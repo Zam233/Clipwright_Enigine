@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.sovits
+*.safetensors
+*.pt
+*.pth
+*.npy
+
+# Node
+node_modules/
+dist/
+.next/
+*.tsbuildinfo
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Claude
+.claude/scheduled_tasks.json
+
+# Media / large assets
+*.mp4
+*.mov
+*.avi
+*.wav
+*.mp3
+
+# Persona model weights (tracked separately)
+personas/**/models/
+personas/**/embeddings/
