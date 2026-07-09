@@ -73,21 +73,6 @@ Phase 1：后端单 Agent 链条 + API；前端基础时间轴编辑器。
 | 转场 (Glitch/Pixelate/Morph) | 3 | 类型插件层 |
 | 布局与运动 (Grid/PiP/动画文字/进度条) | 6 | 时间轴编辑器 |
 | 分析 (场景检测/故事板/质量对比/波形) | 8 | 质检 Agent |
-
-### ComfyUI MCP（89 工具）❌ 需本地 ComfyUI
-
-安装：`claude mcp add` — 通过 ComfyUI 进行 AI 图像/视频生成。
-
-| 类别 | 说明 |
-|------|------|
-| 图像/视频生成 | Flux, WAN, LTX 2.3 Video, Qwen, Ideogram |
-| 工作流执行 | 编排、可视化(Mermaid)、修改、验证、批量参数扫描 |
-| 模型管理 | 搜索 HuggingFace、下载、VRAM 管理 |
-| 实时工作流编辑 | 从 Claude session 直接编辑 ComfyUI 工作流 |
-| 音频生成 | Stable Audio 3 音乐生成 |
-
-使用前提：本地启动 ComfyUI 后自动连接。适合作为 MaterialAgent 的视频生成后端。
-
 ### framely-cli（~15 工具）✅ 已安装
 
 安装：`claude mcp add` — AI 原生视频编辑器 CLI。
