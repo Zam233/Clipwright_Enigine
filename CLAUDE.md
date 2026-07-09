@@ -21,31 +21,80 @@ Phase 1：后端单 Agent 链条 + API；前端基础时间轴编辑器。
 
 ---
 
-## 推荐的 Skill 使用指南
+## 已安装的第三方 Skills
 
-本项目预装了以下 Claude Code skills，在每个开发环节按需使用：
+### Superpowers（obra/superpowers，243K⭐）
 
-### 开发时
+预装在 `.claude/skills/superpowers/`，包含 10 个子 skill：
 
-| Skill | 何时使用 | 用法 |
-|-------|---------|------|
-| `/tdd` | 新增 Agent 节点、前端组件、API 端点时。先写测试再实现 | `/tdd 为 MaterialAgent 的 CLIP 检索添加单元测试` |
-| `/diagnose` | Agent 管线断裂、渲染失败、时间轴状态异常、Persona 参数不生效 | `/diagnose EditAgent 输出的时间线时间轴位置不对` |
-| `/prototype` | 验证新方案：Persona 对话引导流程、Canvas 渲染方案、动画参数生成 | `/prototype PersonaForge 对话引导的交互流程` |
-| `/simplify` | 提交前、PR review 前、重构后。检查代码复用、质量、效率 | `/simplify` |
+| Skill | 场景 | 用法 |
+|-------|------|------|
+| `superpowers` 主 skill | 全流程工程开发：规划 → 实现 → 测试 → 代码审查 | 自动按需加载，也可手动 `/` 调用子 skill |
+| `test-driven-development` | 新增 Agent/组件/API 前先写测试 | TDD 循环：Red → Green → Refactor |
+| `systematic-debugging` | Agent 管线断裂、渲染失败、状态异常 | 假设驱动 + 二分定位 |
+| `dispatching-parallel-agents` | 需要并行执行多个独立任务 | 自动拆解任务并派发子 agent |
+| `subagent-driven-development` | 复杂功能需要隔离上下文实现 | 为子任务创建隔离的 agent 环境 |
+| `requesting-code-review` | 提交 PR 前请求审查 | 生成 review 请求 + 上下文摘要 |
+| `receiving-code-review` | 处理 review 反馈 | 逐条处理 + 标记 resolved |
+| `executing-plans` | 按计划逐步实现 | 跟踪进度，不偏离 scope |
+| `finishing-a-development-branch` | 分支完成时清理：squash、rebase、PR | 规范化分支收尾 |
+| `using-git-worktrees` | 多分支并行开发 | 隔离工作区，互不干扰 |
+| `brainstorming` | 方案设计前探索多种可能性 | 结构化发散 + 收敛 |
 
-### 架构与规划时
+### 内置 Skills（Claude Code 原生）
 
-| Skill | 何时使用 | 用法 |
-|-------|---------|------|
-| `/improve-codebase-architecture` | 架构边界模糊时（如 Agent 逻辑混入原子能力层），检查模块耦合 | `/improve-codebase-architecture 检查 Agent 编排层和各层的边界` |
-| `/to-issues` | 将路线图阶段或功能需求拆解为独立可认领的 issue | `/to-issues 将 Phase 2 的三个插件需求拆成 issue` |
+| Skill | 何时使用 |
+|-------|---------|
+| `/tdd` | TDD 开发循环 |
+| `/diagnose` | 硬 bug 和性能回归的诊断循环 |
+| `/simplify` | 提交前代码 review：复用、质量、效率 |
+| `/improve-codebase-architecture` | 架构边界检查，模块耦合分析 |
+| `/to-issues` | 将路线图拆为独立可认领的 issue |
+| `/handoff` | 模块间 / session 间上下文移交 |
+| `/prototype` | 快速构建可抛弃的原型验证方案 |
 
-### 上下文切换时
+---
 
-| Skill | 何时使用 | 用法 |
-|-------|---------|------|
-| `/handoff` | 从前端切换到后端、从一个模块切到另一个、或结束 session 前 | `/handoff` |
+## 已安装的 MCP 服务器
+
+### mcp-video（87 工具）✅ 已连接
+
+安装：`claude mcp add` — 基于 FFmpeg + Hyperframes 的视频处理工具集。
+
+直接对应 Clipwright **原子能力层**，可在开发 Agent 时直接调用以下能力：
+
+| 类别 | 工具数 | 对应 Clipwright 模块 |
+|------|--------|---------------------|
+| 核心视频 (trim/merge/text/audio/resize/chroma key/字幕/水印/稳定) | 32 | 原子能力层 |
+| AI (Whisper 转录/场景检测/Demucs 音源分离/升格/调色) | 11 | AudioAgent, QA |
+| Hyperframes (HTML → MP4 代码驱动视频) | 8 | AnimationAgent |
+| 音频合成 (波形/预设/空间音频) | 7 | AudioAgent |
+| 视觉效果 (暗角/色差/扫描线/发光/蒙版) | 8 | AnimationAgent |
+| 转场 (Glitch/Pixelate/Morph) | 3 | 类型插件层 |
+| 布局与运动 (Grid/PiP/动画文字/进度条) | 6 | 时间轴编辑器 |
+| 分析 (场景检测/故事板/质量对比/波形) | 8 | 质检 Agent |
+
+### ComfyUI MCP（89 工具）❌ 需本地 ComfyUI
+
+安装：`claude mcp add` — 通过 ComfyUI 进行 AI 图像/视频生成。
+
+| 类别 | 说明 |
+|------|------|
+| 图像/视频生成 | Flux, WAN, LTX 2.3 Video, Qwen, Ideogram |
+| 工作流执行 | 编排、可视化(Mermaid)、修改、验证、批量参数扫描 |
+| 模型管理 | 搜索 HuggingFace、下载、VRAM 管理 |
+| 实时工作流编辑 | 从 Claude session 直接编辑 ComfyUI 工作流 |
+| 音频生成 | Stable Audio 3 音乐生成 |
+
+使用前提：本地启动 ComfyUI 后自动连接。适合作为 MaterialAgent 的视频生成后端。
+
+### framely-cli（~15 工具）✅ 已安装
+
+安装：`claude mcp add` — AI 原生视频编辑器 CLI。
+
+同领域架构参考。支持 project init、asset management、silence cutting、captions、transcription、rendering。所有操作原子化可撤销，媒体文件不出本地。
+
+---
 
 ---
 
