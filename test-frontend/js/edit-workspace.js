@@ -1,22 +1,54 @@
 /* 剪辑工作台 — AI 剪辑一体化工作流 */
-let _lastTimelineData = null, _tlZoom = 1.0, _ewStep = 0;
+let _lastTimelineData = null, _tlZoom = 1.0;
 
-// 初始化：加载素材源列表
+// ── 日志系统 ──
+function ewLog(msg, type) {
+  const panel = document.getElementById('ewLogPanel');
+  const welcome = panel.querySelector('.text-muted');
+  if (welcome) welcome.remove();
+  const div = document.createElement('div');
+  div.style.cssText = 'padding:2px 0;line-height:1.5';
+  if (type === 'error') div.style.color = 'var(--red)';
+  else if (type === 'success') div.style.color = 'var(--green)';
+  else if (type === 'step') div.style.color = 'var(--accent)';
+  else if (type === 'muted') div.style.color = 'var(--text2)';
+  else div.style.color = 'var(--text)';
+  div.style.fontSize = type === 'title' ? '12px' : '11px';
+  div.style.fontWeight = type === 'title' ? '600' : '400';
+  div.textContent = msg;
+  panel.appendChild(div);
+  panel.scrollTop = panel.scrollHeight;
+}
+
+function clearEwLog() {
+  document.getElementById('ewLogPanel').innerHTML =
+    '<div class="text-muted" style="text-align:center;padding:30px 0;font-size:11px;color:var(--text2)">等待操作...</div>';
+}
+
+function setEwProgress(pct, text) {
+  const bar = document.getElementById('ewProgressBar');
+  const label = document.getElementById('ewProgressText');
+  if (bar) bar.style.width = pct + '%';
+  if (label) label.textContent = text;
+  document.getElementById('ewProgress').style.display = 'block';
+}
+
+// ── 素材源加载 ──
 async function loadEditSources() {
   const el = document.getElementById('ewSourceList');
   const { ok, data } = await api('GET', '/api/material/sources');
   if (!ok || !data || !data.length) {
-    el.innerHTML = '<span class="text-muted" style="font-size:11px">无素材源 — 仅文字占位视频</span>';
+    el.innerHTML = '<span class="text-muted" style="font-size:10px">无素材源 — 文字占位</span>';
     return;
   }
   el.innerHTML = data.map(s =>
-    `<label style="display:flex;align-items:center;gap:4px;padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:11px">
-      <input type="checkbox" checked data-source-id="${s.id}" style="accent-color:var(--accent)">
+    `<label style="display:inline-flex;align-items:center;gap:2px;padding:2px 6px;background:var(--surface2);border:1px solid var(--border);border-radius:3px;cursor:pointer;font-size:10px">
+      <input type="checkbox" checked data-source-id="${s.id}" style="accent-color:var(--accent);width:10px;height:10px;margin:0">
       ${s.name}
     </label>`
   ).join('');
 }
-// 获取选中的素材源 ID 列表
+
 function getSelectedSources() {
   const checks = document.querySelectorAll('#ewSourceList input[type="checkbox"]:checked');
   return Array.from(checks).map(c => c.getAttribute('data-source-id'));
@@ -34,7 +66,6 @@ async function uploadAudio(event) {
   const file = event.target.files[0];
   if (!file) return;
   const el = document.getElementById('ewAudioPath');
-  // Upload via asset API
   const formData = new FormData();
   formData.append('file', file);
   try {
@@ -42,46 +73,38 @@ async function uploadAudio(event) {
     const data = await res.json();
     if (data.file_path) {
       el.value = data.file_path;
-      addEwLog(`配音上传成功: ${data.filename} (${(data.file_size/1024).toFixed(0)}KB)`);
+      ewLog(`配音上传成功: ${data.filename}`, 'success');
     }
   } catch(e) {
     el.value = file.name;
+    ewLog(`配音上传失败: ${e.message}`, 'error');
   }
 }
 
-let _ewLogs = [];
-function addEwLog(msg) {
-  _ewLogs.push(msg);
-  const el = document.getElementById('ewResult');
-  el.innerHTML = _ewLogs.map(m => `<div class="text-muted" style="font-size:11px;padding:2px 0">${m}</div>`).join('');
-}
-function setEwProgress(pct, text) {
-  const bar = document.getElementById('ewProgressBar');
-  const label = document.getElementById('ewProgressText');
-  if (bar) bar.style.width = pct + '%';
-  if (label) label.textContent = text;
-  document.getElementById('ewProgress').style.display = 'block';
-}
-
-// ── 主流程：生成视频 ──
+// ── 主流程 ──
 async function runAiEdit() {
   const btn = document.getElementById('ewRunBtn');
   btn.disabled = true; btn.textContent = '生成中...';
-  _ewLogs = []; document.getElementById('ewResult').innerHTML = '';
-  _ewStep = 0;
+  clearEwLog();
+  const startedAt = Date.now();
+
+  const topic = document.getElementById('ewTopic').value.trim();
+  const script = document.getElementById('ewScript').value.trim();
+  const personaId = document.getElementById('ewPersonaId').value.trim();
+  const pluginId = document.getElementById('ewPluginId').value;
+  const audioPath = document.getElementById('ewAudioPath').value.trim();
+  const selectedSources = getSelectedSources();
+
+  ewLog(`=== AI 剪辑工作流 ===`, 'title');
+  ewLog(`选题: ${topic}`, '');
+  ewLog(`人格: ${personaId} | 类型: ${pluginId}`, 'muted');
+  ewLog(`素材源: ${selectedSources.length ? selectedSources.join(', ') : '全部'}`, 'muted');
+  if (audioPath) ewLog(`配音: ${audioPath}`, 'muted');
 
   try {
-    const topic = document.getElementById('ewTopic').value.trim();
-    const script = document.getElementById('ewScript').value.trim();
-    const personaId = document.getElementById('ewPersonaId').value.trim();
-    const pluginId = document.getElementById('ewPluginId').value;
-    const audioPath = document.getElementById('ewAudioPath').value.trim();
-
-    addEwLog('开始 AI 剪辑流程...');
-
-    // Step 1: STT align (配音+文案对齐)
-    _ewStep = 1;
+    // Step 1: STT
     setEwProgress(10, '正在对齐配音与文案...');
+    ewLog(`[1/4] 对齐配音与文案...`, 'step');
     let sttSegments = [];
     if (audioPath && script) {
       const res = await fetch(API_BASE() + '/api/stt/align', {
@@ -91,18 +114,14 @@ async function runAiEdit() {
       const data = await res.json();
       if (data.success) {
         sttSegments = data.segments || [];
-        addEwLog(`配音对齐完成: ${sttSegments.length} 个时间戳段落`);
+        ewLog(`配音对齐完成: ${sttSegments.length} 个时间戳段落`, 'success');
       }
     }
 
-    // Step 2: Run pipeline
-    _ewStep = 2;
-    setEwProgress(30, 'AI 管线运行中 (Structure→Material→Edit→Animation→Audio→Quality)...');
+    // Step 2: Pipeline
+    setEwProgress(30, 'AI 管线运行中...');
+    ewLog(`[2/4] AI 管线运行中...`, 'step');
     let pipelineResult;
-    // 获取选中的素材源
-    const selectedSources = getSelectedSources();
-    addEwLog(`素材源: ${selectedSources.length ? selectedSources.join(', ') : '全部 (或无素材源)'}`);
-
     try {
       const res = await fetch(API_BASE() + '/api/pipeline/run', {
         method: 'POST', headers: {'Content-Type':'application/json'},
@@ -113,175 +132,134 @@ async function runAiEdit() {
         })
       });
       pipelineResult = await res.json();
-      // HTTP 400 时错误信息在 detail 字段
-      if (!res.ok) {
-        throw new Error(pipelineResult?.detail || `HTTP ${res.status}`);
-      }
+      if (!res.ok) throw new Error(pipelineResult?.detail || `HTTP ${res.status}`);
     } catch(e) {
-      addEwLog('错误: ' + e.message);
+      ewLog(`管线失败: ${e.message}`, 'error');
       btn.disabled = false; btn.textContent = '生成视频';
       return;
     }
 
     const tl = pipelineResult?.shared_data?.final_timeline;
     const steps = pipelineResult?.steps || [];
+    const trace = pipelineResult?.shared_data?.execution_trace || [];
 
-    // 显示管线状态
-    addEwLog(`管线状态: ${pipelineResult?.status || 'unknown'}`);
-    if (pipelineResult?.error) addEwLog(`错误: ${pipelineResult.error}`);
-
-    // 显示每个 Agent 步骤状态
+    // 显示步骤结果
     for (const s of steps) {
-      const tag = s.status === 'completed' ? '✅' : s.status === 'failed' ? '❌' : '⏳';
-      addEwLog(`  ${tag} ${s.agent_name}: ${s.status}${s.duration_ms ? ' ('+s.duration_ms+'ms)' : ''}${s.error ? ' → '+s.error.slice(0,100) : ''}`);
+      const icon = s.status === 'completed' ? '✓' : s.status === 'failed' ? '✗' : '○';
+      const dur = s.duration_ms ? ` (${(s.duration_ms/1000).toFixed(1)}s)` : '';
+      const err = s.error ? ` → ${s.error.slice(0,120)}` : '';
+      ewLog(`  ${icon} ${s.agent_name}: ${s.status}${dur}${err}`, s.status === 'failed' ? 'error' : 'muted');
+    }
+
+    // 显示追踪事件
+    if (trace.length) {
+      const typeIcons = {llm:'🤖', tool:'🔧', skill:'🧠', plugin:'🔌', agent_start:'▶', agent_end:'✓', error:'✗', info:'○'};
+      for (const ev of trace.slice(-10)) { // 显示最近10条
+        const icon = typeIcons[ev.type] || '·';
+        ewLog(`  ${icon} ${ev.agent}: ${ev.summary}`, 'muted');
+      }
     }
 
     if (!tl) {
-      addEwLog('未生成时间线 — 可能是 LLM API Key 未配置或无素材源');
+      ewLog(`管线状态: ${pipelineResult?.status || 'unknown'}`, 'error');
+      ewLog(`未生成时间线 — 检查 LLM API Key 或素材源配置`, 'error');
       btn.disabled = false; btn.textContent = '生成视频';
       return;
     }
     _lastTimelineData = tl;
-
-    // Show execution trace (LLM calls, Tool calls, Plugin usage)
-    const trace = pipelineResult?.shared_data?.execution_trace || [];
-    addEwLog(`管线完成: ${(pipelineResult.steps||[]).filter(s=>s.status==='completed').length}/6 Agent 通过`);
-    addEwLog(`执行事件: ${trace.length} 条`);
-
-    // Render trace events in a collapsible panel
-    const resultEl = document.getElementById('ewResult');
-    let traceHtml = '<div style="margin-top:4px;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">';
-    traceHtml += '<div style="font-size:11px;font-weight:600;padding:6px 10px;background:var(--surface);cursor:pointer" onclick="toggleTrace()">执行追踪 ▾</div>';
-    traceHtml += '<div id="tracePanel" style="max-height:300px;overflow-y:auto;font-size:10px;line-height:1.5">';
-
-    const typeIcons = {llm:'🤖', tool:'🔧', skill:'🧠', plugin:'🔌', agent_start:'▶️', agent_end:'✅', error:'❌', info:'ℹ️'};
-    for (const ev of trace) {
-      const icon = typeIcons[ev.type] || '•';
-      const time = ev.time ? new Date(ev.time*1000).toLocaleTimeString() : '';
-      traceHtml += `<div style="padding:4px 10px;border-bottom:1px solid var(--border);display:flex;gap:6px">
-        <span>${icon}</span>
-        <span style="color:var(--text2);width:50px;flex-shrink:0">${ev.agent||''}</span>
-        <span style="flex:1">${ev.summary||''}</span>
-        <span style="color:var(--text2);font-size:9px">${time}</span>
-      </div>`;
-    }
-    traceHtml += '</div></div>';
-    resultEl.innerHTML = _ewLogs.map(m => `<div class="text-muted" style="font-size:11px;padding:1px 0">${m}</div>`).join('') + traceHtml;
-
-    // Step status
-    for (const s of (pipelineResult.steps||[])) {
-      addEwLog(`  ${s.agent_name}: ${s.status}${s.duration_ms?' ('+s.duration_ms+'ms)':''}`);
-    }
+    ewLog(`管线完成: ${steps.filter(s => s.status === 'completed').length}/6 Agent 通过`, 'success');
 
     // Step 3: Render
-    _ewStep = 3;
     setEwProgress(70, '正在渲染 MP4...');
-    let renderResult;
+    ewLog(`[3/4] 渲染视频...`, 'step');
     try {
       const res = await fetch(API_BASE() + '/api/render/start', {
         method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({timeline: tl, output_path: 'renders/ai_edit_output.mp4'})
       });
-      renderResult = await res.json();
+      const renderResult = await res.json();
+      if (renderResult?.success) {
+        ewLog(`渲染完成: ${renderResult.output_path}`, 'success');
+      } else {
+        ewLog(`渲染: ${renderResult?.error || '无输出 (FFmpeg 可能未安装)'}`, 'muted');
+      }
     } catch(e) {
-      addEwLog('渲染调用失败 (FFmpeg 可能未安装): ' + e.message);
-      renderResult = null;
+      ewLog(`渲染失败: ${e.message}`, 'error');
     }
 
+    // Step 4: Show timeline
     setEwProgress(100, '完成');
-    if (renderResult?.success) {
-      addEwLog(`渲染完成: ${renderResult.output_path} (${renderResult.duration_sec.toFixed(1)}s)`);
-    } else if (renderResult) {
-      addEwLog(`渲染状态: ${renderResult.error || '完成 (无文件输出)'}`);
-    }
-
-    // Render timeline
+    ewLog(`[4/4] 完成 (${((Date.now()-startedAt)/1000).toFixed(1)}s)`, 'success');
     renderTimelineWithCaptions(tl, sttSegments);
-    addEwLog('时间线已更新');
 
   } catch(e) {
-    addEwLog('错误: ' + e.message);
+    ewLog(`错误: ${e.message}`, 'error');
   }
 
   btn.disabled = false; btn.textContent = '生成视频';
 }
 
-// ── Timeline Renderer (CapCut-style) ──
+// ── Timeline Renderer ──
 function renderTimelineWithCaptions(tl, sttSegments) {
-  if (!tl) return renderTimeline(tl);
-
+  if (!tl) return;
   const container = document.getElementById('timelineInner');
   const info = document.getElementById('tlInfo');
   const dur = tl.duration_sec || 60;
-  info.textContent = `${tl.width}x${tl.height} @ ${tl.fps}fps | ${dur.toFixed(1)}s | ${(tl.tracks||[]).length} 轨道`;
+  info.textContent = `${tl.width}x${tl.height} @ ${tl.fps}fps | ${dur.toFixed(1)}s`;
 
   const zoom = _tlZoom, pxPerSec = 100 * zoom;
   const totalWidth = Math.max(dur * pxPerSec, 400);
-  const trackH = 56, rulerH = 30, labelW = 80;
+  const trackH = 48, rulerH = 26, labelW = 70;
 
-  let html = `<div style="display:flex;flex-direction:column;min-width:${labelW+totalWidth+20}px;user-select:none">`;
-
+  let html = `<div style="display:flex;flex-direction:column;min-width:${labelW+totalWidth+10}px;user-select:none">`;
   // Ruler
   html += `<div style="display:flex;height:${rulerH}px;position:sticky;top:0;z-index:10;background:var(--surface);border-bottom:1px solid var(--border)">`;
-  html += `<div style="width:${labelW}px;flex-shrink:0;border-right:1px solid var(--border);font-size:10px;color:var(--text2);display:flex;align-items:center;justify-content:center">时间</div>`;
+  html += `<div style="width:${labelW}px;flex-shrink:0;border-right:1px solid var(--border);font-size:9px;color:var(--text2);display:flex;align-items:center;justify-content:center">时间</div>`;
   html += `<div style="flex:1;position:relative;overflow:hidden">`;
   const tickInterval = Math.max(1, Math.floor(5 / zoom));
   for (let t = 0; t <= dur; t += tickInterval/2) {
     const x = t * pxPerSec;
     const isMain = t % tickInterval === 0;
-    html += `<div style="position:absolute;left:${x}px;bottom:0;width:1px;height:${isMain?12:6}px;background:var(--border)"></div>`;
-    if (isMain) html += `<div style="position:absolute;left:${x}px;bottom:14px;transform:translateX(-50%);font-size:10px;color:var(--text2)">${t.toFixed(1)}s</div>`;
+    html += `<div style="position:absolute;left:${x}px;bottom:0;width:1px;height:${isMain?10:5}px;background:var(--border)"></div>`;
+    if (isMain) html += `<div style="position:absolute;left:${x}px;bottom:12px;transform:translateX(-50%);font-size:9px;color:var(--text2)">${t.toFixed(1)}s</div>`;
   }
   html += `</div></div>`;
 
   // Tracks
-  const colors = {video:'#4f8cff', audio:'#34d399', text:'#fbbf24', caption:'#f59e0b', image:'#a855f7', shape:'#ec4899', waveform:'#22d3ee'};
-  const trackNames = {video:'视频轨', audio:'音频轨', text:'文字轨', caption:'字幕轨', image:'图片轨'};
+  const colors = {video:'#4f8cff', audio:'#34d399', text:'#fbbf24', caption:'#f59e0b', image:'#a855f7'};
+  const trackNames = {video:'视频', audio:'音频', text:'文字', caption:'字幕', image:'图片'};
 
   for (const track of (tl.tracks||[])) {
     const kind = track.kind || 'video';
     const color = colors[kind] || '#888';
     html += `<div style="display:flex;height:${trackH}px;border-bottom:1px solid var(--border);background:var(--surface2)">`;
-    html += `<div style="width:${labelW}px;flex-shrink:0;border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:10px;color:var(--text2);background:var(--surface)">`;
-    html += `<span style="font-weight:600">${trackNames[kind]||kind}</span>`;
-    html += `<span style="font-size:9px">${(track.clips||[]).length} 片段</span></div>`;
+    html += `<div style="width:${labelW}px;flex-shrink:0;border-right:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--text2);background:var(--surface)">${trackNames[kind]||kind}</div>`;
     html += `<div style="flex:1;position:relative;min-width:${totalWidth}px">`;
-
-    // Grid lines
     for (let t = 0; t <= dur; t += tickInterval/2) {
-      const x = t * pxPerSec;
-      html += `<div style="position:absolute;left:${x}px;top:0;width:1px;height:100%;background:rgba(255,255,255,0.03)"></div>`;
+      html += `<div style="position:absolute;left:${t*pxPerSec}px;top:0;width:1px;height:100%;background:rgba(255,255,255,0.02)"></div>`;
     }
-
-    // Clips
     for (const clip of (track.clips||[])) {
       const x = (clip.start_sec||0) * pxPerSec;
-      const w = Math.max((clip.duration_sec||1) * pxPerSec, 6);
-      const top = 4;
-      const h = trackH - 8;
+      const w = Math.max((clip.duration_sec||1) * pxPerSec, 4);
       const label = clip.text || clip.asset_id || clip.id || '';
-      const shortLabel = label.length > 20 ? label.slice(0,20)+'…' : label;
       const title = `${label} | ${clip.start_sec.toFixed(1)}s-${(clip.start_sec+clip.duration_sec).toFixed(1)}s`;
-
-      html += `<div style="position:absolute;left:${x}px;top:${top}px;width:${w}px;height:${h}px;border-radius:4px;background:${color}44;border:1px solid ${color}88;display:flex;align-items:center;justify-content:center;overflow:hidden;cursor:pointer;font-size:10px" title="${title}">`;
-      if (w > 40) {
-        html += `<span style="color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.8);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${shortLabel}</span>`;
-      }
+      html += `<div style="position:absolute;left:${x}px;top:4px;width:${w}px;height:${trackH-8}px;border-radius:3px;background:${color}44;border:1px solid ${color}88;display:flex;align-items:center;justify-content:center;overflow:hidden;cursor:pointer;font-size:10px" title="${title}">`;
+      if (w > 30) html += `<span style="color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.8);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${label.slice(0,15)}</span>`;
       html += `</div>`;
     }
     html += `</div></div>`;
   }
 
-  // STT caption track (if available)
+  // STT track
   if (sttSegments && sttSegments.length > 0) {
     html += `<div style="display:flex;height:${trackH}px;border-bottom:1px solid var(--border);background:var(--surface2)">`;
-    html += `<div style="width:${labelW}px;flex-shrink:0;border-right:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--text2);background:var(--surface);font-weight:600">配音</div>`;
+    html += `<div style="width:${labelW}px;flex-shrink:0;border-right:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--text2);background:var(--surface)">配音</div>`;
     html += `<div style="flex:1;position:relative;min-width:${totalWidth}px">`;
     for (const seg of sttSegments) {
       const x = (seg.start||0) * pxPerSec;
-      const w = Math.max(((seg.end||seg.start+1) - (seg.start||0)) * pxPerSec, 10);
-      html += `<div style="position:absolute;left:${x}px;top:4px;width:${w}px;height:${trackH-8}px;border-radius:4px;background:#fbbf2444;border:1px solid #fbbf2488;display:flex;align-items:center;justify-content:center;overflow:hidden;font-size:10px;cursor:pointer" title="${seg.text}">`;
-      if (w > 50) html += `<span style="color:#fff;padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${seg.text}</span>`;
+      const w = Math.max(((seg.end||seg.start+1)-seg.start) * pxPerSec, 6);
+      html += `<div style="position:absolute;left:${x}px;top:4px;width:${w}px;height:${trackH-8}px;border-radius:3px;background:#fbbf2444;border:1px solid #fbbf2488;display:flex;align-items:center;justify-content:center;overflow:hidden;font-size:10px;cursor:pointer" title="${seg.text}">`;
+      if (w > 40) html += `<span style="color:#fff;padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${seg.text}</span>`;
       html += `</div>`;
     }
     html += `</div></div>`;
@@ -292,20 +270,6 @@ function renderTimelineWithCaptions(tl, sttSegments) {
   document.getElementById('tlRange').textContent = `${dur.toFixed(1)}s`;
 }
 
-// Legacy timeline render (also updated)
-function renderTimeline(tl) {
-  if (!tl) return;
-  const container = document.getElementById('timelineInner');
-  const info = document.getElementById('tlInfo');
-  const dur = tl.duration_sec || 60;
-  info.textContent = `${tl.width}x${tl.height} @ ${tl.fps}fps | ${dur.toFixed(1)}s`;
-  renderTimelineWithCaptions(tl, []);
-}
-
-function toggleTrace() {
-  const panel = document.getElementById('tracePanel');
-  if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-}
 function zoomTimeline(delta) {
   _tlZoom = Math.max(0.3, Math.min(5, _tlZoom + delta));
   if (_lastTimelineData) renderTimelineWithCaptions(_lastTimelineData, []);

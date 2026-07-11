@@ -53,23 +53,33 @@ class PexelsMaterialSource(MaterialSource):
             media_type: "video" / "photo" / "all"
         """
         if not self._api_key:
+            import logging
+            logging.getLogger("pexels").warning("Pexels API Key 未配置，跳过搜索")
             return []
 
         results: list[tuple[MaterialAsset, float]] = []
 
+        import logging
+        log = logging.getLogger("pexels")
         if media_type in ("video", "all"):
             try:
                 videos = await self._search_videos(query, top_k)
                 results.extend(videos)
-            except Exception:
-                pass
+                if videos:
+                    log.info("Pexels videos found: %d for '%s'", len(videos), query)
+                else:
+                    log.debug("No Pexels videos for '%s'", query)
+            except Exception as e:
+                log.warning("Pexels视频搜索失败: %s", e)
 
         if media_type in ("photo", "all"):
             try:
                 photos = await self._search_photos(query, top_k)
                 results.extend(photos)
-            except Exception:
-                pass
+                if photos:
+                    log.info("Pexels photos found: %d for '%s'", len(photos), query)
+            except Exception as e:
+                log.warning("Pexels图片搜索失败: %s", e)
 
         return results
 

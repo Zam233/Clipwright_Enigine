@@ -401,68 +401,77 @@
     </div>
 
     <!-- Edit Workspace -->
-    <div id="section-edit-workspace" class="section">
-      <div style="display:flex;gap:16px;height:calc(100vh - 140px)">
+    <div id="section-edit-workspace" class="section" style="height:calc(100vh - 80px)">
+      <div style="display:flex;gap:12px;height:100%">
         <!-- Left: Input Panel -->
-        <div style="width:380px;flex-shrink:0;display:flex;flex-direction:column;gap:12px;overflow-y:auto">
+        <div style="width:320px;flex-shrink:0;display:flex;flex-direction:column;gap:8px;overflow-y:auto">
           <div class="card" style="margin:0">
-            <div class="card-header" style="padding:10px 14px">AI 剪辑 — 输入</div>
-            <div class="card-body" style="padding:12px 14px">
-              <div class="form-group"><label>选题</label><input id="ewTopic" value="年轻人的盲盒消费"></div>
-              <div class="form-group"><label>文案（导入或粘贴）</label>
-                <textarea id="ewScript" rows="5" placeholder="粘贴视频文案...">今天我们来聊聊年轻人的盲盒消费。</textarea>
-                <div style="margin-top:4px"><button class="btn btn-secondary btn-sm" onclick="document.getElementById('ewScriptFile').click()">导入文件</button><input type="file" id="ewScriptFile" style="display:none" accept=".txt,.md" onchange="importEditScript(event)"></div>
+            <div class="card-header" style="padding:8px 12px;font-size:12px">AI 剪辑 — 输入</div>
+            <div class="card-body" style="padding:10px 12px">
+              <div class="form-group" style="margin-bottom:8px"><label style="font-size:11px">选题</label><input id="ewTopic" value="年轻人的盲盒消费" style="font-size:12px;padding:6px 10px"></div>
+              <div class="form-group" style="margin-bottom:8px"><label style="font-size:11px">文案</label>
+                <textarea id="ewScript" rows="4" placeholder="粘贴视频文案..." style="font-size:12px;padding:6px 10px;min-height:60px">今天我们来聊聊年轻人的盲盒消费。</textarea>
+                <div style="margin-top:3px"><button class="btn btn-secondary btn-sm" style="font-size:10px;padding:3px 8px" onclick="document.getElementById('ewScriptFile').click()">导入文件</button><input type="file" id="ewScriptFile" style="display:none" accept=".txt,.md" onchange="importEditScript(event)"></div>
               </div>
-              <div class="form-row">
-                <div class="form-group"><label>人格</label><input id="ewPersonaId" value="zam_knowledge_critical"></div>
-                <div class="form-group"><label>视频类型</label>
-                  <select id="ewPluginId">
-                    <option value="knowledge_longform">知识区长片</option>
-                    <option value="kichiku_fastcut">鬼畜快剪</option>
-                    <option value="digital_review">数码评测</option>
-                    <option value="vlog_daily">Vlog 日常</option>
+              <div class="form-row" style="gap:8px">
+                <div class="form-group" style="margin-bottom:8px"><label style="font-size:11px">人格</label><input id="ewPersonaId" value="zam_knowledge_critical" style="font-size:12px;padding:6px 10px"></div>
+                <div class="form-group" style="margin-bottom:8px"><label style="font-size:11px">类型</label>
+                  <select id="ewPluginId" style="font-size:12px;padding:6px 10px">
+                    <option value="knowledge_longform">知识区</option>
+                    <option value="kichiku_fastcut">鬼畜</option>
+                    <option value="digital_review">数码</option>
+                    <option value="vlog_daily">Vlog</option>
                   </select>
                 </div>
               </div>
-              <div class="form-group"><label>素材库（可选，留空使用全部）</label>
-                <div id="ewSourceList" style="display:flex;flex-wrap:wrap;gap:4px;min-height:30px;padding:4px 0">
-                  <span class="text-muted" style="font-size:11px">加载中...</span>
+              <div class="form-group" style="margin-bottom:8px"><label style="font-size:11px">素材源</label>
+                <div id="ewSourceList" style="display:flex;flex-wrap:wrap;gap:3px;min-height:24px;padding:2px 0">
+                  <span class="text-muted" style="font-size:10px">加载中...</span>
                 </div>
               </div>
-              <div class="form-group"><label>配音上传</label>
-                <div style="display:flex;gap:8px;align-items:center">
-                  <input id="ewAudioPath" value="/path/to/voiceover.wav" placeholder="音频路径或上传" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:var(--radius);font-size:13px">
-                  <button class="btn btn-secondary btn-sm" onclick="document.getElementById('ewAudioFile').click()">浏览</button>
+              <div class="form-group" style="margin-bottom:8px"><label style="font-size:11px">配音</label>
+                <div style="display:flex;gap:4px;align-items:center">
+                  <input id="ewAudioPath" value="/path/to/voiceover.wav" placeholder="音频路径" style="flex:1;font-size:11px;padding:5px 8px;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:var(--radius)">
+                  <button class="btn btn-secondary btn-sm" style="font-size:10px;padding:3px 8px" onclick="document.getElementById('ewAudioFile').click()">浏览</button>
                   <input type="file" id="ewAudioFile" style="display:none" accept=".wav,.mp3,.m4a,.mp4" onchange="uploadAudio(event)">
                 </div>
               </div>
-              <button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="runAiEdit()" id="ewRunBtn">
-                生成视频
-              </button>
-              <div id="ewProgress" style="margin-top:8px;display:none">
-                <div class="progress-bar"><div class="fill" id="ewProgressBar" style="width:0%"></div></div>
-                <div class="text-muted" style="font-size:11px;margin-top:2px" id="ewProgressText">初始化...</div>
-              </div>
-              <div id="ewResult"></div>
+              <button class="btn btn-primary" style="width:100%;padding:8px;font-size:12px;margin-top:4px" onclick="runAiEdit()" id="ewRunBtn">生成视频</button>
             </div>
           </div>
         </div>
-        <!-- Right: Timeline Viewer -->
+        <!-- Center: Timeline Viewer -->
         <div class="card" style="margin:0;flex:1;display:flex;flex-direction:column;min-width:0">
-          <div class="card-header" style="padding:10px 14px;flex-shrink:0">
+          <div class="card-header" style="padding:6px 10px;flex-shrink:0;font-size:11px">
             <div style="display:flex;justify-content:space-between;align-items:center;width:100%">
-              <span>时间轴 <span class="text-muted" id="tlInfo" style="font-weight:400;font-size:11px"></span></span>
-              <div style="display:flex;gap:4px">
-                <button class="btn btn-secondary btn-sm" onclick="zoomTimeline(-0.3)" title="缩小">−</button>
-                <span class="text-muted" style="font-size:11px;padding:0 4px" id="tlRange">0s</span>
-                <button class="btn btn-secondary btn-sm" onclick="zoomTimeline(0.3)" title="放大">+</button>
+              <span>时间轴 <span class="text-muted" id="tlInfo" style="font-weight:400"></span></span>
+              <div style="display:flex;gap:2px;align-items:center">
+                <button class="btn btn-secondary btn-sm" style="font-size:10px;padding:2px 6px" onclick="zoomTimeline(-0.3)">−</button>
+                <span class="text-muted" style="font-size:10px;padding:0 4px;min-width:30px;text-align:center" id="tlRange">0s</span>
+                <button class="btn btn-secondary btn-sm" style="font-size:10px;padding:2px 6px" onclick="zoomTimeline(0.3)">+</button>
               </div>
             </div>
           </div>
           <div id="timelineContainer" style="flex:1;overflow:auto;background:var(--surface2);font-family:var(--font);position:relative">
             <div id="timelineInner" style="position:relative;min-height:200px">
-              <div class="text-muted" style="padding:60px;text-align:center">填写左侧参数，点击"生成视频"<br>管线运行后时间线在此展示</div>
+              <div class="text-muted" style="padding:60px 20px;text-align:center;font-size:12px">填写左侧参数，点击"生成视频"<br>管线运行后时间线在此展示</div>
             </div>
+          </div>
+        </div>
+        <!-- Right: Execution Log -->
+        <div style="width:300px;flex-shrink:0;display:flex;flex-direction:column;gap:8px">
+          <div class="card" style="margin:0;flex:1;display:flex;flex-direction:column;overflow:hidden">
+            <div class="card-header" style="padding:6px 10px;font-size:11px;flex-shrink:0">
+              <span>执行日志</span>
+              <button class="btn btn-secondary btn-sm" style="font-size:9px;padding:1px 6px" onclick="clearEwLog()">清空</button>
+            </div>
+            <div id="ewLogPanel" style="flex:1;overflow-y:auto;padding:6px 8px;font-family:var(--font);font-size:11px;line-height:1.6">
+              <div class="text-muted" style="text-align:center;padding:30px 0;font-size:11px;color:var(--text2)">等待操作...</div>
+            </div>
+          </div>
+          <div id="ewProgress" style="display:none;padding:6px 10px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius)">
+            <div class="progress-bar" style="height:4px"><div class="fill" id="ewProgressBar" style="width:0%"></div></div>
+            <div class="text-muted" style="font-size:10px;margin-top:2px" id="ewProgressText">初始化...</div>
           </div>
         </div>
       </div>

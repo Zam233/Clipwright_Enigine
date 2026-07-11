@@ -204,6 +204,7 @@ class PipelineOrchestrator:
         except Exception as e:
             state.status = PipelineStatus.FAILED
             state.error = str(e)
+            logger.exception("Pipeline 执行异常: %s", e)
 
         state.updated_at = datetime.now()
         return state
@@ -263,6 +264,7 @@ class PipelineOrchestrator:
             step.status = PipelineStatus.FAILED
             step.error = str(e)
             add_event(pid, agent_name, "error", f"Agent 失败: {agent_name} → {str(e)[:200]}")
+            logger.exception("Agent %s 执行异常: %s", agent_name, e)
 
         step.completed_at = datetime.now()
         if step.started_at:
