@@ -253,7 +253,8 @@ function renderTimelineWithCaptions(tl, sttSegments) {
     for (const clip of (track.clips||[])) {
       const x = (clip.start_sec||0) * pxPerSec;
       const w = Math.max((clip.duration_sec||1) * pxPerSec, 4);
-      const label = clip.text || clip.asset_id || clip.id || '';
+      const meta = clip.metadata || {};
+      const label = clip.text || meta.label || meta.source_title || (clip.asset_id ? clip.asset_id.split('/').pop().split('\\').pop().slice(0,20) : '') || clip.id || '';
       const title = `${label} | ${clip.start_sec.toFixed(1)}s-${(clip.start_sec+clip.duration_sec).toFixed(1)}s`;
       html += `<div style="position:absolute;left:${x}px;top:4px;width:${w}px;height:${trackH-8}px;border-radius:3px;background:${color}44;border:1px solid ${color}88;display:flex;align-items:center;justify-content:center;overflow:hidden;cursor:pointer;font-size:10px" title="${title}">`;
       if (w > 30) html += `<span style="color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.8);padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${label.slice(0,15)}</span>`;

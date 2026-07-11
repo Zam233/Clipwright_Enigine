@@ -224,17 +224,18 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         processed_path: str = "",
     ) -> Clip:
         """构造一个 Clip，填充素材信息和已处理的媒体路径。"""
-        asset_id = asset.get("asset_id", "") if asset else ""
         clip = Clip(
             id=_uid("c"),
             kind=kind,
-            asset_id=processed_path or asset_id,
+            asset_id=processed_path or (asset.get("asset_id", "") if asset else ""),
             track_id=track_id,
             start_sec=start_sec,
             duration_sec=duration_sec,
         )
+        # 媒体路径存到 asset_id（给 Render 用），显示用自定义标签
+        clip.metadata["label"] = clip_label
         if asset:
-            clip.asset_id = processed_path or asset.get("asset_id", clip.asset_id)
+            clip.metadata["source_title"] = asset.get("title", "")
 
         if kind in (ClipKind.VIDEO, ClipKind.IMAGE):
             clip.image_fit = ImageFit.COVER
