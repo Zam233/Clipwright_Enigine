@@ -81,7 +81,7 @@ async function runStt() {
   if (!path) { document.getElementById('sttResult').innerHTML = '<div class="tag tag-error">请输入音频路径</div>'; return; }
   const el = document.getElementById('sttResult');
   el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">转录中...</span></div>';
-  const res = await fetch(API_BASE() + '/api/stt/transcribe?audio_path=' + encodeURIComponent(path), { method: 'POST' });
+  const res = await fetch(API_BASE() + '/api/stt/transcribe', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({audio_path: path}) });
   const data = await res.json();
   if (!data.success) { el.innerHTML = `<div class="tag tag-error">${data.error||'转录失败'}</div>`; return; }
   let html = `<div class="result-box"><div class="result-header"><span>${data.model} | ${data.language} | ${data.duration_sec}s</span><span class="tag tag-success">${(data.segments||[]).length} 段</span></div><pre>`;
@@ -100,4 +100,35 @@ async function runSttAlign() {
   let html = `<div class="result-box"><div class="result-header"><span>${(data.segments||[]).length} 段对齐</span><span class="tag tag-success">${data.duration_sec}s</span></div><pre>`;
   for (const seg of (data.segments||[])) html += `[${seg.start.toFixed(1)}s-${seg.end.toFixed(1)}s] ${seg.text}\n`;
   el.innerHTML = html + '</pre></div>';
+}
+/* EDL */
+async function importEdl() {
+  const content = document.getElementById('edlContent').value;
+  const el = document.getElementById('edlResult');
+  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">解析中...</span></div>';
+  const { ok, data } = await api('POST', '/api/edl/import/edl', { content });
+  el.innerHTML = ok ? `<div class="result-box"><pre>${JSON.stringify(data, null, 2)}</pre></div>` : '<div class="tag tag-error">解析失败</div>';
+}
+async function importFcpxml() {
+  const content = document.getElementById('edlContent').value;
+  const el = document.getElementById('edlResult');
+  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">解析中...</span></div>';
+  const { ok, data } = await api('POST', '/api/edl/import/fcpxml', { content });
+  el.innerHTML = ok ? `<div class="result-box"><pre>${JSON.stringify(data, null, 2)}</pre></div>` : '<div class="tag tag-error">解析失败</div>';
+}
+/* Proxy */
+async function generateProxy() {
+  const input_path = document.getElementById('proxyPath').value.trim();
+  const proxy_height = parseInt(document.getElementById('proxyHeight').value) || 720;
+  const el = document.getElementById('proxyResult');
+  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">生成中...</span></div>';
+  const { ok, data } = await api('POST', '/api/proxy/generate', { input_path, proxy_height });
+  el.innerHTML = ok ? `<div class="result-box"><pre>${JSON.stringify(data, null, 2)}</pre></div>` : '<div class="tag tag-error">生成失败</div>';
+}
+async function switchProxy() {
+  const el = document.getElementById('proxyResult');
+  if (!_lastTimelineData) { el.innerHTML = '<div class="tag tag-error">请先运行管线</div>'; return; }
+  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">切换中...</span></div>';
+  const { ok, data } = await api('POST', '/api/proxy/switch', { timeline: _lastTimelineData });
+  el.innerHTML = ok ? `<div class="result-box"><pre>${JSON.stringify(data, null, 2)}</pre></div>` : '<div class="tag tag-error">切换失败</div>';
 }

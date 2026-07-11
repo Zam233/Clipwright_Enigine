@@ -363,6 +363,8 @@
           <div class="tab active" onclick="switchEditTab('pipeline',this)">Pipeline</div>
           <div class="tab" onclick="switchEditTab('timeline',this)">时间线</div>
           <div class="tab" onclick="switchEditTab('stt',this)">语音转文字</div>
+          <div class="tab" onclick="switchEditTab('edl',this)">EDL/FCPXML</div>
+          <div class="tab" onclick="switchEditTab('proxy',this)">代理</div>
         </div>
         <div id="edit-pipeline" class="card-body">
           <p class="text-muted mb-2">输入文案或选题，运行完整剪辑管线</p>
@@ -400,6 +402,30 @@
           <div class="form-group"><label>已有文案（可选，留空则自动转录）</label><textarea id="sttTranscript" rows="3" placeholder="如果已有文案，粘贴到这里进行时间对齐..."></textarea></div>
           <div class="btn-group"><button class="btn btn-primary" onclick="runStt()">转录</button><button class="btn btn-secondary" onclick="runSttAlign()">对齐文案</button></div>
           <div id="sttResult"></div>
+        </div>
+        <div id="edit-edl" class="card-body" style="display:none">
+          <p class="text-muted mb-2">EDL/FCPXML 导入导出 — 与 PR / 达芬奇 / FCP 互操作</p>
+          <div class="form-group">
+            <label>EDL 内容</label>
+            <textarea id="edlContent" rows="4" placeholder="粘贴 EDL 文本...">TITLE: Test
+001  AX       V     C        00:00:00:00 00:00:10:00 00:00:00:00 00:00:10:00
+* FROM CLIP NAME: test.mp4</textarea>
+          </div>
+          <div class="btn-group">
+            <button class="btn btn-primary" onclick="importEdl()">导入 EDL</button>
+            <button class="btn btn-secondary" onclick="importFcpxml()">导入 FCPXML</button>
+          </div>
+          <div id="edlResult"></div>
+        </div>
+        <div id="edit-proxy" class="card-body" style="display:none">
+          <p class="text-muted mb-2">为高分辨率素材生成低分辨率代理</p>
+          <div class="form-group"><label>素材路径</label><input id="proxyPath" value="/path/to/4k_video.mp4"></div>
+          <div class="form-group"><label>代理高度</label><input id="proxyHeight" value="720" type="number"></div>
+          <div class="btn-group">
+            <button class="btn btn-primary" onclick="generateProxy()">生成代理</button>
+            <button class="btn btn-secondary" onclick="switchProxy()">切换 Timeline 到代理</button>
+          </div>
+          <div id="proxyResult"></div>
         </div>
       </div>
     </div>

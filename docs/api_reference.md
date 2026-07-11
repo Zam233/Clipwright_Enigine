@@ -162,6 +162,99 @@ curl -X POST http://localhost:8000/api/persona/forge/from-prompt \
 
 ---
 
+## EDL / FCPXML（跨软件互操作）
+
+### `POST /api/edl/import/edl`
+
+导入 EDL 文件 → Timeline clip 列表。
+
+**请求体**：
+
+```json
+{"content": "TITLE: Test\n001  AX  V  C  00:00:00:00 00:00:10:00 00:00:00:00 00:00:10:00\n* FROM CLIP NAME: test.mp4"}
+```
+
+### `POST /api/edl/import/fcpxml`
+
+导入 FCP 7 XML 文件 → Timeline clip 列表。
+
+### `POST /api/edl/export/edl`
+
+将 Timeline clip 列表导出为 EDL 格式。
+
+### `POST /api/edl/export/fcpxml`
+
+将 Timeline clip 列表导出为 FCPXML 格式。
+
+---
+
+## Proxy（代理工作流）
+
+### `POST /api/proxy/generate`
+
+为高分辨率素材生成低分辨率代理文件。
+
+**请求体**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `input_path` | string | 是 | 原始素材路径 |
+| `proxy_height` | int | 否 | 代理高度（默认 720） |
+
+### `POST /api/proxy/switch`
+
+将 Timeline JSON 中的素材路径替换为代理路径。
+
+---
+
+## Tool（新增工具）
+
+以下工具已注册到 ToolRegistry，通过统一工具 API 调用：
+
+### `POST /api/tool/execute?name=color_correct`
+
+色彩校正（brightness/contrast/saturation/gamma/hue）。
+
+| 参数 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `input_path` | string | — | 输入视频路径 |
+| `brightness` | float | 0.0 | 亮度（-1.0 ~ 1.0） |
+| `contrast` | float | 1.0 | 对比度（0.0 ~ 2.0） |
+| `saturation` | float | 1.0 | 饱和度（0.0 ~ 2.0） |
+| `gamma` | float | 1.0 | Gamma（0.1 ~ 2.0） |
+
+### `POST /api/tool/execute?name=lut_apply`
+
+应用 LUT (.cube) 文件。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `input_path` | string | 是 | 输入视频路径 |
+| `lut_path` | string | 是 | .cube 文件路径 |
+
+### `POST /api/tool/execute?name=chroma_key`
+
+绿幕/蓝幕抠像。
+
+| 参数 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `input_path` | string | — | 输入视频路径 |
+| `color` | string | `0x00FF00` | 抠像颜色 |
+| `similarity` | float | 0.2 | 相似度（0.1-0.5） |
+| `blend` | float | 0.05 | 边缘混合 |
+
+### `POST /api/tool/execute?name=video_stabilize`
+
+视频防抖稳定。
+
+| 参数 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `input_path` | string | — | 输入视频路径 |
+| `smoothing` | int | 10 | 平滑度 |
+| `max_shift` | int | 90 | 最大位移像素 |
+
+---
+
 ## Tool（原子能力层）
 
 ### `GET /api/tool/list`
