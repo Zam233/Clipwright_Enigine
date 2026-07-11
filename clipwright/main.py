@@ -23,6 +23,7 @@ from clipwright.api import tool as tool_api
 from clipwright.api import plugin as plugin_api
 from clipwright.api import animation as animation_api
 from clipwright.api import material as material_api
+from clipwright.api import stt as stt_api
 from clipwright.api import skill as skill_api
 from clipwright.category import (
     CategoryRegistry,
@@ -137,6 +138,7 @@ app.include_router(plugin_api.router)
 app.include_router(skill_api.router)
 app.include_router(material_api.router)
 app.include_router(animation_api.router)
+app.include_router(stt_api.router)
 
 
 @app.get("/health")

@@ -273,6 +273,24 @@ body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── Timeline ── */
+.tl-ruler { position:sticky; top:0; z-index:10; height:28px; background:var(--surface); border-bottom:1px solid var(--border); display:flex; align-items:flex-end; }
+.tl-ruler .tick { position:absolute; font-size:10px; color:var(--text2); transform:translateX(-50%); bottom:2px; white-space:nowrap; }
+.tl-ruler .tick-line { position:absolute; bottom:0; width:1px; height:8px; background:var(--border); }
+.tl-track { position:relative; height:52px; border-bottom:1px solid var(--border); display:flex; align-items:center; }
+.tl-track-label { position:sticky; left:0; z-index:5; width:70px; font-size:11px; color:var(--text2); padding:0 8px; flex-shrink:0; background:var(--surface2); height:100%; display:flex; align-items:center; border-right:1px solid var(--border); }
+.tl-track-inner { position:relative; flex:1; height:100%; min-width:100px; }
+.tl-clip { position:absolute; top:6px; height:40px; border-radius:4px; display:flex; align-items:center; justify-content:center; font-size:10px; overflow:hidden; cursor:pointer; border:1px solid rgba(255,255,255,0.1); transition:border-color 0.15s; }
+.tl-clip:hover { border-color:var(--accent); }
+.tl-clip .tl-label { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:0 6px; font-size:10px; color:#fff; text-shadow:0 1px 2px rgba(0,0,0,0.5); }
+.tl-clip.video { background:rgba(79,140,255,0.4); }
+.tl-clip.audio { background:rgba(52,211,153,0.4); }
+.tl-clip.text { background:rgba(251,191,36,0.4); }
+.tl-clip.caption { background:rgba(251,191,36,0.3); }
+.tl-clip.image { background:rgba(168,85,247,0.4); }
+.tl-clip.shape { background:rgba(236,72,153,0.4); }
+.tl-clip.waveform { background:rgba(34,211,238,0.4); }
+
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -373,6 +391,7 @@ body {
     <a onclick="switchSection('animation')">🎬 动画</a>
     <a onclick="switchSection('material')">📦 素材库</a>
     <a onclick="switchSection('plugin')">🔌 插件</a>
+    <a onclick="switchSection('edit-workspace')">✂️ 剪辑工作台</a>
     <a onclick="switchSection('model-test')">🧪 模型测试</a>
   </nav>
   <div class="status-bar">
@@ -775,6 +794,82 @@ body {
             </div>
           </div>
           <div id="pluginActionResult"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ 剪辑工作台 ═══ -->
+    <div id="section-edit-workspace" class="section">
+      <div class="card">
+        <div class="card-header">剪辑工作台 — 从文案到时间线</div>
+        <div class="tabs">
+          <div class="tab active" onclick="switchEditTab('pipeline',this)">Pipeline</div>
+          <div class="tab" onclick="switchEditTab('timeline',this)">时间线</div>
+          <div class="tab" onclick="switchEditTab('stt',this)">语音转文字</div>
+        </div>
+
+        <!-- Pipeline Tab -->
+        <div id="edit-pipeline" class="card-body">
+          <p class="text-muted mb-2">输入文案或选题，运行完整剪辑管线</p>
+          <div class="form-group">
+            <label>文案/选题</label>
+            <textarea id="editScript" rows="4" placeholder="输入视频文案或选题...">年轻人的盲盒消费为什么会成为社会现象</textarea>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Persona ID</label>
+              <input id="editPersonaId" value="zam_knowledge_critical">
+            </div>
+            <div class="form-group">
+              <label>类型插件</label>
+              <select id="editPluginId">
+                <option value="knowledge_longform">知识区长片</option>
+                <option value="kichiku_fastcut">鬼畜快剪</option>
+                <option value="digital_review">数码评测</option>
+                <option value="vlog_daily">Vlog 日常</option>
+              </select>
+            </div>
+          </div>
+          <div class="btn-group">
+            <button class="btn btn-primary" onclick="runEditPipeline()">运行管线</button>
+            <button class="btn btn-secondary" onclick="document.getElementById('editFileInput').click()">导入文案文件</button>
+            <input type="file" id="editFileInput" style="display:none" accept=".txt,.md" onchange="importEditScript(event)">
+          </div>
+          <div id="editPipelineResult"></div>
+        </div>
+
+        <!-- Timeline Tab -->
+        <div id="edit-timeline" class="card-body" style="display:none">
+          <div class="flex" style="justify-content:space-between;margin-bottom:8px">
+            <span class="text-muted" id="tlInfo">尚未运行管线</span>
+            <div class="btn-group">
+              <button class="btn btn-secondary btn-sm" onclick="zoomTimeline(-0.3)">缩小</button>
+              <button class="btn btn-secondary btn-sm" onclick="zoomTimeline(0.3)">放大</button>
+            </div>
+          </div>
+          <div id="timelineContainer" style="position:relative;overflow-x:auto;overflow-y:auto;max-height:500px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);font-family:var(--font)">
+            <div id="timelineInner" style="position:relative;min-height:120px">
+              <div class="text-muted" style="padding:40px;text-align:center">运行管线后在此查看时间线</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- STT Tab -->
+        <div id="edit-stt" class="card-body" style="display:none">
+          <p class="text-muted mb-2">将配音音频转为带时间戳的文字，或对齐已有文案</p>
+          <div class="form-group">
+            <label>音频路径</label>
+            <input id="sttAudioPath" placeholder="/path/to/audio.wav 或 video.mp4">
+          </div>
+          <div class="form-group">
+            <label>已有文案（可选，留空则自动转录）</label>
+            <textarea id="sttTranscript" rows="3" placeholder="如果已有文案，粘贴到这里进行时间对齐..."></textarea>
+          </div>
+          <div class="btn-group">
+            <button class="btn btn-primary" onclick="runStt()">转录</button>
+            <button class="btn btn-secondary" onclick="runSttAlign()">对齐文案</button>
+          </div>
+          <div id="sttResult"></div>
         </div>
       </div>
     </div>
@@ -1810,6 +1905,169 @@ async function getCapabilities() {
   const animRes = await api('GET', '/api/animation/list');
   if (animRes.ok) summary.animations = animRes.data.length;
   document.getElementById('pluginList').innerHTML = `<div class="result-box"><pre>${JSON.stringify(summary, null, 2)}</pre></div>`;
+}
+
+// ══════════════════════════════════════════
+// ── 剪辑工作台 ──
+// ══════════════════════════════════════════
+let _lastTimelineData = null;
+let _tlZoom = 1.0;
+
+function switchEditTab(name, el) {
+  document.querySelectorAll('#section-edit-workspace .tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('#section-edit-workspace .card-body[id^="edit-"]').forEach(d => d.style.display = 'none');
+  document.getElementById('edit-' + name).style.display = 'block';
+  if (name === 'timeline' && _lastTimelineData) renderTimeline(_lastTimelineData);
+}
+
+function importEditScript(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    document.getElementById('editScript').value = e.target.result;
+  };
+  reader.readAsText(file);
+}
+
+async function runEditPipeline() {
+  const el = document.getElementById('editPipelineResult');
+  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">管线运行中...</span></div>';
+  const body = {
+    persona_id: document.getElementById('editPersonaId').value,
+    category_plugin_id: document.getElementById('editPluginId').value,
+    topic: document.getElementById('editScript').value.trim(),
+    dry_run: false,
+  };
+  const { ok, data } = await api('POST', '/api/pipeline/run', body);
+  if (!ok || !data) {
+    el.innerHTML = '<div class="tag tag-error">管线运行失败</div>';
+    return;
+  }
+
+  // Store timeline data
+  const tl = data.shared_data?.final_timeline;
+  _lastTimelineData = tl || null;
+
+  // Build summary
+  let html = '<div class="result-box">';
+  html += `<div class="result-header"><span>${data.status} | ${data.pipeline_id}</span></div><pre>`;
+
+  if (data.steps) {
+    for (const s of data.steps) {
+      const tag = s.status === 'completed' ? 'tag-success' : s.status === 'failed' ? 'tag-error' : 'tag-pending';
+      html += `[${s.agent_name}] ${s.status} ${s.duration_ms ? s.duration_ms+'ms' : ''}\n`;
+    }
+  }
+  if (tl) {
+    html += `\n时间线: ${tl.width}x${tl.height} @ ${tl.fps}fps | ${tl.duration_sec}s | ${tl.tracks?.length || 0} 轨道\n`;
+    for (const t of (tl.tracks || [])) {
+      html += `  [${t.kind}] ${t.name}: ${t.clips?.length || 0} clips\n`;
+    }
+  }
+  html += '</pre></div>';
+
+  // Switch to timeline tab and render
+  html += '<div class="btn-group mt-2"><button class="btn btn-primary btn-sm" onclick="switchEditTab(\'timeline\',document.querySelector(\'#section-edit-workspace .tab:nth-child(2)\'));renderTimeline(_lastTimelineData)">查看时间线</button></div>';
+
+  el.innerHTML = html;
+}
+
+// ── Timeline Renderer ──
+function renderTimeline(tl) {
+  if (!tl) return;
+  const container = document.getElementById('timelineInner');
+  const info = document.getElementById('tlInfo');
+  info.textContent = `${tl.width}x${tl.height} @ ${tl.fps}fps | ${tl.duration_sec}s | ${tl.tracks?.length || 0} 轨道`;
+
+  const zoom = _tlZoom;
+  const pxPerSec = 80 * zoom;
+  const totalWidth = Math.max((tl.duration_sec || 60) * pxPerSec, 400);
+  const trackHeight = 52;
+  const rulerHeight = 28;
+  const labelWidth = 70;
+
+  let html = `<div style="display:flex;flex-direction:column;min-width:${labelWidth + totalWidth}px;position:relative">`;
+
+  // Ruler
+  html += `<div class="tl-ruler" style="padding-left:${labelWidth}px;height:${rulerHeight}px">`;
+  const tickInterval = Math.max(1, Math.floor(10 / zoom));
+  for (let t = 0; t <= (tl.duration_sec || 60); t += tickInterval) {
+    const x = t * pxPerSec;
+    html += `<div class="tick-line" style="left:${x}px"></div>`;
+    html += `<div class="tick" style="left:${x}px">${t}s</div>`;
+  }
+  html += '</div>';
+
+  // Tracks
+  const kindColors = { video:'video', audio:'audio', text:'text', caption:'caption', image:'image', shape:'shape', waveform:'waveform' };
+
+  for (const track of (tl.tracks || [])) {
+    html += `<div class="tl-track" style="height:${trackHeight}px">`;
+    html += `<div class="tl-track-label">${track.name || track.kind}</div>`;
+    html += `<div class="tl-track-inner" style="min-width:${totalWidth}px">`;
+
+    for (const clip of (track.clips || [])) {
+      const x = (clip.start_sec || 0) * pxPerSec;
+      const w = Math.max((clip.duration_sec || 1) * pxPerSec, 8);
+      const cls = kindColors[clip.kind] || 'video';
+      const label = clip.text || clip.asset_id || clip.id || clip.kind;
+      const title = `${label} | ${clip.start_sec}s-${(clip.start_sec + clip.duration_sec).toFixed(1)}s | ${clip.kind}`;
+
+      html += `<div class="tl-clip ${cls}" style="left:${x}px;width:${w}px" title="${title}">`;
+      if (w > 30) html += `<span class="tl-label">${label}</span>`;
+      html += '</div>';
+    }
+
+    html += '</div></div>';
+  }
+
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function zoomTimeline(delta) {
+  _tlZoom = Math.max(0.3, Math.min(5, _tlZoom + delta));
+  if (_lastTimelineData) renderTimeline(_lastTimelineData);
+}
+
+// ── STT ──
+async function runStt() {
+  const path = document.getElementById('sttAudioPath').value.trim();
+  if (!path) { document.getElementById('sttResult').innerHTML = '<div class="tag tag-error">请输入音频路径</div>'; return; }
+  const el = document.getElementById('sttResult');
+  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">转录中...</span></div>';
+  const res = await fetch(API_BASE() + '/api/stt/transcribe?audio_path=' + encodeURIComponent(path), { method: 'POST' });
+  const data = await res.json();
+  if (!data.success) { el.innerHTML = `<div class="tag tag-error">${data.error || '转录失败'}</div>`; return; }
+  let html = `<div class="result-box"><div class="result-header"><span>${data.model} | ${data.language} | ${data.duration_sec}s</span><span class="tag tag-success">${data.segments.length} 段</span></div><pre>`;
+  for (const seg of data.segments || []) {
+    html += `[${seg.start.toFixed(1)}s-${seg.end.toFixed(1)}s] ${seg.text}\n`;
+  }
+  html += '</pre></div>';
+  el.innerHTML = html;
+}
+
+async function runSttAlign() {
+  const path = document.getElementById('sttAudioPath').value.trim();
+  const text = document.getElementById('sttTranscript').value.trim();
+  if (!path || !text) { document.getElementById('sttResult').innerHTML = '<div class="tag tag-error">请填写音频路径和文案</div>'; return; }
+  const el = document.getElementById('sttResult');
+  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">对齐中...</span></div>';
+  const res = await fetch(API_BASE() + '/api/stt/align', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({audio_path: path, transcript_text: text})
+  });
+  const data = await res.json();
+  if (!data.success) { el.innerHTML = `<div class="tag tag-error">${data.error || '对齐失败'}</div>`; return; }
+  let html = `<div class="result-box"><div class="result-header"><span>${data.segments.length} 段对齐</span><span class="tag tag-success">${data.duration_sec}s</span></div><pre>`;
+  for (const seg of data.segments || []) {
+    html += `[${seg.start.toFixed(1)}s-${seg.end.toFixed(1)}s] ${seg.text}\n`;
+  }
+  html += '</pre></div>';
+  el.innerHTML = html;
 }
 
 // ── Init ──
