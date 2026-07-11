@@ -424,6 +424,11 @@
                   </select>
                 </div>
               </div>
+              <div class="form-group"><label>素材库（可选，留空使用全部）</label>
+                <div id="ewSourceList" style="display:flex;flex-wrap:wrap;gap:4px;min-height:30px;padding:4px 0">
+                  <span class="text-muted" style="font-size:11px">加载中...</span>
+                </div>
+              </div>
               <div class="form-group"><label>配音上传</label>
                 <div style="display:flex;gap:8px;align-items:center">
                   <input id="ewAudioPath" value="/path/to/voiceover.wav" placeholder="音频路径或上传" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:var(--radius);font-size:13px">
@@ -521,6 +526,7 @@
 <script src="js/material.js"></script>
 <script src="js/plugin.js"></script>
 <script src="js/edit-workspace.js"></script>
-<script>checkHealth();</script>
+<script>checkHealth();
+setTimeout(() => { if (typeof loadEditSources === 'function') loadEditSources(); }, 2000);</script>
 </body>
 </html>

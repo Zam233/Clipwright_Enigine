@@ -52,6 +52,11 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                     candidate_clips=candidate_clips,
                 )
 
+            # 获取用户指定的素材源 ID 列表（可选）
+            source_ids = context.extra_params.get("material_source_ids", None)
+            if isinstance(source_ids, list) and len(source_ids) == 0:
+                source_ids = None  # 空列表 = 使用全部
+
             # 对每个场景搜索素材
             candidate_clips = []
             for i, scene in enumerate(scenes):
@@ -65,10 +70,11 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                 if not query:
                     query = description
 
-                # 跨所有源搜索
+                # 跨指定（或全部）素材源搜索
                 results = await MaterialRegistry.search(
                     query=query,
                     top_k_per_source=5,
+                    source_ids=source_ids if isinstance(source_ids, list) else None,
                 )
 
                 suggested = [

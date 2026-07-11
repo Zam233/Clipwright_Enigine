@@ -1,6 +1,27 @@
 /* 剪辑工作台 — AI 剪辑一体化工作流 */
 let _lastTimelineData = null, _tlZoom = 1.0, _ewStep = 0;
 
+// 初始化：加载素材源列表
+async function loadEditSources() {
+  const el = document.getElementById('ewSourceList');
+  const { ok, data } = await api('GET', '/api/material/sources');
+  if (!ok || !data || !data.length) {
+    el.innerHTML = '<span class="text-muted" style="font-size:11px">无素材源 — 仅文字占位视频</span>';
+    return;
+  }
+  el.innerHTML = data.map(s =>
+    `<label style="display:flex;align-items:center;gap:4px;padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:11px">
+      <input type="checkbox" checked data-source-id="${s.id}" style="accent-color:var(--accent)">
+      ${s.name}
+    </label>`
+  ).join('');
+}
+// 获取选中的素材源 ID 列表
+function getSelectedSources() {
+  const checks = document.querySelectorAll('#ewSourceList input[type="checkbox"]:checked');
+  return Array.from(checks).map(c => c.getAttribute('data-source-id'));
+}
+
 function importEditScript(event) {
   const file = event.target.files[0];
   if (!file) return;
@@ -78,11 +99,17 @@ async function runAiEdit() {
     _ewStep = 2;
     setEwProgress(30, 'AI 管线运行中 (Structure→Material→Edit→Animation→Audio→Quality)...');
     let pipelineResult;
+    // 获取选中的素材源
+    const selectedSources = getSelectedSources();
+    addEwLog(`素材源: ${selectedSources.length ? selectedSources.join(', ') : '全部 (或无素材源)'}`);
+
     try {
       const res = await fetch(API_BASE() + '/api/pipeline/run', {
         method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({
-          persona_id: personaId, category_plugin_id: pluginId, topic, dry_run: false
+          persona_id: personaId, category_plugin_id: pluginId, topic,
+          extra_params: { material_source_ids: selectedSources },
+          dry_run: false
         })
       });
       pipelineResult = await res.json();
