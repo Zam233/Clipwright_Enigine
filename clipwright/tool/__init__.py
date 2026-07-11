@@ -11,6 +11,7 @@ from clipwright.tool.audio import AudioExtractTool, AudioReplaceTool, BPMDetectT
 from clipwright.tool.base import BaseTool
 from clipwright.tool.registry import ToolRegistry
 from clipwright.tool.video import VideoConcatTool, VideoOverlayTool, VideoTrimTool
+from clipwright.tool.speed import SpeedRampTool
 from clipwright.tool.vision import SceneDetectTool, SemanticMatchTool
 
 
@@ -31,6 +32,8 @@ def register_builtin_tools() -> None:
         # Animation
         TypewriterAnimationTool(),
         TrackingTextTool(),
+        # Speed
+        SpeedRampTool(),
     ]
     for tool in tools:
         ToolRegistry.register(tool)
@@ -54,4 +57,6 @@ __all__ = [
     # Animation
     "TypewriterAnimationTool",
     "TrackingTextTool",
+    # Speed
+    "SpeedRampTool",
 ]

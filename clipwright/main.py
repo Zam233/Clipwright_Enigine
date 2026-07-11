@@ -27,6 +27,7 @@ from clipwright.api import asset as asset_api
 from clipwright.api import project as project_api
 from clipwright.api import subtitle as subtitle_api
 from clipwright.api import stt as stt_api
+from clipwright.api import waveform as waveform_api
 from clipwright.api import skill as skill_api
 from clipwright.category import (
     CategoryRegistry,
@@ -145,6 +146,7 @@ app.include_router(stt_api.router)
 app.include_router(asset_api.router)
 app.include_router(project_api.router)
 app.include_router(subtitle_api.router)
+app.include_router(waveform_api.router)
 
 
 @app.get("/health")
