@@ -86,6 +86,26 @@ CLIPWRIGHT_RAG_RERANK_TOP_K=20
 - `openai`：使用 `text-embedding-3-small` 等 API 模型，需 `CLIPWRIGHT_RAG_EMBED_API_KEY`
 - `ollama`：使用本地 Ollama 嵌入端点，需 `CLIPWRIGHT_RAG_EMBED_BASE_URL`
 
+### 视觉识别模型配置（识图 + 自动标签）
+
+```bash
+# ── 视觉识别模型 ──
+CLIPWRIGHT_VISION_PROVIDER=transformers     # transformers / none（none 表示只用文件名分析）
+CLIPWRIGHT_VISION_MODEL=google/vit-base-patch16-224  # HuggingFace 模型名
+CLIPWRIGHT_VISION_TOP_K=5                   # 返回 Top-K 分类结果
+CLIPWRIGHT_VISION_DEVICE=cpu                # cpu / cuda（有 GPU 时用 cuda 加速）
+
+# 设置为 none 可跳过模型加载，仅用文件名 + 文件元数据生成标签：
+# CLIPWRIGHT_VISION_PROVIDER=none
+```
+
+支持任意 HuggingFace 上的图像分类模型，如：
+- `google/vit-base-patch16-224`（默认，~330MB，速度快）
+- `microsoft/resnet-50`（~100MB，更轻量）
+- `microsoft/beit-base-patch16-224`（精度更高）
+
+设置为 `CLIPWRIGHT_VISION_PROVIDER=none` 时，完全依赖文件名关键词提取和 `ffprobe` 元数据分析，零模型依赖。
+
 ### 语音转文字（STT）配置
 
 ClipWright 的语音转文字服务支持三种后端，自动探测可用性：

@@ -53,11 +53,13 @@ class VisionService:
         if not path.exists():
             return {"tags": [], "description": "", "labels": [], "model": "", "error": "文件不存在"}
 
-        # 1. 尝试 transformers 图像分类
-        try:
-            return await self._classify_transformers(image_path)
-        except Exception as e:
-            logger.debug("transformers 分类失败: %s", e)
+        # 1. 根据配置选择识别方式
+        from clipwright.config import settings
+        if settings.vision_provider == "transformers":
+            try:
+                return await self._classify_transformers(image_path)
+            except Exception as e:
+                logger.debug("transformers 分类失败: %s", e)
 
         # 2. 保底：文件名 + 文件信息
         return self._fallback_analyze(image_path)
@@ -65,15 +67,19 @@ class VisionService:
     # ── Transformers 分类 ──
 
     async def _classify_transformers(self, image_path: str) -> dict[str, Any]:
-        """使用 transformers 图像分类模型。"""
+        """使用 transformers 图像分类模型（模型名等参数从 env 读取）。"""
         if self._classifier is None:
+            from clipwright.config import settings
             from transformers import pipeline
-            self._classifier = pipeline(
-                "image-classification",
-                model="google/vit-base-patch16-224",
-                top_k=5,
-            )
-            self._classifier_name = "vit-base"
+            kwargs: dict[str, Any] = {
+                "task": "image-classification",
+                "model": settings.vision_model,
+                "top_k": settings.vision_top_k,
+            }
+            if settings.vision_device:
+                kwargs["device"] = settings.vision_device
+            self._classifier = pipeline(**kwargs)
+            self._classifier_name = settings.vision_model.split("/")[-1]
 
         result = self._classifier(image_path)
         labels = [r["label"] for r in result]

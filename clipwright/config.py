@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     # --- 渲染 ---
     render_output_dir: Path = Path("renders")
 
+    # --- 视觉识别模型 ---
+    vision_provider: Literal["transformers", "none"] = "transformers"
+    vision_model: str = "google/vit-base-patch16-224"
+    vision_top_k: int = 5
+    vision_device: str = "cpu"
+
     # --- 素材库 ---
     library_dir: Path = Path("library")
 
