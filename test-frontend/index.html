@@ -4,376 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>帧艺 ClipWright — 测试前端</title>
-<style>
-:root {
-  --bg: #0d0d12;
-  --surface: #16161f;
-  --surface2: #1e1e2a;
-  --border: #2a2a3a;
-  --text: #e0e0e8;
-  --text2: #8888a0;
-  --accent: #4f8cff;
-  --accent2: #3a6fd8;
-  --green: #34d399;
-  --red: #f87171;
-  --yellow: #fbbf24;
-  --font: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', monospace;
-  --radius: 8px;
-}
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body {
-  font-family: -apple-system, 'Segoe UI', sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  display: flex;
-  height: 100vh;
-  overflow: hidden;
-}
-
-/* ── Sidebar ── */
-.sidebar {
-  width: 220px;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-}
-.sidebar h1 {
-  font-size: 15px;
-  padding: 20px 16px 12px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  border-bottom: 1px solid var(--border);
-}
-.sidebar h1 small {
-  display: block;
-  font-size: 11px;
-  color: var(--text2);
-  font-weight: 400;
-  margin-top: 2px;
-}
-.sidebar nav { flex: 1; overflow-y: auto; padding: 8px 0; }
-.sidebar nav a {
-  display: block;
-  padding: 10px 16px;
-  color: var(--text2);
-  text-decoration: none;
-  font-size: 13px;
-  cursor: pointer;
-  border-left: 3px solid transparent;
-  transition: all 0.15s;
-}
-.sidebar nav a:hover { color: var(--text); background: var(--surface2); }
-.sidebar nav a.active {
-  color: var(--accent);
-  border-left-color: var(--accent);
-  background: rgba(79,140,255,0.08);
-}
-.status-bar {
-  padding: 12px 16px;
-  font-size: 12px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.status-dot {
-  width: 8px; height: 8px;
-  border-radius: 50%;
-  background: var(--text2);
-  flex-shrink: 0;
-}
-.status-dot.online { background: var(--green); box-shadow: 0 0 6px var(--green); }
-.status-dot.offline { background: var(--red); }
-
-/* ── Main ── */
-.main {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.toolbar {
-  padding: 12px 24px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 13px;
-  gap: 12px;
-}
-.toolbar input {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 6px 12px;
-  border-radius: var(--radius);
-  font-size: 12px;
-  width: 300px;
-  font-family: var(--font);
-}
-.toolbar input:focus { outline: none; border-color: var(--accent); }
-.content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 24px;
-}
-
-/* ── Cards ── */
-.section { display: none; }
-.section.active { display: block; }
-.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  margin-bottom: 16px;
-}
-.card-header {
-  padding: 14px 18px;
-  font-size: 13px;
-  font-weight: 600;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.card-body { padding: 18px; }
-
-/* ── Form ── */
-.form-group { margin-bottom: 14px; }
-.form-group label {
-  display: block;
-  font-size: 12px;
-  color: var(--text2);
-  margin-bottom: 4px;
-  font-weight: 500;
-}
-.form-group input, .form-group textarea, .form-group select {
-  width: 100%;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 8px 12px;
-  border-radius: var(--radius);
-  font-size: 13px;
-  font-family: var(--font);
-}
-.form-group textarea {
-  min-height: 80px;
-  resize: vertical;
-  line-height: 1.5;
-}
-.form-group input:focus, .form-group textarea:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-.form-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-
-/* ── Buttons ── */
-.btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 18px;
-  border: none;
-  border-radius: var(--radius);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s;
-  font-family: inherit;
-}
-.btn-primary { background: var(--accent); color: #fff; }
-.btn-primary:hover { background: var(--accent2); }
-.btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
-.btn-secondary:hover { border-color: var(--text2); }
-.btn-danger { background: var(--red); color: #fff; }
-.btn-sm { padding: 5px 12px; font-size: 12px; }
-.btn-group { display: flex; gap: 8px; flex-wrap: wrap; }
-
-/* ── Result ── */
-.result-box {
-  margin-top: 12px;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-}
-.result-box pre {
-  padding: 14px;
-  font-size: 12px;
-  line-height: 1.6;
-  overflow-x: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
-  font-family: var(--font);
-  max-height: 400px;
-  overflow-y: auto;
-}
-.result-box .result-header {
-  padding: 8px 14px;
-  font-size: 11px;
-  font-weight: 600;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.tag {
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 500;
-}
-.tag-success { background: rgba(52,211,153,0.15); color: var(--green); }
-.tag-error { background: rgba(248,113,113,0.15); color: var(--red); }
-.tag-pending { background: rgba(251,191,36,0.15); color: var(--yellow); }
-
-/* ── Tabs ── */
-.tabs {
-  display: flex;
-  gap: 0;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 0;
-}
-.tab {
-  padding: 10px 18px;
-  font-size: 12px;
-  color: var(--text2);
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  transition: all 0.15s;
-}
-.tab:hover { color: var(--text); }
-.tab.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-}
-
-/* ── Misc ── */
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.mt-2 { margin-top: 8px; }
-.mb-2 { margin-bottom: 8px; }
-.text-muted { color: var(--text2); font-size: 12px; }
-.flex { display: flex; align-items: center; gap: 8px; }
-.spin {
-  display: inline-block;
-  width: 14px; height: 14px;
-  border: 2px solid var(--text2);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-
-/* ── Timeline ── */
-.tl-ruler { position:sticky; top:0; z-index:10; height:28px; background:var(--surface); border-bottom:1px solid var(--border); display:flex; align-items:flex-end; }
-.tl-ruler .tick { position:absolute; font-size:10px; color:var(--text2); transform:translateX(-50%); bottom:2px; white-space:nowrap; }
-.tl-ruler .tick-line { position:absolute; bottom:0; width:1px; height:8px; background:var(--border); }
-.tl-track { position:relative; height:52px; border-bottom:1px solid var(--border); display:flex; align-items:center; }
-.tl-track-label { position:sticky; left:0; z-index:5; width:70px; font-size:11px; color:var(--text2); padding:0 8px; flex-shrink:0; background:var(--surface2); height:100%; display:flex; align-items:center; border-right:1px solid var(--border); }
-.tl-track-inner { position:relative; flex:1; height:100%; min-width:100px; }
-.tl-clip { position:absolute; top:6px; height:40px; border-radius:4px; display:flex; align-items:center; justify-content:center; font-size:10px; overflow:hidden; cursor:pointer; border:1px solid rgba(255,255,255,0.1); transition:border-color 0.15s; }
-.tl-clip:hover { border-color:var(--accent); }
-.tl-clip .tl-label { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:0 6px; font-size:10px; color:#fff; text-shadow:0 1px 2px rgba(0,0,0,0.5); }
-.tl-clip.video { background:rgba(79,140,255,0.4); }
-.tl-clip.audio { background:rgba(52,211,153,0.4); }
-.tl-clip.text { background:rgba(251,191,36,0.4); }
-.tl-clip.caption { background:rgba(251,191,36,0.3); }
-.tl-clip.image { background:rgba(168,85,247,0.4); }
-.tl-clip.shape { background:rgba(236,72,153,0.4); }
-.tl-clip.waveform { background:rgba(34,211,238,0.4); }
-
-/* ── Scrollbar ── */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--text2); }
-
-/* ── Chat ── */
-.chat-layout { display: flex; gap: 16px; height: calc(100vh - 160px); }
-.chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.chat-sidebar { width: 380px; flex-shrink: 0; display: flex; flex-direction: column; gap: 12px; }
-.chat-messages {
-  flex: 1; overflow-y: auto; padding: 16px;
-  background: var(--surface2); border-radius: var(--radius);
-  border: 1px solid var(--border);
-  display: flex; flex-direction: column; gap: 12px;
-}
-.chat-msg {
-  max-width: 85%; padding: 10px 14px; border-radius: 12px;
-  font-size: 13px; line-height: 1.6; white-space: pre-wrap;
-}
-.chat-msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-radius: 12px 12px 4px 12px; }
-.chat-msg.ai {
-  align-self: flex-start;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px 12px 12px 4px;
-  color: var(--text);
-}
-.chat-msg.system { align-self: center; background: rgba(251,191,36,0.1); border: 1px solid rgba(251,191,36,0.2); color: var(--yellow); font-size: 12px; }
-.chat-msg .msg-label { font-size: 10px; font-weight: 600; margin-bottom: 4px; opacity: 0.6; text-transform: uppercase; }
-.chat-input-area {
-  display: flex; gap: 8px; padding: 12px 0;
-}
-.chat-input-area textarea {
-  flex: 1; background: var(--surface2); border: 1px solid var(--border);
-  color: var(--text); padding: 10px 14px; border-radius: var(--radius);
-  font-size: 13px; resize: none; min-height: 44px; max-height: 120px;
-  font-family: inherit; line-height: 1.5;
-}
-.chat-input-area textarea:focus { outline: none; border-color: var(--accent); }
-.chat-actions { display: flex; gap: 6px; align-items: flex-end; }
-
-/* Chat persona preview */
-.preview-card {
-  background: var(--surface2); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 14px; max-height: 300px; overflow-y: auto;
-}
-.preview-card pre {
-  font-family: var(--font); font-size: 11px; line-height: 1.5;
-  white-space: pre-wrap; word-break: break-all;
-  color: var(--text2);
-}
-.preview-card .field {
-  margin: 2px 0; font-size: 12px;
-}
-.preview-card .field .key { color: var(--accent); }
-.preview-card .field .val { color: var(--text); }
-.progress-bar {
-  height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; margin: 2px 0;
-}
-.progress-bar .fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.5s; }
-.progress-label { font-size: 11px; color: var(--text2); display: flex; justify-content: space-between; }
-.knowledge-item {
-  padding: 8px 12px; background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius); font-size: 12px; margin-bottom: 6px;
-  display: flex; align-items: center; justify-content: space-between;
-}
-.knowledge-item .name { color: var(--text); }
-.knowledge-item .badge { font-size: 10px; color: var(--text2); }
-.chat-welcome {
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  flex: 1; color: var(--text2); gap: 12px;
-}
-.chat-welcome h2 { font-size: 20px; color: var(--text); font-weight: 600; }
-.chat-welcome p { font-size: 14px; text-align: center; max-width: 400px; line-height: 1.6; }
-
-/* ── Knowledge progress pulses ── */
-@keyframes kbPulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
-}
-.kb-processing .fill { animation: kbPulse 1s ease-in-out infinite; }
-</style>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 
@@ -381,18 +12,18 @@ body {
 <div class="sidebar">
   <h1>ClipWright <small>帧艺 · 测试前端</small></h1>
   <nav>
-    <a class="active" onclick="switchSection('health')">🏥 健康检查</a>
-    <a onclick="switchSection('persona')">🎭 Persona</a>
-    <a onclick="switchSection('forge')">🔨 PersonaForge</a>
-    <a onclick="switchSection('chat-forge')">💬 对话创建</a>
-    <a onclick="switchSection('pipeline')">▶ Pipeline</a>
-    <a onclick="switchSection('tool')">🔧 工具</a>
-    <a onclick="switchSection('skill')">🧠 技能</a>
-    <a onclick="switchSection('animation')">🎬 动画</a>
-    <a onclick="switchSection('material')">📦 素材库</a>
-    <a onclick="switchSection('plugin')">🔌 插件</a>
-    <a onclick="switchSection('edit-workspace')">✂️ 剪辑工作台</a>
-    <a onclick="switchSection('model-test')">🧪 模型测试</a>
+    <a class="active" onclick="switchSection('health')">健康检查</a>
+    <a onclick="switchSection('persona')">Persona</a>
+    <a onclick="switchSection('forge')">PersonaForge</a>
+    <a onclick="switchSection('chat-forge')">对话创建</a>
+    <a onclick="switchSection('pipeline')">Pipeline</a>
+    <a onclick="switchSection('tool')">工具</a>
+    <a onclick="switchSection('skill')">技能</a>
+    <a onclick="switchSection('animation')">动画</a>
+    <a onclick="switchSection('material')">素材库</a>
+    <a onclick="switchSection('plugin')">插件</a>
+    <a onclick="switchSection('edit-workspace')">剪辑工作台</a>
+    <a onclick="switchSection('model-test')">模型测试</a>
   </nav>
   <div class="status-bar">
     <span class="status-dot" id="statusDot"></span>
@@ -410,7 +41,7 @@ body {
 
   <div class="content">
 
-    <!-- ═══ Health ═══ -->
+    <!-- Health -->
     <div id="section-health" class="section active">
       <div class="card">
         <div class="card-header">健康检查</div>
@@ -422,7 +53,7 @@ body {
       </div>
     </div>
 
-    <!-- ═══ Persona ═══ -->
+    <!-- Persona -->
     <div id="section-persona" class="section">
       <div class="card">
         <div class="card-header">Persona 列表</div>
@@ -448,18 +79,16 @@ body {
       </div>
     </div>
 
-    <!-- ═══ PersonaForge ═══ -->
+    <!-- PersonaForge -->
     <div id="section-forge" class="section">
       <div class="card">
         <div class="card-header">PersonaForge — 智能构建</div>
         <div class="tabs">
-          <div class="tab active" onclick="switchForgeTab('prompt',this)">📝 自然语言</div>
-          <div class="tab" onclick="switchForgeTab('script',this)">📄 脚本分析</div>
-          <div class="tab" onclick="switchForgeTab('refine',this)">🔧 迭代优化</div>
-          <div class="tab" onclick="switchForgeTab('dialogue',this)">💬 对话引导</div>
+          <div class="tab active" onclick="switchForgeTab('prompt',this)">自然语言</div>
+          <div class="tab" onclick="switchForgeTab('script',this)">脚本分析</div>
+          <div class="tab" onclick="switchForgeTab('refine',this)">迭代优化</div>
+          <div class="tab" onclick="switchForgeTab('dialogue',this)">对话引导</div>
         </div>
-
-        <!-- from-prompt -->
         <div id="forge-prompt" class="card-body">
           <p class="text-muted mb-2">用一句话描述你的创作风格，自动生成 Persona 参数层。</p>
           <div class="form-group">
@@ -479,17 +108,11 @@ body {
           <button class="btn btn-primary" onclick="forgeFromPrompt()">生成</button>
           <div id="forgePromptResult"></div>
         </div>
-
-        <!-- from-script -->
         <div id="forge-script" class="card-body" style="display:none">
           <p class="text-muted mb-2">上传脚本/口播文本，精确提取语言风格参数。</p>
           <div class="form-group">
             <label>脚本内容</label>
-            <textarea id="forgeScriptText" rows="5" placeholder="贴入你的脚本或字幕文本...">今天我们来聊聊一个很多人都在问的问题：年轻人为什么会沉迷盲盒？
-
-首先，我们要理解一个核心概念——符号消费。这不是简单的买一个玩具，而是一种身份认同的投射。
-
-基于鲍德里亚的消费社会理论，我们可以从三个维度来分析这个现象：商品拜物教、符号价值、身份焦虑。</textarea>
+            <textarea id="forgeScriptText" rows="5" placeholder="贴入你的脚本或字幕文本...">今天我们来聊聊一个很多人都在问的问题：年轻人为什么会沉迷盲盒？</textarea>
           </div>
           <div class="form-row">
             <div class="form-group">
@@ -504,8 +127,6 @@ body {
           <button class="btn btn-primary" onclick="forgeFromScript()">分析</button>
           <div id="forgeScriptResult"></div>
         </div>
-
-        <!-- refine -->
         <div id="forge-refine" class="card-body" style="display:none">
           <p class="text-muted mb-2">对已有 Persona 给出自然语言反馈，系统自动调整参数。</p>
           <div class="form-row">
@@ -521,8 +142,6 @@ body {
           <button class="btn btn-primary" onclick="forgeRefine()">优化</button>
           <div id="forgeRefineResult"></div>
         </div>
-
-        <!-- dialogue -->
         <div id="forge-dialogue" class="card-body" style="display:none">
           <p class="text-muted mb-2">多轮对话引导，逐步明确创作风格。</p>
           <div class="form-group">
@@ -544,52 +163,32 @@ body {
       </div>
     </div>
 
-    <!-- ═══ Chat Forge ═══ -->
+    <!-- Chat Forge -->
     <div id="section-chat-forge" class="section">
       <div class="card" style="border:none;background:transparent">
         <div class="chat-layout">
-          <!-- Chat Main -->
           <div class="chat-main">
             <div id="chatMessages" class="chat-messages">
               <div class="chat-welcome">
-                <h2>💬 对话创建 Persona</h2>
+                <h2>对话创建 Persona</h2>
                 <p>和 AI 创作顾问自然对话，逐步建立你的创作人格。<br>可以随时上传参考文档，也可以说"修改"来调整。</p>
                 <button class="btn btn-primary" onclick="chatStart()">开始对话</button>
               </div>
             </div>
-            <!-- 总体进度条 -->
             <div id="chatOverallProgress" style="display:none;padding:10px 4px 4px">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
                 <span style="font-size:12px;font-weight:600">Persona 完整度</span>
-                <span style="font-size:11px;color:var(--text2)">
-                  <span id="chatProgressPct">0</span>%
-                  <span id="chatReadyBadge" style="display:none;color:var(--green);margin-left:6px">✓ 可保存</span>
-                </span>
+                <span style="font-size:11px;color:var(--text2)"><span id="chatProgressPct">0</span>%<span id="chatReadyBadge" style="display:none;color:var(--green);margin-left:6px"> 可保存</span></span>
               </div>
-              <div class="progress-bar" style="height:6px">
-                <div class="fill" id="chatOverallBar" style="width:0%;background:linear-gradient(90deg,var(--accent),var(--green))"></div>
-              </div>
+              <div class="progress-bar" style="height:6px"><div class="fill" id="chatOverallBar" style="width:0%;background:linear-gradient(90deg,var(--accent),var(--green))"></div></div>
             </div>
-            <!-- 发送加载中 -->
-            <div id="chatLoading" style="display:none;padding:4px">
-              <div class="flex" style="justify-content:center;color:var(--text2);font-size:12px">
-                <span class="spin"></span>
-                <span style="margin-left:6px">AI 思考中...</span>
-              </div>
-            </div>
-            <!-- 知识库分析进度 -->
+            <div id="chatLoading" style="display:none;padding:4px"><div class="flex" style="justify-content:center;color:var(--text2);font-size:12px"><span class="spin"></span><span style="margin-left:6px">AI 思考中...</span></div></div>
             <div id="chatKbProgress" style="display:none;padding:4px 4px 0">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
-                <span style="font-size:11px;color:var(--text2)">
-                  <span id="kbFileName"></span>
-                </span>
-                <span style="font-size:11px;color:var(--text2)">
-                  <span id="kbProgressNum">0</span>/<span id="kbProgressTotal">0</span> 章
-                </span>
+                <span style="font-size:11px;color:var(--text2)"><span id="kbFileName"></span></span>
+                <span style="font-size:11px;color:var(--text2)"><span id="kbProgressNum">0</span>/<span id="kbProgressTotal">0</span> 章</span>
               </div>
-              <div class="progress-bar" style="height:4px">
-                <div class="fill" id="chatKbBar" style="width:0%;background:var(--yellow)"></div>
-              </div>
+              <div class="progress-bar" style="height:4px"><div class="fill" id="chatKbBar" style="width:0%;background:var(--yellow)"></div></div>
               <div style="font-size:10px;color:var(--text2);margin-top:2px" id="kbProgressLabel"></div>
             </div>
             <div class="chat-input-area" id="chatInputArea" style="display:none">
@@ -601,8 +200,6 @@ body {
               </div>
             </div>
           </div>
-
-          <!-- Chat Sidebar -->
           <div class="chat-sidebar" id="chatSidebar" style="display:none">
             <div class="card" style="margin:0">
               <div class="card-header" style="padding:10px 14px;font-size:12px">Persona 实时预览</div>
@@ -611,28 +208,20 @@ body {
             <div class="card" style="margin:0">
               <div class="card-header" style="padding:10px 14px;font-size:12px">构建进度</div>
               <div class="card-body" style="padding:12px 14px" id="chatProgress">
-                <div class="progress-label"><span>身份</span><span id="p_identity">0%</span></div>
-                <div class="progress-bar"><div class="fill" id="pb_identity" style="width:0%"></div></div>
-                <div class="progress-label"><span>语言</span><span id="p_language">0%</span></div>
-                <div class="progress-bar"><div class="fill" id="pb_language" style="width:0%"></div></div>
-                <div class="progress-label"><span>节奏</span><span id="p_rhythm">0%</span></div>
-                <div class="progress-bar"><div class="fill" id="pb_rhythm" style="width:0%"></div></div>
-                <div class="progress-label"><span>视觉</span><span id="p_visual">0%</span></div>
-                <div class="progress-bar"><div class="fill" id="pb_visual" style="width:0%"></div></div>
-                <div class="progress-label"><span>音频</span><span id="p_audio">0%</span></div>
-                <div class="progress-bar"><div class="fill" id="pb_audio" style="width:0%"></div></div>
-                <div class="progress-label"><span>约束</span><span id="p_constraints">0%</span></div>
-                <div class="progress-bar"><div class="fill" id="pb_constraints" style="width:0%"></div></div>
+                <div class="progress-label"><span>身份</span><span id="p_identity">0%</span></div><div class="progress-bar"><div class="fill" id="pb_identity" style="width:0%"></div></div>
+                <div class="progress-label"><span>语言</span><span id="p_language">0%</span></div><div class="progress-bar"><div class="fill" id="pb_language" style="width:0%"></div></div>
+                <div class="progress-label"><span>节奏</span><span id="p_rhythm">0%</span></div><div class="progress-bar"><div class="fill" id="pb_rhythm" style="width:0%"></div></div>
+                <div class="progress-label"><span>视觉</span><span id="p_visual">0%</span></div><div class="progress-bar"><div class="fill" id="pb_visual" style="width:0%"></div></div>
+                <div class="progress-label"><span>音频</span><span id="p_audio">0%</span></div><div class="progress-bar"><div class="fill" id="pb_audio" style="width:0%"></div></div>
+                <div class="progress-label"><span>约束</span><span id="p_constraints">0%</span></div><div class="progress-bar"><div class="fill" id="pb_constraints" style="width:0%"></div></div>
               </div>
             </div>
             <div class="card" style="margin:0">
-              <div class="card-header" style="padding:10px 14px;font-size:12px">知识库 <span id="kbCount" style="color:var(--text2)">(0)</span></div>
-              <div class="card-body" style="padding:8px 14px;max-height:140px;overflow-y:auto" id="kbList">
-                <div class="text-muted" style="font-size:12px">上传 txt/md/srt 文件作为风格参考</div>
-              </div>
+              <div class="card-header" style="padding:10px 14px;font-size:12px">知识库 <span id="kbCount">(0)</span></div>
+              <div class="card-body" style="padding:8px 14px;max-height:140px;overflow-y:auto" id="kbList"><div class="text-muted" style="font-size:12px">上传 txt/md/srt 文件作为风格参考</div></div>
             </div>
             <div style="display:flex;gap:8px">
-              <button class="btn btn-primary btn-sm" style="flex:1" onclick="chatCommit()">💾 保存 Persona</button>
+              <button class="btn btn-primary btn-sm" style="flex:1" onclick="chatCommit()">保存 Persona</button>
               <button class="btn btn-secondary btn-sm" onclick="chatReset()">重新开始</button>
             </div>
           </div>
@@ -640,316 +229,7 @@ body {
       </div>
     </div>
 
-    <!-- ═══ 模型测试 ═══ -->
-    <!-- ═══ Tool ═══ -->
-    <div id="section-tool" class="section">
-      <div class="card">
-        <div class="card-header">原子能力工具 <span style="font-weight:400;color:var(--text2)">-- ToolRegistry 中的全部工具</span></div>
-        <div class="card-body">
-          <button class="btn btn-primary" onclick="listTools()">刷新工具列表</button>
-          <div id="toolList"></div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header">执行工具</div>
-        <div class="card-body">
-          <div class="form-row">
-            <div class="form-group">
-              <label>工具名</label>
-              <input id="toolExecName" placeholder="scene_detect">
-            </div>
-            <div class="form-group">
-              <label>参数 (JSON)</label>
-              <input id="toolExecParams" value='{"input_path": "/path/to/video.mp4"}'>
-            </div>
-          </div>
-          <button class="btn btn-primary" onclick="execTool()">执行</button>
-          <div id="toolExecResult"></div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header">批量执行</div>
-        <div class="card-body">
-          <div class="form-group">
-            <label>调用列表 (JSON 数组)</label>
-            <textarea id="toolBatchCalls" rows="4">[{"tool":"scene_detect","input_path":"/video.mp4","threshold":0.3},{"tool":"bpm_detect","input_path":"/audio.wav"}]</textarea>
-          </div>
-          <button class="btn btn-primary" onclick="execToolBatch()">批量执行</button>
-          <div id="toolBatchResult"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ═══ Skill ═══ -->
-    <div id="section-skill" class="section">
-      <div class="card">
-        <div class="card-header">技能 <span style="font-weight:400;color:var(--text2)">-- 可组合的高级能力</span></div>
-        <div class="card-body">
-          <button class="btn btn-primary" onclick="listSkills()">刷新技能列表</button>
-          <div id="skillList"></div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header">执行技能</div>
-        <div class="card-body">
-          <div class="form-row">
-            <div class="form-group">
-              <label>技能名</label>
-              <input id="skillExecName" value="generate_captions">
-            </div>
-            <div class="form-group">
-              <label>参数 (JSON)</label>
-              <input id="skillExecParams" value='{"text": "hello world this is a caption test"}'>
-            </div>
-          </div>
-          <button class="btn btn-primary" onclick="execSkill()">执行</button>
-          <div id="skillExecResult"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ═══ Animation ═══ -->
-    <div id="section-animation" class="section">
-      <div class="card">
-        <div class="card-header">动画定义 <span style="font-weight:400;color:var(--text2)">-- JSON 规范动画引擎</span></div>
-        <div class="tabs">
-          <div class="tab active" onclick="switchAnimTab('onscreen',this)">Onscreen (<span id="animOnscreenCount">0</span>)</div>
-          <div class="tab" onclick="switchAnimTab('text',this)">Text (<span id="animTextCount">0</span>)</div>
-          <div class="tab" onclick="switchAnimTab('transition',this)">Transition (<span id="animTransCount">0</span>)</div>
-          <div class="tab" onclick="switchAnimTab('all',this)">All</div>
-        </div>
-        <div class="card-body" id="animList" style="max-height:500px;overflow-y:auto">
-          <button class="btn btn-primary" onclick="listAnimations()">刷新</button>
-          <div id="animListResult" class="mt-2"></div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header">动画详情</div>
-        <div class="card-body">
-          <div class="form-row">
-            <div class="form-group">
-              <label>动画 ID</label>
-              <input id="animGetId" value="fade_in">
-            </div>
-            <div class="form-group" style="align-self:flex-end">
-              <button class="btn btn-primary" onclick="getAnimation()">查看</button>
-            </div>
-          </div>
-          <div id="animDetailResult"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ═══ Material ═══ -->
-    <div id="section-material" class="section">
-      <div class="card">
-        <div class="card-header">素材库 <span style="font-weight:400;color:var(--text2)">-- 跨素材源统一搜索</span></div>
-        <div class="card-body">
-          <div class="form-row">
-            <div class="form-group">
-              <label>搜索关键词</label>
-              <input id="matSearchQuery" value="city">
-            </div>
-            <div class="form-group">
-              <label>Top-K</label>
-              <input id="matSearchTopK" value="5" type="number">
-            </div>
-          </div>
-          <div class="btn-group">
-            <button class="btn btn-primary" onclick="searchMaterial()">搜索</button>
-            <button class="btn btn-secondary" onclick="listMaterialSources()">素材源列表</button>
-          </div>
-          <div id="materialResult"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ═══ Plugin ═══ -->
-    <div id="section-plugin" class="section">
-      <div class="card">
-        <div class="card-header">插件管理</div>
-        <div class="card-body">
-          <div class="btn-group">
-            <button class="btn btn-primary" onclick="listPlugins()">已加载插件</button>
-            <button class="btn btn-secondary" onclick="discoverPlugins()">发现可用</button>
-            <button class="btn btn-secondary" onclick="loadAllPlugins()">加载全部</button>
-            <button class="btn btn-secondary" onclick="getCapabilities()">能力概览</button>
-          </div>
-          <div id="pluginList"></div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header">加载/卸载插件</div>
-        <div class="card-body">
-          <div class="form-row">
-            <div class="form-group">
-              <label>Plugin ID</label>
-              <input id="pluginLoadId" value="my_material_lib">
-            </div>
-            <div class="form-group" style="align-self:flex-end">
-              <div class="btn-group">
-                <button class="btn btn-primary btn-sm" onclick="loadPlugin()">加载</button>
-                <button class="btn btn-danger btn-sm" onclick="unloadPlugin()">卸载</button>
-              </div>
-            </div>
-          </div>
-          <div id="pluginActionResult"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ═══ 剪辑工作台 ═══ -->
-    <div id="section-edit-workspace" class="section">
-      <div class="card">
-        <div class="card-header">剪辑工作台 — 从文案到时间线</div>
-        <div class="tabs">
-          <div class="tab active" onclick="switchEditTab('pipeline',this)">Pipeline</div>
-          <div class="tab" onclick="switchEditTab('timeline',this)">时间线</div>
-          <div class="tab" onclick="switchEditTab('stt',this)">语音转文字</div>
-        </div>
-
-        <!-- Pipeline Tab -->
-        <div id="edit-pipeline" class="card-body">
-          <p class="text-muted mb-2">输入文案或选题，运行完整剪辑管线</p>
-          <div class="form-group">
-            <label>文案/选题</label>
-            <textarea id="editScript" rows="4" placeholder="输入视频文案或选题...">年轻人的盲盒消费为什么会成为社会现象</textarea>
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label>Persona ID</label>
-              <input id="editPersonaId" value="zam_knowledge_critical">
-            </div>
-            <div class="form-group">
-              <label>类型插件</label>
-              <select id="editPluginId">
-                <option value="knowledge_longform">知识区长片</option>
-                <option value="kichiku_fastcut">鬼畜快剪</option>
-                <option value="digital_review">数码评测</option>
-                <option value="vlog_daily">Vlog 日常</option>
-              </select>
-            </div>
-          </div>
-          <div class="btn-group">
-            <button class="btn btn-primary" onclick="runEditPipeline()">运行管线</button>
-            <button class="btn btn-secondary" onclick="document.getElementById('editFileInput').click()">导入文案文件</button>
-            <input type="file" id="editFileInput" style="display:none" accept=".txt,.md" onchange="importEditScript(event)">
-          </div>
-          <div id="editPipelineResult"></div>
-        </div>
-
-        <!-- Timeline Tab -->
-        <div id="edit-timeline" class="card-body" style="display:none">
-          <div class="flex" style="justify-content:space-between;margin-bottom:8px">
-            <span class="text-muted" id="tlInfo">尚未运行管线</span>
-            <div class="btn-group">
-              <button class="btn btn-secondary btn-sm" onclick="zoomTimeline(-0.3)">缩小</button>
-              <button class="btn btn-secondary btn-sm" onclick="zoomTimeline(0.3)">放大</button>
-            </div>
-          </div>
-          <div id="timelineContainer" style="position:relative;overflow-x:auto;overflow-y:auto;max-height:500px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);font-family:var(--font)">
-            <div id="timelineInner" style="position:relative;min-height:120px">
-              <div class="text-muted" style="padding:40px;text-align:center">运行管线后在此查看时间线</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- STT Tab -->
-        <div id="edit-stt" class="card-body" style="display:none">
-          <p class="text-muted mb-2">将配音音频转为带时间戳的文字，或对齐已有文案</p>
-          <div class="form-group">
-            <label>音频路径</label>
-            <input id="sttAudioPath" placeholder="/path/to/audio.wav 或 video.mp4">
-          </div>
-          <div class="form-group">
-            <label>已有文案（可选，留空则自动转录）</label>
-            <textarea id="sttTranscript" rows="3" placeholder="如果已有文案，粘贴到这里进行时间对齐..."></textarea>
-          </div>
-          <div class="btn-group">
-            <button class="btn btn-primary" onclick="runStt()">转录</button>
-            <button class="btn btn-secondary" onclick="runSttAlign()">对齐文案</button>
-          </div>
-          <div id="sttResult"></div>
-        </div>
-      </div>
-    </div>
-
-    <div id="section-model-test" class="section">
-      <div class="card">
-        <div class="card-header">🧪 模型测试面板</div>
-        <div class="tabs">
-          <div class="tab active" onclick="switchModelTab('llm',this)">🤖 LLM</div>
-          <div class="tab" onclick="switchModelTab('embed',this)">📐 嵌入</div>
-          <div class="tab" onclick="switchModelTab('rerank',this)">⚖️ 重排序</div>
-          <div class="tab" onclick="switchModelTab('info',this)">ℹ️ 配置</div>
-        </div>
-
-        <!-- LLM Test -->
-        <div id="model-llm" class="card-body">
-          <p class="text-muted mb-2">向 LLM 发送一条测试消息，验证模型连接和响应。</p>
-          <div class="form-group">
-            <label>测试消息</label>
-            <textarea id="modelLlmPrompt" rows="3">用一句话描述冷峻科技评论的风格特点。</textarea>
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label>模型（留空用默认）</label>
-              <input id="modelLlmModel" placeholder="claude-sonnet-4-6">
-            </div>
-            <div class="form-group" style="align-self:flex-end">
-              <button class="btn btn-primary" onclick="testLlm()">发送测试</button>
-            </div>
-          </div>
-          <div id="modelLlmResult"></div>
-        </div>
-
-        <!-- Embed Test -->
-        <div id="model-embed" class="card-body" style="display:none">
-          <p class="text-muted mb-2">测试嵌入模型，查看文本的向量表示。</p>
-          <div class="form-group">
-            <label>文本</label>
-            <textarea id="modelEmbedText" rows="2">冷峻科技评论风格，黑白画面，快速剪辑</textarea>
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label>Provider</label>
-              <input id="modelEmbedProvider" placeholder="sentence_transformer">
-            </div>
-            <div class="form-group" style="align-self:flex-end">
-              <button class="btn btn-primary" onclick="testEmbed()">生成向量</button>
-            </div>
-          </div>
-          <div id="modelEmbedResult"></div>
-        </div>
-
-        <!-- Rerank Test -->
-        <div id="model-rerank" class="card-body" style="display:none">
-          <p class="text-muted mb-2">测试重排序模型：输入查询和候选文本，验证排序效果。</p>
-          <div class="form-group">
-            <label>查询</label>
-            <input id="modelRerankQuery" value="冷峻科技风格">
-          </div>
-          <div class="form-group">
-            <label>候选文本（每行一条）</label>
-            <textarea id="modelRerankCandidates" rows="4">科技视频评论风格冷峻画面黑白
-今天天气真好适合出去游玩
-快速剪辑搭配暗色调突出科技感
-温暖Vlog日常分享生活点滴</textarea>
-          </div>
-          <button class="btn btn-primary" onclick="testRerank()">测试重排序</button>
-          <div id="modelRerankResult"></div>
-        </div>
-
-        <!-- Config Info -->
-        <div id="model-info" class="card-body" style="display:none">
-          <p class="text-muted mb-2">当前引擎的模型配置信息。</p>
-          <pre id="modelConfigInfo" style="font-size:12px;line-height:1.5;background:var(--surface2);padding:14px;border-radius:var(--radius);border:1px solid var(--border)">加载中...</pre>
-          <button class="btn btn-secondary btn-sm mt-2" onclick="loadModelConfig()">刷新</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ═══ Pipeline ═══ -->
+    <!-- Pipeline -->
     <div id="section-pipeline" class="section">
       <div class="card">
         <div class="card-header">运行 Pipeline</div>
@@ -980,1098 +260,208 @@ body {
       </div>
     </div>
 
+    <!-- Tool -->
+    <div id="section-tool" class="section">
+      <div class="card"><div class="card-header">工具 — ToolRegistry 中的全部原子能力</div><div class="card-body">
+        <button class="btn btn-primary" onclick="listTools()">刷新工具列表</button>
+        <div id="toolList"></div>
+      </div></div>
+      <div class="card"><div class="card-header">执行工具</div><div class="card-body">
+        <div class="form-row">
+          <div class="form-group"><label>工具名</label><input id="toolExecName" placeholder="scene_detect"></div>
+          <div class="form-group"><label>参数 (JSON)</label><input id="toolExecParams" value='{"input_path": "/path/to/video.mp4"}'></div>
+        </div>
+        <button class="btn btn-primary" onclick="execTool()">执行</button>
+        <div id="toolExecResult"></div>
+      </div></div>
+      <div class="card"><div class="card-header">批量执行</div><div class="card-body">
+        <div class="form-group"><label>调用列表 (JSON)</label><textarea id="toolBatchCalls" rows="4">[{"tool":"scene_detect","input_path":"/video.mp4","threshold":0.3}]</textarea></div>
+        <button class="btn btn-primary" onclick="execToolBatch()">批量执行</button>
+        <div id="toolBatchResult"></div>
+      </div></div>
+    </div>
+
+    <!-- Skill -->
+    <div id="section-skill" class="section">
+      <div class="card"><div class="card-header">技能 — 可组合的高级能力</div><div class="card-body">
+        <button class="btn btn-primary" onclick="listSkills()">刷新技能列表</button>
+        <div id="skillList"></div>
+      </div></div>
+      <div class="card"><div class="card-header">执行技能</div><div class="card-body">
+        <div class="form-row">
+          <div class="form-group"><label>技能名</label><input id="skillExecName" value="generate_captions"></div>
+          <div class="form-group"><label>参数 (JSON)</label><input id="skillExecParams" value='{"text": "hello world caption test"}'></div>
+        </div>
+        <button class="btn btn-primary" onclick="execSkill()">执行</button>
+        <div id="skillExecResult"></div>
+      </div></div>
+    </div>
+
+    <!-- Animation -->
+    <div id="section-animation" class="section">
+      <div class="card"><div class="card-header">动画定义 — JSON 规范动画引擎</div>
+        <div class="tabs">
+          <div class="tab active" onclick="switchAnimTab('onscreen',this)">Onscreen (<span id="animOnscreenCount">0</span>)</div>
+          <div class="tab" onclick="switchAnimTab('text',this)">Text (<span id="animTextCount">0</span>)</div>
+          <div class="tab" onclick="switchAnimTab('transition',this)">Transition (<span id="animTransCount">0</span>)</div>
+          <div class="tab" onclick="switchAnimTab('all',this)">All</div>
+        </div>
+        <div class="card-body" id="animList" style="max-height:500px;overflow-y:auto">
+          <button class="btn btn-primary" onclick="listAnimations()">刷新</button>
+          <div id="animListResult" class="mt-2"></div>
+        </div>
+      </div>
+      <div class="card"><div class="card-header">动画详情</div><div class="card-body">
+        <div class="form-row">
+          <div class="form-group"><label>动画 ID</label><input id="animGetId" value="fade_in"></div>
+          <div class="form-group" style="align-self:flex-end"><button class="btn btn-primary" onclick="getAnimation()">查看</button></div>
+        </div>
+        <div id="animDetailResult"></div>
+      </div></div>
+    </div>
+
+    <!-- Material -->
+    <div id="section-material" class="section">
+      <div class="card"><div class="card-header">素材库 — 跨素材源统一搜索</div><div class="card-body">
+        <div class="form-row">
+          <div class="form-group"><label>搜索关键词</label><input id="matSearchQuery" value="city"></div>
+          <div class="form-group"><label>Top-K</label><input id="matSearchTopK" value="5" type="number"></div>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-primary" onclick="searchMaterial()">搜索</button>
+          <button class="btn btn-secondary" onclick="listMaterialSources()">素材源列表</button>
+        </div>
+        <div id="materialResult"></div>
+      </div></div>
+    </div>
+
+    <!-- Plugin -->
+    <div id="section-plugin" class="section">
+      <div class="card"><div class="card-header">插件管理</div><div class="card-body">
+        <div class="btn-group">
+          <button class="btn btn-primary" onclick="listPlugins()">已加载插件</button>
+          <button class="btn btn-secondary" onclick="discoverPlugins()">发现可用</button>
+          <button class="btn btn-secondary" onclick="loadAllPlugins()">加载全部</button>
+          <button class="btn btn-secondary" onclick="getCapabilities()">能力概览</button>
+        </div>
+        <div id="pluginList"></div>
+      </div></div>
+      <div class="card"><div class="card-header">加载/卸载插件</div><div class="card-body">
+        <div class="form-row">
+          <div class="form-group"><label>Plugin ID</label><input id="pluginLoadId" value="my_material_lib"></div>
+          <div class="form-group" style="align-self:flex-end"><div class="btn-group"><button class="btn btn-primary btn-sm" onclick="loadPlugin()">加载</button><button class="btn btn-danger btn-sm" onclick="unloadPlugin()">卸载</button></div></div>
+        </div>
+        <div id="pluginActionResult"></div>
+      </div></div>
+    </div>
+
+    <!-- Edit Workspace -->
+    <div id="section-edit-workspace" class="section">
+      <div class="card">
+        <div class="card-header">剪辑工作台 — 从文案到时间线</div>
+        <div class="tabs">
+          <div class="tab active" onclick="switchEditTab('pipeline',this)">Pipeline</div>
+          <div class="tab" onclick="switchEditTab('timeline',this)">时间线</div>
+          <div class="tab" onclick="switchEditTab('stt',this)">语音转文字</div>
+        </div>
+        <div id="edit-pipeline" class="card-body">
+          <p class="text-muted mb-2">输入文案或选题，运行完整剪辑管线</p>
+          <div class="form-group"><label>文案/选题</label><textarea id="editScript" rows="4" placeholder="输入视频文案或选题...">年轻人的盲盒消费为什么会成为社会现象</textarea></div>
+          <div class="form-row">
+            <div class="form-group"><label>Persona ID</label><input id="editPersonaId" value="zam_knowledge_critical"></div>
+            <div class="form-group"><label>类型插件</label>
+              <select id="editPluginId">
+                <option value="knowledge_longform">知识区长片</option>
+                <option value="kichiku_fastcut">鬼畜快剪</option>
+                <option value="digital_review">数码评测</option>
+                <option value="vlog_daily">Vlog 日常</option>
+              </select>
+            </div>
+          </div>
+          <div class="btn-group">
+            <button class="btn btn-primary" onclick="runEditPipeline()">运行管线</button>
+            <button class="btn btn-secondary" onclick="document.getElementById('editFileInput').click()">导入文案文件</button>
+            <input type="file" id="editFileInput" style="display:none" accept=".txt,.md" onchange="importEditScript(event)">
+          </div>
+          <div id="editPipelineResult"></div>
+        </div>
+        <div id="edit-timeline" class="card-body" style="display:none">
+          <div class="flex" style="justify-content:space-between;margin-bottom:8px">
+            <span class="text-muted" id="tlInfo">尚未运行管线</span>
+            <div class="btn-group"><button class="btn btn-secondary btn-sm" onclick="zoomTimeline(-0.3)">缩小</button><button class="btn btn-secondary btn-sm" onclick="zoomTimeline(0.3)">放大</button></div>
+          </div>
+          <div id="timelineContainer" style="position:relative;overflow-x:auto;overflow-y:auto;max-height:500px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);font-family:var(--font)">
+            <div id="timelineInner" style="position:relative;min-height:120px"><div class="text-muted" style="padding:40px;text-align:center">运行管线后在此查看时间线</div></div>
+          </div>
+        </div>
+        <div id="edit-stt" class="card-body" style="display:none">
+          <p class="text-muted mb-2">将配音音频转为带时间戳的文字，或对齐已有文案</p>
+          <div class="form-group"><label>音频路径</label><input id="sttAudioPath" placeholder="/path/to/audio.wav 或 video.mp4"></div>
+          <div class="form-group"><label>已有文案（可选，留空则自动转录）</label><textarea id="sttTranscript" rows="3" placeholder="如果已有文案，粘贴到这里进行时间对齐..."></textarea></div>
+          <div class="btn-group"><button class="btn btn-primary" onclick="runStt()">转录</button><button class="btn btn-secondary" onclick="runSttAlign()">对齐文案</button></div>
+          <div id="sttResult"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Model Test -->
+    <div id="section-model-test" class="section">
+      <div class="card">
+        <div class="card-header">模型测试面板</div>
+        <div class="tabs">
+          <div class="tab active" onclick="switchModelTab('llm',this)">LLM</div>
+          <div class="tab" onclick="switchModelTab('embed',this)">嵌入</div>
+          <div class="tab" onclick="switchModelTab('rerank',this)">重排序</div>
+          <div class="tab" onclick="switchModelTab('info',this)">配置</div>
+        </div>
+        <div id="model-llm" class="card-body">
+          <p class="text-muted mb-2">向 LLM 发送一条测试消息，验证模型连接和响应。</p>
+          <div class="form-group"><label>测试消息</label><textarea id="modelLlmPrompt" rows="3">用一句话描述冷峻科技评论的风格特点。</textarea></div>
+          <div class="form-row">
+            <div class="form-group"><label>模型（留空用默认）</label><input id="modelLlmModel" placeholder="claude-sonnet-4-6"></div>
+            <div class="form-group" style="align-self:flex-end"><button class="btn btn-primary" onclick="testLlm()">发送测试</button></div>
+          </div>
+          <div id="modelLlmResult"></div>
+        </div>
+        <div id="model-embed" class="card-body" style="display:none">
+          <p class="text-muted mb-2">测试嵌入模型，查看文本的向量表示。</p>
+          <div class="form-group"><label>文本</label><textarea id="modelEmbedText" rows="2">冷峻科技评论风格，黑白画面，快速剪辑</textarea></div>
+          <div class="form-row">
+            <div class="form-group"><label>Provider</label><input id="modelEmbedProvider" placeholder="sentence_transformer"></div>
+            <div class="form-group" style="align-self:flex-end"><button class="btn btn-primary" onclick="testEmbed()">生成向量</button></div>
+          </div>
+          <div id="modelEmbedResult"></div>
+        </div>
+        <div id="model-rerank" class="card-body" style="display:none">
+          <p class="text-muted mb-2">测试重排序模型：输入查询和候选文本，验证排序效果。</p>
+          <div class="form-group"><label>查询</label><input id="modelRerankQuery" value="冷峻科技风格"></div>
+          <div class="form-group"><label>候选文本（每行一条）</label><textarea id="modelRerankCandidates" rows="4">科技视频评论风格冷峻画面黑白\n今天天气真好适合出去游玩\n快速剪辑搭配暗色调突出科技感</textarea></div>
+          <button class="btn btn-primary" onclick="testRerank()">测试重排序</button>
+          <div id="modelRerankResult"></div>
+        </div>
+        <div id="model-info" class="card-body" style="display:none">
+          <p class="text-muted mb-2">当前引擎的模型配置信息。</p>
+          <pre id="modelConfigInfo" style="font-size:12px;line-height:1.5;background:var(--surface2);padding:14px;border-radius:var(--radius);border:1px solid var(--border)">加载中...</pre>
+          <button class="btn btn-secondary btn-sm mt-2" onclick="loadModelConfig()">刷新</button>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /content -->
 </div><!-- /main -->
 
-<script>
-const API_BASE = () => document.getElementById('apiBase').value.replace(/\/+$/, '');
-
-// ── Navigation ──
-function switchSection(id) {
-  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
-  document.getElementById('section-' + id).classList.add('active');
-  document.querySelectorAll('.sidebar nav a').forEach(a => a.classList.remove('active'));
-  document.querySelector(`.sidebar nav a[onclick*="${id}"]`).classList.add('active');
-}
-function switchForgeTab(name, el) {
-  document.querySelectorAll('#section-forge .tab').forEach(t => t.classList.remove('active'));
-  el.classList.add('active');
-  document.querySelectorAll('#section-forge .card-body[id^="forge-"]').forEach(d => d.style.display = 'none');
-  document.getElementById('forge-' + name).style.display = 'block';
-}
-
-// ── API helper ──
-async function api(method, path, body) {
-  const url = API_BASE() + path;
-  const opts = {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-  };
-  if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(url, opts);
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { data = text; }
-  return { ok: res.ok, status: res.status, data };
-}
-
-function showResult(elId, data, ok) {
-  const el = document.getElementById(elId);
-  const cls = ok ? 'tag-success' : 'tag-error';
-  const label = ok ? 'Success' : 'Error';
-  el.innerHTML = `
-    <div class="result-box">
-      <div class="result-header">
-        <span>Response</span>
-        <span class="tag ${cls}">${label}</span>
-      </div>
-      <pre>${typeof data === 'string' ? data : JSON.stringify(data, null, 2)}</pre>
-    </div>`;
-}
-
-// ── Health ──
-async function checkHealth() {
-  const statusDot = document.getElementById('statusDot');
-  const statusText = document.getElementById('statusText');
-  statusDot.className = 'status-dot';
-  statusText.textContent = '检查中...';
-  try {
-    const { ok, data } = await api('GET', '/health');
-    if (ok) {
-      statusDot.className = 'status-dot online';
-      statusText.textContent = `已连接 · ${data.service || 'ok'}`;
-    } else {
-      statusDot.className = 'status-dot offline';
-      statusText.textContent = '连接失败';
-    }
-    showResult('healthResult', data, ok);
-  } catch(e) {
-    statusDot.className = 'status-dot offline';
-    statusText.textContent = '无法连接';
-    showResult('healthResult', { error: e.message }, false);
-  }
-}
-
-// ── Persona ──
-async function listPersonas() {
-  const { ok, data } = await api('GET', '/api/persona/list');
-  showResult('personaList', data, ok);
-}
-async function getPersona() {
-  const id = document.getElementById('personaGetId').value;
-  const { ok, data } = await api('GET', `/api/persona/${id}`);
-  if (!ok) { showResult('personaDetail', data, false); return; }
-
-  // 三部分展示：YAML / Prompt / RAG
-  const yamlText = data.parameter ? JSON.stringify(data.parameter, null, 2) : '(无 parameter)';
-  const promptText = data.prompt || '(无 prompt)';
-  const kbList = data.knowledge || [];
-
-  const html = `
-    <div class="card" style="margin-top:12px;border-color:var(--accent)">
-      <div class="card-header">
-        <span>${data.persona_id} <span style="color:var(--text2);font-weight:400">v${data.version}</span></span>
-        <span class="tag tag-success">已加载</span>
-      </div>
-      <div class="tabs" style="border-bottom:1px solid var(--border)">
-        <div class="tab active" onclick="switchPersonaTab('yaml',this,'${id}')">📋 YAML</div>
-        <div class="tab" onclick="switchPersonaTab('prompt',this,'${id}')">📝 Prompt</div>
-        <div class="tab" onclick="switchPersonaTab('rag',this,'${id}')">📚 RAG (${kbList.length})</div>
-        <div class="tab" onclick="switchPersonaTab('query',this,'${id}')">🔍 检索</div>
-      </div>
-      <div id="personaTab-yaml" class="card-body">
-        <pre style="font-size:12px;line-height:1.5;overflow-x:auto;white-space:pre-wrap">${yamlText}</pre>
-      </div>
-      <div id="personaTab-prompt" class="card-body" style="display:none">
-        <pre style="font-size:12px;line-height:1.5;overflow-x:auto;white-space:pre-wrap">${promptText}</pre>
-      </div>
-      <div id="personaTab-rag" class="card-body" style="display:none">
-        ${kbList.length === 0 ? '<div class="text-muted">无知识库文档</div>' : ''}
-        ${kbList.map((doc, i) => `
-          <div class="knowledge-item">
-            <span class="name">${doc.title || doc.id || '未命名文档'}</span>
-            <span class="badge">${doc.content ? doc.content.length + ' 字' : '0 字'}</span>
-          </div>
-          ${doc.content ? `<pre style="font-size:11px;line-height:1.4;color:var(--text2);padding:4px 12px 10px;margin:0;border-bottom:1px solid var(--border);white-space:pre-wrap">${doc.content.slice(0, 200)}${doc.content.length > 200 ? '...' : ''}</pre>` : ''}
-        `).join('')}
-        <div class="btn-group" style="margin-top:8px">
-          <button class="btn btn-secondary btn-sm" onclick="indexRag('${id}')">🔨 建立向量索引</button>
-        </div>
-      </div>
-      <div id="personaTab-query" class="card-body" style="display:none">
-        <div class="flex" style="gap:8px">
-          <input id="ragQueryInput" placeholder="输入检索内容..." style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:var(--radius);font-size:13px">
-          <button class="btn btn-primary btn-sm" onclick="queryRag('${id}')">检索</button>
-        </div>
-        <div id="ragQueryResult" style="margin-top:8px"></div>
-      </div>
-    </div>`;
-
-  document.getElementById('personaDetail').innerHTML = html;
-}
-
-async function indexRag(personaId) {
-  const { ok, data } = await api('POST', `/api/persona/${personaId}/rag/index`, { force_rebuild: true });
-  const el = document.getElementById('ragQueryResult') || document.getElementById('personaTab-rag');
-  const msg = ok
-    ? `✅ 索引完成：${data.total_docs} 篇文档 → ${data.total_chunks} 个向量块`
-    : `❌ 索引失败：${JSON.stringify(data)}`;
-  el.innerHTML = `<div class="text-muted" style="margin-top:4px;font-size:12px">${msg}</div>`;
-}
-
-async function queryRag(personaId) {
-  const q = document.getElementById('ragQueryInput').value.trim();
-  if (!q) return;
-  const el = document.getElementById('ragQueryResult');
-  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">检索中...</span></div>';
-  const { ok, data } = await api('POST', `/api/persona/${personaId}/rag/query`, { query: q, top_k: 5, rerank: true });
-  if (!ok) { el.innerHTML = `<div class="tag tag-error">检索失败</div>`; return; }
-  let html = `<div class="text-muted" style="font-size:12px;margin-bottom:6px">找到 ${data.total_chunks} 个相关片段</div>`;
-  html += `<div style="font-size:11px;color:var(--text2);padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:8px;line-height:1.5;white-space:pre-wrap">${data.context}</div>`;
-  for (const c of data.chunks) {
-    html += `<div class="knowledge-item"><span class="name">📄 ${c.source || c.id}</span><span class="badge">${c.score.toFixed(3)}</span></div>`;
-    html += `<pre style="font-size:11px;line-height:1.4;color:var(--text2);padding:4px 12px 8px;margin:0;border-bottom:1px solid var(--border);white-space:pre-wrap">${c.text}</pre>`;
-  }
-  el.innerHTML = html;
-}
-
-function switchPersonaTab(tab, el, personaId) {
-  document.querySelectorAll('#personaDetail .tab').forEach(t => t.classList.remove('active'));
-  el.classList.add('active');
-  ['yaml', 'prompt', 'rag', 'query'].forEach(t => {
-    const el2 = document.getElementById('personaTab-' + t);
-    if (el2) el2.style.display = t === tab ? 'block' : 'none';
-  });
-  // 如果是 RAG 标签，点击时从 API 刷新
-  if (tab === 'rag') {
-    api('GET', `/api/persona/${personaId}/knowledge`).then(({ data }) => {
-      const container = document.getElementById('personaTab-rag');
-      if (!data || data.length === 0) {
-        container.innerHTML = '<div class="text-muted">无知识库文档</div>';
-        return;
-      }
-      container.innerHTML = data.map((doc, i) => `
-        <div class="knowledge-item">
-          <span class="name">${doc.title || doc.id || '未命名'}</span>
-          <span class="badge">${doc.content ? doc.content.length + ' 字' : '0 字'}</span>
-        </div>
-        <pre style="font-size:11px;line-height:1.4;color:var(--text2);padding:4px 12px 10px;margin:0;border-bottom:1px solid var(--border);white-space:pre-wrap">${(doc.content || '').slice(0, 300)}</pre>
-      `).join('');
-    });
-  }
-}
-
-// ── Forge ──
-async function forgeFromPrompt() {
-  const body = {
-    description: document.getElementById('forgePromptDesc').value,
-    persona_id: document.getElementById('forgePromptId').value,
-    persona_name: document.getElementById('forgePromptName').value,
-  };
-  const { ok, data } = await api('POST', '/api/persona/forge/from-prompt', body);
-  showResult('forgePromptResult', data, ok);
-}
-async function forgeFromScript() {
-  const body = {
-    script: document.getElementById('forgeScriptText').value,
-    persona_id: document.getElementById('forgeScriptId').value,
-    persona_name: document.getElementById('forgeScriptName').value,
-    script_format: 'txt',
-  };
-  const { ok, data } = await api('POST', '/api/persona/forge/from-script', body);
-  showResult('forgeScriptResult', data, ok);
-}
-async function forgeRefine() {
-  const body = {
-    persona_id: document.getElementById('forgeRefineId').value,
-    feedback: document.getElementById('forgeRefineFeedback').value,
-  };
-  const { ok, data } = await api('POST', '/api/persona/forge/refine', body);
-  showResult('forgeRefineResult', data, ok);
-}
-async function dialogueGenerateQuestions() {
-  const body = {
-    persona_id: document.getElementById('forgeDialogueId').value,
-    existing_answers: {},
-  };
-  const { ok, data } = await api('POST', '/api/persona/forge/dialogue/generate-questions', body);
-  showResult('forgeDialogueResult', data, ok);
-}
-async function dialogueBuild() {
-  const answersText = document.getElementById('forgeDialogueAnswers').value;
-  let answers;
-  try { answers = JSON.parse(answersText); } catch { answers = {}; }
-  const body = {
-    persona_id: document.getElementById('forgeDialogueId').value,
-    persona_name: '对话测试',
-    answers,
-  };
-  const { ok, data } = await api('POST', '/api/persona/forge/dialogue/build', body);
-  showResult('forgeDialogueResult', data, ok);
-}
-
-// ── Pipeline ──
-async function runPipeline() {
-  const resultEl = document.getElementById('pipelineResult');
-  resultEl.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">执行中...</span></div>';
-  const body = {
-    persona_id: document.getElementById('pipePersonaId').value,
-    category_plugin_id: document.getElementById('pipePluginId').value,
-    topic: document.getElementById('pipeTopic').value,
-    dry_run: false,
-  };
-  const { ok, data } = await api('POST', '/api/pipeline/run', body);
-  // 提取摘要
-  if (ok && data.steps) {
-    const summary = {
-      status: data.status,
-      pipeline_id: data.pipeline_id,
-      steps: data.steps.map(s => ({
-        agent: s.agent_name,
-        status: s.status,
-        duration_ms: s.duration_ms,
-      })),
-      timeline: data.shared_data?.final_timeline
-        ? {
-            width: data.shared_data.final_timeline.width,
-            height: data.shared_data.final_timeline.height,
-            fps: data.shared_data.final_timeline.fps,
-            duration_sec: data.shared_data.final_timeline.duration_sec,
-            tracks: data.shared_data.final_timeline.tracks?.length,
-          }
-        : null,
-    };
-    showResult('pipelineResult', summary, ok);
-  } else {
-    showResult('pipelineResult', data, ok);
-  }
-}
-
-// ══════════════════════════════════════════
-// ── Chat Forge ──
-// ══════════════════════════════════════════
-let chatSessionId = null;
-let chatHistory = [];
-
-function addChatMessage(role, content) {
-  const container = document.getElementById('chatMessages');
-  // Remove welcome if present
-  const welcome = container.querySelector('.chat-welcome');
-  if (welcome) welcome.remove();
-
-  const div = document.createElement('div');
-  div.className = `chat-msg ${role}`;
-  div.textContent = content;
-  container.appendChild(div);
-  container.scrollTop = container.scrollHeight;
-}
-
-function addChatSystem(msg) {
-  const container = document.getElementById('chatMessages');
-  const div = document.createElement('div');
-  div.className = 'chat-msg system';
-  div.textContent = msg;
-  container.appendChild(div);
-  container.scrollTop = container.scrollHeight;
-}
-
-function updateChatPreview(draft) {
-  if (!draft) return;
-  const el = document.getElementById('chatPreview');
-  // Show compact view
-  let html = '';
-  const sections = { identity: '身份', language: '语言', rhythm: '节奏', visual: '视觉', audio: '音频', constraints: '约束' };
-  for (const [key, label] of Object.entries(sections)) {
-    const val = draft[key];
-    if (!val) continue;
-    html += `<div class="field"><span class="key">${label}:</span> `;
-    if (typeof val === 'object') {
-      const parts = Object.entries(val).filter(([_, v]) => v && v !== '').map(([k, v]) => {
-        if (Array.isArray(v)) return `${k}=[${v.join(',')}]`;
-        if (typeof v === 'object' && v !== null) return `${k}={...}`;
-        return `${k}=${v}`;
-      });
-      html += `<span class="val">${parts.join(', ')}</span>`;
-    } else {
-      html += `<span class="val">${val}</span>`;
-    }
-    html += '</div>';
-  }
-  el.innerHTML = html || '<pre>等待数据...</pre>';
-}
-
-// 持久化存储上一次的进度值，防止 AI 不返回 progress 时归零
-let _lastProgress = {};
-
-function updateChatProgress(progress) {
-  if (!progress) return;
-
-  // 合并增量：新值覆盖旧值，缺失的维度保留上次的值
-  const merged = { ..._lastProgress, ...progress };
-  _lastProgress = merged;
-
-  // 只对 6 个固定维度做均值
-  const dims = ['identity', 'language', 'rhythm', 'visual', 'audio', 'constraints'];
-  let total = 0, count = 0;
-  for (const d of dims) {
-    const v = merged[d];
-    if (typeof v === 'number' && v >= 0) {
-      total += v;
-      count++;
-    }
-  }
-  const avg = count > 0 ? total / count : 0;
-  const overallPct = Math.round(avg * 100);
-
-  // 更新各维度进度（用合并后的值）
-  for (const d of dims) {
-    const val = merged[d] ?? 0;
-    const pct = Math.round(val * 100);
-    const pEl = document.getElementById('p_' + d);
-    const pbEl = document.getElementById('pb_' + d);
-    if (pEl) pEl.textContent = pct + '%';
-    if (pbEl) pbEl.style.width = pct + '%';
-  }
-
-  // 更新总体进度
-  document.getElementById('chatProgressPct').textContent = overallPct;
-  document.getElementById('chatOverallBar').style.width = overallPct + '%';
-
-  // 进度 > 70% 显示"可保存"标记
-  const badge = document.getElementById('chatReadyBadge');
-  if (badge) badge.style.display = overallPct >= 70 ? 'inline' : 'none';
-}
-
-function showChatInterface() {
-  document.getElementById('chatInputArea').style.display = 'flex';
-  document.getElementById('chatOverallProgress').style.display = 'block';
-  document.getElementById('chatSidebar').style.display = 'flex';
-  document.getElementById('chatInput').focus();
-}
-
-function showLoading(show) {
-  const el = document.getElementById('chatLoading');
-  if (el) el.style.display = show ? 'flex' : 'none';
-}
-
-// ── 知识库分析进度 ──
-const KB_CHUNK_LIMIT = 6000;  // 单段最大字符数，超过则按 H1 切分
-
-function showKnowledgeProgress(fileName, totalChunks) {
-  const el = document.getElementById('chatKbProgress');
-  document.getElementById('kbFileName').textContent = `📖 ${fileName}`;
-  document.getElementById('kbProgressNum').textContent = '0';
-  document.getElementById('kbProgressTotal').textContent = totalChunks;
-  document.getElementById('chatKbBar').style.width = '0%';
-  document.getElementById('chatKbBar').className = 'fill kb-pulse';
-  document.getElementById('kbProgressLabel').textContent = totalChunks > 1
-    ? `正在逐段分析，共 ${totalChunks} 章...`
-    : '正在分析...';
-  el.style.display = 'block';
-}
-
-function updateKnowledgeProgress(current, total, label) {
-  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
-  document.getElementById('kbProgressNum').textContent = Math.min(current, total);
-  document.getElementById('chatKbBar').style.width = pct + '%';
-  document.getElementById('kbProgressLabel').textContent = label || `第 ${current}/${total} 章`;
-}
-
-function hideKnowledgeProgress(success) {
-  const el = document.getElementById('chatKbProgress');
-  document.getElementById('chatKbBar').className = 'fill';
-  if (success) {
-    const total = document.getElementById('kbProgressTotal').textContent;
-    document.getElementById('kbProgressLabel').textContent = total > 1
-      ? `✅ 已完成 ${total} 章分析`
-      : '✅ 分析完成';
-    document.getElementById('chatKbBar').style.width = '100%';
-    setTimeout(() => { el.style.display = 'none'; }, 3000);
-  } else {
-    el.style.display = 'none';
-  }
-}
-
-function splitByH1(text, maxLen) {
-  if (text.length <= maxLen) return [{ heading: '', content: text }];
-
-  const sections = text.split(/^# /m);
-  const chunks = [];
-  for (const section of sections) {
-    if (!section.trim()) continue;
-    const lines = section.split('\n');
-    const heading = lines[0].trim();
-    const body = lines.slice(1).join('\n').trim();
-    const chunkContent = heading ? `# ${heading}\n\n${body}` : body;
-    // 单节超长也截断
-    chunks.push({
-      heading: heading || `section_${chunks.length + 1}`,
-      content: chunkContent.length > maxLen ? chunkContent.slice(0, maxLen) : chunkContent,
-    });
-  }
-  return chunks.length ? chunks : [{ heading: '', content: text.slice(0, maxLen) }];
-}
-
-async function chatStart() {
-  try {
-    showLoading(true);
-    const { ok, data } = await api('POST', '/api/persona/forge/chat/start', { persona_id: '' });
-    showLoading(false);
-    if (!ok) { addChatSystem('启动失败'); return; }
-    chatSessionId = data.session_id;
-    showChatInterface();
-    addChatMessage('ai',
-      '你好！我是帧艺 ClipWright 的创作风格顾问。\n\n'
-      + '你可以用日常语言描述你的创作风格，例如：\n'
-      + '• "我做数码评测，毒舌吐槽，画面高对比暗色调，节奏偏快"\n'
-      + '• "知识区长视频，偏学术，画面简洁，留白多，BGM用电子工业风"\n'
-      + '• "Vlog 日常，轻松温暖，画面明亮，节奏舒缓"\n\n'
-      + '也可以上传参考脚本文档（📎按钮），我会分析你的语言习惯。\n'
-      + '随时说"改一下"来调整，满意后点"保存"就行。'
-    );
-    updateChatPreview(data.persona_draft);
-    updateChatProgress(data.progress);
-  } catch(e) {
-    showLoading(false);
-    addChatSystem('错误: ' + e.message);
-  }
-}
-
-async function chatSend() {
-  const input = document.getElementById('chatInput');
-  const text = input.value.trim();
-  if (!text || !chatSessionId) return;
-  input.value = '';
-  input.style.height = 'auto';
-
-  addChatMessage('user', text);
-  showLoading(true);
-
-  try {
-    const { ok, data } = await api('POST', '/api/persona/forge/chat/message', {
-      session_id: chatSessionId,
-      message: text,
-    });
-    showLoading(false);
-    if (!ok) { addChatMessage('ai', '抱歉，出了点问题。'); return; }
-    addChatMessage('ai', data.reply);
-    updateChatPreview(data.persona_draft);
-    updateChatProgress(data.progress);
-  } catch(e) {
-    showLoading(false);
-    addChatMessage('ai', '通信错误: ' + e.message);
-  }
-}
-
-async function chatUploadKnowledge(event) {
-  const file = event.target.files[0];
-  if (!file || !chatSessionId) return;
-  const text = await file.text();
-
-  // 前端按 H1 分段，逐段发送实现实时进度
-  const sections = splitByH1(text, KB_CHUNK_LIMIT);
-  const total = sections.length;
-
-  addChatSystem(`正在分析参考文档: ${file.name} (${text.length} 字, ${total} 段)`);
-  showKnowledgeProgress(file.name, total);
-  let lastReply = null;
-
-  try {
-    for (let i = 0; i < total; i++) {
-      const sec = sections[i];
-      const label = sec.heading
-        ? `第 ${i+1}/${total} 章：${sec.heading.slice(0, 30)}`
-        : `第 ${i+1}/${total} 段`;
-      updateKnowledgeProgress(i + 1, total, label);
-
-      const { ok, data } = await api('POST', '/api/persona/forge/chat/knowledge', {
-        session_id: chatSessionId,
-        content: sec.content,
-        source: file.name,
-      });
-
-      if (!ok) {
-        hideKnowledgeProgress(false);
-        addChatSystem(`第 ${i+1} 段分析失败`);
-        event.target.value = '';
-        return;
-      }
-
-      // 累计更新
-      if (data.reply) lastReply = data.reply;
-      if (data.persona_draft) updateChatPreview(data.persona_draft);
-      if (data.progress) updateChatProgress(data.progress);
-    }
-
-    hideKnowledgeProgress(true);
-
-    // 添加到知识库列表
-    const kbList = document.getElementById('kbList');
-    const empty = kbList.querySelector('.text-muted');
-    if (empty) empty.remove();
-    // 检查是否已添加同名的
-    const existing = kbList.querySelector(`.knowledge-item[data-source="${file.name}"]`);
-    if (!existing) {
-      const item = document.createElement('div');
-      item.className = 'knowledge-item';
-      item.dataset.source = file.name;
-      const label = total > 1 ? `${total} 章` : `${text.length} 字`;
-      item.innerHTML = `<span class="name">📄 ${file.name}</span><span class="badge">${label}</span>`;
-      kbList.appendChild(item);
-    }
-    document.getElementById('kbCount').textContent = `(${kbList.children.length})`;
-
-    if (lastReply && total > 1) addChatMessage('ai', lastReply);
-  } catch(e) {
-    hideKnowledgeProgress(false);
-    addChatSystem('上传错误: ' + e.message);
-  }
-  event.target.value = '';
-}
-
-async function chatCommit() {
-  if (!chatSessionId) return;
-  const id = prompt('Persona ID:', 'chat_persona_' + Date.now().toString(36));
-  if (!id) return;
-  const name = prompt('Persona 名称:', '对话创建_' + id.slice(-8));
-  if (!name) return;
-
-  addChatSystem('正在保存 Persona...');
-  try {
-    const { ok, data } = await api('POST', '/api/persona/forge/chat/commit', {
-      session_id: chatSessionId,
-      persona_id: id,
-      persona_name: name,
-    });
-    if (!ok) { addChatSystem('保存失败: ' + JSON.stringify(data)); return; }
-    const p = data.parameter || {};
-    const hasPrompt = data.prompt ? '✅' : '❌';
-    const kbCount = (data.knowledge || []).length;
-    const summary = `✅ Persona 已保存（三部分完整）
-
-ID: ${data.persona_id}
-名称: ${data.persona_name}
-语调: ${p.identity?.tone || '未设置'}
-学术密度: ${p.language?.academic_density ?? '默认'}
-节奏: ${p.rhythm?.cut_profile || '默认'}
-配色: ${p.visual?.palette || '默认'}
-时长上限: ${p.constraints?.max_duration_sec || 900}s
-
-三部分存储:
-  📋 YAML:  personas/${id}/parameter.yaml
-  📝 Prompt: ${hasPrompt} personas/${id}/prompt.md
-  📚 RAG:   ${kbCount} 篇文档 → personas/${id}/knowledge/
-
-可以随时查看:
-  curl http://localhost:8000/api/persona/${id}
-  curl http://localhost:8000/api/persona/${id}/prompt
-  curl http://localhost:8000/api/persona/${id}/knowledge
-
-在管线中使用:
-  persona_id="${id}"`;
-    addChatSystem(summary);
-    // 在预览面板显示保存结果
-    const preview = document.getElementById('chatPreview');
-    preview.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
-    // 更新进度条为 100%
-    const dims = ['identity','language','rhythm','visual','audio','constraints'];
-    dims.forEach(d => {
-      const p = document.getElementById('p_' + d);
-      const pb = document.getElementById('pb_' + d);
-      if (p) p.textContent = '100%';
-      if (pb) pb.style.width = '100%';
-    });
-  } catch(e) {
-    addChatSystem('保存错误: ' + e.message);
-  }
-}
-
-function chatReset() {
-  chatSessionId = null;
-  _lastProgress = {};
-  document.getElementById('chatMessages').innerHTML = `
-    <div class="chat-welcome">
-      <h2>💬 对话创建 Persona</h2>
-      <p>和 AI 创作顾问自然对话，逐步建立你的创作人格。<br>可以随时上传参考文档，也可以说"修改"来调整。</p>
-      <button class="btn btn-primary" onclick="chatStart()">开始对话</button>
-    </div>`;
-  document.getElementById('chatInputArea').style.display = 'none';
-  document.getElementById('chatOverallProgress').style.display = 'none';
-  document.getElementById('chatLoading').style.display = 'none';
-  document.getElementById('chatKbProgress').style.display = 'none';
-  document.getElementById('chatSidebar').style.display = 'none';
-  document.getElementById('chatPreview').innerHTML = '<pre>等待对话开始...</pre>';
-  document.getElementById('kbList').innerHTML = '<div class="text-muted" style="font-size:12px">上传 txt/md/srt 文件作为风格参考</div>';
-  document.getElementById('kbCount').textContent = '(0)';
-  document.getElementById('chatProgressPct').textContent = '0';
-  document.getElementById('chatOverallBar').style.width = '0%';
-  document.getElementById('chatReadyBadge').style.display = 'none';
-  const dims = ['identity','language','rhythm','visual','audio','constraints'];
-  dims.forEach(d => {
-    const p = document.getElementById('p_' + d);
-    const pb = document.getElementById('pb_' + d);
-    if (p) p.textContent = '0%';
-    if (pb) pb.style.width = '0%';
-  });
-}
-
-// ══════════════════════════════════════════
-// ── 模型测试 ──
-// ══════════════════════════════════════════
-
-function switchModelTab(name, el) {
-  document.querySelectorAll('#section-model-test .tab').forEach(t => t.classList.remove('active'));
-  el.classList.add('active');
-  document.querySelectorAll('#section-model-test .card-body[id^="model-"]').forEach(d => d.style.display = 'none');
-  document.getElementById('model-' + name).style.display = 'block';
-  if (name === 'info') loadModelConfig();
-}
-
-async function loadModelConfig() {
-  const { ok, data } = await api('GET', '/api/test/config');
-  document.getElementById('modelConfigInfo').textContent = ok ? JSON.stringify(data, null, 2) : '加载失败';
-}
-
-async function testLlm() {
-  const prompt = document.getElementById('modelLlmPrompt').value;
-  const model = document.getElementById('modelLlmModel').value;
-  const el = document.getElementById('modelLlmResult');
-  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">发送中...</span></div>';
-  const { ok, data } = await api('POST', '/api/test/llm', { prompt, model });
-  if (!ok) { el.innerHTML = '<div class="tag tag-error">请求失败</div>'; return; }
-  if (!data.success) {
-    el.innerHTML = `<div class="result-box"><pre>错误: ${data.error}</pre></div>`;
-    return;
-  }
-  el.innerHTML = `
-    <div class="result-box">
-      <div class="result-header"><span>${data.provider} / ${data.model}</span><span class="tag tag-success">${data.usage?.input_tokens || '?'} in / ${data.usage?.output_tokens || '?'} out</span></div>
-      <pre>${data.content}</pre>
-    </div>`;
-}
-
-async function testEmbed() {
-  const text = document.getElementById('modelEmbedText').value;
-  const provider = document.getElementById('modelEmbedProvider').value;
-  const el = document.getElementById('modelEmbedResult');
-  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">生成中...</span></div>';
-  const { ok, data } = await api('POST', '/api/test/embed', { text, provider });
-  if (!ok) { el.innerHTML = '<div class="tag tag-error">请求失败</div>'; return; }
-  if (!data.success) {
-    el.innerHTML = `<div class="result-box"><pre>错误: ${data.error}</pre></div>`;
-    return;
-  }
-  el.innerHTML = `
-    <div class="result-box">
-      <div class="result-header"><span>${data.provider} / ${data.model}</span><span class="tag tag-success">${data.dimension} 维</span></div>
-      <pre>向量预览（前 8 维）:\n[${data.vector_preview.join(', ')}]</pre>
-    </div>`;
-}
-
-async function testRerank() {
-  const query = document.getElementById('modelRerankQuery').value;
-  const text = document.getElementById('modelRerankCandidates').value;
-  const candidates = text.split('\n').filter(s => s.trim());
-  const el = document.getElementById('modelRerankResult');
-  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">重排序中...</span></div>';
-  const { ok, data } = await api('POST', '/api/test/rerank', { query, candidates, top_k: 5 });
-  if (!ok) { el.innerHTML = '<div class="tag tag-error">请求失败</div>'; return; }
-  if (!data.success) {
-    el.innerHTML = `<div class="result-box"><pre>错误: ${data.error}</pre></div>`;
-    return;
-  }
-  let html = `<div class="result-box"><div class="result-header"><span>${data.model}</span><span class="tag tag-success">${data.results.length} 条结果</span></div><pre>`;
-  data.results.forEach((r, i) => {
-    html += `${i + 1}. [${r.score.toFixed(4)}] ${r.text}\n`;
-  });
-  html += '</pre></div>';
-  el.innerHTML = html;
-}
-
-// ══════════════════════════════════════════
-// ── Tool ──
-// ══════════════════════════════════════════
-async function listTools() {
-  const { ok, data } = await api('GET', '/api/tool/list');
-  if (!ok) { document.getElementById('toolList').innerHTML = '<div class="tag tag-error">获取失败</div>'; return; }
-  const avail = data.filter(t => t.available).length;
-  let html = `<div class="text-muted" style="margin-bottom:8px;font-size:12px">共 ${data.length} 个工具，${avail} 个可用</div>`;
-  for (const t of data) {
-    const tag = t.available ? 'tag-success' : 'tag-pending';
-    const tagLabel = t.available ? '可用' : '需 ffmpeg';
-    const paramsHtml = Object.entries(t.parameters || {}).map(([k, v]) =>
-      `<span class="text-muted">${k}: ${v.type}${v.required ? ' *' : ''}</span>`
-    ).join(' ');
-    html += `<div class="knowledge-item">
-      <span><span class="name">${t.name}</span>
-      <span class="badge">${t.description || ''}</span></span>
-      <span><span class="tag ${tag}">${tagLabel}</span></span>
-    </div>
-    <div style="font-size:11px;color:var(--text2);padding:2px 12px 8px;border-bottom:1px solid var(--border)">${paramsHtml || '(无参数)'}</div>`;
-  }
-  document.getElementById('toolList').innerHTML = html;
-}
-async function execTool() {
-  const name = document.getElementById('toolExecName').value.trim();
-  let params = {};
-  try { params = JSON.parse(document.getElementById('toolExecParams').value || '{}'); } catch {}
-  const el = document.getElementById('toolExecResult');
-  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">执行中...</span></div>';
-  const res = await fetch(API_BASE() + `/api/tool/execute?name=${encodeURIComponent(name)}`, {
-    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({params})
-  });
-  const data = await res.json();
-  el.innerHTML = `<div class="result-box"><div class="result-header"><span>${name}</span><span class="tag ${res.ok?'tag-success':'tag-error'}">${data.status||'done'}</span></div><pre>${JSON.stringify(data, null, 2)}</pre></div>`;
-}
-async function execToolBatch() {
-  let calls = [];
-  try { calls = JSON.parse(document.getElementById('toolBatchCalls').value); } catch {}
-  const el = document.getElementById('toolBatchResult');
-  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">执行中...</span></div>';
-  const { ok, data } = await api('POST', '/api/tool/batch', calls);
-  el.innerHTML = `<div class="result-box"><div class="result-header"><span>Batch (${data ? data.length : 0})</span><span class="tag ${ok?'tag-success':'tag-error'}">done</span></div><pre>${JSON.stringify(data, null, 2)}</pre></div>`;
-}
-
-// ══════════════════════════════════════════
-// ── Skill ──
-// ══════════════════════════════════════════
-async function listSkills() {
-  const { ok, data } = await api('GET', '/api/skill/list');
-  if (!ok) { document.getElementById('skillList').innerHTML = '<div class="tag tag-error">获取失败</div>'; return; }
-  let html = `<div class="text-muted" style="font-size:12px;margin-bottom:8px">共 ${data.length} 个技能</div>`;
-  for (const s of data) {
-    const tag = s.available ? 'tag-success' : 'tag-pending';
-    const label = s.available ? '可用' : '依赖缺失';
-    html += `<div class="knowledge-item">
-      <span class="name">${s.name}</span>
-      <span><span class="tag ${tag}">${label}</span></span>
-    </div>
-    <div style="font-size:11px;color:var(--text2);padding:2px 12px 8px;border-bottom:1px solid var(--border)">
-      依赖工具: ${(s.required_tools||[]).join(', ') || '无'} | ${s.description}
-    </div>`;
-  }
-  document.getElementById('skillList').innerHTML = html;
-}
-async function execSkill() {
-  const name = document.getElementById('skillExecName').value.trim();
-  let params = {};
-  try { params = JSON.parse(document.getElementById('skillExecParams').value || '{}'); } catch {}
-  const el = document.getElementById('skillExecResult');
-  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">执行中...</span></div>';
-  const res = await fetch(API_BASE() + `/api/skill/execute?name=${encodeURIComponent(name)}`, {
-    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({params})
-  });
-  const data = await res.json();
-  el.innerHTML = `<div class="result-box"><div class="result-header"><span>${name}</span><span class="tag ${res.ok?'tag-success':'tag-error'}">${data.status||'done'}</span></div><pre>${JSON.stringify(data, null, 2)}</pre></div>`;
-}
-
-// ══════════════════════════════════════════
-// ── Animation ──
-// ══════════════════════════════════════════
-let animData = [];
-function switchAnimTab(type, el) {
-  document.querySelectorAll('#section-animation .tab').forEach(t => t.classList.remove('active'));
-  el.classList.add('active');
-  renderAnimList(type);
-}
-function renderAnimList(type) {
-  const filtered = type === 'all' ? animData : animData.filter(a => a.type === type);
-  const el = document.getElementById('animListResult');
-  if (!filtered.length) { el.innerHTML = '<div class="text-muted">无数据</div>'; return; }
-  let html = '';
-  for (const a of filtered) {
-    const props = Object.entries(a.properties_meta || {}).map(([k, v]) => `${k}:${v.type}`).join(', ');
-    html += `<div class="knowledge-item">
-      <span class="name">${a.animation_id}</span>
-      <span class="badge">${a.duration_sec}s | ${a.easing}</span>
-    </div>
-    <div style="font-size:11px;color:var(--text2);padding:2px 12px 8px;border-bottom:1px solid var(--border)">
-      ${a.description || a.name || ''}
-      ${a.target && a.target !== 'any' ? ' | target: ' + a.target : ''}
-      ${a.keyframes ? ' | keyframes: ' + a.keyframes.length : ''}
-      ${props ? ' | props: ' + props : ''}
-    </div>`;
-  }
-  el.innerHTML = html;
-}
-async function listAnimations() {
-  const { ok, data } = await api('GET', '/api/animation/list');
-  if (!ok) return;
-  animData = data || [];
-  document.getElementById('animOnscreenCount').textContent = data.filter(a => a.type === 'onscreen').length;
-  document.getElementById('animTextCount').textContent = data.filter(a => a.type === 'text').length;
-  document.getElementById('animTransCount').textContent = data.filter(a => a.type === 'transition').length;
-  renderAnimList('onscreen');
-}
-async function getAnimation() {
-  const id = document.getElementById('animGetId').value.trim();
-  const { ok, data } = await api('GET', `/api/animation/get/${id}`);
-  document.getElementById('animDetailResult').innerHTML = ok
-    ? `<div class="result-box"><pre>${JSON.stringify(data, null, 2)}</pre></div>`
-    : `<div class="tag tag-error">未找到: ${id}</div>`;
-}
-
-// ══════════════════════════════════════════
-// ── Material ──
-// ══════════════════════════════════════════
-async function searchMaterial() {
-  const q = document.getElementById('matSearchQuery').value.trim();
-  const topK = parseInt(document.getElementById('matSearchTopK').value) || 5;
-  const el = document.getElementById('materialResult');
-  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">搜索中...</span></div>';
-  const res = await fetch(API_BASE() + `/api/material/search?query=${encodeURIComponent(q)}&top_k=${topK}`, { method: 'POST' });
-  const data = await res.json();
-  if (!Array.isArray(data)) { el.innerHTML = '<div class="tag tag-error">搜索失败</div>'; return; }
-  let html = `<div class="text-muted" style="font-size:12px;margin-bottom:8px">找到 ${data.length} 个结果</div>`;
-  for (const r of data) {
-    const a = r.asset || {};
-    html += `<div class="knowledge-item">
-      <span class="name">${a.title || a.id}</span>
-      <span><span class="tag ${r.score > 0.5 ? 'tag-success' : 'tag-pending'}">${r.score.toFixed(2)}</span></span>
-    </div>
-    <div style="font-size:11px;color:var(--text2);padding:2px 12px 8px;border-bottom:1px solid var(--border)">
-      ${a.type} | ${a.url ? 'URL: '+a.url.slice(0,50) : ''}${a.local_path ? ' PATH: '+a.local_path : ''}
-      ${a.tags ? ' | tags: '+a.tags.join(', ') : ''}
-      ${a.duration_sec ? ' | '+a.duration_sec+'s' : ''}
-    </div>`;
-  }
-  el.innerHTML = html;
-}
-async function listMaterialSources() {
-  const { ok, data } = await api('GET', '/api/material/sources');
-  document.getElementById('materialResult').innerHTML = ok
-    ? `<div class="result-box"><pre>${JSON.stringify(data, null, 2)}</pre></div>`
-    : '<div class="tag tag-error">获取失败</div>';
-}
-
-// ══════════════════════════════════════════
-// ── Plugin ──
-// ══════════════════════════════════════════
-async function listPlugins() {
-  const { ok, data } = await api('GET', '/api/plugin/list');
-  if (!ok) { document.getElementById('pluginList').innerHTML = '<div class="tag tag-error">获取失败</div>'; return; }
-  let html = `<div class="text-muted" style="font-size:12px;margin-bottom:8px">已加载 ${data.length} 个插件</div>`;
-  for (const p of data) {
-    const m = p.manifest || {};
-    html += `<div class="knowledge-item">
-      <span class="name">${m.id}</span>
-      <span class="badge">v${m.version} | ${m.kind}</span>
-    </div>
-    <div style="font-size:11px;color:var(--text2);padding:2px 12px 8px;border-bottom:1px solid var(--border)">${m.description} | ${m.author}</div>`;
-  }
-  document.getElementById('pluginList').innerHTML = html;
-}
-async function discoverPlugins() {
-  const { ok, data } = await api('GET', '/api/plugin/discover');
-  document.getElementById('pluginList').innerHTML = ok
-    ? `<div class="result-box"><pre>${JSON.stringify(data, null, 2)}</pre></div>`
-    : '<div class="tag tag-error">发现失败</div>';
-}
-async function loadAllPlugins() {
-  const el = document.getElementById('pluginList');
-  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">加载中...</span></div>';
-  const { ok, data } = await api('POST', '/api/plugin/load-all');
-  el.innerHTML = ok
-    ? `<div class="result-box"><pre>${JSON.stringify(data, null, 2)}</pre></div>`
-    : '<div class="tag tag-error">加载失败</div>';
-}
-async function loadPlugin() {
-  const id = document.getElementById('pluginLoadId').value.trim();
-  const el = document.getElementById('pluginActionResult');
-  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">加载中...</span></div>';
-  const { ok, data } = await api('POST', `/api/plugin/load/${id}`);
-  el.innerHTML = ok
-    ? `<div class="result-box"><pre>${JSON.stringify(data, null, 2)}</pre></div>`
-    : `<div class="tag tag-error">${data?.detail || '加载失败'}</div>`;
-}
-async function unloadPlugin() {
-  const id = document.getElementById('pluginLoadId').value.trim();
-  const { ok, data } = await api('POST', `/api/plugin/unload/${id}`);
-  document.getElementById('pluginActionResult').innerHTML = ok
-    ? `<div class="result-box"><pre>${JSON.stringify(data, null, 2)}</pre></div>`
-    : '<div class="tag tag-error">卸载失败</div>';
-}
-async function getCapabilities() {
-  const { ok, data } = await api('GET', '/api/plugin/capabilities');
-  if (!ok) return;
-  const summary = {
-    tools: data.tools?.length + ' (' + data.tools?.filter(t => t.available).length + ' available)',
-    skills: data.skills?.length,
-    material_sources: data.material_sources?.length,
-    animations: 'TODO',
-    plugins: data.plugins?.length,
-  };
-  // Also get animation count
-  const animRes = await api('GET', '/api/animation/list');
-  if (animRes.ok) summary.animations = animRes.data.length;
-  document.getElementById('pluginList').innerHTML = `<div class="result-box"><pre>${JSON.stringify(summary, null, 2)}</pre></div>`;
-}
-
-// ══════════════════════════════════════════
-// ── 剪辑工作台 ──
-// ══════════════════════════════════════════
-let _lastTimelineData = null;
-let _tlZoom = 1.0;
-
-function switchEditTab(name, el) {
-  document.querySelectorAll('#section-edit-workspace .tab').forEach(t => t.classList.remove('active'));
-  el.classList.add('active');
-  document.querySelectorAll('#section-edit-workspace .card-body[id^="edit-"]').forEach(d => d.style.display = 'none');
-  document.getElementById('edit-' + name).style.display = 'block';
-  if (name === 'timeline' && _lastTimelineData) renderTimeline(_lastTimelineData);
-}
-
-function importEditScript(event) {
-  const file = event.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    document.getElementById('editScript').value = e.target.result;
-  };
-  reader.readAsText(file);
-}
-
-async function runEditPipeline() {
-  const el = document.getElementById('editPipelineResult');
-  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">管线运行中...</span></div>';
-  const body = {
-    persona_id: document.getElementById('editPersonaId').value,
-    category_plugin_id: document.getElementById('editPluginId').value,
-    topic: document.getElementById('editScript').value.trim(),
-    dry_run: false,
-  };
-  const { ok, data } = await api('POST', '/api/pipeline/run', body);
-  if (!ok || !data) {
-    el.innerHTML = '<div class="tag tag-error">管线运行失败</div>';
-    return;
-  }
-
-  // Store timeline data
-  const tl = data.shared_data?.final_timeline;
-  _lastTimelineData = tl || null;
-
-  // Build summary
-  let html = '<div class="result-box">';
-  html += `<div class="result-header"><span>${data.status} | ${data.pipeline_id}</span></div><pre>`;
-
-  if (data.steps) {
-    for (const s of data.steps) {
-      const tag = s.status === 'completed' ? 'tag-success' : s.status === 'failed' ? 'tag-error' : 'tag-pending';
-      html += `[${s.agent_name}] ${s.status} ${s.duration_ms ? s.duration_ms+'ms' : ''}\n`;
-    }
-  }
-  if (tl) {
-    html += `\n时间线: ${tl.width}x${tl.height} @ ${tl.fps}fps | ${tl.duration_sec}s | ${tl.tracks?.length || 0} 轨道\n`;
-    for (const t of (tl.tracks || [])) {
-      html += `  [${t.kind}] ${t.name}: ${t.clips?.length || 0} clips\n`;
-    }
-  }
-  html += '</pre></div>';
-
-  // Switch to timeline tab and render
-  html += '<div class="btn-group mt-2"><button class="btn btn-primary btn-sm" onclick="switchEditTab(\'timeline\',document.querySelector(\'#section-edit-workspace .tab:nth-child(2)\'));renderTimeline(_lastTimelineData)">查看时间线</button></div>';
-
-  el.innerHTML = html;
-}
-
-// ── Timeline Renderer ──
-function renderTimeline(tl) {
-  if (!tl) return;
-  const container = document.getElementById('timelineInner');
-  const info = document.getElementById('tlInfo');
-  info.textContent = `${tl.width}x${tl.height} @ ${tl.fps}fps | ${tl.duration_sec}s | ${tl.tracks?.length || 0} 轨道`;
-
-  const zoom = _tlZoom;
-  const pxPerSec = 80 * zoom;
-  const totalWidth = Math.max((tl.duration_sec || 60) * pxPerSec, 400);
-  const trackHeight = 52;
-  const rulerHeight = 28;
-  const labelWidth = 70;
-
-  let html = `<div style="display:flex;flex-direction:column;min-width:${labelWidth + totalWidth}px;position:relative">`;
-
-  // Ruler
-  html += `<div class="tl-ruler" style="padding-left:${labelWidth}px;height:${rulerHeight}px">`;
-  const tickInterval = Math.max(1, Math.floor(10 / zoom));
-  for (let t = 0; t <= (tl.duration_sec || 60); t += tickInterval) {
-    const x = t * pxPerSec;
-    html += `<div class="tick-line" style="left:${x}px"></div>`;
-    html += `<div class="tick" style="left:${x}px">${t}s</div>`;
-  }
-  html += '</div>';
-
-  // Tracks
-  const kindColors = { video:'video', audio:'audio', text:'text', caption:'caption', image:'image', shape:'shape', waveform:'waveform' };
-
-  for (const track of (tl.tracks || [])) {
-    html += `<div class="tl-track" style="height:${trackHeight}px">`;
-    html += `<div class="tl-track-label">${track.name || track.kind}</div>`;
-    html += `<div class="tl-track-inner" style="min-width:${totalWidth}px">`;
-
-    for (const clip of (track.clips || [])) {
-      const x = (clip.start_sec || 0) * pxPerSec;
-      const w = Math.max((clip.duration_sec || 1) * pxPerSec, 8);
-      const cls = kindColors[clip.kind] || 'video';
-      const label = clip.text || clip.asset_id || clip.id || clip.kind;
-      const title = `${label} | ${clip.start_sec}s-${(clip.start_sec + clip.duration_sec).toFixed(1)}s | ${clip.kind}`;
-
-      html += `<div class="tl-clip ${cls}" style="left:${x}px;width:${w}px" title="${title}">`;
-      if (w > 30) html += `<span class="tl-label">${label}</span>`;
-      html += '</div>';
-    }
-
-    html += '</div></div>';
-  }
-
-  html += '</div>';
-  container.innerHTML = html;
-}
-
-function zoomTimeline(delta) {
-  _tlZoom = Math.max(0.3, Math.min(5, _tlZoom + delta));
-  if (_lastTimelineData) renderTimeline(_lastTimelineData);
-}
-
-// ── STT ──
-async function runStt() {
-  const path = document.getElementById('sttAudioPath').value.trim();
-  if (!path) { document.getElementById('sttResult').innerHTML = '<div class="tag tag-error">请输入音频路径</div>'; return; }
-  const el = document.getElementById('sttResult');
-  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">转录中...</span></div>';
-  const res = await fetch(API_BASE() + '/api/stt/transcribe?audio_path=' + encodeURIComponent(path), { method: 'POST' });
-  const data = await res.json();
-  if (!data.success) { el.innerHTML = `<div class="tag tag-error">${data.error || '转录失败'}</div>`; return; }
-  let html = `<div class="result-box"><div class="result-header"><span>${data.model} | ${data.language} | ${data.duration_sec}s</span><span class="tag tag-success">${data.segments.length} 段</span></div><pre>`;
-  for (const seg of data.segments || []) {
-    html += `[${seg.start.toFixed(1)}s-${seg.end.toFixed(1)}s] ${seg.text}\n`;
-  }
-  html += '</pre></div>';
-  el.innerHTML = html;
-}
-
-async function runSttAlign() {
-  const path = document.getElementById('sttAudioPath').value.trim();
-  const text = document.getElementById('sttTranscript').value.trim();
-  if (!path || !text) { document.getElementById('sttResult').innerHTML = '<div class="tag tag-error">请填写音频路径和文案</div>'; return; }
-  const el = document.getElementById('sttResult');
-  el.innerHTML = '<div class="flex"><span class="spin"></span><span class="text-muted">对齐中...</span></div>';
-  const res = await fetch(API_BASE() + '/api/stt/align', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({audio_path: path, transcript_text: text})
-  });
-  const data = await res.json();
-  if (!data.success) { el.innerHTML = `<div class="tag tag-error">${data.error || '对齐失败'}</div>`; return; }
-  let html = `<div class="result-box"><div class="result-header"><span>${data.segments.length} 段对齐</span><span class="tag tag-success">${data.duration_sec}s</span></div><pre>`;
-  for (const seg of data.segments || []) {
-    html += `[${seg.start.toFixed(1)}s-${seg.end.toFixed(1)}s] ${seg.text}\n`;
-  }
-  html += '</pre></div>';
-  el.innerHTML = html;
-}
-
-// ── Init ──
-checkHealth();
-</script>
+<script src="js/app.js"></script>
+<script src="js/persona.js"></script>
+<script src="js/forge.js"></script>
+<script src="js/chat-forge.js"></script>
+<script src="js/pipeline.js"></script>
+<script src="js/model-test.js"></script>
+<script src="js/tool.js"></script>
+<script src="js/skill.js"></script>
+<script src="js/animation.js"></script>
+<script src="js/material.js"></script>
+<script src="js/plugin.js"></script>
+<script src="js/edit-workspace.js"></script>
+<script>checkHealth();</script>
 </body>
 </html>
