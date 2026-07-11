@@ -21,7 +21,8 @@ async def upload_asset(file: UploadFile) -> dict:
 
     # 保存到临时位置
     ext = Path(file.filename).suffix or ".bin"
-    tmp = Path(_manager._library_dir) / f"upload_{len(_manager._assets)}{ext}"
+    import tempfile
+    tmp = Path(tempfile.mktemp(suffix=ext))
     content = await file.read()
     tmp.write_bytes(content)
 
