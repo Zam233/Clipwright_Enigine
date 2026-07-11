@@ -149,9 +149,11 @@ class VectorStore:
                 try:
                     self._client.delete_collection(col.name)
                 except Exception:
-                    pass
-        except Exception:
-            pass
+                    from clipwright.config import logger
+                    logger.debug("删除 collection %s 失败", col.name)
+        except Exception as e:
+            from clipwright.config import logger
+            logger.debug("清空所有 collection 失败: %s", e)
 
     @staticmethod
     def destroy(persona_knowledge_dir: Path) -> None:

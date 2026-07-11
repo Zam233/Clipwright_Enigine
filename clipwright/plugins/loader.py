@@ -8,6 +8,8 @@ from __future__ import annotations
 import importlib
 import sys
 from pathlib import Path
+
+from clipwright.config import logger
 from typing import Any, Optional
 
 import yaml
@@ -110,8 +112,8 @@ class PluginLoader:
             try:
                 self.load(pid)
                 loaded.append(pid)
-            except PluginLoadError:
-                pass  # 单个加载失败不影响其他
+            except PluginLoadError as e:
+                logger.warning("插件加载失败 (skipped): %s", e)
         return loaded
 
     # ── 管理 ──
@@ -130,8 +132,8 @@ class PluginLoader:
         if plugin:
             try:
                 plugin.shutdown()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("插件 %s shutdown 异常: %s", plugin_id, e)
 
     def get(self, plugin_id: str) -> Optional[BasePlugin]:
         return self._plugins.get(plugin_id)

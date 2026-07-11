@@ -20,6 +20,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
+from clipwright.config import logger
+
 
 class STTResult:
     """语音转文字的结果。"""
@@ -89,16 +91,16 @@ class STTService:
             result = self._transcribe_whisper(audio_file, language, model_size, word_timestamps)
             if result.success:
                 return result
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Whisper 不可用 (%s), 尝试 faster-whisper...", e)
 
         try:
             # 尝试 faster-whisper
             result = self._transcribe_faster_whisper(audio_file, language, model_size, word_timestamps)
             if result.success:
                 return result
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("faster-whisper 不可用 (%s), 使用保底模式...", e)
 
         # 保底：FFmpeg 提取音频信息 + 占位结果
         duration = self._get_duration(audio_file)
@@ -176,7 +178,8 @@ class STTService:
                     capture_output=True, text=True, timeout=300,
                 )
                 return tmp.name
-            except Exception:
+            except Exception as e:
+                logger.debug("FFmpeg 音频提取失败: %s", e)
                 return str(path)
         return str(path)
 
@@ -255,7 +258,8 @@ class STTService:
             )
             data = json.loads(result.stdout)
             return float(data.get("format", {}).get("duration", 0))
-        except Exception:
+        except Exception as e:
+            logger.debug("获取音频时长失败: %s", e)
             return 0
 
     @staticmethod

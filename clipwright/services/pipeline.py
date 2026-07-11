@@ -35,6 +35,7 @@ from clipwright.schema.pipeline import (
     PipelineStatus,
     PipelineStep,
 )
+from clipwright.config import logger
 from clipwright.schema.timeline import Timeline
 
 
@@ -93,8 +94,8 @@ class PipelineOrchestrator:
                     )
                     if result.context:
                         rag_context = result.context
-                except Exception:
-                    pass  # RAG 检索失败不影响主流程
+                except Exception as e:
+                    logger.warning("RAG retrieval failed (non-fatal): %s", e)
 
             # 5. 构建 Agent 上下文
             agent_context = AgentContext(

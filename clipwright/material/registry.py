@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from clipwright.config import logger
 from clipwright.material.base import MaterialSource
 from clipwright.schema.material import MaterialAsset, MaterialSearchResult
 
@@ -67,8 +68,8 @@ class MaterialRegistry:
                         score=score,
                         source_name=src.source_name,
                     ))
-            except Exception:
-                pass  # 单源搜索失败不影响其他源
+            except Exception as e:
+                logger.warning("素材源 %s 搜索失败 (skipped): %s", src.source_id, e)
 
         # 按分数降序排列
         all_results.sort(key=lambda r: r.score, reverse=True)

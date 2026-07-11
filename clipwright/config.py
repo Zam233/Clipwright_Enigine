@@ -1,7 +1,8 @@
-"""全局配置管理。"""
+"""全局配置管理 + 日志配置。"""
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -67,3 +68,26 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# ── 日志配置 ─────────────────────────────────────────
+
+def setup_logging() -> logging.Logger:
+    """配置并返回全局 logger。"""
+    logger = logging.getLogger("clipwright")
+    logger.setLevel(logging.DEBUG if settings.debug else logging.INFO)
+
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.DEBUG)
+        fmt = logging.Formatter(
+            "[%(asctime)s] %(levelname)-7s %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        )
+        handler.setFormatter(fmt)
+        logger.addHandler(handler)
+
+    return logger
+
+
+logger = setup_logging()

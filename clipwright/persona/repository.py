@@ -192,9 +192,9 @@ class PersonaRepository:
             from clipwright.rag.retriever import Retriever
             retriever = Retriever()
             retriever.index_persona_knowledge(persona_id, manifest.knowledge)
-        except Exception:
-            # 向量化失败不影响主流程，静默处理
-            pass
+        except Exception as e:
+            from clipwright.config import logger
+            logger.warning("知识库向量化失败 (non-fatal): %s", e)
 
     def delete(self, persona_id: str) -> None:
         import shutil
