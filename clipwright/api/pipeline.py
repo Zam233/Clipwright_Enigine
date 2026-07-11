@@ -17,8 +17,9 @@ router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 _orchestrator = PipelineOrchestrator()
 
 
-# 后台运行的任务缓存
+# 后台运行的任务 + 结果缓存
 _running_pipelines: dict[str, asyncio.Task] = {}
+_pipeline_results: dict[str, dict] = {}
 
 
 @router.post("/run", response_model=PipelineState)
@@ -43,11 +44,11 @@ async def run_pipeline_async(request: PipelineRequest) -> dict:
         try:
             state = await _orchestrator.run(request, pipeline_id=pipeline_id)
             state.shared_data["execution_trace"] = get_all_events(pipeline_id)
+            result_dict = state.model_dump(mode="json")
+            _pipeline_results[pipeline_id] = result_dict
             add_event(pipeline_id, "system", "done", f"管线完成: {state.status}")
         except Exception as e:
             add_event(pipeline_id, "system", "error", f"管线失败: {e}")
-            import traceback
-            add_event(pipeline_id, "system", "error_detail", traceback.format_exc())
 
     task = asyncio.create_task(_run_background())
     _running_pipelines[pipeline_id] = task
@@ -96,6 +97,19 @@ async def stream_pipeline_trace(pipeline_id: str):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/result/{pipeline_id}")
+async def get_pipeline_result(pipeline_id: str) -> dict:
+    """获取异步管线执行结果（轮询此端点直到返回 200）。"""
+    result = _pipeline_results.get(pipeline_id)
+    if result is None:
+        from clipwright.services.trace import get_all_events as ga
+        events = ga(pipeline_id)
+        if events:
+            return {"status": "running", "pipeline_id": pipeline_id, "events": events[-5:]}
+        raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found")
+    return result
 
 
 @router.get("/status/{pipeline_id}", response_model=PipelineState)

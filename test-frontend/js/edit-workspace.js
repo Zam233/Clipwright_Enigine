@@ -143,27 +143,42 @@ async function runAiEdit() {
       setTimeout(() => { if (!pipelineDone) { evtSource.close(); resolve(); } }, 120000);
     });
 
-    if (!_lastTimelineData) {
+    // 从管线结果中获取最终时间线（优先于 SSE 快照）
+    ewLog('获取最终管线结果…', 'step');
+    let finalTimeline = _lastTimelineData;
+    try {
+      const r2 = await fetch(API_BASE() + '/api/pipeline/result/' + pipeline_id);
+      if (r2.ok) {
+        const full = await r2.json();
+        const ft = full?.shared_data?.final_timeline;
+        if (ft && ft.tracks && ft.tracks.length > 0) {
+          finalTimeline = ft;
+          _lastTimelineData = ft;
+          renderTimelineWithCaptions(ft, sttSegments);
+          ewLog(`最终时间线: ${ft.tracks.length} 轨道, ${ft.duration_sec?.toFixed(1)}s`, 'success');
+        }
+      }
+    } catch(ex) {}
+
+    if (!finalTimeline || !finalTimeline.tracks || !finalTimeline.tracks.length) {
       ewLog('管线未生成时间线', 'error');
-      // 拉取所有 trace 事件来显示错误详情
       try {
-        const r2 = await fetch(API_BASE() + '/api/pipeline/trace/' + pipeline_id + '?' + Date.now());
-        const all = await r2.json();
+        const r3 = await fetch(API_BASE() + '/api/pipeline/trace/' + pipeline_id);
+        const all = await r3.json();
         if (Array.isArray(all)) for (const ev of all) {
           if (ev.type === 'error' && ev.summary) ewLog(`  ${ev.summary}`, 'error');
         }
       } catch(ex) {}
-
       btn.disabled = false; btn.textContent = '生成视频';
       return;
     }
     ewLog('管线完成', 'success');
 
-    // Step 4: 渲染
+    // Step 4: 渲染（使用 finalTimeline 而不是 _lastTimelineData）
     setEwProgress(70, '渲染 MP4…');
     ewLog('[4/4] 渲染视频…', 'step');
     try {
-      const r = await fetch(API_BASE() + '/api/render/start', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({timeline:_lastTimelineData, output_path:'renders/ai_edit_output.mp4'}) });
+      const r = await fetch(API_BASE() + '/api/render/start', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({timeline: finalTimeline, output_path:'renders/ai_edit_output.mp4'}) });
       const rd = await r.json();
       if (rd?.success) {
         ewLog(`渲染完成: ${(rd.duration_sec||0).toFixed(1)}s`, 'success');
