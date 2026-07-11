@@ -97,20 +97,40 @@ class RenderService:
             trimmed_files: list[str] = []
             for seg in video_segments:
                 src = seg.get("source_path", "")
-                if not src or not Path(src).exists():
-                    continue
-                out = str(self._work_dir / f"trim_{len(trimmed_files)}.mp4")
-                result = await ToolRegistry.execute(
-                    "video_trim",
-                    input_path=src,
-                    start_sec=seg["source_offset"],
-                    duration_sec=seg["duration_sec"] * seg["speed"],
-                    output_path=out,
-                )
-                if result.status == "success" and result.output_path:
-                    trimmed_files.append(result.output_path)
+                dur = seg["duration_sec"] * seg["speed"]
+                scene_label = src.split("/")[-1][:30] if src else f"segment_{len(trimmed_files)}"
+
+                if src and Path(src).exists():
+                    # 本地文件 → 裁剪
+                    out = str(self._work_dir / f"trim_{len(trimmed_files)}.mp4")
+                    result = await ToolRegistry.execute(
+                        "video_trim",
+                        input_path=src,
+                        start_sec=seg["source_offset"],
+                        duration_sec=dur,
+                        output_path=out,
+                    )
+                    if result.status == "success" and result.output_path:
+                        trimmed_files.append(result.output_path)
+                        logger.info("裁剪完成: %s", scene_label)
+                        continue
+                    else:
+                        logger.warning("裁剪失败 %s: %s", scene_label, result.error)
                 else:
-                    logger.warning("裁剪失败 %s: %s", src, result.error)
+                    logger.info("素材不存在或为URL: %s — 生成文字占位", scene_label)
+
+                # 回退：生成文字占位视频
+                text = scene_label.replace("_", " ").replace("-", " ")
+                text_result = await ToolRegistry.execute(
+                    "generate_text_video",
+                    text=text,
+                    duration_sec=dur,
+                )
+                if text_result.status == "success" and text_result.output_path:
+                    trimmed_files.append(text_result.output_path)
+                    logger.info("文字占位视频生成: %s", text)
+                else:
+                    logger.warning("文字占位视频生成失败: %s", text_result.error)
 
             # 3. 拼接视频
             final_video = str(self._work_dir / "concat.mp4")
