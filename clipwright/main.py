@@ -21,6 +21,7 @@ from clipwright.api import rag as rag_api
 from clipwright.api import render as render_api
 from clipwright.api import tool as tool_api
 from clipwright.api import plugin as plugin_api
+from clipwright.api import animation as animation_api
 from clipwright.api import material as material_api
 from clipwright.api import skill as skill_api
 from clipwright.category import (
@@ -31,6 +32,7 @@ from clipwright.category import (
     VlogDailyPlugin,
 )
 from clipwright.plugins import PluginLoader
+from clipwright.animation import register_builtin_animations, AnimationRegistry as AnimRegistry
 from clipwright.material import MaterialRegistry
 from clipwright.skill import register_builtin_skills, SkillRegistry
 from clipwright.tool import ToolRegistry, register_builtin_tools
@@ -57,7 +59,10 @@ async def lifespan(app: FastAPI):
     # 2. 注册内置原子能力工具
     register_builtin_tools()
 
-    # 3. 注册内置技能（可组合的高级能力，编排多个 Tool）
+    # 3. 注册内置动画定义（22 个：12 onscreen + 10 transition）
+    register_builtin_animations()
+
+    # 4. 注册内置技能（可组合的高级能力，编排多个 Tool）
     register_builtin_skills()
 
     # 4. 初始化第三方插件系统
@@ -70,7 +75,9 @@ async def lifespan(app: FastAPI):
     tool_count = len(ToolRegistry.list())
     skill_count = len(SkillRegistry.list())
     material_count = len(MaterialRegistry.list())
-    print(f"[Clipwright] Capabilities: {tool_count} tools, {skill_count} skills, {material_count} material sources")
+    anim_count = len(AnimRegistry.list())
+    print(f"[Clipwright] Capabilities: {tool_count} tools, {skill_count} skills, "
+          f"{material_count} material sources, {anim_count} animations")
 
     # 5. 注入 PluginLoader 到 API 模块
     plugin_api.set_loader(_plugin_loader)
@@ -80,6 +87,7 @@ async def lifespan(app: FastAPI):
     # 清理
     if _plugin_loader:
         _plugin_loader.clear()
+    AnimRegistry.clear()
     CategoryRegistry.clear()
     MaterialRegistry.clear()
     ToolRegistry.clear()
@@ -128,6 +136,7 @@ app.include_router(tool_api.router)
 app.include_router(plugin_api.router)
 app.include_router(skill_api.router)
 app.include_router(material_api.router)
+app.include_router(animation_api.router)
 
 
 @app.get("/health")

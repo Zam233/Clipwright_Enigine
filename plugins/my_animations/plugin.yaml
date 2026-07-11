@@ -1,0 +1,7 @@
+id: "my_animations"
+name: "My Animation Pack"
+version: "1.0.0"
+kind: "capability"
+description: "示例动画插件 — 注册自定义的屏幕动画和转场动画"
+author: "Clipwright Team"
+entry_point: "my_animations.main"

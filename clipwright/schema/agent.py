@@ -102,6 +102,10 @@ class AnimationOutput(BaseModel):
     agent_name: str = "animation_agent"
     decision: AgentDecision = AgentDecision.PASS
     timeline: Optional[Timeline] = Field(default=None)
+    animation_plan: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="动画编排计划：含 onscreen 和 transition 动画的实例化序列",
+    )
     error: Optional[str] = Field(default=None)
 
 
