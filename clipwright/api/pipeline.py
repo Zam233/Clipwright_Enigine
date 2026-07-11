@@ -11,22 +11,44 @@ from fastapi.responses import StreamingResponse
 
 from clipwright.schema.pipeline import PipelineRequest, PipelineState
 from clipwright.services.pipeline import PipelineOrchestrator
-from clipwright.services.trace import get_events
+from clipwright.services.trace import get_events, get_all_events, create_trace, add_event
 
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 _orchestrator = PipelineOrchestrator()
+
+
+# 后台运行的任务缓存
+_running_pipelines: dict[str, asyncio.Task] = {}
 
 
 @router.post("/run", response_model=PipelineState)
 async def run_pipeline(request: PipelineRequest) -> PipelineState:
     """全流程执行，返回完整时间线。"""
     state = await _orchestrator.run(request)
-    # 将追踪事件附加到返回数据
-    from clipwright.services.trace import get_all_events
     state.shared_data["execution_trace"] = get_all_events(state.pipeline_id)
     if state.status == "failed":
         raise HTTPException(status_code=400, detail=state.error)
     return state
+
+
+@router.post("/run-async")
+async def run_pipeline_async(request: PipelineRequest) -> dict:
+    """异步启动管线，立即返回 pipeline_id，进度通过 SSE trace 推送。"""
+    import uuid
+    pipeline_id = f"pl_{uuid.uuid4().hex[:12]}"
+    create_trace(pipeline_id)
+    add_event(pipeline_id, "system", "info", f"管线异步启动: {request.persona_id} / {request.category_plugin_id}")
+
+    async def _run_background():
+        try:
+            state = await _orchestrator.run(request, pipeline_id=pipeline_id)
+            state.shared_data["execution_trace"] = get_all_events(pipeline_id)
+        except Exception as e:
+            add_event(pipeline_id, "system", "error", f"管线失败: {e}")
+
+    task = asyncio.create_task(_run_background())
+    _running_pipelines[pipeline_id] = task
+    return {"pipeline_id": pipeline_id, "status": "started"}
 
 
 @router.get("/trace/{pipeline_id}")

@@ -57,13 +57,15 @@ class PipelineOrchestrator:
             "quality": QualityAgent(),
         }
 
-    async def run(self, request: PipelineRequest) -> PipelineState:
+    async def run(self, request: PipelineRequest, pipeline_id: str = "") -> PipelineState:
         """执行完整的 Pipeline。"""
+        pid = pipeline_id or f"pl_{uuid.uuid4().hex[:12]}"
         state = PipelineState(
-            pipeline_id=f"pl_{uuid.uuid4().hex[:12]}",
+            pipeline_id=pid,
             request=request,
         )
-        create_trace(state.pipeline_id)
+        if not pipeline_id:
+            create_trace(pid)
 
         try:
             # 1. 加载 Persona
@@ -259,6 +261,15 @@ class PipelineOrchestrator:
 
             # 保存到共享数据
             state.shared_data[f"{agent_name}_output"] = step.result
+
+            # 关键Agent完成后，将当前时间线快照写入trace供前端实时展示
+            if agent_name in ("edit", "animation", "material"):
+                timeline_snapshot = step.result.get("timeline") or state.shared_data.get("final_timeline")
+                if timeline_snapshot:
+                    from clipwright.services.trace import add_event as te
+                    te(pid, agent_name, "timeline_snapshot",
+                       f"时间线快照: {agent_name}",
+                       timeline_snapshot)
 
         except Exception as e:
             step.status = PipelineStatus.FAILED
