@@ -43,8 +43,11 @@ async def run_pipeline_async(request: PipelineRequest) -> dict:
         try:
             state = await _orchestrator.run(request, pipeline_id=pipeline_id)
             state.shared_data["execution_trace"] = get_all_events(pipeline_id)
+            add_event(pipeline_id, "system", "done", f"管线完成: {state.status}")
         except Exception as e:
             add_event(pipeline_id, "system", "error", f"管线失败: {e}")
+            import traceback
+            add_event(pipeline_id, "system", "error_detail", traceback.format_exc())
 
     task = asyncio.create_task(_run_background())
     _running_pipelines[pipeline_id] = task
@@ -52,6 +55,16 @@ async def run_pipeline_async(request: PipelineRequest) -> dict:
 
 
 @router.get("/trace/{pipeline_id}")
+async def get_pipeline_trace(pipeline_id: str):
+    """获取管线追踪事件（返回 JSON 数组或 SSE 流）。"""
+    # 简单检测：如果 Accept 不是 text/event-stream，返回 JSON
+    from fastapi import Request
+    from starlette.requests import Request as StarletteRequest
+    # 直接返回 JSON
+    return get_all_events(pipeline_id)
+
+
+@router.get("/trace/stream/{pipeline_id}")
 async def stream_pipeline_trace(pipeline_id: str):
     """SSE 流：实时推送管线执行追踪事件（LLM、Tool、Skill、Plugin 调用）。"""
     async def event_stream():
@@ -61,20 +74,18 @@ async def stream_pipeline_trace(pipeline_id: str):
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             last_time = max(last_time, event["time"])
 
-        # 然后持续轮询新事件（最多 60 秒）
-        for _ in range(120):  # 120 * 0.5s = 60s 超时
+        # 然后持续轮询新事件（最多 120 秒）
+        for _ in range(240):  # 240 * 0.5s = 120s 超时
             await asyncio.sleep(0.5)
             events = get_events(pipeline_id, since=last_time)
             if events:
                 for event in events:
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                     last_time = max(last_time, event["time"])
-            # 当 pipeline 完成时（最后一条是 agent_end 或 error），再多发 2 秒后停止
-            last_events = get_events(pipeline_id)
-            if last_events:
-                last_type = last_events[-1]["type"]
-                if last_type in ("agent_end", "error") and _ > 4:
-                    break
+                    # 收到 done/error 事件后延 2 秒关闭
+                    if event["type"] in ("done", "error"):
+                        await asyncio.sleep(2)
+                        return
 
     return StreamingResponse(
         event_stream(),

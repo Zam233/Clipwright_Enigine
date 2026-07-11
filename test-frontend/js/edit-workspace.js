@@ -99,7 +99,7 @@ async function runAiEdit() {
     // Step 3: SSE 流实时追踪
     setEwProgress(30, '管线运行中…');
     ewLog('[3/4] 实时追踪中…', 'step');
-    const evtSource = new EventSource(API_BASE() + '/api/pipeline/trace/' + pipeline_id);
+    const evtSource = new EventSource(API_BASE() + '/api/pipeline/trace/stream/' + pipeline_id);
     let pipelineDone = false;
 
     await new Promise((resolve, reject) => {
@@ -127,29 +127,33 @@ async function runAiEdit() {
           else if (event.type === 'tool' || event.type === 'llm') {
             ewLog(`  ${icon} ${event.summary}`, 'muted');
           }
-          // 管线完成
-          else if (event.type === 'agent_end' && event.agent === 'quality') {
-            pipelineDone = true;
-            setTimeout(() => { evtSource.close(); resolve(); }, 1000);
+          // 管线完成（done 事件或 quality agent 完成）
+          if (event.type === 'done' || (event.type === 'agent_end' && event.agent === 'quality')) {
+            pipelineDone = true; evtSource.close(); resolve();
           }
-          // 系统错误（管线彻底失败）
+          // 系统错误
           else if (event.type === 'error' && event.agent === 'system') {
             evtSource.close(); reject(new Error(event.summary));
           }
         } catch(ex) {}
       };
       evtSource.onerror = () => {
-        // SSE 连接关闭（管线完成或超时）
-        pipelineDone = true;
-        evtSource.close();
-        setTimeout(resolve, 500);
+        pipelineDone = true; evtSource.close(); setTimeout(resolve, 300);
       };
-      // 30 秒超时
-      setTimeout(() => { if (!pipelineDone) { evtSource.close(); resolve(); } }, 30000);
+      setTimeout(() => { if (!pipelineDone) { evtSource.close(); resolve(); } }, 120000);
     });
 
     if (!_lastTimelineData) {
       ewLog('管线未生成时间线', 'error');
+      // 拉取所有 trace 事件来显示错误详情
+      try {
+        const r2 = await fetch(API_BASE() + '/api/pipeline/trace/' + pipeline_id + '?' + Date.now());
+        const all = await r2.json();
+        if (Array.isArray(all)) for (const ev of all) {
+          if (ev.type === 'error' && ev.summary) ewLog(`  ${ev.summary}`, 'error');
+        }
+      } catch(ex) {}
+
       btn.disabled = false; btn.textContent = '生成视频';
       return;
     }
