@@ -10,13 +10,24 @@ LLM 工具调用支持：
 
 from __future__ import annotations
 
-import inspect
 import shutil
-import typing
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
 from clipwright.schema.tool import ToolExecResult, ToolStatus
+from clipwright.utils.type_utils import infer_parameters_from_signature
+
+
+def _json_type(py_type: str) -> str:
+    """Python 类型名 → JSON Schema 类型名。"""
+    mapping = {
+        "str": "string", "string": "string",
+        "int": "number", "float": "number", "number": "number",
+        "bool": "boolean", "boolean": "boolean",
+        "list": "array", "tuple": "array", "array": "array",
+        "dict": "object", "object": "object",
+    }
+    return mapping.get(py_type.lower(), "string") if isinstance(py_type, str) else "string"
 
 
 class BaseTool(ABC):
@@ -88,75 +99,12 @@ class BaseTool(ABC):
         }
 
     def _infer_parameters(self) -> dict[str, dict[str, Any]]:
-        """从 execute() 方法签名推断参数信息。
-
-        使用 typing.get_type_hints() 解析被 `from __future__ import annotations`
-        延迟求值的类型注解字符串。
-        """
-        sig = inspect.signature(self.execute)
-        # 解析被 PEP 563/649 转为字符串的类型注解
-        try:
-            hints = typing.get_type_hints(self.execute)
-        except Exception:
-            hints = {}
-
-        params: dict[str, dict[str, Any]] = {}
-        for pname, param in sig.parameters.items():
-            if pname in ("self", "kwargs", "args"):
-                continue
-            ann = hints.get(pname, param.annotation)
-            pinfo: dict[str, Any] = {
-                "type": self._type_name(ann),
-                "required": param.default is inspect.Parameter.empty,
-                "description": "",
-            }
-            if param.default is not inspect.Parameter.empty and param.default is not None:
-                pinfo["default"] = param.default
-            params[pname] = pinfo
-        return params
-
-    @staticmethod
-    def _type_name(annotation: Any) -> str:
-        """将类型注解映射为 JSON schema 类型名。
-
-        支持：str, int, float, bool, list, dict, Optional[X],
-        list[X], dict[K,V] 等常见形式。
-        """
-        if annotation is inspect.Parameter.empty or annotation is None:
-            return "string"
-
-        # 处理 Optional / Union 类型
-        origin = typing.get_origin(annotation)
-        args = typing.get_args(annotation)
-
-        if origin is not None:
-            if origin is typing.Union:
-                # Union[Type, None] → Optional[X]
-                non_none = [a for a in args if a is not type(None)]
-                if non_none:
-                    return BaseTool._type_name(non_none[0])
-                return "string"
-            if origin in (list, tuple, set, typing.List, typing.Tuple, typing.Set):
-                return "array"
-            if origin in (dict, typing.Dict):
-                return "object"
-
-        # 简单类型
-        if isinstance(annotation, type):
-            if issubclass(annotation, str):
-                return "string"
-            if issubclass(annotation, int) or issubclass(annotation, float):
-                return "number"
-            if issubclass(annotation, bool):
-                return "boolean"
-            if issubclass(annotation, (list, tuple, set)):
-                return "array"
-            if issubclass(annotation, dict):
-                return "object"
-
-        # fallback 基于类型名
-        name = getattr(annotation, "__name__", str(annotation))
-        return _json_type(name)
+        """从 execute() 方法签名推断参数信息（带缓存）。"""
+        if not hasattr(self, "_param_cache"):
+            self._param_cache: dict[str, dict[str, Any]] | None = None
+        if self._param_cache is None:
+            self._param_cache = infer_parameters_from_signature(self.execute)
+        return self._param_cache
 
 
 class AgentToolkit:
@@ -205,15 +153,3 @@ class AgentToolkit:
         from clipwright.tool.registry import ToolRegistry
 
         return await ToolRegistry.execute(tool_name, **tool_input)
-
-
-def _json_type(py_type: str) -> str:
-    """Python 类型名 → JSON Schema 类型名。"""
-    mapping = {
-        "str": "string", "string": "string",
-        "int": "number", "float": "number", "number": "number",
-        "bool": "boolean", "boolean": "boolean",
-        "list": "array", "tuple": "array", "array": "array",
-        "dict": "object", "object": "object",
-    }
-    return mapping.get(py_type.lower(), "string") if isinstance(py_type, str) else "string"
