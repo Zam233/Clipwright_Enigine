@@ -188,9 +188,12 @@ async function runAiEdit() {
         const src = document.getElementById('ewPreviewSrc');
         const panel = document.getElementById('ewPreviewPanel');
         if (video && src) {
-          src.src = API_BASE() + '/' + renderResult.output_path.replace(/\\/g,'/');
+          // 从本地路径提取文件名，通过 /renders/ 静态路由访问
+          const relPath = renderResult.output_path.replace(/\\/g, '/').split('/').pop();
+          src.src = API_BASE() + '/renders/' + relPath;
           video.load();
           panel.style.display = 'block';
+          ewLog('预览已加载，可在右侧播放', 'success');
         }
       } else {
         ewLog(`渲染: ${renderResult?.error || '无输出'}`, 'muted');

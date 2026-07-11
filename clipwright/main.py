@@ -132,6 +132,11 @@ test_fe_path = Path(__file__).resolve().parent.parent / "test-frontend"
 if test_fe_path.exists():
     app.mount("/test", StaticFiles(directory=str(test_fe_path), html=True), name="test-frontend")
 
+# 挂载渲染输出目录（用于预览）
+renders_path = Path("renders")
+renders_path.mkdir(parents=True, exist_ok=True)
+app.mount("/renders", StaticFiles(directory=str(renders_path)), name="renders")
+
 # 注册路由
 app.include_router(pipeline_api.router)
 app.include_router(persona_api.router)
