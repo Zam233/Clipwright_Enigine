@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     render_output_dir: Path = Path("renders")
 
     # --- 视觉识别模型 ---
-    vision_provider: Literal["transformers", "none"] = "transformers"
+    vision_provider: Literal["llm", "transformers", "none"] = "transformers"
     vision_model: str = "google/vit-base-patch16-224"
     vision_top_k: int = 5
     vision_device: str = "cpu"

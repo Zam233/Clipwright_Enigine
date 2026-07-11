@@ -1,13 +1,15 @@
 """视觉识别服务 — 识图 + 自动打标签 + 生成素材。
 
-策略：
-1. 优先用 transformers 图像分类模型（加载一次后缓存）
-2. 其次用 CLIP（如已安装）
-3. 保底用文件名 + FFmpeg/ffprobe 元数据分析
+策略（按优先级）：
+1. LLM 多模态（CLIPWRIGHT_VISION_PROVIDER=llm）— 调用已配置的 LLM
+   支持 Qwen-VL / Claude 3 Vision / GPT-4V 等
+2. transformers 图像分类（默认）— ViT / ResNet 等 HF 模型
+3. 保底：文件名 + FFmpeg/ffprobe 元数据分析
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import subprocess
 from pathlib import Path
@@ -33,6 +35,16 @@ _FALLBACK_TAGS: dict[str, list[str]] = {
     "cold": ["冷色", "冷调"],
 }
 
+# LLM 识别提示词
+_LLM_PROMPT = """请分析这张图片的内容，用中文输出 JSON：
+{
+  "description": "一句话描述图片内容（20字以内）",
+  "tags": ["标签1", "标签2", "标签3"],
+  "labels": ["英文标签1", "english_label_2"],
+  "scene_type": "indoor/outdoor/abstract/portrait/landscape"
+}
+只输出 JSON，不要其他内容。"""
+
 
 class VisionService:
     """图像识别 + 自动标注。"""
@@ -53,21 +65,98 @@ class VisionService:
         if not path.exists():
             return {"tags": [], "description": "", "labels": [], "model": "", "error": "文件不存在"}
 
-        # 1. 根据配置选择识别方式
         from clipwright.config import settings
+
+        # 1. LLM 多模态（Qwen-VL / Claude Vision / GPT-4V）
+        if settings.vision_provider == "llm":
+            try:
+                return await self._classify_llm(image_path)
+            except Exception as e:
+                logger.debug("LLM 图片识别失败: %s", e)
+
+        # 2. transformers 图像分类
         if settings.vision_provider == "transformers":
             try:
                 return await self._classify_transformers(image_path)
             except Exception as e:
                 logger.debug("transformers 分类失败: %s", e)
 
-        # 2. 保底：文件名 + 文件信息
+        # 3. 保底：文件名 + 文件信息
         return self._fallback_analyze(image_path)
+
+    # ── LLM 多模态 ──
+
+    async def _classify_llm(self, image_path: str) -> dict[str, Any]:
+        """使用 LLM 多模态模型（Qwen-VL/Claude/GPT-4V）识别图片。"""
+        from clipwright.config import settings
+        from clipwright.services.llm import LLMService
+
+        llm = LLMService()
+        # 获取图片 base64
+        with open(image_path, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        # 检测 MIME 类型
+        ext = Path(image_path).suffix.lower()
+        mime_map = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                    ".png": "image/png", ".gif": "image/gif",
+                    ".webp": "image/webp"}
+        media_type = mime_map.get(ext, "image/jpeg")
+
+        # 按 LLM provider 构建消息
+        if settings.llm_provider == "anthropic":
+            messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": _LLM_PROMPT},
+                    {"type": "image", "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": img_b64,
+                    }},
+                ],
+            }]
+        else:
+            # OpenAI / Ollama / 兼容格式
+            data_uri = f"data:{media_type};base64,{img_b64}"
+            messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": _LLM_PROMPT},
+                    {"type": "image_url", "image_url": {"url": data_uri}},
+                ],
+            }]
+
+        resp = await llm.generate(messages=messages)
+        if not resp.success:
+            raise RuntimeError(f"LLM 识别失败: {resp.content}")
+
+        # 解析 JSON 响应
+        content = resp.content.strip()
+        # 去除可能的 markdown 代码块包装
+        if content.startswith("```"):
+            lines = content.splitlines()
+            content = "\n".join(l for l in lines if not l.startswith("```"))
+
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            # 退化为纯文本
+            parsed = {"description": content, "tags": [], "labels": []}
+
+        model_name = settings.llm_model
+        return {
+            "tags": parsed.get("tags", []),
+            "description": parsed.get("description", content[:100]),
+            "labels": parsed.get("labels", []),
+            "scene_type": parsed.get("scene_type", ""),
+            "model": f"llm/{model_name}",
+        }
 
     # ── Transformers 分类 ──
 
     async def _classify_transformers(self, image_path: str) -> dict[str, Any]:
-        """使用 transformers 图像分类模型（模型名等参数从 env 读取）。"""
+        """使用 transformers 图像分类模型。"""
         if self._classifier is None:
             from clipwright.config import settings
             from transformers import pipeline
@@ -85,7 +174,6 @@ class VisionService:
         labels = [r["label"] for r in result]
         scores = [round(r["score"], 4) for r in result]
 
-        # 将英文标签映射为中文标签
         tags = self._map_labels_to_tags(labels)
         top_label = labels[0] if labels else ""
 
@@ -104,12 +192,8 @@ class VisionService:
         path = Path(image_path)
         stem = path.stem.lower()
         tags: list[str] = []
-
-        # 文件名关键词提取
         name_tags = self._extract_name_tags(stem)
         tags.extend(name_tags)
-
-        # 文件信息
         info = self._get_image_info(image_path)
         w, h = info.get("width", 0), info.get("height", 0)
         if w > h:
@@ -118,7 +202,6 @@ class VisionService:
             tags.append("竖版")
         else:
             tags.append("方形")
-
         return {
             "tags": list(set(tags)),
             "description": f"文件: {path.name} ({w}x{h})",
@@ -144,10 +227,8 @@ class VisionService:
     @staticmethod
     def _extract_name_tags(stem: str) -> list[str]:
         """从文件名提取关键词标签。"""
-        # 按常见分隔符拆分
         import re
         parts = re.split(r'[_\-\s]+', stem)
-        # 过滤掉纯数字和过短的词
         return [p for p in parts if len(p) > 2 and not p.isdigit()]
 
     @staticmethod

@@ -89,22 +89,40 @@ CLIPWRIGHT_RAG_RERANK_TOP_K=20
 ### 视觉识别模型配置（识图 + 自动标签）
 
 ```bash
-# ── 视觉识别模型 ──
-CLIPWRIGHT_VISION_PROVIDER=transformers     # transformers / none（none 表示只用文件名分析）
-CLIPWRIGHT_VISION_MODEL=google/vit-base-patch16-224  # HuggingFace 模型名
-CLIPWRIGHT_VISION_TOP_K=5                   # 返回 Top-K 分类结果
-CLIPWRIGHT_VISION_DEVICE=cpu                # cpu / cuda（有 GPU 时用 cuda 加速）
-
-# 设置为 none 可跳过模型加载，仅用文件名 + 文件元数据生成标签：
-# CLIPWRIGHT_VISION_PROVIDER=none
+# ── 方式一：LLM 多模态（推荐，精度最高） ──
+CLIPWRIGHT_VISION_PROVIDER=llm
+# 复用已配置的 LLM（支持 Qwen-VL / Claude 3 Vision / GPT-4V 等）
+# CLIPWRIGHT_LLM_PROVIDER=openai
+# CLIPWRIGHT_LLM_MODEL=qwen-vl-plus
+# CLIPWRIGHT_LLM_API_KEY=sk-...
 ```
 
-支持任意 HuggingFace 上的图像分类模型，如：
-- `google/vit-base-patch16-224`（默认，~330MB，速度快）
-- `microsoft/resnet-50`（~100MB，更轻量）
-- `microsoft/beit-base-patch16-224`（精度更高）
+```bash
+# ── 方式二：transformers 专用模型 ──
+CLIPWRIGHT_VISION_PROVIDER=transformers
+CLIPWRIGHT_VISION_MODEL=google/vit-base-patch16-224  # HuggingFace 模型名
+CLIPWRIGHT_VISION_TOP_K=5                   # 返回 Top-K 分类结果
+CLIPWRIGHT_VISION_DEVICE=cpu                # cpu / cuda
+```
 
-设置为 `CLIPWRIGHT_VISION_PROVIDER=none` 时，完全依赖文件名关键词提取和 `ffprobe` 元数据分析，零模型依赖。
+```bash
+# ── 方式三：无模型（仅文件名分析） ──
+CLIPWRIGHT_VISION_PROVIDER=none
+```
+
+### Provider 说明
+
+| Provider | 依赖 | 精度 | 适合场景 |
+|----------|------|------|---------|
+| `llm` | 配置好的 LLM API Key + 支持多模态的模型 | ★★★★★ | Qwen-VL / Claude 3 Sonnet / GPT-4o 等 |
+| `transformers` | `pip install transformers torch` | ★★★☆ | 本地运行，无需 API Key |
+| `none` | 无 | ★★ | 快速测试，仅文件名 |
+
+**LLM 多模态推荐模型**：
+- Qwen-VL-Plus / Qwen-VL-Max（阿里，中文最佳）
+- Claude 3.5 Sonnet / Claude 3 Opus（Anthropic）
+- GPT-4o / GPT-4o-mini（OpenAI）
+- Llama 3.2 Vision（Ollama 本地）
 
 ### 语音转文字（STT）配置
 
