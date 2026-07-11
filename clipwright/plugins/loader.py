@@ -1,6 +1,14 @@
 """第三方插件发现与加载器。
 
-支持从目录发现插件、解析 plugin.yaml 清单、动态导入 Python 模块。
+支持从目录发现插件、解析 plugin.yaml 清单、解析 config.yaml 配置、
+动态导入 Python 模块。
+
+插件目录规范：
+    plugins/{plugin_id}/
+    ├── plugin.yaml       # 必需：插件清单（id/name/version/kind/entry_point）
+    ├── config.yaml       # 可选：插件配置（独立于代码，运行时通过 plugin.config 访问）
+    ├── main.py           # 推荐：入口模块（export 插件类到 __all__）
+    └── __init__.py       # 可选：备选入口
 """
 
 from __future__ import annotations
@@ -8,12 +16,11 @@ from __future__ import annotations
 import importlib
 import sys
 from pathlib import Path
-
-from clipwright.config import logger
 from typing import Any, Optional
 
 import yaml
 
+from clipwright.config import logger
 from clipwright.plugins.base import BasePlugin
 from clipwright.schema.plugin import PluginManifest, PluginMetadata, PluginKind
 
@@ -52,8 +59,11 @@ class PluginLoader:
 
         流程：
         1. 读取 plugin.yaml 清单（如存在）
-        2. 通过 importlib 动态导入入口模块
-        3. 实例化入口模块中的插件类
+        2. 读取 config.yaml 配置（如存在）
+        3. 通过 importlib 动态导入入口模块
+        4. 实例化入口模块中的插件类，注入 manifest + config
+        5. 调用 plugin.initialize()
+        6. 自动标记插件注册的 Tool / Skill / MaterialSource
         """
         if plugin_id in self._plugins:
             return self._plugins[plugin_id]
@@ -65,7 +75,10 @@ class PluginLoader:
         # 1. 解析清单
         manifest = self._parse_manifest(plugin_id, plugin_path)
 
-        # 2. 动态导入
+        # 2. 解析配置
+        config = self._parse_config(plugin_path)
+
+        # 3. 动态导入
         try:
             module = self._import_plugin(plugin_id, plugin_path, manifest)
         except Exception as e:
@@ -73,14 +86,16 @@ class PluginLoader:
                 f"Failed to import plugin '{plugin_id}': {e}"
             ) from e
 
-        # 3. 寻找插件类并实例化
+        # 4. 实例化插件类，注入 manifest + config
         plugin = self._instantiate_plugin(module, manifest)
         if plugin is None:
             raise PluginLoadError(
                 f"Plugin '{plugin_id}' has no exported class in its entry module"
             )
+        plugin.manifest = manifest
+        plugin.config = config
 
-        # 4. 初始化前快照注册表状态
+        # 5. 注册表快照（用于后续追踪插件注册的内容）
         from clipwright.skill.registry import SkillRegistry
         from clipwright.tool.registry import ToolRegistry
 
@@ -146,6 +161,18 @@ class PluginLoader:
             self.unload(pid)
 
     # ── 内部 ──
+
+    def _parse_config(self, plugin_path: Path) -> dict[str, Any]:
+        """解析 config.yaml（可选），不存在则返回空字典。"""
+        config_path = plugin_path / "config.yaml"
+        if config_path.exists():
+            try:
+                with open(config_path, encoding="utf-8") as f:
+                    data: dict[str, Any] = yaml.safe_load(f) or {}
+                return data
+            except Exception as e:
+                logger.warning("插件 %s config.yaml 解析失败: %s", plugin_path.name, e)
+        return {}
 
     def _parse_manifest(self, plugin_id: str, plugin_path: Path) -> PluginManifest:
         """解析 plugin.yaml，如不存在则创建默认清单。"""

@@ -186,9 +186,10 @@ class PexelsMaterialPlugin(CapabilityPlugin):
         self._source: Optional[PexelsMaterialSource] = None
 
     def initialize(self) -> None:
-        api_key = os.environ.get("PEXELS_API_KEY", "")
+        # 优先使用 config.yaml 中的 api_key，其次环境变量
+        api_key = (self.config or {}).get("api_key", "") or os.environ.get("PEXELS_API_KEY", "")
         if not api_key:
-            print("[PexelsPlugin] 跳过: 未设置 PEXELS_API_KEY 环境变量")
+            print(f"[PexelsPlugin] 跳过: 请在 {self.manifest.id}/config.yaml 中配置 api_key")
             return
         self._source = PexelsMaterialSource(api_key=api_key)
         MaterialRegistry.register(self._source, plugin_id=self.manifest.id)

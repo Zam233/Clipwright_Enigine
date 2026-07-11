@@ -17,6 +17,7 @@ class BasePlugin(ABC):
     """
 
     manifest: PluginManifest
+    config: dict[str, Any] = {}  # 从 config.yaml 加载，插件内通过 self.config 访问
 
     @abstractmethod
     def initialize(self) -> None:
@@ -31,30 +32,22 @@ class BasePlugin(ABC):
         """
         ...
 
-    @abstractmethod
     def shutdown(self) -> None:
         """插件卸载时调用。
 
         在此方法中清理已注册的 Tool 和 Skill。
+        子类可覆盖，基类提供空实现。
         """
-        ...
 
     def plugin_info(self) -> dict[str, Any]:
-        """返回插件提供的 capabilities 概览。
-
-        子类可覆盖此方法返回更详细的信息。
-        """
+        """返回插件提供的 capabilities 概览。"""
         from clipwright.skill.registry import SkillRegistry
         from clipwright.tool.registry import ToolRegistry
 
-        tools = [t.name for t in ToolRegistry._tools.values()
-                 if getattr(t, "_plugin_id", None) == self.manifest.id]
-        skills = [s.name for s in SkillRegistry._skills.values()
-                  if getattr(s, "_plugin_id", None) == self.manifest.id]
         return {
             "id": self.manifest.id,
-            "tools": tools,
-            "skills": skills,
+            "tools": ToolRegistry.list_by_plugin(self.manifest.id),
+            "skills": SkillRegistry.list_by_plugin(self.manifest.id),
         }
 
 

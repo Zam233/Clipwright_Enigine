@@ -111,19 +111,34 @@ resp = await self._llm.with_tools(
 
 ```
 plugins/{plugin_id}/
-├── plugin.yaml       # 清单：id, name, version, kind, entry_point
-├── main.py           # 入口模块（需 export 插件类到 __all__）
-└── ...                # 其他依赖
+├── plugin.yaml       # 必需：清单（id, name, version, kind, entry_point）
+├── config.yaml       # 可选：插件独立配置（通过 self.config 字典访问）
+├── main.py           # 推荐：入口模块（需 export 插件类到 __all__）
+└── ...               # 其他依赖
+```
+
+**配置规范**（`config.yaml`）：
+
+```yaml
+# plugins/my_plugin/config.yaml
+# 配置独立于代码，运行时通过 self.config 访问
+api_key: ""            # API 密钥
+base_url: ""           # 服务地址
+timeout: 30            # 超时秒数
 ```
 
 **约束**：
 - 入口模块的 `__all__` 中 export 的类会被自动实例化
 - 插件类需继承 `clipwright.plugins` 中的基类（`BasePlugin` / `MaterialSourcePlugin` / `AgentStrategyPlugin` / `CapabilityPlugin`）
-- `initialize()` 在加载时调用 — **在此注册插件提供的 Tool 和 Skill**：
+- `config.yaml` 自动加载到 `self.config`（dict），可在 initialize() 中读取
+- `initialize()` 在加载时调用 — **在此注册插件提供的 Tool、Skill 和 MaterialSource**：
   ```python
   def initialize(self) -> None:
+      # self.config 自动从 config.yaml 加载
+      key = (self.config or {}).get("api_key", "")
       ToolRegistry.register(MyTool())
       SkillRegistry.register(MySkill())
+      MaterialRegistry.register(MySource(api_key=key))
   ```
 - `shutdown()` 在卸载时调用 — 在此清理注册的内容
 
