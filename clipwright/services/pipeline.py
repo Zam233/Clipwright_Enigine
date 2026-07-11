@@ -37,6 +37,11 @@ from clipwright.schema.pipeline import (
 )
 from clipwright.config import logger
 from clipwright.schema.timeline import Timeline
+from clipwright.services.trace import (
+    add_event,
+    create_trace,
+    format_tool_call,
+)
 
 
 class PipelineOrchestrator:
@@ -58,6 +63,7 @@ class PipelineOrchestrator:
             pipeline_id=f"pl_{uuid.uuid4().hex[:12]}",
             request=request,
         )
+        create_trace(state.pipeline_id)
 
         try:
             # 1. 加载 Persona
@@ -66,15 +72,23 @@ class PipelineOrchestrator:
             warnings = validate_manifest(manifest)
             if warnings:
                 state.shared_data["persona_warnings"] = warnings
+            add_event(state.pipeline_id, "system", "info",
+                      f"加载 Persona: {request.persona_id}")
 
             # 2. 获取类型插件
             plugin = CategoryRegistry.get(request.category_plugin_id)
             if plugin is None:
                 raise ValueError(f"Unknown category plugin: {request.category_plugin_id}")
+            add_event(state.pipeline_id, "system", "plugin",
+                      f"使用类型插件: {plugin.display_name} ({plugin.plugin_id})",
+                      {"plugin_id": plugin.plugin_id, "display_name": plugin.display_name})
 
             # 3. 翻译 Persona 参数
             persona_config = manifest.parameter.model_dump(mode="json") if manifest.parameter else {}
             translated = plugin.translate_persona(manifest.parameter) if manifest.parameter else {}
+            add_event(state.pipeline_id, "system", "plugin",
+                      f"Persona 参数翻译: {list(translated.keys())}",
+                      {"translated_params": translated})
 
             # 4. 加载 Prompt 和 RAG
             persona_prompt = manifest.prompt
@@ -211,6 +225,9 @@ class PipelineOrchestrator:
 
         agent = self._agents[agent_name]
         state.current_agent = agent_name
+        pid = state.pipeline_id
+
+        add_event(pid, agent_name, "agent_start", f"Agent 开始: {agent_name}")
 
         try:
             # 根据 agent_name 构造对应输入并执行
@@ -218,12 +235,33 @@ class PipelineOrchestrator:
             step.result = result.model_dump(mode="json")
             step.status = PipelineStatus.COMPLETED if result.decision != AgentDecision.FAIL else PipelineStatus.FAILED
 
+            # 提取工具调用记录（从 Agent 的 tool_calls）
+            tool_calls = step.result.get("tool_calls", []) or []
+            for tc in (tool_calls if isinstance(tool_calls, list) else []):
+                if isinstance(tc, dict):
+                    t_name = tc.get("tool", "")
+                    t_input = tc.get("input", {})
+                    add_event(pid, agent_name, "tool",
+                              f"调用工具: {format_tool_call(t_name, t_input)}",
+                              tc)
+
+            # 检查是否有 LLM 调用记录（从 Agent 的 llm_calls）
+            llm_calls = step.result.get("llm_calls", []) or []
+            for lc in (llm_calls if isinstance(llm_calls, list) else []):
+                add_event(pid, agent_name, "llm",
+                          f"LLM 调用: {(lc.get('model','') or lc.get('summary',''))[:100]}",
+                          lc)
+
+            add_event(pid, agent_name, "agent_end",
+                      f"Agent 完成: {agent_name} → {step.status} ({step.duration_ms or '?'}ms)")
+
             # 保存到共享数据
             state.shared_data[f"{agent_name}_output"] = step.result
 
         except Exception as e:
             step.status = PipelineStatus.FAILED
             step.error = str(e)
+            add_event(pid, agent_name, "error", f"Agent 失败: {agent_name} → {str(e)[:200]}")
 
         step.completed_at = datetime.now()
         if step.started_at:

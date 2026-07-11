@@ -97,9 +97,33 @@ async function runAiEdit() {
       return;
     }
     _lastTimelineData = tl;
-    addEwLog(`管线完成: ${(pipelineResult.steps||[]).filter(s=>s.status==='completed').length}/6 Agent 通过`);
 
-    // Show step status
+    // Show execution trace (LLM calls, Tool calls, Plugin usage)
+    const trace = pipelineResult?.shared_data?.execution_trace || [];
+    addEwLog(`管线完成: ${(pipelineResult.steps||[]).filter(s=>s.status==='completed').length}/6 Agent 通过`);
+    addEwLog(`执行事件: ${trace.length} 条`);
+
+    // Render trace events in a collapsible panel
+    const resultEl = document.getElementById('ewResult');
+    let traceHtml = '<div style="margin-top:4px;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">';
+    traceHtml += '<div style="font-size:11px;font-weight:600;padding:6px 10px;background:var(--surface);cursor:pointer" onclick="toggleTrace()">执行追踪 ▾</div>';
+    traceHtml += '<div id="tracePanel" style="max-height:300px;overflow-y:auto;font-size:10px;line-height:1.5">';
+
+    const typeIcons = {llm:'🤖', tool:'🔧', skill:'🧠', plugin:'🔌', agent_start:'▶️', agent_end:'✅', error:'❌', info:'ℹ️'};
+    for (const ev of trace) {
+      const icon = typeIcons[ev.type] || '•';
+      const time = ev.time ? new Date(ev.time*1000).toLocaleTimeString() : '';
+      traceHtml += `<div style="padding:4px 10px;border-bottom:1px solid var(--border);display:flex;gap:6px">
+        <span>${icon}</span>
+        <span style="color:var(--text2);width:50px;flex-shrink:0">${ev.agent||''}</span>
+        <span style="flex:1">${ev.summary||''}</span>
+        <span style="color:var(--text2);font-size:9px">${time}</span>
+      </div>`;
+    }
+    traceHtml += '</div></div>';
+    resultEl.innerHTML = _ewLogs.map(m => `<div class="text-muted" style="font-size:11px;padding:1px 0">${m}</div>`).join('') + traceHtml;
+
+    // Step status
     for (const s of (pipelineResult.steps||[])) {
       addEwLog(`  ${s.agent_name}: ${s.status}${s.duration_ms?' ('+s.duration_ms+'ms)':''}`);
     }
@@ -233,6 +257,10 @@ function renderTimeline(tl) {
   renderTimelineWithCaptions(tl, []);
 }
 
+function toggleTrace() {
+  const panel = document.getElementById('tracePanel');
+  if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+}
 function zoomTimeline(delta) {
   _tlZoom = Math.max(0.3, Math.min(5, _tlZoom + delta));
   if (_lastTimelineData) renderTimelineWithCaptions(_lastTimelineData, []);
