@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -90,6 +90,15 @@ class Clip(BaseModel):
     # 波形（仅 waveform 类型）
     bar_count: Optional[int] = Field(default=None, ge=8, le=256)
     bar_width: Optional[float] = Field(default=None, ge=0.1, le=1)
+
+    # 关键帧动画（per-clip 属性随时间变化）
+    keyframes: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="关键帧序列 [{time: 0.0, properties: {opacity: 0, scale_x: 0.5, ...}}, ...]",
+    )
+
+    # 扩展元数据
+    metadata: dict[str, Any] = Field(default_factory=dict, description="扩展元数据")
 
     model_config = {"use_enum_values": True}
 

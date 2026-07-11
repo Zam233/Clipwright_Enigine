@@ -20,6 +20,7 @@ from clipwright.schema.agent import (
     EditOutput,
 )
 from clipwright.schema.timeline import Clip, ClipKind, ImageFit, Timeline, Track
+from clipwright.config import logger
 from clipwright.tool.registry import ToolRegistry
 
 
@@ -67,11 +68,30 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
 
                 # 素材时长不能超过场景时长
                 asset_dur = scene_duration
+                processed_path = ""
                 if best_asset:
                     ad = best_asset.get("duration_sec")
                     if ad and ad < asset_dur:
                         asset_dur = ad
                     scene_asset_map[str(i)] = best_asset
+
+                    # 尝试裁剪素材到实际时长
+                    source_path = best_asset.get("local_path") or best_asset.get("url", "")
+                    if source_path:
+                        trim_result = await ToolRegistry.execute(
+                            "video_trim",
+                            input_path=source_path,
+                            start_sec=0,
+                            duration_sec=asset_dur,
+                        )
+                        if trim_result.status == "success" and trim_result.output_path:
+                            processed_path = trim_result.output_path
+                            notes.append(f"场景{i}: 裁剪 {source_path} → {trim_result.output_path}")
+                        else:
+                            logger.debug("场景 %s 裁剪失败: %s", i, trim_result.error)
+                            processed_path = source_path
+                    else:
+                        processed_path = best_asset.get("asset_id", "")
 
                 # 视频 clip
                 vid_clip = self._make_clip(
@@ -81,6 +101,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                     duration_sec=asset_dur,
                     asset=best_asset,
                     clip_label=f"v_{i}",
+                    processed_path=processed_path,
                 )
                 vid_track.clips.append(vid_clip)
 
@@ -173,18 +194,20 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         duration_sec: float,
         asset: dict[str, Any] | None,
         clip_label: str,
+        processed_path: str = "",
     ) -> Clip:
-        """构造一个 Clip，填充素材信息。"""
+        """构造一个 Clip，填充素材信息和已处理的媒体路径。"""
+        asset_id = asset.get("asset_id", "") if asset else ""
         clip = Clip(
             id=_uid("c"),
             kind=kind,
-            asset_id=asset.get("asset_id", "") if asset else "",
+            asset_id=processed_path or asset_id,
             track_id=track_id,
             start_sec=start_sec,
             duration_sec=duration_sec,
         )
         if asset:
-            clip.asset_id = asset.get("asset_id", clip.asset_id)
+            clip.asset_id = processed_path or asset.get("asset_id", clip.asset_id)
 
         if kind in (ClipKind.VIDEO, ClipKind.IMAGE):
             clip.image_fit = ImageFit.COVER

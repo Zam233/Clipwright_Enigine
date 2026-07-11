@@ -121,6 +121,7 @@ class AudioOutput(BaseModel):
     agent_name: str = "audio_agent"
     decision: AgentDecision = AgentDecision.PASS
     timeline: Optional[Timeline] = Field(default=None)
+    audio_notes: list[str] = Field(default_factory=list, description="音频处理记录")
     error: Optional[str] = Field(default=None)
 
 
