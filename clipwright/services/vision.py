@@ -87,11 +87,22 @@ class VisionService:
     # ── LLM 多模态 ──
 
     async def _classify_llm(self, image_path: str) -> dict[str, Any]:
-        """使用 LLM 多模态模型（Qwen-VL/Claude/GPT-4V）识别图片。"""
+        """使用 LLM 多模态模型（Qwen-VL/Claude/GPT-4V）识别图片。
+
+        优先使用 vision_llm_* 独立配置；未设置时复用主 LLM 参数。
+        """
         from clipwright.config import settings
         from clipwright.services.llm import LLMService
 
-        llm = LLMService()
+        # 使用独立的视觉 LLM 配置（或退回到主 LLM）
+        client = LLMService.build_client(
+            provider=settings.vision_llm_provider or settings.llm_provider,
+            api_key=settings.vision_llm_api_key or settings.llm_api_key,
+            model=settings.vision_llm_model or settings.llm_model,
+            base_url=settings.vision_llm_base_url or settings.llm_base_url or "",
+        )
+        model_name = settings.vision_llm_model or settings.llm_model
+
         # 获取图片 base64
         with open(image_path, "rb") as f:
             img_b64 = base64.b64encode(f.read()).decode("utf-8")
@@ -104,7 +115,9 @@ class VisionService:
         media_type = mime_map.get(ext, "image/jpeg")
 
         # 按 LLM provider 构建消息
-        if settings.llm_provider == "anthropic":
+        vision_prov = settings.vision_llm_provider or settings.llm_provider
+        if vision_prov == "anthropic":
+            import asyncio
             messages = [{
                 "role": "user",
                 "content": [
@@ -127,7 +140,11 @@ class VisionService:
                 ],
             }]
 
-        resp = await llm.generate(messages=messages)
+        import asyncio
+        from functools import partial
+        resp = await asyncio.to_thread(
+            partial(client.generate, messages=messages),
+        )
         if not resp.success:
             raise RuntimeError(f"LLM 识别失败: {resp.content}")
 
@@ -144,7 +161,6 @@ class VisionService:
             # 退化为纯文本
             parsed = {"description": content, "tags": [], "labels": []}
 
-        model_name = settings.llm_model
         return {
             "tags": parsed.get("tags", []),
             "description": parsed.get("description", content[:100]),

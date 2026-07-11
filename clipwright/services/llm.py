@@ -197,59 +197,61 @@ class LLMService:
             messages: list[dict[str, Any]] = [
                 {"role": "user", "content": user_prompt},
             ]
-            generate_kwargs = {**kwargs, "system": system_prompt, "tools": tools}
+            base_kwargs = {**kwargs, "system": system_prompt}
+            first_round_kwargs = {**base_kwargs, "tools": tools}
         else:
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ]
-            generate_kwargs = {**kwargs, "tools": tools}
+            base_kwargs = {**kwargs}
+            first_round_kwargs = {**base_kwargs, "tools": tools}
+
+        tool_executor_is_coro = asyncio.iscoroutinefunction(tool_executor)
+        is_first_round = True
 
         for _round in range(max_tool_rounds):
-            resp = await self.generate(messages=messages, **generate_kwargs)
+            kw = {**base_kwargs, "tools": tools} if is_first_round else base_kwargs
+            is_first_round = False
+
+            resp = await self.generate(messages=messages, **kw)
 
             if not resp.success:
                 return resp
 
             if not resp.tool_calls:
-                # LLM 不再调用工具 → 返回最终结果
                 return resp
 
-            # 处理 tool_calls: 添加 assistant 消息
-            assistant_content: list[dict[str, Any]] = []
-            if resp.content:
-                assistant_content.append({
-                    "type": "text",
-                    "text": resp.content,
-                })
-
-            for tc in resp.tool_calls:
-                tool_block: dict[str, Any] = {
-                    "type": "tool_use" if self.provider == "anthropic" else "function",
-                    "id": tc.id,
-                    "name": tc.name,
-                    "input": json.loads(tc.arguments) if isinstance(tc.arguments, str) else tc.arguments,
-                }
-                if self.provider == "anthropic":
-                    tool_block["input"] = json.loads(tc.arguments) if isinstance(tc.arguments, str) else tc.arguments
-                else:
-                    tool_block["arguments"] = tc.arguments
-                assistant_content.append(tool_block)
-
-            # 对于 Anthropic，tool_use 块嵌入在 content 数组里
             if self.provider == "anthropic":
-                messages.append({"role": "assistant", "content": assistant_content})
+                # Anthropic: tool_use 块嵌入在 content 数组
+                content_blocks: list[dict[str, Any]] = []
+                if resp.content:
+                    content_blocks.append({"type": "text", "text": resp.content})
+
+                for tc in resp.tool_calls:
+                    parsed = json.loads(tc.arguments) if isinstance(tc.arguments, str) else tc.arguments
+                    content_blocks.append({
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": parsed,
+                    })
+
+                messages.append({"role": "assistant", "content": content_blocks})
+
+                for tc in resp.tool_calls:
+                    tool_input = json.loads(tc.arguments) if isinstance(tc.arguments, str) else tc.arguments
+                    result = await self._do_tool_call(tool_executor, tool_executor_is_coro, tc.name, tool_input)
+                    result_str = json.dumps(result, ensure_ascii=False, default=str)
+                    messages.append({
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": tc.id, "content": result_str}],
+                    })
             else:
                 # OpenAI: tool_calls 在 assistant message 的 tool_calls 字段
                 openai_tool_calls = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.name,
-                            "arguments": tc.arguments,
-                        },
-                    }
+                    {"id": tc.id, "type": "function",
+                     "function": {"name": tc.name, "arguments": tc.arguments}}
                     for tc in resp.tool_calls
                 ]
                 messages.append({
@@ -258,42 +260,58 @@ class LLMService:
                     "tool_calls": openai_tool_calls,
                 })
 
-            # 执行工具并添加 tool_result
-            for tc in resp.tool_calls:
-                tool_input = json.loads(tc.arguments) if isinstance(tc.arguments, str) else tc.arguments
-                try:
-                    if asyncio.iscoroutinefunction(tool_executor):
-                        result = await tool_executor(tc.name, tool_input)
-                    else:
-                        result = tool_executor(tc.name, tool_input)
-                except Exception as e:
-                    result = {"error": str(e)}
-
-                result_str = json.dumps(result, ensure_ascii=False, default=str)
-
-                if self.provider == "anthropic":
-                    messages.append({
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": tc.id,
-                                "content": result_str,
-                            },
-                        ],
-                    })
-                else:
+                for tc in resp.tool_calls:
+                    tool_input = json.loads(tc.arguments) if isinstance(tc.arguments, str) else tc.arguments
+                    result = await self._do_tool_call(tool_executor, tool_executor_is_coro, tc.name, tool_input)
+                    result_str = json.dumps(result, ensure_ascii=False, default=str)
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
                         "content": result_str,
                     })
 
-            # 移除 tools 参数 — Anthropic 只在第一轮需要，后续不需要再传
-            generate_kwargs.pop("tools", None)
-
-        # 达到最大轮数，返回最后一条响应
         return resp
+
+    @staticmethod
+    async def _do_tool_call(
+        executor: Any, is_coro: bool, name: str, inp: dict[str, Any]
+    ) -> Any:
+        """执行一次工具调用，同步/异步兼容。"""
+        try:
+            if is_coro:
+                return await executor(name, inp)
+            return executor(name, inp)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @staticmethod
+    def build_client(
+        provider: str = "",
+        api_key: str = "",
+        model: str = "",
+        base_url: str = "",
+    ) -> AnthropicMessages | OpenAIChat:
+        """使用指定参数构建 LLM 客户端（不依赖实例配置）。
+
+        用于需要独立 LLM 配置的场景（如视觉识别使用不同的模型/API）。
+        """
+        p = provider or settings.llm_provider
+        k = api_key or settings.llm_api_key or None
+        m = model or settings.llm_model
+        u = base_url or settings.llm_base_url or None
+        instructions = settings.llm_instructions
+
+        if p == "anthropic":
+            return AnthropicMessages(
+                api_key=k, base_url=u, default_model=m,
+                instructions=instructions, conversation_mode=False, max_tokens=8192,
+            )
+        elif p in ("openai", "ollama"):
+            return OpenAIChat(
+                api_key=k, base_url=u, default_model=m,
+                instructions=instructions, conversation_mode=False, max_tokens=8192,
+            )
+        raise ValueError(f"Unsupported LLM provider: {p}")
 
     def reset(self) -> None:
         """重置客户端（重新初始化时使用）。"""

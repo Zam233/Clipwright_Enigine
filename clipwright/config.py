@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     vision_model: str = "google/vit-base-patch16-224"
     vision_top_k: int = 5
     vision_device: str = "cpu"
+    # 视觉 LLM 独立配置（不配置时复用主 LLM 参数）
+    vision_llm_provider: Optional[str] = None
+    vision_llm_model: Optional[str] = None
+    vision_llm_api_key: Optional[str] = None
+    vision_llm_base_url: Optional[str] = None
 
     # --- 素材库 ---
     library_dir: Path = Path("library")

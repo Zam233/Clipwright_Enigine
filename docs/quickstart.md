@@ -91,10 +91,16 @@ CLIPWRIGHT_RAG_RERANK_TOP_K=20
 ```bash
 # ── 方式一：LLM 多模态（推荐，精度最高） ──
 CLIPWRIGHT_VISION_PROVIDER=llm
-# 复用已配置的 LLM（支持 Qwen-VL / Claude 3 Vision / GPT-4V 等）
-# CLIPWRIGHT_LLM_PROVIDER=openai
-# CLIPWRIGHT_LLM_MODEL=qwen-vl-plus
-# CLIPWRIGHT_LLM_API_KEY=sk-...
+# 视觉 LLM 可独立配置（不配置时复用主 LLM 的参数）
+CLIPWRIGHT_VISION_LLM_PROVIDER=openai
+CLIPWRIGHT_VISION_LLM_MODEL=qwen-vl-plus
+CLIPWRIGHT_VISION_LLM_API_KEY=sk-...
+CLIPWRIGHT_VISION_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+
+# 主 LLM 可以是不同的 provider/model（如 Claude 做管线推理）
+# CLIPWRIGHT_LLM_PROVIDER=anthropic
+# CLIPWRIGHT_LLM_MODEL=claude-sonnet-4-6
+# CLIPWRIGHT_LLM_API_KEY=sk-ant-...
 ```
 
 ```bash
@@ -109,6 +115,8 @@ CLIPWRIGHT_VISION_DEVICE=cpu                # cpu / cuda
 # ── 方式三：无模型（仅文件名分析） ──
 CLIPWRIGHT_VISION_PROVIDER=none
 ```
+
+视觉 LLM 配置项 `vision_llm_provider` / `vision_llm_model` / `vision_llm_api_key` / `vision_llm_base_url` 均为可选——不设置时自动复用主 LLM 的对应参数。这允许你将 Qwen-VL 用于识图、Claude 用于管线推理，互不干扰。
 
 ### Provider 说明
 
