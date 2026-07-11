@@ -113,8 +113,14 @@ async function runAiEdit() {
         })
       });
       pipelineResult = await res.json();
+      // HTTP 400 时错误信息在 detail 字段
+      if (!res.ok) {
+        throw new Error(pipelineResult?.detail || `HTTP ${res.status}`);
+      }
     } catch(e) {
-      throw new Error('管线调用失败: ' + e.message);
+      addEwLog('错误: ' + e.message);
+      btn.disabled = false; btn.textContent = '生成视频';
+      return;
     }
 
     const tl = pipelineResult?.shared_data?.final_timeline;

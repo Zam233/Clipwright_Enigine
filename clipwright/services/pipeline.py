@@ -128,7 +128,7 @@ class PipelineOrchestrator:
                 },
                 agent_context,
             )
-            if self._should_stop(step1):
+            if self._should_stop(state, step1):
                 return state
 
             script_skeleton = step1.result.get("script_skeleton", {})
@@ -140,7 +140,7 @@ class PipelineOrchestrator:
                 {"script_skeleton": {"scenes": scenes, **script_skeleton}},
                 agent_context,
             )
-            if self._should_stop(step2):
+            if self._should_stop(state, step2):
                 return state
 
             candidate_clips = step2.result.get("candidate_clips", [])
@@ -154,7 +154,7 @@ class PipelineOrchestrator:
                 },
                 agent_context,
             )
-            if self._should_stop(step3):
+            if self._should_stop(state, step3):
                 return state
 
             timeline_data = step3.result.get("timeline")
@@ -167,7 +167,7 @@ class PipelineOrchestrator:
                     {"timeline": timeline},
                     agent_context,
                 )
-                if self._should_stop(step4):
+                if self._should_stop(state, step4):
                     return state
                 timeline_data = step4.result.get("timeline")
                 timeline = Timeline(**timeline_data) if timeline_data else None
@@ -179,7 +179,7 @@ class PipelineOrchestrator:
                     {"timeline": timeline},
                     agent_context,
                 )
-                if self._should_stop(step5):
+                if self._should_stop(state, step5):
                     return state
                 timeline_data = step5.result.get("timeline")
                 timeline = Timeline(**timeline_data) if timeline_data else None
@@ -192,7 +192,7 @@ class PipelineOrchestrator:
                     {"timeline": timeline, "constraints": constraints},
                     agent_context,
                 )
-                if self._should_stop(step6):
+                if self._should_stop(state, step6):
                     return state
 
             # 6. 完成
@@ -317,5 +317,9 @@ class PipelineOrchestrator:
         raise ValueError(f"Unknown agent: {name}")
 
     @staticmethod
-    def _should_stop(step: PipelineStep) -> bool:
-        return step.status in (PipelineStatus.FAILED, PipelineStatus.CANCELLED)
+    def _should_stop(state: PipelineState, step: PipelineStep) -> bool:
+        if step.status in (PipelineStatus.FAILED, PipelineStatus.CANCELLED):
+            state.status = PipelineStatus.FAILED
+            state.error = step.error or f"Agent {step.agent_name} failed"
+            return True
+        return False
