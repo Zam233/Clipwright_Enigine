@@ -230,7 +230,11 @@ class PipelineOrchestrator:
             # 根据 agent_name 构造对应输入并执行
             result = await self._dispatch_agent(agent_name, input_data, context)
             step.result = result.model_dump(mode="json")
-            step.status = PipelineStatus.COMPLETED if result.decision != AgentDecision.FAIL else PipelineStatus.FAILED
+            if result.decision != AgentDecision.FAIL:
+                step.status = PipelineStatus.COMPLETED
+            else:
+                step.status = PipelineStatus.FAILED
+                step.error = result.error or getattr(result, "error", None) or f"Agent {agent_name} returned FAIL"
 
             # 提取工具调用记录（从 Agent 的 tool_calls）
             tool_calls = step.result.get("tool_calls", []) or []
@@ -320,6 +324,6 @@ class PipelineOrchestrator:
     def _should_stop(state: PipelineState, step: PipelineStep) -> bool:
         if step.status in (PipelineStatus.FAILED, PipelineStatus.CANCELLED):
             state.status = PipelineStatus.FAILED
-            state.error = step.error or f"Agent {step.agent_name} failed"
+            state.error = step.error or f"Agent {step.agent_name} failed (unknown error)"
             return True
         return False
