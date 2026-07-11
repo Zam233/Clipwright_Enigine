@@ -152,3 +152,8 @@ body {
 #section-edit-workspace .content-area { height: calc(100vh - 140px); }
 #section-edit-workspace ::-webkit-scrollbar { width: 4px; height: 4px; }
 #section-edit-workspace ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+/* Material library */
+#section-material { height: calc(100vh - 80px); }
+#section-material .card { margin: 0; }
+#section-material ::-webkit-scrollbar { width: 4px; height: 4px; }
+#section-material ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
