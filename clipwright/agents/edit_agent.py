@@ -21,6 +21,7 @@ from clipwright.schema.agent import (
 )
 from clipwright.schema.timeline import Clip, ClipKind, ImageFit, Timeline, Track
 from clipwright.config import logger
+from clipwright.services.trace import add_event
 from clipwright.tool.registry import ToolRegistry
 
 
@@ -92,6 +93,8 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                     # 尝试裁剪素材到实际时长
                     source_path = best_asset.get("local_path") or best_asset.get("url", "")
                     if source_path:
+                        add_event(context.pipeline_id, "edit", "tool",
+                                  f"video_trim({source_path.split('/')[-1][:30]}, dur={asset_dur:.1f}s)")
                         trim_result = await ToolRegistry.execute(
                             "video_trim",
                             input_path=source_path,
@@ -108,7 +111,8 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                         processed_path = best_asset.get("asset_id", "")
                 else:
                     # 无素材占位：用场景标题生成文字视频
-                    logger.info("场景 %s 无匹配素材，生成文字占位视频", i)
+                    add_event(context.pipeline_id, "edit", "tool",
+                              f"generate_text_video({scene_title}, dur={asset_dur:.1f}s)")
                     text_result = await ToolRegistry.execute(
                         "generate_text_video",
                         text=scene_title,

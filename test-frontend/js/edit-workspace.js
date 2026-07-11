@@ -182,15 +182,20 @@ async function runAiEdit() {
       const rd = await r.json();
       if (rd?.success) {
         ewLog(`渲染完成: ${(rd.duration_sec||0).toFixed(1)}s`, 'success');
+      } else {
+        ewLog(`渲染: ${rd?.error || '需安装 FFmpeg 才能渲染 MP4'}`, 'muted');
+      }
+      // 无论渲染是否成功，都显示预览面板（展示时间线）
+      const panel = document.getElementById('ewPreviewPanel');
+      if (panel) {
+        // 显示场景预览（纯前端）
         const video = document.getElementById('ewPreviewVideo');
         const src = document.getElementById('ewPreviewSrc');
-        const panel = document.getElementById('ewPreviewPanel');
-        if (video && src) {
+        if (rd?.success && video && src) {
           src.src = API_BASE() + '/renders/ai_edit_output.mp4';
-          video.load(); panel.style.display = 'block';
+          video.load();
         }
-      } else {
-        ewLog(`渲染: ${rd?.error || '无输出'}`, 'muted');
+        panel.style.display = 'block';
       }
     } catch(ex) { ewLog(`渲染失败: ${ex.message}`, 'error'); }
 
