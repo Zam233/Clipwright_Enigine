@@ -1,7 +1,16 @@
 {
   "permissions": {
     "allow": [
-      "Bash(claude mcp:*)"
+      "Bash(claude mcp:*)",
+      "Bash(python -c ':*)",
+      "Bash(python -m uvicorn clipwright.main:app --host 0.0.0.0 --port 8767)",
+      "Bash(curl -s http://localhost:8767/health)",
+      "Bash(curl -s http://localhost:8767/api/tool/list)",
+      "Bash(curl -s http://localhost:8767/api/skill/list)",
+      "Bash(curl -s http://localhost:8767/api/plugin/capabilities)",
+      "Bash(python -c \" import sys, json caps = json.load\\(sys.stdin\\) print\\(f' Tools: {len\\(caps[\\\\\"tools\\\\\"]\\)} \\({sum\\(1 for t in caps[\\\\\"tools\\\\\"] if t[\\\\\"available\\\\\"]\\)} available\\)'\\) print\\(f' Skills: {len\\(caps[\\\\\"skills\\\\\"]\\)} \\({sum\\(1 for s in caps[\\\\\"skills\\\\\"] if s[\\\\\"available\\\\\"]\\)} available\\)'\\) print\\(f' Plugins: {len\\(caps[\\\\\"plugins\\\\\"]\\)}'\\) \" kill %1)",
+      "Bash(pkill -f \"uvicorn clipwright.main:app\" echo \"\" echo \"Done\")",
+      "Bash(python -m pytest tests/ -v --tb=short)"
     ]
   }
 }

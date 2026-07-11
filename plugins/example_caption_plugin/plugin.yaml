@@ -1,0 +1,7 @@
+id: "example_caption_plugin"
+name: "Example Caption Plugin"
+version: "1.0.0"
+kind: "capability"
+description: "示例插件 — 演示第三方插件系统的加载和注册"
+author: "Clipwright Team"
+entry_point: "example_caption_plugin.main"

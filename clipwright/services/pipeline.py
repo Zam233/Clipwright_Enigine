@@ -1,0 +1,285 @@
+"""Pipeline 编排器 — 驱动 Agent 链路的顺序/条件执行。
+
+核心职责：
+1. 接收 PipelineRequest
+2. 按顺序执行 Agent 节点（Structure → Material → Edit → Animation → Audio → Quality）
+3. 在 Edit Agent 处注入 Persona 参数（经类型插件翻译）
+4. 遇到 fail 时支持局部重执行
+5. 输出最终时间线
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+from typing import Optional
+
+from clipwright.agents import (
+    AnimationAgent,
+    AudioAgent,
+    EditAgent,
+    MaterialAgent,
+    QualityAgent,
+    StructureAgent,
+)
+from clipwright.category import CategoryRegistry
+from clipwright.persona.loader import (
+    load_persona_by_id,
+    resolve_inheritance,
+)
+from clipwright.persona.validator import validate_manifest
+from clipwright.schema.agent import AgentContext, AgentDecision
+from clipwright.schema.pipeline import (
+    PipelineRequest,
+    PipelineState,
+    PipelineStatus,
+    PipelineStep,
+)
+from clipwright.schema.timeline import Timeline
+
+
+class PipelineOrchestrator:
+    """Pipeline 编排器，负责 Agent 链路的编排执行。"""
+
+    def __init__(self) -> None:
+        self._agents = {
+            "structure": StructureAgent(),
+            "material": MaterialAgent(),
+            "edit": EditAgent(),
+            "animation": AnimationAgent(),
+            "audio": AudioAgent(),
+            "quality": QualityAgent(),
+        }
+
+    async def run(self, request: PipelineRequest) -> PipelineState:
+        """执行完整的 Pipeline。"""
+        state = PipelineState(
+            pipeline_id=f"pl_{uuid.uuid4().hex[:12]}",
+            request=request,
+        )
+
+        try:
+            # 1. 加载 Persona
+            manifest = load_persona_by_id(request.persona_id)
+            manifest = resolve_inheritance(manifest)
+            warnings = validate_manifest(manifest)
+            if warnings:
+                state.shared_data["persona_warnings"] = warnings
+
+            # 2. 获取类型插件
+            plugin = CategoryRegistry.get(request.category_plugin_id)
+            if plugin is None:
+                raise ValueError(f"Unknown category plugin: {request.category_plugin_id}")
+
+            # 3. 翻译 Persona 参数
+            persona_config = manifest.parameter.model_dump(mode="json") if manifest.parameter else {}
+            translated = plugin.translate_persona(manifest.parameter) if manifest.parameter else {}
+
+            # 4. 加载 Prompt 和 RAG
+            persona_prompt = manifest.prompt
+            rag_context = ""
+            if manifest.knowledge:
+                try:
+                    from clipwright.rag.retriever import Retriever
+                    retriever = Retriever()
+                    import asyncio
+                    result = asyncio.run(
+                        retriever.retrieve(
+                            request.persona_id,
+                            request.topic,
+                            top_k=3,
+                            rerank=False,
+                        )
+                    )
+                    if result.context:
+                        rag_context = result.context
+                except Exception:
+                    pass  # RAG 检索失败不影响主流程
+
+            # 5. 构建 Agent 上下文
+            agent_context = AgentContext(
+                pipeline_id=state.pipeline_id,
+                persona_id=request.persona_id,
+                category_plugin_id=request.category_plugin_id,
+                topic=request.topic,
+                extra_params=translated,
+            )
+
+            # 6. 按序执行 Agent
+            # Structure Agent
+            step1 = await self._run_agent_step(
+                state, "structure",
+                {
+                    "persona_config": persona_config,
+                    "persona_prompt": persona_prompt,
+                    "rag_context": rag_context,
+                },
+                agent_context,
+            )
+            if self._should_stop(step1):
+                return state
+
+            script_skeleton = step1.result.get("script_skeleton", {})
+            scenes = step1.result.get("scenes", [])
+
+            # Material Agent
+            step2 = await self._run_agent_step(
+                state, "material",
+                {"script_skeleton": {"scenes": scenes, **script_skeleton}},
+                agent_context,
+            )
+            if self._should_stop(step2):
+                return state
+
+            candidate_clips = step2.result.get("candidate_clips", [])
+
+            # Edit Agent
+            step3 = await self._run_agent_step(
+                state, "edit",
+                {
+                    "script_skeleton": {"scenes": scenes, **script_skeleton},
+                    "candidate_clips": candidate_clips,
+                },
+                agent_context,
+            )
+            if self._should_stop(step3):
+                return state
+
+            timeline_data = step3.result.get("timeline")
+            timeline = Timeline(**timeline_data) if timeline_data else None
+
+            # Animation Agent
+            if timeline:
+                step4 = await self._run_agent_step(
+                    state, "animation",
+                    {"timeline": timeline},
+                    agent_context,
+                )
+                if self._should_stop(step4):
+                    return state
+                timeline_data = step4.result.get("timeline")
+                timeline = Timeline(**timeline_data) if timeline_data else None
+
+            # Audio Agent
+            if timeline:
+                step5 = await self._run_agent_step(
+                    state, "audio",
+                    {"timeline": timeline},
+                    agent_context,
+                )
+                if self._should_stop(step5):
+                    return state
+                timeline_data = step5.result.get("timeline")
+                timeline = Timeline(**timeline_data) if timeline_data else None
+
+            # Quality Agent
+            if timeline:
+                constraints = persona_config.get("constraints", {})
+                step6 = await self._run_agent_step(
+                    state, "quality",
+                    {"timeline": timeline, "constraints": constraints},
+                    agent_context,
+                )
+                if self._should_stop(step6):
+                    return state
+
+            # 6. 完成
+            state.status = PipelineStatus.COMPLETED
+            state.shared_data["final_timeline"] = (
+                timeline.model_dump(mode="json") if timeline else None
+            )
+
+        except Exception as e:
+            state.status = PipelineStatus.FAILED
+            state.error = str(e)
+
+        state.updated_at = datetime.now()
+        return state
+
+    async def _run_agent_step(
+        self,
+        state: PipelineState,
+        agent_name: str,
+        input_data: dict,
+        context: AgentContext,
+    ) -> PipelineStep:
+        """执行单个 Agent 步骤。"""
+        step = state.add_step(agent_name)
+        step.status = PipelineStatus.RUNNING
+        step.started_at = datetime.now()
+
+        agent = self._agents[agent_name]
+        state.current_agent = agent_name
+
+        try:
+            # 根据 agent_name 构造对应输入并执行
+            result = await self._dispatch_agent(agent_name, input_data, context)
+            step.result = result.model_dump(mode="json")
+            step.status = PipelineStatus.COMPLETED if result.decision != AgentDecision.FAIL else PipelineStatus.FAILED
+
+            # 保存到共享数据
+            state.shared_data[f"{agent_name}_output"] = step.result
+
+        except Exception as e:
+            step.status = PipelineStatus.FAILED
+            step.error = str(e)
+
+        step.completed_at = datetime.now()
+        if step.started_at:
+            step.duration_ms = int(
+                (step.completed_at - step.started_at).total_seconds() * 1000
+            )
+        state.updated_at = datetime.now()
+        return step
+
+    async def _dispatch_agent(self, name: str, data: dict, ctx: AgentContext) -> object:
+        """分派 Agent 调用。"""
+        agent = self._agents[name]
+        if name == "structure":
+            from clipwright.schema.agent import StructureInput
+            return await agent.execute(
+                StructureInput(
+                    context=ctx,
+                    persona_config=data.get("persona_config", {}),
+                    persona_prompt=data.get("persona_prompt"),
+                    rag_context=data.get("rag_context"),
+                ), ctx,
+            )
+        elif name == "material":
+            from clipwright.schema.agent import MaterialInput
+            return await agent.execute(
+                MaterialInput(context=ctx, script_skeleton=data.get("script_skeleton", {})), ctx,
+            )
+        elif name == "edit":
+            from clipwright.schema.agent import EditInput
+            return await agent.execute(
+                EditInput(
+                    context=ctx,
+                    script_skeleton=data.get("script_skeleton", {}),
+                    candidate_clips=data.get("candidate_clips", []),
+                ), ctx,
+            )
+        elif name == "animation":
+            from clipwright.schema.agent import AnimationInput
+            return await agent.execute(
+                AnimationInput(context=ctx, timeline=data.get("timeline")), ctx,
+            )
+        elif name == "audio":
+            from clipwright.schema.agent import AudioInput
+            return await agent.execute(
+                AudioInput(context=ctx, timeline=data.get("timeline")), ctx,
+            )
+        elif name == "quality":
+            from clipwright.schema.agent import QualityInput
+            return await agent.execute(
+                QualityInput(
+                    context=ctx,
+                    timeline=data.get("timeline"),
+                    constraints=data.get("constraints", {}),
+                ), ctx,
+            )
+        raise ValueError(f"Unknown agent: {name}")
+
+    @staticmethod
+    def _should_stop(step: PipelineStep) -> bool:
+        return step.status in (PipelineStatus.FAILED, PipelineStatus.CANCELLED)

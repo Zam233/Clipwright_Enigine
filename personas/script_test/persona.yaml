@@ -1,0 +1,7 @@
+compose: []
+description: 由 PersonaForge 从脚本离线分析生成（无 API key）
+inherits: null
+overrides: null
+persona_id: script_test
+persona_name: 脚本测试
+version: 1.0.0

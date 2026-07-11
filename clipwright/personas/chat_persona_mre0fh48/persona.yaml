@@ -1,0 +1,7 @@
+compose: []
+description: 由 ChatForge 对话创建
+inherits: null
+overrides: null
+persona_id: chat_persona_mre0fh48
+persona_name: 对话创建_mre0fh48
+version: 1.0.0

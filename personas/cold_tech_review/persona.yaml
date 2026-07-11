@@ -1,0 +1,7 @@
+compose: []
+description: 由 PersonaForge 离线生成（无 API key）
+inherits: null
+overrides: null
+persona_id: cold_tech_review
+persona_name: 冷峻科技评测
+version: 1.0.0

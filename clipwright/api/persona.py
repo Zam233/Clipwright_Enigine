@@ -1,0 +1,95 @@
+"""Persona API — 创建、读取、更新 Persona 配置（含 Prompt / RAG 知识库）。"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+from clipwright.config import settings
+from clipwright.persona.loader import load_persona_by_id
+from clipwright.persona.repository import PersonaRepository
+from clipwright.schema.persona import KnowledgeDoc, PersonaManifest
+
+router = APIRouter(prefix="/api/persona", tags=["persona"])
+
+_repo = PersonaRepository(settings.persona_dir)
+
+
+# ── 基础 CRUD ──
+
+
+@router.get("/list")
+async def list_personas() -> list[str]:
+    return _repo.list_personas()
+
+
+@router.get("/{persona_id}", response_model=PersonaManifest)
+async def get_persona(persona_id: str) -> PersonaManifest:
+    try:
+        return _repo.load_manifest(persona_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
+
+
+@router.post("/create", response_model=PersonaManifest)
+async def create_persona(manifest: PersonaManifest) -> PersonaManifest:
+    if _repo.exists(manifest.persona_id):
+        raise HTTPException(status_code=409, detail=f"Persona {manifest.persona_id} already exists")
+    _repo.save_manifest(manifest)
+    return manifest
+
+
+@router.put("/{persona_id}", response_model=PersonaManifest)
+async def update_persona(persona_id: str, manifest: PersonaManifest) -> PersonaManifest:
+    if not _repo.exists(persona_id):
+        raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
+    _repo.save_manifest(manifest)
+    return manifest
+
+
+# ── Prompt 管理 ──
+
+
+class SavePromptRequest(BaseModel):
+    prompt: str
+
+
+@router.get("/{persona_id}/prompt")
+async def get_prompt(persona_id: str) -> dict:
+    """获取 Persona 的 Prompt 指令。"""
+    if not _repo.exists(persona_id):
+        raise HTTPException(status_code=404)
+    prompt_path = _repo.persona_path(persona_id) / "prompt.md"
+    text = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else ""
+    return {"persona_id": persona_id, "prompt": text}
+
+
+@router.put("/{persona_id}/prompt")
+async def save_prompt(persona_id: str, req: SavePromptRequest) -> dict:
+    """保存/更新 Persona 的 Prompt 指令。"""
+    if not _repo.exists(persona_id):
+        raise HTTPException(status_code=404)
+    _repo.save_prompt(persona_id, req.prompt)
+    return {"status": "ok", "persona_id": persona_id}
+
+
+# ── RAG 知识库管理 ──
+
+
+@router.get("/{persona_id}/knowledge")
+async def list_knowledge(persona_id: str) -> list[KnowledgeDoc]:
+    """列出 Persona 的知识库文档。"""
+    if not _repo.exists(persona_id):
+        raise HTTPException(status_code=404)
+    manifest = _repo.load_manifest(persona_id)
+    return manifest.knowledge or []
+
+
+@router.post("/{persona_id}/knowledge")
+async def add_knowledge(persona_id: str, doc: KnowledgeDoc) -> dict:
+    """向 Persona 知识库添加一篇文档。"""
+    if not _repo.exists(persona_id):
+        raise HTTPException(status_code=404)
+    _repo.add_knowledge_doc(persona_id, doc)
+    return {"status": "ok", "doc_id": doc.id}
+

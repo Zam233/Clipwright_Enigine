@@ -1,0 +1,59 @@
+audio:
+  bgm_slots:
+    climax:
+    - silence_7s
+    resolution:
+    - minimal_piano_single_note
+    theory_backing:
+    - kraftwerk_pool
+  target_loudness_lufs: -16.0
+  voice_model: null
+constraints:
+  forbidden_topics: []
+  max_duration_sec: 900
+  min_duration_sec: 60
+  require_source_citation: true
+identity:
+  class_perspective: vocational_ascending
+  knowledge_domains:
+  - consumer_critique
+  - philosophy
+  - digital_culture
+  position:
+  - 0.72
+  - -0.15
+  tone: critical_intellectual
+language:
+  academic_density: 0.12
+  allowed_patterns: []
+  forbidden_patterns:
+  - 不是.*而是.*
+  - 值得一提的是.*
+  - 掰开了揉碎了
+  max_sentence_len: 30
+  slang_ratio: 0.08
+  variance_target: 0.7
+layer_type: parameter
+persona_id: zam_knowledge_critical
+rhythm:
+  base_shot_duration_ms: 7000
+  cut_density_tier: medium
+  cut_profile: surge_pause
+  pause_sections:
+  - real_world_return
+  - conclusion
+  surge_sections:
+  - hook
+  - theoretical_climax
+version: 1.0.0
+visual:
+  accent_color: '#dc1414'
+  animation_styles:
+    emphasis: red_flash
+    text_intro: typewriter_glitch
+  palette: cold_industrial
+  primary_color: '#12121a'
+  transition_weights:
+    glitch: 0.1
+    hard_cut: 0.7
+    pixel_dissolve: 0.2

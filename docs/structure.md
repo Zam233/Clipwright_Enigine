@@ -1,3 +1,11 @@
+# 帧艺 ClipWright 内容视频编排引擎 — 架构设计文档
+
+> **所属系统**：[帧艺 ClipWright AI 辅助视频创作系统](../README.md)
+>
+> 本文档描述**内容视频编排引擎**（纯后端）的五层架构设计。该引擎作为 AI 辅助视频创作系统的后端核心，可独立运行并通过 REST API 提供服务。
+
+---
+
 ## 一、设计原则
 
 在展开架构之前，先定三条铁律：
@@ -58,6 +66,22 @@
 | 渲染导出   | FFmpeg                   | `render(preset)`                     |
 
 设计约束：**所有 API 的入参必须是纯数值或纯路径，不接受 "风格描述" 字符串。** `cut_density: high`是上层逻辑，这层只认`min_cut_interval_ms: 800`。
+
+### 3.1.1 Skill 层（在原子能力之上的组合层）
+
+Skill 是比 Tool 更高层级的可组合能力，编排多个 Tool 完成一个业务目标：
+
+```
+Skill: analyze_video_structure
+  ├── Tool: scene_detect       → 检测场景切换点
+  ├── Tool: audio_extract      → 提取音频
+  └── Tool: bpm_detect         → 分析 BPM/节奏
+```
+
+Skill 与 Tool 统一注册机制：
+- 都通过 `Registry`（ToolRegistry / SkillRegistry）注册
+- 都支持 `to_llm_tool()` 生成 LLM tool schema
+- 第三方 Plugin 可在 `initialize()` 中同时注册 Tool 和 Skill
 
 ------
 
@@ -147,14 +171,35 @@ Persona详见Persona.md
 1. **用户应用程序前端**
 2. **用户Web前端**
 
-### 3.6 第三方插件层
+### 3.6 第三方插件层（已实现）
 
-同时本项目应当支持使用第三方插件进行扩展。主要支持的扩展功能包括：
+同时本项目支持使用第三方插件进行扩展。主要支持的扩展功能包括：
 
 1. 支持增加视频、图片、动画、音效、音乐素材库/素材源。
 2. 编辑器插件，编辑器插件在前端运行。它们可以新增 UI 组件、修改现有面板、添加新的交互工具。
 3. Agent 插件。Agent 插件在后端运行，可以新增 Agent 节点、替换 Agent 策略、添加质检规则。
-4. 能力及工具插件。能力/工具插件封装对特定工具 / 服务 / 模型的调用。它们让帧匠的能力层可替换、可扩展。
+4. 能力及工具插件。能力/工具插件封装对特定工具 / 服务 / 模型的调用。它们让帧艺的能力层可替换、可扩展。
+
+**实现状态**：
+
+| 组件 | 状态 | 说明 |
+|------|------|------|
+| `PluginLoader` | ✅ 已实现 | 支持 `plugin.yaml` 清单解析 + `importlib` 动态导入 |
+| `HookRegistry` | ✅ 已实现 | 支持 PRE/POST Pipeline、Agent、Render、ON_ERROR 钩子 |
+| REST API | ✅ 已实现 | `/api/plugin/list`, `/api/plugin/discover`, `/api/plugin/load/{id}`, `/api/plugin/unload/{id}` |
+| 自动发现 | ✅ 已实现 | `main.py` lifespan 中自动扫描 `plugins/` 目录 |
+| `BasePlugin` | ✅ 已实现 | 含 `initialize()` / `shutdown()` 生命周期 |
+| `MaterialSourcePlugin` | ✅ 接口已定义 | 扩展素材库来源 |
+| `AgentStrategyPlugin` | ✅ 接口已定义 | 替换或增强 Agent 执行策略 |
+| `CapabilityPlugin` | ✅ 接口已定义 | 封装外部工具/服务调用 |
+| 前端编辑器插件 | ❌ 未实现 | 计划在 Phase 2 实现 |
+
+**使用方式**：
+
+1. 在项目根目录 `plugins/` 下创建 `{your_plugin_id}/` 目录
+2. 包含 `plugin.yaml`（清单）和 `main.py`（入口模块）
+3. 入口模块的 `__all__` 中 export 继承 `BasePlugin` 的类
+4. 重启服务后自动加载，或通过 API 手动加载
 
 ------
 

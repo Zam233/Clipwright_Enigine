@@ -1,0 +1,40 @@
+audio:
+  bgm_slots: {}
+  target_loudness_lufs: -16.0
+  voice_model: null
+constraints:
+  forbidden_topics: []
+  max_duration_sec: 900
+  min_duration_sec: 30
+  require_source_citation: false
+identity:
+  class_perspective: 劳动阶级出身、反对庸俗唯物主义的学术精英
+  knowledge_domains:
+  - 马克思主义哲学与批判理论
+  - 传播学与符号学
+  - 数字技术与开源文化
+  - 城市交通与市井生活
+  position: null
+  tone: 冷峻批判，带智力优越感的戏谑
+language:
+  academic_density: 0.7
+  allowed_patterns: []
+  forbidden_patterns: []
+  max_sentence_len: 30
+  slang_ratio: 0.25
+  variance_target: 0.6
+layer_type: parameter
+persona_id: chat_persona_mre0fh48
+rhythm:
+  base_shot_duration_ms: 5000
+  cut_density_tier: medium
+  cut_profile: variable_punctuated
+  pause_sections: []
+  surge_sections: []
+version: 1.0.0
+visual:
+  accent_color: null
+  animation_styles: {}
+  palette: neutral_with_accent
+  primary_color: null
+  transition_weights: {}

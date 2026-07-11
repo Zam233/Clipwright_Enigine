@@ -1,0 +1,7 @@
+compose: []
+description: 由 PersonaForge 离线生成（无 API key）
+inherits: null
+overrides: null
+persona_id: dialogue_test
+persona_name: 对话测试
+version: 1.0.0

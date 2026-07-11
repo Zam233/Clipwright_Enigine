@@ -1,0 +1,36 @@
+audio:
+  bgm_slots: {}
+  target_loudness_lufs: -16.0
+  voice_model: null
+constraints:
+  forbidden_topics: []
+  max_duration_sec: 900
+  min_duration_sec: 30
+  require_source_citation: false
+identity:
+  class_perspective: ''
+  knowledge_domains: []
+  position: null
+  tone: ''
+language:
+  academic_density: 0.1
+  allowed_patterns: []
+  forbidden_patterns: []
+  max_sentence_len: 30
+  slang_ratio: 0.05
+  variance_target: 0.6
+layer_type: parameter
+persona_id: test_chat_persona
+rhythm:
+  base_shot_duration_ms: 5000
+  cut_density_tier: medium
+  cut_profile: even_flow
+  pause_sections: []
+  surge_sections: []
+version: 1.0.0
+visual:
+  accent_color: null
+  animation_styles: {}
+  palette: neutral
+  primary_color: null
+  transition_weights: {}

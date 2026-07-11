@@ -1,0 +1,7 @@
+compose: []
+description: 由 ChatForge 对话创建
+inherits: null
+overrides: null
+persona_id: test_chat_persona
+persona_name: 对话测试人格
+version: 1.0.0
