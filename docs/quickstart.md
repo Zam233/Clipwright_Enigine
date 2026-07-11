@@ -283,7 +283,21 @@ url_source.add_url("videos/timelapse.mp4", "延时摄影", tags=["city"])
 MaterialRegistry.register(url_source)
 ```
 
-### 方式三：RAG 知识库（文本素材）
+### 方式三：Pexels 免费图库（自动搜索在线素材）
+
+插件方式接入，无需手动维护 JSON 目录。Pipeline 运行时自动搜索 Pexels 匹配的视频和图片。
+
+```bash
+# 1. 注册 Pexels API Key（免费，https://www.pexels.com/api/）
+export PEXELS_API_KEY=your_api_key_here
+
+# 2. 重启服务，插件自动加载
+# [PexelsPlugin] Pexels 素材库已注册（API Key: your...）
+```
+
+插件位于 `plugins/pexels_material/`，支持搜索视频和图片。MaterialAgent 在管线中自动调用 Pexels API 搜索场景关键词。
+
+### 方式四：RAG 知识库（文本素材）
 
 将 Persona 的文档作为素材源：
 

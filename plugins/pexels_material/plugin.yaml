@@ -1,0 +1,7 @@
+id: "pexels_material"
+name: "Pexels Material Library"
+version: "1.0.0"
+kind: "material"
+description: "从 Pexels 免费图库自动搜索匹配的视频和图片素材"
+author: "Clipwright Team"
+entry_point: "pexels_material.main"
