@@ -66,7 +66,9 @@ class RenderService:
             text_overlays: list[dict] = []
             audio_segments: list[dict] = []
 
+            logger.info("开始渲染时间线: %d 轨道", len(timeline.tracks or []))
             for track in timeline.tracks:
+                logger.info("  轨道 %s(%s): %d clips", track.name, track.kind, len(track.clips))
                 kind = track.kind
                 for clip in track.clips:
                     entry = {

@@ -51,13 +51,27 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             text_track = Track(id=_uid("t"), name="文字轨", kind=ClipKind.TEXT, index=1)
             audio_track = Track(id=_uid("t"), name="音频轨", kind=ClipKind.AUDIO, index=2)
 
-            # 4. 对每个场景取最佳素材
+            # 4. 标准化场景时长：如果提供了音频总时长，按比例缩放
+            scene_count = len(scenes)
+            total_scene_duration = sum(
+                s.get("duration_sec", base_shot_sec) for s in scenes
+            )
+            target_duration = context.extra_params.get(
+                "audio_duration_sec", total_scene_duration
+            )
+            if target_duration > 0 and total_scene_duration > 0:
+                duration_scale = target_duration / total_scene_duration
+                notes.append(f"时长缩放: {total_scene_duration:.0f}s → {target_duration:.0f}s (x{duration_scale:.2f})")
+            else:
+                duration_scale = 1.0
+
+            # 5. 对每个场景取最佳素材
             current_time = 0.0
-            scene_asset_map: dict[str, dict] = {}  # scene_id → best asset
+            scene_asset_map: dict[str, dict] = {}
 
             for i, scene in enumerate(scenes):
                 scene_title = scene.get("title", f"场景{i+1}")
-                scene_duration = scene.get("duration_sec", base_shot_sec)
+                scene_duration = scene.get("duration_sec", base_shot_sec) * duration_scale
 
                 # 找此场景的最佳候选
                 scene_candidates = [

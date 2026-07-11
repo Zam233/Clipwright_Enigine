@@ -473,6 +473,15 @@
             <div class="progress-bar" style="height:4px"><div class="fill" id="ewProgressBar" style="width:0%"></div></div>
             <div class="text-muted" style="font-size:10px;margin-top:2px" id="ewProgressText">初始化...</div>
           </div>
+          <!-- Preview Window -->
+          <div id="ewPreviewPanel" style="display:none">
+            <div class="card" style="margin:0;overflow:hidden">
+              <div class="card-header" style="padding:4px 8px;font-size:10px">预览</div>
+              <video id="ewPreviewVideo" controls style="width:100%;display:block;background:#000" preload="metadata">
+                <source id="ewPreviewSrc" src="">
+              </video>
+            </div>
+          </div>
         </div>
       </div>
     </div>

@@ -127,7 +127,10 @@ async function runAiEdit() {
         method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({
           persona_id: personaId, category_plugin_id: pluginId, topic,
-          extra_params: { material_source_ids: selectedSources },
+          extra_params: {
+            material_source_ids: selectedSources,
+            audio_duration_sec: sttSegments.length > 0 ? sttSegments[sttSegments.length-1].end : 0
+          },
           dry_run: false
         })
       });
@@ -179,9 +182,18 @@ async function runAiEdit() {
       });
       const renderResult = await res.json();
       if (renderResult?.success) {
-        ewLog(`渲染完成: ${renderResult.output_path}`, 'success');
+        ewLog(`渲染完成: ${renderResult.output_path} (${renderResult.duration_sec?.toFixed(1)}s)`, 'success');
+        // Show preview
+        const video = document.getElementById('ewPreviewVideo');
+        const src = document.getElementById('ewPreviewSrc');
+        const panel = document.getElementById('ewPreviewPanel');
+        if (video && src) {
+          src.src = API_BASE() + '/' + renderResult.output_path.replace(/\\/g,'/');
+          video.load();
+          panel.style.display = 'block';
+        }
       } else {
-        ewLog(`渲染: ${renderResult?.error || '无输出 (FFmpeg 可能未安装)'}`, 'muted');
+        ewLog(`渲染: ${renderResult?.error || '无输出'}`, 'muted');
       }
     } catch(e) {
       ewLog(`渲染失败: ${e.message}`, 'error');
