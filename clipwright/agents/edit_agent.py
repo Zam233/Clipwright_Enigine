@@ -185,8 +185,6 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         )
         if asset:
             clip.asset_id = asset.get("asset_id", clip.asset_id)
-            url = asset.get("url", "")
-            local_path = asset.get("local_path", "")
 
         if kind in (ClipKind.VIDEO, ClipKind.IMAGE):
             clip.image_fit = ImageFit.COVER

@@ -33,8 +33,7 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
     ) -> MaterialOutput:
         try:
             scenes = input_data.script_skeleton.get("scenes", [])
-            all_candidates = list(MaterialRegistry._sources.values())
-            has_sources = len(all_candidates) > 0
+            has_sources = len(MaterialRegistry.list()) > 0
 
             if not has_sources:
                 # 无注册素材源 → 占位输出
