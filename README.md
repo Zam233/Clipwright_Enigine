@@ -100,12 +100,14 @@
 │  └─────────────────────┘  └──────────────────────┘   │
 │                                                      │
 └──────────────────────┬───────────────────────────────┘
-                       │ REST API · WebSocket
+                       │ REST API
                        │ POST /api/pipeline/run
-                       │ POST /api/agent/suggest
-                       │ POST /api/render/start
-                       │ GET  /api/render/status/{id}
-                       │ WS   /ws/agent/stream
+                       │ POST /api/tool/execute
+                       │ POST /api/skill/execute
+                       │ POST /api/material/search
+                       │ POST /api/animation/list
+                       │ POST /api/stt/transcribe
+                       │ POST /api/plugin/load-all
 ┌──────────────────────┴───────────────────────────────┐
 │                    后端 (clipwright)                   │
 │                  Python · FastAPI · LangGraph          │
@@ -130,13 +132,15 @@
 │  └────────────────────────────────────────────────┘  │
 │                                                      │
 │  ┌────────────────────────────────────────────────┐  │
-│  │             原子能力层                           │  │
-│  │  FFmpeg · CLIP · Manim · SoVITS · Whisper      │  │
+│  │        Tool 层 / Skill 层 / Material 层          │  │
+│  │  10 工具 · 4 技能 · 3 素材源 · 27 动画          │  │
+│  │  FFmpeg · CLIP · Whisper · JSON规范             │  │
 │  └────────────────────────────────────────────────┘  │
 │                                                      │
 │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐   │
-│  │ CLI 工具  │  │ 渲染服务  │  │  素材库管理       │   │
-│  │ 开发调试  │  │ 异步队列  │  │  本地/远程索引    │   │
+│  │ 插件系统  │  │ 渲染服务  │  │  动画系统         │   │
+│  │ importlib │  │ 异步队列  │  │  onscreen/text   │   │
+│  │ 热加载    │  │          │  │  transition       │   │
 │  └──────────┘  └──────────┘  └──────────────────┘   │
 │                                                      │
 └──────────────────────────────────────────────────────┘
@@ -243,34 +247,56 @@
 
 ```plaintext
 # Pipeline 执行
-POST   /api/pipeline/run          # 全流程执行，返回时间线JSON
-POST   /api/pipeline/step/{agent} # 单Agent执行
-POST   /api/pipeline/retry/{id}   # 局部重执行
+POST   /api/pipeline/run           # 全流程执行，返回时间线JSON
+POST   /api/pipeline/step/{agent}  # 单Agent执行
 
-# Agent 建议（副驾驶面板调用）
-POST   /api/agent/suggest/clip    # 对指定位置推荐素材
-POST   /api/agent/suggest/pace    # 节奏分析建议
-POST   /api/agent/suggest/style   # 风格一致性检查
+# 原子能力工具
+GET    /api/tool/list              # 列出所有工具
+POST   /api/tool/execute           # 执行单个工具
+POST   /api/tool/batch             # 批量执行工具
+
+# 技能
+GET    /api/skill/list             # 列出所有技能
+POST   /api/skill/execute          # 执行技能
+
+# 素材库
+GET    /api/material/sources       # 列出素材源
+POST   /api/material/search        # 跨源搜索
+
+# 动画
+GET    /api/animation/list         # 列出所有动画定义
+GET    /api/animation/get/{id}     # 查看动画详情
+
+# 语音转文字
+POST   /api/stt/transcribe         # 音频→带时间戳文字
+POST   /api/stt/align              # 文案→音频对齐
+
+# 插件管理
+GET    /api/plugin/list            # 已加载插件
+GET    /api/plugin/discover        # 发现可用插件
+POST   /api/plugin/load/{id}       # 加载插件
+POST   /api/plugin/unload/{id}     # 卸载插件
+GET    /api/plugin/capabilities    # 系统能力概览
 
 # Persona 管理
 GET    /api/persona/list
 GET    /api/persona/{id}
 POST   /api/persona/create
 PUT    /api/persona/{id}
-POST   /api/persona/analyze       # 从视频自动分析生成Persona
 
-# 素材库
-GET    /api/library/search        # 语义检索
-POST   /api/library/upload        # 上传素材
-GET    /api/library/tag/{tag}
+# PersonaForge
+POST   /api/persona/forge/from-prompt   # 自然语言→Persona
+POST   /api/persona/forge/from-script   # 脚本分析→Persona
+POST   /api/persona/forge/refine        # 迭代优化
+POST   /api/persona/forge/dialogue      # 对话引导
+
+# RAG 知识库
+POST   /api/persona/{id}/rag/index     # 建立向量索引
+POST   /api/persona/{id}/rag/query     # 语义检索
 
 # 渲染
 POST   /api/render/start          # 提交渲染任务
 GET    /api/render/status/{id}    # 查询进度
-GET    /api/render/download/{id}  # 下载完成文件
-
-# 实时通信
-WS     /ws/agent/stream           # Agent执行状态实时推送
 ```
 
 ### 时间线 JSON 格式
@@ -340,9 +366,10 @@ Level 2 ─── LoRA微调 ────── 上传50+历史视频，微调Ag
 
 | 阶段   | 内容                                      | 状态   |
 | ------ | ----------------------------------------- | ------ |
-| 阶段一 | 后端：Agent + API；前端：基础时间轴编辑器 | 开发中 |
-| 阶段二 | 多类型插件；前端动画面板 + Agent操控面板  | 规划中 |
-| 阶段三 | 插件市场；素材库语义检索；渲染队列        | 规划中 |
-| 阶段四 | LoRA 微调管线；协作编辑                   | 规划中 |
+| 阶段一 | 6-Agent 管线 + API；Tool/Skill/Animation 系统 | ✅ 完成 |
+| 阶段二 | 素材库 + 插件系统；前端编辑器初步          | ✅ 完成 |
+| 阶段三 | 动画系统 + STT + 语音转文字               | ✅ 完成 |
+| 阶段四 | AudioAgent + QualityAgent 增强；渲染队列  | 🔄 进行中 |
+| 阶段五 | 前端完整时间轴编辑器；LoRA 微调管线       | 📅 计划中 |
 
 ------

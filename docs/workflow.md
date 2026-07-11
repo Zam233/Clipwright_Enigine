@@ -1,3 +1,11 @@
+# 帧艺 ClipWright 内容视频编排引擎 — Agent 工作流设计
+
+> **所属系统**：[帧艺 ClipWright AI 辅助视频创作系统](../README.md)
+>
+> 本文档定义**内容视频编排引擎**的 Agent 工作流架构。7 个 Agent 构成 LangGraph 管线，从 Persona 解码到风格一致性校验，驱动从选题到成片的完整视频生产流程。
+
+---
+
 这个问题切中了内容工业化落地的核心。如果要用 AI 复刻我的剪辑流程，关键不是 “自动化拼接”，而是**风格参数的可迁移与可控生成**。我的核心标签是：高密度信息输出、强逻辑链条、极简极客视觉。这套工作流必须能将这些隐性经验转化为显性参数。
 
 以下是可直接落地的多 Agent 工作流架构：
@@ -122,10 +130,22 @@
 
 ## 三、工程落地路径
 
-这套架构在技术上是完全可行的。目前：
+这套架构在技术上是完全可行的。当前 Phase 1 实现状态：
 
-- **Agent 1-3** 可基于 LLM + RAG + CLIP 快速搭建原型。
-- **Agent 4** 可通过 Python 操控 `MoviePy` 或 `FFmpeg` 生成基础时间线，复杂工程可导出 XML/EDL 供专业软件读取。
-- **Agent 5-6** 建议对接 AE Scripting (ExtendScript/JSX) 或 Fusion 节点，实现参数化动画生成。
+| Agent | 功能 | 状态 |
+|-------|------|------|
+| Agent 1: PersonaDecoder | 未独立实现，由 PipelineOrchestrator 在运行时解析注入 | ✅ |
+| Agent 2: StructureAgent | LLM 生成脚本骨架，支持 tool calling | ✅ |
+| Agent 3: MaterialAgent | 通过 MaterialRegistry 跨素材源搜索 | ✅ |
+| Agent 4: EditAgent | 从候选素材构建真实时间线（3 轨：视频/文字/音频） | ✅ |
+| Agent 5: AnimationAgent | 基于 JSON 规范编排 onscreen/text/transition 动画 | ✅ |
+| Agent 6: AudioAgent | BGM 匹配与混音（Phase 1 占位） | ⏳ |
+| Agent 7: QualityAgent | 风格一致性校验（基础时长/轨道检查已实现） | ⏳ |
+
+**技术选型现状**：
+- Agent 1-4：LLM (Anthropic/OpenAI) + RAG (ChromaDB + Cross-Encoder) + ToolRegistry
+- Agent 5：JSON 规范动画引擎，通过 AnimationRegistry 管理 27 个内置动画
+- Agent 6-7：待 Phase 2 增强
+- 渲染：FFmpeg 调用已实现为 Tool，完整渲染管线待接入
 
 核心难点在于**隐性节奏的量化**（即 “什么时候该停顿、什么时候该快剪”）。这需要通过标注历史视频的时间线数据，训练一个轻量级的节奏预测模型（如基于 LSTM 或 Transformer 的序列模型），将 “网感” 转化为可计算的波形曲线。

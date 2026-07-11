@@ -49,14 +49,19 @@ mypy clipwright/
 
 ```
 clipwright/
-├── schema/     # Pydantic 数据模型（前后端统一契约）
-├── persona/    # Persona 系统
-├── category/   # 视频类型插件
-├── agents/     # Agent 编排层
-├── plugins/    # 第三方插件系统
-├── services/   # 业务服务层
-├── tool/       # 原子能力层
-└── api/        # FastAPI 路由
+├── schema/       # Pydantic 数据模型（前后端统一契约）
+├── persona/      # Persona 系统
+├── category/     # 视频类型插件（4 内置）
+├── agents/       # Agent 编排层（6 个 Agent）
+├── plugins/      # 第三方插件系统（importlib 加载）
+├── services/     # 业务服务层（Pipeline/LLM/PersonaForge/STT）
+├── tool/         # 原子能力层（10 个 FFmpeg 工具）
+├── skill/        # 技能系统（3 内置技能）
+├── material/     # 素材库系统（JSON/URL/RAG）
+├── animation/    # 动画系统（27 个内置动画）
+├── rag/          # RAG 检索（ChromaDB + 重排序）
+├── utils/        # 共享工具函数
+└── api/          # FastAPI 路由（12 个模块）
 ```
 
 ### Agent 开发规范
@@ -65,7 +70,9 @@ clipwright/
 2. Agent 的 `execute()` 方法必须是 async
 3. Agent 输入/输出必须有对应的 Pydantic 模型（定义在 `schema/agent.py`）
 4. Agent 内部不直接调用原子能力，经 `category_plugin.translate_persona()` 翻译
-5. 需要 LLM 调用工具的 Agent，使用 `AgentToolkit` + `LLMService.with_tools()`：
+5. 需要 LLM 调用工具的 Agent，使用 `AgentToolkit` + `LLMService.with_tools()`
+6. 素材检索使用 `MaterialRegistry.search()`，不要直接调用素材源
+7. 动画编排使用 `AnimationRegistry` + `AnimationRenderer`
 
 ```python
 from clipwright.tool.base import AgentToolkit

@@ -83,6 +83,47 @@ Skill 与 Tool 统一注册机制：
 - 都支持 `to_llm_tool()` 生成 LLM tool schema
 - 第三方 Plugin 可在 `initialize()` 中同时注册 Tool 和 Skill
 
+### 3.1.2 Animation 层（基于 JSON 规范的动画引擎）
+
+Animation 是独立于 Tool/Skill 的声明式动画系统，分三种类型：
+
+```
+Onscreen（10 个）      Text（5 个）           Transition（10 个）
+fade_in               typewriter             crossfade
+slide_up_in           char_by_char           push_left/right
+scale_in              text_fade_in           wipe_left
+blur_in               text_slide_up          zoom_in
+rotate_in             highlight_flash        glitch
+pulse                                     pixel_dissolve
+...                                       ...
+```
+
+每种动画通过 JSON 关键帧定义：
+```json
+{
+  "animation_id": "fade_in",
+  "type": "onscreen",
+  "duration_sec": 0.5,
+  "easing": "ease-out",
+  "keyframes": [
+    {"time": 0.0, "properties": {"opacity": 0}},
+    {"time": 1.0, "properties": {"opacity": 1}}
+  ]
+}
+```
+
+```
+Skill: analyze_video_structure
+  ├── Tool: scene_detect       → 检测场景切换点
+  ├── Tool: audio_extract      → 提取音频
+  └── Tool: bpm_detect         → 分析 BPM/节奏
+```
+
+Skill 与 Tool 统一注册机制：
+- 都通过 `Registry`（ToolRegistry / SkillRegistry）注册
+- 都支持 `to_llm_tool()` 生成 LLM tool schema
+- 第三方 Plugin 可在 `initialize()` 中同时注册 Tool 和 Skill
+
 ------
 
 ### 3.2 Agent 编排层 —— 脑回路
@@ -184,15 +225,16 @@ Persona详见Persona.md
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| `PluginLoader` | ✅ 已实现 | 支持 `plugin.yaml` 清单解析 + `importlib` 动态导入 |
-| `HookRegistry` | ✅ 已实现 | 支持 PRE/POST Pipeline、Agent、Render、ON_ERROR 钩子 |
-| REST API | ✅ 已实现 | `/api/plugin/list`, `/api/plugin/discover`, `/api/plugin/load/{id}`, `/api/plugin/unload/{id}` |
-| 自动发现 | ✅ 已实现 | `main.py` lifespan 中自动扫描 `plugins/` 目录 |
-| `BasePlugin` | ✅ 已实现 | 含 `initialize()` / `shutdown()` 生命周期 |
+| `PluginLoader` | ✅ 已实现 | 支持 `plugin.yaml` 清单解析 + `importlib` 动态导入 + 抽象基类跳过 |
+| `HookRegistry` | ✅ 已实现 | 7 个 HookPoint：PRE/POST Pipeline、Agent、Render、ON_ERROR |
+| REST API | ✅ 已实现 | list/discover/load/unload/load-all/capabilities |
+| 自动发现 | ✅ 已实现 | `main.py` lifespan 中自动扫描 `plugins/` 目录，启动时加载 |
+| 插件 ID 追踪 | ✅ 已实现 | PluginLoader 自动标记插件注册的 Tool/Skill/MaterialSource |
+| `BasePlugin` | ✅ 已实现 | `initialize()` 可注册 Tool + Skill + MaterialSource |
 | `MaterialSourcePlugin` | ✅ 接口已定义 | 扩展素材库来源 |
 | `AgentStrategyPlugin` | ✅ 接口已定义 | 替换或增强 Agent 执行策略 |
 | `CapabilityPlugin` | ✅ 接口已定义 | 封装外部工具/服务调用 |
-| 前端编辑器插件 | ❌ 未实现 | 计划在 Phase 2 实现 |
+| 前端编辑器插件 | ❌ 未实现 | 计划在 Phase 3 |
 
 **使用方式**：
 
@@ -311,11 +353,13 @@ Level 3 的微调产物以 LoRA 权重发布，其他用户可以直接加载。
 
 这不是画饼。按现在的技术成熟度，可以这样推进：
 
-**Phase 1（MVP，4-6 周）**：单 Agent 链条跑通。结构 Agent + 素材 Agent + 剪辑 Agent，只支持一种视频类型（知识区长片），Persona 配置手动编写。目标是产出第一个 2 分钟的自动生成视频片段。
+**Phase 1（已完成）**：6-Agent 管线全线贯通。Structure（LLM+tool calling）→ Material（MaterialRegistry）→ Edit（真实时间线）→ Animation（JSON 规范动画引擎）。Tool/Skill/Animation/Material/Plugin 五大系统就绪。
 
-**Phase 2（3 个月）**：多类型插件 + Persona 自动提取。支持 3 种视频类型，用户上传自己的历史视频后系统自动分析生成 Persona 配置文件。
+**Phase 2（已完成）**：素材库系统（JSON 目录 / URL / RAG 知识库）+ 第三方插件系统（importlib 动态加载）+ 语音转文字（Whisper 转录 + 文案对齐）。测试前端覆盖全部功能。
 
-**Phase 3（6 个月）**：LoRA 微调管线 + 社区生态。开放插件市场和 Persona 市场，创作者上传自己的微调权重，形成开源循环。
+**Phase 3（进行中）**：AudioAgent / QualityAgent 增强，FFmpeg 渲染管线接入。
+
+**Phase 4（计划中）**：LoRA 微调管线 + 社区生态。开放插件市场和 Persona 市场，创作者上传自己的微调权重，形成开源循环。
 
 ------
 

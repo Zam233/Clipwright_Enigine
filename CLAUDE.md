@@ -191,6 +191,11 @@ LLM Agent → ① 构造 AgentToolkit（感知 ToolRegistry 可用工具）
 | 新增/修改 Agent / Pipeline | `docs/workflow.md` |
 | 新增/修改架构层 | `docs/structure.md` |
 | 新增/修改 Persona 系统 | `docs/Persona.md` |
+| 新增/修改 Tool/Skill 系统 | `docs/development.md` + `docs/structure.md` |
+| 新增/修改 Animation 系统 | `docs/structure.md` |
+| 新增/修改 Material 系统 | `docs/structure.md` + `docs/development.md` |
+| 新增/修改 Plugin 系统 | `docs/development.md` + `docs/structure.md` |
+| 新增/修改 STT 服务 | `docs/quickstart.md` + `docs/api_reference.md` |
 | 依赖/启动方式/配置变更 | `docs/quickstart.md` |
 | 开发流程/测试/构建变更 | `docs/development.md` |
 
