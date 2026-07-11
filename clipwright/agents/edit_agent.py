@@ -86,12 +86,25 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                         )
                         if trim_result.status == "success" and trim_result.output_path:
                             processed_path = trim_result.output_path
-                            notes.append(f"场景{i}: 裁剪 {source_path} → {trim_result.output_path}")
+                            notes.append(f"场景{i}: 裁剪 {source_path}")
                         else:
                             logger.debug("场景 %s 裁剪失败: %s", i, trim_result.error)
                             processed_path = source_path
                     else:
                         processed_path = best_asset.get("asset_id", "")
+                else:
+                    # 无素材占位：用场景标题生成文字视频
+                    logger.info("场景 %s 无匹配素材，生成文字占位视频", i)
+                    text_result = await ToolRegistry.execute(
+                        "generate_text_video",
+                        text=scene_title,
+                        duration_sec=asset_dur,
+                    )
+                    if text_result.status == "success" and text_result.output_path:
+                        processed_path = text_result.output_path
+                        notes.append(f"场景{i}: 文字占位 → {scene_title}")
+                    else:
+                        logger.debug("文字视频生成失败: %s", text_result.error)
 
                 # 视频 clip
                 vid_clip = self._make_clip(

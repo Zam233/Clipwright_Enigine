@@ -15,6 +15,7 @@ from clipwright.tool.chroma_key import ChromaKeyTool
 from clipwright.tool.color import ColorCorrectTool, LutApplyTool
 from clipwright.tool.speed import SpeedRampTool
 from clipwright.tool.stabilize import VideoStabilizeTool
+from clipwright.tool.text_video import GenerateTextVideoTool
 from clipwright.tool.vision import SceneDetectTool, SemanticMatchTool
 
 
@@ -44,6 +45,8 @@ def register_builtin_tools() -> None:
         ChromaKeyTool(),
         # Stabilize
         VideoStabilizeTool(),
+        # Text-to-Video
+        GenerateTextVideoTool(),
     ]
     for tool in tools:
         ToolRegistry.register(tool)
@@ -76,4 +79,6 @@ __all__ = [
     "ChromaKeyTool",
     # Stabilize
     "VideoStabilizeTool",
+    # Text-to-Video
+    "GenerateTextVideoTool",
 ]
