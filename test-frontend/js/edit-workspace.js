@@ -91,8 +91,20 @@ async function runAiEdit() {
     }
 
     const tl = pipelineResult?.shared_data?.final_timeline;
+    const steps = pipelineResult?.steps || [];
+
+    // 显示管线状态
+    addEwLog(`管线状态: ${pipelineResult?.status || 'unknown'}`);
+    if (pipelineResult?.error) addEwLog(`错误: ${pipelineResult.error}`);
+
+    // 显示每个 Agent 步骤状态
+    for (const s of steps) {
+      const tag = s.status === 'completed' ? '✅' : s.status === 'failed' ? '❌' : '⏳';
+      addEwLog(`  ${tag} ${s.agent_name}: ${s.status}${s.duration_ms ? ' ('+s.duration_ms+'ms)' : ''}${s.error ? ' → '+s.error.slice(0,100) : ''}`);
+    }
+
     if (!tl) {
-      addEwLog('管线完成，但未生成时间线');
+      addEwLog('未生成时间线 — 可能是 LLM API Key 未配置或无素材源');
       btn.disabled = false; btn.textContent = '生成视频';
       return;
     }

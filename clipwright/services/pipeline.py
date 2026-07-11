@@ -97,14 +97,11 @@ class PipelineOrchestrator:
                 try:
                     from clipwright.rag.retriever import Retriever
                     retriever = Retriever()
-                    import asyncio
-                    result = asyncio.run(
-                        retriever.retrieve(
-                            request.persona_id,
-                            request.topic,
-                            top_k=3,
-                            rerank=False,
-                        )
+                    result = await retriever.retrieve(
+                        request.persona_id,
+                        request.topic,
+                        top_k=3,
+                        rerank=False,
                     )
                     if result.context:
                         rag_context = result.context
