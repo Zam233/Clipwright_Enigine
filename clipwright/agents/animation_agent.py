@@ -118,13 +118,15 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         import json
 
         onscreen_anims: list[AnimationInstance] = []
+        text_anims: list[AnimationInstance] = []
         transition_anims: list[AnimationInstance] = []
 
         # 读取可用动画 ID
         onscreen_ids = AnimationRegistry.list_ids(AnimationType.ONSCREEN)
+        text_ids = AnimationRegistry.list_ids(AnimationType.TEXT)
         transition_ids = AnimationRegistry.list_ids(AnimationType.TRANSITION)
 
-        if not onscreen_ids and not transition_ids:
+        if not onscreen_ids and not text_ids and not transition_ids:
             return AnimationSequence()
 
         # 从视觉风格确定首选动画
@@ -132,6 +134,11 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             style.get("animation_style", "fade_in"),
             onscreen_ids,
             default="fade_in",
+        )
+        pref_text = self._match_animation(
+            style.get("text_animation", "typewriter"),
+            text_ids,
+            default="typewriter",
         )
         pref_transition = self._match_animation(
             self._preferred_transition(style),
@@ -155,14 +162,16 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 clip_dur = clip.get("duration_sec", 5)
                 clip_kind = clip.get("kind", "")
 
-                # 文本轨道 → 入场动画
+                # 文字/字幕轨道 → 文字动画（不适用于图片/视频）
                 if clip_kind in ("text", "caption"):
-                    anim_id = pref_intro
-                    if anim_id and anim_id in onscreen_ids:
-                        onscreen_anims.append(AnimationInstance(
+                    anim_id = pref_text if pref_text in text_ids else (
+                        text_ids[0] if text_ids else ""
+                    )
+                    if anim_id:
+                        text_anims.append(AnimationInstance(
                             animation_id=anim_id,
-                            instance_id=f"anim_{uuid.uuid4().hex[:8]}",
-                            type=AnimationType.ONSCREEN,
+                            instance_id=f"text_anim_{uuid.uuid4().hex[:8]}",
+                            type=AnimationType.TEXT,
                             start_sec=clip_start,
                             duration_sec=min(
                                 self._anim_duration(anim_id),
@@ -170,6 +179,20 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                             ),
                             target_clip_id=clip_id,
                         ))
+                # 视频/图片轨道 → 屏幕动画
+                elif onscreen_ids:
+                    anim_id = pref_intro if pref_intro in onscreen_ids else onscreen_ids[0]
+                    onscreen_anims.append(AnimationInstance(
+                        animation_id=anim_id,
+                        instance_id=f"anim_{uuid.uuid4().hex[:8]}",
+                        type=AnimationType.ONSCREEN,
+                        start_sec=clip_start,
+                        duration_sec=min(
+                            self._anim_duration(anim_id),
+                            clip_dur * 0.3,
+                        ),
+                        target_clip_id=clip_id,
+                    ))
 
                 # 片段之间 → 转场
                 if i > 0 and transition_ids:
@@ -193,6 +216,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
         return AnimationSequence(
             onscreen_animations=onscreen_anims,
+            text_animations=text_anims,
             transition_animations=transition_anims,
         )
 

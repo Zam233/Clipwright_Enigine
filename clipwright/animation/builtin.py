@@ -134,23 +134,6 @@ ONSCREEN_ANIMATIONS: list[AnimationDef] = [
             "scale_y": PropertyDef(type="float", default=1, range=[0, 10]),
         },
     ),
-    # ── 打字机系 ──
-    AnimationDef(
-        animation_id="typewriter",
-        name="打字机效果",
-        type=AnimationType.ONSCREEN,
-        target=AnimationTarget.TEXT,
-        duration_sec=1.0,
-        easing=EasingFunction.LINEAR,
-        keyframes=[
-            Keyframe(time=0.0, properties={"opacity": 1, "char_progress": 0}),
-            Keyframe(time=1.0, properties={"opacity": 1, "char_progress": 1}),
-        ],
-        properties_meta={
-            "char_progress": PropertyDef(type="float", default=1, range=[0, 1], description="字符逐显进度"),
-            "opacity": PropertyDef(type="float", default=1, range=[0, 1]),
-        },
-    ),
     # ── 模糊入场 ──
     AnimationDef(
         animation_id="blur_in",
@@ -208,11 +191,30 @@ ONSCREEN_ANIMATIONS: list[AnimationDef] = [
             "opacity": PropertyDef(type="float", default=1, range=[0, 1]),
         },
     ),
+]
+
+# ── 文字动画 ──────────────────────────────────────────
+
+TEXT_ANIMATIONS: list[AnimationDef] = [
+    AnimationDef(
+        animation_id="typewriter",
+        name="打字机效果",
+        type=AnimationType.TEXT,
+        duration_sec=1.0,
+        easing=EasingFunction.LINEAR,
+        keyframes=[
+            Keyframe(time=0.0, properties={"opacity": 1, "char_progress": 0}),
+            Keyframe(time=1.0, properties={"opacity": 1, "char_progress": 1}),
+        ],
+        properties_meta={
+            "char_progress": PropertyDef(type="float", default=1, range=[0, 1], description="字符逐显进度"),
+            "opacity": PropertyDef(type="float", default=1, range=[0, 1]),
+        },
+    ),
     AnimationDef(
         animation_id="highlight_flash",
         name="高亮闪烁",
-        type=AnimationType.ONSCREEN,
-        target=AnimationTarget.TEXT,
+        type=AnimationType.TEXT,
         duration_sec=0.3,
         easing=EasingFunction.LINEAR,
         keyframes=[
@@ -222,6 +224,53 @@ ONSCREEN_ANIMATIONS: list[AnimationDef] = [
         ],
         properties_meta={
             "color_emphasis": PropertyDef(type="float", default=1, range=[0, 1], description="强调色强度"),
+        },
+    ),
+    AnimationDef(
+        animation_id="text_fade_in",
+        name="文字淡入",
+        type=AnimationType.TEXT,
+        duration_sec=0.4,
+        easing=EasingFunction.EASE_OUT,
+        keyframes=[
+            Keyframe(time=0.0, properties={"opacity": 0}),
+            Keyframe(time=1.0, properties={"opacity": 1}),
+        ],
+        properties_meta={
+            "opacity": PropertyDef(type="float", default=1, range=[0, 1]),
+        },
+    ),
+    AnimationDef(
+        animation_id="text_slide_up",
+        name="文字上滑",
+        type=AnimationType.TEXT,
+        duration_sec=0.5,
+        easing=EasingFunction.EASE_OUT_CUBIC,
+        keyframes=[
+            Keyframe(time=0.0, properties={"opacity": 0, "translate_y": 20}),
+            Keyframe(time=1.0, properties={"opacity": 1, "translate_y": 0}),
+        ],
+        properties_meta={
+            "opacity": PropertyDef(type="float", default=1, range=[0, 1]),
+            "translate_y": PropertyDef(type="float", default=0, range=[-100, 100], unit="percent"),
+        },
+    ),
+    AnimationDef(
+        animation_id="char_by_char",
+        name="逐字出现",
+        type=AnimationType.TEXT,
+        duration_sec=1.2,
+        easing=EasingFunction.LINEAR,
+        keyframes=[
+            Keyframe(time=0.0, properties={"char_progress": 0, "opacity": 1}),
+            Keyframe(time=0.2, properties={"char_progress": 0.2, "opacity": 1}),
+            Keyframe(time=0.5, properties={"char_progress": 0.5, "opacity": 1}),
+            Keyframe(time=0.8, properties={"char_progress": 0.8, "opacity": 1}),
+            Keyframe(time=1.0, properties={"char_progress": 1.0, "opacity": 1}),
+        ],
+        properties_meta={
+            "char_progress": PropertyDef(type="float", default=1, range=[0, 1], description="字符进度"),
+            "opacity": PropertyDef(type="float", default=1, range=[0, 1]),
         },
     ),
 ]
@@ -339,5 +388,5 @@ def register_builtin_animations() -> None:
     """注册所有内置动画到 AnimationRegistry。"""
     from clipwright.animation.registry import AnimationRegistry
 
-    for defn in ONSCREEN_ANIMATIONS + TRANSITION_ANIMATIONS:
+    for defn in ONSCREEN_ANIMATIONS + TEXT_ANIMATIONS + TRANSITION_ANIMATIONS:
         AnimationRegistry.register(defn)

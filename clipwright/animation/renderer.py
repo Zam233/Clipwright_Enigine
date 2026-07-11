@@ -73,6 +73,13 @@ class AnimationRenderer:
             op = AnimationRenderer._render_onscreen(defn, inst)
             ops.append(op)
 
+        for inst in sequence.text_animations:
+            defn = defs.get(inst.animation_id)
+            if defn is None:
+                continue
+            op = AnimationRenderer._render_text(defn, inst)
+            ops.append(op)
+
         for inst in sequence.transition_animations:
             defn = defs.get(inst.animation_id)
             if defn is None:
@@ -96,6 +103,31 @@ class AnimationRenderer:
             animation_id=inst.animation_id,
             instance_id=inst.instance_id,
             op_type="onscreen_overlay",
+            start_sec=inst.start_sec,
+            duration_sec=inst.duration_sec,
+            params={
+                "defn": defn.model_dump(mode="json"),
+                "interpolated": interpolated,
+                "overrides": inst.params,
+            },
+            target_clip_id=inst.target_clip_id,
+        )
+
+    @staticmethod
+    def _render_text(
+        defn: AnimationDef,
+        inst: AnimationInstance,
+    ) -> TimelineAnimationOp:
+        """渲染文字动画。"""
+        interpolated = AnimationRenderer._interpolate_keyframes(
+            defn.keyframes,
+            easing=_easing_value(defn.easing),
+        )
+
+        return TimelineAnimationOp(
+            animation_id=inst.animation_id,
+            instance_id=inst.instance_id,
+            op_type="text_overlay",
             start_sec=inst.start_sec,
             duration_sec=inst.duration_sec,
             params={

@@ -4,25 +4,46 @@
 
 ### 1. 屏幕上展示的动画 (onscreen)
 
-作用于文字/图片/形状等视觉元素的动画，通过关键帧插值驱动：
+作用于图片/视频/形状等非文字视觉元素的动画，通过关键帧插值驱动：
 
 ```json
 {
-  "animation_id": "fade_in_slide_up",
-  "name": "淡入上滑",
+  "animation_id": "fade_in",
+  "name": "淡入",
   "version": "1.0.0",
   "type": "onscreen",
-  "target": "text",
-  "duration_sec": 0.6,
-  "easing": "ease-out-cubic",
+  "target": "any",
+  "duration_sec": 0.5,
+  "easing": "ease-out",
   "keyframes": [
-    {"time": 0.0, "properties": {"opacity": 0, "translate_y": 50, "blur": 4}},
-    {"time": 1.0, "properties": {"opacity": 1, "translate_y": 0, "blur": 0}}
+    {"time": 0.0, "properties": {"opacity": 0}},
+    {"time": 1.0, "properties": {"opacity": 1}}
   ]
 }
 ```
 
-### 2. 转场动画 (transition)
+### 2. 文字动画 (text)
+
+只作用于文字/字幕元素的动画，具有文字特有的属性（字符逐显、高亮等）：
+
+```json
+{
+  "animation_id": "typewriter",
+  "name": "打字机效果",
+  "version": "1.0.0",
+  "type": "text",
+  "duration_sec": 1.0,
+  "keyframes": [
+    {"time": 0.0, "properties": {"char_progress": 0}},
+    {"time": 1.0, "properties": {"char_progress": 1}}
+  ],
+  "properties_meta": {
+    "char_progress": {"type": "float", "range": [0, 1], "description": "字符逐显进度"}
+  }
+}
+```
+
+### 3. 转场动画 (transition)
 
 作用于两个视频片段之间的过渡效果：
 
@@ -33,8 +54,7 @@
   "version": "1.0.0",
   "type": "transition",
   "duration_sec": 0.4,
-  "easing": "ease-in-out",
-  "ffmpeg_filter": "drawtext=text='{text}':fontsize={font_size}:x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t,{start},{end})'"
+  "easing": "ease-in-out"
 }
 ```
 """
@@ -50,13 +70,19 @@ from pydantic import BaseModel, Field
 # ── 枚举 ──────────────────────────────────────────────
 
 class AnimationType(str, Enum):
-    """动画类型。"""
+    """动画类型。
+
+    - onscreen: 作用于图片/视频/形状（不适用于文字）
+    - text: 只作用于文字/字幕元素
+    - transition: 两个片段之间的过渡效果
+    """
     ONSCREEN = "onscreen"
+    TEXT = "text"
     TRANSITION = "transition"
 
 
 class AnimationTarget(str, Enum):
-    """动画作用目标。"""
+    """动画作用目标（仅 onscreen 动画使用，text 动画隐式作用于文字）。"""
     TEXT = "text"
     IMAGE = "image"
     SHAPE = "shape"
@@ -198,8 +224,30 @@ class TransitionAnimationDef(BaseModel):
 
 # ── 统一动画定义 ───────────────────────────────────────
 
+class TextAnimationDef(BaseModel):
+    """文字动画定义。
+
+    只作用于文字/字幕元素，具有字符逐显等文字特有属性。
+    """
+    animation_id: str = Field(description="动画唯一 ID")
+    name: str = Field(default="", description="显示名称")
+    version: str = Field(default="1.0.0")
+    type: AnimationType = Field(default=AnimationType.TEXT)
+    duration_sec: float = Field(default=0.5, gt=0)
+    easing: EasingFunction = Field(default=EasingFunction.LINEAR)
+    keyframes: list[Keyframe] = Field(
+        default_factory=lambda: [
+            Keyframe(time=0.0, properties={"opacity": 0}),
+            Keyframe(time=1.0, properties={"opacity": 1}),
+        ],
+    )
+    properties_meta: dict[str, PropertyDef] = Field(default_factory=dict)
+
+    model_config = {"use_enum_values": True}
+
+
 class AnimationDef(BaseModel):
-    """统一动画定义（onscreen 或 transition）。"""
+    """统一动画定义（onscreen / text / transition）。"""
     animation_id: str
     name: str = ""
     version: str = Field(default="1.0.0")
@@ -208,14 +256,16 @@ class AnimationDef(BaseModel):
     author: str = Field(default="")
     tags: list[str] = Field(default_factory=list)
 
-    # onscreen 字段
-    target: AnimationTarget = Field(default=AnimationTarget.ANY)
+    # onscreen / text 共用字段
     duration_sec: float = Field(default=0.5, ge=0)
     easing: EasingFunction = Field(default=EasingFunction.LINEAR)
     keyframes: list[Keyframe] = Field(default_factory=list)
     properties_meta: dict[str, PropertyDef] = Field(default_factory=dict)
 
-    # transition 字段
+    # onscreen 专属
+    target: AnimationTarget = Field(default=AnimationTarget.ANY)
+
+    # transition 专属
     ffmpeg_filter: str = Field(default="")
     params: dict[str, PropertyDef] = Field(default_factory=dict)
 
@@ -223,7 +273,6 @@ class AnimationDef(BaseModel):
 
     @classmethod
     def from_onscreen(cls, defn: OnscreenAnimationDef) -> AnimationDef:
-        """从 onscreen 定义创建。"""
         return cls(
             animation_id=defn.animation_id,
             name=defn.name,
@@ -237,8 +286,20 @@ class AnimationDef(BaseModel):
         )
 
     @classmethod
+    def from_text(cls, defn: TextAnimationDef) -> AnimationDef:
+        return cls(
+            animation_id=defn.animation_id,
+            name=defn.name,
+            version=defn.version,
+            type=defn.type,
+            duration_sec=defn.duration_sec,
+            easing=defn.easing,
+            keyframes=defn.keyframes,
+            properties_meta=defn.properties_meta,
+        )
+
+    @classmethod
     def from_transition(cls, defn: TransitionAnimationDef) -> AnimationDef:
-        """从 transition 定义创建。"""
         return cls(
             animation_id=defn.animation_id,
             name=defn.name,
@@ -278,7 +339,11 @@ class AnimationSequence(BaseModel):
     """动画编排序列 — 描述整条时间线上的动画计划。"""
     onscreen_animations: list[AnimationInstance] = Field(
         default_factory=list,
-        description="屏幕动画序列",
+        description="屏幕动画序列（作用于图片/视频/形状）",
+    )
+    text_animations: list[AnimationInstance] = Field(
+        default_factory=list,
+        description="文字动画序列（只作用于文字/字幕元素）",
     )
     transition_animations: list[AnimationInstance] = Field(
         default_factory=list,
