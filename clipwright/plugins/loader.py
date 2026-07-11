@@ -78,13 +78,25 @@ class PluginLoader:
                 f"Plugin '{plugin_id}' has no exported class in its entry module"
             )
 
-        # 4. 初始化并注册
+        # 4. 初始化前快照注册表状态
+        from clipwright.skill.registry import SkillRegistry
+        from clipwright.tool.registry import ToolRegistry
+
+        _tools_before = set(ToolRegistry._tools.keys())
+        _skills_before = set(SkillRegistry._skills.keys())
+
         try:
             plugin.initialize()
         except Exception as e:
             raise PluginLoadError(
                 f"Plugin '{plugin_id}' initialize() failed: {e}"
             ) from e
+
+        # 自动标记插件注册的 Tool 和 Skill
+        for name in set(ToolRegistry._tools.keys()) - _tools_before:
+            ToolRegistry._tools[name]._plugin_id = plugin_id  # type: ignore[attr-defined]
+        for name in set(SkillRegistry._skills.keys()) - _skills_before:
+            SkillRegistry._skills[name]._plugin_id = plugin_id  # type: ignore[attr-defined]
 
         self._plugins[plugin_id] = plugin
         self._metadatas[plugin_id] = PluginMetadata(manifest=manifest)
@@ -184,19 +196,29 @@ class PluginLoader:
         self, module: object, manifest: PluginManifest
     ) -> Optional[BasePlugin]:
         """在导入的模块中查找并实例化插件类。"""
-        if not hasattr(module, "__all__"):
-            # 扫描模块属性找 BasePlugin 子类
-            for attr_name in dir(module):
-                attr = getattr(module, attr_name)
-                if (isinstance(attr, type) and issubclass(attr, BasePlugin) and attr is not BasePlugin):
+
+        def _is_concrete_plugin(attr: object) -> bool:
+            """判断是否是 BasePlugin 的非抽象子类。"""
+            return (
+                isinstance(attr, type)
+                and issubclass(attr, BasePlugin)
+                and attr is not BasePlugin
+                and not bool(getattr(attr, "__abstractmethods__", []))
+            )
+
+        # 优先扫描 __all__ 导出
+        if hasattr(module, "__all__"):
+            for export_name in getattr(module, "__all__", []):
+                attr = getattr(module, export_name, None)
+                if _is_concrete_plugin(attr):
                     instance = attr()
                     instance.manifest = manifest
                     return instance
-            return None
 
-        for export_name in getattr(module, "__all__", []):
-            attr = getattr(module, export_name, None)
-            if (isinstance(attr, type) and issubclass(attr, BasePlugin) and attr is not BasePlugin):
+        # 回退：扫描模块属性
+        for attr_name in dir(module):
+            attr = getattr(module, attr_name, None)
+            if _is_concrete_plugin(attr):
                 instance = attr()
                 instance.manifest = manifest
                 return instance

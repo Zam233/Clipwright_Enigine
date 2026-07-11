@@ -72,12 +72,14 @@ async def load_all_plugins() -> list[str]:
 
 @router.get("/capabilities")
 async def get_capabilities() -> dict:
-    """获取系统全部能力概览（插件 + 工具 + 技能）。"""
+    """获取系统全部能力概览（插件 + 工具 + 技能 + 素材源）。"""
+    from clipwright.material import MaterialRegistry
     from clipwright.skill import SkillRegistry
     from clipwright.tool import ToolRegistry
 
     return {
         "tools": ToolRegistry.list(),
         "skills": SkillRegistry.list(),
+        "material_sources": MaterialRegistry.list(),
         "plugins": _loader.list_loaded() if _loader else [],
     }

@@ -7,3 +7,4 @@ from .plugin import *
 from .pipeline import *
 from .tool import *
 from .skill import *
+from .material import *

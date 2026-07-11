@@ -1,0 +1,7 @@
+id: "my_material_lib"
+name: "My Material Library"
+version: "1.0.0"
+kind: "material"
+description: "示例素材库插件 — JSON 目录 + URL 访问 + RAG 知识库"
+author: "Clipwright Team"
+entry_point: "my_material_lib.main"

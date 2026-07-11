@@ -21,6 +21,7 @@ from clipwright.api import rag as rag_api
 from clipwright.api import render as render_api
 from clipwright.api import tool as tool_api
 from clipwright.api import plugin as plugin_api
+from clipwright.api import material as material_api
 from clipwright.api import skill as skill_api
 from clipwright.category import (
     CategoryRegistry,
@@ -30,6 +31,7 @@ from clipwright.category import (
     VlogDailyPlugin,
 )
 from clipwright.plugins import PluginLoader
+from clipwright.material import MaterialRegistry
 from clipwright.skill import register_builtin_skills, SkillRegistry
 from clipwright.tool import ToolRegistry, register_builtin_tools
 
@@ -67,7 +69,8 @@ async def lifespan(app: FastAPI):
     # 输出能力概览
     tool_count = len(ToolRegistry.list())
     skill_count = len(SkillRegistry.list())
-    print(f"[Clipwright] Capabilities: {tool_count} tools, {skill_count} skills")
+    material_count = len(MaterialRegistry.list())
+    print(f"[Clipwright] Capabilities: {tool_count} tools, {skill_count} skills, {material_count} material sources")
 
     # 5. 注入 PluginLoader 到 API 模块
     plugin_api.set_loader(_plugin_loader)
@@ -78,6 +81,7 @@ async def lifespan(app: FastAPI):
     if _plugin_loader:
         _plugin_loader.clear()
     CategoryRegistry.clear()
+    MaterialRegistry.clear()
     ToolRegistry.clear()
     SkillRegistry.clear()
 
@@ -123,6 +127,7 @@ app.include_router(render_api.router)
 app.include_router(tool_api.router)
 app.include_router(plugin_api.router)
 app.include_router(skill_api.router)
+app.include_router(material_api.router)
 
 
 @app.get("/health")

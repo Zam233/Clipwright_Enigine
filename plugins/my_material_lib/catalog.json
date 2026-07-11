@@ -1,0 +1,102 @@
+[
+  {
+    "id": "bg_city_night",
+    "title": "城市夜景空镜",
+    "type": "video",
+    "local_path": "materials/city_night.mp4",
+    "url": "https://cdn.example.com/materials/city_night.mp4",
+    "tags": ["城市", "夜景", "空镜", "b-roll"],
+    "duration_sec": 30,
+    "resolution": "3840x2160",
+    "thumbnail_url": "https://cdn.example.com/thumbnails/city_night.jpg",
+    "metadata": {
+      "shot_type": "wide",
+      "motion": "static",
+      "color_tone": "warm"
+    }
+  },
+  {
+    "id": "bg_forest_stream",
+    "title": "森林溪流自然风光",
+    "type": "video",
+    "local_path": "materials/forest_stream.mp4",
+    "url": "https://cdn.example.com/materials/forest_stream.mp4",
+    "tags": ["自然", "森林", "溪流", "风光"],
+    "duration_sec": 45,
+    "resolution": "1920x1080",
+    "thumbnail_url": "https://cdn.example.com/thumbnails/forest_stream.jpg",
+    "metadata": {
+      "shot_type": "medium",
+      "motion": "slow",
+      "color_tone": "natural"
+    }
+  },
+  {
+    "id": "tech_workspace",
+    "title": "科技感工作台第一人称",
+    "type": "video",
+    "local_path": "materials/tech_workspace.mp4",
+    "url": "https://cdn.example.com/materials/tech_workspace.mp4",
+    "tags": ["科技", "工作台", "编程", "数码"],
+    "duration_sec": 20,
+    "resolution": "1920x1080",
+    "thumbnail_url": "https://cdn.example.com/thumbnails/tech_workspace.jpg",
+    "metadata": {
+      "shot_type": "close_up",
+      "motion": "handheld",
+      "color_tone": "cold"
+    }
+  },
+  {
+    "id": "audio_cinematic_drone",
+    "title": "电影感无人机环境音",
+    "type": "audio",
+    "local_path": "materials/cinematic_drone.mp3",
+    "url": "https://cdn.example.com/audio/cinematic_drone.mp3",
+    "tags": ["电影感", "无人机", "环境音", "铺垫"],
+    "duration_sec": 120,
+    "metadata": {
+      "genre": "cinematic",
+      "mood": "epic",
+      "bpm": 80
+    }
+  },
+  {
+    "id": "audio_tech_review_bg",
+    "title": "科技评测背景音乐",
+    "type": "audio",
+    "local_path": "materials/tech_review_bg.mp3",
+    "url": "https://cdn.example.com/audio/tech_review_bg.mp3",
+    "tags": ["科技", "评测", "背景音乐", "轻快"],
+    "duration_sec": 90,
+    "metadata": {
+      "genre": "electronic",
+      "mood": "upbeat",
+      "bpm": 128
+    }
+  },
+  {
+    "id": "img_infographic_01",
+    "title": "数据信息图模板",
+    "type": "image",
+    "local_path": "materials/infographic_01.png",
+    "url": "https://cdn.example.com/images/infographic_01.png",
+    "tags": ["信息图", "数据", "模板", "图表"],
+    "metadata": {
+      "style": "flat",
+      "color_scheme": "blue_gradient"
+    }
+  },
+  {
+    "id": "img_divider_wave",
+    "title": "波浪分割线装饰",
+    "type": "image",
+    "local_path": "materials/divider_wave.png",
+    "url": "https://cdn.example.com/images/divider_wave.png",
+    "tags": ["分割线", "装饰", "波浪", "过渡"],
+    "metadata": {
+      "style": "minimal",
+      "transparent_bg": true
+    }
+  }
+]
