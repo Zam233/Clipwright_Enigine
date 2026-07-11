@@ -83,20 +83,34 @@ settings = Settings()
 
 # ── 日志配置 ─────────────────────────────────────────
 
-def setup_logging() -> logging.Logger:
-    """配置并返回全局 logger。"""
-    logger = logging.getLogger("clipwright")
-    logger.setLevel(logging.DEBUG if settings.debug else logging.INFO)
+_LOG_FORMAT = "[%(asctime)s] %(levelname)-7s %(name)s: %(message)s"
 
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        handler.setLevel(logging.DEBUG)
-        fmt = logging.Formatter(
-            "[%(asctime)s] %(levelname)-7s %(name)s: %(message)s",
-            datefmt="%H:%M:%S",
-        )
-        handler.setFormatter(fmt)
-        logger.addHandler(handler)
+
+def setup_logging() -> logging.Logger:
+    """配置全局日志：所有 logger 都输出到终端。"""
+    level = logging.DEBUG if settings.debug else logging.INFO
+
+    # 配置根 logger（影响所有子 logger）
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    # 清除已有 handler，避免重复
+    for h in root.handlers[:]:
+        root.removeHandler(h)
+
+    handler = logging.StreamHandler()
+    handler.setLevel(level)
+    handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt="%H:%M:%S"))
+    root.addHandler(handler)
+
+    # Clipwright 自家 logger
+    logger = logging.getLogger("clipwright")
+    logger.setLevel(level)
+    logger.propagate = True  # 确保传播到根 logger
+
+    # 压制第三方库的 DEBUG 日志
+    for noisy in ("httpx", "httpcore", "chromadb", "urllib3", "PIL", "matplotlib"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     return logger
 
