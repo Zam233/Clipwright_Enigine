@@ -29,6 +29,7 @@ from clipwright.api import project as project_api
 from clipwright.api import proxy as proxy_api
 from clipwright.api import subtitle as subtitle_api
 from clipwright.api import stt as stt_api
+from clipwright.api import vision as vision_api
 from clipwright.api import waveform as waveform_api
 from clipwright.api import skill as skill_api
 from clipwright.category import (
@@ -151,6 +152,7 @@ app.include_router(proxy_api.router)
 app.include_router(project_api.router)
 app.include_router(subtitle_api.router)
 app.include_router(waveform_api.router)
+app.include_router(vision_api.router)
 
 
 @app.get("/health")

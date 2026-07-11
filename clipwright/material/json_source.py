@@ -204,6 +204,14 @@ class JsonCatalogSource(MaterialSource):
     async def list_all(self) -> list[MaterialAsset]:
         return list(self._assets)
 
+    def add_asset(self, asset: MaterialAsset) -> None:
+        """动态添加一个素材到目录（不写文件）。"""
+        for i, a in enumerate(self._assets):
+            if a.id == asset.id:
+                self._assets[i] = asset
+                return
+        self._assets.append(asset)
+
     @staticmethod
     def _match(asset: MaterialAsset, query_terms: list[str]) -> float:
         """关键词相关度评分。"""
