@@ -1,10 +1,16 @@
 """剪辑 Agent（EditAgent）— 时间线生成。
 
-核心逻辑：Persona 参数注入点。
-接收 Persona 配置 → 经类型插件翻译 → 生成粗剪时间线。
+核心职责：
+1. 接收 MaterialAgent 的候选素材 + StructureAgent 的脚本骨架
+2. 从 category_plugin.translate_persona() 获取节奏参数
+3. 为每个场景选取最佳素材 → 裁剪 → 放置到时间线
+4. 输出粗剪 Timeline 供 AnimationAgent 加工
 """
 
 from __future__ import annotations
+
+import uuid
+from typing import Any
 
 from clipwright.agents.base import BaseAgent
 from clipwright.schema.agent import (
@@ -13,77 +19,181 @@ from clipwright.schema.agent import (
     EditInput,
     EditOutput,
 )
-from clipwright.schema.timeline import Clip, ClipKind, Timeline, Track
+from clipwright.schema.timeline import Clip, ClipKind, ImageFit, Timeline, Track
+from clipwright.tool.registry import ToolRegistry
 
 
 class EditAgent(BaseAgent[EditInput, EditOutput]):
-    """剪辑 Agent：根据 Persona 参数和素材生成粗剪时间线。"""
+    """剪辑 Agent：从脚本骨架和素材生成粗剪时间线。"""
 
     agent_name = "edit_agent"
 
     async def execute(
         self, input_data: EditInput, context: AgentContext
     ) -> EditOutput:
+        notes: list[str] = []
         try:
-            # 从 context 获取视频类型插件翻译后的参数
-            # 实际会调用 category_plugin.translate_persona()
-            shot_params = context.extra_params.get("shot_params", {})
-            base_shot_ms = shot_params.get("base_shot_ms", 5000)
+            # 1. 解析输入
+            scenes = input_data.script_skeleton.get("scenes", [])
+            candidate_clips = input_data.candidate_clips or []
 
-            # ==== Phase 1 占位实现 ====
+            # 2. 获取 Persona 剪辑参数（经 category_plugin 翻译）
+            shot_params = context.extra_params.get("shot_params", {})
+            cut_profile = context.extra_params.get("cut_profile", "even_flow")
+            transition_weights = context.extra_params.get("transition_weights", {})
+
+            base_shot_ms = shot_params.get("base_shot_ms", 5000)
+            base_shot_sec = base_shot_ms / 1000.0
+
+            # 3. 构建轨道
+            vid_track = Track(id=_uid("t"), name="视频轨", kind=ClipKind.VIDEO, index=0)
+            text_track = Track(id=_uid("t"), name="文字轨", kind=ClipKind.TEXT, index=1)
+            audio_track = Track(id=_uid("t"), name="音频轨", kind=ClipKind.AUDIO, index=2)
+
+            # 4. 对每个场景取最佳素材
+            current_time = 0.0
+            scene_asset_map: dict[str, dict] = {}  # scene_id → best asset
+
+            for i, scene in enumerate(scenes):
+                scene_title = scene.get("title", f"场景{i+1}")
+                scene_duration = scene.get("duration_sec", base_shot_sec)
+
+                # 找此场景的最佳候选
+                scene_candidates = [
+                    c for c in candidate_clips
+                    if c.get("scene_index") == i
+                ]
+                best_asset = self._pick_best(scene_candidates)
+
+                # 素材时长不能超过场景时长
+                asset_dur = scene_duration
+                if best_asset:
+                    ad = best_asset.get("duration_sec")
+                    if ad and ad < asset_dur:
+                        asset_dur = ad
+                    scene_asset_map[str(i)] = best_asset
+
+                # 视频 clip
+                vid_clip = self._make_clip(
+                    kind=ClipKind.VIDEO,
+                    track_id=vid_track.id,
+                    start_sec=current_time,
+                    duration_sec=asset_dur,
+                    asset=best_asset,
+                    clip_label=f"v_{i}",
+                )
+                vid_track.clips.append(vid_clip)
+
+                # 文字 clip（场景标题字幕）
+                text_clip = Clip(
+                    id=_uid("c"),
+                    kind=ClipKind.TEXT,
+                    asset_id="",
+                    track_id=text_track.id,
+                    start_sec=current_time,
+                    duration_sec=min(3.0, asset_dur * 0.3),
+                    text=scene_title,
+                    font="sans-serif",
+                    font_size=48,
+                    font_color="#ffffff",
+                )
+                text_track.clips.append(text_clip)
+
+                # 音频轨占位
+                audio_clip = Clip(
+                    id=_uid("c"),
+                    kind=ClipKind.AUDIO,
+                    asset_id="",
+                    track_id=audio_track.id,
+                    start_sec=current_time,
+                    duration_sec=asset_dur,
+                    volume=1.0,
+                )
+                audio_track.clips.append(audio_clip)
+
+                # 为下一场景留出位置
+                current_time += asset_dur
+
+            # 5. 选择转场风格
+            pref_transition = max(
+                transition_weights,
+                key=transition_weights.get,
+            ) if transition_weights else "hard_cut"
+            notes.append(f"转场偏好: {pref_transition}")
+            notes.append(f"基准镜头时长: {base_shot_ms}ms")
+            notes.append(f"剪辑节奏: {cut_profile}")
+            notes.append(f"共 {len(scenes)} 场景, {len(candidate_clips)} 候选素材, "
+                         f"{len(scene_asset_map)} 场景有匹配素材")
+
+            # 6. 构建 Timeline
             timeline = Timeline(
+                id=_uid("tl"),
                 width=1920,
                 height=1080,
                 fps=30,
+                tracks=[vid_track, text_track, audio_track],
             )
-
-            # 创建基础轨道
-            video_track = Track(
-                id="v1",
-                name="视频轨",
-                kind=ClipKind.VIDEO,
-                index=0,
-            )
-            text_track = Track(
-                id="t1",
-                name="文字轨",
-                kind=ClipKind.TEXT,
-                index=1,
-            )
-            audio_track = Track(
-                id="a1",
-                name="音频轨",
-                kind=ClipKind.AUDIO,
-                index=2,
-            )
-
-            # 为每个场景生成占位片段
-            scenes = input_data.script_skeleton.get("scenes", [])
-            current_time = 0.0
-            for i, scene in enumerate(scenes):
-                scene_duration = scene.get("duration_sec", 30)
-                clip = Clip(
-                    id=f"v_clip_{i}",
-                    kind=ClipKind.VIDEO,
-                    asset_id=f"asset_{i}",
-                    track_id="v1",
-                    start_sec=current_time,
-                    duration_sec=scene_duration,
-                )
-                video_track.clips.append(clip)
-                current_time += scene_duration
-
-            timeline.tracks = [video_track, text_track, audio_track]
             timeline.duration_sec = timeline.total_duration_sec
 
             return EditOutput(
                 decision=AgentDecision.PASS,
                 timeline=timeline,
-                edit_notes=[
-                    f"使用 {base_shot_ms}ms 基准镜头时长",
-                    f"共 {len(scenes)} 个场景",
-                ],
+                edit_notes=notes,
             )
 
         except Exception as e:
             return self.build_error_output(str(e), EditOutput)
+
+    # ── 工具方法 ──
+
+    def _pick_best(
+        self,
+        candidates: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """从候选素材中取最佳匹配。"""
+        if not candidates:
+            return None
+        # 按 score 降序
+        sorted_c = sorted(
+            candidates,
+            key=lambda c: c.get("score", 0) if isinstance(c.get("score"), (int, float)) else 0,
+            reverse=True,
+        )
+        best = sorted_c[0]
+        suggested = best.get("suggested_assets", [])
+        if suggested:
+            return max(suggested, key=lambda a: a.get("score", 0))
+        return None
+
+    def _make_clip(
+        self,
+        kind: ClipKind,
+        track_id: str,
+        start_sec: float,
+        duration_sec: float,
+        asset: dict[str, Any] | None,
+        clip_label: str,
+    ) -> Clip:
+        """构造一个 Clip，填充素材信息。"""
+        clip = Clip(
+            id=_uid("c"),
+            kind=kind,
+            asset_id=asset.get("asset_id", "") if asset else "",
+            track_id=track_id,
+            start_sec=start_sec,
+            duration_sec=duration_sec,
+        )
+        if asset:
+            clip.asset_id = asset.get("asset_id", clip.asset_id)
+            url = asset.get("url", "")
+            local_path = asset.get("local_path", "")
+
+        if kind in (ClipKind.VIDEO, ClipKind.IMAGE):
+            clip.image_fit = ImageFit.COVER
+
+        return clip
+
+
+def _uid(prefix: str) -> str:
+    """生成短唯一 ID。"""
+    return f"{prefix}_{uuid.uuid4().hex[:8]}"
