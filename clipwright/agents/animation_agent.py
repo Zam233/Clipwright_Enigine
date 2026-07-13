@@ -417,6 +417,55 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             # 数据图表：每项格式 "标签:数值" 或纯标签（自动生成值）
             items = [t.strip() for t in text.replace("|", ",").split(",")] if "|" in text or "," in text else [text[:20]]
             base["items"] = items[:8]
+        # 插件图解类型（由 logic_animations 插件提供）
+        elif anim_id == "mindmap":
+            # "中心词|子1|子2|子3"
+            items = [t.strip() for t in text.split("|")] if "|" in text else [text[:20]]
+            base["items"] = items[:13]
+        elif anim_id == "radar":
+            # "标签1:80,标签2:60,标签3:90"
+            items = [t.strip() for t in text.replace("|", ",").split(",")] if "," in text or "|" in text else [text[:20]]
+            base["items"] = items[:8]
+        elif anim_id == "gantt":
+            # "任务1:0:5,任务2:3:8,任务3:7:4"
+            items = [t.strip() for t in text.replace("|", ",").split(",")] if "," in text or "|" in text else [text[:20]]
+            base["items"] = items[:10]
+        elif anim_id == "venn3":
+            # "A|B|C|AB交|AC交|BC交|ABC交"
+            items = [t.strip() for t in text.split("|")] if "|" in text else [text[:20]]
+            base["items"] = items[:7]
+        elif anim_id == "heatmap":
+            # "列1,列2,列3|行1:1,2,3|行2:4,5,6"
+            items = [t.strip() for t in text.replace("→", "|").split("|")] if "|" in text or "→" in text else [text[:20]]
+            base["items"] = items[:8]
+        elif anim_id == "sankey":
+            # "源:目标:值|源2:目标2:值2"
+            items = [t.strip() for t in text.replace("→", "|").split("|")] if "|" in text or "→" in text else [text[:20]]
+            base["items"] = items[:10]
+        elif anim_id == "concept":
+            # "节点A:100:200:标签A|节点B:400:200:标签B|节点A->节点B:关系标签"
+            items = [t.strip() for t in text.replace("→", "|").split("|")] if "|" in text or "→" in text else [text[:20]]
+            base["items"] = items[:12]
+        elif anim_id == "codeblock":
+            # codeblock: 用 → 分隔代码行（每行为一行代码）
+            items = [t.strip() for t in text.replace("→", "\n").split("\n")] if "\n" in text or "→" in text else [text[:20]]
+            base["items"] = items[:20]
+        elif anim_id == "datatable":
+            # "表头1,表头2,表头3|行1A,行1B,行1C|行2A,行2B,行2C"
+            items = [t.strip() for t in text.replace("→", "|").split("|")] if "|" in text or "→" in text else [text[:20]]
+            base["items"] = items[:8]
+        elif anim_id == "quote":
+            # "引用内容|作者名"
+            items = [t.strip() for t in text.split("|")] if "|" in text else [text[:20]]
+            base["items"] = items[:2]
+        elif anim_id == "compcard":
+            # "特征,A值,B值,胜出方(1/2)|特征2,A2,B2,胜出方"
+            items = [t.strip() for t in text.replace("→", "|").split("|")] if "|" in text or "→" in text else [text[:20]]
+            base["items"] = items[:10]
+        elif anim_id == "orgchart":
+            # "CEO|  VP1|  VP2|   经理A|   经理B"（保留缩进以表示层级）
+            items_raw = text.replace("→", "\n").split("\n") if "\n" in text or "→" in text else [text[:20]]
+            base["items"] = items_raw[:15]
         else:
             base["items"] = [text[:20]]
 
