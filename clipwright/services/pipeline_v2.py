@@ -259,13 +259,17 @@ class PipelineOrchestratorV2:
         persona_config = manifest.parameter.model_dump(mode="json") if manifest.parameter else {}
         translated = plugin.translate_persona(manifest.parameter) if manifest.parameter else {}
 
-        # Agent 上下文（合并前端参数）
+        # Agent 上下文（合并前端参数 + 完整 Persona 参数供 StyleInterpreter 使用）
         agent_context = AgentContext(
             pipeline_id=pid,
             persona_id=request.persona_id,
             category_plugin_id=request.category_plugin_id,
             topic=request.topic,
-            extra_params={**translated, **request.extra_params},
+            extra_params={
+                **translated, **request.extra_params,
+                "_persona_config": persona_config,
+                "_identity": manifest.parameter.identity.model_dump(mode="json") if manifest.parameter and manifest.parameter.identity else {},
+            },
         )
 
         bus.set_artifact("persona_config", persona_config)

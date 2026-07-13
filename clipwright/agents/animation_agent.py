@@ -56,9 +56,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 logger.info("AnimationAgent: 时间线为空，跳过")
                 return AnimationOutput(decision=AgentDecision.PASS, timeline=timeline)
 
-            # 解析视觉风格
-            persona_style = self._resolve_style(
-                input_data.visual_config, context.extra_params
+            # 解析视觉风格（LLM 驱动，支持插件覆盖）
+            persona_style = await self._resolve_style(
+                input_data.visual_config, context.extra_params,
             )
 
             text_track = self._find_or_create_track(timeline, ClipKind.TEXT, "文字轨", 1)
@@ -357,12 +357,26 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         return ""
 
     @staticmethod
-    def _resolve_style(
+    async def _resolve_style(
         visual_config: dict[str, Any] | None,
         extra_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        """从 Persona 配置中解析文字视觉风格。"""
-        return AnimationCatalog.resolve_persona_style(visual_config, extra_params)
+        """从 Persona 配置中解析视觉风格（LLM 驱动 + 插件可覆盖）。"""
+        from clipwright.services.style_interpreter import StyleInterpreter
+
+        # 构建 Persona 上下文（含完整 identity/rhythm 等）
+        ctx = dict(extra_params or {})
+        persona_config = ctx.pop("_persona_config", {})
+        identity = ctx.pop("_identity", {})
+        persona_context = {
+            "identity": identity,
+            "extra_params": ctx,
+            **persona_config,
+        }
+
+        config = visual_config or {}
+        result = await StyleInterpreter.interpret(config, persona_context)
+        return result
 
     @staticmethod
     def _build_diagram_params(

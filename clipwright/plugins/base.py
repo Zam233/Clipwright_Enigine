@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+from clipwright.config import logger as _clipwright_logger
 from clipwright.schema.plugin import PluginManifest
 
 
@@ -18,6 +19,12 @@ class BasePlugin(ABC):
 
     manifest: PluginManifest
     config: dict[str, Any] = {}  # 从 config.yaml 加载，插件内通过 self.config 访问
+
+    @property
+    def logger(self):
+        """插件可用的日志记录器，绑定插件 ID。"""
+        import logging
+        return logging.getLogger(f"clipwright.plugin.{self.manifest.id}")
 
     @abstractmethod
     def initialize(self) -> None:
@@ -72,3 +79,32 @@ class AgentStrategyPlugin(BasePlugin):
 class CapabilityPlugin(BasePlugin):
     """能力/工具插件 — 封装外部工具或服务的调用。"""
     pass
+
+
+class StyleInterpreterPlugin(BasePlugin):
+    """风格解释器插件 — 将 Persona 视觉参数和语境转为图解样式。
+
+    创作者可通过实现此接口自定义风格逻辑，
+    例如根据 Persona 的 tone/identity/rhythm 动态计算配色和字体。
+    """
+
+    @abstractmethod
+    async def interpret(
+        self,
+        visual_config: dict,
+        persona_context: dict,
+    ) -> dict:
+        """将 Persona 视觉/语境参数转为 DiagramStyle 兼容的参数字典。
+
+        Args:
+            visual_config: Persona 的 visual 层参数
+                (含 palette, font, style_description, primary_color 等)
+            persona_context: 完整 Persona 上下文
+                (含 identity, language, rhythm 等)
+
+        Returns:
+            dict 包含 DiagramStyle 兼容的字段:
+                primary_color, secondary_color, accent_color, text_color,
+                font_size, title_font_size, stagger_delay, font, etc.
+        """
+        ...
