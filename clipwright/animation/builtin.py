@@ -198,7 +198,7 @@ ONSCREEN_ANIMATIONS: list[AnimationDef] = [
 TEXT_ANIMATIONS: list[AnimationDef] = [
     AnimationDef(
         animation_id="typewriter",
-        name="打字机效果",
+        name="打字",
         type=AnimationType.TEXT,
         duration_sec=1.0,
         easing=EasingFunction.LINEAR,
@@ -213,7 +213,7 @@ TEXT_ANIMATIONS: list[AnimationDef] = [
     ),
     AnimationDef(
         animation_id="highlight_flash",
-        name="高亮闪烁",
+        name="高亮",
         type=AnimationType.TEXT,
         duration_sec=0.3,
         easing=EasingFunction.LINEAR,
@@ -228,7 +228,7 @@ TEXT_ANIMATIONS: list[AnimationDef] = [
     ),
     AnimationDef(
         animation_id="text_fade_in",
-        name="文字淡入",
+        name="淡入",
         type=AnimationType.TEXT,
         duration_sec=0.4,
         easing=EasingFunction.EASE_OUT,
@@ -242,7 +242,7 @@ TEXT_ANIMATIONS: list[AnimationDef] = [
     ),
     AnimationDef(
         animation_id="text_slide_up",
-        name="文字上滑",
+        name="滑入",
         type=AnimationType.TEXT,
         duration_sec=0.5,
         easing=EasingFunction.EASE_OUT_CUBIC,
@@ -257,7 +257,7 @@ TEXT_ANIMATIONS: list[AnimationDef] = [
     ),
     AnimationDef(
         animation_id="char_by_char",
-        name="逐字出现",
+        name="逐字",
         type=AnimationType.TEXT,
         duration_sec=1.2,
         easing=EasingFunction.LINEAR,

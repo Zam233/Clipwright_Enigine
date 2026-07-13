@@ -17,6 +17,7 @@ from isobase.llm import AnthropicMessages, OpenAIChat
 from isobase.llm.entities import LLMResponse
 
 from clipwright.config import settings
+from clipwright.config import logger
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 
 
@@ -69,6 +70,7 @@ class LLMService:
         messages: list[dict[str, str]],
         model: Optional[str] = None,
         tools: Optional[list[dict[str, Any]]] = None,
+        timeout: int = 120,
         **kwargs: Any,
     ) -> LLMResponse:
         """发送非流式生成请求。
@@ -77,6 +79,7 @@ class LLMService:
             messages: 对话消息列表 [{"role": "user", "content": "..."}]
             model: 模型 ID，不传则用默认模型
             tools: Anthropic/OpenAI 格式的 tool schemas
+            timeout: 超时秒数，默认 120s
             **kwargs: 透传给 IsoBase 的额外参数
 
         Returns:
@@ -84,9 +87,31 @@ class LLMService:
         """
         if tools:
             kwargs["tools"] = tools
-        return await asyncio.to_thread(
+        # IsoBase 不支持 max_retries，仅传 timeout
+        if timeout:
+            kwargs["timeout"] = timeout
+        logger.debug("LLM generate 请求: model=%s, timeout=%ds, messages=%s, tools=%s",
+                     model or settings.llm_model, timeout,
+                     json.dumps(messages, ensure_ascii=False)[:500],
+                     json.dumps(kwargs.get("tools", []), ensure_ascii=False)[:200])
+        resp = await asyncio.to_thread(
             partial(self.client.generate, messages=messages, model=model, **kwargs),
         )
+        logger.debug("LLM generate 响应: success=%s, content=%.500s, tool_calls=%s",
+                     resp.success, resp.content or "",
+                     [f"{tc.name}({tc.arguments[:100]})" for tc in (resp.tool_calls or [])])
+        # 推送 LLM 响应 + 推理过程到 trace（用于 SSE 流式显示 LLM 思考）
+        try:
+            from clipwright.services.trace import add_tool_event as _push_llm
+            reasoning = getattr(resp, 'reasoning_content', '') or ''
+            display_text = (reasoning[:200] if reasoning else resp.content[:200]) if resp.content else ""
+            if reasoning:
+                _push_llm("🤔 LLM 推理", {"推理": reasoning[:500]})
+            if resp.content:
+                _push_llm("💬 LLM 响应", {"响应": resp.content[:500]})
+        except Exception:
+            pass
+        return resp
 
     async def ask(
         self,
@@ -94,19 +119,17 @@ class LLMService:
         tools: Optional[list[dict[str, Any]]] = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        """简化的单轮对话接口。
-
-        Args:
-            prompt: 用户输入文本
-            tools: Anthropic/OpenAI 格式的 tool schemas
-            **kwargs: 透传给 IsoBase 的额外参数
-
-        Returns:
-            IsoBase 的 LLMResponse
-        """
-        return await asyncio.to_thread(
-            partial(self.client.ask, prompt=prompt, stream=False, tools=tools, **kwargs),
+        """简化的单轮对话接口。"""
+        logger.debug("LLM ask: prompt=%.300s, tools=%s", prompt,
+                     json.dumps(tools, ensure_ascii=False)[:200] if tools else "none")
+        ask_kwargs = {**kwargs, "stream": False}
+        if tools is not None:
+            ask_kwargs["tools"] = tools
+        resp = await asyncio.to_thread(
+            partial(self.client.ask, prompt=prompt, **ask_kwargs),
         )
+        logger.debug("LLM ask 响应: success=%s, content=%.300s", resp.success, resp.content or "")
+        return resp
 
     async def chat(
         self,
@@ -115,10 +138,9 @@ class LLMService:
         max_tokens: int = 4096,
         **kwargs: Any,
     ) -> str:
-        """发送聊天请求，返回纯文本内容。
-
-        高层封装：调用 generate() 后提取 content 字段。
-        """
+        """发送聊天请求，返回纯文本内容。"""
+        logger.debug("LLM chat 请求: messages=%.500s, temperature=%s",
+                     json.dumps(messages, ensure_ascii=False)[:500], temperature)
         resp = await self.generate(
             messages=messages,
             temperature=temperature,
@@ -126,9 +148,11 @@ class LLMService:
             **kwargs,
         )
         if not resp.success:
+            logger.error("LLM chat failed: status=%s, content=%.200s", resp.status_code, resp.content)
             raise RuntimeError(
                 f"LLM request failed (status={resp.status_code}): {resp.content}"
             )
+        logger.debug("LLM chat 响应: content=%.500s", resp.content)
         return resp.content
 
     async def structured_output(
@@ -139,6 +163,9 @@ class LLMService:
         **kwargs: Any,
     ) -> dict[str, Any]:
         """请求结构化输出（JSON）。"""
+        logger.debug("LLM structured_output 请求: system=%.300s, user=%.300s, schema=%s",
+                     system_prompt[:300], user_prompt[:300],
+                     json.dumps(output_schema, ensure_ascii=False)[:200] if output_schema else "none")
         if self.provider == "anthropic":
             messages = [{"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"}]
         else:
@@ -149,6 +176,7 @@ class LLMService:
 
         resp = await self.generate(messages=messages, **kwargs)
         if not resp.success:
+            logger.error("LLM structured output failed: status=%s, content=%.200s", resp.status_code, resp.content)
             raise RuntimeError(
                 f"LLM structured output failed (status={resp.status_code}): {resp.content}"
             )
@@ -158,8 +186,13 @@ class LLMService:
             lines = content.splitlines()
             content = "\n".join(line for line in lines if not line.startswith("```"))
         try:
-            return json.loads(content)
+            result = json.loads(content)
+            logger.debug("LLM structured_output 响应: result=%.500s",
+                         json.dumps(result, ensure_ascii=False)[:500])
+            return result
         except json.JSONDecodeError:
+            logger.warning("LLM structured output JSON parse failed, returning raw content")
+            logger.debug("LLM structured_output 原始内容: %s", content[:500])
             return {"content": content}
 
     # ── 工具调用支持 ──
@@ -207,6 +240,9 @@ class LLMService:
             base_kwargs = {**kwargs}
             first_round_kwargs = {**base_kwargs, "tools": tools}
 
+        logger.debug("LLM with_tools 启动: system=%.300s, user=%.300s, tools=%s, max_rounds=%s",
+                     system_prompt[:300], user_prompt[:300],
+                     json.dumps(tools, ensure_ascii=False)[:300], max_tool_rounds)
         tool_executor_is_coro = asyncio.iscoroutinefunction(tool_executor)
         is_first_round = True
 
@@ -215,11 +251,15 @@ class LLMService:
             is_first_round = False
 
             resp = await self.generate(messages=messages, **kw)
+            logger.debug("LLM with_tools 第%d轮: success=%s, tool_calls=%d, content=%.200s",
+                         _round + 1, resp.success, len(resp.tool_calls or []), resp.content or "")
 
             if not resp.success:
+                logger.error("LLM with_tools request failed: status=%s", resp.status_code)
                 return resp
 
             if not resp.tool_calls:
+                logger.debug("LLM with_tools 第%d轮完成: 无工具调用", _round + 1)
                 return resp
 
             if self.provider == "anthropic":
@@ -241,8 +281,11 @@ class LLMService:
 
                 for tc in resp.tool_calls:
                     tool_input = json.loads(tc.arguments) if isinstance(tc.arguments, str) else tc.arguments
+                    logger.debug("LLM with_tools 工具调用 %s → input=%s", tc.name,
+                                 json.dumps(tool_input, ensure_ascii=False)[:200])
                     result = await self._do_tool_call(tool_executor, tool_executor_is_coro, tc.name, tool_input)
                     result_str = json.dumps(result, ensure_ascii=False, default=str)
+                    logger.debug("LLM with_tools 工具结果 %s → %s", tc.name, result_str[:300])
                     messages.append({
                         "role": "user",
                         "content": [{"type": "tool_result", "tool_use_id": tc.id, "content": result_str}],
@@ -262,14 +305,19 @@ class LLMService:
 
                 for tc in resp.tool_calls:
                     tool_input = json.loads(tc.arguments) if isinstance(tc.arguments, str) else tc.arguments
+                    logger.debug("LLM with_tools OpenAI 工具 %s → input=%s", tc.name,
+                                 json.dumps(tool_input, ensure_ascii=False)[:200])
                     result = await self._do_tool_call(tool_executor, tool_executor_is_coro, tc.name, tool_input)
                     result_str = json.dumps(result, ensure_ascii=False, default=str)
+                    logger.debug("LLM with_tools OpenAI 工具结果 %s → %s", tc.name, result_str[:300])
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
                         "content": result_str,
                     })
 
+        logger.debug("LLM with_tools 结束: tool_calls 耗尽或达上限, 最终消息数=%d", len(messages))
+        logger.info("LLM with_tools 最终响应: content=%.500s", resp.content or "(空)")
         return resp
 
     @staticmethod
@@ -282,6 +330,7 @@ class LLMService:
                 return await executor(name, inp)
             return executor(name, inp)
         except Exception as e:
+            logger.error("LLM _do_tool_call failed: name=%s, error=%s", name, e)
             return {"error": str(e)}
 
     @staticmethod

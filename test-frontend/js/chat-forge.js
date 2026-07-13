@@ -120,7 +120,7 @@ async function chatSend() {
   addChatMessage('user', text);
   showLoading(true);
   try {
-    const { ok, data } = await api('POST', '/api/persona/forge/chat/message', { session_id: chatSessionId, message: text });
+    const { ok, data } = await api('POST', '/api/persona/forge/chat/message', { session_id: chatSessionId, message: text }, 120000);
     showLoading(false);
     if (!ok) { addChatMessage('ai', '抱歉，出了点问题。'); return; }
     addChatMessage('ai', data.reply);

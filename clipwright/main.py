@@ -9,6 +9,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+
+from clipwright.config import logger
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -32,6 +34,13 @@ from clipwright.api import stt as stt_api
 from clipwright.api import vision as vision_api
 from clipwright.api import waveform as waveform_api
 from clipwright.api import skill as skill_api
+from clipwright.api import type_maker as type_maker_api
+from clipwright.api import template as template_api
+from clipwright.api import webhook as webhook_api
+from clipwright.api import video_editor as video_editor_api
+from clipwright.api import learning as learning_api
+from clipwright.api import preprocess as preprocess_api
+from clipwright.api import font as font_api
 from clipwright.category import (
     CategoryRegistry,
     DigitalReviewPlugin,
@@ -73,21 +82,44 @@ async def lifespan(app: FastAPI):
     # 4. 注册内置技能（可组合的高级能力，编排多个 Tool）
     register_builtin_skills()
 
-    # 4. 初始化第三方插件系统
+    # 4.5 加载用户自定义视频类型
+    from clipwright.category.dynamic import register_user_types
+    user_type_ids = register_user_types()
+    if user_type_ids:
+        logger.info("Loaded %d user-defined types: %s", len(user_type_ids), ", ".join(user_type_ids))
+
+    # 5. 初始化第三方插件系统
     _plugin_loader = PluginLoader(plugin_dir=Path("plugins"))
     loaded = _plugin_loader.load_all()
     if loaded:
-        print(f"[Clipwright] Loaded {len(loaded)} third-party plugins: {', '.join(loaded)}")
+        logger.info("Loaded %d third-party plugins: %s", len(loaded), ", ".join(loaded))
 
     # 输出能力概览
     tool_count = len(ToolRegistry.list())
     skill_count = len(SkillRegistry.list())
     material_count = len(MaterialRegistry.list())
     anim_count = len(AnimRegistry.list())
-    print(f"[Clipwright] Capabilities: {tool_count} tools, {skill_count} skills, "
-          f"{material_count} material sources, {anim_count} animations")
+    logger.info("Capabilities: %d tools, %d skills, %d material sources, %d animations",
+                tool_count, skill_count, material_count, anim_count)
 
-    # 5. 注入 PluginLoader 到 API 模块
+    # 5.5 安装日志流 Handler — INFO 级别以上自动推送到 SSE
+    try:
+        from clipwright.services.log_stream import install_log_stream
+        install_log_stream()
+        logger.info("日志流 Handler 已安装")
+    except Exception as e:
+        logger.warning("日志流 Handler 安装失败: %s", e)
+
+    # 5.6 启动预处理后台工作线程
+    try:
+        from clipwright.services.material_preprocessor import preprocess_worker
+        import asyncio
+        asyncio.create_task(preprocess_worker())
+        logger.info("素材预处理后台线程已启动")
+    except Exception as e:
+        logger.warning("预处理线程启动失败: %s", e)
+
+    # 6. 注入 PluginLoader 到 API 模块
     plugin_api.set_loader(_plugin_loader)
 
     yield
@@ -158,6 +190,13 @@ app.include_router(project_api.router)
 app.include_router(subtitle_api.router)
 app.include_router(waveform_api.router)
 app.include_router(vision_api.router)
+app.include_router(type_maker_api.router)
+app.include_router(template_api.router)
+app.include_router(webhook_api.router)
+app.include_router(video_editor_api.router)
+app.include_router(preprocess_api.router)
+app.include_router(font_api.router)
+app.include_router(learning_api.router)
 
 
 @app.get("/health")

@@ -5,6 +5,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Callable
 
+from clipwright.config import logger
+
 
 class HookPoint(str, Enum):
     """系统定义的 Hook 注入点。"""
@@ -15,6 +17,7 @@ class HookPoint(str, Enum):
     PRE_RENDER = "pre_render"
     POST_RENDER = "post_render"
     ON_ERROR = "on_error"
+    ANIMATION_CATALOG_EXTEND = "animation_catalog_extend"
 
 
 class HookRegistry:
@@ -27,10 +30,13 @@ class HookRegistry:
     @classmethod
     def register(cls, point: HookPoint, fn: Callable) -> None:
         cls._hooks.setdefault(point, []).append(fn)
+        logger.debug("Hook registered: %s -> %s", point.value, getattr(fn, "__name__", str(fn)))
 
     @classmethod
     def execute(cls, point: HookPoint, context: dict[str, Any]) -> dict[str, Any]:
-        for hook in cls._hooks.get(point, []):
+        hooks = cls._hooks.get(point, [])
+        logger.debug("Executing %d hooks for point %s", len(hooks), point.value)
+        for hook in hooks:
             result = hook(context)
             if result:
                 context.update(result)

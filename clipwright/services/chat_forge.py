@@ -32,6 +32,7 @@ from clipwright.schema.persona import (
     VisualConfig,
 )
 from clipwright.services.llm import LLMService
+from clipwright.config import logger
 
 # ── ChatForgesystem prompt ──
 
@@ -152,6 +153,7 @@ class ChatForge:
     async def start(self, persona_id: str = "") -> dict[str, Any]:
         """开始一个新的对话会话。仅初始化，不触发 AI 回复。"""
         session = self._get_or_create_session()
+        logger.info("ChatForge session started: %s", session.session_id)
         # 不调 LLM，等用户发第一条消息再处理
         return {
             "session_id": session.session_id,
@@ -175,6 +177,7 @@ class ChatForge:
         session = self._get_or_create_session(session_id)
         session.messages.append({"role": "user", "content": user_message})
         session.updated_at = datetime.now()
+        logger.info("ChatForge message: session=%s, len=%d", session_id, len(user_message))
         return await self._process(session, user_message, persona_id)
 
     async def add_knowledge(
@@ -196,6 +199,9 @@ class ChatForge:
 
         session.updated_at = datetime.now()
         total_chars = len(content)
+
+        logger.info("ChatForge knowledge added: session=%s, source=%s, chunks=%d, total_chars=%d",
+                     session_id, source, len(chunks), total_chars)
 
         if len(chunks) == 1:
             # 单块：直接分析
@@ -285,6 +291,9 @@ class ChatForge:
         with open(transcript_path, "w", encoding="utf-8") as f:
             json.dump(session.messages, f, ensure_ascii=False, indent=2)
 
+        logger.info("ChatForge commit: session=%s, persona_id=%s, name=%s, knowledge_docs=%d",
+                     session_id, manifest.persona_id, persona_name, len(knowledge_docs))
+
         return manifest
 
     def get_state(self, session_id: str) -> Optional[dict[str, Any]]:
@@ -311,6 +320,7 @@ class ChatForge:
     ) -> dict[str, Any]:
         """处理消息并返回 AI 回复 + 更新后的 Persona。"""
         if not self._has_api_key():
+            logger.warning("ChatForge _process: no API key, using fallback")
             return self._fallback_response(session)
 
         # 构建消息列表
@@ -322,17 +332,25 @@ class ChatForge:
         if user_msg:
             pass  # 已在 message() 中追加
 
-        # 调用 LLM
+        # 调用 LLM（取消防 temperature/max_tokens 等可能不兼容的参数）
+        full_messages = [{"role": "system", "content": system}] + messages
+        system_len = len(system)
+        msg_count = len(full_messages)
+        logger.info("ChatForge LLM 请求: system=%d chars, messages=%d 条", system_len, msg_count)
+        for i, m in enumerate(full_messages):
+            logger.debug("  msg[%d]: role=%s, len=%d", i, m.get("role"), len(m.get("content", "")))
         resp = await self._llm.generate(
-            messages=[{"role": "system", "content": system}] + messages,
-            temperature=0.7,
-            max_tokens=4096,
+            messages=full_messages,
         )
 
         if not resp.success:
+            logger.error("ChatForge LLM 调用失败: status=%d, content=%.200s", resp.status_code or -1, resp.content or "")
+            err_detail = f"LLM API 返回 {resp.status_code}，请检查控制台日志"
+            if resp.status_code == 500 and resp.content:
+                err_detail = f"模型返回错误: {resp.content[:200]}"
             return {
                 "session_id": session.session_id,
-                "reply": f"抱歉，AI 暂时无法回应（{resp.status_code}）。请稍后重试。",
+                "reply": f"抱歉，AI 暂时无法回应。{err_detail}",
                 "persona_draft": session.persona_draft,
                 "missing_dimensions": [],
                 "progress": {},
@@ -361,6 +379,7 @@ class ChatForge:
             }
 
         except (json.JSONDecodeError, KeyError) as e:
+            logger.warning("ChatForge JSON parse failed: %s, content=%.200s", e, resp.content)
             # JSON 解析失败，把原始内容作为 reply
             reply = resp.content
             session.messages.append({"role": "assistant", "content": reply})

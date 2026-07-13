@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -110,14 +111,16 @@ class PipelineOrchestrator:
                 except Exception as e:
                     logger.warning("RAG retrieval failed (non-fatal): %s", e)
 
-            # 5. 构建 Agent 上下文
+            # 5. 构建 Agent 上下文（合并 Persona 翻译参数 + 前端传入参数）
             agent_context = AgentContext(
                 pipeline_id=state.pipeline_id,
                 persona_id=request.persona_id,
                 category_plugin_id=request.category_plugin_id,
                 topic=request.topic,
-                extra_params=translated,
+                extra_params={**translated, **request.extra_params},
             )
+            logger.info("[时长诊断] AgentContext extra_params: %s",
+                        json.dumps(agent_context.extra_params, ensure_ascii=False))
 
             # 6. 按序执行 Agent
             # Structure Agent
@@ -228,11 +231,17 @@ class PipelineOrchestrator:
         pid = state.pipeline_id
 
         add_event(pid, agent_name, "agent_start", f"Agent 开始: {agent_name}")
+        logger.debug("Pipeline Agent[%s] 输入: %s", agent_name,
+                     json.dumps({k: str(v)[:200] for k, v in input_data.items()}, ensure_ascii=False))
 
         try:
             # 根据 agent_name 构造对应输入并执行
             result = await self._dispatch_agent(agent_name, input_data, context)
             step.result = result.model_dump(mode="json")
+            logger.debug("Pipeline Agent[%s] 输出: decision=%s, error=%s, result_keys=%s",
+                         agent_name, result.decision,
+                         getattr(result, "error", None) or "none",
+                         list(step.result.keys()) if step.result else "none")
             if result.decision != AgentDecision.FAIL:
                 step.status = PipelineStatus.COMPLETED
             else:

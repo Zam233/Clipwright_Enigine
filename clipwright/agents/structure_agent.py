@@ -23,6 +23,7 @@ from clipwright.schema.tool import ToolExecResult
 from clipwright.services.llm import LLMService
 from clipwright.tool.base import AgentToolkit
 from clipwright.tool.registry import ToolRegistry
+from clipwright.config import logger
 
 # 脚本骨架生成的系统提示词模板
 SYSTEM_PROMPT_TPL = """你是一个{tone}风格的视频脚本创作者。
@@ -116,46 +117,85 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                     f"\n\n## 参考知识\n{input_data.rag_context}\n"
                 )
 
+            # 判断模式
+            video_mode = context.extra_params.get("video_mode", "voiceover")
+            script_text = context.extra_params.get("script_text", "")
+            audio_duration = context.extra_params.get("audio_duration_sec", 0)
+
             user_prompt = f"选题：{context.topic}\n请生成脚本骨架。"
+
+            anim_guide = (
+                "## 文字动画标记（作用于文字轨 clip 的入场/出场）\n"
+                "分析场景内容的逻辑关系，选择合适的动画类型标记在 description 中。\n"
+                "format: [文字动画]动画名：要显示的文字内容\n"
+                "示例: description: \"以中立风格引入话题 [文字动画]淡入：人工智能正在改变世界\"\n\n"
+            )
+
+            # 动态获取可用文字动画
+            from clipwright.animation.catalog import AnimationCatalog
+            text_anims = AnimationCatalog.get_text_animations()
+            for a in text_anims:
+                anim_guide += f"  [文字动画]{a['name']} — {a.get('desc', '')}\n"
+
+            anim_guide += (
+                "\n## 逻辑动画标记（独立创建动画轨，展示逻辑关系）\n"
+            )
+            logic_anims = AnimationCatalog.get_logic_animations()
+            for a in logic_anims:
+                anim_guide += f"  [逻辑动画]{a['name']} — {a.get('desc', '')}\n"
+            anim_guide += (
+                "\n注意：同一场景 description 最多只应包含一个动画标记，避免冲突。\n"
+            )
+
+            if video_mode == "visual":
+                max_chars = 3000
+                truncated = script_text[:max_chars] + ("..." if len(script_text) > max_chars else "")
+                lines = [l.strip() for l in truncated.split('\n') if l.strip()]
+                scene_count = len(lines)
+                user_prompt += (
+                    f"\n\n## 场景列表（每行一个场景描述）\n{truncated}\n\n"
+                    f"## 要求\n"
+                    f"1. 总时长约 {audio_duration:.0f}s，{scene_count} 个场景\n"
+                    f"2. 每个场景需包含: title, description, duration_sec, keywords\n"
+                    f"3. duration_sec 按重要性分配，总和接近 {audio_duration:.0f}s\n"
+                    f"4. 场景数量接近 {scene_count}\n"
+                    f"5. 在 description 中用 [动画] 和 [转场] 标记\n"
+                    f"6. keywords 具体可搜索\n\n"
+                    f"{anim_guide}"
+                )
+            elif script_text:
+                max_chars = 2000
+                truncated = script_text[:max_chars] + ("..." if len(script_text) > max_chars else "")
+                user_prompt += (
+                    f"\n\n## 完整文稿\n{truncated}\n\n"
+                    f"## 要求\n"
+                    f"1. 总时长约 {audio_duration:.0f}s\n"
+                    f"2. 每个场景: title, description, duration_sec, keywords\n"
+                    f"3. 分析每个场景的逻辑关系，选择合适的动画类型标记\n"
+                    f"4. 场景总时长接近 {audio_duration:.0f}s\n"
+                    f"5. 文稿长则多场景，短则少场景\n\n"
+                    f"{anim_guide}"
+                )
+
             scenes: list[dict] = []
 
             from clipwright.config import settings
             has_api_key = bool(settings.llm_api_key)
 
+            logger.info("StructureAgent: 选题=%s, tone=%s, has_api_key=%s",
+                        context.topic, tone, has_api_key)
+
             if has_api_key:
-                # ── LLM 模式：支持工具调用 ──
-                # 构建 AgentToolkit（只包含当前环境可用的工具）
-                toolkit = AgentToolkit(
-                    tool_names=ToolRegistry.list_available_names(),
-                    fmt="anthropic" if settings.llm_provider == "anthropic" else "openai",
+                # ── LLM 模式：使用 structured_output 获取 JSON 结果 ──
+                # StructureAgent 不需要工具调用，structured_output 强制 LLM 返回 JSON
+                result = await self._llm.structured_output(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
                 )
-
-                if toolkit.available:
-                    system_prompt += TOOL_PROMPT
-                    full_prompt = user_prompt
-
-                    # 执行带工具调用的 LLM 推理
-                    resp = await self._llm.with_tools(
-                        system_prompt=system_prompt,
-                        user_prompt=full_prompt,
-                        tool_executor=self._tool_executor,
-                        tools=toolkit.llm_tools,
-                    )
-
-                    if not resp.success:
-                        # LLM 失败，回退
-                        scenes = self._fallback_scenes(context.topic, tone)
-                    else:
-                        scenes = self._parse_scenes(resp.content)
-                else:
-                    # 无可用工具 → 纯文本模式
-                    result = await self._llm.structured_output(
-                        system_prompt=system_prompt,
-                        user_prompt=user_prompt,
-                    )
-                    scenes = self._parse_structured_result(result, context.topic, tone)
+                scenes = self._parse_structured_result(result, context.topic, tone)
             else:
                 # ── 离线模式：回退到占位实现 ──
+                logger.info("StructureAgent: 无 API key，使用 fallback 场景")
                 scenes = self._fallback_scenes(context.topic, tone)
 
             return StructureOutput(
@@ -175,23 +215,68 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         self, tool_name: str, tool_input: dict[str, Any]
     ) -> dict[str, Any]:
         """执行工具调用（LLM with_tools 的回调）。"""
+        logger.debug("StructureAgent 工具回调: %s → %s",
+                     tool_name, json.dumps(tool_input, ensure_ascii=False)[:300])
         result: ToolExecResult = await ToolRegistry.execute(tool_name, **tool_input)
+        logger.debug("StructureAgent 工具回调结果 %s: status=%s, output=%.200s",
+                     tool_name, result.status,
+                     json.dumps(result.output, ensure_ascii=False)[:200] if result.output else str(result.error))
         return result.model_dump(mode="json")
 
     def _parse_scenes(self, content: str) -> list[dict]:
         """从 LLM 响应文本中解析场景列表。"""
-        content = content.strip()
+        # 清理内容：去除 BOM、零宽字符
+        content = content.strip().lstrip('\ufeff').lstrip('\u200b')
+        # 去除 markdown 代码块标记
         if content.startswith("```"):
             lines = content.splitlines()
-            content = "\n".join(line for line in lines if not line.startswith("```"))
+            if len(lines) >= 2:
+                content = "\n".join(lines[1:-1]).strip()
+        content = content.strip()
+        if not content:
+            logger.warning("StructureAgent: LLM 返回空内容")
+            return self._fallback_scenes("", "neutral")
+        # 尝试直接解析 JSON
         try:
             parsed = json.loads(content)
             if isinstance(parsed, list):
+                logger.info("StructureAgent: 成功解析 %d 个场景", len(parsed))
                 return parsed
             if isinstance(parsed, dict) and "scenes" in parsed:
+                logger.info("StructureAgent: 从 dict 解析 %d 个场景", len(parsed["scenes"]))
                 return parsed["scenes"]
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as je:
+            logger.warning("StructureAgent: JSON 解析失败: %s", je)
+            logger.warning("StructureAgent: raw[%d] first=%.300s", len(content), content[:300])
+            logger.warning("StructureAgent: raw[%d] last=%.200s", len(content), content[-200:])
+            # 尝试找第一个不合法的字符位置
+            for idx, c in enumerate(content[:500]):
+                if ord(c) < 32 and c not in '\n\r\t':
+                    logger.warning("StructureAgent: 非法字符 pos=%d ord=%d repr=%s", idx, ord(c), repr(c))
+                    break
+        # 搜索 JSON 数组
+        import re
+        arr_match = re.search(r'\[\s*\{[^}]*\}\s*\]', content, re.DOTALL)
+        if arr_match:
+            try:
+                parsed = json.loads(arr_match.group())
+                if isinstance(parsed, list):
+                    logger.info("StructureAgent: 从文本提取 %d 个场景", len(parsed))
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+        # 搜索 JSON 对象中的 scenes 数组
+        obj_match = re.search(r'"scenes"\s*:\s*\[.*?\]', content, re.DOTALL)
+        if obj_match:
+            try:
+                partial = '{' + obj_match.group() + '}'
+                parsed = json.loads(partial)
+                if "scenes" in parsed:
+                    logger.info("StructureAgent: 从 scenes 字段提取 %d 个场景", len(parsed["scenes"]))
+                    return parsed["scenes"]
+            except json.JSONDecodeError:
+                pass
+        logger.warning("StructureAgent: 场景解析完全失败，使用 fallback")
         return self._fallback_scenes("", "neutral")
 
     def _parse_structured_result(

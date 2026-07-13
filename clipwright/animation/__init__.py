@@ -31,10 +31,12 @@ ops = AnimationRenderer.render_sequence(AnimationRegistry._animations, sequence)
 """
 
 from clipwright.animation.builtin import register_builtin_animations
+from clipwright.animation.catalog import AnimationCatalog
 from clipwright.animation.registry import AnimationRegistry
 from clipwright.animation.renderer import AnimationRenderer, TimelineAnimationOp
 
 __all__ = [
+    "AnimationCatalog",
     "AnimationRegistry",
     "AnimationRenderer",
     "TimelineAnimationOp",

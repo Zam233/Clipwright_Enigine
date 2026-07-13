@@ -13,17 +13,27 @@ from typing import Any, Optional
 
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
+from clipwright.config import logger
+
+
+_CLIPWRIGHT_TEMP = Path("_cache") / "tmp"
+_CLIPWRIGHT_TEMP.mkdir(parents=True, exist_ok=True)
 
 
 def _ensure_output_path(suggested: Optional[str], prefix: str, ext: str) -> str:
-    """生成输出路径（建议路径不存在时自动创建）。"""
+    """生成输出路径（建议路径不存在时自动创建）。
+
+    默认使用项目目录下的 _cache/tmp，避免填满系统盘 C。
+    """
     if suggested:
         p = Path(suggested)
         p.parent.mkdir(parents=True, exist_ok=True)
         return str(p)
-    tmp = tempfile.NamedTemporaryFile(prefix=prefix, suffix=ext, delete=False)
-    tmp.close()
-    return tmp.name
+    # 使用项目本地临时目录，而非系统 temp
+    import uuid
+    name = f"{prefix}{uuid.uuid4().hex[:8]}{ext}"
+    path = _CLIPWRIGHT_TEMP / name
+    return str(path)
 
 
 def _ffmpeg(*args: str, timeout: int = 300) -> subprocess.CompletedProcess:
@@ -80,17 +90,187 @@ class VideoTrimTool(BaseTool):
                 output_path=out,
             )
         except FileNotFoundError:
+            logger.warning("FFmpeg 不可用: %s", self.name)
             return ToolExecResult(
                 status=ToolStatus.DEPENDENCY_MISSING,
                 tool_name=self.name,
                 error="ffmpeg not found — install FFmpeg to enable video processing",
             )
         except subprocess.TimeoutExpired:
+            logger.error("FFmpeg 超时: %s", self.name)
             return ToolExecResult(
                 status=ToolStatus.ERROR,
                 tool_name=self.name,
                 error="ffmpeg timed out",
             )
+
+
+class VideoDownloadTool(BaseTool):
+    """视频下载工具 — 从 URL 下载素材到本地缓存。"""
+    name = "video_download"
+    description = "从 HTTP/HTTPS URL 下载视频到本地缓存目录，返回本地路径"
+    dependencies = ["ffmpeg"]
+
+    async def execute(
+        self,
+        url: str,
+        output_dir: Optional[str] = None,
+        **kwargs: Any,
+    ) -> ToolExecResult:
+        import tempfile
+        base = Path(output_dir) if output_dir else Path(tempfile.mkdtemp(prefix="dl_"))
+        base.mkdir(parents=True, exist_ok=True)
+        name = url.split("/")[-1].split("?")[0] or f"dl_{hash(url) % 100000}.mp4"
+        out = str(base / name)
+
+        if Path(out).exists():
+            return ToolExecResult(status=ToolStatus.SUCCESS, tool_name=self.name,
+                                  output={"local_path": out, "cached": True}, output_path=out)
+
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error",
+                 "-i", url, "-c", "copy", "-movflags", "+faststart", out],
+                capture_output=True, text=True, timeout=600,
+            )
+            if result.returncode != 0 or not Path(out).exists():
+                return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
+                                      error=f"download failed: {result.stderr[:200]}")
+            size = Path(out).stat().st_size
+            logger.info("VideoDownload: %s → %s (%.1fMB)", url, out, size / 1024 / 1024)
+            return ToolExecResult(status=ToolStatus.SUCCESS, tool_name=self.name,
+                                  output={"local_path": out, "size_bytes": size}, output_path=out)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            logger.warning("VideoDownload 失败: %s", e)
+            return ToolExecResult(status=ToolStatus.DEPENDENCY_MISSING if isinstance(e, FileNotFoundError) else ToolStatus.ERROR,
+                                  tool_name=self.name, error=str(e))
+
+
+class MediaProbeTool(BaseTool):
+    """媒体探测工具 — 用 ffprobe 获取文件的流信息、时长、编码、分辨率等。"""
+    name = "media_probe"
+    description = "探测媒体文件信息：时长、分辨率、编码、帧率、流详情"
+    dependencies = ["ffprobe"]
+
+    async def execute(
+        self,
+        input_path: str,
+        **kwargs: Any,
+    ) -> ToolExecResult:
+        try:
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-print_format", "json",
+                 "-show_format", "-show_streams", input_path],
+                capture_output=True, text=True, timeout=30,
+            )
+            data = json.loads(result.stdout)
+            fmt = data.get("format", {})
+            streams = data.get("streams", [])
+
+            info = {
+                "duration_sec": float(fmt.get("duration", 0)),
+                "size_bytes": int(fmt.get("size", 0)),
+                "bitrate": fmt.get("bit_rate", ""),
+                "streams": [],
+            }
+            for s in streams:
+                sinfo = {
+                    "index": s.get("index"),
+                    "codec_type": s.get("codec_type"),
+                    "codec": s.get("codec_name"),
+                }
+                if s.get("codec_type") == "video":
+                    sinfo.update({
+                        "width": s.get("width", 0),
+                        "height": s.get("height", 0),
+                        "fps": s.get("r_frame_rate", ""),
+                        "pix_fmt": s.get("pix_fmt", ""),
+                    })
+                elif s.get("codec_type") == "audio":
+                    sinfo.update({
+                        "sample_rate": s.get("sample_rate", ""),
+                        "channels": s.get("channels", 0),
+                    })
+                info["streams"].append(sinfo)
+
+            return ToolExecResult(status=ToolStatus.SUCCESS, tool_name=self.name,
+                                  output=info)
+        except FileNotFoundError:
+            logger.warning("ffprobe 不可用")
+            return ToolExecResult(status=ToolStatus.DEPENDENCY_MISSING, tool_name=self.name, error="ffprobe not found")
+        except Exception as e:
+            logger.warning("MediaProbe 失败: %s", e)
+            return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error=str(e))
+
+
+class VideoCropTool(BaseTool):
+    """视频裁切工具 — 将视频裁切为指定宽高比。"""
+    name = "video_crop"
+    description = "裁切视频画面比例，如 16:9 转 9:16, 1:1 等"
+    dependencies = ["ffmpeg"]
+
+    async def execute(
+        self,
+        input_path: str,
+        aspect: str = "9:16",
+        output_path: Optional[str] = None,
+        **kwargs: Any,
+    ) -> ToolExecResult:
+        out = _ensure_output_path(output_path, "crop_", ".mp4")
+        try:
+            # 用 ffmpeg 的 crop 过滤器裁切居中区域
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error", "-i", input_path,
+                 "-vf", f"crop={aspect.replace(':', '/')}:ih:iw/({aspect.replace(':', '/')}):(ih-iw/({aspect.replace(':', '/')}))/2",
+                 "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                 "-c:a", "copy", out],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode != 0:
+                return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
+                                      error=f"crop error: {result.stderr[:200]}")
+            return ToolExecResult(status=ToolStatus.SUCCESS, tool_name=self.name,
+                                  output={"output_path": out, "aspect": aspect}, output_path=out)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return ToolExecResult(status=ToolStatus.ERROR if isinstance(e, subprocess.TimeoutExpired) else ToolStatus.DEPENDENCY_MISSING,
+                                  tool_name=self.name, error=str(e))
+
+
+class VideoThumbnailTool(BaseTool):
+    """视频缩略图生成 — 提取视频最佳帧 + 叠加标题文字。"""
+    name = "video_thumbnail"
+    description = "从视频提取关键帧生成封面缩略图，可选叠加标题文字"
+    dependencies = ["ffmpeg"]
+
+    async def execute(
+        self,
+        input_path: str,
+        text: str = "",
+        time_sec: float = 0.5,
+        output_path: Optional[str] = None,
+        **kwargs: Any,
+    ) -> ToolExecResult:
+        import tempfile
+        out = output_path or Path(tempfile.mktemp(suffix=".jpg")).name
+        try:
+            cmd = ["ffmpeg", "-y", "-loglevel", "error",
+                   "-ss", str(time_sec), "-i", input_path,
+                   "-vframes", "1", "-vf", "scale=1280:-1"]
+            if text:
+                # 叠加底部标题文字
+                from clipwright.services.fontconfig import FontConfig
+                font_spec = FontConfig.ffmpeg_fontspec(FontConfig.get_font_path())
+                cmd[9] += f",drawtext=text='{text[:50]}':fontsize=48:fontcolor=white:x=(w-text_w)/2:y=h-100{font_spec}"
+            cmd.extend(["-q:v", "3", out])
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode != 0 or not Path(out).exists():
+                return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
+                                      error=f"thumb error: {result.stderr[:200]}")
+            return ToolExecResult(status=ToolStatus.SUCCESS, tool_name=self.name,
+                                  output={"output_path": out, "text": text[:50]}, output_path=out)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return ToolExecResult(status=ToolStatus.ERROR if isinstance(e, subprocess.TimeoutExpired) else ToolStatus.DEPENDENCY_MISSING,
+                                  tool_name=self.name, error=str(e))
 
 
 class VideoConcatTool(BaseTool):
@@ -127,6 +307,7 @@ class VideoConcatTool(BaseTool):
                 output_path=out,
             )
         except FileNotFoundError:
+            logger.warning("FFmpeg 不可用: %s", self.name)
             return ToolExecResult(
                 status=ToolStatus.DEPENDENCY_MISSING,
                 tool_name=self.name,
@@ -171,6 +352,7 @@ class VideoOverlayTool(BaseTool):
                 output_path=out,
             )
         except FileNotFoundError:
+            logger.warning("FFmpeg 不可用: %s", self.name)
             return ToolExecResult(
                 status=ToolStatus.DEPENDENCY_MISSING,
                 tool_name=self.name,
