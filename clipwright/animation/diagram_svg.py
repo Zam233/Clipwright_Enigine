@@ -103,12 +103,25 @@ class DiagramRenderer:
             "sequence_diagram": cls._sequence_diagram,
             "flow_chart": cls._flow_chart,
         }
-        # 插件自定义
+        # 插件自定义（包括 DIAGRAM_RENDERER_EXTEND 注册的类型）
         renderer_map.update(cls._custom_renderers)
 
         fn = renderer_map.get(preset)
-        if fn:
+        if fn is not None:
             return fn(items, text, style, width, height)
+
+        # 未找到 → 尝试从 Hook 加载插件渲染器
+        try:
+            from clipwright.plugins.hooks import HookRegistry, HookPoint
+            ctx = HookRegistry.execute(HookPoint.DIAGRAM_RENDERER_EXTEND, {})
+            for r in (ctx.get("renderers") or []):
+                if isinstance(r, dict) and r.get("id") == preset and "renderer" in r:
+                    cls._custom_renderers[preset] = r["renderer"]
+                    fn = r["renderer"]
+                    return fn(items, text, style, width, height)
+        except Exception:
+            pass
+
         logger.warning("DiagramRenderer: 未知 preset=%s，回退到箭头", preset)
         return cls._arrow(items, text, style, width, height)
 
@@ -130,10 +143,8 @@ class DiagramRenderer:
             {"id": "sequence_diagram", "name": "序列图", "desc": "参与者消息传递顺序"},
             {"id": "flow_chart", "name": "流程图", "desc": "判断/分支/循环逻辑结构"},
         ]
-        # 插件注册的自定义渲染器
-        for cid, cfn in cls._custom_renderers.items():
-            presets.append({"id": cid, "name": cid, "desc": getattr(cfn, "__doc__", "") or ""})
-        # 通过 Hook 注册的自定义渲染器
+        # 通过 Hook 注册的自定义渲染器（优先于 register_renderer，含正确的中文名）
+        hook_registered_ids: set[str] = set()
         try:
             from clipwright.plugins.hooks import HookRegistry, HookPoint
             ctx = HookRegistry.execute(HookPoint.DIAGRAM_RENDERER_EXTEND, {})
@@ -146,9 +157,16 @@ class DiagramRenderer:
                             "name": r.get("name", r["id"]),
                             "desc": r.get("desc", ""),
                         })
-                        cls._custom_renderers[r["id"]] = r.get("renderer", lambda *a, **kw: "")
+                        hook_registered_ids.add(r["id"])
         except Exception:
             pass
+        # register_renderer 注册的（仅当 hook 未注册时才用，名称回退到 id）
+        for cid, cfn in cls._custom_renderers.items():
+            if cid not in hook_registered_ids:
+                presets.append({
+                    "id": cid, "name": cid,
+                    "desc": getattr(cfn, "__doc__", "") or "",
+                })
         return presets
 
     # ── SVG 辅助 ────────────────────────────────────────
