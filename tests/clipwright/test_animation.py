@@ -295,9 +295,8 @@ class TestHyperframesRenderer:
         }]
         html = HyperframesRenderer._build_html(overlays, 1920, 1080, 30)
         assert "<svg" in html
-        assert "1." in html
-        assert "2." in html
-        assert "3." in html
+        assert ">1<" in html or "1</text>" in html
+        assert ">2<" in html or "2</text>" in html
 
     def test_html_contains_timing_js(self) -> None:
         """HTML 应包含 JavaScript 时序控制。"""

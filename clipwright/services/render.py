@@ -155,6 +155,7 @@ class RenderService:
                             "anim_class": meta.get("anim_class", "hf-fade-in"),
                             "renderer": meta.get("renderer", "hyperframes"),
                             "diagram_params": meta.get("diagram_params"),
+                            "diagram_style": meta.get("diagram_style", {}),
                             "category": meta.get("category", ""),
                             "_track_idx": track.index,
                         })
@@ -282,21 +283,43 @@ class RenderService:
                     hf_ov = [o for o in text_overlays
                              if o.get("renderer") == "hyperframes" or o.get("diagram_params")]
 
-                    # 1. drawtext 渲染普通文字/字幕
+                    # drawtext 和 Hyperframes 并行渲染
+                    import asyncio
+                    dt_task = None
+                    hf_mov_path = None
+
                     if drawtext_ov:
                         logger.info("drawtext 渲染 %d 个文字/字幕", len(drawtext_ov))
-                        await self._apply_text_overlays(final_video, drawtext_ov, video_with_text)
-                        final_video = video_with_text if Path(video_with_text).exists() else final_video
+                        dt_task = asyncio.create_task(
+                            self._apply_text_overlays(final_video, drawtext_ov, video_with_text)
+                        )
 
-                    # 2. Hyperframes 渲染逻辑图解（叠在 drawtext 之上）
                     if hf_ov and self._hyperframes_available():
                         logger.info("Hyperframes 渲染 %d 个逻辑图解", len(hf_ov))
-                        video_with_hf = str(self._work_dir / "with_hf.mp4")
-                        await self._apply_text_via_hyperframes(
-                            final_video, hf_ov, video_with_hf,
-                            width, height, fps,
+                        hf_mov_path = str(Path(self._work_dir) / "overlay.mov")
+                        hf_task = asyncio.create_task(
+                            self._render_hf_only(hf_ov, hf_mov_path, width, height, fps)
                         )
-                        final_video = video_with_hf if Path(video_with_hf).exists() else final_video
+                    else:
+                        hf_task = None
+
+                    # 等待 drawtext
+                    if dt_task:
+                        await dt_task
+                        if Path(video_with_text).exists():
+                            final_video = video_with_text
+
+                    # 等待 Hyperframes 并叠加
+                    if hf_task:
+                        await hf_task
+                        if hf_mov_path and Path(hf_mov_path).exists():
+                            video_with_hf = str(self._work_dir / "with_hf.mp4")
+                            from clipwright.animation.hyperframes_renderer import HyperframesRenderer
+                            ok = HyperframesRenderer.render_overlay_on_video(
+                                hf_mov_path, final_video, video_with_hf,
+                            )
+                            if ok and Path(video_with_hf).exists():
+                                final_video = video_with_hf
                 final_video = video_with_text if Path(video_with_text).exists() else final_video
 
             # 4.5 处理画中画/叠加轨道（index>0 的视频轨）
@@ -388,27 +411,15 @@ class RenderService:
         except Exception:
             return False
 
-    async def _apply_text_via_hyperframes(
+    async def _render_hf_only(
         self,
-        input_video: str,
         overlays: list[dict],
-        output_path: str,
+        output_mov: str,
         width: int, height: int, fps: float,
     ) -> None:
-        """使用 Hyperframes 渲染文本覆盖层并叠加到主视频。"""
-        overlay_mov = str(Path(self._work_dir) / "overlay.mov")
+        """仅渲染 Hyperframes 覆盖层 MOV（不叠加到主视频），供并行流程调用。"""
         from clipwright.animation.hyperframes_renderer import HyperframesRenderer
-        result = await HyperframesRenderer.render_overlays(
-            overlays, overlay_mov, width, height, fps,
-        )
-        if result and Path(result).exists():
-            ok = HyperframesRenderer.render_overlay_on_video(result, input_video, output_path)
-            if ok:
-                logger.info("Hyperframes 叠加完成: %s", output_path)
-                return
-            logger.warning("Hyperframes 叠加失败，回退到 drawtext")
-        # 回退到 drawtext
-        await self._apply_text_overlays(input_video, overlays, output_path)
+        await HyperframesRenderer.render_overlays(overlays, output_mov, width, height, fps)
 
     async def _apply_text_overlays(
         self,

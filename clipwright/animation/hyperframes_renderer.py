@@ -78,7 +78,7 @@ class HyperframesRenderer:
                 "--format", "mov", "-f", str(int(fps)), "--quiet",
             ]
             logger.info("HyperframesRenderer: 渲染 %d 个覆盖层 → %s", len(overlays), output_path)
-            result = subprocess.run(cmd, capture_output=True, text=False, timeout=600)
+            result = subprocess.run(cmd, capture_output=True, text=False, timeout=3600)
             if result.returncode == 0 and out.exists():
                 logger.info("HyperframesRenderer: 完成 (%s, %.0fKB)",
                             output_path, out.stat().st_size / 1024)
@@ -151,11 +151,23 @@ body{{width:{width}px;height:{height}px;overflow:hidden;background:transparent;p
         font_color = ov.get("font_color", "#ffffff")
         position = ov.get("position", "bottom")
 
-        # 逻辑图解 → SVG
+        # 逻辑图解 → SVG（使用 DiagramRenderer，支持逐元素入场 + 多种图解类型）
         if diagram_params:
-            return HyperframesRenderer._diagram_svg(
-                text, diagram_params, start, dur, font_size, font_color,
-            )
+            from clipwright.animation.diagram_svg import DiagramRenderer, DiagramStyle
+            diagram_style_params = ov.get("diagram_style", {})
+            ds = DiagramStyle.from_persona(diagram_style_params)
+            ds.font_size = font_size
+            ds.text_color = font_color
+            svg = DiagramRenderer.render(diagram_params, ds, width, height)
+            if svg:
+                # SVG 图解自带逐元素入场动画，不通过 HF JS 控制
+                # 隐藏直到 start 时刻，然后由 CSS animation 控制可见性
+                return (
+                    f'<div class="hf-el hf-diagram-svg" data-i="d{index}" data-start="{start}" '
+                    f'data-dur="{dur}" data-anim-class="hf-diagram-reveal" data-anim-dur="0.01" '
+                    f'style="position:absolute;top:0;left:0;width:{width}px;height:{height}px">'
+                    f'{svg}</div>'
+                )
 
         # 位置 CSS
         pos_css = _position_css(position)
@@ -170,87 +182,6 @@ body{{width:{width}px;height:{height}px;overflow:hidden;background:transparent;p
             f'data-anim-dur="{anim_duration}" '
             f'style="font-size:{font_size}px;color:{font_color};'
             f'{pos_css};{bg_css}">{_html_esc(text)}</div>'
-        )
-
-    @staticmethod
-    def _diagram_svg(
-        text: str, params: dict, start: float, dur: float,
-        font_size: int, font_color: str,
-        width: int = 1920, height: int = 1080,
-    ) -> str:
-        """逻辑图解 → 行内 SVG。"""
-        preset = params.get("preset", "diagram")
-        items = params.get("items", [])
-        title = params.get("title", "")
-        cx, cy = 960, 400  # 中心坐标
-
-        # 箭头图解
-        if preset in ("diagram", "causation"):
-            n = min(len(items), 5)
-            spacing = 260
-            total_w = (n - 1) * spacing + 200
-            sx = cx - total_w // 2
-            rects, labels, arrows = "", "", ""
-            for i, item in enumerate(items[:5]):
-                x = sx + i * spacing
-                rects += f'<rect x="{x}" y="{cy-25}" width="180" height="50" rx="10" fill="rgba(255,255,255,0.12)"/>'
-                labels += f'<text x="{x+90}" y="{cy+5}" font-size="{font_size-8}px" fill="{font_color}" text-anchor="middle">{_html_esc(item[:20])}</text>'
-                if i < n - 1:
-                    ax = x + 180
-                    ay = cy
-                    arrows += f'<line x1="{ax}" y1="{ay}" x2="{ax+spacing-180}" y2="{ay}" stroke="#4f8cff" stroke-width="3" marker-end="url(#a)"/>'
-                    arrows += f'<text x="{ax+(spacing-180)//2}" y="{ay-8}" font-size="20" fill="#4f8cff" text-anchor="middle">→</text>'
-            title_svg = f'<text x="{cx}" y="{cy-60}" font-size="{font_size}px" fill="{font_color}" text-anchor="middle" font-weight="bold">{_html_esc(title[:60])}</text>' if title else ""
-            return (
-                f'<svg class="hf-el" data-i="d{start}" data-start="{start}" data-dur="{dur}"'
-                f' data-anim-class="hf-fade-in" data-anim-dur="0.5"'
-                f' width="{width}" height="{height}" style="position:absolute;top:0;left:0">'
-                f'<defs><marker id="a" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0L10,5L0,10Z" fill="#4f8cff"/></marker></defs>'
-                f'{title_svg}{rects}{arrows}{labels}</svg>'
-            )
-
-        # 对比图解
-        elif preset == "comparison":
-            left = items[0] if items else ""
-            right = items[1] if len(items) > 1 else ""
-            return (
-                f'<svg class="hf-el" data-i="c{start}" data-start="{start}" data-dur="{dur}"'
-                f' data-anim-class="hf-fade-in" data-anim-dur="0.5"'
-                f' width="{width}" height="{height}" style="position:absolute;top:0;left:0">'
-                f'<rect x="{cx-260}" y="{cy-30}" width="220" height="60" rx="12" fill="rgba(255,255,255,0.12)"/>'
-                f'<text x="{cx-150}" y="{cy+6}" font-size="{font_size-6}px" fill="{font_color}" text-anchor="middle">{_html_esc(left[:20])}</text>'
-                f'<text x="{cx}" y="{cy+6}" font-size="36" fill="#ff6b6b" text-anchor="middle" font-weight="bold">VS</text>'
-                f'<rect x="{cx+40}" y="{cy-30}" width="220" height="60" rx="12" fill="rgba(255,255,255,0.12)"/>'
-                f'<text x="{cx+150}" y="{cy+6}" font-size="{font_size-6}px" fill="{font_color}" text-anchor="middle">{_html_esc(right[:20])}</text>'
-                f'</svg>'
-            )
-
-        # 流程图解
-        elif preset == "sequence":
-            items_html = []
-            for i, item in enumerate(items[:5], 1):
-                yy = cy - 80 + i * 40
-                items_html.append(
-                    f'<text x="{cx}" y="{yy}" font-size="{font_size-6}px" fill="{font_color}" '
-                    f'text-anchor="middle">{i}. {_html_esc(item[:30])}</text>'
-                )
-            title_html = (
-                f'<text x="{cx}" y="{cy-120}" font-size="{font_size}px" fill="{font_color}" '
-                f'text-anchor="middle" font-weight="bold">{_html_esc(title[:60])}</text>'
-            ) if title else ""
-            return (
-                f'<svg class="hf-el" data-i="s{start}" data-start="{start}" data-dur="{dur}"'
-                f' data-anim-class="hf-fade-in" data-anim-dur="0.5"'
-                f' width="{width}" height="{height}" style="position:absolute;top:0;left:0">'
-                f'{title_html}{"".join(items_html)}</svg>'
-            )
-
-        # fallback
-        return (
-            f'<div class="hf-el" data-i="f{start}" data-start="{start}" '
-            f'data-dur="{dur}" data-anim-class="hf-fade-in" data-anim-dur="0.5" '
-            f'style="left:50%;top:50%;transform:translate(-50%,-50%);'
-            f'font-size:{font_size}px;color:{font_color}">{_html_esc(text)}</div>'
         )
 
     @staticmethod

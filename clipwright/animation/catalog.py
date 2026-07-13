@@ -16,16 +16,28 @@ from clipwright.animation.registry import AnimationRegistry
 from clipwright.config import logger
 from clipwright.schema.animation import AnimationType
 
-# 内置逻辑动画（由 text_diagram tool 驱动）
+# 内置逻辑动画（由 DiagramSVG 渲染引擎驱动）
 _BUILTIN_LOGIC_ANIMATIONS: list[dict[str, str]] = [
     {"id": "diagram", "name": "箭头", "category": "logic",
-     "desc": "展示因果关系（A→B），适合逻辑推理，在屏幕中心区域展示"},
-    {"id": "comparison", "name": "对比", "category": "logic",
-     "desc": "对比两个事物（A vs B），适合对立分析，在屏幕中心区域展示"},
-    {"id": "sequence", "name": "流程", "category": "logic",
-     "desc": "展示步骤/流程/序列，在屏幕中心区域展示"},
+     "desc": "展示因果关系 A→B→C，逐元素入场，支持渐变阴影"},
     {"id": "causation", "name": "因果", "category": "logic",
-     "desc": "因果链条 A → 导致 → B，在屏幕中心区域展示"},
+     "desc": "因果链条 A → 导致 → B，逐元素入场"},
+    {"id": "comparison", "name": "对比", "category": "logic",
+     "desc": "对比两个事物 A vs B，渐变背景 + 逐元素入场"},
+    {"id": "sequence", "name": "流程", "category": "logic",
+     "desc": "步骤/流程/序列，编号圆圈 + 逐元素入场"},
+    {"id": "timeline", "name": "时间线", "category": "logic",
+     "desc": "历史演进/项目里程碑，水平时间轴 + 节点"},
+    {"id": "tree", "name": "层级", "category": "logic",
+     "desc": "分类/组织结构/目录树，根节点 + 子节点"},
+    {"id": "venn", "name": "维恩", "category": "logic",
+     "desc": "交集/包含关系，双圆重叠图"},
+    {"id": "bar_chart", "name": "柱状图", "category": "logic",
+     "desc": "数据对比，垂直柱状图"},
+    {"id": "pie_chart", "name": "饼图", "category": "logic",
+     "desc": "占比分布，扇形 + 图例"},
+    {"id": "line_chart", "name": "折线图", "category": "logic",
+     "desc": "趋势变化，带面积填充 + 数据点"},
 ]
 
 
@@ -394,6 +406,10 @@ class AnimationCatalog:
         "@keyframes hf-fade-out {"
         "  0% { opacity: 1; }"
         "  100% { opacity: 0; }"
+        "}"
+        "@keyframes hf-diagram-reveal {"
+        "  0% { visibility: hidden; }"
+        "  100% { visibility: visible; }"
         "}"
     )
 

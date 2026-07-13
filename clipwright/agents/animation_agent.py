@@ -100,6 +100,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                         anim_track = anim_track or self._ensure_anim_track(timeline)
                         await self._handle_logic_animation(
                             anim_track, clip, anim_id, anim_name, marker,
+                            persona_style,
                         )
                         logic_anim_count += 1
                         logger.info("AnimationAgent: [逻辑动画]%s → %s (id=%s)",
@@ -228,6 +229,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         anim_id: str,
         anim_name: str,
         marker: dict[str, Any],
+        persona_style: dict[str, Any] | None = None,
     ) -> None:
         """在动画轨创建独立的逻辑动画 clip，由 Hyperframes 渲染 SVG。"""
         text_content = marker.get("text", self._extract_text_content(vid_clip, marker))
@@ -238,6 +240,17 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         diagram_params = self._build_diagram_params(
             anim_id, text_content, duration
         )
+
+        # 合并 Persona 视觉风格到图解参数
+        diagram_style = {}
+        if persona_style:
+            diagram_style = {
+                "primary_color": persona_style.get("primary_color", "#4f8cff"),
+                "secondary_color": persona_style.get("secondary_color", "#ff6b6b"),
+                "accent_color": persona_style.get("accent_color", "#fbbf24"),
+                "text_color": persona_style.get("font_color", "#ffffff"),
+                "font_size": persona_style.get("font_size", 36),
+            }
 
         anim_clip = Clip(
             id=_uid("lc"),
@@ -252,9 +265,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "anim_name": anim_name,
                 "category": "logic",
                 "diagram_params": diagram_params,
+                "diagram_style": diagram_style,
                 "renderer": "hyperframes",
                 "font_size": 48,
-                "font_color": "#ffffff",
+                "font_color": diagram_style.get("text_color", "#ffffff"),
                 "position": "center",
             },
         )
@@ -376,11 +390,19 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             ]
         elif anim_id == "sequence":
             steps = [t.strip() for t in text.replace("→", "|").split("|")] if "→" in text or "|" in text else [text[:15], "步骤2", "步骤3"]
-            base["items"] = steps[:5]
+            base["items"] = steps[:8]
             base["relations"] = [
                 {"from": i, "to": i + 1, "label": "→"}
-                for i in range(len(steps[:5]) - 1)
+                for i in range(len(steps[:8]) - 1)
             ]
+        elif anim_id in ("timeline", "tree", "venn"):
+            # 时间线/层级/维恩：用 → 或 | 分隔项
+            items = [t.strip() for t in text.replace("→", "|").split("|")] if "→" in text or "|" in text else [text[:20]]
+            base["items"] = items[:8]
+        elif anim_id in ("bar_chart", "pie_chart", "line_chart"):
+            # 数据图表：每项格式 "标签:数值" 或纯标签（自动生成值）
+            items = [t.strip() for t in text.replace("|", ",").split(",")] if "|" in text or "," in text else [text[:20]]
+            base["items"] = items[:8]
         else:
             base["items"] = [text[:20]]
 
