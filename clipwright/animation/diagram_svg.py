@@ -100,6 +100,8 @@ class DiagramRenderer:
             "bar_chart": cls._bar_chart,
             "pie_chart": cls._pie_chart,
             "line_chart": cls._line_chart,
+            "sequence_diagram": cls._sequence_diagram,
+            "flow_chart": cls._flow_chart,
         }
         # 插件自定义
         renderer_map.update(cls._custom_renderers)
@@ -125,6 +127,8 @@ class DiagramRenderer:
             {"id": "bar_chart", "name": "柱状图", "desc": "数据对比"},
             {"id": "pie_chart", "name": "饼图", "desc": "占比分布"},
             {"id": "line_chart", "name": "折线图", "desc": "趋势变化"},
+            {"id": "sequence_diagram", "name": "序列图", "desc": "参与者消息传递顺序"},
+            {"id": "flow_chart", "name": "流程图", "desc": "判断/分支/循环逻辑结构"},
         ]
         # 插件注册的自定义渲染器
         for cid, cfn in cls._custom_renderers.items():
@@ -163,6 +167,80 @@ class DiagramRenderer:
     @staticmethod
     def _html_esc(text: str) -> str:
         return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+    # ── 富文本标记解析 ──────────────────────────────────
+
+    @staticmethod
+    def _rich_to_tspans(markup: str, font_size: int, fill: str) -> list[str]:
+        """将简易标记转为 SVG <tspan> 列表。
+
+        标记语法: [red]红字[/red][bold]加粗[/bold][size=72]大字[/size]
+        支持: red, blue, yellow, green, orange, bold, size=N
+        """
+        import re
+        tspans: list[str] = []
+        pos = 0
+        cur_color = fill
+        cur_bold = ""
+        cur_size = font_size
+
+        for m in re.finditer(r'\[(red|blue|yellow|green|orange|bold|size=\d+|/[\w]*)\]', markup):
+            if m.start() > pos:
+                text = DiagramRenderer._html_esc(markup[pos:m.start()])
+                tspans.append(
+                    f'<tspan fill="{cur_color}" font-size="{cur_size}" '
+                    f'font-weight="{cur_bold or "normal"}">{text}</tspan>'
+                )
+            tag = m.group(1)
+            if tag == "red": cur_color = "#ff4444"
+            elif tag == "blue": cur_color = "#4488ff"
+            elif tag == "yellow": cur_color = "#ffd700"
+            elif tag == "green": cur_color = "#44cc44"
+            elif tag == "orange": cur_color = "#ff8800"
+            elif tag == "bold": cur_bold = "bold"
+            elif tag.startswith("size="):
+                try: cur_size = int(tag.split("=")[1])
+                except: pass
+            elif tag.startswith("/"):
+                cur_color = fill
+                cur_bold = ""
+                cur_size = font_size
+            pos = m.end()
+
+        if pos < len(markup):
+            text = DiagramRenderer._html_esc(markup[pos:])
+            tspans.append(
+                f'<tspan fill="{cur_color}" font-size="{cur_size}" '
+                f'font-weight="{cur_bold or "normal"}">{text}</tspan>'
+            )
+        return tspans
+
+    # ── 缓动函数 ────────────────────────────────────────
+
+    @staticmethod
+    def _easing(t: float, easing: str = "linear") -> float:
+        """三次贝塞尔缓动。支持 linear / ease_in / ease_out / ease_in_out / bounce。"""
+        def _bez(t2: float, x1: float, y1: float, x2: float, y2: float) -> float:
+            # 牛顿法求 x 对应的 t，再采样 y
+            lo, hi = 0.0, 1.0
+            for _ in range(20):
+                mid = (lo + hi) / 2
+                if 3 * x1 * mid * (1 - mid) ** 2 + 3 * x2 * mid ** 2 * (1 - mid) + mid ** 3 < t2:
+                    lo = mid
+                else:
+                    hi = mid
+            ct = (lo + hi) / 2
+            return 3 * y1 * ct * (1 - ct) ** 2 + 3 * y2 * ct ** 2 * (1 - ct) + ct ** 3
+
+        presets = {
+            "linear": (0, 0, 1, 1),
+            "ease_in": (0.42, 0, 1, 1),
+            "ease_out": (0, 0, 0.58, 1),
+            "ease_in_out": (0.42, 0, 0.58, 1),
+            "bounce": (0.68, -0.55, 0.27, 1.55),
+        }
+        params = presets.get(easing, presets["linear"])
+        return _bez(t, *params)
 
     # ── 箭头/因果图解 ───────────────────────────────────
 
@@ -714,3 +792,145 @@ class DiagramRenderer:
 
         parts_svg.append('</svg>')
         return "\n".join(parts_svg)
+
+    # ── 序列图 ──────────────────────────────────────────
+
+    @classmethod
+    def _sequence_diagram(cls, items: list[str], title: str, s: DiagramStyle,
+                          w: int, h: int) -> str:
+        """参与者消息传递序列图。"""
+        cx = w // 2
+        participants = items[0].split(",") if items else ["A", "B"]
+        messages = items[1:] if len(items) > 1 else []
+        n = len(participants)
+        spacing = min(360, (w - 100) // max(n, 1))
+        sx = cx - ((n - 1) * spacing) // 2
+        delays = cls._staggered(range(len(messages) + 1), 0, s.stagger_delay)
+        parts = [cls._svg_frame(w, h)]
+        if title:
+            parts.append(
+                f'<text x="{cx}" y="60" font-size="{s.title_font_size}"'
+                f' fill="{s.text_color}" text-anchor="middle" font-weight="bold">'
+                f'{cls._html_esc(title[:60])}</text>')
+        # 参与者头部 + 生命线
+        for i, name in enumerate(participants):
+            x = sx + i * spacing
+            parts.append(
+                f'<g style="animation-delay:{delays[0]}s">'
+                f'<rect x="{x - 60}" y="100" width="120" height="36" rx="18"'
+                f' fill="{s.primary_color}44" stroke="{s.primary_color}" filter="url(#ds_sd)"/>'
+                f'<text x="{x}" y="123" font-size="18" fill="{s.text_color}" text-anchor="middle">'
+                f'{cls._html_esc(name[:10])}</text>'
+                f'<line x1="{x}" y1="136" x2="{x}" y2="600" stroke="{s.text_color}22" stroke-width="1" stroke-dasharray="4,3"/>'
+                f'</g>')
+        # 消息箭头
+        for j, msg_raw in enumerate(messages):
+            parts_raw = msg_raw.split(":", 1)
+            spec, label = parts_raw[0], (parts_raw[1] if len(parts_raw) > 1 else "")
+            fi = int(spec.split("->")[0]) if "->" in spec else 0
+            ti = int(spec.split("->")[1]) if "->" in spec else 1
+            fy = sx + min(fi, n - 1) * spacing
+            ty = sx + min(ti, n - 1) * spacing
+            yy = 170 + j * 55
+            if yy > 580: break
+            a1 = fy + (30 if ty > fy else -30)
+            a2 = ty - (30 if ty > fy else -30)
+            parts.append(
+                f'<g style="animation-delay:{delays[min(j + 1, len(delays) - 1)]}s">'
+                f'<line x1="{a1}" y1="{yy}" x2="{a2}" y2="{yy}"'
+                f' stroke="{s.arrow_color}" stroke-width="2" marker-end="url(#a_sd)"/>'
+                + (f'<text x="{(a1 + a2) // 2}" y="{yy - 8}" font-size="14" fill="{s.text_color}88"'
+                   f' text-anchor="middle">{cls._html_esc(label[:25])}</text>' if label else "")
+                + '</g>')
+        # marker
+        parts.insert(1,
+            '<defs>'
+            f'<marker id="a_sd" viewBox="0 0 10 10" refX="10" refY="5"'
+            f' markerWidth="8" markerHeight="8" orient="auto">'
+            f'<path d="M0,0L10,5L0,10Z" fill="{s.arrow_color}"/></marker>'
+            f'<filter id="ds_sd"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.25"/></filter>'
+            '</defs>')
+        parts.append('</svg>')
+        return "\n".join(parts)
+
+    # ── 流程图 ──────────────────────────────────────────
+
+    @classmethod
+    def _flow_chart(cls, items: list[str], title: str, s: DiagramStyle,
+                    w: int, h: int) -> str:
+        """流程图：判断/分支/循环。"""
+        delays = cls._staggered(range(10), 0, s.stagger_delay)
+        parts = [cls._svg_frame(w, h)]
+        if title:
+            parts.append(
+                f'<text x="{w // 2}" y="50" font-size="{s.title_font_size}"'
+                f' fill="{s.text_color}" text-anchor="middle" font-weight="bold">'
+                f'{cls._html_esc(title[:60])}</text>')
+        # 解析节点
+        nodes_raw = items[0].split(";") if items else []
+        nodes = []
+        for nr in nodes_raw[:8]:
+            segs = nr.split(":")
+            nodes.append({
+                "id": segs[0], "x": int(segs[1]) if len(segs) > 1 and segs[1].strip().isdigit() else w // 2,
+                "y": int(segs[2]) if len(segs) > 2 and segs[2].strip().isdigit() else 200 + len(nodes) * 120,
+                "label": segs[3] if len(segs) > 3 else segs[0], "shape": segs[4] if len(segs) > 4 else "rect",
+            })
+        # 解析边
+        edges = []
+        if len(items) > 1:
+            for er in items[1].split(";"):
+                segs = er.split(":", 1)
+                route, lbl = segs[0], (segs[1] if len(segs) > 1 else "")
+                if "->" in route:
+                    p = route.split("->", 1)
+                    edges.append({"from": p[0].strip(), "to": p[1].strip(), "label": lbl})
+        # marker
+        parts.insert(1,
+            '<defs>'
+            f'<marker id="a_fc" viewBox="0 0 10 10" refX="10" refY="5"'
+            f' markerWidth="8" markerHeight="8" orient="auto">'
+            f'<path d="M0,0L10,5L0,10Z" fill="{s.arrow_color}88"/></marker>'
+            f'<filter id="ds_fc"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.25"/></filter>'
+            '</defs>')
+        # 绘制边
+        for ei, edge in enumerate(edges):
+            fn = next((n for n in nodes if n["id"] == edge["from"]), None)
+            tn = next((n for n in nodes if n["id"] == edge["to"]), None)
+            if not fn or not tn: continue
+            x1, y1 = fn["x"], fn["y"] + (60 if fn["shape"] == "diamond" else 30)
+            x2, y2 = tn["x"], tn["y"] - (60 if tn["shape"] == "diamond" else 30)
+            parts.append(
+                f'<g style="animation-delay:{delays[min(ei, len(delays) - 1)]}s">'
+                f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}"'
+                f' stroke="{s.arrow_color}66" stroke-width="2" marker-end="url(#a_fc)"/>'
+                + (f'<text x="{(x1 + x2) // 2}" y="{(y1 + y2) // 2 - 8}" font-size="14" fill="{s.text_color}88"'
+                   f' text-anchor="middle">{cls._html_esc(edge["label"][:15])}</text>' if edge["label"] else "")
+                + '</g>')
+        # 绘制节点
+        for ni, node in enumerate(nodes):
+            d = delays[min(ni, len(delays) - 1)]
+            if node["shape"] == "diamond":
+                parts.append(
+                    f'<g style="animation-delay:{d}s">'
+                    f'<polygon points="{node["x"]},{node["y"] - 40} {node["x"] + 40},{node["y"]}'
+                    f' {node["x"]},{node["y"] + 40} {node["x"] - 40},{node["y"]}"'
+                    f' fill="{s.accent_color}22" stroke="{s.accent_color}" stroke-width="2" filter="url(#ds_fc)"/>'
+                    f'<text x="{node["x"]}" y="{node["y"] + 5}" font-size="14" fill="{s.text_color}"'
+                    f' text-anchor="middle">{cls._html_esc(node["label"][:8])}</text></g>')
+            elif node["shape"] == "pill":
+                parts.append(
+                    f'<g style="animation-delay:{d}s">'
+                    f'<rect x="{node["x"] - 60}" y="{node["y"] - 20}" width="120" height="40" rx="20"'
+                    f' fill="{s.primary_color}33" stroke="{s.primary_color}" stroke-width="2" filter="url(#ds_fc)"/>'
+                    f'<text x="{node["x"]}" y="{node["y"] + 5}" font-size="16" fill="{s.text_color}"'
+                    f' text-anchor="middle">{cls._html_esc(node["label"][:12])}</text></g>')
+            else:
+                parts.append(
+                    f'<g style="animation-delay:{d}s">'
+                    f'<rect x="{node["x"] - 70}" y="{node["y"] - 25}" width="140" height="50" rx="{s.border_radius}"'
+                    f' fill="{s.item_bg}" stroke="{s.primary_color}66" stroke-width="2" filter="url(#ds_fc)"/>'
+                    f'<text x="{node["x"]}" y="{node["y"] + 5}" font-size="16" fill="{s.text_color}"'
+                    f' text-anchor="middle">{cls._html_esc(node["label"][:15])}</text></g>')
+        parts.append('</svg>')
+        return "\n".join(parts)
