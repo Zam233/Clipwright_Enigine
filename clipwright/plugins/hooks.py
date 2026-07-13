@@ -18,6 +18,8 @@ class HookPoint(str, Enum):
     POST_RENDER = "post_render"
     ON_ERROR = "on_error"
     ANIMATION_CATALOG_EXTEND = "animation_catalog_extend"
+    DIAGRAM_STYLE_PRESET = "diagram_style_preset"
+    DIAGRAM_RENDERER_EXTEND = "diagram_renderer_extend"
 
 
 class HookRegistry:

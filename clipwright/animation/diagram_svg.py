@@ -36,17 +36,35 @@ class DiagramStyle:
 
     @classmethod
     def from_persona(cls, persona_style: dict | None = None) -> DiagramStyle:
-        """从 Persona 视觉配置创建。"""
+        """从 Persona 视觉配置创建，合并插件注册的 style preset。"""
+        base = cls()
         if not persona_style:
-            return cls()
+            persona_style = {}
+
+        # 读取插件注册的 style presets
+        plugin_presets: dict[str, dict] = {}
+        try:
+            from clipwright.plugins.hooks import HookRegistry, HookPoint
+            ctx = HookRegistry.execute(HookPoint.DIAGRAM_STYLE_PRESET, {})
+            presets = ctx.get("presets", {})
+            if isinstance(presets, dict):
+                plugin_presets = presets
+        except Exception:
+            pass
+
+        # 如果指定了 preset 名称，优先从插件 preset 加载
+        preset_name = persona_style.get("style_preset", "")
+        if preset_name and preset_name in plugin_presets:
+            base = cls(**{**cls.__dict__, **plugin_presets[preset_name]})
+
         return cls(
-            primary_color=persona_style.get("primary_color", cls.primary_color),
-            secondary_color=persona_style.get("secondary_color", cls.secondary_color),
-            accent_color=persona_style.get("accent_color", cls.accent_color),
-            text_color=persona_style.get("font_color", cls.text_color),
-            font_size=persona_style.get("font_size", cls.font_size),
-            title_font_size=persona_style.get("title_font_size", cls.title_font_size),
-            stagger_delay=persona_style.get("stagger_delay", cls.stagger_delay),
+            primary_color=persona_style.get("primary_color", base.primary_color),
+            secondary_color=persona_style.get("secondary_color", base.secondary_color),
+            accent_color=persona_style.get("accent_color", base.accent_color),
+            text_color=persona_style.get("font_color", base.text_color),
+            font_size=persona_style.get("font_size", base.font_size),
+            title_font_size=persona_style.get("title_font_size", base.title_font_size),
+            stagger_delay=persona_style.get("stagger_delay", base.stagger_delay),
         )
 
 
@@ -94,7 +112,7 @@ class DiagramRenderer:
 
     @classmethod
     def get_supported_presets(cls) -> list[dict[str, str]]:
-        """返回所有支持的图解类型（用于 StructureAgent prompt + 前端）。"""
+        """返回所有支持的图解类型（内置 + 插件注册，用于 StructureAgent prompt + 前端）。"""
         presets = [
             {"id": "diagram", "name": "箭头", "desc": "展示因果关系 A→B→C"},
             {"id": "causation", "name": "因果", "desc": "因果链条 A → 导致 → B"},
@@ -108,8 +126,25 @@ class DiagramRenderer:
             {"id": "pie_chart", "name": "饼图", "desc": "占比分布"},
             {"id": "line_chart", "name": "折线图", "desc": "趋势变化"},
         ]
+        # 插件注册的自定义渲染器
         for cid, cfn in cls._custom_renderers.items():
             presets.append({"id": cid, "name": cid, "desc": getattr(cfn, "__doc__", "") or ""})
+        # 通过 Hook 注册的自定义渲染器
+        try:
+            from clipwright.plugins.hooks import HookRegistry, HookPoint
+            ctx = HookRegistry.execute(HookPoint.DIAGRAM_RENDERER_EXTEND, {})
+            renderers = ctx.get("renderers", [])
+            if isinstance(renderers, list):
+                for r in renderers:
+                    if isinstance(r, dict) and "id" in r:
+                        presets.append({
+                            "id": r["id"],
+                            "name": r.get("name", r["id"]),
+                            "desc": r.get("desc", ""),
+                        })
+                        cls._custom_renderers[r["id"]] = r.get("renderer", lambda *a, **kw: "")
+        except Exception:
+            pass
         return presets
 
     # ── SVG 辅助 ────────────────────────────────────────

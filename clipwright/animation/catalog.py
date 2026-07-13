@@ -95,19 +95,36 @@ class AnimationCatalog:
         """
         result = list(_BUILTIN_LOGIC_ANIMATIONS)
 
-        # 尝试从插件扩展逻辑动画类型
+        # 合并 DiagramSVG 支持的图解类型（内置 + 插件注册）
+        try:
+            from clipwright.animation.diagram_svg import DiagramRenderer
+            for p in DiagramRenderer.get_supported_presets():
+                pid = p["id"]
+                if not any(r["id"] == pid for r in result):
+                    result.append({
+                        "id": pid,
+                        "name": p["name"],
+                        "category": "logic",
+                        "desc": p["desc"],
+                    })
+        except Exception:
+            pass
+
+        # 尝试从插件扩展逻辑动画类型（老接口，兼容）
         try:
             from clipwright.plugins.hooks import HookRegistry, HookPoint
             ctx = HookRegistry.execute(HookPoint.ANIMATION_CATALOG_EXTEND, {})
             extensions = ctx.get("extensions", [])
             for ext in extensions:
                 if isinstance(ext, dict) and "id" in ext:
-                    result.append({
-                        "id": ext["id"],
-                        "name": ext.get("name", ext["id"]),
-                        "category": ext.get("category", "logic"),
-                        "desc": ext.get("desc", ""),
-                    })
+                    pid = ext["id"]
+                    if not any(r["id"] == pid for r in result):
+                        result.append({
+                            "id": pid,
+                            "name": ext.get("name", pid),
+                            "category": ext.get("category", "logic"),
+                            "desc": ext.get("desc", ""),
+                        })
         except Exception:
             pass
 
