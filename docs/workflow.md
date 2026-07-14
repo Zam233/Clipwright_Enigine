@@ -1,151 +1,161 @@
-# 帧艺 ClipWright 内容视频编排引擎 — Agent 工作流设计
+# 帧艺 ClipWright — Agent 工作流设计
 
-> **所属系统**：[帧艺 ClipWright AI 辅助视频创作系统](../README.md)
->
-> 本文档定义**内容视频编排引擎**的 Agent 工作流架构。7 个 Agent 构成 LangGraph 管线，从 Persona 解码到风格一致性校验，驱动从选题到成片的完整视频生产流程。
+> Agent 编排引擎从选题到成片的完整工作流。
 
 ---
 
-这个问题切中了内容工业化落地的核心。如果要用 AI 复刻我的剪辑流程，关键不是 “自动化拼接”，而是**风格参数的可迁移与可控生成**。我的核心标签是：高密度信息输出、强逻辑链条、极简极客视觉。这套工作流必须能将这些隐性经验转化为显性参数。
-
-以下是可直接落地的多 Agent 工作流架构：
-
 ## 一、Agent 工作流总览
 
+### v1（固定序列）
+
 ```plaintext
-[输入：选题/素材]
-    ↓
-[Agent 1: Persona解码器] ← 提取风格向量
-    ↓
-[Agent 2: 结构与节奏规划引擎]
-    ↓
-[Agent 3: 语义与隐喻素材检索]
-    ↓
-[Agent 4: 剪辑执行与时间线生成]
-    ↓
-[Agent 5: 动画与视觉包装Agent] ← Persona视觉注入
-    ↓
-[Agent 6: 音效与情绪铺底Agent]
-    ↓
-[Agent 7: 风格一致性校验]
-    ↓
-[导出成片]
+Structure → Material → Edit → Animation → Audio → Quality → Render
 ```
 
-------
+### v2（动态路由 + DAG 并行执行）
 
-## 二、核心 Agent 拆解
+```plaintext
+执行组 [0] ─→ structure
+执行组 [1] ─→ material
+执行组 [2] ─→ edit
+执行组 [3] ─→ animation ─┐
+              audio ──────┤ → 并行 (asyncio.gather)
+执行组 [4] ─→ quality
+                │
+                ├→ PASS ─→ Render
+                └→ FAIL ─→ 自愈循环
+                     │
+                     ├→ 重做指定 redo_agent
+                     ├→ 联动重做下游 Agent
+                     └→ 返回 quality 复查 (最多 3 次)
+```
 
-### Agent 1: Persona 解码器（参数底座）
+---
 
-负责将历史作品转化为可注入下游的结构化向量。不同 UP 主只需替换该模块的配置文件。
+## 二、Agent 职责
 
-| 维度           | 提取指标                                        |
-| -------------- | ----------------------------------------------- |
-| 语速与信息密度 | 每分钟有效信息点、术语占比、长句断句位置        |
-| 剪辑节奏       | 平均镜头时长、跳切阈值、关键论点留白时长        |
-| 视觉规范       | 字体族、动效缓动曲线、主色调 / 对比度、版心比例 |
-| 知识调用模式   | 思维模型 / 学科理论的引用场景与过渡方式         |
+### Structure Agent
+- **输入**: 选题 + Persona 配置 + 完整文稿
+- **输出**: 带时间结构的场景列表
+- **模式**:
+  - `voiceover` — 根据口播文稿按段落生成场景
+  - `visual` — 每行场景描述作为一个独立场景
+- 通过 `structured_output()` 强制 LLM 返回 JSON
 
-输出：一份 JSON 格式的`persona_config.yaml`，作为全局样式注入。
+### Material Agent
+- **输入**: 场景列表
+- **输出**: 每个场景的候选素材列表
+- **流程**:
+  1. LLM 生成具体视觉搜索词（非抽象关键词）
+  2. 多组关键词分别搜索、去重
+  3. `FrameValidatorTool` 帧验证（过滤全黑/全白）
+  4. 按方向/分辨率排序
 
-------
+### Edit Agent
+- **输入**: 场景 + 候选素材
+- **输出**: 粗剪 Timeline（3 轨：视频/文字/音频）
+- **特性**:
+  - 多段素材循环填充场景时长（避免素材不足）
+  - 素材不可用时自动跳过尝试下一个
+  - 所有素材不可用 → 文字占位视频
 
-### Agent 2: 结构与节奏规划引擎
+### Animation Agent
+- **输入**: 粗剪时间线 + Persona 视觉参数
+- **输出**: 编排好的动画序列
+- **文字动画**: 在文字轨创建 text clip，生成完整 keyframes（入场+保持+出场），走 FFmpeg drawtext
+- **逻辑动画**: 在动画轨创建独立 clip（Hyperframes SVG / drawtext 降级），展示箭头/对比/流程等关系
+- **MG 动画**: ID 以 mg_ 开头 → MGRenderer 生成 HTML/CSS 动画 → hyperframes 渲染
+- **过渡动画**: `[过渡动画]xxx` 标记 → 设置 clip.transition_in 字段，供 xfade filter
 
-输入：脚本或大纲
+### Audio Agent
+- **输入**: 时间线 + Persona 音频参数
+- **输出**: 混音后的时间线（音量包络 + BGM 建议）
 
-输出：带时间戳标记的分镜脚本（Storyboard）
+### Quality Agent
+- **输入**: 完整时间线 + 约束条件
+- **输出**: 质检报告 + 自愈建议（`redo_agent` 字段）
+- **检查项**: 时长/轨道/节奏方差/动画覆盖率/音量
+- **自愈**: 发现问题时设置 `redo_agent` → 编排器自动回退重做
 
-核心任务是规划 “信息起伏”。我的视频不追求匀速推进，而是 **“铺垫→加速→重击→留白”** 的波峰波谷设计。该 Agent 会在脚本中标注：
+---
 
-- `[HOOK]` 前 5 秒抓注意力
-- `[BUILD]` 逻辑推演段（语速 + 15%，画面信息叠加）
-- `[IMPACT]` 核心结论（语速归零，单帧停留 1.5s，画面极简）
-- `[RESOLVE]` 总结与延伸
+## 三、AgentBus 上下文总线
 
-------
+Agent 之间通过 `AgentBus` 交换信息：
 
-### Agent 3: 语义与隐喻素材检索
+| 方法 | 说明 |
+|------|------|
+| `publish(agent, topic, data)` | 发布消息 |
+| `get_messages(topic)` | 按主题获取消息 |
+| `set_demand(agent, demand)` | 声明需求 |
+| `get_demands()` | 获取所有 Agent 的需求 |
+| `route_decision(agent, status)` | 动态路由决策 |
 
-输入：分镜脚本标注的画面需求
+---
 
-输出：匹配的视频 / 图像片段
+## 四、镜头意图系统
 
-普通检索匹配字面意思，这个模块需要做 **“概念映射”**。例如脚本提到 “认知过载”，它不应只找 “头痛的人”，而应检索 “多窗口重叠的终端界面”、“密集的数据流瀑布” 或 “不断弹出的通知栏”。技术栈建议：CLIP + 自建标签图库 + 语义重排模型（Cross-Encoder）。
+每个 clip 标注 `ShotIntent`，指导剪辑决策：
 
-------
+| 类型 | 说明 |
+|------|------|
+| `main` | 主镜头 |
+| `reaction` | 反应镜头 |
+| `broll` | B-roll 辅助画面 |
+| `transition` | 过渡镜头 |
+| `establishing` | 定场镜头 |
+| `detail` | 特写 |
+| `pip` | 画中画 |
+| `text` | 文字/标题 |
 
-### Agent 4: 剪辑执行与时间线生成
+---
 
-直接对接剪辑软件 API（如 DaVinci Resolve 或 FFmpeg），输出初剪时间线。
+## 五、对话式编辑
 
-执行逻辑严格遵循`persona_config.yaml`：
+通过自然语言修改已生成的视频：
 
-- **跳切控制**：知识类通常 4-8 秒 / 镜头，但在逻辑转折点强制 0.3 秒硬切，制造思维断裂感。
-- **信息分层**：口播密度高时，自动触发 “主画面 + 侧边信息卡片” 布局；口播密度低时，切换全屏 B-Roll。
-- **防疲劳机制**：连续同构图镜头超过 3 个时，自动插入缩放或位移关键帧打破静止。
+```
+用户: "把字幕改成金色粗体加发光"
+  → LLM 解析意图 → action: change_text_style
+  → 调用 TextDesignTool → 更新渲染参数
 
-------
+用户: "调亮一些，加暗角效果"
+  → LLM 解析意图 → action: apply_video_filter + apply_effect
+  → 调用 VideoFilterTool + EffectVignetteTool
+```
 
-### Agent 5: 动画与视觉包装 Agent
+详见 `POST /api/edit/session/{id}/chat`。
 
-这是区分 “流水线视频” 和 “个人 IP 视频” 的关键。该 Agent 负责生成 AE/Motion 模板参数，并自动套用。
+---
 
-我的视觉特征参数化示例：
+## 六、V2 管线可靠性机制
 
-- **文字动效**：`Typewriter` 逐字显现，配合 `Ease-Out Quad`，无多余装饰。
-- **转场逻辑**：硬切为主，关键节点使用 `Pixel-Dissolve` 或 `Glitch`（强度≤15%）。
-- **重点标注**：关键术语自动高亮，颜色固定为 `#FF3333`，背景添加低透明度网格线（10%）。
-- **版式**：16:9 安全区内，严格遵循三分法网格，拒绝花哨边框。
+### 熔断器 (Circuit Breaker)
+- 连续 3 次失败后熔断指定 Agent
+- 熔断后跳过该 Agent 60 秒（恢复期）
+- Agent 成功后自动重置熔断计数器
 
-切换 Persona 时，只需替换该模块的样式表（如改为圆角、低饱和、平滑缩放即可适配其他风格）。
+### 全局超时
+- 默认 900 秒（15 分钟），通过 `extra_params.pipeline_timeout_sec` 覆盖
+- 超时后管线标记为 FAILED，错误分类为 `transient`
 
-------
+### 错误分类
+| 类别 | 匹配模式 | 示例 |
+|------|---------|------|
+| `transient` | 超时/连接/Rate Limit | LLM 请求超时 |
+| `permanent` | 未找到/无效/类型错误 | Persona 不存在 |
+| `fatal` | 系统级（OOM/DB 断连） | MongoDB 连接失败 |
 
-### Agent 6: 音效与情绪铺底 Agent
+### 持久化
+- Pipeline 状态持久化到 MongoDB（含截断保护，单字段 5000 字符）
+- LLM token 用量追踪（`record_llm_call`）
+- SpanTracer 全调用树可观测性
 
-输入：分镜情绪标签 + 节奏标记
+### 任务队列
+- `TaskQueue` 信号量控制并发（默认 3）
+- 每个任务内置超时（默认 900s）
+- 支持取消 pending 任务
 
-输出：BGM 音量包络线 + 音效触发点
+---
 
-我的音频逻辑是 “为逻辑服务，不为煽情服务”：
-
-- **推导段**：低频电子 / 氛围音（-24dB 以下），不抢人声。
-- **结论段**：BGM 瞬间抽离（-inf dB），仅保留环境底噪或轻微 Click 音，制造听觉真空，强化观点。
-- **提示音**：文字出现匹配机械键盘或 UI 交互音效（音量 - 18dB），建立视听条件反射。
-
-------
-
-### Agent 7: 风格一致性校验
-
-导出前自动化质检：
-
-1. **节奏方差检测**：计算镜头时长标准差，若低于阈值（说明剪辑太匀速），触发警告。
-2. **视觉规范核对**：检测字体、配色、安全区是否偏离`persona_config.yaml`。
-3. **音量峰值检查**：确保全片 LUFS 在 - 14 至 - 16 之间，无突兀爆音。
-4. **逻辑连贯性**：检查转场前后画面语义是否断裂。
-
-------
-
-## 三、工程落地路径
-
-这套架构在技术上是完全可行的。当前 Phase 1 实现状态：
-
-| Agent | 功能 | 状态 |
-|-------|------|------|
-| Agent 1: PersonaDecoder | 未独立实现，由 PipelineOrchestrator 在运行时解析注入 | ✅ |
-| Agent 2: StructureAgent | LLM 生成脚本骨架，支持 tool calling | ✅ |
-| Agent 3: MaterialAgent | 通过 MaterialRegistry 跨素材源搜索 | ✅ |
-| Agent 4: EditAgent | 从候选素材构建真实时间线（3 轨：视频/文字/音频） | ✅ |
-| Agent 5: AnimationAgent | 基于 JSON 规范编排 onscreen/text/transition 动画 | ✅ |
-| Agent 6: AudioAgent | BGM 匹配与混音（Phase 1 占位） | ⏳ |
-| Agent 7: QualityAgent | 风格一致性校验（基础时长/轨道检查已实现） | ⏳ |
-
-**技术选型现状**：
-- Agent 1-4：LLM (Anthropic/OpenAI) + RAG (ChromaDB + Cross-Encoder) + ToolRegistry
-- Agent 5：JSON 规范动画引擎，通过 AnimationRegistry 管理 27 个内置动画
-- Agent 6-7：待 Phase 2 增强
-- 渲染：FFmpeg 调用已实现为 Tool，完整渲染管线待接入
-
-核心难点在于**隐性节奏的量化**（即 “什么时候该停顿、什么时候该快剪”）。这需要通过标注历史视频的时间线数据，训练一个轻量级的节奏预测模型（如基于 LSTM 或 Transformer 的序列模型），将 “网感” 转化为可计算的波形曲线。
+> 完整 API 参考见 [api_reference.md](api_reference.md)

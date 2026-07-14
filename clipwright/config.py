@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import logging
+from datetime import timezone, timedelta
 from pathlib import Path
 from typing import Literal, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# ── 时区 ──
+TIME_ZONE = timezone(timedelta(hours=8), "Asia/Shanghai")
+MONGO_TRANSACTIONS_ENABLED = False
 
 
 # 查找 .env：优先包目录，其次工作目录
@@ -27,6 +32,7 @@ class Settings(BaseSettings):
     # --- 路径 ---
     persona_dir: Path = Path("personas")
     plugin_dir: Path = Path("plugins")
+    plugin_data_dir: Path = Path("PluginData")
 
     # --- IsoBase / LLM ---
     llm_provider: Literal["openai", "anthropic", "ollama"] = "anthropic"
@@ -45,8 +51,16 @@ class Settings(BaseSettings):
     port: int = 8000
     debug: bool = False
 
+    # --- MongoDB ---
+    mongo_uri: str = "mongodb://localhost:27017"
+    mongo_db_name: str = "clipwright"
+
     # --- 渲染 ---
     render_output_dir: Path = Path("renders")
+    max_concurrent_renders: int = 2
+    render_encoder: str = "libx264"  # libx264 / h264_nvenc / hevc_nvenc / hevc_amf
+    render_preset: str = "medium"    # ultrafast/fast/medium/slow
+    render_trim_cache: bool = True
 
     # --- 视觉识别模型 ---
     vision_provider: Literal["llm", "transformers", "none"] = "transformers"

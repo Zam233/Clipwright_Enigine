@@ -1,0 +1,133 @@
+<div class="section active" id="section-pipeline">
+  <h2>Pipeline 管线系统</h2>
+  <p class="text-secondary">运行 · 队列 · 批量 · 统计 · 追踪</p>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="pipe-run" onclick="pipeSwitchTab('pipe-run')">运行</div>
+    <div class="tab" data-tab="pipe-queue" onclick="pipeSwitchTab('pipe-queue')">任务队列</div>
+    <div class="tab" data-tab="pipe-batch" onclick="pipeSwitchTab('pipe-batch')">批量</div>
+    <div class="tab" data-tab="pipe-stats" onclick="pipeSwitchTab('pipe-stats')">统计</div>
+    <div class="tab" data-tab="pipe-traces" onclick="pipeSwitchTab('pipe-traces')">追踪</div>
+  </div>
+
+  <div id="pipe-run" class="pipe-tab">
+    <div class="card">
+      <div class="card-header">运行 Pipeline</div>
+      <div class="card-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Persona ID</label>
+            <input id="pipePersonaId" class="form-input" value="zam_knowledge_critical" placeholder="persona_id">
+          </div>
+          <div class="form-group">
+            <label>类型插件</label>
+            <select id="pipePluginId" class="form-input">
+              <option value="knowledge_longform">知识区长片</option>
+              <option value="kichiku_fastcut">鬼畜快剪</option>
+              <option value="digital_review">数码评测</option>
+              <option value="vlog_daily">Vlog 日常</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>选题</label>
+          <input id="pipeTopic" class="form-input" value="年轻人的盲盒消费为什么会成为社会现象" placeholder="输入视频选题">
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-primary" onclick="runPipeline()">运行 v1</button>
+          <button class="btn btn-secondary" onclick="runPipelineV2()">运行 v2</button>
+          <button class="btn btn-sm" style="background:var(--green);color:#000" onclick="submitPipelineQueue()">提交到队列</button>
+        </div>
+        <div id="pipelineResult" class="mt-2"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="pipe-queue" class="pipe-tab" style="display:none">
+    <div class="card">
+      <div class="card-header">
+        <span>任务队列</span>
+        <div class="flex gap-md">
+          <span id="queueRunningCount" class="badge">0 运行中</span>
+          <span id="queuePendingCount" class="badge" style="background:var(--yellow);color:#000">0 排队</span>
+          <button class="btn btn-sm btn-secondary" onclick="refreshQueue()">刷新</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <div id="queueList"></div>
+        <div class="mt-2">
+          <label class="text-sm text-secondary" style="display:block;margin-bottom:4px">取消任务</label>
+          <div class="flex gap-md">
+            <input id="cancelTaskId" class="form-input" placeholder="task_id" style="max-width:300px">
+            <button class="btn btn-sm btn-danger" onclick="cancelTask()">取消</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="pipe-batch" class="pipe-tab" style="display:none">
+    <div class="card">
+      <div class="card-header">批量管线</div>
+      <div class="card-body">
+        <p class="text-secondary" style="margin-bottom:8px">每行一个 topic，一起提交</p>
+        <textarea id="batchTopics" class="form-input" rows="5" placeholder="每行一个主题&#10;主题1&#10;主题2&#10;主题3"></textarea>
+        <button class="btn btn-primary mt-2" onclick="runBatchPipeline()">批量提交</button>
+        <div id="batchResult" class="mt-2"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="pipe-stats" class="pipe-tab" style="display:none">
+    <div class="card">
+      <div class="card-header">管线统计</div>
+      <div class="card-body">
+        <div class="flex flex-wrap gap-lg" style="margin-bottom:12px">
+          <div class="form-group mb-0" style="flex:1">
+            <label>起始时间</label>
+            <input id="statsFrom" class="form-input" type="date" style="max-width:200px">
+          </div>
+          <div class="form-group mb-0" style="flex:1">
+            <label>结束时间</label>
+            <input id="statsTo" class="form-input" type="date" style="max-width:200px">
+          </div>
+          <button class="btn btn-primary" onclick="refreshStats()" style="margin-bottom:14px">查询</button>
+        </div>
+        <div id="statsSummary" class="flex flex-wrap gap-lg"></div>
+        <div id="statsList" class="mt-2"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header flex-between">
+        <span>LLM 成本</span>
+        <button class="btn btn-sm btn-secondary" onclick="refreshLLMStats()">刷新</button>
+      </div>
+      <div class="card-body">
+        <div id="llmStats"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="pipe-traces" class="pipe-tab" style="display:none">
+    <div class="card">
+      <div class="card-header">Span 追踪</div>
+      <div class="card-body">
+        <div class="flex gap-md">
+          <input id="tracePipelineId" class="form-input" placeholder="pipeline_id" style="max-width:400px">
+          <button class="btn btn-primary" onclick="loadTraceSpans()">查询</button>
+        </div>
+        <div id="traceSpans" class="mt-2"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">时间线（甘特图）</div>
+      <div class="card-body">
+        <div class="flex gap-md">
+          <input id="timelinePipelineId" class="form-input" placeholder="pipeline_id" style="max-width:400px">
+          <button class="btn btn-primary" onclick="loadTraceTimeline()">查询</button>
+        </div>
+        <div id="traceTimeline" class="mt-2"></div>
+      </div>
+    </div>
+  </div>
+</div>

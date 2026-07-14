@@ -1,0 +1,160 @@
+<div id="section-edit-workspace" class="section" style="height:calc(100vh - 80px)">
+  <div style="display:flex;gap:12px;height:100%">
+    <!-- Left: Input Panel + Conversation -->
+    <div style="width:360px;flex-shrink:0;display:flex;flex-direction:column;gap:8px;overflow:hidden">
+      <!-- Initial Input Form -->
+      <div id="ewInitForm" class="card" style="margin:0;flex-shrink:0">
+        <div class="card-header" style="padding:8px 12px;font-size:12px">AI 剪辑 — 输入</div>
+        <div class="card-body" style="padding:10px 12px">
+          <div class="form-group" style="margin-bottom:8px">
+            <label style="font-size:11px">创作主题 <span class="text-danger">*</span></label>
+            <input id="ewTopic" class="form-input" value="年轻人的盲盒消费" placeholder="视频主题" style="font-size:12px;padding:6px 10px">
+          </div>
+          <div class="form-group" style="margin-bottom:8px">
+            <label style="font-size:11px">视频类型</label>
+            <select id="ewPluginId" class="form-input" style="font-size:12px;padding:6px 10px">
+              <option value="knowledge_longform">知识长视频</option>
+              <option value="kichiku_fastcut">鬼畜快剪</option>
+              <option value="digital_review">数码评测</option>
+              <option value="vlog_daily">日常Vlog</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:8px">
+            <label style="font-size:11px">风格 (Persona ID)</label>
+            <input id="ewPersonaId" class="form-input" value="zam_knowledge_critical" placeholder="留空默认" style="font-size:12px;padding:6px 10px">
+          </div>
+          <div class="form-group" style="margin-bottom:8px">
+            <label style="font-size:11px">文稿内容（可选）</label>
+            <textarea id="ewScript" class="form-input" rows="2" placeholder="粘贴文稿或参考文本" style="font-size:12px;padding:6px 10px;min-height:40px"></textarea>
+          </div>
+          <div class="form-group" style="margin-bottom:8px">
+            <label style="font-size:11px">配音时长(秒)</label>
+            <input id="ewDuration" class="form-input" type="number" value="300" min="30" max="3600" style="font-size:12px;padding:6px 10px">
+          </div>
+          <div class="form-group" style="margin-bottom:8px">
+            <label style="font-size:11px">配音文件 <span class="text-secondary" style="font-weight:400">（上传后自动填入时长）</span></label>
+            <div style="display:flex;gap:4px;align-items:center">
+              <input id="ewAudioPath" class="form-input" placeholder="配音文件路径" style="flex:1;font-size:12px;padding:6px 10px">
+              <button class="btn btn-sm btn-secondary nowrap" style="font-size:10px;padding:4px 8px" onclick="document.getElementById('ewAudioFile').click()">浏览</button>
+              <input type="file" id="ewAudioFile" style="display:none" accept=".wav,.mp3,.m4a,.mp4" onchange="uploadAudio(event)">
+            </div>
+            <input type="hidden" id="ewAudioDuration" value="0">
+          </div>
+          <div class="form-group" style="margin-bottom:8px">
+            <label style="font-size:11px">参考素材 <span class="text-secondary" style="font-weight:400">（上传文件供需求 Agent 参考）</span></label>
+            <div style="display:flex;gap:4px;align-items:center">
+              <label class="btn btn-sm btn-secondary" style="cursor:pointer;font-size:10px;padding:4px 8px">
+                选择文件
+                <input type="file" id="ewRefFile" style="display:none" multiple onchange="ewUploadRef()">
+              </label>
+              <span id="ewRefName" class="text-secondary" style="font-size:10px"></span>
+            </div>
+          </div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap">
+            <button class="btn btn-primary" style="flex:1;padding:8px;font-size:12px" onclick="ewStartSession()">开始创作对话</button>
+            <button class="btn btn-secondary btn-sm" onclick="saveProject()">保存项目</button>
+            <button class="btn btn-secondary btn-sm" onclick="loadProject()">加载项目</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Conversation Area (shown after session starts) -->
+      <div id="ewChatArea" class="card" style="margin:0;flex:1;display:none;flex-direction:column;min-height:0">
+        <div class="card-header" style="padding:6px 10px;font-size:11px;flex-shrink:0;display:flex;justify-content:space-between;align-items:center">
+          <span>创作对话</span>
+          <div style="display:flex;gap:4px;align-items:center">
+            <span id="ewStatusBadge" class="badge" style="font-size:9px;padding:2px 6px">对话中</span>
+            <button class="btn btn-sm btn-secondary" style="font-size:9px;padding:2px 5px" onclick="ewRefreshSession()" title="刷新">↻</button>
+          </div>
+        </div>
+        <div id="ewMessages" style="flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:8px;background:var(--surface2)">
+          <div id="ewTypingIndicator" style="display:none;padding:8px 12px;gap:4px;align-items:center">
+            <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>
+            <span class="text-secondary" style="font-size:11px;margin-left:6px">需求助手正在思考...</span>
+          </div>
+        </div>
+        <div style="padding:6px 8px;border-top:1px solid var(--border);flex-shrink:0">
+          <div style="display:flex;gap:4px">
+            <input id="ewChatInput" class="form-input" placeholder="输入你的需求..." style="font-size:12px;padding:6px 8px;flex:1"
+              onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();ewSendMessage()}">
+            <button class="btn btn-primary btn-sm" style="font-size:10px;padding:4px 10px" onclick="ewSendMessage()">发送</button>
+          </div>
+          <div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">
+            <label class="btn btn-sm btn-secondary" style="cursor:pointer;font-size:9px;padding:2px 6px">
+              上传参考
+              <input type="file" id="ewChatFile" style="display:none" multiple onchange="ewChatUpload()">
+            </label>
+            <span id="ewChatFileName" class="text-secondary" style="font-size:9px"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Center: Production Plan + Timeline -->
+    <div style="flex:1;display:flex;flex-direction:column;gap:8px;min-width:0">
+      <!-- Production Plan (shown during requirements phase) -->
+      <div id="ewPlanPanel" class="card" style="margin:0;display:none;flex:1;flex-direction:column;min-height:0">
+        <div class="card-header" style="padding:6px 12px;font-size:12px;flex-shrink:0;display:flex;justify-content:space-between;align-items:center">
+          <span>成片规划书 <span id="ewPlanStats" class="text-secondary" style="font-weight:400;font-size:11px"></span></span>
+          <div style="display:flex;gap:6px">
+            <button id="ewPlanModifyBtn" class="btn btn-sm btn-secondary" style="font-size:10px;padding:3px 8px" onclick="ewBackToChat()">继续修改</button>
+            <button id="ewPlanConfirmBtn" class="btn btn-sm btn-primary" style="font-size:10px;padding:3px 8px" onclick="ewConfirmPlan()">确认并制作</button>
+          </div>
+        </div>
+        <div style="flex:1;display:flex;gap:12px;padding:12px;min-height:0">
+          <div id="ewPlanNav" style="width:160px;flex-shrink:0;overflow-y:auto;border-right:1px solid var(--border);padding-right:8px;font-size:12px"></div>
+          <div id="ewPlanContent" style="flex:1;overflow-y:auto;background:#111;border-radius:6px;padding:16px;font-size:13px;line-height:1.6" class="req-plan markdown-body"></div>
+        </div>
+      </div>
+
+      <!-- Timeline (visible during/after pipeline) -->
+      <div class="card" style="margin:0;flex:1;display:flex;flex-direction:column;min-width:0">
+        <div class="card-header" style="padding:6px 10px;flex-shrink:0;font-size:11px">
+          <div style="display:flex;justify-content:space-between;align-items:center;width:100%">
+            <span>时间轴 <span class="text-muted" id="tlInfo" style="font-weight:400"></span></span>
+            <div style="display:flex;gap:2px;align-items:center">
+              <button class="btn btn-secondary btn-sm" style="font-size:10px;padding:2px 6px" onclick="zoomTimeline(-0.3)">−</button>
+              <span class="text-muted" style="font-size:10px;padding:0 4px;min-width:30px;text-align:center" id="tlRange">0s</span>
+              <button class="btn btn-secondary btn-sm" style="font-size:10px;padding:2px 6px" onclick="zoomTimeline(0.3)">+</button>
+            </div>
+          </div>
+        </div>
+        <div id="timelineContainer" style="flex:1;overflow:auto;background:var(--surface2);font-family:var(--font);position:relative">
+          <div id="timelineInner" style="position:relative;min-height:200px">
+            <div class="text-muted" style="padding:60px 20px;text-align:center;font-size:12px">先进行创作对话，确认规划书后将生成视频时间线</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: Execution Log + Preview -->
+    <div style="width:300px;flex-shrink:0;display:flex;flex-direction:column;gap:8px">
+      <div class="card" style="margin:0;display:flex;flex-direction:column;overflow:hidden;flex:1">
+        <div class="card-header" style="padding:5px 10px;font-size:11px;flex-shrink:0;display:flex;justify-content:space-between;align-items:center">
+          <span>执行日志 <span id="ewLogBadge" style="font-size:9px;color:var(--text2);display:none;font-weight:400"></span></span>
+          <button class="btn btn-secondary btn-sm" style="font-size:9px;padding:1px 6px" onclick="clearEwLog()">清空</button>
+        </div>
+        <div id="ewLogPanel" style="flex:1;overflow-y:auto;padding:6px 8px;font-family:var(--font);font-size:11px;line-height:1.6;min-height:60px;max-height:calc(100% - 180px)">
+          <div class="text-muted" style="text-align:center;padding:30px 0;font-size:11px;color:var(--text2)">等待操作...</div>
+        </div>
+        <div id="ewProgress" style="display:none;padding:4px 10px 6px;border-top:1px solid var(--border)">
+          <div class="progress-bar" style="height:3px"><div class="fill" id="ewProgressBar" style="width:0%"></div></div>
+          <div class="text-muted" style="font-size:9px;margin-top:1px" id="ewProgressText">初始化...</div>
+        </div>
+        <div id="ewRenderBtnRow" style="display:none;padding:4px 10px;border-top:1px solid var(--border)">
+          <button id="ewRenderBtn" class="btn btn-primary" style="width:100%;padding:5px;font-size:11px" onclick="renderVideo()">渲染 MP4</button>
+          <button id="ewQueueBtn" class="btn btn-secondary" style="width:100%;padding:5px;font-size:11px;margin-top:4px;display:none" onclick="queueRender()">加入队列渲染</button>
+        </div>
+        <div id="ewRenderStatus" style="display:none;padding:4px 10px;font-size:10px;color:var(--text2)"></div>
+        <div id="ewDownloadRow" style="display:none;padding:4px 10px;border-top:1px solid var(--border);text-align:center">
+          <a id="ewDownloadLink" href="#" style="font-size:11px;color:var(--accent)" target="_blank">下载 MP4</a>
+        </div>
+        <div id="ewPreviewPanel" style="display:none;border-top:1px solid var(--border)">
+          <div id="ewFramePreview" style="width:100%;height:100px;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative">
+            <span style="color:#444;font-size:11px">渲染完成后可预览</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

@@ -3,12 +3,12 @@
 ## 技术栈
 
 - **语言**: Python >= 3.12
-- **框架**: FastAPI + LangGraph
+- **框架**: FastAPI
 - **数据模型**: Pydantic v2
-- **LLM 集成**: IsoBase（支持 Anthropic Claude / OpenAI / Ollama）
+- **LLM 集成**: IsoBase（Anthropic Claude / OpenAI / Ollama）
+- **Agent 编排**: 动态路由 DAG（v2）+ 并行 + 自愈循环
+- **视频处理**: FFmpeg + ffprobe
 - **配置**: pydantic-settings（环境变量驱动）
-- **测试**: pytest + pytest-asyncio
-- **代码质量**: ruff（lint）+ mypy（type check）
 
 ## 开发环境
 
@@ -20,131 +20,128 @@ pip install -e ".[dev]"
 uvicorn clipwright.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-## 测试
+## 项目结构
+
+```
+clipwright/                  # 核心引擎
+├── agents/                  # 6 个 Agent
+│   ├── structure_agent.py   # 结构分析
+│   ├── material_agent.py    # 素材搜索
+│   ├── edit_agent.py        # 时间线生成
+│   ├── animation_agent.py   # 动画编排（文字/逻辑/MG/过渡）
+│   ├── audio_agent.py       # 音频处理（BPM/BGM/音量)
+│   ├── quality_agent.py     # 质检 + 自愈
+│   └── base.py              # Agent 基类
+├── api/                     # REST API 端点 (28 路由)
+├── services/                # 核心服务
+│   ├── pipeline.py          # 管线 v1（固定序列）
+│   ├── pipeline_v2.py       # 管线 v2（DAG 并行 + 熔断 + 自愈）
+│   ├── agent_bus.py         # Agent 上下文总线
+│   ├── render.py            # 渲染引擎（多轨/缓存/降级）
+│   ├── task_queue.py        # 并发任务队列（信号量+超时）
+│   ├── trace.py             # 执行追踪（含 TTL/内存保护）
+│   ├── tracing_service.py   # SpanTracer（MongoDB 持久化）
+│   └── llm.py               # LLM 服务（Anthropic/OpenAI/Ollama）
+├── animation/               # 动画渲染
+│   ├── catalog.py           # 动画目录（18 文字 + 10 逻辑 + 9 过渡）
+│   ├── renderer.py          # 动画渲染器（8 种缓动函数）
+│   ├── hyperframes_renderer.py # Hyperframes HTML→MP4 集成
+│   ├── mg_renderer.py       # MG 动画（HTML/CSS → MP4）
+│   ├── diagram_svg.py       # SVG 图解渲染器（24+ 图表类型）
+│   └── registry.py          # 动画注册表
+├── tool/                    # 原子能力
+├── skill/                   # 11 个 Skill
+├── category/                # 类型插件（内置 4 种）
+├── plugins/                 # 第三方插件系统
+│   ├── loader.py            # 插件发现/加载/生命周期
+│   ├── base.py              # 插件基类（5 种类型）
+│   └── hooks.py             # Hook 系统（9 个 HookPoint）
+├── rag/                     # RAG 管线
+├── persona/                 # Persona 加载/验证/继承
+├── schema/                  # Pydantic 数据模型
+└── context/                 # MongoDB 连接上下文
+
+PluginData/                  # 插件运行时数据目录
+├── tmp/                     # 渲染中间文件
+├── assets/                  # 素材副本
+├── cache/                   # 工具缓存
+├── thumbs/                  # 缩略图缓存
+└── plugins/                 # 各插件专属数据目录
+    └── <plugin_id>/         # 自动创建
+
+plugins/                     # 第三方插件安装目录
+renders/                     # 最终 MP4 输出
+library/                     # 素材库（上传的素材文件）
+personas/                    # Persona 定义
+```
+
+## PluginData 目录规范
+
+所有插件产生的运行时数据（配置快照、缓存、生成文件等）必须写入 `PluginData/`，**不能写入插件自身的安装目录**。
+
+```
+PluginData/
+├── tmp/                     # 渲染中间件、临时文件
+├── assets/                  # 插件生成的媒体素材
+├── cache/                   # 工具调用缓存
+├── thumbs/                  # 缩略图缓存
+└── plugins/<plugin_id>/     # 各插件专属数据目录（自动创建）
+    ├── config/              #   插件配置快照
+    ├── cache/               #   插件缓存
+    └── output/              #   插件输出
+```
+
+在 PluginLoader 中通过 `loader.get_plugin_data_dir("my_plugin_id")` 获取路径。
+
+## 新增一个第三方插件
 
 ```bash
-# 运行全部测试
-pytest tests/ -v
+# 1. 创建插件目录
+mkdir -p plugins/my_plugin
+cd plugins/my_plugin
 
-# 运行特定测试文件
-pytest tests/clipwright/test_schema.py -v
+# 2. 创建 plugin.yaml 清单
+cat > plugin.yaml << 'EOF'
+name: "我的插件"
+version: "1.0.0"
+kind: "capability"
+entry_point: "my_plugin.main"
+EOF
 
-# 运行特定测试类
-pytest tests/clipwright/test_persona_forge.py::TestPersonaForgeBuild -v
+# 3. 创建 main.py
+cat > main.py << 'PYEOF'
+from clipwright.plugins import BasePlugin
+
+class MyPlugin(BasePlugin):
+    def initialize(self):
+        # 通过 PluginLoader 获取专属数据目录
+        from clipwright.main import get_plugin_loader
+        data_dir = get_plugin_loader().get_plugin_data_dir(self.plugin_id)
+        # data_dir = PluginData/plugins/my_plugin/
+        (data_dir / "output").mkdir(parents=True, exist_ok=True)
+PYEOF
 ```
 
-## 代码规范
+详细规范见 `clipwright/plugins/loader.py`。
 
-```bash
-# Lint 检查
-ruff check clipwright/
-
-# 类型检查
-mypy clipwright/
-```
-
-## 项目约定
-
-### 包组织
-
-```
-clipwright/
-├── schema/       # Pydantic 数据模型（前后端统一契约）
-├── persona/      # Persona 系统
-├── category/     # 视频类型插件（4 内置）
-├── agents/       # Agent 编排层（6 个 Agent）
-├── plugins/      # 第三方插件系统（importlib 加载）
-├── services/     # 业务服务层（Pipeline/LLM/PersonaForge/STT）
-├── tool/         # 原子能力层（10 个 FFmpeg 工具）
-├── skill/        # 技能系统（3 内置技能）
-├── material/     # 素材库系统（JSON/URL/RAG）
-├── animation/    # 动画系统（27 个内置动画）
-├── rag/          # RAG 检索（ChromaDB + 重排序）
-├── utils/        # 共享工具函数
-└── api/          # FastAPI 路由（12 个模块）
-```
-
-### Agent 开发规范
-
-1. 每个 Agent 继承 `BaseAgent[InputType, OutputType]`
-2. Agent 的 `execute()` 方法必须是 async
-3. Agent 输入/输出必须有对应的 Pydantic 模型（定义在 `schema/agent.py`）
-4. Agent 内部不直接调用原子能力，经 `category_plugin.translate_persona()` 翻译
-5. 需要 LLM 调用工具的 Agent，使用 `AgentToolkit` + `LLMService.with_tools()`
-6. 素材检索使用 `MaterialRegistry.search()`，不要直接调用素材源
-7. 动画编排使用 `AnimationRegistry` + `AnimationRenderer`
+## 新增一个 Tool
 
 ```python
-from clipwright.tool.base import AgentToolkit
-from clipwright.tool.registry import ToolRegistry
+from clipwright.schema.tool import ToolExecResult, ToolStatus
+from clipwright.tool.base import BaseTool
 
-# 构建工具包
-toolkit = AgentToolkit(
-    tool_names=ToolRegistry.list_available_names(),
-    fmt="anthropic",  # 或 "openai"
-)
+class MyTool(BaseTool):
+    name = "my_tool"
+    description = "工具说明"
+    dependencies = ["ffmpeg"]
 
-# 在 LLM 带工具调用的推理中使用
-resp = await self._llm.with_tools(
-    system_prompt=system_prompt,
-    user_prompt=user_prompt,
-    tool_executor=self._tool_executor,  # async回调
-    tools=toolkit.llm_tools,            # 自动生成的 schemas
-)
+    async def execute(self, input_path: str = "", **kwargs) -> ToolExecResult:
+        return ToolExecResult(status=ToolStatus.SUCCESS, tool_name=self.name, output={})
+
+# 在 tool/__init__.py 的 register_builtin_tools() 中添加
 ```
 
-### 添加视频类型插件
-
-1. 在 `clipwright/category/` 下新建文件
-2. 继承 `BaseCategoryPlugin`，实现 `translate_persona()` 和 `get_shot_params()`
-3. 在 `clipwright/main.py` 的 `_register_builtin_plugins()` 中注册
-
-### 添加视频类型插件
-
-1. 在 `clipwright/category/` 下新建文件
-2. 继承 `BaseCategoryPlugin`，实现 `translate_persona()` 和 `get_shot_params()`
-3. 在 `clipwright/main.py` 的 `_register_builtin_plugins()` 中注册
-
-### 添加第三方插件
-
-第三方插件放置在项目根目录的 `plugins/{plugin_id}/` 下，自动被 `PluginLoader` 发现加载：
-
-```
-plugins/{plugin_id}/
-├── plugin.yaml       # 必需：清单（id, name, version, kind, entry_point）
-├── config.yaml       # 可选：插件独立配置（通过 self.config 字典访问）
-├── main.py           # 推荐：入口模块（需 export 插件类到 __all__）
-└── ...               # 其他依赖
-```
-
-**配置规范**（`config.yaml`）：
-
-```yaml
-# plugins/my_plugin/config.yaml
-# 配置独立于代码，运行时通过 self.config 访问
-api_key: ""            # API 密钥
-base_url: ""           # 服务地址
-timeout: 30            # 超时秒数
-```
-
-**约束**：
-- 入口模块的 `__all__` 中 export 的类会被自动实例化
-- 插件类需继承 `clipwright.plugins` 中的基类（`BasePlugin` / `MaterialSourcePlugin` / `AgentStrategyPlugin` / `CapabilityPlugin`）
-- `config.yaml` 自动加载到 `self.config`（dict），可在 initialize() 中读取
-- `initialize()` 在加载时调用 — **在此注册插件提供的 Tool、Skill 和 MaterialSource**：
-  ```python
-  def initialize(self) -> None:
-      # self.config 自动从 config.yaml 加载
-      key = (self.config or {}).get("api_key", "")
-      ToolRegistry.register(MyTool())
-      SkillRegistry.register(MySkill())
-      MaterialRegistry.register(MySource(api_key=key))
-  ```
-- `shutdown()` 在卸载时调用 — 在此清理注册的内容
-
-### 添加技能（Skill — 可组合的高级能力）
-
-技能在 `clipwright/skill/` 下实现，继承 `BaseSkill`，可编排多个 Tool：
+## 新增一个 Skill
 
 ```python
 from clipwright.skill.base import BaseSkill
@@ -152,50 +149,46 @@ from clipwright.schema.skill import SkillExecResult, SkillStatus
 
 class MySkill(BaseSkill):
     name = "my_skill"
-    description = "编排多个工具完成分析"
-    required_tools = ["scene_detect", "bpm_detect"]
+    description = "技能说明"
+    required_tools = ["my_tool"]
 
-    async def execute(self, video_path: str, **kwargs) -> SkillExecResult:
-        # 内部调用工具
-        scene = await self._run_tool("scene_detect", input_path=video_path)
-        bpm = await self._run_tool("bpm_detect", input_path=audio_path)
-        return SkillExecResult(
-            status=SkillStatus.SUCCESS,
-            skill_name=self.name,
-            output={"scenes": scene, "bpm": bpm},
-        )
+    async def execute(self, **kwargs) -> SkillExecResult:
+        result = await self._run_tool("my_tool", **kwargs)
+        return SkillExecResult(status=SkillStatus.SUCCESS, skill_name=self.name, output=result)
+
+# 在 skill/builtin.py 的 register_builtin_skills() 中添加
 ```
 
-技能通过 `SkillRegistry.register()` 注册，与 Tool 共享同一套 LLM tool schema 接口。
+## 新增一个 Agent
 
-### 添加工具（原子能力）
+1. 创建 `clipwright/agents/my_agent.py`，继承 `BaseAgent`
+2. 在 `clipwright/agents/__init__.py` 导出
+3. 在 `PipelineOrchestratorV2._agents` 字典和 `_dispatch` 方法中注册
+4. 在 `AgentDAG._DEPS` 中添加依赖关系
 
-工具在 `clipwright/tool/` 下实现，继承 `BaseTool`：
+## 用户自定义视频类型
 
-```python
-from clipwright.tool.base import BaseTool
-
-class MyTool(BaseTool):
-    name = "my_tool"
-    description = "我的工具"
-    dependencies = ["ffmpeg"]  # 可选，用于可用性检测
-
-    async def execute(self, input_path: str, **kwargs) -> ToolExecResult:
-        # 实现逻辑...
+```bash
+curl -X POST http://localhost:8000/api/type-maker/create \
+  -H "Content-Type: application/json" \
+  -d '{"plugin_id": "my_type", "display_name": "我的类型", ...}'
 ```
 
-工具通过 `register_builtin_tools()` 自动注册到全局 `ToolRegistry`，可通过 REST API `/api/tool/` 访问，也可在 Agent 中通过 `ToolRegistry.execute("my_tool", ...)` 调用。
+存储在 `user_types/my_type.json`，重启后自动加载。
 
-### 添加 API 端点
+## 模板批量生成
 
-1. 在 `clipwright/api/` 下新建路由文件
-2. 使用 `APIRouter` 定义路由
-3. 在 `clipwright/main.py` 中 `include_router()`
-4. 更新 `docs/api_reference.md`
+```bash
+curl -X POST http://localhost:8000/api/template/batch/my_template \
+  -H "Content-Type: application/json" \
+  -d '[{"topic": "视频1"}, {"topic": "视频2"}]'
+```
 
-## 关键设计约束
+## 测试
 
-1. **Persona 配置层不直接调用原子能力，必须经过类型插件层翻译**
-2. **所有工具 API 的入参必须是纯数值或纯路径，不接受风格描述字符串**
-3. **Agent 是调度器，不写死逻辑** — 通过策略注册表选择行为
-4. **时间线 JSON 格式是前后端唯一的数据契约**
+```bash
+pytest tests/ -v
+
+# 只运行非 e2e 测试（更快）
+pytest tests/clipwright/ -v
+```

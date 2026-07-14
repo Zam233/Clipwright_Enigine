@@ -32,10 +32,23 @@ class PluginLoadError(Exception):
 class PluginLoader:
     """插件加载器，支持从目录发现和动态加载第三方插件。"""
 
-    def __init__(self, plugin_dir: Optional[Path] = None) -> None:
+    def __init__(self, plugin_dir: Optional[Path] = None,
+                 data_dir: Optional[Path] = None) -> None:
         self.plugin_dir = (plugin_dir or Path("plugins")).resolve()
+        self.data_dir = (data_dir or Path("PluginData")).resolve()
         self._plugins: dict[str, BasePlugin] = {}
         self._metadatas: dict[str, PluginMetadata] = {}
+
+    def get_plugin_data_dir(self, plugin_id: str, ensure: bool = True) -> Path:
+        """获取指定插件的数据存储目录（PluginData/plugins/<plugin_id>/）。
+
+        所有插件产生的运行时数据（配置快照、缓存、生成的文件等）
+        都应写入此目录，而非插件自身的安装目录。
+        """
+        d = self.data_dir / "plugins" / plugin_id
+        if ensure:
+            d.mkdir(parents=True, exist_ok=True)
+        return d
 
     # ── 发现 ──
 
@@ -213,6 +226,7 @@ class PluginLoader:
         try:
             return importlib.import_module(mod_path)
         except ModuleNotFoundError:
+            logger.warning("Primary entry %s not found for plugin %s, falling back to __init__.py", mod_path, plugin_id)
             # 回退：从 __init__.py 导入
             try:
                 return importlib.import_module(plugin_id)

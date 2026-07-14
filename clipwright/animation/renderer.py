@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from clipwright.config import logger
 from clipwright.schema.animation import (
     AnimationDef,
     AnimationInstance,
@@ -69,6 +70,7 @@ class AnimationRenderer:
         for inst in sequence.onscreen_animations:
             defn = defs.get(inst.animation_id)
             if defn is None:
+                logger.warning("onscreen animation %s not found in defs, skipping", inst.animation_id)
                 continue
             op = AnimationRenderer._render_onscreen(defn, inst)
             ops.append(op)
@@ -76,6 +78,7 @@ class AnimationRenderer:
         for inst in sequence.text_animations:
             defn = defs.get(inst.animation_id)
             if defn is None:
+                logger.warning("text animation %s not found in defs, skipping", inst.animation_id)
                 continue
             op = AnimationRenderer._render_text(defn, inst)
             ops.append(op)
@@ -83,9 +86,13 @@ class AnimationRenderer:
         for inst in sequence.transition_animations:
             defn = defs.get(inst.animation_id)
             if defn is None:
+                logger.warning("transition animation %s not found in defs, skipping", inst.animation_id)
                 continue
             ops.append(AnimationRenderer._render_transition(defn, inst))
 
+        logger.info("Rendered %d animation ops (onscreen=%d, text=%d, transition=%d)",
+                     len(ops), len(sequence.onscreen_animations),
+                     len(sequence.text_animations), len(sequence.transition_animations))
         return ops
 
     @staticmethod
@@ -245,10 +252,10 @@ def _apply_easing(t: float, easing: Any) -> float:
     if name == "ease_out_elastic":
         if t == 0 or t == 1:
             return t
-        return 2 ** (-10 * t) * t * 2 * 3.14159 / 3 + 1
+        return 2 ** (-10 * t) * __import__("math").sin((t * 2 * 3.14159) / 3) + 1
     if name == "ease_in_elastic":
         if t == 0 or t == 1:
             return t
-        return -(2 ** (10 * (t - 1))) * t * 2 * 3.14159 / 3
+        return -(2 ** (10 * (t - 1))) * __import__("math").sin(((t - 1) * 2 * 3.14159) / 3)
 
     return t

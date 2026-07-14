@@ -77,6 +77,7 @@ async function uploadAudio(e) {
       // 保存上传的音频时长供管线使用
       if (d.duration_sec > 0) {
         document.getElementById('ewAudioDuration').value = d.duration_sec;
+        document.getElementById('ewDuration').value = Math.ceil(d.duration_sec);
         ewLog(`配音上传成功: ${d.duration_sec.toFixed(0)}s`, 'success');
       } else {
         ewLog('配音上传成功', 'success');
@@ -123,7 +124,7 @@ function splitScriptToCaptions(text, mode) {
 // ── 主流程：异步 + 实时时间线 ──
 async function runAiEdit() {
   const btn = document.getElementById('ewRunBtn');
-  btn.disabled = true; btn.textContent = '运行中...';
+  if(btn){btn.disabled = true;btn.textContent = '运行中...';}
   clearEwLog();
   const startedAt = Date.now();
   const topic = document.getElementById('ewTopic').value.trim();

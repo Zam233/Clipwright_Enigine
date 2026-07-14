@@ -4,6 +4,7 @@
 """
 
 from .base import BaseAgent
+from .requirements_agent import RequirementsAgent
 from .structure_agent import StructureAgent
 from .material_agent import MaterialAgent
 from .edit_agent import EditAgent

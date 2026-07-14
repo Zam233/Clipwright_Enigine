@@ -102,6 +102,23 @@ async function checkHealth() {
     else { dot.className = 'status-dot offline'; text.textContent = '连接失败'; }
     const resultEl = document.getElementById('healthResult');
     if (resultEl) showResult('healthResult', data, ok);
+
+    // 组件状态卡片
+    const compEl = document.getElementById('healthComponents');
+    if (compEl && data) {
+      const components = ['mongodb', 'llm', 'ffmpeg', 'hyperframes', 'status'];
+      let html = '';
+      for (const key of components) {
+        if (data[key] === undefined) continue;
+        const val = String(data[key]);
+        const color = val === 'ok' ? 'var(--green)' : val === 'no_key' ? 'var(--yellow)' : 'var(--red)';
+        html += `<div style="flex:1;min-width:120px;padding:12px;background:var(--surface2);border-radius:8px;text-align:center">
+          <div style="font-size:14px;font-weight:bold;color:${color}">${val}</div>
+          <div class="text-secondary" style="font-size:12px">${key}</div>
+        </div>`;
+      }
+      compEl.innerHTML = html;
+    }
   } catch(e) {
     dot.className = 'status-dot offline';
     text.textContent = '无法连接';

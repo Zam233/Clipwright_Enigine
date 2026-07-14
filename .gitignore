@@ -45,3 +45,7 @@ Thumbs.db
 # Persona model weights (tracked separately)
 personas/**/models/
 personas/**/embeddings/
+
+# Plugin runtime data
+PluginData/*
+!PluginData/.gitkeep

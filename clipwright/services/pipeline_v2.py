@@ -1,7 +1,22 @@
-"""Pipeline 编排器 v2 — 动态 Agent 路由 + 自愈循环。"""
+"""Pipeline 编排器 v2 — 动态 Agent 路由 + 自愈循环 + 并行执行 + 超时熔断。
+
+P0 修复:
+ ・DAG 依赖关系修正 (material 不依赖 edit)
+ ・_run_agent 不可达代码删除
+P1 修复:
+ ・asyncio.gather 多路错误聚合
+ ・自愈循环联动重做 animation + audio
+ ・全局管线超时 + 熔断
+ ・LLM token 用量追踪
+ ・Trace 事件隔离 (pipeline_id)
+P2 修复:
+ ・DAG 自动拓扑排序 (从 _DEPS 自动推导执行组)
+ ・自愈上下文传递 (quality issues → redo agent)
+"""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import datetime
@@ -19,41 +34,64 @@ from clipwright.schema.agent import AgentContext, AgentDecision
 from clipwright.schema.pipeline import PipelineRequest, PipelineState, PipelineStatus, PipelineStep
 from clipwright.schema.timeline import Timeline
 from clipwright.services.agent_bus import AgentBus
-from clipwright.services.trace import add_event, create_trace, get_all_events, format_tool_call
+from clipwright.services.trace import add_event, create_trace, format_tool_call
 from clipwright.tool.registry import ToolRegistry
+
+# ── 默认超时 ──────────────────────────────────────
+DEFAULT_PIPELINE_TIMEOUT_SEC = 900  # 15 分钟
 
 
 class AgentDAG:
-    """Agent 依赖关系图 — 用于并行调度。
+    """Agent 依赖关系图 — 支持自动拓扑排序。
 
-    定义哪些 Agent 可以并行执行（无依赖关系）。
+    用法:
+        1. 编辑 _DEPS 添加/修改依赖关系
+        2. get_execution_plan() 自动推导并行执行组
     """
 
     # Agent 依赖关系: {agent: [依赖的agent列表]}
-    # None 依赖 → 可以立即执行
-    # 空列表 → 无依赖，但不是入口点
+    # 空列表 = 无依赖，可作为入口点
     _DEPS: dict[str, list[str]] = {
-        "structure": [],        # 入口点，无依赖
-        "material": ["edit"],   # Material 的"最终结果"依赖 edit（但预搜索可提前）
+        "structure": [],           # 入口点，无依赖
+        "material": ["structure"], # material 需要 structure 的 scenes 输出
         "edit": ["structure", "material"],
         "animation": ["edit"],
-        "audio": ["edit"],      # Audio 和 Animation 无依赖关系，可并行
+        "audio": ["edit"],         # Audio 和 Animation 可并行
         "quality": ["animation", "audio"],
     }
 
-    # 真正可以在"准备阶段"提前运行的无依赖 Agent 分组
-    _PARALLEL_GROUPS: list[list[str]] = [
-        ["structure"],                          # 阶段 1: 结构分析
-        ["material_prefetch"],                  # 阶段 2: 素材预搜索
-        ["edit"],                               # 阶段 3: 编辑
-        ["animation", "audio"],                 # 阶段 4: 动画 + 音频并行（依赖 edit）
-        ["quality"],                            # 阶段 5: 质检
-    ]
-
     @classmethod
     def get_execution_plan(cls) -> list[list[str]]:
-        """返回分阶段的并行执行计划。"""
-        return cls._PARALLEL_GROUPS
+        """从 _DEPS 自动拓扑排序 → 分阶段并行执行计划。
+
+        Returns:
+            [[stage1_agents], [stage2_agents], ...]
+            同一阶段的 Agent 可以并行执行。
+        """
+        deps = {k: list(v) for k, v in cls._DEPS.items()}
+        plan: list[list[str]] = []
+        remaining = set(deps.keys())
+
+        while remaining:
+            # 找出所有依赖都已满足（或已在当前 plan 中）的 agent
+            ready = []
+            for agent in remaining:
+                agent_deps = deps.get(agent, [])
+                if all(d not in remaining for d in agent_deps):
+                    ready.append(agent)
+
+            if not ready:
+                # 依赖环检测
+                logger.warning("AgentDAG: 检测到依赖环，剩余: %s", remaining)
+                # 把剩余的全部作为一组执行（可能失败，但比卡死好）
+                ready = list(remaining)
+
+            plan.append(ready)
+            for agent in ready:
+                remaining.remove(agent)
+
+        logger.debug("AgentDAG 执行计划: %s", plan)
+        return plan
 
 
 class PipelineOrchestratorV2:
@@ -70,178 +108,294 @@ class PipelineOrchestratorV2:
             "audio": AudioAgent(),
             "quality": QualityAgent(),
         }
+        # Agent 级熔断: agent_name → {"fail_count": int, "last_fail_at": datetime}
+        self._circuit_breakers: dict[str, dict] = {}
+        # 熔断阈值: 连续失败 N 次后跳过该 agent
+        self._circuit_breaker_threshold = 3
+        # 熔断恢复时间: 失败后等待 N 秒再允许重试
+        self._circuit_breaker_recovery_sec = 60
+
+    def _check_circuit_breaker(self, agent_name: str) -> bool:
+        """检查 agent 是否熔断。返回 True 表示已熔断（应跳过）。"""
+        cb = self._circuit_breakers.get(agent_name)
+        if not cb:
+            return False
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc) if not hasattr(datetime, 'timezone') or timezone else datetime.now()
+        # 如果已过恢复期，重置熔断
+        if cb["fail_count"] >= self._circuit_breaker_threshold:
+            elapsed = (now - cb["last_fail_at"]).total_seconds() if cb["last_fail_at"] else 0
+            if elapsed > self._circuit_breaker_recovery_sec:
+                cb["fail_count"] = 0
+                logger.info("熔断恢复: agent=%s (已过恢复期 %.0fs)", agent_name, elapsed)
+                return False
+            logger.warning("Agent 熔断: %s (连续失败 %d 次, 剩余 %.0fs)",
+                          agent_name, cb["fail_count"],
+                          self._circuit_breaker_recovery_sec - elapsed)
+            return True
+        return False
+
+    def _record_agent_failure(self, agent_name: str) -> None:
+        """记录 agent 失败，更新熔断计数器。"""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc) if not hasattr(datetime, 'timezone') or timezone else datetime.now()
+        cb = self._circuit_breakers.setdefault(agent_name, {"fail_count": 0, "last_fail_at": None})
+        cb["fail_count"] += 1
+        cb["last_fail_at"] = now
+        if cb["fail_count"] >= self._circuit_breaker_threshold:
+            logger.warning("Agent 熔断触发: %s (连续失败 %d/%d 次)",
+                          agent_name, cb["fail_count"], self._circuit_breaker_threshold)
+
+    def _record_agent_success(self, agent_name: str) -> None:
+        """记录 agent 成功，重置熔断计数器。"""
+        cb = self._circuit_breakers.get(agent_name)
+        if cb and cb["fail_count"] > 0:
+            cb["fail_count"] = 0
+            logger.info("Agent 熔断重置: %s", agent_name)
 
     async def run(
         self,
         request: PipelineRequest,
         pipeline_id: str = "",
+        task_id: str = "",
     ) -> PipelineState:
         pid = pipeline_id or f"pl_v2_{uuid.uuid4().hex[:12]}"
         state = PipelineState(pipeline_id=pid, request=request)
         bus = AgentBus(pid)
 
+        timeout_sec = request.extra_params.get("pipeline_timeout_sec", DEFAULT_PIPELINE_TIMEOUT_SEC)
+
         if not pipeline_id:
             create_trace(pid)
 
+        # Layer 2: 初始化 SpanTracer
+        from clipwright.services.tracing_service import SpanTracer
+        tracer = SpanTracer(pid)
+        root_span = tracer.start_span("pipeline", "system", f"管线: {request.topic[:50]}")
+
+        # Layer 1: 持久化初始状态到 MongoDB（在线程池执行以免阻塞事件循环）
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._persist_state, state, "running")
+
         try:
-            # 初始化
-            manifest, plugin, persona_config, translated, agent_context = await self._init(
-                request, pid, state, bus
+            result = await asyncio.wait_for(
+                self._run_inner(request, pid, state, bus, tracer, task_id),
+                timeout=timeout_sec,
             )
-
-            # 并行 Agent 执行（按 DAG 分组）
-            heal_count = 0
-            result_data: dict[str, Any] = {}
-
-            for group_idx, group in enumerate(AgentDAG.get_execution_plan()):
-                logger.info("PipelineV2 执行组 [%d]: %s", group_idx, group)
-                add_event(pid, "system", "info", f"执行组[{group_idx}]: {'+'.join(group)}")
-
-                # 并行执行组内所有无依赖的 Agent
-                tasks = {}
-                for agent_name in group:
-                    if agent_name == "material_prefetch":
-                        # 素材预搜索（与 audio 并行）
-                        input_data = self._build_input("material", result_data, persona_config, plugin)
-                        tasks[agent_name] = self._run_agent(
-                            state, "material", input_data, agent_context, bus
-                        )
-                    else:
-                        input_data = self._build_input(agent_name, result_data, persona_config, plugin)
-                        tasks[agent_name] = self._run_agent(
-                            state, agent_name, input_data, agent_context, bus
-                        )
-
-                # 等待所有并行 Agent 完成
-                import asyncio
-                completed = await asyncio.gather(*tasks.values(), return_exceptions=True)
-
-                for (name, _), result in zip(tasks.items(), completed):
-                    if isinstance(result, Exception):
-                        logger.error("并行 Agent %s 异常: %s", name, result)
-                        add_event(pid, name, "error", f"{name} 异常: {str(result)[:200]}")
-                        state.status = PipelineStatus.FAILED
-                        state.error = str(result)
-                        break
-
-                    if hasattr(result, "result") and result.result:
-                        result_data.update(result.result)
-                        # 调试日志
-                        _dbg_tl = result.result.get("timeline")
-                        _dbg_tr = (len(_dbg_tl.get("tracks", [])) if isinstance(_dbg_tl, dict)
-                                   else (len(_dbg_tl.tracks) if _dbg_tl and hasattr(_dbg_tl, "tracks") else -1))
-                        logger.info("PipelineV2 result_data 更新: agent=%s, timeline=%s, tracks=%d",
-                                    name, "有" if _dbg_tl else "无", _dbg_tr)
-
-                    # 提取关键数据
-                    if name == "structure" or (name == "edit" and result.result):
-                        scenes = result.result.get("scenes", [])
-                        bus.set_artifact("scenes", scenes)
-                    if name == "edit" and result.result:
-                        tl_data = result.result.get("timeline")
-                        if tl_data:
-                            try:
-                                timeline = Timeline(**tl_data) if isinstance(tl_data, dict) else tl_data
-                                bus.set_artifact("timeline", timeline)
-                                result_data["timeline"] = timeline
-                            except Exception as e:
-                                logger.warning("Timeline 解析失败: %s", e)
-                    # 动画 Agent 运行后同步更新总线时间线（含动画轨和文字轨 keyframes）
-                    if name == "animation" and result.result:
-                        tl_data = result.result.get("timeline")
-                        logger.info("AnimationAgent 结果: timeline=%s, tracks=%d",
-                                    "存在" if tl_data else "不存在",
-                                    len(tl_data.get("tracks", [])) if tl_data else 0)
-                        if tl_data:
-                            try:
-                                timeline = Timeline(**tl_data) if isinstance(tl_data, dict) else tl_data
-                                bus.set_artifact("timeline", timeline)
-                                result_data["timeline"] = timeline
-                                logger.info("AnimationAgent 时间线已同步到总线: %d 个轨道",
-                                            len(timeline.tracks))
-                            except Exception as e:
-                                logger.warning("Animation timeline 解析失败: %s", e)
-
-                if state.status == PipelineStatus.FAILED:
-                    break
-
-            # 质检 + 自愈循环
-            quality_passed = False
-            while not quality_passed and heal_count <= self.MAX_SELF_HEAL_LOOPS:
-                tl = result_data.get("timeline")
-                step = await self._run_agent(
-                    state, "quality",
-                    {"timeline": tl, "constraints": persona_config.get("constraints", {})},
-                    agent_context, bus,
-                )
-                if step.result:
-                    result_data.update(step.result)
-
-                # 检查是否需要自愈
-                redo_agent = ""
-                if step.result:
-                    redo_agent = step.result.get("redo_agent", "")
-                    issues = step.result.get("issues", [])
-                    has_errors = any(i.get("severity") == "error" for i in issues)
-                else:
-                    has_errors = False
-
-                if has_errors and redo_agent and heal_count < self.MAX_SELF_HEAL_LOOPS:
-                    heal_count += 1
-                    logger.info("自愈循环 [%d/%d]: → 重做 %s",
-                                heal_count, self.MAX_SELF_HEAL_LOOPS, redo_agent)
-                    add_event(pid, "system", "info", f"自愈[{heal_count}]: 重做 {redo_agent}")
-                    # 重做指定的 Agent
-                    input_data = self._build_input(redo_agent, result_data, persona_config, plugin)
-                    redo_step = await self._run_agent(
-                        state, redo_agent, input_data, agent_context, bus
-                    )
-                    if redo_step.result:
-                        result_data.update(redo_step.result)
-                        if redo_agent == "edit":
-                            tl_data = redo_step.result.get("timeline")
-                            if tl_data:
-                                try:
-                                    timeline = Timeline(**tl_data) if isinstance(tl_data, dict) else tl_data
-                                    bus.set_artifact("timeline", timeline)
-                                    result_data["timeline"] = timeline
-                                except Exception:
-                                    pass
-                        if redo_agent in ("edit", "animation"):
-                            anim_input = self._build_input("animation", result_data, persona_config, plugin)
-                            anim_step = await self._run_agent(
-                                state, "animation", anim_input, agent_context, bus
-                            )
-                            if anim_step and anim_step.result:
-                                result_data.update(anim_step.result)
-                                anim_tl = anim_step.result.get("timeline")
-                                if anim_tl:
-                                    try:
-                                        anim_timeline = Timeline(**anim_tl) if isinstance(anim_tl, dict) else anim_tl
-                                        bus.set_artifact("timeline", anim_timeline)
-                                        result_data["timeline"] = anim_timeline
-                                    except Exception:
-                                        pass
-                else:
-                    quality_passed = True
-
-            # 完成
-            state.shared_data["final_timeline"] = (
-                bus.get_artifact("timeline").model_dump(mode="json")
-                if bus.get_artifact("timeline")
-                else None
-            )
-
-            if state.status != PipelineStatus.FAILED:
-                state.status = PipelineStatus.COMPLETED
-
+            state = result
+            error_category = "none"
+            if state.status == PipelineStatus.COMPLETED:
+                tracer.end_span(root_span, status="ok", output_summary=f"完成, 状态={state.status}")
+            else:
+                error_category = self._categorize_error(state.error or "")
+                tracer.end_span(root_span, status="error", error=state.error)
+        except asyncio.TimeoutError:
+            state.status = PipelineStatus.FAILED
+            state.error = f"管线执行超时（>{timeout_sec}s）"
+            logger.error("PipelineV2 超时: %s", pid)
+            error_category = "transient"
+            tracer.end_span(root_span, status="error", error=state.error)
         except Exception as e:
             state.status = PipelineStatus.FAILED
             state.error = str(e)
             logger.exception("PipelineV2 执行异常: %s", e)
+            error_category = "permanent"
+            tracer.end_span(root_span, status="error", error=str(e))
+
+        tracer.cleanup()
+        state.updated_at = datetime.now()
+        # Layer 1: 持久化最终状态（在线程池执行）
+        await loop.run_in_executor(None, self._persist_state, state, state.status.value, error_category)
+        return state
+
+    async def _run_inner(
+        self, request: PipelineRequest, pid: str, state: PipelineState, bus: AgentBus,
+        tracer: Any = None, task_id: str = "",
+    ) -> PipelineState:
+        """核心执行逻辑（被超时包裹）。"""
+        # Layer 2/3: 更新任务队列进度
+        if task_id:
+            try:
+                from clipwright.services.task_queue import get_task_queue
+                get_task_queue().update_progress(task_id, 5, "加载 Persona 配置")
+            except Exception:
+                pass
+
+        # 初始化
+        manifest, plugin, persona_config, translated, agent_context = await self._init(
+            request, pid, state, bus
+        )
+        result_data: dict[str, Any] = {}
+        heal_count = 0
+
+        # Layer 2/3: 更新任务进度
+        if task_id:
+            try:
+                from clipwright.services.task_queue import get_task_queue
+                tq = get_task_queue()
+                tq.update_progress(task_id, 10, f"执行 {len(AgentDAG.get_execution_plan())} 个阶段")
+            except Exception:
+                pass
+
+        # P2: DAG 自动拓扑排序执行
+        for group_idx, group in enumerate(AgentDAG.get_execution_plan()):
+            logger.info("PipelineV2 执行组 [%d]: %s", group_idx, group)
+            add_event(pid, "system", "info", f"执行组[{group_idx}]: {'+'.join(group)}")
+
+            # Layer 2: 更新进度
+            if task_id:
+                try:
+                    base_progress = 10 + group_idx * 15
+                    get_task_queue().update_progress(task_id, base_progress, f"组[{group_idx}]: {'+'.join(group)}")
+                except Exception:
+                    pass
+
+            tasks = {}
+            for agent_name in group:
+                input_data = self._build_input(agent_name, result_data, persona_config, plugin)
+                # Layer 2: span 在 _run_agent 内部创建（熔断后不创建 span）
+                tasks[agent_name] = self._run_agent(
+                    state, agent_name, input_data, agent_context, bus, tracer,
+                )
+
+            # P1: 并行执行 + 多路错误聚合
+            results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+            errors: list[tuple[str, Exception]] = []
+            for (name, _), result in zip(tasks.items(), results):
+                if isinstance(result, Exception):
+                    errors.append((name, result))
+                    logger.error("并行 Agent %s 异常: %s", name, result)
+                    add_event(pid, name, "error", f"{name} 异常: {str(result)[:200]}")
+                    if tracer:
+                        tracer.end_span(agent_span_cache.get(name, ""), status="error", error=str(result)[:200])
+                    continue
+
+                if hasattr(result, "result") and result.result:
+                    self._merge_agent_result(name, result, result_data, bus, pid)
+
+            # P1: 多路错误
+            if errors:
+                error_msgs = "; ".join(f"{n}: {e}" for n, e in errors)
+                state.status = PipelineStatus.FAILED
+                state.error = f"并行执行错误: {error_msgs}"
+                for name, e in errors:
+                    add_event(pid, name, "error", f"{name} 异常: {str(e)[:200]}")
+                break
+
+        if state.status == PipelineStatus.FAILED:
+            state.updated_at = datetime.now()
+            return state
+
+        # ── 质检 + 自愈循环 (P1: 联动重做 animation + audio) ──
+        quality_passed = False
+        while not quality_passed and heal_count <= self.MAX_SELF_HEAL_LOOPS:
+            tl = result_data.get("timeline")
+            step = await self._run_agent(
+                state, "quality",
+                {"timeline": tl, "constraints": persona_config.get("constraints", {})},
+                agent_context, bus,
+            )
+
+            # 检查是否需要自愈
+            has_errors, redo_agent, quality_issues = self._check_quality(step)
+            if has_errors and redo_agent and heal_count < self.MAX_SELF_HEAL_LOOPS:
+                heal_count += 1
+                logger.info("自愈循环 [%d/%d]: → 重做 %s", heal_count, self.MAX_SELF_HEAL_LOOPS, redo_agent)
+                add_event(pid, "system", "info",
+                          f"自愈[{heal_count}]: 重做 {redo_agent}, 问题={len(quality_issues)}个")
+
+                # P1: 将质检问题注入 agent_context 供重做时参考
+                agent_context.extra_params["_quality_issues"] = quality_issues[:5]
+                agent_context.extra_params["_quality_heal_count"] = heal_count
+
+                # 重做指定的 Agent
+                input_data = self._build_input(redo_agent, result_data, persona_config, plugin)
+                redo_step = await self._run_agent(
+                    state, redo_agent, input_data, agent_context, bus
+                )
+                if redo_step.result:
+                    self._merge_agent_result(redo_agent, redo_step, result_data, bus, pid)
+
+                # P1 FIX: 联动重做依赖于 redo_agent 的下游 agent
+                downstream = self._get_downstream_agents(redo_agent)
+                for dep_name in downstream:
+                    if dep_name == "quality":
+                        continue  # quality 由外层循环处理
+                    add_event(pid, "system", "info",
+                              f"自愈联动: 重做 {dep_name}（因 {redo_agent} 已重做）")
+                    dep_input = self._build_input(dep_name, result_data, persona_config, plugin)
+                    dep_step = await self._run_agent(
+                        state, dep_name, dep_input, agent_context, bus
+                    )
+                    if dep_step and dep_step.result:
+                        self._merge_agent_result(dep_name, dep_step, result_data, bus, pid)
+            else:
+                quality_passed = True
+
+        # 清理注入的质检上下文
+        agent_context.extra_params.pop("_quality_issues", None)
+        agent_context.extra_params.pop("_quality_heal_count", None)
+
+        # 完成
+        state.shared_data["final_timeline"] = (
+            bus.get_artifact("timeline").model_dump(mode="json")
+            if bus.get_artifact("timeline")
+            else None
+        )
+
+        if state.status != PipelineStatus.FAILED:
+            state.status = PipelineStatus.COMPLETED
 
         state.updated_at = datetime.now()
         return state
+
+    # ── 辅助方法 ──────────────────────────────────
+
+    @staticmethod
+    def _merge_agent_result(name: str, step: Any, result_data: dict, bus: AgentBus, pid: str) -> None:
+        """合并 agent 结果。timeline 以总线为准。"""
+        if not hasattr(step, "result") or not step.result:
+            return
+
+        # 非 timeline 字段正常合并
+        for k, v in step.result.items():
+            if k != "timeline":
+                result_data[k] = v
+
+        # timeline 以总线为准
+        tl_data = step.result.get("timeline")
+        if tl_data:
+            try:
+                timeline = Timeline(**tl_data) if isinstance(tl_data, dict) else tl_data
+                bus.set_artifact("timeline", timeline)
+                # result_data 只存 dict 形式，不存 Timeline 对象
+                result_data["timeline"] = timeline.model_dump(mode="json")
+            except Exception as e:
+                logger.warning("Timeline 合并失败 (%s): %s", name, e)
+
+    @staticmethod
+    def _check_quality(step: Any) -> tuple[bool, str, list[dict]]:
+        """从 quality step 中提取自愈信息。"""
+        if not step or not step.result:
+            return False, "", []
+        redo_agent = step.result.get("redo_agent", "")
+        issues = step.result.get("issues", [])
+        has_errors = any(
+            isinstance(i, dict) and i.get("severity") == "error"
+            for i in (issues or [])
+        )
+        return has_errors, redo_agent, issues or []
+
+    @staticmethod
+    def _get_downstream_agents(agent: str) -> list[str]:
+        """获取依赖于此 agent 的所有下游（需联动重做）。"""
+        return [
+            a for a, deps in AgentDAG._DEPS.items()
+            if agent in deps
+        ]
+
+    # ── 初始化 ────────────────────────────────────
 
     async def _init(self, request, pid, state, bus):
         """初始化：加载 Persona、插件、翻译参数。"""
@@ -259,7 +413,6 @@ class PipelineOrchestratorV2:
         persona_config = manifest.parameter.model_dump(mode="json") if manifest.parameter else {}
         translated = plugin.translate_persona(manifest.parameter) if manifest.parameter else {}
 
-        # Agent 上下文（合并前端参数 + 完整 Persona 参数供 StyleInterpreter 使用）
         agent_context = AgentContext(
             pipeline_id=pid,
             persona_id=request.persona_id,
@@ -292,6 +445,7 @@ class PipelineOrchestratorV2:
             },
             "material": {
                 "script_skeleton": result_data,
+                "persona_config": persona_config,
             },
             "edit": {
                 "script_skeleton": result_data,
@@ -310,13 +464,41 @@ class PipelineOrchestratorV2:
         }
         return inputs.get(agent_name, {})
 
-    async def _run_agent(self, state, agent_name, input_data, context, bus):
-        """执行单个 Agent，集成总线通信。"""
+    # ── Agent 执行 ────────────────────────────────
+
+    async def _run_agent(self, state, agent_name, input_data, context, bus,
+                         tracer=None):
+        """执行单个 Agent，集成总线通信。在熔断检查通过后创建 span。"""
+        # 熔断检查 — 不创建 span
+        if self._check_circuit_breaker(agent_name):
+            step = state.add_step(agent_name)
+            step.status = PipelineStatus.FAILED
+            step.started_at = datetime.now()
+            step.error = f"Agent {agent_name} 已熔断（连续失败 {self._circuit_breaker_threshold} 次），已跳过"
+            step.completed_at = datetime.now()
+            state.current_agent = agent_name
+            add_event(state.pipeline_id, agent_name, "error", step.error)
+            logger.warning("Agent[%s] 已熔断，跳过执行", agent_name)
+            return step
+
         step = state.add_step(agent_name)
         step.status = PipelineStatus.RUNNING
         step.started_at = datetime.now()
         state.current_agent = agent_name
         pid = state.pipeline_id
+
+        # 在熔断检查通过后创建 span
+        agent_span_id = ""
+        if tracer:
+            agent_span_id = tracer.start_span(
+                "agent", agent_name, f"Agent: {agent_name}",
+                input_summary=str(list(input_data.keys())) if input_data else "",
+            )
+
+        def _end_span(status="ok", error="", metadata=None, output_summary=""):
+            if tracer and agent_span_id:
+                tracer.end_span(agent_span_id, status=status, error=error,
+                                metadata=metadata, output_summary=output_summary)
 
         add_event(pid, agent_name, "agent_start", f"Agent: {agent_name}")
         logger.info("PipelineV2 Agent[%s] 开始", agent_name)
@@ -332,9 +514,39 @@ class PipelineOrchestratorV2:
 
             if result.decision != AgentDecision.FAIL:
                 step.status = PipelineStatus.COMPLETED
+                self._record_agent_success(agent_name)
+                _end_span(status="ok", error="",
+                          output_summary=f"决策=PASS, keys={list(step.result.keys()) if step.result else []}")
             else:
                 step.status = PipelineStatus.FAILED
                 step.error = getattr(result, "error", None) or f"{agent_name} failed"
+                self._record_agent_failure(agent_name)
+                _end_span(status="error", error=step.error,
+                          metadata={"error_category": self._categorize_error(step.error or "")})
+
+            # 收集 LLM token 用量
+            llm_usage = getattr(result, "_llm_usage", None) or step.result.pop("_llm_usage", None)
+            if llm_usage:
+                step.result["llm_usage"] = llm_usage
+                logger.info("Agent[%s] LLM tokens: input=%s, output=%s",
+                            agent_name,
+                            llm_usage.get("input_tokens", "?"),
+                            llm_usage.get("output_tokens", "?"))
+                try:
+                    from clipwright.services.llm_tracker import record_llm_call
+                    await record_llm_call(
+                        pipeline_id=pid,
+                        agent_name=agent_name,
+                        model=llm_usage.get("model", "unknown"),
+                        provider=context.extra_params.get("_llm_provider", "anthropic"),
+                        input_tokens=llm_usage.get("input_tokens", 0),
+                        output_tokens=llm_usage.get("output_tokens", 0),
+                        duration_ms=step.duration_ms or 0,
+                        prompt_summary=step.result.get("_prompt_summary", ""),
+                        status="success" if result.decision != AgentDecision.FAIL else "error",
+                    )
+                except Exception:
+                    pass
 
             # 发布到总线
             bus.publish(agent_name, "result", {
@@ -342,7 +554,6 @@ class PipelineOrchestratorV2:
                 "keys": list(step.result.keys()) if step.result else [],
             })
 
-            # 如果有 scenes，发布场景信息
             scenes = step.result.get("scenes", [])
             if scenes:
                 bus.publish(agent_name, "scenes", {
@@ -354,18 +565,16 @@ class PipelineOrchestratorV2:
                       f"{agent_name} → {step.status} ({step.duration_ms or '?'}ms)")
 
             if agent_name == "edit":
-                # 编辑 Agent 完成后发布镜头需求到总线
                 timeline_data = step.result.get("timeline")
                 if timeline_data and isinstance(timeline_data, dict):
                     clips_info = []
                     for t in timeline_data.get("tracks", []):
                         for c in (t.get("clips", []) or []):
-                            if c is None:
-                                continue
+                            if c is None: continue
                             clips_info.append({
-                                "kind": c.get("kind", "") if c else "",
-                                "start": c.get("start_sec", 0) if c else 0,
-                                "duration": c.get("duration_sec", 0) if c else 0,
+                                "kind": c.get("kind", ""),
+                                "start": c.get("start_sec", 0),
+                                "duration": c.get("duration_sec", 0),
                                 "text": (c.get("text", "") or "")[:30],
                             })
                     bus.publish("edit", "clips", clips_info)
@@ -373,10 +582,10 @@ class PipelineOrchestratorV2:
         except Exception as e:
             step.status = PipelineStatus.FAILED
             step.error = str(e)
+            self._record_agent_failure(agent_name)
             add_event(pid, agent_name, "error", f"{agent_name} 异常: {str(e)[:200]}")
             logger.exception("Agent %s 异常: %s", agent_name, e)
-
-        return step
+            _end_span(status="error", error=str(e)[:200])
 
         step.completed_at = datetime.now()
         if step.started_at:
@@ -400,6 +609,7 @@ class PipelineOrchestratorV2:
             return await agent.execute(MaterialInput(
                 context=ctx,
                 script_skeleton=data.get("script_skeleton", {}),
+                persona_config=data.get("persona_config", {}),
             ), ctx)
         elif name == "edit":
             from clipwright.schema.agent import EditInput
@@ -410,9 +620,6 @@ class PipelineOrchestratorV2:
             ), ctx)
         elif name == "animation":
             tl = data.get("timeline")
-            tl_tracks = len(tl.tracks) if tl and hasattr(tl, "tracks") else (len(tl.get("tracks", [])) if tl and isinstance(tl, dict) else -1)
-            logger.info("AnimationAgent 输入: timeline=%s, tracks=%d",
-                        "存在" if tl else "空", tl_tracks)
             from clipwright.schema.agent import AnimationInput
             return await agent.execute(AnimationInput(
                 context=ctx,
@@ -432,6 +639,72 @@ class PipelineOrchestratorV2:
                 constraints=data.get("constraints", {}),
             ), ctx)
         raise ValueError(f"Unknown agent: {name}")
+
+    # ── Layer 1: 持久化 + 错误分级 ───────────────
+
+    def _persist_state(self, state: PipelineState, status: str = "", error_category: str = "") -> None:
+        """持久化管线状态到 MongoDB（含截断保护）。"""
+        try:
+            from clipwright.context import mongo as mongo_ctx
+            if not mongo_ctx.is_connected:
+                return
+            from clipwright.models.pipeline_model import PipelineModel
+            # 截断过大的 shared_data 字段，避免 MongoDB 16MB 限制
+            truncated_shared = {}
+            for k, v in (state.shared_data or {}).items():
+                if isinstance(v, str) and len(v) > 5000:
+                    truncated_shared[k] = v[:5000] + f"...[截断, 原长{len(v)}]"
+                elif isinstance(v, (dict, list)):
+                    s = str(v)
+                    truncated_shared[k] = s[:5000] + f"...[截断]" if len(s) > 5000 else v
+                else:
+                    truncated_shared[k] = v
+            data = {
+                "status": status or state.status.value,
+                "request": state.request.model_dump(mode="json") if hasattr(state.request, "model_dump") else {},
+                "steps": [s.model_dump(mode="json") for s in state.steps] if state.steps else [],
+                "shared_data": truncated_shared,
+                "final_timeline": state.shared_data.get("final_timeline"),
+                "output_path": state.output_path or "",
+                "error": state.error or "",
+                "error_category": error_category,
+                "duration_sec": 0,
+            }
+            # 保存 extra_params 到独立的字段中，便于查询
+            if hasattr(state, 'request') and state.request:
+                ep = getattr(state.request, 'extra_params', {})
+                if ep:
+                    # 安全截取关键参数并存为字符串
+                    data["extra_params_summary"] = {k: str(v)[:200] for k, v in ep.items()}
+            model = PipelineModel.find_by_id(state.pipeline_id)
+            if model:
+                for k, v in data.items():
+                    setattr(model, k, v)
+                model.update()
+            else:
+                PipelineModel(_id=state.pipeline_id, **data).insert()
+        except Exception as e:
+            logger.warning("Pipeline 持久化失败: %s", e)
+
+    @staticmethod
+    def _categorize_error(error: str) -> str:
+        """对错误进行分类: transient / permanent / fatal。
+
+        - transient: 可重试（LLM 超时、网络波动）
+        - permanent: 不可重试（参数错误、类型不匹配）
+        - fatal: 系统级（内存不足、数据库断开）
+        """
+        transient_patterns = ["timeout", "超时", "rate limit", "too many", "暂时", "retry",
+                              "connection", "reset", "timed out"]
+        permanent_patterns = ["not found", "unknown", "invalid", "type", "格式错误",
+                              "NoneType", "AttributeError", "KeyError"]
+        for p in transient_patterns:
+            if p in error.lower():
+                return "transient"
+        for p in permanent_patterns:
+            if p in error.lower():
+                return "permanent"
+        return "permanent"
 
     @staticmethod
     def _should_stop(state: PipelineState, step: PipelineStep) -> bool:

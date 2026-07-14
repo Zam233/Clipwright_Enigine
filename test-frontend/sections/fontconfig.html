@@ -1,27 +1,34 @@
-<div id="section-fontconfig" class="section">
-  <h2>字体配置 <small style="font-weight:normal;font-size:12px;color:var(--text2)">FontConfig</small></h2>
-  <div style="display:flex;gap:12px;flex-wrap:wrap">
-    <div class="card" style="flex:1;min-width:300px">
-      <h3>默认字体</h3>
-      <div id="fcDefaultResult" class="result-box" style="margin-top:8px;font-size:12px;word-break:break-all">查询中...</div>
-    </div>
-    <div class="card" style="flex:1;min-width:300px">
-      <h3>按名称查询</h3>
-      <div style="display:flex;gap:8px;margin-top:8px">
-        <input id="fcFontName" value="msyh.ttc" placeholder="字体文件名" style="flex:1;padding:6px 8px">
-        <button class="btn btn-sm" onclick="resolveFont()">查询</button>
+<div class="section active" id="section-fontconfig">
+  <h2>字体配置 <span class="text-secondary text-sm" style="font-weight:400">FontConfig</span></h2>
+  <p class="text-secondary">查询系统字体、解析字体文件路径</p>
+
+  <div class="flex flex-wrap gap-lg">
+    <div class="card flex-1" style="min-width:300px">
+      <div class="card-header">默认字体</div>
+      <div class="card-body">
+        <div id="fcDefaultResult" class="result-box text-sm">查询中...</div>
       </div>
-      <div id="fcResolveResult" class="result-box" style="margin-top:8px;font-size:12px;word-break:break-all"></div>
+    </div>
+    <div class="card flex-1" style="min-width:300px">
+      <div class="card-header">按名称查询</div>
+      <div class="card-body">
+        <div class="flex gap-md">
+          <input id="fcFontName" class="form-input" value="msyh.ttc" placeholder="字体文件名" style="flex:1">
+          <button class="btn btn-sm btn-primary" onclick="resolveFont()">查询</button>
+        </div>
+        <div id="fcResolveResult" class="result-box mt-2 text-sm"></div>
+      </div>
     </div>
   </div>
-  <div class="card" style="margin-top:12px">
-    <h3 style="display:flex;justify-content:space-between;align-items:center">
-      <span>所有字体 <span id="fcFontCount" style="font-weight:normal;font-size:11px;color:var(--text2)"></span></span>
-      <button class="btn btn-sm" onclick="listFonts()">刷新</button>
-    </h3>
-    <div style="margin-top:8px">
-      <input id="fcSearch" placeholder="搜索字体..." style="width:100%;padding:6px 8px;margin-bottom:8px" oninput="filterFonts()">
-      <div id="fcFontList" style="max-height:400px;overflow-y:auto;font-size:11px"></div>
+
+  <div class="card mt-2">
+    <div class="card-header">
+      <span>所有字体 <span id="fcFontCount" class="text-secondary text-sm" style="font-weight:400"></span></span>
+      <button class="btn btn-sm btn-secondary" onclick="listFonts()">刷新</button>
+    </div>
+    <div class="card-body">
+      <input id="fcSearch" class="form-input" placeholder="搜索字体..." oninput="filterFonts()" style="margin-bottom:8px">
+      <div id="fcFontList" class="overflow-auto text-sm" style="max-height:400px"></div>
     </div>
   </div>
 </div>

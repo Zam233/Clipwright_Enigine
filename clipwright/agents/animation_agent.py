@@ -10,11 +10,11 @@
 from __future__ import annotations
 
 import json
-import uuid
 from typing import Any
 
-from clipwright.agents.base import BaseAgent
+from clipwright.agents.base import BaseAgent, uid as _uid
 from clipwright.animation.catalog import AnimationCatalog
+from clipwright.animation.registry import AnimationRegistry
 from clipwright.config import logger
 from clipwright.schema.agent import (
     AgentContext,
@@ -26,15 +26,12 @@ from clipwright.schema.timeline import Clip, ClipKind, Track
 from clipwright.services.trace import add_event
 
 
-def _uid(prefix: str) -> str:
-    return f"{prefix}_{uuid.uuid4().hex[:8]}"
-
-
 class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
-    """动画 Agent：解析 [文字动画] / [逻辑动画] 标记 → 修改时间线。
+    """动画 Agent：解析 [文字动画] / [逻辑动画] / [过渡动画] 标记 → 修改时间线。
 
     文字动画：在文字轨创建/更新 text clip，添加完整 keyframes（入场+保持+出场）。
     逻辑动画：在动画轨创建独立 clip，将 diagram 参数存入 metadata 供 Render 使用。
+    过渡动画：设置 clip 的 transition_in 字段，供 RenderService 使用 xfade filter。
     """
 
     agent_name = "animation_agent"
@@ -66,6 +63,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
             text_anim_count = 0
             logic_anim_count = 0
+            transition_anim_count = 0
+            prev_clip = None
 
             # 遍历所有 video/image 轨 clip，检测标记
             for vid_track in timeline.tracks:
@@ -78,6 +77,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
                     markers = AnimationCatalog.parse_marker_from_description(desc)
                     if not markers:
+                        prev_clip = clip
                         continue
 
                     marker = markers[0]  # 一个场景只处理一个动画标记
@@ -108,8 +108,21 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                         add_event(context.pipeline_id, "animation", "logic_anim",
                                   f"[逻辑动画]{anim_name}({anim_id}) → clip={clip.id[:8]}")
 
+                    elif marker_type == "transition":
+                        self._handle_transition_animation(
+                            clip, prev_clip, anim_id, anim_name,
+                        )
+                        transition_anim_count += 1
+                        logger.info("AnimationAgent: [过渡动画]%s → %s (id=%s)",
+                                    anim_name, clip.id[:8], anim_id)
+                        add_event(context.pipeline_id, "animation", "transition_anim",
+                                  f"[过渡动画]{anim_name}({anim_id}) → clip={clip.id[:8]}")
+
+                    prev_clip = clip
+
             summary = (
-                f"AnimationAgent: 文字动画={text_anim_count}, 逻辑动画={logic_anim_count}"
+                f"AnimationAgent: 文字动画={text_anim_count}, 逻辑动画={logic_anim_count}, "
+                f"过渡动画={transition_anim_count}"
             )
             logger.info(summary)
             add_event(context.pipeline_id, "animation", "agent_end", summary)
@@ -231,17 +244,26 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         marker: dict[str, Any],
         persona_style: dict[str, Any] | None = None,
     ) -> None:
-        """在动画轨创建独立的逻辑动画 clip，由 Hyperframes 渲染 SVG。"""
+        """在动画轨创建独立的逻辑动画 clip。优先 Hyperframes 渲染 SVG，不可用时降级到 drawtext。
+
+        MG 动画（ID 以 mg_ 开头）使用 MGRenderer 渲染 HTML/CSS 动画。"""
         text_content = marker.get("text", self._extract_text_content(vid_clip, marker))
         if not text_content:
             text_content = "逻辑关系"
         duration = min(vid_clip.duration_sec, 6.0)
 
+        # ── MG 动画路由 ──
+        if anim_id.startswith("mg_"):
+            await self._handle_mg_animation(
+                anim_track, vid_clip, anim_id, anim_name,
+                text_content, duration, marker,
+            )
+            return
+
         diagram_params = self._build_diagram_params(
             anim_id, text_content, duration
         )
 
-        # 合并 Persona 视觉风格到图解参数
         diagram_style = {}
         if persona_style:
             diagram_style = {
@@ -251,6 +273,42 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "text_color": persona_style.get("font_color", "#ffffff"),
                 "font_size": persona_style.get("font_size", 36),
             }
+
+        # ── 创建逻辑动画 clip（非 MG） ──
+        # P2: 检测 Hyperframes 是否可用，不可用时降级到 drawtext
+        hf_available = self._hyperframes_available()
+        renderer = "hyperframes" if hf_available else "drawtext"
+        if not hf_available:
+            logger.info("AnimationAgent: Hyperframes 不可用，逻辑动画 [%s] 降级到 drawtext", anim_name)
+            # 通过 trace 事件推送用户可见警告
+            try:
+                from clipwright.services.trace import add_event as _evt
+                _evt("", "animation", "warning",
+                     f"Hyperframes 不可用，[逻辑动画]{anim_name} 降级为文字显示",
+                     {"anim_id": anim_id, "degradation": "hyperframes_not_available"})
+            except Exception:
+                pass
+            text_clip = Clip(
+                id=_uid("lc"),
+                kind=ClipKind.TEXT,
+                asset_id="",
+                track_id=anim_track.id,
+                start_sec=vid_clip.start_sec,
+                duration_sec=duration,
+                text=f"{anim_name}: {text_content[:50]}",
+                font_size=diagram_style.get("font_size", 36),
+                font_color=diagram_style.get("text_color", "#ffffff"),
+                metadata={
+                    "anim_type": anim_id,
+                    "anim_name": anim_name,
+                    "category": "logic",
+                    "renderer": "drawtext",
+                    "position": "center",
+                },
+            )
+            anim_track.clips.append(text_clip)
+            anim_track.clips.sort(key=lambda c: c.start_sec)
+            return
 
         anim_clip = Clip(
             id=_uid("lc"),
@@ -266,7 +324,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "category": "logic",
                 "diagram_params": diagram_params,
                 "diagram_style": diagram_style,
-                "renderer": "hyperframes",
+                "renderer": renderer,
                 "font_size": 48,
                 "font_color": diagram_style.get("text_color", "#ffffff"),
                 "position": "center",
@@ -274,6 +332,132 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         )
         anim_track.clips.append(anim_clip)
         anim_track.clips.sort(key=lambda c: c.start_sec)
+
+    # ── MG 动画处理 ──────────────────────────────────────
+
+    async def _handle_mg_animation(
+        self,
+        anim_track: Track,
+        vid_clip: Clip,
+        anim_id: str,
+        anim_name: str,
+        text_content: str,
+        duration: float,
+        marker: dict[str, Any],
+    ) -> None:
+        """处理 MG 动画标记 — 通过 MGRenderer 生成 HTML 动画。"""
+        from clipwright.animation.mg_renderer import MGRenderer
+
+        # 加载 MG 动画定义
+        mg_def = MGRenderer.load_animation(anim_id)
+        if mg_def is None:
+            logger.warning("MG 动画未找到: %s，降级为文字", anim_id)
+            text_clip = Clip(
+                id=_uid("lc"), kind=ClipKind.TEXT, asset_id="",
+                track_id=anim_track.id,
+                start_sec=vid_clip.start_sec, duration_sec=duration,
+                text=f"{anim_name}: {text_content[:50]}",
+                metadata={"anim_type": anim_id, "renderer": "drawtext"},
+            )
+            anim_track.clips.append(text_clip)
+            return
+
+        # 解析输入参数: 格式 "文字|副标题|值"
+        mg_params: dict[str, str] = {}
+        if text_content:
+            parts = [p.strip() for p in text_content.replace("→", "|").split("|")]
+            mg_params["text"] = parts[0] if len(parts) > 0 else text_content
+            mg_params["value"] = parts[1] if len(parts) > 1 else ""
+            mg_params["unit"] = parts[2] if len(parts) > 2 else ""
+            mg_params["subtitle"] = parts[1] if len(parts) > 1 else ""
+
+        mg_dur = mg_def.get("duration_sec", duration)
+        clip_dur = min(mg_dur, vid_clip.duration_sec)
+
+        # 渲染为 HTML
+        try:
+            html = MGRenderer.render(mg_def, mg_params)
+        except Exception as e:
+            logger.warning("MG 动画渲染失败: %s", e)
+            text_clip = Clip(
+                id=_uid("lc"), kind=ClipKind.TEXT, asset_id="",
+                track_id=anim_track.id,
+                start_sec=vid_clip.start_sec, duration_sec=clip_dur,
+                text=f"{anim_name}: {text_content[:50]}",
+                metadata={"anim_type": anim_id, "renderer": "drawtext"},
+            )
+            anim_track.clips.append(text_clip)
+            return
+
+        anim_clip = Clip(
+            id=_uid("mg"),
+            kind=ClipKind.ANIMATION,
+            asset_id="",
+            track_id=anim_track.id,
+            start_sec=vid_clip.start_sec,
+            duration_sec=clip_dur,
+            text=text_content,
+            metadata={
+                "anim_type": anim_id,
+                "anim_name": anim_name,
+                "category": "mg",
+                "renderer": "mg_hyperframes",
+                "mg_html": html,
+                "mg_def": mg_def,
+                "mg_params": mg_params,
+                "mg_html_path": "",
+                "position": "center",
+            },
+        )
+        anim_track.clips.append(anim_clip)
+        anim_track.clips.sort(key=lambda c: c.start_sec)
+        logger.info("AnimationAgent: [MG动画]%s → HTML已生成 (%s)", anim_name, anim_id)
+
+    # ── 过渡动画处理 ──────────────────────────────────────
+
+    @staticmethod
+    def _handle_transition_animation(
+        clip: Clip,
+        prev_clip: Clip | None,
+        anim_id: str,
+        anim_name: str,
+    ) -> None:
+        """为 clip 设置过渡动画属性，供 RenderService 使用 xfade filter。
+
+        AnimationRegistry 中的 transition 动画：
+        - crossfade → xfade transition
+        - fade_to_black → fade filter
+        - push_left/push_right/wipe_left/zoom_in/glitch/pixel_dissolve/slide_up → xfade type
+        """
+        if prev_clip is None:
+            return
+
+        # 从 AnimationRegistry 查找转场持续时间
+        anim_def = AnimationRegistry.get(anim_id)
+        duration_sec = anim_def.duration_sec if anim_def else 0.4
+
+        # 映射到 FFmpeg xfade transition 类型
+        xfade_map = {
+            "crossfade": "fade",
+            "fade_to_black": "fadeblack",
+            "push_left": "pushleft",
+            "push_right": "pushright",
+            "wipe_left": "wipeleft",
+            "zoom_in": "zoom",
+            "glitch": "fade",
+            "pixel_dissolve": "pixelize",
+            "slide_up": "slideright",
+            "cut": "fade",
+        }
+
+        clip.transition_in = xfade_map.get(anim_id, "fade")
+        clip.transition_duration_sec = duration_sec
+        clip.metadata = clip.metadata or {}
+        clip.metadata["transition_id"] = anim_id
+        clip.metadata["transition_name"] = anim_name
+
+        logger.info("AnimationAgent: 过渡 %s → clip=%s (type=%s, dur=%.1fs)",
+                    anim_name, clip.id[:8], clip.transition_in, duration_sec)
 
     # ── 轨道管理 ──────────────────────────────────────────
 
@@ -307,6 +491,15 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         )
         timeline.tracks.append(track)
         return track
+
+    @staticmethod
+    def _hyperframes_available() -> bool:
+        """检测 Hyperframes CLI 是否可用。"""
+        try:
+            from clipwright.animation.hyperframes_renderer import HyperframesRenderer
+            return HyperframesRenderer.is_available()
+        except Exception:
+            return False
 
     # ── 工具方法 ──────────────────────────────────────────
 
@@ -413,6 +606,11 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             # 时间线/层级/维恩：用 → 或 | 分隔项
             items = [t.strip() for t in text.replace("→", "|").split("|")] if "→" in text or "|" in text else [text[:20]]
             base["items"] = items[:8]
+        elif anim_id == "hierarchy":
+            # 层级图 = tree 的别名，用 → 或 | 分隔
+            items = [t.strip() for t in text.replace("→", "|").split("|")] if "→" in text or "|" in text else [text[:20]]
+            base["items"] = items[:9]
+            base["preset"] = "hierarchy"
         elif anim_id in ("bar_chart", "pie_chart", "line_chart"):
             # 数据图表：每项格式 "标签:数值" 或纯标签（自动生成值）
             items = [t.strip() for t in text.replace("|", ",").split(",")] if "|" in text or "," in text else [text[:20]]
@@ -466,6 +664,18 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             # "CEO|  VP1|  VP2|   经理A|   经理B"（保留缩进以表示层级）
             items_raw = text.replace("→", "\n").split("\n") if "\n" in text or "→" in text else [text[:20]]
             base["items"] = items_raw[:15]
+        elif anim_id == "flow_chart":
+            # 流程图：用 ; 分隔节点，用 -> 分隔边。格式: id:x:y:label:shape;id2...|from->to:label
+            parts = text.replace("→", "|").split("|") if "|" in text or "→" in text else [text[:40]]
+            base["items"] = parts[:3]
+            base["title"] = text[:40]
+            base["preset"] = "flow_chart"
+        elif anim_id == "sequence_diagram":
+            # 序列图：参与者用 , 分隔，消息用 | 分隔。格式: A,B|A->B:消息1|B->A:消息2
+            parts = text.replace("→", "|").split("|") if "|" in text or "→" in text else [text[:40]]
+            base["items"] = parts[:8]
+            base["title"] = text[:40]
+            base["preset"] = "sequence_diagram"
         else:
             base["items"] = [text[:20]]
 

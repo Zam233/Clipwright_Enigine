@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>帧艺 ClipWright — 测试前端</title>
 <link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
 </head>
 <body>
 
@@ -22,7 +25,7 @@
     <a onclick="switchSection('animation')">动画</a>
     <a onclick="switchSection('material')">素材库</a>
     <a onclick="switchSection('plugin')">插件</a>
-    <a onclick="switchSection('edit-workspace')">剪辑工作台</a>
+    <a onclick="switchSection('edit-workspace')">创作工作台</a>
     <a onclick="switchSection('template')">模板</a>
     <a onclick="switchSection('editor')">对话编辑</a>
     <a onclick="switchSection('type-maker')">类型制作器</a>
@@ -55,6 +58,7 @@
 <script src="js/chat-forge.js?v=20260713"></script>
 <script src="js/pipeline.js?v=20260713"></script>
 <script src="js/model-test.js?v=20260713"></script>
+<script src="js/requirements.js?v=20260714"></script>
 <script src="js/tool.js"></script>
 <script src="js/skill.js"></script>
 <script src="js/animation.js"></script>
@@ -66,10 +70,11 @@
 <script src="js/editor.js"></script>
 <script src="js/font.js"></script>
 <script src="js/webhook.js"></script>
+<script src="js/ew-requirements.js"></script>
 <script>
 (async () => {
   // 先加载健康检查面板，再检查后端健康状态
-  await switchSection('health');
+  await switchSection('edit-workspace');
   checkHealth();
   // 面板数据在 switchSection 钩子中按需加载
 })();

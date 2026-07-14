@@ -61,6 +61,7 @@ class MaterialInput(BaseModel):
     """素材 Agent 的输入。"""
     context: AgentContext
     script_skeleton: dict[str, Any]
+    persona_config: dict[str, Any] = Field(default_factory=dict)
 
 
 class MaterialOutput(BaseModel):
@@ -72,6 +73,7 @@ class MaterialOutput(BaseModel):
         description="候选素材列表 [{asset_id, scene_index, score, ...}]",
     )
     error: Optional[str] = Field(default=None)
+    material_notes: list[str] = Field(default_factory=list, exclude=True)
 
 
 class EditInput(BaseModel):
@@ -123,6 +125,40 @@ class AudioOutput(BaseModel):
     timeline: Optional[Timeline] = Field(default=None)
     audio_notes: list[str] = Field(default_factory=list, description="音频处理记录")
     error: Optional[str] = Field(default=None)
+    audio_config_internal: dict[str, Any] = Field(default_factory=dict, exclude=True)
+
+
+class QualityInput(BaseModel):
+    """质检 Agent 的输入。"""
+    context: AgentContext
+    timeline: Timeline
+    constraints: dict[str, Any] = Field(default_factory=dict)
+
+
+class QualityIssue(BaseModel):
+    """质检发现的问题。"""
+    severity: str = Field(description="error / warning / info")
+    category: str = Field(description="问题类别")
+    message: str
+    location: Optional[str] = Field(default=None)
+
+
+class RequirementsInput(BaseModel):
+    """需求 Agent 的输入。"""
+    context: AgentContext
+    topic: str = ""
+    script_text: str = ""
+    reference_materials: list[str] = Field(default_factory=list)
+    persona_id: str = ""
+    category_plugin_id: str = ""
+
+
+class RequirementsOutput(BaseModel):
+    """需求 Agent 的输出 — 创作方案。"""
+    agent_name: str = "requirements_agent"
+    decision: AgentDecision = AgentDecision.PASS
+    creative_brief: dict[str, Any] = Field(default_factory=dict)
+    error: Optional[str] = Field(default=None)
 
 
 class QualityInput(BaseModel):
@@ -148,3 +184,4 @@ class QualityOutput(BaseModel):
     issues: list[QualityIssue] = Field(default_factory=list)
     fix_suggestions: list[str] = Field(default_factory=list)
     error: Optional[str] = Field(default=None)
+    redo_agent: str = Field(default="", description="建议重做的 Agent，空表示不需要重做")
