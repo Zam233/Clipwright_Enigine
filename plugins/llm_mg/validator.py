@@ -1,0 +1,170 @@
+"""MG JSON Schema 验证器 — 校验和修复 LLM 生成的 MG JSON。"""
+
+from __future__ import annotations
+
+from typing import Any
+
+REQUIRED_TOP_KEYS = {"animation_id", "elements"}
+VALID_ELEMENT_TYPES = {"text", "shape"}
+VALID_SHAPES = {"rect", "ellipse"}
+VALID_POSITIONS = {"center", "left", "right", "top", "bottom"}
+ANIMATABLE_PROPS = {"opacity", "scale", "translate_x", "translate_y", "rotate", "width"}
+
+
+def validate_mg_json(mg_def: dict[str, Any]) -> tuple[bool, list[str]]:
+    """验证 MG JSON 定义是否符合规范。"""
+    errors: list[str] = []
+
+    if not isinstance(mg_def, dict):
+        return False, ["mg_def is not a dict"]
+
+    for key in REQUIRED_TOP_KEYS:
+        if key not in mg_def:
+            errors.append(f"Missing required top-level key: {key}")
+
+    anim_id = mg_def.get("animation_id", "")
+    if not anim_id or not isinstance(anim_id, str):
+        errors.append("animation_id must be a non-empty string")
+
+    dur = mg_def.get("duration_sec", 0)
+    if not isinstance(dur, (int, float)) or dur <= 0:
+        errors.append("duration_sec must be a positive number")
+
+    for dim in ("width", "height"):
+        v = mg_def.get(dim, 0)
+        if not isinstance(v, (int, float)) or v <= 0:
+            errors.append(f"{dim} must be a positive number")
+
+    elements = mg_def.get("elements", [])
+    if not isinstance(elements, list) or len(elements) == 0:
+        errors.append("elements must be a non-empty list")
+    else:
+        for i, elem in enumerate(elements):
+            elem_errors = _validate_element(elem, i, mg_def.get("duration_sec", 3.0))
+            errors.extend(elem_errors)
+
+    return len(errors) == 0, errors
+
+
+def _validate_element(elem: dict, index: int, total_dur: float) -> list[str]:
+    errors: list[str] = []
+    prefix = f"elements[{index}]"
+
+    elem_type = elem.get("type", "")
+    if elem_type not in VALID_ELEMENT_TYPES:
+        errors.append(f"{prefix}: type must be one of {VALID_ELEMENT_TYPES}, got '{elem_type}'")
+
+    if elem_type == "text" and "content" not in elem:
+        errors.append(f"{prefix}: text element missing 'content'")
+
+    if elem_type == "shape":
+        if "shape" not in elem:
+            errors.append(f"{prefix}: shape element missing 'shape' field")
+        elif elem.get("shape") not in VALID_SHAPES:
+            errors.append(f"{prefix}: shape must be one of {VALID_SHAPES}")
+
+    kfs = elem.get("keyframes", [])
+    if not isinstance(kfs, list) or len(kfs) < 2:
+        errors.append(f"{prefix}: must have at least 2 keyframes")
+    else:
+        for j, kf in enumerate(kfs):
+            errors.extend(_validate_keyframe(kf, j, total_dur, prefix))
+
+    for pos in ("x", "y"):
+        val = elem.get(pos)
+        if val is None:
+            continue
+        if isinstance(val, str) and val not in VALID_POSITIONS:
+            try:
+                float(val)
+            except (ValueError, TypeError):
+                errors.append(f"{prefix}: {pos} must be center/left/right/top/bottom or a number")
+
+    return errors
+
+
+def _validate_keyframe(kf: dict, index: int, total_dur: float, parent_prefix: str) -> list[str]:
+    errors: list[str] = []
+    pfx = f"{parent_prefix}.keyframes[{index}]"
+
+    t = kf.get("time", -1)
+    if not isinstance(t, (int, float)) or t < 0 or t > total_dur:
+        errors.append(f"{pfx}: time must be between 0 and {total_dur}")
+
+    props = kf.get("properties", kf)
+    if not isinstance(props, dict):
+        errors.append(f"{pfx}: must have properties dict")
+        return errors
+
+    anim_props = {k: v for k, v in props.items() if k != "time"}
+    if not anim_props:
+        errors.append(f"{pfx}: no animatable properties found")
+    else:
+        for prop_name in anim_props:
+            if prop_name not in ANIMATABLE_PROPS:
+                errors.append(f"{pfx}: unknown property '{prop_name}'")
+
+    return errors
+
+
+def repair_mg_json(mg_def: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """尝试修复常见的 MG JSON 错误。"""
+    fixes: list[str] = []
+    repaired = dict(mg_def)
+
+    if "animation_id" not in repaired or not repaired["animation_id"]:
+        import uuid
+        repaired["animation_id"] = f"mg_generated_{uuid.uuid4().hex[:8]}"
+        fixes.append("Added missing animation_id")
+
+    if "duration_sec" not in repaired or not isinstance(repaired.get("duration_sec"), (int, float)):
+        repaired["duration_sec"] = 3.0
+        fixes.append("Set default duration_sec=3.0")
+
+    for dim, default in (("width", 1920), ("height", 1080)):
+        if dim not in repaired or not isinstance(repaired.get(dim), (int, float)):
+            repaired[dim] = default
+            fixes.append(f"Set default {dim}={default}")
+
+    if "elements" not in repaired or not repaired["elements"]:
+        fixes.append("No elements - cannot repair")
+        return repaired, fixes
+
+    if "style" not in repaired:
+        repaired["style"] = {"background": "transparent", "font_family": "sans-serif"}
+
+    if "params" not in repaired:
+        params = {}
+        for elem in repaired.get("elements", []):
+            content = elem.get("content", "")
+            if "{text}" in content:
+                params.setdefault("text", {"type": "string", "default": ""})
+            if "{value}" in content:
+                params.setdefault("value", {"type": "string", "default": ""})
+            if "{accent}" in content:
+                params.setdefault("accent", {"type": "string", "default": "#4f8cff"})
+        if params:
+            repaired["params"] = params
+
+    for i, elem in enumerate(repaired.get("elements", [])):
+        kfs = elem.get("keyframes", [])
+        if not kfs:
+            elem["keyframes"] = [
+                {"time": 0, "opacity": 0},
+                {"time": 0.5, "opacity": 1},
+            ]
+            fixes.append(f"elements[{i}]: added default keyframes")
+            continue
+
+        first_time = kfs[0].get("time", -1)
+        if first_time > 0:
+            kfs.insert(0, {"time": 0, "opacity": 0})
+            fixes.append(f"elements[{i}]: added time=0 keyframe")
+
+        for kf in kfs:
+            if "properties" in kf and isinstance(kf["properties"], dict):
+                for pk, pv in kf["properties"].items():
+                    if pk not in kf:
+                        kf[pk] = pv
+
+    return repaired, fixes

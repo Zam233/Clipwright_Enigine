@@ -1,0 +1,78 @@
+{
+  "animation_id": "mg_progress_bar",
+  "name": "进度条",
+  "description": "水平进度条动画，适合展示完成度/占比/增长率",
+  "duration_sec": 3.0,
+  "width": 1920,
+  "height": 1080,
+  "elements": [
+    {
+      "type": "text",
+      "content": "{text}",
+      "x": "center",
+      "y": "center",
+      "y_offset": -120,
+      "font_size": 42,
+      "font_color": "#ffffff",
+      "font_weight": "bold",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "translate_y": -20},
+        {"time": 0.5, "opacity": 1, "translate_y": 0}
+      ]
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "color": "rgba(255,255,255,0.1)",
+      "x": "center",
+      "y": "center",
+      "y_offset": -30,
+      "width": 600,
+      "height": 24,
+      "border_radius": 12,
+      "keyframes": [
+        {"time": 0.3, "opacity": 0},
+        {"time": 0.8, "opacity": 1}
+      ]
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "color": "{accent}",
+      "x": "center",
+      "y": "center",
+      "y_offset": -30,
+      "width": 0,
+      "height": 24,
+      "border_radius": 12,
+      "keyframes": [
+        {"time": 0.8, "opacity": 1, "width": 0},
+        {"time": 2.2, "opacity": 1, "width": "{bar_width}"}
+      ]
+    },
+    {
+      "type": "text",
+      "content": "{value}",
+      "x": "center",
+      "y": "center",
+      "y_offset": 30,
+      "font_size": 28,
+      "font_color": "#cccccc",
+      "font_weight": "normal",
+      "keyframes": [
+        {"time": 1.5, "opacity": 0, "translate_y": 15},
+        {"time": 2.0, "opacity": 0.9, "translate_y": 0}
+      ]
+    }
+  ],
+  "params": {
+    "text": {"type": "string", "default": "完成度"},
+    "value": {"type": "string", "default": "78%"},
+    "accent": {"type": "string", "default": "#4f8cff"},
+    "bar_width": {"type": "string", "default": "468"}
+  },
+  "style": {
+    "background": "transparent",
+    "font_family": "sans-serif"
+  }
+}

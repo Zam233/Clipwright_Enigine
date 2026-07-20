@@ -24,6 +24,29 @@ CREATIVE_BRIEF_SYSTEM = """你是一位专业的视频创作顾问。你的任�
 - 当收集到足够信息时，设置 is_ready=true
 - 信息不足的标准：至少需要了解 主题/目标受众/风格方向
 
+## 动画需求识别
+如果用户的创作需求中提到了视觉效果、数据展示、对比、流程、图表等信息呈现需求，
+在 brief_draft 中设置 animation_intents 数组，每个元素描述一个场景的动画需求。
+
+animation_intents 格式:
+[
+  {
+    "scene_index": null,
+    "type": "mg",
+    "description": "自然语言描述该动画应呈现的效果",
+    "text_content": "动画中要显示的文字内容，多段内容用 | 分隔",
+    "style_hint": "样式提示: tech_dark / minimal_clean / bold_vibrant / retro",
+    "suggested_template": "最接近的现有模板 ID，不确定则留空"
+  }
+]
+
+类型说明:
+- type="mg": 动态图形动画（数据图表、标题揭示、进度条、对比图等）
+- type="text": 文字入场动画（打字机、淡入、弹跳等）
+- type="logic": 逻辑关系图解（箭头、流程图、因果关系等）
+
+只在用户明确需要视觉信息呈现（图表/对比/数据可视化/标题动画）时填写 animation_intents。
+
 ## 输出格式（纯 JSON）
 {
   "reply": "对用户的自然语言回复",
@@ -35,14 +58,15 @@ CREATIVE_BRIEF_SYSTEM = """你是一位专业的视频创作顾问。你的任�
     "style_direction": "风格方向",
     "structure_suggestion": "结构建议",
     "duration_estimate": "预估时长",
-    "key_elements": ["\u5143\u7d201"],
-    "special_requirements": []
+    "key_elements": ["元素1"],
+    "special_requirements": [],
+    "animation_intents": []
   },
   "is_ready": false,
-  "missing_info": ["\u8fd8\u672a\u4e86\u89e3\u7684\u4fe1\u606f"]
+  "missing_info": ["还未了解的信息"]
 }
 
-\u5f53 is_ready=true \u65f6\uff0cbrief_draft \u5fc5\u987b\u5b8c\u6574\u586b\u5199\u3002
+当 is_ready=true 时，brief_draft 必须完整填写。
 """
 
 

@@ -108,6 +108,7 @@ class AnimationOutput(BaseModel):
         default=None,
         description="动画编排计划：含 onscreen 和 transition 动画的实例化序列",
     )
+    generated_mg_count: int = Field(default=0, description="LLM 本次生成的 MG 动画数量")
     error: Optional[str] = Field(default=None)
 
 
@@ -158,22 +159,11 @@ class RequirementsOutput(BaseModel):
     agent_name: str = "requirements_agent"
     decision: AgentDecision = AgentDecision.PASS
     creative_brief: dict[str, Any] = Field(default_factory=dict)
+    animation_intents: list[AnimationIntent] = Field(
+        default_factory=list,
+        description="RequirementsAgent 识别的动画需求意图",
+    )
     error: Optional[str] = Field(default=None)
-
-
-class QualityInput(BaseModel):
-    """质检 Agent 的输入。"""
-    context: AgentContext
-    timeline: Timeline
-    constraints: dict[str, Any] = Field(default_factory=dict)
-
-
-class QualityIssue(BaseModel):
-    """质检发现的问题。"""
-    severity: str = Field(description="error / warning / info")
-    category: str = Field(description="问题类别")
-    message: str
-    location: Optional[str] = Field(default=None)
 
 
 class QualityOutput(BaseModel):
@@ -185,3 +175,13 @@ class QualityOutput(BaseModel):
     fix_suggestions: list[str] = Field(default_factory=list)
     error: Optional[str] = Field(default=None)
     redo_agent: str = Field(default="", description="建议重做的 Agent，空表示不需要重做")
+
+
+class AnimationIntent(BaseModel):
+    """动画需求意图 — RequirementsAgent → StructureAgent → AnimationAgent。"""
+    scene_index: Optional[int] = Field(default=None, description="目标场景索引，未确定时 null")
+    type: str = Field(default="mg", description="动画类型: mg / text / logic")
+    description: str = Field(default="", description="自然语言动画需求描述")
+    text_content: str = Field(default="", description="动画中要显示的文字，用 | 分隔多个内容")
+    style_hint: str = Field(default="", description="风格提示: tech_dark / minimal_clean / bold_vibrant / retro")
+    suggested_template: str = Field(default="", description="建议的已有模板 ID，不确定则留空")

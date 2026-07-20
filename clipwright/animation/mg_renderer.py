@@ -232,39 +232,55 @@ const dur=parseFloat(root.dataset.duration);
 
     @staticmethod
     def load_animation(anim_id: str) -> dict | None:
-        """从插件目录按 animation_id 加载 MG 动画定义。"""
-        # 搜索 plugins/mg_animations/animations/
-        base = Path(__file__).resolve().parent.parent.parent / "plugins" / "mg_animations" / "animations"
-        if not base.exists():
-            return None
-        for f in base.iterdir():
-            if f.suffix == ".json":
-                try:
-                    data = json.loads(f.read_text(encoding="utf-8"))
-                    if data.get("animation_id") == anim_id:
-                        return data
-                except Exception:
-                    continue
+        """按 animation_id 加载 MG 动画定义。
+
+        搜索顺序:
+        1. plugins/llm_mg/templates/ (正式插件路径)
+        2. plugins/mg_animations/animations/ (向后兼容, deprecated)
+        """
+        search_paths = [
+            Path(__file__).resolve().parent.parent.parent / "plugins" / "llm_mg" / "templates",
+            Path(__file__).resolve().parent.parent.parent / "plugins" / "mg_animations" / "animations",
+        ]
+        for base_dir in search_paths:
+            if not base_dir.exists():
+                continue
+            for f in base_dir.iterdir():
+                if f.suffix == ".json":
+                    try:
+                        data = json.loads(f.read_text(encoding="utf-8"))
+                        if data.get("animation_id") == anim_id:
+                            return data
+                    except Exception:
+                        continue
         return None
 
     @staticmethod
     def list_animations() -> list[dict]:
         """列出所有可用的 MG 动画。"""
-        base = Path(__file__).resolve().parent.parent.parent / "plugins" / "mg_animations" / "animations"
-        if not base.exists():
-            return []
-        anims = []
-        for f in sorted(base.iterdir()):
-            if f.suffix == ".json":
-                try:
-                    data = json.loads(f.read_text(encoding="utf-8"))
-                    anims.append({
-                        "id": data.get("animation_id", ""),
-                        "name": data.get("name", ""),
-                        "description": data.get("description", ""),
-                        "duration_sec": data.get("duration_sec", 3.0),
-                        "params": list(data.get("params", {}).keys()),
-                    })
-                except Exception:
-                    continue
+        search_paths = [
+            Path(__file__).resolve().parent.parent.parent / "plugins" / "llm_mg" / "templates",
+            Path(__file__).resolve().parent.parent.parent / "plugins" / "mg_animations" / "animations",
+        ]
+        seen_ids: set[str] = set()
+        anims: list[dict] = []
+        for base_dir in search_paths:
+            if not base_dir.exists():
+                continue
+            for f in sorted(base_dir.iterdir()):
+                if f.suffix == ".json":
+                    try:
+                        data = json.loads(f.read_text(encoding="utf-8"))
+                        aid = data.get("animation_id", "")
+                        if aid and aid not in seen_ids:
+                            seen_ids.add(aid)
+                            anims.append({
+                                "id": aid,
+                                "name": data.get("name", ""),
+                                "description": data.get("description", ""),
+                                "duration_sec": data.get("duration_sec", 3.0),
+                                "params": list(data.get("params", {}).keys()),
+                            })
+                    except Exception:
+                        continue
         return anims

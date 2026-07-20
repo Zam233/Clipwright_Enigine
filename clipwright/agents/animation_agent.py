@@ -252,6 +252,14 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             text_content = "逻辑关系"
         duration = min(vid_clip.duration_sec, 6.0)
 
+        # ── LLM 动态 MG 动画路由 ──
+        if anim_id == "mg_dynamic":
+            await self._handle_llm_mg(
+                anim_track, vid_clip, anim_id, anim_name,
+                text_content, duration, marker, persona_style,
+            )
+            return
+
         # ── MG 动画路由 ──
         if anim_id.startswith("mg_"):
             await self._handle_mg_animation(
@@ -412,6 +420,131 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         anim_track.clips.append(anim_clip)
         anim_track.clips.sort(key=lambda c: c.start_sec)
         logger.info("AnimationAgent: [MG动画]%s → HTML已生成 (%s)", anim_name, anim_id)
+
+    # ── LLM 动态 MG 动画处理 ──────────────────────────────
+
+    async def _handle_llm_mg(
+        self,
+        anim_track: Track,
+        vid_clip: Clip,
+        anim_id: str,
+        anim_name: str,
+        text_content: str,
+        duration: float,
+        marker: dict[str, Any],
+        persona_style: dict[str, Any] | None = None,
+    ) -> None:
+        """处理 mg_dynamic 标记 — 通过 llm_mg 插件动态生成 MG 动画。"""
+        try:
+            from clipwright.plugins import PluginLoader
+            loader = PluginLoader()
+            plugin = loader.get("llm_mg")
+        except Exception:
+            plugin = None
+
+        if plugin is None:
+            logger.warning("AnimationAgent: llm_mg 插件未加载，mg_dynamic 降级为 drawtext")
+            self._add_trace_warning("LLM MG 插件未加载，动画降级为文字显示")
+            self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
+            return
+
+        scene_meta = vid_clip.metadata or {}
+        scene_context = {
+            "title": scene_meta.get("title", ""),
+            "keywords": scene_meta.get("keywords", []),
+            "description": scene_meta.get("description", ""),
+        }
+
+        try:
+            result = await plugin.generate_mg(
+                description=text_content or marker.get("description", ""),
+                text_content=text_content,
+                persona_style=persona_style or {},
+                scene_context=scene_context,
+            )
+        except Exception as e:
+            logger.exception("AnimationAgent: llm_mg.generate_mg() 异常: %s", e)
+            self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
+            return
+
+        if not result.get("success"):
+            logger.warning("AnimationAgent: llm_mg 生成失败 (method=%s)", result.get("method"))
+            self._add_trace_warning(
+                f"LLM MG 生成失败，使用降级方案: {result.get('fallback_template', 'none')}")
+
+        html = result.get("html", "")
+        mg_def = result.get("mg_def", {})
+        method = result.get("method", "unknown")
+        generation_id = result.get("generation_id", "")
+
+        if not html:
+            self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
+            return
+
+        clip_dur = min(mg_def.get("duration_sec", duration), vid_clip.duration_sec)
+
+        anim_clip = Clip(
+            id=_uid("mgd"),
+            kind=ClipKind.ANIMATION,
+            asset_id="",
+            track_id=anim_track.id,
+            start_sec=vid_clip.start_sec,
+            duration_sec=clip_dur,
+            text=text_content,
+            metadata={
+                "anim_type": anim_id,
+                "anim_name": anim_name,
+                "category": "mg_dynamic",
+                "renderer": "mg_hyperframes",
+                "mg_html": html,
+                "mg_def": mg_def,
+                "mg_method": method,
+                "mg_generation_id": generation_id,
+                "mg_fallback_template": result.get("fallback_template"),
+                "position": "center",
+            },
+        )
+        anim_track.clips.append(anim_clip)
+        anim_track.clips.sort(key=lambda c: c.start_sec)
+        logger.info("AnimationAgent: [LLM MG]%s → method=%s, html=%d chars",
+                     anim_name, method, len(html))
+
+    def _create_fallback_text_clip(
+        self,
+        anim_track: Track,
+        vid_clip: Clip,
+        anim_name: str,
+        text_content: str,
+        duration: float,
+    ) -> None:
+        """创建降级文字 clip。"""
+        text_clip = Clip(
+            id=_uid("fl"),
+            kind=ClipKind.TEXT,
+            asset_id="",
+            track_id=anim_track.id,
+            start_sec=vid_clip.start_sec,
+            duration_sec=min(duration, 5.0),
+            text=f"{anim_name}: {text_content[:50]}",
+            font_size=36,
+            font_color="#ffffff",
+            metadata={
+                "anim_type": "fallback_text",
+                "renderer": "drawtext",
+                "position": "center",
+            },
+        )
+        anim_track.clips.append(text_clip)
+        anim_track.clips.sort(key=lambda c: c.start_sec)
+
+    @staticmethod
+    def _add_trace_warning(message: str) -> None:
+        """添加 trace 警告事件。"""
+        try:
+            from clipwright.services.trace import add_event as _evt
+            _evt("", "animation", "warning", message)
+        except Exception:
+            pass
 
     # ── 过渡动画处理 ──────────────────────────────────────
 
