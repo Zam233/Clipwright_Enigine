@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from clipwright.agents.base import BaseAgent
-from clipwright.schema.agent import AgentContext, AgentDecision, RequirementsInput, RequirementsOutput
+from clipwright.schema.agent import AgentContext, AgentDecision, AnimationIntent, RequirementsInput, RequirementsOutput
 from clipwright.services.llm import LLMService
 from clipwright.config import logger
 
@@ -100,9 +100,11 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
         logger.info("RequirementsAgent 开始 pipeline=%s", context.pipeline_id[:12])
         try:
             brief = await self._generate_brief(input_data, context)
+            animation_intents = self._extract_animation_intents(brief)
             return RequirementsOutput(
                 decision=AgentDecision.PASS,
                 creative_brief=brief,
+                animation_intents=animation_intents,
             )
         except Exception as e:
             logger.exception("RequirementsAgent 失败: %s", e)
@@ -130,6 +132,21 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
         if isinstance(result, dict) and "brief_draft" in result:
             return result["brief_draft"]
         return {}
+
+    @staticmethod
+    def _extract_animation_intents(brief: dict[str, Any]) -> list[AnimationIntent]:
+        """从 brief_draft 中提取 animation_intents 并转为 Pydantic 模型。"""
+        raw = brief.get("animation_intents", [])
+        if not isinstance(raw, list):
+            return []
+        intents: list[AnimationIntent] = []
+        for item in raw:
+            if isinstance(item, dict):
+                try:
+                    intents.append(AnimationIntent(**item))
+                except Exception:
+                    pass
+        return intents
 
     async def translate_scenes(
         self, scenes: list[dict], brief: dict[str, Any] | None = None,

@@ -494,6 +494,13 @@ class RequirementsService:
             except Exception as e:
                 logger.warning("Persona %s 加载失败: %s，使用默认配置", persona_id, e)
 
+            # 提取 animation_intents
+            animation_intents = []
+            if brief_data:
+                raw_intents = brief_data.get("animation_intents", [])
+                if isinstance(raw_intents, list):
+                    animation_intents = raw_intents
+
             agent = StructureAgent()
             context = AgentContext(
                 pipeline_id=session_id,
@@ -504,6 +511,7 @@ class RequirementsService:
                     "video_mode": "voiceover",
                     "script_text": user_inputs.get("script_text", ""),
                     "audio_duration_sec": user_inputs.get("audio_duration_sec", 300),
+                    "animation_intents": animation_intents,
                 },
             )
 

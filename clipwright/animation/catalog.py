@@ -85,15 +85,22 @@ class AnimationCatalog:
 
     @staticmethod
     def get_logic_animations() -> list[dict[str, Any]]:
-        """返回所有可用的逻辑动画（内置 + 插件扩展）。
-
-        返回格式:
-        [
-            {"id": "diagram", "name": "箭头", "desc": "展示因果关系..."},
-            ...
-        ]
-        """
+        """返回所有可用的逻辑动画（内置 + 插件扩展 + MG 动画）。"""
         result = list(_BUILTIN_LOGIC_ANIMATIONS)
+
+        # 合并 MG 动画（MGRenderer 从 plugins/llm_mg/templates/ 加载）
+        try:
+            from clipwright.animation.mg_renderer import MGRenderer
+            for mg in MGRenderer.list_animations():
+                if not any(r["id"] == mg["id"] for r in result):
+                    result.append({
+                        "id": mg["id"],
+                        "name": mg["name"],
+                        "category": "logic",
+                        "desc": mg.get("description", ""),
+                    })
+        except Exception:
+            pass
 
         # 合并 DiagramSVG 支持的图解类型（内置 + 插件注册）
         try:
@@ -129,6 +136,17 @@ class AnimationCatalog:
             pass
 
         return result
+
+    @staticmethod
+    def get_transition_animations() -> list[dict[str, Any]]:
+        """返回所有已注册的过渡动画（来自 AnimationRegistry TRANSITION 类型）。"""
+        from clipwright.schema.animation import AnimationType
+        defs = AnimationRegistry.list(AnimationType.TRANSITION)
+        return [
+            {"id": d.animation_id, "name": d.name or d.animation_id,
+             "desc": d.description or "", "duration_sec": d.duration_sec}
+            for d in defs
+        ]
 
     @staticmethod
     def get_text_animations_prompt() -> str:

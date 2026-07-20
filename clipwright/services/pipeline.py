@@ -167,9 +167,10 @@ class PipelineOrchestrator:
 
             # Animation Agent
             if timeline:
+                visual_config = persona_config.get("visual", {})
                 step4 = await self._run_agent_step(
                     state, "animation",
-                    {"timeline": timeline},
+                    {"timeline": timeline, "visual_config": visual_config},
                     agent_context,
                 )
                 if self._should_stop(state, step4):
@@ -324,7 +325,11 @@ class PipelineOrchestrator:
         elif name == "animation":
             from clipwright.schema.agent import AnimationInput
             return await agent.execute(
-                AnimationInput(context=ctx, timeline=data.get("timeline")), ctx,
+                AnimationInput(
+                    context=ctx,
+                    timeline=data.get("timeline"),
+                    visual_config=data.get("visual_config", {}),
+                ), ctx,
             )
         elif name == "audio":
             from clipwright.schema.agent import AudioInput

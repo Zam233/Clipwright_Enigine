@@ -121,24 +121,25 @@ class PipelineOrchestratorV2:
         if not cb:
             return False
         from datetime import datetime, timezone
-        now = datetime.now(timezone.utc) if not hasattr(datetime, 'timezone') or timezone else datetime.now()
+        now = datetime.now(timezone.utc)
         # 如果已过恢复期，重置熔断
         if cb["fail_count"] >= self._circuit_breaker_threshold:
-            elapsed = (now - cb["last_fail_at"]).total_seconds() if cb["last_fail_at"] else 0
-            if elapsed > self._circuit_breaker_recovery_sec:
-                cb["fail_count"] = 0
-                logger.info("熔断恢复: agent=%s (已过恢复期 %.0fs)", agent_name, elapsed)
-                return False
-            logger.warning("Agent 熔断: %s (连续失败 %d 次, 剩余 %.0fs)",
-                          agent_name, cb["fail_count"],
-                          self._circuit_breaker_recovery_sec - elapsed)
+            cb_last = cb.get("last_fail_at")
+            if cb_last is not None:
+                elapsed = (now - cb_last).total_seconds()
+                if elapsed > self._circuit_breaker_recovery_sec:
+                    cb["fail_count"] = 0
+                    logger.info("熔断恢复: agent=%s (已过恢复期 %.0fs)", agent_name, elapsed)
+                    return False
+            logger.warning("Agent 熔断: %s (连续失败 %d 次)",
+                          agent_name, cb["fail_count"])
             return True
         return False
 
     def _record_agent_failure(self, agent_name: str) -> None:
         """记录 agent 失败，更新熔断计数器。"""
         from datetime import datetime, timezone
-        now = datetime.now(timezone.utc) if not hasattr(datetime, 'timezone') or timezone else datetime.now()
+        now = datetime.now(timezone.utc)
         cb = self._circuit_breakers.setdefault(agent_name, {"fail_count": 0, "last_fail_at": None})
         cb["fail_count"] += 1
         cb["last_fail_at"] = now
@@ -267,8 +268,6 @@ class PipelineOrchestratorV2:
                     errors.append((name, result))
                     logger.error("并行 Agent %s 异常: %s", name, result)
                     add_event(pid, name, "error", f"{name} 异常: {str(result)[:200]}")
-                    if tracer:
-                        tracer.end_span(agent_span_cache.get(name, ""), status="error", error=str(result)[:200])
                     continue
 
                 if hasattr(result, "result") and result.result:
@@ -453,6 +452,7 @@ class PipelineOrchestratorV2:
             },
             "animation": {
                 "timeline": result_data.get("timeline"),
+                "visual_config": persona_config.get("visual", {}),
             },
             "audio": {
                 "timeline": result_data.get("timeline"),
@@ -524,8 +524,8 @@ class PipelineOrchestratorV2:
                 _end_span(status="error", error=step.error,
                           metadata={"error_category": self._categorize_error(step.error or "")})
 
-            # 收集 LLM token 用量
-            llm_usage = getattr(result, "_llm_usage", None) or step.result.pop("_llm_usage", None)
+            # 收集 LLM token 用量（从 Agent 对象属性读取，不在 model_dump 中）
+            llm_usage = getattr(result, "_llm_usage", None)
             if llm_usage:
                 step.result["llm_usage"] = llm_usage
                 logger.info("Agent[%s] LLM tokens: input=%s, output=%s",
@@ -624,6 +624,7 @@ class PipelineOrchestratorV2:
             return await agent.execute(AnimationInput(
                 context=ctx,
                 timeline=tl,
+                visual_config=data.get("visual_config", {}),
             ), ctx)
         elif name == "audio":
             from clipwright.schema.agent import AudioInput

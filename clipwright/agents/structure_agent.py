@@ -127,6 +127,22 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
             user_prompt = f"选题：{context.topic}\n请生成脚本骨架。"
 
+            # 注入 animation_intents（来自 RequirementsAgent）
+            anim_intents = context.extra_params.get("animation_intents", [])
+            if anim_intents:
+                intent_lines = ["\n## 动画需求意图（来自需求分析）"]
+                for intent in anim_intents:
+                    if isinstance(intent, dict):
+                        desc = intent.get("description", "")
+                        text = intent.get("text_content", "")
+                        style = intent.get("style_hint", "")
+                        intent_lines.append(f"- [{intent.get('type', 'mg')}] {desc}")
+                        if text:
+                            intent_lines.append(f"  文字: {text}")
+                        if style:
+                            intent_lines.append(f"  风格: {style}")
+                user_prompt += "\n".join(intent_lines)
+
             anim_guide = self._build_anim_guide()
             user_prompt = self._build_user_prompt(
                 video_mode, script_text, audio_duration, user_prompt, anim_guide,
@@ -178,21 +194,65 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             return self.build_error_output(str(e), StructureOutput)
 
     def _build_anim_guide(self) -> str:
+        """构建动画引导（精简版 top-N + tool 指引）。
+
+        不再全量列出所有动画名到 prompt 中 —
+        只展示各类别最常用的 top-N（N 可配），
+        并提示 LLM 调用 list_animations 工具获取更多。
+        动画数量从 40+ 增长到任意多也不会膨胀 prompt。
+        """
         from clipwright.animation.catalog import AnimationCatalog
+        TOP_N = 4  # 每类只展示前 N 个最常用动画
+
         parts = [
-            "## 文字动画标记\n分析场景内容的逻辑关系，选择合适的动画类型标记在 description 中。\n"
-            'format: [文字动画]动画名：要显示的文字\n'
-            '示例: description: "以中立风格引入话题 [文字动画]淡入：人工智能正在改变世界"\n'
+            "## 动画标记",
+            "在 scene.description 中用以下格式标记动画：",
+            "  [文字动画]动画名：要显示的文字",
+            "  [逻辑动画]动画名：要展示的概念 或 关系描述",
+            "  [过渡动画]动画名",
+            "同一场景 description 最多一个标记。",
+            "",
         ]
-        for a in AnimationCatalog.get_text_animations():
-            parts.append(f"  [文字动画]{a['name']} — {a.get('desc', '')}")
-        parts.append("\n## 逻辑动画标记\n")
-        for a in AnimationCatalog.get_logic_animations():
-            parts.append(f"  [逻辑动画]{a['name']} — {a.get('desc', '')}")
-        parts.append("\n## 转场动画标记\n")
-        for a in AnimationCatalog.get_transition_animations():
-            parts.append(f"  [过渡动画]{a['name']} — {a.get('desc', '')}（{a.get('duration_sec', 0.4)}s）")
-        parts.append("\n注意：同一场景 description 最多只应包含一个动画标记。")
+
+        # 文字动画 top-N
+        text_anims = AnimationCatalog.get_text_animations()
+        if text_anims:
+            parts.append("### 常用文字动画（更多可调用 list_animations 工具）")
+            for a in text_anims[:TOP_N]:
+                parts.append(f"  [文字动画]{a['name']} — {a.get('desc', '')}")
+            parts.append("")
+
+        # 逻辑动画 top-N（含 MG）
+        logic_anims = AnimationCatalog.get_logic_animations()
+        if logic_anims:
+            parts.append("### 常用逻辑动画（更多可调用 list_animations 工具）")
+            for a in logic_anims[:TOP_N]:
+                parts.append(f"  [逻辑动画]{a['name']} — {a.get('desc', '')}")
+            parts.append("")
+
+        # 过渡动画 top-N
+        trans_anims = AnimationCatalog.get_transition_animations()
+        if trans_anims:
+            parts.append("### 常用过渡动画（更多可调用 list_animations 工具）")
+            for a in trans_anims[:TOP_N]:
+                parts.append(f"  [过渡动画]{a['name']} — {a.get('desc', '')}")
+            parts.append("")
+
+        # MG 动态动画（LLM 自动生成）
+        parts.append("### LLM 动态 MG 动画")
+        parts.append("  当需要数据图表、对比图、进度条等动态图形时，使用 mg_dynamic：")
+        parts.append('  [逻辑动画]mg_dynamic:{"description":"动画描述","text":"A|B|结果","style":"tech_dark"}')
+        parts.append("  LLM 将根据 description 自动生成完整的 MG 动画。")
+        parts.append("")
+
+        total = len(text_anims) + len(logic_anims) + len(trans_anims)
+        shown = min(TOP_N, len(text_anims)) + min(TOP_N, len(logic_anims)) + min(TOP_N, len(trans_anims))
+        parts.append(
+            f"（当前展示 {shown}/{total} 种动画，"
+            "调用 list_animations 工具可获取完整列表。"
+            "动画 id 或 name 均可用于标记。）"
+        )
+
         return "\n".join(parts)
 
     def _build_user_prompt(self, mode: str, script: str, audio_dur: float, base: str, anim_guide: str) -> str:
