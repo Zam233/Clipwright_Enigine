@@ -315,3 +315,54 @@ curl -X POST "http://localhost:8000/api/edit/session/{id}/chat?message=把字幕
 ```
 
 返回 LLM 解析的操作和执行结果。
+
+---
+
+## LLM MG 动画生成插件
+
+`llm_mg` 插件提供 LLM 驱动的动态 MG 动画生成能力。
+
+### `POST /api/plugin/llm_mg/generate`
+
+调用 LLM 生成 MG 动画 JSON 并渲染为 HTML。
+
+```bash
+curl -X POST "http://localhost:8000/api/plugin/llm_mg/generate" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "description": "产品A和B性能对比，A胜出",
+    "text_content": "骁龙8Gen3|天玑9300|骁龙胜出",
+    "style_hint": "tech_dark",
+    "scene_context": {"title": "性能对比", "keywords": ["CPU", "GPU"]}
+  }'
+```
+
+响应:
+```json
+{
+  "success": true,
+  "html": "<!DOCTYPE html>...",
+  "mg_def": {"animation_id": "mg_generated_xxx", "elements": [...]},
+  "method": "llm",
+  "fallback_template": null,
+  "generation_id": "gen_20260720_195227_c334af9c"
+}
+```
+
+### `POST /api/plugin/llm_mg/save-template`
+
+将生成结果保存为可复用模板。
+
+```bash
+curl -X POST "http://localhost:8000/api/plugin/llm_mg/save-template" \
+  -H "Content-Type: application/json" \
+  -d '{"generation_id": "gen_20260720_195227_c334af9c", "custom_name": "骁龙对比动画"}'
+```
+
+### `GET /api/plugin/llm_mg/templates`
+
+列出所有可用 MG 模板。
+
+### `GET /api/plugin/llm_mg/generations`
+
+列出未保存的生成记录。

@@ -191,4 +191,54 @@ pytest tests/ -v
 
 # 只运行非 e2e 测试（更快）
 pytest tests/clipwright/ -v
+
+## MG 动画插件开发
+
+`plugins/llm_mg/` 提供 LLM 驱动的 MG 动画生成能力。
+
+### 插件结构
+
+```
+plugins/llm_mg/
+├── plugin.yaml       # 插件清单
+├── config.yaml       # LLM prompt + 生成配置
+├── main.py           # LLMMGPlugin 主类
+├── generator.py      # LLM 调用 + 验证 + 修复 + 降级
+├── validator.py      # MG JSON schema 验证 + 自动修复
+├── fallback.py       # 降级策略（语义 → 模板匹配）
+├── storage.py        # 生成持久化 + 保存为模板
+└── templates/        # 可复用 MG JSON 模板
+```
+
+### 添加新模板
+
+在 `plugins/llm_mg/templates/` 创建 JSON 文件，参考 `mg_title_reveal.json` 格式。
+
+### 自定义 LLM prompt
+
+编辑 `plugins/llm_mg/config.yaml` 中的 `prompt.system_template`。
+
+### 插件接口
+
+```python
+from clipwright.plugins import PluginLoader
+
+plugin = PluginLoader().get("llm_mg")
+result = await plugin.generate_mg(
+    description="产品对比动画",
+    text_content="A产品|B产品|A胜出",
+    persona_style={"primary_color": "#4f8cff"},
+    scene_context={"title": "性能对比", "keywords": ["CPU", "GPU"]},
+)
+# result: {"success": bool, "html": str, "mg_def": dict, "method": "llm|fallback", "generation_id": str}
+```
+
+### 降级策略
+
+```
+LLM 生成 MG JSON
+  ├── 成功 → MGRenderer.render() → Hyperframes MOV
+  ├── JSON 校验失败 → 自动修复 → 仍失败则模板匹配
+  └── LLM 不可用 → 关键词匹配已有模板 → drawtext 最终降级
+```
 ```
