@@ -34,13 +34,23 @@ Structure → Material → Edit → Animation → Audio → Quality → Render
 
 ## 二、Agent 职责
 
+### Requirements Agent
+- **输入**: 用户选题 + 文稿 + 参考素材
+- **输出**: 创作方案 (creative_brief) + 动画需求意图 (animation_intents)
+- **动画识别**: 当用户提到数据展示、对比、流程、图表时，自动识别并输出 animation_intents
+  - `type: "mg"` — 动态图形（数据图表、进度条、对比图等）
+  - `type: "text"` — 文字入场动画
+  - `type: "logic"` — 逻辑关系图解
+- animation_intents 经 `requirements_service` → `StructureAgent.extra_params` → 注入 LLM prompt
+
 ### Structure Agent
-- **输入**: 选题 + Persona 配置 + 完整文稿
-- **输出**: 带时间结构的场景列表
+- **输入**: 选题 + Persona 配置 + 完整文稿 + animation_intents（来自 RequirementsAgent）
+- **输出**: 带时间结构的场景列表（含动画标记）
 - **模式**:
   - `voiceover` — 根据口播文稿按段落生成场景
   - `visual` — 每行场景描述作为一个独立场景
 - 通过 `structured_output()` 强制 LLM 返回 JSON
+- `_build_anim_guide()` 向 LLM 暴露可用动画类型，包括 `mg_dynamic` 标记格式
 
 ### Material Agent
 - **输入**: 场景列表
@@ -60,11 +70,14 @@ Structure → Material → Edit → Animation → Audio → Quality → Render
   - 所有素材不可用 → 文字占位视频
 
 ### Animation Agent
-- **输入**: 粗剪时间线 + Persona 视觉参数
-- **输出**: 编排好的动画序列
+- **输入**: 粗剪时间线 + Persona 视觉参数 (visual_config)
+- **输出**: 编排好的动画序列（含 generated_mg_count）
 - **文字动画**: 在文字轨创建 text clip，生成完整 keyframes（入场+保持+出场），走 FFmpeg drawtext
 - **逻辑动画**: 在动画轨创建独立 clip（Hyperframes SVG / drawtext 降级），展示箭头/对比/流程等关系
-- **MG 动画**: ID 以 mg_ 开头 → MGRenderer 生成 HTML/CSS 动画 → hyperframes 渲染
+- **MG 动画（静态模板）**: ID 以 mg_ 开头 → MGRenderer 加载预定义 JSON 模板 → HTML/CSS 动画 → hyperframes 渲染
+- **MG 动画（LLM 动态生成）**: `[逻辑动画]mg_dynamic:{...}` 标记 → `_handle_llm_mg()` → `llm_mg` 插件生成完整 MG JSON → MGRenderer → Hyperframes
+  - 成功生成时 `generated_mg_count` 递增
+  - 失败时自动降级: LLM → 模板匹配 → drawtext 纯文字
 - **过渡动画**: `[过渡动画]xxx` 标记 → 设置 clip.transition_in 字段，供 xfade filter
 
 ### Audio Agent

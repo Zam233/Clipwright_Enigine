@@ -173,6 +173,54 @@ curl -X POST http://localhost:8000/api/edit/session/create
 curl -X POST "http://localhost:8000/api/edit/session/{session_id}/chat?message=调亮画面，加暗角效果"
 ```
 
+## LLM 动态 MG 动画
+
+### 通过管线自动生成
+
+在选题中提及数据对比、图表需求时，管线自动生成 MG 动画：
+
+```bash
+curl -X POST http://localhost:8000/api/pipeline/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "persona_id": "default",
+    "category_plugin_id": "knowledge_longform",
+    "topic": "骁龙8Gen3 vs 天玑9300 性能对比"
+  }'
+```
+
+RequirementsAgent 自动识别对比需求 → StructureAgent 生成 `[逻辑动画]mg_dynamic:{...}` 标记 → AnimationAgent 调用 llm_mg 插件 → LLM 生成完整 MG 动画。
+
+### 直接调用 llm_mg 插件
+
+```bash
+# 生成 MG 动画
+curl -X POST http://localhost:8000/api/plugin/llm_mg/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "description": "产品A和B的性能参数左右对比，A胜出",
+    "text_content": "骁龙8Gen3|天玑9300|骁龙胜出",
+    "style_hint": "tech_dark",
+    "scene_context": {"title": "性能对比", "keywords": ["CPU", "GPU"]}
+  }'
+
+# 保存为可复用模板
+curl -X POST http://localhost:8000/api/plugin/llm_mg/save-template \
+  -H "Content-Type: application/json" \
+  -d '{"generation_id": "gen_xxx", "custom_name": "性能对比动画"}'
+
+# 列出可用模板
+curl http://localhost:8000/api/plugin/llm_mg/templates
+```
+
+### 手动在场景中标记
+
+在 scene.description 中直接写入标记：
+
+```
+[逻辑动画]mg_dynamic:{"description":"数据对比图","text":"A|B|结果","style":"tech_dark"}
+```
+
 ## 更多
 
 - [架构设计](structure.md)

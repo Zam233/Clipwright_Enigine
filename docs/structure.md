@@ -57,6 +57,7 @@
 | 视觉 | `scene_detect` `semantic_match` `vision_llm` `face_detect` `background_remove` |
 | 特效 | `effect_vignette` `watermark` `video_filter` `chroma_key` `video_stabilize` |
 | 文字 | `generate_text_video` `subtitle_burn` `text_design` `typewriter_animation` `tracking_text` |
+| MG 动画 | `mg_dynamic` — LLM 动态生成完整 MG JSON → MGRenderer → Hyperframes（见 `llm_mg` 插件） |
 | 素材 | `material_filter` `frame_validator` |
 | 质量 | `black_frame_detect` `audio_silence_detect` `subtitle_overflow` |
 | 其他 | `speed_ramp` `color_correct` `lut_apply` `whisper_transcribe` `text_to_speech` `transition_apply` |
@@ -80,19 +81,20 @@
 6 个 Agent + 动态路由 + 自愈循环：
 
 ```plaintext
-执行组 [0]: structure                     ← 结构分析
+执行组 [0]: structure                     ← 结构分析（含 animation_intents 注入）
 执行组 [1]: material                      ← 素材搜索
 执行组 [2]: edit                          ← 时间线生成
-执行组 [3]: animation + audio             ← 并行：动画编排 + 音频处理
+执行组 [3]: animation + audio             ← 并行：动画编排（含 LLM MG 动画）+ 音频处理
 执行组 [4]: quality                       ← 质检 + 自愈循环
     失败 → 自动回退到对应 Agent + 下游重做 (最多 3 次)
 ```
 
-Agent 间通过 `AgentBus` 共享上下文（镜头意图、质检需求、素材需求）。
+Agent 间通过 `AgentBus` 共享上下文。AnimationAgent 通过 `[逻辑动画]mg_dynamic:{...}` 标记调用 `llm_mg` 插件，LLM 动态生成完整 MG JSON（elements + keyframes + params），经 MGRenderer → Hyperframes 渲染为透明 MOV，最后 overlay 到主视频。
 
 ### 3.3 类型插件层
 
 - **内置插件**: `knowledge_longform` `kichiku_fastcut` `digital_review` `vlog_daily`
+- **能力插件**: `llm_mg` — LLM 驱动的动态 MG 动画生成（数据图表、标题揭示、进度条、对比图等）
 - **用户自定义**: TypeMaker → JSON 配置 → `DynamicCategoryPlugin` 动态加载（`user_types/` 目录）
 - **模板系统**: `VideoTemplate` + `{{变量}}` 占位符（`templates/` 目录）
 
@@ -145,6 +147,12 @@ POST   /api/webhook/subscribe            # Webhook 订阅
 POST   /api/asset/upload                 # 上传素材
 POST   /api/material/search              # 搜索素材
 GET    /api/material/sources             # 素材源列表
+
+# MG 动画 (llm_mg 插件)
+POST   /api/plugin/llm_mg/generate       # LLM 生成 MG 动画
+POST   /api/plugin/llm_mg/save-template  # 保存生成的 MG 动画为模板
+GET    /api/plugin/llm_mg/templates      # 列出可用 MG 模板
+GET    /api/plugin/llm_mg/generations    # 列出未保存的生成记录
 ```
 
 ---
