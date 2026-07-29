@@ -64,6 +64,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             text_anim_count = 0
             logic_anim_count = 0
             transition_anim_count = 0
+            self._llm_mg_generated = 0
             prev_clip = None
 
             # 遍历所有 video/image 轨 clip，检测标记
@@ -135,6 +136,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                     "logic_animations": logic_anim_count,
                     "persona_style": persona_style,
                 },
+                generated_mg_count=self._llm_mg_generated,
             )
 
         except Exception as e:
@@ -508,6 +510,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         anim_track.clips.sort(key=lambda c: c.start_sec)
         logger.info("AnimationAgent: [LLM MG]%s → method=%s, html=%d chars",
                      anim_name, method, len(html))
+        self._llm_mg_generated += 1
 
     def _create_fallback_text_clip(
         self,

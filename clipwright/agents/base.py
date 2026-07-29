@@ -6,6 +6,7 @@ Agent 本身不写死逻辑，它只是"调度器"——根据 Persona 和视频
 
 from __future__ import annotations
 
+import uuid
 from abc import ABC, abstractmethod
 from typing import Any, Generic, TypeVar
 
@@ -17,10 +18,16 @@ I = TypeVar("I", bound=BaseModel)
 O = TypeVar("O", bound=BaseModel)
 
 
+def uid(prefix: str = "ag") -> str:
+    """生成短唯一 ID，供 Agent 共用。"""
+    return f"{prefix}_{uuid.uuid4().hex[:8]}"
+
+
 class BaseAgent(ABC, Generic[I, O]):
     """Agent 基类。"""
 
     agent_name: str = ""
+    timeout_sec: int = 120  # LLM 调用默认超时（秒）
 
     def __init__(self) -> None:
         self._strategy_registry: dict[str, Any] = {}

@@ -21,3 +21,13 @@
 | 文档 | 说明 |
 |------|------|
 | [开发指南](development.md) | 技术栈、开发规范、设计约束 |
+
+## 新增模块
+
+| 文档 | 说明 |
+|------|------|
+| [素材系统](material_system.md) | 多源素材搜索与检索系统 |
+| [语音与 TTS](voice_tts.md) | 声音克隆、语音合成与配音 |
+| [动画系统](animation_system.md) | 动画编目、渲染管线与 MG 动画 |
+| [服务概览](services_overview.md) | 全部后端服务层模块说明 |
+| [需求分析 Agent](requirements_agent.md) | Requirements Agent 设计与职责 |

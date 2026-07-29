@@ -44,6 +44,18 @@ SESSION_TTL_HOURS = 48           # 会话过期时间
 SESSION_CLEANUP_INTERVAL = 3600  # 清理检查间隔（秒）
 
 
+_memory_sessions: dict[str, dict] = {}
+
+
+def _mongo_ok() -> bool:
+    """检查 MongoDB 是否已连接。"""
+    try:
+        from clipwright.context import mongo
+        return mongo.is_connected
+    except Exception:
+        return False
+
+
 # ── LLM 重试装饰器 ──────────────────────────────
 
 async def llm_call_with_retry(
@@ -145,17 +157,45 @@ CREATIVE_BRIEF_SYSTEM = """你是一位专业的视频创作顾问。用户会�
     "structure_suggestion": "结构建议（未知则填待定）",
     "duration_estimate": "预估时长",
     "key_elements": ["元素1"],
-    "special_requirements": []
+    "special_requirements": [],
+    "production_plan": "制作方案 (如 A/B/C)",
+    "reference_style": "参考风格描述",
+    "bgm_requirement": "BGM需求",
+    "era_background": "年代背景",
+    "material_requirements": {
+      "type": "素材类型",
+      "source": "推荐来源",
+      "preference": "素材偏好",
+      "timeliness": "时效性要求"
+    },
+    "animation_style": {
+      "style": "动画风格名",
+      "tone": "色调描述",
+      "fonts": {"title": "...", "body": "...", "number": "..."},
+      "icons": "图标方案"
+    },
+    "asset_ratio": {"footage": "30-40%", "mg": "60-70%"}
   },
   "is_ready": false,
   "missing_info": ["还未了解的信息"]
 }
 
 当 is_ready=true 时，brief_draft 必须完整填写。
+如果用户提供了以上信息，填入对应字段。未提供的信息可留空或省略。不要编造用户未提供的信息。
 """
 
 
 PLAN_TRANSLATE_SYSTEM = """你是一位专业的视频创作顾问。请将结构 Agent 生成的场景规划翻译为用户友好的 Markdown 规划书。
+
+Markdown 规划书必须使用以下场景表格：
+| 场景标题 | 时长 | 口播脚本 | 画面描述 |
+|---|---|---|---|
+
+其中“画面描述”单元格按已有信息包含以下子项，并用 `<br>` 分隔：
+- 素材库: xxx
+- 素材内容: xxx
+- 素材偏好: xxx
+- 动画描述: xxx（仅在存在时填写）
 
 ## 输出格式（纯 JSON）
 {
@@ -163,7 +203,7 @@ PLAN_TRANSLATE_SYSTEM = """你是一位专业的视频创作顾问。请将结�
   "sections": [
     {"title": "段落标题", "description": "段落描述", "scenes": [1, 2, 3]}
   ],
-  "markdown_content": "完整的 Markdown 格式规划书\n- 包含场景表格\n- 每个场景的详细描述\n- 总时长统计",
+  "markdown_content": "完整的 Markdown 格式规划书，包含上述四列表格和总时长统计",
   "total_duration_sec": 300,
   "scene_count": 5
 }
@@ -238,17 +278,29 @@ class RequirementsService:
             "metadata": {},
         }]
 
-        # 持久化到 MongoDB
-        model = RequirementsSessionModel(
-            _id=session_id,
-            status="gathering",
-            messages=messages,
-            user_inputs=user_inputs or {},
-            extra={},
-        )
-        model.insert()
-        logger.info("需求会话已创建: %s", session_id)
-        return model.to_session_dict()
+        session_dict = {
+            "session_id": session_id,
+            "status": "gathering",
+            "messages": messages,
+            "user_inputs": user_inputs or {},
+            "creative_brief": None,
+            "production_plan": None,
+        }
+        if _mongo_ok():
+            try:
+                model = RequirementsSessionModel(
+                    _id=session_id,
+                    status="gathering",
+                    messages=messages,
+                    user_inputs=user_inputs or {},
+                    extra={},
+                )
+                model.insert()
+            except Exception as e:
+                logger.warning("MongoDB 会话创建失败，使用内存: %s", e)
+        _memory_sessions[session_id] = session_dict
+        logger.info("需求会话已创建: %s (mongo=%s)", session_id, _mongo_ok())
+        return session_dict
 
     async def load_or_create_session(
         self, session_id: str, user_inputs: dict | None = None
@@ -256,20 +308,34 @@ class RequirementsService:
         """加载现有会话，不存在则创建。"""
         if not session_id:
             return self.create_session(user_inputs)
-        model = RequirementsSessionModel.find_by_id(session_id)
-        if model:
-            return model.to_session_dict()
+        existing = self.get_session(session_id)
+        if existing:
+            return existing
         return self.create_session(user_inputs)
 
     def get_session(self, session_id: str) -> dict | None:
         """从 MongoDB 加载会话。"""
-        model = RequirementsSessionModel.find_by_id(session_id)
-        return model.to_session_dict() if model else None
+        mem = _memory_sessions.get(session_id)
+        if mem:
+            return mem
+        if _mongo_ok():
+            try:
+                model = RequirementsSessionModel.find_by_id(session_id)
+                if model:
+                    return model.to_session_dict()
+            except Exception as e:
+                logger.warning("MongoDB 会话查询失败: %s", e)
+        return None
 
     def delete_session(self, session_id: str) -> None:
-        model = RequirementsSessionModel.find_by_id(session_id)
-        if model:
-            model.delete()
+        _memory_sessions.pop(session_id, None)
+        if _mongo_ok():
+            try:
+                model = RequirementsSessionModel.find_by_id(session_id)
+                if model:
+                    model.delete()
+            except Exception as e:
+                logger.warning("MongoDB 会话删除失败: %s", e)
 
     @staticmethod
     def _build_welcome(inputs: dict) -> str:
@@ -391,13 +457,27 @@ class RequirementsService:
 
         # 持久化到 MongoDB
         self._persist(session_id, status, messages, brief_data, plan_data, user_inputs)
-        return self.get_session(session_id) or {}
+        session = self.get_session(session_id) or {}
+        msgs = session.get("messages", [])
+        last_assistant = next(
+            (m["content"] for m in reversed(msgs) if m.get("role") == "assistant"),
+            "",
+        )
+        return {**session, "reply": last_assistant}
 
     @staticmethod
     def _is_confirm(message: str) -> bool:
         msg = message.strip().lower()
-        return any(msg.startswith(kw) or msg == kw for kw in
-                   ["确认", "同意", "可以", "好的", "行", "没问题", "ok", "yes", "y", "确定", "批准"])
+        # Strong unambiguous phrases — substring match (these are NEVER negation-safe at start)
+        strong = ["已确认", "确认无误", "确认通过", "确认实施", "没问题", "就这样", "可以了", "批准通过"]
+        if any(phrase in msg for phrase in strong):
+            return True
+        # Start-only tokens — short words that could be negated if not at start
+        start_tokens = [
+            "确认", "同意", "可以", "好的", "行", "ok", "yes", "y",
+            "对", "嗯", "确定", "通过", "批准",
+        ]
+        return any(msg.startswith(kw) or msg == kw for kw in start_tokens)
 
     # ── LLM 需求收集 ──────────────────────────
 
@@ -410,10 +490,21 @@ class RequirementsService:
         if brief_data:
             context = f"\n\n当前方案草稿:\n{json.dumps(brief_data, ensure_ascii=False, indent=2)}"
 
-        # 注入 Persona 上下文
-        persona_context = self._build_persona_context(user_inputs or {})
-        if persona_context:
-            context += f"\n\n创作者风格参考:\n{persona_context}"
+        # 注入完整 Persona 上下文
+        persona_full = self._build_full_persona_context(user_inputs or {})
+        if persona_full:
+            persona_text = json.dumps(persona_full.get("config", {}), ensure_ascii=False, indent=2)
+            persona_prompt = persona_full.get("prompt", "")
+            context += f"\n\n## 创作者完整风格配置\n{persona_text}"
+            if persona_prompt:
+                context += f"\n\n## 创作者风格指引 (Prompt)\n{persona_prompt}"
+
+        persona_id = user_inputs.get("persona_id", "default") if user_inputs else "default"
+        topic = user_inputs.get("topic", "") if user_inputs else ""
+        script = user_inputs.get("script_text", "") if user_inputs else ""
+        rag_context = await self._retrieve_knowledge(persona_id, f"{topic} {script}")
+        if rag_context:
+            context += f"\n\n## 知识库参考\n{rag_context}"
 
         user_prompt = messages[-1]["content"] if messages else "请开始对话。"
         llm_kwargs = {
@@ -425,40 +516,32 @@ class RequirementsService:
         )
 
     @staticmethod
-    def _build_persona_context(user_inputs: dict) -> str:
-        """从 Persona YAML 中提取风格参数作为 LLM 上下文。"""
+    def _build_full_persona_context(user_inputs: dict) -> dict:
+        """加载 Persona 的完整参数配置和 Prompt 指引。"""
         persona_id = user_inputs.get("persona_id", "")
         if not persona_id:
-            return ""
+            return {}
         try:
             from clipwright.persona.loader import load_persona_by_id
             manifest = load_persona_by_id(persona_id)
-            if not manifest or not manifest.parameter:
-                return ""
-            param = manifest.parameter
-            parts = []
-            identity = param.identity
-            if identity:
-                tone = identity.get("tone", "")
-                if tone:
-                    parts.append(f"风格语调: {tone}")
-            lang = param.language
-            if lang:
-                ad = lang.get("academic_density", 0)
-                ms = lang.get("max_sentence_len", 0)
-                if ad: parts.append(f"学术密度: {ad}")
-                if ms: parts.append(f"最长句长: {ms}字")
-            rhythm = param.rhythm
-            if rhythm:
-                cp = rhythm.get("cut_profile", "")
-                if cp: parts.append(f"剪辑节奏: {cp}")
-            constraints = param.constraints
-            if constraints:
-                md = constraints.get("max_duration_sec", 0)
-                if md: parts.append(f"最长时长: {md}秒")
-            return "\n".join(parts) if parts else ""
+            if not manifest:
+                return {}
+            return {
+                "config": manifest.parameter.model_dump(mode="json") if manifest.parameter else {},
+                "prompt": manifest.prompt or "",
+            }
         except Exception as e:
             logger.debug("Persona 上下文加载失败: %s", e)
+            return {}
+
+    async def _retrieve_knowledge(self, persona_id: str, query: str) -> str:
+        """检索 Persona 知识库并返回可注入 Prompt 的上下文。"""
+        try:
+            from clipwright.rag.retriever import Retriever
+            retriever = Retriever()
+            result = await retriever.retrieve(persona_id=persona_id, query=query)
+            return result.context if result and result.context else ""
+        except Exception:
             return ""
 
     # ── 规划书生成 ──────────────────────────
@@ -512,15 +595,20 @@ class RequirementsService:
                     "script_text": user_inputs.get("script_text", ""),
                     "audio_duration_sec": user_inputs.get("audio_duration_sec", 300),
                     "animation_intents": animation_intents,
+                    "dub_segments": user_inputs.get("dub_segments", []),
                 },
             )
+
+            script = user_inputs.get("script_text", "")
+            rag_context = await self._retrieve_knowledge(persona_id, f"{topic} {script}")
 
             result = await agent.execute(
                 StructureInput(
                     context=context,
                     persona_config=persona_config,
                     persona_prompt=persona_prompt,
-                    rag_context="",
+                    rag_context=rag_context,
+                    creative_brief=brief_data,
                 ),
                 context,
             )
@@ -558,16 +646,17 @@ class RequirementsService:
     def _default_markdown(scenes: list[dict]) -> str:
         lines = ["# 🎬 视频成片规划书\n"]
         lines.append("## 场景列表\n")
-        lines.append("| # | 标题 | 时长 | 关键词 |")
-        lines.append("|---|------|------|--------|")
-        for i, s in enumerate(scenes, 1):
-            lines.append(f"| {i} | {s.get('title', '')} | {s.get('duration_sec', 0)}s | {', '.join(s.get('keywords', [])[:3])} |")
+        lines.append("| 场景标题 | 时长 | 口播脚本 | 画面描述 |")
+        lines.append("|---|---|---|---|")
+        for scene in scenes:
+            title = str(scene.get("title", "")).replace("|", "\\|").replace("\n", "<br>")
+            voiceover = str(scene.get("voiceover_script", "")).replace("|", "\\|").replace("\n", "<br>")
+            visual = str(scene.get("visual_description", "")).replace("|", "\\|").replace("\n", "<br>")
+            lines.append(
+                f"| {title} | {scene.get('duration_sec', 0)}s | {voiceover} | {visual} |"
+            )
         total = sum(s.get("duration_sec", 0) for s in scenes)
         lines.append(f"\n**总时长**: {total:.0f}s ({total/60:.1f}分钟)\n---\n")
-        for i, s in enumerate(scenes, 1):
-            lines.append(f"### 场景 {i}: {s.get('title', '')}")
-            lines.append(f"- **时长**: {s.get('duration_sec', 0)}秒")
-            lines.append(f"- **描述**: {s.get('description', '')}\n")
         return "\n".join(lines)
 
     # ── 持久化 ──────────────────────────────
@@ -595,6 +684,13 @@ class RequirementsService:
                 model.insert()
         except Exception as e:
             logger.warning("MongoDB 持久化失败: %s", e)
+        if session_id in _memory_sessions:
+            _memory_sessions[session_id].update({
+                "status": status,
+                "messages": messages,
+                "creative_brief": brief,
+                "production_plan": plan,
+            })
 
     # ── 文件处理 ──────────────────────────────
 

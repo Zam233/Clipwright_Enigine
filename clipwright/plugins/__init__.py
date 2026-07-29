@@ -12,6 +12,11 @@ from clipwright.plugins.base import (
     CapabilityPlugin,
     MaterialSourcePlugin,
 )
+from clipwright.plugins.config_types import (
+    TYPED_CONFIG_TYPES,
+    typed_config_to_values,
+    validate_typed_config,
+)
 from clipwright.plugins.hooks import HookPoint, HookRegistry
 from clipwright.plugins.loader import PluginLoadError, PluginLoader
 

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from clipwright.agents.base import BaseAgent
 from clipwright.schema.agent import (
     AgentContext,
@@ -90,6 +92,93 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
 
             notes.append(f"音频配置: voice={voice_model or '默认'}, BPM模式={bpm_mode}")
             notes.append(f"BGM 槽位: {len(bgm_slots)} 个")
+
+            # ── 7. 自动配音（无人声配音时触发）──
+            try:
+                voice_id = audio_config.get("voice_id", "")
+                auto_dub = bool(audio_config.get("auto_dub", True))
+                script_text = context.extra_params.get("script_text", "")
+                video_mode = context.extra_params.get("video_mode", "")
+
+                # 门控：voiceover 模式 + auto_dub + 有 voice_id + 有文案
+                if (
+                    auto_dub
+                    and voice_id
+                    and script_text.strip()
+                    and video_mode == "voiceover"
+                ):
+                    # 检查是否已有旁白轨（避免重复）
+                    has_narration = any(
+                        any(
+                            getattr(c, "metadata", {}).get("narration")
+                            for c in t.clips
+                        )
+                        for t in timeline.tracks
+                    )
+
+                    if not has_narration:
+                        from clipwright.skill.registry import SkillRegistry
+
+                        res = await SkillRegistry.execute(
+                            "dub_script",
+                            voice_id=voice_id,
+                            text=script_text,
+                            split_mode="sentence",
+                        )
+
+                        if res.status == "success":
+                            segments = res.output.get("segments", [])
+                            if segments:
+                                # 查找或创建旁白轨
+                                narr_track = None
+                                for t in timeline.tracks:
+                                    if t.id == "a_narration":
+                                        narr_track = t
+                                        break
+                                if narr_track is None:
+                                    narr_track = Track(
+                                        id="a_narration",
+                                        name="旁白 TTS",
+                                        kind=ClipKind.AUDIO,
+                                        index=len(timeline.tracks),
+                                    )
+                                    timeline.tracks.append(narr_track)
+
+                                # 按顺序铺设旁白 clip
+                                cursor = 0.0
+                                for idx, seg in enumerate(segments):
+                                    dur = float(seg.get("duration_sec", 0))
+                                    clip = Clip(
+                                        id=f"narr_{idx}_{uuid.uuid4().hex[:6]}",
+                                        kind=ClipKind.AUDIO,
+                                        asset_id=seg.get("audio_path", ""),
+                                        track_id="a_narration",
+                                        start_sec=cursor,
+                                        duration_sec=dur,
+                                        volume=1.0,
+                                        metadata={
+                                            "narration": True,
+                                            "text": seg.get("text", ""),
+                                            "voice_id": voice_id,
+                                            "seed": seg.get("seed"),
+                                        },
+                                    )
+                                    narr_track.clips.append(clip)
+                                    cursor += dur
+
+                                # 更新时间线总时长（如需）
+                                if timeline.duration_sec < cursor:
+                                    timeline.duration_sec = cursor
+
+                                notes.append(
+                                    f"自动配音: {len(segments)} 段旁白"
+                                )
+                        else:
+                            notes.append(
+                                f"自动配音失败: {getattr(res, 'error', 'unknown')}"
+                            )
+            except Exception as dub_err:
+                notes.append(f"自动配音失败: {str(dub_err)[:200]}")
 
             return AudioOutput(
                 decision=AgentDecision.PASS,

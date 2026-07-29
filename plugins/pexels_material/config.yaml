@@ -1,1 +1,16 @@
-api_key: ''
+fields:
+  api_key:
+    type: string
+    value: ""
+    label: "Pexels API Key"
+    description: "从 https://www.pexels.com/api/ 获取，免费版每小时 200 次请求"
+  enable_visual_llm:
+    type: bool
+    value: false
+    label: "启用视觉LLM帧分析"
+    description: "开启后，MaterialAgent 会用视觉大模型分析候选素材的帧内容，提高匹配精度。"
+  visual_llm_frame_count:
+    type: int
+    value: 3
+    label: "分析帧数"
+    description: "每个候选素材抽取分析的帧数（1-5）。更多帧 = 更准确，但更慢更贵。"

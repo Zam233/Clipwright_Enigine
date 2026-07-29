@@ -180,9 +180,17 @@ class PipelineOrchestrator:
 
             # Audio Agent
             if timeline:
+                audio_cfg = persona_config.get("audio", {})
+                audio_config = {
+                    **audio_cfg,
+                    "voice_id": audio_cfg.get("voice_clone_model_id")
+                    or audio_cfg.get("voice")
+                    or agent_context.extra_params.get("voice_id", ""),
+                    "auto_dub": agent_context.extra_params.get("auto_dub", True),
+                }
                 step5 = await self._run_agent_step(
                     state, "audio",
-                    {"timeline": timeline},
+                    {"timeline": timeline, "audio_config": audio_config},
                     agent_context,
                 )
                 if self._should_stop(state, step5):
@@ -334,7 +342,7 @@ class PipelineOrchestrator:
         elif name == "audio":
             from clipwright.schema.agent import AudioInput
             return await agent.execute(
-                AudioInput(context=ctx, timeline=data.get("timeline")), ctx,
+                AudioInput(context=ctx, timeline=data.get("timeline"), audio_config=data.get("audio_config", {})), ctx,
             )
         elif name == "quality":
             from clipwright.schema.agent import QualityInput

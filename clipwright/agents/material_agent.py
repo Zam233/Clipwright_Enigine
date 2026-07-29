@@ -18,8 +18,6 @@ from clipwright.schema.agent import (
 from clipwright.services.llm import LLMService
 from clipwright.services.trace import add_event
 
-_frame_validator = None
-
 # 搜索缓存: query_hash → list[result]
 _search_cache: dict[str, list[dict]] = {}
 _SEARCH_CACHE_MAX = 200
@@ -93,17 +91,18 @@ async def _llm_search_queries(
 
 
 async def _validate_video_frame(video_url: str, expected_text: str) -> float:
-    """用 FrameValidatorTool 验证视频帧。"""
-    global _frame_validator
-    if _frame_validator is None:
-        from clipwright.tool.material import FrameValidatorTool
-        _frame_validator = FrameValidatorTool()
+    """用视觉服务验证视频帧（占位 — 委托 FrameValidator 或视觉模型）。"""
     if not video_url:
         return 0.5
     try:
         import asyncio
+        # 尝试从 tool stubs 获取 FrameValidator，不存在则跳过
+        from clipwright.tool.registry import ToolRegistry
+        tool = ToolRegistry.get("frame_validator")
+        if tool is None:
+            return 0.5
         result = await asyncio.wait_for(
-            _frame_validator.execute(video_url=video_url, expected_text=expected_text),
+            tool.execute(video_url=video_url, expected_text=expected_text),
             timeout=15,
         )
         output = result.output or {}
@@ -210,6 +209,40 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
 
         return score
 
+    async def _validate_via_vision_llm(
+        self,
+        asset: Any,
+        scene_title: str,
+        scene_keywords: list[str],
+        scene_description: str,
+        frame_count: int = 3,
+    ) -> float:
+        """使用视觉 LLM 分析候选素材帧内容，返回语义匹配分 (0-1)。"""
+        try:
+            from clipwright.tool.registry import ToolRegistry
+            result = await ToolRegistry.execute(
+                "vision_llm",
+                asset=asset,
+                scene_context={
+                    "title": scene_title,
+                    "keywords": scene_keywords,
+                    "description": scene_description,
+                },
+                frame_count=frame_count,
+            )
+            output = result.output or {}
+            score = output.get("score", 0.5)
+            extraction_method = output.get("extraction_method", "unknown")
+            frames = output.get("frames_analyzed", 0)
+            logger.info(
+                "MaterialAgent: [视觉LLM] scene=%s score=%.3f method=%s frames=%d",
+                scene_title, score, extraction_method, frames,
+            )
+            return float(score)
+        except Exception as e:
+            logger.debug("MaterialAgent: 视觉LLM验证失败，降级: %s", e)
+            return 0.5
+
     async def execute(
         self, input_data: MaterialInput, context: AgentContext
     ) -> MaterialOutput:
@@ -247,6 +280,12 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                 source_ids = None
 
             pref_orientation = context.extra_params.get("orientation", "landscape")
+
+            # ── 视觉 LLM 分析开关 ──
+            plugin_config = input_data.material_plugin_config or {}
+            use_vision_llm = bool(plugin_config.get("enable_visual_llm", False))
+            vision_frame_count = int(plugin_config.get("visual_llm_frame_count", 3))
+
             candidate_clips = []
 
             for i, scene in enumerate(scenes):
@@ -278,16 +317,26 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
 
                 validated = []
                 for r in all_results[:8]:
-                    video_url = ""
-                    if hasattr(r, 'asset'):
-                        video_url = r.asset.url or r.asset.local_path or ""
+                    if use_vision_llm:
+                        asset_obj = r.asset if hasattr(r, 'asset') else r
+                        match_score = await self._validate_via_vision_llm(
+                            asset_obj,
+                            scene_title,
+                            scene_keywords,
+                            description,
+                            frame_count=vision_frame_count,
+                        )
                     else:
-                        video_url = r.get("url", "") or r.get("local_path", "")
-                    if not video_url:
-                        continue
-                    match_score = await _validate_video_frame(
-                        video_url, f"{scene_title} {' '.join(scene_keywords)}"
-                    )
+                        video_url = ""
+                        if hasattr(r, 'asset'):
+                            video_url = r.asset.url or r.asset.local_path or ""
+                        else:
+                            video_url = r.get("url", "") or r.get("local_path", "")
+                        if not video_url:
+                            continue
+                        match_score = await _validate_video_frame(
+                            video_url, f"{scene_title} {' '.join(scene_keywords)}"
+                        )
                     validated.append((r, match_score))
                     if match_score > 0.3:
                         break
@@ -368,10 +417,14 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                     "query": " | ".join(search_queries),
                 })
 
+            notes: list[str] = []
+            if use_vision_llm:
+                notes.append(f"视觉LLM分析已启用 (每候选 {vision_frame_count} 帧)")
+
             return MaterialOutput(
                 decision=AgentDecision.PASS,
                 candidate_clips=candidate_clips,
-                material_notes=[],
+                material_notes=notes,
             )
 
         except Exception as e:

@@ -1,5 +1,8 @@
 # 帧艺（ClipWright）内容视频编排引擎设计方案
 
+> ⚠️ **设计意图文档**
+> 本文档记录初始设计思考与架构意图。实际实现可能有所差异。当前状态请参考 [docs/structure.md](docs/structure.md)、[docs/workflow.md](docs/workflow.md) 及 [API 参考](docs/api_reference.md)。
+
 ---
 
 ## 1 方案概述

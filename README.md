@@ -1,4 +1,4 @@
-## 目录
+﻿## 目录
 
 - 项目结构
 - 项目定位
@@ -120,8 +120,9 @@
 │  ┌────────────────────────────────────────────────┐  │
 │  │             Agent 编排层 (LangGraph)            │  │
 │  │                                                │  │
-│  │  StructureAgent → MaterialAgent → EditAgent    │  │
-│  │       → AnimationAgent → AudioAgent → QA       │  │
+│  │  RequirementsAgent → StructureAgent →          │  │
+│  │  MaterialAgent → EditAgent → AnimationAgent     │  │
+│  │  → AudioAgent → QualityAgent                   │  │
 │  │                                                │  │
 │  │  支持: 全流程执行 / 单Agent执行 / 局部重执行   │  │
 │  └────────────────────────────────────────────────┘  │
@@ -133,7 +134,7 @@
 │                                                      │
 │  ┌────────────────────────────────────────────────┐  │
 │  │        Tool 层 / Skill 层 / Material 层          │  │
-│  │  10 工具 · 4 技能 · 3 素材源 · 27 动画          │  │
+│  │  40 工具 · 12 技能 · 3 素材源 · 37+ 动画          │  │
 │  │  FFmpeg · CLIP · Whisper · JSON规范             │  │
 │  └────────────────────────────────────────────────┘  │
 │                                                      │
@@ -297,6 +298,54 @@ POST   /api/persona/{id}/rag/query     # 语义检索
 # 渲染
 POST   /api/render/start          # 提交渲染任务
 GET    /api/render/status/{id}    # 查询进度
+
+# 需求分析
+POST   /api/requirements/analyze  # 分析用户需求
+POST   /api/requirements/extract  # 提取创作约束
+
+# 声音克隆与 TTS
+POST   /api/voice/upload          # 上传音频文件
+POST   /api/voice/clone           # 克隆音色
+GET    /api/voice/list            # 列出已克隆音色
+DELETE /api/voice/{db_id}         # 删除音色
+POST   /api/voice/synthesize      # 文字→语音
+POST   /api/voice/dub             # 文案切分+逐段配音
+
+# 波形可视化
+GET    /api/waveform/{id}         # 获取音频波形数据
+
+# 视觉分析
+POST   /api/vision/analyze        # 视频/图像分析
+
+# 字体管理
+GET    /api/font/list             # 列出可用字体
+POST   /api/font/upload           # 上传字体
+
+# EDL 导入导出
+POST   /api/edl/import            # 导入 EDL
+GET    /api/edl/export/{id}       # 导出 EDL
+
+# 项目管理
+POST   /api/project/create        # 创建项目
+GET    /api/project/{id}          # 获取项目
+PUT    /api/project/{id}          # 更新项目
+DELETE /api/project/{id}          # 删除项目
+GET    /api/project/list          # 项目列表
+
+# Chat Forge
+POST   /api/chat_forge/generate   # 对话式内容生成
+
+# 学习/反馈
+POST   /api/learning/feedback     # 提交反馈
+GET    /api/learning/stats        # 学习统计
+
+# 媒体预处理
+POST   /api/preprocess/validate   # 素材验证
+POST   /api/preprocess/transcode  # 素材转码
+
+# 配音脚本
+POST   /api/dub_script/split      # 文案切分
+POST   /api/dub_script/sync       # 配音同步
 ```
 
 ### 时间线 JSON 格式
@@ -366,7 +415,7 @@ Level 2 ─── LoRA微调 ────── 上传50+历史视频，微调Ag
 
 | 阶段   | 内容                                      | 状态   |
 | ------ | ----------------------------------------- | ------ |
-| 阶段一 | 6-Agent 管线 + API；Tool/Skill/Animation 系统 | ✅ 完成 |
+| 阶段一 | 7-Agent 管线 + API；Tool/Skill/Animation 系统 | ✅ 完成 |
 | 阶段二 | 素材库 + 插件系统；前端编辑器初步          | ✅ 完成 |
 | 阶段三 | 动画系统 + STT + 语音转文字               | ✅ 完成 |
 | 阶段四 | AudioAgent + QualityAgent 增强；渲染队列  | 🔄 进行中 |

@@ -136,24 +136,31 @@ function ewSilentTrigger(text) {
 
 async function ewSendMessage() {
   const input = document.getElementById("ewChatInput");
+  if (!input) return;
   const text = input.value.trim();
   if (!text || !_ewSessionId) return;
   input.value = "";
   input.disabled = true;
   ewAddBubble("user", text);
   ewShowTyping(true);
-  const { ok, data } = await api("POST", "/api/requirements/chat", {
-    session_id: _ewSessionId, message: text,
-  });
-  input.disabled = false;
-  ewShowTyping(false);
-  if (!ok) { ewToast("发送失败", "error"); return; }
-  ewRenderMessages(data.messages || []);
-  ewUpdateStatus(data.status);
-  if (data.creative_brief && data.creative_brief.title) {
-    ewShowBrief(data.creative_brief);
+  try {
+    const { ok, data } = await api("POST", "/api/requirements/chat", {
+      session_id: _ewSessionId, message: text,
+    });
+    if (!ok) { ewToast("发送失败", "error"); return; }
+    ewRenderMessages(data.messages || []);
+    ewUpdateStatus(data.status);
+    if (data.creative_brief && data.creative_brief.title) {
+      ewShowBrief(data.creative_brief);
+    }
+    if (data.status === "plan_ready" || data.status === "plan_confirmed") ewFetchPlan();
+  } catch (e) {
+    console.error("[ewSendMessage]", e);
+    ewToast("发送失败: " + (e.message || "网络错误"), "error");
+  } finally {
+    input.disabled = false;
+    ewShowTyping(false);
   }
-  if (data.status === "plan_ready" || data.status === "plan_confirmed") ewFetchPlan();
 }
 
 function ewUpdateStatus(status) {

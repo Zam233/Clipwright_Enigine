@@ -40,6 +40,12 @@ class StructureInput(BaseModel):
     rag_context: Optional[str] = Field(
         default=None, description="RAG 检索结果上下文"
     )
+    creative_brief: Optional[dict[str, Any]] = Field(
+        default=None, description="用户审阅确认的创作简报（来自需求对话）"
+    )
+    production_plan: Optional[dict[str, Any]] = Field(
+        default=None, description="用户确认的制作规划书（含 markdown/scenes）"
+    )
 
 
 class StructureOutput(BaseModel):
@@ -62,6 +68,10 @@ class MaterialInput(BaseModel):
     context: AgentContext
     script_skeleton: dict[str, Any]
     persona_config: dict[str, Any] = Field(default_factory=dict)
+    material_plugin_config: dict[str, Any] = Field(
+        default_factory=dict,
+        description="素材库插件的配置（含 enable_visual_llm, visual_llm_frame_count 等）",
+    )
 
 
 class MaterialOutput(BaseModel):

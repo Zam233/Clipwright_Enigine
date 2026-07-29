@@ -288,7 +288,7 @@ SSE 流：实时推送渲染进度（裁剪/拼接/文字/音频各阶段进度�
 | `audio_silence_detect` | 静音检测 | ffmpeg |
 | `subtitle_overflow` | 字幕溢出检查 | - |
 
-## 完整 Skill 列表 (11 个)
+## 完整 Skill 列表 (12 个)
 
 | Skill | 功能 |
 |------|------|
@@ -303,6 +303,7 @@ SSE 流：实时推送渲染进度（裁剪/拼接/文字/音频各阶段进度�
 | `auto_transition` | 自动转场推荐 |
 | `background_music` | BGM 匹配 |
 | `silence_cut` | 静音切除 |
+| `dub_script` | 文案切分 + 逐段配音 |
 
 ---
 
@@ -366,3 +367,73 @@ curl -X POST "http://localhost:8000/api/plugin/llm_mg/save-template" \
 ### `GET /api/plugin/llm_mg/generations`
 
 列出未保存的生成记录。
+
+---
+
+## 声音克隆与 TTS（/api/voice）
+
+### `POST /api/voice/upload`
+
+上传音频文件，返回 `data_uri`（base64）供克隆使用。
+
+```bash
+curl -X POST http://localhost:8000/api/voice/upload \
+  -F "file=@sample.wav"
+```
+
+响应：
+```json
+{"filename": "sample.wav", "saved_as": "PluginData/uploads/xxx.wav", "size": 123456, "data_uri": "data:audio/wav;base64,...", "mime": "audio/wav"}
+```
+
+### `POST /api/voice/clone`
+
+克隆音色并持久化元数据。支持 `audio_path`（本地）、`audio_url`（公网）、`data_uri`（base64）。
+
+```bash
+curl -X POST http://localhost:8000/api/voice/clone \
+  -H "Content-Type: application/json" \
+  -d '{"voice_name": "我的音色", "audio_url": "https://example.com/sample.wav", "provider": "qwen_tts"}'
+```
+
+### `GET /api/voice/list`
+
+列出所有已克隆音色。
+
+### `DELETE /api/voice/{db_id}`
+
+删除指定音色记录。
+
+### `POST /api/voice/synthesize`
+
+用已克隆音色合成语音。
+
+```bash
+curl -X POST http://localhost:8000/api/voice/synthesize \
+  -H "Content-Type: application/json" \
+  -d '{"voice_id": "v_xxx", "text": "你好世界"}'
+```
+
+响应：
+```json
+{"audio_path": "...", "duration_sec": 2.5, "voice_id": "v_xxx", "provider": "qwen_tts", "text": "你好世界"}
+```
+
+### `POST /api/voice/dub`
+
+文案切分 + 逐段配音。返回分段音频片段列表。
+
+```bash
+curl -X POST http://localhost:8000/api/voice/dub \
+  -H "Content-Type: application/json" \
+  -d '{"voice_id": "v_xxx", "text": "第一段文案。第二段文案。", "split_mode": "sentence"}'
+```
+
+响应：
+```json
+{"segments": [{"audio_path": "...", "duration_sec": 2.0, "text": "第一段文案。"}], "total": 2, "total_duration_sec": 4.0}
+```
+
+### 静态音频文件
+
+合成的音频文件通过 `/voice_audio/{filename}` 静态挂载访问。

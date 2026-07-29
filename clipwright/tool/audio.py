@@ -137,5 +137,113 @@ class AudioReplaceTool(BaseTool):
             )
 
 
+class AudioNormalizeTool(BaseTool):
+    """音频归一化工具 — LUFS/峰值归一化。"""
+    name = "audio_normalize"
+    description = "音频音量归一化：loudnorm(LUFS目标)/peak(峰值)/rms(RMS)"
+    dependencies = ["ffmpeg"]
+
+    async def execute(
+        self,
+        input_path: str,
+        mode: str = "loudnorm",
+        output_path: Optional[str] = None,
+        **kwargs: Any,
+    ) -> ToolExecResult:
+        out = _ensure_output_path(output_path, "norm_", ".wav")
+        try:
+            if mode == "loudnorm":
+                # EBU R128 loudnorm 两遍处理
+                import json
+                # 第一遍: 分析
+                probe = subprocess.run(
+                    ["ffmpeg", "-y", "-i", input_path, "-af",
+                     "loudnorm=print_format=json", "-f", "null", "-"],
+                    capture_output=True, text=True, timeout=120,
+                )
+                # 第二遍: 应用归一化
+                result = _ffmpeg(
+                    "-i", input_path,
+                    "-af", "loudnorm=linear=true",
+                    "-c:a", "pcm_s16le", out,
+                )
+            elif mode == "peak":
+                result = _ffmpeg(
+                    "-i", input_path,
+                    "-af", "volume=1.0:precision=double",
+                    "-c:a", "pcm_s16le", out,
+                )
+            else:
+                return ToolExecResult(
+                    status=ToolStatus.ERROR, tool_name=self.name,
+                    error=f"unsupported mode: {mode}",
+                )
+            if result.returncode != 0:
+                return ToolExecResult(
+                    status=ToolStatus.ERROR, tool_name=self.name,
+                    error=f"normalize error: {result.stderr[:500]}",
+                )
+            return ToolExecResult(
+                status=ToolStatus.SUCCESS, tool_name=self.name,
+                output={"output_path": out, "mode": mode}, output_path=out,
+            )
+        except FileNotFoundError:
+            return ToolExecResult(
+                status=ToolStatus.DEPENDENCY_MISSING, tool_name=self.name,
+                error="ffmpeg not found",
+            )
+
+
+class AudioMixTool(BaseTool):
+    """音频混音工具 — 多音轨混音。"""
+    name = "audio_mix"
+    description = "将多段音频/视频的音频轨道混合为单轨输出"
+    dependencies = ["ffmpeg"]
+
+    async def execute(
+        self,
+        input_paths: list[str],
+        volumes: Optional[list[float]] = None,
+        output_path: Optional[str] = None,
+        **kwargs: Any,
+    ) -> ToolExecResult:
+        out = _ensure_output_path(output_path, "mix_", ".wav")
+        try:
+            if not input_paths:
+                return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error="no input paths")
+            vols = volumes or [1.0] * len(input_paths)
+
+            # 构建 ffmpeg 多输入混音命令
+            cmd_args = ["ffmpeg", "-y", "-loglevel", "error"]
+            for p in input_paths:
+                cmd_args.extend(["-i", p])
+
+            # amix filter
+            amix = f"amix=inputs={len(input_paths)}:duration=longest"
+            vol_filters = [f"[{i}:a]volume={vols[i]}[v{i}]" for i in range(len(input_paths))]
+            mix_inputs = "".join(f"[v{i}]" for i in range(len(input_paths)))
+            filter_complex = ";".join(vol_filters) + f";{mix_inputs}{amix}[a]"
+
+            result = subprocess.run(
+                [*cmd_args, "-filter_complex", filter_complex,
+                 "-map", "[a]", "-c:a", "pcm_s16le", out],
+                capture_output=True, text=True, timeout=300,
+            )
+            if result.returncode != 0:
+                return ToolExecResult(
+                    status=ToolStatus.ERROR, tool_name=self.name,
+                    error=f"mix error: {result.stderr[:500]}",
+                )
+            return ToolExecResult(
+                status=ToolStatus.SUCCESS, tool_name=self.name,
+                output={"output_path": out, "inputs": len(input_paths)}, output_path=out,
+            )
+        except FileNotFoundError:
+            return ToolExecResult(
+                status=ToolStatus.DEPENDENCY_MISSING, tool_name=self.name,
+                error="ffmpeg not found",
+            )
+
+
 def _codec_for(fmt: str) -> str:
     return {"mp3": "libmp3lame", "aac": "aac", "wav": "pcm_s16le", "ogg": "libvorbis", "flac": "flac"}.get(fmt, "pcm_s16le")

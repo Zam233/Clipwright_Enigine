@@ -117,14 +117,10 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
             if track.kind in (ClipKind.TEXT, ClipKind.CAPTION):
                 text_clips.extend(track.clips)
 
-        for clip in text_clips:
-            # 检查 clip 是否有 animation_plan 关联
-            pass  # AnimationAgent 的输出在 shared_data 中，这里不做重复检查
-
-        if text_clips and len(text_clips) > 0:
+        if text_clips:
             issues.append(QualityIssue(
                 severity="info", category="animation",
-                message=f"文字轨有 {len(text_clips)} 个片段，AnimationAgent 已编排动画",
+                message=f"文字轨有 {len(text_clips)} 个片段，动画由 AnimationAgent 编排",
             ))
 
         # ── 5. 转场检查 ──

@@ -445,6 +445,7 @@ class PipelineOrchestratorV2:
             "material": {
                 "script_skeleton": result_data,
                 "persona_config": persona_config,
+                "material_plugin_config": getattr(plugin, "config", {}) if plugin else {},
             },
             "edit": {
                 "script_skeleton": result_data,
@@ -456,6 +457,13 @@ class PipelineOrchestratorV2:
             },
             "audio": {
                 "timeline": result_data.get("timeline"),
+                "audio_config": {
+                    **persona_config.get("audio", {}),
+                    "voice_id": persona_config.get("audio", {}).get("voice_clone_model_id")
+                    or persona_config.get("audio", {}).get("voice")
+                    or "",
+                    "auto_dub": True,
+                },
             },
             "quality": {
                 "timeline": result_data.get("timeline"),
@@ -603,6 +611,8 @@ class PipelineOrchestratorV2:
                 persona_config=data.get("persona_config", {}),
                 persona_prompt=data.get("persona_prompt"),
                 rag_context=data.get("rag_context", ""),
+                creative_brief=ctx.extra_params.get("creative_brief"),
+                production_plan=ctx.extra_params.get("production_plan"),
             ), ctx)
         elif name == "material":
             from clipwright.schema.agent import MaterialInput
@@ -631,6 +641,7 @@ class PipelineOrchestratorV2:
             return await agent.execute(AudioInput(
                 context=ctx,
                 timeline=data.get("timeline"),
+                audio_config=data.get("audio_config", {}),
             ), ctx)
         elif name == "quality":
             from clipwright.schema.agent import QualityInput

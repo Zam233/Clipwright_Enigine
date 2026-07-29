@@ -189,10 +189,13 @@ def register_builtin_skills() -> None:
     """注册所有内置技能到 SkillRegistry。"""
     from clipwright.skill.registry import SkillRegistry
 
+    from clipwright.skill.dub import DubScriptSkill
+
     skills = [
         AnalyzeVideoStructureSkill(),
         GenerateCaptionSkill(),
         AnalyzeAudioRhythmSkill(),
+        DubScriptSkill(),
     ]
     for skill in skills:
         SkillRegistry.register(skill)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -59,7 +61,7 @@ async def test_embed(req: EmbedTestRequest) -> dict:
             settings.rag_embed_provider = req.provider  # type: ignore
             reset_embedder()
         embedder = get_embedder()
-        vec = embedder.embed([req.text])
+        vec = await asyncio.to_thread(embedder.embed, [req.text])
         return {
             "success": True,
             "dimension": len(vec[0]) if vec else 0,
@@ -82,7 +84,9 @@ async def test_rerank(req: RerankTestRequest) -> dict:
             ScoredChunk(id=f"c{i}", text=t, score=0.5)
             for i, t in enumerate(req.candidates)
         ]
-        results = reranker.rerank(req.query, candidates, top_k=req.top_k)
+        results = await asyncio.to_thread(
+            reranker.rerank, req.query, candidates, top_k=req.top_k
+        )
         return {
             "success": True,
             "results": [

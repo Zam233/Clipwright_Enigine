@@ -39,7 +39,7 @@
 │                    │ Agent  │                        │
 │                    └────────┘                        │
 ├─────────────────────────────────────────────────────┤
-│            原子能力层 (38 个 Tool + 11 个 Skill)        │
+│            原子能力层 (40 个 Tool + 12 个 Skill)        │
 │   FFmpeg · ffprobe · Vision · Whisper · TTS · CLIP   │
 └─────────────────────────────────────────────────────┘
 ```
@@ -60,7 +60,8 @@
 | MG 动画 | `mg_dynamic` — LLM 动态生成完整 MG JSON → MGRenderer → Hyperframes（见 `llm_mg` 插件） |
 | 素材 | `material_filter` `frame_validator` |
 | 质量 | `black_frame_detect` `audio_silence_detect` `subtitle_overflow` |
-| 其他 | `speed_ramp` `color_correct` `lut_apply` `whisper_transcribe` `text_to_speech` `transition_apply` |
+| TTS | `voice_clone` `text_to_speech` |
+| 其他 | `speed_ramp` `color_correct` `lut_apply` `whisper_transcribe` `transition_apply` |
 
 | Skill | 功能 |
 |-------|------|
@@ -75,10 +76,11 @@
 | `auto_transition` | 自动转场推荐 |
 | `background_music` | BGM 匹配 |
 | `silence_cut` | 静音切除 |
+| `dub_script` | 文案切分 + 逐段配音（委托 VoiceService） |
 
 ### 3.2 Agent 编排层
 
-6 个 Agent + 动态路由 + 自愈循环：
+7 个 Agent + 动态路由 + 自愈循环：
 
 ```plaintext
 执行组 [0]: structure                     ← 结构分析（含 animation_intents 注入）
@@ -115,6 +117,15 @@ POST   /api/pipeline/batch               # 批量管线
 POST   /api/pipeline/step/{agent}        # 单 Agent 执行
 GET    /api/pipeline/trace/stream/{id}   # SSE 实时追踪
 GET    /api/pipeline/result/{id}         # 异步结果查询
+
+# 声音克隆与 TTS
+POST   /api/voice/upload                 # 上传音频 → data_uri
+POST   /api/voice/clone                  # 克隆音色
+GET    /api/voice/list                   # 列出已克隆音色
+DELETE /api/voice/{db_id}                # 删除音色
+POST   /api/voice/synthesize             # 文字 → 语音
+POST   /api/voice/dub                    # 文案切分 + 逐段配音
+```
 GET    /api/pipeline/tasks               # 任务列表
 GET    /api/pipeline/stats               # 管线统计
 GET    /api/pipeline/llm-usage           # LLM 用量统计

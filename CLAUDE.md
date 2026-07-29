@@ -8,7 +8,7 @@
 
 > 核心文档：`docs/structure.md` · `docs/Persona.md` · `docs/workflow.md`
 
-Persona 驱动的 Agent 引擎，包含五层架构和 6 个 Agent 构成 LangGraph 管线。可独立运行，对外暴露 REST API。
+Persona 驱动的 Agent 引擎，包含五层架构和 7 个 Agent 构成 LangGraph 管线。可独立运行，对外暴露 REST API。
 
 ### 2. 帧艺 ClipWright AI 辅助视频创作系统（全栈）
 
@@ -16,7 +16,7 @@ Persona 驱动的 Agent 引擎，包含五层架构和 6 个 Agent 构成 LangGr
 
 前后端分离的 AI 辅助视频创作系统 = 内容视频编排引擎（后端）+ Web 视频编辑器（前端）。
 
-- **后端**：Python + FastAPI + LangGraph。Persona 驱动的 Agent 引擎，6 个 Agent 构成管线。
+- **后端**：Python + FastAPI + LangGraph。Persona 驱动的 Agent 引擎，7 个 Agent 构成管线。
 - **前端**：React 19 + TypeScript + Zustand + Canvas 自研时间轴。对标 PR 的多轨编辑器。
 - **Plugin 系统**：视频类型插件（knowledge_longform、kichiku_fastcut、digital_review、vlog_daily）
 - **Persona 系统**：四层复合（参数层/示例层/嵌入层/模型层）
@@ -177,6 +177,12 @@ LLM Agent → ① 构造 AgentToolkit（感知 ToolRegistry 可用工具）
 - `docs/api_reference.md` — API 参考文档
 - `docs/persona_forge.md` — PersonaForge 使用说明
 - `docs/development.md` — 开发指南
+- `docs/material_system.md` — 素材系统文档
+- `docs/voice_tts.md` — 语音与 TTS 系统文档
+- `docs/animation_system.md` — 动画系统文档
+- `docs/services_overview.md` — 服务层概览文档
+- `docs/requirements_agent.md` — Requirements Agent 文档
+- `AGENTS.md` — AI Agent 项目地图
 - `README.md` — 项目概览和快速开始
 
 ## 文档维护规则

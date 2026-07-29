@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 
@@ -29,8 +30,6 @@ class FallbackEngine:
 
         for t in templates:
             tid = t.get("animation_id", "")
-            tname = t.get("name", "")
-            tdesc = t.get("description", "")
             score = 0.0
 
             for pattern, template_id in cls.KEYWORD_TEMPLATE_MAP.items():
@@ -38,10 +37,7 @@ class FallbackEngine:
                     for kw in pattern.split("|"):
                         if kw.lower() in desc_lower:
                             score += 2.0
-                        if kw.lower() in tname.lower():
-                            score += 1.0
-                        if kw.lower() in tdesc.lower():
-                            score += 0.5
+                            break
 
             scores[tid] = score
 
@@ -85,7 +81,8 @@ class FallbackEngine:
             params["text"] = parts[0]
 
         style = persona_style or {}
-        if "primary_color" in style:
-            params.setdefault("accent", style["primary_color"])
+        if "primary_color" in style and "accent" in params:
+            # Persona 主色覆盖默认 accent
+            params["accent"] = style["primary_color"]
 
         return template, params

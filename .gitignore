@@ -49,3 +49,13 @@ personas/**/embeddings/
 # Plugin runtime data
 PluginData/*
 !PluginData/.gitkeep
+
+# Runtime data
+.chroma_db/
+projects/
+library/
+personas/chat_*/
+
+# Agent tooling state
+.omo/
+.opencode/

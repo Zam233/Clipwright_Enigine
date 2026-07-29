@@ -21,6 +21,7 @@ class ClipKind(str, Enum):
     CAPTION = "caption"
     SHAPE = "shape"
     WAVEFORM = "waveform"
+    ANIMATION = "animation"
 
 
 class TransitionType(str, Enum):
@@ -73,7 +74,7 @@ class Clip(BaseModel):
     text: Optional[str] = Field(default=None)
     font: Optional[str] = Field(default=None)
     font_size: Optional[float] = Field(default=None, gt=0)
-    font_color: Optional[str] = Field(default=None, pattern="^#[0-9a-fA-F]{6}$")
+    font_color: Optional[str] = Field(default=None, pattern="^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$")
     text_align: Optional[TextAlign] = Field(default=None)
 
     # 转场

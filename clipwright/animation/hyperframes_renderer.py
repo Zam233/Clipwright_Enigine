@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import tempfile
 from pathlib import Path
@@ -19,6 +20,22 @@ from typing import Any
 
 from clipwright.animation.catalog import AnimationCatalog
 from clipwright.config import logger
+from clipwright.services.async_util import cached_probe
+
+
+def _probe_hyperframes() -> bool:
+    """同步阻塞探测（在后台线程里跑，绝不进事件循环线程）。"""
+    try:
+        npx = HyperframesRenderer._npx_cmd()
+        r = subprocess.run([npx, "hyperframes", "--version"],
+                           capture_output=True, text=False, timeout=15)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+# 进程级缓存探针：npx 冷启动慢，缓存 10 分钟，后台线程刷新，await 永不阻塞事件循环。
+_hf_available = cached_probe("hyperframes", _probe_hyperframes, ttl=600.0, default=False)
 
 
 class HyperframesRenderer:
@@ -44,13 +61,17 @@ class HyperframesRenderer:
 
     @staticmethod
     def is_available() -> bool:
-        try:
-            npx = HyperframesRenderer._npx_cmd()
-            r = subprocess.run([npx, "hyperframes", "--version"],
-                               capture_output=True, text=False, timeout=15)
-            return r.returncode == 0
-        except Exception:
-            return False
+        """同步、非阻塞读取缓存值（供 /health、启动期等 sync 上下文使用）。
+
+        缓存为空时返回 False 并在后台触发一次探测，**不会**同步执行 npx。
+        async 上下文请改用 ``await HyperframesRenderer.ais_available()``。
+        """
+        return bool(_hf_available.get_sync())
+
+    @staticmethod
+    async def ais_available() -> bool:
+        """async 版可用检查：命中缓存立即返回，失效时后台刷新，永不阻塞事件循环。"""
+        return bool(await _hf_available())
 
     @staticmethod
     async def render_overlays(
@@ -61,7 +82,7 @@ class HyperframesRenderer:
         """将所有 overlay 渲染为透明 MOV。"""
         if not overlays:
             return None
-        if not HyperframesRenderer.is_available():
+        if not await HyperframesRenderer.ais_available():
             logger.warning("HyperframesRenderer: Hyperframes 不可用")
             return None
 
@@ -78,7 +99,10 @@ class HyperframesRenderer:
                 "--format", "mov", "-f", str(int(fps)), "--quiet",
             ]
             logger.info("HyperframesRenderer: 渲染 %d 个覆盖层 → %s", len(overlays), output_path)
-            result = subprocess.run(cmd, capture_output=True, text=False, timeout=3600)
+            # 同步 subprocess（最长 1h）offload 到线程池，避免冻住事件循环。
+            result = await asyncio.to_thread(
+                subprocess.run, cmd, capture_output=True, text=False, timeout=3600
+            )
             if result.returncode == 0 and out.exists():
                 logger.info("HyperframesRenderer: 完成 (%s, %.0fKB)",
                             output_path, out.stat().st_size / 1024)

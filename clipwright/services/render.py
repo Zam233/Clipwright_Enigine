@@ -139,6 +139,26 @@ class RenderService:
         self._work_dir.mkdir(parents=True, exist_ok=True)
         self._final_ffmpeg_log: list[str] = []
 
+    def _run_ff(self, cmd, **kw) -> subprocess.CompletedProcess:
+        """同步执行 ffmpeg/外部命令（供已在线程池里的 sync 代码直接调用）。"""
+        return subprocess.run(cmd, **kw)
+
+    async def _ff(self, cmd, **kw) -> subprocess.CompletedProcess:
+        """在 async 上下文把同步 ffmpeg/外部命令 offload 到 _ffmpeg_pool，避免冻住事件循环。
+
+        若当前没有运行中的事件循环（即被 worker 线程调用），则退化为同步执行。
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return subprocess.run(cmd, **kw)
+        return await loop.run_in_executor(_ffmpeg_pool, self._run_ff, cmd, **kw)
+
+    async def _ff_concat(self, sync_fn, *args):
+        """把同步拼接函数（内含阻塞 subprocess）offload 到 _ffmpeg_pool。"""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_ffmpeg_pool, sync_fn, *args)
+
     async def render(self, timeline: Timeline, output_path: str | Path = "out.mp4",
                      *, width=1920, height=1080, fps=30.0, bitrate="5M",
                      audio_bitrate="192k", audio_file_path="", bgm_file_path="",
@@ -147,7 +167,7 @@ class RenderService:
         output.parent.mkdir(parents=True, exist_ok=True)
         self._final_ffmpeg_log = []
 
-        ok, info = ffmpeg_available()
+        ok, info = await asyncio.to_thread(ffmpeg_available)
         if not ok:
             return RenderResult(False, error=f"FFmpeg 未就绪: {info}")
 
@@ -189,12 +209,12 @@ class RenderService:
         # 音频
         if final_video:
             final_video = await self._mix_audio_safe(final_video, audio_segments, audio_file_path,
-                                                     audio_bitrate, bgm_file_path)
+                                                      bitrate, audio_bitrate, bgm_file_path)
 
         # 输出
         if final_video and Path(final_video).exists():
             shutil.copy2(final_video, str(output))
-            dur = _get_actual_duration(str(output))
+            dur = await asyncio.to_thread(_get_actual_duration, str(output))
             logger.info("渲染完成: %s (%.1fs)", output, dur)
             return RenderResult(True, output_path=str(output.resolve()), duration_sec=dur)
 
@@ -273,11 +293,13 @@ class RenderService:
         scale = f"scale={width}:{height}:force_original_aspect_ratio=1,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
         loop = asyncio.get_running_loop()
 
-        async def _trim_one(idx, seg):
+        def _trim_one(idx, seg):
+            # 注意：本函数整体在 _ffmpeg_pool 线程里跑（见下方 run_in_executor），
+            # 故内部用同步 _run_ff，禁止在此 await。
             src = seg.get("source_path", "")
             dur = max(0.5, seg.get("duration_sec", 5) * seg.get("speed", 1.0))
             if not src:
-                return await loop.run_in_executor(_ffmpeg_pool, self._generate_fallback, dur, width, height, fps, idx)
+                return self._generate_fallback(dur, width, height, fps, idx)
 
             # M1: 缓存
             cache_key = _trim_cache_key(src, seg.get("source_offset", 0), dur, width, height)
@@ -302,7 +324,7 @@ class RenderService:
                        "-i", src, "-t", str(dur), "-vf", vf, "-r", str(fps),
                        "-c:v", encoder, "-pix_fmt", "yuv420p",
                        "-preset", preset, "-b:v", bitrate, "-an", out]
-                r = subprocess.run(cmd, capture_output=True, text=False, timeout=600)
+                r = self._run_ff(cmd, capture_output=True, text=False, timeout=600)
                 if r.returncode == 0 and Path(out).exists():
                     if len(_trim_cache) < _TRIM_CACHE_MAX:
                         _trim_cache[cache_key] = out
@@ -313,8 +335,9 @@ class RenderService:
 
             return self._generate_fallback(dur, width, height, fps, idx)
 
-        # 并行执行所有裁剪
-        tasks = [_trim_one(i, s) for i, s in enumerate(segments)]
+        # 并行执行所有裁剪：每个 _trim_one 是同步阻塞 ffmpeg，丢进线程池才真正并行，
+        # 且不冻住事件循环（旧实现 _trim_one 为 async 内同步 subprocess，gather 实为串行）。
+        tasks = [loop.run_in_executor(_ffmpeg_pool, _trim_one, i, s) for i, s in enumerate(segments)]
         results = await asyncio.gather(*tasks)
         trimmed = [r for r in results if r and Path(r).exists()]
 
@@ -325,7 +348,7 @@ class RenderService:
     def _generate_fallback(self, dur, width, height, fps, idx):
         out = str(self._work_dir / f"fallback_{idx}.mp4")
         try:
-            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+            self._run_ff(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
                            f"color=c=0x1a1a2e:s={width}x{height}:d={dur}",
                            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(fps), out],
                           capture_output=True, text=False, timeout=30)
@@ -344,12 +367,12 @@ class RenderService:
         if len(trimmed) == 1:
             f = str(self._work_dir / "concat.mp4"); shutil.copy2(trimmed[0], f); return f
         if len(trimmed) == 2:
-            return self._run_concat(trimmed[0], trimmed[1], fps, bitrate, encoder, preset)
+            return await self._ff_concat(self._run_concat, trimmed[0], trimmed[1], fps, bitrate, encoder, preset)
 
         has_trans = any(segments[i].get("transition_in") for i in range(len(segments)) if i > 0)
-        if has_trans and _ffmpeg_supports_xfade():
-            return self._concat_xfade(trimmed, segments, fps, bitrate, encoder, preset)
-        return self._run_concat_all(trimmed, fps, bitrate, encoder, preset)
+        if has_trans and await asyncio.to_thread(_ffmpeg_supports_xfade):
+            return await self._ff_concat(self._concat_xfade, trimmed, segments, fps, bitrate, encoder, preset)
+        return await self._ff_concat(self._run_concat_all, trimmed, fps, bitrate, encoder, preset)
 
     def _run_concat(self, a, b, fps, bitrate, encoder, preset):
         out = Path(a).parent / "concat.mp4"
@@ -421,7 +444,7 @@ class RenderService:
                    "-vf", ",".join(batch),
                    "-c:v", encoder, "-preset", preset, "-pix_fmt", "yuv420p",
                    "-c:a", "copy", out]
-            r = subprocess.run(cmd, capture_output=True, text=False, timeout=300)
+            r = await self._ff(cmd, capture_output=True, text=False, timeout=300)
             if r.returncode == 0 and Path(out).exists():
                 current = out
         return current
@@ -465,7 +488,7 @@ class RenderService:
                str(mg_dir), "-o", mov, "--format", "mov",
                "-f", str(int(fps)), "--quiet"]
         try:
-            r = subprocess.run(cmd, capture_output=True, text=False, timeout=600)
+            r = await self._ff(cmd, capture_output=True, text=False, timeout=600)
             if r.returncode == 0 and Path(mov).exists():
                 out_v = str(self._work_dir / f"mg_{uuid.uuid4().hex[:4]}.mp4")
                 ok = HyperframesRenderer.render_overlay_on_video(mov, video, out_v)
@@ -492,11 +515,10 @@ class RenderService:
         font_arg = f":fontfile={ov.get('font', '')}" if ov.get("font") and Path(ov["font"]).exists() else ""
 
         if anim in ("typewriter", "char_by_char"):
+            font_size = ts.font_size
             n = max(1, len(text))
             cw = [font_size if ord(c) > 0x2E80 else (int(font_size*0.3) if c in " \t" else int(font_size*0.6)) for c in text]
-            if sum(cw) > 1920 * 0.9:
-                pass  # 超出宽度 → 走静态文字
-            else:
+            if sum(cw) <= 1920 * 0.9:
                 parts = []
                 for i, ch in enumerate(text):
                     if not ch.strip(): continue
@@ -506,6 +528,7 @@ class RenderService:
                     parts.append(f"drawtext=text='{safe}'{font_arg}:fontsize={ts.font_size}:fontcolor={ts.font_color}:x={xp}:y=(h-text_h)/2:enable='between(t,{cs},{start+dur})'")
                 if parts:
                     return ",\n".join(parts)
+            # 超宽文本 → 降级为静态文字（fall through below）
 
         if kfs and len(kfs) >= 2:
             return self._build_kf_drawtext(text, ts, start, dur, kfs, font_arg)
@@ -578,22 +601,22 @@ class RenderService:
             s = ov.get("source_path","")
             if s and Path(s).exists(): inputs.extend(["-i", s])
         c = ";".join(filters)
-        subprocess.run(["ffmpeg","-y","-loglevel","error",*inputs,"-filter_complex",c,
+        await self._ff(["ffmpeg","-y","-loglevel","error",*inputs,"-filter_complex",c,
                        "-map",f"[v{len(filters)-1}]","-map","0:a?",
                        "-c:v",encoder,"-preset",preset,"-pix_fmt","yuv420p","-c:a","copy",output_path],
                       capture_output=True, text=False, timeout=600)
 
-    async def _mix_audio_safe(self, video, segments, audio_path, bitrate, bgm_path):
+    async def _mix_audio_safe(self, video, segments, audio_path, bitrate, ab, bgm_path):
         if not video or not Path(video).exists(): return video
         out = str(self._work_dir / "aud.mp4")
         try:
-            await self._mix_audio(video, segments, out, audio_path, bitrate, bgm_path)
+            await self._mix_audio(video, segments, out, audio_path, ab, bgm_path, bitrate)
             return out if Path(out).exists() else video
         except Exception as e:
             logger.warning("音频混合失败，跳过音频: %s", e)
             return video
 
-    async def _mix_audio(self, input_video, segments, output_path, afp="", ab="192k", bfp=""):
+    async def _mix_audio(self, input_video, segments, output_path, afp="", ab="192k", bfp="", bitrate="5M"):
         encoder = _get_encoder(); preset = _get_preset()
         voice = afp if afp and Path(afp).exists() else None
         if not voice:
@@ -603,10 +626,10 @@ class RenderService:
         bgm = bfp if bfp and Path(bfp).exists() else None
         if voice and bgm:
             try:
-                subprocess.run(["ffmpeg","-y","-loglevel","error","-i",input_video,"-i",voice,"-i",bgm,
+                await self._ff(["ffmpeg","-y","-loglevel","error","-i",input_video,"-i",voice,"-i",bgm,
                                "-filter_complex","[1:a]loudnorm=I=-16:LRA=11:TP=-1.5[voice];[2:a]volume=0.3[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]",
                                "-map","0:v:0","-map","[aout]",
-                               "-c:v",encoder,"-preset",preset,"-pix_fmt","yuv420p","-b:v","5M",
+                               "-c:v",encoder,"-preset",preset,"-pix_fmt","yuv420p","-b:v",bitrate,
                                "-c:a","aac","-b:a",ab,"-shortest",output_path],
                               capture_output=True, text=False, timeout=600)
                 if Path(output_path).exists(): return
@@ -614,8 +637,8 @@ class RenderService:
                 pass
         if voice:
             try:
-                subprocess.run(["ffmpeg","-y","-loglevel","error","-i",input_video,"-i",voice,
-                               "-c:v",encoder,"-preset",preset,"-pix_fmt","yuv420p","-b:v","5M",
+                await self._ff(["ffmpeg","-y","-loglevel","error","-i",input_video,"-i",voice,
+                               "-c:v",encoder,"-preset",preset,"-pix_fmt","yuv420p","-b:v",bitrate,
                                "-c:a","aac","-b:a",ab,"-map","0:v:0","-map","1:a:0","-shortest",output_path],
                               capture_output=True, text=False, timeout=600)
                 if Path(output_path).exists(): return

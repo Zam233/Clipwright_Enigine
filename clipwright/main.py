@@ -5,12 +5,28 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 
-from clipwright.config import logger
+from clipwright.config import settings, logger
+from clipwright.services.async_util import cached_probe
+
+
+def _probe_ffmpeg() -> bool:
+    """同步 ffmpeg 探测（后台线程执行，不进事件循环线程）。"""
+    try:
+        import subprocess
+        r = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=5)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+# /health 用的外部工具探针：缓存 + 后台刷新，await 永不阻塞事件循环。
+_ffmpeg_available = cached_probe("ffmpeg", _probe_ffmpeg, ttl=600.0, default=False)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -32,6 +48,7 @@ from clipwright.api import proxy as proxy_api
 from clipwright.api import subtitle as subtitle_api
 from clipwright.api import stt as stt_api
 from clipwright.api import vision as vision_api
+from clipwright.api import voice as voice_api
 from clipwright.api import waveform as waveform_api
 from clipwright.api import skill as skill_api
 from clipwright.api import type_maker as type_maker_api
@@ -183,6 +200,11 @@ renders_path = Path("renders")
 renders_path.mkdir(parents=True, exist_ok=True)
 app.mount("/renders", StaticFiles(directory=str(renders_path)), name="renders")
 
+# 挂载 TTS 输出目录
+tts_output_path = Path(settings.tts_output_dir)
+tts_output_path.mkdir(parents=True, exist_ok=True)
+app.mount("/voice_audio", StaticFiles(directory=str(tts_output_path)), name="voice_audio")
+
 # 注册路由
 app.include_router(pipeline_api.router)
 app.include_router(persona_api.router)
@@ -202,6 +224,7 @@ app.include_router(edl_api.router)
 app.include_router(proxy_api.router)
 app.include_router(project_api.router)
 app.include_router(subtitle_api.router)
+app.include_router(voice_api.router)
 app.include_router(waveform_api.router)
 app.include_router(vision_api.router)
 app.include_router(type_maker_api.router)
@@ -219,7 +242,7 @@ async def health() -> dict[str, str]:
     """增强健康检查 — 检测所有服务组件的状态。"""
     components = {"service": "clipwright-engine"}
 
-    # MongoDB
+    # MongoDB（is_connected 仅读标志，廉价；ping 已在启动期完成）
     try:
         from clipwright.context import mongo as mongo_ctx
         components["mongodb"] = "ok" if mongo_ctx.is_connected else "disconnected"
@@ -233,18 +256,22 @@ async def health() -> dict[str, str]:
     except Exception:
         components["llm"] = "error"
 
-    # FFmpeg
+    # FFmpeg / Hyperframes —— 读缓存探针，绝不在此同步 spawn 进程冻住事件循环。
+    # 缓存为空（冷启动）时给 1.5s 宽限等后台探测，超时则返回 "checking"，仍不阻塞。
     try:
-        import subprocess
-        r = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=5)
-        components["ffmpeg"] = "ok" if r.returncode == 0 else "not_found"
+        components["ffmpeg"] = "ok" if await asyncio.wait_for(_ffmpeg_available(), 1.5) else "not_found"
+    except asyncio.TimeoutError:
+        components["ffmpeg"] = "checking"
     except Exception:
         components["ffmpeg"] = "not_found"
 
-    # Hyperframes
     try:
         from clipwright.animation.hyperframes_renderer import HyperframesRenderer
-        components["hyperframes"] = "ok" if HyperframesRenderer.is_available() else "not_found"
+        components["hyperframes"] = (
+            "ok" if await asyncio.wait_for(HyperframesRenderer.ais_available(), 1.5) else "not_found"
+        )
+    except asyncio.TimeoutError:
+        components["hyperframes"] = "checking"
     except Exception:
         components["hyperframes"] = "not_found"
 
@@ -274,34 +301,40 @@ async def metrics() -> str:
         from clipwright.context import mongo as mongo_ctx
         if mongo_ctx.is_connected:
             from clipwright.models.pipeline_model import PipelineModel, LLMCallModel
-            # Pipeline 统计
-            total = PipelineModel.count({})
-            completed = PipelineModel.count({"status": "completed"})
-            failed = PipelineModel.count({"status": "failed"})
+
+            # 同步 Mongo 统计查询整体 offload 到线程，避免冻住事件循环。
+            def _query():
+                _total = PipelineModel.count({})
+                _completed = PipelineModel.count({"status": "completed"})
+                _failed = PipelineModel.count({"status": "failed"})
+                _llm_total = LLMCallModel.count({})
+                _in_tokens = _out_tokens = 0
+                try:
+                    _pipeline = [{"$group": {"_id": None, "input": {"$sum": "$input_tokens"}, "output": {"$sum": "$output_tokens"}}}]
+                    _res = list(LLMCallModel.aggregate(_pipeline))
+                    if _res:
+                        _in_tokens = _res[0].get("input", 0)
+                        _out_tokens = _res[0].get("output", 0)
+                except Exception:
+                    pass
+                return _total, _completed, _failed, _llm_total, _in_tokens, _out_tokens
+
+            total, completed, failed, llm_total, in_tokens, out_tokens = await asyncio.to_thread(_query)
+
             lines.append("# HELP clipwright_pipelines_total Pipeline count by status")
             lines.append("# TYPE clipwright_pipelines_total gauge")
             lines.append(f'clipwright_pipelines_total{{status="total"}} {total}')
             lines.append(f'clipwright_pipelines_total{{status="completed"}} {completed}')
             lines.append(f'clipwright_pipelines_total{{status="failed"}} {failed}')
 
-            # LLM 统计
-            llm_total = LLMCallModel.count({})
             lines.append("# HELP clipwright_llm_calls_total Total LLM calls")
             lines.append("# TYPE clipwright_llm_calls_total counter")
             lines.append(f"clipwright_llm_calls_total {llm_total}")
 
-            # LLM token 聚合
-            try:
-                pipeline = [{"$group": {"_id": None, "input": {"$sum": "$input_tokens"}, "output": {"$sum": "$output_tokens"}}}]
-                results = list(LLMCallModel.aggregate(pipeline))
-                if results:
-                    r = results[0]
-                    lines.append("# HELP clipwright_llm_tokens_total Total LLM tokens")
-                    lines.append("# TYPE clipwright_llm_tokens_total counter")
-                    lines.append(f'clipwright_llm_tokens_total{{type="input"}} {r.get("input", 0)}')
-                    lines.append(f'clipwright_llm_tokens_total{{type="output"}} {r.get("output", 0)}')
-            except Exception:
-                pass
+            lines.append("# HELP clipwright_llm_tokens_total Total LLM tokens")
+            lines.append("# TYPE clipwright_llm_tokens_total counter")
+            lines.append(f'clipwright_llm_tokens_total{{type="input"}} {in_tokens}')
+            lines.append(f'clipwright_llm_tokens_total{{type="output"}} {out_tokens}')
     except Exception:
         pass
 

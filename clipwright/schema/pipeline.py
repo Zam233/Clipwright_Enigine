@@ -40,6 +40,7 @@ class PipelineRequest(BaseModel):
     topic: str
     extra_params: dict[str, Any] = Field(default_factory=dict)
     dry_run: bool = Field(default=False, description="仅生成预览，不渲染")
+    use_v2: bool = Field(default=False, description="是否使用 v2 动态路由管线")
 
 
 class PipelineState(BaseModel):

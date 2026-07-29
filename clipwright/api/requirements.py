@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Optional
 
@@ -53,7 +54,7 @@ async def init_session(req: InitRequest) -> dict:
         "audio_duration_sec": req.audio_duration_sec,
         **req.extra,
     }
-    session = _service.create_session(user_inputs)
+    session = await asyncio.to_thread(_service.create_session, user_inputs)
     return session
 
 
@@ -112,7 +113,7 @@ async def upload_file(
         tmp_path = tmp.name
 
     try:
-        result = await _service.process_upload(session_id, tmp_path, file.filename or "file")
+        result = await asyncio.to_thread(_service.process_upload, session_id, tmp_path, file.filename or "file")
         return result
     except Exception as e:
         logger.exception("Upload error: %s", e)
@@ -127,7 +128,7 @@ async def upload_file(
 @router.get("/session/{session_id}")
 async def get_session(session_id: str) -> dict:
     """获取会话完整状态。"""
-    session = _service.get_session(session_id)
+    session = await asyncio.to_thread(_service.get_session, session_id)
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
     return session
@@ -136,7 +137,7 @@ async def get_session(session_id: str) -> dict:
 @router.get("/plan/{session_id}")
 async def get_plan(session_id: str) -> dict:
     """获取规划书。"""
-    plan = _service.get_plan(session_id)
+    plan = await asyncio.to_thread(_service.get_plan, session_id)
     if plan is None:
         raise HTTPException(status_code=404, detail="Plan not found or not yet generated")
     return plan
@@ -145,7 +146,7 @@ async def get_plan(session_id: str) -> dict:
 @router.post("/proceed")
 async def proceed_to_pipeline(req: ProceedRequest) -> dict:
     """确认规划书 → 启动管线。"""
-    session = _service.get_session(req.session_id)
+    session = await asyncio.to_thread(_service.get_session, req.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -168,6 +169,8 @@ async def proceed_to_pipeline(req: ProceedRequest) -> dict:
                 extra_params={
                     "script_text": user_inputs.get("script_text", ""),
                     "audio_duration_sec": user_inputs.get("audio_duration_sec", 0),
+                    "creative_brief": session.get("creative_brief"),
+                    "production_plan": session.get("production_plan"),
                     **req.extra_params,
                 },
                 use_v2=True,
@@ -175,8 +178,9 @@ async def proceed_to_pipeline(req: ProceedRequest) -> dict:
             orch = PipelineOrchestratorV2()
             state = await orch.run(pipeline_req)
 
-            # 更新会话状态
-            _service._persist(
+            # 更新会话状态（同步 Mongo 写入，offload 到线程避免冻住事件循环）
+            await asyncio.to_thread(
+                _service._persist,
                 req.session_id, "pipeline_done",
                 session.get("messages", []),
                 session.get("creative_brief"),

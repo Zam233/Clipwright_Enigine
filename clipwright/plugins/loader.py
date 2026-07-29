@@ -25,6 +25,14 @@ from clipwright.plugins.base import BasePlugin
 from clipwright.schema.plugin import PluginManifest, PluginMetadata, PluginKind
 
 
+def _extract_flat_values(config: dict[str, Any]) -> dict[str, Any]:
+    """若 config 为结构化格式（含 fields），提取扁平值；否则原样返回。"""
+    if "fields" in config:
+        from clipwright.plugins.config_types import typed_config_to_values
+        return typed_config_to_values(config)
+    return config
+
+
 class PluginLoadError(Exception):
     """插件加载失败时抛出。"""
 
@@ -88,8 +96,8 @@ class PluginLoader:
         # 1. 解析清单
         manifest = self._parse_manifest(plugin_id, plugin_path)
 
-        # 2. 解析配置
-        config = self._parse_config(plugin_path)
+        # 2. 解析配置（合并源码默认 + PluginData 覆盖）
+        config = self._get_merged_config(plugin_id)
 
         # 3. 动态导入
         try:
@@ -106,7 +114,8 @@ class PluginLoader:
                 f"Plugin '{plugin_id}' has no exported class in its entry module"
             )
         plugin.manifest = manifest
-        plugin.config = config
+        # 注入扁平值（向后兼容插件通过 self.config["key"] 访问）
+        plugin.config = _extract_flat_values(config)
 
         # 5. 注册表快照（用于后续追踪插件注册的内容）
         from clipwright.skill.registry import SkillRegistry
@@ -168,6 +177,80 @@ class PluginLoader:
 
     def list_loaded(self) -> list[PluginMetadata]:
         return list(self._metadatas.values())
+
+    # ── 配置管理 ──
+
+    def get_config(self, plugin_id: str) -> dict[str, Any]:
+        """获取插件的合并配置（扁平值，向后兼容）。"""
+        return _extract_flat_values(self._get_merged_config(plugin_id))
+
+    def get_typed_config(self, plugin_id: str) -> dict[str, Any]:
+        """获取插件的结构化配置（含 type/value/label 元数据）。"""
+        return self._get_merged_config(plugin_id)
+
+    def save_config(self, plugin_id: str, data: dict[str, Any]) -> None:
+        """将配置写入 PluginData/plugins/{plugin_id}/config.yaml。
+
+        创建该目录（如不存在），写入 YAML，并更新已加载插件的 config 属性。
+        """
+        data_dir = self.get_plugin_data_dir(plugin_id)
+        config_path = data_dir / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+
+        # 热更新：刷新已加载插件的 config（扁平值）
+        if plugin_id in self._plugins:
+            merged = self._get_merged_config(plugin_id)
+            self._plugins[plugin_id].config = _extract_flat_values(merged)
+
+        logger.info("Plugin config saved: %s", plugin_id)
+
+    def reload(self, plugin_id: str) -> None:
+        """重载插件——shutdown 后重新 initialize，使新配置生效。"""
+        if plugin_id not in self._plugins:
+            logger.warning("插件 %s 未加载，无法重载", plugin_id)
+            return
+
+        try:
+            self._plugins[plugin_id].shutdown()
+        except Exception as e:
+            logger.warning("插件 %s shutdown 异常: %s", plugin_id, e)
+
+        self._plugins.pop(plugin_id, None)
+        self._metadatas.pop(plugin_id, None)
+
+        try:
+            self.load(plugin_id)
+            logger.info("Plugin reloaded: %s", plugin_id)
+        except PluginLoadError as e:
+            logger.error("插件 %s 重载失败: %s", plugin_id, e)
+
+    def _get_merged_config(self, plugin_id: str) -> dict[str, Any]:
+        """合并源码 config.yaml（默认值）+ PluginData config.yaml（覆盖值）。
+
+        同格式时 fields 内逐字段合并；异格式时提取扁平值后合并。
+        """
+        # 源码默认配置
+        source = self._parse_config(self.plugin_dir / plugin_id)
+
+        # PluginData 覆盖配置
+        data_path = self.get_plugin_data_dir(plugin_id) / "config.yaml"
+        if data_path.exists():
+            try:
+                with open(data_path, encoding="utf-8") as f:
+                    override: dict[str, Any] = yaml.safe_load(f) or {}
+                if "fields" in source and "fields" in override:
+                    # 同结构化格式：fields 内逐字段合并
+                    source["fields"].update(override.get("fields", {}))
+                elif "fields" in override:
+                    # 覆盖为结构化，源码为扁平：提取覆盖值合并到扁平
+                    source.update(_extract_flat_values(override))
+                else:
+                    source.update(override)
+            except Exception as e:
+                logger.warning("插件 %s PluginData config.yaml 解析失败: %s", plugin_id, e)
+
+        return source
 
     def clear(self) -> None:
         for pid in list(self._plugins.keys()):

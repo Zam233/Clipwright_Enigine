@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import tempfile
@@ -36,13 +37,19 @@ def _ensure_output_path(suggested: Optional[str], prefix: str, ext: str) -> str:
     return str(path)
 
 
-def _ffmpeg(*args: str, timeout: int = 300) -> subprocess.CompletedProcess:
-    """调用 ffmpeg，CommandNotFound 时抛出 FileNotFoundError。"""
-    return subprocess.run(
-        ["ffmpeg", "-y", *args],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
+async def _ffmpeg(*args: str, timeout: int = 300) -> subprocess.CompletedProcess:
+    """调用 ffmpeg，CommandNotFound 时抛出 FileNotFoundError。
+
+    async 上下文（事件循环线程）里自动 offload 到线程，避免冻住整个服务；
+    sync 上下文（worker 线程等）则直接同步执行。调用方需 ``await``。
+    """
+    cmd = ["ffmpeg", "-y", *args]
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    return await asyncio.to_thread(
+        subprocess.run, cmd, capture_output=True, text=True, timeout=timeout
     )
 
 
@@ -76,7 +83,7 @@ class VideoTrimTool(BaseTool):
             elif end_sec is not None:
                 args.extend(["-to", str(end_sec)])
             args.extend(["-c", "copy", out])
-            result = _ffmpeg(*args)
+            result = await _ffmpeg(*args)
             if result.returncode != 0:
                 return ToolExecResult(
                     status=ToolStatus.ERROR,
@@ -128,7 +135,8 @@ class VideoDownloadTool(BaseTool):
                                   output={"local_path": out, "cached": True}, output_path=out)
 
         try:
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 ["ffmpeg", "-y", "-loglevel", "error",
                  "-i", url, "-c", "copy", "-movflags", "+faststart", out],
                 capture_output=True, text=True, timeout=600,
@@ -158,7 +166,8 @@ class MediaProbeTool(BaseTool):
         **kwargs: Any,
     ) -> ToolExecResult:
         try:
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 ["ffprobe", "-v", "error", "-print_format", "json",
                  "-show_format", "-show_streams", input_path],
                 capture_output=True, text=True, timeout=30,
@@ -219,7 +228,8 @@ class VideoCropTool(BaseTool):
         out = _ensure_output_path(output_path, "crop_", ".mp4")
         try:
             # 用 ffmpeg 的 crop 过滤器裁切居中区域
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 ["ffmpeg", "-y", "-loglevel", "error", "-i", input_path,
                  "-vf", f"crop={aspect.replace(':', '/')}:ih:iw/({aspect.replace(':', '/')}):(ih-iw/({aspect.replace(':', '/')}))/2",
                  "-c:v", "libx264", "-pix_fmt", "yuv420p",
@@ -262,7 +272,7 @@ class VideoThumbnailTool(BaseTool):
                 font_spec = FontConfig.ffmpeg_fontspec(FontConfig.get_font_path())
                 cmd[9] += f",drawtext=text='{text[:50]}':fontsize=48:fontcolor=white:x=(w-text_w)/2:y=h-100{font_spec}"
             cmd.extend(["-q:v", "3", out])
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, timeout=30)
             if result.returncode != 0 or not Path(out).exists():
                 return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
                                       error=f"thumb error: {result.stderr[:200]}")
@@ -292,7 +302,7 @@ class VideoConcatTool(BaseTool):
             with open(file_list, "w") as f:
                 for clip in clips:
                     f.write(f"file '{clip}'\n")
-            result = _ffmpeg("-f", "concat", "-safe", "0", "-i", file_list, "-c", "copy", out)
+            result = await _ffmpeg("-f", "concat", "-safe", "0", "-i", file_list, "-c", "copy", out)
             os.unlink(file_list)
             if result.returncode != 0:
                 return ToolExecResult(
@@ -332,7 +342,7 @@ class VideoOverlayTool(BaseTool):
         out = _ensure_output_path(output_path, "overlay_", ".mp4")
         pos = position or {"x": 0, "y": 0}
         try:
-            result = _ffmpeg(
+            result = await _ffmpeg(
                 "-i", background_path,
                 "-i", overlay_path,
                 "-filter_complex",

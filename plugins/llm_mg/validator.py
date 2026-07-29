@@ -136,13 +136,16 @@ def repair_mg_json(mg_def: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     if "params" not in repaired:
         params = {}
         for elem in repaired.get("elements", []):
-            content = elem.get("content", "")
-            if "{text}" in content:
-                params.setdefault("text", {"type": "string", "default": ""})
-            if "{value}" in content:
-                params.setdefault("value", {"type": "string", "default": ""})
-            if "{accent}" in content:
-                params.setdefault("accent", {"type": "string", "default": "#4f8cff"})
+            for field in ("content", "font_color", "color"):
+                val = elem.get(field, "")
+                if not isinstance(val, str):
+                    continue
+                if "{text}" in val:
+                    params.setdefault("text", {"type": "string", "default": ""})
+                if "{value}" in val:
+                    params.setdefault("value", {"type": "string", "default": ""})
+                if "{accent}" in val:
+                    params.setdefault("accent", {"type": "string", "default": "#4f8cff"})
         if params:
             repaired["params"] = params
 

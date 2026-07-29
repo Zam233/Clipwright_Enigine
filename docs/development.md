@@ -24,7 +24,8 @@ uvicorn clipwright.main:app --reload --host 0.0.0.0 --port 8000
 
 ```
 clipwright/                  # 核心引擎
-├── agents/                  # 6 个 Agent
+├── agents/                  # 7 个 Agent
+│   ├── requirements_agent.py # 需求分析
 │   ├── structure_agent.py   # 结构分析
 │   ├── material_agent.py    # 素材搜索
 │   ├── edit_agent.py        # 时间线生成
@@ -32,7 +33,7 @@ clipwright/                  # 核心引擎
 │   ├── audio_agent.py       # 音频处理（BPM/BGM/音量)
 │   ├── quality_agent.py     # 质检 + 自愈
 │   └── base.py              # Agent 基类
-├── api/                     # REST API 端点 (28 路由)
+├── api/                     # REST API 端点 (30 路由)
 ├── services/                # 核心服务
 │   ├── pipeline.py          # 管线 v1（固定序列）
 │   ├── pipeline_v2.py       # 管线 v2（DAG 并行 + 熔断 + 自愈）
@@ -50,7 +51,7 @@ clipwright/                  # 核心引擎
 │   ├── diagram_svg.py       # SVG 图解渲染器（24+ 图表类型）
 │   └── registry.py          # 动画注册表
 ├── tool/                    # 原子能力
-├── skill/                   # 11 个 Skill
+├── skill/                   # 12 个 Skill
 ├── category/                # 类型插件（内置 4 种）
 ├── plugins/                 # 第三方插件系统
 │   ├── loader.py            # 插件发现/加载/生命周期
@@ -92,6 +93,22 @@ PluginData/
 ```
 
 在 PluginLoader 中通过 `loader.get_plugin_data_dir("my_plugin_id")` 获取路径。
+
+### config.yaml 约定
+
+每个插件的运行时配置**统一为 `config.yaml`**。前端可编辑的配置覆盖项存储于：
+
+```
+PluginData/plugins/{plugin_id}/config.yaml
+```
+
+插件加载时，PluginLoader 会合并两个配置源：
+1. **源码默认配置**：`plugins/{plugin_id}/config.yaml`（插件作者提供）
+2. **运行时覆盖配置**：`PluginData/plugins/{plugin_id}/config.yaml`（前端编辑）
+
+合并规则：顶级键覆盖（非递归深合并）。数据目录配置不存在时，仅使用源码默认值。前端可通过 `DELETE /api/plugin/{id}/config` 删除数据目录文件，回退到源码默认值。
+
+插件内通过 `self.config` 访问合并后的配置。
 
 ## 新增一个第三方插件
 
@@ -141,6 +158,8 @@ class MyTool(BaseTool):
 # 在 tool/__init__.py 的 register_builtin_tools() 中添加
 ```
 
+**已注册的 Tool**：`video_trim` `video_concat` `video_overlay` `video_download` `video_crop` `video_thumbnail` `video_speed` `video_blur` `media_probe` `audio_extract` `audio_normalize` `audio_mix` `audio_replace` `bpm_detect` `scene_detect` `semantic_match` `vision_llm` `face_detect` `background_remove` `effect_vignette` `watermark` `video_filter` `chroma_key` `video_stabilize` `generate_text_video` `subtitle_burn` `text_design` `typewriter_animation` `tracking_text` `mg_dynamic` `material_filter` `frame_validator` `black_frame_detect` `audio_silence_detect` `subtitle_overflow` `speed_ramp` `color_correct` `lut_apply` `whisper_transcribe` `transition_apply` `voice_clone` `text_to_speech`
+
 ## 新增一个 Skill
 
 ```python
@@ -158,6 +177,8 @@ class MySkill(BaseSkill):
 
 # 在 skill/builtin.py 的 register_builtin_skills() 中添加
 ```
+
+**已注册的 Skill**：`analyze_video_structure` `generate_captions` `analyze_audio_rhythm` `auto_caption` `broll_matcher` `script_analysis` `material_downloader` `voiceover_sync` `auto_transition` `background_music` `silence_cut` `dub_script`
 
 ## 新增一个 Agent
 

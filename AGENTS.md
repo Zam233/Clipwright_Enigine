@@ -1,0 +1,118 @@
+# Clipwright / 帧艺 — AI Agent 项目地图
+
+## 快速入口
+
+| 用途 | 文件 |
+|------|------|
+| 项目总览 | [README.md](README.md) |
+| 架构设计 | [docs/structure.md](docs/structure.md) |
+| Agent 工作流 | [docs/workflow.md](docs/workflow.md) |
+| API 参考 | [docs/api_reference.md](docs/api_reference.md) |
+| 开发指南 | [docs/development.md](docs/development.md) |
+| 项目上下文 | [CLAUDE.md](CLAUDE.md) |
+
+## 项目结构
+
+```
+clipwright/
+├── agents/          # 7 个 Agent（需求→结构→素材→剪辑→动画→音频→质检）
+├── api/             # 30 个 API 路由文件
+├── services/        # 29 个后端服务
+├── tool/            # 40 个原子能力工具
+├── skill/           # 12 个可组合技能
+├── animation/       # 动画系统（37+ 动画编目）
+├── category/        # 4 个内置类型插件
+├── plugins/         # 第三方插件系统
+├── schema/          # 11 个数据模型
+├── rag/             # RAG 知识库
+└── persona/         # Persona 配置系统
+
+docs/                # 20 个文档文件
+```
+
+## 核心不变量
+
+1. **7 个 Agent**：RequirementsAgent → StructureAgent → MaterialAgent → EditAgent → AnimationAgent → AudioAgent → QualityAgent
+2. **40 个 Tool**：原子能力层，通过 ToolRegistry 注册
+3. **12 个 Skill**：可组合的高级能力，通过 SkillRegistry 注册
+4. **30 个 API 路由组**：每个路由文件对应一组端点
+5. **29 个 Service**：业务逻辑层
+6. **11 个 Schema**：Pydantic v2 数据模型
+7. **4 个内置 Category Plugin**：知识区长片、鬼畜快剪、数码评测、Vlog 日常
+8. **五层架构**：原子能力层 → Agent 编排层 → 类型插件层 → Persona 配置层 → 用户接口层
+9. **Persona 配置不直接调用原子能力**：必须经过类型插件层翻译
+
+## 常用工作流
+
+### 新增一个 Tool
+
+1. 在 `clipwright/tool/` 下创建工具文件，继承 `BaseTool`
+2. 实现 `execute()` 方法和 `to_llm_tool()` 方法
+3. 在 `tool/__init__.py` 的 `register_builtin_tools()` 中注册
+4. 更新 `docs/api_reference.md` 工具列表
+
+### 新增一个 Skill
+
+1. 在 `clipwright/skill/` 下创建技能文件，继承 `BaseSkill`
+2. 实现核心逻辑和 `to_llm_tool()` 方法
+3. 在 `skill/builtin.py` 的 `register_builtin_skills()` 中注册
+4. 更新 `docs/api_reference.md` 技能列表
+
+### 新增一个 Agent
+
+1. 在 `clipwright/agents/` 下创建 Agent 文件，继承 `BaseAgent`
+2. 实现 `execute()` 方法
+3. 在 `agents/__init__.py` 的代理列表中注册
+4. 更新 `docs/structure.md` 和 `docs/workflow.md`
+
+### 新增一个 Service
+
+1. 在 `clipwright/services/` 下创建服务文件
+2. 在依赖注入中注册
+3. 更新 `docs/services_overview.md`
+
+### 新增 API 端点
+
+1. 在 `clipwright/api/` 下创建路由文件
+2. 在 `main.py` 中注册路由
+3. 更新 `docs/api_reference.md`
+
+## 文档维护规则
+
+每次功能更新后，必须同步更新 `docs/` 中的相关文档。详见 [docs/README.md](docs/README.md) 的文档维护规则。
+
+## 新增模块
+
+| 文档 | 说明 |
+|------|------|
+| [素材系统](docs/material_system.md) | 多源素材搜索与检索系统 |
+| [语音与 TTS](docs/voice_tts.md) | 声音克隆、语音合成与配音 |
+| [动画系统](docs/animation_system.md) | 动画编目、渲染管线与 MG 动画 |
+| [服务概览](docs/services_overview.md) | 全部后端服务层模块说明 |
+| [需求分析 Agent](docs/requirements_agent.md) | Requirements Agent 设计与职责 |
+
+## 验证清单
+
+修改代码后，运行：
+```bash
+# 类型检查
+pip install -e ".[dev]"
+
+# 启动服务验证
+uvicorn clipwright.main:app --host 0.0.0.0 --port 8000
+```
+
+## 文档与对应代码
+
+| 文档 | 覆盖的代码模块 |
+|------|---------------|
+| [架构总览](docs/structure.md) | 全部五层架构 |
+| [Agent 工作流](docs/workflow.md) | agents/, services/pipeline*.py, services/agent_bus.py |
+| [API 参考](docs/api_reference.md) | api/ 全部 30 个路由文件 |
+| [开发指南](docs/development.md) | tool/, skill/, plugins/, 开发规范 |
+| [Persona 系统](docs/Persona.md) | persona/ 模块 |
+| [素材系统](docs/material_system.md) | 素材源插件, material Agent |
+| [语音与 TTS](docs/voice_tts.md) | services/voice.py, api/voice.py |
+| [动画系统](docs/animation_system.md) | animation/ 全部 |
+| [服务概览](docs/services_overview.md) | services/ 全部 29 个服务 |
+| [需求分析 Agent](docs/requirements_agent.md) | agents/requirements_agent.py, services/requirements_service.py |

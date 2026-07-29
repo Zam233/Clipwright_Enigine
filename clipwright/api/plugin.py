@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from clipwright.plugins import PluginLoadError
 from clipwright.schema.plugin import PluginMetadata
@@ -59,6 +59,74 @@ async def unload_plugin(plugin_id: str) -> dict[str, str]:
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
     _loader.unload(plugin_id)
+    return {"status": "ok", "plugin_id": plugin_id}
+
+
+# ── 插件配置管理 ──
+
+@router.get("/{plugin_id}/config")
+async def get_plugin_config(plugin_id: str) -> dict[str, object]:
+    """读取插件结构化配置（含 type/value/label 元数据）。"""
+    if _loader is None:
+        raise HTTPException(status_code=503, detail="Plugin system not initialized")
+    if _loader.get(plugin_id) is None:
+        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not loaded")
+    return _loader.get_typed_config(plugin_id)
+
+
+@router.put("/{plugin_id}/config")
+async def put_plugin_config(plugin_id: str, request: Request) -> dict[str, object]:
+    """写入插件配置（YAML 格式），校验类型后存入 PluginData。"""
+    if _loader is None:
+        raise HTTPException(status_code=503, detail="Plugin system not initialized")
+    if _loader.get(plugin_id) is None:
+        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not loaded")
+
+    import yaml
+
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="Empty body")
+
+    try:
+        data = yaml.safe_load(body)
+    except yaml.YAMLError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
+
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Config must be a YAML mapping")
+
+    # 校验结构化配置
+    from clipwright.plugins.config_types import validate_typed_config
+    errors = validate_typed_config(data)
+    if errors:
+        raise HTTPException(status_code=400, detail={"message": "配置校验失败", "errors": errors})
+
+    _loader.save_config(plugin_id, data)
+    _loader.reload(plugin_id)
+    return {"status": "ok", "plugin_id": plugin_id}
+
+
+@router.delete("/{plugin_id}/config")
+async def delete_plugin_config(plugin_id: str) -> dict[str, str]:
+    """删除数据目录的 config.yaml，回退到源码默认配置。"""
+    if _loader is None:
+        raise HTTPException(status_code=503, detail="Plugin system not initialized")
+    if _loader.get(plugin_id) is None:
+        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not loaded")
+
+    config_path = _loader.get_plugin_data_dir(plugin_id) / "config.yaml"
+
+    if config_path.exists():
+        config_path.unlink()
+
+    # 刷新并重载
+    plugin = _loader.get(plugin_id)
+    if plugin:
+        from clipwright.plugins.loader import _extract_flat_values
+        plugin.config = _extract_flat_values(_loader._get_merged_config(plugin_id))
+
+    _loader.reload(plugin_id)
     return {"status": "ok", "plugin_id": plugin_id}
 
 

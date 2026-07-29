@@ -924,8 +924,8 @@ function showDownloadLink(filename) {
 let _editSessionId = null;
 
 function showEditChat() {
-  const row = document.getElementById('ewChatRow');
-  if (row) row.style.display = 'block';
+  const row = document.getElementById('ewChatArea');
+  if (row) row.style.display = 'flex';
 }
 
 async function ensureEditSession() {
@@ -951,13 +951,15 @@ async function ensureEditSession() {
 
 async function sendEditChat() {
   const input = document.getElementById('ewChatInput');
+  if (!input) return;
   const msg = input.value.trim();
   if (!msg) return;
   input.value = '';
+  input.disabled = true;
   ewLog('🎯 ' + msg, 'step');
 
   const sessionId = await ensureEditSession();
-  if (!sessionId) return;
+  if (!sessionId) { input.disabled = false; return; }
 
   try {
     const r = await fetch(API_BASE() + '/api/edit/session/' + sessionId + '/chat?message=' + encodeURIComponent(msg), { method: 'POST' });
@@ -971,11 +973,14 @@ async function sendEditChat() {
     }
   } catch(ex) {
     ewLog('请求失败: ' + ex.message, 'error');
+  } finally {
+    input.disabled = false;
   }
 }
 
 function quickEdit(msg) {
-  document.getElementById('ewChatInput').value = msg;
+  const input = document.getElementById('ewChatInput');
+  if (input) input.value = msg;
   sendEditChat();
 }
 

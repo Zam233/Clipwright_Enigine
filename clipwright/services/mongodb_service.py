@@ -17,8 +17,25 @@ from typing import Any, Dict, List, Tuple
 from pymongo.errors import OperationFailure
 import uuid
 
-from ..context import mongo  
+from ..context import mongo
 from ..config import TIME_ZONE, MONGO_TRANSACTIONS_ENABLED
+
+
+def _io(fn, *args, **kwargs):
+    """在 async 上下文把同步 pymongo 调用 offload 到线程池，sync 上下文则直接执行。
+
+    pymongo 是同步驱动；在 ``async def`` 路由（事件循环线程）里直接调用会冻住整个服务。
+    本帮手让 model 方法对 sync/async 调用方都透明：async 下走 ``asyncio.to_thread``，
+    sync 下（后台 worker 等）原样执行。pymongo 的 MongoClient 本身线程安全，
+    各请求使用独立 session/游标，故并发 offload 安全。
+    """
+    import asyncio
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return fn(*args, **kwargs)
+    return asyncio.to_thread(fn, *args, **kwargs)
+
 
 class MongoDbModel(ABC):
     """Abstract base model class with common MongoDB operations using PyMongo."""
@@ -216,10 +233,10 @@ class MongoDbModel(ABC):
         """
         try:
             oid = ObjectId(id) if not isinstance(id, ObjectId) else id
-            data = cls.get_collection().find_one({"_id": oid})
+            data = _io(cls.get_collection().find_one, {"_id": oid})
         except Exception:
             # ObjectId 转换失败（如 UUID 格式），按字符串 _id 查找
-            data = cls.get_collection().find_one({"_id": id})
+            data = _io(cls.get_collection().find_one, {"_id": id})
         return cls.from_dict(data) if data else None
 
     @classmethod
@@ -233,14 +250,16 @@ class MongoDbModel(ABC):
         Returns:
             MongoDbModel or None: The matching document as a model instance.
         """
-        cursor = cls.get_collection().find(filter or {})
-        if sort:
-            cursor = cursor.sort(sort)
-        data = cursor.limit(1)
-        try:
-            doc = next(data)
-        except StopIteration:
-            doc = None
+        def _run():
+            cursor = cls.get_collection().find(filter or {})
+            if sort:
+                cursor = cursor.sort(sort)
+            data = cursor.limit(1)
+            try:
+                return next(data)
+            except StopIteration:
+                return None
+        doc = _io(_run)
         return cls.from_dict(doc) if doc else None
 
     @classmethod
@@ -256,14 +275,16 @@ class MongoDbModel(ABC):
         Returns:
             list: A list of model instances.
         """
-        cursor = cls.get_collection().find(filter or {})
-        if sort:
-            cursor = cursor.sort(sort)
-        if skip:
-            cursor = cursor.skip(skip)
-        if limit:
-            cursor = cursor.limit(limit)
-        return [cls.from_dict(doc) for doc in cursor]
+        def _run():
+            cursor = cls.get_collection().find(filter or {})
+            if sort:
+                cursor = cursor.sort(sort)
+            if skip:
+                cursor = cursor.skip(skip)
+            if limit:
+                cursor = cursor.limit(limit)
+            return [cls.from_dict(doc) for doc in cursor]
+        return _io(_run)
 
     @classmethod
     def count(cls, filter: dict = {}):
@@ -275,7 +296,7 @@ class MongoDbModel(ABC):
         Returns:
             list: A list of model instances.
         """
-        document_count = cls.get_collection().count_documents(filter or {})
+        document_count = _io(cls.get_collection().count_documents, filter or {})
         return document_count
 
     @classmethod
@@ -288,7 +309,7 @@ class MongoDbModel(ABC):
         Returns:
             list: The result of the aggregation pipeline.
         """
-        return list(cls.get_collection().aggregate(pipeline))
+        return _io(lambda: list(cls.get_collection().aggregate(pipeline)))
 
     def insert(self, session=None):
         """Inserts this instance as a new document in the database.
@@ -306,7 +327,7 @@ class MongoDbModel(ABC):
         data.pop("id", None)
         if custom_id:
             data["_id"] = custom_id
-        result = self.get_collection().insert_one(data, session=session)
+        result = _io(self.get_collection().insert_one, data, session=session)
         if not custom_id:
             self._id = result.inserted_id
         return result.inserted_id
@@ -325,7 +346,7 @@ class MongoDbModel(ABC):
         self.updated_time = datetime.now(tz=TIME_ZONE)
         data = self.to_dict(to_database=True)
         data.pop("_id", None)
-        result = self.get_collection().update_one({"_id": self._id}, {"$set": data}, session=session)
+        result = _io(self.get_collection().update_one, {"_id": self._id}, {"$set": data}, session=session)
         return result.modified_count
 
     def delete(self, session=None) -> int:
@@ -339,7 +360,7 @@ class MongoDbModel(ABC):
         """
         if not hasattr(self, "_id"):
             raise ValueError("This instance must have _id to delete.")
-        result = self.get_collection().delete_one({"_id": self._id}, session=session)
+        result = _io(self.get_collection().delete_one, {"_id": self._id}, session=session)
         return result.deleted_count
 
     def unset_attributes(
@@ -389,7 +410,8 @@ class MongoDbModel(ABC):
         unset_payload = {"$unset": {field: "" for field in fields_to_actually_unset}}
 
         # Perform the database operation.
-        result = self.get_collection().update_one(
+        result = _io(
+            self.get_collection().update_one,
             {"_id": self._id}, unset_payload
         )
 
@@ -437,19 +459,21 @@ class MongoDbModel(ABC):
         if cls._supports_transactions is None:
             cls.init_transaction_support()
 
-        if cls._supports_transactions is False:
-            return callback(session=None, **kwargs)
-
-        try:
-            with mongo.cx.start_session() as session:
-                with session.start_transaction():
-                    return callback(session=session, **kwargs)
-        except OperationFailure as e:
-            # Code 20: Transaction numbers are only allowed on a replica set member or mongos
-            if e.code == 20:
-                cls._supports_transactions = False
+        def _run():
+            if cls._supports_transactions is False:
                 return callback(session=None, **kwargs)
-            raise e
+            try:
+                with mongo.cx.start_session() as session:
+                    with session.start_transaction():
+                        return callback(session=session, **kwargs)
+            except OperationFailure as e:
+                # Code 20: Transaction numbers are only allowed on a replica set member or mongos
+                if e.code == 20:
+                    cls._supports_transactions = False
+                    return callback(session=None, **kwargs)
+                raise e
+
+        return _io(_run)
 
     @classmethod
     def delete_many(cls, filter: dict, session=None) -> int:
@@ -471,7 +495,7 @@ class MongoDbModel(ABC):
         if not isinstance(filter, dict) or not filter:
             raise ValueError("A non-empty filter dictionary is required for delete_many to prevent accidental mass deletion.")
         
-        result = cls.get_collection().delete_many(filter, session=session)
+        result = _io(cls.get_collection().delete_many, filter, session=session)
         return result.deleted_count
 
     def update_attributes(
@@ -530,7 +554,8 @@ class MongoDbModel(ABC):
                 update_data[timestamp_field] = now
 
             try:
-                result = self.get_collection().update_one(
+                result = _io(
+                    self.get_collection().update_one,
                     {"_id": self._id}, {"$set": update_data}, session=session
                 )
                 if result.modified_count > 0:
@@ -573,9 +598,10 @@ class MongoDbModel(ABC):
         # For now, let's allow Mongo to handle it, but we should update the in-memory object too.
         
         try:
-            result = self.get_collection().update_one(
-                {"_id": self._id}, 
-                {"$inc": mapper}, 
+            result = _io(
+                self.get_collection().update_one,
+                {"_id": self._id},
+                {"$inc": mapper},
                 session=session
             )
             

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from pathlib import Path
 from typing import Any, Optional
@@ -45,7 +46,9 @@ class ProxyGenerator:
         proxy_path = str(out_dir / f"{src.stem}{suffix}{src.suffix}")
 
         try:
-            result = subprocess.run(
+            # 同步 ffmpeg（最长 600s）offload 到线程池，避免冻住事件循环。
+            result = await asyncio.to_thread(
+                subprocess.run,
                 ["ffmpeg", "-y", "-i", input_path,
                  "-vf", f"scale=-2:{proxy_height}",
                  "-c:v", "libx264", "-preset", "fast", "-crf", "23",

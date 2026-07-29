@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -13,7 +15,6 @@ from clipwright.schema.timeline import Timeline
 from clipwright.services.render import RenderService
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-import asyncio
 
 router = APIRouter(prefix="/api/render", tags=["render"])
 _render_service = RenderService()

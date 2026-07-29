@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -83,27 +84,31 @@ class STTService:
         if not path.exists():
             return STTResult(text="", segments=[], success=False, error=f"文件不存在: {audio_path}")
 
-        # 如果是视频，先提取音频
-        audio_file = self._ensure_audio(path)
+        # 如果是视频，先提取音频（同步 ffmpeg，offload 到线程避免冻住事件循环）
+        audio_file = await asyncio.to_thread(self._ensure_audio, path)
 
         try:
-            # 尝试 whisper Python 包
-            result = self._transcribe_whisper(audio_file, language, model_size, word_timestamps)
+            # 尝试 whisper Python 包（CPU 推理可达数分钟，必须 offload）
+            result = await asyncio.to_thread(
+                self._transcribe_whisper, audio_file, language, model_size, word_timestamps
+            )
             if result.success:
                 return result
         except Exception as e:
             logger.debug("Whisper 不可用 (%s), 尝试 faster-whisper...", e)
 
         try:
-            # 尝试 faster-whisper
-            result = self._transcribe_faster_whisper(audio_file, language, model_size, word_timestamps)
+            # 尝试 faster-whisper（同样 CPU 推理，offload）
+            result = await asyncio.to_thread(
+                self._transcribe_faster_whisper, audio_file, language, model_size, word_timestamps
+            )
             if result.success:
                 return result
         except Exception as e:
             logger.debug("faster-whisper 不可用 (%s), 使用保底模式...", e)
 
         # 保底：FFmpeg 提取音频信息 + 占位结果
-        duration = self._get_duration(audio_file)
+        duration = await asyncio.to_thread(self._get_duration, audio_file)
         return STTResult(
             text="",
             segments=[],
@@ -129,8 +134,8 @@ class STTService:
         if not path.exists():
             return STTResult(text="", segments=[], success=False, error=f"文件不存在: {audio_path}")
 
-        audio_file = self._ensure_audio(path)
-        duration = self._get_duration(audio_file)
+        audio_file = await asyncio.to_thread(self._ensure_audio, path)
+        duration = await asyncio.to_thread(self._get_duration, audio_file)
 
         # 按句子分段并估算时间
         sentences = self._split_sentences(transcript_text)

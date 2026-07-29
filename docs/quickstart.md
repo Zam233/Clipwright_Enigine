@@ -29,6 +29,25 @@ CLIPWRIGHT_LLM_BASE_URL=https://api.deepseek.com
 CLIPWRIGHT_LLM_MODEL=deepseek-chat
 ```
 
+### TTS / 声音克隆配置（可选）
+
+```bash
+# DashScope API Key（Qwen-TTS / CosyVoice / MiniMax 共用）
+CLIPWRIGHT_TTS_DASHSCOPE_API_KEY=sk-...
+
+# CosyVoice 所需的 Workspace ID
+CLIPWRIGHT_TTS_WORKSPACE_ID=your_workspace_id
+
+# 默认 TTS 提供者：qwen_tts | cosyvoice | minimax
+CLIPWRIGHT_TTS_DEFAULT_PROVIDER=qwen_tts
+
+# 公网上传服务（CosyVoice / MiniMax 克隆需要公网 URL）
+# 支持 uguu、catbox，逗号分隔
+CLIPWRIGHT_TTS_PUBLIC_UPLOAD_SERVICES=uguu,catbox
+```
+
+> **依赖**：TTS 功能额外需要 `dashscope>=1.22.0`，已包含在 `pyproject.toml` 中。
+
 ## 启动
 
 ```bash
@@ -154,7 +173,7 @@ personas/            # Persona 定义
 | 概念 | 说明 |
 |------|------|
 | **Pipeline** | Agent 编排管线，v1 固定序列 / v2 动态并行 |
-| **Agent** | 6 个 Agent（结构/素材/剪辑/动画/音频/质检） |
+| **Agent** | 7 个 Agent（需求/结构/素材/剪辑/动画/音频/质检） |
 | **Tool** | 原子能力（FFmpeg 封装） |
 | **Skill** | 可组合的高级能力 |
 | **Persona** | UP 主风格配置（四层复合 + 自适应学习） |

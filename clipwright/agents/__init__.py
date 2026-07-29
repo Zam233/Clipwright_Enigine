@@ -14,6 +14,7 @@ from .quality_agent import QualityAgent
 
 __all__ = [
     "BaseAgent",
+    "RequirementsAgent",
     "StructureAgent",
     "MaterialAgent",
     "EditAgent",

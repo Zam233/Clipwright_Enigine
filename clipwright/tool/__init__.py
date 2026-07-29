@@ -7,46 +7,110 @@
 """
 
 from clipwright.tool.animation import TrackingTextTool, TypewriterAnimationTool
-from clipwright.tool.audio import AudioExtractTool, AudioReplaceTool, BPMDetectTool
+from clipwright.tool.animation_list import ListAnimationsTool
+from clipwright.tool.audio import (
+    AudioExtractTool,
+    AudioMixTool,
+    AudioNormalizeTool,
+    AudioReplaceTool,
+    BPMDetectTool,
+)
 from clipwright.tool.base import BaseTool
-from clipwright.tool.registry import ToolRegistry
-from clipwright.tool.video import VideoConcatTool, VideoOverlayTool, VideoTrimTool
 from clipwright.tool.chroma_key import ChromaKeyTool
 from clipwright.tool.color import ColorCorrectTool, LutApplyTool
+from clipwright.tool.effects import (
+    BackgroundRemoveTool,
+    EffectVignetteTool,
+    FaceDetectTool,
+    TextDiagramTool,
+    TransitionApplyTool,
+    VideoBlurTool,
+    VideoSpeedTool,
+    WatermarkTool,
+)
+from clipwright.tool.registry import ToolRegistry
 from clipwright.tool.speed import SpeedRampTool
 from clipwright.tool.stabilize import VideoStabilizeTool
+from clipwright.tool.stubs import (
+    AudioSilenceDetectTool,
+    BlackFrameDetectTool,
+    FrameValidatorTool,
+    MaterialFilterTool,
+    SubtitleOverflowTool,
+    TextDesignTool,
+    VideoFilterTool,
+    VisionLLMTool,
+    WhisperTranscribeTool,
+)
+from clipwright.tool.voice import TextToSpeechTool, VoiceCloneTool
+from clipwright.tool.subtitle import SubtitleBurnTool
 from clipwright.tool.text_video import GenerateTextVideoTool
+from clipwright.tool.video import (
+    MediaProbeTool,
+    VideoConcatTool,
+    VideoCropTool,
+    VideoDownloadTool,
+    VideoOverlayTool,
+    VideoThumbnailTool,
+    VideoTrimTool,
+)
 from clipwright.tool.vision import SceneDetectTool, SemanticMatchTool
 
 
 def register_builtin_tools() -> None:
     """注册所有内置工具到全局 ToolRegistry。"""
     tools: list[BaseTool] = [
-        # Video
+        # ── 视频 ──
         VideoTrimTool(),
         VideoConcatTool(),
         VideoOverlayTool(),
-        # Audio
+        VideoDownloadTool(),
+        VideoCropTool(),
+        VideoThumbnailTool(),
+        VideoSpeedTool(),
+        VideoBlurTool(),
+        VideoFilterTool(),
+        MediaProbeTool(),
+        # ── 音频 ──
         AudioExtractTool(),
-        BPMDetectTool(),
+        AudioNormalizeTool(),
+        AudioMixTool(),
         AudioReplaceTool(),
-        # Vision
+        BPMDetectTool(),
+        # ── 视觉 ──
         SceneDetectTool(),
         SemanticMatchTool(),
-        # Animation
+        VisionLLMTool(),
+        FaceDetectTool(),
+        BackgroundRemoveTool(),
+        # ── 特效 ──
+        EffectVignetteTool(),
+        WatermarkTool(),
+        ChromaKeyTool(),
+        VideoStabilizeTool(),
+        # ── 文字 ──
+        GenerateTextVideoTool(),
+        SubtitleBurnTool(),
+        TextDesignTool(),
         TypewriterAnimationTool(),
         TrackingTextTool(),
-        # Speed
+        TextDiagramTool(),
+        # ── 素材 ──
+        MaterialFilterTool(),
+        FrameValidatorTool(),
+        # ── 质量 ──
+        BlackFrameDetectTool(),
+        AudioSilenceDetectTool(),
+        SubtitleOverflowTool(),
+        # ── 其他 ──
         SpeedRampTool(),
-        # Color
         ColorCorrectTool(),
         LutApplyTool(),
-        # Chroma Key
-        ChromaKeyTool(),
-        # Stabilize
-        VideoStabilizeTool(),
-        # Text-to-Video
-        GenerateTextVideoTool(),
+        TransitionApplyTool(),
+        WhisperTranscribeTool(),
+        TextToSpeechTool(),
+        VoiceCloneTool(),
+        ListAnimationsTool(),
     ]
     for tool in tools:
         ToolRegistry.register(tool)
@@ -60,25 +124,51 @@ __all__ = [
     "VideoTrimTool",
     "VideoConcatTool",
     "VideoOverlayTool",
+    "VideoDownloadTool",
+    "VideoCropTool",
+    "VideoThumbnailTool",
+    "VideoSpeedTool",
+    "VideoBlurTool",
+    "VideoFilterTool",
+    "MediaProbeTool",
     # Audio
     "AudioExtractTool",
-    "BPMDetectTool",
+    "AudioNormalizeTool",
+    "AudioMixTool",
     "AudioReplaceTool",
+    "BPMDetectTool",
     # Vision
     "SceneDetectTool",
     "SemanticMatchTool",
-    # Animation
+    "VisionLLMTool",
+    "FaceDetectTool",
+    "BackgroundRemoveTool",
+    # Effects
+    "EffectVignetteTool",
+    "WatermarkTool",
+    "ChromaKeyTool",
+    "VideoStabilizeTool",
+    # Text
+    "GenerateTextVideoTool",
+    "SubtitleBurnTool",
+    "TextDesignTool",
     "TypewriterAnimationTool",
     "TrackingTextTool",
-    # Speed
+    "TextDiagramTool",
+    # Material
+    "MaterialFilterTool",
+    "FrameValidatorTool",
+    # Quality
+    "BlackFrameDetectTool",
+    "AudioSilenceDetectTool",
+    "SubtitleOverflowTool",
+    # Misc
     "SpeedRampTool",
-    # Color
     "ColorCorrectTool",
     "LutApplyTool",
-    # Chroma Key
-    "ChromaKeyTool",
-    # Stabilize
-    "VideoStabilizeTool",
-    # Text-to-Video
-    "GenerateTextVideoTool",
+    "TransitionApplyTool",
+    "WhisperTranscribeTool",
+    "TextToSpeechTool",
+    "VoiceCloneTool",
+    "ListAnimationsTool",
 ]

@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     persona_dir: Path = Path("personas")
     plugin_dir: Path = Path("plugins")
     plugin_data_dir: Path = Path("PluginData")
+    project_dir: Path = Path("projects")
 
     # --- IsoBase / LLM ---
     llm_provider: Literal["openai", "anthropic", "ollama"] = "anthropic"
@@ -90,6 +91,24 @@ class Settings(BaseSettings):
     rag_chunk_size: int = 512
     rag_chunk_overlap: int = 64
     rag_embed_batch_size: int = 20
+
+    # --- TTS / 声音克隆 ---
+    # 阿里云百炼（DashScope）凭据，用于声音克隆与语音合成
+    tts_dashscope_api_key: str = ""
+    tts_workspace_id: str = ""
+    # 默认音色模型 provider：qwen-tts | cosyvoice | minimax
+    tts_default_provider: Literal["qwen-tts", "cosyvoice", "minimax"] = "qwen-tts"
+    # 各 provider 默认目标模型
+    tts_qwen_model: str = "qwen3-tts-vc-2026-01-22"
+    tts_cosyvoice_model: str = "cosyvoice-v3.5-plus"
+    tts_minimax_model: str = "MiniMax/speech-2.8-turbo"
+    # 音色元数据 / 合成音频 / 克隆样本 存储路径
+    tts_voice_db: Path = Path("PluginData/voices/voices.json")
+    tts_output_dir: Path = Path("PluginData/voices/audio")
+    tts_upload_dir: Path = Path("PluginData/voices/uploads")
+    # 公网上传服务（逗号分隔，按顺序优先级；内置 uguu / catbox）。
+    # 仅 CosyVoice / MiniMax 克隆需要公网音频 URL；Qwen-TTS 用 base64 不受影响。
+    tts_public_upload_services: str = "uguu,catbox"
 
 
 settings = Settings()

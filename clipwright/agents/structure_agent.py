@@ -33,7 +33,14 @@ SYSTEM_PROMPT_TPL = """你是一个{tone}风格的视频脚本创作者。
     "title": "场景标题",
     "description": "场景描述",
     "keywords": ["关键词1", "关键词2"],
-    "duration_sec": 30
+    "duration_sec": 30,
+    "voiceover_script": "该场景的口播旁白文案",
+    "visual_description": {{
+        "material_library": "素材来源/库名",
+        "material_content": "画面具体内容描述",
+        "material_preference": "素材偏好(色调/构图等)",
+        "animation_desc": "动画描述(如有)"
+    }}
 }}
 
 要求：
@@ -48,10 +55,7 @@ SYSTEM_PROMPT_TPL = """你是一个{tone}风格的视频脚本创作者。
 TOOL_PROMPT = """
 ## 可用工具
 你可以在生成脚本骨架的过程中调用以下工具来获取参考数据：
-- scene_detect: 检测视频中的场景切换点
-- bpm_detect: 检测音频文件的 BPM
-- audio_extract: 从视频中提取音频
-- semantic_match: 用语义搜索匹配文字和视频素材
+- list_animations: List available MG/text/logic animations. Use when scene needs animation.
 """
 
 
@@ -72,8 +76,18 @@ def _validate_scenes(scenes: list[dict]) -> tuple[list[dict], list[str]]:
         dur = s.get("duration_sec", 0)
         if not isinstance(dur, (int, float)) or dur <= 0:
             issues.append(f"duration_sec 无效: {dur}")
+        # Keywords is optional - auto-generate from title/description if missing
         if not isinstance(s.get("keywords"), list) or len(s.get("keywords", [])) == 0:
-            issues.append("缺少 keywords")
+            # Auto-generate keywords from title and description
+            title = s.get("title", "")
+            desc = s.get("description", "")
+            auto_keywords = []
+            if title:
+                auto_keywords.extend(title.split()[:3])
+            if desc:
+                auto_keywords.extend(desc.split()[:2])
+            s["keywords"] = auto_keywords[:5] if auto_keywords else ["场景"]
+            warnings.append(f"场景[{i}] keywords 已自动补全")
         if issues:
             warnings.append(f"场景[{i}] {', '.join(issues)}，已过滤")
         else:
@@ -115,6 +129,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                 cut_profile=cut_profile,
                 max_duration=max_duration,
             )
+            system_prompt += TOOL_PROMPT
 
             if input_data.persona_prompt:
                 system_prompt += f"\n\n## Persona Prompt\n{input_data.persona_prompt}\n"
@@ -126,6 +141,13 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             audio_duration = context.extra_params.get("audio_duration_sec", 0)
 
             user_prompt = f"选题：{context.topic}\n请生成脚本骨架。"
+
+            # 注入用户审阅确认的简报/规划书（人在回路审阅结果，须严格遵循）
+            brief_context = self._build_brief_context(
+                input_data.creative_brief, input_data.production_plan
+            )
+            if brief_context:
+                user_prompt += brief_context
 
             # 注入 animation_intents（来自 RequirementsAgent）
             anim_intents = context.extra_params.get("animation_intents", [])
@@ -143,6 +165,19 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                             intent_lines.append(f"  风格: {style}")
                 user_prompt += "\n".join(intent_lines)
 
+            # 注入配音时间轴（来自 DubView，用于场景时间对齐）
+            dub_segments = context.extra_params.get("dub_segments", [])
+            if dub_segments and isinstance(dub_segments, list):
+                dub_lines = ["\n## 配音时间轴（场景时间须与之对齐）"]
+                for i, seg in enumerate(dub_segments):
+                    if isinstance(seg, dict):
+                        start = seg.get("start", 0)
+                        end = seg.get("end", 0)
+                        text = seg.get("text", "")
+                        dub_lines.append(f"- 片段{i+1}: {start:.1f}s - {end:.1f}s | {text[:50]}")
+                user_prompt += "\n".join(dub_lines)
+                logger.info("StructureAgent: 注入 %d 个配音片段到 prompt", len(dub_segments))
+
             anim_guide = self._build_anim_guide()
             user_prompt = self._build_user_prompt(
                 video_mode, script_text, audio_duration, user_prompt, anim_guide,
@@ -157,24 +192,49 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
             if has_api_key:
                 try:
+                    tool_names = ["list_animations"]
+                    available_tools = {}
+                    for name in tool_names:
+                        tool = ToolRegistry.get(name)
+                        if tool and tool.is_available():
+                            available_tools[name] = tool
+                        else:
+                            logger.warning("StructureAgent: 工具 %s 不可用或不存在", name)
+                    tool_schemas = [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": tool.name,
+                                "description": tool.description or f"Execute {tool.name}",
+                                "parameters": getattr(tool, "parameters_schema", {}),
+                            },
+                        }
+                        for tool in available_tools.values()
+                    ]
+                    logger.info("StructureAgent: 可用工具=%s, tool_schemas数量=%d", list(available_tools.keys()), len(tool_schemas))
                     result = await asyncio.wait_for(
-                        self._llm.structured_output(
+                        self._llm.with_tools(
                             system_prompt=system_prompt,
                             user_prompt=user_prompt,
+                            tool_executor=self._tool_executor_for_llm,
+                            tools=tool_schemas,
                             pipeline_id=context.pipeline_id,
                         ),
                         timeout=self.timeout_sec,
                     )
-                    raw_scenes = self._parse_structured_result(result, context.topic, tone)
+                    logger.info("StructureAgent: LLM 响应长度=%d, 内容预览=%.200s", len(result.content or ""), result.content or "")
+                    raw_scenes = self._parse_scenes(result.content)
+                    logger.info("StructureAgent: 解析出 %d 个原始场景", len(raw_scenes))
                     scenes, warnings = _validate_scenes(raw_scenes)
+                    logger.info("StructureAgent: 验证后 %d 个有效场景, 警告=%s", len(scenes), warnings)
                 except asyncio.TimeoutError:
                     logger.warning("StructureAgent: LLM 超时（>%ss），使用 fallback", self.timeout_sec)
-                    scenes = self._fallback_scenes(context.topic, tone)
+                    scenes = self._fallback_scenes(context.topic, tone, script_text)
                     warnings.append(f"LLM 超时（>{self.timeout_sec}s）")
 
             if not scenes:
                 logger.info("StructureAgent: 无有效场景，使用 fallback")
-                scenes = self._fallback_scenes(context.topic, tone)
+                scenes = self._fallback_scenes(context.topic, tone, script_text)
 
             output = StructureOutput(
                 decision=AgentDecision.PASS,
@@ -257,7 +317,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
     def _build_user_prompt(self, mode: str, script: str, audio_dur: float, base: str, anim_guide: str) -> str:
         if mode == "visual" and script:
-            truncated = script[:3000] + ("..." if len(script) > 3000 else "")
+            truncated = script[:8000] + ("..." if len(script) > 8000 else "")
             lines = [l.strip() for l in truncated.split('\n') if l.strip()]
             return base + (
                 f"\n\n## 场景列表\n{truncated}\n\n## 要求\n"
@@ -269,7 +329,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                 f"6. keywords 具体可搜索\n\n{anim_guide}"
             )
         elif script:
-            truncated = script[:2000] + ("..." if len(script) > 2000 else "")
+            truncated = script[:8000] + ("..." if len(script) > 8000 else "")
             return base + (
                 f"\n\n## 完整文稿\n{truncated}\n\n## 要求\n"
                 f"1. 总时长约 {audio_dur:.0f}s\n"
@@ -280,10 +340,59 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             )
         return base
 
+    @staticmethod
+    def _build_brief_context(brief: dict | None, plan: dict | None) -> str:
+        """将用户审阅确认的简报/规划书序列化为 prompt 上下文（人在回路）。"""
+        parts: list[str] = []
+        if isinstance(brief, dict) and brief:
+            lines = ["\n\n## 用户已确认的创作简报（必须严格遵循）"]
+            simple_fields = [
+                ("title", "标题"), ("overview", "概述"), ("target_audience", "目标受众"),
+                ("core_message", "核心信息"), ("style_direction", "风格方向"),
+                ("structure_suggestion", "结构建议"), ("duration_estimate", "预估时长"),
+                ("production_plan", "制作方案"), ("reference_style", "参考风格"),
+                ("bgm_requirement", "BGM需求"), ("era_background", "年代背景"),
+            ]
+            for key, label in simple_fields:
+                val = brief.get(key)
+                if val:
+                    lines.append(f"- {label}: {val}")
+            for key, label in (("key_elements", "关键元素"), ("special_requirements", "特殊要求")):
+                val = brief.get(key)
+                if isinstance(val, list) and val:
+                    lines.append(f"- {label}: {'、'.join(str(v) for v in val)}")
+            mat = brief.get("material_requirements")
+            if isinstance(mat, dict):
+                mat_parts = [f"{k}: {v}" for k, v in mat.items() if v and not isinstance(v, dict)]
+                if mat_parts:
+                    lines.append(f"- 素材需求: {'；'.join(mat_parts)}")
+            anim = brief.get("animation_style")
+            if isinstance(anim, dict):
+                anim_parts = [f"{k}: {v}" for k, v in anim.items() if v and not isinstance(v, dict)]
+                if anim_parts:
+                    lines.append(f"- 动画风格: {'；'.join(anim_parts)}")
+            ratio = brief.get("asset_ratio")
+            if isinstance(ratio, dict) and (ratio.get("footage") or ratio.get("mg")):
+                lines.append(f"- 素材/动画占比: 实拍 {ratio.get('footage', '')} · MG {ratio.get('mg', '')}")
+            if len(lines) > 1:
+                parts.append("\n".join(lines))
+        if isinstance(plan, dict) and plan:
+            markdown = plan.get("markdown_content") or plan.get("markdown") or ""
+            if markdown:
+                parts.append(f"\n\n## 用户已确认的制作规划书（分镜须与之保持一致）\n{str(markdown)[:3000]}")
+        if not parts:
+            return ""
+        return "".join(parts) + "\n\n请确保生成的分镜场景与上述已确认的简报、规划书在核心信息、风格方向、结构上保持一致。"
+
     async def _tool_executor(self, tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
         logger.debug("StructureAgent 工具回调: %s → %s", tool_name, json.dumps(tool_input, ensure_ascii=False)[:300])
         result: ToolExecResult = await ToolRegistry.execute(tool_name, **tool_input)
         return result.model_dump(mode="json")
+
+    async def _tool_executor_for_llm(
+        self, tool_name: str, tool_input: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await self._tool_executor(tool_name, tool_input)
 
     def _parse_scenes(self, content: str) -> list[dict]:
         content = content.strip().lstrip('\ufeff').lstrip('\u200b')
@@ -302,14 +411,23 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         except json.JSONDecodeError:
             pass
         import re
-        arr_match = re.search(r'\[.*?\]', content, re.DOTALL)
-        if arr_match:
-            try:
-                parsed = json.loads(arr_match.group())
-                if isinstance(parsed, list):
-                    return parsed
-            except json.JSONDecodeError:
-                pass
+        # Find JSON array with balanced bracket matching
+        start = content.find('[')
+        if start != -1:
+            depth = 0
+            for i in range(start, len(content)):
+                if content[i] == '[':
+                    depth += 1
+                elif content[i] == ']':
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            parsed = json.loads(content[start:i+1])
+                            if isinstance(parsed, list):
+                                return parsed
+                        except json.JSONDecodeError:
+                            pass
+                        break
         return []
 
     def _parse_structured_result(self, result: dict, topic: str, tone: str) -> list[dict]:
@@ -322,11 +440,34 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         return []
 
     @staticmethod
-    def _fallback_scenes(topic: str, tone: str) -> list[dict]:
-        """无 LLM 或无工具时的占位场景列表。"""
+    def _fallback_scenes(topic: str, tone: str, script_text: str = "") -> list[dict]:
+        """无 LLM 或无工具时的占位场景列表。基于文稿内容生成场景。"""
+        # If script_text is provided, try to split it into scenes
+        if script_text and len(script_text) > 50:
+            # Split by paragraphs or sentences
+            paragraphs = [p.strip() for p in script_text.split('\n\n') if p.strip()]
+            if len(paragraphs) >= 2:
+                scenes = []
+                total_duration = 300  # 5 minutes default
+                duration_per_scene = total_duration // len(paragraphs)
+                for i, para in enumerate(paragraphs[:6]):  # Max 6 scenes
+                    # Extract first sentence as title
+                    sentences = para.split('。')
+                    title = sentences[0][:20] if sentences else f"场景{i+1}"
+                    scenes.append({
+                        "title": title,
+                        "description": para[:100],
+                        "keywords": [topic, f"场景{i+1}"],
+                        "duration_sec": duration_per_scene,
+                        "voiceover_script": para,
+                        "visual_description": {}
+                    })
+                return scenes
+        
+        # Fallback to default scenes
         return [
-            {"title": "破题", "description": f"以{tone}风格切入话题：{topic}", "keywords": [topic, "引入"], "duration_sec": 30},
-            {"title": "展开", "description": "核心论点展开", "keywords": ["分析", "论证"], "duration_sec": 120},
-            {"title": "深化", "description": "多角度深入分析", "keywords": ["深度", "视角"], "duration_sec": 90},
-            {"title": "收束", "description": "总结与观点输出", "keywords": ["总结", "观点"], "duration_sec": 60},
+            {"title": "破题", "description": f"以{tone}风格切入话题：{topic}", "keywords": [topic, "引入"], "duration_sec": 30, "voiceover_script": "", "visual_description": {}},
+            {"title": "展开", "description": "核心论点展开", "keywords": ["分析", "论证"], "duration_sec": 120, "voiceover_script": "", "visual_description": {}},
+            {"title": "深化", "description": "多角度深入分析", "keywords": ["深度", "视角"], "duration_sec": 90, "voiceover_script": "", "visual_description": {}},
+            {"title": "收束", "description": "总结与观点输出", "keywords": ["总结", "观点"], "duration_sec": 60, "voiceover_script": "", "visual_description": {}},
         ]
