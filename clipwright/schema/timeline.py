@@ -63,6 +63,22 @@ class Clip(BaseModel):
     volume: float = Field(default=1.0, ge=0, description="音量 0-1")
     opacity: float = Field(default=1.0, ge=0, le=1, description="不透明度 0-1")
 
+    # 混合 / 启用 / 标签
+    blend_mode: Optional[str] = Field(default=None, description="混合模式 normal/multiply/screen/overlay 等")
+    enabled: bool = Field(default=True, description="片段是否启用（禁用的片段不参与渲染）")
+    label_color: Optional[str] = Field(default=None, description="片段标签颜色（hex）")
+    notes: Optional[str] = Field(default=None, description="片段备注")
+
+    # 音频 EQ 预设
+    eq_preset: Optional[str] = Field(default=None, description="音频 EQ 预设名称")
+
+    # 视频特效滤镜（仅 video / image 类型）
+    fx_brightness: Optional[float] = Field(default=None, ge=0, le=2, description="亮度 0-2，默认 1")
+    fx_contrast: Optional[float] = Field(default=None, ge=0, le=2, description="对比度 0-2，默认 1")
+    fx_saturation: Optional[float] = Field(default=None, ge=0, le=2, description="饱和度 0-2，默认 1")
+    fx_blur: Optional[float] = Field(default=None, ge=0, le=10, description="模糊半径 px")
+    fx_hue: Optional[float] = Field(default=None, ge=0, le=360, description="色相旋转角度")
+
     # 画面布局（仅 video / image 类型）
     image_fit: Optional[ImageFit] = Field(default=None)
     image_rect: Optional[dict] = Field(
@@ -101,7 +117,7 @@ class Clip(BaseModel):
     # 扩展元数据
     metadata: dict[str, Any] = Field(default_factory=dict, description="扩展元数据")
 
-    model_config = {"use_enum_values": True}
+    model_config = {"use_enum_values": True, "extra": "allow"}
 
 
 class Track(BaseModel):

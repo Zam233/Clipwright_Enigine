@@ -229,12 +229,21 @@ class RenderService:
         for track in timeline.tracks:
             is_overlay = track.index > 0 and str(track.kind) in ("video", "image")
             for clip in (track.clips or []):
+                # 跳过禁用的片段
+                if hasattr(clip, 'enabled') and clip.enabled is False:
+                    continue
                 k = str(clip.kind) if clip.kind else str(track.kind)
                 entry = dict(asset_id=clip.asset_id, start_sec=clip.start_sec,
                              duration_sec=clip.duration_sec, source_offset=clip.source_offset_sec,
                              speed=clip.speed, volume=clip.volume, opacity=clip.opacity,
                              image_rect=clip.image_rect, transition_in=clip.transition_in,
-                             transition_duration_sec=clip.transition_duration_sec)
+                             transition_duration_sec=clip.transition_duration_sec,
+                             # 视频特效
+                             fx_brightness=getattr(clip, 'fx_brightness', None),
+                             fx_contrast=getattr(clip, 'fx_contrast', None),
+                             fx_saturation=getattr(clip, 'fx_saturation', None),
+                             fx_blur=getattr(clip, 'fx_blur', None),
+                             fx_hue=getattr(clip, 'fx_hue', None))
                 if k in ("video", "image"):
                     entry["source_path"] = clip.asset_id
                     (overlay_segments if is_overlay else video_segments).append(entry)
@@ -319,6 +328,30 @@ class RenderService:
                             parts.append(f"between(t,{t},{t+0.1})*{op}+not(between(t,{t},{t+0.1}))")
                     if parts:
                         vf += f",format=rgba,colorchannelmixer=aa={'+'.join(parts)}"
+
+                # 视频特效滤镜 (fx_*)
+                fx_parts = []
+                fb = seg.get("fx_brightness")
+                fc = seg.get("fx_contrast")
+                fs = seg.get("fx_saturation")
+                if fb is not None or fc is not None or fs is not None:
+                    eq_args = []
+                    if fb is not None and fb != 1.0:
+                        eq_args.append(f"brightness={fb - 1.0:.3f}")
+                    if fc is not None and fc != 1.0:
+                        eq_args.append(f"contrast={fc:.3f}")
+                    if fs is not None and fs != 1.0:
+                        eq_args.append(f"saturation={fs:.3f}")
+                    if eq_args:
+                        fx_parts.append(f"eq={':'.join(eq_args)}")
+                fh = seg.get("fx_hue")
+                if fh is not None and fh != 0:
+                    fx_parts.append(f"hue=h={fh:.1f}")
+                fbl = seg.get("fx_blur")
+                if fbl is not None and fbl > 0:
+                    fx_parts.append(f"gblur=sigma={fbl:.1f}")
+                if fx_parts:
+                    vf += "," + ",".join(fx_parts)
 
                 cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", str(seg.get("source_offset", 0)),
                        "-i", src, "-t", str(dur), "-vf", vf, "-r", str(fps),

@@ -285,6 +285,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             track_id=track_id,
             start_sec=start_sec,
             duration_sec=duration_sec,
+            enabled=True,
         )
         # 媒体路径存到 asset_id（给 Render 用），显示用自定义标签
         clip.metadata["label"] = clip_label
@@ -293,6 +294,16 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
 
         if kind in (ClipKind.VIDEO, ClipKind.IMAGE):
             clip.image_fit = ImageFit.COVER
+
+        # 按类型设置标签颜色（与前端 TRACK_COLORS 一致）
+        _KIND_COLORS = {
+            ClipKind.VIDEO: "#4F8CFF",
+            ClipKind.AUDIO: "#34D399",
+            ClipKind.TEXT: "#FBBF24",
+            ClipKind.IMAGE: "#A855F7",
+            ClipKind.ANIMATION: "#FF6B6B",
+        }
+        clip.label_color = _KIND_COLORS.get(kind)
 
         return clip
 
