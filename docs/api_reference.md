@@ -8,6 +8,46 @@
 
 ---
 
+## Timeline 数据模型
+
+Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 schema。
+
+### Clip 字段
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `id` | string | — | 全局唯一 ID |
+| `kind` | ClipKind | — | video / audio / text / image / caption / shape / waveform / animation |
+| `asset_id` | string | — | 引用的素材 ID 或媒体路径 |
+| `track_id` | string | — | 所属轨道 ID |
+| `start_sec` | float ≥0 | — | 时间轴起始时间（秒） |
+| `duration_sec` | float >0 | — | 持续时长（秒） |
+| `source_offset_sec` | float ≥0 | 0 | 素材内起始偏移 |
+| `speed` | float >0 | 1.0 | 播放速度倍率 |
+| `volume` | float ≥0 | 1.0 | 音量 0-1 |
+| `opacity` | float 0-1 | 1.0 | 不透明度 |
+| `blend_mode` | string? | null | 混合模式 (normal/multiply/screen/overlay 等) |
+| `enabled` | bool | true | 是否启用（禁用的片段不参与渲染） |
+| `label_color` | string? | null | 标签颜色 hex（如 #4F8CFF） |
+| `notes` | string? | null | 片段备注 |
+| `eq_preset` | string? | null | 音频 EQ 预设名称 |
+| `fx_brightness` | float 0-2? | null | 亮度（1=默认） |
+| `fx_contrast` | float 0-2? | null | 对比度（1=默认） |
+| `fx_saturation` | float 0-2? | null | 饱和度（1=默认） |
+| `fx_blur` | float 0-10? | null | 模糊半径 px |
+| `fx_hue` | float 0-360? | null | 色相旋转角度 |
+| `image_fit` | ImageFit? | null | 画面适配 (cover/contain/fill) |
+| `image_rect` | dict? | null | 归一化矩形 {x,y,w,h} |
+| `text` | string? | null | 文字内容 |
+| `font` / `font_size` / `font_color` / `text_align` | — | null | 文字样式 |
+| `transition_in` / `transition_out` / `transition_duration_sec` | — | null | 转场 |
+| `keyframes` | list[dict] | [] | 关键帧动画序列 |
+| `metadata` | dict | {} | 扩展元数据 |
+
+> **注意**: Clip 模型设置 `extra="allow"`，前端自定义字段在 pipeline 合并时不会被丢弃。
+
+---
+
 ## 健康检查
 
 ### `GET /health`
