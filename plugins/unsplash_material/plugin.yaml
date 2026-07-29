@@ -1,0 +1,7 @@
+id: "unsplash_material"
+name: "Unsplash Material Library"
+version: "1.0.0"
+kind: "material"
+description: "从 Unsplash 高质量免费图库搜索图片素材（需 API Key，Demo 版每小时 50 次）"
+author: "Clipwright Team"
+entry_point: "unsplash_material.main"
