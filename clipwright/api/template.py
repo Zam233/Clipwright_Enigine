@@ -13,12 +13,22 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from clipwright.config import TIME_ZONE, logger
+from clipwright.security import validate_id
 
 router = APIRouter(prefix="/api/template", tags=["template"])
+
+
+async def _guard_template_id(template_id: str | None = None) -> None:
+    """路由级守卫：template_id 出现在路径中时校验合法性（防路径遍历）。"""
+    if template_id is not None:
+        validate_id(template_id, "template_id")
+
+
+router.dependencies = [Depends(_guard_template_id)]
 
 # 模板存储目录
 _TEMPLATES_DIR = Path("templates")

@@ -259,7 +259,8 @@ class RequirementsService:
             try:
                 loop = asyncio.get_running_loop()
                 if loop and loop.is_running():
-                    asyncio.create_task(_cleanup_expired_sessions())
+                    from clipwright.services.async_util import spawn_background
+                    spawn_background(_cleanup_expired_sessions(), name="requirements-session-cleanup")
             except RuntimeError:
                 pass
 

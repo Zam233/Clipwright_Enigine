@@ -61,3 +61,33 @@ def assert_allowed_path(path: Path) -> Path:
     if not any(is_within(root, path) for root in allowed_media_roots()):
         raise SecurityViolation("路径不在允许的目录内")
     return path
+
+
+def assert_public_url(url: str) -> None:
+    """校验 URL 不指向回环/私网/链路本地/元数据地址（防 SSRF）。
+
+    解析主机名的全部 A/AAAA 记录，任一地址属于受限范围即拒绝。
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if not host:
+        raise SecurityViolation("URL 缺少主机名")
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or 80, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as e:
+        raise SecurityViolation(f"无法解析主机名: {host}") from e
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (
+            ip.is_loopback
+            or ip.is_private
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            raise SecurityViolation(f"禁止访问内网/回环地址: {ip}")

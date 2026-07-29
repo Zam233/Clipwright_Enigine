@@ -55,6 +55,12 @@ PluginData/*
 projects/
 library/
 personas/chat_*/
+editor_projects/
+user_types/
+templates/
+renders/
+learning/
+webhooks.json
 
 # Agent tooling state
 .omo/

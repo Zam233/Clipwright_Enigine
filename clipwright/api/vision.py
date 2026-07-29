@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException
 from fastapi.params import Body
 
 from clipwright.material import JsonCatalogSource, MaterialRegistry
 from clipwright.schema.material import MaterialAsset, MaterialType
+from clipwright.security import assert_allowed_path
 from clipwright.services.vision import VisionService
 
 router = APIRouter(prefix="/api/vision", tags=["vision"])
@@ -16,6 +19,7 @@ _service = VisionService()
 @router.post("/analyze")
 async def analyze_image(image_path: str = Body(...)) -> dict:
     """分析图片/视频内容，返回自动识别的标签和描述。"""
+    assert_allowed_path(Path(image_path))
     result = await _service.analyze_image(image_path)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
@@ -32,6 +36,7 @@ async def import_image(
 
     素材加入内存中的 JsonCatalogSource，可通过 /api/material/search 搜索。
     """
+    assert_allowed_path(Path(image_path))
     # 1. 分析图片
     analysis = await _service.analyze_image(image_path)
     if "error" in analysis:

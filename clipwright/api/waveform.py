@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException
 from fastapi.params import Body
 
+from clipwright.security import assert_allowed_path
 from clipwright.services.waveform import WaveformGenerator
 
 router = APIRouter(prefix="/api/waveform", tags=["waveform"])
@@ -16,5 +19,6 @@ async def generate_waveform(
     samples: int = Body(default=200),
 ) -> dict:
     """从音频文件生成波形采样数据（用于时间轴可视化）。"""
+    assert_allowed_path(Path(audio_path))
     result = await WaveformGenerator.generate(audio_path, samples)
     return result

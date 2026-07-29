@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.params import Body
 
+from clipwright.security import assert_allowed_path
 from clipwright.services.stt import STTService
 from clipwright.services.subtitle import (
     parse_srt,
@@ -56,6 +59,7 @@ async def transcribe_subtitle(
     format: str = Body(default="timeline", description="输出格式: timeline / srt"),
 ) -> dict:
     """从音频自动转录音频 → 生成带时间戳的字幕（支持 Whisper 或保底对齐）。"""
+    assert_allowed_path(Path(audio_path))
     result = await _stt.transcribe(
         audio_path=audio_path,
         language=language,
@@ -105,6 +109,7 @@ async def align_subtitle(
     format: str = Body(default="timeline", description="输出格式: timeline / srt"),
 ) -> dict:
     """将已有文案与音频对齐 → 生成带时间戳的字幕（无需 Whisper）。"""
+    assert_allowed_path(Path(audio_path))
     result = await _stt.align(
         audio_path=audio_path,
         transcript_text=script_text,

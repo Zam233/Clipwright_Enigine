@@ -144,8 +144,8 @@ async def lifespan(app: FastAPI):
     # 5.6 启动预处理后台工作线程
     try:
         from clipwright.services.material_preprocessor import preprocess_worker
-        import asyncio
-        asyncio.create_task(preprocess_worker())
+        from clipwright.services.async_util import spawn_background
+        spawn_background(preprocess_worker(), name="preprocess-worker")
         logger.info("素材预处理后台线程已启动")
     except Exception as e:
         logger.warning("预处理线程启动失败: %s", e)
@@ -192,20 +192,24 @@ from clipwright.security import SecurityViolation
 
 @app.middleware("http")
 async def api_token_auth(request: Request, call_next):
+    if not settings.api_token or request.method == "OPTIONS":
+        return await call_next(request)
     path = request.url.path
-    if (
-        settings.api_token
-        and path.startswith("/api/")
-        and not path.startswith("/api/health")
-        and request.method != "OPTIONS"
-    ):
-        auth = request.headers.get("Authorization", "")
-        expected = f"Bearer {settings.api_token}"
-        if not hmac.compare_digest(auth, expected):
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "未授权：缺少或错误的 API 令牌"},
-            )
+    is_api = path.startswith("/api/") and not path.startswith("/api/health")
+    # 渲染成片与克隆语音属敏感内容，令牌模式下同样需要鉴权
+    is_media = path.startswith(("/renders/", "/voice_audio/"))
+    if not (is_api or is_media):
+        return await call_next(request)
+    expected = f"Bearer {settings.api_token}"
+    ok = hmac.compare_digest(request.headers.get("Authorization", ""), expected)
+    if not ok and is_media:
+        # <video>/<audio> 标签无法携带 Authorization 头，允许 query token 校验
+        ok = hmac.compare_digest(request.query_params.get("token", ""), settings.api_token)
+    if not ok:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "未授权：缺少或错误的 API 令牌"},
+        )
     return await call_next(request)
 
 

@@ -125,8 +125,9 @@ class TaskQueue:
         self._tasks[task_id] = task
         self._pending_queue.append(task_id)
 
-        # 启动处理（不等待）
-        asyncio.create_task(self._process_queue())
+        # 启动处理（不等待；持强引用防 GC 回收）
+        from clipwright.services.async_util import spawn_background
+        spawn_background(self._process_queue(), name=f"task-queue-{task_id}")
         return task_id
 
     async def _process_queue(self) -> None:

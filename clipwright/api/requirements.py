@@ -191,5 +191,6 @@ async def proceed_to_pipeline(req: ProceedRequest) -> dict:
         except Exception as e:
             logger.exception("Pipeline failed: %s", e)
 
-    asyncio.create_task(_run())
+    from clipwright.services.async_util import spawn_background
+    spawn_background(_run(), name=f"requirements-pipeline-{req.session_id}")
     return {"session_id": req.session_id, "status": "pipeline_started"}

@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 
 from clipwright.config import logger
 from clipwright.schema.timeline import Timeline
+from clipwright.services.async_util import spawn_background
 from clipwright.services.render import RenderService
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -69,9 +70,9 @@ async def queue_render(body: RenderRequest) -> dict:
             async def _cleanup():
                 await asyncio.sleep(60)
                 _render_queue.pop(task_id, None)
-            asyncio.create_task(_cleanup())
+            spawn_background(_cleanup(), name=f"render-cleanup-{task_id}")
 
-    asyncio.create_task(_run())
+    spawn_background(_run(), name=f"render-{task_id}")
     return {"task_id": task_id, "status": "queued", "output": out}
 
 

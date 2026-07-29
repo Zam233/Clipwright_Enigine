@@ -14,6 +14,7 @@ from clipwright.services.predictor import ScriptAnalyzer, MaterialAnalyzer
 from clipwright.services.pipeline import PipelineOrchestrator
 from clipwright.services.pipeline_v2 import PipelineOrchestratorV2
 from clipwright.services.trace import get_events, get_all_events, create_trace, add_event
+from clipwright.services.async_util import spawn_background
 from clipwright.config import logger
 
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
@@ -86,7 +87,7 @@ async def run_pipeline_async(request: PipelineRequest) -> dict:
                 _running_pipelines.pop(pipeline_id, None)
                 from clipwright.services.trace import clear
                 clear(pipeline_id)
-            asyncio.create_task(_cleanup())
+            spawn_background(_cleanup(), name=f"pipeline-cleanup-{pipeline_id}")
 
     task = asyncio.create_task(_run_background())
     _running_pipelines[pipeline_id] = task
@@ -272,7 +273,7 @@ async def regenerate_scene(pipeline_id: str, scene_index: int) -> dict:
         except Exception as e:
             add_event(new_pid, "system", "error", f"场景重生成失败: {e}")
 
-    asyncio.create_task(_run())
+    _running_pipelines[new_pid] = spawn_background(_run(), name=f"scene-regen-{new_pid}")
     return {"pipeline_id": new_pid, "scene_index": scene_index, "status": "regenerating"}
 
 

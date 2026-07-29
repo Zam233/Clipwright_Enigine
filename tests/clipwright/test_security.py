@@ -76,6 +76,52 @@ class TestVideoEditorGuard:
         assert resp.status_code == 404
 
 
+class TestTemplateAndTypeMakerGuard:
+    @pytest.fixture
+    def client(self) -> TestClient:
+        from clipwright.main import app
+        return TestClient(app)
+
+    def test_template_traversal_blocked(self, client: TestClient) -> None:
+        resp = client.get("/api/template/..%5C..%5Csecret")
+        assert resp.status_code == 400
+
+    def test_type_maker_create_traversal_blocked(self, client: TestClient) -> None:
+        resp = client.post(
+            "/api/type-maker/create",
+            json={"id": "../../evil_type", "name": "x"},
+        )
+        assert resp.status_code == 400
+
+    def test_learning_job_traversal_blocked(self, client: TestClient) -> None:
+        resp = client.post(
+            "/api/learning/jobs/create",
+            json={"name": "x", "dataset_id": "../../etc/passwd"},
+        )
+        assert resp.status_code == 400
+
+
+class TestWebhookSsrf:
+    @pytest.fixture
+    def client(self) -> TestClient:
+        from clipwright.main import app
+        return TestClient(app)
+
+    def test_register_loopback_blocked(self, client: TestClient) -> None:
+        resp = client.post(
+            "/api/webhook/register",
+            json={"url": "http://127.0.0.1:9999/hook", "events": ["pipeline.completed"]},
+        )
+        assert resp.status_code == 400
+
+    def test_register_metadata_blocked(self, client: TestClient) -> None:
+        resp = client.post(
+            "/api/webhook/register",
+            json={"url": "http://169.254.169.254/latest/meta-data/", "events": ["pipeline.completed"]},
+        )
+        assert resp.status_code == 400
+
+
 class TestProxyGuard:
     async def test_rejects_outside_whitelist(self, tmp_path: Path) -> None:
         from clipwright.services.proxy import ProxyGenerator

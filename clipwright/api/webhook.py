@@ -121,6 +121,10 @@ async def register_webhook(req: RegisterWebhookRequest) -> WebhookConfig:
     if not req.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="URL must start with http:// or https://")
 
+    # SSRF 防护：禁止注册指向回环/私网/元数据的地址
+    from clipwright.security import assert_public_url
+    assert_public_url(req.url)
+
     webhook = {
         "webhook_id": f"wh_{uuid.uuid4().hex[:10]}",
         "url": req.url,
@@ -173,13 +177,15 @@ async def test_webhook(webhook_id: str) -> dict:
         "data": {"message": "This is a test event from ClipWright"},
     }
 
+    from clipwright.security import assert_public_url
+    assert_public_url(webhook["url"])
+
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(webhook["url"], json=payload)
             return {
                 "status": "sent",
                 "response_code": resp.status_code,
-                "response_body": resp.text[:500],
             }
     except Exception as e:
         return {"status": "failed", "error": str(e)}
@@ -225,6 +231,10 @@ async def dispatch_event(event: str, data: dict[str, Any]) -> int:
             "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
         }
         try:
+            # SSRF 防护：投递前再次校验（兼容守卫上线前注册的旧记录）
+            from clipwright.security import assert_public_url
+            assert_public_url(webhook["url"])
+
             headers: dict[str, str] = {}
             if webhook.get("secret"):
                 body = json.dumps(payload, ensure_ascii=False)

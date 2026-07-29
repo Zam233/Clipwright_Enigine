@@ -17,10 +17,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from clipwright.config import TIME_ZONE, logger
+from clipwright.security import validate_id
 from clipwright.services.async_util import cached_probe, run_blocking
 
 
@@ -43,6 +44,15 @@ async def _check_gpu() -> bool:
     return bool(await _gpu_available())
 
 router = APIRouter(prefix="/api/learning", tags=["learning"])
+
+
+async def _guard_dataset_id(dataset_id: str | None = None) -> None:
+    """路由级守卫：dataset_id 出现在路径中时校验合法性（防路径遍历）。"""
+    if dataset_id is not None:
+        validate_id(dataset_id, "dataset_id")
+
+
+router.dependencies = [Depends(_guard_dataset_id)]
 
 # 训练任务存储目录
 _LEARNING_DIR = Path("learning")
@@ -213,6 +223,7 @@ async def get_job(job_id: str) -> TrainingJob:
 @router.post("/jobs/create", response_model=TrainingJob)
 async def create_job(req: CreateJobRequest) -> TrainingJob:
     """创建训练任务（排队等待执行）。"""
+    validate_id(req.dataset_id, "dataset_id")
     await run_blocking(_LEARNING_DIR.mkdir, parents=True, exist_ok=True)
 
     # 验证数据集存在

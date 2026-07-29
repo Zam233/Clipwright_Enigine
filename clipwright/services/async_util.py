@@ -34,6 +34,18 @@ async def run_blocking(func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     return await asyncio.to_thread(func, *args, **kwargs)
 
 
+# 后台任务强引用集合：事件循环仅持弱引用，未保存引用的任务可能被 GC 中途回收。
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def spawn_background(coro: Awaitable[Any], name: str | None = None) -> asyncio.Task:
+    """创建后台任务并持有强引用，完成后自动从集合移除。"""
+    task = asyncio.create_task(coro, name=name)  # type: ignore[arg-type]
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return task
+
+
 class _CachedProbe:
     """带 TTL 缓存 + 后台线程刷新的探针，await 时永不阻塞事件循环。"""
 

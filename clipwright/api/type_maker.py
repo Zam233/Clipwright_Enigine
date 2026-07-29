@@ -10,13 +10,23 @@ from pathlib import Path
 from typing import Any, Optional
 
 import yaml
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from clipwright.category.registry import CategoryRegistry
 from clipwright.config import logger
+from clipwright.security import validate_id
 
 router = APIRouter(prefix="/api/type-maker", tags=["type-maker"])
+
+
+async def _guard_type_id(type_id: str | None = None) -> None:
+    """路由级守卫：type_id 出现在路径中时校验合法性（防路径遍历）。"""
+    if type_id is not None:
+        validate_id(type_id, "type_id")
+
+
+router.dependencies = [Depends(_guard_type_id)]
 
 # 用户自定义类型存储目录
 _USER_TYPES_DIR = Path("user_types")
@@ -125,6 +135,7 @@ async def get_type(type_id: str) -> dict:
 @router.post("/create", response_model=dict)
 async def create_type(definition: TypeDefinition) -> dict:
     """创建自定义视频类型。"""
+    validate_id(definition.id, "type_id")
     _USER_TYPES_DIR.mkdir(parents=True, exist_ok=True)
     yaml_path = _USER_TYPES_DIR / f"{definition.id}.yaml"
 

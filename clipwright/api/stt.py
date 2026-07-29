@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
 
+from clipwright.security import assert_allowed_path
 from clipwright.services.stt import STTService
 
 router = APIRouter(prefix="/api/stt", tags=["stt"])
@@ -20,6 +22,7 @@ async def transcribe(
     word_timestamps: bool = Body(default=True),
 ) -> dict[str, Any]:
     """将音频/视频文件转录为带时间戳的文字。"""
+    assert_allowed_path(Path(audio_path))
     result = await _service.transcribe(
         audio_path=audio_path,
         language=language,
@@ -38,6 +41,7 @@ async def align(
     language: str = Body(default=""),
 ) -> dict[str, Any]:
     """将已有文案与音频对齐，生成带时间戳的字幕分段。"""
+    assert_allowed_path(Path(audio_path))
     result = await _service.align(
         audio_path=audio_path,
         transcript_text=transcript_text,
