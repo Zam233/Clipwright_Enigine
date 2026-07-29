@@ -132,10 +132,27 @@ async def list_queue() -> dict:
 
 @router.get("/video")
 async def serve_video(path: str):
-    """代理视频文件供前端预览（浏览器不能直接加载 file:// 路径）。"""
+    """代理视频文件供前端预览（浏览器不能直接加载 file:// 路径）。
+
+    安全：仅允许访问白名单目录内的文件，防止任意文件读取。
+    """
+    from clipwright.config import settings
+    from clipwright.security import is_within
+
+    allowed_roots = [
+        Path("renders"),
+        Path("library"),
+        Path("editor_projects"),
+        Path("projects"),
+        Path("PluginData"),
+        Path(settings.persona_dir),
+        Path(settings.tts_output_dir),
+    ]
     src = Path(path)
-    if not src.exists():
-        raise HTTPException(status_code=404, detail=f"文件不存在: {path}")
+    if not src.exists() or not src.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    if not any(is_within(root, src) for root in allowed_roots):
+        raise HTTPException(status_code=403, detail="禁止访问该路径")
     return FileResponse(str(src), media_type="video/mp4",
                         headers={"Accept-Ranges": "bytes"})
 
@@ -144,6 +161,10 @@ async def serve_video(path: str):
 async def download_render(filename: str):
     """下载渲染输出的 MP4 文件。"""
     from pathlib import Path
+
+    from clipwright.security import is_safe_id
+    if not is_safe_id(filename):
+        raise HTTPException(status_code=400, detail="非法文件名")
     file_path = Path("renders") / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"文件不存在: {filename}")
@@ -269,9 +290,31 @@ async def get_render_status(render_id: str) -> dict:
 @router.get("/thumbnail")
 async def get_video_thumbnail(path: str, time_sec: float = 0.5):
     """从视频文件提取一帧作为缩略图。"""
+    import os
+    import shutil
+    import subprocess
+
+    from starlette.background import BackgroundTask
+
+    from clipwright.config import settings
+    from clipwright.security import is_within
+
     src = Path(path)
-    if not src.exists():
-        raise HTTPException(status_code=404, detail=f"文件不存在: {path}")
+    if not src.exists() or not src.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    # 安全：仅允许白名单目录内的素材
+    allowed_roots = [
+        Path("renders"),
+        Path("library"),
+        Path("editor_projects"),
+        Path("projects"),
+        Path("PluginData"),
+        Path(settings.persona_dir),
+        Path(settings.tts_output_dir),
+    ]
+    if not any(is_within(root, src) for root in allowed_roots):
+        raise HTTPException(status_code=403, detail="禁止访问该路径")
 
     ext = src.suffix.lower()
     if ext not in (".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wav", ".mp3", ".m4a"):
@@ -281,21 +324,28 @@ async def get_video_thumbnail(path: str, time_sec: float = 0.5):
     if ext in (".wav", ".mp3", ".m4a"):
         raise HTTPException(status_code=400, detail="音频文件无缩略图")
 
-    import subprocess
-    thumb = Path(tempfile.mktemp(suffix=".jpg"))
-    try:
-        result = subprocess.run(
+    thumb = Path(tempfile.mkdtemp(prefix="thumb_")) / "thumb.jpg"
+
+    def _generate() -> subprocess.CompletedProcess:
+        return subprocess.run(
             ["ffmpeg", "-y", "-i", str(src), "-ss", str(time_sec),
              "-vframes", "1", "-vf", "scale=160:-1", "-q:v", "5",
              str(thumb)],
             capture_output=True, text=False, timeout=15,
         )
+
+    try:
+        # 在后台线程执行，避免阻塞事件循环
+        result = await asyncio.to_thread(_generate)
         if result.returncode != 0 or not thumb.exists() or thumb.stat().st_size == 0:
             raise HTTPException(status_code=500, detail="缩略图生成失败")
         return FileResponse(str(thumb), media_type="image/jpeg",
-                            headers={"Cache-Control": "max-age=3600"})
+                            headers={"Cache-Control": "max-age=3600"},
+                            background=BackgroundTask(shutil.rmtree, str(thumb.parent), True))
     except HTTPException:
+        shutil.rmtree(thumb.parent, ignore_errors=True)
         raise
     except Exception as e:
+        shutil.rmtree(thumb.parent, ignore_errors=True)
         logger.error("缩略图异常: %s", e)
         raise HTTPException(status_code=500, detail=str(e))

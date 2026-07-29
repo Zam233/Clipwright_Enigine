@@ -12,6 +12,9 @@ _traces: dict[str, list[dict[str, Any]]] = {}
 # 每管线最大事件数（防止内存泄漏）
 _MAX_EVENTS_PER_PIPELINE = 5000
 
+# 最大管线数（防止 _traces 键集无限增长）
+_MAX_PIPELINES = 1000
+
 # 事件自动清理 TTL（秒）：创建超过此时间的事件在读取时被清除
 _EVENT_TTL_SEC = 3600  # 1 小时
 
@@ -35,7 +38,20 @@ def _expire_old_events(pipeline_id: str) -> None:
 
 def create_trace(pipeline_id: str) -> None:
     """创建新的追踪记录。"""
+    _cleanup_stale()
     _traces[pipeline_id] = []
+
+
+def _cleanup_stale() -> None:
+    """清理无事件的管线键；超限时按最近事件时间淘汰最旧管线。"""
+    if len(_traces) <= _MAX_PIPELINES:
+        return
+    for pid in [p for p, evs in _traces.items() if not evs]:
+        _traces.pop(pid, None)
+    if len(_traces) > _MAX_PIPELINES:
+        items = sorted(_traces.items(), key=lambda kv: kv[1][-1]["time"] if kv[1] else 0.0)
+        for pid, _ in items[: len(_traces) - _MAX_PIPELINES]:
+            _traces.pop(pid, None)
 
 
 def add_event(

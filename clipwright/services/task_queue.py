@@ -163,6 +163,19 @@ class TaskQueue:
                     if task.started_at:
                         task.duration_sec = (now - task.started_at).total_seconds()
                     task.progress = 100
+                    self._cleanup_finished()
+
+    def _cleanup_finished(self, keep: int = 200) -> None:
+        """清理已完成任务，防止 _tasks 无限增长（保留最近 keep 个）。"""
+        finished = [
+            t for t in self._tasks.values()
+            if t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED)
+        ]
+        if len(finished) <= keep:
+            return
+        finished.sort(key=lambda t: t.created_at.timestamp() if t.created_at else 0.0)
+        for t in finished[: len(finished) - keep]:
+            self._tasks.pop(t.task_id, None)
 
     def get_task(self, task_id: str) -> PipelineTask | None:
         return self._tasks.get(task_id)
@@ -199,7 +212,7 @@ class TaskQueue:
             tasks = [t for t in tasks if t.task_type == task_type]
         if status:
             tasks = [t for t in tasks if t.status.value == status]
-        tasks.sort(key=lambda t: t.created_at or datetime.min, reverse=True)
+        tasks.sort(key=lambda t: t.created_at.timestamp() if t.created_at else 0.0, reverse=True)
         return [t.to_dict() for t in tasks[:limit]]
 
     @property

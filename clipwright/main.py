@@ -181,14 +181,56 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — 允许测试前端跨域访问
+# 安全：API 令牌认证（settings.api_token 设置后启用；必须在 CORS 之前注册，使 CORS 处于最外层处理预检）
+import hmac
+
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+from clipwright.security import SecurityViolation
+
+
+@app.middleware("http")
+async def api_token_auth(request: Request, call_next):
+    path = request.url.path
+    if (
+        settings.api_token
+        and path.startswith("/api/")
+        and not path.startswith("/api/health")
+        and request.method != "OPTIONS"
+    ):
+        auth = request.headers.get("Authorization", "")
+        expected = f"Bearer {settings.api_token}"
+        if not hmac.compare_digest(auth, expected):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "未授权：缺少或错误的 API 令牌"},
+            )
+    return await call_next(request)
+
+
+@app.exception_handler(SecurityViolation)
+async def security_violation_handler(request: Request, exc: SecurityViolation):
+    """安全校验失败（非法 ID / 路径遍历）统一返回 400。"""
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+# CORS — 设置令牌后限制来源；开发模式（无令牌）允许全部
+_cors_origins = (
+    [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+    if settings.api_token
+    else ["*"]
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+if not settings.api_token:
+    logger.warning("安全提示: 未设置 CLIPWRIGHT_API_TOKEN，API 处于开放开发模式；生产部署请设置令牌。")
 
 # 挂载测试前端（可选，用于开发调试）
 test_fe_path = Path(__file__).resolve().parent.parent / "test-frontend"

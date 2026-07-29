@@ -6,7 +6,7 @@ import asyncio
 import json
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from clipwright.schema.pipeline import PipelineRequest, PipelineState
@@ -104,7 +104,7 @@ async def get_pipeline_trace(pipeline_id: str):
 
 
 @router.get("/trace/stream/{pipeline_id}")
-async def stream_pipeline_trace(pipeline_id: str):
+async def stream_pipeline_trace(pipeline_id: str, request: Request):
     """SSE 流：实时推送管线执行追踪事件（LLM、Tool、Skill、Plugin 调用）。"""
     async def event_stream():
         last_time = time.time()
@@ -113,8 +113,10 @@ async def stream_pipeline_trace(pipeline_id: str):
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             last_time = max(last_time, event["time"])
 
-        # 然后持续轮询新事件（最多 600 秒）
+        # 然后持续轮询新事件（最多 600 秒；客户端断开即退出）
         for _ in range(1200):  # 1200 * 0.5s = 600s 超时
+            if await request.is_disconnected():
+                return
             await asyncio.sleep(0.5)
             events = get_events(pipeline_id, since=last_time)
             if events:
@@ -174,9 +176,20 @@ async def get_pipeline_result(pipeline_id: str) -> dict:
                         detail=f"Pipeline {pipeline_id} 执行超时（>5分钟）")
 
 
-@router.get("/status/{pipeline_id}", response_model=PipelineState)
-async def get_pipeline_status(pipeline_id: str) -> PipelineState:
+@router.get("/status/{pipeline_id}")
+async def get_pipeline_status(pipeline_id: str) -> dict:
     """查询管线执行状态。"""
+    result = _pipeline_results.get(pipeline_id)
+    if result is not None:
+        return {"pipeline_id": pipeline_id, "status": result.get("status", "completed"),
+                "has_result": True}
+    task = _running_pipelines.get(pipeline_id)
+    if task is not None:
+        return {"pipeline_id": pipeline_id,
+                "status": "running" if not task.done() else "finished",
+                "has_result": False}
+    if get_all_events(pipeline_id):
+        return {"pipeline_id": pipeline_id, "status": "unknown", "has_result": False}
     raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found")
 
 
@@ -193,8 +206,10 @@ async def retry_agent(pipeline_id: str, agent_name: str) -> dict:
     if not state:
         raise HTTPException(status_code=400, detail="Pipeline result not available for retry")
 
-    request_data = state.get("request", {})
-    request = PipelineRequest(**request_data) if isinstance(request_data, dict) else state.request
+    request_data = state.get("request")
+    if not isinstance(request_data, dict):
+        raise HTTPException(status_code=400, detail="Pipeline result missing request data")
+    request = PipelineRequest(**request_data)
 
     add_event(pipeline_id, "system", "info", f"重试 Agent: {agent_name}")
 
@@ -232,8 +247,10 @@ async def regenerate_scene(pipeline_id: str, scene_index: int) -> dict:
     create_trace(new_pid)
     add_event(new_pid, "system", "info", f"局部重生成场景[{scene_index}]")
 
-    request_data = state.get("request", {})
-    request = PipelineRequest(**request_data) if isinstance(request_data, dict) else state.request
+    request_data = state.get("request")
+    if not isinstance(request_data, dict):
+        raise HTTPException(status_code=400, detail="Pipeline result missing request data")
+    request = PipelineRequest(**request_data)
 
     async def _run():
         try:

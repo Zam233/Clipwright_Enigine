@@ -45,16 +45,18 @@ class PersonaRepository:
         )
 
     def exists(self, persona_id: str) -> bool:
-        return (self.root_dir / persona_id / "persona.yaml").exists()
+        return (self.persona_path(persona_id) / "persona.yaml").exists()
 
     def persona_path(self, persona_id: str) -> Path:
+        from clipwright.security import validate_id
+        validate_id(persona_id, "persona_id")
         return self.root_dir / persona_id
 
     # ── 保存 ──
 
     def save_manifest(self, manifest: PersonaManifest) -> None:
         """保存 Persona 的三个组成部分到磁盘。"""
-        pdir = self.root_dir / manifest.persona_id
+        pdir = self.persona_path(manifest.persona_id)
         pdir.mkdir(parents=True, exist_ok=True)
 
         # 1. yaml —— manifest 元信息
@@ -115,15 +117,16 @@ class PersonaRepository:
     def load_manifest(self, persona_id: str) -> PersonaManifest:
         """从磁盘加载完整 Persona（含 prompt 和 knowledge）。"""
         from clipwright.persona.loader import load_persona_manifest
-        manifest = load_persona_manifest(self.root_dir / persona_id)
+        pdir = self.persona_path(persona_id)
+        manifest = load_persona_manifest(pdir)
 
         # 加载 prompt
-        prompt_path = self.root_dir / persona_id / "prompt.md"
+        prompt_path = pdir / "prompt.md"
         if prompt_path.exists():
             manifest.prompt = prompt_path.read_text(encoding="utf-8")
 
         # 加载 knowledge
-        kdir = self.root_dir / persona_id / "knowledge"
+        kdir = pdir / "knowledge"
         index_path = kdir / "index.yaml"
         if index_path.exists():
             with open(index_path, encoding="utf-8") as f:
@@ -148,13 +151,13 @@ class PersonaRepository:
 
     def save_prompt(self, persona_id: str, prompt_text: str) -> None:
         """单独保存/更新 Prompt。"""
-        pdir = self.root_dir / persona_id
+        pdir = self.persona_path(persona_id)
         pdir.mkdir(parents=True, exist_ok=True)
         (pdir / "prompt.md").write_text(prompt_text, encoding="utf-8")
 
     def add_knowledge_doc(self, persona_id: str, doc: KnowledgeDoc) -> None:
         """追加一篇知识库文档。"""
-        pdir = self.root_dir / persona_id
+        pdir = self.persona_path(persona_id)
         kdir = pdir / "knowledge"
         kdir.mkdir(parents=True, exist_ok=True)
 
@@ -198,6 +201,6 @@ class PersonaRepository:
 
     def delete(self, persona_id: str) -> None:
         import shutil
-        pdir = self.root_dir / persona_id
+        pdir = self.persona_path(persona_id)
         if pdir.exists():
             shutil.rmtree(pdir)

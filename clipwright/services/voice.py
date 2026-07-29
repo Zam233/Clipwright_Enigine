@@ -16,6 +16,7 @@ import base64
 import json
 import re
 import subprocess
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +27,9 @@ import httpx
 from pydantic import BaseModel, Field
 
 from clipwright.config import settings, logger
+
+# DashScope 全局 api_key 串行化锁（SDK 不支持请求级凭据）
+_DASHSCOPE_KEY_LOCK = threading.Lock()
 
 # ──────────────────────────────────────────────
 # 数据层：结果对象 / 音色记录 / JSON 存储
@@ -459,22 +463,23 @@ class CosyVoiceProvider(BaseVoiceProvider):
         dashscope.base_websocket_api_url = (
             f"wss://{settings.tts_workspace_id}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference"
         )
-        old_key = dashscope.api_key
-        dashscope.api_key = settings.tts_dashscope_api_key
-
-        try:
-            synth_kwargs: dict = dict(model=model, voice=voice_api_id)
-            for key in ("instructions", "volume", "speech_rate", "pitch_rate", "seed"):
-                val = kwargs.get(key)
-                if val is not None:
-                    synth_kwargs[key] = val
-            synthesizer = SpeechSynthesizer(**synth_kwargs)
-            audio = synthesizer.call(text)
-            if audio is None:
-                raise RuntimeError("CosyVoice synthesis returned None")
-            return audio if isinstance(audio, bytes) else audio.encode()
-        finally:
-            dashscope.api_key = old_key
+        # SDK 仅支持全局 api_key：用锁串行化「改 key → 合成 → 还原」，避免并发请求相互覆盖凭据
+        with _DASHSCOPE_KEY_LOCK:
+            old_key = dashscope.api_key
+            dashscope.api_key = settings.tts_dashscope_api_key
+            try:
+                synth_kwargs: dict = dict(model=model, voice=voice_api_id)
+                for key in ("instructions", "volume", "speech_rate", "pitch_rate", "seed"):
+                    val = kwargs.get(key)
+                    if val is not None:
+                        synth_kwargs[key] = val
+                synthesizer = SpeechSynthesizer(**synth_kwargs)
+                audio = synthesizer.call(text)
+                if audio is None:
+                    raise RuntimeError("CosyVoice synthesis returned None")
+                return audio if isinstance(audio, bytes) else audio.encode()
+            finally:
+                dashscope.api_key = old_key
 
 
 class MiniMaxProvider(BaseVoiceProvider):

@@ -173,7 +173,9 @@ class ToolRegistry:
         """批量执行工具调用 —— 按顺序执行，一个失败不影响后续。"""
         results: list[ToolExecResult] = []
         for call in calls:
-            name = call.pop("tool", "")
-            result = await cls.execute(name, **call)
+            # 复制后再取参数，避免修改调用方传入的 dict；过滤非字符串键防止 **kwargs TypeError
+            name = str(call.get("tool", ""))
+            params = {k: v for k, v in call.items() if isinstance(k, str) and k != "tool"}
+            result = await cls.execute(name, **params)
             results.append(result)
         return results

@@ -17,12 +17,22 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from clipwright.config import TIME_ZONE, logger
+from clipwright.security import is_safe_id
 
 router = APIRouter(prefix="/api/video-editor", tags=["video-editor"])
+
+
+async def _validate_project_id(project_id: str | None = None) -> None:
+    """路由级守卫：project_id 出现在路径中时校验其合法性（防路径遍历）。"""
+    if project_id is not None and not is_safe_id(project_id):
+        raise HTTPException(status_code=400, detail="非法 project_id")
+
+
+router.dependencies = [Depends(_validate_project_id)]
 
 # 编辑器项目存储目录
 _EDITOR_DIR = Path("editor_projects")

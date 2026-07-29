@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     port: int = 8000
     debug: bool = False
 
+    # --- 安全 ---
+    # API 令牌：设置后所有 /api/* 请求需携带 Authorization: Bearer <token>
+    # 留空为开发模式（直接放行，启动时打印警告）
+    api_token: str = ""
+    # CORS 允许的来源（逗号分隔）；api_token 设置后生效，"*" 表示允许全部
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+
     # --- MongoDB ---
     mongo_uri: str = "mongodb://localhost:27017"
     mongo_db_name: str = "clipwright"
