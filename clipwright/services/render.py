@@ -230,7 +230,7 @@ class RenderService:
             is_overlay = track.index > 0 and str(track.kind) in ("video", "image")
             for clip in (track.clips or []):
                 # 跳过禁用的片段
-                if hasattr(clip, 'enabled') and clip.enabled is False:
+                if getattr(clip, 'enabled', True) is False:
                     continue
                 k = str(clip.kind) if clip.kind else str(track.kind)
                 entry = dict(asset_id=clip.asset_id, start_sec=clip.start_sec,
