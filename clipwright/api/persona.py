@@ -47,6 +47,15 @@ async def update_persona(persona_id: str, manifest: PersonaManifest) -> PersonaM
     return manifest
 
 
+@router.delete("/{persona_id}")
+async def delete_persona(persona_id: str) -> dict:
+    """删除 Persona（含磁盘目录）。"""
+    if not _repo.exists(persona_id):
+        raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
+    _repo.delete(persona_id)
+    return {"status": "deleted", "persona_id": persona_id}
+
+
 # ── Prompt 管理 ──
 
 
