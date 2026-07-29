@@ -1,0 +1,7 @@
+id: "subtitle_translate"
+name: "Subtitle Translation"
+version: "1.0.0"
+kind: "capability"
+description: "字幕翻译 — 通过 LLM 或 DeepL API 翻译字幕文本，支持双语字幕生成"
+author: "Clipwright Team"
+entry_point: "subtitle_translate.main"

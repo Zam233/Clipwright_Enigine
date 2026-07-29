@@ -1,0 +1,7 @@
+id: "ai_image_gen"
+name: "AI Image Generation"
+version: "1.0.0"
+kind: "capability"
+description: "AI 文生图 — 支持 Stable Diffusion(本地) / DALL-E / Flux API，作为 MaterialSource + Tool"
+author: "Clipwright Team"
+entry_point: "ai_image_gen.main"

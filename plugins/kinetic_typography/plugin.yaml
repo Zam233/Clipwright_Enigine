@@ -1,0 +1,7 @@
+id: "kinetic_typography"
+name: "Kinetic Typography"
+version: "1.0.0"
+kind: "capability"
+description: "高级动态文字动画 — 逐词强调/弹跳/弹性缩放/3D透视/渐变/描边动画"
+author: "Clipwright Team"
+entry_point: "kinetic_typography.main"
