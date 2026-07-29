@@ -126,6 +126,10 @@ async def submit_task(req: SubmitRequest) -> PreprocessTask:
     if not file_path.exists():
         raise HTTPException(status_code=400, detail=f"File not found: {req.file_path}")
 
+    # 安全：仅允许白名单目录内的素材，防止任意路径喂 ffmpeg/ffprobe/whisper
+    from clipwright.security import assert_allowed_path
+    assert_allowed_path(file_path)
+
     task_id = f"pp_{uuid.uuid4().hex[:10]}"
     now = datetime.now(tz=TIME_ZONE).isoformat()
 
@@ -164,9 +168,14 @@ async def batch_submit(req: BatchSubmitRequest) -> list[PreprocessTask]:
         )
 
     results: list[PreprocessTask] = []
+    from clipwright.security import SecurityViolation, assert_allowed_path
     for fp in req.file_paths:
         file_path = Path(fp)
         if not file_path.exists():
+            continue
+        try:
+            assert_allowed_path(file_path)
+        except SecurityViolation:
             continue
 
         task_id = f"pp_{uuid.uuid4().hex[:10]}"

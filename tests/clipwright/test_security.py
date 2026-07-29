@@ -121,6 +121,13 @@ class TestWebhookSsrf:
         )
         assert resp.status_code == 400
 
+    def test_register_cgnat_blocked(self, client: TestClient) -> None:
+        resp = client.post(
+            "/api/webhook/register",
+            json={"url": "http://100.64.0.1/hook", "events": ["pipeline.completed"]},
+        )
+        assert resp.status_code == 400
+
 
 class TestProxyGuard:
     async def test_rejects_outside_whitelist(self, tmp_path: Path) -> None:

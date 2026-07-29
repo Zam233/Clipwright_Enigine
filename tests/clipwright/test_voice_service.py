@@ -212,13 +212,26 @@ class TestVoiceServiceSynthesize:
         fake = FakeProvider()
         svc = _make_service(tmp_path, fake)
         db_id = self._seed_voice(svc)
-        custom = tmp_path / "custom_out.mp3"
+        # output_path 必须位于服务输出目录内（安全约束）
+        custom = tmp_path / "audio" / "custom_out.mp3"
         result = await svc.synthesize(
             voice_id=db_id, text="test", output_path=str(custom)
         )
         assert result.success is True
         assert Path(result.data["audio_path"]) == custom
         assert custom.exists()
+
+    @pytest.mark.asyncio
+    async def test_synthesize_rejects_output_path_outside_dir(self, tmp_path: Path):
+        fake = FakeProvider()
+        svc = _make_service(tmp_path, fake)
+        db_id = self._seed_voice(svc)
+        evil = tmp_path / "elsewhere" / "evil.mp3"
+        result = await svc.synthesize(
+            voice_id=db_id, text="test", output_path=str(evil)
+        )
+        assert result.success is False
+        assert not evil.exists()
 
     @pytest.mark.asyncio
     async def test_synthesize_provider_error(self, tmp_path: Path):

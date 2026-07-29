@@ -82,12 +82,7 @@ def assert_public_url(url: str) -> None:
         raise SecurityViolation(f"无法解析主机名: {host}") from e
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
-        if (
-            ip.is_loopback
-            or ip.is_private
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_reserved
-            or ip.is_unspecified
-        ):
+        # is_global 白名单判定：拒绝回环/私网(含 CGNAT 100.64/10)/链路本地(含元数据
+        # 169.254.169.254)/多播/保留/未指定等一切非全球可路由地址
+        if not ip.is_global:
             raise SecurityViolation(f"禁止访问内网/回环地址: {ip}")

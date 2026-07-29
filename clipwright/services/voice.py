@@ -644,6 +644,12 @@ class VoiceService:
             p = Path(audio_path)
             if not p.exists():
                 return VoiceResult(success=False, error=f"音频文件不存在: {audio_path}")
+            # 安全：仅允许白名单目录内的音频，防止任意文件读取（base64 外泄通道）
+            from clipwright.security import SecurityViolation, assert_allowed_path
+            try:
+                assert_allowed_path(p)
+            except SecurityViolation as e:
+                return VoiceResult(success=False, error=str(e))
             if provider_name == "qwen-tts":
                 raw = p.read_bytes()
                 mime = _guess_mime(p.suffix)
@@ -716,9 +722,12 @@ class VoiceService:
         except Exception as e:
             return VoiceResult(success=False, error=str(e)[:500])
 
-        # 写文件
+        # 写文件（output_path 必须落在 TTS 输出目录内，防任意路径写入）
         if output_path:
+            from clipwright.security import is_within
             out = Path(output_path)
+            if not is_within(self._output_dir, out):
+                return VoiceResult(success=False, error="output_path 必须位于 TTS 输出目录内")
         else:
             out = self._output_dir / f"tts_{uuid.uuid4().hex[:12]}.mp3"
         out.parent.mkdir(parents=True, exist_ok=True)

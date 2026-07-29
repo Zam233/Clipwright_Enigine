@@ -205,6 +205,11 @@ async def api_token_auth(request: Request, call_next):
     if not ok and is_media:
         # <video>/<audio> 标签无法携带 Authorization 头，允许 query token 校验
         ok = hmac.compare_digest(request.query_params.get("token", ""), settings.api_token)
+        if ok:
+            # 校验通过后从 query string 中抹除 token，避免泄露到访问日志 / Referer
+            from urllib.parse import urlencode
+            remaining = [(k, v) for k, v in request.query_params.multi_items() if k != "token"]
+            request.scope["query_string"] = urlencode(remaining).encode()
     if not ok:
         return JSONResponse(
             status_code=401,

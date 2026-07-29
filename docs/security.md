@@ -50,3 +50,5 @@ CLIPWRIGHT_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 
 - MongoDB 使用同步驱动（pymongo）；高并发场景建议迁移至 motor 或对查询调用 `asyncio.to_thread` 封装（`/metrics` 已封装）。
 - 工具/插件执行端点（`/api/tool/execute`、`/api/plugin/load/*`）权限等同管理员操作，**必须**在令牌模式下部署。
+- 媒体路径（`/renders/`、`/voice_audio/`）的 `?token=` 查询参数校验通过后，令牌会从请求 query string 中抹除（不进入访问日志）；但仍建议生产环境在反向代理层改用短期签名 URL。
+- Webhook SSRF 防护在注册与投递时校验目标 IP（拒绝一切非全球可路由地址，含回环/私网/CGNAT/链路本地/云元数据）。理论上仍存在 DNS rebinding（校验与连接两次解析不一致）窗口；高敏感环境建议在出口网关层再做一次 IP 过滤。
