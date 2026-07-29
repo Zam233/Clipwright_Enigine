@@ -45,14 +45,16 @@ def allowed_media_roots() -> list[Path]:
     """媒体/文件 API 的白名单目录（防任意文件读写）。"""
     from clipwright.config import settings
 
+    # 锚定到项目根目录（clipwright 包的父目录），避免 CWD 依赖
+    _base = Path(__file__).resolve().parent.parent
     return [
-        Path("renders"),
-        Path("library"),
-        Path("editor_projects"),
-        Path("projects"),
-        Path("PluginData"),
-        Path(settings.persona_dir),
-        Path(settings.tts_output_dir),
+        _base / "renders",
+        _base / "library",
+        _base / "editor_projects",
+        _base / "projects",
+        _base / "PluginData",
+        Path(settings.persona_dir).resolve(),
+        Path(settings.tts_output_dir).resolve(),
     ]
 
 

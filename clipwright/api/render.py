@@ -28,9 +28,7 @@ _render_queue_counter = 0
 @router.post("/queue")
 async def queue_render(body: RenderRequest) -> dict:
     """将渲染任务加入队列，立即返回任务 ID，后台异步执行。"""
-    global _render_queue_counter
-    _render_queue_counter += 1
-    task_id = f"render_{_render_queue_counter}_{int(__import__('time').time())}"
+    task_id = f"render_{uuid.uuid4().hex[:12]}"
     _render_queue[task_id] = {"status": "queued", "progress": 0, "result": None}
 
     params = _resolve_settings(body.settings)
@@ -271,6 +269,9 @@ async def get_render_status(render_id: str) -> dict:
         }
     # 回退：检查 renders/ 目录中是否有同名文件
     from pathlib import Path
+    from clipwright.security import is_safe_id
+    if not is_safe_id(render_id):
+        raise HTTPException(status_code=400, detail="无效的 render_id")
     file_path = Path("renders") / f"{render_id}.mp4"
     if file_path.exists():
         return {

@@ -47,7 +47,17 @@ class ProjectManager:
     def _write_json(self, project_id: str, data: dict[str, Any]) -> None:
         path = self._project_path(project_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 原子写入：先写临时文件，再 rename，防止并发写入导致 JSON 损坏
+        import tempfile, os
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, str(path))
+        except BaseException:
+            try: os.unlink(tmp)
+            except OSError: pass
+            raise
 
     @staticmethod
     def _now() -> str:

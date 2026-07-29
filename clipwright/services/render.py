@@ -107,9 +107,14 @@ def _get_actual_duration(video_path: str) -> float:
     except Exception:
         return 0
 
-# M1: 裁剪缓存
+# M1: 裁剪缓存（持久化目录，不随 render 清理删除）
+import threading as _threading
+from clipwright.tool.video import _CLIPWRIGHT_TEMP
 _trim_cache: dict[str, str] = {}
+_trim_cache_lock = _threading.Lock()
 _TRIM_CACHE_MAX = 500
+_TRIM_CACHE_DIR = _CLIPWRIGHT_TEMP / "trim_cache"
+_TRIM_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 def _trim_cache_key(src: str, offset: float, dur: float, width: int, height: int) -> str:
     raw = f"{src}|{offset:.2f}|{dur:.2f}|{width}x{height}"
@@ -313,11 +318,12 @@ class RenderService:
 
             # M1: 缓存
             cache_key = _trim_cache_key(src, seg.get("source_offset", 0), dur, width, height)
-            cached = _trim_cache.get(cache_key)
+            with _trim_cache_lock:
+                cached = _trim_cache.get(cache_key)
             if cached and Path(cached).exists():
                 return cached
 
-            out = str(self._work_dir / f"trim_{Path(src).stem}_{uuid.uuid4().hex[:4]}.mp4")
+            out = str(_TRIM_CACHE_DIR / f"trim_{cache_key}.mp4")
             try:
                 vf = scale
                 kfs = seg.get("keyframes", [])
@@ -360,8 +366,9 @@ class RenderService:
                        "-preset", preset, "-b:v", bitrate, "-an", out]
                 r = self._run_ff(cmd, capture_output=True, text=False, timeout=600)
                 if r.returncode == 0 and Path(out).exists():
-                    if len(_trim_cache) < _TRIM_CACHE_MAX:
-                        _trim_cache[cache_key] = out
+                    with _trim_cache_lock:
+                        if len(_trim_cache) < _TRIM_CACHE_MAX:
+                            _trim_cache[cache_key] = out
                     return out
                 self._final_ffmpeg_log.append(f"trim({src[-30:]}): {_sanitize_ffmpeg_error(r.stderr)}")
             except (FileNotFoundError, subprocess.TimeoutExpired) as e:

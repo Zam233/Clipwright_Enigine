@@ -287,7 +287,7 @@ class PipelineOrchestratorV2:
 
         # ── 质检 + 自愈循环 (P1: 联动重做 animation + audio) ──
         quality_passed = False
-        while not quality_passed and heal_count <= self.MAX_SELF_HEAL_LOOPS:
+        while not quality_passed and heal_count < self.MAX_SELF_HEAL_LOOPS:
             tl = result_data.get("timeline")
             step = await self._run_agent(
                 state, "quality",
