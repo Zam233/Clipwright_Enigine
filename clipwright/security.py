@@ -69,6 +69,14 @@ def assert_public_url(url: str) -> None:
     """校验 URL 不指向回环/私网/链路本地/元数据地址（防 SSRF）。
 
     解析主机名的全部 A/AAAA 记录，任一地址属于受限范围即拒绝。
+
+    ⚠ 已知限制 (DNS-rebinding TOCTOU):
+    本函数在验证时解析 DNS，但实际 HTTP 请求由 httpx/aiohttp 在后续
+    重新解析 DNS。攻击者可用 DNS-rebinding 绕过（第一次解析返回公网 IP，
+    第二次返回 127.0.0.1）。完整修复需要在 HTTP 传输层固定已验证的 IP
+    （例如 httpx 自定义 resolver 或连接后校验 socket peer address）。
+    当前实现可阻止直接的内网地址请求，但无法阻止 DNS-rebinding 攻击。
+    生产环境建议配合网络层防火墙规则（禁止出站访问私网段）。
     """
     import ipaddress
     import socket

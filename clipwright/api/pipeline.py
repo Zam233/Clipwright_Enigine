@@ -8,6 +8,7 @@ import time
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 from clipwright.schema.pipeline import PipelineRequest, PipelineState
 from clipwright.services.predictor import ScriptAnalyzer, MaterialAnalyzer
@@ -258,15 +259,14 @@ async def regenerate_scene(pipeline_id: str, scene_index: int) -> dict:
             new_state = await orch.run(request, pipeline_id=new_pid)
             new_ft = new_state.shared_data.get("final_timeline")
             if new_ft:
-                # 仅替换场景[scene_index]的 clip
-                if scene_index < len(timeline_data.get("tracks", [])):
-                    for track_idx, track in enumerate(timeline_data.get("tracks", [])):
-                        old_clips = track.get("clips", [])
-                        new_tracks = new_ft.get("tracks", [])
-                        if track_idx < len(new_tracks):
-                            new_clips = new_tracks[track_idx].get("clips", [])
-                            if scene_index < len(new_clips):
-                                old_clips[scene_index] = new_clips[scene_index]
+                # 仅替换场景[scene_index]的 clip（按各轨道的 clip 数量校验）
+                for track_idx, track in enumerate(timeline_data.get("tracks", [])):
+                    old_clips = track.get("clips", [])
+                    new_tracks = new_ft.get("tracks", [])
+                    if track_idx < len(new_tracks):
+                        new_clips = new_tracks[track_idx].get("clips", [])
+                        if scene_index < len(old_clips) and scene_index < len(new_clips):
+                            old_clips[scene_index] = new_clips[scene_index]
                 state["shared_data"]["final_timeline"] = timeline_data
             _pipeline_results[new_pid] = state
             add_event(new_pid, "system", "done", f"场景[{scene_index}] 重生成完成")
@@ -277,23 +277,38 @@ async def regenerate_scene(pipeline_id: str, scene_index: int) -> dict:
     return {"pipeline_id": new_pid, "scene_index": scene_index, "status": "regenerating"}
 
 
+class PredictScriptRequest(BaseModel):
+    script_text: str = Field(..., max_length=50000, description="文稿内容")
+
+class PredictMaterialRequest(BaseModel):
+    file_path: str = Field(..., description="素材文件路径")
+    file_size: int = Field(default=0, ge=0, description="文件大小(bytes)")
+
+
 @router.post("/predict-script")
-async def predict_script(script_text: str) -> dict:
+async def predict_script(body: PredictScriptRequest) -> dict:
     """智能预判：分析文稿并推荐 Persona/类型/时长。"""
-    result = await ScriptAnalyzer.analyze(script_text)
+    result = await ScriptAnalyzer.analyze(body.script_text)
     return result
 
 
 @router.post("/predict-material")
-async def predict_material(file_path: str, file_size: int = 0) -> dict:
+async def predict_material(body: PredictMaterialRequest) -> dict:
     """智能预判：分析素材并推荐使用方式。"""
-    result = await MaterialAnalyzer.analyze(file_path, file_size)
+    from clipwright.security import assert_allowed_path
+    from pathlib import Path
+    assert_allowed_path(Path(body.file_path))
+    result = await MaterialAnalyzer.analyze(body.file_path, body.file_size)
     return result
 
 
 @router.post("/step/{agent_name}")
 async def run_single_agent(agent_name: str, request: PipelineRequest) -> dict:
-    """单 Agent 执行。"""
+    """执行完整 Pipeline 并返回指定 Agent 的结果。
+
+    注意：当前实现运行完整 Pipeline（所有 Agent），然后提取指定 agent_name
+    的步骤结果。真正的单 Agent 隔离执行需要显式依赖注入，暂未实现。
+    """
     state = await _orchestrator.run(request)
     step = state.get_step(agent_name)
     if step is None:
