@@ -13,8 +13,16 @@ import json
 from functools import partial
 from typing import Any, Callable, Optional
 
-from isobase.llm import AnthropicMessages, OpenAIChat
-from isobase.llm.entities import LLMResponse
+try:
+    from isobase.llm import AnthropicMessages, OpenAIChat
+    from isobase.llm.entities import LLMResponse
+
+    ISOBASE_AVAILABLE = True
+except ImportError:  # 环境未安装 isobase 时降级：模块仍可导入，实际调用时报错
+    ISOBASE_AVAILABLE = False
+    AnthropicMessages = None  # type: ignore[assignment,misc]
+    OpenAIChat = None  # type: ignore[assignment,misc]
+    LLMResponse = Any  # type: ignore[assignment,misc]
 
 from clipwright.config import settings
 from clipwright.config import logger
@@ -27,6 +35,7 @@ class LLMService:
     def __init__(self) -> None:
         self.provider = settings.llm_provider
         self._client: Optional[AnthropicMessages | OpenAIChat] = None
+        self.last_usage: Optional[dict[str, int]] = None
 
     @property
     def client(self) -> AnthropicMessages | OpenAIChat:
@@ -37,6 +46,11 @@ class LLMService:
 
     def _build_client(self) -> AnthropicMessages | OpenAIChat:
         """根据配置构建对应的 IsoBase LLM 客户端。"""
+        if not ISOBASE_AVAILABLE:
+            raise RuntimeError(
+                "isobase 未安装，无法构建 LLM 客户端。"
+                "请运行: pip install 'isobase @ git+https://github.com/landspark/IsoBase.git'"
+            )
         api_key = settings.llm_api_key or None
         base_url = settings.llm_base_url or None
         model = settings.llm_model
@@ -90,6 +104,8 @@ class LLMService:
         # IsoBase 不支持 max_retries，仅传 timeout
         if timeout:
             kwargs["timeout"] = timeout
+        # 过滤仅用于日志/追踪的元数据参数，不透传给 API
+        kwargs.pop("pipeline_id", None)
         logger.debug("LLM generate 请求: model=%s, timeout=%ds, messages=%s, tools=%s",
                      model or settings.llm_model, timeout,
                      json.dumps(messages, ensure_ascii=False)[:500],
@@ -111,6 +127,14 @@ class LLMService:
                 _push_llm("💬 LLM 响应", {"响应": resp.content[:500]})
         except Exception:
             pass
+
+        # 缓存最近一次 usage，供 Agent 获取用量统计
+        if resp.success and resp.usage:
+            self.last_usage = {
+                "input_tokens": getattr(resp.usage, "input_tokens", 0),
+                "output_tokens": getattr(resp.usage, "output_tokens", 0),
+            }
+
         return resp
 
     async def ask(
@@ -344,6 +368,11 @@ class LLMService:
 
         用于需要独立 LLM 配置的场景（如视觉识别使用不同的模型/API）。
         """
+        if not ISOBASE_AVAILABLE:
+            raise RuntimeError(
+                "isobase 未安装，无法构建 LLM 客户端。"
+                "请运行: pip install 'isobase @ git+https://github.com/landspark/IsoBase.git'"
+            )
         p = provider or settings.llm_provider
         k = api_key or settings.llm_api_key or None
         m = model or settings.llm_model

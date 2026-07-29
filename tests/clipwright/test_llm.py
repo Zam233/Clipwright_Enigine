@@ -6,6 +6,8 @@ import os
 
 import pytest
 
+pytest.importorskip("isobase", reason="isobase 未安装，跳过 IsoBase 集成测试")
+
 from clipwright.services.llm import LLMService
 
 

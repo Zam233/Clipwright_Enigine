@@ -24,6 +24,19 @@ def _make_store() -> tuple[VectorStore, str]:
     return store, td
 
 
+@pytest.fixture(autouse=True)
+def _force_local_embedder(monkeypatch: pytest.MonkeyPatch):
+    """强制使用本地 sentence_transformer，避免测试依赖开发者 .env 中的在线 API 配置。"""
+    pytest.importorskip("sentence_transformers", reason="sentence-transformers 未安装，跳过 RAG 测试")
+    from clipwright.config import settings
+
+    monkeypatch.setattr(settings, "rag_embed_provider", "sentence_transformer")
+    monkeypatch.setattr(settings, "rag_embed_model", "BAAI/bge-small-zh-v1.5")
+    reset_embedder()
+    yield
+    reset_embedder()
+
+
 # ── Chunker ──
 
 class TestChunker:

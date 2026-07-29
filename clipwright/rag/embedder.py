@@ -129,7 +129,7 @@ def get_embedder() -> BaseEmbedder:
         _embedder_instance = OpenAIEmbedder(
             model_name=settings.rag_embed_model,
             api_key=api_key or settings.llm_api_key,
-            base_url=base_url or settings.llm_base_url if provider == "ollama" else base_url,
+            base_url=(base_url or settings.llm_base_url) if provider == "ollama" else base_url,
         )
     else:
         raise ValueError(f"Unsupported embed provider: {provider}")
