@@ -1,0 +1,7 @@
+id: "news_category"
+name: "News Commentary Type"
+version: "1.0.0"
+kind: "category"
+description: "新闻评论视频类型 — 下三分之一人名条、来源引用、分屏对比、正式节奏"
+author: "Clipwright Team"
+entry_point: "news_category.main"

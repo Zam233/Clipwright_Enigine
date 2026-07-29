@@ -1,0 +1,7 @@
+id: "gif_sticker"
+name: "GIF & Sticker Material"
+version: "1.0.0"
+kind: "material"
+description: "GIF 和贴纸素材搜索 — 支持 Giphy/Tenor API，提供反应 GIF、Meme 贴纸"
+author: "Clipwright Team"
+entry_point: "gif_sticker.main"
