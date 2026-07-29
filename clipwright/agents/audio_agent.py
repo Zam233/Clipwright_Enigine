@@ -156,6 +156,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                                         start_sec=cursor,
                                         duration_sec=dur,
                                         volume=1.0,
+                                        eq_preset="voice",
                                         metadata={
                                             "narration": True,
                                             "text": seg.get("text", ""),
