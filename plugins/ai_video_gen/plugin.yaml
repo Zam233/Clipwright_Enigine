@@ -1,0 +1,7 @@
+id: "ai_video_gen"
+name: "AI Video Generation"
+version: "1.0.0"
+kind: "capability"
+description: "AI 文生视频 — 支持 Kling/Runway/Pika API，异步任务追踪，作为 MaterialSource + Tool"
+author: "Clipwright Team"
+entry_point: "ai_video_gen.main"

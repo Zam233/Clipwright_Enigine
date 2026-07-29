@@ -1,0 +1,7 @@
+id: "lottie_animations"
+name: "Lottie Animations"
+version: "1.0.0"
+kind: "capability"
+description: "Lottie JSON 动画导入与渲染 — 支持 LottieFiles 搜索和本地 .json 文件"
+author: "Clipwright Team"
+entry_point: "lottie_animations.main"
