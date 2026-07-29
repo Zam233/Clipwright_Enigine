@@ -50,7 +50,7 @@ class TestServeVideoGuard:
         secret = tmp_path / "secret.txt"
         secret.write_text("top secret")
         resp = client.get("/api/render/video", params={"path": str(secret)})
-        assert resp.status_code in (403, 404)
+        assert resp.status_code in (400, 403, 404)
 
     def test_rejects_traversal(self, client: TestClient) -> None:
         resp = client.get("/api/render/video", params={"path": "renders/../../.env"})
@@ -74,6 +74,20 @@ class TestVideoEditorGuard:
     def test_missing_project_404(self, client: TestClient) -> None:
         resp = client.get("/api/video-editor/projects/nonexistent_proj_123")
         assert resp.status_code == 404
+
+
+class TestProxyGuard:
+    async def test_rejects_outside_whitelist(self, tmp_path: Path) -> None:
+        from clipwright.services.proxy import ProxyGenerator
+        src = tmp_path / "video.mp4"
+        src.write_bytes(b"fake")
+        result = await ProxyGenerator.generate(str(src))
+        assert "error" in result
+
+    async def test_rejects_output_dir_outside_whitelist(self, tmp_path: Path) -> None:
+        from clipwright.services.proxy import ProxyGenerator
+        result = await ProxyGenerator.generate("library/nonexistent.mp4", output_dir=str(tmp_path))
+        assert "error" in result
 
 
 class TestPersonaRepositoryGuard:

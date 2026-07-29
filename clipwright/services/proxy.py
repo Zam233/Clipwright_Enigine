@@ -40,8 +40,19 @@ class ProxyGenerator:
         if not src.exists():
             return {"error": f"文件不存在: {input_path}"}
 
+        # 安全：输入与输出目录均须在白名单内，防止任意路径喂 ffmpeg / 任意目录写代理
+        from clipwright.security import SecurityViolation, assert_allowed_path
+        try:
+            assert_allowed_path(src)
+        except SecurityViolation as e:
+            return {"error": str(e)}
+
         suffix = ProxyGenerator.PROXY_HEIGHTS.get(proxy_height, f"_proxy_{proxy_height}p")
         out_dir = Path(output_dir) if output_dir else src.parent
+        try:
+            assert_allowed_path(out_dir)
+        except SecurityViolation as e:
+            return {"error": str(e)}
         out_dir.mkdir(parents=True, exist_ok=True)
         proxy_path = str(out_dir / f"{src.stem}{suffix}{src.suffix}")
 

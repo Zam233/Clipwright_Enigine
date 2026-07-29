@@ -12,6 +12,9 @@ from clipwright.services.asset_manager import AssetManager
 router = APIRouter(prefix="/api/asset", tags=["asset"])
 _manager = AssetManager()
 
+# 上传体积上限（防大文件 DoS）
+MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2GB
+
 
 @router.post("/upload")
 async def upload_asset(file: UploadFile) -> dict:
@@ -19,17 +22,30 @@ async def upload_asset(file: UploadFile) -> dict:
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
 
-    # 保存到临时位置
-    ext = Path(file.filename).suffix or ".bin"
+    # 保存到临时位置（mkdtemp 避免 mktemp 竞态；分块读取并限制体积）
+    import shutil
     import tempfile
-    tmp = Path(tempfile.mktemp(suffix=ext))
-    content = await file.read()
-    tmp.write_bytes(content)
+    ext = Path(file.filename).suffix or ".bin"
+    tmp_dir = Path(tempfile.mkdtemp(prefix="asset_up_"))
+    tmp = tmp_dir / f"upload{ext}"
+    try:
+        size = 0
+        with open(tmp, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="文件过大（上限 2GB）")
+                out.write(chunk)
 
-    info = await _manager.import_file(tmp)
-    if info.error:
-        raise HTTPException(status_code=400, detail=info.error)
-    return info.to_dict()
+        info = await _manager.import_file(tmp)
+        if info.error:
+            raise HTTPException(status_code=400, detail=info.error)
+        return info.to_dict()
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @router.get("/list")

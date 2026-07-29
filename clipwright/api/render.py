@@ -136,23 +136,12 @@ async def serve_video(path: str):
 
     安全：仅允许访问白名单目录内的文件，防止任意文件读取。
     """
-    from clipwright.config import settings
-    from clipwright.security import is_within
+    from clipwright.security import assert_allowed_path
 
-    allowed_roots = [
-        Path("renders"),
-        Path("library"),
-        Path("editor_projects"),
-        Path("projects"),
-        Path("PluginData"),
-        Path(settings.persona_dir),
-        Path(settings.tts_output_dir),
-    ]
     src = Path(path)
     if not src.exists() or not src.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
-    if not any(is_within(root, src) for root in allowed_roots):
-        raise HTTPException(status_code=403, detail="禁止访问该路径")
+    assert_allowed_path(src)
     return FileResponse(str(src), media_type="video/mp4",
                         headers={"Accept-Ranges": "bytes"})
 
@@ -290,31 +279,19 @@ async def get_render_status(render_id: str) -> dict:
 @router.get("/thumbnail")
 async def get_video_thumbnail(path: str, time_sec: float = 0.5):
     """从视频文件提取一帧作为缩略图。"""
-    import os
     import shutil
     import subprocess
 
     from starlette.background import BackgroundTask
 
-    from clipwright.config import settings
-    from clipwright.security import is_within
+    from clipwright.security import assert_allowed_path
 
     src = Path(path)
     if not src.exists() or not src.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
 
     # 安全：仅允许白名单目录内的素材
-    allowed_roots = [
-        Path("renders"),
-        Path("library"),
-        Path("editor_projects"),
-        Path("projects"),
-        Path("PluginData"),
-        Path(settings.persona_dir),
-        Path(settings.tts_output_dir),
-    ]
-    if not any(is_within(root, src) for root in allowed_roots):
-        raise HTTPException(status_code=403, detail="禁止访问该路径")
+    assert_allowed_path(src)
 
     ext = src.suffix.lower()
     if ext not in (".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wav", ".mp3", ".m4a"):

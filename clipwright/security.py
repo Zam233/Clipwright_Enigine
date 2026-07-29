@@ -39,3 +39,25 @@ def safe_join(base: Path, user_path: str) -> Path:
     if not is_within(base, target):
         raise SecurityViolation(f"路径超出允许目录: {user_path!r}")
     return target.resolve()
+
+
+def allowed_media_roots() -> list[Path]:
+    """媒体/文件 API 的白名单目录（防任意文件读写）。"""
+    from clipwright.config import settings
+
+    return [
+        Path("renders"),
+        Path("library"),
+        Path("editor_projects"),
+        Path("projects"),
+        Path("PluginData"),
+        Path(settings.persona_dir),
+        Path(settings.tts_output_dir),
+    ]
+
+
+def assert_allowed_path(path: Path) -> Path:
+    """校验路径落在白名单目录之一内，否则抛 SecurityViolation（API 层返回 400）。"""
+    if not any(is_within(root, path) for root in allowed_media_roots()):
+        raise SecurityViolation("路径不在允许的目录内")
+    return path
