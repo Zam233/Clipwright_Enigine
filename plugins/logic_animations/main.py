@@ -8,7 +8,7 @@ from clipwright.config import logger
 from clipwright.plugins.base import CapabilityPlugin
 from clipwright.plugins.hooks import HookRegistry, HookPoint
 from clipwright.schema.plugin import PluginManifest, PluginKind
-from plugins.logic_animations.diagrams.all import RENDERER_MAP
+from .diagrams.all import RENDERER_MAP
 
 
 def register_diagrams(context: dict[str, Any]) -> dict[str, Any]:

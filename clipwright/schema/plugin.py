@@ -19,6 +19,7 @@ class PluginKind(str, Enum):
     MATERIAL_SOURCE = "material"   # 素材库/素材源插件
     AGENT_STRATEGY = "agent"       # Agent 策略插件
     CAPABILITY = "capability"      # 能力/工具插件
+    STYLE = "style"                # 风格解释器插件
     EDITOR = "editor"              # 编辑器插件（前端）
 
 
