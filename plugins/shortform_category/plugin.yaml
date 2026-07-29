@@ -1,0 +1,7 @@
+id: "shortform_category"
+name: "Short-form Video Type"
+version: "1.0.0"
+kind: "category"
+description: "短视频类型 — 9:16 竖屏、1-3 秒快切、Hook 优先、文字密集、适配抖音/TikTok/Shorts"
+author: "Clipwright Team"
+entry_point: "shortform_category.main"

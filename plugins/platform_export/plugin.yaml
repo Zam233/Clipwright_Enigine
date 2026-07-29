@@ -1,0 +1,7 @@
+id: "platform_export"
+name: "Platform Export Presets"
+version: "1.0.0"
+kind: "capability"
+description: "平台专属导出预设 — Bilibili/Douyin/YouTube/微信视频号/小红书"
+author: "Clipwright Team"
+entry_point: "platform_export.main"
