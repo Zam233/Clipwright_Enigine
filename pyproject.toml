@@ -43,6 +43,8 @@ extras = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+testpaths = ["tests"]
+norecursedirs = ["clipwright/api", "clipwright/services", "clipwright/material"]
 
 [tool.ruff]
 line-length = 100
