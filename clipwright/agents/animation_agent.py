@@ -44,6 +44,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         self, input_data: AnimationInput, context: AgentContext
     ) -> AnimationOutput:
         logger.info("AnimationAgent 开始 pipeline=%s", context.pipeline_id[:12])
+        self._pid = context.pipeline_id
         add_event(context.pipeline_id, "animation", "agent_start",
                   "AnimationAgent 开始（文字动画/逻辑动画分流）")
 
@@ -293,7 +294,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             # 通过 trace 事件推送用户可见警告
             try:
                 from clipwright.services.trace import add_event as _evt
-                _evt("", "animation", "warning",
+                _evt(getattr(self, '_pid', ''), "animation", "warning",
                      f"Hyperframes 不可用，[逻辑动画]{anim_name} 降级为文字显示",
                      {"anim_id": anim_id, "degradation": "hyperframes_not_available"})
             except Exception:
@@ -541,11 +542,11 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         anim_track.clips.sort(key=lambda c: c.start_sec)
 
     @staticmethod
-    def _add_trace_warning(message: str) -> None:
+    def _add_trace_warning(self, message: str) -> None:
         """添加 trace 警告事件。"""
         try:
             from clipwright.services.trace import add_event as _evt
-            _evt("", "animation", "warning", message)
+            _evt(getattr(self, '_pid', ''), "animation", "warning", message)
         except Exception:
             pass
 

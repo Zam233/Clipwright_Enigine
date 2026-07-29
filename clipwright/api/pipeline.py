@@ -38,7 +38,7 @@ async def run_pipeline_v2(request: PipelineRequest) -> dict:
     try:
         state = await orch_v2.run(request, pipeline_id=pipeline_id)
     except Exception as e:
-        return {"pipeline_id": pipeline_id, "status": "failed", "error": str(e)}
+        raise HTTPException(status_code=500, detail=f"Pipeline 执行失败: {e}")
     return {
         "pipeline_id": pipeline_id,
         "status": state.status.value,

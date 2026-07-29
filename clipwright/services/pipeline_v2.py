@@ -98,6 +98,11 @@ class PipelineOrchestratorV2:
     """Pipeline 编排器 v2 — 支持动态路由、自愈循环、Agent 总线 + 并行执行。"""
 
     MAX_SELF_HEAL_LOOPS = 3
+    # Agent 级熔断: agent_name → {"fail_count": int, "last_fail_at": datetime}
+    # 类级变量：跨实例共享，确保熔断计数在多次 pipeline 运行间累积
+    _circuit_breakers: dict[str, dict] = {}
+    _circuit_breaker_threshold = 3
+    _circuit_breaker_recovery_sec = 60
 
     def __init__(self) -> None:
         self._agents = {
@@ -108,12 +113,6 @@ class PipelineOrchestratorV2:
             "audio": AudioAgent(),
             "quality": QualityAgent(),
         }
-        # Agent 级熔断: agent_name → {"fail_count": int, "last_fail_at": datetime}
-        self._circuit_breakers: dict[str, dict] = {}
-        # 熔断阈值: 连续失败 N 次后跳过该 agent
-        self._circuit_breaker_threshold = 3
-        # 熔断恢复时间: 失败后等待 N 秒再允许重试
-        self._circuit_breaker_recovery_sec = 60
 
     def _check_circuit_breaker(self, agent_name: str) -> bool:
         """检查 agent 是否熔断。返回 True 表示已熔断（应跳过）。"""

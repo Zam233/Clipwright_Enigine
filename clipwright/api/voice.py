@@ -63,7 +63,18 @@ async def upload_voice_audio(file: UploadFile) -> dict[str, Any]:
     dest = settings.tts_upload_dir / f"{uuid.uuid4().hex[:12]}{ext}"
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    content = await file.read()
+    _MAX_VOICE_SIZE = 100 * 1024 * 1024  # 100MB
+    chunks = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)  # 1MB chunks
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > _MAX_VOICE_SIZE:
+            raise HTTPException(status_code=413, detail="文件过大（最大 100MB）")
+        chunks.append(chunk)
+    content = b"".join(chunks)
     dest.write_bytes(content)
 
     mime = _guess_mime(ext)

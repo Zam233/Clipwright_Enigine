@@ -152,7 +152,8 @@ class RenderService:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return subprocess.run(cmd, **kw)
-        return await loop.run_in_executor(_ffmpeg_pool, self._run_ff, cmd, **kw)
+        from functools import partial
+        return await loop.run_in_executor(_ffmpeg_pool, partial(self._run_ff, cmd, **kw))
 
     async def _ff_concat(self, sync_fn, *args):
         """把同步拼接函数（内含阻塞 subprocess）offload 到 _ffmpeg_pool。"""

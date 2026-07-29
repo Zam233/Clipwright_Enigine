@@ -140,9 +140,9 @@ async def serve_video(path: str):
     from clipwright.security import assert_allowed_path
 
     src = Path(path)
+    assert_allowed_path(src)
     if not src.exists() or not src.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
-    assert_allowed_path(src)
     return FileResponse(str(src), media_type="video/mp4",
                         headers={"Accept-Ranges": "bytes"})
 
@@ -226,6 +226,11 @@ async def start_render(
     """提交渲染任务：将 Timeline JSON 渲染为 MP4 视频。"""
     tl = body.timeline
     out = body.output_path or "renders/output.mp4"
+    # 安全：强制输出到 renders/ 目录，防止任意文件写入
+    out_path = Path(out)
+    if not str(out_path).startswith("renders"):
+        out_path = Path("renders") / out_path.name
+    out = str(out_path)
     s = body.settings
     params = _resolve_settings(s)
     logger.info("渲染请求: tracks=%d, output=%s, params=%s",
