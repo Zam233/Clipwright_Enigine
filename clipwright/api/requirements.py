@@ -81,7 +81,8 @@ async def chat_stream(session_id: str, message: str = Form(...)):
             async for chunk in _service.stream_chat(session_id, message):
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'data': str(e)}, ensure_ascii=False)}\n\n"
+            logger.exception("SSE stream error: %s", e)
+            yield f"data: {json.dumps({'type': 'error', 'data': '对话处理失败，请稍后重试'}, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
@@ -113,7 +114,9 @@ async def upload_file(
         tmp_path = tmp.name
 
     try:
-        result = await asyncio.to_thread(_service.process_upload, session_id, tmp_path, file.filename or "file")
+        # process_upload is async — await it directly (asyncio.to_thread would only
+        # create an unawaited coroutine and never execute it)
+        result = await _service.process_upload(session_id, tmp_path, file.filename or "file")
         return result
     except Exception as e:
         logger.exception("Upload error: %s", e)

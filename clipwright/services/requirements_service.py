@@ -323,7 +323,7 @@ class RequirementsService:
             try:
                 model = RequirementsSessionModel.find_by_id(session_id)
                 if model:
-                    return model.to_session_dict()
+                    return model.to_dict()
             except Exception as e:
                 logger.warning("MongoDB 会话查询失败: %s", e)
         return None
@@ -469,14 +469,21 @@ class RequirementsService:
     @staticmethod
     def _is_confirm(message: str) -> bool:
         msg = message.strip().lower()
-        # Strong unambiguous phrases — substring match (these are NEVER negation-safe at start)
-        strong = ["已确认", "确认无误", "确认通过", "确认实施", "没问题", "就这样", "可以了", "批准通过"]
+        # Questions are not confirmations
+        if msg.endswith(("?", "？")):
+            return False
+        # Strong unambiguous affirmative phrases
+        strong = ["已确认", "确认无误", "确认通过", "确认实施", "批准通过"]
         if any(phrase in msg for phrase in strong):
             return True
-        # Start-only tokens — short words that could be negated if not at start
+        # Negation markers invert any affirmation ("不可以", "不要就这样", "有问题")
+        negations = ("不", "没", "别", "勿", "莫", "未")
+        if any(neg in msg for neg in negations):
+            return False
+        # Start-only affirmative tokens
         start_tokens = [
-            "确认", "同意", "可以", "好的", "行", "ok", "yes", "y",
-            "对", "嗯", "确定", "通过", "批准",
+            "没问题", "就这样", "可以了", "好的", "确认", "同意", "可以",
+            "行", "ok", "yes", "y", "对", "嗯", "确定", "通过", "批准",
         ]
         return any(msg.startswith(kw) or msg == kw for kw in start_tokens)
 

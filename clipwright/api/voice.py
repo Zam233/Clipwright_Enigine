@@ -24,7 +24,7 @@ router = APIRouter(prefix="/api/voice", tags=["voice"])
 
 class CloneRequest(BaseModel):
     provider: str = ""
-    voice_name: str = Field(default="", min_length=1, description="克隆音色名称")
+    voice_name: str = Field(default="", description="克隆音色名称（留空则自动生成）")
     audio_path: str = ""
     audio_url: str = ""
     data_uri: str = ""
