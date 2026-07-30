@@ -272,8 +272,8 @@ class PipelineOrchestratorV2:
                 if hasattr(result, "result") and result.result:
                     self._merge_agent_result(name, result, result_data, bus, pid)
 
-                # 检查 agent 是否返回 FAIL 决策
-                if hasattr(result, "status") and str(result.status) in ("failed", "PipelineStatus.FAILED"):
+                # 检查 agent 返回 FAIL 状态的两种形式
+                if hasattr(result, "status") and str(result.status).lower() in ("failed", "fail"):
                     errors.append((name, Exception(result.error or f"{name} 返回 FAIL")))
                     logger.error("Agent %s 返回 FAIL: %s", name, result.error)
 

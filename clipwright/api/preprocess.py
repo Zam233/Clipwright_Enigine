@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import uuid
 from datetime import datetime
 from enum import Enum
@@ -386,7 +387,9 @@ async def _generate_thumbnail(file_path: str) -> dict[str, Any]:
     import tempfile
 
     try:
-        out_path = Path(tempfile.mktemp(suffix=".jpg"))
+        out_fd, out_path_str = tempfile.mkstemp(suffix=".jpg")
+        os.close(out_fd)
+        out_path = Path(out_path_str)
         cmd = [
             "ffmpeg", "-y", "-ss", "1", "-i", file_path,
             "-vframes", "1", "-q:v", "3",

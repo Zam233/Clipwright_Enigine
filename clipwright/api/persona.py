@@ -67,7 +67,7 @@ class SavePromptRequest(BaseModel):
 async def get_prompt(persona_id: str) -> dict:
     """获取 Persona 的 Prompt 指令。"""
     if not _repo.exists(persona_id):
-        raise HTTPException(status_code=404)
+        raise HTTPException(status_code=404, detail=f"Persona 不存在: {persona_id}")
     prompt_path = _repo.persona_path(persona_id) / "prompt.md"
     text = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else ""
     return {"persona_id": persona_id, "prompt": text}
@@ -77,7 +77,7 @@ async def get_prompt(persona_id: str) -> dict:
 async def save_prompt(persona_id: str, req: SavePromptRequest) -> dict:
     """保存/更新 Persona 的 Prompt 指令。"""
     if not _repo.exists(persona_id):
-        raise HTTPException(status_code=404)
+        raise HTTPException(status_code=404, detail=f"Persona 不存在: {persona_id}")
     _repo.save_prompt(persona_id, req.prompt)
     return {"status": "ok", "persona_id": persona_id}
 
@@ -89,7 +89,7 @@ async def save_prompt(persona_id: str, req: SavePromptRequest) -> dict:
 async def list_knowledge(persona_id: str) -> list[KnowledgeDoc]:
     """列出 Persona 的知识库文档。"""
     if not _repo.exists(persona_id):
-        raise HTTPException(status_code=404)
+        raise HTTPException(status_code=404, detail=f"Persona 不存在: {persona_id}")
     manifest = _repo.load_manifest(persona_id)
     return manifest.knowledge or []
 
@@ -98,7 +98,7 @@ async def list_knowledge(persona_id: str) -> list[KnowledgeDoc]:
 async def add_knowledge(persona_id: str, doc: KnowledgeDoc) -> dict:
     """向 Persona 知识库添加一篇文档。"""
     if not _repo.exists(persona_id):
-        raise HTTPException(status_code=404)
+        raise HTTPException(status_code=404, detail=f"Persona 不存在: {persona_id}")
     _repo.add_knowledge_doc(persona_id, doc)
     return {"status": "ok", "doc_id": doc.id}
 

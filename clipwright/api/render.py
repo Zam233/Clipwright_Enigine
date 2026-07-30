@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -22,7 +23,6 @@ _render_service = RenderService()
 
 # 渲染队列
 _render_queue: dict[str, dict] = {}
-_render_queue_counter = 0
 
 
 @router.post("/queue")

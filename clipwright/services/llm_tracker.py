@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from clipwright.config import logger
 
-# 内存存储（后续可持久化到 MongoDB）
+# 内存存储（后续可持久化到 MongoDB），限制最大记录数防止内存泄漏
 _llm_calls: list[dict] = []
+_MAX_CALLS = 10000
 
 
 async def record_llm_call(
@@ -35,6 +36,8 @@ async def record_llm_call(
         "status": status,
     }
     _llm_calls.append(record)
+    if len(_llm_calls) > _MAX_CALLS:
+        del _llm_calls[:-((_MAX_CALLS * 3) // 4)]
     logger.info(
         "LLM call: pipeline=%s agent=%s model=%s tokens=%d/%d (%.0fms)",
         pipeline_id, agent_name, model, input_tokens, output_tokens, duration_ms,
