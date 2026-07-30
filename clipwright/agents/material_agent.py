@@ -364,20 +364,13 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                     quality = min(1.0, (w * h) / (1920 * 1080))
                     return match * 0.7 + quality * 0.3
 
-                # P2: Persona 风格匹配分
-                persona_tags = None
-                if persona_style_keywords:
-                    if hasattr(r, 'asset') and hasattr(r.asset, 'tags'):
-                        persona_tags = r.asset.tags or []
-                    elif isinstance(r, dict):
-                        persona_tags = r.get("tags", [])
-
+                # P2: Persona 风格匹配分（每个候选项使用自身的 tags）
                 validated.sort(key=lambda x: (
                     x[1] * 0.5 +                                    # 帧验证匹配度
                     _orientation_score(x[0]) * 0.25 +               # 方向优先级
                     self._persona_style_score(
                         x[0],
-                        persona_tags if persona_tags else (x[0].asset.tags if hasattr(x[0], 'asset') and hasattr(x[0].asset, 'tags') else []),
+                        x[0].asset.tags if hasattr(x[0], 'asset') and hasattr(x[0].asset, 'tags') else [],
                         persona_style_keywords,
                         input_data.persona_config,
                     ) * 0.25                                         # Persona 风格匹配度

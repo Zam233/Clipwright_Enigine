@@ -130,7 +130,9 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                 if clip.transition_in or clip.transition_out:
                     transition_count += 1
 
-        clip_gaps = len(video_clips) - 1
+        # 按轨道计算间隔（避免跨轨道误报）
+        clip_gaps = sum(max(0, len(t.clips) - 1) for t in tracks
+                        if t.kind in (ClipKind.VIDEO, ClipKind.IMAGE))
         if clip_gaps > 0 and transition_count == 0:
             issues.append(QualityIssue(
                 severity="info", category="transition",

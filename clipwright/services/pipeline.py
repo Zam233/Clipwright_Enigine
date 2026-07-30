@@ -142,7 +142,8 @@ class PipelineOrchestrator:
             # Material Agent
             step2 = await self._run_agent_step(
                 state, "material",
-                {"script_skeleton": {"scenes": scenes, **script_skeleton}},
+                {"script_skeleton": {"scenes": scenes, **script_skeleton},
+                 "persona_config": persona_config},
                 agent_context,
             )
             if self._should_stop(state, step2):
