@@ -72,6 +72,8 @@ class VoiceStorage:
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
+        # Serialize read-modify-write ops so concurrent clone/delete don't lose updates
+        self._lock = threading.Lock()
 
     def load(self) -> list[dict]:
         """读取全部音色记录；文件不存在或 JSON 损坏时返回 []。"""
@@ -94,9 +96,10 @@ class VoiceStorage:
         tmp.replace(self.db_path)
 
     def add(self, record: dict) -> None:
-        voices = self.load()
-        voices.append(record)
-        self.save(voices)
+        with self._lock:
+            voices = self.load()
+            voices.append(record)
+            self.save(voices)
 
     def get(self, db_id: str) -> Optional[dict]:
         for v in self.load():
@@ -105,12 +108,13 @@ class VoiceStorage:
         return None
 
     def delete(self, db_id: str) -> bool:
-        voices = self.load()
-        new_voices = [v for v in voices if v.get("id") != db_id]
-        if len(new_voices) == len(voices):
-            return False
-        self.save(new_voices)
-        return True
+        with self._lock:
+            voices = self.load()
+            new_voices = [v for v in voices if v.get("id") != db_id]
+            if len(new_voices) == len(voices):
+                return False
+            self.save(new_voices)
+            return True
 
 
 # ──────────────────────────────────────────────
