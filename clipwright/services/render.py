@@ -702,3 +702,4 @@ class RenderService:
     def _cleanup(self):
         if self._work_dir.exists():
             shutil.rmtree(self._work_dir, ignore_errors=True)
+        self._work_dir.mkdir(parents=True, exist_ok=True)

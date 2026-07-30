@@ -84,11 +84,14 @@ class VoiceStorage:
         return []
 
     def save(self, voices: list[dict]) -> None:
-        """写入全部音色记录（自动建父目录，UTF-8，保留中文）。"""
+        """原子写入全部音色记录（临时文件 + rename 防崩溃丢失数据）。"""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.db_path.write_text(
-            json.dumps(voices, ensure_ascii=False, indent=2), "utf-8"
+        tmp = self.db_path.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps(voices, ensure_ascii=False, indent=2),
+            encoding="utf-8",
         )
+        tmp.replace(self.db_path)
 
     def add(self, record: dict) -> None:
         voices = self.load()
@@ -812,11 +815,13 @@ class VoiceService:
 # ── 单例 ──
 
 _voice_service: Optional[VoiceService] = None
+_voice_lock = __import__('threading').Lock()
 
 
 def get_voice_service() -> VoiceService:
-    """获取 VoiceService 单例。"""
     global _voice_service
     if _voice_service is None:
-        _voice_service = VoiceService()
+        with _voice_lock:
+            if _voice_service is None:
+                _voice_service = VoiceService()
     return _voice_service
