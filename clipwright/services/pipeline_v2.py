@@ -269,13 +269,20 @@ class PipelineOrchestratorV2:
                     add_event(pid, name, "error", f"{name} 异常: {str(result)[:200]}")
                     continue
 
+                # 检查 agent 是否失败（用枚举直接比较——str(enum) 返回 'PipelineStatus.FAILED'
+                # 而非 'failed'，旧的 str().lower() in (...) 永远匹配不上，导致失败被静默吞掉、
+                # 管线仍报 COMPLETED 并产出空/残时间线）
+                agent_failed = hasattr(result, "status") and result.status == PipelineStatus.FAILED
+                if agent_failed:
+                    err_msg = getattr(result, "error", None) or f"{name} 返回 FAIL"
+                    errors.append((name, Exception(err_msg)))
+                    logger.error("Agent %s 返回 FAIL: %s", name, err_msg)
+                    add_event(pid, name, "error", f"{name} 失败: {str(err_msg)[:200]}")
+                    continue
+
+                # 仅合并成功结果，避免失败 Agent 的部分/空时间线覆盖已累积的好时间线
                 if hasattr(result, "result") and result.result:
                     self._merge_agent_result(name, result, result_data, bus, pid)
-
-                # 检查 agent 返回 FAIL 状态的两种形式
-                if hasattr(result, "status") and str(result.status).lower() in ("failed", "fail"):
-                    errors.append((name, Exception(result.error or f"{name} 返回 FAIL")))
-                    logger.error("Agent %s 返回 FAIL: %s", name, result.error)
 
             # P1: 多路错误
             if errors:
