@@ -122,6 +122,28 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             cut_profile = rhythm.get("cut_profile", "even_flow")
             max_duration = constraints.get("max_duration_sec", 900)
 
+            # 复用人在回路已确认的场景结构（production_plan.raw_scenes），
+            # 避免管线重新生成导致与用户确认的规划书发生漂移（绕过审阅）。
+            confirmed_scenes = []
+            if isinstance(input_data.production_plan, dict):
+                confirmed_scenes = input_data.production_plan.get("raw_scenes") or []
+            if confirmed_scenes and isinstance(confirmed_scenes, list):
+                reused, reuse_warnings = _validate_scenes(confirmed_scenes)
+                if reused:
+                    logger.info("StructureAgent: 复用已确认规划书的 %d 个场景（跳过重新生成）", len(reused))
+                    output = StructureOutput(
+                        decision=AgentDecision.PASS,
+                        script_skeleton={
+                            "topic": context.topic,
+                            "tone": tone,
+                            "scene_count": len(reused),
+                            "_warnings": reuse_warnings + ["复用已确认规划书场景"],
+                        },
+                        scenes=reused,
+                    )
+                    output._llm_usage = None
+                    return output
+
             system_prompt = SYSTEM_PROMPT_TPL.format(
                 tone=tone,
                 academic_density=academic_density,

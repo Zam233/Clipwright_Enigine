@@ -294,6 +294,12 @@ class PipelineOrchestratorV2:
         quality_passed = False
         while not quality_passed and heal_count < self.MAX_SELF_HEAL_LOOPS:
             tl = result_data.get("timeline")
+            if not tl:
+                # 无时间线则无法质检——明确失败，避免静默跳过质检直接"完成"
+                state.status = PipelineStatus.FAILED
+                state.error = "质检阶段缺少时间线输入，无法完成质量校验"
+                add_event(pid, "quality", "error", state.error)
+                break
             step = await self._run_agent(
                 state, "quality",
                 {"timeline": tl, "constraints": persona_config.get("constraints", {})},
@@ -452,6 +458,10 @@ class PipelineOrchestratorV2:
 
     def _build_input(self, agent_name: str, result_data: dict, persona_config: dict, plugin) -> dict:
         """为 Agent 构建输入数据。"""
+        # animation/audio/quality 依赖 edit 产出的时间线；若缺失则明确报错，
+        # 避免下游以 None 时间线触发 Pydantic 校验崩溃或静默跳过质检。
+        if agent_name in ("animation", "audio", "quality") and not result_data.get("timeline"):
+            raise ValueError(f"Agent {agent_name} 需要时间线输入，但 edit 阶段未产出有效时间线")
         inputs = {
             "structure": {
                 "persona_config": persona_config,
