@@ -104,6 +104,24 @@ def load_persona_by_id(
     return load_persona_manifest(persona_dir)
 
 
+def load_persona_or_default(
+    persona_id: str,
+    persona_root: Optional[Path] = None,
+) -> PersonaManifest:
+    """按 ID 加载 Persona；不存在时回退到默认 Persona（而非抛异常使管线失败）。"""
+    try:
+        return load_persona_by_id(persona_id, persona_root)
+    except PersonaLoadError:
+        from clipwright.config import logger
+        logger.warning("Persona %s 不存在，回退到默认 Persona 配置", persona_id)
+        pid = persona_id or "default"
+        return PersonaManifest(
+            persona_id=pid,
+            persona_name="默认",
+            parameter=ParameterLayer(persona_id=pid),
+        )
+
+
 def resolve_inheritance(manifest: PersonaManifest) -> PersonaManifest:
     """解析 Persona 的继承链，合并所有覆盖和组合。
 

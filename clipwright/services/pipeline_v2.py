@@ -28,7 +28,7 @@ from clipwright.agents import (
 )
 from clipwright.category import CategoryRegistry
 from clipwright.config import logger
-from clipwright.persona.loader import load_persona_by_id, resolve_inheritance
+from clipwright.persona.loader import load_persona_by_id, load_persona_or_default, resolve_inheritance
 from clipwright.persona.validator import validate_manifest
 from clipwright.schema.agent import AgentContext, AgentDecision
 from clipwright.schema.pipeline import PipelineRequest, PipelineState, PipelineStatus, PipelineStep
@@ -424,7 +424,8 @@ class PipelineOrchestratorV2:
 
     async def _init(self, request, pid, state, bus):
         """初始化：加载 Persona、插件、翻译参数。"""
-        manifest = load_persona_by_id(request.persona_id)
+        # Persona 不存在时回退到默认配置，避免整条管线因缺 Persona 而失败
+        manifest = load_persona_or_default(request.persona_id)
         manifest = resolve_inheritance(manifest)
         warnings = validate_manifest(manifest)
         if warnings:
