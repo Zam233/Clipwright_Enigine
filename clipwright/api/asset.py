@@ -9,6 +9,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from clipwright.services.asset_manager import AssetManager
 
@@ -109,3 +110,22 @@ async def delete_asset(asset_id: str, project_id: str = Query("")) -> dict:
     if not ok:
         raise HTTPException(status_code=404, detail=f"Asset {asset_id} not found")
     return {"status": "ok", "asset_id": asset_id}
+
+
+class ImportPathRequest(BaseModel):
+    path: str
+    project_id: str = ""
+
+
+@router.post("/import-path")
+async def import_asset_by_path(req: ImportPathRequest) -> dict:
+    """通过文件路径导入素材（不复制文件，创建软连接）。"""
+    from pathlib import Path
+    src = Path(req.path)
+    if not src.exists():
+        raise HTTPException(status_code=400, detail=f"文件不存在: {req.path}")
+    manager = _get_manager(req.project_id or None)
+    info = await manager.import_file(src)
+    if info.error:
+        raise HTTPException(status_code=400, detail=info.error)
+    return info.to_dict()

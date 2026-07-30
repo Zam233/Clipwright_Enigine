@@ -1,27 +1,19 @@
-"""AI 文生图插件 — 从文字提示生成图片素材。
-
-支持提供商（通过 config.yaml 的 provider 字段切换）：
-  - "dalle": OpenAI DALL-E 3（需 OPENAI_API_KEY）
-  - "flux": Black Forest Labs Flux（需 FLUX_API_KEY）
-  - "local": 本地 Stable Diffusion / ComfyUI（需 SD_API_URL）
-
-注册为 MaterialSource（搜索=生成）和 Tool（ai_image_generate）。
+"""AI 文生图插件 — 从文字提示生成图片。
+支持 DALL-E / Flux / 本地 Stable Diffusion。
+生成结果通过 ToolRegistry 调用，不注册为 MaterialSource（生成≠搜索）。
 """
 
 from __future__ import annotations
 
 import os
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
-from clipwright.material.base import MaterialSource
-from clipwright.material.registry import MaterialRegistry
 from clipwright.plugins import CapabilityPlugin
 from clipwright.tool.base import BaseTool
 from clipwright.tool.registry import ToolRegistry
-from clipwright.schema.material import MaterialAsset, MaterialType
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
 
@@ -103,28 +95,6 @@ class AIImageGenTool(BaseTool):
             return {"success": False, "error": "本地 SD 未返回图片"}
 
 
-class AIImageGenSource(MaterialSource):
-    source_id: str = "ai_image_gen"
-    source_name: str = "AI 文生图"
-
-    def __init__(self, tool: AIImageGenTool) -> None:
-        self._tool = tool
-
-    async def search(self, query: str, top_k: int = 1, media_type: str = "all", **kw: Any) -> list[tuple[MaterialAsset, float]]:
-        if media_type not in ("photo", "all"):
-            return []
-        result = await self._tool.execute({"prompt": query, "width": 1024, "height": 576})
-        if not result.get("success"):
-            return []
-        asset = MaterialAsset(
-            id=f"aigen_{uuid.uuid4().hex[:8]}", title=query, type=MaterialType.IMAGE,
-            url=result["url"], thumbnail_url=result["url"], tags=["ai_generated", query],
-            resolution="1024x576", source=self.source_id,
-            metadata={"prompt": query, "provider": result.get("provider", "")},
-        )
-        return [(asset, 0.9)]
-
-
 class AIImageGenPlugin(CapabilityPlugin):
     manifest = PluginManifest(
         id="ai_image_gen", name="AI Image Generation", version="1.0.0",
@@ -138,8 +108,7 @@ class AIImageGenPlugin(CapabilityPlugin):
         provider = cfg.get("provider", "dalle")
         tool = AIImageGenTool(provider=provider, api_key=cfg.get("api_key", ""), api_url=cfg.get("api_url", ""))
         ToolRegistry.register(tool, plugin_id=self.manifest.id)
-        MaterialRegistry.register(AIImageGenSource(tool), plugin_id=self.manifest.id)
-        logger.info("[AIImageGen] Tool + MaterialSource 已注册 (provider=%s)", provider)
+        logger.info("[AIImageGen] Tool 已注册 (provider=%s)", provider)
 
     def shutdown(self) -> None:
         pass

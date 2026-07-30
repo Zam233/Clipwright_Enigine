@@ -1,29 +1,18 @@
 """AI 文生视频插件 — 从文字提示生成短视频片段。
-
-支持提供商（config.yaml provider 字段）：
-  - "kling": 快手可灵 API（需 KLING_API_KEY）
-  - "runway": Runway Gen-3（需 RUNWAY_API_KEY）
-  - "pika": Pika Labs（需 PIKA_API_KEY）
-
-异步生成（30-120 秒），通过轮询追踪任务状态。
-注册为 MaterialSource + Tool。
+支持 Kling / Runway API。生成结果通过 ToolRegistry 调用。
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
-import uuid
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
-from clipwright.material.base import MaterialSource
-from clipwright.material.registry import MaterialRegistry
 from clipwright.plugins import CapabilityPlugin
 from clipwright.tool.base import BaseTool
 from clipwright.tool.registry import ToolRegistry
-from clipwright.schema.material import MaterialAsset, MaterialType
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
 
@@ -71,7 +60,6 @@ class AIVideoGenTool(BaseTool):
             task_id = resp.json().get("data", {}).get("task_id", "")
             if not task_id:
                 return {"success": False, "error": "未返回 task_id"}
-            # 轮询等待完成
             for _ in range(60):
                 await asyncio.sleep(3)
                 status_resp = await c.get(f"https://api.klingai.com/v1/videos/text2video/{task_id}",
@@ -82,7 +70,7 @@ class AIVideoGenTool(BaseTool):
                     return {"success": True, "url": video_url, "provider": "kling", "task_id": task_id}
                 if data.get("task_status") == "failed":
                     return {"success": False, "error": data.get("task_status_msg", "生成失败")}
-            return {"success": False, "error": "生成超时（180s）"}
+            return {"success": False, "error": "生成超时"}
 
     async def _gen_runway(self, prompt: str, params: dict) -> dict:
         key = self._api_key or os.environ.get("RUNWAY_API_KEY", "")
@@ -106,28 +94,6 @@ class AIVideoGenTool(BaseTool):
             return {"success": False, "error": "生成超时"}
 
 
-class AIVideoGenSource(MaterialSource):
-    source_id: str = "ai_video_gen"
-    source_name: str = "AI 文生视频"
-
-    def __init__(self, tool: AIVideoGenTool) -> None:
-        self._tool = tool
-
-    async def search(self, query: str, top_k: int = 1, media_type: str = "all", **kw: Any) -> list[tuple[MaterialAsset, float]]:
-        if media_type not in ("video", "all"):
-            return []
-        result = await self._tool.execute({"prompt": query, "duration_sec": 5})
-        if not result.get("success"):
-            return []
-        asset = MaterialAsset(
-            id=f"aivid_{uuid.uuid4().hex[:8]}", title=query, type=MaterialType.VIDEO,
-            url=result["url"], thumbnail_url="", tags=["ai_generated", query],
-            duration_sec=5, source=self.source_id,
-            metadata={"prompt": query, "provider": result.get("provider", "")},
-        )
-        return [(asset, 0.85)]
-
-
 class AIVideoGenPlugin(CapabilityPlugin):
     manifest = PluginManifest(
         id="ai_video_gen", name="AI Video Generation", version="1.0.0",
@@ -141,8 +107,7 @@ class AIVideoGenPlugin(CapabilityPlugin):
         provider = cfg.get("provider", "kling")
         tool = AIVideoGenTool(provider=provider, api_key=cfg.get("api_key", ""))
         ToolRegistry.register(tool, plugin_id=self.manifest.id)
-        MaterialRegistry.register(AIVideoGenSource(tool), plugin_id=self.manifest.id)
-        logger.info("[AIVideoGen] Tool + MaterialSource 已注册 (provider=%s)", provider)
+        logger.info("[AIVideoGen] Tool 已注册 (provider=%s)", provider)
 
     def shutdown(self) -> None:
         pass
