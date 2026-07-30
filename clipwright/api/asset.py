@@ -60,6 +60,8 @@ async def upload_asset(file: UploadFile, project_id: str = Query("")) -> dict:
         info = await manager.import_file(tmp)
         if info.error:
             raise HTTPException(status_code=400, detail=info.error)
+        # Preserve original filename (temp file is named "upload{ext}")
+        info.filename = file.filename
         return info.to_dict()
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -69,7 +71,13 @@ async def upload_asset(file: UploadFile, project_id: str = Query("")) -> dict:
 async def list_assets(project_id: str = Query("")) -> list[dict]:
     """列出项目的所有已导入素材。"""
     manager = _get_manager(project_id or None)
-    return [a.to_dict() for a in await manager.list_assets()]
+    result: list[dict] = []
+    for a in await manager.list_assets():
+        d = a.to_dict()
+        if project_id:
+            d["project_id"] = project_id
+        result.append(d)
+    return result
 
 
 @router.get("/{asset_id}")
