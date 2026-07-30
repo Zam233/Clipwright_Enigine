@@ -461,8 +461,11 @@ class RequirementsService:
                     "metadata": {},
                 })
 
-        # 持久化到 MongoDB
-        self._persist(session_id, status, messages, brief_data, plan_data, user_inputs)
+        # 持久化到 MongoDB（offload 到线程：_persist 内的 find_by_id 走 _io()，
+        # 在事件循环线程会返回未 await 的协程导致写入静默失败；线程内无事件循环则同步执行）
+        await asyncio.to_thread(
+            self._persist, session_id, status, messages, brief_data, plan_data, user_inputs,
+        )
         session = self.get_session(session_id) or {}
         msgs = session.get("messages", [])
         last_assistant = next(
