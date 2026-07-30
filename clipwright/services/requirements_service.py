@@ -411,7 +411,7 @@ class RequirementsService:
                 })
 
         elif status == "brief_ready":
-            if self._is_confirm(user_message):
+            if await self._is_confirm(user_message):
                 status = "brief_confirmed"
                 messages.append({
                     "role": "assistant", "content": "方案已确认！正在生成成片规划书，请稍候...",
@@ -441,7 +441,7 @@ class RequirementsService:
                 })
 
         elif status == "plan_ready":
-            if self._is_confirm(user_message):
+            if await self._is_confirm(user_message):
                 status = "plan_confirmed"
                 messages.append({
                     "role": "assistant", "content": "规划书已确认！即将启动视频制作流程。",
@@ -466,8 +466,43 @@ class RequirementsService:
         )
         return {**session, "reply": last_assistant}
 
+    async def _is_confirm(self, message: str) -> bool:
+        """用 LLM 判断用户回复是否为对当前方案的确认/批准。
+
+        相比关键词硬编码，LLM 能正确处理否定、提问、委婉表达等复杂语义。
+        LLM 不可用（离线/异常）时回退到关键词启发式，保证流程不中断。
+        """
+        msg = message.strip()
+        if not msg:
+            return False
+        try:
+            resp = await self._llm.structured_output(
+                system_prompt=(
+                    "你是意图分类器。判断用户对一份已生成的视频方案/规划书的回复，"
+                    "是否表示「确认 / 同意 / 批准 / 通过 / 就这样」（即接受当前方案、进入下一步）。\n"
+                    "以下情况都【不是】确认：否定（不可以、不要、有问题、不满意）、"
+                    "提问（这样行吗？可以吗？）、以及提出任何修改意见或新需求。\n"
+                    "仅输出符合 schema 的 JSON，不要输出其他内容。"
+                ),
+                user_prompt=f"用户回复：{msg}",
+                output_schema={
+                    "type": "object",
+                    "properties": {"is_confirm": {"type": "boolean"}},
+                    "required": ["is_confirm"],
+                },
+                temperature=0,
+                max_tokens=16,
+                pipeline_id="",
+            )
+            if isinstance(resp, dict) and "is_confirm" in resp:
+                return bool(resp["is_confirm"])
+        except Exception as e:
+            logger.debug("LLM 确认判断失败，回退关键词启发式: %s", e)
+        return self._is_confirm_heuristic(msg)
+
     @staticmethod
-    def _is_confirm(message: str) -> bool:
+    def _is_confirm_heuristic(message: str) -> bool:
+        """关键词启发式确认判断（LLM 不可用时的降级方案）。"""
         msg = message.strip().lower()
         # Questions are not confirmations
         if msg.endswith(("?", "？")):
