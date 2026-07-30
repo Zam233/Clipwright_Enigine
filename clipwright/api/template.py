@@ -86,6 +86,7 @@ async def list_templates(category: str = "", tag: str = "") -> list[TemplateMeta
                 continue
             templates.append(TemplateMeta(**meta))
         except Exception:
+            logger.warning("Failed to parse template: %s", file_path, exc_info=True)
             continue
 
     return templates

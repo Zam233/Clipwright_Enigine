@@ -104,6 +104,7 @@ async def list_types() -> list[TypeListItem]:
                             tags=config.get("tags", []),
                         ))
             except Exception:
+                logger.warning("Failed to parse type config: %s", config_path, exc_info=True)
                 continue
 
     return result

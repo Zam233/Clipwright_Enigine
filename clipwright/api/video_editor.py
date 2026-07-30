@@ -119,6 +119,7 @@ async def list_projects() -> list[dict]:
                 "version": data.get("version", 0),
             })
         except Exception:
+            logger.warning("Failed to parse editor project: %s", file_path, exc_info=True)
             continue
     return projects
 

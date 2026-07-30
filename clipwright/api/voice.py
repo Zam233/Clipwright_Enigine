@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from clipwright.config import settings, logger
 from clipwright.services.voice import get_voice_service
@@ -24,7 +24,7 @@ router = APIRouter(prefix="/api/voice", tags=["voice"])
 
 class CloneRequest(BaseModel):
     provider: str = ""
-    voice_name: str = ""
+    voice_name: str = Field(default="", min_length=1, description="克隆音色名称")
     audio_path: str = ""
     audio_url: str = ""
     data_uri: str = ""
