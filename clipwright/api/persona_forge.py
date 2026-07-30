@@ -59,7 +59,8 @@ async def forge_from_prompt(req: ForgeFromPromptRequest) -> PersonaManifest:
         await _forge.save_persona(manifest)
         return manifest
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("forge from prompt failed")
+        raise HTTPException(status_code=500, detail="Persona 生成失败，请稍后重试")
 
 
 @router.post("/from-script", response_model=PersonaManifest)
@@ -79,7 +80,8 @@ async def forge_from_script(req: ForgeFromScriptRequest) -> PersonaManifest:
         await _forge.save_persona(manifest)
         return manifest
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("forge from prompt failed")
+        raise HTTPException(status_code=500, detail="Persona 生成失败，请稍后重试")
 
 
 @router.post("/refine", response_model=PersonaManifest)
@@ -101,7 +103,8 @@ async def forge_refine(req: ForgeRefineRequest) -> PersonaManifest:
             status_code=404, detail=f"Persona {req.persona_id} not found"
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("forge from prompt failed")
+        raise HTTPException(status_code=500, detail="Persona 生成失败，请稍后重试")
 
 
 @router.post("/dialogue/generate-questions")
@@ -116,7 +119,8 @@ async def dialogue_generate_questions(
         )
         return questions
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("forge from prompt failed")
+        raise HTTPException(status_code=500, detail="Persona 生成失败，请稍后重试")
 
 
 @router.post("/dialogue/build", response_model=PersonaManifest)
@@ -131,4 +135,5 @@ async def dialogue_build(req: DialogueBuildRequest) -> PersonaManifest:
         await _forge.save_persona(manifest)
         return manifest
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("forge from prompt failed")
+        raise HTTPException(status_code=500, detail="Persona 生成失败，请稍后重试")

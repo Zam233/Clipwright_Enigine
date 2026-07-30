@@ -162,10 +162,6 @@ class OnscreenAnimationDef(BaseModel):
         default=EasingFunction.LINEAR,
         description="插值缓动函数",
     )
-    easing: EasingFunction = Field(
-        default=EasingFunction.LINEAR,
-        description="插值缓动函数",
-    )
     keyframes: list[Keyframe] = Field(
         default_factory=lambda: [
             Keyframe(time=0.0, properties={"opacity": 0}),

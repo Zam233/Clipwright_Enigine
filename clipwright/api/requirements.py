@@ -70,7 +70,7 @@ async def chat_message(req: ChatRequest) -> dict:
         raise
     except Exception as e:
         logger.exception("Chat error: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="会话处理失败，请稍后重试")
 
 
 @router.post("/chat/stream/{session_id}")
@@ -117,7 +117,7 @@ async def upload_file(
         return result
     except Exception as e:
         logger.exception("Upload error: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="会话处理失败，请稍后重试")
     finally:
         try:
             os.unlink(tmp_path)

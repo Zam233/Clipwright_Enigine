@@ -16,7 +16,7 @@ from clipwright.schema.timeline import Timeline
 from clipwright.services.async_util import spawn_background
 from clipwright.services.render import RenderService
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/render", tags=["render"])
 _render_service = RenderService()
@@ -175,9 +175,9 @@ _EXPORT_PRESETS = {
 
 class RenderSettings(BaseModel):
     """渲染参数。"""
-    width: int = 1920
-    height: int = 1080
-    fps: float = 30.0
+    width: int = Field(default=1920, ge=64, le=7680, description="输出宽度 (px)")
+    height: int = Field(default=1080, ge=64, le=4320, description="输出高度 (px)")
+    fps: float = Field(default=30.0, gt=0, le=120, description="输出帧率")
     bitrate: str = "5M"
     audio_bitrate: str = "192k"
     preset: str = ""  # 预设名称，如 "bilibili"、"tiktok"，会覆盖其他参数
@@ -332,4 +332,4 @@ async def get_video_thumbnail(path: str, time_sec: float = 0.5):
     except Exception as e:
         shutil.rmtree(thumb.parent, ignore_errors=True)
         logger.error("缩略图异常: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="缩略图生成失败")
