@@ -18,6 +18,7 @@ from typing import Any
 from clipwright.plugins import CapabilityPlugin
 from clipwright.plugins.hooks import HookRegistry, HookPoint
 from clipwright.animation.registry import AnimationRegistry
+from clipwright.schema.animation import AnimationDef, AnimationType
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
 
@@ -93,10 +94,12 @@ class KineticTypographyPlugin(CapabilityPlugin):
     def initialize(self) -> None:
         HookRegistry.register(HookPoint.ANIMATION_CATALOG_EXTEND, _extend_catalog, plugin_id=self.manifest.id)
         for anim_id, anim_def in KINETIC_ANIMATIONS.items():
-            AnimationRegistry.register(
-                anim_id=anim_id, name=anim_def["name"], anim_type=anim_def["type"],
-                css=anim_def["css"], plugin_id=self.manifest.id,
+            defn = AnimationDef(
+                animation_id=anim_id, name=anim_def["name"],
+                type=AnimationType.ONSCREEN, description=f"Kinetic typography: {anim_def['name']}",
+                author="Clipwright Team", tags=["kinetic", "typography"],
             )
+            AnimationRegistry.register(defn, plugin_id=self.manifest.id)
         logger.info("[KineticTypography] %d 种动态文字动画已注册", len(KINETIC_ANIMATIONS))
 
     def shutdown(self) -> None:

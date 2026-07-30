@@ -16,6 +16,7 @@ from clipwright.schema.plugin import PluginManifest, PluginKind
 
 
 class TutorialCategoryPlugin(BaseCategoryPlugin):
+    plugin_id = "tutorial_category"
     manifest = PluginManifest(
         id="tutorial_category", name="Tutorial Video Type", version="1.0.0",
         kind=PluginKind.CATEGORY,
@@ -23,7 +24,10 @@ class TutorialCategoryPlugin(BaseCategoryPlugin):
         author="Clipwright Team",
     )
 
-    def get_shot_params(self) -> dict:
+    def translate_persona(self, params) -> dict:
+        return {"style": "tutorial", "cut_density": "low"}
+
+    def get_shot_params(self, translated=None) -> dict:
         return {
             "min_shot_sec": 5.0,
             "max_shot_sec": 15.0,

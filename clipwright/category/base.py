@@ -6,20 +6,29 @@ Persona 配置层不直接调用原子能力，必须经过类型插件层翻译
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import Any
 
+from clipwright.plugins.base import BasePlugin
 from clipwright.schema.persona import ParameterLayer
 from clipwright.schema.timeline import Clip, Timeline
 
 
-class BaseCategoryPlugin(ABC):
+class BaseCategoryPlugin(BasePlugin):
     """视频类型插件基类。"""
 
     # 插件标识
     plugin_id: str = ""
     display_name: str = ""
     description: str = ""
+
+    def initialize(self) -> None:
+        """默认初始化（注册到 CategoryRegistry）。子类可覆盖。"""
+        pass
+
+    def shutdown(self) -> None:
+        """默认关闭。子类可覆盖。"""
+        pass
 
     @abstractmethod
     def translate_persona(self, params: ParameterLayer) -> dict[str, Any]:

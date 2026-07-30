@@ -23,7 +23,7 @@ class SkillRegistry:
         return cls._instance
 
     @classmethod
-    def register(cls, skill: BaseSkill) -> None:
+    def register(cls, skill: BaseSkill, **kwargs) -> None:
         if not skill.name:
             raise ValueError(f"Skill must have a non-empty name: {type(skill).__name__}")
         cls._skills[skill.name] = skill

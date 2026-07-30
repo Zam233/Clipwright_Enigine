@@ -8,10 +8,14 @@ from clipwright.category.registry import CategoryRegistry
 from clipwright.schema.plugin import PluginManifest, PluginKind
 
 class GamingCategoryPlugin(BaseCategoryPlugin):
+    plugin_id = "gaming_category"
     manifest = PluginManifest(id="gaming_category", name="Gaming Video Type", version="1.0.0",
         kind=PluginKind.CATEGORY, description="Gaming highlight video editing strategy", author="Clipwright Team")
 
-    def get_shot_params(self) -> dict:
+    def translate_persona(self, params) -> dict:
+        return {"style": "gaming", "cut_density": "high"}
+
+    def get_shot_params(self, translated=None) -> dict:
         return {"min_shot_sec": 1.5, "max_shot_sec": 6.0, "transition_type": "cut", "transition_duration_sec": 0.05, "cut_on_beat": True}
 
     def get_structure_template(self) -> list[dict]:

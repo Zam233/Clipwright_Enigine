@@ -30,7 +30,7 @@ class HookRegistry:
     }
 
     @classmethod
-    def register(cls, point: HookPoint, fn: Callable) -> None:
+    def register(cls, point: HookPoint, fn: Callable, **kwargs: Any) -> None:
         cls._hooks.setdefault(point, []).append(fn)
         logger.debug("Hook registered: %s -> %s", point.value, getattr(fn, "__name__", str(fn)))
 

@@ -20,6 +20,7 @@ from clipwright.config import logger
 
 
 class ShortformCategoryPlugin(BaseCategoryPlugin):
+    plugin_id = "shortform_category"
     manifest = PluginManifest(
         id="shortform_category", name="Short-form Video Type", version="1.0.0",
         kind=PluginKind.CATEGORY,
@@ -27,7 +28,10 @@ class ShortformCategoryPlugin(BaseCategoryPlugin):
         author="Clipwright Team",
     )
 
-    def get_shot_params(self) -> dict:
+    def translate_persona(self, params) -> dict:
+        return {"style": "shortform", "cut_density": "very_high", "aspect": "9:16"}
+
+    def get_shot_params(self, translated=None) -> dict:
         return {
             "min_shot_sec": 1.0,
             "max_shot_sec": 3.0,

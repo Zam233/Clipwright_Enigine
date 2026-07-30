@@ -8,10 +8,14 @@ from clipwright.category.registry import CategoryRegistry
 from clipwright.schema.plugin import PluginManifest, PluginKind
 
 class NewsCategoryPlugin(BaseCategoryPlugin):
+    plugin_id = "news_category"
     manifest = PluginManifest(id="news_category", name="News Commentary Type", version="1.0.0",
         kind=PluginKind.CATEGORY, description="News/commentary video editing strategy", author="Clipwright Team")
 
-    def get_shot_params(self) -> dict:
+    def translate_persona(self, params) -> dict:
+        return {"style": "news", "cut_density": "low"}
+
+    def get_shot_params(self, translated=None) -> dict:
         return {"min_shot_sec": 4.0, "max_shot_sec": 12.0, "transition_type": "fade", "transition_duration_sec": 0.5, "cut_on_beat": False}
 
     def get_structure_template(self) -> list[dict]:

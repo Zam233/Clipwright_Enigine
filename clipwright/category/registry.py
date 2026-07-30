@@ -13,7 +13,7 @@ class CategoryRegistry:
     _plugins: dict[str, BaseCategoryPlugin] = {}
 
     @classmethod
-    def register(cls, plugin: BaseCategoryPlugin) -> None:
+    def register(cls, plugin: BaseCategoryPlugin, **kwargs) -> None:
         if plugin.plugin_id in cls._plugins:
             raise ValueError(f"Plugin already registered: {plugin.plugin_id}")
         cls._plugins[plugin.plugin_id] = plugin
