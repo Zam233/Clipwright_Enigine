@@ -21,13 +21,14 @@ import httpx
 from clipwright.material.base import MaterialSource
 from clipwright.material.registry import MaterialRegistry
 from clipwright.plugins import CapabilityPlugin
+from clipwright.tool.base import BaseTool
 from clipwright.tool.registry import ToolRegistry
 from clipwright.schema.material import MaterialAsset, MaterialType
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
 
 
-class AIVideoGenTool:
+class AIVideoGenTool(BaseTool):
     name = "ai_video_generate"
     description = "从文字提示生成短视频（5-10 秒），异步执行"
     parameters_schema = {
@@ -44,15 +45,15 @@ class AIVideoGenTool:
         self._provider = provider
         self._api_key = api_key
 
-    async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
-        prompt = params.get("prompt", "")
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:
+        prompt = kwargs.get("prompt", "")
         if not prompt:
             return {"success": False, "error": "缺少 prompt"}
         try:
             if self._provider == "kling":
-                return await self._gen_kling(prompt, params)
+                return await self._gen_kling(prompt, kwargs)
             elif self._provider == "runway":
-                return await self._gen_runway(prompt, params)
+                return await self._gen_runway(prompt, kwargs)
             return {"success": False, "error": f"未知 provider: {self._provider}"}
         except Exception as e:
             return {"success": False, "error": str(e)}

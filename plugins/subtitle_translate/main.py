@@ -15,13 +15,14 @@ from typing import Any
 import httpx
 
 from clipwright.plugins import CapabilityPlugin
+from clipwright.tool.base import BaseTool
 from clipwright.tool.registry import ToolRegistry
 from clipwright.skill.registry import SkillRegistry
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
 
 
-class SubtitleTranslateTool:
+class SubtitleTranslateTool(BaseTool):
     name = "subtitle_translate"
     description = "翻译字幕文本到目标语言"
     parameters_schema = {
@@ -37,10 +38,10 @@ class SubtitleTranslateTool:
     def __init__(self, engine: str = "llm") -> None:
         self._engine = engine
 
-    async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
-        text = params.get("text", "")
-        target = params.get("target_lang", "en")
-        source = params.get("source_lang", "")
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:
+        text = kwargs.get("text", "")
+        target = kwargs.get("target_lang", "en")
+        source = kwargs.get("source_lang", "")
         if not text:
             return {"success": False, "error": "缺少 text"}
         try:
@@ -84,7 +85,7 @@ class BilingualSubtitleSkill:
             if not text:
                 results.append(clip)
                 continue
-            tr = await tool.execute({"text": text, "target_lang": target})
+            tr = await tool.execute(text=text, target_lang=target)
             translated = tr.get("translated", "") if tr.get("success") else ""
             results.append({**clip, "text": f"{text}\n{translated}" if translated else text})
         return {"success": True, "clips": results}

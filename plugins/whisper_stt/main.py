@@ -12,13 +12,14 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from clipwright.plugins import CapabilityPlugin
-from clipwright.schema.plugin import PluginManifest, PluginKind
+from clipwright.tool.base import BaseTool
 from clipwright.tool.registry import ToolRegistry
 from clipwright.skill.registry import SkillRegistry
+from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
 
 
-class WhisperTranscribeTool:
+class WhisperTranscribeTool(BaseTool):
     """语音转文字 Tool — 调用 STTService 完成转录。"""
 
     name = "whisper_transcribe"
@@ -36,13 +37,13 @@ class WhisperTranscribeTool:
     def __init__(self, default_model: str = "base") -> None:
         self._default_model = default_model
 
-    async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:
         from clipwright.services.stt import STTService
-        audio_path = params.get("audio_path", "")
+        audio_path = kwargs.get("audio_path", "")
         if not audio_path:
             return {"success": False, "error": "缺少 audio_path 参数"}
-        language = params.get("language", "")
-        model_size = params.get("model_size", self._default_model)
+        language = kwargs.get("language", "")
+        model_size = kwargs.get("model_size", self._default_model)
         try:
             svc = STTService()
             result = await svc.transcribe(audio_path, language=language, model_size=model_size)
@@ -69,7 +70,7 @@ class TranscribeAndAlignSkill:
 
     async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
         tool = WhisperTranscribeTool()
-        result = await tool.execute(params)
+        result = await tool.execute(**params)
         if not result.get("success"):
             return result
         clips = []

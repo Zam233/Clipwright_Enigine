@@ -13,11 +13,12 @@ import os
 from typing import Any
 import httpx
 from clipwright.plugins import CapabilityPlugin
+from clipwright.tool.base import BaseTool
 from clipwright.tool.registry import ToolRegistry
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
 
-class ExtendedTTSTool:
+class ExtendedTTSTool(BaseTool):
     name = "extended_tts"
     description = "使用扩展 TTS 提供商合成语音"
     parameters_schema = {
@@ -33,16 +34,16 @@ class ExtendedTTSTool:
     def __init__(self, default_provider: str = "elevenlabs") -> None:
         self._provider = default_provider
 
-    async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
-        text = params.get("text", "")
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:
+        text = kwargs.get("text", "")
         if not text:
             return {"success": False, "error": "缺少 text"}
-        provider = params.get("provider", self._provider)
+        provider = kwargs.get("provider", self._provider)
         try:
             if provider == "elevenlabs":
-                return await self._synth_elevenlabs(text, params.get("voice_id", ""))
+                return await self._synth_elevenlabs(text, kwargs.get("voice_id", ""))
             elif provider == "azure":
-                return await self._synth_azure(text, params.get("voice_id", "zh-CN-XiaoxiaoNeural"))
+                return await self._synth_azure(text, kwargs.get("voice_id", "zh-CN-XiaoxiaoNeural"))
             return {"success": False, "error": f"未知 provider: {provider}"}
         except Exception as e:
             return {"success": False, "error": str(e)}

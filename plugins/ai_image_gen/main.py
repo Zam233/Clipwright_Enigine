@@ -19,13 +19,14 @@ import httpx
 from clipwright.material.base import MaterialSource
 from clipwright.material.registry import MaterialRegistry
 from clipwright.plugins import CapabilityPlugin
+from clipwright.tool.base import BaseTool
 from clipwright.tool.registry import ToolRegistry
 from clipwright.schema.material import MaterialAsset, MaterialType
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
 
 
-class AIImageGenTool:
+class AIImageGenTool(BaseTool):
     name = "ai_image_generate"
     description = "从文字提示生成图片，返回图片 URL 或本地路径"
     parameters_schema = {
@@ -44,15 +45,15 @@ class AIImageGenTool:
         self._api_key = api_key
         self._api_url = api_url
 
-    async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
-        prompt = params.get("prompt", "")
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:
+        prompt = kwargs.get("prompt", "")
         if not prompt:
             return {"success": False, "error": "缺少 prompt"}
-        w = params.get("width", 1024)
-        h = params.get("height", 576)
+        w = kwargs.get("width", 1024)
+        h = kwargs.get("height", 576)
         try:
             if self._provider == "dalle":
-                return await self._gen_dalle(prompt, w, h, params.get("style", "natural"))
+                return await self._gen_dalle(prompt, w, h, kwargs.get("style", "natural"))
             elif self._provider == "flux":
                 return await self._gen_flux(prompt, w, h)
             elif self._provider == "local":
