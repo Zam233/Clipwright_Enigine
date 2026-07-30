@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     # OpenAI 兼容 API 的 base_url（Ollama: http://localhost:11434/v1, vLLM/Together: ...）
     llm_base_url: Optional[str] = None
     llm_instructions: str = "You are ClipWright, an AI video content orchestration engine."
+    # --- Flash 模型（轻量快速）---
+    # 用于简单任务：意图判断、确认分类、搜索查询改写等无需重型推理的场景。
+    # 主 LLM (llm_model) 保留给复杂生成（创意简报、规划书、场景编排）。
+    # 各项不配置时复用主 LLM 对应参数；仅 llm_flash_model 单独指定即可启用。
+    llm_flash_model: Optional[str] = None
+    llm_flash_provider: Optional[str] = None
+    llm_flash_api_key: Optional[str] = None
+    llm_flash_base_url: Optional[str] = None
 
     # --- 服务 ---
     host: str = "0.0.0.0"

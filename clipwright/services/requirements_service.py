@@ -493,6 +493,7 @@ class RequirementsService:
                 temperature=0,
                 max_tokens=16,
                 pipeline_id="",
+                use_flash=True,  # 简单意图判断 → flash 轻量模型
             )
             if isinstance(resp, dict) and "is_confirm" in resp:
                 return bool(resp["is_confirm"])

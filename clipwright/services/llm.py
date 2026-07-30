@@ -35,28 +35,50 @@ class LLMService:
     def __init__(self) -> None:
         self.provider = settings.llm_provider
         self._client: Optional[AnthropicMessages | OpenAIChat] = None
+        self._flash_client: Optional[AnthropicMessages | OpenAIChat] = None
         self.last_usage: Optional[dict[str, int]] = None
 
     @property
     def client(self) -> AnthropicMessages | OpenAIChat:
-        """懒初始化 IsoBase 客户端。"""
+        """懒初始化 IsoBase 客户端（主/专业模型）。"""
         if self._client is None:
             self._client = self._build_client()
         return self._client
 
-    def _build_client(self) -> AnthropicMessages | OpenAIChat:
-        """根据配置构建对应的 IsoBase LLM 客户端。"""
+    @property
+    def flash_client(self) -> AnthropicMessages | OpenAIChat:
+        """懒初始化 Flash 客户端（轻量模型，用于简单任务）。
+
+        未配置 flash 参数时复用主 LLM 配置。
+        """
+        if self._flash_client is None:
+            self._flash_client = self._build_client(flash=True)
+        return self._flash_client
+
+    def _build_client(self, flash: bool = False) -> AnthropicMessages | OpenAIChat:
+        """根据配置构建对应的 IsoBase LLM 客户端。
+
+        Args:
+            flash: True 时使用 flash 模型配置（缺省项回退到主 LLM 配置）。
+        """
         if not ISOBASE_AVAILABLE:
             raise RuntimeError(
                 "isobase 未安装，无法构建 LLM 客户端。"
                 "请运行: pip install 'isobase @ git+https://github.com/landspark/IsoBase.git'"
             )
-        api_key = settings.llm_api_key or None
-        base_url = settings.llm_base_url or None
-        model = settings.llm_model
+        if flash:
+            api_key = settings.llm_flash_api_key or settings.llm_api_key or None
+            base_url = settings.llm_flash_base_url or settings.llm_base_url or None
+            model = settings.llm_flash_model or settings.llm_model
+            provider = settings.llm_flash_provider or self.provider
+        else:
+            api_key = settings.llm_api_key or None
+            base_url = settings.llm_base_url or None
+            model = settings.llm_model
+            provider = self.provider
         instructions = settings.llm_instructions
 
-        if self.provider == "anthropic":
+        if provider == "anthropic":
             return AnthropicMessages(
                 api_key=api_key,
                 base_url=base_url,
@@ -65,7 +87,7 @@ class LLMService:
                 conversation_mode=False,
                 max_tokens=8192,
             )
-        elif self.provider in ("openai", "ollama"):
+        elif provider in ("openai", "ollama"):
             return OpenAIChat(
                 api_key=api_key,
                 base_url=base_url,
@@ -75,7 +97,7 @@ class LLMService:
                 max_tokens=8192,
             )
         else:
-            raise ValueError(f"Unsupported LLM provider: {self.provider}")
+            raise ValueError(f"Unsupported LLM provider: {provider}")
 
     # ── 基础接口 ──
 
@@ -85,6 +107,7 @@ class LLMService:
         model: Optional[str] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         timeout: int = 120,
+        use_flash: bool = False,
         **kwargs: Any,
     ) -> LLMResponse:
         """发送非流式生成请求。
@@ -94,6 +117,7 @@ class LLMService:
             model: 模型 ID，不传则用默认模型
             tools: Anthropic/OpenAI 格式的 tool schemas
             timeout: 超时秒数，默认 120s
+            use_flash: True 时使用 flash 轻量模型（适合意图判断/分类等简单任务）
             **kwargs: 透传给 IsoBase 的额外参数
 
         Returns:
@@ -106,12 +130,13 @@ class LLMService:
             kwargs["timeout"] = timeout
         # 过滤仅用于日志/追踪的元数据参数，不透传给 API
         kwargs.pop("pipeline_id", None)
-        logger.debug("LLM generate 请求: model=%s, timeout=%ds, messages=%s, tools=%s",
-                     model or settings.llm_model, timeout,
+        client = self.flash_client if use_flash else self.client
+        logger.debug("LLM generate 请求: flash=%s, model=%s, timeout=%ds, messages=%s, tools=%s",
+                     use_flash, model or settings.llm_model, timeout,
                      json.dumps(messages, ensure_ascii=False)[:500],
                      json.dumps(kwargs.get("tools", []), ensure_ascii=False)[:200])
         resp = await asyncio.to_thread(
-            partial(self.client.generate, messages=messages, model=model, **kwargs),
+            partial(client.generate, messages=messages, model=model, **kwargs),
         )
         logger.debug("LLM generate 响应: success=%s, content=%.500s, tool_calls=%s",
                      resp.success, resp.content or "",
@@ -160,15 +185,17 @@ class LLMService:
         messages: list[dict[str, str]],
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        use_flash: bool = False,
         **kwargs: Any,
     ) -> str:
         """发送聊天请求，返回纯文本内容。"""
-        logger.debug("LLM chat 请求: messages=%.500s, temperature=%s",
-                     json.dumps(messages, ensure_ascii=False)[:500], temperature)
+        logger.debug("LLM chat 请求: flash=%s, messages=%.500s, temperature=%s",
+                     use_flash, json.dumps(messages, ensure_ascii=False)[:500], temperature)
         resp = await self.generate(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            use_flash=use_flash,
             **kwargs,
         )
         if not resp.success:
@@ -184,13 +211,16 @@ class LLMService:
         system_prompt: str,
         user_prompt: str,
         output_schema: Optional[dict[str, Any]] = None,
+        use_flash: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """请求结构化输出（JSON）。"""
-        logger.debug("LLM structured_output 请求: system=%.300s, user=%.300s, schema=%s",
-                     system_prompt[:300], user_prompt[:300],
+        logger.debug("LLM structured_output 请求: flash=%s, system=%.300s, user=%.300s, schema=%s",
+                     use_flash, system_prompt[:300], user_prompt[:300],
                      json.dumps(output_schema, ensure_ascii=False)[:200] if output_schema else "none")
-        if self.provider == "anthropic":
+        # 选择与目标客户端一致的 provider 来构造消息格式
+        provider = (settings.llm_flash_provider or self.provider) if use_flash else self.provider
+        if provider == "anthropic":
             messages = [{"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"}]
         else:
             messages = [
@@ -198,7 +228,7 @@ class LLMService:
                 {"role": "user", "content": user_prompt},
             ]
 
-        resp = await self.generate(messages=messages, **kwargs)
+        resp = await self.generate(messages=messages, use_flash=use_flash, **kwargs)
         if not resp.success:
             logger.error("LLM structured output failed: status=%s, content=%.200s", resp.status_code, resp.content)
             raise RuntimeError(
