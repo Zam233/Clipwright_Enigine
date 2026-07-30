@@ -162,9 +162,23 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         errors = [i for i in issues if i.severity == "error"]
         decision = AgentDecision.FAIL if errors else AgentDecision.PASS
 
+        # 依据 error 类别建议重做的 Agent（取最上游责任方，下游会联动重做）：
+        #   structure/duration/rhythm → edit（重建粗剪时间线）
+        #   animation/transition      → animation
+        #   audio                     → audio
+        redo_agent = ""
+        error_cats = {i.category for i in errors}
+        if error_cats & {"structure", "duration", "rhythm"}:
+            redo_agent = "edit"
+        elif error_cats & {"animation", "transition"}:
+            redo_agent = "animation"
+        elif "audio" in error_cats:
+            redo_agent = "audio"
+
         return QualityOutput(
             decision=decision,
             passed=len(errors) == 0,
             issues=issues,
             fix_suggestions=[i.message for i in issues if i.severity in ("error", "warning")],
+            redo_agent=redo_agent,
         )

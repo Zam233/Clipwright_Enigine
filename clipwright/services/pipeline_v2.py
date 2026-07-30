@@ -275,6 +275,12 @@ class PipelineOrchestratorV2:
                 agent_failed = hasattr(result, "status") and result.status == PipelineStatus.FAILED
                 if agent_failed:
                     err_msg = getattr(result, "error", None) or f"{name} 返回 FAIL"
+                    # quality 失败不直接终止管线，交由后续自愈循环重做责任 Agent；
+                    # 其它 Agent 失败则终止。
+                    if name == "quality":
+                        logger.info("Quality 检出问题，转入自愈循环处理: %s", err_msg)
+                        add_event(pid, name, "warning", f"quality 检出问题: {str(err_msg)[:200]}")
+                        continue
                     errors.append((name, Exception(err_msg)))
                     logger.error("Agent %s 返回 FAIL: %s", name, err_msg)
                     add_event(pid, name, "error", f"{name} 失败: {str(err_msg)[:200]}")
@@ -330,7 +336,8 @@ class PipelineOrchestratorV2:
                 redo_step = await self._run_agent(
                     state, redo_agent, input_data, agent_context, bus
                 )
-                if redo_step.result:
+                # 仅在重做成功时合并，避免失败的部分/空时间线覆盖好时间线
+                if redo_step.result and getattr(redo_step, "status", None) != PipelineStatus.FAILED:
                     self._merge_agent_result(redo_agent, redo_step, result_data, bus, pid)
 
                 # P1 FIX: 联动重做依赖于 redo_agent 的下游 agent
@@ -344,7 +351,7 @@ class PipelineOrchestratorV2:
                     dep_step = await self._run_agent(
                         state, dep_name, dep_input, agent_context, bus
                     )
-                    if dep_step and dep_step.result:
+                    if dep_step and dep_step.result and getattr(dep_step, "status", None) != PipelineStatus.FAILED:
                         self._merge_agent_result(dep_name, dep_step, result_data, bus, pid)
             else:
                 quality_passed = True
@@ -374,9 +381,11 @@ class PipelineOrchestratorV2:
         if not hasattr(step, "result") or not step.result:
             return
 
-        # 非 timeline 字段正常合并
+        # 非 timeline 字段正常合并（排除各 Agent 的控制字段，避免污染共享 result_data、
+        # 掩盖更早的 error 或把 agent_name/decision 之类灌给下游 script_skeleton）
+        _control_keys = {"timeline", "agent_name", "decision", "error", "status"}
         for k, v in step.result.items():
-            if k != "timeline":
+            if k not in _control_keys:
                 result_data[k] = v
 
         # timeline 以总线为准
