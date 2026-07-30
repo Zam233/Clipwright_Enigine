@@ -385,6 +385,11 @@ class RequirementsService:
             result = await self._handle_gathering(messages, brief_data, status, user_inputs)
             brief_data = result.get("brief_draft", brief_data)
             is_ready = result.get("is_ready", False)
+            # 只要生成了完整方案草稿就进入待确认状态。不完全依赖 LLM 的 is_ready 标志——
+            # 否则前端已展示方案（brief_ready）而后端仍停留 gathering，用户确认后会被
+            # 当作普通 gathering 消息处理（回复"请继续描述你的想法"），无法生成规划书。
+            if isinstance(brief_data, dict) and brief_data:
+                is_ready = True
             reply = result.get("reply", "请继续描述你的想法。")
             status = "brief_ready" if is_ready else "gathering"
 
