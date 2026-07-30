@@ -148,7 +148,7 @@ async def get_plan(session_id: str) -> dict:
 
 @router.post("/proceed")
 async def proceed_to_pipeline(req: ProceedRequest) -> dict:
-    """确认规划书 → 启动管线。"""
+    """确认规划书 → 启动管线，返回 pipeline_id 供前端追踪（SSE + result）。"""
     session = await asyncio.to_thread(_service.get_session, req.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -157,31 +157,43 @@ async def proceed_to_pipeline(req: ProceedRequest) -> dict:
     if not plan_data:
         raise HTTPException(status_code=400, detail="Plan not ready")
 
-    import asyncio
+    import uuid
+    from clipwright.services.pipeline_v2 import PipelineOrchestratorV2
+    from clipwright.schema.pipeline import PipelineRequest
+    from clipwright.services.trace import create_trace, add_event, get_all_events
+    from clipwright.services.async_util import spawn_background
+    from clipwright.api.pipeline import _pipeline_results, _running_pipelines
+
+    # 预先生成 pipeline_id 并建立 trace，使前端可立即订阅 SSE / 轮询 result
+    pipeline_id = f"pl_{uuid.uuid4().hex[:12]}"
+    create_trace(pipeline_id)
+
+    user_inputs = session.get("user_inputs", {})
+    pipeline_req = PipelineRequest(
+        persona_id=req.persona_id or user_inputs.get("persona_id", "default"),
+        category_plugin_id=req.category_plugin_id or user_inputs.get("category_plugin_id", "knowledge_longform"),
+        topic=user_inputs.get("topic", ""),
+        extra_params={
+            "script_text": user_inputs.get("script_text", ""),
+            "audio_duration_sec": user_inputs.get("audio_duration_sec", 0),
+            "dub_segments": user_inputs.get("dub_segments", []),
+            "creative_brief": session.get("creative_brief"),
+            "production_plan": session.get("production_plan"),
+            **req.extra_params,
+        },
+        use_v2=True,
+    )
+    add_event(pipeline_id, "system", "info",
+              f"由需求确认启动管线: {pipeline_req.persona_id} / {pipeline_req.category_plugin_id}")
 
     async def _run():
         try:
-            from clipwright.services.pipeline_v2 import PipelineOrchestratorV2
-            from clipwright.schema.pipeline import PipelineRequest
-
-            user_inputs = session.get("user_inputs", {})
-            pipeline_req = PipelineRequest(
-                persona_id=req.persona_id or user_inputs.get("persona_id", "default"),
-                category_plugin_id=req.category_plugin_id or user_inputs.get("category_plugin_id", "knowledge_longform"),
-                topic=user_inputs.get("topic", ""),
-                extra_params={
-                    "script_text": user_inputs.get("script_text", ""),
-                    "audio_duration_sec": user_inputs.get("audio_duration_sec", 0),
-                    "creative_brief": session.get("creative_brief"),
-                    "production_plan": session.get("production_plan"),
-                    **req.extra_params,
-                },
-                use_v2=True,
-            )
             orch = PipelineOrchestratorV2()
-            state = await orch.run(pipeline_req)
-
-            # 更新会话状态（同步 Mongo 写入，offload 到线程避免冻住事件循环）
+            state = await orch.run(pipeline_req, pipeline_id=pipeline_id)
+            state.shared_data["execution_trace"] = get_all_events(pipeline_id)
+            _pipeline_results[pipeline_id] = state.model_dump(mode="json")
+            add_event(pipeline_id, "system", "done", f"管线完成: {state.status}")
+            # 更新会话状态
             await asyncio.to_thread(
                 _service._persist,
                 req.session_id, "pipeline_done",
@@ -193,7 +205,17 @@ async def proceed_to_pipeline(req: ProceedRequest) -> dict:
             logger.info("管线完成: pipeline_id=%s, status=%s", state.pipeline_id, state.status)
         except Exception as e:
             logger.exception("Pipeline failed: %s", e)
+            add_event(pipeline_id, "system", "error", f"管线失败: {e}")
+            _pipeline_results[pipeline_id] = {"status": "failed", "error": str(e), "pipeline_id": pipeline_id}
+        finally:
+            async def _cleanup():
+                import asyncio as _a
+                await _a.sleep(60)
+                _pipeline_results.pop(pipeline_id, None)
+                _running_pipelines.pop(pipeline_id, None)
+                from clipwright.services.trace import clear
+                clear(pipeline_id)
+            spawn_background(_cleanup(), name=f"pipeline-cleanup-{pipeline_id}")
 
-    from clipwright.services.async_util import spawn_background
-    spawn_background(_run(), name=f"requirements-pipeline-{req.session_id}")
-    return {"session_id": req.session_id, "status": "pipeline_started"}
+    _running_pipelines[pipeline_id] = spawn_background(_run(), name=f"requirements-pipeline-{req.session_id}")
+    return {"session_id": req.session_id, "pipeline_id": pipeline_id, "status": "pipeline_started"}

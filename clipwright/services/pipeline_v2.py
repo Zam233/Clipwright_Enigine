@@ -416,6 +416,18 @@ class PipelineOrchestratorV2:
         persona_config = manifest.parameter.model_dump(mode="json") if manifest.parameter else {}
         translated = plugin.translate_persona(manifest.parameter) if manifest.parameter else {}
 
+        # 加载 Persona 的 prompt.md 风格指引与知识库上下文，供 StructureAgent 使用，
+        # 避免管线生成的脚本与需求阶段确认的风格发生漂移。
+        self._persona_prompt = getattr(manifest, "prompt", "") or ""
+        self._rag_context = ""
+        try:
+            from clipwright.rag.retriever import Retriever
+            _ret = Retriever()
+            _rag = await _ret.retrieve(persona_id=request.persona_id, query=request.topic or "")
+            self._rag_context = _rag.context if _rag and _rag.context else ""
+        except Exception as e:
+            logger.debug("管线 RAG 检索失败: %s", e)
+
         agent_context = AgentContext(
             pipeline_id=pid,
             persona_id=request.persona_id,
@@ -443,8 +455,8 @@ class PipelineOrchestratorV2:
         inputs = {
             "structure": {
                 "persona_config": persona_config,
-                "persona_prompt": result_data.get("persona_prompt", ""),
-                "rag_context": result_data.get("rag_context", ""),
+                "persona_prompt": getattr(self, "_persona_prompt", "") or result_data.get("persona_prompt", ""),
+                "rag_context": getattr(self, "_rag_context", "") or result_data.get("rag_context", ""),
             },
             "material": {
                 "script_skeleton": result_data,
@@ -624,6 +636,7 @@ class PipelineOrchestratorV2:
                 context=ctx,
                 script_skeleton=data.get("script_skeleton", {}),
                 persona_config=data.get("persona_config", {}),
+                material_plugin_config=data.get("material_plugin_config", {}),
             ), ctx)
         elif name == "edit":
             from clipwright.schema.agent import EditInput

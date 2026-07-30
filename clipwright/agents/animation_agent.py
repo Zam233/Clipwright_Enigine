@@ -542,7 +542,6 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         anim_track.clips.append(text_clip)
         anim_track.clips.sort(key=lambda c: c.start_sec)
 
-    @staticmethod
     def _add_trace_warning(self, message: str) -> None:
         """添加 trace 警告事件。"""
         try:
