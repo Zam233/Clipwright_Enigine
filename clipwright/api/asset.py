@@ -117,6 +117,12 @@ class ImportPathRequest(BaseModel):
     project_id: str = ""
 
 
+class ImportUrlRequest(BaseModel):
+    url: str
+    filename: str
+    project_id: str = ""
+
+
 @router.post("/import-path")
 async def import_asset_by_path(req: ImportPathRequest) -> dict:
     """通过文件路径导入素材（不复制文件，创建软连接）。"""
@@ -129,3 +135,29 @@ async def import_asset_by_path(req: ImportPathRequest) -> dict:
     if info.error:
         raise HTTPException(status_code=400, detail=info.error)
     return info.to_dict()
+
+
+@router.post("/import-url")
+async def import_asset_by_url(req: ImportUrlRequest) -> dict:
+    """通过 URL 下载素材并导入到项目素材库。"""
+    import httpx
+    from pathlib import Path
+
+    ext = Path(req.filename).suffix or ".bin"
+    tmp_dir = Path(tempfile.mkdtemp(prefix="asset_url_"))
+    tmp = tmp_dir / f"download{ext}"
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.get(req.url)
+            resp.raise_for_status()
+            tmp.write_bytes(resp.content)
+
+        manager = _get_manager(req.project_id or None)
+        info = await manager.import_file(tmp)
+        if info.error:
+            raise HTTPException(status_code=400, detail=info.error)
+        return info.to_dict()
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=400, detail=f"下载失败: {e}")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
