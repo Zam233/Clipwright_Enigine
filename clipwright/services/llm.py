@@ -166,16 +166,18 @@ class LLMService:
         self,
         prompt: str,
         tools: Optional[list[dict[str, Any]]] = None,
+        use_flash: bool = False,
         **kwargs: Any,
     ) -> LLMResponse:
         """简化的单轮对话接口。"""
-        logger.debug("LLM ask: prompt=%.300s, tools=%s", prompt,
+        logger.debug("LLM ask: flash=%s, prompt=%.300s, tools=%s", use_flash, prompt,
                      json.dumps(tools, ensure_ascii=False)[:200] if tools else "none")
         ask_kwargs = {**kwargs, "stream": False}
         if tools is not None:
             ask_kwargs["tools"] = tools
+        client = self.flash_client if use_flash else self.client
         resp = await asyncio.to_thread(
-            partial(self.client.ask, prompt=prompt, **ask_kwargs),
+            partial(client.ask, prompt=prompt, **ask_kwargs),
         )
         logger.debug("LLM ask 响应: success=%s, content=%.300s", resp.success, resp.content or "")
         return resp

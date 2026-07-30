@@ -72,7 +72,8 @@ async def _llm_search_queries(
     llm = LLMService()
     try:
         import asyncio
-        resp = await asyncio.wait_for(llm.ask(prompt), timeout=30)
+        # 搜索词生成是简单任务 → 使用 flash 轻量模型
+        resp = await asyncio.wait_for(llm.ask(prompt, use_flash=True), timeout=30)
         if resp.success and resp.content:
             queries = [q.strip() for q in resp.content.strip().split("\n") if q.strip()][:5]
             if pipeline_id:
