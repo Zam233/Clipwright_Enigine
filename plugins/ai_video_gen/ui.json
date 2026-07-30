@@ -1,0 +1,67 @@
+{
+  "title": "AI 视频生成",
+  "widgets": [
+    {
+      "type": "group",
+      "title": "文生视频",
+      "children": [
+        {
+          "type": "textarea",
+          "key": "prompt",
+          "label": "描述",
+          "placeholder": "描述你想生成的视频，如「无人机航拍海岸线，日落金光」…",
+          "rows": 3
+        },
+        {
+          "type": "row",
+          "gap": 2,
+          "children": [
+            {
+              "type": "button",
+              "label": "生成视频",
+              "disabledWhen": "loading",
+              "action": {
+                "endpoint": "/api/tool/execute",
+                "method": "POST",
+                "loadingKey": "loading",
+                "errorKey": "error",
+                "successKey": "success",
+                "body": {
+                  "tool": "ai_video_generate",
+                  "params": {
+                    "prompt": "${prompt}",
+                    "duration_sec": 5
+                  }
+                },
+                "resultMap": {
+                  "url": "url",
+                  "status": "status"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "gap": 2,
+          "visibleWhen": "loading",
+          "children": [
+            { "type": "spinner", "label": "生成中（约30-120秒）…" }
+          ]
+        },
+        {
+          "type": "text",
+          "content": "生成完成",
+          "contentField": "status",
+          "size": "caption",
+          "visibleWhen": "success"
+        },
+        {
+          "type": "alert",
+          "severity": "error",
+          "textField": "error"
+        }
+      ]
+    }
+  ]
+}

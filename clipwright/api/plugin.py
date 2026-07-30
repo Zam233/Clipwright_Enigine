@@ -151,3 +151,21 @@ async def get_capabilities() -> dict:
         "material_sources": MaterialRegistry.list(),
         "plugins": _loader.list_loaded() if _loader else [],
     }
+
+
+# ── 插件前端 UI ──
+
+
+@router.get("/{plugin_id}/ui")
+async def get_plugin_ui(plugin_id: str) -> dict:
+    """返回插件的 UI 布局定义（ui.json）。"""
+    if _loader is None:
+        raise HTTPException(status_code=503, detail="Plugin system not initialized")
+    ui_file = _loader.plugin_dir / plugin_id / "ui.json"
+    if not ui_file.exists():
+        return {"widgets": []}
+    try:
+        import json as _json
+        return _json.loads(ui_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read plugin UI: {e}")

@@ -1,0 +1,67 @@
+{
+  "title": "AI 音乐生成",
+  "widgets": [
+    {
+      "type": "group",
+      "title": "文生音乐",
+      "children": [
+        {
+          "type": "textarea",
+          "key": "prompt",
+          "label": "描述",
+          "placeholder": "描述你想生成的音乐，如「轻快企业风，120bpm，钢琴为主」…",
+          "rows": 3
+        },
+        {
+          "type": "row",
+          "gap": 2,
+          "children": [
+            {
+              "type": "button",
+              "label": "生成音乐",
+              "disabledWhen": "loading",
+              "action": {
+                "endpoint": "/api/tool/execute",
+                "method": "POST",
+                "loadingKey": "loading",
+                "errorKey": "error",
+                "successKey": "success",
+                "body": {
+                  "tool": "ai_music_generate",
+                  "params": {
+                    "prompt": "${prompt}",
+                    "duration_sec": 30
+                  }
+                },
+                "resultMap": {
+                  "url": "url",
+                  "status": "status"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "gap": 2,
+          "visibleWhen": "loading",
+          "children": [
+            { "type": "spinner", "label": "生成中…" }
+          ]
+        },
+        {
+          "type": "text",
+          "content": "生成完成",
+          "contentField": "status",
+          "size": "caption",
+          "visibleWhen": "success"
+        },
+        {
+          "type": "alert",
+          "severity": "error",
+          "textField": "error"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+{
+  "title": "AI 图片生成",
+  "widgets": [
+    {
+      "type": "group",
+      "title": "文生图",
+      "children": [
+        {
+          "type": "textarea",
+          "key": "prompt",
+          "label": "描述",
+          "placeholder": "描述你想生成的图片，如「赛博朋克城市夜景，霓虹灯，雨天」…",
+          "rows": 3
+        },
+        {
+          "type": "row",
+          "gap": 2,
+          "children": [
+            {
+              "type": "button",
+              "label": "生成图片",
+              "disabledWhen": "loading",
+              "action": {
+                "endpoint": "/api/tool/execute",
+                "method": "POST",
+                "loadingKey": "loading",
+                "errorKey": "error",
+                "successKey": "success",
+                "body": {
+                  "tool": "ai_image_generate",
+                  "params": {
+                    "prompt": "${prompt}",
+                    "width": 1024,
+                    "height": 576
+                  }
+                },
+                "resultMap": {
+                  "url": "url"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "gap": 2,
+          "visibleWhen": "loading",
+          "children": [
+            { "type": "spinner", "label": "生成中…" }
+          ]
+        },
+        {
+          "type": "alert",
+          "severity": "error",
+          "textField": "error"
+        },
+        {
+          "type": "image",
+          "sourceField": "url",
+          "alt": "AI 生成图片",
+          "visibleWhen": "url"
+        }
+      ]
+    }
+  ]
+}
