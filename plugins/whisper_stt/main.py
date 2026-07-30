@@ -14,7 +14,9 @@ from typing import Any, Optional
 from clipwright.plugins import CapabilityPlugin
 from clipwright.tool.base import BaseTool
 from clipwright.tool.registry import ToolRegistry
+from clipwright.skill.base import BaseSkill
 from clipwright.skill.registry import SkillRegistry
+from clipwright.schema.skill import SkillExecResult
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
 
@@ -62,17 +64,18 @@ class WhisperTranscribeTool(BaseTool):
             return {"success": False, "error": str(e)}
 
 
-class TranscribeAndAlignSkill:
+class TranscribeAndAlignSkill(BaseSkill):
     """转录并对齐到时间轴 Skill。"""
 
     name = "transcribe_and_align"
     description = "转录音频并生成可直接添加到时间轴的字幕 clip 列表"
+    required_tools: list[str] = []
 
-    async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def execute(self, **kwargs) -> SkillExecResult:
         tool = WhisperTranscribeTool()
-        result = await tool.execute(**params)
+        result = await tool.execute(**kwargs)
         if not result.get("success"):
-            return result
+            return SkillExecResult(status="failed", skill_name=self.name, error=result.get("error"))
         clips = []
         for seg in result.get("segments", []):
             clips.append({
@@ -83,7 +86,7 @@ class TranscribeAndAlignSkill:
                 "font_size": 28,
                 "font_color": "#FFFFFF",
             })
-        return {"success": True, "clips": clips, "text": result.get("text", "")}
+        return SkillExecResult(status="success", skill_name=self.name, output={"clips": clips, "text": result.get("text", "")})
 
 
 class WhisperSTTPlugin(CapabilityPlugin):

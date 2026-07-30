@@ -17,7 +17,9 @@ import httpx
 from clipwright.plugins import CapabilityPlugin
 from clipwright.tool.base import BaseTool
 from clipwright.tool.registry import ToolRegistry
+from clipwright.skill.base import BaseSkill
 from clipwright.skill.registry import SkillRegistry
+from clipwright.schema.skill import SkillExecResult
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
 
@@ -71,13 +73,14 @@ class SubtitleTranslateTool(BaseTool):
             return {"success": True, "translated": translated, "engine": "deepl"}
 
 
-class BilingualSubtitleSkill:
+class BilingualSubtitleSkill(BaseSkill):
     name = "bilingual_subtitle"
     description = "将字幕 clip 列表翻译为双语字幕（原文 + 译文）"
+    required_tools: list[str] = []
 
-    async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
-        clips = params.get("clips", [])
-        target = params.get("target_lang", "en")
+    async def execute(self, **kwargs) -> SkillExecResult:
+        clips = kwargs.get("clips", [])
+        target = kwargs.get("target_lang", "en")
         tool = SubtitleTranslateTool()
         results = []
         for clip in clips:
@@ -88,7 +91,7 @@ class BilingualSubtitleSkill:
             tr = await tool.execute(text=text, target_lang=target)
             translated = tr.get("translated", "") if tr.get("success") else ""
             results.append({**clip, "text": f"{text}\n{translated}" if translated else text})
-        return {"success": True, "clips": results}
+        return SkillExecResult(status="success", skill_name=self.name, output={"clips": results})
 
 
 class SubtitleTranslatePlugin(CapabilityPlugin):
