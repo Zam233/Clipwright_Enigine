@@ -73,7 +73,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
 
             # 4. 标记 BGM 建议到音频 clip 的 metadata
             for clip in audio_track.clips:
-                clip.volume = clip.volume or 0.7
+                clip.volume = clip.volume if clip.volume is not None else 0.7
                 clip.metadata = {
                     **getattr(clip, "metadata", {}),
                     "bpm": bpm,

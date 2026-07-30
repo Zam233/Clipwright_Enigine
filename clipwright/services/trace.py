@@ -119,6 +119,7 @@ def add_tool_event(tool_name: str, params: dict, pipeline_id: str = "") -> None:
             "summary": summary,
             "detail": {"tool": tool_name, "params": copy.deepcopy(params)},
         })
+        _trim_events(pipeline_id)
 
 
 def format_tool_call(tool_name: str, params: dict) -> str:

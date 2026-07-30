@@ -56,7 +56,7 @@ class AgentDAG:
         "material": ["structure"], # material 需要 structure 的 scenes 输出
         "edit": ["structure", "material"],
         "animation": ["edit"],
-        "audio": ["edit"],         # Audio 和 Animation 可并行
+        "audio": ["animation"],     # Audio 依赖 Animation（防止并行覆盖时间轴）
         "quality": ["animation", "audio"],
     }
 
@@ -271,6 +271,11 @@ class PipelineOrchestratorV2:
 
                 if hasattr(result, "result") and result.result:
                     self._merge_agent_result(name, result, result_data, bus, pid)
+
+                # 检查 agent 是否返回 FAIL 决策
+                if hasattr(result, "status") and str(result.status) in ("failed", "PipelineStatus.FAILED"):
+                    errors.append((name, Exception(result.error or f"{name} 返回 FAIL")))
+                    logger.error("Agent %s 返回 FAIL: %s", name, result.error)
 
             # P1: 多路错误
             if errors:

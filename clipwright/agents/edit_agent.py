@@ -92,9 +92,9 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             # 5. 对每个场景取素材（多段素材拼接，填满场景时长）
             current_time = 0.0
             scene_asset_map: dict[str, dict] = {}
-            clip_index = 0
 
             for i, scene in enumerate(scenes):
+                clip_index = 0  # 每个场景重置素材索引
                 scene_title = scene.get("title", f"场景{i+1}")
                 scene_duration = scene.get("duration_sec", base_shot_sec) * duration_scale
 

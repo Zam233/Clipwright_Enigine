@@ -72,6 +72,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             for vid_track in timeline.tracks:
                 if str(vid_track.kind) not in ("video", "image"):
                     continue
+                prev_clip = None  # 每轨道重置，防止跨轨道转场
 
                 for clip in list(vid_track.clips or []):
                     meta = clip.metadata or {}
@@ -606,7 +607,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         preferred_index: int,
     ) -> Track:
         for t in timeline.tracks:
-            if str(t.kind) == str(kind):
+            if str(t.kind) == kind.value:
                 return t
         existing_indices = {t.index for t in timeline.tracks}
         idx = preferred_index
@@ -619,7 +620,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
     @staticmethod
     def _ensure_anim_track(timeline: object) -> Track:
         for t in timeline.tracks:
-            if str(t.kind) == str(ClipKind.ANIMATION):
+            if str(t.kind) == ClipKind.ANIMATION.value:
                 return t
         max_idx = max((t.index for t in timeline.tracks), default=0)
         track = Track(
