@@ -1,9 +1,10 @@
-"""资产管理 — 上传、格式检测、缩略图生成。"""
+"""资产管理 — 上传、格式检测、缩略图生成。支持按项目隔离和软连接。"""
 
 from __future__ import annotations
 
 import json
-import mimetypes
+import os
+import shutil
 import subprocess
 import uuid
 from pathlib import Path
@@ -14,6 +15,7 @@ from clipwright.config import logger, settings
 
 class AssetInfo:
     """已导入的素材信息。"""
+
     def __init__(
         self,
         asset_id: str,
@@ -54,11 +56,28 @@ class AssetInfo:
 
 
 class AssetManager:
-    """素材导入与管理。"""
+    """素材导入与管理。
 
-    def __init__(self) -> None:
-        self._library_dir = settings.library_dir
+    当 project_id 指定时，素材存储在 projects/{project_id}/assets/ 下：
+        assets/
+        ├── files/          # 软连接到原始文件
+        ├── thumbnails/     # 缩略图
+        └── index.json      # 素材索引
+
+    上传的素材通过软连接（Windows 回退到复制）引用原始文件，
+    删除素材仅删除软连接和 JSON 元数据，不删除原始文件。
+    """
+
+    def __init__(self, project_id: str | None = None) -> None:
+        self._project_id = project_id
+        if project_id:
+            base = settings.project_dir / project_id / "assets"
+        else:
+            base = settings.library_dir
+        self._library_dir = base
         self._library_dir.mkdir(parents=True, exist_ok=True)
+        self._files_dir = self._library_dir / "files"
+        self._files_dir.mkdir(parents=True, exist_ok=True)
         self._thumb_dir = self._library_dir / "thumbnails"
         self._thumb_dir.mkdir(parents=True, exist_ok=True)
         self._index_path = self._library_dir / "index.json"
@@ -68,16 +87,25 @@ class AssetManager:
     # ── 导入 ──
 
     async def import_file(self, file_path: str | Path) -> AssetInfo:
-        """导入一个媒体文件，检测格式并生成缩略图。"""
-        src = Path(file_path)
+        """导入一个媒体文件，检测格式并生成缩略图。
+
+        源文件通过软连接引用（不复制），删除时仅移除连接。
+        """
+        src = Path(file_path).resolve()
         if not src.exists():
             return AssetInfo(asset_id="", filename="", file_path="", media_type="", error=f"文件不存在: {file_path}")
 
         asset_id = f"asset_{uuid.uuid4().hex[:12]}"
         ext = src.suffix.lower()
-        dest = self._library_dir / f"{asset_id}{ext}"
-        import shutil
-        shutil.copy2(str(src), str(dest))
+        dest = self._files_dir / f"{asset_id}{ext}"
+
+        # 软连接引用原始文件；Windows 非管理员回退到复制
+        try:
+            dest.unlink(missing_ok=True)
+            os.symlink(str(src), str(dest))
+        except OSError:
+            logger.debug("symlink failed for %s, falling back to copy", src.name)
+            shutil.copy2(str(src), str(dest))
 
         # 格式检测
         media_type = self._detect_type(ext)
@@ -86,8 +114,10 @@ class AssetManager:
         # 缩略图
         thumb_path = ""
         if media_type in ("video", "image"):
-            thumb_path = str(self._thumb_dir / f"{asset_id}_thumb.jpg")
-            self._generate_thumbnail(str(dest), thumb_path, media_type)
+            thumb_file = self._thumb_dir / f"{asset_id}_thumb.jpg"
+            self._generate_thumbnail(str(dest), str(thumb_file), media_type)
+            if thumb_file.exists():
+                thumb_path = str(thumb_file.resolve())
 
         asset = AssetInfo(
             asset_id=asset_id,
@@ -98,17 +128,44 @@ class AssetManager:
             width=info.get("width", 0),
             height=info.get("height", 0),
             file_size=dest.stat().st_size,
-            thumbnail_path=thumb_path if Path(thumb_path).exists() else "",
+            thumbnail_path=thumb_path,
         )
         self._assets[asset_id] = asset
         self._save_index()
         return asset
 
     async def list_assets(self) -> list[AssetInfo]:
+        """列出当前项目的所有素材。"""
         return list(self._assets.values())
 
     def get(self, asset_id: str) -> Optional[AssetInfo]:
-        return self._assets.get(asset_id)
+        """获取指定素材信息（返回前校验文件存在性）。"""
+        asset = self._assets.get(asset_id)
+        if asset and asset.file_path:
+            fp = Path(asset.file_path)
+            if not fp.exists():
+                asset.error = "素材文件不存在（原始文件可能已移动或删除）"
+        return asset
+
+    def delete_asset(self, asset_id: str) -> bool:
+        """删除素材：移除软连接/文件和缩略图，但保留原始文件。"""
+        asset = self._assets.pop(asset_id, None)
+        if not asset:
+            return False
+        try:
+            # 移除软连接/素材文件
+            fp = Path(asset.file_path) if asset.file_path else None
+            if fp and fp.exists():
+                fp.unlink()
+            # 移除缩略图
+            if asset.thumbnail_path:
+                tp = Path(asset.thumbnail_path)
+                if tp.exists():
+                    tp.unlink()
+        except OSError as e:
+            logger.warning("清理素材文件失败 %s: %s", asset_id, e)
+        self._save_index()
+        return True
 
     # ── 内部 ──
 
