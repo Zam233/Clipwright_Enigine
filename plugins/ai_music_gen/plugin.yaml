@@ -1,5 +1,5 @@
 id: "ai_music_gen"
-name: "AI Music Generation"
+name: "AI 音乐生成"
 version: "1.0.0"
 kind: "capability"
 description: "AI 文生音乐 — 支持 Suno API / 本地 MusicGen，生成免版税 BGM"

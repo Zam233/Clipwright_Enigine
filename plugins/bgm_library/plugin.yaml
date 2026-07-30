@@ -1,5 +1,5 @@
 id: "bgm_library"
-name: "BGM Library"
+name: "背景音乐素材库"
 version: "1.0.0"
 kind: "material"
 description: "背景音乐素材源 — 支持 Freesound.org API 和本地音乐目录搜索"

@@ -1,5 +1,5 @@
 id: "whisper_stt"
-name: "Whisper STT"
+name: "Whisper 语音转文字"
 version: "1.0.0"
 kind: "capability"
 description: "语音转文字工具 — 包装 STTService，提供 Whisper/faster-whisper 转录能力"

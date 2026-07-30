@@ -1,5 +1,5 @@
 id: "custom_style"
-name: "自定义风格插件示例"
+name: "自定义风格"
 version: "1.0.0"
 kind: "style"
 description: "根据 Persona 的 tone 和 identity 动态生成图解配色和字体方案。注册 StyleInterpreterPlugin，完全接管风格解释逻辑。"

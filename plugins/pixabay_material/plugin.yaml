@@ -1,5 +1,5 @@
 id: "pixabay_material"
-name: "Pixabay Material Library"
+name: "Pixabay 素材库"
 version: "1.0.0"
 kind: "material"
 description: "从 Pixabay 免费图库搜索视频、图片和插画素材（每日 10,000+ 免费请求）"

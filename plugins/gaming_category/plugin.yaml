@@ -1,5 +1,5 @@
 id: "gaming_category"
-name: "Gaming Video Type"
+name: "游戏集锦"
 version: "1.0.0"
 kind: "category"
 description: "游戏集锦视频类型 — 反应摄像头 PIP、击杀信息叠加、快速缩放、Meme 音效"

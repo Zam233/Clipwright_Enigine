@@ -1,5 +1,5 @@
 id: "pexels_material"
-name: "Pexels Material Library"
+name: "Pexels 素材库"
 version: "1.0.0"
 kind: "material"
 description: "从 Pexels 免费图库自动搜索匹配的视频和图片素材"

@@ -1,5 +1,5 @@
 id: "cloud_render"
-name: "Cloud Render"
+name: "云端渲染"
 version: "1.0.0"
 kind: "capability"
 description: "云端渲染卸载 — 将 FFmpeg 渲染任务发送到远程服务器执行"

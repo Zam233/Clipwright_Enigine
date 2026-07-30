@@ -1,5 +1,5 @@
 id: "my_animations"
-name: "My Animation Pack"
+name: "我的动画包"
 version: "1.0.0"
 kind: "capability"
 description: "示例动画插件 — 注册自定义的屏幕动画和转场动画"

@@ -1,5 +1,5 @@
 id: "voice_ext"
-name: "Voice Provider Extension"
+name: "语音提供商扩展"
 version: "1.0.0"
 kind: "capability"
 description: "TTS 语音提供商扩展模板 — 演示如何添加 ElevenLabs/Azure/XTTS 等新语音引擎"

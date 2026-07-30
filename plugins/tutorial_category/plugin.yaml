@@ -1,5 +1,5 @@
 id: "tutorial_category"
-name: "Tutorial Video Type"
+name: "教程视频"
 version: "1.0.0"
 kind: "category"
 description: "教程/教学视频类型 — 长镜头、步骤结构、代码高亮、章节标记、慢节奏"

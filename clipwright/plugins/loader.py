@@ -138,7 +138,10 @@ class PluginLoader:
             SkillRegistry._skills[name]._plugin_id = plugin_id  # type: ignore[attr-defined]
 
         self._plugins[plugin_id] = plugin
-        self._metadatas[plugin_id] = PluginMetadata(manifest=manifest)
+        self._metadatas[plugin_id] = PluginMetadata(
+            manifest=manifest,
+            has_ui=(self.plugin_dir / plugin_id / "ui.json").exists(),
+        )
 
         return plugin
 
@@ -159,7 +162,8 @@ class PluginLoader:
         """直接注册一个已实例化的插件。"""
         self._plugins[plugin.manifest.id] = plugin
         self._metadatas[plugin.manifest.id] = PluginMetadata(
-            manifest=plugin.manifest
+            manifest=plugin.manifest,
+            has_ui=(self.plugin_dir / plugin.manifest.id / "ui.json").exists(),
         )
 
     def unload(self, plugin_id: str) -> None:

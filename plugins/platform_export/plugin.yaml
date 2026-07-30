@@ -1,5 +1,5 @@
 id: "platform_export"
-name: "Platform Export Presets"
+name: "平台导出预设"
 version: "1.0.0"
 kind: "capability"
 description: "平台专属导出预设 — Bilibili/Douyin/YouTube/微信视频号/小红书"

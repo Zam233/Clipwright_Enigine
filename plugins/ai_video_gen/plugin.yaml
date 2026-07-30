@@ -1,5 +1,5 @@
 id: "ai_video_gen"
-name: "AI Video Generation"
+name: "AI 视频生成"
 version: "1.0.0"
 kind: "capability"
 description: "AI 文生视频 — 支持 Kling/Runway/Pika API，异步任务追踪，作为 MaterialSource + Tool"

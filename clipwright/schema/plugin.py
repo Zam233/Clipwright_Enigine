@@ -40,6 +40,7 @@ class PluginMetadata(BaseModel):
     """插件的运行时元信息。"""
     manifest: PluginManifest
     enabled: bool = Field(default=True)
+    has_ui: bool = Field(default=False, description="是否定义了前端 UI (ui.json)")
     config: dict[str, Any] = Field(default_factory=dict)
 
 

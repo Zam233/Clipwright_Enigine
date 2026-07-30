@@ -1,5 +1,5 @@
 id: "lut_presets"
-name: "LUT Color Grading Presets"
+name: "LUT 调色预设"
 version: "1.0.0"
 kind: "style"
 description: "LUT 调色预设包 — 电影感/复古/赛博朋克/纪录片/美食暖调，配合 LutApplyTool 使用"
