@@ -475,14 +475,35 @@ class RequirementsService:
         return {**session, "reply": last_assistant}
 
     async def _is_confirm(self, message: str) -> bool:
-        """用 LLM 判断用户回复是否为对当前方案的确认/批准。
+        """判断用户回复是否为对当前方案的确认/批准。
 
-        相比关键词硬编码，LLM 能正确处理否定、提问、委婉表达等复杂语义。
-        LLM 不可用（离线/异常）时回退到关键词启发式，保证流程不中断。
+        策略：明确的确认/否定/提问先用启发式快速判定（可靠、零延迟），
+        仅在语义模糊（如委婉表达、夹带修改意见）时才调用 LLM 判断。
+        这样「确认，请生成规划书」这类明确确认不会被 LLM 误判为「提出新需求」。
         """
         msg = message.strip()
         if not msg:
             return False
+
+        # ── 启发式优先处理明确情况 ──
+        low = msg.lower()
+        # 提问不是确认
+        if low.endswith(("?", "？")):
+            return False
+        # 明确的强确认短语（任意位置出现即可）
+        strong = ["已确认", "确认无误", "确认通过", "确认实施", "批准通过", "确认，请生成", "确认并"]
+        if any(phrase in low for phrase in strong):
+            return True
+        # 以否定词开头 → 非确认（"不可以"、"不要"、"有问题"、"不满意"）
+        if low.startswith(("不", "没", "别", "勿", "莫", "未")):
+            return False
+        # 以明确确认词开头 → 确认（"确认…"、"可以…"、"好的…"、"同意…"）
+        affirm_starts = ["没问题", "就这样", "可以了", "好的", "确认", "同意", "可以",
+                         "行", "ok", "yes", "y", "对", "嗯", "确定", "通过", "批准"]
+        if any(low.startswith(kw) or low == kw for kw in affirm_starts):
+            return True
+
+        # ── 语义模糊 → 用 LLM 判断 ──
         try:
             resp = await self._llm.structured_output(
                 system_prompt=(

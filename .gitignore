@@ -65,3 +65,7 @@ webhooks.json
 # Agent tooling state
 .omo/
 .opencode/
+
+# test logs
+backend-out.log
+*.log
