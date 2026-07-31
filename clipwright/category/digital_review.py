@@ -41,3 +41,11 @@ class DigitalReviewPlugin(BaseCategoryPlugin):
 
     def get_shot_params(self, translated: dict[str, Any]) -> dict[str, Any]:
         return translated.get("shot_params", {})
+
+    def get_mg_style_guidance(self) -> str:
+        return (
+            "数码评测的 MG 动画风格：科技感、精致、冷色调。"
+            "偏好产品数据对比（参数表格/跑分柱状图/温度曲线）、"
+            "规格参数高亮、性能排名；动效干脆利落（0.2-0.4s），"
+            "常用描边线框、发光光效、渐变质感，背景多用深色。"
+        )

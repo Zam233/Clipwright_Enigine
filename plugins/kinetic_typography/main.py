@@ -102,6 +102,21 @@ class KineticTypographyPlugin(CapabilityPlugin):
             AnimationRegistry.register(defn, plugin_id=self.manifest.id)
         logger.info("[KineticTypography] %d 种动态文字动画已注册", len(KINETIC_ANIMATIONS))
 
+        from clipwright.plugins.prompt_registry import PluginPromptRegistry
+        PluginPromptRegistry.register(
+            "kinetic_typography", "structure",
+            "## 高级文字动画（来自 kinetic_typography 插件）\n"
+            "可用高级文字动画标记：\n"
+            "- [文字动画]逐词强调 — 逐词放大变色强调\n"
+            "- [文字动画]弹跳 — 弹跳入场效果\n"
+            "- [文字动画]弹性缩放 — 弹性缩放动画\n"
+            "- [文字动画]3D透视 — 3D 透视旋转\n"
+            "- [文字动画]渐变填充 — 颜色渐变填充\n"
+            "- [文字动画]描边绘制 — 描边绘制入场\n\n"
+            "使用 [文字动画]名称：要显示的文字 格式标记。",
+            priority=3,
+        )
+
     def shutdown(self) -> None:
         pass
 

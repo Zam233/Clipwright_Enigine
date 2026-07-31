@@ -664,6 +664,8 @@ class PipelineOrchestratorV2:
                 script_skeleton=data.get("script_skeleton", {}),
                 persona_config=data.get("persona_config", {}),
                 material_plugin_config=data.get("material_plugin_config", {}),
+                creative_brief=ctx.extra_params.get("creative_brief"),
+                production_plan=ctx.extra_params.get("production_plan"),
             ), ctx)
         elif name == "edit":
             from clipwright.schema.agent import EditInput
@@ -671,6 +673,8 @@ class PipelineOrchestratorV2:
                 context=ctx,
                 script_skeleton=data.get("script_skeleton", {}),
                 candidate_clips=data.get("candidate_clips", []),
+                creative_brief=ctx.extra_params.get("creative_brief"),
+                production_plan=ctx.extra_params.get("production_plan"),
             ), ctx)
         elif name == "animation":
             tl = data.get("timeline")
@@ -679,6 +683,8 @@ class PipelineOrchestratorV2:
                 context=ctx,
                 timeline=tl,
                 visual_config=data.get("visual_config", {}),
+                creative_brief=ctx.extra_params.get("creative_brief"),
+                production_plan=ctx.extra_params.get("production_plan"),
             ), ctx)
         elif name == "audio":
             from clipwright.schema.agent import AudioInput
@@ -686,6 +692,8 @@ class PipelineOrchestratorV2:
                 context=ctx,
                 timeline=data.get("timeline"),
                 audio_config=data.get("audio_config", {}),
+                creative_brief=ctx.extra_params.get("creative_brief"),
+                production_plan=ctx.extra_params.get("production_plan"),
             ), ctx)
         elif name == "quality":
             from clipwright.schema.agent import QualityInput
@@ -693,6 +701,8 @@ class PipelineOrchestratorV2:
                 context=ctx,
                 timeline=data.get("timeline"),
                 constraints=data.get("constraints", {}),
+                creative_brief=ctx.extra_params.get("creative_brief"),
+                production_plan=ctx.extra_params.get("production_plan"),
             ), ctx)
         raise ValueError(f"Unknown agent: {name}")
 

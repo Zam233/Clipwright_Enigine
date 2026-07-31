@@ -37,9 +37,11 @@ from clipwright.services.trace import add_event
 # ── 常量 ──────────────────────────────────────────
 
 MAX_HISTORY_ROUNDS = 20          # 超过 20 轮对话后压缩
-MAX_MESSAGE_LENGTH = 3000        # 单条消息最大字符
+MAX_MESSAGE_LENGTH = 50000       # 单条消息最大字符
 LLM_RETRY_MAX = 3                # LLM 最大重试次数
 LLM_RETRY_BASE_DELAY = 2.0      # 重试基础延迟（秒）
+BRIEF_GENERATE_TIMEOUT = 180     # 简报生成单次调用超时（秒）
+PLAN_TRANSLATE_TIMEOUT = 240     # 规划书翻译单次调用超时（秒）
 SESSION_TTL_HOURS = 48           # 会话过期时间
 SESSION_CLEANUP_INTERVAL = 3600  # 清理检查间隔（秒）
 
@@ -141,6 +143,7 @@ CREATIVE_BRIEF_SYSTEM = """你是一位专业的视频创作顾问。用户会�
 
 ## 核心原则
 - 当用户提供了主题（以及可选的文稿/风格/时长），且明确要求你拟定方案时，请你**直接产出完整的草案**，而不是反问更多问题。
+- **用户提供的原始文稿是创作方案的唯一依据**，你必须仔细阅读并基于文稿内容生成方案，所有字段（标题、概述、核心信息、结构建议等）都应真实反映文稿内容，不得编造或遗漏文稿中的关键信息。
 - 草案中不确定的字段写上"待定"或合理推测即可，后续用户会调整。
 - 如果你不确定某些信息，可以在回复中说明"以下是我基于现有信息的初步方案，你看看需要调整哪些部分？"
 - 当用户表示"确认"或"可以"时，设置 is_ready=true。
@@ -580,13 +583,29 @@ class RequirementsService:
             context += f"\n\n## 知识库参考\n{rag_context}"
 
         user_prompt = messages[-1]["content"] if messages else "请开始对话。"
+        if script:
+            user_prompt = (
+                f"## 用户提供的原始文稿（请基于此文稿生成创作方案）\n"
+                f"{script[:12000]}\n\n"
+                f"## 用户最新输入\n{user_prompt}"
+            )
         llm_kwargs = {
             "system_prompt": CREATIVE_BRIEF_SYSTEM + context,
             "user_prompt": user_prompt,
         }
-        return await llm_call_with_retry(
-            self._llm, "creative_brief", pipeline_id="", **llm_kwargs,
-        )
+        try:
+            return await asyncio.wait_for(
+                llm_call_with_retry(self._llm, "creative_brief", pipeline_id="", **llm_kwargs),
+                timeout=BRIEF_GENERATE_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("创意简报生成超时（>%ds），返回空方案", BRIEF_GENERATE_TIMEOUT)
+            return {
+                "reply": "生成创意简报时超时，请再试一次或补充描述。",
+                "brief_draft": {},
+                "is_ready": False,
+                "missing_info": ["请重新描述创作需求"],
+            }
 
     @staticmethod
     def _build_full_persona_context(user_inputs: dict) -> dict:
@@ -664,7 +683,7 @@ class RequirementsService:
                 category_plugin_id=plugin_id,
                 topic=topic,
                 extra_params={
-                    "video_mode": "voiceover",
+                    "video_mode": user_inputs.get("video_mode", "voiceover"),
                     "script_text": user_inputs.get("script_text", ""),
                     "audio_duration_sec": user_inputs.get("audio_duration_sec", 300),
                     "animation_intents": animation_intents,
@@ -690,21 +709,40 @@ class RequirementsService:
                 logger.warning("StructureAgent 返回空场景")
                 return None
 
-            return await self._translate_plan(scenes, brief_data)
+            return await self._translate_plan(scenes, brief_data, script)
 
         except Exception as e:
             logger.exception("规划书生成失败: %s", e)
             return None
 
-    async def _translate_plan(self, scenes: list[dict], brief_data: dict | None) -> dict:
+    async def _translate_plan(self, scenes: list[dict], brief_data: dict | None, script_text: str = "") -> dict:
         """翻译场景为规划书。"""
         scenes_json = json.dumps(scenes, ensure_ascii=False, indent=2)
         brief_json = json.dumps(brief_data, ensure_ascii=False) if brief_data else "{}"
 
-        result = await llm_call_with_retry(self._llm, "plan_translate", pipeline_id="", **{
-            "system_prompt": f"{PLAN_TRANSLATE_SYSTEM}\n\n参考方案:\n{brief_json}",
-            "user_prompt": f"结构 Agent 输出:\n{scenes_json}",
-        })
+        system_prompt = PLAN_TRANSLATE_SYSTEM
+        if script_text:
+            system_prompt += f"\n\n## 原始文稿（规划书必须忠实反映此内容）\n{script_text[:8000]}"
+        system_prompt += f"\n\n参考方案:\n{brief_json}"
+
+        try:
+            result = await asyncio.wait_for(
+                llm_call_with_retry(self._llm, "plan_translate", pipeline_id="", **{
+                    "system_prompt": system_prompt,
+                    "user_prompt": f"结构 Agent 输出:\n{scenes_json}",
+                }),
+                timeout=PLAN_TRANSLATE_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            # LLM 翻译超时 → 使用基础规划书，绝不挂起
+            logger.warning("规划书翻译超时（>%ds），使用基础规划书", PLAN_TRANSLATE_TIMEOUT)
+            result = {
+                "summary": "规划书已生成（LLM 翻译超时，使用基础版本）。",
+                "sections": [],
+                "markdown_content": self._default_markdown(scenes),
+                "total_duration_sec": sum(s.get("duration_sec", 0) for s in scenes),
+                "scene_count": len(scenes),
+            }
 
         if not result.get("markdown_content"):
             result["markdown_content"] = self._default_markdown(scenes)

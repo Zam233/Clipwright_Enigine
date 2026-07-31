@@ -45,3 +45,11 @@ class KnowledgeLongformPlugin(BaseCategoryPlugin):
 
     def get_shot_params(self, translated: dict[str, Any]) -> dict[str, Any]:
         return translated.get("shot_params", {})
+
+    def get_mg_style_guidance(self) -> str:
+        return (
+            "知识区长片的 MG 动画风格：优雅、学术、有质感。"
+            "偏好数据可视化（图表/时间线/流程图）、逻辑关系图；"
+            "配色克制沉稳，动效节奏舒缓（0.3-0.6s 入场），"
+            "避免过于花哨的霓虹/故障效果，注重信息的清晰传达。"
+        )

@@ -124,8 +124,14 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
         if references:
             user_context += f"参考素材: {len(references)} 个文件\n"
 
+        system_prompt = CREATIVE_BRIEF_SYSTEM
+        from clipwright.plugins.prompt_registry import PluginPromptRegistry
+        plugin_prompts = PluginPromptRegistry.get_for_agent("requirements")
+        if plugin_prompts:
+            system_prompt += "\n\n## 插件能力扩展\n" + "\n\n".join(plugin_prompts)
+
         result = await self._llm.structured_output(
-            system_prompt=CREATIVE_BRIEF_SYSTEM,
+            system_prompt=system_prompt,
             user_prompt=user_context,
             pipeline_id=context.pipeline_id,
         )
@@ -159,8 +165,14 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
         brief_json = json.dumps(brief, ensure_ascii=False) if brief else "{}"
 
         try:
+            system_prompt = f"{PLAN_TRANSLATE_SYSTEM}\n\n参考方案:\n{brief_json}"
+            from clipwright.plugins.prompt_registry import PluginPromptRegistry
+            plugin_prompts = PluginPromptRegistry.get_for_agent("requirements")
+            if plugin_prompts:
+                system_prompt += "\n\n## 插件能力扩展\n" + "\n\n".join(plugin_prompts)
+
             result = await self._llm.structured_output(
-                system_prompt=f"{PLAN_TRANSLATE_SYSTEM}\n\n参考方案:\n{brief_json}",
+                system_prompt=system_prompt,
                 user_prompt=f"结构 Agent 输出:\n{scenes_json}",
                 pipeline_id=pipeline_id,
             )

@@ -20,6 +20,7 @@ from clipwright.config import logger
 
 class AIImageGenTool(BaseTool):
     name = "ai_image_generate"
+    agent_callable = True
     description = "从文字提示生成图片，返回图片 URL 或本地路径"
     parameters_schema = {
         "type": "object",

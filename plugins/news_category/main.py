@@ -32,6 +32,14 @@ class NewsCategoryPlugin(BaseCategoryPlugin):
     def get_pacing(self) -> dict:
         return {"cuts_per_minute": 8, "text_density": "high", "animation_style": "formal", "bgm_volume": 0.1}
 
+    def get_mg_style_guidance(self) -> str:
+        return (
+            "新闻评论的 MG 动画风格：正式、权威、信息密度高。"
+            "偏好数据/证据可视化（占比饼图、趋势折线、时间线）、"
+            "来源引用角标、人物标题栏；动效沉稳（0.4-0.7s），"
+            "配色克制（深蓝/白/灰），排版规整，避免花哨特效。"
+        )
+
     def initialize(self) -> None:
         CategoryRegistry.register(self, plugin_id=self.manifest.id)
         print("[NewsCategory] 新闻评论类型已注册")

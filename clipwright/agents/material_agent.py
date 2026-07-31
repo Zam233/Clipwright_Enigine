@@ -47,11 +47,13 @@ async def _llm_search_queries(
     description: str,
     pipeline_id: str = "",
     persona_style: str = "",
+    brief_hint: str = "",
 ) -> list[str]:
-    """调用 LLM 生成具体视觉搜索词（考虑 Persona 风格）。"""
+    """调用 LLM 生成具体视觉搜索词（考虑 Persona 风格 + 简报素材偏好）。"""
     from clipwright.services.llm import LLMService
 
     style_hint = f"\n- 优先匹配风格: {persona_style}" if persona_style else ""
+    brief_hint_text = f"\n- 简报素材要求: {brief_hint}" if brief_hint else ""
 
     prompt = (
         f"你是一个视频素材搜索关键词生成器。根据以下场景信息，生成 3-5 个具体、可搜索的视觉关键词，"
@@ -64,10 +66,15 @@ async def _llm_search_queries(
         f"不能是抽象概念（如'社会矛盾''心理防御'）\n"
         f"- 优先推荐实拍风格的画面\n"
         f"- 用中文输出，每行一个关键词\n"
-        f"- 只输出关键词，不要序号和说明{style_hint}"
+        f"- 只输出关键词，不要序号和说明{style_hint}{brief_hint_text}"
     )
     if pipeline_id:
         add_event(pipeline_id, "material", "llm", f"LLM 搜索词生成: {scene_title}")
+
+    from clipwright.plugins.prompt_registry import PluginPromptRegistry
+    plugin_prompts = PluginPromptRegistry.get_for_agent("material")
+    if plugin_prompts:
+        prompt += "\n\n## 插件能力扩展\n" + "\n\n".join(plugin_prompts)
 
     llm = LLMService()
     try:
@@ -255,6 +262,21 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
             # ── 提取 Persona 视觉风格偏好 ──
             persona_style_keywords = self._extract_persona_style(input_data.persona_config)
 
+            # ── 提取简报素材要求（类型/来源/偏好）──
+            brief_material_hint = ""
+            try:
+                brief = input_data.creative_brief or {}
+                mat_req = brief.get("material_requirements") or {}
+                if isinstance(mat_req, dict):
+                    parts = []
+                    for k, label in (("type", "类型"), ("source", "来源"), ("preference", "偏好"), ("timeliness", "时效性")):
+                        v = mat_req.get(k)
+                        if v:
+                            parts.append(f"{label}: {v}")
+                    brief_material_hint = "；".join(parts)
+            except Exception:
+                pass
+
             if not scenes:
                 return MaterialOutput(
                     decision=AgentDecision.PASS,
@@ -298,6 +320,7 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                     scene_title, scene_keywords, description,
                     pipeline_id=context.pipeline_id,
                     persona_style=persona_style_keywords,
+                    brief_hint=brief_material_hint,
                 )
 
                 all_results = []

@@ -19,6 +19,7 @@ from clipwright.plugins.config_types import (
 )
 from clipwright.plugins.hooks import HookPoint, HookRegistry
 from clipwright.plugins.loader import PluginLoadError, PluginLoader
+from clipwright.plugins.prompt_registry import PluginPrompt, PluginPromptRegistry
 
 __all__ = [
     "BasePlugin",
@@ -29,4 +30,6 @@ __all__ = [
     "PluginLoadError",
     "HookRegistry",
     "HookPoint",
+    "PluginPromptRegistry",
+    "PluginPrompt",
 ]

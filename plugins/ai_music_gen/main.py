@@ -18,6 +18,7 @@ from clipwright.config import logger
 
 class AIMusicGenTool(BaseTool):
     name = "ai_music_generate"
+    agent_callable = True
     description = "从情绪/风格描述生成免版税背景音乐"
     parameters_schema = {
         "type": "object",

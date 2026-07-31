@@ -27,7 +27,7 @@ class BaseAgent(ABC, Generic[I, O]):
     """Agent 基类。"""
 
     agent_name: str = ""
-    timeout_sec: int = 120  # LLM 调用默认超时（秒）
+    timeout_sec: int = 300  # LLM 调用默认超时（秒）——大 prompt + 多工具调用时 120s 不足
 
     def __init__(self) -> None:
         self._strategy_registry: dict[str, Any] = {}

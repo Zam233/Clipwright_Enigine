@@ -53,3 +53,12 @@ class LogicAnimationsPlugin(CapabilityPlugin):
     def initialize(self) -> None:
         HookRegistry.register(HookPoint.DIAGRAM_RENDERER_EXTEND, register_diagrams)
         logger.info("LogicAnimationsPlugin: 注册 %d 种图解类型", len(RENDERER_MAP))
+
+        from clipwright.plugins.prompt_registry import PluginPromptRegistry
+        desc_list = "\n".join(f"  - {fid} — {desc}" for fid, desc in _DESCRIPTIONS.items())
+        PluginPromptRegistry.register(
+            "logic_animations", "structure",
+            f"## 高级图解类型（来自 logic_animations 插件）\n"
+            f"以下高级图解可通过 mg_dynamic 或 [逻辑动画] 调用：\n{desc_list}",
+            priority=3,
+        )

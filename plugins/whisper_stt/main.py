@@ -25,6 +25,7 @@ class WhisperTranscribeTool(BaseTool):
     """语音转文字 Tool — 调用 STTService 完成转录。"""
 
     name = "whisper_transcribe"
+    agent_callable = True
     description = "将音频文件转录为文字，返回带时间戳的分段文本"
     parameters_schema = {
         "type": "object",

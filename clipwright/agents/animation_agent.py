@@ -39,6 +39,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
     def __init__(self) -> None:
         super().__init__()
         self._catalog = AnimationCatalog()
+        self._mg_category_context: dict = {}  # 视频类型（category）特征数据
 
     async def execute(
         self, input_data: AnimationInput, context: AgentContext
@@ -58,6 +59,48 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             persona_style = await self._resolve_style(
                 input_data.visual_config, context.extra_params,
             )
+
+            # 解析视频类型（category）特征，注入 LLM MG 生成器
+            # （由引擎结合 Persona + 类型数据自行决定动画设计）
+            self._mg_category_context = {}
+            try:
+                if context.category_plugin_id:
+                    from clipwright.category.registry import CategoryRegistry
+                    cat = CategoryRegistry.get(context.category_plugin_id)
+                    if cat is not None:
+                        self._mg_category_context = {
+                            "plugin_id": getattr(cat, "plugin_id", ""),
+                            "display_name": getattr(cat, "display_name", ""),
+                            "description": getattr(cat, "description", ""),
+                        }
+                        if hasattr(cat, "get_shot_params"):
+                            try:
+                                self._mg_category_context["shot_params"] = cat.get_shot_params({})
+                            except Exception:
+                                pass
+                        if hasattr(cat, "get_pacing"):
+                            try:
+                                self._mg_category_context["pacing"] = cat.get_pacing()
+                            except Exception:
+                                pass
+                        if hasattr(cat, "get_mg_style_guidance"):
+                            try:
+                                self._mg_category_context["mg_style_guidance"] = cat.get_mg_style_guidance()
+                            except Exception:
+                                pass
+            except Exception:
+                self._mg_category_context = {}
+
+            # 简报动画风格（style/tone/fonts/icons）并入 MG 生成上下文
+            try:
+                brief = input_data.creative_brief or {}
+                brief_anim_style = brief.get("animation_style") or {}
+                if isinstance(brief_anim_style, dict) and brief_anim_style:
+                    self._mg_category_context["brief_animation_style"] = brief_anim_style
+                if brief.get("asset_ratio"):
+                    self._mg_category_context["brief_asset_ratio"] = brief.get("asset_ratio")
+            except Exception:
+                pass
 
             text_track = self._find_or_create_track(timeline, ClipKind.TEXT, "文字轨", 1)
             anim_track = None  # 延迟创建
@@ -438,19 +481,33 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         marker: dict[str, Any],
         persona_style: dict[str, Any] | None = None,
     ) -> None:
-        """处理 mg_dynamic 标记 — 通过 llm_mg 插件动态生成 MG 动画。"""
+        """处理 mg_dynamic 标记 — 通过内置 llm_mg 引擎动态生成 MG 动画。"""
         try:
-            from clipwright.plugins import PluginLoader
-            loader = PluginLoader()
-            plugin = loader.get("llm_mg")
-        except Exception:
-            plugin = None
+            from clipwright.animation.mg import MGGenerator
+            mg_gen = MGGenerator()
+        except Exception as e:
+            logger.warning("AnimationAgent: llm_mg 引擎初始化失败: %s", e)
+            mg_gen = None
 
-        if plugin is None:
-            logger.warning("AnimationAgent: llm_mg 插件未加载，mg_dynamic 降级为 drawtext")
-            self._add_trace_warning("LLM MG 插件未加载，动画降级为文字显示")
+        if mg_gen is None:
+            logger.warning("AnimationAgent: llm_mg 引擎不可用，mg_dynamic 降级为 drawtext")
+            self._add_trace_warning("LLM MG 引擎不可用，动画降级为文字显示")
             self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
             return
+
+        # 解析 JSON payload（如果 text_content 是 JSON 字符串）
+        description = text_content
+        style_param = "tech_dark"
+        text_parts = ""
+        if text_content and text_content.strip().startswith("{"):
+            try:
+                import json as _json
+                payload = _json.loads(text_content.strip())
+                description = payload.get("description", text_content)
+                text_parts = payload.get("text", "")
+                style_param = payload.get("style", "tech_dark")
+            except Exception:
+                pass  # 解析失败则使用原始值
 
         scene_meta = vid_clip.metadata or {}
         scene_context = {
@@ -460,14 +517,15 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         }
 
         try:
-            result = await plugin.generate_mg(
-                description=text_content or marker.get("description", ""),
-                text_content=text_content,
+            result = await mg_gen.generate(
+                description=description,
+                text_content=text_parts or text_content,
                 persona_style=persona_style or {},
                 scene_context=scene_context,
+                category_context=self._mg_category_context,
             )
         except Exception as e:
-            logger.exception("AnimationAgent: llm_mg.generate_mg() 异常: %s", e)
+            logger.exception("AnimationAgent: llm_mg.generate() 异常: %s", e)
             self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
             return
 
@@ -705,6 +763,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         }
 
         config = visual_config or {}
+        from clipwright.plugins.prompt_registry import PluginPromptRegistry
+        plugin_prompts = PluginPromptRegistry.get_for_agent("animation")
+        if plugin_prompts:
+            persona_context["_plugin_prompts"] = plugin_prompts
         result = await StyleInterpreter.interpret(config, persona_context)
         return result
 

@@ -8,6 +8,7 @@
 
 from clipwright.tool.animation import TrackingTextTool, TypewriterAnimationTool
 from clipwright.tool.animation_list import ListAnimationsTool
+from clipwright.tool.describe_llm_mg import DescribeLLMMGTool
 from clipwright.tool.audio import (
     AudioExtractTool,
     AudioMixTool,
@@ -111,6 +112,7 @@ def register_builtin_tools() -> None:
         TextToSpeechTool(),
         VoiceCloneTool(),
         ListAnimationsTool(),
+        DescribeLLMMGTool(),
     ]
     for tool in tools:
         ToolRegistry.register(tool)
@@ -171,4 +173,5 @@ __all__ = [
     "TextToSpeechTool",
     "VoiceCloneTool",
     "ListAnimationsTool",
+    "DescribeLLMMGTool",
 ]

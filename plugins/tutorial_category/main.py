@@ -60,6 +60,14 @@ class TutorialCategoryPlugin(BaseCategoryPlugin):
             "bgm_volume": 0.15,
         }
 
+    def get_mg_style_guidance(self) -> str:
+        return (
+            "教程/教学类视频的 MG 动画风格：清晰、简洁、教学化。"
+            "偏好步骤序号、章节标记、代码高亮、操作示意箭头、流程框图；"
+            "动效平缓（0.3-0.5s），配色清爽（蓝/绿/白），"
+            "图形规范对齐，把信息讲清楚比炫技更重要。"
+        )
+
     def initialize(self) -> None:
         CategoryRegistry.register(self, plugin_id=self.manifest.id)
         print(f"[TutorialCategory] 教程视频类型已注册")

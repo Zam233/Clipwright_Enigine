@@ -87,7 +87,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             if has_pip:
                 pip_track = Track(id=_uid("t"), name="画中画", kind=ClipKind.VIDEO, index=3)
 
-            # 4. 标准化场景时长：如果提供了音频总时长，按比例缩放
+            # 4. 标准化场景时长：优先规划书总时长 → 音频总时长 → 场景和
             scene_count = len(scenes)
             total_scene_duration = sum(
                 s.get("duration_sec", base_shot_sec) for s in scenes
@@ -95,6 +95,14 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             target_duration = context.extra_params.get(
                 "audio_duration_sec", total_scene_duration
             )
+            try:
+                plan = input_data.production_plan or {}
+                plan_dur = plan.get("total_duration_sec")
+                if isinstance(plan_dur, (int, float)) and plan_dur > 0:
+                    target_duration = float(plan_dur)
+                    notes.append(f"按规划书总时长对齐: {target_duration:.0f}s")
+            except Exception:
+                pass
             logger.info("EditAgent 时长: scenes=%d, sum=%.0fs, target=%.0fs (extra audio_duration_sec=%s)",
                         scene_count, total_scene_duration, target_duration,
                         context.extra_params.get("audio_duration_sec"))

@@ -31,6 +31,14 @@ class GamingCategoryPlugin(BaseCategoryPlugin):
     def get_pacing(self) -> dict:
         return {"cuts_per_minute": 25, "text_density": "medium", "animation_style": "energetic", "bgm_volume": 0.3}
 
+    def get_mg_style_guidance(self) -> str:
+        return (
+            "游戏集锦的 MG 动画风格：高能电竞、霓虹科技、冲击感。"
+            "偏好击杀/胜率/排名数据可视化、KDA 计数、技能图标特效、"
+            "故障闪烁与镜头缩放冲击；动效快速（0.15-0.35s），"
+            "配色高饱和（电光蓝/霓虹紫/荧光绿），带发光描边与颗粒质感。"
+        )
+
     def initialize(self) -> None:
         CategoryRegistry.register(self, plugin_id=self.manifest.id)
         print("[GamingCategory] 游戏集锦类型已注册")

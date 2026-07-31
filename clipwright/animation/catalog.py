@@ -88,7 +88,7 @@ class AnimationCatalog:
         """返回所有可用的逻辑动画（内置 + 插件扩展 + MG 动画）。"""
         result = list(_BUILTIN_LOGIC_ANIMATIONS)
 
-        # 合并 MG 动画（MGRenderer 从 plugins/llm_mg/templates/ 加载）
+        # 合并 MG 动画（MGRenderer 从内置 clipwright/animation/mg/templates/ 加载）
         try:
             from clipwright.animation.mg_renderer import MGRenderer
             for mg in MGRenderer.list_animations():
@@ -184,6 +184,10 @@ class AnimationCatalog:
 
         支持模糊匹配：精确 name → 包含匹配 → id 匹配。
         """
+        # 0. 特殊标记优先匹配 — mg_dynamic 触发 LLM 动态 MG 引擎
+        if marker_text == "mg_dynamic":
+            return {"type": "logic", "anim_id": "mg_dynamic", "name": "LLM 动态 MG"}
+
         # 1. 精确 name 匹配
         for a in AnimationCatalog.get_text_animations():
             if a["name"] == marker_text:

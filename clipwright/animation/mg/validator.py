@@ -8,7 +8,13 @@ REQUIRED_TOP_KEYS = {"animation_id", "elements"}
 VALID_ELEMENT_TYPES = {"text", "shape"}
 VALID_SHAPES = {"rect", "ellipse"}
 VALID_POSITIONS = {"center", "left", "right", "top", "bottom"}
-ANIMATABLE_PROPS = {"opacity", "scale", "translate_x", "translate_y", "rotate", "width"}
+ANIMATABLE_PROPS = {
+    "opacity", "scale", "translate_x", "translate_y", "rotate",
+    "width", "height", "font_size", "color", "background",
+    "border_radius", "border_width", "border_color",
+    "box_shadow", "text_shadow", "filter", "letter_spacing",
+    "font_weight", "font_family", "line_height",
+}
 
 
 def validate_mg_json(mg_def: dict[str, Any]) -> tuple[bool, list[str]]:
@@ -169,5 +175,12 @@ def repair_mg_json(mg_def: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
                 for pk, pv in kf["properties"].items():
                     if pk not in kf:
                         kf[pk] = pv
+
+            # 清理未知动画属性（LLM 偶发的多余字段），避免整个生成降级
+            unknown = [k for k in kf if k != "time" and k not in ANIMATABLE_PROPS]
+            if unknown:
+                for k in unknown:
+                    kf.pop(k, None)
+                fixes.append(f"elements[{i}]: removed unknown keyframe props {unknown}")
 
     return repaired, fixes

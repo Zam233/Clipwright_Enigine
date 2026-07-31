@@ -27,6 +27,10 @@ SYSTEM_PROMPT_TPL = """你是一个{tone}风格的视频脚本创作者。
 - 最长句长: {max_sentence_len} 字
 - 剪辑节奏: {cut_profile}
 
+## 动画标记规则
+每个场景 description 必须包含一个动画标记。优先使用 mg_dynamic（动态 LLM 生成），其次选用预置动画。
+在生成场景前**必须先调用 describe_llm_mg 工具**了解动态 MG 能力。
+
 ## 输出格式
 返回 JSON 数组，每个元素是一个分镜场景：
 {{
@@ -49,13 +53,18 @@ SYSTEM_PROMPT_TPL = """你是一个{tone}风格的视频脚本创作者。
 3. 遵循 {tone} 的语调风格
 4. 禁止使用 forbidden_patterns
 5. **每个场景必须有 title(非空)、duration_sec(>0)、description(非空)、keywords(数组)**
+6. **每个场景 description 中必须包含动画标记，优先使用 mg_dynamic**
 """
 
 
 TOOL_PROMPT = """
 ## 可用工具
-你可以在生成脚本骨架的过程中调用以下工具来获取参考数据：
-- list_animations: List available MG/text/logic animations. Use when scene needs animation.
+你**必须**在生成场景脚本前调用工具获取能力信息（工具列表见下方 function schemas）：
+1. **describe_llm_mg**：了解内置 LLM 动效生成引擎 (llm_mg) 的动态 MG 动画能力
+2. **list_animations**：获取所有预置动画类型（文字/逻辑/过渡）
+3. 其他插件工具：根据需要查询（如 AI 生成图片/视频/音乐等）
+
+调用顺序：先 describe_llm_mg，再 list_animations，最后根据返回的能力信息为每个场景选择合适的动画标记。
 """
 
 
@@ -131,6 +140,9 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                 reused, reuse_warnings = _validate_scenes(confirmed_scenes)
                 if reused:
                     logger.info("StructureAgent: 复用已确认规划书的 %d 个场景（跳过重新生成）", len(reused))
+                    # 为缺少动画标记的场景调用 LLM 补充动画标记（不硬编码），
+                    # 使 AnimationAgent 能创建动画（含 LLM 动态 MG 动画）。
+                    reused = await self._enrich_scene_animations(reused, context)
                     output = StructureOutput(
                         decision=AgentDecision.PASS,
                         script_skeleton={
@@ -157,6 +169,11 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                 system_prompt += f"\n\n## Persona Prompt\n{input_data.persona_prompt}\n"
             if input_data.rag_context:
                 system_prompt += f"\n\n## 参考知识\n{input_data.rag_context}\n"
+
+            from clipwright.plugins.prompt_registry import PluginPromptRegistry
+            plugin_prompts = PluginPromptRegistry.get_for_agent("structure")
+            if plugin_prompts:
+                system_prompt += "\n\n## 插件能力\n" + "\n\n".join(plugin_prompts)
 
             video_mode = context.extra_params.get("video_mode", "voiceover")
             script_text = context.extra_params.get("script_text", "")
@@ -214,21 +231,27 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
             if has_api_key:
                 try:
-                    tool_names = ["list_animations"]
-                    available_tools = {}
-                    for name in tool_names:
-                        tool = ToolRegistry.get(name)
-                        if tool and tool.is_available():
-                            available_tools[name] = tool
-                        else:
-                            logger.warning("StructureAgent: 工具 %s 不可用或不存在", name)
+                    # 动态收集所有声明 agent_callable 且可用的工具
+                    # （内置 list_animations/describe_llm_mg + 插件注册工具），
+                    # 不再硬编码工具列表，插件工具可被 LLM 主动调用。
+                    available_tools: dict[str, Any] = {}
+                    for tool in ToolRegistry.list_agent_callable():
+                        available_tools[tool.name] = tool
+                    if "list_animations" not in available_tools:
+                        list_tool = ToolRegistry.get("list_animations")
+                        if list_tool and list_tool.is_available():
+                            available_tools["list_animations"] = list_tool
+                    if "describe_llm_mg" not in available_tools:
+                        mg_tool = ToolRegistry.get("describe_llm_mg")
+                        if mg_tool and mg_tool.is_available():
+                            available_tools["describe_llm_mg"] = mg_tool
                     tool_schemas = [
                         {
                             "type": "function",
                             "function": {
                                 "name": tool.name,
                                 "description": tool.description or f"Execute {tool.name}",
-                                "parameters": getattr(tool, "parameters_schema", {}),
+                                "parameters": tool.to_llm_tool("openai")["function"]["parameters"],
                             },
                         }
                         for tool in available_tools.values()
@@ -257,6 +280,9 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             if not scenes:
                 logger.info("StructureAgent: 无有效场景，使用 fallback")
                 scenes = self._fallback_scenes(context.topic, tone, script_text)
+
+            # 为缺少动画标记的场景调用 LLM 补充动画标记（不硬编码），供 AnimationAgent 创建动画
+            scenes = await self._enrich_scene_animations(scenes, context)
 
             output = StructureOutput(
                 decision=AgentDecision.PASS,
@@ -320,11 +346,11 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                 parts.append(f"  [过渡动画]{a['name']} — {a.get('desc', '')}")
             parts.append("")
 
-        # MG 动态动画（LLM 自动生成）
-        parts.append("### LLM 动态 MG 动画")
-        parts.append("  当需要数据图表、对比图、进度条等动态图形时，使用 mg_dynamic：")
-        parts.append('  [逻辑动画]mg_dynamic:{"description":"动画描述","text":"A|B|结果","style":"tech_dark"}')
-        parts.append("  LLM 将根据 description 自动生成完整的 MG 动画。")
+        # 动态 MG 动画 — **必须**先调用 describe_llm_mg 工具了解能力再使用
+        parts.append("### LLM 动态 MG 动画（先调用 describe_llm_mg 工具）")
+        parts.append("  对于数据图表、对比图、进度条等自定义动态图形，优先使用 mg_dynamic 标记。")
+        parts.append("  **必须**先调用 describe_llm_mg 工具获取最新的标记格式、可用模板和生成能力。")
+        parts.append("  不要凭记忆使用，每次生成前都应调用该工具确认能力。")
         parts.append("")
 
         total = len(text_anims) + len(logic_anims) + len(trans_anims)
@@ -336,6 +362,102 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         )
 
         return "\n".join(parts)
+
+    async def _enrich_scene_animations(self, scenes: list[dict], context: AgentContext) -> list[dict]:
+        """为缺少动画标记的场景调用 LLM 补充动画标记（文字动画/逻辑动画/mg_dynamic）。
+
+        不硬编码动画：由 LLM 根据场景内容与可用动画列表（AnimationCatalog 动态提供）
+        和 llm_mg 插件能力（通过 describe_llm_mg 工具动态获取）选择合适的动画标记。
+        """
+        import re
+        marker_re = re.compile(r"\[(?:文字动画|逻辑动画|过渡动画|动画)\]")
+        scenes_needing = [s for s in scenes if not marker_re.search(s.get("description", "") or "")]
+        if not scenes_needing:
+            return scenes
+
+        logger.info("StructureAgent: %d/%d 场景缺少动画标记，调用 LLM 补充", len(scenes_needing), len(scenes))
+        anim_guide = self._build_anim_guide()
+
+        mg_info = ""
+        try:
+            from clipwright.animation.mg import list_templates
+            templates = list_templates()
+            mg_info = (
+                "\n## llm_mg 动态 MG 动画（内置，始终可用）\n"
+                "llm_mg 是内置的 LLM 驱动动态 MG 动画生成引擎。"
+                "可从自然语言描述动态生成完整的 HTML/CSS 动画，"
+                "适用于数据图表、对比图、进度条等自定义动效。\n\n"
+                "标记格式：[逻辑动画]mg_dynamic:{\"description\":\"动画描述\",\"text\":\"A|B|结果\",\"style\":\"tech_dark\"}\n"
+                "在场景 description 末尾添加此标记，AnimationAgent 会在渲染时自动生成 MG 动画。"
+            )
+            if templates:
+                names = "、".join(t["name"] for t in templates[:8])
+                mg_info += f"\n可用模板（参考）：{names}"
+        except Exception as e:
+            logger.debug("StructureAgent: 获取 llm_mg 模板失败: %s", e)
+
+        scenes_text = "\n".join(
+            f"场景{i}: 标题={s.get('title', '')} | 描述={s.get('description', '')}"
+            for i, s in enumerate(scenes)
+        )
+        system_prompt = (
+            "你是视频动画标记专家。为每个分镜场景的 description 补充一个合适的动画标记，"
+            "供后续 AnimationAgent 创建动画。请根据场景内容从可用动画中选择最合适的，不要硬编码。\n\n"
+            "## 动画选择规则\n"
+            "1. 场景涉及数据/数字/统计/百分比 → 必须使用 mg_dynamic 生成数据可视化\n"
+            "2. 场景涉及对比/A vs B/优劣分析 → 必须使用 mg_dynamic 生成对比图\n"
+            "3. 场景涉及流程/步骤/进度 → 必须使用 mg_dynamic 生成进度条或流程图\n"
+            "4. 场景涉及逻辑关系/因果/分类/层级 → 必须使用 mg_dynamic 生成关系图\n"
+            "5. 场景涉及标题揭示/开场/重要声明 → 使用 mg_dynamic 生成标题特效\n"
+            "6. 只有纯文字强调/关键句/标语 → 才使用 [文字动画]\n"
+            "7. 文字动画和 MG 动画不冲突，同一场景可同时有两者（用途不同）\n\n"
+            + anim_guide + mg_info
+        )
+        user_prompt = (
+            f"以下是 {len(scenes)} 个分镜场景。请为缺少动画标记的场景补充合适的动画标记。\n\n"
+            "分析每个场景的内容（标题、描述），判断属于上述哪种类型：\n"
+            "- 若有数据/对比/流程/逻辑关系 → 用 mg_dynamic\n"
+            "- 若是纯文字强调 → 用 [文字动画]\n\n"
+            "返回 JSON：{\"markers\": [{\"index\": 场景序号(从0开始), \"animation_marker\": \"动画标记字符串\"}]}。\n\n"
+            f"{scenes_text}"
+        )
+        try:
+            result = await self._llm.structured_output(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "markers": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "index": {"type": "integer"},
+                                    "animation_marker": {"type": "string"},
+                                },
+                                "required": ["index", "animation_marker"],
+                            },
+                        },
+                    },
+                    "required": ["markers"],
+                },
+                pipeline_id=context.pipeline_id,
+            )
+            markers = result.get("markers", []) if isinstance(result, dict) else []
+            enriched = 0
+            for m in markers:
+                idx = m.get("index")
+                marker = (m.get("animation_marker") or "").strip()
+                if isinstance(idx, int) and 0 <= idx < len(scenes) and marker:
+                    desc = scenes[idx].get("description", "") or ""
+                    if not marker_re.search(desc):
+                        scenes[idx]["description"] = f"{desc} {marker}".strip()
+                        enriched += 1
+            logger.info("StructureAgent: LLM 补充了 %d 个动画标记", enriched)
+        except Exception as e:
+            logger.warning("StructureAgent: LLM 补充动画标记失败: %s", e)
+        return scenes
 
     def _build_user_prompt(self, mode: str, script: str, audio_dur: float, base: str, anim_guide: str) -> str:
         if mode == "visual" and script:
@@ -404,7 +526,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                 parts.append(f"\n\n## 用户已确认的制作规划书（分镜须与之保持一致）\n{str(markdown)[:3000]}")
         if not parts:
             return ""
-        return "".join(parts) + "\n\n请确保生成的分镜场景与上述已确认的简报、规划书在核心信息、风格方向、结构上保持一致。"
+        return "".join(parts) + "\n\n请确保生成的分镜场景与上述已确认的简报、规划书在核心信息、风格方向、结构上保持一致，同时忠实反映用户提供的原始文稿内容。"
 
     async def _tool_executor(self, tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
         logger.debug("StructureAgent 工具回调: %s → %s", tool_name, json.dumps(tool_input, ensure_ascii=False)[:300])

@@ -115,6 +115,10 @@ class StyleInterpreter:
         )
 
         try:
+            plugin_prompts = persona_context.get("_plugin_prompts", [])
+            if plugin_prompts:
+                prompt += "\n\n## 插件能力扩展\n" + "\n\n".join(plugin_prompts)
+
             from clipwright.services.llm import LLMService
             llm = LLMService()
             resp = await llm.ask(prompt, temperature=0.3)

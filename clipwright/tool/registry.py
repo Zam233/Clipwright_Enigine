@@ -71,6 +71,19 @@ class ToolRegistry:
         """列出当前环境下可用的工具名列表。"""
         return [t.name for t in cls._tools.values() if t.is_available()]
 
+    @classmethod
+    def list_agent_callable(cls) -> list[BaseTool]:
+        """列出所有声明可被 Agent LLM tool-use 调用且当前可用的工具。
+
+        工具需同时满足：
+        - agent_callable = True（插件/内置工具显式声明）
+        - is_available() = True（依赖满足）
+        """
+        return [
+            t for t in cls._tools.values()
+            if getattr(t, "agent_callable", False) and t.is_available()
+        ]
+
     # 工具回退链：主工具失败时尝试的替代工具
     _FALLBACK_CHAINS: dict[str, list[str]] = {
         "video_trim": [],  # 签名不兼容 video_concat，不设 fallback

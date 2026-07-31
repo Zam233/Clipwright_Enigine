@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from plugins.llm_mg.fallback import FallbackEngine
+from clipwright.animation.mg.fallback import FallbackEngine
 
 
 TEMPLATES = [

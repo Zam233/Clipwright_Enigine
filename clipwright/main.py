@@ -121,6 +121,10 @@ async def lifespan(app: FastAPI):
     # 3. 注册内置动画定义（22 个：12 onscreen + 10 transition）
     register_builtin_animations()
 
+    # 3.5 注册内置 llm_mg 引擎的 Agent 提示词（系统核心能力，非插件）
+    from clipwright.animation.mg import register_agent_prompts as _register_mg_prompts
+    _register_mg_prompts()
+
     # 4. 注册内置技能（可组合的高级能力，编排多个 Tool）
     register_builtin_skills()
 

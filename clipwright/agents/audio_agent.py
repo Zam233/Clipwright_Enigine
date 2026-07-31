@@ -40,6 +40,19 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
             voice_model = audio_config.get("voice", "")
             bpm_mode = bool(audio_config.get("bpm_detect", False))
 
+            # 1b. 简报 BGM 需求 → 记录到 BGM 建议（供后续 BGM 检索/混音参考）
+            brief_bgm = ""
+            try:
+                brief = input_data.creative_brief or {}
+                bgm_req = brief.get("bgm_requirement")
+                if isinstance(bgm_req, dict):
+                    bgm_req = " ".join(str(v) for v in bgm_req.values() if v)
+                if bgm_req:
+                    brief_bgm = str(bgm_req)[:300]
+                    notes.append(f"简报 BGM 需求: {brief_bgm}")
+            except Exception:
+                pass
+
             # 2. 确保有音频轨
             audio_track = None
             for t in timeline.tracks:

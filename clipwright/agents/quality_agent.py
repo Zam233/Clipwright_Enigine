@@ -43,6 +43,19 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                 issues=[QualityIssue(severity="error", category="structure", message="时间线为空")],
             )
 
+        # ── 0. 简报特殊要求 → 作为 info 提示（供审阅参考）──
+        try:
+            brief = input_data.creative_brief or {}
+            special = brief.get("special_requirements")
+            if isinstance(special, list) and special:
+                for req in special[:5]:
+                    issues.append(QualityIssue(
+                        severity="info", category="brief_requirement",
+                        message=f"简报要求: {req}",
+                    ))
+        except Exception:
+            pass
+
         # ── 1. 时长校验 ──
         max_duration = constraints.get("max_duration_sec", 900)
         if timeline.duration_sec > max_duration:

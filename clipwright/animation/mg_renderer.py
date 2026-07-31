@@ -235,10 +235,12 @@ const dur=parseFloat(root.dataset.duration);
         """按 animation_id 加载 MG 动画定义。
 
         搜索顺序:
-        1. plugins/llm_mg/templates/ (正式插件路径)
-        2. plugins/mg_animations/animations/ (向后兼容, deprecated)
+        1. clipwright/animation/mg/templates/ (内置 llm_mg 引擎模板)
+        2. plugins/llm_mg/templates/ (向后兼容, deprecated)
+        3. plugins/mg_animations/animations/ (向后兼容, deprecated)
         """
         search_paths = [
+            Path(__file__).resolve().parent / "mg" / "templates",
             Path(__file__).resolve().parent.parent.parent / "plugins" / "llm_mg" / "templates",
             Path(__file__).resolve().parent.parent.parent / "plugins" / "mg_animations" / "animations",
         ]
@@ -259,6 +261,7 @@ const dur=parseFloat(root.dataset.duration);
     def list_animations() -> list[dict]:
         """列出所有可用的 MG 动画。"""
         search_paths = [
+            Path(__file__).resolve().parent / "mg" / "templates",
             Path(__file__).resolve().parent.parent.parent / "plugins" / "llm_mg" / "templates",
             Path(__file__).resolve().parent.parent.parent / "plugins" / "mg_animations" / "animations",
         ]

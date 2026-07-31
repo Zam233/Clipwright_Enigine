@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from plugins.llm_mg.validator import validate_mg_json, repair_mg_json
+from clipwright.animation.mg.validator import validate_mg_json, repair_mg_json
 
 
 class TestValidateMGJson:

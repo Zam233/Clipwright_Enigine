@@ -37,6 +37,10 @@ class BaseTool(ABC):
     description: str = ""
     # 工具依赖的外部命令（如 ffmpeg），用于可用性检测
     dependencies: list[str] = []
+    # 是否可被 Agent 的 LLM tool-use 调用。
+    # 插件注册工具时若希望 Agent 能主动调用（如 ai_image_generate），
+    # 置为 True；纯编排路径工具（如 video_trim）保持默认 False。
+    agent_callable: bool = False
 
     @abstractmethod
     async def execute(self, **kwargs: Any) -> Any:

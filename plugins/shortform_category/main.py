@@ -63,6 +63,14 @@ class ShortformCategoryPlugin(BaseCategoryPlugin):
             "bgm_volume": 0.4,
         }
 
+    def get_mg_style_guidance(self) -> str:
+        return (
+            "竖屏短视频的 MG 动画风格：高密度、强视觉、3 秒抓眼球。"
+            "偏好超大标题冲击、关键词弹跳、进度条、贴纸式标注；"
+            "动效极快（0.1-0.25s），每帧都有变化，"
+            "配色大胆高饱和，字体粗大带描边，适配 9:16 竖屏布局。"
+        )
+
     def get_dimensions(self) -> dict:
         return {"width": 1080, "height": 1920, "aspect": "9:16"}
 

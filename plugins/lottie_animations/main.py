@@ -97,6 +97,16 @@ class LottieAnimationsPlugin(CapabilityPlugin):
         HookRegistry.register(HookPoint.DIAGRAM_RENDERER_EXTEND, _extend_renderer, plugin_id=self.manifest.id)
         local = _load_local_lottie()
         logger.info("[LottieAnimations] %d 个本地 Lottie 动画已注册 (目录: %s/)", len(local), LOTTIE_DIR)
+
+        from clipwright.plugins.prompt_registry import PluginPromptRegistry
+        names = ", ".join(local.keys()) if local else "无本地动画"
+        PluginPromptRegistry.register(
+            "lottie_animations", "structure",
+            f"## Lottie 动画（来自 lottie_animations 插件）\n"
+            f"可使用 [逻辑动画]动画名 标记调用 Lottie 动画。当前可用：{names}。\n"
+            f"Lottie 动画支持复杂矢量动效，适合图标动画、加载动画、角色动画等。",
+            priority=2,
+        )
         if not local:
             logger.info("[LottieAnimations] 提示: 将 .json 文件放入 %s/ 以启用", LOTTIE_DIR)
 

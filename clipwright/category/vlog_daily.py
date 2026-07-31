@@ -41,3 +41,11 @@ class VlogDailyPlugin(BaseCategoryPlugin):
 
     def get_shot_params(self, translated: dict[str, Any]) -> dict[str, Any]:
         return translated.get("shot_params", {})
+
+    def get_mg_style_guidance(self) -> str:
+        return (
+            "Vlog 日常的 MG 动画风格：温暖、轻快、生活化。"
+            "偏好简单的手绘感标注、地点/时间标签、暖色圆角图形；"
+            "动效柔和自然（0.3-0.5s），避免工业感/冷硬科技风，"
+            "文字动画多于数据图表。"
+        )

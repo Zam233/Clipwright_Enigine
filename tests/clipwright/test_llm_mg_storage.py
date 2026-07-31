@@ -5,7 +5,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from plugins.llm_mg.storage import MGStorage
+from clipwright.animation.mg import MGStorage
 
 
 class TestMGStorage:

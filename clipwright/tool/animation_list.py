@@ -17,6 +17,7 @@ class ListAnimationsTool(BaseTool):
     """列出当前可用的动画类型（文字动画 / 逻辑动画 / 过渡动画 / MG 动画）。"""
 
     name = "list_animations"
+    agent_callable = True
     description = (
         "列出所有可用的动画类型和标记格式。"
         "用于在场景 description 中标注 [文字动画]xxx / [逻辑动画]xxx / [过渡动画]xxx 标记时，"

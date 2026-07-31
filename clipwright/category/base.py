@@ -54,3 +54,12 @@ class BaseCategoryPlugin(BasePlugin):
     def validate_clip(self, clip: Clip) -> bool:
         """验证单个片段是否符合本类型的规范。"""
         return True
+
+    def get_mg_style_guidance(self) -> str:
+        """返回本视频类型的 MG 动画风格指引。
+
+        该指引会被注入 LLM MG 生成器（llm_mg）的 system prompt，
+        使生成的动画符合视频类型的视觉气质。
+        基类返回空字符串（不注入）；子类可覆盖，返回自然语言风格描述。
+        """
+        return ""

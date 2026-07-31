@@ -1,7 +1,0 @@
-id: "llm_mg"
-name: "LLM 动效生成"
-version: "1.0.0"
-kind: "capability"
-description: "LLM 驱动的动态 MG 动画生成 — 从自然语言需求生成 HTML/CSS 动画并渲染为视频覆盖层"
-author: "Clipwright Team"
-entry_point: "llm_mg.main"

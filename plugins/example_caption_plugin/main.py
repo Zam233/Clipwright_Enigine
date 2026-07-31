@@ -49,6 +49,7 @@ class ExampleCaptionPlugin(CapabilityPlugin):
 class CaptionSegmentTool(BaseTool):
     """字幕片段切分工具。"""
     name = "caption_segment"
+    agent_callable = True
     description = "将文本切分为带时间戳的字幕片段"
     dependencies = []  # 纯逻辑，无外部依赖
 

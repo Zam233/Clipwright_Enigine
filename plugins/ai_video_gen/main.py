@@ -19,6 +19,7 @@ from clipwright.config import logger
 
 class AIVideoGenTool(BaseTool):
     name = "ai_video_generate"
+    agent_callable = True
     description = "从文字提示生成短视频（5-10 秒），异步执行"
     parameters_schema = {
         "type": "object",

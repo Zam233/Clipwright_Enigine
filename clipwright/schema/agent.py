@@ -72,6 +72,12 @@ class MaterialInput(BaseModel):
         default_factory=dict,
         description="素材库插件的配置（含 enable_visual_llm, visual_llm_frame_count 等）",
     )
+    creative_brief: Optional[dict[str, Any]] = Field(
+        default=None, description="用户审阅确认的创作简报（素材偏好/类型/来源）"
+    )
+    production_plan: Optional[dict[str, Any]] = Field(
+        default=None, description="用户确认的制作规划书"
+    )
 
 
 class MaterialOutput(BaseModel):
@@ -91,6 +97,12 @@ class EditInput(BaseModel):
     context: AgentContext
     script_skeleton: dict[str, Any]
     candidate_clips: list[dict[str, Any]]
+    creative_brief: Optional[dict[str, Any]] = Field(
+        default=None, description="用户审阅确认的创作简报"
+    )
+    production_plan: Optional[dict[str, Any]] = Field(
+        default=None, description="用户确认的制作规划书（时长/结构）"
+    )
 
 
 class EditOutput(BaseModel):
@@ -107,6 +119,12 @@ class AnimationInput(BaseModel):
     context: AgentContext
     timeline: Timeline
     visual_config: dict[str, Any] = Field(default_factory=dict)
+    creative_brief: Optional[dict[str, Any]] = Field(
+        default=None, description="用户审阅确认的创作简报（动画风格/字体/图标）"
+    )
+    production_plan: Optional[dict[str, Any]] = Field(
+        default=None, description="用户确认的制作规划书"
+    )
 
 
 class AnimationOutput(BaseModel):
@@ -127,6 +145,12 @@ class AudioInput(BaseModel):
     context: AgentContext
     timeline: Timeline
     audio_config: dict[str, Any] = Field(default_factory=dict)
+    creative_brief: Optional[dict[str, Any]] = Field(
+        default=None, description="用户审阅确认的创作简报（BGM 需求）"
+    )
+    production_plan: Optional[dict[str, Any]] = Field(
+        default=None, description="用户确认的制作规划书"
+    )
 
 
 class AudioOutput(BaseModel):
@@ -144,6 +168,12 @@ class QualityInput(BaseModel):
     context: AgentContext
     timeline: Timeline
     constraints: dict[str, Any] = Field(default_factory=dict)
+    creative_brief: Optional[dict[str, Any]] = Field(
+        default=None, description="用户审阅确认的创作简报（特殊要求/约束）"
+    )
+    production_plan: Optional[dict[str, Any]] = Field(
+        default=None, description="用户确认的制作规划书"
+    )
 
 
 class QualityIssue(BaseModel):

@@ -43,3 +43,11 @@ class KichikuFastcutPlugin(BaseCategoryPlugin):
 
     def get_shot_params(self, translated: dict[str, Any]) -> dict[str, Any]:
         return translated.get("shot_params", {})
+
+    def get_mg_style_guidance(self) -> str:
+        return (
+            "鬼畜快剪的 MG 动画风格：高能、夸张、冲击力强。"
+            "偏好弹幕式大字、故障抖动、快速缩放、震动效果、像素风；"
+            "动效极快（0.1-0.3s 内完成），高频闪烁，"
+            "颜色高饱和（大红/亮黄/电紫），可以打破常规排版。"
+        )
