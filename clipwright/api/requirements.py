@@ -176,6 +176,11 @@ async def proceed_to_pipeline(req: ProceedRequest) -> dict:
         extra_params={
             "script_text": user_inputs.get("script_text", ""),
             "audio_duration_sec": user_inputs.get("audio_duration_sec", 0),
+            "audio_path": user_inputs.get("audio_path", ""),
+            "video_mode": user_inputs.get("video_mode", "voiceover"),
+            "split_mode": user_inputs.get("split_mode", "period"),
+            "auto_dub": user_inputs.get("auto_dub", True),
+            "voice_id": user_inputs.get("voice_id", ""),
             "dub_segments": user_inputs.get("dub_segments", []),
             "creative_brief": session.get("creative_brief"),
             "production_plan": session.get("production_plan"),

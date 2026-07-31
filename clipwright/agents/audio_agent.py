@@ -56,6 +56,31 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                 )
                 timeline.tracks.append(audio_track)
 
+            # 2b. 若用户上传了配音文件（audio_path），将其作为音频 clip 铺满整个配音时长，
+            #     使时间轴总长锚定到配音实际长度（而非脚本估算值）。
+            audio_path = context.extra_params.get("audio_path", "")
+            audio_duration = float(context.extra_params.get("audio_duration_sec", 0) or 0)
+            if audio_path and audio_duration > 0:
+                has_dub = any(
+                    getattr(c, "metadata", {}).get("dubbing") for c in audio_track.clips
+                )
+                if not has_dub:
+                    dub_clip = Clip(
+                        id=f"dub_{uuid.uuid4().hex[:8]}",
+                        kind=ClipKind.AUDIO,
+                        asset_id=audio_path,
+                        track_id=audio_track.id,
+                        start_sec=0.0,
+                        duration_sec=audio_duration,
+                        volume=1.0,
+                        eq_preset="voice",
+                        metadata={"dubbing": True, "source": "upload"},
+                    )
+                    audio_track.clips.insert(0, dub_clip)
+                    if timeline.duration_sec < audio_duration:
+                        timeline.duration_sec = audio_duration
+                    notes.append(f"已导入配音文件: {audio_duration:.0f}s")
+
             # 3. 如果有 BPM 检测工具且配置启用，分析音频节奏
             bpm = 120
             if bpm_mode and ToolRegistry.get("bpm_detect") is not None:
