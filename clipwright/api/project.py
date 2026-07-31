@@ -39,6 +39,7 @@ class ProjectCreateRequest(BaseModel):
     plugin_id: str | None = None
     folder: str = ""
     tags: list[str] | None = None
+    agent_state: Any = None
 
 
 class ProjectUpdateRequest(BaseModel):
@@ -48,6 +49,7 @@ class ProjectUpdateRequest(BaseModel):
     plugin_id: str | None = None
     folder: str | None = None
     tags: list[str] | None = None
+    agent_state: Any = None  # 需求对话/简报/规划书/执行日志，随项目持久化
 
 
 class RenameRequest(BaseModel):
