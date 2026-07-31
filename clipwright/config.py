@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     render_encoder: str = "libx264"  # libx264 / h264_nvenc / hevc_nvenc / hevc_amf
     render_preset: str = "medium"    # ultrafast/fast/medium/slow
     render_trim_cache: bool = True
+    # ffmpeg/ffprobe 可执行文件路径（留空则自动探测 PATH 及常见安装位置，如 WinGet）
+    ffmpeg_path: str = ""
+    ffprobe_path: str = ""
 
     # --- 视觉识别模型 ---
     vision_provider: Literal["llm", "transformers", "none"] = "transformers"

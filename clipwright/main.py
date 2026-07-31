@@ -15,11 +15,35 @@ from clipwright.config import settings, logger
 from clipwright.services.async_util import cached_probe
 
 
+def _ensure_ffmpeg_on_path() -> None:
+    """若 ffmpeg 不在 PATH 上但可探测到（如 WinGet 安装），将其目录加入 PATH。
+
+    这样所有以 ``["ffmpeg", ...]`` / ``["ffprobe", ...]`` 形式调用 ffmpeg 的代码
+    （渲染服务、各处理工具等）都能找到可执行文件，无需逐一修改调用点。
+    """
+    import os
+    try:
+        from clipwright.tool.video import resolve_ffmpeg
+        path = resolve_ffmpeg()
+        if path and os.path.isabs(path) and os.path.exists(path):
+            bin_dir = os.path.dirname(path)
+            cur = os.environ.get("PATH", "")
+            if bin_dir not in cur.split(os.pathsep):
+                os.environ["PATH"] = bin_dir + os.pathsep + cur
+                logger.info("已将 ffmpeg 目录加入 PATH: %s", bin_dir)
+    except Exception as e:
+        logger.debug("ffmpeg PATH 注入失败: %s", e)
+
+
+_ensure_ffmpeg_on_path()
+
+
 def _probe_ffmpeg() -> bool:
     """同步 ffmpeg 探测（后台线程执行，不进事件循环线程）。"""
     try:
         import subprocess
-        r = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=5)
+        from clipwright.tool.video import resolve_ffmpeg
+        r = subprocess.run([resolve_ffmpeg(), "-version"], capture_output=True, text=True, timeout=5)
         return r.returncode == 0
     except Exception:
         return False

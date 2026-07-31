@@ -25,6 +25,22 @@ from clipwright.services.trace import add_event
 from clipwright.tool.registry import ToolRegistry
 
 
+# 素材裁剪缓存：同一 (源路径, 起点, 时长) 的裁剪结果复用，避免对同一网络素材重复下载/裁剪。
+# 有界（最多 _TRIM_CACHE_MAX 条），超出时清空重建。
+_TRIM_CACHE: dict[tuple, str] = {}
+_TRIM_CACHE_MAX = 512
+
+
+def _trim_cache_get(source_path: str, start_sec: float, duration_sec: float) -> str | None:
+    return _TRIM_CACHE.get((source_path, round(start_sec, 2), round(duration_sec, 2)))
+
+
+def _trim_cache_set(source_path: str, start_sec: float, duration_sec: float, output_path: str) -> None:
+    if len(_TRIM_CACHE) >= _TRIM_CACHE_MAX:
+        _TRIM_CACHE.clear()
+    _TRIM_CACHE[(source_path, round(start_sec, 2), round(duration_sec, 2))] = output_path
+
+
 class EditAgent(BaseAgent[EditInput, EditOutput]):
     """剪辑 Agent：从脚本骨架和素材生成粗剪时间线。"""
 
@@ -134,22 +150,28 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                         ad = asset.get("duration_sec", seg_dur)
                         if ad and ad < seg_dur:
                             seg_dur = ad
-                        add_event(context.pipeline_id, "edit", "tool",
-                                  f"video_trim({source_path.split('/')[-1][:30]}, dur={seg_dur:.1f}s)")
-                        trim_result = await ToolRegistry.execute(
-                            "video_trim",
-                            input_path=source_path,
-                            start_sec=0,
-                            duration_sec=seg_dur,
-                        )
-                        if trim_result.status == "success" and trim_result.output_path:
-                            processed_path = trim_result.output_path
+                        # 命中裁剪缓存则复用，避免对同一网络素材重复下载/裁剪
+                        cached = _trim_cache_get(source_path, 0, seg_dur)
+                        if cached:
+                            processed_path = cached
                         else:
-                            # 素材不可用 → 加入失败集，重试下一个
-                            logger.warning("EditAgent: 素材不可用 %s, 尝试下一个",
-                                           source_path.split('/')[-1][:30])
-                            failed_assets.add(source_path)
-                            continue
+                            add_event(context.pipeline_id, "edit", "tool",
+                                      f"video_trim({source_path.split('/')[-1][:30]}, dur={seg_dur:.1f}s)")
+                            trim_result = await ToolRegistry.execute(
+                                "video_trim",
+                                input_path=source_path,
+                                start_sec=0,
+                                duration_sec=seg_dur,
+                            )
+                            if trim_result.status == "success" and trim_result.output_path:
+                                processed_path = trim_result.output_path
+                                _trim_cache_set(source_path, 0, seg_dur, processed_path)
+                            else:
+                                # 素材不可用 → 加入失败集，重试下一个
+                                logger.warning("EditAgent: 素材不可用 %s, 尝试下一个",
+                                               source_path.split('/')[-1][:30])
+                                failed_assets.add(source_path)
+                                continue
                     else:
                         # 无可用素材 → 文字占位视频填满剩余时长
                         add_event(context.pipeline_id, "edit", "tool",

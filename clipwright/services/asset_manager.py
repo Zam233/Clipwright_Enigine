@@ -185,10 +185,11 @@ class AssetManager:
     @staticmethod
     async def _probe(path: Path) -> dict[str, Any]:
         """用 ffprobe 检测媒体信息。"""
+        from clipwright.tool.video import resolve_ffprobe
         info: dict[str, Any] = {"duration": 0, "width": 0, "height": 0}
         try:
             result = subprocess.run(
-                ["ffprobe", "-v", "error", "-print_format", "json",
+                [resolve_ffprobe(), "-v", "error", "-print_format", "json",
                  "-show_format", "-show_streams", str(path)],
                 capture_output=True, text=True, timeout=30,
             )
@@ -207,16 +208,18 @@ class AssetManager:
     @staticmethod
     def _generate_thumbnail(src: str, thumb_path: str, media_type: str) -> None:
         """生成缩略图。"""
+        from clipwright.tool.video import resolve_ffmpeg
+        ffmpeg = resolve_ffmpeg()
         try:
             if media_type == "video":
                 subprocess.run(
-                    ["ffmpeg", "-y", "-i", src, "-ss", "0.5", "-vframes", "1",
+                    [ffmpeg, "-y", "-i", src, "-ss", "0.5", "-vframes", "1",
                      "-vf", "scale=320:-1", thumb_path],
                     capture_output=True, text=True, timeout=30,
                 )
             elif media_type == "image":
                 subprocess.run(
-                    ["ffmpeg", "-y", "-i", src, "-vf", "scale=320:-1", thumb_path],
+                    [ffmpeg, "-y", "-i", src, "-vf", "scale=320:-1", thumb_path],
                     capture_output=True, text=True, timeout=30,
                 )
         except Exception as e:

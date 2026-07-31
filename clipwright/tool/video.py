@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -43,7 +44,7 @@ async def _ffmpeg(*args: str, timeout: int = 300) -> subprocess.CompletedProcess
     async 上下文（事件循环线程）里自动 offload 到线程，避免冻住整个服务；
     sync 上下文（worker 线程等）则直接同步执行。调用方需 ``await``。
     """
-    cmd = ["ffmpeg", "-y", *args]
+    cmd = [resolve_ffmpeg(), "-y", *args]
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -53,10 +54,49 @@ async def _ffmpeg(*args: str, timeout: int = 300) -> subprocess.CompletedProcess
     )
 
 
-def _check_ffmpeg() -> Optional[str]:
-    """检测 ffmpeg 是否可用。"""
+def _resolve_bin(name: str, configured: str) -> str:
+    """解析可执行文件路径：配置项 → PATH → 常见安装位置（如 WinGet）。"""
+    if configured:
+        return configured
+    found = shutil.which(name)
+    if found:
+        return found
     if os.name == "nt":
-        return "nt"
+        # WinGet 默认安装位置（Gyan.FFmpeg）
+        try:
+            local = os.environ.get("LOCALAPPDATA", "")
+            if local:
+                import glob as _glob
+                pattern = os.path.join(local, "Microsoft", "WinGet", "Packages",
+                                       "Gyan.FFmpeg_*", "ffmpeg-*-full_build", "bin", f"{name}.exe")
+                matches = _glob.glob(pattern)
+                if matches:
+                    return matches[0]
+        except Exception:
+            pass
+    return name  # 退回名称，依赖 PATH（找不到时 subprocess 会抛 FileNotFoundError）
+
+
+def resolve_ffmpeg() -> str:
+    from clipwright.config import settings
+    return _resolve_bin("ffmpeg", settings.ffmpeg_path)
+
+
+def resolve_ffprobe() -> str:
+    from clipwright.config import settings
+    return _resolve_bin("ffprobe", settings.ffprobe_path)
+
+
+def _check_ffmpeg() -> Optional[str]:
+    """检测 ffmpeg 是否可用（解析到真实路径则可用）。"""
+    try:
+        path = resolve_ffmpeg()
+        if path and (os.path.isabs(path) and os.path.exists(path)):
+            return path
+        if shutil.which(path):
+            return path
+    except Exception:
+        pass
     return None
 
 

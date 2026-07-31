@@ -169,6 +169,9 @@ async def proceed_to_pipeline(req: ProceedRequest) -> dict:
     create_trace(pipeline_id)
 
     user_inputs = session.get("user_inputs", {})
+    # 长视频管线耗时随配音时长增长（逐场景素材处理），动态调高超时避免误超时
+    _audio_dur = float(user_inputs.get("audio_duration_sec", 0) or 0)
+    _pipeline_timeout = int(max(900, _audio_dur * 4))
     pipeline_req = PipelineRequest(
         persona_id=req.persona_id or user_inputs.get("persona_id", "default"),
         category_plugin_id=req.category_plugin_id or user_inputs.get("category_plugin_id", "knowledge_longform"),
@@ -184,6 +187,7 @@ async def proceed_to_pipeline(req: ProceedRequest) -> dict:
             "dub_segments": user_inputs.get("dub_segments", []),
             "creative_brief": session.get("creative_brief"),
             "production_plan": session.get("production_plan"),
+            "pipeline_timeout_sec": _pipeline_timeout,
             **req.extra_params,
         },
         use_v2=True,
