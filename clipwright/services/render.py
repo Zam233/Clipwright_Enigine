@@ -338,14 +338,22 @@ class RenderService:
     def _extract_text_overlay(clip, track_idx, existing):
         meta = clip.metadata or {}
         style = meta.get("style", {})
+        category = meta.get("category", "")
         pos = meta.get("position", style.get("position", {1: "bottom", 2: "top", 3: "center"}.get(track_idx, "bottom")))
-        y_off = min(len([t for t in existing if t.get("_track_idx") == track_idx]) * 35, 500)
+        # 字幕（caption）：offset_y 强制 0，避免长视频多条字幕按 35px/行堆叠被推出屏幕；
+        # 无显式 style 时注入默认描边（borderw=2），保证白字在亮背景上仍可读。
+        if category == "caption":
+            offset_y = 0
+            if not style:
+                style = {"stroke_width": 2, "stroke_color": "#000000"}
+        else:
+            offset_y = min(len([t for t in existing if t.get("_track_idx") == track_idx]) * 35, 500)
         return dict(start_sec=clip.start_sec, duration_sec=clip.duration_sec,
                     text=clip.text or "", font_size=clip.font_size or 48,
                     font_color=clip.font_color or "#ffffff", font=clip.font or "",
-                    position=pos, offset_y=y_off, style=style,
+                    position=pos, offset_y=offset_y, style=style,
                     anim_type=meta.get("anim_type", ""), renderer=meta.get("renderer", "drawtext"),
-                    category=meta.get("category", ""), _track_idx=track_idx, keyframes=clip.keyframes or [])
+                    category=category, _track_idx=track_idx, keyframes=clip.keyframes or [])
 
     @staticmethod
     def _extract_animation_overlay(clip, track_idx=0):
