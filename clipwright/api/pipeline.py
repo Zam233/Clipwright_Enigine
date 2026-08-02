@@ -115,8 +115,11 @@ async def stream_pipeline_trace(pipeline_id: str, request: Request):
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             last_time = max(last_time, event["time"])
 
-        # 然后持续轮询新事件（最多 600 秒；客户端断开即退出）
-        for _ in range(1200):  # 1200 * 0.5s = 600s 超时
+        # 持续轮询新事件直到管线终态（done/error）或达到长上限（2 小时）。
+        # 管线动画阶段可能长达 40-60 分钟，固定 600s 会让前端 SSE 中途断流而收不到终态。
+        max_wall = 7200.0  # 秒
+        start_wall = time.time()
+        while time.time() - start_wall < max_wall:
             if await request.is_disconnected():
                 return
             await asyncio.sleep(0.5)

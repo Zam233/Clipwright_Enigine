@@ -28,6 +28,17 @@ from clipwright.config import settings
 from clipwright.config import logger
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 
+# 模块级客户端缓存：多个 LLMService 实例（各 Agent/Service 各自 new）共享同一
+# IsoBase 客户端实例，避免每个实例重复构建连接/初始化（日志里反复出现
+# "OpenAIChat initialized" 即此问题）。key = (provider, base_url, model, api_key)。
+_client_cache: dict[tuple[str, Optional[str], Optional[str], Optional[str]], Any] = {}
+
+
+def _client_cache_key(
+    provider: str, base_url: Optional[str], model: Optional[str], api_key: Optional[str],
+) -> tuple[str, Optional[str], Optional[str], Optional[str]]:
+    return (provider, base_url, model, api_key)
+
 
 class LLMService:
     """基于 IsoBase 的 LLM 服务，支持文本生成和工具调用。"""
@@ -78,8 +89,14 @@ class LLMService:
             provider = self.provider
         instructions = settings.llm_instructions
 
+        # 命中共享缓存：同一 (provider, base_url, model, api_key) 只构建一次客户端
+        cache_key = _client_cache_key(provider, base_url, model, api_key)
+        cached = _client_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         if provider == "anthropic":
-            return AnthropicMessages(
+            client: Any = AnthropicMessages(
                 api_key=api_key,
                 base_url=base_url,
                 default_model=model,
@@ -88,7 +105,7 @@ class LLMService:
                 max_tokens=8192,
             )
         elif provider in ("openai", "ollama"):
-            return OpenAIChat(
+            client = OpenAIChat(
                 api_key=api_key,
                 base_url=base_url,
                 default_model=model,
@@ -98,6 +115,9 @@ class LLMService:
             )
         else:
             raise ValueError(f"Unsupported LLM provider: {provider}")
+
+        _client_cache[cache_key] = client
+        return client
 
     # ── 基础接口 ──
 
@@ -411,18 +431,40 @@ class LLMService:
         u = base_url or settings.llm_base_url or None
         instructions = settings.llm_instructions
 
+        # 同样走共享缓存：视觉等独立配置的客户端也复用（同一 key 只建一次）
+        cache_key = _client_cache_key(p, u, m, k)
+        cached = _client_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         if p == "anthropic":
-            return AnthropicMessages(
+            client: Any = AnthropicMessages(
                 api_key=k, base_url=u, default_model=m,
                 instructions=instructions, conversation_mode=False, max_tokens=8192,
             )
         elif p in ("openai", "ollama"):
-            return OpenAIChat(
+            client = OpenAIChat(
                 api_key=k, base_url=u, default_model=m,
                 instructions=instructions, conversation_mode=False, max_tokens=8192,
             )
-        raise ValueError(f"Unsupported LLM provider: {p}")
+        else:
+            raise ValueError(f"Unsupported LLM provider: {p}")
+        _client_cache[cache_key] = client
+        return client
 
     def reset(self) -> None:
         """重置客户端（重新初始化时使用）。"""
         self._client = None
+        self._flash_client = None
+        # 清理本实例对应的共享缓存项，保证配置热更新后下次构建新客户端
+        try:
+            for provider, base_url, model, api_key in (
+                (self.provider, settings.llm_base_url or None, settings.llm_model, settings.llm_api_key or None),
+                (settings.llm_flash_provider or self.provider,
+                 settings.llm_flash_base_url or settings.llm_base_url or None,
+                 settings.llm_flash_model or settings.llm_model,
+                 settings.llm_flash_api_key or settings.llm_api_key or None),
+            ):
+                _client_cache.pop(_client_cache_key(provider, base_url, model, api_key), None)
+        except Exception:
+            pass

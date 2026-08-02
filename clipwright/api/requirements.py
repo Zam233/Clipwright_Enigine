@@ -60,12 +60,23 @@ async def init_session(req: InitRequest) -> dict:
 
 @router.post("/chat")
 async def chat_message(req: ChatRequest) -> dict:
-    """发送对话消息（非流式）。"""
+    """发送对话消息（非流式）。
+
+    整体用 wait_for 兜底：即使底层 LLM/线程意外卡死（asyncio.to_thread 的线程
+    无法被取消），也保证在时限内返回一个可重试的错误响应，而不是让请求永久挂起。
+    """
+    CHAT_HARD_TIMEOUT = 660  # 秒：简报 180s + 规划书 240s + 翻译/重试余量
     try:
-        result = await _service.chat(req.session_id, req.message)
+        result = await asyncio.wait_for(
+            _service.chat(req.session_id, req.message),
+            timeout=CHAT_HARD_TIMEOUT,
+        )
         if "error" in result:
             raise HTTPException(status_code=404, detail=result["error"])
         return result
+    except asyncio.TimeoutError:
+        logger.error("需求对话处理超时（>%ss），会话 %s 可能卡死，返回可重试错误", CHAT_HARD_TIMEOUT, req.session_id)
+        raise HTTPException(status_code=504, detail="处理超时，请稍后重试")
     except HTTPException:
         raise
     except Exception as e:
@@ -169,9 +180,11 @@ async def proceed_to_pipeline(req: ProceedRequest) -> dict:
     create_trace(pipeline_id)
 
     user_inputs = session.get("user_inputs", {})
-    # 长视频管线耗时随配音时长增长（逐场景素材处理），动态调高超时避免误超时
+    # 长视频管线耗时随配音时长增长（逐场景素材处理），动态调高超时避免误超时。
+    # 真正的时间大头是逐片段动画（LLM MG 每个 2-4 分钟），因此还需按场景数叠加余量。
     _audio_dur = float(user_inputs.get("audio_duration_sec", 0) or 0)
-    _pipeline_timeout = int(max(900, _audio_dur * 4))
+    _scene_count = int((plan_data or {}).get("scene_count", 0) or 0)
+    _pipeline_timeout = int(max(1800, _audio_dur * 4, _scene_count * 240))
     pipeline_req = PipelineRequest(
         persona_id=req.persona_id or user_inputs.get("persona_id", "default"),
         category_plugin_id=req.category_plugin_id or user_inputs.get("category_plugin_id", "knowledge_longform"),

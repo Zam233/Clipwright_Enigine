@@ -38,7 +38,9 @@ from clipwright.services.trace import add_event, create_trace, format_tool_call
 from clipwright.tool.registry import ToolRegistry
 
 # ── 默认超时 ──────────────────────────────────────
-DEFAULT_PIPELINE_TIMEOUT_SEC = 900  # 15 分钟
+# 动画阶段逐片段 LLM MG 生成（每个 2-4 分钟）是主要耗时来源；
+# 默认给 30 分钟，前端/需求确认路径会按音频时长与场景数再叠加。
+DEFAULT_PIPELINE_TIMEOUT_SEC = 1800  # 30 分钟
 
 
 class AgentDAG:
@@ -366,6 +368,14 @@ class PipelineOrchestratorV2:
             if bus.get_artifact("timeline")
             else None
         )
+
+        # 与 V1 对齐：把最终时间线快照写入 trace，前端 SSE 据此进入审阅视图，
+        # 不依赖 result 接口的轮询时机
+        _ft = state.shared_data.get("final_timeline")
+        if _ft:
+            add_event(pid, "system", "timeline_snapshot",
+                      f"最终时间线: {len(_ft.get('tracks', []) or [])} 轨",
+                      _ft)
 
         if state.status != PipelineStatus.FAILED:
             state.status = PipelineStatus.COMPLETED
