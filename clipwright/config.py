@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     port: int = 8000
     debug: bool = False
 
+    # --- Pipeline 并行度（稳妥有界并发）---
+    # 动画阶段逐片段 LLM MG 生成的并发路数；默认 3。设置 1 即回到串行。
+    pipeline_concurrency: int = 3
+    # 素材阶段场景级并行路数；默认 4。设置 1 即回到逐场景串行。
+    material_concurrency: int = 4
+
     # --- 安全 ---
     # API 令牌：设置后所有 /api/* 请求需携带 Authorization: Bearer <token>
     # 留空为开发模式（直接放行，启动时打印警告）
@@ -80,6 +86,16 @@ class Settings(BaseSettings):
     # ffmpeg/ffprobe 可执行文件路径（留空则自动探测 PATH 及常见安装位置，如 WinGet）
     ffmpeg_path: str = ""
     ffprobe_path: str = ""
+    # 远程渲染服务地址（留空表示仅本地渲染）
+    remote_render_url: str = ""
+    # 远程渲染服务鉴权令牌
+    remote_render_token: str = ""
+    # 远程渲染不可用时是否回退本地渲染
+    remote_render_fallback: bool = True
+    # 远程渲染轮询间隔（秒）
+    remote_render_poll_interval: float = 1.5
+    # 远程渲染超时（秒）
+    remote_render_timeout: int = 1800
 
     # --- 视觉识别模型 ---
     vision_provider: Literal["llm", "transformers", "none"] = "transformers"
