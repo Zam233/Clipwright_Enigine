@@ -1,9 +1,10 @@
 """远程渲染 Worker API — 独立部署（默认 0.0.0.0:8100）。
 
 提供：全局令牌鉴权 + 健康检查 + 渲染素材（asset）存储接口（上传 / 去重 /
-存在性探测 / 下载）。渲染 / ffmpeg 逻辑由后续 todo 负责，此处刻意保持零渲染
-实现。后台任务统一走 ``clipwright.services.async_util.spawn_background`` /
-``asyncio.to_thread``，绝不在事件循环线程里做同步阻塞调用。
+存在性探测 / 下载）+ 远程渲染任务（jobs）接口（提交 / 状态 / 下载产物）。
+渲染 / ffmpeg 逻辑由 ``clipwright.worker.render_runner.run_job`` 复用主应用
+RenderService 完成。后台任务统一走 ``clipwright.services.async_util.spawn_background``
+/ ``asyncio.to_thread``，绝不在事件循环线程里做同步阻塞调用。
 """
 
 from __future__ import annotations
@@ -13,13 +14,17 @@ import hmac
 import os
 import re
 import shutil
+import uuid
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from clipwright.config import logger
+from clipwright.services.async_util import spawn_background
+from clipwright.worker.render_runner import run_job
+from clipwright.worker.store import store
 
 
 def _resolve_worker_token() -> str:
@@ -210,6 +215,83 @@ async def get_asset(asset_hash: str) -> FileResponse:
     if path is None:
         raise HTTPException(status_code=404, detail="Asset not found")
     return FileResponse(path)
+
+
+# ---- 远程渲染任务（jobs）-----------------------------------------------
+
+def _parse_job_request(body: Any) -> tuple[dict[str, Any], dict[str, Any], dict[str, str]]:
+    """校验并拆解 jobs 请求体 → ``(timeline, params, asset_refs)``。
+
+    - ``timeline`` 必须是含 ``tracks`` 列表的对象；
+    - ``params`` / ``asset_refs``（可选）必须是对象；
+    - ``asset_refs`` 的值必须是 ``asset://`` 开头的字符串。
+    任一不合法即抛 400。
+    """
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="请求体必须是 JSON 对象")
+    timeline = body.get("timeline")
+    if not isinstance(timeline, dict) or not isinstance(timeline.get("tracks"), list):
+        raise HTTPException(status_code=400, detail="timeline 必须是包含 tracks 列表的对象")
+    params = body.get("params") or {}
+    if not isinstance(params, dict):
+        raise HTTPException(status_code=400, detail="params 必须是对象")
+    asset_refs = body.get("asset_refs") or {}
+    if not isinstance(asset_refs, dict):
+        raise HTTPException(status_code=400, detail="asset_refs 必须是对象")
+    for aid, uri in asset_refs.items():
+        if not isinstance(uri, str) or not uri.startswith("asset://"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"asset_refs[{aid!r}] 必须是 asset:// 开头的字符串",
+            )
+    return timeline, params, asset_refs
+
+
+@router.post("/jobs", status_code=202)
+async def create_render_job(body: dict) -> dict:
+    """提交远程渲染任务：校验后创建 job，立即返回 ``{"job_id": ...}``（202）。
+
+    后台协程执行 :func:`clipwright.worker.render_runner.run_job`；run_job 内部已
+    负责写 failed/error，这里再包一层 try/except 兜底，确保任何未预期异常都不会
+    留下永远卡在 queued/rendering 的僵死 job。
+    """
+    timeline, params, asset_refs = _parse_job_request(body)
+    job_id = f"job_{uuid.uuid4().hex[:12]}"
+    store.create_job(job_id)
+    logger.info("Worker job 提交: %s (tracks=%d)", job_id, len(timeline.get("tracks", [])))
+
+    async def _run() -> None:
+        try:
+            await run_job(job_id, timeline, params, asset_refs, store)
+        except Exception as e:
+            logger.exception("Worker job 执行异常: %s", job_id)
+            store.update_job(job_id, status="failed", error=str(e))
+
+    spawn_background(_run(), name=f"worker-job-{job_id}")
+    return {"job_id": job_id}
+
+
+@router.get("/jobs/{job_id}")
+async def get_job_status(job_id: str) -> dict:
+    """查询任务状态（status/progress/phase/detail/error/output_path）；不存在 404。"""
+    job = store.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    return {"job_id": job_id, **job}
+
+
+@router.get("/jobs/{job_id}/download")
+async def download_job_output(job_id: str) -> FileResponse:
+    """下载已完成的渲染产物 MP4；任务未完成返回 409，任务不存在返回 404。"""
+    job = store.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    if job.get("status") != "completed":
+        raise HTTPException(status_code=409, detail="job not completed")
+    output_path = job.get("output_path") or ""
+    if not output_path or not Path(output_path).is_file():
+        raise HTTPException(status_code=404, detail="output file not found")
+    return FileResponse(output_path, media_type="video/mp4", filename=f"{job_id}.mp4")
 
 
 app = FastAPI(
