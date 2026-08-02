@@ -183,7 +183,14 @@ class VisionLLMTool(BaseTool):
             }
             tag_similarity = len(tags & keywords) / max(len(tags | keywords), 1)
 
-            scene_words = set(str(scene_context.get("description", "")).lower().split())
+            # 描述词表 = 场景描述 + 场景级旁白 + 素材意图（对旁白/意图词敏感）
+            scene_words = set(
+                " ".join(filter(None, [
+                    str(scene_context.get("description", "")),
+                    str(scene_context.get("narration_text", "")),
+                    str(scene_context.get("material_intent", "")),
+                ])).lower().split()
+            )
             aggregated_description = description.lower()
             description_overlap = sum(
                 word in aggregated_description for word in scene_words
