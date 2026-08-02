@@ -188,6 +188,7 @@ class PipelineOrchestrator:
                     or audio_cfg.get("voice")
                     or agent_context.extra_params.get("voice_id", ""),
                     "auto_dub": agent_context.extra_params.get("auto_dub", True),
+                    "subtitle_enabled": True,
                 }
                 step5 = await self._run_agent_step(
                     state, "audio",

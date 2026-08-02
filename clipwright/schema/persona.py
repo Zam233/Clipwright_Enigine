@@ -13,7 +13,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 
 
 # ──────────────────────────────────────────────
@@ -73,6 +73,7 @@ class AudioConfig(BaseModel):
     )
     voice_model: Optional[str] = Field(default=None)
     target_loudness_lufs: float = Field(default=-16, ge=-30, le=-10)
+    subtitle_enabled: StrictBool = Field(default=True, description="渲染时是否烧录旁白字幕")
 
 
 class ConstraintsConfig(BaseModel):
