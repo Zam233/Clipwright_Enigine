@@ -38,6 +38,9 @@ def _probe_hyperframes() -> bool:
 # 进程级缓存探针：npx 冷启动慢，缓存 10 分钟，后台线程刷新，await 永不阻塞事件循环。
 _hf_available = cached_probe("hyperframes", _probe_hyperframes, ttl=600.0, default=False)
 
+# await_available() 的轮询间隔：npx 冷启动可能 ~90s，2s 轮询足够及时且不喧宾夺主。
+_AWAIT_POLL_INTERVAL = 2.0
+
 
 class HyperframesRenderer:
     """使用 Hyperframes (HTML→MOV) 渲染文字覆盖层。"""
@@ -73,6 +76,24 @@ class HyperframesRenderer:
     async def ais_available() -> bool:
         """async 版可用检查：命中缓存立即返回，失效时后台刷新，永不阻塞事件循环。"""
         return bool(await _hf_available())
+
+    @staticmethod
+    async def await_available(timeout: float = 120.0) -> bool:
+        """轮询等待 Hyperframes 可用（冷启动预热用），超时返回 False。
+
+        每 ``_AWAIT_POLL_INTERVAL``（默认 2s）调用一次缓存的探针（``_hf_available``），
+        后台线程负责跑真实 npx 探测，事件循环只 await，绝不阻塞。一旦探针翻转为
+        True 立即返回 True；超过 ``timeout`` 秒仍未就绪返回 False。
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            if bool(await _hf_available()):
+                return True
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(_AWAIT_POLL_INTERVAL, remaining))
 
     @staticmethod
     async def render_overlays(
