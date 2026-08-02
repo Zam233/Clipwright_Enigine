@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import re
 from typing import Any
 
 from clipwright.agents.base import BaseAgent
-from clipwright.config import logger
+from clipwright.config import logger, settings
 from clipwright.material import MaterialRegistry
 from clipwright.schema.agent import (
     AgentContext,
@@ -39,6 +41,68 @@ class _CachedResult:
         self.asset = self._Asset(d)
         self.source_name = d.get("source_name", "")
         self.score = d.get("score", 0.0)
+
+
+async def _llm_search_queries_batch(
+    scenes: list[dict[str, Any]],
+    pipeline_id: str = "",
+    persona_style: str = "",
+    brief_hint: str = "",
+) -> list[list[str]] | None:
+    """一次 LLM 调用为全部场景生成搜索词（省 N-1 次 LLM 往返）。
+
+    返回顺序与 scenes 对齐的查询词列表；失败/解析不出时返回 None，
+    由调用方回退到逐场景生成。
+    """
+    from clipwright.services.llm import LLMService
+
+    style_hint = f"\n- 优先匹配风格: {persona_style}" if persona_style else ""
+    brief_hint_text = f"\n- 简报素材要求: {brief_hint}" if brief_hint else ""
+
+    scene_lines = []
+    for i, scene in enumerate(scenes):
+        title = scene.get("title", "")
+        keywords = ", ".join(scene.get("keywords", []) or [])
+        desc = (scene.get("description", "") or "")[:120]
+        scene_lines.append(f"[{i + 1}] 标题: {title} | 关键词: {keywords} | 描述: {desc}")
+
+    prompt = (
+        "你是一个视频素材搜索关键词生成器。为以下每个场景分别生成 3-5 个具体、"
+        "可搜索的视觉关键词，用于在视频素材库搜索 B-roll 画面。\n\n"
+        + "\n".join(scene_lines) +
+        "\n\n要求：\n"
+        "- 每个关键词必须是**具体的视觉画面**（如'城市夜景''键盘打字'），不能是抽象概念\n"
+        "- 优先推荐实拍风格画面\n"
+        "- 按场景编号输出，每行格式：\"场景N: 关键词1/关键词2/关键词3\"\n"
+        "- 只输出关键词行，不要额外说明"
+        f"{style_hint}{brief_hint_text}"
+    )
+
+    llm = LLMService()
+    try:
+        resp = await asyncio.wait_for(llm.ask(prompt, use_flash=True), timeout=45)
+        if not (resp.success and resp.content):
+            return None
+        result: list[list[str]] = [[] for _ in scenes]
+        for line in resp.content.strip().splitlines():
+            m = re.match(r"^\s*场景?\s*(\d+)\s*[:：]\s*(.+)$", line)
+            if not m:
+                continue
+            idx = int(m.group(1)) - 1
+            if 0 <= idx < len(scenes):
+                queries = [q.strip() for q in re.split(r"[、,，/|]", m.group(2)) if q.strip()][:5]
+                if queries:
+                    result[idx] = queries
+        if any(result):
+            if pipeline_id:
+                add_event(pipeline_id, "material", "llm", f"LLM 搜索词批量生成: {len(scenes)} 场景")
+            logger.info("MaterialAgent: LLM 批量搜索词=%s", result)
+            return result
+    except asyncio.TimeoutError:
+        logger.warning("MaterialAgent: LLM 批量搜索词生成超时")
+    except Exception as e:
+        logger.warning("MaterialAgent: LLM 批量搜索词失败: %s", e)
+    return None
 
 
 async def _llm_search_queries(
@@ -311,128 +375,37 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
 
             candidate_clips = []
 
-            for i, scene in enumerate(scenes):
-                scene_title = scene.get("title", "")
-                scene_keywords = scene.get("keywords", [])
-                description = scene.get("description", "")
+            # ── 并行处理场景 ──
+            # 每场景的 LLM 搜索词 + 搜索 + 校验相互独立 → 场景级有界并行（默认 4）
+            scene_concurrency = max(1, int(getattr(settings, "material_concurrency", 4)))
 
-                search_queries = await _llm_search_queries(
-                    scene_title, scene_keywords, description,
-                    pipeline_id=context.pipeline_id,
-                    persona_style=persona_style_keywords,
-                    brief_hint=brief_material_hint,
-                )
+            # 尝试一次 LLM 调用为全部场景生成搜索词（省 N-1 次往返）；失败回退逐场景
+            batch_queries = await _llm_search_queries_batch(
+                scenes,
+                pipeline_id=context.pipeline_id,
+                persona_style=" ".join(persona_style_keywords),
+                brief_hint=brief_material_hint,
+            )
 
-                all_results = []
-                seen_ids = set()
-                for query in search_queries:
-                    results = await _search_with_cache(
-                        query, top_k=5, source_ids=source_ids if isinstance(source_ids, list) else None,
+            sem = asyncio.Semaphore(scene_concurrency)
+
+            async def _process_scene(i: int, scene: dict[str, Any]) -> dict[str, Any]:
+                async with sem:
+                    return await self._process_scene(
+                        i, scene,
+                        persona_style_keywords=persona_style_keywords,
+                        brief_material_hint=brief_material_hint,
+                        source_ids=source_ids,
+                        pref_orientation=pref_orientation,
+                        use_vision_llm=use_vision_llm,
+                        vision_frame_count=vision_frame_count,
+                        input_data=input_data,
+                        pipeline_id=context.pipeline_id,
+                        batch_query=batch_queries[i] if batch_queries else None,
                     )
-                    for r in results:
-                        rid = r.asset.id if hasattr(r, 'asset') else r.get("asset_id", "")
-                        if rid and rid not in seen_ids:
-                            seen_ids.add(rid)
-                            all_results.append(r)
-                    if len(all_results) >= 15:
-                        break
 
-                logger.info("MaterialAgent: 场景[%d] 去重后 %d 条候选", i, len(all_results))
-
-                validated = []
-                for r in all_results[:8]:
-                    if use_vision_llm:
-                        asset_obj = r.asset if hasattr(r, 'asset') else r
-                        match_score = await self._validate_via_vision_llm(
-                            asset_obj,
-                            scene_title,
-                            scene_keywords,
-                            description,
-                            frame_count=vision_frame_count,
-                        )
-                    else:
-                        video_url = ""
-                        if hasattr(r, 'asset'):
-                            video_url = r.asset.url or r.asset.local_path or ""
-                        else:
-                            video_url = r.get("url", "") or r.get("local_path", "")
-                        if not video_url:
-                            continue
-                        match_score = await _validate_video_frame(
-                            video_url, f"{scene_title} {' '.join(scene_keywords)}"
-                        )
-                    validated.append((r, match_score))
-                    if match_score > 0.3:
-                        break
-
-                if not validated:
-                    validated = [(r, 0.5) for r in all_results[:5]]
-
-                def _orientation_score(asset_obj) -> float:
-                    resolution = ""
-                    if hasattr(asset_obj, 'resolution'):
-                        resolution = asset_obj.resolution or ""
-                    elif isinstance(asset_obj, dict):
-                        resolution = asset_obj.get("resolution", "")
-                    w, h = 0, 0
-                    if isinstance(resolution, str) and "x" in resolution:
-                        try:
-                            parts = resolution.split("x")
-                            w, h = int(parts[0]), int(parts[1])
-                        except ValueError:
-                            pass
-                    if w <= 0 or h <= 0:
-                        return 0.5
-                    orient = "landscape" if w > h else "portrait"
-                    match = 1.0 if orient == pref_orientation else 0.3
-                    quality = min(1.0, (w * h) / (1920 * 1080))
-                    return match * 0.7 + quality * 0.3
-
-                # P2: Persona 风格匹配分（每个候选项使用自身的 tags）
-                validated.sort(key=lambda x: (
-                    x[1] * 0.5 +                                    # 帧验证匹配度
-                    _orientation_score(x[0]) * 0.25 +               # 方向优先级
-                    self._persona_style_score(
-                        x[0],
-                        x[0].asset.tags if hasattr(x[0], 'asset') and hasattr(x[0].asset, 'tags') else [],
-                        persona_style_keywords,
-                        input_data.persona_config,
-                    ) * 0.25                                         # Persona 风格匹配度
-                ), reverse=True)
-
-                suggested = []
-                for r, ms in validated[:5]:
-                    if hasattr(r, 'asset'):
-                        suggested.append({
-                            "asset_id": r.asset.id,
-                            "title": r.asset.title,
-                            "type": r.asset.type,
-                            "url": r.asset.url,
-                            "local_path": r.asset.local_path,
-                            "score": round(ms, 3),
-                            "source": r.source_name if hasattr(r, 'source_name') else "",
-                            "duration_sec": r.asset.duration_sec,
-                            "tags": r.asset.tags,
-                        })
-                    else:
-                        suggested.append({
-                            "asset_id": r.get("asset_id", ""),
-                            "title": r.get("title", ""),
-                            "url": r.get("url", ""),
-                            "local_path": r.get("local_path", ""),
-                            "score": round(ms, 3),
-                            "duration_sec": r.get("duration_sec", 0),
-                            "tags": r.get("tags", []),
-                        })
-
-                best_score = max((ms for _, ms in validated), default=0.0)
-                candidate_clips.append({
-                    "scene_index": i,
-                    "scene_title": scene_title,
-                    "suggested_assets": suggested,
-                    "score": best_score,
-                    "query": " | ".join(search_queries),
-                })
+            results = await asyncio.gather(*(_process_scene(i, s) for i, s in enumerate(scenes)))
+            candidate_clips = [r for r in results if r is not None]
 
             notes: list[str] = []
             if use_vision_llm:
@@ -447,3 +420,150 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
         except Exception as e:
             logger.exception("MaterialAgent 失败: %s", e)
             return self.build_error_output(str(e), MaterialOutput)
+
+    async def _process_scene(
+        self,
+        i: int,
+        scene: dict[str, Any],
+        persona_style_keywords: list[str],
+        brief_material_hint: str,
+        source_ids: list[str] | None,
+        pref_orientation: str,
+        use_vision_llm: bool,
+        vision_frame_count: int,
+        input_data: MaterialInput,
+        pipeline_id: str,
+        batch_query: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """处理单个场景：LLM 搜索词（或批量结果）→ 搜索 → 帧校验 → 打分排序。"""
+        scene_title = scene.get("title", "")
+        scene_keywords = scene.get("keywords", [])
+        description = scene.get("description", "")
+
+        search_queries = batch_query or await _llm_search_queries(
+            scene_title, scene_keywords, description,
+            pipeline_id=pipeline_id,
+            persona_style=" ".join(persona_style_keywords),
+            brief_hint=brief_material_hint,
+        )
+
+        all_results = []
+        seen_ids = set()
+        for query in search_queries:
+            results = await _search_with_cache(
+                query, top_k=5, source_ids=source_ids if isinstance(source_ids, list) else None,
+            )
+            for r in results:
+                rid = r.asset.id if hasattr(r, 'asset') else r.get("asset_id", "")
+                if rid and rid not in seen_ids:
+                    seen_ids.add(rid)
+                    all_results.append(r)
+            if len(all_results) >= 15:
+                break
+
+        logger.info("MaterialAgent: 场景[%d] 去重后 %d 条候选", i, len(all_results))
+
+        validated = []
+        # 帧校验并行：对前 4 个候选用有界 gather 校验（限制额外 API 开销），
+        # 选择逻辑保持「原顺序第一个 >0.3 命中」，与串行版结果一致
+        top_candidates = all_results[:8]
+        if top_candidates:
+            validate_sem = asyncio.Semaphore(4)
+
+            async def _validate(r):
+                async with validate_sem:
+                    if use_vision_llm:
+                        asset_obj = r.asset if hasattr(r, 'asset') else r
+                        score = await self._validate_via_vision_llm(
+                            asset_obj,
+                            scene_title,
+                            scene_keywords,
+                            description,
+                            frame_count=vision_frame_count,
+                        )
+                    else:
+                        video_url = ""
+                        if hasattr(r, 'asset'):
+                            video_url = r.asset.url or r.asset.local_path or ""
+                        else:
+                            video_url = r.get("url", "") or r.get("local_path", "")
+                        if not video_url:
+                            return None
+                        score = await _validate_video_frame(
+                            video_url, f"{scene_title} {' '.join(scene_keywords)}"
+                        )
+                    return (r, score)
+
+            scores = await asyncio.gather(*(_validate(r) for r in top_candidates))
+            for s in scores:
+                if s is not None:
+                    validated.append(s)
+
+        if not validated:
+            validated = [(r, 0.5) for r in all_results[:5]]
+
+        def _orientation_score(asset_obj) -> float:
+            resolution = ""
+            if hasattr(asset_obj, 'resolution'):
+                resolution = asset_obj.resolution or ""
+            elif isinstance(asset_obj, dict):
+                resolution = asset_obj.get("resolution", "")
+            w, h = 0, 0
+            if isinstance(resolution, str) and "x" in resolution:
+                try:
+                    parts = resolution.split("x")
+                    w, h = int(parts[0]), int(parts[1])
+                except ValueError:
+                    pass
+            if w <= 0 or h <= 0:
+                return 0.5
+            orient = "landscape" if w > h else "portrait"
+            match = 1.0 if orient == pref_orientation else 0.3
+            quality = min(1.0, (w * h) / (1920 * 1080))
+            return match * 0.7 + quality * 0.3
+
+        # P2: Persona 风格匹配分（每个候选项使用自身的 tags）
+        validated.sort(key=lambda x: (
+            x[1] * 0.5 +                                    # 帧验证匹配度
+            _orientation_score(x[0]) * 0.25 +               # 方向优先级
+            self._persona_style_score(
+                x[0],
+                x[0].asset.tags if hasattr(x[0], 'asset') and hasattr(x[0].asset, 'tags') else [],
+                persona_style_keywords,
+                input_data.persona_config,
+            ) * 0.25                                         # Persona 风格匹配度
+        ), reverse=True)
+
+        suggested = []
+        for r, ms in validated[:5]:
+            if hasattr(r, 'asset'):
+                suggested.append({
+                    "asset_id": r.asset.id,
+                    "title": r.asset.title,
+                    "type": r.asset.type,
+                    "url": r.asset.url,
+                    "local_path": r.asset.local_path,
+                    "score": round(ms, 3),
+                    "source": r.source_name if hasattr(r, 'source_name') else "",
+                    "duration_sec": r.asset.duration_sec,
+                    "tags": r.asset.tags,
+                })
+            else:
+                suggested.append({
+                    "asset_id": r.get("asset_id", ""),
+                    "title": r.get("title", ""),
+                    "url": r.get("url", ""),
+                    "local_path": r.get("local_path", ""),
+                    "score": round(ms, 3),
+                    "duration_sec": r.get("duration_sec", 0),
+                    "tags": r.get("tags", []),
+                })
+
+        best_score = max((ms for _, ms in validated), default=0.0)
+        return {
+            "scene_index": i,
+            "scene_title": scene_title,
+            "suggested_assets": suggested,
+            "score": best_score,
+            "query": " | ".join(search_queries),
+        }

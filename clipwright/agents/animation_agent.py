@@ -9,13 +9,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
 from clipwright.agents.base import BaseAgent, uid as _uid
 from clipwright.animation.catalog import AnimationCatalog
 from clipwright.animation.registry import AnimationRegistry
-from clipwright.config import logger
+from clipwright.config import logger, settings
 from clipwright.schema.agent import (
     AgentContext,
     AgentDecision,
@@ -110,6 +111,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             transition_anim_count = 0
             self._llm_mg_generated = 0
             prev_clip = None
+            # 收集逻辑动画（含 LLM MG）作业，主循环扫描后再并发执行——
+            # 每个 LLM MG 生成 2-4 分钟，串行是动画阶段的最大瓶颈
+            logic_jobs: list[tuple[Track, Clip, str, str, dict[str, Any], dict[str, Any] | None]] = []
 
             # 遍历所有 video/image 轨 clip，检测标记
             for vid_track in timeline.tracks:
@@ -144,10 +148,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
                     elif marker_type == "logic":
                         anim_track = anim_track or self._ensure_anim_track(timeline)
-                        await self._handle_logic_animation(
-                            anim_track, clip, anim_id, anim_name, marker,
-                            persona_style,
-                        )
+                        logic_jobs.append((anim_track, clip, anim_id, anim_name, marker, persona_style))
                         logic_anim_count += 1
                         logger.info("AnimationAgent: [逻辑动画]%s → %s (id=%s)",
                                     anim_name, clip.id[:8], anim_id)
@@ -165,6 +166,28 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                                   f"[过渡动画]{anim_name}({anim_id}) → clip={clip.id[:8]}")
 
                     prev_clip = clip
+
+            # 并发执行逻辑动画作业（有界并发，默认 3；clips 写入后按 start_sec 排序保证 z-order）
+            if logic_jobs:
+                sem = asyncio.Semaphore(max(1, int(getattr(settings, "pipeline_concurrency", 3))))
+
+                async def _run_logic(job):
+                    async with sem:
+                        track, c, aid, aname, m, style = job
+                        add_event(context.pipeline_id, "animation", "mg_start",
+                                  f"动画生成开始: {aname} → {c.id[:8]}", {"anim_id": aid, "clip_id": c.id})
+                        try:
+                            await self._handle_logic_animation(
+                                track, c, aid, aname, m, style,
+                            )
+                            add_event(context.pipeline_id, "animation", "mg_end",
+                                      f"动画生成完成: {aname} → {c.id[:8]}", {"anim_id": aid, "clip_id": c.id})
+                        except Exception as e:
+                            logger.exception("AnimationAgent: 逻辑动画 %s 异常: %s", aname, e)
+                            add_event(context.pipeline_id, "animation", "mg_end",
+                                      f"动画生成失败: {aname} → {c.id[:8]}", {"anim_id": aid, "clip_id": c.id, "error": str(e)[:200]})
+
+                await asyncio.gather(*(_run_logic(j) for j in logic_jobs))
 
             summary = (
                 f"AnimationAgent: 文字动画={text_anim_count}, 逻辑动画={logic_anim_count}, "

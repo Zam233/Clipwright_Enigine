@@ -69,7 +69,9 @@ class MGGenerator:
         max_retries = gen_config.get("max_retries", 2)
 
         mg_def = None
-        for attempt in range(max_retries + 1):
+        # 正常生成：至多 1 次盲重试（盲重试很贵，2-4 分钟/次）。
+        # 解析/校验失败改为走下面的「带错误回传的修复重试」，比盲重试高效得多。
+        for attempt in range(min(max_retries, 1) + 1):
             try:
                 mg_def = await self._call_llm(
                     description, text_content, persona_style,
@@ -88,10 +90,70 @@ class MGGenerator:
                 logger.info("MGGenerator repair fixes: %s", fixes)
 
             ok2, errors2 = validate_mg_json(mg_def)
-            if ok2:
+            if not ok2:
+                # 带错误回传的一次修复重试（仅一次，避免无限重试）
+                repaired = await self._call_llm_repair(
+                    mg_def, errors2, description, text_content,
+                    persona_style, scene_context, category_context,
+                )
+                if repaired:
+                    logger.info("MGGenerator: 修复重试成功（带错误回传）")
+                    return self._build_success(repaired, "llm_repair")
+                logger.warning("MGGenerator: 修复重试仍失败，进入降级")
+            else:
                 return self._build_success(mg_def, "llm")
 
         return await self._fallback_generate(description, text_content, persona_style)
+
+    async def _call_llm_repair(
+        self,
+        broken_def: dict[str, Any],
+        errors: list[str],
+        description: str,
+        text_content: str,
+        persona_style: dict,
+        scene_context: dict,
+        category_context: dict,
+    ) -> dict[str, Any] | None:
+        """带错误回传的一次性修复调用：把 schema 校验错误告诉 LLM 让其修正 JSON。"""
+        prompt_config = self._config.get("prompt", {})
+        system_template = prompt_config.get("system_template", "Generate MG animation JSON.")
+        context_section = self._build_context_section(persona_style, category_context)
+        system_prompt = system_template
+        if context_section:
+            system_prompt += "\n\n" + context_section
+        system_prompt += (
+            "\n\n上次输出的动画 JSON 未通过 schema 校验。请只输出**修正后的完整 JSON**，"
+            "确保它通过全部校验规则，不要输出任何解释或额外文本。"
+        )
+
+        broken_str = json.dumps(broken_def, ensure_ascii=False)
+        user_parts = [f"## 动画需求\n{description}"]
+        if text_content:
+            user_parts.append(f"## 文字内容\n{text_content}")
+        user_parts.append("## 校验错误\n" + "\n".join(f"- {e}" for e in errors))
+        user_parts.append(f"## 上次输出（不合法）\n{broken_str[:4000]}")
+        user_prompt = "\n\n".join(user_parts)
+
+        llm_config = self._config.get("llm", {})
+        try:
+            response = await self._llm.generate(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=llm_config.get("temperature", 0.2),
+                timeout=llm_config.get("timeout", 120),
+            )
+            content = response.content if hasattr(response, "content") else str(response)
+            repaired = self._parse_llm_response(content)
+            if repaired:
+                ok, _ = validate_mg_json(repaired)
+                if ok:
+                    return repaired
+        except Exception as e:
+            logger.warning("MGGenerator repair call failed: %s", e)
+        return None
 
     async def _call_llm(
         self,

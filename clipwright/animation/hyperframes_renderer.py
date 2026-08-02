@@ -27,8 +27,9 @@ def _probe_hyperframes() -> bool:
     """同步阻塞探测（在后台线程里跑，绝不进事件循环线程）。"""
     try:
         npx = HyperframesRenderer._npx_cmd()
+        # 冷启动 npx 首次解析全局包可能超过 15s（下载/校验），放宽到 90s
         r = subprocess.run([npx, "hyperframes", "--version"],
-                           capture_output=True, text=False, timeout=15)
+                           capture_output=True, text=False, timeout=90)
         return r.returncode == 0
     except Exception:
         return False
@@ -248,7 +249,7 @@ els.forEach(el=>{
                 "-c:v", "libx264", "-pix_fmt", "yuv420p",
                 "-c:a", "copy", output_path,
             ]
-            subprocess.run(cmd, capture_output=True, text=False, timeout=300, check=True)
+            subprocess.run(cmd, capture_output=True, text=False, timeout=1800, check=True)
             return True
         except Exception as e:
             logger.warning("Hyperframes: 叠加失败: %s", e)
