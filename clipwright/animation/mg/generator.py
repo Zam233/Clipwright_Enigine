@@ -39,6 +39,23 @@ class MGGenerator:
         from clipwright.animation.mg import list_templates as list_mg_templates
         return list_mg_templates()
 
+    @staticmethod
+    def _trace_event(
+        pipeline_id: str | None, event_type: str, summary: str, detail: Any = None,
+    ) -> None:
+        """记录一条 MG 追踪事件（仅观察用途，不影响生成流程）。
+
+        pipeline_id 不可用（None/空）时静默跳过；异常被吞掉避免干扰生成。
+        事件形状: agent="mg", event_type, summary, detail。
+        """
+        if not pipeline_id:
+            return
+        try:
+            from clipwright.services.trace import add_event
+            add_event(pipeline_id, "mg", event_type, summary, detail)
+        except Exception:
+            pass
+
     async def generate(
         self,
         description: str,
@@ -46,6 +63,7 @@ class MGGenerator:
         persona_style: dict[str, Any] | None = None,
         scene_context: dict[str, Any] | None = None,
         category_context: dict[str, Any] | None = None,
+        pipeline_id: str | None = None,
     ) -> dict[str, Any]:
         """生成 MG 动画 JSON。
 
@@ -69,6 +87,7 @@ class MGGenerator:
         max_retries = gen_config.get("max_retries", 2)
 
         mg_def = None
+        llm_fail_reasons: list[str] = []
         # 正常生成：至多 1 次盲重试（盲重试很贵，2-4 分钟/次）。
         # 解析/校验失败改为走下面的「带错误回传的修复重试」，比盲重试高效得多。
         for attempt in range(min(max_retries, 1) + 1):
@@ -76,18 +95,36 @@ class MGGenerator:
                 mg_def = await self._call_llm(
                     description, text_content, persona_style,
                     scene_context, category_context,
+                    pipeline_id=pipeline_id,
                 )
                 if mg_def:
                     break
             except Exception as e:
+                reason = str(e) or repr(e)
+                llm_fail_reasons.append(reason)
                 logger.warning("MGGenerator LLM attempt %d failed: %s", attempt + 1, e)
+                self._trace_event(
+                    pipeline_id, "llm_attempt_fail",
+                    f"LLM 生成第 {attempt + 1} 次失败",
+                    {"attempt": attempt + 1, "error": reason[:200]},
+                )
 
         if mg_def:
             ok, errors = validate_mg_json(mg_def)
             if not ok:
                 logger.warning("MGGenerator validation errors: %s", errors)
+                self._trace_event(
+                    pipeline_id, "validation_error",
+                    "MG JSON 校验失败",
+                    {"errors": errors[:20]},
+                )
                 mg_def, fixes = repair_mg_json(mg_def)
                 logger.info("MGGenerator repair fixes: %s", fixes)
+                self._trace_event(
+                    pipeline_id, "repair",
+                    "MG JSON 自动修复",
+                    {"fixes": fixes},
+                )
 
             ok2, errors2 = validate_mg_json(mg_def)
             if not ok2:
@@ -95,15 +132,30 @@ class MGGenerator:
                 repaired = await self._call_llm_repair(
                     mg_def, errors2, description, text_content,
                     persona_style, scene_context, category_context,
+                    pipeline_id=pipeline_id,
                 )
                 if repaired:
                     logger.info("MGGenerator: 修复重试成功（带错误回传）")
-                    return self._build_success(repaired, "llm_repair")
+                    return self._build_success(repaired, "llm_repair", pipeline_id=pipeline_id)
                 logger.warning("MGGenerator: 修复重试仍失败，进入降级")
+                self._trace_event(
+                    pipeline_id, "llm_repair_fail",
+                    "修复重试仍失败，进入降级",
+                    {"errors": errors2[:20]},
+                )
             else:
-                return self._build_success(mg_def, "llm")
+                return self._build_success(mg_def, "llm", pipeline_id=pipeline_id)
 
-        return await self._fallback_generate(description, text_content, persona_style)
+        if not mg_def:
+            # LLM 多次尝试均失败（返回 None 或抛异常），记录失败原因供降级决策追溯
+            self._trace_event(
+                pipeline_id, "llm_fail",
+                "LLM 生成失败（多次尝试均未返回有效 JSON）",
+                {"reasons": llm_fail_reasons[-5:]},
+            )
+        return await self._fallback_generate(
+            description, text_content, persona_style, pipeline_id=pipeline_id,
+        )
 
     async def _call_llm_repair(
         self,
@@ -114,6 +166,7 @@ class MGGenerator:
         persona_style: dict,
         scene_context: dict,
         category_context: dict,
+        pipeline_id: str | None = None,
     ) -> dict[str, Any] | None:
         """带错误回传的一次性修复调用：把 schema 校验错误告诉 LLM 让其修正 JSON。"""
         prompt_config = self._config.get("prompt", {})
@@ -153,6 +206,11 @@ class MGGenerator:
                     return repaired
         except Exception as e:
             logger.warning("MGGenerator repair call failed: %s", e)
+            self._trace_event(
+                pipeline_id, "llm_repair_call_fail",
+                "修复重试 LLM 调用失败",
+                {"error": str(e)[:200]},
+            )
         return None
 
     async def _call_llm(
@@ -162,6 +220,7 @@ class MGGenerator:
         persona_style: dict,
         scene_context: dict,
         category_context: dict,
+        pipeline_id: str | None = None,
     ) -> dict[str, Any] | None:
         """调用 LLM 生成 MG JSON。
 
@@ -202,6 +261,11 @@ class MGGenerator:
             return self._parse_llm_response(content)
         except Exception as e:
             logger.warning("MGGenerator LLM call failed: %s", e)
+            self._trace_event(
+                pipeline_id, "llm_call_fail",
+                "LLM 调用失败",
+                {"error": str(e)[:200]},
+            )
             return None
 
     @staticmethod
@@ -309,6 +373,7 @@ class MGGenerator:
         description: str,
         text_content: str,
         persona_style: dict,
+        pipeline_id: str | None = None,
     ) -> dict[str, Any]:
         """降级生成 — 匹配已有模板。"""
         templates = self._get_templates()
@@ -324,11 +389,25 @@ class MGGenerator:
                 try:
                     full_template = _json.loads(template_path.read_text(encoding="utf-8"))
                     template, params = FallbackEngine.fill_template_params(full_template, text_content, persona_style)
-                    return self._build_success(template, "fallback", fallback_template=tid)
+                    self._trace_event(
+                        pipeline_id, "fallback_template",
+                        f"降级命中模板 {tid}",
+                        {"fallback_template": tid},
+                    )
+                    return self._build_success(
+                        template, "fallback", fallback_template=tid, pipeline_id=pipeline_id,
+                    )
                 except Exception:
                     pass
 
-        logger.warning("MGGenerator: no fallback template available")
+        logger.warning(
+            "MGGenerator: no fallback template available — LLM 与模板均失败，降级为 drawtext 文字显示"
+        )
+        self._trace_event(
+            pipeline_id, "fallback_fail",
+            "无可用降级模板，最终降级为 drawtext 文字显示",
+            {"method": "drawtext", "fallback_template": None},
+        )
         return {
             "success": False,
             "html": "",
@@ -340,6 +419,7 @@ class MGGenerator:
 
     def _build_success(
         self, mg_def: dict, method: str, fallback_template: str | None = None,
+        pipeline_id: str | None = None,
     ) -> dict[str, Any]:
         """构建成功响应 + 渲染 HTML。"""
         import uuid
@@ -353,6 +433,18 @@ class MGGenerator:
         except Exception as e:
             logger.warning("MGGenerator: MGRenderer.render() failed: %s", e)
             html = ""
+
+        # 记录最终生成方式（llm / llm_repair / fallback），供 trace/SSE 展示与质检追溯
+        self._trace_event(
+            pipeline_id, "method",
+            f"MG 生成完成 method={method}",
+            {
+                "method": method,
+                "fallback_template": fallback_template,
+                "generation_id": generation_id,
+                "success": bool(html),
+            },
+        )
 
         return {
             "success": bool(html),
