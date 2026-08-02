@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any, Callable
@@ -130,6 +131,27 @@ def _make_progress(job_id: str, store: JobStore) -> Callable[..., Any]:
     return cb
 
 
+def _heartbeat(job_id: str, store: JobStore, interval: float = 30.0) -> asyncio.Task:
+    """渲染期间的心跳：定期刷新 job 存活时间，防止长渲染（如 concat 阶段无
+    进度回调）超过 JobStore 60s TTL 被惰性清理，导致客户端轮询 404。
+
+    JobStore 的 ``get_job`` 只读不刷新 ``_updated`` 且每次调用都会
+    ``_prune_locked()`` 清理过期条目——若渲染中间阶段长时间无回调（如 concat
+    大片段），客户端轮询反而会触发清理。心跳用 ``update_job``（刷新时间戳）
+    保持 job 存活，渲染结束后由调用方取消。
+    """
+
+    async def _run() -> None:
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                store.update_job(job_id)
+        except asyncio.CancelledError:
+            pass
+
+    return asyncio.create_task(_run())
+
+
 async def run_job(
     job_id: str,
     timeline_dict: dict[str, Any],
@@ -151,6 +173,10 @@ async def run_job(
     jobs_dir = work_dir / "jobs"
 
     store.update_job(job_id, status="rendering", phase="prepare", progress=0, detail="开始渲染")
+
+    # 渲染期间心跳保活：长渲染（concat 大片段）无中间进度回调时，防止
+    # JobStore 60s TTL 把进行中的 job 清理掉（客户端轮询会触发 _prune_locked）。
+    heartbeat = _heartbeat(job_id, store)
 
     try:
         if not isinstance(timeline_dict, dict) or "tracks" not in timeline_dict:
@@ -186,3 +212,5 @@ async def run_job(
     except Exception as e:
         store.update_job(job_id, status="failed", error=str(e))
         raise
+    finally:
+        heartbeat.cancel()
