@@ -66,6 +66,10 @@ webhooks.json
 .omo/
 .opencode/
 
+# Runtime caches / fonts (render trim cache, worker assets, system font copies)
+_cache/
+_fonts/
+
 # test logs
 backend-out.log
 *.log
