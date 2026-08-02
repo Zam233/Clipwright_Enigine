@@ -429,3 +429,22 @@ async def metrics() -> str:
         pass
 
     return "\n".join(lines) + "\n"
+
+
+def _main() -> None:
+    """入口：按 env 配置启动 uvicorn（CLIPWRIGHT_HOST / CLIPWRIGHT_PORT /
+    CLIPWRIGHT_DEBUG，默认 0.0.0.0:8000）。用法：``python -m clipwright.main``。
+    """
+    import uvicorn
+
+    uvicorn.run(
+        "clipwright.main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=settings.debug,
+        log_level="info",
+    )
+
+
+if __name__ == "__main__":
+    _main()
