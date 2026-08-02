@@ -97,6 +97,8 @@ CLIPWRIGHT_TTS_PUBLIC_UPLOAD_SERVICES=uguu,catbox
 
 **失败降级**：配音失败不会阻断管线，失败信息写入 `audio_notes`，Pipeline 状态仍为 `COMPLETED`。
 
+**字幕烧录（caption burn-in）**：`audio_config.subtitle_enabled`（默认 `True`）控制是否将旁白分段烧录为字幕。为 `True` 时，AudioAgent 依据旁白分段在文字轨生成 `kind=caption` 的字幕 clip（与旁白音频 clip 对齐，`text` 截断至 100 字符，轨道名「字幕轨」）；为 `False` 时仅正常配音、不生成字幕。字段类型为 `StrictBool`，非布尔字符串会被 Pydantic 拒绝。
+
 ## 相关文档
 
 - [API 参考](api_reference.md) — 完整 API 端点说明
