@@ -107,6 +107,68 @@ def _get_actual_duration(video_path: str) -> float:
     except Exception:
         return 0
 
+def _is_valid_video(path: str | Path, min_bytes: int = 1024) -> bool:
+    """ffmpeg 输出有效性：存在且非空（ffmpeg -y 失败也会留下 0 字节占位文件，
+    仅检查 exists() 会把失败误判为成功，导致最终导出空视频）。"""
+    try:
+        p = Path(path)
+        return p.exists() and p.stat().st_size >= min_bytes
+    except Exception:
+        return False
+
+_font_file_cache: str | None = None
+
+def _resolve_system_font() -> str:
+    """解析一个可用的字体文件路径（过滤器可用形式）。
+
+    两个硬约束：
+    1. 本项目 ffmpeg 是带 fontconfig 的静态构建；Windows 无 fontconfig 配置，
+       所有 drawtext 会报 "Fontconfig error: Cannot load default config file"。
+    2. 该构建的过滤器解析器**不识别 ``\\:`` 转义**，Windows 盘符 ``C:`` 会被
+       当作参数分隔符截断 → fontfile 必须用**无冒号**的路径。
+    因此：Windows 下把系统字体复制到项目 ``_fonts/``（相对 CWD 路径，无盘符），
+    Unix 下直接返回系统字体绝对路径（无冒号，过滤器可用）。
+    """
+    global _font_file_cache
+    if _font_file_cache is not None:
+        return _font_file_cache
+
+    # Windows：复制 CJK 字体到项目 _fonts/（相对路径，过滤器可解析）
+    win_fonts = [
+        r"C:\Windows\Fonts\msyh.ttc",    # 微软雅黑（中文字幕首选）
+        r"C:\Windows\Fonts\msyhbd.ttc",
+        r"C:\Windows\Fonts\simhei.ttf",  # 黑体
+        r"C:\Windows\Fonts\simsun.ttc",  # 宋体
+        r"C:\Windows\Fonts\arial.ttf",
+    ]
+    for src in win_fonts:
+        if Path(src).exists():
+            try:
+                dest_dir = Path.cwd() / "_fonts"
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest = dest_dir / Path(src).name
+                if not dest.exists():
+                    import shutil
+                    shutil.copy2(src, dest)
+                # 用正斜杠相对路径（与 CWD 一致），避免盘符冒号
+                _font_file_cache = f"_fonts/{Path(src).name}"
+                return _font_file_cache
+            except Exception:
+                continue
+
+    unix_fonts = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/Helvetica.ttc",
+    ]
+    for p in unix_fonts:
+        if Path(p).exists():
+            _font_file_cache = p
+            return p
+    _font_file_cache = ""
+    return ""
+
 # M1: 裁剪缓存（持久化目录，不随 render 清理删除）
 import threading as _threading
 from clipwright.tool.video import _CLIPWRIGHT_TEMP
@@ -218,8 +280,11 @@ class RenderService:
                                                       bitrate, audio_bitrate, bgm_file_path)
 
         # 输出
-        if final_video and Path(final_video).exists():
+        if final_video and _is_valid_video(final_video):
             shutil.copy2(final_video, str(output))
+            if not _is_valid_video(output):
+                logger.error("渲染输出为空文件: %s（源 %s）", output, final_video)
+                return RenderResult(False, error=f"渲染输出为空文件 (final={final_video})")
             dur = await asyncio.to_thread(_get_actual_duration, str(output))
             logger.info("渲染完成: %s (%.1fs)", output, dur)
             return RenderResult(True, output_path=str(output.resolve()), duration_sec=dur)
@@ -305,7 +370,10 @@ class RenderService:
         if progress_callback:
             await progress_callback("trim", 0, f"裁剪 {len(segments)} 个片段")
 
-        scale = f"scale={width}:{height}:force_original_aspect_ratio=1,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+        # setsar=1 归一化像素宽高比：Pexels 等来源 SAR 不一致（1215:1216 vs 1:1），
+        # concat 过滤器要求所有输入 SAR 相同，否则报 "Invalid argument" 导致拼接失败
+        scale = (f"scale={width}:{height}:force_original_aspect_ratio=1,"
+                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1")
         loop = asyncio.get_running_loop()
 
         def _trim_one(idx, seg):
@@ -314,6 +382,13 @@ class RenderService:
             src = seg.get("source_path", "")
             dur = max(0.5, seg.get("duration_sec", 5) * seg.get("speed", 1.0))
             if not src:
+                return self._generate_fallback(dur, width, height, fps, idx)
+
+            # 源文件损坏预检：无时长/无视频流（如 EditAgent 裁剪失败的 258 字节残留）
+            # 直接走 fallback，避免 ffmpeg 对 Duration:N/A 的输入挂死/空输出
+            if not self._source_valid(src):
+                logger.warning("RenderService: 源文件不可解码，用 fallback 兜底: %s", str(src)[-50:])
+                self._final_ffmpeg_log.append(f"trim({str(src)[-30:]}): 源文件不可解码 → fallback")
                 return self._generate_fallback(dur, width, height, fps, idx)
 
             # M1: 缓存
@@ -361,11 +436,11 @@ class RenderService:
                     vf += "," + ",".join(fx_parts)
 
                 cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", str(seg.get("source_offset", 0)),
-                       "-i", src, "-t", str(dur), "-vf", vf, "-r", str(fps),
+                       "-stream_loop", "-1", "-i", src, "-t", str(dur), "-vf", vf, "-r", str(fps),
                        "-c:v", encoder, "-pix_fmt", "yuv420p",
                        "-preset", preset, "-b:v", bitrate, "-an", out]
                 r = self._run_ff(cmd, capture_output=True, text=False, timeout=600)
-                if r.returncode == 0 and Path(out).exists():
+                if r.returncode == 0 and _is_valid_video(out):
                     with _trim_cache_lock:
                         if len(_trim_cache) < _TRIM_CACHE_MAX:
                             _trim_cache[cache_key] = out
@@ -386,14 +461,33 @@ class RenderService:
             await progress_callback("trim", 50, f"完成 {len(trimmed)}/{len(segments)} 裁剪")
         return trimmed
 
+    def _source_valid(self, src: str) -> bool:
+        """检查源视频文件是否可解码（有视频流且时长可读）。"""
+        try:
+            r = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=codec_type:format=duration", "-of", "json", src],
+                capture_output=True, text=True, timeout=15,
+            )
+            if r.returncode != 0:
+                return False
+            j = json.loads(r.stdout)
+            streams = j.get("streams", []) or []
+            dur = j.get("format", {}).get("duration")
+            return bool(streams) and dur not in (None, "", "N/A")
+        except Exception:
+            return False
+
     def _generate_fallback(self, dur, width, height, fps, idx):
         out = str(self._work_dir / f"fallback_{idx}.mp4")
         try:
+            # 超时按时长缩放：长片段（如 113s）色块编码超过固定 30s 会被误杀
+            timeout = 30 + int(dur) * 2
             self._run_ff(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
                            f"color=c=0x1a1a2e:s={width}x{height}:d={dur}",
                            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(fps), out],
-                          capture_output=True, text=False, timeout=30)
-            return out if Path(out).exists() else None
+                          capture_output=True, text=False, timeout=timeout)
+            return out if _is_valid_video(out) else None
         except Exception:
             return None
 
@@ -418,11 +512,11 @@ class RenderService:
     def _run_concat(self, a, b, fps, bitrate, encoder, preset):
         out = Path(a).parent / "concat.mp4"
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", a, "-i", b,
-                       "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[v]",
+                       "-filter_complex", "[0:v]setsar=1[a];[1:v]setsar=1[b];[a][b]concat=n=2:v=1:a=0[v]",
                        "-map", "[v]", "-c:v", encoder, "-preset", preset,
                        "-b:v", bitrate, "-r", str(fps), str(out)],
                       capture_output=True, text=False, timeout=600)
-        return str(out) if out.exists() else a
+        return str(out) if _is_valid_video(out) else a
 
     def _concat_xfade(self, trimmed, segments, fps, bitrate, encoder, preset):
         final = str(self._work_dir / "concat.mp4")
@@ -434,15 +528,18 @@ class RenderService:
             out = str(self._work_dir / f"cp_{i}.mp4")
             off = max(0, acc - td)
             subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", cur, "-i", trimmed[i],
-                           "-filter_complex", f"[0:v][1:v]xfade=transition={tt}:duration={td}:offset={off}[v]",
+                           "-filter_complex",
+                           f"[0:v]setsar=1[a];[1:v]setsar=1[b];[a][b]xfade=transition={tt}:duration={td}:offset={off}[v]",
                            "-map", "[v]", "-c:v", encoder, "-preset", preset,
                            "-b:v", bitrate, "-r", str(fps), out],
                           capture_output=True, text=False, timeout=600)
-            if Path(out).exists():
+            # ffmpeg -y 失败也留 0 字节占位 → 必须校验非空
+            if _is_valid_video(out):
                 cur = out; acc = _get_actual_duration(cur)
             else:
+                self._final_ffmpeg_log.append(f"xfade({i}): 输出无效，回退到片段 {i}")
                 cur = trimmed[i]; acc = _get_actual_duration(cur)
-        if Path(cur).exists():
+        if _is_valid_video(cur):
             shutil.copy2(cur, final); return final
         return trimmed[0]
 
@@ -450,14 +547,15 @@ class RenderService:
         out = Path(clips[0]).parent / "concat.mp4"
         inputs = sum([["-i", f] for f in clips], [])
         n = len(clips)
-        flt = "".join(f"[{i}:v]" for i in range(n)) + f"concat=n={n}:v=1:a=0[v]"
+        # 每个输入先 setsar=1 归一化，保证 concat 输入参数一致（含旧缓存里 SAR 未归一化的片段）
+        flt = "".join(f"[{i}:v]setsar=1[v{i}];" for i in range(n)) + "".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[v]"
         timeout = 120 + n * 60  # 120s base + 60s per segment
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *inputs,
                        "-filter_complex", flt, "-map", "[v]",
                        "-c:v", encoder, "-preset", preset,
                        "-b:v", bitrate, "-r", str(fps), str(out)],
                       capture_output=True, text=False, timeout=timeout)
-        return str(out) if out.exists() else clips[0]
+        return str(out) if _is_valid_video(out) else clips[-1]
 
     # ── M2: concat + text 合并 ────────────────────
 
@@ -474,8 +572,9 @@ class RenderService:
         if not filters:
             return video
 
-        # 分批，每批内所有 filter 以逗号连接，单次 FFmpeg 调用
-        batch_size = 20
+        # 分批，每批内所有 filter 以逗号连接，单次 FFmpeg 调用。
+        # 长视频（数百秒）单趟重编码就需 5-15 分钟：batch 放大到单批 + 超时放大。
+        batch_size = 100
         current = video
         for bi in range(0, len(filters), batch_size):
             batch = filters[bi:bi + batch_size]
@@ -485,8 +584,8 @@ class RenderService:
                    "-vf", ",".join(batch),
                    "-c:v", encoder, "-preset", preset, "-pix_fmt", "yuv420p",
                    "-c:a", "copy", out]
-            r = await self._ff(cmd, capture_output=True, text=False, timeout=300)
-            if r.returncode == 0 and Path(out).exists():
+            r = await self._ff(cmd, capture_output=True, text=False, timeout=1800)
+            if r.returncode == 0 and _is_valid_video(out):
                 current = out
         return current
 
@@ -507,10 +606,10 @@ class RenderService:
         if overlays:
             mov = str(self._work_dir / "overlay.mov")
             ok = await HyperframesRenderer.render_overlays(overlays, mov, width, height, fps)
-            if ok and Path(mov).exists():
+            if ok and _is_valid_video(mov):
                 out_v = str(self._work_dir / "with_hf.mp4")
                 ok2 = HyperframesRenderer.render_overlay_on_video(mov, video, out_v)
-                if ok2 and Path(out_v).exists():
+                if ok2 and _is_valid_video(out_v):
                     video = out_v
         return video
 
@@ -529,11 +628,11 @@ class RenderService:
                str(mg_dir), "-o", mov, "--format", "mov",
                "-f", str(int(fps)), "--quiet"]
         try:
-            r = await self._ff(cmd, capture_output=True, text=False, timeout=600)
-            if r.returncode == 0 and Path(mov).exists():
+            r = await self._ff(cmd, capture_output=True, text=False, timeout=1800)
+            if r.returncode == 0 and _is_valid_video(mov):
                 out_v = str(self._work_dir / f"mg_{uuid.uuid4().hex[:4]}.mp4")
                 ok = HyperframesRenderer.render_overlay_on_video(mov, video, out_v)
-                if ok and Path(out_v).exists():
+                if ok and _is_valid_video(out_v):
                     return out_v
         except Exception as e:
             logger.warning("MG overlay fail: %s", e)
@@ -553,7 +652,13 @@ class RenderService:
             font_size=ov.get("font_size", 48), font_color=ov.get("font_color", "#ffffff"),
             stroke_width=ov.get("stroke_width", 0), position=ov.get("position", "bottom"),
             offset_y=ov.get("offset_y", 0))
-        font_arg = f":fontfile={ov.get('font', '')}" if ov.get("font") and Path(ov["font"]).exists() else ""
+        # 显式 fontfile 绕过 Windows fontconfig 缺失：优先片段指定字体（无盘符），否则用系统字体
+        explicit_font = ov.get("font") or ""
+        if explicit_font and Path(explicit_font).exists() and ":" not in explicit_font:
+            font_file = explicit_font
+        else:
+            font_file = _resolve_system_font()
+        font_arg = f":fontfile={font_file}" if font_file else ""
 
         if anim in ("typewriter", "char_by_char"):
             font_size = ts.font_size
@@ -573,9 +678,7 @@ class RenderService:
 
         if kfs and len(kfs) >= 2:
             return self._build_kf_drawtext(text, ts, start, dur, kfs, font_arg)
-        base = ts.build_drawtext_filter(text, start, dur)
-        if font_arg:
-            base = base.replace(":fontsize=", f"{font_arg}:fontsize=")
+        base = ts.build_drawtext_filter(text, start, dur, font_file)
         return base
 
     @staticmethod
@@ -619,7 +722,7 @@ class RenderService:
         out = str(self._work_dir / "ov.mp4")
         try:
             await self._apply_overlays(video, segments, out, width, height)
-            return out if Path(out).exists() else video
+            return out if _is_valid_video(out) else video
         except Exception as e:
             logger.warning("画中画合成失败，跳过覆盖层: %s", e)
             return video
@@ -645,7 +748,7 @@ class RenderService:
         await self._ff(["ffmpeg","-y","-loglevel","error",*inputs,"-filter_complex",c,
                        "-map",f"[v{len(filters)-1}]","-map","0:a?",
                        "-c:v",encoder,"-preset",preset,"-pix_fmt","yuv420p","-c:a","copy",output_path],
-                      capture_output=True, text=False, timeout=600)
+                      capture_output=True, text=False, timeout=1800)
 
     async def _mix_audio_safe(self, video, segments, audio_path, bitrate, ab, bgm_path):
         if not video or not Path(video).exists(): return video
@@ -672,8 +775,8 @@ class RenderService:
                                "-map","0:v:0","-map","[aout]",
                                "-c:v",encoder,"-preset",preset,"-pix_fmt","yuv420p","-b:v",bitrate,
                                "-c:a","aac","-b:a",ab,"-shortest",output_path],
-                              capture_output=True, text=False, timeout=600)
-                if Path(output_path).exists(): return
+                              capture_output=True, text=False, timeout=1800)
+                if _is_valid_video(output_path): return
             except Exception:
                 pass
         if voice:
@@ -682,7 +785,7 @@ class RenderService:
                                "-c:v",encoder,"-preset",preset,"-pix_fmt","yuv420p","-b:v",bitrate,
                                "-c:a","aac","-b:a",ab,"-map","0:v:0","-map","1:a:0","-shortest",output_path],
                               capture_output=True, text=False, timeout=600)
-                if Path(output_path).exists(): return
+                if _is_valid_video(output_path): return
             except Exception:
                 pass
         shutil.copy2(input_video, output_path)
