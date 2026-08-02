@@ -335,3 +335,101 @@ class TestHyperframesRenderer:
         assert widths[0] == int(48 * 0.6)  # H
         assert widths[5] == 48  # 世
         assert widths[6] == 48  # 界
+
+
+class TestAnimationAgentAsyncProbe:
+    """AnimationAgent 使用异步 Hyperframes 可用性探针 (Todo 5 C2b)。
+
+    根因：``_CachedProbe.get_sync()`` 冷启动首次返回 default=False，导致
+    AnimationAgent 的同步检查把首个 pipeline 的逻辑动画全部降级为静态 drawtext。
+    修复：改用 ``await HyperframesRenderer.await_available(120)`` 等待冷启动；
+    所有降级文字 clip 都必须带 fade_in keyframes，绝不静态。
+    测试一律 monkeypatch 探针，绝不派生真实 npx 子进程。
+    """
+
+    def _make_agent(self):
+        from clipwright.agents.animation_agent import AnimationAgent
+        return AnimationAgent()
+
+    @staticmethod
+    def _mk_anim_track():
+        from clipwright.schema.timeline import ClipKind, Track
+        return Track(id="t1", name="动画轨", kind=ClipKind.ANIMATION, index=2)
+
+    @staticmethod
+    def _mk_video_clip(start_sec=2.0, duration_sec=5.0):
+        from clipwright.schema.timeline import Clip, ClipKind
+        return Clip(
+            id="vid1", kind=ClipKind.VIDEO, asset_id="a.mp4",
+            track_id="t0", start_sec=start_sec, duration_sec=duration_sec,
+            metadata={"description": "[逻辑动画]箭头：A→B→C"},
+        )
+
+    @staticmethod
+    def _mk_marker():
+        return {"type": "logic", "anim_id": "diagram", "text": "A→B→C"}
+
+    def test_probe_true_produces_hyperframes_animation(self, monkeypatch) -> None:
+        """await_available→True → 产出 ANIMATION clip，renderer=hyperframes（非 drawtext TEXT）。"""
+        import asyncio
+
+        from clipwright.animation.hyperframes_renderer import HyperframesRenderer
+
+        async def _fake_true(timeout=120.0):
+            return True
+
+        monkeypatch.setattr(HyperframesRenderer, "await_available", _fake_true)
+
+        agent = self._make_agent()
+        track = self._mk_anim_track()
+        vid = self._mk_video_clip()
+        asyncio.run(agent._handle_logic_animation(
+            track, vid, "diagram", "箭头", self._mk_marker(), None))
+
+        assert len(track.clips) == 1
+        produced = track.clips[0]
+        assert str(produced.kind) == "animation"
+        assert produced.metadata["renderer"] == "hyperframes"
+
+    def test_probe_false_produces_animated_text_clip(self, monkeypatch) -> None:
+        """await_available→False（真超时） → 产出 TEXT 降级 clip，但 keyframes 非空（len≥2）。"""
+        import asyncio
+
+        from clipwright.animation.hyperframes_renderer import HyperframesRenderer
+
+        async def _fake_false(timeout=120.0):
+            return False
+
+        monkeypatch.setattr(HyperframesRenderer, "await_available", _fake_false)
+
+        agent = self._make_agent()
+        track = self._mk_anim_track()
+        vid = self._mk_video_clip()
+        asyncio.run(agent._handle_logic_animation(
+            track, vid, "diagram", "箭头", self._mk_marker(), None))
+
+        assert len(track.clips) == 1
+        produced = track.clips[0]
+        assert str(produced.kind) == "text"
+        assert produced.metadata["renderer"] == "drawtext"
+        assert len(produced.keyframes) >= 2
+
+    def test_fallback_text_clip_is_animated_fade_in(self) -> None:
+        """_create_fallback_text_clip → keyframes opacity 0→1（fade_in）+ anim_type=fade_in。"""
+        agent = self._make_agent()
+        track = self._mk_anim_track()
+        vid = self._mk_video_clip(start_sec=2.0, duration_sec=5.0)
+        agent._create_fallback_text_clip(track, vid, "箭头", "A→B→C", 5.0)
+
+        assert len(track.clips) == 1
+        produced = track.clips[0]
+        assert produced.metadata["anim_type"] == "fade_in"
+        assert produced.metadata["renderer"] == "drawtext"
+        assert len(produced.keyframes) >= 2
+        opacities = [
+            kf["properties"]["opacity"]
+            for kf in produced.keyframes
+            if "opacity" in kf.get("properties", {})
+        ]
+        assert opacities[0] == 0
+        assert 1 in opacities

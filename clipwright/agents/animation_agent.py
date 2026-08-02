@@ -353,8 +353,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             }
 
         # ── 创建逻辑动画 clip（非 MG） ──
-        # P2: 检测 Hyperframes 是否可用，不可用时降级到 drawtext
-        hf_available = self._hyperframes_available()
+        # P2: 异步探测 Hyperframes 是否可用（含冷启动等待，最多 120s），
+        # 避免首个 pipeline 因缓存探针冷启动返回 False 而误降级为静态 drawtext。
+        # 只有真正等待超时（不可用）才走降级分支。
+        hf_available = await self._hyperframes_available()
         renderer = "hyperframes" if hf_available else "drawtext"
         if not hf_available:
             logger.info("AnimationAgent: Hyperframes 不可用，逻辑动画 [%s] 降级到 drawtext", anim_name)
@@ -376,8 +378,11 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 text=f"{anim_name}: {text_content[:50]}",
                 font_size=diagram_style.get("font_size", 36),
                 font_color=diagram_style.get("text_color", "#ffffff"),
+                keyframes=AnimationCatalog.build_full_keyframes(
+                    "fade_in", vid_clip.start_sec, duration
+                ),
                 metadata={
-                    "anim_type": anim_id,
+                    "anim_type": "fade_in",
                     "anim_name": anim_name,
                     "category": "logic",
                     "renderer": "drawtext",
@@ -435,7 +440,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 track_id=anim_track.id,
                 start_sec=vid_clip.start_sec, duration_sec=duration,
                 text=f"{anim_name}: {text_content[:50]}",
-                metadata={"anim_type": anim_id, "renderer": "drawtext"},
+                keyframes=AnimationCatalog.build_full_keyframes(
+                    "fade_in", vid_clip.start_sec, duration
+                ),
+                metadata={"anim_type": "fade_in", "renderer": "drawtext"},
             )
             anim_track.clips.append(text_clip)
             return
@@ -462,7 +470,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 track_id=anim_track.id,
                 start_sec=vid_clip.start_sec, duration_sec=clip_dur,
                 text=f"{anim_name}: {text_content[:50]}",
-                metadata={"anim_type": anim_id, "renderer": "drawtext"},
+                keyframes=AnimationCatalog.build_full_keyframes(
+                    "fade_in", vid_clip.start_sec, clip_dur
+                ),
+                metadata={"anim_type": "fade_in", "renderer": "drawtext"},
             )
             anim_track.clips.append(text_clip)
             return
@@ -505,6 +516,14 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         persona_style: dict[str, Any] | None = None,
     ) -> None:
         """处理 mg_dynamic 标记 — 通过内置 llm_mg 引擎动态生成 MG 动画。"""
+        # P2: LLM MG 产物依赖 Hyperframes 渲染，入口同样用异步探测（含冷启动等待）。
+        # 只有真正等待超时（不可用）才降级为动画 drawtext，避免冷启动误降级。
+        if not await self._hyperframes_available():
+            logger.warning("AnimationAgent: Hyperframes 不可用，mg_dynamic 降级为 drawtext")
+            self._add_trace_warning("Hyperframes 不可用，LLM MG 动画降级为文字显示")
+            self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
+            return
+
         try:
             from clipwright.animation.mg import MGGenerator
             mg_gen = MGGenerator()
@@ -603,19 +622,23 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         text_content: str,
         duration: float,
     ) -> None:
-        """创建降级文字 clip。"""
+        """创建降级文字 clip（带 fade_in keyframes，保证是动画而非静态文字）。"""
+        clip_duration = min(duration, 5.0)
         text_clip = Clip(
             id=_uid("fl"),
             kind=ClipKind.TEXT,
             asset_id="",
             track_id=anim_track.id,
             start_sec=vid_clip.start_sec,
-            duration_sec=min(duration, 5.0),
+            duration_sec=clip_duration,
             text=f"{anim_name}: {text_content[:50]}",
             font_size=36,
             font_color="#ffffff",
+            keyframes=AnimationCatalog.build_full_keyframes(
+                "fade_in", vid_clip.start_sec, clip_duration
+            ),
             metadata={
-                "anim_type": "fallback_text",
+                "anim_type": "fade_in",
                 "renderer": "drawtext",
                 "position": "center",
             },
@@ -711,11 +734,16 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         return track
 
     @staticmethod
-    def _hyperframes_available() -> bool:
-        """检测 Hyperframes CLI 是否可用。"""
+    async def _hyperframes_available(timeout: float = 120.0) -> bool:
+        """异步检测 Hyperframes CLI 是否可用（等待冷启动，最多 timeout 秒）。
+
+        冷启动根因：``is_available()`` 底层 ``_CachedProbe.get_sync()`` 首次调用返回
+        default=False（见 services/async_util.py），会让首个 pipeline 把逻辑动画误降级
+        为静态 drawtext。这里改用 ``await_available`` 轮询等待真实可用性。
+        """
         try:
             from clipwright.animation.hyperframes_renderer import HyperframesRenderer
-            return HyperframesRenderer.is_available()
+            return await HyperframesRenderer.await_available(timeout)
         except Exception:
             return False
 

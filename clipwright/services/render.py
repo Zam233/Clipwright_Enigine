@@ -266,7 +266,7 @@ class RenderService:
             final_video = await self._apply_text_concat(final_video, text_overlays, encoder, preset)
 
         # S2: HF 图解 + MG 动画 → 单次 Hyperframes 调用
-        if final_video and self._hyperframes_available():
+        if final_video and await self._hyperframes_available_async():
             final_video = await self._apply_all_hyperframes(final_video, text_overlays, hf_ov_local,
                                                             width, height, fps)
 
@@ -807,6 +807,19 @@ class RenderService:
         try:
             from clipwright.animation.hyperframes_renderer import HyperframesRenderer
             return HyperframesRenderer.is_available()
+        except Exception:
+            return False
+
+    @staticmethod
+    async def _hyperframes_available_async(timeout: float = 60.0):
+        """异步探测 Hyperframes 是否可用（含冷启动等待，最多 timeout 秒）。
+
+        与同步版不同：冷启动时 ``is_available()`` 底层缓存探针首次返回 default=False，
+        会误跳过 HF 图解/MG 渲染。此方法轮询等待真实可用性，超时仍不可用才返回 False。
+        """
+        try:
+            from clipwright.animation.hyperframes_renderer import HyperframesRenderer
+            return await HyperframesRenderer.await_available(timeout)
         except Exception:
             return False
 
