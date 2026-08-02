@@ -6,23 +6,37 @@ import asyncio
 import json
 import tempfile
 import uuid
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
-from clipwright.config import logger
+from clipwright.config import logger, settings
 from clipwright.schema.timeline import Timeline
 from clipwright.services.async_util import spawn_background
+from clipwright.services.remote_render import RemoteRenderService
 from clipwright.services.render import RenderService
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/render", tags=["render"])
-_render_service = RenderService()
 
 # 渲染队列
 _render_queue: dict[str, dict] = {}
+
+
+@lru_cache(maxsize=1)
+def _pick_render_service():
+    """按配置选择渲染服务（懒加载单例）：配置远程地址则用远程服务，否则本地服务。
+
+    首次调用时依据 settings.remote_render_url 决定，结果缓存为单例。
+    """
+    if (settings.remote_render_url or "").strip():
+        logger.info("渲染服务选择: RemoteRenderService (remote=%s)", settings.remote_render_url)
+        return RemoteRenderService()
+    logger.info("渲染服务选择: RenderService (本地)")
+    return RenderService()
 
 
 @router.post("/queue")
@@ -47,7 +61,7 @@ async def queue_render(body: RenderRequest) -> dict:
                 _render_queue[task_id]["phase"] = phase
                 _render_queue[task_id]["detail"] = detail
 
-            result = await _render_service.render(
+            result = await _pick_render_service().render(
                 tl, out,
                 width=params["width"], height=params["height"],
                 fps=params["fps"], bitrate=params["bitrate"],
@@ -234,7 +248,7 @@ async def start_render(
     logger.info("渲染请求: tracks=%d, output=%s, params=%s",
                 len(tl.tracks or []), out, params)
     try:
-        result = await _render_service.render(
+        result = await _pick_render_service().render(
             tl, out,
             width=params["width"],
             height=params["height"],
