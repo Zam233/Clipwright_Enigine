@@ -272,7 +272,7 @@ els.forEach(el=>{
                 start = _fmt_sec(start_sec)
                 end = _fmt_sec(start_sec + duration_sec)
                 fc = (
-                    "[1:v]setpts=PTS-STARTPTS,format=yuva420p[ov];"
+                    f"[1:v]setpts=PTS-STARTPTS+{start}/TB,format=yuva420p[ov];"
                     f"[0:v][ov]overlay=x=0:y=0:enable='between(t,{start},{end})'"
                     ":eof_action=pass[vout]"
                 )
