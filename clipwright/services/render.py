@@ -782,13 +782,17 @@ class RenderService:
                 s = seg.get("source_path","")
                 if s and Path(s).exists(): voice = s; break
         bgm = bfp if bfp and Path(bfp).exists() else None
+        # 注意：不要使用 -shortest —— 旁白/背景乐通常短于整片时长，
+        # -shortest 会把输出裁剪到较短音轨的长度，导致成片被截断（保留完整视频时长是预期行为）。
+        # Do NOT use -shortest: narration/bgm is usually shorter than the full cut,
+        # and -shortest would trim the output to the shorter stream, truncating the video.
         if voice and bgm:
             try:
                 await self._ff(["ffmpeg","-y","-loglevel","error","-i",input_video,"-i",voice,"-i",bgm,
                                "-filter_complex","[1:a]loudnorm=I=-16:LRA=11:TP=-1.5[voice];[2:a]volume=0.3[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]",
                                "-map","0:v:0","-map","[aout]",
                                "-c:v",encoder,"-preset",preset,"-pix_fmt","yuv420p","-b:v",bitrate,
-                               "-c:a","aac","-b:a",ab,"-shortest",output_path],
+                               "-c:a","aac","-b:a",ab,output_path],
                               capture_output=True, text=False, timeout=1800)
                 if _is_valid_video(output_path): return
             except Exception:
@@ -797,7 +801,7 @@ class RenderService:
             try:
                 await self._ff(["ffmpeg","-y","-loglevel","error","-i",input_video,"-i",voice,
                                "-c:v",encoder,"-preset",preset,"-pix_fmt","yuv420p","-b:v",bitrate,
-                               "-c:a","aac","-b:a",ab,"-map","0:v:0","-map","1:a:0","-shortest",output_path],
+                               "-c:a","aac","-b:a",ab,"-map","0:v:0","-map","1:a:0",output_path],
                               capture_output=True, text=False, timeout=600)
                 if _is_valid_video(output_path): return
             except Exception:
