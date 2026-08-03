@@ -343,7 +343,7 @@ class TestAnimationAgentAsyncProbe:
     根因：``_CachedProbe.get_sync()`` 冷启动首次返回 default=False，导致
     AnimationAgent 的同步检查把首个 pipeline 的逻辑动画全部降级为静态 drawtext。
     修复：改用 ``await HyperframesRenderer.await_available(120)`` 等待冷启动；
-    所有降级文字 clip 都必须带 fade_in keyframes，绝不静态。
+    降级路径不再创建任何文字 clip（跳过，避免把动画设计描述渲染成屏幕文字）。
     测试一律 monkeypatch 探针，绝不派生真实 npx 子进程。
     """
 
@@ -391,8 +391,8 @@ class TestAnimationAgentAsyncProbe:
         assert str(produced.kind) == "animation"
         assert produced.metadata["renderer"] == "hyperframes"
 
-    def test_probe_false_produces_animated_text_clip(self, monkeypatch) -> None:
-        """await_available→False（真超时） → 产出 TEXT 降级 clip，但 keyframes 非空（len≥2）。"""
+    def test_probe_false_skips_clip(self, monkeypatch) -> None:
+        """await_available→False（真超时） → 降级路径跳过创建 clip（不再渲染描述文字）。"""
         import asyncio
 
         from clipwright.animation.hyperframes_renderer import HyperframesRenderer
@@ -408,28 +408,15 @@ class TestAnimationAgentAsyncProbe:
         asyncio.run(agent._handle_logic_animation(
             track, vid, "diagram", "箭头", self._mk_marker(), None))
 
-        assert len(track.clips) == 1
-        produced = track.clips[0]
-        assert str(produced.kind) == "text"
-        assert produced.metadata["renderer"] == "drawtext"
-        assert len(produced.keyframes) >= 2
+        # 降级 = 跳过：不创建任何 TEXT/drawtext 描述文字 clip
+        assert len(track.clips) == 0
 
-    def test_fallback_text_clip_is_animated_fade_in(self) -> None:
-        """_create_fallback_text_clip → keyframes opacity 0→1（fade_in）+ anim_type=fade_in。"""
+    def test_fallback_text_clip_skips_no_descriptive_text(self) -> None:
+        """_create_fallback_text_clip → 不再创建任何 TEXT/drawtext clip（降级文本已禁用）。"""
         agent = self._make_agent()
         track = self._mk_anim_track()
         vid = self._mk_video_clip(start_sec=2.0, duration_sec=5.0)
         agent._create_fallback_text_clip(track, vid, "箭头", "A→B→C", 5.0)
 
-        assert len(track.clips) == 1
-        produced = track.clips[0]
-        assert produced.metadata["anim_type"] == "fade_in"
-        assert produced.metadata["renderer"] == "drawtext"
-        assert len(produced.keyframes) >= 2
-        opacities = [
-            kf["properties"]["opacity"]
-            for kf in produced.keyframes
-            if "opacity" in kf.get("properties", {})
-        ]
-        assert opacities[0] == 0
-        assert 1 in opacities
+        # 降级文本已禁用：跳过创建 clip，绝不把动画设计描述打印成屏幕文字
+        assert len(track.clips) == 0

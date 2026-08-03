@@ -367,38 +367,21 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         hf_available = await self._hyperframes_available()
         renderer = "hyperframes" if hf_available else "drawtext"
         if not hf_available:
-            logger.info("AnimationAgent: Hyperframes 不可用，逻辑动画 [%s] 降级到 drawtext", anim_name)
-            # 通过 trace 事件推送用户可见警告
+            # 降级：Hyperframes 不可用 → 跳过创建 clip，绝不把 LLM 生成的动画
+            # 设计描述（text_content）打印成屏幕文字（修复前会产生
+            # "因果: 镜像→他者→…" 的字幕污染）。仅记录 warning + trace 事件。
+            logger.warning(
+                "AnimationAgent: Hyperframes 不可用，逻辑动画 [%s] 已跳过"
+                "（不再降级为文字显示）", anim_name,
+            )
             try:
                 from clipwright.services.trace import add_event as _evt
                 _evt(getattr(self, '_pid', ''), "animation", "warning",
-                     f"Hyperframes 不可用，[逻辑动画]{anim_name} 降级为文字显示",
-                     {"anim_id": anim_id, "degradation": "hyperframes_not_available"})
+                     f"Hyperframes 不可用，[逻辑动画]{anim_name} 已跳过",
+                     {"anim_id": anim_id, "degradation": "hyperframes_not_available",
+                      "skipped": True})
             except Exception:
                 pass
-            text_clip = Clip(
-                id=_uid("lc"),
-                kind=ClipKind.TEXT,
-                asset_id="",
-                track_id=anim_track.id,
-                start_sec=vid_clip.start_sec,
-                duration_sec=duration,
-                text=f"{anim_name}: {text_content[:50]}",
-                font_size=diagram_style.get("font_size", 36),
-                font_color=diagram_style.get("text_color", "#ffffff"),
-                keyframes=AnimationCatalog.build_full_keyframes(
-                    "fade_in", vid_clip.start_sec, duration
-                ),
-                metadata={
-                    "anim_type": "fade_in",
-                    "anim_name": anim_name,
-                    "category": "logic",
-                    "renderer": "drawtext",
-                    "position": "center",
-                },
-            )
-            anim_track.clips.append(text_clip)
-            anim_track.clips.sort(key=lambda c: c.start_sec)
             return
 
         anim_clip = Clip(
@@ -442,18 +425,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         # 加载 MG 动画定义
         mg_def = MGRenderer.load_animation(anim_id)
         if mg_def is None:
-            logger.warning("MG 动画未找到: %s，降级为文字", anim_id)
-            text_clip = Clip(
-                id=_uid("lc"), kind=ClipKind.TEXT, asset_id="",
-                track_id=anim_track.id,
-                start_sec=vid_clip.start_sec, duration_sec=duration,
-                text=f"{anim_name}: {text_content[:50]}",
-                keyframes=AnimationCatalog.build_full_keyframes(
-                    "fade_in", vid_clip.start_sec, duration
-                ),
-                metadata={"anim_type": "fade_in", "renderer": "drawtext"},
-            )
-            anim_track.clips.append(text_clip)
+            # 降级：MG 定义缺失 → 跳过创建 clip，不把设计描述打印成屏幕文字
+            logger.warning("MG 动画未找到: %s，已跳过（不再降级为文字显示）", anim_id)
+            self._add_trace_warning(f"MG 动画未找到: {anim_id}，动画已跳过")
             return
 
         # 解析输入参数: 格式 "文字|副标题|值"
@@ -472,18 +446,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         try:
             html = MGRenderer.render(mg_def, mg_params)
         except Exception as e:
-            logger.warning("MG 动画渲染失败: %s", e)
-            text_clip = Clip(
-                id=_uid("lc"), kind=ClipKind.TEXT, asset_id="",
-                track_id=anim_track.id,
-                start_sec=vid_clip.start_sec, duration_sec=clip_dur,
-                text=f"{anim_name}: {text_content[:50]}",
-                keyframes=AnimationCatalog.build_full_keyframes(
-                    "fade_in", vid_clip.start_sec, clip_dur
-                ),
-                metadata={"anim_type": "fade_in", "renderer": "drawtext"},
-            )
-            anim_track.clips.append(text_clip)
+            # 降级：渲染失败 → 跳过创建 clip，不把设计描述打印成屏幕文字
+            logger.warning("MG 动画渲染失败: %s，已跳过（不再降级为文字显示）", e)
+            self._add_trace_warning(f"MG 动画渲染失败: {anim_id}，动画已跳过")
             return
 
         anim_clip = Clip(
@@ -525,10 +490,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
     ) -> None:
         """处理 mg_dynamic 标记 — 通过内置 llm_mg 引擎动态生成 MG 动画。"""
         # P2: LLM MG 产物依赖 Hyperframes 渲染，入口同样用异步探测（含冷启动等待）。
-        # 只有真正等待超时（不可用）才降级为动画 drawtext，避免冷启动误降级。
+        # 只有真正等待超时（不可用）才走降级分支（跳过，不降级为文字显示）。
         if not await self._hyperframes_available():
-            logger.warning("AnimationAgent: Hyperframes 不可用，mg_dynamic 降级为 drawtext")
-            self._add_trace_warning("Hyperframes 不可用，LLM MG 动画降级为文字显示")
+            logger.warning("AnimationAgent: Hyperframes 不可用，mg_dynamic 跳过")
             self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
             return
 
@@ -540,8 +504,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             mg_gen = None
 
         if mg_gen is None:
-            logger.warning("AnimationAgent: llm_mg 引擎不可用，mg_dynamic 降级为 drawtext")
-            self._add_trace_warning("LLM MG 引擎不可用，动画降级为文字显示")
+            logger.warning("AnimationAgent: llm_mg 引擎不可用，mg_dynamic 跳过")
             self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
             return
 
@@ -630,29 +593,18 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         text_content: str,
         duration: float,
     ) -> None:
-        """创建降级文字 clip（带 fade_in keyframes，保证是动画而非静态文字）。"""
-        clip_duration = min(duration, 5.0)
-        text_clip = Clip(
-            id=_uid("fl"),
-            kind=ClipKind.TEXT,
-            asset_id="",
-            track_id=anim_track.id,
-            start_sec=vid_clip.start_sec,
-            duration_sec=clip_duration,
-            text=f"{anim_name}: {text_content[:50]}",
-            font_size=36,
-            font_color="#ffffff",
-            keyframes=AnimationCatalog.build_full_keyframes(
-                "fade_in", vid_clip.start_sec, clip_duration
-            ),
-            metadata={
-                "anim_type": "fade_in",
-                "renderer": "drawtext",
-                "position": "center",
-            },
+        """降级占位：文本降级已禁用——不再把动画设计描述打印为屏幕文字，直接跳过。
+
+        保留函数签名与全部调用点，但不再创建任何 TEXT/drawtext clip：
+        仅记录 warning 日志 + trace 警告事件。
+        """
+        logger.warning(
+            "AnimationAgent: LLM MG 降级文本已禁用，动画 [%s] 跳过（不显示描述文字）",
+            anim_name,
         )
-        anim_track.clips.append(text_clip)
-        anim_track.clips.sort(key=lambda c: c.start_sec)
+        self._add_trace_warning(
+            f"LLM MG 动画 [{anim_name}] 无法生成，已跳过（不再降级为文字显示）"
+        )
 
     def _add_trace_warning(self, message: str) -> None:
         """添加 trace 警告事件。"""
