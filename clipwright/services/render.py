@@ -600,16 +600,37 @@ class RenderService:
     # ── S2: 单次 Hyperframes 批量 ──────────────────
 
     async def _apply_all_hyperframes(self, video, text_overlays, hf_ov_local, width, height, fps):
-        """将图解动画 + MG 动画合并到单次 Hyperframes 调用。"""
+        """将图解动画 + MG 动画合并到单次 Hyperframes 调用。
+
+        两阶段:
+          Phase 1 — 各 MG 的 hyperframes MOV 渲染（CPU/GPU 密集）有界并发；
+          Phase 2 — 把 MOV 逐个叠加到主视频（ffmpeg re-encode，链式依赖）串行。
+        """
         from clipwright.animation.hyperframes_renderer import HyperframesRenderer
         overlays = [o for o in (text_overlays or [])
                     if o.get("renderer") == "hyperframes" or o.get("diagram_params")]
 
-        # MG HTML → overlay 条目
+        # Phase 1: 并发渲染各 MG 的 MOV（有界并发，避免 16 个同时占满 CPU/GPU）。
+        # 每个 MOV 用独立 uuid 目录，输出路径互不相同，可安全并行。
         if hf_ov_local:
-            # 需要渲染单个 HTML，先生成 MOV 再用 overlay 合成
-            for mg in hf_ov_local:
-                video = await self._apply_mg_overlay(video, mg, width, height, fps)
+            from clipwright.config import settings
+            sem = asyncio.Semaphore(
+                max(1, int(getattr(settings, "pipeline_concurrency", None) or 4)))
+
+            async def _render_one(mg):
+                async with sem:
+                    return await self._render_mg_mov(mg, width, height, fps)
+
+            movs = await asyncio.gather(
+                *(_render_one(mg) for mg in hf_ov_local), return_exceptions=True)
+
+            # Phase 2: 串行叠加（每次基于前一次输出 re-encode，保序链式执行）
+            for mg, mov in zip(hf_ov_local, movs):
+                if isinstance(mov, BaseException):
+                    logger.warning("MG overlay render failed: %s", mov)
+                    continue
+                if mov and _is_valid_video(mov):
+                    video = await self._apply_mg_overlay_mov(video, mg, mov, width, height, fps)
 
         if overlays:
             mov = str(self._work_dir / "overlay.mov")
@@ -621,16 +642,19 @@ class RenderService:
                     video = out_v
         return video
 
-    async def _apply_mg_overlay(self, video, mg_ov, width, height, fps):
-        """单个 MG HTML → Hyperframes 渲染 → overlay 合成。"""
+    async def _render_mg_mov(self, mg_ov, width, height, fps):
+        """渲染单个 MG HTML → MOV（hyperframes CLI，CPU/GPU 密集）。
+
+        每次调用使用独立 uuid 目录/输出路径（mg_<uuid>/mg_out.mov），
+        因此多个渲染可安全并发、互不覆盖。失败返回 None（由调用方跳过叠加）。
+        """
+        from clipwright.animation.hyperframes_renderer import HyperframesRenderer
         html = mg_ov.get("mg_html", "")
         if not html:
-            return video
+            return None
         mg_dir = Path(self._work_dir) / f"mg_{uuid.uuid4().hex[:8]}"
         mg_dir.mkdir(parents=True, exist_ok=True)
         (mg_dir / "index.html").write_text(html, encoding="utf-8")
-
-        from clipwright.animation.hyperframes_renderer import HyperframesRenderer
         mov = str(mg_dir / "mg_out.mov")
         cmd = [HyperframesRenderer._npx_cmd(), "hyperframes", "render",
                str(mg_dir), "-o", mov, "--format", "mov",
@@ -638,18 +662,35 @@ class RenderService:
         try:
             r = await self._ff(cmd, capture_output=True, text=False, timeout=1800)
             if r.returncode == 0 and _is_valid_video(mov):
-                out_v = str(self._work_dir / f"mg_{uuid.uuid4().hex[:4]}.mp4")
-                ok = HyperframesRenderer.render_overlay_on_video(
-                    mov, video, out_v,
-                    mg_ov.get("start_sec", 0), mg_ov.get("duration_sec", 0))
-                if ok and _is_valid_video(out_v):
-                    return out_v
+                return mov
             elif r.returncode != 0:
                 logger.warning("MG overlay render failed: rc=%s", r.returncode)
             else:
                 logger.warning("MG overlay produced invalid MOV: %s", mov)
         except Exception as e:
             logger.warning("MG overlay fail: %s", e)
+        return None
+
+    async def _apply_mg_overlay_mov(self, video, mg_ov, mov, width, height, fps):
+        """把已渲染的 MG MOV 叠加到主视频（ffmpeg re-encode，链式依赖须串行）。"""
+        from clipwright.animation.hyperframes_renderer import HyperframesRenderer
+        try:
+            out_v = str(self._work_dir / f"mg_{uuid.uuid4().hex[:4]}.mp4")
+            ok = HyperframesRenderer.render_overlay_on_video(
+                mov, video, out_v,
+                mg_ov.get("start_sec", 0), mg_ov.get("duration_sec", 0))
+            if ok and _is_valid_video(out_v):
+                return out_v
+            logger.warning("MG overlay re-encode invalid output: %s", out_v)
+        except Exception as e:
+            logger.warning("MG overlay fail: %s", e)
+        return video
+
+    async def _apply_mg_overlay(self, video, mg_ov, width, height, fps):
+        """单个 MG HTML → Hyperframes 渲染 → overlay 合成（串行路径，保持原签名）。"""
+        mov = await self._render_mg_mov(mg_ov, width, height, fps)
+        if mov and _is_valid_video(mov):
+            return await self._apply_mg_overlay_mov(video, mg_ov, mov, width, height, fps)
         return video
 
     # ── drawtext 构建（同原版） ──────────────────
