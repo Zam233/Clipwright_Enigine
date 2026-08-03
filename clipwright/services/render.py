@@ -639,9 +639,15 @@ class RenderService:
             r = await self._ff(cmd, capture_output=True, text=False, timeout=1800)
             if r.returncode == 0 and _is_valid_video(mov):
                 out_v = str(self._work_dir / f"mg_{uuid.uuid4().hex[:4]}.mp4")
-                ok = HyperframesRenderer.render_overlay_on_video(mov, video, out_v)
+                ok = HyperframesRenderer.render_overlay_on_video(
+                    mov, video, out_v,
+                    mg_ov.get("start_sec", 0), mg_ov.get("duration_sec", 0))
                 if ok and _is_valid_video(out_v):
                     return out_v
+            elif r.returncode != 0:
+                logger.warning("MG overlay render failed: rc=%s", r.returncode)
+            else:
+                logger.warning("MG overlay produced invalid MOV: %s", mov)
         except Exception as e:
             logger.warning("MG overlay fail: %s", e)
         return video

@@ -73,7 +73,7 @@ body{{width:{w}px;height:{h}px;overflow:hidden;background:{bg};position:relative
 .mg-shape{{border-radius:4px}}
 {all_css}
 </style></head><body>
-<div id="root" data-duration="{dur:.2f}" style="width:{w}px;height:{h}px;position:relative;overflow:hidden">
+<div id="root" data-composition-id="main" data-width="{w}" data-height="{h}" data-start="0" data-duration="{dur:.2f}" style="width:{w}px;height:{h}px;position:relative;overflow:hidden">
 {chr(10).join(elements_html)}
 </div>
 <script>
@@ -82,6 +82,7 @@ const root=document.getElementById('root');
 const dur=parseFloat(root.dataset.duration);
 {all_js}
 }})();
+window.__timelines = window.__timelines || {{}}; window.__timelines['main'] = {{ paused: true }};
 </script>
 </body></html>"""
 
@@ -187,7 +188,8 @@ const dur=parseFloat(root.dataset.duration);
             font_color = fill(elem.get("font_color", "#ffffff"))
             font_weight = elem.get("font_weight", "normal")
             html = (
-                f'<div id="{eid}" class="mg-el" style="{base_css}'
+                f'<div id="{eid}" class="mg-el clip" data-start="0" data-duration="{total_dur}" '
+                f'data-track-index="1" style="{base_css}'
                 f'font-size:{font_size}px;color:{font_color};font-weight:{font_weight}'
                 f'">{MGRenderer._esc(content)}</div>'
             )
@@ -200,7 +202,8 @@ const dur=parseFloat(root.dataset.duration);
             h_val = fill(elem.get("height", 100))
             radius = "50%" if shape == "ellipse" else elem.get("border_radius", 4)
             html = (
-                f'<div id="{eid}" class="mg-el mg-shape" style="{base_css}'
+                f'<div id="{eid}" class="mg-el mg-shape clip" data-start="0" data-duration="{total_dur}" '
+                f'data-track-index="1" style="{base_css}'
                 f'width:{w_val}px;height:{h_val}px;background:{color};'
                 f'border-radius:{radius};'
                 + (f'border:{sw}px solid {sw_color};' if sw > 0 else "")

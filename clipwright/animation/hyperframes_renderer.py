@@ -259,13 +259,36 @@ els.forEach(el=>{
     @staticmethod
     def render_overlay_on_video(
         overlay_video: str, main_video: str, output_path: str,
+        start_sec: float = 0, duration_sec: float = 0,
     ) -> bool:
-        """将 HF 输出的 MOV 叠加到主视频。"""
+        """将 HF 输出的 MOV 叠加到主视频。
+
+        start_sec/duration_sec 指定叠加窗口（默认 0 = 全时长叠加，保持旧行为）。
+        提供窗口时用 setpts 归零覆盖层时间戳，并用 overlay enable=between(t,start,start+dur)
+        只在窗口内显示；若覆盖层时长超过 duration_sec，则用 -t 截断输入对齐窗口。
+        """
         try:
+            if start_sec > 0 or duration_sec > 0:
+                start = _fmt_sec(start_sec)
+                end = _fmt_sec(start_sec + duration_sec)
+                fc = (
+                    "[1:v]setpts=PTS-STARTPTS,format=yuva420p[ov];"
+                    f"[0:v][ov]overlay=x=0:y=0:enable='between(t,{start},{end})'"
+                    ":eof_action=pass[vout]"
+                )
+            else:
+                fc = "[0:v][1:v]overlay=format=auto[vout]"
+
+            inputs = ["-i", main_video]
+            if duration_sec > 0 and _mov_longer_than(overlay_video, duration_sec):
+                # 覆盖层超长 → 用 -t 截断输入，使 enable 窗口与内容对齐
+                inputs += ["-t", _fmt_sec(duration_sec)]
+            inputs += ["-i", overlay_video]
+
             cmd = [
                 "ffmpeg", "-y", "-loglevel", "error",
-                "-i", main_video, "-i", overlay_video,
-                "-filter_complex", "[0:v][1:v]overlay=format=auto[vout]",
+                *inputs,
+                "-filter_complex", fc,
                 "-map", "[vout]", "-map", "0:a?",
                 "-c:v", "libx264", "-pix_fmt", "yuv420p",
                 "-c:a", "copy", output_path,
@@ -278,6 +301,28 @@ els.forEach(el=>{
 
 
 # ── 辅助函数 ─────────────────────────────────────────
+
+def _fmt_sec(value: float) -> str:
+    """格式化秒数：整数不带小数点，其余去掉多余尾零（滤镜参数安全形式）。"""
+    if float(value).is_integer():
+        return str(int(value))
+    return ("%.6f" % value).rstrip("0").rstrip(".")
+
+
+def _mov_longer_than(path: str, seconds: float) -> bool:
+    """检查视频时长是否超过给定秒数（用于决定是否需要截断覆盖层）。"""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode != 0:
+            return False
+        dur = float(r.stdout.strip().split("\n")[0])
+        return dur > seconds + 1e-6
+    except Exception:
+        return False
 
 def _html_esc(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
