@@ -229,12 +229,20 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         drawtext 都有实现方案（scale→fontsize 表达式）。
         """
         clip_duration = max(vid_clip.duration_sec, 1.0)
-        text_content = self._extract_text_content(vid_clip, marker) or marker.get("text", "")
+        text_content, text_source = self._extract_text_with_source(vid_clip, marker)
+        if not text_content:
+            text_content = marker.get("text", "")
+            if text_content:
+                text_source = "marker"
 
         # 长文本 + typewriter → 路由到字幕轨（CAPTION）
+        # 仅当文本来自真实旁白（marker/metadata）时才允许进入字幕轨；
+        # description 正则兜底提取的是场景描述（「混剪」/「镜头」-style），
+        # 禁止路由到字幕轨避免污染，降级为普通 TEXT clip（保留入场动画）。
         is_long_text = len(text_content) > 50
         is_typewriter = anim_id in ("typewriter", "char_by_char")
-        if is_long_text and is_typewriter:
+        can_caption = text_source in ("marker", "metadata")
+        if is_long_text and is_typewriter and can_caption:
             self._handle_caption(
                 text_track, vid_clip, text_content, persona_style,
             )
@@ -770,19 +778,38 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         3. clip.metadata.label
         4. clip.metadata.source_title
         5. description 中标记后的文字
+
+        仅返回文本；如需区分提取来源（真实旁白 vs 场景描述兜底），
+        使用 ``_extract_text_with_source``。
         """
-        # 1. marker 中解析的文字
+        text, _ = AnimationAgent._extract_text_with_source(clip, marker)
+        return text
+
+    @staticmethod
+    def _extract_text_with_source(
+        clip: Clip, marker: dict[str, Any] | None = None
+    ) -> tuple[str, str]:
+        """从 clip 中提取文字内容并返回来源标记。
+
+        Returns:
+            (text, source)，其中 source ∈ {"marker", "metadata", "description", ""}
+            - "marker"     ：marker.text —— 制作计划/用户真实旁白
+            - "metadata"   ：metadata.text / label / source_title —— 真实旁白
+            - "description"：description 正则兜底 —— 场景描述文本（不可作字幕）
+            - ""           ：无内容
+        """
+        # 1. marker 中解析的文字（真实旁白）
         if marker and marker.get("text"):
-            return marker["text"]
+            return marker["text"], "marker"
 
         meta = clip.metadata or {}
 
-        # 2. metadata 直接字段
+        # 2. metadata 直接字段（真实旁白）
         text = meta.get("text", "") or meta.get("label", "") or meta.get("source_title", "")
         if text:
-            return text
+            return text, "metadata"
 
-        # 3. description 中标记后面的文字
+        # 3. description 中标记后面的文字（场景描述兜底，非真实旁白）
         desc = meta.get("description", "") or ""
         if desc:
             import re
@@ -791,9 +818,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 r'\[(?:文字动画|逻辑动画|动画)\]\S+\s*[：:—\-]\s*(.+?)(?:$|[\n。！？])',
                 desc,
             ):
-                return m.group(1).strip()
+                return m.group(1).strip(), "description"
 
-        return ""
+        return "", ""
 
     @staticmethod
     async def _resolve_style(
