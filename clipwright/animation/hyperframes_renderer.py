@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -42,6 +43,10 @@ _hf_available = cached_probe("hyperframes", _probe_hyperframes, ttl=600.0, defau
 class HyperframesRenderer:
     """使用 Hyperframes (HTML→MOV) 渲染文字覆盖层。"""
 
+    _BROWSER_CACHE_GLOB = (
+        r"C:\Users\*\.cache\hyperframes\chrome\chrome-headless-shell\*\chrome-headless-shell-win64\chrome-headless-shell.exe"
+    )
+
     @staticmethod
     def _npx_cmd() -> str:
         import shutil
@@ -59,6 +64,49 @@ class HyperframesRenderer:
             elif Path(c).exists():
                 return c
         return "npx"
+
+    @staticmethod
+    def _resolve_browser_path() -> str:
+        """定位 hyperframes 可用的 Chrome/Chromium（含已下载的 chrome-headless-shell）。
+
+        hyperframes 在 Windows 上只会探测 ``C:\\Program Files\\Google\\Chrome\\...``，
+        本机 Chrome 常装在 ``(x86)`` 目录 → 探测失败 → 尝试下载 → 渲染 hang。
+        这里显式解析 headless shell 路径注入 ``HYPERFRAMES_BROWSER_PATH``。
+        """
+        import glob as _glob
+        # 1) 用户已设置
+        env_p = os.environ.get("HYPERFRAMES_BROWSER_PATH") or os.environ.get("PRODUCER_HEADLESS_SHELL_PATH")
+        if env_p and Path(env_p).exists():
+            return env_p
+        # 2) hyperframes 自带的 chrome-headless-shell 缓存（优先，专为无头渲染设计）
+        for pat in (
+            r"C:\Users\*\.cache\hyperframes\chrome\chrome-headless-shell\*\chrome-headless-shell-win64\chrome-headless-shell.exe",
+            r"C:\Users\*\AppData\Local\hyperframes\chrome\chrome-headless-shell\*\chrome-headless-shell-win64\chrome-headless-shell.exe",
+        ):
+            hits = _glob.glob(pat)
+            if hits:
+                return hits[0]
+        # 3) 系统 Chrome / Edge
+        for p in (
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        ):
+            if Path(p).exists():
+                return p
+        return ""
+
+    @staticmethod
+    def _render_env() -> dict | None:
+        """为 hyperframes subprocess 提供带浏览器路径的 env（无浏览器时返回 None）。"""
+        bp = HyperframesRenderer._resolve_browser_path()
+        if not bp:
+            return None
+        env = dict(os.environ)
+        env["HYPERFRAMES_BROWSER_PATH"] = bp
+        env["PUPPETEER_EXECUTABLE_PATH"] = bp
+        return env
 
     @staticmethod
     def is_available() -> bool:
@@ -101,8 +149,10 @@ class HyperframesRenderer:
             ]
             logger.info("HyperframesRenderer: 渲染 %d 个覆盖层 → %s", len(overlays), output_path)
             # 同步 subprocess（最长 1h）offload 到线程池，避免冻住事件循环。
+            # 注入 HYPERFRAMES_BROWSER_PATH，避免 Windows 上浏览器探测失败导致 hang。
             result = await asyncio.to_thread(
-                subprocess.run, cmd, capture_output=True, text=False, timeout=3600
+                subprocess.run, cmd, capture_output=True, text=False, timeout=3600,
+                env=HyperframesRenderer._render_env(),
             )
             if result.returncode == 0 and out.exists():
                 logger.info("HyperframesRenderer: 完成 (%s, %.0fKB)",
@@ -154,6 +204,7 @@ body{{width:{width}px;height:{height}px;overflow:hidden;background:transparent;p
 {css_kfs}
 </style></head><body>
 <div id="root" data-composition-id="main" data-duration="{total_dur:.2f}"
+     data-width="{width}" data-height="{height}"
      style="width:{width}px;height:{height}px;position:relative;overflow:hidden">
 {chr(10).join(elems)}
 </div>
@@ -238,15 +289,30 @@ els.forEach(el=>{
     @staticmethod
     def render_overlay_on_video(
         overlay_video: str, main_video: str, output_path: str,
+        start_sec: float | None = None, duration_sec: float | None = None,
     ) -> bool:
-        """将 HF 输出的 MOV 叠加到主视频。"""
+        """将 HF 输出的 MOV 叠加到主视频。
+
+        :param start_sec: 叠加时间窗口起点（相对主视频时间线）；None 表示叠加整个视频。
+        :param duration_sec: 叠加时间窗口长度；与 start_sec 同时提供时，
+            通过 overlay 的 ``enable='between(t,...)'`` 裁剪到 MG clip 对应时段，
+            避免 MOV 被平铺到整个主视频（Bug2 修复）。
+        """
         try:
+            # Bug3: 编码器统一走智能探测（GPU 可用时 h264_nvenc，否则 libx264）
+            from clipwright.services.render import _resolve_encoder, _hwaccel_args
+            encoder = _resolve_encoder()
+            hwaccel = _hwaccel_args(encoder)
+            overlay_expr = "overlay=format=auto"
+            if start_sec is not None and duration_sec is not None:
+                overlay_expr = (f"overlay=format=auto:"
+                                f"enable='between(t,{start_sec},{start_sec + duration_sec})'")
             cmd = [
                 "ffmpeg", "-y", "-loglevel", "error",
-                "-i", main_video, "-i", overlay_video,
-                "-filter_complex", "[0:v][1:v]overlay=format=auto[vout]",
+                *hwaccel, "-i", main_video, "-i", overlay_video,
+                "-filter_complex", f"[0:v][1:v]{overlay_expr}[vout]",
                 "-map", "[vout]", "-map", "0:a?",
-                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-c:v", encoder, "-pix_fmt", "yuv420p",
                 "-c:a", "copy", output_path,
             ]
             subprocess.run(cmd, capture_output=True, text=False, timeout=1800, check=True)

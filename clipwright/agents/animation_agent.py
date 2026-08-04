@@ -24,7 +24,23 @@ from clipwright.schema.agent import (
     AnimationOutput,
 )
 from clipwright.schema.timeline import Clip, ClipKind, Track
+from clipwright.services.subtitle import DEFAULT_CAPTION_STYLE, DEFAULT_TEXT_STYLE
 from clipwright.services.trace import add_event
+
+
+def _merge_style_defaults(
+    base: dict[str, Any], persona_style: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """将 persona_style 提供的样式覆盖到统一默认样式上（仅覆盖已定义样式字段）。
+
+    任务 32：生成 clip 必须携带完整样式字段；persona_style 未提供时使用统一默认值。
+    """
+    style = dict(base)
+    for k in style:
+        v = (persona_style or {}).get(k)
+        if v is not None:
+            style[k] = v
+    return style
 
 
 class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
@@ -41,6 +57,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         super().__init__()
         self._catalog = AnimationCatalog()
         self._mg_category_context: dict = {}  # 视频类型（category）特征数据
+        # 时间线分辨率/帧率（execute() 中从 Timeline 读取，供 MG 渲染器动态解析）
+        self._tl_width = 1920
+        self._tl_height = 1080
+        self._tl_fps = 30.0
 
     async def execute(
         self, input_data: AnimationInput, context: AgentContext
@@ -55,6 +75,12 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             if timeline is None or not timeline.tracks:
                 logger.info("AnimationAgent: 时间线为空，跳过")
                 return AnimationOutput(decision=AgentDecision.PASS, timeline=timeline)
+
+            # 读取时间线拟定分辨率/帧率（0/None 回退 1920x1080/30），
+            # 供 MG 渲染器动态解析 — 不再让 Hyperframes 默认 1080x1920 竖屏
+            self._tl_width = getattr(timeline, "width", 0) or 1920
+            self._tl_height = getattr(timeline, "height", 0) or 1080
+            self._tl_fps = getattr(timeline, "fps", 0) or 30.0
 
             # 解析视觉风格（LLM 驱动，支持插件覆盖）
             persona_style = await self._resolve_style(
@@ -245,6 +271,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             anim_id, vid_clip.start_sec, clip_duration
         )
 
+        # 完整文字样式字段（统一默认 + persona_style 覆盖，任务 32）
+        style = _merge_style_defaults(DEFAULT_TEXT_STYLE, persona_style)
+
         text_clip = Clip(
             id=_uid("tc"),
             kind=ClipKind.TEXT,
@@ -254,15 +283,14 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             duration_sec=clip_duration,
             text=text_content or marker.get("text", ""),
             font="sans-serif",
-            font_size=persona_style.get("font_size", 48),
-            font_color=persona_style.get("font_color", "#ffffff"),
+            **style,
             keyframes=full_kfs,
             metadata={
                 "anim_type": anim_id,
                 "anim_name": anim_name,
                 "renderer": "drawtext",
                 "position": persona_style.get("position", "bottom"),
-                "stroke_width": persona_style.get("stroke_width", 1),
+                "stroke_width": persona_style.get("stroke_width", 0),
                 "stroke_color": persona_style.get("stroke_color", "#000000"),
             },
         )
@@ -283,6 +311,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
     ) -> None:
         """长文本 → CAPTION clip，使用 FFmpeg drawtext 渲染。"""
         clip_duration = max(vid_clip.duration_sec, 1.0)
+        # 完整字幕样式字段（统一默认 + persona_style 覆盖，任务 32）
+        style = _merge_style_defaults(DEFAULT_CAPTION_STYLE, persona_style)
         caption_clip = Clip(
             id=_uid("cc"),
             kind=ClipKind.CAPTION,
@@ -292,8 +322,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             duration_sec=clip_duration,
             text=text_content,
             font="sans-serif",
-            font_size=persona_style.get("font_size", 36),
-            font_color=persona_style.get("font_color", "#ffffff"),
+            **style,
             metadata={
                 "category": "caption",
                 "position": persona_style.get("position", "bottom"),
@@ -452,9 +481,12 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         mg_dur = mg_def.get("duration_sec", duration)
         clip_dur = min(mg_dur, vid_clip.duration_sec)
 
-        # 渲染为 HTML
+        # 渲染为 HTML（时间线尺寸优先，动态解析分辨率/帧率）
         try:
-            html = MGRenderer.render(mg_def, mg_params)
+            html = MGRenderer.render(
+                mg_def, mg_params,
+                width=self._tl_width, height=self._tl_height, fps=self._tl_fps,
+            )
         except Exception as e:
             logger.warning("MG 动画渲染失败: %s", e)
             text_clip = Clip(
@@ -546,6 +578,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 persona_style=persona_style or {},
                 scene_context=scene_context,
                 category_context=self._mg_category_context,
+                width=self._tl_width, height=self._tl_height, fps=self._tl_fps,
             )
         except Exception as e:
             logger.exception("AnimationAgent: llm_mg.generate() 异常: %s", e)

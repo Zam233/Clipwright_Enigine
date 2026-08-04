@@ -19,6 +19,15 @@ from clipwright.animation.mg.validator import validate_mg_json, repair_mg_json
 from clipwright.animation.mg.fallback import FallbackEngine
 
 
+# LLM MG 生成/修复提示词共用：输出硬性约束（降低 fallback 率，run6 有 6 次 fallback）
+_STRICT_JSON_OUTPUT = (
+    "\n\n## 输出硬性要求\n"
+    "- 只输出一个合法的 JSON 对象，不要包含任何解释性文字、前言或后语。\n"
+    "- 不要使用 markdown 代码块围栏（``` 或 ```json），直接输出原始 JSON。\n"
+    "- 输出中除 JSON 外不要出现任何其他字符。\n"
+)
+
+
 class MGGenerator:
     """LLM 驱动的 MG 动画生成器。"""
 
@@ -46,6 +55,9 @@ class MGGenerator:
         persona_style: dict[str, Any] | None = None,
         scene_context: dict[str, Any] | None = None,
         category_context: dict[str, Any] | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        fps: float = 30.0,
     ) -> dict[str, Any]:
         """生成 MG 动画 JSON。
 
@@ -57,6 +69,9 @@ class MGGenerator:
             category_context: 视频类型（category）特征数据
                 {plugin_id, display_name, description, shot_params, pacing,
                  mg_style_guidance, translated}
+            width: 拟定分辨率宽度（时间线尺寸；None 时回退 mg_def/1920）
+            height: 拟定分辨率高度（时间线尺寸；None 时回退 mg_def/1080）
+            fps: 实际时间线帧率
 
         Returns:
             {success, html, mg_def, method, fallback_template, generation_id}
@@ -88,22 +103,48 @@ class MGGenerator:
                 logger.warning("MGGenerator validation errors: %s", errors)
                 mg_def, fixes = repair_mg_json(mg_def)
                 logger.info("MGGenerator repair fixes: %s", fixes)
+                ok, errors = validate_mg_json(mg_def)
 
-            ok2, errors2 = validate_mg_json(mg_def)
-            if not ok2:
-                # 带错误回传的一次修复重试（仅一次，避免无限重试）
-                repaired = await self._call_llm_repair(
-                    mg_def, errors2, description, text_content,
+            if ok:
+                # 校验通过 → LLM 自批判质量闭环：低分且可修复 → 一次修复重试
+                result = await self._finalize_with_critique(
+                    mg_def, "llm", description, text_content,
                     persona_style, scene_context, category_context,
+                    width=width, height=height, fps=fps,
                 )
-                if repaired:
-                    logger.info("MGGenerator: 修复重试成功（带错误回传）")
-                    return self._build_success(repaired, "llm_repair")
-                logger.warning("MGGenerator: 修复重试仍失败，进入降级")
-            else:
-                return self._build_success(mg_def, "llm")
+                if result:
+                    return result
+                logger.warning("MGGenerator: 批判修复失败，进入降级")
+                return await self._fallback_generate(
+                    description, text_content, persona_style,
+                    width=width, height=height, fps=fps,
+                )
 
-        return await self._fallback_generate(description, text_content, persona_style)
+            # 带错误回传的一次修复重试（仅一次，避免无限重试）
+            repaired = await self._call_llm_repair(
+                mg_def, errors, description, text_content,
+                persona_style, scene_context, category_context,
+            )
+            if repaired:
+                logger.info("MGGenerator: 修复重试成功（带错误回传）")
+                result = await self._finalize_with_critique(
+                    repaired, "llm_repair", description, text_content,
+                    persona_style, scene_context, category_context,
+                    width=width, height=height, fps=fps,
+                )
+                if result:
+                    return result
+                logger.warning("MGGenerator: 修复重试结果批判不通过，进入降级")
+                return await self._fallback_generate(
+                    description, text_content, persona_style,
+                    width=width, height=height, fps=fps,
+                )
+            logger.warning("MGGenerator: 修复重试仍失败，进入降级")
+
+        return await self._fallback_generate(
+            description, text_content, persona_style,
+            width=width, height=height, fps=fps,
+        )
 
     async def _call_llm_repair(
         self,
@@ -126,6 +167,7 @@ class MGGenerator:
             "\n\n上次输出的动画 JSON 未通过 schema 校验。请只输出**修正后的完整 JSON**，"
             "确保它通过全部校验规则，不要输出任何解释或额外文本。"
         )
+        system_prompt += _STRICT_JSON_OUTPUT
 
         broken_str = json.dumps(broken_def, ensure_ascii=False)
         user_parts = [f"## 动画需求\n{description}"]
@@ -155,6 +197,227 @@ class MGGenerator:
             logger.warning("MGGenerator repair call failed: %s", e)
         return None
 
+    async def _finalize_with_critique(
+        self,
+        mg_def: dict[str, Any],
+        method: str,
+        description: str,
+        text_content: str,
+        persona_style: dict,
+        scene_context: dict,
+        category_context: dict,
+        width: int | None = None,
+        height: int | None = None,
+        fps: float = 30.0,
+    ) -> dict[str, Any] | None:
+        """校验通过后的质量出口：LLM 自批判 + 必要时一次修复重试。
+
+        返回成功响应；批判修复失败时返回 None（调用方进入降级）。
+        批判 LLM 调用失败/禁用时静默跳过批判，直接接受当前输出（不降级）。
+        """
+        critique = await self._critique_quality(
+            mg_def, description, persona_style, category_context,
+        )
+        params = self._build_llm_params(mg_def, text_content, persona_style)
+        if critique is None:
+            # LLM 评估失败（或 critique 禁用）→ 静默跳过，不降级
+            return self._build_success(mg_def, method, params=params,
+                                       width=width, height=height, fps=fps)
+
+        score = critique.get("score", 100)
+        issues = critique.get("issues", [])
+        suggestions = critique.get("suggestions", [])
+        min_score = self._config.get("critique", {}).get("min_score", 60)
+
+        if score >= min_score:
+            logger.debug("MGGenerator: 批判通过 score=%d", score)
+            return self._build_success(mg_def, method, params=params,
+                                       width=width, height=height, fps=fps)
+
+        if not self._issues_fixable(issues, suggestions):
+            logger.warning("MGGenerator: 批判低分(score=%d)但问题不可修复，接受原输出", score)
+            return self._build_success(mg_def, method, params=params,
+                                       width=width, height=height, fps=fps)
+
+        # 低分且可修复 → 带批判反馈的一次修复重试（仅一次）
+        repaired = await self._call_llm_critique_repair(
+            mg_def, critique, description, text_content,
+            persona_style, scene_context, category_context,
+        )
+        if repaired:
+            logger.info("MGGenerator: 批判修复成功 score=%d", score)
+            return self._build_success(
+                repaired, "critique_repair",
+                params=self._build_llm_params(repaired, text_content, persona_style),
+                width=width, height=height, fps=fps,
+            )
+
+        logger.warning("MGGenerator: 批判修复失败(score=%d)，进入降级", score)
+        return None
+
+    async def _critique_quality(
+        self,
+        mg_def: dict[str, Any],
+        description: str,
+        persona_style: dict,
+        category_context: dict,
+    ) -> dict[str, Any] | None:
+        """LLM 自批判质量评估。
+
+        让 LLM 按 config.yaml 中的设计原则与硬性约束对已生成的 mg_def 打分，
+        输出 {score 0-100, issues[], suggestions[]}。评估失败（LLM 异常/解析
+        失败/score 越界）返回 None，调用方应静默跳过（不降级）。
+
+        Returns:
+            {"score": int, "issues": list[str], "suggestions": list[str]} 或 None
+        """
+        critique_config = self._config.get("critique", {})
+        if not critique_config.get("enabled", True):
+            return None
+
+        prompt_config = self._config.get("prompt", {})
+        system_template = prompt_config.get("system_template", "")
+        context_section = self._build_context_section(persona_style, category_context)
+
+        system_prompt = (
+            "你是一位严苛的 Motion Graphics 动画质量评审专家。"
+            "下面给出 MG 动画 JSON 及其设计原则与硬性约束，请据此评审动画质量。\n\n"
+        )
+        if system_template:
+            system_prompt += system_template
+        system_prompt += (
+            "\n\n## 评审输出\n"
+            "只输出一个 JSON，不要包含解释性文字：\n"
+            '{"score": 0到100的整数, "issues": ["具体问题1", ...], '
+            '"suggestions": ["可操作建议1", ...]}\n'
+            "- score < 60 表示未达标（元素过少/缺少缓动/违反硬性约束/动画平淡单调等）。\n"
+            "- issues 指出违反的原则与约束，具体到元素或关键帧。\n"
+            "- suggestions 给出一到两条可执行的改进方向，供修复重试使用。\n"
+        )
+        if context_section:
+            system_prompt += "\n\n" + context_section
+
+        user_parts = [f"## 动画需求\n{description}"]
+        user_parts.append(
+            "## 待评审动画 JSON\n" + json.dumps(mg_def, ensure_ascii=False)[:4000]
+        )
+        user_prompt = "\n\n".join(user_parts)
+
+        llm_config = self._config.get("llm", {})
+        try:
+            response = await self._llm.generate(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=critique_config.get("temperature", 0.1),
+                timeout=llm_config.get("timeout", 120),
+            )
+            content = response.content if hasattr(response, "content") else str(response)
+            return self._parse_critique(content)
+        except Exception as e:
+            logger.warning("MGGenerator critique call failed: %s", e)
+            return None
+
+    async def _call_llm_critique_repair(
+        self,
+        mg_def: dict[str, Any],
+        critique: dict[str, Any],
+        description: str,
+        text_content: str,
+        persona_style: dict,
+        scene_context: dict,
+        category_context: dict,
+    ) -> dict[str, Any] | None:
+        """带批判反馈的一次性修复调用：把质量评审意见告诉 LLM 让其重做 JSON。"""
+        prompt_config = self._config.get("prompt", {})
+        system_template = prompt_config.get("system_template", "Generate MG animation JSON.")
+        context_section = self._build_context_section(persona_style, category_context)
+        system_prompt = system_template
+        if context_section:
+            system_prompt += "\n\n" + context_section
+        system_prompt += (
+            "\n\n上次输出的动画 JSON 经质量评审未达标（score 低于阈值）。"
+            "请根据评审意见重新设计，只输出**改进后的完整 JSON**，"
+            "确保它通过全部校验规则并修复所有质量问题，不要输出任何解释或额外文本。"
+        )
+        system_prompt += _STRICT_JSON_OUTPUT
+
+        broken_str = json.dumps(mg_def, ensure_ascii=False)
+        issues = "\n".join(f"- {i}" for i in critique.get("issues", []))
+        suggestions = "\n".join(f"- {s}" for s in critique.get("suggestions", []))
+        user_parts = [f"## 动画需求\n{description}"]
+        if text_content:
+            user_parts.append(f"## 文字内容\n{text_content}")
+        user_parts.append(f"## 质量评审\n评分: {critique.get('score')}")
+        if issues:
+            user_parts.append("问题:\n" + issues)
+        if suggestions:
+            user_parts.append("改进建议:\n" + suggestions)
+        user_parts.append(f"## 上次输出（未达标）\n{broken_str[:4000]}")
+        user_prompt = "\n\n".join(user_parts)
+
+        llm_config = self._config.get("llm", {})
+        try:
+            response = await self._llm.generate(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=llm_config.get("temperature", 0.2),
+                timeout=llm_config.get("timeout", 120),
+            )
+            content = response.content if hasattr(response, "content") else str(response)
+            repaired = self._parse_llm_response(content)
+            if repaired:
+                ok, _ = validate_mg_json(repaired)
+                if ok:
+                    return repaired
+        except Exception as e:
+            logger.warning("MGGenerator critique repair call failed: %s", e)
+        return None
+
+    def _parse_critique(self, content: str) -> dict[str, Any] | None:
+        """从 LLM 批判响应中提取并规范化 {score, issues, suggestions}。"""
+        parsed = self._parse_llm_response(content)
+        if not isinstance(parsed, dict):
+            return None
+
+        raw_score = parsed.get("score")
+        try:
+            score = int(raw_score)
+        except (TypeError, ValueError):
+            logger.warning("MGGenerator: critique 评分无法解析: %r", raw_score)
+            return None
+        if not (0 <= score <= 100):
+            logger.warning("MGGenerator: critique 评分越界: %s", score)
+            return None
+
+        def _to_str_list(value: Any) -> list[str]:
+            if isinstance(value, list):
+                return [str(v) for v in value if str(v).strip()]
+            if isinstance(value, str) and value.strip():
+                return [value.strip()]
+            return []
+
+        return {
+            "score": score,
+            "issues": _to_str_list(parsed.get("issues")),
+            "suggestions": _to_str_list(parsed.get("suggestions")),
+        }
+
+    @staticmethod
+    def _issues_fixable(issues: list[str], suggestions: list[str]) -> bool:
+        """判断批判问题是否可修复：有可操作建议，或问题非根本性不可修复。"""
+        if suggestions:
+            return True
+        if not issues:
+            return False
+        unfixable_markers = ("无法修复", "不可能", "需求不足", "信息不足", "无法实现", "无解")
+        return not any(
+            marker in issue for issue in issues for marker in unfixable_markers
+        )
+
     async def _call_llm(
         self,
         description: str,
@@ -176,6 +439,7 @@ class MGGenerator:
         system_prompt = system_template
         if context_section:
             system_prompt += "\n\n" + context_section
+        system_prompt += _STRICT_JSON_OUTPUT
 
         user_parts = [f"## 动画需求\n{description}"]
         if text_content:
@@ -309,6 +573,9 @@ class MGGenerator:
         description: str,
         text_content: str,
         persona_style: dict,
+        width: int | None = None,
+        height: int | None = None,
+        fps: float = 30.0,
     ) -> dict[str, Any]:
         """降级生成 — 匹配已有模板。"""
         templates = self._get_templates()
@@ -324,7 +591,8 @@ class MGGenerator:
                 try:
                     full_template = _json.loads(template_path.read_text(encoding="utf-8"))
                     template, params = FallbackEngine.fill_template_params(full_template, text_content, persona_style)
-                    return self._build_success(template, "fallback", fallback_template=tid)
+                    return self._build_success(template, "fallback", fallback_template=tid, params=params,
+                                               width=width, height=height, fps=fps)
                 except Exception:
                     pass
 
@@ -338,8 +606,55 @@ class MGGenerator:
             "generation_id": "",
         }
 
+    @staticmethod
+    def _build_llm_params(
+        mg_def: dict[str, Any],
+        text_content: str,
+        persona_style: dict | None = None,
+    ) -> dict[str, str]:
+        """为 LLM 生成的 mg_def 构建占位符参数。
+
+        LLM 输出可能在元素内容中引用 {text} {left} {right} {accent} 等占位符。
+        从模板 params 定义（无定义时从内容中出现的 {key} 占位符）收集键，
+        按位置用 | 分隔的文本段填充，并应用 Persona 主色覆盖 accent，
+        避免占位符原样渲染进最终 HTML。
+        """
+        style = persona_style or {}
+        parts = FallbackEngine.extract_keywords(text_content)
+
+        param_keys = list(mg_def.get("params", {}).keys())
+        if not param_keys:
+            seen: list[str] = []
+            for m in re.findall(
+                r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", json.dumps(mg_def, ensure_ascii=False)
+            ):
+                if m not in seen:
+                    seen.append(m)
+            param_keys = seen
+
+        params: dict[str, str] = {}
+        for i, key in enumerate(param_keys):
+            if i < len(parts):
+                params[key] = parts[i]
+            else:
+                default = mg_def.get("params", {}).get(key)
+                params[key] = default.get("default", "") if isinstance(default, dict) else ""
+
+        if parts:
+            params["text"] = parts[0]
+
+        if "primary_color" in style and "accent" in params:
+            # Persona 主色覆盖默认 accent
+            params["accent"] = style["primary_color"]
+
+        return params
+
     def _build_success(
         self, mg_def: dict, method: str, fallback_template: str | None = None,
+        params: dict[str, Any] | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        fps: float = 30.0,
     ) -> dict[str, Any]:
         """构建成功响应 + 渲染 HTML。"""
         import uuid
@@ -349,7 +664,7 @@ class MGGenerator:
 
         from clipwright.animation.mg_renderer import MGRenderer
         try:
-            html = MGRenderer.render(mg_def)
+            html = MGRenderer.render(mg_def, params, width=width, height=height, fps=fps)
         except Exception as e:
             logger.warning("MGGenerator: MGRenderer.render() failed: %s", e)
             html = ""

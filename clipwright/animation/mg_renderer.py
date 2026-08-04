@@ -29,23 +29,83 @@ from clipwright.config import logger
 class MGRenderer:
     """MG 动画渲染器 — MG JSON → HTML 字符串。"""
 
+    # 命名曲线 → CSS animation-timing-function 映射
+    # elastic/bounce 无标准 CSS 关键字，用近似 cubic-bezier
+    EASING_MAP: dict[str, str] = {
+        "linear": "linear",
+        "ease": "ease",
+        "ease-in": "ease-in",
+        "ease-out": "ease-out",
+        "ease-in-out": "ease-in-out",
+        "back-out": "cubic-bezier(0.175, 0.885, 0.32, 1.275)",
+        "elastic-out": "cubic-bezier(0.68, -0.55, 0.265, 1.55)",
+        "bounce": "cubic-bezier(0.25, 0.46, 0.45, 0.94)",
+    }
+
+    # 关键帧属性 → CSS 属性名（蛇形命名转连字符）
+    KEYFRAME_CSS_MAP: dict[str, str] = {
+        "font_size": "font-size",
+        "font_weight": "font-weight",
+        "font_family": "font-family",
+        "line_height": "line-height",
+        "letter_spacing": "letter-spacing",
+        "text_shadow": "text-shadow",
+        "box_shadow": "box-shadow",
+        "border_radius": "border-radius",
+        "border_width": "border-width",
+        "border_color": "border-color",
+        "transform_origin": "transform-origin",
+    }
+
+    # 元素级已显式渲染/结构性字段，静态透传时排除，避免重复输出
+    STATIC_EXCLUDE_KEYS = {
+        "type", "content", "shape", "color", "background",
+        "x", "y", "x_offset", "y_offset", "keyframes",
+        "font_size", "font_color", "font_weight",
+        "width", "height", "border_radius",
+        "stroke_width", "stroke_color", "border_width", "border_color",
+    }
+
+    @staticmethod
+    def _css_timing(easing: Any) -> str:
+        """将 easing 字段转换为 CSS animation-timing-function 值。
+
+        - 命名曲线 → EASING_MAP
+        - [x1, y1, x2, y2] 数组 → cubic-bezier(x1, y1, x2, y2) 透传
+        - 未知值回退到 ease（容错）
+        """
+        if isinstance(easing, (list, tuple)) and len(easing) == 4:
+            nums = ", ".join(str(float(n)) for n in easing)
+            return f"cubic-bezier({nums})"
+        name = str(easing)
+        if name.startswith("cubic-bezier(") and name.endswith(")"):
+            return name
+        return MGRenderer.EASING_MAP.get(name, "ease")
+
     @staticmethod
     def render(
         mg_def: dict[str, Any],
         params: dict[str, Any] | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        fps: float = 30.0,
     ) -> str:
         """将 MG 动画定义渲染为完整的 HTML 页面（供 Hyperframes 渲染）。
 
         Args:
             mg_def: 从 JSON 加载的 MG 动画定义
             params: 用户参数，替换 {text} {value} {unit} 等占位符
+            width: 拟定分辨率宽度（调用方时间线尺寸优先，缺省回退 mg_def/1920）
+            height: 拟定分辨率高度（调用方时间线尺寸优先，缺省回退 mg_def/1080）
+            fps: 实际时间线帧率（写进 <html data-fps>）
 
         Returns:
             完整 HTML 字符串（含 <style> 和 <script>）
         """
         params = params or {}
-        w = mg_def.get("width", 1920)
-        h = mg_def.get("height", 1080)
+        # 分辨率：调用方传入的时间线尺寸优先 → mg_def 兜底 → 1920x1080
+        w = width or mg_def.get("width", 1920)
+        h = height or mg_def.get("height", 1080)
         dur = mg_def.get("duration_sec", 3.0)
         bg = mg_def.get("style", {}).get("background", "transparent")
         font_family = mg_def.get("style", {}).get("font_family", "sans-serif")
@@ -65,7 +125,7 @@ class MGRenderer:
         all_js = "\n".join(js_code)
 
         return f"""<!DOCTYPE html>
-<html data-fps="30" data-width="{w}" data-height="{h}">
+<html data-fps="{fps:g}" data-width="{w}" data-height="{h}">
 <head><meta charset="utf-8"><style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{width:{w}px;height:{h}px;overflow:hidden;background:{bg};position:relative;font-family:{font_family}}}
@@ -73,7 +133,7 @@ body{{width:{w}px;height:{h}px;overflow:hidden;background:{bg};position:relative
 .mg-shape{{border-radius:4px}}
 {all_css}
 </style></head><body>
-<div id="root" data-duration="{dur:.2f}" style="width:{w}px;height:{h}px;position:relative;overflow:hidden">
+<div id="root" data-composition-id="mg" data-duration="{dur:.2f}" data-width="{w}" data-height="{h}" style="width:{w}px;height:{h}px;position:relative;overflow:hidden">
 {chr(10).join(elements_html)}
 </div>
 <script>
@@ -163,16 +223,23 @@ const dur=parseFloat(root.dataset.duration);
                 transforms.append(f"translateX({tx}px)")
             if "width" in props:
                 w = props.pop("width")
-                style_attrs.append(f"width:{w}px")
+                style_attrs.append(f"width:{w}px;")
+
+            # 逐关键帧 easing → animation-timing-function（CSS 规范特性，Chromium/Hyperframes 支持）
+            easing = props.pop("easing", None)
+            timing = f"animation-timing-function:{MGRenderer._css_timing(easing)};" if easing else ""
 
             tf = f"{base_transform} {' '.join(transforms)}".strip()
-            css_parts.append(
-                f"  {pct:.1f}%{{"
-                + (f"transform:{tf};" if tf else "")
-                + "".join(f"{k}:{v};" for k, v in props.items())
-                + "".join(style_attrs)
-                + "}"
-            )
+            stop = f"  {pct:.1f}%{{"
+            if tf:
+                stop += f"transform:{tf};"
+            for k, v in props.items():
+                css_key = MGRenderer.KEYFRAME_CSS_MAP.get(k, k)
+                stop += f"{css_key}:{v};"
+            stop += "".join(style_attrs)
+            stop += timing
+            stop += "}"
+            css_parts.append(stop)
         css_parts.append("}")
         css = "\n".join(css_parts)
 
@@ -182,6 +249,15 @@ const dur=parseFloat(root.dataset.duration);
             f"transform:{base_transform};"
         )
 
+        # 静态样式透传（非关键帧动画的固定属性）
+        static_style = ""
+        for k, v in elem.items():
+            if k in MGRenderer.STATIC_EXCLUDE_KEYS:
+                continue
+            css_key = MGRenderer.KEYFRAME_CSS_MAP.get(k)
+            if css_key and isinstance(v, (str, int, float)):
+                static_style += f"{css_key}:{fill(v)};"
+
         if elem_type == "text":
             font_size = fill(elem.get("font_size", 48))
             font_color = fill(elem.get("font_color", "#ffffff"))
@@ -189,21 +265,58 @@ const dur=parseFloat(root.dataset.duration);
             html = (
                 f'<div id="{eid}" class="mg-el" style="{base_css}'
                 f'font-size:{font_size}px;color:{font_color};font-weight:{font_weight}'
-                f'">{MGRenderer._esc(content)}</div>'
+                + static_style
+                + f'">{MGRenderer._esc(content)}</div>'
             )
-        elif elem_type == "shape":
+        elif elem_type == "bg":
+            # 全幅背景/渐变底层：铺满、置于最底层
+            color = elem.get("background") or elem.get("color", "#0e101a")
+            html = (
+                f'<div id="{eid}" class="mg-el" style="position:absolute;inset:0;z-index:0;'
+                f'background:{fill(color)};'
+                + static_style
+                + '"></div>'
+            )
+        elif elem_type in ("line", "circle", "ring", "arc", "shape"):
             shape = elem.get("shape", "rect")
             color = elem.get("color", "#4f8cff")
-            sw = elem.get("stroke_width", 0)
-            sw_color = elem.get("stroke_color", color)
+            sw = elem.get("stroke_width", elem.get("border_width", 0))
+            sw_color = elem.get("stroke_color", elem.get("border_color", color))
             w_val = fill(elem.get("width", 100))
             h_val = fill(elem.get("height", 100))
-            radius = "50%" if shape == "ellipse" else elem.get("border_radius", 4)
+            border_radius = elem.get("border_radius", 0)
+
+            if elem_type == "circle":
+                # 正圆
+                border_radius = "50%"
+            elif elem_type == "ring":
+                # 空心圆环：border-radius 50% + border 描边
+                border_radius = "50%"
+            elif elem_type == "arc":
+                # 近似圆弧：border 上/右圆角（非真弧）
+                border_radius = "50% 50% 0 0"
+            elif elem_type == "line":
+                # 细长线条
+                border_radius = elem.get("border_radius", 0)
+            elif shape == "ellipse":
+                border_radius = "50%"
+            else:
+                border_radius = elem.get("border_radius", 4)
+
+            radius_css = f"border-radius:{border_radius};" if border_radius not in (0, "0", 0.0) else ""
+            if elem_type == "ring":
+                # ring 需要空心底色透明，用 border 画圆环
+                bg_css = "background:transparent;"
+            else:
+                bg_val = elem.get("background") or color
+                bg_css = f"background:{fill(bg_val)};"
+
             html = (
                 f'<div id="{eid}" class="mg-el mg-shape" style="{base_css}'
-                f'width:{w_val}px;height:{h_val}px;background:{color};'
-                f'border-radius:{radius};'
-                + (f'border:{sw}px solid {sw_color};' if sw > 0 else "")
+                f'width:{w_val}px;height:{h_val}px;{bg_css}'
+                f'{radius_css}'
+                + (f'border:{sw}px solid {fill(sw_color)};' if sw else "")
+                + static_style
                 + '"></div>'
             )
         else:
