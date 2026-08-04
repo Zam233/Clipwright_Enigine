@@ -259,6 +259,9 @@ class ChatForge:
         # 1. 从对话记录提取 Prompt 指令
         prompt = self._build_prompt_from_session(session.messages)
 
+        # 1b. 从对话记录提取视觉需求 Prompt（画面/视觉相关描述）
+        vision_prompt = self._build_vision_prompt_from_session(session.messages)
+
         # 2. 从知识库提取 KnowledgeDoc 列表
         knowledge_docs = [
             KnowledgeDoc(
@@ -282,6 +285,14 @@ class ChatForge:
             manifest.prompt = prompt
         if knowledge_docs:
             manifest.knowledge = knowledge_docs
+
+        # 4b. 填入视觉需求 Prompt（no-clobber：不覆盖已存在的 vision_prompt.md）
+        if vision_prompt:
+            vision_path = repo.root_dir / manifest.persona_id / "vision_prompt.md"
+            if vision_path.exists():
+                logger.warning("vision_prompt.md 已存在，ChatForge 不覆盖用户创作内容: %s", vision_path)
+            else:
+                manifest.vision_prompt = vision_prompt
 
         # 5. 保存到磁盘
         repo.save_manifest(manifest)
@@ -583,6 +594,36 @@ class ChatForge:
         lines.append("此 Prompt 由 ChatForge 根据对话记录自动生成，")
         lines.append("包含用户在对话中表达的创作风格偏好，")
         lines.append("可在 AI 视频编排时作为系统指令使用。")
+        return "\n".join(lines)
+
+    _VISUAL_KEYWORDS = ("画面", "视觉", "风格", "配色", "颜色", "色调", "字体", "动画", "转场", "特效", "镜头", "滤镜")
+
+    @classmethod
+    def _build_vision_prompt_from_session(cls, messages: list[dict]) -> str:
+        """从对话记录生成视觉需求 Prompt（画面风格/视觉约束）。
+
+        仅提取用户消息中与 画面/视觉/风格/配色/字体/动画/转场 相关的描述，
+        完整保留原文（不截断）。无视觉相关描述时返回空串。
+        """
+        if not messages:
+            return ""
+        user_statements = [
+            m["content"] for m in messages
+            if m.get("role") == "user"
+            and not m["content"].startswith("[系统]")
+            and any(k in m["content"] for k in cls._VISUAL_KEYWORDS)
+        ]
+        if not user_statements:
+            return ""
+        lines = ["# ChatForge 对话生成的视觉需求 Prompt", ""]
+        lines.append("## 用户视觉/风格描述")
+        for s in user_statements:
+            lines.append(f"- {s}")
+        lines.append("")
+        lines.append("## 说明")
+        lines.append("此视觉需求 Prompt 由 ChatForge 根据对话记录自动生成，")
+        lines.append("包含用户在对话中表达的画面风格与视觉约束，")
+        lines.append("可在结构/动画/MG 生成阶段作为视觉约束注入。")
         return "\n".join(lines)
 
     @staticmethod

@@ -64,7 +64,7 @@ class PersonaRepository:
         with open(manifest_path, "w", encoding="utf-8") as f:
             yaml.dump(
                 manifest.model_dump(
-                    exclude={"parameter", "prompt", "knowledge", "exemplar", "embedding", "model"},
+                    exclude={"parameter", "prompt", "vision_prompt", "knowledge", "exemplar", "embedding", "model"},
                     mode="json",
                 ),
                 f,
@@ -87,6 +87,10 @@ class PersonaRepository:
         if manifest.prompt:
             prompt_path = pdir / "prompt.md"
             prompt_path.write_text(manifest.prompt, encoding="utf-8")
+
+        # 3b. Vision Prompt —— 视觉需求提示词（no-clobber：仅当文件不存在时写入）
+        if manifest.vision_prompt:
+            self._save_vision_prompt_noclobber(pdir, manifest.vision_prompt)
 
         # 4. RAG —— 知识库文档
         if manifest.knowledge:
@@ -125,6 +129,11 @@ class PersonaRepository:
         if prompt_path.exists():
             manifest.prompt = prompt_path.read_text(encoding="utf-8")
 
+        # 加载 vision_prompt
+        vision_prompt_path = pdir / "vision_prompt.md"
+        if vision_prompt_path.exists():
+            manifest.vision_prompt = vision_prompt_path.read_text(encoding="utf-8")
+
         # 加载 knowledge
         kdir = pdir / "knowledge"
         index_path = kdir / "index.yaml"
@@ -154,6 +163,21 @@ class PersonaRepository:
         pdir = self.persona_path(persona_id)
         pdir.mkdir(parents=True, exist_ok=True)
         (pdir / "prompt.md").write_text(prompt_text, encoding="utf-8")
+
+    def save_vision_prompt(self, persona_id: str, vision_text: str) -> None:
+        """单独保存/更新视觉需求 Prompt（显式写入，允许覆盖）。"""
+        pdir = self.persona_path(persona_id)
+        pdir.mkdir(parents=True, exist_ok=True)
+        (pdir / "vision_prompt.md").write_text(vision_text, encoding="utf-8")
+
+    def _save_vision_prompt_noclobber(self, pdir: Path, text: str) -> None:
+        """写入 vision_prompt.md，但绝不覆盖已存在的文件（保护用户创作内容）。"""
+        vision_path = pdir / "vision_prompt.md"
+        if vision_path.exists():
+            from clipwright.config import logger
+            logger.warning("vision_prompt.md 已存在，跳过写入以保护用户内容: %s", vision_path)
+            return
+        vision_path.write_text(text, encoding="utf-8")
 
     def add_knowledge_doc(self, persona_id: str, doc: KnowledgeDoc) -> None:
         """追加一篇知识库文档。"""

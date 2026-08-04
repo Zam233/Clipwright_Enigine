@@ -273,6 +273,9 @@ class PersonaManifest(BaseModel):
     prompt: Optional[str] = Field(
         default=None, description="Prompt 指令：系统提示词/行为引导文本"
     )
+    vision_prompt: Optional[str] = Field(
+        default=None, description="视觉需求提示词：贯穿结构/动画/MG 生成的画面风格与视觉约束"
+    )
     knowledge: Optional[list[KnowledgeDoc]] = Field(
         default=None, description="RAG 知识库：参考文档集合"
     )

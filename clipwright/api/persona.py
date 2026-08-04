@@ -82,6 +82,32 @@ async def save_prompt(persona_id: str, req: SavePromptRequest) -> dict:
     return {"status": "ok", "persona_id": persona_id}
 
 
+# ── 视觉需求 Prompt 管理 ──
+
+
+class SaveVisionPromptRequest(BaseModel):
+    vision_prompt: str
+
+
+@router.get("/{persona_id}/vision-prompt")
+async def get_vision_prompt(persona_id: str) -> dict:
+    """获取 Persona 的视觉需求 Prompt。"""
+    if not _repo.exists(persona_id):
+        raise HTTPException(status_code=404, detail=f"Persona 不存在: {persona_id}")
+    vision_path = _repo.persona_path(persona_id) / "vision_prompt.md"
+    text = vision_path.read_text(encoding="utf-8") if vision_path.exists() else ""
+    return {"persona_id": persona_id, "vision_prompt": text}
+
+
+@router.put("/{persona_id}/vision-prompt")
+async def save_vision_prompt(persona_id: str, req: SaveVisionPromptRequest) -> dict:
+    """保存/更新 Persona 的视觉需求 Prompt（显式编辑，允许覆盖）。"""
+    if not _repo.exists(persona_id):
+        raise HTTPException(status_code=404, detail=f"Persona 不存在: {persona_id}")
+    _repo.save_vision_prompt(persona_id, req.vision_prompt)
+    return {"status": "ok", "persona_id": persona_id}
+
+
 # ── RAG 知识库管理 ──
 
 

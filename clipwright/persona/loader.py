@@ -63,6 +63,11 @@ def load_persona_manifest(persona_dir: Path) -> PersonaManifest:
     if prompt_path.exists():
         manifest.prompt = prompt_path.read_text(encoding="utf-8")
 
+    # 加载视觉需求 Prompt
+    vision_prompt_path = persona_dir / "vision_prompt.md"
+    if vision_prompt_path.exists():
+        manifest.vision_prompt = vision_prompt_path.read_text(encoding="utf-8")
+
     # 加载 RAG 知识库
     kdir = persona_dir / "knowledge"
     index_path = kdir / "index.yaml"
