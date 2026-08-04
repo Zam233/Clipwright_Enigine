@@ -23,6 +23,15 @@ from typing import Any, Callable, Optional
 
 from clipwright.config import logger
 from clipwright.schema.timeline import Timeline
+from clipwright.tool.design import color_to_drawtext
+
+# 任务 31：字幕新样式字段（与 schema/timeline.py Clip 对齐）。
+# 渲染时直接从 Clip 读取并合并进传给 TextStyle.from_dict 的 style dict；
+# clip.metadata.style 仅作回退（clip 显式字段优先）。
+_CLIP_STYLE_FIELDS = (
+    "font_weight", "font_italic", "letter_spacing", "stroke_width", "stroke_color",
+    "shadow_x", "shadow_y", "shadow_color", "shadow_blur", "glow_color", "glow_width",
+)
 
 # ── 线程池 (并行 FFmpeg 调用) ─────────────────
 _ffmpeg_pool = ThreadPoolExecutor(max_workers=8)
@@ -42,12 +51,104 @@ def _get_render_semaphore() -> asyncio.Semaphore:
         _RENDER_SEMAPHORE = asyncio.Semaphore(_MAX_CONCURRENT_RENDERS)
     return _RENDER_SEMAPHORE
 
-def _get_encoder() -> str:
+# ── GPU 编码智能探测（Bug3）──────────────────
+_encoder_resolved: str | None = None
+
+def _nvenc_runtime_probe() -> bool:
+    """真实 NVENC 编码探针：探测发现 h264_nvenc 后，再做一次微缩真实编码。
+
+    仅凭 ``ffmpeg -encoders`` 含 h264_nvenc 并不代表可用——若 NVIDIA 驱动版本
+    低于 ffmpeg 构建要求（如 nvenc API 13.1 需要驱动 ≥610.00），运行时
+    ``Error while opening encoder`` 会拖垮整次渲染（所有 trim 失败）。此处用
+    64x64 0.2s 合成图真实编码一次，编码成功才算可用。结果不缓存（探测本身
+    开销极小，且需反映当前驱动状态）。
+    """
+    probe_out = _CLIPWRIGHT_TEMP / "nvenc_probe.mp4"
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+             "-i", "color=c=black:s=64x64:d=0.2",
+             "-c:v", "h264_nvenc", "-pix_fmt", "yuv420p", str(probe_out)],
+            capture_output=True, text=True, timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        ok = r.returncode == 0 and probe_out.exists() and probe_out.stat().st_size > 0
+        if not ok:
+            logger.warning("[Render] nvenc 运行时编码探测失败（驱动版本过低？）：%s",
+                           (r.stderr or "").strip().splitlines()[0] if r.stderr else "rc!=0")
+        return ok
+    except Exception as e:
+        logger.warning("[Render] nvenc 运行时编码探测异常: %s", e)
+        return False
+    finally:
+        try:
+            probe_out.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _resolve_encoder() -> str:
+    """运行时探测可用的视频编码器（结果缓存）。
+
+    判定规则（不硬编码假设）：
+    1. ``ffmpeg -encoders`` 输出含 ``h264_nvenc``（编码器存在）
+    2. ``nvidia-smi`` 返回 0 且输出含 NVIDIA GPU（驱动就绪）
+    3. 真实 NVENC 编码探针通过（驱动版本满足 ffmpeg 构建要求，能实际编码）
+    三条全满足 → h264_nvenc + 硬件解码；任一不满足 → 回退 libx264 并记录原因。
+    探测结果缓存到模块级变量，并打印 [Render] encoder=... reason=... 日志。
+    """
+    global _encoder_resolved
+    if _encoder_resolved:
+        return _encoder_resolved
+
+    # 配置显式指定（render_encoder 非空）→ 尊重配置，跳过探测
     try:
         from clipwright.config import settings
-        return getattr(settings, 'render_encoder', 'libx264')
+        configured = getattr(settings, 'render_encoder', '')
     except Exception:
-        return 'libx264'
+        configured = ''
+    if configured and configured.strip():
+        _encoder_resolved = configured.strip()
+        logger.info("[Render] encoder=%s reason=config", _encoder_resolved)
+        return _encoder_resolved
+
+    reason = "config 未指定"
+    nvenc = False
+    try:
+        r = subprocess.run(["ffmpeg", "-encoders"], capture_output=True, text=True,
+                           timeout=15, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        nvenc = "h264_nvenc" in (r.stdout or "")
+    except Exception:
+        pass
+
+    gpu = False
+    try:
+        r = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                           capture_output=True, text=True, timeout=15,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        gpu = r.returncode == 0 and bool((r.stdout or "").strip())
+    except Exception:
+        pass
+
+    if nvenc and gpu and _nvenc_runtime_probe():
+        _encoder_resolved = "h264_nvenc"
+        reason = "nvenc encoder + NVIDIA GPU + 运行时探针通过"
+    elif nvenc and gpu:
+        _encoder_resolved = "libx264"
+        reason = "nvenc 存在但运行时编码失败（驱动版本过低）→ 回退 CPU"
+    else:
+        _encoder_resolved = "libx264"
+        reason = f"nvenc={nvenc} gpu={gpu} → 回退 CPU"
+    logger.info("[Render] encoder=%s reason=%s", _encoder_resolved, reason)
+    return _encoder_resolved
+
+def _hwaccel_args(encoder: str) -> list[str]:
+    """NVENC 路径输入解码前缀；libx264 返回空列表。"""
+    if encoder == "h264_nvenc":
+        return ["-hwaccel", "cuda"]
+    return []
+
+def _get_encoder() -> str:
+    return _resolve_encoder()
 
 def _get_preset() -> str:
     try:
@@ -55,6 +156,14 @@ def _get_preset() -> str:
         return getattr(settings, 'render_preset', 'medium')
     except Exception:
         return 'medium'
+
+def _caption_renderer() -> str:
+    """字幕渲染器：ass（默认，libass 全 14 字段）| drawtext（旧滤镜回退）。"""
+    try:
+        from clipwright.config import settings
+        return getattr(settings, 'caption_renderer', 'ass')
+    except Exception:
+        return 'ass'
 
 # ── 工具函数 ──────────────────────────────────
 
@@ -169,6 +278,93 @@ def _resolve_system_font() -> str:
     _font_file_cache = ""
     return ""
 
+# ── 粗体字体解析（任务 31）────────────────────────
+# 项目无 fontconfig.py：已知字族映射到 Windows 粗体变体，找不到回退普通字族。
+_BOLD_FONT_MAP: dict[str, str] = {
+    "msyh": "msyhbd.ttc",
+    "microsoftyahei": "msyhbd.ttc",
+    "microsoft yahei": "msyhbd.ttc",
+    "微软雅黑": "msyhbd.ttc",
+    "simhei": "simhei.ttf",
+    "simsun": "simsunb.ttf",
+    "宋体": "simsunb.ttf",
+    "黑体": "simhei.ttf",
+    "msjh": "msjhbd.ttc",
+    "microsoft jhenghei": "msjhbd.ttc",
+    "malgun": "malgunbd.ttf",
+    "malgun gothic": "malgunbd.ttf",
+    "sans-serif": "arialbd.ttf",
+    "arial": "arialbd.ttf",
+    "helvetica": "arialbd.ttf",
+    "times new roman": "timesbd.ttf",
+    "times": "timesbd.ttf",
+    "courier new": "courbd.ttf",
+    "jetbrains mono": "JetBrainsMono-Bold.ttf",
+    "jetbrainsmono": "JetBrainsMono-Bold.ttf",
+}
+_bold_font_cache: dict[str, str] = {}
+
+
+def _resolve_bold_font(family: str = "") -> str:
+    """解析字族的粗体变体（过滤器可用形式，无盘符冒号）。
+
+    与 _resolve_system_font 同约束：Windows 下复制到项目 _fonts/ 用相对路径。
+    空 family 默认 msyh；找不到映射/文件则回退普通字族。
+    """
+    key = (family or "msyh").strip().lower()
+    if key in _bold_font_cache:
+        return _bold_font_cache[key]
+    bold_name = _BOLD_FONT_MAP.get(key)
+    if not bold_name:
+        fallback = _resolve_system_font()
+        _bold_font_cache[key] = fallback
+        return fallback
+    src = Path(r"C:\Windows\Fonts") / bold_name
+    if not src.exists():
+        fallback = _resolve_system_font()
+        _bold_font_cache[key] = fallback
+        return fallback
+    try:
+        dest_dir = Path.cwd() / "_fonts"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / src.name
+        if not dest.exists():
+            import shutil
+            shutil.copy2(src, dest)
+        resolved = f"_fonts/{src.name}"
+        _bold_font_cache[key] = resolved
+        return resolved
+    except Exception:
+        fallback = _resolve_system_font()
+        _bold_font_cache[key] = fallback
+        return fallback
+
+
+def _build_glow_underlay(text: str, font_size, glow_color: str, glow_width: float,
+                         font_arg: str, x: str, y: str, enable: str, alpha: str = "") -> str:
+    """发光底层通道 drawtext（glow 双通道方案）。
+
+    与主文本同 enable 窗口/同坐标/同 fontfile/fontsize；底层在前，主文本在后。
+    用描边（bordercolor=glow_color, borderw=glow_width）形成光晕，
+    fontcolor 半透明（0xCOLOR@0.6）避免遮盖主文本；glow_width 上限 20px 防 FFmpeg 裁剪。
+    """
+    c = color_to_drawtext(glow_color)
+    w = max(1, min(int(round(float(glow_width))), 20))
+    safe = text.replace("'", "'\\''").replace(":", "\\:")
+    parts = [
+        f"drawtext=text='{safe}'{font_arg}",
+        f"fontsize={font_size}",
+        f"fontcolor={c}@0.6",
+        f"borderw={w}",
+        f"bordercolor={c}",
+        f"x={x}",
+        f"y={y}",
+    ]
+    if alpha:
+        parts.append(f"alpha={alpha}")
+    parts.append(f"enable='{enable}'")
+    return ":".join(parts)
+
 # M1: 裁剪缓存（持久化目录，不随 render 清理删除）
 import threading as _threading
 from clipwright.tool.video import _CLIPWRIGHT_TEMP
@@ -251,6 +447,10 @@ class RenderService:
         video_segments, overlay_segments, text_overlays, audio_segments, hf_ov_local = \
             self._extract_segments(timeline)
 
+        if progress_callback:
+            # Bug4：prepare 从 0 起步，保证全阶段进度单调不减（trim 阶段从 0→50）。
+            await progress_callback("prepare", 0, "解析时间线")
+
         # S1: 并行裁剪
         encoder = _get_encoder()
         preset = _get_preset()
@@ -263,12 +463,13 @@ class RenderService:
 
         # M2: concat+text+overlay 合并为单次 filter_complex
         if final_video and text_overlays:
-            final_video = await self._apply_text_concat(final_video, text_overlays, encoder, preset)
+            final_video = await self._apply_text_concat(final_video, text_overlays, encoder, preset,
+                                                        progress_callback, width=width, height=height)
 
         # S2: HF 图解 + MG 动画 → 单次 Hyperframes 调用
         if final_video and self._hyperframes_available():
             final_video = await self._apply_all_hyperframes(final_video, text_overlays, hf_ov_local,
-                                                            width, height, fps)
+                                                            width, height, fps, progress_callback)
 
         # 画中画
         if final_video and overlay_segments:
@@ -281,11 +482,15 @@ class RenderService:
 
         # 输出
         if final_video and _is_valid_video(final_video):
+            if progress_callback:
+                await progress_callback("done", 99, "输出成片")
             shutil.copy2(final_video, str(output))
             if not _is_valid_video(output):
                 logger.error("渲染输出为空文件: %s（源 %s）", output, final_video)
                 return RenderResult(False, error=f"渲染输出为空文件 (final={final_video})")
             dur = await asyncio.to_thread(_get_actual_duration, str(output))
+            if progress_callback:
+                await progress_callback("done", 100, "渲染完成")
             logger.info("渲染完成: %s (%.1fs)", output, dur)
             return RenderResult(True, output_path=str(output.resolve()), duration_sec=dur)
 
@@ -328,18 +533,97 @@ class RenderService:
                 elif k == "animation":
                     meta = clip.metadata or {}
                     if meta.get("renderer") == "mg_hyperframes" and meta.get("mg_html"):
-                        hf_ov_local.append(dict(mg_html=meta["mg_html"], start_sec=clip.start_sec,
+                        mg_html = self._ensure_mg_placeholders_filled(meta, clip.text or "")
+                        hf_ov_local.append(dict(mg_html=mg_html, start_sec=clip.start_sec,
                                                 duration_sec=clip.duration_sec, _track_idx=track.index))
                     else:
                         text_overlays.append(self._extract_animation_overlay(clip, track.index))
         return video_segments, overlay_segments, text_overlays, audio_segments, hf_ov_local
 
     @staticmethod
+    def _ensure_mg_placeholders_filled(meta: dict, text_content: str = "") -> str:
+        """确保 MG HTML 不含字面占位符（{key}）。
+
+        老版本生成的 clip 可能把 {left_label}/{accent} 等占位符原样写进 mg_html，
+        此处若检测到残留占位符，则用存储的 mg_def + params 重渲一遍：
+        优先按 clip.text 的 | 分隔关键段填充（与 generator._build_llm_params 同源逻辑），
+        缺失时回退 mg_def.params 默认值，避免占位符字面量渲染进成片。
+        重渲失败则退回原始 HTML。
+        """
+        import json as _json
+        import re as _re
+        html = meta.get("mg_html", "")
+        if not html:
+            return html
+        if not _re.search(r"\{[a-zA-Z_][a-zA-Z0-9_]*\}", html):
+            return html
+        mg_def = meta.get("mg_def") or {}
+        if not mg_def:
+            return html
+        try:
+            from clipwright.animation.mg.fallback import FallbackEngine
+            # 解析 clip.text：可能是 {"text":"A|B","description":...} JSON，也可能是裸文本
+            real_text = text_content
+            if text_content.lstrip().startswith("{"):
+                try:
+                    parsed = _json.loads(text_content)
+                    real_text = parsed.get("text") or text_content
+                except Exception:
+                    pass
+            parts = FallbackEngine.extract_keywords(real_text)
+
+            param_defs = mg_def.get("params") or {}
+            param_keys = list(param_defs.keys())
+            # LLM 生成的 mg_def 可能只在元素内容里出现占位符，无 params 声明 → 从内容扫描
+            if not param_keys:
+                seen: list[str] = []
+                for m in _re.findall(
+                    r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", _json.dumps(mg_def, ensure_ascii=False)
+                ):
+                    if m not in seen:
+                        seen.append(m)
+                param_keys = seen
+
+            params: dict = {}
+            for i, key in enumerate(param_keys):
+                if i < len(parts):
+                    params[key] = parts[i]
+                else:
+                    default = param_defs.get(key)
+                    params[key] = default.get("default", "") if isinstance(default, dict) else ""
+            if parts:
+                params["text"] = parts[0]
+            stored = meta.get("mg_params") or {}
+            for k, v in stored.items():
+                if k not in params or not params[k]:
+                    params[k] = v if isinstance(v, str) else ""
+            from clipwright.animation.mg_renderer import MGRenderer
+            rebuilt = MGRenderer.render(mg_def, params)
+            if rebuilt and not _re.search(r"\{[a-zA-Z_][a-zA-Z0-9_]*\}", rebuilt):
+                logger.info("Render: 重渲 MG HTML 清除占位符 anim=%s", meta.get("anim_type"))
+                return rebuilt
+        except Exception as e:
+            logger.warning("Render: MG 占位符重渲失败: %s", e)
+        return html
+
+    @staticmethod
     def _extract_text_overlay(clip, track_idx, existing):
         meta = clip.metadata or {}
-        style = meta.get("style", {})
+        style = dict(meta.get("style", {}))
         pos = meta.get("position", style.get("position", {1: "bottom", 2: "top", 3: "center"}.get(track_idx, "bottom")))
-        y_off = min(len([t for t in existing if t.get("_track_idx") == track_idx]) * 35, 500)
+        # Bug1 修复：不再按同轨字幕数量累积偏移（旧逻辑会导致后出现的字幕逐条上移直至消失）。
+        # 同一 track 的字幕 y 固定为 0（同一时刻多条字幕同高度，避免累加漂移）。
+        y_off = 0
+        # 基础样式并入 style dict：clip 显式字段优先，缺失时回退 meta.style / 默认值
+        style.setdefault("font_size", clip.font_size or 48)
+        style.setdefault("font_color", clip.font_color or "#ffffff")
+        style.setdefault("position", pos)
+        style.setdefault("offset_y", y_off)
+        # 任务 31：新样式字段直接从 Clip 读取并合并进 style dict（clip 优先，meta.style 兜底）
+        for f in _CLIP_STYLE_FIELDS:
+            v = getattr(clip, f, None)
+            if v is not None:
+                style[f] = v
         return dict(start_sec=clip.start_sec, duration_sec=clip.duration_sec,
                     text=clip.text or "", font_size=clip.font_size or 48,
                     font_color=clip.font_color or "#ffffff", font=clip.font or "",
@@ -435,7 +719,8 @@ class RenderService:
                 if fx_parts:
                     vf += "," + ",".join(fx_parts)
 
-                cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", str(seg.get("source_offset", 0)),
+                cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)),
+                       "-ss", str(seg.get("source_offset", 0)),
                        "-stream_loop", "-1", "-i", src, "-t", str(dur), "-vf", vf, "-r", str(fps),
                        "-c:v", encoder, "-pix_fmt", "yuv420p",
                        "-preset", preset, "-b:v", bitrate, "-an", out]
@@ -485,7 +770,7 @@ class RenderService:
             timeout = 30 + int(dur) * 2
             self._run_ff(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
                            f"color=c=0x1a1a2e:s={width}x{height}:d={dur}",
-                           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(fps), out],
+                           "-c:v", _resolve_encoder(), "-pix_fmt", "yuv420p", "-r", str(fps), out],
                           capture_output=True, text=False, timeout=timeout)
             return out if _is_valid_video(out) else None
         except Exception:
@@ -511,7 +796,7 @@ class RenderService:
 
     def _run_concat(self, a, b, fps, bitrate, encoder, preset):
         out = Path(a).parent / "concat.mp4"
-        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", a, "-i", b,
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", a, "-i", b,
                        "-filter_complex", "[0:v]setsar=1[a];[1:v]setsar=1[b];[a][b]concat=n=2:v=1:a=0[v]",
                        "-map", "[v]", "-c:v", encoder, "-preset", preset,
                        "-b:v", bitrate, "-r", str(fps), str(out)],
@@ -527,7 +812,7 @@ class RenderService:
             td = segments[i].get("transition_duration_sec", 0.4) if i < len(segments) else 0.4
             out = str(self._work_dir / f"cp_{i}.mp4")
             off = max(0, acc - td)
-            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", cur, "-i", trimmed[i],
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", cur, "-i", trimmed[i],
                            "-filter_complex",
                            f"[0:v]setsar=1[a];[1:v]setsar=1[b];[a][b]xfade=transition={tt}:duration={td}:offset={off}[v]",
                            "-map", "[v]", "-c:v", encoder, "-preset", preset,
@@ -550,7 +835,7 @@ class RenderService:
         # 每个输入先 setsar=1 归一化，保证 concat 输入参数一致（含旧缓存里 SAR 未归一化的片段）
         flt = "".join(f"[{i}:v]setsar=1[v{i}];" for i in range(n)) + "".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[v]"
         timeout = 120 + n * 60  # 120s base + 60s per segment
-        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *inputs,
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), *inputs,
                        "-filter_complex", flt, "-map", "[v]",
                        "-c:v", encoder, "-preset", preset,
                        "-b:v", bitrate, "-r", str(fps), str(out)],
@@ -559,8 +844,95 @@ class RenderService:
 
     # ── M2: concat + text 合并 ────────────────────
 
-    async def _apply_text_concat(self, video, overlays, encoder, preset):
-        """将 drawtext filter 叠加到视频（单次 re-encode）。"""
+    async def _apply_text_concat(self, video, overlays, encoder, preset, progress_callback=None,
+                                 width=1920, height=1080):
+        """将文字叠加层烧录到视频（单次 re-encode）。
+
+        默认走 ASS 路径（``-vf ass=<path>``）：全部 14 个样式字段真实生效。
+        ``settings.caption_renderer == "drawtext"`` 时回退到旧 drawtext 滤镜链。
+        """
+        if _caption_renderer() == "drawtext":
+            return await self._apply_text_concat_drawtext(video, overlays, encoder, preset,
+                                                          progress_callback)
+        return await self._apply_text_ass(video, overlays, encoder, preset, progress_callback,
+                                          width=width, height=height)
+
+    async def _apply_text_ass(self, video, overlays, encoder, preset, progress_callback=None,
+                              width=1920, height=1080):
+        """ASS 路径：全部文字 overlay → 单个 .ass 文件 + ``-vf ass=<relpath>``。
+
+        字幕起止裁剪到成片实际时长（Bug：``_concat_xfade`` 的转场会缩短成片，
+        Dialogue end 若超出实际时长，libass 直接不渲染 → 最后几秒字幕消失）。
+        写文件用相对路径（ffmpeg 从 CWD=仓库根运行，同 ``_fonts/`` 哲学，
+        规避 Windows 盘符冒号被 filter 解析器截断）。
+        """
+        from clipwright.tool.design import TextStyle
+        try:
+            actual_dur = await asyncio.to_thread(_get_actual_duration, str(video))
+        except Exception:
+            actual_dur = 0
+
+        dialogues: list[str] = []
+        style_ts: TextStyle | None = None
+        for ov in overlays:
+            if ov.get("renderer") == "hyperframes" or ov.get("diagram_params"):
+                continue
+            text = (ov.get("text") or "")[:100]
+            if not text:
+                continue
+            start = float(ov.get("start_sec", 0) or 0)
+            dur = float(ov.get("duration_sec", 3) or 3)
+            # 裁剪到成片实际时长；never extend past start+duration（min 天然保证）
+            end = min(start + dur, actual_dur) if actual_dur > 0 else start + dur
+            end = max(end, start)
+            style_d = ov.get("style", {})
+            if style_d:
+                ts = TextStyle.from_dict(style_d)
+            else:
+                ts = TextStyle(
+                    font_size=ov.get("font_size", 48), font_color=ov.get("font_color", "#ffffff"),
+                    stroke_width=ov.get("stroke_width", 0), position=ov.get("position", "bottom"),
+                    offset_y=ov.get("offset_y", 0))
+            if style_ts is None:
+                style_ts = ts  # 样式取第一条 overlay（14 字段映射 1:1）
+            dialogues.append(ts.build_ass_dialogue(text, start, end))
+        if not dialogues:
+            return video
+
+        if progress_callback:
+            await progress_callback("text", 60, f"烧录 {len(dialogues)} 条字幕/文字")
+
+        # 分批：每批一个 .ass + 单次 FFmpeg（长视频数百秒单趟 5-15 分钟 → 超时放大）
+        batch_size = 100
+        current = video
+        for bi in range(0, len(dialogues), batch_size):
+            batch = dialogues[bi:bi + batch_size]
+            ass_path = self._work_dir / f"subs_{bi}.ass"
+            header = style_ts.build_ass_style(int(width), int(height))
+            body = ("[Events]\n"
+                    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+                    + "\n".join(batch) + "\n")
+            ass_path.write_text(header + "\n\n" + body, encoding="utf-8")
+            try:
+                ass_arg = ass_path.resolve().relative_to(Path.cwd().resolve()).as_posix()
+            except ValueError:
+                ass_arg = ass_path.name  # 跨盘符回退：仅文件名（依赖 CWD 与 work_dir 一致）
+            out = str(self._work_dir / f"txt_{bi}.mp4")
+            cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", current,
+                   "-vf", f"ass={ass_arg}",
+                   "-c:v", encoder, "-preset", preset, "-pix_fmt", "yuv420p",
+                   "-c:a", "copy", out]
+            r = await self._ff(cmd, capture_output=True, text=False, timeout=1800)
+            if r.returncode == 0 and _is_valid_video(out):
+                current = out
+            if progress_callback:
+                done = bi + len(batch)
+                pct = 60 + min(done / max(len(dialogues), 1), 1.0) * 10
+                await progress_callback("text", pct, f"烧录 {done}/{len(dialogues)} 条字幕")
+        return current
+
+    async def _apply_text_concat_drawtext(self, video, overlays, encoder, preset, progress_callback=None):
+        """将 drawtext filter 叠加到视频（单次 re-encode）。旧路径，仅 fallback 使用。"""
         from clipwright.tool.design import TextStyle
         filters = []
         for ov in overlays:
@@ -572,6 +944,9 @@ class RenderService:
         if not filters:
             return video
 
+        if progress_callback:
+            await progress_callback("text", 60, f"烧录 {len(filters)} 条字幕/文字")
+
         # 分批，每批内所有 filter 以逗号连接，单次 FFmpeg 调用。
         # 长视频（数百秒）单趟重编码就需 5-15 分钟：batch 放大到单批 + 超时放大。
         batch_size = 100
@@ -580,30 +955,51 @@ class RenderService:
             batch = filters[bi:bi + batch_size]
             out = str(self._work_dir / f"txt_{bi}.mp4")
             # L2: 用 -vf 而非重新 -filter_complex，减少复杂度
-            cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", current,
+            cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", current,
                    "-vf", ",".join(batch),
                    "-c:v", encoder, "-preset", preset, "-pix_fmt", "yuv420p",
                    "-c:a", "copy", out]
             r = await self._ff(cmd, capture_output=True, text=False, timeout=1800)
             if r.returncode == 0 and _is_valid_video(out):
                 current = out
+            if progress_callback:
+                done = bi + len(batch)
+                pct = 60 + min(done / max(len(filters), 1), 1.0) * 10
+                await progress_callback("text", pct, f"烧录 {done}/{len(filters)} 条字幕")
         return current
 
     # ── S2: 单次 Hyperframes 批量 ──────────────────
 
-    async def _apply_all_hyperframes(self, video, text_overlays, hf_ov_local, width, height, fps):
+    async def _apply_all_hyperframes(self, video, text_overlays, hf_ov_local, width, height, fps,
+                                     progress_callback=None):
         """将图解动画 + MG 动画合并到单次 Hyperframes 调用。"""
         from clipwright.animation.hyperframes_renderer import HyperframesRenderer
         overlays = [o for o in (text_overlays or [])
                     if o.get("renderer") == "hyperframes" or o.get("diagram_params")]
 
-        # MG HTML → overlay 条目
+        # MG HTML → MOV 并行渲染 (Phase 1: asyncio.gather 一波并发)
         if hf_ov_local:
-            # 需要渲染单个 HTML，先生成 MOV 再用 overlay 合成
-            for mg in hf_ov_local:
-                video = await self._apply_mg_overlay(video, mg, width, height, fps)
+            if progress_callback:
+                await progress_callback("mg", 70, f"渲染 {len(hf_ov_local)} 个 MG 动画")
+            movs = await asyncio.gather(
+                *(self._render_mg_mov(m, width, height, fps) for m in hf_ov_local))
+            # 按 start_sec 排序，overlay 合成保持严格串行 (Phase 2: 逐级链式叠加)
+            ordered = sorted(zip(movs, [m.get("start_sec", 0) for m in hf_ov_local],
+                                 [m.get("duration_sec", 0) for m in hf_ov_local]),
+                             key=lambda t: t[1])
+            total = max(len(ordered), 1)
+            for i, (mov, start_sec, duration_sec) in enumerate(ordered):
+                if mov:
+                    video = await self._apply_mg_overlay(video, mov, width, height, fps,
+                                                         start_sec=start_sec, duration_sec=duration_sec)
+                if progress_callback:
+                    done = i + 1
+                    pct = 70 + (done / total) * 25
+                    await progress_callback("mg", pct, f"叠加 MG {done}/{len(ordered)}")
 
         if overlays:
+            if progress_callback:
+                await progress_callback("mg", 96, "合成图解动画叠加层")
             mov = str(self._work_dir / "overlay.mov")
             ok = await HyperframesRenderer.render_overlays(overlays, mov, width, height, fps)
             if ok and _is_valid_video(mov):
@@ -613,11 +1009,11 @@ class RenderService:
                     video = out_v
         return video
 
-    async def _apply_mg_overlay(self, video, mg_ov, width, height, fps):
-        """单个 MG HTML → Hyperframes 渲染 → overlay 合成。"""
+    async def _render_mg_mov(self, mg_ov: dict, width: int, height: int, fps: float) -> str | None:
+        """(a)+(b) 单个 MG HTML → 独立工作目录 → npx hyperframes render 产出 MOV。"""
         html = mg_ov.get("mg_html", "")
         if not html:
-            return video
+            return None
         mg_dir = Path(self._work_dir) / f"mg_{uuid.uuid4().hex[:8]}"
         mg_dir.mkdir(parents=True, exist_ok=True)
         (mg_dir / "index.html").write_text(html, encoding="utf-8")
@@ -628,12 +1024,34 @@ class RenderService:
                str(mg_dir), "-o", mov, "--format", "mov",
                "-f", str(int(fps)), "--quiet"]
         try:
-            r = await self._ff(cmd, capture_output=True, text=False, timeout=1800)
+            r = await self._ff(cmd, capture_output=True, text=False, timeout=1800,
+                               env=HyperframesRenderer._render_env())
             if r.returncode == 0 and _is_valid_video(mov):
-                out_v = str(self._work_dir / f"mg_{uuid.uuid4().hex[:4]}.mp4")
-                ok = HyperframesRenderer.render_overlay_on_video(mov, video, out_v)
-                if ok and _is_valid_video(out_v):
-                    return out_v
+                return mov
+        except Exception as e:
+            logger.warning("MG render fail: %s", e)
+        return None
+
+    async def _apply_mg_overlay(self, video, mov: str, width: int, height: int, fps: float,
+                                start_sec: float = 0.0, duration_sec: float | None = None) -> str:
+        """(c) 将已渲染的 MOV overlay 合成到当前视频（严格串行链式）。
+
+        注意：render_overlay_on_video 内部是阻塞的 subprocess.run（对整段视频 re-encode，
+        单次可达数分钟），因此 offload 到 _ffmpeg_pool，避免冻结事件循环；
+        overlay 顺序仍严格串行（每一轮依赖上一轮输出）。
+        start_sec/duration_sec 传入 MOV 在主时间线上的时间窗口，让 overlay 只在
+        MG clip 对应时段可见（Bug2 修复）。
+        """
+        from clipwright.animation.hyperframes_renderer import HyperframesRenderer
+        try:
+            out_v = str(self._work_dir / f"mg_{uuid.uuid4().hex[:4]}.mp4")
+            loop = asyncio.get_running_loop()
+            ok = await loop.run_in_executor(
+                _ffmpeg_pool, HyperframesRenderer.render_overlay_on_video, mov, video, out_v,
+                start_sec, duration_sec,
+            )
+            if ok and _is_valid_video(out_v):
+                return out_v
         except Exception as e:
             logger.warning("MG overlay fail: %s", e)
         return video
@@ -656,6 +1074,8 @@ class RenderService:
         explicit_font = ov.get("font") or ""
         if explicit_font and Path(explicit_font).exists() and ":" not in explicit_font:
             font_file = explicit_font
+        elif ts.font_weight == "bold":
+            font_file = _resolve_bold_font(explicit_font)
         else:
             font_file = _resolve_system_font()
         font_arg = f":fontfile={font_file}" if font_file else ""
@@ -671,7 +1091,7 @@ class RenderService:
                     cs = start + i * (dur / n)
                     xp = sum(cw[:i]) + 8
                     safe = ch.replace("'", "'\\''")
-                    parts.append(f"drawtext=text='{safe}'{font_arg}:fontsize={ts.font_size}:fontcolor={ts.font_color}:x={xp}:y=(h-text_h)/2:enable='between(t,{cs},{start+dur})'")
+                    parts.append(f"drawtext=text='{safe}'{font_arg}:fontsize={ts.font_size}:fontcolor={color_to_drawtext(ts.font_color)}:x={xp}:y=(h-text_h)/2:enable='between(t,{cs},{start+dur})'")
                 if parts:
                     return ",\n".join(parts)
             # 超宽文本 → 降级为静态文字（fall through below）
@@ -679,6 +1099,13 @@ class RenderService:
         if kfs and len(kfs) >= 2:
             return self._build_kf_drawtext(text, ts, start, dur, kfs, font_arg)
         base = ts.build_drawtext_filter(text, start, dur, font_file)
+        if ts.glow_width > 0 and ts.glow_color:
+            # glow 双通道：底层在前（同坐标/同 enable 窗口），主文本在后，`,` 同处一个 filtergraph
+            xp, yp = ts.drawtext_position()
+            glow = _build_glow_underlay(text, ts.font_size, ts.glow_color, ts.glow_width,
+                                        font_arg, xp, yp,
+                                        f"between(t,{start},{start + dur})")
+            return f"{glow},{base}"
         return base
 
     @staticmethod
@@ -709,12 +1136,21 @@ class RenderService:
         a, xo, yo = _ip("opacity","1"), _ip("translate_x","0"), _ip("translate_y","0")
         sc = _ip("scale_x","1")
         fs = f"({ts.font_size})*({sc})" if sc != "1" else str(ts.font_size)
-        parts = [f"drawtext=text='{safe}'{font_arg}", f"fontsize={fs}", f"fontcolor={ts.font_color}",
+        enable = f"between(t,{s},{max(e,start_sec+duration_sec)})"
+        parts = [f"drawtext=text='{safe}'{font_arg}", f"fontsize={fs}", f"fontcolor={color_to_drawtext(ts.font_color)}",
                  f"x={bx}+({xo})", f"y={by}+({yo})", f"alpha={a}",
-                 f":enable='between(t,{s},{max(e,start_sec+duration_sec)})'"]
+                 f":enable='{enable}'"]
         if ts.stroke_width > 0:
-            parts.append(f":borderw={ts.stroke_width}:bordercolor={ts.stroke_color}")
-        return ":".join(parts)
+            parts.append(f":borderw={ts.stroke_width}:bordercolor={color_to_drawtext(ts.stroke_color)}")
+        if ts.shadow_x != 0 or ts.shadow_y != 0:
+            parts.append(f":shadowx={ts.shadow_x}:shadowy={ts.shadow_y}:shadowcolor={color_to_drawtext(ts.shadow_color)}")
+        main = ":".join(parts)
+        if ts.glow_width > 0 and ts.glow_color:
+            # glow 双通道：底层在前（同坐标/同 enable 窗口/随缩放），主文本在后
+            glow = _build_glow_underlay(text, fs, ts.glow_color, ts.glow_width, font_arg,
+                                        f"{bx}+({xo})", f"{by}+({yo})", enable, alpha=a)
+            return f"{glow},{main}"
+        return main
 
     # ── overlay / audio（同原版精简）─────────────
 
@@ -745,7 +1181,7 @@ class RenderService:
             s = ov.get("source_path","")
             if s and Path(s).exists(): inputs.extend(["-i", s])
         c = ";".join(filters)
-        await self._ff(["ffmpeg","-y","-loglevel","error",*inputs,"-filter_complex",c,
+        await self._ff(["ffmpeg","-y","-loglevel","error",*(_hwaccel_args(encoder)),*inputs,"-filter_complex",c,
                        "-map",f"[v{len(filters)-1}]","-map","0:a?",
                        "-c:v",encoder,"-preset",preset,"-pix_fmt","yuv420p","-c:a","copy",output_path],
                       capture_output=True, text=False, timeout=1800)
@@ -770,7 +1206,7 @@ class RenderService:
         bgm = bfp if bfp and Path(bfp).exists() else None
         if voice and bgm:
             try:
-                await self._ff(["ffmpeg","-y","-loglevel","error","-i",input_video,"-i",voice,"-i",bgm,
+                await self._ff(["ffmpeg","-y","-loglevel","error",*(_hwaccel_args(encoder)),"-i",input_video,"-i",voice,"-i",bgm,
                                "-filter_complex","[1:a]loudnorm=I=-16:LRA=11:TP=-1.5[voice];[2:a]volume=0.3[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]",
                                "-map","0:v:0","-map","[aout]",
                                "-c:v",encoder,"-preset",preset,"-pix_fmt","yuv420p","-b:v",bitrate,
@@ -781,7 +1217,7 @@ class RenderService:
                 pass
         if voice:
             try:
-                await self._ff(["ffmpeg","-y","-loglevel","error","-i",input_video,"-i",voice,
+                await self._ff(["ffmpeg","-y","-loglevel","error",*(_hwaccel_args(encoder)),"-i",input_video,"-i",voice,
                                "-c:v",encoder,"-preset",preset,"-pix_fmt","yuv420p","-b:v",bitrate,
                                "-c:a","aac","-b:a",ab,"-map","0:v:0","-map","1:a:0","-shortest",output_path],
                               capture_output=True, text=False, timeout=600)

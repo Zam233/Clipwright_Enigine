@@ -6,6 +6,29 @@ import re
 from typing import Any
 
 
+# 字幕/文字 clip 的默认样式（与前端 PreviewPanel 回退值对齐，任务 32）
+# shadow / glow 全关（null 表示关闭）；stroke_width=0 表示无描边。
+DEFAULT_CAPTION_STYLE: dict[str, Any] = {
+    "font_size": 48,
+    "font_color": "#ffffff",
+    "font_weight": "normal",
+    "font_italic": False,
+    "letter_spacing": 0,
+    "text_align": "center",
+    "stroke_width": 0,
+    "stroke_color": "#000000",
+    "shadow_x": None,
+    "shadow_y": None,
+    "shadow_color": None,
+    "shadow_blur": None,
+    "glow_color": None,
+    "glow_width": None,
+}
+
+# text clip 默认样式：仅对齐方式不同（文字左对齐）
+DEFAULT_TEXT_STYLE: dict[str, Any] = {**DEFAULT_CAPTION_STYLE, "text_align": "left"}
+
+
 class SubtitleSegment:
     """一个字幕片段。"""
     def __init__(self, index: int, start_sec: float, end_sec: float, text: str):
@@ -59,7 +82,11 @@ def segments_to_timeline_clips(
     segments: list[SubtitleSegment],
     track_id: str = "caption_track",
 ) -> list[dict[str, Any]]:
-    """将字幕片段转为 Timeline clip 格式。"""
+    """将字幕片段转为 Timeline clip 格式。
+
+    生成的 caption clip 携带完整字幕样式字段（与前端对齐，任务 32）：
+    默认 font_size=48、font_color=#ffffff、text_align=center、shadow/glow 全关。
+    """
     clips: list[dict[str, Any]] = []
     for i, seg in enumerate(segments):
         clips.append({
@@ -71,8 +98,7 @@ def segments_to_timeline_clips(
             "duration_sec": round(seg.end_sec - seg.start_sec, 2),
             "text": seg.text,
             "font": "sans-serif",
-            "font_size": 36,
-            "font_color": "#ffffff",
+            **DEFAULT_CAPTION_STYLE,
         })
     return clips
 

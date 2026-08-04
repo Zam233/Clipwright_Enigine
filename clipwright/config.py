@@ -61,10 +61,11 @@ class Settings(BaseSettings):
     debug: bool = False
 
     # --- Pipeline 并行度（稳妥有界并发）---
-    # 动画阶段逐片段 LLM MG 生成的并发路数；默认 3。设置 1 即回到串行。
-    pipeline_concurrency: int = 3
-    # 素材阶段场景级并行路数；默认 4。设置 1 即回到逐场景串行。
-    material_concurrency: int = 4
+    # 动画阶段逐片段 LLM MG 生成的并发路数；默认 6（LLM 生成是网络等待，并发翻倍时间近半）。
+    # 设置 1 即回到串行。
+    pipeline_concurrency: int = 6
+    # 素材阶段场景级并行路数；默认 6。设置 1 即回到逐场景串行。
+    material_concurrency: int = 6
 
     # --- 安全 ---
     # API 令牌：设置后所有 /api/* 请求需携带 Authorization: Bearer <token>
@@ -80,9 +81,11 @@ class Settings(BaseSettings):
     # --- 渲染 ---
     render_output_dir: Path = Path("renders")
     max_concurrent_renders: int = 2
-    render_encoder: str = "libx264"  # libx264 / h264_nvenc / hevc_nvenc / hevc_amf
+    render_encoder: str = ""  # 空 = 运行时智能探测 (h264_nvenc if GPU 可用, else libx264)；也可显式指定 libx264 / h264_nvenc / hevc_nvenc / hevc_amf
     render_preset: str = "medium"    # ultrafast/fast/medium/slow
     render_trim_cache: bool = True
+    # 字幕/文字渲染器：ass = libass（.ass 文件 + `-vf ass=`，14 个样式字段全部生效）| drawtext = 旧 drawtext 滤镜（回退）
+    caption_renderer: Literal["ass", "drawtext"] = "ass"
     # ffmpeg/ffprobe 可执行文件路径（留空则自动探测 PATH 及常见安装位置，如 WinGet）
     ffmpeg_path: str = ""
     ffprobe_path: str = ""
