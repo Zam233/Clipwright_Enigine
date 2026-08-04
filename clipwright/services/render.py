@@ -157,6 +157,13 @@ def _get_preset() -> str:
     except Exception:
         return 'medium'
 
+def _fmt_sec(v: float) -> str:
+    """把秒数格式化为紧凑字符串（去掉尾零，避免浮点噪声污染 filter 表达式）。
+
+    12.5 → "12.5", 15.0 → "15", 0.0 → "0"。
+    """
+    return f"{v:g}"
+
 def _caption_renderer() -> str:
     """字幕渲染器：ass（默认，libass 全 14 字段）| drawtext（旧滤镜回退）。"""
     try:
@@ -972,30 +979,55 @@ class RenderService:
 
     async def _apply_all_hyperframes(self, video, text_overlays, hf_ov_local, width, height, fps,
                                      progress_callback=None):
-        """将图解动画 + MG 动画合并到单次 Hyperframes 调用。"""
+        """将图解动画 + MG 动画合并到单次 Hyperframes 调用。
+
+        Phase 1: MG HTML → MOV 有界并发渲染（信号量限制 Chrome 实例并发数）。
+        Phase 2: 全部 MG MOV → 单次 filter_complex 链式 overlay（对比旧版 N 次
+                 全片 re-encode）。进度回调保持单调不减：70 → 90 → 95 → 96。
+        """
         from clipwright.animation.hyperframes_renderer import HyperframesRenderer
         overlays = [o for o in (text_overlays or [])
                     if o.get("renderer") == "hyperframes" or o.get("diagram_params")]
 
-        # MG HTML → MOV 并行渲染 (Phase 1: asyncio.gather 一波并发)
+        # MG HTML → MOV 并行渲染 (Phase 1: 有界信号量并发)
         if hf_ov_local:
+            total = max(len(hf_ov_local), 1)
             if progress_callback:
                 await progress_callback("mg", 70, f"渲染 {len(hf_ov_local)} 个 MG 动画")
-            movs = await asyncio.gather(
-                *(self._render_mg_mov(m, width, height, fps) for m in hf_ov_local))
-            # 按 start_sec 排序，overlay 合成保持严格串行 (Phase 2: 逐级链式叠加)
+            # Chrome 渲染是重资源操作：限制同时运行的实例数（默认 6，可用
+            # material_concurrency 配置覆盖），避免 44 个 MG 一次性打爆内存。
+            try:
+                from clipwright.config import settings
+                limit = max(1, int(getattr(settings, "material_concurrency", 6)))
+            except Exception:
+                limit = 6
+            sem = asyncio.Semaphore(limit)
+            completed = 0
+
+            async def _render_one(mg_ov):
+                nonlocal completed
+                async with sem:
+                    res = await self._render_mg_mov(mg_ov, width, height, fps)
+                completed += 1
+                if progress_callback:
+                    pct = 70 + (completed / total) * 20  # 70 → 90 单调递增
+                    await progress_callback("mg", pct, f"渲染 MG {completed}/{len(hf_ov_local)}")
+                return res
+
+            movs = await asyncio.gather(*(_render_one(m) for m in hf_ov_local))
+            # 按 start_sec 排序，保持原有链式叠加顺序语义 (Phase 2: 单次 filter_complex)
             ordered = sorted(zip(movs, [m.get("start_sec", 0) for m in hf_ov_local],
                                  [m.get("duration_sec", 0) for m in hf_ov_local]),
                              key=lambda t: t[1])
-            total = max(len(ordered), 1)
-            for i, (mov, start_sec, duration_sec) in enumerate(ordered):
-                if mov:
-                    video = await self._apply_mg_overlay(video, mov, width, height, fps,
-                                                         start_sec=start_sec, duration_sec=duration_sec)
+            chained = [(mov, start_sec, duration_sec)
+                       for mov, start_sec, duration_sec in ordered if mov]
+            if chained:
                 if progress_callback:
-                    done = i + 1
-                    pct = 70 + (done / total) * 25
-                    await progress_callback("mg", pct, f"叠加 MG {done}/{len(ordered)}")
+                    await progress_callback("mg", 90, "链式叠加 MG 动画")
+                video = await self._apply_mg_overlay_chained(
+                    video, chained, width, height, fps)
+                if progress_callback:
+                    await progress_callback("mg", 95, "MG 叠加完成")
 
         if overlays:
             if progress_callback:
@@ -1055,6 +1087,92 @@ class RenderService:
         except Exception as e:
             logger.warning("MG overlay fail: %s", e)
         return video
+
+    async def _apply_mg_overlay_chained(
+        self, video, movs: list[tuple[str, float, float]], width: int, height: int, fps: float,
+        max_len: int = 30000,
+    ) -> str:
+        """(c') 全部 MG MOV → 单次 filter_complex 链式 overlay（对比旧版 N 次全片 re-encode）。
+
+        ``movs`` 为 ``(mov_path, start_sec, duration_sec)`` 元组列表，已按 start_sec 排序。
+        每个 MOV 单独 ``-i`` 输入，先 scale/pad 到导出分辨率，再链式 overlay 到主视频，
+        以 ``enable='between(t,...)'`` 限制到各自时间窗口；最终 ``-map`` 末级标签输出。
+
+        - 缺失/损坏 MOV：调用方已过滤 None；此处再按文件存在性兜底跳过，
+          链式图保证任何输入缺失都不断链、不使整次渲染失败。
+        - cmdline 长度超过 ``max_len``（Windows 命令行限制）时拆成两半递归分批，
+          每批仍为单次 ffmpeg 调用。
+        - 失败时回退返回原 ``video``，绝不让 MG 阶段拖垮整个导出。
+        """
+        movs = [(m, s, d) for m, s, d in movs if m and Path(m).exists()]
+        if not movs:
+            return video
+        out = str(self._work_dir / f"mg_chain_{uuid.uuid4().hex[:8]}.mp4")
+        cmd = self._build_mg_chained_cmd(video, movs, width, height, out)
+        length = len(" ".join(cmd))
+        if length > max_len:
+            logger.warning(
+                "[Render] MG chained cmdline %d chars > %d，拆成两批链式叠加",
+                length, max_len)
+            mid = len(movs) // 2
+            first = await self._apply_mg_overlay_chained(
+                video, movs[:mid], width, height, fps, max_len=max_len)
+            return await self._apply_mg_overlay_chained(
+                first, movs[mid:], width, height, fps, max_len=max_len)
+        logger.info("[Render] MG chained overlay: %d inputs, %d chars",
+                    len(movs), length)
+        try:
+            r = await self._ff(cmd, capture_output=True, text=False, timeout=3600)
+            if r.returncode == 0 and _is_valid_video(out):
+                return out
+            logger.warning("[Render] MG chained overlay fail rc=%s", r.returncode)
+        except Exception as e:
+            logger.warning("MG chained overlay fail: %s", e)
+        return video
+
+    def _build_mg_chained_cmd(
+        self, video, movs: list[tuple[str, float, float]], width: int, height: int, out: str,
+    ) -> list[str]:
+        """构建单次 ffmpeg 命令：主视频 + N 个 MOV 输入，链式 filter_complex overlay。
+
+        filter_complex 形态（N 个有效 MOV）::
+
+            [0:v]null[base];
+            [1:v]scale=W:H:force_original_aspect_ratio=decrease,pad=W:H:(ow-iw)/2:(oh-ih)/2,setsar=1[mg1];
+            [base][mg1]overlay=format=rgba:enable='between(t,s0,s0+d0)'[v1];
+            [2:v]scale=...:pad=...[mg2];
+            [v1][mg2]overlay=...:enable='between(t,s1,s1+d1)'[v2];
+            ...
+            -map "[vN]" -map 0:a?
+
+        scale/pad 保证 MOV 尺寸对齐实际导出分辨率（大小安全落在链式图内，
+        不改动 render_overlay_on_video 的逐 MOV 非链式回退路径）。
+        """
+        encoder = _get_encoder()
+        preset = _get_preset()
+        cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)),
+               "-i", str(video)]
+        for mov, _start, _dur in movs:
+            cmd += ["-i", str(mov)]
+        parts = ["[0:v]null[base]"]
+        prev = "base"
+        for i, (mov, start_sec, duration_sec) in enumerate(movs, start=1):
+            start = float(start_sec or 0)
+            end = start + float(duration_sec or 0)
+            parts.append(
+                f"[{i}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1[mg{i}]"
+            )
+            parts.append(
+                f"[{prev}][mg{i}]overlay=format=rgba:"
+                f"enable='between(t,{_fmt_sec(start)},{_fmt_sec(end)})'[v{i}]"
+            )
+            prev = f"v{i}"
+        cmd += ["-filter_complex", ";".join(parts),
+                "-map", f"[{prev}]", "-map", "0:a?",
+                "-c:v", encoder, "-preset", preset, "-pix_fmt", "yuv420p",
+                "-c:a", "copy", str(out)]
+        return cmd
 
     # ── drawtext 构建（同原版） ──────────────────
 

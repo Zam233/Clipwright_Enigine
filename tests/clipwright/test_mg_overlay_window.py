@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from pathlib import Path
 
 import clipwright.services.render as render_mod
 from clipwright.animation.hyperframes_renderer import HyperframesRenderer
@@ -121,3 +122,107 @@ class TestBuildHtmlDimsAttributes:
             [{"text": "hi", "start_sec": 0, "duration_sec": 2}], 1920, 1080, 25
         )
         assert 'data-fps="25"' in html
+
+
+class TestApplyMGChainedOverlay:
+    """T3(C1): 单次 filter_complex 链式 MG overlay 合成（对比旧版 N 次全片 re-encode）。
+
+    mock 策略：``_render_mg_mov`` 返回预先建好的假 .mov 文件路径（按 ``_track_idx``
+    对应，顺序无关）；``_ff`` 记录命令行并返回 rc=0，不真正执行 ffmpeg。
+    """
+
+    def _mk(self, tmp_path, i: int) -> str:
+        p = tmp_path / f"fake_mg_{i}.mov"
+        p.write_bytes(b"\x00" * 4096)
+        return str(p)
+
+    def _hf(self, n: int):
+        return [{"mg_html": "<html></html>", "start_sec": float(i), "duration_sec": 1.0,
+                 "_track_idx": i} for i in range(n)]
+
+    def _build(self, monkeypatch, tmp_path, returns: list[str | None]):
+        """returns[i] = _track_idx 为 i 的 MG 返回的 MOV 路径（None = 渲染失败跳过）。"""
+        monkeypatch.setattr(render_mod, "_resolve_encoder", lambda: "libx264")
+        svc = RenderService(work_dir=tmp_path / "work")
+        ff_cmds: list[list[str]] = []
+        by_idx = dict(enumerate(returns))
+
+        async def fake_ff(self, cmd, **kw):
+            ff_cmds.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(RenderService, "_ff", fake_ff)
+
+        async def fake_render_mg_mov(self, mg_ov, width, height, fps):
+            return by_idx.get(mg_ov.get("_track_idx"), None)
+
+        monkeypatch.setattr(RenderService, "_render_mg_mov", fake_render_mg_mov)
+        return svc, ff_cmds
+
+    async def test_chained_single_invocation(self, monkeypatch, tmp_path) -> None:
+        """≥4 个 MG → 恰好 1 次 ffmpeg 调用；-i 数 = N+1；N 个 enable 窗口。"""
+        n = 4
+        svc, cmds = self._build(monkeypatch, tmp_path, [self._mk(tmp_path, i) for i in range(n)])
+        await svc._apply_all_hyperframes("main.mp4", [], self._hf(n), 1920, 1080, 30.0)
+        assert len(cmds) == 1, f"应只有 1 次 ffmpeg 调用: {len(cmds)}"
+        cmd = cmds[0]
+        assert sum(1 for t in cmd if t == "-i") == n + 1  # 主视频 + N 个 MOV
+        flt = _filter_complex(cmd)
+        assert flt.count("enable='between(t,") == n
+        assert cmd[cmd.index("-map") + 1] == f"[v{n}]"
+
+    async def test_chain_survives_missing_mov(self, monkeypatch, tmp_path) -> None:
+        """一个 MOV=None → 跳过该输入，不断链、不崩溃，其余照常合成。"""
+        returns: list[str | None] = [self._mk(tmp_path, 0), None, self._mk(tmp_path, 2)]
+        svc, cmds = self._build(monkeypatch, tmp_path, returns)
+        await svc._apply_all_hyperframes("main.mp4", [], self._hf(3), 1920, 1080, 30.0)
+        assert len(cmds) == 1
+        cmd = cmds[0]
+        assert sum(1 for t in cmd if t == "-i") == 3  # 主视频 + 2 个有效 MOV
+        flt = _filter_complex(cmd)
+        assert flt.count("enable='between(t,") == 2
+        assert cmd[cmd.index("-map") + 1] == "[v2]"
+
+    async def test_cmdline_length_under_30000(self, monkeypatch, tmp_path) -> None:
+        """20 个 MOV 的命令行总长 < 30000（Windows 命令行长度安全）。"""
+        n = 20
+        svc, cmds = self._build(monkeypatch, tmp_path, [self._mk(tmp_path, i) for i in range(n)])
+        await svc._apply_all_hyperframes("main.mp4", [], self._hf(n), 1920, 1080, 30.0)
+        assert cmds, "应至少产生一次 ffmpeg 调用"
+        for cmd in cmds:
+            assert len(" ".join(cmd)) < 30000
+
+    async def test_progress_monotonic(self, monkeypatch, tmp_path) -> None:
+        """整个 _apply_all_hyperframes 的 pct 序列单调不减（70 → 90 → 95 → 96）。"""
+        n = 4
+        svc, cmds = self._build(monkeypatch, tmp_path, [self._mk(tmp_path, i) for i in range(n)])
+        text_overlays = [{"renderer": "hyperframes", "text": "x",
+                          "start_sec": 0, "duration_sec": 1}]
+        calls: list[tuple[str, float, str]] = []
+
+        async def spy(phase, pct, detail):
+            calls.append((phase, pct, detail))
+
+        async def fake_render_overlays(overlays, output_path, width, height, fps):
+            Path(output_path).write_bytes(b"\x00" * 4096)
+            return True
+
+        monkeypatch.setattr(HyperframesRenderer, "render_overlays", fake_render_overlays)
+        monkeypatch.setattr(
+            HyperframesRenderer, "render_overlay_on_video",
+            staticmethod(lambda mov, video, out_v: True))
+        await svc._apply_all_hyperframes("main.mp4", text_overlays, self._hf(n),
+                                         1920, 1080, 30.0, spy)
+        pcts = [c[1] for c in calls]
+        assert pcts, "未收到任何进度回调"
+        for a, b in zip(pcts, pcts[1:]):
+            assert b >= a, f"进度回退: {a} -> {b} | 序列={pcts}"
+
+    async def test_each_input_scaled_padded(self, monkeypatch, tmp_path) -> None:
+        """每个 MOV 输入都带 scale/pad 尺寸对齐（导出分辨率，各出现一次）。"""
+        n = 3
+        svc, cmds = self._build(monkeypatch, tmp_path, [self._mk(tmp_path, i) for i in range(n)])
+        await svc._apply_all_hyperframes("main.mp4", [], self._hf(n), 1920, 1080, 30.0)
+        flt = _filter_complex(cmds[0])
+        assert flt.count("scale=1920:1080:force_original_aspect_ratio=decrease") == n
+        assert flt.count("pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1") == n
