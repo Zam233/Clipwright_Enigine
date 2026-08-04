@@ -31,6 +31,24 @@ SYSTEM_PROMPT_TPL = """你是一个{tone}风格的视频脚本创作者。
 每个场景 description 必须包含一个动画标记。优先使用 mg_dynamic（动态 LLM 生成），其次选用预置动画。
 在生成场景前**必须先调用 describe_llm_mg 工具**了解动态 MG 能力。
 
+标记选择规则：
+1. 数据/数字/统计/百分比、对比/A vs B、流程/步骤、逻辑关系/因果 等场景 → 使用 mg_dynamic
+2. 只有纯文字强调/关键句/标语 → 使用 [文字动画]
+3. 长文本口播内容 → 走字幕，不做动画标记
+4. 每部视频鼓励 1-2 个 mg_dynamic 场景，不要把每个场景都做成 MG
+
+mg_dynamic payload 结构（JSON）：
+  {{"description": "动画描述", "text": "A|B|C", "style": "tech_dark",
+   "data": [{{"label": "A", "value": 100}}]}}
+  - description: 必填，动画内容描述
+  - text: 必填，用 | 分隔的数据/文字
+  - style: 可选，视觉风格（如 tech_dark）
+  - data: 可选，图表数据数组
+
+示例：
+  [逻辑动画]mg_dynamic:{{"description": "近三年营收增长柱状图",
+  "text": "2023|2024|2025", "style": "tech_dark"}}
+
 ## 输出格式
 返回 JSON 数组，每个元素是一个分镜场景：
 {{
@@ -66,6 +84,36 @@ TOOL_PROMPT = """
 
 调用顺序：先 describe_llm_mg，再 list_animations，最后根据返回的能力信息为每个场景选择合适的动画标记。
 """
+
+
+# mg_dynamic 标记引导 — 供 _build_anim_guide 与 _enrich_scene_animations 共用，
+# 保证两处引导一致：payload 结构化（description/text/style/data）+ 选择规则。
+MG_DYNAMIC_GUIDE = """### LLM 动态 MG 动画（mg_dynamic）— 先调用 describe_llm_mg 工具
+对于数据图表、对比、流程、逻辑关系等需要动态图形的场景，优先使用 mg_dynamic 标记。
+**必须**先调用 describe_llm_mg 工具获取最新的标记格式、可用模板和生成能力，不要凭记忆使用。
+
+标记 payload 结构（JSON，紧跟 mg_dynamic: 之后）：
+  {"description": "动画描述", "text": "A|B|C", "style": "tech_dark",
+   "data": [{"label": "A", "value": 100}]}
+  - description: 必填，动画内容自然语言描述（如"三阶段增长柱状图"）
+  - text: 必填，用 | 分隔的数据或文字（柱状图条目、对比项、流程步骤、金句等）
+  - style: 可选，视觉风格（tech_dark / gradient / clean 等，默认 tech_dark）
+  - data: 可选，图表数据数组（图表类用），每项含 label/value 等字段
+
+标记示例：
+  [逻辑动画]mg_dynamic:{"description":"近三年营收增长柱状图",
+  "text":"2023|2024|2025","style":"tech_dark",
+  "data":[{"label":"2023","value":100},{"label":"2024","value":180},{"label":"2025","value":300}]}
+
+选择规则：
+1. 场景涉及数据/数字/统计/百分比 → mg_dynamic（数据可视化）
+2. 场景涉及对比/A vs B/优劣分析 → mg_dynamic（对比图）
+3. 场景涉及流程/步骤/进度 → mg_dynamic（进度条或流程图）
+4. 场景涉及逻辑关系/因果/分类/层级 → mg_dynamic（关系图）
+5. 场景涉及标题揭示/开场/重要声明 → 可使用 mg_dynamic 生成标题特效
+6. 只有纯文字强调/关键句/标语 → 才使用 [文字动画]
+7. 长文本口播内容 → 走字幕，不要用动画标记承载大段文字
+8. 同一场景至多一个 mg_dynamic 标记；每部视频鼓励 1-2 个 MG 场景"""
 
 
 def _validate_scenes(scenes: list[dict]) -> tuple[list[dict], list[str]]:
@@ -167,6 +215,8 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
             if input_data.persona_prompt:
                 system_prompt += f"\n\n## Persona Prompt\n{input_data.persona_prompt}\n"
+            if input_data.vision_prompt:
+                system_prompt += f"\n\n## Vision Prompt\n{input_data.vision_prompt}\n"
             if input_data.rag_context:
                 system_prompt += f"\n\n## 参考知识\n{input_data.rag_context}\n"
 
@@ -347,10 +397,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             parts.append("")
 
         # 动态 MG 动画 — **必须**先调用 describe_llm_mg 工具了解能力再使用
-        parts.append("### LLM 动态 MG 动画（先调用 describe_llm_mg 工具）")
-        parts.append("  对于数据图表、对比图、进度条等自定义动态图形，优先使用 mg_dynamic 标记。")
-        parts.append("  **必须**先调用 describe_llm_mg 工具获取最新的标记格式、可用模板和生成能力。")
-        parts.append("  不要凭记忆使用，每次生成前都应调用该工具确认能力。")
+        parts.append(MG_DYNAMIC_GUIDE)
         parts.append("")
 
         total = len(text_anims) + len(logic_anims) + len(trans_anims)
@@ -404,14 +451,10 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             "你是视频动画标记专家。为每个分镜场景的 description 补充一个合适的动画标记，"
             "供后续 AnimationAgent 创建动画。请根据场景内容从可用动画中选择最合适的，不要硬编码。\n\n"
             "## 动画选择规则\n"
-            "1. 场景涉及数据/数字/统计/百分比 → 必须使用 mg_dynamic 生成数据可视化\n"
-            "2. 场景涉及对比/A vs B/优劣分析 → 必须使用 mg_dynamic 生成对比图\n"
-            "3. 场景涉及流程/步骤/进度 → 必须使用 mg_dynamic 生成进度条或流程图\n"
-            "4. 场景涉及逻辑关系/因果/分类/层级 → 必须使用 mg_dynamic 生成关系图\n"
-            "5. 场景涉及标题揭示/开场/重要声明 → 使用 mg_dynamic 生成标题特效\n"
-            "6. 只有纯文字强调/关键句/标语 → 才使用 [文字动画]\n"
-            "7. 文字动画和 MG 动画不冲突，同一场景可同时有两者（用途不同）\n\n"
-            + anim_guide + mg_info
+            + MG_DYNAMIC_GUIDE
+            + "\n\n"
+            + anim_guide
+            + mg_info
         )
         user_prompt = (
             f"以下是 {len(scenes)} 个分镜场景。请为缺少动画标记的场景补充合适的动画标记。\n\n"

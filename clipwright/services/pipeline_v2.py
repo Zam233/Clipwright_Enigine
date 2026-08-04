@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import uuid
 from datetime import datetime
 from typing import Any, Optional
@@ -41,6 +42,168 @@ from clipwright.tool.registry import ToolRegistry
 # 动画阶段逐片段 LLM MG 生成（每个 2-4 分钟）是主要耗时来源；
 # 默认给 30 分钟，前端/需求确认路径会按音频时长与场景数再叠加。
 DEFAULT_PIPELINE_TIMEOUT_SEC = 1800  # 30 分钟
+
+
+# ── 运行记录注册表 (Run Registry) ────────────────
+# 无 Mongo 时记录管线执行历史，供 GET /api/pipeline/runs 消费；
+# 有 Mongo 时优先读取持久化历史，内存记录覆盖当前进程内完成的运行。
+_run_registry: list[dict] = []
+_run_registry_lock = threading.Lock()
+
+
+def _registry_snapshot() -> list[dict]:
+    """深拷贝当前内存注册表（剔除内部时间戳字段）。"""
+    with _run_registry_lock:
+        return [{k: v for k, v in r.items() if k != "_start_dt"} for r in _run_registry]
+
+
+def record_run_start(pipeline_id: str, topic: str) -> None:
+    """在管线执行入口记录运行开始（status=running, agents 空）。"""
+    now = datetime.now()
+    with _run_registry_lock:
+        _run_registry.append({
+            "id": pipeline_id,
+            "topic": topic or "",
+            "status": "running",
+            "duration_ms": 0,
+            "started_at": now.isoformat(timespec="seconds"),
+            "_start_dt": now,
+            "agents": [],
+        })
+
+
+def record_run_complete(pipeline_id: str, status: str, steps: list[PipelineStep]) -> None:
+    """在结果落库处更新运行结束（成功与失败分支共用）。
+
+    把 PipelineStep 列表转换为前端期望的 agent 跨度
+    ``[{agent, start, dur, status}]``。
+    """
+    spans: list[dict] = []
+    with _run_registry_lock:
+        for run in _run_registry:
+            if run["id"] != pipeline_id:
+                continue
+            start_dt: Optional[datetime] = run.get("_start_dt")
+            for s in steps or []:
+                start_ms = 0
+                if start_dt is not None and s.started_at is not None:
+                    start_ms = max(0, int((s.started_at - start_dt).total_seconds() * 1000))
+                span_status = "ok"
+                if s.status == PipelineStatus.FAILED:
+                    span_status = "fail"
+                elif s.retry_count > 0:
+                    span_status = "retry"
+                spans.append({
+                    "agent": s.agent_name,
+                    "start": start_ms,
+                    "dur": int(s.duration_ms or 0),
+                    "status": span_status,
+                })
+            now = datetime.now()
+            run["status"] = status
+            run["duration_ms"] = int((now - start_dt).total_seconds() * 1000) if start_dt else 0
+            run["agents"] = spans
+            run.pop("_start_dt", None)
+            return
+        # 开始记录缺失（如进程内直接调用执行器）→ 补一条完成的记录
+        _run_registry.append({
+            "id": pipeline_id,
+            "topic": "",
+            "status": status,
+            "duration_ms": 0,
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "agents": spans,
+        })
+
+
+def clear_run_records() -> None:
+    """清空内存注册表（测试用）。"""
+    with _run_registry_lock:
+        _run_registry.clear()
+
+
+def _as_same_tz(dt: datetime, ref: datetime) -> datetime:
+    """把 dt 规整到与 ref 相同的时区，容忍 naive/aware 混用。"""
+    if dt.tzinfo is None:
+        if ref.tzinfo is not None:
+            dt = dt.replace(tzinfo=ref.tzinfo)
+    elif ref.tzinfo is not None:
+        dt = dt.astimezone(ref.tzinfo)
+    return dt
+
+
+def _mongo_record_to_run(m: Any) -> Optional[dict]:
+    """把 Mongo PipelineModel 文档映射为前端期望的 run 形状（防御式）。
+
+    任一字段缺失/异常都返回 None，保证 Mongo 不可用时不影响内存记录。
+    """
+    try:
+        request = getattr(m, "request", None) or {}
+        topic = request.get("topic", "") if isinstance(request, dict) else ""
+        created = getattr(m, "created_time", None)
+        updated = getattr(m, "updated_time", None)
+        if not isinstance(created, datetime) or not isinstance(updated, datetime):
+            return None
+        duration_ms = max(0, int((_as_same_tz(updated, created) - created).total_seconds() * 1000))
+        spans: list[dict] = []
+        for s in (getattr(m, "steps", None) or []):
+            if not isinstance(s, dict):
+                continue
+            start_ms = 0
+            try:
+                s_start = s.get("started_at")
+                if s_start:
+                    start_ms = max(0, int(
+                        (_as_same_tz(datetime.fromisoformat(str(s_start)), created) - created
+                         ).total_seconds() * 1000))
+            except (ValueError, TypeError):
+                start_ms = 0
+            span_status = "ok"
+            if s.get("status") == "failed":
+                span_status = "fail"
+            elif s.get("retry_count", 0) > 0:
+                span_status = "retry"
+            spans.append({
+                "agent": s.get("agent_name", ""),
+                "start": start_ms,
+                "dur": int(s.get("duration_ms") or 0),
+                "status": span_status,
+            })
+        return {
+            "id": str(m.id),
+            "topic": topic,
+            "status": getattr(m, "status", "completed") or "completed",
+            "duration_ms": duration_ms,
+            "started_at": created.isoformat(timespec="seconds"),
+            "agents": spans,
+        }
+    except Exception as e:
+        logger.debug("Mongo run 记录映射失败: %s", e)
+        return None
+
+
+def get_run_records(limit: int = 50) -> list[dict]:
+    """获取运行记录（新→旧）。
+
+    内存注册表始终返回（当前进程真实执行历史）；当 Mongo 可用时，
+    再合并 PipelineModel 中的持久化历史（去重，内存优先）。
+    """
+    records = _registry_snapshot()
+    try:
+        from clipwright.context import mongo as mongo_ctx
+        if mongo_ctx.is_connected:
+            from clipwright.models.pipeline_model import PipelineModel
+            memory_ids = {r["id"] for r in records}
+            docs = PipelineModel.find_many({}, sort=[("created_time", -1)], limit=limit)
+            for m in docs:
+                if str(m.id) in memory_ids:
+                    continue
+                rec = _mongo_record_to_run(m)
+                if rec:
+                    records.append(rec)
+    except Exception as e:
+        logger.debug("GET /runs Mongo 读取失败，仅返回内存记录: %s", e)
+    return records[:limit]
 
 
 class AgentDAG:
@@ -165,6 +328,9 @@ class PipelineOrchestratorV2:
         state = PipelineState(pipeline_id=pid, request=request)
         bus = AgentBus(pid)
 
+        # Run registry: 记录运行开始（供 GET /api/pipeline/runs 消费）
+        record_run_start(pid, request.topic)
+
         timeout_sec = request.extra_params.get("pipeline_timeout_sec", DEFAULT_PIPELINE_TIMEOUT_SEC)
 
         if not pipeline_id:
@@ -208,6 +374,8 @@ class PipelineOrchestratorV2:
         state.updated_at = datetime.now()
         # Layer 1: 持久化最终状态（在线程池执行）
         await loop.run_in_executor(None, self._persist_state, state, state.status.value, error_category)
+        # Run registry: 记录运行结束（成功/失败共用，含 agent 跨度）
+        record_run_complete(pid, state.status.value, state.steps)
         return state
 
     async def _run_inner(
@@ -452,6 +620,7 @@ class PipelineOrchestratorV2:
         # 加载 Persona 的 prompt.md 风格指引与知识库上下文，供 StructureAgent 使用，
         # 避免管线生成的脚本与需求阶段确认的风格发生漂移。
         self._persona_prompt = getattr(manifest, "prompt", "") or ""
+        self._vision_prompt = getattr(manifest, "vision_prompt", "") or ""
         self._rag_context = ""
         try:
             from clipwright.rag.retriever import Retriever
@@ -493,6 +662,7 @@ class PipelineOrchestratorV2:
             "structure": {
                 "persona_config": persona_config,
                 "persona_prompt": getattr(self, "_persona_prompt", "") or result_data.get("persona_prompt", ""),
+                "vision_prompt": getattr(self, "_vision_prompt", "") or result_data.get("vision_prompt", ""),
                 "rag_context": getattr(self, "_rag_context", "") or result_data.get("rag_context", ""),
             },
             "material": {
@@ -507,6 +677,8 @@ class PipelineOrchestratorV2:
             "animation": {
                 "timeline": result_data.get("timeline"),
                 "visual_config": persona_config.get("visual", {}),
+                "persona_prompt": getattr(self, "_persona_prompt", "") or result_data.get("persona_prompt", ""),
+                "vision_prompt": getattr(self, "_vision_prompt", "") or result_data.get("vision_prompt", ""),
             },
             "audio": {
                 "timeline": result_data.get("timeline"),
@@ -663,6 +835,7 @@ class PipelineOrchestratorV2:
                 context=ctx,
                 persona_config=data.get("persona_config", {}),
                 persona_prompt=data.get("persona_prompt"),
+                vision_prompt=data.get("vision_prompt"),
                 rag_context=data.get("rag_context", ""),
                 creative_brief=ctx.extra_params.get("creative_brief"),
                 production_plan=ctx.extra_params.get("production_plan"),
@@ -693,6 +866,8 @@ class PipelineOrchestratorV2:
                 context=ctx,
                 timeline=tl,
                 visual_config=data.get("visual_config", {}),
+                persona_prompt=data.get("persona_prompt"),
+                vision_prompt=data.get("vision_prompt"),
                 creative_brief=ctx.extra_params.get("creative_brief"),
                 production_plan=ctx.extra_params.get("production_plan"),
             ), ctx)

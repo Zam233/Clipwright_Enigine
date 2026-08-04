@@ -46,6 +46,9 @@ class StructureInput(BaseModel):
     production_plan: Optional[dict[str, Any]] = Field(
         default=None, description="用户确认的制作规划书（含 markdown/scenes）"
     )
+    vision_prompt: Optional[str] = Field(
+        default=None, description="Persona 的视觉需求 Prompt，注入 LLM system prompt"
+    )
 
 
 class StructureOutput(BaseModel):
@@ -119,6 +122,12 @@ class AnimationInput(BaseModel):
     context: AgentContext
     timeline: Timeline
     visual_config: dict[str, Any] = Field(default_factory=dict)
+    persona_prompt: Optional[str] = Field(
+        default=None, description="Persona 的 Prompt 指令，注入 LLM system prompt"
+    )
+    vision_prompt: Optional[str] = Field(
+        default=None, description="Persona 的视觉需求 Prompt，注入 LLM system prompt"
+    )
     creative_brief: Optional[dict[str, Any]] = Field(
         default=None, description="用户审阅确认的创作简报（动画风格/字体/图标）"
     )
