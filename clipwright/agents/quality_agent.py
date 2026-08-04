@@ -7,13 +7,20 @@
 4. 动画覆盖率 — 文字轨是否有动画
 5. 转场覆盖率 — 视频片段之间是否有转场
 6. 音量峰值检查
+7. 帧级素材匹配（视觉 LLM 门控）— 关键 scene 抽帧 → VisionService 分析 →
+   与文案做 token 重叠打分，低于阈值产出 material_match 错误问题
+   （触发 redo_agent="material"，复用与 material_agent 相同的 enable_visual_llm 开关）
 """
 
 from __future__ import annotations
 
+import asyncio
+import os
 import statistics
+from typing import Any
 
 from clipwright.agents.base import BaseAgent
+from clipwright.config import logger
 from clipwright.schema.agent import (
     AgentContext,
     AgentDecision,
@@ -21,7 +28,7 @@ from clipwright.schema.agent import (
     QualityIssue,
     QualityOutput,
 )
-from clipwright.schema.timeline import ClipKind
+from clipwright.schema.timeline import Clip, ClipKind, Timeline
 
 
 class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
@@ -171,17 +178,27 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                 message="没有音频轨道，视频将无声",
             ))
 
+        # ── 7. 帧级素材匹配检查（视觉 LLM 门控）──
+        # 与 material_agent 共用 enable_visual_llm 开关；仅在开启时执行，
+        # 避免新增一条常开视觉路径。检查结果进 _quality_issues →
+        # redo_agent 建议 material 重做素材。
+        frame_issues = await self._check_frame_matches(timeline, context, constraints)
+        issues.extend(frame_issues)
+
         # ── 判定 ──
         errors = [i for i in issues if i.severity == "error"]
         decision = AgentDecision.FAIL if errors else AgentDecision.PASS
 
         # 依据 error 类别建议重做的 Agent（取最上游责任方，下游会联动重做）：
+        #   material_match → material（素材帧与文案不匹配，重做素材匹配）
         #   structure/duration/rhythm → edit（重建粗剪时间线）
         #   animation/transition      → animation
         #   audio                     → audio
         redo_agent = ""
         error_cats = {i.category for i in errors}
-        if error_cats & {"structure", "duration", "rhythm"}:
+        if "material_match" in error_cats:
+            redo_agent = "material"
+        elif error_cats & {"structure", "duration", "rhythm"}:
             redo_agent = "edit"
         elif error_cats & {"animation", "transition"}:
             redo_agent = "animation"
@@ -195,3 +212,102 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
             fix_suggestions=[i.message for i in issues if i.severity in ("error", "warning")],
             redo_agent=redo_agent,
         )
+
+    # ── 帧级素材匹配检查 ─────────────────────────────────
+
+    @staticmethod
+    def _clip_expected_text(clip: Clip) -> str:
+        """关键片段的期望文案：优先取注入的场景描述，其次素材标题。"""
+        meta = clip.metadata or {}
+        return str(meta.get("description") or meta.get("source_title") or "").strip()
+
+    @staticmethod
+    def _clip_media_source(clip: Clip) -> str:
+        """关键片段的帧提取源：metadata 中的本地路径/URL，或 asset_id（处理后的媒体路径）。"""
+        meta = clip.metadata or {}
+        return str(meta.get("local_path") or meta.get("url") or clip.asset_id or "").strip()
+
+    async def _check_frame_matches(
+        self,
+        timeline: Timeline,
+        context: AgentContext,
+        constraints: dict[str, Any],
+    ) -> list[QualityIssue]:
+        """帧级素材匹配检查（视觉 LLM 门控）。
+
+        Gate: ``constraints["enable_visual_llm"]`` —— 与 material_agent 的
+        material_plugin_config 使用同一开关；关闭时直接返回空（不引入常开视觉路径）。
+
+        开启时对有界的关键 scene（有文案 + 可提取帧源的 video/image clip，最多
+        ``quality_check_max_clips`` 个）抽帧 → VisionService 分析 → 用与
+        material_agent 一致的 token 重叠启发式打分；低于阈值产出
+        ``material_match`` 错误问题（触发 redo_agent="material"）。
+        """
+        if not constraints.get("enable_visual_llm", False):
+            return []
+
+        threshold = float(constraints.get("material_match_threshold", 0.35))
+        frame_count = int(constraints.get("quality_frame_count", 1))
+        max_clips = int(constraints.get("quality_check_max_clips", 3))
+
+        # 有界关键 scene 子集：优先 metadata 带描述的片段
+        key_clips: list[tuple[Clip, str, dict[str, Any]]] = []
+        for track in timeline.tracks or []:
+            if track.kind not in (ClipKind.VIDEO, ClipKind.IMAGE):
+                continue
+            for clip in track.clips:
+                expected_text = self._clip_expected_text(clip)
+                source = self._clip_media_source(clip)
+                if expected_text and source:
+                    key_clips.append((clip, expected_text, {
+                        "local_path": source,
+                        "duration_sec": clip.duration_sec,
+                    }))
+                if len(key_clips) >= max_clips:
+                    break
+            if len(key_clips) >= max_clips:
+                break
+
+        if not key_clips:
+            return []
+
+        from clipwright.agents.material_agent import _heuristic_title_match_score
+        from clipwright.services.vision import VisionService
+        from clipwright.tool.frame_extractor import extract_frames
+
+        issues: list[QualityIssue] = []
+        for clip, expected_text, asset in key_clips:
+            frame_paths: list[str] = []
+            try:
+                frame_paths = await extract_frames(asset, frame_count=frame_count)
+                if not frame_paths:
+                    continue
+                service = VisionService()
+                analyses = await asyncio.gather(
+                    *(service.analyze_image(p) for p in frame_paths)
+                )
+                tags = list({str(t) for a in analyses for t in a.get("tags", []) if t})
+                descriptions = [
+                    str(a.get("description", "")) for a in analyses if a.get("description")
+                ]
+                description = " | ".join(descriptions)
+                score = _heuristic_title_match_score(description, tags, expected_text)
+                if score < threshold:
+                    issues.append(QualityIssue(
+                        severity="error",
+                        category="material_match",
+                        message=(
+                            f"素材帧与文案不匹配: clip={clip.id} 匹配分 {score:.2f} "
+                            f"(阈值 {threshold:.2f})，建议重做素材匹配"
+                        ),
+                        location=clip.id,
+                    ))
+            except Exception as e:
+                logger.debug("QualityAgent: 帧匹配检查跳过 clip=%s: %s", clip.id, e)
+            finally:
+                for p in frame_paths:
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+        return issues
