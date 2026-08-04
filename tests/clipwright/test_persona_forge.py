@@ -127,6 +127,32 @@ class TestPersonaForgeInfer:
             settings.llm_api_key = orig_key
 
     @pytest.mark.asyncio
+    async def test_from_script_over_8000_not_truncated(self, forge: PersonaForge) -> None:
+        """>8000 字脚本应完整送入 LLM prompt（[:8000] → [:16000] 回归）。"""
+        script = "我偏好冷峻的叙述节奏，" + "用词精准，杜绝冗余铺垫，" * 800 + "尾句收束有力。" * 50
+        assert 8000 < len(script) < 16000
+
+        captured: dict[str, str] = {}
+
+        async def _fake_structured_output(**kwargs: object) -> dict[str, object]:
+            captured["user_prompt"] = str(kwargs.get("user_prompt", ""))
+            return {"language": {}}
+
+        forge._has_api_key = lambda: True  # type: ignore[method-assign]
+        forge._llm.structured_output = _fake_structured_output  # type: ignore[method-assign]
+
+        manifest = await forge.from_script(
+            script=script,
+            persona_id="test_script_long",
+            persona_name="长脚本测试",
+        )
+        assert manifest.persona_id == "test_script_long"
+        user_prompt = captured["user_prompt"]
+        # 完整脚本（含末尾唯一子串）应出现在 prompt 中，不再被 8000 截断
+        assert "尾句收束有力。" * 50 in user_prompt
+        assert script[-40:] in user_prompt
+
+    @pytest.mark.asyncio
     async def test_from_prompt_text(self, forge: PersonaForge) -> None:
         """验证 prompt 构建流程不崩溃。"""
         from clipwright.config import settings

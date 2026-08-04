@@ -107,6 +107,7 @@ class ChatForgeSession:
 
     @property
     def is_expired(self) -> bool:
+        # 已知限制：1h 内存过期保留（非本需求范围）
         return datetime.now() - self.updated_at > timedelta(hours=1)
 
 
@@ -568,9 +569,9 @@ class ChatForge:
         if not messages:
             return ""
         lines = ["# ChatForge 对话生成的 Persona Prompt", ""]
-        # 提取用户的关键描述
+        # 提取用户的关键描述（保留完整内容，不截断）
         user_statements = [
-            m["content"][:500] for m in messages
+            m["content"] for m in messages
             if m.get("role") == "user" and not m["content"].startswith("[系统]")
         ]
         if user_statements:

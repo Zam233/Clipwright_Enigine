@@ -169,7 +169,8 @@ class PersonaForge:
             f"- 总句数: {stats['sentence_count']}\n"
             f"- 平均句长: {stats['avg_sentence_len']:.1f} 字\n"
             f"- 最长句: {stats['max_sentence_len']} 字\n\n"
-            f"文本内容：\n```\n{script[:8000]}\n```\n\n"
+            # 资源保护上限 16000 字（避免超长脚本撑爆上下文）
+            f"文本内容：\n```\n{script[:16000]}\n```\n\n"
             f"persona_id: {persona_id}\n"
             f"返回严格 JSON。"
         )
