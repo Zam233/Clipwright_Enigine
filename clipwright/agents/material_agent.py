@@ -24,6 +24,76 @@ from clipwright.services.trace import add_event
 _search_cache: dict[str, list[dict]] = {}
 _SEARCH_CACHE_MAX = 200
 
+# 素材校验有界重试：单场景最多重试次数 + 触发重试的最低分数阈值
+_MAX_VALIDATION_RETRIES = 2
+_VALIDATION_THRESHOLD = 0.35
+
+# 启发式分词：拉丁词 + CJK 字符
+_CJK_CHAR_RE = re.compile(r"[\u4e00-\u9fff]")
+_LATIN_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _text_tokens(text: str) -> set[str]:
+    """将文本切分为可比较的 token 集合：拉丁词 + CJK 相邻字符二元组。
+
+    中文无空格分词，用相邻字符二元组（bigram）可避免单字误匹配
+    （如「城市夜景」与「风景」共享「景」但不共享二元组）。
+    """
+    latin = set(_LATIN_TOKEN_RE.findall(text.lower()))
+    chars = _CJK_CHAR_RE.findall(text)
+    if len(chars) >= 2:
+        bigrams = {chars[i] + chars[i + 1] for i in range(len(chars) - 1)}
+    else:
+        bigrams = set(chars)
+    return latin | bigrams
+
+
+def _heuristic_title_match_score(
+    title: str, tags: list[str], expected_text: str
+) -> float:
+    """标题/标签 vs 场景文本的启发式匹配分 (0-1)。
+
+    评分方法：
+    - 分词：拉丁文按单词切分；中文按相邻字符二元组（bigram）切分。
+    - 用 F1（调和平均）衡量素材 title+tags 与场景文本的 token 重叠：
+      - 完全无关（无重叠 token）→ 0.0
+      - 场景 token 被充分覆盖 → 接近 1.0
+    - 空素材文本 → 0.0（无法判断，不选为最优）
+    - 空场景文本 → 0.5（中性分）
+    """
+    expected_tokens = _text_tokens(expected_text)
+    if not expected_tokens:
+        return 0.5
+    asset_text = " ".join([title or ""] + list(tags or []))
+    asset_tokens = _text_tokens(asset_text)
+    if not asset_tokens:
+        return 0.0
+    overlap = len(expected_tokens & asset_tokens)
+    if overlap == 0:
+        return 0.0
+    precision = overlap / len(asset_tokens)
+    recall = overlap / len(expected_tokens)
+    denom = precision + recall
+    f1 = (2 * precision * recall / denom) if denom > 0 else 0.0
+    return min(1.0, f1)
+
+
+def _asset_parts(asset: Any) -> tuple[str, list[str], str]:
+    """提取候选素材的 (title, tags, url)，兼容 Asset 对象 / 搜索结果包装 / dict。"""
+    if hasattr(asset, "asset"):
+        asset = asset.asset
+    if hasattr(asset, "title"):
+        return (
+            asset.title or "",
+            list(asset.tags or []),
+            asset.url or asset.local_path or "",
+        )
+    return (
+        asset.get("title", ""),
+        list(asset.get("tags", []) or []),
+        asset.get("url", "") or asset.get("local_path", ""),
+    )
+
 
 class _CachedResult:
     """缓存结果的轻量封装，使属性访问与 AssetResult 对象一致。"""
@@ -112,12 +182,20 @@ async def _llm_search_queries(
     pipeline_id: str = "",
     persona_style: str = "",
     brief_hint: str = "",
+    retry_hint: bool = False,
 ) -> list[str]:
-    """调用 LLM 生成具体视觉搜索词（考虑 Persona 风格 + 简报素材偏好）。"""
+    """调用 LLM 生成具体视觉搜索词（考虑 Persona 风格 + 简报素材偏好）。
+
+    retry_hint: 重试时置 True，提示 LLM 换一个角度/方向重新生成，避免重复词。
+    """
     from clipwright.services.llm import LLMService
 
     style_hint = f"\n- 优先匹配风格: {persona_style}" if persona_style else ""
     brief_hint_text = f"\n- 简报素材要求: {brief_hint}" if brief_hint else ""
+    retry_hint_text = (
+        "\n- 上次生成的关键词未能命中合适素材，请换一个角度/场景方向重新生成，"
+        "避免与上次雷同" if retry_hint else ""
+    )
 
     prompt = (
         f"你是一个视频素材搜索关键词生成器。根据以下场景信息，生成 3-5 个具体、可搜索的视觉关键词，"
@@ -130,7 +208,7 @@ async def _llm_search_queries(
         f"不能是抽象概念（如'社会矛盾''心理防御'）\n"
         f"- 优先推荐实拍风格的画面\n"
         f"- 用中文输出，每行一个关键词\n"
-        f"- 只输出关键词，不要序号和说明{style_hint}{brief_hint_text}"
+        f"- 只输出关键词，不要序号和说明{retry_hint_text}{style_hint}{brief_hint_text}"
     )
     if pipeline_id:
         add_event(pipeline_id, "material", "llm", f"LLM 搜索词生成: {scene_title}")
@@ -162,32 +240,42 @@ async def _llm_search_queries(
     return fallback
 
 
-async def _validate_video_frame(video_url: str, expected_text: str) -> float:
-    """用视觉服务验证视频帧（占位 — 委托 FrameValidator 或视觉模型）。"""
+async def _validate_video_frame(asset: Any, expected_text: str) -> float:
+    """校验单个素材候选是否匹配场景，返回 0-1 分（非视觉路径）。
+
+    校验顺序：
+    1. 素材无可访问 URL → 0.0（无法校验，不作为最优候选）。
+    2. 尝试注册的 frame_validator 工具：若返回真实分数（含 match_score）则使用，
+       全黑帧返回 0.0；若工具未注册或未返回真实分数则回退启发式。
+    3. 启发式回退（_heuristic_title_match_score）：用素材 title+tags 与
+       场景 expected_text（场景标题 + 关键词）做 token/F1 重叠打分：
+       完全无关 → 0.0；充分覆盖 → 接近 1.0。
+    """
+    title, tags, video_url = _asset_parts(asset)
     if not video_url:
-        return 0.5
+        return 0.0
     try:
-        import asyncio
-        # 尝试从 tool stubs 获取 FrameValidator，不存在则跳过
         from clipwright.tool.registry import ToolRegistry
         tool = ToolRegistry.get("frame_validator")
-        if tool is None:
-            return 0.5
-        result = await asyncio.wait_for(
-            tool.execute(video_url=video_url, expected_text=expected_text),
-            timeout=15,
-        )
-        output = result.output or {}
-        if output.get("is_blank"):
-            logger.debug("MaterialAgent: 跳过全黑帧 %s", video_url[:40])
-            return 0.0
-        return output.get("match_score", 0.5)
+        if tool is not None:
+            result = await asyncio.wait_for(
+                tool.execute(video_url=video_url, expected_text=expected_text),
+                timeout=15,
+            )
+            output = result.output or {}
+            if output.get("is_blank"):
+                logger.debug("MaterialAgent: 跳过全黑帧 %s", video_url[:40])
+                return 0.0
+            if "match_score" in output:
+                try:
+                    return float(output["match_score"])
+                except (TypeError, ValueError):
+                    pass
     except asyncio.TimeoutError:
         logger.debug("MaterialAgent: 帧验证超时 %s", video_url[:40])
-        return 0.3
     except Exception as e:
         logger.debug("MaterialAgent: 帧验证失败 %s: %s", video_url[:40], e)
-        return 0.0
+    return _heuristic_title_match_score(title, tags, expected_text)
 
 
 def _search_cache_key(query: str, source_ids: list[str] | None) -> str:
@@ -435,7 +523,7 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
         pipeline_id: str,
         batch_query: list[str] | None = None,
     ) -> dict[str, Any]:
-        """处理单个场景：LLM 搜索词（或批量结果）→ 搜索 → 帧校验 → 打分排序。"""
+        """处理单个场景：LLM 搜索词（或批量结果）→ 搜索 → 帧校验 → 打分排序 + 有界重试。"""
         scene_title = scene.get("title", "")
         scene_keywords = scene.get("keywords", [])
         description = scene.get("description", "")
@@ -463,44 +551,104 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
 
         logger.info("MaterialAgent: 场景[%d] 去重后 %d 条候选", i, len(all_results))
 
-        validated = []
-        # 帧校验并行：对前 4 个候选用有界 gather 校验（限制额外 API 开销），
-        # 选择逻辑保持「原顺序第一个 >0.3 命中」，与串行版结果一致
-        top_candidates = all_results[:8]
-        if top_candidates:
-            validate_sem = asyncio.Semaphore(4)
+        validated: list[tuple[Any, float]] = []
+        validated_ids: set[str] = set()
+        validate_sem = asyncio.Semaphore(4)
 
-            async def _validate(r):
-                async with validate_sem:
-                    if use_vision_llm:
-                        asset_obj = r.asset if hasattr(r, 'asset') else r
-                        score = await self._validate_via_vision_llm(
-                            asset_obj,
-                            scene_title,
-                            scene_keywords,
-                            description,
-                            frame_count=vision_frame_count,
-                        )
-                    else:
-                        video_url = ""
-                        if hasattr(r, 'asset'):
-                            video_url = r.asset.url or r.asset.local_path or ""
-                        else:
-                            video_url = r.get("url", "") or r.get("local_path", "")
-                        if not video_url:
-                            return None
-                        score = await _validate_video_frame(
-                            video_url, f"{scene_title} {' '.join(scene_keywords)}"
-                        )
-                    return (r, score)
+        def _asset_id_of(r) -> str:
+            """提取候选素材 ID（兼容对象与 dict）。"""
+            return r.asset.id if hasattr(r, 'asset') else r.get("asset_id", "")
 
-            scores = await asyncio.gather(*(_validate(r) for r in top_candidates))
+        def _video_url_of(r) -> str:
+            """提取候选素材的可访问 URL（兼容对象与 dict）。"""
+            if hasattr(r, 'asset'):
+                return r.asset.url or r.asset.local_path or ""
+            return r.get("url", "") or r.get("local_path", "")
+
+        async def _validate(r):
+            """按 gate 校验单个候选，返回 (候选, 分数) 或 None。"""
+            async with validate_sem:
+                if use_vision_llm:
+                    asset_obj = r.asset if hasattr(r, 'asset') else r
+                    score = await self._validate_via_vision_llm(
+                        asset_obj,
+                        scene_title,
+                        scene_keywords,
+                        description,
+                        frame_count=vision_frame_count,
+                    )
+                else:
+                    if not _video_url_of(r):
+                        return None
+                    score = await _validate_video_frame(
+                        r, f"{scene_title} {' '.join(scene_keywords)}"
+                    )
+                return (r, score)
+
+        async def _validate_batch(candidates: list[Any]) -> None:
+            """有界并行校验一组候选并合并进 validated。"""
+            scores = await asyncio.gather(*(_validate(r) for r in candidates))
             for s in scores:
                 if s is not None:
+                    rid = _asset_id_of(s[0])
+                    if rid:
+                        validated_ids.add(rid)
                     validated.append(s)
+
+        # 帧校验并行：对前 8 个候选用有界 gather 校验（限制额外 API 开销）
+        top_candidates = all_results[:8]
+        if top_candidates:
+            await _validate_batch(top_candidates)
 
         if not validated:
             validated = [(r, 0.5) for r in all_results[:5]]
+
+        # ── 有界重试：最优校验分低于阈值时换素材/换搜索词，最多 _MAX_VALIDATION_RETRIES 次 ──
+        retries_used = 0
+        retried = False
+        validation_note = ""
+        while retries_used < _MAX_VALIDATION_RETRIES:
+            best_score = max((ms for _, ms in validated), default=0.0)
+            if best_score >= _VALIDATION_THRESHOLD:
+                break
+            retries_used += 1
+            retried = True
+            if retries_used == 1:
+                # 尝试 1：换素材 — 从未校验过的候选中取下一个（搜索序）重新校验
+                swap_candidates = [
+                    r for r in all_results if _asset_id_of(r) not in validated_ids
+                ][:4]
+                if pipeline_id:
+                    add_event(pipeline_id, "material", "validation_retry",
+                              f"场景[{i}] 校验分不足({best_score:.2f})，尝试1: 换素材重新校验")
+                if not swap_candidates:
+                    continue
+                await _validate_batch(swap_candidates)
+            else:
+                # 尝试 2：换搜索词 — 重新生成搜索词并搜索新候选
+                if pipeline_id:
+                    add_event(pipeline_id, "material", "validation_retry",
+                              f"场景[{i}] 校验分不足({best_score:.2f})，尝试2: 重新生成搜索词")
+                retry_queries = await _llm_search_queries(
+                    scene_title, scene_keywords, description,
+                    pipeline_id=pipeline_id,
+                    persona_style=" ".join(persona_style_keywords),
+                    brief_hint=brief_material_hint,
+                    retry_hint=True,
+                )
+                new_results: list[Any] = []
+                for query in retry_queries:
+                    results = await _search_with_cache(
+                        query, top_k=5,
+                        source_ids=source_ids if isinstance(source_ids, list) else None,
+                    )
+                    for r in results:
+                        rid = _asset_id_of(r)
+                        if rid and rid not in seen_ids:
+                            seen_ids.add(rid)
+                            new_results.append(r)
+                if new_results:
+                    await _validate_batch(new_results[:8])
 
         def _orientation_score(asset_obj) -> float:
             resolution = ""
@@ -560,10 +708,14 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                 })
 
         best_score = max((ms for _, ms in validated), default=0.0)
+        if retried:
+            validation_note = f"retry_{retries_used}_best_score_{best_score:.2f}"
         return {
             "scene_index": i,
             "scene_title": scene_title,
             "suggested_assets": suggested,
             "score": best_score,
             "query": " | ".join(search_queries),
+            "retried": retried,
+            "validation_note": validation_note,
         }
