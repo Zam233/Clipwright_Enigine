@@ -211,19 +211,19 @@ const dur=parseFloat(root.dataset.duration);
 
             if "scale" in props:
                 s = props.pop("scale")
-                transforms.append(f"scale({s})")
+                transforms.append(f"scale({fill(s)})")
             if "rotate" in props:
                 r = props.pop("rotate")
-                transforms.append(f"rotate({r}deg)")
+                transforms.append(f"rotate({fill(r)}deg)")
             if "translate_y" in props:
                 ty = props.pop("translate_y")
-                transforms.append(f"translateY({ty}px)")
+                transforms.append(f"translateY({fill(ty)}px)")
             if "translate_x" in props:
                 tx = props.pop("translate_x")
-                transforms.append(f"translateX({tx}px)")
+                transforms.append(f"translateX({fill(tx)}px)")
             if "width" in props:
                 w = props.pop("width")
-                style_attrs.append(f"width:{w}px;")
+                style_attrs.append(f"width:{fill(w)}px;")
 
             # 逐关键帧 easing → animation-timing-function（CSS 规范特性，Chromium/Hyperframes 支持）
             easing = props.pop("easing", None)
@@ -235,7 +235,7 @@ const dur=parseFloat(root.dataset.duration);
                 stop += f"transform:{tf};"
             for k, v in props.items():
                 css_key = MGRenderer.KEYFRAME_CSS_MAP.get(k, k)
-                stop += f"{css_key}:{v};"
+                stop += f"{css_key}:{fill(v)};"
             stop += "".join(style_attrs)
             stop += timing
             stop += "}"
@@ -261,7 +261,7 @@ const dur=parseFloat(root.dataset.duration);
         if elem_type == "text":
             font_size = fill(elem.get("font_size", 48))
             font_color = fill(elem.get("font_color", "#ffffff"))
-            font_weight = elem.get("font_weight", "normal")
+            font_weight = fill(elem.get("font_weight", "normal"))
             html = (
                 f'<div id="{eid}" class="mg-el" style="{base_css}'
                 f'font-size:{font_size}px;color:{font_color};font-weight:{font_weight}'
@@ -280,8 +280,8 @@ const dur=parseFloat(root.dataset.duration);
         elif elem_type in ("line", "circle", "ring", "arc", "shape"):
             shape = elem.get("shape", "rect")
             color = elem.get("color", "#4f8cff")
-            sw = elem.get("stroke_width", elem.get("border_width", 0))
-            sw_color = elem.get("stroke_color", elem.get("border_color", color))
+            sw = fill(elem.get("stroke_width", elem.get("border_width", 0)))
+            sw_color = fill(elem.get("stroke_color", elem.get("border_color", color)))
             w_val = fill(elem.get("width", 100))
             h_val = fill(elem.get("height", 100))
             border_radius = elem.get("border_radius", 0)
@@ -303,7 +303,7 @@ const dur=parseFloat(root.dataset.duration);
             else:
                 border_radius = elem.get("border_radius", 4)
 
-            radius_css = f"border-radius:{border_radius};" if border_radius not in (0, "0", 0.0) else ""
+            radius_css = f"border-radius:{fill(border_radius)};" if border_radius not in (0, "0", 0.0) else ""
             if elem_type == "ring":
                 # ring 需要空心底色透明，用 border 画圆环
                 bg_css = "background:transparent;"

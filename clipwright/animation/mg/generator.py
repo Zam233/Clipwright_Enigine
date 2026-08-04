@@ -19,6 +19,10 @@ from clipwright.animation.mg.validator import validate_mg_json, repair_mg_json
 from clipwright.animation.mg.fallback import FallbackEngine
 
 
+# 残留占位符检测：{word} 形式的字面量在最终 HTML 中出现即视为未填充
+_RESIDUAL_PLACEHOLDER_RE = re.compile(r"\{[a-zA-Z_][a-zA-Z0-9_]*\}")
+
+
 # LLM MG 生成/修复提示词共用：输出硬性约束（降低 fallback 率，run6 有 6 次 fallback）
 _STRICT_JSON_OUTPUT = (
     "\n\n## 输出硬性要求\n"
@@ -55,6 +59,7 @@ class MGGenerator:
         persona_style: dict[str, Any] | None = None,
         scene_context: dict[str, Any] | None = None,
         category_context: dict[str, Any] | None = None,
+        vision_prompt: str = "",
         width: int | None = None,
         height: int | None = None,
         fps: float = 30.0,
@@ -69,6 +74,8 @@ class MGGenerator:
             category_context: 视频类型（category）特征数据
                 {plugin_id, display_name, description, shot_params, pacing,
                  mg_style_guidance, translated}
+            vision_prompt: Persona 视觉需求 Prompt（非空时注入 LLM 上下文，
+                空串不产生额外段落）
             width: 拟定分辨率宽度（时间线尺寸；None 时回退 mg_def/1920）
             height: 拟定分辨率高度（时间线尺寸；None 时回退 mg_def/1080）
             fps: 实际时间线帧率
@@ -90,7 +97,7 @@ class MGGenerator:
             try:
                 mg_def = await self._call_llm(
                     description, text_content, persona_style,
-                    scene_context, category_context,
+                    scene_context, category_context, vision_prompt,
                 )
                 if mg_def:
                     break
@@ -109,7 +116,7 @@ class MGGenerator:
                 # 校验通过 → LLM 自批判质量闭环：低分且可修复 → 一次修复重试
                 result = await self._finalize_with_critique(
                     mg_def, "llm", description, text_content,
-                    persona_style, scene_context, category_context,
+                    persona_style, scene_context, category_context, vision_prompt,
                     width=width, height=height, fps=fps,
                 )
                 if result:
@@ -123,13 +130,13 @@ class MGGenerator:
             # 带错误回传的一次修复重试（仅一次，避免无限重试）
             repaired = await self._call_llm_repair(
                 mg_def, errors, description, text_content,
-                persona_style, scene_context, category_context,
+                persona_style, scene_context, category_context, vision_prompt,
             )
             if repaired:
                 logger.info("MGGenerator: 修复重试成功（带错误回传）")
                 result = await self._finalize_with_critique(
                     repaired, "llm_repair", description, text_content,
-                    persona_style, scene_context, category_context,
+                    persona_style, scene_context, category_context, vision_prompt,
                     width=width, height=height, fps=fps,
                 )
                 if result:
@@ -155,11 +162,12 @@ class MGGenerator:
         persona_style: dict,
         scene_context: dict,
         category_context: dict,
+        vision_prompt: str = "",
     ) -> dict[str, Any] | None:
         """带错误回传的一次性修复调用：把 schema 校验错误告诉 LLM 让其修正 JSON。"""
         prompt_config = self._config.get("prompt", {})
         system_template = prompt_config.get("system_template", "Generate MG animation JSON.")
-        context_section = self._build_context_section(persona_style, category_context)
+        context_section = self._build_context_section(persona_style, category_context, vision_prompt)
         system_prompt = system_template
         if context_section:
             system_prompt += "\n\n" + context_section
@@ -206,6 +214,7 @@ class MGGenerator:
         persona_style: dict,
         scene_context: dict,
         category_context: dict,
+        vision_prompt: str = "",
         width: int | None = None,
         height: int | None = None,
         fps: float = 30.0,
@@ -216,13 +225,16 @@ class MGGenerator:
         批判 LLM 调用失败/禁用时静默跳过批判，直接接受当前输出（不降级）。
         """
         critique = await self._critique_quality(
-            mg_def, description, persona_style, category_context,
+            mg_def, description, persona_style, category_context, vision_prompt,
         )
         params = self._build_llm_params(mg_def, text_content, persona_style)
         if critique is None:
             # LLM 评估失败（或 critique 禁用）→ 静默跳过，不降级
-            return self._build_success(mg_def, method, params=params,
-                                       width=width, height=height, fps=fps)
+            return await self._build_success(mg_def, method, params=params,
+                                       width=width, height=height, fps=fps,
+                                       description=description,
+                                       text_content=text_content,
+                                       persona_style=persona_style)
 
         score = critique.get("score", 100)
         issues = critique.get("issues", [])
@@ -231,25 +243,33 @@ class MGGenerator:
 
         if score >= min_score:
             logger.debug("MGGenerator: 批判通过 score=%d", score)
-            return self._build_success(mg_def, method, params=params,
-                                       width=width, height=height, fps=fps)
+            return await self._build_success(mg_def, method, params=params,
+                                       width=width, height=height, fps=fps,
+                                       description=description,
+                                       text_content=text_content,
+                                       persona_style=persona_style)
 
         if not self._issues_fixable(issues, suggestions):
             logger.warning("MGGenerator: 批判低分(score=%d)但问题不可修复，接受原输出", score)
-            return self._build_success(mg_def, method, params=params,
-                                       width=width, height=height, fps=fps)
+            return await self._build_success(mg_def, method, params=params,
+                                       width=width, height=height, fps=fps,
+                                       description=description,
+                                       text_content=text_content,
+                                       persona_style=persona_style)
 
         # 低分且可修复 → 带批判反馈的一次修复重试（仅一次）
         repaired = await self._call_llm_critique_repair(
             mg_def, critique, description, text_content,
-            persona_style, scene_context, category_context,
+            persona_style, scene_context, category_context, vision_prompt,
         )
         if repaired:
             logger.info("MGGenerator: 批判修复成功 score=%d", score)
-            return self._build_success(
+            return await self._build_success(
                 repaired, "critique_repair",
                 params=self._build_llm_params(repaired, text_content, persona_style),
                 width=width, height=height, fps=fps,
+                description=description, text_content=text_content,
+                persona_style=persona_style,
             )
 
         logger.warning("MGGenerator: 批判修复失败(score=%d)，进入降级", score)
@@ -261,6 +281,7 @@ class MGGenerator:
         description: str,
         persona_style: dict,
         category_context: dict,
+        vision_prompt: str = "",
     ) -> dict[str, Any] | None:
         """LLM 自批判质量评估。
 
@@ -277,7 +298,7 @@ class MGGenerator:
 
         prompt_config = self._config.get("prompt", {})
         system_template = prompt_config.get("system_template", "")
-        context_section = self._build_context_section(persona_style, category_context)
+        context_section = self._build_context_section(persona_style, category_context, vision_prompt)
 
         system_prompt = (
             "你是一位严苛的 Motion Graphics 动画质量评审专家。"
@@ -328,11 +349,12 @@ class MGGenerator:
         persona_style: dict,
         scene_context: dict,
         category_context: dict,
+        vision_prompt: str = "",
     ) -> dict[str, Any] | None:
         """带批判反馈的一次性修复调用：把质量评审意见告诉 LLM 让其重做 JSON。"""
         prompt_config = self._config.get("prompt", {})
         system_template = prompt_config.get("system_template", "Generate MG animation JSON.")
-        context_section = self._build_context_section(persona_style, category_context)
+        context_section = self._build_context_section(persona_style, category_context, vision_prompt)
         system_prompt = system_template
         if context_section:
             system_prompt += "\n\n" + context_section
@@ -425,17 +447,18 @@ class MGGenerator:
         persona_style: dict,
         scene_context: dict,
         category_context: dict,
+        vision_prompt: str = "",
     ) -> dict[str, Any] | None:
         """调用 LLM 生成 MG JSON。
 
         系统提示词 = 基础规范模板（config.yaml）+ 动态上下文段落
-        （Persona 视觉风格数据 + 视频类型特征数据）。
+        （Persona 视觉风格数据 + 视频类型特征数据 + 视觉需求 Prompt）。
         动画风格不写死，由 LLM 依据传入数据自行决定。
         """
         prompt_config = self._config.get("prompt", {})
         system_template = prompt_config.get("system_template", "Generate MG animation JSON.")
 
-        context_section = self._build_context_section(persona_style, category_context)
+        context_section = self._build_context_section(persona_style, category_context, vision_prompt)
         system_prompt = system_template
         if context_section:
             system_prompt += "\n\n" + context_section
@@ -469,11 +492,14 @@ class MGGenerator:
             return None
 
     @staticmethod
-    def _build_context_section(persona_style: dict, category_context: dict) -> str:
-        """构建动态上下文段落（Persona 视觉风格 + 视频类型特征）。
+    def _build_context_section(
+        persona_style: dict, category_context: dict, vision_prompt: str = "",
+    ) -> str:
+        """构建动态上下文段落（Persona 视觉风格 + 视频类型特征 + 视觉需求）。
 
         将 Persona 视觉风格与视频类型（category）的结构化数据转为文本，
-        注入生成 prompt，由 LLM 自行决定动画设计。
+        注入生成 prompt，由 LLM 自行决定动画设计。vision_prompt 非空时
+        追加「视觉需求」段落，空串不产生额外输出（保持向后兼容）。
         """
         parts: list[str] = []
 
@@ -538,6 +564,13 @@ class MGGenerator:
                 "动画设计与该视频类型的剪辑节奏、气质相协调：\n" + "\n".join(cat_parts)
             )
 
+        # ── 视觉需求（vision_prompt，创作者定义，优先级最高）──
+        if vision_prompt:
+            parts.append(
+                "## 视觉需求（vision_prompt）\n"
+                "动画必须满足以下视觉需求，优先级高于默认设计：\n" + str(vision_prompt)
+            )
+
         return "\n\n".join(parts)
 
     def _parse_llm_response(self, content: str) -> dict[str, Any] | None:
@@ -591,7 +624,7 @@ class MGGenerator:
                 try:
                     full_template = _json.loads(template_path.read_text(encoding="utf-8"))
                     template, params = FallbackEngine.fill_template_params(full_template, text_content, persona_style)
-                    return self._build_success(template, "fallback", fallback_template=tid, params=params,
+                    return await self._build_success(template, "fallback", fallback_template=tid, params=params,
                                                width=width, height=height, fps=fps)
                 except Exception:
                     pass
@@ -615,29 +648,37 @@ class MGGenerator:
         """为 LLM 生成的 mg_def 构建占位符参数。
 
         LLM 输出可能在元素内容中引用 {text} {left} {right} {accent} 等占位符。
-        从模板 params 定义（无定义时从内容中出现的 {key} 占位符）收集键，
+        union 收集键：先取模板 params 定义键，再扫描内容中出现的 {key} 占位符并集，
         按位置用 | 分隔的文本段填充，并应用 Persona 主色覆盖 accent，
         避免占位符原样渲染进最终 HTML。
         """
         style = persona_style or {}
         parts = FallbackEngine.extract_keywords(text_content)
+        param_defs = mg_def.get("params", {})
 
-        param_keys = list(mg_def.get("params", {}).keys())
-        if not param_keys:
-            seen: list[str] = []
-            for m in re.findall(
-                r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", json.dumps(mg_def, ensure_ascii=False)
-            ):
-                if m not in seen:
-                    seen.append(m)
-            param_keys = seen
+        # 双保护(a): union 扫描 — 无论是否声明 params，都扫描 mg_def 内容里的
+        # {placeholder} 并与其 params 键取并集。避免「有 params 键即跳过内容扫描」
+        # 导致 {left}/{right}/{accent} 等未声明键残留字面量。顺序稳定：params 键优先，
+        # 再追加内容扫描出的新键。
+        param_keys: list[str] = []
+        seen: set[str] = set()
+        for key in param_defs:
+            if key not in seen:
+                seen.add(key)
+                param_keys.append(key)
+        for m in re.findall(
+            r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", json.dumps(mg_def, ensure_ascii=False)
+        ):
+            if m not in seen:
+                seen.add(m)
+                param_keys.append(m)
 
         params: dict[str, str] = {}
         for i, key in enumerate(param_keys):
             if i < len(parts):
                 params[key] = parts[i]
             else:
-                default = mg_def.get("params", {}).get(key)
+                default = param_defs.get(key)
                 params[key] = default.get("default", "") if isinstance(default, dict) else ""
 
         if parts:
@@ -649,25 +690,101 @@ class MGGenerator:
 
         return params
 
-    def _build_success(
-        self, mg_def: dict, method: str, fallback_template: str | None = None,
-        params: dict[str, Any] | None = None,
+    async def _render_html_no_residuals(
+        self,
+        mg_def: dict,
+        params: dict[str, Any] | None,
+        description: str | None = None,
+        text_content: str | None = None,
+        persona_style: dict | None = None,
         width: int | None = None,
         height: int | None = None,
         fps: float = 30.0,
-    ) -> dict[str, Any]:
-        """构建成功响应 + 渲染 HTML。"""
-        import uuid
-        from datetime import datetime
+        allow_fallback: bool = True,
+    ) -> str:
+        """渲染并确保输出不含字面占位符（{key}）。
 
-        generation_id = f"gen_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-
+        双保护(c): 渲染后扫描残留占位符，若有则用 mg_def 全部占位符键补齐 params
+        再渲一次（二次填充）；仍残留且允许降级时改用 fallback 模板渲染（fallback
+        路径本身已把模板参数填满，输出无占位符）。作为守卫只记录日志并修复，不循环。
+        """
         from clipwright.animation.mg_renderer import MGRenderer
+        params = params or {}
         try:
             html = MGRenderer.render(mg_def, params, width=width, height=height, fps=fps)
         except Exception as e:
             logger.warning("MGGenerator: MGRenderer.render() failed: %s", e)
             html = ""
+
+        if html and not _RESIDUAL_PLACEHOLDER_RE.search(html):
+            return html
+
+        # 残留 → 二次填充：把 mg_def 中出现的所有占位符键补齐（默认值或空串）再渲染
+        param_defs = mg_def.get("params", {})
+        union_keys: list[str] = []
+        seen: set[str] = set()
+        for key in param_defs:
+            if key not in seen:
+                seen.add(key)
+                union_keys.append(key)
+        for m in _RESIDUAL_PLACEHOLDER_RE.findall(json.dumps(mg_def, ensure_ascii=False)):
+            if m not in seen:
+                seen.add(m)
+                union_keys.append(m)
+
+        merged = dict(params)
+        for key in union_keys:
+            if key not in merged:
+                default = param_defs.get(key)
+                merged[key] = default.get("default", "") if isinstance(default, dict) else ""
+        try:
+            html2 = MGRenderer.render(mg_def, merged, width=width, height=height, fps=fps)
+        except Exception as e:
+            logger.warning("MGGenerator: 残留占位符二次渲染失败: %s", e)
+            html2 = ""
+        if html2 and not _RESIDUAL_PLACEHOLDER_RE.search(html2):
+            logger.warning("MGGenerator: 渲染残留占位符经二次填充后清除")
+            return html2
+
+        if allow_fallback and description and text_content:
+            try:
+                fallback = await self._fallback_generate(
+                    description, text_content, persona_style or {},
+                    width=width, height=height, fps=fps,
+                )
+                fb_html = fallback.get("html") or ""
+                if fb_html and not _RESIDUAL_PLACEHOLDER_RE.search(fb_html):
+                    logger.warning("MGGenerator: 渲染残留占位符 → 降级模板渲染")
+                    return fb_html
+            except Exception as e:
+                logger.warning("MGGenerator: 残留占位符降级渲染失败: %s", e)
+
+        logger.warning("MGGenerator: 渲染后仍含残留占位符，返回原始 HTML")
+        return html or html2
+
+    async def _build_success(
+        self, mg_def: dict, method: str, fallback_template: str | None = None,
+        params: dict[str, Any] | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        fps: float = 30.0,
+        description: str | None = None,
+        text_content: str | None = None,
+        persona_style: dict | None = None,
+    ) -> dict[str, Any]:
+        """构建成功响应 + 渲染 HTML（含残留占位符兜底）。"""
+        import uuid
+        from datetime import datetime
+
+        generation_id = f"gen_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
+        html = await self._render_html_no_residuals(
+            mg_def, params,
+            description=description, text_content=text_content, persona_style=persona_style,
+            width=width, height=height, fps=fps,
+            # fallback 路径自身已填满模板参数，禁止再次降级以免递归
+            allow_fallback=(method != "fallback"),
+        )
 
         return {
             "success": bool(html),

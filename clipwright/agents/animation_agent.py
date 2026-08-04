@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 
 from clipwright.agents.base import BaseAgent, uid as _uid
@@ -69,6 +70,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         self._pid = context.pipeline_id
         add_event(context.pipeline_id, "animation", "agent_start",
                   "AnimationAgent 开始（文字动画/逻辑动画分流）")
+
+        # 捕获 Persona 的 prompt / 视觉需求 prompt，供 MG 处理器与风格解析使用
+        self._persona_prompt = getattr(input_data, "persona_prompt", None) or ""
+        self._vision_prompt = getattr(input_data, "vision_prompt", None) or ""
 
         try:
             timeline = input_data.timeline
@@ -363,7 +368,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         if anim_id.startswith("mg_"):
             await self._handle_mg_animation(
                 anim_track, vid_clip, anim_id, anim_name,
-                text_content, duration, marker,
+                text_content, duration, marker, persona_style,
             )
             return
 
@@ -451,9 +456,11 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         text_content: str,
         duration: float,
         marker: dict[str, Any],
+        persona_style: dict[str, Any] | None = None,
     ) -> None:
         """处理 MG 动画标记 — 通过 MGRenderer 生成 HTML 动画。"""
         from clipwright.animation.mg_renderer import MGRenderer
+        from clipwright.animation.mg.fallback import FallbackEngine
 
         # 加载 MG 动画定义
         mg_def = MGRenderer.load_animation(anim_id)
@@ -469,14 +476,37 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             anim_track.clips.append(text_clip)
             return
 
-        # 解析输入参数: 格式 "文字|副标题|值"
+        # 解析输入参数: 格式 "文字|副标题|值"，按模板实际 params 定义按位置填充
+        # （双保护(d): 不硬编码 text/value/unit/subtitle 4 键 — 固定模板各有不同
+        # 参数键，如 mg_comparison_split 的 left/right/left_sub/right_sub/vs/accent）
+        param_defs = mg_def.get("params", {})
+        param_keys = list(param_defs.keys())
+        if not param_keys:
+            # 无 params 声明 → 从元素内容扫描占位符
+            seen: list[str] = []
+            for m in re.findall(
+                r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", json.dumps(mg_def, ensure_ascii=False)
+            ):
+                if m not in seen:
+                    seen.append(m)
+            param_keys = seen
+
         mg_params: dict[str, str] = {}
         if text_content:
-            parts = [p.strip() for p in text_content.replace("→", "|").split("|")]
-            mg_params["text"] = parts[0] if len(parts) > 0 else text_content
-            mg_params["value"] = parts[1] if len(parts) > 1 else ""
-            mg_params["unit"] = parts[2] if len(parts) > 2 else ""
-            mg_params["subtitle"] = parts[1] if len(parts) > 1 else ""
+            parts = FallbackEngine.extract_keywords(text_content)
+            for i, key in enumerate(param_keys):
+                if i < len(parts):
+                    mg_params[key] = parts[i]
+                else:
+                    default = param_defs.get(key)
+                    mg_params[key] = default.get("default", "") if isinstance(default, dict) else ""
+            if parts and "text" not in param_keys:
+                mg_params["text"] = parts[0]
+
+        style = persona_style or {}
+        if "primary_color" in style and "accent" in mg_params:
+            # Persona 主色覆盖默认 accent
+            mg_params["accent"] = style["primary_color"]
 
         mg_dur = mg_def.get("duration_sec", duration)
         clip_dur = min(mg_dur, vid_clip.duration_sec)
@@ -578,6 +608,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 persona_style=persona_style or {},
                 scene_context=scene_context,
                 category_context=self._mg_category_context,
+                vision_prompt=getattr(self, "_vision_prompt", "") or "",
                 width=self._tl_width, height=self._tl_height, fps=self._tl_fps,
             )
         except Exception as e:
@@ -800,21 +831,22 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
         return ""
 
-    @staticmethod
     async def _resolve_style(
+        self,
         visual_config: dict[str, Any] | None,
         extra_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """从 Persona 配置中解析视觉风格（LLM 驱动 + 插件可覆盖）。"""
         from clipwright.services.style_interpreter import StyleInterpreter
 
-        # 构建 Persona 上下文（含完整 identity/rhythm 等）
+        # 构建 Persona 上下文（含完整 identity/rhythm 等 + vision_prompt）
         ctx = dict(extra_params or {})
         persona_config = ctx.pop("_persona_config", {})
         identity = ctx.pop("_identity", {})
         persona_context = {
             "identity": identity,
             "extra_params": ctx,
+            "vision_prompt": getattr(self, "_vision_prompt", "") or "",
             **persona_config,
         }
 
