@@ -176,7 +176,10 @@ class TextStyle:
             tags.append(rf"\bord{gw}\blur{gw}")
             tags.append(rf"\c{color_to_ass(self.glow_color)}")
         esc = text.replace("{", r"\{").replace("}", r"\}")
-        return f"Dialogue: 0,{ass_time(start_sec)},{ass_time(end_sec)},Default,,0,0,0,,{''.join(tags)}{esc}"
+        # F3 实渲修复: ASS override tags 必须包裹在 {} 内才被 libass 当作样式解释，
+        # 否则 \an2\i1... 会作为字面文本渲染进画面。
+        tags_block = "{" + "".join(tags) + "}" if tags else ""
+        return f"Dialogue: 0,{ass_time(start_sec)},{ass_time(end_sec)},Default,,0,0,0,,{tags_block}{esc}"
 
     def drawtext_position(self) -> tuple[str, str]:
         """返回当前 position 的 x/y 表达式（供 render.py glow 双通道复用坐标）。"""

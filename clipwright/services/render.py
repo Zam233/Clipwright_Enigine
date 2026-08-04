@@ -1164,7 +1164,10 @@ class RenderService:
                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1[mg{i}]"
             )
             parts.append(
-                f"[{prev}][mg{i}]overlay=format=rgba:"
+                # F3 实渲修复: overlay 的 format 选项是枚举（yuv420/yuv420p10/rgb/gbrp/auto），
+                # `rgba` 非法会导致整条链式合成失败（rc=EINVAL）、MG 静默丢失。
+                # 用 format=auto —— 与非链式路径 render_overlay_on_video 一致，alpha 由输入像素格式保留。
+                f"[{prev}][mg{i}]overlay=format=auto:"
                 f"enable='between(t,{_fmt_sec(start)},{_fmt_sec(end)})'[v{i}]"
             )
             prev = f"v{i}"
