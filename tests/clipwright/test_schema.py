@@ -157,3 +157,116 @@ class TestClipNewFields:
         c = restored.tracks[0].clips[0]
         assert c.fx_blur == 3.0
         assert c.label_color == "#00FF00"
+
+
+class TestCaptionStyleFields:
+    """字幕样式字段（任务 28）在后端 Clip 模型中的支持测试。"""
+
+    CAPTION_ARGS: dict = {
+        "id": "c1",
+        "kind": ClipKind.CAPTION,
+        "asset_id": "a1",
+        "track_id": "v1",
+        "start_sec": 0,
+        "duration_sec": 5,
+    }
+
+    def test_caption_style_fields_default_none(self) -> None:
+        """缺省字段时，10 个新字段均为 None（旧数据无字段也能解析）。"""
+        clip = Clip(**self.CAPTION_ARGS)
+        assert clip.font_weight is None
+        assert clip.font_italic is None
+        assert clip.letter_spacing is None
+        assert clip.stroke_width is None
+        assert clip.stroke_color is None
+        assert clip.shadow_x is None
+        assert clip.shadow_y is None
+        assert clip.shadow_color is None
+        assert clip.shadow_blur is None
+        assert clip.glow_color is None
+        assert clip.glow_width is None
+
+    def test_caption_style_fields_set_and_round_trip(self) -> None:
+        """带全部新字段构造，序列化/反序列化后值不变（round-trip）。"""
+        clip = Clip(
+            **self.CAPTION_ARGS,
+            font_weight="bold",
+            font_italic=True,
+            letter_spacing=2.5,
+            stroke_width=3.0,
+            stroke_color="#FF0000",
+            shadow_x=4.0,
+            shadow_y=-4.0,
+            shadow_color="#000000",
+            shadow_blur=6.0,
+            glow_color="#FFFF00",
+            glow_width=8.0,
+        )
+        data = clip.model_dump(mode="json")
+        assert data["font_weight"] == "bold"
+        assert data["font_italic"] is True
+        assert data["letter_spacing"] == 2.5
+        assert data["stroke_width"] == 3.0
+        assert data["stroke_color"] == "#FF0000"
+        assert data["shadow_x"] == 4.0
+        assert data["shadow_y"] == -4.0
+        assert data["shadow_color"] == "#000000"
+        assert data["shadow_blur"] == 6.0
+        assert data["glow_color"] == "#FFFF00"
+        assert data["glow_width"] == 8.0
+
+        restored = Clip(**data)
+        assert restored.font_weight == "bold"
+        assert restored.font_italic is True
+        assert restored.letter_spacing == 2.5
+        assert restored.stroke_width == 3.0
+        assert restored.stroke_color == "#FF0000"
+        assert restored.shadow_x == 4.0
+        assert restored.shadow_y == -4.0
+        assert restored.shadow_color == "#000000"
+        assert restored.shadow_blur == 6.0
+        assert restored.glow_color == "#FFFF00"
+        assert restored.glow_width == 8.0
+
+    def test_caption_style_constraints(self) -> None:
+        """ge=0 约束字段拒绝负值；hex 颜色字段拒绝非法格式。"""
+        import pytest
+        for field, value in [("stroke_width", -1.0), ("shadow_blur", -1.0),
+                             ("glow_width", -1.0)]:
+            with pytest.raises(ValueError):
+                Clip(**self.CAPTION_ARGS, **{field: value})
+        for field, value in [("stroke_color", "red"), ("shadow_color", "#GGGGGG"),
+                             ("glow_color", 123)]:
+            with pytest.raises(ValueError):
+                Clip(**self.CAPTION_ARGS, **{field: value})
+
+    def test_caption_style_fields_inside_timeline_round_trip(self) -> None:
+        """完整 Timeline 序列化/反序列化保持字幕样式字段。"""
+        track = Track(id="v1", name="Subs", kind=ClipKind.CAPTION, index=0, clips=[
+            Clip(
+                **self.CAPTION_ARGS,
+                font_weight="bold",
+                stroke_width=2.0,
+                shadow_blur=5.0,
+                glow_color="#00FFFF",
+            ),
+        ])
+        tl = Timeline(tracks=[track])
+        data = tl.model_dump(mode="json")
+        restored = Timeline(**data)
+        c = restored.tracks[0].clips[0]
+        assert c.font_weight == "bold"
+        assert c.stroke_width == 2.0
+        assert c.shadow_blur == 5.0
+        assert c.glow_color == "#00FFFF"
+
+    def test_extra_allow_still_preserved_with_caption_fields(self) -> None:
+        """extra='allow' 在新增字段后仍不丢弃自定义字段（回归防护）。"""
+        clip = Clip(
+            **self.CAPTION_ARGS,
+            font_weight="normal",
+            **{"custom_field": "hello"},  # type: ignore[call-arg]
+        )
+        data = clip.model_dump(mode="json")
+        assert data.get("custom_field") == "hello"
+        assert data["font_weight"] == "normal"

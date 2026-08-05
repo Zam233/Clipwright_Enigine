@@ -171,6 +171,83 @@ class TestValidateMGJson:
         ok, errors = validate_mg_json(d)
         assert ok is True
 
+    def test_valid_new_animatable_props(self) -> None:
+        """新增动画属性全部放行。"""
+        d = self._minimal_valid()
+        d["elements"][0]["keyframes"] = [
+            {"time": 0, "opacity": 0, "easing": "ease-out"},
+            {"time": 1.0, "opacity": 1, "text_shadow": "0 0 30px rgba(79,140,255,0.8)",
+             "letter_spacing": 4, "font_weight": "bold", "transform_origin": "center bottom",
+             "line_height": 1.5, "background": "linear-gradient(90deg, #000 0%, #fff 100%)",
+             "height": 120, "border_radius": 8},
+        ]
+        ok, errors = validate_mg_json(d)
+        assert ok is True
+
+    def test_valid_easing_back_out(self) -> None:
+        """back-out / elastic-out / bounce 命名曲线放行。"""
+        d = self._minimal_valid()
+        d["elements"][0]["keyframes"] = [
+            {"time": 0, "opacity": 0},
+            {"time": 0.5, "opacity": 1, "easing": "back-out"},
+            {"time": 1.0, "opacity": 1, "easing": "elastic-out"},
+            {"time": 1.5, "opacity": 1, "easing": "bounce"},
+        ]
+        ok, errors = validate_mg_json(d)
+        assert ok is True
+
+    def test_valid_easing_cubic_bezier_array(self) -> None:
+        """cubic-bezier 数组透传放行。"""
+        d = self._minimal_valid()
+        d["elements"][0]["keyframes"] = [
+            {"time": 0, "opacity": 0},
+            {"time": 1.0, "opacity": 1, "easing": [0.175, 0.885, 0.32, 1.275]},
+        ]
+        ok, errors = validate_mg_json(d)
+        assert ok is True
+
+    def test_invalid_easing(self) -> None:
+        """非法 easing 值拒绝。"""
+        d = self._minimal_valid()
+        d["elements"][0]["keyframes"][1]["easing"] = "bogus-curve"
+        ok, errors = validate_mg_json(d)
+        assert ok is False
+        assert any("easing" in e for e in errors)
+
+    def test_invalid_easing_bezier_array(self) -> None:
+        """cubic-bezier 数组长度/元素类型非法拒绝。"""
+        d = self._minimal_valid()
+        d["elements"][0]["keyframes"][1]["easing"] = [0.1, 0.2, 0.3]
+        ok, errors = validate_mg_json(d)
+        assert ok is False
+        assert any("easing" in e for e in errors)
+
+    def test_valid_new_element_types(self) -> None:
+        """新元素类型 line/circle/ring/arc/bg 全部放行。"""
+        d = self._minimal_valid()
+        d["elements"] = [
+            {"type": "line", "width": 360, "height": 4, "color": "#4f8cff",
+             "keyframes": [{"time": 0, "opacity": 0}, {"time": 1, "opacity": 1}]},
+            {"type": "circle", "width": 14, "height": 14, "color": "#fbbf24",
+             "keyframes": [{"time": 0, "opacity": 0}, {"time": 1, "opacity": 1}]},
+            {"type": "ring", "width": 420, "height": 420, "border_width": 2,
+             "border_color": "#4f8cff", "keyframes": [{"time": 0, "opacity": 0}, {"time": 1, "opacity": 1}]},
+            {"type": "arc", "width": 520, "height": 520, "border_width": 3,
+             "border_color": "#fbbf24", "keyframes": [{"time": 0, "opacity": 0}, {"time": 1, "opacity": 1}]},
+            {"type": "bg", "background": "linear-gradient(135deg, #0a0e1a 0%, #16234a 100%)",
+             "keyframes": [{"time": 0, "opacity": 0}, {"time": 0.5, "opacity": 1}]},
+        ]
+        ok, errors = validate_mg_json(d)
+        assert ok is True
+
+    def test_invalid_element_type_still_rejected(self) -> None:
+        """非法元素类型仍被拒绝（白名单外）。"""
+        d = self._minimal_valid()
+        d["elements"][0]["type"] = "spline"
+        ok, errors = validate_mg_json(d)
+        assert ok is False
+        assert any("type" in e for e in errors)
+
 
 class TestRepairMGJson:
     """repair_mg_json 函数测试。"""
@@ -256,3 +333,61 @@ class TestRepairMGJson:
         kf = repaired["elements"][0]["keyframes"][0]
         assert kf["opacity"] == 0
         assert kf["scale"] == 0.5
+
+    def test_repair_preserves_new_fields(self) -> None:
+        """repair 对新字段容错（easing/transform_origin/glow 不被清除）。"""
+        repaired, fixes = repair_mg_json({
+            "animation_id": "x",
+            "duration_sec": 3.0,
+            "elements": [{
+                "type": "text", "content": "Hi",
+                "keyframes": [
+                    {"time": 0, "opacity": 0},
+                    {"time": 1, "opacity": 1, "easing": "back-out",
+                     "transform_origin": "center bottom",
+                     "text_shadow": "0 0 30px rgba(79,140,255,0.8)",
+                     "letter_spacing": 4},
+                ],
+            }],
+        })
+        kf = repaired["elements"][0]["keyframes"][1]
+        assert kf.get("easing") == "back-out"
+        assert kf.get("transform_origin") == "center bottom"
+        assert "text_shadow" in kf
+        assert "letter_spacing" in kf
+        assert all("removed unknown" not in f for f in fixes)
+
+    def test_repair_removes_truly_unknown_props(self) -> None:
+        """仍清除真正未知的属性（如拼写错误的属性名）。"""
+        repaired, fixes = repair_mg_json({
+            "animation_id": "x",
+            "duration_sec": 3.0,
+            "elements": [{
+                "type": "text", "content": "Hi",
+                "keyframes": [
+                    {"time": 0, "opacity": 0},
+                    {"time": 1, "opacity": 1, "opacitty": 0.5},
+                ],
+            }],
+        })
+        kf = repaired["elements"][0]["keyframes"][1]
+        assert "opacitty" not in kf
+        assert any("removed unknown" in f for f in fixes)
+
+    def test_repair_preserves_new_element_types(self) -> None:
+        """repair 后新元素类型关键帧完整保留。"""
+        repaired, _ = repair_mg_json({
+            "animation_id": "x",
+            "duration_sec": 3.0,
+            "elements": [{
+                "type": "ring", "width": 420, "height": 420,
+                "border_width": 2, "border_color": "#4f8cff",
+                "keyframes": [
+                    {"time": 0, "opacity": 0},
+                    {"time": 1, "opacity": 1},
+                ],
+            }],
+        })
+        elem = repaired["elements"][0]
+        assert elem["type"] == "ring"
+        assert len(elem["keyframes"]) == 2

@@ -16,10 +16,10 @@
 ```
 clipwright/
 ├── agents/          # 7 个 Agent（需求→结构→素材→剪辑→动画→音频→质检）
-├── api/             # 30 个 API 路由文件
+├── api/             # 29 个 API 路由文件
 ├── services/        # 29 个后端服务
-├── tool/            # 40 个原子能力工具
-├── skill/           # 12 个可组合技能
+├── tool/            # 44 个原子能力工具
+├── skill/           # 4 个可组合技能
 ├── animation/       # 动画系统（37+ 动画编目）
 ├── category/        # 4 个内置类型插件
 ├── plugins/         # 第三方插件系统
@@ -33,14 +33,20 @@ docs/                # 20 个文档文件
 ## 核心不变量
 
 1. **7 个 Agent**：RequirementsAgent → StructureAgent → MaterialAgent → EditAgent → AnimationAgent → AudioAgent → QualityAgent
-2. **40 个 Tool**：原子能力层，通过 ToolRegistry 注册
-3. **12 个 Skill**：可组合的高级能力，通过 SkillRegistry 注册
-4. **30 个 API 路由组**：每个路由文件对应一组端点
+2. **44 个 Tool**：原子能力层，通过 ToolRegistry 注册
+3. **4 个 Skill**：可组合的高级能力，通过 SkillRegistry 注册
+4. **29 个 API 路由组**：每个路由文件对应一组端点
 5. **29 个 Service**：业务逻辑层
 6. **11 个 Schema**：Pydantic v2 数据模型
 7. **4 个内置 Category Plugin**：知识区长片、鬼畜快剪、数码评测、Vlog 日常
 8. **五层架构**：原子能力层 → Agent 编排层 → 类型插件层 → Persona 配置层 → 用户接口层
 9. **Persona 配置不直接调用原子能力**：必须经过类型插件层翻译
+
+## 本期改进
+
+- **MG 动画质量深度改进**：`animation/mg/config.yaml` 重写专业动效设计原则提示词（easing 优先、预期动作、错峰 0.2-0.5s、粒子、光效扫过、逐关键帧 `easing` 字段）；`animation/mg_renderer.py` 支持新元素类型（`line`/`circle`/`ring`/`arc`/`bg`）与 `text_shadow`/`box_shadow`/`background`（渐变）/`letter_spacing`/`font_weight`/`transform_origin`/`line_height`/`height`/`border_radius`；`animation/mg/templates/` 内置 8 个专业模板（title_reveal/comparison_split/data_bars/timeline_progress/counter_up/flow_arrows/quote_card/mindmap）；`agents/structure_agent.py` 强化 `mg_dynamic` 标记引导；`animation/mg/generator.py` 新增 LLM 自批判闭环（score < `critique.min_score` 时带批判反馈修复一次，LLM 失败静默跳过）。
+- **字幕样式字段**：`schema/timeline.py` Clip 新增 11 个可选样式字段——`font_weight`/`font_italic`/`letter_spacing`/`stroke_width`/`stroke_color`/`shadow_x`/`shadow_y`/`shadow_color`/`shadow_blur`/`glow_color`/`glow_width`；`services/render.py` drawtext 双通道实现发光，支持描边/阴影/粗体渲染；`services/subtitle.py` 新生成字幕 clip 统一默认样式（font_size=48、font_color=#ffffff、text_align=center）。详见 `docs/api_reference.md`「字幕样式字段」。
+- **新端点 `GET /api/pipeline/runs`**：列出最近管线运行记录，返回 `[{id, topic, status, duration_ms, started_at, agents[{agent,start,dur,status}]}]`，供 Pipeline 管理页展示真实运行数据。
 
 ## 常用工作流
 
@@ -108,7 +114,7 @@ uvicorn clipwright.main:app --host 0.0.0.0 --port 8000
 |------|---------------|
 | [架构总览](docs/structure.md) | 全部五层架构 |
 | [Agent 工作流](docs/workflow.md) | agents/, services/pipeline*.py, services/agent_bus.py |
-| [API 参考](docs/api_reference.md) | api/ 全部 30 个路由文件 |
+| [API 参考](docs/api_reference.md) | api/ 全部 29 个路由文件 |
 | [开发指南](docs/development.md) | tool/, skill/, plugins/, 开发规范 |
 | [Persona 系统](docs/Persona.md) | persona/ 模块 |
 | [素材系统](docs/material_system.md) | 素材源插件, material Agent |

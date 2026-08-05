@@ -894,10 +894,14 @@ class RenderService:
             end = max(end, start)
             style_d = ov.get("style", {})
             if style_d:
+                # 优先 style dict（含 font），再补 clip 级 font 字段
+                if "font" not in style_d and ov.get("font"):
+                    style_d = {**style_d, "font": ov.get("font")}
                 ts = TextStyle.from_dict(style_d)
             else:
                 ts = TextStyle(
                     font_size=ov.get("font_size", 48), font_color=ov.get("font_color", "#ffffff"),
+                    font=ov.get("font", ""),
                     stroke_width=ov.get("stroke_width", 0), position=ov.get("position", "bottom"),
                     offset_y=ov.get("offset_y", 0))
             if style_ts is None:

@@ -93,6 +93,19 @@ class Clip(BaseModel):
     font_color: Optional[str] = Field(default=None, pattern="^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$")
     text_align: Optional[TextAlign] = Field(default=None)
 
+    # 字幕样式（仅 text / caption 类型，任务 28 新增，可选字段向后兼容）
+    font_weight: Optional[str] = Field(default=None, description="字重 normal/bold 等")
+    font_italic: Optional[bool] = Field(default=None, description="是否斜体")
+    letter_spacing: Optional[float] = Field(default=None, description="字间距 px")
+    stroke_width: Optional[float] = Field(default=None, ge=0, description="描边宽度 px")
+    stroke_color: Optional[str] = Field(default=None, pattern="^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$", description="描边颜色（hex）")
+    shadow_x: Optional[float] = Field(default=None, description="阴影水平偏移 px")
+    shadow_y: Optional[float] = Field(default=None, description="阴影垂直偏移 px")
+    shadow_color: Optional[str] = Field(default=None, pattern="^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$", description="阴影颜色（hex）")
+    shadow_blur: Optional[float] = Field(default=None, ge=0, description="阴影模糊半径 px")
+    glow_color: Optional[str] = Field(default=None, pattern="^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$", description="发光颜色（hex）")
+    glow_width: Optional[float] = Field(default=None, ge=0, description="发光宽度 px")
+
     # 转场
     transition_in: Optional[str] = Field(
         default=None, description="入场转场类型 TransitionType"

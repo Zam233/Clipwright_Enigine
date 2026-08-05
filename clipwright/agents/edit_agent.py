@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 
@@ -20,7 +21,7 @@ from clipwright.schema.agent import (
     EditOutput,
 )
 from clipwright.schema.timeline import Clip, ClipKind, ImageFit, Timeline, Track
-from clipwright.config import logger
+from clipwright.config import logger, settings
 from clipwright.services.trace import add_event
 from clipwright.tool.registry import ToolRegistry
 
@@ -29,6 +30,87 @@ from clipwright.tool.registry import ToolRegistry
 # 有界（最多 _TRIM_CACHE_MAX 条），超出时清空重建。
 _TRIM_CACHE: dict[tuple, str] = {}
 _TRIM_CACHE_MAX = 512
+
+
+def _split_sentences(text: str) -> list[str]:
+    """按中文标点切分口播文案为句子（字幕粒度）。
+
+    与前端 HomePage 的按标点切分规则一致（'，。！；？：' 为边界）；
+    '？！' 连标点保留在前句，其余标点作为边界消费。
+    结果去空。长句（>40 字）二次按逗号切分，保证字幕可读。
+    """
+    t = (text or "").strip()
+    if not t:
+        return []
+    parts: list[str] = []
+    buf = ""
+    for ch in t:
+        if ch in "，。！；？：":
+            if ch in "！？":
+                parts.append((buf + ch).strip())
+            elif buf.strip():
+                parts.append(buf.strip())
+            buf = ""
+        else:
+            buf += ch
+    if buf.strip():
+        parts.append(buf.strip())
+    out: list[str] = []
+    for p in parts:
+        if not p:
+            continue
+        if len(p) > 40:
+            # 长句按逗号二次切分，保留标点
+            sub = ""
+            for ch in p:
+                sub += ch
+                if ch in "，、；" and len(sub) >= 10:
+                    out.append(sub.strip())
+                    sub = ""
+            if sub.strip():
+                out.append(sub.strip())
+        else:
+            out.append(p)
+    return [p for p in out if p]
+
+
+def _append_caption_sentences(
+    caption_track: "Track",
+    sentences: list[str],
+    start_sec: float,
+    total_dur: float,
+) -> None:
+    """把一组句子按长度比例分配进 [start_sec, start_sec+total_dur]，追加为 CAPTION clip。
+
+    配音驱动对齐：场景总长已按配音时长缩放，句子按字数占比分配时间 →
+    字幕与配音时间轴一致。clip.kind=CAPTION、renderer=ass（走 ASS/libass 渲染）。
+    """
+    if not sentences or total_dur <= 0:
+        return
+    seg_lens = [max(len(s), 1) for s in sentences]
+    total_len = sum(seg_lens)
+    t_cursor = start_sec
+    for si, sent in enumerate(sentences):
+        ratio = seg_lens[si] / total_len
+        s_dur = max(0.8, ratio * total_dur)
+        caption_clip = Clip(
+            id=_uid("cc"),
+            kind=ClipKind.CAPTION,
+            asset_id="",
+            track_id=caption_track.id,
+            start_sec=round(t_cursor, 3),
+            duration_sec=round(s_dur, 3),
+            text=sent,
+            font="sans-serif",
+            metadata={
+                "category": "caption",
+                "position": "bottom",
+                "renderer": "ass",
+            },
+        )
+        caption_track.clips.append(caption_clip)
+        t_cursor += s_dur
+    caption_track.clips.sort(key=lambda c: c.start_sec)
 
 
 def _trim_cache_get(source_path: str, start_sec: float, duration_sec: float) -> str | None:
@@ -54,6 +136,27 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             # 1. 解析输入
             scenes = input_data.script_skeleton.get("scenes", [])
             candidate_clips = input_data.candidate_clips or []
+            # 全局口播文案（配音驱动字幕的 fallback 源）：extra_params.script_text（requirements 完整文案）
+            # → script_skeleton.voiceover → creative_brief 文案 → 场景拼接
+            _sk = input_data.script_skeleton or {}
+            _brief = input_data.creative_brief or {}
+            _brief_draft = _brief.get("brief_draft") or _brief.get("creative_brief") or {}
+            global_voice = (
+                (context.extra_params or {}).get("script_text")
+                or _sk.get("voiceover")
+                or _sk.get("script")
+                or _brief_draft.get("overview")
+                or _brief_draft.get("script")
+                or _brief_draft.get("content")
+                or ""
+            ) or ""
+            if not global_voice:
+                # 最后兜底：场景 description/voiceover 拼接
+                global_voice = "。".join(
+                    str(s.get("voiceover_script") or s.get("text") or "").strip()
+                    for s in scenes if (s.get("voiceover_script") or s.get("text"))
+                )
+            logger.info("EditAgent: 全局文案 %d 字（字幕 fallback 源）", len(global_voice))
             logger.info("EditAgent: %d 个场景, %d 候选素材", len(scenes), len(candidate_clips))
             if not scenes:
                 logger.warning("EditAgent: 场景列表为空，无法生成时间线")
@@ -74,7 +177,8 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             # 3. 构建轨道（检测是否需要 PiP 画中画叠加轨）
             vid_track = Track(id=_uid("t"), name="视频轨", kind=ClipKind.VIDEO, index=0)
             text_track = Track(id=_uid("t"), name="文字轨", kind=ClipKind.TEXT, index=1)
-            audio_track = Track(id=_uid("t"), name="音频轨", kind=ClipKind.AUDIO, index=2)
+            caption_track = Track(id=_uid("t"), name="字幕轨", kind=ClipKind.CAPTION, index=2)
+            audio_track = Track(id=_uid("t"), name="音频轨", kind=ClipKind.AUDIO, index=3)
             pip_track = None  # 画中画轨，按需创建
 
             # 检查场景描述中是否有 PiP 需求
@@ -85,7 +189,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 for s in scenes
             )
             if has_pip:
-                pip_track = Track(id=_uid("t"), name="画中画", kind=ClipKind.VIDEO, index=3)
+                pip_track = Track(id=_uid("t"), name="画中画", kind=ClipKind.VIDEO, index=4)
 
             # 4. 标准化场景时长：优先规划书总时长 → 音频总时长 → 场景和
             scene_count = len(scenes)
@@ -114,84 +218,38 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 notes.append(f"无时长缩放: total={total_scene_duration:.0f}s, target={target_duration:.0f}s")
 
             # 5. 对每个场景取素材（多段素材拼接，填满场景时长）
+            # 场景裁剪/文字占位是主要 IO（网络下载 + ffmpeg）→ 场景级有界并行。
+            # 关键：场景处理只计算本地放置段（不触碰共享轨道 / current_time），
+            # 轨道装配在下方按场景顺序串行执行，保证时间线顺序与串行版完全一致。
+            scene_concurrency = max(1, int(getattr(settings, "material_concurrency", 6)))
+            scene_sem = asyncio.Semaphore(scene_concurrency)
+
+            async def _process_one(i: int, scene: dict[str, Any]) -> list[dict[str, Any]]:
+                async with scene_sem:
+                    scene_duration = scene.get("duration_sec", base_shot_sec) * duration_scale
+                    return await self._process_scene_units(
+                        i, scene,
+                        candidate_clips=candidate_clips,
+                        scene_duration=scene_duration,
+                        context=context,
+                    )
+
+            scene_results = await asyncio.gather(
+                *(_process_one(i, s) for i, s in enumerate(scenes))
+            )
+
+            # 串行装配：clip 放置在共享轨道上，start_sec 由全局 current_time 累积决定，
+            # 必须按场景顺序逐个放置，才能复现串行版的 clip 顺序 / start_sec / scene_asset_map 键。
             current_time = 0.0
             scene_asset_map: dict[str, dict] = {}
+            missing_scenes: list[tuple[float, float, int]] = []  # (start, dur, scene_idx) 缺字幕的场景
 
-            for i, scene in enumerate(scenes):
-                clip_index = 0  # 每个场景重置素材索引
-                scene_title = scene.get("title", f"场景{i+1}")
-                scene_duration = scene.get("duration_sec", base_shot_sec) * duration_scale
-
-                # 获取此场景的全部候选素材（按分数排序）
-                scene_candidates = [
-                    c for c in candidate_clips
-                    if c.get("scene_index") == i
-                ]
-                sorted_assets = []
-                for c in scene_candidates:
-                    suggested = c.get("suggested_assets", [])
-                    sorted_assets.extend(sorted(suggested, key=lambda a: a.get("score", 0), reverse=True))
-
-                # 循环取素材填充场景，直到用完场景时长或素材耗尽
-                remaining = scene_duration
-                failed_assets = set()
-                while remaining > 1.0:
-                    seg_dur = remaining
-                    processed_path = ""
-
-                    # 取下一个有效素材（跳过已确认失败的）
-                    asset = None
-                    source_path = ""
-                    if sorted_assets:
-                        for _ in range(len(sorted_assets) * 2):
-                            candidate = sorted_assets[clip_index % len(sorted_assets)]
-                            clip_index += 1
-                            sp = candidate.get("local_path") or candidate.get("url", "")
-                            if sp and sp not in failed_assets:
-                                asset = candidate
-                                source_path = sp
-                                break
-                            elif not sp:
-                                failed_assets.add(sp or candidate.get("asset_id", ""))
-
-                    if asset and source_path:
-                        ad = asset.get("duration_sec", seg_dur)
-                        if ad and ad < seg_dur:
-                            seg_dur = ad
-                        # 命中裁剪缓存则复用，避免对同一网络素材重复下载/裁剪
-                        cached = _trim_cache_get(source_path, 0, seg_dur)
-                        if cached:
-                            processed_path = cached
-                        else:
-                            add_event(context.pipeline_id, "edit", "tool",
-                                      f"video_trim({source_path.split('/')[-1][:30]}, dur={seg_dur:.1f}s)")
-                            trim_result = await ToolRegistry.execute(
-                                "video_trim",
-                                input_path=source_path,
-                                start_sec=0,
-                                duration_sec=seg_dur,
-                            )
-                            if trim_result.status == "success" and trim_result.output_path:
-                                processed_path = trim_result.output_path
-                                _trim_cache_set(source_path, 0, seg_dur, processed_path)
-                            else:
-                                # 素材不可用 → 加入失败集，重试下一个
-                                logger.warning("EditAgent: 素材不可用 %s, 尝试下一个",
-                                               source_path.split('/')[-1][:30])
-                                failed_assets.add(source_path)
-                                continue
-                    else:
-                        # 无可用素材 → 文字占位视频填满剩余时长
-                        add_event(context.pipeline_id, "edit", "tool",
-                                  f"generate_text_video({scene_title}, dur={seg_dur:.1f}s)")
-                        text_result = await ToolRegistry.execute(
-                            "generate_text_video",
-                            text=scene_title,
-                            duration_sec=seg_dur,
-                        )
-                        if text_result.status == "success" and text_result.output_path:
-                            processed_path = text_result.output_path
-                            notes.append(f"场景{i}: 文字占位 → {scene_title}")
+            for i, units in enumerate(scene_results):
+                scene_desc = scenes[i].get("description", "") if i < len(scenes) else ""
+                scene_start_time = current_time
+                scene_total_dur = sum(u["seg_dur"] for u in units)
+                for unit in units:
+                    seg_dur = unit["seg_dur"]
 
                     # 添加视频 clip（注入场景描述供 Animation Agent 检测 [文字动画]/[逻辑动画] 标记）
                     vid_clip = self._make_clip(
@@ -199,12 +257,11 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                         track_id=vid_track.id,
                         start_sec=current_time,
                         duration_sec=seg_dur,
-                        asset=asset,
+                        asset=unit["asset"],
                         clip_label=f"v_{i}_{len(vid_track.clips)}",
-                        processed_path=processed_path,
+                        processed_path=unit["processed_path"],
                     )
                     # 注入描述信息到 metadata
-                    scene_desc = scene.get("description", "") if i < len(scenes) else ""
                     if any(m in scene_desc for m in ["[动画]", "[转场]", "[文字动画]", "[逻辑动画]"]):
                         if not vid_clip.metadata:
                             vid_clip.metadata = {}
@@ -212,15 +269,15 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                     vid_track.clips.append(vid_clip)
 
                     # 画中画：如果场景描述含 PiP 标记，在主视频 clip 之后添加 PiP clip
-                    if pip_track and ("[PiP]" in scene_desc or "画中画" in scene_desc):
+                    if pip_track and unit["is_pip"]:
                         pip_clip = self._make_clip(
                             kind=ClipKind.VIDEO,
                             track_id=pip_track.id,
                             start_sec=current_time,
                             duration_sec=seg_dur,
-                            asset=asset,
+                            asset=unit["asset"],
                             clip_label=f"pip_{i}",
-                            processed_path=processed_path,
+                            processed_path=unit["processed_path"],
                         )
                         # 设置 PiP 位置（右下角，占画面 30%）
                         pip_clip.image_rect = {"x": 0.65, "y": 0.55, "w": 0.3, "h": 0.3}
@@ -241,10 +298,47 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                     )
                     audio_track.clips.append(audio_clip)
 
+                    if unit["asset"]:
+                        scene_asset_map[f"{i}_{len(vid_track.clips)}"] = unit["asset"]
+                    if unit["placeholder_note"]:
+                        notes.append(unit["placeholder_note"])
+
                     current_time += seg_dur
-                    remaining -= seg_dur
-                    if asset:
-                        scene_asset_map[f"{i}_{len(vid_track.clips)}"] = asset
+
+                # 配音驱动字幕：按场景 voiceover_script 逐句切分，时间 = 句内比例 × 场景时长
+                # （场景总长已按配音时长缩放 → 字幕与配音时间轴对齐）。
+                # 轨道统一：字幕落在 CAPTION 轨（kind=caption），前端 findCaptionTrack 直接命中；
+                # animation_agent 的文字动画仍在 TEXT 轨，互不冲突。
+                # 场景无 voiceover_script 时标记待补，场景循环后由全局文案按比例分配。
+                scene_voice = scenes[i].get("voiceover_script") or scenes[i].get("text") or ""
+                sentences = _split_sentences(str(scene_voice))
+                if sentences and scene_total_dur > 0:
+                    _append_caption_sentences(
+                        caption_track, sentences, scene_start_time, scene_total_dur,
+                    )
+                else:
+                    missing_scenes.append((scene_start_time, scene_total_dur, i))
+
+            # 全局文案补充：缺失 voiceover_script 的场景，用全局口播文案按场景时长比例分配字幕
+            # （保证 CAPTION 轨有内容，前端 findCaptionTrack 可命中；不依赖 LLM 逐场景产出 voiceover_script）。
+            if missing_scenes:
+                global_sentences = _split_sentences(global_voice)
+                if global_sentences:
+                    g_seg_lens = [max(len(s), 1) for s in global_sentences]
+                    g_total_len = sum(g_seg_lens)
+                    # 全局句子按缺失场景的时长比例切块
+                    missing_total = sum(d for _, d, _ in missing_scenes)
+                    g_cursor = 0
+                    if missing_total > 0:
+                        for s_start, s_dur, _sidx in missing_scenes:
+                            # 本场景分到的全局句子数 = 时长比例 × 句子数
+                            n_here = max(1, round((s_dur / missing_total) * len(global_sentences)))
+                            here = global_sentences[g_cursor:g_cursor + n_here]
+                            g_cursor += n_here
+                            if here and s_dur > 0:
+                                _append_caption_sentences(caption_track, here, s_start, s_dur)
+                if caption_track.clips:
+                    notes.append(f"全局文案补充字幕: {len(caption_track.clips)} 条（{len(missing_scenes)} 个场景无 voiceover_script）")
 
             # 5. 选择转场风格
             pref_transition = max(
@@ -263,7 +357,8 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 width=1920,
                 height=1080,
                 fps=30,
-                tracks=[vid_track, text_track, audio_track] + ([pip_track] if (pip_track and pip_track.clips) else []),
+                tracks=[vid_track, text_track, caption_track, audio_track]
+                       + ([pip_track] if (pip_track and pip_track.clips) else []),
             )
             timeline.duration_sec = timeline.total_duration_sec
 
@@ -277,6 +372,112 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             return self.build_error_output(str(e), EditOutput)
 
     # ── 工具方法 ──
+
+    async def _process_scene_units(
+        self,
+        i: int,
+        scene: dict[str, Any],
+        candidate_clips: list[dict[str, Any]],
+        scene_duration: float,
+        context: AgentContext,
+    ) -> list[dict[str, Any]]:
+        """并行场景处理：仅用本地状态计算本场景的放置段，不触碰共享轨道 / current_time。
+
+        返回单元列表，每单元为 {seg_dur, processed_path, asset, is_pip, placeholder_note}；
+        轨道装配（共享轨道 + 全局 current_time）由 execute 按场景顺序串行完成，顺序与串行版一致。
+        """
+        clip_index = 0  # 每个场景重置素材索引
+        scene_title = scene.get("title", f"场景{i+1}")
+
+        # 获取此场景的全部候选素材（按分数排序）
+        scene_candidates = [
+            c for c in candidate_clips
+            if c.get("scene_index") == i
+        ]
+        sorted_assets = []
+        for c in scene_candidates:
+            suggested = c.get("suggested_assets", [])
+            sorted_assets.extend(sorted(suggested, key=lambda a: a.get("score", 0), reverse=True))
+
+        # 循环取素材填充场景，直到用完场景时长或素材耗尽
+        scene_time = 0.0  # 本地时间游标（替代共享 current_time，仅推进、不用于轨道放置）
+        remaining = scene_duration
+        failed_assets = set()
+        scene_desc = scene.get("description", "")
+        is_pip = "[PiP]" in scene_desc or "画中画" in scene_desc
+        units: list[dict[str, Any]] = []
+
+        while remaining > 1.0:
+            seg_dur = remaining
+            processed_path = ""
+
+            # 取下一个有效素材（跳过已确认失败的）
+            asset = None
+            source_path = ""
+            if sorted_assets:
+                for _ in range(len(sorted_assets) * 2):
+                    candidate = sorted_assets[clip_index % len(sorted_assets)]
+                    clip_index += 1
+                    sp = candidate.get("local_path") or candidate.get("url", "")
+                    if sp and sp not in failed_assets:
+                        asset = candidate
+                        source_path = sp
+                        break
+                    elif not sp:
+                        failed_assets.add(sp or candidate.get("asset_id", ""))
+
+            placeholder_note = None
+            if asset and source_path:
+                ad = asset.get("duration_sec", seg_dur)
+                if ad and ad < seg_dur:
+                    seg_dur = ad
+                # 命中裁剪缓存则复用，避免对同一网络素材重复下载/裁剪
+                cached = _trim_cache_get(source_path, 0, seg_dur)
+                if cached:
+                    processed_path = cached
+                else:
+                    add_event(context.pipeline_id, "edit", "tool",
+                              f"video_trim({source_path.split('/')[-1][:30]}, dur={seg_dur:.1f}s)")
+                    trim_result = await ToolRegistry.execute(
+                        "video_trim",
+                        input_path=source_path,
+                        start_sec=0,
+                        duration_sec=seg_dur,
+                    )
+                    if trim_result.status == "success" and trim_result.output_path:
+                        processed_path = trim_result.output_path
+                        _trim_cache_set(source_path, 0, seg_dur, processed_path)
+                    else:
+                        # 素材不可用 → 加入失败集，重试下一个
+                        logger.warning("EditAgent: 素材不可用 %s, 尝试下一个",
+                                       source_path.split('/')[-1][:30])
+                        failed_assets.add(source_path)
+                        continue
+            else:
+                # 无可用素材 → 文字占位视频填满剩余时长
+                add_event(context.pipeline_id, "edit", "tool",
+                          f"generate_text_video({scene_title}, dur={seg_dur:.1f}s)")
+                text_result = await ToolRegistry.execute(
+                    "generate_text_video",
+                    text=scene_title,
+                    duration_sec=seg_dur,
+                )
+                if text_result.status == "success" and text_result.output_path:
+                    processed_path = text_result.output_path
+                    placeholder_note = f"场景{i}: 文字占位 → {scene_title}"
+
+            units.append({
+                "seg_dur": seg_dur,
+                "processed_path": processed_path,
+                "asset": asset,
+                "is_pip": is_pip,
+                "placeholder_note": placeholder_note,
+            })
+
+            scene_time += seg_dur
+            remaining -= seg_dur
+
+        return units
 
     def _pick_best(
         self,

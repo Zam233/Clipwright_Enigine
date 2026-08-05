@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 REQUIRED_TOP_KEYS = {"animation_id", "elements"}
-VALID_ELEMENT_TYPES = {"text", "shape"}
+VALID_ELEMENT_TYPES = {"text", "shape", "line", "circle", "ring", "arc", "bg"}
 VALID_SHAPES = {"rect", "ellipse"}
 VALID_POSITIONS = {"center", "left", "right", "top", "bottom"}
 ANIMATABLE_PROPS = {
@@ -13,7 +13,13 @@ ANIMATABLE_PROPS = {
     "width", "height", "font_size", "color", "background",
     "border_radius", "border_width", "border_color",
     "box_shadow", "text_shadow", "filter", "letter_spacing",
-    "font_weight", "font_family", "line_height",
+    "font_weight", "font_family", "line_height", "transform_origin",
+    "easing",
+}
+# easing 取值：命名曲线 + 可选 cubic-bezier 数组 [x1,y1,x2,y2]
+VALID_EASINGS = {
+    "linear", "ease", "ease-in", "ease-out", "ease-in-out",
+    "back-out", "elastic-out", "bounce",
 }
 
 
@@ -106,11 +112,33 @@ def _validate_keyframe(kf: dict, index: int, total_dur: float, parent_prefix: st
     if not anim_props:
         errors.append(f"{pfx}: no animatable properties found")
     else:
-        for prop_name in anim_props:
+        for prop_name, prop_val in anim_props.items():
             if prop_name not in ANIMATABLE_PROPS:
                 errors.append(f"{pfx}: unknown property '{prop_name}'")
+            elif prop_name == "easing":
+                errors.extend(_validate_easing(prop_val, pfx))
 
     return errors
+
+
+def _validate_easing(value: Any, pfx: str) -> list[str]:
+    """校验 easing 取值：命名曲线或 cubic-bezier 数组。"""
+    if isinstance(value, str):
+        if value in VALID_EASINGS:
+            return []
+        # 允许带 cubic-bezier(...) 包装的命名曲线透传
+        if value.startswith("cubic-bezier(") and value.endswith(")"):
+            return []
+        return [f"{pfx}: invalid easing '{value}', must be one of "
+                f"{sorted(VALID_EASINGS)} or a cubic-bezier(x1,y1,x2,y2) array"]
+    if (
+        isinstance(value, (list, tuple))
+        and len(value) == 4
+        and all(isinstance(n, (int, float)) for n in value)
+    ):
+        return []
+    return [f"{pfx}: invalid easing {value!r}, must be a named curve or "
+            "[x1, y1, x2, y2] array"]
 
 
 def repair_mg_json(mg_def: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:

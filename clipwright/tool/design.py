@@ -75,6 +75,7 @@ class TextStyle:
 
     font_size: int = 48
     font_color: str = "#ffffff"
+    font: str = ""  # 字幕字体族（clip.font / 前端可选）；空 = 安全默认 MSYH
     stroke_width: float = 0
     stroke_color: str = "#000000"
     position: str = "bottom"
@@ -101,6 +102,7 @@ class TextStyle:
         return cls(
             font_size=d.get("font_size", 48),
             font_color=d.get("font_color", "#ffffff"),
+            font=d.get("font", ""),
             stroke_width=d.get("stroke_width", 0),
             stroke_color=d.get("stroke_color", "#000000"),
             position=d.get("position", "bottom"),
@@ -119,11 +121,26 @@ class TextStyle:
             glow_width=d.get("glow_width", 0),
         )
 
+    @staticmethod
+    def _ass_fontname(font: str) -> str:
+        """前端字体名 → ASS Fontname（清洗非法字符，空值回退 MSYH）。
+
+        ASS Fontname 不支持逗号（那是样式行分隔符），且 libass/fontconfig
+        在 Windows 上按系统注册的字体族名匹配——前端可选 'PingFang SC' /
+        'Microsoft YaHei' / 'Noto Sans SC' 等，直接可用；含引号/逗号时剥离。
+        """
+        if not font:
+            return "MSYH"
+        cleaned = font.replace('"', "").replace("'", "").replace(",", " ").strip()
+        return cleaned or "MSYH"
+
     def build_ass_style(self, play_res_x: int = 1920, play_res_y: int = 1080) -> str:
         """构建 ASS `[Script Info]` + `[V4+ Styles]` 段。
 
-        Fontname 固定用 "MSYH"（微软雅黑）作为安全默认——不 import render.py
-        以免循环依赖；运行时由 ffmpeg 的 libass/fontconfig 负责字体解析。
+        Fontname←font（_ass_fontname 清洗，空回退 "MSYH"）——修复 ASS 字体
+        硬编码缺陷：前端选择的字体族现在真实传入成片。libass/fontconfig 负责
+        系统字体解析，非系统字体（如思源黑体）依赖本机注册；drawtext 回退
+        路径的 _resolve_system_font 仍按需复制字体文件。
         14 个样式字段映射（与 drawtext 路径语义 1:1，drawtext 无法表达的
         shadow_blur / font_italic / letter_spacing / 9 点对齐 / glow 在此全部生效）：
           Fontsize←font_size / Primary←font_color / Secondary=Primary /
@@ -141,6 +158,7 @@ class TextStyle:
         outline_w = int(round(self.stroke_width))
         shadow = 1 if (self.shadow_x or self.shadow_y or self.shadow_blur) else 0
         align = ass_alignment(self.position)
+        fontname = self._ass_fontname(self.font)
         return (
             "[Script Info]\n"
             "ScriptType: v4.00+\n"
@@ -150,7 +168,7 @@ class TextStyle:
             "\n"
             "[V4+ Styles]\n"
             "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
-            f"Style: Default,MSYH,{self.font_size},{primary},{primary},{outline},{back},"
+            f"Style: Default,{fontname},{self.font_size},{primary},{primary},{outline},{back},"
             f"{bold},{italic},0,0,100,100,{spacing},0,1,{outline_w},{shadow},{align},10,10,10,1"
         )
 

@@ -134,7 +134,7 @@
 │                                                      │
 │  ┌────────────────────────────────────────────────┐  │
 │  │        Tool 层 / Skill 层 / Material 层          │  │
-│  │  40 工具 · 12 技能 · 3 素材源 · 37+ 动画          │  │
+│  │  44 工具 · 4 技能 · 3 素材源 · 37+ 动画          │  │
 │  │  FFmpeg · CLIP · Whisper · JSON规范             │  │
 │  └────────────────────────────────────────────────┘  │
 │                                                      │
@@ -248,36 +248,42 @@
 
 ```plaintext
 # Pipeline 执行
-POST   /api/pipeline/run           # 全流程执行，返回时间线JSON
-POST   /api/pipeline/step/{agent}  # 单Agent执行
+POST   /api/pipeline/run              # 全流程执行，返回时间线JSON
+POST   /api/pipeline/run-async        # 异步启动管线（SSE 追踪）
+POST   /api/pipeline/step/{agent}     # 单Agent执行
+GET    /api/pipeline/runs             # 最近管线运行记录
+GET    /api/pipeline/status/{id}      # 管线状态
+GET    /api/pipeline/trace/stream/{id} # SSE 管线事件流
 
 # 原子能力工具
-GET    /api/tool/list              # 列出所有工具
-POST   /api/tool/execute           # 执行单个工具
-POST   /api/tool/batch             # 批量执行工具
+GET    /api/tool/list                 # 列出所有工具
+POST   /api/tool/execute              # 执行单个工具
+POST   /api/tool/batch                # 批量执行工具
 
 # 技能
-GET    /api/skill/list             # 列出所有技能
-POST   /api/skill/execute          # 执行技能
+GET    /api/skill/list                # 列出所有技能
+POST   /api/skill/execute             # 执行技能
 
 # 素材库
-GET    /api/material/sources       # 列出素材源
-POST   /api/material/search        # 跨源搜索
+GET    /api/material/sources          # 列出素材源
+POST   /api/material/search           # 跨源搜索
 
 # 动画
-GET    /api/animation/list         # 列出所有动画定义
-GET    /api/animation/get/{id}     # 查看动画详情
+GET    /api/animation/list            # 列出所有动画定义
+GET    /api/animation/get/{id}        # 查看动画详情
 
-# 语音转文字
-POST   /api/stt/transcribe         # 音频→带时间戳文字
-POST   /api/stt/align              # 文案→音频对齐
+# 语音转文字 / 字幕
+POST   /api/stt/transcribe            # 音频→带时间戳文字
+POST   /api/stt/align                 # 文案→音频对齐
+POST   /api/subtitle/import           # 导入字幕
+POST   /api/subtitle/export           # 导出字幕
 
 # 插件管理
-GET    /api/plugin/list            # 已加载插件
-GET    /api/plugin/discover        # 发现可用插件
-POST   /api/plugin/load/{id}       # 加载插件
-POST   /api/plugin/unload/{id}     # 卸载插件
-GET    /api/plugin/capabilities    # 系统能力概览
+GET    /api/plugin/list               # 已加载插件
+GET    /api/plugin/discover           # 发现可用插件
+POST   /api/plugin/load/{id}          # 加载插件
+POST   /api/plugin/unload/{id}        # 卸载插件
+GET    /api/plugin/capabilities       # 系统能力概览
 
 # Persona 管理
 GET    /api/persona/list
@@ -286,66 +292,76 @@ POST   /api/persona/create
 PUT    /api/persona/{id}
 
 # PersonaForge
-POST   /api/persona/forge/from-prompt   # 自然语言→Persona
-POST   /api/persona/forge/from-script   # 脚本分析→Persona
-POST   /api/persona/forge/refine        # 迭代优化
-POST   /api/persona/forge/dialogue      # 对话引导
-
-# RAG 知识库
-POST   /api/persona/{id}/rag/index     # 建立向量索引
-POST   /api/persona/{id}/rag/query     # 语义检索
-
-# 渲染
-POST   /api/render/start          # 提交渲染任务
-GET    /api/render/status/{id}    # 查询进度
-
-# 需求分析
-POST   /api/requirements/analyze  # 分析用户需求
-POST   /api/requirements/extract  # 提取创作约束
-
-# 声音克隆与 TTS
-POST   /api/voice/upload          # 上传音频文件
-POST   /api/voice/clone           # 克隆音色
-GET    /api/voice/list            # 列出已克隆音色
-DELETE /api/voice/{db_id}         # 删除音色
-POST   /api/voice/synthesize      # 文字→语音
-POST   /api/voice/dub             # 文案切分+逐段配音
-
-# 波形可视化
-GET    /api/waveform/{id}         # 获取音频波形数据
-
-# 视觉分析
-POST   /api/vision/analyze        # 视频/图像分析
-
-# 字体管理
-GET    /api/font/list             # 列出可用字体
-POST   /api/font/upload           # 上传字体
-
-# EDL 导入导出
-POST   /api/edl/import            # 导入 EDL
-GET    /api/edl/export/{id}       # 导出 EDL
-
-# 项目管理
-POST   /api/project/create        # 创建项目
-GET    /api/project/{id}          # 获取项目
-PUT    /api/project/{id}          # 更新项目
-DELETE /api/project/{id}          # 删除项目
-GET    /api/project/list          # 项目列表
+POST   /api/persona/forge/from-prompt # 自然语言→Persona
+POST   /api/persona/forge/from-script # 脚本分析→Persona
+POST   /api/persona/forge/refine      # 迭代优化
+POST   /api/persona/forge/dialogue/build # 对话引导
 
 # Chat Forge
-POST   /api/chat_forge/generate   # 对话式内容生成
+POST   /api/persona/forge/chat/start  # 对话式 Persona 生成
+POST   /api/persona/forge/chat/commit # 提交生成 PersonaManifest
 
-# 学习/反馈
-POST   /api/learning/feedback     # 提交反馈
-GET    /api/learning/stats        # 学习统计
+# RAG 知识库
+POST   /api/persona/{id}/rag/index    # 建立向量索引
+POST   /api/persona/{id}/rag/query    # 语义检索
+
+# 渲染
+POST   /api/render/queue              # 加入渲染队列
+GET    /api/render/queue/{id}         # 队列任务状态
+GET    /api/render/status/{id}        # 查询进度
+GET    /api/render/download/{name}    # 下载渲染结果
+
+# 需求分析
+POST   /api/requirements/init         # 初始化需求会话
+POST   /api/requirements/chat         # 发送需求消息
+GET    /api/requirements/plan/{id}    # 获取制作规划书
+POST   /api/requirements/proceed      # 确认并启动管线
+
+# 声音克隆与 TTS
+POST   /api/voice/upload              # 上传音频文件
+POST   /api/voice/clone               # 克隆音色
+GET    /api/voice/list                # 列出已克隆音色
+DELETE /api/voice/{db_id}             # 删除音色
+POST   /api/voice/synthesize          # 文字→语音
+POST   /api/voice/dub                 # 文案切分+逐段配音
+
+# 波形可视化
+POST   /api/waveform/generate         # 生成音频波形
+
+# 视觉分析
+POST   /api/vision/analyze            # 视频/图像分析
+
+# 字体管理
+GET    /api/fonts/list                # 列出可用字体
+GET    /api/fonts/default             # 默认字体
+POST   /api/fonts/clear-cache         # 清空字体缓存
+
+# EDL 导入导出
+POST   /api/edl/import/edl            # 导入 EDL
+POST   /api/edl/import/fcpxml         # 导入 FCPXML
+POST   /api/edl/export/edl            # 导出 EDL
+
+# 项目管理
+POST   /api/project                   # 创建项目
+GET    /api/project                   # 项目列表
+GET    /api/project/{id}              # 获取项目
+PUT    /api/project/{id}              # 更新项目
+DELETE /api/project/{id}              # 删除项目
+POST   /api/project/{id}/duplicate    # 复制项目
+
+# 视频编辑器（运维控制台）
+GET    /api/video-editor/projects     # 编辑器项目列表
+POST   /api/video-editor/projects/create # 创建编辑器项目
+POST   /api/video-editor/projects/{id}/undo # 撤销
+
+# 学习/微调
+GET    /api/learning/datasets         # 数据集列表
+GET    /api/learning/jobs             # 训练任务列表
 
 # 媒体预处理
-POST   /api/preprocess/validate   # 素材验证
-POST   /api/preprocess/transcode  # 素材转码
-
-# 配音脚本
-POST   /api/dub_script/split      # 文案切分
-POST   /api/dub_script/sync       # 配音同步
+GET    /api/preprocess/operations     # 预处理操作列表
+POST   /api/preprocess/submit         # 提交预处理任务
+GET    /api/preprocess/task/{id}      # 任务状态
 ```
 
 ### 时间线 JSON 格式
@@ -353,6 +369,14 @@ POST   /api/dub_script/sync       # 配音同步
 前后端之间传递的时间线是统一 JSON 格式，确保前端编辑器和后端 Agent 可以互操作：
 
 前端编辑器加载这个 JSON 并渲染为可视化时间轴。用户在编辑器里的每个操作，最终也是修改这个 JSON 结构。Agent 的输出和用户的修改在同一个数据模型上工作 —— 这就是互操作性的基础。
+
+### 本期改进
+
+- **MG 动画质量深度改进**：专业动效提示词（easing/发光/渐变/粒子/错峰）、`mg_renderer` 支持 `line`/`circle`/`ring`/`arc`/`bg` 元素与逐关键帧 easing、8 个内置专业模板、StructureAgent `mg_dynamic` 引导、Generator LLM 自批判闭环。
+- **字幕样式**：Clip 新增 11 个样式字段（字重/斜体/字距/描边宽色/阴影 x·y·blur·色/发光宽色），导出 drawtext 双通道渲染，新字幕默认样式统一（font_size=48）。
+- **新端点 `GET /api/pipeline/runs`**：列出最近管线运行记录，供 Pipeline 管理页展示。
+
+完整路由清单见 [docs/api_reference.md](docs/api_reference.md)。
 
 
 ## Persona 配置

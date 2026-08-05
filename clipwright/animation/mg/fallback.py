@@ -12,9 +12,12 @@ class FallbackEngine:
     KEYWORD_TEMPLATE_MAP: dict[str, str] = {
         "对比|vs|比较|pk|差异": "mg_comparison_split",
         "标题|title|reveal|揭示|开头": "mg_title_reveal",
-        "进度|progress|完成|percent|百分比": "mg_progress_bar",
+        "进度|progress|完成|percent|百分比|时间线|timeline": "mg_timeline_progress",
+        "柱状|数据|data|chart|图表|柱": "mg_data_bars",
         "数字|count|计数|增长|统计|counter": "mg_counter_up",
-        "标签|badge|徽章|标注|callout|提示": "mg_callout_badge",
+        "流程|flow|步骤|箭头|arrow|先后": "mg_flow_arrows",
+        "金句|quote|引言|格言|名言|标注|callout|提示|徽章|badge": "mg_quote_card",
+        "思维导图|mindmap|脑图|结构|图谱": "mg_mindmap",
     }
 
     @classmethod

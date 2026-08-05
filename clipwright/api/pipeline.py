@@ -27,6 +27,18 @@ _running_pipelines: dict[str, asyncio.Task] = {}
 _pipeline_results: dict[str, dict] = {}
 
 
+@router.get("/runs")
+async def list_pipeline_runs(limit: int = 50) -> list[dict]:
+    """获取管线运行记录（真实执行历史，供 PipelineAdminPage 展示）。
+
+    返回形状: {id, topic, status, duration_ms, started_at,
+               agents: [{agent, start, dur, status}]}
+    数据源：内存注册表（当前进程真实运行）优先，Mongo PipelineModel 持久化历史兜底。
+    """
+    from clipwright.services.pipeline_v2 import get_run_records
+    return get_run_records(limit=max(1, min(limit, 500)))
+
+
 @router.post("/run-v2")
 async def run_pipeline_v2(request: PipelineRequest) -> dict:
     """运行 PipelineV2（动态路由 + 自愈循环）。"""

@@ -181,10 +181,16 @@ async def proceed_to_pipeline(req: ProceedRequest) -> dict:
 
     user_inputs = session.get("user_inputs", {})
     # 长视频管线耗时随配音时长增长（逐场景素材处理），动态调高超时避免误超时。
-    # 真正的时间大头是逐片段动画（LLM MG 每个 2-4 分钟），因此还需按场景数叠加余量。
+    # 真正的时间大头是逐片段动画（AnimationAgent：LLM 生成 MG 每个 2-4+ 分钟，外加
+    # critique 修复重试），因此按音频时长 ×6 与场景数 ×360 叠加余量。
+    # 实测：658s 音频管线运行 44 分钟仍未完成（卡在动画阶段），旧公式（音频 ×4 / 场景
+    # ×240）余量不足，此处加宽以保证长视频（knowledge_longform）能完整跑完。
     _audio_dur = float(user_inputs.get("audio_duration_sec", 0) or 0)
     _scene_count = int((plan_data or {}).get("scene_count", 0) or 0)
-    _pipeline_timeout = int(max(1800, _audio_dur * 4, _scene_count * 240))
+    # 规划书未给出场景数时按音频时长估算（约每 15 秒一个场景）兜底，保证场景余量不失效。
+    if _scene_count <= 0 and _audio_dur > 0:
+        _scene_count = int(_audio_dur / 15)
+    _pipeline_timeout = int(max(1800, _audio_dur * 6, _scene_count * 360))
     pipeline_req = PipelineRequest(
         persona_id=req.persona_id or user_inputs.get("persona_id", "default"),
         category_plugin_id=req.category_plugin_id or user_inputs.get("category_plugin_id", "knowledge_longform"),
