@@ -99,3 +99,56 @@ class TestValidatorStillAllowsBgType:
         assert "bg" in VALID_ELEMENT_TYPES
         ok, errors = validate_mg_json(_mg_def_with_bg())
         assert ok, f"validate_mg_json introduced new errors for bg element: {errors}"
+
+
+class TestTemplatePathStripsBackground:
+    """模板 MG（_handle_mg_animation 直接渲染模板）也必须剥离背景渐变。
+
+    质检发现：T3 仅覆盖 LLM MG 路径（generator.generate），模板路径漏掉——
+    8 个内置模板（mg_comparison_split 等）自带 bg 渐变，渲染后遮挡实拍素材。
+    """
+
+    def test_template_bg_stripped_by_handle_mg_animation(self) -> None:
+        from clipwright.agents.animation_agent import AnimationAgent
+        from clipwright.animation.mg_renderer import MGRenderer
+
+        # 真实模板含 bg 渐变背景
+        mg_def = MGRenderer.load_animation("mg_comparison_split")
+        assert mg_def is not None
+        bg = next((e for e in mg_def.get("elements", []) if e.get("type") == "bg"), None)
+        assert bg is not None and bg.get("background") != "transparent", (
+            "前置条件：模板应自带渐变背景，否则测试无意义"
+        )
+
+        # 走模板路径：_handle_mg_animation 渲染出的 HTML 背景必须透明
+        import asyncio
+        from clipwright.schema.timeline import Clip, ClipKind, Timeline, Track
+        from clipwright.agents.animation_agent import AnimationAgent
+
+        agent = AnimationAgent()
+        agent._tl_width = 1920
+        agent._tl_height = 1080
+        agent._tl_fps = 30.0
+        agent._vision_prompt = ""  # 无视觉需求 → 强制透明
+
+        track = Track(
+            id="t_anim", name="动画轨", kind=ClipKind.ANIMATION, index=4,
+        )
+        vid = Clip(
+            id="c_v", kind=ClipKind.VIDEO, asset_id="a", track_id="t_v",
+            start_sec=0.0, duration_sec=5.0,
+        )
+        marker = {"text": "左侧|右侧|中央"}
+
+        async def _run():
+            await agent._handle_mg_animation(
+                track, vid, "mg_comparison_split", "对比", "左侧|右侧|中央",
+                5.0, marker, {},
+            )
+            return track
+
+        track = asyncio.run(_run())
+        assert len(track.clips) == 1
+        html = (track.clips[0].metadata or {}).get("mg_html", "")
+        assert "linear-gradient" not in html.split("bg")[0][-200:]  # bg 区域无渐变
+        assert "background:transparent" in html or "background: transparent" in html

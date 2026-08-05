@@ -484,6 +484,13 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             anim_track.clips.append(text_clip)
             return
 
+        # 背景守卫：模板 MG 与 LLM MG 一致——vision_prompt 为空时强制 bg 透明，
+        # 动画叠加在实拍素材上，不允许不透明全幅背景（用户要求，T3 补充覆盖模板路径）
+        from clipwright.animation.mg.generator import MGGenerator
+        mg_def = MGGenerator._ensure_no_background(
+            mg_def, getattr(self, "_vision_prompt", "") or ""
+        )
+
         # 解析输入参数: 格式 "文字|副标题|值"，按模板实际 params 定义按位置填充
         # （双保护(d): 不硬编码 text/value/unit/subtitle 4 键 — 固定模板各有不同
         # 参数键，如 mg_comparison_split 的 left/right/left_sub/right_sub/vs/accent）
