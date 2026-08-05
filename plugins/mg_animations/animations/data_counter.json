@@ -1,0 +1,62 @@
+{
+  "animation_id": "mg_data_counter",
+  "name": "数据计数",
+  "category": "mg",
+  "description": "数字从 0 滚动到目标值，带标题和单位，适合数据展示场景",
+  "duration_sec": 3.0,
+  "width": 1920,
+  "height": 1080,
+  "elements": [
+    {
+      "type": "text",
+      "id": "label",
+      "content": "{text}",
+      "font_size": 36,
+      "font_color": "#8888a0",
+      "x": "center",
+      "y": "center",
+      "y_offset": -80,
+      "keyframes": [
+        {"time": 0.0, "opacity": 0, "translate_y": 20},
+        {"time": 0.5, "opacity": 1, "translate_y": 0}
+      ]
+    },
+    {
+      "type": "text",
+      "id": "number",
+      "content": "{value}",
+      "font_size": 120,
+      "font_color": "#4f8cff",
+      "font_weight": "bold",
+      "x": "center",
+      "y": "center",
+      "keyframes": [
+        {"time": 0.0, "opacity": 0, "scale": 0.5},
+        {"time": 0.5, "opacity": 1, "scale": 1.1},
+        {"time": 1.0, "opacity": 1, "scale": 1.0}
+      ]
+    },
+    {
+      "type": "text",
+      "id": "unit",
+      "content": "{unit}",
+      "font_size": 28,
+      "font_color": "#8888a0",
+      "x": "center",
+      "y": "center",
+      "y_offset": 80,
+      "keyframes": [
+        {"time": 0.5, "opacity": 0, "translate_y": -10},
+        {"time": 1.0, "opacity": 1, "translate_y": 0}
+      ]
+    }
+  ],
+  "params": {
+    "value": {"type": "number", "default": 10000, "description": "目标数值"},
+    "unit": {"type": "string", "default": "", "description": "数值单位"}
+  },
+  "style": {
+    "background": "rgba(0,0,0,0)",
+    "font_family": "sans-serif"
+  }
+}

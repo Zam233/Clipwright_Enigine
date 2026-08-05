@@ -1,0 +1,96 @@
+<div id="section-type-maker" class="section">
+  <div style="display:flex;gap:12px;height:calc(100vh - 80px)">
+    <!-- Left: List -->
+    <div style="width:280px;flex-shrink:0;display:flex;flex-direction:column;gap:8px">
+      <div class="card" style="margin:0;flex:1">
+        <div class="card-header" style="padding:8px 12px;font-size:12px">
+          <span>我的视频类型</span>
+          <button class="btn btn-primary btn-sm" style="font-size:9px;padding:2px 8px" onclick="newTypeForm()">+ 新建</button>
+        </div>
+        <div id="tmTypeList" class="card-body" style="padding:6px;overflow-y:auto">
+          <div class="text-muted" style="font-size:11px;text-align:center;padding:20px">加载中...</div>
+        </div>
+      </div>
+    </div>
+    <!-- Right: Editor -->
+    <div style="flex:1;display:flex;flex-direction:column;gap:8px;min-width:0">
+      <div class="card" style="margin:0;flex:1;display:flex;flex-direction:column">
+        <div class="card-header" style="padding:8px 12px;font-size:12px">
+          <span id="tmEditorTitle">编辑类型</span>
+          <div style="display:flex;gap:4px">
+            <button class="btn btn-primary btn-sm" style="font-size:9px;padding:2px 8px" onclick="saveType()">保存</button>
+            <button class="btn btn-danger btn-sm" style="font-size:9px;padding:2px 8px" onclick="deleteType()">删除</button>
+          </div>
+        </div>
+        <div class="card-body" style="padding:10px 14px;overflow-y:auto">
+          <input type="hidden" id="tmEditId" value="">
+
+          <div class="form-group" style="margin-bottom:10px">
+            <label style="font-size:11px">类型 ID</label>
+            <input id="tmId" placeholder="my_video_type" style="font-size:12px;padding:6px 10px;width:100%">
+          </div>
+          <div class="form-row" style="gap:8px">
+            <div class="form-group" style="flex:1;margin-bottom:10px">
+              <label style="font-size:11px">显示名称</label>
+              <input id="tmName" placeholder="我的视频类型" style="font-size:12px;padding:6px 10px;width:100%">
+            </div>
+            <div class="form-group" style="flex:1;margin-bottom:10px">
+              <label style="font-size:11px">描述</label>
+              <input id="tmDesc" placeholder="类型简介" style="font-size:12px;padding:6px 10px;width:100%">
+            </div>
+          </div>
+
+          <div style="border-top:1px solid var(--border);padding-top:10px;margin-bottom:10px">
+            <label style="font-size:11px;font-weight:600">剪辑参数</label>
+          </div>
+          <div class="form-row" style="gap:8px">
+            <div class="form-group" style="flex:1;margin-bottom:8px">
+              <label style="font-size:10px">剪辑节奏</label>
+              <select id="tmCutProfile" style="font-size:12px;padding:6px 10px;width:100%">
+                <option value="even_flow">平稳流畅</option>
+                <option value="fast">快速节奏</option>
+                <option value="surge_pause">张弛有度</option>
+                <option value="slow">缓慢节奏</option>
+              </select>
+            </div>
+            <div class="form-group" style="flex:1;margin-bottom:8px">
+              <label style="font-size:10px">动画密度</label>
+              <select id="tmAnimDensity" style="font-size:12px;padding:6px 10px;width:100%">
+                <option value="low">低</option>
+                <option value="medium" selected>中</option>
+                <option value="high">高</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="border-top:1px solid var(--border);padding-top:10px;margin-bottom:10px">
+            <label style="font-size:11px;font-weight:600">镜头时长（毫秒）</label>
+          </div>
+          <div id="tmShotParams">
+            <div class="form-row" style="gap:8px">
+              <div class="form-group" style="flex:1"><label style="font-size:10px">低密度</label>
+                <input id="tmShotLow" value='{"base_shot_ms":8000,"min_shot_ms":2000,"max_shot_ms":15000}' style="font-size:10px;padding:4px 6px;width:100%">
+              </div>
+              <div class="form-group" style="flex:1"><label style="font-size:10px">中密度</label>
+                <input id="tmShotMid" value='{"base_shot_ms":5000,"min_shot_ms":1500,"max_shot_ms":10000}' style="font-size:10px;padding:4px 6px;width:100%">
+              </div>
+              <div class="form-group" style="flex:1"><label style="font-size:10px">高密度</label>
+                <input id="tmShotHigh" value='{"base_shot_ms":3000,"min_shot_ms":800,"max_shot_ms":8000}' style="font-size:10px;padding:4px 6px;width:100%">
+              </div>
+            </div>
+          </div>
+
+          <div style="border-top:1px solid var(--border);padding-top:10px;margin-bottom:10px">
+            <label style="font-size:11px;font-weight:600">转场权重（JSON，总和=1）</label>
+          </div>
+          <input id="tmTransWeights" value='{"hard_cut":0.6,"dissolve":0.2,"fade":0.1,"crossfade":0.1}' style="font-size:11px;padding:4px 8px;width:100%">
+
+          <div style="border-top:1px solid var(--border);padding-top:10px;margin-bottom:10px">
+            <label style="font-size:11px;font-weight:600">标注模板（每行一个）</label>
+          </div>
+          <textarea id="tmAnnotations" rows="3" style="font-size:11px;padding:4px 8px;width:100%" placeholder="hook&#10;climax_silence&#10;theory_acceleration"></textarea>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,82 @@
+<div id="section-forge" class="section">
+  <div class="card">
+    <div class="card-header">PersonaForge — 智能构建</div>
+    <div class="tabs">
+      <div class="tab active" onclick="switchForgeTab('prompt',this)">自然语言</div>
+      <div class="tab" onclick="switchForgeTab('script',this)">脚本分析</div>
+      <div class="tab" onclick="switchForgeTab('refine',this)">迭代优化</div>
+      <div class="tab" onclick="switchForgeTab('dialogue',this)">对话引导</div>
+    </div>
+    <div id="forge-prompt" class="card-body">
+      <p class="text-muted mb-2">用一句话描述你的创作风格，自动生成 Persona 参数层。</p>
+      <div class="form-group">
+        <label>风格描述</label>
+        <textarea id="forgePromptDesc" rows="3" placeholder='例如：我做数码评测，风格毒舌吐槽，画面高对比暗色调，节奏偏快'>我做数码评测，风格毒舌吐槽，画面高对比暗色调，节奏偏快</textarea>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Persona ID</label>
+          <input id="forgePromptId" value="test_prompt" placeholder="persona_id">
+        </div>
+        <div class="form-group">
+          <label>Persona 名称（可选）</label>
+          <input id="forgePromptName" value="测试 Prompt" placeholder="persona_name">
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="forgeFromPrompt()">生成</button>
+      <div id="forgePromptResult"></div>
+    </div>
+    <div id="forge-script" class="card-body" style="display:none">
+      <p class="text-muted mb-2">上传脚本/口播文本，精确提取语言风格参数。</p>
+      <div class="form-group">
+        <label>脚本内容</label>
+        <textarea id="forgeScriptText" rows="5" placeholder="贴入你的脚本或字幕文本...">今天我们来聊聊一个很多人都在问的问题：年轻人为什么会沉迷盲盒？</textarea>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Persona ID</label>
+          <input id="forgeScriptId" value="test_script" placeholder="persona_id">
+        </div>
+        <div class="form-group">
+          <label>Persona 名称</label>
+          <input id="forgeScriptName" value="脚本测试" placeholder="persona_name">
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="forgeFromScript()">分析</button>
+      <div id="forgeScriptResult"></div>
+    </div>
+    <div id="forge-refine" class="card-body" style="display:none">
+      <p class="text-muted mb-2">对已有 Persona 给出自然语言反馈，系统自动调整参数。</p>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Persona ID</label>
+          <input id="forgeRefineId" value="zam_knowledge_critical" placeholder="persona_id">
+        </div>
+        <div class="form-group">
+          <label>反馈</label>
+          <input id="forgeRefineFeedback" value="节奏太慢了，学术味太重" placeholder="你的反馈">
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="forgeRefine()">优化</button>
+      <div id="forgeRefineResult"></div>
+    </div>
+    <div id="forge-dialogue" class="card-body" style="display:none">
+      <p class="text-muted mb-2">多轮对话引导，逐步明确创作风格。</p>
+      <div class="form-group">
+        <label>Persona ID</label>
+        <input id="forgeDialogueId" value="test_dialogue" placeholder="persona_id">
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-primary" onclick="dialogueGenerateQuestions()">生成问题</button>
+        <button class="btn btn-secondary" onclick="dialogueBuild()">编译 Persona</button>
+      </div>
+      <div class="mt-2">
+        <div class="form-group">
+          <label>回答（JSON 格式）</label>
+          <textarea id="forgeDialogueAnswers" rows="4" placeholder='{"identity":{"tone":"冷峻犀利的技术专家"},"rhythm":{"cut_profile":"偏快，信息密集"}}'></textarea>
+        </div>
+      </div>
+      <div id="forgeDialogueResult"></div>
+    </div>
+  </div>
+</div>

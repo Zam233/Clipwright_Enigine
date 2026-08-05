@@ -1,0 +1,24 @@
+<div id="section-persona" class="section">
+  <div class="card">
+    <div class="card-header">Persona 列表</div>
+    <div class="card-body">
+      <button class="btn btn-primary" onclick="listPersonas()">刷新列表</button>
+      <div id="personaList"></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">查看 Persona</div>
+    <div class="card-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Persona ID</label>
+          <input id="personaGetId" value="zam_knowledge_critical" placeholder="persona_id">
+        </div>
+        <div class="form-group" style="align-self:flex-end">
+          <button class="btn btn-primary" onclick="getPersona()">查看</button>
+        </div>
+      </div>
+      <div id="personaDetail"></div>
+    </div>
+  </div>
+</div>

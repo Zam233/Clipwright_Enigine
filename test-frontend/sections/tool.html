@@ -1,0 +1,19 @@
+<div id="section-tool" class="section">
+  <div class="card"><div class="card-header">工具 — ToolRegistry 中的全部原子能力</div><div class="card-body">
+    <button class="btn btn-primary" onclick="listTools()">刷新工具列表</button>
+    <div id="toolList"></div>
+  </div></div>
+  <div class="card"><div class="card-header">执行工具</div><div class="card-body">
+    <div class="form-row">
+      <div class="form-group"><label>工具名</label><input id="toolExecName" placeholder="scene_detect"></div>
+      <div class="form-group"><label>参数 (JSON)</label><input id="toolExecParams" value='{"input_path": "/path/to/video.mp4"}'></div>
+    </div>
+    <button class="btn btn-primary" onclick="execTool()">执行</button>
+    <div id="toolExecResult"></div>
+  </div></div>
+  <div class="card"><div class="card-header">批量执行</div><div class="card-body">
+    <div class="form-group"><label>调用列表 (JSON)</label><textarea id="toolBatchCalls" rows="4">[{"tool":"scene_detect","input_path":"/video.mp4","threshold":0.3}]</textarea></div>
+    <button class="btn btn-primary" onclick="execToolBatch()">批量执行</button>
+    <div id="toolBatchResult"></div>
+  </div></div>
+</div>

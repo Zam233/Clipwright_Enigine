@@ -1,0 +1,18 @@
+<div id="section-plugin" class="section">
+  <div class="card"><div class="card-header">插件管理</div><div class="card-body">
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="listPlugins()">已加载插件</button>
+      <button class="btn btn-secondary" onclick="discoverPlugins()">发现可用</button>
+      <button class="btn btn-secondary" onclick="loadAllPlugins()">加载全部</button>
+      <button class="btn btn-secondary" onclick="getCapabilities()">能力概览</button>
+    </div>
+    <div id="pluginList"></div>
+  </div></div>
+  <div class="card"><div class="card-header">加载/卸载插件</div><div class="card-body">
+    <div class="form-row">
+      <div class="form-group"><label>Plugin ID</label><input id="pluginLoadId" value="my_material_lib"></div>
+      <div class="form-group" style="align-self:flex-end"><div class="btn-group"><button class="btn btn-primary btn-sm" onclick="loadPlugin()">加载</button><button class="btn btn-danger btn-sm" onclick="unloadPlugin()">卸载</button></div></div>
+    </div>
+    <div id="pluginActionResult"></div>
+  </div></div>
+</div>

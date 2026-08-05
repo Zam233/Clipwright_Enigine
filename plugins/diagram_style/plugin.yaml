@@ -1,0 +1,6 @@
+id: "diagram_style"
+name: "图解视觉风格预设"
+version: "1.0.0"
+kind: "capability"
+description: "提供多组配色主题（黑金/赛博/极简/暖白）和自定义 SVG 图解类型，通过 HookPoint.DIAGRAM_STYLE_PRESET 和 DIAGRAM_RENDERER_EXTEND 注册"
+entry_point: "diagram_style.presets"

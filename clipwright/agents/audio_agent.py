@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 from clipwright.agents.base import BaseAgent
+from clipwright.config import logger
 from clipwright.schema.agent import (
     AgentContext,
     AgentDecision,
@@ -219,6 +221,92 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
             except Exception as dub_err:
                 notes.append(f"自动配音失败: {str(dub_err)[:200]}")
 
+            # ── 7b. 配音门控诊断：有文案但未触发配音时说明哪个条件未满足 ──
+            try:
+                voice_id = audio_config.get("voice_id", "")
+                auto_dub = bool(audio_config.get("auto_dub", True))
+                script_text = context.extra_params.get("script_text", "")
+                video_mode = context.extra_params.get("video_mode", "")
+                gate_ok = (
+                    auto_dub
+                    and voice_id
+                    and script_text.strip()
+                    and video_mode == "voiceover"
+                )
+                if not gate_ok and script_text.strip():
+                    failed = []
+                    if not voice_id:
+                        failed.append("voice_id 未配置（Persona voice_model 为空）")
+                    if video_mode != "voiceover":
+                        failed.append(f"video_mode={video_mode or '未设置'}（需 voiceover）")
+                    if not auto_dub:
+                        failed.append("auto_dub 已关闭")
+                    notes.append(f"配音未触发: {'; '.join(failed)}")
+            except Exception:
+                pass
+
+            # ── 8. 无声音检测：音频轨全是占位 clip（asset_id 为空）且无旁白 ──
+            try:
+                has_real_audio = False
+                for t in timeline.tracks:
+                    if t.kind != ClipKind.AUDIO:
+                        continue
+                    for c in t.clips:
+                        if (getattr(c, "asset_id", "") or ""):
+                            has_real_audio = True
+                            break
+                    if has_real_audio:
+                        break
+                if not has_real_audio:
+                    # ── demo 配音回退：用内置 voice.mp3 铺满时间线作为配音 ──
+                    # 用户明确要求：整片无声时应使用 demo 的 voice.mp3（文稿配音）作为音频，
+                    # 而非静默输出。voice.mp3 时长与 timeline 总长一致（见 proj_84b48b414b29）。
+                    demo_voice = self._resolve_demo_voice()
+                    if demo_voice:
+                        demo_dur = self._probe_demo_duration(demo_voice)
+                        tl_dur = float(getattr(timeline, "duration_sec", 0) or 0)
+                        dur = max(0.0, demo_dur or tl_dur)
+                        if dur <= 0:
+                            dur = tl_dur
+                        # 移除空占位 clip，避免与 demo 配音重复/混淆
+                        for t in timeline.tracks:
+                            if t.kind == ClipKind.AUDIO:
+                                t.clips = [
+                                    c for c in t.clips
+                                    if (getattr(c, "asset_id", "") or "")
+                                ]
+                        demo_clip = Clip(
+                            id=f"dub_{uuid.uuid4().hex[:8]}",
+                            kind=ClipKind.AUDIO,
+                            asset_id=demo_voice,
+                            track_id=audio_track.id,
+                            start_sec=0.0,
+                            duration_sec=dur,
+                            volume=1.0,
+                            eq_preset="voice",
+                            metadata={"dubbing": True, "source": "demo"},
+                        )
+                        if demo_clip not in audio_track.clips:
+                            audio_track.clips.insert(0, demo_clip)
+                        if tl_dur < dur:
+                            timeline.duration_sec = dur
+                        notes.append(f"使用 demo 配音 voice.mp3（{dur:.0f}s）")
+                        has_real_audio = True
+                    if not has_real_audio:
+                        msg = (
+                            "无配音与BGM配置（voice 未配置、无 TTS/音乐 key、无 demo voice.mp3），"
+                            "成片将无声音"
+                        )
+                        logger.warning("AudioAgent: %s", msg)
+                        notes.append(msg)
+                        try:
+                            from clipwright.services.trace import add_event as _evt
+                            _evt(context.pipeline_id, "audio", "warning", msg)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
             return AudioOutput(
                 decision=AgentDecision.PASS,
                 timeline=timeline,
@@ -227,6 +315,35 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
 
         except Exception as e:
             return self.build_error_output(str(e), AudioOutput)
+
+    @staticmethod
+    def _resolve_demo_voice() -> str:
+        """定位内置 demo 配音文件（data/demo/voice.mp3，相对仓库根）。"""
+        candidates = [
+            Path(__file__).resolve().parents[2] / "data" / "demo" / "voice.mp3",
+            Path("data/demo/voice.mp3"),
+            Path("_cache/demo/voice.mp3"),
+        ]
+        for p in candidates:
+            if p.exists() and p.stat().st_size > 2000:
+                return str(p)
+        return ""
+
+    @staticmethod
+    def _probe_demo_duration(path: str) -> float:
+        """用 ffprobe 探测 demo 配音时长；失败返回 0。"""
+        try:
+            import subprocess
+            r = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "csv=p=0", path],
+                capture_output=True, text=True, timeout=15,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                return float(r.stdout.strip())
+        except Exception:
+            pass
+        return 0.0
 
     @staticmethod
     def _match_bgm_slot(

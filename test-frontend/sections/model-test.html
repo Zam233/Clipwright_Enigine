@@ -1,0 +1,41 @@
+<div id="section-model-test" class="section">
+  <div class="card">
+    <div class="card-header">模型测试面板</div>
+    <div class="tabs">
+      <div class="tab active" onclick="switchModelTab('llm',this)">LLM</div>
+      <div class="tab" onclick="switchModelTab('embed',this)">嵌入</div>
+      <div class="tab" onclick="switchModelTab('rerank',this)">重排序</div>
+      <div class="tab" onclick="switchModelTab('info',this)">配置</div>
+    </div>
+    <div id="model-llm" class="card-body">
+      <p class="text-muted mb-2">向 LLM 发送一条测试消息，验证模型连接和响应。</p>
+      <div class="form-group"><label>测试消息</label><textarea id="modelLlmPrompt" rows="3">用一句话描述冷峻科技评论的风格特点。</textarea></div>
+      <div class="form-row">
+        <div class="form-group"><label>模型（留空用默认）</label><input id="modelLlmModel" placeholder="claude-sonnet-4-6"></div>
+        <div class="form-group" style="align-self:flex-end"><button class="btn btn-primary" onclick="testLlm()">发送测试</button></div>
+      </div>
+      <div id="modelLlmResult"></div>
+    </div>
+    <div id="model-embed" class="card-body" style="display:none">
+      <p class="text-muted mb-2">测试嵌入模型，查看文本的向量表示。</p>
+      <div class="form-group"><label>文本</label><textarea id="modelEmbedText" rows="2">冷峻科技评论风格，黑白画面，快速剪辑</textarea></div>
+      <div class="form-row">
+        <div class="form-group"><label>Provider</label><input id="modelEmbedProvider" placeholder="sentence_transformer"></div>
+        <div class="form-group" style="align-self:flex-end"><button class="btn btn-primary" onclick="testEmbed()">生成向量</button></div>
+      </div>
+      <div id="modelEmbedResult"></div>
+    </div>
+    <div id="model-rerank" class="card-body" style="display:none">
+      <p class="text-muted mb-2">测试重排序模型：输入查询和候选文本，验证排序效果。</p>
+      <div class="form-group"><label>查询</label><input id="modelRerankQuery" value="冷峻科技风格"></div>
+      <div class="form-group"><label>候选文本（每行一条）</label><textarea id="modelRerankCandidates" rows="4">科技视频评论风格冷峻画面黑白\n今天天气真好适合出去游玩\n快速剪辑搭配暗色调突出科技感</textarea></div>
+      <button class="btn btn-primary" onclick="testRerank()">测试重排序</button>
+      <div id="modelRerankResult"></div>
+    </div>
+    <div id="model-info" class="card-body" style="display:none">
+      <p class="text-muted mb-2">当前引擎的模型配置信息。</p>
+      <pre id="modelConfigInfo" style="font-size:12px;line-height:1.5;background:var(--surface2);padding:14px;border-radius:var(--radius);border:1px solid var(--border)">加载中...</pre>
+      <button class="btn btn-secondary btn-sm mt-2" onclick="loadModelConfig()">刷新</button>
+    </div>
+  </div>
+</div>

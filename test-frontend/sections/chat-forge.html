@@ -1,0 +1,64 @@
+<div id="section-chat-forge" class="section">
+  <div class="card" style="border:none;background:transparent">
+    <div class="chat-layout">
+      <div class="chat-main">
+        <div id="chatMessages" class="chat-messages">
+          <div class="chat-welcome">
+            <h2>对话创建 Persona</h2>
+            <p>和 AI 创作顾问自然对话，逐步建立你的创作人格。<br>可以随时上传参考文档，也可以说"修改"来调整。</p>
+            <button class="btn btn-primary" onclick="chatStart()">开始对话</button>
+          </div>
+        </div>
+        <div id="chatOverallProgress" style="display:none;padding:10px 4px 4px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+            <span style="font-size:12px;font-weight:600">Persona 完整度</span>
+            <span style="font-size:11px;color:var(--text2)"><span id="chatProgressPct">0</span>%<span id="chatReadyBadge" style="display:none;color:var(--green);margin-left:6px"> 可保存</span></span>
+          </div>
+          <div class="progress-bar" style="height:6px"><div class="fill" id="chatOverallBar" style="width:0%;background:linear-gradient(90deg,var(--accent),var(--green))"></div></div>
+        </div>
+        <div id="chatLoading" style="display:none;padding:4px"><div class="flex" style="justify-content:center;color:var(--text2);font-size:12px"><span class="spin"></span><span style="margin-left:6px">AI 思考中...</span></div></div>
+        <div id="chatKbProgress" style="display:none;padding:4px 4px 0">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+            <span style="font-size:11px;color:var(--text2)"><span id="kbFileName"></span></span>
+            <span style="font-size:11px;color:var(--text2)"><span id="kbProgressNum">0</span>/<span id="kbProgressTotal">0</span> 章</span>
+          </div>
+          <div class="progress-bar" style="height:4px"><div class="fill" id="chatKbBar" style="width:0%;background:var(--yellow)"></div></div>
+          <div style="font-size:10px;color:var(--text2);margin-top:2px" id="kbProgressLabel"></div>
+        </div>
+        <div class="chat-input-area" id="chatInputArea" style="display:none">
+          <textarea id="chatInput" rows="1" placeholder="描述你的创作风格..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();chatSend()}"></textarea>
+          <div class="chat-actions">
+            <button class="btn btn-secondary btn-sm" onclick="document.getElementById('chatKbInput').click()" title="上传参考文档">📎</button>
+            <input type="file" id="chatKbInput" style="display:none" accept=".txt,.md,.srt" onchange="chatUploadKnowledge(event)">
+            <button class="btn btn-primary" onclick="chatSend()">发送</button>
+          </div>
+        </div>
+      </div>
+      <div class="chat-sidebar" id="chatSidebar" style="display:none">
+        <div class="card" style="margin:0">
+          <div class="card-header" style="padding:10px 14px;font-size:12px">Persona 实时预览</div>
+          <div class="preview-card" id="chatPreview"><pre>等待对话开始...</pre></div>
+        </div>
+        <div class="card" style="margin:0">
+          <div class="card-header" style="padding:10px 14px;font-size:12px">构建进度</div>
+          <div class="card-body" style="padding:12px 14px" id="chatProgress">
+            <div class="progress-label"><span>身份</span><span id="p_identity">0%</span></div><div class="progress-bar"><div class="fill" id="pb_identity" style="width:0%"></div></div>
+            <div class="progress-label"><span>语言</span><span id="p_language">0%</span></div><div class="progress-bar"><div class="fill" id="pb_language" style="width:0%"></div></div>
+            <div class="progress-label"><span>节奏</span><span id="p_rhythm">0%</span></div><div class="progress-bar"><div class="fill" id="pb_rhythm" style="width:0%"></div></div>
+            <div class="progress-label"><span>视觉</span><span id="p_visual">0%</span></div><div class="progress-bar"><div class="fill" id="pb_visual" style="width:0%"></div></div>
+            <div class="progress-label"><span>音频</span><span id="p_audio">0%</span></div><div class="progress-bar"><div class="fill" id="pb_audio" style="width:0%"></div></div>
+            <div class="progress-label"><span>约束</span><span id="p_constraints">0%</span></div><div class="progress-bar"><div class="fill" id="pb_constraints" style="width:0%"></div></div>
+          </div>
+        </div>
+        <div class="card" style="margin:0">
+          <div class="card-header" style="padding:10px 14px;font-size:12px">知识库 <span id="kbCount">(0)</span></div>
+          <div class="card-body" style="padding:8px 14px;max-height:140px;overflow-y:auto" id="kbList"><div class="text-muted" style="font-size:12px">上传 txt/md/srt 文件作为风格参考</div></div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-primary btn-sm" style="flex:1" onclick="chatCommit()">保存 Persona</button>
+          <button class="btn btn-secondary btn-sm" onclick="chatReset()">重新开始</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

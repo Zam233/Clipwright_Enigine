@@ -31,6 +31,13 @@ _STRICT_JSON_OUTPUT = (
     "- 输出中除 JSON 外不要出现任何其他字符。\n"
 )
 
+# 背景约束：MG 动画叠加在实拍素材上，默认禁止不透明全幅背景层。
+# 仅当创作者在 vision_prompt 中明确要求背景时才允许 bg 元素。
+_NO_BACKGROUND_CONSTRAINT = (
+    "禁止背景层：除非 vision_prompt 明确要求背景，动画不得包含 bg 元素或任何"
+    "不透明全幅背景（background 必须为 transparent）；动画叠加在实拍素材上。"
+)
+
 
 class MGGenerator:
     """LLM 驱动的 MG 动画生成器。"""
@@ -125,6 +132,7 @@ class MGGenerator:
                 return await self._fallback_generate(
                     description, text_content, persona_style,
                     width=width, height=height, fps=fps,
+                    vision_prompt=vision_prompt,
                 )
 
             # 带错误回传的一次修复重试（仅一次，避免无限重试）
@@ -145,13 +153,34 @@ class MGGenerator:
                 return await self._fallback_generate(
                     description, text_content, persona_style,
                     width=width, height=height, fps=fps,
+                    vision_prompt=vision_prompt,
                 )
             logger.warning("MGGenerator: 修复重试仍失败，进入降级")
 
         return await self._fallback_generate(
             description, text_content, persona_style,
             width=width, height=height, fps=fps,
+            vision_prompt=vision_prompt,
         )
+
+    @staticmethod
+    def _ensure_no_background(mg_def: dict[str, Any], vision_prompt: str = "") -> dict[str, Any]:
+        """背景守卫：vision_prompt 为空时，强制 bg 元素背景透明。
+
+        MG 动画叠加在实拍素材上，默认不允许不透明全幅背景；
+        仅当创作者在 vision_prompt 中明确要求背景时保留 bg 元素原样。
+        """
+        if not isinstance(mg_def, dict):
+            return mg_def
+        if vision_prompt and str(vision_prompt).strip():
+            return mg_def
+        elements = mg_def.get("elements")
+        if isinstance(elements, list):
+            for elem in elements:
+                if isinstance(elem, dict) and elem.get("type") == "bg":
+                    if elem.get("background") not in (None, "transparent"):
+                        elem["background"] = "transparent"
+        return mg_def
 
     async def _call_llm_repair(
         self,
@@ -234,7 +263,8 @@ class MGGenerator:
                                        width=width, height=height, fps=fps,
                                        description=description,
                                        text_content=text_content,
-                                       persona_style=persona_style)
+                                       persona_style=persona_style,
+                                       vision_prompt=vision_prompt)
 
         score = critique.get("score", 100)
         issues = critique.get("issues", [])
@@ -247,7 +277,8 @@ class MGGenerator:
                                        width=width, height=height, fps=fps,
                                        description=description,
                                        text_content=text_content,
-                                       persona_style=persona_style)
+                                       persona_style=persona_style,
+                                       vision_prompt=vision_prompt)
 
         if not self._issues_fixable(issues, suggestions):
             logger.warning("MGGenerator: 批判低分(score=%d)但问题不可修复，接受原输出", score)
@@ -255,7 +286,8 @@ class MGGenerator:
                                        width=width, height=height, fps=fps,
                                        description=description,
                                        text_content=text_content,
-                                       persona_style=persona_style)
+                                       persona_style=persona_style,
+                                       vision_prompt=vision_prompt)
 
         # 低分且可修复 → 带批判反馈的一次修复重试（仅一次）
         repaired = await self._call_llm_critique_repair(
@@ -270,6 +302,7 @@ class MGGenerator:
                 width=width, height=height, fps=fps,
                 description=description, text_content=text_content,
                 persona_style=persona_style,
+                vision_prompt=vision_prompt,
             )
 
         logger.warning("MGGenerator: 批判修复失败(score=%d)，进入降级", score)
@@ -588,8 +621,12 @@ class MGGenerator:
                 "色板以 Persona 注入值为最终准绳。无论上方任何段落（含「简报动画风格」"
                 "「动画风格指引」）如何建议色调，以本段色板为准。\n"
                 + "\n".join(_color_lines) +
+                "\n" + _NO_BACKGROUND_CONSTRAINT +
                 "\n禁止默认蓝紫科技渐变、发光粒子、彩虹渐变。"
             )
+        else:
+            # 无注入色板时仍需输出背景约束（默认禁止不透明背景层）
+            parts.append("## 最终约束\n" + _NO_BACKGROUND_CONSTRAINT)
 
         return "\n\n".join(parts)
 
@@ -629,6 +666,7 @@ class MGGenerator:
         width: int | None = None,
         height: int | None = None,
         fps: float = 30.0,
+        vision_prompt: str = "",
     ) -> dict[str, Any]:
         """降级生成 — 匹配已有模板。"""
         templates = self._get_templates()
@@ -645,7 +683,8 @@ class MGGenerator:
                     full_template = _json.loads(template_path.read_text(encoding="utf-8"))
                     template, params = FallbackEngine.fill_template_params(full_template, text_content, persona_style)
                     return await self._build_success(template, "fallback", fallback_template=tid, params=params,
-                                               width=width, height=height, fps=fps)
+                                               width=width, height=height, fps=fps,
+                                               vision_prompt=vision_prompt)
                 except Exception:
                     pass
 
@@ -791,10 +830,14 @@ class MGGenerator:
         description: str | None = None,
         text_content: str | None = None,
         persona_style: dict | None = None,
+        vision_prompt: str = "",
     ) -> dict[str, Any]:
         """构建成功响应 + 渲染 HTML（含残留占位符兜底）。"""
         import uuid
         from datetime import datetime
+
+        # 背景守卫：vision_prompt 未明确要求背景时剥离不透明 bg 背景层
+        mg_def = self._ensure_no_background(mg_def, vision_prompt)
 
         generation_id = f"gen_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 

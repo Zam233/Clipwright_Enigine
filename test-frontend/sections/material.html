@@ -1,0 +1,58 @@
+<div id="section-material" class="section">
+  <div style="display:flex;gap:12px;height:calc(100vh - 140px)">
+    <!-- Left sidebar: sources + upload -->
+    <div style="width:240px;flex-shrink:0;display:flex;flex-direction:column;gap:8px">
+      <div class="card" style="margin:0">
+        <div class="card-header" style="padding:10px 14px;font-size:12px">素材源</div>
+        <div class="card-body" style="padding:8px" id="matSourceList">
+          <div class="text-muted" style="font-size:11px;padding:8px">加载中...</div>
+        </div>
+      </div>
+      <div class="card" style="margin:0">
+        <div class="card-header" style="padding:10px 14px;font-size:12px">操作</div>
+        <div class="card-body" style="padding:8px;display:flex;flex-direction:column;gap:6px">
+          <button class="btn btn-primary btn-sm" onclick="document.getElementById('matUploadInput').click()" style="width:100%">上传素材</button>
+          <input type="file" id="matUploadInput" style="display:none" multiple accept="video/*,audio/*,image/*" onchange="uploadMaterial(event)">
+          <button class="btn btn-secondary btn-sm" onclick="openVisionImport()" style="width:100%">识图导入</button>
+          <button class="btn btn-secondary btn-sm" onclick="listMaterialSources()" style="width:100%">刷新源列表</button>
+        </div>
+      </div>
+    </div>
+    <!-- Right: material grid + search -->
+    <div style="flex:1;display:flex;flex-direction:column;gap:8px;min-width:0">
+      <div class="card" style="margin:0;flex-shrink:0">
+        <div class="card-body" style="padding:10px 14px">
+          <div style="display:flex;gap:8px;align-items:center">
+            <input id="matSearchQuery" placeholder="搜索素材..." style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:var(--radius);font-size:13px">
+            <button class="btn btn-primary btn-sm" onclick="searchMaterial()">搜索</button>
+          </div>
+        </div>
+      </div>
+      <div class="card" style="margin:0;flex:1;overflow:hidden;display:flex;flex-direction:column">
+        <div class="card-header" style="padding:10px 14px;font-size:12px">
+          <span>素材 <span class="text-muted" id="matCount"></span></span>
+          <div style="display:flex;gap:4px">
+            <button class="btn btn-secondary btn-sm" onclick="switchMatView('grid')" id="matViewGrid">网格</button>
+            <button class="btn btn-secondary btn-sm" onclick="switchMatView('list')" id="matViewList">列表</button>
+          </div>
+        </div>
+        <div id="matGrid" style="flex:1;overflow-y:auto;padding:12px;display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;align-content:start"></div>
+        <div id="matList" style="flex:1;overflow-y:auto;padding:8px;display:none"></div>
+      </div>
+    </div>
+  </div>
+  <!-- Vision import dialog -->
+  <div id="visionDialog" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:100;display:none;align-items:center;justify-content:center">
+    <div class="card" style="width:480px;margin:0">
+      <div class="card-header">识图导入素材</div>
+      <div class="card-body">
+        <div class="form-group"><label>图片路径</label><input id="visionPath" placeholder="/path/to/image.jpg"></div>
+        <div class="form-group"><label>识别结果</label><pre id="visionResult" style="font-size:12px;min-height:60px;background:var(--surface2);padding:8px;border-radius:var(--radius)">等待识别...</pre></div>
+        <div class="btn-group">
+          <button class="btn btn-primary" onclick="analyzeAndImport()">识别并导入</button>
+          <button class="btn btn-secondary" onclick="closeVisionDialog()">取消</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

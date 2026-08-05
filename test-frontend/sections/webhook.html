@@ -1,0 +1,31 @@
+<div id="section-webhook" class="section">
+  <div style="max-width:600px;margin:0 auto">
+    <div class="card">
+      <div class="card-header">Webhook 订阅管理</div>
+      <div class="card-body">
+        <div class="form-row" style="gap:8px;margin-bottom:12px">
+          <div class="form-group" style="flex:1">
+            <label style="font-size:11px">事件类型</label>
+            <select id="whEventType" style="font-size:12px;padding:6px 10px;width:100%">
+              <option value="pipeline">管线完成</option>
+              <option value="render">渲染完成</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex:2">
+            <label style="font-size:11px">回调 URL</label>
+            <input id="whUrl" placeholder="https://your-server.com/webhook" style="font-size:12px;padding:6px 10px;width:100%">
+          </div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="whSubscribe()">订阅</button>
+        <button class="btn btn-secondary btn-sm" onclick="whList()">刷新列表</button>
+        <button class="btn btn-secondary btn-sm" onclick="whTest()">测试通知</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">已订阅的 Webhook</div>
+      <div id="whList" class="card-body" style="font-size:11px">
+        <div class="text-muted" style="padding:10px">加载中...</div>
+      </div>
+    </div>
+  </div>
+</div>

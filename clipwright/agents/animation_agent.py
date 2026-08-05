@@ -142,6 +142,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             transition_anim_count = 0
             self._llm_mg_generated = 0
             prev_clip = None
+            # 开场保护：第一个 video/image clip（开场场景）不允许逻辑/文字动画——
+            # 知识讲解类视频开场是口播引入，动画只用于内容展开后的论证/数据/对比场景
+            seen_first_video = False
             # 收集逻辑动画（含 LLM MG）作业，主循环扫描后再并发执行——
             # 每个 LLM MG 生成 2-4 分钟，串行是动画阶段的最大瓶颈
             logic_jobs: list[tuple[Track, Clip, str, str, dict[str, Any], dict[str, Any] | None]] = []
@@ -153,6 +156,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 prev_clip = None  # 每轨道重置，防止跨轨道转场
 
                 for clip in list(vid_track.clips or []):
+                    is_first_video = not seen_first_video
+                    seen_first_video = True
                     meta = clip.metadata or {}
                     desc = meta.get("description", "") or ""
 
@@ -165,6 +170,21 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                     marker_type = marker.get("type", "text")
                     anim_id = marker.get("anim_id", "text_fade_in")
                     anim_name = marker.get("name", "淡入")
+
+                    # 开场场景跳过逻辑/文字动画（字幕轨不受影响）
+                    if is_first_video and marker_type in ("logic", "text"):
+                        logger.warning(
+                            "AnimationAgent: 开场场景跳过%s动画 [%s] → clip=%s",
+                            "逻辑" if marker_type == "logic" else "文字",
+                            anim_name, clip.id[:8],
+                        )
+                        add_event(
+                            context.pipeline_id, "animation", "warning",
+                            f"开场场景跳过{'逻辑' if marker_type == 'logic' else '文字'}动画: {anim_name} → clip={clip.id[:8]}",
+                            {"anim_id": anim_id, "clip_id": clip.id, "reason": "opening_scene"},
+                        )
+                        prev_clip = clip
+                        continue
 
                     if marker_type == "text":
                         self._handle_text_animation(
@@ -352,6 +372,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
         MG 动画（ID 以 mg_ 开头）使用 MGRenderer 渲染 HTML/CSS 动画。"""
         text_content = marker.get("text", self._extract_text_content(vid_clip, marker))
+        # 防御：旧 marker 的 text 可能是原始 JSON 串，先剥离
+        text_content = self._strip_json_payload(text_content)
         if not text_content:
             text_content = "逻辑关系"
         duration = min(vid_clip.duration_sec, 6.0)
@@ -461,6 +483,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         """处理 MG 动画标记 — 通过 MGRenderer 生成 HTML 动画。"""
         from clipwright.animation.mg_renderer import MGRenderer
         from clipwright.animation.mg.fallback import FallbackEngine
+
+        # 防御：旧时间线中 marker["text"] 可能是原始 JSON 串，
+        # 解析出 text/description，避免 JSON 片段被渲染为屏上大字。
+        text_content = self._strip_json_payload(text_content)
 
         # 加载 MG 动画定义
         mg_def = MGRenderer.load_animation(anim_id)
@@ -580,11 +606,17 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
             return
 
-        # 解析 JSON payload（如果 text_content 是 JSON 字符串）
+        # 解析 JSON payload：优先 catalog 已解析的结构化字段（marker["payload"]），
+        # 否则把 text_content 当 JSON 串解析（旧 marker 兼容）
         description = text_content
         style_param = "tech_dark"
         text_parts = ""
-        if text_content and text_content.strip().startswith("{"):
+        payload = marker.get("payload") if marker else None
+        if isinstance(payload, dict):
+            description = payload.get("description", "") or text_content
+            text_parts = payload.get("text", "") or ""
+            style_param = payload.get("style", "") or "tech_dark"
+        elif text_content and text_content.strip().startswith("{"):
             try:
                 import json as _json
                 payload = _json.loads(text_content.strip())
@@ -639,7 +671,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             track_id=anim_track.id,
             start_sec=vid_clip.start_sec,
             duration_sec=clip_dur,
-            text=text_content,
+            # 存干净文本（text_parts 或 description），绝不存原始 JSON
+            text=text_parts or description,
             metadata={
                 "anim_type": anim_id,
                 "anim_name": anim_name,
@@ -795,6 +828,23 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             if ts < ce and te > cs:
                 return tc
         return None
+
+    @staticmethod
+    def _strip_json_payload(text: str) -> str:
+        """若 text 是 JSON payload 串（旧 marker 残留），提取其中 text/description。
+
+        非 JSON 或解析失败时原样返回。"""
+        if not text or not text.strip().startswith("{"):
+            return text
+        try:
+            import json as _json
+            payload = _json.loads(text.strip())
+        except Exception:
+            return text
+        if not isinstance(payload, dict):
+            return text
+        clean = payload.get("text", "") or payload.get("description", "") or ""
+        return clean if clean else text
 
     @staticmethod
     def _extract_text_content(clip: Clip, marker: dict[str, Any] | None = None) -> str:

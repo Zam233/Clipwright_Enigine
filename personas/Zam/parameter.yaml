@@ -1,0 +1,52 @@
+audio:
+  bgm_slots:
+    intro:
+    - 工业电子/氛围音乐，低沉但有压迫感
+    main_argument:
+    - 节奏型电子或后摇滚，中速
+    reflection:
+    - 极简钢琴或无配乐
+  target_loudness_lufs: -16.0
+  voice_model: null
+constraints:
+  forbidden_topics: []
+  max_duration_sec: 900
+  min_duration_sec: 120
+  require_source_citation: false
+identity:
+  class_perspective: 底层观察者与结构性分析者
+  knowledge_domains:
+  - 马克思主义哲学
+  - 传播学批判理论
+  - 互联网技术与开源文化
+  - Minecraft红石与指令系统
+  - 城市公共交通运转
+  position: null
+  tone: 理性批判型
+language:
+  academic_density: 0.75
+  allowed_patterns: []
+  forbidden_patterns: []
+  max_sentence_len: 30
+  slang_ratio: 0.35
+  variance_target: 0.85
+layer_type: parameter
+persona_id: Zam
+rhythm:
+  base_shot_duration_ms: 4500
+  cut_density_tier: 中高
+  cut_profile: 论证推进型
+  pause_sections: []
+  surge_sections: []
+version: 1.0.0
+visual:
+  accent_color: null
+  animation_styles:
+    data_visualization: 具象化数字标注，避免花哨动画
+    text_emphasis: 逐字出现或硬切闪现，配合论点节奏
+  palette: 冷色调+高对比度，黑白为主色调，辅以警示黄或深红标注关键数据
+  primary_color: null
+  transition_weights:
+    dip_to_black: 0.2
+    hard_cut: 0.7
+    push: 0.1

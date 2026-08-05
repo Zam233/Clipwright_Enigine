@@ -1349,6 +1349,11 @@ class RenderService:
                 if _is_valid_video(output_path): return
             except Exception:
                 pass
+        if not voice:
+            logger.warning(
+                "_mix_audio: 未找到配音或BGM音源（segments=%d, afp=%s, bfp=%s），输出视频将无声音: %s",
+                len(segments or []), afp or "(none)", bfp or "(none)", output_path,
+            )
         shutil.copy2(input_video, output_path)
 
     @staticmethod

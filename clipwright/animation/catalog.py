@@ -248,6 +248,33 @@ class AnimationCatalog:
                 if text_match:
                     text = text_match.group(1)
 
+            # JSON payload 提取：structure_agent 会写入
+            # [逻辑动画]mg_dynamic:{"description":"...","text":"A|B","style":"..."}
+            # 此时 text 是整个 JSON 串，必须解析出结构化字段，
+            # 否则 JSON 片段会被当作屏上大字渲染。
+            if text.strip().startswith("{"):
+                import json as _json
+                try:
+                    payload = _json.loads(text.strip())
+                except Exception:
+                    payload = None
+                if isinstance(payload, dict):
+                    info = AnimationCatalog.resolve_marker(name)
+                    if forced_type:
+                        info["type"] = forced_type
+                    payload_text = payload.get("text", "") or ""
+                    payload_desc = payload.get("description", "") or ""
+                    if payload_text:
+                        info["text"] = payload_text
+                    elif payload_desc:
+                        # 无 text 字段 → 回退到 description（截断），绝不保留原始 JSON
+                        info["text"] = payload_desc[:50]
+                    info["description"] = payload_desc
+                    info["style"] = payload.get("style", "") or ""
+                    info["payload"] = payload
+                    info["full_match"] = match.group(0)
+                    return info
+
             info = AnimationCatalog.resolve_marker(name)
             if forced_type:
                 info["type"] = forced_type

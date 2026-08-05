@@ -1,0 +1,66 @@
+<div id="section-template" class="section">
+  <div style="display:flex;gap:12px;height:calc(100vh - 80px)">
+    <div style="width:260px;flex-shrink:0;display:flex;flex-direction:column;gap:8px">
+      <div class="card" style="margin:0;flex:1">
+        <div class="card-header" style="padding:8px 12px;font-size:12px">
+          <span>模板</span>
+          <button class="btn btn-primary btn-sm" style="font-size:9px;padding:2px 8px" onclick="tmplNew()">+ 新建</button>
+        </div>
+        <div id="tmplList" class="card-body" style="padding:6px;overflow-y:auto">
+          <div class="text-muted" style="font-size:11px;text-align:center;padding:20px">加载中...</div>
+        </div>
+      </div>
+      <div class="card" style="margin:0">
+        <div class="card-header" style="padding:8px 12px;font-size:12px">片头/片尾</div>
+        <div class="card-body" style="padding:6px">
+          <div id="introOutroList" style="font-size:10px;max-height:120px;overflow-y:auto">
+            <div class="text-muted" style="padding:8px">加载中...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="flex:1;display:flex;flex-direction:column;gap:8px">
+      <div class="card" style="margin:0;flex:1">
+        <div class="card-header" style="padding:8px 12px;font-size:12px">
+          <span id="tmplEditorTitle">编辑模板</span>
+          <div style="display:flex;gap:4px">
+            <button class="btn btn-primary btn-sm" style="font-size:9px;padding:2px 8px" onclick="tmplSave()">保存</button>
+            <button class="btn btn-danger btn-sm" style="font-size:9px;padding:2px 8px" onclick="tmplDelete()">删除</button>
+          </div>
+        </div>
+        <div class="card-body" style="padding:10px;overflow-y:auto">
+          <input type="hidden" id="tmplEditId">
+          <div class="form-row" style="gap:8px;margin-bottom:8px">
+            <div class="form-group" style="flex:1"><label style="font-size:10px">ID</label><input id="tmplId" style="font-size:11px;padding:4px 8px;width:100%"></div>
+            <div class="form-group" style="flex:1"><label style="font-size:10px">名称</label><input id="tmplName" style="font-size:11px;padding:4px 8px;width:100%"></div>
+            <div class="form-group" style="flex:1"><label style="font-size:10px">Persona ID</label><input id="tmplPersona" value="zam_knowledge_critical" style="font-size:11px;padding:4px 8px;width:100%"></div>
+          </div>
+          <div class="form-group" style="margin-bottom:8px"><label style="font-size:10px">选题模板（支持 {{变量}}）</label>
+            <input id="tmplTopic" value="{{topic}}" style="font-size:11px;padding:4px 8px;width:100%">
+          </div>
+          <div class="form-group" style="margin-bottom:8px"><label style="font-size:10px">文稿模板</label>
+            <textarea id="tmplScript" rows="6" style="font-size:11px;padding:4px 8px;width:100%">{{script}}</textarea>
+          </div>
+          <div class="form-row" style="gap:8px;margin-bottom:8px">
+            <div class="form-group" style="flex:1"><label style="font-size:10px">类型插件</label>
+              <select id="tmplPlugin" style="font-size:11px;padding:4px 8px;width:100%">
+                <option value="knowledge_longform">知识区长片</option>
+                <option value="digital_review">数码评测</option>
+              </select>
+            </div>
+            <div class="form-group" style="flex:1"><label style="font-size:10px">分辨率</label>
+              <select id="tmplRes" style="font-size:11px;padding:4px 8px;width:100%">
+                <option value="1920x1080">1080p</option>
+                <option value="1080x1920">竖屏 1080p</option>
+              </select>
+            </div>
+          </div>
+          <div style="border-top:1px solid var(--border);padding-top:8px">
+            <button class="btn btn-secondary btn-sm" onclick="tmplRender()" style="font-size:10px">预览渲染</button>
+            <span id="tmplRenderResult" style="font-size:10px;margin-left:8px;color:var(--text2)"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

@@ -123,7 +123,10 @@ prompt:
     - text_blocks: text_content 用 | 分隔的各文本段，按顺序映射到各元素占位符
 
     ## 硬性约束
-    - 元素数量 >= 4（背景层 + 主体 + 前景强调 + 粒子层）
+    - 元素数量 >= 3（主体 + 前景强调 + 粒子层）；默认不要使用 bg 背景层
+    - 默认禁止背景层：除非用户视觉需求（vision_prompt）明确要求背景，否则不得生成
+      bg 元素，元素 background 必须为 transparent 或省略；动画叠加在实拍画面上，
+      背景必须透明
     - 每个元素至少 3 个关键帧，第一个关键帧必须 time=0 且隐藏（opacity:0）
     - 至少 2 个关键帧带 easing 字段
     - 所有关键帧 time 不超过 duration_sec
@@ -149,14 +152,14 @@ prompt:
       "colors": ["{accent}", "#ffffff"],
       "text_blocks": ["{value}", "{unit}"],
       "name": "数据冲击",
-      "description": "标题揭示 + 光带扫过 + 冲击回弹 + 渐变底色",
+      "description": "标题揭示 + 光带扫过 + 冲击回弹 + 透明叠加",
       "duration_sec": 4.0,
       "width": 1920,
       "height": 1080,
       "elements": [
         {
           "type": "bg",
-          "background": "linear-gradient(135deg, #0a0e1a 0%, #16234a 60%, #0a0e1a 100%)",
+          "background": "transparent",
           "keyframes": [
             {"time": 0, "opacity": 0, "easing": "ease-out"},
             {"time": 0.4, "opacity": 1},
@@ -269,14 +272,14 @@ prompt:
     {
       "animation_id": "mg_generated_title_reveal",
       "name": "标题揭示",
-      "description": "错峰入场 + 文字发光 + 圆环与弧线装饰 + 渐变底色",
+      "description": "错峰入场 + 文字发光 + 圆环与弧线装饰 + 透明叠加",
       "duration_sec": 4.0,
       "width": 1920,
       "height": 1080,
       "elements": [
         {
           "type": "bg",
-          "background": "linear-gradient(180deg, #10152b 0%, #1d1e3d 100%)",
+          "background": "transparent",
           "keyframes": [
             {"time": 0, "opacity": 0, "easing": "ease-out"},
             {"time": 0.5, "opacity": 1},

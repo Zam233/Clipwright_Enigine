@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -116,6 +117,20 @@ class VideoTrimTool(BaseTool):
         **kwargs: Any,
     ) -> ToolExecResult:
         out = _ensure_output_path(output_path, "trim_", ".mp4")
+        # 输入预检：源文件缺失/过小（损坏）直接报错，不调 ffmpeg
+        try:
+            if not os.path.isfile(input_path) or os.path.getsize(input_path) < 2000:
+                return ToolExecResult(
+                    status=ToolStatus.ERROR,
+                    tool_name=self.name,
+                    error=f"source missing/corrupt: {input_path}",
+                )
+        except OSError as e:
+            return ToolExecResult(
+                status=ToolStatus.ERROR,
+                tool_name=self.name,
+                error=f"source missing/corrupt: {input_path} ({e})",
+            )
         try:
             args = ["-ss", str(start_sec), "-i", input_path]
             if duration_sec is not None:
@@ -129,6 +144,14 @@ class VideoTrimTool(BaseTool):
                     status=ToolStatus.ERROR,
                     tool_name=self.name,
                     error=f"ffmpeg error: {result.stderr[:500]}",
+                )
+            # 输出校验：-c copy 对损坏源可能 exit 0 但产出 ~258B 空容器（无流）
+            if not self._validate_trim_output(out):
+                return ToolExecResult(
+                    status=ToolStatus.ERROR,
+                    tool_name=self.name,
+                    error="trim output invalid (empty/corrupt container)",
+                    output_path=out,
                 )
             return ToolExecResult(
                 status=ToolStatus.SUCCESS,
@@ -150,6 +173,28 @@ class VideoTrimTool(BaseTool):
                 tool_name=self.name,
                 error="ffmpeg timed out",
             )
+
+    @staticmethod
+    def _validate_trim_output(path: str) -> bool:
+        """校验 trim 产物：存在、非空容器、含视频流、时长可解析且 > 0.2s。"""
+        try:
+            if not os.path.isfile(path) or os.path.getsize(path) <= 2000:
+                return False
+            result = subprocess.run(
+                [resolve_ffprobe(), "-v", "error", "-print_format", "json",
+                 "-show_format", "-show_streams", path],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                return False
+            data = json.loads(result.stdout or "{}")
+            streams = data.get("streams") or []
+            if not any(s.get("codec_type") == "video" for s in streams):
+                return False
+            duration = float(data.get("format", {}).get("duration", 0) or 0)
+            return duration > 0.2
+        except Exception:
+            return False
 
 
 class VideoDownloadTool(BaseTool):

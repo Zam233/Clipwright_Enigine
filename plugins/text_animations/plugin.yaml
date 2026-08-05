@@ -1,0 +1,6 @@
+id: "text_animations"
+name: "文字动画工具集"
+version: "1.0.0"
+kind: "capability"
+description: "25 种文字动画工具 + 自定义 JSON 动画 + 校验器"
+entry_point: "text_animations.animations"

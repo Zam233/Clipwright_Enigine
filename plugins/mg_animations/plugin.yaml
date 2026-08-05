@@ -1,0 +1,5 @@
+name: MG 动画插件
+version: 1.0.0
+kind: capability
+description: 自定义 MG 动画（运动图形），以 JSON 格式定义，支持文字/形状/图标的逐帧动画
+entry_point: mg_animations.main
