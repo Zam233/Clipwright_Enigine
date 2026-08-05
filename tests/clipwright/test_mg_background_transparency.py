@@ -152,3 +152,65 @@ class TestTemplatePathStripsBackground:
         html = (track.clips[0].metadata or {}).get("mg_html", "")
         assert "linear-gradient" not in html.split("bg")[0][-200:]  # bg 区域无渐变
         assert "background:transparent" in html or "background: transparent" in html
+
+
+class TestLabelSeparation:
+    """标签分离守卫：LLM 生成模板中 left/right 标签同坐标 → 分列左右。
+
+    质检发现 mg_generated_cost_asymmetry 的 {left_label}/{right_label} 都在
+    x=center,y=center,y_offset=240，渲染后两个标签完全重叠（帧 mg_230 视觉实锤）。
+    """
+
+    def _overlap_def(self) -> dict:
+        return {
+            "animation_id": "mg_generated_test_overlap",
+            "duration_sec": 3.0,
+            "elements": [
+                {"type": "text", "content": "{left_label}",
+                 "x": "center", "y": "center", "y_offset": 240, "font_size": 36},
+                {"type": "text", "content": "{right_label}",
+                 "x": "center", "y": "center", "y_offset": 240, "font_size": 36},
+                {"type": "text", "content": "{title}",
+                 "x": "center", "y": "center", "y_offset": -180, "font_size": 64},
+            ],
+        }
+
+    def test_left_right_labels_separated(self) -> None:
+        result = MGGenerator._ensure_label_separation(self._overlap_def())
+        by_content = {e["content"]: e for e in result["elements"]}
+        assert by_content["{left_label}"]["x"] == "left"
+        assert by_content["{right_label}"]["x"] == "right"
+        # 无 left/right 语义的元素不受影响
+        assert by_content["{title}"]["x"] == "center"
+
+    def test_no_duplicate_positions_no_change(self) -> None:
+        mg_def = {
+            "elements": [
+                {"type": "text", "content": "{title}", "x": "center", "y": "center"},
+                {"type": "text", "content": "副标题", "x": "center", "y": "bottom"},
+            ]
+        }
+        out = MGGenerator._ensure_label_separation(mg_def)
+        assert out["elements"][0]["x"] == "center"
+        assert out["elements"][1]["x"] == "center"
+
+    def test_build_success_applies_guard(self) -> None:
+        """_build_success 全路径应用守卫（含 LLM 生成模板）。"""
+        # 通过 _build_success 验证 mg_def 被处理
+        import asyncio
+        mg_def = self._overlap_def()
+        mg_def["width"] = 1920
+        mg_def["height"] = 1080
+
+        async def _run():
+            gen = MGGenerator()
+            # 用 monkeypatch 避免真正渲染 HTML（MGRenderer 需要完整结构）
+            return await gen._build_success(
+                mg_def, method="llm", params={"left_label": "左", "right_label": "右"},
+            )
+
+        result = asyncio.run(_run())
+        defs = result["mg_def"]["elements"]
+        by_content = {e["content"]: e for e in defs}
+        assert by_content["{left_label}"]["x"] == "left"
+        assert by_content["{right_label}"]["x"] == "right"

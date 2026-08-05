@@ -821,6 +821,39 @@ class MGGenerator:
         logger.warning("MGGenerator: 渲染后仍含残留占位符，返回原始 HTML")
         return html or html2
 
+    @staticmethod
+    def _ensure_label_separation(mg_def: dict[str, Any]) -> dict[str, Any]:
+        """标签分离守卫：LLM 生成的对比模板可能把 left/right 标签放在同一坐标。
+
+        质检发现 mg_generated_cost_asymmetry 的 {left_label}/{right_label} 都在
+        x=center,y=center,y_offset=240 → 渲染后两个标签完全重叠（不可读）。
+        此处对坐标完全相同的 text 元素，按内容占位符语义（left/right）强制分列左右。
+        """
+        if not isinstance(mg_def, dict):
+            return mg_def
+        elements = mg_def.get("elements")
+        if not isinstance(elements, list):
+            return mg_def
+
+        from collections import defaultdict
+        groups: dict[tuple, list[tuple[int, dict]]] = defaultdict(list)
+        for i, e in enumerate(elements):
+            if isinstance(e, dict) and e.get("type") == "text":
+                key = (e.get("x"), e.get("y"), e.get("y_offset"), e.get("x_offset"))
+                groups[key].append((i, e))
+
+        for _key, items in groups.items():
+            if len(items) < 2:
+                continue
+            for idx, e in items:
+                content = str(e.get("content") or "")
+                low = content.lower()
+                if "left" in low:
+                    e["x"] = "left"
+                elif "right" in low:
+                    e["x"] = "right"
+        return mg_def
+
     async def _build_success(
         self, mg_def: dict, method: str, fallback_template: str | None = None,
         params: dict[str, Any] | None = None,
@@ -838,6 +871,8 @@ class MGGenerator:
 
         # 背景守卫：vision_prompt 未明确要求背景时剥离不透明 bg 背景层
         mg_def = self._ensure_no_background(mg_def, vision_prompt)
+        # 标签分离守卫：left/right 标签同坐标 → 按语义分列左右（质检发现的重叠 bug）
+        mg_def = self._ensure_label_separation(mg_def)
 
         generation_id = f"gen_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
