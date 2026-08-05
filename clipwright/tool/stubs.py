@@ -49,21 +49,6 @@ class TextDesignTool(BaseTool):
         )
 
 
-class MaterialFilterTool(BaseTool):
-    """素材过滤工具 — 按标签/时长/分辨率/方向筛选素材候选。"""
-    name = "material_filter"
-    description = "素材过滤：按标签/时长/分辨率/方向筛选候选素材列表"
-    dependencies = []
-
-    async def execute(self, **kwargs: Any) -> ToolExecResult:
-        return ToolExecResult(
-            status=ToolStatus.SUCCESS,
-            tool_name=self.name,
-            output={"filtered": True, "criteria": kwargs},
-            warning="material_filter 为占位实现 — 委托 MaterialRegistry.search()（Phase 2 增强）",
-        )
-
-
 class FrameValidatorTool(BaseTool):
     """帧验证工具 — 检测黑帧、过曝帧、模糊帧、全白帧。"""
     name = "frame_validator"

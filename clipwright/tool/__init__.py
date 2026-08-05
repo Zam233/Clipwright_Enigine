@@ -29,14 +29,13 @@ from clipwright.tool.effects import (
     VideoSpeedTool,
     WatermarkTool,
 )
-from clipwright.tool.material import FrameValidatorTool
+from clipwright.tool.material import FrameValidatorTool, MaterialFilterTool
 from clipwright.tool.registry import ToolRegistry
 from clipwright.tool.speed import SpeedRampTool
 from clipwright.tool.stabilize import VideoStabilizeTool
 from clipwright.tool.stubs import (
     AudioSilenceDetectTool,
     BlackFrameDetectTool,
-    MaterialFilterTool,
     SubtitleOverflowTool,
     TextDesignTool,
     VideoFilterTool,

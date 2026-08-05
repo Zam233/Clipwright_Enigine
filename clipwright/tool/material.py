@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -11,6 +12,11 @@ from typing import Any, Optional
 from clipwright.config import logger, settings
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
+
+
+def _lavfi_escape(path: str) -> str:
+    """转义 lavfi movie= 滤镜路径中的特殊字符（\\ : '）。"""
+    return path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
 
 
 class MaterialFilterTool(BaseTool):
@@ -61,7 +67,9 @@ class FrameValidatorTool(BaseTool):
         expected_text: str = "",
         **kwargs: Any,
     ) -> ToolExecResult:
-        frame = Path(tempfile.mktemp(suffix=".jpg"))
+        fd, tmp_path = tempfile.mkstemp(suffix=".jpg")
+        os.close(fd)  # 关闭句柄，交由 ffmpeg -y 覆写（避免 mktemp 的 TOCTOU 竞态）
+        frame = Path(tmp_path)
         try:
             result = subprocess.run(
                 ["ffmpeg", "-y", "-loglevel", "error", "-ss", "1",
@@ -76,14 +84,20 @@ class FrameValidatorTool(BaseTool):
                 )
 
             try:
+                # ffprobe 无 "mean" 键；改用 lavfi signalstats 的 YAVG 标签测平均亮度
                 stats = subprocess.run(
-                    ["ffprobe", "-v", "error", "-show_entries",
-                     "frame=mean", "-of", "json", str(frame)],
+                    ["ffprobe", "-v", "error", "-f", "lavfi",
+                     "-i", f"movie='{_lavfi_escape(str(frame))}',signalstats",
+                     "-show_entries", "frame_tags=lavfi.signalstats.YAVG",
+                     "-of", "json"],
                     capture_output=True, text=True, timeout=10,
                 )
                 mean_data = json.loads(stats.stdout)
                 frames_info = mean_data.get("frames", [])
-                mean_val = float(frames_info[0].get("mean", 128)) if frames_info else 128
+                tag = (frames_info[0].get("tags", {}) if frames_info else {}).get(
+                    "lavfi.signalstats.YAVG"
+                )
+                mean_val = float(tag) if tag is not None else 128
                 is_blank = mean_val < 10 or mean_val > 245
             except (ValueError, json.JSONDecodeError):
                 mean_val, is_blank = 128, False

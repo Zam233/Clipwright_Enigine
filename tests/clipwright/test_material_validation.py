@@ -7,7 +7,7 @@
 - 视觉关时 VisionService 不调用；agent 经 _heuristic_title_match_score 打分
 - title 完全无关 → <0.35；相关 → 高分
 - 低分触发重拟词恰 ≤2 次
-- git diff --stat 显示 material.py + config.py 已 stage（含 tool/__init__.py）
+- T3 提交包含 material.py + config.py + tool/__init__.py（committed history，非暂存区）
 """
 
 from __future__ import annotations
@@ -77,7 +77,9 @@ def _install_ffmpeg_mock(monkeypatch, mean: float = 128.0) -> None:
             return types.SimpleNamespace(returncode=0, stderr="")
         return types.SimpleNamespace(
             returncode=0,
-            stdout=json.dumps({"frames": [{"mean": mean}]}),
+            stdout=json.dumps(
+                {"frames": [{"tags": {"lavfi.signalstats.YAVG": str(mean)}}]}
+            ),
         )
     monkeypatch.setattr(subprocess, "run", fake_run)
 
@@ -235,13 +237,21 @@ class TestRegistration:
         # 真实实现无 stubs 占位 warning
         assert getattr(tool, "dependencies", []) == ["ffmpeg", "ffprobe"]
 
-    def test_git_diff_staged_includes_material_and_config(self) -> None:
-        """⑦ git diff --stat 显示 material.py + config.py 已 stage。"""
+    def test_material_and_config_committed_together(self) -> None:
+        """⑦ T3 提交包含 tool/material.py + config.py + tool/__init__.py（验证提交内容而非暂存区）。"""
         import subprocess as sp
+        repo = Path(__file__).resolve().parents[2]
         out = sp.run(
-            ["git", "diff", "--cached", "--stat"],
-            capture_output=True, text=True, cwd=Path(__file__).resolve().parents[2],
+            ["git", "log", "--oneline", "-1", "--", "clipwright/tool/material.py"],
+            capture_output=True, text=True, cwd=repo,
         )
-        stat = out.stdout
-        assert "tool/material.py" in stat
-        assert "config.py" in stat
+        # 断言 material.py 已被提交（有提交记录）
+        assert out.stdout.strip(), "tool/material.py 未提交"
+        commit = out.stdout.split()[0]
+        show = sp.run(
+            ["git", "show", "--stat", "--name-only", commit],
+            capture_output=True, text=True, cwd=repo,
+        )
+        assert "tool/material.py" in show.stdout
+        assert "config.py" in show.stdout
+        assert "tool/__init__.py" in show.stdout
