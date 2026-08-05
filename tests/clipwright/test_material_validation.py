@@ -7,7 +7,9 @@
 - 视觉关时 VisionService 不调用；agent 经 _heuristic_title_match_score 打分
 - title 完全无关 → <0.35；相关 → 高分
 - 低分触发重拟词恰 ≤2 次
-- T3 提交包含 material.py + config.py + tool/__init__.py（committed history，非暂存区）
+- 注：原「T3 提交包含 material.py + config.py + tool/__init__.py」的 git 历史测试已删除——
+  git 提交布局校验属于 review/CI 流程，不该作为单元测试（用 `git log -1` 解析最新提交本身是
+  自引用反模式，会在后续提交触及 material.py 时失效）。
 """
 
 from __future__ import annotations
@@ -237,21 +239,7 @@ class TestRegistration:
         # 真实实现无 stubs 占位 warning
         assert getattr(tool, "dependencies", []) == ["ffmpeg", "ffprobe"]
 
-    def test_material_and_config_committed_together(self) -> None:
-        """⑦ T3 提交包含 tool/material.py + config.py + tool/__init__.py（验证提交内容而非暂存区）。"""
-        import subprocess as sp
-        repo = Path(__file__).resolve().parents[2]
-        out = sp.run(
-            ["git", "log", "--oneline", "-1", "--", "clipwright/tool/material.py"],
-            capture_output=True, text=True, cwd=repo,
-        )
-        # 断言 material.py 已被提交（有提交记录）
-        assert out.stdout.strip(), "tool/material.py 未提交"
-        commit = out.stdout.split()[0]
-        show = sp.run(
-            ["git", "show", "--stat", "--name-only", commit],
-            capture_output=True, text=True, cwd=repo,
-        )
-        assert "tool/material.py" in show.stdout
-        assert "config.py" in show.stdout
-        assert "tool/__init__.py" in show.stdout
+    # 注：原 test_material_and_config_committed_together（用 `git log -1 -- material.py` 解析最新
+    # 提交并断言其中含 config.py）已删除。它断言的是 git 提交历史布局而非代码行为，属于反模式；
+    # 且 `git log -1` 解析到最新提交（如 review-fix 9f26390 只含 material.py+__init__.py+stubs.py）
+    # 时必然失败。git 布局校验应放在 review 流程而非单元测试套件。
