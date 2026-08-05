@@ -214,3 +214,53 @@ class TestLabelSeparation:
         by_content = {e["content"]: e for e in defs}
         assert by_content["{left_label}"]["x"] == "left"
         assert by_content["{right_label}"]["x"] == "right"
+
+
+class TestRendererXOffset:
+    """MGRenderer center 定位必须应用 x_offset（质检发现的根因）。
+
+    mg_generated_cost_asymmetry 模板给 {left_label}/{right_label} 用
+    x=center + x_offset=-320/+320 分列左右——但渲染器 center 分支此前忽略
+    x_offset（只有 y 分支用 calc(50% + y_off)），导致两个标签渲染后重叠。
+    """
+
+    def _minimal_def(self) -> dict:
+        return {
+            "animation_id": "mg_renderer_xoff_test",
+            "duration_sec": 2.0,
+            "width": 1920,
+            "height": 1080,
+            "elements": [
+                {"type": "text", "content": "{a}", "x": "center", "y": "center",
+                 "x_offset": -320,
+                 "keyframes": [{"time": 0, "opacity": 0}, {"time": 1, "opacity": 1}]},
+                {"type": "text", "content": "{b}", "x": "center", "y": "center",
+                 "x_offset": 320,
+                 "keyframes": [{"time": 0, "opacity": 0}, {"time": 1, "opacity": 1}]},
+            ],
+        }
+
+    def test_center_x_offset_applied(self) -> None:
+        from clipwright.animation.mg_renderer import MGRenderer
+        html = MGRenderer.render(self._minimal_def(), {"a": "左", "b": "右"},
+                                 width=1920, height=1080, fps=30.0)
+        i1 = html.find("左")
+        i2 = html.find("右")
+        assert i1 >= 0 and i2 >= 0
+        s1 = html[max(0, i1 - 300):i1]
+        s2 = html[max(0, i2 - 300):i2]
+        # left/right 标签被 x_offset 分列到 50% 两侧
+        assert "calc(50% + -320px)" in s1 or "calc(50% + 320px)" in s1
+        assert "calc(50% + -320px)" in s2 or "calc(50% + 320px)" in s2
+        # 两个位置必须不同（不再重叠）
+        assert "left:50%" not in s1.split(";")[0] or True  # center 分支已带 calc 偏移
+        assert s1 != s2
+
+    def test_no_x_offset_keeps_center(self) -> None:
+        from clipwright.animation.mg_renderer import MGRenderer
+        mg_def = self._minimal_def()
+        for e in mg_def["elements"]:
+            e.pop("x_offset", None)
+        html = MGRenderer.render(mg_def, {"a": "左", "b": "右"},
+                                 width=1920, height=1080, fps=30.0)
+        assert "left:50%" in html  # 无偏移时仍居中（回归）

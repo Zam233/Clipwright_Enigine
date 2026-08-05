@@ -174,7 +174,14 @@ const dur=parseFloat(root.dataset.duration);
         y_off = elem.get("y_offset", 0)
 
         if x == "center":
-            left_style = "left:50%"
+            # center 定位必须应用 x_offset（与 y 分支对称：y=center 用 calc(50% + y_off)）。
+            # 此前忽略 x_offset → LLM 模板用 x_offset 分列 left/right 标签时渲染仍重叠
+            # （质检发现 mg_generated_cost_asymmetry 的 {left_label}/{right_label}）。
+            # offset 为 0 时保持原 left:50% 输出（向后兼容既有模板）。
+            if x_off:
+                left_style = f"left:calc(50% + {x_off}px)"
+            else:
+                left_style = "left:50%"
             xform_x = "translateX(-50%)"
         elif x == "left":
             left_style = f"left:{20 + x_off}px"
