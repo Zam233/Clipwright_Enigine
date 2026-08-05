@@ -571,6 +571,26 @@ class MGGenerator:
                 "动画必须满足以下视觉需求，优先级高于默认设计：\n" + str(vision_prompt)
             )
 
+        # ── 最终约束（Q2：色板注入值是最终准绳，置于所有内容段落之后）──
+        # 放在最末覆盖上方所有色调建议（含「简报动画风格」「动画风格指引」），
+        # 明确禁止默认蓝紫科技渐变/发光粒子/彩虹渐变——否则 LLM 易按兜底蓝紫生成。
+        _palette_colors = {
+            "主色": persona_style.get("primary_color"),
+            "辅色": persona_style.get("secondary_color"),
+            "强调色": persona_style.get("accent_color"),
+        }
+        _color_lines = [
+            f"- {k}: {v}" for k, v in _palette_colors.items() if v
+        ]
+        if _color_lines:
+            parts.append(
+                "## 最终约束\n"
+                "色板以 Persona 注入值为最终准绳。无论上方任何段落（含「简报动画风格」"
+                "「动画风格指引」）如何建议色调，以本段色板为准。\n"
+                + "\n".join(_color_lines) +
+                "\n禁止默认蓝紫科技渐变、发光粒子、彩虹渐变。"
+            )
+
         return "\n\n".join(parts)
 
     def _parse_llm_response(self, content: str) -> dict[str, Any] | None:

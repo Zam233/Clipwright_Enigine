@@ -850,12 +850,26 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             **persona_config,
         }
 
-        config = visual_config or {}
+        config = dict(visual_config or {})
+        # Q2 主修复：原始层注入兜底色板（黑白红）。
+        # persona 参数层 primary/secondary/accent 为 null 时（如 Zam），注入非空结构化字段，
+        # 使 _apply_structured_overrides 无论走 LLM/tone-fallback/快路径都把结果盖回黑白红——
+        # 注入是正确性保证（不依赖 LLM 恰好生成对色板）。
+        if not config.get("primary_color"):
+            config["primary_color"] = "#000000"
+        if not config.get("secondary_color"):
+            config["secondary_color"] = "#FFFFFF"
+        if not config.get("accent_color"):
+            config["accent_color"] = "#FF0000"
+        # 成本优化（可选）：局部剥离 palette 传给 StyleInterpreter——剥离后 `not palette` 为真，
+        # has_exact 快路径触发（有精确 primary_color 即跳过 LLM 调用）。仅影响传给 interpret 的
+        # 副本，persona_config / yaml 原样保留（material_agent 的 palette 消费点不受影响）。
+        fast_cfg = {k: v for k, v in config.items() if k != "palette"}
         from clipwright.plugins.prompt_registry import PluginPromptRegistry
         plugin_prompts = PluginPromptRegistry.get_for_agent("animation")
         if plugin_prompts:
             persona_context["_plugin_prompts"] = plugin_prompts
-        result = await StyleInterpreter.interpret(config, persona_context)
+        result = await StyleInterpreter.interpret(fast_cfg, persona_context)
         return result
 
     @staticmethod
