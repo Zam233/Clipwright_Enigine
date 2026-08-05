@@ -193,6 +193,9 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                     # 为缺少动画标记的场景调用 LLM 补充动画标记（不硬编码），
                     # 使 AnimationAgent 能创建动画（含 LLM 动态 MG 动画）。
                     reused = await self._enrich_scene_animations(reused, context)
+                    # 源头剥离开场动画标记：开场（第一个场景）不生成动画，
+                    # 知识讲解类视频开场是口播引入，动画用于中段论证/数据/对比。
+                    reused = self._strip_opening_animation_markers(reused)
                     output = StructureOutput(
                         decision=AgentDecision.PASS,
                         script_skeleton={
@@ -335,6 +338,9 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
             # 为缺少动画标记的场景调用 LLM 补充动画标记（不硬编码），供 AnimationAgent 创建动画
             scenes = await self._enrich_scene_animations(scenes, context)
+            # 源头剥离开场动画标记：开场（第一个场景）不生成动画，
+            # 知识讲解类视频开场是口播引入，动画用于中段论证/数据/对比。
+            scenes = self._strip_opening_animation_markers(scenes)
 
             output = StructureOutput(
                 decision=AgentDecision.PASS,
@@ -502,6 +508,30 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             logger.info("StructureAgent: LLM 补充了 %d 个动画标记", enriched)
         except Exception as e:
             logger.warning("StructureAgent: LLM 补充动画标记失败: %s", e)
+        return scenes
+
+    @staticmethod
+    def _strip_opening_animation_markers(scenes: list[dict]) -> list[dict]:
+        """源头剥离开场场景（第一个场景）的动画标记。
+
+        用户要求：知识讲解类视频开场是口播引入，开头特定时间内不应生成动画标记——
+        实现应放在结构 Agent（生成源头），而非动画 Agent（消费端事后跳过）。
+        复用规划书场景与 LLM 新生成场景两条路径都在返回前调用本方法，硬保证
+        第一个场景的 description 不携带任何 [逻辑动画]/[文字动画]/[动画] 标记。
+        """
+        import re
+        if not scenes:
+            return scenes
+        opening = scenes[0]
+        desc = opening.get("description", "") or ""
+        marker_re = re.compile(r"\[(?:文字动画|逻辑动画|过渡动画|动画)\][^\n]*")
+        stripped = marker_re.sub("", desc).strip()
+        if stripped != desc:
+            opening["description"] = stripped
+            logger.info(
+                "StructureAgent: 开场场景已剥离动画标记（scene[0] title=%s）",
+                str(opening.get("title", ""))[:30],
+            )
         return scenes
 
     def _build_user_prompt(self, mode: str, script: str, audio_dur: float, base: str, anim_guide: str) -> str:

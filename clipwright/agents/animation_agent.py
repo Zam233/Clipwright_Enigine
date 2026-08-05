@@ -142,9 +142,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             transition_anim_count = 0
             self._llm_mg_generated = 0
             prev_clip = None
-            # 开场保护：第一个 video/image clip（开场场景）不允许逻辑/文字动画——
-            # 知识讲解类视频开场是口播引入，动画只用于内容展开后的论证/数据/对比场景
-            seen_first_video = False
+            # 开场不生成动画标记由 StructureAgent 源头保证（_strip_opening_animation_markers），
+            # AnimationAgent 不做位置判断跳过——此处只按 description 标记忠实执行。
             # 收集逻辑动画（含 LLM MG）作业，主循环扫描后再并发执行——
             # 每个 LLM MG 生成 2-4 分钟，串行是动画阶段的最大瓶颈
             logic_jobs: list[tuple[Track, Clip, str, str, dict[str, Any], dict[str, Any] | None]] = []
@@ -156,8 +155,6 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 prev_clip = None  # 每轨道重置，防止跨轨道转场
 
                 for clip in list(vid_track.clips or []):
-                    is_first_video = not seen_first_video
-                    seen_first_video = True
                     meta = clip.metadata or {}
                     desc = meta.get("description", "") or ""
 
@@ -170,21 +167,6 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                     marker_type = marker.get("type", "text")
                     anim_id = marker.get("anim_id", "text_fade_in")
                     anim_name = marker.get("name", "淡入")
-
-                    # 开场场景跳过逻辑/文字动画（字幕轨不受影响）
-                    if is_first_video and marker_type in ("logic", "text"):
-                        logger.warning(
-                            "AnimationAgent: 开场场景跳过%s动画 [%s] → clip=%s",
-                            "逻辑" if marker_type == "logic" else "文字",
-                            anim_name, clip.id[:8],
-                        )
-                        add_event(
-                            context.pipeline_id, "animation", "warning",
-                            f"开场场景跳过{'逻辑' if marker_type == 'logic' else '文字'}动画: {anim_name} → clip={clip.id[:8]}",
-                            {"anim_id": anim_id, "clip_id": clip.id, "reason": "opening_scene"},
-                        )
-                        prev_clip = clip
-                        continue
 
                     if marker_type == "text":
                         self._handle_text_animation(
