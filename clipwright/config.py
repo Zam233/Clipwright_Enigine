@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     pipeline_concurrency: int = 6
     # 素材阶段场景级并行路数；默认 6。设置 1 即回到逐场景串行。
     material_concurrency: int = 6
+    # 素材帧验证是否启用视觉 LLM；默认 False（只做 ffmpeg 抽帧 is_blank + 本地启发式标题匹配）。
+    # 打开后 frame_validator 工具调用 ImageAnalyzer 产出 match_score（视觉 API 成本）。
+    enable_visual_llm: bool = False
 
     # --- 安全 ---
     # API 令牌：设置后所有 /api/* 请求需携带 Authorization: Bearer <token>
