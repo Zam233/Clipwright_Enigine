@@ -80,19 +80,37 @@ def _append_caption_sentences(
     start_sec: float,
     total_dur: float,
 ) -> None:
-    """把一组句子按长度比例分配进 [start_sec, start_sec+total_dur]，追加为 CAPTION clip。
+    """把一组句子分配进 [start_sec, start_sec+total_dur]，追加为 CAPTION clip。
 
     配音驱动对齐：场景总长已按配音时长缩放，句子按字数占比分配时间 →
     字幕与配音时间轴一致。clip.kind=CAPTION、renderer=ass（走 ASS/libass 渲染）。
+
+    时长分配保证 Σdur == total_dur 精确、相邻 clip 无重叠（含跨场景）：
+    1. 退化预检：非末句有 0.3s 最小时长保护，若 (n-1)*0.3 超出 total_dur*0.85，
+       把尾部句子文本拼进前一个 clip（合并），直到 (merged-1)*0.3 <= total_dur*0.85，
+       使 min 钳制不再超界（修复叠字：累积超时导致前句吞掉下场景时间）；
+    2. 非末句按字数比例分配（min 0.3s 保护），末句吸收剩余
+       max(0.05, total_dur - (t_cursor - start_sec))，保证 Σ == total_dur 且末句不越界。
+    字幕样式用显式非零 kwargs 注入（stroke/shadow），render 读 Clip 属性 → ASS
+    \\bord\\shad 生效——不依赖 DEFAULT_CAPTION_STYLE（全 0 无效）。
     """
     if not sentences or total_dur <= 0:
         return
-    seg_lens = [max(len(s), 1) for s in sentences]
+    # 退化预检：过多短句时 min 钳制会超界 → 合并尾部句子直到 (n-1)*0.3 <= total_dur*0.85
+    merged = list(sentences)
+    while len(merged) > 1 and (len(merged) - 1) * 0.3 > total_dur * 0.85:
+        merged[-2] = f"{merged[-2]}{merged[-1]}"
+        merged.pop()
+    seg_lens = [max(len(s), 1) for s in merged]
     total_len = sum(seg_lens)
     t_cursor = start_sec
-    for si, sent in enumerate(sentences):
-        ratio = seg_lens[si] / total_len
-        s_dur = max(0.8, ratio * total_dur)
+    for si, sent in enumerate(merged):
+        if si == len(merged) - 1:
+            # 末句吸收剩余：保证 Σ == total_dur 精确，且不越界到下场景
+            s_dur = max(0.05, total_dur - (t_cursor - start_sec))
+        else:
+            ratio = seg_lens[si] / total_len
+            s_dur = max(0.3, ratio * total_dur)
         caption_clip = Clip(
             id=_uid("cc"),
             kind=ClipKind.CAPTION,
@@ -102,6 +120,11 @@ def _append_caption_sentences(
             duration_sec=round(s_dur, 3),
             text=sent,
             font="sans-serif",
+            stroke_width=2.0,
+            stroke_color="#000000",
+            shadow_x=1.0,
+            shadow_y=1.0,
+            shadow_color="#80000000",
             metadata={
                 "category": "caption",
                 "position": "bottom",

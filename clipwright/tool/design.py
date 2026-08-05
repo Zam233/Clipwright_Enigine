@@ -187,6 +187,8 @@ class TextStyle:
             tags.append(rf"\fsp{int(round(self.letter_spacing))}")
         if self.shadow_blur > 0:
             tags.append(rf"\blur{self.shadow_blur:g}")
+        if self.shadow_x or self.shadow_y or self.shadow_blur:
+            tags.append(r"\shad1")
         if self.stroke_width > 0:
             tags.append(rf"\bord{int(round(self.stroke_width))}")
         if self.glow_width > 0 and self.glow_color:
