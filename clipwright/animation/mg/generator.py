@@ -38,6 +38,53 @@ _NO_BACKGROUND_CONSTRAINT = (
     "不透明全幅背景（background 必须为 transparent）；动画叠加在实拍素材上。"
 )
 
+# A3 编排约束（外部调研准则：TapVid/601MEDIA/Descript 动画制作技巧）：
+# 顺序揭示 / 每节拍一个主运动 / 方向强化语义 / 构图居中 / 连线止于节点边缘 /
+# 箭头方向随流程 / 次级元素错峰（stagger）。
+_MG_ORCHESTRATION_CONSTRAINTS = (
+    "\n\n## 动画编排约束\n"
+    "- 顺序揭示（sequential reveal）：元素按阅读顺序逐个出现，重要数据点停顿 1-2 秒，"
+    "避免多个元素同时动画。\n"
+    "- 每节拍一个主运动（one primary motion per beat）：同一时刻只突出一个主运动，"
+    "次级元素错峰（stagger）延迟入场。\n"
+    "- 方向强化语义（direction reinforces semantics）：动画方向强化信息语义，"
+    "增长向上、下降向下；流程类动画自左向右推进。\n"
+    "- 构图居中（centered composition）：整体构图居中平衡，避免元素偏向一侧"
+    "造成大面积留白。\n"
+    "- 连线止于节点边缘（connectors stop at node edge）：连接线/箭头终止于节点边缘，"
+    "不得穿入节点内部。\n"
+    "- 箭头方向随流程（arrow direction follows flow）：流程 L→R 时箭头指向右，"
+    "方向不得与流程语义相悖。\n"
+    "- 每次只变化一个变量：一个节拍内只变更一个视觉变量，因果流程清晰可见。\n"
+)
+
+# A3 批判检查项：构图 / 层级 / 方向 / 编排
+_CRITIQUE_CHECK_ITEMS = (
+    "\n## 评审检查项（必须逐项检查）\n"
+    "- 构图（composition）：整体构图是否居中平衡，是否存在偏左/偏右或大面积留白。\n"
+    "- 层级（hierarchy）：元素层级是否清晰，连接线是否穿入节点内部、是否遮挡文字。\n"
+    "- 方向（direction）：箭头/运动方向是否与语义一致（流程 L→R 时箭头向右，增长向上、下降向下）。\n"
+    "- 编排（orchestration）：是否顺序揭示、每节拍一个主运动、次级元素错峰入场。\n"
+)
+
+# A8 图片语义匹配检查项：所选图片必须与场景语义匹配（防 📡→石墨烯 类错配）
+_CRITIQUE_IMAGE_MATCH_CHECK = (
+    "\n## 图片语义匹配检查（动画包含 image 元素时必须检查）\n"
+    "- 逐张核对 image 元素的 src 与场景标题/关键词/动画需求的语义匹配度；"
+    "图片必须与场景语义一致（如「石墨烯」场景配卫星图标即错配）。\n"
+    "- 图片与场景语义不匹配属于严重问题：score 应低于阈值，并在 issues/suggestions 中"
+    "明确要求——更换为语义匹配的图片，或移除全部 image 元素回退为纯矢量动画。\n"
+)
+
+# A8 批判修复指引：图片不匹配 → 换图或回退无图动画
+_CRITIQUE_REPAIR_IMAGE_GUIDANCE = (
+    "\n\n## 图片修复指引\n"
+    "若评审指出图片语义不匹配：优先更换 image 元素的 src 为语义匹配的图片"
+    "（从可用图片中选择）；若没有可替换的匹配图片，则移除全部 image 元素，"
+    "回退为纯矢量动画。其余元素与编排约束保持不变。"
+)
+
+
 
 class MGGenerator:
     """LLM 驱动的 MG 动画生成器。"""
@@ -182,6 +229,17 @@ class MGGenerator:
                         elem["background"] = "transparent"
         return mg_def
 
+    @staticmethod
+    def _has_image_elements(mg_def: dict[str, Any]) -> bool:
+        """判断 mg_def 是否包含 image 元素（A8 图片语义匹配检查的前置条件）。"""
+        elements = mg_def.get("elements")
+        if not isinstance(elements, list):
+            return False
+        return any(
+            isinstance(elem, dict) and elem.get("type") == "image"
+            for elem in elements
+        )
+
     async def _call_llm_repair(
         self,
         broken_def: dict[str, Any],
@@ -204,6 +262,8 @@ class MGGenerator:
             "\n\n上次输出的动画 JSON 未通过 schema 校验。请只输出**修正后的完整 JSON**，"
             "确保它通过全部校验规则，不要输出任何解释或额外文本。"
         )
+        # A3：编排约束注入（修复重试同样遵循编排准则）
+        system_prompt += _MG_ORCHESTRATION_CONSTRAINTS
         system_prompt += _STRICT_JSON_OUTPUT
 
         broken_str = json.dumps(broken_def, ensure_ascii=False)
@@ -255,6 +315,7 @@ class MGGenerator:
         """
         critique = await self._critique_quality(
             mg_def, description, persona_style, category_context, vision_prompt,
+            scene_context=scene_context,
         )
         params = self._build_llm_params(mg_def, text_content, persona_style)
         if critique is None:
@@ -315,6 +376,7 @@ class MGGenerator:
         persona_style: dict,
         category_context: dict,
         vision_prompt: str = "",
+        scene_context: dict | None = None,
     ) -> dict[str, Any] | None:
         """LLM 自批判质量评估。
 
@@ -348,10 +410,26 @@ class MGGenerator:
             "- issues 指出违反的原则与约束，具体到元素或关键帧。\n"
             "- suggestions 给出一到两条可执行的改进方向，供修复重试使用。\n"
         )
+        # A3：构图/层级/方向/编排检查项；A8：含 image 元素时增加图片语义匹配检查
+        system_prompt += _CRITIQUE_CHECK_ITEMS
+        if self._has_image_elements(mg_def):
+            system_prompt += _CRITIQUE_IMAGE_MATCH_CHECK
         if context_section:
             system_prompt += "\n\n" + context_section
 
         user_parts = [f"## 动画需求\n{description}"]
+        if self._has_image_elements(mg_def):
+            # A8：图片语义匹配需要场景标题/关键词作为匹配依据
+            scene = scene_context or {}
+            scene_lines = []
+            if scene.get("title"):
+                scene_lines.append(f"标题: {scene['title']}")
+            if scene.get("keywords"):
+                scene_lines.append(f"关键词: {scene.get('keywords')}")
+            if scene_lines:
+                user_parts.append(
+                    "## 场景上下文（图片语义匹配依据）\n" + "\n".join(scene_lines)
+                )
         user_parts.append(
             "## 待评审动画 JSON\n" + json.dumps(mg_def, ensure_ascii=False)[:4000]
         )
@@ -396,6 +474,10 @@ class MGGenerator:
             "请根据评审意见重新设计，只输出**改进后的完整 JSON**，"
             "确保它通过全部校验规则并修复所有质量问题，不要输出任何解释或额外文本。"
         )
+        # A3：编排约束注入；A8：含 image 元素时注入图片换图/回退指引
+        system_prompt += _MG_ORCHESTRATION_CONSTRAINTS
+        if self._has_image_elements(mg_def):
+            system_prompt += _CRITIQUE_REPAIR_IMAGE_GUIDANCE
         system_prompt += _STRICT_JSON_OUTPUT
 
         broken_str = json.dumps(mg_def, ensure_ascii=False)
@@ -495,6 +577,8 @@ class MGGenerator:
         system_prompt = system_template
         if context_section:
             system_prompt += "\n\n" + context_section
+        # A3：编排约束注入（顺序揭示/单主运动/方向语义/构图居中/连线不穿节点/箭头随流程）
+        system_prompt += _MG_ORCHESTRATION_CONSTRAINTS
         system_prompt += _STRICT_JSON_OUTPUT
 
         user_parts = [f"## 动画需求\n{description}"]
@@ -681,7 +765,9 @@ class MGGenerator:
             if template_path.exists():
                 try:
                     full_template = _json.loads(template_path.read_text(encoding="utf-8"))
-                    template, params = FallbackEngine.fill_template_params(full_template, text_content, persona_style)
+                    template, params = await FallbackEngine.llm_fill_template_params(
+                        full_template, text_content, persona_style, llm=self._llm,
+                    )
                     return await self._build_success(template, "fallback", fallback_template=tid, params=params,
                                                width=width, height=height, fps=fps,
                                                vision_prompt=vision_prompt)

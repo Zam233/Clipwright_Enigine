@@ -116,6 +116,13 @@ MG_DYNAMIC_GUIDE = """### LLM 动态 MG 动画（mg_dynamic）— 先调用 desc
 8. 同一场景至多一个 mg_dynamic 标记；每部视频鼓励 1-2 个 MG 场景
 
 全局约束：第一个场景（开场）不得使用 [逻辑动画] 或 [文字动画] 标记；动画只用于内容展开后的论证/数据/对比场景。"""
+# 开场允许保留动画标记的快节奏视频类型（插件 id 集合）。
+# 快节奏类型（如鬼畜快剪 kichiku_fastcut）开场即为高能引入，应允许开场动画标记；
+# 其余类型（knowledge_longform 知识长片等）维持开场禁动画 —— 开场口播引入，
+# 动画用于中段论证/数据/对比。TypeMaker 新增的快节奏类型在此追加 id 即可生效。
+_OPENING_ANIMATION_ALLOWED_PLUGIN_IDS: frozenset[str] = frozenset(
+    {"kichiku_fastcut"}
+)
 
 
 def _validate_scenes(scenes: list[dict]) -> tuple[list[dict], list[str]]:
@@ -193,9 +200,11 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                     # 为缺少动画标记的场景调用 LLM 补充动画标记（不硬编码），
                     # 使 AnimationAgent 能创建动画（含 LLM 动态 MG 动画）。
                     reused = await self._enrich_scene_animations(reused, context)
-                    # 源头剥离开场动画标记：开场（第一个场景）不生成动画，
-                    # 知识讲解类视频开场是口播引入，动画用于中段论证/数据/对比。
-                    reused = self._strip_opening_animation_markers(reused)
+                    # 源头剥离开场动画标记（按视频类型分支）：知识类开场是口播引入，
+                    # 动画用于中段论证/数据/对比；快节奏类型（kichiku_fastcut 等）开场允许动画。
+                    reused = self._strip_opening_animation_markers(
+                        reused, context.category_plugin_id
+                    )
                     output = StructureOutput(
                         decision=AgentDecision.PASS,
                         script_skeleton={
@@ -338,9 +347,11 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
             # 为缺少动画标记的场景调用 LLM 补充动画标记（不硬编码），供 AnimationAgent 创建动画
             scenes = await self._enrich_scene_animations(scenes, context)
-            # 源头剥离开场动画标记：开场（第一个场景）不生成动画，
-            # 知识讲解类视频开场是口播引入，动画用于中段论证/数据/对比。
-            scenes = self._strip_opening_animation_markers(scenes)
+            # 源头剥离开场动画标记（按视频类型分支）：知识类开场是口播引入，
+            # 动画用于中段论证/数据/对比；快节奏类型（kichiku_fastcut 等）开场允许动画。
+            scenes = self._strip_opening_animation_markers(
+                scenes, context.category_plugin_id
+            )
 
             output = StructureOutput(
                 decision=AgentDecision.PASS,
@@ -511,14 +522,23 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         return scenes
 
     @staticmethod
-    def _strip_opening_animation_markers(scenes: list[dict]) -> list[dict]:
+    def _strip_opening_animation_markers(
+        scenes: list[dict], category_plugin_id: str = ""
+    ) -> list[dict]:
         """源头剥离开场场景（第一个场景）的动画标记。
 
         用户要求：知识讲解类视频开场是口播引入，开头特定时间内不应生成动画标记——
         实现应放在结构 Agent（生成源头），而非动画 Agent（消费端事后跳过）。
         复用规划书场景与 LLM 新生成场景两条路径都在返回前调用本方法，硬保证
         第一个场景的 description 不携带任何 [逻辑动画]/[文字动画]/[动画] 标记。
+
+        按视频类型分支（来自 context.category_plugin_id）：
+        - 快节奏类型（kichiku_fastcut 等，见 _OPENING_ANIMATION_ALLOWED_PLUGIN_IDS）：
+          开场允许动画标记（原样保留），符合其高能开场特性；
+        - 知识类及其余类型（knowledge_longform 等，含未指定类型）：维持原有剥离行为。
         """
+        if category_plugin_id in _OPENING_ANIMATION_ALLOWED_PLUGIN_IDS:
+            return scenes
         import re
         if not scenes:
             return scenes
@@ -529,8 +549,9 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         if stripped != desc:
             opening["description"] = stripped
             logger.info(
-                "StructureAgent: 开场场景已剥离动画标记（scene[0] title=%s）",
+                "StructureAgent: 开场场景已剥离动画标记（scene[0] title=%s, category=%s）",
                 str(opening.get("title", ""))[:30],
+                category_plugin_id,
             )
         return scenes
 
