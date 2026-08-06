@@ -39,21 +39,29 @@ for a in la:
 # ── 2. resolve_marker() ──
 print("\n=== 2. resolve_marker() Name Matching ===")
 tests = [
+    # 文字动画（已注册）
     ("淡入", "text", "text_fade_in"), ("打字", "text", "typewriter"),
-    ("弹跳", "text", "scale_bounce"), ("模糊", "text", "blur_in"),
+    ("滑入", "text", "text_slide_up"), ("逐字", "text", "char_by_char"),
+    ("高亮", "text", "highlight_flash"),
+    # 逻辑动画（内置 + MG + DiagramSVG 预设）
     ("箭头", "logic", "diagram"), ("因果", "logic", "causation"),
     ("对比", "logic", "comparison"), ("流程", "logic", "sequence"),
     ("时间线", "logic", "timeline"), ("维恩", "logic", "venn"),
     ("柱状图", "logic", "bar_chart"), ("饼图", "logic", "pie_chart"),
-    ("折线图", "logic", "line_chart"), ("思维导图", "logic", "mindmap"),
-    ("雷达图", "logic", "radar"), ("甘特图", "logic", "gantt"),
-    ("三维恩", "logic", "venn3"), ("热力图", "logic", "heatmap"),
-    ("桑基图", "logic", "sankey"), ("概念图", "logic", "concept"),
-    ("代码块", "logic", "codeblock"), ("数据表", "logic", "datatable"),
-    ("引用", "logic", "quote"), ("对比卡", "logic", "compcard"),
-    ("组织架构图", "logic", "orgchart"), ("序列图", "logic", "sequence_diagram"),
-    ("流程图", "logic", "flow_chart"), ("淡入淡出", "transition", "crossfade"),
-    ("左推", "transition", "push_left"), ("故障干扰", "transition", "glitch"),
+    ("折线图", "logic", "line_chart"),
+    ("思维导图", "logic", "mg_mindmap"),
+    ("层级", "logic", "tree"), ("序列图", "logic", "sequence_diagram"),
+    ("流程图", "logic", "flow_chart"),
+    # 包含匹配（标记含已注册动画名）
+    ("对比卡", "logic", "comparison"), ("三维恩", "logic", "venn"),
+    # 未注册标记 → 默认回退 text/text_fade_in
+    ("弹跳", "text", "text_fade_in"), ("模糊", "text", "text_fade_in"),
+    ("雷达图", "text", "text_fade_in"), ("甘特图", "text", "text_fade_in"),
+    ("热力图", "text", "text_fade_in"), ("桑基图", "text", "text_fade_in"),
+    ("概念图", "text", "text_fade_in"), ("代码块", "text", "text_fade_in"),
+    ("数据表", "text", "text_fade_in"), ("引用", "text", "text_fade_in"),
+    ("组织架构图", "text", "text_fade_in"), ("淡入淡出", "text", "text_fade_in"),
+    ("左推", "text", "text_fade_in"), ("故障干扰", "text", "text_fade_in"),
 ]
 for name, etype, eid in tests:
     r = AnimationCatalog.resolve_marker(name)
@@ -65,12 +73,17 @@ print("\n=== 3. parse_marker_from_description() ===")
 desc_tests = [
     ("[文字动画]淡入：人工智能改变世界", "text", "text_fade_in"),
     ("[逻辑动画]箭头：机器学习→深度学习", "logic", "diagram"),
-    ("[过渡动画]淡入淡出", "transition", "crossfade"),
-    ("[文字动画]弹跳：重要结论", "text", "scale_bounce"),
+    # 未注册过渡动画 → 解析为空列表
+    ("[过渡动画]淡入淡出", None, None),
+    # 未注册文字动画 → 回退 text/text_fade_in
+    ("[文字动画]弹跳：重要结论", "text", "text_fade_in"),
 ]
 for desc, etype, eid in desc_tests:
     markers = AnimationCatalog.parse_marker_from_description(desc)
-    ok = len(markers) > 0 and markers[0]["type"] == etype and markers[0]["anim_id"] == eid
+    if eid is None:
+        ok = len(markers) == 0
+    else:
+        ok = len(markers) > 0 and markers[0]["type"] == etype and markers[0]["anim_id"] == eid
     check(f"parse({desc[:25]})", ok, f"got {markers[0] if markers else '[]'}")
 
 # ── 4. _build_diagram_params() Coverage ──

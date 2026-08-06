@@ -845,8 +845,9 @@ class DiagramRenderer:
         for j, msg_raw in enumerate(messages):
             parts_raw = msg_raw.split(":", 1)
             spec, label = parts_raw[0], (parts_raw[1] if len(parts_raw) > 1 else "")
-            fi = int(spec.split("->")[0]) if "->" in spec else 0
-            ti = int(spec.split("->")[1]) if "->" in spec else 1
+            left, right = (spec.split("->") + ["1"])[:2] if "->" in spec else ("0", "1")
+            fi = int(left) if left.isdigit() else (participants.index(left) if left in participants else 0)
+            ti = int(right) if right.isdigit() else (participants.index(right) if right in participants else 1)
             fy = sx + min(fi, n - 1) * spacing
             ty = sx + min(ti, n - 1) * spacing
             yy = 170 + j * 55
