@@ -13,7 +13,9 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 
 from clipwright.config import logger, settings
+from clipwright.paths import anchor
 from clipwright.schema.timeline import Timeline
+from clipwright.security import is_safe_download_name
 from clipwright.services.async_util import spawn_background
 from clipwright.services.remote_render import RemoteRenderService
 from clipwright.services.render import RenderService
@@ -24,6 +26,11 @@ router = APIRouter(prefix="/api/render", tags=["render"])
 
 # 渲染队列
 _render_queue: dict[str, dict] = {}
+
+
+def _renders_dir() -> Path:
+    """渲染输出目录（锚定到包父目录，避免 CWD 依赖）。"""
+    return anchor("renders")
 
 
 @lru_cache(maxsize=1)
@@ -47,7 +54,14 @@ async def queue_render(body: RenderRequest) -> dict:
 
     params = _resolve_settings(body.settings)
     tl = body.timeline
-    out = f"renders/{task_id}.mp4"
+    # 使用请求 output_path 的 basename（防御：仅取 basename 拼到 renders/，白名单校验）。
+    # 先对原始串做 is_safe_download_name 校验（拒绝路径分隔符 / \\、.. 与 Windows 非法字符），
+    # 再取 basename 拼接到 renders/ 目录，杜绝路径穿越。
+    raw_output = body.output_path or ""
+    if raw_output and not is_safe_download_name(raw_output):
+        raise HTTPException(status_code=400, detail="非法输出文件名")
+    requested_name = Path(raw_output).name if raw_output else ""
+    out = f"renders/{requested_name}" if requested_name else f"renders/{task_id}.mp4"
 
     async def _run():
         _render_queue[task_id]["status"] = "rendering"
@@ -124,7 +138,12 @@ async def stream_render_progress(task_id: str):
                 'current_clip': task.get('current_clip', 0),
             })}\n\n"
             if status in ("completed", "failed"):
-                yield f"data: {json.dumps({'type': status, 'task_id': task_id, 'result': task.get('result')})}\n\n"
+                payload = json.dumps({
+                    'type': status, 'task_id': task_id,
+                    'result': task.get('result'),
+                    'output_path': task.get('output_path', ''),
+                })
+                yield f"data: {payload}\n\n"
                 return
             await asyncio.sleep(0.5)
         yield f"data: {json.dumps({'type': 'timeout'})}\n\n"
@@ -161,18 +180,23 @@ async def serve_video(path: str):
 
 @router.get("/download/{filename}")
 async def download_render(filename: str):
-    """下载渲染输出的 MP4 文件。"""
-    from pathlib import Path
+    """下载渲染输出的 MP4 文件。
 
-    from clipwright.security import is_safe_id
-    if not is_safe_id(filename):
+    允许 CJK/unicode 文件名（如 "发布会.mp4"），仅拒路径分隔与 Windows 非法字符。
+    """
+    from urllib.parse import quote
+
+    from clipwright.security import is_safe_download_name
+    if not is_safe_download_name(filename):
         raise HTTPException(status_code=400, detail="非法文件名")
-    file_path = Path("renders") / filename
+    file_path = _renders_dir() / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"文件不存在: {filename}")
+    # RFC 5987 编码文件名，支持中文（latin-1 无法直接承载 CJK）
+    ascii_name = quote(filename)
+    disposition = f"attachment; filename*=UTF-8''{ascii_name}"
     return FileResponse(str(file_path), media_type="video/mp4",
-                        filename=filename,
-                        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+                        headers={"Content-Disposition": disposition})
 
 
 
@@ -282,11 +306,10 @@ async def get_render_status(render_id: str) -> dict:
             "result": queue_task.get("result"),
         }
     # 回退：检查 renders/ 目录中是否有同名文件
-    from pathlib import Path
     from clipwright.security import is_safe_id
     if not is_safe_id(render_id):
         raise HTTPException(status_code=400, detail="无效的 render_id")
-    file_path = Path("renders") / f"{render_id}.mp4"
+    file_path = anchor(f"renders/{render_id}.mp4")
     if file_path.exists():
         return {
             "render_id": render_id,

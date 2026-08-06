@@ -5,7 +5,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from clipwright.paths import anchor
+
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+# Windows 非法文件名保留字符（路径分隔符/控制符之外的常见禁止字符）
+_FORBIDDEN_FILENAME_CHARS = set('/\\:*?"<>|')
 
 
 class SecurityViolation(ValueError):
@@ -15,6 +20,17 @@ class SecurityViolation(ValueError):
 def is_safe_id(value: str) -> bool:
     """校验 ID 是否安全：仅字母/数字/下划线/连字符/点，且以字母或数字开头。"""
     return bool(value) and bool(_ID_PATTERN.match(value))
+
+
+def is_safe_download_name(value: str) -> bool:
+    """校验下载文件名是否安全：允许 CJK/unicode 等宽字符，仅拒路径分隔与 Windows 非法字符。
+
+    与 ``is_safe_id`` 不同，渲染输出文件名（如 "发布会.mp4"）常含中文，需放宽校验。
+    仅拒绝：路径分隔符（/ \\）、Windows 保留字符（: * ? " < > |）、空串与 ".."。
+    """
+    if not value or value in (".", ".."):
+        return False
+    return not any(ch in _FORBIDDEN_FILENAME_CHARS for ch in value)
 
 
 def validate_id(value: str, name: str = "id") -> str:
@@ -53,8 +69,8 @@ def allowed_media_roots() -> list[Path]:
         _base / "editor_projects",
         _base / "projects",
         _base / "PluginData",
-        Path(settings.persona_dir).resolve(),
-        Path(settings.tts_output_dir).resolve(),
+        anchor(settings.persona_dir),
+        anchor(settings.tts_output_dir),
     ]
 
 
