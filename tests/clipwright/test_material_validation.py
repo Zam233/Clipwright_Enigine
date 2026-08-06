@@ -193,7 +193,7 @@ class TestValidateVideoFrame:
 class TestBoundedRetry:
     @pytest.mark.asyncio
     async def test_low_score_triggers_requery_leq_two(self) -> None:
-        """校验恒低分 → 重拟词恰好 ≤2 次。"""
+        """校验恒低分且无新候选 → 有界寻源终止，重拟词 ≤2 次，validation_note 含 retry/exhausted。"""
         agent = MaterialAgent()
         bad = [_asset("bad-1", "无关素材", ["x"]), _asset("bad-2", "无关素材", ["x"])]
         queries_mock = AsyncMock(return_value=["retry-query"])
@@ -224,7 +224,7 @@ class TestBoundedRetry:
 
         assert queries_mock.await_count <= 2
         assert out["retried"] is True
-        assert out["validation_note"].startswith("retry_")
+        assert out["validation_note"].startswith(("retry_", "exhausted_attempts_"))
 
 
 class TestRegistration:

@@ -756,7 +756,7 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                 suggested.append({
                     "asset_id": r.asset.id,
                     "title": r.asset.title,
-                    "type": r.asset.type,
+                    "type": getattr(r.asset, "type", ""),
                     "url": r.asset.url,
                     "local_path": r.asset.local_path,
                     "score": round(ms, 3),
