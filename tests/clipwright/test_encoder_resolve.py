@@ -17,7 +17,7 @@ import subprocess
 import pytest
 
 import clipwright.services.render as render_mod
-from clipwright.services.render import _hwaccel_args, _resolve_encoder
+from clipwright.services.render import _hwaccel_args, _nvenc_runtime_probe, _resolve_encoder
 
 
 @pytest.fixture(autouse=True)
@@ -116,3 +116,42 @@ class TestResolveEncoder:
         """无论环境如何，返回值必在允许集合内（确定性）。"""
         _mock_env(monkeypatch, has_nvenc=False, has_gpu=False)
         assert _resolve_encoder() in {"h264_nvenc", "libx264"}
+
+    def test_nvenc_probe_uses_320x240_frame(self, monkeypatch, tmp_path) -> None:
+        """探针帧尺寸从 64x64 提高到 320x240（64x64 低于 NVENC 最小支持尺寸）。
+
+        断言实际下发的 ffmpeg 探针命令含 s=320x240 且不含 s=64x64。
+        """
+        from pathlib import Path
+
+        probe_cmds: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            probe_cmds.append(list(cmd))
+            if cmd[0] == "ffmpeg" and "-f" in cmd and "lavfi" in cmd:
+                # 探针命令：写入非空输出文件使 ok=True（finally 会清理）
+                out_path = Path(cmd[-1])
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_bytes(b"\x00" * 16)
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            raise AssertionError(f"未预期的外部调用: {cmd}")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert _nvenc_runtime_probe() is True
+        probe = next(c for c in probe_cmds if "lavfi" in c)
+        assert any("s=320x240" in a for a in probe)
+        assert not any("s=64x64" in a for a in probe)
+
+    def test_nvenc_probe_warning_includes_stderr_head(self, monkeypatch, caplog) -> None:
+        """探针失败时告警文案包含 stderr 首两行 + 提示。"""
+        import logging
+
+        def fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout="", stderr="first line\nsecond line\n")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with caplog.at_level(logging.WARNING, logger="clipwright"):
+            assert _nvenc_runtime_probe() is False
+        assert any("first line" in r.message and "second line" in r.message
+                   for r in caplog.records), caplog.text
+        assert any("探针帧尺寸过小或驱动版本过旧" in r.message for r in caplog.records), caplog.text

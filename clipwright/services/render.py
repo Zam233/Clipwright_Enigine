@@ -60,21 +60,27 @@ def _nvenc_runtime_probe() -> bool:
     仅凭 ``ffmpeg -encoders`` 含 h264_nvenc 并不代表可用——若 NVIDIA 驱动版本
     低于 ffmpeg 构建要求（如 nvenc API 13.1 需要驱动 ≥610.00），运行时
     ``Error while opening encoder`` 会拖垮整次渲染（所有 trim 失败）。此处用
-    64x64 0.2s 合成图真实编码一次，编码成功才算可用。结果不缓存（探测本身
+    320x240 0.2s 合成图真实编码一次，编码成功才算可用。结果不缓存（探测本身
     开销极小，且需反映当前驱动状态）。
+
+    ⚠ 历史：探针帧尺寸曾用 64x64——低于 NVENC 最小支持尺寸（NVENC 对
+    H.264 的 H 尺寸要求 ≥ 2 个 16px 宏块行，实际最小高 120），导致驱动返回
+    ``invalid param (8)`` 被误判为"驱动版本过低"而错误回退 libx264。
+    改用 320x240（高于 NVENC 最小支持尺寸）后，驱动正常时探针通过。
     """
     probe_out = _CLIPWRIGHT_TEMP / "nvenc_probe.mp4"
     try:
         r = subprocess.run(
             ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
-             "-i", "color=c=black:s=64x64:d=0.2",
+             "-i", "color=c=black:s=320x240:d=0.2",
              "-c:v", "h264_nvenc", "-pix_fmt", "yuv420p", str(probe_out)],
             capture_output=True, text=True, timeout=30,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         ok = r.returncode == 0 and probe_out.exists() and probe_out.stat().st_size > 0
         if not ok:
-            logger.warning("[Render] nvenc 运行时编码探测失败（驱动版本过低？）：%s",
-                           (r.stderr or "").strip().splitlines()[0] if r.stderr else "rc!=0")
+            stderr_head = "\n".join((r.stderr or "").strip().splitlines()[:2]) or "rc!=0"
+            logger.warning("[Render] nvenc 运行时编码探测失败（探针帧尺寸过小或驱动版本过旧）：\n%s",
+                           stderr_head)
         return ok
     except Exception as e:
         logger.warning("[Render] nvenc 运行时编码探测异常: %s", e)
