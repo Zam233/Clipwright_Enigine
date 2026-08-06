@@ -24,8 +24,9 @@ from clipwright.services.trace import add_event
 _search_cache: dict[str, list[dict]] = {}
 _SEARCH_CACHE_MAX = 200
 
-# 素材校验有界重试：单场景最多重试次数 + 触发重试的最低分数阈值
-_MAX_VALIDATION_RETRIES = 2
+# 素材校验有界寻源：单场景最多尝试轮数 + 触发重试的最低分数阈值
+# （原 2 次重试在素材源命中不佳时过早放弃，改为 6 轮持续寻源）
+_MAX_VALIDATION_ATTEMPTS = 6
 _VALIDATION_THRESHOLD = 0.35
 
 # 启发式分词：拉丁词 + CJK 字符
@@ -142,6 +143,9 @@ async def _llm_search_queries_batch(
         + "\n".join(scene_lines) +
         "\n\n要求：\n"
         "- 每个关键词必须是**具体的视觉画面**（如'城市夜景''键盘打字'），不能是抽象概念\n"
+        "- **每个关键词必须是一个 2-6 字的短名词短语**（如『黑板』『粉笔』『公式』），"
+        "不得输出长句、场景描述或修饰语\n"
+        "- 多个关键词用空格或逗号分隔\n"
         "- 优先推荐实拍风格画面\n"
         "- 按场景编号输出，每行格式：\"场景N: 关键词1/关键词2/关键词3\"\n"
         "- 只输出关键词行，不要额外说明"
@@ -206,6 +210,9 @@ async def _llm_search_queries(
         f"要求：\n"
         f"- 每个关键词必须是**具体的视觉画面**（如'城市夜景''键盘打字''街头涂鸦'），"
         f"不能是抽象概念（如'社会矛盾''心理防御'）\n"
+        f"- **每个关键词必须是一个 2-6 字的短名词短语**（如『黑板』『粉笔』『公式』），"
+        f"不得输出长句、场景描述或修饰语\n"
+        f"- 多个关键词用空格或逗号分隔\n"
         f"- 优先推荐实拍风格的画面\n"
         f"- 用中文输出，每行一个关键词\n"
         f"- 只输出关键词，不要序号和说明{retry_hint_text}{style_hint}{brief_hint_text}"
@@ -238,6 +245,37 @@ async def _llm_search_queries(
     fallback = [scene_title] + keywords[:2]
     logger.info("MaterialAgent: 降级搜索词=%s", fallback)
     return fallback
+
+
+def _split_search_queries(queries: list[str]) -> list[str]:
+    """把 LLM 生成的长句/多词搜索词切分为 2-6 字短关键词组合（后处理兜底）。
+
+    - 按 [、,，/|] 与空白切分，过滤空串与单字；
+    - 含 CJK 且 >8 字的长短语按 2/3 字滑窗拆成子查询（保留『黑板』『粉笔』等短关键词）；
+    - 已是短词 / 空列表 → 原样返回 / 空列表，不崩。
+    """
+    parts: list[str] = []
+    for q in queries or []:
+        for seg in re.split(r"[、,，/|；;]+", q):
+            for piece in seg.split():
+                t = piece.strip()
+                if not t or len(t) == 1:
+                    continue
+                if len(t) > 8 and _CJK_CHAR_RE.search(t):
+                    # 长 CJK 短语 → 2/3 字滑窗子查询
+                    for size in (3, 2):
+                        for i in range(len(t) - size + 1):
+                            parts.append(t[i:i + size])
+                else:
+                    parts.append(t)
+    # 去重保序
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in parts:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
 
 
 async def _validate_video_frame(asset: Any, expected_text: str) -> float:
@@ -528,11 +566,13 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
         scene_keywords = scene.get("keywords", [])
         description = scene.get("description", "")
 
-        search_queries = batch_query or await _llm_search_queries(
-            scene_title, scene_keywords, description,
-            pipeline_id=pipeline_id,
-            persona_style=" ".join(persona_style_keywords),
-            brief_hint=brief_material_hint,
+        search_queries = _split_search_queries(
+            batch_query or await _llm_search_queries(
+                scene_title, scene_keywords, description,
+                pipeline_id=pipeline_id,
+                persona_style=" ".join(persona_style_keywords),
+                brief_hint=brief_material_hint,
+            )
         )
 
         all_results = []
@@ -601,42 +641,44 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
             await _validate_batch(top_candidates)
 
         if not validated:
+            logger.warning("MaterialAgent: 场景[%d] 无任何候选通过校验，回退为未校验候选兜底", i)
             validated = [(r, 0.5) for r in all_results[:5]]
 
-        # ── 有界重试：最优校验分低于阈值时换素材/换搜索词，最多 _MAX_VALIDATION_RETRIES 次 ──
+        # ── 有界持续寻源：最优校验分低于阈值时换素材/换搜索词/放宽查询，最多 _MAX_VALIDATION_ATTEMPTS 轮 ──
         retries_used = 0
         retried = False
         validation_note = ""
-        while retries_used < _MAX_VALIDATION_RETRIES:
+        while retries_used < _MAX_VALIDATION_ATTEMPTS:
             best_score = max((ms for _, ms in validated), default=0.0)
             if best_score >= _VALIDATION_THRESHOLD:
                 break
             retries_used += 1
             retried = True
-            if retries_used == 1:
-                # 尝试 1：换素材 — 从未校验过的候选中取下一个（搜索序）重新校验
+            found_new = False
+            new_results: list[Any] = []
+            if retries_used % 2 == 1:
+                # 奇数轮：换素材 — 从未校验过的候选中取下一个（搜索序）重新校验
                 swap_candidates = [
                     r for r in all_results if _asset_id_of(r) not in validated_ids
                 ][:4]
                 if pipeline_id:
                     add_event(pipeline_id, "material", "validation_retry",
-                              f"场景[{i}] 校验分不足({best_score:.2f})，尝试1: 换素材重新校验")
-                if not swap_candidates:
-                    continue
-                await _validate_batch(swap_candidates)
+                              f"场景[{i}] 校验分不足({best_score:.2f})，第{retries_used}轮: 换素材重新校验")
+                if swap_candidates:
+                    await _validate_batch(swap_candidates)
+                    found_new = True
             else:
-                # 尝试 2：换搜索词 — 重新生成搜索词并搜索新候选
+                # 偶数轮：换搜索词 — 重新生成搜索词并搜索新候选
                 if pipeline_id:
                     add_event(pipeline_id, "material", "validation_retry",
-                              f"场景[{i}] 校验分不足({best_score:.2f})，尝试2: 重新生成搜索词")
-                retry_queries = await _llm_search_queries(
+                              f"场景[{i}] 校验分不足({best_score:.2f})，第{retries_used}轮: 重新生成搜索词")
+                retry_queries = _split_search_queries(await _llm_search_queries(
                     scene_title, scene_keywords, description,
                     pipeline_id=pipeline_id,
                     persona_style=" ".join(persona_style_keywords),
                     brief_hint=brief_material_hint,
                     retry_hint=True,
-                )
-                new_results: list[Any] = []
+                ))
                 for query in retry_queries:
                     results = await _search_with_cache(
                         query, top_k=5,
@@ -649,6 +691,32 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                             new_results.append(r)
                 if new_results:
                     await _validate_batch(new_results[:8])
+                    found_new = True
+            # 第 5 轮起：同时追加放宽查询（场景标题 + 关键词直接搜索）
+            if retries_used >= 5:
+                relaxed = _split_search_queries([scene_title] + list(scene_keywords or []))
+                relaxed_new = False
+                for query in relaxed:
+                    results = await _search_with_cache(
+                        query, top_k=5,
+                        source_ids=source_ids if isinstance(source_ids, list) else None,
+                    )
+                    for r in results:
+                        rid = _asset_id_of(r)
+                        if rid and rid not in seen_ids:
+                            seen_ids.add(rid)
+                            new_results.append(r)
+                            relaxed_new = True
+                if relaxed_new:
+                    await _validate_batch(new_results[-8:])
+                    found_new = True
+            # 一轮未找到任何新候选 → 终止并注明，避免无限空转
+            if not found_new:
+                validation_note = f"exhausted_attempts_{retries_used}"
+                if pipeline_id:
+                    add_event(pipeline_id, "material", "validation_retry",
+                              f"场景[{i}] 第{retries_used}轮未找到新候选，终止寻源")
+                break
 
         def _orientation_score(asset_obj) -> float:
             resolution = ""
@@ -708,7 +776,7 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                 })
 
         best_score = max((ms for _, ms in validated), default=0.0)
-        if retried:
+        if retried and not validation_note:
             validation_note = f"retry_{retries_used}_best_score_{best_score:.2f}"
         return {
             "scene_index": i,

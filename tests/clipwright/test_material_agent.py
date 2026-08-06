@@ -1,9 +1,10 @@
-"""MaterialAgent 素材校验 + 有界重试测试（T5/C3a）。
+"""MaterialAgent 素材校验 + 有界持续寻源测试（T5/C3a + C8/C9）。
 
 覆盖：
 - 标题/标签启发式评分（_heuristic_title_match_score / _validate_video_frame）
 - gate 关闭时视觉工具不被调用
-- 有界重试：换素材 → 换搜索词，最多 2 次
+- 搜索词切分（_split_search_queries）
+- 有界持续寻源：换素材 → 换搜索词 → 放宽查询，最多 6 轮，无新候选即终止
 - 换素材路径 / 换搜索词路径
 - execute 集成路径
 """
@@ -16,6 +17,7 @@ import pytest
 
 from clipwright.agents.material_agent import (
     _heuristic_title_match_score,
+    _split_search_queries,
     _validate_video_frame,
     MaterialAgent,
 )
@@ -151,12 +153,46 @@ async def test_gate_off_does_not_call_vision() -> None:
     assert out["suggested_assets"][0]["score"] > 0.35
 
 
-# ── 有界重试：全部失败时最多 2 次 ──
+# ── 搜索词切分 ──
+
+
+def test_split_splits_long_cjk_phrase_into_short_keywords() -> None:
+    """长 CJK 句按 2/3 字滑窗拆出含『黑板』『粉笔』『公式』的短子查询。"""
+    out = _split_search_queries(["黑板上的白粉笔字迹与未擦净的公式痕迹"])
+    joined = "|".join(out)
+    assert "黑板" in joined
+    assert "粉笔" in joined
+    assert "公式" in joined
+    # 所有子查询 2-3 字
+    assert all(2 <= len(x) <= 3 for x in out)
+
+
+def test_split_by_punctuation_and_whitespace() -> None:
+    out = _split_search_queries(["黑板、粉笔，公式 城市夜景/车流"])
+    assert "黑板" in out and "粉笔" in out and "公式" in out
+    assert "城市夜景" in out and "车流" in out
+
+
+def test_split_keeps_short_queries_and_dedups() -> None:
+    out = _split_search_queries(["黑板", "黑板", "黑板上"])
+    assert out.count("黑板") == 1
+    assert "黑板上" in out
+
+
+def test_split_filters_empty_and_single_char() -> None:
+    assert _split_search_queries(["", "   ", "板", "黑板"]) == ["黑板"]
+
+
+def test_split_empty_list_returns_empty() -> None:
+    assert _split_search_queries([]) == []
+
+
+# ── 有界持续寻源：无新候选即耗尽终止 ──
 
 
 @pytest.mark.asyncio
-async def test_retry_cap_two_retries() -> None:
-    """校验恒为 0.0 → 重试循环恰好 2 次，_llm_search_queries 共调用 2 次。"""
+async def test_retry_exhausted_when_no_new_candidates() -> None:
+    """首轮后无未校验候选 → 第 1 轮即耗尽终止，validation_note 含 exhausted。"""
     agent = MaterialAgent()
     bad = [_asset("bad-1", "无关素材", ["x"]), _asset("bad-2", "无关素材", ["x"])]
     queries_mock = AsyncMock(return_value=["retry-query"])
@@ -173,9 +209,36 @@ async def test_retry_cap_two_retries() -> None:
     ):
         out = await _run_scene(agent, SCENE, batch_query=None)
 
+    # 仅初始 1 次搜索词调用；奇数轮换素材无可换 → 终止
+    assert queries_mock.await_count == 1
+    assert out["retried"] is True
+    assert out["validation_note"].startswith("exhausted_attempts_")
+
+
+@pytest.mark.asyncio
+async def test_retry_researches_when_swap_finds_new_failures() -> None:
+    """首轮换素材找到新候选但仍低分 → 偶数轮换搜索词，_llm_search_queries 至少 2 次。"""
+    agent = MaterialAgent()
+    # 初始搜索返回 10 个坏候选：前 8 个首轮校验，剩余 2 个留给奇数轮换素材
+    results = [_asset(f"bad-{i}", "无关素材", ["x"]) for i in range(10)]
+    queries_mock = AsyncMock(return_value=["retry-query"])
+    with (
+        patch(
+            "clipwright.agents.material_agent._search_with_cache",
+            new=AsyncMock(return_value=results),
+        ),
+        patch(
+            "clipwright.agents.material_agent._validate_video_frame",
+            new=AsyncMock(return_value=0.0),
+        ),
+        patch("clipwright.agents.material_agent._llm_search_queries", new=queries_mock),
+    ):
+        out = await _run_scene(agent, SCENE, batch_query=None)
+
+    # 初始 1 次 + 偶数轮换搜索词 1 次 = 2 次；重搜索无新候选后耗尽终止
     assert queries_mock.await_count == 2
     assert out["retried"] is True
-    assert out["validation_note"].startswith("retry_2")
+    assert out["validation_note"].startswith("exhausted_attempts_")
 
 
 # ── 换素材路径 ──
@@ -214,9 +277,9 @@ async def test_swap_material_picks_second_valid() -> None:
 
 @pytest.mark.asyncio
 async def test_requery_with_retry_hint() -> None:
-    """全部失败 → 第 2 次重试重新生成搜索词（retry_hint=True）并命中新素材。"""
+    """全部失败 → 偶数轮换搜索词（retry_hint=True）并命中新素材。"""
     agent = MaterialAgent()
-    bad = [_asset("bad-1", "无关素材", ["x"])]
+    bad = [_asset(f"bad-{i}", "无关素材", ["x"]) for i in range(10)]
 
     def _search_side(query: str, top_k: int = 5, source_ids=None):
         if "retry" in query:
@@ -243,6 +306,7 @@ async def test_requery_with_retry_hint() -> None:
     ):
         out = await _run_scene(agent, SCENE, batch_query=None)
 
+    # 初始 1 次 + 偶数轮 1 次 = 2 次
     assert queries_mock.await_count == 2
     assert queries_mock.await_args.kwargs.get("retry_hint") is True
     assert out["retried"] is True
