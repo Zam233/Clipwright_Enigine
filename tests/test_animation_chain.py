@@ -53,15 +53,21 @@ tests = [
     ("层级", "logic", "tree"), ("序列图", "logic", "sequence_diagram"),
     ("流程图", "logic", "flow_chart"),
     # 包含匹配（标记含已注册动画名）
-    ("对比卡", "logic", "comparison"), ("三维恩", "logic", "venn"),
-    # 未注册标记 → 默认回退 text/text_fade_in
-    ("弹跳", "text", "text_fade_in"), ("模糊", "text", "text_fade_in"),
-    ("雷达图", "text", "text_fade_in"), ("甘特图", "text", "text_fade_in"),
-    ("热力图", "text", "text_fade_in"), ("桑基图", "text", "text_fade_in"),
-    ("概念图", "text", "text_fade_in"), ("代码块", "text", "text_fade_in"),
-    ("数据表", "text", "text_fade_in"), ("引用", "text", "text_fade_in"),
-    ("组织架构图", "text", "text_fade_in"), ("淡入淡出", "text", "text_fade_in"),
-    ("左推", "text", "text_fade_in"), ("故障干扰", "text", "text_fade_in"),
+    ("三维恩", "logic", "venn"),
+    # 屏上动画简称 → 别名解析（命名漂移兼容）
+    ("弹跳", "text", "scale_bounce"), ("模糊", "text", "blur_in"),
+    # DiagramSVG 新增预设（P3：未实现的逻辑类型）
+    ("雷达图", "logic", "radar"), ("甘特图", "logic", "gantt"),
+    ("热力图", "logic", "heatmap"), ("桑基图", "logic", "sankey"),
+    ("概念图", "logic", "concept"), ("代码块", "logic", "codeblock"),
+    ("数据表", "logic", "datatable"), ("引用", "logic", "quote"),
+    ("组织架构图", "logic", "orgchart"), ("三维图", "logic", "venn3"),
+    # 精确匹配优先：对比卡 → compcard（旧行为回退 comparison 已修复）
+    ("对比卡", "logic", "compcard"),
+    # 过渡动画精确匹配（旧行为回退 text_fade_in 已修复）
+    ("淡入淡出", "transition", "crossfade"),
+    ("左推", "transition", "push_left"),
+    ("故障干扰", "transition", "glitch"),
 ]
 for name, etype, eid in tests:
     r = AnimationCatalog.resolve_marker(name)
@@ -73,10 +79,11 @@ print("\n=== 3. parse_marker_from_description() ===")
 desc_tests = [
     ("[文字动画]淡入：人工智能改变世界", "text", "text_fade_in"),
     ("[逻辑动画]箭头：机器学习→深度学习", "logic", "diagram"),
-    # 未注册过渡动画 → 解析为空列表
-    ("[过渡动画]淡入淡出", None, None),
-    # 未注册文字动画 → 回退 text/text_fade_in
-    ("[文字动画]弹跳：重要结论", "text", "text_fade_in"),
+    # 过渡动画前缀（[过渡动画]/[转场动画] 兼容）
+    ("[过渡动画]淡入淡出", "transition", "crossfade"),
+    ("[转场动画]左推", "transition", "push_left"),
+    # 屏上动画简称 → 别名解析
+    ("[文字动画]弹跳：重要结论", "text", "scale_bounce"),
 ]
 for desc, etype, eid in desc_tests:
     markers = AnimationCatalog.parse_marker_from_description(desc)

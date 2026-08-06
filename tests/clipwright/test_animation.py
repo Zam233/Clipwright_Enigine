@@ -2,21 +2,34 @@
 
 from __future__ import annotations
 
+import pytest
+
+from clipwright.animation.builtin import register_builtin_animations
 from clipwright.animation.catalog import AnimationCatalog
 from clipwright.schema.animation import AnimationType, AnimationDef
+
+
+@pytest.fixture(autouse=True)
+def _registered_builtins() -> None:
+    """内置动画已注册（main.py 启动时同样会调用）。"""
+    register_builtin_animations()
 
 
 class TestAnimationCatalog:
     """AnimationCatalog 核心逻辑测试。"""
 
     def test_get_text_animations_fallback(self) -> None:
-        """无注册时应有 fallback 列表。"""
+        """TEXT + ONSCREEN 合并列表应有完整可用动画。"""
         anims = AnimationCatalog.get_text_animations()
         assert len(anims) > 0
         names = {a["name"] for a in anims}
         assert "淡入" in names
         assert "打字" in names
         assert "滑入" in names
+        # ONSCREEN 动画已合并（P0：注册的屏上动画可被 marker 解析）
+        assert "弹跳进入" in names
+        assert "模糊进入" in names
+        assert "脉冲强调" in names
 
     def test_get_logic_animations(self) -> None:
         """应有内置逻辑动画类型。"""

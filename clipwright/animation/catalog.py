@@ -46,7 +46,10 @@ class AnimationCatalog:
 
     @staticmethod
     def get_text_animations() -> list[dict[str, Any]]:
-        """返回所有已注册的文字动画（来自 AnimationRegistry + 插件注册）。
+        """返回所有可用的文字/屏上动画（TEXT + ONSCREEN 合并，来自 AnimationRegistry）。
+
+        ONSCREEN 动画（弹跳进入/模糊进入等）本质也是文字轨入场动画，
+        与 TEXT 合并列出使 StructureAgent 可选、resolve_marker 可解析。
 
         返回格式:
         [
@@ -55,32 +58,21 @@ class AnimationCatalog:
             ...
         ]
         """
-        defs = AnimationRegistry.list(AnimationType.TEXT)
-        result = []
+        defs = (AnimationRegistry.list(AnimationType.TEXT)
+                + AnimationRegistry.list(AnimationType.ONSCREEN))
+        result: list[dict[str, Any]] = []
+        seen_names: set[str] = set()
         for d in defs:
+            name = d.name or d.animation_id
+            if name in seen_names:
+                # 同名去重（TEXT 在前，如 淡入 → text_fade_in 优先）
+                continue
+            seen_names.add(name)
             result.append({
                 "id": d.animation_id,
-                "name": d.name or d.animation_id,
+                "name": name,
                 "desc": d.description or "",
             })
-        if not result:
-            # 默认文字动画（当 AnimationRegistry 未填充时）
-            result = [
-                {"id": "text_fade_in", "name": "淡入", "desc": "文字从透明到不透明"},
-                {"id": "typewriter", "name": "打字", "desc": "逐字出现，适合引言或关键结论"},
-                {"id": "text_slide_up", "name": "滑入", "desc": "文字从下方滑入"},
-                {"id": "char_by_char", "name": "逐字", "desc": "每个字符依次出现"},
-                {"id": "highlight_flash", "name": "高亮", "desc": "高亮闪烁强调"},
-                {"id": "slide_down", "name": "下滑", "desc": "文字从上方滑入"},
-                {"id": "slide_left", "name": "左滑", "desc": "文字从右侧滑入"},
-                {"id": "slide_right", "name": "右滑", "desc": "文字从左侧滑入"},
-                {"id": "zoom_in", "name": "放大", "desc": "文字从中心放大出现"},
-                {"id": "scale_bounce", "name": "弹跳", "desc": "带弹性的缩放入场"},
-                {"id": "rotate_in", "name": "旋转", "desc": "旋转进入"},
-                {"id": "blur_in", "name": "模糊", "desc": "从模糊到清晰"},
-                {"id": "shake", "name": "震动", "desc": "抖动效果"},
-                {"id": "pulse", "name": "脉冲", "desc": "呼吸式闪烁"},
-            ]
         return result
 
     @staticmethod
@@ -178,39 +170,86 @@ class AnimationCatalog:
         lines.append('示例：description: "技术发展演进 [逻辑动画]箭头：机器学习→深度学习→强化学习"')
         return "\n".join(lines)
 
+    # 别名表：旧广告名/LLM 简称 → 已注册动画 id（命名漂移兼容）
+    # 如「弹跳」→「弹跳进入」(scale_bounce)，「左推」→ push_left (transition)
+    _MARKER_ALIASES: dict[str, tuple[str, str]] = {
+        # 文字/屏上动画简称
+        "弹跳": ("scale_bounce", "text"),
+        "模糊": ("blur_in", "text"),
+        "旋转": ("rotate_in", "text"),
+        "脉冲": ("pulse", "text"),
+        "放大": ("scale_in", "text"),
+        "缩放": ("scale_in", "text"),
+        "震动": ("shake", "text"),
+        "下滑": ("slide_down", "text"),
+        "左滑": ("slide_left", "text"),
+        "右滑": ("slide_right", "text"),
+        # 转场动画简称
+        "淡入淡出": ("crossfade", "transition"),
+        "左推": ("push_left", "transition"),
+        "右推": ("push_right", "transition"),
+        "左擦除": ("wipe_left", "transition"),
+        "故障": ("glitch", "transition"),
+        "像素溶解": ("pixel_dissolve", "transition"),
+    }
+
     @staticmethod
     def resolve_marker(marker_text: str) -> dict[str, Any]:
         """将标记文字解析为 {type, anim_id, name}。
 
-        支持模糊匹配：精确 name → 包含匹配 → id 匹配。
+        支持模糊匹配：精确 name → 别名 → 包含匹配 → id 匹配。
         """
         # 0. 特殊标记优先匹配 — mg_dynamic 触发 LLM 动态 MG 引擎
         if marker_text == "mg_dynamic":
             return {"type": "logic", "anim_id": "mg_dynamic", "name": "LLM 动态 MG"}
 
-        # 1. 精确 name 匹配
+        # 1. 精确 name 匹配（文字/屏上 → 逻辑 → 转场）
         for a in AnimationCatalog.get_text_animations():
             if a["name"] == marker_text:
                 return {"type": "text", "anim_id": a["id"], "name": a["name"]}
         for a in AnimationCatalog.get_logic_animations():
             if a["name"] == marker_text:
                 return {"type": "logic", "anim_id": a["id"], "name": a["name"]}
+        for a in AnimationCatalog.get_transition_animations():
+            if a["name"] == marker_text:
+                return {"type": "transition", "anim_id": a["id"], "name": a["name"]}
 
-        # 2. 包含匹配（处理 LLM 加括号/后缀的情况如 "淡入(发光)"）
+        # 2. 别名匹配（旧广告名/简称 → 注册动画）
+        alias = AnimationCatalog._MARKER_ALIASES.get(marker_text)
+        if alias:
+            anim_id, anim_type = alias
+            for a in AnimationCatalog.get_text_animations():
+                if a["id"] == anim_id:
+                    return {"type": anim_type, "anim_id": anim_id, "name": a["name"]}
+            for a in AnimationCatalog.get_transition_animations():
+                if a["id"] == anim_id:
+                    return {"type": anim_type, "anim_id": anim_id, "name": a["name"]}
+            # 别名指向未注册动画（如 shake 无 def）→ 仍返回 text 让 keyframes 兜底
+            logger.warning("AnimationCatalog: 别名 '%s' 指向未注册动画 '%s', 使用 keyframes 兜底",
+                           marker_text, anim_id)
+            return {"type": anim_type, "anim_id": anim_id, "name": marker_text}
+
+        # 3. 包含匹配（处理 LLM 加括号/后缀的情况如 "淡入(发光)"）
         for a in AnimationCatalog.get_text_animations():
             if a["name"] in marker_text or marker_text in a["name"]:
                 return {"type": "text", "anim_id": a["id"], "name": a["name"]}
         for a in AnimationCatalog.get_logic_animations():
             if a["name"] in marker_text or marker_text in a["name"]:
                 return {"type": "logic", "anim_id": a["id"], "name": a["name"]}
+        for a in AnimationCatalog.get_transition_animations():
+            if a["name"] in marker_text or marker_text in a["name"]:
+                return {"type": "transition", "anim_id": a["id"], "name": a["name"]}
 
-        # 3. id 匹配
+        # 4. id 匹配
         for a in AnimationCatalog.get_text_animations():
             if a["id"] == marker_text:
                 return {"type": "text", "anim_id": a["id"], "name": a["name"]}
         for a in AnimationCatalog.get_logic_animations():
             if a["id"] == marker_text:
                 return {"type": "logic", "anim_id": a["id"], "name": a["name"]}
+        for a in AnimationCatalog.get_transition_animations():
+            if a["id"] == marker_text:
+                return {"type": "transition", "anim_id": a["id"], "name": a["name"]}
 
         # 默认回退
         logger.warning("AnimationCatalog: 未匹配标记 '%s', 回退到淡入", marker_text)
@@ -224,6 +263,8 @@ class AnimationCatalog:
         - [文字动画]淡入：要显示的文字
         - [文字动画]打字 — 引言
         - [逻辑动画]箭头：A→B→C
+        - [转场动画]淡入淡出（创建过渡转场）
+        - [过渡动画]淡入淡出（同 [转场动画]，兼容）
         - [动画]淡入（向后兼容）
 
         Returns:
@@ -296,7 +337,13 @@ class AnimationCatalog:
             if info:
                 results.append(info)
 
-        # 3. [动画]xxx（向后兼容）
+        # 3. [转场动画]xxx / [过渡动画]xxx（过渡转场，如 淡入淡出/左推/黑场过渡）
+        for m in re.finditer(r'\[(?:转场动画|过渡动画)\]([^：:—\s]+)', desc):
+            info = _extract(m, "transition")
+            if info:
+                results.append(info)
+
+        # 4. [动画]xxx（向后兼容）
         if not results:
             for m in re.finditer(r'\[动画\]([^：:—\s]+)', desc):
                 info = _extract(m)
@@ -315,6 +362,30 @@ class AnimationCatalog:
         "text_slide_up": [
             {"time": 0, "properties": {"opacity": 0, "translate_y": 30}},
             {"time": 0.5, "properties": {"opacity": 1, "translate_y": 0}},
+        ],
+        "fade_in": [
+            {"time": 0, "properties": {"opacity": 0}},
+            {"time": 0.5, "properties": {"opacity": 1}},
+        ],
+        "fade_out": [
+            {"time": 0, "properties": {"opacity": 1}},
+            {"time": 0.5, "properties": {"opacity": 0}},
+        ],
+        "slide_up_in": [
+            {"time": 0, "properties": {"opacity": 0, "translate_y": 60}},
+            {"time": 0.6, "properties": {"opacity": 1, "translate_y": 0}},
+        ],
+        "slide_down_out": [
+            {"time": 0, "properties": {"opacity": 1, "translate_y": 0}},
+            {"time": 0.5, "properties": {"opacity": 0, "translate_y": 60}},
+        ],
+        "slide_left_in": [
+            {"time": 0, "properties": {"opacity": 0, "translate_x": -80}},
+            {"time": 0.5, "properties": {"opacity": 1, "translate_x": 0}},
+        ],
+        "scale_in": [
+            {"time": 0, "properties": {"opacity": 0, "scale_x": 0.5, "scale_y": 0.5}},
+            {"time": 0.4, "properties": {"opacity": 1, "scale_x": 1.0, "scale_y": 1.0}},
         ],
         "slide_down": [
             {"time": 0, "properties": {"opacity": 0, "translate_y": -30}},
@@ -390,6 +461,39 @@ class AnimationCatalog:
             "class": "hf-fade-in",
             "keyframes": "@keyframes hf-fade-in { 0% { opacity: 0; } 100% { opacity: 1; } }",
             "duration": 0.5, "easing": "ease-out",
+        },
+        "fade_out": {
+            "class": "hf-fade-out",
+            "keyframes": "@keyframes hf-fade-out { 0% { opacity: 1; } 100% { opacity: 0; } }",
+            "duration": 0.5, "easing": "ease-in",
+        },
+        "slide_up_in": {
+            "class": "hf-slide-up-in",
+            "keyframes": ("@keyframes hf-slide-up-in { 0% { opacity: 0; "
+                          "transform: translateY(60px); } "
+                          "100% { opacity: 1; transform: translateY(0); } }"),
+            "duration": 0.6, "easing": "ease-out-cubic",
+        },
+        "slide_down_out": {
+            "class": "hf-slide-down-out",
+            "keyframes": ("@keyframes hf-slide-down-out { 0% { opacity: 1; "
+                          "transform: translateY(0); } "
+                          "100% { opacity: 0; transform: translateY(60px); } }"),
+            "duration": 0.5, "easing": "ease-in-cubic",
+        },
+        "slide_left_in": {
+            "class": "hf-slide-left-in",
+            "keyframes": ("@keyframes hf-slide-left-in { 0% { opacity: 0; "
+                          "transform: translateX(-80px); } "
+                          "100% { opacity: 1; transform: translateX(0); } }"),
+            "duration": 0.5, "easing": "ease-out-cubic",
+        },
+        "scale_in": {
+            "class": "hf-scale-in",
+            "keyframes": ("@keyframes hf-scale-in { 0% { opacity: 0; "
+                          "transform: scale(0.5); } "
+                          "100% { opacity: 1; transform: scale(1); } }"),
+            "duration": 0.4, "easing": "ease-out-quad",
         },
         "typewriter": {
             "class": "hf-typewriter",

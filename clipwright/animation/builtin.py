@@ -98,6 +98,74 @@ ONSCREEN_ANIMATIONS: list[AnimationDef] = [
             "translate_x": PropertyDef(type="float", default=0, range=[-200, 200], unit="percent"),
         },
     ),
+    # ── 滑动系（旧 fallback 广告名，注册使其可被 marker 解析）──
+    AnimationDef(
+        animation_id="slide_down",
+        name="下滑",
+        type=AnimationType.ONSCREEN,
+        target=AnimationTarget.TEXT,
+        duration_sec=0.5,
+        easing=EasingFunction.EASE_OUT_CUBIC,
+        keyframes=[
+            Keyframe(time=0.0, properties={"opacity": 0, "translate_y": -30}),
+            Keyframe(time=1.0, properties={"opacity": 1, "translate_y": 0}),
+        ],
+        properties_meta={
+            "opacity": PropertyDef(type="float", default=1, range=[0, 1]),
+            "translate_y": PropertyDef(type="float", default=0, range=[-200, 200], unit="percent"),
+        },
+    ),
+    AnimationDef(
+        animation_id="slide_left",
+        name="左滑",
+        type=AnimationType.ONSCREEN,
+        target=AnimationTarget.TEXT,
+        duration_sec=0.5,
+        easing=EasingFunction.EASE_OUT_CUBIC,
+        keyframes=[
+            Keyframe(time=0.0, properties={"opacity": 0, "translate_x": 50}),
+            Keyframe(time=1.0, properties={"opacity": 1, "translate_x": 0}),
+        ],
+        properties_meta={
+            "opacity": PropertyDef(type="float", default=1, range=[0, 1]),
+            "translate_x": PropertyDef(type="float", default=0, range=[-200, 200], unit="percent"),
+        },
+    ),
+    AnimationDef(
+        animation_id="slide_right",
+        name="右滑",
+        type=AnimationType.ONSCREEN,
+        target=AnimationTarget.TEXT,
+        duration_sec=0.5,
+        easing=EasingFunction.EASE_OUT_CUBIC,
+        keyframes=[
+            Keyframe(time=0.0, properties={"opacity": 0, "translate_x": -50}),
+            Keyframe(time=1.0, properties={"opacity": 1, "translate_x": 0}),
+        ],
+        properties_meta={
+            "opacity": PropertyDef(type="float", default=1, range=[0, 1]),
+            "translate_x": PropertyDef(type="float", default=0, range=[-200, 200], unit="percent"),
+        },
+    ),
+    # ── 震动 ──
+    AnimationDef(
+        animation_id="shake",
+        name="震动",
+        type=AnimationType.ONSCREEN,
+        target=AnimationTarget.TEXT,
+        duration_sec=0.4,
+        easing=EasingFunction.EASE_IN_OUT,
+        keyframes=[
+            Keyframe(time=0.0, properties={"translate_x": 0}),
+            Keyframe(time=0.2, properties={"translate_x": -4}),
+            Keyframe(time=0.4, properties={"translate_x": 4}),
+            Keyframe(time=0.6, properties={"translate_x": -2}),
+            Keyframe(time=0.8, properties={"translate_x": 0}),
+        ],
+        properties_meta={
+            "translate_x": PropertyDef(type="float", default=0, range=[-200, 200], unit="percent"),
+        },
+    ),
     # ── 缩放系 ──
     AnimationDef(
         animation_id="scale_in",
