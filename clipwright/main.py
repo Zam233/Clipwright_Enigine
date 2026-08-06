@@ -10,6 +10,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 
 from clipwright.config import settings, logger
 from clipwright.services.async_util import cached_probe
@@ -241,6 +243,48 @@ async def api_token_auth(request: Request, call_next):
 async def security_violation_handler(request: Request, exc: SecurityViolation):
     """安全校验失败（非法 ID / 路径遍历）统一返回 400。"""
     return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+# ── 请求参数校验错误（422）中文化 ──
+# FastAPI 默认的 422 detail 是英文的 Pydantic 错误列表，对前端用户不友好。
+# 这里取第一个错误映射为中文短语，原始错误列表放在 errors 字段供调试。
+
+_VALIDATION_ERROR_TEMPLATES: dict[str, str] = {
+    "int_parsing": "参数格式错误：{loc} 需要是数字",
+    "float_parsing": "参数格式错误：{loc} 需要是数字",
+    "number_parsing": "参数格式错误：{loc} 需要是数字",
+    "missing": "缺少必填参数：{loc}",
+    "string_too_short": "参数 {loc} 格式不正确",
+    "string_type": "参数 {loc} 格式不正确",
+}
+
+# loc 前缀中无意义的位置段（跳过，只保留业务参数名）
+_LOC_PREFIXES = ("body", "query", "path", "headers", "cookie")
+
+
+def _friendly_validation_message(errors: list[dict]) -> str:
+    """把第一条 Pydantic 校验错误映射为中文提示。"""
+    first = errors[0] if errors else {}
+    loc_parts = [
+        str(p) for p in first.get("loc", ()) if str(p) not in _LOC_PREFIXES
+    ]
+    loc = ".".join(loc_parts) or "请求"
+    err_type = str(first.get("type", ""))
+    template = _VALIDATION_ERROR_TEMPLATES.get(err_type, "参数 {loc} 不合法：{msg}")
+    return template.format(loc=loc, msg=first.get("msg", ""))
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_handler(request: Request, exc: RequestValidationError):
+    """422 校验错误统一返回中文 detail + 原始 errors。"""
+    errors = exc.errors()
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": _friendly_validation_message(errors),
+            "errors": jsonable_encoder(errors),
+        },
+    )
 
 
 # CORS — 设置令牌后限制来源；开发模式（无令牌）允许全部
