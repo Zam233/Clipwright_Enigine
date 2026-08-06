@@ -18,6 +18,8 @@ async def test_pipeline_orchestrator_imports() -> None:
 
 def test_category_registry() -> None:
     """验证类型插件注册表。"""
+    # 先清空，避免与其他测试文件（如 test_pipeline_diag.py 顶层注册）的执行顺序耦合
+    CategoryRegistry.clear()
     CategoryRegistry.register(KnowledgeLongformPlugin())
     plugin = CategoryRegistry.get("knowledge_longform")
     assert plugin is not None
