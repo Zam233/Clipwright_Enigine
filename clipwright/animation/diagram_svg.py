@@ -55,7 +55,10 @@ class DiagramStyle:
         # 如果指定了 preset 名称，优先从插件 preset 加载
         preset_name = persona_style.get("style_preset", "")
         if preset_name and preset_name in plugin_presets:
-            base = cls(**{**cls.__dict__, **plugin_presets[preset_name]})
+            base = cls(
+                **{**{f: getattr(cls, f) for f in cls.__dataclass_fields__},
+                   **plugin_presets[preset_name]},
+            )
 
         return cls(
             primary_color=persona_style.get("primary_color", base.primary_color),

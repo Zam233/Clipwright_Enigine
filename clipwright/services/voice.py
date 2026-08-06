@@ -204,6 +204,20 @@ def _is_local_url(url: str) -> bool:
     ))
 
 
+# 允许本地上传的媒体扩展名（大小写不敏感）
+_MEDIA_FILE_EXTENSIONS = {".wav", ".mp3", ".m4a", ".mp4"}
+
+
+def _is_absolute_http_url(s: str) -> bool:
+    """Check if a string is an absolute http(s) URL (vs a bare filesystem path)."""
+    return s.lower().startswith(("http://", "https://"))
+
+
+def _resolve_local_file(local_path: str) -> Path:
+    """Resolve a localhost URL path or bare filesystem path relative to project root."""
+    return Path(__file__).resolve().parent.parent.parent / local_path.lstrip("/")
+
+
 # ──────────────────────────────────────────────
 # Provider 层：公网上传
 # ──────────────────────────────────────────────
@@ -279,14 +293,21 @@ class PublicUploadManager:
         raise RuntimeError("所有公网上传服务均不可用，请手动提供公网音频 URL。")
 
     async def maybe_upload(self, url: str) -> str:
-        """If URL is local, upload to public; otherwise return as-is."""
-        if not _is_local_url(url):
+        """If URL is local, upload to public; otherwise return as-is.
+
+        本地输入（localhost URL 或裸文件路径）先校验媒体扩展名与文件存在性，
+        非法路径报错不静默；公网 http(s) URL 原样透传。
+        """
+        if _is_absolute_http_url(url) and not _is_local_url(url):
             return url
-        local_path = urlparse(url).path
-        # Resolve relative to project root
-        file_path = Path(__file__).resolve().parent.parent.parent / local_path.lstrip("/")
+        local_path = urlparse(url).path if _is_absolute_http_url(url) else url
+        if Path(local_path).suffix.lower() not in _MEDIA_FILE_EXTENSIONS:
+            raise ValueError(
+                f"非法素材路径: {url!r} 不是音频文件（仅支持 .wav/.mp3/.m4a/.mp4）"
+            )
+        file_path = _resolve_local_file(local_path)
         if not file_path.exists():
-            raise FileNotFoundError(f"Local file not found: {file_path}")
+            raise FileNotFoundError(f"素材文件不存在: {file_path}")
         return await self.upload(file_path)
 
 

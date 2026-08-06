@@ -14,13 +14,13 @@ import json
 import uuid
 from datetime import datetime
 from enum import Enum
-from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from clipwright.config import TIME_ZONE, logger
+from clipwright.paths import anchor
 from clipwright.security import validate_id
 from clipwright.services.async_util import cached_probe, run_blocking
 
@@ -55,7 +55,7 @@ async def _guard_dataset_id(dataset_id: str | None = None) -> None:
 router.dependencies = [Depends(_guard_dataset_id)]
 
 # 训练任务存储目录
-_LEARNING_DIR = Path("learning")
+_LEARNING_DIR = anchor("learning")
 _MODELS_DIR = _LEARNING_DIR / "models"
 _DATASETS_DIR = _LEARNING_DIR / "datasets"
 

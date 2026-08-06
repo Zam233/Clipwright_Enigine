@@ -117,11 +117,10 @@ class TransitionApplyTool(BaseTool):
                 "wipe_left": f"xfade=transition=wiperight:duration={t}:offset=1",
                 "wipe_right": f"xfade=transition=wipeleft:duration={t}:offset=1",
                 "zoom_in": f"xfade=transition=zoomin:duration={t}:offset=1",
-                "glitch": f"xfade=transition=glitch:duration={t}:offset=1",
                 "pixel_dissolve": f"xfade=transition=pixelize:duration={t}:offset=1",
                 "radial": f"xfade=transition=radial:duration={t}:offset=1",
-                "rect": f"xfade=transition=rectangle:duration={t}:offset=1",
-                "clock": f"xfade=transition=clock:duration={t}:offset=1",
+                "rect": f"xfade=transition=rectcrop:duration={t}:offset=1",
+                "clock": f"xfade=transition=circleopen:duration={t}:offset=1",
             }
             xfade = filter_map.get(transition, filter_map["crossfade"])
 
@@ -178,7 +177,7 @@ class VideoBlurTool(BaseTool):
             filter_map = {
                 "gaussian": f"gblur=sigma={radius}",
                 "box": f"boxblur=luma_radius={radius}:luma_power=2",
-                "motion": f"mblur=planes=15:mask={radius}",
+                "motion": f"gblur=sigma={radius}",
                 "pixelate": f"pixelize=width=32:height=32",
             }
             vf = filter_map.get(blur_type, filter_map["gaussian"])
@@ -287,7 +286,8 @@ class EffectVignetteTool(BaseTool):
                 "vignette": f"vignette=PI*{intensity}",
                 "grain": f"noise=alls={intensity * 20}:allf=t+u",
                 "scanline": f"drawbox=y=ih/2:color=black@0.05:width=iw:height=1:t=max(1,ih*0.01)",
-                "sepia": f"colorchannelmixer=.393*.769*.189:.349*.686*.168:.272*.534*.131",
+                "sepia": ("colorchannelmixer=rr=0.393:rg=0.769:rb=0.189:gr=0.349:"
+                          "gg=0.686:gb=0.168:br=0.272:bg=0.534:bb=0.131"),
                 "old_film": f"vignette=PI*{intensity},noise=alls=15:allf=t+u",
             }
             vf = effect_map.get(effect, effect_map["vignette"])

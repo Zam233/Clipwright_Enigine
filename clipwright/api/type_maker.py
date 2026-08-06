@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from clipwright.category.registry import CategoryRegistry
 from clipwright.config import logger
+from clipwright.paths import anchor
 from clipwright.security import validate_id
 
 router = APIRouter(prefix="/api/type-maker", tags=["type-maker"])
@@ -29,7 +30,7 @@ async def _guard_type_id(type_id: str | None = None) -> None:
 router.dependencies = [Depends(_guard_type_id)]
 
 # 用户自定义类型存储目录
-_USER_TYPES_DIR = Path("user_types")
+_USER_TYPES_DIR = anchor("user_types")
 
 
 # ── 请求/响应模型 ──────────────────────────────

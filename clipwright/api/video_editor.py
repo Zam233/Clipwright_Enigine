@@ -14,13 +14,13 @@ import copy
 import json
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from clipwright.config import TIME_ZONE, logger
+from clipwright.paths import anchor
 from clipwright.security import is_safe_id
 
 router = APIRouter(prefix="/api/video-editor", tags=["video-editor"])
@@ -35,7 +35,7 @@ async def _validate_project_id(project_id: str | None = None) -> None:
 router.dependencies = [Depends(_validate_project_id)]
 
 # 编辑器项目存储目录
-_EDITOR_DIR = Path("editor_projects")
+_EDITOR_DIR = anchor("editor_projects")
 
 
 # ── 请求/响应模型 ──────────────────────────────

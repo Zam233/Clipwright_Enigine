@@ -60,8 +60,9 @@ class STTService:
     """语音转文字服务。"""
 
     def __init__(self) -> None:
-        self._model = None
-        self._model_name = ""
+        # 按 model_size 分键缓存已加载模型，避免不同尺寸互相复用
+        self._models: dict[str, Any] = {}
+        self._faster_models: dict[str, Any] = {}
 
     # ── 转录 ──
 
@@ -177,14 +178,20 @@ class STTService:
             tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
             tmp.close()
             try:
-                subprocess.run(
+                result = subprocess.run(
                     ["ffmpeg", "-y", "-i", str(path), "-vn", "-acodec", "pcm_s16le",
                      "-ar", "16000", "-ac", "1", tmp.name],
                     capture_output=True, text=True, timeout=300,
                 )
+                if result.returncode != 0:
+                    stderr = (result.stderr or "").strip()
+                    logger.warning(
+                        "FFmpeg 音频提取失败: %s",
+                        stderr or f"exit code {result.returncode}",
+                    )
                 return tmp.name
             except Exception as e:
-                logger.debug("FFmpeg 音频提取失败: %s", e)
+                logger.warning("FFmpeg 音频提取失败: %s", e)
                 return str(path)
         return str(path)
 
@@ -194,16 +201,15 @@ class STTService:
         """使用 openai-whisper 转录。"""
         import whisper  # type: ignore[import-untyped]
 
-        model_key = f"{model_size}" if not self._model_name else self._model_name
-        if self._model is None:
-            self._model = whisper.load_model(model_key)
-            self._model_name = model_key
+        if model_size not in self._models:
+            self._models[model_size] = whisper.load_model(model_size)
+        model = self._models[model_size]
 
         opts: dict[str, Any] = {"word_timestamps": word_timestamps}
         if language:
             opts["language"] = language
 
-        result = self._model.transcribe(audio_path, **opts)
+        result = model.transcribe(audio_path, **opts)
 
         segments = []
         for seg in result.get("segments", []):
@@ -229,8 +235,14 @@ class STTService:
         """使用 faster-whisper 转录。"""
         from faster_whisper import WhisperModel  # type: ignore[import-untyped]
 
-        model = WhisperModel(model_size, device="cpu", compute_type="int8")
-        segments_raw, info = model.transcribe(audio_path, language=language or None, word_timestamps=word_timestamps)
+        if model_size not in self._faster_models:
+            self._faster_models[model_size] = WhisperModel(
+                model_size, device="cpu", compute_type="int8"
+            )
+        model = self._faster_models[model_size]
+        segments_raw, info = model.transcribe(
+            audio_path, language=language or None, word_timestamps=word_timestamps
+        )
 
         segments = []
         full_text = ""

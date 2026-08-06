@@ -10,13 +10,13 @@ import copy
 import json
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from clipwright.config import TIME_ZONE, logger
+from clipwright.paths import anchor
 from clipwright.security import validate_id
 
 router = APIRouter(prefix="/api/template", tags=["template"])
@@ -31,7 +31,7 @@ async def _guard_template_id(template_id: str | None = None) -> None:
 router.dependencies = [Depends(_guard_template_id)]
 
 # 模板存储目录
-_TEMPLATES_DIR = Path("templates")
+_TEMPLATES_DIR = anchor("templates")
 
 
 # ── 请求/响应模型 ──────────────────────────────

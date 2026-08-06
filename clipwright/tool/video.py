@@ -352,10 +352,11 @@ class VideoThumbnailTool(BaseTool):
                    "-ss", str(time_sec), "-i", input_path,
                    "-vframes", "1", "-vf", "scale=1280:-1"]
             if text:
-                # 叠加底部标题文字
+                # 叠加底部标题文字（先截断，再转义 ' : , 避免破坏 drawtext 过滤语法）
                 from clipwright.services.fontconfig import FontConfig
                 font_spec = FontConfig.ffmpeg_fontspec(FontConfig.get_font_path())
-                cmd[9] += f",drawtext=text='{text[:50]}':fontsize=48:fontcolor=white:x=(w-text_w)/2:y=h-100{font_spec}"
+                safe = text[:50].replace("'", "''").replace(":", "\\:").replace(",", "\\,")
+                cmd[11] += f",drawtext=text='{safe}':fontsize=48:fontcolor=white:x=(w-text_w)/2:y=h-100{font_spec}"
             cmd.extend(["-q:v", "3", out])
             result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, timeout=30)
             if result.returncode != 0 or not Path(out).exists():

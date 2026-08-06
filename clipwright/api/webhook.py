@@ -11,7 +11,6 @@ import hmac
 import json
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -19,11 +18,12 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from clipwright.config import TIME_ZONE, logger
+from clipwright.paths import anchor
 
 router = APIRouter(prefix="/api/webhook", tags=["webhook"])
 
 # Webhook 配置持久化文件
-_WEBHOOKS_FILE = Path("webhooks.json")
+_WEBHOOKS_FILE = anchor("webhooks.json")
 
 # 支持的事件类型
 SUPPORTED_EVENTS = [
