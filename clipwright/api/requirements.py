@@ -83,7 +83,9 @@ async def edit_timeline(req: EditRequest) -> dict:
             raise HTTPException(status_code=404, detail=result["error"])
         return result
     except asyncio.TimeoutError:
-        logger.error("时间线编辑处理超时（>%ss），会话 %s 可能卡死", EDIT_HARD_TIMEOUT, req.session_id)
+        logger.error(
+            "时间线编辑处理超时（>%ss），会话 %s 可能卡死", EDIT_HARD_TIMEOUT, req.session_id
+        )
         raise HTTPException(status_code=504, detail="处理超时，请稍后重试")
     except HTTPException:
         raise

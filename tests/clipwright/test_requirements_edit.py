@@ -232,11 +232,16 @@ async def test_redo_animation_subset_merge_keeps_id(service, monkeypatch):
                 "metadata": {},
             }],
         )
-        return Timeline(id="tl_1", width=1920, height=1080, fps=30.0, duration_sec=10.0, tracks=[tr])
+        return Timeline(
+            id="tl_1", width=1920, height=1080, fps=30.0,
+            duration_sec=10.0, tracks=[tr],
+        )
 
     class FakeAnim:
         async def execute(self, input_data, context):
-            return AnimationOutput(decision="pass", timeline=_result_timeline(), generated_mg_count=0)
+            return AnimationOutput(
+                decision="pass", timeline=_result_timeline(), generated_mg_count=0
+            )
 
     monkeypatch.setattr(animation_agent, "AnimationAgent", FakeAnim)
     tl = _mk_timeline()

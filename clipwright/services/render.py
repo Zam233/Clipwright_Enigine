@@ -79,8 +79,10 @@ def _nvenc_runtime_probe() -> bool:
         ok = r.returncode == 0 and probe_out.exists() and probe_out.stat().st_size > 0
         if not ok:
             stderr_head = "\n".join((r.stderr or "").strip().splitlines()[:2]) or "rc!=0"
-            logger.warning("[Render] nvenc 运行时编码探测失败（探针帧尺寸过小或驱动版本过旧）：\n%s",
-                           stderr_head)
+            logger.warning(
+                "[Render] nvenc 运行时编码探测失败（探针帧尺寸过小或驱动版本过旧）：\n%s",
+                stderr_head,
+            )
         return ok
     except Exception as e:
         logger.warning("[Render] nvenc 运行时编码探测异常: %s", e)
