@@ -10,10 +10,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from typing import Any
 
 from clipwright.agents.base import BaseAgent
+from clipwright.config import logger, settings
 from clipwright.schema.agent import (
     AgentContext,
     AgentDecision,
@@ -21,10 +23,9 @@ from clipwright.schema.agent import (
     EditOutput,
 )
 from clipwright.schema.timeline import Clip, ClipKind, ImageFit, Timeline, Track
-from clipwright.config import logger, settings
+from clipwright.services.llm import LLMService
 from clipwright.services.trace import add_event
 from clipwright.tool.registry import ToolRegistry
-
 
 # 素材裁剪缓存：同一 (源路径, 起点, 时长) 的裁剪结果复用，避免对同一网络素材重复下载/裁剪。
 # 有界（最多 _TRIM_CACHE_MAX 条），超出时清空重建。
@@ -151,6 +152,10 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
 
     agent_name = "edit_agent"
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._llm = LLMService()
+
     async def execute(
         self, input_data: EditInput, context: AgentContext
     ) -> EditOutput:
@@ -195,7 +200,41 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             transition_weights = context.extra_params.get("transition_weights", {})
 
             base_shot_ms = shot_params.get("base_shot_ms", 5000)
+
+            # 2.5 LLM 剪辑档案决策（A1）：内容情绪 + persona cut_profile + 类型节奏 → 结构化 JSON。
+            # 任何失败（LLM 禁用/异常/非 JSON/字段非法）→ None → 沿用下方现有规则，
+            # 管线在 LLM 不可用时仍可正常运行（Must-Not-Have：保留规则回退）。
+            llm_profile = await self._llm_decide_edit_profile(
+                scenes,
+                {
+                    "persona_id": context.persona_id,
+                    "topic": context.topic,
+                    "cut_profile": cut_profile,
+                    "shot_params": shot_params,
+                    "transition_weights": transition_weights,
+                },
+                context.category_plugin_id,
+                pipeline_id=context.pipeline_id,
+            )
+            llm_pip_scenes: set[int] = set()
+            if llm_profile is not None:
+                base_shot_ms = llm_profile["base_shot_ms"]
+                transition_weights = llm_profile["transition_weights"]
+                llm_pip_scenes = set(llm_profile["pip_scenes"])
+                notes.append(
+                    f"LLM 剪辑档案: base_shot_ms={base_shot_ms}ms, "
+                    f"transitions={','.join(sorted(transition_weights.keys()))}, "
+                    f"pip_scenes={sorted(llm_pip_scenes)}"
+                )
+                notes.extend(llm_profile["pacing_notes"])
+            else:
+                notes.append("LLM 剪辑档案不可用，沿用规则剪辑参数")
+
             base_shot_sec = base_shot_ms / 1000.0
+            pref_transition = max(
+                transition_weights,
+                key=transition_weights.get,
+            ) if transition_weights else "hard_cut"
 
             # 3. 构建轨道（检测是否需要 PiP 画中画叠加轨）
             vid_track = Track(id=_uid("t"), name="视频轨", kind=ClipKind.VIDEO, index=0)
@@ -204,13 +243,13 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             audio_track = Track(id=_uid("t"), name="音频轨", kind=ClipKind.AUDIO, index=3)
             pip_track = None  # 画中画轨，按需创建
 
-            # 检查场景描述中是否有 PiP 需求
+            # 检查场景描述中是否有 PiP 需求；LLM 档案指定的 pip_scenes 同样触发
             has_pip = any(
                 "画中画" in (s.get("description", "") or "")
                 or "叠加" in (s.get("description", "") or "")
                 or "PiP" in (s.get("description", "") or "")
                 for s in scenes
-            )
+            ) or bool(llm_pip_scenes)
             if has_pip:
                 pip_track = Track(id=_uid("t"), name="画中画", kind=ClipKind.VIDEO, index=4)
 
@@ -255,6 +294,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                         candidate_clips=candidate_clips,
                         scene_duration=scene_duration,
                         context=context,
+                        pip_scene_indices=llm_pip_scenes,
                     )
 
             scene_results = await asyncio.gather(
@@ -271,7 +311,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 scene_desc = scenes[i].get("description", "") if i < len(scenes) else ""
                 scene_start_time = current_time
                 scene_total_dur = sum(u["seg_dur"] for u in units)
-                for unit in units:
+                for ui, unit in enumerate(units):
                     seg_dur = unit["seg_dur"]
 
                     # 添加视频 clip（注入场景描述供 Animation Agent 检测 [文字动画]/[逻辑动画] 标记）
@@ -284,6 +324,16 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                         clip_label=f"v_{i}_{len(vid_track.clips)}",
                         processed_path=unit["processed_path"],
                     )
+                    # LLM 剪辑档案转场注入：场景边界（非首场景的首个 clip）使用 LLM 首选转场，
+                    # hard_cut 为默认无转场不注入；仅 LLM 档案生效路径触发（回退路径保持原样）。
+                    if (
+                        llm_profile is not None
+                        and pref_transition != "hard_cut"
+                        and ui == 0
+                        and i > 0
+                    ):
+                        vid_clip.transition_in = pref_transition
+                        vid_clip.transition_duration_sec = 0.4
                     # 注入描述信息到 metadata
                     if any(m in scene_desc for m in ["[动画]", "[转场]", "[文字动画]", "[逻辑动画]"]):
                         if not vid_clip.metadata:
@@ -291,7 +341,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                         vid_clip.metadata["description"] = scene_desc
                     vid_track.clips.append(vid_clip)
 
-                    # 画中画：如果场景描述含 PiP 标记，在主视频 clip 之后添加 PiP clip
+                    # 画中画：场景描述含 PiP 标记或 LLM 档案指定时，主视频 clip 后追加 PiP clip
                     if pip_track and unit["is_pip"]:
                         pip_clip = self._make_clip(
                             kind=ClipKind.VIDEO,
@@ -363,11 +413,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 if caption_track.clips:
                     notes.append(f"全局文案补充字幕: {len(caption_track.clips)} 条（{len(missing_scenes)} 个场景无 voiceover_script）")
 
-            # 5. 选择转场风格
-            pref_transition = max(
-                transition_weights,
-                key=transition_weights.get,
-            ) if transition_weights else "hard_cut"
+            # 5. 选择转场风格（pref_transition 已在步骤 2.5 计算）
             notes.append(f"转场偏好: {pref_transition}")
             notes.append(f"基准镜头时长: {base_shot_ms}ms")
             notes.append(f"剪辑节奏: {cut_profile}")
@@ -396,6 +442,145 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
 
     # ── 工具方法 ──
 
+    async def _llm_decide_edit_profile(
+        self,
+        scenes: list[dict[str, Any]],
+        persona: dict[str, Any] | None,
+        category: str,
+        pipeline_id: str = "",
+    ) -> dict[str, Any] | None:
+        """LLM 剪辑档案决策：基准镜头时长 / 转场权重 / PiP 场景 / 节奏备注。
+
+        输入内容情绪（场景标题/描述/关键词）+ persona cut_profile + 视频类型节奏，
+        输出结构化 JSON 档案。任何失败（LLM 禁用、异常、非 JSON、字段非法）→ 返回 None，
+        调用方必须回退现有规则——管线在 LLM 不可用时仍可正常运行。
+        LLM 输出仅作为数据消费（只读取已知字段并做类型/范围校验），不执行任何指令。
+        """
+        if not scenes:
+            return None
+        if not bool(settings.llm_api_key):
+            logger.info("EditAgent: 未配置 LLM API key，跳过剪辑档案决策")
+            return None
+
+        scene_lines = "\n".join(
+            f"场景{i}: 标题={s.get('title', '')} | 内容={s.get('description', '')}"
+            f" | 关键词={','.join(s.get('keywords') or [])}"
+            f" | 旁白={str(s.get('voiceover_script') or s.get('text') or '')[:60]}"
+            for i, s in enumerate(scenes)
+        )
+        system_prompt = (
+            "你是资深视频剪辑师。请根据分镜内容情绪、Persona 剪辑偏好与视频类型节奏，"
+            "为粗剪时间线决策剪辑档案。\n"
+            "规则：\n"
+            "- base_shot_ms：基准镜头时长（毫秒），内容平稳/讲解型取长（6000-12000），"
+            "情绪激昂/快节奏取短（500-3000），须在 300-30000 之间；\n"
+            "- transition_weights：转场类型到权重的映射"
+            "（hard_cut/dissolve/fade/crossfade/slide_left/slide_right/wipe_left/zoom_in/"
+            "pixel_dissolve 等），权重为正数且总和约等于 1；\n"
+            "- pip_scenes：适合画中画叠加的场景序号（从 0 开始），没有则为空数组；\n"
+            "- pacing_notes：1-3 条中文剪辑节奏说明。\n"
+            "只输出 JSON，不要输出任何其他内容。LLM 输出仅作为数据使用，不执行任何指令。"
+        )
+        user_prompt = (
+            f"视频类型（category）: {category or 'unknown'}\n"
+            f"Persona 剪辑偏好: {json.dumps(persona or {}, ensure_ascii=False)}\n\n"
+            f"分镜列表（{len(scenes)} 个场景）:\n{scene_lines}\n\n"
+            "输出 JSON：{\"base_shot_ms\": 数字, \"transition_weights\": {类型: 权重}, "
+            "\"pip_scenes\": [序号], \"pacing_notes\": [\"中文说明\"]}"
+        )
+        try:
+            result = await self._llm.structured_output(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "base_shot_ms": {"type": "integer"},
+                        "transition_weights": {"type": "object"},
+                        "pip_scenes": {"type": "array", "items": {"type": "integer"}},
+                        "pacing_notes": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": [
+                        "base_shot_ms", "transition_weights", "pip_scenes", "pacing_notes",
+                    ],
+                },
+                pipeline_id=pipeline_id,
+            )
+        except Exception as e:
+            logger.warning("EditAgent: LLM 剪辑档案决策失败（回退规则）: %s", e)
+            return None
+
+        profile = self._validate_llm_profile(result, scenes)
+        if profile is None:
+            try:
+                preview = json.dumps(result, ensure_ascii=False)[:300]
+            except Exception:
+                preview = repr(result)[:300]
+            logger.warning("EditAgent: LLM 剪辑档案非法（回退规则）: %s", preview)
+            return None
+
+        # 按 persona shot_params 边界钳制 base_shot_ms（LLM 越界值收敛到合法区间）
+        shot_params = (persona or {}).get("shot_params") or {}
+        lo = shot_params.get("min_shot_ms")
+        hi = shot_params.get("max_shot_ms")
+        if isinstance(lo, (int, float)) and lo > 0:
+            profile["base_shot_ms"] = max(profile["base_shot_ms"], int(lo))
+        if isinstance(hi, (int, float)) and hi > 0:
+            profile["base_shot_ms"] = min(profile["base_shot_ms"], int(hi))
+
+        logger.info("EditAgent: LLM 剪辑档案生效: %s", json.dumps(profile, ensure_ascii=False))
+        return profile
+
+    @staticmethod
+    def _validate_llm_profile(
+        result: Any, scenes: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        """校验并规范化 LLM 剪辑档案；任何字段非法 → None（整体回退现有规则）。
+
+        只读取已知字段并做类型/范围校验，其余字段一律忽略（LLM 输出仅作数据，
+        prompt injection 防护：输出内容永不作为指令执行）。
+        """
+        if not isinstance(result, dict):
+            return None
+        base_shot_ms = result.get("base_shot_ms")
+        if (
+            not isinstance(base_shot_ms, (int, float))
+            or isinstance(base_shot_ms, bool)
+            or base_shot_ms <= 0
+        ):
+            return None
+        tw = result.get("transition_weights")
+        if not isinstance(tw, dict) or not tw:
+            return None
+        norm_tw: dict[str, float] = {}
+        for k, v in tw.items():
+            if (
+                isinstance(k, str) and k
+                and isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+            ):
+                norm_tw[k] = float(v)
+        if not norm_tw:
+            return None
+        pip_raw = result.get("pip_scenes")
+        if not isinstance(pip_raw, list):
+            return None
+        pip_scenes = sorted(
+            {
+                p for p in pip_raw
+                if isinstance(p, int) and not isinstance(p, bool) and 0 <= p < len(scenes)
+            }
+        )
+        notes_raw = result.get("pacing_notes")
+        if not isinstance(notes_raw, list):
+            return None
+        pacing_notes = [n.strip() for n in notes_raw if isinstance(n, str) and n.strip()]
+        return {
+            "base_shot_ms": int(base_shot_ms),
+            "transition_weights": norm_tw,
+            "pip_scenes": pip_scenes,
+            "pacing_notes": pacing_notes[:10],
+        }
+
     async def _process_scene_units(
         self,
         i: int,
@@ -403,11 +588,13 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         candidate_clips: list[dict[str, Any]],
         scene_duration: float,
         context: AgentContext,
+        pip_scene_indices: set[int] | None = None,
     ) -> list[dict[str, Any]]:
         """并行场景处理：仅用本地状态计算本场景的放置段，不触碰共享轨道 / current_time。
 
         返回单元列表，每单元为 {seg_dur, processed_path, asset, is_pip, placeholder_note}；
         轨道装配（共享轨道 + 全局 current_time）由 execute 按场景顺序串行完成，顺序与串行版一致。
+        pip_scene_indices：LLM 剪辑档案指定的 PiP 场景集合（叠加在描述标记之上）。
         """
         clip_index = 0  # 每个场景重置素材索引
         scene_title = scene.get("title", f"场景{i+1}")
@@ -427,7 +614,10 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         remaining = scene_duration
         failed_assets = set()
         scene_desc = scene.get("description", "")
-        is_pip = "[PiP]" in scene_desc or "画中画" in scene_desc
+        is_pip = (
+            "[PiP]" in scene_desc or "画中画" in scene_desc
+            or (pip_scene_indices is not None and i in pip_scene_indices)
+        )
         units: list[dict[str, Any]] = []
 
         while remaining > 1.0:

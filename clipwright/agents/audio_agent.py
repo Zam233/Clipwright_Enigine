@@ -8,16 +8,18 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from typing import Any
 
 from clipwright.agents.base import BaseAgent
-from clipwright.config import logger
+from clipwright.config import logger, settings
 from clipwright.schema.agent import (
     AgentContext,
     AgentDecision,
     AudioInput,
     AudioOutput,
 )
-from clipwright.schema.timeline import Clip, ClipKind, Track
+from clipwright.schema.timeline import Clip, ClipKind, Timeline, Track
+from clipwright.services.llm import LLMService
 from clipwright.tool.registry import ToolRegistry
 
 
@@ -25,6 +27,10 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
     """音效 Agent：BGM 匹配、混音编排。"""
 
     agent_name = "audio_agent"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._llm = LLMService()
 
     async def execute(
         self, input_data: AudioInput, context: AgentContext
@@ -112,12 +118,43 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                             break
 
             # 4. 标记 BGM 建议到音频 clip 的 metadata
+            # 4a. LLM 情绪匹配（A2）：按场景情绪推荐 BGM 槽位风格 + 音量包络 + 停顿；
+            #     任何失败/不可用都回退 `_match_bgm_slot` 规则（与无 LLM 时行为一致）。
+            llm_alloc: dict[str, Any] = {}
+            try:
+                scenes_emotions = self._collect_scenes_emotions(input_data, timeline)
+                if scenes_emotions:
+                    llm_alloc = await self._llm_match_bgm(
+                        scenes_emotions, bgm_slots, context.pipeline_id
+                    )
+                    allocs = llm_alloc.get("allocations", [])
+                    if allocs:
+                        notes.append(f"LLM BGM 情绪匹配: {len(allocs)} 个槽位")
+            except Exception as e:
+                logger.warning("AudioAgent: LLM BGM 匹配异常，回退规则: %s", e)
+                llm_alloc = {}
+
             for clip in audio_track.clips:
                 clip.volume = clip.volume if clip.volume is not None else 0.7
+                meta: dict[str, Any] = {
+                    "bpm": bpm,
+                    "bgm_slot": self._match_bgm_slot(
+                        clip.start_sec, timeline.duration_sec, bgm_slots
+                    ),
+                }
+                allocation = self._allocation_for_clip(
+                    llm_alloc, clip.start_sec, timeline.duration_sec, bgm_slots
+                )
+                if allocation is not None:
+                    if allocation.get("style"):
+                        meta["bgm_style"] = allocation["style"]
+                    if allocation.get("volume_envelope"):
+                        meta["volume_envelope"] = allocation["volume_envelope"]
+                    if allocation.get("pause_design"):
+                        meta["pause_design"] = allocation["pause_design"]
                 clip.metadata = {
                     **getattr(clip, "metadata", {}),
-                    "bpm": bpm,
-                    "bgm_slot": self._match_bgm_slot(clip.start_sec, timeline.duration_sec, bgm_slots),
+                    **meta,
                 }
 
             # 5. 设置淡入淡出
@@ -371,3 +408,218 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                 if key in bgm_slots:
                     return key
         return list(bgm_slots.keys())[0]
+
+    # ── LLM BGM 情绪匹配（A2）────────────────────────────
+
+    @staticmethod
+    def _collect_scenes_emotions(input_data: AudioInput, timeline: Timeline) -> list[dict]:
+        """收集场景情绪输入（标题/描述/可选情绪），供 LLM BGM 匹配。
+
+        优先取制作规划书的 scenes/raw_scenes；缺失时回退到视频轨 clip 的
+        metadata（title/name/description）。
+        """
+        scenes: list[dict] = []
+        plan = input_data.production_plan or {}
+        for key in ("scenes", "raw_scenes"):
+            raw = plan.get(key) or []
+            if not isinstance(raw, list):
+                continue
+            for i, s in enumerate(raw):
+                if not isinstance(s, dict):
+                    continue
+                item: dict[str, Any] = {
+                    "index": i,
+                    "title": str(s.get("title") or "")[:200],
+                    "description": str(s.get("description") or "")[:500],
+                }
+                if s.get("emotion"):
+                    item["emotion"] = str(s["emotion"])[:100]
+                if item["title"] or item["description"]:
+                    scenes.append(item)
+        if scenes:
+            return scenes
+        for t in timeline.tracks:
+            if t.kind != ClipKind.VIDEO:
+                continue
+            for c in t.clips:
+                meta = getattr(c, "metadata", {}) or {}
+                title = str(meta.get("title") or meta.get("name") or "")[:200]
+                desc = str(meta.get("description") or "")[:500]
+                if title or desc:
+                    scenes.append({
+                        "index": len(scenes),
+                        "title": title,
+                        "description": desc,
+                    })
+            if scenes:
+                break
+        return scenes
+
+    async def _llm_match_bgm(
+        self,
+        scenes_emotions: list[dict],
+        bgm_slots: dict,
+        pipeline_id: str = "",
+    ) -> dict:
+        """按场景情绪调用 LLM 推荐 BGM 槽位分配（风格 + 音量包络 + 停顿设计）。
+
+        与 structure_agent._enrich_scene_animations 相同的 LLM 调用模式
+        （LLMService.structured_output + 输出 schema + pipeline_id 追踪）。
+
+        返回 {"allocations": [{"slot", "style", "volume_envelope", "pause_design"}]}；
+        未配置 API key / 输入为空 / LLM 失败 / 输出非法 → 一律返回 {}，
+        由调用方回退 `_match_bgm_slot` 规则（管线在 LLM 不可用时仍可运行）。
+        """
+        if not (settings.llm_api_key or settings.llm_flash_api_key):
+            return {}
+        if not scenes_emotions or not bgm_slots:
+            return {}
+        slot_keys = [str(k) for k in bgm_slots.keys()]
+        try:
+            scenes_text = "\n".join(
+                f"场景{s.get('index', i)}: 标题={s.get('title', '')} | "
+                f"描述={s.get('description', '')}"
+                + (f" | 情绪={s.get('emotion')}" if s.get("emotion") else "")
+                for i, s in enumerate(scenes_emotions)
+            )
+            system_prompt = (
+                "你是视频 BGM 情绪匹配专家。根据分镜场景的情绪基调，为每个 BGM 槽位"
+                "推荐音乐风格，并设计音量包络与停顿。\n\n"
+                "## BGM 槽位（按时间进度划分）\n"
+                f"可用槽位: {'、'.join(slot_keys)}\n"
+                "槽位含义参考：intro/opening/hook=开场铺垫；backing/background="
+                "平稳推进；climax/build/intensity=高潮；outro/resolution=收尾。\n\n"
+                "## 输出要求\n"
+                '返回 JSON: {"allocations": [{"slot": "槽位key", '
+                '"style": "音乐风格描述(如 warm ambient piano / tense electronic)", '
+                '"volume_envelope": [{"t": 0-1(相对时长), "v": 0-1(音量)}], '
+                '"pause_design": {"pause_before_sec": 秒, "pause_after_sec": 秒}}]}\n'
+                "- slot 必须是给定槽位之一，每个槽位最多一条 allocation；\n"
+                "- 包络至少 2 个点，t 由 0 递增到 1，音量 0-1；\n"
+                "- 停顿秒数必须 >= 0。"
+            )
+            user_prompt = (
+                f"以下是 {len(scenes_emotions)} 个分镜场景（含标题/描述/情绪），"
+                f"请为各 BGM 槽位推荐风格与包络：\n\n{scenes_text}"
+            )
+            result = await self._llm.structured_output(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "allocations": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "slot": {"type": "string"},
+                                    "style": {"type": "string"},
+                                    "volume_envelope": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "t": {"type": "number"},
+                                                "v": {"type": "number"},
+                                            },
+                                            "required": ["t", "v"],
+                                        },
+                                    },
+                                    "pause_design": {
+                                        "type": "object",
+                                        "properties": {
+                                            "pause_before_sec": {"type": "number"},
+                                            "pause_after_sec": {"type": "number"},
+                                        },
+                                    },
+                                },
+                                "required": ["slot"],
+                            },
+                        },
+                    },
+                    "required": ["allocations"],
+                },
+                pipeline_id=pipeline_id,
+            )
+            return self._sanitize_allocations(result, slot_keys)
+        except Exception as e:
+            logger.warning("AudioAgent: LLM BGM 匹配失败，回退规则: %s", e)
+            return {}
+
+    @staticmethod
+    def _sanitize_allocations(result: Any, slot_keys: list[str]) -> dict:
+        """校验并归一化 LLM 返回的 allocations（防误导性/畸形输出）。
+
+        非法槽位、非法类型、越界数值一律丢弃；全部非法时返回 {}。
+        """
+        if not isinstance(result, dict):
+            return {}
+        raw = result.get("allocations")
+        if not isinstance(raw, list):
+            return {}
+        ok: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for a in raw:
+            if not isinstance(a, dict):
+                continue
+            slot = a.get("slot")
+            if not isinstance(slot, str) or slot not in slot_keys or slot in seen:
+                continue
+            seen.add(slot)
+            entry: dict[str, Any] = {"slot": slot}
+            style = a.get("style")
+            if isinstance(style, str) and style.strip():
+                entry["style"] = style.strip()[:200]
+            env = a.get("volume_envelope")
+            if isinstance(env, list) and len(env) >= 2:
+                pts = []
+                for p in env:
+                    if not isinstance(p, dict):
+                        continue
+                    t, v = p.get("t"), p.get("v")
+                    if (
+                        isinstance(t, (int, float)) and not isinstance(t, bool)
+                        and isinstance(v, (int, float)) and not isinstance(v, bool)
+                    ):
+                        pts.append({
+                            "t": max(0.0, min(1.0, float(t))),
+                            "v": max(0.0, min(1.0, float(v))),
+                        })
+                if len(pts) >= 2:
+                    pts.sort(key=lambda p: p["t"])
+                    entry["volume_envelope"] = pts
+            pause = a.get("pause_design")
+            if isinstance(pause, dict):
+                p_entry = {}
+                for key in ("pause_before_sec", "pause_after_sec"):
+                    val = pause.get(key)
+                    if (
+                        isinstance(val, (int, float)) and not isinstance(val, bool)
+                        and val >= 0
+                    ):
+                        p_entry[key] = float(val)
+                if p_entry:
+                    entry["pause_design"] = p_entry
+            if len(entry) > 1:  # 仅保留至少携带一项增强的分配（防空壳误导）
+                ok.append(entry)
+        if not ok:
+            return {}
+        return {"allocations": ok}
+
+    @staticmethod
+    def _allocation_for_clip(
+        alloc: dict, clip_start: float, total_duration: float, bgm_slots: dict
+    ) -> dict | None:
+        """取 clip 时间位置命中的 LLM 分配项。
+
+        槽位归属仍由 `_match_bgm_slot` 规则决定（时间进度分界不变），
+        LLM 只提供该槽位的风格/包络/停顿增强。
+        """
+        if not alloc or not isinstance(alloc, dict):
+            return None
+        slot = AudioAgent._match_bgm_slot(clip_start, total_duration, bgm_slots)
+        for a in alloc.get("allocations", []):
+            if isinstance(a, dict) and a.get("slot") == slot:
+                return a
+        return None
