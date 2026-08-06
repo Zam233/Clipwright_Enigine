@@ -545,6 +545,13 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         clip.metadata["label"] = clip_label
         if asset:
             clip.metadata["source_title"] = asset.get("title", "")
+            # 素材 URL/本地路径持久化到 metadata，供前端预览经 /api/asset/by-path 拉取真实媒体
+            src_url = asset.get("url") or ""
+            src_local = asset.get("local_path") or ""
+            if src_url:
+                clip.metadata["url"] = src_url
+            if src_local:
+                clip.metadata["local_path"] = src_local
 
         if kind in (ClipKind.VIDEO, ClipKind.IMAGE):
             clip.image_fit = ImageFit.COVER

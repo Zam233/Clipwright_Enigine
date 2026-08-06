@@ -80,6 +80,48 @@ async def list_assets(project_id: str = Query("")) -> list[dict]:
     return result
 
 
+@router.get("/by-path")
+async def get_asset_by_path(path: str = Query(...)):
+    """通过本地路径返回媒体文件流（安全白名单代理）。
+
+    仅服务 allowed_media_roots() 白名单内的路径（renders / library /
+    editor_projects / projects / PluginData / persona_dir / tts_output_dir）。
+    素材候选的 local_path 若在白名单外（如 json_source 自定义路径、_cache 裁剪缓存）
+    → 返回 403，前端须优雅降级（预览回退占位块）。
+    """
+    from clipwright.security import SecurityViolation, assert_allowed_path
+
+    try:
+        target = assert_allowed_path(Path(path))
+    except SecurityViolation as e:
+        # 显式转 403：绕过 main.py 全局 SecurityViolation 处理（返回 400），给出明确语义
+        raise HTTPException(status_code=403, detail=f"Path not allowed: {e}") from e
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Path not found")
+    return FileResponse(target, media_type=_guess_media_type(target))
+
+
+def _guess_media_type(path: Path) -> str:
+    """按扩展名推断媒体 MIME 类型（视频/图片/音频）。"""
+    return {
+        ".mp4": "video/mp4",
+        ".webm": "video/webm",
+        ".mov": "video/quicktime",
+        ".mkv": "video/x-matroska",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+        ".m4a": "audio/mp4",
+        ".aac": "audio/aac",
+        ".ogg": "audio/ogg",
+        ".flac": "audio/flac",
+    }.get(path.suffix.lower(), "application/octet-stream")
+
+
 @router.get("/{asset_id}")
 async def get_asset(asset_id: str, project_id: str = Query("")) -> dict:
     """获取素材信息。"""
