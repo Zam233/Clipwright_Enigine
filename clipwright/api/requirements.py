@@ -34,6 +34,13 @@ class ChatRequest(BaseModel):
     message: str
 
 
+class EditRequest(BaseModel):
+    session_id: str
+    message: str
+    timeline: dict[str, Any] = {}
+    selected_clip_ids: list[str] = []
+
+
 class ProceedRequest(BaseModel):
     session_id: str
     persona_id: str = ""
@@ -56,6 +63,33 @@ async def init_session(req: InitRequest) -> dict:
     }
     session = await asyncio.to_thread(_service.create_session, user_inputs)
     return session
+
+
+@router.post("/edit")
+async def edit_timeline(req: EditRequest) -> dict:
+    """时间线编辑：按选中素材 + 自然语言指令，三路分发（换素材 / 重做动画 / 数值调整）。
+
+    整体用 wait_for 兜底：即使底层 Agent/LLM 意外卡死，也保证在时限内返回可重试错误。
+    """
+    EDIT_HARD_TIMEOUT = 660
+    try:
+        result = await asyncio.wait_for(
+            _service.edit_timeline(
+                req.session_id, req.message, req.timeline, req.selected_clip_ids,
+            ),
+            timeout=EDIT_HARD_TIMEOUT,
+        )
+        if "error" in result:
+            raise HTTPException(status_code=404, detail=result["error"])
+        return result
+    except asyncio.TimeoutError:
+        logger.error("时间线编辑处理超时（>%ss），会话 %s 可能卡死", EDIT_HARD_TIMEOUT, req.session_id)
+        raise HTTPException(status_code=504, detail="处理超时，请稍后重试")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Timeline edit error: %s", e)
+        raise HTTPException(status_code=500, detail="时间线编辑失败，请稍后重试")
 
 
 @router.post("/chat")

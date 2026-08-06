@@ -33,6 +33,7 @@ from clipwright.schema.requirements import (
 )
 from clipwright.services.llm import LLMService
 from clipwright.services.trace import add_event
+from clipwright.schema.timeline import Timeline, Track
 
 # ── 常量 ──────────────────────────────────────────
 
@@ -44,6 +45,19 @@ BRIEF_GENERATE_TIMEOUT = 180     # 简报生成单次调用超时（秒）
 PLAN_TRANSLATE_TIMEOUT = 240     # 规划书翻译单次调用超时（秒）
 SESSION_TTL_HOURS = 48           # 会话过期时间
 SESSION_CLEANUP_INTERVAL = 3600  # 清理检查间隔（秒）
+
+# 时间线数值调整字段白名单 + 边界钳制（值域外拒绝/钳位）
+_ADJUST_FIELDS: dict[str, tuple[type, Any]] = {
+    "speed": (float, lambda v: max(0.25, min(4.0, float(v)))),
+    "volume": (float, lambda v: max(0.0, min(1.0, float(v)))),
+    "opacity": (float, lambda v: max(0.0, min(1.0, float(v)))),
+    "duration_sec": (float, lambda v: max(0.1, float(v))),
+    "start_sec": (float, lambda v: max(0.0, float(v))),
+    "source_offset_sec": (float, lambda v: max(0.0, float(v))),
+    "font_size": (float, lambda v: max(8.0, min(200.0, float(v)))),
+    "font_color": (str, lambda v: v if isinstance(v, str) else "#FFFFFF"),
+    "text": (str, lambda v: str(v)),
+}
 
 
 _memory_sessions: dict[str, dict] = {}
@@ -476,6 +490,346 @@ class RequirementsService:
             "",
         )
         return {**session, "reply": last_assistant}
+
+    # ── 时间线编辑（选中素材 + 自然语言指令） ──────────
+
+    async def edit_timeline(
+        self,
+        session_id: str,
+        user_message: str,
+        timeline: dict[str, Any],
+        selected_clip_ids: list[str],
+    ) -> dict:
+        """时间线编辑：意图分类 → 换素材 / 重做动画 / 数值调整 → 返回 proposed_timeline。
+
+        timeline 入参为 dict；构建子集/合并时须 Timeline.model_validate 转为 pydantic，
+        返回前 model_dump(mode="json") 序列化。
+        """
+        await self._ensure_cleanup()
+        session_data = self.get_session(session_id)
+        if not session_data:
+            return {"error": "Session not found"}
+
+        messages = session_data.get("messages", [])
+        user_inputs = session_data.get("user_inputs", {})
+        brief_data = session_data.get("creative_brief")
+        plan_data = session_data.get("production_plan")
+
+        # 追加用户消息，保留对话上下文
+        messages.append({
+            "role": "user",
+            "content": truncate_message(user_message),
+            "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+            "metadata": {"edit": True},
+        })
+
+        proposed: Timeline | None = Timeline.model_validate(timeline) if timeline else None
+        reply_parts: list[str] = []
+        action = "adjust"  # 最保守默认：不回退、不越权
+
+        # LLM 意图分类（flash 轻量模型，temperature=0）；失败回退 adjust
+        try:
+            intent = await self._llm.structured_output(
+                system_prompt=(
+                    "你是视频时间线编辑意图分类器。用户选中了时间轴上的若干片段并输入自然语言指令，"
+                    "判断用户意图并仅输出符合 schema 的 JSON：\n"
+                    "- replace_material：换素材/换画面/替换片段素材/找更合适的视频/换更明亮的图片\n"
+                    "- redo_animation：重做动画/动画重来/换个动画效果/让动画动起来\n"
+                    "- adjust：数值/参数调整（速度、音量、透明度、时长、位置、字号、颜色等）或其它"
+                ),
+                user_prompt=f"选中片段: {selected_clip_ids}\n指令: {user_message}",
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["replace_material", "redo_animation", "adjust"]},
+                    },
+                    "required": ["action"],
+                },
+                temperature=0,
+                max_tokens=16,
+                pipeline_id=session_id,
+                use_flash=True,
+            )
+            if isinstance(intent, dict) and intent.get("action") in ("replace_material", "redo_animation", "adjust"):
+                action = intent["action"]
+        except Exception as e:
+            logger.warning("编辑意图分类失败，默认 adjust: %s", e)
+
+        if proposed is not None and selected_clip_ids:
+            try:
+                if action == "replace_material":
+                    proposed, notes = await self._edit_replace_material(
+                        proposed, selected_clip_ids, session_id, brief_data, plan_data, user_inputs,
+                    )
+                    reply_parts.extend(notes)
+                elif action == "redo_animation":
+                    proposed, notes = await self._edit_redo_animation(
+                        proposed, selected_clip_ids, session_id, brief_data, plan_data, user_inputs,
+                    )
+                    reply_parts.extend(notes)
+                else:
+                    proposed, notes = await self._edit_adjust(proposed, selected_clip_ids, user_message)
+                    reply_parts.extend(notes)
+            except Exception as e:
+                logger.exception("时间线编辑执行失败: %s", e)
+                reply_parts.append(f"编辑执行出错：{str(e)[:120]}")
+
+        status = session_data.get("status", "plan_ready")
+        reply = "；".join(reply_parts) if reply_parts else "已收到，未对时间线做任何修改。"
+        messages.append({
+            "role": "assistant",
+            "content": reply,
+            "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+            "metadata": {"edit": True, "action": action},
+        })
+        await asyncio.to_thread(
+            self._persist, session_id, status, messages, brief_data, plan_data, user_inputs,
+        )
+        add_event(session_id, "system", "info", f"时间线编辑[{action}]: {reply[:100]}")
+
+        return {
+            "reply": reply,
+            "action": action,
+            "proposed_timeline": proposed.model_dump(mode="json") if proposed is not None else timeline,
+        }
+
+    def _find_clip(self, timeline: Timeline, clip_id: str) -> tuple[Track, Any] | None:
+        """按 id 在时间线中查找 clip（返回所在轨道 + clip）。"""
+        for track in timeline.tracks:
+            for clip in track.clips:
+                if clip.id == clip_id:
+                    return track, clip
+        return None
+
+    async def _edit_replace_material(
+        self,
+        timeline: Timeline,
+        selected_clip_ids: list[str],
+        session_id: str,
+        brief_data: dict | None,
+        plan_data: dict | None,
+        user_inputs: dict[str, Any],
+    ) -> tuple[Timeline, list[str]]:
+        """替换素材：对每个选中 clip 构建 1-场景骨架 → MaterialAgent → 取最优建议素材替换。"""
+        from clipwright.agents.material_agent import MaterialAgent
+        from clipwright.schema.agent import AgentContext, MaterialInput
+        from clipwright.persona.loader import load_persona_by_id, resolve_inheritance
+
+        topic = user_inputs.get("topic", "")
+        persona_id = user_inputs.get("persona_id", "default")
+        plugin_id = user_inputs.get("category_plugin_id", "knowledge_longform")
+        persona_config: dict[str, Any] = {}
+        try:
+            manifest = load_persona_by_id(persona_id)
+            manifest = resolve_inheritance(manifest)
+            persona_config = manifest.parameter.model_dump(mode="json") if manifest.parameter else {}
+        except Exception:
+            pass
+
+        context = AgentContext(
+            pipeline_id=session_id, persona_id=persona_id,
+            category_plugin_id=plugin_id, topic=topic, extra_params=dict(user_inputs),
+        )
+        notes: list[str] = []
+        for cid in selected_clip_ids:
+            found = self._find_clip(timeline, cid)
+            if not found:
+                continue
+            _track, clip = found
+            clip_text = clip.text if isinstance(getattr(clip, "text", None), str) else None
+            scene_title = clip_text or clip.metadata.get("source_title") or "选中片段"
+            scene = {
+                "title": scene_title,
+                "keywords": [],
+                "description": clip.metadata.get("description") or clip_text or "",
+            }
+            try:
+                out = await MaterialAgent().execute(
+                    MaterialInput(
+                        context=context,
+                        script_skeleton={"scenes": [scene]},
+                        persona_config=persona_config,
+                        creative_brief=brief_data,
+                        production_plan=plan_data,
+                    ),
+                    context,
+                )
+            except Exception as e:
+                logger.exception("换素材失败 clip=%s: %s", cid, e)
+                notes.append(f"片段 {cid} 换素材失败")
+                continue
+            candidates = list(getattr(out, "candidate_clips", None) or [])
+            asset = None
+            if candidates:
+                suggested = candidates[0].get("suggested_assets") or []
+                if suggested:
+                    asset = suggested[0]
+            # 空值守卫：无候选/无注册素材源时保持原片段，不得 IndexError
+            new_asset_id = ""
+            if asset:
+                new_asset_id = asset.get("asset_id") or asset.get("url") or asset.get("local_path") or ""
+            if not new_asset_id:
+                notes.append("未找到替代素材，已保留原片段")
+                continue
+            clip.asset_id = new_asset_id
+            merged = dict(clip.metadata or {})
+            if asset.get("url"):
+                merged["url"] = asset["url"]
+            if asset.get("local_path"):
+                merged["local_path"] = asset["local_path"]
+            if asset.get("title"):
+                merged["source_title"] = asset["title"]
+            merged.setdefault("label", f"v_{cid}")
+            clip.metadata = merged
+            notes.append(f"片段 {cid} 已更换素材")
+        return timeline, notes
+
+    async def _edit_redo_animation(
+        self,
+        timeline: Timeline,
+        selected_clip_ids: list[str],
+        session_id: str,
+        brief_data: dict | None,
+        plan_data: dict | None,
+        user_inputs: dict[str, Any],
+    ) -> tuple[Timeline, list[str]]:
+        """重做动画：构建只含选中 clip 的子集时间线 → AnimationAgent → 按 id 合并回当前时间线。"""
+        from clipwright.agents.animation_agent import AnimationAgent
+        from clipwright.schema.agent import AgentContext, AnimationInput
+
+        persona_id = user_inputs.get("persona_id", "default")
+        plugin_id = user_inputs.get("category_plugin_id", "knowledge_longform")
+        topic = user_inputs.get("topic", "")
+        context = AgentContext(
+            pipeline_id=session_id, persona_id=persona_id,
+            category_plugin_id=plugin_id, topic=topic, extra_params=dict(user_inputs),
+        )
+
+        selected = set(selected_clip_ids)
+        subset_tracks: list[Track] = []
+        for track in timeline.tracks:
+            keep = [c for c in track.clips if c.id in selected]
+            if keep:
+                subset_tracks.append(Track(
+                    id=track.id, name=track.name, kind=track.kind, index=track.index,
+                    clips=keep, locked=track.locked, muted=track.muted,
+                ))
+        if not subset_tracks:
+            return timeline, ["未找到选中片段，未执行动画重做"]
+
+        subset = Timeline(
+            id=timeline.id, width=timeline.width, height=timeline.height,
+            fps=timeline.fps, duration_sec=timeline.duration_sec, tracks=subset_tracks,
+        )
+        visual_config: dict[str, Any] = {}
+        if isinstance(brief_data, dict):
+            anim_style = brief_data.get("animation_style")
+            if isinstance(anim_style, dict):
+                visual_config = anim_style
+        try:
+            out = await AnimationAgent().execute(
+                AnimationInput(
+                    context=context, timeline=subset, visual_config=visual_config,
+                    creative_brief=brief_data, production_plan=plan_data,
+                ),
+                context,
+            )
+        except Exception as e:
+            logger.exception("动画重做失败: %s", e)
+            return timeline, [f"动画重做失败：{str(e)[:100]}"]
+
+        new_tl = out.timeline
+        if new_tl is None or not new_tl.tracks:
+            return timeline, ["动画重做无结果，时间线未变化"]
+
+        # 按 id 合并回当前时间线；新增 clip 追加到其轨道
+        out_by_id: dict[str, Any] = {}
+        for tr in new_tl.tracks:
+            for c in tr.clips:
+                out_by_id[c.id] = c
+        merged_count = 0
+        for track in timeline.tracks:
+            for i, clip in enumerate(track.clips):
+                if clip.id in out_by_id:
+                    track.clips[i] = out_by_id.pop(clip.id)
+                    merged_count += 1
+        for c in out_by_id.values():
+            for track in timeline.tracks:
+                if track.id == c.track_id:
+                    track.clips.append(c)
+                    break
+        return timeline, [f"已重做动画（更新 {merged_count} 个片段）"]
+
+    async def _edit_adjust(
+        self,
+        timeline: Timeline,
+        selected_clip_ids: list[str],
+        user_message: str,
+    ) -> tuple[Timeline, list[str]]:
+        """数值调整：LLM 解析 ops → 白名单字段 + 边界校验后应用。"""
+        selected = set(selected_clip_ids)
+        ops: list[dict[str, Any]] = []
+        try:
+            resp = await self._llm.structured_output(
+                system_prompt=(
+                    "你是时间线数值调整解析器。根据用户指令输出对选中片段的属性调整操作，仅输出符合 schema 的 JSON："
+                    "{\"ops\":[{\"clip_id\":\"...\",\"field\":\"...\",\"value\":...}]}。"
+                    "clip_id 必须是选中片段之一。field 取值：speed/volume/opacity/duration_sec/start_sec/"
+                    "source_offset_sec/font_size/font_color/text。value 为数值或字符串。"
+                    "若指令不涉及任何数值调整，输出 {\"ops\":[]}。"
+                ),
+                user_prompt=f"选中片段: {sorted(selected)}\n指令: {user_message}",
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "ops": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "clip_id": {"type": "string"},
+                                    "field": {"type": "string"},
+                                    "value": {},
+                                },
+                                "required": ["clip_id", "field", "value"],
+                            },
+                        }
+                    },
+                    "required": ["ops"],
+                },
+                temperature=0,
+                max_tokens=256,
+                pipeline_id="",
+                use_flash=True,
+            )
+            ops = (resp or {}).get("ops") or []
+        except Exception as e:
+            logger.warning("数值调整解析失败: %s", e)
+            return timeline, ["无法解析调整指令"]
+
+        notes: list[str] = []
+        applied = 0
+        for op in ops:
+            cid = op.get("clip_id")
+            field = op.get("field")
+            value = op.get("value")
+            if cid not in selected or field not in _ADJUST_FIELDS:
+                continue
+            found = self._find_clip(timeline, cid)
+            if not found:
+                continue
+            _track, clip = found
+            try:
+                kind, clamp_fn = _ADJUST_FIELDS[field]
+                if kind is float:
+                    setattr(clip, field, clamp_fn(value))
+                else:
+                    setattr(clip, field, clamp_fn(value))
+                applied += 1
+            except (TypeError, ValueError):
+                continue
+        notes.append(f"已应用 {applied} 项调整")
+        return timeline, notes
 
     async def _is_confirm(self, message: str) -> bool:
         """判断用户回复是否为对当前方案的确认/批准。
