@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 from clipwright.agents.base import BaseAgent, uid as _uid
@@ -62,6 +63,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         self._tl_width = 1920
         self._tl_height = 1080
         self._tl_fps = 30.0
+        # A7: 图片素材库语义索引 {path, tags, description} — execute() 中构建，
+        # 供 mg_dynamic 生成 prompt 让 LLM 主动选择语义匹配图片（防 📡→石墨烯 类错配）
+        self._image_index: list[dict[str, Any]] = []
 
     async def execute(
         self, input_data: AnimationInput, context: AgentContext
@@ -91,6 +95,22 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             persona_style = await self._resolve_style(
                 input_data.visual_config, context.extra_params,
             )
+
+            # A7: 图片素材库语义索引 — 对 image_assets 逐个调用视觉分析器
+            # （VisionService.analyze_image）构建 {path, tags, description}；
+            # 分析失败回退文件名标签；无 image_assets 时保持原有行为（不调用分析器）。
+            self._image_index = []
+            try:
+                image_assets = getattr(input_data, "image_assets", None) or []
+                if image_assets:
+                    self._image_index = await self._build_image_semantic_index(image_assets)
+                    if self._image_index:
+                        logger.info("AnimationAgent: 图片语义索引 %d 项", len(self._image_index))
+                        add_event(context.pipeline_id, "animation", "image_index",
+                                  f"图片语义索引 {len(self._image_index)} 项（LLM 选图入动画）")
+            except Exception:
+                logger.exception("AnimationAgent: 图片语义索引构建失败，忽略图片素材库")
+                self._image_index = []
 
             # 解析视频类型（category）特征，注入 LLM MG 生成器
             # （由引擎结合 Persona + 类型数据自行决定动画设计）
@@ -622,9 +642,15 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             "description": scene_meta.get("description", ""),
         }
 
+        # A7: 图片语义索引注入 mg_dynamic 生成 prompt — 让 LLM 理解图片内容后
+        # 主动选择语义匹配的图片放入动画 image 元素（防图标语义错配）
+        gen_description = description
+        if getattr(self, "_image_index", None):
+            gen_description = description + self._format_image_index_prompt(self._image_index)
+
         try:
             result = await mg_gen.generate(
-                description=description,
+                description=gen_description,
                 text_content=text_parts or text_content,
                 persona_style=persona_style or {},
                 scene_context=scene_context,
@@ -680,6 +706,73 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         logger.info("AnimationAgent: [LLM MG]%s → method=%s, html=%d chars",
                      anim_name, method, len(html))
         self._llm_mg_generated += 1
+
+    # ── A7: 图片素材库语义索引 ────────────────────────────────
+
+    async def _build_image_semantic_index(
+        self, image_assets: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """对图片资产逐个调用视觉分析器，构建语义索引 {path, tags, description}。
+
+        优先级：分析器结果 > 资产自带 tags/description > 文件名标签（保底）。
+        非 dict / 缺 path / 空 path 的资产直接跳过（malformed_input 对抗）。
+        """
+        from clipwright.services.vision import VisionService
+
+        analyzer = VisionService()
+        index: list[dict[str, Any]] = []
+        for asset in image_assets or []:
+            if not isinstance(asset, dict):
+                continue
+            path = asset.get("path") or asset.get("src") or ""
+            if not isinstance(path, str) or not path.strip():
+                continue
+            entry: dict[str, Any] = {"path": path}
+            tags: Any = None
+            description: Any = None
+            try:
+                result = await analyzer.analyze_image(path)
+                if isinstance(result, dict):
+                    tags = result.get("tags")
+                    description = result.get("description")
+            except Exception:
+                logger.debug("AnimationAgent: 图片分析失败，回退文件名标签: %s", path)
+                tags, description = None, None
+            if not tags:
+                tags = asset.get("tags")
+            if not description:
+                description = asset.get("description")
+            if not tags:
+                tags = self._filename_tags(path)
+            if not description:
+                description = f"文件: {Path(path).name}"
+            entry["tags"] = [str(t) for t in tags][:6] if isinstance(tags, list) else [str(tags)]
+            entry["description"] = str(description)
+            index.append(entry)
+        return index
+
+    @staticmethod
+    def _filename_tags(path: str) -> list[str]:
+        """从文件名提取标签（分析失败时的保底）。"""
+        stem = Path(path).stem
+        return [p for p in re.split(r"[\s_\-]+", stem) if len(p) > 2 and not p.isdigit()][:6]
+
+    @staticmethod
+    def _format_image_index_prompt(image_index: list[dict[str, Any]]) -> str:
+        """把图片语义索引格式化为 mg_dynamic 生成 prompt 的选图段落。"""
+        lines: list[str] = []
+        for i, entry in enumerate(image_index or [], 1):
+            tags = "、".join(str(t) for t in (entry.get("tags") or []))
+            lines.append(
+                f"{i}. 路径: {entry.get('path', '')}\n"
+                f"   标签: {tags}\n"
+                f"   语义描述: {entry.get('description', '')}"
+            )
+        return (
+            "\n\n## 可用图片列表（含语义描述）\n"
+            "选择语义匹配的图片放入动画 image 元素：\n"
+            + "\n".join(lines)
+        )
 
     def _create_fallback_text_clip(
         self,

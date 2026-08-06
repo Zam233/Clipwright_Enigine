@@ -59,7 +59,7 @@ class MGRenderer:
 
     # 元素级已显式渲染/结构性字段，静态透传时排除，避免重复输出
     STATIC_EXCLUDE_KEYS = {
-        "type", "content", "shape", "color", "background",
+        "type", "content", "shape", "color", "background", "src",
         "x", "y", "x_offset", "y_offset", "keyframes",
         "font_size", "font_color", "font_weight",
         "width", "height", "border_radius",
@@ -325,6 +325,25 @@ const dur=parseFloat(root.dataset.duration);
                 + (f'border:{sw}px solid {fill(sw_color)};' if sw else "")
                 + static_style
                 + '"></div>'
+            )
+        elif elem_type == "image":
+            # 图片元素：<img> 渲染。src 为图片资源路径（素材库/本地文件/URL），
+            # x/y 定位、width/height 尺寸；opacity/scale/translate 等关键帧动画
+            # 复用上方通用 keyframe 机制（与 text/shape 等元素一致）。
+            src = fill(elem.get("src", ""))
+            w_val = fill(elem.get("width", 320))
+            h_val = fill(elem.get("height", 240))
+            radius_css = ""
+            br = elem.get("border_radius", 0)
+            if br not in (0, "0", 0.0):
+                radius_css = f"border-radius:{fill(br)};"
+            html = (
+                f'<img id="{eid}" class="mg-el mg-image" '
+                f'src="{MGRenderer._esc(str(src))}" alt="" '
+                f'style="{base_css}width:{w_val}px;height:{h_val}px;'
+                f'object-fit:contain;{radius_css}'
+                + static_style
+                + '"/>'
             )
         else:
             return None

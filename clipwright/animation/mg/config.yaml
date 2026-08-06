@@ -87,6 +87,7 @@ prompt:
     - ring: 圆环（border-radius:50% + 空心 border）
     - arc: 圆弧（border 上/右圆角近似，非真弧）
     - bg: 全幅背景层（position:absolute;inset:0;z-index:0，渐变/底色层）
+    - image: 图片元素（src 为图片资源路径；x/y 数字定位，width/height 尺寸；可把截图、图标、照片放入动画，同样支持关键帧动画）
     组合使用可构建任意图形：柱状图=rect阵列、饼图=circle/ring 扇区、折线=line 旋转拼接、
     粒子=小尺寸 shape/circle、环形进度=ring。
 

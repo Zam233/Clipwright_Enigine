@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 REQUIRED_TOP_KEYS = {"animation_id", "elements"}
-VALID_ELEMENT_TYPES = {"text", "shape", "line", "circle", "ring", "arc", "bg"}
+VALID_ELEMENT_TYPES = {"text", "shape", "line", "circle", "ring", "arc", "bg", "image"}
 VALID_SHAPES = {"rect", "ellipse"}
 VALID_POSITIONS = {"center", "left", "right", "top", "bottom"}
 ANIMATABLE_PROPS = {
@@ -74,6 +74,20 @@ def _validate_element(elem: dict, index: int, total_dur: float) -> list[str]:
             errors.append(f"{prefix}: shape element missing 'shape' field")
         elif elem.get("shape") not in VALID_SHAPES:
             errors.append(f"{prefix}: shape must be one of {VALID_SHAPES}")
+
+    if elem_type == "image":
+        # image 元素必须提供非空 src；x/y/width/height 必须为数值
+        src = elem.get("src")
+        if not isinstance(src, str) or not src.strip():
+            errors.append(f"{prefix}: image element missing non-empty 'src'")
+        for field in ("x", "y"):
+            v = elem.get(field)
+            if not isinstance(v, (int, float)):
+                errors.append(f"{prefix}: image element '{field}' must be a number, got {v!r}")
+        for field in ("width", "height"):
+            v = elem.get(field)
+            if not isinstance(v, (int, float)) or v <= 0:
+                errors.append(f"{prefix}: image element '{field}' must be a positive number, got {v!r}")
 
     kfs = elem.get("keyframes", [])
     if not isinstance(kfs, list) or len(kfs) < 2:

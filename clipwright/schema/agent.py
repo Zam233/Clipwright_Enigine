@@ -134,6 +134,10 @@ class AnimationInput(BaseModel):
     production_plan: Optional[dict[str, Any]] = Field(
         default=None, description="用户确认的制作规划书"
     )
+    image_assets: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="素材库图片资产 [{path, tags, description}]，Agent 解析语义供 LLM 选图",
+    )
 
 
 class AnimationOutput(BaseModel):
