@@ -133,7 +133,7 @@ class TestVectorStore:
 class TestReranker:
     def test_rerank_empty(self) -> None:
         r = Reranker()
-        assert r.rerank("query", []) == []
+        assert asyncio.run(r.rerank("query", [])) == []
 
 
 # ── Retriever ──

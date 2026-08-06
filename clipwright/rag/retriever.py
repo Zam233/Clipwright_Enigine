@@ -140,7 +140,7 @@ class Retriever:
 
         # 2. 重排序
         if rerank:
-            candidates = self.reranker.rerank(query, candidates, top_k=top_k)
+            candidates = await self.reranker.rerank(query, candidates, top_k=top_k)
         else:
             candidates = candidates[:top_k]
 

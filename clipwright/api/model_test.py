@@ -84,9 +84,7 @@ async def test_rerank(req: RerankTestRequest) -> dict:
             ScoredChunk(id=f"c{i}", text=t, score=0.5)
             for i, t in enumerate(req.candidates)
         ]
-        results = await asyncio.to_thread(
-            reranker.rerank, req.query, candidates, top_k=req.top_k
-        )
+        results = await reranker.rerank(req.query, candidates, top_k=req.top_k)
         return {
             "success": True,
             "results": [

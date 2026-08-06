@@ -159,7 +159,7 @@ class JsonCatalogSource(MaterialSource):
         if rerank:
             from clipwright.rag.reranker import Reranker
             reranker = Reranker()
-            candidates = reranker.rerank(query, candidates, top_k=top_k)
+            candidates = await reranker.rerank(query, candidates, top_k=top_k)
         else:
             candidates = candidates[:top_k]
 

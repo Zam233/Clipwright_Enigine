@@ -36,7 +36,7 @@ class Reranker:
         self._api_key = api_key or settings.rag_rerank_api_key
         self._model = None  # 懒加载（仅本地模式）
 
-    def rerank(
+    async def rerank(
         self,
         query: str,
         candidates: list[ScoredChunk],
@@ -50,7 +50,7 @@ class Reranker:
 
         if self._base_url and not self._is_hf_mirror(self._base_url):
             # ── API 模式 ──
-            return self._rerank_api(query, candidates, top_k)
+            return await self._rerank_api(query, candidates, top_k)
         else:
             # ── 本地模式 ──
             return self._rerank_local(query, candidates, top_k)
@@ -106,13 +106,13 @@ class Reranker:
 
     # ── API 模式 ──
 
-    def _rerank_api(
+    async def _rerank_api(
         self,
         query: str,
         candidates: list[ScoredChunk],
         top_k: int,
     ) -> list[ScoredChunk]:
-        """调用远程重排序 API。"""
+        """调用远程重排序 API（异步，不阻塞事件循环）。"""
         url = self._base_url.rstrip("/")
         api_key = self._api_key
 
@@ -130,7 +130,8 @@ class Reranker:
         }
 
         try:
-            response = httpx.post(url, json=payload, headers=headers, timeout=30)
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.post(url, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
         except Exception as e:
