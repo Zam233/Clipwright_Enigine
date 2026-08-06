@@ -169,15 +169,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("日志流 Handler 安装失败: %s", e)
 
-    # 5.6 启动预处理后台工作线程
-    try:
-        from clipwright.services.material_preprocessor import preprocess_worker
-        from clipwright.services.async_util import spawn_background
-        spawn_background(preprocess_worker(), name="preprocess-worker")
-        logger.info("素材预处理后台线程已启动")
-    except Exception as e:
-        logger.warning("预处理线程启动失败: %s", e)
-
     # 6. 注入 PluginLoader 到 API 模块
     plugin_api.set_loader(_plugin_loader)
 

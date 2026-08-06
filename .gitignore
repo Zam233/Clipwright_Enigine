@@ -70,6 +70,9 @@ webhooks.json
 _cache/
 _fonts/
 
+# Local backup snapshots (created by internal tooling, not project assets)
+_local_backup_*/
+
 # test logs
 backend-out.log
 *.log

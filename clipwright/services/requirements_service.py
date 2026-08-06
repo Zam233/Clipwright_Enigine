@@ -1242,7 +1242,11 @@ class RequirementsService:
     async def stream_chat(
         self, session_id: str, user_message: str,
     ):
-        """SSE 流式处理对话，逐块推送 LLM 推理。"""
+        """SSE 流式推送对话结果（typing → result）。
+
+        已知限制 / Known limitation: 并非真正的 token-by-token 流式——底层 LLM 调用为非流式
+        （structured_output），完整响应先缓冲再一次性推送；本次范围内不做重构。
+        """
         # 1. 先返回用户消息确认 + typing 指示
         yield {"type": "status", "data": "typing"}
 

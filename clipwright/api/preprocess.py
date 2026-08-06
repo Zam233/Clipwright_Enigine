@@ -5,7 +5,6 @@
   ・缩略图 / 预览帧生成
   ・元数据提取 (分辨率、帧率、时长、编码)
   ・音频提取 + BPM 检测
-  ・字幕/语音转录 (Whisper)
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ import uuid
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -57,7 +56,7 @@ class SubmitRequest(BaseModel):
     file_path: str = Field(description="视频文件路径")
     operations: list[str] = Field(
         default=["metadata", "scenes", "thumbnail"],
-        description="预处理操作: metadata/scenes/thumbnail/audio/bpm/transcribe",
+        description="预处理操作: metadata/scenes/thumbnail/audio/bpm",
     )
 
 
@@ -71,7 +70,7 @@ class BatchSubmitRequest(BaseModel):
 
 
 # 支持的操作
-SUPPORTED_OPERATIONS = ["metadata", "scenes", "thumbnail", "audio", "bpm", "transcribe"]
+SUPPORTED_OPERATIONS = ["metadata", "scenes", "thumbnail", "audio", "bpm"]
 
 
 # ── 内存任务队列 ───────────────────────────────
@@ -95,7 +94,6 @@ async def list_operations() -> dict:
             "thumbnail": "生成缩略图和预览帧序列",
             "audio": "提取音频轨道",
             "bpm": "音频节拍检测 (BPM)",
-            "transcribe": "语音转文字 (Whisper STT)",
         },
     }
 
@@ -222,7 +220,9 @@ async def cancel_task(task_id: str) -> dict:
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
 
     if task["status"] != PreprocessStatus.QUEUED.value:
-        raise HTTPException(status_code=400, detail=f"Cannot cancel task in '{task['status']}' state")
+        raise HTTPException(
+            status_code=400, detail=f"Cannot cancel task in '{task['status']}' state"
+        )
 
     task["status"] = PreprocessStatus.FAILED.value
     task["error"] = "Cancelled by user"
@@ -340,9 +340,6 @@ async def _execute_preprocess(task: dict) -> dict[str, Any]:
                 results["bpm"] = bpm_result
             except Exception as e:
                 results["bpm"] = {"error": str(e)}
-
-        elif op == "transcribe":
-            results["transcribe"] = {"status": "not_implemented", "message": "Whisper STT 待接入"}
 
     return results
 
