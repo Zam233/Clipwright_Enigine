@@ -8,8 +8,10 @@
 5. 转场覆盖率 — 视频片段之间是否有转场
 6. 音量峰值检查
 7. 帧级素材匹配（视觉 LLM 门控）— 关键 scene 抽帧 → VisionService 分析 →
-   与文案做 token 重叠打分，低于阈值产出 material_match 错误问题
-   （触发 redo_agent="material"，复用与 material_agent 相同的 enable_visual_llm 开关）
+    与文案做 token 重叠打分，低于阈值产出 material_match 错误问题
+    （触发 redo_agent="material"，复用与 material_agent 相同的 enable_visual_llm 开关）
+8. LLM 语义质检（enable_semantic_qa 门控，默认关闭）— 文案与创意简报一致性 +
+    错别字/风格；LLM 失败/超时/非 JSON 一律静默跳过（零行为变化）
 """
 
 from __future__ import annotations
@@ -185,6 +187,15 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         frame_issues = await self._check_frame_matches(timeline, context, constraints)
         issues.extend(frame_issues)
 
+        # ── 8. LLM 语义质检（enable_semantic_qa 门控）──
+        # 文案与简报一致性 + 错别字/风格；复用视觉 LLM 门控开关模式，
+        # 默认关闭；LLM 失败/超时/非 JSON 静默跳过（零行为变化）。
+        if constraints.get("enable_semantic_qa", False):
+            semantic_issues = await self._check_semantic_qa(
+                timeline, input_data.creative_brief, context
+            )
+            issues.extend(semantic_issues)
+
         # ── 判定 ──
         errors = [i for i in issues if i.severity == "error"]
         decision = AgentDecision.FAIL if errors else AgentDecision.PASS
@@ -310,4 +321,119 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                         os.remove(p)
                     except OSError:
                         pass
+        return issues
+
+    # ── LLM 语义质检（enable_semantic_qa 门控）─────────────
+
+    async def _check_semantic_qa(
+        self,
+        timeline: Timeline,
+        creative_brief: dict[str, Any] | None,
+        context: AgentContext,
+    ) -> list[QualityIssue]:
+        """LLM 语义质检：文案与创意简报一致性 + 错别字/风格。
+
+        Gate: ``constraints["enable_semantic_qa"]``（默认关闭）——与视觉 LLM
+        （enable_visual_llm）共用同一 constraints 门控模式；关闭或 LLM
+        失败/超时/非 JSON 时直接返回空（零行为变化）。
+
+        LLM 输出仅作数据消费：severity 仅接受 error/warning/info（其余丢弃），
+        category 固定为 ``semantic``，location 取首个关键片段 ID。
+        """
+        # 收集关键片段文案（有文案的 video/image clip，最多 3 个）
+        clip_copy: list[tuple[str, str]] = []  # (clip_id, text)
+        for track in timeline.tracks or []:
+            if track.kind not in (ClipKind.VIDEO, ClipKind.IMAGE):
+                continue
+            for clip in track.clips:
+                text = self._clip_expected_text(clip)
+                if not text and clip.text:
+                    text = str(clip.text).strip()
+                if text:
+                    clip_copy.append((clip.id, text))
+                    if len(clip_copy) >= 3:
+                        break
+            if len(clip_copy) >= 3:
+                break
+
+        if not clip_copy:
+            return []
+
+        # 简报上下文（缺省时占位，避免拼接 None）
+        brief = creative_brief or {}
+        brief_lines = [
+            f"- {key}: {value}"
+            for key in ("special_requirements", "overview")
+            if (value := brief.get(key)) is not None
+        ]
+        brief_text = "\n".join(brief_lines) or "（无简报内容）"
+
+        clips_text = "\n".join(f"[{cid}] {text}" for cid, text in clip_copy)
+        system_prompt = (
+            "你是一名视频质检编辑。检查给定视频文案与创意简报的一致性、"
+            "错别字与风格问题。只输出 JSON。"
+        )
+        user_prompt = (
+            "【创意简报】\n"
+            f"{brief_text}\n\n"
+            "【视频文案】\n"
+            f"{clips_text}\n\n"
+            "请检查文案与简报的一致性、错别字与风格问题。"
+            '输出格式: {"issues": [{"severity": "error|warning|info", '
+            '"category": "semantic", "message": "问题描述"}]}\n'
+            "其中 severity 仅可为 error / warning / info。"
+        )
+
+        try:
+            from clipwright.services.llm import LLMService
+
+            result = await asyncio.wait_for(
+                LLMService().structured_output(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    use_flash=True,
+                    pipeline_id=context.pipeline_id,
+                ),
+                timeout=30,
+            )
+        except Exception as e:
+            # LLM 失败/超时 → 静默跳过（零行为变化）
+            logger.debug("QualityAgent: 语义质检 LLM 调用失败，跳过: %s", e)
+            return []
+
+        # structured_output 已剥离 markdown 围栏并做 JSON 解析；解析失败时
+        # 返回 {"content": ...}（无 issues 键），同样视为无可用结果
+        raw_issues = result.get("issues") if isinstance(result, dict) else None
+        if not isinstance(raw_issues, list):
+            logger.debug("QualityAgent: 语义质检返回缺少 issues 列表，跳过")
+            return []
+
+        issues: list[QualityIssue] = []
+        for item in raw_issues:
+            if not isinstance(item, dict):
+                continue
+            severity = str(item.get("severity", "")).strip().lower()
+            if severity not in ("error", "warning", "info"):
+                continue
+            message = str(item.get("message", "")).strip()
+            if not message:
+                continue
+            issues.append(QualityIssue(
+                severity=severity,
+                category="semantic",
+                message=message,
+                location=clip_copy[0][0],
+            ))
+
+        if issues:
+            from clipwright.services.trace import add_event
+
+            add_event(
+                context.pipeline_id,
+                "quality",
+                "llm",
+                f"语义质检: {len(issues)} 条问题",
+                {"issues": [i.model_dump() for i in issues]},
+            )
+
         return issues
