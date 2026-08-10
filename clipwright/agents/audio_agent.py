@@ -12,6 +12,7 @@ from typing import Any
 
 from clipwright.agents.base import BaseAgent
 from clipwright.config import logger, settings
+from clipwright.material.registry import MaterialRegistry
 from clipwright.schema.agent import (
     AgentContext,
     AgentDecision,
@@ -21,6 +22,42 @@ from clipwright.schema.agent import (
 from clipwright.schema.timeline import Clip, ClipKind, Timeline, Track
 from clipwright.services.llm import LLMService
 from clipwright.tool.registry import ToolRegistry
+
+
+async def _search_bgm_from_library(bgm_slots: dict, top_k: int = 3) -> list[dict]:
+    """从素材库检索 BGM 音频（A1）。
+
+    先以 "music" 通用词检索，再按 bgm_slots 槽位风格词补充搜索；
+    仅保留 MaterialType.AUDIO 结果，按分数降序去重。
+    素材库为空 / 无音频结果 / 任何异常一律返回 []，
+    由调用方回退原有 bgm_slots 规则（行为零改动）。
+    """
+    try:
+        from clipwright.schema.material import MaterialType
+
+        if not MaterialRegistry.list():
+            return []
+        queries = ["music"]
+        for v in bgm_slots.values():
+            for item in (v if isinstance(v, list) else [v]):
+                if isinstance(item, str) and item.strip():
+                    queries.append(item.strip())
+        seen: dict[str, dict] = {}
+        for q in queries[:5]:
+            results = await MaterialRegistry.search(q, top_k_per_source=top_k)
+            for r in results:
+                asset = r.asset
+                if getattr(asset, "type", None) == MaterialType.AUDIO:
+                    key = (
+                        getattr(asset, "id", None)
+                        or getattr(asset, "url", None)
+                        or getattr(asset, "title", "")
+                    )
+                    if key and key not in seen:
+                        seen[key] = {"asset": asset, "score": r.score}
+        return sorted(seen.values(), key=lambda x: x["score"], reverse=True)[:top_k]
+    except Exception:
+        return []
 
 
 class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
@@ -117,6 +154,18 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                             notes.append(f"检测到 BPM: {bpm}")
                             break
 
+            # 3b. 素材库 BGM 检索（A1）：优先用素材库音频填充 BGM；
+            #     无素材源/无音频结果/失败一律回退原有 bgm_slots 规则（零改动）。
+            library_bgm: list[dict] = []
+            try:
+                if MaterialRegistry.list():
+                    library_bgm = await _search_bgm_from_library(bgm_slots)
+            except Exception:
+                library_bgm = []
+            if library_bgm:
+                lib_title = (getattr(library_bgm[0]["asset"], "title", "") or "").strip()
+                notes.append(f"BGM 来自素材库: {lib_title or '未命名素材'}")
+
             # 4. 标记 BGM 建议到音频 clip 的 metadata
             # 4a. LLM 情绪匹配（A2）：按场景情绪推荐 BGM 槽位风格 + 音量包络 + 停顿；
             #     任何失败/不可用都回退 `_match_bgm_slot` 规则（与无 LLM 时行为一致）。
@@ -134,7 +183,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                 logger.warning("AudioAgent: LLM BGM 匹配异常，回退规则: %s", e)
                 llm_alloc = {}
 
-            for clip in audio_track.clips:
+            for i, clip in enumerate(audio_track.clips):
                 clip.volume = clip.volume if clip.volume is not None else 0.7
                 meta: dict[str, Any] = {
                     "bpm": bpm,
@@ -142,6 +191,16 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                         clip.start_sec, timeline.duration_sec, bgm_slots
                     ),
                 }
+                # A1: 素材库音频 → 填充 bgm_style / bgm_library（无结果时零改动）
+                if library_bgm:
+                    lib_asset = library_bgm[i % len(library_bgm)]["asset"]
+                    lib_title = (getattr(lib_asset, "title", "") or "").strip()
+                    meta["bgm_library"] = {
+                        "title": lib_title,
+                        "url": getattr(lib_asset, "url", None),
+                        "local_path": getattr(lib_asset, "local_path", None),
+                    }
+                    meta["bgm_style"] = (lib_title or "library music")[:200]
                 allocation = self._allocation_for_clip(
                     llm_alloc, clip.start_sec, timeline.duration_sec, bgm_slots
                 )
@@ -165,6 +224,8 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
             # 6. 如果没有音频 clip，添加一个占位 BGM 建议
             if not audio_track.clips:
                 first_bgm = next(iter(bgm_slots.values()), [""])[0] if bgm_slots else ""
+                if library_bgm:
+                    first_bgm = (getattr(library_bgm[0]["asset"], "title", "") or "").strip()
                 notes.append(f"建议 BGM: {first_bgm or '未配置'}" if first_bgm else "无 BGM 配置")
 
             notes.append(f"音频配置: voice={voice_model or '默认'}, BPM模式={bpm_mode}")
