@@ -67,24 +67,24 @@
 
 | # | 文件 | 变更 | 提交 |
 |---|------|------|------|
-| B1 | `clipwright/config.py` | 新增 web search 配置组（`enable_web_search` 等 6 字段 + `.env` 变量） | `_pending_` |
-| B2 | `clipwright/services/web_search.py`（新） | `WebSearchService`（Bocha 主 + 百度备，可插拔）+ `WebFetchService` + 模块级单例 | `_pending_` |
-| B3 | `clipwright/tool/web_search_tool.py`（新）+ `tool/__init__.py` | `WebSearchTool`/`WebFetchTool` 注册到 ToolRegistry | `_pending_` |
-| B4 | `clipwright/services/requirements_service.py` | W1 chat 全轮次 `with_tools` 接入 | `_pending_` |
-| B5 | `clipwright/services/requirements_service.py` + `agents/requirements_agent.py` | W2 规划书生成注入 web_context | `_pending_` |
-| B6 | `clipwright/agents/structure_agent.py` | W3 脚本生成追加 web 工具 | `_pending_` |
-| B7 | `clipwright/agents/animation_agent.py` + `animation/mg/generator.py` | W5 数据/事实类门控搜索 + `web_context` 参数 | `_pending_` |
-| B8 | `clipwright/agents/audio_agent.py` | A1 BGM 素材库检索 + 回退 | `_pending_` |
-| B9 | `clipwright/agents/requirements_agent.py` + `services/requirements_service.py` | A2 素材库概览注入 | `_pending_` |
-| B10 | `clipwright/agents/quality_agent.py` | C1 LLM 语义质检（`enable_semantic_qa` 门控） | `_pending_` |
+| B1 | `clipwright/config.py` | 新增 web search 配置组（`enable_web_search` 等 6 字段 + `.env` 变量） | `39d25af` |
+| B2 | `clipwright/services/web_search.py`（新） | `WebSearchService`（Bocha 主 + 百度备，可插拔）+ `WebFetchService` + 模块级单例 | `f49af24` |
+| B3 | `clipwright/tool/web_search_tool.py`（新）+ `tool/__init__.py` | `WebSearchTool`/`WebFetchTool` 注册到 ToolRegistry | `465a6ab` |
+| B4 | `clipwright/services/requirements_service.py` | W1 chat 全轮次 `with_tools` 接入 | `5bf2de1` |
+| B5 | `clipwright/services/requirements_service.py` + `agents/requirements_agent.py` | W2 规划书生成注入 web_context | `9bba15c` |
+| B6 | `clipwright/agents/structure_agent.py` | W3 脚本生成追加 web 工具（动态收集已自动包含，测试锁定） | `549acb0` |
+| B7 | `clipwright/agents/animation_agent.py` + `animation/mg/generator.py` | W5 数据/事实类门控搜索 + `web_context` 参数 | `7b38bee` |
+| B8 | `clipwright/agents/audio_agent.py` | A1 BGM 素材库检索 + 回退 | `855c691` |
+| B9 | `clipwright/agents/requirements_agent.py` + `services/requirements_service.py` | A2 素材库概览注入 | `bb64b11` |
+| B10 | `clipwright/agents/quality_agent.py` | C1 LLM 语义质检（`enable_semantic_qa` 门控） | `7f4ca0f` |
 
 ### 前端 `J:\Clipweight-Client`
 
 | # | 文件 | 变更 | 提交 |
 |---|------|------|------|
-| F1 | `src/services/api/pipeline.ts` | 新增 `cancel(pipelineId)` | `_pending_` |
-| F2 | `src/stores/agentStore.ts` | `cancelling` 状态 + `setCancelling` + resetPipeline 复位 | `_pending_` |
-| F3 | `src/features/agent/AgentPanel.tsx` + `src/types/pipeline.ts` | 停止按钮 + SSE `cancelled` 处理 + `PipelineSSEEventType` 增 `cancelled` | `_pending_` |
-| F4 | `docs/frontend-backend-parity.md` | parity 表同步 cancel 端点、移除 regenerate-scene | `_pending_` |
+| F1 | `src/services/api/pipeline.ts` | 新增 `cancel(pipelineId)` | `eeaa9f1` |
+| F2 | `src/stores/agentStore.ts` | `cancelling` 状态 + `setCancelling` + resetPipeline 复位 | `858c4dc` |
+| F3 | `src/features/agent/AgentPanel.tsx` + `src/types/pipeline.ts` | 停止按钮 + SSE `cancelled` 处理 + `PipelineSSEEventType` 增 `cancelled` | `22052256` |
+| F4 | `docs/frontend-backend-parity.md` | parity 表同步 cancel 端点、移除 regenerate-scene | `4ecf4d2` |
 
-> F1（结构验证）核对 后端 10 项 + 前端 4 项提交全部存在后回填 hash；`_pending_` → 具体 hash。
+> 审计文档本身：`dfede83`。全部 10 后端 + 4 前端提交已核实存在（F1 验证通过）。
