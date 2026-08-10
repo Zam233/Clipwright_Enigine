@@ -43,6 +43,7 @@ from clipwright.tool.stubs import (
     WhisperTranscribeTool,
 )
 from clipwright.tool.voice import TextToSpeechTool, VoiceCloneTool
+from clipwright.tool.web_search_tool import WebFetchTool, WebSearchTool
 from clipwright.tool.subtitle import SubtitleBurnTool
 from clipwright.tool.text_video import GenerateTextVideoTool
 from clipwright.tool.video import (
@@ -112,6 +113,8 @@ def register_builtin_tools() -> None:
         VoiceCloneTool(),
         ListAnimationsTool(),
         DescribeLLMMGTool(),
+        WebSearchTool(),
+        WebFetchTool(),
     ]
     for tool in tools:
         ToolRegistry.register(tool)
@@ -173,4 +176,6 @@ __all__ = [
     "VoiceCloneTool",
     "ListAnimationsTool",
     "DescribeLLMMGTool",
+    "WebSearchTool",
+    "WebFetchTool",
 ]
