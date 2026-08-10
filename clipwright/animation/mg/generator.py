@@ -12,12 +12,10 @@ from typing import Any
 
 import yaml
 
-from clipwright.services.llm import LLMService
-from clipwright.config import logger
-
-from clipwright.animation.mg.validator import validate_mg_json, repair_mg_json
 from clipwright.animation.mg.fallback import FallbackEngine
-
+from clipwright.animation.mg.validator import repair_mg_json, validate_mg_json
+from clipwright.config import logger
+from clipwright.services.llm import LLMService
 
 # 残留占位符检测：{word} 形式的字面量在最终 HTML 中出现即视为未填充
 _RESIDUAL_PLACEHOLDER_RE = re.compile(r"\{[a-zA-Z_][a-zA-Z0-9_]*\}")
@@ -63,7 +61,8 @@ _CRITIQUE_CHECK_ITEMS = (
     "\n## 评审检查项（必须逐项检查）\n"
     "- 构图（composition）：整体构图是否居中平衡，是否存在偏左/偏右或大面积留白。\n"
     "- 层级（hierarchy）：元素层级是否清晰，连接线是否穿入节点内部、是否遮挡文字。\n"
-    "- 方向（direction）：箭头/运动方向是否与语义一致（流程 L→R 时箭头向右，增长向上、下降向下）。\n"
+    "- 方向（direction）：箭头/运动方向是否与语义一致"
+    "（流程 L→R 时箭头向右，增长向上、下降向下）。\n"
     "- 编排（orchestration）：是否顺序揭示、每节拍一个主运动、次级元素错峰入场。\n"
 )
 
@@ -114,6 +113,7 @@ class MGGenerator:
         scene_context: dict[str, Any] | None = None,
         category_context: dict[str, Any] | None = None,
         vision_prompt: str = "",
+        web_context: str = "",
         width: int | None = None,
         height: int | None = None,
         fps: float = 30.0,
@@ -130,6 +130,8 @@ class MGGenerator:
                  mg_style_guidance, translated}
             vision_prompt: Persona 视觉需求 Prompt（非空时注入 LLM 上下文，
                 空串不产生额外段落）
+            web_context: 联网搜索的事实参考文本（数据/数值类动画时非空；
+                注入 LLM 上下文作为数据依据，空串不产生额外段落）
             width: 拟定分辨率宽度（时间线尺寸；None 时回退 mg_def/1920）
             height: 拟定分辨率高度（时间线尺寸；None 时回退 mg_def/1080）
             fps: 实际时间线帧率
@@ -149,9 +151,15 @@ class MGGenerator:
         # 解析/校验失败改为走下面的「带错误回传的修复重试」，比盲重试高效得多。
         for attempt in range(min(max_retries, 1) + 1):
             try:
+                # web_context 非空才传参：空（默认）与旧行为逐字节一致，
+                # 兼容测试中未声明 web_context 参数的 monkeypatch 桩函数
+                llm_kwargs: dict[str, Any] = {}
+                if web_context:
+                    llm_kwargs["web_context"] = web_context
                 mg_def = await self._call_llm(
                     description, text_content, persona_style,
                     scene_context, category_context, vision_prompt,
+                    **llm_kwargs,
                 )
                 if mg_def:
                     break
@@ -171,6 +179,7 @@ class MGGenerator:
                 result = await self._finalize_with_critique(
                     mg_def, "llm", description, text_content,
                     persona_style, scene_context, category_context, vision_prompt,
+                    web_context=web_context,
                     width=width, height=height, fps=fps,
                 )
                 if result:
@@ -183,15 +192,20 @@ class MGGenerator:
                 )
 
             # 带错误回传的一次修复重试（仅一次，避免无限重试）
+            repair_kwargs: dict[str, Any] = {}
+            if web_context:
+                repair_kwargs["web_context"] = web_context
             repaired = await self._call_llm_repair(
                 mg_def, errors, description, text_content,
                 persona_style, scene_context, category_context, vision_prompt,
+                **repair_kwargs,
             )
             if repaired:
                 logger.info("MGGenerator: 修复重试成功（带错误回传）")
                 result = await self._finalize_with_critique(
                     repaired, "llm_repair", description, text_content,
                     persona_style, scene_context, category_context, vision_prompt,
+                    web_context=web_context,
                     width=width, height=height, fps=fps,
                 )
                 if result:
@@ -250,11 +264,14 @@ class MGGenerator:
         scene_context: dict,
         category_context: dict,
         vision_prompt: str = "",
+        web_context: str = "",
     ) -> dict[str, Any] | None:
         """带错误回传的一次性修复调用：把 schema 校验错误告诉 LLM 让其修正 JSON。"""
         prompt_config = self._config.get("prompt", {})
         system_template = prompt_config.get("system_template", "Generate MG animation JSON.")
-        context_section = self._build_context_section(persona_style, category_context, vision_prompt)
+        context_section = self._build_context_section(
+            persona_style, category_context, vision_prompt, web_context,
+        )
         system_prompt = system_template
         if context_section:
             system_prompt += "\n\n" + context_section
@@ -304,6 +321,7 @@ class MGGenerator:
         scene_context: dict,
         category_context: dict,
         vision_prompt: str = "",
+        web_context: str = "",
         width: int | None = None,
         height: int | None = None,
         fps: float = 30.0,
@@ -313,9 +331,14 @@ class MGGenerator:
         返回成功响应；批判修复失败时返回 None（调用方进入降级）。
         批判 LLM 调用失败/禁用时静默跳过批判，直接接受当前输出（不降级）。
         """
+        # web_context 非空才传参：空（默认）与旧行为逐字节一致，
+        # 兼容测试中未声明 web_context 参数的 monkeypatch 桩函数
+        critique_kwargs: dict[str, Any] = {"scene_context": scene_context}
+        if web_context:
+            critique_kwargs["web_context"] = web_context
         critique = await self._critique_quality(
             mg_def, description, persona_style, category_context, vision_prompt,
-            scene_context=scene_context,
+            **critique_kwargs,
         )
         params = self._build_llm_params(mg_def, text_content, persona_style)
         if critique is None:
@@ -351,9 +374,14 @@ class MGGenerator:
                                        vision_prompt=vision_prompt)
 
         # 低分且可修复 → 带批判反馈的一次修复重试（仅一次）
+        # web_context 非空才传参（兼容 monkeypatch 桩函数，见上方批判调用注释）
+        repair_kwargs: dict[str, Any] = {}
+        if web_context:
+            repair_kwargs["web_context"] = web_context
         repaired = await self._call_llm_critique_repair(
             mg_def, critique, description, text_content,
             persona_style, scene_context, category_context, vision_prompt,
+            **repair_kwargs,
         )
         if repaired:
             logger.info("MGGenerator: 批判修复成功 score=%d", score)
@@ -377,6 +405,7 @@ class MGGenerator:
         category_context: dict,
         vision_prompt: str = "",
         scene_context: dict | None = None,
+        web_context: str = "",
     ) -> dict[str, Any] | None:
         """LLM 自批判质量评估。
 
@@ -393,7 +422,9 @@ class MGGenerator:
 
         prompt_config = self._config.get("prompt", {})
         system_template = prompt_config.get("system_template", "")
-        context_section = self._build_context_section(persona_style, category_context, vision_prompt)
+        context_section = self._build_context_section(
+            persona_style, category_context, vision_prompt, web_context,
+        )
 
         system_prompt = (
             "你是一位严苛的 Motion Graphics 动画质量评审专家。"
@@ -461,11 +492,14 @@ class MGGenerator:
         scene_context: dict,
         category_context: dict,
         vision_prompt: str = "",
+        web_context: str = "",
     ) -> dict[str, Any] | None:
         """带批判反馈的一次性修复调用：把质量评审意见告诉 LLM 让其重做 JSON。"""
         prompt_config = self._config.get("prompt", {})
         system_template = prompt_config.get("system_template", "Generate MG animation JSON.")
-        context_section = self._build_context_section(persona_style, category_context, vision_prompt)
+        context_section = self._build_context_section(
+            persona_style, category_context, vision_prompt, web_context,
+        )
         system_prompt = system_template
         if context_section:
             system_prompt += "\n\n" + context_section
@@ -563,17 +597,20 @@ class MGGenerator:
         scene_context: dict,
         category_context: dict,
         vision_prompt: str = "",
+        web_context: str = "",
     ) -> dict[str, Any] | None:
         """调用 LLM 生成 MG JSON。
 
         系统提示词 = 基础规范模板（config.yaml）+ 动态上下文段落
-        （Persona 视觉风格数据 + 视频类型特征数据 + 视觉需求 Prompt）。
+        （Persona 视觉风格数据 + 视频类型特征数据 + 视觉需求 Prompt + 事实参考）。
         动画风格不写死，由 LLM 依据传入数据自行决定。
         """
         prompt_config = self._config.get("prompt", {})
         system_template = prompt_config.get("system_template", "Generate MG animation JSON.")
 
-        context_section = self._build_context_section(persona_style, category_context, vision_prompt)
+        context_section = self._build_context_section(
+            persona_style, category_context, vision_prompt, web_context,
+        )
         system_prompt = system_template
         if context_section:
             system_prompt += "\n\n" + context_section
@@ -611,12 +648,15 @@ class MGGenerator:
     @staticmethod
     def _build_context_section(
         persona_style: dict, category_context: dict, vision_prompt: str = "",
+        web_context: str = "",
     ) -> str:
-        """构建动态上下文段落（Persona 视觉风格 + 视频类型特征 + 视觉需求）。
+        """构建动态上下文段落（Persona 视觉风格 + 视频类型特征 + 视觉需求 + 事实参考）。
 
         将 Persona 视觉风格与视频类型（category）的结构化数据转为文本，
         注入生成 prompt，由 LLM 自行决定动画设计。vision_prompt 非空时
         追加「视觉需求」段落，空串不产生额外输出（保持向后兼容）。
+        web_context 非空时追加「事实参考」段落：动画中的数据/数值须以此为据；
+        空串不产生额外段落（保持向后兼容）。
         """
         parts: list[str] = []
 
@@ -662,7 +702,10 @@ class MGGenerator:
         brief_style = category_context.get("brief_animation_style")
         if isinstance(brief_style, dict) and brief_style:
             style_items = []
-            for k, label in (("style", "风格"), ("tone", "色调"), ("fonts", "字体"), ("icons", "图标")):
+            brief_fields = (
+                ("style", "风格"), ("tone", "色调"), ("fonts", "字体"), ("icons", "图标"),
+            )
+            for k, label in brief_fields:
                 v = brief_style.get(k)
                 if v:
                     if isinstance(v, dict):
@@ -674,7 +717,10 @@ class MGGenerator:
                 )
         ratio = category_context.get("brief_asset_ratio")
         if isinstance(ratio, dict) and (ratio.get("footage") or ratio.get("mg")):
-            cat_parts.append(f"- 简报素材/动画占比: 实拍 {ratio.get('footage', '')} · MG {ratio.get('mg', '')}")
+            cat_parts.append(
+                f"- 简报素材/动画占比: 实拍 {ratio.get('footage', '')}"
+                f" · MG {ratio.get('mg', '')}"
+            )
         if cat_parts:
             parts.append(
                 "## 当前视频类型（category）特征\n"
@@ -711,6 +757,14 @@ class MGGenerator:
         else:
             # 无注入色板时仍需输出背景约束（默认禁止不透明背景层）
             parts.append("## 最终约束\n" + _NO_BACKGROUND_CONSTRAINT)
+
+        # ── 事实参考（web_context，来自联网搜索；数据/数值以搜索结果为据）──
+        # 置于最末：明确数据是准绳，LLM 不得臆造数值。
+        if web_context and str(web_context).strip():
+            parts.append(
+                "## 事实参考（来自联网搜索，动画中的数据/数值须以此为据）\n"
+                + str(web_context)
+            )
 
         return "\n\n".join(parts)
 
@@ -757,8 +811,8 @@ class MGGenerator:
         best = FallbackEngine.find_best_template(description, templates)
 
         if best:
-            from pathlib import Path as _Path
             import json as _json
+            from pathlib import Path as _Path
             tid = best.get("animation_id", "")
             templates_dir = _Path(__file__).resolve().parent / "templates"
             template_path = templates_dir / f"{tid}.json"
@@ -768,9 +822,11 @@ class MGGenerator:
                     template, params = await FallbackEngine.llm_fill_template_params(
                         full_template, text_content, persona_style, llm=self._llm,
                     )
-                    return await self._build_success(template, "fallback", fallback_template=tid, params=params,
-                                               width=width, height=height, fps=fps,
-                                               vision_prompt=vision_prompt)
+                    return await self._build_success(
+                        template, "fallback", fallback_template=tid, params=params,
+                        width=width, height=height, fps=fps,
+                        vision_prompt=vision_prompt,
+                    )
                 except Exception:
                     pass
 

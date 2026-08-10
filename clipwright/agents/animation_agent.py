@@ -15,7 +15,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-from clipwright.agents.base import BaseAgent, uid as _uid
+from clipwright.agents.base import BaseAgent
+from clipwright.agents.base import uid as _uid
 from clipwright.animation.catalog import AnimationCatalog
 from clipwright.animation.registry import AnimationRegistry
 from clipwright.config import logger, settings
@@ -28,6 +29,14 @@ from clipwright.schema.agent import (
 from clipwright.schema.timeline import Clip, ClipKind, Track
 from clipwright.services.subtitle import DEFAULT_CAPTION_STYLE, DEFAULT_TEXT_STYLE
 from clipwright.services.trace import add_event
+from clipwright.services.web_search import WebSearchService
+
+# W5: 数据/事实型 mg_dynamic 检测 — 命中则触发联网搜索，注入事实上下文
+# （中文 + 英文，大小写不敏感；图表/数据/百分比/年份/引语/增长率/GDP/报告等）
+_DATA_FACT_RE = re.compile(
+    r"图表|数据|统计|对比|百分比|%|年份 20\d\d|引语|quote|citation|增长率|GDP|报告|survey",
+    re.IGNORECASE,
+)
 
 
 def _merge_style_defaults(
@@ -137,7 +146,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                                 pass
                         if hasattr(cat, "get_mg_style_guidance"):
                             try:
-                                self._mg_category_context["mg_style_guidance"] = cat.get_mg_style_guidance()
+                                guidance = cat.get_mg_style_guidance()
+                                self._mg_category_context["mg_style_guidance"] = guidance
                             except Exception:
                                 pass
             except Exception:
@@ -166,7 +176,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             # AnimationAgent 不做位置判断跳过——此处只按 description 标记忠实执行。
             # 收集逻辑动画（含 LLM MG）作业，主循环扫描后再并发执行——
             # 每个 LLM MG 生成 2-4 分钟，串行是动画阶段的最大瓶颈
-            logic_jobs: list[tuple[Track, Clip, str, str, dict[str, Any], dict[str, Any] | None]] = []
+            logic_job_t = tuple[Track, Clip, str, str, dict[str, Any], dict[str, Any] | None]
+            logic_jobs: list[logic_job_t] = []
 
             # 遍历所有 video/image 轨 clip，检测标记
             for vid_track in timeline.tracks:
@@ -201,7 +212,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
                     elif marker_type == "logic":
                         anim_track = anim_track or self._ensure_anim_track(timeline)
-                        logic_jobs.append((anim_track, clip, anim_id, anim_name, marker, persona_style))
+                        logic_jobs.append(
+                            (anim_track, clip, anim_id, anim_name, marker, persona_style)
+                        )
                         logic_anim_count += 1
                         logger.info("AnimationAgent: [逻辑动画]%s → %s (id=%s)",
                                     anim_name, clip.id[:8], anim_id)
@@ -227,18 +240,27 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 async def _run_logic(job):
                     async with sem:
                         track, c, aid, aname, m, style = job
-                        add_event(context.pipeline_id, "animation", "mg_start",
-                                  f"动画生成开始: {aname} → {c.id[:8]}", {"anim_id": aid, "clip_id": c.id})
+                        add_event(
+                            context.pipeline_id, "animation", "mg_start",
+                            f"动画生成开始: {aname} → {c.id[:8]}",
+                            {"anim_id": aid, "clip_id": c.id},
+                        )
                         try:
                             await self._handle_logic_animation(
                                 track, c, aid, aname, m, style,
                             )
-                            add_event(context.pipeline_id, "animation", "mg_end",
-                                      f"动画生成完成: {aname} → {c.id[:8]}", {"anim_id": aid, "clip_id": c.id})
+                            add_event(
+                                context.pipeline_id, "animation", "mg_end",
+                                f"动画生成完成: {aname} → {c.id[:8]}",
+                                {"anim_id": aid, "clip_id": c.id},
+                            )
                         except Exception as e:
                             logger.exception("AnimationAgent: 逻辑动画 %s 异常: %s", aname, e)
-                            add_event(context.pipeline_id, "animation", "mg_end",
-                                      f"动画生成失败: {aname} → {c.id[:8]}", {"anim_id": aid, "clip_id": c.id, "error": str(e)[:200]})
+                            add_event(
+                                context.pipeline_id, "animation", "mg_end",
+                                f"动画生成失败: {aname} → {c.id[:8]}",
+                                {"anim_id": aid, "clip_id": c.id, "error": str(e)[:200]},
+                            )
 
                 await asyncio.gather(*(_run_logic(j) for j in logic_jobs))
 
@@ -415,7 +437,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         hf_available = self._hyperframes_available()
         renderer = "hyperframes" if hf_available else "drawtext"
         if not hf_available:
-            logger.info("AnimationAgent: Hyperframes 不可用，逻辑动画 [%s] 降级到 drawtext", anim_name)
+            logger.info(
+                "AnimationAgent: Hyperframes 不可用，逻辑动画 [%s] 降级到 drawtext",
+                anim_name,
+            )
             # 通过 trace 事件推送用户可见警告
             try:
                 from clipwright.services.trace import add_event as _evt
@@ -483,8 +508,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         persona_style: dict[str, Any] | None = None,
     ) -> None:
         """处理 MG 动画标记 — 通过 MGRenderer 生成 HTML 动画。"""
-        from clipwright.animation.mg_renderer import MGRenderer
         from clipwright.animation.mg.fallback import FallbackEngine
+        from clipwright.animation.mg_renderer import MGRenderer
 
         # 防御：旧时间线中 marker["text"] 可能是原始 JSON 串，
         # 解析出 text/description，避免 JSON 片段被渲染为屏上大字。
@@ -618,20 +643,17 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         # 解析 JSON payload：优先 catalog 已解析的结构化字段（marker["payload"]），
         # 否则把 text_content 当 JSON 串解析（旧 marker 兼容）
         description = text_content
-        style_param = "tech_dark"
         text_parts = ""
         payload = marker.get("payload") if marker else None
         if isinstance(payload, dict):
             description = payload.get("description", "") or text_content
             text_parts = payload.get("text", "") or ""
-            style_param = payload.get("style", "") or "tech_dark"
         elif text_content and text_content.strip().startswith("{"):
             try:
                 import json as _json
                 payload = _json.loads(text_content.strip())
                 description = payload.get("description", text_content)
                 text_parts = payload.get("text", "")
-                style_param = payload.get("style", "tech_dark")
             except Exception:
                 pass  # 解析失败则使用原始值
 
@@ -648,6 +670,24 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         if getattr(self, "_image_index", None):
             gen_description = description + self._format_image_index_prompt(self._image_index)
 
+        # W5: 数据/事实型 mg_dynamic → 联网搜索，注入事实上下文
+        # （门控：描述命中数据/事实关键词 AND WebSearchService 已配置才搜索；
+        #  任何异常/空结果一律静默回退 web_context=""，行为与未配置时完全一致）
+        web_context = ""
+        if re.search(_DATA_FACT_RE, gen_description):
+            try:
+                search_svc = WebSearchService()
+                if search_svc.is_configured():
+                    results = await search_svc.search(gen_description[:120])
+                    web_context = "\n".join(
+                        f"标题: {r.get('title', '')}\n摘要: {r.get('snippet', '')}\n"
+                        f"来源: {r.get('url', '')}"
+                        for r in (results or [])[:3]
+                    )
+            except Exception:
+                logger.warning("AnimationAgent: 联网搜索失败，跳过 web_context", exc_info=True)
+                web_context = ""
+
         try:
             result = await mg_gen.generate(
                 description=gen_description,
@@ -656,6 +696,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 scene_context=scene_context,
                 category_context=self._mg_category_context,
                 vision_prompt=getattr(self, "_vision_prompt", "") or "",
+                web_context=web_context,
                 width=self._tl_width, height=self._tl_height, fps=self._tl_fps,
             )
         except Exception as e:
@@ -1023,13 +1064,21 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 for i in range(len(items) - 1)
             ]
         elif anim_id == "comparison":
-            parts = [t.strip() for t in text.replace("vs", " VS ").replace("V S", " VS ").split("VS")] if "VS" in text.upper() else [text[:15], ""]
+            parts = (
+                [t.strip() for t in text.replace("vs", " VS ").replace("V S", " VS ").split("VS")]
+                if "VS" in text.upper()
+                else [text[:15], ""]
+            )
             base["items"] = [parts[0] if parts else text[:15], parts[1] if len(parts) > 1 else ""]
             base["relations"] = [
                 {"from": 0, "to": 1, "label": "VS", "highlight": 0},
             ]
         elif anim_id == "sequence":
-            steps = [t.strip() for t in text.replace("→", "|").split("|")] if "→" in text or "|" in text else [text[:15], "步骤2", "步骤3"]
+            steps = (
+                [t.strip() for t in text.replace("→", "|").split("|")]
+                if "→" in text or "|" in text
+                else [text[:15], "步骤2", "步骤3"]
+            )
             base["items"] = steps[:8]
             base["relations"] = [
                 {"from": i, "to": i + 1, "label": "→"}
@@ -1037,16 +1086,28 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             ]
         elif anim_id in ("timeline", "tree", "venn"):
             # 时间线/层级/维恩：用 → 或 | 分隔项
-            items = [t.strip() for t in text.replace("→", "|").split("|")] if "→" in text or "|" in text else [text[:20]]
+            items = (
+                [t.strip() for t in text.replace("→", "|").split("|")]
+                if "→" in text or "|" in text
+                else [text[:20]]
+            )
             base["items"] = items[:8]
         elif anim_id == "hierarchy":
             # 层级图 = tree 的别名，用 → 或 | 分隔
-            items = [t.strip() for t in text.replace("→", "|").split("|")] if "→" in text or "|" in text else [text[:20]]
+            items = (
+                [t.strip() for t in text.replace("→", "|").split("|")]
+                if "→" in text or "|" in text
+                else [text[:20]]
+            )
             base["items"] = items[:9]
             base["preset"] = "hierarchy"
         elif anim_id in ("bar_chart", "pie_chart", "line_chart"):
             # 数据图表：每项格式 "标签:数值" 或纯标签（自动生成值）
-            items = [t.strip() for t in text.replace("|", ",").split(",")] if "|" in text or "," in text else [text[:20]]
+            items = (
+                [t.strip() for t in text.replace("|", ",").split(",")]
+                if "|" in text or "," in text
+                else [text[:20]]
+            )
             base["items"] = items[:8]
         # 插件图解类型（由 logic_animations 插件提供）
         elif anim_id == "mindmap":
@@ -1055,11 +1116,19 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             base["items"] = items[:13]
         elif anim_id == "radar":
             # "标签1:80,标签2:60,标签3:90"
-            items = [t.strip() for t in text.replace("|", ",").split(",")] if "," in text or "|" in text else [text[:20]]
+            items = (
+                [t.strip() for t in text.replace("|", ",").split(",")]
+                if "," in text or "|" in text
+                else [text[:20]]
+            )
             base["items"] = items[:8]
         elif anim_id == "gantt":
             # "任务1:0:5,任务2:3:8,任务3:7:4"
-            items = [t.strip() for t in text.replace("|", ",").split(",")] if "," in text or "|" in text else [text[:20]]
+            items = (
+                [t.strip() for t in text.replace("|", ",").split(",")]
+                if "," in text or "|" in text
+                else [text[:20]]
+            )
             base["items"] = items[:10]
         elif anim_id == "venn3":
             # "A|B|C|AB交|AC交|BC交|ABC交"
@@ -1067,23 +1136,43 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             base["items"] = items[:7]
         elif anim_id == "heatmap":
             # "列1,列2,列3|行1:1,2,3|行2:4,5,6"
-            items = [t.strip() for t in text.replace("→", "|").split("|")] if "|" in text or "→" in text else [text[:20]]
+            items = (
+                [t.strip() for t in text.replace("→", "|").split("|")]
+                if "|" in text or "→" in text
+                else [text[:20]]
+            )
             base["items"] = items[:8]
         elif anim_id == "sankey":
             # "源:目标:值|源2:目标2:值2"
-            items = [t.strip() for t in text.replace("→", "|").split("|")] if "|" in text or "→" in text else [text[:20]]
+            items = (
+                [t.strip() for t in text.replace("→", "|").split("|")]
+                if "|" in text or "→" in text
+                else [text[:20]]
+            )
             base["items"] = items[:10]
         elif anim_id == "concept":
             # "节点A:100:200:标签A|节点B:400:200:标签B|节点A->节点B:关系标签"
-            items = [t.strip() for t in text.replace("→", "|").split("|")] if "|" in text or "→" in text else [text[:20]]
+            items = (
+                [t.strip() for t in text.replace("→", "|").split("|")]
+                if "|" in text or "→" in text
+                else [text[:20]]
+            )
             base["items"] = items[:12]
         elif anim_id == "codeblock":
             # codeblock: 用 → 分隔代码行（每行为一行代码）
-            items = [t.strip() for t in text.replace("→", "\n").split("\n")] if "\n" in text or "→" in text else [text[:20]]
+            items = (
+                [t.strip() for t in text.replace("→", "\n").split("\n")]
+                if "\n" in text or "→" in text
+                else [text[:20]]
+            )
             base["items"] = items[:20]
         elif anim_id == "datatable":
             # "表头1,表头2,表头3|行1A,行1B,行1C|行2A,行2B,行2C"
-            items = [t.strip() for t in text.replace("→", "|").split("|")] if "|" in text or "→" in text else [text[:20]]
+            items = (
+                [t.strip() for t in text.replace("→", "|").split("|")]
+                if "|" in text or "→" in text
+                else [text[:20]]
+            )
             base["items"] = items[:8]
         elif anim_id == "quote":
             # "引用内容|作者名"
@@ -1091,11 +1180,19 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             base["items"] = items[:2]
         elif anim_id == "compcard":
             # "特征,A值,B值,胜出方(1/2)|特征2,A2,B2,胜出方"
-            items = [t.strip() for t in text.replace("→", "|").split("|")] if "|" in text or "→" in text else [text[:20]]
+            items = (
+                [t.strip() for t in text.replace("→", "|").split("|")]
+                if "|" in text or "→" in text
+                else [text[:20]]
+            )
             base["items"] = items[:10]
         elif anim_id == "orgchart":
             # "CEO|  VP1|  VP2|   经理A|   经理B"（保留缩进以表示层级）
-            items_raw = text.replace("→", "\n").split("\n") if "\n" in text or "→" in text else [text[:20]]
+            items_raw = (
+                text.replace("→", "\n").split("\n")
+                if "\n" in text or "→" in text
+                else [text[:20]]
+            )
             base["items"] = items_raw[:15]
         elif anim_id == "flow_chart":
             # 流程图：用 ; 分隔节点，用 -> 分隔边。格式: id:x:y:label:shape;id2...|from->to:label
