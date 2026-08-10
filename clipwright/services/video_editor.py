@@ -222,8 +222,13 @@ class VideoEditor:
             return await self._exec_tool("video_blur", session.current_video_path, params)
 
         elif action_name == "retime_scene":
-            # 重新生成场景：调用局部管线
-            return await self._exec_pipeline(session, params)
+            # 局部重生成场景端点已移除（B4 处置：原按索引替换、前端零调用；语义匹配重做
+            # 请走需求对话 /edit 意图或审阅视图「不满意→重做」入口）。
+            return {
+                "success": False,
+                "error": "局部场景重生成端点已移除",
+                "llm_reply": "该操作已不再支持，请用审阅的「不满意→重做」或需求对话提出修改。",
+            }
 
         elif action_name == "change_audio":
             # 重新混音
@@ -249,17 +254,4 @@ class VideoEditor:
             "llm_reply": f"已执行 {tool_name}，状态: {result.status}",
         }
 
-    async def _exec_pipeline(self, session: EditSession, params: dict) -> dict:
-        """调用管线局部重生成。"""
-        if not session.pipeline_id:
-            return {"success": False, "error": "无关联管线", "llm_reply": "没有找到关联的管线"}
-
-        from clipwright.api.pipeline import regenerate_scene
-        scene_idx = params.get("scene_index", 0)
-        result = await regenerate_scene(session.pipeline_id, scene_idx)
-        return {
-            "success": True,
-            "action": "pipeline_regenerate",
-            "output": result,
-            "llm_reply": f"已开始重新生成场景[{scene_idx}]，请稍候查看结果",
-        }
+    # ── 本地视频编辑工具 ──

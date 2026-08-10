@@ -88,9 +88,8 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 | `GET /api/pipeline/result/{pipeline_id}` | 获取异步执行结果（含时间线 JSON） |
 | `GET /api/pipeline/trace/{pipeline_id}` | 获取管线事件轨迹 |
 | `GET /api/pipeline/trace/stream/{pipeline_id}` | SSE 流：实时追踪管线执行事件 |
-| `POST /api/pipeline/retry/{pipeline_id}/{agent_name}` | 从失败的 Agent 重试 |
-| `POST /api/pipeline/regenerate-scene/{pipeline_id}/{scene_index}` | 局部重新生成指定场景 |
-| `POST /api/pipeline/step/{agent_name}` | 单 Agent 执行 |
+| `POST /api/pipeline/retry/{pipeline_id}/{agent_name}` | 从失败的 Agent 重试（B3：重放前置成功结果，仅重跑目标 + 下游） |
+| `POST /api/pipeline/step/{agent_name}` | 单 Agent 执行（deprecated，见 B5） |
 | `POST /api/pipeline/predict-script` | 分析文稿并推荐配置（请求体：`PredictScriptRequest`）。返回字数、句数、估算时长、推荐 Persona、推荐类型插件、情绪基调、关键主题 |
 | `POST /api/pipeline/predict-material` | 分析素材文件并推荐使用方式（请求体：`PredictMaterialRequest`）。返回时长、分辨率、方向、是否有视频/音频、用途建议 |
 

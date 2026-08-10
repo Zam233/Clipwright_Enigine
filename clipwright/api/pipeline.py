@@ -27,6 +27,16 @@ _running_pipelines: dict[str, asyncio.Task] = {}
 _pipeline_results: dict[str, dict] = {}
 
 
+def pipeline_timeout_sec(audio_dur: float, scene_count: int) -> int:
+    """管线超时公式（前后端对齐，B7）。
+
+    动画阶段逐片段 LLM MG 生成（每个 2-4+ 分钟）是主要耗时来源，另有 critique 修复重试；
+    按音频时长 ×6 与场景数 ×360 叠加余量，最低 1800s。
+    前端 ReviewPanel 与后端 proceed_to_pipeline 必须使用同一公式。
+    """
+    return int(max(1800, float(audio_dur or 0) * 6, int(scene_count or 0) * 360))
+
+
 @router.get("/runs")
 async def list_pipeline_runs(limit: int = 50) -> list[dict]:
     """获取管线运行记录（真实执行历史，供 PipelineAdminPage 展示）。
@@ -41,8 +51,12 @@ async def list_pipeline_runs(limit: int = 50) -> list[dict]:
 
 @router.post("/run-v2")
 async def run_pipeline_v2(request: PipelineRequest) -> dict:
-    """运行 PipelineV2（动态路由 + 自愈循环）。"""
+    """运行 PipelineV2（动态路由 + 自愈循环）。
+
+    Deprecated (B13): V1 同步端点，前端已改用 /run-async + SSE 追踪；保留兼容不删除。
+    """
     import uuid
+    logger.warning("DEPRECATED: POST /api/pipeline/run-v2 被调用 (persona=%s)", request.persona_id)
     pipeline_id = f"pl_v2_{uuid.uuid4().hex[:12]}"
     create_trace(pipeline_id)
     add_event(pipeline_id, "system", "info", f"PipelineV2 启动: {request.persona_id} / {request.category_plugin_id}")
@@ -57,16 +71,23 @@ async def run_pipeline_v2(request: PipelineRequest) -> dict:
         "status": state.status.value,
         "steps": [{"agent": s.agent_name, "status": s.status.value} for s in state.steps],
         "error": state.error,
+        "deprecated": True,
     }
 
 
 @router.post("/run", response_model=PipelineState)
 async def run_pipeline(request: PipelineRequest) -> PipelineState:
-    """全流程执行，返回完整时间线。"""
+    """全流程执行，返回完整时间线。
+
+    Deprecated (B13): V1 同步端点，前端零调用；保留兼容不删除。
+    """
+    logger.warning("DEPRECATED: POST /api/pipeline/run 被调用 (persona=%s)", request.persona_id)
     state = await _orchestrator.run(request)
     state.shared_data["execution_trace"] = get_all_events(state.pipeline_id)
     if state.status == "failed":
         raise HTTPException(status_code=400, detail=state.error)
+    # 附加 deprecated 标记（响应模型为 PipelineState，注入 shared_data 供调用方探测）
+    state.shared_data["deprecated"] = True
     return state
 
 
@@ -127,9 +148,21 @@ async def stream_pipeline_trace(pipeline_id: str, request: Request):
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             last_time = max(last_time, event["time"])
 
-        # 持续轮询新事件直到管线终态（done/error）或达到长上限（2 小时）。
+        # 持续轮询新事件直到管线终态（done/error）或达到长上限。
         # 管线动画阶段可能长达 40-60 分钟，固定 600s 会让前端 SSE 中途断流而收不到终态。
-        max_wall = 7200.0  # 秒
+        # B7：max_wall 动态化——从结果缓存中取该管线的 pipeline_timeout_sec（proceed 时写入
+        # request.extra_params），加 600s 余量；取不到时回退默认 7200+600。
+        _max_wall = 7200.0 + 600.0
+        _res = _pipeline_results.get(pipeline_id)
+        try:
+            if isinstance(_res, dict):
+                _ep = (_res.get("request") or {}).get("extra_params") or {}
+                _to = _ep.get("pipeline_timeout_sec")
+                if isinstance(_to, (int, float)) and _to > 0:
+                    _max_wall = float(_to) + 600.0
+        except Exception:
+            pass
+        max_wall = _max_wall
         start_wall = time.time()
         while time.time() - start_wall < max_wall:
             if await request.is_disconnected():
@@ -212,7 +245,12 @@ async def get_pipeline_status(pipeline_id: str) -> dict:
 
 @router.post("/retry/{pipeline_id}/{agent_name}")
 async def retry_agent(pipeline_id: str, agent_name: str) -> dict:
-    """重试指定 Agent（从失败的管线中恢复）。"""
+    """重试指定 Agent（从失败的管线中恢复，B3）。
+
+    改用 PipelineOrchestratorV2.run_from_agent：从 prior_state 重放目标 agent 之前的
+    成功结果，只重跑目标 agent + 下游联动 + 统一自愈质检循环（不再全量重跑）。
+    目标 agent 无可用前置结果/无记录时明确 400。
+    """
     from clipwright.services.trace import get_all_events
     events = get_all_events(pipeline_id)
     if not events:
@@ -228,11 +266,36 @@ async def retry_agent(pipeline_id: str, agent_name: str) -> dict:
         raise HTTPException(status_code=400, detail="Pipeline result missing request data")
     request = PipelineRequest(**request_data)
 
+    # 前置校验：目标 agent 必须存在于 steps 且之前有成功结果，否则同步 400
+    steps = state.get("steps") or []
+    target_index = None
+    for i, s in enumerate(steps):
+        if isinstance(s, dict) and s.get("agent_name") == agent_name:
+            target_index = i
+            break
+    if target_index is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Pipeline {pipeline_id} 中未找到 Agent {agent_name}",
+        )
+    has_preceding = any(
+        isinstance(s, dict) and s.get("status") == "completed" and s.get("result")
+        for s in steps[:target_index]
+    )
+    if not has_preceding:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Pipeline {pipeline_id} 无可用前置成功结果，无法从 {agent_name} 恢复",
+        )
+
     add_event(pipeline_id, "system", "info", f"重试 Agent: {agent_name}")
 
     async def _retry():
         try:
-            new_state = await _orchestrator.run(request, pipeline_id=pipeline_id)
+            orch_v2 = PipelineOrchestratorV2()
+            new_state = await orch_v2.run_from_agent(
+                pipeline_id, request, agent_name, prior_state=state,
+            )
             result_dict = new_state.model_dump(mode="json")
             _pipeline_results[pipeline_id] = result_dict
             add_event(pipeline_id, "system", "done", f"重试完成: {new_state.status}")
@@ -244,52 +307,23 @@ async def retry_agent(pipeline_id: str, agent_name: str) -> dict:
     return {"pipeline_id": pipeline_id, "status": "retrying", "agent": agent_name}
 
 
-@router.post("/regenerate-scene/{pipeline_id}/{scene_index}")
-async def regenerate_scene(pipeline_id: str, scene_index: int) -> dict:
-    """重新生成指定场景（局部编辑）。"""
-    from clipwright.services.pipeline import PipelineOrchestrator
-    orch = PipelineOrchestrator()
+@router.post("/cancel/{pipeline_id}")
+async def cancel_pipeline(pipeline_id: str) -> dict:
+    """协作式取消管线（G2）。
 
-    state = _pipeline_results.get(pipeline_id)
-    if not state:
-        raise HTTPException(status_code=404, detail="Pipeline result not available")
+    标记取消标志；运行中的管线在下一个 agent 边界（_dispatch 前）跳过后续 agent，
+    终态改为 CANCELLED 并写 trace `cancelled` 事件。不强制中断 in-flight LLM 调用。
+    若管线已结束/不存在，返回 404。
+    """
+    from clipwright.services.pipeline_v2 import mark_cancelled
+    from clipwright.services.trace import get_all_events as _ga
 
-    timeline_data = state.get("shared_data", {}).get("final_timeline")
-    if not timeline_data:
-        raise HTTPException(status_code=400, detail="No final timeline in pipeline result")
-
-    # 局部重生成：重新跑 structure + material + edit
-    import uuid as _uuid
-    new_pid = f"pl_scene_{_uuid.uuid4().hex[:12]}"
-    create_trace(new_pid)
-    add_event(new_pid, "system", "info", f"局部重生成场景[{scene_index}]")
-
-    request_data = state.get("request")
-    if not isinstance(request_data, dict):
-        raise HTTPException(status_code=400, detail="Pipeline result missing request data")
-    request = PipelineRequest(**request_data)
-
-    async def _run():
-        try:
-            new_state = await orch.run(request, pipeline_id=new_pid)
-            new_ft = new_state.shared_data.get("final_timeline")
-            if new_ft:
-                # 仅替换场景[scene_index]的 clip（按各轨道的 clip 数量校验）
-                for track_idx, track in enumerate(timeline_data.get("tracks", [])):
-                    old_clips = track.get("clips", [])
-                    new_tracks = new_ft.get("tracks", [])
-                    if track_idx < len(new_tracks):
-                        new_clips = new_tracks[track_idx].get("clips", [])
-                        if scene_index < len(old_clips) and scene_index < len(new_clips):
-                            old_clips[scene_index] = new_clips[scene_index]
-                state["shared_data"]["final_timeline"] = timeline_data
-            _pipeline_results[new_pid] = state
-            add_event(new_pid, "system", "done", f"场景[{scene_index}] 重生成完成")
-        except Exception as e:
-            add_event(new_pid, "system", "error", f"场景重生成失败: {e}")
-
-    _running_pipelines[new_pid] = spawn_background(_run(), name=f"scene-regen-{new_pid}")
-    return {"pipeline_id": new_pid, "scene_index": scene_index, "status": "regenerating"}
+    if not _ga(pipeline_id):
+        raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found")
+    mark_cancelled(pipeline_id)
+    add_event(pipeline_id, "system", "cancelled", "已请求取消管线")
+    logger.info("取消请求: %s (协作式，下一 agent 边界生效)", pipeline_id)
+    return {"pipeline_id": pipeline_id, "status": "cancelling"}
 
 
 class PredictScriptRequest(BaseModel):
@@ -321,9 +355,10 @@ async def predict_material(body: PredictMaterialRequest) -> dict:
 async def run_single_agent(agent_name: str, request: PipelineRequest) -> dict:
     """执行完整 Pipeline 并返回指定 Agent 的结果。
 
-    注意：当前实现运行完整 Pipeline（所有 Agent），然后提取指定 agent_name
-    的步骤结果。真正的单 Agent 隔离执行需要显式依赖注入，暂未实现。
+    Deprecated (B5): 语义为「运行完整管线并返回指定 agent 步骤结果（非隔离执行）」，
+    前端零调用；保留兼容不删除，但调用方不应依赖其"单步"语义。
     """
+    logger.warning("DEPRECATED: POST /api/pipeline/step/%s 被调用", agent_name)
     state = await _orchestrator.run(request)
     step = state.get_step(agent_name)
     if step is None:
@@ -333,4 +368,5 @@ async def run_single_agent(agent_name: str, request: PipelineRequest) -> dict:
         "status": step.status,
         "result": step.result,
         "error": step.error,
+        "deprecated": True,
     }

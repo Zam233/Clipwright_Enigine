@@ -15,7 +15,6 @@ from fastapi.testclient import TestClient
 from clipwright.schema.pipeline import PipelineStatus, PipelineStep
 from clipwright.services import pipeline_v2 as pv2
 
-
 # ── Test app ──
 
 app = FastAPI()
@@ -162,3 +161,133 @@ def test_route_registered_in_main_app() -> None:
     from clipwright.main import app as main_app
     paths = list(main_app.openapi().get("paths", {}).keys())
     assert "/api/pipeline/runs" in paths
+
+
+# ── B3: retry 端点 400 路径 ──
+
+def _retry_request() -> dict:
+    return {
+        "persona_id": "default",
+        "category_plugin_id": "knowledge_longform",
+        "topic": "t",
+        "extra_params": {},
+    }
+
+
+def test_retry_unknown_pipeline_404() -> None:
+    resp = client.post("/api/pipeline/retry/pl_ghost/material")
+    assert resp.status_code == 404
+
+
+def test_retry_agent_not_found_400() -> None:
+    from clipwright.api.pipeline import _pipeline_results, add_event, create_trace
+    create_trace("pl_retry_nf")
+    add_event("pl_retry_nf", "system", "info", "started")
+    _pipeline_results["pl_retry_nf"] = {
+        "pipeline_id": "pl_retry_nf",
+        "request": _retry_request(),
+        "steps": [
+            {
+                "agent_name": "structure",
+                "status": "completed",
+                "result": {"scenes": [{"title": "s"}]},
+                "error": None,
+            },
+        ],
+    }
+    try:
+        resp = client.post("/api/pipeline/retry/pl_retry_nf/nonexistent")
+        assert resp.status_code == 400
+    finally:
+        _pipeline_results.pop("pl_retry_nf", None)
+        from clipwright.services.trace import clear as _clear_trace
+        _clear_trace("pl_retry_nf")
+
+
+def test_retry_no_preceding_result_400() -> None:
+    """目标 agent 之前无成功结果 → 明确 400（而非全量重跑）。"""
+    from clipwright.api.pipeline import _pipeline_results, add_event, create_trace
+    create_trace("pl_retry_nopre")
+    add_event("pl_retry_nopre", "system", "info", "started")
+    _pipeline_results["pl_retry_nopre"] = {
+        "pipeline_id": "pl_retry_nopre",
+        "request": _retry_request(),
+        "steps": [
+            {"agent_name": "edit", "status": "failed", "result": None, "error": "boom"},
+        ],
+    }
+    try:
+        resp = client.post("/api/pipeline/retry/pl_retry_nopre/edit")
+        assert resp.status_code == 400
+    finally:
+        _pipeline_results.pop("pl_retry_nopre", None)
+        from clipwright.services.trace import clear as _clear_trace
+        _clear_trace("pl_retry_nopre")
+
+
+# ── B4: regenerate-scene 端点已移除 ──
+
+def test_regenerate_scene_endpoint_removed() -> None:
+    """B4 处置：regenerate-scene 端点移除（原按索引替换、前端零调用），请求应 404。"""
+    resp = client.post("/api/pipeline/regenerate-scene/pl_any/0")
+    assert resp.status_code == 404
+
+
+def test_regenerate_scene_not_in_openapi() -> None:
+    from clipwright.main import app as main_app
+    paths = list(main_app.openapi().get("paths", {}).keys())
+    assert "/api/pipeline/regenerate-scene/{pipeline_id}/{scene_index}" not in paths
+
+
+# ── G2: cancel 端点 ──
+
+def test_cancel_unknown_pipeline_404() -> None:
+    resp = client.post("/api/pipeline/cancel/pl_ghost_cancel")
+    assert resp.status_code == 404
+
+
+def test_cancel_sets_flag_and_returns_cancelling() -> None:
+    from clipwright.api.pipeline import create_trace, add_event
+    from clipwright.services.pipeline_v2 import clear_cancel, is_cancelled
+    create_trace("pl_cancel_api")
+    add_event("pl_cancel_api", "system", "info", "started")
+    try:
+        resp = client.post("/api/pipeline/cancel/pl_cancel_api")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "cancelling"
+        assert is_cancelled("pl_cancel_api") is True
+    finally:
+        clear_cancel("pl_cancel_api")
+        from clipwright.services.trace import clear as _clear_trace
+        _clear_trace("pl_cancel_api")
+
+
+# ── B5/B13: V1 同步端点 deprecated 标记 ──
+
+def test_run_v2_deprecated_flag() -> None:
+    """/run-v2 响应体含 deprecated: true（B13：前端零调用，保留兼容）。"""
+    import clipwright.services.pipeline_v2 as pv2
+
+    class _FakeState:
+        status = "completed"
+        error = None
+        steps = []
+
+    async def _fake_run(self, request, pipeline_id=""):
+        return _FakeState()
+
+    orig = pv2.PipelineOrchestratorV2
+    try:
+        pv2.PipelineOrchestratorV2 = type(  # type: ignore[assignment]
+            "FakeOrch", (), {"run": _fake_run},
+        )
+        resp = client.post("/api/pipeline/run-v2", json={
+            "persona_id": "default",
+            "category_plugin_id": "knowledge_longform",
+            "topic": "t",
+            "extra_params": {},
+        })
+        assert resp.status_code == 200
+        assert resp.json().get("deprecated") is True
+    finally:
+        pv2.PipelineOrchestratorV2 = orig
