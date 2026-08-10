@@ -85,6 +85,7 @@ async def create_project(req: ProjectCreateRequest) -> dict[str, Any]:
         plugin_id=req.plugin_id,
         folder=req.folder,
         tags=req.tags,
+        agent_state=req.agent_state,
     )
     return data
 

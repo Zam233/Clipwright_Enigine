@@ -89,6 +89,7 @@ class ProjectManager:
         plugin_id: str | None = None,
         folder: str = "",
         tags: list[str] | None = None,
+        agent_state: Any = None,
     ) -> dict[str, Any]:
         """Create a new project with backend-assigned id."""
         project_id = f"proj_{uuid.uuid4().hex[:12]}"
@@ -101,6 +102,7 @@ class ProjectManager:
             "plugin_id": plugin_id,
             "folder": folder,
             "tags": tags or [],
+            "agent_state": agent_state,
             "created_at": now,
             "updated_at": now,
         }
