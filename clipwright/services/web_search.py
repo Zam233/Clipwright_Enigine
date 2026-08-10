@@ -23,9 +23,10 @@ from clipwright.config import logger, settings
 
 # Bocha 默认端点（可在 .env 通过 WEB_SEARCH_BASE_URL 覆盖）
 _BOCHA_DEFAULT_ENDPOINT = "https://api.bochaai.com/v1/web-search"
-# 百度千帆 v3 Web Search 默认端点（可在 .env 通过 WEB_SEARCH_BASE_URL 覆盖）
-# 参考千帆 v3 Web Search API：POST /v3/websearch，Authorization: bce-v3/ALTAK-{ak}/{sk}
-_BAIDU_DEFAULT_ENDPOINT = "https://qianfan.baidubce.com/v3/websearch"
+# 百度千帆 v3 AI Search Web Search 默认端点（可在 .env 通过 WEB_SEARCH_BASE_URL 覆盖）
+# 参考千帆 v3 AI Search Web Search API：POST /v2/ai_search/web_search，
+# Authorization: Bearer bce-v3/ALTAK-{ak}，请求头 X-Request-Id（UUID 字符串）。
+_BAIDU_DEFAULT_ENDPOINT = "https://qianfan.baidubce.com/v2/ai_search/web_search"
 # 百度鉴权前缀：key 可能已带 bce-v3/ALTAK- 前缀，缺失时自动补
 _BAIDU_AUTH_PREFIX = "bce-v3/ALTAK-"
 
@@ -42,7 +43,7 @@ class WebSearchService:
     """联网搜索服务：按 settings.web_search_provider 选主 provider，失败自动回退。
 
     - provider = "bocha"（默认）：Bocha Web Search API（Bearer 鉴权）
-    - provider = "baidu"：百度千帆 v3 Web Search API（bce-v3/ALTAK 鉴权）
+    - provider = "baidu"：百度千帆 v3 AI Search Web Search API（`Bearer bce-v3/ALTAK-...` 鉴权）
     - 主 provider 失败（非 2xx / 超时 / 解析失败）→ 回退另一 provider
     - 全部失败 → 返回 []（绝不抛异常）
 
@@ -145,21 +146,29 @@ class WebSearchService:
     # ── Baidu（千帆 v3）──────────────────────────────────────
 
     async def _search_baidu(self, query: str, count: int) -> list[dict[str, Any]]:
-        """调用百度千帆 v3 Web Search API，解析并归一化结果。失败时抛异常（由 search 兜底）。
+        """调用百度千帆 v3 AI Search Web Search API，解析并归一化结果。
+        失败时抛异常（由 search 兜底）。
 
-        端点：https://qianfan.baidubce.com/v3/websearch（可用 WEB_SEARCH_BASE_URL 覆盖）。
-        鉴权：Authorization: bce-v3/ALTAK-{ak}/{sk}（完整 key 含 bce-v3/ALTAK- 前缀，
-        缺失时自动补前缀）。请求体 {query, top_num}；结果字段名各版本不一，故防御式解析。
+        端点：POST https://qianfan.baidubce.com/v2/ai_search/web_search
+        （可用 WEB_SEARCH_BASE_URL 覆盖）。
+        鉴权：Authorization: Bearer bce-v3/ALTAK-{ak}（完整 key 含 bce-v3/ALTAK- 前缀，
+        缺失时自动补前缀后再包 Bearer）。请求头 X-Request-Id: <uuid>。
+        请求体 {messages, search_source, resource_type_filter}；结果数组在响应顶层 `references`，
+        防御式解析兼容各版本字段名。
         """
         endpoint = getattr(settings, "web_search_base_url", None) or _BAIDU_DEFAULT_ENDPOINT
         api_key = getattr(settings, "web_search_api_key", "") or ""
         if api_key and not api_key.startswith(_BAIDU_AUTH_PREFIX):
             api_key = f"{_BAIDU_AUTH_PREFIX}{api_key}"
-        payload = {"query": query, "top_num": count}
+        payload = {
+            "messages": [{"role": "user", "content": query}],
+            "search_source": "baidu_search_v2",
+            "resource_type_filter": [{"type": "web", "top_k": count}],
+        }
         headers = {
-            "Authorization": api_key,
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "X-Bce-Request-Id": str(uuid.uuid4()),
+            "X-Request-Id": str(uuid.uuid4()),
         }
         logger.debug("Baidu web search: url=%s, count=%d, query=%.100s", endpoint, count, query)
         async with httpx.AsyncClient(timeout=self._timeout()) as client:
@@ -171,10 +180,10 @@ class WebSearchService:
 
     @staticmethod
     def _extract_baidu_items(data: Any) -> list[Any]:
-        """百度千帆响应解析 — 防御多种结果字段名（result/results/webSearchResult 等）。"""
+        """百度千帆响应解析 — 防御多种结果字段名（references/result/results 等）。"""
         if not isinstance(data, dict):
             return []
-        for key in ("result", "results", "webSearchResult", "searchResult", "data"):
+        for key in ("references", "result", "results", "webSearchResult", "searchResult", "data"):
             found = WebSearchService._find_list(data.get(key))
             if found is not None:
                 return found

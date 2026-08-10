@@ -57,7 +57,7 @@
 ### 端点与请求头（实现期核对记录）
 
 - **Bocha**：默认端点 `https://api.bochaai.com/v1/web-search`（POST JSON）。Header：`Authorization: Bearer {key}`、`Content-Type: application/json`。Body：`{query, count, freshness}`（freshness 默认 `oneMonth`）。返回 `data.webPages.value[]` → 归一化为 `{title, url, snippet, score}`。⚠️ 实现时以官方文档为准；端点不可考时以 `settings.web_search_base_url` 覆盖。
-- **百度（千帆 v3 Web Search）**：认证 `Authorization: bce-v3/ALTAK-{ak}/{sk}`（完整值含前缀 `bce-v3/ALTAK-`）。配套 Header：`Content-Type: application/json`；部分接口需 `X-Bce-Request-Id`（UUID 字符串）。实现时按千帆 v3 官方文档核对请求头组合；**代码不硬编码 key**（测试凭证仅进 `.env`，F4 用 grep 校验 `bce-v3/ALTAK` 不出现在代码/提交）。
+- **百度（千帆 v3 AI Search Web Search，已实测 200）**：端点 `POST https://qianfan.baidubce.com/v2/ai_search/web_search`。认证 `Authorization: Bearer bce-v3/ALTAK-{ak}`（`settings.web_search_api_key` 值本身已含 `bce-v3/ALTAK-` 前缀，缺失时代码自动补）。配套 Header：`Content-Type: application/json`、`X-Request-Id: <uuid>`。Body：`{messages: [{role: "user", content: query}], search_source: "baidu_search_v2", resource_type_filter: [{type: "web", top_k: N}]}`。返回结果数组在顶层 `references[]`（每项含 `title` / `url` / `content`）→ 归一化为 `{title, url, snippet, score}`。⚠️ 旧端点 `/v3/websearch` 与旧 Header `X-Bce-Request-Id` 已废弃（404）。**代码不硬编码 key**（测试凭证仅进 `.env`，F4 用 grep 校验 `bce-v3/ALTAK` 不出现在代码/提交）。
 
 ---
 

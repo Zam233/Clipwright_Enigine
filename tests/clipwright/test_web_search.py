@@ -115,31 +115,44 @@ async def test_bocha_shallow_nesting_variant(monkeypatch) -> None:
 
 
 async def test_baidu_provider_parses_and_adds_auth_prefix(monkeypatch) -> None:
-    """Baidu 主 provider：mock result[] → 归一化；鉴权头自动补 bce-v3/ALTAK- 前缀。"""
+    """Baidu 主 provider：mock references[] → 归一化；鉴权头 Bearer + 自动补 bce-v3/ALTAK- 前缀。
+
+    按千帆 v3 AI Search Web Search 真实形态：
+    - 响应结果数组在顶层 `references`
+    - 请求体 {messages, search_source, resource_type_filter}
+    - 鉴权 Authorization: Bearer bce-v3/ALTAK-...；请求头 X-Request-Id。
+    """
     _enable_search(monkeypatch)
     monkeypatch.setattr(settings, "web_search_provider", "baidu")
-    payload = {"result": [{"title": "百度结果", "url": "https://b.com/x", "snippet": "百度摘要"}]}
+    payload = {"references": [{"title": "百度结果", "url": "https://b.com/x", "content": "百度摘要"}]}
     client = _mock_client(post_response=_json_response(payload))
     with patch("httpx.AsyncClient", return_value=client):
         results = await WebSearchService().search("q")
 
     assert results == [{"title": "百度结果", "url": "https://b.com/x", "snippet": "百度摘要", "score": 0.0}]
     kwargs = client.post.call_args.kwargs
-    assert kwargs["headers"]["Authorization"] == "bce-v3/ALTAK-test-key"
-    assert "X-Bce-Request-Id" in kwargs["headers"]
+    # 鉴权：key "test-key" 缺前缀 → 补 bce-v3/ALTAK- 再包 Bearer
+    assert kwargs["headers"]["Authorization"] == "Bearer bce-v3/ALTAK-test-key"
+    assert "X-Request-Id" in kwargs["headers"]
+    # 请求体：messages / search_source / resource_type_filter
+    assert kwargs["json"]["messages"] == [{"role": "user", "content": "q"}]
+    assert kwargs["json"]["search_source"] == "baidu_search_v2"
+    assert kwargs["json"]["resource_type_filter"] == [{"type": "web", "top_k": 5}]
 
 
 async def test_baidu_already_prefixed_key_unchanged(monkeypatch) -> None:
-    """key 已含 bce-v3/ALTAK- 前缀时不重复添加。"""
+    """key 已含 bce-v3/ALTAK- 前缀时不重复添加，仍包 Bearer。"""
     _enable_search(monkeypatch)
     monkeypatch.setattr(settings, "web_search_provider", "baidu")
     monkeypatch.setattr(settings, "web_search_api_key", "bce-v3/ALTAK-full-key")
-    payload = {"webSearchResult": {"items": [{"title": "T", "url": "https://t.com"}]}}
+    payload = {"references": [{"title": "T", "url": "https://t.com"}]}
     client = _mock_client(post_response=_json_response(payload))
     with patch("httpx.AsyncClient", return_value=client):
         results = await WebSearchService().search("q")
     assert results[0]["title"] == "T"
-    assert client.post.call_args.kwargs["headers"]["Authorization"] == "bce-v3/ALTAK-full-key"
+    assert (
+        client.post.call_args.kwargs["headers"]["Authorization"] == "Bearer bce-v3/ALTAK-full-key"
+    )
 
 
 async def test_both_providers_fail_returns_empty(monkeypatch) -> None:
