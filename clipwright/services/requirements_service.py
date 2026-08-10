@@ -137,6 +137,19 @@ def _fallback_response(method: str, prompt: str, error: str) -> dict:
     }
 
 
+async def _web_tool_executor(tool_name: str, tool_input: dict) -> dict:
+    """执行 web_search / web_fetch 工具调用（W1）。失败返回空 dict，绝不抛异常。"""
+    try:
+        from clipwright.tool.registry import ToolRegistry
+        result = await ToolRegistry.execute(tool_name, **tool_input)
+        if hasattr(result, "model_dump"):
+            return result.model_dump(mode="json")
+        return result if isinstance(result, dict) else {"result": str(result)}
+    except Exception as e:
+        logger.warning("requirements chat 工具 %s 执行失败: %s", tool_name, e)
+        return {"results": []} if tool_name == "web_search" else {"content": ""}
+
+
 # ── 对话窗口管理 ──────────────────────────────
 
 def compress_history(messages: list[dict]) -> list[dict]:
@@ -1004,6 +1017,49 @@ class RequirementsService:
             "system_prompt": CREATIVE_BRIEF_SYSTEM + context,
             "user_prompt": user_prompt,
         }
+        # W1: 联网搜索工具门控接入（Bocha/百度）——配置开启时 LLM 可自主搜索；
+        # 未配置/失败/无工具调用时行为与现状完全一致（落到下方 llm_call_with_retry 原路径）。
+        try:
+            from clipwright.services.web_search import WebSearchService
+            from clipwright.tool.registry import ToolRegistry
+
+            if WebSearchService().is_configured():
+                tool_schemas = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "description": tool.description or f"Execute {tool.name}",
+                            "parameters": tool.to_llm_tool("openai")["function"]["parameters"],
+                        },
+                    }
+                    for tool in ToolRegistry.list_agent_callable()
+                ]
+                if tool_schemas:
+                    resp = await asyncio.wait_for(
+                        self._llm.with_tools(
+                            **llm_kwargs,
+                            tool_executor=_web_tool_executor,
+                            tools=tool_schemas,
+                            pipeline_id="",
+                        ),
+                        timeout=BRIEF_GENERATE_TIMEOUT,
+                    )
+                    # 解析 with_tools 返回的 content（复用 structured_output 的 JSON 提取逻辑）
+                    content = getattr(resp, "content", "") or ""
+                    parsed = self._parse_llm_json(content)
+                    if parsed:
+                        return parsed
+                    # content 非 JSON（如 LLM 直接回复文本）→ 构造与现状一致的返回
+                    default_reply = "请继续描述你的想法。"
+                    return {
+                        "reply": content if isinstance(content, str) and content else default_reply,
+                        "brief_draft": {},
+                        "is_ready": False,
+                    }
+        except Exception as e:
+            logger.warning("requirements chat with_tools 路径失败，回退原路径: %s", e)
+        # 原路径：未配置 / 无可用工具 / with_tools 异常或超时 → 行为与现状完全一致
         try:
             return await asyncio.wait_for(
                 llm_call_with_retry(self._llm, "creative_brief", pipeline_id="", **llm_kwargs),
@@ -1017,6 +1073,26 @@ class RequirementsService:
                 "is_ready": False,
                 "missing_info": ["请重新描述创作需求"],
             }
+
+    @staticmethod
+    def _parse_llm_json(content: Any) -> dict | None:
+        """解析 LLM 返回的 JSON（复用 structured_output 的 fence 剥离 + json.loads 逻辑）。
+
+        成功返回 dict；非字符串 / 非 JSON / 非 dict（如数组或文本）一律返回 None。
+        """
+        if not isinstance(content, str):
+            return None
+        content = content.strip().lstrip("\ufeff")
+        if content.startswith("```"):
+            lines = content.splitlines()
+            content = "\n".join(line for line in lines if not line.startswith("```"))
+        if not content:
+            return None
+        try:
+            result = json.loads(content)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        return result if isinstance(result, dict) else None
 
     @staticmethod
     def _build_full_persona_context(user_inputs: dict) -> dict:
