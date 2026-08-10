@@ -7,6 +7,7 @@ from datetime import timezone, timedelta
 from pathlib import Path
 from typing import Literal, Optional
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # ── 时区 ──
@@ -113,6 +114,34 @@ class Settings(BaseSettings):
     vision_llm_model: Optional[str] = None
     vision_llm_api_key: Optional[str] = None
     vision_llm_base_url: Optional[str] = None
+
+    # --- Web Search（联网搜索：Bocha 主 / 百度备）---
+    # 环境变量名：优先 ENABLE_WEB_SEARCH 等无前缀形式（与计划/F3 测试一致），
+    # 也兼容 CLIPWRIGHT_ 前缀（沿用 env_prefix="CLIPWRIGHT_" 的既有约定）。
+    enable_web_search: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("ENABLE_WEB_SEARCH", "CLIPWRIGHT_ENABLE_WEB_SEARCH"),
+    )
+    web_search_provider: Literal["bocha", "baidu"] = Field(
+        default="bocha",
+        validation_alias=AliasChoices("WEB_SEARCH_PROVIDER", "CLIPWRIGHT_WEB_SEARCH_PROVIDER"),
+    )
+    web_search_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("WEB_SEARCH_API_KEY", "CLIPWRIGHT_WEB_SEARCH_API_KEY"),
+    )
+    web_search_base_url: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("WEB_SEARCH_BASE_URL", "CLIPWRIGHT_WEB_SEARCH_BASE_URL"),
+    )
+    web_search_timeout: int = Field(
+        default=15,
+        validation_alias=AliasChoices("WEB_SEARCH_TIMEOUT", "CLIPWRIGHT_WEB_SEARCH_TIMEOUT"),
+    )
+    web_search_max_results: int = Field(
+        default=5,
+        validation_alias=AliasChoices("WEB_SEARCH_MAX_RESULTS", "CLIPWRIGHT_WEB_SEARCH_MAX_RESULTS"),
+    )
 
     # --- 素材库 ---
     library_dir: Path = Path("library")
