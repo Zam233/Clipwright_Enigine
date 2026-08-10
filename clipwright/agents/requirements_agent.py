@@ -156,7 +156,7 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
 
     async def translate_scenes(
         self, scenes: list[dict], brief: dict[str, Any] | None = None,
-        pipeline_id: str = "",
+        pipeline_id: str = "", web_context: str = "",
     ) -> dict[str, Any]:
         """将 StructureAgent 的场景列表翻译为用户友好的规划书。"""
         import json
@@ -170,6 +170,8 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
             plugin_prompts = PluginPromptRegistry.get_for_agent("requirements")
             if plugin_prompts:
                 system_prompt += "\n\n## 插件能力扩展\n" + "\n\n".join(plugin_prompts)
+            if web_context:
+                system_prompt += f"\n\n## 联网搜索参考\n{web_context}"
 
             result = await self._llm.structured_output(
                 system_prompt=system_prompt,

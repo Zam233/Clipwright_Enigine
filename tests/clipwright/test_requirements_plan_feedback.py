@@ -133,7 +133,7 @@ class TestRawScenesReuse:
         session_id = "req_fb_5"
         scenes = [{"title": "s1", "duration_sec": 60.0}]
 
-        async def _fake_translate(scenes_arg, brief, script_text="", feedback=""):
+        async def _fake_translate(scenes_arg, brief, script_text="", feedback="", web_context=""):
             return {"markdown_content": "REUSED", "scene_count": len(scenes_arg), "total_duration_sec": 60, "raw_scenes": scenes_arg}
 
         with (

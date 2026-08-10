@@ -150,6 +150,26 @@ async def _web_tool_executor(tool_name: str, tool_input: dict) -> dict:
         return {"results": []} if tool_name == "web_search" else {"content": ""}
 
 
+async def _build_web_context(query: str, max_results: int = 3) -> str:
+    """联网搜索并拼接事实参考段落（W2）。未配置/失败/空结果返回 ""。"""
+    try:
+        from clipwright.services.web_search import WebSearchService
+        svc = WebSearchService()
+        if not svc.is_configured():
+            return ""
+        results = await svc.search(query[:200], max_results=max_results)
+        if not results:
+            return ""
+        lines = [
+            f"- 标题: {r.get('title', '')} | 摘要: {r.get('snippet', '')} "
+            f"| 来源: {r.get('url', '')}"
+            for r in results[:max_results]
+        ]
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 # ── 对话窗口管理 ──────────────────────────────
 
 def compress_history(messages: list[dict]) -> list[dict]:
@@ -1189,9 +1209,13 @@ class RequirementsService:
                     "规划书修订: 复用 %d 个已确认场景（跳过 StructureAgent），feedback=%s",
                     len(existing_raw_scenes), feedback[:50],
                 )
+                web_context = await _build_web_context(
+                    f"{topic} {user_inputs.get('script_text', '')}"[:300]
+                )
                 return await self._translate_plan(
                     existing_raw_scenes, brief_data,
                     user_inputs.get("script_text", ""), feedback=feedback,
+                    web_context=web_context,
                 )
 
             agent = StructureAgent()
@@ -1212,6 +1236,14 @@ class RequirementsService:
             script = user_inputs.get("script_text", "")
             rag_context = await self._retrieve_knowledge(persona_id, f"{topic} {script}", session_id)
 
+            # W2: 注入联网搜索结果作为事实参考（未配置/失败/空结果 → 零变化）
+            web_context = await _build_web_context(f"{topic} {script}"[:300])
+            if web_context:
+                if rag_context:
+                    rag_context += f"\n\n## 联网搜索参考\n{web_context}"
+                else:
+                    rag_context = f"## 联网搜索参考\n{web_context}"
+
             result = await agent.execute(
                 StructureInput(
                     context=context,
@@ -1227,7 +1259,9 @@ class RequirementsService:
                 logger.warning("StructureAgent 返回空场景")
                 return None
 
-            return await self._translate_plan(scenes, brief_data, script, feedback=feedback)
+            return await self._translate_plan(
+                scenes, brief_data, script, feedback=feedback, web_context=web_context,
+            )
 
         except Exception as e:
             logger.exception("规划书生成失败: %s", e)
@@ -1235,7 +1269,7 @@ class RequirementsService:
 
     async def _translate_plan(
         self, scenes: list[dict], brief_data: dict | None, script_text: str = "",
-        feedback: str = "",
+        feedback: str = "", web_context: str = "",
     ) -> dict:
         """翻译场景为规划书。"""
         scenes_json = json.dumps(scenes, ensure_ascii=False, indent=2)
@@ -1249,6 +1283,8 @@ class RequirementsService:
         if script_text:
             system_prompt += f"\n\n## 原始文稿（规划书必须忠实反映此内容）\n{script_text[:8000]}"
         system_prompt += f"\n\n参考方案:\n{brief_json}"
+        if web_context:
+            system_prompt += f"\n\n## 联网搜索参考\n{web_context}"
 
         try:
             result = await asyncio.wait_for(
