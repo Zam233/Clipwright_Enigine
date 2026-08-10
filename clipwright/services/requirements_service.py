@@ -62,6 +62,18 @@ _ADJUST_FIELDS: dict[str, tuple[type, Any]] = {
 
 _memory_sessions: dict[str, dict] = {}
 
+# E5: 会话级缓存 — RAG 检索 (session_id → (query, result, ts)) 与 Persona 上下文 (persona_id → (result, ts))。
+# TTL 10 分钟；同 session 同 query / 同 persona 复用，避免每条 chat 消息重复 embedding 与序列化。
+_SESSION_CACHE_TTL = 600.0
+_session_knowledge_cache: dict[str, tuple[str, str, float]] = {}
+_persona_context_cache: dict[str, tuple[dict, float]] = {}
+
+
+def clear_session_caches() -> None:
+    """清空会话级缓存（测试/重置用）。"""
+    _session_knowledge_cache.clear()
+    _persona_context_cache.clear()
+
 
 def _mongo_ok() -> bool:
     """检查 MongoDB 是否已连接。"""
@@ -399,7 +411,7 @@ class RequirementsService:
 
         # 状态路由
         if status in ("gathering", "init"):
-            result = await self._handle_gathering(messages, brief_data, status, user_inputs)
+            result = await self._handle_gathering(messages, brief_data, status, user_inputs, session_id)
             brief_data = result.get("brief_draft", brief_data)
             is_ready = result.get("is_ready", False)
             # 只要生成了完整方案草稿就进入待确认状态。不完全依赖 LLM 的 is_ready 标志——
@@ -471,12 +483,13 @@ class RequirementsService:
                     "metadata": {},
                 })
             else:
-                status = "gathering"
-                messages.append({
-                    "role": "assistant", "content": "好的，请告诉我需要如何调整规划书？",
-                    "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
-                    "metadata": {},
-                })
+                # B6/E2: 规划书反馈闭环——不重置回 gathering，而是按反馈修订规划书
+                # 并复用已确认的 raw_scenes（仅重新翻译，不重跑 StructureAgent）。
+                status, revised = await self._handle_plan_revision(
+                    messages, brief_data, plan_data, user_inputs, session_id, user_message,
+                )
+                if revised:
+                    plan_data = revised
 
         # 持久化到 MongoDB（offload 到线程：_persist 内的 find_by_id 走 _io()，
         # 在事件循环线程会返回未 await 的协程导致写入静默失败；线程内无事件循环则同步执行）
@@ -490,6 +503,50 @@ class RequirementsService:
             "",
         )
         return {**session, "reply": last_assistant}
+
+    async def _handle_plan_revision(
+        self,
+        messages: list[dict],
+        brief_data: dict | None,
+        plan_data: dict | None,
+        user_inputs: dict,
+        session_id: str,
+        feedback: str,
+    ) -> tuple[str, dict | None]:
+        """plan_ready 非确认消息 → 按反馈修订规划书（B6/E2）。
+
+        复用现有 raw_scenes 只重新翻译（不重跑 StructureAgent LLM），
+        修订成功保持 plan_ready；失败保留旧规划书并提示。
+        返回 (status, new_plan_or_None)。
+        """
+        existing_raw = []
+        if isinstance(plan_data, dict):
+            raw = plan_data.get("raw_scenes")
+            if isinstance(raw, list):
+                existing_raw = raw
+        new_plan = await self._generate_plan(
+            brief_data, user_inputs, session_id,
+            feedback=feedback, existing_raw_scenes=existing_raw or None,
+        )
+        if new_plan:
+            messages.append({
+                "role": "assistant",
+                "content": (
+                    f"### 📋 已按反馈修订规划书\n\n共 **{new_plan.get('scene_count', 0)}** 个场景，"
+                    f"预估总时长 **{new_plan.get('total_duration_sec', 0):.0f}秒**\n\n"
+                    "确认无误请输入「确认」，或继续提出修改意见。"
+                ),
+                "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                "metadata": {"plan_ready": True},
+            })
+            return "plan_ready", new_plan
+        messages.append({
+            "role": "assistant",
+            "content": "修订规划书时遇到问题，已保留原规划书。请重试或提出新的修改意见。",
+            "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+            "metadata": {"plan_ready": True},
+        })
+        return "plan_ready", None
 
     # ── 时间线编辑（选中素材 + 自然语言指令） ──────────
 
@@ -913,7 +970,7 @@ class RequirementsService:
 
     async def _handle_gathering(
         self, messages: list[dict], brief_data: dict | None, status: str,
-        user_inputs: dict | None = None,
+        user_inputs: dict | None = None, session_id: str = "",
     ) -> dict:
         """调用 LLM 收集需求（注入 Persona 上下文）。"""
         context = ""
@@ -932,7 +989,7 @@ class RequirementsService:
         persona_id = user_inputs.get("persona_id", "default") if user_inputs else "default"
         topic = user_inputs.get("topic", "") if user_inputs else ""
         script = user_inputs.get("script_text", "") if user_inputs else ""
-        rag_context = await self._retrieve_knowledge(persona_id, f"{topic} {script}")
+        rag_context = await self._retrieve_knowledge(persona_id, f"{topic} {script}", session_id)
         if rag_context:
             context += f"\n\n## 知识库参考\n{rag_context}"
 
@@ -963,39 +1020,58 @@ class RequirementsService:
 
     @staticmethod
     def _build_full_persona_context(user_inputs: dict) -> dict:
-        """加载 Persona 的完整参数配置和 Prompt 指引。"""
+        """加载 Persona 的完整参数配置和 Prompt 指引（E5：按 persona_id 缓存 TTL 10min）。"""
         persona_id = user_inputs.get("persona_id", "")
         if not persona_id:
             return {}
+        now = time.time()
+        cached = _persona_context_cache.get(persona_id)
+        if cached and (now - cached[1]) < _SESSION_CACHE_TTL:
+            return dict(cached[0])
         try:
             from clipwright.persona.loader import load_persona_by_id
             manifest = load_persona_by_id(persona_id)
             if not manifest:
                 return {}
-            return {
+            result = {
                 "config": manifest.parameter.model_dump(mode="json") if manifest.parameter else {},
                 "prompt": manifest.prompt or "",
             }
+            _persona_context_cache[persona_id] = (result, now)
+            return result
         except Exception as e:
             logger.debug("Persona 上下文加载失败: %s", e)
             return {}
 
-    async def _retrieve_knowledge(self, persona_id: str, query: str) -> str:
-        """检索 Persona 知识库并返回可注入 Prompt 的上下文。"""
+    async def _retrieve_knowledge(self, persona_id: str, query: str, session_id: str = "") -> str:
+        """检索 Persona 知识库并返回可注入 Prompt 的上下文（E5：会话级缓存 TTL 10min）。"""
+        if session_id:
+            now = time.time()
+            cached = _session_knowledge_cache.get(session_id)
+            if cached and cached[0] == query and (now - cached[2]) < _SESSION_CACHE_TTL:
+                return cached[1]
         try:
             from clipwright.rag.retriever import Retriever
             retriever = Retriever()
             result = await retriever.retrieve(persona_id=persona_id, query=query)
-            return result.context if result and result.context else ""
+            context = result.context if result and result.context else ""
+            if session_id:
+                _session_knowledge_cache[session_id] = (query, context, time.time())
+            return context
         except Exception:
             return ""
 
     # ── 规划书生成 ──────────────────────────
 
     async def _generate_plan(
-        self, brief_data: dict | None, user_inputs: dict, session_id: str
+        self, brief_data: dict | None, user_inputs: dict, session_id: str,
+        feedback: str = "", existing_raw_scenes: list | None = None,
     ) -> dict | None:
-        """调用 StructureAgent（注入 Persona）并翻译为规划书。"""
+        """调用 StructureAgent（注入 Persona）并翻译为规划书。
+
+        B6/E2：规划书修订路径——当已有 raw_scenes（简报未变、本会话已生成过场景）时
+        跳过 StructureAgent 重新生成，仅带反馈重新 _translate_plan，避免重复完整 LLM 生成。
+        """
         try:
             from clipwright.agents.structure_agent import StructureAgent
             from clipwright.schema.agent import AgentContext, StructureInput
@@ -1030,6 +1106,18 @@ class RequirementsService:
                 if isinstance(raw_intents, list):
                     animation_intents = raw_intents
 
+            # B6/E2: 复用已确认的 raw_scenes 修订路径——不重跑 StructureAgent，
+            # 仅带反馈重新翻译场景（简报未变、已有场景时）。
+            if isinstance(existing_raw_scenes, list) and existing_raw_scenes:
+                logger.info(
+                    "规划书修订: 复用 %d 个已确认场景（跳过 StructureAgent），feedback=%s",
+                    len(existing_raw_scenes), feedback[:50],
+                )
+                return await self._translate_plan(
+                    existing_raw_scenes, brief_data,
+                    user_inputs.get("script_text", ""), feedback=feedback,
+                )
+
             agent = StructureAgent()
             context = AgentContext(
                 pipeline_id=session_id,
@@ -1046,7 +1134,7 @@ class RequirementsService:
             )
 
             script = user_inputs.get("script_text", "")
-            rag_context = await self._retrieve_knowledge(persona_id, f"{topic} {script}")
+            rag_context = await self._retrieve_knowledge(persona_id, f"{topic} {script}", session_id)
 
             result = await agent.execute(
                 StructureInput(
@@ -1063,18 +1151,25 @@ class RequirementsService:
                 logger.warning("StructureAgent 返回空场景")
                 return None
 
-            return await self._translate_plan(scenes, brief_data, script)
+            return await self._translate_plan(scenes, brief_data, script, feedback=feedback)
 
         except Exception as e:
             logger.exception("规划书生成失败: %s", e)
             return None
 
-    async def _translate_plan(self, scenes: list[dict], brief_data: dict | None, script_text: str = "") -> dict:
+    async def _translate_plan(
+        self, scenes: list[dict], brief_data: dict | None, script_text: str = "",
+        feedback: str = "",
+    ) -> dict:
         """翻译场景为规划书。"""
         scenes_json = json.dumps(scenes, ensure_ascii=False, indent=2)
         brief_json = json.dumps(brief_data, ensure_ascii=False) if brief_data else "{}"
 
         system_prompt = PLAN_TRANSLATE_SYSTEM
+        if feedback:
+            system_prompt += (
+                f"\n\n## 用户修改意见（规划书必须体现这些修订）\n{feedback[:2000]}"
+            )
         if script_text:
             system_prompt += f"\n\n## 原始文稿（规划书必须忠实反映此内容）\n{script_text[:8000]}"
         system_prompt += f"\n\n参考方案:\n{brief_json}"
