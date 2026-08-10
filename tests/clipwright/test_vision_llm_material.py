@@ -30,12 +30,20 @@ if "isobase" not in sys.modules:
     sys.modules["isobase.llm"] = llm_module
     sys.modules["isobase.llm.entities"] = entities_module
 
-from clipwright.agents.material_agent import MaterialAgent
+from clipwright.agents.material_agent import MaterialAgent, clear_material_vision_cache
 from clipwright.schema.agent import AgentContext, AgentDecision, MaterialInput
 from clipwright.schema.material import MaterialAsset, MaterialSearchResult
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.services.pipeline_v2 import PipelineOrchestratorV2
 from clipwright.tool.frame_extractor import extract_frames
+
+
+@pytest.fixture(autouse=True)
+def _clear_vision_cache():
+    """清空 URL→score 缓存，避免跨用例串扰（E10 模块级缓存）。"""
+    clear_material_vision_cache()
+    yield
+    clear_material_vision_cache()
 
 
 def _context() -> AgentContext:

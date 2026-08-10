@@ -128,6 +128,7 @@ class LLMService:
         tools: Optional[list[dict[str, Any]]] = None,
         timeout: int = 120,
         use_flash: bool = False,
+        max_retries: int = 2,
         **kwargs: Any,
     ) -> LLMResponse:
         """发送非流式生成请求。
@@ -138,6 +139,8 @@ class LLMService:
             tools: Anthropic/OpenAI 格式的 tool schemas
             timeout: 超时秒数，默认 120s
             use_flash: True 时使用 flash 轻量模型（适合意图判断/分类等简单任务）
+            max_retries: transient 错误（超时/429/5xx/连接错误）重试次数，默认 2
+                （指数退避 1s/2s）；非 transient 失败（400/401/403/404/422）不重试。
             **kwargs: 透传给 IsoBase 的额外参数
 
         Returns:
@@ -155,9 +158,41 @@ class LLMService:
                      use_flash, model or settings.llm_model, timeout,
                      json.dumps(messages, ensure_ascii=False)[:500],
                      json.dumps(kwargs.get("tools", []), ensure_ascii=False)[:200])
-        resp = await asyncio.to_thread(
-            partial(client.generate, messages=messages, model=model, **kwargs),
-        )
+
+        # E3: transient 错误指数退避重试（避免 transient 失败触发管线自愈全链路重做）
+        def _is_transient(resp: Any) -> bool:
+            sc = getattr(resp, "status_code", None)
+            if sc is None:
+                return not getattr(resp, "success", True)
+            return int(sc) in (408, 409, 429) or int(sc) >= 500
+
+        resp: Any = None
+        for attempt in range(max_retries + 1):
+            try:
+                resp = await asyncio.to_thread(
+                    partial(client.generate, messages=messages, model=model, **kwargs),
+                )
+                if resp.success or not _is_transient(resp):
+                    break
+                logger.warning(
+                    "LLM generate transient 失败 (attempt %d/%d): status=%s, 退避重试",
+                    attempt + 1, max_retries + 1, getattr(resp, "status_code", "?"),
+                )
+            except Exception as e:
+                # 连接错误/超时等异常 → transient，继续重试
+                if attempt >= max_retries:
+                    logger.warning(
+                        "LLM generate 异常 (attempt %d/%d): %s",
+                        attempt + 1, max_retries + 1, e,
+                    )
+                    raise
+                logger.warning(
+                    "LLM generate 异常 (attempt %d/%d): %s, 退避重试",
+                    attempt + 1, max_retries + 1, e,
+                )
+            if attempt < max_retries:
+                await asyncio.sleep(2 ** (attempt + 1))  # 1s, 2s, 4s...
+
         logger.debug("LLM generate 响应: success=%s, content=%.500s, tool_calls=%s",
                      resp.success, resp.content or "",
                      [f"{tc.name}({tc.arguments[:100]})" for tc in (resp.tool_calls or [])])

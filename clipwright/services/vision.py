@@ -12,10 +12,32 @@ from __future__ import annotations
 import base64
 import json
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Optional
 
 from clipwright.config import logger
+
+# E8/E9: 视觉识别结果缓存 — {str(path):mtime_ns → result}，TTL 1h，上限 512。
+# 多 Agent 重复分析同一图片（AnimationAgent 图片索引 / Quality 帧检查）共享缓存。
+_VISION_CACHE: dict[str, tuple[dict[str, Any], float]] = {}
+_VISION_CACHE_MAX = 512
+_VISION_CACHE_TTL = 3600.0
+
+
+def clear_vision_cache() -> None:
+    """清空视觉识别缓存（测试/重置用）。"""
+    _VISION_CACHE.clear()
+
+
+def _vision_cache_key(image_path: str) -> str:
+    """缓存键 = 规范化路径 + 文件 mtime_ns（文件变更后自动失效）。"""
+    try:
+        st = Path(image_path).stat()
+        mtime = getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9))
+    except OSError:
+        mtime = 0
+    return f"{str(Path(image_path).resolve())}:{mtime}"
 
 # 常见视频/图片内容的标签映射（保底方案）
 _FALLBACK_TAGS: dict[str, list[str]] = {
@@ -56,7 +78,7 @@ class VisionService:
     # ── 公开接口 ──
 
     async def analyze_image(self, image_path: str) -> dict[str, Any]:
-        """分析图片内容，生成标签和描述。
+        """分析图片内容，生成标签和描述（E9：path+mtime 缓存，TTL 1h，上限 512）。
 
         Returns:
             {"tags": [...], "description": str, "labels": [...], "model": str}
@@ -65,24 +87,42 @@ class VisionService:
         if not path.exists():
             return {"tags": [], "description": "", "labels": [], "model": "", "error": "文件不存在"}
 
+        key = _vision_cache_key(image_path)
+        cached = _VISION_CACHE.get(key)
+        if cached and (time.time() - cached[1]) < _VISION_CACHE_TTL:
+            return dict(cached[0])
+
         from clipwright.config import settings
 
         # 1. LLM 多模态（Qwen-VL / Claude Vision / GPT-4V）
         if settings.vision_provider == "llm":
             try:
-                return await self._classify_llm(image_path)
+                result = await self._classify_llm(image_path)
+                self._cache_store(key, result)
+                return result
             except Exception as e:
                 logger.debug("LLM 图片识别失败: %s", e)
 
         # 2. transformers 图像分类
         if settings.vision_provider == "transformers":
             try:
-                return await self._classify_transformers(image_path)
+                result = await self._classify_transformers(image_path)
+                self._cache_store(key, result)
+                return result
             except Exception as e:
                 logger.debug("transformers 分类失败: %s", e)
 
         # 3. 保底：文件名 + 文件信息
-        return self._fallback_analyze(image_path)
+        result = self._fallback_analyze(image_path)
+        self._cache_store(key, result)
+        return result
+
+    @staticmethod
+    def _cache_store(key: str, result: dict[str, Any]) -> None:
+        """写入缓存并裁剪超限（淘汰最旧条目）。"""
+        if len(_VISION_CACHE) >= _VISION_CACHE_MAX and key not in _VISION_CACHE:
+            _VISION_CACHE.pop(next(iter(_VISION_CACHE)), None)
+        _VISION_CACHE[key] = (result, time.time())
 
     # ── LLM 多模态 ──
 

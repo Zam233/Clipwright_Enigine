@@ -24,6 +24,15 @@ from clipwright.services.trace import add_event
 _search_cache: dict[str, list[dict]] = {}
 _SEARCH_CACHE_MAX = 200
 
+# E10: 视觉校验 URL→score 缓存（多场景复用同素材时省多模态调用），上限 512。
+_VISION_SCORE_CACHE: dict[str, float] = {}
+_VISION_SCORE_CACHE_MAX = 512
+
+
+def clear_material_vision_cache() -> None:
+    """清空素材视觉校验缓存（测试/重置用）。"""
+    _VISION_SCORE_CACHE.clear()
+
 # 素材校验有界寻源：单场景最多尝试轮数 + 触发重试的最低分数阈值
 # （原 2 次重试在素材源命中不佳时过早放弃，改为 6 轮持续寻源）
 _MAX_VALIDATION_ATTEMPTS = 6
@@ -407,6 +416,15 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
 
         return score
 
+    @staticmethod
+    def _asset_url_of(asset: Any) -> str:
+        """提取素材可访问 URL（兼容对象与 dict）。"""
+        if hasattr(asset, "url"):
+            return asset.url or asset.local_path or ""
+        if isinstance(asset, dict):
+            return asset.get("url", "") or asset.get("local_path", "")
+        return str(asset)
+
     async def _validate_via_vision_llm(
         self,
         asset: Any,
@@ -415,7 +433,16 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
         scene_description: str,
         frame_count: int = 3,
     ) -> float:
-        """使用视觉 LLM 分析候选素材帧内容，返回语义匹配分 (0-1)。"""
+        """使用视觉 LLM 分析候选素材帧内容，返回语义匹配分 (0-1)。
+
+        E10: URL→score 模块级缓存——多场景复用同素材时省重复多模态调用；
+        仅缓存成功结果，失败回退 0.5 且不写缓存。
+        """
+        url = self._asset_url_of(asset)
+        if url:
+            cached = _VISION_SCORE_CACHE.get(url)
+            if cached is not None:
+                return cached
         try:
             from clipwright.tool.registry import ToolRegistry
             result = await ToolRegistry.execute(
@@ -436,7 +463,13 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                 "MaterialAgent: [视觉LLM] scene=%s score=%.3f method=%s frames=%d",
                 scene_title, score, extraction_method, frames,
             )
-            return float(score)
+            final = float(score)
+            if url:
+                if len(_VISION_SCORE_CACHE) >= _VISION_SCORE_CACHE_MAX \
+                        and url not in _VISION_SCORE_CACHE:
+                    _VISION_SCORE_CACHE.pop(next(iter(_VISION_SCORE_CACHE)), None)
+                _VISION_SCORE_CACHE[url] = final
+            return final
         except Exception as e:
             logger.debug("MaterialAgent: 视觉LLM验证失败，降级: %s", e)
             return 0.5
