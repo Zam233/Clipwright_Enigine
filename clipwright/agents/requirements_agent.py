@@ -124,6 +124,13 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
         if references:
             user_context += f"参考素材: {len(references)} 个文件\n"
 
+        # A2: 注入素材库概览（空素材库 → 无额外段落，零变化）。
+        # 延迟导入避免模块级循环依赖（requirements_service 不反向依赖本模块）。
+        from clipwright.services.requirements_service import _material_library_overview
+        overview = _material_library_overview()
+        if overview:
+            user_context += f"\n素材库概览: {overview}"
+
         system_prompt = CREATIVE_BRIEF_SYSTEM
         from clipwright.plugins.prompt_registry import PluginPromptRegistry
         plugin_prompts = PluginPromptRegistry.get_for_agent("requirements")

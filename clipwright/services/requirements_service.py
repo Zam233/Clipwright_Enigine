@@ -170,6 +170,24 @@ async def _build_web_context(query: str, max_results: int = 3) -> str:
         return ""
 
 
+def _material_library_overview() -> str:
+    """生成素材库概览一行（A2）。素材库为空返回 ""；以源粒度统计，不做逐源 I/O。
+
+    素材库注册表 MaterialRegistry.list() 仅返回 {id, name}（无类型字段），
+    故概览按源粒度呈现：`素材库可用: {n} 个素材源: {name 列表}`。
+    任何异常（注册表不可用等）一律返回 ""，保证零变化。
+    """
+    try:
+        from clipwright.material.registry import MaterialRegistry
+        sources = MaterialRegistry.list()
+        if not sources:
+            return ""
+        names = ", ".join(str(s.get("name") or s.get("id") or "?") for s in sources[:10])
+        return f"素材库可用: {len(sources)} 个素材源: {names}"
+    except Exception:
+        return ""
+
+
 # ── 对话窗口管理 ──────────────────────────────
 
 def compress_history(messages: list[dict]) -> list[dict]:
@@ -1243,6 +1261,14 @@ class RequirementsService:
                     rag_context += f"\n\n## 联网搜索参考\n{web_context}"
                 else:
                     rag_context = f"## 联网搜索参考\n{web_context}"
+
+            # A2: 注入素材库概览（空素材库 → 无额外段落，零变化）
+            overview = _material_library_overview()
+            if overview:
+                if rag_context:
+                    rag_context += f"\n\n## 素材库概览\n{overview}"
+                else:
+                    rag_context = f"## 素材库概览\n{overview}"
 
             result = await agent.execute(
                 StructureInput(
