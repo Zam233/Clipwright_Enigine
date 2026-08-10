@@ -21,6 +21,7 @@ import json
 import threading
 import uuid
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any, Optional
 
 from clipwright.agents import (
@@ -50,11 +51,53 @@ DEFAULT_PIPELINE_TIMEOUT_SEC = 1800  # 30 分钟
 _run_registry: list[dict] = []
 _run_registry_lock = threading.Lock()
 
+# G2: 协作式取消标记（per-pipeline）。
+# 不强制中断 in-flight LLM 调用（asyncio.to_thread 不可取消），
+# 在下一个 agent 边界（_dispatch 前）生效。
+_CANCELLED: set[str] = set()
+
+
+def mark_cancelled(pipeline_id: str) -> None:
+    """标记管线取消（协作式）。"""
+    _CANCELLED.add(pipeline_id)
+
+
+def is_cancelled(pipeline_id: str) -> bool:
+    return pipeline_id in _CANCELLED
+
+
+def clear_cancel(pipeline_id: str | None = None) -> None:
+    """清除取消标记（测试/重置用）。"""
+    if pipeline_id is None:
+        _CANCELLED.clear()
+    else:
+        _CANCELLED.discard(pipeline_id)
+
 
 def _registry_snapshot() -> list[dict]:
     """深拷贝当前内存注册表（剔除内部时间戳字段）。"""
     with _run_registry_lock:
         return [{k: v for k, v in r.items() if k != "_start_dt"} for r in _run_registry]
+
+
+def truncate_shared_data(shared: dict[str, Any], max_len: int = 5000) -> dict[str, Any]:
+    """递归截断 shared_data 中的字符串字段，保留 dict/list 结构（B8）。
+
+    - dict/list 值保持原结构，仅递归截断内部字符串字段；
+    - 顶层标量字符串超长仍截断。
+    """
+    def _truncate(v: Any) -> Any:
+        if isinstance(v, str):
+            if len(v) > max_len:
+                return v[:max_len] + f"...[截断, 原长{len(v)}]"
+            return v
+        if isinstance(v, dict):
+            return {k: _truncate(val) for k, val in v.items()}
+        if isinstance(v, list):
+            return [_truncate(item) for item in v]
+        return v
+
+    return {k: _truncate(v) for k, v in shared.items()}
 
 
 def record_run_start(pipeline_id: str, topic: str) -> None:
@@ -70,6 +113,8 @@ def record_run_start(pipeline_id: str, topic: str) -> None:
             "_start_dt": now,
             "agents": [],
         })
+        # B9: 有界注册表——裁剪至最近 200 条，防止无界增长
+        del _run_registry[:-200]
 
 
 def record_run_complete(pipeline_id: str, status: str, steps: list[PipelineStep]) -> None:
@@ -229,13 +274,17 @@ class AgentDAG:
     def get_execution_plan(cls) -> list[list[str]]:
         """从 _DEPS 自动拓扑排序 → 分阶段并行执行计划。
 
+        quality 不参与 DAG 执行组：统一由 _run_inner 的自愈 while 循环调度
+        （循环开头即运行 quality），避免同一管线内 quality 重复执行（B1）。
+        但 _DEPS 仍保留 quality 依赖，供 _get_downstream_agents 自愈联动计算。
+
         Returns:
             [[stage1_agents], [stage2_agents], ...]
             同一阶段的 Agent 可以并行执行。
         """
         deps = {k: list(v) for k, v in cls._DEPS.items()}
         plan: list[list[str]] = []
-        remaining = set(deps.keys())
+        remaining = set(deps.keys()) - {"quality"}
 
         while remaining:
             # 找出所有依赖都已满足（或已在当前 plan 中）的 agent
@@ -372,10 +421,190 @@ class PipelineOrchestratorV2:
 
         tracer.cleanup()
         state.updated_at = datetime.now()
+
+        # G2: 协作式取消——若期间被标记取消，终态改为 CANCELLED 并写 trace/result
+        if is_cancelled(pid):
+            state.status = PipelineStatus.CANCELLED
+            state.error = state.error or "管线已取消"
+            add_event(pid, "system", "cancelled", "管线已取消")
+            clear_cancel(pid)
+            logger.info("PipelineV2 取消: %s", pid)
+
         # Layer 1: 持久化最终状态（在线程池执行）
         await loop.run_in_executor(None, self._persist_state, state, state.status.value, error_category)
         # Run registry: 记录运行结束（成功/失败共用，含 agent 跨度）
         record_run_complete(pid, state.status.value, state.steps)
+        return state
+
+    async def _self_heal_quality(
+        self, state: PipelineState, result_data: dict, persona_config: dict, plugin,
+        agent_context: AgentContext, bus: AgentBus, pid: str,
+    ) -> bool:
+        """质检 + 自愈循环（B3/B1 共用）：运行 quality，检出 error 则联动重做责任 Agent 及其下游。
+
+        Returns:
+            True 表示质检通过。
+        """
+        quality_passed = False
+        heal_count = 0
+        while not quality_passed and heal_count < self.MAX_SELF_HEAL_LOOPS:
+            tl = result_data.get("timeline")
+            if not tl:
+                # 无时间线则无法质检——明确失败，避免静默跳过质检直接"完成"
+                state.status = PipelineStatus.FAILED
+                state.error = "质检阶段缺少时间线输入，无法完成质量校验"
+                add_event(pid, "quality", "error", state.error)
+                break
+            step = await self._run_agent(
+                state, "quality",
+                {"timeline": tl, "constraints": persona_config.get("constraints", {})},
+                agent_context, bus,
+            )
+
+            # 检查是否需要自愈
+            has_errors, redo_agent, quality_issues = self._check_quality(step)
+            if has_errors and redo_agent and heal_count < self.MAX_SELF_HEAL_LOOPS:
+                heal_count += 1
+                logger.info("自愈循环 [%d/%d]: → 重做 %s", heal_count, self.MAX_SELF_HEAL_LOOPS, redo_agent)
+                add_event(pid, "system", "info",
+                          f"自愈[{heal_count}]: 重做 {redo_agent}, 问题={len(quality_issues)}个")
+
+                # P1: 将质检问题注入 agent_context 供重做时参考
+                agent_context.extra_params["_quality_issues"] = quality_issues[:5]
+                agent_context.extra_params["_quality_heal_count"] = heal_count
+
+                # 重做指定的 Agent
+                input_data = self._build_input(redo_agent, result_data, persona_config, plugin,
+                                               extra_params=agent_context.extra_params)
+                redo_step = await self._run_agent(
+                    state, redo_agent, input_data, agent_context, bus
+                )
+                # 仅在重做成功时合并，避免失败的部分/空时间线覆盖好时间线
+                if redo_step.result and getattr(redo_step, "status", None) != PipelineStatus.FAILED:
+                    self._merge_agent_result(redo_agent, redo_step, result_data, bus, pid)
+
+                # P1 FIX: 联动重做依赖于 redo_agent 的下游 agent
+                downstream = self._get_downstream_agents(redo_agent)
+                for dep_name in downstream:
+                    if dep_name == "quality":
+                        continue  # quality 由外层循环处理
+                    add_event(pid, "system", "info",
+                              f"自愈联动: 重做 {dep_name}（因 {redo_agent} 已重做）")
+                    dep_input = self._build_input(dep_name, result_data, persona_config, plugin,
+                                                  extra_params=agent_context.extra_params)
+                    dep_step = await self._run_agent(
+                        state, dep_name, dep_input, agent_context, bus
+                    )
+                    if dep_step and dep_step.result and getattr(dep_step, "status", None) != PipelineStatus.FAILED:
+                        self._merge_agent_result(dep_name, dep_step, result_data, bus, pid)
+            else:
+                quality_passed = True
+
+        # 清理注入的质检上下文
+        agent_context.extra_params.pop("_quality_issues", None)
+        agent_context.extra_params.pop("_quality_heal_count", None)
+        return quality_passed
+
+    async def run_from_agent(
+        self,
+        pipeline_id: str,
+        request: PipelineRequest,
+        agent_name: str,
+        prior_state: Optional[dict] = None,
+    ) -> PipelineState:
+        """从指定 Agent 恢复执行（B3 retry）。
+
+        result_data 重建算法（决策完备）：
+        1. 从 prior_state.steps（按执行顺序）取 agent_name == 目标 之前所有
+           ``status == completed`` 且 ``result`` 非空的步骤；
+        2. 按 ``_merge_agent_result`` 的合并语义顺序重放——非控制键并入 result_data，
+           timeline 取最后成功写入的 step.result 的 timeline dict（经 AgentBus）；
+        3. 执行目标 agent + 下游联动（``_get_downstream_agents``），quality 走统一自愈循环；
+        4. 目标 agent 无可用前置结果 / 无记录 → 抛 ValueError（端点映射 400）。
+        """
+        pid = pipeline_id or f"pl_v2_{uuid.uuid4().hex[:12]}"
+        prior = prior_state or {}
+        steps: list[dict] = prior.get("steps") or []
+        if not steps:
+            raise ValueError(f"Pipeline {pid} 无执行记录，无法 retry")
+
+        # ── 1. 重建 result_data ──
+        result_data: dict[str, Any] = {}
+        bus = AgentBus(pid)
+        target_index = None
+        for i, s in enumerate(steps):
+            if s.get("agent_name") == agent_name:
+                target_index = i
+                break
+            if s.get("status") == "completed" and s.get("result"):
+                fake_step = SimpleNamespace(
+                    result=s.get("result"), agent_name=s.get("agent_name", ""),
+                )
+                self._merge_agent_result(s.get("agent_name", ""), fake_step, result_data, bus, pid)
+        if target_index is None:
+            raise ValueError(f"Pipeline {pid} 中未找到 Agent {agent_name}")
+        if not result_data:
+            raise ValueError(f"Pipeline {pid} 无可用前置成功结果，无法从 {agent_name} 恢复")
+
+        # ── 2. 初始化（Persona/插件/上下文），与正常管线一致 ──
+        state = PipelineState(pipeline_id=pid, request=request)
+        manifest, plugin, persona_config, translated, agent_context = await self._init(
+            request, pid, state, bus
+        )
+
+        # ── 3. 执行目标 agent ──
+        add_event(pid, "system", "info", f"重试从 Agent {agent_name} 恢复")
+        input_data = self._build_input(agent_name, result_data, persona_config, plugin,
+                                       extra_params=agent_context.extra_params)
+        target_step = await self._run_agent(state, agent_name, input_data, agent_context, bus)
+        if target_step.result and getattr(target_step, "status", None) != PipelineStatus.FAILED:
+            self._merge_agent_result(agent_name, target_step, result_data, bus, pid)
+
+        # ── 4. 下游联动（传递闭包 + DAG 执行顺序；quality 由自愈循环处理）──
+        # 直接依赖图的传递闭包：重做 edit 后，animation（依赖 edit）与 audio（依赖 animation）
+        # 都需联动，而 _get_downstream_agents 只返回一层，故按依赖图 BFS 求全部下游。
+        rev_deps: dict[str, set[str]] = {a: set() for a in AgentDAG._DEPS}
+        for dep, base in AgentDAG._DEPS.items():
+            for b in base:
+                rev_deps.setdefault(b, set()).add(dep)
+        downstream_set: set[str] = set()
+        frontier = list(rev_deps.get(agent_name, set()))
+        while frontier:
+            cur = frontier.pop()
+            if cur == "quality" or cur in downstream_set:
+                continue
+            downstream_set.add(cur)
+            frontier.extend(rev_deps.get(cur, set()))
+        plan_order = [a for group in AgentDAG.get_execution_plan() for a in group]
+        for dep_name in plan_order:
+            if dep_name == "quality" or dep_name not in downstream_set:
+                continue
+            add_event(pid, "system", "info",
+                      f"retry 联动: 重做 {dep_name}（因 {agent_name} 已重做）")
+            dep_input = self._build_input(dep_name, result_data, persona_config, plugin,
+                                          extra_params=agent_context.extra_params)
+            dep_step = await self._run_agent(state, dep_name, dep_input, agent_context, bus)
+            if dep_step and dep_step.result \
+                    and getattr(dep_step, "status", None) != PipelineStatus.FAILED:
+                self._merge_agent_result(dep_name, dep_step, result_data, bus, pid)
+
+        # ── 5. 质检 + 自愈（统一循环）──
+        await self._self_heal_quality(state, result_data, persona_config, plugin,
+                                      agent_context, bus, pid)
+
+        # ── 6. 完成 ──
+        state.shared_data["final_timeline"] = (
+            bus.get_artifact("timeline").model_dump(mode="json")
+            if bus.get_artifact("timeline")
+            else None
+        )
+        _ft = state.shared_data.get("final_timeline")
+        if _ft:
+            add_event(pid, "system", "timeline_snapshot",
+                      f"最终时间线: {len(_ft.get('tracks', []) or [])} 轨", _ft)
+        if state.status != PipelineStatus.FAILED:
+            state.status = PipelineStatus.COMPLETED
+        state.updated_at = datetime.now()
         return state
 
     async def _run_inner(
@@ -396,7 +625,6 @@ class PipelineOrchestratorV2:
             request, pid, state, bus
         )
         result_data: dict[str, Any] = {}
-        heal_count = 0
 
         # Layer 2/3: 更新任务进度
         if task_id:
@@ -422,7 +650,8 @@ class PipelineOrchestratorV2:
 
             tasks = {}
             for agent_name in group:
-                input_data = self._build_input(agent_name, result_data, persona_config, plugin)
+                input_data = self._build_input(agent_name, result_data, persona_config, plugin,
+                                               extra_params=agent_context.extra_params)
                 # Layer 2: span 在 _run_agent 内部创建（熔断后不创建 span）
                 tasks[agent_name] = self._run_agent(
                     state, agent_name, input_data, agent_context, bus, tracer,
@@ -474,57 +703,9 @@ class PipelineOrchestratorV2:
             return state
 
         # ── 质检 + 自愈循环 (P1: 联动重做 animation + audio) ──
-        quality_passed = False
-        while not quality_passed and heal_count < self.MAX_SELF_HEAL_LOOPS:
-            tl = result_data.get("timeline")
-            if not tl:
-                # 无时间线则无法质检——明确失败，避免静默跳过质检直接"完成"
-                state.status = PipelineStatus.FAILED
-                state.error = "质检阶段缺少时间线输入，无法完成质量校验"
-                add_event(pid, "quality", "error", state.error)
-                break
-            step = await self._run_agent(
-                state, "quality",
-                {"timeline": tl, "constraints": persona_config.get("constraints", {})},
-                agent_context, bus,
-            )
-
-            # 检查是否需要自愈
-            has_errors, redo_agent, quality_issues = self._check_quality(step)
-            if has_errors and redo_agent and heal_count < self.MAX_SELF_HEAL_LOOPS:
-                heal_count += 1
-                logger.info("自愈循环 [%d/%d]: → 重做 %s", heal_count, self.MAX_SELF_HEAL_LOOPS, redo_agent)
-                add_event(pid, "system", "info",
-                          f"自愈[{heal_count}]: 重做 {redo_agent}, 问题={len(quality_issues)}个")
-
-                # P1: 将质检问题注入 agent_context 供重做时参考
-                agent_context.extra_params["_quality_issues"] = quality_issues[:5]
-                agent_context.extra_params["_quality_heal_count"] = heal_count
-
-                # 重做指定的 Agent
-                input_data = self._build_input(redo_agent, result_data, persona_config, plugin)
-                redo_step = await self._run_agent(
-                    state, redo_agent, input_data, agent_context, bus
-                )
-                # 仅在重做成功时合并，避免失败的部分/空时间线覆盖好时间线
-                if redo_step.result and getattr(redo_step, "status", None) != PipelineStatus.FAILED:
-                    self._merge_agent_result(redo_agent, redo_step, result_data, bus, pid)
-
-                # P1 FIX: 联动重做依赖于 redo_agent 的下游 agent
-                downstream = self._get_downstream_agents(redo_agent)
-                for dep_name in downstream:
-                    if dep_name == "quality":
-                        continue  # quality 由外层循环处理
-                    add_event(pid, "system", "info",
-                              f"自愈联动: 重做 {dep_name}（因 {redo_agent} 已重做）")
-                    dep_input = self._build_input(dep_name, result_data, persona_config, plugin)
-                    dep_step = await self._run_agent(
-                        state, dep_name, dep_input, agent_context, bus
-                    )
-                    if dep_step and dep_step.result and getattr(dep_step, "status", None) != PipelineStatus.FAILED:
-                        self._merge_agent_result(dep_name, dep_step, result_data, bus, pid)
-            else:
-                quality_passed = True
+        await self._self_heal_quality(
+            state, result_data, persona_config, plugin, agent_context, bus, pid,
+        )
 
         # 清理注入的质检上下文
         agent_context.extra_params.pop("_quality_issues", None)
@@ -652,12 +833,14 @@ class PipelineOrchestratorV2:
 
         return manifest, plugin, persona_config, translated, agent_context
 
-    def _build_input(self, agent_name: str, result_data: dict, persona_config: dict, plugin) -> dict:
+    def _build_input(self, agent_name: str, result_data: dict, persona_config: dict, plugin,
+                     extra_params: Optional[dict] = None) -> dict:
         """为 Agent 构建输入数据。"""
         # animation/audio/quality 依赖 edit 产出的时间线；若缺失则明确报错，
         # 避免下游以 None 时间线触发 Pydantic 校验崩溃或静默跳过质检。
         if agent_name in ("animation", "audio", "quality") and not result_data.get("timeline"):
             raise ValueError(f"Agent {agent_name} 需要时间线输入，但 edit 阶段未产出有效时间线")
+        extra_params = extra_params or {}
         inputs = {
             "structure": {
                 "persona_config": persona_config,
@@ -684,10 +867,12 @@ class PipelineOrchestratorV2:
                 "timeline": result_data.get("timeline"),
                 "audio_config": {
                     **persona_config.get("audio", {}),
-                    "voice_id": persona_config.get("audio", {}).get("voice_clone_model_id")
+                    # B12: 优先透传前端 voice_id/auto_dub；未提供时回退 persona + 默认 auto_dub=True
+                    "voice_id": extra_params.get("voice_id")
+                    or persona_config.get("audio", {}).get("voice_clone_model_id")
                     or persona_config.get("audio", {}).get("voice")
                     or "",
-                    "auto_dub": True,
+                    "auto_dub": extra_params.get("auto_dub", True),
                 },
             },
             "quality": {
@@ -735,6 +920,17 @@ class PipelineOrchestratorV2:
 
         add_event(pid, agent_name, "agent_start", f"Agent: {agent_name}")
         logger.info("PipelineV2 Agent[%s] 开始", agent_name)
+
+        # G2: 协作式取消——在 dispatch 前检查取消标记，命中则跳过该 agent
+        if is_cancelled(pid):
+            step.status = PipelineStatus.CANCELLED
+            step.error = f"Agent {agent_name} 已跳过（管线取消）"
+            step.completed_at = datetime.now()
+            if step.started_at:
+                step.duration_ms = int((step.completed_at - step.started_at).total_seconds() * 1000)
+            add_event(pid, agent_name, "cancelled", f"{agent_name} 已跳过（管线取消）")
+            _end_span(status="error", error=step.error)
+            return step
 
         try:
             # 从总线获取其他 Agent 的需求
@@ -900,16 +1096,9 @@ class PipelineOrchestratorV2:
             if not mongo_ctx.is_connected:
                 return
             from clipwright.models.pipeline_model import PipelineModel
-            # 截断过大的 shared_data 字段，避免 MongoDB 16MB 限制
-            truncated_shared = {}
-            for k, v in (state.shared_data or {}).items():
-                if isinstance(v, str) and len(v) > 5000:
-                    truncated_shared[k] = v[:5000] + f"...[截断, 原长{len(v)}]"
-                elif isinstance(v, (dict, list)):
-                    s = str(v)
-                    truncated_shared[k] = s[:5000] + f"...[截断]" if len(s) > 5000 else v
-                else:
-                    truncated_shared[k] = v
+            # 截断过大的 shared_data 字段，避免 MongoDB 16MB 限制。
+            # B8：递归截断内部字符串并保留 dict/list 结构，不再把容器 str() 成字符串。
+            truncated_shared = truncate_shared_data(state.shared_data or {})
             data = {
                 "status": status or state.status.value,
                 "request": state.request.model_dump(mode="json") if hasattr(state.request, "model_dump") else {},
