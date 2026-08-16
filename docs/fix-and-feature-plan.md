@@ -499,3 +499,11 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 → P5 → P6/P7 → 
 - ? Server 端：login/register/refresh 写 httpOnly cookie（cw_refresh，SameSite=Lax），refresh 支持 cookie，logout 清 cookie
 - ? 新增测试：backend tests/clipwright/test_authz.py（7 个：401/放行/伪造密钥/owner 隔离/persona 越权/admin 绕过）；Server 既有 7 个适配
 - 回归：后端 1012/1012 ? · Server 7/7 ? · 前端 261/261 + typecheck ?
+
+### 执行轮次 4（P3-3B 收尾 + P4 市场后端）
+- ? 管线 owner：run-async 记录归属、/runs 按 owner 过滤（jwt 模式无主记录隐藏）、status/retry/cancel 校验所有权
+- ? 渲染 owner：queue 记录 owner_id、状态查询校验、列表过滤
+- ? P4-4A Server 市场核心（K:\Clipwright Server）：插件/Persona 发布（multipart+tar 校验+sha256）、搜索（仅 approved）、详情（含评分汇总）、下载（计数+1）、评分（每用户每包一评）、admin 审核 approve/reject；防 zip-slip 与缺清单拒绝；11 个测试全过
+- ? P4-4B 主项目市场后端：market_client（搜索/详情/下载）+ install_service（安全解包→schema 校验→原子移动→注册→失败回滚）+ /api/market 浏览与安装端点；6 个离线安装测试
+- ? 附带：persona/loader.py 重复 import 清理（B32）
+- 回归：后端 1018/1018 ? · Server 11/11 ?
