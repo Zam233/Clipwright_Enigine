@@ -697,3 +697,8 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ? 节拍对齐剪辑 beat-sync：EditAgent 消费 cut_on_beat + bpm（extra_params），场景起点吸附拍点网格（BPM→拍间隔）+ 测试 3 项
 - ? 特效工具产品化：AssetCard 特效菜单（移除背景/稳定/水印，toolApi.execute → output_path 重新加载素材库）+ 测试保持
 - 回归：后端 1080/1080 ?；前端 332/332 + typecheck + build ?
+
+### 执行轮次 41（P8 接线即得 + 运营调度 · 第四批）
+- ? 定时调度：scheduler 服务（Mongo scheduled_runs 持久化，interval/daily 两种触发，后台 asyncio 循环 2s 扫描，lifespan 启停）+ /api/scheduler CRUD/tick + 测试 4 项
+- ? 热点/选题发现：/api/pipeline/topic-suggest（LLM 生成 + 可选 web_search trending，启发式选题库回退）+ 测试 2 项
+- 回归：后端 1088/1088 ?

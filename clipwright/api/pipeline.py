@@ -592,6 +592,13 @@ class ScriptToolRequest(BaseModel):
     max_length: int = Field(default=0, ge=0, le=20000, description="目标字数（可选，0=不限）")
 
 
+class TopicSuggestRequest(BaseModel):
+    """P8: 热点/选题发现。"""
+    category: str = Field(default="", description="内容类别（可选）")
+    count: int = Field(default=5, ge=1, le=10)
+    use_web: bool = Field(default=False, description="是否尝试外部 trending 检索")
+
+
 @router.post("/script-tools")
 async def script_tools(body: ScriptToolRequest) -> dict:
     """P8: 脚本续写/改写/扩写 — LLM 工具化三种模式。"""
@@ -673,3 +680,11 @@ async def run_single_agent(agent_name: str, request: PipelineRequest) -> dict:
         "error": step.error,
         "deprecated": True,
     }
+
+
+@router.post("/topic-suggest")
+async def suggest_topics(body: TopicSuggestRequest) -> dict:
+    """P8: 热点/选题发现 — 返回选题建议列表（LLM + 可选 trending，启发式回退）。"""
+    from clipwright.services.topic_discovery import suggest_topics as _suggest
+    topics = await _suggest(category=body.category, count=body.count, use_web=body.use_web)
+    return {"topics": topics}

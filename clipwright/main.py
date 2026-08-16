@@ -88,6 +88,7 @@ from clipwright.api import preprocess as preprocess_api
 from clipwright.api import font as font_api
 from clipwright.api import requirements as requirements_api
 from clipwright.api import versions as versions_api
+from clipwright.api import scheduler as scheduler_api
 from clipwright.category import (
     CategoryRegistry,
     DigitalReviewPlugin,
@@ -177,9 +178,29 @@ async def lifespan(app: FastAPI):
     # 6. 注入 PluginLoader 到 API 模块
     plugin_api.set_loader(_plugin_loader)
 
+    # 6.5 P8: 启动轻量定时调度器（后台循环；Mongo 未连接时扫描空转不报错）
+    try:
+        from clipwright.services import scheduler as _sched
+        from clipwright.api import pipeline as _pipeline_api
+
+        def _sched_handler(payload: dict) -> None:
+            """定时任务默认动作：写 trace 事件（管线/通知可扩展）。"""
+            from clipwright.services.trace import add_event as _te
+            _te(payload.get("schedule_id", "sched"), "system", "info",
+                f"定时任务触发: {payload.get('name', '')}")
+
+        _sched.start(_sched_handler, interval_sec=2.0)
+    except Exception as e:
+        logger.warning("定时调度器启动失败: %s", e)
+
     yield
 
     # 清理
+    try:
+        from clipwright.services import scheduler as _sched
+        _sched.stop()
+    except Exception:
+        pass
     if _plugin_loader:
         _plugin_loader.clear()
     AnimRegistry.clear()
@@ -496,6 +517,7 @@ app.include_router(market_api.router)
 app.include_router(stats_api.router)
 app.include_router(requirements_api.router)
 app.include_router(versions_api.router)
+app.include_router(scheduler_api.router)
 
 
 @app.get("/health")
