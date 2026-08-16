@@ -570,6 +570,7 @@ function BottomBar() {
   const updatePhase = useAgentStore((s) => s.updatePhase);
   const cancelling = useAgentStore((s) => s.cancelling);
   const setCancelling = useAgentStore((s) => s.setCancelling);
+  const suggestions = useAgentStore((s) => s.suggestions);
 
   // M13: 编辑器内 Persona 切换
   const personaId = useProjectStore((s) => s.personaId);
@@ -625,6 +626,20 @@ function BottomBar() {
         updatePhase('completed', 100);
         // B17: 管线完成 → 复位需求状态，输入框恢复可继续对话
         useAgentStore.getState().setRequirementsStatus('pipeline_done');
+        // W2: 从 warning 日志生成建议列表（质检/节奏提示等，供用户下一步参考）
+        const warns = useAgentStore.getState().logEntries
+          .filter((l) => l.type === 'warning')
+          .slice(0, 5)
+          .map((l) => ({
+            id: l.id,
+            type: 'pace' as const,
+            message: l.summary,
+            confidence: 0.6,
+          }));
+        if (warns.length > 0) {
+          useAgentStore.getState().clearSuggestions();
+          warns.forEach((w) => useAgentStore.getState().addSuggestion(w));
+        }
         // 优先用 SSE 快照；否则从 result 接口取最终时间线
         let tl = lastTimelineRef.current;
         if (!tl) {
@@ -910,6 +925,19 @@ function BottomBar() {
           {pipelineSummary.timelineStats && (
             <span>{pipelineSummary.timelineStats.tracks}轨 {pipelineSummary.timelineStats.clips}clip {pipelineSummary.timelineStats.durationSec}s</span>
           )}
+        </div>
+      )}
+
+      {/* W2: 建议列表（管线完成后的质检/节奏提示） */}
+      {suggestions.length > 0 && (
+        <div className="px-3 pb-2 space-y-1">
+          <p className="text-caption font-medium text-on-surface-variant">建议</p>
+          {suggestions.map((s, i) => (
+            <div key={s.id ?? i} className="flex items-start gap-1.5 text-caption text-on-surface-variant">
+              <span className="text-primary shrink-0 mt-0.5">▸</span>
+              <span>{s.message}</span>
+            </div>
+          ))}
         </div>
       )}
     </div>

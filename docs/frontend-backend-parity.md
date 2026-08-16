@@ -286,6 +286,24 @@ $files | ForEach-Object { (Select-String -Path $_.FullName -Pattern "^\s{2,4}asy
 
 ---
 
+## 6.1 P6/P7 增量对账（2026-08 执行补充）
+
+P6/P7 阶段新增/变更的路由与客户端（均已完成接线与回归）：
+
+| 新增路由 | 来源 | 前端消费 |
+|---|---|---|
+| `POST /api/project/{id}/versions` · `GET /{id}/versions` · `POST /{id}/versions/{pos}/restore` · `DELETE /{id}/versions` | G1 版本历史 | `versionApi.list/snapshot/restore/clear`（TimelinePanel 历史弹层） |
+| `POST /api/project/{id}/trash` · `POST /{id}/restore` · `DELETE /{id}/trash` · `GET /api/project?trash=1` | A2 回收站 | `projectApi.trashProject/restoreProject/purgeProject`（ProjectsPage 回收站视图） |
+| `GET /api/pipeline/breaker-status` | C8 熔断探测 | 运维/健康监控（admin 用） |
+| `GET /api/project/{id}/versions` 系列 | — | 见上 |
+
+其他接线说明：
+- `assetApi.get/fileUrl/byPathUrl` 补全（W14），对齐 asset.py 全部 9 端点。
+- 需求对话新增 SSE 流式消费（W1）：`POST /api/requirements/chat/stream/{id}` → `requirementsApi.streamChat`。
+- wsUrl 已彻底移除（W9）；`/api/project/{id}/versions` 系列校验 owner（P3-3B）。
+
+---
+
 ## 7. 结论与残留风险
 
 **结论**：前后端功能对账完成——后端 176 条真实路由全部有前端消费路径（除明确范围外的 /metrics、worker、/ws）；10 处死/坏调用与 6 处形状漂移已修复；4 个新管理页 + 7 处页面接线已落地；文档（本报告、AGENTS.md、README）与代码一致。

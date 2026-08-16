@@ -6,6 +6,7 @@ import { useHistoryStore } from '@/stores/historyStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { assetApi, visionApi } from '@/services/api';
 import { mediaManager } from '@/services/media/mediaManager';
+import { toast } from '@/stores/toastStore';
 import { Button } from '@/components/ui';
 import { uid, normalizeClipKind } from '@/lib/utils';
 import { DubView } from './DubView';
@@ -87,7 +88,8 @@ export function AssetPanel() {
       }
       await loadAssets();
     } catch {
-      // Offline: create local assets backed by real object URLs (playable media)
+      // W5: 离线/失败 → 本地演示素材（明确标记为演示数据，不静默伪装成后端素材）
+      setDemoMode(true);
       const newAssets: Asset[] = Array.from(files).map((f) => {
         const id = uid('asset');
         const kind = normalizeClipKind(f.type.startsWith('video') ? 'video' : f.type.startsWith('audio') ? 'audio' : 'image') as Asset['kind'];
@@ -103,6 +105,7 @@ export function AssetPanel() {
         };
       });
       setAssets([...newAssets, ...useAssetStore.getState().assets]);
+      toast('后端不可达 — 已添加本地演示素材（不持久化）', 'info');
     } finally {
       setLoading(false);
       setUploadProgress(null);
