@@ -521,3 +521,9 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 → P5 → P6/P7 → 
 - ? B3：services/budget.py 全局月 token 预算（CLIPWRIGHT_LLM_MONTHLY_TOKEN_BUDGET，0=不限），管线 run-async 入口熔断（超预算 429 含已用/总额），60s 缓存聚合
 - ? 新增测试：test_budget 3 个（禁用/限额内/超限；monkeypatch 聚合无 Mongo 依赖，避免全局态污染）
 - 回归：后端 1024/1024 ?
+
+### 执行轮次 7（P5：B9/B6/用量报表）
+- ? B9 素材硬过滤：material_agent 候选硬剔除（时长<3s、已知分辨率方向不符），过滤后为空回退原候选防空转
+- ? B6 版权字段：MaterialAsset.license 字段 + 素材建议透传（前端可展示，素材源可提供）
+- ? 用量报表：GET /api/stats/usage（管线/渲染/LLM tokens 本月与总计，jwt 按 owner 过滤）+ 设置页「用量统计」卡片
+- 回归：后端 1024/1024 ? · 前端 261/261 + typecheck ?
