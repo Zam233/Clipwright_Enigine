@@ -202,6 +202,12 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
         _render_queue[task_id]["progress"] = 0
         _render_queue[task_id]["clip_count"] = len(tl.tracks or [])
         _render_queue[task_id]["current_clip"] = 0
+        # P1-4: 插件 hook — 渲染前置
+        try:
+            from clipwright.plugins.hooks import HookRegistry, HookPoint
+            HookRegistry.execute(HookPoint.PRE_RENDER, {"task_id": task_id})
+        except Exception as e:
+            logger.warning("pre_render hook 执行失败: %s", e)
         try:
             # 分阶段进度更新回调
             async def on_progress(phase: str, pct: float, detail: str = ""):
@@ -222,6 +228,15 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
             _render_queue[task_id]["status"] = "completed" if result.success else "failed"
             _render_queue[task_id]["progress"] = 100
             _render_queue[task_id]["output_path"] = str(out)
+            # P1-4: 插件 hook — 渲染后置
+            try:
+                from clipwright.plugins.hooks import HookRegistry, HookPoint
+                HookRegistry.execute(HookPoint.POST_RENDER, {
+                    "task_id": task_id, "output_path": str(out),
+                    "success": result.success,
+                })
+            except Exception as e:
+                logger.warning("post_render hook 执行失败: %s", e)
             # P8: webhook 事件接线 — 渲染完成/失败通知
             try:
                 from clipwright.api.webhook import dispatch_event

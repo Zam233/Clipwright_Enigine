@@ -720,3 +720,13 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ? 素材使用统计：used_count 字段 + increment_used + 治理摘要 GET /api/asset/governance/summary + 测试 1 项
 - ? 违规内容检测：POST /api/asset/governance/violations（图片视觉模型 / 文本关键词，可选第三方）
 - 回归：后端 1098/1098 ?
+
+### 执行轮次 45（P10 Persona/插件治理 · 第一批）
+- ? B7 原子写：save_manifest 全部文件改 temp+os.replace（防半写损坏）+ 测试
+- ? B10 知识文档 DELETE/PUT：repository.delete_knowledge_doc / update_knowledge_doc（文件+索引+向量重索引）+ /api/persona/{id}/knowledge/{doc_id} PUT/DELETE 端点 + 测试 2 项
+- ? B6 删除级联向量：persona delete 时清理 ChromaDB 索引
+- ? P1-5 reload 失败回滚：插件重载失败恢复旧实例（不消失）+ 测试
+- ? P1-1 插件 unregister API：DELETE /api/plugin/{id}（卸载+清 PluginData+hook 清理）
+- ? P1-7 密钥加密：config_types secret 字段（encrypt_field_value/decrypt/mask）+ loader 落盘加密/读取掩码/运行时解密 + 测试 3 项
+- ? P1-4 hook 执行框架：PRE/POST_PIPELINE、ON_ERROR、PRE/POST_RENDER 接入管线与渲染
+- 回归：后端 1103/1103 ?

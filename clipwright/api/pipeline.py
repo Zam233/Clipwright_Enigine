@@ -154,12 +154,30 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
 
     async def _run_background():
         try:
+            # P1-4: 插件 hook — 管线前置
+            try:
+                from clipwright.plugins.hooks import HookRegistry, HookPoint
+                HookRegistry.execute(HookPoint.PRE_PIPELINE, {
+                    "pipeline_id": pipeline_id, "topic": request.topic,
+                    "persona_id": request.persona_id,
+                })
+            except Exception as e:
+                logger.warning("pre_pipeline hook 执行失败: %s", e)
             orch = PipelineOrchestratorV2() if request.use_v2 else _orchestrator
             state = await orch.run(request, pipeline_id=pipeline_id)
             state.shared_data["execution_trace"] = get_all_events(pipeline_id)
             result_dict = state.model_dump(mode="json")
             _pipeline_results[pipeline_id] = result_dict
             add_event(pipeline_id, "system", "done", f"管线完成: {state.status}")
+            # P1-4: 插件 hook — 管线后置
+            try:
+                from clipwright.plugins.hooks import HookRegistry, HookPoint
+                HookRegistry.execute(HookPoint.POST_PIPELINE, {
+                    "pipeline_id": pipeline_id,
+                    "status": str(getattr(state, "status", "")),
+                })
+            except Exception as e:
+                logger.warning("post_pipeline hook 执行失败: %s", e)
             # P8: webhook 事件接线 — 管线完成/失败通知
             ok = getattr(state, "status", None) is not None and str(getattr(state, "status", "")).lower() in ("completed", "pass")
             try:
@@ -188,6 +206,14 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
             add_event(pipeline_id, "system", "error", f"管线失败: {e}")
             # 即使异常也写一个结果，让前端能查到错误
             _pipeline_results[pipeline_id] = {"status": "failed", "error": str(e), "pipeline_id": pipeline_id}
+            # P1-4: 插件 hook — 错误通知
+            try:
+                from clipwright.plugins.hooks import HookRegistry, HookPoint
+                HookRegistry.execute(HookPoint.ON_ERROR, {
+                    "pipeline_id": pipeline_id, "error": str(e)[:300],
+                })
+            except Exception as he:
+                logger.warning("on_error hook 执行失败: %s", he)
             try:
                 from clipwright.api.webhook import dispatch_event
                 await dispatch_event("pipeline.failed", {

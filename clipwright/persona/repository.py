@@ -55,38 +55,33 @@ class PersonaRepository:
     # ── 保存 ──
 
     def save_manifest(self, manifest: PersonaManifest) -> None:
-        """保存 Persona 的三个组成部分到磁盘。"""
+        """保存 Persona 的三个组成部分到磁盘（B7: 原子写防半写损坏）。"""
         pdir = self.persona_path(manifest.persona_id)
         pdir.mkdir(parents=True, exist_ok=True)
 
         # 1. yaml —— manifest 元信息
         manifest_path = pdir / "persona.yaml"
-        with open(manifest_path, "w", encoding="utf-8") as f:
-            yaml.dump(
-                manifest.model_dump(
-                    exclude={"parameter", "prompt", "vision_prompt", "knowledge", "exemplar", "embedding", "model"},
-                    mode="json",
-                ),
-                f,
-                allow_unicode=True,
-                default_flow_style=False,
-            )
+        self._atomic_write_text(manifest_path, yaml.dump(
+            manifest.model_dump(
+                exclude={"parameter", "prompt", "vision_prompt", "knowledge", "exemplar", "embedding", "model"},
+                mode="json",
+            ),
+            allow_unicode=True,
+            default_flow_style=False,
+        ))
 
         # 2. YAML —— parameter 参数层
         if manifest.parameter:
             param_path = pdir / "parameter.yaml"
-            with open(param_path, "w", encoding="utf-8") as f:
-                yaml.dump(
-                    manifest.parameter.model_dump(mode="json"),
-                    f,
-                    allow_unicode=True,
-                    default_flow_style=False,
-                )
+            self._atomic_write_text(param_path, yaml.dump(
+                manifest.parameter.model_dump(mode="json"),
+                allow_unicode=True,
+                default_flow_style=False,
+            ))
 
         # 3. Prompt —— 指令文本
         if manifest.prompt:
-            prompt_path = pdir / "prompt.md"
-            prompt_path.write_text(manifest.prompt, encoding="utf-8")
+            self._atomic_write_text(pdir / "prompt.md", manifest.prompt)
 
         # 3b. Vision Prompt —— 视觉需求提示词（no-clobber：仅当文件不存在时写入）
         if manifest.vision_prompt:
@@ -100,7 +95,7 @@ class PersonaRepository:
             for doc in manifest.knowledge:
                 doc_id = doc.id or f"doc_{len(index) + 1}"
                 fname = f"{doc_id}.md"
-                (kdir / fname).write_text(doc.content, encoding="utf-8")
+                self._atomic_write_text(kdir / fname, doc.content)
                 index.append({
                     "id": doc_id,
                     "title": doc.title,
@@ -110,11 +105,28 @@ class PersonaRepository:
                 })
             # 知识库索引
             index_path = kdir / "index.yaml"
-            with open(index_path, "w", encoding="utf-8") as f:
-                yaml.dump(index, f, allow_unicode=True, default_flow_style=False)
+            self._atomic_write_text(index_path, yaml.dump(index, allow_unicode=True, default_flow_style=False))
 
             # 自动向量化索引
             self._reindex_knowledge(manifest.persona_id)
+
+    @staticmethod
+    def _atomic_write_text(path: Path, text: str) -> None:
+        """B7: 原子写 — 临时文件 + os.replace，防进程中断产生半写文件。"""
+        import os
+        import tempfile
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.replace(tmp, str(path))
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
     # ── 加载（完整加载，含 prompt + knowledge） ──
 
@@ -220,6 +232,62 @@ class PersonaRepository:
         self._reindex_knowledge(persona_id)
         return doc_id
 
+    def delete_knowledge_doc(self, persona_id: str, doc_id: str) -> bool:
+        """B10: 删除知识库文档（含文件 + 索引 + 向量）。"""
+        from clipwright.security import validate_id
+        doc_id = validate_id(doc_id, "doc_id")
+        pdir = self.persona_path(persona_id)
+        kdir = pdir / "knowledge"
+        fname = f"{doc_id}.md"
+        fpath = kdir / fname
+        removed = False
+        if fpath.exists():
+            fpath.unlink()
+            removed = True
+        # 更新索引
+        index_path = kdir / "index.yaml"
+        if index_path.exists():
+            try:
+                with open(index_path, encoding="utf-8") as f:
+                    index = yaml.safe_load(f) or []
+                index = [e for e in index if e.get("id") != doc_id]
+                with open(index_path, "w", encoding="utf-8") as f:
+                    yaml.dump(index, f, allow_unicode=True, default_flow_style=False)
+            except Exception:
+                pass
+        # 重索引（删除向量）
+        self._reindex_knowledge(persona_id)
+        return removed
+
+    def update_knowledge_doc(self, persona_id: str, doc_id: str, doc: KnowledgeDoc) -> bool:
+        """B10: 更新知识库文档内容（保留原 id，重索引）。"""
+        from clipwright.security import validate_id
+        doc_id = validate_id(doc_id, "doc_id")
+        pdir = self.persona_path(persona_id)
+        kdir = pdir / "knowledge"
+        fname = f"{doc_id}.md"
+        fpath = kdir / fname
+        if not fpath.exists():
+            return False
+        fpath.write_text(doc.content, encoding="utf-8")
+        # 更新索引标题
+        index_path = kdir / "index.yaml"
+        if index_path.exists():
+            try:
+                with open(index_path, encoding="utf-8") as f:
+                    index = yaml.safe_load(f) or []
+                for e in index:
+                    if e.get("id") == doc_id:
+                        e["title"] = doc.title
+                        e["source"] = doc.source
+                        break
+                with open(index_path, "w", encoding="utf-8") as f:
+                    yaml.dump(index, f, allow_unicode=True, default_flow_style=False)
+            except Exception:
+                pass
+        self._reindex_knowledge(persona_id)
+        return True
+
     # ── 向量化索引 ──
 
     def _reindex_knowledge(self, persona_id: str) -> None:
@@ -240,3 +308,10 @@ class PersonaRepository:
         pdir = self.persona_path(persona_id)
         if pdir.exists():
             shutil.rmtree(pdir)
+        # B6: 删除级联向量 — 清理 ChromaDB 中的 persona 索引
+        try:
+            from clipwright.rag.retriever import Retriever
+            Retriever().delete_index(persona_id)
+        except Exception as e:
+            from clipwright.config import logger
+            logger.warning("Persona 向量清理失败 (non-fatal): %s", e)

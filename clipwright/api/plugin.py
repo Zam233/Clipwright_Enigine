@@ -62,6 +62,37 @@ async def unload_plugin(plugin_id: str) -> dict[str, str]:
     return {"status": "ok", "plugin_id": plugin_id}
 
 
+@router.delete("/{plugin_id}")
+async def unregister_plugin(plugin_id: str) -> dict[str, str]:
+    """P1-1: 注销插件 — 卸载 + 清理 PluginData（含 hook 与配置）。"""
+    if _loader is None:
+        raise HTTPException(status_code=503, detail="Plugin system not initialized")
+    if _loader.get(plugin_id) is None:
+        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not loaded")
+    _loader.unload(plugin_id)
+    # 清理 PluginData 目录（config/数据）
+    try:
+        data_dir = _loader.get_plugin_data_dir(plugin_id, ensure=False)
+        import shutil
+        if data_dir.exists():
+            shutil.rmtree(data_dir, ignore_errors=True)
+    except Exception as e:
+        from clipwright.config import logger
+        logger.warning("插件数据目录清理失败 %s: %s", plugin_id, e)
+    # P1-1: 注销已注册的 Hook
+    try:
+        from clipwright.plugins.hooks import HookRegistry
+        for point in list(HookRegistry._hooks.keys()):
+            HookRegistry._hooks[point] = [
+                fn for fn in HookRegistry._hooks[point]
+                if getattr(fn, "__plugin_id__", None) != plugin_id
+            ]
+    except Exception as e:
+        from clipwright.config import logger
+        logger.warning("插件 Hook 清理失败 %s: %s", plugin_id, e)
+    return {"status": "unregistered", "plugin_id": plugin_id}
+
+
 # ── 插件配置管理 ──
 
 @router.get("/{plugin_id}/config")

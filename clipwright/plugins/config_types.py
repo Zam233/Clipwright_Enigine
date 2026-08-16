@@ -8,6 +8,7 @@
         value: ""
         label: "API Key"
         description: "从 xxx 获取"
+        secret: true   # P1-7: 敏感字段（落盘加密 + 读取掩码）
 
 支持的 type: string | int | float | bool | dict | list
 """
@@ -28,6 +29,34 @@ _TYPE_MAP: dict[str, type | tuple[type, ...]] = {
     "dict": dict,
     "list": list,
 }
+
+# P1-7: secret 字段加密/解密（复用 webhook_crypto 的 Fernet；未配置密钥时明文兼容）
+from clipwright.services.webhook_crypto import encrypt_secret as _enc, decrypt_secret as _dec
+
+_SECRET_KEY = "secret"
+
+
+def encrypt_field_value(field: dict[str, Any], value: Any) -> Any:
+    """按字段声明加密值（仅 string 且 secret=true）。"""
+    if field.get(_SECRET_KEY) is True and isinstance(value, str) and value:
+        return _enc(value)
+    return value
+
+
+def decrypt_field_value(field: dict[str, Any], value: Any) -> Any:
+    """按字段声明解密值（读取时还原）。"""
+    if field.get(_SECRET_KEY) is True and isinstance(value, str) and value:
+        return _dec(value)
+    return value
+
+
+def mask_secret_value(value: Any) -> str:
+    """掩码显示：保留前 4 字符，其余打星。"""
+    if not isinstance(value, str) or not value:
+        return ""
+    if len(value) <= 4:
+        return "****"
+    return f"{value[:4]}****"
 
 
 def typed_config_to_values(config: dict[str, Any]) -> dict[str, Any]:

@@ -217,3 +217,23 @@ async def add_knowledge(persona_id: str, doc: KnowledgeDoc) -> dict:
     actual_id = _repo.add_knowledge_doc(persona_id, doc)
     return {"status": "ok", "doc_id": actual_id}
 
+
+@router.put("/{persona_id}/knowledge/{doc_id}")
+async def update_knowledge(persona_id: str, doc_id: str, doc: KnowledgeDoc) -> dict:
+    """B10: 更新知识库文档（保留原 id + 重索引）。"""
+    if not _repo.exists(persona_id):
+        raise HTTPException(status_code=404, detail=f"Persona 不存在: {persona_id}")
+    if not _repo.update_knowledge_doc(persona_id, doc_id, doc):
+        raise HTTPException(status_code=404, detail=f"文档 {doc_id} 不存在")
+    return {"status": "ok", "doc_id": doc_id}
+
+
+@router.delete("/{persona_id}/knowledge/{doc_id}")
+async def delete_knowledge(persona_id: str, doc_id: str) -> dict:
+    """B10: 删除知识库文档（文件 + 索引 + 向量）。"""
+    if not _repo.exists(persona_id):
+        raise HTTPException(status_code=404, detail=f"Persona 不存在: {persona_id}")
+    if not _repo.delete_knowledge_doc(persona_id, doc_id):
+        raise HTTPException(status_code=404, detail=f"文档 {doc_id} 不存在")
+    return {"status": "deleted", "doc_id": doc_id}
+

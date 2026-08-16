@@ -33,6 +33,56 @@ def _extract_flat_values(config: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
+def _mask_secret_fields(config: dict[str, Any]) -> dict[str, Any]:
+    """P1-7: 结构化配置读取时，secret 字段解密后掩码显示。"""
+    fields = config.get("fields")
+    if not isinstance(fields, dict):
+        return config
+    from clipwright.plugins.config_types import mask_secret_value
+    out = dict(config)
+    masked = dict(fields)
+    for name, field in fields.items():
+        if isinstance(field, dict) and field.get("secret") is True:
+            f = dict(field)
+            if isinstance(f.get("value"), str) and f.get("value"):
+                f["value"] = mask_secret_value(f["value"])
+            masked[name] = f
+    out["fields"] = masked
+    return out
+
+
+def _decrypt_flat(config: dict[str, Any]) -> dict[str, Any]:
+    """P1-7: 扁平化时解密 secret 字段（供插件运行时读取真实值）。"""
+    fields = config.get("fields")
+    if not isinstance(fields, dict):
+        return config
+    from clipwright.plugins.config_types import decrypt_field_value
+    flat: dict[str, Any] = {}
+    for name, field in fields.items():
+        if isinstance(field, dict):
+            flat[name] = decrypt_field_value(field, field.get("value"))
+        else:
+            flat[name] = field
+    return flat
+
+
+def _encrypt_secret_fields(config: dict[str, Any]) -> dict[str, Any]:
+    """P1-7: 落盘前加密 secret 字段。"""
+    fields = config.get("fields")
+    if not isinstance(fields, dict):
+        return config
+    from clipwright.plugins.config_types import encrypt_field_value
+    out = dict(config)
+    encrypted = dict(fields)
+    for name, field in fields.items():
+        if isinstance(field, dict) and field.get("secret") is True:
+            f = dict(field)
+            f["value"] = encrypt_field_value(field, field.get("value"))
+            encrypted[name] = f
+    out["fields"] = encrypted
+    return out
+
+
 class PluginLoadError(Exception):
     """插件加载失败时抛出。"""
 
@@ -114,8 +164,8 @@ class PluginLoader:
                 f"Plugin '{plugin_id}' has no exported class in its entry module"
             )
         plugin.manifest = manifest
-        # 注入扁平值（向后兼容插件通过 self.config["key"] 访问）
-        plugin.config = _extract_flat_values(config)
+        # 注入扁平值（向后兼容插件通过 self.config["key"] 访问；P1-7: secret 解密）
+        plugin.config = _decrypt_flat(config)
 
         # 5. 注册表快照（用于后续追踪插件注册的内容）
         from clipwright.skill.registry import SkillRegistry
@@ -185,38 +235,46 @@ class PluginLoader:
     # ── 配置管理 ──
 
     def get_config(self, plugin_id: str) -> dict[str, Any]:
-        """获取插件的合并配置（扁平值，向后兼容）。"""
-        return _extract_flat_values(self._get_merged_config(plugin_id))
+        """获取插件的合并配置（扁平值，向后兼容；P1-7: secret 解密）。"""
+        return _decrypt_flat(self._get_merged_config(plugin_id))
 
     def get_typed_config(self, plugin_id: str) -> dict[str, Any]:
-        """获取插件的结构化配置（含 type/value/label 元数据）。"""
-        return self._get_merged_config(plugin_id)
+        """获取插件的结构化配置（含 type/value/label 元数据；P1-7: secret 解密后掩码）。"""
+        merged = self._get_merged_config(plugin_id)
+        return _mask_secret_fields(merged)
 
     def save_config(self, plugin_id: str, data: dict[str, Any]) -> None:
         """将配置写入 PluginData/plugins/{plugin_id}/config.yaml。
 
-        创建该目录（如不存在），写入 YAML，并更新已加载插件的 config 属性。
+        创建该目录（如不存在），写入 YAML（P1-7: secret 字段加密落盘），
+        并更新已加载插件的 config 属性。
         """
         data_dir = self.get_plugin_data_dir(plugin_id)
         config_path = data_dir / "config.yaml"
+        # P1-7: 落盘前加密 secret 字段
+        encrypted = _encrypt_secret_fields(data)
         with open(config_path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+            yaml.dump(encrypted, f, allow_unicode=True, default_flow_style=False)
 
-        # 热更新：刷新已加载插件的 config（扁平值）
+        # 热更新：刷新已加载插件的 config（扁平值，解密后注入）
         if plugin_id in self._plugins:
             merged = self._get_merged_config(plugin_id)
-            self._plugins[plugin_id].config = _extract_flat_values(merged)
+            self._plugins[plugin_id].config = _decrypt_flat(merged)
 
         logger.info("Plugin config saved: %s", plugin_id)
 
     def reload(self, plugin_id: str) -> None:
-        """重载插件——shutdown 后重新 initialize，使新配置生效。"""
+        """重载插件——shutdown 后重新 initialize，使新配置生效（P1-5: 失败回滚保留旧实例）。"""
         if plugin_id not in self._plugins:
             logger.warning("插件 %s 未加载，无法重载", plugin_id)
             return
 
+        old_plugin = self._plugins.get(plugin_id)
+        old_meta = self._metadatas.get(plugin_id)
+
         try:
-            self._plugins[plugin_id].shutdown()
+            if old_plugin is not None:
+                old_plugin.shutdown()
         except Exception as e:
             logger.warning("插件 %s shutdown 异常: %s", plugin_id, e)
 
@@ -228,6 +286,12 @@ class PluginLoader:
             logger.info("Plugin reloaded: %s", plugin_id)
         except PluginLoadError as e:
             logger.error("插件 %s 重载失败: %s", plugin_id, e)
+            # P1-5: 回滚 — 恢复旧实例，避免插件从注册表消失
+            if old_plugin is not None:
+                self._plugins[plugin_id] = old_plugin
+            if old_meta is not None:
+                self._metadatas[plugin_id] = old_meta
+            logger.warning("插件 %s 已回滚到旧实例", plugin_id)
 
     def _get_merged_config(self, plugin_id: str) -> dict[str, Any]:
         """合并源码 config.yaml（默认值）+ PluginData config.yaml（覆盖值）。
