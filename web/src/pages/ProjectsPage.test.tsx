@@ -15,6 +15,9 @@ const { mocks } = vi.hoisted(() => ({
   mocks: {
     list: vi.fn(),
     remove: vi.fn(),
+    trashProject: vi.fn(),
+    restoreProject: vi.fn(),
+    purgeProject: vi.fn(),
     rename: vi.fn(),
     setFolder: vi.fn(),
     addTag: vi.fn(),
@@ -29,6 +32,9 @@ vi.mock('@/services/api', () => ({
   projectApi: {
     list: mocks.list,
     remove: mocks.remove,
+    trashProject: mocks.trashProject,
+    restoreProject: mocks.restoreProject,
+    purgeProject: mocks.purgeProject,
     rename: mocks.rename,
     setFolder: mocks.setFolder,
     addTag: mocks.addTag,
@@ -54,44 +60,94 @@ async function confirmDelete(projectName: string) {
   fireEvent.click(deleteConfirm);
 }
 
-describe('ProjectsPage handleDelete', () => {
+describe('ProjectsPage handleDelete (A2 → 回收站)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.list.mockResolvedValue(projects);
     mocks.getThumbnailUrl.mockReturnValue('http://localhost:8000/api/project/proj_1/thumbnail');
   });
 
-  it('removes the project from the list when the delete API succeeds', async () => {
-    mocks.remove.mockResolvedValue({ ok: true });
+  it('trashes the project (soft delete) and removes it from the list', async () => {
+    mocks.trashProject.mockResolvedValue({ ok: true });
     render(<ProjectsPage />);
     await screen.findByText('项目A');
 
     await confirmDelete('项目A');
 
     await waitFor(() => {
-      expect(mocks.remove).toHaveBeenCalledWith('proj_1');
+      expect(mocks.trashProject).toHaveBeenCalledWith('proj_1');
     });
     await waitFor(() => {
       expect(screen.queryByText('项目A')).toBeNull();
     });
     expect(screen.getByText('项目B')).toBeTruthy();
-    expect(mocks.toast).not.toHaveBeenCalled();
+    // 不再调用永久删除
+    expect(mocks.remove).not.toHaveBeenCalled();
   });
 
-  it('keeps the project in the list and shows an error toast when the delete API fails', async () => {
-    mocks.remove.mockRejectedValue(new Error('后端不可达'));
+  it('keeps the project and shows an error toast when the trash API fails', async () => {
+    mocks.trashProject.mockRejectedValue(new Error('后端不可达'));
     render(<ProjectsPage />);
     await screen.findByText('项目A');
 
     await confirmDelete('项目A');
 
     await waitFor(() => {
-      expect(mocks.remove).toHaveBeenCalledWith('proj_1');
+      expect(mocks.trashProject).toHaveBeenCalledWith('proj_1');
     });
     await waitFor(() => {
       expect(screen.getByText('项目A')).toBeTruthy();
     });
     expect(mocks.toast).toHaveBeenCalledWith('删除失败：后端不可达，项目已保留', 'error');
+  });
+});
+
+describe('ProjectsPage 回收站视图 (A2)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.list.mockResolvedValue(projects);
+    mocks.getThumbnailUrl.mockReturnValue('http://localhost:8000/api/project/proj_1/thumbnail');
+  });
+
+  it('切换回收站 → 加载 trash 列表并显示恢复/永久删除按钮', async () => {
+    mocks.list.mockResolvedValueOnce(projects).mockResolvedValueOnce([
+      { id: 'proj_9', name: '已删项目', created_at: '2024-01-01T00:00:00Z', updated_at: '2024-01-01T00:00:00Z', folder: '', tags: [], track_count: 1, duration_sec: 3 },
+    ]);
+    render(<ProjectsPage />);
+    await screen.findByText('项目A');
+
+    fireEvent.click(screen.getByRole('button', { name: /回收站/ }));
+    await screen.findByText('已删项目');
+    expect(mocks.list).toHaveBeenLastCalledWith(undefined, undefined, true);
+
+    // 恢复
+    mocks.restoreProject.mockResolvedValue({ ok: true });
+    fireEvent.click(screen.getByRole('button', { name: '恢复 已删项目' }));
+    await waitFor(() => {
+      expect(mocks.restoreProject).toHaveBeenCalledWith('proj_9');
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('已删项目')).toBeNull();
+    });
+  });
+
+  it('永久删除需确认，确认后调用 purgeProject', async () => {
+    mocks.list.mockResolvedValueOnce(projects).mockResolvedValueOnce([
+      { id: 'proj_9', name: '已删项目', created_at: '2024-01-01T00:00:00Z', updated_at: '2024-01-01T00:00:00Z', folder: '', tags: [], track_count: 1, duration_sec: 3 },
+    ]);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    mocks.purgeProject.mockResolvedValue({ ok: true });
+    render(<ProjectsPage />);
+    await screen.findByText('项目A');
+
+    fireEvent.click(screen.getByRole('button', { name: /回收站/ }));
+    await screen.findByText('已删项目');
+    fireEvent.click(screen.getByRole('button', { name: '永久删除 已删项目' }));
+
+    await waitFor(() => {
+      expect(mocks.purgeProject).toHaveBeenCalledWith('proj_9');
+    });
+    confirmSpy.mockRestore();
   });
 });
 

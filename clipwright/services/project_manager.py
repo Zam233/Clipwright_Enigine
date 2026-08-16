@@ -74,6 +74,8 @@ class ProjectManager:
             "updated_at": data.get("updated_at"),
             "persona_id": data.get("persona_id"),
             "plugin_id": data.get("plugin_id"),
+            # A2: 回收站软删除标记（None/缺省 = 正常；有值 = 已删除，list 默认隐藏）
+            "deleted_at": data.get("deleted_at"),
             # P3-3B: owner 隔离所需的归属字段
             "owner_id": data.get("owner_id", ""),
             "track_count": len((data.get("timeline") or {}).get("tracks", [])),
@@ -141,13 +143,44 @@ class ProjectManager:
         logger.info("项目已删除: %s", project_id)
         return True
 
+    # A2: 回收站软删除 — 标记 deleted_at，保留数据可恢复；list 默认隐藏
+    def soft_delete(self, project_id: str) -> bool:
+        """软删除：写入 deleted_at。返回 False 表示项目不存在。"""
+        _safe_id(project_id)
+        existing = self._read_json(project_id)
+        if existing is None:
+            return False
+        existing["deleted_at"] = self._now()
+        existing["updated_at"] = self._now()
+        self._write_json(project_id, existing)
+        logger.info("项目已移入回收站: %s", project_id)
+        return True
+
+    def restore(self, project_id: str) -> bool:
+        """从回收站恢复：清除 deleted_at。返回 False 表示项目不存在。"""
+        _safe_id(project_id)
+        existing = self._read_json(project_id)
+        if existing is None:
+            return False
+        existing.pop("deleted_at", None)
+        existing["updated_at"] = self._now()
+        self._write_json(project_id, existing)
+        logger.info("项目已从回收站恢复: %s", project_id)
+        return True
+
     def list_projects(
-        self, folder: str | None = None, tag: str | None = None
+        self, folder: str | None = None, tag: str | None = None,
+        include_deleted: bool = False, only_deleted: bool = False,
     ) -> list[dict[str, Any]]:
         """List all projects, optionally filtered by folder/tag.
 
         Returns lightweight summary dicts (no timeline) sorted by updated_at
         descending (newest first).
+
+        A2 回收站语义：
+        - 默认（include_deleted=False, only_deleted=False）隐藏软删除项目；
+        - include_deleted=True → 正常列表 + 已删除项目；
+        - only_deleted=True → 仅回收站项目。
         """
         projects: list[dict[str, Any]] = []
         if not self._projects_dir.exists():
@@ -160,6 +193,11 @@ class ProjectManager:
                 if folder and data.get("folder", "") != folder:
                     continue
                 if tag and tag not in data.get("tags", []):
+                    continue
+                is_deleted = bool(data.get("deleted_at"))
+                if only_deleted and not is_deleted:
+                    continue
+                if not include_deleted and not only_deleted and is_deleted:
                     continue
                 projects.append(data)
         projects.sort(key=lambda d: d.get("updated_at", ""), reverse=True)

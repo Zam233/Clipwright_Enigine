@@ -22,11 +22,30 @@ export const projectApi = {
   },
 
   /** List all projects (returns summaries, not full timeline) */
-  async list(folder?: string, tag?: string) {
+  async list(folder?: string, tag?: string, trash = false) {
     const params: Record<string, string> = {};
     if (folder) params.folder = folder;
     if (tag) params.tag = tag;
+    if (trash) params.trash = '1'; // A2: 回收站视图
     const { data } = await getApiClient().get<ProjectSummary[]>('/api/project', { params });
+    return data;
+  },
+
+  /** A2: 移入回收站（软删除，可恢复） */
+  async trashProject(projectId: string) {
+    const { data } = await getApiClient().post(`/api/project/${projectId}/trash`);
+    return data;
+  },
+
+  /** A2: 从回收站恢复 */
+  async restoreProject(projectId: string) {
+    const { data } = await getApiClient().post(`/api/project/${projectId}/restore`);
+    return data;
+  },
+
+  /** A2: 从回收站永久删除 */
+  async purgeProject(projectId: string) {
+    const { data } = await getApiClient().delete(`/api/project/${projectId}/trash`);
     return data;
   },
 

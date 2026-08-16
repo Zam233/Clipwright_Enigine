@@ -118,9 +118,13 @@ async def list_projects(
     request: Request,
     folder: str | None = Query(None),
     tag: str | None = Query(None),
+    trash: bool = Query(False, description="A2: 列出回收站项目（仅软删除的）"),
 ) -> list[dict[str, Any]]:
-    """List all projects, optionally filtered by folder/tag（P3-3B: 按 owner 过滤）。"""
-    return filter_by_owner(request, _manager.list_projects(folder=folder, tag=tag))
+    """List all projects, optionally filtered by folder/tag（P3-3B: 按 owner 过滤；A2: trash=1 仅列出回收站）。"""
+    return filter_by_owner(
+        request,
+        _manager.list_projects(folder=folder, tag=tag, only_deleted=trash),
+    )
 
 
 @router.post("/folders/rename")
@@ -181,6 +185,53 @@ async def delete_project(project_id: str, request: Request) -> dict[str, Any]:
     from clipwright import audit
     audit.record("project_delete", current_user_id(request), {"project_id": project_id})
     return {"status": "deleted", "id": project_id}
+
+
+# A2: 回收站（软删除 / 恢复 / 永久删除）
+
+@router.post("/{project_id}/trash")
+async def trash_project(project_id: str, request: Request) -> dict[str, Any]:
+    """移入回收站（软删除，可恢复）（A2 + P3-3B 校验所有权）。"""
+    _load_owned(request, project_id)
+    try:
+        ok = _manager.soft_delete(project_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    from clipwright import audit
+    audit.record("project_trash", current_user_id(request), {"project_id": project_id})
+    return {"status": "trashed", "id": project_id}
+
+
+@router.post("/{project_id}/restore")
+async def restore_project(project_id: str, request: Request) -> dict[str, Any]:
+    """从回收站恢复项目（A2 + P3-3B 校验所有权）。"""
+    _load_owned(request, project_id)
+    try:
+        ok = _manager.restore(project_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    from clipwright import audit
+    audit.record("project_restore", current_user_id(request), {"project_id": project_id})
+    return {"status": "restored", "id": project_id}
+
+
+@router.delete("/{project_id}/trash")
+async def purge_project(project_id: str, request: Request) -> dict[str, Any]:
+    """从回收站永久删除（A2 + P3-3B 校验所有权）。"""
+    _load_owned(request, project_id)
+    try:
+        ok = _manager.delete(project_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    from clipwright import audit
+    audit.record("project_purge", current_user_id(request), {"project_id": project_id})
+    return {"status": "purged", "id": project_id}
 
 
 @router.post("/{project_id}/duplicate")
