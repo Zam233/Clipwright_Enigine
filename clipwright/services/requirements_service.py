@@ -1428,6 +1428,9 @@ class RequirementsService:
                         content = texts[0][:5000] if texts else "[DOCX 解析失败]"
                 except Exception:
                     content = "[DOCX 文件]"
+            elif ext in ("png", "jpg", "jpeg", "webp", "gif"):
+                # C6: 附件图片理解 — 视觉模型描述图片并提取标签，替代占位符
+                content = await self._describe_image(file_path, file_name)
             else:
                 content = f"[上传文件: {file_name}]"
         except Exception as e:
@@ -1456,6 +1459,26 @@ class RequirementsService:
             )
 
         return {"content_preview": content[:500], "file_name": file_name}
+
+    async def _describe_image(self, file_path: str, file_name: str) -> str:
+        """C6: 附件图片理解 — 用 VisionService 提取描述/标签，失败时返回占位。"""
+        try:
+            from clipwright.services.vision import VisionService
+            result = await VisionService().analyze_image(file_path)
+            desc = result.get("description") or ""
+            tags = result.get("tags") or []
+            labels = result.get("labels") or []
+            parts = [f"[图片附件: {file_name}]"]
+            if desc:
+                parts.append(f"画面描述：{str(desc)[:400]}")
+            if tags:
+                parts.append(f"识别标签：{'、'.join(str(t) for t in tags[:12])}")
+            if labels:
+                parts.append(f"分类：{'、'.join(str(l) for l in labels[:8])}")
+            return "\n".join(parts)[:1200]
+        except Exception as e:
+            logger.info("图片理解失败（非致命，回退占位）: %s", e)
+            return f"[图片附件: {file_name}（自动理解失败，可手动描述）]"
 
     # ── 规划书获取 ──────────────────────────
 

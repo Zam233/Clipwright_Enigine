@@ -1026,6 +1026,17 @@ class PipelineOrchestratorV2:
         if step.started_at:
             step.duration_ms = int((step.completed_at - step.started_at).total_seconds() * 1000)
         state.updated_at = datetime.now()
+
+        # C1: 断点续跑落库 — 每完成一个 agent 即持久化检查点（含已完成的 steps 与
+        # 共享数据），进程崩溃/重启后可从最后一个完整步骤恢复/重放。
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None, self._persist_state, state, state.status.value, ""
+            )
+        except Exception as e:
+            logger.warning("C1 检查点持久化失败: %s", e)
+
         return step
 
     async def _dispatch(self, name: str, data: dict, ctx: AgentContext):

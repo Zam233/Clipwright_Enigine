@@ -652,3 +652,8 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ? W14 asset 客户端补全：assetApi.get（详情）/ fileUrl（素材文件 URL）/ byPathUrl（白名单代理 URL 封装），对齐后端 9 端点
 - ? W1 需求流式消费：requirementsApi.streamChat（fetch SSE 流式消费，逐块回调 status/result，长对话不再受 axios 超时）+ AgentPanel.sendChat 优先流式、失败回退一次性 chat（实时「思考中」）+ 测试 2 项
 - 回归：前端 332/332 + typecheck + build ?
+
+### 执行轮次 33（P7 薄弱项加固 · 第九批）
+- ? C6 附件图片理解：需求上传 png/jpg/webp/gif → VisionService 提取描述/标签/分类注入对话上下文（失败回退占位，非致命）+ 测试 3 项
+- ? C1 断点续跑落库：pipeline_v2 每完成一个 agent 即持久化检查点（steps + shared_data 到 Mongo），崩溃后可从最后完整步骤重放 + 测试 1 项
+- 回归：后端 1060/1060 ?
