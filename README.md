@@ -1,4 +1,4 @@
-﻿## 目录
+## 目录
 
 - 项目结构
 - 项目定位
@@ -166,6 +166,36 @@
 | 渲染转码                             |      | ✓    |
 | 素材库索引与存储                     |      | ✓    |
 
+
+------
+
+## 快速开始（Monorepo 一键启动）
+
+> 本仓库为前后端合并的 monorepo：后端在根目录（Python FastAPI），前端在 `web/`。
+> 账号/市场服务为独立仓库 `K:\Clipwright Server`（可选，端口 8090）。
+
+```powershell
+# 一键启动（检查依赖 → 启动 MongoDB → 后端 8080 → 前端 5173）
+scripts\start.ps1
+
+# 停止
+scripts\stop.ps1
+```
+
+或手动分步启动：
+
+```bash
+# 后端（需要 MongoDB 127.0.0.1:27017，配置见 .env.example）
+python -m uvicorn clipwright.main:app --port 8080
+
+# 前端
+cd web
+npm install --cache "D:\.npm-cache"
+npm run dev            # http://localhost:5173
+```
+
+**端口约定**：后端 8080（唯一标准）· 前端 5173 · 账号/市场服务 8090 · MongoDB 27017。
+**前端代理**：`/api` → 8080，`/srv` → 8090（账号服务）。
 
 ## 前端编辑器
 
@@ -442,7 +472,22 @@ Level 2 ─── LoRA微调 ────── 上传50+历史视频，微调Ag
 | 阶段一 | 7-Agent 管线 + API；Tool/Skill/Animation 系统 | ✅ 完成 |
 | 阶段二 | 素材库 + 插件系统；前端编辑器初步          | ✅ 完成 |
 | 阶段三 | 动画系统 + STT + 语音转文字               | ✅ 完成 |
-| 阶段四 | AudioAgent + QualityAgent 增强；渲染队列  | 🔄 进行中 |
-| 阶段五 | 前端完整时间轴编辑器；LoRA 微调管线       | 📅 计划中 |
+| 阶段四 | AudioAgent + QualityAgent 增强；渲染队列  | ✅ 完成 |
+| 阶段五 | 前端完整时间轴编辑器；LoRA 微调管线       | ✅ 完成 |
+| 阶段六 | 账号管理 / 插件与 Persona 市场 / 商业交付加固（P0–P10） | ✅ 完成 |
 
 ------
+
+## 开源协议
+
+本项目采用 **MIT License**，详见 [LICENSE](LICENSE)。第三方依赖各自遵循其开源协议。
+
+## 贡献
+
+欢迎提交 Issue 与 Pull Request。开发前请阅读：
+
+- [AGENTS.md](AGENTS.md)（项目地图与验证清单）
+- [docs/development.md](docs/development.md)（开发指南）
+- 计划与执行进度：[docs/fix-and-feature-plan.md](docs/fix-and-feature-plan.md)
+
+所有改动需通过：后端 `python -m pytest tests -q`（1154+）、前端 `npm run test`（349+）与 `npx tsc --noEmit`。

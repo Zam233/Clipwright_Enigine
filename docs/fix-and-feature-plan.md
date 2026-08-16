@@ -783,3 +783,11 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ? 前端 persona.ts +2（learn/learnStats）
 - 回归：后端 1154/1154 ?、前端 349/349 ?、tsc 通过 ?
 - ? 文档：frontend-backend-parity.md 全量刷新（路由 176→225、客户端 20→24 模块、插件 API 16 项、persona API 20 项）
+
+### 执行轮次 52（收尾：README/AGENTS/parity + LICENSE + tag v0.2.0-deliverable）
+- ? README：新增「快速开始（Monorepo 一键启动）」章节（scripts/start.ps1、端口约定 8080/5173/8090、/api 与 /srv 代理）；路线图补阶段六；补「开源协议/贡献」章节
+- ? AGENTS.md（根）：monorepo 结构、一键启动、鉴权三模式、P8–P10 摘要、验证清单（pytest 1154 / vitest 349）、文档维护规则含 parity 同步
+- ? .env.example：端口 8000→8080；补账号（verify_mode/jwt secret）、webhook_secret_key、插件治理（signature/require_signature/allowed_permissions）配置
+- ? LICENSE：根 + J:\Clipweight-Client 补 MIT（合规审计）
+- ? 双仓库同步 docs + LICENSE
+- ? tag `v0.2.0-deliverable`
