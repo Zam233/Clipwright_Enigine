@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from clipwright.schema.persona import PersonaManifest
@@ -13,6 +13,23 @@ from clipwright.services.persona_forge import PersonaForge
 router = APIRouter(prefix="/api/persona/forge", tags=["persona-forge"])
 
 _forge = PersonaForge()
+
+
+def _audit_forge(request: Request, method: str, persona_id: str, persona_name: str = "") -> None:
+    """B2: forge 成功/失败审计 + trace 事件。"""
+    from clipwright import audit
+    from clipwright.services.trace import add_event
+    uid = None
+    try:
+        from clipwright.authz import current_user_id
+        uid = current_user_id(request)
+    except Exception:
+        pass
+    audit.record(f"persona_forge_{method}", uid, {
+        "persona_id": persona_id, "persona_name": persona_name[:50],
+    })
+    add_event(f"forge_{persona_id}", "system", "info",
+              f"PersonaForge[{method}]: {persona_id}")
 
 
 class ForgeFromPromptRequest(BaseModel):
@@ -45,7 +62,7 @@ class DialogueBuildRequest(BaseModel):
 
 
 @router.post("/from-prompt", response_model=PersonaManifest)
-async def forge_from_prompt(req: ForgeFromPromptRequest) -> PersonaManifest:
+async def forge_from_prompt(req: ForgeFromPromptRequest, request: Request) -> PersonaManifest:
     """自然语言描述 → Persona。
 
     用户用自然语言描述创作风格，系统自动映射为结构化 Persona 配置。
@@ -57,6 +74,7 @@ async def forge_from_prompt(req: ForgeFromPromptRequest) -> PersonaManifest:
             persona_name=req.persona_name,
         )
         await _forge.save_persona(manifest)
+        _audit_forge(request, "from_prompt", manifest.persona_id, manifest.persona_name)
         return manifest
     except Exception as e:
         logger.exception("forge from prompt failed")
@@ -64,7 +82,7 @@ async def forge_from_prompt(req: ForgeFromPromptRequest) -> PersonaManifest:
 
 
 @router.post("/from-script", response_model=PersonaManifest)
-async def forge_from_script(req: ForgeFromScriptRequest) -> PersonaManifest:
+async def forge_from_script(req: ForgeFromScriptRequest, request: Request) -> PersonaManifest:
     """脚本/口播文本 → Persona。
 
     上传脚本或口播文本，系统通过语言分析和 LLM 提取创作风格。
@@ -78,6 +96,7 @@ async def forge_from_script(req: ForgeFromScriptRequest) -> PersonaManifest:
             script_format=req.script_format,
         )
         await _forge.save_persona(manifest)
+        _audit_forge(request, "from_script", manifest.persona_id, manifest.persona_name)
         return manifest
     except Exception as e:
         logger.exception("forge from prompt failed")
@@ -85,7 +104,7 @@ async def forge_from_script(req: ForgeFromScriptRequest) -> PersonaManifest:
 
 
 @router.post("/refine", response_model=PersonaManifest)
-async def forge_refine(req: ForgeRefineRequest) -> PersonaManifest:
+async def forge_refine(req: ForgeRefineRequest, request: Request) -> PersonaManifest:
     """迭代优化 Persona。
 
     给出 Persona ID 和自然语言反馈，系统自动调整对应参数。
@@ -97,6 +116,7 @@ async def forge_refine(req: ForgeRefineRequest) -> PersonaManifest:
         manifest = load_persona_by_id(req.persona_id)
         updated = await _forge.refine(manifest, req.feedback)
         await _forge.save_persona(updated)
+        _audit_forge(request, "refine", updated.persona_id, updated.persona_name)
         return updated
     except FileNotFoundError:
         raise HTTPException(
@@ -110,6 +130,7 @@ async def forge_refine(req: ForgeRefineRequest) -> PersonaManifest:
 @router.post("/dialogue/generate-questions")
 async def dialogue_generate_questions(
     req: DialogueQuestionsRequest,
+    request: Request,
 ) -> list[dict[str, str]]:
     """对话引导：生成下一步引导问题。"""
     try:
@@ -117,6 +138,7 @@ async def dialogue_generate_questions(
             persona_id=req.persona_id,
             existing_answers=req.existing_answers,
         )
+        _audit_forge(request, "dialogue_questions", req.persona_id)
         return questions
     except Exception as e:
         logger.exception("forge from prompt failed")
@@ -124,7 +146,7 @@ async def dialogue_generate_questions(
 
 
 @router.post("/dialogue/build", response_model=PersonaManifest)
-async def dialogue_build(req: DialogueBuildRequest) -> PersonaManifest:
+async def dialogue_build(req: DialogueBuildRequest, request: Request) -> PersonaManifest:
     """对话引导：将问答记录编译为 Persona。"""
     try:
         manifest = await _forge.dialogue_build(
@@ -133,6 +155,7 @@ async def dialogue_build(req: DialogueBuildRequest) -> PersonaManifest:
             answers=req.answers,
         )
         await _forge.save_persona(manifest)
+        _audit_forge(request, "dialogue_build", manifest.persona_id, manifest.persona_name)
         return manifest
     except Exception as e:
         logger.exception("forge from prompt failed")

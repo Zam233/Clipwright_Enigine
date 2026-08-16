@@ -138,6 +138,7 @@ async def get_type(type_id: str) -> dict:
 async def create_type(definition: TypeDefinition) -> dict:
     """创建自定义视频类型。"""
     validate_id(definition.id, "type_id")
+    _validate_definition(definition)  # B23: 引用/取值检查
     _USER_TYPES_DIR.mkdir(parents=True, exist_ok=True)
     yaml_path = _USER_TYPES_DIR / f"{definition.id}.yaml"
 
@@ -154,7 +155,12 @@ async def create_type(definition: TypeDefinition) -> dict:
     )
 
     # 热注册到 CategoryRegistry
-    _hot_register(yaml_path)
+    try:
+        _hot_register(yaml_path)
+    except Exception as e:
+        # B24: 热注册失败回滚 — 删除刚写的文件，避免半注册残留
+        yaml_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"类型注册失败，已回滚: {e}") from e
 
     logger.info("创建自定义视频类型: %s", definition.id)
     return {"status": "created", "id": definition.id, "file": str(yaml_path)}
@@ -173,15 +179,26 @@ async def update_type(type_id: str, definition: TypeDefinition) -> dict:
     if definition.id != type_id:
         raise HTTPException(status_code=400, detail="Cannot change type ID after creation")
 
+    _validate_definition(definition)  # B23
     data = definition.model_dump(mode="json")
+    backup = yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else None
     yaml_path.write_text(
         yaml.dump(data, allow_unicode=True, default_flow_style=False, sort_keys=False),
         encoding="utf-8",
     )
 
-    # 热更新注册表
+    # 热更新注册表（B24: 失败回滚旧配置）
     CategoryRegistry.unregister(type_id)
-    _hot_register(yaml_path)
+    try:
+        _hot_register(yaml_path)
+    except Exception as e:
+        if backup is not None:
+            yaml_path.write_text(backup, encoding="utf-8")
+        try:
+            _hot_register(yaml_path)
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail=f"类型更新注册失败，已回滚: {e}") from e
 
     logger.info("更新自定义视频类型: %s", type_id)
     return {"status": "updated", "id": type_id}
@@ -243,6 +260,27 @@ async def preview_type(definition: TypeDefinition) -> dict:
 
 
 # ── 辅助函数 ───────────────────────────────────
+
+
+def _validate_definition(definition: TypeDefinition) -> None:
+    """B23: 类型定义引用/取值检查（创建/更新前）。"""
+    errors: list[str] = []
+    sp = definition.shot_params
+    if sp.transition_type not in ("cut", "fade", "dissolve", "wipe", "glitch", "pixel_dissolve", "slide"):
+        errors.append(f"不支持的转场类型: {sp.transition_type}")
+    if sp.min_shot_sec <= 0:
+        errors.append("min_shot_sec 必须 > 0")
+    if sp.max_shot_sec < sp.min_shot_sec:
+        errors.append("max_shot_sec 不能小于 min_shot_sec")
+    if sp.transition_duration_sec < 0:
+        errors.append("transition_duration_sec 不能为负")
+    for key, item in definition.persona_mapping.items():
+        if not item.source:
+            errors.append(f"映射项 {key} 缺少 source")
+        if item.transform not in ("direct", "scale", "lookup"):
+            errors.append(f"映射项 {key} 的 transform 不支持: {item.transform}")
+    if errors:
+        raise HTTPException(status_code=400, detail="；".join(errors))
 
 
 def _find_yaml(type_id: str) -> Optional[Path]:

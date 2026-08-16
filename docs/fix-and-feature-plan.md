@@ -730,3 +730,13 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ? P1-7 密钥加密：config_types secret 字段（encrypt_field_value/decrypt/mask）+ loader 落盘加密/读取掩码/运行时解密 + 测试 3 项
 - ? P1-4 hook 执行框架：PRE/POST_PIPELINE、ON_ERROR、PRE/POST_RENDER 接入管线与渲染
 - 回归：后端 1103/1103 ?
+
+### 执行轮次 46（P10 Persona/类型/插件治理 · 第二批）
+- ? B21 transform 实现：DynamicCategoryPlugin.post_process_timeline（fps/分辨率覆盖、标题字幕、时长截断）+ pipeline_v2 完成时应用 + 测试 2 项
+- ? B23 引用检查：type_maker create/update 前校验（转场白名单/时长/transform 枚举）+ 测试 2 项
+- ? B24 热注册回滚：create 失败删文件回滚 / update 失败恢复旧配置 + 测试
+- ? B5 ChatForge 会话落盘：会话 JSON 持久化 + 重启恢复（未过期）+ commit 清理 + 测试 3 项
+- ? B2 forge logger：persona_forge 5 端点审计 + trace 事件
+- ? B8 变量修复：SYSTEM_DIALOGUE_PROMPT 改 replace（防 .format 花括号崩溃）
+- ? B14 RAG 字段修复：index_from_directory 字段安全访问（旧索引缺 file/created_at 容错）
+- 回归：后端 1110/1110 ?

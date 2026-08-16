@@ -17,6 +17,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Optional
 
 from clipwright.persona.repository import PersonaRepository
@@ -128,10 +129,64 @@ class ChatForge:
 
     # 单段知识库内容的最大字符数，超过则按 Markdown H1 分段读入
     MAX_KB_CHARS: int = 8000
+    # B5: 会话落盘目录（每个 session 一个 JSON；重启后恢复）
+    SESSIONS_DIR = Path("chatforge_sessions")
 
     def __init__(self) -> None:
         self._llm = LLMService()
         self._sessions: dict[str, ChatForgeSession] = {}
+        self.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        self._restore_sessions()
+
+    # ── B5: 会话落盘 ──
+
+    def _session_path(self, session_id: str) -> Path:
+        safe = "".join(c for c in session_id if c.isalnum() or c in "-_")[:64] or "s"
+        return self.SESSIONS_DIR / f"{safe}.json"
+
+    def _persist_session(self, session: ChatForgeSession) -> None:
+        """把会话状态写到磁盘（消息/草稿/知识库）。"""
+        try:
+            data = {
+                "session_id": session.session_id,
+                "messages": session.messages,
+                "persona_draft": session.persona_draft,
+                "knowledge_base": session.knowledge_base,
+                "created_at": session.created_at.isoformat(),
+                "updated_at": session.updated_at.isoformat(),
+            }
+            path = self._session_path(session.session_id)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
+            tmp.replace(path)
+        except Exception as e:
+            logger.warning("ChatForge 会话落盘失败 %s: %s", session.session_id, e)
+
+    def _restore_sessions(self) -> None:
+        """启动时从磁盘恢复未过期会话。"""
+        try:
+            for f in self.SESSIONS_DIR.glob("*.json"):
+                if f.name.endswith(".tmp"):
+                    continue
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    sid = data.get("session_id", "")
+                    if not sid:
+                        continue
+                    session = ChatForgeSession(
+                        session_id=sid,
+                        messages=data.get("messages", []),
+                        persona_draft=data.get("persona_draft", _default_draft()),
+                        knowledge_base=data.get("knowledge_base", []),
+                        created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.now(),
+                        updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else datetime.now(),
+                    )
+                    if not session.is_expired:
+                        self._sessions[sid] = session
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.warning("ChatForge 会话恢复失败: %s", e)
 
     # ── 会话管理 ──
 
@@ -178,6 +233,7 @@ class ChatForge:
         session = self._get_or_create_session(session_id)
         session.messages.append({"role": "user", "content": user_message})
         session.updated_at = datetime.now()
+        self._persist_session(session)  # B5
         logger.info("ChatForge message: session=%s, len=%d", session_id, len(user_message))
         return await self._process(session, user_message, persona_id)
 
@@ -199,6 +255,7 @@ class ChatForge:
             session.knowledge_base.append(chunk)
 
         session.updated_at = datetime.now()
+        self._persist_session(session)  # B5
         total_chars = len(content)
 
         logger.info("ChatForge knowledge added: session=%s, source=%s, chunks=%d, total_chars=%d",

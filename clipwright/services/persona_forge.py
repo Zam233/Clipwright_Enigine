@@ -102,7 +102,6 @@ class PersonaForge:
 
     def __init__(self) -> None:
         self._llm = LLMService()
-
     # ── 模式 A：自然语言描述 → Persona ─────────────────
 
     async def from_prompt(
@@ -201,7 +200,7 @@ class PersonaForge:
             问题列表 [{question, category, field}]
         """
         collected = json.dumps(existing_answers or {}, ensure_ascii=False)
-        prompt = SYSTEM_DIALOGUE_PROMPT.format(collected_info=collected)
+        prompt = SYSTEM_DIALOGUE_PROMPT.replace("{collected_info}", str(collected))
         prompt += (
             "\n\n请根据当前已收集的信息，生成最多 2 个问题继续引导用户。"
             "\n返回 JSON 数组：[{question, category, field}]"

@@ -593,11 +593,20 @@ class PipelineOrchestratorV2:
                                       agent_context, bus, pid)
 
         # ── 6. 完成 ──
-        state.shared_data["final_timeline"] = (
+        final_tl = (
             bus.get_artifact("timeline").model_dump(mode="json")
             if bus.get_artifact("timeline")
             else None
         )
+        # B21: 类型插件 transform 后处理（分辨率/帧率/标题字幕/时长截断）
+        if final_tl and plugin is not None:
+            try:
+                from clipwright.schema.timeline import Timeline as _Tl
+                processed = plugin.post_process_timeline(_Tl.model_validate(final_tl))
+                final_tl = processed.model_dump(mode="json")
+            except Exception as e:
+                logger.warning("B21 类型 transform 后处理失败（保留原时间线）: %s", e)
+        state.shared_data["final_timeline"] = final_tl
         _ft = state.shared_data.get("final_timeline")
         if _ft:
             add_event(pid, "system", "timeline_snapshot",

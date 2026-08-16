@@ -93,13 +93,18 @@ class Retriever:
 
         docs: list[KnowledgeDoc] = []
         for entry in index:
-            fpath = kdir / entry["file"]
+            # B14: 字段安全访问（旧索引可能缺 file/created_at 等字段）
+            if not isinstance(entry, dict):
+                continue
+            fname = entry.get("file") or f"{entry.get('id', 'doc')}.md"
+            fpath = kdir / fname
             content = fpath.read_text(encoding="utf-8") if fpath.exists() else ""
             docs.append(KnowledgeDoc(
                 id=entry.get("id", ""),
                 title=entry.get("title", ""),
                 content=content,
                 source=entry.get("source", ""),
+                created_at=entry.get("created_at", ""),
             ))
 
         return self.index_persona_knowledge(persona_id, docs)
