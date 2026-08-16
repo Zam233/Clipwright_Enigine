@@ -536,6 +536,9 @@ class RenderService:
                              speed=clip.speed, volume=clip.volume, opacity=clip.opacity,
                              image_rect=clip.image_rect, transition_in=clip.transition_in,
                              transition_duration_sec=clip.transition_duration_sec,
+                             # C11/M6: 音频淡入淡出
+                             audio_fade_in_sec=getattr(clip, 'audio_fade_in_sec', None),
+                             audio_fade_out_sec=getattr(clip, 'audio_fade_out_sec', None),
                              # 视频特效
                              fx_brightness=getattr(clip, 'fx_brightness', None),
                              fx_contrast=getattr(clip, 'fx_contrast', None),
@@ -1351,27 +1354,74 @@ class RenderService:
             return video, f"audio_mix_error: {str(e)[:120]}"
 
     async def _mix_audio(self, input_video, segments, output_path, afp="", ab="192k", bfp="", bitrate="5M"):
-        """混音。任一路径失败都会抛出/返回 False，由 _mix_audio_safe 统一标记。"""
+        """混音。任一路径失败都会抛出/返回 False，由 _mix_audio_safe 统一标记。
+
+        C11: 真实混音 — 所有音频片段按时间窗裁剪 + 各自音量 + 淡入淡出，
+        延迟对齐后 amix，最终 loudnorm LUFS 归一；失败逐级回退。
+        """
         encoder = _get_encoder(); preset = _get_preset()
-        voice = afp if afp and Path(afp).exists() else None
-        if not voice:
-            for seg in segments:
-                s = seg.get("source_path","")
-                if s and Path(s).exists(): voice = s; break
-        bgm = bfp if bfp and Path(bfp).exists() else None
-        if voice and bgm:
+
+        # 收集实际存在的音源：显式配音 afp > BGM bfp > 时间线音频片段
+        voices = []
+        if afp and Path(afp).exists():
+            voices.append({"path": afp, "volume": 1.0, "start": 0, "dur": 0,
+                           "fade_in": 0, "fade_out": 0})
+        for seg in segments or []:
+            s = seg.get("source_path", "")
+            if s and Path(s).exists():
+                voices.append({
+                    "path": s,
+                    "volume": float(seg.get("volume", 1.0) or 1.0),
+                    "start": float(seg.get("start_sec", 0) or 0),
+                    "dur": float(seg.get("duration_sec", 0) or 0),
+                    "fade_in": float(seg.get("audio_fade_in_sec") or 0),
+                    "fade_out": float(seg.get("audio_fade_out_sec") or 0),
+                })
+        if bfp and Path(bfp).exists():
+            voices.append({"path": bfp, "volume": 0.3, "start": 0, "dur": 0,
+                           "fade_in": 0, "fade_out": 0})
+
+        # C11 路径：≥2 个音源 → 多输入 amix + loudnorm（真实混音/LUFS）
+        if len(voices) >= 2:
             try:
-                await self._ff(["ffmpeg","-y","-loglevel","error",*(_hwaccel_args(encoder)),"-i",input_video,"-i",voice,"-i",bgm,
-                               "-filter_complex","[1:a]loudnorm=I=-16:LRA=11:TP=-1.5[voice];[2:a]volume=0.3[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]",
-                               "-map","0:v:0","-map","[aout]",
-                               "-c:v",encoder,"-preset",preset,"-pix_fmt","yuv420p","-b:v",bitrate,
-                               "-c:a","aac","-b:a",ab,"-shortest",output_path],
-                              capture_output=True, text=False, timeout=1800)
-                if _is_valid_video(output_path): return
-                logger.warning("_mix_audio: 配音+BGM 混合输出无效: %s", output_path)
+                inputs = ["ffmpeg", "-y", "-loglevel", "error", *( _hwaccel_args(encoder)),
+                          "-i", input_video]
+                for v in voices:
+                    inputs += ["-i", v["path"]]
+                chains = []
+                for i, v in enumerate(voices, start=1):
+                    parts = []
+                    if v["dur"] > 0 and v["start"] >= 0:
+                        parts.append(f"atrim=start={v['start']}:duration={v['dur']}")
+                    if v["start"] > 0:
+                        parts.append(f"adelay={int(v['start'] * 1000)}|{int(v['start'] * 1000)}")
+                    if v["fade_in"] > 0:
+                        parts.append(f"afade=t=in:st=0:d={v['fade_in']}")
+                    if v["fade_out"] > 0 and v["dur"] > 0:
+                        parts.append(f"afade=t=out:st={max(0, v['dur'] - v['fade_out'])}:d={v['fade_out']}")
+                    parts.append(f"volume={v['volume']}")
+                    chains.append(f"[{i}:a]{','.join(parts)}[a{i}]")
+                mix_in = "".join(f"[a{i}]" for i in range(1, len(voices) + 1))
+                chains.append(
+                    f"{mix_in}amix=inputs={len(voices)}:duration=first:normalize=0,"
+                    f"loudnorm=I=-16:LRA=11:TP=-1.5[aout]"
+                )
+                await self._ff(inputs + [
+                    "-filter_complex", ";".join(chains),
+                    "-map", "0:v:0", "-map", "[aout]",
+                    "-c:v", encoder, "-preset", preset, "-pix_fmt", "yuv420p", "-b:v", bitrate,
+                    "-c:a", "aac", "-b:a", ab, "-shortest", output_path,
+                ], capture_output=True, text=False, timeout=1800)
+                if _is_valid_video(output_path):
+                    logger.info("C11 真实混音成功: %d 音源 + LUFS 归一", len(voices))
+                    return
+                logger.warning("_mix_audio: C11 混音输出无效，回退单音源: %s", output_path)
             except Exception as e:
-                logger.warning("_mix_audio: 配音+BGM 混合异常: %s", str(e)[:200])
-        if voice:
+                logger.warning("_mix_audio: C11 混音异常，回退单音源: %s", str(e)[:200])
+
+        # 回退：单音源直接混入
+        if voices:
+            voice = voices[0]["path"]
             try:
                 await self._ff(["ffmpeg","-y","-loglevel","error",*(_hwaccel_args(encoder)),"-i",input_video,"-i",voice,
                                "-c:v",encoder,"-preset",preset,"-pix_fmt","yuv420p","-b:v",bitrate,
@@ -1381,7 +1431,7 @@ class RenderService:
                 logger.warning("_mix_audio: 配音混合输出无效: %s", output_path)
             except Exception as e:
                 logger.warning("_mix_audio: 配音混合异常: %s", str(e)[:200])
-        if not voice:
+        if not voices:
             logger.warning(
                 "_mix_audio: 未找到配音或BGM音源（segments=%d, afp=%s, bfp=%s），输出视频将无声音: %s",
                 len(segments or []), afp or "(none)", bfp or "(none)", output_path,
