@@ -1,0 +1,69 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build
+dist/
+dist-ssr/
+*.local
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Testing
+coverage/
+test-results/
+playwright-report/
+
+# Temp
+*.tmp
+.cache/
+
+# TypeScript build info
+tsconfig.tsbuildinfo
+
+# Test/debug artifacts
+screenshot/
+.playwright-mcp/
+qa-*.png
+qa-*.md
+timeline-after-drop.png
+
+# Agent tooling state
+.omo/
+.opencode/opencode-loop/
+.opencode/run-continuation/
+
+# User content / media dropped into workspace (not source)
+文理/
+
+# E2E manual test artifacts
+e2e-shots/
+e2e/artifacts/
+vite-out.log
+vite-err.log
+
+# 运行时字体缓存（勿提交）
+_fonts/

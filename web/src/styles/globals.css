@@ -1,0 +1,277 @@
+@import "tailwindcss";
+
+/* ═══════════════════════════════════════════════════════════
+   ClipWright Design Tokens — Material You + Premiere Pro
+   ═══════════════════════════════════════════════════════════ */
+
+@theme {
+  /* ── Font Families ── */
+  --font-sans: 'Inter', 'Noto Sans SC', -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  --font-display: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+
+  /* ── Font Sizes (Material 3 Type Scale, editor-tuned) ── */
+  --text-display: 36px;
+  --text-display--line-height: 44px;
+  --text-headline: 24px;
+  --text-headline--line-height: 32px;
+  --text-title: 20px;
+  --text-title--line-height: 28px;
+  --text-title-sm: 16px;
+  --text-title-sm--line-height: 24px;
+  --text-body: 14px;
+  --text-body--line-height: 20px;
+  --text-body-sm: 12px;
+  --text-body-sm--line-height: 16px;
+  --text-label: 11px;
+  --text-label--line-height: 16px;
+  --text-label-sm: 10px;
+  --text-label-sm--line-height: 14px;
+  --text-caption: 9px;
+  --text-caption--line-height: 12px;
+  --text-mono: 12px;
+  --text-mono--line-height: 18px;
+
+  /* ── Spacing (4px grid) ──
+     NOTE: do NOT define named spacing tokens like --spacing-sm / --spacing-2xl
+     here. In Tailwind v4 the `--spacing-*` namespace feeds EVERY size utility
+     (p-*, gap-*, w-*, h-*, min-w-*, max-w-*, size-* …). A named key such as
+     `--spacing-2xl: 32px` silently hijacks `max-w-2xl` (and w-2xl / min-w-2xl)
+     away from the container scale (42rem) and pins it to 32px — collapsing any
+     `max-w-2xl` content column to a single-character-wide strip. The 4px grid
+     is already covered by the default dynamic scale (p-1=4, p-2=8, p-3=12,
+     p-4=16, p-6=24, p-8=32, p-12=48, p-0.5=2), so no named tokens are needed. */
+
+  /* ── Border Radius ── */
+  --radius-cw-xs: 4px;
+  --radius-cw-sm: 8px;
+  --radius-cw-md: 12px;
+  --radius-cw-lg: 16px;
+  --radius-cw-full: 9999px;
+
+  /* ── Durations (Material 3 motion) ── */
+  --duration-short1: 50ms;
+  --duration-short3: 150ms;
+  --duration-short4: 200ms;
+  --duration-medium1: 250ms;
+  --duration-medium2: 300ms;
+  --duration-medium3: 350ms;
+  --duration-long1: 400ms;
+  --duration-long2: 450ms;
+  --duration-long3: 500ms;
+
+  /* ── Easing ── */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --ease-emphasized-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --ease-emphasized-accelerate: cubic-bezier(0.3, 0, 0.8, 0.15);
+
+  /* ── ClipWright Track Colors ── */
+  --color-track-video: #4F8CFF;
+  --color-track-audio: #34D399;
+  --color-track-text: #FBBF24;
+  --color-track-image: #A855F7;
+  --color-track-caption: #F59E0B;
+  --color-track-animation: #FF6B6B;
+  --color-playhead: #FF4444;
+  --color-marker: #FFD700;
+  --color-snap-guide: #00E5FF;
+  --color-selection: rgba(79, 140, 255, 0.33);
+  --color-ruler-bg: #1A1D29;
+  --color-ruler-tick: #46464F;
+  --color-cw-grid: #2A2A3A;
+  --color-keyframe-dot: #FBBF24;
+  --color-keyframe-selected: #4F8CFF;
+  --color-agent-bubble: #1A3074;
+}
+
+/* ── Semantic palette → runtime theme variables ──
+   Tailwind v4 only generates color utilities (bg-*, text-*, border-*, …)
+   from tokens declared inside @theme. `inline` makes utilities reference
+   the var() directly, so .dark / .light can swap values at runtime
+   (opacity modifiers compile to color-mix() and keep working). */
+@theme inline {
+  --color-surface: var(--cw-surface);
+  --color-surface-dim: var(--cw-surface-dim);
+  --color-surface-bright: var(--cw-surface-bright);
+  --color-surface-container: var(--cw-surface-container);
+  --color-surface-container-low: var(--cw-surface-container-low);
+  --color-surface-container-high: var(--cw-surface-container-high);
+  --color-on-surface: var(--cw-on-surface);
+  --color-on-surface-variant: var(--cw-on-surface-variant);
+  --color-primary: var(--cw-primary);
+  --color-on-primary: var(--cw-on-primary);
+  --color-primary-container: var(--cw-primary-container);
+  --color-on-primary-container: var(--cw-on-primary-container);
+  --color-secondary: var(--cw-secondary);
+  --color-secondary-container: var(--cw-secondary-container);
+  --color-tertiary: var(--cw-tertiary);
+  --color-error: var(--cw-error);
+  --color-on-error: var(--cw-on-error);
+  --color-outline: var(--cw-outline);
+  --color-outline-variant: var(--cw-outline-variant);
+  --color-inverse-surface: var(--cw-inverse-surface);
+  --color-inverse-on-surface: var(--cw-inverse-on-surface);
+  --color-scrim: var(--cw-scrim);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Dark Theme (Default) — Premiere Pro Aesthetic
+   ═══════════════════════════════════════════════════════════ */
+
+:root,
+.dark {
+  --cw-surface: #0E101A;
+  --cw-surface-dim: #11131D;
+  --cw-surface-bright: #1A1D29;
+  --cw-surface-container: #161824;
+  --cw-surface-container-low: #12141E;
+  --cw-surface-container-high: #1C1F2C;
+  --cw-on-surface: #E2E2EC;
+  --cw-on-surface-variant: #C4C4D0;
+  --cw-primary: #B4C5FF;
+  --cw-on-primary: #001C55;
+  --cw-primary-container: #1A3074;
+  --cw-on-primary-container: #DBE2FF;
+  --cw-secondary: #BBBCD0;
+  --cw-secondary-container: #3B3C50;
+  --cw-tertiary: #D1708E;
+  --cw-error: #FFB4AB;
+  --cw-on-error: #690005;
+  --cw-outline: #8D8D99;
+  --cw-outline-variant: #46464F;
+  --cw-inverse-surface: #E2E2EC;
+  --cw-inverse-on-surface: #1B1B21;
+  --cw-scrim: rgba(0, 0, 0, 0.6);
+
+  color-scheme: dark;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Light Theme — for docs/settings pages only
+   ═══════════════════════════════════════════════════════════ */
+
+.light {
+  --cw-surface: #FDFBFF;
+  --cw-surface-dim: #F0F1F5;
+  --cw-surface-bright: #FFFFFF;
+  --cw-surface-container: #EBECF0;
+  --cw-surface-container-low: #F5F6FA;
+  --cw-surface-container-high: #E0E2E8;
+  --cw-on-surface: #1B1B21;
+  --cw-on-surface-variant: #49454F;
+  --cw-primary: #34448D;
+  --cw-on-primary: #FFFFFF;
+  --cw-primary-container: #DBE2FF;
+  --cw-on-primary-container: #001C55;
+  --cw-secondary: #535468;
+  --cw-secondary-container: #D7D8EC;
+  --cw-tertiary: #622B40;
+  --cw-error: #BA1A1A;
+  --cw-on-error: #FFFFFF;
+  --cw-outline: #73737D;
+  --cw-outline-variant: #C4C4D0;
+  --cw-inverse-surface: #1B1B21;
+  --cw-inverse-on-surface: #F0F1F5;
+  --cw-scrim: rgba(0, 0, 0, 0.4);
+
+  color-scheme: light;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Base Styles
+   ═══════════════════════════════════════════════════════════ */
+
+/* No bare `* { margin:0; padding:0 }` reset here: Tailwind v4's preflight
+   already resets margin/padding/box-sizing inside @layer base, and v4's
+   space-x/space-y utilities are wrapped in :where() (specificity 0). An
+   unlayered `* { margin:0 }` (specificity 0,0,1) would override them and
+   silently kill every space-y-* / space-x-* gap. */
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
+  color: var(--cw-on-surface);
+  background-color: var(--cw-surface);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar styling (Premiere-like thin scrollbars) */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--cw-outline-variant);
+  border-radius: var(--radius-cw-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--cw-outline);
+}
+
+/* Selection */
+::selection {
+  background: var(--cw-primary-container);
+  color: var(--cw-on-primary-container);
+}
+
+/* Focus visible ring */
+:focus-visible {
+  outline: 2px solid var(--cw-primary);
+  outline-offset: 2px;
+}
+
+/* Utility: panel divider — 5px grab target with a centered 1px visible line */
+.panel-divider {
+  width: 5px;
+  background: linear-gradient(to right,
+    transparent 2px,
+    var(--cw-outline-variant) 2px,
+    var(--cw-outline-variant) 3px,
+    transparent 3px);
+  cursor: col-resize;
+  transition: background var(--duration-short3) var(--ease-standard);
+}
+
+.panel-divider:hover,
+.panel-divider:active {
+  background: linear-gradient(to right,
+    transparent 2px,
+    var(--cw-primary) 2px,
+    var(--cw-primary) 3px,
+    transparent 3px);
+}
+
+.panel-divider-h {
+  height: 5px;
+  background: linear-gradient(to bottom,
+    transparent 2px,
+    var(--cw-outline-variant) 2px,
+    var(--cw-outline-variant) 3px,
+    transparent 3px);
+  cursor: row-resize;
+  transition: background var(--duration-short3) var(--ease-standard);
+}
+
+.panel-divider-h:hover,
+.panel-divider-h:active {
+  background: linear-gradient(to bottom,
+    transparent 2px,
+    var(--cw-primary) 2px,
+    var(--cw-primary) 3px,
+    transparent 3px);
+}
