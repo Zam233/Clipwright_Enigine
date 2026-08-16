@@ -743,7 +743,52 @@ function ImageSection({ clip, pushHistory, set }: {
       >
         <RotateCcw className="w-3 h-3" /> 重置裁切区域
       </button>
+
+      {/* M4: 蒙版 */}
+      <div className="pt-2 border-t border-outline-variant/20">
+        <p className="text-label font-medium text-on-surface-variant mb-2">蒙版</p>
+        <Row label="类型">
+          <select
+            value={clip.mask_type ?? 'none'}
+            onChange={(e) => { pushHistory(); set({ mask_type: (e.target.value || 'none') as Clip['mask_type'] }); }}
+            className="flex-1 bg-surface-container rounded-cw-xs px-2 py-1 text-body-sm text-on-surface
+              outline-none border border-outline-variant/30 focus:border-primary cursor-pointer"
+          >
+            <option value="none">无</option>
+            <option value="rect">矩形</option>
+            <option value="ellipse">椭圆</option>
+          </select>
+        </Row>
+        {clip.mask_type && clip.mask_type !== 'none' && (
+          <MaskRectEditor clip={clip} pushHistory={pushHistory} set={set} />
+        )}
+      </div>
     </Section>
+  );
+}
+
+/** M4: 蒙版矩形编辑（归一化 x/y/w/h，四个滑杆）。 */
+function MaskRectEditor({ clip, pushHistory, set }: {
+  clip: Clip;
+  pushHistory: () => void;
+  set: (u: Partial<Clip>) => void;
+}) {
+  const r = clip.mask_rect ?? { x: 0, y: 0, w: 1, h: 1 };
+  const patch = (p: Partial<{ x: number; y: number; w: number; h: number }>) => {
+    pushHistory();
+    set({ mask_rect: { ...r, ...p } });
+  };
+  return (
+    <div className="space-y-2 pt-1">
+      <Slider label="X" min={0} max={1} step={0.01} value={round2(r.x)}
+        onChange={(v) => patch({ x: Math.min(v, 1 - r.w) })} />
+      <Slider label="Y" min={0} max={1} step={0.01} value={round2(r.y)}
+        onChange={(v) => patch({ y: Math.min(v, 1 - r.h) })} />
+      <Slider label="宽" min={0.05} max={1} step={0.01} value={round2(r.w)}
+        onChange={(v) => patch({ w: Math.min(v, 1 - r.x) })} />
+      <Slider label="高" min={0.05} max={1} step={0.01} value={round2(r.h)}
+        onChange={(v) => patch({ h: Math.min(v, 1 - r.y) })} />
+    </div>
   );
 }
 

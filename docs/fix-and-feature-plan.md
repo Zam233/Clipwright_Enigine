@@ -602,3 +602,8 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 ### 执行轮次 22（P6 编辑器专业能力 · 第十四批）
 - ? M5 时间重映射（预览层）：速度关键帧 — 预览合成 interpolateProperties 提取 speed 属性驱动素材源偏移（变速播放）+ PropertiesPanel 添加速度关键帧按钮 / 列表内显示 ×倍率 / 单独移除 + 测试 3 项（双关键帧线性插值 / 端点回退 / 无 speed 不干预）
 - 回归：前端 321/321 + typecheck + build ?
+
+### 执行轮次 23（P6 编辑器专业能力 · 第十五批）
+- ? M4 蒙版：Clip.mask_type/mask_rect（前后端 schema，白名单校验 + round-trip + 注入拒绝）+ 预览 applyMaskClip 裁剪（rect/ellipse，越界钳制）+ PropertiesPanel 蒙版类型下拉 + 归一化矩形四滑杆 + 测试（schema 1 + 前端 4）
+- 回归：后端 1040/1040 ?；前端 325/325 + typecheck + build ?
+- P6 剩余：C3 嵌套序列（数据模型级，最后一项）

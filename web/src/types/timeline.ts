@@ -74,6 +74,11 @@ export interface Clip {
   image_fit?: ImageFit | null;
   image_rect?: { x: number; y: number; w: number; h: number } | null;
 
+  // M4: 蒙版（video / image only，预览裁剪到形状内）
+  mask_type?: 'none' | 'rect' | 'ellipse' | null;
+  /** 归一化蒙版矩形 {x, y, w, h}，各值 0-1 */
+  mask_rect?: { x: number; y: number; w: number; h: number } | null;
+
   // Text content (text / caption only)
   text?: string | null;
   font?: string | null;
@@ -187,6 +192,8 @@ export function createDefaultClip(
     fx_hue: null,
     image_fit: null,
     image_rect: null,
+    mask_type: null,
+    mask_rect: null,
     text: null,
     font: null,
     font_size: null,

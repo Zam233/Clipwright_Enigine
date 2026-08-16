@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from 'vitest';
-import { hitTestTextClipForEdit, applyTransitionAlpha } from './PreviewPanel';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { hitTestTextClipForEdit, applyTransitionAlpha, applyMaskClip } from './PreviewPanel';
 import type { Clip, Track } from '@/types/timeline';
 import { createDefaultClip, createEmptyTimeline } from '@/types/timeline';
 
@@ -72,5 +72,51 @@ describe('applyTransitionAlpha 与其他导出（防止回归）', () => {
   it('无转场不调制', () => {
     const c = textClip();
     expect(applyTransitionAlpha(1, c, 0.5)).toBeCloseTo(1, 5);
+  });
+});
+
+describe('applyMaskClip (M4 蒙版)', () => {
+  const FRAME2 = { fx: 0, fy: 0, fw: 1000, fh: 500 };
+  let ctx: any;
+
+  beforeEach(() => {
+    ctx = {
+      beginPath: vi.fn(), rect: vi.fn(), ellipse: vi.fn(), clip: vi.fn(),
+      save: vi.fn(), restore: vi.fn(),
+    };
+  });
+
+  it('无蒙版 → 不调用 clip', () => {
+    applyMaskClip(ctx, textClip(), FRAME2.fx, FRAME2.fy, FRAME2.fw, FRAME2.fh);
+    expect(ctx.clip).not.toHaveBeenCalled();
+  });
+
+  it('rect 蒙版 → rect + clip', () => {
+    const c = textClip({ mask_type: 'rect', mask_rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.4 } });
+    applyMaskClip(ctx, c, FRAME2.fx, FRAME2.fy, FRAME2.fw, FRAME2.fh);
+    const call = ctx.rect.mock.calls[0];
+    expect(call[0]).toBeCloseTo(100, 5);
+    expect(call[1]).toBeCloseTo(100, 5);
+    expect(call[2]).toBeCloseTo(500, 5);
+    expect(call[3]).toBeCloseTo(200, 5);
+    expect(ctx.clip).toHaveBeenCalledTimes(1);
+  });
+
+  it('ellipse 蒙版 → ellipse + clip', () => {
+    const c = textClip({ mask_type: 'ellipse', mask_rect: { x: 0, y: 0, w: 0.5, h: 1 } });
+    applyMaskClip(ctx, c, FRAME2.fx, FRAME2.fy, FRAME2.fw, FRAME2.fh);
+    expect(ctx.ellipse).toHaveBeenCalled();
+    expect(ctx.clip).toHaveBeenCalledTimes(1);
+  });
+
+  it('越界值钳制：rect 超出画面时裁剪到边界', () => {
+    const c = textClip({ mask_type: 'rect', mask_rect: { x: 0.9, y: 0, w: 0.9, h: 1 } });
+    applyMaskClip(ctx, c, FRAME2.fx, FRAME2.fy, FRAME2.fw, FRAME2.fh);
+    // x 钳到 0.9，宽钳到 0.1（不越界）
+    const call = ctx.rect.mock.calls[0];
+    expect(call[0]).toBeCloseTo(900, 5);
+    expect(call[1]).toBeCloseTo(0, 5);
+    expect(call[2]).toBeCloseTo(100, 5);
+    expect(call[3]).toBeCloseTo(500, 5);
   });
 });

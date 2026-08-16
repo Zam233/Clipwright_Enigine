@@ -224,6 +224,20 @@ class TestCaptionStyleFields:
         c2 = Clip(**self.CAPTION_ARGS, group_id="grp_1")
         assert Clip(**c2.model_dump(mode="json")).group_id == "grp_1"
 
+    def test_mask_fields(self) -> None:
+        """M4: mask_type/mask_rect 字段默认 None，round-trip 保持，非法类型拒绝。"""
+        clip = Clip(**self.CAPTION_ARGS)
+        assert clip.mask_type is None
+        assert clip.mask_rect is None
+        c2 = Clip(**self.CAPTION_ARGS, mask_type="ellipse", mask_rect={"x": 0.1, "y": 0.2, "w": 0.5, "h": 0.5})
+        data = c2.model_dump(mode="json")
+        restored = Clip(**data)
+        assert restored.mask_type == "ellipse"
+        assert restored.mask_rect["w"] == 0.5
+        # 非法类型（注入/拼写）拒绝
+        with pytest.raises(Exception):
+            Clip(**self.CAPTION_ARGS, mask_type=";rm -rf")
+
     def test_caption_style_fields_set_and_round_trip(self) -> None:
         """带全部新字段构造，序列化/反序列化后值不变（round-trip）。"""
         clip = Clip(

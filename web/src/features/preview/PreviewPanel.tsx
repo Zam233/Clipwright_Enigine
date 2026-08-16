@@ -532,6 +532,35 @@ export function applyTransitionAlpha(opacity: number, clip: Clip, localT: number
   return clamp(opacity, 0, 1);
 }
 
+/**
+ * M4: 蒙版裁剪 — 把当前画布裁剪路径限定到蒙版形状内（矩形或椭圆，基于归一化 rect）。
+ * 必须在 clip 绘制前调用（ctx.save 之后），restore 由调用方统一处理。
+ */
+export function applyMaskClip(
+  ctx: CanvasRenderingContext2D,
+  clip: Clip,
+  fx: number, fy: number, fw: number, fh: number,
+) {
+  if (!clip.mask_type || clip.mask_type === 'none') return;
+  const r = clip.mask_rect ?? { x: 0, y: 0, w: 1, h: 1 };
+  const x = clamp(r.x, 0, 1);
+  const y = clamp(r.y, 0, 1);
+  // 宽高钳制到剩余画面，避免蒙版越界
+  const w = clamp(r.w, 0.01, 1 - x);
+  const h = clamp(r.h, 0.01, 1 - y);
+  const mx = fx + x * fw;
+  const my = fy + y * fh;
+  const mw = w * fw;
+  const mh = h * fh;
+  ctx.beginPath();
+  if (clip.mask_type === 'ellipse') {
+    ctx.ellipse(mx + mw / 2, my + mh / 2, mw / 2, mh / 2, 0, 0, Math.PI * 2);
+  } else {
+    ctx.rect(mx, my, mw, mh);
+  }
+  ctx.clip();
+}
+
 function drawClipToPreview(
   ctx: CanvasRenderingContext2D,
   clip: Clip,
@@ -565,6 +594,9 @@ function drawClipToPreview(
   if (clip.blend_mode && clip.blend_mode !== 'normal') {
     (ctx as CanvasRenderingContext2D).globalCompositeOperation = clip.blend_mode as GlobalCompositeOperation;
   }
+
+  // M4: 蒙版 — 裁剪到矩形/椭圆内
+  applyMaskClip(ctx, clip, fx, fy, fw, fh);
 
   const fxStr = buildFilter(clip);
   if (fxStr) {

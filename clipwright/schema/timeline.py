@@ -90,6 +90,16 @@ class Clip(BaseModel):
         description="归一化矩形 {x, y, w, h}，各值范围 0-1",
     )
 
+    # 蒙版（M4：仅 video / image 类型，渲染时裁剪到形状内）
+    mask_type: Optional[str] = Field(
+        default=None, pattern="^(none|rect|ellipse)?$",
+        description="蒙版类型 none/rect/ellipse",
+    )
+    mask_rect: Optional[dict] = Field(
+        default=None,
+        description="归一化蒙版矩形 {x, y, w, h}，各值范围 0-1",
+    )
+
     # 文字内容（仅 text / caption 类型）
     text: Optional[str] = Field(default=None)
     font: Optional[str] = Field(default=None)
