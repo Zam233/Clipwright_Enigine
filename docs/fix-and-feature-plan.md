@@ -515,3 +515,9 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 → P5 → P6/P7 → 
 - ? P5-B5 审计日志：clipwright/audit.py（Mongo audit 集合 + 日志兜底）；埋点 project_create/delete、persona_create/delete、pipeline_run、render_queue、market install
 - ? 新增测试：rate_limit 3 个（单元 + 中间件 429）
 - 回归：后端 1021/1021 ? · 前端 261/261 + typecheck ?
+
+### 执行轮次 6（P5：C2 成本追踪 + B3 预算熔断）
+- ? C2：llm_tracker.record_llm_call 持久化到 Mongo llm_calls 集合（事件循环 to_thread，失败告警）——/metrics 的 LLM 统计与成本预算从此有真实数据
+- ? B3：services/budget.py 全局月 token 预算（CLIPWRIGHT_LLM_MONTHLY_TOKEN_BUDGET，0=不限），管线 run-async 入口熔断（超预算 429 含已用/总额），60s 缓存聚合
+- ? 新增测试：test_budget 3 个（禁用/限额内/超限；monkeypatch 聚合无 Mongo 依赖，避免全局态污染）
+- 回归：后端 1024/1024 ?
