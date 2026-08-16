@@ -105,7 +105,7 @@ async def test_check_frame_matches_gate_off() -> None:
         ) as analyze,
     ):
         issues = await agent._check_frame_matches(
-            _timeline(), _context(), {"enable_visual_llm": False}
+            _timeline(), _context(), {"enable_visual_llm": False}, enabled=False
         )
 
     assert issues == []
@@ -136,10 +136,34 @@ async def test_check_frame_matches_match_no_issue(tmp_path: Path) -> None:
         ),
     ):
         issues = await agent._check_frame_matches(
-            _timeline(), _context(), {"enable_visual_llm": True}
+            _timeline(), _context(), {"enable_visual_llm": True}, enabled=True
         )
 
     assert issues == []
+
+
+# ── Test C2：enabled=False 强制跳过（即使 constraints 开启了开关）──
+
+
+@pytest.mark.asyncio
+async def test_check_frame_matches_enabled_flag_wins(tmp_path: Path) -> None:
+    """C3: enabled 参数优先于 constraints 开关 — basic 深度下视觉路径不执行。"""
+    agent = QualityAgent()
+
+    with (
+        patch("clipwright.tool.frame_extractor.extract_frames", new=AsyncMock()) as extract,
+        patch(
+            "clipwright.services.vision.VisionService.analyze_image",
+            new=AsyncMock(),
+        ) as analyze,
+    ):
+        issues = await agent._check_frame_matches(
+            _timeline(), _context(), {"enable_visual_llm": True}, enabled=False
+        )
+
+    assert issues == []
+    extract.assert_not_awaited()
+    analyze.assert_not_awaited()
 
 
 # ── Test D：gate 开启 + 不匹配 ──
@@ -165,7 +189,7 @@ async def test_check_frame_matches_mismatch_produces_issue(tmp_path: Path) -> No
         ),
     ):
         issues = await agent._check_frame_matches(
-            _timeline(), _context(), {"enable_visual_llm": True}
+            _timeline(), _context(), {"enable_visual_llm": True}, enabled=True
         )
 
     assert len(issues) == 1

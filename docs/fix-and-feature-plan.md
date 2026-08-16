@@ -629,3 +629,7 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ? W4 关键帧值编辑：关键帧行内数值输入（opacity/speed/scale/position 等属性直接改，updateKeyframe 合并更新，shortPropLabel 缩写）
 - ? W7 撤销历史列表：historyStore.jumpTo（跳转任意历史快照，丢弃其后）+ EditorToolbar 历史下拉（标签+时间，点击跳转）+ 测试 1 项
 - 回归：前端 330/330 + typecheck + build ?
+
+### 执行轮次 28（P7 薄弱项加固 · 第四批）
+- ? C3 质检深度默认策略：QualityAgent 新增 quality_depth（basic=零媒体/LLM 开销 / standard=默认现状 / deep=强制视觉+语义），归一 enable_visual_llm/enable_semantic_qa 门控；_check_frame_matches 改为 enabled 参数显式控制 + 测试 4 项（basic 关闭 / deep 强制 / standard 默认 / standard+显式开关保留）
+- 回归：后端 1048/1048 ?；前端 330/330 ?

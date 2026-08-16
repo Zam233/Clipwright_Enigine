@@ -45,6 +45,18 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         constraints = input_data.constraints or {}
         timeline = input_data.timeline
 
+        # C3: 质检深度默认策略 — basic（仅结构/时长/节奏，零媒体/LLM 开销）
+        #   standard（默认，现有行为）/ deep（强制视觉 LLM + 语义质检）。
+        # 显式设置 quality_depth 时以它为准，否则沿用各自的独立门控默认值。
+        qdepth = str(constraints.get("quality_depth", "standard")).lower()
+        enable_visual = constraints.get("enable_visual_llm", False)
+        enable_semantic = constraints.get("enable_semantic_qa", False)
+        if qdepth == "basic":
+            enable_visual = enable_semantic = False
+        elif qdepth == "deep":
+            enable_visual = enable_semantic = True
+        # standard：保持门控开关原样
+
         if timeline is None:
             return QualityOutput(
                 decision=AgentDecision.FAIL,
@@ -180,17 +192,18 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                 message="没有音频轨道，视频将无声",
             ))
 
-        # ── 7. 帧级素材匹配检查（视觉 LLM 门控）──
+        # ── 7. 帧级素材匹配检查（视觉 LLM 门控；C3 quality_depth 归一）──
         # 与 material_agent 共用 enable_visual_llm 开关；仅在开启时执行，
         # 避免新增一条常开视觉路径。检查结果进 _quality_issues →
         # redo_agent 建议 material 重做素材。
-        frame_issues = await self._check_frame_matches(timeline, context, constraints)
-        issues.extend(frame_issues)
+        if enable_visual:
+            frame_issues = await self._check_frame_matches(timeline, context, constraints, enabled=True)
+            issues.extend(frame_issues)
 
-        # ── 8. LLM 语义质检（enable_semantic_qa 门控）──
+        # ── 8. LLM 语义质检（enable_semantic_qa 门控；C3 quality_depth 归一）──
         # 文案与简报一致性 + 错别字/风格；复用视觉 LLM 门控开关模式，
         # 默认关闭；LLM 失败/超时/非 JSON 静默跳过（零行为变化）。
-        if constraints.get("enable_semantic_qa", False):
+        if enable_semantic:
             semantic_issues = await self._check_semantic_qa(
                 timeline, input_data.creative_brief, context
             )
@@ -243,18 +256,20 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         timeline: Timeline,
         context: AgentContext,
         constraints: dict[str, Any],
+        enabled: bool = False,
     ) -> list[QualityIssue]:
         """帧级素材匹配检查（视觉 LLM 门控）。
 
         Gate: ``constraints["enable_visual_llm"]`` —— 与 material_agent 的
         material_plugin_config 使用同一开关；关闭时直接返回空（不引入常开视觉路径）。
+        C3: quality_depth 归一后由调用方传入 enabled（basic=关，deep=强制开）。
 
         开启时对有界的关键 scene（有文案 + 可提取帧源的 video/image clip，最多
         ``quality_check_max_clips`` 个）抽帧 → VisionService 分析 → 用与
         material_agent 一致的 token 重叠启发式打分；低于阈值产出
         ``material_match`` 错误问题（触发 redo_agent="material"）。
         """
-        if not constraints.get("enable_visual_llm", False):
+        if not enabled:
             return []
 
         threshold = float(constraints.get("material_match_threshold", 0.35))
