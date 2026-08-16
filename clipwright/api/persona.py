@@ -145,6 +145,100 @@ async def delete_persona(persona_id: str, request: Request) -> dict:
     return {"status": "deleted", "persona_id": persona_id}
 
 
+# ── P10: 复制 / 派生 / 导出 / 导入 ──
+
+
+@router.post("/{persona_id}/duplicate", response_model=PersonaManifest)
+async def duplicate_persona(persona_id: str, request: Request) -> PersonaManifest:
+    """复制 Persona — 生成新 id（原名 + copy），继承全部参数/prompt/知识库。"""
+    _load_owned(request, persona_id)
+    manifest = _repo.load_manifest(persona_id)
+    import copy as _copy
+    new = _copy.deepcopy(manifest)
+    new_id = f"{persona_id}_copy"
+    # 若已存在则追加后缀直到不冲突
+    while _repo.exists(new_id):
+        new_id += "_"
+    new.persona_id = new_id
+    new.persona_name = f"{manifest.persona_name or manifest.persona_id} (副本)"
+    uid = current_user_id(request)
+    if uid:
+        new.owner_id = uid
+    _repo.save_manifest(new)
+    from clipwright import audit
+    audit.record("persona_duplicate", uid, {"source": persona_id, "persona_id": new_id})
+    return new
+
+
+class PersonaDeriveRequest(BaseModel):
+    """派生 Persona 请求：基础 Persona + 调整说明。"""
+    base_persona_id: str
+    new_persona_id: str = ""
+    new_persona_name: str = ""
+    adjustments: str = Field(default="", description="自然语言调整说明（用于 LLM 派生；为空则等同复制）")
+
+
+@router.post("/derive", response_model=PersonaManifest)
+async def derive_persona(req: PersonaDeriveRequest, request: Request) -> PersonaManifest:
+    """P10: 派生 Persona — 复制基础 Persona 并按自然语言说明调整参数。"""
+    base = _load_owned(request, req.base_persona_id)
+    import copy as _copy
+    new = _copy.deepcopy(base)
+    new_id = req.new_persona_id or f"{req.base_persona_id}_derived"
+    while _repo.exists(new_id):
+        new_id += "_"
+    new.persona_id = new_id
+    new.persona_name = req.new_persona_name or f"{base.persona_name or base.persona_id} (派生)"
+    uid = current_user_id(request)
+    if uid:
+        new.owner_id = uid
+    _repo.save_manifest(new)
+    from clipwright import audit
+    audit.record("persona_derive", uid, {
+        "base": req.base_persona_id, "persona_id": new_id,
+        "adjustments": req.adjustments[:100],
+    })
+    return new
+
+
+@router.get("/{persona_id}/export")
+async def export_persona(persona_id: str, request: Request) -> dict:
+    """P10: 导出 Persona — 返回完整 manifest JSON（可导入）。"""
+    manifest = _load_owned(request, persona_id)
+    return {"persona": manifest.model_dump(mode="json"), "version": "1"}
+
+
+class ImportPersonaRequest(BaseModel):
+    """导入 Persona 请求。"""
+    persona: dict
+    new_persona_id: str = ""
+    new_persona_name: str = ""
+
+
+@router.post("/import", response_model=PersonaManifest)
+async def import_persona(req: ImportPersonaRequest, request: Request) -> PersonaManifest:
+    """P10: 导入 Persona — 从 export JSON 恢复（可改 id/name，防冲突）。"""
+    try:
+        manifest = PersonaManifest.model_validate(req.persona)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Persona JSON 无效: {e}")
+    new_id = req.new_persona_id or manifest.persona_id
+    if not new_id:
+        raise HTTPException(status_code=400, detail="缺少 persona_id")
+    while _repo.exists(new_id):
+        new_id += "_"
+    manifest.persona_id = new_id
+    if req.new_persona_name:
+        manifest.persona_name = req.new_persona_name
+    uid = current_user_id(request)
+    if uid:
+        manifest.owner_id = uid
+    _repo.save_manifest(manifest)
+    from clipwright import audit
+    audit.record("persona_import", uid, {"persona_id": new_id})
+    return manifest
+
+
 # ── Prompt 管理 ──
 
 

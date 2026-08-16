@@ -30,6 +30,7 @@ const { mocks } = vi.hoisted(() => ({
     updateVisionPrompt: vi.fn(),
     getKnowledge: vi.fn(),
     list: vi.fn(),
+    derive: vi.fn(),
   },
 }));
 
@@ -41,6 +42,7 @@ vi.mock('@/services/api', () => ({
     updatePrompt: mocks.updatePrompt,
     updateVisionPrompt: mocks.updateVisionPrompt,
     getKnowledge: mocks.getKnowledge,
+    derive: mocks.derive,
   },
   voiceApi: {
     list: mocks.list,
@@ -62,6 +64,7 @@ describe('PersonaDetailPage vision_prompt', () => {
     mocks.list.mockResolvedValue([]);
     mocks.updatePrompt.mockResolvedValue({ status: 'ok', persona_id: personaId });
     mocks.updateVisionPrompt.mockResolvedValue({ status: 'ok', persona_id: personaId });
+    mocks.derive.mockResolvedValue({ ...persona, persona_id: 'per_derived', persona_name: '派生人格' });
   });
 
   it('loads vision prompt and renders a second textarea in the Prompt tab', async () => {
@@ -94,6 +97,32 @@ describe('PersonaDetailPage vision_prompt', () => {
 
     await waitFor(() => {
       expect(mocks.updateVisionPrompt).toHaveBeenCalledWith(personaId, '冷色调科技感画面');
+    });
+  });
+});
+
+describe('PersonaDetailPage P10 派生', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.get.mockResolvedValue(persona);
+    mocks.getPrompt.mockResolvedValue({ persona_id: personaId, prompt: '系统 Prompt 初始值' });
+    mocks.getVisionPrompt.mockResolvedValue({ persona_id: personaId, vision_prompt: '视觉 Prompt 初始值' });
+    mocks.getKnowledge.mockResolvedValue([]);
+    mocks.list.mockResolvedValue([]);
+    mocks.derive.mockResolvedValue({ ...persona, persona_id: 'per_derived', persona_name: '派生人格' });
+  });
+
+  it('派生表单提交调用 personaApi.derive 并携带调整说明', async () => {
+    render(<PersonaDetailPage />);
+    fireEvent.click((await screen.findAllByText('派生新人格'))[0]);
+
+    const adjust = screen.getByPlaceholderText(/调整说明/);
+    fireEvent.change(adjust, { target: { value: '更口语化，节奏更快' } });
+
+    fireEvent.click(screen.getByRole('button', { name: '生成派生' }));
+
+    await waitFor(() => {
+      expect(mocks.derive).toHaveBeenCalledWith(personaId, '更口语化，节奏更快', undefined, undefined);
     });
   });
 });

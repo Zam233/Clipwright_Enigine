@@ -746,3 +746,11 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ? M3/P1-2 注册冲突检测：ToolRegistry.register 同名覆盖告警（记录新旧来源）+ 测试
 - ? M14 插件审计日志：插件加载写 audit（plugin_id/name/version）
 - 回归：后端 1114/1114 ?
+
+### 执行轮次 48（P10 Persona 复制/派生/导出/导入 · 第四批）
+- ? 后端 4 端点：POST /{id}/duplicate（副本 id 冲突追加后缀 + owner/audit）、POST /derive（base+adjustments，new_id/name 可选）、GET /{id}/export（manifest JSON）、POST /import（校验 + 冲突后缀 + owner/audit）
+- ? 前端 persona.ts：duplicate/derive/export/importPersona
+- ? PersonaPage：头部「导入」按钮 + 内联 JSON 输入；PersonaCard 复制/导出动作按钮（卡片由 `<button>` 改 div+role，嵌套按钮合法化）
+- ? PersonaDetailPage：头部「派生新人格」入口（调整说明 + 可选名称 → 派生后跳转新人格）
+- ? 测试：后端 test_persona_lifecycle.py 8 项（duplicate/冲突/derive/404/export-import 往返/导入冲突/400/路由注册）；前端 PersonaPage +3、PersonaDetailPage +1（共 336）
+- 回归：后端 1114/1114 ?、前端 336/336 ?、tsc 通过 ?

@@ -5,7 +5,7 @@ import { Button, Badge } from '@/components/ui';
 import type { Persona } from '@/types/persona';
 import {
   Plus, Sparkles, MessageSquare, Layers, BookOpen,
-  Timer, ChevronRight, Dna,
+  Timer, ChevronRight, Dna, Copy, Download, Upload,
 } from 'lucide-react';
 
 /** Demo personas (offline fallback) — rich parameter data for visualization. */
@@ -59,24 +59,66 @@ export function PersonaPage() {
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [loading, setLoading] = useState(true);
   const [dataMode, setDataMode] = useState<'live' | 'demo'>('demo');
+  const [importInput, setImportInput] = useState(false);
+  const [importText, setImportText] = useState('');
+
+  const loadList = async () => {
+    try {
+      const list = await personaApi.list();
+      setDataMode('live');
+      setPersonas(Array.isArray(list) ? list : []);
+    } catch {
+      setPersonas(DEMO_PERSONAS);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
     let alive = true;
     (async () => {
-      try {
-        const list = await personaApi.list();
-        if (alive) {
-          setDataMode('live');
-          setPersonas(Array.isArray(list) ? list : []);
-        }
-      } catch {
-        if (alive) setPersonas(DEMO_PERSONAS);
-      } finally {
-        if (alive) setLoading(false);
-      }
+      if (!alive) return;
+      await loadList();
     })();
     return () => { alive = false; };
   }, []);
+
+  // P10: 导入 Persona（JSON）
+  const handleImport = async () => {
+    try {
+      const parsed = JSON.parse(importText);
+      const payload = parsed.persona ?? parsed;
+      await personaApi.importPersona(payload as Record<string, unknown>);
+      setImportInput(false);
+      setImportText('');
+      await loadList();
+    } catch {
+      setImportInput(true);
+      setImportText('⚠ 导入失败：JSON 无效或后端不可达');
+    }
+  };
+
+  // P10: 导出 Persona
+  const handleExport = async (p: Persona) => {
+    try {
+      const data = await personaApi.export(p.persona_id);
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${p.persona_id}.persona.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch { /* 后端离线 */ }
+  };
+
+  // P10: 复制 Persona
+  const handleDuplicate = async (p: Persona) => {
+    try {
+      await personaApi.duplicate(p.persona_id);
+      await loadList();
+    } catch { /* 后端离线 */ }
+  };
 
   return (
     <div className="h-full overflow-y-auto bg-surface">
@@ -102,6 +144,9 @@ export function PersonaPage() {
               <Badge variant={dataMode === 'live' ? 'success' : 'default'}>
                 {dataMode === 'live' ? '实时数据' : '演示数据'}
               </Badge>
+              <Button variant="outline" onClick={() => setImportInput((v) => !v)}>
+                <Upload className="w-4 h-4" /> 导入
+              </Button>
               <Button variant="outline" onClick={() => navigate({ to: '/persona/forge' })}>
                 <MessageSquare className="w-4 h-4" /> 对话创建
               </Button>
@@ -110,6 +155,20 @@ export function PersonaPage() {
               </Button>
             </div>
           </div>
+          {/* P10: 内联导入输入 */}
+          {importInput && (
+            <div className="mt-4 flex items-center gap-2">
+              <input
+                value={importText}
+                onChange={(e) => setImportText(e.target.value)}
+                placeholder="粘贴 Persona JSON（从导出获得）…"
+                className="flex-1 bg-surface-container rounded-cw-sm px-3 py-2 text-label-sm font-mono text-on-surface
+                  outline-none border border-outline-variant/30 focus:border-primary"
+              />
+              <Button size="sm" onClick={handleImport}>导入</Button>
+              <Button size="sm" variant="outline" onClick={() => setImportInput(false)}>取消</Button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -138,7 +197,9 @@ export function PersonaPage() {
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
               {personas.map((p) => (
                 <PersonaCard key={p.persona_id} persona={p}
-                  onOpen={() => navigate({ to: '/persona/$personaId', params: { personaId: p.persona_id } })} />
+                  onOpen={() => navigate({ to: '/persona/$personaId', params: { personaId: p.persona_id } })}
+                  onDuplicate={handleDuplicate}
+                  onExport={handleExport} />
               ))}
               {/* create tile */}
               <button
@@ -161,7 +222,10 @@ export function PersonaPage() {
   );
 }
 
-const PersonaCard = memo(function PersonaCardImpl({ persona, onOpen }: { persona: Persona; onOpen: () => void }) {
+const PersonaCard = memo(function PersonaCardImpl({ persona, onOpen, onDuplicate, onExport }: {
+  persona: Persona; onOpen: () => void;
+  onDuplicate?: (p: Persona) => void; onExport?: (p: Persona) => void;
+}) {
   const tone = persona.parameter.identity.tone;
   const accent = TONE_COLORS[tone] ?? '#4F8CFF';
   const rhythm = persona.parameter.rhythm;
@@ -178,8 +242,11 @@ const PersonaCard = memo(function PersonaCardImpl({ persona, onOpen }: { persona
   const bars = densityMap[rhythm.cut_density_tier ?? 'medium'] ?? densityMap.medium;
 
   return (
-    <button
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onOpen}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } }}
       className="group text-left bg-surface-container border border-outline-variant/30 rounded-cw-md overflow-hidden
         hover:border-primary/50 hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10
         transition-all duration-medium2 cursor-pointer"
@@ -236,10 +303,26 @@ const PersonaCard = memo(function PersonaCardImpl({ persona, onOpen }: { persona
             <span className="opacity-50">·</span>
             <BookOpen className="w-3 h-3" /> 示例层
           </span>
-          <ChevronRight className="w-4 h-4 text-on-surface-variant group-hover:text-primary group-hover:translate-x-0.5 transition-all" />
+          <span className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+            {onDuplicate && (
+              <button onClick={() => onDuplicate(persona)}
+                className="p-1 rounded-cw-xs text-on-surface-variant/60 hover:text-primary transition-colors cursor-pointer"
+                title="复制人格">
+                <Copy className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {onExport && (
+              <button onClick={() => onExport(persona)}
+                className="p-1 rounded-cw-xs text-on-surface-variant/60 hover:text-primary transition-colors cursor-pointer"
+                title="导出入格">
+                <Download className="w-3.5 h-3.5" />
+              </button>
+            )}
+            <ChevronRight className="w-4 h-4 text-on-surface-variant group-hover:text-primary group-hover:translate-x-0.5 transition-all" />
+          </span>
         </div>
       </div>
-    </button>
+    </div>
   );
 });
 

@@ -42,6 +42,41 @@ export const personaApi = {
     return data;
   },
 
+  // ── P10: 复制 / 派生 / 导出 / 导入 ──
+
+  /** Duplicate a persona (new id, inherits all params/prompt/knowledge) */
+  async duplicate(personaId: string) {
+    const { data } = await getApiClient().post(`/api/persona/${personaId}/duplicate`);
+    return personaFromBackend(data as Record<string, unknown>);
+  },
+
+  /** Derive a persona from base + adjustments */
+  async derive(basePersonaId: string, adjustments: string, newPersonaId?: string, newPersonaName?: string) {
+    const { data } = await getApiClient().post('/api/persona/derive', {
+      base_persona_id: basePersonaId,
+      new_persona_id: newPersonaId,
+      new_persona_name: newPersonaName,
+      adjustments,
+    });
+    return personaFromBackend(data as Record<string, unknown>);
+  },
+
+  /** Export a persona as JSON */
+  async export(personaId: string) {
+    const { data } = await getApiClient().get(`/api/persona/${personaId}/export`);
+    return data as { persona: Record<string, unknown>; version: string };
+  },
+
+  /** Import a persona from exported JSON */
+  async importPersona(persona: Record<string, unknown>, newPersonaId?: string, newPersonaName?: string) {
+    const { data } = await getApiClient().post('/api/persona/import', {
+      persona,
+      new_persona_id: newPersonaId,
+      new_persona_name: newPersonaName,
+    });
+    return personaFromBackend(data as Record<string, unknown>);
+  },
+
   // ── Knowledge / RAG ──
 
   /** Upload knowledge document for a persona (auto-indexed by backend) */

@@ -45,6 +45,12 @@ export function PersonaDetailPage() {
   const [visionPrompt, setVisionPrompt] = useState('');
   const [visionPromptSaving, setVisionPromptSaving] = useState(false);
   const [visionPromptError, setVisionPromptError] = useState('');
+  // P10: 派生 — 基于当前人格 + 调整说明生成新人格
+  const [deriveOpen, setDeriveOpen] = useState(false);
+  const [deriveAdjust, setDeriveAdjust] = useState('');
+  const [deriveName, setDeriveName] = useState('');
+  const [deriveBusy, setDeriveBusy] = useState(false);
+  const [deriveMsg, setDeriveMsg] = useState('');
 
   useEffect(() => {
     let alive = true;
@@ -159,6 +165,30 @@ export function PersonaDetailPage() {
     }
   };
 
+  // P10: 派生 — 基于当前人格 + 调整说明生成新人格
+  const runDerive = async () => {
+    if (!persona || !deriveAdjust.trim()) return;
+    setDeriveBusy(true);
+    setDeriveMsg('');
+    try {
+      const np = await personaApi.derive(
+        persona.persona_id,
+        deriveAdjust.trim(),
+        undefined,
+        deriveName.trim() || undefined,
+      );
+      setDeriveMsg(`已派生「${np.persona_name}」(${np.persona_id})`);
+      setDeriveOpen(false);
+      setDeriveAdjust('');
+      setDeriveName('');
+      navigate({ to: '/persona/$personaId', params: { personaId: np.persona_id } });
+    } catch {
+      setDeriveMsg('派生失败：后端不可达或请求被拒绝');
+    } finally {
+      setDeriveBusy(false);
+    }
+  };
+
   if (!persona) {
     return <StandardLayout title="人格详情"><p className="text-on-surface-variant">加载中…</p></StandardLayout>;
   }
@@ -171,6 +201,37 @@ export function PersonaDetailPage() {
         className="flex items-center gap-1.5 text-label-sm text-on-surface-variant hover:text-primary transition-colors mb-5 cursor-pointer">
         <ArrowLeft className="w-3.5 h-3.5" /> 返回人格库
       </button>
+
+      {/* P10: 派生入口 */}
+      <div className="flex items-center gap-2 mb-5 max-w-[900px]">
+        <Button size="sm" variant="outline" onClick={() => setDeriveOpen((v) => !v)} disabled={deriveBusy}>
+          <GitBranch className="w-3.5 h-3.5" /> 派生新人格
+        </Button>
+        {deriveMsg && <span className="text-label-sm text-on-surface-variant">{deriveMsg}</span>}
+      </div>
+      {deriveOpen && (
+        <div className="max-w-[900px] bg-surface-container/60 border border-outline-variant/30 rounded-cw-md p-3 mb-6 space-y-2">
+          <textarea
+            value={deriveAdjust}
+            onChange={(e) => setDeriveAdjust(e.target.value)}
+            placeholder="调整说明，例如：改为更口语化的科技测评风格，节奏更快，多用梗"
+            className="w-full bg-surface rounded-cw-sm px-3 py-2 text-label-sm text-on-surface outline-none
+              border border-outline-variant/30 focus:border-primary resize-none"
+            rows={2}
+          />
+          <div className="flex items-center gap-2">
+            <input
+              value={deriveName}
+              onChange={(e) => setDeriveName(e.target.value)}
+              placeholder="新人格名称（可选）"
+              className="flex-1 bg-surface rounded-cw-sm px-3 py-2 text-label-sm text-on-surface outline-none
+                border border-outline-variant/30 focus:border-primary"
+            />
+            <Button size="sm" onClick={runDerive} disabled={deriveBusy || !deriveAdjust.trim()}>生成派生</Button>
+            <Button size="sm" variant="outline" onClick={() => setDeriveOpen(false)}>取消</Button>
+          </div>
+        </div>
+      )}
 
       {/* tabs */}
       <div className="flex gap-1 border-b border-outline-variant/30 mb-6 max-w-[900px]">
