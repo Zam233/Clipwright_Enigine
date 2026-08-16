@@ -67,3 +67,13 @@ vite-err.log
 
 # 运行时字体缓存（勿提交）
 _fonts/
+
+# Runtime dirs (monorepo)
+frames/
+projects/
+renders/
+personas/
+PluginData/
+.pytest_cache/
+.ruff_cache/
+

@@ -1,0 +1,30 @@
+services:
+  mongo:
+    image: mongo:7
+    ports: ["27017:27017"]
+    volumes: [mongo_data:/data/db]
+
+  backend:
+    build: { context: ., dockerfile: Dockerfile.backend }
+    ports: ["8080:8080"]
+    depends_on: [mongo]
+    volumes:
+      - "./renders:/app/renders"
+      - "./personas:/app/personas"
+      - "./projects:/app/projects"
+      - "./PluginData:/app/PluginData"
+      - "./library:/app/library"
+    env_file: [.env]
+
+  frontend:
+    build: { context: ./web, dockerfile: Dockerfile.frontend }
+    ports: ["80:80"]
+    depends_on: [backend]
+
+  # P3/P4 完成后启用（Server 独立部署于 K:\Clipwright Server，其自带 docker-compose）
+  # server:
+  #   build: { context: ../Clipwright Server, dockerfile: Dockerfile }
+  #   ports: ["8090:8090"]
+
+volumes:
+  mongo_data:

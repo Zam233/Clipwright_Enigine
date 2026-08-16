@@ -1,0 +1,470 @@
+# ClipWright 修复与功能补全计划（开发版）
+
+> 版本：v0.3（待评审；v0.2=对账补录，v0.3=评审决议：包体拆分与参考成片风格模仿纳入排期，E3 项目共享保持排除） · 状态：**仅计划，未经评审批准不得执行**
+> 依据：六轮审计（交付就绪度 / 安全与功能 / 特性完整性 / 未文档化缺口 / Persona·类型·插件专项 / 汇总），审计结论共约 230 项问题、完整度约 68%。
+> 评审流程：开发/架构负责人逐节评审 → 修改本文档 → 批准后按 §10 执行清单实施。
+
+---
+
+## 1. 范围
+
+### 1.1 包含（本次排期）
+
+| # | 工作块 | 对应审计项 |
+|---|--------|-----------|
+| 1 | 安全与数据必修（P0/P1 共 11 项） | §2 全部 |
+| 2 | 文档-代码-行为对账与死代码清理 | §3（A 组 10 + D 组 9 + 假成功 5） |
+| 3 | 工程化：monorepo 合并 + 一键启动 + CI + 端口统一 | 新增 |
+| 4 | **账号管理**（服务端在 K:\Clipwright Server，主项目接入） | 新增（落地 B1 多租户） |
+| 5 | **Persona 市场 / 插件市场**（主项目仅做前后端；服务端在 K:\Clipwright Server） | F1/F2 落地 |
+| 6 | 商用地基（配额/速率/预算/队列/审计/版权过滤/多方案/幂等/硬过滤） | B 组（B1 并入账号管理） |
+| 7 | 编辑器专业能力 | M 组 14 项 + 编辑器手感 12 项 |
+| 8 | 薄弱项加固 | C 组 11 + W 组 15 |
+| 9 | 接线即得 + 运营调度 | 孤儿代码 4 项 + 定时/失败诊断/模板复用/归档 |
+| 10 | 素材治理与合规 | 去重/失效巡检/使用统计/违规检测 |
+| 11 | Persona/类型/插件治理 | B2–B28 + 插件 P1/P2/P3/M1–M15 |
+
+### 1.2 排除（本次不排期，日后可加回）
+
+| 排除项 | 对应审计条目（加回时按此恢复） |
+|--------|-------------------------------|
+| 发布分发（封面编辑/智能封面、发布元数据、平台发布、分享链接、发布历史、定时发布、水印产品入口） | §6 发布分发域 7 项 |
+| 模板分享（分享到社区） | 前端 F3 |
+| 多人协作/评论批注 | 前端 E1 |
+| 项目共享审阅链接（评审确认：与多人协作同类，保持排除） | 前端 E3 |
+| 多语言成片（脚本翻译→多语言配音→多语言字幕→独立成片） | §6 内容创作辅助-多语言 |
+| 数字人/虚拟形象 | §6 内容创作辅助-数字人 |
+| A/B 双管线对比 | §6 运营调度-A/B |
+| （与排除项联动）平台自动发布合规决策 | business_analysis.md:566 |
+
+> 决策记录 D-01：排除项不影响其前置依赖（如账号体系的 owner 字段照做，因 P3 需要）。
+
+---
+
+## 2. 目标架构
+
+### 2.1 拓扑
+
+```mermaid
+graph LR
+  U[用户浏览器] -->|5173 dev / 8080 prod| FE[前端 web/]
+  FE -->|/api| BE[ClipWright 引擎 后端]
+  BE -->|27017| M[(MongoDB clipwright)]
+  BE -->|8090 内网/公网 API| SVR[K:\Clipwright Server]
+  SVR -->|27017| MS[(MongoDB clipwright_server)]
+  SVR -->|storage/| FS[(市场包存储)]
+  BE -.->|JWT 验证 / 账号信息| SVR
+  FE -.->|登录/注册/市场浏览| SVR
+```
+
+### 2.2 端口与约定（统一后）
+
+| 服务 | 端口 | 说明 |
+|------|------|------|
+| ClipWright 后端 | **8080**（唯一标准） | 删除所有 8000 fallback，文档同步 |
+| 前端 dev | 5173 | vite proxy `/api` → 8080 |
+| ClipWright Server | 8090 | 账号 + 市场 |
+| MongoDB | 27017 | 两个库：clipwright / clipwright_server |
+
+### 2.3 Monorepo 结构（合并后）
+
+```
+J:\Clipwright\                     # 合并后的唯一仓库（保留后端 git 历史）
+├── clipwright/                    # 后端包（原位不动，相对路径不受影响）
+├── personas/ plugins/ PluginData/ renders/ projects/ ...   # 后端运行时目录（原位）
+├── web\                           # ← 前端整体迁入（原 J:\Clipweight-Client）
+│   ├── src/ e2e/ docs/ ...
+│   ├── package.json vite.config.ts ...
+│   └── .env                       # VITE_API_BASE_URL=http://localhost:8080
+├── docs\                          # 合并后文档（含本计划）
+├── scripts\
+│   ├── start.ps1                  # 一键启动（开发模式）
+│   ├── start.bat
+│   ├── stop.ps1
+│   └── check_env.ps1              # 环境体检（python/node/mongo 版本与端口）
+├── docker-compose.yml             # mongo + 后端 + 前端（生产构建） + server
+├── Dockerfile.backend
+├── web\Dockerfile.frontend
+└── README.md                      # 更新为 monorepo 说明 + 一键启动
+```
+
+### 2.4 K:\Clipwright Server 结构（新建，独立 git 仓库）
+
+```
+K:\Clipwright Server\
+├── app\
+│   ├── main.py                    # FastAPI 入口（/health、挂载两路由）
+│   ├── config.py                  # pydantic-settings（CLIPWRIGHT_SERVER_ 前缀）
+│   ├── auth\                      # 账号管理
+│   │   ├── router.py              # register/login/refresh/logout/me/change-password/verify
+│   │   ├── service.py             # bcrypt + JWT 签发/校验 + 刷新轮换
+│   │   └── models.py              # users 集合模型
+│   └── market\                    # 市场
+│       ├── router.py              # 插件/Persona 发布·搜索·详情·下载·评分·审核
+│       ├── service.py             # 包存储/校验/版本管理
+│       └── models.py
+├── storage\                       # 市场包存储（gitignore）
+├── tests\                         # pytest
+├── pyproject.toml · .env.example · .gitignore · docker-compose.yml · README.md
+```
+
+---
+
+## 3. 阶段总览
+
+| 阶段 | 内容 | 人日（估） | 前置 | 退出标准（DoD） |
+|------|------|-----------|------|----------------|
+| **P0** | 安全与数据必修（14 项） | 6–9 | 无 | 全部 P0/P1 修复 + 安全回归测试通过 |
+| **P1** | 文档对账与死代码清理 | 1–2 | P0 | 19 项承诺「落地/改文档/标废弃」各有结论；6 个 stub 工具拆除或接真实现 |
+| **P2** | 工程化（合并/一键启动/CI/工程卫生） | 4–6 | P1 | 一个仓库、一条命令启动、CI 绿、LICENSE/依赖/残留清理完成 |
+| **P3** | 账号管理 | 10–15 | P2 | 注册/登录/JWT/配额可用；主项目 owner 数据隔离生效 |
+| **P4** | Persona/插件市场 | 12–20 | P3 | 市场发布/下载闭环；主项目可浏览安装 |
+| **P5** | 商用地基（B 组剩余 + Agent 基座 + 用量报表） | 17–29 | P3 | 限流/预算/队列/审计/版权/多方案/幂等/硬过滤/报表上线 |
+| **P6** | 编辑器专业能力（26+10 项） | 45–68 | P0 | M 组 14 + 手感 12 + 打磨批 10 全部验收 |
+| **P7** | 薄弱项加固（26+4 项） | 46–73 | 可与 P6 并行 | C/W 组全清 + C12/W16/W17/W18 |
+| **P8** | 接线即得 + 运营调度（14 项） | 33–53 | P1 | webhook/批量/dry-run 接线；定时/诊断/模板复用/归档/热点/脚本/beat-sync/色彩匹配/参考风格可用 |
+| **P9** | 素材治理与合规 | 9–14 | P0 | 去重/巡检/统计/违规检测上线 |
+| **P10** | Persona/类型/插件治理 | 18–31 | P0 | B2–B28 与插件 P1/P2/M 全清（含沙箱/签名） |
+
+**合计约 202–322 人日**（P6/P7 可并行压缩工期；v0.2 补录 30 项 + v0.3 决议新增 2 项）。
+
+---
+
+## 4. 阶段明细
+
+### P0 · 安全与数据必修（11 项，5–8 人日）
+
+| # | 任务 | 修改点（文件） | 验收标准 |
+|---|------|---------------|---------|
+| P0-1 | asset 任意文件读取链封堵 | `api/asset.py:176-187` 增加 `assert_allowed_path`；`services/asset_manager.py:89-135` import_file 二次校验；`api/asset.py:135-142` get file/thumbnail 返回前校验 `asset.file_path` | 传 `.env` 路径 import-path 返回 400；越界 file 请求 400 |
+| P0-2 | 渲染入参白名单 + 输出路径安全 | `api/render.py:258-290` 输出改 `is_safe_download_name + safe_join(renders_dir)`；`services/render.py:739,1332-1359` 对 asset_id/audio/bgm 解析后路径 `assert_allowed_path` | `renders/../../x.mp4` 拒绝；任意音频/素材路径拒绝 |
+| P0-3 | ffmpeg filter 注入 | `schema/timeline.py:110-112` transition_in 改枚举/白名单；`render.py:830-832` 拼接前校验；keyframes 数值强制化；drawtext fontfile 白名单+转义（round2 P3 项并入） | 非法 transition 值 422/400；fuzz 用例通过 |
+| P0-4 | tool 执行入口校验 | `api/tool.py:21-33` 入口统一 `assert_allowed_path`（input/output 类参数）+ 工具级参数白名单 | 越界路径 400 |
+| P0-5 | **Persona 保存毁参（B1）** | 前端 `types/persona.ts` 与后端 `schema/persona.py` 统一字段名（9 组映射，后端加 alias 或前端映射层）；`PersonaDetailPage.tsx:116-131` 回传字段对齐 | 保存前后 `parameter.yaml` 自定义值不变；单测覆盖 9 组字段往返 |
+| P0-6 | Mongo `_io` 持久化误用族 | `services/mongodb_service.py` 模型方法显式 async 化（或调用点强制 await）；至少修 4 处：`requirements_service.py:304`（TTL 清理）、`:404/:415`（会话恢复）、`:1446`（process_upload）、`pipeline_v2.py:242`（find_many） | 新增 async 集成测试：会话重启恢复、TTL 清理真实删库、/runs 返回 Mongo 历史 |
+| P0-7 | import-url SSRF + 内存限制 | `api/asset.py:190-213` 下载前 `assert_public_url`；流式写盘 + 大小上限（参考 worker/_HashingWriter） | 内网/回环 URL 拒绝；超大文件 413 |
+| P0-8 | ChromaDB 导入期副作用 | `api/rag.py:13` 模块级 Retriever 改懒加载单例（首次使用时初始化，失败降级） | 删除/损坏 `.chroma_db` 后服务仍可启动，RAG 端点返回明确错误 |
+| P0-9 | SSE 鉴权（后端） | `main.py:214-239` 为 SSE 路径支持短期一次性 query token（签发端点 + 日志抹除含失败路径） | token 模式下 EventSource 全链路可用；token 不进访问日志 |
+| P0-10 | 前端认证统一 | `render.ts:62-77` 下载/流改 axios 带凭据；`EditorPage.tsx:265` pagehide 冲刷、`mediaManager.ts:275` 波形改带 Authorization；补 `cw:unauthorized` 全局监听（toast+跳转） | 开启 token 后渲染进度/下载/自动保存/波形全部正常 |
+| P0-11 | 端口统一 + E2E 闭环 | 所有 fallback 改 8080（`client.ts:9`、`settingsStore.ts:68` 默认改空串、各 URL builder）；`e2e/integration.spec.ts:3` 改 8080 并移出默认 testDir（新增 `test:e2e:integration`）；`.env.example`/AGENTS.md/README 同步 | `npm run test:e2e` 默认全绿（hermetic）；integration 单独脚本在 8080 后端就绪时全绿 |
+| P0-12 | persona knowledge doc.id 校验（round2 P2-3 补录） | `api/persona.py:123-129` 对 doc_id `validate_id`；`repository.py:188-190` 写文件路径经校验 | 非法 doc_id 400；越界 .md 写入被拒 |
+| P0-13 | 错误响应脱敏（round2 P2-10 补录） | ffmpeg stderr / `str(e)` 回显处（`api/render.py:71` 等）统一脱敏：过滤服务器绝对路径后回传 | 错误响应不含服务器路径 |
+| P0-14 | 请求体上限 + 管理端点鉴权（round2 P2-9/P3 补录） | 中间件限请求体大小（如 20MB）；`/metrics`、`/test` 挂载加 token/JWT 保护 | 超大 body 413；未鉴权访问 /metrics 401 |
+
+> 安全红线：生产部署强制 `CLIPWRIGHT_API_TOKEN`（或 P3 后的 JWT）；启动检测无鉴权配置时禁止以 0.0.0.0 公网暴露（警告升级为错误或显式开关）。
+
+### P1 · 文档对账与死代码清理（1–2 人日）
+
+| 任务 | 处理原则 |
+|------|---------|
+| A 组 10 项 + D 组 9 项 | 每项三选一：**落地**（排期到对应阶段，如 A1 动画并行并入 P7）/ **改文档**（声明当前行为）/ **标废弃**（在文档中标记 removed） |
+| 假成功 5 项 | 对话式编辑（EditSession 死代码）→ 本计划**删除**（能力由时间线+Agent 返工替代）；ShotIntent → 改文档为「未实现，规划中」；TimelineVersionStore → 接线到 P6 版本历史 UI；FrameValidatorTool/TextDesignTool/VideoFilterTool 等 6 个 stub → 返回 `ToolStatus.NOT_IMPLEMENTED` 并附文档链接，或接真实现 |
+| parity 文档 | 重跑 §6 复现命令更新路由数（requirements 8、asset 9） |
+| 参考成片风格模仿 | 已排入 P8（评审决议 v0.3），此处不再做三选一处理 |
+| 300+ 裸 except 治理（round2 P3 补录） | 制定策略：核心路径（持久化/清理/渲染）在 P0/P7 强制消除；外围降级型 except 登记豁免清单 |
+
+### P2 · 工程化：Monorepo 合并 + 一键启动 + CI（3–5 人日）
+
+**2.1 仓库合并（执行步骤，批准后按此操作）**
+
+```powershell
+# 方案 A：保留前端提交历史（推荐）
+cd J:\Clipwright
+git remote add web-tmp J:\Clipweight-Client
+git fetch web-tmp main
+git subtree add --prefix web web-tmp main --squash
+git remote remove web-tmp
+
+# 方案 B：仅合并当前快照（历史留在原仓库，操作更简单）
+robocopy J:\Clipweight-Client J:\Clipwright\web /E ^
+  /XD node_modules dist .git .pytest_cache .ruff_cache test-results ^
+       frames renders projects personas PluginData .codegraph .omo ^
+       .opencode .playwright-mcp
+```
+
+- 后端文件全部原位（`clipwright/`、`personas/`、`plugins/` 等不移动，避免相对路径爆炸）。
+- 前端迁入 `web\`；`web\.gitignore` 补充 frames/projects/renders/personas/PluginData/.pytest_cache/.ruff_cache。
+- 合并后原 `J:\Clipweight-Client` 置为只读归档（不删除，直至 CI/联调确认）。
+- `docs\frontend-backend-parity.md` 等文档路径引用统一更新为 `web/`。
+
+**2.2 一键启动**
+
+- `scripts\check_env.ps1`：检查 python≥3.12、node≥20、MongoDB 27017 监听、端口 8080/8090 空闲。
+- `scripts\start.ps1`（开发模式）：
+  1. 运行 check_env；
+  2. 若 `web\node_modules` 缺失 → `npm ci --prefix web`；
+  3. 后端：`Start-Process python -ArgumentList '-m','clipwright.main'`（隐藏窗口，日志写 `logs/backend.log`）；
+  4. 前端：`npm --prefix web run dev`（前台，Ctrl+C 退出）；
+  5. （P3 后）Server：若启用账号/市场 → 一并拉起 `uvicorn app.main:app --port 8090`。
+- `scripts\start.bat`：等价批处理（双击启动）。
+- `scripts\stop.ps1`：按端口 8080/5173/8090 结束进程。
+- 生产模式：`docker-compose up`（见 2.3）或 `npm --prefix web run build` 后由后端 `StaticFiles` 挂载 `web\dist`（单进程）。
+
+**2.3 docker-compose.yml**
+
+```yaml
+services:
+  mongo: { image: mongo:7, ports: ["27017:27017"], volumes: [mongo_data:/data/db] }
+  backend:
+    build: { context: ., dockerfile: Dockerfile.backend }   # python3.12 + clipwright + ffmpeg
+    ports: ["8080:8080"]
+    depends_on: [mongo]
+    volumes: ["./renders:/app/renders", "./personas:/app/personas", "./PluginData:/app/PluginData"]
+    env_file: [.env]
+  frontend:
+    build: { context: ./web, dockerfile: Dockerfile.frontend }  # node build → nginx，proxy /api→backend:8080
+    ports: ["80:80"]
+  server:   # P3/P4 完成后启用
+    build: { context: ../Clipwright Server 或独立部署, dockerfile: Dockerfile }
+    ports: ["8090:8090"]
+```
+
+**2.4 CI（GitHub Actions / Gitea 均可）**
+
+- 后端：`python -m pytest` + `ruff check`；前端：`npm run typecheck && npm run test && npm run lint && npm run test:e2e`（hermetic）；每 PR 必跑。
+- 发布门禁：P0 安全回归用例（越界路径/SSRF/filter 注入）必须包含。
+
+**2.5 工程卫生批（0.5–1 人日，补录）**
+
+| 任务 | 来源 | 要点 |
+|------|------|------|
+| LICENSE 文件 | 合规审计 | 两仓库补 LICENSE（MIT）+ README「开源协议」章节 |
+| persona 个人数据出库 | 合规审计 | `git rm --cached personas/`（26 文件）+ .gitignore + 历史清理评估 |
+| isobase 锁版本 | round2 P2-8 | pyproject 改为锁定 commit/tag 或私有索引镜像 |
+| opencode-autopilot 归位 | 前端 P2-5 | 移出 dependencies → devDependencies（或移除） |
+| 根目录调试残留清理 | 前端 P3 | e2e-*.png/json、ux-*.png、web_search_tool.py、_xtest/envx 清理/归档 |
+| index.html 安全头 | 前端 P3 | 补 CSP / Referrer-Policy meta（部署层同配） |
+| Giphy demo key 移除 | 插件审计 | `plugins/gif_sticker/main.py:20` 删除硬编码默认值 |
+
+### P3 · 账号管理（10–15 人日）
+
+**3.1 K:\Clipwright Server 服务端（3A，6–8 人日）**
+
+API 规格（v1，全部 JSON，除标注外均需 Bearer JWT）：
+
+| 端点 | 方法 | 说明 | 权限 |
+|------|------|------|------|
+| `/api/auth/register` | POST | 邮箱+密码注册（密码强度校验、邮箱唯一、bcrypt） | 匿名 |
+| `/api/auth/login` | POST | 返回 access_token + refresh_token；**登录失败速率限制**（5 次/5 分钟/IP+账号） | 匿名 |
+| `/api/auth/refresh` | POST | refresh_token 轮换（旧 token 立即失效） | 匿名 |
+| `/api/auth/logout` | POST | 撤销 refresh token | 登录 |
+| `/api/auth/me` | GET | 用户资料 + 配额用量 | 登录 |
+| `/api/auth/change-password` | POST | 修改密码（需旧密码） | 登录 |
+| `/api/auth/verify` | POST | 主项目内网验证 JWT（返回 user_id/role/quotas） | 服务互信（共享密钥或仅内网） |
+| `/api/admin/users` | GET/PATCH | 列表/禁用/调整配额 | admin |
+
+数据模型（users 集合）：`email, password_hash, display_name, role(user|admin), status(active|disabled), quotas{storage_bytes, render_seconds, pipeline_runs}, usage{...}, refresh_tokens[], audit[] , created_at, updated_at`。
+安全要求：JWT HS256（`CLIPWRIGHT_SERVER_JWT_SECRET` 强制非默认值启动）、access 1h / refresh 30d 轮换、审计事件（注册/登录/改密/配额变更）写 audit 集合。
+初始化：git init + 骨架（结构见 §2.4）+ 初始提交。
+
+**3.2 主项目接入（3B，4–7 人日）**
+
+| 任务 | 修改点 |
+|------|--------|
+| 配置 | `config.py` 增加 `account_url`、`account_verify_mode(token|jwt|off)`；`jwt_secret`（共享验证） |
+| 鉴权中间件升级 | `main.py:214-239`：off=现状；jwt=本地验签（共享密钥）；token=内网调 `/api/auth/verify`。SSE 短期一次性 token 签发端点（P0-9 落地于此） |
+| owner 数据隔离 | projects/pipelines/personas/renders 增加 `owner_id`；所有查询/下载按 owner 过滤；管理接口仅 admin |
+| 前端会话 | 登录页（新增路由 `/login`）；access token 存内存 + refresh 存 httpOnly cookie（不再 localStorage 明文，替换 P2-4 遗留）；`cw:unauthorized` → 自动 refresh → 失败跳登录 |
+| 兼容 | 本地/内网部署保持 `off` 模式（现 token 模式保留为过渡） |
+
+**验收**：两账号数据互不可见；token 过期自动续期无感；登录限流生效；SSE 在 JWT 模式全链路可用。
+
+### P4 · Persona / 插件市场（12–20 人日）
+
+分工：**主项目 = 市场前端（浏览/发布向导）+ 后端 market client 与本地安装/导入；Server = 存储、发布、下载、审核 API。**
+
+**4.1 Server 市场 API（4A，6–9 人日）**
+
+| 域 | 端点 | 说明 |
+|----|------|------|
+| 插件 | `POST /api/market/plugins` | 发布（multipart 包 + manifest 校验） |
+| 插件 | `GET /api/market/plugins?q=&tag=&page=` | 搜索/筛选 |
+| 插件 | `GET /api/market/plugins/{id}` · `/{id}/versions` | 详情/版本 |
+| 插件 | `GET /api/market/plugins/{id}/download` | 下载（计数+1，限速） |
+| 插件 | `POST /api/market/plugins/{id}/rating` | 评分/评价 |
+| 插件 | `GET /api/market/plugins/pending` · `POST /{id}/approve|reject` | 审核队列（admin） |
+| Persona | 同构一组 `POST/GET/GET{id}/download/rating` | 发布=persona 目录打包（manifest 校验） |
+
+包规范：tar.gz；必需 manifest（id/name/version/license/compat_api_version/author）；发布时服务端计算 sha256；单包 ≤200MB；解包后结构校验（插件=plugin.yaml+入口模块；Persona=persona.yaml 可被主项目 schema 解析）；预留审核流与病毒扫描接口（可选集成 ClamAV）。
+
+**4.2 主项目后端（4B，3–5 人日）**
+
+- `services/market_client.py`：封装 Server API（httpx，超时/重试/错误归一）。
+- `services/install_service.py`：安装流程 = 下载 → sha256 校验 → 解包到临时目录 → 结构/manifest 校验 → 原子移动到 `plugins/{id}/` 或 `personas/{id}/` → 注册/导入 → 失败回滚（删除半成品 + 事件日志）。
+- 安全：下载 URL 必走 `assert_public_url`；解包防 zip-slip（路径校验）；安装前冲突检测（P10 的 unregister/冲突机制先落地最小版）。
+
+**4.3 主项目前端（4C，3–6 人日）**
+
+- 新增 `/market` 页（Tab：插件 / Persona）：搜索、列表、详情（版本/评分/兼容性）、安装/导入按钮（状态：已安装/可更新）。
+- 发布向导：选择本地插件目录或 persona → 打包上传 → 进度/结果。
+- 设置页与 PluginsPage 增加「市场」入口；`VITE_ENABLE_*_MARKET` 开关改为真实生效。
+
+**验收**：发布一个测试插件/Persona → 另一账号搜索下载安装成功；恶意包（路径穿越/超限/假 manifest）被拒绝且日志留痕；安装失败可回滚。
+
+### P5 · 商用地基（B 组剩余，15–25 人日，依赖 P3）
+
+| 任务 | 来源 | 方案要点 |
+|------|------|---------|
+| 速率限制 | B2 | 自研轻量中间件（滑动窗口，按 user/ip/端点），限额进 users.quotas |
+| 成本预算熔断 | B3 | LLM 用量累加（先修 P0-6 持久化 + C2 成本追踪）→ 超月预算拒绝新管线并通知 |
+| 队列持久化+优先级 | B4 | 任务/渲染队列落 Mongo，重启恢复；优先级字段 |
+| 审计日志 | B5 | audit 集合：管线/渲染/review/安装/配置变更；review accept/reject 落库（C7 一并做） |
+| 版权/敏感过滤 | B6 | 素材加 license/source 字段透传；敏感词过滤作为可选服务（先出接口） |
+| 多方案生成 | B7 | structure 双稿 + 质量分择优（低置信场景） |
+| 幂等键 | B8 | 请求指纹去重（管线/渲染入口） |
+| 素材硬过滤 | B9 | 时长/分辨率门槛（按视频类型可配） |
+| Agent 统一基座（补录） | Agent 缺失 | base 统一重试/超时/预算基座；animation 动画预算/复杂度上限；quality 渲染产物级校验（黑帧/花屏/音画不同步） |
+| 用量报表（补录） | §6 报表 | 用户可读用量/费用报表 API + 前端入口 |
+
+### P6 · 编辑器专业能力（41–62 人日）
+
+**6.1 M 组 14 项**
+
+| 组 | 任务（审计 ID） |
+|----|----------------|
+| 剪辑核心 | M1 ripple/rolling/slip/slide 编辑族；M2 素材编组；M4 蒙版；M5 时间重映射；M11 转场可见性（预览+时间轴渲染） |
+| 音频 | M6 音频增益+淡入淡出 UI；M7 轨道隐藏/独显 |
+| 工作流 | M3 跨项目复制/粘贴属性；M8 标记持久化+命名；M9 素材删除/替换 UI；M12 In/Out 区间 UI；M13 编辑器内 Persona 切换 |
+| 死状态 | M14 范围选择工具（实现或移除按钮）；M10 吸附快捷键 |
+
+**6.2 编辑器手感 12 项**：画布双击编辑文字（C1）、波形拖拽增益（C2）、嵌套序列（C3）、快捷键自定义 UI（C4）、画布设置修改（C5）、自定义导出预设（C6）、代理工作流 UI（C7）、版本历史 UI（G1，接线后端 TimelineVersionStore）、多标签同步（G3）、项目排序（A1）、回收站/软删除（A2）、模板画廊（A3）。
+
+**6.3 产品化打磨批（4–6 人日，补录）**：无 404 路由（notFoundRoute，前端 P2-3）、上传大小客户端预检（统一 MAX_UPLOAD，前端 P2-2）、ProjectCard kebab 删除二次确认、icon-only 按钮 aria-label、window.prompt 替换为弹层输入、自动保存增量 PUT（替换 5s 全量）、onboarding 首启引导（round4 D1）、反馈/报错上报入口（round4 D2）、系统通知中心（round4 E2，持久通知）、PWA/离线缓存（round4 G2）。
+
+### P7 · 薄弱项加固（43–67 人日，可与 P6 并行）
+
+- 后端 C 组 11 项：C1 断点续跑落库、C2 成本追踪真实写入、C3 质检深度默认策略、C4 snapshot 逐 agent、C5 细粒度进度、C6 附件图片理解、C7 review 落库（并入 P5 审计）、C8 熔断健康探测、C9 取消即时性、C10 版本管理接线、C11 BGM 真实混音/LUFS。
+- 前端 W 组 15 项：W1 需求流式消费、W2 建议列表（并入 agentStore 死状态清理）、W3 删死客户端、W4 关键帧值编辑、W5 demo 与真实模式显式分离、W6 VideoEditorPage 定位决策（合并或下沉为调试工具）、W7 撤销历史列表、W8 per-route 错误边界、W9 删 wsUrl、W10 LLM 流式、W11 BGM 素材源、W12 区域级返工、W13 by-path 白名单、W14 asset 客户端补全、W15 parity 更新。
+- 补录：C12 `_mix_audio` 静默吞异常→静音成片（`services/render.py:1348-1359`，失败必须标记 result 并告警，round2 P2-6）；W16 mediaManager 缓存 LRU 上限（落实 `VITE_MAX_THUMBNAIL_CACHE_SIZE`，前端 P2-9）；W17 historyStore 增量/diff 快照（替换全量 structuredClone，前端 P2-10）；W18 包体优化（评审决议 v0.3：react-query/router 拆 vendor chunk + lucide 图标按需引入，前端 P3 意见项转正式，1–2 人日）。
+
+### P8 · 接线即得 + 运营调度（22–34 人日）
+
+| 任务 | 来源 | 要点 |
+|------|------|------|
+| webhook 事件接线 | 孤儿代码 | `dispatch_event` 接入 pipeline/render 完成·失败事件（SSRF/HMAC 已有） |
+| 批量选题生成 | 孤儿代码 | `template.py:164 batch_generate` 补 API + 前端批量入口 |
+| dry-run 预览模式 | 孤儿代码 | `dry_run` 字段接线：只生成规划书不执行渲染 |
+| 特效工具产品化 | 工具接线 | 抠像/稳定/水印接入素材右键菜单与导出页（发布分发域的水印入口除外，仅工具级） |
+| 定时调度 | §6 运营 | 轻量调度器（Mongo 定时任务 + 后台循环） |
+| 失败诊断报告 | §6 运营 | 失败 run 生成结构化诊断（阶段/原因/建议） |
+| 管线配置模板复用 | §6 运营 | 保存/加载 PipelineRequest 模板 |
+| 项目归档 zip 导出 | §6 归档 | 时间线+素材打包 |
+| webhook secret 加密 + TOCTOU（补录） | round2 P2-7/P2-2 | `webhooks.json` 加密落盘；投递固定已验证 IP（自定义 transport）或出站防火墙 |
+| 热点/选题发现（补录） | §6 创作辅助 | 可选 trending 数据源 + 选题推荐接口 |
+| 脚本续写/改写/扩写（补录） | §6 创作辅助 | LLM 工具化（改写/扩写/缩写三模式） |
+| 节拍对齐剪辑 beat-sync（补录） | §6 创作辅助 | 消费 `cut_on_beat`：EditAgent 按 BPM 拍点对齐切点 |
+| 跨片段色彩匹配（补录） | §6 创作辅助 | 以参考片段为基准自动匹配（color_correct 扩展） |
+| 参考成片风格模仿（评审决议 v0.3 补入） | §6 创作辅助 | 上传参考视频 → 提取配色/镜头节奏/转场风格参数 → 写入 persona 参数层（6–10 人日） |
+
+### P9 · 素材治理与合规（9–14 人日）
+
+素材库哈希去重（import_file 内容哈希比对）、URL 失效巡检（定期 404 检测+标记）、素材使用统计（used_count）、违规内容检测（接口 + 可选第三方服务）。
+
+### P10 · Persona/类型/插件治理（16–27 人日）
+
+| 块 | 任务（审计 ID） |
+|----|----------------|
+| Persona 高优 | B2 forge logger、B3 异常归一 404、B5 ChatForge 会话落盘、B6 删除级联向量、B7 原子写、B8 变量修复、B14 RAG 字段修复（0.1 人日级优先合入 P0 后的第一个批次） |
+| Persona 其余 | B4/B19 覆盖冲突 409、B10 知识文档 DELETE/PUT（含重索引异步化，round2 P2-4/5 一并落地）、B11/B12/B13/B15/B17/B18/B20/B25/B26/B27/B28 + P3 七项；补录：B16 persona_learner（接线到编辑事件上报，或删除并改文档）、Persona 删除 UI/复制·派生·导出·导入（前后端）、知识库文档管理 UI（删/改/重命名）、TypeMakerPage 预览调用+删除类型确认、RAG 查询/编码 offload（to_thread，round2 P2-4）、fontconfig 存在性 oracle 收敛（round2 P3） |
+| 类型 | B9 前端真字段、B21 transform 实现、B22 校验补全、B23 引用检查、B24 热注册回滚、B29/B31/B35 |
+| 插件 | P1-1 注册表 unregister API + 卸载清理；P1-2 冲突检测（注册前查重告警）；P1-3 import 期注册改 initialize；P1-4 hook 执行框架（接 render/pipeline 生命周期）；P1-5 reload 失败回滚+错误传播；P1-6 diagram_style 约定兼容；P1-7 密钥加密存储+前端掩码 |
+| 插件治理 | M1 沙箱/签名（市场开放前最低：manifest 签名 + 安装确认 + 权限声明；进程级沙箱作为后续项）、M2 依赖解析、M3 冲突检测、M4 reload 清 sys.modules、M7 错误通道、M8 启停持久化、M10 manifest 增强、M14 审计日志、M15 配置迁移；P2 六项；补录 M11 插件 UI 控件集扩充、M12 设置页插件 UI 预览、M13 未加载插件预配置 |
+
+---
+
+## 5. 数据模型变更汇总
+
+| 库 | 集合/字段 | 变更 |
+|----|-----------|------|
+| clipwright | projects/pipelines/personas/renders | +`owner_id`（P3）+索引 |
+| clipwright | audit（新） | 管线/渲染/review/安装/配置事件（P5） |
+| clipwright | task_queue（新） | 持久化队列（P5-B4） |
+| clipwright | 素材 | +`license`/`source_url`/`sha256`/`used_count`/`status`（P5-B6、P9） |
+| clipwright_server | users（新） | 见 §3.1 |
+| clipwright_server | market_plugins / market_personas / ratings / downloads / audit（新） | §4.1 |
+
+---
+
+## 6. 测试与验收
+
+1. **安全回归套件（P0 起强制）**：越界路径 400、SSRF 拒绝、filter 注入拒绝、JWT 过期/篡改、owner 越权 403。
+2. **async Mongo 集成测试**：覆盖 P0-6 四误用点，防回归。
+3. **市场流程 E2E**：发布→审核→下载→安装→卸载残留检查。
+4. **一键启动验收**：干净机器按 `start.ps1` 从零启动 ≤ 5 分钟（含依赖安装指引）。
+5. **性能红线**：时间轴 500 clip 60fps 引擎帧率 ≥ 30fps（P6 手感项附带）。
+6. 每阶段 DoD = §3 总览表退出标准 + 相关回归测试绿 + 文档同步（AGENTS/README/parity）。
+
+## 7. 风险与决策记录
+
+| # | 风险/决策 | 结论 | 备选 |
+|---|-----------|------|------|
+| D-01 | 排除项（v0.3 评审决议） | 模板分享/多人协作/多语言成片/数字人/A-B 对比/发布分发 + 项目共享审阅（E3，与协作同类）**保持排除**；包体拆分与参考成片风格模仿**纳入排期**（P7 W18 / P8） | 条目保留索引，日后可加回 |
+| D-02 | 插件沙箱 | 首版=签名+权限声明+安装确认；进程级沙箱后置 | 子进程/容器运行插件（成本高） |
+| D-03 | JWT 验证模式 | 共享密钥本地验签为主，/verify 端点兜底 | 统一走 Server 验证（多一跳） |
+| D-04 | 仓库合并 | subtree 保留前端历史；后端原位不动 | robocopy 快照合并 |
+| D-05 | 端口 | 8080 唯一标准，8000 全部清除 | 全改 8000 |
+| D-06 | VideoEditorPage（W6） | 下沉为开发者调试工具，不进主编辑器（避免两套模型长期并存） | 完整整合（5-10 人日） |
+| D-07 | 平台发布 | 不在本期（排除项）；未来若做，先出发布包导出而非 API 直发（封禁风险，business_analysis.md:566） |
+
+---
+
+## 8. 执行清单（批准后按序执行；含 git 操作）
+
+1. **P2 前置动作**：K:\Clipwright Server 建仓（mkdir → git init → 骨架代码 → .gitignore/.env.example → 初始提交）。
+2. 合并前端入 `J:\Clipwright\web`（§4.2.1 方案 A/B 二选一，批准时圈选）→ 提交。
+3. 根目录脚本/CI/docker-compose → 提交。
+4. 按 P0 → P1 → P3 → P4 → P5 →（P6/P7 并行）→ P8 → P9 → P10 顺序开发；每阶段完成即提交并跑对应回归。
+5. 全部完成后：更新 README/AGENTS/parity → 打 tag `v0.2.0-deliverable`。
+
+> ⚠ 本计划为只读评审版；在获得评审批准（或修改后批准）前，不得执行任何代码修改、目录创建或 git 操作。
+
+---
+
+## 9. 修订记录
+
+### v0.2 — 对账补录（六轮审计全覆盖核查）
+
+核查结论：初版覆盖约 85%，遗漏 30 项已全部补入（下为对账表）；另有 2 项为决策边界，需评审确认。
+
+| 来源 | 遗漏条目 | 补入位置 |
+|------|---------|---------|
+| round2 P2-3 | persona knowledge doc.id 未校验（任意 .md 写/读） | P0-12 |
+| round2 P2-4/5 | RAG 同步阻塞事件循环 + _reindex 全量重建 | P10（B10 重索引异步化合并） |
+| round2 P2-6 | _mix_audio 静默吞异常 → 静音成片 | P7 C12 |
+| round2 P2-7 | webhook secret 明文落盘 | P8 |
+| round2 P2-2 | webhook DNS-rebinding TOCTOU | P8 |
+| round2 P2-8 | isobase git 依赖未锁 | P2 2.5 |
+| round2 P2-9 | /metrics /test /docs 未受鉴权 | P0-14 |
+| round2 P2-10 | ffmpeg stderr/str(e) 回显泄露路径 | P0-13 |
+| round2 P3 | fontconfig 存在性 oracle | P10 |
+| round2 P3 | 请求体无大小限制 | P0-14 |
+| round2 P3 | drawtext fontfile 未转义 | P0-3（并入） |
+| round2 P3 | 300+ 裸 except | P1（治理策略） |
+| 前端 P2-2 | 上传无大小校验 | P6.3 |
+| 前端 P2-3 | 无 404 路由 | P6.3 |
+| 前端 P2-5 | opencode-autopilot 依赖位置 | P2 2.5 |
+| 前端 P2-9 | mediaManager 缓存无上限 | P7 W16 |
+| 前端 P2-10 | historyStore 全量 clone | P7 W17 |
+| 前端 P3 | 根目录调试残留 / kebab 删除确认 / aria-label / CSP / window.prompt / 5s 全量 PUT | P2 2.5 + P6.3 |
+| round4 前端 D1/D2 | onboarding / 反馈上报 | P6.3 |
+| round4 前端 E2 | 系统通知中心 | P6.3 |
+| round4 前端 G2 | PWA/离线缓存 | P6.3 |
+| round4 后端 | 热点选题 / 脚本续写改写 / beat-sync / 色彩匹配 | P8 |
+| round4 后端 | 用量报表 | P5 |
+| round4 后端 | 参考成片风格模仿 | P1（三选一） |
+| round5 | B16 persona_learner 死代码 | P10 |
+| round5 | Persona 删除/复制·导出·导入 UI 与端点、知识库文档管理 UI、TypeMakerPage 预览+删除确认 | P10 |
+| round5 | 插件 M11 控件集扩充 / M12 UI 预览 / M13 未加载预配置 | P10 |
+| Agent 层 | base 统一基座 / animation 预算 / quality 产物级校验 | P5 |
+| 合规审计 | LICENSE 文件 / persona 数据出库 / Giphy demo key | P2 2.5 |
+
+**决策边界（评审决议 v0.3）**：
+1. **E3 项目共享审阅链接**：评审确认保持排除（与多人协作同类）。✅ 已定
+2. **包体拆分（前端 P3 意见项）**：评审决定纳入排期 → P7 W18（1–2 人日）。✅ 已补入
+3. **参考成片风格模仿**：评审决定纳入排期 → P8（6–10 人日），P1 三选一处理取消。✅ 已补入
+
+### v0.3 — 评审决议
+
+- 排除项维持：模板分享、多人协作、项目共享审阅（E3）、多语言成片、数字人、A/B 对比、发布分发。
+- 新增排期：P7 W18 包体优化（+1–2 人日）；P8 参考成片风格模仿（+6–10 人日）。
+- 合计更新：约 202–322 人日。
