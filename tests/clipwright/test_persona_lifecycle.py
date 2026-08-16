@@ -118,3 +118,46 @@ class TestPersonaLifecycleAPI:
         assert any(p.endswith("/derive") for p in paths)
         assert any(p.endswith("/export") for p in paths)
         assert any(p.endswith("/import") for p in paths)
+
+
+class TestPersonaLearner:
+    """B16: 学习器接线 — learn/stats 端点。"""
+
+    def _make_client(self, tmp_path: Path, monkeypatch: MonkeyPatch) -> TestClient:
+        repo = _seed_repo(tmp_path)
+        monkeypatch.setattr("clipwright.api.persona._repo", repo)
+        monkeypatch.setattr(
+            "clipwright.services.persona_learner.LEARNER_DATA_DIR",
+            tmp_path / "learning",
+        )
+        from clipwright.services.persona_learner import _learners
+        _learners.clear()
+
+        app = FastAPI()
+        from clipwright.api.persona import router
+
+        app.include_router(router)
+        return TestClient(app)
+
+    def test_learn_records_edit(self, tmp_path, monkeypatch: MonkeyPatch) -> None:
+        client = self._make_client(tmp_path, monkeypatch)
+        resp = client.post("/api/persona/per_base/learn", json={
+            "action": "apply_transition",
+            "params": {"transition_type": "dissolve"},
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["edit_count"] >= 1
+
+        stats = client.get("/api/persona/per_base/learn/stats")
+        assert stats.status_code == 200
+        assert stats.json()["edit_count"] >= 1
+        # 转场权重被学习
+        prefs = stats.json()["preferences"]
+        assert prefs["transition_weights"]["dissolve"] > 0
+
+    def test_learn_missing_persona_404(self, tmp_path, monkeypatch: MonkeyPatch) -> None:
+        client = self._make_client(tmp_path, monkeypatch)
+        resp = client.post("/api/persona/nope/learn", json={"action": "x", "params": {}})
+        assert resp.status_code == 404

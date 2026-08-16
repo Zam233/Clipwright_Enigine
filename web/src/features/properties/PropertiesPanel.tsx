@@ -11,9 +11,10 @@ import {
   ANIMATION_PRESETS, presetKeyframes, backendPresetsToPresets,
   type AnimationPreset, type BackendAnimationDef,
 } from './animationPresets';
-import { animationApi } from '@/services/api';
+import { animationApi, personaApi } from '@/services/api';
 import { shouldPush } from './historyCoalesce';
 import { sectionsForKind } from './sectionsForKind';
+import { useProjectStore } from '@/stores/projectStore';
 import {
   extractCopyableAttributes, filterFieldsForKind,
   useClipAttributeClipboard,
@@ -80,6 +81,13 @@ export function PropertiesPanel() {
     } else if (clip) {
       updateClip(clip.id, updates);
     }
+  };
+
+  // B16: 编辑事件上报 — 有活跃 Persona 时向 PersonaLearner 学习偏好（fire-and-forget）
+  const personaId = useProjectStore((s) => s.personaId);
+  const reportLearn = (action: string, params: Record<string, unknown>) => {
+    if (!personaId) return;
+    personaApi.learn(personaId, action, params).catch(() => {});
   };
 
   // Style edits cascade to every clip on the same caption layer (ONE history point);
@@ -265,7 +273,7 @@ export function PropertiesPanel() {
             {/* Playback */}
             <Section title="播放">
               <Slider label="速度" min={0.25} max={4} step={0.25} value={clip.speed}
-                onChange={(v) => { pushHistory(); set({ speed: v }); }} />
+                onChange={(v) => { pushHistory(); reportLearn('change_video_speed', { speed: v }); set({ speed: v }); }} />
               {/* M6: 音频增益 — 音量 0-200%（增益可 >100%） */}
               <Slider label={isAudioLike ? `增益 ${Math.round(clip.volume * 100)}%` : '音量'}
                 min={0} max={isAudioLike ? 2 : 1} step={0.05} value={round2(clip.volume)}
@@ -470,10 +478,10 @@ export function PropertiesPanel() {
             {/* Transitions */}
             <Section title="转场">
               <Row label="入场">
-                <TransitionSelect value={clip.transition_in ?? ''} onChange={(v) => { pushHistory(); set({ transition_in: v || null }); }} />
+                <TransitionSelect value={clip.transition_in ?? ''} onChange={(v) => { pushHistory(); reportLearn('apply_transition', { transition_type: v || 'hard_cut' }); set({ transition_in: v || null }); }} />
               </Row>
               <Row label="出场">
-                <TransitionSelect value={clip.transition_out ?? ''} onChange={(v) => { pushHistory(); set({ transition_out: v || null }); }} />
+                <TransitionSelect value={clip.transition_out ?? ''} onChange={(v) => { pushHistory(); reportLearn('apply_transition', { transition_type: v || 'hard_cut' }); set({ transition_out: v || null }); }} />
               </Row>
               {clip.transition_in && (
                 <Slider label="转场时长" min={0.1} max={2} step={0.1} value={round2(clip.transition_duration_sec ?? 0.5)}

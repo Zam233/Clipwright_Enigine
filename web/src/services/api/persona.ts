@@ -109,6 +109,18 @@ export const personaApi = {
     return data as { status: string; doc_id: string };
   },
 
+  /** B16: 上报一次编辑事件（PersonaLearner 学习偏好） */
+  async learn(personaId: string, action: string, params: Record<string, unknown>) {
+    const { data } = await getApiClient().post(`/api/persona/${personaId}/learn`, { action, params });
+    return data as { status: string; persona_id: string; edit_count: number };
+  },
+
+  /** B16: 读取学习器偏好统计 */
+  async learnStats(personaId: string) {
+    const { data } = await getApiClient().get(`/api/persona/${personaId}/learn/stats`);
+    return data as { persona_id: string; edit_count: number; preferences: Record<string, unknown> };
+  },
+
   /** Run RAG query against a persona's knowledge base */
   async ragQuery(personaId: string, query: string) {
     const { data } = await getApiClient().post(

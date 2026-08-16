@@ -776,3 +776,10 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ? TypeMakerPage：预览按钮（调用 /preview）+ 删除二次确认弹层
 - ? 测试：后端 test_plugin_governance3.py 28 项 + test_typed_plugin_config.py +3（共 1152）；前端 PluginsPage +4、TypeMakerPage +3、PluginLayoutRenderer +2（共 349）
 - 回归：后端 1152/1152 ?、前端 349/349 ?、tsc 通过 ?
+
+### 执行轮次 51（P10 B16 学习器接线 + parity 更新 · 第七批）
+- ? B16 persona_learner 接线：POST /{persona_id}/learn + GET /{persona_id}/learn/stats（owner 校验 + audit 无）；修复 save() 不 mkdir 数据目录的真实 bug；前端 personaApi.learn/learnStats + PropertiesPanel 转场/速度变更上报（有活跃 persona 时 fire-and-forget）
+- ? 测试：test_persona_lifecycle.py +2（learn 记录 + 权重学习 / 404）
+- ? 前端 persona.ts +2（learn/learnStats）
+- 回归：后端 1154/1154 ?、前端 349/349 ?、tsc 通过 ?
+- ? 文档：frontend-backend-parity.md 全量刷新（路由 176→225、客户端 20→24 模块、插件 API 16 项、persona API 20 项）

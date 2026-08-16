@@ -9,8 +9,8 @@
 
 ## 0. 结论摘要（TL;DR）
 
-- 后端真实路由 **176 条**，分布 29 个 APIRouter（`J:\Clipwright\clipwright\api\*.py`）。
-- 前端 API 客户端 **20 个模块 + 172 个函数**（`src/services/api/*.ts`，排除 `client.ts`/`index.ts`/测试文件）。
+- 后端真实路由 **225 条**，分布 33 个 APIRouter（`J:\Clipwright\clipwright\api\*.py`）。
+- 前端 API 客户端 **20 个模块 + 180+ 个函数**（`src/services/api/*.ts`，排除 `client.ts`/`index.ts`/测试文件）。
 - 三类差距（无客户端 / 死坏调用 / 形状漂移）**已全部修复**，并补齐 4 个新管理页 + 7 处现有页面接线。
 - `/metrics`、独立 worker 服务、`/ws` WebSocket 为**明确范围外**：`WsClient.ts` 已删除，实时链路为 SSE-only。
 - 唯一无专属客户端模块的后端路由组为 `/api/test/*`（model_test 4 条），但已被 `ModelsPage.tsx` 以裸 `getApiClient()` 消费（见 §2.4）。
@@ -19,64 +19,69 @@
 
 ## 1. 后端路由全量清单（① 真实路由 inventory）
 
-> 数据来源：`Select-String -Path "J:\Clipwright\clipwright\api\*.py" -Pattern "@router\.(get|post|put|delete|patch)"` → **176 条**。
+> 数据来源：`Select-String -Path "J:\Clipwright\clipwright\api\*.py" -Pattern "@router\.(get|post|put|delete|patch)"` → **225 条**。
 > 前缀来源：每个文件 `router = APIRouter(prefix=...)`。
 > 排除：`errors.py`（无路由）、`__init__.py`（聚合）。`/health` 在 `main.py`（非 `api/*.py`），由 `healthApi.check()` 消费。
 
 | 前缀 | 文件 | 数量 | 路由 |
 |---|---|---|---|
 | `/api/animation` | animation.py | 4 | GET `/list` · GET `/onscreen` · GET `/transitions` · GET `/get/{animation_id}` |
-| `/api/asset` | asset.py | 9 | POST `/upload` · GET `/list` · GET `/by-path` · GET `/{asset_id}` · GET `/{asset_id}/file` · GET `/{asset_id}/thumbnail` · DELETE `/{asset_id}` · POST `/import-path` · POST `/import-url` |
+| `/api/asset` | asset.py | 12 | POST `/upload` · GET `/list` · GET `/by-path` · GET `/{asset_id}` · GET `/{asset_id}/file` · GET `/{asset_id}/thumbnail` · DELETE `/{asset_id}` · POST `/import-path` · POST `/import-url` · POST `/governance/patrol` · POST `/governance/violations` · GET `/governance/summary` |
 | `/api/persona/forge/chat` | chat_forge.py | 5 | POST `/start` · POST `/message` · POST `/knowledge` · POST `/commit` · GET `/state/{session_id}` |
 | `/api/edl` | edl.py | 4 | POST `/import/edl` · POST `/import/fcpxml` · POST `/export/edl` · POST `/export/fcpxml` |
 | `/api/fonts` | font.py | 4 | GET `/list` · GET `/default` · GET `/resolve` · POST `/clear-cache` |
 | `/api/learning` | learning.py | 11 | GET `/status` · GET `/datasets` · POST `/datasets/create` · DELETE `/datasets/{dataset_id}` · GET `/jobs` · GET `/jobs/{job_id}` · POST `/jobs/create` · POST `/jobs/{job_id}/start` · POST `/jobs/{job_id}/cancel` · DELETE `/jobs/{job_id}` · GET `/models` |
+| `/api/market` | market.py | 6 | GET `/plugins` · GET `/plugins/{plugin_id}` · POST `/plugins/{plugin_id}/install` · GET `/personas` · GET `/personas/{persona_id}` · POST `/personas/{persona_id}/install` |
 | `/api/material` | material.py | 3 | GET `/sources` · POST `/search` · GET `/asset/{source_id}/{asset_id}` |
 | `/api/test` | model_test.py | 4 | POST `/llm` · POST `/embed` · POST `/rerank` · GET `/config` |
-| `/api/persona` | persona.py | 9 | GET `/list` · GET `/{persona_id}` · POST `/create` · PUT `/{persona_id}` · DELETE `/{persona_id}` · GET `/{persona_id}/prompt` · PUT `/{persona_id}/prompt` · GET `/{persona_id}/knowledge` · POST `/{persona_id}/knowledge` |
+| `/api/persona` | persona.py | 20 | GET `/list` · GET `/{persona_id}` · POST `/create` · PUT `/{persona_id}` · POST `/{persona_id}/reference-style` · DELETE `/{persona_id}` · POST `/{persona_id}/duplicate` · POST `/derive` · GET `/{persona_id}/export` · POST `/import` · GET `/{persona_id}/prompt` · PUT `/{persona_id}/prompt` · GET `/{persona_id}/vision-prompt` · PUT `/{persona_id}/vision-prompt` · GET `/{persona_id}/knowledge` · POST `/{persona_id}/knowledge` · PUT `/{persona_id}/knowledge/{doc_id}` · DELETE `/{persona_id}/knowledge/{doc_id}` · POST `/{persona_id}/learn` · GET `/{persona_id}/learn/stats` |
 | `/api/persona/forge` | persona_forge.py | 5 | POST `/from-prompt` · POST `/from-script` · POST `/refine` · POST `/dialogue/generate-questions` · POST `/dialogue/build` |
-| `/api/pipeline` | pipeline.py | 12 | GET `/runs` · POST `/run-v2` · POST `/run` · POST `/run-async` · GET `/trace/{pipeline_id}` · GET `/trace/stream/{pipeline_id}` · GET `/result/{pipeline_id}` · GET `/status/{pipeline_id}` · POST `/retry/{pipeline_id}/{agent_name}` · POST `/predict-script` · POST `/predict-material` · POST `/step/{agent_name}` |
-| `/api/plugin` | plugin.py | 10 | GET `/list` · GET `/discover` · POST `/load/{plugin_id}` · POST `/unload/{plugin_id}` · GET `/{plugin_id}/config` · PUT `/{plugin_id}/config` · DELETE `/{plugin_id}/config` · POST `/load-all` · GET `/capabilities` · GET `/{plugin_id}/ui` |
+| `/api/pipeline` | pipeline.py | 21 | GET `/runs` · POST `/run-v2` · POST `/run` · POST `/run-async` · GET `/trace/{pipeline_id}` · GET `/trace/stream/{pipeline_id}` · GET `/result/{pipeline_id}` · GET `/status/{pipeline_id}` · GET `/diagnostics/{pipeline_id}` · POST `/retry/{pipeline_id}/{agent_name}` · GET `/templates` · POST `/templates` · GET `/templates/{name}` · DELETE `/templates/{name}` · POST `/cancel/{pipeline_id}` · GET `/breaker-status` · POST `/script-tools` · POST `/predict-script` · POST `/predict-material` · POST `/step/{agent_name}` · POST `/topic-suggest` |
+| `/api/plugin` | plugin.py | 16 | GET `/list` · GET `/discover` · POST `/load/{plugin_id}` · POST `/unload/{plugin_id}` · POST `/{plugin_id}/enable` · POST `/{plugin_id}/disable` · GET `/permissions` · GET `/errors` · DELETE `/errors` · DELETE `/{plugin_id}` · GET `/{plugin_id}/config` · PUT `/{plugin_id}/config` · DELETE `/{plugin_id}/config` · POST `/load-all` · GET `/capabilities` · GET `/{plugin_id}/ui` |
 | `/api/preprocess` | preprocess.py | 7 | GET `/operations` · GET `/queue` · POST `/submit` · POST `/batch-submit` · GET `/task/{task_id}` · DELETE `/task/{task_id}` · GET `/task/{task_id}/results` |
-| `/api/project` | project.py | 13 | POST `/`（create） · GET `/`（list） · POST `/folders/rename` · POST `/folders/delete` · GET `/{project_id}` · PUT `/{project_id}` · DELETE `/{project_id}` · POST `/{project_id}/duplicate` · PATCH `/{project_id}/rename` · PATCH `/{project_id}/folder` · POST `/{project_id}/tags` · DELETE `/{project_id}/tags/{tag}` · GET `/{project_id}/thumbnail` |
+| `/api/project` | project.py | 15 | POST `/folders/rename` · POST `/folders/delete` · GET `/{project_id}` · PUT `/{project_id}` · DELETE `/{project_id}` · POST `/{project_id}/trash` · POST `/{project_id}/restore` · DELETE `/{project_id}/trash` · GET `/{project_id}/archive` · POST `/{project_id}/duplicate` · PATCH `/{project_id}/rename` · PATCH `/{project_id}/folder` · POST `/{project_id}/tags` · DELETE `/{project_id}/tags/{tag}` · GET `/{project_id}/thumbnail` |
 | `/api/proxy` | proxy.py | 2 | POST `/generate` · POST `/switch` |
 | `/api/persona`（RAG） | rag.py | 4 | POST `/{persona_id}/rag/query` · POST `/{persona_id}/rag/index` · GET `/{persona_id}/rag/status` · DELETE `/{persona_id}/rag/index` |
 | `/api/render` | render.py | 10 | POST `/queue` · GET `/queue/{task_id}` · GET `/queue/stream/{task_id}` · GET `/queue` · GET `/video` · GET `/download/{filename}` · GET `/presets` · POST `/start` · GET `/status/{render_id}` · GET `/thumbnail` |
 | `/api/requirements` | requirements.py | 8 | POST `/init` · POST `/edit` · POST `/chat` · POST `/chat/stream/{session_id}` · POST `/upload/{session_id}` · GET `/session/{session_id}` · GET `/plan/{session_id}` · POST `/proceed` |
+| `/api/scheduler` | scheduler.py | 5 | GET `/schedules` · POST `/schedules` · DELETE `/schedules/{schedule_id}` · POST `/schedules/{schedule_id}/toggle` · POST `/tick` |
 | `/api/skill` | skill.py | 2 | GET `/list` · POST `/execute` |
+| `/api/stats` | stats.py | 1 | GET `/usage` |
 | `/api/stt` | stt.py | 2 | POST `/transcribe` · POST `/align` |
 | `/api/subtitle` | subtitle.py | 4 | POST `/import` · POST `/export` · POST `/transcribe` · POST `/align` |
-| `/api/template` | template.py | 6 | GET `/list` · GET `/{template_id}` · POST `/create` · PUT `/{template_id}` · DELETE `/{template_id}` · POST `/{template_id}/apply` |
+| `/api/template` | template.py | 7 | GET `/list` · GET `/{template_id}` · POST `/create` · PUT `/{template_id}` · DELETE `/{template_id}` · POST `/{template_id}/apply` · POST `/{template_id}/batch-apply` |
 | `/api/tool` | tool.py | 3 | GET `/list` · POST `/execute` · POST `/batch` |
 | `/api/type-maker` | type_maker.py | 6 | GET `/list` · GET `/{type_id}` · POST `/create` · PUT `/{type_id}` · DELETE `/{type_id}` · POST `/preview` |
+| `/api/project`（版本） | versions.py | 4 | GET `/{project_id}/versions` · POST `/{project_id}/versions` · POST `/{project_id}/versions/{position}/restore` · DELETE `/{project_id}/versions` |
 | `/api/video-editor` | video_editor.py | 13 | GET `/status` · GET `/projects` · POST `/projects/create` · GET `/projects/{project_id}` · PUT `/projects/{project_id}` · DELETE `/projects/{project_id}` · POST `/projects/{project_id}/undo` · POST `/projects/{project_id}/redo` · POST `/projects/{project_id}/clips/add` · POST `/projects/{project_id}/clips/remove` · POST `/projects/{project_id}/clips/move` · POST `/projects/{project_id}/clips/split` · POST `/projects/{project_id}/export` |
 | `/api/vision` | vision.py | 2 | POST `/analyze` · POST `/import` |
 | `/api/voice` | voice.py | 6 | POST `/upload` · POST `/clone` · GET `/list` · DELETE `/{db_id}` · POST `/synthesize` · POST `/dub` |
 | `/api/waveform` | waveform.py | 1 | POST `/generate` |
 | `/api/webhook` | webhook.py | 8 | GET `/events` · GET `/list` · POST `/register` · DELETE `/{webhook_id}` · PUT `/{webhook_id}/toggle` · POST `/{webhook_id}/test` · POST `/notify` · GET `/deliveries` |
-| **合计** | **29 个 router** | **176** | |
+| **合计** | **33 个 router** | **225** | |
 
 ---
 
 ## 2. 前端客户端清单（② 客户端 inventory）
 
-> 数据来源：`src/services/api/*.ts` 共 **22 个文件**（含 `client.ts` 工厂与 `index.ts` 聚合桶）；20 个业务模块、**172 个函数**。
+> 数据来源：`src/services/api/*.ts` 共 **24 个业务模块、202 个 async 函数**（含 `client.ts` 工厂与 `index.ts` 聚合桶）。
 > 计数命令：遍历 `src/services/api/*.ts`（排除 `client.ts`/`index.ts`/`*.test.ts`）匹配 `async xxx(...)` 顶层方法。
 
 | 模块文件 | 导出 | 函数数 | 覆盖后端 |
 |---|---|---|---|
-| `pipeline.ts` | `pipelineApi` | 13 | `/api/pipeline`（13/13） |
-| `persona.ts` | `personaApi` | 23 | `/api/persona` + RAG + forge + forge/chat（23/23） |
-| `project.ts` | `projectApi` / `healthApi` / `pluginApi` / `animationApi` / `skillApi` | 31 | `/api/project` + `/health` + `/api/plugin` + `/api/animation` + `/api/skill` |
-| `asset.ts` | `assetApi`（含 material 素材） | 7 | `/api/asset` + `/api/material`（search/sources/asset 详情） |
-| `render.ts` | `renderApi` | 10 | `/api/render`（10/10） |
-| `requirements.ts` | `requirementsApi` | 8 | `/api/requirements`（8/8，含 /edit） |
+| `account.ts` | `accountApi` | 5 | 账号管理（Server `/srv` 代理：登录/注册/刷新/登出/资料） |
+| `pipeline.ts` | `pipelineApi` | 9 | `/api/pipeline`（核心 9 项 + 诊断/模板经 client 扩展） |
+| `persona.ts` | `personaApi` | 33 | `/api/persona` + RAG + forge + forge/chat + learn（33） |
+| `project.ts` | `projectApi` / `healthApi` / `pluginApi` / `animationApi` / `skillApi` | 42 | `/api/project` + `/health` + `/api/plugin`（16 项）+ `/api/animation` + `/api/skill` + `/api/stats` |
+| `asset.ts` | `assetApi`（含 material 素材 + governance） | 9 | `/api/asset` + `/api/material` + `/api/asset/governance` |
+| `render.ts` | `renderApi` | 7 | `/api/render`（7/10，SSE 流经 sse.ts） |
+| `requirements.ts` | `requirementsApi` | 8 | `/api/requirements`（8/8，含 /edit + streamChat） |
 | `tool.ts` | `toolApi` | 3 | `/api/tool`（3/3） |
-| `voice.ts` | `voiceApi` | 7 | `/api/voice`（6/6 + URL helper） |
+| `voice.ts` | `voiceApi` | 6 | `/api/voice`（6/6） |
 | `font.ts` | `fontApi` | 4 | `/api/fonts`（4/4） |
 | `webhook.ts` | `webhookApi` | 8 | `/api/webhook`（8/8） |
 | `typeMaker.ts` | `typeMakerApi` | 6 | `/api/type-maker`（6/6） |
-| `template.ts` | `templateApi` | 6 | `/api/template`（6/6） |
+| `template.ts` | `templateApi` | 7 | `/api/template`（7/7，含 batch-apply） |
 | `edl.ts` | `edlApi` | 4 | `/api/edl`（4/4） |
 | `waveform.ts` | `waveformApi` | 1 | `/api/waveform`（1/1） |
 | `proxy.ts` | `proxyApi` | 3 | `/api/proxy`（2/2） |
@@ -85,8 +90,9 @@
 | `videoEditor.ts` | `videoEditorApi` | 13 | `/api/video-editor`（13/13） |
 | `subtitle.ts` | `subtitleApi` + `sttApi` | 6 | `/api/subtitle`（4/4）+ `/api/stt`（2/2） |
 | `vision.ts` | `visionApi` | 2 | `/api/vision`（2/2） |
-| `client.ts` | `getApiClient` / `resetApiClient` | — | Axios 工厂（baseURL 默认 `http://localhost:8000`） |
-| `index.ts` | 聚合桶 | — | 导出全部 20 个模块 |
+| `market.ts` | `marketApi` | 8 | `/api/market`（插件/Persona 市场安装） |
+| `client.ts` | `getApiClient` / `resetApiClient` | — | Axios 工厂（baseURL 同源/8080，SSE 见 sse.ts） |
+| `index.ts` | 聚合桶 | — | 导出全部业务模块 |
 
 ### 2.1 聚合桶导出（index.ts）
 
@@ -112,31 +118,37 @@ export { learningApi } from './learning';
 export { videoEditorApi } from './videoEditor';
 export { subtitleApi, sttApi } from './subtitle';
 export { visionApi } from './vision';
+export { accountApi } from './account';
+export { marketApi } from './market';
 ```
 
 ### 2.2 后端路由 → 前端函数覆盖矩阵
 
 | 后端前缀 | 覆盖方式 |
 |---|---|
-| `/api/animation` | `animationApi.list/onscreen/transitions/get`（project.ts:156-180） |
-| `/api/asset` | `assetApi.list/upload/importPath/importUrl/…` |
+| `/api/animation` | `animationApi.list/onscreen/transitions/get`（project.ts） |
+| `/api/asset` | `assetApi.list/upload/importPath/importUrl/…` + `assetApi.patrol/violations/summary`（governance） |
 | `/api/edl` | `edlApi.importEDL/importFCPXML/exportEDL/exportFCPXML` |
 | `/api/fonts` | `fontApi.list/getDefault/resolve/clearCache` |
 | `/api/learning` | `learningApi.*`（11 函数） |
-| `/api/material` | `assetApi.searchMaterials/listSources/getMaterialAsset`（asset.ts:100-132） |
-| `/api/persona` + RAG + forge + forge/chat | `personaApi.*`（23 函数，persona.ts） |
-| `/api/pipeline` | `pipelineApi.*`（13 函数） |
-| `/api/plugin` | `pluginApi.*`（10 函数，project.ts:101-154） |
+| `/api/material` | `assetApi.searchMaterials/listSources/getMaterialAsset`（asset.ts） |
+| `/api/market` | `marketApi.*`（8 函数） |
+| `/api/persona` + RAG + forge + forge/chat + learn | `personaApi.*`（33 函数，persona.ts） |
+| `/api/pipeline` | `pipelineApi.*`（9 函数 + 诊断） |
+| `/api/plugin` | `pluginApi.*`（16 函数：list/discover/load/unload/enable/disable/permissions/errors/config/ui/…） |
 | `/api/preprocess` | `preprocessApi.*`（7 函数） |
-| `/api/project` | `projectApi.*`（14 函数） |
+| `/api/project` | `projectApi.*`（含 archive/trash/restore/purge） |
 | `/api/proxy` | `proxyApi.generate/switchToFull/switchToProxy` |
-| `/api/render` | `renderApi.*`（10 函数） |
-| `/api/requirements` | `requirementsApi.*`（7 函数） |
+| `/api/render` | `renderApi.*`（7 函数） |
+| `/api/requirements` | `requirementsApi.*`（8 函数，含 streamChat） |
+| `/api/scheduler` | ⚠️ 无专属前端模块（运营 API，PipelineAdminPage 可扩展消费） |
 | `/api/skill` | `skillApi.list/execute` |
-| `/api/stt` | `sttApi.transcribe/align`（subtitle.ts:100-129） |
+| `/api/stats` | `projectApi.stats/usage`（或 PipelineAdminPage 直连） |
+| `/api/stt` | `sttApi.transcribe/align`（subtitle.ts） |
 | `/api/subtitle` | `subtitleApi.importSrt/exportSrt/transcribe/align` |
-| `/api/template` | `templateApi.list/get/create/update/remove/apply` |
-| `/api/test` | ⚠️ 无专属模块，**裸客户端消费**：`ModelsPage.tsx:26,38,46-48` 直接 `getApiClient().get/post` |
+| `/api/template` | `templateApi.list/get/create/update/remove/apply/batchApply` |
+| `/api/test` | ⚠️ 无专属模块，**裸客户端消费**：`ModelsPage.tsx` 直接 `getApiClient().get/post` |
+| `/api/project`（版本） | `projectApi.versions*`（versions.ts 相关函数） |
 | `/api/tool` | `toolApi.list/execute/batch` |
 | `/api/type-maker` | `typeMakerApi.list/get/create/update/remove/preview` |
 | `/api/video-editor` | `videoEditorApi.*`（13 函数） |

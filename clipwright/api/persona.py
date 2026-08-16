@@ -331,3 +331,41 @@ async def delete_knowledge(persona_id: str, doc_id: str) -> dict:
         raise HTTPException(status_code=404, detail=f"文档 {doc_id} 不存在")
     return {"status": "deleted", "doc_id": doc_id}
 
+
+# ── B16: Persona 学习器接线（编辑事件上报 → 偏好学习）──
+
+
+class LearnEventRequest(BaseModel):
+    """学习事件：前端编辑行为上报。"""
+    action: str = Field(description="编辑动作（apply_video_filter/change_text_style/apply_transition/change_video_speed 等）")
+    params: dict = Field(default_factory=dict, description="动作参数")
+
+
+@router.post("/{persona_id}/learn")
+async def learn_from_edit(persona_id: str, req: LearnEventRequest, request: Request) -> dict:
+    """B16: 记录一次编辑事件，PersonaLearner 学习偏好并落盘。
+
+    前端在时间轴/属性面板的编辑动作后调用（防抖节流由前端控制）。
+    """
+    _load_owned(request, persona_id)
+    from clipwright.services.persona_learner import get_learner
+    try:
+        learner = get_learner(persona_id)
+        learner.record_edit(req.action, req.params)
+        return {
+            "status": "ok",
+            "persona_id": persona_id,
+            "edit_count": learner.to_dict()["edit_count"],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"学习事件记录失败: {e}")
+
+
+@router.get("/{persona_id}/learn/stats")
+async def learn_stats(persona_id: str, request: Request) -> dict:
+    """B16: 读取学习器当前偏好统计（供诊断/展示）。"""
+    _load_owned(request, persona_id)
+    from clipwright.services.persona_learner import get_learner
+    learner = get_learner(persona_id)
+    return learner.to_dict()
+
