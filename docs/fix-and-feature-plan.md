@@ -527,3 +527,10 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 → P5 → P6/P7 → 
 - ? B6 版权字段：MaterialAsset.license 字段 + 素材建议透传（前端可展示，素材源可提供）
 - ? 用量报表：GET /api/stats/usage（管线/渲染/LLM tokens 本月与总计，jwt 按 owner 过滤）+ 设置页「用量统计」卡片
 - 回归：后端 1024/1024 ? · 前端 261/261 + typecheck ?
+
+### 执行轮次 8（P5 收尾：B7/B4/Agent 基座）
+- ? B7 多方案：structure_agent voiceover 模式双稿生成 + 择优启发式（场景数 3-20 区间内多者优，越界惩罚，平局取先）
+- ? B4 队列持久化：渲染任务落 Mongo render_tasks（含 timeline/优先级 X-Priority 1-5），终态同步、60s 后清理；重启后 GET /queue 合并恢复项（recovered 标记），状态查询 Mongo 兜底
+- ? Agent 统一基座：BaseAgent.run_with_timeout / llm_or_fallback（超时+异常优雅降级）
+- ? 新增测试：test_p5_unit 4 个（择优 3 + 队列恢复 1，无 Mongo 依赖）
+- 回归：后端 1028/1028 ? —— P5 阶段全部完成
