@@ -12,9 +12,10 @@ import {
   Film, Settings, ArrowRight, Plus, Bot, ListChecks,
   PenLine, PackageCheck, Clock, Layers, Wand2, Mic, Image as ImageIcon,
   Upload, X, Check, Loader2, AudioLines,
-  Scissors, FileText, FolderOpen, Clapperboard, Store,
+  Scissors, FileText, FolderOpen, Clapperboard, Store, LayoutTemplate,
 } from 'lucide-react';
 import { ProjectCard, type ProjectCardData } from '@/components/shared/ProjectCard';
+import { TemplateGallery } from '@/components/shared/TemplateGallery';
 import { fmtDur, relTime, uid } from '@/lib/utils';
 import { toast } from '@/stores/toastStore';
 
@@ -116,6 +117,8 @@ export function HomePage() {
   const [uploadErr, setUploadErr] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
   const [launchErr, setLaunchErr] = useState<string | null>(null);
+  // A3: 模板画廊弹层
+  const [templateGalleryOpen, setTemplateGalleryOpen] = useState(false);
   const [materialSources, setMaterialSources] = useState<MatSource[]>([]);
   const [selectedSources, setSelectedSources] = useState<string[]>([]);
   const audioInputRef = useRef<HTMLInputElement>(null);
@@ -738,6 +741,11 @@ export function HomePage() {
                         <Plus className="w-4 h-4" />
                         空白编辑器
                       </Button>
+                      <Button size="lg" variant="ghost" onClick={() => setTemplateGalleryOpen(true)}
+                        className="text-on-surface-variant hover:text-primary">
+                        <LayoutTemplate className="w-4 h-4" />
+                        从模板开始
+                      </Button>
                     </div>
                   </div>
                 </div>
@@ -860,6 +868,13 @@ export function HomePage() {
         }
         .caption-chip { animation: captionChipIn 0.25s var(--ease-emphasized-decelerate) both; }
       `}</style>
+
+      {/* A3: 模板画廊 */}
+      <TemplateGallery
+        open={templateGalleryOpen}
+        onClose={() => setTemplateGalleryOpen(false)}
+        onApplyProject={(projectId) => navigate({ to: '/editor/$projectId', params: { projectId } })}
+      />
     </div>
   );
 }
