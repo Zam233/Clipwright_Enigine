@@ -13,6 +13,22 @@ from typing import Any, Optional
 from clipwright.config import logger, settings
 
 
+def _sha256_of(path: Path, chunk: int = 1 << 20) -> str:
+    """计算文件内容 sha256（分块，避免大文件整读）。"""
+    import hashlib
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            while True:
+                block = f.read(chunk)
+                if not block:
+                    break
+                h.update(block)
+    except OSError:
+        return ""
+    return h.hexdigest()
+
+
 class AssetInfo:
     """已导入的素材信息。"""
 
@@ -28,6 +44,9 @@ class AssetInfo:
         file_size: int = 0,
         thumbnail_path: str = "",
         error: str = "",
+        sha256: str = "",
+        used_count: int = 0,
+        status: str = "ok",  # ok / missing / violated
     ):
         self.asset_id = asset_id
         self.filename = filename
@@ -39,6 +58,10 @@ class AssetInfo:
         self.file_size = file_size
         self.thumbnail_path = thumbnail_path
         self.error = error
+        # P9: 素材治理字段
+        self.sha256 = sha256
+        self.used_count = used_count
+        self.status = status
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -52,6 +75,9 @@ class AssetInfo:
             "file_size": self.file_size,
             "thumbnail_path": self.thumbnail_path,
             "error": self.error,
+            "sha256": self.sha256,
+            "used_count": self.used_count,
+            "status": self.status,
         }
 
 
@@ -100,6 +126,29 @@ class AssetManager:
         if not src.exists():
             return AssetInfo(asset_id="", filename="", file_path="", media_type="", error=f"文件不存在: {file_path}")
 
+        # P9: 内容哈希去重（sha256）— 已存在同内容素材 → 复用（返回 deduplicated 标记）
+        import hashlib
+        sha256 = _sha256_of(src)
+        for existing in self._assets.values():
+            if existing.sha256 and existing.sha256 == sha256 and Path(existing.file_path).exists():
+                existing.used_count += 1
+                self._save_index()
+                return AssetInfo(
+                    asset_id=existing.asset_id,
+                    filename=existing.filename,
+                    file_path=existing.file_path,
+                    media_type=existing.media_type,
+                    duration_sec=existing.duration_sec,
+                    width=existing.width,
+                    height=existing.height,
+                    file_size=existing.file_size,
+                    thumbnail_path=existing.thumbnail_path,
+                    sha256=existing.sha256,
+                    used_count=existing.used_count,
+                    status=existing.status,
+                    error="deduplicated",
+                )
+
         asset_id = f"asset_{uuid.uuid4().hex[:12]}"
         ext = src.suffix.lower()
         dest = self._files_dir / f"{asset_id}{ext}"
@@ -139,6 +188,8 @@ class AssetManager:
             height=info.get("height", 0),
             file_size=dest.stat().st_size,
             thumbnail_path=thumb_path,
+            sha256=sha256,
+            used_count=1,
         )
         self._assets[asset_id] = asset
         self._save_index()
@@ -176,6 +227,70 @@ class AssetManager:
             logger.warning("清理素材文件失败 %s: %s", asset_id, e)
         self._save_index()
         return True
+
+    # ── P9: 素材治理 ──
+
+    def increment_used(self, asset_id: str) -> None:
+        """素材使用统计：被时间线引用时计数 +1。"""
+        asset = self._assets.get(asset_id)
+        if asset:
+            asset.used_count += 1
+            self._save_index()
+
+    async def patrol_urls(self) -> dict[str, Any]:
+        """P9: URL 失效巡检 — 对 HTTP(S) 引用的素材做 HEAD 检查，失效标记 status=missing。"""
+        import httpx
+        checked = 0
+        failed: list[str] = []
+        for asset in self._assets.values():
+            path = asset.file_path or ""
+            if not path.startswith(("http://", "https://")):
+                continue
+            checked += 1
+            try:
+                async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+                    resp = await client.head(path)
+                    if resp.status_code >= 400:
+                        raise httpx.HTTPStatusError("bad", request=resp.request, response=resp)
+                asset.status = "ok"
+            except Exception:
+                asset.status = "missing"
+                failed.append(asset.asset_id)
+        if checked:
+            self._save_index()
+        return {"checked": checked, "missing": failed}
+
+    async def detect_violations(self) -> dict[str, Any]:
+        """P9: 违规内容检测 — 对图片素材用视觉模型评分；文本素材用关键词过滤。
+
+        纯可选增强：视觉模型/第三方服务不可用时跳过（不阻断导入）。
+        """
+        from clipwright.tool.registry import ToolRegistry
+        checked = 0
+        flagged: list[str] = []
+        for asset in self._assets.values():
+            path = asset.file_path or ""
+            if asset.media_type == "image" and ToolRegistry.get("vision_llm") is not None:
+                try:
+                    result = await ToolRegistry.execute("vision_llm", input_path=path)
+                    out = result.output or {}
+                    flags = out.get("flags") or out.get("violations") or []
+                    if flags:
+                        asset.status = "violated"
+                        flagged.append(asset.asset_id)
+                    checked += 1
+                except Exception:
+                    pass
+            elif asset.media_type == "text":
+                low = asset.filename.lower()
+                banned = ["violence", "gore", "nsfw", "xxx"]
+                if any(b in low for b in banned):
+                    asset.status = "violated"
+                    flagged.append(asset.asset_id)
+                checked += 1
+        if checked:
+            self._save_index()
+        return {"checked": checked, "flagged": flagged}
 
     # ── 内部 ──
 

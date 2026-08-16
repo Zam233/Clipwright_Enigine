@@ -243,3 +243,41 @@ async def import_asset_by_url(req: ImportUrlRequest) -> dict:
         raise HTTPException(status_code=400, detail=f"下载失败: {e}")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# ── P9: 素材治理与合规 ─────────────────────────
+
+
+@router.post("/governance/patrol")
+async def patrol_assets(project_id: str = Query("")) -> dict:
+    """P9: URL 失效巡检 — 检查 HTTP(S) 引用素材的可达性并标记。"""
+    manager = _get_manager(project_id or None)
+    return await manager.patrol_urls()
+
+
+@router.post("/governance/violations")
+async def detect_violations(project_id: str = Query("")) -> dict:
+    """P9: 违规内容检测 — 图片走视觉模型，文本走关键词；可选第三方服务。"""
+    manager = _get_manager(project_id or None)
+    return await manager.detect_violations()
+
+
+@router.get("/governance/summary")
+async def governance_summary(project_id: str = Query("")) -> dict:
+    """P9: 素材治理摘要 — 总数/去重数/使用统计/异常状态。"""
+    manager = _get_manager(project_id or None)
+    assets = await manager.list_assets()
+    total = len(assets)
+    deduped = sum(1 for a in assets if a.error == "deduplicated")
+    used = sum(1 for a in assets if a.used_count > 0)
+    total_uses = sum(a.used_count for a in assets)
+    missing = sum(1 for a in assets if a.status == "missing")
+    violated = sum(1 for a in assets if a.status == "violated")
+    return {
+        "total": total,
+        "deduplicated": deduped,
+        "used": used,
+        "total_uses": total_uses,
+        "missing": missing,
+        "violated": violated,
+    }
