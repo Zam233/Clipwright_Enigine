@@ -94,6 +94,21 @@ export const personaApi = {
     return data as Array<{ id: string; title?: string; content: string; source?: string; created_at?: string }>;
   },
 
+  /** Rename/replace a knowledge document */
+  async updateKnowledgeDoc(personaId: string, docId: string, doc: { title?: string; content?: string }) {
+    const { data } = await getApiClient().put(
+      `/api/persona/${personaId}/knowledge/${docId}`,
+      { id: docId, title: doc.title ?? '', content: doc.content ?? '' },
+    );
+    return data as { status: string; doc_id: string };
+  },
+
+  /** Delete a knowledge document */
+  async deleteKnowledgeDoc(personaId: string, docId: string) {
+    const { data } = await getApiClient().delete(`/api/persona/${personaId}/knowledge/${docId}`);
+    return data as { status: string; doc_id: string };
+  },
+
   /** Run RAG query against a persona's knowledge base */
   async ragQuery(personaId: string, query: string) {
     const { data } = await getApiClient().post(

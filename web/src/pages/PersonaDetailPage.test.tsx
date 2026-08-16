@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { PersonaDetailPage } from './PersonaDetailPage';
 import type { Persona } from '@/types/persona';
+
+afterEach(() => cleanup());
 
 const personaId = 'per_test_1';
 
@@ -31,6 +33,8 @@ const { mocks } = vi.hoisted(() => ({
     getKnowledge: vi.fn(),
     list: vi.fn(),
     derive: vi.fn(),
+    deleteKnowledgeDoc: vi.fn(),
+    updateKnowledgeDoc: vi.fn(),
   },
 }));
 
@@ -43,6 +47,8 @@ vi.mock('@/services/api', () => ({
     updateVisionPrompt: mocks.updateVisionPrompt,
     getKnowledge: mocks.getKnowledge,
     derive: mocks.derive,
+    deleteKnowledgeDoc: mocks.deleteKnowledgeDoc,
+    updateKnowledgeDoc: mocks.updateKnowledgeDoc,
   },
   voiceApi: {
     list: mocks.list,
@@ -123,6 +129,49 @@ describe('PersonaDetailPage P10 派生', () => {
 
     await waitFor(() => {
       expect(mocks.derive).toHaveBeenCalledWith(personaId, '更口语化，节奏更快', undefined, undefined);
+    });
+  });
+});
+
+describe('PersonaDetailPage P10 知识库文档管理', () => {
+  const docs = [
+    { id: 'doc_1', title: '主题文档', content: '正文', source: 'upload', created_at: '2024-01-01' },
+    { id: 'doc_2', title: '第二篇', content: '正文2', source: 'upload' },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.get.mockResolvedValue(persona);
+    mocks.getPrompt.mockResolvedValue({ persona_id: personaId, prompt: '系统 Prompt 初始值' });
+    mocks.getVisionPrompt.mockResolvedValue({ persona_id: personaId, vision_prompt: '视觉 Prompt 初始值' });
+    mocks.getKnowledge.mockResolvedValue(docs);
+    mocks.list.mockResolvedValue([]);
+    mocks.deleteKnowledgeDoc.mockResolvedValue({ status: 'deleted', doc_id: 'doc_1' });
+    mocks.updateKnowledgeDoc.mockResolvedValue({ status: 'ok', doc_id: 'doc_1' });
+  });
+
+  it('删除按钮调用 personaApi.deleteKnowledgeDoc 并刷新列表', async () => {
+    render(<PersonaDetailPage />);
+    fireEvent.click((await screen.findAllByRole('button', { name: /知识库/ }))[0]);
+    const delButtons = await screen.findAllByTitle('删除文档');
+    fireEvent.click(delButtons[0]);
+
+    await waitFor(() => {
+      expect(mocks.deleteKnowledgeDoc).toHaveBeenCalledWith(personaId, 'doc_1');
+    });
+  });
+
+  it('重命名表单提交调用 personaApi.updateKnowledgeDoc', async () => {
+    render(<PersonaDetailPage />);
+    fireEvent.click((await screen.findAllByRole('button', { name: /知识库/ }))[0]);
+    fireEvent.click((await screen.findAllByTitle('重命名文档'))[0]);
+
+    const input = screen.getByPlaceholderText('新标题');
+    fireEvent.change(input, { target: { value: '新标题文档' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+
+    await waitFor(() => {
+      expect(mocks.updateKnowledgeDoc).toHaveBeenCalledWith(personaId, 'doc_1', { title: '新标题文档' });
     });
   });
 });

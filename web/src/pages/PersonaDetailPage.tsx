@@ -8,7 +8,7 @@ import type { VoiceRecord } from '@/types/voice';
 import {
   ArrowLeft, Save, SlidersHorizontal, FileText, Database, GitBranch,
   Fingerprint, MessageSquareText, Timer, Palette, Music, ShieldCheck, ExternalLink,
-  Search,
+  Search, Pencil, Trash2,
 } from 'lucide-react';
 
 type Tab = 'params' | 'prompt' | 'knowledge' | 'versions';
@@ -51,6 +51,10 @@ export function PersonaDetailPage() {
   const [deriveName, setDeriveName] = useState('');
   const [deriveBusy, setDeriveBusy] = useState(false);
   const [deriveMsg, setDeriveMsg] = useState('');
+  // P10: 知识库文档管理（删除 / 重命名）
+  const [renamingId, setRenamingId] = useState('');
+  const [renameTitle, setRenameTitle] = useState('');
+  const [kbMutMsg, setKbMutMsg] = useState('');
 
   useEffect(() => {
     let alive = true;
@@ -162,6 +166,38 @@ export function PersonaDetailPage() {
       setKbStatus('上传失败：后端不可达或索引服务异常');
     } finally {
       setKbBusy(false);
+    }
+  };
+
+  // P10: 删除知识库文档
+  const deleteKnowledgeDoc = async (docId: string) => {
+    if (!persona) return;
+    setKbMutMsg('');
+    try {
+      await personaApi.deleteKnowledgeDoc(persona.persona_id, docId);
+      personaApi.getKnowledge(persona.persona_id)
+        .then((docs) => setKnowledge(docs))
+        .catch(() => {});
+      setKbMutMsg('已删除文档');
+    } catch {
+      setKbMutMsg('删除失败：后端不可达');
+    }
+  };
+
+  // P10: 重命名知识库文档
+  const renameKnowledgeDoc = async (docId: string) => {
+    if (!persona || !renameTitle.trim()) return;
+    setKbMutMsg('');
+    try {
+      await personaApi.updateKnowledgeDoc(persona.persona_id, docId, { title: renameTitle.trim() });
+      personaApi.getKnowledge(persona.persona_id)
+        .then((docs) => setKnowledge(docs))
+        .catch(() => {});
+      setRenamingId('');
+      setRenameTitle('');
+      setKbMutMsg('已重命名文档');
+    } catch {
+      setKbMutMsg('重命名失败：后端不可达');
     }
   };
 
@@ -401,14 +437,45 @@ export function PersonaDetailPage() {
                 <ul className="space-y-2">
                   {knowledge.map((doc) => (
                     <li key={doc.id} className="bg-surface rounded-cw-xs border border-outline-variant/20 px-3 py-2">
-                      <p className="text-body-sm text-on-surface">{doc.title || '(无标题)'}</p>
-                      <p className="text-caption text-on-surface-variant/70 font-mono">
-                        {doc.source || 'upload'}{doc.created_at ? ` · ${doc.created_at}` : ''}
-                      </p>
+                      {renamingId === doc.id ? (
+                        <div className="flex items-center gap-2">
+                          <input
+                            value={renameTitle}
+                            onChange={(e) => setRenameTitle(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') renameKnowledgeDoc(doc.id); if (e.key === 'Escape') { setRenamingId(''); setRenameTitle(''); } }}
+                            placeholder="新标题"
+                            className="flex-1 bg-surface-container rounded-cw-xs px-2 py-1 text-label-sm text-on-surface outline-none border border-outline-variant/30 focus:border-primary"
+                          />
+                          <Button size="sm" onClick={() => renameKnowledgeDoc(doc.id)}>保存</Button>
+                          <Button size="sm" variant="outline" onClick={() => { setRenamingId(''); setRenameTitle(''); }}>取消</Button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-body-sm text-on-surface truncate">{doc.title || '(无标题)'}</p>
+                            <p className="text-caption text-on-surface-variant/70 font-mono">
+                              {doc.source || 'upload'}{doc.created_at ? ` · ${doc.created_at}` : ''}
+                            </p>
+                          </div>
+                          <button
+                            onClick={() => { setRenamingId(doc.id); setRenameTitle(doc.title ?? ''); }}
+                            className="p-1 rounded-cw-xs text-on-surface-variant/60 hover:text-primary transition-colors cursor-pointer"
+                            title="重命名文档">
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => deleteKnowledgeDoc(doc.id)}
+                            className="p-1 rounded-cw-xs text-on-surface-variant/60 hover:text-error transition-colors cursor-pointer"
+                            title="删除文档">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>
               )}
+              {kbMutMsg && <p className="text-caption text-on-surface-variant mt-2">{kbMutMsg}</p>}
             </div>
             <div className="bg-surface-container border border-outline-variant/30 rounded-cw-md p-5 text-center">
               <Database className="w-6 h-6 text-on-surface-variant/40 mx-auto mb-1.5" />

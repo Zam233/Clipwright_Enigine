@@ -754,3 +754,9 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ? PersonaDetailPage：头部「派生新人格」入口（调整说明 + 可选名称 → 派生后跳转新人格）
 - ? 测试：后端 test_persona_lifecycle.py 8 项（duplicate/冲突/derive/404/export-import 往返/导入冲突/400/路由注册）；前端 PersonaPage +3、PersonaDetailPage +1（共 336）
 - 回归：后端 1114/1114 ?、前端 336/336 ?、tsc 通过 ?
+
+### 执行轮次 49（P10 知识库文档管理 UI · 第五批）
+- ? 前端 persona.ts：updateKnowledgeDoc（PUT）/ deleteKnowledgeDoc（DELETE）
+- ? PersonaDetailPage 知识库 Tab：每文档 重命名（内联输入，Enter 保存/Esc 取消）/ 删除 按钮 + 操作反馈
+- ? 测试：PersonaDetailPage +2（删除/重命名），全量 338
+- 回归：前端 338/338 ?、tsc 通过 ?
