@@ -468,3 +468,19 @@ API è§„æ ¼ï¼ˆv1ï¼Œå…¨éƒ¨ JSONï¼Œé™¤æ ‡æ³¨å¤–å‡éœ€ Bearer JWTï¼‰ï¼š
 - æ’é™¤é¡¹ç»´æŒï¼šæ¨¡æ¿åˆ†äº«ã€å¤šäººåä½œã€é¡¹ç›®å…±äº«å®¡é˜…ï¼ˆE3ï¼‰ã€å¤šè¯­è¨€æˆç‰‡ã€æ•°å­—äººã€A/B å¯¹æ¯”ã€å‘å¸ƒåˆ†å‘ã€‚
 - æ–°å¢æ’æœŸï¼šP7 W18 åŒ…ä½“ä¼˜åŒ–ï¼ˆ+1â€“2 äººæ—¥ï¼‰ï¼›P8 å‚è€ƒæˆç‰‡é£æ ¼æ¨¡ä»¿ï¼ˆ+6â€“10 äººæ—¥ï¼‰ã€‚
 - åˆè®¡æ›´æ–°ï¼šçº¦ 202â€“322 äººæ—¥ã€‚
+
+---
+
+## 10. Ö´ĞĞ½ø¶È£¨Åú×¼ºó¹ö¶¯¸üĞÂ£©
+
+### ÒÑÍê³É£¨2026-08 Ö´ĞĞÂÖ´Î 1£©
+- ? P2 Ç°ÖÃ£ºK:\Clipwright Server ½¨²Ö£¨commit 0d973a5£ºauth+market ¹Ç¼Ü 18 ÎÄ¼ş£¬/health ¿ÉÓÃ£¬ÒµÎñ¶Ëµã 501 ´ı P3/P4£©
+- ? P2 ºÏ²¢£ºÇ°¶Ë git subtree ²¢Èë web/£¨221806e£¬±£ÁôÀúÊ·£©£»¸ù scripts/start.ps1¡¤bat¡¢check_env¡¢stop¡¢docker-compose¡¢Dockerfile.backend¡¢web/Dockerfile.frontend+nginx¡¢CI£¨8412751£©¡ú Ò»¼üÆô¶¯£ºscripts\start.ps1
+- ? P0 È«²¿ 14 ÏîÊµÊ©£º
+  - b249f7b£ºP0-1 asset °×Ãûµ¥£¨import ¾Ü¾øµãÎÄ¼ş/°×Ãûµ¥Íâ¸´ÖÆ/·şÎñ¶ËĞ£Ñé£©¡¢P0-2 äÖÈ¾Èë²Î°×Ãûµ¥+Êä³ö safe_join¡¢P0-3 transition Ã¶¾Ù+×¢Èë»ØÍË¡¢P0-4 tool Â·¾¶²ÎÊıĞ£Ñé¡¢P0-7 import-url SSRF+Á÷Ê½ÏŞÁ÷¡¢P0-8 RAG ÀÁ¼ÓÔØ¡¢P0-9 SSE Ò»´ÎĞÔ token£¨/api/auth/sse-token + ÈÕÖ¾Ä¨³ı£©¡¢P0-12 doc.id Ğ£Ñé¡¢P0-13 ´íÎóÍÑÃô¡¢P0-14 body ÉÏÏŞ+/metrics /test ¼øÈ¨
+  - df5a776£ºP0-5 Persona Ç°ºó¶Ë×Ö¶ÎÓ³Éä£¨ºó¶Ë¼æÈİĞ£ÑéÆ÷+UI ×Ö¶Î£»Ç°¶Ë personaFromBackend£©¡¢P0-6 _io ËÄÎóÓÃµã to_thread ĞŞ¸´
+  - Ç°¶ËÅú´Î£ºpersona shape Ó³Éä½ÓÈë personaApi.get¡¢SSE ¹Ò½ÓÒì²½»¯£¨AgentPanel/ExportPage + sse.ts£©¡¢ÏÂÔØ¸Ä axios blob ´øÆ¾¾İ¡¢pagehide/²¨ĞÎÂã fetch ²¹ Authorization¡¢cw:unauthorized È«¾Ö¼àÌı¡¢¶Ë¿ÚÍ³Ò» 8080£¨client/settingsStore/URL builders/.env.example/AGENTS.md£©¡¢integration.spec ÒÆ³öÄ¬ÈÏ E2E + ĞÂ½Å±¾ test:e2e:integration
+- »Ø¹éÑéÖ¤£ººó¶Ë pytest 1005/1005 ? ¡¤ Ç°¶Ë 261/261 ? ¡¤ typecheck ? ¡¤ build ? ¡¤ hermetic E2E 45/45 ?
+
+### ´ı°ì
+P1 ÎÄµµ¶ÔÕË ¡ú P3 ÕËºÅ¹ÜÀí£¨Server 3A + Ö÷ÏîÄ¿ 3B£©¡ú P4 ÊĞ³¡ ¡ú P5 ¡ú P6/P7 ¡ú P8 ¡ú P9 ¡ú P10
