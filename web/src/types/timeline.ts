@@ -119,6 +119,8 @@ export interface Track {
   clips: Clip[];
   locked: boolean;
   muted: boolean;
+  /** M7: 隐藏轨道（时间轴与预览均跳过渲染） */
+  hidden?: boolean;
 }
 
 /** Complete timeline — unified format for Agent output and editor */

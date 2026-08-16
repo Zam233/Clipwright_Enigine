@@ -20,6 +20,7 @@ interface TimelineState {
   reorderTrack: (trackId: string, newIndex: number) => void;
   toggleTrackLock: (trackId: string) => void;
   toggleTrackMute: (trackId: string) => void;
+  toggleTrackHidden: (trackId: string) => void; // M7
   renameTrack: (trackId: string, name: string) => void;
 
   // Clip actions
@@ -161,6 +162,17 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
         ...state.timeline,
         tracks: state.timeline.tracks.map((t) =>
           t.id === trackId ? { ...t, muted: !t.muted } : t,
+        ),
+      },
+      isDirty: true,
+    })),
+
+  toggleTrackHidden: (trackId) => // M7: 轨道隐藏/独显
+    set((state) => ({
+      timeline: {
+        ...state.timeline,
+        tracks: state.timeline.tracks.map((t) =>
+          t.id === trackId ? { ...t, hidden: !t.hidden } : t,
         ),
       },
       isDirty: true,

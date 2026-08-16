@@ -13,7 +13,7 @@ import { PluginPanel } from './PluginPanel';
 import type { Asset, MaterialSearchResult } from '@/types/api';
 import type { MaterialAsset } from '@/services/api/asset';
 import type { ClipKind } from '@/types/timeline';
-import { Sparkles, FolderOpen, History, Upload, Search, Plus, Mic, Puzzle, X, Heart, Check, Info } from 'lucide-react';
+import { Sparkles, FolderOpen, History, Upload, Search, Plus, Mic, Puzzle, X, Heart, Check, Info, Trash2 } from 'lucide-react';
 
 type Tab = 'ai' | 'library' | 'history' | 'dub' | 'plugins';
 
@@ -62,6 +62,17 @@ export function AssetPanel() {
 
   // Load on mount + reload on project change (refreshCounter bump)
   useEffect(() => { loadAssets(); }, [loadAssets, refreshCounter]);
+
+  // M9: 素材删除（移除素材库条目；离线时仅本地移除）
+  const handleDeleteAsset = async (asset: Asset) => {
+    if (!window.confirm(`从素材库移除「${asset.filename || asset.id}」？（原始文件保留）`)) return;
+    try {
+      await assetApi.remove(asset.id, projectId ?? undefined);
+    } catch {
+      /* 离线/后端不可达：仅本地移除 */
+    }
+    setAssets(useAssetStore.getState().assets.filter((a) => a.id !== asset.id));
+  };
 
   const handleUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -214,7 +225,8 @@ export function AssetPanel() {
               <div className="grid grid-cols-2 gap-2">
                 {(activeTab === 'library' ? filtered : history).map((asset) => (
                   <AssetCard key={asset.id} asset={asset}
-                    onAdd={(opts) => addToTimeline(asset, opts)} />
+                    onAdd={(opts) => addToTimeline(asset, opts)}
+                    onDelete={handleDeleteAsset} />
                 ))}
               </div>
             )}
@@ -228,7 +240,11 @@ export function AssetPanel() {
   );
 }
 
-export const AssetCard = memo(function AssetCard({ asset, onAdd }: { asset: Asset; onAdd: (opts?: { ripple?: boolean }) => void }) {
+export const AssetCard = memo(function AssetCard({ asset, onAdd, onDelete }: {
+  asset: Asset;
+  onAdd: (opts?: { ripple?: boolean }) => void;
+  onDelete?: (asset: Asset) => void; // M9
+}) {
   const kind = normalizeClipKind(asset.kind);
   const kindColor = kind === 'video' ? '#4F8CFF' : kind === 'audio' ? '#34D399' : kind === 'text' ? '#FBBF24' : '#A855F7';
   const [thumb, setThumb] = useState<string | null>(null);
@@ -301,6 +317,18 @@ export const AssetCard = memo(function AssetCard({ asset, onAdd }: { asset: Asse
         >
           <Plus className="w-4 h-4" />
         </button>
+        {/* M9: 删除素材（保留原始文件，仅移除素材库条目与软链接） */}
+        {onDelete && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(asset); }}
+            className="absolute top-1 right-1 w-7 h-7 rounded-cw-full bg-black/60 text-white flex items-center justify-center
+              opacity-0 group-hover:opacity-100 transition-opacity duration-short3 pointer-events-auto cursor-pointer hover:bg-error"
+            title="从素材库移除"
+            aria-label="从素材库移除"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
       <div className="px-2 py-1.5">
         <p className="text-label-sm text-on-surface truncate">{asset.filename}</p>

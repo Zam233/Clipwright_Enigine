@@ -174,6 +174,7 @@ export class TimelineEngine {
     } else {
       const isMoving = this.drag.mode === 'move-clip';
       for (let i = 0; i < tracks.length; i++) {
+        if (tracks[i].hidden) continue; // M7: 隐藏轨道不渲染
         for (const clip of tracks[i].clips) {
           const isDragged = isMoving && this.drag.origClips.has(clip.id);
           if (isDragged) continue; // draw ghosts after, on top

@@ -269,6 +269,7 @@ export function PreviewPanel() {
       // 合成顺序：轨道 index 升序，低 index 先画（底层），高 index 最后（顶层）。
       const sorted = orderTracksForComposite(tl.tracks);
       for (const track of sorted) {
+        if (track.hidden) continue; // M7: 隐藏轨道不参与预览合成
         if (track.muted && (track.kind === 'audio' || track.kind === 'waveform')) continue;
         for (const clip of track.clips) {
           if (t < clip.start_sec || t >= clip.start_sec + clip.duration_sec) continue;

@@ -25,6 +25,7 @@ export function ProjectsPage() {
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null); // null=全部, ''=未分组, else name
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [sortBy, setSortBy] = useState<'updated' | 'name'>('updated'); // A1
 
   const [newFolderPrompt, setNewFolderPrompt] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
@@ -86,8 +87,15 @@ export function ProjectsPage() {
       const q = search.trim().toLowerCase();
       list = list.filter((p) => p.name.toLowerCase().includes(q) || p.type.toLowerCase().includes(q));
     }
-    return list;
-  }, [projects, selectedFolder, selectedTag, search]);
+    // A1: 排序（最近编辑默认 / 名称）
+    const arr = [...list];
+    if (sortBy === 'name') {
+      arr.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+    } else {
+      arr.sort((a, b) => String(b.edited ?? '').localeCompare(String(a.edited ?? '')));
+    }
+    return arr;
+  }, [projects, selectedFolder, selectedTag, search, sortBy]);
 
   /* ── actions ───────────────────────────────────────── */
   const handleOpen = (proj: ProjectCardData) => {
@@ -261,6 +269,16 @@ export function ProjectsPage() {
                 </button>
               )}
             </div>
+            {/* A1: 排序 */}
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as 'updated' | 'name')}
+              className="bg-surface-container border border-outline-variant/30 rounded-cw-sm px-2 py-1.5 text-caption text-on-surface outline-none cursor-pointer"
+              aria-label="排序方式"
+            >
+              <option value="updated">最近编辑</option>
+              <option value="name">名称</option>
+            </select>
           </div>
 
           {/* project grid */}

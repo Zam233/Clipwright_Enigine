@@ -382,6 +382,13 @@ export function useGlobalKeybindings() {
         handler: toolRazor },
       { id: 'tool-range', combo: 'r', label: '范围选择 (R)', category: '工具',
         handler: toolRange },
+      // M10: 吸附切换快捷键（Alt+S，与 Ctrl+S 保存不冲突）
+      { id: 'toggle-snap', combo: 'alt+s', label: '切换吸附 (Alt+S)', category: '时间轴',
+        handler: () => {
+          const s = useSettingsStore.getState();
+          s.setSnapEnabled(!s.snapEnabled);
+        },
+      },
       { id: 'zoom-fit', combo: 'f', label: '跳至选中片段', category: '时间轴',
         handler: () => {
           const sel = useSelectionStore.getState().selectedClipIds;

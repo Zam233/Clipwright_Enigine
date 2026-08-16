@@ -12,7 +12,7 @@ import { TRACK_COLORS } from '@/types/timeline';
 import {
   Magnet, Plus, ZoomIn, ZoomOut, Maximize2, Trash2, Scissors, ChevronsLeft,
   Layers, Lock, LockOpen, Volume2, VolumeX, ArrowUp, ArrowDown, X, Flag, FlagOff,
-  Grid3x3,
+  Grid3x3, Eye, EyeOff,
 } from 'lucide-react';
 import { useSettingsStore } from '@/stores/settingsStore';
 
@@ -41,6 +41,9 @@ export function TimelinePanel() {
   const snapGridSec = useSettingsStore((s) => s.snapGridSec);
   const currentTimeSec = usePreviewStore((s) => s.currentTimeSec);
   const fps = usePreviewStore((s) => s.fps);
+  const setMarkerIn = usePreviewStore((s) => s.setMarkerIn);
+  const setMarkerOut = usePreviewStore((s) => s.setMarkerOut);
+  const setLoopRegion = usePreviewStore((s) => s.setLoopRegion);
   const [trackMgrOpen, setTrackMgrOpen] = useState(false);
 
   // Instantiate engine
@@ -264,6 +267,29 @@ export function TimelinePanel() {
           </button>
         </Tooltip>
 
+        {/* M12: In/Out 区间播放按钮 */}
+        <Tooltip content="设置入点 (I)">
+          <button onClick={() => setMarkerIn()}
+            className="p-1.5 rounded-cw-xs text-on-surface-variant hover:text-primary transition-colors cursor-pointer"
+            aria-label="设置入点">
+            <span className="w-3 h-3 rounded-sm bg-track-text inline-block" />
+          </button>
+        </Tooltip>
+        <Tooltip content="设置出点 (O)">
+          <button onClick={() => setMarkerOut()}
+            className="p-1.5 rounded-cw-xs text-on-surface-variant hover:text-primary transition-colors cursor-pointer"
+            aria-label="设置出点">
+            <span className="w-3 h-3 rounded-sm bg-track-text/50 inline-block" />
+          </button>
+        </Tooltip>
+        <Tooltip content="清除区间">
+          <button onClick={() => setLoopRegion(null)}
+            className="p-1.5 rounded-cw-xs text-on-surface-variant hover:text-error transition-colors cursor-pointer"
+            aria-label="清除区间">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </Tooltip>
+
         <div className="flex-1" />
 
         {/* Timecode readout */}
@@ -379,6 +405,7 @@ function TrackManagerDropdown({ onClose }: { onClose: () => void }) {
   const tracks = useTimelineStore((s) => s.timeline.tracks);
   const toggleTrackLock = useTimelineStore((s) => s.toggleTrackLock);
   const toggleTrackMute = useTimelineStore((s) => s.toggleTrackMute);
+  const toggleTrackHidden = useTimelineStore((s) => s.toggleTrackHidden); // M7
   const reorderTrack = useTimelineStore((s) => s.reorderTrack);
   const removeTrack = useTimelineStore((s) => s.removeTrack);
 
@@ -422,6 +449,12 @@ function TrackManagerDropdown({ onClose }: { onClose: () => void }) {
                   className={cn('p-1 rounded-cw-xs transition-colors cursor-pointer',
                     track.muted ? 'text-error' : 'text-on-surface-variant/50 hover:text-on-surface')}>
                   {track.muted ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+                </button>
+                {/* M7: 隐藏/独显 */}
+                <button onClick={() => toggleTrackHidden(track.id)} title={track.hidden ? '显示轨道' : '隐藏轨道'}
+                  className={cn('p-1 rounded-cw-xs transition-colors cursor-pointer',
+                    track.hidden ? 'text-primary' : 'text-on-surface-variant/50 hover:text-on-surface')}>
+                  {track.hidden ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
                 </button>
                 <button onClick={() => reorderTrack(track.id, i - 1)} disabled={i === 0} title="上移"
                   className="p-1 rounded-cw-xs text-on-surface-variant/50 hover:text-on-surface disabled:opacity-20 transition-colors cursor-pointer">

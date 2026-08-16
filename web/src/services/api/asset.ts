@@ -96,6 +96,14 @@ export const assetApi = {
     return data;
   },
 
+  /** M9: 从素材库移除（仅移除条目与软链接，保留原始文件） */
+  async remove(assetId: string, projectId?: string) {
+    const { data } = await getApiClient().delete(`/api/asset/${assetId}`, {
+      params: { project_id: projectId || '' },
+    });
+    return data;
+  },
+
   /** Search materials (semantic) */
   async searchMaterials(request: MaterialSearchRequest): Promise<MaterialSearchResult[]> {
     const params: Record<string, string> = { query: request.query };
