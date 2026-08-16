@@ -321,6 +321,8 @@ function RequirementsView() {
         sid,
         st.personaId ?? 'default',
         st.pluginId ?? 'knowledge_longform',
+        // P8: dry-run 预览模式 — 只生成粗剪时间线，跳过动画/音频/质检
+        { dry_run: st.dryRun },
       ) as { pipeline_id?: string };
       if (res.pipeline_id) {
         // 设置 pipelineId + 运行相位，BottomBar 的 effect 会自动挂接 SSE 追踪

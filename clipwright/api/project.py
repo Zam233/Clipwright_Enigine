@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import io
+import json
 import threading
+import zipfile
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from clipwright.authz import current_user_id, enforce_owner, filter_by_owner
@@ -232,6 +237,53 @@ async def purge_project(project_id: str, request: Request) -> dict[str, Any]:
     from clipwright import audit
     audit.record("project_purge", current_user_id(request), {"project_id": project_id})
     return {"status": "purged", "id": project_id}
+
+
+@router.get("/{project_id}/archive")
+async def archive_project(project_id: str, request: Request) -> StreamingResponse:
+    """P8: 项目归档 zip 导出 — project.json + 时间线引用的本地媒体文件打包。"""
+    data = _load_owned(request, project_id)
+    name = (data.get("name") or project_id).strip() or project_id
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        # 1. project.json（含 timeline/agent_state）
+        zf.writestr(f"{project_id}/project.json",
+                    json.dumps(data, ensure_ascii=False, default=str, indent=2))
+        # 2. 时间线引用的本地媒体（去重 + 白名单校验 + 存在性）
+        seen: set[str] = set()
+        timeline = data.get("timeline") or {}
+        for track in timeline.get("tracks", []):
+            for clip in (track.get("clips") or []):
+                path = (clip or {}).get("asset_id") or ""
+                if not path or path in seen:
+                    continue
+                seen.add(path)
+                p = Path(path)
+                try:
+                    from clipwright.security import assert_allowed_path
+                    assert_allowed_path(p)
+                except Exception:
+                    continue  # 白名单外路径不入归档（防路径穿越）
+                if p.is_file():
+                    # 媒体文件名做 ASCII 安全处理（zip 头在 latin-1 下可能炸 CJK 文件名）
+                    safe_media = "".join(
+                        c if (c.isalnum() or c in "._-") else "_" for c in p.name
+                    )[:80] or "media"
+                    zf.write(p, arcname=f"{project_id}/media/{safe_media}")
+
+    buf.seek(0)
+    from urllib.parse import quote
+    safe_name = "".join(c for c in name if c.isalnum() or c in "-_.")[:60] or "project"
+    # RFC 5987: 文件名用 UTF-8 百分号编码，避免 CJK 在 latin-1 header 中报错
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition":
+                f"attachment; filename=\"project.zip\"; filename*=UTF-8''{quote(safe_name + '.zip')}",
+        },
+    )
 
 
 @router.post("/{project_id}/duplicate")

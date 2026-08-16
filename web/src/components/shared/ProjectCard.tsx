@@ -27,6 +27,7 @@ export const ProjectCard = memo(function ProjectCard({
   onRemoveTag,
   onDuplicate,
   onRefreshThumbnail,
+  onArchive,
   folders,
   mode = 'full',
 }: {
@@ -39,6 +40,8 @@ export const ProjectCard = memo(function ProjectCard({
   onRemoveTag?: (tag: string) => void;
   onDuplicate?: () => void;
   onRefreshThumbnail?: () => void;
+  /** P8: 导出项目归档 zip */
+  onArchive?: () => void;
   folders?: string[];
   mode?: 'simple' | 'full';
 }) {
@@ -160,6 +163,9 @@ export const ProjectCard = memo(function ProjectCard({
               }} />
               <MenuItem label="重新生成封面" onClick={() => { onRefreshThumbnail?.(); setMenuOpen(false); }} />
               <MenuItem label="创建副本" onClick={() => { onDuplicate?.(); setMenuOpen(false); }} />
+              {onArchive && (
+                <MenuItem label="导出归档" onClick={() => { onArchive(); setMenuOpen(false); }} />
+              )}
               <div className="border-t border-outline-variant/20" />
               <MenuItem label="删除" danger onClick={() => { onDelete(); setMenuOpen(false); }} />
             </div>

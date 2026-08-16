@@ -49,6 +49,21 @@ export const projectApi = {
     return data;
   },
 
+  /** P8: 项目归档 zip 下载（project.json + 时间线引用的本地媒体） */
+  async archive(projectId: string, projectName = 'project') {
+    const resp = await getApiClient().get(`/api/project/${projectId}/archive`, {
+      responseType: 'blob',
+    });
+    const url = URL.createObjectURL(resp.data as Blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${projectName || projectId}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  },
+
   /** Delete a project */
   async remove(projectId: string) {
     const { data } = await getApiClient().delete(`/api/project/${projectId}`);

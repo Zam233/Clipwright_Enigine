@@ -25,6 +25,8 @@ interface ProjectState {
   requirementsAudioDuration: number;
   materialSourceIds: string[];
   dubSegments: Array<{ start: number; end: number; text: string }> | null;
+  /** P8: dry-run 预览模式 — 管线只生成粗剪时间线，不执行动画/音频/质检 */
+  dryRun: boolean;
 
   // Actions
   setProjectId: (id: string | null) => void;
@@ -48,6 +50,7 @@ interface ProjectState {
   setRequirementsAudioDuration: (v: number) => void;
   setMaterialSourceIds: (ids: string[]) => void;
   setDubSegments: (segments: Array<{ start: number; end: number; text: string }> | null) => void;
+  setDryRun: (v: boolean) => void;
   resetProject: () => void;
 }
 
@@ -75,6 +78,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
   requirementsAudioDuration: 0,
   materialSourceIds: [],
   dubSegments: null,
+  dryRun: false,
 
   setProjectId: (id) => set({ projectId: id }),
   setProjectName: (name) => set({ projectName: name }),
@@ -97,6 +101,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
   setRequirementsAudioDuration: (v) => set({ requirementsAudioDuration: v }),
   setMaterialSourceIds: (ids) => set({ materialSourceIds: ids }),
   setDubSegments: (segments) => set({ dubSegments: segments }),
+  setDryRun: (v) => set({ dryRun: v }),
   resetProject: () =>
     set({
       projectId: null,
@@ -119,5 +124,6 @@ export const useProjectStore = create<ProjectState>((set) => ({
       requirementsAudioDuration: 0,
       materialSourceIds: [],
       dubSegments: null,
+      dryRun: false,
     }),
 }));

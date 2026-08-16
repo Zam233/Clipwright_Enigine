@@ -87,6 +87,9 @@ class Settings(BaseSettings):
     account_jwt_secret: str = ""   # 共享 JWT 密钥（jwt 模式必填，与 Server 一致）
     account_jwt_algorithm: str = "HS256"
 
+    # --- Webhook（P8: secret 落盘加密密钥；缺省时从 account_jwt_secret 派生）---
+    webhook_secret_key: str = ""   # Fernet key (base64 urlsafe, 32 bytes)；空则用 jwt secret 派生
+
     # --- 速率限制（P5-B2，内存滑动窗口；默认关闭）---
     rate_limit_enabled: bool = False
     rate_limit_window_sec: float = 60.0

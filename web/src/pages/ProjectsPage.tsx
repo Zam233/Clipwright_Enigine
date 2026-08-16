@@ -208,6 +208,16 @@ export function ProjectsPage() {
     } catch { toast('复制项目失败', 'error'); }
   };
 
+  // P8: 导出项目归档 zip
+  const handleArchive = async (proj: ProjectCardData) => {
+    try {
+      await projectApi.archive(proj.id, proj.name);
+      toast(`已导出归档「${proj.name}」`, 'success');
+    } catch {
+      toast('导出归档失败（后端离线）', 'error');
+    }
+  };
+
   const handleRefreshThumbnail = (proj: ProjectCardData) => {
     setProjects((prev) => prev.map((p) =>
       p.id === proj.id ? { ...p, thumbnail: projectApi.refreshThumbnailUrl(p.id) } : p,
@@ -429,6 +439,7 @@ export function ProjectsPage() {
                   onRemoveTag={(tag) => handleRemoveTag(proj, tag)}
                   onDuplicate={() => handleDuplicate(proj)}
                   onRefreshThumbnail={() => handleRefreshThumbnail(proj)}
+                  onArchive={() => handleArchive(proj)}
                 />
               ))}
             </div>

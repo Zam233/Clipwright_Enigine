@@ -160,6 +160,21 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
             result_dict = state.model_dump(mode="json")
             _pipeline_results[pipeline_id] = result_dict
             add_event(pipeline_id, "system", "done", f"管线完成: {state.status}")
+            # P8: webhook 事件接线 — 管线完成/失败通知
+            ok = getattr(state, "status", None) is not None and str(getattr(state, "status", "")).lower() in ("completed", "pass")
+            try:
+                from clipwright.api.webhook import dispatch_event
+                await dispatch_event(
+                    "pipeline.completed" if ok else "pipeline.failed",
+                    {
+                        "pipeline_id": pipeline_id,
+                        "topic": request.topic,
+                        "persona_id": request.persona_id,
+                        "status": str(getattr(state, "status", "")),
+                    },
+                )
+            except Exception as we:
+                logger.warning("pipeline webhook dispatch failed: %s", we)
         except asyncio.CancelledError:
             # C9: 取消即时性 — 任务被外部 cancel，写入终态并标记已取消（不重新抛出）
             logger.info("管线任务已取消: %s", pipeline_id)
@@ -173,6 +188,15 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
             add_event(pipeline_id, "system", "error", f"管线失败: {e}")
             # 即使异常也写一个结果，让前端能查到错误
             _pipeline_results[pipeline_id] = {"status": "failed", "error": str(e), "pipeline_id": pipeline_id}
+            try:
+                from clipwright.api.webhook import dispatch_event
+                await dispatch_event("pipeline.failed", {
+                    "pipeline_id": pipeline_id,
+                    "topic": request.topic,
+                    "error": str(e)[:300],
+                })
+            except Exception as we:
+                logger.warning("pipeline webhook dispatch failed: %s", we)
         finally:
             # 60秒后清理内存，给前端足够时间轮询
             async def _cleanup():
@@ -262,7 +286,6 @@ async def get_pipeline_result(pipeline_id: str) -> dict:
     result = _pipeline_results.get(pipeline_id)
     if result is not None:
         return result
-
     # 没有结果 → 检查是否还在运行
     task = _running_pipelines.get(pipeline_id)
     if task is None:
@@ -306,6 +329,53 @@ async def get_pipeline_status(pipeline_id: str, request: Request) -> dict:
     if get_all_events(pipeline_id):
         return {"pipeline_id": pipeline_id, "status": "unknown", "has_result": False}
     raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found")
+
+
+@router.get("/diagnostics/{pipeline_id}")
+async def pipeline_diagnostics(pipeline_id: str, request: Request) -> dict:
+    """P8: 失败诊断报告 — 失败 run 生成结构化诊断（阶段/原因/建议）。"""
+    from clipwright.services.pipeline_v2 import PipelineOrchestratorV2
+
+    _enforce_pipeline_owner(request, pipeline_id)
+    result = _pipeline_results.get(pipeline_id)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found or still running")
+
+    status = result.get("status", "")
+    error = result.get("error") or ""
+    steps = result.get("steps") or []
+
+    # 定位失败步骤
+    failed_step: dict | None = None
+    for s in steps:
+        if isinstance(s, dict) and s.get("status") == "failed":
+            failed_step = s
+            break
+
+    category = PipelineOrchestratorV2._categorize_error(error or (failed_step or {}).get("error") or "")
+    suggestions: list[str] = []
+    if category == "transient":
+        suggestions.append("可重试：等待网络恢复后重跑，或对失败 Agent 单独重试（POST /retry/{id}/{agent}）")
+    elif category == "fatal":
+        suggestions.append("系统级故障：检查 MongoDB/磁盘/内存，修复后重跑")
+    else:
+        suggestions.append("参数/数据问题：检查 Persona、选题与素材路径配置")
+    if failed_step:
+        suggestions.append(f"失败阶段：{failed_step.get('agent_name', '?')}")
+
+    return {
+        "pipeline_id": pipeline_id,
+        "status": status,
+        "error": error[:500],
+        "error_category": category,
+        "failed_step": failed_step,
+        "steps_summary": [
+            {"agent_name": s.get("agent_name"), "status": s.get("status"),
+             "error": (s.get("error") or "")[:200]}
+            for s in steps if isinstance(s, dict)
+        ],
+        "suggestions": suggestions,
+    }
 
 
 @router.post("/retry/{pipeline_id}/{agent_name}")

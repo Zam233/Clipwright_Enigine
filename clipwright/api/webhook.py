@@ -19,6 +19,10 @@ from pydantic import BaseModel, Field
 
 from clipwright.config import TIME_ZONE, logger
 from clipwright.paths import anchor
+from clipwright.services.webhook_crypto import (
+    encrypt_secret as _encrypt,
+    decrypt_secret as _decrypt,
+)
 
 router = APIRouter(prefix="/api/webhook", tags=["webhook"])
 
@@ -104,8 +108,13 @@ async def list_supported_events() -> dict:
 
 @router.get("/list", response_model=list[WebhookConfig])
 async def list_webhooks() -> list[WebhookConfig]:
-    """列出所有已注册的 Webhook。"""
-    return [WebhookConfig(**w) for w in _webhooks]
+    """列出所有已注册的 Webhook（secret 掩码，不回显）。"""
+    out = []
+    for w in _webhooks:
+        masked = dict(w)
+        masked["secret"] = "******" if masked.get("secret") else ""
+        out.append(WebhookConfig(**masked))
+    return out
 
 
 @router.post("/register", response_model=WebhookConfig)
@@ -129,7 +138,8 @@ async def register_webhook(req: RegisterWebhookRequest) -> WebhookConfig:
         "webhook_id": f"wh_{uuid.uuid4().hex[:10]}",
         "url": req.url,
         "events": req.events,
-        "secret": req.secret,
+        # P8/P2-7: secret 加密落盘（不存明文）
+        "secret": _encrypt(req.secret),
         "active": True,
         "created_at": datetime.now(tz=TIME_ZONE).isoformat(),
         "description": req.description,
@@ -138,7 +148,10 @@ async def register_webhook(req: RegisterWebhookRequest) -> WebhookConfig:
     _save_webhooks()
 
     logger.info("Webhook 已注册: %s → %s (%s)", webhook["webhook_id"], req.url, req.events)
-    return WebhookConfig(**webhook)
+    # 回显时不泄露明文 secret
+    out = dict(webhook)
+    out["secret"] = ""
+    return WebhookConfig(**out)
 
 
 @router.delete("/{webhook_id}")
@@ -238,8 +251,10 @@ async def dispatch_event(event: str, data: dict[str, Any]) -> int:
             headers: dict[str, str] = {}
             if webhook.get("secret"):
                 body = json.dumps(payload, ensure_ascii=False)
+                # P8/P2-7: 投递时解密存储的 secret
+                secret = _decrypt(webhook["secret"])
                 sig = hmac.new(
-                    webhook["secret"].encode(), body.encode(), hashlib.sha256
+                    secret.encode(), body.encode(), hashlib.sha256
                 ).hexdigest()
                 headers["X-ClipWright-Signature"] = f"sha256={sig}"
 

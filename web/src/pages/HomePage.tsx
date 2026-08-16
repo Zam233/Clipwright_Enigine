@@ -119,6 +119,8 @@ export function HomePage() {
   const [launchErr, setLaunchErr] = useState<string | null>(null);
   // A3: 模板画廊弹层
   const [templateGalleryOpen, setTemplateGalleryOpen] = useState(false);
+  // P8: dry-run 预览模式（只生成粗剪时间线）
+  const [dryRun, setDryRun] = useState(false);
   const [materialSources, setMaterialSources] = useState<MatSource[]>([]);
   const [selectedSources, setSelectedSources] = useState<string[]>([]);
   const audioInputRef = useRef<HTMLInputElement>(null);
@@ -298,6 +300,7 @@ export function HomePage() {
     st.setAudioPath(audio?.path || '');
     st.setAudioDurationSec(audio?.duration || 0);
     st.setMaterialSourceIds(selectedSources);
+    st.setDryRun(dryRun); // P8: 传递 dry-run 预览模式
     try {
       const prefs = JSON.parse(localStorage.getItem('clipwright_voice_prefs') || '{}');
       if (prefs.voiceId) st.setVoiceId(prefs.voiceId);
@@ -747,6 +750,16 @@ export function HomePage() {
                         从模板开始
                       </Button>
                     </div>
+                    {/* P8: dry-run 预览模式开关 */}
+                    <label className="mt-3 flex items-center gap-2 text-label-sm text-on-surface-variant cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={dryRun}
+                        onChange={(e) => setDryRun(e.target.checked)}
+                        className="accent-primary w-3.5 h-3.5"
+                      />
+                      仅预览（dry-run）— 只生成粗剪时间线，跳过动画/音频/质检，快速出规划
+                    </label>
                   </div>
                 </div>
               </div>

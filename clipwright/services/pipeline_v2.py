@@ -637,6 +637,30 @@ class PipelineOrchestratorV2:
 
         # P2: DAG 自动拓扑排序执行
         for group_idx, group in enumerate(AgentDAG.get_execution_plan()):
+            # P8: dry-run 预览模式 — 只执行到 edit（粗剪时间线），
+            # 跳过 animation/audio/quality 组，快速出规划预览。
+            if request.dry_run and "edit" in group:
+                add_event(pid, "system", "info",
+                          "dry_run 模式：本组含 edit，完成粗剪后跳过动画/音频/质检")
+                for agent_name in group:
+                    if agent_name == "edit":
+                        input_data = self._build_input(
+                            agent_name, result_data, persona_config, plugin,
+                            extra_params=agent_context.extra_params,
+                        )
+                        tasks = {agent_name: self._run_agent(
+                            state, agent_name, input_data, agent_context, bus, tracer,
+                        )}
+                        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+                        for (name, _), result in zip(tasks.items(), results):
+                            if isinstance(result, Exception):
+                                add_event(pid, name, "error", f"{name} 异常: {str(result)[:200]}")
+                                continue
+                            result_data[name] = getattr(result, "result", {}) or {}
+                state.shared_data["dry_run"] = True
+                state.status = PipelineStatus.COMPLETED
+                add_event(pid, "system", "info", "dry_run 完成：已生成粗剪时间线预览")
+                return state
             logger.info("PipelineV2 执行组 [%d]: %s", group_idx, group)
             add_event(pid, "system", "info", f"执行组[{group_idx}]: {'+'.join(group)}")
 

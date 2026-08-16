@@ -190,6 +190,17 @@ class PipelineOrchestrator:
             timeline_data = step3.result.get("timeline")
             timeline = Timeline(**timeline_data) if timeline_data else None
 
+            # P8: dry_run 预览模式 — 只生成粗剪时间线（structure→edit），
+            # 不执行 animation/audio/quality（无需媒体与额外 LLM 成本），
+            # 供前端「仅预览规划」场景快速出片。
+            if request.dry_run:
+                state.shared_data["dry_run"] = True
+                state.shared_data["final_timeline"] = timeline_data
+                add_event(state.pipeline_id, "system", "info",
+                          "dry_run 模式：已生成粗剪时间线预览，跳过动画/音频/质检")
+                state.status = PipelineStatus.COMPLETED
+                return state
+
             # Animation Agent
             if timeline:
                 visual_config = persona_config.get("visual", {})

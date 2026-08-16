@@ -222,9 +222,31 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
             _render_queue[task_id]["status"] = "completed" if result.success else "failed"
             _render_queue[task_id]["progress"] = 100
             _render_queue[task_id]["output_path"] = str(out)
+            # P8: webhook 事件接线 — 渲染完成/失败通知
+            try:
+                from clipwright.api.webhook import dispatch_event
+                await dispatch_event(
+                    "render.completed" if result.success else "render.failed",
+                    {
+                        "task_id": task_id,
+                        "output_path": str(out),
+                        "success": result.success,
+                        "warnings": result.warnings or [],
+                    },
+                )
+            except Exception as we:
+                logger.warning("render webhook dispatch failed: %s", we)
         except Exception as e:
             _render_queue[task_id]["status"] = "failed"
             _render_queue[task_id]["result"] = {"error": _sanitize_detail(str(e))}
+            try:
+                from clipwright.api.webhook import dispatch_event
+                await dispatch_event("render.failed", {
+                    "task_id": task_id,
+                    "error": _sanitize_detail(str(e))[:300],
+                })
+            except Exception as we:
+                logger.warning("render webhook dispatch failed: %s", we)
         finally:
             # P5-B4: 终态同步 Mongo（含中断标记供重启恢复）
             try:

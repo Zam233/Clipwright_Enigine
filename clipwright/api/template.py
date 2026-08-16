@@ -67,6 +67,11 @@ class ApplyTemplateRequest(BaseModel):
     overrides: dict[str, Any] = Field(default_factory=dict, description="覆盖参数")
 
 
+class BatchApplyRequest(BaseModel):
+    """批量应用模板请求（P8: 批量选题生成）。"""
+    items: list[ApplyTemplateRequest] = Field(description="批量条目（每条 topic/overrides）")
+
+
 # ── API 端点 ───────────────────────────────────
 
 
@@ -207,6 +212,37 @@ async def apply_template(template_id: str, req: ApplyTemplateRequest) -> dict:
         "template_id": template_id,
         "timeline": new_timeline,
     }
+
+
+@router.post("/{template_id}/batch-apply")
+async def batch_apply_template(template_id: str, req: BatchApplyRequest) -> dict:
+    """P8: 批量选题生成 — 一次对多个选题/覆盖参数应用同一模板，返回多条时间线副本。"""
+    path = _TEMPLATES_DIR / f"{template_id}.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Template '{template_id}' not found")
+    if not req.items:
+        return {"status": "applied", "template_id": template_id, "results": []}
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    base = data.get("timeline", {})
+    results = []
+    for item in req.items:
+        new_timeline = copy.deepcopy(base)
+        if item.overrides:
+            for key, value in item.overrides.items():
+                if key in new_timeline:
+                    new_timeline[key] = value
+        new_timeline["_meta"] = {
+            "from_template": template_id,
+            "topic": item.topic,
+            "applied_at": datetime.now(tz=TIME_ZONE).isoformat(),
+        }
+        results.append({
+            "topic": item.topic,
+            "timeline": new_timeline,
+        })
+    logger.info("批量应用模板: %s × %d", template_id, len(results))
+    return {"status": "applied", "template_id": template_id, "results": results}
 
 
 # ── 辅助函数 ───────────────────────────────────

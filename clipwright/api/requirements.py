@@ -247,6 +247,8 @@ async def proceed_to_pipeline(req: ProceedRequest) -> dict:
             "pipeline_timeout_sec": _pipeline_timeout,
             **req.extra_params,
         },
+        # P8: dry-run 预览模式（仅生成粗剪时间线，跳过动画/音频/质检）
+        dry_run=bool(req.extra_params.get("dry_run", False)),
         use_v2=True,
     )
     add_event(pipeline_id, "system", "info",

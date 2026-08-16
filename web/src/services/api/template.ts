@@ -46,4 +46,14 @@ export const templateApi = {
     const { data } = await getApiClient().post<ApplyTemplateResult>(`/api/template/${id}/apply`);
     return data;
   },
+
+  /** P8: 批量应用模板（批量选题生成）— 一次对多个选题生成时间线副本 */
+  async batchApply(id: string, items: { topic: string; overrides?: Record<string, unknown> }[]): Promise<{
+    status: string;
+    template_id: string;
+    results: { topic: string; timeline: Record<string, unknown> }[];
+  }> {
+    const { data } = await getApiClient().post(`/api/template/${id}/batch-apply`, { items });
+    return data;
+  },
 };
