@@ -14,6 +14,10 @@ Structure → Material → Edit → Animation → Audio → Quality → Render
 
 ### v2（动态路由 + DAG 并行执行）
 
+> ⚠ 对账注记（2026-08）：执行组[3] 的 animation/audio 并行在 `_DEPS` 中
+> `audio` 依赖 `animation`（防并行覆盖时间轴），**当前实为串行**；
+> 并行机制本身（asyncio.gather）已实现，待时间轴合并改不可变后可启用。
+
 ```plaintext
 执行组 [0] ─→ structure
 执行组 [1] ─→ material
@@ -102,13 +106,15 @@ Agent 之间通过 `AgentBus` 交换信息：
 | `get_messages(topic)` | 按主题获取消息 |
 | `set_demand(agent, demand)` | 声明需求 |
 | `get_demands()` | 获取所有 Agent 的需求 |
-| `route_decision(agent, status)` | 动态路由决策 |
+| `route_decision(agent, status)` | 动态路由决策（⚠ 未实现——当前为静态 DAG，见对账注记 2026-08） |
 
 ---
 
 ## 四、镜头意图系统
 
 每个 clip 标注 `ShotIntent`，指导剪辑决策：
+
+> ⚠ 对账注记（2026-08）：ShotIntent 镜头意图系统**尚未实现**（代码中仅 shot_params 时长参数），本章为规划稿。
 
 | 类型 | 说明 |
 |------|------|
@@ -124,6 +130,9 @@ Agent 之间通过 `AgentBus` 交换信息：
 ---
 
 ## 五、对话式编辑
+
+> ⚠ 对账注记（2026-08）：对话式编辑（EditSession + `/api/edit/session/{id}/chat`）**已删除**
+> （死代码 + 依赖 video_filter/text_design 占位工具）。能力由「时间轴手动编辑 + Agent 选片段返工」替代。
 
 通过自然语言修改已生成的视频：
 
@@ -149,7 +158,7 @@ Agent 之间通过 `AgentBus` 交换信息：
 - Agent 成功后自动重置熔断计数器
 
 ### 全局超时
-- 默认 900 秒（15 分钟），通过 `extra_params.pipeline_timeout_sec` 覆盖
+- 默认 1800 秒（30 分钟），通过 `extra_params.pipeline_timeout_sec` 覆盖（对账注记：原文档写 900s，实际实现为 1800s，已对齐）
 - 超时后管线标记为 FAILED，错误分类为 `transient`
 
 ### 错误分类
@@ -165,7 +174,7 @@ Agent 之间通过 `AgentBus` 交换信息：
 - SpanTracer 全调用树可观测性
 
 ### 任务队列
-- `TaskQueue` 信号量控制并发（默认 3）
+- `TaskQueue` 信号量控制并发（默认 3）——⚠ 对账注记：队列当前未接线到管线执行（规划 P8 接线），仅用于健康/指标统计
 - 每个任务内置超时（默认 900s）
 - 支持取消 pending 任务
 

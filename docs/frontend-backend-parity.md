@@ -26,7 +26,7 @@
 | 前缀 | 文件 | 数量 | 路由 |
 |---|---|---|---|
 | `/api/animation` | animation.py | 4 | GET `/list` · GET `/onscreen` · GET `/transitions` · GET `/get/{animation_id}` |
-| `/api/asset` | asset.py | 8 | POST `/upload` · GET `/list` · GET `/{asset_id}` · GET `/{asset_id}/file` · GET `/{asset_id}/thumbnail` · DELETE `/{asset_id}` · POST `/import-path` · POST `/import-url` |
+| `/api/asset` | asset.py | 9 | POST `/upload` · GET `/list` · GET `/by-path` · GET `/{asset_id}` · GET `/{asset_id}/file` · GET `/{asset_id}/thumbnail` · DELETE `/{asset_id}` · POST `/import-path` · POST `/import-url` |
 | `/api/persona/forge/chat` | chat_forge.py | 5 | POST `/start` · POST `/message` · POST `/knowledge` · POST `/commit` · GET `/state/{session_id}` |
 | `/api/edl` | edl.py | 4 | POST `/import/edl` · POST `/import/fcpxml` · POST `/export/edl` · POST `/export/fcpxml` |
 | `/api/fonts` | font.py | 4 | GET `/list` · GET `/default` · GET `/resolve` · POST `/clear-cache` |
@@ -42,7 +42,7 @@
 | `/api/proxy` | proxy.py | 2 | POST `/generate` · POST `/switch` |
 | `/api/persona`（RAG） | rag.py | 4 | POST `/{persona_id}/rag/query` · POST `/{persona_id}/rag/index` · GET `/{persona_id}/rag/status` · DELETE `/{persona_id}/rag/index` |
 | `/api/render` | render.py | 10 | POST `/queue` · GET `/queue/{task_id}` · GET `/queue/stream/{task_id}` · GET `/queue` · GET `/video` · GET `/download/{filename}` · GET `/presets` · POST `/start` · GET `/status/{render_id}` · GET `/thumbnail` |
-| `/api/requirements` | requirements.py | 7 | POST `/init` · POST `/chat` · POST `/chat/stream/{session_id}` · POST `/upload/{session_id}` · GET `/session/{session_id}` · GET `/plan/{session_id}` · POST `/proceed` |
+| `/api/requirements` | requirements.py | 8 | POST `/init` · POST `/edit` · POST `/chat` · POST `/chat/stream/{session_id}` · POST `/upload/{session_id}` · GET `/session/{session_id}` · GET `/plan/{session_id}` · POST `/proceed` |
 | `/api/skill` | skill.py | 2 | GET `/list` · POST `/execute` |
 | `/api/stt` | stt.py | 2 | POST `/transcribe` · POST `/align` |
 | `/api/subtitle` | subtitle.py | 4 | POST `/import` · POST `/export` · POST `/transcribe` · POST `/align` |
@@ -70,7 +70,7 @@
 | `project.ts` | `projectApi` / `healthApi` / `pluginApi` / `animationApi` / `skillApi` | 31 | `/api/project` + `/health` + `/api/plugin` + `/api/animation` + `/api/skill` |
 | `asset.ts` | `assetApi`（含 material 素材） | 7 | `/api/asset` + `/api/material`（search/sources/asset 详情） |
 | `render.ts` | `renderApi` | 10 | `/api/render`（10/10） |
-| `requirements.ts` | `requirementsApi` | 7 | `/api/requirements`（7/7） |
+| `requirements.ts` | `requirementsApi` | 8 | `/api/requirements`（8/8，含 /edit） |
 | `tool.ts` | `toolApi` | 3 | `/api/tool`（3/3） |
 | `voice.ts` | `voiceApi` | 7 | `/api/voice`（6/6 + URL helper） |
 | `font.ts` | `fontApi` | 4 | `/api/fonts`（4/4） |

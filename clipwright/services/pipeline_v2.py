@@ -1132,17 +1132,23 @@ class PipelineOrchestratorV2:
 
         - transient: 可重试（LLM 超时、网络波动）
         - permanent: 不可重试（参数错误、类型不匹配）
-        - fatal: 系统级（内存不足、数据库断开）
+        - fatal: 系统级（内存不足、数据库断开）——A7 落地（文档承诺 fatal 分类）
         """
         transient_patterns = ["timeout", "超时", "rate limit", "too many", "暂时", "retry",
                               "connection", "reset", "timed out"]
         permanent_patterns = ["not found", "unknown", "invalid", "type", "格式错误",
                               "NoneType", "AttributeError", "KeyError"]
+        fatal_patterns = ["memoryerror", "out of memory", "oom", "mongo", "not connected",
+                          "disk full", "磁盘", "database"]
+        lowered = error.lower()
         for p in transient_patterns:
-            if p in error.lower():
+            if p in lowered:
                 return "transient"
+        for p in fatal_patterns:
+            if p in lowered:
+                return "fatal"
         for p in permanent_patterns:
-            if p in error.lower():
+            if p in lowered:
                 return "permanent"
         return "permanent"
 

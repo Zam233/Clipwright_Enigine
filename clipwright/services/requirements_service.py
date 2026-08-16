@@ -7,9 +7,9 @@ Phase 1 加固：
 ・对话历史窗口管理（超长历史自动截断摘要）
 ・Session TTL 自动清理
 
-Phase 2 增强：
-・文件上传 → RAG 索引
-・SSE 流式推送 LLM 推理过程
+Phase 2 增强（对账注记 2026-08：以下两项均未实现，保留为规划）：
+・文件上传 → RAG 索引（当前仅文本提取 ≤5000 字符）
+・SSE 流式推送 LLM 推理过程（当前完整响应缓冲后一次性推送）
 """
 
 from __future__ import annotations

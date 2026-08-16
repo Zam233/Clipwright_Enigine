@@ -111,12 +111,15 @@ Agent 间通过 `AgentBus` 共享上下文。AnimationAgent 通过 `[逻辑动�
 POST   /api/pipeline/run                 # 管线 v1 (固定序列)
 POST   /api/pipeline/run-v2              # 管线 v2 (动态路由 + 并行 + 自愈)
 POST   /api/pipeline/run-async           # 异步管线 + SSE 追踪
-POST   /api/pipeline/submit              # 提交到队列
+POST   /api/pipeline/submit              # ⚠ 未实现（规划中）
 POST   /api/pipeline/retry/{id}/{agent}  # 重试 Agent
-POST   /api/pipeline/batch               # 批量管线
-POST   /api/pipeline/step/{agent}        # 单 Agent 执行
+POST   /api/pipeline/batch               # ⚠ 未实现（规划中，模板批量见 template.py 孤儿代码）
+POST   /api/pipeline/step/{agent}        # 单 Agent 执行（deprecated 语义：跑全管线取一步）
 GET    /api/pipeline/trace/stream/{id}   # SSE 实时追踪
 GET    /api/pipeline/result/{id}         # 异步结果查询
+GET    /api/pipeline/tasks               # ⚠ 未实现（规划中）
+GET    /api/pipeline/stats               # ⚠ 未实现（规划中）
+GET    /api/pipeline/llm-usage           # ⚠ 未实现（规划中）
 
 # 声音克隆与 TTS
 POST   /api/voice/upload                 # 上传音频 → data_uri
@@ -126,11 +129,11 @@ DELETE /api/voice/{db_id}                # 删除音色
 POST   /api/voice/synthesize             # 文字 → 语音
 POST   /api/voice/dub                    # 文案切分 + 逐段配音
 ```
-GET    /api/pipeline/tasks               # 任务列表
-GET    /api/pipeline/stats               # 管线统计
-GET    /api/pipeline/llm-usage           # LLM 用量统计
 
-# Render
+> ⚠ 对账注记（2026-08）：/api/pipeline/tasks、/stats、/llm-usage 三端点未实现，
+> 已并入上方 Pipeline 清单标注；/api/template/batch/{id}（下方）亦未实现。
+>
+> # Render
 POST   /api/render/start                 # 渲染
 POST   /api/render/queue                 # 队列渲染
 GET    /api/render/queue/{id}            # 查询渲染队列

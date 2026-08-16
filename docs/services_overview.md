@@ -48,7 +48,7 @@
 | 服务文件 | 说明 |
 |---------|------|
 | `trace.py` | 执行追踪（TTL/内存保护） |
-| `tracing_service.py` | SpanTracer（MongoDB 持久化全调用树） |
+| `tracing_service.py` | SpanTracer（⚠ 对账注记：内存实现 + cleanup 清空，MongoDB 持久化未实现，规划中） |
 | `log_stream.py` | 实时日志流 |
 | `llm_tracker.py` | LLM token 用量追踪 |
 

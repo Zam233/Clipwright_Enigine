@@ -30,18 +30,16 @@ from clipwright.tool.effects import (
     WatermarkTool,
 )
 from clipwright.tool.material import FrameValidatorTool, MaterialFilterTool
+from clipwright.tool.quality import (
+    AudioSilenceDetectTool,
+    BlackFrameDetectTool,
+    SubtitleOverflowCheckTool,
+)
 from clipwright.tool.registry import ToolRegistry
 from clipwright.tool.speed import SpeedRampTool
 from clipwright.tool.stabilize import VideoStabilizeTool
-from clipwright.tool.stubs import (
-    AudioSilenceDetectTool,
-    BlackFrameDetectTool,
-    SubtitleOverflowTool,
-    TextDesignTool,
-    VideoFilterTool,
-    VisionLLMTool,
-    WhisperTranscribeTool,
-)
+from clipwright.tool.stubs import VisionLLMTool
+from clipwright.tool.transcribe import WhisperTranscribeTool
 from clipwright.tool.voice import TextToSpeechTool, VoiceCloneTool
 from clipwright.tool.web_search_tool import WebFetchTool, WebSearchTool
 from clipwright.tool.subtitle import SubtitleBurnTool
@@ -70,7 +68,6 @@ def register_builtin_tools() -> None:
         VideoThumbnailTool(),
         VideoSpeedTool(),
         VideoBlurTool(),
-        VideoFilterTool(),
         MediaProbeTool(),
         # ── 音频 ──
         AudioExtractTool(),
@@ -92,7 +89,6 @@ def register_builtin_tools() -> None:
         # ── 文字 ──
         GenerateTextVideoTool(),
         SubtitleBurnTool(),
-        TextDesignTool(),
         TypewriterAnimationTool(),
         TrackingTextTool(),
         TextDiagramTool(),
@@ -102,7 +98,7 @@ def register_builtin_tools() -> None:
         # ── 质量 ──
         BlackFrameDetectTool(),
         AudioSilenceDetectTool(),
-        SubtitleOverflowTool(),
+        SubtitleOverflowCheckTool(),
         # ── 其他 ──
         SpeedRampTool(),
         ColorCorrectTool(),
@@ -133,7 +129,6 @@ __all__ = [
     "VideoThumbnailTool",
     "VideoSpeedTool",
     "VideoBlurTool",
-    "VideoFilterTool",
     "MediaProbeTool",
     # Audio
     "AudioExtractTool",
@@ -155,7 +150,6 @@ __all__ = [
     # Text
     "GenerateTextVideoTool",
     "SubtitleBurnTool",
-    "TextDesignTool",
     "TypewriterAnimationTool",
     "TrackingTextTool",
     "TextDiagramTool",
@@ -165,7 +159,7 @@ __all__ = [
     # Quality
     "BlackFrameDetectTool",
     "AudioSilenceDetectTool",
-    "SubtitleOverflowTool",
+    "SubtitleOverflowCheckTool",
     # Misc
     "SpeedRampTool",
     "ColorCorrectTool",

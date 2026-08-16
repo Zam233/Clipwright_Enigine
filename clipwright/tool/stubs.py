@@ -1,9 +1,13 @@
-"""占位工具（Stub Tools）— 声明接口但实现为占位或委托现有服务。
+"""视觉 LLM 工具（VisionLLMTool）— 真实实现。
 
-这些工具在文档中列出，对应功能由其他模块（services/ 等）提供，
-此处作为为 ToolRegistry 提供统一注册入口，使 Agent 可通过 Tool Calling 发现它们。
-
-实际功能待 Phase 2 深层集成后从占位切换为真实调用。
+P1 变更记录：本文件原含 6 个「占位实现返回假 SUCCESS」的 stub 工具，已按
+fix-and-feature-plan P1 处理：
+- frame_validator / black_frame_detect / audio_silence_detect / whisper_transcribe
+  → 已切换为真实实现注册（tool/material.py、tool/quality.py、tool/transcribe.py）；
+- video_filter / text_design → 无真实实现，已从 ToolRegistry 摘除
+  （其唯一调用链为已删除的对话式编辑死代码，能力由时间线+Agent 返工替代）；
+- subtitle_overflow → 切换为 tool/quality.py 的 SubtitleOverflowCheckTool（真实计算）。
+本文件仅保留真实实现的 VisionLLMTool。
 """
 
 from __future__ import annotations
@@ -19,99 +23,10 @@ from clipwright.tool.base import BaseTool
 logger = logging.getLogger("clipwright.tool.stubs")
 
 
-class VideoFilterTool(BaseTool):
-    """通用视频滤镜工具 — 亮度/对比度/锐化/色调等参数化调整。"""
-    name = "video_filter"
-    description = "通用视频滤镜：亮度/对比度/锐化/色调/旋转/翻转等参数化调整（占位）"
-    dependencies = ["ffmpeg"]
-
-    async def execute(self, **kwargs: Any) -> ToolExecResult:
-        return ToolExecResult(
-            status=ToolStatus.SUCCESS,
-            tool_name=self.name,
-            output={"applied": True, "params": kwargs},
-            warning="video_filter 为占位实现 — 委托 FFmpeg eq/hflip/vflip 等 filter（Phase 2 增强）",
-        )
-
-
-class TextDesignTool(BaseTool):
-    """文字设计工具 — 排版样式、字体、特效预设。"""
-    name = "text_design"
-    description = "文字设计/排版：字体选择、颜色渐变、描边、阴影、发光效果（占位）"
-    dependencies = []
-
-    async def execute(self, **kwargs: Any) -> ToolExecResult:
-        return ToolExecResult(
-            status=ToolStatus.SUCCESS,
-            tool_name=self.name,
-            output={"design": kwargs},
-            warning="text_design 为占位实现 — 委托 TextDiagramTool / TypewriterAnimationTool（Phase 2 增强）",
-        )
-
-
-class FrameValidatorTool(BaseTool):
-    """帧验证工具 — 检测黑帧、过曝帧、模糊帧、全白帧。"""
-    name = "frame_validator"
-    description = "帧验证：检测黑帧/过曝/模糊/全白帧，过滤不合格素材"
-    dependencies = ["ffmpeg"]
-
-    async def execute(self, **kwargs: Any) -> ToolExecResult:
-        return ToolExecResult(
-            status=ToolStatus.SUCCESS,
-            tool_name=self.name,
-            output={"valid": True, "checks": kwargs},
-            warning="frame_validator 为占位实现 — 委托 FFmpeg blackdetect/signalstats（Phase 2 增强）",
-        )
-
-
-class BlackFrameDetectTool(BaseTool):
-    """黑帧检测工具 — 检测视频中的黑屏/淡入淡出片段。"""
-    name = "black_frame_detect"
-    description = "黑帧检测：定位视频中的黑屏/淡入淡出片段（占位）"
-    dependencies = ["ffmpeg"]
-
-    async def execute(self, **kwargs: Any) -> ToolExecResult:
-        return ToolExecResult(
-            status=ToolStatus.SUCCESS,
-            tool_name=self.name,
-            output={"black_frames": [], "count": 0},
-            warning="black_frame_detect 为占位实现 — 委托 FFmpeg blackdetect filter（Phase 2 增强）",
-        )
-
-
-class AudioSilenceDetectTool(BaseTool):
-    """静音检测工具 — 检测音频中的静音段落。"""
-    name = "audio_silence_detect"
-    description = "静音检测：定位音频中的静音段落，返回起止时间和持续时长（占位）"
-    dependencies = ["ffmpeg"]
-
-    async def execute(self, **kwargs: Any) -> ToolExecResult:
-        return ToolExecResult(
-            status=ToolStatus.SUCCESS,
-            tool_name=self.name,
-            output={"silence_segments": [], "count": 0},
-            warning="audio_silence_detect 为占位实现 — 委托 FFmpeg silencedetect filter（Phase 2 增强）",
-        )
-
-
-class SubtitleOverflowTool(BaseTool):
-    """字幕溢出检测工具 — 检测字幕文字是否超出画面边界或时长不足。"""
-    name = "subtitle_overflow"
-    description = "字幕溢出检测：验证字幕文字宽度/行数是否超出画面，时长是否足够阅读（占位）"
-
-    async def execute(self, **kwargs: Any) -> ToolExecResult:
-        return ToolExecResult(
-            status=ToolStatus.SUCCESS,
-            tool_name=self.name,
-            output={"overflow": False, "issues": []},
-            warning="subtitle_overflow 为占位实现 — 纯逻辑检测（Phase 2 增强）",
-        )
-
-
 class VisionLLMTool(BaseTool):
     """视觉 LLM 分析工具 — 用多模态 LLM 分析视频帧内容。"""
     name = "vision_llm"
-    description = "视觉 LLM 分析：用多模态大模型分析视频帧内容、描述、标签（占位）"
+    description = "视觉 LLM 分析：用多模态大模型分析视频帧内容、描述、标签"
 
     async def execute(self, **kwargs: Any) -> ToolExecResult:
         from clipwright.services.vision import VisionService
@@ -216,18 +131,3 @@ class VisionLLMTool(BaseTool):
                     os.remove(path)
                 except OSError as exc:
                     logger.debug("Failed to remove temporary frame %s: %s", path, exc)
-
-
-class WhisperTranscribeTool(BaseTool):
-    """Whisper 转录工具 — 语音转文字。"""
-    name = "whisper_transcribe"
-    description = "Whisper 语音转文字：将音频/视频转为带时间戳的文本字幕（占位）"
-
-    async def execute(self, **kwargs: Any) -> ToolExecResult:
-        return ToolExecResult(
-            status=ToolStatus.SUCCESS,
-            tool_name=self.name,
-            output={"text": "", "segments": [], "language": ""},
-            warning="whisper_transcribe 为占位实现 — 委托 clipwright.services.stt.STTService.transcribe()（Phase 2 增强）",
-        )
-
