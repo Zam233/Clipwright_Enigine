@@ -160,6 +160,14 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
             result_dict = state.model_dump(mode="json")
             _pipeline_results[pipeline_id] = result_dict
             add_event(pipeline_id, "system", "done", f"管线完成: {state.status}")
+        except asyncio.CancelledError:
+            # C9: 取消即时性 — 任务被外部 cancel，写入终态并标记已取消（不重新抛出）
+            logger.info("管线任务已取消: %s", pipeline_id)
+            _pipeline_results[pipeline_id] = {
+                "status": "cancelled", "pipeline_id": pipeline_id,
+                "error": "管线已取消（任务中断）",
+            }
+            add_event(pipeline_id, "system", "cancelled", "管线已取消（任务中断）")
         except Exception as e:
             logger.exception("pipeline._run_background failed: %s", e)
             add_event(pipeline_id, "system", "error", f"管线失败: {e}")
@@ -367,10 +375,11 @@ async def retry_agent(pipeline_id: str, agent_name: str, request: Request) -> di
 
 @router.post("/cancel/{pipeline_id}")
 async def cancel_pipeline(pipeline_id: str, request: Request) -> dict:
-    """协作式取消管线（G2）。
+    """取消管线（C9：即时取消）。
 
-    标记取消标志；运行中的管线在下一个 agent 边界（_dispatch 前）跳过后续 agent，
-    终态改为 CANCELLED 并写 trace `cancelled` 事件。不强制中断 in-flight LLM 调用。
+    1. 先取消后台 asyncio 任务（中断 in-flight agent/LLM 调用）；
+    2. 同时标记协作式取消标志（任务已结束/不存在时仍能阻止后续 agent）；
+    3. 终态写入 CANCELLED / cancelled 并写 trace 事件。
     若管线已结束/不存在，返回 404。
     """
     from clipwright.services.pipeline_v2 import mark_cancelled
@@ -379,10 +388,52 @@ async def cancel_pipeline(pipeline_id: str, request: Request) -> dict:
     _enforce_pipeline_owner(request, pipeline_id)
     if not _ga(pipeline_id):
         raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found")
+
+    # C9: 即时取消 — 中断运行中的后台任务（CancelledError 由 _run_background 捕获写终态）
+    task = _running_pipelines.get(pipeline_id)
+    if task and not task.done():
+        task.cancel()
+        logger.info("取消请求: %s (即时取消后台任务)", pipeline_id)
+    else:
+        logger.info("取消请求: %s (任务已不在运行，仅标记协作式取消)", pipeline_id)
+
     mark_cancelled(pipeline_id)
     add_event(pipeline_id, "system", "cancelled", "已请求取消管线")
-    logger.info("取消请求: %s (协作式，下一 agent 边界生效)", pipeline_id)
     return {"pipeline_id": pipeline_id, "status": "cancelling"}
+
+
+@router.get("/breaker-status")
+async def pipeline_breaker_status(request: Request) -> dict:
+    """C8: 熔断健康探测 — 返回各 Agent 熔断计数与状态（运维/前端监控用）。"""
+    from datetime import datetime, timezone
+    from clipwright.services.pipeline_v2 import PipelineOrchestratorV2
+
+    now = datetime.now(timezone.utc)
+    breakers = PipelineOrchestratorV2._circuit_breakers
+    threshold = PipelineOrchestratorV2._circuit_breaker_threshold
+    recovery = PipelineOrchestratorV2._circuit_breaker_recovery_sec
+    agents: list[dict] = []
+    tripped = 0
+    for name, cb in sorted(breakers.items()):
+        count = int(cb.get("fail_count", 0))
+        last = cb.get("last_fail_at")
+        elapsed = (now - last).total_seconds() if last else None
+        is_open = count >= threshold and (elapsed is None or elapsed <= recovery)
+        if is_open:
+            tripped += 1
+        agents.append({
+            "agent": name,
+            "fail_count": count,
+            "threshold": threshold,
+            "open": is_open,
+            "recovery_sec": recovery,
+            "seconds_since_fail": round(elapsed, 1) if elapsed is not None else None,
+        })
+    return {
+        "status": "degraded" if tripped > 0 else "ok",
+        "tripped_agents": tripped,
+        "agents": agents,
+    }
 
 
 class PredictScriptRequest(BaseModel):
