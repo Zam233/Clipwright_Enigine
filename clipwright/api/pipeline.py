@@ -25,6 +25,21 @@ _orchestrator = PipelineOrchestrator()
 # 后台运行的任务 + 结果缓存
 _running_pipelines: dict[str, asyncio.Task] = {}
 _pipeline_results: dict[str, dict] = {}
+# P3-3B: 管线归属（jwt 模式）；"" = 无主（off/token 模式/遗留）
+_pipeline_owners: dict[str, str] = {}
+
+
+def _enforce_pipeline_owner(request: Request, pipeline_id: str) -> None:
+    """jwt 模式下校验管线所有权（无主记录 403，安全优先）。"""
+    from clipwright.authz import current_user_id, is_admin
+
+    uid = current_user_id(request)
+    if uid is None or is_admin(request):
+        return
+    owner = _pipeline_owners.get(pipeline_id)
+    if owner == uid:
+        return
+    raise HTTPException(status_code=403, detail=f"无权访问管线 {pipeline_id}")
 
 
 def pipeline_timeout_sec(audio_dur: float, scene_count: int) -> int:
@@ -38,16 +53,23 @@ def pipeline_timeout_sec(audio_dur: float, scene_count: int) -> int:
 
 
 @router.get("/runs")
-async def list_pipeline_runs(limit: int = 50) -> list[dict]:
+async def list_pipeline_runs(request: Request, limit: int = 50) -> list[dict]:
     """获取管线运行记录（真实执行历史，供 PipelineAdminPage 展示）。
 
     返回形状: {id, topic, status, duration_ms, started_at,
                agents: [{agent, start, dur, status}]}
     数据源：内存注册表（当前进程真实运行）优先，Mongo PipelineModel 持久化历史兜底。
+    P3-3B: jwt 模式下按 owner 过滤（无主记录隐藏）。
     """
+    from clipwright.authz import current_user_id, is_admin
+
     from clipwright.services.pipeline_v2 import get_run_records
     # P0-6: find_many 走 _io() → 线程内执行，避免事件循环中协程误用导致 Mongo 历史丢失
-    return await asyncio.to_thread(get_run_records, max(1, min(limit, 500)))
+    records = await asyncio.to_thread(get_run_records, max(1, min(limit, 500)))
+    uid = current_user_id(request)
+    if uid is None or is_admin(request):
+        return records
+    return [r for r in records if _pipeline_owners.get(r.get("id")) == uid]
 
 
 @router.post("/run-v2")
@@ -93,10 +115,13 @@ async def run_pipeline(request: PipelineRequest) -> PipelineState:
 
 
 @router.post("/run-async")
-async def run_pipeline_async(request: PipelineRequest) -> dict:
+async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
     """异步启动管线，立即返回 pipeline_id，进度通过 SSE trace 推送。"""
     import uuid
     pipeline_id = f"pl_{uuid.uuid4().hex[:12]}"
+    # P3-3B: 记录归属
+    from clipwright.authz import current_user_id
+    _pipeline_owners[pipeline_id] = current_user_id(req) or ""
     create_trace(pipeline_id)
     add_event(pipeline_id, "system", "info",
               f"管线异步启动: {request.persona_id} / {request.category_plugin_id} (v2={'是' if request.use_v2 else '否'})")
@@ -120,6 +145,7 @@ async def run_pipeline_async(request: PipelineRequest) -> dict:
                 await asyncio.sleep(60)
                 _pipeline_results.pop(pipeline_id, None)
                 _running_pipelines.pop(pipeline_id, None)
+                _pipeline_owners.pop(pipeline_id, None)
                 from clipwright.services.trace import clear
                 clear(pipeline_id)
             spawn_background(_cleanup(), name=f"pipeline-cleanup-{pipeline_id}")
@@ -228,8 +254,9 @@ async def get_pipeline_result(pipeline_id: str) -> dict:
 
 
 @router.get("/status/{pipeline_id}")
-async def get_pipeline_status(pipeline_id: str) -> dict:
-    """查询管线执行状态。"""
+async def get_pipeline_status(pipeline_id: str, request: Request) -> dict:
+    """查询管线执行状态（P3-3B: 校验所有权）。"""
+    _enforce_pipeline_owner(request, pipeline_id)
     result = _pipeline_results.get(pipeline_id)
     if result is not None:
         return {"pipeline_id": pipeline_id, "status": result.get("status", "completed"),
@@ -245,13 +272,14 @@ async def get_pipeline_status(pipeline_id: str) -> dict:
 
 
 @router.post("/retry/{pipeline_id}/{agent_name}")
-async def retry_agent(pipeline_id: str, agent_name: str) -> dict:
+async def retry_agent(pipeline_id: str, agent_name: str, request: Request) -> dict:
     """重试指定 Agent（从失败的管线中恢复，B3）。
 
     改用 PipelineOrchestratorV2.run_from_agent：从 prior_state 重放目标 agent 之前的
     成功结果，只重跑目标 agent + 下游联动 + 统一自愈质检循环（不再全量重跑）。
     目标 agent 无可用前置结果/无记录时明确 400。
     """
+    _enforce_pipeline_owner(request, pipeline_id)
     from clipwright.services.trace import get_all_events
     events = get_all_events(pipeline_id)
     if not events:
@@ -309,7 +337,7 @@ async def retry_agent(pipeline_id: str, agent_name: str) -> dict:
 
 
 @router.post("/cancel/{pipeline_id}")
-async def cancel_pipeline(pipeline_id: str) -> dict:
+async def cancel_pipeline(pipeline_id: str, request: Request) -> dict:
     """协作式取消管线（G2）。
 
     标记取消标志；运行中的管线在下一个 agent 边界（_dispatch 前）跳过后续 agent，
@@ -319,6 +347,7 @@ async def cancel_pipeline(pipeline_id: str) -> dict:
     from clipwright.services.pipeline_v2 import mark_cancelled
     from clipwright.services.trace import get_all_events as _ga
 
+    _enforce_pipeline_owner(request, pipeline_id)
     if not _ga(pipeline_id):
         raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found")
     mark_cancelled(pipeline_id)

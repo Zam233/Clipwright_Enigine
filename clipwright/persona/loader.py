@@ -7,8 +7,6 @@ from typing import Optional
 
 import yaml
 
-import yaml
-
 from clipwright.schema.persona import (
     EmbeddingLayer,
     ExemplarLayer,

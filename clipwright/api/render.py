@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from clipwright.config import logger, settings
 from clipwright.paths import anchor
@@ -94,10 +94,17 @@ def _pick_render_service():
 
 
 @router.post("/queue")
-async def queue_render(body: RenderRequest) -> dict:
+async def queue_render(body: RenderRequest, request: Request) -> dict:
     """将渲染任务加入队列，立即返回任务 ID，后台异步执行。"""
+    from clipwright.authz import current_user_id
+
     task_id = f"render_{uuid.uuid4().hex[:12]}"
-    _render_queue[task_id] = {"status": "queued", "progress": 0, "result": None}
+    _render_queue[task_id] = {
+        "status": "queued",
+        "progress": 0,
+        "result": None,
+        "owner_id": current_user_id(request) or "",  # P3-3B
+    }
 
     params = _resolve_settings(body.settings)
     tl = body.timeline
@@ -152,11 +159,14 @@ async def queue_render(body: RenderRequest) -> dict:
 
 
 @router.get("/queue/{task_id}")
-async def get_queue_status(task_id: str) -> dict:
-    """查询渲染队列任务状态。"""
+async def get_queue_status(task_id: str, request: Request) -> dict:
+    """查询渲染队列任务状态（P3-3B: 校验所有权）。"""
+    from clipwright.authz import enforce_owner
+
     task = _render_queue.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    enforce_owner(request, task.get("owner_id"), "渲染任务")
     return {"task_id": task_id, **task}
 
 
@@ -202,11 +212,15 @@ async def stream_render_progress(task_id: str):
 
 
 @router.get("/queue")
-async def list_queue() -> dict:
-    """列出所有队列任务。"""
+async def list_queue(request: Request) -> dict:
+    """列出所有队列任务（P3-3B: 按 owner 过滤）。"""
+    from clipwright.authz import filter_by_owner
+
     tasks = []
     for tid, info in _render_queue.items():
-        tasks.append({"task_id": tid, "status": info["status"], "progress": info.get("progress", 0)})
+        tasks.append({"task_id": tid, "status": info["status"],
+                      "progress": info.get("progress", 0), "owner_id": info.get("owner_id", "")})
+    tasks = filter_by_owner(request, tasks)
     tasks.sort(key=lambda t: t["task_id"], reverse=True)
     return {"tasks": tasks}
 
