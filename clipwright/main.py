@@ -224,6 +224,27 @@ async def limit_body_size(request: Request, call_next):
     return await call_next(request)
 
 
+# P5-B2: 速率限制（注册在鉴权之前 → 执行在鉴权之后，可用 user_id 做键）
+from clipwright.services.rate_limit import RateLimiter as _RateLimiter
+
+_rate_limiter = _RateLimiter(settings.rate_limit_window_sec, settings.rate_limit_max_requests)
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    if not settings.rate_limit_enabled or request.method == "OPTIONS":
+        return await call_next(request)
+    uid = getattr(request.state, "user_id", None) or ""
+    ip = request.client.host if request.client else ""
+    key = f"{uid or ip}:{request.method}:{request.url.path[:80]}"
+    # 参数随配置热更新（避免实例构造时快照导致开关调整不生效）
+    _rate_limiter.window = settings.rate_limit_window_sec
+    _rate_limiter.max = settings.rate_limit_max_requests
+    if not _rate_limiter.allow(key):
+        return JSONResponse(status_code=429, content={"detail": "请求过于频繁，请稍后再试"})
+    return await call_next(request)
+
+
 # P0-9: SSE 短期一次性 token 存储（内存，TTL 120s，单次使用）
 _sse_tokens: dict[str, float] = {}
 _sse_ttl = 120.0

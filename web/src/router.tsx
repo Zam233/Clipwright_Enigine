@@ -37,6 +37,7 @@ const PipelineAdminPage = lazyPage(() => import('./pages/admin/PipelineAdminPage
 const VoicePage = lazyPage(() => import('./pages/VoicePage'), 'VoicePage');
 const ProjectsPage = lazyPage(() => import('./pages/ProjectsPage'), 'ProjectsPage');
 const LoginPage = lazyPage(() => import('./pages/LoginPage'), 'LoginPage');
+const MarketPage = lazyPage(() => import('./pages/MarketPage'), 'MarketPage');
 
 function RouteFallback() {
   return (
@@ -204,6 +205,12 @@ const loginRoute = createRoute({
   component: LoginPage,
 });
 
+const marketRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/market',
+  component: MarketPage,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   editorRoute,
@@ -228,6 +235,7 @@ const routeTree = rootRoute.addChildren([
   voiceRoute,
   projectsRoute,
   loginRoute,
+  marketRoute,
 ]);
 
 export const router = createRouter({ routeTree });

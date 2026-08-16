@@ -12,7 +12,7 @@ import {
   Film, Settings, ArrowRight, Plus, Bot, ListChecks,
   PenLine, PackageCheck, Clock, Layers, Wand2, Mic, Image as ImageIcon,
   Upload, X, Check, Loader2, AudioLines,
-  Scissors, FileText, FolderOpen, Clapperboard,
+  Scissors, FileText, FolderOpen, Clapperboard, Store,
 } from 'lucide-react';
 import { ProjectCard, type ProjectCardData } from '@/components/shared/ProjectCard';
 import { fmtDur, relTime, uid } from '@/lib/utils';
@@ -963,6 +963,14 @@ function TopBar() {
           title="我的项目"
         >
           <FolderOpen className="w-3.5 h-3.5" /> 我的项目
+        </button>
+        <button
+          onClick={() => navigate({ to: '/market' })}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-cw-sm text-label-sm text-on-surface-variant
+            hover:text-on-surface hover:bg-surface-container transition-colors cursor-pointer"
+          title="插件与 Persona 市场"
+        >
+          <Store className="w-3.5 h-3.5" /> 市场
         </button>
         <button
           onClick={() => navigate({ to: '/voice' })}

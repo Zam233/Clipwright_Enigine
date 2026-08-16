@@ -27,6 +27,8 @@ _running_pipelines: dict[str, asyncio.Task] = {}
 _pipeline_results: dict[str, dict] = {}
 # P3-3B: 管线归属（jwt 模式）；"" = 无主（off/token 模式/遗留）
 _pipeline_owners: dict[str, str] = {}
+# P5-B8: 幂等键（Idempotency-Key → pipeline_id；随结果缓存一并清理）
+_idempotency_pipeline: dict[str, str] = {}
 
 
 def _enforce_pipeline_owner(request: Request, pipeline_id: str) -> None:
@@ -118,10 +120,26 @@ async def run_pipeline(request: PipelineRequest) -> PipelineState:
 async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
     """异步启动管线，立即返回 pipeline_id，进度通过 SSE trace 推送。"""
     import uuid
+
+    from clipwright import audit
+    from clipwright.authz import current_user_id
+
+    uid = current_user_id(req)
+    # P5-B8: 幂等键去重（双击/网络重试不重复扣费）
+    idem_key = req.headers.get("Idempotency-Key", "")
+    if idem_key:
+        existing = _idempotency_pipeline.get(idem_key)
+        if existing and (existing in _pipeline_results or existing in _running_pipelines):
+            return {"pipeline_id": existing, "status": "deduplicated"}
+
     pipeline_id = f"pl_{uuid.uuid4().hex[:12]}"
     # P3-3B: 记录归属
-    from clipwright.authz import current_user_id
-    _pipeline_owners[pipeline_id] = current_user_id(req) or ""
+    _pipeline_owners[pipeline_id] = uid or ""
+    if idem_key:
+        _idempotency_pipeline[idem_key] = pipeline_id
+    audit.record("pipeline_run", uid, {"pipeline_id": pipeline_id,
+                                       "persona_id": request.persona_id,
+                                       "category_plugin_id": request.category_plugin_id})
     create_trace(pipeline_id)
     add_event(pipeline_id, "system", "info",
               f"管线异步启动: {request.persona_id} / {request.category_plugin_id} (v2={'是' if request.use_v2 else '否'})")
@@ -146,6 +164,9 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
                 _pipeline_results.pop(pipeline_id, None)
                 _running_pipelines.pop(pipeline_id, None)
                 _pipeline_owners.pop(pipeline_id, None)
+                for k, v in list(_idempotency_pipeline.items()):
+                    if v == pipeline_id:
+                        _idempotency_pipeline.pop(k, None)
                 from clipwright.services.trace import clear
                 clear(pipeline_id)
             spawn_background(_cleanup(), name=f"pipeline-cleanup-{pipeline_id}")

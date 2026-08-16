@@ -26,6 +26,8 @@ router = APIRouter(prefix="/api/render", tags=["render"])
 
 # 渲染队列
 _render_queue: dict[str, dict] = {}
+# P5-B8: 渲染幂等键（Idempotency-Key → task_id）
+_idempotency_render: dict[str, str] = {}
 
 
 def _renders_dir() -> Path:
@@ -96,15 +98,27 @@ def _pick_render_service():
 @router.post("/queue")
 async def queue_render(body: RenderRequest, request: Request) -> dict:
     """将渲染任务加入队列，立即返回任务 ID，后台异步执行。"""
+    from clipwright import audit
     from clipwright.authz import current_user_id
+
+    uid = current_user_id(request)
+    # P5-B8: 幂等键去重
+    idem_key = request.headers.get("Idempotency-Key", "")
+    if idem_key:
+        existing = _idempotency_render.get(idem_key)
+        if existing and existing in _render_queue:
+            return {"task_id": existing, "status": "deduplicated"}
 
     task_id = f"render_{uuid.uuid4().hex[:12]}"
     _render_queue[task_id] = {
         "status": "queued",
         "progress": 0,
         "result": None,
-        "owner_id": current_user_id(request) or "",  # P3-3B
+        "owner_id": uid or "",  # P3-3B
     }
+    if idem_key:
+        _idempotency_render[idem_key] = task_id
+    audit.record("render_queue", uid, {"task_id": task_id, "output_path": body.output_path or ""})
 
     params = _resolve_settings(body.settings)
     tl = body.timeline
@@ -152,6 +166,9 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
             async def _cleanup():
                 await asyncio.sleep(60)
                 _render_queue.pop(task_id, None)
+                for k, v in list(_idempotency_render.items()):
+                    if v == task_id:
+                        _idempotency_render.pop(k, None)
             spawn_background(_cleanup(), name=f"render-cleanup-{task_id}")
 
     spawn_background(_run(), name=f"render-{task_id}")

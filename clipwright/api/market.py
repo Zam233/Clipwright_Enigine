@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from clipwright.services import install_service, market_client
 
@@ -36,9 +36,13 @@ async def market_plugin_detail(plugin_id: str):
 
 
 @router.post("/plugins/{plugin_id}/install")
-async def install_market_plugin(plugin_id: str, version: str = ""):
+async def install_market_plugin(plugin_id: str, request: Request, version: str = ""):
     try:
-        return await install_service.install_plugin(plugin_id, version)
+        result = await install_service.install_plugin(plugin_id, version)
+        from clipwright import audit
+        from clipwright.authz import current_user_id
+        audit.record("market_plugin_install", current_user_id(request), {"plugin_id": plugin_id, "version": version})
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except httpx.HTTPError as e:
@@ -67,9 +71,13 @@ async def market_persona_detail(persona_id: str):
 
 
 @router.post("/personas/{persona_id}/install")
-async def install_market_persona(persona_id: str, version: str = ""):
+async def install_market_persona(persona_id: str, request: Request, version: str = ""):
     try:
-        return await install_service.install_persona(persona_id, version)
+        result = await install_service.install_persona(persona_id, version)
+        from clipwright import audit
+        from clipwright.authz import current_user_id
+        audit.record("market_persona_install", current_user_id(request), {"persona_id": persona_id, "version": version})
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except httpx.HTTPError as e:

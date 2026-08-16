@@ -87,6 +87,11 @@ class Settings(BaseSettings):
     account_jwt_secret: str = ""   # 共享 JWT 密钥（jwt 模式必填，与 Server 一致）
     account_jwt_algorithm: str = "HS256"
 
+    # --- 速率限制（P5-B2，内存滑动窗口；默认关闭）---
+    rate_limit_enabled: bool = False
+    rate_limit_window_sec: float = 60.0
+    rate_limit_max_requests: int = 120
+
     # --- MongoDB ---
     mongo_uri: str = "mongodb://localhost:27017"
     mongo_db_name: str = "clipwright"

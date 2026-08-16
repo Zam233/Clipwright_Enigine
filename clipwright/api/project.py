@@ -107,6 +107,9 @@ async def create_project(req: ProjectCreateRequest, request: Request) -> dict[st
             data["owner_id"] = uid
         except Exception as e:
             logger.warning("owner_id 写入失败: %s", e)
+    # P5-B5: 审计
+    from clipwright import audit
+    audit.record("project_create", uid, {"project_id": data["id"], "name": data.get("name", "")})
     return data
 
 
@@ -174,6 +177,9 @@ async def delete_project(project_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(e))
     if not ok:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    # P5-B5: 审计
+    from clipwright import audit
+    audit.record("project_delete", current_user_id(request), {"project_id": project_id})
     return {"status": "deleted", "id": project_id}
 
 

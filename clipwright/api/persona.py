@@ -51,6 +51,9 @@ async def create_persona(manifest: PersonaManifest, request: Request) -> Persona
     if uid and not manifest.owner_id:
         manifest.owner_id = uid
     _repo.save_manifest(manifest)
+    # P5-B5: 审计
+    from clipwright import audit
+    audit.record("persona_create", uid, {"persona_id": manifest.persona_id})
     return manifest
 
 
@@ -73,6 +76,9 @@ async def delete_persona(persona_id: str, request: Request) -> dict:
     if not _repo.exists(persona_id):
         raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
     _repo.delete(persona_id)
+    # P5-B5: 审计
+    from clipwright import audit
+    audit.record("persona_delete", current_user_id(request), {"persona_id": persona_id})
     return {"status": "deleted", "persona_id": persona_id}
 
 
