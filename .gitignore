@@ -76,3 +76,6 @@ _local_backup_*/
 # test logs
 backend-out.log
 *.log
+
+# 测试产生的版本快照目录
+versions/
