@@ -9,6 +9,7 @@ import { Tooltip } from '@/components/ui';
 import { formatTimecode, cn } from '@/lib/utils';
 import type { ClipKind } from '@/types/timeline';
 import { TRACK_COLORS } from '@/types/timeline';
+import { HEADER_W } from '../engine/types';
 import {
   Magnet, Plus, ZoomIn, ZoomOut, Maximize2, Trash2, Scissors, ChevronsLeft,
   Layers, Lock, LockOpen, Volume2, VolumeX, ArrowUp, ArrowDown, X, Flag, FlagOff,
@@ -45,12 +46,24 @@ export function TimelinePanel() {
   const setMarkerOut = usePreviewStore((s) => s.setMarkerOut);
   const setLoopRegion = usePreviewStore((s) => s.setLoopRegion);
   const [trackMgrOpen, setTrackMgrOpen] = useState(false);
+  // M8: 重命名标记弹层（{ time, name }）
+  const [renamingMarker, setRenamingMarker] = useState<{ time: number; name: string } | null>(null);
 
   // Instantiate engine
   useEffect(() => {
     if (!canvasRef.current) return;
     const engine = new TimelineEngine(canvasRef.current);
     engineRef.current = engine;
+
+    // M8: 引擎标记变更 → 写回 store（随项目 autosave 持久化）
+    engine.onMarkersChange = (m) => useTimelineStore.getState().setTimelineMarkers(m);
+    // M8: 双击已有标记 → 打开命名输入框
+    engine.onMarkerRename = (time) => {
+      const existing = useTimelineStore.getState().timeline.markers?.find((x) => Math.abs(x.time - time) < 0.01);
+      setRenamingMarker({ time, name: existing?.name ?? '' });
+    };
+    // 初始同步 store 标记 → 引擎
+    engine.setMarkers(useTimelineStore.getState().timeline.markers ?? []);
 
     // M14: 范围工具两击设置 In/Out 区间
     engine.onRangePoint = (t) => {
@@ -78,6 +91,18 @@ export function TimelinePanel() {
       engineRef.current = null;
     };
   }, []);
+
+  // M8: store 标记（项目加载/撤销/Agent 快照）→ 引擎同步（引擎自己写回的不触发循环）
+  useEffect(() => {
+    engineRef.current?.setMarkers(timeline.markers ?? []);
+  }, [timeline.markers]);
+
+  const handleRenameCommit = (name: string) => {
+    if (renamingMarker && engineRef.current) {
+      engineRef.current.renameMarker(renamingMarker.time, name.trim());
+    }
+    setRenamingMarker(null);
+  };
 
   // Register timeline-scoped shortcuts with the global KeybindingEngine
   // (avoids dual-fire conflicts with the centralized engine)
@@ -383,6 +408,16 @@ export function TimelinePanel() {
         {dropActive && (
           <div className="absolute inset-0 z-10 pointer-events-none border-2 border-dashed border-primary/60 bg-primary/5 rounded-cw-sm" />
         )}
+        {/* M8: 标记重命名输入框（定位在标尺对应 x） */}
+        {renamingMarker && (
+          <MarkerRenameInput
+            time={renamingMarker.time}
+            initialName={renamingMarker.name}
+            engine={engineRef.current}
+            onCommit={handleRenameCommit}
+            onCancel={() => setRenamingMarker(null)}
+          />
+        )}
         <canvas
           ref={canvasRef}
           className="absolute inset-0 block"
@@ -499,4 +534,55 @@ function kindLabel(kind: ClipKind): string {
     caption: '字幕', shape: '形状', waveform: '波形', animation: '动画',
   };
   return map[kind];
+}
+
+/**
+ * M8: 标记重命名输入框 — 渲染在画布标尺上方，跟随标记 x 位置。
+ * 提交（Enter/失焦）→ 引擎 renameMarker；Esc → 取消。
+ */
+function MarkerRenameInput({
+  time, initialName, engine, onCommit, onCancel,
+}: {
+  time: number;
+  initialName: string;
+  engine: TimelineEngine | null;
+  onCommit: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initialName);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  const x = engine
+    ? Math.max(0, HEADER_W + time * engine.zoom - engine.scrollX)
+    : 8;
+
+  return (
+    <div
+      className="absolute z-20"
+      style={{ left: x, top: 2 }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <input
+        ref={inputRef}
+        value={value}
+        placeholder="标记名称"
+        maxLength={64}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') onCommit(value);
+          if (e.key === 'Escape') onCancel();
+        }}
+        onBlur={() => onCommit(value)}
+        className="w-40 px-1.5 py-0.5 text-label-sm rounded-cw-xs
+          bg-surface-container-high border border-primary/60 text-on-surface
+          outline-none shadow-lg shadow-black/40"
+        aria-label="标记名称"
+      />
+    </div>
+  );
 }

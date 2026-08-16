@@ -471,74 +471,87 @@ API è§„æ ¼ï¼ˆv1ï¼Œå…¨éƒ¨ JSONï¼Œé™¤æ ‡æ³¨å¤–å‡éœ€ Bearer JWTï¼‰ï¼š
 
 ---
 
-## 10. Ö´ĞĞ½ø¶È£¨Åú×¼ºó¹ö¶¯¸üĞÂ£©
+## 10. Ö´è¡Œè¿›åº¦ï¼ˆæ‰¹å‡†åæ»šåŠ¨æ›´æ–°ï¼‰
 
-### ÒÑÍê³É£¨2026-08 Ö´ĞĞÂÖ´Î 1£©
-- ? P2 Ç°ÖÃ£ºK:\Clipwright Server ½¨²Ö£¨commit 0d973a5£ºauth+market ¹Ç¼Ü 18 ÎÄ¼ş£¬/health ¿ÉÓÃ£¬ÒµÎñ¶Ëµã 501 ´ı P3/P4£©
-- ? P2 ºÏ²¢£ºÇ°¶Ë git subtree ²¢Èë web/£¨221806e£¬±£ÁôÀúÊ·£©£»¸ù scripts/start.ps1¡¤bat¡¢check_env¡¢stop¡¢docker-compose¡¢Dockerfile.backend¡¢web/Dockerfile.frontend+nginx¡¢CI£¨8412751£©¡ú Ò»¼üÆô¶¯£ºscripts\start.ps1
-- ? P0 È«²¿ 14 ÏîÊµÊ©£º
-  - b249f7b£ºP0-1 asset °×Ãûµ¥£¨import ¾Ü¾øµãÎÄ¼ş/°×Ãûµ¥Íâ¸´ÖÆ/·şÎñ¶ËĞ£Ñé£©¡¢P0-2 äÖÈ¾Èë²Î°×Ãûµ¥+Êä³ö safe_join¡¢P0-3 transition Ã¶¾Ù+×¢Èë»ØÍË¡¢P0-4 tool Â·¾¶²ÎÊıĞ£Ñé¡¢P0-7 import-url SSRF+Á÷Ê½ÏŞÁ÷¡¢P0-8 RAG ÀÁ¼ÓÔØ¡¢P0-9 SSE Ò»´ÎĞÔ token£¨/api/auth/sse-token + ÈÕÖ¾Ä¨³ı£©¡¢P0-12 doc.id Ğ£Ñé¡¢P0-13 ´íÎóÍÑÃô¡¢P0-14 body ÉÏÏŞ+/metrics /test ¼øÈ¨
-  - df5a776£ºP0-5 Persona Ç°ºó¶Ë×Ö¶ÎÓ³Éä£¨ºó¶Ë¼æÈİĞ£ÑéÆ÷+UI ×Ö¶Î£»Ç°¶Ë personaFromBackend£©¡¢P0-6 _io ËÄÎóÓÃµã to_thread ĞŞ¸´
-  - Ç°¶ËÅú´Î£ºpersona shape Ó³Éä½ÓÈë personaApi.get¡¢SSE ¹Ò½ÓÒì²½»¯£¨AgentPanel/ExportPage + sse.ts£©¡¢ÏÂÔØ¸Ä axios blob ´øÆ¾¾İ¡¢pagehide/²¨ĞÎÂã fetch ²¹ Authorization¡¢cw:unauthorized È«¾Ö¼àÌı¡¢¶Ë¿ÚÍ³Ò» 8080£¨client/settingsStore/URL builders/.env.example/AGENTS.md£©¡¢integration.spec ÒÆ³öÄ¬ÈÏ E2E + ĞÂ½Å±¾ test:e2e:integration
-- »Ø¹éÑéÖ¤£ººó¶Ë pytest 1005/1005 ? ¡¤ Ç°¶Ë 261/261 ? ¡¤ typecheck ? ¡¤ build ? ¡¤ hermetic E2E 45/45 ?
+### å·²å®Œæˆï¼ˆ2026-08 æ‰§è¡Œè½®æ¬¡ 1ï¼‰
+- ? P2 å‰ç½®ï¼šK:\Clipwright Server å»ºä»“ï¼ˆcommit 0d973a5ï¼šauth+market éª¨æ¶ 18 æ–‡ä»¶ï¼Œ/health å¯ç”¨ï¼Œä¸šåŠ¡ç«¯ç‚¹ 501 å¾… P3/P4ï¼‰
+- ? P2 åˆå¹¶ï¼šå‰ç«¯ git subtree å¹¶å…¥ web/ï¼ˆ221806eï¼Œä¿ç•™å†å²ï¼‰ï¼›æ ¹ scripts/start.ps1Â·batã€check_envã€stopã€docker-composeã€Dockerfile.backendã€web/Dockerfile.frontend+nginxã€CIï¼ˆ8412751ï¼‰â†’ ä¸€é”®å¯åŠ¨ï¼šscripts\start.ps1
+- ? P0 å…¨éƒ¨ 14 é¡¹å®æ–½ï¼š
+  - b249f7bï¼šP0-1 asset ç™½åå•ï¼ˆimport æ‹’ç»ç‚¹æ–‡ä»¶/ç™½åå•å¤–å¤åˆ¶/æœåŠ¡ç«¯æ ¡éªŒï¼‰ã€P0-2 æ¸²æŸ“å…¥å‚ç™½åå•+è¾“å‡º safe_joinã€P0-3 transition æšä¸¾+æ³¨å…¥å›é€€ã€P0-4 tool è·¯å¾„å‚æ•°æ ¡éªŒã€P0-7 import-url SSRF+æµå¼é™æµã€P0-8 RAG æ‡’åŠ è½½ã€P0-9 SSE ä¸€æ¬¡æ€§ tokenï¼ˆ/api/auth/sse-token + æ—¥å¿—æŠ¹é™¤ï¼‰ã€P0-12 doc.id æ ¡éªŒã€P0-13 é”™è¯¯è„±æ•ã€P0-14 body ä¸Šé™+/metrics /test é‰´æƒ
+  - df5a776ï¼šP0-5 Persona å‰åç«¯å­—æ®µæ˜ å°„ï¼ˆåç«¯å…¼å®¹æ ¡éªŒå™¨+UI å­—æ®µï¼›å‰ç«¯ personaFromBackendï¼‰ã€P0-6 _io å››è¯¯ç”¨ç‚¹ to_thread ä¿®å¤
+  - å‰ç«¯æ‰¹æ¬¡ï¼špersona shape æ˜ å°„æ¥å…¥ personaApi.getã€SSE æŒ‚æ¥å¼‚æ­¥åŒ–ï¼ˆAgentPanel/ExportPage + sse.tsï¼‰ã€ä¸‹è½½æ”¹ axios blob å¸¦å‡­æ®ã€pagehide/æ³¢å½¢è£¸ fetch è¡¥ Authorizationã€cw:unauthorized å…¨å±€ç›‘å¬ã€ç«¯å£ç»Ÿä¸€ 8080ï¼ˆclient/settingsStore/URL builders/.env.example/AGENTS.mdï¼‰ã€integration.spec ç§»å‡ºé»˜è®¤ E2E + æ–°è„šæœ¬ test:e2e:integration
+- å›å½’éªŒè¯ï¼šåç«¯ pytest 1005/1005 ? Â· å‰ç«¯ 261/261 ? Â· typecheck ? Â· build ? Â· hermetic E2E 45/45 ?
 
-### ´ı°ì
-P1 ÎÄµµ¶ÔÕË ¡ú P3 ÕËºÅ¹ÜÀí£¨Server 3A + Ö÷ÏîÄ¿ 3B£©¡ú P4 ÊĞ³¡ ¡ú P5 ¡ú P6/P7 ¡ú P8 ¡ú P9 ¡ú P10
+### å¾…åŠ
+P1 æ–‡æ¡£å¯¹è´¦ â†’ P3 è´¦å·ç®¡ç†ï¼ˆServer 3A + ä¸»é¡¹ç›® 3Bï¼‰â†’ P4 å¸‚åœº â†’ P5 â†’ P6/P7 â†’ P8 â†’ P9 â†’ P10
 
-### Ö´ĞĞÂÖ´Î 2£¨P1 + P3-3A£©
-- ? P1 ÎÄµµ¶ÔÕË£º19 Ïî³ĞÅµÖğÏîÈıÑ¡Ò»ÂäµØ£¨workflow.md/structure.md/services_overview.md ±ê×¢ A1/A2/A3/A4/A6/A9/A10£»requirements_service docstring A8£»README ¿ì½İ¼üĞŞÕı D9£©
-- ? P1 ¼Ù³É¹¦ÇåÀí£º¶Ô»°Ê½±à¼­ËÀ´úÂëÉ¾³ı£¨services/video_editor.py£¬-404 ĞĞ£©£»frame_validator/black_frame_detect/audio_silence_detect/whisper_transcribe/subtitle_overflow ÇĞ»»ÎªÕæÊµÊµÏÖ×¢²á£»video_filter/text_design ¼Ù stub Õª³ı£»A7 fatal ´íÎó·ÖÀàÂäµØ
-- ? P1 parity ¸üĞÂ£ºrequirements 7¡ú8£¨º¬ /edit£©¡¢asset 8¡ú9£¨º¬ /by-path£©
-- ? P3-3A Server ÕËºÅºËĞÄÊµÏÖ£¨K:\Clipwright Server commit 325bb76£©£ºregister/login/refresh ÂÖ»»/logout/me/change-password/verify + /api/admin/users£»bcrypt£¨72 ×Ö½ÚÉÏÏŞ£©+ JWT + µÇÂ¼ÏŞÁ÷£¨5 ´Î/5 ·ÖÖÓ£©+ Éó¼ÆÊÂ¼ş£»7 ¸ö pytest È«¹ı£¨Mongo ²»¿ÉÓÃ×Ô¶¯Ìø¹ı£©
-- »Ø¹é£ººó¶Ë 1005/1005 ?
+### æ‰§è¡Œè½®æ¬¡ 2ï¼ˆP1 + P3-3Aï¼‰
+- ? P1 æ–‡æ¡£å¯¹è´¦ï¼š19 é¡¹æ‰¿è¯ºé€é¡¹ä¸‰é€‰ä¸€è½åœ°ï¼ˆworkflow.md/structure.md/services_overview.md æ ‡æ³¨ A1/A2/A3/A4/A6/A9/A10ï¼›requirements_service docstring A8ï¼›README å¿«æ·é”®ä¿®æ­£ D9ï¼‰
+- ? P1 å‡æˆåŠŸæ¸…ç†ï¼šå¯¹è¯å¼ç¼–è¾‘æ­»ä»£ç åˆ é™¤ï¼ˆservices/video_editor.pyï¼Œ-404 è¡Œï¼‰ï¼›frame_validator/black_frame_detect/audio_silence_detect/whisper_transcribe/subtitle_overflow åˆ‡æ¢ä¸ºçœŸå®å®ç°æ³¨å†Œï¼›video_filter/text_design å‡ stub æ‘˜é™¤ï¼›A7 fatal é”™è¯¯åˆ†ç±»è½åœ°
+- ? P1 parity æ›´æ–°ï¼šrequirements 7â†’8ï¼ˆå« /editï¼‰ã€asset 8â†’9ï¼ˆå« /by-pathï¼‰
+- ? P3-3A Server è´¦å·æ ¸å¿ƒå®ç°ï¼ˆK:\Clipwright Server commit 325bb76ï¼‰ï¼šregister/login/refresh è½®æ¢/logout/me/change-password/verify + /api/admin/usersï¼›bcryptï¼ˆ72 å­—èŠ‚ä¸Šé™ï¼‰+ JWT + ç™»å½•é™æµï¼ˆ5 æ¬¡/5 åˆ†é’Ÿï¼‰+ å®¡è®¡äº‹ä»¶ï¼›7 ä¸ª pytest å…¨è¿‡ï¼ˆMongo ä¸å¯ç”¨è‡ªåŠ¨è·³è¿‡ï¼‰
+- å›å½’ï¼šåç«¯ 1005/1005 ?
 
-### Ö´ĞĞÂÖ´Î 3£¨P3-3B Ö÷ÏîÄ¿½ÓÈë£©
-- ? ÈıÄ£Ê½¼øÈ¨£ºconfig Ôö¼Ó account_verify_mode(off/token/jwt)/account_url/account_jwt_secret£»ÖĞ¼ä¼ş jwt Ä£Ê½±¾µØÑéÇ©£¨¹²ÏíÃÜÔ¿£©+ ÔËÎ¬ÁîÅÆ¼æÈİ + request.state Éí·İ×¢Èë£»SSE Ò»´ÎĞÔ token ¶ËµãÊÊÅä jwt Ä£Ê½
-- ? owner Êı¾İ¸ôÀë£ºclipwright/authz.py£¨current_user_id/enforce_owner/filter_by_owner£©£»ÏîÄ¿È« CRUD + ËõÂÔÍ¼/¸´ÖÆ/ÖØÃüÃû/±êÇ©ËùÓĞÈ¨Ğ£Ñé£¬list °´ owner ¹ıÂË£¨jwt Ä£Ê½ÒÅÁôÎŞÖ÷Êı¾İÒş²Ø£¬°²È«ÓÅÏÈ£©£»Persona create ¼ÇÂ¼ owner¡¢update/delete Ğ£Ñé£¨¶ÁÈ¡±£³Ö¹«¿ª£©
-- ? Ç°¶Ë»á»°£ºauthStore£¨access ÄÚ´æ + httpOnly cookie Ë¢ĞÂ£©¡¢session µ¥Àı¡¢client À¹½ØÆ÷¡¢/srv ´úÀí¡¢LoginPage + /login Â·ÓÉ¡¢App ¹ÒÔØ»Ö¸´»á»° + 401 ×Ô¶¯ refresh¡úÊ§°ÜÌøµÇÂ¼¡¢²¨ĞÎ/pagehide Âã fetch ÁîÅÆ¼æÈİ
-- ? Server ¶Ë£ºlogin/register/refresh Ğ´ httpOnly cookie£¨cw_refresh£¬SameSite=Lax£©£¬refresh Ö§³Ö cookie£¬logout Çå cookie
-- ? ĞÂÔö²âÊÔ£ºbackend tests/clipwright/test_authz.py£¨7 ¸ö£º401/·ÅĞĞ/Î±ÔìÃÜÔ¿/owner ¸ôÀë/persona Ô½È¨/admin ÈÆ¹ı£©£»Server ¼ÈÓĞ 7 ¸öÊÊÅä
-- »Ø¹é£ººó¶Ë 1012/1012 ? ¡¤ Server 7/7 ? ¡¤ Ç°¶Ë 261/261 + typecheck ?
+### æ‰§è¡Œè½®æ¬¡ 3ï¼ˆP3-3B ä¸»é¡¹ç›®æ¥å…¥ï¼‰
+- ? ä¸‰æ¨¡å¼é‰´æƒï¼šconfig å¢åŠ  account_verify_mode(off/token/jwt)/account_url/account_jwt_secretï¼›ä¸­é—´ä»¶ jwt æ¨¡å¼æœ¬åœ°éªŒç­¾ï¼ˆå…±äº«å¯†é’¥ï¼‰+ è¿ç»´ä»¤ç‰Œå…¼å®¹ + request.state èº«ä»½æ³¨å…¥ï¼›SSE ä¸€æ¬¡æ€§ token ç«¯ç‚¹é€‚é… jwt æ¨¡å¼
+- ? owner æ•°æ®éš”ç¦»ï¼šclipwright/authz.pyï¼ˆcurrent_user_id/enforce_owner/filter_by_ownerï¼‰ï¼›é¡¹ç›®å…¨ CRUD + ç¼©ç•¥å›¾/å¤åˆ¶/é‡å‘½å/æ ‡ç­¾æ‰€æœ‰æƒæ ¡éªŒï¼Œlist æŒ‰ owner è¿‡æ»¤ï¼ˆjwt æ¨¡å¼é—ç•™æ— ä¸»æ•°æ®éšè—ï¼Œå®‰å…¨ä¼˜å…ˆï¼‰ï¼›Persona create è®°å½• ownerã€update/delete æ ¡éªŒï¼ˆè¯»å–ä¿æŒå…¬å¼€ï¼‰
+- ? å‰ç«¯ä¼šè¯ï¼šauthStoreï¼ˆaccess å†…å­˜ + httpOnly cookie åˆ·æ–°ï¼‰ã€session å•ä¾‹ã€client æ‹¦æˆªå™¨ã€/srv ä»£ç†ã€LoginPage + /login è·¯ç”±ã€App æŒ‚è½½æ¢å¤ä¼šè¯ + 401 è‡ªåŠ¨ refreshâ†’å¤±è´¥è·³ç™»å½•ã€æ³¢å½¢/pagehide è£¸ fetch ä»¤ç‰Œå…¼å®¹
+- ? Server ç«¯ï¼šlogin/register/refresh å†™ httpOnly cookieï¼ˆcw_refreshï¼ŒSameSite=Laxï¼‰ï¼Œrefresh æ”¯æŒ cookieï¼Œlogout æ¸… cookie
+- ? æ–°å¢æµ‹è¯•ï¼šbackend tests/clipwright/test_authz.pyï¼ˆ7 ä¸ªï¼š401/æ”¾è¡Œ/ä¼ªé€ å¯†é’¥/owner éš”ç¦»/persona è¶Šæƒ/admin ç»•è¿‡ï¼‰ï¼›Server æ—¢æœ‰ 7 ä¸ªé€‚é…
+- å›å½’ï¼šåç«¯ 1012/1012 ? Â· Server 7/7 ? Â· å‰ç«¯ 261/261 + typecheck ?
 
-### Ö´ĞĞÂÖ´Î 4£¨P3-3B ÊÕÎ² + P4 ÊĞ³¡ºó¶Ë£©
-- ? ¹ÜÏß owner£ºrun-async ¼ÇÂ¼¹éÊô¡¢/runs °´ owner ¹ıÂË£¨jwt Ä£Ê½ÎŞÖ÷¼ÇÂ¼Òş²Ø£©¡¢status/retry/cancel Ğ£ÑéËùÓĞÈ¨
-- ? äÖÈ¾ owner£ºqueue ¼ÇÂ¼ owner_id¡¢×´Ì¬²éÑ¯Ğ£Ñé¡¢ÁĞ±í¹ıÂË
-- ? P4-4A Server ÊĞ³¡ºËĞÄ£¨K:\Clipwright Server£©£º²å¼ş/Persona ·¢²¼£¨multipart+tar Ğ£Ñé+sha256£©¡¢ËÑË÷£¨½ö approved£©¡¢ÏêÇé£¨º¬ÆÀ·Ö»ã×Ü£©¡¢ÏÂÔØ£¨¼ÆÊı+1£©¡¢ÆÀ·Ö£¨Ã¿ÓÃ»§Ã¿°üÒ»ÆÀ£©¡¢admin ÉóºË approve/reject£»·À zip-slip ÓëÈ±Çåµ¥¾Ü¾ø£»11 ¸ö²âÊÔÈ«¹ı
-- ? P4-4B Ö÷ÏîÄ¿ÊĞ³¡ºó¶Ë£ºmarket_client£¨ËÑË÷/ÏêÇé/ÏÂÔØ£©+ install_service£¨°²È«½â°ü¡úschema Ğ£Ñé¡úÔ­×ÓÒÆ¶¯¡ú×¢²á¡úÊ§°Ü»Ø¹ö£©+ /api/market ä¯ÀÀÓë°²×°¶Ëµã£»6 ¸öÀëÏß°²×°²âÊÔ
-- ? ¸½´ø£ºpersona/loader.py ÖØ¸´ import ÇåÀí£¨B32£©
-- »Ø¹é£ººó¶Ë 1018/1018 ? ¡¤ Server 11/11 ?
+### æ‰§è¡Œè½®æ¬¡ 4ï¼ˆP3-3B æ”¶å°¾ + P4 å¸‚åœºåç«¯ï¼‰
+- ? ç®¡çº¿ ownerï¼šrun-async è®°å½•å½’å±ã€/runs æŒ‰ owner è¿‡æ»¤ï¼ˆjwt æ¨¡å¼æ— ä¸»è®°å½•éšè—ï¼‰ã€status/retry/cancel æ ¡éªŒæ‰€æœ‰æƒ
+- ? æ¸²æŸ“ ownerï¼šqueue è®°å½• owner_idã€çŠ¶æ€æŸ¥è¯¢æ ¡éªŒã€åˆ—è¡¨è¿‡æ»¤
+- ? P4-4A Server å¸‚åœºæ ¸å¿ƒï¼ˆK:\Clipwright Serverï¼‰ï¼šæ’ä»¶/Persona å‘å¸ƒï¼ˆmultipart+tar æ ¡éªŒ+sha256ï¼‰ã€æœç´¢ï¼ˆä»… approvedï¼‰ã€è¯¦æƒ…ï¼ˆå«è¯„åˆ†æ±‡æ€»ï¼‰ã€ä¸‹è½½ï¼ˆè®¡æ•°+1ï¼‰ã€è¯„åˆ†ï¼ˆæ¯ç”¨æˆ·æ¯åŒ…ä¸€è¯„ï¼‰ã€admin å®¡æ ¸ approve/rejectï¼›é˜² zip-slip ä¸ç¼ºæ¸…å•æ‹’ç»ï¼›11 ä¸ªæµ‹è¯•å…¨è¿‡
+- ? P4-4B ä¸»é¡¹ç›®å¸‚åœºåç«¯ï¼šmarket_clientï¼ˆæœç´¢/è¯¦æƒ…/ä¸‹è½½ï¼‰+ install_serviceï¼ˆå®‰å…¨è§£åŒ…â†’schema æ ¡éªŒâ†’åŸå­ç§»åŠ¨â†’æ³¨å†Œâ†’å¤±è´¥å›æ»šï¼‰+ /api/market æµè§ˆä¸å®‰è£…ç«¯ç‚¹ï¼›6 ä¸ªç¦»çº¿å®‰è£…æµ‹è¯•
+- ? é™„å¸¦ï¼špersona/loader.py é‡å¤ import æ¸…ç†ï¼ˆB32ï¼‰
+- å›å½’ï¼šåç«¯ 1018/1018 ? Â· Server 11/11 ?
 
-### Ö´ĞĞÂÖ´Î 5£¨P4-4C ÊĞ³¡Ç°¶Ë + P5 Ê×Åú£©
-- ? P4-4C ÊĞ³¡Ò³£ºweb/src/pages/MarketPage.tsx£¨²å¼ş/Persona Ë« Tab¡¢ËÑË÷¡¢¿¨Æ¬ÁĞ±íº¬ÆÀ·Ö/ÏÂÔØÊı¡¢Ò»¼ü°²×°¡¢·¢²¼Ïòµ¼ multipart ÉÏ´«£©+ market.ts ¿Í»§¶Ë£¨ä¯ÀÀ×ßÖ÷ÏîÄ¿ /api/market£¬·¢²¼/ÆÀ·ÖÖ±Á¬ /srv£©+ /market Â·ÓÉ + HomePage TopBar¡¸ÊĞ³¡¡¹Èë¿Ú + ÊĞ³¡ flag Ä¬ÈÏ¿ªÆô
-- ? P5-B2 ËÙÂÊÏŞÖÆ£ºservices/rate_limit.py£¨ÄÚ´æ»¬¶¯´°¿Ú£©+ ÖĞ¼ä¼ş£¨°´ user/ip+method+path ¼ü£¬ÅäÖÃÈÈ¸üĞÂ£¬Ä¬ÈÏ¹Ø±Õ CLIPWRIGHT_RATE_LIMIT_ENABLED£©
-- ? P5-B8 ÃİµÈ¼ü£º¹ÜÏß run-async ÓëäÖÈ¾ queue Ö§³Ö Idempotency-Key È¥ÖØ£¨ÖØ¸´ÇëÇó·µ»ØÒÑÓĞÈÎÎñ£©
-- ? P5-B5 Éó¼ÆÈÕÖ¾£ºclipwright/audit.py£¨Mongo audit ¼¯ºÏ + ÈÕÖ¾¶µµ×£©£»Âñµã project_create/delete¡¢persona_create/delete¡¢pipeline_run¡¢render_queue¡¢market install
-- ? ĞÂÔö²âÊÔ£ºrate_limit 3 ¸ö£¨µ¥Ôª + ÖĞ¼ä¼ş 429£©
-- »Ø¹é£ººó¶Ë 1021/1021 ? ¡¤ Ç°¶Ë 261/261 + typecheck ?
+### æ‰§è¡Œè½®æ¬¡ 5ï¼ˆP4-4C å¸‚åœºå‰ç«¯ + P5 é¦–æ‰¹ï¼‰
+- ? P4-4C å¸‚åœºé¡µï¼šweb/src/pages/MarketPage.tsxï¼ˆæ’ä»¶/Persona åŒ Tabã€æœç´¢ã€å¡ç‰‡åˆ—è¡¨å«è¯„åˆ†/ä¸‹è½½æ•°ã€ä¸€é”®å®‰è£…ã€å‘å¸ƒå‘å¯¼ multipart ä¸Šä¼ ï¼‰+ market.ts å®¢æˆ·ç«¯ï¼ˆæµè§ˆèµ°ä¸»é¡¹ç›® /api/marketï¼Œå‘å¸ƒ/è¯„åˆ†ç›´è¿ /srvï¼‰+ /market è·¯ç”± + HomePage TopBarã€Œå¸‚åœºã€å…¥å£ + å¸‚åœº flag é»˜è®¤å¼€å¯
+- ? P5-B2 é€Ÿç‡é™åˆ¶ï¼šservices/rate_limit.pyï¼ˆå†…å­˜æ»‘åŠ¨çª—å£ï¼‰+ ä¸­é—´ä»¶ï¼ˆæŒ‰ user/ip+method+path é”®ï¼Œé…ç½®çƒ­æ›´æ–°ï¼Œé»˜è®¤å…³é—­ CLIPWRIGHT_RATE_LIMIT_ENABLEDï¼‰
+- ? P5-B8 å¹‚ç­‰é”®ï¼šç®¡çº¿ run-async ä¸æ¸²æŸ“ queue æ”¯æŒ Idempotency-Key å»é‡ï¼ˆé‡å¤è¯·æ±‚è¿”å›å·²æœ‰ä»»åŠ¡ï¼‰
+- ? P5-B5 å®¡è®¡æ—¥å¿—ï¼šclipwright/audit.pyï¼ˆMongo audit é›†åˆ + æ—¥å¿—å…œåº•ï¼‰ï¼›åŸ‹ç‚¹ project_create/deleteã€persona_create/deleteã€pipeline_runã€render_queueã€market install
+- ? æ–°å¢æµ‹è¯•ï¼šrate_limit 3 ä¸ªï¼ˆå•å…ƒ + ä¸­é—´ä»¶ 429ï¼‰
+- å›å½’ï¼šåç«¯ 1021/1021 ? Â· å‰ç«¯ 261/261 + typecheck ?
 
-### Ö´ĞĞÂÖ´Î 6£¨P5£ºC2 ³É±¾×·×Ù + B3 Ô¤ËãÈÛ¶Ï£©
-- ? C2£ºllm_tracker.record_llm_call ³Ö¾Ã»¯µ½ Mongo llm_calls ¼¯ºÏ£¨ÊÂ¼şÑ­»· to_thread£¬Ê§°Ü¸æ¾¯£©¡ª¡ª/metrics µÄ LLM Í³¼ÆÓë³É±¾Ô¤Ëã´Ó´ËÓĞÕæÊµÊı¾İ
-- ? B3£ºservices/budget.py È«¾ÖÔÂ token Ô¤Ëã£¨CLIPWRIGHT_LLM_MONTHLY_TOKEN_BUDGET£¬0=²»ÏŞ£©£¬¹ÜÏß run-async Èë¿ÚÈÛ¶Ï£¨³¬Ô¤Ëã 429 º¬ÒÑÓÃ/×Ü¶î£©£¬60s »º´æ¾ÛºÏ
-- ? ĞÂÔö²âÊÔ£ºtest_budget 3 ¸ö£¨½ûÓÃ/ÏŞ¶îÄÚ/³¬ÏŞ£»monkeypatch ¾ÛºÏÎŞ Mongo ÒÀÀµ£¬±ÜÃâÈ«¾ÖÌ¬ÎÛÈ¾£©
-- »Ø¹é£ººó¶Ë 1024/1024 ?
+### æ‰§è¡Œè½®æ¬¡ 6ï¼ˆP5ï¼šC2 æˆæœ¬è¿½è¸ª + B3 é¢„ç®—ç†”æ–­ï¼‰
+- ? C2ï¼šllm_tracker.record_llm_call æŒä¹…åŒ–åˆ° Mongo llm_calls é›†åˆï¼ˆäº‹ä»¶å¾ªç¯ to_threadï¼Œå¤±è´¥å‘Šè­¦ï¼‰â€”â€”/metrics çš„ LLM ç»Ÿè®¡ä¸æˆæœ¬é¢„ç®—ä»æ­¤æœ‰çœŸå®æ•°æ®
+- ? B3ï¼šservices/budget.py å…¨å±€æœˆ token é¢„ç®—ï¼ˆCLIPWRIGHT_LLM_MONTHLY_TOKEN_BUDGETï¼Œ0=ä¸é™ï¼‰ï¼Œç®¡çº¿ run-async å…¥å£ç†”æ–­ï¼ˆè¶…é¢„ç®— 429 å«å·²ç”¨/æ€»é¢ï¼‰ï¼Œ60s ç¼“å­˜èšåˆ
+- ? æ–°å¢æµ‹è¯•ï¼štest_budget 3 ä¸ªï¼ˆç¦ç”¨/é™é¢å†…/è¶…é™ï¼›monkeypatch èšåˆæ—  Mongo ä¾èµ–ï¼Œé¿å…å…¨å±€æ€æ±¡æŸ“ï¼‰
+- å›å½’ï¼šåç«¯ 1024/1024 ?
 
-### Ö´ĞĞÂÖ´Î 7£¨P5£ºB9/B6/ÓÃÁ¿±¨±í£©
-- ? B9 ËØ²ÄÓ²¹ıÂË£ºmaterial_agent ºòÑ¡Ó²ÌŞ³ı£¨Ê±³¤<3s¡¢ÒÑÖª·Ö±æÂÊ·½Ïò²»·û£©£¬¹ıÂËºóÎª¿Õ»ØÍËÔ­ºòÑ¡·À¿Õ×ª
-- ? B6 °æÈ¨×Ö¶Î£ºMaterialAsset.license ×Ö¶Î + ËØ²Ä½¨ÒéÍ¸´«£¨Ç°¶Ë¿ÉÕ¹Ê¾£¬ËØ²ÄÔ´¿ÉÌá¹©£©
-- ? ÓÃÁ¿±¨±í£ºGET /api/stats/usage£¨¹ÜÏß/äÖÈ¾/LLM tokens ±¾ÔÂÓë×Ü¼Æ£¬jwt °´ owner ¹ıÂË£©+ ÉèÖÃÒ³¡¸ÓÃÁ¿Í³¼Æ¡¹¿¨Æ¬
-- »Ø¹é£ººó¶Ë 1024/1024 ? ¡¤ Ç°¶Ë 261/261 + typecheck ?
+### æ‰§è¡Œè½®æ¬¡ 7ï¼ˆP5ï¼šB9/B6/ç”¨é‡æŠ¥è¡¨ï¼‰
+- ? B9 ç´ æç¡¬è¿‡æ»¤ï¼šmaterial_agent å€™é€‰ç¡¬å‰”é™¤ï¼ˆæ—¶é•¿<3sã€å·²çŸ¥åˆ†è¾¨ç‡æ–¹å‘ä¸ç¬¦ï¼‰ï¼Œè¿‡æ»¤åä¸ºç©ºå›é€€åŸå€™é€‰é˜²ç©ºè½¬
+- ? B6 ç‰ˆæƒå­—æ®µï¼šMaterialAsset.license å­—æ®µ + ç´ æå»ºè®®é€ä¼ ï¼ˆå‰ç«¯å¯å±•ç¤ºï¼Œç´ ææºå¯æä¾›ï¼‰
+- ? ç”¨é‡æŠ¥è¡¨ï¼šGET /api/stats/usageï¼ˆç®¡çº¿/æ¸²æŸ“/LLM tokens æœ¬æœˆä¸æ€»è®¡ï¼Œjwt æŒ‰ owner è¿‡æ»¤ï¼‰+ è®¾ç½®é¡µã€Œç”¨é‡ç»Ÿè®¡ã€å¡ç‰‡
+- å›å½’ï¼šåç«¯ 1024/1024 ? Â· å‰ç«¯ 261/261 + typecheck ?
 
-### Ö´ĞĞÂÖ´Î 8£¨P5 ÊÕÎ²£ºB7/B4/Agent »ù×ù£©
-- ? B7 ¶à·½°¸£ºstructure_agent voiceover Ä£Ê½Ë«¸åÉú³É + ÔñÓÅÆô·¢Ê½£¨³¡¾°Êı 3-20 Çø¼äÄÚ¶àÕßÓÅ£¬Ô½½ç³Í·££¬Æ½¾ÖÈ¡ÏÈ£©
-- ? B4 ¶ÓÁĞ³Ö¾Ã»¯£ºäÖÈ¾ÈÎÎñÂä Mongo render_tasks£¨º¬ timeline/ÓÅÏÈ¼¶ X-Priority 1-5£©£¬ÖÕÌ¬Í¬²½¡¢60s ºóÇåÀí£»ÖØÆôºó GET /queue ºÏ²¢»Ö¸´Ïî£¨recovered ±ê¼Ç£©£¬×´Ì¬²éÑ¯ Mongo ¶µµ×
-- ? Agent Í³Ò»»ù×ù£ºBaseAgent.run_with_timeout / llm_or_fallback£¨³¬Ê±+Òì³£ÓÅÑÅ½µ¼¶£©
-- ? ĞÂÔö²âÊÔ£ºtest_p5_unit 4 ¸ö£¨ÔñÓÅ 3 + ¶ÓÁĞ»Ö¸´ 1£¬ÎŞ Mongo ÒÀÀµ£©
-- »Ø¹é£ººó¶Ë 1028/1028 ? ¡ª¡ª P5 ½×¶ÎÈ«²¿Íê³É
+### æ‰§è¡Œè½®æ¬¡ 8ï¼ˆP5 æ”¶å°¾ï¼šB7/B4/Agent åŸºåº§ï¼‰
+- ? B7 å¤šæ–¹æ¡ˆï¼šstructure_agent voiceover æ¨¡å¼åŒç¨¿ç”Ÿæˆ + æ‹©ä¼˜å¯å‘å¼ï¼ˆåœºæ™¯æ•° 3-20 åŒºé—´å†…å¤šè€…ä¼˜ï¼Œè¶Šç•Œæƒ©ç½šï¼Œå¹³å±€å–å…ˆï¼‰
+- ? B4 é˜Ÿåˆ—æŒä¹…åŒ–ï¼šæ¸²æŸ“ä»»åŠ¡è½ Mongo render_tasksï¼ˆå« timeline/ä¼˜å…ˆçº§ X-Priority 1-5ï¼‰ï¼Œç»ˆæ€åŒæ­¥ã€60s åæ¸…ç†ï¼›é‡å¯å GET /queue åˆå¹¶æ¢å¤é¡¹ï¼ˆrecovered æ ‡è®°ï¼‰ï¼ŒçŠ¶æ€æŸ¥è¯¢ Mongo å…œåº•
+- ? Agent ç»Ÿä¸€åŸºåº§ï¼šBaseAgent.run_with_timeout / llm_or_fallbackï¼ˆè¶…æ—¶+å¼‚å¸¸ä¼˜é›…é™çº§ï¼‰
+- ? æ–°å¢æµ‹è¯•ï¼štest_p5_unit 4 ä¸ªï¼ˆæ‹©ä¼˜ 3 + é˜Ÿåˆ—æ¢å¤ 1ï¼Œæ—  Mongo ä¾èµ–ï¼‰
+- å›å½’ï¼šåç«¯ 1028/1028 ? â€”â€” P5 é˜¶æ®µå…¨éƒ¨å®Œæˆ
 
-### Ö´ĞĞÂÖ´Î 9£¨P6 ±à¼­Æ÷×¨ÒµÄÜÁ¦ ¡¤ µÚÒ»Åú£©
-- ? M7 ¹ìµÀÒş²Ø/¶ÀÏÔ£ºTrack.hidden ×Ö¶Î + timelineStore.toggleTrackHidden + ÒıÇæ/Ô¤ÀÀÌø¹ıÒş²Ø¹ìµÀ + ¹ìµÀ¹ÜÀíÏÂÀ­ÑÛ¾¦°´Å¥
-- ? M10 Îü¸½ÇĞ»»¿ì½İ¼ü£ºAlt+S
-- ? M12 In/Out Çø¼ä²¥·Å UI °´Å¥£ºÊ±¼äÖá¹¤¾ßÀ¸ Èëµã/³öµã/Çå³ı£¨setMarkerIn/Out + loopRegion ¸ßÁÁ¼ÈÓĞ£©
-- ? M9 ËØ²ÄÉ¾³ı UI£ºassetApi.remove£¨ºó¶Ë DELETE ÒÑÓĞ£©+ AssetCard É¾³ı°´Å¥ + È·ÈÏ + ÀëÏß±¾µØÒÆ³ı
-- ? A1 ÏîÄ¿ÅÅĞò£ºProjectsPage ×î½ü±à¼­/Ãû³Æ ÇĞ»»
-- »Ø¹é£ºÇ°¶Ë 261/261 + typecheck + build ?£¨P6 Ê£Óà 21 Ïî°´¼Æ»®¼ÌĞø£©
+### æ‰§è¡Œè½®æ¬¡ 9ï¼ˆP6 ç¼–è¾‘å™¨ä¸“ä¸šèƒ½åŠ› Â· ç¬¬ä¸€æ‰¹ï¼‰
+- ? M7 è½¨é“éšè—/ç‹¬æ˜¾ï¼šTrack.hidden å­—æ®µ + timelineStore.toggleTrackHidden + å¼•æ“/é¢„è§ˆè·³è¿‡éšè—è½¨é“ + è½¨é“ç®¡ç†ä¸‹æ‹‰çœ¼ç›æŒ‰é’®
+- ? M10 å¸é™„åˆ‡æ¢å¿«æ·é”®ï¼šAlt+S
+- ? M12 In/Out åŒºé—´æ’­æ”¾ UI æŒ‰é’®ï¼šæ—¶é—´è½´å·¥å…·æ  å…¥ç‚¹/å‡ºç‚¹/æ¸…é™¤ï¼ˆsetMarkerIn/Out + loopRegion é«˜äº®æ—¢æœ‰ï¼‰
+- ? M9 ç´ æåˆ é™¤ UIï¼šassetApi.removeï¼ˆåç«¯ DELETE å·²æœ‰ï¼‰+ AssetCard åˆ é™¤æŒ‰é’® + ç¡®è®¤ + ç¦»çº¿æœ¬åœ°ç§»é™¤
+- ? A1 é¡¹ç›®æ’åºï¼šProjectsPage æœ€è¿‘ç¼–è¾‘/åç§° åˆ‡æ¢
+- å›å½’ï¼šå‰ç«¯ 261/261 + typecheck + build ?ï¼ˆP6 å‰©ä½™ 21 é¡¹æŒ‰è®¡åˆ’ç»§ç»­ï¼‰
+
+### æ‰§è¡Œè½®æ¬¡ 10ï¼ˆP6 ç¼–è¾‘å™¨ä¸“ä¸šèƒ½åŠ› Â· ç¬¬äºŒæ‰¹ï¼‰
+- ? M13 ç¼–è¾‘å™¨å†… Persona åˆ‡æ¢ï¼šAgentPanel BottomBar ä¸‹æ‹‰ï¼ˆpersonaApi.listIdsï¼‰+ projectStore.personaId å†™å…¥
+- ? M14 èŒƒå›´é€‰æ‹©å·¥å…·ï¼šTimelineEngine.onRangePoint å›è°ƒ + range å·¥å…· pointerdown åˆ†æ”¯ï¼›é¢æ¿ä¸¤å‡»è®¾ç½® In/Out loopRegion å¹¶æ¢å¤é€‰æ‹©å·¥å…·
+- ? C6 è‡ªå®šä¹‰å¯¼å‡ºé¢„è®¾ï¼šExportPage localStorage é¢„è®¾ä¿å­˜/åº”ç”¨/åˆ é™¤ï¼ˆcw_export_presetsï¼‰
+- ? æµ‹è¯•ä¿®å¤ï¼šAgentPanel.test afterEach æ”¹ç”¨ vi.clearAllMocksï¼ˆrestoreAllMocks æ¸…ç©ºå·¥å‚çº§ vi.fn() å®ç°å¯¼è‡´ M13 æŒ‚è½½ .then å´©æºƒï¼‰
+- å›å½’ï¼šå‰ç«¯ 261/261 + typecheck + build ?
+
+### æ‰§è¡Œè½®æ¬¡ 11ï¼ˆP6 ç¼–è¾‘å™¨ä¸“ä¸šèƒ½åŠ› Â· ç¬¬ä¸‰æ‰¹ï¼‰
+- ? M8 æ ‡è®°æŒä¹…åŒ– + å‘½åï¼šåç«¯ Timeline.markersï¼ˆTimelineMarker{time,name,max64}ï¼‰+ å‰ç«¯ Timeline.markers + engine setMarkers/renameMarker/onMarkersChange/onMarkerRename + é¢æ¿åŒå‡»æ ‡è®°å‘½åè¾“å…¥æ¡† + store setTimelineMarkers + æµ‹è¯•ï¼ˆengine 5 + store 2 + schema 1ï¼‰
+- ? M11 è½¬åœºå¯è§æ€§ï¼šæ—¶é—´è½´ç‰‡æ®µé¦–/å°¾è½¬åœºå¾½æ ‡ï¼ˆç±»å‹ + æ—¶é•¿æ ‡ç­¾ï¼Œhard_cut é™¤å¤–ï¼‰+ é¢„è§ˆåˆæˆ applyTransitionAlphaï¼ˆfade/dissolve ç­‰è¿›/å‡ºçª—å£é€æ˜åº¦æ¸å˜ï¼‰+ æµ‹è¯• 6 é¡¹
+- ? æ–‡æ¡£ä¿®å¤ï¼šfix-and-feature-plan.md Â§10 æ··ç¼–ç ï¼ˆUTF-8+GBKï¼‰å½’ä¸€ä¸º UTF-8
+- å›å½’ï¼šåç«¯ 1029/1029 ?ï¼›å‰ç«¯ 274/274 + typecheck + build ?

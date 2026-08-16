@@ -131,6 +131,14 @@ export interface Timeline {
   fps: number;
   duration_sec: number;
   tracks: Track[];
+  /** M8: 时间轴标记（持久化 + 命名） */
+  markers?: TimelineMarker[];
+}
+
+/** M8: 时间轴标记 */
+export interface TimelineMarker {
+  time: number;
+  name?: string;
 }
 
 /** Create an empty timeline with defaults */
@@ -142,6 +150,7 @@ export function createEmptyTimeline(id = ''): Timeline {
     fps: 30,
     duration_sec: 0,
     tracks: [],
+    markers: [],
   };
 }
 

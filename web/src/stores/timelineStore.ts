@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Timeline, Track, Clip, ClipKind } from '@/types/timeline';
+import type { Timeline, Track, Clip, ClipKind, TimelineMarker } from '@/types/timeline';
 import { createEmptyTimeline, createDefaultClip, computeTotalDuration } from '@/types/timeline';
 import { uid } from '@/lib/utils';
 import { useSelectionStore } from './selectionStore';
@@ -13,6 +13,8 @@ interface TimelineState {
   setTimeline: (timeline: Timeline) => void;
   resetTimeline: () => void;
   updateTimelineMeta: (meta: Partial<Pick<Timeline, 'width' | 'height' | 'fps' | 'duration_sec'>>) => void;
+  /** M8: 批量设置时间轴标记（引擎变更回调写回 store，随项目保存持久化） */
+  setTimelineMarkers: (markers: TimelineMarker[]) => void;
 
   // Track actions
   addTrack: (kind: ClipKind, name?: string, index?: number) => string;
@@ -67,6 +69,12 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     usePreviewStore.getState().setDuration(0);
     useSelectionStore.getState().deselectAll();
   },
+
+  setTimelineMarkers: (markers) =>
+    set((state) => ({
+      timeline: { ...state.timeline, markers },
+      isDirty: true,
+    })),
 
   updateTimelineMeta: (meta) =>
     set((state) => {

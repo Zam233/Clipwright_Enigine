@@ -146,6 +146,12 @@ class Track(BaseModel):
     model_config = {"use_enum_values": True}
 
 
+class TimelineMarker(BaseModel):
+    """时间轴标记（M8：持久化 + 命名）。"""
+    time: float = Field(ge=0, description="标记时间点（秒）")
+    name: str = Field(default="", max_length=64, description="标记名称（可选）")
+
+
 class Timeline(BaseModel):
     """完整时间线 — Agent 输出与编辑器加载的统一格式。"""
     id: str = Field(default="", description="时间线 ID")
@@ -154,6 +160,7 @@ class Timeline(BaseModel):
     fps: float = Field(default=30.0, gt=0, description="帧率")
     duration_sec: float = Field(default=0, ge=0, description="总时长（秒）")
     tracks: list[Track] = Field(default_factory=list)
+    markers: list[TimelineMarker] = Field(default_factory=list, description="时间轴标记列表（M8）")
 
     @property
     def total_duration_sec(self) -> float:

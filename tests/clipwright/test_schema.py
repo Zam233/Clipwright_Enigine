@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from clipwright.schema.timeline import Clip, ClipKind, Timeline, Track
 
 
@@ -157,6 +159,22 @@ class TestClipNewFields:
         c = restored.tracks[0].clips[0]
         assert c.fx_blur == 3.0
         assert c.label_color == "#00FF00"
+
+    def test_timeline_markers_round_trip(self) -> None:
+        """M8: markers 字段序列化/反序列化保持，旧数据（无字段）解析为 []。"""
+        tl = Timeline(markers=[{"time": 1.5, "name": "片头"}, {"time": 12.0}])
+        data = tl.model_dump(mode="json")
+        restored = Timeline(**data)
+        assert restored.markers[0].time == 1.5
+        assert restored.markers[0].name == "片头"
+        assert restored.markers[1].time == 12.0
+        assert restored.markers[1].name == ""
+        # 旧数据兼容：无 markers 字段 → 空列表
+        legacy = Timeline.model_validate({"tracks": [], "duration_sec": 0})
+        assert legacy.markers == []
+        # 名称长度上限：超过 64 字符应被拒绝（前端 input maxLength=64 同步限制）
+        with pytest.raises(Exception):
+            Timeline(markers=[{"time": 0, "name": "x" * 100}])
 
 
 class TestCaptionStyleFields:

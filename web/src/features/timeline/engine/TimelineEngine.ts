@@ -46,6 +46,10 @@ export class TimelineEngine {
   markers: Marker[] = [];
   /** M14: 范围工具点击回调（面板接线：两击设置 In/Out 区间） */
   onRangePoint: ((t: number) => void) | null = null;
+  /** M8: 标记变更回调（增/删/改名后触发；面板接线写回 timelineStore 持久化） */
+  onMarkersChange: ((markers: Marker[]) => void) | null = null;
+  /** M8: 双击已有标记触发重命名（面板接线弹出命名输入框） */
+  onMarkerRename: ((time: number) => void) | null = null;
   /** Drop feedback animation: green=placed before/after, red=reject (middle) */
   dropFeedback: { type: 'before' | 'after' | 'reject'; clipId: string; trackId: string; time: number } | null = null;
   private feedbackTimer: ReturnType<typeof setTimeout> | null = null;
@@ -282,14 +286,21 @@ export class TimelineEngine {
       return;
     }
 
-    // Ruler → scrub or double-click to add marker
+    // Ruler → scrub or double-click to add marker (M8: dblclick on existing marker → rename)
     if (y < L.rulerH) {
       const now = performance.now();
       const clickTime = xToTime(x, L);
       if (now - this.lastClickTime < 400 && Math.abs(x - this.lastClickX) < 10) {
-        this.markers.push({ time: Math.max(0, clickTime) });
-        this.markers.sort((a, b) => a.time - b.time);
-        this.requestRender();
+        // 命中已有标记（6px 内）→ 触发重命名；否则新增
+        const near = this.markers.find((m) => Math.abs(timeToX(m.time, L) - x) < 6);
+        if (near) {
+          this.onMarkerRename?.(near.time);
+        } else {
+          this.markers.push({ time: Math.max(0, clickTime) });
+          this.markers.sort((a, b) => a.time - b.time);
+          this.requestRender();
+          this.onMarkersChange?.(this.markers);
+        }
         this.drag.mode = 'none';
         return;
       }
@@ -799,7 +810,26 @@ export class TimelineEngine {
       this.markers.push({ time: t });
       this.markers.sort((a, b) => a.time - b.time);
       this.requestRender();
+      this.onMarkersChange?.(this.markers);
     }
+  }
+
+  /** M8: 从外部（store/项目加载）整体设置标记列表。 */
+  setMarkers(markers: Marker[]) {
+    this.markers = (markers ?? [])
+      .map((m) => ({ time: Math.max(0, m.time), name: m.name ?? '' }))
+      .sort((a, b) => a.time - b.time);
+    this.requestRender();
+  }
+
+  /** M8: 重命名标记（按 time 定位，不改变时间点）。 */
+  renameMarker(time: number, name: string) {
+    const m = this.markers.find((x) => Math.abs(x.time - time) < 0.01);
+    if (!m) return false;
+    m.name = name ?? '';
+    this.requestRender();
+    this.onMarkersChange?.(this.markers);
+    return true;
   }
 
   /** Remove the marker nearest to the playhead (within 0.5s). */
@@ -814,12 +844,14 @@ export class TimelineEngine {
     if (bestIdx >= 0) {
       this.markers.splice(bestIdx, 1);
       this.requestRender();
+      this.onMarkersChange?.(this.markers);
     }
   }
 
   clearMarkers() {
     this.markers = [];
     this.requestRender();
+    this.onMarkersChange?.(this.markers);
   }
 
   /** Jump to the next marker after the playhead. */

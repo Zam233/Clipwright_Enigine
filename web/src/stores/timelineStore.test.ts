@@ -256,4 +256,21 @@ describe('updateTrackClips (字幕样式整层级联)', () => {
     expect(useTimelineStore.getState().timeline.duration_sec).toBeCloseTo(10, 5);
     expect(useTimelineStore.getState().isDirty).toBe(true);
   });
+
+  it('M8 setTimelineMarkers 写入标记并置 isDirty（引擎变更回调持久化路径）', () => {
+    const before = useTimelineStore.getState().isDirty;
+    useTimelineStore.getState().setTimelineMarkers([{ time: 1.5, name: '片头' }, { time: 12 }]);
+    const st = useTimelineStore.getState();
+    expect(st.timeline.markers).toEqual([{ time: 1.5, name: '片头' }, { time: 12 }]);
+    expect(st.isDirty).toBe(true);
+    // reset 后回到空列表
+    useTimelineStore.getState().resetTimeline();
+    expect(useTimelineStore.getState().timeline.markers).toEqual([]);
+    expect(before).toBe(false);
+  });
+
+  it('M8 createEmptyTimeline 默认含空 markers（兼容旧数据加载）', () => {
+    const tl = useTimelineStore.getState().timeline;
+    expect(tl.markers).toEqual([]);
+  });
 });

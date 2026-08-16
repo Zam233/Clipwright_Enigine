@@ -451,6 +451,26 @@ export function PreviewPanel() {
 }
 
 /** Draw a single clip into the preview frame (placeholder compositing). */
+/**
+ * M11: 转场可见性 — 在进/出转场窗口内调制透明度，让淡入淡出/溶解类转场在预览中可见。
+ * - transition_in：片段开头 dur 秒内透明度 0→1（前一片段叠化进来）
+ * - transition_out：片段结尾 dur 秒内透明度 1→0（叠化到下一片段）
+ * - hard_cut / 无转场：不调制。
+ */
+export function applyTransitionAlpha(opacity: number, clip: Clip, localT: number): number {
+  const dur = Math.max(0.05, clip.transition_duration_sec ?? 0.5);
+  const fadeKinds = new Set(['fade', 'dissolve', 'pixel_dissolve', 'slide', 'wipe', 'glitch']);
+  if (clip.transition_in && clip.transition_in !== 'hard_cut' && fadeKinds.has(clip.transition_in)) {
+    const windowFrac = clamp(localT / (dur / clip.duration_sec), 0, 1);
+    opacity *= windowFrac; // 0→1 淡入
+  }
+  if (clip.transition_out && clip.transition_out !== 'hard_cut' && fadeKinds.has(clip.transition_out)) {
+    const windowFrac = clamp((1 - localT) / (dur / clip.duration_sec), 0, 1);
+    opacity *= windowFrac; // 1→0 淡出
+  }
+  return clamp(opacity, 0, 1);
+}
+
 function drawClipToPreview(
   ctx: CanvasRenderingContext2D,
   clip: Clip,
@@ -472,6 +492,9 @@ function drawClipToPreview(
     tf.y = props.position_y ?? tf.y;
     tf.rotation = props.rotation ?? tf.rotation;
   }
+
+  // M11: 转场可见性 — 在进/出转场窗口内对透明度做渐变（淡入淡出/溶解类预览）
+  opacity = applyTransitionAlpha(opacity, clip, localT);
 
   ctx.save();
   ctx.globalAlpha = clamp(opacity, 0, 1);

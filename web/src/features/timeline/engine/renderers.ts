@@ -405,6 +405,64 @@ export function drawClip(
       ctx.fill();
     }
   }
+
+  // M11: 转场可见性 — 在片段首/尾绘制转场徽标（双三角形 + 转场时长）
+  drawTransitionBadges(ctx, clip, x, y, w, h, bodyAlpha);
+}
+
+const TRANSITION_LABEL: Record<string, string> = {
+  fade: '淡入淡出', dissolve: '溶解', glitch: '故障', pixel_dissolve: '像素溶解',
+  slide: '滑动', wipe: '划像', hard_cut: '硬切',
+};
+
+/** M11: 在片段边缘绘制转场指示（进/出转场）。 */
+function drawTransitionBadges(
+  ctx: CanvasRenderingContext2D,
+  clip: Clip,
+  x: number, y: number, w: number, h: number,
+  bodyAlpha: number,
+) {
+  const dur = clip.transition_duration_sec ?? 0.5;
+  const drawBadge = (edgeX: number, type: string, side: 'in' | 'out') => {
+    const bw = Math.min(14, Math.max(6, w / 3));
+    const bx = side === 'in' ? edgeX : edgeX - bw;
+    if (bx < 0 || bx + bw > x + w + 1) return;
+    ctx.save();
+    ctx.globalAlpha = 0.9 * bodyAlpha;
+    // 深色底条
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(bx, y + h / 2 - 7, bw, 14);
+    // 双三角形（◀▶ 合并形）
+    ctx.fillStyle = '#FFD700';
+    ctx.beginPath();
+    if (side === 'in') {
+      ctx.moveTo(bx + 3, y + h / 2);
+      ctx.lineTo(bx + bw - 3, y + h / 2 - 4);
+      ctx.lineTo(bx + bw - 3, y + h / 2 + 4);
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      ctx.moveTo(bx + bw - 3, y + h / 2);
+      ctx.lineTo(bx + 3, y + h / 2 - 4);
+      ctx.lineTo(bx + 3, y + h / 2 + 4);
+      ctx.closePath();
+      ctx.fill();
+    }
+    // 转场时长标签（宽度足够时）
+    const label = TRANSITION_LABEL[type] ?? type;
+    if (w > 70) {
+      ctx.font = `400 8px ${MONO}`;
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${dur.toFixed(1)}s`, bx + bw / 2, y + h / 2 - 9);
+      ctx.fillText(label, bx + bw / 2, y + h / 2 + 9);
+      ctx.textAlign = 'left';
+    }
+    ctx.restore();
+  };
+
+  if (clip.transition_in && clip.transition_in !== 'hard_cut') drawBadge(x, clip.transition_in, 'in');
+  if (clip.transition_out && clip.transition_out !== 'hard_cut') drawBadge(x + w, clip.transition_out, 'out');
 }
 
 function clipLabel(clip: Clip, kind: ClipKind): string {

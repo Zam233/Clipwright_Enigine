@@ -2,7 +2,7 @@
  * Timeline engine shared types & coordinate helpers.
  * All rendering is done in CSS pixels; the canvas is scaled by devicePixelRatio.
  */
-import type { Clip } from '@/types/timeline';
+import type { Clip, TimelineMarker } from '@/types/timeline';
 
 export interface TimelineLayout {
   /** Canvas CSS width/height */
@@ -29,10 +29,8 @@ export const RULER_H = 30;
 export const TRACK_H = 48;
 export const SCROLLBAR_H = 12;
 
-export interface Marker {
-  time: number;
-  name?: string;
-}
+/** M8: 时间轴标记（与 @/types/timeline 的 TimelineMarker 对齐） */
+export type Marker = TimelineMarker;
 export const MIN_ZOOM = 4;
 export const MAX_ZOOM = 600;
 export const DEFAULT_ZOOM = 60;
