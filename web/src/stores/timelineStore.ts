@@ -35,6 +35,12 @@ interface TimelineState {
   splitClip: (clipId: string, splitTimeSec: number) => void;
   trimClipStart: (clipId: string, newStartSec: number) => void;
   trimClipEnd: (clipId: string, newEndSec: number) => void;
+  /** M1: rolling 编辑 — 拖动相邻两片段共享边界，此消彼长，总时长不变 */
+  rollingTrim: (clipId: string, deltaSec: number, edge: 'start' | 'end') => void;
+  /** M1: slip 编辑 — 保持片段在时间轴位置不变，仅平移素材内容窗口 */
+  slipClip: (clipId: string, deltaSec: number) => void;
+  /** M1: slide 编辑 — 移动片段，同时让相邻片段伸缩补位，总时长不变 */
+  slideClip: (clipId: string, deltaSec: number) => void;
   /** Ripple delete: remove clip and close the gap by shifting later clips left. */
   rippleDelete: (clipId: string) => void;
   /** Ripple insert: add a clip at a time, shifting later clips right to make room. */
@@ -377,6 +383,104 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
           return { ...c, duration_sec: newDuration };
         }),
       }));
+      return {
+        timeline: { ...state.timeline, tracks, duration_sec: computeTotalDuration(tracks) },
+        isDirty: true,
+      };
+    }),
+
+  // M1: rolling 编辑 — 共享边界此消彼长，总时长不变。
+  // edge='start'：调整 clipId 的起点，同时把同轨道紧邻的前一片段终点对向移动；
+  // edge='end'：调整 clipId 的终点，同时把紧邻的后一片段起点对向移动。
+  rollingTrim: (clipId, deltaSec, edge) =>
+    set((state) => {
+      const tracks = state.timeline.tracks.map((t) => {
+        const sorted = [...t.clips].sort((a, b) => a.start_sec - b.start_sec);
+        const idx = sorted.findIndex((c) => c.id === clipId);
+        if (idx === -1) return t;
+        const clip = sorted[idx];
+        const updated = new Map<string, { start_sec: number; duration_sec: number }>();
+        if (edge === 'start') {
+          const prev = sorted[idx - 1];
+          if (!prev) return t; // 没有前一片段 → rolling 无从谈起
+          const maxShrink = clip.duration_sec - 0.1;
+          const maxGrow = prev.duration_sec - 0.1;
+          const d = Math.max(-maxShrink, Math.min(maxGrow, deltaSec));
+          updated.set(clip.id, { start_sec: clip.start_sec + d, duration_sec: clip.duration_sec - d });
+          updated.set(prev.id, { start_sec: prev.start_sec, duration_sec: prev.duration_sec + d });
+        } else {
+          const next = sorted[idx + 1];
+          if (!next) return t;
+          const maxGrow = clip.duration_sec - 0.1;
+          const maxShrink = next.duration_sec - 0.1;
+          const d = Math.max(-maxGrow, Math.min(maxShrink, deltaSec));
+          updated.set(clip.id, { start_sec: clip.start_sec, duration_sec: clip.duration_sec + d });
+          updated.set(next.id, { start_sec: next.start_sec + d, duration_sec: next.duration_sec - d });
+        }
+        return {
+          ...t,
+          clips: t.clips.map((c) => {
+            const u = updated.get(c.id);
+            return u ? { ...c, ...u } : c;
+          }),
+        };
+      });
+      return {
+        timeline: { ...state.timeline, tracks, duration_sec: computeTotalDuration(tracks) },
+        isDirty: true,
+      };
+    }),
+
+  // M1: slip 编辑 — 素材窗口平移，时间轴位置与时长不变。
+  slipClip: (clipId, deltaSec) =>
+    set((state) => ({
+      timeline: {
+        ...state.timeline,
+        tracks: state.timeline.tracks.map((t) => ({
+          ...t,
+          clips: t.clips.map((c) => {
+            if (c.id !== clipId) return c;
+            return { ...c, source_offset_sec: Math.max(0, c.source_offset_sec + deltaSec * c.speed) };
+          }),
+        })),
+      },
+      isDirty: true,
+    })),
+
+  // M1: slide 编辑 — 移动片段，相邻片段伸缩补位，总时长不变。
+  // 前移：前一片段终点前移、后一片段起点前移（若存在）；后移同理反向。
+  slideClip: (clipId, deltaSec) =>
+    set((state) => {
+      const tracks = state.timeline.tracks.map((t) => {
+        const sorted = [...t.clips].sort((a, b) => a.start_sec - b.start_sec);
+        const idx = sorted.findIndex((c) => c.id === clipId);
+        if (idx === -1) return t;
+        const clip = sorted[idx];
+        const prev = sorted[idx - 1];
+        const next = sorted[idx + 1];
+        // 前移上限 = 前一片段可压缩量（且不能越过 0）；后移上限 = 后一片段可压缩量
+        const maxFwd = Math.min(prev ? prev.duration_sec - 0.1 : Infinity, clip.start_sec);
+        const maxBack = next ? next.duration_sec - 0.1 : Infinity;
+        const d = Math.max(
+          maxBack === Infinity ? -(clip.duration_sec - 0.1) : -maxBack,
+          Math.min(maxFwd === Infinity ? clip.duration_sec - 0.1 : maxFwd, deltaSec),
+        );
+        const updated = new Map<string, { start_sec: number; duration_sec: number }>();
+        updated.set(clip.id, { start_sec: clip.start_sec + d, duration_sec: clip.duration_sec });
+        if (prev) {
+          updated.set(prev.id, { start_sec: prev.start_sec, duration_sec: prev.duration_sec + d });
+        }
+        if (next) {
+          updated.set(next.id, { start_sec: next.start_sec + d, duration_sec: next.duration_sec - d });
+        }
+        return {
+          ...t,
+          clips: t.clips.map((c) => {
+            const u = updated.get(c.id);
+            return u ? { ...c, ...u } : c;
+          }),
+        };
+      });
       return {
         timeline: { ...state.timeline, tracks, duration_sec: computeTotalDuration(tracks) },
         isDirty: true,

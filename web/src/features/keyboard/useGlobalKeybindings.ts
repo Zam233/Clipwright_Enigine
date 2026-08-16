@@ -287,6 +287,28 @@ export function useGlobalKeybindings() {
       }
     };
 
+    // M1: slip（Alt+←/→ 平移素材窗口）/ slide（Shift+Alt+←/→ 移动片段并补位）
+    const slipBy = (dir: 1 | -1) => {
+      const sel = useSelectionStore.getState().selectedClipIds;
+      const first = sel[0];
+      if (!first) return;
+      const store = useTimelineStore.getState();
+      const fps = store.timeline.fps || 30;
+      const frame = 1 / fps;
+      useHistoryStore.getState().pushState(store.timeline, 'slip');
+      sel.forEach((cid) => store.slipClip(cid, dir * frame));
+    };
+    const slideBy = (dir: 1 | -1) => {
+      const sel = useSelectionStore.getState().selectedClipIds;
+      const first = sel[0];
+      if (!first) return;
+      const store = useTimelineStore.getState();
+      const fps = store.timeline.fps || 30;
+      const frame = 1 / fps;
+      useHistoryStore.getState().pushState(store.timeline, 'slide');
+      sel.forEach((cid) => store.slideClip(cid, dir * frame));
+    };
+
     const moveClipUp = () => {
       const sel = useSelectionStore.getState().selectedClipIds;
       if (sel.length === 0) return;
@@ -465,6 +487,19 @@ export function useGlobalKeybindings() {
       { id: 'trim-end', combo: ']', label: '修剪出点 (右剪一帧)', category: '编辑',
         when: () => useSelectionStore.getState().selectedClipIds.length > 0,
         handler: trimEndOut },
+      // M1: slip / slide（避免与默认浏览器 Alt+←→ 前进后退冲突，用 Shift 组合区分）
+      { id: 'slip-left', combo: 'shift+alt+arrowleft', label: 'Slip 左移一帧', category: '编辑',
+        when: () => useSelectionStore.getState().selectedClipIds.length > 0,
+        handler: () => slipBy(-1) },
+      { id: 'slip-right', combo: 'shift+alt+arrowright', label: 'Slip 右移一帧', category: '编辑',
+        when: () => useSelectionStore.getState().selectedClipIds.length > 0,
+        handler: () => slipBy(1) },
+      { id: 'slide-left', combo: 'ctrl+alt+arrowleft', label: 'Slide 左移一帧', category: '编辑',
+        when: () => useSelectionStore.getState().selectedClipIds.length > 0,
+        handler: () => slideBy(-1) },
+      { id: 'slide-right', combo: 'ctrl+alt+arrowright', label: 'Slide 右移一帧', category: '编辑',
+        when: () => useSelectionStore.getState().selectedClipIds.length > 0,
+        handler: () => slideBy(1) },
       { id: 'move-clip-up', combo: 'ctrl+arrowup', label: '上移轨道', category: '编辑',
         when: () => useSelectionStore.getState().selectedClipIds.length > 0,
         handler: moveClipUp },

@@ -609,18 +609,28 @@ export class TimelineEngine {
       case 'trim-start': {
         const ghost = this.computeTrimGhost();
         if (ghost && this.drag.trimOrig) {
-          store.updateClip(this.drag.trimOrig.id, {
-            start_sec: ghost.start_sec,
-            duration_sec: ghost.duration_sec,
-            source_offset_sec: ghost.source_offset_sec,
-          });
+          // M1: Alt+trim-start → rolling 编辑（边界共享，此消彼长）
+          if (this.altKeyHeld) {
+            store.rollingTrim(this.drag.trimOrig.id, ghost.start_sec - this.drag.trimOrig.start_sec, 'start');
+          } else {
+            store.updateClip(this.drag.trimOrig.id, {
+              start_sec: ghost.start_sec,
+              duration_sec: ghost.duration_sec,
+              source_offset_sec: ghost.source_offset_sec,
+            });
+          }
         }
         break;
       }
       case 'trim-end': {
         const ghost = this.computeTrimGhost();
         if (ghost && this.drag.trimOrig) {
-          store.updateClip(this.drag.trimOrig.id, { duration_sec: ghost.duration_sec });
+          // M1: Alt+trim-end → rolling 编辑
+          if (this.altKeyHeld) {
+            store.rollingTrim(this.drag.trimOrig.id, ghost.duration_sec - this.drag.trimOrig.duration_sec, 'end');
+          } else {
+            store.updateClip(this.drag.trimOrig.id, { duration_sec: ghost.duration_sec });
+          }
         }
         break;
       }

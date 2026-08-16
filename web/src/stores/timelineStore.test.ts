@@ -274,3 +274,84 @@ describe('updateTrackClips (字幕样式整层级联)', () => {
     expect(tl.markers).toEqual([]);
   });
 });
+
+describe('timelineStore M1 (rolling/slip/slide 编辑族)', () => {
+  beforeEach(() => {
+    useTimelineStore.getState().setTimeline(createEmptyTimeline());
+  });
+
+  function threeClips() {
+    const tid = useTimelineStore.getState().addTrack('video', 'V1');
+    const c1 = useTimelineStore.getState().addClip(tid, { kind: 'video', start_sec: 0, duration_sec: 4 });
+    const c2 = useTimelineStore.getState().addClip(tid, { kind: 'video', start_sec: 4, duration_sec: 5 });
+    const c3 = useTimelineStore.getState().addClip(tid, { kind: 'video', start_sec: 9, duration_sec: 3 });
+    return { tid, c1, c2, c3 };
+  }
+
+  it('rollingTrim edge=start：边界此消彼长，总时长不变', () => {
+    const { c1, c2 } = threeClips();
+    useTimelineStore.getState().rollingTrim(c2, -1, 'start');
+    const clips = useTimelineStore.getState().timeline.tracks[0].clips;
+    const a = clips.find((c) => c.id === c1)!;
+    const b = clips.find((c) => c.id === c2)!;
+    expect(b.start_sec).toBeCloseTo(3, 5); // 前移 1s
+    expect(b.duration_sec).toBeCloseTo(6, 5); // 加长 1s
+    expect(a.duration_sec).toBeCloseTo(3, 5); // 前片段缩短 1s
+    expect(useTimelineStore.getState().timeline.duration_sec).toBeCloseTo(12, 5); // 总长不变
+  });
+
+  it('rollingTrim edge=end：后片段起点对向移动', () => {
+    const { c2, c3 } = threeClips();
+    useTimelineStore.getState().rollingTrim(c2, 1, 'end');
+    const clips = useTimelineStore.getState().timeline.tracks[0].clips;
+    const b = clips.find((c) => c.id === c2)!;
+    const d = clips.find((c) => c.id === c3)!;
+    expect(b.duration_sec).toBeCloseTo(6, 5); // 加长 1s
+    expect(d.start_sec).toBeCloseTo(10, 5); // 后片段起点后移 1s
+    expect(d.duration_sec).toBeCloseTo(2, 5); // 后片段缩短 1s
+  });
+
+  it('rollingTrim 边界钳制：不能把片段缩到 <0.1s', () => {
+    const { c2 } = threeClips();
+    useTimelineStore.getState().rollingTrim(c2, 99, 'end'); // 后片段仅 3s，最多缩 2.9s
+    const clips = useTimelineStore.getState().timeline.tracks[0].clips;
+    const b = clips.find((c) => c.id === c2)!;
+    expect(b.duration_sec).toBeCloseTo(5 + 2.9, 5); // c2 原时长 5s
+  });
+
+  it('slipClip：位置时长不变，素材偏移平移', () => {
+    const { c2 } = threeClips();
+    const before = useTimelineStore.getState().getClip(c2)!;
+    useTimelineStore.getState().slipClip(c2, 0.5);
+    const after = useTimelineStore.getState().getClip(c2)!;
+    expect(after.start_sec).toBe(before.start_sec);
+    expect(after.duration_sec).toBe(before.duration_sec);
+    expect(after.source_offset_sec).toBeCloseTo(before.source_offset_sec + 0.5, 5);
+    // 负方向钳制到 0
+    useTimelineStore.getState().slipClip(c2, -999);
+    expect(useTimelineStore.getState().getClip(c2)!.source_offset_sec).toBe(0);
+  });
+
+  it('slideClip：移动片段 + 相邻伸缩补位，总时长不变', () => {
+    const { c1, c2, c3 } = threeClips();
+    useTimelineStore.getState().slideClip(c2, -1);
+    const clips = useTimelineStore.getState().timeline.tracks[0].clips;
+    const a = clips.find((c) => c.id === c1)!;
+    const b = clips.find((c) => c.id === c2)!;
+    const d = clips.find((c) => c.id === c3)!;
+    expect(b.start_sec).toBeCloseTo(3, 5); // 自身左移 1s
+    expect(b.duration_sec).toBeCloseTo(5, 5); // 自身时长不变
+    expect(a.duration_sec).toBeCloseTo(3, 5); // 前片段缩短 1s
+    expect(d.start_sec).toBeCloseTo(8, 5); // 后片段整体左移 1s
+    expect(d.duration_sec).toBeCloseTo(4, 5); // 后片段加长 1s
+    expect(useTimelineStore.getState().timeline.duration_sec).toBeCloseTo(12, 5);
+  });
+
+  it('slideClip 边界钳制：首片段无前邻时后移受限', () => {
+    const { c1 } = threeClips();
+    useTimelineStore.getState().slideClip(c1, 1);
+    const b = useTimelineStore.getState().getClip(c1)!;
+    // 首片段前移 1s → 被 0 边界钳制
+    expect(b.start_sec).toBeCloseTo(0, 5);
+  });
+});
