@@ -837,6 +837,7 @@ function MaskRectEditor({ clip, pushHistory, set }: {
 function KeyframeEditor({ clip }: { clip: Clip }) {
   const addKeyframe = useTimelineStore((s) => s.addKeyframe);
   const removeKeyframe = useTimelineStore((s) => s.removeKeyframe);
+  const updateKeyframe = useTimelineStore((s) => s.updateKeyframe);
   const updateClip = useTimelineStore((s) => s.updateClip);
   const currentTimeSec = usePreviewStore((s) => s.currentTimeSec);
   const setCurrentTime = usePreviewStore((s) => s.setCurrentTime);
@@ -892,6 +893,12 @@ function KeyframeEditor({ clip }: { clip: Clip }) {
     pushHistory();
     const kfs = clip.keyframes.map((k) => (Math.abs(k.time - time) < 0.001 ? { ...k, easing } : k));
     updateClip(clip.id, { keyframes: kfs });
+  };
+
+  // W4: 关键帧属性值编辑（合并更新单个属性）
+  const setProperty = (time: number, prop: string, value: number) => {
+    pushHistory();
+    updateKeyframe(clip.id, time, { [prop]: value });
   };
 
   const jumpTo = (dir: 1 | -1) => {
@@ -969,6 +976,28 @@ function KeyframeEditor({ clip }: { clip: Clip }) {
               >
                 {EASING_NAMES.map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
+              {/* W4: 属性值编辑（opacity/speed/scale/position 等数值直接改） */}
+              {Object.entries(kf.properties).length > 0 && (
+                <div className="flex items-center gap-1 flex-wrap shrink-0 max-w-[140px]">
+                  {Object.entries(kf.properties).map(([prop, val]) => (
+                    <label key={prop} className="flex items-center gap-0.5 text-caption font-mono text-on-surface-variant"
+                      title={`${prop} = ${val}`}>
+                      <span className="text-[10px] uppercase">{shortPropLabel(prop)}</span>
+                      <input
+                        type="number"
+                        step="0.05"
+                        value={Math.round(val * 100) / 100}
+                        onChange={(e) => {
+                          const n = Number(e.target.value);
+                          if (Number.isFinite(n)) setProperty(kf.time, prop, n);
+                        }}
+                        className="w-12 bg-surface rounded-cw-xs px-1 py-0.5 text-caption font-mono text-on-surface
+                          outline-none border border-outline-variant/30 focus:border-primary"
+                      />
+                    </label>
+                  ))}
+                </div>
+              )}
               {/* M5: 显示速度属性，可单独删除 */}
               {kf.properties.speed !== undefined && (
                 <span className="shrink-0 flex items-center gap-1 text-caption font-mono text-track-video"
@@ -1131,6 +1160,15 @@ function clipLabel(clip: Clip, kind: string): string {
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+/** W4: 关键帧属性名缩写（position_x → x 等）。 */
+function shortPropLabel(prop: string): string {
+  const map: Record<string, string> = {
+    opacity: 'op', speed: 'sp', scale: 'sc', rotation: 'rot',
+    position_x: 'x', position_y: 'y', fx_brightness: 'br', fx_contrast: 'ct',
+  };
+  return map[prop] ?? prop.replace('position_', '').slice(0, 4);
 }
 
 /** M6: 淡入/淡出滑块上限 = 片段时长（至少 0.1s），避免越过片段边界。 */

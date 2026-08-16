@@ -138,4 +138,24 @@ describe('historyStore', () => {
     useHistoryStore.getState().pushState(tl1);
     expect(useHistoryStore.getState().undoStack).toHaveLength(1);
   });
+
+  it('W7: jumpTo 返回目标快照并丢弃其后历史', () => {
+    const tl1 = makeTimeline('tl-1');
+    const tl2 = makeTimeline('tl-2');
+    const tl3 = makeTimeline('tl-3');
+    useHistoryStore.getState().pushState(tl1);
+    useHistoryStore.getState().pushState(tl2);
+    useHistoryStore.getState().pushState(tl3);
+    expect(useHistoryStore.getState().undoStack).toHaveLength(3);
+
+    const result = useHistoryStore.getState().jumpTo(0); // 跳到最旧
+    expect(result?.id).toBe('tl-1');
+    expect(useHistoryStore.getState().undoStack).toHaveLength(0);
+    expect(useHistoryStore.getState().canUndo()).toBe(false);
+
+    // 越界返回 null
+    useHistoryStore.getState().pushState(tl1);
+    expect(useHistoryStore.getState().jumpTo(5)).toBeNull();
+    expect(useHistoryStore.getState().jumpTo(-1)).toBeNull();
+  });
 });

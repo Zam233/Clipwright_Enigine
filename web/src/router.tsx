@@ -7,6 +7,7 @@ import {
 } from '@tanstack/react-router';
 import { lazy, Suspense } from 'react';
 import { HomePage } from './pages/HomePage';
+import { RouteErrorFallback } from './components/RouteErrorFallback';
 
 // Route-level code splitting: every page (except the landing HomePage) is
 // lazy-loaded into its own chunk to keep the initial bundle small.
@@ -62,6 +63,7 @@ const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
   component: HomePage,
+  errorComponent: RouteErrorFallback,
 });
 
 const editorRoute = createRoute({
@@ -77,138 +79,161 @@ const editorRoute = createRoute({
     }
   },
   component: EditorPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings',
   component: SettingsPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const exportRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/export/$projectId',
   component: ExportPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const personaRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/persona',
   component: PersonaPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const personaDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/persona/$personaId',
   component: PersonaDetailPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const personaForgeRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/persona/forge',
   component: PersonaForgePage,
+  errorComponent: RouteErrorFallback,
 });
 
 const helpRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/help',
   component: HelpPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const modelsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/models',
   component: ModelsPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const toolsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/tools',
   component: ToolsPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const pluginsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/plugins',
   component: PluginsPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const typeMakerRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/type-maker',
   component: TypeMakerPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const templatesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/templates',
   component: TemplatesPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const webhooksRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/webhooks',
   component: WebhooksPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const learningRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/learning',
   component: LearningPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const videoEditorRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/video-editor',
   component: VideoEditorPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const fontsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/fonts',
   component: FontsPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const subtitleToolsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/subtitle-tools',
   component: SubtitleToolsPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const preprocessRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/preprocess',
   component: PreprocessPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const pipelineAdminRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/pipeline-admin',
   component: PipelineAdminPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const voiceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/voice',
   component: VoicePage,
+  errorComponent: RouteErrorFallback,
 });
 
 const projectsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/projects',
   component: ProjectsPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/login',
   component: LoginPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const marketRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/market',
   component: MarketPage,
+  errorComponent: RouteErrorFallback,
 });
 
 const routeTree = rootRoute.addChildren([

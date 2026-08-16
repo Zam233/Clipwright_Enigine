@@ -19,6 +19,8 @@ interface HistoryState {
   redo: () => Timeline | null;
   canUndo: () => boolean;
   canRedo: () => boolean;
+  /** W7: 跳转到历史栈中指定索引的快照（0 = 最旧）。返回该时间线并清空其后历史。 */
+  jumpTo: (index: number) => Timeline | null;
   clear: () => void;
 }
 
@@ -86,5 +88,18 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
 
   canUndo: () => get().undoStack.length > 0,
   canRedo: () => get().redoStack.length > 0,
+
+  jumpTo: (index) => {
+    const { undoStack } = get();
+    if (index < 0 || index >= undoStack.length) return null;
+    const entry = undoStack[index];
+    // 跳转后丢弃该条目之后的历史（与常规编辑语义一致）
+    set({
+      undoStack: undoStack.slice(0, index),
+      redoStack: [],
+    });
+    return entry.timeline;
+  },
+
   clear: () => set({ undoStack: [], redoStack: [] }),
 }));

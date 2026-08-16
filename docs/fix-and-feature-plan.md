@@ -623,3 +623,9 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ? W16 mediaManager 缩略图 LRU 上限：单素材缓存上限 MAX_THUMBNAILS_PER_ENTRY=24，touchThumb 命中标记 + 超限淘汰最久未用 bucket，防数据 URL 内存无界增长
 - ? W17 historyStore 增量快照：全量 structuredClone 改为引用存储（O(1)），利用 timelineStore 不可变更新约定；同引用重复 push 去重（滑杆拖动不再灌满历史栈）；不可克隆值（函数等）现在可正常入栈 + 测试更新（4 项）
 - 回归：前端 329/329 + typecheck + build ?
+
+### 执行轮次 27（P7 薄弱项加固 · 第三批）
+- ? W8 per-route 错误边界：RouteErrorFallback（重试渲染/返回工作台/复制详情）+ 全部 24 条路由接入 TanStack Router errorComponent，页面渲染抛错不再白屏
+- ? W4 关键帧值编辑：关键帧行内数值输入（opacity/speed/scale/position 等属性直接改，updateKeyframe 合并更新，shortPropLabel 缩写）
+- ? W7 撤销历史列表：historyStore.jumpTo（跳转任意历史快照，丢弃其后）+ EditorToolbar 历史下拉（标签+时间，点击跳转）+ 测试 1 项
+- 回归：前端 330/330 + typecheck + build ?
