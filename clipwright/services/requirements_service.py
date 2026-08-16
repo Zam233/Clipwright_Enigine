@@ -611,11 +611,16 @@ class RequirementsService:
         user_message: str,
         timeline: dict[str, Any],
         selected_clip_ids: list[str],
+        region_start_sec: float | None = None,
+        region_end_sec: float | None = None,
     ) -> dict:
         """时间线编辑：意图分类 → 换素材 / 重做动画 / 数值调整 → 返回 proposed_timeline。
 
         timeline 入参为 dict；构建子集/合并时须 Timeline.model_validate 转为 pydantic，
         返回前 model_dump(mode="json") 序列化。
+
+        W12: 区域级返工 — 提供 region_start/end 时，把编辑范围限制在该时间窗内的片段
+        （意图分类只看到区域内片段；selected_clip_ids 若为空则自动取区域内片段）。
         """
         await self._ensure_cleanup()
         session_data = await asyncio.to_thread(self.get_session, session_id)
@@ -636,6 +641,17 @@ class RequirementsService:
         })
 
         proposed: Timeline | None = Timeline.model_validate(timeline) if timeline else None
+
+        # W12: 区域级返工 — 收集时间窗内的片段 id（供意图分类与编辑动作限定范围）
+        region_clip_ids: list[str] = []
+        if proposed is not None and region_start_sec is not None and region_end_sec is not None:
+            lo, hi = min(region_start_sec, region_end_sec), max(region_start_sec, region_end_sec)
+            for track in proposed.tracks or []:
+                for clip in track.clips or []:
+                    if clip.start_sec < hi and clip.start_sec + clip.duration_sec > lo:
+                        region_clip_ids.append(clip.id)
+        scope_ids = selected_clip_ids if selected_clip_ids else region_clip_ids
+
         reply_parts: list[str] = []
         action = "adjust"  # 最保守默认：不回退、不越权
 
@@ -667,20 +683,20 @@ class RequirementsService:
         except Exception as e:
             logger.warning("编辑意图分类失败，默认 adjust: %s", e)
 
-        if proposed is not None and selected_clip_ids:
+        if proposed is not None and scope_ids:
             try:
                 if action == "replace_material":
                     proposed, notes = await self._edit_replace_material(
-                        proposed, selected_clip_ids, session_id, brief_data, plan_data, user_inputs,
+                        proposed, scope_ids, session_id, brief_data, plan_data, user_inputs,
                     )
                     reply_parts.extend(notes)
                 elif action == "redo_animation":
                     proposed, notes = await self._edit_redo_animation(
-                        proposed, selected_clip_ids, session_id, brief_data, plan_data, user_inputs,
+                        proposed, scope_ids, session_id, brief_data, plan_data, user_inputs,
                     )
                     reply_parts.extend(notes)
                 else:
-                    proposed, notes = await self._edit_adjust(proposed, selected_clip_ids, user_message)
+                    proposed, notes = await self._edit_adjust(proposed, scope_ids, user_message)
                     reply_parts.extend(notes)
             except Exception as e:
                 logger.exception("时间线编辑执行失败: %s", e)

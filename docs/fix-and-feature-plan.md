@@ -673,3 +673,8 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ? W10 LLM 流式：管线 llm 事件经 SSE trace 实时消费（AgentPanel 每条 LLM 调用即时展示）+ W1 requirements streamChat 已覆盖对话流式 —— 视为已满足
 - 回归：前端 332/332 + typecheck + build ?
 - P7 剩余：W12 区域级返工（较大，转下一轮或与 P8 并行）
+
+### 执行轮次 37（P7 薄弱项加固 · 第十三批 — P7 完成）
+- ? W12 区域级返工：EditRequest + region_start_sec/region_end_sec（后端收集区域内片段作为编辑范围，selected_clip_ids 为空时自动取区域内）+ requirementsApi.edit 类型 + AgentPanel.sendEdit 附带当前 range 选区（M14 工具）+ 测试 1 项
+- ✅ **P7 全部完成**（后端 C 组 11 项 + 补录 C12 + 前端 W 组 15 项 + 补录 W16/W17/W18）
+- 回归：后端 1063/1063 ?；前端 332/332 + typecheck + build ?

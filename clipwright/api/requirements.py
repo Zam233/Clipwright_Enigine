@@ -39,6 +39,9 @@ class EditRequest(BaseModel):
     message: str
     timeline: dict[str, Any] = {}
     selected_clip_ids: list[str] = []
+    # W12: 区域级返工 — 编辑范围（秒）；提供时仅返回/改写该时间窗内的片段
+    region_start_sec: float | None = None
+    region_end_sec: float | None = None
 
 
 class ProceedRequest(BaseModel):
@@ -76,6 +79,8 @@ async def edit_timeline(req: EditRequest) -> dict:
         result = await asyncio.wait_for(
             _service.edit_timeline(
                 req.session_id, req.message, req.timeline, req.selected_clip_ids,
+                region_start_sec=req.region_start_sec,
+                region_end_sec=req.region_end_sec,
             ),
             timeout=EDIT_HARD_TIMEOUT,
         )

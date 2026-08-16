@@ -245,11 +245,17 @@ function RequirementsView() {
     addMessage({ id: uid('m'), role: 'user', content, timestamp: new Date().toISOString() });
     setBusy(true);
     try {
+      // W12: 区域级返工 — 附带当前范围选择（M14 range 工具），后端限定编辑窗口
+      const sel = useSelectionStore.getState();
+      const region = (sel.rangeStart != null && sel.rangeEnd != null)
+        ? { region_start_sec: sel.rangeStart, region_end_sec: sel.rangeEnd }
+        : {};
       const res = await requirementsApi.edit({
         session_id: sessionId,
         message,
         timeline: useTimelineStore.getState().timeline,
         selected_clip_ids: selectedClipIds,
+        ...region,
       });
       if (res.proposed_timeline) {
         // 触发既有 TimelineDiffView 审阅覆盖层；接受/合并时 TimelineDiffView 会注册真实媒体
