@@ -6,7 +6,7 @@ import { useTimelineStore } from '@/stores/timelineStore';
 import { Markdown } from '@/components/shared/Markdown';
 import { TimelineDiffView } from './TimelineDiffView';
 import { resolveMessageAttachments } from './requirementsAttachments';
-import { pipelineApi, requirementsApi } from '@/services/api';
+import { pipelineApi, requirementsApi, personaApi } from '@/services/api';
 import { fetchSseToken, withSseToken } from '@/services/api/sse';
 import { useBackendHealth } from '@/pages/useBackendHealth';
 import { Button } from '@/components/ui';
@@ -557,6 +557,15 @@ function BottomBar() {
   const cancelling = useAgentStore((s) => s.cancelling);
   const setCancelling = useAgentStore((s) => s.setCancelling);
 
+  // M13: 编辑器内 Persona 切换
+  const personaId = useProjectStore((s) => s.personaId);
+  const [personas, setPersonas] = useState<string[]>([]);
+  useEffect(() => {
+    let alive = true;
+    personaApi.listIds().then((ids) => { if (alive) setPersonas(Array.isArray(ids) ? ids : []); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
   const esRef = useRef<EventSource | null>(null);
   const lastTimelineRef = useRef<Timeline | null>(null);
   // SSE 断线重连定时器
@@ -793,6 +802,25 @@ function BottomBar() {
               <X className="w-3.5 h-3.5 mr-1" />
               {cancelling ? '取消中…' : '停止'}
             </Button>
+          </div>
+          {/* M13: 编辑器内 Persona 切换 */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className="text-caption text-on-surface-variant/60">Persona</span>
+            <select
+              value={personaId ?? 'default'}
+              onChange={(e) => {
+                const v = e.target.value === 'default' ? null : e.target.value;
+                useProjectStore.getState().setPersonaId(v);
+                useProjectStore.getState().requestSave();
+              }}
+              className="bg-surface-container border border-outline-variant/30 rounded-cw-xs px-1.5 py-1 text-caption text-on-surface outline-none cursor-pointer max-w-[160px]"
+              aria-label="选择 Persona"
+            >
+              <option value="default">默认</option>
+              {personas.map((id) => (
+                <option key={id} value={id}>{id}</option>
+              ))}
+            </select>
           </div>
           {PHASE_ORDER.map((p) => {
             const idx = PHASE_ORDER.indexOf(p);

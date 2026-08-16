@@ -24,6 +24,10 @@ vi.mock('@/services/api', () => ({
     proceed: vi.fn(),
     upload: vi.fn().mockResolvedValue({ file_name: 'ref.txt', content_preview: 'x' }),
   },
+  personaApi: {
+    listIds: vi.fn().mockResolvedValue([]), // M13
+    list: vi.fn().mockResolvedValue([]),
+  },
 }));
 
 // P0-9/10: SSE 挂接异步化——测试环境直接返回空 token（开放模式语义）
@@ -91,7 +95,9 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
-  vi.restoreAllMocks();
+  // M13: personaApi.listIds 等工厂级 vi.fn() 实现必须在测试间保留——
+  // restoreAllMocks 会把实现清成 undefined，导致后续挂载 .then 崩溃。
+  vi.clearAllMocks();
 });
 
 describe('U5: SSE reconnect cap', () => {

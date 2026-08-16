@@ -44,6 +44,8 @@ export class TimelineEngine {
   private lastClickTime = 0;
   private lastClickX = 0;
   markers: Marker[] = [];
+  /** M14: 范围工具点击回调（面板接线：两击设置 In/Out 区间） */
+  onRangePoint: ((t: number) => void) | null = null;
   /** Drop feedback animation: green=placed before/after, red=reject (middle) */
   dropFeedback: { type: 'before' | 'after' | 'reject'; clipId: string; trackId: string; time: number } | null = null;
   private feedbackTimer: ReturnType<typeof setTimeout> | null = null;
@@ -333,6 +335,12 @@ export class TimelineEngine {
       const t = xToTime(x, L);
       useHistoryStore.getState().pushState(timeline, 'split');
       useTimelineStore.getState().splitClip(hit.clip.id, t);
+      return;
+    }
+
+    // M14: 范围工具 → 两击设置区间（回调由面板接线，设置 In/Out loopRegion）
+    if (selection.toolMode === 'range') {
+      this.onRangePoint?.(xToTime(x, L));
       return;
     }
 

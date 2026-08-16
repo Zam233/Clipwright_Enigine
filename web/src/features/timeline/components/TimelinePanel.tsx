@@ -52,6 +52,22 @@ export function TimelinePanel() {
     const engine = new TimelineEngine(canvasRef.current);
     engineRef.current = engine;
 
+    // M14: 范围工具两击设置 In/Out 区间
+    engine.onRangePoint = (t) => {
+      const sel = useSelectionStore.getState();
+      if (sel.rangeStart == null) {
+        sel.setRange(Math.max(0, t), null);
+        sel.setRangeSelecting(true);
+      } else {
+        const a = sel.rangeStart;
+        const b = Math.max(0, t);
+        sel.setRange(Math.min(a, b), Math.max(a, b));
+        sel.setRangeSelecting(false);
+        sel.setToolMode('select');
+        usePreviewStore.getState().setLoopRegion({ start: Math.min(a, b), end: Math.max(a, b) });
+      }
+    };
+
     const handleResize = () => engine.resize();
     const ro = new ResizeObserver(handleResize);
     if (containerRef.current) ro.observe(containerRef.current);

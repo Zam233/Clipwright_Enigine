@@ -79,6 +79,14 @@ export function ExportPage() {
   const [settings, setSettings] = useState<ExportSettings>({
     preset: 'bilibili', width: 1920, height: 1080, fps: 30, bitrate: '6M',
   });
+  // C6: 自定义导出预设（localStorage）
+  const [savedPresets, setSavedPresets] = useState<{ name: string; width: number; height: number; fps: number; bitrate: string }[]>(() => {
+    try {
+      const raw = localStorage.getItem('cw_export_presets');
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  });
+  const [presetName, setPresetName] = useState('');
   const [apiPresets, setApiPresets] = useState<Record<string, Partial<PresetDef>> | null>(null);
   const [loadingPresets, setLoadingPresets] = useState(true);
   const [queue, setQueue] = useState<QueueItem[]>([]);
@@ -351,6 +359,47 @@ export function ExportPage() {
             <h3 className="flex items-center gap-2 text-label font-medium text-on-surface-variant uppercase tracking-wide">
               <Gauge className="w-3.5 h-3.5" /> 参数
             </h3>
+            {/* C6: 自定义预设保存/应用 */}
+            <div className="flex items-center gap-2">
+              <input
+                value={presetName}
+                onChange={(e) => setPresetName(e.target.value)}
+                placeholder="预设名称（如 竖屏 4K）"
+                className="flex-1 bg-surface rounded-cw-xs px-2 py-1.5 text-body-sm text-on-surface outline-none border border-outline-variant/30 focus:border-primary"
+              />
+              <button
+                onClick={() => {
+                  const name = presetName.trim();
+                  if (!name) return;
+                  const next = [...savedPresets.filter((p) => p.name !== name), { name, width: settings.width, height: settings.height, fps: settings.fps, bitrate: settings.bitrate }];
+                  setSavedPresets(next);
+                  localStorage.setItem('cw_export_presets', JSON.stringify(next));
+                  setPresetName('');
+                }}
+                className="px-2.5 py-1.5 rounded-cw-xs bg-surface-container-high text-label-sm text-on-surface hover:bg-primary/20 cursor-pointer"
+                title="保存当前参数为自定义预设"
+              >
+                另存为预设
+              </button>
+            </div>
+            {savedPresets.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {savedPresets.map((p) => (
+                  <span key={p.name}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-cw-full bg-surface-container-high border border-outline-variant/30 text-caption cursor-pointer hover:border-primary/60"
+                    title={`${p.width}×${p.height} · ${p.fps}fps · ${p.bitrate}`}
+                  >
+                    <button onClick={() => { setSettings({ ...settings, width: p.width, height: p.height, fps: p.fps, bitrate: p.bitrate }); setPresetId(''); }}
+                      className="hover:text-primary">{p.name}</button>
+                    <button onClick={() => {
+                      const next = savedPresets.filter((x) => x.name !== p.name);
+                      setSavedPresets(next);
+                      localStorage.setItem('cw_export_presets', JSON.stringify(next));
+                    }} className="text-on-surface-variant/50 hover:text-error" aria-label={`删除预设 ${p.name}`}>×</button>
+                  </span>
+                ))}
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <NumField label="宽度" value={settings.width} onChange={(v) => setSettings({ ...settings, width: v })} min={320} max={7680} step={2} />
               <NumField label="高度" value={settings.height} onChange={(v) => setSettings({ ...settings, height: v })} min={240} max={4320} step={2} />
