@@ -12,6 +12,7 @@ import { Button, Tooltip } from '@/components/ui';
 import { formatTimecode, uid } from '@/lib/utils';
 import type { Clip } from '@/types/timeline';
 import type { ClipKind } from '@/types/timeline';
+import { createEmptyTimeline } from '@/types/timeline';
 import {
   Play, Pause, SkipBack, SkipForward, StepBack, StepForward,
   Undo2, Redo2, Save, PanelLeft, PanelRight, Bot, Film,
@@ -80,6 +81,56 @@ export function EditorToolbar() {
     if (found.length > 0) {
       // 按起始时间排序：粘贴偏移以最早的片段为锚点
       clipClipboard.clips = [...found].sort((a, b) => a.start_sec - b.start_sec);
+    }
+  };
+
+  // C7: 代理工作流（生成代理 / 切换代理·原片）
+  const [proxyBusy, setProxyBusy] = useState(false);
+  const [proxyMode, setProxyMode] = useState<'full' | 'proxy'>('full');
+  const [proxyNotice, setProxyNotice] = useState<string | null>(null);
+
+  const handleGenerateProxy = async () => {
+    // 以第一个视频片段/素材作为输入
+    const store = useTimelineStore.getState();
+    let inputPath = '';
+    outer: for (const tr of store.timeline.tracks) {
+      for (const c of tr.clips) {
+        if (c.asset_id && (c.kind === 'video' || c.kind === 'image')) { inputPath = c.asset_id; break outer; }
+      }
+    }
+    if (!inputPath) { setProxyNotice('时间轴中没有视频片段，无法生成代理'); return; }
+    setProxyBusy(true);
+    setProxyNotice(null);
+    try {
+      const { proxyApi } = await import('@/services/api');
+      const res = await proxyApi.generate(inputPath);
+      setProxyNotice(`代理已生成：${String((res as Record<string, unknown>).proxy_path ?? '完成')}`);
+    } catch {
+      setProxyNotice('代理生成失败（后端离线或文件不可达）');
+    } finally {
+      setProxyBusy(false);
+    }
+  };
+
+  const handleToggleProxy = async () => {
+    const store = useTimelineStore.getState();
+    const tl = store.timeline;
+    setProxyBusy(true);
+    setProxyNotice(null);
+    try {
+      const { proxyApi } = await import('@/services/api');
+      const next = proxyMode === 'full' ? 'proxy' : 'full';
+      const result = next === 'proxy'
+        ? await proxyApi.switchToProxy(tl as unknown as Record<string, unknown>)
+        : await proxyApi.switchToFull(tl as unknown as Record<string, unknown>);
+      useHistoryStore.getState().pushState(tl, 'proxy-switch');
+      useTimelineStore.getState().setTimeline(result as unknown as ReturnType<typeof createEmptyTimeline>);
+      setProxyMode(next);
+      setProxyNotice(next === 'proxy' ? '已切换到代理素材（低分辨率）' : '已切回原始素材（全分辨率）');
+    } catch {
+      setProxyNotice('切换失败（后端离线）');
+    } finally {
+      setProxyBusy(false);
     }
   };
 
@@ -489,6 +540,33 @@ export function EditorToolbar() {
             <Upload className="w-3.5 h-3.5" />
           </button>
         </Tooltip>
+
+        {/* C7: 代理工作流 */}
+        <div className="flex items-center gap-0.5 px-1.5 py-1 rounded-cw-sm bg-surface-container border border-outline-variant/30 ml-1">
+          <Tooltip side="bottom" content="生成代理（首个视频片段）">
+            <button onClick={handleGenerateProxy} disabled={proxyBusy}
+              className="p-1 rounded-cw-xs text-on-surface-variant hover:text-primary disabled:opacity-30 transition-colors cursor-pointer"
+              aria-label="生成代理">
+              {proxyBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Film className="w-3.5 h-3.5" />}
+            </button>
+          </Tooltip>
+          <Tooltip side="bottom" content={proxyMode === 'full' ? '切换到代理素材' : '切回原始素材'}>
+            <button onClick={handleToggleProxy} disabled={proxyBusy}
+              className={`p-1 rounded-cw-xs transition-colors cursor-pointer disabled:opacity-30 ${
+                proxyMode === 'proxy' ? 'text-primary bg-primary/10' : 'text-on-surface-variant hover:text-primary'
+              }`}
+              aria-label="切换代理/原片">
+              {proxyBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : (
+                <span className="text-caption font-mono px-0.5">{proxyMode === 'full' ? '原片' : '代理'}</span>
+              )}
+            </button>
+          </Tooltip>
+          {proxyNotice && (
+            <span className="max-w-[160px] truncate text-caption text-on-surface-variant/80 px-1" title={proxyNotice}>
+              {proxyNotice}
+            </span>
+          )}
+        </div>
         <Tooltip side="bottom" content="素材面板">
           <button onClick={() => togglePanel('assets')}
             className={`p-1.5 rounded-cw-xs transition-colors cursor-pointer ${panels.assets ? 'text-primary bg-primary/10' : 'text-on-surface-variant hover:text-on-surface'}`}>

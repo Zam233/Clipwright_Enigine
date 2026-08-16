@@ -27,5 +27,7 @@ async def switch_to_proxy(
     timeline: dict = Body(...),
     proxy_suffix: str = Body(default="_proxy_720p"),
 ) -> dict:
-    """将 Timeline 中的素材路径替换为代理路径。"""
-    return ProxyGenerator.switch_to_proxy(timeline, proxy_suffix)
+    """将 Timeline 中的素材路径替换为代理路径（proxy_suffix='' 时还原原片，C7）。"""
+    if proxy_suffix and proxy_suffix.strip():
+        return ProxyGenerator.switch_to_proxy(timeline, proxy_suffix)
+    return ProxyGenerator.switch_to_full(timeline)

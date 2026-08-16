@@ -98,3 +98,27 @@ class ProxyGenerator:
                     if proxy_candidate.exists():
                         clip["asset_id"] = str(proxy_candidate)
         return tl
+
+    @staticmethod
+    def switch_to_full(timeline_json: dict) -> dict:
+        """将 Timeline 中的代理路径还原为原始素材路径（C7）。
+
+        识别形如 ``<stem>_proxy_<height>p<suffix>`` 的代理文件命名，
+        去掉代理段恢复原文件名；若目标路径已存在则替换，否则保持原样。
+        """
+        import copy
+        import re
+        tl = copy.deepcopy(timeline_json)
+        proxy_re = re.compile(r"^(?P<stem>.+?)_proxy_(?P<height>\d+)p(?P<suffix>\.[A-Za-z0-9]+)$")
+        for track in tl.get("tracks", []):
+            for clip in track.get("clips", []):
+                asset_id = clip.get("asset_id", "")
+                if not asset_id or asset_id.startswith("proxy_"):
+                    continue
+                m = proxy_re.match(asset_id)
+                if not m:
+                    continue
+                original = f"{m.group('stem')}{m.group('suffix')}"
+                if Path(original).exists():
+                    clip["asset_id"] = original
+        return tl
