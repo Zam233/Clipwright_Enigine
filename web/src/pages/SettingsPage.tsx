@@ -1,11 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { StandardLayout } from '@/layouts/StandardLayout';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { healthApi, assetApi, resetApiClient } from '@/services/api';
 import { getApiClient } from '@/services/api/client';
 import { Button, Badge, Slider } from '@/components/ui';
-import { Server, Palette, Ruler, Save, RefreshCw, Terminal, ChevronRight, FolderOpen, Clapperboard, Film, Captions, GraduationCap, Gauge } from 'lucide-react';
+import { Server, Palette, Ruler, Save, RefreshCw, Terminal, ChevronRight, FolderOpen, Clapperboard, Film, Captions, GraduationCap, Gauge, Keyboard } from 'lucide-react';
+import { keybindingEngine } from '@/features/keyboard/KeybindingEngine';
+import { useKeybindingStore } from '@/features/keyboard/keybindingStore';
 
 /**
  * SettingsPage — global configuration (API, theme, timeline defaults).
@@ -45,6 +47,41 @@ export function SettingsPage() {
       setHealth('fail');
     }
   };
+
+  // C4: 快捷键自定义
+  const kb = useKeybindingStore();
+  const [recordingId, setRecordingId] = useState<string | null>(null);
+
+  const captureOnceRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  useEffect(() => {
+    captureOnceRef.current = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      document.removeEventListener('keydown', captureOnceRef.current, true);
+      const id = recordingId;
+      setRecordingId(null);
+      if (!id) return;
+      if (e.key === 'Escape') return; // 取消
+      if (e.key === 'Backspace' || e.key === 'Delete') { kb.resetCombo(id); return; } // 恢复默认
+      const mods: string[] = [];
+      if (e.ctrlKey || e.metaKey) mods.push('ctrl');
+      if (e.shiftKey) mods.push('shift');
+      if (e.altKey) mods.push('alt');
+      const key = normalizeCaptureKey(e.key);
+      if (!key) return;
+      const combo = [...mods, key].join('+');
+      kb.setCombo(id, combo);
+    };
+  }, [recordingId, kb]);
+
+  const startRecord = (id: string) => {
+    setRecordingId(id);
+    setTimeout(() => document.addEventListener('keydown', captureOnceRef.current, true), 0);
+  };
+
+  useEffect(() => () => { document.removeEventListener('keydown', captureOnceRef.current, true); }, []);
+
+  const bindings = keybindingEngine.list();
 
   return (
     <StandardLayout title="全局设置">
@@ -263,6 +300,57 @@ export function SettingsPage() {
           </div>
           <ChevronRight className="w-4.5 h-4.5 text-on-surface-variant group-hover:text-primary group-hover:translate-x-1 transition-all shrink-0" />
         </button>
+
+        {/* C4: 快捷键自定义 */}
+        <Card icon={<Keyboard className="w-4 h-4" />} title="快捷键自定义">
+          <p className="text-caption text-on-surface-variant">
+            点击某个快捷键开始录制新组合键；Esc 取消，Delete/Backspace 恢复默认。
+          </p>
+          <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
+            {bindings.length === 0 && (
+              <p className="text-caption text-on-surface-variant/60 text-center py-3">暂无已注册的快捷键（打开编辑器后刷新）</p>
+            )}
+            {bindings.map((b) => {
+              const effective = keybindingEngine.effectiveCombo(b);
+              const isCustom = effective !== b.combo;
+              const recording = recordingId === b.id;
+              return (
+                <div key={b.id}
+                  className="flex items-center gap-2 px-3 py-2 rounded-cw-sm bg-surface-container border border-outline-variant/20">
+                  <span className="text-caption text-on-surface-variant w-20 shrink-0 truncate">{b.category}</span>
+                  <span className="text-body-sm text-on-surface flex-1 truncate">{b.label}</span>
+                  {recording ? (
+                    <span className="text-label-sm text-primary animate-pulse">按下新组合键…</span>
+                  ) : (
+                    <button onClick={() => startRecord(b.id)}
+                      className={`px-2 py-0.5 rounded-cw-xs text-label-sm font-mono transition-colors cursor-pointer ${
+                        isCustom ? 'text-primary bg-primary/10' : 'text-on-surface-variant bg-surface-container-high hover:text-on-surface'
+                      }`}
+                      title={isCustom ? `已自定义（默认 ${comboKeyLabel(b.combo)}）· 点击修改` : '点击修改'}
+                    >
+                      {comboKeyLabel(effective)}
+                    </button>
+                  )}
+                  {isCustom && !recording && (
+                    <button onClick={() => kb.resetCombo(b.id)}
+                      className="p-1 rounded-cw-xs text-caption text-on-surface-variant/50 hover:text-error transition-colors cursor-pointer"
+                      title="恢复默认">
+                      ⟲
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {bindings.length > 0 && (
+            <div className="flex justify-end pt-1">
+              <button onClick={() => kb.resetAll()}
+                className="px-3 py-1 rounded-cw-xs text-label-sm text-error hover:bg-error/10 transition-colors cursor-pointer">
+                全部恢复默认
+              </button>
+            </div>
+          )}
+        </Card>
       </div>
     </StandardLayout>
   );
@@ -296,4 +384,33 @@ function Stat({ label, value }: { label: string; value: string }) {
       <p className="text-caption text-on-surface-variant">{label}</p>
     </div>
   );
+}
+
+/** C4: 把 KeyboardEvent.key 归一化为 combo 键名（与 KeybindingEngine.parseCombo 对齐）。 */
+function normalizeCaptureKey(key: string): string {
+  const k = key.toLowerCase();
+  const map: Record<string, string> = {
+    ' ': 'space', esc: 'escape', 'delete': 'delete', backspace: 'backspace',
+    arrowup: 'arrowup', arrowdown: 'arrowdown', arrowleft: 'arrowleft', arrowright: 'arrowright',
+    enter: 'enter', tab: 'tab', home: 'home', end: 'end', pageup: 'pageup', pagedown: 'pagedown',
+  };
+  const mapped = map[k] ?? k;
+  // 单字符（字母/数字/标点）或功能键 F1-F24
+  if (/^[a-z0-9.,/;'\[\]\\`=\-]$/.test(mapped)) return mapped;
+  if (/^f([1-9]|1[0-9]|2[0-4])$/.test(mapped)) return mapped;
+  if (['space', 'escape', 'delete', 'backspace', 'enter', 'tab', 'home', 'end', 'pageup', 'pagedown',
+    'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(mapped)) return mapped;
+  return '';
+}
+
+/** C4: 快捷键速查（组合键展示）。 */
+function comboKeyLabel(combo: string): string {
+  return combo.split('+').map((p) => {
+    const map: Record<string, string> = {
+      ctrl: 'Ctrl', shift: 'Shift', alt: 'Alt', space: '␣',
+      arrowleft: '←', arrowright: '→', arrowup: '↑', arrowdown: '↓',
+      escape: 'Esc', delete: 'Del', backspace: '⌫', enter: 'Enter', tab: 'Tab',
+    };
+    return map[p] ?? p.toUpperCase();
+  }).join(' + ');
 }

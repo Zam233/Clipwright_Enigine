@@ -4,7 +4,11 @@
  * Bindings declare a combo string ("ctrl+z", "space", "shift+delete", "s"),
  * a human-readable label (for the cheat sheet), and an optional `when`
  * guard. The engine normalizes keydown events and dispatches to handlers.
+ *
+ * C4: 支持快捷键自定义 — 匹配时通过 keybindingStore 解析「生效 combo」
+ * （用户覆盖优先，否则用注册时的默认 combo）。
  */
+import { useKeybindingStore } from './keybindingStore';
 
 export interface KeyBinding {
   id: string;
@@ -70,6 +74,11 @@ export class KeybindingEngine {
     this.bindings = this.bindings.filter((b) => b.id !== id);
   }
 
+  /** 生效 combo：用户覆盖（C4）优先，否则注册默认值。 */
+  effectiveCombo(binding: KeyBinding): string {
+    return useKeybindingStore.getState().getCombo(binding.id, binding.combo);
+  }
+
   /** All registered bindings (for the cheat sheet). */
   list(): KeyBinding[] {
     return [...this.bindings];
@@ -91,7 +100,7 @@ export class KeybindingEngine {
     if (isInteractiveControl(e) && !hasModifier) return;
 
     const binding = this.bindings.find((b) => {
-      const m = parseCombo(b.combo);
+      const m = parseCombo(this.effectiveCombo(b));
       if (m.key !== combo.key) return false;
       if (m.ctrl !== (e.ctrlKey || e.metaKey)) return false;
       if (m.shift !== e.shiftKey) return false;

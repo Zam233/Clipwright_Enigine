@@ -16,13 +16,15 @@ export function ShortcutCheatSheet({ open, onClose }: { open: boolean; onClose: 
     return () => document.removeEventListener('keydown', handler);
   }, [open, onClose]);
   const grouped = useMemo(() => {
-    const map = new Map<string, { combo: string; label: string }[]>();
+    const map = new Map<string, { combo: string; label: string; isCustom: boolean }[]>();
     for (const b of keybindingEngine.list()) {
+      const combo = keybindingEngine.effectiveCombo(b);
       if (!map.has(b.category)) map.set(b.category, []);
-      map.get(b.category)!.push({ combo: b.combo, label: b.label });
+      map.get(b.category)!.push({ combo, label: b.label, isCustom: combo !== b.combo });
     }
     return [...map.entries()];
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   if (!open) return null;
 
@@ -58,7 +60,10 @@ export function ShortcutCheatSheet({ open, onClose }: { open: boolean; onClose: 
                 {items.map((item) => (
                   <div key={item.combo} className="flex items-center justify-between px-3 py-2 rounded-cw-sm bg-surface-container
                     border border-outline-variant/20 hover:border-outline/50 transition-colors duration-short3">
-                    <span className="text-body-sm text-on-surface">{item.label}</span>
+                    <span className="text-body-sm text-on-surface">
+                      {item.label}
+                      {item.isCustom && <span className="ml-2 text-caption text-primary">自定义</span>}
+                    </span>
                     <span className="flex items-center gap-1">
                       {item.combo.split('+').map((part, i) => (
                         <span key={i} className="flex items-center gap-1">

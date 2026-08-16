@@ -569,3 +569,7 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 ### 执行轮次 14（P6 编辑器专业能力 · 第六批）
 - ? A2 回收站/软删除：后端 ProjectManager.soft_delete/restore + list only_deleted 过滤（trash=1）+ /api/project/{id}/trash|restore|trash(DELETE) 三端点（owner 校验 + 审计）+ 前端 projectApi.trash/restore/purge + ProjectsPage 回收站视图（切换加载 trash 列表、恢复、确认后永久删除）+ 测试（后端 3 + 前端 4 新增、2 改写）
 - 回归：后端 1035/1035 ?；前端 291/291 + typecheck + build ?
+
+### 执行轮次 15（P6 编辑器专业能力 · 第七批）
+- ? C4 快捷键自定义 UI：keybindingStore（localStorage 持久化 overrides + isValidCombo 校验 + set/reset/resetAll/getCombo）+ KeybindingEngine.effectiveCombo（匹配走用户覆盖）+ ShortcutCheatSheet 显示生效组合与「自定义」标记 + SettingsPage 快捷键卡片（点击录制 / Esc 取消 / Delete 恢复默认 / 全部恢复）+ 测试 5 项
+- 回归：前端 296/296 + typecheck + build ?
