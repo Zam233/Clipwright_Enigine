@@ -315,6 +315,11 @@ export function PreviewPanel() {
         for (const clip of track.clips) {
           if (t < clip.start_sec || t >= clip.start_sec + clip.duration_sec) continue;
           if (clip.enabled === false) continue;
+          // C3: 嵌套序列 — 递归合成子时间线（深度上限 4，防循环）
+          if (clip.nested_timeline) {
+            drawNestedTimeline(ctx, clip, track, fx, fy, fw, fh, t, 0);
+            continue;
+          }
           drawClipToPreview(ctx, clip, track, fx, fy, fw, fh, t);
         }
       }
@@ -559,6 +564,39 @@ export function applyMaskClip(
     ctx.rect(mx, my, mw, mh);
   }
   ctx.clip();
+}
+
+/**
+ * C3: 嵌套序列合成 — 把子时间线的片段按父片段的时间窗口递归渲染。
+ * 父片段占 [start_sec, start_sec+duration)；嵌套时间线内的时刻 = t - start_sec。
+ * 深度上限 4 防止循环嵌套导致栈溢出。
+ */
+function drawNestedTimeline(
+  ctx: CanvasRenderingContext2D,
+  parent: Clip,
+  parentTrack: Track,
+  fx: number, fy: number, fw: number, fh: number,
+  t: number,
+  depth: number,
+) {
+  if (depth >= 4 || !parent.nested_timeline) return;
+  const nestedT = t - parent.start_sec;
+  const nt = parent.nested_timeline;
+  const sorted = orderTracksForComposite(nt.tracks);
+  for (const track of sorted) {
+    if (track.hidden) continue;
+    if (track.muted && (track.kind === 'audio' || track.kind === 'waveform')) continue;
+    for (const clip of track.clips) {
+      if (nestedT < clip.start_sec || nestedT >= clip.start_sec + clip.duration_sec) continue;
+      if (clip.enabled === false) continue;
+      if (clip.nested_timeline) {
+        // 深度优先：用 clip 自己的时间窗继续下钻
+        drawNestedTimeline(ctx, clip, track, fx, fy, fw, fh, clip.start_sec + nestedT, depth + 1);
+        continue;
+      }
+      drawClipToPreview(ctx, clip, track, fx, fy, fw, fh, nestedT);
+    }
+  }
 }
 
 function drawClipToPreview(

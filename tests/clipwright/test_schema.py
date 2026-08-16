@@ -238,6 +238,16 @@ class TestCaptionStyleFields:
         with pytest.raises(Exception):
             Clip(**self.CAPTION_ARGS, mask_type=";rm -rf")
 
+    def test_nested_timeline_field(self) -> None:
+        """C3: nested_timeline 字段默认 None，赋值后 round-trip 保持。"""
+        clip = Clip(**self.CAPTION_ARGS)
+        assert clip.nested_timeline is None
+        nested = {"id": "nest_1", "width": 1920, "height": 1080, "fps": 30, "duration_sec": 5, "tracks": [], "markers": []}
+        c2 = Clip(**self.CAPTION_ARGS, nested_timeline=nested)
+        restored = Clip(**c2.model_dump(mode="json"))
+        assert restored.nested_timeline is not None
+        assert restored.nested_timeline["id"] == "nest_1"
+
     def test_caption_style_fields_set_and_round_trip(self) -> None:
         """带全部新字段构造，序列化/反序列化后值不变（round-trip）。"""
         clip = Clip(

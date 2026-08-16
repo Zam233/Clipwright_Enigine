@@ -100,6 +100,12 @@ class Clip(BaseModel):
         description="归一化蒙版矩形 {x, y, w, h}，各值范围 0-1",
     )
 
+    # 嵌套序列（C3：片段内嵌子时间线，预览递归合成）
+    nested_timeline: Optional[dict] = Field(
+        default=None,
+        description="内嵌子时间线（完整 Timeline 结构）",
+    )
+
     # 文字内容（仅 text / caption 类型）
     text: Optional[str] = Field(default=None)
     font: Optional[str] = Field(default=None)

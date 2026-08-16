@@ -23,7 +23,7 @@ import type { Clip, ClipKind } from '@/types/timeline';
 import {
   SlidersHorizontal, Type, Diamond, Plus, Trash2, ChevronLeft, ChevronRight,
   Move, RotateCcw, Wand2, Eye, EyeOff, Shapes, BarChart3, Image as ImageIcon,
-  Copy, ClipboardPaste, Gauge, X,
+  Copy, ClipboardPaste, Gauge, X, Layers2, UnfoldVertical,
 } from 'lucide-react';
 
 // Coalesce rapid history pushes (slider drag / number input / typing) into a single
@@ -96,7 +96,6 @@ export function PropertiesPanel() {
   // M3: 跨项目复制/粘贴属性
   const { set: setClipboard, fields: clipboardFields, sourceKind } = useClipAttributeClipboard();
   const hasClipboardAttrs = clipboardFields !== null && Object.keys(clipboardFields).length > 0;
-
   const handleCopyAttributes = () => {
     if (!clip) return;
     setClipboard(extractCopyableAttributes(clip), trackKind as ClipKind);
@@ -114,6 +113,26 @@ export function PropertiesPanel() {
     // 全量 set：单片段用 updateClip，多选批量更新（沿用既有 set 语义）
     set(Object.fromEntries(entries) as Partial<Clip>);
     toast(`已粘贴 ${entries.length} 项属性`, 'success');
+  };
+
+  // C3: 嵌套序列 — 多选时折叠为嵌套片段；单选嵌套片段时可展开
+  const handleCreateNested = () => {
+    if (selectedClipIds.length < 2) return;
+    pushHistory();
+    const created = useTimelineStore.getState().createNestedSequence(selectedClipIds);
+    if (created) {
+      useSelectionStore.setState({ selectedClipIds: [created] });
+      toast('已创建嵌套序列', 'success');
+    } else {
+      toast('创建嵌套序列失败（需要 ≥2 个片段）', 'error');
+    }
+  };
+
+  const handleExpandNested = () => {
+    if (!clip?.nested_timeline) return;
+    pushHistory();
+    useTimelineStore.getState().expandNestedSequence(clip.id);
+    toast('已展开嵌套序列', 'success');
   };
 
   const color = TRACK_COLORS[trackKind as keyof typeof TRACK_COLORS] ?? '#4F8CFF';
@@ -153,6 +172,25 @@ export function PropertiesPanel() {
                 <ClipboardPaste className="w-3.5 h-3.5" />
               </button>
             </Tooltip>
+            {/* C3: 嵌套序列 — 多选折叠 / 单选嵌套片段展开 */}
+            {selectedClipIds.length > 1 && (
+              <Tooltip content={`折叠 ${selectedClipIds.length} 个片段为嵌套序列`}>
+                <button onClick={handleCreateNested}
+                  className="p-1.5 rounded-cw-xs text-on-surface-variant hover:text-tertiary transition-colors cursor-pointer"
+                  aria-label="创建嵌套序列">
+                  <Layers2 className="w-3.5 h-3.5" />
+                </button>
+              </Tooltip>
+            )}
+            {clip?.nested_timeline && selectedClipIds.length === 1 && (
+              <Tooltip content="展开嵌套序列">
+                <button onClick={handleExpandNested}
+                  className="p-1.5 rounded-cw-xs text-on-surface-variant hover:text-tertiary transition-colors cursor-pointer"
+                  aria-label="展开嵌套序列">
+                  <UnfoldVertical className="w-3.5 h-3.5" />
+                </button>
+              </Tooltip>
+            )}
           </div>
         )}
       </div>

@@ -404,3 +404,57 @@ describe('timelineStore M2 (编组)', () => {
     expect(useTimelineStore.getState().getGroupClipIds(c)).toHaveLength(3);
   });
 });
+
+describe('timelineStore C3 (嵌套序列)', () => {
+  beforeEach(() => {
+    useTimelineStore.getState().setTimeline(createEmptyTimeline());
+  });
+
+  function threeClips() {
+    const tid = useTimelineStore.getState().addTrack('video', 'V1');
+    const c1 = useTimelineStore.getState().addClip(tid, { kind: 'video', start_sec: 2, duration_sec: 4 });
+    const c2 = useTimelineStore.getState().addClip(tid, { kind: 'video', start_sec: 6, duration_sec: 5 });
+    const c3 = useTimelineStore.getState().addClip(tid, { kind: 'video', start_sec: 11, duration_sec: 3 });
+    return { tid, c1, c2, c3 };
+  }
+
+  it('createNestedSequence：折叠 2+ 片段为嵌套片段（保留相对时间）', () => {
+    const { tid, c1, c2, c3 } = threeClips();
+    const nestId = useTimelineStore.getState().createNestedSequence([c1, c2])!;
+    expect(nestId).toBeTruthy();
+    const st = useTimelineStore.getState();
+    const nest = st.getClip(nestId)!;
+    expect(nest.nested_timeline).toBeTruthy();
+    // 起点 = 最小起点（2s），时长 = 总跨度（2→11 = 9s）
+    expect(nest.start_sec).toBeCloseTo(2, 5);
+    expect(nest.duration_sec).toBeCloseTo(9, 5);
+    // 原片段被移除
+    expect(st.getClip(c1)).toBeUndefined();
+    expect(st.getClip(c2)).toBeUndefined();
+    // 未选中的 c3 保留
+    expect(st.getClip(c3)).toBeTruthy();
+    // 子时间线内的相对时间：c2 相对 2s 起点 → 4s
+    const nestedClips = nest.nested_timeline!.tracks.flatMap((t) => t.clips);
+    expect(nestedClips.some((c) => Math.abs(c.start_sec - 4) < 0.001)).toBe(true);
+    expect(nestedClips.some((c) => Math.abs(c.start_sec - 0) < 0.001)).toBe(true);
+  });
+
+  it('createNestedSequence：少于 2 个片段返回 null', () => {
+    const { c1 } = threeClips();
+    expect(useTimelineStore.getState().createNestedSequence([c1])).toBeNull();
+  });
+
+  it('expandNestedSequence：子片段平铺回原轨道并删除嵌套片段', () => {
+    const { c1, c2 } = threeClips();
+    const nestId = useTimelineStore.getState().createNestedSequence([c1, c2])!;
+    useTimelineStore.getState().expandNestedSequence(nestId);
+    const st = useTimelineStore.getState();
+    expect(st.getClip(nestId)).toBeUndefined();
+    const clips = st.timeline.tracks.flatMap((t) => t.clips);
+    // 平铺回 2 个子片段（相对时间 + 父起点）
+    expect(clips.length).toBe(3); // 2 个展开 + 原 c3
+    const starts = clips.map((c) => c.start_sec).sort((a, b) => a - b);
+    expect(starts[0]).toBeCloseTo(2, 5);
+    expect(starts[1]).toBeCloseTo(6, 5);
+  });
+});

@@ -79,6 +79,9 @@ export interface Clip {
   /** 归一化蒙版矩形 {x, y, w, h}，各值 0-1 */
   mask_rect?: { x: number; y: number; w: number; h: number } | null;
 
+  /** C3: 嵌套序列 — 片段内嵌子时间线，预览递归合成 */
+  nested_timeline?: Timeline | null;
+
   // Text content (text / caption only)
   text?: string | null;
   font?: string | null;
@@ -194,6 +197,7 @@ export function createDefaultClip(
     image_rect: null,
     mask_type: null,
     mask_rect: null,
+    nested_timeline: null,
     text: null,
     font: null,
     font_size: null,

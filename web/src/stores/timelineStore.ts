@@ -56,6 +56,11 @@ interface TimelineState {
   ungroupClips: (clipIds: string[]) => void;
   getGroupClipIds: (clipId: string) => string[];
 
+  // C3: 嵌套序列
+  createNestedSequence: (clipIds: string[]) => string | null;
+  /** 展开嵌套序列：把内嵌子时间线的片段平铺回原轨道（按时间窗口重定位） */
+  expandNestedSequence: (clipId: string) => void;
+
   // Query helpers
   getTrack: (trackId: string) => Track | undefined;
   getClip: (clipId: string) => Clip | undefined;
@@ -633,6 +638,124 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
       }
     }
     return out;
+  },
+
+  // C3: 把选中片段折叠为一个嵌套序列片段（保留相对时间布局，替换为一个引用子时间线的 clip）
+  createNestedSequence: (clipIds) => {
+    const ids = [...new Set(clipIds)];
+    if (ids.length < 2) return null;
+    // 收集片段及其所在轨道
+    const state = get().timeline;
+    const selected: { clip: Clip; track: Track }[] = [];
+    for (const t of state.tracks) {
+      for (const c of t.clips) {
+        if (ids.includes(c.id)) selected.push({ clip: c, track: t });
+      }
+    }
+    if (selected.length < 2) return null;
+    const minStart = Math.min(...selected.map((s) => s.clip.start_sec));
+    const maxEnd = Math.max(...selected.map((s) => s.clip.start_sec + s.clip.duration_sec));
+    const duration = Math.max(0.1, maxEnd - minStart);
+    // 构建子时间线：每个来源轨道映射为一条子轨道，片段时间相对 minStart
+    const nestedTracks: Track[] = selected.map((s, i) => ({
+      id: uid('track'),
+      name: s.track.name,
+      kind: s.track.kind,
+      index: i,
+      locked: false,
+      muted: false,
+      clips: [{
+        ...s.clip,
+        id: uid('clip'),
+        track_id: '',
+        start_sec: s.clip.start_sec - minStart,
+      }],
+    }));
+    const nested: Timeline = {
+      id: uid('nest'),
+      width: state.width,
+      height: state.height,
+      fps: state.fps,
+      duration_sec: duration,
+      tracks: nestedTracks,
+      markers: [],
+    };
+    // 新建一个 video 轨道放置嵌套片段，移除原片段
+    const nestClipId = uid('clip');
+    const nestTrackId = uid('track');
+    const tracks = state.tracks.map((t) => ({
+      ...t,
+      clips: t.clips.filter((c) => !ids.includes(c.id)),
+    }));
+    tracks.push({
+      id: nestTrackId,
+      name: `嵌套序列 ${ids.length}`,
+      kind: 'video',
+      index: tracks.length,
+      locked: false,
+      muted: false,
+      clips: [{
+        ...createDefaultClip({
+          id: nestClipId,
+          kind: 'video',
+          track_id: nestTrackId,
+          start_sec: minStart,
+          duration_sec: duration,
+          nested_timeline: nested,
+        }),
+        id: nestClipId,
+        track_id: nestTrackId,
+        start_sec: minStart,
+        duration_sec: duration,
+        nested_timeline: nested,
+      }],
+    });
+    set({
+      timeline: { ...state, tracks, duration_sec: computeTotalDuration(tracks) },
+      isDirty: true,
+    });
+    return nestClipId;
+  },
+
+  // C3: 展开嵌套序列 — 子时间线片段平铺回（相对窗口 + 父片段起点），删除嵌套片段
+  expandNestedSequence: (clipId) => {
+    const state = get().timeline;
+    let parent: Clip | null = null;
+    let parentTrack: Track | null = null;
+    for (const t of state.tracks) {
+      for (const c of t.clips) {
+        if (c.id === clipId) { parent = c; parentTrack = t; }
+      }
+    }
+    if (!parent || !parent.nested_timeline) return;
+    const nt = parent.nested_timeline;
+    const flat: { clip: Clip; track: Track }[] = [];
+    for (const t of nt.tracks) {
+      for (const c of t.clips) {
+        flat.push({ clip: c, track: t });
+      }
+    }
+    if (flat.length === 0) return;
+    // 平铺到原轨道上（时间 = 父起点 + 相对时间）
+    const tracks = state.tracks.map((t) => ({
+      ...t,
+      clips: t.clips.filter((c) => c.id !== clipId),
+    }));
+    for (const { clip, track } of flat) {
+      const target = tracks.find((t) => t.id === parentTrack!.id) ?? tracks[0];
+      if (!target) continue;
+      target.clips.push({
+        ...clip,
+        id: uid('clip'),
+        track_id: target.id,
+        start_sec: parent!.start_sec + clip.start_sec,
+      });
+      target.clips.sort((a, b) => a.start_sec - b.start_sec);
+    }
+    set({
+      timeline: { ...state, tracks, duration_sec: computeTotalDuration(tracks) },
+      isDirty: true,
+    });
   },
 
   getTrack: (trackId) =>
