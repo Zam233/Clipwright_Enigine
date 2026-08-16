@@ -204,6 +204,19 @@ class TestCaptionStyleFields:
         assert clip.glow_color is None
         assert clip.glow_width is None
 
+    def test_audio_fade_fields(self) -> None:
+        """M6: 音频淡入淡出字段默认 None，赋值后 round-trip 保持，负值拒绝。"""
+        clip = Clip(**self.CAPTION_ARGS)
+        assert clip.audio_fade_in_sec is None
+        assert clip.audio_fade_out_sec is None
+        c2 = Clip(**self.CAPTION_ARGS, audio_fade_in_sec=0.5, audio_fade_out_sec=1.2)
+        data = c2.model_dump(mode="json")
+        restored = Clip(**data)
+        assert restored.audio_fade_in_sec == 0.5
+        assert restored.audio_fade_out_sec == 1.2
+        with pytest.raises(Exception):
+            Clip(**self.CAPTION_ARGS, audio_fade_in_sec=-1)
+
     def test_caption_style_fields_set_and_round_trip(self) -> None:
         """带全部新字段构造，序列化/反序列化后值不变（round-trip）。"""
         clip = Clip(

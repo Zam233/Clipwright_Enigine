@@ -72,6 +72,10 @@ class Clip(BaseModel):
     # 音频 EQ 预设
     eq_preset: Optional[str] = Field(default=None, description="音频 EQ 预设名称")
 
+    # 音频淡入淡出（M6：仅 audio / waveform 类型，渲染时 afade 应用）
+    audio_fade_in_sec: Optional[float] = Field(default=None, ge=0, description="音频淡入时长（秒）")
+    audio_fade_out_sec: Optional[float] = Field(default=None, ge=0, description="音频淡出时长（秒）")
+
     # 视频特效滤镜（仅 video / image 类型）
     fx_brightness: Optional[float] = Field(default=None, ge=0, le=2, description="亮度 0-2，默认 1")
     fx_contrast: Optional[float] = Field(default=None, ge=0, le=2, description="对比度 0-2，默认 1")

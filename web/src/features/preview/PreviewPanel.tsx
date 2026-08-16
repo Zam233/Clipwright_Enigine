@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTimelineStore } from '@/stores/timelineStore';
 import { usePreviewStore } from '@/stores/previewStore';
+import { useHistoryStore } from '@/stores/historyStore';
 import { TRACK_COLORS } from '@/types/timeline';
 import type { Clip, Track } from '@/types/timeline';
 import { captionBaselineY, captionFontSize } from './captionLayout';
 import { orderTracksForComposite } from './compositeOrder';
 import { computePreviewFrameRect, xToScrubTime } from './frameGeometry';
+import type { FrameRect } from './frameGeometry';
 import { formatTimecode, clamp } from '@/lib/utils';
 import { mediaManager } from '@/services/media/mediaManager';
 import { interpolateProperties } from '@/features/timeline/engine/easing';
@@ -40,6 +42,45 @@ export function PreviewPanel() {
   const toggleLoop = usePreviewStore((s) => s.toggleLoop);
   const volume = usePreviewStore((s) => s.volume);
   const setVolume = usePreviewStore((s) => s.setVolume);
+
+  // C1: 画布双击编辑文字 — 命中 text/caption 片段时打开内联编辑
+  const [editingText, setEditingText] = useState<{ clipId: string; text: string; x: number; y: number } | null>(null);
+  const editTextRef = useRef<HTMLTextAreaElement>(null);
+
+  const handleDoubleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    const wrap = wrapRef.current;
+    if (!canvas || !wrap) return;
+    const rect = wrap.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    const pst = usePreviewStore.getState();
+    const tl = useTimelineStore.getState().timeline;
+    const t = pst.currentTimeSec;
+    const fr = computePreviewFrameRect(rect.width, rect.height, tl.width, tl.height, pst.zoomLevel);
+    // 点击必须在帧内
+    if (px < fr.fx || px > fr.fx + fr.fw || py < fr.fy || py > fr.fy + fr.fh) return;
+    const hit = hitTestTextClipForEdit(px, py, fr, tl.tracks, t);
+    if (hit) setEditingText({ clipId: hit.clip.id, text: hit.clip.text ?? '', x: hit.x, y: hit.y });
+  }, []);
+
+  const commitTextEdit = useCallback(() => {
+    setEditingText((cur) => {
+      if (cur) {
+        useHistoryStore.getState().pushState(useTimelineStore.getState().timeline, 'edit-text');
+        useTimelineStore.getState().updateClip(cur.clipId, { text: cur.text });
+      }
+      return null;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (editingText) {
+      // 聚焦并选中全部文本，方便直接覆盖
+      const el = editTextRef.current;
+      if (el) { el.focus(); el.select(); }
+    }
+  }, [editingText]);
 
   // Sync duration from timeline
   useEffect(() => {
@@ -426,7 +467,27 @@ export function PreviewPanel() {
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerCancel}
+          onDoubleClick={handleDoubleClick}
         />
+        {/* C1: 画布内联文字编辑 */}
+        {editingText && (
+          <div className="absolute z-20" style={{ left: editingText.x, top: editingText.y, transform: 'translate(-50%, -50%)' }}>
+            <textarea
+              ref={editTextRef}
+              value={editingText.text}
+              onChange={(e) => setEditingText({ ...editingText, text: e.target.value })}
+              onBlur={commitTextEdit}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitTextEdit(); }
+                if (e.key === 'Escape') setEditingText(null);
+              }}
+              rows={2}
+              className="w-64 max-w-[80vw] bg-black/85 text-white text-center rounded-cw-xs
+                px-3 py-2 text-body outline-none border-2 border-primary/70 resize-none shadow-2xl"
+              aria-label="编辑文字"
+            />
+          </div>
+        )}
         {/* Centered play/pause overlay — visible when paused or on hover */}
         <button
           aria-label={isPlaying ? '暂停' : '播放'}
@@ -687,6 +748,34 @@ export interface Transform2D {
 }
 
 export const IDENTITY_TRANSFORM: Transform2D = { x: 0, y: 0, scale: 1, rotation: 0 };
+
+/**
+ * C1: 画布双击命中测试 — 返回 playhead 处、命中框内最顶层的 text/caption 片段。
+ * 命中框以文本锚点为中心：左右 fw*0.45、上下 fh*0.3。
+ */
+export function hitTestTextClipForEdit(
+  px: number, py: number,
+  frame: FrameRect,
+  tracks: Track[],
+  t: number,
+): { clip: Clip; x: number; y: number } | null {
+  const sorted = orderTracksForComposite(tracks).slice().reverse();
+  for (const track of sorted) {
+    if (track.hidden) continue;
+    if (track.kind !== 'text' && track.kind !== 'caption') continue;
+    const clip = track.clips.find((c) => t >= c.start_sec && t < c.start_sec + c.duration_sec && c.enabled !== false);
+    if (!clip) continue;
+    const align = clip.text_align ?? 'center';
+    const baseY = track.kind === 'caption' ? frame.fy + captionBaselineY(frame.fh) : frame.fy + frame.fh / 2;
+    const tf = getClipTransform(clip);
+    const ax = (align === 'left' ? frame.fx + frame.fw * 0.05 : align === 'right' ? frame.fx + frame.fw * 0.95 : frame.fx + frame.fw / 2) + tf.x * frame.fw;
+    const ay = baseY + tf.y * frame.fh;
+    if (Math.abs(px - ax) < frame.fw * 0.45 && Math.abs(py - ay) < frame.fh * 0.3) {
+      return { clip, x: ax, y: ay };
+    }
+  }
+  return null;
+}
 
 /** Read a clip's base transform from metadata (static edit) — keyframes animate on top. */
 export function getClipTransform(clip: Clip): Transform2D {

@@ -555,3 +555,8 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ? M11 转场可见性：时间轴片段首/尾转场徽标（类型 + 时长标签，hard_cut 除外）+ 预览合成 applyTransitionAlpha（fade/dissolve 等进/出窗口透明度渐变）+ 测试 6 项
 - ? 文档修复：fix-and-feature-plan.md §10 混编码（UTF-8+GBK）归一为 UTF-8
 - 回归：后端 1029/1029 ?；前端 274/274 + typecheck + build ?
+
+### 执行轮次 12（P6 编辑器专业能力 · 第四批）
+- ? M6 音频增益 + 淡入淡出 UI：Clip.audio_fade_in_sec/audio_fade_out_sec（前后端 schema，负值拒绝）+ 属性面板音频类轨道 增益滑块 0-200%（百分比标签）+ 淡入/淡出时长滑块（上限=片段时长）+ 测试（schema 1 + 面板 2）
+- ? C1 画布双击编辑文字：hitTestTextClipForEdit 命中测试（text/caption、隐藏/禁用跳过、倒序顶层优先、对齐/变换感知）+ 预览画布 onDoubleClick 内联 textarea 编辑（Enter 提交 / Esc 取消 / blur 提交，updateClip + history）+ 测试 9 项
+- 回归：后端 1030/1030 ?；前端 285/285 + typecheck + build ?

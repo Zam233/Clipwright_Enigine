@@ -56,6 +56,10 @@ export interface Clip {
   blend_mode?: string | null;
   enabled?: boolean;
   eq_preset?: string | null;
+  /** M6: 音频淡入时长（秒），仅 audio/waveform 使用 */
+  audio_fade_in_sec?: number | null;
+  /** M6: 音频淡出时长（秒），仅 audio/waveform 使用 */
+  audio_fade_out_sec?: number | null;
   label_color?: string | null;
   notes?: string | null;
 
@@ -171,6 +175,8 @@ export function createDefaultClip(
     label_color: null,
     notes: null,
     eq_preset: null,
+    audio_fade_in_sec: null,
+    audio_fade_out_sec: null,
     fx_brightness: null,
     fx_contrast: null,
     fx_saturation: null,

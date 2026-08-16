@@ -89,6 +89,9 @@ export function PropertiesPanel() {
 
   const color = TRACK_COLORS[trackKind as keyof typeof TRACK_COLORS] ?? '#4F8CFF';
 
+  // M6: 音频类轨道（audio/waveform）显示增益与淡入淡出
+  const isAudioLike = trackKind === 'audio' || trackKind === 'waveform';
+
   // 按素材类型决定渲染哪些分区（sectionsForKind 为单一事实来源）
   const sections = clip ? sectionsForKind(trackKind as ClipKind) : [];
 
@@ -177,8 +180,21 @@ export function PropertiesPanel() {
             <Section title="播放">
               <Slider label="速度" min={0.25} max={4} step={0.25} value={clip.speed}
                 onChange={(v) => { pushHistory(); set({ speed: v }); }} />
-              <Slider label="音量" min={0} max={1} step={0.05} value={round2(clip.volume)}
+              {/* M6: 音频增益 — 音量 0-200%（增益可 >100%） */}
+              <Slider label={isAudioLike ? `增益 ${Math.round(clip.volume * 100)}%` : '音量'}
+                min={0} max={isAudioLike ? 2 : 1} step={0.05} value={round2(clip.volume)}
                 onChange={(v) => { pushHistory(); set({ volume: v }); }} />
+              {/* M6: 音频淡入淡出 */}
+              {isAudioLike && (
+                <>
+                  <Slider label="淡入 (s)" min={0} max={fadeMaxSec(clip.duration_sec)} step={0.1}
+                    value={round2(clip.audio_fade_in_sec ?? 0)}
+                    onChange={(v) => { pushHistory(); set({ audio_fade_in_sec: v > 0 ? v : null }); }} />
+                  <Slider label="淡出 (s)" min={0} max={fadeMaxSec(clip.duration_sec)} step={0.1}
+                    value={round2(clip.audio_fade_out_sec ?? 0)}
+                    onChange={(v) => { pushHistory(); set({ audio_fade_out_sec: v > 0 ? v : null }); }} />
+                </>
+              )}
               {trackKind === 'audio' && (
                 <Row label="预设">
                   <select
@@ -936,4 +952,9 @@ function clipLabel(clip: Clip, kind: string): string {
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+/** M6: 淡入/淡出滑块上限 = 片段时长（至少 0.1s），避免越过片段边界。 */
+function fadeMaxSec(durationSec: number): number {
+  return Math.max(0.1, Math.round(durationSec * 100) / 100);
 }
