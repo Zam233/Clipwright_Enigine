@@ -2,6 +2,8 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './e2e',
+  // P0-11: 真实后端集成测试需 8080 后端就绪，移出默认套件（npm run test:e2e:integration 单独运行）
+  testIgnore: ['**/integration.spec.ts'],
   fullyParallel: true,
   retries: 0,
   workers: 1,

@@ -65,8 +65,10 @@ const prefs = loadEditorPrefs();
 const connPrefs = loadConnectionPrefs();
 
 export const useSettingsStore = create<SettingsState>((set) => ({
-  apiBaseUrl: connPrefs.apiBaseUrl || import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000',
-  wsUrl: connPrefs.wsUrl || import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws',
+  // P0-11: 默认空串（同源）；持久化的旧 localStorage 值仍会被 loadConnectionPrefs 采用——
+  // 仅当用户显式在设置中清空 API 地址时回落到空串。WS 已移除，wsUrl 保留兼容默认值。
+  apiBaseUrl: connPrefs.apiBaseUrl || import.meta.env.VITE_API_BASE_URL || '',
+  wsUrl: connPrefs.wsUrl || import.meta.env.VITE_WS_URL || 'ws://localhost:8080/ws',
   theme: prefs.theme,
   language: 'zh',
   authToken: connPrefs.authToken,

@@ -9,6 +9,7 @@ import { useSelectionStore } from '@/stores/selectionStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useAssetStore } from '@/stores/assetStore';
 import { useVoiceStore } from '@/stores/voiceStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { toast } from '@/stores/toastStore';
 import { projectApi, requirementsApi, getApiClient } from '@/services/api';
 import { mediaManager } from '@/services/media/mediaManager';
@@ -245,7 +246,8 @@ export function EditorPage() {
       if (!dirtyRef.current) return;
       const st = useProjectStore.getState();
       if (!st.projectId) return;
-      const base = getApiClient().defaults.baseURL || 'http://localhost:8000';
+      const base = getApiClient().defaults.baseURL || '';
+      const token = useSettingsStore.getState().authToken;
       // F3 负载大小守卫：>48KB 时退化为紧凑元数据，避免 keepalive 静默丢弃大负载
       const decision = decideFlushPayload({
         project_id: st.projectId,
@@ -264,7 +266,11 @@ export function EditorPage() {
       try {
         fetch(`${base}/api/project/${st.projectId}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            // P0-10: pagehide 冲刷走裸 fetch——补 Authorization 头，令牌模式下自动保存不再 401
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
           body: payload,
           keepalive: true,
         }).catch(() => {});

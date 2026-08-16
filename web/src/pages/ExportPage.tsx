@@ -3,6 +3,7 @@ import { useNavigate, useParams } from '@tanstack/react-router';
 import { useTimelineStore } from '@/stores/timelineStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { renderApi, projectApi } from '@/services/api';
+import { fetchSseToken, withSseToken } from '@/services/api/sse';
 import { toast } from '@/stores/toastStore';
 import { createEmptyTimeline } from '@/types/timeline';
 import { StandardLayout } from '@/layouts/StandardLayout';
@@ -212,8 +213,11 @@ export function ExportPage() {
 
   const openSSE = (taskId: string) => {
     if (esRefs.current.has(taskId)) return;
-    const es = new EventSource(renderApi.getQueueStreamUrl(taskId));
-    esRefs.current.set(taskId, es);
+    // P0-9/10: EventSource 无法带请求头 → 先取一次性 token 再挂接
+    void fetchSseToken().then((tok) => {
+      if (esRefs.current.has(taskId)) return;
+      const es = new EventSource(withSseToken(renderApi.getQueueStreamUrl(taskId), tok));
+      esRefs.current.set(taskId, es);
     // 后端发送的是未命名 data 消息（{type: progress/completed/failed/timeout}）
     es.onmessage = (e) => {
       let d: { type?: string; progress?: number; phase?: string; detail?: string; output_path?: string };
@@ -249,6 +253,7 @@ export function ExportPage() {
           : it,
       ));
     };
+    });
   };
 
   const simulateTimers = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
@@ -441,13 +446,17 @@ function QueueCard({ item, onRetry }: { item: QueueItem; onRetry?: () => void })
           </span>
         )}
         {item.status === 'completed' && !item.simulated && (item.filename || item.output_path) && (
-          <a
-            href={renderApi.getDownloadUrl(item.filename ?? '', item.output_path)}
-            className="p-2 rounded-cw-sm bg-track-audio/15 text-track-audio hover:bg-track-audio/25 transition-colors"
+          <button
+            onClick={() => {
+              renderApi.downloadFile(item.filename ?? '', item.output_path)
+                .catch(() => toast('下载失败 — 请重试', 'error'));
+            }}
+            className="p-2 rounded-cw-sm bg-track-audio/15 text-track-audio hover:bg-track-audio/25 transition-colors cursor-pointer"
             title="下载"
+            aria-label="下载成片"
           >
             <Download className="w-4 h-4" />
-          </a>
+          </button>
         )}
         {item.status === 'failed' && onRetry && (
           <button

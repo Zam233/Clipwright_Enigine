@@ -6,7 +6,9 @@ let client: AxiosInstance | null = null;
 
 export function getApiClient(): AxiosInstance {
   if (!client) {
-    const baseURL = useSettingsStore.getState().apiBaseUrl || 'http://localhost:8000';
+    // P0-11: 未配置 API 地址时同源（开发走 vite proxy，生产由后端挂载静态/反代）——
+    // 原 8000 fallback 与后端实际 8080 漂移导致「无 .env 的生产构建直连错误端口」
+    const baseURL = useSettingsStore.getState().apiBaseUrl || '';
     client = axios.create({
       baseURL,
       // 普通请求 60s 上限：后端一旦 hang 住能尽快失败，避免挂起连接越堆越多。

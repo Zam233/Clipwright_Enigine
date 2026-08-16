@@ -9,7 +9,7 @@ const { mocks, timelineState, projectState } = vi.hoisted(() => ({
     listQueue: vi.fn(),
     submitQueue: vi.fn(),
     getQueueStreamUrl: vi.fn(),
-    getDownloadUrl: vi.fn(),
+    downloadFile: vi.fn(),
     load: vi.fn(),
     toast: vi.fn(),
   },
@@ -25,9 +25,16 @@ vi.mock('@/services/api', () => ({
     listQueue: mocks.listQueue,
     submitQueue: mocks.submitQueue,
     getQueueStreamUrl: mocks.getQueueStreamUrl,
-    getDownloadUrl: mocks.getDownloadUrl,
+    downloadFile: mocks.downloadFile,
   },
   projectApi: { load: mocks.load },
+}));
+
+// P0-9/10: SSE 挂接异步化——测试环境直接返回空 token（开放模式语义）
+vi.mock('@/services/api/sse', () => ({
+  fetchSseToken: async () => '',
+  withSseToken: (url: string) => url,
+  apiBase: () => 'http://localhost:8000',
 }));
 
 vi.mock('@/stores/toastStore', () => ({ toast: mocks.toast }));
@@ -91,7 +98,7 @@ beforeEach(() => {
   mocks.listQueue.mockResolvedValue([]);
   mocks.load.mockRejectedValue(new Error('offline'));
   mocks.getQueueStreamUrl.mockImplementation((id: string) => `http://localhost:8000/stream/${id}`);
-  mocks.getDownloadUrl.mockReturnValue('http://localhost:8000/api/render/download/x.mp4');
+  mocks.downloadFile.mockResolvedValue(undefined);
 });
 
 afterEach(() => {

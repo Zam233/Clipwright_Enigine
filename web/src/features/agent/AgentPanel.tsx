@@ -7,6 +7,7 @@ import { Markdown } from '@/components/shared/Markdown';
 import { TimelineDiffView } from './TimelineDiffView';
 import { resolveMessageAttachments } from './requirementsAttachments';
 import { pipelineApi, requirementsApi } from '@/services/api';
+import { fetchSseToken, withSseToken } from '@/services/api/sse';
 import { useBackendHealth } from '@/pages/useBackendHealth';
 import { Button } from '@/components/ui';
 import { uid } from '@/lib/utils';
@@ -582,8 +583,11 @@ function BottomBar() {
 
   const openSSE = useCallback((pid: string) => {
     esRef.current?.close();
-    const es = new EventSource(pipelineApi.getTraceStreamUrl(pid));
-    esRef.current = es;
+    esRef.current = null; // P0-9/10: 挂接异步化（先取一次性 token）
+    void fetchSseToken().then((tok) => {
+      if (esRef.current) return; // 已有更新的挂接
+      const es = new EventSource(withSseToken(pipelineApi.getTraceStreamUrl(pid), tok));
+      esRef.current = es;
 
     const startTimes: Record<string, number> = {};
     let finished = false;
@@ -741,6 +745,7 @@ function BottomBar() {
       }
       addLogEntry({ timestamp: Date.now(), agent: 'system', type: 'warning', summary: 'SSE 连接中断，3s 后重连…' });
     };
+    });
   }, [addLogEntry, updatePhase]);
 
   // 页面刷新后 store 被重置：从 sessionStorage 恢复运行中的 pipelineId 并重新挂接 SSE。

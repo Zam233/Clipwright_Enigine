@@ -272,7 +272,12 @@ class MediaManager {
       if (!this.audioCtx) {
         this.audioCtx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
       }
-      const resp = await fetch(e.url);
+      // P0-10: 波形提取走裸 fetch——补 Authorization 头（动态导入避免 node 测试环境加载 DOM 依赖的 store）
+      const { useSettingsStore } = await import('@/stores/settingsStore');
+      const token = useSettingsStore.getState().authToken;
+      const resp = await fetch(e.url, {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
       const buf = await resp.arrayBuffer();
       const audioBuf = await this.audioCtx.decodeAudioData(buf);
       const data = audioBuf.getChannelData(0);

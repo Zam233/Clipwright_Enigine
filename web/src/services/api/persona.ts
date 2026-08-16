@@ -1,5 +1,5 @@
 import { getApiClient } from './client';
-import type { Persona } from '@/types/persona';
+import { personaFromBackend, type Persona } from '@/types/persona';
 
 export const personaApi = {
   /** List all persona IDs */
@@ -18,10 +18,10 @@ export const personaApi = {
       .map((r) => r.value);
   },
 
-  /** Get a single persona */
+  /** Get a single persona（P0-5: 后端规范字段 → 前端 UI 模型映射） */
   async get(personaId: string) {
     const { data } = await getApiClient().get(`/api/persona/${personaId}`);
-    return data as Persona;
+    return personaFromBackend(data as Record<string, unknown>);
   },
 
   /** Create a new persona */

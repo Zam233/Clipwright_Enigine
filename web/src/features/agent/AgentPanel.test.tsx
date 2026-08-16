@@ -26,6 +26,13 @@ vi.mock('@/services/api', () => ({
   },
 }));
 
+// P0-9/10: SSE 挂接异步化——测试环境直接返回空 token（开放模式语义）
+vi.mock('@/services/api/sse', () => ({
+  fetchSseToken: async () => '',
+  withSseToken: (url: string) => url,
+  apiBase: () => 'http://localhost:8000',
+}));
+
 class MockEventSource {
   static instances: MockEventSource[] = [];
   onmessage: ((e: MessageEvent) => void) | null = null;
@@ -93,6 +100,7 @@ describe('U5: SSE reconnect cap', () => {
     try {
       useAgentStore.setState({ pipelineId: 'p1', phase: 'structure' });
       render(<AgentPanel />);
+      await act(async () => {}); // flush SSE 挂接（P0-9 后异步取 token）
 
       // 初始挂接
       expect(MockEventSource.instances.length).toBe(1);
@@ -107,6 +115,7 @@ describe('U5: SSE reconnect cap', () => {
           act(() => {
             vi.advanceTimersByTime(3000);
           });
+          await act(async () => {}); // flush token 微任务后完成 SSE 重挂接
         }
       }
 
@@ -137,6 +146,7 @@ describe('U5: SSE reconnect cap', () => {
     try {
       useAgentStore.setState({ pipelineId: 'p1', phase: 'structure' });
       render(<AgentPanel />);
+      await act(async () => {}); // flush SSE 挂接（P0-9 后异步取 token）
 
       // 4 次失败（逼近上限）
       for (let i = 0; i < 4; i++) {
@@ -147,6 +157,7 @@ describe('U5: SSE reconnect cap', () => {
         act(() => {
           vi.advanceTimersByTime(3000);
         });
+        await act(async () => {}); // flush token 微任务后完成 SSE 重挂接
       }
       expect(MockEventSource.instances.length).toBe(5);
 
@@ -165,6 +176,7 @@ describe('U5: SSE reconnect cap', () => {
         act(() => {
           vi.advanceTimersByTime(3000);
         });
+        await act(async () => {}); // flush token 微任务后完成 SSE 重挂接
       }
       expect(MockEventSource.instances.length).toBe(9);
       expect(screen.queryByText('连接已断开')).toBeNull();
@@ -175,12 +187,13 @@ describe('U5: SSE reconnect cap', () => {
 });
 
 describe('U11: pipeline auto-reconnect after refresh', () => {
-  it('restores pipelineId from sessionStorage and opens SSE on mount', () => {
+  it('restores pipelineId from sessionStorage and opens SSE on mount', async () => {
     sessionStorage.setItem('cw_pipeline_id', 'pid-xyz');
     // 刷新后 store 重置：无 pipelineId、phase 回落 idle
     useAgentStore.setState({ pipelineId: null, phase: 'idle' });
 
     render(<AgentPanel />);
+    await act(async () => {}); // flush SSE 挂接
 
     expect(useAgentStore.getState().pipelineId).toBe('pid-xyz');
     expect(MockEventSource.instances.length).toBe(1);
@@ -206,6 +219,7 @@ describe('B17: reset requirements status on pipeline finish', () => {
       ],
     });
     render(<AgentPanel />);
+    await act(async () => {}); // flush SSE 挂接
     expect(MockEventSource.instances.length).toBe(1);
 
     // 模拟管线完成事件
@@ -231,6 +245,7 @@ describe('B17: reset requirements status on pipeline finish', () => {
       ],
     });
     render(<AgentPanel />);
+    await act(async () => {}); // flush SSE 挂接
     const es = MockEventSource.instances[0];
     act(() => {
       es.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'error', error: 'boom' }) }));
@@ -383,6 +398,7 @@ describe('G2: pipeline cancel', () => {
     useAgentStore.setState({ pipelineId: 'p1', phase: 'structure', cancelling: false });
     vi.mocked(pipelineApi.cancel).mockRejectedValue(new Error('boom'));
     render(<AgentPanel />);
+    await act(async () => {}); // flush SSE 挂接
     expect(MockEventSource.instances.length).toBe(1);
 
     fireEvent.click(screen.getByText('停止'));
@@ -398,6 +414,7 @@ describe('G2: pipeline cancel', () => {
     useAgentStore.setState({ pipelineId: 'p1', phase: 'structure', cancelling: false });
     sessionStorage.setItem('cw_pipeline_id', 'p1');
     render(<AgentPanel />);
+    await act(async () => {}); // flush SSE 挂接
     expect(MockEventSource.instances.length).toBe(1);
 
     const es = MockEventSource.instances[0];

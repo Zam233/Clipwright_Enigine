@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 
-const BASE = 'http://127.0.0.1:8000';
+// P0-11: 与后端实际端口（8080）对齐；本 spec 需真实后端，由 test:e2e:integration 单独运行
+const BASE = 'http://127.0.0.1:8080';
 
 test.describe('真实后端集成测试', () => {
   test('健康检查返回有效响应', async ({ request }) => {

@@ -1,4 +1,4 @@
-﻿// @vitest-environment jsdom
+// @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 /**
@@ -8,9 +8,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
  */
 
 const CONN_KEY = 'clipwright.connectionPrefs';
-// 默认值与 settingsStore 同源（本地 .env 可能覆盖，不写死端口）
-const DEFAULT_API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
-const DEFAULT_WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws';
+// 默认值与 settingsStore 同源（本地 .env 可能覆盖；P0-11 后无 env 时同源为空串）
+const DEFAULT_API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+const DEFAULT_WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8080/ws';
 
 async function importFreshStore() {
   vi.resetModules();

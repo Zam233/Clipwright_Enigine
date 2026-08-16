@@ -1,4 +1,5 @@
 import { getApiClient } from './client';
+import { apiBase } from './sse';
 import type { RenderRequest, RenderProgress } from '@/types/api';
 
 /** Export preset shape (backend may omit optional fields). */
@@ -58,10 +59,9 @@ export const renderApi = {
     return data.tasks ?? [];
   },
 
-  /** Get SSE stream URL for render progress */
+  /** Get SSE stream URL for render progress（token 由调用方用 withSseToken 附加） */
   getQueueStreamUrl(taskId: string): string {
-    const base = getApiClient().defaults.baseURL || 'http://localhost:8000';
-    return `${base}/api/render/queue/stream/${taskId}`;
+    return `${apiBase()}/api/render/queue/stream/${taskId}`;
   },
 
   /** Get render status */
@@ -70,22 +70,30 @@ export const renderApi = {
     return data;
   },
 
-  /** Download rendered file */
-  getDownloadUrl(filename: string, outputPath?: string): string {
-    const base = getApiClient().defaults.baseURL || 'http://localhost:8000';
-    return `${base}${buildRenderDownloadUrl(outputPath, filename)}`;
+  /** P0-10: 带凭据下载成片（/api 端点需 Authorization，改用 axios blob） */
+  async downloadFile(filename: string, outputPath?: string): Promise<void> {
+    const url = buildRenderDownloadUrl(outputPath, filename);
+    if (!url) throw new Error('无法确定下载路径');
+    const resp = await getApiClient().get(url, { responseType: 'blob', timeout: 600_000 });
+    const blob = resp.data as Blob;
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = filename || 'render.mp4';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(objectUrl);
   },
 
   /** Get video thumbnail */
   getThumbnailUrl(path: string, timeSec = 0.5): string {
-    const base = getApiClient().defaults.baseURL || 'http://localhost:8000';
-    return `${base}/api/render/thumbnail?path=${encodeURIComponent(path)}&time_sec=${timeSec}`;
+    return `${apiBase()}/api/render/thumbnail?path=${encodeURIComponent(path)}&time_sec=${timeSec}`;
   },
 
   /** Get video proxy URL for preview */
   getVideoUrl(path: string): string {
-    const base = getApiClient().defaults.baseURL || 'http://localhost:8000';
-    return `${base}/api/render/video?path=${encodeURIComponent(path)}`;
+    return `${apiBase()}/api/render/video?path=${encodeURIComponent(path)}`;
   },
 
   /** List export presets */

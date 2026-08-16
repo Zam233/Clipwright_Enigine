@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:e2e:integration": "playwright test e2e/integration.spec.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -22,9 +22,9 @@ npm run format         # Prettier
 npm run preview        # preview production build
 ```
 
-**Proxy** (vite.config.ts): `/api` → `http://localhost:8000`.
+**Proxy** (vite.config.ts): `/api` → `http://localhost:8080`。
 
-**Env vars**: `VITE_API_BASE_URL` (default `http://localhost:8000`), `VITE_WS_URL` (default `ws://localhost:8000/ws`).
+**Env vars**: `VITE_API_BASE_URL`（默认 `http://localhost:8080`；留空=同源），`VITE_WS_URL`（默认 `ws://localhost:8080/ws`，WebSocket 已移除，仅兼容保留）。
 
 **Path alias**: `@/` → `src/` (tsconfig.json).
 
@@ -187,5 +187,5 @@ Coding conventions:
 
 ## Security Notes
 
-- Backend API base URL fallbacks must use port **8000** (not 8080) — see `src/services/api/*.ts` SSE/URL builders.
+- Backend API base URL fallbacks must use port **8080** (not 8000) — see `src/services/api/*.ts` SSE/URL builders (P0-11)。
 - Backend supports optional API token auth (`CLIPWRIGHT_API_TOKEN`); see backend `docs/security.md`.
