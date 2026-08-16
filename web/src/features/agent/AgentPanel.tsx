@@ -13,7 +13,7 @@ import { Button } from '@/components/ui';
 import { uid } from '@/lib/utils';
 import type { PipelinePhase, LogEventType, LogEntry } from '@/types/pipeline';
 import type { Timeline, Clip, ClipKind } from '@/types/timeline';
-import type { RequirementsStatus } from '@/types/persona';
+import type { RequirementsStatus, CreativeBrief, ProductionPlan } from '@/types/persona';
 import {
   Bot, Send, Sparkles, Check, FileText, ListChecks, Loader2, Zap,
   MessageSquareText, ChevronDown, ChevronRight, X, Paperclip,
@@ -198,9 +198,23 @@ function RequirementsView() {
     addMessage({ id: uid('m'), role: 'user', content: message, timestamp: new Date().toISOString() });
     setBusy(true);
     try {
-      const res = await requirementsApi.chat({ session_id: sessionId, message });
-      const brief = res.creative_brief ?? null;
-      const plan = res.production_plan ?? null;
+      // W1: 优先流式消费（实时「思考中」状态 + 无长轮询超时）；失败回退一次性 chat
+      let res: {
+        reply?: unknown; message?: unknown; creative_brief?: unknown;
+        production_plan?: unknown; status?: unknown;
+      } = {};
+      try {
+        res = await requirementsApi.streamChat(sessionId, message, (chunk) => {
+          if (chunk.type === 'status') setStatus('gathering');
+        });
+        if (Object.keys(res).length === 0) {
+          res = await requirementsApi.chat({ session_id: sessionId, message });
+        }
+      } catch {
+        res = await requirementsApi.chat({ session_id: sessionId, message });
+      }
+      const brief = res.creative_brief ? (res.creative_brief as CreativeBrief) : null;
+      const plan = res.production_plan ? (res.production_plan as ProductionPlan) : null;
       const st = res.status as string | undefined;
       // 有简报/规划书就刷新（不再仅限特定状态，避免修订版被丢弃）
       if (brief) setBrief(brief);
@@ -211,7 +225,7 @@ function RequirementsView() {
       else if (plan) setStatus('plan_ready');
       else if (brief) setStatus('brief_ready');
       const att = resolveMessageAttachments(st, brief, plan);
-      addMessage({ id: uid('m'), role: 'assistant', content: res.reply ?? res.message ?? '已收到。',
+      addMessage({ id: uid('m'), role: 'assistant', content: (res.reply ?? res.message ?? '已收到。') as string,
         timestamp: new Date().toISOString(),
         creative_brief: att.creative_brief,
         production_plan: att.production_plan });

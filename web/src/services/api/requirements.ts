@@ -1,5 +1,5 @@
 import { getApiClient } from './client';
-import { apiBase } from './sse';
+import { apiBase, fetchSseToken } from './sse';
 import type { RequirementsInitRequest, RequirementsChatRequest } from '@/types/api';
 
 export const requirementsApi = {
@@ -15,6 +15,57 @@ export const requirementsApi = {
     // 覆盖 axios 默认 60s 超时。
     const { data } = await getApiClient().post('/api/requirements/chat', request, { timeout: 600_000 });
     return data;
+  },
+
+  /**
+   * W1: 流式消费需求对话（SSE）— 边收边回调 chunk（type/status/result），
+   * 返回最终 result payload。长耗时对话不再受 axios 超时影响，且能实时显示「思考中」。
+   */
+  async streamChat(
+    sessionId: string,
+    message: string,
+    onChunk?: (chunk: { type: string; data: unknown }) => void,
+  ): Promise<Record<string, unknown>> {
+    const base = apiBase();
+    const form = new URLSearchParams();
+    form.append('message', message);
+    const token = await fetchSseToken();
+    const url = `${base}/api/requirements/chat/stream/${sessionId}`;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: form.toString(),
+    });
+    if (!resp.ok || !resp.body) {
+      throw new Error(`chat stream failed: ${resp.status}`);
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let result: Record<string, unknown> = {};
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      // SSE 以空行分隔事件
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() ?? '';
+      for (const part of parts) {
+        const line = part.split('\n').find((l) => l.startsWith('data:'));
+        if (!line) continue;
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') continue;
+        try {
+          const chunk = JSON.parse(payload) as { type: string; data: unknown };
+          onChunk?.(chunk);
+          if (chunk.type === 'result') result = (chunk.data as Record<string, unknown>) ?? result;
+        } catch { /* 忽略坏块 */ }
+      }
+    }
+    return result;
   },
 
   /** Edit timeline by selected clips + natural-language instruction (C6/C7) */
