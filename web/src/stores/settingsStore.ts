@@ -3,7 +3,6 @@ import { loadPref, savePref } from '@/services/storage/localPrefs';
 
 interface SettingsState {
   apiBaseUrl: string;
-  wsUrl: string;
   theme: 'dark' | 'light';
   language: 'zh' | 'en';
   authToken: string | null;
@@ -21,7 +20,6 @@ interface SettingsState {
 
   // Actions
   setApiBaseUrl: (url: string) => void;
-  setWsUrl: (url: string) => void;
   setTheme: (theme: 'dark' | 'light') => void;
   setLanguage: (lang: 'zh' | 'en') => void;
   setAuthToken: (token: string | null) => void;
@@ -51,12 +49,11 @@ function loadEditorPrefs() {
   };
 }
 
-/** 加载持久化的连接配置（API 地址 / WS 地址 / 鉴权 Token）。 */
+/** 加载持久化的连接配置（API 地址 / 鉴权 Token）。WS 已移除（W9）。 */
 function loadConnectionPrefs() {
   const raw = loadPref<Record<string, unknown>>('connectionPrefs', {});
   return {
     apiBaseUrl: typeof raw.apiBaseUrl === 'string' && raw.apiBaseUrl !== '' ? raw.apiBaseUrl : undefined,
-    wsUrl: typeof raw.wsUrl === 'string' && raw.wsUrl !== '' ? raw.wsUrl : undefined,
     authToken: typeof raw.authToken === 'string' ? raw.authToken : null,
   };
 }
@@ -66,9 +63,8 @@ const connPrefs = loadConnectionPrefs();
 
 export const useSettingsStore = create<SettingsState>((set) => ({
   // P0-11: 默认空串（同源）；持久化的旧 localStorage 值仍会被 loadConnectionPrefs 采用——
-  // 仅当用户显式在设置中清空 API 地址时回落到空串。WS 已移除，wsUrl 保留兼容默认值。
+  // 仅当用户显式在设置中清空 API 地址时回落到空串。WS 已移除（W9）。
   apiBaseUrl: connPrefs.apiBaseUrl || import.meta.env.VITE_API_BASE_URL || '',
-  wsUrl: connPrefs.wsUrl || import.meta.env.VITE_WS_URL || 'ws://localhost:8080/ws',
   theme: prefs.theme,
   language: 'zh',
   authToken: connPrefs.authToken,
@@ -85,7 +81,6 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   defaultResolution: { width: 1920, height: 1080 },
 
   setApiBaseUrl: (url) => { set({ apiBaseUrl: url }); persistConnectionPrefs(); },
-  setWsUrl: (url) => { set({ wsUrl: url }); persistConnectionPrefs(); },
   setTheme: (theme) => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
     document.documentElement.classList.toggle('light', theme === 'light');
@@ -122,7 +117,6 @@ function persistConnectionPrefs() {
   const s = useSettingsStore.getState();
   savePref('connectionPrefs', {
     apiBaseUrl: s.apiBaseUrl,
-    wsUrl: s.wsUrl,
     authToken: s.authToken,
   });
 }

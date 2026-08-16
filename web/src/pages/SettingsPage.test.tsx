@@ -13,8 +13,6 @@ vi.mock('@/stores/settingsStore', () => ({
   useSettingsStore: () => ({
     apiBaseUrl: 'http://localhost:8000',
     setApiBaseUrl: vi.fn(),
-    wsUrl: 'ws://localhost:8000/ws',
-    setWsUrl: vi.fn(),
     theme: 'dark',
     setTheme: vi.fn(),
     language: 'zh',

@@ -396,16 +396,18 @@ def _trim_cache_key(src: str, offset: float, dur: float, width: int, height: int
 
 class RenderResult:
     def __init__(self, success: bool, output_path: str = "", error: str = "",
-                 duration_sec: float = 0, ffmpeg_log: str = ""):
+                 duration_sec: float = 0, ffmpeg_log: str = "", warnings: list[str] | None = None):
         self.success = success
         self.output_path = output_path
         self.error = error
         self.duration_sec = duration_sec
         self.ffmpeg_log = ffmpeg_log
+        self.warnings = warnings or []
 
     def to_dict(self) -> dict[str, Any]:
         return {"success": self.success, "output_path": self.output_path,
-                "error": self.error, "duration_sec": self.duration_sec, "ffmpeg_log": self.ffmpeg_log}
+                "error": self.error, "duration_sec": self.duration_sec,
+                "ffmpeg_log": self.ffmpeg_log, "warnings": self.warnings}
 
 
 class RenderService:
@@ -490,10 +492,14 @@ class RenderService:
         if final_video and overlay_segments:
             final_video = await self._apply_overlays_safe(final_video, overlay_segments, width, height)
 
-        # 音频
+        # 音频（C12：混合失败必须标记到结果，而非静默静音成片）
+        audio_warnings: list[str] = []
         if final_video:
-            final_video = await self._mix_audio_safe(final_video, audio_segments, audio_file_path,
-                                                      bitrate, audio_bitrate, bgm_file_path)
+            final_video, mix_marker = await self._mix_audio_safe(
+                final_video, audio_segments, audio_file_path, bitrate, audio_bitrate, bgm_file_path)
+            if mix_marker:
+                audio_warnings.append(mix_marker)
+                logger.error("C12 音频混合失败已标记: %s (render=%s)", mix_marker, output)
 
         # 输出
         if final_video and _is_valid_video(final_video):
@@ -507,7 +513,8 @@ class RenderService:
             if progress_callback:
                 await progress_callback("done", 100, "渲染完成")
             logger.info("渲染完成: %s (%.1fs)", output, dur)
-            return RenderResult(True, output_path=str(output.resolve()), duration_sec=dur)
+            return RenderResult(True, output_path=str(output.resolve()), duration_sec=dur,
+                                warnings=audio_warnings)
 
         return RenderResult(False, error=f"渲染失败 (video={len(video_segments)}, trimmed={len(trimmed)})")
 
@@ -1329,16 +1336,22 @@ class RenderService:
                       capture_output=True, text=False, timeout=1800)
 
     async def _mix_audio_safe(self, video, segments, audio_path, bitrate, ab, bgm_path):
-        if not video or not Path(video).exists(): return video
+        """混合音频（C12：失败必须标记而非静默静音成片）。返回 (video, failure_marker|None)。"""
+        if not video or not Path(video).exists():
+            return video, None
         out = str(self._work_dir / "aud.mp4")
         try:
             await self._mix_audio(video, segments, out, audio_path, ab, bgm_path, bitrate)
-            return out if Path(out).exists() else video
+            if Path(out).exists() and _is_valid_video(out):
+                return out, None
+            # 混合失败/输出无效 → 保留无声视频但标记失败
+            return video, "audio_mix_failed"
         except Exception as e:
             logger.warning("音频混合失败，跳过音频: %s", e)
-            return video
+            return video, f"audio_mix_error: {str(e)[:120]}"
 
     async def _mix_audio(self, input_video, segments, output_path, afp="", ab="192k", bfp="", bitrate="5M"):
+        """混音。任一路径失败都会抛出/返回 False，由 _mix_audio_safe 统一标记。"""
         encoder = _get_encoder(); preset = _get_preset()
         voice = afp if afp and Path(afp).exists() else None
         if not voice:
@@ -1355,8 +1368,9 @@ class RenderService:
                                "-c:a","aac","-b:a",ab,"-shortest",output_path],
                               capture_output=True, text=False, timeout=1800)
                 if _is_valid_video(output_path): return
-            except Exception:
-                pass
+                logger.warning("_mix_audio: 配音+BGM 混合输出无效: %s", output_path)
+            except Exception as e:
+                logger.warning("_mix_audio: 配音+BGM 混合异常: %s", str(e)[:200])
         if voice:
             try:
                 await self._ff(["ffmpeg","-y","-loglevel","error",*(_hwaccel_args(encoder)),"-i",input_video,"-i",voice,
@@ -1364,8 +1378,9 @@ class RenderService:
                                "-c:a","aac","-b:a",ab,"-map","0:v:0","-map","1:a:0","-shortest",output_path],
                               capture_output=True, text=False, timeout=600)
                 if _is_valid_video(output_path): return
-            except Exception:
-                pass
+                logger.warning("_mix_audio: 配音混合输出无效: %s", output_path)
+            except Exception as e:
+                logger.warning("_mix_audio: 配音混合异常: %s", str(e)[:200])
         if not voice:
             logger.warning(
                 "_mix_audio: 未找到配音或BGM音源（segments=%d, afp=%s, bfp=%s），输出视频将无声音: %s",
