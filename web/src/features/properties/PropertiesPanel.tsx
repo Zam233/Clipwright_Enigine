@@ -14,10 +14,16 @@ import {
 import { animationApi } from '@/services/api';
 import { shouldPush } from './historyCoalesce';
 import { sectionsForKind } from './sectionsForKind';
+import {
+  extractCopyableAttributes, filterFieldsForKind,
+  useClipAttributeClipboard,
+} from './clipAttributeClipboard';
+import { toast } from '@/stores/toastStore';
 import type { Clip, ClipKind } from '@/types/timeline';
 import {
   SlidersHorizontal, Type, Diamond, Plus, Trash2, ChevronLeft, ChevronRight,
   Move, RotateCcw, Wand2, Eye, EyeOff, Shapes, BarChart3, Image as ImageIcon,
+  Copy, ClipboardPaste,
 } from 'lucide-react';
 
 // Coalesce rapid history pushes (slider drag / number input / typing) into a single
@@ -87,6 +93,29 @@ export function PropertiesPanel() {
     }
   };
 
+  // M3: 跨项目复制/粘贴属性
+  const { set: setClipboard, fields: clipboardFields, sourceKind } = useClipAttributeClipboard();
+  const hasClipboardAttrs = clipboardFields !== null && Object.keys(clipboardFields).length > 0;
+
+  const handleCopyAttributes = () => {
+    if (!clip) return;
+    setClipboard(extractCopyableAttributes(clip), trackKind as ClipKind);
+    toast('属性已复制', 'success');
+  };
+
+  const handlePasteAttributes = () => {
+    if (!clip || !clipboardFields) return;
+    const fields = filterFieldsForKind(clipboardFields, trackKind as ClipKind);
+    const entries = Object.entries(fields);
+    if (entries.length === 0) {
+      toast('没有可粘贴的兼容属性（类型不匹配）', 'info');
+      return;
+    }
+    // 全量 set：单片段用 updateClip，多选批量更新（沿用既有 set 语义）
+    set(Object.fromEntries(entries) as Partial<Clip>);
+    toast(`已粘贴 ${entries.length} 项属性`, 'success');
+  };
+
   const color = TRACK_COLORS[trackKind as keyof typeof TRACK_COLORS] ?? '#4F8CFF';
 
   // M6: 音频类轨道（audio/waveform）显示增益与淡入淡出
@@ -106,6 +135,25 @@ export function PropertiesPanel() {
           <span className="text-caption text-on-surface-variant/60 ml-auto truncate">
             {trackName}
           </span>
+        )}
+        {/* M3: 跨项目复制/粘贴属性 */}
+        {clip && (
+          <div className="flex items-center gap-0.5 ml-1 shrink-0">
+            <Tooltip content="复制属性 (Ctrl+Shift+C)">
+              <button onClick={handleCopyAttributes}
+                className="p-1.5 rounded-cw-xs text-on-surface-variant hover:text-primary transition-colors cursor-pointer"
+                aria-label="复制属性">
+                <Copy className="w-3.5 h-3.5" />
+              </button>
+            </Tooltip>
+            <Tooltip content={hasClipboardAttrs ? '粘贴属性 (Ctrl+Shift+V)' : '无复制的属性'}>
+              <button onClick={handlePasteAttributes} disabled={!hasClipboardAttrs}
+                className="p-1.5 rounded-cw-xs text-on-surface-variant hover:text-primary disabled:opacity-30 disabled:cursor-default transition-colors cursor-pointer"
+                aria-label="粘贴属性">
+                <ClipboardPaste className="w-3.5 h-3.5" />
+              </button>
+            </Tooltip>
+          </div>
         )}
       </div>
 

@@ -577,3 +577,7 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 ### 执行轮次 16（P6 编辑器专业能力 · 第八批）
 - ? A3 模板画廊：TemplateGallery 弹层组件（复用后端 /api/template/*，应用 → 创建副本项目 → 回调跳转编辑器）+ HomePage「从模板开始」入口按钮 + 测试 3 项
 - 回归：前端 299/299 + typecheck + build ?
+
+### 执行轮次 17（P6 编辑器专业能力 · 第九批）
+- ? M3 跨项目复制/粘贴属性：clipAttributeClipboard（localStorage 持久化 + COPYABLE_FIELDS 白名单 + 按 kind 过滤可粘贴字段）+ PropertiesPanel 头部 复制/粘贴按钮 + Ctrl+Shift+C/V 快捷键 + 测试 3 项
+- 回归：前端 302/302 + typecheck + build ?

@@ -8,6 +8,12 @@ import { useProjectStore } from '@/stores/projectStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { uid } from '@/lib/utils';
 import { clipClipboard } from '@/features/timeline/components/EditorToolbar';
+import {
+  extractCopyableAttributes, filterFieldsForKind,
+  useClipAttributeClipboard,
+} from '@/features/properties/clipAttributeClipboard';
+import { toast } from '@/stores/toastStore';
+import type { Clip } from '@/types/timeline';
 
 export function useGlobalKeybindings() {
 
@@ -119,10 +125,45 @@ export function useGlobalKeybindings() {
       }
     };
 
-    const cutClips = () => {
+    // M3: 复制/粘贴属性（跨项目）
+    const copyAttributes = () => {
+      const store = useTimelineStore.getState();
+      const firstId = useSelectionStore.getState().selectedClipIds[0];
+      if (!firstId) return;
+      for (const tr of store.timeline.tracks) {
+        const c = tr.clips.find((cc) => cc.id === firstId);
+        if (c) {
+          useClipAttributeClipboard.getState().set(extractCopyableAttributes(c), c.kind as Clip['kind']);
+          toast('属性已复制', 'success');
+          return;
+        }
+      }
+    };
+
+    const pasteAttributes = () => {
+      const fields = useClipAttributeClipboard.getState().fields;
+      if (!fields) return;
+      const store = useTimelineStore.getState();
       const sel = useSelectionStore.getState().selectedClipIds;
       if (sel.length === 0) return;
-      const store = useTimelineStore.getState();
+      useHistoryStore.getState().pushState(store.timeline, 'paste-attrs');
+      for (const tr of store.timeline.tracks) {
+        for (const c of tr.clips) {
+          if (sel.includes(c.id)) {
+            const filtered = filterFieldsForKind(fields, c.kind as Clip['kind']);
+            const entries = Object.entries(filtered);
+            if (entries.length > 0) {
+              store.updateClip(c.id, Object.fromEntries(entries) as Partial<Clip>);
+            }
+          }
+        }
+      }
+      toast('属性已粘贴', 'success');
+    };
+
+    const cutClips = () => {
+      const sel = useSelectionStore.getState().selectedClipIds;
+      if (sel.length === 0) return;      const store = useTimelineStore.getState();
       const found: typeof clipClipboard.clips = [];
       for (const tr of store.timeline.tracks) {
         for (const c of tr.clips) {
@@ -369,6 +410,13 @@ export function useGlobalKeybindings() {
       { id: 'cut', combo: 'ctrl+x', label: '剪切片段', category: '编辑',
         when: () => useSelectionStore.getState().selectedClipIds.length > 0,
         handler: cutClips },
+      // M3: 复制/粘贴属性（跨项目，localStorage 持久化）
+      { id: 'copy-attrs', combo: 'ctrl+shift+c', label: '复制属性', category: '编辑',
+        when: () => useSelectionStore.getState().selectedClipIds.length > 0,
+        handler: copyAttributes },
+      { id: 'paste-attrs', combo: 'ctrl+shift+v', label: '粘贴属性', category: '编辑',
+        when: () => useClipAttributeClipboard.getState().fields !== null,
+        handler: pasteAttributes },
       { id: 'duplicate', combo: 'ctrl+d', label: '复制片段到后方', category: '编辑',
         when: () => useSelectionStore.getState().selectedClipIds.length > 0,
         handler: duplicateClips },
