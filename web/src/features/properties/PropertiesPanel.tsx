@@ -23,7 +23,7 @@ import type { Clip, ClipKind } from '@/types/timeline';
 import {
   SlidersHorizontal, Type, Diamond, Plus, Trash2, ChevronLeft, ChevronRight,
   Move, RotateCcw, Wand2, Eye, EyeOff, Shapes, BarChart3, Image as ImageIcon,
-  Copy, ClipboardPaste,
+  Copy, ClipboardPaste, Gauge, X,
 } from 'lucide-react';
 
 // Coalesce rapid history pushes (slider drag / number input / typing) into a single
@@ -778,6 +778,28 @@ function KeyframeEditor({ clip }: { clip: Clip }) {
     addKeyframe(clip.id, Math.round(localT * 1000) / 1000, snapshotProps);
   };
 
+  // M5: 时间重映射 — 添加「速度」关键帧（预览层变速；无已有速度关键帧时以当前 clip.speed 为基准）
+  const addSpeedAtPlayhead = () => {
+    if (!inClip) return;
+    pushHistory();
+    const cur = interpolateProperties(clip.keyframes, localT);
+    const speedVal = cur.speed ?? clip.speed;
+    addKeyframe(clip.id, Math.round(localT * 1000) / 1000, { speed: speedVal });
+  };
+
+  // M5: 移除指定时间的 speed 属性（回退为静态 clip.speed）
+  const removeSpeedAt = (time: number) => {
+    pushHistory();
+    const kfs = clip.keyframes.map((k) => {
+      if (Math.abs(k.time - time) < 0.001) {
+        const { speed: _s, ...rest } = k.properties;
+        return { ...k, properties: rest };
+      }
+      return k;
+    });
+    updateClip(clip.id, { keyframes: kfs });
+  };
+
   const removeAt = (time: number) => {
     pushHistory();
     removeKeyframe(clip.id, time);
@@ -826,6 +848,19 @@ function KeyframeEditor({ clip }: { clip: Clip }) {
         </button>
       </div>
 
+      {/* M5: 时间重映射 — 速度关键帧 */}
+      <button
+        onClick={addSpeedAtPlayhead}
+        disabled={!inClip}
+        className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-cw-xs
+          bg-surface-container text-on-surface-variant text-label-sm font-medium border border-outline-variant/30
+          hover:text-primary hover:border-primary/40 disabled:opacity-30 transition-colors cursor-pointer"
+        title="在播放头添加速度关键帧（预览层时间重映射）"
+      >
+        <Gauge className="w-3.5 h-3.5" />
+        {inClip ? '添加速度关键帧 (变速)' : '播放头不在片段内'}
+      </button>
+
       {clip.keyframes.length === 0 ? (
         <p className="text-label-sm text-on-surface-variant leading-relaxed">
           无关键帧。将播放头移到片段内，点击「添加」记录当前属性值，即可创建动画。
@@ -851,6 +886,19 @@ function KeyframeEditor({ clip }: { clip: Clip }) {
               >
                 {EASING_NAMES.map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
+              {/* M5: 显示速度属性，可单独删除 */}
+              {kf.properties.speed !== undefined && (
+                <span className="shrink-0 flex items-center gap-1 text-caption font-mono text-track-video"
+                  title="速度关键帧（时间重映射）">
+                  <Gauge className="w-3 h-3" />
+                  {round2(kf.properties.speed)}×
+                  <button onClick={() => removeSpeedAt(kf.time)}
+                    className="p-0.5 rounded text-on-surface-variant/50 hover:text-error transition-colors cursor-pointer"
+                    title="移除速度关键帧">
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              )}
               <button
                 onClick={() => removeAt(kf.time)}
                 className="p-1 rounded-cw-xs text-on-surface-variant hover:text-error opacity-0 group-hover:opacity-100 transition-all cursor-pointer"

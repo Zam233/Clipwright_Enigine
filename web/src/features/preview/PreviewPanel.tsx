@@ -545,6 +545,7 @@ function drawClipToPreview(
   // Apply keyframe interpolation for opacity/transform if present
   let opacity = clip.opacity;
   const tf: Transform2D = { ...getClipTransform(clip) };
+  let speed = clip.speed;
   if (clip.keyframes.length > 0) {
     const props = interpolateProperties(clip.keyframes, localT);
     opacity = props.opacity ?? opacity;
@@ -552,6 +553,8 @@ function drawClipToPreview(
     tf.x = props.position_x ?? tf.x;
     tf.y = props.position_y ?? tf.y;
     tf.rotation = props.rotation ?? tf.rotation;
+    // M5: 时间重映射 — 关键帧驱动的变速（预览层）
+    if (props.speed !== undefined) speed = props.speed;
   }
 
   // M11: 转场可见性 — 在进/出转场窗口内对透明度做渐变（淡入淡出/溶解类预览）
@@ -592,7 +595,7 @@ function drawClipToPreview(
         }
       } else if (videoEl && videoEl.readyState >= 2) {
         // Real video frame: seek to clip-local time and draw
-        const sourceT = (t - clip.start_sec) * clip.speed + clip.source_offset_sec;
+        const sourceT = (t - clip.start_sec) * speed + clip.source_offset_sec;
         mediaManager.seekVideo(clip.asset_id, sourceT);
         drawCover(ctx, videoEl, fx, fy, fw, fh, tf);
         drewReal = true;
