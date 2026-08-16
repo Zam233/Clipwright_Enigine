@@ -133,6 +133,14 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
             return {"pipeline_id": existing, "status": "deduplicated"}
 
     pipeline_id = f"pl_{uuid.uuid4().hex[:12]}"
+    # P5-B3: 成本预算熔断（超月预算拒绝新管线）
+    from clipwright.services.budget import check_budget
+    allowed, used = await check_budget()
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"本月 LLM token 预算已耗尽（已用 {used} / {settings.llm_monthly_token_budget}）",
+        )
     # P3-3B: 记录归属
     _pipeline_owners[pipeline_id] = uid or ""
     if idem_key:

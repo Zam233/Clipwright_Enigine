@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     rate_limit_window_sec: float = 60.0
     rate_limit_max_requests: int = 120
 
+    # --- LLM 成本预算（P5-B3，全局月 token 预算；0=不限）---
+    llm_monthly_token_budget: int = 0
+
     # --- MongoDB ---
     mongo_uri: str = "mongodb://localhost:27017"
     mongo_db_name: str = "clipwright"
