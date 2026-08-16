@@ -191,6 +191,53 @@ def test_put_missing_fields(api_client: TestClient) -> None:
     assert resp.status_code == 400
 
 
+# ── M13: 未加载插件预配置 ──
+
+
+def _unloaded_env() -> tuple[TestClient, object]:
+    """创建未加载的插件环境：loader 已知插件目录但不加载。"""
+    src = Path(tempfile.mkdtemp(prefix="tsrc13_"))
+    data = Path(tempfile.mkdtemp(prefix="tdata13_"))
+    pd = src / "pre_cfg"
+    pd.mkdir(parents=True)
+    (pd / "__init__.py").write_text(
+        "from clipwright.plugins import CapabilityPlugin\n"
+        "class PC(CapabilityPlugin):\n    def initialize(self): pass\n"
+    )
+    (pd / "plugin.yaml").write_text("name: PC\nkind: capability\nentry_point: pre_cfg\n")
+    (pd / "config.yaml").write_text(
+        "fields:\n  api_key:\n    type: string\n    value: ''\n    label: API Key\n"
+    )
+    loader = PluginLoader(plugin_dir=src, data_dir=data)
+    app = FastAPI()
+    app.include_router(plugin_router)
+    set_loader(loader)
+    return TestClient(app), loader
+
+
+def test_get_config_unloaded_plugin_returns_defaults() -> None:
+    client, loader = _unloaded_env()
+    assert loader.get("pre_cfg") is None  # 未加载
+    resp = client.get("/api/plugin/pre_cfg/config")
+    assert resp.status_code == 200
+    assert "fields" in resp.json()
+
+
+def test_put_config_unloaded_plugin_persists() -> None:
+    client, loader = _unloaded_env()
+    assert loader.get("pre_cfg") is None
+    body = "fields:\n  api_key:\n    type: string\n    value: sk-预配置\n    label: API Key\n"
+    resp = client.put(
+        "/api/plugin/pre_cfg/config",
+        content=body.encode(),
+        headers={"Content-Type": "text/plain"},
+    )
+    assert resp.status_code == 200
+    # 预配置已落盘（未加载也生效于下次加载）
+    merged = loader._get_merged_config("pre_cfg")
+    assert merged["fields"]["api_key"]["value"] == "sk-预配置"
+
+
 def test_routes_in_openapi(api_client: TestClient) -> None:
     schema = api_client.app.openapi()
     paths = list(schema.get("paths", {}).keys())

@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     plugin_data_dir: Path = Path("PluginData")
     project_dir: Path = Path("projects")
 
+    # --- 插件治理（M1/M2/M8/M15）---
+    # manifest 签名密钥；空则从 account_jwt_secret 派生；再为空则不启用签名强制
+    plugin_signature_key: str = ""
+    # True 时未签名插件拒绝加载（市场开放前最低安全线）
+    plugin_require_signature: bool = False
+    # 已知权限白名单（M1 权限声明校验；插件声明之外的权限将被拒绝）
+    plugin_allowed_permissions: list[str] = Field(
+        default_factory=lambda: ["network", "fs_read", "fs_write", "shell", "http", "noop"],
+    )
+
     # --- IsoBase / LLM ---
     llm_provider: Literal["openai", "anthropic", "ollama"] = "anthropic"
     llm_api_key: str = ""

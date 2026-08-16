@@ -3,7 +3,8 @@ import { ConsoleShell, ConsoleHeading } from './ConsoleShell';
 import { typeMakerApi } from '@/services/api';
 import { Button } from '@/components/ui';
 import { cn } from '@/lib/utils';
-import { Plus, Copy, Trash2, Pencil, Film } from 'lucide-react';
+import { Plus, Copy, Trash2, Pencil, Film, Eye, X } from 'lucide-react';
+import type { TypePreviewResult } from '@/services/api/typeMaker';
 
 interface VideoType {
   id: string;
@@ -26,6 +27,11 @@ export function TypeMakerPage() {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<string | null>(null);
   const [notice, setNotice] = useState('');
+  // P10: 删除确认 / 预览结果
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [previewFor, setPreviewFor] = useState<{ id: string; name: string } | null>(null);
+  const [previewResult, setPreviewResult] = useState<TypePreviewResult | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   const reload = async () => {
     try {
@@ -65,8 +71,26 @@ export function TypeMakerPage() {
     try {
       await typeMakerApi.remove(id);
       setTypes((ts) => ts.filter((t) => t.id !== id));
+      setConfirmDelete(null);
     } catch {
       setNotice('删除失败：后端不可达或内置类型受保护');
+      setConfirmDelete(null);
+    }
+  };
+
+  // P10: 预览 — 调用 /api/type-maker/preview 校验定义并展示节拍翻译
+  const runPreview = async (t: VideoType) => {
+    setPreviewLoading(true);
+    setPreviewResult(null);
+    setPreviewFor({ id: t.id, name: t.name });
+    try {
+      const definition = await typeMakerApi.get(t.id) as unknown as Parameters<typeof typeMakerApi.preview>[0];
+      const result = await typeMakerApi.preview(definition);
+      setPreviewResult(result);
+    } catch {
+      setPreviewResult({ valid: false, errors: ['预览失败：后端不可达'], shot_params: null as never, sample_translation: {} });
+    } finally {
+      setPreviewLoading(false);
     }
   };
 
@@ -132,20 +156,78 @@ export function TypeMakerPage() {
             <TypeCard key={t.id} type={t} editing={editing === t.id}
               onEdit={() => (editing === t.id ? commitEdit(t) : setEditing(t.id))}
               onDuplicate={() => duplicate(t)}
-              onRemove={() => remove(t.id)}
+              onPreview={() => runPreview(t)}
+              onRemove={() => setConfirmDelete(t.id)}
               onChange={(patch) => setTypes((ts) => ts.map((x) => (x.id === t.id ? { ...x, ...patch } : x)))} />
           ))
         )}
       </div>
+
+      {/* P10: 删除确认弹层 */}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setConfirmDelete(null)}>
+          <div className="w-full max-w-sm bg-surface-container border border-outline-variant/40 rounded-cw-lg p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-title-sm font-semibold text-on-surface mb-1.5">删除视频类型？</h3>
+            <p className="text-label-sm text-on-surface-variant mb-4">
+              「{confirmDelete}」将被永久删除，此操作不可撤销。
+            </p>
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1" onClick={() => setConfirmDelete(null)}>取消</Button>
+              <Button className="flex-1" variant="destructive" onClick={() => remove(confirmDelete)}>
+                <Trash2 className="w-4 h-4" /> 确认删除
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* P10: 预览结果弹层 */}
+      {previewFor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => { setPreviewFor(null); setPreviewResult(null); }}>
+          <div className="w-full max-w-lg max-h-[80vh] overflow-y-auto bg-surface-container border border-outline-variant/40 rounded-cw-lg p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-title-sm font-semibold text-on-surface">类型预览 · {previewFor.name}</h3>
+              <button onClick={() => { setPreviewFor(null); setPreviewResult(null); }}
+                className="p-1 rounded-cw-xs text-on-surface-variant hover:text-on-surface cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            {previewLoading ? (
+              <p className="text-label-sm text-on-surface-variant py-4">校验中…</p>
+            ) : previewResult ? (
+              <div className="space-y-3">
+                <div className={cn('rounded-cw-xs px-3 py-2 text-label-sm',
+                  previewResult.valid ? 'bg-success/10 text-success border border-success/30' : 'bg-error/10 text-error border border-error/30')}>
+                  {previewResult.valid ? '✓ 定义有效' : `✗ ${(previewResult.errors ?? []).join('；') || '定义无效'}`}
+                </div>
+                {previewResult.shot_params && (
+                  <div className="grid grid-cols-2 gap-2 font-mono text-caption">
+                    <Spec label="镜头区间" value={`${previewResult.shot_params.min_shot_sec}-${previewResult.shot_params.max_shot_sec}s`} />
+                    <Spec label="转场" value={previewResult.shot_params.transition_type} />
+                  </div>
+                )}
+                {Object.keys(previewResult.sample_translation ?? {}).length > 0 && (
+                  <div>
+                    <p className="text-label text-on-surface-variant mb-1">样本节拍翻译</p>
+                    <pre className="bg-surface rounded-cw-xs p-2.5 text-caption font-mono text-on-surface overflow-x-auto max-h-48 overflow-y-auto">
+                      {JSON.stringify(previewResult.sample_translation, null, 2)}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
     </ConsoleShell>
   );
 }
 
 function TypeCard({
-  type, editing, onEdit, onDuplicate, onRemove, onChange,
+  type, editing, onEdit, onDuplicate, onPreview, onRemove, onChange,
 }: {
   type: VideoType; editing: boolean; onEdit: () => void; onDuplicate: () => void;
-  onRemove: () => void; onChange: (patch: Partial<VideoType>) => void;
+  onPreview: () => void; onRemove: () => void; onChange: (patch: Partial<VideoType>) => void;
 }) {
   // rhythm bars derived from cut interval (lower interval = denser)
   const density = Math.max(1, Math.min(8, Math.round(8 - type.cut_interval_ms / 2000)));
@@ -162,6 +244,7 @@ function TypeCard({
             <Film className="w-4.5 h-4.5" />
           </span>
           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-short3">
+            <IconBtn title="预览" onClick={onPreview}><Eye className="w-3.5 h-3.5" /></IconBtn>
             <IconBtn title="编辑" onClick={onEdit}><Pencil className="w-3.5 h-3.5" /></IconBtn>
             <IconBtn title="复制" onClick={onDuplicate}><Copy className="w-3.5 h-3.5" /></IconBtn>
             {!type.builtin && (

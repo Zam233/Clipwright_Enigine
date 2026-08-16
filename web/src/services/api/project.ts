@@ -194,6 +194,35 @@ export const pluginApi = {
     return data;
   },
 
+  /** M8: 启用插件（持久化 + 加载） */
+  async enable(pluginId: string) {
+    const { data } = await getApiClient().post(`/api/plugin/${pluginId}/enable`);
+    return data;
+  },
+
+  /** M8: 禁用插件（持久化 + 卸载） */
+  async disable(pluginId: string) {
+    const { data } = await getApiClient().post(`/api/plugin/${pluginId}/disable`);
+    return data;
+  },
+
+  /** M1: 已知权限白名单 */
+  async permissions() {
+    const { data } = await getApiClient().get('/api/plugin/permissions');
+    return data as { allowed: string[] };
+  },
+
+  /** M7: 插件错误通道 */
+  async errors(limit = 50) {
+    const { data } = await getApiClient().get(`/api/plugin/errors?limit=${limit}`);
+    return data as Array<{ plugin_id: string; phase: string; message: string; details: string; ts: number }>;
+  },
+
+  async clearErrors(pluginId?: string) {
+    const { data } = await getApiClient().delete(`/api/plugin/errors${pluginId ? `?plugin_id=${pluginId}` : ''}`);
+    return data as { status: string; removed: number };
+  },
+
   async capabilities() {
     const { data } = await getApiClient().get('/api/plugin/capabilities');
     return data;

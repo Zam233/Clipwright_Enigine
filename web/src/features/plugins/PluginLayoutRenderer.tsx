@@ -115,12 +115,14 @@ export function PluginLayoutRenderer({ layout }: { layout: UILayout }) {
         switch (widget.type) {
           case 'textarea': {
             const val = (getValue(widget.key) as string) ?? widget.defaultValue ?? '';
+            const inputId = `plui-${widget.key}-textarea`;
             return (
               <div key={widget.key}>
                 {widget.label && (
-                  <label className="block text-label text-on-surface-variant mb-1">{widget.label}</label>
+                  <label htmlFor={inputId} className="block text-label text-on-surface-variant mb-1">{widget.label}</label>
                 )}
                 <textarea
+                  id={inputId}
                   value={val}
                   onChange={(e) => setUIState(widget.key, e.target.value)}
                   placeholder={widget.placeholder}
@@ -128,6 +130,94 @@ export function PluginLayoutRenderer({ layout }: { layout: UILayout }) {
                   className="w-full bg-surface-container rounded-cw-sm px-3 py-2 text-body-sm text-on-surface
                     outline-none border border-outline-variant/30 focus:border-primary resize-none
                     placeholder:text-on-surface-variant/40"
+                />
+              </div>
+            );
+          }
+
+          case 'input': {
+            const val = (getValue(widget.key) as string) ?? widget.defaultValue ?? '';
+            const inputId = `plui-${widget.key}-input`;
+            return (
+              <div key={widget.key}>
+                {widget.label && (
+                  <label htmlFor={inputId} className="block text-label text-on-surface-variant mb-1">{widget.label}</label>
+                )}
+                <input
+                  id={inputId}
+                  type="text"
+                  value={val}
+                  onChange={(e) => setUIState(widget.key, e.target.value)}
+                  placeholder={widget.placeholder}
+                  className="w-full bg-surface-container rounded-cw-sm px-3 py-2 text-body-sm text-on-surface
+                    outline-none border border-outline-variant/30 focus:border-primary
+                    placeholder:text-on-surface-variant/40"
+                />
+              </div>
+            );
+          }
+
+          case 'select': {
+            const val = (getValue(widget.key) as string) ?? widget.defaultValue ?? widget.options[0] ?? '';
+            const inputId = `plui-${widget.key}-select`;
+            return (
+              <div key={widget.key}>
+                {widget.label && (
+                  <label htmlFor={inputId} className="block text-label text-on-surface-variant mb-1">{widget.label}</label>
+                )}
+                <select
+                  id={inputId}
+                  value={val}
+                  onChange={(e) => setUIState(widget.key, e.target.value)}
+                  className="w-full bg-surface-container rounded-cw-sm px-3 py-2 text-body-sm text-on-surface
+                    outline-none border border-outline-variant/30 focus:border-primary cursor-pointer"
+                >
+                  {widget.options.map((opt) => (
+                    <option key={opt} value={opt}>{opt}</option>
+                  ))}
+                </select>
+              </div>
+            );
+          }
+
+          case 'checkbox': {
+            const val = (getValue(widget.key) as boolean) ?? widget.defaultValue ?? false;
+            return (
+              <label key={widget.key} className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={val}
+                  onChange={(e) => setUIState(widget.key, e.target.checked)}
+                  className="w-4 h-4 accent-primary cursor-pointer"
+                />
+                {widget.label && <span className="text-label text-on-surface-variant">{widget.label}</span>}
+              </label>
+            );
+          }
+
+          case 'slider': {
+            const min = widget.min ?? 0;
+            const max = widget.max ?? 100;
+            const step = widget.step ?? 1;
+            const val = (getValue(widget.key) as number) ?? widget.defaultValue ?? min;
+            const inputId = `plui-${widget.key}-slider`;
+            return (
+              <div key={widget.key}>
+                {widget.label && (
+                  <label htmlFor={inputId} className="flex items-center justify-between text-label text-on-surface-variant mb-1">
+                    <span>{widget.label}</span>
+                    <span className="font-mono text-caption">{val}</span>
+                  </label>
+                )}
+                <input
+                  id={inputId}
+                  type="range"
+                  min={min}
+                  max={max}
+                  step={step}
+                  value={val}
+                  onChange={(e) => setUIState(widget.key, Number(e.target.value))}
+                  className="w-full accent-primary cursor-pointer"
                 />
               </div>
             );

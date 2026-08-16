@@ -62,6 +62,49 @@ async def unload_plugin(plugin_id: str) -> dict[str, str]:
     return {"status": "ok", "plugin_id": plugin_id}
 
 
+@router.post("/{plugin_id}/enable")
+async def enable_plugin(plugin_id: str) -> dict[str, str]:
+    """M8: 启用插件（持久化 + 加载）。"""
+    if _loader is None:
+        raise HTTPException(status_code=503, detail="Plugin system not initialized")
+    _loader.set_enabled(plugin_id, True)
+    return {"status": "ok", "plugin_id": plugin_id, "enabled": "true"}
+
+
+@router.post("/{plugin_id}/disable")
+async def disable_plugin(plugin_id: str) -> dict[str, str]:
+    """M8: 禁用插件（持久化 + 卸载）。"""
+    if _loader is None:
+        raise HTTPException(status_code=503, detail="Plugin system not initialized")
+    _loader.set_enabled(plugin_id, False)
+    return {"status": "ok", "plugin_id": plugin_id, "enabled": "false"}
+
+
+@router.get("/permissions")
+async def list_permissions() -> dict[str, object]:
+    """M1: 已知权限白名单（供前端安装确认展示）。"""
+    from clipwright.config import settings
+    return {"allowed": settings.plugin_allowed_permissions}
+
+
+# ── M7: 插件错误通道 ──
+
+
+@router.get("/errors")
+async def list_plugin_errors(limit: int = 50) -> list[dict]:
+    """M7: 插件错误通道 — 最近错误列表（诊断用）。"""
+    from clipwright.plugins.error_bus import get_error_bus
+    return get_error_bus().list(limit=max(1, min(limit, 200)))
+
+
+@router.delete("/errors")
+async def clear_plugin_errors(plugin_id: str = "") -> dict[str, object]:
+    """M7: 清空插件错误通道（可按插件过滤）。"""
+    from clipwright.plugins.error_bus import get_error_bus
+    removed = get_error_bus().clear(plugin_id or None)
+    return {"status": "ok", "removed": removed}
+
+
 @router.delete("/{plugin_id}")
 async def unregister_plugin(plugin_id: str) -> dict[str, str]:
     """P1-1: 注销插件 — 卸载 + 清理 PluginData（含 hook 与配置）。"""
@@ -97,21 +140,28 @@ async def unregister_plugin(plugin_id: str) -> dict[str, str]:
 
 @router.get("/{plugin_id}/config")
 async def get_plugin_config(plugin_id: str) -> dict[str, object]:
-    """读取插件结构化配置（含 type/value/label 元数据）。"""
+    """读取插件结构化配置（含 type/value/label 元数据）。
+
+    M13: 已发现但未加载的插件同样返回（源码默认 + PluginData 覆盖），
+    支持预配置；完全不存在（未发现）的插件返回 404。
+    """
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
-    if _loader.get(plugin_id) is None:
-        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not loaded")
+    if plugin_id not in _loader.discover():
+        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not found")
     return _loader.get_typed_config(plugin_id)
 
 
 @router.put("/{plugin_id}/config")
 async def put_plugin_config(plugin_id: str, request: Request) -> dict[str, object]:
-    """写入插件配置（YAML 格式），校验类型后存入 PluginData。"""
+    """写入插件配置（YAML 格式），校验类型后存入 PluginData。
+
+    M13: 已发现但未加载的插件同样可保存（预配置），加载后生效。
+    """
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
-    if _loader.get(plugin_id) is None:
-        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not loaded")
+    if plugin_id not in _loader.discover():
+        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not found")
 
     import yaml
 
@@ -143,8 +193,8 @@ async def delete_plugin_config(plugin_id: str) -> dict[str, str]:
     """删除数据目录的 config.yaml，回退到源码默认配置。"""
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
-    if _loader.get(plugin_id) is None:
-        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not loaded")
+    if plugin_id not in _loader.discover():
+        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not found")
 
     config_path = _loader.get_plugin_data_dir(plugin_id) / "config.yaml"
 

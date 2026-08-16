@@ -760,3 +760,19 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ? PersonaDetailPage 知识库 Tab：每文档 重命名（内联输入，Enter 保存/Esc 取消）/ 删除 按钮 + 操作反馈
 - ? 测试：PersonaDetailPage +2（删除/重命名），全量 338
 - 回归：前端 338/338 ?、tsc 通过 ?
+
+### 执行轮次 50（P10 插件治理 · 第六批）
+- ? M10 manifest 增强：PluginManifest + license/homepage/compat_api_version/permissions/dependencies/signature/config_schema_version；PluginMetadata + signed/verified/dependency_ok/missing_dependencies
+- ? M1 签名/权限：sign_manifest/verify_manifest_signature（HMAC-SHA256，密钥 = plugin_signature_key 或 JWT 派生）+ check_permissions 白名单校验 + 设置项 plugin_require_signature/plugin_allowed_permissions + GET /api/plugin/permissions
+- ? M2 依赖解析：_resolve_dependencies（discover 集合差集）+ 加载前拒绝
+- ? M8 启停持久化：.enabled 状态文件 + is_enabled/set_enabled + POST /{id}/enable|disable + 前端 PluginsPage toggle 改 enable/disable
+- ? M15 配置迁移：_migrate_config（target_schema + 插件 migrations.py migrate_config(config, from, to)）
+- ? P1-3 import 期注册改 initialize：diagram_style 插件由 `__init_plugin__` 副作用改 BasePlugin 类（DiagramStylePlugin.initialize 注册 Hook）——修复生产环境插件从未加载的隐性 bug
+- ? P1-6 diagram_style 约定兼容：DiagramStyle.from_dict 过滤未知字段 + 数值类型收敛（非法值回退默认）
+- ? M7 错误通道：plugins/error_bus.py 环形缓冲（cap 200）+ 加载/初始化/卸载/重载失败自动记录 + GET/DELETE /api/plugin/errors + 前端 PluginsPage 错误通道按钮/弹层/清空
+- ? M11 控件集扩充：UIWidget + input/select/checkbox/slider（渲染器 + label 关联 htmlFor 修复 a11y）
+- ? M12 UI 预览：PluginsPage 每插件「UI 预览」按钮 + 弹层渲染 PluginLayoutRenderer
+- ? M13 未加载预配置：config GET/PUT/DELETE 放宽（未加载插件可读写，加载后生效）
+- ? TypeMakerPage：预览按钮（调用 /preview）+ 删除二次确认弹层
+- ? 测试：后端 test_plugin_governance3.py 28 项 + test_typed_plugin_config.py +3（共 1152）；前端 PluginsPage +4、TypeMakerPage +3、PluginLayoutRenderer +2（共 349）
+- 回归：后端 1152/1152 ?、前端 349/349 ?、tsc 通过 ?

@@ -12,6 +12,10 @@ export interface UILayout {
 
 export type UIWidget =
   | UITextarea
+  | UIInput
+  | UISelect
+  | UICheckbox
+  | UISlider
   | UIButton
   | UIImage
   | UISpinner
@@ -34,6 +38,43 @@ export interface UITextarea extends UIWidgetBase {
   key: string;
   /** Default value */
   defaultValue?: string;
+}
+
+/** M11: 单行文本输入 */
+export interface UIInput extends UIWidgetBase {
+  type: 'input';
+  label?: string;
+  placeholder?: string;
+  key: string;
+  defaultValue?: string;
+}
+
+/** M11: 下拉选择 */
+export interface UISelect extends UIWidgetBase {
+  type: 'select';
+  label?: string;
+  key: string;
+  options: string[];
+  defaultValue?: string;
+}
+
+/** M11: 布尔开关 */
+export interface UICheckbox extends UIWidgetBase {
+  type: 'checkbox';
+  label?: string;
+  key: string;
+  defaultValue?: boolean;
+}
+
+/** M11: 数值滑杆 */
+export interface UISlider extends UIWidgetBase {
+  type: 'slider';
+  label?: string;
+  key: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  defaultValue?: number;
 }
 
 export interface UIButton extends UIWidgetBase {

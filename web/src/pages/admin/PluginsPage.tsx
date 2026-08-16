@@ -4,7 +4,9 @@ import { pluginApi } from '@/services/api';
 import { Button } from '@/components/ui';
 import { cn } from '@/lib/utils';
 import type { PluginConfigField, PluginConfigResponse } from '@/types/api';
-import { Puzzle, Power, Loader2, RefreshCw, Zap, Settings, X, Save, Trash2 } from 'lucide-react';
+import { Puzzle, Power, Loader2, RefreshCw, Zap, Settings, X, Save, Trash2, Eye, Box, AlertTriangle } from 'lucide-react';
+import { PluginLayoutRenderer } from '@/features/plugins';
+import type { UILayout } from '@/features/plugins/types';
 
 interface PluginItem {
   id: string;
@@ -13,6 +15,7 @@ interface PluginItem {
   version?: string;
   kind?: string;
   loaded: boolean;
+  has_ui?: boolean;
 }
 
 export function PluginsPage() {
@@ -26,6 +29,51 @@ export function PluginsPage() {
   const [configLoading, setConfigLoading] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
+
+  // M12: 插件 UI 预览
+  const [previewId, setPreviewId] = useState<string | null>(null);
+  const [previewLayout, setPreviewLayout] = useState<UILayout | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
+  // M7: 插件错误通道
+  const [errorsOpen, setErrorsOpen] = useState(false);
+  const [pluginErrors, setPluginErrors] = useState<Awaited<ReturnType<typeof pluginApi.errors>>>([]);
+  const [errorsLoading, setErrorsLoading] = useState(false);
+
+  const loadErrors = async () => {
+    setErrorsLoading(true);
+    try {
+      setPluginErrors(await pluginApi.errors(100));
+    } catch {
+      setPluginErrors([]);
+    } finally {
+      setErrorsLoading(false);
+    }
+  };
+
+  const clearErrors = async () => {
+    try {
+      await pluginApi.clearErrors();
+      setPluginErrors([]);
+    } catch { /* offline */ }
+  };
+
+  const openPreview = async (p: PluginItem) => {
+    setPreviewId(p.id);
+    setPreviewLayout(null);
+    setPreviewError(null);
+    setPreviewLoading(true);
+    try {
+      const ui = await pluginApi.getUI(p.id);
+      if (ui && ui.widgets && ui.widgets.length > 0) setPreviewLayout(ui as UILayout);
+      else setPreviewError('该插件未定义 UI（ui.json 缺失或为空）');
+    } catch (e: unknown) {
+      setPreviewError(e instanceof Error ? e.message : '读取插件 UI 失败');
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -54,8 +102,9 @@ export function PluginsPage() {
   const toggle = async (p: PluginItem) => {
     setBusyId(p.id);
     try {
-      if (p.loaded) await pluginApi.unload(p.id);
-      else await pluginApi.load(p.id);
+      // M8: 启停持久化 — enable/disable 落盘，重启后保持状态
+      if (p.loaded) await pluginApi.disable(p.id);
+      else await pluginApi.enable(p.id);
     } catch { /* offline */ }
     setPlugins((ps) => ps.map((x) => (x.id === p.id ? { ...x, loaded: !x.loaded } : x)));
     setBusyId(null);
@@ -155,6 +204,9 @@ export function PluginsPage() {
         <Button size="sm" variant="outline" onClick={load} disabled={loading}>
           <RefreshCw className={cn('w-3.5 h-3.5', loading && 'animate-spin')} /> 刷新
         </Button>
+        <Button size="sm" variant="outline" onClick={() => { setErrorsOpen(true); loadErrors(); }}>
+          <AlertTriangle className="w-3.5 h-3.5" /> 错误通道
+        </Button>
         <Button size="sm" onClick={loadAll} disabled={loadingAll}>
           {loadingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />} 全部加载
         </Button>
@@ -196,10 +248,16 @@ export function PluginsPage() {
                 </button>
               )}
 
+              <button onClick={() => openPreview(p)}
+                className="p-1.5 rounded-cw-xs text-on-surface-variant hover:text-primary hover:bg-primary/10 transition-colors cursor-pointer shrink-0"
+                title="UI 预览">
+                <Eye className="w-3.5 h-3.5" />
+              </button>
+
               <button onClick={() => toggle(p)} disabled={busyId === p.id}
                 className={cn('relative w-12 h-[26px] rounded-cw-full transition-colors duration-short3 cursor-pointer shrink-0',
                   p.loaded ? 'bg-track-audio' : 'bg-outline-variant/50')}
-                title={p.loaded ? '卸载' : '加载'}>
+                title={p.loaded ? '禁用（持久化）' : '启用（持久化）'}>
                 {busyId === p.id ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white" />
                 ) : (
@@ -263,6 +321,78 @@ export function PluginsPage() {
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+      {errorsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setErrorsOpen(false)}>
+          <div className="w-full max-w-lg max-h-[80vh] overflow-y-auto bg-surface-container border border-outline-variant/40 rounded-cw-lg p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="flex items-center gap-2 text-title-sm font-semibold text-on-surface">
+                <AlertTriangle className="w-4 h-4 text-warning" /> 插件错误通道
+              </h2>
+              <div className="flex items-center gap-1">
+                <Button size="sm" variant="outline" onClick={clearErrors} disabled={pluginErrors.length === 0}>
+                  <Trash2 className="w-3.5 h-3.5" /> 清空
+                </Button>
+                <button onClick={() => setErrorsOpen(false)} className="p-1 rounded-cw-xs text-on-surface-variant hover:text-on-surface cursor-pointer">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {errorsLoading ? (
+              <div className="flex items-center gap-2 text-label-sm text-on-surface-variant py-4">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> 加载错误…
+              </div>
+            ) : pluginErrors.length === 0 ? (
+              <p className="text-label-sm text-on-surface-variant/70 text-center py-6">暂无插件错误。</p>
+            ) : (
+              <ul className="space-y-2">
+                {pluginErrors.map((e, i) => (
+                  <li key={i} className="bg-surface rounded-cw-xs border border-error/20 px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-label-sm text-on-surface">{e.plugin_id}</span>
+                      <span className="text-caption font-mono text-error/80">{e.phase}</span>
+                      <span className="text-caption text-on-surface-variant/50 font-mono ml-auto">
+                        {new Date(e.ts * 1000).toLocaleTimeString()}
+                      </span>
+                    </div>
+                    <p className="text-label-sm text-on-surface mt-1">{e.message}</p>
+                    {e.details && <p className="text-caption text-on-surface-variant/60 font-mono mt-1 break-all">{e.details}</p>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
+
+      {previewId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setPreviewId(null)}>
+          <div className="w-full max-w-md max-h-[80vh] overflow-y-auto bg-surface-container border border-outline-variant/40 rounded-cw-lg p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="flex items-center gap-2 text-title-sm font-semibold text-on-surface">
+                <Box className="w-4 h-4 text-primary" /> 插件 UI 预览 · {previewId}
+              </h2>
+              <button onClick={() => setPreviewId(null)} className="p-1 rounded-cw-xs text-on-surface-variant hover:text-on-surface cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {previewLoading ? (
+              <div className="flex items-center gap-2 text-label-sm text-on-surface-variant py-4">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> 加载 UI…
+              </div>
+            ) : previewError ? (
+              <p className="text-label-sm text-error py-4">{previewError}</p>
+            ) : previewLayout ? (
+              <div className="bg-surface rounded-cw-sm border border-outline-variant/20 p-3">
+                <PluginLayoutRenderer layout={previewLayout} />
+              </div>
+            ) : null}
           </div>
         </div>
       )}

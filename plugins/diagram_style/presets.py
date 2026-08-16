@@ -4,14 +4,17 @@
   在 Persona visual_config 中设置 style_preset: "gold_black"
   即可全局应用该配色风格。
 
-插件注册方式：
-  HookRegistry.register(HookPoint.DIAGRAM_STYLE_PRESET, register_style_presets)
+插件注册方式（P1-3: 统一在 initialize() 中注册，而非 import 期副作用）：
+  class DiagramStylePlugin(BasePlugin):
+      def initialize(self):
+          HookRegistry.register(HookPoint.DIAGRAM_STYLE_PRESET, register_style_presets)
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from clipwright.plugins.base import BasePlugin
 from clipwright.plugins.hooks import HookRegistry, HookPoint
 
 # ── 内置配色主题 ─────────────────────────────────────
@@ -93,10 +96,10 @@ def register_style_presets(context: dict) -> dict:
     return {"presets": STYLE_PRESETS}
 
 
-# ── 自动注册 ─────────────────────────────────────────
+class DiagramStylePlugin(BasePlugin):
+    """P1-3: 图解风格插件 — 在 initialize() 中注册 Hook（不再依赖 import 期副作用）。"""
 
-def __init_plugin__() -> None:
-    """插件加载入口。"""
-    HookRegistry.register(HookPoint.DIAGRAM_STYLE_PRESET, register_style_presets)
-    from clipwright.config import logger
-    logger.info("DiagramStyle 插件已加载: %d 个配色主题", len(STYLE_PRESETS))
+    def initialize(self) -> None:
+        HookRegistry.register(HookPoint.DIAGRAM_STYLE_PRESET, register_style_presets)
+        from clipwright.config import logger
+        logger.info("DiagramStyle 插件已加载: %d 个配色主题", len(STYLE_PRESETS))

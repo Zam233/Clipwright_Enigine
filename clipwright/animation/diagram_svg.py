@@ -35,8 +35,45 @@ class DiagramStyle:
     vs_color: str = "#ff6b6b"
 
     @classmethod
+    def _known_fields(cls) -> set[str]:
+        return set(cls.__dataclass_fields__.keys())
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "DiagramStyle":
+        """P1-6: 从任意 dict 构造，仅取已知字段（插件输出约定兼容）。
+
+        数值字段做类型收敛（int/float），非法值回退默认，不抛 TypeError。
+        """
+        if not data:
+            return cls()
+        known = cls._known_fields()
+        _int_fields = {"font_size", "title_font_size", "border_radius"}
+        _float_fields = {"stagger_delay"}
+        filtered: dict[str, Any] = {}
+        for k, v in data.items():
+            if k not in known or v is None:
+                continue
+            if k in _int_fields:
+                try:
+                    filtered[k] = int(v)
+                except (TypeError, ValueError):
+                    continue
+            elif k in _float_fields:
+                try:
+                    filtered[k] = float(v)
+                except (TypeError, ValueError):
+                    continue
+            else:
+                filtered[k] = v
+        return cls(**filtered)
+
+    @classmethod
     def from_persona(cls, persona_style: dict | None = None) -> DiagramStyle:
-        """从 Persona 视觉配置创建，合并插件注册的 style preset。"""
+        """从 Persona 视觉配置创建，合并插件注册的 style preset。
+
+        P1-6: 插件 preset / interpret 输出按 DiagramStyle 字段约定过滤，
+        未知键、None 值与类型不匹配字段均安全忽略，不抛 TypeError。
+        """
         base = cls()
         if not persona_style:
             persona_style = {}
@@ -52,13 +89,10 @@ class DiagramStyle:
         except Exception:
             pass
 
-        # 如果指定了 preset 名称，优先从插件 preset 加载
+        # 如果指定了 preset 名称，优先从插件 preset 加载（按已知字段过滤）
         preset_name = persona_style.get("style_preset", "")
         if preset_name and preset_name in plugin_presets:
-            base = cls(
-                **{**{f: getattr(cls, f) for f in cls.__dataclass_fields__},
-                   **plugin_presets[preset_name]},
-            )
+            base = cls.from_dict(plugin_presets[preset_name])
 
         return cls(
             primary_color=persona_style.get("primary_color", base.primary_color),

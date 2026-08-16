@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import importlib
 import sys
 from pathlib import Path
@@ -20,9 +22,52 @@ from typing import Any, Optional
 
 import yaml
 
-from clipwright.config import logger
+from clipwright.config import logger, settings
 from clipwright.plugins.base import BasePlugin
+from clipwright.plugins.error_bus import get_error_bus
 from clipwright.schema.plugin import PluginManifest, PluginMetadata, PluginKind
+
+
+# M1: manifest 签名密钥（配置为空时从 JWT 密钥派生）
+def _signature_key() -> bytes:
+    key = settings.plugin_signature_key or settings.account_jwt_secret
+    if not key:
+        return b""
+    return hashlib.sha256(key.encode("utf-8")).digest()
+
+
+def sign_manifest(manifest: PluginManifest, key: Optional[str] = None) -> str:
+    """M1: 计算 manifest 规范载荷的 HMAC-SHA256 签名（hex）。
+
+    签名覆盖除 signature 外的全部字段，按字段名排序保证确定性。
+    """
+    payload = _canonical_manifest_payload(manifest)
+    k = hashlib.sha256((key or settings.plugin_signature_key or settings.account_jwt_secret).encode("utf-8")).digest() \
+        if (key or settings.plugin_signature_key or settings.account_jwt_secret) else b""
+    return hmac.new(k, payload, hashlib.sha256).hexdigest()
+
+
+def _canonical_manifest_payload(manifest: PluginManifest) -> bytes:
+    data = manifest.model_dump(mode="json")
+    data.pop("signature", None)
+    import json
+    return json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def verify_manifest_signature(manifest: PluginManifest) -> bool:
+    """M1: 校验 manifest 签名。无签名密钥或清单无签名 → 视场景返回。"""
+    key = _signature_key()
+    if not key or not manifest.signature:
+        return True
+    expected = hmac.new(key, _canonical_manifest_payload(manifest), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, manifest.signature.strip())
+
+
+# M1: 权限声明校验
+def check_permissions(manifest: PluginManifest) -> list[str]:
+    """返回声明中不在白名单里的权限列表（空 = 全部允许）。"""
+    allowed = set(settings.plugin_allowed_permissions)
+    return [p for p in manifest.permissions if p not in allowed]
 
 
 def _extract_flat_values(config: dict[str, Any]) -> dict[str, Any]:
@@ -129,15 +174,23 @@ class PluginLoader:
         """加载并实例化指定插件。
 
         流程：
+        0. 启停持久化检查（M8：disabled 标记跳过加载）
         1. 读取 plugin.yaml 清单（如存在）
-        2. 读取 config.yaml 配置（如存在）
-        3. 通过 importlib 动态导入入口模块
-        4. 实例化入口模块中的插件类，注入 manifest + config
-        5. 调用 plugin.initialize()
-        6. 自动标记插件注册的 Tool / Skill / MaterialSource
+        2. 签名校验 + 权限声明校验（M1）
+        3. 依赖解析（M2）
+        4. 读取 config.yaml 配置（如存在，含 M15 迁移）
+        5. 通过 importlib 动态导入入口模块
+        6. 实例化入口模块中的插件类，注入 manifest + config
+        7. 调用 plugin.initialize()
+        8. 自动标记插件注册的 Tool / Skill / MaterialSource
         """
         if plugin_id in self._plugins:
             return self._plugins[plugin_id]
+
+        # M8: disabled 标记 → 跳过加载
+        if not self.is_enabled(plugin_id):
+            logger.info("插件 %s 处于禁用状态，跳过加载", plugin_id)
+            return None
 
         plugin_path = self.plugin_dir / plugin_id
         if not plugin_path.exists():
@@ -146,20 +199,48 @@ class PluginLoader:
         # 1. 解析清单
         manifest = self._parse_manifest(plugin_id, plugin_path)
 
-        # 2. 解析配置（合并源码默认 + PluginData 覆盖）
-        config = self._get_merged_config(plugin_id)
+        # 2. M1: 签名 + 权限
+        if settings.plugin_require_signature and not manifest.signature:
+            get_error_bus().record(plugin_id, "load", "未签名且 require_signature=True 拒绝加载")
+            raise PluginLoadError(
+                f"Plugin '{plugin_id}' 未签名，且 plugin_require_signature=True 拒绝加载"
+            )
+        if manifest.signature and not verify_manifest_signature(manifest):
+            get_error_bus().record(plugin_id, "load", "manifest 签名校验失败")
+            raise PluginLoadError(
+                f"Plugin '{plugin_id}' manifest 签名校验失败，拒绝加载"
+            )
+        forbidden = check_permissions(manifest)
+        if forbidden:
+            get_error_bus().record(plugin_id, "load", f"声明了未知权限 {forbidden}")
+            raise PluginLoadError(
+                f"Plugin '{plugin_id}' 声明了未知权限 {forbidden}，拒绝加载"
+            )
 
-        # 3. 动态导入
+        # 3. M2: 依赖解析
+        missing = self._resolve_dependencies(manifest)
+        if missing:
+            get_error_bus().record(plugin_id, "load", f"缺少依赖插件 {missing}")
+            raise PluginLoadError(
+                f"Plugin '{plugin_id}' 缺少依赖插件 {missing}，拒绝加载"
+            )
+
+        # 4. 解析配置（合并源码默认 + PluginData 覆盖，M15 迁移后）
+        config = self._get_merged_config(plugin_id, target_schema=manifest.config_schema_version)
+
+        # 5. 动态导入
         try:
             module = self._import_plugin(plugin_id, plugin_path, manifest)
         except Exception as e:
+            get_error_bus().record(plugin_id, "load", f"模块导入失败: {e}")
             raise PluginLoadError(
                 f"Failed to import plugin '{plugin_id}': {e}"
             ) from e
 
-        # 4. 实例化插件类，注入 manifest + config
+        # 6. 实例化插件类，注入 manifest + config
         plugin = self._instantiate_plugin(module, manifest)
         if plugin is None:
+            get_error_bus().record(plugin_id, "load", "入口模块无导出插件类")
             raise PluginLoadError(
                 f"Plugin '{plugin_id}' has no exported class in its entry module"
             )
@@ -167,7 +248,7 @@ class PluginLoader:
         # 注入扁平值（向后兼容插件通过 self.config["key"] 访问；P1-7: secret 解密）
         plugin.config = _decrypt_flat(config)
 
-        # 5. 注册表快照（用于后续追踪插件注册的内容）
+        # 7. 注册表快照（用于后续追踪插件注册的内容）
         from clipwright.skill.registry import SkillRegistry
         from clipwright.tool.registry import ToolRegistry
 
@@ -177,11 +258,12 @@ class PluginLoader:
         try:
             plugin.initialize()
         except Exception as e:
+            get_error_bus().record(plugin_id, "initialize", f"initialize() 失败: {e}")
             raise PluginLoadError(
                 f"Plugin '{plugin_id}' initialize() failed: {e}"
             ) from e
 
-        # 自动标记插件注册的 Tool 和 Skill
+        # 8. 自动标记插件注册的 Tool 和 Skill
         for name in set(ToolRegistry._tools.keys()) - _tools_before:
             ToolRegistry._tools[name]._plugin_id = plugin_id  # type: ignore[attr-defined]
         for name in set(SkillRegistry._skills.keys()) - _skills_before:
@@ -191,7 +273,11 @@ class PluginLoader:
         self._metadatas[plugin_id] = PluginMetadata(
             manifest=manifest,
             has_ui=(self.plugin_dir / plugin_id / "ui.json").exists(),
-            enabled=True,
+            enabled=self.is_enabled(plugin_id),
+            signed=bool(manifest.signature),
+            verified=bool(manifest.signature) and verify_manifest_signature(manifest),
+            dependency_ok=not missing,
+            missing_dependencies=missing,
         )
 
         # M14: 插件加载审计
@@ -235,6 +321,7 @@ class PluginLoader:
                 plugin.shutdown()
             except Exception as e:
                 logger.warning("插件 %s shutdown 异常: %s", plugin_id, e)
+                get_error_bus().record(plugin_id, "shutdown", f"shutdown() 异常: {e}")
 
     def get(self, plugin_id: str) -> Optional[BasePlugin]:
         return self._plugins.get(plugin_id)
@@ -287,6 +374,7 @@ class PluginLoader:
                 old_plugin.shutdown()
         except Exception as e:
             logger.warning("插件 %s shutdown 异常: %s", plugin_id, e)
+            get_error_bus().record(plugin_id, "shutdown", f"reload 时 shutdown() 异常: {e}")
 
         self._plugins.pop(plugin_id, None)
         self._metadatas.pop(plugin_id, None)
@@ -298,6 +386,7 @@ class PluginLoader:
             logger.info("Plugin reloaded: %s", plugin_id)
         except PluginLoadError as e:
             logger.error("插件 %s 重载失败: %s", plugin_id, e)
+            get_error_bus().record(plugin_id, "reload", f"重载失败: {e}")
             # P1-5: 回滚 — 恢复旧实例，避免插件从注册表消失
             if old_plugin is not None:
                 self._plugins[plugin_id] = old_plugin
@@ -313,10 +402,11 @@ class PluginLoader:
             if mod_name == plugin_id or mod_name.startswith(prefix):
                 sys.modules.pop(mod_name, None)
 
-    def _get_merged_config(self, plugin_id: str) -> dict[str, Any]:
+    def _get_merged_config(self, plugin_id: str, target_schema: int = 1) -> dict[str, Any]:
         """合并源码 config.yaml（默认值）+ PluginData config.yaml（覆盖值）。
 
         同格式时 fields 内逐字段合并；异格式时提取扁平值后合并。
+        M15: 合并后按 target_schema 执行配置迁移。
         """
         # 源码默认配置
         source = self._parse_config(self.plugin_dir / plugin_id)
@@ -338,11 +428,81 @@ class PluginLoader:
             except Exception as e:
                 logger.warning("插件 %s PluginData config.yaml 解析失败: %s", plugin_id, e)
 
-        return source
+        return self._migrate_config(plugin_id, source, target_schema)
 
     def clear(self) -> None:
         for pid in list(self._plugins.keys()):
             self.unload(pid)
+
+    # ── M8: 启停持久化 ──
+
+    def _enabled_state_path(self, plugin_id: str) -> Path:
+        return self.get_plugin_data_dir(plugin_id) / ".enabled"
+
+    def is_enabled(self, plugin_id: str) -> bool:
+        """M8: 读取持久化启停状态（默认启用；存在 .enabled 标记 = 显式启用）。"""
+        state = self._enabled_state_path(plugin_id)
+        if state.exists():
+            return state.read_text(encoding="utf-8").strip().lower() == "enabled"
+        return True
+
+    def set_enabled(self, plugin_id: str, enabled: bool) -> None:
+        """M8: 持久化启停状态；禁用时卸载已加载实例。"""
+        state = self._enabled_state_path(plugin_id)
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text("enabled" if enabled else "disabled", encoding="utf-8")
+        if not enabled and plugin_id in self._plugins:
+            self.unload(plugin_id)
+        elif enabled and plugin_id not in self._plugins:
+            self.load(plugin_id)
+        if plugin_id in self._metadatas:
+            self._metadatas[plugin_id].enabled = enabled
+
+    # ── M2: 依赖解析 ──
+
+    def _resolve_dependencies(self, manifest: PluginManifest) -> list[str]:
+        """返回 manifest 声明依赖中缺失（未安装/不可发现）的插件 ID。"""
+        if not manifest.dependencies:
+            return []
+        available = set(self.discover())
+        return [dep for dep in manifest.dependencies if dep not in available]
+
+    # ── M15: 配置迁移 ──
+
+    def _migrate_config(self, plugin_id: str, config: dict[str, Any], target_schema: int = 1) -> dict[str, Any]:
+        """M15: 按 plugin.yaml 声明的 config_schema_version 迁移 PluginData 配置。
+
+        迁移逻辑：读取数据目录 config.yaml 的 `_schema_version` 字段（缺省 1），
+        若小于目标版本则逐级执行迁移函数（插件目录 migrations.py 可选）。
+        当前实现提供框架 + 版本戳写入；具体迁移器由插件目录 `migrations.py` 提供。
+        """
+        if target_schema <= 1:
+            return config
+
+        current = int(config.get("_schema_version", 1) or 1)
+        if current >= target_schema:
+            return config
+
+        # 尝试加载插件目录 migrations.py 中的 migrate_config(config, from, to)
+        try:
+            plugin_dir_str = str(self.plugin_dir)
+            if plugin_dir_str not in sys.path:
+                sys.path.insert(0, plugin_dir_str)
+            migrate_fn = getattr(importlib.import_module(f"{plugin_id}.migrations"), "migrate_config", None)
+        except Exception:
+            migrate_fn = None
+
+        migrated = config
+        if callable(migrate_fn):
+            try:
+                migrated = migrate_fn(config, current, target_schema)
+            except Exception as e:
+                logger.warning("插件 %s 配置迁移失败（保留原值）: %s", plugin_id, e)
+        if not isinstance(migrated, dict):
+            migrated = config
+        migrated = dict(migrated)
+        migrated["_schema_version"] = target_schema
+        return migrated
 
     # ── 内部 ──
 
