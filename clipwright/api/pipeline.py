@@ -443,6 +443,76 @@ async def retry_agent(pipeline_id: str, agent_name: str, request: Request) -> di
     return {"pipeline_id": pipeline_id, "status": "retrying", "agent": agent_name}
 
 
+# ── P8: 管线配置模板复用 ─────────────────────────────
+# 命名保存/加载 PipelineRequest 模板（含 persona/plugin/extra_params），
+# 供「一键复用同一套配置启动多个选题」的场景。
+
+import re as _re
+
+_PIPE_TEMPLATE_ID_RE = _re.compile(r"^[\w\u4e00-\u9fff-]{1,64}$")  # 字母数字下划线中文连字符
+_pipe_templates: dict[str, dict] = {}  # name → {request: {...}, owner_id, updated_at}
+
+
+class PipelineTemplateSaveRequest(BaseModel):
+    name: str = Field(description="模板名（字母数字下划线连字符）")
+    request: dict = Field(description="PipelineRequest 字段（persona_id/category_plugin_id/topic/extra_params/dry_run/use_v2）")
+
+
+@router.get("/templates")
+async def list_pipeline_templates(request: Request) -> list[dict]:
+    """列出当前用户的管线配置模板（jwt 模式按 owner 过滤）。"""
+    from clipwright.authz import current_user_id
+    uid = current_user_id(request)
+    items = []
+    for name, t in _pipe_templates.items():
+        if uid and t.get("owner_id") and t["owner_id"] != uid:
+            continue
+        items.append({"name": name, "updated_at": t.get("updated_at", "")})
+    return sorted(items, key=lambda x: x["name"])
+
+
+@router.post("/templates")
+async def save_pipeline_template(req: PipelineTemplateSaveRequest, request: Request) -> dict:
+    """保存（或覆盖）一个命名管线配置模板。"""
+    from clipwright.authz import current_user_id
+    if not _PIPE_TEMPLATE_ID_RE.match(req.name):
+        raise HTTPException(status_code=400, detail="模板名限字母数字下划线连字符（1-64）")
+    from datetime import datetime, timezone
+    _pipe_templates[req.name] = {
+        "request": req.request,
+        "owner_id": current_user_id(request) or "",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return {"name": req.name, "status": "saved"}
+
+
+@router.get("/templates/{name}")
+async def get_pipeline_template(name: str, request: Request) -> dict:
+    """读取模板（返回 PipelineRequest 字段，供直接启动）。"""
+    from clipwright.authz import current_user_id
+    t = _pipe_templates.get(name)
+    if t is None:
+        raise HTTPException(status_code=404, detail=f"模板 {name} 不存在")
+    uid = current_user_id(request)
+    if uid and t.get("owner_id") and t["owner_id"] != uid:
+        raise HTTPException(status_code=403, detail="无权访问该模板")
+    return {"name": name, "request": t["request"], "updated_at": t.get("updated_at", "")}
+
+
+@router.delete("/templates/{name}")
+async def delete_pipeline_template(name: str, request: Request) -> dict:
+    """删除模板。"""
+    from clipwright.authz import current_user_id
+    t = _pipe_templates.get(name)
+    if t is None:
+        raise HTTPException(status_code=404, detail=f"模板 {name} 不存在")
+    uid = current_user_id(request)
+    if uid and t.get("owner_id") and t["owner_id"] != uid:
+        raise HTTPException(status_code=403, detail="无权删除该模板")
+    del _pipe_templates[name]
+    return {"name": name, "status": "deleted"}
+
+
 @router.post("/cancel/{pipeline_id}")
 async def cancel_pipeline(pipeline_id: str, request: Request) -> dict:
     """取消管线（C9：即时取消）。
@@ -512,6 +582,59 @@ class PredictScriptRequest(BaseModel):
 class PredictMaterialRequest(BaseModel):
     file_path: str = Field(..., description="素材文件路径")
     file_size: int = Field(default=0, ge=0, description="文件大小(bytes)")
+
+
+class ScriptToolRequest(BaseModel):
+    """P8: 脚本创作工具（改写/扩写/缩写）。"""
+    mode: str = Field(..., description="rewrite | expand | summarize")
+    script_text: str = Field(..., max_length=50000, description="原文稿")
+    style: str = Field(default="", description="风格/口吻要求（可选）")
+    max_length: int = Field(default=0, ge=0, le=20000, description="目标字数（可选，0=不限）")
+
+
+@router.post("/script-tools")
+async def script_tools(body: ScriptToolRequest) -> dict:
+    """P8: 脚本续写/改写/扩写 — LLM 工具化三种模式。"""
+    from clipwright.services.llm import LLMService
+
+    mode_map = {
+        "rewrite": "改写",
+        "expand": "扩写",
+        "summarize": "缩写",
+    }
+    mode = mode_map.get(body.mode)
+    if not mode:
+        raise HTTPException(status_code=400, detail="mode 必须为 rewrite/expand/summarize")
+
+    style_hint = f"风格要求：{body.style}。" if body.style else ""
+    length_hint = f"目标约 {body.max_length} 字。" if body.max_length > 0 else ""
+    prompt = (
+        f"你是中文视频文案编辑。请对下面的文稿进行「{mode}」处理。\n"
+        f"{style_hint}{length_hint}\n"
+        f"只输出处理后的文稿正文，不要解释、不要 Markdown 标题。\n\n"
+        f"原文稿：\n{body.script_text[:40000]}"
+    )
+    try:
+        resp = await LLMService().generate(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=6000,
+            timeout=180,
+        )
+        text = getattr(resp, "content", None) or ""
+        out = str(text).strip()
+        if not out:
+            raise ValueError("空输出")
+        return {"mode": body.mode, "result": out[:50000]}
+    except Exception as e:
+        # LLM 失败 → 启发式回退（扩写=原文+说明；缩写=截断；改写=原文）
+        logger.warning("script-tools LLM 失败，回退启发式: %s", e)
+        if body.mode == "summarize":
+            target = body.max_length or min(500, len(body.script_text))
+            return {"mode": body.mode, "result": body.script_text[:target], "fallback": True}
+        if body.mode == "expand":
+            return {"mode": body.mode, "result": body.script_text, "fallback": True,
+                    "note": "LLM 不可用，未扩写"}
+        return {"mode": body.mode, "result": body.script_text, "fallback": True}
 
 
 @router.post("/predict-script")

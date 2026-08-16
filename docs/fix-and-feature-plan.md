@@ -687,3 +687,8 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ? 项目归档 zip：GET /api/project/{id}/archive（project.json + 白名单内媒体，RFC5987 文件名）+ projectApi.archive + ProjectCard 导出归档 + 测试 2 项
 - ? webhook secret 加密（P2-7）：webhook_crypto Fernet（webhook_secret_key 或 jwt secret 派生），register 加密落盘 + dispatch 解密 + list 掩码 + 测试 3 项
 - 回归：后端 1071/1071 ?；前端 332/332 + typecheck ?
+
+### 执行轮次 39（P8 接线即得 + 运营调度 · 第二批）
+- ? 管线配置模板复用：/api/pipeline/templates CRUD（命名保存 PipelineRequest，jwt owner 隔离，CJK 模板名白名单）+ 测试 2 项
+- ? 脚本续写/改写/扩写：POST /api/pipeline/script-tools（rewrite/expand/summarize 三模式 LLM 工具化，失败启发式回退）+ 测试 3 项
+- 回归：后端 1077/1077 ?
