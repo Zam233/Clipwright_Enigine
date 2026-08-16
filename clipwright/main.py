@@ -83,6 +83,7 @@ from clipwright.api import webhook as webhook_api
 from clipwright.api import video_editor as video_editor_api
 from clipwright.api import learning as learning_api
 from clipwright.api import market as market_api
+from clipwright.api import stats as stats_api
 from clipwright.api import preprocess as preprocess_api
 from clipwright.api import font as font_api
 from clipwright.api import requirements as requirements_api
@@ -491,6 +492,7 @@ app.include_router(preprocess_api.router)
 app.include_router(font_api.router)
 app.include_router(learning_api.router)
 app.include_router(market_api.router)
+app.include_router(stats_api.router)
 app.include_router(requirements_api.router)
 
 

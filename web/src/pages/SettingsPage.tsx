@@ -3,8 +3,9 @@ import { useNavigate } from '@tanstack/react-router';
 import { StandardLayout } from '@/layouts/StandardLayout';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { healthApi, assetApi, resetApiClient } from '@/services/api';
+import { getApiClient } from '@/services/api/client';
 import { Button, Badge, Slider } from '@/components/ui';
-import { Server, Palette, Ruler, Save, RefreshCw, Terminal, ChevronRight, FolderOpen, Clapperboard, Film, Captions, GraduationCap } from 'lucide-react';
+import { Server, Palette, Ruler, Save, RefreshCw, Terminal, ChevronRight, FolderOpen, Clapperboard, Film, Captions, GraduationCap, Gauge } from 'lucide-react';
 
 /**
  * SettingsPage — global configuration (API, theme, timeline defaults).
@@ -15,6 +16,17 @@ export function SettingsPage() {
   const [health, setHealth] = useState<'idle' | 'checking' | 'ok' | 'fail'>('idle');
   const [matSources, setMatSources] = useState<{ id: string; name: string }[]>([]);
   const [matLoading, setMatLoading] = useState(false);
+  // P5: 用量报表
+  const [usage, setUsage] = useState<{ pipelines: number; renders: number; llm_tokens_month: number; llm_tokens_total: number } | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const { data } = await getApiClient().get('/api/stats/usage');
+        setUsage(data);
+      } catch { /* 后端离线 */ }
+    })();
+  }, []);
 
   const loadMatSources = async () => {
     setMatLoading(true);
@@ -56,6 +68,20 @@ export function SettingsPage() {
             {health === 'ok' && <Badge variant="success">引擎在线</Badge>}
             {health === 'fail' && <Badge variant="error">无法连接</Badge>}
           </div>
+        </Card>
+
+        {/* P5: 用量报表（用户可读） */}
+        <Card icon={<Gauge className="w-4 h-4" />} title="用量统计">
+          {usage ? (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <Stat label="管线运行" value={String(usage.pipelines)} />
+              <Stat label="渲染任务" value={String(usage.renders)} />
+              <Stat label="本月 LLM Tokens" value={usage.llm_tokens_month.toLocaleString()} />
+              <Stat label="累计 LLM Tokens" value={usage.llm_tokens_total.toLocaleString()} />
+            </div>
+          ) : (
+            <p className="text-caption text-on-surface-variant">加载中…（后端离线则不可用）</p>
+          )}
         </Card>
 
         {/* Appearance */}
@@ -259,6 +285,15 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div>
       <label className="block text-label font-medium text-on-surface-variant mb-1.5">{label}</label>
       {children}
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="p-3 rounded-cw-sm bg-surface-container">
+      <p className="font-mono text-title-sm text-on-surface">{value}</p>
+      <p className="text-caption text-on-surface-variant">{label}</p>
     </div>
   );
 }

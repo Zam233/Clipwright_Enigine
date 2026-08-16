@@ -751,6 +751,45 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                               f"场景[{i}] 第{retries_used}轮未找到新候选，终止寻源")
                 break
 
+        # P5-B9: 素材硬过滤 — 时长过短（<3s）/ 方向不符（已知分辨率时）硬剔除；
+        # 过滤后为空则回退原候选，避免空转。
+        def _asset_duration(r) -> float | None:
+            a = getattr(r, "asset", None)
+            if a is not None:
+                d = getattr(a, "duration_sec", None)
+                return float(d) if d is not None else None
+            d = r.get("duration_sec") if isinstance(r, dict) else None
+            return float(d) if d else None
+
+        def _asset_resolution(r) -> str:
+            a = getattr(r, "asset", None)
+            if a is not None:
+                return getattr(a, "resolution", "") or ""
+            return (r.get("resolution", "") if isinstance(r, dict) else "") or ""
+
+        _MIN_MATERIAL_DURATION = 3.0
+
+        def _hard_filter(cands):
+            kept = []
+            for r, ms in cands:
+                dur = _asset_duration(r)
+                if dur is not None and dur < _MIN_MATERIAL_DURATION:
+                    continue
+                res = _asset_resolution(r)
+                if res and "x" in res:
+                    try:
+                        w, h = (int(x) for x in res.split("x")[:2])
+                    except (TypeError, ValueError):
+                        w = h = 0
+                    if w > 0 and h > 0:
+                        orient = "landscape" if w > h else "portrait"
+                        if orient != pref_orientation:
+                            continue
+                kept.append((r, ms))
+            return kept or list(cands)
+
+        validated = _hard_filter(validated)
+
         def _orientation_score(asset_obj) -> float:
             resolution = ""
             if hasattr(asset_obj, 'resolution'):
@@ -796,6 +835,7 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                     "source": r.source_name if hasattr(r, 'source_name') else "",
                     "duration_sec": r.asset.duration_sec,
                     "tags": r.asset.tags,
+                    "license": getattr(r.asset, "license", ""),  # P5-B6
                 })
             else:
                 suggested.append({
