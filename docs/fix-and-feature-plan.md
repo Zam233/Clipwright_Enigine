@@ -560,3 +560,8 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ? M6 音频增益 + 淡入淡出 UI：Clip.audio_fade_in_sec/audio_fade_out_sec（前后端 schema，负值拒绝）+ 属性面板音频类轨道 增益滑块 0-200%（百分比标签）+ 淡入/淡出时长滑块（上限=片段时长）+ 测试（schema 1 + 面板 2）
 - ? C1 画布双击编辑文字：hitTestTextClipForEdit 命中测试（text/caption、隐藏/禁用跳过、倒序顶层优先、对齐/变换感知）+ 预览画布 onDoubleClick 内联 textarea 编辑（Enter 提交 / Esc 取消 / blur 提交，updateClip + history）+ 测试 9 项
 - 回归：后端 1030/1030 ?；前端 285/285 + typecheck + build ?
+
+### 执行轮次 13（P6 编辑器专业能力 · 第五批）
+- ? C5 画布设置修改：TimelinePanel 画布设置弹层（分辨率 16-7680/16-4320、帧率 1-120，锁定宽高比，updateTimelineMeta 接线）
+- ? G1 版本历史 UI：后端 /api/project/{id}/versions 四端点（list/snapshot/restore/clear，VersionManager 接线 + owner 校验 + 审计 + 恢复写回项目）+ 前端 versionApi + TimelinePanel 版本历史弹层（保存快照/恢复/清空，恢复后 setTimeline + 重注册媒体）+ 测试（后端 2 + 前端 4）
+- 回归：后端 1032/1032 ?；前端 289/289 + typecheck + build ?

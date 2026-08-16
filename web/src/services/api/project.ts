@@ -90,6 +90,43 @@ export const projectApi = {
   },
 };
 
+/** G1: 项目时间线版本管理（版本历史 UI 接线后端 VersionManager API）。 */
+export interface TimelineVersionEntry {
+  version_id: string;
+  time: string;
+  label: string;
+  position: number;
+  is_current: boolean;
+}
+
+export const versionApi = {
+  /** 列出项目全部版本快照 */
+  async list(projectId: string) {
+    const { data } = await getApiClient().get<TimelineVersionEntry[]>(`/api/project/${projectId}/versions`);
+    return data;
+  },
+
+  /** 把当前时间线存为版本快照 */
+  async snapshot(projectId: string, label = '') {
+    const { data } = await getApiClient().post<{ version_id: string; count: number }>(
+      `/api/project/${projectId}/versions`, { label });
+    return data;
+  },
+
+  /** 恢复指定版本（写回项目 timeline） */
+  async restore(projectId: string, position: number) {
+    const { data } = await getApiClient().post<{ version_id: string; timeline: import('@/types/timeline').Timeline }>(
+      `/api/project/${projectId}/versions/${position}/restore`);
+    return data;
+  },
+
+  /** 清空全部版本快照 */
+  async clear(projectId: string) {
+    const { data } = await getApiClient().delete<{ deleted: boolean }>(`/api/project/${projectId}/versions`);
+    return data;
+  },
+};
+
 export const healthApi = {
   async check() {
     const { data } = await getApiClient().get<HealthResponse>('/health');

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { TimelineEngine } from '../engine/TimelineEngine';
 import { useTimelineStore } from '@/stores/timelineStore';
 import { useSelectionStore } from '@/stores/selectionStore';
@@ -13,9 +13,13 @@ import { HEADER_W } from '../engine/types';
 import {
   Magnet, Plus, ZoomIn, ZoomOut, Maximize2, Trash2, Scissors, ChevronsLeft,
   Layers, Lock, LockOpen, Volume2, VolumeX, ArrowUp, ArrowDown, X, Flag, FlagOff,
-  Grid3x3, Eye, EyeOff,
+  Grid3x3, Eye, EyeOff, Settings, History as HistoryIcon, RotateCcw,
 } from 'lucide-react';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useProjectStore } from '@/stores/projectStore';
+import { versionApi } from '@/services/api/project';
+import type { TimelineVersionEntry } from '@/services/api/project';
+import { mediaManager } from '@/services/media/mediaManager';
 
 /**
  * TimelinePanel — hosts the Canvas timeline engine plus transport/track controls.
@@ -48,6 +52,72 @@ export function TimelinePanel() {
   const [trackMgrOpen, setTrackMgrOpen] = useState(false);
   // M8: 重命名标记弹层（{ time, name }）
   const [renamingMarker, setRenamingMarker] = useState<{ time: number; name: string } | null>(null);
+  // C5: 画布设置弹层（分辨率/帧率）
+  const [canvasSettingsOpen, setCanvasSettingsOpen] = useState(false);
+  const updateTimelineMeta = useTimelineStore((s) => s.updateTimelineMeta);
+  // G1: 版本历史弹层
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const projectId = useProjectStore((s) => s.projectId);
+  const [versions, setVersions] = useState<TimelineVersionEntry[]>([]);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+
+  const refreshVersions = useCallback(async () => {
+    if (!projectId) return;
+    setHistoryBusy(true);
+    setHistoryError(null);
+    try {
+      setVersions(await versionApi.list(projectId));
+    } catch {
+      setHistoryError('版本加载失败（后端离线？）');
+    } finally {
+      setHistoryBusy(false);
+    }
+  }, [projectId]);
+
+  const handleSnapshot = useCallback(async () => {
+    if (!projectId) return;
+    setHistoryBusy(true);
+    setHistoryError(null);
+    try {
+      await versionApi.snapshot(projectId, `手动快照 ${new Date().toLocaleTimeString()}`);
+      await refreshVersions();
+    } catch {
+      setHistoryError('快照保存失败（时间线为空或后端离线）');
+    } finally {
+      setHistoryBusy(false);
+    }
+  }, [projectId, refreshVersions]);
+
+  const handleRestore = useCallback(async (position: number) => {
+    if (!projectId) return;
+    setHistoryBusy(true);
+    setHistoryError(null);
+    try {
+      const res = await versionApi.restore(projectId, position);
+      useTimelineStore.getState().setTimeline(res.timeline);
+      mediaManager.registerTimeline(res.timeline);
+      await refreshVersions();
+    } catch {
+      setHistoryError('恢复失败（后端离线或版本已删除）');
+    } finally {
+      setHistoryBusy(false);
+    }
+  }, [projectId, refreshVersions]);
+
+  const handleClearVersions = useCallback(async () => {
+    if (!projectId) return;
+    setHistoryBusy(true);
+    setHistoryError(null);
+    try {
+      await versionApi.clear(projectId);
+      setVersions([]);
+    } catch {
+      setHistoryError('清空失败（后端离线）');
+    } finally {
+      setHistoryBusy(false);
+    }
+  }, [projectId]);
 
   // Instantiate engine
   useEffect(() => {
@@ -333,6 +403,51 @@ export function TimelinePanel() {
 
         <div className="flex-1" />
 
+        {/* C5: 画布设置（分辨率/帧率） */}
+        <div className="relative">
+          <Tooltip content="画布设置">
+            <button onClick={() => setCanvasSettingsOpen(!canvasSettingsOpen)}
+              className={cn('p-1.5 rounded-cw-xs transition-colors cursor-pointer',
+                canvasSettingsOpen ? 'text-primary bg-primary/10' : 'text-on-surface-variant hover:text-on-surface')}>
+              <Settings className="w-3.5 h-3.5" />
+            </button>
+          </Tooltip>
+          {canvasSettingsOpen && (
+            <CanvasSettingsPopover
+              width={timeline.width}
+              height={timeline.height}
+              fps={timeline.fps}
+              onChange={(meta) => { updateTimelineMeta(meta); }}
+              onClose={() => setCanvasSettingsOpen(false)}
+            />
+          )}
+        </div>
+
+        {/* G1: 版本历史 */}
+        <div className="relative">
+          <Tooltip content="版本历史">
+            <button onClick={() => {
+              setHistoryOpen(!historyOpen);
+              if (!historyOpen) refreshVersions();
+            }}
+              className={cn('p-1.5 rounded-cw-xs transition-colors cursor-pointer',
+                historyOpen ? 'text-primary bg-primary/10' : 'text-on-surface-variant hover:text-on-surface')}>
+              <HistoryIcon className="w-3.5 h-3.5" />
+            </button>
+          </Tooltip>
+          {historyOpen && (
+            <VersionHistoryPopover
+              versions={versions}
+              busy={historyBusy}
+              error={historyError}
+              onSnapshot={handleSnapshot}
+              onRestore={handleRestore}
+              onClear={handleClearVersions}
+              onClose={() => setHistoryOpen(false)}
+            />
+          )}
+        </div>
+
         {/* Timecode readout */}
         <span className="font-mono text-mono text-primary bg-surface-container px-2 py-0.5 rounded-cw-xs mr-2">
           {formatTimecode(currentTimeSec, fps)}
@@ -534,6 +649,176 @@ function kindLabel(kind: ClipKind): string {
     caption: '字幕', shape: '形状', waveform: '波形', animation: '动画',
   };
   return map[kind];
+}
+
+/**
+ * C5: 画布设置弹层 — 修改时间线分辨率与帧率（updateTimelineMeta）。
+ * 提交即生效（history 在编辑器中由 autosave 承担），输入做边界钳制。
+ */
+function CanvasSettingsPopover({
+  width, height, fps, onChange, onClose,
+}: {
+  width: number;
+  height: number;
+  fps: number;
+  onChange: (meta: { width: number; height: number; fps: number }) => void;
+  onClose: () => void;
+}) {
+  const [w, setW] = useState(String(width));
+  const [h, setH] = useState(String(height));
+  const [f, setF] = useState(String(fps));
+  const [aspectLock, setAspectLock] = useState(true);
+
+  const clampInt = (v: string, min: number, max: number, fallback: number) => {
+    const n = Math.round(Number(v));
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, n));
+  };
+
+  const apply = () => {
+    const cw = clampInt(w, 16, 7680, width);
+    const ch = clampInt(h, 16, 4320, height);
+    const cf = clampInt(f, 1, 120, fps);
+    if (cw !== width || ch !== height || cf !== fps) onChange({ width: cw, height: ch, fps: cf });
+    onClose();
+  };
+
+  const aspect = width > 0 && height > 0 ? width / height : 16 / 9;
+
+  const onW = (v: string) => {
+    setW(v);
+    if (aspectLock) {
+      const n = clampInt(v, 16, 7680, width);
+      setH(String(Math.round(n / aspect)));
+    }
+  };
+
+  const onH = (v: string) => {
+    setH(v);
+    if (aspectLock) {
+      const n = clampInt(v, 16, 4320, height);
+      setW(String(Math.round(n * aspect)));
+    }
+  };
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onClick={onClose} />
+      <div className="absolute right-0 top-full mt-1.5 z-50 w-[240px] bg-surface-container-high border border-outline-variant/50
+        rounded-cw-md shadow-2xl shadow-black/50 overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-2 border-b border-outline-variant/30">
+          <span className="text-label font-medium text-on-surface-variant uppercase tracking-wide">画布设置</span>
+          <button onClick={onClose} className="p-1 rounded-cw-xs text-on-surface-variant hover:text-on-surface transition-colors cursor-pointer">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        <div className="p-3 space-y-2.5">
+          <div className="flex items-center gap-2">
+            <label className="text-label-sm text-on-surface-variant w-14 shrink-0">宽度</label>
+            <input value={w} onChange={(e) => onW(e.target.value)} inputMode="numeric"
+              className="flex-1 bg-surface rounded-cw-xs px-2 py-1 text-label-sm font-mono text-on-surface outline-none border border-outline-variant/30 focus:border-primary" />
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-label-sm text-on-surface-variant w-14 shrink-0">高度</label>
+            <input value={h} onChange={(e) => onH(e.target.value)} inputMode="numeric"
+              className="flex-1 bg-surface rounded-cw-xs px-2 py-1 text-label-sm font-mono text-on-surface outline-none border border-outline-variant/30 focus:border-primary" />
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-label-sm text-on-surface-variant w-14 shrink-0">帧率</label>
+            <input value={f} onChange={(e) => setF(e.target.value)} inputMode="numeric"
+              className="flex-1 bg-surface rounded-cw-xs px-2 py-1 text-label-sm font-mono text-on-surface outline-none border border-outline-variant/30 focus:border-primary" />
+          </div>
+          <label className="flex items-center gap-2 text-label-sm text-on-surface-variant cursor-pointer select-none">
+            <input type="checkbox" checked={aspectLock} onChange={(e) => setAspectLock(e.target.checked)}
+              className="accent-primary" />
+            锁定宽高比
+          </label>
+          <div className="flex justify-end gap-2 pt-1">
+            <button onClick={onClose}
+              className="px-3 py-1 rounded-cw-xs text-label-sm text-on-surface-variant hover:text-on-surface transition-colors cursor-pointer">
+              取消
+            </button>
+            <button onClick={apply}
+              className="px-3 py-1 rounded-cw-xs text-label-sm bg-primary text-on-primary hover:bg-primary/90 transition-colors cursor-pointer">
+              应用
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/**
+ * G1: 版本历史弹层 — 列出项目快照，支持 保存快照 / 恢复 / 清空。
+ */
+function VersionHistoryPopover({
+  versions, busy, error, onSnapshot, onRestore, onClear, onClose,
+}: {
+  versions: TimelineVersionEntry[];
+  busy: boolean;
+  error: string | null;
+  onSnapshot: () => void;
+  onRestore: (position: number) => void;
+  onClear: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onClick={onClose} />
+      <div className="absolute right-0 top-full mt-1.5 z-50 w-[300px] bg-surface-container-high border border-outline-variant/50
+        rounded-cw-md shadow-2xl shadow-black/50 overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-2 border-b border-outline-variant/30">
+          <span className="text-label font-medium text-on-surface-variant uppercase tracking-wide">版本历史</span>
+          <div className="flex items-center gap-1">
+            <button onClick={onSnapshot} disabled={busy}
+              className="px-2 py-0.5 rounded-cw-xs text-label-sm bg-primary text-on-primary hover:bg-primary/90 disabled:opacity-40 transition-colors cursor-pointer">
+              保存快照
+            </button>
+            <button onClick={onClose} className="p-1 rounded-cw-xs text-on-surface-variant hover:text-on-surface transition-colors cursor-pointer">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+        <div className="max-h-[280px] overflow-y-auto p-1.5 space-y-1">
+          {error && <p className="text-label-sm text-error px-2 py-1">{error}</p>}
+          {!error && versions.length === 0 && (
+            <p className="text-label-sm text-on-surface-variant text-center py-4">
+              {busy ? '加载中…' : '暂无版本 — 点击「保存快照」记录当前时间线'}
+            </p>
+          )}
+          {versions.map((v) => (
+            <div key={v.version_id}
+              className={cn('flex items-center gap-2 px-2 py-1.5 rounded-cw-sm border transition-colors',
+                v.is_current ? 'border-primary/50 bg-primary/5' : 'border-outline-variant/20 bg-surface-container hover:bg-surface')}>
+              <span className="w-2 h-2 rounded-full shrink-0" style={{ background: v.is_current ? '#4F8CFF' : '#34D399' }} />
+              <div className="flex-1 min-w-0">
+                <p className="text-label-sm text-on-surface truncate">{v.label || `版本 ${v.position + 1}`}</p>
+                <p className="text-caption text-on-surface-variant/70 font-mono">
+                  {v.is_current ? '当前' : new Date(v.time).toLocaleString()}
+                </p>
+              </div>
+              {!v.is_current && (
+                <button onClick={() => onRestore(v.position)} disabled={busy}
+                  className="p-1 rounded-cw-xs text-on-surface-variant hover:text-primary disabled:opacity-40 transition-colors cursor-pointer"
+                  title="恢复此版本">
+                  <RotateCcw className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+        {versions.length > 0 && (
+          <div className="px-3 py-1.5 border-t border-outline-variant/30 flex justify-end">
+            <button onClick={onClear} disabled={busy}
+              className="px-2 py-0.5 rounded-cw-xs text-label-sm text-error hover:bg-error/10 disabled:opacity-40 transition-colors cursor-pointer">
+              清空全部版本
+            </button>
+          </div>
+        )}
+      </div>
+    </>
+  );
 }
 
 /**
