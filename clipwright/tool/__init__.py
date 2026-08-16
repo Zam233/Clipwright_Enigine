@@ -18,7 +18,7 @@ from clipwright.tool.audio import (
 )
 from clipwright.tool.base import BaseTool
 from clipwright.tool.chroma_key import ChromaKeyTool
-from clipwright.tool.color import ColorCorrectTool, LutApplyTool
+from clipwright.tool.color import ColorCorrectTool, ColorMatchTool, LutApplyTool
 from clipwright.tool.effects import (
     BackgroundRemoveTool,
     EffectVignetteTool,
@@ -102,6 +102,7 @@ def register_builtin_tools() -> None:
         # ── 其他 ──
         SpeedRampTool(),
         ColorCorrectTool(),
+        ColorMatchTool(),
         LutApplyTool(),
         TransitionApplyTool(),
         WhisperTranscribeTool(),

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from clipwright.authz import current_user_id, enforce_owner
 from clipwright.config import settings
@@ -18,9 +18,10 @@ _repo = PersonaRepository(settings.persona_dir)
 
 def _load_owned(request: Request, persona_id: str) -> PersonaManifest:
     """加载 persona 并校验所有权（P3-3B）。"""
+    from clipwright.persona.loader import PersonaLoadError
     try:
         manifest = _repo.load_manifest(persona_id)
-    except FileNotFoundError:
+    except (FileNotFoundError, PersonaLoadError):
         raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
     enforce_owner(request, manifest.owner_id, "Persona")
     return manifest
@@ -36,9 +37,10 @@ async def list_personas() -> list[str]:
 
 @router.get("/{persona_id}", response_model=PersonaManifest)
 async def get_persona(persona_id: str) -> PersonaManifest:
+    from clipwright.persona.loader import PersonaLoadError
     try:
         return _repo.load_manifest(persona_id)
-    except FileNotFoundError:
+    except (FileNotFoundError, PersonaLoadError):
         raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
 
 
@@ -67,6 +69,67 @@ async def update_persona(persona_id: str, manifest: PersonaManifest, request: Re
         manifest.owner_id = _repo.load_manifest(persona_id).owner_id
     _repo.save_manifest(manifest)
     return manifest
+
+
+class ReferenceStyleRequest(BaseModel):
+    """P8: 参考成片风格模仿 — 上传参考视频路径，分析后写入 persona 参数层。"""
+    video_path: str = Field(..., description="参考成片本地路径（须在白名单内）")
+    apply: bool = Field(default=True, description="是否把分析结果写入 persona 参数层")
+
+
+@router.post("/{persona_id}/reference-style")
+async def reference_style(persona_id: str, req: ReferenceStyleRequest, request: Request) -> dict:
+    """P8: 参考成片风格模仿 — 提取配色/镜头节奏/转场参数并写入 persona 参数层。
+
+    分析结果写入 manifest.parameter.embedding（RhythmStats/VisualStats）+ transition_weights；
+    apply=False 时仅返回分析结果不写库。
+    """
+    _load_owned(request, persona_id)
+    from clipwright.security import assert_allowed_path
+    from pathlib import Path
+    try:
+        assert_allowed_path(Path(req.video_path))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"参考视频路径不在白名单: {e}")
+
+    from clipwright.services.style_analyzer import analyze_reference_video
+    analysis = await analyze_reference_video(req.video_path)
+    if not analysis.get("rhythm") and not analysis.get("visual"):
+        raise HTTPException(status_code=400, detail="参考视频分析失败（ffmpeg 不可用或文件无效）")
+
+    if req.apply:
+        manifest = _repo.load_manifest(persona_id)
+        param = manifest.parameter
+        # 写入参数层（P8: 参考成片风格模仿 → rhythm/visual/transition_weights）
+        if analysis.get("rhythm"):
+            # rhythm: 镜头时长均值 → base_shot_duration_ms；密度 → cut_density_tier
+            rh = analysis["rhythm"]
+            param.rhythm.base_shot_duration_ms = int(rh.get("shot_duration_mu_ms", param.rhythm.base_shot_duration_ms))
+            if rh.get("pacing_variance_per_minute", 0.3) > 0.5:
+                param.rhythm.cut_density_tier = "high"
+            elif rh.get("pacing_variance_per_minute", 0.3) < 0.2:
+                param.rhythm.cut_density_tier = "low"
+            else:
+                param.rhythm.cut_density_tier = "medium"
+        if analysis.get("visual"):
+            vs = analysis["visual"]
+            colors = vs.get("dominant_color_cluster") or []
+            if colors:
+                # 主色 → 色板（取前 1-2 簇）
+                c0 = colors[0]
+                param.visual.primary_color = f"#{c0[0]:02X}{c0[1]:02X}{c0[2]:02X}"
+                if len(colors) > 1:
+                    c1 = colors[1]
+                    param.visual.accent_color = f"#{c1[0]:02X}{c1[1]:02X}{c1[2]:02X}"
+        if analysis.get("transition_weights"):
+            param.visual.transition_weights = analysis["transition_weights"]
+        manifest.parameter = param
+        _repo.save_manifest(manifest)
+        from clipwright import audit
+        audit.record("persona_reference_style", current_user_id(request),
+                     {"persona_id": persona_id, "video": Path(req.video_path).name})
+
+    return {"persona_id": persona_id, "applied": req.apply, "analysis": analysis}
 
 
 @router.delete("/{persona_id}")
