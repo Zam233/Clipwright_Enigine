@@ -78,6 +78,15 @@ class Settings(BaseSettings):
     # CORS 允许的来源（逗号分隔）；api_token 设置后生效，"*" 表示允许全部
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
+    # --- 账号体系（P3-3B，对接 K:\Clipwright Server）---
+    # off  = 现状（api_token 或无鉴权，本地/内网部署）
+    # token= 本地 api_token 强制（过渡模式）
+    # jwt  = 校验 Server 签发的 JWT（与 CLIPWRIGHT_SERVER_JWT_SECRET 共享密钥本地验签）
+    account_verify_mode: Literal["off", "token", "jwt"] = "off"
+    account_url: str = ""          # ClipWright Server 地址（前端市场 API / 未来 token 模式 /verify）
+    account_jwt_secret: str = ""   # 共享 JWT 密钥（jwt 模式必填，与 Server 一致）
+    account_jwt_algorithm: str = "HS256"
+
     # --- MongoDB ---
     mongo_uri: str = "mongodb://localhost:27017"
     mongo_db_name: str = "clipwright"

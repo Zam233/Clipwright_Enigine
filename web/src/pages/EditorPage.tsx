@@ -12,6 +12,7 @@ import { useVoiceStore } from '@/stores/voiceStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { toast } from '@/stores/toastStore';
 import { projectApi, requirementsApi, getApiClient } from '@/services/api';
+import { session } from '@/services/api/session';
 import { mediaManager } from '@/services/media/mediaManager';
 import { useGlobalKeybindings } from '@/features/keyboard/useGlobalKeybindings';
 import { ShortcutCheatSheet } from '@/features/keyboard/ShortcutCheatSheet';
@@ -247,7 +248,7 @@ export function EditorPage() {
       const st = useProjectStore.getState();
       if (!st.projectId) return;
       const base = getApiClient().defaults.baseURL || '';
-      const token = useSettingsStore.getState().authToken;
+      const token = useSettingsStore.getState().authToken || session.token;
       // F3 负载大小守卫：>48KB 时退化为紧凑元数据，避免 keepalive 静默丢弃大负载
       const decision = decideFlushPayload({
         project_id: st.projectId,

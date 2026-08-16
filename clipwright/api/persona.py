@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from clipwright.authz import current_user_id, enforce_owner
 from clipwright.config import settings
 from clipwright.persona.loader import load_persona_by_id
 from clipwright.persona.repository import PersonaRepository
@@ -13,6 +14,16 @@ from clipwright.schema.persona import KnowledgeDoc, PersonaManifest
 router = APIRouter(prefix="/api/persona", tags=["persona"])
 
 _repo = PersonaRepository(settings.persona_dir)
+
+
+def _load_owned(request: Request, persona_id: str) -> PersonaManifest:
+    """加载 persona 并校验所有权（P3-3B）。"""
+    try:
+        manifest = _repo.load_manifest(persona_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
+    enforce_owner(request, manifest.owner_id, "Persona")
+    return manifest
 
 
 # ── 基础 CRUD ──
@@ -32,24 +43,33 @@ async def get_persona(persona_id: str) -> PersonaManifest:
 
 
 @router.post("/create", response_model=PersonaManifest)
-async def create_persona(manifest: PersonaManifest) -> PersonaManifest:
+async def create_persona(manifest: PersonaManifest, request: Request) -> PersonaManifest:
     if _repo.exists(manifest.persona_id):
         raise HTTPException(status_code=409, detail=f"Persona {manifest.persona_id} already exists")
+    # P3-3B: 记录创建者
+    uid = current_user_id(request)
+    if uid and not manifest.owner_id:
+        manifest.owner_id = uid
     _repo.save_manifest(manifest)
     return manifest
 
 
 @router.put("/{persona_id}", response_model=PersonaManifest)
-async def update_persona(persona_id: str, manifest: PersonaManifest) -> PersonaManifest:
+async def update_persona(persona_id: str, manifest: PersonaManifest, request: Request) -> PersonaManifest:
+    _load_owned(request, persona_id)  # P3-3B
     if not _repo.exists(persona_id):
         raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
+    # 保留原所有者（body 未携带时）
+    if not manifest.owner_id:
+        manifest.owner_id = _repo.load_manifest(persona_id).owner_id
     _repo.save_manifest(manifest)
     return manifest
 
 
 @router.delete("/{persona_id}")
-async def delete_persona(persona_id: str) -> dict:
-    """删除 Persona（含磁盘目录）。"""
+async def delete_persona(persona_id: str, request: Request) -> dict:
+    """删除 Persona（含磁盘目录；P3-3B: 校验所有权）。"""
+    _load_owned(request, persona_id)
     if not _repo.exists(persona_id):
         raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
     _repo.delete(persona_id)

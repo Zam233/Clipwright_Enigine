@@ -74,6 +74,8 @@ class ProjectManager:
             "updated_at": data.get("updated_at"),
             "persona_id": data.get("persona_id"),
             "plugin_id": data.get("plugin_id"),
+            # P3-3B: owner 隔离所需的归属字段
+            "owner_id": data.get("owner_id", ""),
             "track_count": len((data.get("timeline") or {}).get("tracks", [])),
             "duration_sec": (data.get("timeline") or {}).get("duration_sec", 0),
             "has_thumbnail": bool(data.get("thumbnail") and Path(data["thumbnail"]).exists()),

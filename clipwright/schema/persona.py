@@ -352,6 +352,8 @@ class PersonaManifest(BaseModel):
     persona_name: str = Field(default="")
     version: str = Field(default="1.0.0")
     description: str = Field(default="")
+    # P3-3B: 创建者账号 ID（jwt 模式）；空串 = 遗留/公共 persona（off/token 模式）
+    owner_id: str = Field(default="")
 
     # 继承与组合
     inherits: Optional[str] = Field(default=None)

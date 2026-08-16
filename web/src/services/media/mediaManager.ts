@@ -272,9 +272,10 @@ class MediaManager {
       if (!this.audioCtx) {
         this.audioCtx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
       }
-      // P0-10: 波形提取走裸 fetch——补 Authorization 头（动态导入避免 node 测试环境加载 DOM 依赖的 store）
+      // P0-10/P3-3B: 波形提取走裸 fetch——补 Authorization 头（动态导入避免 node 测试环境加载 DOM 依赖的 store）
       const { useSettingsStore } = await import('@/stores/settingsStore');
-      const token = useSettingsStore.getState().authToken;
+      const { session } = await import('@/services/api/session');
+      const token = useSettingsStore.getState().authToken || session.token;
       const resp = await fetch(e.url, {
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       });

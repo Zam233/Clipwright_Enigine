@@ -18,6 +18,11 @@ export default defineConfig({
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
+      // P3-3B: 账号/市场服务（ClipWright Server，K:\Clipwright Server :8090）
+      '/srv': {
+        target: 'http://localhost:8090',
+        changeOrigin: true,
+      },
     },
   },
 });

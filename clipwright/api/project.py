@@ -5,14 +5,27 @@ from __future__ import annotations
 import threading
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from clipwright.authz import current_user_id, enforce_owner, filter_by_owner
 from clipwright.config import logger
 from clipwright.services.project_manager import ProjectManager
 
 router = APIRouter(prefix="/api/project", tags=["project"])
 _manager = ProjectManager()
+
+
+def _load_owned(request: Request, project_id: str) -> dict[str, Any]:
+    """加载项目并校验所有权（P3-3B）。"""
+    try:
+        data = _manager.load(project_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    enforce_owner(request, data.get("owner_id"), "项目")
+    return data
 
 
 # ── Background thumbnail helper (fire-and-forget) ──
@@ -76,8 +89,8 @@ class FolderDeleteRequest(BaseModel):
 # ── Routes ──
 
 @router.post("")
-async def create_project(req: ProjectCreateRequest) -> dict[str, Any]:
-    """Create a new project (backend assigns id)."""
+async def create_project(req: ProjectCreateRequest, request: Request) -> dict[str, Any]:
+    """Create a new project (backend assigns id; P3-3B: 记录 owner_id)。"""
     data = _manager.create(
         name=req.name,
         timeline=req.timeline,
@@ -87,16 +100,24 @@ async def create_project(req: ProjectCreateRequest) -> dict[str, Any]:
         tags=req.tags,
         agent_state=req.agent_state,
     )
+    uid = current_user_id(request)
+    if uid:
+        try:
+            _manager.save(data["id"], {"owner_id": uid})
+            data["owner_id"] = uid
+        except Exception as e:
+            logger.warning("owner_id 写入失败: %s", e)
     return data
 
 
 @router.get("")
 async def list_projects(
+    request: Request,
     folder: str | None = Query(None),
     tag: str | None = Query(None),
 ) -> list[dict[str, Any]]:
-    """List all projects, optionally filtered by folder/tag."""
-    return _manager.list_projects(folder=folder, tag=tag)
+    """List all projects, optionally filtered by folder/tag（P3-3B: 按 owner 过滤）。"""
+    return filter_by_owner(request, _manager.list_projects(folder=folder, tag=tag))
 
 
 @router.post("/folders/rename")
@@ -114,25 +135,20 @@ async def delete_folder(req: FolderDeleteRequest) -> dict[str, Any]:
 
 
 @router.get("/{project_id}")
-async def get_project(project_id: str) -> dict[str, Any]:
-    """Load a project by id."""
-    try:
-        data = _manager.load(project_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    if data is None:
-        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-    return data
+async def get_project(project_id: str, request: Request) -> dict[str, Any]:
+    """Load a project by id（P3-3B: 校验所有权）。"""
+    return _load_owned(request, project_id)
 
 
 @router.put("/{project_id}")
-async def update_project(project_id: str, req: ProjectUpdateRequest) -> dict[str, Any]:
+async def update_project(project_id: str, req: ProjectUpdateRequest, request: Request) -> dict[str, Any]:
     """Update an existing project.
 
     When the request includes a ``timeline`` (or any content change), a
     background thread regenerates the thumbnail asynchronously so the
     PUT response is never delayed by FFmpeg.
     """
+    _load_owned(request, project_id)  # P3-3B
     update_data = req.model_dump(exclude_unset=True)
     try:
         data = _manager.save(project_id, update_data)
@@ -149,8 +165,9 @@ async def update_project(project_id: str, req: ProjectUpdateRequest) -> dict[str
 
 
 @router.delete("/{project_id}")
-async def delete_project(project_id: str) -> dict[str, Any]:
-    """Delete a project."""
+async def delete_project(project_id: str, request: Request) -> dict[str, Any]:
+    """Delete a project（P3-3B: 校验所有权）。"""
+    _load_owned(request, project_id)
     try:
         ok = _manager.delete(project_id)
     except ValueError as e:
@@ -161,10 +178,18 @@ async def delete_project(project_id: str) -> dict[str, Any]:
 
 
 @router.post("/{project_id}/duplicate")
-async def duplicate_project(project_id: str) -> dict[str, Any]:
-    """Deep-copy a project with a new id."""
+async def duplicate_project(project_id: str, request: Request) -> dict[str, Any]:
+    """Deep-copy a project with a new id（P3-3B: 校验所有权，副本归属当前用户）。"""
+    _load_owned(request, project_id)
     try:
-        return _manager.duplicate(project_id)
+        dup = _manager.duplicate(project_id)
+        uid = current_user_id(request)
+        if uid:
+            try:
+                _manager.save(dup["id"], {"owner_id": uid})
+            except Exception:
+                pass
+        return dup
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
     except ValueError as e:
@@ -172,8 +197,9 @@ async def duplicate_project(project_id: str) -> dict[str, Any]:
 
 
 @router.patch("/{project_id}/rename")
-async def rename_project(project_id: str, req: RenameRequest) -> dict[str, Any]:
-    """Rename a project."""
+async def rename_project(project_id: str, req: RenameRequest, request: Request) -> dict[str, Any]:
+    """Rename a project（P3-3B）。"""
+    _load_owned(request, project_id)
     try:
         return _manager.rename(project_id, req.name)
     except FileNotFoundError:
@@ -183,8 +209,9 @@ async def rename_project(project_id: str, req: RenameRequest) -> dict[str, Any]:
 
 
 @router.patch("/{project_id}/folder")
-async def set_folder(project_id: str, req: FolderRequest) -> dict[str, Any]:
-    """Set project folder."""
+async def set_folder(project_id: str, req: FolderRequest, request: Request) -> dict[str, Any]:
+    """Set project folder（P3-3B）。"""
+    _load_owned(request, project_id)
     try:
         return _manager.set_folder(project_id, req.folder)
     except FileNotFoundError:
@@ -194,8 +221,9 @@ async def set_folder(project_id: str, req: FolderRequest) -> dict[str, Any]:
 
 
 @router.post("/{project_id}/tags")
-async def add_tag(project_id: str, req: TagRequest) -> dict[str, Any]:
-    """Add a tag to a project."""
+async def add_tag(project_id: str, req: TagRequest, request: Request) -> dict[str, Any]:
+    """Add a tag to a project（P3-3B）。"""
+    _load_owned(request, project_id)
     try:
         return _manager.add_tag(project_id, req.tag)
     except FileNotFoundError:
@@ -205,8 +233,9 @@ async def add_tag(project_id: str, req: TagRequest) -> dict[str, Any]:
 
 
 @router.delete("/{project_id}/tags/{tag}")
-async def remove_tag(project_id: str, tag: str) -> dict[str, Any]:
-    """Remove a tag from a project."""
+async def remove_tag(project_id: str, tag: str, request: Request) -> dict[str, Any]:
+    """Remove a tag from a project（P3-3B）。"""
+    _load_owned(request, project_id)
     try:
         return _manager.remove_tag(project_id, tag)
     except FileNotFoundError:
@@ -216,7 +245,7 @@ async def remove_tag(project_id: str, tag: str) -> dict[str, Any]:
 
 
 @router.get("/{project_id}/thumbnail")
-async def get_thumbnail(project_id: str, force: bool = Query(False)):
+async def get_thumbnail(project_id: str, request: Request, force: bool = Query(False)):
     """Get project thumbnail image.
 
     When *force* is ``True`` the thumbnail is regenerated even if it is
@@ -226,12 +255,7 @@ async def get_thumbnail(project_id: str, force: bool = Query(False)):
     from pathlib import Path
     from fastapi.responses import FileResponse
 
-    try:
-        data = _manager.load(project_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    if data is None:
-        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    data = _load_owned(request, project_id)  # P3-3B
 
     thumb_path = data.get("thumbnail")
     if thumb_path and Path(thumb_path).exists() and not force:

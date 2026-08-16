@@ -36,6 +36,7 @@ const PreprocessPage = lazyPage(() => import('./pages/admin/PreprocessPage'), 'P
 const PipelineAdminPage = lazyPage(() => import('./pages/admin/PipelineAdminPage'), 'PipelineAdminPage');
 const VoicePage = lazyPage(() => import('./pages/VoicePage'), 'VoicePage');
 const ProjectsPage = lazyPage(() => import('./pages/ProjectsPage'), 'ProjectsPage');
+const LoginPage = lazyPage(() => import('./pages/LoginPage'), 'LoginPage');
 
 function RouteFallback() {
   return (
@@ -197,6 +198,12 @@ const projectsRoute = createRoute({
   component: ProjectsPage,
 });
 
+const loginRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/login',
+  component: LoginPage,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   editorRoute,
@@ -220,6 +227,7 @@ const routeTree = rootRoute.addChildren([
   pipelineAdminRoute,
   voiceRoute,
   projectsRoute,
+  loginRoute,
 ]);
 
 export const router = createRouter({ routeTree });

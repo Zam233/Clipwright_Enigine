@@ -252,14 +252,38 @@ def _consume_sse_token(tok: str) -> bool:
 async def issue_sse_token(request: Request) -> dict:
     """P0-9: 签发 EventSource 使用的短期一次性 token（需先通过 Bearer 鉴权）。
 
-    开放模式（未设置 api_token）返回空 token——前端可直接建 EventSource。
+    开放模式返回空 token——前端可直接建 EventSource；jwt 模式要求有效 JWT 或运维令牌。
     """
+    auth_header = request.headers.get("Authorization", "") or ""
+    if settings.account_verify_mode == "jwt":
+        if settings.account_jwt_secret and _verify_access_jwt(auth_header[7:] if auth_header.startswith("Bearer ") else ""):
+            return {"token": _issue_sse_token(), "expires_in": int(_sse_ttl)}
+        if settings.api_token and hmac.compare_digest(auth_header, f"Bearer {settings.api_token}"):
+            return {"token": _issue_sse_token(), "expires_in": int(_sse_ttl)}
+        return JSONResponse(status_code=401, content={"detail": "未授权"})
     if not settings.api_token:
         return {"token": "", "expires_in": 0}
     expected = f"Bearer {settings.api_token}"
-    if not hmac.compare_digest(request.headers.get("Authorization", "") or "", expected):
+    if not hmac.compare_digest(auth_header, expected):
         return JSONResponse(status_code=401, content={"detail": "未授权"})
     return {"token": _issue_sse_token(), "expires_in": int(_sse_ttl)}
+
+
+def _verify_access_jwt(token: str) -> dict | None:
+    """P3-3B: 用共享密钥本地校验 Server 签发的 access JWT。"""
+    import jwt as _pyjwt
+
+    if not settings.account_jwt_secret or not token:
+        return None
+    try:
+        payload = _pyjwt.decode(
+            token, settings.account_jwt_secret, algorithms=[settings.account_jwt_algorithm]
+        )
+    except _pyjwt.PyJWTError:
+        return None
+    if payload.get("type") != "access":
+        return None
+    return payload
 
 
 @app.middleware("http")
@@ -274,8 +298,13 @@ async def api_token_auth(request: Request, call_next):
     else:
         qtok = ""
 
-    if not settings.api_token or request.method == "OPTIONS":
+    # P3-3B: 每请求重置身份（无鉴权/off/token 模式保持 None=管理员语义）
+    request.state.user_id = None
+    request.state.user_role = None
+
+    if request.method == "OPTIONS":
         return await call_next(request)
+
     path = request.url.path
     is_api = path.startswith("/api/") and not path.startswith("/api/health")
     # 渲染成片与克隆语音属敏感内容，令牌模式下同样需要鉴权
@@ -284,8 +313,38 @@ async def api_token_auth(request: Request, call_next):
     is_admin = path.startswith("/metrics") or path.startswith("/test")
     if not (is_api or is_media or is_admin):
         return await call_next(request)
+
+    mode = settings.account_verify_mode
+    auth_header = request.headers.get("Authorization", "") or ""
+    bearer = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+
+    if mode == "jwt":
+        # 运维令牌（可选）或 Server JWT 本地验签
+        ok = False
+        if settings.api_token and hmac.compare_digest(bearer, settings.api_token):
+            ok = True
+        else:
+            payload = _verify_access_jwt(bearer)
+            if payload:
+                request.state.user_id = payload.get("sub")
+                request.state.user_role = payload.get("role")
+                ok = True
+        if not ok and is_media:
+            ok = bool(settings.api_token) and hmac.compare_digest(qtok, settings.api_token)
+        if not ok and "/stream" in path:
+            ok = _consume_sse_token(qtok)
+        if not ok:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "未授权：缺少或错误的访问令牌"},
+            )
+        return await call_next(request)
+
+    # off / token 模式：沿用 api_token 语义（未设置 token 时开放）
+    if not settings.api_token:
+        return await call_next(request)
     expected = f"Bearer {settings.api_token}"
-    ok = hmac.compare_digest(request.headers.get("Authorization", "") or "", expected)
+    ok = hmac.compare_digest(bearer, settings.api_token)
     if not ok and is_media:
         # <video>/<audio> 标签无法携带 Authorization 头，允许 query token 校验
         ok = hmac.compare_digest(qtok, settings.api_token)

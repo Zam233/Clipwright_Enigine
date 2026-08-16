@@ -1,6 +1,7 @@
 import axios from 'axios';
 import type { AxiosInstance } from 'axios';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { session } from './session';
 
 let client: AxiosInstance | null = null;
 
@@ -18,9 +19,9 @@ export function getApiClient(): AxiosInstance {
       headers: { 'Content-Type': 'application/json' },
     });
 
-    // Request interceptor: attach auth token
+    // Request interceptor: attach auth token（P3-3B: 本地令牌优先，其次账号会话令牌）
     client.interceptors.request.use((config) => {
-      const token = useSettingsStore.getState().authToken;
+      const token = useSettingsStore.getState().authToken || session.token;
       if (token) {
         config.headers.Authorization = `Bearer ${token}`;
       }
