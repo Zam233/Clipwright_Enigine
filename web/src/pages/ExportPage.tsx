@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useTimelineStore } from '@/stores/timelineStore';
 import { useProjectStore } from '@/stores/projectStore';
-import { renderApi, projectApi, assetApi } from '@/services/api';
+import { renderApi, projectApi, assetApi, toolApi } from '@/services/api';
 import { fetchSseToken, withSseToken } from '@/services/api/sse';
 import { toast } from '@/stores/toastStore';
 import { createEmptyTimeline } from '@/types/timeline';
@@ -12,7 +12,7 @@ import { uid, formatTimecode } from '@/lib/utils';
 import type { ExportSettings, RenderProgress } from '@/types/api';
 import {
   Download, Clapperboard, Gauge, Cpu, Film, Loader2, CheckCircle2,
-  XCircle, ArrowLeft, HardDrive, Zap, RotateCcw,
+  XCircle, ArrowLeft, HardDrive, Zap, RotateCcw, Wand2,
 } from 'lucide-react';
 
 interface PresetDef {
@@ -541,6 +541,30 @@ function QueueCard({ item, onRetry }: { item: QueueItem; onRetry?: () => void })
             aria-label="下载成片"
           >
             <Download className="w-4 h-4" />
+          </button>
+        )}
+        {/* P8: 渲染后添加水印（工具级；调用后端 watermark 工具） */}
+        {item.status === 'completed' && !item.simulated && (item.filename || item.output_path) && (
+          <button
+            onClick={() => {
+              const base = item.output_path || (item.filename ? `renders/${item.filename}` : '');
+              if (!base) { toast('无渲染产物路径', 'error'); return; }
+              toast('正在添加水印…', 'info');
+              toolApi.execute('watermark', { input_path: base, text: 'ClipWright' })
+                .then((res) => {
+                  if (res.status === 'success') {
+                    toast('水印已添加', 'success');
+                  } else {
+                    toast(`水印失败：${res.error ?? '未知错误'}`, 'error');
+                  }
+                })
+                .catch(() => toast('水印失败（后端离线）', 'error'));
+            }}
+            className="p-2 rounded-cw-sm bg-track-text/15 text-track-text hover:bg-track-text/25 transition-colors cursor-pointer"
+            title="添加水印"
+            aria-label="添加水印"
+          >
+            <Wand2 className="w-4 h-4" />
           </button>
         )}
         {item.status === 'failed' && onRetry && (
