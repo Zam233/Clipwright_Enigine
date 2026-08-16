@@ -484,3 +484,10 @@ API è§„æ ¼ï¼ˆv1ï¼Œå…¨éƒ¨ JSONï¼Œé™¤æ ‡æ³¨å¤–å‡éœ€ Bearer JWTï¼‰ï¼š
 
 ### ´ı°ì
 P1 ÎÄµµ¶ÔÕË ¡ú P3 ÕËºÅ¹ÜÀí£¨Server 3A + Ö÷ÏîÄ¿ 3B£©¡ú P4 ÊĞ³¡ ¡ú P5 ¡ú P6/P7 ¡ú P8 ¡ú P9 ¡ú P10
+
+### Ö´ĞĞÂÖ´Î 2£¨P1 + P3-3A£©
+- ? P1 ÎÄµµ¶ÔÕË£º19 Ïî³ĞÅµÖğÏîÈıÑ¡Ò»ÂäµØ£¨workflow.md/structure.md/services_overview.md ±ê×¢ A1/A2/A3/A4/A6/A9/A10£»requirements_service docstring A8£»README ¿ì½İ¼üĞŞÕı D9£©
+- ? P1 ¼Ù³É¹¦ÇåÀí£º¶Ô»°Ê½±à¼­ËÀ´úÂëÉ¾³ı£¨services/video_editor.py£¬-404 ĞĞ£©£»frame_validator/black_frame_detect/audio_silence_detect/whisper_transcribe/subtitle_overflow ÇĞ»»ÎªÕæÊµÊµÏÖ×¢²á£»video_filter/text_design ¼Ù stub Õª³ı£»A7 fatal ´íÎó·ÖÀàÂäµØ
+- ? P1 parity ¸üĞÂ£ºrequirements 7¡ú8£¨º¬ /edit£©¡¢asset 8¡ú9£¨º¬ /by-path£©
+- ? P3-3A Server ÕËºÅºËĞÄÊµÏÖ£¨K:\Clipwright Server commit 325bb76£©£ºregister/login/refresh ÂÖ»»/logout/me/change-password/verify + /api/admin/users£»bcrypt£¨72 ×Ö½ÚÉÏÏŞ£©+ JWT + µÇÂ¼ÏŞÁ÷£¨5 ´Î/5 ·ÖÖÓ£©+ Éó¼ÆÊÂ¼ş£»7 ¸ö pytest È«¹ı£¨Mongo ²»¿ÉÓÃ×Ô¶¯Ìø¹ı£©
+- »Ø¹é£ººó¶Ë 1005/1005 ?
