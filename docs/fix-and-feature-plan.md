@@ -534,3 +534,11 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 → P5 → P6/P7 → 
 - ? Agent 统一基座：BaseAgent.run_with_timeout / llm_or_fallback（超时+异常优雅降级）
 - ? 新增测试：test_p5_unit 4 个（择优 3 + 队列恢复 1，无 Mongo 依赖）
 - 回归：后端 1028/1028 ? —— P5 阶段全部完成
+
+### 执行轮次 9（P6 编辑器专业能力 · 第一批）
+- ? M7 轨道隐藏/独显：Track.hidden 字段 + timelineStore.toggleTrackHidden + 引擎/预览跳过隐藏轨道 + 轨道管理下拉眼睛按钮
+- ? M10 吸附切换快捷键：Alt+S
+- ? M12 In/Out 区间播放 UI 按钮：时间轴工具栏 入点/出点/清除（setMarkerIn/Out + loopRegion 高亮既有）
+- ? M9 素材删除 UI：assetApi.remove（后端 DELETE 已有）+ AssetCard 删除按钮 + 确认 + 离线本地移除
+- ? A1 项目排序：ProjectsPage 最近编辑/名称 切换
+- 回归：前端 261/261 + typecheck + build ?（P6 剩余 21 项按计划继续）
