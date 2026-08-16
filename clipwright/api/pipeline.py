@@ -46,7 +46,8 @@ async def list_pipeline_runs(limit: int = 50) -> list[dict]:
     数据源：内存注册表（当前进程真实运行）优先，Mongo PipelineModel 持久化历史兜底。
     """
     from clipwright.services.pipeline_v2 import get_run_records
-    return get_run_records(limit=max(1, min(limit, 500)))
+    # P0-6: find_many 走 _io() → 线程内执行，避免事件循环中协程误用导致 Mongo 历史丢失
+    return await asyncio.to_thread(get_run_records, max(1, min(limit, 500)))
 
 
 @router.post("/run-v2")

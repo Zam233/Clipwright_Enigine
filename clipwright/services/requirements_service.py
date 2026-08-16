@@ -301,10 +301,13 @@ async def _cleanup_expired_sessions():
         try:
             if mongo.is_connected:
                 cutoff = datetime.now(tz=TIME_ZONE) - timedelta(hours=SESSION_TTL_HOURS)
-                deleted = RequirementsSessionModel.delete_many({
-                    "updated_time": {"$lt": cutoff},
-                    "status": {"$nin": ["pipeline_running", "pipeline_done"]},
-                })
+                # P0-6: 线程内执行（_io 在事件循环线程会返回未 await 的协程导致清理静默失效）
+                deleted = await asyncio.to_thread(
+                    RequirementsSessionModel.delete_many, {
+                        "updated_time": {"$lt": cutoff},
+                        "status": {"$nin": ["pipeline_running", "pipeline_done"]},
+                    }
+                )
                 if deleted:
                     logger.info("清理过期会话 %d 个", deleted)
         except Exception:
@@ -389,7 +392,8 @@ class RequirementsService:
         """加载现有会话，不存在则创建。"""
         if not session_id:
             return self.create_session(user_inputs)
-        existing = self.get_session(session_id)
+        # P0-6: _io() 在事件循环线程返回协程 → 必须 offload 到线程执行
+        existing = await asyncio.to_thread(self.get_session, session_id)
         if existing:
             return existing
         return self.create_session(user_inputs)
@@ -439,7 +443,7 @@ class RequirementsService:
     ) -> dict:
         """处理用户消息，更新 MongoDB，返回最新状态。"""
         await self._ensure_cleanup()
-        session_data = self.get_session(session_id)
+        session_data = await asyncio.to_thread(self.get_session, session_id)
         if not session_data:
             return {"error": "Session not found"}
 
@@ -547,7 +551,7 @@ class RequirementsService:
         await asyncio.to_thread(
             self._persist, session_id, status, messages, brief_data, plan_data, user_inputs,
         )
-        session = self.get_session(session_id) or {}
+        session = (await asyncio.to_thread(self.get_session, session_id)) or {}
         msgs = session.get("messages", [])
         last_assistant = next(
             (m["content"] for m in reversed(msgs) if m.get("role") == "assistant"),
@@ -614,7 +618,7 @@ class RequirementsService:
         返回前 model_dump(mode="json") 序列化。
         """
         await self._ensure_cleanup()
-        session_data = self.get_session(session_id)
+        session_data = await asyncio.to_thread(self.get_session, session_id)
         if not session_data:
             return {"error": "Session not found"}
 
@@ -1434,7 +1438,8 @@ class RequirementsService:
             if content else f"用户上传了文件: {file_name}"
         )
 
-        session = self.get_session(session_id)
+        # P0-6: process_upload 为 async 上下文 → 线程内执行同步 Mongo 操作
+        session = await asyncio.to_thread(self.get_session, session_id)
         if session:
             messages = session.get("messages", [])
             messages.append({
@@ -1443,7 +1448,8 @@ class RequirementsService:
                 "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
                 "metadata": {"file": file_name, "type": "upload"},
             })
-            self._persist(
+            await asyncio.to_thread(
+                self._persist,
                 session_id, session.get("status", "gathering"),
                 messages, session.get("creative_brief"),
                 session.get("production_plan"), session.get("user_inputs", {}),

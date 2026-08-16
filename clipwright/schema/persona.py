@@ -13,7 +13,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ──────────────────────────────────────────────
@@ -23,16 +23,22 @@ from pydantic import BaseModel, Field
 
 class IdentityConfig(BaseModel):
     """创作者身份定义。"""
+    model_config = {"populate_by_name": True}
+
     tone: str = Field(default="neutral", description="整体语调")
     position: Optional[list[float]] = Field(
         default=None, description="政治光谱二维坐标 [经济轴, 文化轴]"
     )
+    # P0-5: 前端 UI 使用字符串定位描述（与 numeric position 并存，保证往返不丢失）
+    positioning: Optional[str] = Field(default=None, description="定位描述（前端 UI 字符串）")
     class_perspective: Optional[str] = Field(default=None)
     knowledge_domains: list[str] = Field(default_factory=list)
 
 
 class LanguageConfig(BaseModel):
     """语言风格参数。"""
+    model_config = {"populate_by_name": True}
+
     academic_density: float = Field(default=0.1, ge=0, le=1)
     slang_ratio: float = Field(default=0.05, ge=0, le=1)
     max_sentence_len: int = Field(default=30, gt=0)
@@ -43,18 +49,27 @@ class LanguageConfig(BaseModel):
 
 class RhythmConfig(BaseModel):
     """剪辑节奏参数。"""
+    model_config = {"populate_by_name": True}
+
     cut_profile: str = Field(default="even_flow", description="命名节奏配置")
     surge_sections: list[str] = Field(default_factory=list)
     pause_sections: list[str] = Field(default_factory=list)
     base_shot_duration_ms: int = Field(default=5000, ge=100)
     cut_density_tier: str = Field(default="medium")
+    # P0-5: 前端 UI 字段（保留往返）
+    pause_frequency: Optional[float] = Field(default=None, ge=0)
 
 
 class VisualConfig(BaseModel):
     """视觉风格参数。"""
+    model_config = {"populate_by_name": True}
+
     palette: str = Field(default="neutral", description="配色方案名称")
     primary_color: Optional[str] = Field(default=None, pattern="^#[0-9a-fA-F]{6}$")
     accent_color: Optional[str] = Field(default=None, pattern="^#[0-9a-fA-F]{6}$")
+    # P0-5: 前端 UI 字段（保留往返）
+    background_color: Optional[str] = Field(default=None, pattern="^#[0-9a-fA-F]{6}$")
+    animation_style: Optional[str] = Field(default=None, description="动画风格描述（前端 UI 字符串）")
     animation_styles: dict[str, str] = Field(
         default_factory=dict,
         description="动画风格映射，如 {text_intro: typewriter_glitch}",
@@ -67,6 +82,8 @@ class VisualConfig(BaseModel):
 
 class AudioConfig(BaseModel):
     """音频风格参数。"""
+    model_config = {"populate_by_name": True}
+
     bgm_slots: dict[str, list[str]] = Field(
         default_factory=dict,
         description="BGM 槽位映射，如 {theory_backing: [kraftwerk_pool]}",
@@ -77,6 +94,8 @@ class AudioConfig(BaseModel):
 
 class ConstraintsConfig(BaseModel):
     """硬约束参数。"""
+    model_config = {"populate_by_name": True}
+
     max_duration_sec: int = Field(default=900, gt=0)
     min_duration_sec: int = Field(default=30, ge=0)
     require_source_citation: bool = Field(default=False)
@@ -96,6 +115,79 @@ class ParameterLayer(BaseModel):
     constraints: ConstraintsConfig = Field(default_factory=ConstraintsConfig)
 
     model_config = {"populate_by_name": True}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _map_frontend_shape(cls, data):
+        """P0-5: 兼容前端 UI 字段名/单位/结构（修复保存静默重置参数的 B1）。
+
+        前端形状 → 后端规范形状的映射：
+        - max_sentence_length → max_sentence_len
+        - sentence_variance_target → variance_target
+        - base_shot_duration_sec(秒) → base_shot_duration_ms(毫秒)
+        - color_palette{primary,accent,background} → palette/primary_color/accent_color/background_color
+        - loudness_target_lufs → target_loudness_lufs
+        - voice_clone_model_id → voice_model
+        - source_citation_required → require_source_citation
+        - bgm_slots 列表 → {"default": [...]}
+        """
+        if not isinstance(data, dict):
+            return data
+        d = dict(data)
+
+        lang = d.get("language")
+        if isinstance(lang, dict):
+            l = dict(lang)
+            if "max_sentence_length" in l and "max_sentence_len" not in l:
+                l["max_sentence_len"] = l.pop("max_sentence_length")
+            if "sentence_variance_target" in l and "variance_target" not in l:
+                l["variance_target"] = l.pop("sentence_variance_target")
+            d["language"] = l
+
+        rhythm = d.get("rhythm")
+        if isinstance(rhythm, dict):
+            r = dict(rhythm)
+            if "base_shot_duration_sec" in r and "base_shot_duration_ms" not in r:
+                try:
+                    r["base_shot_duration_ms"] = int(float(r["base_shot_duration_sec"]) * 1000)
+                except (TypeError, ValueError):
+                    pass
+            d["rhythm"] = r
+
+        visual = d.get("visual")
+        if isinstance(visual, dict):
+            v = dict(visual)
+            cp = v.get("color_palette")
+            if isinstance(cp, dict):
+                if cp.get("primary") and "primary_color" not in v:
+                    v["primary_color"] = cp["primary"]
+                if cp.get("accent") and "accent_color" not in v:
+                    v["accent_color"] = cp["accent"]
+                if cp.get("background") and "background_color" not in v:
+                    v["background_color"] = cp["background"]
+                if "palette" not in v:
+                    v["palette"] = "custom"
+            d["visual"] = v
+
+        audio = d.get("audio")
+        if isinstance(audio, dict):
+            a = dict(audio)
+            if "loudness_target_lufs" in a and "target_loudness_lufs" not in a:
+                a["target_loudness_lufs"] = a.pop("loudness_target_lufs")
+            if "voice_clone_model_id" in a and "voice_model" not in a:
+                a["voice_model"] = a.pop("voice_clone_model_id") or None
+            if isinstance(a.get("bgm_slots"), list):
+                a["bgm_slots"] = {"default": [str(x) for x in a["bgm_slots"] if x]}
+            d["audio"] = a
+
+        cons = d.get("constraints")
+        if isinstance(cons, dict):
+            c = dict(cons)
+            if "source_citation_required" in c and "require_source_citation" not in c:
+                c["require_source_citation"] = bool(c.pop("source_citation_required"))
+            d["constraints"] = c
+
+        return d
 
 
 # ──────────────────────────────────────────────
@@ -284,3 +376,16 @@ class PersonaManifest(BaseModel):
     exemplar: Optional[ExemplarLayer] = Field(default=None)
     embedding: Optional[EmbeddingLayer] = Field(default=None)
     model: Optional[ModelLayer] = Field(default=None)
+
+    model_config = {"populate_by_name": True}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _map_frontend_shape(cls, data):
+        """P0-5: parent_id（前端字段名）→ inherits（后端规范字段名）。"""
+        if isinstance(data, dict):
+            d = dict(data)
+            if "parent_id" in d and "inherits" not in d:
+                d["inherits"] = d.pop("parent_id") or None
+            return d
+        return data
