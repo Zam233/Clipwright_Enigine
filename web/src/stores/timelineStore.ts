@@ -51,6 +51,11 @@ interface TimelineState {
   removeKeyframe: (clipId: string, time: number) => void;
   updateKeyframe: (clipId: string, time: number, properties: Record<string, number>) => void;
 
+  // M2: 编组
+  groupClips: (clipIds: string[]) => string | null;
+  ungroupClips: (clipIds: string[]) => void;
+  getGroupClipIds: (clipId: string) => string[];
+
   // Query helpers
   getTrack: (trackId: string) => Track | undefined;
   getClip: (clipId: string) => Clip | undefined;
@@ -579,6 +584,56 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
 
   updateKeyframe: (clipId, time, properties) =>
     get().addKeyframe(clipId, time, properties),
+
+  // M2: 编组 — 为指定片段分配同一 group_id（≥2 个才成组）
+  groupClips: (clipIds) => {
+    const ids = [...new Set(clipIds)].filter((id) => get().getClip(id));
+    if (ids.length < 2) return null;
+    // 合并已有组：若任一片段已属于某组，沿用该组 id（其余组归并进来）
+    let groupId: string | null = null;
+    for (const id of ids) {
+      const c = get().getClip(id);
+      if (c?.group_id) { groupId = c.group_id; break; }
+    }
+    if (!groupId) groupId = uid('grp');
+    set((state) => ({
+      timeline: {
+        ...state.timeline,
+        tracks: state.timeline.tracks.map((t) => ({
+          ...t,
+          clips: t.clips.map((c) => (ids.includes(c.id) ? { ...c, group_id: groupId } : c)),
+        })),
+      },
+      isDirty: true,
+    }));
+    return groupId;
+  },
+
+  ungroupClips: (clipIds) => {
+    set((state) => ({
+      timeline: {
+        ...state.timeline,
+        tracks: state.timeline.tracks.map((t) => ({
+          ...t,
+          clips: t.clips.map((c) => (clipIds.includes(c.id) ? { ...c, group_id: null } : c)),
+        })),
+      },
+      isDirty: true,
+    }));
+  },
+
+  getGroupClipIds: (clipId) => {
+    const clip = get().getClip(clipId);
+    if (!clip?.group_id) return [];
+    const gid = clip.group_id;
+    const out: string[] = [];
+    for (const t of get().timeline.tracks) {
+      for (const c of t.clips) {
+        if (c.group_id === gid) out.push(c.id);
+      }
+    }
+    return out;
+  },
 
   getTrack: (trackId) =>
     get().timeline.tracks.find((t) => t.id === trackId),

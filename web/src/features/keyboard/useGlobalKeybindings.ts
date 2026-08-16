@@ -309,6 +309,24 @@ export function useGlobalKeybindings() {
       sel.forEach((cid) => store.slideClip(cid, dir * frame));
     };
 
+    // M2: 编组 / 解组
+    const groupSelected = () => {
+      const sel = useSelectionStore.getState().selectedClipIds;
+      if (sel.length < 2) return;
+      const store = useTimelineStore.getState();
+      useHistoryStore.getState().pushState(store.timeline, 'group');
+      store.groupClips(sel);
+      toast('已编组', 'success');
+    };
+    const ungroupSelected = () => {
+      const sel = useSelectionStore.getState().selectedClipIds;
+      if (sel.length === 0) return;
+      const store = useTimelineStore.getState();
+      useHistoryStore.getState().pushState(store.timeline, 'ungroup');
+      store.ungroupClips(sel);
+      toast('已解组', 'success');
+    };
+
     const moveClipUp = () => {
       const sel = useSelectionStore.getState().selectedClipIds;
       if (sel.length === 0) return;
@@ -500,6 +518,13 @@ export function useGlobalKeybindings() {
       { id: 'slide-right', combo: 'ctrl+alt+arrowright', label: 'Slide 右移一帧', category: '编辑',
         when: () => useSelectionStore.getState().selectedClipIds.length > 0,
         handler: () => slideBy(1) },
+      // M2: 编组 / 解组
+      { id: 'group-clips', combo: 'ctrl+g', label: '编组 (Ctrl+G)', category: '编辑',
+        when: () => useSelectionStore.getState().selectedClipIds.length >= 2,
+        handler: groupSelected },
+      { id: 'ungroup-clips', combo: 'ctrl+shift+g', label: '解组 (Ctrl+Shift+G)', category: '编辑',
+        when: () => useSelectionStore.getState().selectedClipIds.length > 0,
+        handler: ungroupSelected },
       { id: 'move-clip-up', combo: 'ctrl+arrowup', label: '上移轨道', category: '编辑',
         when: () => useSelectionStore.getState().selectedClipIds.length > 0,
         handler: moveClipUp },

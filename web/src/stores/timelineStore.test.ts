@@ -355,3 +355,52 @@ describe('timelineStore M1 (rolling/slip/slide 编辑族)', () => {
     expect(b.start_sec).toBeCloseTo(0, 5);
   });
 });
+
+describe('timelineStore M2 (编组)', () => {
+  beforeEach(() => {
+    useTimelineStore.getState().setTimeline(createEmptyTimeline());
+  });
+
+  function twoClipsOnTracks() {
+    const v1 = useTimelineStore.getState().addTrack('video', 'V1');
+    const v2 = useTimelineStore.getState().addTrack('video', 'V2');
+    const a = useTimelineStore.getState().addClip(v1, { kind: 'video', start_sec: 0, duration_sec: 3 });
+    const b = useTimelineStore.getState().addClip(v2, { kind: 'video', start_sec: 0, duration_sec: 3 });
+    return { a, b };
+  }
+
+  it('groupClips 赋予同一 group_id；getGroupClipIds 返回全组', () => {
+    const { a, b } = twoClipsOnTracks();
+    const gid = useTimelineStore.getState().groupClips([a, b])!;
+    expect(gid).toBeTruthy();
+    expect(useTimelineStore.getState().getClip(a)!.group_id).toBe(gid);
+    expect(useTimelineStore.getState().getClip(b)!.group_id).toBe(gid);
+    expect(useTimelineStore.getState().getGroupClipIds(a).sort()).toEqual([a, b].sort());
+    expect(useTimelineStore.getState().getGroupClipIds(a)).toHaveLength(2);
+  });
+
+  it('少于 2 个片段不成组', () => {
+    const { a } = twoClipsOnTracks();
+    expect(useTimelineStore.getState().groupClips([a])).toBeNull();
+    expect(useTimelineStore.getState().getClip(a)!.group_id).toBeNull();
+  });
+
+  it('ungroupClips 清除指定片段的组', () => {
+    const { a, b } = twoClipsOnTracks();
+    useTimelineStore.getState().groupClips([a, b]);
+    useTimelineStore.getState().ungroupClips([a]);
+    expect(useTimelineStore.getState().getClip(a)!.group_id).toBeNull();
+    expect(useTimelineStore.getState().getClip(b)!.group_id).toBeTruthy();
+    expect(useTimelineStore.getState().getGroupClipIds(b)).toEqual([b]);
+  });
+
+  it('合并组：新片段加入已有组时沿用组 id', () => {
+    const { a, b } = twoClipsOnTracks();
+    const v3 = useTimelineStore.getState().addTrack('video', 'V3');
+    const c = useTimelineStore.getState().addClip(v3, { kind: 'video', start_sec: 5, duration_sec: 2 });
+    const gid = useTimelineStore.getState().groupClips([a, b])!;
+    useTimelineStore.getState().groupClips([b, c]);
+    expect(useTimelineStore.getState().getClip(c)!.group_id).toBe(gid);
+    expect(useTimelineStore.getState().getGroupClipIds(c)).toHaveLength(3);
+  });
+});

@@ -594,3 +594,7 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 ### 执行轮次 20（P6 编辑器专业能力 · 第十二批）
 - ? C7 代理工作流 UI：EditorToolbar 代理工具组（生成代理[首个视频片段] / 原片↔代理切换）+ 后端 switch_to_full 真实还原代理路径（ProxyGenerator.switch_to_full 正则识别 _proxy_<height>p 命名，API proxy_suffix='' 时走还原）+ 测试 3 项
 - 回归：后端 1038/1038 ?；前端 314/314 + typecheck + build ?
+
+### 执行轮次 21（P6 编辑器专业能力 · 第十三批）
+- ? M2 素材编组：Clip.group_id（前后端 schema，round-trip）+ timelineStore groupClips（≥2 才成组、并入已有组沿用 id）/ ungroupClips / getGroupClipIds + 引擎移动时展开同组片段 + Ctrl+G 编组 / Ctrl+Shift+G 解组 + 测试（schema 1 + store 4）
+- 回归：后端 1039/1039 ?；前端 318/318 + typecheck + build ?

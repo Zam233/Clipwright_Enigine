@@ -217,6 +217,13 @@ class TestCaptionStyleFields:
         with pytest.raises(Exception):
             Clip(**self.CAPTION_ARGS, audio_fade_in_sec=-1)
 
+    def test_group_id_field(self) -> None:
+        """M2: group_id 字段默认 None，赋值后 round-trip 保持。"""
+        clip = Clip(**self.CAPTION_ARGS)
+        assert clip.group_id is None
+        c2 = Clip(**self.CAPTION_ARGS, group_id="grp_1")
+        assert Clip(**c2.model_dump(mode="json")).group_id == "grp_1"
+
     def test_caption_style_fields_set_and_round_trip(self) -> None:
         """带全部新字段构造，序列化/反序列化后值不变（round-trip）。"""
         clip = Clip(

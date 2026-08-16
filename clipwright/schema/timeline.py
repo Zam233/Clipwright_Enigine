@@ -131,6 +131,9 @@ class Clip(BaseModel):
         description="关键帧序列 [{time: 0.0, properties: {opacity: 0, scale_x: 0.5, ...}}, ...]",
     )
 
+    # 编组（M2：同组片段一起移动/删除）
+    group_id: Optional[str] = Field(default=None, max_length=64, description="编组 ID")
+
     # 扩展元数据
     metadata: dict[str, Any] = Field(default_factory=dict, description="扩展元数据")
 

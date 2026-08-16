@@ -112,6 +112,9 @@ export interface Clip {
 
   // Extension metadata
   metadata: Record<string, unknown>;
+
+  /** M2: 编组 ID — 同组片段一起移动/删除 */
+  group_id?: string | null;
 }
 
 /** A timeline track */
@@ -209,6 +212,7 @@ export function createDefaultClip(
     bar_width: null,
     keyframes: [],
     metadata: {},
+    group_id: null,
     ...overrides,
   };
 }

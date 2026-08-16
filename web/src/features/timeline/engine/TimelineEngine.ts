@@ -406,10 +406,16 @@ export class TimelineEngine {
         useHistoryStore.getState().pushState(useTimelineStore.getState().timeline, 'trim');
         this.drag.historyPushed = true;
       } else {
-        // Begin move for all selected clips
+        // Begin move for all selected clips (M2: 展开同组片段一起移动)
         this.drag.mode = 'move-clip';
         const tl = useTimelineStore.getState().timeline;
-        for (const id of useSelectionStore.getState().selectedClipIds) {
+        const store = useTimelineStore.getState();
+        const moveIds = new Set(useSelectionStore.getState().selectedClipIds);
+        // 组扩散：任一选中片段属于某组 → 整组加入移动集
+        for (const id of [...moveIds]) {
+          for (const gid of store.getGroupClipIds(id)) moveIds.add(gid);
+        }
+        for (const id of moveIds) {
           for (const tr of tl.tracks) {
             const c = tr.clips.find((cc) => cc.id === id);
             if (c) this.drag.origClips.set(id, c);
