@@ -819,12 +819,21 @@ class RenderService:
         return str(out) if _is_valid_video(out) else a
 
     def _concat_xfade(self, trimmed, segments, fps, bitrate, encoder, preset):
+        import re as _re
+
+        # P0-3: 过渡名白名单（小写标识符），非法/注入值一律回退 fade
+        _XFADE_NAME_RE = _re.compile(r"^[a-z][a-z0-9_]{0,31}$")
         final = str(self._work_dir / "concat.mp4")
         cur = trimmed[0]
         acc = _get_actual_duration(cur)
         for i in range(1, len(trimmed)):
-            tt = segments[i].get("transition_in", "fade") if i < len(segments) else "fade"
-            td = segments[i].get("transition_duration_sec", 0.4) if i < len(segments) else 0.4
+            tt_raw = segments[i].get("transition_in", "fade") if i < len(segments) else "fade"
+            tt = str(tt_raw) if tt_raw and _XFADE_NAME_RE.fullmatch(str(tt_raw)) else "fade"
+            try:
+                td = float(segments[i].get("transition_duration_sec", 0.4) if i < len(segments) else 0.4)
+            except (TypeError, ValueError):
+                td = 0.4
+            td = max(0.0, min(td, 60.0))
             out = str(self._work_dir / f"cp_{i}.mp4")
             off = max(0, acc - td)
             subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", cur, "-i", trimmed[i],

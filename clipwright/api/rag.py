@@ -10,8 +10,23 @@ from clipwright.rag.retriever import Retriever
 
 router = APIRouter(prefix="/api/persona", tags=["rag"])
 
-_retriever = Retriever()
+# P0-8: 懒加载单例 — ChromaDB 初始化失败时服务仍可启动，RAG 端点返回明确 503
+_retriever: Retriever | None = None
+_retriever_error: str = ""
 _repo = PersonaRepository.from_settings()
+
+
+def _get_retriever() -> Retriever:
+    """获取 Retriever（首次使用时初始化；失败降级为 503 而非服务崩溃）。"""
+    global _retriever, _retriever_error
+    if _retriever is None and not _retriever_error:
+        try:
+            _retriever = Retriever()
+        except Exception as e:
+            _retriever_error = f"向量库不可用: {e}"
+    if _retriever is None:
+        raise HTTPException(status_code=503, detail=_retriever_error)
+    return _retriever
 
 
 class QueryRequest(BaseModel):
@@ -30,7 +45,7 @@ async def rag_query(persona_id: str, req: QueryRequest) -> dict:
     if not _repo.exists(persona_id):
         raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
 
-    result = await _retriever.retrieve(
+    result = await _get_retriever().retrieve(
         persona_id=persona_id,
         query=req.query,
         top_k=req.top_k,
@@ -61,13 +76,13 @@ async def rag_index(persona_id: str, req: IndexRequest) -> dict:
         raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
 
     if req.force_rebuild:
-        _retriever.delete_index(persona_id)
+        _get_retriever().delete_index(persona_id)
 
     manifest = _repo.load_manifest(persona_id)
     if not manifest.knowledge:
         raise HTTPException(status_code=400, detail="Persona has no knowledge documents")
 
-    result = _retriever.index_persona_knowledge(persona_id, manifest.knowledge)
+    result = _get_retriever().index_persona_knowledge(persona_id, manifest.knowledge)
 
     return {
         "status": "ok",
@@ -84,7 +99,7 @@ async def rag_status(persona_id: str) -> dict:
         raise HTTPException(status_code=404)
 
     manifest = _repo.load_manifest(persona_id)
-    has_index = _retriever.has_index(persona_id)
+    has_index = _get_retriever().has_index(persona_id)
     doc_count = len(manifest.knowledge or [])
 
     return {
@@ -100,5 +115,5 @@ async def rag_delete_index(persona_id: str) -> dict:
     """删除 Persona 的向量索引。"""
     if not _repo.exists(persona_id):
         raise HTTPException(status_code=404)
-    _retriever.delete_index(persona_id)
+    _get_retriever().delete_index(persona_id)
     return {"status": "deleted", "persona_id": persona_id}

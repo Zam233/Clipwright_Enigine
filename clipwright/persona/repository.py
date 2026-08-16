@@ -179,13 +179,24 @@ class PersonaRepository:
             return
         vision_path.write_text(text, encoding="utf-8")
 
-    def add_knowledge_doc(self, persona_id: str, doc: KnowledgeDoc) -> None:
-        """追加一篇知识库文档。"""
+    def add_knowledge_doc(self, persona_id: str, doc: KnowledgeDoc) -> str:
+        """追加一篇知识库文档，返回实际 doc_id。
+
+        P0-12: doc.id 非空时强制 validate_id（防路径注入写任意 .md）；
+        自动生成时使用 uuid，避免删除后 glob 计数复用导致同 id 覆写。
+        """
+        import uuid as _uuid
+
+        from clipwright.security import validate_id
+
         pdir = self.persona_path(persona_id)
         kdir = pdir / "knowledge"
         kdir.mkdir(parents=True, exist_ok=True)
 
-        doc_id = doc.id or f"doc_{len(list(kdir.glob('*.md'))) + 1}"
+        if doc.id:
+            doc_id = validate_id(doc.id, "doc_id")
+        else:
+            doc_id = f"doc_{_uuid.uuid4().hex[:10]}"
         fname = f"{doc_id}.md"
         (kdir / fname).write_text(doc.content, encoding="utf-8")
 
@@ -207,6 +218,7 @@ class PersonaRepository:
 
         # 自动向量化索引
         self._reindex_knowledge(persona_id)
+        return doc_id
 
     # ── 向量化索引 ──
 

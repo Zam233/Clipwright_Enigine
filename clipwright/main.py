@@ -210,27 +210,88 @@ from fastapi.responses import JSONResponse
 
 from clipwright.security import SecurityViolation
 
+# P0-14: 请求体大小上限（防超大 JSON/上传 DoS；分块上传端点自行处理流式上限）
+_MAX_BODY_BYTES = 20 * 1024 * 1024
+
+
+@app.middleware("http")
+async def limit_body_size(request: Request, call_next):
+    if request.method in ("POST", "PUT", "PATCH"):
+        cl = request.headers.get("content-length")
+        if cl and cl.isdigit() and int(cl) > _MAX_BODY_BYTES:
+            return JSONResponse(status_code=413, content={"detail": "请求体过大"})
+    return await call_next(request)
+
+
+# P0-9: SSE 短期一次性 token 存储（内存，TTL 120s，单次使用）
+_sse_tokens: dict[str, float] = {}
+_sse_ttl = 120.0
+
+
+def _issue_sse_token() -> str:
+    import secrets as _secrets
+    import time as _time
+
+    tok = _secrets.token_urlsafe(24)
+    _sse_tokens[tok] = _time.time() + _sse_ttl
+    return tok
+
+
+def _consume_sse_token(tok: str) -> bool:
+    import time as _time
+
+    if not tok:
+        return False
+    exp = _sse_tokens.pop(tok, None)
+    if exp is None or _time.time() > exp:
+        return False
+    return True
+
+
+@app.post("/api/auth/sse-token")
+async def issue_sse_token(request: Request) -> dict:
+    """P0-9: 签发 EventSource 使用的短期一次性 token（需先通过 Bearer 鉴权）。
+
+    开放模式（未设置 api_token）返回空 token——前端可直接建 EventSource。
+    """
+    if not settings.api_token:
+        return {"token": "", "expires_in": 0}
+    expected = f"Bearer {settings.api_token}"
+    if not hmac.compare_digest(request.headers.get("Authorization", "") or "", expected):
+        return JSONResponse(status_code=401, content={"detail": "未授权"})
+    return {"token": _issue_sse_token(), "expires_in": int(_sse_ttl)}
+
 
 @app.middleware("http")
 async def api_token_auth(request: Request, call_next):
+    # P0-9: 无论鉴权成败，先抹除 query 中的 token（防失败路径 token 进访问日志/Referer）
+    if "token" in request.query_params:
+        from urllib.parse import urlencode
+
+        qtok = request.query_params.get("token", "")
+        remaining = [(k, v) for k, v in request.query_params.multi_items() if k != "token"]
+        request.scope["query_string"] = urlencode(remaining).encode()
+    else:
+        qtok = ""
+
     if not settings.api_token or request.method == "OPTIONS":
         return await call_next(request)
     path = request.url.path
     is_api = path.startswith("/api/") and not path.startswith("/api/health")
     # 渲染成片与克隆语音属敏感内容，令牌模式下同样需要鉴权
     is_media = path.startswith(("/renders/", "/voice_audio/"))
-    if not (is_api or is_media):
+    # P0-14: 运维/调试端点同样受令牌保护（/health 保持开放）
+    is_admin = path.startswith("/metrics") or path.startswith("/test")
+    if not (is_api or is_media or is_admin):
         return await call_next(request)
     expected = f"Bearer {settings.api_token}"
-    ok = hmac.compare_digest(request.headers.get("Authorization", ""), expected)
+    ok = hmac.compare_digest(request.headers.get("Authorization", "") or "", expected)
     if not ok and is_media:
         # <video>/<audio> 标签无法携带 Authorization 头，允许 query token 校验
-        ok = hmac.compare_digest(request.query_params.get("token", ""), settings.api_token)
-        if ok:
-            # 校验通过后从 query string 中抹除 token，避免泄露到访问日志 / Referer
-            from urllib.parse import urlencode
-            remaining = [(k, v) for k, v in request.query_params.multi_items() if k != "token"]
-            request.scope["query_string"] = urlencode(remaining).encode()
+        ok = hmac.compare_digest(qtok, settings.api_token)
+    if not ok and "/stream" in path:
+        # P0-9: SSE 端点（EventSource 无法带请求头）允许短期一次性 token
+        ok = _consume_sse_token(qtok)
     if not ok:
         return JSONResponse(
             status_code=401,

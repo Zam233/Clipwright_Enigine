@@ -89,8 +89,13 @@ class AssetManager:
     async def import_file(self, file_path: str | Path) -> AssetInfo:
         """导入一个媒体文件，检测格式并生成缩略图。
 
-        源文件通过软连接引用（不复制），删除时仅移除连接。
+        P0-1 安全策略：
+        - 源文件位于白名单目录内 → 软连接引用（不复制）；
+        - 源文件位于白名单外 → 安全复制进素材库（保证对外服务的文件始终在白名单内）；
+        - 删除时仅移除连接/副本，不影响源文件。
         """
+        from clipwright.security import allowed_media_roots, is_within
+
         src = Path(file_path).resolve()
         if not src.exists():
             return AssetInfo(asset_id="", filename="", file_path="", media_type="", error=f"文件不存在: {file_path}")
@@ -99,10 +104,15 @@ class AssetManager:
         ext = src.suffix.lower()
         dest = self._files_dir / f"{asset_id}{ext}"
 
-        # 软连接引用原始文件；Windows 非管理员回退到复制
+        _inside_whitelist = any(is_within(root, src) for root in allowed_media_roots())
+
+        # 软连接引用白名单内文件；白名单外回退复制（Windows 非管理员也回退复制）
         try:
             dest.unlink(missing_ok=True)
-            os.symlink(str(src), str(dest))
+            if _inside_whitelist:
+                os.symlink(str(src), str(dest))
+            else:
+                shutil.copy2(str(src), str(dest))
         except OSError:
             logger.debug("symlink failed for %s, falling back to copy", src.name)
             shutil.copy2(str(src), str(dest))

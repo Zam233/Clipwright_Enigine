@@ -106,11 +106,11 @@ class Clip(BaseModel):
     glow_color: Optional[str] = Field(default=None, pattern="^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$", description="发光颜色（hex）")
     glow_width: Optional[float] = Field(default=None, ge=0, description="发光宽度 px")
 
-    # 转场
+    # 转场（P0-3: 白名单模式 — ffmpeg xfade 过渡名均为小写标识符，禁止 filter 语法字符注入）
     transition_in: Optional[str] = Field(
-        default=None, description="入场转场类型 TransitionType"
+        default=None, pattern="^[a-z][a-z0-9_]{0,31}$", description="入场转场类型 TransitionType"
     )
-    transition_out: Optional[str] = Field(default=None)
+    transition_out: Optional[str] = Field(default=None, pattern="^[a-z][a-z0-9_]{0,31}$")
     transition_duration_sec: Optional[float] = Field(default=None, ge=0)
 
     # 形状（仅 shape 类型）

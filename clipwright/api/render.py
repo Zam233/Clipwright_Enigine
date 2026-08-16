@@ -33,6 +33,53 @@ def _renders_dir() -> Path:
     return anchor("renders")
 
 
+# P0-13: 错误信息脱敏 — 抹除服务器绝对路径
+import re as _re
+
+_PATH_LEAK_RE = _re.compile(r"[A-Za-z]:[\\/][^\s\"']*|/(?:home|usr|app|var|etc|tmp)[^\s\"']*")
+
+
+def _sanitize_detail(msg: str) -> str:
+    """移除错误信息中的服务器路径（Windows 盘符路径与常见 Unix 绝对路径）。"""
+    if not msg:
+        return ""
+    return _PATH_LEAK_RE.sub("<path>", str(msg))[:1000]
+
+
+def _validate_render_inputs(tl: Timeline, audio_file_path: str, bgm_file_path: str) -> None:
+    """P0-2: 渲染入参白名单校验 — timeline 内所有本地媒体路径与音频/BGM 路径必须位于白名单目录。
+
+    未通过抛 HTTPException(400)。URL 源（http/https）跳过；相对路径且文件不存在时跳过
+    （不构成文件访问，交由渲染层报错）。
+    """
+    from clipwright.security import SecurityViolation, assert_allowed_path
+
+    def _check(label: str, value: str) -> None:
+        if not value:
+            return
+        if value.startswith(("http://", "https://")):
+            return
+        p = Path(value)
+        if not (p.is_absolute() or p.exists()):
+            return
+        try:
+            assert_allowed_path(p)
+        except SecurityViolation as e:
+            raise HTTPException(status_code=400, detail=f"{label} 不在白名单目录: {e}") from e
+
+    _check("audio_file_path", audio_file_path)
+    _check("bgm_file_path", bgm_file_path)
+    for track in tl.tracks or []:
+        for clip in track.clips or []:
+            aid = getattr(clip, "asset_id", "") or ""
+            _check("clip.asset_id", str(aid))
+            meta = getattr(clip, "metadata", {}) or {}
+            if isinstance(meta, dict):
+                lp = meta.get("local_path")
+                if lp:
+                    _check("clip.metadata.local_path", str(lp))
+
+
 @lru_cache(maxsize=1)
 def _pick_render_service():
     """按配置选择渲染服务（懒加载单例）：配置远程地址则用远程服务，否则本地服务。
@@ -54,6 +101,8 @@ async def queue_render(body: RenderRequest) -> dict:
 
     params = _resolve_settings(body.settings)
     tl = body.timeline
+    # P0-2: 入参白名单（timeline 媒体路径 + 音频/BGM）
+    _validate_render_inputs(tl, body.audio_file_path or "", body.bgm_file_path or "")
     # 使用请求 output_path 的 basename（防御：仅取 basename 拼到 renders/，白名单校验）。
     # 先对原始串做 is_safe_download_name 校验（拒绝路径分隔符 / \\、.. 与 Windows 非法字符），
     # 再取 basename 拼接到 renders/ 目录，杜绝路径穿越。
@@ -90,7 +139,7 @@ async def queue_render(body: RenderRequest) -> dict:
             _render_queue[task_id]["output_path"] = str(out)
         except Exception as e:
             _render_queue[task_id]["status"] = "failed"
-            _render_queue[task_id]["result"] = {"error": str(e)}
+            _render_queue[task_id]["result"] = {"error": _sanitize_detail(str(e))}
         finally:
             # 60s 后清理
             async def _cleanup():
@@ -261,12 +310,14 @@ async def start_render(
 ) -> dict:
     """提交渲染任务：将 Timeline JSON 渲染为 MP4 视频。"""
     tl = body.timeline
-    out = body.output_path or "renders/output.mp4"
-    # 安全：强制输出到 renders/ 目录，防止任意文件写入
-    out_path = Path(out)
-    if not str(out_path).startswith("renders"):
-        out_path = Path("renders") / out_path.name
-    out = str(out_path)
+    # P0-2: 入参白名单（timeline 媒体路径 + 音频/BGM）
+    _validate_render_inputs(tl, body.audio_file_path or "", body.bgm_file_path or "")
+    # P0-2: 输出文件名校验 + 强制落入 renders/（safe 名称，杜绝 renders/../../ 穿越）
+    raw_output = body.output_path or ""
+    if raw_output and not is_safe_download_name(raw_output):
+        raise HTTPException(status_code=400, detail="非法输出文件名")
+    requested_name = Path(raw_output).name if raw_output else f"render_{uuid.uuid4().hex[:8]}.mp4"
+    out = str(_renders_dir() / requested_name)
     s = body.settings
     params = _resolve_settings(s)
     logger.info("渲染请求: tracks=%d, output=%s, params=%s",
@@ -286,7 +337,7 @@ async def start_render(
         logger.exception("start_render failed: %s", e)
         raise
     if not result.success:
-        raise HTTPException(status_code=400, detail=result.error)
+        raise HTTPException(status_code=400, detail=_sanitize_detail(result.error or "渲染失败"))
     return result.to_dict()
 
 

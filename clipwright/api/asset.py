@@ -134,22 +134,34 @@ async def get_asset(asset_id: str, project_id: str = Query("")) -> dict:
 
 @router.get("/{asset_id}/file")
 async def get_asset_file(asset_id: str, project_id: str = Query("")):
-    """获取素材文件。"""
+    """获取素材文件（P0-1：返回前强制白名单校验）。"""
+    from clipwright.security import SecurityViolation, assert_allowed_path
+
     manager = _get_manager(project_id or None)
     asset = manager.get(asset_id)
-    if asset is None or not Path(asset.file_path).exists():
+    if asset is None or not asset.file_path or not Path(asset.file_path).exists():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(asset.file_path)
+    try:
+        fp = assert_allowed_path(Path(asset.file_path))
+    except SecurityViolation:
+        raise HTTPException(status_code=403, detail="素材路径不在白名单（请重新导入）") from None
+    return FileResponse(fp)
 
 
 @router.get("/{asset_id}/thumbnail")
 async def get_asset_thumbnail(asset_id: str, project_id: str = Query("")):
-    """获取素材缩略图。"""
+    """获取素材缩略图（P0-1：返回前强制白名单校验）。"""
+    from clipwright.security import SecurityViolation, assert_allowed_path
+
     manager = _get_manager(project_id or None)
     asset = manager.get(asset_id)
     if asset is None or not asset.thumbnail_path or not Path(asset.thumbnail_path).exists():
         raise HTTPException(status_code=404, detail="Thumbnail not found")
-    return FileResponse(asset.thumbnail_path)
+    try:
+        tp = assert_allowed_path(Path(asset.thumbnail_path))
+    except SecurityViolation:
+        raise HTTPException(status_code=403, detail="缩略图路径不在白名单") from None
+    return FileResponse(tp)
 
 
 @router.delete("/{asset_id}")
@@ -175,11 +187,14 @@ class ImportUrlRequest(BaseModel):
 
 @router.post("/import-path")
 async def import_asset_by_path(req: ImportPathRequest) -> dict:
-    """通过文件路径导入素材（不复制文件，创建软连接）。"""
+    """通过文件路径导入素材（白名单内创建软连接，白名单外安全复制）。"""
     from pathlib import Path
     src = Path(req.path)
     if not src.exists():
         raise HTTPException(status_code=400, detail=f"文件不存在: {req.path}")
+    # P0-1: 拒绝点文件（.env/.git/.ssh 等敏感文件不可导入，阻断任意文件读取链入口）
+    if src.name.startswith("."):
+        raise HTTPException(status_code=400, detail="不允许导入隐藏文件")
     manager = _get_manager(req.project_id or None)
     info = await manager.import_file(src)
     if info.error:
@@ -189,24 +204,41 @@ async def import_asset_by_path(req: ImportPathRequest) -> dict:
 
 @router.post("/import-url")
 async def import_asset_by_url(req: ImportUrlRequest) -> dict:
-    """通过 URL 下载素材并导入到项目素材库。"""
+    """通过 URL 下载素材并导入到项目素材库（P0-7：SSRF 防护 + 流式大小上限）。"""
     import httpx
     from pathlib import Path
+
+    from clipwright.security import SecurityViolation, assert_public_url
+
+    # P0-7: 拒绝回环/私网/链路本地/云元数据地址（防 SSRF）
+    try:
+        assert_public_url(req.url)
+    except SecurityViolation as e:
+        raise HTTPException(status_code=400, detail=f"URL 不允许: {e}") from e
 
     ext = Path(req.filename).suffix or ".bin"
     tmp_dir = Path(tempfile.mkdtemp(prefix="asset_url_"))
     tmp = tmp_dir / f"download{ext}"
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.get(req.url)
-            resp.raise_for_status()
-            tmp.write_bytes(resp.content)
+        # P0-7: 流式写盘 + 大小上限，避免整读内存
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            async with client.stream("GET", req.url) as resp:
+                resp.raise_for_status()
+                size = 0
+                with open(tmp, "wb") as out:
+                    async for chunk in resp.aiter_bytes(1024 * 1024):
+                        size += len(chunk)
+                        if size > MAX_UPLOAD_BYTES:
+                            raise HTTPException(status_code=413, detail="文件过大（上限 2GB）")
+                        out.write(chunk)
 
         manager = _get_manager(req.project_id or None)
         info = await manager.import_file(tmp)
         if info.error:
             raise HTTPException(status_code=400, detail=info.error)
         return info.to_dict()
+    except HTTPException:
+        raise
     except httpx.HTTPError as e:
         raise HTTPException(status_code=400, detail=f"下载失败: {e}")
     finally:

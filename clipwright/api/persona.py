@@ -122,9 +122,9 @@ async def list_knowledge(persona_id: str) -> list[KnowledgeDoc]:
 
 @router.post("/{persona_id}/knowledge")
 async def add_knowledge(persona_id: str, doc: KnowledgeDoc) -> dict:
-    """向 Persona 知识库添加一篇文档。"""
+    """向 Persona 知识库添加一篇文档（P0-12: 返回真实 doc_id）。"""
     if not _repo.exists(persona_id):
         raise HTTPException(status_code=404, detail=f"Persona 不存在: {persona_id}")
-    _repo.add_knowledge_doc(persona_id, doc)
-    return {"status": "ok", "doc_id": doc.id}
+    actual_id = _repo.add_knowledge_doc(persona_id, doc)
+    return {"status": "ok", "doc_id": actual_id}
 
