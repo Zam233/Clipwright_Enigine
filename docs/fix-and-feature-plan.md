@@ -507,3 +507,11 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 → P5 → P6/P7 → 
 - ? P4-4B 主项目市场后端：market_client（搜索/详情/下载）+ install_service（安全解包→schema 校验→原子移动→注册→失败回滚）+ /api/market 浏览与安装端点；6 个离线安装测试
 - ? 附带：persona/loader.py 重复 import 清理（B32）
 - 回归：后端 1018/1018 ? · Server 11/11 ?
+
+### 执行轮次 5（P4-4C 市场前端 + P5 首批）
+- ? P4-4C 市场页：web/src/pages/MarketPage.tsx（插件/Persona 双 Tab、搜索、卡片列表含评分/下载数、一键安装、发布向导 multipart 上传）+ market.ts 客户端（浏览走主项目 /api/market，发布/评分直连 /srv）+ /market 路由 + HomePage TopBar「市场」入口 + 市场 flag 默认开启
+- ? P5-B2 速率限制：services/rate_limit.py（内存滑动窗口）+ 中间件（按 user/ip+method+path 键，配置热更新，默认关闭 CLIPWRIGHT_RATE_LIMIT_ENABLED）
+- ? P5-B8 幂等键：管线 run-async 与渲染 queue 支持 Idempotency-Key 去重（重复请求返回已有任务）
+- ? P5-B5 审计日志：clipwright/audit.py（Mongo audit 集合 + 日志兜底）；埋点 project_create/delete、persona_create/delete、pipeline_run、render_queue、market install
+- ? 新增测试：rate_limit 3 个（单元 + 中间件 429）
+- 回归：后端 1021/1021 ? · 前端 261/261 + typecheck ?
