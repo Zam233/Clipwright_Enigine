@@ -125,6 +125,21 @@ _OPENING_ANIMATION_ALLOWED_PLUGIN_IDS: frozenset[str] = frozenset(
 )
 
 
+def _pick_better_scenes(
+    a: tuple[list[dict], list[str]], b: tuple[list[dict], list[str]]
+) -> tuple[list[dict], list[str]]:
+    """B7: 双稿择优启发式 — 有效场景数 3-20 区间内越多越优，越界惩罚；平局取 a。"""
+    def _score(pair: tuple[list[dict], list[str]]) -> float:
+        n = len(pair[0])
+        if n == 0:
+            return -1.0
+        if 3 <= n <= 20:
+            return float(n)
+        return -abs(n - 8)
+
+    return b if _score(b) > _score(a) else a
+
+
 def _validate_scenes(scenes: list[dict]) -> tuple[list[dict], list[str]]:
     """验证场景列表的完整性，过滤无效场景。
 
@@ -294,52 +309,67 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             logger.info("StructureAgent: 选题=%s, tone=%s, has_api_key=%s", context.topic, tone, has_api_key)
 
             if has_api_key:
-                try:
-                    # 动态收集所有声明 agent_callable 且可用的工具
-                    # （内置 list_animations/describe_llm_mg + 插件注册工具），
-                    # 不再硬编码工具列表，插件工具可被 LLM 主动调用。
-                    available_tools: dict[str, Any] = {}
-                    for tool in ToolRegistry.list_agent_callable():
-                        available_tools[tool.name] = tool
-                    if "list_animations" not in available_tools:
-                        list_tool = ToolRegistry.get("list_animations")
-                        if list_tool and list_tool.is_available():
-                            available_tools["list_animations"] = list_tool
-                    if "describe_llm_mg" not in available_tools:
-                        mg_tool = ToolRegistry.get("describe_llm_mg")
-                        if mg_tool and mg_tool.is_available():
-                            available_tools["describe_llm_mg"] = mg_tool
-                    tool_schemas = [
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": tool.name,
-                                "description": tool.description or f"Execute {tool.name}",
-                                "parameters": tool.to_llm_tool("openai")["function"]["parameters"],
-                            },
-                        }
-                        for tool in available_tools.values()
-                    ]
-                    logger.info("StructureAgent: 可用工具=%s, tool_schemas数量=%d", list(available_tools.keys()), len(tool_schemas))
-                    result = await asyncio.wait_for(
-                        self._llm.with_tools(
-                            system_prompt=system_prompt,
-                            user_prompt=user_prompt,
-                            tool_executor=self._tool_executor_for_llm,
-                            tools=tool_schemas,
-                            pipeline_id=context.pipeline_id,
-                        ),
-                        timeout=self.timeout_sec,
+                # 动态收集所有声明 agent_callable 且可用的工具
+                # （内置 list_animations/describe_llm_mg + 插件注册工具），
+                # 不再硬编码工具列表，插件工具可被 LLM 主动调用。
+                available_tools: dict[str, Any] = {}
+                for tool in ToolRegistry.list_agent_callable():
+                    available_tools[tool.name] = tool
+                if "list_animations" not in available_tools:
+                    list_tool = ToolRegistry.get("list_animations")
+                    if list_tool and list_tool.is_available():
+                        available_tools["list_animations"] = list_tool
+                if "describe_llm_mg" not in available_tools:
+                    mg_tool = ToolRegistry.get("describe_llm_mg")
+                    if mg_tool and mg_tool.is_available():
+                        available_tools["describe_llm_mg"] = mg_tool
+                tool_schemas = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "description": tool.description or f"Execute {tool.name}",
+                            "parameters": tool.to_llm_tool("openai")["function"]["parameters"],
+                        },
+                    }
+                    for tool in available_tools.values()
+                ]
+                logger.info("StructureAgent: 可用工具=%s, tool_schemas数量=%d", list(available_tools.keys()), len(tool_schemas))
+
+                async def _generate_scenes(variant_hint: str = "") -> tuple[list[dict], list[str]]:
+                    """单次结构生成（带超时；超时回退 fallback）。"""
+                    try:
+                        up = user_prompt + variant_hint
+                        result = await asyncio.wait_for(
+                            self._llm.with_tools(
+                                system_prompt=system_prompt,
+                                user_prompt=up,
+                                tool_executor=self._tool_executor_for_llm,
+                                tools=tool_schemas,
+                                pipeline_id=context.pipeline_id,
+                            ),
+                            timeout=self.timeout_sec,
+                        )
+                        logger.info("StructureAgent: LLM 响应长度=%d, 内容预览=%.200s", len(result.content or ""), result.content or "")
+                        raw_scenes = self._parse_scenes(result.content)
+                        logger.info("StructureAgent: 解析出 %d 个原始场景", len(raw_scenes))
+                        sc, wa = _validate_scenes(raw_scenes)
+                        logger.info("StructureAgent: 验证后 %d 个有效场景, 警告=%s", len(sc), wa)
+                        return sc, wa
+                    except asyncio.TimeoutError:
+                        logger.warning("StructureAgent: LLM 超时（>%ss），使用 fallback", self.timeout_sec)
+                        return self._fallback_scenes(context.topic, tone, script_text), [f"LLM 超时（>{self.timeout_sec}s）"]
+
+                scenes, warnings = await _generate_scenes()
+
+                # B7: 多方案择优 — voiceover（脚本驱动）场景双稿，择优启发式选择
+                if video_mode == "voiceover" and script_text.strip() and scenes:
+                    scenes_b, warnings_b = await _generate_scenes(
+                        "\n\n（额外要求：请再输出一版节奏/结构安排与上述不同的替代方案，仍遵循全部约束）"
                     )
-                    logger.info("StructureAgent: LLM 响应长度=%d, 内容预览=%.200s", len(result.content or ""), result.content or "")
-                    raw_scenes = self._parse_scenes(result.content)
-                    logger.info("StructureAgent: 解析出 %d 个原始场景", len(raw_scenes))
-                    scenes, warnings = _validate_scenes(raw_scenes)
-                    logger.info("StructureAgent: 验证后 %d 个有效场景, 警告=%s", len(scenes), warnings)
-                except asyncio.TimeoutError:
-                    logger.warning("StructureAgent: LLM 超时（>%ss），使用 fallback", self.timeout_sec)
-                    scenes = self._fallback_scenes(context.topic, tone, script_text)
-                    warnings.append(f"LLM 超时（>{self.timeout_sec}s）")
+                    picked = _pick_better_scenes((scenes, warnings), (scenes_b, warnings_b))
+                    scenes, warnings = picked
+                    warnings = list(warnings) + ["已生成双稿并择优"]
 
             if not scenes:
                 logger.info("StructureAgent: 无有效场景，使用 fallback")

@@ -6,13 +6,14 @@ import asyncio
 import json
 import tempfile
 import uuid
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
-from clipwright.config import logger, settings
+from clipwright.config import TIME_ZONE, logger, settings
 from clipwright.paths import anchor
 from clipwright.schema.timeline import Timeline
 from clipwright.security import is_safe_download_name
@@ -28,6 +29,44 @@ router = APIRouter(prefix="/api/render", tags=["render"])
 _render_queue: dict[str, dict] = {}
 # P5-B8: 渲染幂等键（Idempotency-Key → task_id）
 _idempotency_render: dict[str, str] = {}
+
+
+# ── P5-B4: 渲染队列持久化（Mongo render_tasks；不可用静默降级为纯内存）──
+
+def _persist_render_task(doc: dict) -> None:
+    try:
+        from clipwright.context import mongo
+        if mongo.is_connected:
+            mongo.db["render_tasks"].update_one(
+                {"task_id": doc["task_id"]}, {"$set": doc}, upsert=True
+            )
+    except Exception:
+        pass
+
+
+def _drop_render_task(task_id: str) -> None:
+    try:
+        from clipwright.context import mongo
+        if mongo.is_connected:
+            mongo.db["render_tasks"].delete_one({"task_id": task_id})
+    except Exception:
+        pass
+
+
+def _load_recovered_render_tasks() -> list[dict]:
+    """重启恢复：Mongo 中 queued/rendering 且内存已无的任务。"""
+    try:
+        from clipwright.context import mongo
+        if not mongo.is_connected:
+            return []
+        docs = list(mongo.db["render_tasks"].find(
+            {"status": {"$in": ["queued", "rendering"]}}
+        ))
+        for d in docs:
+            d.pop("_id", None)
+        return docs
+    except Exception:
+        return []
 
 
 def _renders_dir() -> Path:
@@ -110,11 +149,17 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
             return {"task_id": existing, "status": "deduplicated"}
 
     task_id = f"render_{uuid.uuid4().hex[:12]}"
+    # P5-B4: 优先级（X-Priority: 1-5，默认 3）
+    try:
+        priority = max(1, min(5, int(request.headers.get("X-Priority", "3") or "3")))
+    except (TypeError, ValueError):
+        priority = 3
     _render_queue[task_id] = {
         "status": "queued",
         "progress": 0,
         "result": None,
         "owner_id": uid or "",  # P3-3B
+        "priority": priority,
     }
     if idem_key:
         _idempotency_render[idem_key] = task_id
@@ -132,6 +177,25 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
         raise HTTPException(status_code=400, detail="非法输出文件名")
     requested_name = Path(raw_output).name if raw_output else ""
     out = f"renders/{requested_name}" if requested_name else f"renders/{task_id}.mp4"
+
+    # P5-B4: 持久化任务（含 timeline，供重启恢复/中断重试）
+    try:
+        _persist_render_task({
+            "task_id": task_id,
+            "status": "queued",
+            "progress": 0,
+            "output_path": out,
+            "owner_id": uid or "",
+            "priority": priority,
+            "timeline": tl.model_dump(mode="json"),
+            "audio_file_path": body.audio_file_path or "",
+            "bgm_file_path": body.bgm_file_path or "",
+            "settings": params,
+            "created_at": datetime.now(tz=TIME_ZONE),
+            "updated_at": datetime.now(tz=TIME_ZONE),
+        })
+    except Exception as e:
+        logger.warning("渲染任务持久化失败（降级内存）: %s", e)
 
     async def _run():
         _render_queue[task_id]["status"] = "rendering"
@@ -162,10 +226,24 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
             _render_queue[task_id]["status"] = "failed"
             _render_queue[task_id]["result"] = {"error": _sanitize_detail(str(e))}
         finally:
+            # P5-B4: 终态同步 Mongo（含中断标记供重启恢复）
+            try:
+                _persist_render_task({
+                    "task_id": task_id,
+                    "status": _render_queue[task_id]["status"],
+                    "progress": _render_queue[task_id].get("progress", 0),
+                    "result": _render_queue[task_id].get("result"),
+                    "output_path": _render_queue[task_id].get("output_path", ""),
+                    "owner_id": _render_queue[task_id].get("owner_id", ""),
+                    "updated_at": datetime.now(tz=TIME_ZONE),
+                })
+            except Exception:
+                pass
             # 60s 后清理
             async def _cleanup():
                 await asyncio.sleep(60)
                 _render_queue.pop(task_id, None)
+                _drop_render_task(task_id)  # P5-B4: 终态已同步，清理落库记录
                 for k, v in list(_idempotency_render.items()):
                     if v == task_id:
                         _idempotency_render.pop(k, None)
@@ -177,12 +255,29 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
 
 @router.get("/queue/{task_id}")
 async def get_queue_status(task_id: str, request: Request) -> dict:
-    """查询渲染队列任务状态（P3-3B: 校验所有权）。"""
+    """查询渲染队列任务状态（P3-3B: 校验所有权；P5-B4: 内存缺失时查 Mongo 恢复）。"""
+    import asyncio as _asyncio
+
     from clipwright.authz import enforce_owner
 
     task = _render_queue.get(task_id)
     if task is None:
-        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        def _load():
+            try:
+                from clipwright.context import mongo
+                if mongo.is_connected:
+                    d = mongo.db["render_tasks"].find_one({"task_id": task_id})
+                    if d:
+                        d.pop("_id", None)
+                    return d
+            except Exception:
+                pass
+            return None
+        recovered = await _asyncio.to_thread(_load)
+        if recovered is None:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        enforce_owner(request, recovered.get("owner_id"), "渲染任务")
+        return {"task_id": task_id, **recovered, "recovered": True}
     enforce_owner(request, task.get("owner_id"), "渲染任务")
     return {"task_id": task_id, **task}
 
@@ -230,15 +325,28 @@ async def stream_render_progress(task_id: str):
 
 @router.get("/queue")
 async def list_queue(request: Request) -> dict:
-    """列出所有队列任务（P3-3B: 按 owner 过滤）。"""
+    """列出所有队列任务（P3-3B: 按 owner 过滤；P5-B4: 合并 Mongo 恢复项）。"""
     from clipwright.authz import filter_by_owner
 
     tasks = []
     for tid, info in _render_queue.items():
         tasks.append({"task_id": tid, "status": info["status"],
-                      "progress": info.get("progress", 0), "owner_id": info.get("owner_id", "")})
+                      "progress": info.get("progress", 0), "owner_id": info.get("owner_id", ""),
+                      "priority": info.get("priority", 3)})
+    memory_ids = {t["task_id"] for t in tasks}
+    # 重启恢复：Mongo 中 queued/rendering 且内存已无 → 标记 recovered（前端可提示中断重试）
+    recovered = await asyncio.to_thread(_load_recovered_render_tasks)
+    for d in recovered:
+        if d.get("task_id") not in memory_ids:
+            tasks.append({
+                "task_id": d["task_id"],
+                "status": d.get("status", "queued"),
+                "progress": d.get("progress", 0),
+                "owner_id": d.get("owner_id", ""),
+                "recovered": True,
+            })
     tasks = filter_by_owner(request, tasks)
-    tasks.sort(key=lambda t: t["task_id"], reverse=True)
+    tasks.sort(key=lambda t: (-t.get("priority", 3), t["task_id"]), reverse=True)
     return {"tasks": tasks}
 
 

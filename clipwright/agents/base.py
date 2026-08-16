@@ -51,3 +51,34 @@ class BaseAgent(ABC, Generic[I, O]):
             decision=AgentDecision.FAIL,
             error=error_msg,
         )
+
+    # ── 统一基座（P5）：超时 + 优雅降级，供各 Agent 复用 ──
+
+    async def run_with_timeout(self, coro_factory, timeout: float | None = None):
+        """带统一超时的 LLM/工具调用封装（超时抛 asyncio.TimeoutError，由调用方降级）。
+
+        用法::
+
+            try:
+                result = await agent.run_with_timeout(lambda: llm.ask(...))
+            except asyncio.TimeoutError:
+                result = fallback
+
+        超时默认取 ``self.timeout_sec``（各 Agent 可覆盖）。
+        """
+        import asyncio
+
+        return await asyncio.wait_for(coro_factory(), timeout=timeout or self.timeout_sec)
+
+    async def llm_or_fallback(self, coro_factory, fallback, timeout: float | None = None):
+        """LLM 调用 + 超时兜底：超时/异常一律返回 fallback 并记录日志。"""
+        from clipwright.config import logger
+
+        try:
+            return await self.run_with_timeout(coro_factory, timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning("%s: LLM 调用超时，使用兜底", self.agent_name)
+            return fallback
+        except Exception as e:
+            logger.warning("%s: LLM 调用失败（%s），使用兜底", self.agent_name, e)
+            return fallback
