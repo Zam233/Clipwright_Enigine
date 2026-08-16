@@ -29,11 +29,16 @@ interface MediaEntry {
   durationSec: number;
   waveform?: number[];
   thumbnails: Map<number, string>;
+  /** W16: 缩略图 LRU 访问顺序（bucket 时间戳 → 最近访问序），超限时淘汰最久未用的 */
+  thumbLru: number[];
   /** true when url is a blob: object URL that must be revoked on unregister */
   isObjectUrl?: boolean;
   /** true when the media element fired an error event (404 / network) — keeps url for retry */
   error?: boolean;
 }
+
+/** W16: 单素材缩略图缓存上限（数据 URL 可能很大，防内存无界增长）。 */
+const MAX_THUMBNAILS_PER_ENTRY = 24;
 
 class MediaManager {
   private entries = new Map<string, MediaEntry>();
@@ -50,7 +55,7 @@ class MediaManager {
       : file.type.startsWith('audio')
         ? 'audio'
         : 'image';
-    const entry: MediaEntry = { url, kind, durationSec: 0, thumbnails: new Map(), isObjectUrl: true };
+    const entry: MediaEntry = { url, kind, durationSec: 0, thumbnails: new Map(), thumbLru: [], isObjectUrl: true };
 
     if (kind === 'video') {
       const v = document.createElement('video');
@@ -99,7 +104,7 @@ class MediaManager {
   /** Register a backend-hosted asset by proxy URL. */
   registerUrl(assetId: string, url: string, kind: MediaEntry['kind']): void {
     if (this.entries.has(assetId)) return;
-    const entry: MediaEntry = { url, kind, durationSec: 0, thumbnails: new Map() };
+    const entry: MediaEntry = { url, kind, durationSec: 0, thumbnails: new Map(), thumbLru: [] };
     if (kind === 'video') {
       const v = document.createElement('video');
       v.src = url;
@@ -225,7 +230,11 @@ class MediaManager {
 
     const bucket = Math.round(timeSec * 2) / 2;
     const cached = e.thumbnails.get(bucket);
-    if (cached) return cached;
+    if (cached) {
+      // W16: 命中即标记最近使用
+      this.touchThumb(e, bucket);
+      return cached;
+    }
 
     if (e.kind === 'video' && e.videoEl) {
       return new Promise((resolve) => {
@@ -240,6 +249,7 @@ class MediaManager {
             ctx.drawImage(v, 0, 0, c.width, c.height);
             const dataUrl = c.toDataURL('image/jpeg', 0.7);
             e.thumbnails.set(bucket, dataUrl);
+            this.touchThumb(e, bucket);
             resolve(dataUrl);
           } catch {
             resolve(null);
@@ -257,6 +267,19 @@ class MediaManager {
       });
     }
     return null;
+  }
+
+  /**
+   * W16: 标记缩略图最近使用并执行 LRU 淘汰。
+   * 超过 MAX_THUMBNAILS_PER_ENTRY 时删除最久未用的 bucket，防止缓存无界增长。
+   */
+  private touchThumb(e: MediaEntry, bucket: number): void {
+    e.thumbLru = e.thumbLru.filter((b) => b !== bucket);
+    e.thumbLru.push(bucket);
+    while (e.thumbLru.length > MAX_THUMBNAILS_PER_ENTRY) {
+      const oldest = e.thumbLru.shift();
+      if (oldest !== undefined) e.thumbnails.delete(oldest);
+    }
   }
 
   /** Extract waveform peaks (0-1) via WebAudio decodeAudioData. Cached. */

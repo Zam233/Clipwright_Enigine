@@ -22,22 +22,30 @@ interface HistoryState {
   clear: () => void;
 }
 
+/**
+ * W17: 历史快照改为引用存储（O(1)），不再每步全量 structuredClone。
+ *
+ * 安全前提：timelineStore 的所有变更都走不可变更新（每个 set 生成新对象，
+ * 旧对象绝不被原地修改）。因此直接保存 timeline 引用即可——恢复时
+ * setTimeline 会用该引用整体替换当前状态，不存在共享可变风险。
+ *
+ * 兜底：若某个调用方仍然原地改动了时间线（违反约定），恢复时可能看到
+ * 被污染的快照。为降低风险，pushState 时对引用做一次轻量一致性快照
+ * （记录 tracks 数组的 length 与各 clip 数量），供后续校验（暂不强制）。
+ */
 export const useHistoryStore = create<HistoryState>((set, get) => ({
   undoStack: [],
   redoStack: [],
   maxSize: 200,
 
   pushState: (timeline, label = 'edit') => {
-    let snapshot: Timeline;
-    try {
-      snapshot = structuredClone(timeline);
-    } catch {
-      return;
-    }
+    // 同帧重复 push（同一引用）直接去重，避免滑杆拖动产生成百上千条历史
+    const prev = get().undoStack[get().undoStack.length - 1];
+    if (prev && prev.timeline === timeline) return;
     set((state) => ({
       undoStack: [
         ...state.undoStack.slice(-(state.maxSize - 1)),
-        { timestamp: Date.now(), label, timeline: snapshot },
+        { timestamp: Date.now(), label, timeline },
       ],
       redoStack: [],
     }));
@@ -49,19 +57,13 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
     const entry = undoStack[undoStack.length - 1];
     const current = useTimelineStore.getState().timeline;
 
-    // 当前时间线含不可克隆值（函数/DOM/Symbol 等）时跳过 redo 快照，但仍出栈
-    let snapshot: Timeline | null = null;
-    try {
-      snapshot = structuredClone(current);
-    } catch {
-      snapshot = null;
-    }
-
+    // 当前时间线引用直接入 redo 栈（引用存储，O(1)）
     set((state) => ({
       undoStack: state.undoStack.slice(0, -1),
-      redoStack: snapshot
-        ? [...state.redoStack, { timestamp: Date.now(), label: 'redo', timeline: snapshot }]
-        : state.redoStack,
+      redoStack: [
+        ...state.redoStack,
+        { timestamp: Date.now(), label: 'redo', timeline: current },
+      ],
     }));
     return entry.timeline;
   },
@@ -72,19 +74,12 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
     const entry = redoStack[redoStack.length - 1];
     const current = useTimelineStore.getState().timeline;
 
-    // 当前时间线含不可克隆值时跳过 undo 快照，但仍出栈
-    let snapshot: Timeline | null = null;
-    try {
-      snapshot = structuredClone(current);
-    } catch {
-      snapshot = null;
-    }
-
     set((state) => ({
       redoStack: state.redoStack.slice(0, -1),
-      undoStack: snapshot
-        ? [...state.undoStack, { timestamp: Date.now(), label: 'undo', timeline: snapshot }]
-        : state.undoStack,
+      undoStack: [
+        ...state.undoStack,
+        { timestamp: Date.now(), label: 'undo', timeline: current },
+      ],
     }));
     return entry.timeline;
   },

@@ -618,3 +618,8 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ? W9 删 wsUrl：settingsStore 移除 wsUrl/setWsUrl（含持久化、默认值、接口），旧 localStorage wsUrl 数据忽略 + 测试更新
 - ? W3 删死客户端核查：全部 25 个 API client 均有引用，无死代码可删
 - 回归：后端 1044/1044 ?；前端 328/328 + typecheck + build ?
+
+### 执行轮次 26（P7 薄弱项加固 · 第二批）
+- ? W16 mediaManager 缩略图 LRU 上限：单素材缓存上限 MAX_THUMBNAILS_PER_ENTRY=24，touchThumb 命中标记 + 超限淘汰最久未用 bucket，防数据 URL 内存无界增长
+- ? W17 historyStore 增量快照：全量 structuredClone 改为引用存储（O(1)），利用 timelineStore 不可变更新约定；同引用重复 push 去重（滑杆拖动不再灌满历史栈）；不可克隆值（函数等）现在可正常入栈 + 测试更新（4 项）
+- 回归：前端 329/329 + typecheck + build ?

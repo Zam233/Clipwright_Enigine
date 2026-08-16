@@ -63,7 +63,7 @@ describe('historyStore', () => {
     expect(useHistoryStore.getState().canRedo()).toBe(true); // 撤销产生的 redo 快照
   });
 
-  it('undo with a non-cloneable current timeline does not throw and still returns the prior entry', () => {
+  it('W17: 引用存储 — 含函数等不可克隆值的时间线也能正常入栈/撤销（不再需要 clone 防护）', () => {
     const tl1 = makeTimeline('tl-1');
     const tl2 = makeTimeline('tl-2');
     const bad = makeNonCloneableTimeline('tl-bad');
@@ -73,9 +73,9 @@ describe('historyStore', () => {
     useTimelineStore.getState().setTimeline(tl2);
     useHistoryStore.getState().pushState(tl2);
 
-    // pushState 已加防护：遇到不可克隆时间线不抛错、不入栈
+    // 引用存储：不可克隆时间线照常入栈
     expect(() => useHistoryStore.getState().pushState(bad)).not.toThrow();
-    expect(useHistoryStore.getState().undoStack).toHaveLength(2);
+    expect(useHistoryStore.getState().undoStack).toHaveLength(3);
 
     // 把“当前”时间线换成不可克隆值后再撤销
     useTimelineStore.setState({ timeline: bad });
@@ -88,16 +88,15 @@ describe('historyStore', () => {
     }
     expect(threw).toBe(false);
 
-    // 仍出栈并返回栈顶条目…
-    expect(result?.id).toBe('tl-2');
-    expect(useHistoryStore.getState().undoStack).toHaveLength(1);
+    // 出栈返回栈顶条目（bad 本身），redo 快照 = 当前引用（bad）也可存储
+    expect(result?.id).toBe('tl-bad');
+    expect(useHistoryStore.getState().undoStack).toHaveLength(2);
     expect(useHistoryStore.getState().canUndo()).toBe(true);
-    // …但跳过失败的 redo 快照（redoStack 不增长）
-    expect(useHistoryStore.getState().redoStack).toHaveLength(0);
-    expect(useHistoryStore.getState().canRedo()).toBe(false);
+    expect(useHistoryStore.getState().redoStack).toHaveLength(1);
+    expect(useHistoryStore.getState().canRedo()).toBe(true);
   });
 
-  it('redo with a non-cloneable current timeline does not throw, returns the entry, and pops redoStack', () => {
+  it('W17: 引用存储 — redo 同样处理不可克隆值', () => {
     const tl1 = makeTimeline('tl-1');
     const tl2 = makeTimeline('tl-2');
     const tl3 = makeTimeline('tl-3');
@@ -109,14 +108,12 @@ describe('historyStore', () => {
     useHistoryStore.getState().pushState(tl2);
     useTimelineStore.getState().setTimeline(tl3);
 
-    // 两次撤销灌入 redoStack（模拟真实用法：每次 undo 后把返回的时间线写回）
     expect(useHistoryStore.getState().undo()?.id).toBe('tl-2');
     useTimelineStore.setState({ timeline: tl2 });
     expect(useHistoryStore.getState().undo()?.id).toBe('tl-1');
     expect(useHistoryStore.getState().redoStack).toHaveLength(2);
     expect(useHistoryStore.getState().canRedo()).toBe(true);
 
-    // 把“当前”时间线换成不可克隆值后再重做
     useTimelineStore.setState({ timeline: bad });
     let result: Timeline | null = null;
     let threw = false;
@@ -127,12 +124,18 @@ describe('historyStore', () => {
     }
     expect(threw).toBe(false);
 
-    // 仍出栈并返回栈顶条目…
     expect(result?.id).toBe('tl-2');
     expect(useHistoryStore.getState().redoStack).toHaveLength(1);
     expect(useHistoryStore.getState().canRedo()).toBe(true);
-    // …但跳过失败的 undo 快照（undoStack 不增长）
-    expect(useHistoryStore.getState().undoStack).toHaveLength(0);
-    expect(useHistoryStore.getState().canUndo()).toBe(false);
+    expect(useHistoryStore.getState().undoStack).toHaveLength(1);
+    expect(useHistoryStore.getState().canUndo()).toBe(true);
+  });
+
+  it('W17: 同引用重复 push 去重', () => {
+    const tl1 = makeTimeline('tl-1');
+    useHistoryStore.getState().pushState(tl1);
+    useHistoryStore.getState().pushState(tl1);
+    useHistoryStore.getState().pushState(tl1);
+    expect(useHistoryStore.getState().undoStack).toHaveLength(1);
   });
 });
