@@ -30,7 +30,7 @@ const PHASE_ORDER: PipelinePhase[] = ['structure', 'material', 'edit', 'animatio
 const LOG_ICONS: Record<LogEventType, string> = {
   agent_start: '▶', agent_end: '✓', llm: '🤖', tool: '🔧',
   skill: '🧠', plugin: '🔌', info: '○', warning: '⚠',
-  error: '✗', timeline_snapshot: '📊',
+  error: '✗', timeline_snapshot: '📊', progress: '▸',
   mg_start: '🎬', mg_end: '✨',
 };
 
@@ -39,7 +39,7 @@ const LOG_COLORS: Record<LogEventType, string> = {
   llm: 'text-track-caption', tool: 'text-on-surface-variant/70',
   skill: 'text-tertiary', plugin: 'text-track-image',
   info: 'text-on-surface-variant/50', warning: 'text-track-text',
-  error: 'text-error', timeline_snapshot: 'text-track-video',
+  error: 'text-error', timeline_snapshot: 'text-track-video', progress: 'text-snap-guide',
   mg_start: 'text-track-text', mg_end: 'text-track-animation',
 };
 
@@ -687,6 +687,19 @@ function BottomBar() {
         case 'pipeline_complete':
           void finish(true);
           break;
+        case 'progress': {
+          // C5: 细粒度进度事件 → 更新 store 进度条
+          const pct = Number((d.detail as { progress?: number } | undefined)?.progress ?? d.progress);
+          if (Number.isFinite(pct) && pct >= 0) {
+            useAgentStore.setState({ progress: Math.min(100, Math.max(0, pct)) });
+          }
+          addLogEntry({
+            timestamp: Date.now(), agent: name, type: 'progress',
+            summary: (d.summary || `${name} 进度更新`) as string,
+            detail: (d.detail as Record<string, unknown>) || null,
+          });
+          break;
+        }
         case 'llm':
         case 'tool':
         case 'skill':

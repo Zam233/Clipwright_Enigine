@@ -45,8 +45,32 @@ from clipwright.services.trace import (
 )
 
 
+def get_agent_progress(agent_name: str) -> int:
+    """C5: 返回某 agent 完成后的累计进度百分比（权重表累计）。未知 agent → 0。"""
+    weights = PipelineOrchestrator.AGENT_PROGRESS_WEIGHTS
+    if agent_name not in weights:
+        return 0
+    order = ["structure", "material", "edit", "animation", "audio", "quality"]
+    total = 0
+    for name in order:
+        total += weights.get(name, 0)
+        if name == agent_name:
+            break
+    return min(100, total)
+
+
 class PipelineOrchestrator:
     """Pipeline 编排器，负责 Agent 链路的编排执行。"""
+
+    # C5: Agent 阶段进度权重（总和 100），用于细粒度进度事件
+    AGENT_PROGRESS_WEIGHTS = {
+        "structure": 15,
+        "material": 20,
+        "edit": 30,
+        "animation": 15,
+        "audio": 10,
+        "quality": 10,
+    }
 
     def __init__(self) -> None:
         self._agents = {
@@ -281,14 +305,14 @@ class PipelineOrchestrator:
             # 保存到共享数据
             state.shared_data[f"{agent_name}_output"] = step.result
 
-            # 关键Agent完成后，将当前时间线快照写入trace供前端实时展示
-            if agent_name in ("edit", "animation", "material"):
-                timeline_snapshot = step.result.get("timeline") or state.shared_data.get("final_timeline")
-                if timeline_snapshot:
-                    from clipwright.services.trace import add_event as te
-                    te(pid, agent_name, "timeline_snapshot",
-                       f"时间线快照: {agent_name}",
-                       timeline_snapshot)
+            # C4: 每个 Agent 完成后都写时间线快照到 trace（前端可逐阶段回放），
+            # 优先取 agent 自己的 timeline 输出，否则回退共享的 final_timeline。
+            timeline_snapshot = step.result.get("timeline") or state.shared_data.get("final_timeline")
+            if timeline_snapshot:
+                from clipwright.services.trace import add_event as te
+                te(pid, agent_name, "timeline_snapshot",
+                   f"时间线快照: {agent_name}",
+                   timeline_snapshot)
 
         except Exception as e:
             step.status = PipelineStatus.FAILED

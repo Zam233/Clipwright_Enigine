@@ -99,6 +99,7 @@ export type LogEventType =
   | 'warning'
   | 'error'
   | 'timeline_snapshot'
+  | 'progress'
   | 'mg_start'
   | 'mg_end';
 

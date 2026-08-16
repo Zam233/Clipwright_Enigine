@@ -993,6 +993,12 @@ class PipelineOrchestratorV2:
             add_event(pid, agent_name, "agent_end",
                       f"{agent_name} → {step.status} ({step.duration_ms or '?'}ms)")
 
+            # C5: 细粒度进度 — 每个 agent 完成后发一个数值进度事件（SSE/轮询可消费）
+            from clipwright.services.pipeline import get_agent_progress
+            add_event(pid, agent_name, "progress",
+                      f"{agent_name} 完成",
+                      {"progress": get_agent_progress(agent_name)})
+
             if agent_name == "edit":
                 timeline_data = step.result.get("timeline")
                 if timeline_data and isinstance(timeline_data, dict):
