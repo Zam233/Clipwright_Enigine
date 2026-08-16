@@ -198,6 +198,9 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             shot_params = context.extra_params.get("shot_params", {})
             cut_profile = context.extra_params.get("cut_profile", "even_flow")
             transition_weights = context.extra_params.get("transition_weights", {})
+            # P8: 节拍对齐剪辑 beat-sync — cut_on_beat + BPM（来自类型配置/音频检测）
+            cut_on_beat = bool(context.extra_params.get("cut_on_beat", False))
+            beat_bpm = float(context.extra_params.get("bpm", 120) or 120)
 
             base_shot_ms = shot_params.get("base_shot_ms", 5000)
 
@@ -307,8 +310,14 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             scene_asset_map: dict[str, dict] = {}
             missing_scenes: list[tuple[float, float, int]] = []  # (start, dur, scene_idx) 缺字幕的场景
 
+            # P8: beat-sync 场景起点吸附函数（BPM → 拍间隔）
+            beat_interval = 60.0 / max(beat_bpm, 30.0) if cut_on_beat else None
+
             for i, units in enumerate(scene_results):
                 scene_desc = scenes[i].get("description", "") if i < len(scenes) else ""
+                # 场景起点吸附到最近拍点（非首场景）
+                if beat_interval is not None and i > 0:
+                    current_time = round(current_time / beat_interval) * beat_interval
                 scene_start_time = current_time
                 scene_total_dur = sum(u["seg_dur"] for u in units)
                 for ui, unit in enumerate(units):

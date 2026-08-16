@@ -4,7 +4,7 @@ import { useTimelineStore } from '@/stores/timelineStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useHistoryStore } from '@/stores/historyStore';
 import { usePreviewStore } from '@/stores/previewStore';
-import { assetApi, visionApi } from '@/services/api';
+import { assetApi, visionApi, toolApi } from '@/services/api';
 import { mediaManager } from '@/services/media/mediaManager';
 import { toast } from '@/stores/toastStore';
 import { Button } from '@/components/ui';
@@ -14,7 +14,7 @@ import { PluginPanel } from './PluginPanel';
 import type { Asset, MaterialSearchResult } from '@/types/api';
 import type { MaterialAsset } from '@/services/api/asset';
 import type { ClipKind } from '@/types/timeline';
-import { Sparkles, FolderOpen, History, Upload, Search, Plus, Mic, Puzzle, X, Heart, Check, Info, Trash2 } from 'lucide-react';
+import { Sparkles, FolderOpen, History, Upload, Search, Plus, Mic, Puzzle, X, Heart, Check, Info, Trash2, Wand2 } from 'lucide-react';
 
 type Tab = 'ai' | 'library' | 'history' | 'dub' | 'plugins';
 
@@ -73,6 +73,28 @@ export function AssetPanel() {
       /* 离线/后端不可达：仅本地移除 */
     }
     setAssets(useAssetStore.getState().assets.filter((a) => a.id !== asset.id));
+  };
+
+  // P8: 特效工具（抠像/背景移除/稳定/水印）— 调用后端 tool 执行，产物重新注册到素材库
+  const handleAssetEffect = async (asset: Asset, effect: string) => {
+    const inputPath = asset.path || asset.id;
+    if (!inputPath) { toast('素材路径缺失，无法处理', 'error'); return; }
+    try {
+      toast(`正在处理「${asset.filename}」…`, 'info');
+      const res = await toolApi.execute(effect, { input_path: inputPath });
+      if (res.status !== 'success') {
+        toast(`特效处理失败：${res.error ?? '未知错误'}`, 'error');
+        return;
+      }
+      const outPath = (res.output as Record<string, unknown> | undefined)?.output_path
+        ?? (res.output as Record<string, unknown> | undefined)?.processed_path
+        ?? (res.output as Record<string, unknown> | undefined)?.watermarked_path;
+      if (!outPath) { toast('特效完成，但未返回产物路径', 'info'); return; }
+      toast('特效处理完成，已加入素材库', 'success');
+      await loadAssets();
+    } catch {
+      toast('特效处理失败（后端离线或工具不可用）', 'error');
+    }
   };
 
   const handleUpload = async (files: FileList | null) => {
@@ -229,7 +251,8 @@ export function AssetPanel() {
                 {(activeTab === 'library' ? filtered : history).map((asset) => (
                   <AssetCard key={asset.id} asset={asset}
                     onAdd={(opts) => addToTimeline(asset, opts)}
-                    onDelete={handleDeleteAsset} />
+                    onDelete={handleDeleteAsset}
+                    onEffect={handleAssetEffect} />
                 ))}
               </div>
             )}
@@ -243,10 +266,12 @@ export function AssetPanel() {
   );
 }
 
-export const AssetCard = memo(function AssetCard({ asset, onAdd, onDelete }: {
+export const AssetCard = memo(function AssetCard({ asset, onAdd, onDelete, onEffect }: {
   asset: Asset;
   onAdd: (opts?: { ripple?: boolean }) => void;
   onDelete?: (asset: Asset) => void; // M9
+  /** P8: 特效工具（抠像/背景移除/稳定/水印） */
+  onEffect?: (asset: Asset, effect: string) => void;
 }) {
   const kind = normalizeClipKind(asset.kind);
   const kindColor = kind === 'video' ? '#4F8CFF' : kind === 'audio' ? '#34D399' : kind === 'text' ? '#FBBF24' : '#A855F7';
@@ -332,6 +357,10 @@ export const AssetCard = memo(function AssetCard({ asset, onAdd, onDelete }: {
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         )}
+        {/* P8: 特效工具菜单（仅视频素材） */}
+        {onEffect && (kind === 'video' || kind === 'image') && (
+          <EffectMenu asset={asset} onEffect={onEffect} />
+        )}
       </div>
       <div className="px-2 py-1.5">
         <p className="text-label-sm text-on-surface truncate">{asset.filename}</p>
@@ -340,6 +369,57 @@ export const AssetCard = memo(function AssetCard({ asset, onAdd, onDelete }: {
     </div>
   );
 });
+
+/** P8: 特效工具下拉（抠像/背景移除/稳定/水印） */
+function EffectMenu({ asset, onEffect }: {
+  asset: Asset;
+  onEffect: (asset: Asset, effect: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler, true);
+    return () => document.removeEventListener('mousedown', handler, true);
+  }, [open]);
+
+  const EFFECTS = [
+    { id: 'background_remove', label: '移除背景（绿幕）', icon: '🎬' },
+    { id: 'video_stabilize', label: '画面稳定', icon: '📷' },
+    { id: 'watermark', label: '添加水印', icon: '©' },
+  ];
+
+  return (
+    <div ref={ref} className="absolute top-1 left-1 z-20">
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
+        className="w-7 h-7 rounded-cw-full bg-black/60 text-white flex items-center justify-center
+          opacity-0 group-hover:opacity-100 transition-opacity duration-short3 pointer-events-auto cursor-pointer hover:bg-primary"
+        title="特效工具"
+        aria-label={`特效工具 ${asset.filename}`}
+      >
+        <Wand2 className="w-3.5 h-3.5" />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full mt-1 w-44 bg-surface-container-high border border-outline-variant/40
+          rounded-cw-sm shadow-xl overflow-hidden text-caption text-on-surface"
+          onClick={(e) => e.stopPropagation()}>
+          {EFFECTS.map((ef) => (
+            <button key={ef.id}
+              onClick={() => { onEffect(asset, ef.id); setOpen(false); }}
+              className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-primary/10 transition-colors cursor-pointer">
+              <span>{ef.icon}</span>
+              <span className="flex-1">{ef.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function AIMatchView() {
   const [query, setQuery] = useState('');
