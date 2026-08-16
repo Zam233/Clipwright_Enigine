@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useTimelineStore } from '@/stores/timelineStore';
 import { useProjectStore } from '@/stores/projectStore';
-import { renderApi, projectApi } from '@/services/api';
+import { renderApi, projectApi, assetApi } from '@/services/api';
 import { fetchSseToken, withSseToken } from '@/services/api/sse';
 import { toast } from '@/stores/toastStore';
 import { createEmptyTimeline } from '@/types/timeline';
@@ -79,6 +79,22 @@ export function ExportPage() {
   const [settings, setSettings] = useState<ExportSettings>({
     preset: 'bilibili', width: 1920, height: 1080, fps: 30, bitrate: '6M',
   });
+  // W11: BGM 素材源 — 从素材库选音频作为背景音乐
+  const [bgmPath, setBgmPath] = useState('');
+  const [audioAssets, setAudioAssets] = useState<{ id: string; name: string; path: string }[]>([]);
+  useEffect(() => {
+    let alive = true;
+    assetApi.list(useProjectStore.getState().projectId ?? undefined)
+      .then((list) => {
+        if (!alive) return;
+        const audios = (Array.isArray(list) ? list : [])
+          .filter((a) => a.kind === 'audio')
+          .map((a) => ({ id: a.id, name: a.filename || a.id, path: a.path || a.id }));
+        setAudioAssets(audios);
+      })
+      .catch(() => { /* 离线：无 BGM 可选 */ });
+    return () => { alive = false; };
+  }, []);
   // C6: 自定义导出预设（localStorage）
   const [savedPresets, setSavedPresets] = useState<{ name: string; width: number; height: number; fps: number; bitrate: string }[]>(() => {
     try {
@@ -185,6 +201,8 @@ export function ExportPage() {
         timeline: useTimelineStore.getState().exportTimeline(),
         output_path: `renders/${filename}`,
         settings,
+        // W11: BGM 素材源（用户从素材库选择；无则后端走无 BGM 路径）
+        ...(bgmPath ? { bgm_file_path: bgmPath } : {}),
       });
       // 后端返回真实 task_id（render_N_ts）；替换本地占位 ID 后再挂接进度流
       const realId = res.task_id ?? taskId;
@@ -420,6 +438,24 @@ export function ExportPage() {
                 <HardDrive className="w-3.5 h-3.5" /> 预估体积
               </span>
               <span className="font-mono text-body-sm text-primary">{estSize}</span>
+            </div>
+
+            {/* W11: BGM 素材源 */}
+            <div className="pt-2 border-t border-outline-variant/20">
+              <label className="block text-label text-on-surface-variant mb-1">背景音乐 (BGM)</label>
+              <select
+                value={bgmPath}
+                onChange={(e) => setBgmPath(e.target.value)}
+                className="w-full bg-surface rounded-cw-xs px-2 py-1.5 text-body-sm text-on-surface outline-none border border-outline-variant/30 focus:border-primary cursor-pointer"
+              >
+                <option value="">无（不混入 BGM）</option>
+                {audioAssets.map((a) => (
+                  <option key={a.id} value={a.path}>{a.name}</option>
+                ))}
+              </select>
+              {audioAssets.length === 0 && (
+                <p className="text-caption text-on-surface-variant/60 mt-1">素材库暂无音频（上传音频素材后可选用作 BGM）</p>
+              )}
             </div>
           </div>
 

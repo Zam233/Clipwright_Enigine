@@ -28,6 +28,7 @@ vi.mock('@/services/api', () => ({
     downloadFile: mocks.downloadFile,
   },
   projectApi: { load: mocks.load },
+  assetApi: { list: vi.fn().mockResolvedValue([]) }, // W11
 }));
 
 // P0-9/10: SSE 挂接异步化——测试环境直接返回空 token（开放模式语义）

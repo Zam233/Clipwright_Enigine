@@ -667,3 +667,9 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 ### 执行轮次 35（P7 薄弱项加固 · 第十一批 — P7 后端收尾）
 - ? C11 BGM 真实混音/LUFS：_mix_audio 多音源（配音+BGM+时间线音频片段）按时间窗裁剪 + 各自音量 + 淡入淡出 + 延迟对齐 → amix + loudnorm LUFS 归一；单音源回退简单混入；失败逐级回退并标记（C12 衔接）+ 测试 2 项
 - 回归：后端 1062/1062 ?
+
+### 执行轮次 36（P7 薄弱项加固 · 第十二批 — P7 前端收尾）
+- ? W11 BGM 素材源：ExportPage 从素材库加载音频素材 → BGM 下拉选择（bgm_file_path 随渲染提交，无则后端走无 BGM 路径）+ ExportPage 测试补 assetApi mock
+- ? W10 LLM 流式：管线 llm 事件经 SSE trace 实时消费（AgentPanel 每条 LLM 调用即时展示）+ W1 requirements streamChat 已覆盖对话流式 —— 视为已满足
+- 回归：前端 332/332 + typecheck + build ?
+- P7 剩余：W12 区域级返工（较大，转下一轮或与 P8 并行）
