@@ -67,7 +67,9 @@ export type DragMode =
   | 'trim-start'
   | 'trim-end'
   | 'pan'
-  | 'scrollbar';
+  | 'scrollbar'
+  /** C2: Alt+拖拽音频片段调整增益 */
+  | 'gain';
 
 export interface DragState {
   mode: DragMode;
@@ -83,6 +85,9 @@ export interface DragState {
   /** Clip being trimmed */
   trimClipId: string | null;
   trimOrig: Clip | null;
+  /** C2: 增益拖拽目标 */
+  gainClipId: string | null;
+  gainStartVolume: number;
   /** Marquee rect in screen px */
   marquee: { x0: number; y0: number; x1: number; y1: number } | null;
   /** Active snap guide screen X (for rendering) */
@@ -103,6 +108,8 @@ export function makeDragState(): DragState {
     deltaTrack: 0,
     trimClipId: null,
     trimOrig: null,
+    gainClipId: null,
+    gainStartVolume: 1,
     marquee: null,
     snapX: null,
     historyPushed: false,

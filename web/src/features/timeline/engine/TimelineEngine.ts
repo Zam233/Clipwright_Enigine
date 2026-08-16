@@ -59,6 +59,10 @@ export class TimelineEngine {
   private disposed = false;
   private unsubscribers: (() => void)[] = [];
   private resizeObserver: ResizeObserver | null = null;
+  /** C2: Alt 键当前是否按住（用于悬停光标切换） */
+  private altKeyHeld = false;
+  private _keyHandler: ((e: KeyboardEvent) => void) | null = null;
+  private _keyUnsubs: (() => void)[] | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -357,6 +361,21 @@ export class TimelineEngine {
 
     if (hit) {
       const { clip, track } = hit;
+      // C2: Alt+拖拽音频/波形片段 → 调整增益（音量）
+      if (e.altKey && (track.kind === 'audio' || track.kind === 'waveform')) {
+        this.altKeyHeld = true;
+        this.drag.mode = 'gain';
+        this.drag.gainClipId = clip.id;
+        this.drag.gainStartVolume = clip.volume;
+        if (!this.drag.historyPushed) {
+          useHistoryStore.getState().pushState(useTimelineStore.getState().timeline, 'gain');
+          this.drag.historyPushed = true;
+        }
+        selection.selectClip(clip.id, e.shiftKey || e.ctrlKey || e.metaKey);
+        selection.selectTrack(track.id);
+        this.requestRender();
+        return;
+      }
       // Select (Shift=additive, Ctrl/Meta=toggle)
       if (!selection.selectedClipIds.includes(clip.id)) {
         selection.selectClip(clip.id, e.shiftKey || e.ctrlKey || e.metaKey);
@@ -497,6 +516,17 @@ export class TimelineEngine {
       case 'trim-start':
       case 'trim-end': {
         this.drag.snapX = null;
+        this.requestRender();
+        break;
+      }
+      case 'gain': {
+        // C2: 垂直拖拽 = 增益变化；向上放大，向下衰减。灵敏度 ~1/120 音量/px。
+        const id = this.drag.gainClipId;
+        if (id) {
+          const dy = this.drag.startMouse.y - y;
+          const vol = clamp(this.drag.gainStartVolume + dy / 120, 0, 2);
+          useTimelineStore.getState().updateClip(id, { volume: Math.round(vol * 100) / 100 });
+        }
         this.requestRender();
         break;
       }
@@ -713,6 +743,11 @@ export class TimelineEngine {
     const hit = this.hitTestClip(x, y);
     if (!hit) {
       this.canvas.style.cursor = 'default';
+      return;
+    }
+    // C2: Alt 悬停音频/波形片段 → 增益拖拽光标
+    if (this.altKeyHeld && (hit.track.kind === 'audio' || hit.track.kind === 'waveform')) {
+      this.canvas.style.cursor = 'ns-resize';
       return;
     }
     const clipX = timeToX(hit.clip.start_sec, L);
@@ -1007,12 +1042,27 @@ export class TimelineEngine {
     this.canvas.addEventListener('pointermove', this.onPointerMove);
     this.canvas.addEventListener('pointerup', this.onPointerUp);
     this.canvas.addEventListener('pointercancel', this.onPointerCancel);
+    // C2: 跟踪 Alt 键（悬停音频片段时切换增益光标）
+    this._keyHandler = (e: KeyboardEvent) => {
+      if (e.key === 'Alt') {
+        this.altKeyHeld = e.type === 'keydown';
+        this.requestRender();
+      }
+    };
+    window.addEventListener('keydown', this._keyHandler);
+    window.addEventListener('keyup', this._keyHandler);
+    this._keyUnsubs = [
+      () => window.removeEventListener('keydown', this._keyHandler!),
+      () => window.removeEventListener('keyup', this._keyHandler!),
+    ];
   }
   private removePointerEvents() {
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
     this.canvas.removeEventListener('pointerup', this.onPointerUp);
     this.canvas.removeEventListener('pointercancel', this.onPointerCancel);
+    this._keyUnsubs?.forEach((u) => u());
+    this._keyUnsubs = null;
   }
   private bindWheelEvent() {
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false });

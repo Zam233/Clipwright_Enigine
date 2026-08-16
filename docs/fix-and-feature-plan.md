@@ -581,3 +581,8 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 ### 执行轮次 17（P6 编辑器专业能力 · 第九批）
 - ? M3 跨项目复制/粘贴属性：clipAttributeClipboard（localStorage 持久化 + COPYABLE_FIELDS 白名单 + 按 kind 过滤可粘贴字段）+ PropertiesPanel 头部 复制/粘贴按钮 + Ctrl+Shift+C/V 快捷键 + 测试 3 项
 - 回归：前端 302/302 + typecheck + build ?
+
+### 执行轮次 18（P6 编辑器专业能力 · 第十批）
+- ? G3 多标签同步：tabSync（BroadcastChannel 广播 timeline-saved + 事件订阅，不支持时 no-op）+ EditorPage 保存后广播 + 收到他标签保存事件时重新拉取项目时间线（本地有未保存修改时跳过，防覆盖）+ 测试 3 项
+- ? C2 波形拖拽增益：TimelineEngine gain 拖拽模式（Alt+拖拽音频/波形片段 → 音量 0-2 线性调整，灵敏度 1/120 per px，向上增大向下衰减 + 历史快照 + ns-resize 悬停光标 + Alt 键跟踪）+ 测试 3 项
+- 回归：前端 308/308 + typecheck + build ?
