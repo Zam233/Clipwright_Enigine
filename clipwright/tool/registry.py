@@ -33,9 +33,19 @@ class ToolRegistry:
         Args:
             tool: 工具实例
             plugin_id: 注册插件的 ID（用于反向查询），空字符串表示内置
+
+        M3/P1-2: 注册冲突检测 — 同名工具被覆盖时告警（记录来源），不静默吞掉。
         """
         if not tool.name:
             raise ValueError(f"Tool must have a non-empty name: {type(tool).__name__}")
+        existing = cls._tools.get(tool.name)
+        if existing is not None:
+            old_src = getattr(existing, "_plugin_id", "") or "builtin"
+            new_src = plugin_id or "builtin"
+            logger.warning(
+                "工具注册冲突: %s 已被 %s 注册，现被 %s 覆盖",
+                tool.name, old_src, new_src,
+            )
         tool._plugin_id = plugin_id  # type: ignore[attr-defined]
         cls._tools[tool.name] = tool
 

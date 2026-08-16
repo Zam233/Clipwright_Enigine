@@ -740,3 +740,9 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ? B8 变量修复：SYSTEM_DIALOGUE_PROMPT 改 replace（防 .format 花括号崩溃）
 - ? B14 RAG 字段修复：index_from_directory 字段安全访问（旧索引缺 file/created_at 容错）
 - 回归：后端 1110/1110 ?
+
+### 执行轮次 47（P10 Persona/类型/插件治理 · 第三批）
+- ? M4 reload 清 sys.modules：_purge_plugin_modules（插件及其子模块从 sys.modules 移除，reload 强制重新加载）+ 测试
+- ? M3/P1-2 注册冲突检测：ToolRegistry.register 同名覆盖告警（记录新旧来源）+ 测试
+- ? M14 插件审计日志：插件加载写 audit（plugin_id/name/version）
+- 回归：后端 1114/1114 ?

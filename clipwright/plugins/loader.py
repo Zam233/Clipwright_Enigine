@@ -191,7 +191,17 @@ class PluginLoader:
         self._metadatas[plugin_id] = PluginMetadata(
             manifest=manifest,
             has_ui=(self.plugin_dir / plugin_id / "ui.json").exists(),
+            enabled=True,
         )
+
+        # M14: 插件加载审计
+        try:
+            from clipwright import audit
+            audit.record("plugin_load", "", {
+                "plugin_id": plugin_id, "name": manifest.name, "version": manifest.version,
+            })
+        except Exception:
+            pass
 
         return plugin
 
@@ -280,6 +290,8 @@ class PluginLoader:
 
         self._plugins.pop(plugin_id, None)
         self._metadatas.pop(plugin_id, None)
+        # M4: 清除 sys.modules 中该插件的陈旧模块（否则 reload 拿到旧代码）
+        self._purge_plugin_modules(plugin_id)
 
         try:
             self.load(plugin_id)
@@ -292,6 +304,14 @@ class PluginLoader:
             if old_meta is not None:
                 self._metadatas[plugin_id] = old_meta
             logger.warning("插件 %s 已回滚到旧实例", plugin_id)
+
+    @staticmethod
+    def _purge_plugin_modules(plugin_id: str) -> None:
+        """M4: 从 sys.modules 移除该插件及其子模块（main/子包），强制下次 reload 重新加载。"""
+        prefix = f"{plugin_id}."
+        for mod_name in list(sys.modules.keys()):
+            if mod_name == plugin_id or mod_name.startswith(prefix):
+                sys.modules.pop(mod_name, None)
 
     def _get_merged_config(self, plugin_id: str) -> dict[str, Any]:
         """合并源码 config.yaml（默认值）+ PluginData config.yaml（覆盖值）。
