@@ -5,10 +5,12 @@ import { clearRequirementsDraft } from '@/stores/agentStore';
 import { useBackendHealth } from './useBackendHealth';
 import {
   healthApi, personaApi, projectApi, assetApi, typeMakerApi, pipelineApi,
+  pluginApi,
   getApiClient,
 } from '@/services/api';
 import { accountApi } from '@/services/api/account';
 import { useAuthStore } from '@/stores/authStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { Button, Badge } from '@/components/ui';
 import {
   Film, Settings, ArrowRight, Plus, Bot, ListChecks,
@@ -16,6 +18,7 @@ import {
   Upload, X, Check, Loader2, AudioLines,
   Scissors, FileText, FolderOpen, Clapperboard, Store, LayoutTemplate,
   Home, Shapes, User, Puzzle, Sparkles, Coins, Zap, LogOut, LogIn,
+  Palette, Ruler, Server, ChevronRight, Gauge,
 } from 'lucide-react';
 import { ProjectCard, type ProjectCardData } from '@/components/shared/ProjectCard';
 import { TemplateGallery } from '@/components/shared/TemplateGallery';
@@ -23,7 +26,7 @@ import { fmtDur, relTime, uid } from '@/lib/utils';
 import { toast } from '@/stores/toastStore';
 
 /* ── 图一：左侧导航 tab ── */
-type HomeTab = 'home' | 'types' | 'personas' | 'plugins' | 'settings';
+type HomeTab = 'home' | 'types' | 'personas' | 'plugins' | 'create' | 'settings';
 
 /* ── types ─────────────────────────────────────────────── */
 interface PersonaOpt { id: string; name: string; tone: string }
@@ -128,6 +131,8 @@ export function HomePage() {
   const [dataMode, setDataMode] = useState<'live' | 'demo'>('demo');
   const [personas, setPersonas] = useState<PersonaOpt[]>(DEMO_PERSONAS);
   const [plugins, setPlugins] = useState<PluginOpt[]>(DEMO_PLUGINS);
+  // BUG3: 真实第三方插件（/api/plugin/list，区别于类型插件 typeMakerApi）
+  const [extPlugins, setExtPlugins] = useState<PluginOpt[]>([]);
   const [projects, setProjects] = useState<ProjectOpt[]>([]);
 
   const [topic, setTopic] = useState('');
@@ -196,8 +201,10 @@ export function HomePage() {
           })));
         }
         if (Array.isArray(projs)) {
-          setProjects(projs.length > 0
-              ? projs.map((pr, i) => ({
+          // 过滤无 id 的脏记录（历史遗留），避免 React duplicate-key 警告
+          const valid = projs.filter((pr) => pr && pr.id);
+          setProjects(valid.length > 0
+              ? valid.map((pr, i) => ({
                 id: pr.id,
                 name: pr.name,
                 type: pr.plugin_id ?? '—',
@@ -237,6 +244,28 @@ export function HomePage() {
     (async () => {
       const result = await loadPlugins();
       if (alive && result) setPlugins(result);
+    })();
+
+    // BUG3: 真实第三方插件（/api/plugin/list → manifest 列表）
+    (async () => {
+      try {
+        const data = await pluginApi.list();
+        if (!alive || !Array.isArray(data)) return;
+        const items = data
+          .map((p: Record<string, unknown>, i: number) => {
+            const m = (p.manifest ?? p) as Record<string, unknown>;
+            return {
+              id: String(m.id ?? p.id ?? ''),
+              name: String(m.name ?? p.id ?? ''),
+              desc: String(m.description ?? m.kind ?? 'capability'),
+              color: PLUGIN_PALETTE[i % PLUGIN_PALETTE.length],
+            };
+          })
+          .filter((x) => x.id);
+        if (items.length > 0) setExtPlugins(items);
+      } catch {
+        /* 后端离线：保持空列表 */
+      }
     })();
 
     assetApi.listSources()
@@ -422,7 +451,8 @@ export function HomePage() {
     try {
       const projs = await projectApi.list();
       if (Array.isArray(projs)) {
-        setProjects(projs.map((pr, i) => ({
+        const valid = projs.filter((pr) => pr && pr.id);
+        setProjects(valid.map((pr, i) => ({
           id: pr.id,
           name: pr.name,
           type: pr.plugin_id ?? '—',
@@ -506,7 +536,7 @@ export function HomePage() {
 
               {/* 顶部操作入口：开始创作 / 空项目 */}
               <div className="flex flex-wrap items-center gap-3 mb-10">
-                <Button size="lg" onClick={() => { setActiveTab('settings'); window.scrollTo({ top: 0 }); }} className="min-w-[220px] group">
+                <Button size="lg" onClick={() => { setActiveTab('create'); window.scrollTo({ top: 0 }); }} className="min-w-[220px] group">
                   <Sparkles className="w-4.5 h-4.5" /> 开始创作
                   <ArrowRight className="w-4 h-4 transition-transform duration-short3 group-hover:translate-x-1" />
                 </Button>
@@ -576,7 +606,7 @@ export function HomePage() {
               <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
                 {plugins.map((pl) => (
                   <button key={pl.id}
-                    onClick={() => { setPluginId(pl.id); setActiveTab('settings'); }}
+                    onClick={() => { setPluginId(pl.id); setActiveTab('create'); }}
                     className="text-left bg-surface-container border border-outline-variant/30 rounded-cw-md p-4
                       hover:border-primary/50 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-primary/10
                       transition-all duration-short3 cursor-pointer group">
@@ -599,7 +629,7 @@ export function HomePage() {
               <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
                 {personas.map((p) => (
                   <button key={p.id}
-                    onClick={() => { setPersonaId(p.id); setActiveTab('settings'); }}
+                    onClick={() => { setPersonaId(p.id); setActiveTab('create'); }}
                     className={`text-left bg-surface-container border rounded-cw-md p-4 transition-all duration-short3 cursor-pointer group ${
                       personaId === p.id
                         ? 'border-primary bg-primary/5 shadow-lg shadow-primary/10'
@@ -636,24 +666,44 @@ export function HomePage() {
                 </Button>
               </div>
               <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-                {plugins.map((pl) => (
-                  <div key={pl.id} className="bg-surface-container border border-outline-variant/30 rounded-cw-md p-4
-                    hover:border-primary/50 transition-all duration-short3">
-                    <span className="flex items-center gap-2.5 mb-2">
-                      <span className="w-8 h-8 rounded-cw-sm flex items-center justify-center" style={{ background: `${pl.color}1A`, color: pl.color }}>
-                        <Puzzle className="w-4 h-4" />
-                      </span>
-                      <span className="text-body-sm font-semibold text-on-surface">{pl.name}</span>
-                    </span>
-                    {pl.desc && <span className="block text-caption text-on-surface-variant/70 font-mono">{pl.desc}</span>}
+                {extPlugins.length === 0 ? (
+                  <div className="col-span-full flex flex-col items-center justify-center py-12 text-center gap-2
+                    border border-dashed border-outline-variant/30 rounded-cw-md">
+                    <Puzzle className="w-8 h-8 text-on-surface-variant/40" />
+                    <p className="text-body-sm text-on-surface-variant">暂无已加载插件</p>
+                    <p className="text-caption text-on-surface-variant/60">
+                      后端未连接或插件目录为空；可在「插件市场」浏览并安装。
+                    </p>
                   </div>
-                ))}
+                ) : (
+                  extPlugins.map((pl) => (
+                    <div key={pl.id} className="bg-surface-container border border-outline-variant/30 rounded-cw-md p-4
+                      hover:border-primary/50 transition-all duration-short3">
+                      <span className="flex items-center gap-2.5 mb-2">
+                        <span className="w-8 h-8 rounded-cw-sm flex items-center justify-center" style={{ background: `${pl.color}1A`, color: pl.color }}>
+                          <Puzzle className="w-4 h-4" />
+                        </span>
+                        <span className="text-body-sm font-semibold text-on-surface">{pl.name}</span>
+                      </span>
+                      {pl.desc && <span className="block text-caption text-on-surface-variant/70 font-mono">{pl.desc}</span>}
+                    </div>
+                  ))
+                )}
               </div>
             </section>
           )}
 
-          {/* ── 设置 tab：现有创作控制台（图二内容） ── */}
+          {/* ── 设置 tab：系统设置（主题/语言/API/时间轴默认） ── */}
           {activeTab === 'settings' && (
+            <section className="pt-8 max-w-[1080px]">
+              <p className="font-mono text-label-sm tracking-[0.3em] text-primary uppercase mb-2">Preferences</p>
+              <h1 className="font-display text-[32px] font-bold text-on-surface mb-6">设置</h1>
+              <HomeSettings onAdvanced={() => navigate({ to: '/settings' })} />
+            </section>
+          )}
+
+          {/* ── 创作 tab：图二创作控制台（由「开始创作」进入） ── */}
+          {activeTab === 'create' && (
           <section className="grid grid-cols-12 gap-6 pt-8">
             {/* ── production console ── */}
             <div className="col-span-12 lg:col-span-7">
@@ -1078,6 +1128,106 @@ export function HomePage() {
         onClose={() => setTemplateGalleryOpen(false)}
         onApplyProject={(projectId) => navigate({ to: '/editor/$projectId', params: { projectId } })}
       />
+    </div>
+  );
+}
+
+/* ── 设置 tab：轻量系统设置（复用 settingsStore）──────────────── */
+function HomeSettings({ onAdvanced }: { onAdvanced: () => void }) {
+  const s = useSettingsStore();
+  const navigate = useNavigate();
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      {/* 外观 */}
+      <div className="bg-surface-container border border-outline-variant/30 rounded-cw-md p-5 space-y-4">
+        <h3 className="flex items-center gap-2 text-title-sm font-medium text-on-surface">
+          <Palette className="w-4 h-4 text-primary" /> 外观
+        </h3>
+        <div className="flex items-center justify-between">
+          <span className="text-label-sm text-on-surface-variant">主题</span>
+          <div className="flex bg-surface rounded-cw-sm border border-outline-variant/40 p-0.5">
+            {(['dark', 'light'] as const).map((t) => (
+              <button key={t}
+                onClick={() => s.setTheme(t)}
+                className={`px-3 py-1 rounded-cw-xs text-label-sm transition-colors cursor-pointer ${
+                  s.theme === t ? 'bg-primary-container text-on-primary-container' : 'text-on-surface-variant hover:text-on-surface'
+                }`}>
+                {t === 'dark' ? '深色' : '浅色'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-label-sm text-on-surface-variant">语言</span>
+          <div className="flex bg-surface rounded-cw-sm border border-outline-variant/40 p-0.5">
+            {(['zh', 'en'] as const).map((l) => (
+              <button key={l}
+                onClick={() => s.setLanguage(l)}
+                className={`px-3 py-1 rounded-cw-xs text-label-sm transition-colors cursor-pointer ${
+                  s.language === l ? 'bg-primary-container text-on-primary-container' : 'text-on-surface-variant hover:text-on-surface'
+                }`}>
+                {l === 'zh' ? '中文' : 'English'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-label-sm text-on-surface-variant">自动保存</span>
+          <input type="checkbox" checked={s.autoSave} onChange={(e) => s.setAutoSave(e.target.checked)}
+            className="accent-primary w-4 h-4 cursor-pointer" />
+        </div>
+      </div>
+
+      {/* 时间轴默认 */}
+      <div className="bg-surface-container border border-outline-variant/30 rounded-cw-md p-5 space-y-4">
+        <h3 className="flex items-center gap-2 text-title-sm font-medium text-on-surface">
+          <Ruler className="w-4 h-4 text-primary" /> 时间轴默认
+        </h3>
+        <div className="flex items-center justify-between">
+          <span className="text-label-sm text-on-surface-variant">帧率 FPS</span>
+          <input type="number" value={s.defaultFps} min={1} max={120}
+            onChange={(e) => s.setDefaultFps(Number(e.target.value) || 30)}
+            className="w-20 bg-surface rounded-cw-xs px-2 py-1 text-label-sm font-mono text-on-surface outline-none border border-outline-variant/30 focus:border-primary" />
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-label-sm text-on-surface-variant">默认分辨率</span>
+          <div className="flex items-center gap-1.5">
+            <input type="number" value={s.defaultResolution.width}
+              onChange={(e) => s.setDefaultResolution({ ...s.defaultResolution, width: Number(e.target.value) || 1920 })}
+              className="w-20 bg-surface rounded-cw-xs px-2 py-1 text-label-sm font-mono text-on-surface outline-none border border-outline-variant/30 focus:border-primary" />
+            <span className="text-on-surface-variant">×</span>
+            <input type="number" value={s.defaultResolution.height}
+              onChange={(e) => s.setDefaultResolution({ ...s.defaultResolution, height: Number(e.target.value) || 1080 })}
+              className="w-20 bg-surface rounded-cw-xs px-2 py-1 text-label-sm font-mono text-on-surface outline-none border border-outline-variant/30 focus:border-primary" />
+          </div>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-label-sm text-on-surface-variant">吸附（对齐）</span>
+          <input type="checkbox" checked={s.snapEnabled} onChange={(e) => s.setSnapEnabled(e.target.checked)}
+            className="accent-primary w-4 h-4 cursor-pointer" />
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-label-sm text-on-surface-variant">时间轴标尺显示帧标记</span>
+          <input type="checkbox" checked={s.showFramesInRuler} onChange={(e) => s.setShowFramesInRuler(e.target.checked)}
+            className="accent-primary w-4 h-4 cursor-pointer" />
+        </div>
+      </div>
+
+      {/* 高级设置入口 */}
+      <div className="lg:col-span-2 bg-surface-container border border-outline-variant/30 rounded-cw-md p-5">
+        <h3 className="flex items-center gap-2 text-title-sm font-medium text-on-surface mb-3">
+          <Server className="w-4 h-4 text-primary" /> 高级
+        </h3>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button size="sm" variant="outline" onClick={onAdvanced}>
+            <ChevronRight className="w-3.5 h-3.5" /> 完整设置页（API / 快捷键 / 模型 / 工具…）
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => navigate({ to: '/pipeline-admin' })}>
+            <Gauge className="w-3.5 h-3.5" /> 管线监控
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

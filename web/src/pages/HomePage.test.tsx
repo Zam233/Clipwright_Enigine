@@ -21,6 +21,7 @@ const { mocks } = vi.hoisted(() => ({
     predictScript: vi.fn(),
     healthStatus: vi.fn(),
     toast: vi.fn(),
+    pluginList: vi.fn(),
   },
 }));
 
@@ -37,6 +38,7 @@ vi.mock('@/services/api', () => ({
   assetApi: { listSources: mocks.listSources },
   typeMakerApi: { list: mocks.typeMakerList },
   pipelineApi: { predictScript: mocks.predictScript },
+  pluginApi: { list: mocks.pluginList },
   getApiClient: vi.fn(),
 }));
 
@@ -79,6 +81,7 @@ beforeEach(() => {
   mocks.listSources.mockResolvedValue([]);
   mocks.healthStatus.mockReturnValue('offline');
   mocks.predictScript.mockResolvedValue({});
+  mocks.pluginList.mockResolvedValue([]);
 });
 
 afterEach(() => cleanup());
@@ -154,9 +157,9 @@ describe('HomePage empty-state copy (U12)', () => {
     expect(screen.queryByText('\u6f14\u793a\u6570\u636e \u00b7 \u6682\u65e0\u540e\u7aef\u9879\u76ee')).toBeNull();
   });
 });
-/** 切换到「设置」tab（创作表单所在）。 */
-async function gotoSettings() {
-  fireEvent.click(screen.getByRole('button', { name: /设置/ }));
+/** 切换到「创作」tab（创作表单所在；由「开始创作」按钮进入）。 */
+async function gotoCreate() {
+  fireEvent.click(screen.getByRole('button', { name: /^开始创作/ }));
   await screen.findByPlaceholderText(/粘贴口播文案/);
 }
 
@@ -170,7 +173,7 @@ describe('G6: script intelligence prediction', () => {
       summary: '适合做知识区长片',
     });
     render(<HomePage />);
-    await gotoSettings();
+    await gotoCreate();
 
     const textarea = screen.getByPlaceholderText(/粘贴口播文案/);
     fireEvent.change(textarea, { target: { value: 'x'.repeat(60) } });
@@ -183,7 +186,7 @@ describe('G6: script intelligence prediction', () => {
     mocks.healthStatus.mockReturnValue('offline');
     mocks.predictScript.mockRejectedValue(new Error('offline'));
     render(<HomePage />);
-    await gotoSettings();
+    await gotoCreate();
 
     const textarea = screen.getByPlaceholderText(/粘贴口播文案/);
     fireEvent.change(textarea, { target: { value: 'y'.repeat(60) } });
@@ -219,16 +222,51 @@ describe('图一：左侧导航切换右侧内容区', () => {
     await screen.findByPlaceholderText(/粘贴口播文案/);
   });
 
-  it('点击「设置」→ 显示创作控制台（图二表单）', async () => {
+  it('点击「设置」→ 显示系统设置界面（BUG1 修复：不再跳创作表单）', async () => {
     render(<HomePage />);
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
-    expect(await screen.findByText('新建制作')).toBeTruthy();
-    expect(screen.getByText('稿件')).toBeTruthy();
+    expect(await screen.findByText('外观')).toBeTruthy();
+    expect(screen.getByText('主题')).toBeTruthy();
+    expect(screen.getByText('时间轴默认')).toBeTruthy();
+    // 创作表单不应出现
+    expect(screen.queryByPlaceholderText(/粘贴口播文案/)).toBeNull();
   });
 
-  it('「开始创作」大按钮 → 切入设置 tab', async () => {
+  it('「开始创作」大按钮 → 切入创作 tab（图二表单）', async () => {
     render(<HomePage />);
     fireEvent.click(await screen.findByRole('button', { name: /^开始创作/ }));
     await screen.findByPlaceholderText(/粘贴口播文案/);
+  });
+});
+
+describe('BUG3: 插件 tab 显示真实插件（/api/plugin/list）而非类型插件', () => {
+  it('点击「插件」→ 显示 pluginApi.list 返回的插件', async () => {
+    mocks.pluginList.mockResolvedValue([
+      { manifest: { id: 'whisper_stt', name: 'Whisper 语音转文字', kind: 'capability', description: '本地转写' } },
+      { manifest: { id: 'bgm_library', name: 'BGM 素材库', kind: 'material' } },
+    ]);
+    render(<HomePage />);
+    fireEvent.click(screen.getByRole('button', { name: '插件' }));
+    expect(await screen.findByText('Whisper 语音转文字')).toBeTruthy();
+    expect(screen.getByText('BGM 素材库')).toBeTruthy();
+    expect(mocks.pluginList).toHaveBeenCalled();
+  });
+
+  it('类型 tab 仍显示类型插件（typeMakerApi），互不混淆', async () => {
+    mocks.typeMakerList.mockResolvedValue([
+      { id: 'knowledge_longform', name: '知识区长片', description: '5-15s' },
+    ]);
+    mocks.pluginList.mockResolvedValue([
+      { manifest: { id: 'whisper_stt', name: 'Whisper 语音转文字' } },
+    ]);
+    render(<HomePage />);
+    fireEvent.click(screen.getByRole('button', { name: '类型' }));
+    expect(await screen.findByText('知识区长片')).toBeTruthy();
+    // 类型 tab 不应出现真实插件
+    expect(screen.queryByText('Whisper 语音转文字')).toBeNull();
+    // 切到插件 tab → 显示真实插件
+    fireEvent.click(screen.getByRole('button', { name: '插件' }));
+    expect(await screen.findByText('Whisper 语音转文字')).toBeTruthy();
+    expect(screen.queryByText('知识区长片')).toBeNull();
   });
 });

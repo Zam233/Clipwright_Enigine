@@ -93,8 +93,9 @@ export function EditorLayout() {
         } else if (panel === 'properties') {
           setPanelWidth('properties', dragStartRef.current.w - dx);
         } else if (panel === 'agent') {
-          // B18: Agent 面板位于最右，宽度随 dx 增长（与 assets 同向）
-          setPanelWidth('agent', dragStartRef.current.w + dx);
+          // BUG2 修复：Agent 面板的 divider 位于面板左侧（与 properties 同侧），
+          // 向右拖（dx>0）面板应收窄、向左拖（dx<0）应加宽 → 用 w - dx。
+          setPanelWidth('agent', dragStartRef.current.w - dx);
         } else if (panel === 'timeline') {
           setTimelineHeight(dragStartRef.current.h - dy);
         }
