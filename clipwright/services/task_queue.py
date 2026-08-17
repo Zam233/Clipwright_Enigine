@@ -1,11 +1,14 @@
-"""任务队列 — 并发隔离 + 排队 + 限流。
+"""任务队列 — 并发隔离 + 排队 + 限流 + 优先级 + Mongo 持久化。
 
 Layer 1: 并发请求不会共享同一个 orchestrator 实例。
 Layer 3: 支持批量提交。
+A10 (2026-08): 管线异步执行改走本队列（并发上限 + 排队 + 优先级），
+提交/状态变更同步 Mongo `task_queue` 集合（任务元数据，handler 不可序列化），
+重启后 pending/running 且内存缺失的任务以 recovered 标记呈现（提示中断重试）。
 
 用法:
     queue = TaskQueue(max_concurrent=3)
-    task_id = await queue.submit("pipeline", handler_func, *args)
+    task_id = await queue.submit("pipeline", handler_func, *args, priority=3)
     status = queue.get_status(task_id)
 """
 
@@ -26,6 +29,17 @@ class TaskStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+def _mongo_collection(name: str = "task_queue"):
+    """获取 Mongo 集合；未连接返回 None（调用方自行兜底）。"""
+    try:
+        from clipwright.context import mongo
+        if mongo.is_connected:
+            return mongo.db[name]
+    except Exception:
+        pass
+    return None
 
 
 class TaskResult:
@@ -63,12 +77,14 @@ class PipelineTask:
         handler: Callable,
         args: tuple,
         kwargs: dict,
+        priority: int = 3,
     ):
         self.task_id = task_id
         self.task_type = task_type  # "pipeline" / "batch"
         self.handler = handler
         self.args = args
         self.kwargs = kwargs
+        self.priority = priority  # A10: 1-5，数字越大越先执行
         self.status = TaskStatus.PENDING
         self.result: Any = None
         self.error: str = ""
@@ -83,6 +99,7 @@ class PipelineTask:
         return {
             "task_id": self.task_id,
             "task_type": self.task_type,
+            "priority": self.priority,
             "status": self.status.value,
             "progress": self.progress,
             "progress_text": self.progress_text,
@@ -90,11 +107,12 @@ class PipelineTask:
             "duration_sec": self.duration_sec,
             "created_at": self.created_at.isoformat() if self.created_at else "",
             "started_at": self.started_at.isoformat() if self.started_at else "",
+            "completed_at": self.completed_at.isoformat() if self.completed_at else "",
         }
 
 
 class TaskQueue:
-    """并发任务队列 — 最多 N 个任务同时执行，其余排队。"""
+    """并发任务队列 — 最多 N 个任务同时执行，其余排队（按优先级）。"""
 
     def __init__(self, max_concurrent: int = 3, task_timeout_sec: int = 900):
         self.max_concurrent = max_concurrent
@@ -103,11 +121,57 @@ class TaskQueue:
         self._tasks: dict[str, PipelineTask] = {}
         self._pending_queue: list[str] = []
 
+    # ── Mongo 持久化（A10）──
+
+    def _persist(self, task: PipelineTask) -> None:
+        """同步任务状态到 Mongo（失败仅告警）。"""
+        col = _mongo_collection()
+        if col is None:
+            return
+        try:
+            doc = task.to_dict()
+            # handler 不可序列化 → 只存类型与可序列化摘要
+            doc.pop("handler", None)
+            doc["handler_repr"] = getattr(task.handler, "__name__", str(task.handler))[:100]
+            doc["kwargs_summary"] = {k: str(v)[:200] for k, v in task.kwargs.items()}
+            col.update_one({"task_id": task.task_id}, {"$set": doc}, upsert=True)
+        except Exception as e:
+            logger.warning("任务 %s 持久化失败: %s", task.task_id, e)
+
+    def _drop(self, task_id: str) -> None:
+        """终态清理 Mongo 记录（保留最近已完成标记通过 recover 呈现）。"""
+        col = _mongo_collection()
+        if col is None:
+            return
+        try:
+            col.delete_one({"task_id": task_id})
+        except Exception:
+            pass
+
+    def recover_stale(self) -> list[dict]:
+        """A10: 重启恢复 — Mongo 中 pending/running 且内存已无的任务 → recovered 标记。"""
+        col = _mongo_collection()
+        if col is None:
+            return []
+        try:
+            docs = list(col.find({"status": {"$in": ["pending", "running"]}}))
+            out = []
+            for d in docs:
+                d.pop("_id", None)
+                if d.get("task_id") not in self._tasks:
+                    d["recovered"] = True
+                    d["status"] = "interrupted"
+                    out.append(d)
+            return out
+        except Exception:
+            return []
+
     async def submit(
         self,
         task_type: str,
         handler: Callable,
         *args: Any,
+        priority: int = 3,
         **kwargs: Any,
     ) -> str:
         """提交任务到队列。
@@ -115,15 +179,18 @@ class TaskQueue:
         Args:
             task_type: 任务类型标识
             handler: 异步处理函数
+            priority: 1-5，数字越大越先执行（A10）
             *args / **kwargs: 传给 handler 的参数
 
         Returns:
             task_id
         """
         task_id = f"task_{uuid.uuid4().hex[:12]}"
-        task = PipelineTask(task_id, task_type, handler, args, kwargs)
+        priority = max(1, min(5, int(priority)))
+        task = PipelineTask(task_id, task_type, handler, args, kwargs, priority=priority)
         self._tasks[task_id] = task
         self._pending_queue.append(task_id)
+        self._persist(task)
 
         # 启动处理（不等待；持强引用防 GC 回收）
         from clipwright.services.async_util import spawn_background
@@ -131,8 +198,12 @@ class TaskQueue:
         return task_id
 
     async def _process_queue(self) -> None:
-        """从队列取任务执行（受信号量限制）。"""
+        """从队列取任务执行（受信号量限制，按优先级排序）。"""
         while self._pending_queue:
+            # A10: 高优先级先出队
+            self._pending_queue.sort(
+                key=lambda tid: -self._tasks.get(tid).priority if self._tasks.get(tid) else 0,
+            )
             task_id = self._pending_queue.pop(0)
             task = self._tasks.get(task_id)
             if not task:
@@ -141,6 +212,7 @@ class TaskQueue:
             async with self._semaphore:
                 task.status = TaskStatus.RUNNING
                 task.started_at = datetime.now(tz=TIME_ZONE) if TIME_ZONE else datetime.now(timezone.utc)
+                self._persist(task)
                 try:
                     task.result = await asyncio.wait_for(
                         task.handler(*task.args, **task.kwargs),
@@ -164,6 +236,9 @@ class TaskQueue:
                     if task.started_at:
                         task.duration_sec = (now - task.started_at).total_seconds()
                     task.progress = 100
+                    self._persist(task)
+                    # A10: 终态同步后从 Mongo 删除（recover_stale 会呈现最近中断项）
+                    self._drop(task_id)
                     self._cleanup_finished()
 
     def _cleanup_finished(self, keep: int = 200) -> None:

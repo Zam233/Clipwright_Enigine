@@ -4,7 +4,7 @@ import { pipelineApi } from '@/services/api';
 import { cn } from '@/lib/utils';
 import {
   Activity, Gauge, Coins, Timer, ChevronDown, ChevronRight,
-  RefreshCw, FileJson, Loader2,
+  RefreshCw, FileJson, Loader2, Layers, AlertTriangle,
 } from 'lucide-react';
 
 interface Span { agent: string; start: number; dur: number; status: 'ok' | 'fail' | 'retry'; }
@@ -39,6 +39,8 @@ export function PipelineAdminPage() {
   const [trace, setTrace] = useState<TraceView | null>(null);
   // Guard against stale in-flight trace responses when the user collapses/re-expands.
   const expandedRef = useRef<string | null>(null);
+  // A10: 队列任务概览（running/pending/recovered）
+  const [queueInfo, setQueueInfo] = useState<{ running: number; pending: number; recovered: number } | null>(null);
 
   const loadRuns = async () => {
     setLoading(true);
@@ -52,6 +54,11 @@ export function PipelineAdminPage() {
     } finally {
       setLoading(false);
     }
+    // A10: 队列状态（失败不影响主列表）
+    try {
+      const q = await pipelineApi.getTasks();
+      setQueueInfo({ running: q.running, pending: q.pending, recovered: q.recovered.length });
+    } catch { /* 离线 */ }
   };
 
   useEffect(() => { loadRuns(); }, []);
@@ -131,6 +138,28 @@ export function PipelineAdminPage() {
             <Activity className="w-3.5 h-3.5" />{retryErr}
           </span>
           <button onClick={() => setRetryErr(null)} className="text-label-sm text-error hover:text-error/80 cursor-pointer">关闭</button>
+        </div>
+      )}
+
+      {/* A10: 队列任务状态条 */}
+      {queueInfo && (
+        <div className="flex items-center gap-4 mb-5 max-w-[900px] bg-surface-container border border-outline-variant/30 rounded-cw-md px-4 py-2.5">
+          <span className="flex items-center gap-1.5 text-label-sm text-on-surface-variant">
+            <Layers className="w-3.5 h-3.5 text-primary" /> 执行队列
+          </span>
+          <span className="flex items-center gap-1.5 text-label-sm">
+            <span className="w-2 h-2 rounded-full bg-track-audio animate-pulse" />
+            运行中 <b className="font-mono">{queueInfo.running}</b>
+          </span>
+          <span className="flex items-center gap-1.5 text-label-sm text-on-surface-variant">
+            排队 <b className="font-mono">{queueInfo.pending}</b>
+          </span>
+          {queueInfo.recovered > 0 && (
+            <span className="flex items-center gap-1.5 text-label-sm text-warning">
+              <AlertTriangle className="w-3.5 h-3.5" />
+              重启中断 {queueInfo.recovered} 项（<span className="font-mono">recovered</span>）
+            </span>
+          )}
         </div>
       )}
 

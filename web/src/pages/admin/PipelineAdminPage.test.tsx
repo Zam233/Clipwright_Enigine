@@ -8,6 +8,7 @@ const { mocks } = vi.hoisted(() => ({
     getRunRecords: vi.fn(),
     getTraceJson: vi.fn(),
     retry: vi.fn(),
+    getTasks: vi.fn(),
   },
 }));
 
@@ -17,6 +18,7 @@ vi.mock('@/services/api', () => ({
     getRunRecords: mocks.getRunRecords,
     getTraceJson: mocks.getTraceJson,
     retry: mocks.retry,
+    getTasks: mocks.getTasks,
   },
 }));
 
@@ -47,6 +49,7 @@ beforeEach(() => {
   mocks.getRunRecords.mockResolvedValue(RUNS);
   mocks.getTraceJson.mockResolvedValue([]);
   mocks.retry.mockResolvedValue({ status: 'retrying' });
+  mocks.getTasks.mockResolvedValue({ tasks: [], recovered: [], running: 2, pending: 1 });
 });
 
 afterEach(() => cleanup());
@@ -81,5 +84,26 @@ describe('G9: PipelineAdminPage 真实成本 + 重试', () => {
     const btn = await screen.findByText('重试');
     fireEvent.click(btn);
     await waitFor(() => expect(screen.getByText(/重试失败/)).toBeTruthy());
+  });
+
+  it('A10: 队列状态条显示 running/pending，有中断项时提示 recovered', async () => {
+    render(<PipelineAdminPage />);
+    expect(await screen.findByText('执行队列')).toBeTruthy();
+    // 「运行中 2」「排队 1」由状态条渲染
+    await waitFor(() => {
+      const bar = screen.getByText('执行队列').closest('div')?.parentElement;
+      expect(bar?.textContent).toContain('运行中');
+      expect(bar?.textContent).toContain('2');
+      expect(bar?.textContent).toContain('排队');
+      expect(bar?.textContent).toContain('1');
+    });
+    expect(mocks.getTasks).toHaveBeenCalled();
+  });
+
+  it('A10: 无 recovered 项时提示不出现', async () => {
+    mocks.getTasks.mockResolvedValue({ tasks: [], recovered: [], running: 0, pending: 0 });
+    render(<PipelineAdminPage />);
+    await screen.findByText('执行队列');
+    expect(screen.queryByText(/重启中断/)).toBeNull();
   });
 });

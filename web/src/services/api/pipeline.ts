@@ -48,6 +48,29 @@ export const pipelineApi = {
     return data as PipelineRunRecord[];
   },
 
+  /** A10: 队列任务概览（含重启恢复项 recovered/interrupted） */
+  async getTasks(limit = 50) {
+    const { data } = await getApiClient().get('/api/pipeline/tasks', {
+      params: { limit },
+    });
+    return data as {
+      tasks: Array<{
+        task_id: string;
+        task_type: string;
+        priority: number;
+        status: string;
+        progress: number;
+        progress_text: string;
+        error: string;
+        duration_sec: number;
+        created_at: string;
+      }>;
+      recovered: Array<Record<string, unknown> & { task_id: string; recovered: boolean; status: string }>;
+      running: number;
+      pending: number;
+    };
+  },
+
   /** Retry from failed agent */
   async retry(pipelineId: string, agentName: string) {
     const { data } = await getApiClient().post(

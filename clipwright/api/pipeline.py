@@ -29,6 +29,8 @@ _pipeline_results: dict[str, dict] = {}
 _pipeline_owners: dict[str, str] = {}
 # P5-B8: 幂等键（Idempotency-Key → pipeline_id；随结果缓存一并清理）
 _idempotency_pipeline: dict[str, str] = {}
+# A10: pipeline_id → TaskQueue task_id（供取消/查询映射）
+_pipeline_tasks: dict[str, str] = {}
 
 
 def _enforce_pipeline_owner(request: Request, pipeline_id: str) -> None:
@@ -72,6 +74,25 @@ async def list_pipeline_runs(request: Request, limit: int = 50) -> list[dict]:
     if uid is None or is_admin(request):
         return records
     return [r for r in records if _pipeline_owners.get(r.get("id")) == uid]
+
+
+@router.get("/tasks")
+async def list_pipeline_tasks(request: Request, limit: int = 50) -> dict:
+    """A10: 队列任务列表（含重启恢复项 recovered/interrupted）。
+
+    返回: {tasks: [...], recovered: [...], running: n, pending: n}
+    """
+    from clipwright.services.task_queue import get_task_queue
+
+    tq = get_task_queue()
+    tasks = tq.list_tasks(task_type="pipeline", limit=max(1, min(limit, 200)))
+    recovered = tq.recover_stale()
+    return {
+        "tasks": tasks,
+        "recovered": recovered,
+        "running": tq.running_count,
+        "pending": tq.pending_count,
+    }
 
 
 @router.post("/run-v2")
@@ -152,8 +173,15 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
     add_event(pipeline_id, "system", "info",
               f"管线异步启动: {request.persona_id} / {request.category_plugin_id} (v2={'是' if request.use_v2 else '否'})")
 
-    async def _run_background():
+    async def _run_background(task_id: str = ""):
         try:
+            # A10: 队列进度联动
+            if task_id:
+                try:
+                    from clipwright.services.task_queue import get_task_queue
+                    get_task_queue().update_progress(task_id, 1, "管线启动")
+                except Exception:
+                    pass
             # P1-4: 插件 hook — 管线前置
             try:
                 from clipwright.plugins.hooks import HookRegistry, HookPoint
@@ -164,7 +192,7 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
             except Exception as e:
                 logger.warning("pre_pipeline hook 执行失败: %s", e)
             orch = PipelineOrchestratorV2() if request.use_v2 else _orchestrator
-            state = await orch.run(request, pipeline_id=pipeline_id)
+            state = await orch.run(request, pipeline_id=pipeline_id, task_id=task_id)
             state.shared_data["execution_trace"] = get_all_events(pipeline_id)
             result_dict = state.model_dump(mode="json")
             _pipeline_results[pipeline_id] = result_dict
@@ -237,9 +265,27 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
                 clear(pipeline_id)
             spawn_background(_cleanup(), name=f"pipeline-cleanup-{pipeline_id}")
 
-    task = asyncio.create_task(_run_background())
-    _running_pipelines[pipeline_id] = task
-    return {"pipeline_id": pipeline_id, "status": "started"}
+    # A10: 管线异步执行走 TaskQueue（并发限流 + 排队 + 优先级 + Mongo 持久化）
+    async def _queue_handler(task_id: str = ""):
+        await _run_background(task_id=task_id)
+
+    priority = 3
+    try:
+        priority = max(1, min(5, int(request.headers.get("X-Priority", "3") or "3")))
+    except (ValueError, TypeError):
+        priority = 3
+    from clipwright.services.task_queue import get_task_queue
+    task_id = await get_task_queue().submit("pipeline", _queue_handler, priority=priority)
+
+    async def _task_slot():
+        """把队列 task 与 pipeline 取消/清理关联。"""
+        try:
+            await asyncio.sleep(0.1)
+            _pipeline_tasks[pipeline_id] = task_id
+        except Exception:
+            pass
+    spawn_background(_task_slot(), name=f"pipeline-tasklink-{pipeline_id}")
+    return {"pipeline_id": pipeline_id, "task_id": task_id, "status": "started"}
 
 
 @router.get("/trace/{pipeline_id}")
@@ -562,6 +608,15 @@ async def cancel_pipeline(pipeline_id: str, request: Request) -> dict:
         logger.info("取消请求: %s (即时取消后台任务)", pipeline_id)
     else:
         logger.info("取消请求: %s (任务已不在运行，仅标记协作式取消)", pipeline_id)
+
+    # A10: 队列 pending 任务直接从队列移除
+    try:
+        from clipwright.services.task_queue import get_task_queue
+        tq_id = _pipeline_tasks.get(pipeline_id, "")
+        if tq_id:
+            get_task_queue().cancel(tq_id)
+    except Exception:
+        pass
 
     mark_cancelled(pipeline_id)
     add_event(pipeline_id, "system", "cancelled", "已请求取消管线")

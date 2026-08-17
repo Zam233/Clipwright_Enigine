@@ -347,6 +347,35 @@ class RequirementsService:
             except RuntimeError:
                 pass
 
+    async def _record_llm_usage(
+        self,
+        agent_name: str,
+        pipeline_id: str = "",
+        status: str = "success",
+    ) -> None:
+        """C2: 记录最近一次 LLM 调用用量（requirements 会话级，写入 llm_tracker）。
+
+        LLMService.generate（structured_output/with_tools/chat）会缓存 last_usage；
+        ask 不缓存，故仅对走 generate 的调用点接线。失败仅告警不阻断。
+        """
+        usage = getattr(self._llm, "last_usage", None)
+        if not usage:
+            return
+        try:
+            from clipwright.services.llm_tracker import record_llm_call
+            await record_llm_call(
+                pipeline_id=pipeline_id or "requirements",
+                agent_name=agent_name,
+                model=usage.get("model", "unknown"),
+                provider=usage.get("provider", "unknown"),
+                input_tokens=usage.get("input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+                duration_ms=0,
+                status=status,
+            )
+        except Exception as e:
+            logger.warning("requirements LLM 用量记录失败: %s", e)
+
     # ── 会话生命周期 ──────────────────────────
 
     def create_session(self, user_inputs: dict[str, Any] | None = None) -> dict:
@@ -680,6 +709,7 @@ class RequirementsService:
             )
             if isinstance(intent, dict) and intent.get("action") in ("replace_material", "redo_animation", "adjust"):
                 action = intent["action"]
+            await self._record_llm_usage("requirements.edit_intent", session_id)
         except Exception as e:
             logger.warning("编辑意图分类失败，默认 adjust: %s", e)
 
@@ -931,6 +961,7 @@ class RequirementsService:
                 use_flash=True,
             )
             ops = (resp or {}).get("ops") or []
+            await self._record_llm_usage("requirements.edit_adjust")
         except Exception as e:
             logger.warning("数值调整解析失败: %s", e)
             return timeline, ["无法解析调整指令"]
@@ -1010,6 +1041,7 @@ class RequirementsService:
                 use_flash=True,  # 简单意图判断 → flash 轻量模型
             )
             if isinstance(resp, dict) and "is_confirm" in resp:
+                await self._record_llm_usage("requirements.confirm")
                 return bool(resp["is_confirm"])
         except Exception as e:
             logger.debug("LLM 确认判断失败，回退关键词启发式: %s", e)
@@ -1105,6 +1137,7 @@ class RequirementsService:
                     )
                     # 解析 with_tools 返回的 content（复用 structured_output 的 JSON 提取逻辑）
                     content = getattr(resp, "content", "") or ""
+                    await self._record_llm_usage("requirements.gathering", session_id)
                     parsed = self._parse_llm_json(content)
                     if parsed:
                         return parsed
@@ -1119,10 +1152,12 @@ class RequirementsService:
             logger.warning("requirements chat with_tools 路径失败，回退原路径: %s", e)
         # 原路径：未配置 / 无可用工具 / with_tools 异常或超时 → 行为与现状完全一致
         try:
-            return await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 llm_call_with_retry(self._llm, "creative_brief", pipeline_id="", **llm_kwargs),
                 timeout=BRIEF_GENERATE_TIMEOUT,
             )
+            await self._record_llm_usage("requirements.gathering", session_id)
+            return result
         except asyncio.TimeoutError:
             logger.warning("创意简报生成超时（>%ds），返回空方案", BRIEF_GENERATE_TIMEOUT)
             return {
@@ -1300,6 +1335,22 @@ class RequirementsService:
                 ),
                 context,
             )
+            # C2: StructureAgent 的 LLM 用量（requirements 会话级，非 pipeline）
+            agent_usage = getattr(result, "_llm_usage", None)
+            if agent_usage:
+                try:
+                    from clipwright.services.llm_tracker import record_llm_call
+                    await record_llm_call(
+                        pipeline_id=session_id or "requirements",
+                        agent_name="requirements.structure",
+                        model=agent_usage.get("model", "unknown"),
+                        provider=agent_usage.get("provider", "unknown"),
+                        input_tokens=agent_usage.get("input_tokens", 0),
+                        output_tokens=agent_usage.get("output_tokens", 0),
+                        duration_ms=0,
+                    )
+                except Exception as e:
+                    logger.warning("StructureAgent 用量记录失败: %s", e)
             scenes = result.scenes or []
             if not scenes:
                 logger.warning("StructureAgent 返回空场景")
@@ -1340,6 +1391,7 @@ class RequirementsService:
                 }),
                 timeout=PLAN_TRANSLATE_TIMEOUT,
             )
+            await self._record_llm_usage("requirements.plan_translate")
         except asyncio.TimeoutError:
             # LLM 翻译超时 → 使用基础规划书，绝不挂起
             logger.warning("规划书翻译超时（>%ds），使用基础规划书", PLAN_TRANSLATE_TIMEOUT)

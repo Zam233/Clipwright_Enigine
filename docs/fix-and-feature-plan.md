@@ -791,3 +791,12 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ? LICENSE：根 + J:\Clipweight-Client 补 MIT（合规审计）
 - ? 双仓库同步 docs + LICENSE
 - ? tag `v0.2.0-deliverable`
+
+### 执行轮次 53（遗留补齐：C2 成本追踪 / A10 队列接线 / 一键启动验收）
+- ? C2 requirements_service 成本追踪：新增 `_record_llm_usage` 辅助（读 LLMService.last_usage → llm_tracker），接线 6 个调用点——edit_intent / edit_adjust / confirm / gathering（with_tools + 原路径）/ plan_translate / structure（StructureAgent._llm_usage）；失败仅告警不阻断
+- ? 测试：test_requirements_llm_usage.py 4 项（写入/无 usage 跳过/edit_intent/confirm）
+- ? A10 TaskQueue 接线管线：run_pipeline_async 改走 get_task_queue().submit（X-Priority 1-5 读头，默认 3）；TaskQueue 加 priority 字段 + 出队按优先级排序 + Mongo task_queue 持久化（提交/状态变更同步，终态清理）+ recover_stale 重启恢复（pending/running 且内存缺失 → recovered/interrupted）；orch.run 透传 task_id 联动队列进度；cancel 端点同时取消队列任务；新增 GET /api/pipeline/tasks
+- ? 前端：pipelineApi.getTasks + PipelineAdminPage 队列状态条（运行中/排队/重启中断 recovered）
+- ? 测试：test_task_queue.py 5 项（优先级排序/钳制/持久化/恢复/路由注册）；PipelineAdminPage +2
+- ? 一键启动验收：stop 旧 8080 → start.ps1 同方式启动 → /health ok（mongo ok）→ GET /api/pipeline/tasks、/api/persona/{id}/learn/stats、/api/plugin/errors 路由在线 → 前端 vite dev 5173 起 + HTTP 200 + /api 代理到 8080 通
+- 回归：后端 1163/1163 ?、前端 351/351 ?、tsc 通过 ?
