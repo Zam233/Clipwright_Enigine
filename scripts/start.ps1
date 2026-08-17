@@ -38,9 +38,11 @@ Write-Host '后端 health: http://localhost:8080/health' -ForegroundColor Green
 $backendReady = $false
 for ($i = 0; $i -lt 60; $i++) {
     try {
-        $resp = Invoke-WebRequest -Uri 'http://localhost:8080/health' -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+        # 5s 超时：health 含 chromadb 检查，偶尔 >2s，2s 会误报未就绪
+        $resp = Invoke-WebRequest -Uri 'http://localhost:8080/health' -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
         if ($resp.StatusCode -eq 200) { $backendReady = $true; break }
-    } catch { /* 未就绪，继续等待 */ }
+    } catch { # 未就绪，继续等待
+    }
     Start-Sleep -Seconds 1
 }
 if ($backendReady) {
