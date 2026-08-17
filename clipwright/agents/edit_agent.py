@@ -36,9 +36,9 @@ _TRIM_CACHE_MAX = 512
 def _split_sentences(text: str) -> list[str]:
     """按中文标点切分口播文案为句子（字幕粒度）。
 
-    与前端 HomePage 的按标点切分规则一致（'，。！；？：' 为边界）；
-    '？！' 连标点保留在前句，其余标点作为边界消费。
-    结果去空。长句（>40 字）二次按逗号切分，保证字幕可读。
+    边界：'，。！；？：' 全部**保留在前句**（标点不丢失，保证文案一字不漏；
+    E2E 修复——此前仅 '！？' 保留，逗号/句号等被剥离导致字幕缺标点）。
+    结果去空。长句（>40 字）二次按逗号切分，标点同样保留。
     """
     t = (text or "").strip()
     if not t:
@@ -47,10 +47,7 @@ def _split_sentences(text: str) -> list[str]:
     buf = ""
     for ch in t:
         if ch in "，。！；？：":
-            if ch in "！？":
-                parts.append((buf + ch).strip())
-            elif buf.strip():
-                parts.append(buf.strip())
+            parts.append((buf + ch).strip())
             buf = ""
         else:
             buf += ch
@@ -61,7 +58,7 @@ def _split_sentences(text: str) -> list[str]:
         if not p:
             continue
         if len(p) > 40:
-            # 长句按逗号二次切分，保留标点
+            # 长句按逗号二次切分，标点保留（逗号留在前段末尾）
             sub = ""
             for ch in p:
                 sub += ch

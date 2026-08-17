@@ -49,6 +49,8 @@ class ProceedRequest(BaseModel):
     persona_id: str = ""
     category_plugin_id: str = ""
     extra_params: dict[str, Any] = {}
+    # E2E 修复：管线完成后把 final_timeline 保存到该项目（防止内存结果 60s 清理后丢失）
+    project_id: str = ""
 
 
 # ── API 端点 ─────────────────────────────────
@@ -261,6 +263,17 @@ async def proceed_to_pipeline(req: ProceedRequest) -> dict:
             state.shared_data["execution_trace"] = get_all_events(pipeline_id)
             _pipeline_results[pipeline_id] = state.model_dump(mode="json")
             add_event(pipeline_id, "system", "done", f"管线完成: {state.status}")
+            # E2E 修复：管线完成后把 final_timeline 保存到关联项目（若有），
+            # 避免内存结果 60s 清理后 timeline 丢失（API 直连场景）。
+            try:
+                final_tl = state.shared_data.get("final_timeline")
+                if final_tl and req.project_id:
+                    from clipwright.services.project_manager import ProjectManager
+                    pm = ProjectManager()
+                    pm.save(req.project_id, {"timeline": final_tl})
+                    logger.info("管线时间线已保存到项目: %s", req.project_id)
+            except Exception as e:
+                logger.warning("管线时间线保存失败: %s", e)
             # 更新会话状态
             await asyncio.to_thread(
                 _service._persist,
