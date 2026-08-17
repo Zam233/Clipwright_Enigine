@@ -94,12 +94,22 @@ class StyleInterpreter:
             return cls._tone_fallback(tone)
 
         # 有自然语言描述 → 调 LLM 解析
+        vision_prompt = persona_context.get("vision_prompt", "") or ""
         prompt = (
             f"你是一个视频图解风格设计师。请根据以下描述返回 JSON。\n\n"
             f"内容基调: {tone or '通用'}\n"
             f"配色描述: {palette or '未指定'}\n"
             f"字体描述: {font_desc or '未指定'}\n"
             f"风格描述: {style_desc or '未指定'}\n\n"
+        )
+        # 问题3补充：vision_prompt.md 注入风格解析——视觉需求（纯黑纯白底/红色强调等）
+        # 影响文字动画/字幕等 persona_style 消费点（此前仅 LLM 动态 MG 用 vision_prompt）。
+        if vision_prompt:
+            prompt += (
+                "## 创作者视觉需求（vision_prompt，最高优先级）\n"
+                f"{vision_prompt[:1500]}\n\n"
+            )
+        prompt += (
             f"返回以下 JSON（只返回 JSON，不要其他文字）：\n"
             f"{{\n"
             f'  "primary_color": "主色 #RRGGBB",\n'
