@@ -15,6 +15,16 @@ export interface AccountUser {
   role: string;
   quotas: Record<string, number>;
   usage: Record<string, number>;
+  credit: number;
+}
+
+export interface CreditEstimate {
+  user_id: string;
+  balance: number;
+  total: number;
+  affordable: boolean;
+  rates: Record<string, number>;
+  items: Array<{ label: string; credit: number }>;
 }
 
 export const accountApi = {
@@ -47,5 +57,39 @@ export const accountApi = {
       headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
     });
     return data as AccountUser;
+  },
+
+  // ── CREADIT 积分 ──
+
+  /** 查询 CREADIT 余额与最近流水 */
+  async creditBalance(accessToken?: string) {
+    const { data } = await srv.get('/api/credit/balance', {
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+    });
+    return data as { user_id: string; credit: number; recent: Array<{ type: string; amount: number; reason: string; balance: number }> };
+  },
+
+  /** 充值（仅测试用） */
+  async creditTopup(amount: number, accessToken?: string) {
+    const { data } = await srv.post('/api/credit/topup', { amount }, {
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+    });
+    return data as { status: string; credit: number; topup: number };
+  },
+
+  /** 预估一次创作的 CREADIT 消耗（首页展示） */
+  async creditEstimate(params: { pipeline?: boolean; dry_run?: boolean; render?: boolean; voice?: boolean; asset_count?: number }, accessToken?: string) {
+    const { data } = await srv.post('/api/credit/estimate', params, {
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+    });
+    return data as CreditEstimate;
+  },
+
+  /** 扣减 CREADIT（主项目消费） */
+  async creditCharge(amount: number, reason: string, accessToken?: string) {
+    const { data } = await srv.post('/api/credit/charge', { amount, reason }, {
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+    });
+    return data as { status: string; credit: number; charged: number };
   },
 };

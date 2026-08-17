@@ -1,7 +1,12 @@
-﻿// @vitest-environment jsdom
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { HomePage } from './HomePage';
+
+// jsdom 未实现 scrollTo
+beforeEach(() => {
+  window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
+});
 
 const { mocks } = vi.hoisted(() => ({
   mocks: {
@@ -33,6 +38,20 @@ vi.mock('@/services/api', () => ({
   typeMakerApi: { list: mocks.typeMakerList },
   pipelineApi: { predictScript: mocks.predictScript },
   getApiClient: vi.fn(),
+}));
+
+vi.mock('@/services/api/account', () => ({
+  accountApi: {
+    creditBalance: vi.fn(async () => ({ credit: 10, recent: [] })),
+    creditEstimate: vi.fn(async () => ({ total: 15, balance: 10, affordable: false, items: [], rates: {} })),
+    creditTopup: vi.fn(async () => ({ credit: 110, topup: 100 })),
+    creditCharge: vi.fn(async () => ({ credit: 0, charged: 0 })),
+  },
+}));
+
+vi.mock('@/stores/authStore', () => ({
+  useAuthStore: (sel?: (s: unknown) => unknown) =>
+    sel ? sel({ user: null, accessToken: null, logout: vi.fn() }) : { user: null, accessToken: null, logout: vi.fn() },
 }));
 
 vi.mock('./useBackendHealth', () => ({
@@ -135,6 +154,12 @@ describe('HomePage empty-state copy (U12)', () => {
     expect(screen.queryByText('\u6f14\u793a\u6570\u636e \u00b7 \u6682\u65e0\u540e\u7aef\u9879\u76ee')).toBeNull();
   });
 });
+/** 切换到「设置」tab（创作表单所在）。 */
+async function gotoSettings() {
+  fireEvent.click(screen.getByRole('button', { name: /设置/ }));
+  await screen.findByPlaceholderText(/粘贴口播文案/);
+}
+
 describe('G6: script intelligence prediction', () => {
   it('长文稿 + 后端在线 → 渲染推荐卡片', async () => {
     mocks.healthStatus.mockReturnValue('online');
@@ -145,6 +170,7 @@ describe('G6: script intelligence prediction', () => {
       summary: '适合做知识区长片',
     });
     render(<HomePage />);
+    await gotoSettings();
 
     const textarea = screen.getByPlaceholderText(/粘贴口播文案/);
     fireEvent.change(textarea, { target: { value: 'x'.repeat(60) } });
@@ -157,6 +183,7 @@ describe('G6: script intelligence prediction', () => {
     mocks.healthStatus.mockReturnValue('offline');
     mocks.predictScript.mockRejectedValue(new Error('offline'));
     render(<HomePage />);
+    await gotoSettings();
 
     const textarea = screen.getByPlaceholderText(/粘贴口播文案/);
     fireEvent.change(textarea, { target: { value: 'y'.repeat(60) } });
@@ -164,5 +191,44 @@ describe('G6: script intelligence prediction', () => {
     expect(screen.queryByText('智能预判')).toBeNull();
     // 启动按钮仍在
     expect(screen.getByText(/开始创作/)).toBeTruthy();
+  });
+});
+
+describe('图一：左侧导航切换右侧内容区', () => {
+  it('默认显示首页（开始创作 + 空项目 + 最近项目）', async () => {
+    render(<HomePage />);
+    expect(await screen.findByText('最近项目')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /开始创作/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /空项目/ })).toBeTruthy();
+    // 五个导航按钮都在
+    for (const label of ['首页', '类型', '人格', '插件', '设置']) {
+      expect(screen.getByRole('button', { name: label })).toBeTruthy();
+    }
+  });
+
+  it('点击「人格」→ 右侧切换到人格列表；点击卡片选中并跳设置', async () => {
+    mocks.personaList.mockResolvedValue([
+      { persona_id: 'p_a', persona_name: '人格A', parameter: { identity: { tone: '批判型' } } },
+    ]);
+    render(<HomePage />);
+    fireEvent.click(screen.getByRole('button', { name: '人格' }));
+    expect(await screen.findByText('创作人格')).toBeTruthy();
+    expect(await screen.findByText('人格A')).toBeTruthy();
+    // 点击人格卡片 → 切到设置 tab（创作表单）
+    fireEvent.click(screen.getByText('人格A'));
+    await screen.findByPlaceholderText(/粘贴口播文案/);
+  });
+
+  it('点击「设置」→ 显示创作控制台（图二表单）', async () => {
+    render(<HomePage />);
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+    expect(await screen.findByText('新建制作')).toBeTruthy();
+    expect(screen.getByText('稿件')).toBeTruthy();
+  });
+
+  it('「开始创作」大按钮 → 切入设置 tab', async () => {
+    render(<HomePage />);
+    fireEvent.click(await screen.findByRole('button', { name: /^开始创作/ }));
+    await screen.findByPlaceholderText(/粘贴口播文案/);
   });
 });
