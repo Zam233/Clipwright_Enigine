@@ -1,4 +1,4 @@
-# 一键启动 ClipWright（开发模式）：后端 8080 + 前端 5173 +（可选）Server 8090
+﻿# 一键启动 ClipWright（开发模式）：后端 8080 + 前端 5173 +（可选）Server 8090
 # 用法: powershell -ExecutionPolicy Bypass -File scripts\start.ps1
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent

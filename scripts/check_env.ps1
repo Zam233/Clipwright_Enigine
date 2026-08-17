@@ -1,4 +1,4 @@
-# 环境体检：python / node / mongo / 端口
+﻿# 环境体检：python / node / mongo / 端口
 $ErrorActionPreference = 'SilentlyContinue'
 $script:ok = $true
 
