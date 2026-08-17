@@ -104,8 +104,40 @@ def _check_ffmpeg() -> Optional[str]:
 class VideoTrimTool(BaseTool):
     """视频裁剪工具。"""
     name = "video_trim"
-    description = "裁剪视频片段（支持 start+duration 或 start+end）"
+    description = "裁剪视频片段（支持 start+duration 或 start+end；输入可为本地文件或 http(s) URL）"
     dependencies = ["ffmpeg"]
+
+    async def _ensure_local(self, input_path: str) -> str | None:
+        """URL 输入先下载到统一缓存目录（_cache/tmp/），返回本地路径；失败返回 None。"""
+        if not input_path.startswith(("http://", "https://")):
+            return input_path
+        from clipwright.security import allowed_media_roots
+        roots = allowed_media_roots()
+        cache_root = next((r for r in roots if r.name == "_cache"), None)
+        if cache_root is None:
+            from pathlib import Path as _P
+            cache_root = _P(__file__).resolve().parent.parent.parent / "_cache"
+        dl_dir = cache_root / "tmp"
+        dl_dir.mkdir(parents=True, exist_ok=True)
+        name = input_path.split("/")[-1].split("?")[0] or f"url_{abs(hash(input_path))}.mp4"
+        out = dl_dir / name
+        if out.exists() and out.stat().st_size > 2000:
+            return str(out)
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ["ffmpeg", "-y", "-loglevel", "error",
+                 "-i", input_path, "-c", "copy", "-movflags", "+faststart", str(out)],
+                capture_output=True, text=True, timeout=600,
+            )
+            if result.returncode != 0 or not out.exists() or out.stat().st_size <= 2000:
+                logger.warning("video_trim URL 下载失败: %s (%s)", input_path, result.stderr[:200])
+                return None
+            logger.info("video_trim 已下载网络素材: %s → %s", name, out)
+            return str(out)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            logger.warning("video_trim URL 下载异常: %s", e)
+            return None
 
     async def execute(
         self,
@@ -117,6 +149,16 @@ class VideoTrimTool(BaseTool):
         **kwargs: Any,
     ) -> ToolExecResult:
         out = _ensure_output_path(output_path, "trim_", ".mp4")
+        # URL 输入 → 先下载到本地缓存（E2E 修复：此前 os.path.isfile 对 URL 恒 False，
+        # 导致 Pexels 网络素材一律「source missing/corrupt」→ 文字占位）
+        local = await self._ensure_local(input_path)
+        if local is None:
+            return ToolExecResult(
+                status=ToolStatus.ERROR,
+                tool_name=self.name,
+                error=f"source missing/corrupt: {input_path}",
+            )
+        input_path = local
         # 输入预检：源文件缺失/过小（损坏）直接报错，不调 ffmpeg
         try:
             if not os.path.isfile(input_path) or os.path.getsize(input_path) < 2000:
