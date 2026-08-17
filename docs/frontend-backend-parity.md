@@ -1,7 +1,7 @@
 # 前后端功能对账审计报告（Frontend–Backend Parity Audit）
 
-> 仓库：`J:\Clipweight-Client`（前端） ↔ `J:\Clipwright`（后端）
-> 阶段：Phase 5 · 六任务大改（clipwright-six-task-overhaul）收尾
+> 仓库：`J:\Clipweight-Client`（前端，独立仓库） ↔ `J:\Clipwright`（后端）
+> 阶段：Phase 5 · 六任务大改（clipwright-six-task-overhaul）收尾；2026-08 前端按方式 A 独立回 `J:\Clipweight-Client`
 > 本文由任务 40 撰写；数据取自**当前工作区真实代码**（非计划假设），所有计数均有来源命令可复现。
 > 文档语言与仓库既有文档（README / api_reference.md）一致：中文为主，标识符用英文。
 
