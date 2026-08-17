@@ -17,21 +17,22 @@ jobs:
       - name: Ruff (advisory)
         run: python -m ruff check clipwright || true
 
-  frontend:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Install deps
-        run: npm ci
-      - name: Typecheck
-        run: npm run typecheck
-      - name: Unit tests
-        run: npm run test
-      - name: Lint
-        run: npm run lint
+  # 前端已独立（方式 A）：前端源码位于独立仓库 J:\Clipweight-Client
+  # （本地映射），其 CI 由该仓库自行维护：
+  #   jobs.frontend → working-directory: 仓库根
+  #   steps: npm ci → npm run typecheck → npm run test → npm run lint
+  # frontend:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-node@v4
+  #       with:
+  #         node-version: 20
+  #     - name: Install deps
+  #       run: npm ci
+  #     - name: Typecheck
+  #       run: npm run typecheck
+  #     - name: Unit tests
+  #       run: npm run test
+  #     - name: Lint
+  #       run: npm run lint

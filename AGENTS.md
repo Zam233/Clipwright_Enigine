@@ -21,14 +21,14 @@ scripts\stop.ps1         # 停止全部
 ```
 
 - 后端：`uvicorn clipwright.main:app --port 8080`（`CLIPWRIGHT_PORT=8080`，见 `.env.example`）
-- 前端：`cd web && npm run dev`（vite 5173；`/api` 代理 → 8080，`/srv` 代理 → 账号服务 8090）
+- 前端：**独立仓库** `J:\Clipweight-Client`（`npm run dev`，vite 5173；`/api` 代理 → 8080，`/srv` 代理 → 账号服务 8090）
 - 账号/市场服务（可选）：`K:\Clipwright Server` 独立仓库，端口 8090
 
-## 项目结构（monorepo）
+## 项目结构（后端 monorepo + 前端独立仓库）
 
 ```
-J:\Clipwright
-├── clipwright/       # 后端（Python FastAPI）
+J:\Clipwright                    # 后端（Python FastAPI）
+├── clipwright/       # 后端源码
 │   ├── agents/       # 7 个 Agent（需求→结构→素材→剪辑→动画→音频→质检）
 │   ├── api/          # 33 个 API 路由文件
 │   ├── services/     # 30+ 后端服务
@@ -40,10 +40,14 @@ J:\Clipwright
 │   ├── schema/       # 11+ 数据模型
 │   ├── rag/          # RAG 知识库
 │   └── persona/      # Persona 配置系统
-├── web/              # 前端（React 19 + TS 5.5 + Vite，见 web/AGENTS.md）
 ├── plugins/          # 内置第三方插件目录（diagram_style 等）
 ├── docs/             # 20+ 文档
 └── scripts/          # start/stop/check_env 一键启动脚本
+
+J:\Clipweight-Client              # 前端（React 19 + TS 5.5 + Vite，独立 git 仓库）
+└── src/              # 前端源码（见其 AGENTS.md）
+
+K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓库，8090）
 ```
 
 ## 核心不变量
@@ -135,9 +139,9 @@ J:\Clipwright
 python -m pytest tests -q        # 期望 1154 passed
 python -c "import clipwright.main"
 
-# 前端回归（工作目录 J:\Clipwright\web）
+# 前端回归（工作目录 J:\Clipweight-Client）
 npx tsc --noEmit
-npm run test                     # 期望 349 passed
+npm run test                     # 期望 361 passed
 npm run build
 ```
 

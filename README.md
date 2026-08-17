@@ -169,9 +169,9 @@
 
 ------
 
-## 快速开始（Monorepo 一键启动）
+## 快速开始（后端 + 独立前端仓库）
 
-> 本仓库为前后端合并的 monorepo：后端在根目录（Python FastAPI），前端在 `web/`。
+> 本仓库为**后端**（Python FastAPI）；**前端为独立仓库** `J:\Clipweight-Client`（React 19 + Vite）。
 > 账号/市场服务为独立仓库 `K:\Clipwright Server`（可选，端口 8090）。
 
 ```powershell
@@ -188,8 +188,8 @@ scripts\stop.ps1
 # 后端（需要 MongoDB 127.0.0.1:27017，配置见 .env.example）
 python -m uvicorn clipwright.main:app --port 8080
 
-# 前端
-cd web
+# 前端（独立仓库）
+cd J:\Clipweight-Client
 npm install --cache "D:\.npm-cache"
 npm run dev            # http://localhost:5173
 ```

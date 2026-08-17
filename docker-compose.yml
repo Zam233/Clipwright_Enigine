@@ -16,10 +16,12 @@ services:
       - "./library:/app/library"
     env_file: [.env]
 
-  frontend:
-    build: { context: ./web, dockerfile: Dockerfile.frontend }
-    ports: ["80:80"]
-    depends_on: [backend]
+  # 前端已独立（方式 A）：单独部署于 J:\Clipweight-Client，
+  # 其 Dockerfile.frontend 在独立仓库中构建（npm run build → nginx，proxy /api→backend:8080）
+  # frontend:
+  #   build: { context: ../Clipweight-Client, dockerfile: Dockerfile.frontend }
+  #   ports: ["80:80"]
+  #   depends_on: [backend]
 
   # P3/P4 完成后启用（Server 独立部署于 K:\Clipwright Server，其自带 docker-compose）
   # server:

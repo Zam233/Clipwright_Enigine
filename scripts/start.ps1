@@ -4,13 +4,22 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
 
+# 前端仓库已独立（方式 A）：前端位于 J:\Clipweight-Client（不再随主项目 web/ 分发）
+$frontend = 'J:\Clipweight-Client'
+if (-not (Test-Path "$frontend\package.json")) {
+    Write-Host "前端仓库不存在: $frontend（请确认前端已独立放置）" -ForegroundColor Red
+    exit 1
+}
+
 & "$PSScriptRoot\check_env.ps1"
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 # 1. 前端依赖
-if (-not (Test-Path 'web\node_modules')) {
+if (-not (Test-Path "$frontend\node_modules")) {
     Write-Host '首次运行：安装前端依赖（npm ci）...' -ForegroundColor Cyan
-    npm ci --prefix web
+    Push-Location $frontend
+    npm ci
+    Pop-Location
     if ($LASTEXITCODE -ne 0) { Write-Error 'npm ci 失败'; exit 1 }
 }
 
@@ -53,5 +62,7 @@ if ($backendReady) {
 
 Write-Host '前端 dev:   http://localhost:5173/  （Ctrl+C 停止前端；后端用 scripts\stop.ps1 停止）' -ForegroundColor Green
 
-# 4. 前端（前台）
-npm --prefix web run dev
+# 4. 前端（前台，独立仓库 J:\Clipweight-Client）
+Push-Location $frontend
+npm run dev
+Pop-Location
