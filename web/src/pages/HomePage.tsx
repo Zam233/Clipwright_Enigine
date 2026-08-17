@@ -1092,7 +1092,10 @@ function HomeSidebar({ activeTab, onTab, credit, user, onTopup, estimate }: {
   estimate: number | null;
 }) {
   const navigate = useNavigate();
-  const auth = useAuthStore((s) => ({ user: s.user, accessToken: s.accessToken, logout: s.logout }));
+  // 拆分成 primitive selector，避免返回新对象引用导致无限重渲染
+  const authUser = useAuthStore((s) => s.user);
+  const authToken = useAuthStore((s) => s.accessToken);
+  const authLogout = useAuthStore((s) => s.logout);
 
   const NAV: { id: HomeTab; label: string; icon: typeof Home }[] = [
     { id: 'home', label: '首页', icon: Home },
@@ -1123,10 +1126,10 @@ function HomeSidebar({ activeTab, onTab, credit, user, onTopup, estimate }: {
           </span>
           <div className="min-w-0 flex-1">
             <p className="text-body-sm font-semibold text-on-surface truncate">
-              {auth.user?.display_name || user?.display_name || '未登录'}
+              {authUser?.display_name || user?.display_name || '未登录'}
             </p>
             <p className="font-mono text-caption text-on-surface-variant/70 truncate">
-              {auth.user?.user_id ? `ID ${auth.user.user_id.slice(0, 8)}` : 'ID ———'}
+              {authUser?.user_id ? `ID ${authUser.user_id.slice(0, 8)}` : 'ID ———'}
             </p>
           </div>
         </div>
@@ -1139,7 +1142,7 @@ function HomeSidebar({ activeTab, onTab, credit, user, onTopup, estimate }: {
             {credit ?? '—'}
           </span>
         </div>
-        {auth.accessToken && (
+        {authToken && (
           <button
             onClick={onTopup}
             className="mt-2 w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-cw-xs
@@ -1177,9 +1180,9 @@ function HomeSidebar({ activeTab, onTab, credit, user, onTopup, estimate }: {
 
       {/* 底部：账号操作 + 其他入口 */}
       <div className="px-3 pb-5 pt-3 space-y-1 border-t border-outline-variant/20">
-        {auth.accessToken ? (
+        {authToken ? (
           <button
-            onClick={async () => { await auth.logout(); navigate({ to: '/' }); }}
+            onClick={async () => { await authLogout(); navigate({ to: '/' }); }}
             className="w-full flex items-center gap-2.5 px-3.5 py-2 rounded-cw-sm text-label-sm text-on-surface-variant
               hover:text-error hover:bg-error/5 transition-colors cursor-pointer"
           >
