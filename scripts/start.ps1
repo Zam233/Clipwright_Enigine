@@ -1,4 +1,4 @@
-﻿# 一键启动 ClipWright（开发模式）：后端 8080 + 前端 5173 +（可选）Server 8090
+# 一键启动 ClipWright（开发模式）：后端 8080 + 前端 5173 +（可选）Server 8090
 # 用法: powershell -ExecutionPolicy Bypass -File scripts\start.ps1
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -33,6 +33,22 @@ if (Test-Path 'K:\Clipwright Server') {
 
 Write-Host ''
 Write-Host '后端 health: http://localhost:8080/health' -ForegroundColor Green
+
+# 2.5 等待后端就绪（最多 60s），避免前端先起导致 /api 代理 ECONNREFUSED
+$backendReady = $false
+for ($i = 0; $i -lt 60; $i++) {
+    try {
+        $resp = Invoke-WebRequest -Uri 'http://localhost:8080/health' -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+        if ($resp.StatusCode -eq 200) { $backendReady = $true; break }
+    } catch { /* 未就绪，继续等待 */ }
+    Start-Sleep -Seconds 1
+}
+if ($backendReady) {
+    Write-Host '后端已就绪 (health OK)' -ForegroundColor Green
+} else {
+    Write-Host '警告: 60s 内后端未就绪，继续启动前端（/api 代理可能短暂不可用）' -ForegroundColor Yellow
+}
+
 Write-Host '前端 dev:   http://localhost:5173/  （Ctrl+C 停止前端；后端用 scripts\stop.ps1 停止）' -ForegroundColor Green
 
 # 4. 前端（前台）
