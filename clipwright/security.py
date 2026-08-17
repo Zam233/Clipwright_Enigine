@@ -69,6 +69,7 @@ def allowed_media_roots() -> list[Path]:
         _base / "editor_projects",
         _base / "projects",
         _base / "PluginData",
+        _base / "_cache",  # 网络素材/文字占位缓存（textvid 等，E2E 渲染需要）
         anchor(settings.persona_dir),
         anchor(settings.tts_output_dir),
     ]

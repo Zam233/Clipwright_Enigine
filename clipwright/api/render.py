@@ -103,6 +103,9 @@ def _validate_render_inputs(tl: Timeline, audio_file_path: str, bgm_file_path: s
         p = Path(value)
         if not (p.is_absolute() or p.exists()):
             return
+        # 相对路径（如 _cache/tmp/textvid_*.mp4）按 cwd 解析为绝对路径后再校验
+        if not p.is_absolute():
+            p = p.resolve()
         try:
             assert_allowed_path(p)
         except SecurityViolation as e:
