@@ -236,13 +236,19 @@ from clipwright.security import SecurityViolation
 
 # P0-14: 请求体大小上限（防超大 JSON/上传 DoS；分块上传端点自行处理流式上限）
 _MAX_BODY_BYTES = 20 * 1024 * 1024
+# multipart 文件上传端点（asset/voice 等）自行流式校验大小（2GB/100MB），
+# 全局 content-length 限制若对其生效会误拦大文件（如音频/视频素材）。
+_MULTIPART_CT = "multipart/form-data"
 
 
 @app.middleware("http")
 async def limit_body_size(request: Request, call_next):
     if request.method in ("POST", "PUT", "PATCH"):
+        # multipart 文件上传跳过全局上限（由端点流式校验，避免 413 误拦）
+        ct = (request.headers.get("content-type") or "").lower()
+        is_multipart = ct.startswith(_MULTIPART_CT)
         cl = request.headers.get("content-length")
-        if cl and cl.isdigit() and int(cl) > _MAX_BODY_BYTES:
+        if (not is_multipart) and cl and cl.isdigit() and int(cl) > _MAX_BODY_BYTES:
             return JSONResponse(status_code=413, content={"detail": "请求体过大"})
     return await call_next(request)
 
