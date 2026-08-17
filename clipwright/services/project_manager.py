@@ -190,6 +190,15 @@ class ProjectManager:
                 data = self._read_json(d.name)
                 if data is None:
                     continue
+                # 自愈：无 id 的遗留记录用目录名补 id（避免 null-id 泄漏到前端/React key 冲突）
+                if not data.get("id"):
+                    try:
+                        data["id"] = d.name
+                        data["updated_at"] = self._now()
+                        self._write_json(d.name, data)
+                        logger.warning("项目自愈补 id: %s -> %s", d.name, d.name)
+                    except Exception as e:
+                        logger.warning("项目自愈失败 %s: %s", d.name, e)
                 if folder and data.get("folder", "") != folder:
                     continue
                 if tag and tag not in data.get("tags", []):

@@ -146,6 +146,29 @@ def test_list_projects_filter_tag(pm):
     assert result[0]["name"] == "Tagged"
 
 
+# ── 自愈：无 id 遗留记录 ──
+
+def test_list_projects_selfheals_null_id(pm):
+    """无 id 的遗留记录在 list 时自动补 id（目录名）并持久化。"""
+    created = pm.create(name="Legacy")
+    pid = created["id"]
+    # 模拟历史脏数据：手工把 id 置空
+    import json
+    from pathlib import Path
+    path = pm._project_path(pid)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["id"] = None
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    result = pm.list_projects()
+    assert len(result) == 1
+    assert result[0]["id"] == pid  # 补 id = 目录名
+    assert result[0]["name"] == "Legacy"
+    # 已持久化（再次 list 不再触发自愈，id 已存在）
+    persisted = json.loads(pm._project_path(pid).read_text(encoding="utf-8"))
+    assert persisted["id"] == pid
+
+
 # ── rename ──
 
 def test_rename(pm):
