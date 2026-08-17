@@ -688,6 +688,19 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 logger.warning("AnimationAgent: 联网搜索失败，跳过 web_context", exc_info=True)
                 web_context = ""
 
+        # 问题3修复：Persona prompt（prompt.md 风格指引）注入 MG 生成描述——
+        # 此前 _persona_prompt 只捕获未使用，Zam 的动画风格（逐字出现/硬切闪现/
+        # 冷色调+高对比/警示黄深红标注）完全没进动画生成。
+        persona_style = persona_style or {}
+        persona_guide = getattr(self, "_persona_prompt", "") or ""
+        if persona_guide:
+            style_hint = persona_style.get("style_description", "")
+            gen_description = (
+                f"{gen_description}\n\n## 创作者 Persona 动画风格指引（最高优先级）\n"
+                f"{persona_guide[:2000]}"
+                + (f"\n\n## 视觉风格摘要\n{style_hint}" if style_hint else "")
+            )
+
         try:
             result = await mg_gen.generate(
                 description=gen_description,
@@ -1024,6 +1037,16 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         }
 
         config = dict(visual_config or {})
+        # 问题3修复：兼容 animation_styles（dict，如 Zam: data_visualization/text_emphasis）
+        # → 拼接为 style_description 字符串，注入 StyleInterpreter 与 LLM MG prompt。
+        anim_styles = config.get("animation_styles")
+        if isinstance(anim_styles, dict) and anim_styles:
+            style_desc_parts = []
+            for _k, _v in anim_styles.items():
+                if isinstance(_v, str) and _v.strip():
+                    style_desc_parts.append(_v.strip())
+            if style_desc_parts and not config.get("style_description"):
+                config["style_description"] = "；".join(style_desc_parts)
         # Q2 主修复：原始层注入兜底色板（黑白红）。
         # persona 参数层 primary/secondary/accent 为 null 时（如 Zam），注入非空结构化字段，
         # 使 _apply_structured_overrides 无论走 LLM/tone-fallback/快路径都把结果盖回黑白红——
@@ -1043,6 +1066,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         if plugin_prompts:
             persona_context["_plugin_prompts"] = plugin_prompts
         result = await StyleInterpreter.interpret(fast_cfg, persona_context)
+        # 问题3修复：保留 style_description（animation_styles 拼接的动画风格描述），
+        # 供下游（LLM MG prompt / 文字动画消费点）使用——StyleInterpreter 只返回结构化字段。
+        if config.get("style_description") and isinstance(result, dict):
+            result.setdefault("style_description", config["style_description"])
         return result
 
     @staticmethod

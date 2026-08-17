@@ -36,9 +36,8 @@ _TRIM_CACHE_MAX = 512
 def _split_sentences(text: str) -> list[str]:
     """按中文标点切分口播文案为句子（字幕粒度）。
 
-    边界：'，。！；？：' 全部**保留在前句**（标点不丢失，保证文案一字不漏；
-    E2E 修复——此前仅 '！？' 保留，逗号/句号等被剥离导致字幕缺标点）。
-    结果去空。长句（>40 字）二次按逗号切分，标点同样保留。
+    边界：'，。；：' 作为边界**消费**（不进入字幕）；'！？' 保留在前句末尾。
+    结果去空。长句（>40 字）二次按逗号切分，逗号同样消费。
     """
     t = (text or "").strip()
     if not t:
@@ -47,7 +46,10 @@ def _split_sentences(text: str) -> list[str]:
     buf = ""
     for ch in t:
         if ch in "，。！；？：":
-            parts.append((buf + ch).strip())
+            if ch in "！？":
+                parts.append((buf + ch).strip())
+            elif buf.strip():
+                parts.append(buf.strip())
             buf = ""
         else:
             buf += ch
@@ -58,13 +60,14 @@ def _split_sentences(text: str) -> list[str]:
         if not p:
             continue
         if len(p) > 40:
-            # 长句按逗号二次切分，标点保留（逗号留在前段末尾）
+            # 长句按逗号二次切分，逗号作为边界消费（不留段尾）
             sub = ""
             for ch in p:
-                sub += ch
                 if ch in "，、；" and len(sub) >= 10:
                     out.append(sub.strip())
                     sub = ""
+                else:
+                    sub += ch
             if sub.strip():
                 out.append(sub.strip())
         else:
@@ -253,20 +256,23 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             if has_pip:
                 pip_track = Track(id=_uid("t"), name="画中画", kind=ClipKind.VIDEO, index=4)
 
-            # 4. 标准化场景时长：优先规划书总时长 → 音频总时长 → 场景和
+            # 4. 标准化场景时长：优先**配音时长**（字幕必须与配音同步）→ 规划书总时长 → 场景和
             scene_count = len(scenes)
             total_scene_duration = sum(
                 s.get("duration_sec", base_shot_sec) for s in scenes
             )
-            target_duration = context.extra_params.get(
-                "audio_duration_sec", total_scene_duration
-            )
+            audio_dur = context.extra_params.get("audio_duration_sec", 0) or 0
+            target_duration = float(audio_dur) if audio_dur > 0 else total_scene_duration
             try:
                 plan = input_data.production_plan or {}
                 plan_dur = plan.get("total_duration_sec")
                 if isinstance(plan_dur, (int, float)) and plan_dur > 0:
-                    target_duration = float(plan_dur)
-                    notes.append(f"按规划书总时长对齐: {target_duration:.0f}s")
+                    # 规划书时长仅在无配音时生效（配音优先：字幕/画面必须与配音对齐）
+                    if audio_dur <= 0:
+                        target_duration = float(plan_dur)
+                        notes.append(f"按规划书总时长对齐: {target_duration:.0f}s")
+                    else:
+                        notes.append(f"按配音时长对齐: {target_duration:.0f}s（规划书 {float(plan_dur):.0f}s 被配音覆盖）")
             except Exception:
                 pass
             logger.info("EditAgent 时长: scenes=%d, sum=%.0fs, target=%.0fs (extra audio_duration_sec=%s)",

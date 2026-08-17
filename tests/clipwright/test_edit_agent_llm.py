@@ -361,3 +361,60 @@ async def test_fallback_identical_to_rules_when_llm_down(monkeypatch) -> None:
     assert [c.duration_sec for c in vid_track.clips] == [2.0, 2.0, 2.0]
     assert all(c.transition_in is None for c in vid_track.clips)
     assert any("LLM 剪辑档案不可用" in n for n in out_a.edit_notes)
+
+
+# ── 问题2：字幕与配音时间轴配对（配音时长优先于规划书） ──
+
+@pytest.mark.asyncio
+async def test_audio_duration_wins_over_plan_duration(monkeypatch) -> None:
+    """有配音时 target_duration 用 audio_duration_sec，规划书总时长被覆盖。"""
+    agent = EditAgent()
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    fake = FakeLLM()
+    agent._llm = fake  # type: ignore[assignment]
+    monkeypatch.setattr(ToolRegistry, "execute", _fake_tool_execute)
+
+    # 场景总长 6+7+8=21s；配音 658s；规划书写死 300s → 应取 658s
+    ctx = _context()
+    ctx.extra_params["audio_duration_sec"] = 658.0
+    ctx.extra_params["audio_path"] = "J:/voice.mp3"
+    inp = _input(ctx, _scenes(with_duration=True))
+    inp.production_plan = {"total_duration_sec": 300.0}
+
+    out = await agent.execute(inp, ctx)
+    assert out.decision == AgentDecision.PASS
+    tl = out.timeline
+    vid_track = _vid_track(tl)
+    # 时长缩放 658/21 ≈ 31.3x：clip 时长 = 场景时长 × scale
+    scale = 658.0 / 21.0
+    durs = [c.duration_sec for c in vid_track.clips]
+    assert len(durs) == 3
+    assert abs(durs[0] - 6.0 * scale) < 1.0
+    assert abs(durs[1] - 7.0 * scale) < 1.0
+    assert abs(durs[2] - 8.0 * scale) < 1.0
+    # 时间线总长 ≈ 658s（配音时长）
+    assert abs(tl.duration_sec - 658.0) < 2.0
+    # 备注确认配音优先
+    assert any("按配音时长对齐" in n for n in out.edit_notes)
+    assert any("被配音覆盖" in n for n in out.edit_notes)
+
+
+@pytest.mark.asyncio
+async def test_plan_duration_used_when_no_audio(monkeypatch) -> None:
+    """无配音时规划书总时长生效（回归：不破坏无配音场景）。"""
+    agent = EditAgent()
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    agent._llm = FakeLLM()  # type: ignore[assignment]
+    monkeypatch.setattr(ToolRegistry, "execute", _fake_tool_execute)
+
+    ctx = _context()
+    inp = _input(ctx, _scenes(with_duration=True))
+    inp.production_plan = {"total_duration_sec": 300.0}
+
+    out = await agent.execute(inp, ctx)
+    tl = out.timeline
+    scale = 300.0 / 21.0
+    vid_track = _vid_track(tl)
+    durs = [c.duration_sec for c in vid_track.clips]
+    assert abs(durs[0] - 6.0 * scale) < 1.0
+    assert any("按规划书总时长对齐" in n for n in out.edit_notes)

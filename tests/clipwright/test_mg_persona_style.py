@@ -62,8 +62,9 @@ class TestZamYamlUntouched:
 
 class TestResolveStyleInjection:
     @pytest.mark.asyncio
-    async def test_zam_resolves_black_white_red_fast_path(self, monkeypatch) -> None:
-        """剥离 palette 后走 has_exact 快路径 → LLM 未调，输出黑白红（非蓝）。"""
+    async def test_zam_style_description_injected_and_colors_overridden(self, monkeypatch) -> None:
+        """Zam：animation_styles → style_description 注入（走 LLM 解析，细节不丢），
+        颜色仍被结构化注入 override 为黑白红（非蓝）。"""
         state = _LLMCallState()
         _install_fake_llm(monkeypatch, state, {"primary_color": "#3b82f6"})
         agent = AnimationAgent()
@@ -71,8 +72,13 @@ class TestResolveStyleInjection:
         assert style["primary_color"] == "#000000"
         assert style["secondary_color"] == "#FFFFFF"
         assert style["accent_color"] == "#FF0000"
-        # 快路径：LLM 分支未调用
-        assert state.calls == []
+        # 有 animation_styles → style_description 走 LLM 解析（风格细节不丢）；颜色仍被 override
+        assert style.get("style_description")
+        assert "具象化数字标注" in style["style_description"]
+        assert "逐字出现或硬切闪现" in style["style_description"]
+        # 剥离 palette 且无 style_description 的纯色板场景仍走快路径——此处 LLM 被调用
+        # （风格描述存在 → 需要 LLM 理解），但 override 保证非蓝
+        assert state.calls  # LLM 被调用（有风格描述要解析）
 
     @pytest.mark.asyncio
     async def test_injection_reaches_interpret_when_no_explicit_colors(self, monkeypatch) -> None:
