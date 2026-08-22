@@ -137,11 +137,7 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
         if plugin_prompts:
             system_prompt += "\n\n## 插件能力扩展\n" + "\n\n".join(plugin_prompts)
 
-        result = await self._llm.structured_output(
-            system_prompt=system_prompt,
-            user_prompt=user_context,
-            pipeline_id=context.pipeline_id,
-        )
+        result = await self.llm_or_fallback(lambda: self._llm.structured_output(system_prompt=system_prompt, user_prompt=user_context, pipeline_id=context.pipeline_id), fallback={}, retries=2)
         if isinstance(result, dict) and "brief_draft" in result:
             return result["brief_draft"]
         return {}
@@ -180,11 +176,7 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
             if web_context:
                 system_prompt += f"\n\n## 联网搜索参考\n{web_context}"
 
-            result = await self._llm.structured_output(
-                system_prompt=system_prompt,
-                user_prompt=f"结构 Agent 输出:\n{scenes_json}",
-                pipeline_id=pipeline_id,
-            )
+            result = await self.llm_or_fallback(lambda: self._llm.structured_output(system_prompt=system_prompt, user_prompt=f"结构 Agent 输出:\n{scenes_json}", pipeline_id=pipeline_id), fallback={}, retries=2)
             if isinstance(result, dict):
                 if not result.get("markdown_content"):
                     result["markdown_content"] = self._default_markdown(scenes)

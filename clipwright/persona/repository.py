@@ -108,7 +108,7 @@ class PersonaRepository:
             self._atomic_write_text(index_path, yaml.dump(index, allow_unicode=True, default_flow_style=False))
 
             # 自动向量化索引
-            self._reindex_knowledge(manifest.persona_id)
+            self._async_reindex(manifest.persona_id)
 
     @staticmethod
     def _atomic_write_text(path: Path, text: str) -> None:
@@ -256,7 +256,7 @@ class PersonaRepository:
             except Exception:
                 pass
         # 重索引（删除向量）
-        self._reindex_knowledge(persona_id)
+        self._async_reindex(persona_id)
         return removed
 
     def update_knowledge_doc(self, persona_id: str, doc_id: str, doc: KnowledgeDoc) -> bool:
@@ -285,7 +285,7 @@ class PersonaRepository:
                     yaml.dump(index, f, allow_unicode=True, default_flow_style=False)
             except Exception:
                 pass
-        self._reindex_knowledge(persona_id)
+        self._async_reindex(persona_id)
         return True
 
     # ── 向量化索引 ──
@@ -302,6 +302,30 @@ class PersonaRepository:
         except Exception as e:
             from clipwright.config import logger
             logger.warning("知识库向量化失败 (non-fatal): %s", e)
+
+    def _async_reindex(self, persona_id: str) -> None:
+        """Phase 4.3：异步重索引 — 不阻塞写 API 响应（大知识库 ChromaDB 写入很慢）。
+
+        串行锁防止并发写 API 触发多个 ChromaDB 写入互相踩踏。
+        """
+        try:
+            import threading
+            _lock = getattr(PersonaRepository, "_reindex_lock", None)
+            if _lock is None:
+                _lock = threading.Lock()
+                PersonaRepository._reindex_lock = _lock
+            def _job():
+                if not _lock.acquire(blocking=False):
+                    return  # 已有重索引在跑
+                try:
+                    self._reindex_knowledge(persona_id)
+                finally:
+                    _lock.release()
+            threading.Thread(target=_job, name=f"persona-reindex-{persona_id}", daemon=True).start()
+        except Exception as e:
+            from clipwright.config import logger
+            logger.warning("异步重索引启动失败，降级同步: %s", e)
+            self._async_reindex(persona_id)
 
     def delete(self, persona_id: str) -> None:
         import shutil

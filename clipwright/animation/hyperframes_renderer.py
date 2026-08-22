@@ -150,8 +150,10 @@ class HyperframesRenderer:
             logger.info("HyperframesRenderer: 渲染 %d 个覆盖层 → %s", len(overlays), output_path)
             # 同步 subprocess（最长 1h）offload 到线程池，避免冻住事件循环。
             # 注入 HYPERFRAMES_BROWSER_PATH，避免 Windows 上浏览器探测失败导致 hang。
+            # 审计 P0 修复：走 run_tracked_ff，渲染取消时可 terminate（to_thread 自动传播 context）。
+            from clipwright.services.render import run_tracked_ff
             result = await asyncio.to_thread(
-                subprocess.run, cmd, capture_output=True, text=False, timeout=3600,
+                run_tracked_ff, cmd, capture_output=True, text=False, timeout=3600,
                 env=HyperframesRenderer._render_env(),
             )
             if result.returncode == 0 and out.exists():
@@ -300,7 +302,7 @@ els.forEach(el=>{
         """
         try:
             # Bug3: 编码器统一走智能探测（GPU 可用时 h264_nvenc，否则 libx264）
-            from clipwright.services.render import _resolve_encoder, _hwaccel_args
+            from clipwright.services.render import _resolve_encoder, _hwaccel_args, run_tracked_ff
             encoder = _resolve_encoder()
             hwaccel = _hwaccel_args(encoder)
             overlay_expr = "overlay=format=auto"
@@ -315,7 +317,7 @@ els.forEach(el=>{
                 "-c:v", encoder, "-pix_fmt", "yuv420p",
                 "-c:a", "copy", output_path,
             ]
-            subprocess.run(cmd, capture_output=True, text=False, timeout=1800, check=True)
+            run_tracked_ff(cmd, capture_output=True, text=False, timeout=1800, check=True)
             return True
         except Exception as e:
             logger.warning("Hyperframes: 叠加失败: %s", e)

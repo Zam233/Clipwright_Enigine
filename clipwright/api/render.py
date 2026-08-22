@@ -226,6 +226,9 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                 audio_file_path=body.audio_file_path or "",
                 bgm_file_path=body.bgm_file_path or "",
                 progress_callback=on_progress,
+                cancel_id=task_id,
+                encoder_override=params.get("encoder", ""),
+                pix_fmt_override=params.get("pix_fmt", ""),
             )
             _render_queue[task_id]["result"] = result.to_dict()
             _render_queue[task_id]["status"] = "completed" if result.success else "failed"
@@ -255,8 +258,14 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
             except Exception as we:
                 logger.warning("render webhook dispatch failed: %s", we)
         except Exception as e:
-            _render_queue[task_id]["status"] = "failed"
-            _render_queue[task_id]["result"] = {"error": _sanitize_detail(str(e))}
+            from clipwright.services.render import RenderCancelledError
+            if isinstance(e, RenderCancelledError):
+                # 审计 P0 修复：用户取消 → 独立终态 cancelled
+                _render_queue[task_id]["status"] = "cancelled"
+                _render_queue[task_id]["result"] = {"error": "渲染已取消"}
+            else:
+                _render_queue[task_id]["status"] = "failed"
+                _render_queue[task_id]["result"] = {"error": _sanitize_detail(str(e))}
             try:
                 from clipwright.api.webhook import dispatch_event
                 await dispatch_event("render.failed", {
@@ -322,6 +331,36 @@ async def get_queue_status(task_id: str, request: Request) -> dict:
     return {"task_id": task_id, **task}
 
 
+@router.delete("/queue/{task_id}")
+async def cancel_queue_render(task_id: str, request: Request) -> dict:
+    """审计 P0 修复：取消渲染任务 — terminate 活跃 ffmpeg 子进程并置 cancelled 终态。"""
+    from clipwright.authz import enforce_owner
+    from clipwright.services.render import cancel_render
+
+    task = _render_queue.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    enforce_owner(request, task.get("owner_id"), "渲染任务")
+    if task.get("status") in ("completed", "failed", "cancelled"):
+        return {"task_id": task_id, "status": task.get("status"), "cancelled": False}
+    cancel_render(task_id)
+    task["status"] = "cancelled"
+    task["result"] = {"error": "渲染已取消"}
+    try:
+        _persist_render_task({
+            "task_id": task_id,
+            "status": "cancelled",
+            "progress": task.get("progress", 0),
+            "result": task.get("result"),
+            "output_path": task.get("output_path", ""),
+            "owner_id": task.get("owner_id", ""),
+            "updated_at": datetime.now(tz=TIME_ZONE),
+        })
+    except Exception:
+        pass
+    return {"task_id": task_id, "status": "cancelled", "cancelled": True}
+
+
 @router.get("/queue/stream/{task_id}")
 async def stream_render_progress(task_id: str):
     """SSE 流：实时推送渲染进度。"""
@@ -330,7 +369,11 @@ async def stream_render_progress(task_id: str):
 
     async def event_stream():
         last_status = ""
-        for _ in range(600):  # 最多等 5 分钟
+        # 生产加固 1.5: 终态驱动（completed/failed/cancelled）+ 2h 墙钟上限，
+        # 替代旧 5 分钟硬上限（长视频渲染不再中途断流）。
+        import time as _time
+        _start = _time.time()
+        while _time.time() - _start < 72000:
             task = _render_queue.get(task_id)
             if task is None:
                 yield f"data: {json.dumps({'type': 'error', 'message': 'Task not found'})}\n\n"
@@ -348,7 +391,7 @@ async def stream_render_progress(task_id: str):
                 'clip_count': task.get('clip_count', 0),
                 'current_clip': task.get('current_clip', 0),
             })}\n\n"
-            if status in ("completed", "failed"):
+            if status in ("completed", "failed", "cancelled"):
                 payload = json.dumps({
                     'type': status, 'task_id': task_id,
                     'result': task.get('result'),
@@ -436,6 +479,11 @@ _EXPORT_PRESETS = {
     "1080p": {"width": 1920, "height": 1080, "fps": 30, "bitrate": "5M", "audio_bitrate": "192k", "note": "标准 1080p"},
     "720p": {"width": 1280, "height": 720, "fps": 30, "bitrate": "3M", "audio_bitrate": "192k", "note": "标准 720p"},
     "480p": {"width": 854, "height": 480, "fps": 24, "bitrate": "1.5M", "audio_bitrate": "128k", "note": "标准 480p"},
+    # Phase 3.3: 交付级封装（广播/母带场景）
+    "prores422hq": {"width": 1920, "height": 1080, "fps": 30, "encoder": "prores_ks", "pix_fmt": "yuv422p10le",
+                    "note": "ProRes 422 HQ（10bit，母带/广播交付）"},
+    "h265_10bit": {"width": 1920, "height": 1080, "fps": 30, "encoder": "libx265", "pix_fmt": "yuv420p10le", "bitrate": "12M",
+                   "note": "H.265 HEVC 10bit 高码率（HDR/高保真交付）"},
 }
 
 
@@ -447,6 +495,9 @@ class RenderSettings(BaseModel):
     bitrate: str = "5M"
     audio_bitrate: str = "192k"
     preset: str = ""  # 预设名称，如 "bilibili"、"tiktok"，会覆盖其他参数
+    # Phase 3.3: 编码器/像素格式覆盖（交付级；空 = 自动探测/默认）
+    encoder: str = Field(default="", description="编码器覆盖（libx264/h264_nvenc/prores_ks/libx265；空=自动）")
+    pix_fmt: str = Field(default="", description="像素格式覆盖（yuv420p/yuv420p10le/yuv422p10le；空=默认）")
 
 
 class RenderRequest(BaseModel):
@@ -471,8 +522,8 @@ def _resolve_settings(s: RenderSettings | None) -> dict:
     if preset_name and preset_name in _EXPORT_PRESETS:
         preset = _EXPORT_PRESETS[preset_name].copy()
         preset.pop("note", None)
-        # 预设为基底，单个设置项可覆盖
-        preset.update({k: v for k, v in base.items() if v is not None and k != "preset"})
+        # 预设为基底，单个设置项可覆盖（空串不覆盖——避免 encoder/pix_fmt 默认空值顶掉预设）
+        preset.update({k: v for k, v in base.items() if v is not None and v != "" and k != "preset"})
         return preset
     return {
         "width": base.get("width", 1920),
@@ -480,6 +531,8 @@ def _resolve_settings(s: RenderSettings | None) -> dict:
         "fps": base.get("fps", 30.0),
         "bitrate": base.get("bitrate", "5M"),
         "audio_bitrate": base.get("audio_bitrate", "192k"),
+        "encoder": base.get("encoder", ""),
+        "pix_fmt": base.get("pix_fmt", ""),
     }
 
 

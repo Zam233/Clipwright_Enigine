@@ -90,7 +90,9 @@ class TestTextStyleExtension:
         assert color_to_drawtext("#ffffff") == "0xffffff"
         assert color_to_drawtext("#FF0000") == "0xFF0000"
         assert color_to_drawtext("#00000080") == "0x000000@0.502"
-        assert color_to_drawtext("") == ""
+        # 审计 P3 修复：非法颜色回退白色，不再静默透传
+        assert color_to_drawtext("") == "0xFFFFFF"
+        assert color_to_drawtext("red") == "0xFFFFFF"
         assert color_to_drawtext("0xffffff") == "0xffffff"
 
     def test_fontcolor_converted(self) -> None:

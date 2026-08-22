@@ -144,6 +144,13 @@ async def lifespan(app: FastAPI):
     from clipwright.context import mongo as mongo_ctx
     mongo_ctx.connect()
 
+    # 4.78 生产加固 1.2: 管线运行态启动恢复（遗留 running 标 interrupted + 重建映射）
+    try:
+        from clipwright.api.pipeline import recover_pipeline_runtime
+        recover_pipeline_runtime()
+    except Exception as e:
+        logger.warning("管线运行态启动恢复跳过: %s", e)
+
     # 4.85 确保 PluginData 目录结构存在
     from clipwright.config import settings as _cfg
     _pd = _cfg.plugin_data_dir

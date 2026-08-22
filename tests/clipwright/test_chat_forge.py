@@ -85,7 +85,7 @@ class TestChatForgeSessionExpiry:
         import datetime
 
         session = ChatForgeSession(session_id="test_exp")
-        session.updated_at = datetime.datetime.now() - datetime.timedelta(hours=2)
+        session.updated_at = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)
         assert session.is_expired is True
-        session.updated_at = datetime.datetime.now()
+        session.updated_at = datetime.datetime.now(datetime.timezone.utc)
         assert session.is_expired is False

@@ -16,7 +16,7 @@ from clipwright.services.pipeline import PipelineOrchestrator
 from clipwright.services.pipeline_v2 import PipelineOrchestratorV2
 from clipwright.services.trace import get_events, get_all_events, create_trace, add_event
 from clipwright.services.async_util import spawn_background
-from clipwright.config import logger
+from clipwright.config import logger, settings
 
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 _orchestrator = PipelineOrchestrator()
@@ -31,6 +31,101 @@ _pipeline_owners: dict[str, str] = {}
 _idempotency_pipeline: dict[str, str] = {}
 # A10: pipeline_id → TaskQueue task_id（供取消/查询映射）
 _pipeline_tasks: dict[str, str] = {}
+
+
+# ── 生产加固 1.2：运行态映射落 Mongo（重启可恢复），不可用时静默降级纯内存 ──
+
+def _mongo_runtime_col():
+    try:
+        from clipwright.context import mongo
+        if mongo.is_connected:
+            return mongo.db["pipeline_runtime"]
+    except Exception:
+        pass
+    return None
+
+
+def _persist_pipeline_runtime(pipeline_id: str, **fields) -> None:
+    """upsert 管线运行态元数据（owner/幂等键/队列映射），供进程重启后重建。"""
+    col = _mongo_runtime_col()
+    if col is None:
+        return
+    try:
+        import time as _t
+        payload = {k: v for k, v in fields.items() if v}
+        payload["updated_at"] = _t.time()
+        col.update_one({"pipeline_id": pipeline_id}, {"$set": payload}, upsert=True)
+    except Exception as e:
+        logger.warning("pipeline runtime 持久化失败: %s", e)
+
+
+def _load_result_from_mongo(pipeline_id: str) -> dict | None:
+    """内存缺失时从 pipelines 集合重建结果字典（V2 全程落库的 state）。"""
+    try:
+        from clipwright.models.pipeline_model import PipelineModel
+        model = PipelineModel.find_by_id(pipeline_id)
+        if model is None:
+            return None
+        doc = model.to_dict()
+        if not isinstance(doc, dict) or not doc.get("status"):
+            return None
+        return {
+            "pipeline_id": pipeline_id,
+            "status": doc.get("status", "unknown"),
+            "steps": doc.get("steps") or [],
+            "request": doc.get("request") or {},
+            "shared_data": doc.get("shared_data") or {},
+            "error": doc.get("error") or "",
+            "output_path": doc.get("output_path") or "",
+            "recovered_from_mongo": True,
+        }
+    except Exception as e:
+        logger.warning("pipeline 结果 Mongo 回退失败: %s", e)
+        return None
+
+
+def recover_pipeline_runtime() -> dict:
+    """启动恢复（main.py lifespan 调用）：
+
+    1. pipelines 集合中遗留 status=running 的记录标记 interrupted（进程已死）；
+    2. 从 pipeline_runtime 集合重建 owner/幂等映射（24h 内）。
+    """
+    stats = {"interrupted": 0, "owners": 0, "idem": 0}
+    try:
+        from clipwright.models.pipeline_model import PipelineModel
+        stale = PipelineModel.find_many({"status": "running"}, limit=500)
+        for model in stale or []:
+            try:
+                model.status = "interrupted"
+                model.error = (model.error or "") + " [进程重启中断]"
+                model.update()
+                stats["interrupted"] += 1
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning("启动恢复: 标记中断管线失败: %s", e)
+    col = _mongo_runtime_col()
+    if col is not None:
+        try:
+            import time as _t
+            cutoff = _t.time() - 24 * 3600
+            for doc in col.find({"updated_at": {"$gte": cutoff}}, limit=2000):
+                pid = doc.get("pipeline_id")
+                if not pid:
+                    continue
+                if doc.get("owner_id"):
+                    _pipeline_owners.setdefault(pid, doc["owner_id"])
+                    stats["owners"] += 1
+                if doc.get("idem_key"):
+                    _idempotency_pipeline.setdefault(doc["idem_key"], pid)
+                    stats["idem"] += 1
+                if doc.get("task_id"):
+                    _pipeline_tasks.setdefault(pid, doc["task_id"])
+        except Exception as e:
+            logger.warning("启动恢复: 重建运行态映射失败: %s", e)
+    if any(stats.values()):
+        logger.info("管线运行态启动恢复: %s", stats)
+    return stats
 
 
 def _enforce_pipeline_owner(request: Request, pipeline_id: str) -> None:
@@ -126,9 +221,10 @@ async def run_pipeline(request: PipelineRequest) -> PipelineState:
     """全流程执行，返回完整时间线。
 
     Deprecated (B13): V1 同步端点，前端零调用；保留兼容不删除。
+    生产加固 1.1：内部引擎切换为 V2（熔断/自愈/检查点保障与主链路一致）。
     """
     logger.warning("DEPRECATED: POST /api/pipeline/run 被调用 (persona=%s)", request.persona_id)
-    state = await _orchestrator.run(request)
+    state = await PipelineOrchestratorV2().run(request)
     state.shared_data["execution_trace"] = get_all_events(state.pipeline_id)
     if state.status == "failed":
         raise HTTPException(status_code=400, detail=state.error)
@@ -166,6 +262,8 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
     _pipeline_owners[pipeline_id] = uid or ""
     if idem_key:
         _idempotency_pipeline[idem_key] = pipeline_id
+    # 生产加固 1.2: 运行态元数据落 Mongo（重启可恢复）
+    _persist_pipeline_runtime(pipeline_id, owner_id=uid or "", idem_key=idem_key)
     audit.record("pipeline_run", uid, {"pipeline_id": pipeline_id,
                                        "persona_id": request.persona_id,
                                        "category_plugin_id": request.category_plugin_id})
@@ -191,7 +289,9 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
                 })
             except Exception as e:
                 logger.warning("pre_pipeline hook 执行失败: %s", e)
-            orch = PipelineOrchestratorV2() if request.use_v2 else _orchestrator
+            # 生产加固 1.1：管线引擎统一 V2（熔断/自愈/DAG/检查点）；
+            # use_v2 字段保留兼容但被忽略，V1 编排器不再服务任何端点。
+            orch = PipelineOrchestratorV2()
             state = await orch.run(request, pipeline_id=pipeline_id, task_id=task_id)
             state.shared_data["execution_trace"] = get_all_events(pipeline_id)
             result_dict = state.model_dump(mode="json")
@@ -282,6 +382,7 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
         try:
             await asyncio.sleep(0.1)
             _pipeline_tasks[pipeline_id] = task_id
+            _persist_pipeline_runtime(pipeline_id, task_id=task_id)
         except Exception:
             pass
     spawn_background(_task_slot(), name=f"pipeline-tasklink-{pipeline_id}")
@@ -302,11 +403,13 @@ async def get_pipeline_trace(pipeline_id: str):
 async def stream_pipeline_trace(pipeline_id: str, request: Request):
     """SSE 流：实时推送管线执行追踪事件（LLM、Tool、Skill、Plugin 调用）。"""
     async def event_stream():
-        last_time = time.time()
+        # 生产加固 1.8: 单调 seq 游标（替代浮点时间戳，时钟回拨不丢事件）
+        from clipwright.services.trace import get_events_since_seq, wait_new_event
+        last_seq = 0
         # 先发送已存在的事件
         for event in get_events(pipeline_id):
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-            last_time = max(last_time, event["time"])
+            last_seq = max(last_seq, int(event.get("seq", 0) or 0))
 
         # 持续轮询新事件直到管线终态（done/error）或达到长上限。
         # 管线动画阶段可能长达 40-60 分钟，固定 600s 会让前端 SSE 中途断流而收不到终态。
@@ -323,16 +426,18 @@ async def stream_pipeline_trace(pipeline_id: str, request: Request):
         except Exception:
             pass
         max_wall = _max_wall
-        start_wall = time.time()
-        while time.time() - start_wall < max_wall:
+        start_wall = time.monotonic()
+        while time.monotonic() - start_wall < max_wall:
             if await request.is_disconnected():
                 return
-            await asyncio.sleep(0.5)
-            events = get_events(pipeline_id, since=last_time)
+            # 生产加固 1.5: 事件驱动等待（替代 0.5s 盲轮询），1s 超时兼顾断连检查
+            from clipwright.services.trace import wait_new_event
+            await wait_new_event(pipeline_id, timeout=1.0)
+            events = get_events_since_seq(pipeline_id, last_seq)
             if events:
                 for event in events:
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                    last_time = max(last_time, event["time"])
+                    last_seq = max(last_seq, int(event.get("seq", 0) or 0))
                     # 收到 done/error 事件后延 2 秒关闭
                     if event["type"] in ("done", "error"):
                         await asyncio.sleep(2)
@@ -361,6 +466,11 @@ async def get_pipeline_result(pipeline_id: str) -> dict:
     # 没有结果 → 检查是否还在运行
     task = _running_pipelines.get(pipeline_id)
     if task is None:
+        # 生产加固 1.2: 内存缺失（如进程重启）→ Mongo 回退
+        recovered = _load_result_from_mongo(pipeline_id)
+        if recovered is not None:
+            _pipeline_results[pipeline_id] = recovered
+            return recovered
         # 既无结果也无运行中的任务
         from clipwright.services.trace import get_all_events as ga
         events = ga(pipeline_id)
@@ -390,6 +500,11 @@ async def get_pipeline_status(pipeline_id: str, request: Request) -> dict:
     """查询管线执行状态（P3-3B: 校验所有权）。"""
     _enforce_pipeline_owner(request, pipeline_id)
     result = _pipeline_results.get(pipeline_id)
+    if result is None:
+        # 生产加固 1.2: Mongo 回退
+        result = _load_result_from_mongo(pipeline_id)
+        if result is not None:
+            _pipeline_results[pipeline_id] = result
     if result is not None:
         return {"pipeline_id": pipeline_id, "status": result.get("status", "completed"),
                 "has_result": True}
@@ -466,6 +581,11 @@ async def retry_agent(pipeline_id: str, agent_name: str, request: Request) -> di
 
     # 重建上下文，只从失败 agent 开始重新执行
     state = _pipeline_results.get(pipeline_id)
+    if not state:
+        # 生产加固 1.2: 进程重启后内存丢失 → Mongo 回退重建 prior_state
+        state = _load_result_from_mongo(pipeline_id)
+        if state:
+            _pipeline_results[pipeline_id] = state
     if not state:
         raise HTTPException(status_code=400, detail="Pipeline result not available for retry")
 
@@ -748,9 +868,10 @@ async def run_single_agent(agent_name: str, request: PipelineRequest) -> dict:
 
     Deprecated (B5): 语义为「运行完整管线并返回指定 agent 步骤结果（非隔离执行）」，
     前端零调用；保留兼容不删除，但调用方不应依赖其"单步"语义。
+    生产加固 1.1：内部引擎切换为 V2。
     """
     logger.warning("DEPRECATED: POST /api/pipeline/step/%s 被调用", agent_name)
-    state = await _orchestrator.run(request)
+    state = await PipelineOrchestratorV2().run(request)
     step = state.get_step(agent_name)
     if step is None:
         raise HTTPException(status_code=404, detail=f"Agent {agent_name} not executed")

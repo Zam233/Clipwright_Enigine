@@ -338,7 +338,7 @@ class BaseVoiceProvider(abc.ABC):
         model: str,
         text: str,
         **kwargs: Any,
-    ) -> bytes:
+    ) -> tuple[bytes, list[dict]]:
         """合成语音，返回音频字节流。"""
 
 
@@ -387,7 +387,7 @@ class QwenTTSProvider(BaseVoiceProvider):
         model: str,
         text: str,
         **kwargs: Any,
-    ) -> bytes:
+    ) -> tuple[bytes, list[dict]]:
         if "realtime" in model.lower():
             raise ValueError(
                 f"音色绑定的是实时模型 '{model}'，不支持 HTTP 合成。"
@@ -398,7 +398,7 @@ class QwenTTSProvider(BaseVoiceProvider):
         instructions = kwargs.get("instructions")
         if instructions:
             inp["instructions"] = instructions
-        payload = {"model": model, "input": inp}
+        payload = {"model": model, "input": inp, "parameters": {"word_timestamp_enabled": True}}
         headers = {
             "Authorization": f"Bearer {settings.tts_dashscope_api_key}",
             "Content-Type": "application/json",
@@ -410,14 +410,18 @@ class QwenTTSProvider(BaseVoiceProvider):
             raise RuntimeError(f"Qwen-TTS 合成失败 [{resp.status_code}]: {resp.text[:500]}")
         body = resp.json()
         audio_info = body.get("output", {}).get("audio", {})
+        audio_bytes = b""
         if audio_info.get("data"):
-            return base64.b64decode(audio_info["data"])
-        if audio_info.get("url"):
+            audio_bytes = base64.b64decode(audio_info["data"])
+        elif audio_info.get("url"):
             async with httpx.AsyncClient(timeout=120) as client:
                 r = await client.get(audio_info["url"])
             if r.status_code == 200:
-                return r.content
-        raise RuntimeError(f"Qwen-TTS 响应中没有音频: {str(body)[:300]}")
+                audio_bytes = r.content
+        if not audio_bytes:
+            raise RuntimeError(f"Qwen-TTS 响应中没有音频: {str(body)[:300]}")
+        word_timestamps = body.get("output", {}).get("word_timestamps", [])
+        return audio_bytes, word_timestamps
 
 
 class CosyVoiceProvider(BaseVoiceProvider):
@@ -484,7 +488,7 @@ class CosyVoiceProvider(BaseVoiceProvider):
         model: str,
         text: str,
         **kwargs: Any,
-    ) -> bytes:
+    ) -> tuple[bytes, list[dict]]:
         import dashscope
         from dashscope.audio.tts_v2 import SpeechSynthesizer
 
@@ -505,7 +509,8 @@ class CosyVoiceProvider(BaseVoiceProvider):
                 audio = synthesizer.call(text)
                 if audio is None:
                     raise RuntimeError("CosyVoice synthesis returned None")
-                return audio if isinstance(audio, bytes) else audio.encode()
+                audio_bytes = audio if isinstance(audio, bytes) else audio.encode()
+                return audio_bytes, []
             finally:
                 dashscope.api_key = old_key
 
@@ -558,7 +563,7 @@ class MiniMaxProvider(BaseVoiceProvider):
         model: str,
         text: str,
         **kwargs: Any,
-    ) -> bytes:
+    ) -> tuple[bytes, list[dict]]:
         url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
         vs = {"voice_id": voice_api_id, "speed": 1, "vol": 1, "pitch": 0}
         emotion = kwargs.get("emotion")
@@ -582,20 +587,25 @@ class MiniMaxProvider(BaseVoiceProvider):
             raise RuntimeError(f"MiniMax synthesis failed [{resp.status_code}]: {resp.text[:500]}")
         body = resp.json()
         audio_data = body.get("output", {}).get("data", {})
+        audio_bytes = b""
         if audio_data.get("audio"):
-            return bytes.fromhex(audio_data["audio"])
-        audio_info = body.get("output", {}).get("audio", {})
-        if audio_info.get("data"):
-            return base64.b64decode(audio_info["data"])
-        if audio_info.get("url"):
-            async with httpx.AsyncClient(timeout=120) as client:
-                r = await client.get(audio_info["url"])
-            if r.status_code == 200:
-                return r.content
-        ct = resp.headers.get("content-type", "")
-        if "audio" in ct or "octet" in ct:
-            return resp.content
-        raise RuntimeError(f"MiniMax 响应中没有音频: {str(body)[:300]}")
+            audio_bytes = bytes.fromhex(audio_data["audio"])
+        else:
+            audio_info = body.get("output", {}).get("audio", {})
+            if audio_info.get("data"):
+                audio_bytes = base64.b64decode(audio_info["data"])
+            elif audio_info.get("url"):
+                async with httpx.AsyncClient(timeout=120) as client:
+                    r = await client.get(audio_info["url"])
+                if r.status_code == 200:
+                    audio_bytes = r.content
+            else:
+                ct = resp.headers.get("content-type", "")
+                if "audio" in ct or "octet" in ct:
+                    audio_bytes = resp.content
+        if not audio_bytes:
+            raise RuntimeError(f"MiniMax 响应中没有音频: {str(body)[:300]}")
+        return audio_bytes, []
 
 
 # ──────────────────────────────────────────────
@@ -796,6 +806,9 @@ class VoiceService:
         results: list[dict[str, Any]] = []
         total_duration = 0.0
 
+        # 生产加固 2.1: 实测句级时间戳 — 每段合成后用 ffprobe 实测时长累加，
+        # 段内词级时间按字符比例近似（供 NEL/字幕/动画对齐消费）。
+        cursor = 0.0
         for idx, seg in enumerate(segments_text):
             seed = hash(seg) % 2147483647
             try:
@@ -812,7 +825,23 @@ class VoiceService:
                     d = sr.data
                     d["index"] = idx
                     d["seed"] = seed
-                    total_duration += d.get("duration_sec", 0)
+                    seg_dur = float(d.get("duration_sec", 0) or 0)
+                    d["start_sec"] = round(cursor, 3)
+                    d["end_sec"] = round(cursor + seg_dur, 3)
+                    # Phase 2.1 词级时间戳接入
+                    word_timestamps = d.get("word_timestamps", [])
+                    if word_timestamps:
+                        d["words"] = [{"word": w.get("word", ""), "t": round(cursor + float(w.get("time", 0)) / 1000.0, 3)} for w in word_timestamps]
+                        d["char_timings"] = [w["t"] for w in d["words"]]
+                    else:
+                        chars = [c for c in seg if not c.isspace()]
+                        if chars and seg_dur > 0:
+                            d["char_timings"] = [
+                                round(cursor + seg_dur * (i + 0.5) / len(chars), 3)
+                                for i in range(len(chars))
+                            ]
+                    cursor += seg_dur
+                    total_duration += seg_dur
                     results.append(d)
                 else:
                     results.append({"index": idx, "text": seg, "error": sr.error})

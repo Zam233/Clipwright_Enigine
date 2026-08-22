@@ -337,18 +337,18 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                 logger.info("StructureAgent: 可用工具=%s, tool_schemas数量=%d", list(available_tools.keys()), len(tool_schemas))
 
                 async def _generate_scenes(variant_hint: str = "") -> tuple[list[dict], list[str]]:
-                    """单次结构生成（带超时；超时回退 fallback）。"""
+                    """单次结构生成（统一收口：超时+重试；失败回退 fallback）。"""
                     try:
                         up = user_prompt + variant_hint
-                        result = await asyncio.wait_for(
-                            self._llm.with_tools(
+                        result = await self.llm_call_with_retry(
+                            lambda: self._llm.with_tools(
                                 system_prompt=system_prompt,
                                 user_prompt=up,
                                 tool_executor=self._tool_executor_for_llm,
                                 tools=tool_schemas,
                                 pipeline_id=context.pipeline_id,
                             ),
-                            timeout=self.timeout_sec,
+                            retries=1, timeout=self.timeout_sec,
                         )
                         logger.info("StructureAgent: LLM 响应长度=%d, 内容预览=%.200s", len(result.content or ""), result.content or "")
                         raw_scenes = self._parse_scenes(result.content)
@@ -514,7 +514,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             f"{scenes_text}"
         )
         try:
-            result = await self._llm.structured_output(
+            result = await self.llm_or_fallback(lambda: self._llm.structured_output(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 output_schema={
@@ -533,9 +533,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                         },
                     },
                     "required": ["markers"],
-                },
-                pipeline_id=context.pipeline_id,
-            )
+                }, pipeline_id=context.pipeline_id), fallback=None, retries=2)
             markers = result.get("markers", []) if isinstance(result, dict) else []
             enriched = 0
             for m in markers:

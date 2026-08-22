@@ -55,10 +55,17 @@ def _canonical_manifest_payload(manifest: PluginManifest) -> bytes:
 
 
 def verify_manifest_signature(manifest: PluginManifest) -> bool:
-    """M1: 校验 manifest 签名。无签名密钥或清单无签名 → 视场景返回。"""
-    key = _signature_key()
-    if not key or not manifest.signature:
+    """M1: 校验 manifest 签名。
+
+    审计 P0 修复：收紧绕过路径——
+    - 清单未携带签名：返回 True，是否放行由加载层 plugin_require_signature 策略决定；
+    - 清单声称已签名但无密钥可验：一律视为无效（原先静默放行）。
+    """
+    if not manifest.signature:
         return True
+    key = _signature_key()
+    if not key:
+        return False
     expected = hmac.new(key, _canonical_manifest_payload(manifest), hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, manifest.signature.strip())
 
@@ -199,11 +206,15 @@ class PluginLoader:
         # 1. 解析清单
         manifest = self._parse_manifest(plugin_id, plugin_path)
 
-        # 2. M1: 签名 + 权限
-        if settings.plugin_require_signature and not manifest.signature:
-            get_error_bus().record(plugin_id, "load", "未签名且 require_signature=True 拒绝加载")
+        # 2. M1: 签名 + 权限（审计 P0 修复：显式配置签名密钥后，未签名插件一律拒绝，
+        # 堵住「部署了密钥但默认 require_signature=False」的绕过缺口；
+        # 仅从 jwt 密钥派生的隐式密钥不触发强制，保持本地/jwt 部署对未签名内置插件的兼容）
+        explicit_sig_key = bool(settings.plugin_signature_key)
+        if (settings.plugin_require_signature or explicit_sig_key) and not manifest.signature:
+            get_error_bus().record(plugin_id, "load", "未签名且签名策略强制 拒绝加载")
             raise PluginLoadError(
-                f"Plugin '{plugin_id}' 未签名，且 plugin_require_signature=True 拒绝加载"
+                f"Plugin '{plugin_id}' 未签名，且签名策略要求强制签名（plugin_require_signature "
+                f"或显式 plugin_signature_key），拒绝加载"
             )
         if manifest.signature and not verify_manifest_signature(manifest):
             get_error_bus().record(plugin_id, "load", "manifest 签名校验失败")

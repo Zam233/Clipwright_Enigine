@@ -20,7 +20,11 @@ from clipwright.services.render import RenderService
 
 
 def _capture_ffmpeg(monkeypatch) -> list[list[str]]:
-    """拦截 render_overlay_on_video 内部的真实 subprocess.run，记录命令行。"""
+    """拦截 render_overlay_on_video 内部的真实 ffmpeg 执行，记录命令行。
+
+    审计 P0 修复后 overlay 走 run_tracked_ff（Popen + 取消跟踪），
+    故同时 patch 该入口；行为契约不变（返回 CompletedProcess rc=0）。
+    """
     cmds: list[list[str]] = []
 
     def fake_run(cmd, **kw):
@@ -28,6 +32,7 @@ def _capture_ffmpeg(monkeypatch) -> list[list[str]]:
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(render_mod, "run_tracked_ff", fake_run)
     # 固定编码器，避免测试机器差异影响断言
     monkeypatch.setattr(render_mod, "_resolve_encoder", lambda: "libx264")
     return cmds

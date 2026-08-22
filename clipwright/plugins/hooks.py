@@ -31,6 +31,13 @@ class HookRegistry:
 
     @classmethod
     def register(cls, point: HookPoint, fn: Callable, **kwargs: Any) -> None:
+        # 审计 P2 修复：登记 plugin_id 标注，unregister/卸载时才能按插件精确清理
+        plugin_id = kwargs.get("plugin_id")
+        if plugin_id:
+            try:
+                fn.__plugin_id__ = plugin_id
+            except (AttributeError, TypeError):
+                pass
         cls._hooks.setdefault(point, []).append(fn)
         logger.debug("Hook registered: %s -> %s", point.value, getattr(fn, "__name__", str(fn)))
 

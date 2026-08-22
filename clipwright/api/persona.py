@@ -36,12 +36,9 @@ async def list_personas() -> list[str]:
 
 
 @router.get("/{persona_id}", response_model=PersonaManifest)
-async def get_persona(persona_id: str) -> PersonaManifest:
-    from clipwright.persona.loader import PersonaLoadError
-    try:
-        return _repo.load_manifest(persona_id)
-    except (FileNotFoundError, PersonaLoadError):
-        raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
+async def get_persona(persona_id: str, request: Request) -> PersonaManifest:
+    # 审计 P0 修复：读端点同样校验所有权
+    return _load_owned(request, persona_id)
 
 
 @router.post("/create", response_model=PersonaManifest)
@@ -247,20 +244,18 @@ class SavePromptRequest(BaseModel):
 
 
 @router.get("/{persona_id}/prompt")
-async def get_prompt(persona_id: str) -> dict:
+async def get_prompt(persona_id: str, request: Request) -> dict:
     """获取 Persona 的 Prompt 指令。"""
-    if not _repo.exists(persona_id):
-        raise HTTPException(status_code=404, detail=f"Persona 不存在: {persona_id}")
+    _load_owned(request, persona_id)  # 审计 P0 修复：读端点校验所有权
     prompt_path = _repo.persona_path(persona_id) / "prompt.md"
     text = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else ""
     return {"persona_id": persona_id, "prompt": text}
 
 
 @router.put("/{persona_id}/prompt")
-async def save_prompt(persona_id: str, req: SavePromptRequest) -> dict:
+async def save_prompt(persona_id: str, req: SavePromptRequest, request: Request) -> dict:
     """保存/更新 Persona 的 Prompt 指令。"""
-    if not _repo.exists(persona_id):
-        raise HTTPException(status_code=404, detail=f"Persona 不存在: {persona_id}")
+    _load_owned(request, persona_id)  # 审计 P2 修复：写端点校验所有权
     _repo.save_prompt(persona_id, req.prompt)
     return {"status": "ok", "persona_id": persona_id}
 
@@ -273,20 +268,18 @@ class SaveVisionPromptRequest(BaseModel):
 
 
 @router.get("/{persona_id}/vision-prompt")
-async def get_vision_prompt(persona_id: str) -> dict:
+async def get_vision_prompt(persona_id: str, request: Request) -> dict:
     """获取 Persona 的视觉需求 Prompt。"""
-    if not _repo.exists(persona_id):
-        raise HTTPException(status_code=404, detail=f"Persona 不存在: {persona_id}")
+    _load_owned(request, persona_id)  # 审计 P0 修复：读端点校验所有权
     vision_path = _repo.persona_path(persona_id) / "vision_prompt.md"
     text = vision_path.read_text(encoding="utf-8") if vision_path.exists() else ""
     return {"persona_id": persona_id, "vision_prompt": text}
 
 
 @router.put("/{persona_id}/vision-prompt")
-async def save_vision_prompt(persona_id: str, req: SaveVisionPromptRequest) -> dict:
+async def save_vision_prompt(persona_id: str, req: SaveVisionPromptRequest, request: Request) -> dict:
     """保存/更新 Persona 的视觉需求 Prompt（显式编辑，允许覆盖）。"""
-    if not _repo.exists(persona_id):
-        raise HTTPException(status_code=404, detail=f"Persona 不存在: {persona_id}")
+    _load_owned(request, persona_id)  # 审计 P2 修复：写端点校验所有权
     _repo.save_vision_prompt(persona_id, req.vision_prompt)
     return {"status": "ok", "persona_id": persona_id}
 
@@ -295,38 +288,33 @@ async def save_vision_prompt(persona_id: str, req: SaveVisionPromptRequest) -> d
 
 
 @router.get("/{persona_id}/knowledge")
-async def list_knowledge(persona_id: str) -> list[KnowledgeDoc]:
+async def list_knowledge(persona_id: str, request: Request) -> list[KnowledgeDoc]:
     """列出 Persona 的知识库文档。"""
-    if not _repo.exists(persona_id):
-        raise HTTPException(status_code=404, detail=f"Persona 不存在: {persona_id}")
-    manifest = _repo.load_manifest(persona_id)
+    manifest = _load_owned(request, persona_id)  # 审计 P0 修复：读端点校验所有权
     return manifest.knowledge or []
 
 
 @router.post("/{persona_id}/knowledge")
-async def add_knowledge(persona_id: str, doc: KnowledgeDoc) -> dict:
+async def add_knowledge(persona_id: str, doc: KnowledgeDoc, request: Request) -> dict:
     """向 Persona 知识库添加一篇文档（P0-12: 返回真实 doc_id）。"""
-    if not _repo.exists(persona_id):
-        raise HTTPException(status_code=404, detail=f"Persona 不存在: {persona_id}")
+    _load_owned(request, persona_id)  # 审计 P2 修复：写端点校验所有权
     actual_id = _repo.add_knowledge_doc(persona_id, doc)
     return {"status": "ok", "doc_id": actual_id}
 
 
 @router.put("/{persona_id}/knowledge/{doc_id}")
-async def update_knowledge(persona_id: str, doc_id: str, doc: KnowledgeDoc) -> dict:
+async def update_knowledge(persona_id: str, doc_id: str, doc: KnowledgeDoc, request: Request) -> dict:
     """B10: 更新知识库文档（保留原 id + 重索引）。"""
-    if not _repo.exists(persona_id):
-        raise HTTPException(status_code=404, detail=f"Persona 不存在: {persona_id}")
+    _load_owned(request, persona_id)  # 审计 P2 修复：写端点校验所有权
     if not _repo.update_knowledge_doc(persona_id, doc_id, doc):
         raise HTTPException(status_code=404, detail=f"文档 {doc_id} 不存在")
     return {"status": "ok", "doc_id": doc_id}
 
 
 @router.delete("/{persona_id}/knowledge/{doc_id}")
-async def delete_knowledge(persona_id: str, doc_id: str) -> dict:
+async def delete_knowledge(persona_id: str, doc_id: str, request: Request) -> dict:
     """B10: 删除知识库文档（文件 + 索引 + 向量）。"""
-    if not _repo.exists(persona_id):
-        raise HTTPException(status_code=404, detail=f"Persona 不存在: {persona_id}")
+    _load_owned(request, persona_id)  # 审计 P2 修复：写端点校验所有权
     if not _repo.delete_knowledge_doc(persona_id, doc_id):
         raise HTTPException(status_code=404, detail=f"文档 {doc_id} 不存在")
     return {"status": "deleted", "doc_id": doc_id}

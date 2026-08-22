@@ -309,6 +309,25 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                                 if timeline.duration_sec < cursor:
                                     timeline.duration_sec = cursor
 
+                                # 生产加固 2.2：字幕轨按实测旁白窗口重建。
+                                # EditAgent 先于 AudioAgent 运行，字幕是字数比例估算；
+                                # 此处用 TTS 实测句级时间戳替换（仅首次配音触发，
+                                # has_narration=False，不覆盖用户后续手改）。
+                                self._realign_captions_to_narration(timeline, segments)
+                                # Phase 2.3：提取 NEL 配音事件线挂到旁白轨 metadata
+                                # （数字/强调/转折/设问/枚举 cue → 动画对齐消费）
+                                try:
+                                    from clipwright.services.narration_events import (
+                                        align_animations_to_nel,
+                                        attach_nel_to_timeline,
+                                    )
+                                    attach_nel_to_timeline(timeline, segments, bpm=float(bpm) if bpm else None)
+                                    # Phase 2.4/2.5：后置对齐 — MG 动画 clip 吸附到 NEL 事件/节拍
+                                    # （AnimationAgent 先于本 Agent 运行，生成时 NEL 尚不存在）
+                                    align_animations_to_nel(timeline)
+                                except Exception as e:
+                                    logger.warning("NEL 提取/对齐失败（跳过，不影响管线）: %s", e)
+
                                 notes.append(
                                     f"自动配音: {len(segments)} 段旁白"
                                 )
@@ -413,6 +432,49 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
 
         except Exception as e:
             return self.build_error_output(str(e), AudioOutput)
+
+    @staticmethod
+    def _realign_captions_to_narration(timeline, segments: list[dict]) -> None:
+        """生产加固 2.2：用 TTS 实测句级时间戳重建字幕轨（替换估算比例时间）。
+
+        仅处理带 audio_path+text 的成功段；样式与 EditAgent 字幕 clip 保持一致
+        （stroke/shadow 显式注入，renderer=ass）。无字幕轨/无成功段时 no-op。
+        """
+        narr = [s for s in segments if s.get("audio_path") and (s.get("text") or "").strip()]
+        if not narr:
+            return
+        for t in timeline.tracks:
+            if t.kind != ClipKind.CAPTION:
+                continue
+            new_clips = []
+            for i, seg in enumerate(narr):
+                start = float(seg.get("start_sec", 0) or 0)
+                end = float(seg.get("end_sec", start) or start)
+                new_clips.append(Clip(
+                    id=f"cc_narr_{i}_{uuid.uuid4().hex[:6]}",
+                    kind=ClipKind.CAPTION,
+                    asset_id="",
+                    track_id=t.id,
+                    start_sec=round(start, 3),
+                    duration_sec=round(max(0.3, end - start), 3),
+                    text=str(seg["text"]),
+                    font="sans-serif",
+                    stroke_width=2.0,
+                    stroke_color="#000000",
+                    shadow_x=1.0,
+                    shadow_y=1.0,
+                    shadow_color="#80000000",
+                    metadata={
+                        "category": "caption",
+                        "position": "bottom",
+                        "renderer": "ass",
+                        "source": "narration_aligned",
+                    },
+                ))
+            if new_clips:
+                t.clips = new_clips
+                logger.info("AudioAgent: 字幕轨按实测旁白时间重建 %d 条", len(new_clips))
+            return  # 只处理第一条字幕轨
 
     @staticmethod
     def _resolve_demo_voice() -> str:
@@ -563,10 +625,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                 f"以下是 {len(scenes_emotions)} 个分镜场景（含标题/描述/情绪），"
                 f"请为各 BGM 槽位推荐风格与包络：\n\n{scenes_text}"
             )
-            result = await self._llm.structured_output(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                output_schema={
+            result = await self.llm_or_fallback(lambda: self._llm.structured_output(system_prompt=system_prompt, user_prompt=user_prompt, output_schema={
                     "type": "object",
                     "properties": {
                         "allocations": {
@@ -601,8 +660,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                     },
                     "required": ["allocations"],
                 },
-                pipeline_id=pipeline_id,
-            )
+                pipeline_id=pipeline_id), fallback=None, retries=2)
             return self._sanitize_allocations(result, slot_keys)
         except Exception as e:
             logger.warning("AudioAgent: LLM BGM 匹配失败，回退规则: %s", e)

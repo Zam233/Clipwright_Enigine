@@ -75,8 +75,12 @@ class MGRenderer:
         - 未知值回退到 ease（容错）
         """
         if isinstance(easing, (list, tuple)) and len(easing) == 4:
-            nums = ", ".join(str(float(n)) for n in easing)
-            return f"cubic-bezier({nums})"
+            try:
+                nums = ", ".join(str(float(n)) for n in easing)
+                return f"cubic-bezier({nums})"
+            except (TypeError, ValueError):
+                # 审计 P3 修复：非数值 bezier 数组回退 ease，避免整元素渲染失败
+                return "ease"
         name = str(easing)
         if name.startswith("cubic-bezier(") and name.endswith(")"):
             return name
@@ -153,6 +157,8 @@ const dur=parseFloat(root.dataset.duration);
         elem_type = elem.get("type", "text")
         kfs = elem.get("keyframes", [])
         if not kfs:
+            # 审计 P2 修复：静默丢弃改 warning，便于线上排查残缺动画
+            logger.warning("MG 元素 #%d (%s) 无关键帧，已跳过", idx, elem.get("type", "text"))
             return None
 
         eid = f"mg-e{idx}"
@@ -200,7 +206,10 @@ const dur=parseFloat(root.dataset.duration);
             top_style = f"top:{20 + y_off}px"
             xform_y = ""
         elif y == "bottom":
-            top_style = f"bottom:{60 - y_off}px"
+            # 审计 P0 修复 + 约定统一：edge 锚点一律「正 offset = 远离边缘（向画布内）」。
+            # 与 x=left(left:20+x_off) / x=right(right:20+x_off) / y=top(top:20+y_off) 对称；
+            # 旧式 60-y_off 使模板中 23 处正 offset 渲染到画布外。模板负值已同步翻转。
+            top_style = f"bottom:{60 + y_off}px"
             xform_y = ""
         else:
             top_style = f"top:{y}px"
@@ -211,7 +220,10 @@ const dur=parseFloat(root.dataset.duration);
         # 构建 CSS keyframes
         css_parts = [f"@keyframes {anim_name}{{"]
         for kf in kfs:
-            pct = (kf["time"] / max(total_dur, 0.01)) * 100
+            # 审计 P1 修复：关键帧时间防御性钳制到 [0, total_dur]，
+            # 越界 time 会生成 >100% 的 CSS stop，被 Chromium 忽略导致尾部动画不可预测
+            kf_time = max(0.0, min(float(kf.get("time", 0)), max(total_dur, 0.01)))
+            pct = (kf_time / max(total_dur, 0.01)) * 100
             props = {k: v for k, v in kf.items() if k != "time"}
             transforms = []
             style_attrs = []
@@ -311,6 +323,11 @@ const dur=parseFloat(root.dataset.duration);
                 border_radius = elem.get("border_radius", 4)
 
             radius_css = f"border-radius:{fill(border_radius)};" if border_radius not in (0, "0", 0.0) else ""
+            # 审计 P3 修复：stroke_width=0 为合法「显式无边框」，按数值判断而非 truthy
+            try:
+                sw_num = float(sw)
+            except (TypeError, ValueError):
+                sw_num = 0.0
             if elem_type == "ring":
                 # ring 需要空心底色透明，用 border 画圆环
                 bg_css = "background:transparent;"
@@ -322,7 +339,7 @@ const dur=parseFloat(root.dataset.duration);
                 f'<div id="{eid}" class="mg-el mg-shape" style="{base_css}'
                 f'width:{w_val}px;height:{h_val}px;{bg_css}'
                 f'{radius_css}'
-                + (f'border:{sw}px solid {fill(sw_color)};' if sw else "")
+                + (f'border:{sw}px solid {fill(sw_color)};' if sw_num > 0 else "")
                 + static_style
                 + '"></div>'
             )
@@ -346,6 +363,8 @@ const dur=parseFloat(root.dataset.duration);
                 + '"/>'
             )
         else:
+            # 审计 P2 修复：未知元素类型静默丢弃改 warning
+            logger.warning("MG 元素 #%d 类型 %r 不受支持，已跳过", idx, elem_type)
             return None
 
         # JS 控制（使用 CSS 动画 + animation-delay）

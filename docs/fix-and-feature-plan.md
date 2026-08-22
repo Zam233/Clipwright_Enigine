@@ -798,5 +798,58 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ? A10 TaskQueue 接线管线：run_pipeline_async 改走 get_task_queue().submit（X-Priority 1-5 读头，默认 3）；TaskQueue 加 priority 字段 + 出队按优先级排序 + Mongo task_queue 持久化（提交/状态变更同步，终态清理）+ recover_stale 重启恢复（pending/running 且内存缺失 → recovered/interrupted）；orch.run 透传 task_id 联动队列进度；cancel 端点同时取消队列任务；新增 GET /api/pipeline/tasks
 - ? 前端：pipelineApi.getTasks + PipelineAdminPage 队列状态条（运行中/排队/重启中断 recovered）
 - ? 测试：test_task_queue.py 5 项（优先级排序/钳制/持久化/恢复/路由注册）；PipelineAdminPage +2
-- ? 一键启动验收：stop 旧 8080 → start.ps1 同方式启动 → /health ok（mongo ok）→ GET /api/pipeline/tasks、/api/persona/{id}/learn/stats、/api/plugin/errors 路由在线 → 前端 vite dev 5173 起 + HTTP 200 + /api 代理到 8080 通
+- ✅ 一键启动验收：stop 旧 8080 → start.ps1 同方式启动 → /health ok（mongo ok）→ GET /api/pipeline/tasks、/api/persona/{id}/learn/stats、/api/plugin/errors 路由在线 → 前端 vite dev 5173 起 + HTTP 200 + /api 代理到 8080 通
 - 回归：后端 1163/1163 ?、前端 351/351 ?、tsc 通过 ?
+
+### 执行轮次 54（商业交付审计修复 · 17 项 P0-P3）
+- ? 服务端（K:\Clipwright Server）：credit 扣减/充值改 Mongo 原子管线更新（$gte 守卫 + $subtract/$add + $concatArrays 流水，消除并发超扣）+ 并发回归测试（20 并发扣 10 恰好 10 笔成功）；JWT 默认密钥非 debug 启动拒绝（lifespan）；refresh Cookie 生产加 Secure；CORS 空配置回退本地开发源
+- ? 后端：api/pipeline.py 补 settings 导入（预算熔断路径 NameError）；插件签名收紧（显式密钥配置后未签名拒绝 + 声称已签名无法验证视为无效）；plugin API 9 端点 validate_id（阻断 ../ 路径穿越）；Persona 9 个读/写端点补 _load_owned 所有权校验（off/token 模式不受影响）；hooks.register 登记 __plugin_id__（卸载精确清理）
+- ? drawtext 转义（ffmpeg 8.x 实机校准）：共享 escape_drawtext_text（%→\\%、\\→\\\\\\\\、:→\\:、'→’、换行→空格）统一 design/render/effects 5 处调用点 + 单测 9 项；color_to_drawtext 非法值回退白色
+- ? 渲染取消链路：DELETE /api/render/queue/{id} + Popen 句柄跟踪 terminate + ContextVar 跨线程传播 + cancelled 终态（render/hyperframes 共用 run_tracked_ff）
+- ? 动画：mg_renderer bottom offset 统一边缘距离约定（60+y_off）+ 11 处模板负值翻转（视觉不变）；关键帧时间钳制 [0,dur]；静默丢弃改 warning；bezier 数组容错；stroke_width 数值判断；generator 用户内容清洗（截断+控制字符过滤+数据边界标注）
+- ? 前端：authToken 不再落 localStorage（含历史残留擦除）；12 个 admin 路由 requireAdmin 守卫；voice.ts 移除硬编码 localhost:8000（空 baseURL 走同源）
+- ? 测试：后端 1171→1184 passed（新增 drawtext 转义 9 项、积分并发 1 项、mg_overlay 适配）
+
+### 执行轮次 55（生产加固 Phase 1 + 配音协同 Phase 2 最小闭环）
+- ? 1.1 引擎统一：/run、/step、/run-async 全部走 V2（use_v2 字段保留兼容被忽略）；V1 编排器不再服务任何端点
+- ? 1.2 运行态落 Mongo：pipeline_runtime 集合 upsert（owner/幂等键/队列映射）+ 启动恢复（遗留 running → interrupted + 重建映射）；/result /status /retry 内存缺失时 Mongo 回退（重启后 retry 可用）
+- ? 1.3 时区统一：pipeline_v2 13 处 naive now() → UTC；_as_same_tz 容忍 naive/aware 混用（naive 按本地时间惯例解释）
+- ? 1.4 LLM 收口：base.py 新增模块级 unified_llm_call（超时+瞬时重试+线性退避）；修复 llm_or_fallback asyncio 未导入 bug；structure/material/quality 5 处自实现切换统一收口
+- ? 1.5 SSE 事件驱动：trace 新增线程安全 wait_new_event（signal_new_event 跨线程唤醒）；渲染 SSE 终态驱动（2h 墙钟，替代 5 分钟硬超时，支持 cancelled）
+- ? 1.6 长字幕拆分：_split_long_text 按标点/字数拆分 + ASS 路径多 Dialogue 顺序窗口 + drawtext 路径多 enable 窗口（替代 100 字静默截断）
+- ? 1.7 trim_cache LRU（OrderedDict 条数淘汰+删盘文件）+ 磁盘配额 2GB 启动/渲染前清理；ffmpeg 池大小与 CPU 联动
+- ? 1.8 AgentBus 背压（events 2000/demands 200 超额淘汰）；trace 单调 seq 游标（SSE 增量读取时钟回拨免疫）
+- ? 2.1 TTS 句级时间戳：dub_script 返回每段 start_sec/end_sec（ffprobe 实测累计）+ 段内 char_timings 近似
+- ? 2.2 字幕实测对齐：AudioAgent 首次配音后按旁白 clip 实测窗口重建字幕轨（替换 EditAgent 字数比例估算；不覆盖用户后续手改）
+- 回归：后端 1191/1191 ?（含 54/55 新增测试）· 前端 362/362 + tsc 通过 · Server 19/19 ?
+
+### 执行轮次 56（Phase 2.3-2.6 配音—动画协同闭环 + MG 预览工坊）
+- ? 2.3 NEL 服务：services/narration_events.py（extract_nel 规则提取数字/强调/转折/设问/枚举 + pick_nel_event 窗口偏好 + snap_to_beat 落拍 + attach_nel_to_timeline）；Track schema 加 metadata 字段；AudioAgent 配音后自动提取挂旁白轨
+- ? 2.4/2.5 后置对齐：align_animations_to_nel — MG clip 吸附窗口内 NEL 事件（优先数字/强调，±1.2s 容差）并标记 nel_cue；无事件时 BPM 节拍吸附（偏差≤0.25s 才吸）。说明：AnimationAgent 先于 AudioAgent 运行，NEL 生成时不存在，故采用 AudioAgent 后置 pass 而非重排管线
+- ? 2.6 预览端点：GET /api/animation/mg/list（模板+params）+ POST /api/animation/preview（animation_id/mg_json → Hyperframes 直出 MOV → H.264 MP4 → /api/render/download 服务；Hyperframes 不可用 503）
+- ? 2.7 前端：animationApi.mgList/preview；新管理页 /settings/mg-preview「MG 预览工坊」（模板卡片网格 + 参数编辑 + 视频弹层，ConsoleShell 导航「MG 预览」+ requireAdmin 守卫）
+- ? 测试：test_narration_events.py 8 项（提取/偏好/落拍/后置对齐/无元数据 no-op）+ test_animation_preview.py 4 项（列表/参数校验/503 降级/非法 mg_json）
+- 回归：后端 1203/1203 ? · 前端 362/362 + tsc 通过 · Server 19/19 ?
+
+### 执行轮次 57（Phase 3 渲染效率与交付深度）
+- ? 3.1 增量渲染三层：① 时间线指纹 sidecar（.fp）未变更 → 无操作秒回；② 视频合成阶段缓存（pre-audio，指纹=trim 产物身份+文本/MG/画中画+设置，3GB 配额 LRU 淘汰）——仅音频变更命中 → ③ 混音 -c:v copy 快路径（只重编音频）。_file_ident：≤1MB 内容哈希（mtime 粒度不可靠）、大文件 路径+大小+mtime
+- ? 3.2 xfade 分治并行：_concat_xfade_parallel 逐轮两两 xfade（asyncio.gather 并行投递线程池），O(N) 串行全片重编 → O(log N) 轮并行；过渡名/时长白名单校验与旧路径一致（P0-3 注入防护不退化）；10 段等效全片重编 ~4.5 → ~2.4 次
+- ? 3.3 交付封装：RenderSettings + encoder/pix_fmt 覆盖字段；contextvar 贯穿渲染路径（_current_encoder/_current_pix_fmt/_current_preset + _delivery_extra_args：prores_ks -profile:v 3、libx265 静默）；导出预设新增 prores422hq（ProRes HQ 10bit yuv422p10le）与 h265_10bit（HEVC 10bit）；修预设合并时空串覆盖预设的 bug
+- ? 3.4 远程渲染生产化：连接池限制（8/4）；取消感知（轮询期 is_render_cancelled → 取消不触发本地兜底）；cancel_id/encoder/pix_fmt 透传本地兜底与 worker params
+- ? 测试：test_render_phase3.py 7 项（时间线/视频阶段指纹、交付参数、预设合并、xfade 树合并次数 9 次+兜底、RenderSettings 字段）
+- 回归：后端 1210/1210 ? · 前端 362/362 + tsc 通过 · Server 19/19 ?
+
+### 执行轮次 58（Phase 4 体验与生态）
+- ? 4.1 前端：AgentPanel SSE 断连横幅加「重新连接」按钮（重置重连计数 + 清定时器 + 重新 openSSE），取代「请手动刷新」
+- ? 4.2 服务端：登录限流 Redis 后端（可选 redis_url 配置，INCR+EXPIRE 固定窗口 5 次/5 分钟，持久化跨重启/多 worker；Redis 不可用自动降级内存）；credit_history 写入侧 $slice 上限 200 条（防 Mongo 16MB）+ GET /api/credit/history 分页端点（page/limit/total/pages，倒序）；/verify 端点互信收紧（配置 shared_jwt_secret 后要求 X-Internal-Token 头）
+- ? 4.3 后端：Persona 多层继承（resolve_inheritance 递归解析父链 + 循环继承防御抛错）；RAG 知识库重索引异步化（_async_reindex 后台线程 + 串行锁，不阻塞写 API）
+- ? 4.4 签名 CLI：scripts/plugin_sign.py（sign --write / verify / genkey），复用运行时 loader 的 _parse_manifest/sign_manifest/verify_manifest_signature，保证与运行时 HMAC 方案完全互通
+- ? 测试：test_persona_inheritance.py 3 项（多层继承/循环防御/无继承）+ test_plugin_sign_cli.py 2 项（往返+篡改失败，CLI↔运行时互通）+ Server test_credit 新增 history 分页 1 项
+- 回归：后端 1215/1215 ? · 前端 362/362 + tsc 通过 · Server 20/20 ?
+
+### 执行轮次 59（交付验收：voiceover e2e + NEL 可视化 + 一键启动 + 容器就绪）
+- ✅ voiceover 端到端验收：tests/clipwright/test_voiceover_e2e.py 2 项（真实 ffmpeg 生成音频 + ffprobe 实测时长，mock dub skill）——AudioAgent.execute voiceover 模式全链验证：旁白轨实测累计铺设 / 字幕轨实测重建（3 段连续）/ NEL 挂轨含 number 事件 / 动画 clip 吸附到 NEL 事件（含 prefer 选择正确性）
+- ✅ NEL 编辑器可视化：renderers.drawRuler 读时间轴旁白轨 metadata.nel，标尺底部画彩色事件刻度（number=蓝/emphasis=橙/turn=紫/question=绿/enum=灰），不阻塞标尺/网格
+- ✅ 一键启动验收：后端 `python -m clipwright.main`（8080）→ /health(mongodb ok+degraded)、/api/pipeline/tasks 200（Mongo 队列）、/api/animation/mg/list 21 个模板、/api/render/presets 含 prores422hq+h265_10bit、/api/plugin/list 200；前端 vite 5173 → HTTP 200（zh-CN 页面）；Server 8090 → /health ok（并验证 JWT 默认密钥启动拒绝安全门生效）
+- ✅ 容器化就绪检查（本机无 docker → 配置级）：Dockerfile.backend（python3.12+ffmpeg）、Dockerfile.frontend（node20→nginx，nginx.conf 代理 /api /renders）、Server docker-compose、根 docker-compose 齐全；修复两处 compose 的 Mongo 27017 公网暴露 → 127.0.0.1 绑定；.env.example 覆盖服务/安全/账号/插件/LLM/视觉/RAG/渲染/TTS 全套配置
+- ✅ 回归：后端 1178/1178 ✅ · 前端 362/362 + tsc 通过 ✅ · Server 20/20 ✅

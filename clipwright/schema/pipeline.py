@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
@@ -40,7 +40,10 @@ class PipelineRequest(BaseModel):
     topic: str
     extra_params: dict[str, Any] = Field(default_factory=dict)
     dry_run: bool = Field(default=False, description="仅生成预览，不渲染")
-    use_v2: bool = Field(default=False, description="是否使用 v2 动态路由管线")
+    use_v2: bool = Field(
+        default=True,
+        description="Deprecated（生产加固 1.1）：管线统一 V2 引擎，本字段保留兼容但被忽略",
+    )
 
 
 class PipelineState(BaseModel):
@@ -48,8 +51,8 @@ class PipelineState(BaseModel):
     pipeline_id: str
     status: PipelineStatus = PipelineStatus.PENDING
     request: PipelineRequest
-    created_at: datetime = Field(default_factory=datetime.now)
-    updated_at: datetime = Field(default_factory=datetime.now)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     # 执行状态
     current_agent: Optional[str] = Field(default=None)

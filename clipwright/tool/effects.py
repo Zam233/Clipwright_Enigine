@@ -240,8 +240,9 @@ class WatermarkTool(BaseTool):
                     "-c:a", "copy", out,
                 ]
             elif text:
-                # 文字水印
-                safe_text = text.replace("'", "'\\''").replace(":", "\\:")
+                # 文字水印（审计 P0 修复：完整 drawtext 转义）
+                from clipwright.tool.design import escape_drawtext_text
+                safe_text = escape_drawtext_text(text)
                 cmd = [
                     "ffmpeg", "-y", "-loglevel", "error",
                     "-i", input_path,

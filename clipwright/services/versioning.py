@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -64,7 +64,7 @@ class VersionManager:
         version_id = f"v_{uuid.uuid4().hex[:8]}"
         entry = {
             "version_id": version_id,
-            "time": datetime.now().isoformat(),
+            "time": datetime.now(timezone.utc).isoformat(),
             "label": label,
             "position": len(self._index),
         }
@@ -176,7 +176,7 @@ class EditHistory:
         """添加编辑历史记录。"""
         if self._position < len(self._history) - 1:
             self._history = self._history[:self._position + 1]
-        self._history.append({"action": action, "state": state, "time": datetime.now().isoformat()})
+        self._history.append({"action": action, "state": state, "time": datetime.now(timezone.utc).isoformat()})
         if len(self._history) > self._max:
             self._history = self._history[-self._max:]
         self._position = len(self._history) - 1

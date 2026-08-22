@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -24,14 +24,14 @@ class MGStorage:
     def save_generation(self, mg_def: dict, generation_id: str = "") -> dict:
         """保存一次生成结果。返回 {generation_id, path}。"""
         if not generation_id:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
             short_uid = uuid.uuid4().hex[:8]
             generation_id = f"gen_{ts}_{short_uid}"
 
         record = {
             "generation_id": generation_id,
             "mg_def": mg_def,
-            "created_at": datetime.now().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
         path = self._generations_dir / f"{generation_id}.json"
         path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")

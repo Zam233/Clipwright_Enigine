@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import bisect
 import json
 import time
@@ -9,6 +10,31 @@ from typing import Any, Optional
 
 # 全局追踪存储: pipeline_id → list[trace_event]
 _traces: dict[str, list[dict[str, Any]]] = {}
+
+# 生产加固 1.5: SSE 事件驱动通知（替代 0.5s 盲轮询）。
+# waiters 存 Future，signal 用 call_soon_threadsafe 跨线程安全唤醒。
+_waiters: dict[str, list[asyncio.Future]] = {}
+
+
+def signal_new_event(pipeline_id: str) -> None:
+    """通知该管线有新事件（线程安全，可在 executor 线程调用）。"""
+    for fut in list(_waiters.get(pipeline_id, ())):
+        if not fut.done():
+            fut.get_loop().call_soon_threadsafe(fut.set_result, None)
+
+
+async def wait_new_event(pipeline_id: str, timeout: float = 1.0) -> None:
+    """等待新事件通知；超时静默返回（调用方据此做断连检查等慢循环事务）。"""
+    fut = asyncio.get_running_loop().create_future()
+    _waiters.setdefault(pipeline_id, []).append(fut)
+    try:
+        await asyncio.wait_for(fut, timeout)
+    except asyncio.TimeoutError:
+        pass
+    finally:
+        lst = _waiters.get(pipeline_id)
+        if lst and fut in lst:
+            lst.remove(fut)
 
 # 每管线最大事件数（防止内存泄漏）
 _MAX_EVENTS_PER_PIPELINE = 5000
@@ -23,6 +49,17 @@ _EVENT_TTL_SEC = 3600  # 1 小时
 # get_events(since) 用 bisect 二分定位起始下标，避免全量过滤。
 _trace_times: dict[str, list[float]] = {}
 
+# 生产加固 1.8: 单调递增序号游标 — SSE 增量读取不再依赖浮点时间戳
+# （系统时钟回拨时 time.time() 非单调，会丢事件）。
+_seq_counters: dict[str, int] = {}
+_seq_index: dict[str, list[int]] = {}  # 与 _traces 同步的 seq 索引（bisect 定位）
+
+
+def _next_seq(pipeline_id: str) -> int:
+    n = _seq_counters.get(pipeline_id, 0) + 1
+    _seq_counters[pipeline_id] = n
+    return n
+
 
 def _trim_events(pipeline_id: str) -> None:
     """裁剪管线的事件列表，防止无限增长。"""
@@ -35,6 +72,9 @@ def _trim_events(pipeline_id: str) -> None:
         if _times is not None:
             _trace_times[pipeline_id] = _times[-_MAX_EVENTS_PER_PIPELINE:]
             del _times[:dropped]
+        _seqs = _seq_index.get(pipeline_id)
+        if _seqs is not None:
+            _seq_index[pipeline_id] = _seqs[-_MAX_EVENTS_PER_PIPELINE:]
 
 
 def _expire_old_events(pipeline_id: str) -> None:
@@ -58,6 +98,8 @@ def create_trace(pipeline_id: str) -> None:
     _cleanup_stale()
     _traces[pipeline_id] = []
     _trace_times[pipeline_id] = []
+    _seq_counters[pipeline_id] = 0
+    _seq_index[pipeline_id] = []
 
 
 def _cleanup_stale() -> None:
@@ -94,8 +136,12 @@ def add_event(
     if pipeline_id not in _traces:
         _traces[pipeline_id] = []
         _trace_times[pipeline_id] = []
+        _seq_counters[pipeline_id] = 0
+        _seq_index[pipeline_id] = []
+    seq = _next_seq(pipeline_id)
     _traces[pipeline_id].append({
         "time": now,
+        "seq": seq,
         "agent": agent,
         "type": event_type,
         "summary": summary,
@@ -104,7 +150,11 @@ def add_event(
     _times = _trace_times.get(pipeline_id)
     if _times is not None:
         _times.append(now)
+    _seqs = _seq_index.get(pipeline_id)
+    if _seqs is not None:
+        _seqs.append(seq)
     _trim_events(pipeline_id)
+    signal_new_event(pipeline_id)
 
 
 def get_events(pipeline_id: str, since: float = 0) -> list[dict[str, Any]]:
@@ -132,9 +182,24 @@ def get_all_events(pipeline_id: str) -> list[dict[str, Any]]:
     return _traces.get(pipeline_id, [])
 
 
+def get_events_since_seq(pipeline_id: str, after_seq: int) -> list[dict[str, Any]]:
+    """生产加固 1.8: 按单调 seq 游标取增量事件（时钟回拨免疫）。"""
+    events = _traces.get(pipeline_id, [])
+    if not events:
+        return []
+    seqs = _seq_index.get(pipeline_id)
+    if seqs is not None and len(seqs) == len(events):
+        start = bisect.bisect_right(seqs, after_seq)
+        return events[start:]
+    return [e for e in events if e.get("seq", 0) > after_seq]
+
+
 def clear(pipeline_id: str) -> None:
     _traces.pop(pipeline_id, None)
     _trace_times.pop(pipeline_id, None)
+    _seq_counters.pop(pipeline_id, None)
+    _seq_index.pop(pipeline_id, None)
+    _waiters.pop(pipeline_id, None)
 
 
 def add_tool_event(tool_name: str, params: dict, pipeline_id: str = "") -> None:
@@ -152,8 +217,10 @@ def add_tool_event(tool_name: str, params: dict, pipeline_id: str = "") -> None:
     events = _traces.get(pipeline_id)
     if events is not None:
         now = __import__("time").time()
+        seq = _next_seq(pipeline_id)
         events.append({
             "time": now,
+            "seq": seq,
             "agent": "tool",
             "type": "tool",
             "summary": summary,
@@ -162,7 +229,11 @@ def add_tool_event(tool_name: str, params: dict, pipeline_id: str = "") -> None:
         _times = _trace_times.get(pipeline_id)
         if _times is not None:
             _times.append(now)
+        _seqs = _seq_index.get(pipeline_id)
+        if _seqs is not None:
+            _seqs.append(seq)
         _trim_events(pipeline_id)
+        signal_new_event(pipeline_id)
 
 
 def format_tool_call(tool_name: str, params: dict) -> str:

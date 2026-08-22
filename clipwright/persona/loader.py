@@ -125,27 +125,36 @@ def load_persona_or_default(
         )
 
 
-def resolve_inheritance(manifest: PersonaManifest) -> PersonaManifest:
-    """解析 Persona 的继承链，合并所有覆盖和组合。
+def resolve_inheritance(
+    manifest: PersonaManifest,
+    _visited: Optional[set[str]] = None,
+) -> PersonaManifest:
+    """解析 Persona 的继承链，合并所有覆盖和组合（Phase 4.3：支持多层 + 循环防御）。
 
-    当前实现仅做单层继承解析。多层继承需要递归。
+    规则：先递归解析父链（祖父 → 父 → 本），子级缺失的字段取最近祖先的值；
+    inherits 只可能是同一 owner 的名称，读操作不涉及跨用户。
     """
     if not manifest.inherits:
         return manifest
 
     from clipwright.config import settings
+
+    _visited = _visited or set()
+    if manifest.persona_id in _visited:
+        raise PersonaLoadError(
+            f"Persona 继承链存在循环: {' -> '.join(list(_visited) + [manifest.persona_id])}"
+        )
+    _visited.add(manifest.persona_id)
+
     parent = load_persona_by_id(manifest.inherits, settings.persona_dir)
+    parent = resolve_inheritance(parent, _visited)  # 先解析父链（多层）
 
-    if manifest.parameter is None and parent.parameter is not None:
-        manifest.parameter = parent.parameter.model_copy(deep=True)
-
-    if manifest.exemplar is None and parent.exemplar is not None:
-        manifest.exemplar = parent.exemplar.model_copy(deep=True)
-
-    if manifest.embedding is None and parent.embedding is not None:
-        manifest.embedding = parent.embedding.model_copy(deep=True)
-
-    if manifest.model is None and parent.model is not None:
-        manifest.model = parent.model.model_copy(deep=True)
-
+    for field in ("parameter", "exemplar", "embedding", "model"):
+        child_val = getattr(manifest, field, None)
+        parent_val = getattr(parent, field, None)
+        if child_val is None and parent_val is not None:
+            try:
+                setattr(manifest, field, parent_val.model_copy(deep=True))
+            except (ValueError, TypeError):  # noqa: BLE001 — pydantic 某些模型不可原位改，回退构造
+                manifest = manifest.model_copy(update={field: parent_val.model_copy(deep=True)})
     return manifest

@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -337,7 +337,7 @@ class KnowledgeDoc(BaseModel):
     title: str = Field(default="", description="文档标题/文件名")
     content: str = Field(default="", description="文档正文内容")
     source: str = Field(default="", description="来源（本地文件/上传/自动生成）")
-    created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class PersonaManifest(BaseModel):

@@ -168,6 +168,7 @@ class RemoteRenderService:
     async def _poll_job(
         self, client: httpx.AsyncClient, base_url: str, headers: dict[str, str],
         job_id: str, progress_callback: Optional[ProgressCallback],
+        cancel_id: str | None = None,
     ) -> dict[str, Any]:
         """轮询 job 直到 completed / failed / 超时；进度转发给 progress_callback。
 
@@ -182,6 +183,10 @@ class RemoteRenderService:
         status_url = f"{base_url}/api/worker/jobs/{job_id}"
 
         while True:
+            # Phase 3.4: 轮询期间感知用户取消（取消不触发本地兜底）
+            from clipwright.services.render import is_render_cancelled
+            if is_render_cancelled(cancel_id):
+                raise RemoteRenderError(f"渲染已取消: {job_id}")
             try:
                 r = await client.get(status_url, headers=headers)
             except httpx.HTTPError as e:
@@ -246,7 +251,8 @@ class RemoteRenderService:
         self, timeline: Timeline, output_path: str | Path, width: int, height: int,
         fps: float, bitrate: str, audio_bitrate: str, audio_file_path: str,
         bgm_file_path: str, progress_callback: Optional[ProgressCallback],
-        enable_progress: bool,
+        enable_progress: bool, cancel_id: str | None = None,
+        encoder_override: str = "", pix_fmt_override: str = "",
     ) -> RenderResult:
         """本地渲染兜底：完整透传原始参数，交给 RenderService 处理。"""
         return await RenderService().render(
@@ -254,6 +260,8 @@ class RemoteRenderService:
             bitrate=bitrate, audio_bitrate=audio_bitrate,
             audio_file_path=audio_file_path, bgm_file_path=bgm_file_path,
             progress_callback=progress_callback, enable_progress=enable_progress,
+            cancel_id=cancel_id, encoder_override=encoder_override,
+            pix_fmt_override=pix_fmt_override,
         )
 
     # ── 远程主流程 ───────────────────────────────────────────────
@@ -263,6 +271,8 @@ class RemoteRenderService:
         width: int, height: int, fps: float, bitrate: str, audio_bitrate: str,
         audio_file_path: str, bgm_file_path: str,
         progress_callback: Optional[ProgressCallback], enable_progress: bool,
+        cancel_id: str | None = None, encoder_override: str = "",
+        pix_fmt_override: str = "",
     ) -> RenderResult:
         from clipwright.config import settings
 
@@ -276,7 +286,9 @@ class RemoteRenderService:
         if local_files:
             logger.info("远程渲染: 收集 %d 个本地素材文件", len(local_files))
 
-        async with httpx.AsyncClient(timeout=_REMOTE_HTTP_TIMEOUT) as client:
+        # Phase 3.4: 连接池限制（防并发任务耗尽 worker 连接）
+        limits = httpx.Limits(max_connections=8, max_keepalive_connections=4)
+        async with httpx.AsyncClient(timeout=_REMOTE_HTTP_TIMEOUT, limits=limits) as client:
             for path in local_files:
                 sha1 = await asyncio.to_thread(self._sha1_file, path)
                 path_to_sha1[path] = sha1
@@ -320,6 +332,9 @@ class RemoteRenderService:
                 "audio_file_path": _remap_audio(audio_file_path),
                 "bgm_file_path": _remap_audio(bgm_file_path),
                 "enable_progress": enable_progress,
+                # Phase 3.3/3.4: 交付级编码器/像素格式透传（worker 侧 RenderService 消费）
+                "encoder": encoder_override,
+                "pix_fmt": pix_fmt_override,
             }
 
             timeline_dict = new_tl.model_dump()
@@ -331,7 +346,8 @@ class RemoteRenderService:
             logger.info("远程渲染任务已提交: %s", job_id)
 
             # ④ 轮询
-            job = await self._poll_job(client, base_url, headers, job_id, progress_callback)
+            job = await self._poll_job(client, base_url, headers, job_id, progress_callback,
+                                       cancel_id=cancel_id)
             logger.info("远程渲染任务完成: %s", job_id)
 
             # ⑤ 下载 + 原子写 + ffprobe
@@ -345,13 +361,16 @@ class RemoteRenderService:
     async def render(self, timeline: Timeline, output_path: str | Path = "out.mp4",
                      *, width=1920, height=1080, fps=30.0, bitrate="5M",
                      audio_bitrate="192k", audio_file_path="", bgm_file_path="",
-                     progress_callback=None, enable_progress=True) -> RenderResult:
+                     progress_callback=None, enable_progress=True,
+                     cancel_id: str | None = None,
+                     encoder_override: str = "", pix_fmt_override: str = "",
+                     force_render: bool = False) -> RenderResult:
         """将 Timeline 渲染为 MP4 —— 与 RenderService.render 签名完全一致（drop-in 替代）。
 
         - **No-remote 快速路径**：``remote_render_url`` 为空时防御性直接走本地渲染。
           todo 6 集成仅在该配置非空时才实例化本服务，这里兜底保证行为一致。
         - **失败兜底**：远程失败 / 超时按 ``remote_render_fallback`` 决定回退本地
-          渲染（原始 timeline/参数）或返回失败结果。
+          渲染（原始 timeline/参数）或返回失败结果；**用户取消不触发兜底**。
         """
         from clipwright.config import settings
 
@@ -362,6 +381,8 @@ class RemoteRenderService:
                 timeline, output_path, width, height, fps, bitrate,
                 audio_bitrate, audio_file_path, bgm_file_path,
                 progress_callback, enable_progress,
+                cancel_id=cancel_id, encoder_override=encoder_override,
+                pix_fmt_override=pix_fmt_override,
             )
 
         try:
@@ -369,15 +390,22 @@ class RemoteRenderService:
                 url, timeline, output_path, width, height, fps, bitrate,
                 audio_bitrate, audio_file_path, bgm_file_path,
                 progress_callback, enable_progress,
+                cancel_id=cancel_id, encoder_override=encoder_override,
+                pix_fmt_override=pix_fmt_override,
             )
         except Exception as e:
             logger.warning("远程渲染失败: %s（fallback=%s）", e, settings.remote_render_fallback)
+            from clipwright.services.render import is_render_cancelled
+            if is_render_cancelled(cancel_id):
+                return RenderResult(False, error="渲染已取消")
             if settings.remote_render_fallback:
                 try:
                     return await self._render_local(
                         timeline, output_path, width, height, fps, bitrate,
                         audio_bitrate, audio_file_path, bgm_file_path,
                         progress_callback, enable_progress,
+                        cancel_id=cancel_id, encoder_override=encoder_override,
+                        pix_fmt_override=pix_fmt_override,
                     )
                 except Exception as e2:
                     logger.error("本地渲染兜底失败: %s", e2)

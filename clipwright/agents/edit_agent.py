@@ -501,7 +501,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             "\"pip_scenes\": [序号], \"pacing_notes\": [\"中文说明\"]}"
         )
         try:
-            result = await self._llm.structured_output(
+            result = await self.llm_or_fallback(lambda: self._llm.structured_output(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 output_schema={
@@ -517,7 +517,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                     ],
                 },
                 pipeline_id=pipeline_id,
-            )
+            ), fallback=None, retries=2)
         except Exception as e:
             logger.warning("EditAgent: LLM 剪辑档案决策失败（回退规则）: %s", e)
             return None

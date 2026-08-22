@@ -6,6 +6,7 @@ Agent 本身不写死逻辑，它只是"调度器"——根据 Persona 和视频
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from abc import ABC, abstractmethod
 from typing import Any, Generic, TypeVar
@@ -21,6 +22,43 @@ O = TypeVar("O", bound=BaseModel)
 def uid(prefix: str = "ag") -> str:
     """生成短唯一 ID，供 Agent 共用。"""
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
+
+
+async def unified_llm_call(
+    name: str,
+    coro_factory,
+    retries: int = 1,
+    timeout: float = 300,
+    retry_delay_sec: float = 1.5,
+):
+    """生产加固 1.4：全仓统一的 LLM/工具调用收口 — 超时 + 瞬时失败重试（线性退避）。
+
+    重试仅针对超时与含瞬时特征的错误（timeout/rate limit/429/connection/reset），
+    永久错误直接抛出，由调用方决定降级。
+    """
+    from clipwright.config import logger
+
+    last_exc: Exception | None = None
+    for attempt in range(max(0, retries) + 1):
+        try:
+            return await asyncio.wait_for(coro_factory(), timeout=timeout)
+        except asyncio.TimeoutError as e:
+            last_exc = e
+        except Exception as e:  # noqa: BLE001 — 按错误特征判定是否瞬时
+            low = str(e).lower()
+            transient = any(k in low for k in (
+                "timeout", "rate limit", "429", "connection", "reset", "temporarily",
+            ))
+            if not transient:
+                raise
+            last_exc = e
+        if attempt < retries:
+            logger.warning(
+                "%s: 调用失败（%s），%.1fs 后第 %d 次重试",
+                name, last_exc, retry_delay_sec * (attempt + 1), attempt + 1,
+            )
+            await asyncio.sleep(retry_delay_sec * (attempt + 1))
+    raise last_exc  # type: ignore[misc]
 
 
 class BaseAgent(ABC, Generic[I, O]):
@@ -66,16 +104,28 @@ class BaseAgent(ABC, Generic[I, O]):
 
         超时默认取 ``self.timeout_sec``（各 Agent 可覆盖）。
         """
-        import asyncio
-
         return await asyncio.wait_for(coro_factory(), timeout=timeout or self.timeout_sec)
 
-    async def llm_or_fallback(self, coro_factory, fallback, timeout: float | None = None):
-        """LLM 调用 + 超时兜底：超时/异常一律返回 fallback 并记录日志。"""
+    async def llm_call_with_retry(
+        self,
+        coro_factory,
+        retries: int = 1,
+        timeout: float | None = None,
+        retry_delay_sec: float = 1.5,
+    ):
+        """生产加固 1.4：统一 LLM 调用收口（委托模块级 unified_llm_call）。"""
+        return await unified_llm_call(
+            self.agent_name, coro_factory,
+            retries=retries, timeout=timeout or self.timeout_sec,
+            retry_delay_sec=retry_delay_sec,
+        )
+
+    async def llm_or_fallback(self, coro_factory, fallback, timeout: float | None = None, retries: int = 1):
+        """LLM 调用 + 重试 + 超时兜底：失败一律返回 fallback 并记录日志。"""
         from clipwright.config import logger
 
         try:
-            return await self.run_with_timeout(coro_factory, timeout=timeout)
+            return await self.llm_call_with_retry(coro_factory, retries=retries, timeout=timeout)
         except asyncio.TimeoutError:
             logger.warning("%s: LLM 调用超时，使用兜底", self.agent_name)
             return fallback

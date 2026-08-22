@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from clipwright.agents import (
@@ -256,7 +256,7 @@ class PipelineOrchestrator:
             state.error = str(e)
             logger.exception("Pipeline 执行异常: %s", e)
 
-        state.updated_at = datetime.now()
+        state.updated_at = datetime.now(timezone.utc)
         return state
 
     async def _run_agent_step(
@@ -269,7 +269,7 @@ class PipelineOrchestrator:
         """执行单个 Agent 步骤。"""
         step = state.add_step(agent_name)
         step.status = PipelineStatus.RUNNING
-        step.started_at = datetime.now()
+        step.started_at = datetime.now(timezone.utc)
 
         agent = self._agents[agent_name]
         state.current_agent = agent_name
@@ -331,12 +331,12 @@ class PipelineOrchestrator:
             add_event(pid, agent_name, "error", f"Agent 失败: {agent_name} → {str(e)[:200]}")
             logger.exception("Agent %s 执行异常: %s", agent_name, e)
 
-        step.completed_at = datetime.now()
+        step.completed_at = datetime.now(timezone.utc)
         if step.started_at:
             step.duration_ms = int(
                 (step.completed_at - step.started_at).total_seconds() * 1000
             )
-        state.updated_at = datetime.now()
+        state.updated_at = datetime.now(timezone.utc)
         return step
 
     async def _dispatch_agent(self, name: str, data: dict, ctx: AgentContext) -> object:

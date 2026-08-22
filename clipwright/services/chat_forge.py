@@ -16,7 +16,7 @@ import json
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -103,13 +103,13 @@ class ChatForgeSession:
     messages: list[dict[str, Any]] = field(default_factory=list)
     persona_draft: dict[str, Any] = field(default_factory=lambda: _default_draft())
     knowledge_base: list[dict[str, str]] = field(default_factory=list)
-    created_at: datetime = field(default_factory=datetime.now)
-    updated_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
     def is_expired(self) -> bool:
         # 已知限制：1h 内存过期保留（非本需求范围）
-        return datetime.now() - self.updated_at > timedelta(hours=1)
+        return datetime.now(timezone.utc) - self.updated_at > timedelta(hours=1)
 
 
 def _default_draft() -> dict[str, Any]:
@@ -178,8 +178,8 @@ class ChatForge:
                         messages=data.get("messages", []),
                         persona_draft=data.get("persona_draft", _default_draft()),
                         knowledge_base=data.get("knowledge_base", []),
-                        created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.now(),
-                        updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else datetime.now(),
+                        created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.now(timezone.utc),
+                        updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else datetime.now(timezone.utc),
                     )
                     if not session.is_expired:
                         self._sessions[sid] = session
@@ -191,7 +191,7 @@ class ChatForge:
     # ── 会话管理 ──
 
     def _cleanup_expired(self) -> None:
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         expired = [sid for sid, s in self._sessions.items() if now - s.updated_at > timedelta(hours=1)]
         for sid in expired:
             del self._sessions[sid]
@@ -232,7 +232,7 @@ class ChatForge:
         """发送一条消息并获取 AI 回复。"""
         session = self._get_or_create_session(session_id)
         session.messages.append({"role": "user", "content": user_message})
-        session.updated_at = datetime.now()
+        session.updated_at = datetime.now(timezone.utc)
         self._persist_session(session)  # B5
         logger.info("ChatForge message: session=%s, len=%d", session_id, len(user_message))
         return await self._process(session, user_message, persona_id)
@@ -254,7 +254,7 @@ class ChatForge:
         for chunk in chunks:
             session.knowledge_base.append(chunk)
 
-        session.updated_at = datetime.now()
+        session.updated_at = datetime.now(timezone.utc)
         self._persist_session(session)  # B5
         total_chars = len(content)
 
@@ -437,7 +437,7 @@ class ChatForge:
             self._merge_draft(session.persona_draft, draft_update)
 
             session.messages.append({"role": "assistant", "content": reply})
-            session.updated_at = datetime.now()
+            session.updated_at = datetime.now(timezone.utc)
 
             return {
                 "session_id": session.session_id,
@@ -452,7 +452,7 @@ class ChatForge:
             # JSON 解析失败，把原始内容作为 reply
             reply = resp.content
             session.messages.append({"role": "assistant", "content": reply})
-            session.updated_at = datetime.now()
+            session.updated_at = datetime.now(timezone.utc)
             return {
                 "session_id": session.session_id,
                 "reply": reply,

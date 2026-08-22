@@ -19,6 +19,16 @@ def set_loader(loader: "PluginLoader") -> None:  # noqa: F821
 router = APIRouter(prefix="/api/plugin", tags=["plugin"])
 
 
+def _validate_plugin_id(plugin_id: str) -> str:
+    """审计 P1 修复：所有含 plugin_id 的端点先校验 ID 合法性，
+    防止 ../ 路径穿越（如 GET /{plugin_id}/ui 直接拼接文件路径）。"""
+    from clipwright.security import SecurityViolation, validate_id
+    try:
+        return validate_id(plugin_id, "plugin_id")
+    except SecurityViolation as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/list", response_model=list[PluginMetadata])
 async def list_plugins() -> list[PluginMetadata]:
     """列出所有已加载的第三方插件。"""
@@ -38,6 +48,7 @@ async def discover_plugins() -> list[str]:
 @router.post("/load/{plugin_id}", response_model=PluginMetadata)
 async def load_plugin(plugin_id: str) -> PluginMetadata:
     """加载并初始化指定插件。"""
+    _validate_plugin_id(plugin_id)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
     try:
@@ -56,6 +67,7 @@ async def load_plugin(plugin_id: str) -> PluginMetadata:
 @router.post("/unload/{plugin_id}")
 async def unload_plugin(plugin_id: str) -> dict[str, str]:
     """卸载指定插件。"""
+    _validate_plugin_id(plugin_id)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
     _loader.unload(plugin_id)
@@ -65,6 +77,7 @@ async def unload_plugin(plugin_id: str) -> dict[str, str]:
 @router.post("/{plugin_id}/enable")
 async def enable_plugin(plugin_id: str) -> dict[str, str]:
     """M8: 启用插件（持久化 + 加载）。"""
+    _validate_plugin_id(plugin_id)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
     _loader.set_enabled(plugin_id, True)
@@ -74,6 +87,7 @@ async def enable_plugin(plugin_id: str) -> dict[str, str]:
 @router.post("/{plugin_id}/disable")
 async def disable_plugin(plugin_id: str) -> dict[str, str]:
     """M8: 禁用插件（持久化 + 卸载）。"""
+    _validate_plugin_id(plugin_id)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
     _loader.set_enabled(plugin_id, False)
@@ -108,6 +122,7 @@ async def clear_plugin_errors(plugin_id: str = "") -> dict[str, object]:
 @router.delete("/{plugin_id}")
 async def unregister_plugin(plugin_id: str) -> dict[str, str]:
     """P1-1: 注销插件 — 卸载 + 清理 PluginData（含 hook 与配置）。"""
+    _validate_plugin_id(plugin_id)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
     if _loader.get(plugin_id) is None:
@@ -145,6 +160,7 @@ async def get_plugin_config(plugin_id: str) -> dict[str, object]:
     M13: 已发现但未加载的插件同样返回（源码默认 + PluginData 覆盖），
     支持预配置；完全不存在（未发现）的插件返回 404。
     """
+    _validate_plugin_id(plugin_id)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
     if plugin_id not in _loader.discover():
@@ -158,6 +174,7 @@ async def put_plugin_config(plugin_id: str, request: Request) -> dict[str, objec
 
     M13: 已发现但未加载的插件同样可保存（预配置），加载后生效。
     """
+    _validate_plugin_id(plugin_id)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
     if plugin_id not in _loader.discover():
@@ -191,6 +208,7 @@ async def put_plugin_config(plugin_id: str, request: Request) -> dict[str, objec
 @router.delete("/{plugin_id}/config")
 async def delete_plugin_config(plugin_id: str) -> dict[str, str]:
     """删除数据目录的 config.yaml，回退到源码默认配置。"""
+    _validate_plugin_id(plugin_id)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
     if plugin_id not in _loader.discover():
@@ -240,6 +258,7 @@ async def get_capabilities() -> dict:
 @router.get("/{plugin_id}/ui")
 async def get_plugin_ui(plugin_id: str) -> dict:
     """返回插件的 UI 布局定义（ui.json）。"""
+    _validate_plugin_id(plugin_id)  # 审计 P1 修复：阻断 ../ 路径穿越
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
     ui_file = _loader.plugin_dir / plugin_id / "ui.json"

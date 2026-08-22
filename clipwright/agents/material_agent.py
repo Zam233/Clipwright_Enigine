@@ -163,7 +163,11 @@ async def _llm_search_queries_batch(
 
     llm = LLMService()
     try:
-        resp = await asyncio.wait_for(llm.ask(prompt, use_flash=True), timeout=45)
+        from clipwright.agents.base import unified_llm_call
+        resp = await unified_llm_call(
+            "MaterialAgent.scene_queries", lambda: llm.ask(prompt, use_flash=True),
+            retries=1, timeout=45,
+        )
         if not (resp.success and resp.content):
             return None
         result: list[list[str]] = [[] for _ in scenes]
@@ -236,9 +240,12 @@ async def _llm_search_queries(
 
     llm = LLMService()
     try:
-        import asyncio
+        from clipwright.agents.base import unified_llm_call
         # 搜索词生成是简单任务 → 使用 flash 轻量模型
-        resp = await asyncio.wait_for(llm.ask(prompt, use_flash=True), timeout=30)
+        resp = await unified_llm_call(
+            "MaterialAgent.search_queries", lambda: llm.ask(prompt, use_flash=True),
+            retries=1, timeout=30,
+        )
         if resp.success and resp.content:
             queries = [q.strip() for q in resp.content.strip().split("\n") if q.strip()][:5]
             if pipeline_id:
@@ -305,9 +312,11 @@ async def _validate_video_frame(asset: Any, expected_text: str) -> float:
         from clipwright.tool.registry import ToolRegistry
         tool = ToolRegistry.get("frame_validator")
         if tool is not None:
-            result = await asyncio.wait_for(
-                tool.execute(video_url=video_url, expected_text=expected_text),
-                timeout=15,
+            from clipwright.agents.base import unified_llm_call
+            result = await unified_llm_call(
+                "MaterialAgent.frame_validator",
+                lambda: tool.execute(video_url=video_url, expected_text=expected_text),
+                retries=0, timeout=15,
             )
             output = result.output or {}
             if output.get("is_blank"):

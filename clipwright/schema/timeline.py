@@ -165,8 +165,10 @@ class Track(BaseModel):
     clips: list[Clip] = Field(default_factory=list)
     locked: bool = Field(default=False)
     muted: bool = Field(default=False)
+    # Phase 2.3: 轨道级元数据（NEL 配音事件线、BPM 等，供动画/渲染消费）
+    metadata: dict[str, Any] = Field(default_factory=dict, description="轨道扩展元数据")
 
-    model_config = {"use_enum_values": True}
+    model_config = {"use_enum_values": True, "extra": "allow"}
 
 
 class TimelineMarker(BaseModel):

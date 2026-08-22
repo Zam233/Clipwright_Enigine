@@ -14,15 +14,38 @@ def color_to_drawtext(color: str | None) -> str:
     """将 schema 颜色 `#RRGGBB` / `#RRGGBBAA` 转为 drawtext 的 `0xRRGGBB` / `0xRRGGBB@alpha`。
 
     drawtext 用 0x 前缀解析颜色；8 位 hex 的 alpha 转为 @ 浮点透明度（0-1）。
-    已在 0x 或非法值原样返回。
+    审计 P3 修复：非法颜色（命名颜色/空串等）不再静默透传，回退白色，
+    避免 drawtext 因无法解析颜色而整条滤镜报错。
     """
     c = (color or "").strip()
-    if not c.startswith("#") or len(c) not in (7, 9):
+    if c.startswith("0x"):
         return c
-    rgb, aa = c[1:7], c[7:9]
-    if len(c) == 9:
-        return f"0x{rgb}@{int(aa, 16) / 255.0:.3f}"
-    return f"0x{rgb}"
+    if c.startswith("#") and len(c) in (7, 9):
+        rgb, aa = c[1:7], c[7:9]
+        if len(c) == 9:
+            return f"0x{rgb}@{int(aa, 16) / 255.0:.3f}"
+        return f"0x{rgb}"
+    return "0xFFFFFF"
+
+
+def escape_drawtext_text(text: str) -> str:
+    """将任意用户文本转义为可安全嵌入 drawtext=text='...' 的滤镜字符串。
+
+    审计 P0 修复，规则经 ffmpeg 8.x 实机渲染校准（tests/test_drawtext_escape.py）：
+    - 换行：drawtext 单行渲染，\\r\\n / \\n / \\r 一律替换为空格；
+    - 反斜杠：filtergraph 层与 drawtext 文本扩展层各消费一层 → 1 个变 4 个；
+    - 百分号：% 触发文本扩展（裸 % 直接导致文本消失/报错）→ 滤镜串 \\%；
+    - 冒号：选项分隔符，引号不保护 → \\:；
+    - 单引号：实测 '\\'' / '' / \\' 均无法正确渲染（空白或解析错误），
+      统一替换为视觉等价的 ’（U+2019）；
+    - 逗号/分号/方括号：引号内受保护，无需转义。
+    """
+    t = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    t = t.replace("\\", "\\\\\\\\")
+    t = t.replace("%", "\\\\%")
+    t = t.replace(":", "\\:")
+    t = t.replace("'", "’")
+    return t
 
 
 def color_to_ass(color: str | None) -> str:
@@ -214,7 +237,7 @@ class TextStyle:
 
     def build_drawtext_filter(self, text: str, start_sec: float, duration_sec: float, font_file: str = "") -> str:
         """构建 FFmpeg drawtext filter 字符串（主文本通道；glow 由 render.py 双通道实现）。"""
-        safe = text.replace("'", "'\\''").replace(":", "\\:")
+        safe = escape_drawtext_text(text)
         font_arg = f":fontfile={font_file}" if font_file and Path(font_file).exists() else ""
 
         xp, yp = self.drawtext_position()

@@ -92,12 +92,13 @@ class TestOwnerIsolation:
         create = client.post("/api/persona/create", json=manifest, headers=a)
         assert create.status_code == 200, create.text
 
-        # 他人读取允许（persona 公开可读）、更新/删除 403
-        assert client.get("/api/persona/authz_test_persona", headers=b).status_code == 200
+        # 审计 P0 修复后：persona 读/写均校验所有权 —— 他人读取同样 403
+        assert client.get("/api/persona/authz_test_persona", headers=b).status_code == 403
         assert client.put("/api/persona/authz_test_persona", json=create.json(), headers=b).status_code == 403
         assert client.delete("/api/persona/authz_test_persona", headers=b).status_code == 403
 
-        # 所有者可删（清理）
+        # 所有者可读可删（清理）
+        assert client.get("/api/persona/authz_test_persona", headers=a).status_code == 200
         assert client.delete("/api/persona/authz_test_persona", headers=a).status_code == 200
 
     def test_admin_bypasses_ownership(self, client: TestClient) -> None:

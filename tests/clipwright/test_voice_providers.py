@@ -147,7 +147,8 @@ class TestQwenTTSProvider:
             result = await provider.synthesize(
                 voice_api_id="v_abc123", model="qwen3-tts-vc-2026-01-22", text="你好"
             )
-        assert result == audio_bytes
+        assert result[0] == audio_bytes
+        assert isinstance(result[1], list)
 
     @pytest.mark.asyncio
     async def test_synthesize_url_response(self):
@@ -169,7 +170,8 @@ class TestQwenTTSProvider:
             result = await provider.synthesize(
                 voice_api_id="v_abc123", model="qwen3-tts-vc-2026-01-22", text="你好"
             )
-        assert result == audio_bytes
+        assert result[0] == audio_bytes
+        assert isinstance(result[1], list)
 
     @pytest.mark.asyncio
     async def test_synthesize_realtime_model_raises(self):
@@ -269,7 +271,8 @@ class TestMiniMaxProvider:
             result = await provider.synthesize(
                 voice_api_id="mm_voice", model="MiniMax/speech-2.8-turbo", text="你好"
             )
-        assert isinstance(result, bytes)
+        assert isinstance(result[0], bytes)
+        assert isinstance(result[1], list)
         assert len(result) > 0
 
     @pytest.mark.asyncio
@@ -282,7 +285,8 @@ class TestMiniMaxProvider:
             result = await provider.synthesize(
                 voice_api_id="mm_voice", model="MiniMax/speech-2.8-turbo", text="测试"
             )
-        assert result == audio_bytes
+        assert result[0] == audio_bytes
+        assert isinstance(result[1], list)
 
     @pytest.mark.asyncio
     async def test_synthesize_content_type_audio(self):
@@ -306,7 +310,8 @@ class TestMiniMaxProvider:
             result = await provider.synthesize(
                 voice_api_id="mm_voice", model="MiniMax/speech-2.8-turbo", text="test"
             )
-        assert result == audio_bytes
+        assert result[0] == audio_bytes
+        assert isinstance(result[1], list)
 
 
 # ──────────────────────────────────────────────

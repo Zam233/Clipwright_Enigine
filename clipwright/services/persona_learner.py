@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -29,7 +29,7 @@ class PersonaLearner:
                 pass
         return {
             "persona_id": self.persona_id,
-            "created_at": datetime.now().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "edit_count": 0,
             "preferences": {
                 "shot_duration_ms": 5000,
@@ -45,7 +45,7 @@ class PersonaLearner:
         }
 
     def save(self) -> None:
-        self._data["updated_at"] = datetime.now().isoformat()
+        self._data["updated_at"] = datetime.now(timezone.utc).isoformat()
         # B16: 确保数据目录存在（配置化 data_dir 时不再依赖模块导入期 mkdir）
         self._data_path.parent.mkdir(parents=True, exist_ok=True)
         self._data_path.write_text(json.dumps(self._data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -54,7 +54,7 @@ class PersonaLearner:
         """记录用户的编辑操作，用于学习偏好。"""
         self._data["edit_count"] += 1
         entry = {
-            "time": datetime.now().isoformat(),
+            "time": datetime.now(timezone.utc).isoformat(),
             "action": action,
             "params": params,
         }

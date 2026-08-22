@@ -41,7 +41,7 @@ class MaterialAsset(BaseModel):
 
     # 扩展
     metadata: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=datetime.now)
+    created_at: datetime = Field(default_factory=lambda: __import__('datetime').datetime.now(__import__('datetime').timezone.utc))
 
     model_config = {"use_enum_values": True}
 

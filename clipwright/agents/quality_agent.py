@@ -400,16 +400,18 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         )
 
         try:
+            from clipwright.agents.base import unified_llm_call
             from clipwright.services.llm import LLMService
 
-            result = await asyncio.wait_for(
-                LLMService().structured_output(
+            result = await unified_llm_call(
+                "QualityAgent.semantic_qa",
+                lambda: LLMService().structured_output(
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     use_flash=True,
                     pipeline_id=context.pipeline_id,
                 ),
-                timeout=30,
+                retries=1, timeout=30,
             )
         except Exception as e:
             # LLM 失败/超时 → 静默跳过（零行为变化）

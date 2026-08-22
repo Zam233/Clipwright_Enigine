@@ -12,10 +12,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import json
 import shutil
 import subprocess
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -23,7 +25,7 @@ from typing import Any, Callable, Optional
 
 from clipwright.config import logger
 from clipwright.schema.timeline import Timeline
-from clipwright.tool.design import color_to_drawtext
+from clipwright.tool.design import color_to_drawtext, escape_drawtext_text
 
 # 任务 31：字幕新样式字段（与 schema/timeline.py Clip 对齐）。
 # 渲染时直接从 Clip 读取并合并进传给 TextStyle.from_dict 的 style dict；
@@ -34,10 +36,133 @@ _CLIP_STYLE_FIELDS = (
 )
 
 # ── 线程池 (并行 FFmpeg 调用) ─────────────────
-_ffmpeg_pool = ThreadPoolExecutor(max_workers=8)
+# 生产加固 1.7: 池大小与 CPU 联动（封顶 8），所有 ffmpeg 调用（trim/concat/overlay）
+# 共享同一池 → 天然全局并发上限，配合 _MAX_CONCURRENT_RENDERS 防低配机 OOM。
+import os as _os
+# 生产加固 1.7: 线程池最大并发限制为 min(8, cpu_count) 并且受限于 max_concurrent_renders
+_MAX_CONCURRENT_RENDERS = 2
+try:
+    from clipwright.config import settings
+    _MAX_CONCURRENT_RENDERS = getattr(settings, 'max_concurrent_renders', 2)
+except Exception:
+    pass
+_ffmpeg_pool = ThreadPoolExecutor(max_workers=min(_MAX_CONCURRENT_RENDERS * 2, max(4, min(8, _os.cpu_count() or 8))))
+
+# ── 审计 P0 修复：渲染任务取消 + 僵尸进程清理 ─────────────────
+# cancel_id（通常为渲染 task_id）→ 活跃 ffmpeg 子进程句柄；
+# 取消时 terminate 全部活跃进程并标记，_run_ff 在进程返回后抛 RenderCancelledError。
+_CURRENT_CANCEL_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "clipwright_render_cancel_id", default=None
+)
+_CANCEL_LOCK = threading.Lock()
+_CANCELLED_IDS: set[str] = set()
+_ACTIVE_PROCS: dict[str, list[subprocess.Popen]] = {}
+
+
+class RenderCancelledError(Exception):
+    """渲染任务被用户取消。"""
+
+
+def cancel_render(task_id: str) -> bool:
+    """请求取消渲染：标记 + terminate 当前活跃 ffmpeg 子进程（幂等）。"""
+    with _CANCEL_LOCK:
+        _CANCELLED_IDS.add(task_id)
+        procs = list(_ACTIVE_PROCS.get(task_id, []))
+    for p in procs:
+        try:
+            p.terminate()
+        except Exception:
+            pass
+    return True
+
+
+def is_render_cancelled(task_id: str | None) -> bool:
+    if not task_id:
+        return False
+    with _CANCEL_LOCK:
+        return task_id in _CANCELLED_IDS
+
+
+def clear_cancel_state(task_id: str) -> None:
+    with _CANCEL_LOCK:
+        _CANCELLED_IDS.discard(task_id)
+        _ACTIVE_PROCS.pop(task_id, None)
+
+
+def _track_proc(task_id: str | None, proc: subprocess.Popen) -> None:
+    if not task_id:
+        return
+    with _CANCEL_LOCK:
+        _ACTIVE_PROCS.setdefault(task_id, []).append(proc)
+
+
+def _untrack_proc(task_id: str | None, proc: subprocess.Popen) -> None:
+    if not task_id:
+        return
+    with _CANCEL_LOCK:
+        lst = _ACTIVE_PROCS.get(task_id)
+        if lst and proc in lst:
+            lst.remove(proc)
+
+
+def run_tracked_ff(cmd, **kw) -> subprocess.CompletedProcess:
+    """审计 P0 修复：带取消跟踪的同步子进程执行（模块级，供 render/hyperframes 共用）。
+
+    改用 Popen 并登记进程句柄；cancel_render() 会 terminate 活跃进程；
+    取消标记存在时抛 RenderCancelledError，避免僵尸 ffmpeg 继续烧 CPU。
+    """
+    cid = _CURRENT_CANCEL_ID.get()
+    if is_render_cancelled(cid):
+        raise RenderCancelledError(cid)
+    timeout = kw.pop("timeout", None)
+    use_text = kw.pop("text", False)
+    capture = kw.pop("capture_output", False)
+    check = kw.pop("check", False)
+    stdout_arg = kw.pop("stdout", subprocess.PIPE if capture else None)
+    stderr_arg = kw.pop("stderr", subprocess.PIPE if capture else None)
+    proc = subprocess.Popen(
+        cmd, stdout=stdout_arg, stderr=stderr_arg, text=use_text, **kw
+    )
+    _track_proc(cid, proc)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, err = proc.communicate()
+        raise
+    finally:
+        _untrack_proc(cid, proc)
+    if is_render_cancelled(cid):
+        raise RenderCancelledError(cid)
+    if check and proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, cmd, out, err)
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 # ── 并发控制 ──
 _MAX_CONCURRENT_RENDERS = 2
+
+
+def _split_long_text(text: str, limit: int = 100) -> list[str]:
+    """生产加固 1.6：长文本按标点/空格拆成 ≤limit 字的段（替代静默硬截断）。
+
+    优先在 ，。！？；、/空格 等边界切分（过半宽即可切），无标点时按字数硬切。
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    buf = ""
+    for ch in text:
+        buf += ch
+        if (ch in "，。！？；、,!?; " and len(buf) >= limit // 2) or len(buf) >= limit:
+            if buf.strip():
+                chunks.append(buf.strip())
+            buf = ""
+    if buf.strip():
+        chunks.append(buf.strip())
+    return chunks
 _RENDER_SEMAPHORE: asyncio.Semaphore | None = None
 
 def _get_render_semaphore() -> asyncio.Semaphore:
@@ -73,7 +198,7 @@ def _nvenc_runtime_probe() -> bool:
         r = subprocess.run(
             ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
              "-i", "color=c=black:s=320x240:d=0.2",
-             "-c:v", "h264_nvenc", "-pix_fmt", "yuv420p", str(probe_out)],
+             "-c:v", "h264_nvenc", "-pix_fmt", _current_pix_fmt(), str(probe_out)],
             capture_output=True, text=True, timeout=30,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         ok = r.returncode == 0 and probe_out.exists() and probe_out.stat().st_size > 0
@@ -164,6 +289,107 @@ def _get_preset() -> str:
         return getattr(settings, 'render_preset', 'medium')
     except Exception:
         return 'medium'
+
+# ── Phase 3.3: 单次渲染编码器/预设/像素格式覆盖（contextvar，随 ctx.run 传播到线程池）──
+_ENC_OVERRIDE: contextvars.ContextVar[str] = contextvars.ContextVar("clipwright_enc_override", default="")
+_PRESET_OVERRIDE: contextvars.ContextVar[str] = contextvars.ContextVar("clipwright_preset_override", default="")
+_PFMT_OVERRIDE: contextvars.ContextVar[str] = contextvars.ContextVar("clipwright_pfmt_override", default="")
+
+
+def _current_encoder() -> str:
+    ov = _ENC_OVERRIDE.get()
+    return ov or _get_encoder()
+
+
+def _current_preset() -> str:
+    ov = _PRESET_OVERRIDE.get()
+    return ov or _get_preset()
+
+
+def _current_pix_fmt() -> str:
+    ov = _PFMT_OVERRIDE.get()
+    return ov or "yuv420p"
+
+
+def _delivery_extra_args(encoder: str) -> list[str]:
+    """交付级编码器附加参数（ProRes HQ profile / x265 静默模式）。"""
+    if encoder.startswith("prores"):
+        return ["-profile:v", "3"]  # prores_ks profile 3 = HQ 422
+    if encoder == "libx265":
+        return ["-x265-params", "log-level=error"]
+    return []
+
+
+# ── Phase 3.1: 渲染指纹与阶段缓存 ────────────────────────────
+from clipwright.tool.video import _CLIPWRIGHT_TEMP
+_VIDEO_CACHE_DIR = _CLIPWRIGHT_TEMP / "video_cache"
+_VIDEO_CACHE_MAX_BYTES = 3 * 1024 ** 3  # 3GB 视频阶段缓存配额
+try:
+    _VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
+
+
+def _file_ident(p: Path) -> str:
+    """文件身份：小文件内容哈希（精确），大文件路径+大小+mtime（廉价）。"""
+    try:
+        st = p.stat()
+        if st.st_size < (1 << 20):  # ≤1MB：内容哈希（小型素材/测试可靠性，不受 mtime 粒度影响）
+            try:
+                return f"{p}|{hashlib.sha256(p.read_bytes()).hexdigest()}"
+            except Exception:
+                pass
+        return f"{p}|{st.st_size}|{int(st.st_mtime)}"
+    except Exception:
+        return str(p)
+
+
+def _timeline_render_fingerprint(
+    timeline, output, width, height, fps, bitrate,
+    audio_bitrate, audio_file_path, bgm_file_path, encoder, preset, pix_fmt,
+) -> str:
+    """整条时间线渲染指纹（无操作快速返回用）。"""
+    try:
+        canonical = json.dumps(timeline.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
+    except Exception:
+        canonical = str(timeline)
+    payload = "|".join([
+        canonical, str(output), str(width), str(height), str(fps), bitrate,
+        audio_bitrate, audio_file_path or "", bgm_file_path or "", encoder, preset, pix_fmt,
+    ])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _video_stage_fingerprint(
+    trimmed, text_overlays, overlay_segments, hf_ov_local,
+    width, height, fps, bitrate, encoder, preset, pix_fmt,
+) -> str:
+    """视频合成阶段指纹（trim 产物 + 文本/MG/画中画 + 设置）— 音频变更不影响本阶段。"""
+    parts = [
+        "|".join(_file_ident(Path(t)) for t in (trimmed or [])),
+        json.dumps(text_overlays or [], sort_keys=True, ensure_ascii=False),
+        json.dumps(overlay_segments or [], sort_keys=True, ensure_ascii=False),
+        json.dumps(hf_ov_local or [], sort_keys=True, ensure_ascii=False),
+        f"{width}x{height}@{fps}:{bitrate}:{encoder}:{preset}:{pix_fmt}",
+    ]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _prune_video_cache_dir() -> None:
+    """按 mtime 删除超额旧阶段缓存（启动时 + 每次渲染前）。"""
+    try:
+        entries = sorted(_VIDEO_CACHE_DIR.glob("stage_*.mp4"), key=lambda p: p.stat().st_mtime)
+        total = sum(p.stat().st_size for p in entries)
+        for p in entries:
+            if total <= _VIDEO_CACHE_MAX_BYTES:
+                break
+            try:
+                total -= p.stat().st_size
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 def _fmt_sec(v: float) -> str:
     """把秒数格式化为紧凑字符串（去掉尾零，避免浮点噪声污染 filter 表达式）。
@@ -365,7 +591,7 @@ def _build_glow_underlay(text: str, font_size, glow_color: str, glow_width: floa
     """
     c = color_to_drawtext(glow_color)
     w = max(1, min(int(round(float(glow_width))), 20))
-    safe = text.replace("'", "'\\''").replace(":", "\\:")
+    safe = escape_drawtext_text(text)
     parts = [
         f"drawtext=text='{safe}'{font_arg}",
         f"fontsize={font_size}",
@@ -381,13 +607,48 @@ def _build_glow_underlay(text: str, font_size, glow_color: str, glow_width: floa
     return ":".join(parts)
 
 # M1: 裁剪缓存（持久化目录，不随 render 清理删除）
+# 生产加固 1.7: LRU 淘汰（条数 + 磁盘配额），淘汰时删除磁盘文件；启动时清理超额旧文件。
 import threading as _threading
+from collections import OrderedDict
 from clipwright.tool.video import _CLIPWRIGHT_TEMP
-_trim_cache: dict[str, str] = {}
+_trim_cache: "OrderedDict[str, str]" = OrderedDict()
 _trim_cache_lock = _threading.Lock()
-_TRIM_CACHE_MAX = 500
+_TRIM_CACHE_MAX = 50
+_TRIM_CACHE_MAX_BYTES = 2 * 1024 ** 3  # 2GB 磁盘配额
 _TRIM_CACHE_DIR = _CLIPWRIGHT_TEMP / "trim_cache"
 _TRIM_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _trim_cache_put_locked(cache_key: str, path: str) -> None:
+    """LRU 写入（调用方持锁）：重复键移到最新；超额淘汰最旧并删盘文件。"""
+    _trim_cache[cache_key] = path
+    _trim_cache.move_to_end(cache_key)
+    while len(_trim_cache) > _TRIM_CACHE_MAX:
+        _old_key, old_path = _trim_cache.popitem(last=False)
+        try:
+            Path(old_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _prune_trim_cache_dir() -> None:
+    """按 mtime 删除超额旧文件（启动时 + 每次渲染前调用，成本一次 scandir）。"""
+    try:
+        entries = sorted(_TRIM_CACHE_DIR.glob("trim_*.mp4"), key=lambda p: p.stat().st_mtime)
+        total = sum(p.stat().st_size for p in entries)
+        for p in entries:
+            if total <= _TRIM_CACHE_MAX_BYTES:
+                break
+            try:
+                total -= p.stat().st_size
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+_prune_trim_cache_dir()
 
 def _trim_cache_key(src: str, offset: float, dur: float, width: int, height: int) -> str:
     raw = f"{src}|{offset:.2f}|{dur:.2f}|{width}x{height}"
@@ -421,7 +682,7 @@ class RenderService:
 
     def _run_ff(self, cmd, **kw) -> subprocess.CompletedProcess:
         """同步执行 ffmpeg/外部命令（供已在线程池里的 sync 代码直接调用）。"""
-        return subprocess.run(cmd, **kw)
+        return run_tracked_ff(cmd, **kw)
 
     async def _ff(self, cmd, **kw) -> subprocess.CompletedProcess:
         """在 async 上下文把同步 ffmpeg/外部命令 offload 到 _ffmpeg_pool，避免冻住事件循环。
@@ -431,19 +692,37 @@ class RenderService:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            return subprocess.run(cmd, **kw)
+            return self._run_ff(cmd, **kw)
         from functools import partial
-        return await loop.run_in_executor(_ffmpeg_pool, partial(self._run_ff, cmd, **kw))
+        # 复制当前 context（含 cancel_id），保证线程池内可感知取消
+        ctx = contextvars.copy_context()
+        return await loop.run_in_executor(
+            _ffmpeg_pool, ctx.run, partial(self._run_ff, cmd, **kw)
+        )
 
     async def _ff_concat(self, sync_fn, *args):
         """把同步拼接函数（内含阻塞 subprocess）offload 到 _ffmpeg_pool。"""
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(_ffmpeg_pool, sync_fn, *args)
+        ctx = contextvars.copy_context()
+        from functools import partial
+        return await loop.run_in_executor(_ffmpeg_pool, ctx.run, partial(sync_fn, *args))
 
     async def render(self, timeline: Timeline, output_path: str | Path = "out.mp4",
                      *, width=1920, height=1080, fps=30.0, bitrate="5M",
                      audio_bitrate="192k", audio_file_path="", bgm_file_path="",
-                     progress_callback=None, enable_progress=True) -> RenderResult:
+                     progress_callback=None, enable_progress=True,
+                     cancel_id: str | None = None,
+                     encoder_override: str = "", preset_override: str = "",
+                     pix_fmt_override: str = "", force_render: bool = False) -> RenderResult:
+        # 审计 P0 修复：取消标识注入 context，线程池内 ffmpeg 调用可感知并 terminate
+        _CURRENT_CANCEL_ID.set(cancel_id)
+        # Phase 3.3: 单次渲染编码器/像素格式覆盖注入 context（随 ctx.run 传播）
+        _ENC_OVERRIDE.set(encoder_override)
+        _PRESET_OVERRIDE.set(preset_override)
+        _PFMT_OVERRIDE.set(pix_fmt_override)
+        # 生产加固 1.7 + Phase 3.1: 每次渲染前清理超额缓存（一次 scandir，成本可忽略）
+        _prune_trim_cache_dir()
+        _prune_video_cache_dir()
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
         self._final_ffmpeg_log = []
@@ -452,12 +731,39 @@ class RenderService:
         if not ok:
             return RenderResult(False, error=f"FFmpeg 未就绪: {info}")
 
-        async with _get_render_semaphore():
-            try:
-                return await self._render_inner(timeline, output, width, height, fps, bitrate,
-                                                audio_bitrate, audio_file_path, bgm_file_path, progress_callback)
-            finally:
-                self._cleanup()
+        # Phase 3.1: 未变更无操作快速返回（指纹 sidecar 比对）
+        self._render_fp = _timeline_render_fingerprint(
+            timeline, output, width, height, fps, bitrate, audio_bitrate,
+            audio_file_path, bgm_file_path, _current_encoder(), _current_preset(), _current_pix_fmt(),
+        )
+        if not force_render:
+            sidecar = Path(str(output) + ".fp")
+            if output.exists() and sidecar.exists():
+                try:
+                    if sidecar.read_text(encoding="utf-8").strip() == self._render_fp:
+                        dur = await asyncio.to_thread(_get_actual_duration, str(output))
+                        logger.info("渲染跳过（时间线未变更）: %s", output)
+                        return RenderResult(True, output_path=str(output.resolve()), duration_sec=dur)
+                except Exception:
+                    pass
+
+        try:
+            async with _get_render_semaphore():
+                try:
+                    result = await self._render_inner(
+                        timeline, output, width, height, fps, bitrate,
+                        audio_bitrate, audio_file_path, bgm_file_path, progress_callback)
+                    if result.success:
+                        try:
+                            Path(str(output) + ".fp").write_text(self._render_fp, encoding="utf-8")
+                        except Exception:
+                            pass
+                    return result
+                finally:
+                    self._cleanup()
+        finally:
+            if cancel_id:
+                clear_cancel_state(cancel_id)
 
     async def _render_inner(self, timeline, output, width, height, fps, bitrate,
                             audio_bitrate, audio_file_path, bgm_file_path, progress_callback):
@@ -469,34 +775,54 @@ class RenderService:
             await progress_callback("prepare", 0, "解析时间线")
 
         # S1: 并行裁剪
-        encoder = _get_encoder()
-        preset = _get_preset()
+        encoder = _current_encoder()
+        preset = _current_preset()
         trimmed = await self._trim_segments_parallel(video_segments, width, height, fps, bitrate,
                                                      encoder, preset, progress_callback)
 
-        # 拼接
-        final_video = await self._concat_segments(trimmed, video_segments, fps, bitrate,
-                                                  encoder, preset, progress_callback)
+        # Phase 3.1: 视频合成阶段缓存（pre-audio）— 命中时跳过 concat/text/MG/PIP 全量重编
+        stage_fp = _video_stage_fingerprint(
+            trimmed, text_overlays, overlay_segments, hf_ov_local,
+            width, height, fps, bitrate, encoder, preset, _current_pix_fmt())
+        cached_stage = _VIDEO_CACHE_DIR / f"stage_{stage_fp}.mp4"
+        video_from_cache = False
+        if cached_stage.exists() and _is_valid_video(cached_stage):
+            final_video = str(cached_stage)
+            video_from_cache = True
+            if progress_callback:
+                await progress_callback("video", 60, "视频阶段命中缓存（音频可快路径混入）")
+        else:
+            # 拼接
+            final_video = await self._concat_segments(trimmed, video_segments, fps, bitrate,
+                                                      encoder, preset, progress_callback)
 
-        # M2: concat+text+overlay 合并为单次 filter_complex
-        if final_video and text_overlays:
-            final_video = await self._apply_text_concat(final_video, text_overlays, encoder, preset,
-                                                        progress_callback, width=width, height=height)
+            # M2: concat+text+overlay 合并为单次 filter_complex
+            if final_video and text_overlays:
+                final_video = await self._apply_text_concat(final_video, text_overlays, encoder, preset,
+                                                            progress_callback, width=width, height=height)
 
-        # S2: HF 图解 + MG 动画 → 单次 Hyperframes 调用
-        if final_video and self._hyperframes_available():
-            final_video = await self._apply_all_hyperframes(final_video, text_overlays, hf_ov_local,
-                                                            width, height, fps, progress_callback)
+            # S2: HF 图解 + MG 动画 → 单次 Hyperframes 调用
+            if final_video and self._hyperframes_available():
+                final_video = await self._apply_all_hyperframes(final_video, text_overlays, hf_ov_local,
+                                                                width, height, fps, progress_callback)
 
-        # 画中画
-        if final_video and overlay_segments:
-            final_video = await self._apply_overlays_safe(final_video, overlay_segments, width, height)
+            # 画中画
+            if final_video and overlay_segments:
+                final_video = await self._apply_overlays_safe(final_video, overlay_segments, width, height)
+
+            # 缓存 pre-audio 视频（供「仅音频变更」快路径复用）
+            if final_video and _is_valid_video(final_video):
+                try:
+                    shutil.copy2(final_video, cached_stage)
+                except Exception as e:
+                    logger.warning("视频阶段缓存写入失败: %s", e)
 
         # 音频（C12：混合失败必须标记到结果，而非静默静音成片）
         audio_warnings: list[str] = []
         if final_video:
             final_video, mix_marker = await self._mix_audio_safe(
-                final_video, audio_segments, audio_file_path, bitrate, audio_bitrate, bgm_file_path)
+                final_video, audio_segments, audio_file_path, bitrate, audio_bitrate, bgm_file_path,
+                video_cached=video_from_cache)
             if mix_marker:
                 audio_warnings.append(mix_marker)
                 logger.error("C12 音频混合失败已标记: %s (render=%s)", mix_marker, output)
@@ -704,6 +1030,8 @@ class RenderService:
             cache_key = _trim_cache_key(src, seg.get("source_offset", 0), dur, width, height)
             with _trim_cache_lock:
                 cached = _trim_cache.get(cache_key)
+                if cached:
+                    _trim_cache.move_to_end(cache_key)  # LRU touch
             if cached and Path(cached).exists():
                 return cached
 
@@ -747,13 +1075,12 @@ class RenderService:
                 cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)),
                        "-ss", str(seg.get("source_offset", 0)),
                        "-stream_loop", "-1", "-i", src, "-t", str(dur), "-vf", vf, "-r", str(fps),
-                       "-c:v", encoder, "-pix_fmt", "yuv420p",
+                       "-c:v", encoder, "-pix_fmt", _current_pix_fmt(),
                        "-preset", preset, "-b:v", bitrate, "-an", out]
                 r = self._run_ff(cmd, capture_output=True, text=False, timeout=600)
                 if r.returncode == 0 and _is_valid_video(out):
                     with _trim_cache_lock:
-                        if len(_trim_cache) < _TRIM_CACHE_MAX:
-                            _trim_cache[cache_key] = out
+                        _trim_cache_put_locked(cache_key, out)
                     return out
                 self._final_ffmpeg_log.append(f"trim({src[-30:]}): {_sanitize_ffmpeg_error(r.stderr)}")
             except (FileNotFoundError, subprocess.TimeoutExpired) as e:
@@ -763,7 +1090,7 @@ class RenderService:
 
         # 并行执行所有裁剪：每个 _trim_one 是同步阻塞 ffmpeg，丢进线程池才真正并行，
         # 且不冻住事件循环（旧实现 _trim_one 为 async 内同步 subprocess，gather 实为串行）。
-        tasks = [loop.run_in_executor(_ffmpeg_pool, _trim_one, i, s) for i, s in enumerate(segments)]
+        tasks = [loop.run_in_executor(_ffmpeg_pool, contextvars.copy_context().run, _trim_one, i, s) for i, s in enumerate(segments)]
         results = await asyncio.gather(*tasks)
         trimmed = [r for r in results if r and Path(r).exists()]
 
@@ -795,7 +1122,7 @@ class RenderService:
             timeout = 30 + int(dur) * 2
             self._run_ff(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
                            f"color=c=0x1a1a2e:s={width}x{height}:d={dur}",
-                           "-c:v", _resolve_encoder(), "-pix_fmt", "yuv420p", "-r", str(fps), out],
+                           "-c:v", _resolve_encoder(), "-pix_fmt", _current_pix_fmt(), "-r", str(fps), out],
                           capture_output=True, text=False, timeout=timeout)
             return out if _is_valid_video(out) else None
         except Exception:
@@ -816,50 +1143,86 @@ class RenderService:
 
         has_trans = any(segments[i].get("transition_in") for i in range(len(segments)) if i > 0)
         if has_trans and await asyncio.to_thread(_ffmpeg_supports_xfade):
-            return await self._ff_concat(self._concat_xfade, trimmed, segments, fps, bitrate, encoder, preset)
+            # Phase 3.2: 分治并行拼接（替代 O(N) 串行全片重编）
+            return await self._concat_xfade_parallel(trimmed, segments, fps, bitrate, encoder, preset)
         return await self._ff_concat(self._run_concat_all, trimmed, fps, bitrate, encoder, preset)
 
     def _run_concat(self, a, b, fps, bitrate, encoder, preset):
         out = Path(a).parent / "concat.mp4"
-        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", a, "-i", b,
+        self._run_ff(["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", a, "-i", b,
                        "-filter_complex", "[0:v]setsar=1[a];[1:v]setsar=1[b];[a][b]concat=n=2:v=1:a=0[v]",
                        "-map", "[v]", "-c:v", encoder, "-preset", preset,
                        "-b:v", bitrate, "-r", str(fps), str(out)],
                       capture_output=True, text=False, timeout=600)
         return str(out) if _is_valid_video(out) else a
 
-    def _concat_xfade(self, trimmed, segments, fps, bitrate, encoder, preset):
+    def _xfade_pair(self, left, right, tt, td, fps, bitrate, encoder, preset, out_name):
+        """单次 xfade 合成（Phase 3.2：可并行）；输出无效时回退右片段。"""
+        acc = _get_actual_duration(left)
+        off = max(0, acc - td)
+        out = str(self._work_dir / out_name)
+        self._run_ff(["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", left, "-i", right,
+                       "-filter_complex",
+                       f"[0:v]setsar=1[a];[1:v]setsar=1[b];[a][b]xfade=transition={tt}:duration={td}:offset={off}[v]",
+                       "-map", "[v]", "-c:v", encoder, "-preset", preset,
+                       "-b:v", bitrate, "-r", str(fps), out],
+                      capture_output=True, text=False, timeout=600)
+        if _is_valid_video(out):
+            return out
+        self._final_ffmpeg_log.append(f"xfade({Path(left).name}×{Path(right).name}): 输出无效，回退右片段")
+        return right
+
+    async def _concat_xfade_parallel(self, trimmed, segments, fps, bitrate, encoder, preset):
+        """Phase 3.2: 分治并行拼接 — 每轮两两 xfade（asyncio.gather 并行投递线程池），
+        把 O(N) 串行全片重编降为 O(log N) 轮（每轮并行），10 段转场拼接的等效
+        全片重编码次数从 ~4.5 次降到 ~2.4 次。
+
+        过渡名/时长白名单校验与旧串行路径一致（P0-3 注入防护不退化）。
+        """
         import re as _re
 
-        # P0-3: 过渡名白名单（小写标识符），非法/注入值一律回退 fade
         _XFADE_NAME_RE = _re.compile(r"^[a-z][a-z0-9_]{0,31}$")
-        final = str(self._work_dir / "concat.mp4")
-        cur = trimmed[0]
-        acc = _get_actual_duration(cur)
-        for i in range(1, len(trimmed)):
+        items: list[dict] = []
+        for i, p in enumerate(trimmed):
             tt_raw = segments[i].get("transition_in", "fade") if i < len(segments) else "fade"
             tt = str(tt_raw) if tt_raw and _XFADE_NAME_RE.fullmatch(str(tt_raw)) else "fade"
             try:
                 td = float(segments[i].get("transition_duration_sec", 0.4) if i < len(segments) else 0.4)
             except (TypeError, ValueError):
                 td = 0.4
-            td = max(0.0, min(td, 60.0))
-            out = str(self._work_dir / f"cp_{i}.mp4")
-            off = max(0, acc - td)
-            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", cur, "-i", trimmed[i],
-                           "-filter_complex",
-                           f"[0:v]setsar=1[a];[1:v]setsar=1[b];[a][b]xfade=transition={tt}:duration={td}:offset={off}[v]",
-                           "-map", "[v]", "-c:v", encoder, "-preset", preset,
-                           "-b:v", bitrate, "-r", str(fps), out],
-                          capture_output=True, text=False, timeout=600)
-            # ffmpeg -y 失败也留 0 字节占位 → 必须校验非空
-            if _is_valid_video(out):
-                cur = out; acc = _get_actual_duration(cur)
-            else:
-                self._final_ffmpeg_log.append(f"xfade({i}): 输出无效，回退到片段 {i}")
-                cur = trimmed[i]; acc = _get_actual_duration(cur)
-        if _is_valid_video(cur):
-            shutil.copy2(cur, final); return final
+            items.append({
+                "path": p,
+                "acc": _get_actual_duration(p),
+                "tt": tt,
+                "td": max(0.0, min(td, 60.0)),
+            })
+
+        round_no = 0
+        while len(items) > 1:
+            round_no += 1
+            pairs = [(items[j], items[j + 1]) for j in range(0, len(items) - 1, 2)]
+            odd = items[-1] if len(items) % 2 == 1 else None
+
+            async def _merge(pair: tuple[dict, dict]) -> dict:
+                left, right = pair
+                out = await self._ff_concat(
+                    self._xfade_pair, left["path"], right["path"], right["tt"], right["td"],
+                    fps, bitrate, encoder, preset, f"xr{round_no}_{uuid.uuid4().hex[:6]}.mp4",
+                )
+                return {
+                    "path": out,
+                    "acc": left["acc"] + right["acc"] - right["td"],
+                    "tt": right["tt"],
+                    "td": right["td"],
+                }
+
+            merged = await asyncio.gather(*(_merge(p) for p in pairs))
+            items = list(merged) + ([odd] if odd else [])
+
+        final = str(self._work_dir / "concat.mp4")
+        if _is_valid_video(items[0]["path"]):
+            shutil.copy2(items[0]["path"], final)
+            return final
         return trimmed[0]
 
     def _run_concat_all(self, clips, fps, bitrate, encoder, preset):
@@ -869,7 +1232,7 @@ class RenderService:
         # 每个输入先 setsar=1 归一化，保证 concat 输入参数一致（含旧缓存里 SAR 未归一化的片段）
         flt = "".join(f"[{i}:v]setsar=1[v{i}];" for i in range(n)) + "".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[v]"
         timeout = 120 + n * 60  # 120s base + 60s per segment
-        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), *inputs,
+        self._run_ff(["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), *inputs,
                        "-filter_complex", flt, "-map", "[v]",
                        "-c:v", encoder, "-preset", preset,
                        "-b:v", bitrate, "-r", str(fps), str(out)],
@@ -911,14 +1274,16 @@ class RenderService:
         for ov in overlays:
             if ov.get("renderer") == "hyperframes" or ov.get("diagram_params"):
                 continue
-            text = (ov.get("text") or "")[:100]
-            if not text:
+            # 生产加固 1.6：长字幕自动拆分多 Dialogue（时间按字数比例分配），不再硬截断
+            chunks = _split_long_text(ov.get("text") or "")
+            if not chunks:
                 continue
             start = float(ov.get("start_sec", 0) or 0)
             dur = float(ov.get("duration_sec", 3) or 3)
             # 裁剪到成片实际时长；never extend past start+duration（min 天然保证）
             end = min(start + dur, actual_dur) if actual_dur > 0 else start + dur
             end = max(end, start)
+            total_chars = sum(len(c) for c in chunks) or 1
             style_d = ov.get("style", {})
             if style_d:
                 # 优先 style dict（含 font），再补 clip 级 font 字段
@@ -933,7 +1298,11 @@ class RenderService:
                     offset_y=ov.get("offset_y", 0))
             if style_ts is None:
                 style_ts = ts  # 样式取第一条 overlay（14 字段映射 1:1）
-            dialogues.append(ts.build_ass_dialogue(text, start, end))
+            cursor = start
+            for chunk in chunks:
+                w = (end - start) * len(chunk) / total_chars
+                dialogues.append(ts.build_ass_dialogue(chunk, cursor, min(cursor + w, end)))
+                cursor += w
         if not dialogues:
             return video
 
@@ -958,7 +1327,7 @@ class RenderService:
             out = str(self._work_dir / f"txt_{bi}.mp4")
             cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", current,
                    "-vf", f"ass={ass_arg}",
-                   "-c:v", encoder, "-preset", preset, "-pix_fmt", "yuv420p",
+                   "-c:v", encoder, "-preset", preset, "-pix_fmt", _current_pix_fmt(),
                    "-c:a", "copy", out]
             r = await self._ff(cmd, capture_output=True, text=False, timeout=1800)
             if r.returncode == 0 and _is_valid_video(out):
@@ -995,7 +1364,7 @@ class RenderService:
             # L2: 用 -vf 而非重新 -filter_complex，减少复杂度
             cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", current,
                    "-vf", ",".join(batch),
-                   "-c:v", encoder, "-preset", preset, "-pix_fmt", "yuv420p",
+                   "-c:v", encoder, "-preset", preset, "-pix_fmt", _current_pix_fmt(),
                    "-c:a", "copy", out]
             r = await self._ff(cmd, capture_output=True, text=False, timeout=1800)
             if r.returncode == 0 and _is_valid_video(out):
@@ -1110,7 +1479,8 @@ class RenderService:
             out_v = str(self._work_dir / f"mg_{uuid.uuid4().hex[:4]}.mp4")
             loop = asyncio.get_running_loop()
             ok = await loop.run_in_executor(
-                _ffmpeg_pool, HyperframesRenderer.render_overlay_on_video, mov, video, out_v,
+                _ffmpeg_pool, contextvars.copy_context().run,
+                HyperframesRenderer.render_overlay_on_video, mov, video, out_v,
                 start_sec, duration_sec,
             )
             if ok and _is_valid_video(out_v):
@@ -1179,8 +1549,8 @@ class RenderService:
         scale/pad 保证 MOV 尺寸对齐实际导出分辨率（大小安全落在链式图内，
         不改动 render_overlay_on_video 的逐 MOV 非链式回退路径）。
         """
-        encoder = _get_encoder()
-        preset = _get_preset()
+        encoder = _current_encoder()
+        preset = _current_preset()
         cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)),
                "-i", str(video)]
         for mov, _start, _dur in movs:
@@ -1204,7 +1574,7 @@ class RenderService:
             prev = f"v{i}"
         cmd += ["-filter_complex", ";".join(parts),
                 "-map", f"[{prev}]", "-map", "0:a?",
-                "-c:v", encoder, "-preset", preset, "-pix_fmt", "yuv420p",
+                "-c:v", encoder, "-preset", preset, "-pix_fmt", _current_pix_fmt(),
                 "-c:a", "copy", str(out)]
         return cmd
 
@@ -1212,7 +1582,8 @@ class RenderService:
 
     def _build_drawtext_filter(self, ov):
         from clipwright.tool.design import TextStyle
-        text = (ov.get("text") or "")[:100]
+        # 生产加固 1.6：不再硬截断 100 字；长文本在静态路径自动拆分顺序窗口
+        text = (ov.get("text") or "").strip()
         if not text:
             return None
         start, dur = ov.get("start_sec", 0), ov.get("duration_sec", 3)
@@ -1242,14 +1613,25 @@ class RenderService:
                     if not ch.strip(): continue
                     cs = start + i * (dur / n)
                     xp = sum(cw[:i]) + 8
-                    safe = ch.replace("'", "'\\''")
+                    safe = escape_drawtext_text(ch)
                     parts.append(f"drawtext=text='{safe}'{font_arg}:fontsize={ts.font_size}:fontcolor={color_to_drawtext(ts.font_color)}:x={xp}:y=(h-text_h)/2:enable='between(t,{cs},{start+dur})'")
                 if parts:
                     return ",\n".join(parts)
             # 超宽文本 → 降级为静态文字（fall through below）
 
-        if kfs and len(kfs) >= 2:
+        if kfs and len(kfs) >= 2 and len(text) <= 1000:
             return self._build_kf_drawtext(text, ts, start, dur, kfs, font_arg)
+        # 生产加固 1.6：长文本 → 按字数比例拆成顺序 enable 窗口的多 drawtext
+        chunks = _split_long_text(text)
+        if len(chunks) > 1:
+            total_chars = sum(len(c) for c in chunks) or 1
+            parts = []
+            cursor = float(start)
+            for chunk in chunks:
+                w = float(dur) * len(chunk) / total_chars
+                parts.append(ts.build_drawtext_filter(chunk, cursor, w, font_file))
+                cursor += w
+            return ",\n".join(p for p in parts if p)
         base = ts.build_drawtext_filter(text, start, dur, font_file)
         if ts.glow_width > 0 and ts.glow_color:
             # glow 双通道：底层在前（同坐标/同 enable 窗口），主文本在后，`,` 同处一个 filtergraph
@@ -1265,7 +1647,7 @@ class RenderService:
         if not keyframes: return ""
         times = [kf["time"] for kf in keyframes]
         s, e = min(times), max(times)
-        safe = text.replace("'", "'\\''").replace(":", "\\:")
+        safe = escape_drawtext_text(text)
         pos = {"center": "(w-text_w)/2", "bottom": "(w-text_w)/2", "top": "(w-text_w)/2",
                "left": "20", "right": "w-text_w-20", "top_left": "20",
                "top_right": "w-text_w-20", "bottom_left": "20", "bottom_right": "w-text_w-20"}
@@ -1318,7 +1700,7 @@ class RenderService:
     async def _apply_overlays(self, input_video, overlays, output_path, tw, th):
         if not overlays:
             shutil.copy2(input_video, output_path); return
-        encoder = _get_encoder(); preset = _get_preset()
+        encoder = _current_encoder(); preset = _current_preset()
         filters = []
         for i, ov in enumerate(overlays):
             src, dur, start, opacity = ov.get("source_path",""), ov.get("duration_sec",5), ov.get("start_sec",0), ov.get("opacity",1.0)
@@ -1338,13 +1720,15 @@ class RenderService:
                        "-c:v",encoder,"-preset",preset,"-pix_fmt","yuv420p","-c:a","copy",output_path],
                       capture_output=True, text=False, timeout=1800)
 
-    async def _mix_audio_safe(self, video, segments, audio_path, bitrate, ab, bgm_path):
+    async def _mix_audio_safe(self, video, segments, audio_path, bitrate, ab, bgm_path,
+                              video_cached: bool = False):
         """混合音频（C12：失败必须标记而非静默静音成片）。返回 (video, failure_marker|None)。"""
         if not video or not Path(video).exists():
             return video, None
         out = str(self._work_dir / "aud.mp4")
         try:
-            await self._mix_audio(video, segments, out, audio_path, ab, bgm_path, bitrate)
+            await self._mix_audio(video, segments, out, audio_path, ab, bgm_path, bitrate,
+                                  video_cached=video_cached)
             if Path(out).exists() and _is_valid_video(out):
                 return out, None
             # 混合失败/输出无效 → 保留无声视频但标记失败
@@ -1353,13 +1737,16 @@ class RenderService:
             logger.warning("音频混合失败，跳过音频: %s", e)
             return video, f"audio_mix_error: {str(e)[:120]}"
 
-    async def _mix_audio(self, input_video, segments, output_path, afp="", ab="192k", bfp="", bitrate="5M"):
+    async def _mix_audio(self, input_video, segments, output_path, afp="", ab="192k", bfp="", bitrate="5M",
+                         video_cached: bool = False):
         """混音。任一路径失败都会抛出/返回 False，由 _mix_audio_safe 统一标记。
 
         C11: 真实混音 — 所有音频片段按时间窗裁剪 + 各自音量 + 淡入淡出，
         延迟对齐后 amix，最终 loudnorm LUFS 归一；失败逐级回退。
+        Phase 3.1: video_cached=True 时视频轨 -c:v copy（视频未变，仅重编音频），
+        音频变更的迭代从「全片重编码」降为「仅音频编码」。
         """
-        encoder = _get_encoder(); preset = _get_preset()
+        encoder = _current_encoder(); preset = _current_preset()
 
         # 收集实际存在的音源：显式配音 afp > BGM bfp > 时间线音频片段
         voices = []
@@ -1409,7 +1796,9 @@ class RenderService:
                 await self._ff(inputs + [
                     "-filter_complex", ";".join(chains),
                     "-map", "0:v:0", "-map", "[aout]",
-                    "-c:v", encoder, "-preset", preset, "-pix_fmt", "yuv420p", "-b:v", bitrate,
+                    *(["-c:v", "copy"] if video_cached else
+                      ["-c:v", encoder, "-preset", preset, "-pix_fmt", _current_pix_fmt(),
+                       "-b:v", bitrate, *_delivery_extra_args(encoder)]),
                     "-c:a", "aac", "-b:a", ab, "-shortest", output_path,
                 ], capture_output=True, text=False, timeout=1800)
                 if _is_valid_video(output_path):
@@ -1424,7 +1813,9 @@ class RenderService:
             voice = voices[0]["path"]
             try:
                 await self._ff(["ffmpeg","-y","-loglevel","error",*(_hwaccel_args(encoder)),"-i",input_video,"-i",voice,
-                               "-c:v",encoder,"-preset",preset,"-pix_fmt","yuv420p","-b:v",bitrate,
+                               *(["-c:v","copy"] if video_cached else
+                                 ["-c:v",encoder,"-preset",preset,"-pix_fmt",_current_pix_fmt(),
+                                  "-b:v",bitrate,*_delivery_extra_args(encoder)]),
                                "-c:a","aac","-b:a",ab,"-map","0:v:0","-map","1:a:0","-shortest",output_path],
                               capture_output=True, text=False, timeout=600)
                 if _is_valid_video(output_path): return

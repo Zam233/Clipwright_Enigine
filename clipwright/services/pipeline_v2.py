@@ -20,7 +20,7 @@ import asyncio
 import json
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Optional
 
@@ -102,7 +102,7 @@ def truncate_shared_data(shared: dict[str, Any], max_len: int = 5000) -> dict[st
 
 def record_run_start(pipeline_id: str, topic: str) -> None:
     """在管线执行入口记录运行开始（status=running, agents 空）。"""
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     with _run_registry_lock:
         _run_registry.append({
             "id": pipeline_id,
@@ -132,7 +132,9 @@ def record_run_complete(pipeline_id: str, status: str, steps: list[PipelineStep]
             for s in steps or []:
                 start_ms = 0
                 if start_dt is not None and s.started_at is not None:
-                    start_ms = max(0, int((s.started_at - start_dt).total_seconds() * 1000))
+                    # 生产加固 1.3: 容忍 naive/aware 混用（测试/外部构造的 step 时间可能无时区）
+                    s_start = _as_same_tz(s.started_at, start_dt)
+                    start_ms = max(0, int((s_start - start_dt).total_seconds() * 1000))
                 span_status = "ok"
                 if s.status == PipelineStatus.FAILED:
                     span_status = "fail"
@@ -144,7 +146,7 @@ def record_run_complete(pipeline_id: str, status: str, steps: list[PipelineStep]
                     "dur": int(s.duration_ms or 0),
                     "status": span_status,
                 })
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
             run["status"] = status
             run["duration_ms"] = int((now - start_dt).total_seconds() * 1000) if start_dt else 0
             run["agents"] = spans
@@ -156,7 +158,7 @@ def record_run_complete(pipeline_id: str, status: str, steps: list[PipelineStep]
             "topic": "",
             "status": status,
             "duration_ms": 0,
-            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "agents": spans,
         })
 
@@ -168,13 +170,17 @@ def clear_run_records() -> None:
 
 
 def _as_same_tz(dt: datetime, ref: datetime) -> datetime:
-    """把 dt 规整到与 ref 相同的时区，容忍 naive/aware 混用。"""
+    """把 dt 规整到与 ref 相同的时区，容忍 naive/aware 混用。
+
+    生产加固 1.3: naive 值按「本地时间」惯例解释（外部构造/测试的 naive 通常表示本地时间），
+    再转换到 ref 时区，避免跨时区偏差。
+    """
     if dt.tzinfo is None:
         if ref.tzinfo is not None:
-            dt = dt.replace(tzinfo=ref.tzinfo)
-    elif ref.tzinfo is not None:
-        dt = dt.astimezone(ref.tzinfo)
-    return dt
+            local_tz = datetime.now(timezone.utc).astimezone().tzinfo
+            return dt.replace(tzinfo=local_tz).astimezone(ref.tzinfo)
+        return dt
+    return dt.astimezone(ref.tzinfo) if ref.tzinfo is not None else dt
 
 
 def _mongo_record_to_run(m: Any) -> Optional[dict]:
@@ -420,7 +426,7 @@ class PipelineOrchestratorV2:
             tracer.end_span(root_span, status="error", error=str(e))
 
         tracer.cleanup()
-        state.updated_at = datetime.now()
+        state.updated_at = datetime.now(timezone.utc)
 
         # G2: 协作式取消——若期间被标记取消，终态改为 CANCELLED 并写 trace/result
         if is_cancelled(pid):
@@ -613,7 +619,7 @@ class PipelineOrchestratorV2:
                       f"最终时间线: {len(_ft.get('tracks', []) or [])} 轨", _ft)
         if state.status != PipelineStatus.FAILED:
             state.status = PipelineStatus.COMPLETED
-        state.updated_at = datetime.now()
+        state.updated_at = datetime.now(timezone.utc)
         return state
 
     async def _run_inner(
@@ -732,7 +738,7 @@ class PipelineOrchestratorV2:
                 break
 
         if state.status == PipelineStatus.FAILED:
-            state.updated_at = datetime.now()
+            state.updated_at = datetime.now(timezone.utc)
             return state
 
         # ── 质检 + 自愈循环 (P1: 联动重做 animation + audio) ──
@@ -762,7 +768,7 @@ class PipelineOrchestratorV2:
         if state.status != PipelineStatus.FAILED:
             state.status = PipelineStatus.COMPLETED
 
-        state.updated_at = datetime.now()
+        state.updated_at = datetime.now(timezone.utc)
         return state
 
     # ── 辅助方法 ──────────────────────────────────
@@ -924,9 +930,9 @@ class PipelineOrchestratorV2:
         if self._check_circuit_breaker(agent_name):
             step = state.add_step(agent_name)
             step.status = PipelineStatus.FAILED
-            step.started_at = datetime.now()
+            step.started_at = datetime.now(timezone.utc)
             step.error = f"Agent {agent_name} 已熔断（连续失败 {self._circuit_breaker_threshold} 次），已跳过"
-            step.completed_at = datetime.now()
+            step.completed_at = datetime.now(timezone.utc)
             state.current_agent = agent_name
             add_event(state.pipeline_id, agent_name, "error", step.error)
             logger.warning("Agent[%s] 已熔断，跳过执行", agent_name)
@@ -934,7 +940,7 @@ class PipelineOrchestratorV2:
 
         step = state.add_step(agent_name)
         step.status = PipelineStatus.RUNNING
-        step.started_at = datetime.now()
+        step.started_at = datetime.now(timezone.utc)
         state.current_agent = agent_name
         pid = state.pipeline_id
 
@@ -958,7 +964,7 @@ class PipelineOrchestratorV2:
         if is_cancelled(pid):
             step.status = PipelineStatus.CANCELLED
             step.error = f"Agent {agent_name} 已跳过（管线取消）"
-            step.completed_at = datetime.now()
+            step.completed_at = datetime.now(timezone.utc)
             if step.started_at:
                 step.duration_ms = int((step.completed_at - step.started_at).total_seconds() * 1000)
             add_event(pid, agent_name, "cancelled", f"{agent_name} 已跳过（管线取消）")
@@ -1055,10 +1061,10 @@ class PipelineOrchestratorV2:
             logger.exception("Agent %s 异常: %s", agent_name, e)
             _end_span(status="error", error=str(e)[:200])
 
-        step.completed_at = datetime.now()
+        step.completed_at = datetime.now(timezone.utc)
         if step.started_at:
             step.duration_ms = int((step.completed_at - step.started_at).total_seconds() * 1000)
-        state.updated_at = datetime.now()
+        state.updated_at = datetime.now(timezone.utc)
 
         # C1: 断点续跑落库 — 每完成一个 agent 即持久化检查点（含已完成的 steps 与
         # 共享数据），进程崩溃/重启后可从最后一个完整步骤恢复/重放。
