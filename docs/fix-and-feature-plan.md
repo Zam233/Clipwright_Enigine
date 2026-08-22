@@ -474,9 +474,9 @@ API 规格（v1，全部 JSON，除标注外均需 Bearer JWT）：
 ## 10. ִ行进度（批准后滚动更新）
 
 ### 已完成（2026-08 执行轮次 1）
-- ? P2 前置：K:\Clipwright Server 建仓（commit 0d973a5：auth+market 骨架 18 文件，/health 可用，业务端点 501 待 P3/P4）
-- ? P2 合并：前端 git subtree 并入 web/（221806e，保留历史）；根 scripts/start.ps1·bat、check_env、stop、docker-compose、Dockerfile.backend、web/Dockerfile.frontend+nginx、CI（8412751）→ 一键启动：scripts\start.ps1
-- ? P0 全部 14 项实施：
+- ✅ P2 前置：K:\Clipwright Server 建仓（commit 0d973a5：auth+market 骨架 18 文件，/health 可用，业务端点 501 待 P3/P4）
+- ✅ P2 合并：前端 git subtree 并入 web/（221806e，保留历史）；根 scripts/start.ps1·bat、check_env、stop、docker-compose、Dockerfile.backend、web/Dockerfile.frontend+nginx、CI（8412751）→ 一键启动：scripts\start.ps1
+- ✅ P0 全部 14 项实施：
   - b249f7b：P0-1 asset 白名单（import 拒绝点文件/白名单外复制/服务端校验）、P0-2 渲染入参白名单+输出 safe_join、P0-3 transition 枚举+注入回退、P0-4 tool 路径参数校验、P0-7 import-url SSRF+流式限流、P0-8 RAG 懒加载、P0-9 SSE 一次性 token（/api/auth/sse-token + 日志抹除）、P0-12 doc.id 校验、P0-13 错误脱敏、P0-14 body 上限+/metrics /test 鉴权
   - df5a776：P0-5 Persona 前后端字段映射（后端兼容校验器+UI 字段；前端 personaFromBackend）、P0-6 _io 四误用点 to_thread 修复
   - 前端批次：persona shape 映射接入 personaApi.get、SSE 挂接异步化（AgentPanel/ExportPage + sse.ts）、下载改 axios blob 带凭据、pagehide/波形裸 fetch 补 Authorization、cw:unauthorized 全局监听、端口统一 8080（client/settingsStore/URL builders/.env.example/AGENTS.md）、integration.spec 移出默认 E2E + 新脚本 test:e2e:integration
@@ -486,365 +486,365 @@ API 规格（v1，全部 JSON，除标注外均需 Bearer JWT）：
 P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 → P5 → P6/P7 → P8 → P9 → P10
 
 ### 执行轮次 2（P1 + P3-3A）
-- ? P1 文档对账：19 项承诺逐项三选一落地（workflow.md/structure.md/services_overview.md 标注 A1/A2/A3/A4/A6/A9/A10；requirements_service docstring A8；README 快捷键修正 D9）
-- ? P1 假成功清理：对话式编辑死代码删除（services/video_editor.py，-404 行）；frame_validator/black_frame_detect/audio_silence_detect/whisper_transcribe/subtitle_overflow 切换为真实实现注册；video_filter/text_design 假 stub 摘除；A7 fatal 错误分类落地
-- ? P1 parity 更新：requirements 7→8（含 /edit）、asset 8→9（含 /by-path）
-- ? P3-3A Server 账号核心实现（K:\Clipwright Server commit 325bb76）：register/login/refresh 轮换/logout/me/change-password/verify + /api/admin/users；bcrypt（72 字节上限）+ JWT + 登录限流（5 次/5 分钟）+ 审计事件；7 个 pytest 全过（Mongo 不可用自动跳过）
+- ✅ P1 文档对账：19 项承诺逐项三选一落地（workflow.md/structure.md/services_overview.md 标注 A1/A2/A3/A4/A6/A9/A10；requirements_service docstring A8；README 快捷键修正 D9）
+- ✅ P1 假成功清理：对话式编辑死代码删除（services/video_editor.py，-404 行）；frame_validator/black_frame_detect/audio_silence_detect/whisper_transcribe/subtitle_overflow 切换为真实实现注册；video_filter/text_design 假 stub 摘除；A7 fatal 错误分类落地
+- ✅ P1 parity 更新：requirements 7→8（含 /edit）、asset 8→9（含 /by-path）
+- ✅ P3-3A Server 账号核心实现（K:\Clipwright Server commit 325bb76）：register/login/refresh 轮换/logout/me/change-password/verify + /api/admin/users；bcrypt（72 字节上限）+ JWT + 登录限流（5 次/5 分钟）+ 审计事件；7 个 pytest 全过（Mongo 不可用自动跳过）
 - 回归：后端 1005/1005 ?
 
 ### 执行轮次 3（P3-3B 主项目接入）
-- ? 三模式鉴权：config 增加 account_verify_mode(off/token/jwt)/account_url/account_jwt_secret；中间件 jwt 模式本地验签（共享密钥）+ 运维令牌兼容 + request.state 身份注入；SSE 一次性 token 端点适配 jwt 模式
-- ? owner 数据隔离：clipwright/authz.py（current_user_id/enforce_owner/filter_by_owner）；项目全 CRUD + 缩略图/复制/重命名/标签所有权校验，list 按 owner 过滤（jwt 模式遗留无主数据隐藏，安全优先）；Persona create 记录 owner、update/delete 校验（读取保持公开）
-- ? 前端会话：authStore（access 内存 + httpOnly cookie 刷新）、session 单例、client 拦截器、/srv 代理、LoginPage + /login 路由、App 挂载恢复会话 + 401 自动 refresh→失败跳登录、波形/pagehide 裸 fetch 令牌兼容
-- ? Server 端：login/register/refresh 写 httpOnly cookie（cw_refresh，SameSite=Lax），refresh 支持 cookie，logout 清 cookie
-- ? 新增测试：backend tests/clipwright/test_authz.py（7 个：401/放行/伪造密钥/owner 隔离/persona 越权/admin 绕过）；Server 既有 7 个适配
+- ✅ 三模式鉴权：config 增加 account_verify_mode(off/token/jwt)/account_url/account_jwt_secret；中间件 jwt 模式本地验签（共享密钥）+ 运维令牌兼容 + request.state 身份注入；SSE 一次性 token 端点适配 jwt 模式
+- ✅ owner 数据隔离：clipwright/authz.py（current_user_id/enforce_owner/filter_by_owner）；项目全 CRUD + 缩略图/复制/重命名/标签所有权校验，list 按 owner 过滤（jwt 模式遗留无主数据隐藏，安全优先）；Persona create 记录 owner、update/delete 校验（读取保持公开）
+- ✅ 前端会话：authStore（access 内存 + httpOnly cookie 刷新）、session 单例、client 拦截器、/srv 代理、LoginPage + /login 路由、App 挂载恢复会话 + 401 自动 refresh→失败跳登录、波形/pagehide 裸 fetch 令牌兼容
+- ✅ Server 端：login/register/refresh 写 httpOnly cookie（cw_refresh，SameSite=Lax），refresh 支持 cookie，logout 清 cookie
+- ✅ 新增测试：backend tests/clipwright/test_authz.py（7 个：401/放行/伪造密钥/owner 隔离/persona 越权/admin 绕过）；Server 既有 7 个适配
 - 回归：后端 1012/1012 ? · Server 7/7 ? · 前端 261/261 + typecheck ?
 
 ### 执行轮次 4（P3-3B 收尾 + P4 市场后端）
-- ? 管线 owner：run-async 记录归属、/runs 按 owner 过滤（jwt 模式无主记录隐藏）、status/retry/cancel 校验所有权
-- ? 渲染 owner：queue 记录 owner_id、状态查询校验、列表过滤
-- ? P4-4A Server 市场核心（K:\Clipwright Server）：插件/Persona 发布（multipart+tar 校验+sha256）、搜索（仅 approved）、详情（含评分汇总）、下载（计数+1）、评分（每用户每包一评）、admin 审核 approve/reject；防 zip-slip 与缺清单拒绝；11 个测试全过
-- ? P4-4B 主项目市场后端：market_client（搜索/详情/下载）+ install_service（安全解包→schema 校验→原子移动→注册→失败回滚）+ /api/market 浏览与安装端点；6 个离线安装测试
-- ? 附带：persona/loader.py 重复 import 清理（B32）
+- ✅ 管线 owner：run-async 记录归属、/runs 按 owner 过滤（jwt 模式无主记录隐藏）、status/retry/cancel 校验所有权
+- ✅ 渲染 owner：queue 记录 owner_id、状态查询校验、列表过滤
+- ✅ P4-4A Server 市场核心（K:\Clipwright Server）：插件/Persona 发布（multipart+tar 校验+sha256）、搜索（仅 approved）、详情（含评分汇总）、下载（计数+1）、评分（每用户每包一评）、admin 审核 approve/reject；防 zip-slip 与缺清单拒绝；11 个测试全过
+- ✅ P4-4B 主项目市场后端：market_client（搜索/详情/下载）+ install_service（安全解包→schema 校验→原子移动→注册→失败回滚）+ /api/market 浏览与安装端点；6 个离线安装测试
+- ✅ 附带：persona/loader.py 重复 import 清理（B32）
 - 回归：后端 1018/1018 ? · Server 11/11 ?
 
 ### 执行轮次 5（P4-4C 市场前端 + P5 首批）
-- ? P4-4C 市场页：web/src/pages/MarketPage.tsx（插件/Persona 双 Tab、搜索、卡片列表含评分/下载数、一键安装、发布向导 multipart 上传）+ market.ts 客户端（浏览走主项目 /api/market，发布/评分直连 /srv）+ /market 路由 + HomePage TopBar「市场」入口 + 市场 flag 默认开启
-- ? P5-B2 速率限制：services/rate_limit.py（内存滑动窗口）+ 中间件（按 user/ip+method+path 键，配置热更新，默认关闭 CLIPWRIGHT_RATE_LIMIT_ENABLED）
-- ? P5-B8 幂等键：管线 run-async 与渲染 queue 支持 Idempotency-Key 去重（重复请求返回已有任务）
-- ? P5-B5 审计日志：clipwright/audit.py（Mongo audit 集合 + 日志兜底）；埋点 project_create/delete、persona_create/delete、pipeline_run、render_queue、market install
-- ? 新增测试：rate_limit 3 个（单元 + 中间件 429）
+- ✅ P4-4C 市场页：web/src/pages/MarketPage.tsx（插件/Persona 双 Tab、搜索、卡片列表含评分/下载数、一键安装、发布向导 multipart 上传）+ market.ts 客户端（浏览走主项目 /api/market，发布/评分直连 /srv）+ /market 路由 + HomePage TopBar「市场」入口 + 市场 flag 默认开启
+- ✅ P5-B2 速率限制：services/rate_limit.py（内存滑动窗口）+ 中间件（按 user/ip+method+path 键，配置热更新，默认关闭 CLIPWRIGHT_RATE_LIMIT_ENABLED）
+- ✅ P5-B8 幂等键：管线 run-async 与渲染 queue 支持 Idempotency-Key 去重（重复请求返回已有任务）
+- ✅ P5-B5 审计日志：clipwright/audit.py（Mongo audit 集合 + 日志兜底）；埋点 project_create/delete、persona_create/delete、pipeline_run、render_queue、market install
+- ✅ 新增测试：rate_limit 3 个（单元 + 中间件 429）
 - 回归：后端 1021/1021 ? · 前端 261/261 + typecheck ?
 
 ### 执行轮次 6（P5：C2 成本追踪 + B3 预算熔断）
-- ? C2：llm_tracker.record_llm_call 持久化到 Mongo llm_calls 集合（事件循环 to_thread，失败告警）——/metrics 的 LLM 统计与成本预算从此有真实数据
-- ? B3：services/budget.py 全局月 token 预算（CLIPWRIGHT_LLM_MONTHLY_TOKEN_BUDGET，0=不限），管线 run-async 入口熔断（超预算 429 含已用/总额），60s 缓存聚合
-- ? 新增测试：test_budget 3 个（禁用/限额内/超限；monkeypatch 聚合无 Mongo 依赖，避免全局态污染）
+- ✅ C2：llm_tracker.record_llm_call 持久化到 Mongo llm_calls 集合（事件循环 to_thread，失败告警）——/metrics 的 LLM 统计与成本预算从此有真实数据
+- ✅ B3：services/budget.py 全局月 token 预算（CLIPWRIGHT_LLM_MONTHLY_TOKEN_BUDGET，0=不限），管线 run-async 入口熔断（超预算 429 含已用/总额），60s 缓存聚合
+- ✅ 新增测试：test_budget 3 个（禁用/限额内/超限；monkeypatch 聚合无 Mongo 依赖，避免全局态污染）
 - 回归：后端 1024/1024 ?
 
 ### 执行轮次 7（P5：B9/B6/用量报表）
-- ? B9 素材硬过滤：material_agent 候选硬剔除（时长<3s、已知分辨率方向不符），过滤后为空回退原候选防空转
-- ? B6 版权字段：MaterialAsset.license 字段 + 素材建议透传（前端可展示，素材源可提供）
-- ? 用量报表：GET /api/stats/usage（管线/渲染/LLM tokens 本月与总计，jwt 按 owner 过滤）+ 设置页「用量统计」卡片
+- ✅ B9 素材硬过滤：material_agent 候选硬剔除（时长<3s、已知分辨率方向不符），过滤后为空回退原候选防空转
+- ✅ B6 版权字段：MaterialAsset.license 字段 + 素材建议透传（前端可展示，素材源可提供）
+- ✅ 用量报表：GET /api/stats/usage（管线/渲染/LLM tokens 本月与总计，jwt 按 owner 过滤）+ 设置页「用量统计」卡片
 - 回归：后端 1024/1024 ? · 前端 261/261 + typecheck ?
 
 ### 执行轮次 8（P5 收尾：B7/B4/Agent 基座）
-- ? B7 多方案：structure_agent voiceover 模式双稿生成 + 择优启发式（场景数 3-20 区间内多者优，越界惩罚，平局取先）
-- ? B4 队列持久化：渲染任务落 Mongo render_tasks（含 timeline/优先级 X-Priority 1-5），终态同步、60s 后清理；重启后 GET /queue 合并恢复项（recovered 标记），状态查询 Mongo 兜底
-- ? Agent 统一基座：BaseAgent.run_with_timeout / llm_or_fallback（超时+异常优雅降级）
-- ? 新增测试：test_p5_unit 4 个（择优 3 + 队列恢复 1，无 Mongo 依赖）
+- ✅ B7 多方案：structure_agent voiceover 模式双稿生成 + 择优启发式（场景数 3-20 区间内多者优，越界惩罚，平局取先）
+- ✅ B4 队列持久化：渲染任务落 Mongo render_tasks（含 timeline/优先级 X-Priority 1-5），终态同步、60s 后清理；重启后 GET /queue 合并恢复项（recovered 标记），状态查询 Mongo 兜底
+- ✅ Agent 统一基座：BaseAgent.run_with_timeout / llm_or_fallback（超时+异常优雅降级）
+- ✅ 新增测试：test_p5_unit 4 个（择优 3 + 队列恢复 1，无 Mongo 依赖）
 - 回归：后端 1028/1028 ? —— P5 阶段全部完成
 
 ### 执行轮次 9（P6 编辑器专业能力 · 第一批）
-- ? M7 轨道隐藏/独显：Track.hidden 字段 + timelineStore.toggleTrackHidden + 引擎/预览跳过隐藏轨道 + 轨道管理下拉眼睛按钮
-- ? M10 吸附切换快捷键：Alt+S
-- ? M12 In/Out 区间播放 UI 按钮：时间轴工具栏 入点/出点/清除（setMarkerIn/Out + loopRegion 高亮既有）
-- ? M9 素材删除 UI：assetApi.remove（后端 DELETE 已有）+ AssetCard 删除按钮 + 确认 + 离线本地移除
-- ? A1 项目排序：ProjectsPage 最近编辑/名称 切换
+- ✅ M7 轨道隐藏/独显：Track.hidden 字段 + timelineStore.toggleTrackHidden + 引擎/预览跳过隐藏轨道 + 轨道管理下拉眼睛按钮
+- ✅ M10 吸附切换快捷键：Alt+S
+- ✅ M12 In/Out 区间播放 UI 按钮：时间轴工具栏 入点/出点/清除（setMarkerIn/Out + loopRegion 高亮既有）
+- ✅ M9 素材删除 UI：assetApi.remove（后端 DELETE 已有）+ AssetCard 删除按钮 + 确认 + 离线本地移除
+- ✅ A1 项目排序：ProjectsPage 最近编辑/名称 切换
 - 回归：前端 261/261 + typecheck + build ?（P6 剩余 21 项按计划继续）
 
 ### 执行轮次 10（P6 编辑器专业能力 · 第二批）
-- ? M13 编辑器内 Persona 切换：AgentPanel BottomBar 下拉（personaApi.listIds）+ projectStore.personaId 写入
-- ? M14 范围选择工具：TimelineEngine.onRangePoint 回调 + range 工具 pointerdown 分支；面板两击设置 In/Out loopRegion 并恢复选择工具
-- ? C6 自定义导出预设：ExportPage localStorage 预设保存/应用/删除（cw_export_presets）
-- ? 测试修复：AgentPanel.test afterEach 改用 vi.clearAllMocks（restoreAllMocks 清空工厂级 vi.fn() 实现导致 M13 挂载 .then 崩溃）
+- ✅ M13 编辑器内 Persona 切换：AgentPanel BottomBar 下拉（personaApi.listIds）+ projectStore.personaId 写入
+- ✅ M14 范围选择工具：TimelineEngine.onRangePoint 回调 + range 工具 pointerdown 分支；面板两击设置 In/Out loopRegion 并恢复选择工具
+- ✅ C6 自定义导出预设：ExportPage localStorage 预设保存/应用/删除（cw_export_presets）
+- ✅ 测试修复：AgentPanel.test afterEach 改用 vi.clearAllMocks（restoreAllMocks 清空工厂级 vi.fn() 实现导致 M13 挂载 .then 崩溃）
 - 回归：前端 261/261 + typecheck + build ?
 
 ### 执行轮次 11（P6 编辑器专业能力 · 第三批）
-- ? M8 标记持久化 + 命名：后端 Timeline.markers（TimelineMarker{time,name,max64}）+ 前端 Timeline.markers + engine setMarkers/renameMarker/onMarkersChange/onMarkerRename + 面板双击标记命名输入框 + store setTimelineMarkers + 测试（engine 5 + store 2 + schema 1）
-- ? M11 转场可见性：时间轴片段首/尾转场徽标（类型 + 时长标签，hard_cut 除外）+ 预览合成 applyTransitionAlpha（fade/dissolve 等进/出窗口透明度渐变）+ 测试 6 项
-- ? 文档修复：fix-and-feature-plan.md §10 混编码（UTF-8+GBK）归一为 UTF-8
+- ✅ M8 标记持久化 + 命名：后端 Timeline.markers（TimelineMarker{time,name,max64}）+ 前端 Timeline.markers + engine setMarkers/renameMarker/onMarkersChange/onMarkerRename + 面板双击标记命名输入框 + store setTimelineMarkers + 测试（engine 5 + store 2 + schema 1）
+- ✅ M11 转场可见性：时间轴片段首/尾转场徽标（类型 + 时长标签，hard_cut 除外）+ 预览合成 applyTransitionAlpha（fade/dissolve 等进/出窗口透明度渐变）+ 测试 6 项
+- ✅ 文档修复：fix-and-feature-plan.md §10 混编码（UTF-8+GBK）归一为 UTF-8
 - 回归：后端 1029/1029 ?；前端 274/274 + typecheck + build ?
 
 ### 执行轮次 12（P6 编辑器专业能力 · 第四批）
-- ? M6 音频增益 + 淡入淡出 UI：Clip.audio_fade_in_sec/audio_fade_out_sec（前后端 schema，负值拒绝）+ 属性面板音频类轨道 增益滑块 0-200%（百分比标签）+ 淡入/淡出时长滑块（上限=片段时长）+ 测试（schema 1 + 面板 2）
-- ? C1 画布双击编辑文字：hitTestTextClipForEdit 命中测试（text/caption、隐藏/禁用跳过、倒序顶层优先、对齐/变换感知）+ 预览画布 onDoubleClick 内联 textarea 编辑（Enter 提交 / Esc 取消 / blur 提交，updateClip + history）+ 测试 9 项
+- ✅ M6 音频增益 + 淡入淡出 UI：Clip.audio_fade_in_sec/audio_fade_out_sec（前后端 schema，负值拒绝）+ 属性面板音频类轨道 增益滑块 0-200%（百分比标签）+ 淡入/淡出时长滑块（上限=片段时长）+ 测试（schema 1 + 面板 2）
+- ✅ C1 画布双击编辑文字：hitTestTextClipForEdit 命中测试（text/caption、隐藏/禁用跳过、倒序顶层优先、对齐/变换感知）+ 预览画布 onDoubleClick 内联 textarea 编辑（Enter 提交 / Esc 取消 / blur 提交，updateClip + history）+ 测试 9 项
 - 回归：后端 1030/1030 ?；前端 285/285 + typecheck + build ?
 
 ### 执行轮次 13（P6 编辑器专业能力 · 第五批）
-- ? C5 画布设置修改：TimelinePanel 画布设置弹层（分辨率 16-7680/16-4320、帧率 1-120，锁定宽高比，updateTimelineMeta 接线）
-- ? G1 版本历史 UI：后端 /api/project/{id}/versions 四端点（list/snapshot/restore/clear，VersionManager 接线 + owner 校验 + 审计 + 恢复写回项目）+ 前端 versionApi + TimelinePanel 版本历史弹层（保存快照/恢复/清空，恢复后 setTimeline + 重注册媒体）+ 测试（后端 2 + 前端 4）
+- ✅ C5 画布设置修改：TimelinePanel 画布设置弹层（分辨率 16-7680/16-4320、帧率 1-120，锁定宽高比，updateTimelineMeta 接线）
+- ✅ G1 版本历史 UI：后端 /api/project/{id}/versions 四端点（list/snapshot/restore/clear，VersionManager 接线 + owner 校验 + 审计 + 恢复写回项目）+ 前端 versionApi + TimelinePanel 版本历史弹层（保存快照/恢复/清空，恢复后 setTimeline + 重注册媒体）+ 测试（后端 2 + 前端 4）
 - 回归：后端 1032/1032 ?；前端 289/289 + typecheck + build ?
 
 ### 执行轮次 14（P6 编辑器专业能力 · 第六批）
-- ? A2 回收站/软删除：后端 ProjectManager.soft_delete/restore + list only_deleted 过滤（trash=1）+ /api/project/{id}/trash|restore|trash(DELETE) 三端点（owner 校验 + 审计）+ 前端 projectApi.trash/restore/purge + ProjectsPage 回收站视图（切换加载 trash 列表、恢复、确认后永久删除）+ 测试（后端 3 + 前端 4 新增、2 改写）
+- ✅ A2 回收站/软删除：后端 ProjectManager.soft_delete/restore + list only_deleted 过滤（trash=1）+ /api/project/{id}/trash|restore|trash(DELETE) 三端点（owner 校验 + 审计）+ 前端 projectApi.trash/restore/purge + ProjectsPage 回收站视图（切换加载 trash 列表、恢复、确认后永久删除）+ 测试（后端 3 + 前端 4 新增、2 改写）
 - 回归：后端 1035/1035 ?；前端 291/291 + typecheck + build ?
 
 ### 执行轮次 15（P6 编辑器专业能力 · 第七批）
-- ? C4 快捷键自定义 UI：keybindingStore（localStorage 持久化 overrides + isValidCombo 校验 + set/reset/resetAll/getCombo）+ KeybindingEngine.effectiveCombo（匹配走用户覆盖）+ ShortcutCheatSheet 显示生效组合与「自定义」标记 + SettingsPage 快捷键卡片（点击录制 / Esc 取消 / Delete 恢复默认 / 全部恢复）+ 测试 5 项
+- ✅ C4 快捷键自定义 UI：keybindingStore（localStorage 持久化 overrides + isValidCombo 校验 + set/reset/resetAll/getCombo）+ KeybindingEngine.effectiveCombo（匹配走用户覆盖）+ ShortcutCheatSheet 显示生效组合与「自定义」标记 + SettingsPage 快捷键卡片（点击录制 / Esc 取消 / Delete 恢复默认 / 全部恢复）+ 测试 5 项
 - 回归：前端 296/296 + typecheck + build ?
 
 ### 执行轮次 16（P6 编辑器专业能力 · 第八批）
-- ? A3 模板画廊：TemplateGallery 弹层组件（复用后端 /api/template/*，应用 → 创建副本项目 → 回调跳转编辑器）+ HomePage「从模板开始」入口按钮 + 测试 3 项
+- ✅ A3 模板画廊：TemplateGallery 弹层组件（复用后端 /api/template/*，应用 → 创建副本项目 → 回调跳转编辑器）+ HomePage「从模板开始」入口按钮 + 测试 3 项
 - 回归：前端 299/299 + typecheck + build ?
 
 ### 执行轮次 17（P6 编辑器专业能力 · 第九批）
-- ? M3 跨项目复制/粘贴属性：clipAttributeClipboard（localStorage 持久化 + COPYABLE_FIELDS 白名单 + 按 kind 过滤可粘贴字段）+ PropertiesPanel 头部 复制/粘贴按钮 + Ctrl+Shift+C/V 快捷键 + 测试 3 项
+- ✅ M3 跨项目复制/粘贴属性：clipAttributeClipboard（localStorage 持久化 + COPYABLE_FIELDS 白名单 + 按 kind 过滤可粘贴字段）+ PropertiesPanel 头部 复制/粘贴按钮 + Ctrl+Shift+C/V 快捷键 + 测试 3 项
 - 回归：前端 302/302 + typecheck + build ?
 
 ### 执行轮次 18（P6 编辑器专业能力 · 第十批）
-- ? G3 多标签同步：tabSync（BroadcastChannel 广播 timeline-saved + 事件订阅，不支持时 no-op）+ EditorPage 保存后广播 + 收到他标签保存事件时重新拉取项目时间线（本地有未保存修改时跳过，防覆盖）+ 测试 3 项
-- ? C2 波形拖拽增益：TimelineEngine gain 拖拽模式（Alt+拖拽音频/波形片段 → 音量 0-2 线性调整，灵敏度 1/120 per px，向上增大向下衰减 + 历史快照 + ns-resize 悬停光标 + Alt 键跟踪）+ 测试 3 项
+- ✅ G3 多标签同步：tabSync（BroadcastChannel 广播 timeline-saved + 事件订阅，不支持时 no-op）+ EditorPage 保存后广播 + 收到他标签保存事件时重新拉取项目时间线（本地有未保存修改时跳过，防覆盖）+ 测试 3 项
+- ✅ C2 波形拖拽增益：TimelineEngine gain 拖拽模式（Alt+拖拽音频/波形片段 → 音量 0-2 线性调整，灵敏度 1/120 per px，向上增大向下衰减 + 历史快照 + ns-resize 悬停光标 + Alt 键跟踪）+ 测试 3 项
 - 回归：前端 308/308 + typecheck + build ?
 
 ### 执行轮次 19（P6 编辑器专业能力 · 第十一批）
-- ? M1 ripple/rolling/slip/slide 编辑族：timelineStore rollingTrim（共享边界此消彼长，总时长不变，含钳制）/ slipClip（素材窗口平移）/ slideClip（移动 + 相邻补位 + 0 边界钳制）+ 引擎 Alt+trim 触发 rolling + 快捷键（Shift+Alt+←→ slip、Ctrl+Alt+←→ slide）+ 测试 6 项
+- ✅ M1 ripple/rolling/slip/slide 编辑族：timelineStore rollingTrim（共享边界此消彼长，总时长不变，含钳制）/ slipClip（素材窗口平移）/ slideClip（移动 + 相邻补位 + 0 边界钳制）+ 引擎 Alt+trim 触发 rolling + 快捷键（Shift+Alt+←→ slip、Ctrl+Alt+←→ slide）+ 测试 6 项
 - 回归：前端 314/314 + typecheck + build ?
 
 ### 执行轮次 20（P6 编辑器专业能力 · 第十二批）
-- ? C7 代理工作流 UI：EditorToolbar 代理工具组（生成代理[首个视频片段] / 原片↔代理切换）+ 后端 switch_to_full 真实还原代理路径（ProxyGenerator.switch_to_full 正则识别 _proxy_<height>p 命名，API proxy_suffix='' 时走还原）+ 测试 3 项
+- ✅ C7 代理工作流 UI：EditorToolbar 代理工具组（生成代理[首个视频片段] / 原片↔代理切换）+ 后端 switch_to_full 真实还原代理路径（ProxyGenerator.switch_to_full 正则识别 _proxy_<height>p 命名，API proxy_suffix='' 时走还原）+ 测试 3 项
 - 回归：后端 1038/1038 ?；前端 314/314 + typecheck + build ?
 
 ### 执行轮次 21（P6 编辑器专业能力 · 第十三批）
-- ? M2 素材编组：Clip.group_id（前后端 schema，round-trip）+ timelineStore groupClips（≥2 才成组、并入已有组沿用 id）/ ungroupClips / getGroupClipIds + 引擎移动时展开同组片段 + Ctrl+G 编组 / Ctrl+Shift+G 解组 + 测试（schema 1 + store 4）
+- ✅ M2 素材编组：Clip.group_id（前后端 schema，round-trip）+ timelineStore groupClips（≥2 才成组、并入已有组沿用 id）/ ungroupClips / getGroupClipIds + 引擎移动时展开同组片段 + Ctrl+G 编组 / Ctrl+Shift+G 解组 + 测试（schema 1 + store 4）
 - 回归：后端 1039/1039 ?；前端 318/318 + typecheck + build ?
 
 ### 执行轮次 22（P6 编辑器专业能力 · 第十四批）
-- ? M5 时间重映射（预览层）：速度关键帧 — 预览合成 interpolateProperties 提取 speed 属性驱动素材源偏移（变速播放）+ PropertiesPanel 添加速度关键帧按钮 / 列表内显示 ×倍率 / 单独移除 + 测试 3 项（双关键帧线性插值 / 端点回退 / 无 speed 不干预）
+- ✅ M5 时间重映射（预览层）：速度关键帧 — 预览合成 interpolateProperties 提取 speed 属性驱动素材源偏移（变速播放）+ PropertiesPanel 添加速度关键帧按钮 / 列表内显示 ×倍率 / 单独移除 + 测试 3 项（双关键帧线性插值 / 端点回退 / 无 speed 不干预）
 - 回归：前端 321/321 + typecheck + build ?
 
 ### 执行轮次 23（P6 编辑器专业能力 · 第十五批）
-- ? M4 蒙版：Clip.mask_type/mask_rect（前后端 schema，白名单校验 + round-trip + 注入拒绝）+ 预览 applyMaskClip 裁剪（rect/ellipse，越界钳制）+ PropertiesPanel 蒙版类型下拉 + 归一化矩形四滑杆 + 测试（schema 1 + 前端 4）
+- ✅ M4 蒙版：Clip.mask_type/mask_rect（前后端 schema，白名单校验 + round-trip + 注入拒绝）+ 预览 applyMaskClip 裁剪（rect/ellipse，越界钳制）+ PropertiesPanel 蒙版类型下拉 + 归一化矩形四滑杆 + 测试（schema 1 + 前端 4）
 - 回归：后端 1040/1040 ?；前端 325/325 + typecheck + build ?
 - P6 剩余：C3 嵌套序列（数据模型级，最后一项）
 
 ### 执行轮次 24（P6 编辑器专业能力 · 第十六批 — P6 收尾）
-- ? C3 嵌套序列：Clip.nested_timeline（前后端 schema，round-trip）+ timelineStore createNestedSequence（选中片段折叠为嵌套片段，保留相对时间布局）/ expandNestedSequence（平铺回原轨道）+ 预览 drawNestedTimeline 递归合成（深度上限 4）+ PropertiesPanel 多选折叠按钮 / 单选展开按钮 + 测试（schema 1 + store 3）
+- ✅ C3 嵌套序列：Clip.nested_timeline（前后端 schema，round-trip）+ timelineStore createNestedSequence（选中片段折叠为嵌套片段，保留相对时间布局）/ expandNestedSequence（平铺回原轨道）+ 预览 drawNestedTimeline 递归合成（深度上限 4）+ PropertiesPanel 多选折叠按钮 / 单选展开按钮 + 测试（schema 1 + store 3）
 - ✅ **P6 全部完成**（M1–M14 剪辑核心/音频/工作流/死状态 + C1–C7 手感 + G1/G3 + A1–A3）
 - 回归：后端 1041/1041 ?；前端 328/328 + typecheck + build ?
 
 ### 执行轮次 25（P7 薄弱项加固 · 第一批）
-- ? C12 _mix_audio 静默吞异常修复：混音失败必须标记（_mix_audio_safe 返回 (video, marker)，audio_mix_failed / audio_mix_error 写入 RenderResult.warnings 并告警，不再静默静音成片）+ 异常路径逐段 warning 日志 + 测试 3 项
-- ? W9 删 wsUrl：settingsStore 移除 wsUrl/setWsUrl（含持久化、默认值、接口），旧 localStorage wsUrl 数据忽略 + 测试更新
-- ? W3 删死客户端核查：全部 25 个 API client 均有引用，无死代码可删
+- ✅ C12 _mix_audio 静默吞异常修复：混音失败必须标记（_mix_audio_safe 返回 (video, marker)，audio_mix_failed / audio_mix_error 写入 RenderResult.warnings 并告警，不再静默静音成片）+ 异常路径逐段 warning 日志 + 测试 3 项
+- ✅ W9 删 wsUrl：settingsStore 移除 wsUrl/setWsUrl（含持久化、默认值、接口），旧 localStorage wsUrl 数据忽略 + 测试更新
+- ✅ W3 删死客户端核查：全部 25 个 API client 均有引用，无死代码可删
 - 回归：后端 1044/1044 ?；前端 328/328 + typecheck + build ?
 
 ### 执行轮次 26（P7 薄弱项加固 · 第二批）
-- ? W16 mediaManager 缩略图 LRU 上限：单素材缓存上限 MAX_THUMBNAILS_PER_ENTRY=24，touchThumb 命中标记 + 超限淘汰最久未用 bucket，防数据 URL 内存无界增长
-- ? W17 historyStore 增量快照：全量 structuredClone 改为引用存储（O(1)），利用 timelineStore 不可变更新约定；同引用重复 push 去重（滑杆拖动不再灌满历史栈）；不可克隆值（函数等）现在可正常入栈 + 测试更新（4 项）
+- ✅ W16 mediaManager 缩略图 LRU 上限：单素材缓存上限 MAX_THUMBNAILS_PER_ENTRY=24，touchThumb 命中标记 + 超限淘汰最久未用 bucket，防数据 URL 内存无界增长
+- ✅ W17 historyStore 增量快照：全量 structuredClone 改为引用存储（O(1)），利用 timelineStore 不可变更新约定；同引用重复 push 去重（滑杆拖动不再灌满历史栈）；不可克隆值（函数等）现在可正常入栈 + 测试更新（4 项）
 - 回归：前端 329/329 + typecheck + build ?
 
 ### 执行轮次 27（P7 薄弱项加固 · 第三批）
-- ? W8 per-route 错误边界：RouteErrorFallback（重试渲染/返回工作台/复制详情）+ 全部 24 条路由接入 TanStack Router errorComponent，页面渲染抛错不再白屏
-- ? W4 关键帧值编辑：关键帧行内数值输入（opacity/speed/scale/position 等属性直接改，updateKeyframe 合并更新，shortPropLabel 缩写）
-- ? W7 撤销历史列表：historyStore.jumpTo（跳转任意历史快照，丢弃其后）+ EditorToolbar 历史下拉（标签+时间，点击跳转）+ 测试 1 项
+- ✅ W8 per-route 错误边界：RouteErrorFallback（重试渲染/返回工作台/复制详情）+ 全部 24 条路由接入 TanStack Router errorComponent，页面渲染抛错不再白屏
+- ✅ W4 关键帧值编辑：关键帧行内数值输入（opacity/speed/scale/position 等属性直接改，updateKeyframe 合并更新，shortPropLabel 缩写）
+- ✅ W7 撤销历史列表：historyStore.jumpTo（跳转任意历史快照，丢弃其后）+ EditorToolbar 历史下拉（标签+时间，点击跳转）+ 测试 1 项
 - 回归：前端 330/330 + typecheck + build ?
 
 ### 执行轮次 28（P7 薄弱项加固 · 第四批）
-- ? C3 质检深度默认策略：QualityAgent 新增 quality_depth（basic=零媒体/LLM 开销 / standard=默认现状 / deep=强制视觉+语义），归一 enable_visual_llm/enable_semantic_qa 门控；_check_frame_matches 改为 enabled 参数显式控制 + 测试 4 项（basic 关闭 / deep 强制 / standard 默认 / standard+显式开关保留）
+- ✅ C3 质检深度默认策略：QualityAgent 新增 quality_depth（basic=零媒体/LLM 开销 / standard=默认现状 / deep=强制视觉+语义），归一 enable_visual_llm/enable_semantic_qa 门控；_check_frame_matches 改为 enabled 参数显式控制 + 测试 4 项（basic 关闭 / deep 强制 / standard 默认 / standard+显式开关保留）
 - 回归：后端 1048/1048 ?；前端 330/330 ?
 
 ### 执行轮次 29（P7 薄弱项加固 · 第五批）
-- ? C9 取消即时性：cancel 端点即时中断运行中的后台任务（task.cancel()，CancelledError 由 _run_background 捕获写 cancelled 终态），任务不存在时回退协作式标记 + 测试 3 项（运行中取消 / 无任务协作式 / 已完成不重复取消）
-- ? C8 熔断健康探测：GET /api/pipeline/breaker-status 返回各 Agent 熔断计数/open 状态/恢复倒计时 + 测试 2 项
+- ✅ C9 取消即时性：cancel 端点即时中断运行中的后台任务（task.cancel()，CancelledError 由 _run_background 捕获写 cancelled 终态），任务不存在时回退协作式标记 + 测试 3 项（运行中取消 / 无任务协作式 / 已完成不重复取消）
+- ✅ C8 熔断健康探测：GET /api/pipeline/breaker-status 返回各 Agent 熔断计数/open 状态/恢复倒计时 + 测试 2 项
 - 回归：后端 1054/1054 ?
 
 ### 执行轮次 30（P7 薄弱项加固 · 第六批）
-- ? C4 snapshot 逐 agent：pipeline（v1）所有 Agent 完成后都写 timeline_snapshot 到 trace（不再限于 edit/animation/material）
-- ? C5 细粒度进度：AGENT_PROGRESS_WEIGHTS 权重表（结构15/素材20/剪辑30/动画15/音频10/质检10，总和100）+ get_agent_progress 累计进度 + pipeline_v2 每 agent 完成发 progress 事件（detail.progress）+ 前端 AgentPanel 消费 progress 事件更新进度条并记录日志 + 测试 2 项
+- ✅ C4 snapshot 逐 agent：pipeline（v1）所有 Agent 完成后都写 timeline_snapshot 到 trace（不再限于 edit/animation/material）
+- ✅ C5 细粒度进度：AGENT_PROGRESS_WEIGHTS 权重表（结构15/素材20/剪辑30/动画15/音频10/质检10，总和100）+ get_agent_progress 累计进度 + pipeline_v2 每 agent 完成发 progress 事件（detail.progress）+ 前端 AgentPanel 消费 progress 事件更新进度条并记录日志 + 测试 2 项
 - 回归：后端 1056/1056 ?；前端 330/330 + typecheck ?
 
 ### 执行轮次 31（P7 薄弱项加固 · 第七批）
-- ? W18 包体优化：vite manualChunks vendor 拆分（react / tanstack / lucide / zustand / radix），主 index chunk 483→338 kB（-30%），lucide 58 kB / tanstack 128 kB 独立长缓存
+- ✅ W18 包体优化：vite manualChunks vendor 拆分（react / tanstack / lucide / zustand / radix），主 index chunk 483→338 kB（-30%），lucide 58 kB / tanstack 128 kB 独立长缓存
 - 回归：前端 330/330 + build ?
 
 ### 执行轮次 32（P7 薄弱项加固 · 第八批）
-- ? W14 asset 客户端补全：assetApi.get（详情）/ fileUrl（素材文件 URL）/ byPathUrl（白名单代理 URL 封装），对齐后端 9 端点
-- ? W1 需求流式消费：requirementsApi.streamChat（fetch SSE 流式消费，逐块回调 status/result，长对话不再受 axios 超时）+ AgentPanel.sendChat 优先流式、失败回退一次性 chat（实时「思考中」）+ 测试 2 项
+- ✅ W14 asset 客户端补全：assetApi.get（详情）/ fileUrl（素材文件 URL）/ byPathUrl（白名单代理 URL 封装），对齐后端 9 端点
+- ✅ W1 需求流式消费：requirementsApi.streamChat（fetch SSE 流式消费，逐块回调 status/result，长对话不再受 axios 超时）+ AgentPanel.sendChat 优先流式、失败回退一次性 chat（实时「思考中」）+ 测试 2 项
 - 回归：前端 332/332 + typecheck + build ?
 
 ### 执行轮次 33（P7 薄弱项加固 · 第九批）
-- ? C6 附件图片理解：需求上传 png/jpg/webp/gif → VisionService 提取描述/标签/分类注入对话上下文（失败回退占位，非致命）+ 测试 3 项
-- ? C1 断点续跑落库：pipeline_v2 每完成一个 agent 即持久化检查点（steps + shared_data 到 Mongo），崩溃后可从最后完整步骤重放 + 测试 1 项
+- ✅ C6 附件图片理解：需求上传 png/jpg/webp/gif → VisionService 提取描述/标签/分类注入对话上下文（失败回退占位，非致命）+ 测试 3 项
+- ✅ C1 断点续跑落库：pipeline_v2 每完成一个 agent 即持久化检查点（steps + shared_data 到 Mongo），崩溃后可从最后完整步骤重放 + 测试 1 项
 - 回归：后端 1060/1060 ?
 
 ### 执行轮次 34（P7 薄弱项加固 · 第十批）
-- ? W5 demo 与真实模式显式分离：离线上传 → 明确标记演示数据 + toast「本地演示素材（不持久化）」
-- ? W15 parity 更新：docs/frontend-backend-parity.md 补 P6/P7 增量对账（versions/trash/breaker-status/streamChat 等），双仓库同步
-- ? W2 建议列表：管线完成时从 warning 日志生成建议（质检/节奏提示）写入 agentStore.suggestions + BottomBar 渲染建议列表（原死状态接线）
+- ✅ W5 demo 与真实模式显式分离：离线上传 → 明确标记演示数据 + toast「本地演示素材（不持久化）」
+- ✅ W15 parity 更新：docs/frontend-backend-parity.md 补 P6/P7 增量对账（versions/trash/breaker-status/streamChat 等），双仓库同步
+- ✅ W2 建议列表：管线完成时从 warning 日志生成建议（质检/节奏提示）写入 agentStore.suggestions + BottomBar 渲染建议列表（原死状态接线）
 - 回归：前端 332/332 + typecheck + build ?
 
 ### 执行轮次 35（P7 薄弱项加固 · 第十一批 — P7 后端收尾）
-- ? C11 BGM 真实混音/LUFS：_mix_audio 多音源（配音+BGM+时间线音频片段）按时间窗裁剪 + 各自音量 + 淡入淡出 + 延迟对齐 → amix + loudnorm LUFS 归一；单音源回退简单混入；失败逐级回退并标记（C12 衔接）+ 测试 2 项
+- ✅ C11 BGM 真实混音/LUFS：_mix_audio 多音源（配音+BGM+时间线音频片段）按时间窗裁剪 + 各自音量 + 淡入淡出 + 延迟对齐 → amix + loudnorm LUFS 归一；单音源回退简单混入；失败逐级回退并标记（C12 衔接）+ 测试 2 项
 - 回归：后端 1062/1062 ?
 
 ### 执行轮次 36（P7 薄弱项加固 · 第十二批 — P7 前端收尾）
-- ? W11 BGM 素材源：ExportPage 从素材库加载音频素材 → BGM 下拉选择（bgm_file_path 随渲染提交，无则后端走无 BGM 路径）+ ExportPage 测试补 assetApi mock
-- ? W10 LLM 流式：管线 llm 事件经 SSE trace 实时消费（AgentPanel 每条 LLM 调用即时展示）+ W1 requirements streamChat 已覆盖对话流式 —— 视为已满足
+- ✅ W11 BGM 素材源：ExportPage 从素材库加载音频素材 → BGM 下拉选择（bgm_file_path 随渲染提交，无则后端走无 BGM 路径）+ ExportPage 测试补 assetApi mock
+- ✅ W10 LLM 流式：管线 llm 事件经 SSE trace 实时消费（AgentPanel 每条 LLM 调用即时展示）+ W1 requirements streamChat 已覆盖对话流式 —— 视为已满足
 - 回归：前端 332/332 + typecheck + build ?
 - P7 剩余：W12 区域级返工（较大，转下一轮或与 P8 并行）
 
 ### 执行轮次 37（P7 薄弱项加固 · 第十三批 — P7 完成）
-- ? W12 区域级返工：EditRequest + region_start_sec/region_end_sec（后端收集区域内片段作为编辑范围，selected_clip_ids 为空时自动取区域内）+ requirementsApi.edit 类型 + AgentPanel.sendEdit 附带当前 range 选区（M14 工具）+ 测试 1 项
+- ✅ W12 区域级返工：EditRequest + region_start_sec/region_end_sec（后端收集区域内片段作为编辑范围，selected_clip_ids 为空时自动取区域内）+ requirementsApi.edit 类型 + AgentPanel.sendEdit 附带当前 range 选区（M14 工具）+ 测试 1 项
 - ✅ **P7 全部完成**（后端 C 组 11 项 + 补录 C12 + 前端 W 组 15 项 + 补录 W16/W17/W18）
 - 回归：后端 1063/1063 ?；前端 332/332 + typecheck + build ?
 
 ### 执行轮次 38（P8 接线即得 + 运营调度 · 第一批）
-- ? webhook 事件接线：dispatch_event 接入 pipeline 完成/失败 + render 完成/失败（topic/pipeline_id/output_path/warnings 载荷）
-- ? dry-run 预览模式：PipelineRequest.dry_run 接线（v1 停到 edit 粗剪 / v2 组级截断），前端 HomePage「仅预览」开关 + projectStore.dryRun + proceed 透传 + 测试 1 项
-- ? 批量选题生成：POST /api/template/{id}/batch-apply（一次多选题渲染时间线副本）+ templateApi.batchApply + 测试 3 项
-- ? 失败诊断报告：GET /api/pipeline/diagnostics/{id}（失败步骤/错误分类 transient-permanent-fatal/建议）+ 测试 2 项
-- ? 项目归档 zip：GET /api/project/{id}/archive（project.json + 白名单内媒体，RFC5987 文件名）+ projectApi.archive + ProjectCard 导出归档 + 测试 2 项
-- ? webhook secret 加密（P2-7）：webhook_crypto Fernet（webhook_secret_key 或 jwt secret 派生），register 加密落盘 + dispatch 解密 + list 掩码 + 测试 3 项
+- ✅ webhook 事件接线：dispatch_event 接入 pipeline 完成/失败 + render 完成/失败（topic/pipeline_id/output_path/warnings 载荷）
+- ✅ dry-run 预览模式：PipelineRequest.dry_run 接线（v1 停到 edit 粗剪 / v2 组级截断），前端 HomePage「仅预览」开关 + projectStore.dryRun + proceed 透传 + 测试 1 项
+- ✅ 批量选题生成：POST /api/template/{id}/batch-apply（一次多选题渲染时间线副本）+ templateApi.batchApply + 测试 3 项
+- ✅ 失败诊断报告：GET /api/pipeline/diagnostics/{id}（失败步骤/错误分类 transient-permanent-fatal/建议）+ 测试 2 项
+- ✅ 项目归档 zip：GET /api/project/{id}/archive（project.json + 白名单内媒体，RFC5987 文件名）+ projectApi.archive + ProjectCard 导出归档 + 测试 2 项
+- ✅ webhook secret 加密（P2-7）：webhook_crypto Fernet（webhook_secret_key 或 jwt secret 派生），register 加密落盘 + dispatch 解密 + list 掩码 + 测试 3 项
 - 回归：后端 1071/1071 ?；前端 332/332 + typecheck ?
 
 ### 执行轮次 39（P8 接线即得 + 运营调度 · 第二批）
-- ? 管线配置模板复用：/api/pipeline/templates CRUD（命名保存 PipelineRequest，jwt owner 隔离，CJK 模板名白名单）+ 测试 2 项
-- ? 脚本续写/改写/扩写：POST /api/pipeline/script-tools（rewrite/expand/summarize 三模式 LLM 工具化，失败启发式回退）+ 测试 3 项
+- ✅ 管线配置模板复用：/api/pipeline/templates CRUD（命名保存 PipelineRequest，jwt owner 隔离，CJK 模板名白名单）+ 测试 2 项
+- ✅ 脚本续写/改写/扩写：POST /api/pipeline/script-tools（rewrite/expand/summarize 三模式 LLM 工具化，失败启发式回退）+ 测试 3 项
 - 回归：后端 1077/1077 ?
 
 ### 执行轮次 40（P8 接线即得 + 运营调度 · 第三批）
-- ? 节拍对齐剪辑 beat-sync：EditAgent 消费 cut_on_beat + bpm（extra_params），场景起点吸附拍点网格（BPM→拍间隔）+ 测试 3 项
-- ? 特效工具产品化：AssetCard 特效菜单（移除背景/稳定/水印，toolApi.execute → output_path 重新加载素材库）+ 测试保持
+- ✅ 节拍对齐剪辑 beat-sync：EditAgent 消费 cut_on_beat + bpm（extra_params），场景起点吸附拍点网格（BPM→拍间隔）+ 测试 3 项
+- ✅ 特效工具产品化：AssetCard 特效菜单（移除背景/稳定/水印，toolApi.execute → output_path 重新加载素材库）+ 测试保持
 - 回归：后端 1080/1080 ?；前端 332/332 + typecheck + build ?
 
 ### 执行轮次 41（P8 接线即得 + 运营调度 · 第四批）
-- ? 定时调度：scheduler 服务（Mongo scheduled_runs 持久化，interval/daily 两种触发，后台 asyncio 循环 2s 扫描，lifespan 启停）+ /api/scheduler CRUD/tick + 测试 4 项
-- ? 热点/选题发现：/api/pipeline/topic-suggest（LLM 生成 + 可选 web_search trending，启发式选题库回退）+ 测试 2 项
+- ✅ 定时调度：scheduler 服务（Mongo scheduled_runs 持久化，interval/daily 两种触发，后台 asyncio 循环 2s 扫描，lifespan 启停）+ /api/scheduler CRUD/tick + 测试 4 项
+- ✅ 热点/选题发现：/api/pipeline/topic-suggest（LLM 生成 + 可选 web_search trending，启发式选题库回退）+ 测试 2 项
 - 回归：后端 1088/1088 ?
 
 ### 执行轮次 42（P8 接线即得 + 运营调度 · 第五批）
-- ? 跨片段色彩匹配：ColorMatchTool（color_match，signalstats YAVG 参考-目标亮度差 → eq brightness 偏移）+ 注册 + 测试 3 项
-- ? 参考成片风格模仿：style_analyzer（ffmpeg scene 检测节奏 + 抽帧主色 + 转场密度）+ POST /api/persona/{id}/reference-style 写入 persona 参数层（rhythm/visual/transition_weights）+ 修复 _load_owned/get_persona 的 PersonaLoadError 未捕获（404 语义） + 测试 3 项
+- ✅ 跨片段色彩匹配：ColorMatchTool（color_match，signalstats YAVG 参考-目标亮度差 → eq brightness 偏移）+ 注册 + 测试 3 项
+- ✅ 参考成片风格模仿：style_analyzer（ffmpeg scene 检测节奏 + 抽帧主色 + 转场密度）+ POST /api/persona/{id}/reference-style 写入 persona 参数层（rhythm/visual/transition_weights）+ 修复 _load_owned/get_persona 的 PersonaLoadError 未捕获（404 语义） + 测试 3 项
 - 回归：后端 1094/1094 ?
 
 ### 执行轮次 43（P8 接线即得 + 运营调度 · 第六批 — P8 收尾）
-- ? 特效工具导出页入口：QueueCard 完成项「添加水印」按钮（toolApi.execute watermark，工具级；发布分发域入口排除）
-- ? webhook TOCTOU（补录）：已记录部署指引（投递固定已验证 IP 或出站防火墙）；assert_public_url 每投递前校验 + 注册时校验已落地
+- ✅ 特效工具导出页入口：QueueCard 完成项「添加水印」按钮（toolApi.execute watermark，工具级；发布分发域入口排除）
+- ✅ webhook TOCTOU（补录）：已记录部署指引（投递固定已验证 IP 或出站防火墙）；assert_public_url 每投递前校验 + 注册时校验已落地
 - ✅ **P8 全部完成**（webhook 接线 / 批量选题 / dry-run / 特效工具 / 定时调度 / 失败诊断 / 模板复用 / 归档 zip / secret 加密 / 热点发现 / 脚本工具 / beat-sync / 色彩匹配 / 参考风格模仿）
 - 回归：前端 332/332 + typecheck + build ?
 
 ### 执行轮次 44（P9 素材治理与合规）
-- ? 哈希去重：import_file 计算 sha256（分块），同内容复用既有素材（deduplicated + used_count 递增）+ 测试 3 项
-- ? URL 失效巡检：POST /api/asset/governance/patrol（HTTP(S) 引用 HEAD 检查 → status=missing）+ 测试
-- ? 素材使用统计：used_count 字段 + increment_used + 治理摘要 GET /api/asset/governance/summary + 测试 1 项
-- ? 违规内容检测：POST /api/asset/governance/violations（图片视觉模型 / 文本关键词，可选第三方）
+- ✅ 哈希去重：import_file 计算 sha256（分块），同内容复用既有素材（deduplicated + used_count 递增）+ 测试 3 项
+- ✅ URL 失效巡检：POST /api/asset/governance/patrol（HTTP(S) 引用 HEAD 检查 → status=missing）+ 测试
+- ✅ 素材使用统计：used_count 字段 + increment_used + 治理摘要 GET /api/asset/governance/summary + 测试 1 项
+- ✅ 违规内容检测：POST /api/asset/governance/violations（图片视觉模型 / 文本关键词，可选第三方）
 - 回归：后端 1098/1098 ?
 
 ### 执行轮次 45（P10 Persona/插件治理 · 第一批）
-- ? B7 原子写：save_manifest 全部文件改 temp+os.replace（防半写损坏）+ 测试
-- ? B10 知识文档 DELETE/PUT：repository.delete_knowledge_doc / update_knowledge_doc（文件+索引+向量重索引）+ /api/persona/{id}/knowledge/{doc_id} PUT/DELETE 端点 + 测试 2 项
-- ? B6 删除级联向量：persona delete 时清理 ChromaDB 索引
-- ? P1-5 reload 失败回滚：插件重载失败恢复旧实例（不消失）+ 测试
-- ? P1-1 插件 unregister API：DELETE /api/plugin/{id}（卸载+清 PluginData+hook 清理）
-- ? P1-7 密钥加密：config_types secret 字段（encrypt_field_value/decrypt/mask）+ loader 落盘加密/读取掩码/运行时解密 + 测试 3 项
-- ? P1-4 hook 执行框架：PRE/POST_PIPELINE、ON_ERROR、PRE/POST_RENDER 接入管线与渲染
+- ✅ B7 原子写：save_manifest 全部文件改 temp+os.replace（防半写损坏）+ 测试
+- ✅ B10 知识文档 DELETE/PUT：repository.delete_knowledge_doc / update_knowledge_doc（文件+索引+向量重索引）+ /api/persona/{id}/knowledge/{doc_id} PUT/DELETE 端点 + 测试 2 项
+- ✅ B6 删除级联向量：persona delete 时清理 ChromaDB 索引
+- ✅ P1-5 reload 失败回滚：插件重载失败恢复旧实例（不消失）+ 测试
+- ✅ P1-1 插件 unregister API：DELETE /api/plugin/{id}（卸载+清 PluginData+hook 清理）
+- ✅ P1-7 密钥加密：config_types secret 字段（encrypt_field_value/decrypt/mask）+ loader 落盘加密/读取掩码/运行时解密 + 测试 3 项
+- ✅ P1-4 hook 执行框架：PRE/POST_PIPELINE、ON_ERROR、PRE/POST_RENDER 接入管线与渲染
 - 回归：后端 1103/1103 ?
 
 ### 执行轮次 46（P10 Persona/类型/插件治理 · 第二批）
-- ? B21 transform 实现：DynamicCategoryPlugin.post_process_timeline（fps/分辨率覆盖、标题字幕、时长截断）+ pipeline_v2 完成时应用 + 测试 2 项
-- ? B23 引用检查：type_maker create/update 前校验（转场白名单/时长/transform 枚举）+ 测试 2 项
-- ? B24 热注册回滚：create 失败删文件回滚 / update 失败恢复旧配置 + 测试
-- ? B5 ChatForge 会话落盘：会话 JSON 持久化 + 重启恢复（未过期）+ commit 清理 + 测试 3 项
-- ? B2 forge logger：persona_forge 5 端点审计 + trace 事件
-- ? B8 变量修复：SYSTEM_DIALOGUE_PROMPT 改 replace（防 .format 花括号崩溃）
-- ? B14 RAG 字段修复：index_from_directory 字段安全访问（旧索引缺 file/created_at 容错）
+- ✅ B21 transform 实现：DynamicCategoryPlugin.post_process_timeline（fps/分辨率覆盖、标题字幕、时长截断）+ pipeline_v2 完成时应用 + 测试 2 项
+- ✅ B23 引用检查：type_maker create/update 前校验（转场白名单/时长/transform 枚举）+ 测试 2 项
+- ✅ B24 热注册回滚：create 失败删文件回滚 / update 失败恢复旧配置 + 测试
+- ✅ B5 ChatForge 会话落盘：会话 JSON 持久化 + 重启恢复（未过期）+ commit 清理 + 测试 3 项
+- ✅ B2 forge logger：persona_forge 5 端点审计 + trace 事件
+- ✅ B8 变量修复：SYSTEM_DIALOGUE_PROMPT 改 replace（防 .format 花括号崩溃）
+- ✅ B14 RAG 字段修复：index_from_directory 字段安全访问（旧索引缺 file/created_at 容错）
 - 回归：后端 1110/1110 ?
 
 ### 执行轮次 47（P10 Persona/类型/插件治理 · 第三批）
-- ? M4 reload 清 sys.modules：_purge_plugin_modules（插件及其子模块从 sys.modules 移除，reload 强制重新加载）+ 测试
-- ? M3/P1-2 注册冲突检测：ToolRegistry.register 同名覆盖告警（记录新旧来源）+ 测试
-- ? M14 插件审计日志：插件加载写 audit（plugin_id/name/version）
+- ✅ M4 reload 清 sys.modules：_purge_plugin_modules（插件及其子模块从 sys.modules 移除，reload 强制重新加载）+ 测试
+- ✅ M3/P1-2 注册冲突检测：ToolRegistry.register 同名覆盖告警（记录新旧来源）+ 测试
+- ✅ M14 插件审计日志：插件加载写 audit（plugin_id/name/version）
 - 回归：后端 1114/1114 ?
 
 ### 执行轮次 48（P10 Persona 复制/派生/导出/导入 · 第四批）
-- ? 后端 4 端点：POST /{id}/duplicate（副本 id 冲突追加后缀 + owner/audit）、POST /derive（base+adjustments，new_id/name 可选）、GET /{id}/export（manifest JSON）、POST /import（校验 + 冲突后缀 + owner/audit）
-- ? 前端 persona.ts：duplicate/derive/export/importPersona
-- ? PersonaPage：头部「导入」按钮 + 内联 JSON 输入；PersonaCard 复制/导出动作按钮（卡片由 `<button>` 改 div+role，嵌套按钮合法化）
-- ? PersonaDetailPage：头部「派生新人格」入口（调整说明 + 可选名称 → 派生后跳转新人格）
-- ? 测试：后端 test_persona_lifecycle.py 8 项（duplicate/冲突/derive/404/export-import 往返/导入冲突/400/路由注册）；前端 PersonaPage +3、PersonaDetailPage +1（共 336）
+- ✅ 后端 4 端点：POST /{id}/duplicate（副本 id 冲突追加后缀 + owner/audit）、POST /derive（base+adjustments，new_id/name 可选）、GET /{id}/export（manifest JSON）、POST /import（校验 + 冲突后缀 + owner/audit）
+- ✅ 前端 persona.ts：duplicate/derive/export/importPersona
+- ✅ PersonaPage：头部「导入」按钮 + 内联 JSON 输入；PersonaCard 复制/导出动作按钮（卡片由 `<button>` 改 div+role，嵌套按钮合法化）
+- ✅ PersonaDetailPage：头部「派生新人格」入口（调整说明 + 可选名称 → 派生后跳转新人格）
+- ✅ 测试：后端 test_persona_lifecycle.py 8 项（duplicate/冲突/derive/404/export-import 往返/导入冲突/400/路由注册）；前端 PersonaPage +3、PersonaDetailPage +1（共 336）
 - 回归：后端 1114/1114 ?、前端 336/336 ?、tsc 通过 ?
 
 ### 执行轮次 49（P10 知识库文档管理 UI · 第五批）
-- ? 前端 persona.ts：updateKnowledgeDoc（PUT）/ deleteKnowledgeDoc（DELETE）
-- ? PersonaDetailPage 知识库 Tab：每文档 重命名（内联输入，Enter 保存/Esc 取消）/ 删除 按钮 + 操作反馈
-- ? 测试：PersonaDetailPage +2（删除/重命名），全量 338
+- ✅ 前端 persona.ts：updateKnowledgeDoc（PUT）/ deleteKnowledgeDoc（DELETE）
+- ✅ PersonaDetailPage 知识库 Tab：每文档 重命名（内联输入，Enter 保存/Esc 取消）/ 删除 按钮 + 操作反馈
+- ✅ 测试：PersonaDetailPage +2（删除/重命名），全量 338
 - 回归：前端 338/338 ?、tsc 通过 ?
 
 ### 执行轮次 50（P10 插件治理 · 第六批）
-- ? M10 manifest 增强：PluginManifest + license/homepage/compat_api_version/permissions/dependencies/signature/config_schema_version；PluginMetadata + signed/verified/dependency_ok/missing_dependencies
-- ? M1 签名/权限：sign_manifest/verify_manifest_signature（HMAC-SHA256，密钥 = plugin_signature_key 或 JWT 派生）+ check_permissions 白名单校验 + 设置项 plugin_require_signature/plugin_allowed_permissions + GET /api/plugin/permissions
-- ? M2 依赖解析：_resolve_dependencies（discover 集合差集）+ 加载前拒绝
-- ? M8 启停持久化：.enabled 状态文件 + is_enabled/set_enabled + POST /{id}/enable|disable + 前端 PluginsPage toggle 改 enable/disable
-- ? M15 配置迁移：_migrate_config（target_schema + 插件 migrations.py migrate_config(config, from, to)）
-- ? P1-3 import 期注册改 initialize：diagram_style 插件由 `__init_plugin__` 副作用改 BasePlugin 类（DiagramStylePlugin.initialize 注册 Hook）——修复生产环境插件从未加载的隐性 bug
-- ? P1-6 diagram_style 约定兼容：DiagramStyle.from_dict 过滤未知字段 + 数值类型收敛（非法值回退默认）
-- ? M7 错误通道：plugins/error_bus.py 环形缓冲（cap 200）+ 加载/初始化/卸载/重载失败自动记录 + GET/DELETE /api/plugin/errors + 前端 PluginsPage 错误通道按钮/弹层/清空
-- ? M11 控件集扩充：UIWidget + input/select/checkbox/slider（渲染器 + label 关联 htmlFor 修复 a11y）
-- ? M12 UI 预览：PluginsPage 每插件「UI 预览」按钮 + 弹层渲染 PluginLayoutRenderer
-- ? M13 未加载预配置：config GET/PUT/DELETE 放宽（未加载插件可读写，加载后生效）
-- ? TypeMakerPage：预览按钮（调用 /preview）+ 删除二次确认弹层
-- ? 测试：后端 test_plugin_governance3.py 28 项 + test_typed_plugin_config.py +3（共 1152）；前端 PluginsPage +4、TypeMakerPage +3、PluginLayoutRenderer +2（共 349）
+- ✅ M10 manifest 增强：PluginManifest + license/homepage/compat_api_version/permissions/dependencies/signature/config_schema_version；PluginMetadata + signed/verified/dependency_ok/missing_dependencies
+- ✅ M1 签名/权限：sign_manifest/verify_manifest_signature（HMAC-SHA256，密钥 = plugin_signature_key 或 JWT 派生）+ check_permissions 白名单校验 + 设置项 plugin_require_signature/plugin_allowed_permissions + GET /api/plugin/permissions
+- ✅ M2 依赖解析：_resolve_dependencies（discover 集合差集）+ 加载前拒绝
+- ✅ M8 启停持久化：.enabled 状态文件 + is_enabled/set_enabled + POST /{id}/enable|disable + 前端 PluginsPage toggle 改 enable/disable
+- ✅ M15 配置迁移：_migrate_config（target_schema + 插件 migrations.py migrate_config(config, from, to)）
+- ✅ P1-3 import 期注册改 initialize：diagram_style 插件由 `__init_plugin__` 副作用改 BasePlugin 类（DiagramStylePlugin.initialize 注册 Hook）——修复生产环境插件从未加载的隐性 bug
+- ✅ P1-6 diagram_style 约定兼容：DiagramStyle.from_dict 过滤未知字段 + 数值类型收敛（非法值回退默认）
+- ✅ M7 错误通道：plugins/error_bus.py 环形缓冲（cap 200）+ 加载/初始化/卸载/重载失败自动记录 + GET/DELETE /api/plugin/errors + 前端 PluginsPage 错误通道按钮/弹层/清空
+- ✅ M11 控件集扩充：UIWidget + input/select/checkbox/slider（渲染器 + label 关联 htmlFor 修复 a11y）
+- ✅ M12 UI 预览：PluginsPage 每插件「UI 预览」按钮 + 弹层渲染 PluginLayoutRenderer
+- ✅ M13 未加载预配置：config GET/PUT/DELETE 放宽（未加载插件可读写，加载后生效）
+- ✅ TypeMakerPage：预览按钮（调用 /preview）+ 删除二次确认弹层
+- ✅ 测试：后端 test_plugin_governance3.py 28 项 + test_typed_plugin_config.py +3（共 1152）；前端 PluginsPage +4、TypeMakerPage +3、PluginLayoutRenderer +2（共 349）
 - 回归：后端 1152/1152 ?、前端 349/349 ?、tsc 通过 ?
 
 ### 执行轮次 51（P10 B16 学习器接线 + parity 更新 · 第七批）
-- ? B16 persona_learner 接线：POST /{persona_id}/learn + GET /{persona_id}/learn/stats（owner 校验 + audit 无）；修复 save() 不 mkdir 数据目录的真实 bug；前端 personaApi.learn/learnStats + PropertiesPanel 转场/速度变更上报（有活跃 persona 时 fire-and-forget）
-- ? 测试：test_persona_lifecycle.py +2（learn 记录 + 权重学习 / 404）
-- ? 前端 persona.ts +2（learn/learnStats）
+- ✅ B16 persona_learner 接线：POST /{persona_id}/learn + GET /{persona_id}/learn/stats（owner 校验 + audit 无）；修复 save() 不 mkdir 数据目录的真实 bug；前端 personaApi.learn/learnStats + PropertiesPanel 转场/速度变更上报（有活跃 persona 时 fire-and-forget）
+- ✅ 测试：test_persona_lifecycle.py +2（learn 记录 + 权重学习 / 404）
+- ✅ 前端 persona.ts +2（learn/learnStats）
 - 回归：后端 1154/1154 ?、前端 349/349 ?、tsc 通过 ?
-- ? 文档：frontend-backend-parity.md 全量刷新（路由 176→225、客户端 20→24 模块、插件 API 16 项、persona API 20 项）
+- ✅ 文档：frontend-backend-parity.md 全量刷新（路由 176→225、客户端 20→24 模块、插件 API 16 项、persona API 20 项）
 
 ### 执行轮次 52（收尾：README/AGENTS/parity + LICENSE + tag v0.2.0-deliverable）
-- ? README：新增「快速开始（Monorepo 一键启动）」章节（scripts/start.ps1、端口约定 8080/5173/8090、/api 与 /srv 代理）；路线图补阶段六；补「开源协议/贡献」章节
-- ? AGENTS.md（根）：monorepo 结构、一键启动、鉴权三模式、P8–P10 摘要、验证清单（pytest 1154 / vitest 349）、文档维护规则含 parity 同步
-- ? .env.example：端口 8000→8080；补账号（verify_mode/jwt secret）、webhook_secret_key、插件治理（signature/require_signature/allowed_permissions）配置
-- ? LICENSE：根 + J:\Clipweight-Client 补 MIT（合规审计）
-- ? 双仓库同步 docs + LICENSE
-- ? tag `v0.2.0-deliverable`
+- ✅ README：新增「快速开始（Monorepo 一键启动）」章节（scripts/start.ps1、端口约定 8080/5173/8090、/api 与 /srv 代理）；路线图补阶段六；补「开源协议/贡献」章节
+- ✅ AGENTS.md（根）：monorepo 结构、一键启动、鉴权三模式、P8–P10 摘要、验证清单（pytest 1154 / vitest 349）、文档维护规则含 parity 同步
+- ✅ .env.example：端口 8000→8080；补账号（verify_mode/jwt secret）、webhook_secret_key、插件治理（signature/require_signature/allowed_permissions）配置
+- ✅ LICENSE：根 + J:\Clipweight-Client 补 MIT（合规审计）
+- ✅ 双仓库同步 docs + LICENSE
+- ✅ tag `v0.2.0-deliverable`
 
 ### 执行轮次 53（遗留补齐：C2 成本追踪 / A10 队列接线 / 一键启动验收）
-- ? C2 requirements_service 成本追踪：新增 `_record_llm_usage` 辅助（读 LLMService.last_usage → llm_tracker），接线 6 个调用点——edit_intent / edit_adjust / confirm / gathering（with_tools + 原路径）/ plan_translate / structure（StructureAgent._llm_usage）；失败仅告警不阻断
-- ? 测试：test_requirements_llm_usage.py 4 项（写入/无 usage 跳过/edit_intent/confirm）
-- ? A10 TaskQueue 接线管线：run_pipeline_async 改走 get_task_queue().submit（X-Priority 1-5 读头，默认 3）；TaskQueue 加 priority 字段 + 出队按优先级排序 + Mongo task_queue 持久化（提交/状态变更同步，终态清理）+ recover_stale 重启恢复（pending/running 且内存缺失 → recovered/interrupted）；orch.run 透传 task_id 联动队列进度；cancel 端点同时取消队列任务；新增 GET /api/pipeline/tasks
-- ? 前端：pipelineApi.getTasks + PipelineAdminPage 队列状态条（运行中/排队/重启中断 recovered）
-- ? 测试：test_task_queue.py 5 项（优先级排序/钳制/持久化/恢复/路由注册）；PipelineAdminPage +2
+- ✅ C2 requirements_service 成本追踪：新增 `_record_llm_usage` 辅助（读 LLMService.last_usage → llm_tracker），接线 6 个调用点——edit_intent / edit_adjust / confirm / gathering（with_tools + 原路径）/ plan_translate / structure（StructureAgent._llm_usage）；失败仅告警不阻断
+- ✅ 测试：test_requirements_llm_usage.py 4 项（写入/无 usage 跳过/edit_intent/confirm）
+- ✅ A10 TaskQueue 接线管线：run_pipeline_async 改走 get_task_queue().submit（X-Priority 1-5 读头，默认 3）；TaskQueue 加 priority 字段 + 出队按优先级排序 + Mongo task_queue 持久化（提交/状态变更同步，终态清理）+ recover_stale 重启恢复（pending/running 且内存缺失 → recovered/interrupted）；orch.run 透传 task_id 联动队列进度；cancel 端点同时取消队列任务；新增 GET /api/pipeline/tasks
+- ✅ 前端：pipelineApi.getTasks + PipelineAdminPage 队列状态条（运行中/排队/重启中断 recovered）
+- ✅ 测试：test_task_queue.py 5 项（优先级排序/钳制/持久化/恢复/路由注册）；PipelineAdminPage +2
 - ✅ 一键启动验收：stop 旧 8080 → start.ps1 同方式启动 → /health ok（mongo ok）→ GET /api/pipeline/tasks、/api/persona/{id}/learn/stats、/api/plugin/errors 路由在线 → 前端 vite dev 5173 起 + HTTP 200 + /api 代理到 8080 通
 - 回归：后端 1163/1163 ?、前端 351/351 ?、tsc 通过 ?
 
 ### 执行轮次 54（商业交付审计修复 · 17 项 P0-P3）
-- ? 服务端（K:\Clipwright Server）：credit 扣减/充值改 Mongo 原子管线更新（$gte 守卫 + $subtract/$add + $concatArrays 流水，消除并发超扣）+ 并发回归测试（20 并发扣 10 恰好 10 笔成功）；JWT 默认密钥非 debug 启动拒绝（lifespan）；refresh Cookie 生产加 Secure；CORS 空配置回退本地开发源
-- ? 后端：api/pipeline.py 补 settings 导入（预算熔断路径 NameError）；插件签名收紧（显式密钥配置后未签名拒绝 + 声称已签名无法验证视为无效）；plugin API 9 端点 validate_id（阻断 ../ 路径穿越）；Persona 9 个读/写端点补 _load_owned 所有权校验（off/token 模式不受影响）；hooks.register 登记 __plugin_id__（卸载精确清理）
-- ? drawtext 转义（ffmpeg 8.x 实机校准）：共享 escape_drawtext_text（%→\\%、\\→\\\\\\\\、:→\\:、'→’、换行→空格）统一 design/render/effects 5 处调用点 + 单测 9 项；color_to_drawtext 非法值回退白色
-- ? 渲染取消链路：DELETE /api/render/queue/{id} + Popen 句柄跟踪 terminate + ContextVar 跨线程传播 + cancelled 终态（render/hyperframes 共用 run_tracked_ff）
-- ? 动画：mg_renderer bottom offset 统一边缘距离约定（60+y_off）+ 11 处模板负值翻转（视觉不变）；关键帧时间钳制 [0,dur]；静默丢弃改 warning；bezier 数组容错；stroke_width 数值判断；generator 用户内容清洗（截断+控制字符过滤+数据边界标注）
-- ? 前端：authToken 不再落 localStorage（含历史残留擦除）；12 个 admin 路由 requireAdmin 守卫；voice.ts 移除硬编码 localhost:8000（空 baseURL 走同源）
-- ? 测试：后端 1171→1184 passed（新增 drawtext 转义 9 项、积分并发 1 项、mg_overlay 适配）
+- ✅ 服务端（K:\Clipwright Server）：credit 扣减/充值改 Mongo 原子管线更新（$gte 守卫 + $subtract/$add + $concatArrays 流水，消除并发超扣）+ 并发回归测试（20 并发扣 10 恰好 10 笔成功）；JWT 默认密钥非 debug 启动拒绝（lifespan）；refresh Cookie 生产加 Secure；CORS 空配置回退本地开发源
+- ✅ 后端：api/pipeline.py 补 settings 导入（预算熔断路径 NameError）；插件签名收紧（显式密钥配置后未签名拒绝 + 声称已签名无法验证视为无效）；plugin API 9 端点 validate_id（阻断 ../ 路径穿越）；Persona 9 个读/写端点补 _load_owned 所有权校验（off/token 模式不受影响）；hooks.register 登记 __plugin_id__（卸载精确清理）
+- ✅ drawtext 转义（ffmpeg 8.x 实机校准）：共享 escape_drawtext_text（%→\\%、\\→\\\\\\\\、:→\\:、'→’、换行→空格）统一 design/render/effects 5 处调用点 + 单测 9 项；color_to_drawtext 非法值回退白色
+- ✅ 渲染取消链路：DELETE /api/render/queue/{id} + Popen 句柄跟踪 terminate + ContextVar 跨线程传播 + cancelled 终态（render/hyperframes 共用 run_tracked_ff）
+- ✅ 动画：mg_renderer bottom offset 统一边缘距离约定（60+y_off）+ 11 处模板负值翻转（视觉不变）；关键帧时间钳制 [0,dur]；静默丢弃改 warning；bezier 数组容错；stroke_width 数值判断；generator 用户内容清洗（截断+控制字符过滤+数据边界标注）
+- ✅ 前端：authToken 不再落 localStorage（含历史残留擦除）；12 个 admin 路由 requireAdmin 守卫；voice.ts 移除硬编码 localhost:8000（空 baseURL 走同源）
+- ✅ 测试：后端 1171→1184 passed（新增 drawtext 转义 9 项、积分并发 1 项、mg_overlay 适配）
 
 ### 执行轮次 55（生产加固 Phase 1 + 配音协同 Phase 2 最小闭环）
-- ? 1.1 引擎统一：/run、/step、/run-async 全部走 V2（use_v2 字段保留兼容被忽略）；V1 编排器不再服务任何端点
-- ? 1.2 运行态落 Mongo：pipeline_runtime 集合 upsert（owner/幂等键/队列映射）+ 启动恢复（遗留 running → interrupted + 重建映射）；/result /status /retry 内存缺失时 Mongo 回退（重启后 retry 可用）
-- ? 1.3 时区统一：pipeline_v2 13 处 naive now() → UTC；_as_same_tz 容忍 naive/aware 混用（naive 按本地时间惯例解释）
-- ? 1.4 LLM 收口：base.py 新增模块级 unified_llm_call（超时+瞬时重试+线性退避）；修复 llm_or_fallback asyncio 未导入 bug；structure/material/quality 5 处自实现切换统一收口
-- ? 1.5 SSE 事件驱动：trace 新增线程安全 wait_new_event（signal_new_event 跨线程唤醒）；渲染 SSE 终态驱动（2h 墙钟，替代 5 分钟硬超时，支持 cancelled）
-- ? 1.6 长字幕拆分：_split_long_text 按标点/字数拆分 + ASS 路径多 Dialogue 顺序窗口 + drawtext 路径多 enable 窗口（替代 100 字静默截断）
-- ? 1.7 trim_cache LRU（OrderedDict 条数淘汰+删盘文件）+ 磁盘配额 2GB 启动/渲染前清理；ffmpeg 池大小与 CPU 联动
-- ? 1.8 AgentBus 背压（events 2000/demands 200 超额淘汰）；trace 单调 seq 游标（SSE 增量读取时钟回拨免疫）
-- ? 2.1 TTS 句级时间戳：dub_script 返回每段 start_sec/end_sec（ffprobe 实测累计）+ 段内 char_timings 近似
-- ? 2.2 字幕实测对齐：AudioAgent 首次配音后按旁白 clip 实测窗口重建字幕轨（替换 EditAgent 字数比例估算；不覆盖用户后续手改）
+- ✅ 1.1 引擎统一：/run、/step、/run-async 全部走 V2（use_v2 字段保留兼容被忽略）；V1 编排器不再服务任何端点
+- ✅ 1.2 运行态落 Mongo：pipeline_runtime 集合 upsert（owner/幂等键/队列映射）+ 启动恢复（遗留 running → interrupted + 重建映射）；/result /status /retry 内存缺失时 Mongo 回退（重启后 retry 可用）
+- ✅ 1.3 时区统一：pipeline_v2 13 处 naive now() → UTC；_as_same_tz 容忍 naive/aware 混用（naive 按本地时间惯例解释）
+- ✅ 1.4 LLM 收口：base.py 新增模块级 unified_llm_call（超时+瞬时重试+线性退避）；修复 llm_or_fallback asyncio 未导入 bug；structure/material/quality 5 处自实现切换统一收口
+- ✅ 1.5 SSE 事件驱动：trace 新增线程安全 wait_new_event（signal_new_event 跨线程唤醒）；渲染 SSE 终态驱动（2h 墙钟，替代 5 分钟硬超时，支持 cancelled）
+- ✅ 1.6 长字幕拆分：_split_long_text 按标点/字数拆分 + ASS 路径多 Dialogue 顺序窗口 + drawtext 路径多 enable 窗口（替代 100 字静默截断）
+- ✅ 1.7 trim_cache LRU（OrderedDict 条数淘汰+删盘文件）+ 磁盘配额 2GB 启动/渲染前清理；ffmpeg 池大小与 CPU 联动
+- ✅ 1.8 AgentBus 背压（events 2000/demands 200 超额淘汰）；trace 单调 seq 游标（SSE 增量读取时钟回拨免疫）
+- ✅ 2.1 TTS 句级时间戳：dub_script 返回每段 start_sec/end_sec（ffprobe 实测累计）+ 段内 char_timings 近似
+- ✅ 2.2 字幕实测对齐：AudioAgent 首次配音后按旁白 clip 实测窗口重建字幕轨（替换 EditAgent 字数比例估算；不覆盖用户后续手改）
 - 回归：后端 1191/1191 ?（含 54/55 新增测试）· 前端 362/362 + tsc 通过 · Server 19/19 ?
 
 ### 执行轮次 56（Phase 2.3-2.6 配音—动画协同闭环 + MG 预览工坊）
-- ? 2.3 NEL 服务：services/narration_events.py（extract_nel 规则提取数字/强调/转折/设问/枚举 + pick_nel_event 窗口偏好 + snap_to_beat 落拍 + attach_nel_to_timeline）；Track schema 加 metadata 字段；AudioAgent 配音后自动提取挂旁白轨
-- ? 2.4/2.5 后置对齐：align_animations_to_nel — MG clip 吸附窗口内 NEL 事件（优先数字/强调，±1.2s 容差）并标记 nel_cue；无事件时 BPM 节拍吸附（偏差≤0.25s 才吸）。说明：AnimationAgent 先于 AudioAgent 运行，NEL 生成时不存在，故采用 AudioAgent 后置 pass 而非重排管线
-- ? 2.6 预览端点：GET /api/animation/mg/list（模板+params）+ POST /api/animation/preview（animation_id/mg_json → Hyperframes 直出 MOV → H.264 MP4 → /api/render/download 服务；Hyperframes 不可用 503）
-- ? 2.7 前端：animationApi.mgList/preview；新管理页 /settings/mg-preview「MG 预览工坊」（模板卡片网格 + 参数编辑 + 视频弹层，ConsoleShell 导航「MG 预览」+ requireAdmin 守卫）
-- ? 测试：test_narration_events.py 8 项（提取/偏好/落拍/后置对齐/无元数据 no-op）+ test_animation_preview.py 4 项（列表/参数校验/503 降级/非法 mg_json）
+- ✅ 2.3 NEL 服务：services/narration_events.py（extract_nel 规则提取数字/强调/转折/设问/枚举 + pick_nel_event 窗口偏好 + snap_to_beat 落拍 + attach_nel_to_timeline）；Track schema 加 metadata 字段；AudioAgent 配音后自动提取挂旁白轨
+- ✅ 2.4/2.5 后置对齐：align_animations_to_nel — MG clip 吸附窗口内 NEL 事件（优先数字/强调，±1.2s 容差）并标记 nel_cue；无事件时 BPM 节拍吸附（偏差≤0.25s 才吸）。说明：AnimationAgent 先于 AudioAgent 运行，NEL 生成时不存在，故采用 AudioAgent 后置 pass 而非重排管线
+- ✅ 2.6 预览端点：GET /api/animation/mg/list（模板+params）+ POST /api/animation/preview（animation_id/mg_json → Hyperframes 直出 MOV → H.264 MP4 → /api/render/download 服务；Hyperframes 不可用 503）
+- ✅ 2.7 前端：animationApi.mgList/preview；新管理页 /settings/mg-preview「MG 预览工坊」（模板卡片网格 + 参数编辑 + 视频弹层，ConsoleShell 导航「MG 预览」+ requireAdmin 守卫）
+- ✅ 测试：test_narration_events.py 8 项（提取/偏好/落拍/后置对齐/无元数据 no-op）+ test_animation_preview.py 4 项（列表/参数校验/503 降级/非法 mg_json）
 - 回归：后端 1203/1203 ? · 前端 362/362 + tsc 通过 · Server 19/19 ?
 
 ### 执行轮次 57（Phase 3 渲染效率与交付深度）
-- ? 3.1 增量渲染三层：① 时间线指纹 sidecar（.fp）未变更 → 无操作秒回；② 视频合成阶段缓存（pre-audio，指纹=trim 产物身份+文本/MG/画中画+设置，3GB 配额 LRU 淘汰）——仅音频变更命中 → ③ 混音 -c:v copy 快路径（只重编音频）。_file_ident：≤1MB 内容哈希（mtime 粒度不可靠）、大文件 路径+大小+mtime
-- ? 3.2 xfade 分治并行：_concat_xfade_parallel 逐轮两两 xfade（asyncio.gather 并行投递线程池），O(N) 串行全片重编 → O(log N) 轮并行；过渡名/时长白名单校验与旧路径一致（P0-3 注入防护不退化）；10 段等效全片重编 ~4.5 → ~2.4 次
-- ? 3.3 交付封装：RenderSettings + encoder/pix_fmt 覆盖字段；contextvar 贯穿渲染路径（_current_encoder/_current_pix_fmt/_current_preset + _delivery_extra_args：prores_ks -profile:v 3、libx265 静默）；导出预设新增 prores422hq（ProRes HQ 10bit yuv422p10le）与 h265_10bit（HEVC 10bit）；修预设合并时空串覆盖预设的 bug
-- ? 3.4 远程渲染生产化：连接池限制（8/4）；取消感知（轮询期 is_render_cancelled → 取消不触发本地兜底）；cancel_id/encoder/pix_fmt 透传本地兜底与 worker params
-- ? 测试：test_render_phase3.py 7 项（时间线/视频阶段指纹、交付参数、预设合并、xfade 树合并次数 9 次+兜底、RenderSettings 字段）
+- ✅ 3.1 增量渲染三层：① 时间线指纹 sidecar（.fp）未变更 → 无操作秒回；② 视频合成阶段缓存（pre-audio，指纹=trim 产物身份+文本/MG/画中画+设置，3GB 配额 LRU 淘汰）——仅音频变更命中 → ③ 混音 -c:v copy 快路径（只重编音频）。_file_ident：≤1MB 内容哈希（mtime 粒度不可靠）、大文件 路径+大小+mtime
+- ✅ 3.2 xfade 分治并行：_concat_xfade_parallel 逐轮两两 xfade（asyncio.gather 并行投递线程池），O(N) 串行全片重编 → O(log N) 轮并行；过渡名/时长白名单校验与旧路径一致（P0-3 注入防护不退化）；10 段等效全片重编 ~4.5 → ~2.4 次
+- ✅ 3.3 交付封装：RenderSettings + encoder/pix_fmt 覆盖字段；contextvar 贯穿渲染路径（_current_encoder/_current_pix_fmt/_current_preset + _delivery_extra_args：prores_ks -profile:v 3、libx265 静默）；导出预设新增 prores422hq（ProRes HQ 10bit yuv422p10le）与 h265_10bit（HEVC 10bit）；修预设合并时空串覆盖预设的 bug
+- ✅ 3.4 远程渲染生产化：连接池限制（8/4）；取消感知（轮询期 is_render_cancelled → 取消不触发本地兜底）；cancel_id/encoder/pix_fmt 透传本地兜底与 worker params
+- ✅ 测试：test_render_phase3.py 7 项（时间线/视频阶段指纹、交付参数、预设合并、xfade 树合并次数 9 次+兜底、RenderSettings 字段）
 - 回归：后端 1210/1210 ? · 前端 362/362 + tsc 通过 · Server 19/19 ?
 
 ### 执行轮次 58（Phase 4 体验与生态）
-- ? 4.1 前端：AgentPanel SSE 断连横幅加「重新连接」按钮（重置重连计数 + 清定时器 + 重新 openSSE），取代「请手动刷新」
-- ? 4.2 服务端：登录限流 Redis 后端（可选 redis_url 配置，INCR+EXPIRE 固定窗口 5 次/5 分钟，持久化跨重启/多 worker；Redis 不可用自动降级内存）；credit_history 写入侧 $slice 上限 200 条（防 Mongo 16MB）+ GET /api/credit/history 分页端点（page/limit/total/pages，倒序）；/verify 端点互信收紧（配置 shared_jwt_secret 后要求 X-Internal-Token 头）
-- ? 4.3 后端：Persona 多层继承（resolve_inheritance 递归解析父链 + 循环继承防御抛错）；RAG 知识库重索引异步化（_async_reindex 后台线程 + 串行锁，不阻塞写 API）
-- ? 4.4 签名 CLI：scripts/plugin_sign.py（sign --write / verify / genkey），复用运行时 loader 的 _parse_manifest/sign_manifest/verify_manifest_signature，保证与运行时 HMAC 方案完全互通
-- ? 测试：test_persona_inheritance.py 3 项（多层继承/循环防御/无继承）+ test_plugin_sign_cli.py 2 项（往返+篡改失败，CLI↔运行时互通）+ Server test_credit 新增 history 分页 1 项
+- ✅ 4.1 前端：AgentPanel SSE 断连横幅加「重新连接」按钮（重置重连计数 + 清定时器 + 重新 openSSE），取代「请手动刷新」
+- ✅ 4.2 服务端：登录限流 Redis 后端（可选 redis_url 配置，INCR+EXPIRE 固定窗口 5 次/5 分钟，持久化跨重启/多 worker；Redis 不可用自动降级内存）；credit_history 写入侧 $slice 上限 200 条（防 Mongo 16MB）+ GET /api/credit/history 分页端点（page/limit/total/pages，倒序）；/verify 端点互信收紧（配置 shared_jwt_secret 后要求 X-Internal-Token 头）
+- ✅ 4.3 后端：Persona 多层继承（resolve_inheritance 递归解析父链 + 循环继承防御抛错）；RAG 知识库重索引异步化（_async_reindex 后台线程 + 串行锁，不阻塞写 API）
+- ✅ 4.4 签名 CLI：scripts/plugin_sign.py（sign --write / verify / genkey），复用运行时 loader 的 _parse_manifest/sign_manifest/verify_manifest_signature，保证与运行时 HMAC 方案完全互通
+- ✅ 测试：test_persona_inheritance.py 3 项（多层继承/循环防御/无继承）+ test_plugin_sign_cli.py 2 项（往返+篡改失败，CLI↔运行时互通）+ Server test_credit 新增 history 分页 1 项
 - 回归：后端 1215/1215 ? · 前端 362/362 + tsc 通过 · Server 20/20 ?
 
 ### 执行轮次 59（交付验收：voiceover e2e + NEL 可视化 + 一键启动 + 容器就绪）
@@ -852,4 +852,4 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ✅ NEL 编辑器可视化：renderers.drawRuler 读时间轴旁白轨 metadata.nel，标尺底部画彩色事件刻度（number=蓝/emphasis=橙/turn=紫/question=绿/enum=灰），不阻塞标尺/网格
 - ✅ 一键启动验收：后端 `python -m clipwright.main`（8080）→ /health(mongodb ok+degraded)、/api/pipeline/tasks 200（Mongo 队列）、/api/animation/mg/list 21 个模板、/api/render/presets 含 prores422hq+h265_10bit、/api/plugin/list 200；前端 vite 5173 → HTTP 200（zh-CN 页面）；Server 8090 → /health ok（并验证 JWT 默认密钥启动拒绝安全门生效）
 - ✅ 容器化就绪检查（本机无 docker → 配置级）：Dockerfile.backend（python3.12+ffmpeg）、Dockerfile.frontend（node20→nginx，nginx.conf 代理 /api /renders）、Server docker-compose、根 docker-compose 齐全；修复两处 compose 的 Mongo 27017 公网暴露 → 127.0.0.1 绑定；.env.example 覆盖服务/安全/账号/插件/LLM/视觉/RAG/渲染/TTS 全套配置
-- ✅ 回归：后端 1178/1178 ✅ · 前端 362/362 + tsc 通过 ✅ · Server 20/20 ✅
+- ✅ 回归：后端 1217/1217 ✅ · 前端 362/362 + tsc 通过 ✅ · Server 20/20 ✅
