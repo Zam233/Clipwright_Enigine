@@ -975,6 +975,7 @@ class PipelineOrchestratorV2:
                     or persona_config.get("audio", {}).get("voice")
                     or "",
                     "auto_dub": extra_params.get("auto_dub", True),
+                    "subtitle_enabled": True,
                 },
             },
             "quality": {

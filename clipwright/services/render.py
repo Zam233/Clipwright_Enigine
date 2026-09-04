@@ -813,21 +813,21 @@ class RenderService:
                 final_video = await self._apply_text_concat(final_video, text_overlays, encoder, preset,
                                                             progress_callback, width=width, height=height)
 
-            # S2: HF 图解 + MG 动画 → 单次 Hyperframes 调用
-            if final_video and self._hyperframes_available():
-                final_video = await self._apply_all_hyperframes(final_video, text_overlays, hf_ov_local,
-                                                                width, height, fps, progress_callback)
+        # S2: HF 图解 + MG 动画 → 单次 Hyperframes 调用
+        if final_video and await self._hyperframes_available_async():
+            final_video = await self._apply_all_hyperframes(final_video, text_overlays, hf_ov_local,
+                                                            width, height, fps, progress_callback)
 
-            # 画中画
-            if final_video and overlay_segments:
-                final_video = await self._apply_overlays_safe(final_video, overlay_segments, width, height)
+        # 画中画
+        if final_video and overlay_segments:
+            final_video = await self._apply_overlays_safe(final_video, overlay_segments, width, height)
 
-            # 缓存 pre-audio 视频（供「仅音频变更」快路径复用）
-            if final_video and _is_valid_video(final_video):
-                try:
-                    shutil.copy2(final_video, cached_stage)
-                except Exception as e:
-                    logger.warning("视频阶段缓存写入失败: %s", e)
+        # 缓存 pre-audio 视频（供「仅音频变更」快路径复用）
+        if final_video and _is_valid_video(final_video):
+            try:
+                shutil.copy2(final_video, cached_stage)
+            except Exception as e:
+                logger.warning("视频阶段缓存写入失败: %s", e)
 
         # 音频（C12：混合失败必须标记到结果，而非静默静音成片）
         audio_warnings: list[str] = []
@@ -1008,15 +1008,19 @@ class RenderService:
     def _extract_text_overlay(clip, track_idx, existing):
         meta = clip.metadata or {}
         style = dict(meta.get("style", {}))
+        # 合并判据：metadata.category == "caption" 或 Clip.kind == caption
+        category = meta.get("category", "") or (
+            "caption" if str(getattr(clip, "kind", "")) == "caption" else "")
         pos = meta.get("position", style.get("position", {1: "bottom", 2: "top", 3: "center"}.get(track_idx, "bottom")))
-        # Bug1 修复：不再按同轨字幕数量累积偏移（旧逻辑会导致后出现的字幕逐条上移直至消失）。
-        # 同一 track 的字幕 y 固定为 0（同一时刻多条字幕同高度，避免累加漂移）。
-        y_off = 0
-        # 基础样式并入 style dict：clip 显式字段优先，缺失时回退 meta.style / 默认值
-        style.setdefault("font_size", clip.font_size or 48)
-        style.setdefault("font_color", clip.font_color or "#ffffff")
-        style.setdefault("position", pos)
-        style.setdefault("offset_y", y_off)
+        # 字幕（caption，合并双方语义）：offset_y 恒 0（Bug1：同轨字幕不逐条上移）；
+        # 管线产出的 caption（携带 metadata）且无显式 style 时注入默认描边
+        # （borderw=2，白字可读性）；完全无 metadata 的 legacy ASS 字幕保持原样。
+        if category == "caption":
+            offset_y = 0
+            if not style and meta:
+                style = {"stroke_width": 2, "stroke_color": "#000000", "offset_y": 0, "position": pos}
+        else:
+            offset_y = min(len([t for t in existing if t.get("_track_idx") == track_idx]) * 35, 500)
         # 任务 31：新样式字段直接从 Clip 读取并合并进 style dict（clip 优先，meta.style 兜底）
         for f in _CLIP_STYLE_FIELDS:
             v = getattr(clip, f, None)
@@ -1025,9 +1029,9 @@ class RenderService:
         return dict(start_sec=clip.start_sec, duration_sec=clip.duration_sec,
                     text=clip.text or "", font_size=clip.font_size or 48,
                     font_color=clip.font_color or "#ffffff", font=clip.font or "",
-                    position=pos, offset_y=y_off, style=style,
+                    position=pos, offset_y=offset_y, style=style,
                     anim_type=meta.get("anim_type", ""), renderer=meta.get("renderer", "drawtext"),
-                    category=meta.get("category", ""), _track_idx=track_idx, keyframes=clip.keyframes or [])
+                    category=category, _track_idx=track_idx, keyframes=clip.keyframes or [])
 
     @staticmethod
     def _extract_animation_overlay(clip, track_idx=0):
@@ -1486,9 +1490,11 @@ class RenderService:
                 await progress_callback("mg", 70, f"渲染 {len(hf_ov_local)} 个 MG 动画")
             # Chrome 渲染是重资源操作：限制同时运行的实例数（默认 6，可用
             # material_concurrency 配置覆盖），避免 44 个 MG 一次性打爆内存。
+            # 合并：pipeline_concurrency（远程线键名）优先，回退 material_concurrency。
             try:
                 from clipwright.config import settings
-                limit = max(1, int(getattr(settings, "material_concurrency", 6)))
+                limit = max(1, int(getattr(settings, "pipeline_concurrency", None)
+                                   or getattr(settings, "material_concurrency", 6) or 6))
             except Exception:
                 limit = 6
             sem = asyncio.Semaphore(limit)
@@ -1505,19 +1511,22 @@ class RenderService:
                 return res
 
             movs = await asyncio.gather(*(_render_one(m) for m in hf_ov_local))
-            # 按 start_sec 排序，保持原有链式叠加顺序语义 (Phase 2: 单次 filter_complex)
-            ordered = sorted(zip(movs, [m.get("start_sec", 0) for m in hf_ov_local],
-                                 [m.get("duration_sec", 0) for m in hf_ov_local]),
-                             key=lambda t: t[1])
-            chained = [(mov, start_sec, duration_sec)
-                       for mov, start_sec, duration_sec in ordered if mov]
-            if chained:
-                if progress_callback:
-                    await progress_callback("mg", 90, "链式叠加 MG 动画")
-                video = await self._apply_mg_overlay_chained(
-                    video, chained, width, height, fps)
-                if progress_callback:
-                    await progress_callback("mg", 95, "MG 叠加完成")
+            # Phase 2: 串行叠加（合并决策：沿用远程线的 per-MOV
+            # render_overlay_on_video + 窗口 enable 语义——每 MOV 一次 re-encode，
+            # 任何单个失败仅跳过自身；本地线的链式合成保留方法但不再默认走此路径）
+            for mg, mov in zip(hf_ov_local, movs):
+                if isinstance(mov, BaseException):
+                    logger.warning("MG overlay render failed: %s", mov)
+                    continue
+                if mov and _is_valid_video(mov):
+                    out_v = str(self._work_dir / f"mg_ov_{uuid.uuid4().hex[:4]}.mp4")
+                    ok = HyperframesRenderer.render_overlay_on_video(
+                        mov, video, out_v,
+                        mg.get("start_sec", 0), mg.get("duration_sec", 0))
+                    if ok and _is_valid_video(out_v):
+                        video = out_v
+            if progress_callback:
+                await progress_callback("mg", 95, "MG 叠加完成")
 
         if overlays:
             if progress_callback:
@@ -1595,7 +1604,10 @@ class RenderService:
           每批仍为单次 ffmpeg 调用。
         - 失败时回退返回原 ``video``，绝不让 MG 阶段拖垮整个导出。
         """
-        movs = [(m, s, d) for m, s, d in movs if m and Path(m).exists()]
+        # 合并决策：不再按 Path.exists() 预过滤——缺失/损坏 MOV 由上游
+        # `_render_mg_mov` 返回 None / `_is_valid_video` 门控；此处保留 None
+        # 过滤，真不存在的输入由 ffmpeg 失败回退兜底（返回原 video 不断链）。
+        movs = [(m, s, d) for m, s, d in movs if m]
         if not movs:
             return video
         out = str(self._work_dir / f"mg_chain_{uuid.uuid4().hex[:8]}.mp4")
@@ -1926,7 +1938,7 @@ class RenderService:
                     *(["-c:v", "copy"] if video_cached else
                       ["-c:v", encoder, "-preset", preset, "-pix_fmt", _current_pix_fmt(),
                        "-b:v", bitrate, *_delivery_extra_args(encoder)]),
-                    "-c:a", "aac", "-b:a", ab, "-shortest", output_path,
+                    "-c:a", "aac", "-b:a", ab, output_path,
                 ], capture_output=True, text=False, timeout=1800)
                 if _is_valid_video(output_path):
                     logger.info("C11 真实混音成功: %d 音源 + LUFS 归一", len(voices))
@@ -1943,7 +1955,7 @@ class RenderService:
                                *(["-c:v","copy"] if video_cached else
                                  ["-c:v",encoder,"-preset",preset,"-pix_fmt",_current_pix_fmt(),
                                   "-b:v",bitrate,*_delivery_extra_args(encoder)]),
-                               "-c:a","aac","-b:a",ab,"-map","0:v:0","-map","1:a:0","-shortest",output_path],
+                               "-c:a","aac","-b:a",ab,"-map","0:v:0","-map","1:a:0",output_path],
                               capture_output=True, text=False, timeout=600)
                 if _is_valid_video(output_path): return
                 logger.warning("_mix_audio: 配音混合输出无效: %s", output_path)
@@ -1965,6 +1977,19 @@ class RenderService:
         try:
             from clipwright.animation.hyperframes_renderer import HyperframesRenderer
             return HyperframesRenderer.is_available()
+        except Exception:
+            return False
+
+    @staticmethod
+    async def _hyperframes_available_async(timeout: float = 60.0):
+        """异步探测 Hyperframes 是否可用（含冷启动等待，最多 timeout 秒）。
+
+        与同步版不同：冷启动时 ``is_available()`` 底层缓存探针首次返回 default=False，
+        会误跳过 HF 图解/MG 渲染。此方法轮询等待真实可用性，超时仍不可用才返回 False。
+        """
+        try:
+            from clipwright.animation.hyperframes_renderer import HyperframesRenderer
+            return await HyperframesRenderer.await_available(timeout)
         except Exception:
             return False
 

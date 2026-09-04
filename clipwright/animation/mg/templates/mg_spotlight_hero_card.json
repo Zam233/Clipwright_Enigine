@@ -1,0 +1,124 @@
+{
+  "animation_id": "mg_spotlight_hero_card",
+  "name": "聚光主视觉卡",
+  "description": "video-shotcraft 镜头卡：暗场聚光圆斑 + 主标题/副标题错峰入场，单一主角动效，末尾 hold 留白",
+  "duration_sec": 4.0,
+  "width": 1920,
+  "height": 1080,
+  "elements": [
+    {
+      "type": "bg",
+      "background": "radial-gradient(ellipse at center, #16234a 0%, #0a0e1a 70%)",
+      "keyframes": [
+        {
+          "time": 0,
+          "opacity": 0,
+          "easing": "ease-out"
+        },
+        {
+          "time": 0.5,
+          "opacity": 1
+        },
+        {
+          "time": 4.0,
+          "opacity": 1
+        }
+      ]
+    },
+    {
+      "type": "circle",
+      "x": 960,
+      "y": 430,
+      "width": 640,
+      "height": 640,
+      "color": "rgba(244,180,80,0.14)",
+      "keyframes": [
+        {
+          "time": 0,
+          "opacity": 0,
+          "scale": 0.6,
+          "easing": "ease-out"
+        },
+        {
+          "time": 1.0,
+          "opacity": 1,
+          "scale": 1.0
+        },
+        {
+          "time": 4.0,
+          "opacity": 1,
+          "scale": 1.0
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "x": 960,
+      "y": 470,
+      "font_size": 96,
+      "color": "#f4f6fb",
+      "font_weight": "bold",
+      "text_shadow": "0 0 30px rgba(244,180,80,0.8)",
+      "keyframes": [
+        {
+          "time": 0,
+          "opacity": 0,
+          "scale": 0.86,
+          "easing": "ease-out"
+        },
+        {
+          "time": 1.2,
+          "opacity": 1,
+          "scale": 1.0
+        },
+        {
+          "time": 4.0,
+          "opacity": 1,
+          "scale": 1.0
+        }
+      ],
+      "content": "{title}"
+    },
+    {
+      "type": "text",
+      "x": 960,
+      "y": 610,
+      "font_size": 40,
+      "color": "#aab4cc",
+      "letter_spacing": 6,
+      "keyframes": [
+        {
+          "time": 0,
+          "opacity": 0,
+          "translate_y": 24,
+          "easing": "ease-out"
+        },
+        {
+          "time": 1.6,
+          "opacity": 1,
+          "translate_y": 0
+        },
+        {
+          "time": 4.0,
+          "opacity": 1,
+          "translate_y": 0
+        }
+      ],
+      "content": "{subtitle}"
+    }
+  ],
+  "params": {
+    "title": {
+      "type": "string",
+      "default": "核心主角"
+    },
+    "subtitle": {
+      "type": "string",
+      "default": "SPOTLIGHT HERO CARD"
+    }
+  },
+  "style": {
+    "background": "transparent",
+    "font_family": "sans-serif"
+  }
+}

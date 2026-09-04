@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from clipwright.agents.base import BaseAgent
+from clipwright.agents.base import BaseAgent, uid as _uid
 from clipwright.config import logger, settings
 from clipwright.material.registry import MaterialRegistry
 from clipwright.schema.agent import (
@@ -405,6 +405,70 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                                 notes.append(
                                     f"自动配音: {len(segments)} 段旁白"
                                 )
+
+                                # ── 7b. 由旁白分段生成字幕 clip（受 subtitle_enabled 门控）──
+                                if (
+                                    bool(audio_config.get("subtitle_enabled", True))
+                                    and not audio_path
+                                    and any(
+                                        (getattr(c, "metadata", {}) or {}).get("text")
+                                        for c in narr_track.clips
+                                    )
+                                ):
+                                    # 查找或创建字幕轨
+                                    text_track = None
+                                    for t in timeline.tracks:
+                                        if t.kind == ClipKind.TEXT:
+                                            text_track = t
+                                            break
+                                    if text_track is None:
+                                        used_indexes = {t.index for t in timeline.tracks}
+                                        text_index = 1
+                                        while text_index in used_indexes:
+                                            text_index += 1
+                                        text_track = Track(
+                                            id=_uid("t"),
+                                            name="字幕轨",
+                                            kind=ClipKind.TEXT,
+                                            index=text_index,
+                                        )
+                                        timeline.tracks.append(text_track)
+
+                                    caption_clips: list[Clip] = []
+                                    for nclip in narr_track.clips:
+                                        text = (getattr(nclip, "metadata", {}) or {}).get("text", "")
+                                        if not text:
+                                            continue
+                                        # 去重：该分段已被现有点位重合的字幕覆盖 → 跳过
+                                        if any(
+                                            c.kind == ClipKind.CAPTION
+                                            and abs(c.start_sec - nclip.start_sec) < 1e-6
+                                            for c in [*text_track.clips, *caption_clips]
+                                        ):
+                                            continue
+                                        caption_clips.append(
+                                            Clip(
+                                                id=_uid("cc"),
+                                                kind=ClipKind.CAPTION,
+                                                asset_id="",
+                                                track_id=text_track.id,
+                                                start_sec=nclip.start_sec,
+                                                duration_sec=nclip.duration_sec,
+                                                text=text[:100],
+                                                font="sans-serif",
+                                                font_size=36,
+                                                font_color="#ffffff",
+                                                metadata={
+                                                    "category": "caption",
+                                                    "renderer": "drawtext",
+                                                    "position": "bottom",
+                                                },
+                                            )
+                                        )
+                                    if caption_clips:
+                                        text_track.clips.extend(caption_clips)
+                                        text_track.clips.sort(key=lambda c: c.start_sec)
+                                        notes.append(f"字幕: {len(caption_clips)} 条")
                         else:
                             notes.append(
                                 f"自动配音失败: {getattr(res, 'error', 'unknown')}"

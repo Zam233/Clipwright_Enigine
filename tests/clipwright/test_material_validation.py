@@ -192,6 +192,7 @@ class TestValidateVideoFrame:
 
 class TestBoundedRetry:
     @pytest.mark.asyncio
+    @pytest.mark.skip(reason='合并: 本地有界重试流已被远程C4c重选流取代')
     async def test_low_score_triggers_requery_leq_two(self) -> None:
         """校验恒低分且无新候选 → 有界寻源终止，重拟词 ≤2 次，validation_note 含 retry/exhausted。"""
         agent = MaterialAgent()
@@ -235,7 +236,11 @@ class TestRegistration:
         register_builtin_tools()
         tool = ToolRegistry.get("frame_validator")
         assert tool is not None
-        assert tool.__class__.__module__ == "clipwright.tool.material"
+        # 合并：真实实现可能在 tool/material.py（本地线）或 tool/frame_validator.py
+        # （远程线，真实黑/白/过曝检测）——两者均为非 stubs 实现即满足 B-x 契约。
+        assert tool.__class__.__module__ in (
+            "clipwright.tool.material", "clipwright.tool.frame_validator",
+        )
         # 真实实现无 stubs 占位 warning
         assert getattr(tool, "dependencies", []) == ["ffmpeg", "ffprobe"]
 

@@ -154,6 +154,7 @@ class TestMGGeneratorVisionPrompt:
         async def fake_call_llm(
             description, text_content, persona_style,
             scene_context, category_context, vision_prompt="",
+            **kwargs,  # 合并：generate 会透传 pipeline_id 等参数
         ):
             captured["vision_prompt"] = vision_prompt
             captured["context"] = MGGenerator._build_context_section(

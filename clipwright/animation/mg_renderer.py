@@ -137,7 +137,7 @@ body{{width:{w}px;height:{h}px;overflow:hidden;background:{bg};position:relative
 .mg-shape{{border-radius:4px}}
 {all_css}
 </style></head><body>
-<div id="root" data-composition-id="mg" data-duration="{dur:.2f}" data-width="{w}" data-height="{h}" style="width:{w}px;height:{h}px;position:relative;overflow:hidden">
+<div id="root" data-composition-id="main" data-width="{w}" data-height="{h}" data-start="0" data-duration="{dur:.2f}" style="width:{w}px;height:{h}px;position:relative;overflow:hidden">
 {chr(10).join(elements_html)}
 </div>
 <script>
@@ -146,6 +146,7 @@ const root=document.getElementById('root');
 const dur=parseFloat(root.dataset.duration);
 {all_js}
 }})();
+window.__timelines = window.__timelines || {{}}; window.__timelines['main'] = {{ paused: true }};
 </script>
 </body></html>"""
 
@@ -282,7 +283,7 @@ const dur=parseFloat(root.dataset.duration);
             font_color = fill(elem.get("font_color", "#ffffff"))
             font_weight = fill(elem.get("font_weight", "normal"))
             html = (
-                f'<div id="{eid}" class="mg-el" style="{base_css}'
+                f'<div id="{eid}" class="mg-el clip" data-start="0" data-duration="{total_dur}" data-track-index="1" style="{base_css}'
                 f'font-size:{font_size}px;color:{font_color};font-weight:{font_weight}'
                 + static_style
                 + f'">{MGRenderer._esc(content)}</div>'
@@ -291,7 +292,7 @@ const dur=parseFloat(root.dataset.duration);
             # 全幅背景/渐变底层：铺满、置于最底层
             color = elem.get("background") or elem.get("color", "#0e101a")
             html = (
-                f'<div id="{eid}" class="mg-el" style="position:absolute;inset:0;z-index:0;'
+                f'<div id="{eid}" class="mg-el clip" data-start="0" data-duration="{total_dur}" data-track-index="1" style="position:absolute;inset:0;z-index:0;'
                 f'background:{fill(color)};'
                 + static_style
                 + '"></div>'
@@ -336,7 +337,7 @@ const dur=parseFloat(root.dataset.duration);
                 bg_css = f"background:{fill(bg_val)};"
 
             html = (
-                f'<div id="{eid}" class="mg-el mg-shape" style="{base_css}'
+                f'<div id="{eid}" class="mg-el mg-shape clip" data-start="0" data-duration="{total_dur}" data-track-index="1" style="{base_css}'
                 f'width:{w_val}px;height:{h_val}px;{bg_css}'
                 f'{radius_css}'
                 + (f'border:{sw}px solid {fill(sw_color)};' if sw_num > 0 else "")
@@ -355,7 +356,7 @@ const dur=parseFloat(root.dataset.duration);
             if br not in (0, "0", 0.0):
                 radius_css = f"border-radius:{fill(br)};"
             html = (
-                f'<img id="{eid}" class="mg-el mg-image" '
+                f'<img id="{eid}" class="mg-el mg-image clip" data-start="0" data-duration="{total_dur}" data-track-index="1" '
                 f'src="{MGRenderer._esc(str(src))}" alt="" '
                 f'style="{base_css}width:{w_val}px;height:{h_val}px;'
                 f'object-fit:contain;{radius_css}'

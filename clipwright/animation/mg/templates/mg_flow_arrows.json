@@ -1,0 +1,319 @@
+{
+  "animation_id": "mg_flow_arrows",
+  "name": "流程箭头",
+  "description": "流程箭头：步骤节点自左向右错峰点亮 + 箭头连杆生长 + 菱形箭头回弹 + 渐变底色",
+  "duration_sec": 4.2,
+  "width": 1920,
+  "height": 1080,
+  "elements": [
+    {
+      "type": "bg",
+      "background": "linear-gradient(135deg, #0a0e1a 0%, #14203a 60%, #0a0e1a 100%)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "easing": "ease-out"},
+        {"time": 0.5, "opacity": 1},
+        {"time": 4.1, "opacity": 1}
+      ]
+    },
+    {
+      "type": "text",
+      "content": "{text}",
+      "x": "center",
+      "y": "top",
+      "y_offset": 80,
+      "font_size": 52,
+      "font_weight": "bold",
+      "font_color": "#ffffff",
+      "text_shadow": "0 0 30px rgba(79,140,255,0.8)",
+      "letter_spacing": 5,
+      "keyframes": [
+        {"time": 0, "opacity": 0, "translate_y": 16, "easing": "ease-out"},
+        {"time": 0.7, "opacity": 1, "translate_y": 0},
+        {"time": 3.8, "opacity": 1, "easing": "ease-in"},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 112,
+      "height": 112,
+      "x": 304,
+      "y": 484,
+      "color": "#4f8cff",
+      "box_shadow": "0 0 40px rgba(79,140,255,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.4, "easing": "back-out"},
+        {"time": 0.4, "opacity": 1, "scale": 1.0},
+        {"time": 3.8, "opacity": 1, "easing": "ease-in"},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 112,
+      "height": 112,
+      "x": 664,
+      "y": 484,
+      "color": "#fbbf24",
+      "box_shadow": "0 0 40px rgba(251,191,36,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.4, "easing": "back-out"},
+        {"time": 0.8, "opacity": 1, "scale": 1.0},
+        {"time": 3.8, "opacity": 1, "easing": "ease-in"},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 112,
+      "height": 112,
+      "x": 1024,
+      "y": 484,
+      "color": "#34d399",
+      "box_shadow": "0 0 40px rgba(52,211,153,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.4, "easing": "back-out"},
+        {"time": 1.2, "opacity": 1, "scale": 1.0},
+        {"time": 3.8, "opacity": 1, "easing": "ease-in"},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 112,
+      "height": 112,
+      "x": 1384,
+      "y": 484,
+      "color": "#a855f7",
+      "box_shadow": "0 0 40px rgba(168,85,247,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.4, "easing": "back-out"},
+        {"time": 1.6, "opacity": 1, "scale": 1.0},
+        {"time": 3.8, "opacity": 1, "easing": "ease-in"},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "text",
+      "content": "{step1}",
+      "x": 264,
+      "y": 626,
+      "font_size": 30,
+      "font_color": "#ffffff",
+      "font_weight": "bold",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "translate_y": 10, "easing": "ease-out"},
+        {"time": 0.6, "opacity": 1, "translate_y": 0},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "text",
+      "content": "{step2}",
+      "x": 624,
+      "y": 626,
+      "font_size": 30,
+      "font_color": "#ffffff",
+      "font_weight": "bold",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "translate_y": 10, "easing": "ease-out"},
+        {"time": 1.0, "opacity": 1, "translate_y": 0},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "text",
+      "content": "{step3}",
+      "x": 984,
+      "y": 626,
+      "font_size": 30,
+      "font_color": "#ffffff",
+      "font_weight": "bold",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "translate_y": 10, "easing": "ease-out"},
+        {"time": 1.4, "opacity": 1, "translate_y": 0},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "text",
+      "content": "{step4}",
+      "x": 1344,
+      "y": 626,
+      "font_size": 30,
+      "font_color": "#ffffff",
+      "font_weight": "bold",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "translate_y": 10, "easing": "ease-out"},
+        {"time": 1.8, "opacity": 1, "translate_y": 0},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "line",
+      "width": 150,
+      "height": 5,
+      "x": 428,
+      "y": 538,
+      "color": "#4f8cff",
+      "box_shadow": "0 0 18px rgba(79,140,255,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "width": 0, "easing": "back-out"},
+        {"time": 0.6, "opacity": 1, "width": 150},
+        {"time": 3.8, "opacity": 1, "easing": "ease-in"},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "line",
+      "width": 150,
+      "height": 5,
+      "x": 788,
+      "y": 538,
+      "color": "#fbbf24",
+      "box_shadow": "0 0 18px rgba(251,191,36,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "width": 0, "easing": "back-out"},
+        {"time": 1.0, "opacity": 1, "width": 150},
+        {"time": 3.8, "opacity": 1, "easing": "ease-in"},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "line",
+      "width": 150,
+      "height": 5,
+      "x": 1148,
+      "y": 538,
+      "color": "#34d399",
+      "box_shadow": "0 0 18px rgba(52,211,153,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "width": 0, "easing": "back-out"},
+        {"time": 1.4, "opacity": 1, "width": 150},
+        {"time": 3.8, "opacity": 1, "easing": "ease-in"},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "width": 20,
+      "height": 20,
+      "x": 568,
+      "y": 530,
+      "color": "#4f8cff",
+      "box_shadow": "0 0 14px rgba(79,140,255,0.9)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.3, "rotate": 45, "easing": "back-out"},
+        {"time": 0.9, "opacity": 1, "scale": 1.0, "rotate": 45},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "width": 20,
+      "height": 20,
+      "x": 928,
+      "y": 530,
+      "color": "#fbbf24",
+      "box_shadow": "0 0 14px rgba(251,191,36,0.9)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.3, "rotate": 45, "easing": "back-out"},
+        {"time": 1.3, "opacity": 1, "scale": 1.0, "rotate": 45},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "width": 20,
+      "height": 20,
+      "x": 1288,
+      "y": 530,
+      "color": "#34d399",
+      "box_shadow": "0 0 14px rgba(52,211,153,0.9)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.3, "rotate": 45, "easing": "back-out"},
+        {"time": 1.7, "opacity": 1, "scale": 1.0, "rotate": 45},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 9,
+      "height": 9,
+      "color": "#4f8cff",
+      "x": "left",
+      "y": "top",
+      "x_offset": 200,
+      "y_offset": 260,
+      "box_shadow": "0 0 16px rgba(79,140,255,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.3, "easing": "elastic-out"},
+        {"time": 2.2, "opacity": 1, "scale": 1.0},
+        {"time": 4.0, "opacity": 0.5}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 8,
+      "height": 8,
+      "color": "#fbbf24",
+      "x": "right",
+      "y": "top",
+      "x_offset": 220,
+      "y_offset": 320,
+      "box_shadow": "0 0 14px rgba(251,191,36,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.3, "easing": "elastic-out"},
+        {"time": 2.6, "opacity": 1, "scale": 1.0},
+        {"time": 4.0, "opacity": 0.5}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 7,
+      "height": 7,
+      "color": "#34d399",
+      "x": "left",
+      "y": "bottom",
+      "x_offset": 300,
+      "y_offset": 260,
+      "box_shadow": "0 0 12px rgba(52,211,153,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.3, "easing": "elastic-out"},
+        {"time": 3.0, "opacity": 1, "scale": 1.0},
+        {"time": 4.0, "opacity": 0.4}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 10,
+      "height": 10,
+      "color": "#a855f7",
+      "x": "right",
+      "y": "bottom",
+      "x_offset": 260,
+      "y_offset": 220,
+      "box_shadow": "0 0 16px rgba(168,85,247,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.3, "easing": "elastic-out"},
+        {"time": 3.3, "opacity": 1, "scale": 1.0},
+        {"time": 4.0, "opacity": 0.5}
+      ]
+    }
+  ],
+  "params": {
+    "text": {"type": "string", "default": "工作流程"},
+    "step1": {"type": "string", "default": "分析"},
+    "step2": {"type": "string", "default": "设计"},
+    "step3": {"type": "string", "default": "开发"},
+    "step4": {"type": "string", "default": "上线"},
+    "accent": {"type": "string", "default": "#fbbf24"}
+  },
+  "style": {
+    "background": "transparent",
+    "font_family": "sans-serif"
+  }
+}

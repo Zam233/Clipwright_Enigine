@@ -53,7 +53,8 @@ class TestImageElementRendering:
         assert "<img" in html
         assert 'src="assets/graphene.png"' in html
         assert 'id="mg-e0"' in html
-        assert 'class="mg-el mg-image"' in html
+        # 合并: HyperFrames 契约要求 clip 类与 data-start/duration/track-index 时序属性
+        assert 'class="mg-el mg-image clip"' in html
         assert "position:absolute" in html
         assert "left:200px" in html
         assert "top:150px" in html

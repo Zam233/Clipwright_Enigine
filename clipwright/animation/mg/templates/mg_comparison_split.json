@@ -1,0 +1,205 @@
+{
+  "animation_id": "mg_comparison_split",
+  "name": "左右对比",
+  "description": "A vs B 左右分屏对比：中央渐变分隔线 + 双方错峰入场 + VS 徽章冲击回弹",
+  "duration_sec": 4.5,
+  "width": 1920,
+  "height": 1080,
+  "elements": [
+    {
+      "type": "bg",
+      "background": "linear-gradient(180deg, #0e1118 0%, #1a2237 100%)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "easing": "ease-out"},
+        {"time": 0.6, "opacity": 1},
+        {"time": 4.4, "opacity": 1}
+      ]
+    },
+    {
+      "type": "line",
+      "width": 4,
+      "height": 440,
+      "x": "center",
+      "y": "center",
+      "color": "linear-gradient(180deg, rgba(79,140,255,0) 0%, rgba(79,140,255,0.9) 50%, rgba(79,140,255,0) 100%)",
+      "box_shadow": "0 0 24px rgba(79,140,255,0.6)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "height": 0, "easing": "back-out"},
+        {"time": 1.0, "opacity": 1, "height": 440},
+        {"time": 4.2, "opacity": 0}
+      ]
+    },
+    {
+      "type": "text",
+      "content": "{left}",
+      "x": "left",
+      "x_offset": 240,
+      "y": "center",
+      "y_offset": -70,
+      "font_size": 64,
+      "font_weight": "bold",
+      "font_color": "#ffffff",
+      "text_shadow": "0 0 30px rgba(79,140,255,0.7)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "translate_x": -36, "easing": "ease-out"},
+        {"time": 1.2, "opacity": 1, "translate_x": 0},
+        {"time": 3.9, "opacity": 1, "easing": "ease-in"},
+        {"time": 4.2, "opacity": 0}
+      ]
+    },
+    {
+      "type": "text",
+      "content": "{right}",
+      "x": "right",
+      "x_offset": 240,
+      "y": "center",
+      "y_offset": -70,
+      "font_size": 64,
+      "font_weight": "bold",
+      "font_color": "#ffffff",
+      "text_shadow": "0 0 30px rgba(251,191,36,0.7)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "translate_x": 36, "easing": "ease-out"},
+        {"time": 1.6, "opacity": 1, "translate_x": 0},
+        {"time": 3.9, "opacity": 1, "easing": "ease-in"},
+        {"time": 4.2, "opacity": 0}
+      ]
+    },
+    {
+      "type": "text",
+      "content": "{left_sub}",
+      "x": "left",
+      "x_offset": 240,
+      "y": "center",
+      "y_offset": 20,
+      "font_size": 34,
+      "font_color": "#9fb4ff",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "translate_y": 12, "easing": "ease-out"},
+        {"time": 1.6, "opacity": 1, "translate_y": 0},
+        {"time": 4.2, "opacity": 0}
+      ]
+    },
+    {
+      "type": "text",
+      "content": "{right_sub}",
+      "x": "right",
+      "x_offset": 240,
+      "y": "center",
+      "y_offset": 20,
+      "font_size": 34,
+      "font_color": "#9fb4ff",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "translate_y": 12, "easing": "ease-out"},
+        {"time": 2.0, "opacity": 1, "translate_y": 0},
+        {"time": 4.2, "opacity": 0}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 96,
+      "height": 96,
+      "x": "center",
+      "y": "center",
+      "color": "#4f8cff",
+      "box_shadow": "0 0 50px rgba(79,140,255,0.9)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.4, "easing": "back-out"},
+        {"time": 1.1, "opacity": 1, "scale": 1.0},
+        {"time": 1.6, "scale": 1.18, "easing": "ease-in-out"},
+        {"time": 2.0, "scale": 1.0},
+        {"time": 4.2, "opacity": 0}
+      ]
+    },
+    {
+      "type": "text",
+      "content": "{vs}",
+      "x": "center",
+      "y": "center",
+      "font_size": 40,
+      "font_weight": "bold",
+      "font_color": "#0e1118",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.5, "easing": "back-out"},
+        {"time": 1.2, "opacity": 1, "scale": 1.0},
+        {"time": 4.2, "opacity": 0}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 10,
+      "height": 10,
+      "color": "#4f8cff",
+      "x": "left",
+      "y": "bottom",
+      "x_offset": 220,
+      "y_offset": 180,
+      "box_shadow": "0 0 16px rgba(79,140,255,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.3, "easing": "elastic-out"},
+        {"time": 2.6, "opacity": 1, "scale": 1.0},
+        {"time": 4.0, "opacity": 0.5}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 8,
+      "height": 8,
+      "color": "#fbbf24",
+      "x": "right",
+      "y": "bottom",
+      "x_offset": 200,
+      "y_offset": 220,
+      "box_shadow": "0 0 14px rgba(251,191,36,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.3, "easing": "elastic-out"},
+        {"time": 2.9, "opacity": 1, "scale": 1.0},
+        {"time": 4.0, "opacity": 0.5}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 6,
+      "height": 6,
+      "color": "#34d399",
+      "x": "left",
+      "y": "top",
+      "x_offset": 300,
+      "y_offset": 220,
+      "box_shadow": "0 0 12px rgba(52,211,153,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.3, "easing": "elastic-out"},
+        {"time": 3.2, "opacity": 1, "scale": 1.0},
+        {"time": 4.0, "opacity": 0.4}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 12,
+      "height": 12,
+      "color": "#fbbf24",
+      "x": "right",
+      "y": "top",
+      "x_offset": 280,
+      "y_offset": 300,
+      "box_shadow": "0 0 20px rgba(251,191,36,0.7)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.3, "easing": "elastic-out"},
+        {"time": 3.4, "opacity": 1, "scale": 1.0},
+        {"time": 4.0, "opacity": 0.5}
+      ]
+    }
+  ],
+  "params": {
+    "left": {"type": "string", "default": "旧方案"},
+    "right": {"type": "string", "default": "新方案"},
+    "left_sub": {"type": "string", "default": "成本高 · 效率低"},
+    "right_sub": {"type": "string", "default": "成本低 · 效率高"},
+    "vs": {"type": "string", "default": "VS"},
+    "accent": {"type": "string", "default": "#fbbf24"}
+  },
+  "style": {
+    "background": "transparent",
+    "font_family": "sans-serif"
+  }
+}

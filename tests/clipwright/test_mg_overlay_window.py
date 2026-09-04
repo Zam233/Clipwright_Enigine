@@ -28,6 +28,10 @@ def _capture_ffmpeg(monkeypatch) -> list[list[str]]:
     cmds: list[list[str]] = []
 
     def fake_run(cmd, **kw):
+        # 合并：实现会先 ffprobe 探测覆盖层时长（决定是否 -t 截断）——
+        # 只记录 ffmpeg 调用，保持既有断言的 cmds[0] == ffmpeg 语义。
+        if cmd[0] != "ffmpeg":
+            return subprocess.CompletedProcess(cmd, 0)
         cmds.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0)
 
@@ -63,7 +67,9 @@ class TestMGOverlayTimeWindow:
             "ov.mov", "main.mp4", "out.mp4", start_sec=12.5, duration_sec=3.0)
         assert ok is True
         flt = _filter_complex(cmds[0])
-        assert "overlay=format=auto:enable='between(t,12.5,15.5)'" in flt, flt
+        # 合并契约：setpts 平移（远程线窗口可见性修复）+ enable 窗口（本地线）
+        assert "setpts=PTS-STARTPTS+12.5/TB" in flt
+        assert "enable='between(t,12.5,15.5)'" in flt
 
     def test_overlay_window_zero_start(self, monkeypatch) -> None:
         """起点为 0 的窗口同样生成 enable（0 是合法起点，不能当 None 处理）。"""
@@ -71,6 +77,7 @@ class TestMGOverlayTimeWindow:
         HyperframesRenderer.render_overlay_on_video(
             "ov.mov", "main.mp4", "out.mp4", start_sec=0.0, duration_sec=5.0)
         assert "enable='between(t,0.0,5.0)'" in _filter_complex(cmds[0])
+        assert "setpts=PTS-STARTPTS+0.0/TB" in _filter_complex(cmds[0])
 
     def test_overlay_encoder_resolved(self, monkeypatch) -> None:
         """合成命令的 -c:v 使用探测编码器（与 Bug3 联动，不硬编码）。"""
@@ -130,10 +137,11 @@ class TestBuildHtmlDimsAttributes:
 
 
 class TestApplyMGChainedOverlay:
-    """T3(C1): 单次 filter_complex 链式 MG overlay 合成（对比旧版 N 次全片 re-encode）。
+    """T3(C1) 合并契约：MG overlay 采用 per-MOV render_overlay_on_video +
+    窗口 enable 语义（远程线）；渲染并发与进度由本地线的 Phase 1 保留。
 
     mock 策略：``_render_mg_mov`` 返回预先建好的假 .mov 文件路径（按 ``_track_idx``
-    对应，顺序无关）；``_ff`` 记录命令行并返回 rc=0，不真正执行 ffmpeg。
+    对应，顺序无关）；``render_overlay_on_video`` 记录调用并返回 True。
     """
 
     def _mk(self, tmp_path, i: int) -> str:
@@ -147,6 +155,7 @@ class TestApplyMGChainedOverlay:
 
     def _build(self, monkeypatch, tmp_path, returns: list[str | None]):
         """returns[i] = _track_idx 为 i 的 MG 返回的 MOV 路径（None = 渲染失败跳过）。"""
+        overlay_calls: list[tuple] = []
         monkeypatch.setattr(render_mod, "_resolve_encoder", lambda: "libx264")
         svc = RenderService(work_dir=tmp_path / "work")
         ff_cmds: list[list[str]] = []
@@ -162,45 +171,57 @@ class TestApplyMGChainedOverlay:
             return by_idx.get(mg_ov.get("_track_idx"), None)
 
         monkeypatch.setattr(RenderService, "_render_mg_mov", fake_render_mg_mov)
-        return svc, ff_cmds
+        # 渲染产物统一视为有效（hyperframes 未真实运行，磁盘无 MOV 文件）
+        monkeypatch.setattr(
+            "clipwright.services.render._is_valid_video",
+            lambda _p, min_bytes=1024: True,
+        )
 
-    async def test_chained_single_invocation(self, monkeypatch, tmp_path) -> None:
-        """≥4 个 MG → 恰好 1 次 ffmpeg 调用；-i 数 = N+1；N 个 enable 窗口。"""
+        def fake_overlay(mov, video, out_v, start_sec=0.0, duration_sec=0.0):
+            overlay_calls.append((mov, video, out_v, start_sec, duration_sec))
+            return True
+
+        monkeypatch.setattr(
+            HyperframesRenderer, "render_overlay_on_video",
+            staticmethod(fake_overlay))
+        return svc, ff_cmds, overlay_calls
+
+    async def test_each_mov_overlaid_in_order(self, monkeypatch, tmp_path) -> None:
+        """4 个 MG → 4 次 per-MOV 叠加，窗口 = 各自 (start_sec, duration_sec)。"""
         n = 4
-        svc, cmds = self._build(monkeypatch, tmp_path, [self._mk(tmp_path, i) for i in range(n)])
-        await svc._apply_all_hyperframes("main.mp4", [], self._hf(n), 1920, 1080, 30.0)
-        assert len(cmds) == 1, f"应只有 1 次 ffmpeg 调用: {len(cmds)}"
-        cmd = cmds[0]
-        assert sum(1 for t in cmd if t == "-i") == n + 1  # 主视频 + N 个 MOV
-        flt = _filter_complex(cmd)
-        assert flt.count("enable='between(t,") == n
-        assert cmd[cmd.index("-map") + 1] == f"[v{n}]"
+        svc, ff_cmds, overlay_calls = self._build(monkeypatch, tmp_path,
+                                                  [self._mk(tmp_path, i) for i in range(n)])
+        out = await svc._apply_all_hyperframes("main.mp4", [], self._hf(n), 1920, 1080, 30.0)
+        assert out != "main.mp4"
+        assert len(overlay_calls) == n
+        starts = [c[3] for c in overlay_calls]
+        assert starts == [float(i) for i in range(n)]
+        # 每次叠加的输出路径互不相同（防竞态）
+        outs = [c[2] for c in overlay_calls]
+        assert len(set(outs)) == n
 
     async def test_chain_survives_missing_mov(self, monkeypatch, tmp_path) -> None:
-        """一个 MOV=None → 跳过该输入，不断链、不崩溃，其余照常合成。"""
+        """一个 MOV=None → 跳过该 MG，不崩溃，其余照常叠加。"""
         returns: list[str | None] = [self._mk(tmp_path, 0), None, self._mk(tmp_path, 2)]
-        svc, cmds = self._build(monkeypatch, tmp_path, returns)
-        await svc._apply_all_hyperframes("main.mp4", [], self._hf(3), 1920, 1080, 30.0)
-        assert len(cmds) == 1
-        cmd = cmds[0]
-        assert sum(1 for t in cmd if t == "-i") == 3  # 主视频 + 2 个有效 MOV
-        flt = _filter_complex(cmd)
-        assert flt.count("enable='between(t,") == 2
-        assert cmd[cmd.index("-map") + 1] == "[v2]"
+        svc, ff_cmds, overlay_calls = self._build(monkeypatch, tmp_path, returns)
+        out = await svc._apply_all_hyperframes("main.mp4", [], self._hf(3), 1920, 1080, 30.0)
+        assert out != "main.mp4"
+        assert len(overlay_calls) == 2
 
     async def test_cmdline_length_under_30000(self, monkeypatch, tmp_path) -> None:
-        """20 个 MOV 的命令行总长 < 30000（Windows 命令行长度安全）。"""
+        """20 个 MG 的每次 ffmpeg 命令行总长 < 30000（Windows 命令行长度安全）。"""
         n = 20
-        svc, cmds = self._build(monkeypatch, tmp_path, [self._mk(tmp_path, i) for i in range(n)])
+        svc, ff_cmds, overlay_calls = self._build(monkeypatch, tmp_path,
+                                                  [self._mk(tmp_path, i) for i in range(n)])
         await svc._apply_all_hyperframes("main.mp4", [], self._hf(n), 1920, 1080, 30.0)
-        assert cmds, "应至少产生一次 ffmpeg 调用"
-        for cmd in cmds:
+        for cmd in ff_cmds:
             assert len(" ".join(cmd)) < 30000
 
     async def test_progress_monotonic(self, monkeypatch, tmp_path) -> None:
         """整个 _apply_all_hyperframes 的 pct 序列单调不减（70 → 90 → 95 → 96）。"""
         n = 4
-        svc, cmds = self._build(monkeypatch, tmp_path, [self._mk(tmp_path, i) for i in range(n)])
+        svc, ff_cmds, overlay_calls = self._build(monkeypatch, tmp_path,
+                                                  [self._mk(tmp_path, i) for i in range(n)])
         text_overlays = [{"renderer": "hyperframes", "text": "x",
                           "start_sec": 0, "duration_sec": 1}]
         calls: list[tuple[str, float, str]] = []
@@ -213,9 +234,6 @@ class TestApplyMGChainedOverlay:
             return True
 
         monkeypatch.setattr(HyperframesRenderer, "render_overlays", fake_render_overlays)
-        monkeypatch.setattr(
-            HyperframesRenderer, "render_overlay_on_video",
-            staticmethod(lambda mov, video, out_v: True))
         await svc._apply_all_hyperframes("main.mp4", text_overlays, self._hf(n),
                                          1920, 1080, 30.0, spy)
         pcts = [c[1] for c in calls]
@@ -223,11 +241,12 @@ class TestApplyMGChainedOverlay:
         for a, b in zip(pcts, pcts[1:]):
             assert b >= a, f"进度回退: {a} -> {b} | 序列={pcts}"
 
-    async def test_each_input_scaled_padded(self, monkeypatch, tmp_path) -> None:
-        """每个 MOV 输入都带 scale/pad 尺寸对齐（导出分辨率，各出现一次）。"""
+    async def test_each_window_matches_scene(self, monkeypatch, tmp_path) -> None:
+        """每次叠加调用的窗口参数与 MG clip 的 start_sec/duration_sec 一致。"""
         n = 3
-        svc, cmds = self._build(monkeypatch, tmp_path, [self._mk(tmp_path, i) for i in range(n)])
+        svc, ff_cmds, overlay_calls = self._build(monkeypatch, tmp_path,
+                                                  [self._mk(tmp_path, i) for i in range(n)])
         await svc._apply_all_hyperframes("main.mp4", [], self._hf(n), 1920, 1080, 30.0)
-        flt = _filter_complex(cmds[0])
-        assert flt.count("scale=1920:1080:force_original_aspect_ratio=decrease") == n
-        assert flt.count("pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1") == n
+        for mov, video, out_v, start_sec, duration_sec in overlay_calls:
+            assert float(duration_sec) == 1.0
+            assert float(start_sec) in (0.0, 1.0, 2.0)

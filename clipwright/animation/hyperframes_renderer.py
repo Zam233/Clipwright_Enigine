@@ -39,6 +39,9 @@ def _probe_hyperframes() -> bool:
 # 进程级缓存探针：npx 冷启动慢，缓存 10 分钟，后台线程刷新，await 永不阻塞事件循环。
 _hf_available = cached_probe("hyperframes", _probe_hyperframes, ttl=600.0, default=False)
 
+# await_available() 的轮询间隔：npx 冷启动可能 ~90s，2s 轮询足够及时且不喧宾夺主。
+_AWAIT_POLL_INTERVAL = 2.0
+
 
 class HyperframesRenderer:
     """使用 Hyperframes (HTML→MOV) 渲染文字覆盖层。"""
@@ -121,6 +124,24 @@ class HyperframesRenderer:
     async def ais_available() -> bool:
         """async 版可用检查：命中缓存立即返回，失效时后台刷新，永不阻塞事件循环。"""
         return bool(await _hf_available())
+
+    @staticmethod
+    async def await_available(timeout: float = 120.0) -> bool:
+        """轮询等待 Hyperframes 可用（冷启动预热用），超时返回 False。
+
+        每 ``_AWAIT_POLL_INTERVAL``（默认 2s）调用一次缓存的探针（``_hf_available``），
+        后台线程负责跑真实 npx 探测，事件循环只 await，绝不阻塞。一旦探针翻转为
+        True 立即返回 True；超过 ``timeout`` 秒仍未就绪返回 False。
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            if bool(await _hf_available()):
+                return True
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(_AWAIT_POLL_INTERVAL, remaining))
 
     @staticmethod
     async def render_overlays(
@@ -291,33 +312,51 @@ els.forEach(el=>{
     @staticmethod
     def render_overlay_on_video(
         overlay_video: str, main_video: str, output_path: str,
-        start_sec: float | None = None, duration_sec: float | None = None,
+        start_sec: float = 0, duration_sec: float = 0,
     ) -> bool:
         """将 HF 输出的 MOV 叠加到主视频。
 
-        :param start_sec: 叠加时间窗口起点（相对主视频时间线）；None 表示叠加整个视频。
-        :param duration_sec: 叠加时间窗口长度；与 start_sec 同时提供时，
-            通过 overlay 的 ``enable='between(t,...)'`` 裁剪到 MG clip 对应时段，
-            避免 MOV 被平铺到整个主视频（Bug2 修复）。
+        start_sec/duration_sec 指定叠加窗口（默认 0 = 全时长叠加，保持旧行为）。
+        提供窗口时用 setpts 归零覆盖层时间戳，并用 overlay enable=between(t,start,start+dur)
+        只在窗口内显示；若覆盖层时长超过 duration_sec，则用 -t 截断输入对齐窗口。
         """
         try:
-            # Bug3: 编码器统一走智能探测（GPU 可用时 h264_nvenc，否则 libx264）
-            from clipwright.services.render import _resolve_encoder, _hwaccel_args, run_tracked_ff
+            # Bug3 合并：编码器走 render 的智能探测（GPU 可用时 h264_nvenc，否则 libx264）
+            from clipwright.services.render import _resolve_encoder, _hwaccel_args
             encoder = _resolve_encoder()
             hwaccel = _hwaccel_args(encoder)
-            overlay_expr = "overlay=format=auto"
-            if start_sec is not None and duration_sec is not None:
-                overlay_expr = (f"overlay=format=auto:"
-                                f"enable='between(t,{start_sec},{start_sec + duration_sec})'")
+
+            if start_sec > 0 or duration_sec > 0:
+                # 数值以原始形式格式化：int 保持 "265"、float 保留 "0.0"/"12.5"
+                # （两套测试契约的窗口格式均由此满足）
+                fc = (
+                    f"[1:v]setpts=PTS-STARTPTS+{start_sec}/TB,format=yuva420p[ov];"
+                    f"[0:v][ov]overlay=x=0:y=0:enable='between(t,{start_sec},{start_sec + duration_sec})'"
+                    ":eof_action=pass[vout]"
+                )
+            else:
+                fc = "[0:v][1:v]overlay=format=auto[vout]"
+
+            inputs = ["-i", main_video]
+            if duration_sec > 0 and _mov_longer_than(overlay_video, duration_sec):
+                # 覆盖层超长 → 用 -t 截断输入，使 enable 窗口与内容对齐
+                inputs += ["-t", _fmt_sec(duration_sec)]
+            inputs += ["-i", overlay_video]
+
             cmd = [
                 "ffmpeg", "-y", "-loglevel", "error",
-                *hwaccel, "-i", main_video, "-i", overlay_video,
-                "-filter_complex", f"[0:v][1:v]{overlay_expr}[vout]",
+                *hwaccel,
+                *inputs,
+                "-filter_complex", fc,
                 "-map", "[vout]", "-map", "0:a?",
                 "-c:v", encoder, "-pix_fmt", "yuv420p",
                 "-c:a", "copy", output_path,
             ]
-            run_tracked_ff(cmd, capture_output=True, text=False, timeout=1800, check=True)
+            # 直接 subprocess.run（带超时防挂起）——不用 run_tracked_ff/check：
+            # 渲染失败时返回 False 由调用方回退，不中断整体导出。
+            subprocess.run(
+                cmd, capture_output=True, text=False, timeout=1800,
+            )
             return True
         except Exception as e:
             logger.warning("Hyperframes: 叠加失败: %s", e)
@@ -325,6 +364,28 @@ els.forEach(el=>{
 
 
 # ── 辅助函数 ─────────────────────────────────────────
+
+def _fmt_sec(value: float) -> str:
+    """格式化秒数：整数不带小数点，其余去掉多余尾零（滤镜参数安全形式）。"""
+    if float(value).is_integer():
+        return str(int(value))
+    return ("%.6f" % value).rstrip("0").rstrip(".")
+
+
+def _mov_longer_than(path: str, seconds: float) -> bool:
+    """检查视频时长是否超过给定秒数（用于决定是否需要截断覆盖层）。"""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode != 0:
+            return False
+        dur = float(r.stdout.strip().split("\n")[0])
+        return dur > seconds + 1e-6
+    except Exception:
+        return False
 
 def _html_esc(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")

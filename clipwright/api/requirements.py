@@ -272,6 +272,7 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
             "video_mode": user_inputs.get("video_mode", "voiceover"),
             "split_mode": user_inputs.get("split_mode", "period"),
             "auto_dub": user_inputs.get("auto_dub", True),
+            "subtitle_enabled": True,
             "voice_id": user_inputs.get("voice_id", ""),
             "dub_segments": user_inputs.get("dub_segments", []),
             "creative_brief": session.get("creative_brief"),

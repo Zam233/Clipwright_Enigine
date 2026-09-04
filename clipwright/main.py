@@ -182,6 +182,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("日志流 Handler 安装失败: %s", e)
 
+    # 5.7 预热 Hyperframes 冷启动探针（非阻塞后台任务）
+    # npx 冷启动可达 ~90s；抢先刷新缓存，避免首条管线把逻辑动画误降级为 drawtext。
+    # timeout 120s > npx 冷启动 ~90s。
+    # （B16 合并注记：5.6 的素材预处理 worker 已在本地线移除——合并后模块无此
+    # 函数，不再启动；5.7 探针预热为远程线有效特性，保留。）
+    try:
+        from clipwright.animation.hyperframes_renderer import HyperframesRenderer
+        from clipwright.services.async_util import spawn_background
+        spawn_background(
+            HyperframesRenderer.await_available(120.0),
+            name="hyperframes-warmup",
+        )
+        logger.info("Hyperframes 预热任务已启动")
+    except Exception as e:
+        logger.warning("Hyperframes 预热任务启动失败: %s", e)
+
     # 6. 注入 PluginLoader 到 API 模块
     plugin_api.set_loader(_plugin_loader)
 

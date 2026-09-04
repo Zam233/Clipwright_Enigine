@@ -29,7 +29,11 @@ from clipwright.tool.effects import (
     VideoSpeedTool,
     WatermarkTool,
 )
-from clipwright.tool.material import FrameValidatorTool, MaterialFilterTool
+# 合并说明：FrameValidatorTool 取远程 tool/frame_validator.py（真实黑/白/过曝
+# 检测 + 专项测试）；质量类工具（静音/黑帧/字幕溢出）与 MaterialFilterTool 取
+# 本地 tool/quality.py、tool/material.py 真实实现，替代远程 stubs 占位版。
+from clipwright.tool.frame_validator import FrameValidatorTool
+from clipwright.tool.material import MaterialFilterTool
 from clipwright.tool.quality import (
     AudioSilenceDetectTool,
     BlackFrameDetectTool,

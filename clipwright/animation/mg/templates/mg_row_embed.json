@@ -1,0 +1,161 @@
+{
+  "animation_id": "mg_row_embed",
+  "name": "行内数据行嵌入",
+  "description": "video-shotcraft 镜头卡：三列数据行错峰嵌入，数值标签同行对齐，适合图表旁白说明",
+  "duration_sec": 3.5,
+  "width": 1920,
+  "height": 1080,
+  "elements": [
+    {
+      "type": "shape",
+      "x": 260,
+      "y": 430,
+      "width": 1400,
+      "height": 220,
+      "color": "rgba(22,35,74,0.92)",
+      "border_radius": 18,
+      "keyframes": [
+        {
+          "time": 0,
+          "opacity": 0,
+          "translate_y": 40,
+          "easing": "ease-out"
+        },
+        {
+          "time": 0.6,
+          "opacity": 1,
+          "translate_y": 0
+        },
+        {
+          "time": 3.5,
+          "opacity": 1,
+          "translate_y": 0
+        }
+      ],
+      "shape": "rect"
+    },
+    {
+      "type": "text",
+      "x": 480,
+      "y": 540,
+      "font_size": 64,
+      "color": "#f4f6fb",
+      "font_weight": "bold",
+      "keyframes": [
+        {
+          "time": 0,
+          "opacity": 0,
+          "translate_y": 20,
+          "easing": "ease-out"
+        },
+        {
+          "time": 1.0,
+          "opacity": 1,
+          "translate_y": 0
+        },
+        {
+          "time": 3.5,
+          "opacity": 1,
+          "translate_y": 0
+        }
+      ],
+      "content": "{label_a}"
+    },
+    {
+      "type": "text",
+      "x": 960,
+      "y": 540,
+      "font_size": 64,
+      "color": "#7fd1ae",
+      "font_weight": "bold",
+      "keyframes": [
+        {
+          "time": 0,
+          "opacity": 0,
+          "translate_y": 20,
+          "easing": "ease-out"
+        },
+        {
+          "time": 1.25,
+          "opacity": 1,
+          "translate_y": 0
+        },
+        {
+          "time": 3.5,
+          "opacity": 1,
+          "translate_y": 0
+        }
+      ],
+      "content": "{label_b}"
+    },
+    {
+      "type": "text",
+      "x": 1440,
+      "y": 540,
+      "font_size": 64,
+      "color": "#f4b450",
+      "font_weight": "bold",
+      "keyframes": [
+        {
+          "time": 0,
+          "opacity": 0,
+          "translate_y": 20,
+          "easing": "ease-out"
+        },
+        {
+          "time": 1.5,
+          "opacity": 1,
+          "translate_y": 0
+        },
+        {
+          "time": 3.5,
+          "opacity": 1,
+          "translate_y": 0
+        }
+      ],
+      "content": "{label_c}"
+    },
+    {
+      "type": "line",
+      "x": 320,
+      "y": 650,
+      "width": 1280,
+      "height": 0,
+      "color": "rgba(255,255,255,0.25)",
+      "stroke_width": 2,
+      "keyframes": [
+        {
+          "time": 0,
+          "opacity": 0,
+          "easing": "ease-out"
+        },
+        {
+          "time": 1.8,
+          "opacity": 1
+        },
+        {
+          "time": 3.5,
+          "opacity": 1
+        }
+      ]
+    }
+  ],
+  "params": {
+    "label_a": {
+      "type": "string",
+      "default": "72%"
+    },
+    "label_b": {
+      "type": "string",
+      "default": "3.2x"
+    },
+    "label_c": {
+      "type": "string",
+      "default": "#1"
+    }
+  },
+  "style": {
+    "background": "transparent",
+    "font_family": "sans-serif"
+  }
+}

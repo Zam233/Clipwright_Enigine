@@ -1,0 +1,306 @@
+{
+  "animation_id": "mg_mindmap",
+  "name": "思维导图",
+  "description": "思维导图：中央节点回弹放大 + 四向分支连线旋转生长 + 分支节点错峰展开 + 渐变底色",
+  "duration_sec": 4.2,
+  "width": 1920,
+  "height": 1080,
+  "elements": [
+    {
+      "type": "bg",
+      "background": "linear-gradient(135deg, #0a0e1a 0%, #131c34 55%, #0a0e1a 100%)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "easing": "ease-out"},
+        {"time": 0.5, "opacity": 1},
+        {"time": 4.1, "opacity": 1}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 200,
+      "height": 200,
+      "x": 860,
+      "y": 440,
+      "color": "#4f8cff",
+      "box_shadow": "0 0 60px rgba(79,140,255,0.9)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.4, "easing": "back-out"},
+        {"time": 0.6, "opacity": 1, "scale": 1.0},
+        {"time": 1.1, "scale": 1.08, "easing": "ease-in-out"},
+        {"time": 1.5, "scale": 1.0},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "text",
+      "content": "{text}",
+      "x": 885,
+      "y": 510,
+      "font_size": 32,
+      "font_weight": "bold",
+      "font_color": "#ffffff",
+      "text_shadow": "0 0 20px rgba(255,255,255,0.6)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.5, "translate_y": 10, "easing": "back-out"},
+        {"time": 0.8, "opacity": 1, "scale": 1.0, "translate_y": 0},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "line",
+      "width": 260,
+      "height": 5,
+      "x": 960,
+      "y": 538,
+      "color": "linear-gradient(90deg, #4f8cff 0%, rgba(79,140,255,0.2) 100%)",
+      "transform_origin": "left center",
+      "box_shadow": "0 0 16px rgba(79,140,255,0.7)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "width": 0, "rotate": -45, "easing": "back-out"},
+        {"time": 0.7, "opacity": 1, "width": 260, "rotate": -45},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "line",
+      "width": 260,
+      "height": 5,
+      "x": 960,
+      "y": 538,
+      "color": "linear-gradient(90deg, #fbbf24 0%, rgba(251,191,36,0.2) 100%)",
+      "transform_origin": "left center",
+      "box_shadow": "0 0 16px rgba(251,191,36,0.7)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "width": 0, "rotate": 45, "easing": "back-out"},
+        {"time": 1.05, "opacity": 1, "width": 260, "rotate": 45},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "line",
+      "width": 260,
+      "height": 5,
+      "x": 960,
+      "y": 538,
+      "color": "linear-gradient(90deg, #34d399 0%, rgba(52,211,153,0.2) 100%)",
+      "transform_origin": "left center",
+      "box_shadow": "0 0 16px rgba(52,211,153,0.7)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "width": 0, "rotate": -135, "easing": "back-out"},
+        {"time": 1.4, "opacity": 1, "width": 260, "rotate": -135},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "line",
+      "width": 260,
+      "height": 5,
+      "x": 960,
+      "y": 538,
+      "color": "linear-gradient(90deg, #a855f7 0%, rgba(168,85,247,0.2) 100%)",
+      "transform_origin": "left center",
+      "box_shadow": "0 0 16px rgba(168,85,247,0.7)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "width": 0, "rotate": 135, "easing": "back-out"},
+        {"time": 1.75, "opacity": 1, "width": 260, "rotate": 135},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "background": "linear-gradient(135deg, #4f8cff 0%, #1a3a7a 100%)",
+      "width": 240,
+      "height": 84,
+      "x": 1087,
+      "y": 251,
+      "border_radius": 42,
+      "box_shadow": "0 0 30px rgba(79,140,255,0.7)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.5, "easing": "back-out"},
+        {"time": 0.8, "opacity": 1, "scale": 1.0},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "background": "linear-gradient(135deg, #fbbf24 0%, #8a5a00 100%)",
+      "width": 240,
+      "height": 84,
+      "x": 1087,
+      "y": 745,
+      "border_radius": 42,
+      "box_shadow": "0 0 30px rgba(251,191,36,0.7)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.5, "easing": "back-out"},
+        {"time": 1.15, "opacity": 1, "scale": 1.0},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "background": "linear-gradient(135deg, #34d399 0%, #0e7a52 100%)",
+      "width": 240,
+      "height": 84,
+      "x": 593,
+      "y": 251,
+      "border_radius": 42,
+      "box_shadow": "0 0 30px rgba(52,211,153,0.7)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.5, "easing": "back-out"},
+        {"time": 1.5, "opacity": 1, "scale": 1.0},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "shape",
+      "shape": "rect",
+      "background": "linear-gradient(135deg, #a855f7 0%, #4a1a7a 100%)",
+      "width": 240,
+      "height": 84,
+      "x": 593,
+      "y": 745,
+      "border_radius": 42,
+      "box_shadow": "0 0 30px rgba(168,85,247,0.7)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.5, "easing": "back-out"},
+        {"time": 1.85, "opacity": 1, "scale": 1.0},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "text",
+      "content": "{node1}",
+      "x": 1110,
+      "y": 275,
+      "font_size": 28,
+      "font_weight": "bold",
+      "font_color": "#ffffff",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "translate_y": 8, "easing": "ease-out"},
+        {"time": 1.0, "opacity": 1, "translate_y": 0},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "text",
+      "content": "{node2}",
+      "x": 1110,
+      "y": 769,
+      "font_size": 28,
+      "font_weight": "bold",
+      "font_color": "#ffffff",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "translate_y": 8, "easing": "ease-out"},
+        {"time": 1.35, "opacity": 1, "translate_y": 0},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "text",
+      "content": "{node3}",
+      "x": 616,
+      "y": 275,
+      "font_size": 28,
+      "font_weight": "bold",
+      "font_color": "#ffffff",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "translate_y": 8, "easing": "ease-out"},
+        {"time": 1.7, "opacity": 1, "translate_y": 0},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "text",
+      "content": "{node4}",
+      "x": 616,
+      "y": 769,
+      "font_size": 28,
+      "font_weight": "bold",
+      "font_color": "#ffffff",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "translate_y": 8, "easing": "ease-out"},
+        {"time": 2.05, "opacity": 1, "translate_y": 0},
+        {"time": 4.1, "opacity": 0}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 8,
+      "height": 8,
+      "color": "#4f8cff",
+      "x": "left",
+      "y": "top",
+      "x_offset": 200,
+      "y_offset": 220,
+      "box_shadow": "0 0 14px rgba(79,140,255,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.3, "easing": "elastic-out"},
+        {"time": 1.6, "opacity": 1, "scale": 1.0},
+        {"time": 4.0, "opacity": 0.5}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 10,
+      "height": 10,
+      "color": "#fbbf24",
+      "x": "right",
+      "y": "top",
+      "x_offset": 220,
+      "y_offset": 300,
+      "box_shadow": "0 0 16px rgba(251,191,36,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.3, "easing": "elastic-out"},
+        {"time": 2.2, "opacity": 1, "scale": 1.0},
+        {"time": 4.0, "opacity": 0.5}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 7,
+      "height": 7,
+      "color": "#34d399",
+      "x": "left",
+      "y": "bottom",
+      "x_offset": 280,
+      "y_offset": 240,
+      "box_shadow": "0 0 12px rgba(52,211,153,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.3, "easing": "elastic-out"},
+        {"time": 2.8, "opacity": 1, "scale": 1.0},
+        {"time": 4.0, "opacity": 0.4}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 9,
+      "height": 9,
+      "color": "#a855f7",
+      "x": "right",
+      "y": "bottom",
+      "x_offset": 260,
+      "y_offset": 200,
+      "box_shadow": "0 0 16px rgba(168,85,247,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.3, "easing": "elastic-out"},
+        {"time": 3.2, "opacity": 1, "scale": 1.0},
+        {"time": 4.0, "opacity": 0.5}
+      ]
+    }
+  ],
+  "params": {
+    "text": {"type": "string", "default": "AI 视频创作"},
+    "node1": {"type": "string", "default": "脚本生成"},
+    "node2": {"type": "string", "default": "素材匹配"},
+    "node3": {"type": "string", "default": "动画渲染"},
+    "node4": {"type": "string", "default": "成片导出"},
+    "accent": {"type": "string", "default": "#fbbf24"}
+  },
+  "style": {
+    "background": "transparent",
+    "font_family": "sans-serif"
+  }
+}

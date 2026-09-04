@@ -13,11 +13,15 @@ from typing import Any
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
 from clipwright.config import logger
-from clipwright.animation.mg import list_templates
+# 注意：不可在顶层 `from clipwright.animation.mg import list_templates` ——
+# mg/__init__ 初始化时会经 generator 回导 clipwright.tool，形成循环导入。
+# 改为函数内延迟导入（list_templates 在 _get_llm_mg_description 内使用）。
 
 
 def _get_llm_mg_description() -> dict[str, Any]:
     """动态获取 llm_mg 能力描述（内置，始终可用，不通过插件加载器）。"""
+    from clipwright.animation.mg import list_templates
+
     templates: list[dict] = []
     plugin_available = True  # 内置，始终可用
 

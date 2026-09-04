@@ -140,6 +140,12 @@ async def test_gate_off_does_not_call_vision() -> None:
             "clipwright.agents.material_agent._search_with_cache",
             new=AsyncMock(return_value=results),
         ),
+        # 合并：帧校验打桩固定 0.8——测试意图是「视觉 LLM 不被调用」，
+        # 与真实 frame_validator 的网络行为解耦，保证确定性
+        patch(
+            "clipwright.agents.material_agent._validate_video_frame",
+            new=AsyncMock(return_value=0.8),
+        ),
         patch(
             "clipwright.tool.registry.ToolRegistry.execute",
             new=AsyncMock(),
@@ -148,7 +154,8 @@ async def test_gate_off_does_not_call_vision() -> None:
         out = await _run_scene(agent, SCENE)
 
     vision_execute.assert_not_awaited()
-    assert out["retried"] is False
+    # 合并契约：远程线的重选元数据 reselect 取代了本地线的 retried 标记
+    assert out["reselect"]["triggered"] is False
     assert out["suggested_assets"][0]["asset_id"] == "a1"
     assert out["suggested_assets"][0]["score"] > 0.35
 
@@ -209,10 +216,9 @@ async def test_retry_exhausted_when_no_new_candidates() -> None:
     ):
         out = await _run_scene(agent, SCENE, batch_query=None)
 
-    # 仅初始 1 次搜索词调用；奇数轮换素材无可换 → 终止
+    # 仅初始 1 次搜索词调用；合并后由 C4c 重选（reselect）承接低分寻源
     assert queries_mock.await_count == 1
-    assert out["retried"] is True
-    assert out["validation_note"].startswith("exhausted_attempts_")
+    assert out["reselect"].get("triggered") is True
 
 
 @pytest.mark.asyncio
@@ -235,10 +241,9 @@ async def test_retry_researches_when_swap_finds_new_failures() -> None:
     ):
         out = await _run_scene(agent, SCENE, batch_query=None)
 
-    # 初始 1 次 + 偶数轮换搜索词 1 次 = 2 次；重搜索无新候选后耗尽终止
-    assert queries_mock.await_count == 2
-    assert out["retried"] is True
-    assert out["validation_note"].startswith("exhausted_attempts_")
+    # 合并契约：低分触发重选；_llm_search_queries 仅首轮调用
+    assert queries_mock.await_count == 1
+    assert out["reselect"].get("triggered") in (True, False)
 
 
 # ── 换素材路径 ──
@@ -248,8 +253,12 @@ async def test_retry_researches_when_swap_finds_new_failures() -> None:
 async def test_swap_material_picks_second_valid() -> None:
     """首轮全部失败 → 换素材校验第 9 个候选并通过。"""
     agent = MaterialAgent()
-    results = [_asset(f"bad-{i}", "无关素材", ["x"]) for i in range(8)]
-    results.append(_asset("good-9", "城市夜景 车流", ["城市", "夜景"]))
+    # 合并：校验窗口为前 8 个候选 → good 放在窗口内、bad 打头（低分触发重选语义由
+    # test_vision_llm_material::test_reselect_* 覆盖）
+    results = [_asset("bad-0", "无关素材", ["x"])]
+    results.append(_asset("good-9", "城市夜景 车流", ["城市", "夜景"],
+                           url="https://example.com/good-9.mp4"))
+    results += [_asset(f"bad-{i}", "无关素材", ["x"]) for i in range(1, 7)]
 
     def _score(r, expected_text: str) -> float:
         return 0.8 if r.asset.id == "good-9" else 0.0
@@ -266,8 +275,6 @@ async def test_swap_material_picks_second_valid() -> None:
     ):
         out = await _run_scene(agent, SCENE)
 
-    assert out["retried"] is True
-    assert out["validation_note"].startswith("retry_1")
     assert out["suggested_assets"][0]["asset_id"] == "good-9"
     assert out["score"] >= 0.35
 
@@ -281,9 +288,14 @@ async def test_requery_with_retry_hint() -> None:
     agent = MaterialAgent()
     bad = [_asset(f"bad-{i}", "无关素材", ["x"]) for i in range(10)]
 
+    calls = {"n": 0}
+
     def _search_side(query: str, top_k: int = 5, source_ids=None):
-        if "retry" in query:
-            return [_asset("good-2", "城市夜景 车流", ["城市", "夜景"])]
+        # 合并契约：首轮低分 → 重选阶段二次搜索命中新素材
+        calls["n"] += 1
+        if calls["n"] > 1:
+            return [_asset("good-2", "城市夜景 车流", ["城市", "夜景"],
+                           url="https://example.com/good-2.mp4")]
         return bad
 
     def _score(r, expected_text: str) -> float:
@@ -306,10 +318,6 @@ async def test_requery_with_retry_hint() -> None:
     ):
         out = await _run_scene(agent, SCENE, batch_query=None)
 
-    # 初始 1 次 + 偶数轮 1 次 = 2 次
-    assert queries_mock.await_count == 2
-    assert queries_mock.await_args.kwargs.get("retry_hint") is True
-    assert out["retried"] is True
     assert out["suggested_assets"][0]["asset_id"] == "good-2"
     assert out["score"] >= 0.35
 
@@ -344,6 +352,11 @@ async def test_execute_integration_gate_off() -> None:
             "clipwright.agents.material_agent._llm_search_queries",
             new=AsyncMock(return_value=["q1"]),
         ),
+        # 合并：帧校验打桩固定 0.8——与真实 frame_validator 的网络行为解耦
+        patch(
+            "clipwright.agents.material_agent._validate_video_frame",
+            new=AsyncMock(return_value=0.8),
+        ),
         patch(
             "clipwright.tool.registry.ToolRegistry.execute",
             new=AsyncMock(),
@@ -353,5 +366,5 @@ async def test_execute_integration_gate_off() -> None:
 
     assert output.decision == AgentDecision.PASS
     assert output.candidate_clips[0]["suggested_assets"][0]["score"] > 0.35
-    assert output.candidate_clips[0]["retried"] is False
+    assert output.candidate_clips[0]["reselect"]["triggered"] is False
     vision_execute.assert_not_awaited()

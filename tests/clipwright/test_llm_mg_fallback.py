@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from clipwright.animation.mg.fallback import FallbackEngine
+from clipwright.animation.mg.generator import MGGenerator
 
 
 # 与 clipwright/animation/mg/templates/ 下 8 个真实模板库对齐
@@ -230,3 +233,186 @@ class TestFillTemplateParams:
             persona_style={"primary_color": "#ff0000"},
         )
         assert params["accent"] == "#ff0000"
+
+
+# ── MGGenerator 生成方法记录 / 失败原因 trace 记录（Todo 6 / C3）───────────────
+# 覆盖：
+# - LLM 抛异常 → 降级命中模板 → method=fallback 且 fallback_template 非空
+# - 经 services.trace.add_event 推送 method 追踪事件（agent="mg", event_type="method"）
+# - LLM 成功路径 → method=llm
+# - LLM 与模板均失败 → success False 且日志含明确原因
+# - malformed_input: LLM 返回非法 JSON → 校验错误被记录，经修复重试恢复
+
+
+def _valid_mg_def() -> dict:
+    """最小合法 MG JSON。"""
+    return {
+        "animation_id": "mg_test",
+        "duration_sec": 3.0,
+        "width": 1920,
+        "height": 1080,
+        "elements": [
+            {
+                "type": "text",
+                "content": "Hello",
+                "keyframes": [
+                    {"time": 0, "opacity": 0},
+                    {"time": 1.0, "opacity": 1},
+                ],
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_llm_raises_falls_back_to_template(monkeypatch) -> None:
+    """LLM 调用抛异常 → 降级命中模板 → success 且 method=fallback / fallback_template 非空。"""
+    gen = MGGenerator()
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("LLM service down")
+
+    monkeypatch.setattr(gen, "_call_llm", _boom)
+
+    result = await gen.generate(
+        description="一个视频标题展示",
+        text_content="ClipWright",
+        persona_style={},
+    )
+
+    assert result["success"] is True
+    assert result["method"] == "fallback"
+    assert result["fallback_template"]
+
+
+@pytest.mark.asyncio
+async def test_trace_event_emits_method(monkeypatch) -> None:
+    """monkeypatch services.trace.add_event → 捕获到含 method 字段的事件（fallback）。"""
+    import clipwright.services.trace as trace
+
+    captured: list[tuple] = []
+
+    def _fake_add_event(pipeline_id, agent, event_type, summary, detail=None):
+        captured.append((pipeline_id, agent, event_type, summary, detail))
+
+    monkeypatch.setattr(trace, "add_event", _fake_add_event)
+
+    gen = MGGenerator()
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("LLM service down")
+
+    monkeypatch.setattr(gen, "_call_llm", _boom)
+
+    result = await gen.generate(
+        description="一个视频标题展示",
+        text_content="ClipWright",
+        persona_style={},
+        pipeline_id="proj_demo_test",
+    )
+
+    assert result["success"] is True
+    method_events = [
+        ev for ev in captured if ev[1] == "mg" and ev[2] == "method"
+    ]
+    assert method_events, f"no method trace event captured: {captured}"
+    detail = method_events[-1][4]
+    assert detail["method"] == "fallback"
+    assert detail["fallback_template"]
+
+
+@pytest.mark.asyncio
+async def test_llm_success_method_llm(monkeypatch) -> None:
+    """LLM 成功路径 → method=llm。"""
+    gen = MGGenerator()
+
+    async def _ok(*args, **kwargs):
+        return _valid_mg_def()
+
+    monkeypatch.setattr(gen, "_call_llm", _ok)
+    # 合并：批判闭环（本地线特性）需要 LLM——测试中打桩为不可用 → 静默跳过
+    monkeypatch.setattr(gen, "_critique_quality", _ok)
+    async def _no_repair(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(gen, "_call_llm_critique_repair", _no_repair)
+
+    result = await gen.generate(
+        description="一段成功生成的动画",
+        text_content="Hello",
+        persona_style={},
+    )
+
+    assert result["method"] == "llm"
+    assert result["mg_def"] is not None
+
+
+@pytest.mark.asyncio
+async def test_all_fail_logs_clear_reason(monkeypatch, caplog) -> None:
+    """LLM 与模板均失败 → success False 且日志含明确原因。"""
+    gen = MGGenerator()
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("LLM service down")
+
+    monkeypatch.setattr(gen, "_call_llm", _boom)
+    monkeypatch.setattr(gen, "_get_templates", lambda: [])
+
+    import logging
+    with caplog.at_level(logging.WARNING, logger="clipwright"):
+        result = await gen.generate(
+            description="无模板可用的动画",
+            text_content="x",
+            persona_style={},
+        )
+
+    assert result["success"] is False
+    assert result["method"] == "fallback"
+    joined = "\n".join(rec.getMessage() for rec in caplog.records)
+    assert "no fallback template available" in joined
+
+
+@pytest.mark.asyncio
+async def test_malformed_input_records_errors_then_repair_retry(monkeypatch) -> None:
+    """LLM 返回非法 JSON → 校验错误被记录，经修复重试恢复为 llm_repair。"""
+    import clipwright.services.trace as trace
+
+    captured: list[tuple] = []
+    monkeypatch.setattr(
+        trace, "add_event",
+        lambda *a, **kw: captured.append((a[0], a[1], a[2], a[3], a[4])),
+    )
+
+    gen = MGGenerator()
+
+    async def _invalid(*args, **kwargs):
+        # text 元素缺少 content → repair 无法修复 → 走带错误回传的修复重试
+        return {
+            "animation_id": "mg_bad",
+            "duration_sec": 3.0,
+            "width": 1920,
+            "height": 1080,
+            "elements": [{"type": "text", "keyframes": [{"time": 0, "opacity": 0}]}],
+        }
+
+    async def _repair_ok(*args, **kwargs):
+        return _valid_mg_def()
+
+    monkeypatch.setattr(gen, "_call_llm", _invalid)
+    monkeypatch.setattr(gen, "_call_llm_repair", _repair_ok)
+
+    result = await gen.generate(
+        description="一个需要修复的动画",
+        text_content="Hello",
+        persona_style={},
+        pipeline_id="proj_malformed",
+    )
+
+    assert result["method"] == "llm_repair"
+    validation_events = [
+        ev for ev in captured if ev[1] == "mg" and ev[2] == "validation_error"
+    ]
+    assert validation_events, f"no validation_error event captured: {captured}"
+    assert any("content" in e for e in validation_events[0][4]["errors"])
+    method_events = [ev for ev in captured if ev[1] == "mg" and ev[2] == "method"]
+    assert method_events[-1][4]["method"] == "llm_repair"

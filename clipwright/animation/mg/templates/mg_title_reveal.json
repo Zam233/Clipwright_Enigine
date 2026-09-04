@@ -1,0 +1,174 @@
+{
+  "animation_id": "mg_title_reveal",
+  "name": "标题揭示",
+  "description": "错峰入场的专业标题揭示：渐变底色 + 光晕圆环与弧线装饰 + 文字发光 + 下划线生长",
+  "duration_sec": 4.0,
+  "width": 1920,
+  "height": 1080,
+  "elements": [
+    {
+      "type": "bg",
+      "background": "linear-gradient(135deg, #0a0e1a 0%, #16234a 55%, #0a0e1a 100%)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "easing": "ease-out"},
+        {"time": 0.5, "opacity": 1},
+        {"time": 3.9, "opacity": 1}
+      ]
+    },
+    {
+      "type": "ring",
+      "width": 440,
+      "height": 440,
+      "x": "center",
+      "y": "center",
+      "border_width": 2,
+      "border_color": "rgba(79,140,255,0.5)",
+      "box_shadow": "0 0 40px rgba(79,140,255,0.35)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.6, "easing": "back-out"},
+        {"time": 0.9, "opacity": 1, "scale": 1.0},
+        {"time": 1.6, "scale": 1.05, "easing": "ease-in-out"},
+        {"time": 3.8, "opacity": 0, "scale": 1.15}
+      ]
+    },
+    {
+      "type": "arc",
+      "width": 540,
+      "height": 540,
+      "x": "center",
+      "y": "center",
+      "border_width": 3,
+      "border_color": "#fbbf24",
+      "box_shadow": "0 0 30px rgba(251,191,36,0.4)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "rotate": -90, "easing": "back-out"},
+        {"time": 1.3, "opacity": 1, "rotate": 0},
+        {"time": 1.9, "rotate": 8, "easing": "ease-in-out"},
+        {"time": 2.4, "rotate": 0},
+        {"time": 3.8, "opacity": 0}
+      ]
+    },
+    {
+      "type": "text",
+      "content": "{text}",
+      "x": "center",
+      "y": "center",
+      "y_offset": -20,
+      "font_size": 96,
+      "font_weight": "bold",
+      "font_color": "#ffffff",
+      "text_shadow": "0 0 40px rgba(79,140,255,0.9), 0 0 90px rgba(124,58,237,0.5)",
+      "letter_spacing": 6,
+      "keyframes": [
+        {"time": 0, "opacity": 0, "translate_y": 30, "scale": 0.88, "easing": "back-out"},
+        {"time": 1.1, "opacity": 1, "translate_y": 0, "scale": 1.0},
+        {"time": 3.6, "opacity": 1, "easing": "ease-in"},
+        {"time": 3.9, "opacity": 0, "translate_y": -18}
+      ]
+    },
+    {
+      "type": "line",
+      "width": 260,
+      "height": 6,
+      "x": "center",
+      "y": "center",
+      "y_offset": 74,
+      "color": "#4f8cff",
+      "box_shadow": "0 0 24px rgba(79,140,255,0.9)",
+      "border_radius": 3,
+      "keyframes": [
+        {"time": 0, "width": 0, "opacity": 0, "easing": "back-out"},
+        {"time": 1.8, "width": 260, "opacity": 1},
+        {"time": 3.8, "opacity": 0}
+      ]
+    },
+    {
+      "type": "text",
+      "content": "{subtitle}",
+      "x": "center",
+      "y": "center",
+      "y_offset": 130,
+      "font_size": 40,
+      "font_color": "#9fb4ff",
+      "letter_spacing": 5,
+      "keyframes": [
+        {"time": 0, "opacity": 0, "translate_y": 14, "easing": "ease-out"},
+        {"time": 2.1, "opacity": 1, "translate_y": 0},
+        {"time": 3.8, "opacity": 0}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 10,
+      "height": 10,
+      "color": "#fbbf24",
+      "x": "left",
+      "y": "top",
+      "x_offset": 180,
+      "y_offset": 200,
+      "box_shadow": "0 0 18px rgba(251,191,36,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.3, "easing": "elastic-out"},
+        {"time": 2.2, "opacity": 1, "scale": 1.0},
+        {"time": 3.7, "opacity": 0.5}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 8,
+      "height": 8,
+      "color": "#4f8cff",
+      "x": "right",
+      "y": "top",
+      "x_offset": 200,
+      "y_offset": 260,
+      "box_shadow": "0 0 16px rgba(79,140,255,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.3, "easing": "elastic-out"},
+        {"time": 2.5, "opacity": 1, "scale": 1.0},
+        {"time": 3.7, "opacity": 0.5}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 6,
+      "height": 6,
+      "color": "#34d399",
+      "x": "left",
+      "y": "bottom",
+      "x_offset": 260,
+      "y_offset": 220,
+      "box_shadow": "0 0 14px rgba(52,211,153,0.8)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.3, "easing": "elastic-out"},
+        {"time": 2.8, "opacity": 1, "scale": 1.0},
+        {"time": 3.7, "opacity": 0.4}
+      ]
+    },
+    {
+      "type": "circle",
+      "width": 12,
+      "height": 12,
+      "color": "#fbbf24",
+      "x": "right",
+      "y": "bottom",
+      "x_offset": 220,
+      "y_offset": 180,
+      "box_shadow": "0 0 20px rgba(251,191,36,0.7)",
+      "keyframes": [
+        {"time": 0, "opacity": 0, "scale": 0.3, "easing": "elastic-out"},
+        {"time": 3.0, "opacity": 1, "scale": 1.0},
+        {"time": 3.7, "opacity": 0.5}
+      ]
+    }
+  ],
+  "params": {
+    "text": {"type": "string", "default": "帧艺 ClipWright"},
+    "subtitle": {"type": "string", "default": "AI 视频创作引擎"},
+    "accent": {"type": "string", "default": "#fbbf24"}
+  },
+  "style": {
+    "background": "transparent",
+    "font_family": "sans-serif"
+  }
+}

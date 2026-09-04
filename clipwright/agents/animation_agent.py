@@ -308,12 +308,20 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         # B11: 时长钳制——原 max(dur, 1.0) 让 0.2s 片段挂 1s 文字覆盖侵入下一
         # 场景；改为不越出宿主片段，下限 0.2s
         clip_duration = max(0.2, float(vid_clip.duration_sec or 0.2))
-        text_content = self._extract_text_content(vid_clip, marker) or marker.get("text", "")
+        text_content, text_source = self._extract_text_with_source(vid_clip, marker)
+        if not text_content:
+            text_content = marker.get("text", "")
+            if text_content:
+                text_source = "marker"
 
         # 长文本 + typewriter → 路由到字幕轨（CAPTION）
+        # 仅当文本来自真实旁白（marker/metadata）时才允许进入字幕轨；
+        # description 正则兜底提取的是场景描述（「混剪」/「镜头」-style），
+        # 禁止路由到字幕轨避免污染，降级为普通 TEXT clip（保留入场动画）。
         is_long_text = len(text_content) > 50
         is_typewriter = anim_id in ("typewriter", "char_by_char")
-        if is_long_text and is_typewriter:
+        can_caption = text_source in ("marker", "metadata")
+        if is_long_text and is_typewriter and can_caption:
             self._handle_caption(
                 text_track, vid_clip, text_content, persona_style,
             )
@@ -446,42 +454,27 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             }
 
         # ── 创建逻辑动画 clip（非 MG） ──
-        # P2: 检测 Hyperframes 是否可用，不可用时降级到 drawtext
-        hf_available = self._hyperframes_available()
+        # P2: 异步探测 Hyperframes 是否可用（含冷启动等待，最多 120s），
+        # 避免首个 pipeline 因缓存探针冷启动返回 False 而误降级为静态 drawtext。
+        # 只有真正等待超时（不可用）才走降级分支。
+        hf_available = await self._hyperframes_available()
         renderer = "hyperframes" if hf_available else "drawtext"
         if not hf_available:
-            logger.info(
-                "AnimationAgent: Hyperframes 不可用，逻辑动画 [%s] 降级到 drawtext",
-                anim_name,
+            # 降级：Hyperframes 不可用 → 跳过创建 clip，绝不把 LLM 生成的动画
+            # 设计描述（text_content）打印成屏幕文字（修复前会产生
+            # "因果: 镜像→他者→…" 的字幕污染）。仅记录 warning + trace 事件。
+            logger.warning(
+                "AnimationAgent: Hyperframes 不可用，逻辑动画 [%s] 已跳过"
+                "（不再降级为文字显示）", anim_name,
             )
-            # 通过 trace 事件推送用户可见警告
             try:
                 from clipwright.services.trace import add_event as _evt
                 _evt(getattr(self, '_pid', ''), "animation", "warning",
-                     f"Hyperframes 不可用，[逻辑动画]{anim_name} 降级为文字显示",
-                     {"anim_id": anim_id, "degradation": "hyperframes_not_available"})
+                     f"Hyperframes 不可用，[逻辑动画]{anim_name} 已跳过",
+                     {"anim_id": anim_id, "degradation": "hyperframes_not_available",
+                      "skipped": True})
             except Exception:
                 pass
-            text_clip = Clip(
-                id=_uid("lc"),
-                kind=ClipKind.TEXT,
-                asset_id="",
-                track_id=anim_track.id,
-                start_sec=vid_clip.start_sec,
-                duration_sec=duration,
-                text=f"{anim_name}: {text_content[:50]}",
-                font_size=diagram_style.get("font_size", 36),
-                font_color=diagram_style.get("text_color", "#ffffff"),
-                metadata={
-                    "anim_type": anim_id,
-                    "anim_name": anim_name,
-                    "category": "logic",
-                    "renderer": "drawtext",
-                    "position": "center",
-                },
-            )
-            anim_track.clips.append(text_clip)
-            anim_track.clips.sort(key=lambda c: c.start_sec)
             return
 
         anim_clip = Clip(
@@ -531,15 +524,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         # 加载 MG 动画定义
         mg_def = MGRenderer.load_animation(anim_id)
         if mg_def is None:
-            logger.warning("MG 动画未找到: %s，降级为文字", anim_id)
-            text_clip = Clip(
-                id=_uid("lc"), kind=ClipKind.TEXT, asset_id="",
-                track_id=anim_track.id,
-                start_sec=vid_clip.start_sec, duration_sec=duration,
-                text=f"{anim_name}: {text_content[:50]}",
-                metadata={"anim_type": anim_id, "renderer": "drawtext"},
-            )
-            anim_track.clips.append(text_clip)
+            # 降级：MG 定义缺失 → 跳过创建 clip，不把设计描述打印成屏幕文字
+            logger.warning("MG 动画未找到: %s，已跳过（不再降级为文字显示）", anim_id)
+            self._add_trace_warning(f"MG 动画未找到: {anim_id}，动画已跳过")
             return
 
         # 背景守卫：模板 MG 与 LLM MG 一致——vision_prompt 为空时强制 bg 透明，
@@ -591,15 +578,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 width=self._tl_width, height=self._tl_height, fps=self._tl_fps,
             )
         except Exception as e:
-            logger.warning("MG 动画渲染失败: %s", e)
-            text_clip = Clip(
-                id=_uid("lc"), kind=ClipKind.TEXT, asset_id="",
-                track_id=anim_track.id,
-                start_sec=vid_clip.start_sec, duration_sec=clip_dur,
-                text=f"{anim_name}: {text_content[:50]}",
-                metadata={"anim_type": anim_id, "renderer": "drawtext"},
-            )
-            anim_track.clips.append(text_clip)
+            # 降级：渲染失败 → 跳过创建 clip，不把设计描述打印成屏幕文字
+            logger.warning("MG 动画渲染失败: %s，已跳过（不再降级为文字显示）", e)
+            self._add_trace_warning(f"MG 动画渲染失败: {anim_id}，动画已跳过")
             return
 
         anim_clip = Clip(
@@ -640,6 +621,13 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         persona_style: dict[str, Any] | None = None,
     ) -> None:
         """处理 mg_dynamic 标记 — 通过内置 llm_mg 引擎动态生成 MG 动画。"""
+        # P2: LLM MG 产物依赖 Hyperframes 渲染，入口同样用异步探测（含冷启动等待）。
+        # 只有真正等待超时（不可用）才走降级分支（跳过，不降级为文字显示）。
+        if not await self._hyperframes_available():
+            logger.warning("AnimationAgent: Hyperframes 不可用，mg_dynamic 跳过")
+            self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
+            return
+
         try:
             from clipwright.animation.mg import MGGenerator
             mg_gen = MGGenerator()
@@ -648,8 +636,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             mg_gen = None
 
         if mg_gen is None:
-            logger.warning("AnimationAgent: llm_mg 引擎不可用，mg_dynamic 降级为 drawtext")
-            self._add_trace_warning("LLM MG 引擎不可用，动画降级为文字显示")
+            logger.warning("AnimationAgent: llm_mg 引擎不可用，mg_dynamic 跳过")
             self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
             return
 
@@ -849,25 +836,18 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         text_content: str,
         duration: float,
     ) -> None:
-        """创建降级文字 clip。"""
-        text_clip = Clip(
-            id=_uid("fl"),
-            kind=ClipKind.TEXT,
-            asset_id="",
-            track_id=anim_track.id,
-            start_sec=vid_clip.start_sec,
-            duration_sec=min(duration, 5.0),
-            text=f"{anim_name}: {text_content[:50]}",
-            font_size=36,
-            font_color="#ffffff",
-            metadata={
-                "anim_type": "fallback_text",
-                "renderer": "drawtext",
-                "position": "center",
-            },
+        """降级占位：文本降级已禁用——不再把动画设计描述打印为屏幕文字，直接跳过。
+
+        保留函数签名与全部调用点，但不再创建任何 TEXT/drawtext clip：
+        仅记录 warning 日志 + trace 警告事件。
+        """
+        logger.warning(
+            "AnimationAgent: LLM MG 降级文本已禁用，动画 [%s] 跳过（不显示描述文字）",
+            anim_name,
         )
-        anim_track.clips.append(text_clip)
-        anim_track.clips.sort(key=lambda c: c.start_sec)
+        self._add_trace_warning(
+            f"LLM MG 动画 [{anim_name}] 无法生成，已跳过（不再降级为文字显示）"
+        )
 
     def _add_trace_warning(self, message: str) -> None:
         """添加 trace 警告事件。"""
@@ -991,11 +971,16 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         return track
 
     @staticmethod
-    def _hyperframes_available() -> bool:
-        """检测 Hyperframes CLI 是否可用。"""
+    async def _hyperframes_available(timeout: float = 120.0) -> bool:
+        """异步检测 Hyperframes CLI 是否可用（等待冷启动，最多 timeout 秒）。
+
+        冷启动根因：``is_available()`` 底层 ``_CachedProbe.get_sync()`` 首次调用返回
+        default=False（见 services/async_util.py），会让首个 pipeline 把逻辑动画误降级
+        为静态 drawtext。这里改用 ``await_available`` 轮询等待真实可用性。
+        """
         try:
             from clipwright.animation.hyperframes_renderer import HyperframesRenderer
-            return HyperframesRenderer.is_available()
+            return await HyperframesRenderer.await_available(timeout)
         except Exception:
             return False
 
@@ -1039,19 +1024,38 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         3. clip.metadata.label
         4. clip.metadata.source_title
         5. description 中标记后的文字
+
+        仅返回文本；如需区分提取来源（真实旁白 vs 场景描述兜底），
+        使用 ``_extract_text_with_source``。
         """
-        # 1. marker 中解析的文字
+        text, _ = AnimationAgent._extract_text_with_source(clip, marker)
+        return text
+
+    @staticmethod
+    def _extract_text_with_source(
+        clip: Clip, marker: dict[str, Any] | None = None
+    ) -> tuple[str, str]:
+        """从 clip 中提取文字内容并返回来源标记。
+
+        Returns:
+            (text, source)，其中 source ∈ {"marker", "metadata", "description", ""}
+            - "marker"     ：marker.text —— 制作计划/用户真实旁白
+            - "metadata"   ：metadata.text / label / source_title —— 真实旁白
+            - "description"：description 正则兜底 —— 场景描述文本（不可作字幕）
+            - ""           ：无内容
+        """
+        # 1. marker 中解析的文字（真实旁白）
         if marker and marker.get("text"):
-            return marker["text"]
+            return marker["text"], "marker"
 
         meta = clip.metadata or {}
 
-        # 2. metadata 直接字段
+        # 2. metadata 直接字段（真实旁白）
         text = meta.get("text", "") or meta.get("label", "") or meta.get("source_title", "")
         if text:
-            return text
+            return text, "metadata"
 
-        # 3. description 中标记后面的文字
+        # 3. description 中标记后面的文字（场景描述兜底，非真实旁白）
         desc = meta.get("description", "") or ""
         if desc:
             import re
@@ -1060,9 +1064,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 r'\[(?:文字动画|逻辑动画|动画)\]\S+\s*[：:—\-]\s*(.+?)(?:$|[\n。！？])',
                 desc,
             ):
-                return m.group(1).strip()
+                return m.group(1).strip(), "description"
 
-        return ""
+        return "", ""
 
     async def _resolve_style(
         self,

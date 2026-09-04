@@ -1,0 +1,136 @@
+{
+  "animation_id": "mg_deck_deal_flyin",
+  "name": "卡片飞入",
+  "description": "video-shotcraft 镜头卡：卡片从右侧带旋转飞入落定 + 标题/说明错峰入场，冲击感缓动 + 末尾 hold",
+  "duration_sec": 3.5,
+  "width": 1920,
+  "height": 1080,
+  "elements": [
+    {
+      "type": "shape",
+      "x": 330,
+      "y": 240,
+      "width": 760,
+      "height": 600,
+      "color": "rgba(22,35,74,0.95)",
+      "border_radius": 24,
+      "keyframes": [
+        {
+          "time": 0,
+          "opacity": 0,
+          "translate_x": 900,
+          "rotate": 8,
+          "easing": "back-out"
+        },
+        {
+          "time": 0.9,
+          "opacity": 1,
+          "translate_x": 0,
+          "rotate": 0
+        },
+        {
+          "time": 3.5,
+          "opacity": 1,
+          "translate_x": 0,
+          "rotate": 0
+        }
+      ],
+      "shape": "rect"
+    },
+    {
+      "type": "shape",
+      "x": 400,
+      "y": 330,
+      "width": 620,
+      "height": 6,
+      "color": "#f4b450",
+      "keyframes": [
+        {
+          "time": 0,
+          "opacity": 0,
+          "scale": 0.2,
+          "easing": "ease-out"
+        },
+        {
+          "time": 1.2,
+          "opacity": 1,
+          "scale": 1.0
+        },
+        {
+          "time": 3.5,
+          "opacity": 1,
+          "scale": 1.0
+        }
+      ],
+      "shape": "rect"
+    },
+    {
+      "type": "text",
+      "x": 420,
+      "y": 430,
+      "font_size": 68,
+      "color": "#f4f6fb",
+      "font_weight": "bold",
+      "keyframes": [
+        {
+          "time": 0,
+          "opacity": 0,
+          "translate_x": -30,
+          "easing": "ease-out"
+        },
+        {
+          "time": 1.5,
+          "opacity": 1,
+          "translate_x": 0
+        },
+        {
+          "time": 3.5,
+          "opacity": 1,
+          "translate_x": 0
+        }
+      ],
+      "content": "{title}"
+    },
+    {
+      "type": "text",
+      "x": 420,
+      "y": 560,
+      "font_size": 38,
+      "color": "#aab4cc",
+      "line_height": 1.5,
+      "keyframes": [
+        {
+          "time": 0,
+          "opacity": 0,
+          "translate_x": -30,
+          "easing": "ease-out"
+        },
+        {
+          "time": 1.8,
+          "opacity": 1,
+          "translate_x": 0
+        },
+        {
+          "time": 3.5,
+          "opacity": 1,
+          "translate_x": 0
+        }
+      ],
+      "content": "{body}"
+    }
+  ],
+  "params": {
+    "title": {
+      "type": "string",
+      "default": "核心论点"
+    },
+    "body": {
+      "type": "string",
+      "default": "一句话说明这张卡片要传达的关键信息"
+    }
+  },
+  "style": {
+    "background": "transparent",
+    "font_family": "sans-serif"
+  }
+}

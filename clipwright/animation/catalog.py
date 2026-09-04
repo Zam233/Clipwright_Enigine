@@ -444,6 +444,22 @@ class AnimationCatalog:
             {"time": 0.75, "properties": {"scale_x": 1.2, "scale_y": 1.2, "opacity": 0.8}},
             {"time": 1.0, "properties": {"scale_x": 1.0, "scale_y": 1.0, "opacity": 1}},
         ],
+        # ── Shotcraft 变体（Todo 11 / C5c）──────────────────
+        # 径向聚光 + scale 1→1.05 落定 hold（radial spotlight + scale settle + hold）
+        "spotlight": [
+            {"time": 0, "properties": {"opacity": 0, "scale_x": 1.0, "scale_y": 1.0}},
+            {"time": 0.5, "properties": {"opacity": 1, "scale_x": 1.05, "scale_y": 1.05}},
+        ],
+        # 多元素错峰 0.25s（multi-element stagger 0.25s）
+        "row_stagger": [
+            {"time": 0, "properties": {"opacity": 0, "translate_y": 24}},
+            {"time": 0.25, "properties": {"opacity": 1, "translate_y": 0}},
+        ],
+        # translate/rotate 翻入 + ease-out（flip-in with ease-out）
+        "deal_in": [
+            {"time": 0, "properties": {"opacity": 0, "translate_y": 40, "rotate": 10}},
+            {"time": 0.5, "properties": {"opacity": 1, "translate_y": 0, "rotate": 0}},
+        ],
     }
 
     # drawtext 无法模拟的属性列表（scale_x/scale_y 被 render 转为 fontsize 表达式，仍可工作）
@@ -569,6 +585,40 @@ class AnimationCatalog:
             "class": "hf-glowing",
             "keyframes": "@keyframes hf-glowing { 0%, 100% { filter: brightness(1); } 50% { filter: brightness(1.5); } }",
             "duration": 0.6, "easing": "ease-in-out",
+        },
+        # ── Shotcraft 关键帧（Todo 11 / C5c）──────────────────
+        # hf-spotlight — 径向聚光 + scale 1→1.05 落定 hold
+        "spotlight": {
+            "class": "hf-spotlight",
+            "keyframes": "@keyframes hf-spotlight { 0% { opacity: 0; transform: scale(1); } 35% { opacity: 1; transform: scale(1.05); filter: brightness(1.6); } 100% { opacity: 1; transform: scale(1.05); filter: brightness(1); } }",
+            "duration": 0.8, "easing": "ease-out",
+        },
+        "mg_spotlight_hero_card": {
+            "class": "hf-spotlight",
+            "keyframes": "@keyframes hf-spotlight { 0% { opacity: 0; transform: scale(1); } 35% { opacity: 1; transform: scale(1.05); filter: brightness(1.6); } 100% { opacity: 1; transform: scale(1.05); filter: brightness(1); } }",
+            "duration": 0.8, "easing": "ease-out",
+        },
+        # hf-row-stagger — 多元素错峰 0.25s
+        "row_stagger": {
+            "class": "hf-row-stagger",
+            "keyframes": "@keyframes hf-row-stagger { 0% { opacity: 0; transform: translateY(24px); } 100% { opacity: 1; transform: translateY(0); } }",
+            "duration": 0.25, "easing": "ease-out",
+        },
+        "mg_row_embed": {
+            "class": "hf-row-stagger",
+            "keyframes": "@keyframes hf-row-stagger { 0% { opacity: 0; transform: translateY(24px); } 100% { opacity: 1; transform: translateY(0); } }",
+            "duration": 0.25, "easing": "ease-out",
+        },
+        # hf-deal-in — translate/rotate 翻入 + ease-out
+        "deal_in": {
+            "class": "hf-deal-in",
+            "keyframes": "@keyframes hf-deal-in { 0% { opacity: 0; transform: translateY(60px) rotate(10deg); } 100% { opacity: 1; transform: translateY(0) rotate(0); } }",
+            "duration": 0.5, "easing": "ease-out",
+        },
+        "mg_deck_deal_flyin": {
+            "class": "hf-deal-in",
+            "keyframes": "@keyframes hf-deal-in { 0% { opacity: 0; transform: translateY(60px) rotate(10deg); } 100% { opacity: 1; transform: translateY(0) rotate(0); } }",
+            "duration": 0.5, "easing": "ease-out",
         },
     }
 
