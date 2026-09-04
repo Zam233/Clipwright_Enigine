@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from functools import partial
 from typing import Any, Callable, Optional
 
@@ -32,6 +33,28 @@ from clipwright.schema.tool import ToolExecResult, ToolStatus
 # IsoBase 客户端实例，避免每个实例重复构建连接/初始化（日志里反复出现
 # "OpenAIChat initialized" 即此问题）。key = (provider, base_url, model, api_key)。
 _client_cache: dict[tuple[str, Optional[str], Optional[str], Optional[str]], Any] = {}
+
+
+# ── A6: 进程级 LLM 用量累计 ──
+# 所有 LLMService 实例共享（含 Agent 内临时 new 的实例），供管线 per-agent
+# 差值记账：_run_agent 前后各取一次快照，差值即该 Agent 的 token 消耗。
+# 此前只有 StructureAgent 回写 _llm_usage，其余 Agent 的花费不入账，
+# 导致 /api/stats 低报、月度预算熔断永不触发。
+_usage_lock = threading.Lock()
+_usage_totals = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+
+
+def llm_usage_snapshot() -> dict[str, int]:
+    """返回当前进程 LLM 用量累计快照（A6 per-agent 差值记账用）。"""
+    with _usage_lock:
+        return dict(_usage_totals)
+
+
+def _record_global_usage(input_tokens: int, output_tokens: int) -> None:
+    with _usage_lock:
+        _usage_totals["input_tokens"] += max(0, int(input_tokens or 0))
+        _usage_totals["output_tokens"] += max(0, int(output_tokens or 0))
+        _usage_totals["calls"] += 1
 
 
 def _client_cache_key(
@@ -208,12 +231,13 @@ class LLMService:
         except Exception:
             pass
 
-        # 缓存最近一次 usage，供 Agent 获取用量统计
+        # 缓存最近一次 usage，供 Agent 获取用量统计；并累计进程级用量（A6）
         if resp.success and resp.usage:
             self.last_usage = {
                 "input_tokens": getattr(resp.usage, "input_tokens", 0),
                 "output_tokens": getattr(resp.usage, "output_tokens", 0),
             }
+            _record_global_usage(self.last_usage["input_tokens"], self.last_usage["output_tokens"])
 
         return resp
 
@@ -235,6 +259,13 @@ class LLMService:
             partial(client.ask, prompt=prompt, **ask_kwargs),
         )
         logger.debug("LLM ask 响应: success=%s, content=%.300s", resp.success, resp.content or "")
+        # A6: ask 路径此前不记 usage——补齐 last_usage 与进程级累计
+        if getattr(resp, "success", False) and getattr(resp, "usage", None):
+            self.last_usage = {
+                "input_tokens": getattr(resp.usage, "input_tokens", 0),
+                "output_tokens": getattr(resp.usage, "output_tokens", 0),
+            }
+            _record_global_usage(self.last_usage["input_tokens"], self.last_usage["output_tokens"])
         return resp
 
     async def chat(

@@ -55,7 +55,9 @@
 
 - `[过渡动画]xxx` 标记 → 设置 clip.transition_in 字段
 - 通过 FFmpeg xfade filter 渲染
-- 支持 Glitch、Pixelate、Morph 等转场效果
+- 转场经公共映射表 `animation/xfade_map.py` → ffmpeg xfade（C4）；支持 fade/fadeblack/wipe*/slide*/dissolve/pixelize/zoomin 等
+  - glitch 编目项实际映射为 fade（无对应 xfade 滤镜）；pixel_dissolve → pixelize（需 ffmpeg ≥ 5.1，B10 运行时探测，不支持时自动降级 fade 并发 trace warning）
+  - morph 编目项未接入映射表，实际回退 fade
 
 ## 动画编排流程
 

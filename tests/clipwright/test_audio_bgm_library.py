@@ -181,7 +181,8 @@ async def test_empty_library_no_change(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "bgm_style" not in clip.metadata
     assert clip.metadata["bgm_slot"] == "intro"
     assert clip.metadata["bpm"] == 120
-    assert clip.volume == 0.3  # 首 clip 淡入起点不变
+    assert clip.volume == 1.0  # B6: 不再硬压 0.3，改走 audio_fade 曲线
+    assert clip.audio_fade_in_sec == 1.0
     assert not any("BGM 来自素材库" in n for n in out.audio_notes)
 
 
@@ -255,7 +256,12 @@ async def test_no_audio_clips_uses_library_title(
     assert out.decision == AgentDecision.PASS
     joined = "\n".join(out.audio_notes)
     assert "BGM 来自素材库: LibraryAmbient" in joined
-    assert "建议 BGM: LibraryAmbient" in joined
+    assert "建议 BGM: LibraryAmbient" in joined or "素材库 BGM 已入轨: 1 段" in joined
+    # C1: 素材库 BGM 真实入轨（原实现只写"建议"note，render 永远混不到 BGM）
+    audio_track = next(t for t in inp.timeline.tracks if t.kind == ClipKind.AUDIO)
+    bgm_clips = [c for c in audio_track.clips if "amb.mp3" in (c.asset_id or "")]
+    assert len(bgm_clips) == 1
+    assert bgm_clips[0].volume == 0.25
 
 
 # ── helper 直接调用 ──

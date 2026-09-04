@@ -70,7 +70,7 @@ class Clip(BaseModel):
     notes: Optional[str] = Field(default=None, description="片段备注")
 
     # 音频 EQ 预设
-    eq_preset: Optional[str] = Field(default=None, description="音频 EQ 预设名称")
+    eq_preset: Optional[str] = Field(default=None, description="音频 EQ 预设名称。【预留未实现】混音端无 EQ 滤镜，设置无效果")
 
     # 音频淡入淡出（M6：仅 audio / waveform 类型，渲染时 afade 应用）
     audio_fade_in_sec: Optional[float] = Field(default=None, ge=0, description="音频淡入时长（秒）")
@@ -103,7 +103,7 @@ class Clip(BaseModel):
     # 嵌套序列（C3：片段内嵌子时间线，预览递归合成）
     nested_timeline: Optional[dict] = Field(
         default=None,
-        description="内嵌子时间线（完整 Timeline 结构）",
+        description="内嵌子时间线（完整 Timeline 结构）。【预留未实现】渲染端不递归合成，设置无效果",
     )
 
     # 文字内容（仅 text / caption 类型）

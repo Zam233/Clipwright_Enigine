@@ -29,6 +29,7 @@ class TaskStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    TIMEOUT = "timeout"  # A2: 与用户取消区分的执行超时终态
 
 
 def _mongo_collection(name: str = "task_queue"):
@@ -78,6 +79,7 @@ class PipelineTask:
         args: tuple,
         kwargs: dict,
         priority: int = 3,
+        timeout_sec: float = 0,
     ):
         self.task_id = task_id
         self.task_type = task_type  # "pipeline" / "batch"
@@ -85,6 +87,7 @@ class PipelineTask:
         self.args = args
         self.kwargs = kwargs
         self.priority = priority  # A10: 1-5，数字越大越先执行
+        self.timeout_sec = float(timeout_sec or 0)  # A2: 0 = 用队列默认超时
         self.status = TaskStatus.PENDING
         self.result: Any = None
         self.error: str = ""
@@ -172,6 +175,7 @@ class TaskQueue:
         handler: Callable,
         *args: Any,
         priority: int = 3,
+        timeout_sec: float = 0,
         **kwargs: Any,
     ) -> str:
         """提交任务到队列。
@@ -180,6 +184,9 @@ class TaskQueue:
             task_type: 任务类型标识
             handler: 异步处理函数
             priority: 1-5，数字越大越先执行（A10）
+            timeout_sec: 该任务的超时秒数（A2）；0 = 使用队列默认 task_timeout_sec。
+                管线类任务必须传入与 pipeline_timeout_sec 对齐的值，
+                避免默认 900s 强杀长管线。
             *args / **kwargs: 传给 handler 的参数
 
         Returns:
@@ -187,7 +194,8 @@ class TaskQueue:
         """
         task_id = f"task_{uuid.uuid4().hex[:12]}"
         priority = max(1, min(5, int(priority)))
-        task = PipelineTask(task_id, task_type, handler, args, kwargs, priority=priority)
+        task = PipelineTask(task_id, task_type, handler, args, kwargs,
+                            priority=priority, timeout_sec=timeout_sec)
         self._tasks[task_id] = task
         self._pending_queue.append(task_id)
         self._persist(task)
@@ -213,16 +221,18 @@ class TaskQueue:
                 task.status = TaskStatus.RUNNING
                 task.started_at = datetime.now(tz=TIME_ZONE) if TIME_ZONE else datetime.now(timezone.utc)
                 self._persist(task)
+                # A2: 按任务级超时执行（管线任务传入与 pipeline_timeout_sec 对齐的值）
+                effective_timeout = getattr(task, "timeout_sec", 0) or self.task_timeout_sec
                 try:
                     task.result = await asyncio.wait_for(
                         task.handler(*task.args, **task.kwargs),
-                        timeout=self.task_timeout_sec,
+                        timeout=effective_timeout,
                     )
                     task.status = TaskStatus.COMPLETED
                 except asyncio.TimeoutError:
-                    task.status = TaskStatus.FAILED
-                    task.error = f"任务执行超时（>{self.task_timeout_sec}s）"
-                    logger.error("任务 %s 超时: >%ss", task_id, self.task_timeout_sec)
+                    task.status = TaskStatus.TIMEOUT
+                    task.error = f"任务执行超时（>{effective_timeout}s）"
+                    logger.error("任务 %s 超时: >%ss", task_id, effective_timeout)
                 except asyncio.CancelledError:
                     task.status = TaskStatus.CANCELLED
                     task.error = "任务被取消"
@@ -245,7 +255,7 @@ class TaskQueue:
         """清理已完成任务，防止 _tasks 无限增长（保留最近 keep 个）。"""
         finished = [
             t for t in self._tasks.values()
-            if t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED)
+            if t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.TIMEOUT)
         ]
         if len(finished) <= keep:
             return

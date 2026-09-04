@@ -36,6 +36,7 @@ from clipwright.schema.agent import AgentContext, AgentDecision
 from clipwright.schema.pipeline import PipelineRequest, PipelineState, PipelineStatus, PipelineStep
 from clipwright.schema.timeline import Timeline
 from clipwright.services.agent_bus import AgentBus
+from clipwright.services.llm import llm_usage_snapshot
 from clipwright.services.trace import add_event, create_trace, format_tool_call
 from clipwright.tool.registry import ToolRegistry
 
@@ -60,6 +61,20 @@ _CANCELLED: set[str] = set()
 def mark_cancelled(pipeline_id: str) -> None:
     """标记管线取消（协作式）。"""
     _CANCELLED.add(pipeline_id)
+
+
+def _llm_usage_delta(before: dict) -> Optional[dict[str, int]]:
+    """A6: 计算快照差值——dispatch 期间该 Agent 实际消耗的 token。
+
+    基于进程级 LLM 用量累计（llm.llm_usage_snapshot），覆盖所有 Agent 及
+    其内部临时创建的 LLMService 实例。差值为零返回 None（该 Agent 未调用 LLM）。
+    """
+    now = llm_usage_snapshot()
+    d_in = int(now.get("input_tokens", 0)) - int(before.get("input_tokens", 0))
+    d_out = int(now.get("output_tokens", 0)) - int(before.get("output_tokens", 0))
+    if d_in <= 0 and d_out <= 0:
+        return None
+    return {"input_tokens": max(0, d_in), "output_tokens": max(0, d_out)}
 
 
 def is_cancelled(pipeline_id: str) -> bool:
@@ -318,8 +333,10 @@ class PipelineOrchestratorV2:
     """Pipeline 编排器 v2 — 支持动态路由、自愈循环、Agent 总线 + 并行执行。"""
 
     MAX_SELF_HEAL_LOOPS = 3
-    # Agent 级熔断: agent_name → {"fail_count": int, "last_fail_at": datetime}
-    # 类级变量：跨实例共享，确保熔断计数在多次 pipeline 运行间累积
+    # Agent 级熔断可观测镜像: agent_name → {"fail_count": int, "last_fail_at": datetime}
+    # A10: 类级 dict 仅作为最近状态镜像（供 breaker-status 端点/运维观测），
+    # 不参与熔断判定——判定状态在实例级（见 __init__），避免管线 A 的连续失败
+    # 令并发管线 B 的步骤被熔断跳过。
     _circuit_breakers: dict[str, dict] = {}
     _circuit_breaker_threshold = 3
     _circuit_breaker_recovery_sec = 60
@@ -333,6 +350,8 @@ class PipelineOrchestratorV2:
             "audio": AudioAgent(),
             "quality": QualityAgent(),
         }
+        # A10: 实例级熔断状态（每管线独立，判定唯一依据）
+        self._circuit_breakers: dict[str, dict] = {}
 
     def _check_circuit_breaker(self, agent_name: str) -> bool:
         """检查 agent 是否熔断。返回 True 表示已熔断（应跳过）。"""
@@ -356,7 +375,7 @@ class PipelineOrchestratorV2:
         return False
 
     def _record_agent_failure(self, agent_name: str) -> None:
-        """记录 agent 失败，更新熔断计数器。"""
+        """记录 agent 失败，更新熔断计数器（实例级判定 + 类级镜像同步）。"""
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc)
         cb = self._circuit_breakers.setdefault(agent_name, {"fail_count": 0, "last_fail_at": None})
@@ -365,13 +384,21 @@ class PipelineOrchestratorV2:
         if cb["fail_count"] >= self._circuit_breaker_threshold:
             logger.warning("Agent 熔断触发: %s (连续失败 %d/%d 次)",
                           agent_name, cb["fail_count"], self._circuit_breaker_threshold)
+        # A10: 同步镜像（观测端点用）
+        PipelineOrchestratorV2._circuit_breakers[agent_name] = {
+            "fail_count": cb["fail_count"], "last_fail_at": cb["last_fail_at"],
+        }
 
     def _record_agent_success(self, agent_name: str) -> None:
-        """记录 agent 成功，重置熔断计数器。"""
+        """记录 agent 成功，重置熔断计数器（实例级判定 + 类级镜像同步）。"""
         cb = self._circuit_breakers.get(agent_name)
         if cb and cb["fail_count"] > 0:
             cb["fail_count"] = 0
             logger.info("Agent 熔断重置: %s", agent_name)
+        # A10: 镜像同步归零（保留 last_fail_at 供恢复期展示）
+        PipelineOrchestratorV2._circuit_breakers[agent_name] = {
+            "fail_count": 0, "last_fail_at": (cb or {}).get("last_fail_at"),
+        }
 
     async def run(
         self,
@@ -463,9 +490,23 @@ class PipelineOrchestratorV2:
                 break
             step = await self._run_agent(
                 state, "quality",
-                {"timeline": tl, "constraints": persona_config.get("constraints", {})},
+                {
+                    "timeline": tl,
+                    "constraints": persona_config.get("constraints", {}),
+                    # C8: 显式带上 creative_brief（质检的简报一致性检查依赖它）
+                    "creative_brief": agent_context.extra_params.get("creative_brief"),
+                },
                 agent_context, bus,
             )
+
+            # C8: 质检自身异常 ≠ 通过——原实现 step 异常时 result 为空，
+            # _check_quality 返回 (False,"",[])，quality_passed=True 直接放行
+            if getattr(step, "status", None) == PipelineStatus.FAILED and not getattr(step, "result", None):
+                state.status = PipelineStatus.FAILED
+                state.error = f"质检阶段执行失败: {getattr(step, 'error', '') or '未知错误'}"
+                add_event(pid, "quality", "error", state.error)
+                logger.error("质检执行失败（不自愈不通过）: %s", pid)
+                break
 
             # 检查是否需要自愈
             has_errors, redo_agent, quality_issues = self._check_quality(step)
@@ -594,9 +635,13 @@ class PipelineOrchestratorV2:
                     and getattr(dep_step, "status", None) != PipelineStatus.FAILED:
                 self._merge_agent_result(dep_name, dep_step, result_data, bus, pid)
 
-        # ── 5. 质检 + 自愈（统一循环）──
-        await self._self_heal_quality(state, result_data, persona_config, plugin,
-                                      agent_context, bus, pid)
+        # ── 5. 质检 + 自愈（统一循环；C8: 检查返回值，不自愈耗尽仍 COMPLETED）──
+        _quality_ok = await self._self_heal_quality(state, result_data, persona_config, plugin,
+                                                    agent_context, bus, pid)
+        if not _quality_ok and state.status != PipelineStatus.FAILED:
+            state.status = PipelineStatus.FAILED
+            state.error = "质检未通过（自愈重试用尽），请查看质检问题后重试或调整输入"
+            add_event(pid, "quality", "error", state.error)
 
         # ── 6. 完成 ──
         final_tl = (
@@ -673,6 +718,18 @@ class PipelineOrchestratorV2:
                                 continue
                             result_data[name] = getattr(result, "result", {}) or {}
                 state.shared_data["dry_run"] = True
+                # A9: dry-run 与 V1 对齐——产出 final_timeline + timeline_snapshot
+                # 事件，否则 /run-async 的 dry-run 预览拿不到时间线（原实现只落
+                # result_data[name] 裸结果，未提取 edit 的 timeline）
+                _dry_tl = None
+                _dry_edit = result_data.get("edit")
+                if isinstance(_dry_edit, dict):
+                    _dry_tl = _dry_edit.get("timeline")
+                state.shared_data["final_timeline"] = _dry_tl
+                if _dry_tl:
+                    add_event(pid, "system", "timeline_snapshot",
+                              f"粗剪时间线: {len(_dry_tl.get('tracks', []) or [])} 轨",
+                              _dry_tl)
                 state.status = PipelineStatus.COMPLETED
                 add_event(pid, "system", "info", "dry_run 完成：已生成粗剪时间线预览")
                 return state
@@ -742,9 +799,15 @@ class PipelineOrchestratorV2:
             return state
 
         # ── 质检 + 自愈循环 (P1: 联动重做 animation + audio) ──
-        await self._self_heal_quality(
+        # C8: 检查自愈结果——原实现返回值被丢弃，质检 3 轮 error 未修复的
+        # 管线仍报纯 COMPLETED。现终态置为 FAILED（配合 diagnostics/retry 闭环）。
+        _quality_ok = await self._self_heal_quality(
             state, result_data, persona_config, plugin, agent_context, bus, pid,
         )
+        if not _quality_ok and state.status != PipelineStatus.FAILED:
+            state.status = PipelineStatus.FAILED
+            state.error = "质检未通过（自愈重试用尽），请查看质检问题后重试或调整输入"
+            add_event(pid, "quality", "error", state.error)
 
         # 清理注入的质检上下文
         agent_context.extra_params.pop("_quality_issues", None)
@@ -972,11 +1035,11 @@ class PipelineOrchestratorV2:
             return step
 
         try:
-            # 从总线获取其他 Agent 的需求
-            demands = bus.get_demands()
-            if demands:
-                input_data["_demands"] = demands
-
+            # F6: 移除 demands 注入——AgentBus 的 demand 无任何 Agent 消费
+            # （无消费确认机制、列表无限残留），原注入纯属死机制；事件流保留
+            # A6: dispatch 前取用量快照，结束后差值即该 Agent 的 token 消耗
+            # （补齐 Material/Edit/Animation/Audio/Quality 的记账缺口）
+            _usage_before = llm_usage_snapshot()
             result = await self._dispatch(agent_name, input_data, context)
             step.result = result.model_dump(mode="json") if hasattr(result, "model_dump") else {}
 
@@ -992,8 +1055,11 @@ class PipelineOrchestratorV2:
                 _end_span(status="error", error=step.error,
                           metadata={"error_category": self._categorize_error(step.error or "")})
 
-            # 收集 LLM token 用量（从 Agent 对象属性读取，不在 model_dump 中）
+            # 收集 LLM token 用量（优先 Agent 自报的 _llm_usage；A6: 缺失时用
+            # 进程级差值兜底，确保全部 Agent 的花费都入账）
             llm_usage = getattr(result, "_llm_usage", None)
+            if not llm_usage:
+                llm_usage = _llm_usage_delta(_usage_before)
             if llm_usage:
                 step.result["llm_usage"] = llm_usage
                 logger.info("Agent[%s] LLM tokens: input=%s, output=%s",

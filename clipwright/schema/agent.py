@@ -8,7 +8,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from .timeline import Timeline
 
@@ -221,9 +221,13 @@ class RequirementsOutput(BaseModel):
 
 class QualityOutput(BaseModel):
     """质检 Agent 的输出。"""
+    model_config = ConfigDict(populate_by_name=True)  # C7: 允许按字段名构造
+
     agent_name: str = "quality_agent"
     decision: AgentDecision = AgentDecision.PASS
-    passed: bool = Field(default=True, serialization_alias="pass")
+    # C7: 输入兼容 passed/pass 两种键（历史别名），输出统一序列化为 "passed"——
+    # 原 serialization_alias="pass" 使读取 result["passed"] 的消费方拿不到值
+    passed: bool = Field(default=True, validation_alias=AliasChoices("passed", "pass"))
     issues: list[QualityIssue] = Field(default_factory=list)
     fix_suggestions: list[str] = Field(default_factory=list)
     error: Optional[str] = Field(default=None)

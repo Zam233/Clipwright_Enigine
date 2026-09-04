@@ -254,6 +254,9 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             if plugin_prompts:
                 system_prompt += "\n\n## 插件能力\n" + "\n\n".join(plugin_prompts)
 
+            # C6: 自愈重做时注入上一轮质检问题（原 _quality_issues 注入无 Agent 消费）
+            system_prompt += self.quality_issues_hint(context)
+
             video_mode = context.extra_params.get("video_mode", "voiceover")
             script_text = context.extra_params.get("script_text", "")
             audio_duration = context.extra_params.get("audio_duration_sec", 0)
@@ -662,40 +665,61 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
     ) -> dict[str, Any]:
         return await self._tool_executor(tool_name, tool_input)
 
+    @staticmethod
+    def _scenes_from_parsed(parsed: Any) -> list[dict]:
+        """从已解析 JSON 中提取场景列表。"""
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, dict) and isinstance(parsed.get("scenes"), list):
+            return parsed["scenes"]
+        return []
+
     def _parse_scenes(self, content: str) -> list[dict]:
-        content = content.strip().lstrip('\ufeff').lstrip('\u200b')
+        content = (content or "").strip().lstrip('\ufeff').lstrip('\u200b')
+        # B1: 围栏剥离修复——原实现无条件丢弃首行与末行，当 LLM 输出
+        # 「说明文字 + 围栏 JSON」或围栏未闭合时会把 JSON 截坏。
         if content.startswith("```"):
             lines = content.splitlines()
-            if len(lines) >= 2:
+            if len(lines) >= 2 and lines[-1].strip().startswith("```"):
                 content = "\n".join(lines[1:-1]).strip()
+            else:
+                content = "\n".join(lines[1:]).strip()
         if not content:
             return []
         try:
             parsed = json.loads(content)
-            if isinstance(parsed, list):
-                return parsed
-            if isinstance(parsed, dict) and "scenes" in parsed:
-                return parsed["scenes"]
+            return self._scenes_from_parsed(parsed)
         except json.JSONDecodeError:
             pass
-        import re
-        # Find JSON array with balanced bracket matching
+        # B1: 放弃逐字符括号深度扫描。提示词强制场景 JSON 的字符串值内含
+        # `[逻辑动画]mg_dynamic:{...}` 等标记，字符串内的括号会使深度计数
+        # 永不归零/提前归零，解析必然失败并静默降级 fallback_scenes。
+        # 改为文本定位 + json.JSONDecoder（JSON 语法自身正确处理字符串内括号）。
         start = content.find('[')
-        if start != -1:
-            depth = 0
-            for i in range(start, len(content)):
-                if content[i] == '[':
-                    depth += 1
-                elif content[i] == ']':
-                    depth -= 1
-                    if depth == 0:
-                        try:
-                            parsed = json.loads(content[start:i+1])
-                            if isinstance(parsed, list):
-                                return parsed
-                        except json.JSONDecodeError:
-                            pass
-                        break
+        if start == -1:
+            return []
+        decoder = json.JSONDecoder()
+        try:
+            # raw_decode：从首个 '[' 起解析第一个完整 JSON 值，忽略前后杂文本
+            parsed, _ = decoder.raw_decode(content[start:])
+            result = self._scenes_from_parsed(parsed)
+            if result:
+                return result
+        except json.JSONDecodeError:
+            pass
+        # 截断/尾部缺损兜底：']' 从尾部逐步回退，交 json.loads 重试（有界 10 次）
+        end = content.rfind(']')
+        tries = 0
+        while end > start and tries < 10:
+            try:
+                parsed = json.loads(content[start:end + 1])
+                result = self._scenes_from_parsed(parsed)
+                if result:
+                    return result
+            except json.JSONDecodeError:
+                pass
+            end = content.rfind(']', start, end)
+            tries += 1
         return []
 
     def _parse_structured_result(self, result: dict, topic: str, tone: str) -> list[dict]:

@@ -6,9 +6,9 @@ import asyncio
 import json
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from clipwright.config import logger
 from clipwright.services.requirements_service import RequirementsService
@@ -51,6 +51,10 @@ class ProceedRequest(BaseModel):
     extra_params: dict[str, Any] = {}
     # E2E 修复：管线完成后把 final_timeline 保存到该项目（防止内存结果 60s 清理后丢失）
     project_id: str = ""
+    # C5: beat-sync 开关与 BPM——EditAgent 读取 cut_on_beat/bpm（卡点剪辑），
+    # 但此前全仓无任何写入方，功能永久禁用
+    cut_on_beat: bool = False
+    beat_bpm: float = Field(default=0, ge=0, le=300)
 
 
 # ── API 端点 ─────────────────────────────────
@@ -201,7 +205,7 @@ async def get_plan(session_id: str) -> dict:
 
 
 @router.post("/proceed")
-async def proceed_to_pipeline(req: ProceedRequest) -> dict:
+async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
     """确认规划书 → 启动管线，返回 pipeline_id 供前端追踪（SSE + result）。"""
     session = await asyncio.to_thread(_service.get_session, req.session_id)
     if not session:
@@ -212,11 +216,28 @@ async def proceed_to_pipeline(req: ProceedRequest) -> dict:
         raise HTTPException(status_code=400, detail="Plan not ready")
 
     import uuid
+    from clipwright import audit
+    from clipwright.authz import current_user_id
     from clipwright.services.pipeline_v2 import PipelineOrchestratorV2
     from clipwright.schema.pipeline import PipelineRequest
     from clipwright.services.trace import create_trace, add_event, get_all_events
     from clipwright.services.async_util import spawn_background
-    from clipwright.api.pipeline import _pipeline_results, _running_pipelines, pipeline_timeout_sec
+    from clipwright.api.pipeline import (
+        _pipeline_results, _running_pipelines, _pipeline_owners,
+        _pipeline_tasks, _user_cancel_requested, _persist_pipeline_runtime,
+        pipeline_timeout_sec, _extract_quality_summary, _aggregate_agent_notes,
+    )
+
+    # A5: proceed 与 /run-async 同权——预算熔断检查（原路径完全绕过预算）
+    from clipwright.services.budget import check_budget
+    allowed, used = await check_budget()
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"本月 LLM token 预算已耗尽（已用 {used}），无法启动管线",
+        )
+
+    uid = current_user_id(request)
 
     # 预先生成 pipeline_id 并建立 trace，使前端可立即订阅 SSE / 轮询 result
     pipeline_id = f"pl_{uuid.uuid4().hex[:12]}"
@@ -231,6 +252,15 @@ async def proceed_to_pipeline(req: ProceedRequest) -> dict:
     if _scene_count <= 0 and _audio_dur > 0:
         _scene_count = int(_audio_dur / 15)
     _pipeline_timeout = pipeline_timeout_sec(_audio_dur, _scene_count)
+    # C2: 接通 animation_intents 通道——需求会话简报中的动画意图此前从未
+    # 放入 extra_params，StructureAgent（extra_params.get("animation_intents")）
+    # 永远读到空，聊天里确认的动画意图从不影响成片
+    _cb = session.get("creative_brief") or {}
+    _raw_intents = _cb.get("animation_intents") if isinstance(_cb, dict) else None
+    if not isinstance(_raw_intents, list):
+        _draft = _cb.get("brief_draft") if isinstance(_cb, dict) else None
+        _raw_intents = _draft.get("animation_intents") if isinstance(_draft, dict) else None
+    animation_intents = _raw_intents if isinstance(_raw_intents, list) else []
     pipeline_req = PipelineRequest(
         persona_id=req.persona_id or user_inputs.get("persona_id", "default"),
         category_plugin_id=req.category_plugin_id or user_inputs.get("category_plugin_id", "knowledge_longform"),
@@ -247,6 +277,9 @@ async def proceed_to_pipeline(req: ProceedRequest) -> dict:
             "creative_brief": session.get("creative_brief"),
             "production_plan": session.get("production_plan"),
             "pipeline_timeout_sec": _pipeline_timeout,
+            # C5: beat-sync 透传（用户 extra_params 显式值优先）
+            **({"cut_on_beat": True, "bpm": float(req.beat_bpm)}
+               if req.cut_on_beat and req.beat_bpm > 0 else {}),
             **req.extra_params,
         },
         # P8: dry-run 预览模式（仅生成粗剪时间线，跳过动画/音频/质检）
@@ -256,47 +289,114 @@ async def proceed_to_pipeline(req: ProceedRequest) -> dict:
     add_event(pipeline_id, "system", "info",
               f"由需求确认启动管线: {pipeline_req.persona_id} / {pipeline_req.category_plugin_id}")
 
-    async def _run():
-        try:
-            orch = PipelineOrchestratorV2()
-            state = await orch.run(pipeline_req, pipeline_id=pipeline_id)
-            state.shared_data["execution_trace"] = get_all_events(pipeline_id)
-            _pipeline_results[pipeline_id] = state.model_dump(mode="json")
-            add_event(pipeline_id, "system", "done", f"管线完成: {state.status}")
-            # E2E 修复：管线完成后把 final_timeline 保存到关联项目（若有），
-            # 避免内存结果 60s 清理后 timeline 丢失（API 直连场景）。
-            try:
-                final_tl = state.shared_data.get("final_timeline")
-                if final_tl and req.project_id:
-                    from clipwright.services.project_manager import ProjectManager
-                    pm = ProjectManager()
-                    pm.save(req.project_id, {"timeline": final_tl})
-                    logger.info("管线时间线已保存到项目: %s", req.project_id)
-            except Exception as e:
-                logger.warning("管线时间线保存失败: %s", e)
-            # 更新会话状态
-            await asyncio.to_thread(
-                _service._persist,
-                req.session_id, "pipeline_done",
-                session.get("messages", []),
-                session.get("creative_brief"),
-                session.get("production_plan"),
-                session.get("user_inputs", {}),
-            )
-            logger.info("管线完成: pipeline_id=%s, status=%s", state.pipeline_id, state.status)
-        except Exception as e:
-            logger.exception("Pipeline failed: %s", e)
-            add_event(pipeline_id, "system", "error", f"管线失败: {e}")
-            _pipeline_results[pipeline_id] = {"status": "failed", "error": str(e), "pipeline_id": pipeline_id}
-        finally:
-            async def _cleanup():
-                import asyncio as _a
-                await _a.sleep(60)
-                _pipeline_results.pop(pipeline_id, None)
-                _running_pipelines.pop(pipeline_id, None)
-                from clipwright.services.trace import clear
-                clear(pipeline_id)
-            spawn_background(_cleanup(), name=f"pipeline-cleanup-{pipeline_id}")
+    # A5: 归属注册 + 运行态持久化 + 审计（与 run-async 对齐；此前 jwt 模式下
+    # proceed 发起的管线无 owner，本人 /status /cancel /diagnostics 全部 403）
+    _pipeline_owners[pipeline_id] = uid or ""
+    _persist_pipeline_runtime(pipeline_id, owner_id=uid or "")
+    audit.record("pipeline_run", uid, {
+        "pipeline_id": pipeline_id,
+        "session_id": req.session_id,
+        "persona_id": pipeline_req.persona_id,
+        "category_plugin_id": pipeline_req.category_plugin_id,
+        "source": "requirements_proceed",
+    })
 
-    _running_pipelines[pipeline_id] = spawn_background(_run(), name=f"requirements-pipeline-{req.session_id}")
+    async def _run(task_id: str = ""):
+        try:
+            # A5: 走 TaskQueue 执行（并发上限 + 任务级超时与管线超时公式对齐）
+            from clipwright.services.task_queue import get_task_queue
+
+            async def _queue_handler(inner_task_id: str = "") -> None:
+                # A3 对齐: 注册运行中任务，使 /cancel 能即时中断
+                _running_pipelines[pipeline_id] = asyncio.current_task()
+                try:
+                    orch = PipelineOrchestratorV2()
+                    state = await orch.run(pipeline_req, pipeline_id=pipeline_id,
+                                           task_id=inner_task_id or task_id)
+                    state.shared_data["execution_trace"] = get_all_events(pipeline_id)
+                    # C7/C9: 质检摘要 + Agent 备注（与 run-async 对齐）
+                    _rd = state.model_dump(mode="json")
+                    _q = _extract_quality_summary(_rd)
+                    if _q:
+                        _rd["quality_issues"] = _q
+                    _notes = _aggregate_agent_notes(_rd)
+                    if _notes:
+                        _rd["agent_notes"] = _notes
+                    _pipeline_results[pipeline_id] = _rd
+                    add_event(pipeline_id, "system", "done", f"管线完成: {state.status}", _q)
+                    # E2E 修复：管线完成后把 final_timeline 保存到关联项目（若有），
+                    # 避免内存结果 60s 清理后 timeline 丢失（API 直连场景）。
+                    try:
+                        final_tl = state.shared_data.get("final_timeline")
+                        if final_tl and req.project_id:
+                            from clipwright.services.project_manager import ProjectManager
+                            pm = ProjectManager()
+                            pm.save(req.project_id, {"timeline": final_tl})
+                            logger.info("管线时间线已保存到项目: %s", req.project_id)
+                    except Exception as e:
+                        logger.warning("管线时间线保存失败: %s", e)
+                    # 更新会话状态
+                    await asyncio.to_thread(
+                        _service._persist,
+                        req.session_id, "pipeline_done",
+                        session.get("messages", []),
+                        session.get("creative_brief"),
+                        session.get("production_plan"),
+                        session.get("user_inputs", {}),
+                    )
+                    logger.info("管线完成: pipeline_id=%s, status=%s", pipeline_id, state.status)
+                except asyncio.CancelledError:
+                    # A2 对齐: 用户取消写 cancelled 终态（原实现无 CancelledError
+                    # 处理，取消后 /result 回落到 Mongo 的 running 快照）
+                    if pipeline_id in _user_cancel_requested:
+                        _user_cancel_requested.discard(pipeline_id)
+                        _pipeline_results[pipeline_id] = {
+                            "status": "cancelled", "pipeline_id": pipeline_id,
+                            "error": "管线已取消（任务中断）",
+                        }
+                        add_event(pipeline_id, "system", "cancelled", "管线已取消（任务中断）")
+                    else:
+                        _pipeline_results[pipeline_id] = {
+                            "status": "timeout", "pipeline_id": pipeline_id,
+                            "error": f"管线执行超时（>{_pipeline_timeout}s），可重试",
+                        }
+                        add_event(pipeline_id, "system", "timeout",
+                                  f"管线执行超时（>{_pipeline_timeout}s）")
+                except Exception as e:
+                    logger.exception("Pipeline failed: %s", e)
+                    add_event(pipeline_id, "system", "error", f"管线失败: {e}")
+                    _pipeline_results[pipeline_id] = {"status": "failed", "error": str(e), "pipeline_id": pipeline_id}
+                finally:
+                    if _running_pipelines.get(pipeline_id) is asyncio.current_task():
+                        _running_pipelines.pop(pipeline_id, None)
+                    async def _cleanup():
+                        import asyncio as _a
+                        await _a.sleep(60)
+                        _pipeline_results.pop(pipeline_id, None)
+                        _running_pipelines.pop(pipeline_id, None)
+                        _pipeline_owners.pop(pipeline_id, None)
+                        _pipeline_tasks.pop(pipeline_id, None)
+                        _user_cancel_requested.discard(pipeline_id)
+                        from clipwright.services.trace import clear
+                        clear(pipeline_id)
+                    spawn_background(_cleanup(), name=f"pipeline-cleanup-{pipeline_id}")
+
+            _submit_timeout = float(_pipeline_timeout) + 120.0
+            tq_task_id = await get_task_queue().submit(
+                "pipeline", _queue_handler, timeout_sec=_submit_timeout,
+            )
+            _pipeline_tasks[pipeline_id] = tq_task_id
+            _persist_pipeline_runtime(pipeline_id, task_id=tq_task_id)
+        except Exception as e:
+            # 队列提交失败：写失败终态（不静默吞掉，前端可感知并重试）
+            logger.exception("TaskQueue 提交失败: %s", e)
+            _pipeline_results[pipeline_id] = {
+                "status": "failed", "error": f"管线任务提交失败: {e}",
+                "pipeline_id": pipeline_id,
+            }
+            add_event(pipeline_id, "system", "error", f"管线任务提交失败: {e}")
+
+    _running_pipelines[pipeline_id] = spawn_background(
+        _run(), name=f"requirements-pipeline-{req.session_id}",
+    )
     return {"session_id": req.session_id, "pipeline_id": pipeline_id, "status": "pipeline_started"}

@@ -86,6 +86,8 @@ def segments_to_timeline_clips(
 
     生成的 caption clip 携带完整字幕样式字段（与前端对齐，任务 32）：
     默认 font_size=48、font_color=#ffffff、text_align=center、shadow/glow 全关。
+    C10: 显式写入 metadata.position="bottom"——render 的位置回退按轨道序号
+    （{1:bottom,2:top,3:center}），导入字幕落在第 2 轨时会错误地渲染在顶部。
     """
     clips: list[dict[str, Any]] = []
     for i, seg in enumerate(segments):
@@ -99,6 +101,12 @@ def segments_to_timeline_clips(
             "text": seg.text,
             "font": "sans-serif",
             **DEFAULT_CAPTION_STYLE,
+            "metadata": {
+                "category": "caption",
+                "position": "bottom",
+                "renderer": "ass",
+                "source": "imported",
+            },
         })
     return clips
 

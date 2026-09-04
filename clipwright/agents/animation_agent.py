@@ -194,42 +194,44 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                         prev_clip = clip
                         continue
 
-                    marker = markers[0]  # 一个场景只处理一个动画标记
-                    marker_type = marker.get("type", "text")
-                    anim_id = marker.get("anim_id", "text_fade_in")
-                    anim_name = marker.get("name", "淡入")
+                    # B11: 遍历全部标记（原实现只取 markers[0]，多标记场景
+                    # 其余动画意图静默丢失）
+                    for marker in markers:
+                        marker_type = marker.get("type", "text")
+                        anim_id = marker.get("anim_id", "text_fade_in")
+                        anim_name = marker.get("name", "淡入")
 
-                    if marker_type == "text":
-                        self._handle_text_animation(
-                            text_track, clip, anim_id, anim_name,
-                            marker, persona_style,
-                        )
-                        text_anim_count += 1
-                        logger.info("AnimationAgent: [文字动画]%s → %s (id=%s)",
-                                    anim_name, clip.id[:8], anim_id)
-                        add_event(context.pipeline_id, "animation", "text_anim",
-                                  f"[文字动画]{anim_name}({anim_id}) → clip={clip.id[:8]}")
+                        if marker_type == "text":
+                            self._handle_text_animation(
+                                text_track, clip, anim_id, anim_name,
+                                marker, persona_style,
+                            )
+                            text_anim_count += 1
+                            logger.info("AnimationAgent: [文字动画]%s → %s (id=%s)",
+                                        anim_name, clip.id[:8], anim_id)
+                            add_event(context.pipeline_id, "animation", "text_anim",
+                                      f"[文字动画]{anim_name}({anim_id}) → clip={clip.id[:8]}")
 
-                    elif marker_type == "logic":
-                        anim_track = anim_track or self._ensure_anim_track(timeline)
-                        logic_jobs.append(
-                            (anim_track, clip, anim_id, anim_name, marker, persona_style)
-                        )
-                        logic_anim_count += 1
-                        logger.info("AnimationAgent: [逻辑动画]%s → %s (id=%s)",
-                                    anim_name, clip.id[:8], anim_id)
-                        add_event(context.pipeline_id, "animation", "logic_anim",
-                                  f"[逻辑动画]{anim_name}({anim_id}) → clip={clip.id[:8]}")
+                        elif marker_type == "logic":
+                            anim_track = anim_track or self._ensure_anim_track(timeline)
+                            logic_jobs.append(
+                                (anim_track, clip, anim_id, anim_name, marker, persona_style)
+                            )
+                            logic_anim_count += 1
+                            logger.info("AnimationAgent: [逻辑动画]%s → %s (id=%s)",
+                                        anim_name, clip.id[:8], anim_id)
+                            add_event(context.pipeline_id, "animation", "logic_anim",
+                                      f"[逻辑动画]{anim_name}({anim_id}) → clip={clip.id[:8]}")
 
-                    elif marker_type == "transition":
-                        self._handle_transition_animation(
-                            clip, prev_clip, anim_id, anim_name,
-                        )
-                        transition_anim_count += 1
-                        logger.info("AnimationAgent: [过渡动画]%s → %s (id=%s)",
-                                    anim_name, clip.id[:8], anim_id)
-                        add_event(context.pipeline_id, "animation", "transition_anim",
-                                  f"[过渡动画]{anim_name}({anim_id}) → clip={clip.id[:8]}")
+                        elif marker_type == "transition":
+                            self._handle_transition_animation(
+                                clip, prev_clip, anim_id, anim_name,
+                            )
+                            transition_anim_count += 1
+                            logger.info("AnimationAgent: [过渡动画]%s → %s (id=%s)",
+                                        anim_name, clip.id[:8], anim_id)
+                            add_event(context.pipeline_id, "animation", "transition_anim",
+                                      f"[过渡动画]{anim_name}({anim_id}) → clip={clip.id[:8]}")
 
                     prev_clip = clip
 
@@ -303,7 +305,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         因为所有文字动画类型（fade/slide/typewriter/scale等）
         drawtext 都有实现方案（scale→fontsize 表达式）。
         """
-        clip_duration = max(vid_clip.duration_sec, 1.0)
+        # B11: 时长钳制——原 max(dur, 1.0) 让 0.2s 片段挂 1s 文字覆盖侵入下一
+        # 场景；改为不越出宿主片段，下限 0.2s
+        clip_duration = max(0.2, float(vid_clip.duration_sec or 0.2))
         text_content = self._extract_text_content(vid_clip, marker) or marker.get("text", "")
 
         # 长文本 + typewriter → 路由到字幕轨（CAPTION）
@@ -346,6 +350,14 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         if anim_id in ("typewriter", "char_by_char"):
             text_clip.metadata["typewriter"] = True
 
+        # B11: 启用重叠去重（_find_overlapping_clip 此前定义未调用）——
+        # 同轨道文字片段时间重叠会叠字渲染
+        overlap = self._find_overlapping_clip(text_track, text_clip)
+        if overlap is not None:
+            logger.info("AnimationAgent: 跳过重叠文字动画 %s（与 %s 时间重叠）",
+                        text_clip.id[:8], overlap.id[:8])
+            return
+
         text_track.clips.append(text_clip)
         text_track.clips.sort(key=lambda c: c.start_sec)
 
@@ -359,7 +371,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         persona_style: dict[str, Any],
     ) -> None:
         """长文本 → CAPTION clip，使用 FFmpeg drawtext 渲染。"""
-        clip_duration = max(vid_clip.duration_sec, 1.0)
+        # B11: 与文字动画同样钳制，不越出宿主片段
+        clip_duration = max(0.2, float(vid_clip.duration_sec or 0.2))
         # 完整字幕样式字段（统一默认 + persona_style 覆盖，任务 32）
         style = _merge_style_defaults(DEFAULT_CAPTION_STYLE, persona_style)
         caption_clip = Clip(
@@ -866,8 +879,40 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
     # ── 过渡动画处理 ──────────────────────────────────────
 
-    @staticmethod
+    # B10: 当前 ffmpeg 支持的 xfade transition 值缓存（None = 探测失败，视为全支持）
+    _xfade_supported: list[str] | None = None
+
+    @classmethod
+    def _probe_xfade_transitions(cls) -> list[str] | None:
+        """B10: 探测 ffmpeg 支持的 xfade transition 值列表（进程内缓存）。
+
+        morph/pixelize/zoomin 等值依赖 ffmpeg 版本（部分需 ≥5.1/6.0），
+        原实现无能力探测，不支持的值直到渲染期才 EINVAL。失败返回 None。
+        """
+        if cls._xfade_supported is not None:
+            return cls._xfade_supported
+        try:
+            import subprocess
+
+            r = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-h", "filter=xfade"],
+                capture_output=True, text=True, timeout=10,
+            )
+            out = (r.stdout or "") + (r.stderr or "")
+            values: list[str] = []
+            for line in out.splitlines():
+                stripped = line.strip()
+                # 形如 "fade           0            ..FV....... fade"
+                parts = stripped.split()
+                if len(parts) >= 2 and parts[1].isdigit() and parts[0].replace("_", "").isalpha():
+                    values.append(parts[0])
+            cls._xfade_supported = values if values else None
+        except Exception:
+            cls._xfade_supported = None
+        return cls._xfade_supported
+
     def _handle_transition_animation(
+        self,
         clip: Clip,
         prev_clip: Clip | None,
         anim_id: str,
@@ -887,21 +932,23 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         anim_def = AnimationRegistry.get(anim_id)
         duration_sec = anim_def.duration_sec if anim_def else 0.4
 
-        # 映射到 FFmpeg xfade transition 类型
-        xfade_map = {
-            "crossfade": "fade",
-            "fade_to_black": "fadeblack",
-            "push_left": "pushleft",
-            "push_right": "pushright",
-            "wipe_left": "wipeleft",
-            "zoom_in": "zoom",
-            "glitch": "fade",
-            "pixel_dissolve": "pixelize",
-            "slide_up": "slideright",
-            "cut": "fade",
-        }
+        # 映射到 FFmpeg xfade transition 类型（C4: 复用公共映射表；
+        # B10: 修正 slide_up 方向错误）
+        from clipwright.animation.xfade_map import XFADE_MAP
+        xfade_map = XFADE_MAP
 
-        clip.transition_in = xfade_map.get(anim_id, "fade")
+        mapped = xfade_map.get(anim_id, "fade")
+        # B10: 运行时能力探测——当前 ffmpeg 不支持的 transition 值在 Agent 阶段
+        # 降级 fade 并发 trace warning（原实现在渲染期 EINVAL 且静默硬切）
+        supported = self._probe_xfade_transitions()
+        if supported is not None and mapped not in supported:
+            self._add_trace_warning(
+                f"转场 {anim_id}→{mapped} 当前 ffmpeg 不支持，降级为 fade"
+            )
+            logger.warning("AnimationAgent: xfade=%s 不支持（转场 %s），降级 fade", mapped, anim_id)
+            mapped = "fade"
+
+        clip.transition_in = mapped
         clip.transition_duration_sec = duration_sec
         clip.metadata = clip.metadata or {}
         clip.metadata["transition_id"] = anim_id

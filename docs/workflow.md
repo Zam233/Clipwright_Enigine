@@ -39,6 +39,11 @@ Structure → Material → Edit → Animation → Audio → Quality → Render
 ## 二、Agent 职责
 
 ### Requirements Agent
+> F4 对齐注记（2026-09）：本 Agent 类**保留实现但不在管线中实例化**——生产链路的需求
+> 分析由 `services/requirements_service.py` 承担（自持提示词，经 /api/requirements/* 暴露），
+> PipelineV2 DAG 的入口是 structure。animation_intents 经 requirements_service →
+> /proceed 的 extra_params → StructureAgent（C2 已接通）。
+
 - **输入**: 用户选题 + 文稿 + 参考素材
 - **输出**: 创作方案 (creative_brief) + 动画需求意图 (animation_intents)
 - **动画识别**: 当用户提到数据展示、对比、流程、图表时，自动识别并输出 animation_intents
@@ -102,11 +107,11 @@ Agent 之间通过 `AgentBus` 交换信息：
 
 | 方法 | 说明 |
 |------|------|
-| `publish(agent, topic, data)` | 发布消息 |
-| `get_messages(topic)` | 按主题获取消息 |
-| `set_demand(agent, demand)` | 声明需求 |
-| `get_demands()` | 获取所有 Agent 的需求 |
-| `route_decision(agent, status)` | 动态路由决策（⚠ 未实现——当前为静态 DAG，见对账注记 2026-08） |
+| `publish(agent, topic, data)` | 发布消息（诊断/追踪用） |
+| `get_events(topic)` | 按主题获取事件 |
+| `set_artifact / get_artifact` | 时间线等共享产物的读写 |
+| `add_demand / get_demands` | 需求通道（⚠ F6: 无消费确认机制，管线已停止注入 `_demands`，保留事件流） |
+| `route_decision` | ⚠ 未实现——当前为静态 DAG（`AgentDAG._DEPS`） |
 
 ---
 

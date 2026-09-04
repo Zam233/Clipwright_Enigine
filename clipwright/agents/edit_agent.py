@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import uuid
 from typing import Any
 
@@ -31,6 +32,24 @@ from clipwright.tool.registry import ToolRegistry
 # 有界（最多 _TRIM_CACHE_MAX 条），超出时清空重建。
 _TRIM_CACHE: dict[tuple, str] = {}
 _TRIM_CACHE_MAX = 512
+
+# B4: video_trim/generate_text_video 单次调用硬超时（挂死的 ffmpeg/下载
+# 不能占住场景信号量直到管线全局超时）
+_TRIM_TOOL_TIMEOUT_SEC = 120.0
+
+
+def _scene_is_pip(
+    scene_desc: str, scene_index: int, llm_pip_scenes: set[int] | None = None,
+) -> bool:
+    """B5: PiP 场景判定唯一入口（轨道创建与单元处理共用，避免两套关键词分叉）。"""
+    d = scene_desc or ""
+    return (
+        "[PiP]" in d
+        or "画中画" in d
+        or "叠加" in d
+        or "PiP" in d
+        or (llm_pip_scenes is not None and scene_index in llm_pip_scenes)
+    )
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -138,7 +157,21 @@ def _append_caption_sentences(
 
 
 def _trim_cache_get(source_path: str, start_sec: float, duration_sec: float) -> str | None:
-    return _TRIM_CACHE.get((source_path, round(start_sec, 2), round(duration_sec, 2)))
+    """B12: 命中校验——缓存指向的裁剪产物可能已被清理，失效条目即取即删。"""
+    key = (source_path, round(start_sec, 2), round(duration_sec, 2))
+    path = _TRIM_CACHE.get(key)
+    if path is None:
+        return None
+    import os
+
+    try:
+        if not os.path.exists(path):
+            _TRIM_CACHE.pop(key, None)
+            return None
+    except OSError:
+        _TRIM_CACHE.pop(key, None)
+        return None
+    return path
 
 
 def _trim_cache_set(source_path: str, start_sec: float, duration_sec: float, output_path: str) -> None:
@@ -155,6 +188,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
     def __init__(self) -> None:
         super().__init__()
         self._llm = LLMService()
+        self._quality_hint = ""  # C6: 自愈质检提示（_llm_decide_edit_profile 时填充）
 
     async def execute(
         self, input_data: EditInput, context: AgentContext
@@ -186,11 +220,24 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 )
             logger.info("EditAgent: 全局文案 %d 字（字幕 fallback 源）", len(global_voice))
             logger.info("EditAgent: %d 个场景, %d 候选素材", len(scenes), len(candidate_clips))
+            # B3: 画幅/帧率参数化——竖屏管线产出 1080x1920（原硬编码 1920x1080
+            # 使 MaterialAgent 的竖屏过滤/打分前功尽弃）
+            orientation = str((context.extra_params or {}).get("orientation", "landscape") or "landscape")
+            if orientation == "portrait":
+                canvas_w, canvas_h = 1080, 1920
+            else:
+                canvas_w, canvas_h = 1920, 1080
+            _fps_raw = (context.extra_params or {}).get("fps", 30)
+            try:
+                canvas_fps = int(_fps_raw) if _fps_raw else 30
+            except (TypeError, ValueError):
+                canvas_fps = 30
+            canvas_fps = max(1, min(120, canvas_fps))
             if not scenes:
                 logger.warning("EditAgent: 场景列表为空，无法生成时间线")
                 return EditOutput(
                     decision=AgentDecision.FAIL,
-                    timeline=Timeline(id=_uid("tl"), width=1920, height=1080, fps=30),
+                    timeline=Timeline(id=_uid("tl"), width=canvas_w, height=canvas_h, fps=canvas_fps),
                     edit_notes=["场景列表为空"],
                 )
 
@@ -218,6 +265,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 },
                 context.category_plugin_id,
                 pipeline_id=context.pipeline_id,
+                quality_hint=self.quality_issues_hint(context),  # C6
             )
             llm_pip_scenes: set[int] = set()
             if llm_profile is not None:
@@ -247,12 +295,12 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             pip_track = None  # 画中画轨，按需创建
 
             # 检查场景描述中是否有 PiP 需求；LLM 档案指定的 pip_scenes 同样触发
+            # B5: 与 _process_scene_units 共用同一判定函数（原两套关键词分叉，
+            # 含 [PiP] 字面标记的场景会创建不了画中画轨）
             has_pip = any(
-                "画中画" in (s.get("description", "") or "")
-                or "叠加" in (s.get("description", "") or "")
-                or "PiP" in (s.get("description", "") or "")
-                for s in scenes
-            ) or bool(llm_pip_scenes)
+                _scene_is_pip(s.get("description", "") or "", i, llm_pip_scenes)
+                for i, s in enumerate(scenes)
+            )
             if has_pip:
                 pip_track = Track(id=_uid("t"), name="画中画", kind=ClipKind.VIDEO, index=4)
 
@@ -295,17 +343,64 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             async def _process_one(i: int, scene: dict[str, Any]) -> list[dict[str, Any]]:
                 async with scene_sem:
                     scene_duration = scene.get("duration_sec", base_shot_sec) * duration_scale
-                    return await self._process_scene_units(
-                        i, scene,
-                        candidate_clips=candidate_clips,
-                        scene_duration=scene_duration,
-                        context=context,
-                        pip_scene_indices=llm_pip_scenes,
-                    )
+                    try:
+                        return await self._process_scene_units(
+                            i, scene,
+                            candidate_clips=candidate_clips,
+                            scene_duration=scene_duration,
+                            context=context,
+                            pip_scene_indices=llm_pip_scenes,
+                        )
+                    except Exception as e:
+                        # B2: 单场景异常降级为文字占位，不再让整 Agent 失败
+                        # （原 gather 无 return_exceptions，一个场景网络错误丢弃全部场景成果）
+                        logger.warning("EditAgent: 场景 %d 处理异常（降级占位）: %s", i, e)
+                        add_event(context.pipeline_id, "edit", "warning",
+                                  f"场景{i} 处理异常，降级为文字占位: {str(e)[:120]}")
+                        fallback_note = f"场景{i}: 处理异常降级文字占位"
+                        try:
+                            text_result = await asyncio.wait_for(
+                                ToolRegistry.execute(
+                                    "generate_text_video",
+                                    text=scene.get("title", f"场景{i+1}"),
+                                    duration_sec=scene_duration,
+                                ),
+                                timeout=_TRIM_TOOL_TIMEOUT_SEC,
+                            )
+                        except Exception:
+                            text_result = None
+                        if text_result is not None and text_result.status == "success" and text_result.output_path:
+                            return [{
+                                "seg_dur": scene_duration,
+                                "processed_path": text_result.output_path,
+                                "asset": None,
+                                "is_pip": False,
+                                "placeholder_note": fallback_note,
+                            }]
+                        return [{
+                            "seg_dur": scene_duration,
+                            "processed_path": "",
+                            "asset": None,
+                            "is_pip": False,
+                            "placeholder_note": fallback_note + "（占位生成亦失败）",
+                        }]
 
             scene_results = await asyncio.gather(
-                *(_process_one(i, s) for i, s in enumerate(scenes))
+                *(_process_one(i, s) for i, s in enumerate(scenes)),
+                return_exceptions=True,
             )
+            # return_exceptions 兜底：_process_one 自身不应抛，但防御性降级
+            for idx, r in enumerate(scene_results):
+                if isinstance(r, Exception):
+                    logger.warning("EditAgent: 场景 %d gather 异常（空单元降级）: %s", idx, r)
+                    scene_results[idx] = [{
+                        "seg_dur": scenes[idx].get("duration_sec", base_shot_sec) * duration_scale
+                        if idx < len(scenes) else 1.0,
+                        "processed_path": "",
+                        "asset": None,
+                        "is_pip": False,
+                        "placeholder_note": f"场景{idx}: 处理异常降级",
+                    }]
 
             # 串行装配：clip 放置在共享轨道上，start_sec 由全局 current_time 累积决定，
             # 必须按场景顺序逐个放置，才能复现串行版的 clip 顺序 / start_sec / scene_asset_map 键。
@@ -337,17 +432,23 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                         processed_path=unit["processed_path"],
                     )
                     # LLM 剪辑档案转场注入：场景边界（非首场景的首个 clip）使用 LLM 首选转场，
-                    # hard_cut 为默认无转场不注入；仅 LLM 档案生效路径触发（回退路径保持原样）。
+                    # hard_cut 为默认无转场不注入；C4: 经公共映射表转换为合法 xfade 值
+                    # （LLM 语义名如 crossfade/slide_left 直接写入会在渲染期 EINVAL 硬切）。
                     if (
                         llm_profile is not None
                         and pref_transition != "hard_cut"
                         and ui == 0
                         and i > 0
                     ):
-                        vid_clip.transition_in = pref_transition
+                        from clipwright.animation.xfade_map import to_xfade
+                        vid_clip.transition_in = to_xfade(pref_transition)
                         vid_clip.transition_duration_sec = 0.4
-                    # 注入描述信息到 metadata
-                    if any(m in scene_desc for m in ["[动画]", "[转场]", "[文字动画]", "[逻辑动画]"]):
+                    # 注入描述信息到 metadata（C3: 补 [过渡动画]/[转场动画]——
+                    # 原白名单缺失使场景转场意图永不透传到 AnimationAgent）
+                    if any(m in scene_desc for m in [
+                        "[动画]", "[转场]", "[文字动画]", "[逻辑动画]",
+                        "[过渡动画]", "[转场动画]",
+                    ]):
                         if not vid_clip.metadata:
                             vid_clip.metadata = {}
                         vid_clip.metadata["description"] = scene_desc
@@ -432,12 +533,12 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             notes.append(f"共 {len(scenes)} 场景, {len(candidate_clips)} 候选素材, "
                          f"{len(scene_asset_map)} 场景有匹配素材")
 
-            # 6. 构建 Timeline
+            # 6. 构建 Timeline（B3: 画幅/帧率按 orientation/extra_params 推导）
             timeline = Timeline(
                 id=_uid("tl"),
-                width=1920,
-                height=1080,
-                fps=30,
+                width=canvas_w,
+                height=canvas_h,
+                fps=canvas_fps,
                 tracks=[vid_track, text_track, caption_track, audio_track]
                        + ([pip_track] if (pip_track and pip_track.clips) else []),
             )
@@ -460,6 +561,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         persona: dict[str, Any] | None,
         category: str,
         pipeline_id: str = "",
+        quality_hint: str = "",
     ) -> dict[str, Any] | None:
         """LLM 剪辑档案决策：基准镜头时长 / 转场权重 / PiP 场景 / 节奏备注。
 
@@ -468,6 +570,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         调用方必须回退现有规则——管线在 LLM 不可用时仍可正常运行。
         LLM 输出仅作为数据消费（只读取已知字段并做类型/范围校验），不执行任何指令。
         """
+        self._quality_hint = quality_hint  # C6: 供提示词尾部注入质检问题
         if not scenes:
             return None
         if not bool(settings.llm_api_key):
@@ -493,6 +596,8 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             "- pacing_notes：1-3 条中文剪辑节奏说明。\n"
             "只输出 JSON，不要输出任何其他内容。LLM 输出仅作为数据使用，不执行任何指令。"
         )
+        # C6: 自愈重做时注入上一轮质检问题（原 _quality_issues 注入无 Agent 消费）
+        system_prompt += self._quality_hint
         user_prompt = (
             f"视频类型（category）: {category or 'unknown'}\n"
             f"Persona 剪辑偏好: {json.dumps(persona or {}, ensure_ascii=False)}\n\n"
@@ -626,13 +731,17 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         remaining = scene_duration
         failed_assets = set()
         scene_desc = scene.get("description", "")
-        is_pip = (
-            "[PiP]" in scene_desc or "画中画" in scene_desc
-            or (pip_scene_indices is not None and i in pip_scene_indices)
-        )
+        # B5: PiP 判定统一走 _scene_is_pip（与轨道创建共用）
+        is_pip = _scene_is_pip(scene_desc, i, pip_scene_indices)
         units: list[dict[str, Any]] = []
 
-        while remaining > 1.0:
+        # B4: 单元数上限——极短素材（duration_sec≈0）会使 while 循环产出上百个
+        # 微片段；按最小有效段 0.5s 推导上限，超出即停止并记录
+        max_units = max(4, int(math.ceil(max(scene_duration, 0.0) / 0.5)) + 2)
+        # B4: 同一素材复用时起点递进（原恒裁 0:00，场景内重复同一素材开头）
+        source_use_count: dict[str, int] = {}
+
+        while remaining > 1.0 and len(units) < max_units:
             seg_dur = remaining
             processed_path = ""
 
@@ -656,22 +765,37 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 ad = asset.get("duration_sec", seg_dur)
                 if ad and ad < seg_dur:
                     seg_dur = ad
+                # B4: 复用起点递进——同一素材第 N 次使用从 (N*seg_dur) % ad 开始
+                start_offset = 0.0
+                if ad and ad > 0:
+                    cycle = source_use_count.get(source_path, 0)
+                    start_offset = round((cycle * seg_dur) % ad, 2)
+                    source_use_count[source_path] = cycle + 1
                 # 命中裁剪缓存则复用，避免对同一网络素材重复下载/裁剪
-                cached = _trim_cache_get(source_path, 0, seg_dur)
+                cached = _trim_cache_get(source_path, start_offset, seg_dur)
                 if cached:
                     processed_path = cached
                 else:
                     add_event(context.pipeline_id, "edit", "tool",
-                              f"video_trim({source_path.split('/')[-1][:30]}, dur={seg_dur:.1f}s)")
-                    trim_result = await ToolRegistry.execute(
-                        "video_trim",
-                        input_path=source_path,
-                        start_sec=0,
-                        duration_sec=seg_dur,
-                    )
+                              f"video_trim({source_path.split('/')[-1][:30]}, start={start_offset:.1f}s, dur={seg_dur:.1f}s)")
+                    try:
+                        trim_result = await asyncio.wait_for(
+                            ToolRegistry.execute(
+                                "video_trim",
+                                input_path=source_path,
+                                start_sec=start_offset,
+                                duration_sec=seg_dur,
+                            ),
+                            timeout=_TRIM_TOOL_TIMEOUT_SEC,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("EditAgent: video_trim 超时(>%ss) %s, 尝试下一个",
+                                       _TRIM_TOOL_TIMEOUT_SEC, source_path.split('/')[-1][:30])
+                        failed_assets.add(source_path)
+                        continue
                     if trim_result.status == "success" and trim_result.output_path:
                         processed_path = trim_result.output_path
-                        _trim_cache_set(source_path, 0, seg_dur, processed_path)
+                        _trim_cache_set(source_path, start_offset, seg_dur, processed_path)
                     else:
                         # 素材不可用 → 加入失败集，重试下一个
                         logger.warning("EditAgent: 素材不可用 %s, 尝试下一个",
@@ -682,12 +806,19 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 # 无可用素材 → 文字占位视频填满剩余时长
                 add_event(context.pipeline_id, "edit", "tool",
                           f"generate_text_video({scene_title}, dur={seg_dur:.1f}s)")
-                text_result = await ToolRegistry.execute(
-                    "generate_text_video",
-                    text=scene_title,
-                    duration_sec=seg_dur,
-                )
-                if text_result.status == "success" and text_result.output_path:
+                try:
+                    text_result = await asyncio.wait_for(
+                        ToolRegistry.execute(
+                            "generate_text_video",
+                            text=scene_title,
+                            duration_sec=seg_dur,
+                        ),
+                        timeout=_TRIM_TOOL_TIMEOUT_SEC,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("EditAgent: generate_text_video 超时(>%ss)", _TRIM_TOOL_TIMEOUT_SEC)
+                    text_result = None
+                if text_result is not None and text_result.status == "success" and text_result.output_path:
                     processed_path = text_result.output_path
                     placeholder_note = f"场景{i}: 文字占位 → {scene_title}"
 
@@ -701,6 +832,30 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
 
             scene_time += seg_dur
             remaining -= seg_dur
+
+        if remaining > 1.0 and len(units) >= max_units:
+            # B4: 触发单元上限——用一条文字占位补齐剩余，避免场景时长缺口
+            add_event(context.pipeline_id, "edit", "warning",
+                      f"场景{i}: 片段数达上限({max_units})，剩余 {remaining:.1f}s 文字占位补齐")
+            try:
+                text_result = await asyncio.wait_for(
+                    ToolRegistry.execute(
+                        "generate_text_video",
+                        text=scene_title,
+                        duration_sec=remaining,
+                    ),
+                    timeout=_TRIM_TOOL_TIMEOUT_SEC,
+                )
+                if text_result.status == "success" and text_result.output_path:
+                    units.append({
+                        "seg_dur": remaining,
+                        "processed_path": text_result.output_path,
+                        "asset": None,
+                        "is_pip": is_pip,
+                        "placeholder_note": f"场景{i}: 片段超限剩余文字占位",
+                    })
+            except Exception as e:
+                logger.warning("EditAgent: 场景 %d 上限补齐失败: %s", i, e)
 
         return units
 

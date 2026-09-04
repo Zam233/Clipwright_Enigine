@@ -2,7 +2,7 @@
 
 ## 概述
 
-Requirements Agent 是 Agent 管线中的第一个节点，负责接收用户选题，分析创作需求，提取约束和偏好，生成结构化的创作方案。它是 7-Agent 管线中最新加入的成员。
+Requirements Agent 是面向"需求分析"职责的 Agent 实现。F4 对齐注记（2026-09）：**生产链路并未实例化本 Agent**——需求分析实际由 `services/requirements_service.py`（对话式会话 + 自持提示词）承担，管线入口为 StructureAgent。本文档描述其设计意图与能力边界；相关端点见下方真实 API 表。
 
 ## 管线位置
 
@@ -57,8 +57,11 @@ animation_intents 通过 `requirements_service` → `StructureAgent.extra_params
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/api/requirements/analyze` | POST | 分析用户需求，生成创作方案 |
-| `/api/requirements/extract` | POST | 提取创作约束 |
+| `/api/requirements/init` | POST | 初始化需求会话 |
+| `/api/requirements/chat` / `chat/stream` | POST | 对话生成/修订创作方案（SSE 流式） |
+| `/api/requirements/plan` | GET | 获取规划书 |
+| `/api/requirements/proceed` | POST | 确认规划书 → 启动管线 |
+| `/api/requirements/upload` / `session` | POST/GET | 参考文件上传 / 会话状态 |
 
 ## 相关文档
 

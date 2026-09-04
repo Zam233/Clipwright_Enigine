@@ -33,8 +33,11 @@ async def unified_llm_call(
 ):
     """生产加固 1.4：全仓统一的 LLM/工具调用收口 — 超时 + 瞬时失败重试（线性退避）。
 
-    重试仅针对超时与含瞬时特征的错误（timeout/rate limit/429/connection/reset），
+    重试仅针对「请求确已失败」的瞬时错误（rate limit/429/connection/reset），
     永久错误直接抛出，由调用方决定降级。
+    F7: 超时不再重试——底层请求经 asyncio.to_thread 执行，wait_for 超时无法
+    真正取消线程内的 provider 请求；此时重试会造成同一请求双份并发（双份
+    token 计费 + 线程泄漏）。超时直接抛出，由调用方走兜底降级。
     """
     from clipwright.config import logger
 
@@ -42,8 +45,8 @@ async def unified_llm_call(
     for attempt in range(max(0, retries) + 1):
         try:
             return await asyncio.wait_for(coro_factory(), timeout=timeout)
-        except asyncio.TimeoutError as e:
-            last_exc = e
+        except asyncio.TimeoutError:
+            raise
         except Exception as e:  # noqa: BLE001 — 按错误特征判定是否瞬时
             low = str(e).lower()
             transient = any(k in low for k in (
@@ -132,3 +135,23 @@ class BaseAgent(ABC, Generic[I, O]):
         except Exception as e:
             logger.warning("%s: LLM 调用失败（%s），使用兜底", self.agent_name, e)
             return fallback
+
+    @staticmethod
+    def quality_issues_hint(context: Any) -> str:
+        """C6: 自愈重做时提取上一轮质检问题段落（注入 LLM 提示词尾部）。
+
+        pipeline_v2 自愈循环此前把 _quality_issues 写入 extra_params，但没有任何
+        Agent 读取——被要求重做的 Agent 不知道为什么重做。无问题/非自愈时返回空串。
+        """
+        issues = (getattr(context, "extra_params", {}) or {}).get("_quality_issues") or []
+        lines: list[str] = []
+        for item in issues[:5]:
+            if isinstance(item, dict):
+                lines.append(
+                    f"- [{item.get('severity', '')}] {item.get('category', '')}: "
+                    f"{str(item.get('message', ''))[:120]}"
+                )
+        if not lines:
+            return ""
+        return ("\n\n## 上一轮质检发现问题（本次重做必须针对性修复，不要重复同类问题）\n"
+                + "\n".join(lines))

@@ -31,6 +31,9 @@ _pipeline_owners: dict[str, str] = {}
 _idempotency_pipeline: dict[str, str] = {}
 # A10: pipeline_id → TaskQueue task_id（供取消/查询映射）
 _pipeline_tasks: dict[str, str] = {}
+# A2: 用户主动取消的管线（用于区分用户取消与队列超时强杀——两者都会以
+# CancelledError 形式进入 _run_background，但终态语义不同）
+_user_cancel_requested: set[str] = set()
 
 
 # ── 生产加固 1.2：运行态映射落 Mongo（重启可恢复），不可用时静默降级纯内存 ──
@@ -151,6 +154,60 @@ def pipeline_timeout_sec(audio_dur: float, scene_count: int) -> int:
     return int(max(1800, float(audio_dur or 0) * 6, int(scene_count or 0) * 360))
 
 
+def _extract_quality_summary(result_dict: dict) -> dict | None:
+    """C7: 从 steps 提取质检结果摘要——issues 此前只存在于 step.result 内部，
+    前端（/result 与 SSE done 事件）完全看不到质检发现了什么。"""
+    for s in reversed(result_dict.get("steps") or []):
+        if isinstance(s, dict) and s.get("agent_name") == "quality":
+            r = s.get("result") or {}
+            issues = r.get("issues") or []
+            if not isinstance(issues, list):
+                return None
+            items = []
+            for i in issues:
+                if isinstance(i, dict):
+                    items.append({
+                        "severity": i.get("severity", ""),
+                        "category": i.get("category", ""),
+                        "message": str(i.get("message", ""))[:200],
+                        "location": str(i.get("location", "") or "")[:80],
+                    })
+            errors = sum(1 for x in items if x["severity"] == "error")
+            warnings = sum(1 for x in items if x["severity"] == "warning")
+            return {
+                "passed": r.get("passed", True),
+                "error_count": errors,
+                "warning_count": warnings,
+                "issues": items[:20],
+                "fix_suggestions": [str(x)[:200] for x in (r.get("fix_suggestions") or [])][:10],
+                "redo_agent": r.get("redo_agent", ""),
+            }
+    return None
+
+
+def _aggregate_agent_notes(result_dict: dict) -> dict:
+    """C9: 聚合各 Agent 的 notes/warnings 到 /result 顶层（只写字段一次性暴露）。"""
+    notes: dict[str, list[str]] = {}
+    for s in result_dict.get("steps") or []:
+        if not isinstance(s, dict):
+            continue
+        name = s.get("agent_name") or ""
+        r = s.get("result") or {}
+        if not isinstance(r, dict):
+            continue
+        out: list[str] = []
+        for key in ("edit_notes", "audio_notes", "material_notes"):
+            v = r.get(key)
+            if isinstance(v, list):
+                out.extend(str(x) for x in v)
+        sk = r.get("script_skeleton")
+        if isinstance(sk, dict) and isinstance(sk.get("_warnings"), list):
+            out.extend(str(x) for x in sk["_warnings"])
+        if out:
+            notes[name] = out[:20]
+    return notes
+
+
 @router.get("/runs")
 async def list_pipeline_runs(request: Request, limit: int = 50) -> list[dict]:
     """获取管线运行记录（真实执行历史，供 PipelineAdminPage 展示）。
@@ -242,22 +299,31 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
     from clipwright.authz import current_user_id
 
     uid = current_user_id(req)
+    pipeline_id = f"pl_{uuid.uuid4().hex[:12]}"
     # P5-B8: 幂等键去重（双击/网络重试不重复扣费）
+    # A8: set-before-run 原子占位——检查后同步写入（中间无 await，无并发窗口），
+    # 后续 budget 检查失败时回滚占位，避免留下指向永不执行管线的死键。
     idem_key = req.headers.get("Idempotency-Key", "")
     if idem_key:
         existing = _idempotency_pipeline.get(idem_key)
-        if existing and (existing in _pipeline_results or existing in _running_pipelines):
+        if existing:
             return {"pipeline_id": existing, "status": "deduplicated"}
+        _idempotency_pipeline[idem_key] = pipeline_id
 
-    pipeline_id = f"pl_{uuid.uuid4().hex[:12]}"
-    # P5-B3: 成本预算熔断（超月预算拒绝新管线）
-    from clipwright.services.budget import check_budget
-    allowed, used = await check_budget()
-    if not allowed:
-        raise HTTPException(
-            status_code=429,
-            detail=f"本月 LLM token 预算已耗尽（已用 {used} / {settings.llm_monthly_token_budget}）",
-        )
+    try:
+        # P5-B3: 成本预算熔断（超月预算拒绝新管线）
+        from clipwright.services.budget import check_budget
+        allowed, used = await check_budget()
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail=f"本月 LLM token 预算已耗尽（已用 {used} / {settings.llm_monthly_token_budget}）",
+            )
+    except Exception:
+        # A8: 占位回滚（仅当仍指向本管线）
+        if idem_key and _idempotency_pipeline.get(idem_key) == pipeline_id:
+            _idempotency_pipeline.pop(idem_key, None)
+        raise
     # P3-3B: 记录归属
     _pipeline_owners[pipeline_id] = uid or ""
     if idem_key:
@@ -295,8 +361,15 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
             state = await orch.run(request, pipeline_id=pipeline_id, task_id=task_id)
             state.shared_data["execution_trace"] = get_all_events(pipeline_id)
             result_dict = state.model_dump(mode="json")
+            # C7/C9: 质检摘要 + Agent 备注（前端此前看不到质检发现的问题）
+            _q = _extract_quality_summary(result_dict)
+            if _q:
+                result_dict["quality_issues"] = _q
+            _notes = _aggregate_agent_notes(result_dict)
+            if _notes:
+                result_dict["agent_notes"] = _notes
             _pipeline_results[pipeline_id] = result_dict
-            add_event(pipeline_id, "system", "done", f"管线完成: {state.status}")
+            add_event(pipeline_id, "system", "done", f"管线完成: {state.status}", _q)
             # P1-4: 插件 hook — 管线后置
             try:
                 from clipwright.plugins.hooks import HookRegistry, HookPoint
@@ -322,13 +395,26 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
             except Exception as we:
                 logger.warning("pipeline webhook dispatch failed: %s", we)
         except asyncio.CancelledError:
-            # C9: 取消即时性 — 任务被外部 cancel，写入终态并标记已取消（不重新抛出）
-            logger.info("管线任务已取消: %s", pipeline_id)
-            _pipeline_results[pipeline_id] = {
-                "status": "cancelled", "pipeline_id": pipeline_id,
-                "error": "管线已取消（任务中断）",
-            }
-            add_event(pipeline_id, "system", "cancelled", "管线已取消（任务中断）")
+            # C9/A2: 取消即时性 + 语义区分——用户取消（_user_cancel_requested 命中）
+            # 写 cancelled；未命中说明是队列 wait_for 超时强杀（asyncio.wait_for 超时
+            # 会 cancel 内层协程），写 timeout 终态并给出可重试建议，避免误报"已取消"。
+            if pipeline_id in _user_cancel_requested:
+                _user_cancel_requested.discard(pipeline_id)
+                logger.info("管线任务已取消: %s", pipeline_id)
+                _pipeline_results[pipeline_id] = {
+                    "status": "cancelled", "pipeline_id": pipeline_id,
+                    "error": "管线已取消（任务中断）",
+                }
+                add_event(pipeline_id, "system", "cancelled", "管线已取消（任务中断）")
+            else:
+                _timeout_sec = (request.extra_params or {}).get("pipeline_timeout_sec", "")
+                logger.warning("管线任务被队列超时中断: %s", pipeline_id)
+                _pipeline_results[pipeline_id] = {
+                    "status": "timeout", "pipeline_id": pipeline_id,
+                    "error": f"管线执行超时（> {_timeout_sec or '默认'}s），可从失败步骤重试",
+                }
+                add_event(pipeline_id, "system", "timeout",
+                          f"管线执行超时（> {_timeout_sec or '默认'}s），可对失败 Agent 发起重试")
         except Exception as e:
             logger.exception("pipeline._run_background failed: %s", e)
             add_event(pipeline_id, "system", "error", f"管线失败: {e}")
@@ -358,6 +444,8 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
                 _pipeline_results.pop(pipeline_id, None)
                 _running_pipelines.pop(pipeline_id, None)
                 _pipeline_owners.pop(pipeline_id, None)
+                _pipeline_tasks.pop(pipeline_id, None)  # A3: 补清理，防映射泄漏
+                _user_cancel_requested.discard(pipeline_id)  # A2: 防集合泄漏
                 for k, v in list(_idempotency_pipeline.items()):
                     if v == pipeline_id:
                         _idempotency_pipeline.pop(k, None)
@@ -367,15 +455,33 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
 
     # A10: 管线异步执行走 TaskQueue（并发限流 + 排队 + 优先级 + Mongo 持久化）
     async def _queue_handler(task_id: str = ""):
-        await _run_background(task_id=task_id)
+        # A3: 注册当前运行中的 asyncio 任务（= TaskQueue 处理协程），使 /cancel 能
+        # 即时 task.cancel() 中断运行（CancelledError 由 _run_background 捕获写终态）。
+        _running_pipelines[pipeline_id] = asyncio.current_task()
+        try:
+            await _run_background(task_id=task_id)
+        finally:
+            if _running_pipelines.get(pipeline_id) is asyncio.current_task():
+                _running_pipelines.pop(pipeline_id, None)
 
+    # A2: 任务级超时与管线超时公式对齐（默认 900s 会强杀动画阶段长管线）
+    _ep = request.extra_params or {}
+    _pt = _ep.get("pipeline_timeout_sec")
+    if not isinstance(_pt, (int, float)) or _pt <= 0:
+        _pt = pipeline_timeout_sec(float(_ep.get("audio_duration_sec", 0) or 0), 0)
+    _submit_timeout = float(_pt) + 120.0  # 缓冲：让 orchestrator 自己的超时先生效
+
+    # A1: X-Priority 是 HTTP 头，必须从 Request 读取（request 是 body 模型，
+    # 无 headers 属性——曾导致主入口无条件 AttributeError 500）
     priority = 3
     try:
-        priority = max(1, min(5, int(request.headers.get("X-Priority", "3") or "3")))
+        priority = max(1, min(5, int(req.headers.get("X-Priority", "3") or "3")))
     except (ValueError, TypeError):
         priority = 3
     from clipwright.services.task_queue import get_task_queue
-    task_id = await get_task_queue().submit("pipeline", _queue_handler, priority=priority)
+    task_id = await get_task_queue().submit(
+        "pipeline", _queue_handler, priority=priority, timeout_sec=_submit_timeout,
+    )
 
     async def _task_slot():
         """把队列 task 与 pipeline 取消/清理关联。"""
@@ -402,14 +508,35 @@ async def get_pipeline_trace(pipeline_id: str):
 @router.get("/trace/stream/{pipeline_id}")
 async def stream_pipeline_trace(pipeline_id: str, request: Request):
     """SSE 流：实时推送管线执行追踪事件（LLM、Tool、Skill、Plugin 调用）。"""
+    # A7: jwt 模式校验管线所有权（trace 含提示词/脚本/时间线快照，禁止跨用户订阅）
+    _enforce_pipeline_owner(request, pipeline_id)
+
     async def event_stream():
         # 生产加固 1.8: 单调 seq 游标（替代浮点时间戳，时钟回拨不丢事件）
         from clipwright.services.trace import get_events_since_seq, wait_new_event
+        # A4: 终态集合含 cancelled/timeout——取消/超时后流必须关闭，前端才能停止订阅
+        terminal_types = ("done", "error", "cancelled", "timeout")
         last_seq = 0
         # 先发送已存在的事件
-        for event in get_events(pipeline_id):
+        existing = get_events(pipeline_id)
+        for event in existing:
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             last_seq = max(last_seq, int(event.get("seq", 0) or 0))
+        # A4: 重连时若历史事件已含终态（如完成后 60s 内重连），回放后直接关闭，
+        # 不再空转到 max_wall
+        if any(e.get("type") in terminal_types for e in existing):
+            await asyncio.sleep(2)
+            return
+        if not existing:
+            # A4: trace 已清理（完成 60s 后重连）→ 从 Mongo 检查点回放终态，避免静默空转
+            recovered = _load_result_from_mongo(pipeline_id)
+            _status = (recovered or {}).get("status", "")
+            if _status and _status != "running":
+                _type = ("done" if _status in ("completed", "pass")
+                         else "cancelled" if _status in ("cancelled", "interrupted")
+                         else "error")
+                yield f"data: {json.dumps({'type': _type, 'agent': 'system', 'level': 'info', 'message': f'管线终态回放: {_status}', 'seq': 0}, ensure_ascii=False)}\n\n"
+                return
 
         # 持续轮询新事件直到管线终态（done/error）或达到长上限。
         # 管线动画阶段可能长达 40-60 分钟，固定 600s 会让前端 SSE 中途断流而收不到终态。
@@ -438,8 +565,8 @@ async def stream_pipeline_trace(pipeline_id: str, request: Request):
                 for event in events:
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                     last_seq = max(last_seq, int(event.get("seq", 0) or 0))
-                    # 收到 done/error 事件后延 2 秒关闭
-                    if event["type"] in ("done", "error"):
+                    # A4: done/error/cancelled/timeout 均为终态，延 2 秒关闭
+                    if event["type"] in terminal_types:
                         await asyncio.sleep(2)
                         return
 
@@ -574,6 +701,23 @@ async def retry_agent(pipeline_id: str, agent_name: str, request: Request) -> di
     目标 agent 无可用前置结果/无记录时明确 400。
     """
     _enforce_pipeline_owner(request, pipeline_id)
+    # A5: retry 与主入口同权——预算熔断检查（原路径完全绕过预算）
+    from clipwright import audit as _audit
+    from clipwright.services.budget import check_budget as _check_budget
+    _allowed, _used = await _check_budget()
+    if not _allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"本月 LLM token 预算已耗尽（已用 {_used} / {settings.llm_monthly_token_budget}），无法重试",
+        )
+    _uid = None
+    try:
+        from clipwright.authz import current_user_id as _cuid
+        _uid = _cuid(request)
+    except Exception:
+        pass
+    _audit.record("pipeline_retry", _uid, {"pipeline_id": pipeline_id, "agent": agent_name})
+
     from clipwright.services.trace import get_all_events
     events = get_all_events(pipeline_id)
     if not events:
@@ -618,16 +762,37 @@ async def retry_agent(pipeline_id: str, agent_name: str, request: Request) -> di
 
     add_event(pipeline_id, "system", "info", f"重试 Agent: {agent_name}")
 
+    # A5: retry 超时与管线超时公式对齐（原实现裸 create_task 无超时，挂死即永久占用）
+    _retry_ep = (state.get("request") or {}).get("extra_params") or {}
+    _retry_to = _retry_ep.get("pipeline_timeout_sec")
+    if not isinstance(_retry_to, (int, float)) or _retry_to <= 0:
+        _retry_to = pipeline_timeout_sec(
+            float(_retry_ep.get("audio_duration_sec", 0) or 0), 0)
+    _retry_timeout = float(_retry_to) + 120.0
+
     async def _retry():
         try:
             orch_v2 = PipelineOrchestratorV2()
-            new_state = await orch_v2.run_from_agent(
-                pipeline_id, request, agent_name, prior_state=state,
+            new_state = await asyncio.wait_for(
+                orch_v2.run_from_agent(pipeline_id, request, agent_name, prior_state=state),
+                timeout=_retry_timeout,
             )
             result_dict = new_state.model_dump(mode="json")
             _pipeline_results[pipeline_id] = result_dict
             add_event(pipeline_id, "system", "done", f"重试完成: {new_state.status}")
+        except asyncio.TimeoutError:
+            logger.warning("重试超时: %s (%ss)", pipeline_id, _retry_timeout)
+            _pipeline_results[pipeline_id] = {
+                "status": "timeout", "pipeline_id": pipeline_id,
+                "error": f"重试执行超时（>{_retry_timeout}s）",
+            }
+            add_event(pipeline_id, "system", "timeout", f"重试超时（>{_retry_timeout}s）")
         except Exception as e:
+            logger.exception("重试失败: %s", e)
+            # A5: 失败也写终态结果——原实现只发事件不写结果，/result 会 404/超时
+            _pipeline_results[pipeline_id] = {
+                "status": "failed", "error": str(e), "pipeline_id": pipeline_id,
+            }
             add_event(pipeline_id, "system", "error", f"重试失败: {e}")
 
     task = asyncio.create_task(_retry())
@@ -722,6 +887,9 @@ async def cancel_pipeline(pipeline_id: str, request: Request) -> dict:
         raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found")
 
     # C9: 即时取消 — 中断运行中的后台任务（CancelledError 由 _run_background 捕获写终态）
+    # A2: 先登记用户取消意图——队列超时与用户取消都会以 CancelledError 进入
+    # _run_background，靠该集合区分 cancelled / timeout 终态
+    _user_cancel_requested.add(pipeline_id)
     task = _running_pipelines.get(pipeline_id)
     if task and not task.done():
         task.cancel()

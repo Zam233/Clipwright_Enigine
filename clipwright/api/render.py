@@ -179,7 +179,27 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
     if raw_output and not is_safe_download_name(raw_output):
         raise HTTPException(status_code=400, detail="非法输出文件名")
     requested_name = Path(raw_output).name if raw_output else ""
-    out = f"renders/{requested_name}" if requested_name else f"renders/{task_id}.mp4"
+    # D8: 预设携带容器扩展名（prores→mov）；用户显式指定文件名时尊重用户
+    _ext = str(params.get("container_ext") or "mp4")
+    out = f"renders/{requested_name}" if requested_name else f"renders/{task_id}.{_ext}"
+
+    # D4: 软字幕——从时间线字幕轨生成 SRT sidecar（供 render 封装 mov_text 轨）
+    _srt_path = ""
+    if params.get("soft_subtitle"):
+        try:
+            from pathlib import Path as _P
+            from clipwright.services.subtitle import timeline_clips_to_segments, to_srt
+            _cap_clips = []
+            for _t in tl.tracks or []:
+                if str(_t.kind) == "caption":
+                    _cap_clips.extend(c.model_dump(mode="json") for c in (_t.clips or []))
+            if _cap_clips:
+                _srt_path = str(_P(tempfile.gettempdir()) / f"{task_id}_subs.srt")
+                _P(_srt_path).write_text(
+                    to_srt(timeline_clips_to_segments(_cap_clips)), encoding="utf-8")
+        except Exception as e:
+            logger.warning("软字幕 SRT 生成失败（回退烧入）: %s", e)
+            _srt_path = ""
 
     # P5-B4: 持久化任务（含 timeline，供重启恢复/中断重试）
     try:
@@ -201,6 +221,23 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
         logger.warning("渲染任务持久化失败（降级内存）: %s", e)
 
     async def _run():
+        # D5: 优先级生效——低优先级任务在高优任务排队时让位（原实现 spawn 全
+        # 并发，priority 仅用于列表排序）。等待有界（30 分钟）防饥饿。
+        import time as _time
+        _wait_started = _time.monotonic()
+        while priority < 5:
+            _has_higher_queued = any(
+                t.get("status") == "queued" and int(t.get("priority", 3)) > priority
+                for t in list(_render_queue.values())
+            )
+            _has_running = any(
+                t.get("status") == "rendering" for t in list(_render_queue.values())
+            )
+            if not (_has_higher_queued and _has_running):
+                break
+            if _time.monotonic() - _wait_started > 1800:
+                break
+            await asyncio.sleep(2.0)
         _render_queue[task_id]["status"] = "rendering"
         _render_queue[task_id]["progress"] = 0
         _render_queue[task_id]["clip_count"] = len(tl.tracks or [])
@@ -229,6 +266,7 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                 cancel_id=task_id,
                 encoder_override=params.get("encoder", ""),
                 pix_fmt_override=params.get("pix_fmt", ""),
+                soft_subtitle_srt=_srt_path,  # D4
             )
             _render_queue[task_id]["result"] = result.to_dict()
             _render_queue[task_id]["status"] = "completed" if result.success else "failed"
@@ -481,6 +519,7 @@ _EXPORT_PRESETS = {
     "480p": {"width": 854, "height": 480, "fps": 24, "bitrate": "1.5M", "audio_bitrate": "128k", "note": "标准 480p"},
     # Phase 3.3: 交付级封装（广播/母带场景）
     "prores422hq": {"width": 1920, "height": 1080, "fps": 30, "encoder": "prores_ks", "pix_fmt": "yuv422p10le",
+                    "container_ext": "mov",  # D8: ProRes 容器是 MOV（原输出仍命名 .mp4）
                     "note": "ProRes 422 HQ（10bit，母带/广播交付）"},
     "h265_10bit": {"width": 1920, "height": 1080, "fps": 30, "encoder": "libx265", "pix_fmt": "yuv420p10le", "bitrate": "12M",
                    "note": "H.265 HEVC 10bit 高码率（HDR/高保真交付）"},
@@ -498,6 +537,8 @@ class RenderSettings(BaseModel):
     # Phase 3.3: 编码器/像素格式覆盖（交付级；空 = 自动探测/默认）
     encoder: str = Field(default="", description="编码器覆盖（libx264/h264_nvenc/prores_ks/libx265；空=自动）")
     pix_fmt: str = Field(default="", description="像素格式覆盖（yuv420p/yuv420p10le/yuv422p10le；空=默认）")
+    # D4: 软字幕导出——字幕以 mov_text 轨封装而非烧入画面
+    soft_subtitle: bool = Field(default=False, description="软字幕导出（mov_text 字幕轨，非烧入）")
 
 
 class RenderRequest(BaseModel):

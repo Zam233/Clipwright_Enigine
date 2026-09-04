@@ -216,10 +216,67 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                     **meta,
                 }
 
-            # 5. 设置淡入淡出
-            if audio_track.clips:
-                first = audio_track.clips[0]
-                first.volume = 0.3  # 淡入起点
+            # 5. 淡入淡出（B6: 原 hack 将首个 clip 音量硬压 0.3——上传配音插在
+            # index 0 时全片人声只剩 30%，且无真正淡出。改用 Clip.audio_fade_in/out_sec
+            # 写入真实 afade 曲线：配音短淡入防爆音，BGM 淡入 1s/淡出 2s）
+            for _clip in audio_track.clips:
+                _meta = getattr(_clip, "metadata", {}) or {}
+                _is_voice = bool(_meta.get("dubbing") or _meta.get("narration"))
+                if _is_voice:
+                    _clip.audio_fade_in_sec = 0.3
+                    _clip.audio_fade_out_sec = 0.5
+                else:
+                    _clip.audio_fade_in_sec = 1.0
+                    _clip.audio_fade_out_sec = 2.0
+
+            # 5b. C1: 素材库 BGM 实际入轨——此前 BGM 元数据只是"建议"（bgm_library
+            # 挂在 asset_id 为空的占位 clip 上，render 只混音有真实文件路径的
+            # clip），成片从无 BGM。有素材库音频时创建真实 BGM clip（低音量）铺满
+            # 时间线，render 正常混音。
+            if library_bgm:
+                _tl_dur = float(getattr(timeline, "duration_sec", 0) or 0)
+                _has_real_bgm = any(
+                    (getattr(c, "asset_id", "") or "")
+                    and not (getattr(c, "metadata", {}) or {}).get("dubbing")
+                    and not (getattr(c, "metadata", {}) or {}).get("narration")
+                    for t in timeline.tracks if t.kind == ClipKind.AUDIO
+                    for c in t.clips
+                )
+                if _tl_dur > 0 and not _has_real_bgm:
+                    _bgm_cursor = 0.0
+                    _bgm_count = 0
+                    _bgm_idx = 0
+                    while _bgm_cursor < _tl_dur - 0.5:
+                        _entry = library_bgm[_bgm_idx % len(library_bgm)]
+                        _bgm_idx += 1
+                        _asset = _entry.get("asset")
+                        _a_path = (getattr(_asset, "local_path", None)
+                                   or getattr(_asset, "url", None) or "")
+                        if not _a_path:
+                            continue
+                        try:
+                            _a_dur = float(getattr(_asset, "duration_sec", 0) or 0)
+                        except (TypeError, ValueError):
+                            _a_dur = 0.0
+                        _seg = min(_a_dur if _a_dur > 0 else _tl_dur, _tl_dur - _bgm_cursor)
+                        if _seg <= 0.5:
+                            break
+                        audio_track.clips.append(Clip(
+                            id=f"bgm_{uuid.uuid4().hex[:8]}",
+                            kind=ClipKind.AUDIO,
+                            asset_id=_a_path,
+                            track_id=audio_track.id,
+                            start_sec=round(_bgm_cursor, 3),
+                            duration_sec=round(_seg, 3),
+                            volume=0.25,
+                            audio_fade_in_sec=1.0,
+                            audio_fade_out_sec=2.0,
+                            metadata={"bgm": True, "source": "library"},
+                        ))
+                        _bgm_count += 1
+                        _bgm_cursor += _seg
+                    if _bgm_count:
+                        notes.append(f"素材库 BGM 已入轨: {_bgm_count} 段（volume=0.25）")
 
             # 6. 如果没有音频 clip，添加一个占位 BGM 建议
             if not audio_track.clips:
@@ -237,13 +294,20 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                 auto_dub = bool(audio_config.get("auto_dub", True))
                 script_text = context.extra_params.get("script_text", "")
                 video_mode = context.extra_params.get("video_mode", "")
+                # B7: 已上传配音（audio_path）时跳过 TTS——原 has_dub（配音插入）
+                # 与 has_narration（TTS 门控）互不感知，两者同时满足会把上传配音
+                # 与整条 TTS 旁白同时混音，成片出现双语音叠加。
+                uploaded_dub = bool(audio_path)
+                if uploaded_dub and auto_dub and voice_id and script_text.strip() and video_mode == "voiceover":
+                    notes.append("已提供上传配音，跳过 TTS 旁白生成（避免双语音叠加）")
 
-                # 门控：voiceover 模式 + auto_dub + 有 voice_id + 有文案
+                # 门控：voiceover 模式 + auto_dub + 有 voice_id + 有文案 + 无上传配音
                 if (
                     auto_dub
                     and voice_id
                     and script_text.strip()
                     and video_mode == "voiceover"
+                    and not uploaded_dub
                 ):
                     # 检查是否已有旁白轨（避免重复）
                     has_narration = any(
@@ -283,13 +347,21 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                                     timeline.tracks.append(narr_track)
 
                                 # 按顺序铺设旁白 clip
+                                # B9: 失败分段（无音频文件/零时长）不入轨——原实现
+                                # 零长 clip 照样入轨并推进 cursor，字幕按成功段重排
+                                # 后与实际音频系统性漂移
                                 cursor = 0.0
+                                _skipped_segments = 0
                                 for idx, seg in enumerate(segments):
-                                    dur = float(seg.get("duration_sec", 0))
+                                    dur = float(seg.get("duration_sec", 0) or 0)
+                                    _seg_audio = (seg.get("audio_path", "") or "").strip()
+                                    if dur <= 0 or not _seg_audio:
+                                        _skipped_segments += 1
+                                        continue
                                     clip = Clip(
                                         id=f"narr_{idx}_{uuid.uuid4().hex[:6]}",
                                         kind=ClipKind.AUDIO,
-                                        asset_id=seg.get("audio_path", ""),
+                                        asset_id=_seg_audio,
                                         track_id="a_narration",
                                         start_sec=cursor,
                                         duration_sec=dur,
@@ -304,6 +376,8 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                                     )
                                     narr_track.clips.append(clip)
                                     cursor += dur
+                                if _skipped_segments:
+                                    notes.append(f"TTS 失败分段已跳过: {_skipped_segments} 段（零时长/无音频）")
 
                                 # 更新时间线总时长（如需）
                                 if timeline.duration_sec < cursor:
@@ -358,6 +432,8 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                         failed.append(f"video_mode={video_mode or '未设置'}（需 voiceover）")
                     if not auto_dub:
                         failed.append("auto_dub 已关闭")
+                    if context.extra_params.get("audio_path", ""):
+                        failed.append("已提供上传配音（B7: 跳过 TTS）")
                     notes.append(f"配音未触发: {'; '.join(failed)}")
             except Exception:
                 pass
@@ -375,10 +451,12 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                     if has_real_audio:
                         break
                 if not has_real_audio:
-                    # ── demo 配音回退：用内置 voice.mp3 铺满时间线作为配音 ──
-                    # 用户明确要求：整片无声时应使用 demo 的 voice.mp3（文稿配音）作为音频，
-                    # 而非静默输出。voice.mp3 时长与 timeline 总长一致（见 proj_84b48b414b29）。
-                    demo_voice = self._resolve_demo_voice()
+                    # ── demo 配音回退（B8: 需显式 allow_demo_audio=true 才启用）──
+                    # 原实现无声音时静默用内置 demo voice.mp3 铺满成片并拉伸
+                    # timeline 时长——生产运行可能交付一段与内容无关的演示配音
+                    # 且状态为成功。默认路径诚实输出无音轨 + 警告。
+                    allow_demo_audio = bool((context.extra_params or {}).get("allow_demo_audio", False))
+                    demo_voice = self._resolve_demo_voice() if allow_demo_audio else ""
                     if demo_voice:
                         demo_dur = self._probe_demo_duration(demo_voice)
                         tl_dur = float(getattr(timeline, "duration_sec", 0) or 0)
@@ -411,9 +489,14 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                         has_real_audio = True
                     if not has_real_audio:
                         msg = (
-                            "无配音与BGM配置（voice 未配置、无 TTS/音乐 key、无 demo voice.mp3），"
-                            "成片将无声音"
+                            "无配音与BGM配置（voice 未配置、无 TTS/音乐 key）"
+                            + ("，成片将无声音" if not allow_demo_audio
+                               else "，且无 demo voice.mp3 可用，成片将无声音")
                         )
+                        if not allow_demo_audio and demo_voice:
+                            msg += "（检测到内置 demo 音频，如需启用请传 allow_demo_audio=true）"
+                        elif not allow_demo_audio:
+                            msg += "（demo 音频兜底需显式传 allow_demo_audio=true）"
                         logger.warning("AudioAgent: %s", msg)
                         notes.append(msg)
                         try:
@@ -474,7 +557,8 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
             if new_clips:
                 t.clips = new_clips
                 logger.info("AudioAgent: 字幕轨按实测旁白时间重建 %d 条", len(new_clips))
-            return  # 只处理第一条字幕轨
+        # B9: 重建全部字幕轨（原实现 return 只处理首轨，多字幕轨时其余轨保留
+        # 过时的估算时间轴 → 音画/字膜漂移）
 
     @staticmethod
     def _resolve_demo_voice() -> str:

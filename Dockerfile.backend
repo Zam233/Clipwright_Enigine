@@ -1,11 +1,14 @@
 FROM python:3.12-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+# F1: fonts-noto-cjk 提供中文字体（/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc，
+# 与 render._resolve_system_font 的 unix 探测路径一致），字幕烧入不出现方块
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY pyproject.toml ./
 COPY clipwright ./clipwright
 COPY plugins ./plugins
-COPY skill ./skill 2>/dev/null || true
+# F1: 移除原 `COPY skill ./skill 2>/dev/null || true` —— 重定向/|| 是非法
+# Dockerfile 语法（仅 RUN 支持），导致镜像构建必败；skill/ 目录本就不存在于仓库根
 RUN pip install --no-cache-dir .
 EXPOSE 8080
 CMD ["python", "-m", "clipwright.main"]

@@ -216,13 +216,15 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         # 依据 error 类别建议重做的 Agent（取最上游责任方，下游会联动重做）：
         #   material_match → material（素材帧与文案不匹配，重做素材匹配）
         #   structure/duration/rhythm → edit（重建粗剪时间线）
+        #   semantic → edit（C6: 文案错别字/简报偏差多源于文案与结构，映射 edit；
+        #              原映射缺失使语义错误既不触发自愈也不令管线失败）
         #   animation/transition      → animation
         #   audio                     → audio
         redo_agent = ""
         error_cats = {i.category for i in errors}
         if "material_match" in error_cats:
             redo_agent = "material"
-        elif error_cats & {"structure", "duration", "rhythm"}:
+        elif error_cats & {"structure", "duration", "rhythm", "semantic"}:
             redo_agent = "edit"
         elif error_cats & {"animation", "transition"}:
             redo_agent = "animation"

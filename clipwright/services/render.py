@@ -650,8 +650,10 @@ def _prune_trim_cache_dir() -> None:
 
 _prune_trim_cache_dir()
 
-def _trim_cache_key(src: str, offset: float, dur: float, width: int, height: int) -> str:
-    raw = f"{src}|{offset:.2f}|{dur:.2f}|{width}x{height}"
+def _trim_cache_key(src: str, offset: float, dur: float, width: int, height: int,
+                    speed: float = 1.0, image_fit: str = "") -> str:
+    # D1/D2: 速度与填充模式影响输出内容，必须进缓存键
+    raw = f"{src}|{offset:.2f}|{dur:.2f}|{width}x{height}|{speed:.3f}|{image_fit}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
@@ -679,6 +681,7 @@ class RenderService:
         self._work_dir = Path(work_dir or _CLIPWRIGHT_TEMP / f"render_{uuid.uuid4().hex[:8]}")
         self._work_dir.mkdir(parents=True, exist_ok=True)
         self._final_ffmpeg_log: list[str] = []
+        self._fallback_count = 0  # D6: trim 失败降级纯色段的计数（原静默仅 log）
 
     def _run_ff(self, cmd, **kw) -> subprocess.CompletedProcess:
         """同步执行 ffmpeg/外部命令（供已在线程池里的 sync 代码直接调用）。"""
@@ -713,7 +716,8 @@ class RenderService:
                      progress_callback=None, enable_progress=True,
                      cancel_id: str | None = None,
                      encoder_override: str = "", preset_override: str = "",
-                     pix_fmt_override: str = "", force_render: bool = False) -> RenderResult:
+                     pix_fmt_override: str = "", force_render: bool = False,
+                     soft_subtitle_srt: str = "") -> RenderResult:
         # 审计 P0 修复：取消标识注入 context，线程池内 ffmpeg 调用可感知并 terminate
         _CURRENT_CANCEL_ID.set(cancel_id)
         # Phase 3.3: 单次渲染编码器/像素格式覆盖注入 context（随 ctx.run 传播）
@@ -726,6 +730,7 @@ class RenderService:
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
         self._final_ffmpeg_log = []
+        self._fallback_count = 0
 
         ok, info = await asyncio.to_thread(ffmpeg_available)
         if not ok:
@@ -752,7 +757,8 @@ class RenderService:
                 try:
                     result = await self._render_inner(
                         timeline, output, width, height, fps, bitrate,
-                        audio_bitrate, audio_file_path, bgm_file_path, progress_callback)
+                        audio_bitrate, audio_file_path, bgm_file_path, progress_callback,
+                        soft_subtitle_srt=soft_subtitle_srt)
                     if result.success:
                         try:
                             Path(str(output) + ".fp").write_text(self._render_fp, encoding="utf-8")
@@ -766,9 +772,15 @@ class RenderService:
                 clear_cancel_state(cancel_id)
 
     async def _render_inner(self, timeline, output, width, height, fps, bitrate,
-                            audio_bitrate, audio_file_path, bgm_file_path, progress_callback):
+                            audio_bitrate, audio_file_path, bgm_file_path, progress_callback,
+                            soft_subtitle_srt: str = ""):
         video_segments, overlay_segments, text_overlays, audio_segments, hf_ov_local = \
             self._extract_segments(timeline)
+
+        # D4: 软字幕模式——caption 类烧入滤镜剔除（字幕走 mov_text 轨封装），
+        # TEXT/动画类覆盖物仍烧入
+        if soft_subtitle_srt and Path(soft_subtitle_srt).exists():
+            text_overlays = [t for t in text_overlays if t.get("category") != "caption"]
 
         if progress_callback:
             # Bug4：prepare 从 0 起步，保证全阶段进度单调不减（trim 阶段从 0→50）。
@@ -831,7 +843,21 @@ class RenderService:
         if final_video and _is_valid_video(final_video):
             if progress_callback:
                 await progress_callback("done", 99, "输出成片")
-            shutil.copy2(final_video, str(output))
+            # D4: 软字幕封装——SRT 以 mov_text 轨挂入（失败回退硬拷贝无字幕轨）
+            _srt_ok = False
+            if soft_subtitle_srt and Path(soft_subtitle_srt).exists():
+                try:
+                    await self._ff(
+                        ["ffmpeg", "-y", "-loglevel", "error", "-i", final_video,
+                         "-i", soft_subtitle_srt,
+                         "-map", "0:v:0", "-map", "0:a?", "-map", "1:0",
+                         "-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text", str(output)],
+                        capture_output=True, text=False, timeout=600)
+                    _srt_ok = _is_valid_video(output)
+                except Exception as e:
+                    logger.warning("D4 软字幕封装失败，回退无字幕轨: %s", e)
+            if not _srt_ok:
+                shutil.copy2(final_video, str(output))
             if not _is_valid_video(output):
                 logger.error("渲染输出为空文件: %s（源 %s）", output, final_video)
                 return RenderResult(False, error=f"渲染输出为空文件 (final={final_video})")
@@ -839,8 +865,20 @@ class RenderService:
             if progress_callback:
                 await progress_callback("done", 100, "渲染完成")
             logger.info("渲染完成: %s (%.1fs)", output, dur)
+            # D6/D7: fallback 计数与实际时长偏差显式暴露（原先静默）
+            warnings = list(audio_warnings)
+            if self._fallback_count:
+                warnings.append(f"{self._fallback_count} 个片段源不可用，已降级纯色段")
+            try:
+                tl_dur = float(getattr(timeline, "duration_sec", 0) or 0)
+            except (TypeError, ValueError):
+                tl_dur = 0.0
+            if tl_dur > 0 and abs(dur - tl_dur) > max(1.0, tl_dur * 0.05):
+                warnings.append(
+                    f"成片实际时长 {dur:.1f}s 与时间线 {tl_dur:.1f}s 偏差较大"
+                    f"（转场时长侵蚀/时长字段未校正）")
             return RenderResult(True, output_path=str(output.resolve()), duration_sec=dur,
-                                warnings=audio_warnings)
+                                warnings=warnings)
 
         return RenderResult(False, error=f"渲染失败 (video={len(video_segments)}, trimmed={len(trimmed)})")
 
@@ -862,6 +900,11 @@ class RenderService:
                              speed=clip.speed, volume=clip.volume, opacity=clip.opacity,
                              image_rect=clip.image_rect, transition_in=clip.transition_in,
                              transition_duration_sec=clip.transition_duration_sec,
+                             blend_mode=getattr(clip, 'blend_mode', None),
+                             # D2: 死字段接线——image_fit/mask 此前渲染零消费
+                             image_fit=str(getattr(clip, 'image_fit', None) or ''),
+                             mask_type=getattr(clip, 'mask_type', None),
+                             mask_rect=clip.mask_rect,
                              # C11/M6: 音频淡入淡出
                              audio_fade_in_sec=getattr(clip, 'audio_fade_in_sec', None),
                              audio_fade_out_sec=getattr(clip, 'audio_fade_out_sec', None),
@@ -876,6 +919,10 @@ class RenderService:
                     (overlay_segments if is_overlay else video_segments).append(entry)
                 elif k == "audio":
                     entry["source_path"] = clip.asset_id
+                    # D3: 音源角色标记——供混音阶段做 BGM 自动避让（ducking）
+                    _am = clip.metadata or {}
+                    entry["is_bgm"] = bool(_am.get("bgm"))
+                    entry["is_voice"] = bool(_am.get("narration") or _am.get("dubbing"))
                     audio_segments.append(entry)
                 elif k in ("text", "caption"):
                     # 先计算偏移，分离追加以避免列表自引用歧义
@@ -1007,16 +1054,21 @@ class RenderService:
 
         # setsar=1 归一化像素宽高比：Pexels 等来源 SAR 不一致（1215:1216 vs 1:1），
         # concat 过滤器要求所有输入 SAR 相同，否则报 "Invalid argument" 导致拼接失败
-        scale = (f"scale={width}:{height}:force_original_aspect_ratio=1,"
-                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1")
         loop = asyncio.get_running_loop()
 
         def _trim_one(idx, seg):
             # 注意：本函数整体在 _ffmpeg_pool 线程里跑（见下方 run_in_executor），
             # 故内部用同步 _run_ff，禁止在此 await。
             src = seg.get("source_path", "")
-            dur = max(0.5, seg.get("duration_sec", 5) * seg.get("speed", 1.0))
+            speed = seg.get("speed", 1.0)
+            try:
+                speed = float(speed or 1.0)
+            except (TypeError, ValueError):
+                speed = 1.0
+            speed = max(0.25, min(4.0, speed))
+            dur = max(0.5, seg.get("duration_sec", 5))
             if not src:
+                self._fallback_count += 1
                 return self._generate_fallback(dur, width, height, fps, idx)
 
             # 源文件损坏预检：无时长/无视频流（如 EditAgent 裁剪失败的 258 字节残留）
@@ -1024,10 +1076,13 @@ class RenderService:
             if not self._source_valid(src):
                 logger.warning("RenderService: 源文件不可解码，用 fallback 兜底: %s", str(src)[-50:])
                 self._final_ffmpeg_log.append(f"trim({str(src)[-30:]}): 源文件不可解码 → fallback")
+                self._fallback_count += 1
                 return self._generate_fallback(dur, width, height, fps, idx)
 
-            # M1: 缓存
-            cache_key = _trim_cache_key(src, seg.get("source_offset", 0), dur, width, height)
+            # M1: 缓存（D1/D2: speed 与 image_fit 进键）
+            image_fit = str(seg.get("image_fit", "") or "").lower()
+            cache_key = _trim_cache_key(src, seg.get("source_offset", 0), dur, width, height,
+                                        speed, image_fit)
             with _trim_cache_lock:
                 cached = _trim_cache.get(cache_key)
                 if cached:
@@ -1037,7 +1092,35 @@ class RenderService:
 
             out = str(_TRIM_CACHE_DIR / f"trim_{cache_key}.mp4")
             try:
-                vf = scale
+                # D1: speed≠1 真实变速——原实现只按速度改时长并用 stream_loop
+                # 循环填充，播放速度不变（setpts 只存在于 tool/speed.py，未接入
+                # 时间线渲染）。trim 输出为 -an 无音轨，仅视频 setpts 即可；
+                # stream_loop 保留以在变速后仍能填满目标时长。
+                speed_prefix = f"setpts=PTS/{speed:.4f}," if abs(speed - 1.0) > 0.01 else ""
+                # D2: image_fit 落地——COVER=裁满（increase+crop），CONTAIN=信箱
+                # （decrease+pad，与原行为一致）；原实现两模式都走 pad 分支。
+                if image_fit == "contain":
+                    fit_scale = (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1")
+                else:
+                    fit_scale = (f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+                                 f"crop={width}:{height},setsar=1")
+                vf = speed_prefix + fit_scale
+
+                # D2: mask_type=rectangle 落地——按归一化 mask_rect 裁剪后还原画幅
+                mask_rect = seg.get("mask_rect")
+                if seg.get("mask_type") == "rectangle" and isinstance(mask_rect, dict):
+                    try:
+                        mx = max(0.0, min(1.0, float(mask_rect.get("x", 0) or 0)))
+                        my = max(0.0, min(1.0, float(mask_rect.get("y", 0) or 0)))
+                        mw = max(0.0, min(1.0, float(mask_rect.get("w", 0) or 0)))
+                        mh = max(0.0, min(1.0, float(mask_rect.get("h", 0) or 0)))
+                    except (TypeError, ValueError):
+                        mx = my = mw = mh = 0.0
+                    if mw > 0.01 and mh > 0.01:
+                        vf += (f",crop=iw*{mw:.4f}:ih*{mh:.4f}:iw*{mx:.4f}:ih*{my:.4f},"
+                               f"scale={width}:{height},setsar=1")
+
                 kfs = seg.get("keyframes", [])
                 if kfs:
                     parts = []
@@ -1086,6 +1169,7 @@ class RenderService:
             except (FileNotFoundError, subprocess.TimeoutExpired) as e:
                 self._final_ffmpeg_log.append(f"trim({src[-30:]}): {e}")
 
+            self._fallback_count += 1
             return self._generate_fallback(dur, width, height, fps, idx)
 
         # 并行执行所有裁剪：每个 _trim_one 是同步阻塞 ffmpeg，丢进线程池才真正并行，
@@ -1179,13 +1263,19 @@ class RenderService:
 
         过渡名/时长白名单校验与旧串行路径一致（P0-3 注入防护不退化）。
         """
-        import re as _re
+        from clipwright.animation.xfade_map import XFADE_VALUES
 
-        _XFADE_NAME_RE = _re.compile(r"^[a-z][a-z0-9_]{0,31}$")
         items: list[dict] = []
         for i, p in enumerate(trimmed):
             tt_raw = segments[i].get("transition_in", "fade") if i < len(segments) else "fade"
-            tt = str(tt_raw) if tt_raw and _XFADE_NAME_RE.fullmatch(str(tt_raw)) else "fade"
+            # C4: 精确集合校验——原 regex 形状校验放行任意合法形状名（如 LLM
+            # 语义名 crossfade/zoom_in），ffmpeg EINVAL 后 _xfade_pair 静默回退
+            # 硬切，LLM 转场决策从未生效；非法名降级 fade 并记录
+            if tt_raw and str(tt_raw) in XFADE_VALUES:
+                tt = str(tt_raw)
+            else:
+                self._final_ffmpeg_log.append(f"transition({str(tt_raw)[:40]!r}) 不在 xfade 白名单，降级 fade")
+                tt = "fade"
             try:
                 td = float(segments[i].get("transition_duration_sec", 0.4) if i < len(segments) else 0.4)
             except (TypeError, ValueError):
@@ -1702,13 +1792,30 @@ class RenderService:
             shutil.copy2(input_video, output_path); return
         encoder = _current_encoder(); preset = _current_preset()
         filters = []
+        base = "[0:v]"
+        used = 0
         for i, ov in enumerate(overlays):
             src, dur, start, opacity = ov.get("source_path",""), ov.get("duration_sec",5), ov.get("start_sec",0), ov.get("opacity",1.0)
             rect = ov.get("image_rect") or {"x":0.65,"y":0.05,"w":0.3,"h":0.3}
             if not src or not Path(src).exists(): continue
+            used += 1
             ow, oh = int(tw*rect["w"]), int(th*rect["h"])
             ox, oy = int(tw*rect["x"]), int(th*rect["y"])
-            filters.append(f"[{i+1}:v]scale={ow}:{oh},format=rgba,colorchannelmixer=aa={opacity}[ov{i}];[0:v][ov{i}]overlay={ox}:{oy}:enable='between(t,{start},{start+dur})'[v{i}]")
+            # D2: blend_mode 落地——screen/multiply/overlay 三种混合模式经
+            # blend 滤镜实现（裁剪底图区域 → 混合 → 贴回）；normal/未知值走
+            # 原 overlay 直叠。原实现该字段从不消费。
+            mode = str(ov.get("blend_mode") or "normal").lower()
+            chain_head = f"[{i+1}:v]"
+            if mode in ("screen", "multiply", "overlay"):
+                filters.append(
+                    f"{chain_head}scale={ow}:{oh},format=yuv420p[ov{i}];"
+                    f"{base}crop={ow}:{oh}:{ox}:{oy},format=yuv420p[cb{i}];"
+                    f"[cb{i}][ov{i}]blend=all_mode={mode}:all_opacity={opacity}[bl{i}];"
+                    f"{base}[bl{i}]overlay={ox}:{oy}:enable='between(t,{start},{start+dur})'[v{i}]"
+                )
+            else:
+                filters.append(f"{chain_head}scale={ow}:{oh},format=rgba,colorchannelmixer=aa={opacity}[ov{i}];{base}[ov{i}]overlay={ox}:{oy}:enable='between(t,{start},{start+dur})'[v{i}]")
+            base = f"[v{i}]"
         if not filters: shutil.copy2(input_video, output_path); return
         inputs = ["-i", input_video]
         for ov in overlays:
@@ -1716,7 +1823,7 @@ class RenderService:
             if s and Path(s).exists(): inputs.extend(["-i", s])
         c = ";".join(filters)
         await self._ff(["ffmpeg","-y","-loglevel","error",*(_hwaccel_args(encoder)),*inputs,"-filter_complex",c,
-                       "-map",f"[v{len(filters)-1}]","-map","0:a?",
+                       "-map",f"[v{used-1}]","-map","0:a?",
                        "-c:v",encoder,"-preset",preset,"-pix_fmt","yuv420p","-c:a","copy",output_path],
                       capture_output=True, text=False, timeout=1800)
 
@@ -1752,7 +1859,7 @@ class RenderService:
         voices = []
         if afp and Path(afp).exists():
             voices.append({"path": afp, "volume": 1.0, "start": 0, "dur": 0,
-                           "fade_in": 0, "fade_out": 0})
+                           "fade_in": 0, "fade_out": 0, "is_voice": True, "is_bgm": False})
         for seg in segments or []:
             s = seg.get("source_path", "")
             if s and Path(s).exists():
@@ -1763,10 +1870,12 @@ class RenderService:
                     "dur": float(seg.get("duration_sec", 0) or 0),
                     "fade_in": float(seg.get("audio_fade_in_sec") or 0),
                     "fade_out": float(seg.get("audio_fade_out_sec") or 0),
+                    "is_voice": bool(seg.get("is_voice")),
+                    "is_bgm": bool(seg.get("is_bgm")),
                 })
         if bfp and Path(bfp).exists():
             voices.append({"path": bfp, "volume": 0.3, "start": 0, "dur": 0,
-                           "fade_in": 0, "fade_out": 0})
+                           "fade_in": 0, "fade_out": 0, "is_voice": False, "is_bgm": True})
 
         # C11 路径：≥2 个音源 → 多输入 amix + loudnorm（真实混音/LUFS）
         if len(voices) >= 2:
@@ -1776,6 +1885,8 @@ class RenderService:
                 for v in voices:
                     inputs += ["-i", v["path"]]
                 chains = []
+                mix_inputs: list[str] = []
+                sc_source: str = ""
                 for i, v in enumerate(voices, start=1):
                     parts = []
                     if v["dur"] > 0 and v["start"] >= 0:
@@ -1787,10 +1898,26 @@ class RenderService:
                     if v["fade_out"] > 0 and v["dur"] > 0:
                         parts.append(f"afade=t=out:st={max(0, v['dur'] - v['fade_out'])}:d={v['fade_out']}")
                     parts.append(f"volume={v['volume']}")
-                    chains.append(f"[{i}:a]{','.join(parts)}[a{i}]")
-                mix_in = "".join(f"[a{i}]" for i in range(1, len(voices) + 1))
+                    base = f"a{i}"
+                    chains.append(f"[{i}:a]{','.join(parts)}[{base}]")
+                    # D3: BGM 自动避让（ducking）——首个配音链路 asplit 出 sidechain
+                    # 源；BGM 链路经 sidechaincompress 在人声段自动压低（原实现
+                    # BGM 固定低音量压全程，人声间歇处音乐也被压平）。
+                    if v.get("is_voice") and not sc_source:
+                        chains.append(f"[{base}]asplit=2[scsrc][mix{i}]")
+                        sc_source = "scsrc"
+                        mix_inputs.append(f"mix{i}")
+                    elif v.get("is_bgm") and sc_source:
+                        chains.append(
+                            f"[{base}][{sc_source}]sidechaincompress="
+                            f"threshold=0.03:ratio=4:attack=25:release=400[mix{i}]"
+                        )
+                        mix_inputs.append(f"mix{i}")
+                    else:
+                        mix_inputs.append(base)
+                chains_mix_in = "".join(f"[{m}]" for m in mix_inputs)
                 chains.append(
-                    f"{mix_in}amix=inputs={len(voices)}:duration=first:normalize=0,"
+                    f"{chains_mix_in}amix=inputs={len(mix_inputs)}:duration=first:normalize=0,"
                     f"loudnorm=I=-16:LRA=11:TP=-1.5[aout]"
                 )
                 await self._ff(inputs + [

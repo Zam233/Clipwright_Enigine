@@ -216,7 +216,10 @@ async def test_allocations_injected_into_bgm_clips(monkeypatch: pytest.MonkeyPat
     assert "pause_design" not in clips["bgm3"].metadata
     # 既有行为不回归
     assert clips["bgm1"].metadata["bpm"] == 120
-    assert clips["bgm1"].volume == 0.3  # 首 clip 淡入起点
+    # B6: 淡入淡出改用 audio_fade 真实曲线，不再硬压音量 0.3
+    assert clips["bgm1"].volume == 1.0
+    assert clips["bgm1"].audio_fade_in_sec == 1.0
+    assert clips["bgm1"].audio_fade_out_sec == 2.0
     assert any("LLM BGM 情绪匹配" in n for n in out.audio_notes)
 
 

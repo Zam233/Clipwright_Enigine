@@ -72,9 +72,10 @@ async def test_audio_agent_warns_when_no_audio(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_audio_agent_falls_back_to_demo_voice(monkeypatch) -> None:
-    """无真实音频且 demo voice.mp3 存在 → 用 demo 配音铺满时间线（不再无声）。"""
+    """allow_demo_audio=true 且 demo voice.mp3 存在 → 用 demo 配音铺满时间线。"""
     agent = AudioAgent()
-    ctx = _ctx()
+    # B8: demo 兜底需显式 opt-in（默认路径诚实输出无音轨 + 警告）
+    ctx = _ctx(allow_demo_audio=True)
     tl = _placeholder_timeline()
     # 模拟 demo 配音存在（避免依赖本机文件）
     demo = str(monkeypatch._tmpdir if hasattr(monkeypatch, "_tmpdir") else ".")

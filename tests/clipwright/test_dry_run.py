@@ -64,3 +64,5 @@ async def test_dry_run_stops_after_edit() -> None:
     assert "audio" not in called
     assert "quality" not in called
     assert state.shared_data.get("dry_run") is True
+    # A9: dry-run 必须产出 final_timeline（与 V1 对齐），否则 /run-async 预览为空
+    assert state.shared_data.get("final_timeline") == {"tracks": []}

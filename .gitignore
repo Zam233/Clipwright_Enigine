@@ -79,3 +79,13 @@ backend-out.log
 
 # ���Բ����İ汾����Ŀ¼
 versions/
+
+# F3: 开发产物不入库
+*.log
+__text_*.txt
+_xtest/
+
+# 本地工具目录（AI/扫描器工作区）
+.mimosa/
+.v2c/
+.zcode/

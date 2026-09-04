@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import re
+import time
 from typing import Any
 
 from clipwright.agents.base import BaseAgent
@@ -20,9 +21,12 @@ from clipwright.schema.agent import (
 from clipwright.services.llm import LLMService
 from clipwright.services.trace import add_event
 
-# 搜索缓存: query_hash → list[result]
-_search_cache: dict[str, list[dict]] = {}
+# 搜索缓存: query_hash → (写入时间戳, list[result])
+# B12: 原 dict 满后静默拒绝新条目（缓存悄悄退化为零）；改为 LRU 淘汰最旧
+# + TTL 过期（素材库增删/供应商结果漂移在 TTL 后可见）。
+_search_cache: dict[str, tuple[float, list[dict]]] = {}
 _SEARCH_CACHE_MAX = 200
+_SEARCH_CACHE_TTL_SEC = 3600.0
 
 # E10: 视觉校验 URL→score 缓存（多场景复用同素材时省多模态调用），上限 512。
 _VISION_SCORE_CACHE: dict[str, float] = {}
@@ -109,7 +113,8 @@ class _CachedResult:
     """缓存结果的轻量封装，使属性访问与 AssetResult 对象一致。"""
     __slots__ = ("asset", "source_name", "score")
     class _Asset:
-        __slots__ = ("id", "title", "url", "local_path", "duration_sec", "tags")
+        __slots__ = ("id", "title", "url", "local_path", "duration_sec", "tags",
+                     "type", "license", "resolution")
         def __init__(self, d: dict):
             self.id = d["asset_id"]
             self.title = d.get("title", "")
@@ -117,6 +122,10 @@ class _CachedResult:
             self.local_path = d.get("local_path", "")
             self.duration_sec = d.get("duration_sec", 0)
             self.tags = d.get("tags", [])
+            # B12: 与对象面字段对齐（缓存命中/未命中打分行为一致）
+            self.type = d.get("type", "")
+            self.license = d.get("license", "")
+            self.resolution = d.get("resolution", "")
     def __init__(self, d: dict):
         self.asset = self._Asset(d)
         self.source_name = d.get("source_name", "")
@@ -344,19 +353,24 @@ async def _search_with_cache(
     top_k: int = 5,
     source_ids: list[str] | None = None,
 ) -> list[Any]:
-    """带缓存的素材搜索。"""
+    """带缓存的素材搜索（B12: TTL + LRU 淘汰）。"""
     global _search_cache
     key = _search_cache_key(query, source_ids)
-    if key in _search_cache:
-        logger.debug("MaterialAgent: 缓存命中 %s", query[:30])
-        return [_CachedResult(d) for d in _search_cache[key]]
+    entry = _search_cache.get(key)
+    if entry is not None:
+        ts, data = entry
+        if time.time() - ts <= _SEARCH_CACHE_TTL_SEC:
+            logger.debug("MaterialAgent: 缓存命中 %s", query[:30])
+            return [_CachedResult(d) for d in data]
+        _search_cache.pop(key, None)  # TTL 过期
 
     results = await MaterialRegistry.search(
         query=query,
         top_k_per_source=top_k,
         source_ids=source_ids,
     )
-    # 只缓存 AssetResult 对象的外部表示
+    # 只缓存 AssetResult 对象的外部表示（字段与对象面等价，避免缓存命中/
+    # 未命中行为差异——B12: 补齐 type/license/resolution 供方向/授权打分）
     cached = []
     for r in results:
         cached.append({
@@ -368,10 +382,16 @@ async def _search_with_cache(
             "tags": r.asset.tags,
             "source_name": r.source_name,
             "score": r.score,
+            "type": getattr(r.asset, "type", "") or "",
+            "license": getattr(r.asset, "license", "") or "",
+            "resolution": getattr(r.asset, "resolution", "") or "",
         })
 
-    if len(_search_cache) < _SEARCH_CACHE_MAX:
-        _search_cache[key] = cached
+    if len(_search_cache) >= _SEARCH_CACHE_MAX:
+        # B12: LRU——淘汰最旧条目（原实现满后静默拒绝写入）
+        oldest = min(_search_cache.items(), key=lambda kv: kv[1][0])
+        _search_cache.pop(oldest[0], None)
+    _search_cache[key] = (time.time(), cached)
     return results
 
 
@@ -572,8 +592,27 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                         batch_query=batch_queries[i] if batch_queries else None,
                     )
 
-            results = await asyncio.gather(*(_process_scene(i, s) for i, s in enumerate(scenes)))
-            candidate_clips = [r for r in results if r is not None]
+            results = await asyncio.gather(
+                *(_process_scene(i, s) for i, s in enumerate(scenes)),
+                return_exceptions=True,
+            )
+            # B2: 单场景异常降级为空候选占位，不让整 Agent 失败（原 gather 无
+            # return_exceptions，一个场景搜索网络错误丢弃其余全部场景成果）
+            candidate_clips = []
+            for i, r in enumerate(results):
+                if isinstance(r, Exception):
+                    logger.warning("MaterialAgent: 场景[%d] 处理异常（降级占位）: %s", i, r)
+                    add_event(context.pipeline_id, "material", "warning",
+                              f"场景[{i}] 素材搜索异常，降级文字占位: {str(r)[:120]}")
+                    candidate_clips.append({
+                        "scene_index": i,
+                        "scene_title": scenes[i].get("title", "") if i < len(scenes) else "",
+                        "suggested_assets": [],
+                        "score": 0.0,
+                        "note": f"场景处理异常降级: {str(r)[:80]}",
+                    })
+                elif r is not None:
+                    candidate_clips.append(r)
 
             notes: list[str] = []
             if use_vision_llm:
@@ -779,6 +818,7 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
         _MIN_MATERIAL_DURATION = 3.0
 
         def _hard_filter(cands):
+            nonlocal validation_note  # B12: 过滤空标注写回外层
             kept = []
             for r, ms in cands:
                 dur = _asset_duration(r)
@@ -795,7 +835,15 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                         if orient != pref_orientation:
                             continue
                 kept.append((r, ms))
-            return kept or list(cands)
+            # B12: 过滤器不再自我解除——原 `kept or list(cands)` 在全部候选被
+            # 过滤时返回未过滤列表，恰好在最需要过滤时失效；改为诚实返回空并
+            # 标注，下游 EditAgent 走文字占位降级。
+            if not kept and cands:
+                validation_note = (validation_note + ";" if validation_note else "") + "hard_filter_empty"
+                if pipeline_id:
+                    add_event(pipeline_id, "material", "warning",
+                              f"场景[{i}] 全部候选被硬过滤（时长<{_MIN_MATERIAL_DURATION}s/方向不符），降级文字占位")
+            return kept
 
         validated = _hard_filter(validated)
 
