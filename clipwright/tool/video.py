@@ -418,7 +418,7 @@ class VideoThumbnailTool(BaseTool):
         **kwargs: Any,
     ) -> ToolExecResult:
         import tempfile
-        out = output_path or Path(tempfile.mktemp(suffix=".jpg")).name
+        out = output_path or str(_CLIPWRIGHT_TEMP / f"tmp_{uuid.uuid4().hex[:8]}.jpg")
         try:
             cmd = ["ffmpeg", "-y", "-loglevel", "error",
                    "-ss", str(time_sec), "-i", input_path,

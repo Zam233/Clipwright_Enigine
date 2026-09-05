@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import uuid
 import tempfile
 from pathlib import Path
 from typing import Any, Optional
@@ -27,7 +28,7 @@ class VideoSpeedTool(BaseTool):
         output_path: Optional[str] = None,
         **kwargs: Any,
     ) -> ToolExecResult:
-        out = output_path or Path(tempfile.mktemp(suffix=".mp4")).name
+        out = output_path or str(_CLIPWRIGHT_TEMP / f"tmp_{uuid.uuid4().hex[:8]}.mp4")
         if not Path(input_path).exists():
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error="file not found")
         try:
@@ -90,7 +91,7 @@ class TransitionApplyTool(BaseTool):
         output_path: Optional[str] = None,
         **kwargs: Any,
     ) -> ToolExecResult:
-        out = output_path or Path(tempfile.mktemp(suffix=".mp4")).name
+        out = output_path or str(_CLIPWRIGHT_TEMP / f"tmp_{uuid.uuid4().hex[:8]}.mp4")
         for path, name in [(clip_a, "clip_a"), (clip_b, "clip_b")]:
             if not Path(path).exists():
                 return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
@@ -170,7 +171,7 @@ class VideoBlurTool(BaseTool):
         output_path: Optional[str] = None,
         **kwargs: Any,
     ) -> ToolExecResult:
-        out = output_path or Path(tempfile.mktemp(suffix=".mp4")).name
+        out = output_path or str(_CLIPWRIGHT_TEMP / f"tmp_{uuid.uuid4().hex[:8]}.mp4")
         if not Path(input_path).exists():
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error="file not found")
         try:
@@ -215,7 +216,7 @@ class WatermarkTool(BaseTool):
         output_path: Optional[str] = None,
         **kwargs: Any,
     ) -> ToolExecResult:
-        out = output_path or Path(tempfile.mktemp(suffix=".mp4")).name
+        out = output_path or str(_CLIPWRIGHT_TEMP / f"tmp_{uuid.uuid4().hex[:8]}.mp4")
         if not Path(input_path).exists():
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error="file not found")
         try:
@@ -279,7 +280,7 @@ class EffectVignetteTool(BaseTool):
         output_path: Optional[str] = None,
         **kwargs: Any,
     ) -> ToolExecResult:
-        out = output_path or Path(tempfile.mktemp(suffix=".mp4")).name
+        out = output_path or str(_CLIPWRIGHT_TEMP / f"tmp_{uuid.uuid4().hex[:8]}.mp4")
         if not Path(input_path).exists():
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error="file not found")
         try:
@@ -337,7 +338,7 @@ class TextDiagramTool(BaseTool):
             title: 标题文字
             duration_sec: 动画时长
         """
-        out = output_path or Path(tempfile.mktemp(suffix=".mp4")).name
+        out = output_path or str(_CLIPWRIGHT_TEMP / f"tmp_{uuid.uuid4().hex[:8]}.mp4")
         if not Path(input_path).exists():
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error="file not found")
 
@@ -457,7 +458,7 @@ class FaceDetectTool(BaseTool):
         try:
             # 使用 ffmpeg 的 dnn/detect 或简单 fallback
             # 提取一帧，用 vision service 分析
-            frame = Path(tempfile.mktemp(suffix=".jpg"))
+            frame = _CLIPWRIGHT_TEMP / f"tmp_{uuid.uuid4().hex[:8]}.jpg"
             try:
                 extract = subprocess.run(
                     ["ffmpeg", "-y", "-loglevel", "error", "-ss", str(time_sec),
@@ -522,7 +523,7 @@ class BackgroundRemoveTool(BaseTool):
         output_path: Optional[str] = None,
         **kwargs: Any,
     ) -> ToolExecResult:
-        out = output_path or Path(tempfile.mktemp(suffix=".mp4")).name
+        out = output_path or str(_CLIPWRIGHT_TEMP / f"tmp_{uuid.uuid4().hex[:8]}.mp4")
         if not Path(input_path).exists():
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error="file not found")
         try:

@@ -30,25 +30,44 @@ class HookRegistry:
     }
 
     @classmethod
-    def register(cls, point: HookPoint, fn: Callable, **kwargs: Any) -> None:
-        # 审计 P2 修复：登记 plugin_id 标注，unregister/卸载时才能按插件精确清理
-        plugin_id = kwargs.get("plugin_id")
+    def register(cls, point: HookPoint, fn: Callable, plugin_id: str = "", **kwargs: Any) -> None:
+        # P4: wrapper 闭包携带 plugin_id（绑定方法安全），unregister 时按 ID 精确清理
         if plugin_id:
-            try:
-                fn.__plugin_id__ = plugin_id
-            except (AttributeError, TypeError):
-                pass
+            def _wrapped(ctx: Any, _fn: Callable = fn) -> Any:
+                return _fn(ctx)
+            _wrapped.__plugin_id__ = plugin_id
+            fn = _wrapped
         cls._hooks.setdefault(point, []).append(fn)
         logger.debug("Hook registered: %s -> %s", point.value, getattr(fn, "__name__", str(fn)))
+
+    @classmethod
+    def unregister_plugin(cls, plugin_id: str) -> int:
+        """P4: 按插件 ID 注销全部 Hook。"""
+        removed = 0
+        for point in HookPoint:
+            hooks = cls._hooks.get(point, [])
+            filtered = [
+                fn for fn in hooks
+                if getattr(fn, "__plugin_id__", None) != plugin_id
+            ]
+            removed += len(hooks) - len(filtered)
+            cls._hooks[point] = filtered
+        if removed:
+            logger.info("HookRegistry: 注销插件 %s 的 %d 个 Hook", plugin_id, removed)
+        return removed
 
     @classmethod
     def execute(cls, point: HookPoint, context: dict[str, Any]) -> dict[str, Any]:
         hooks = cls._hooks.get(point, [])
         logger.debug("Executing %d hooks for point %s", len(hooks), point.value)
         for hook in hooks:
-            result = hook(context)
-            if result:
-                context.update(result)
+            try:
+                result = hook(context)
+                if result:
+                    context.update(result)
+            except Exception as e:
+                # P8: 单钩子异常不阻塞同点其余钩子
+                logger.warning("Hook 异常 (%s): %s", point.value, e)
         return context
 
     @classmethod

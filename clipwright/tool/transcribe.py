@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import uuid
 import tempfile
 from pathlib import Path
 from typing import Any, Optional
@@ -71,7 +72,7 @@ class TextToSpeechTool(BaseTool):
         rate: str = "+0%",
         **kwargs: Any,
     ) -> ToolExecResult:
-        out = output_path or Path(tempfile.mktemp(suffix=".mp3")).name
+        out = output_path or str(_CLIPWRIGHT_TEMP / f"tmp_{uuid.uuid4().hex[:8]}.mp3")
         try:
             # 尝试 edge-tts（跨平台，支持中文）
             import asyncio
@@ -107,7 +108,7 @@ class TextToSpeechTool(BaseTool):
             logger.warning("edge-tts 未安装，尝试使用系统 TTS fallback")
             # Fallback: 生成静音 + 告知用户安装 edge-tts
             try:
-                dummy = Path(tempfile.mktemp(suffix=".mp3"))
+                dummy = _CLIPWRIGHT_TEMP / f"tmp_{uuid.uuid4().hex[:8]}.mp3"
                 subprocess.run(
                     ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
                      "-i", "anullsrc=r=44100:cl=mono", "-t", str(max(1, len(text) // 10)),
