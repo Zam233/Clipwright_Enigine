@@ -103,6 +103,19 @@ async def disable_plugin(plugin_id: str, request: Request = None) -> dict[str, s
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
     _loader.set_enabled(plugin_id, False)
+    # P4: 禁用时同时注销 Hook + Prompt（能力即时收缩）
+    try:
+        from clipwright.plugins.hooks import HookRegistry
+        HookRegistry.unregister_plugin(plugin_id)
+    except Exception as e:
+        from clipwright.config import logger
+        logger.warning("禁用插件 Hook 清理失败 %s: %s", plugin_id, e)
+    try:
+        from clipwright.plugins.prompt_registry import PluginPromptRegistry
+        PluginPromptRegistry.unregister(plugin_id)
+    except Exception as e:
+        from clipwright.config import logger
+        logger.warning("禁用插件 Prompt 清理失败 %s: %s", plugin_id, e)
     return {"status": "ok", "plugin_id": plugin_id, "enabled": "false"}
 
 
@@ -150,17 +163,19 @@ async def unregister_plugin(plugin_id: str, request: Request = None) -> dict[str
     except Exception as e:
         from clipwright.config import logger
         logger.warning("插件数据目录清理失败 %s: %s", plugin_id, e)
-    # P1-1: 注销已注册的 Hook
+    # P4: 统一注销 Hook + Prompt
     try:
         from clipwright.plugins.hooks import HookRegistry
-        for point in list(HookRegistry._hooks.keys()):
-            HookRegistry._hooks[point] = [
-                fn for fn in HookRegistry._hooks[point]
-                if getattr(fn, "__plugin_id__", None) != plugin_id
-            ]
+        HookRegistry.unregister_plugin(plugin_id)
     except Exception as e:
         from clipwright.config import logger
         logger.warning("插件 Hook 清理失败 %s: %s", plugin_id, e)
+    try:
+        from clipwright.plugins.prompt_registry import PluginPromptRegistry
+        PluginPromptRegistry.unregister(plugin_id)
+    except Exception as e:
+        from clipwright.config import logger
+        logger.warning("插件 Prompt 清理失败 %s: %s", plugin_id, e)
     return {"status": "unregistered", "plugin_id": plugin_id}
 
 
