@@ -235,10 +235,13 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
             if _time.monotonic() - _wait_started > 1800:
                 break
             await asyncio.sleep(2.0)
+        # R12: 取消的排队任务不进入渲染（状态保持 cancelled）
+        if _render_queue[task_id].get("status") == "cancelled":
+            return
         _render_queue[task_id]["status"] = "rendering"
         _render_queue[task_id]["progress"] = 0
-        _render_queue[task_id]["clip_count"] = len(tl.tracks or [])
-        _render_queue[task_id]["current_clip"] = 0
+        # R12: clip_count 改为片段总数（此前用轨道数，语义错误）
+        _render_queue[task_id]["clip_count"] = sum(len(t.clips or []) for t in tl.tracks or [])
         # P1-4: 插件 hook — 渲染前置
         try:
             from clipwright.plugins.hooks import HookRegistry, HookPoint

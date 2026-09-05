@@ -349,6 +349,11 @@ window.__timelines = window.__timelines || {{}}; window.__timelines['main'] = {{
             # x/y 定位、width/height 尺寸；opacity/scale/translate 等关键帧动画
             # 复用上方通用 keyframe 机制（与 text/shape 等元素一致）。
             src = fill(elem.get("src", ""))
+            # M7: 本地文件路径转 file:/// URI（headless Chrome 相对解析会裂图）
+            if src and not src.startswith(("http://", "https://", "data:", "file://")):
+                from pathlib import Path as _P
+                if _P(src).exists():
+                    src = _P(src).resolve().as_uri()
             w_val = fill(elem.get("width", 320))
             h_val = fill(elem.get("height", 240))
             radius_css = ""

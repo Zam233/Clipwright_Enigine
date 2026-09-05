@@ -295,6 +295,10 @@ class MGGenerator:
             return mg_def
         if vision_prompt and str(vision_prompt).strip():
             return mg_def
+        # M7: 同时清除 style.background（否则 LLM 设纯色背景仍遮实拍）
+        style = mg_def.get("style")
+        if isinstance(style, dict) and style.get("background", "transparent") != "transparent":
+            style["background"] = "transparent"
         elements = mg_def.get("elements")
         if isinstance(elements, list):
             for elem in elements:
