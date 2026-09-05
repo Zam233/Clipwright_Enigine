@@ -21,6 +21,39 @@ from clipwright.agents.base import unified_llm_call
 # 残留占位符检测：{word} 形式的字面量在最终 HTML 中出现即视为未填充
 _RESIDUAL_PLACEHOLDER_RE = re.compile(r"\{[a-zA-Z_][a-zA-Z0-9_]*\}")
 
+# M3: MG 生成结果内存缓存——同输入自愈/重试零 LLM 成本
+# key = sha256(description+text+persona_style)，TTL 30 分钟
+import hashlib as _hl
+import time as _time
+
+_MG_GEN_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_MG_GEN_CACHE_TTL = 1800.0  # 30 分钟
+_MG_GEN_CACHE_MAX = 100
+
+
+def _mg_cache_key(description: str, text_content: str,
+                  persona_style: dict | None) -> str:
+    raw = f"{description}|{text_content}|{json.dumps(persona_style or {}, sort_keys=True)}"
+    return _hl.sha256(raw.encode()).hexdigest()[:24]
+
+
+def _mg_cache_get(key: str) -> dict[str, Any] | None:
+    entry = _MG_GEN_CACHE.get(key)
+    if entry is None:
+        return None
+    ts, data = entry
+    if _time.time() - ts > _MG_GEN_CACHE_TTL:
+        _MG_GEN_CACHE.pop(key, None)
+        return None
+    return data
+
+
+def _mg_cache_put(key: str, result: dict[str, Any]) -> None:
+    if len(_MG_GEN_CACHE) >= _MG_GEN_CACHE_MAX:
+        oldest = min(_MG_GEN_CACHE, key=lambda k: _MG_GEN_CACHE[k][0])
+        _MG_GEN_CACHE.pop(oldest, None)
+    _MG_GEN_CACHE[key] = (_time.time(), result)
+
 
 # LLM MG 生成/修复提示词共用：输出硬性约束（降低 fallback 率，run6 有 6 次 fallback）
 _STRICT_JSON_OUTPUT = (
@@ -175,6 +208,16 @@ class MGGenerator:
         category_context = category_context or {}
         # 合并：pipeline_id 供 _trace_event 推送 MG method 追踪事件（远程线特性）
         self._pid = pipeline_id
+
+        # M3: 生成缓存——同输入（含 vision/fps 语境）直接返回缓存结果，
+        # 自愈/重试零 LLM 成本。缓存 TTL 30 分钟，LRU 淘汰。
+        _ck = _mg_cache_key(description, text_content, persona_style)
+        _cached = _mg_cache_get(_ck)
+        if _cached is not None:
+            self._trace_event(pipeline_id, "method",
+                              "MG 生成命中缓存",
+                              {"method": "cache", "cached": True})
+            return _cached
 
         gen_config = self._config.get("generation", {})
         max_retries = gen_config.get("max_retries", 2)
@@ -1131,6 +1174,16 @@ class MGGenerator:
                 "success": bool(html),
             },
         )
+
+        # M3: 缓存生成结果（下次同输入零 LLM 调用）
+        _mg_cache_put(getattr(self, '_ck', ''), {
+            "success": bool(html),
+            "html": html,
+            "mg_def": mg_def,
+            "method": method,
+            "fallback_template": fallback_template,
+            "generation_id": generation_id,
+        })
 
         return {
             "success": bool(html),
