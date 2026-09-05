@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import hashlib
+import os
 import json
 import shutil
 import subprocess
@@ -105,6 +106,32 @@ def _untrack_proc(task_id: str | None, proc: subprocess.Popen) -> None:
             lst.remove(proc)
 
 
+# M5: 活跃子进程集合（含 npx→chrome 链），供 cancel 时统一进程树击杀
+_child_procs: set = set()
+
+
+def _kill_process_tree(proc) -> None:
+    """M5: 杀死进程及其全部子进程（Chrome → node → npx 链条）。
+
+    Windows: taskkill /T /F；POSIX: 进程组 SIGKILL。
+    """
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                capture_output=True, timeout=10,
+            )
+        except Exception:
+            proc.kill()
+    else:
+        import signal
+        try:
+            import os as _os
+            _os.killpg(_os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+
+
 def run_tracked_ff(cmd, **kw) -> subprocess.CompletedProcess:
     """审计 P0 修复：带取消跟踪的同步子进程执行（模块级，供 render/hyperframes 共用）。
 
@@ -123,15 +150,20 @@ def run_tracked_ff(cmd, **kw) -> subprocess.CompletedProcess:
     proc = subprocess.Popen(
         cmd, stdout=stdout_arg, stderr=stderr_arg, text=use_text, **kw
     )
+    # M5: Windows 下用 CREATE_NEW_PROCESS_GROUP + taskkill /T 杀进程树
+    # （npx → node → chrome-headless-shell 链条只杀直接子进程会留孤儿 Chrome）
+    if os.name == "nt":
+        _child_procs.add(proc)
     _track_proc(cid, proc)
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        _kill_process_tree(proc)
         out, err = proc.communicate()
         raise
     finally:
         _untrack_proc(cid, proc)
+        _child_procs.discard(proc)
     if is_render_cancelled(cid):
         raise RenderCancelledError(cid)
     if check and proc.returncode != 0:
