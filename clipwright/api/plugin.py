@@ -19,6 +19,14 @@ def set_loader(loader: "PluginLoader") -> None:  # noqa: F821
 router = APIRouter(prefix="/api/plugin", tags=["plugin"])
 
 
+def _require_admin(request: Request) -> None:
+    """P3: jwt 模式下插件写操作需 admin 角色；off/token 模式放行。"""
+    from clipwright.authz import current_user_id, is_admin
+    uid = current_user_id(request)
+    if uid is not None and not is_admin(request):
+        raise HTTPException(status_code=403, detail="插件管理操作需要管理员权限")
+
+
 def _validate_plugin_id(plugin_id: str) -> str:
     """审计 P1 修复：所有含 plugin_id 的端点先校验 ID 合法性，
     防止 ../ 路径穿越（如 GET /{plugin_id}/ui 直接拼接文件路径）。"""
@@ -46,8 +54,9 @@ async def discover_plugins() -> list[str]:
 
 
 @router.post("/load/{plugin_id}", response_model=PluginMetadata)
-async def load_plugin(plugin_id: str) -> PluginMetadata:
+async def load_plugin(plugin_id: str, request: Request = None) -> PluginMetadata:
     """加载并初始化指定插件。"""
+    _require_admin(request)
     _validate_plugin_id(plugin_id)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
@@ -65,8 +74,9 @@ async def load_plugin(plugin_id: str) -> PluginMetadata:
 
 
 @router.post("/unload/{plugin_id}")
-async def unload_plugin(plugin_id: str) -> dict[str, str]:
+async def unload_plugin(plugin_id: str, request: Request = None) -> dict[str, str]:
     """卸载指定插件。"""
+    _require_admin(request)
     _validate_plugin_id(plugin_id)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
@@ -75,8 +85,9 @@ async def unload_plugin(plugin_id: str) -> dict[str, str]:
 
 
 @router.post("/{plugin_id}/enable")
-async def enable_plugin(plugin_id: str) -> dict[str, str]:
+async def enable_plugin(plugin_id: str, request: Request = None) -> dict[str, str]:
     """M8: 启用插件（持久化 + 加载）。"""
+    _require_admin(request)
     _validate_plugin_id(plugin_id)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
@@ -85,8 +96,9 @@ async def enable_plugin(plugin_id: str) -> dict[str, str]:
 
 
 @router.post("/{plugin_id}/disable")
-async def disable_plugin(plugin_id: str) -> dict[str, str]:
+async def disable_plugin(plugin_id: str, request: Request = None) -> dict[str, str]:
     """M8: 禁用插件（持久化 + 卸载）。"""
+    _require_admin(request)
     _validate_plugin_id(plugin_id)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
@@ -120,8 +132,9 @@ async def clear_plugin_errors(plugin_id: str = "") -> dict[str, object]:
 
 
 @router.delete("/{plugin_id}")
-async def unregister_plugin(plugin_id: str) -> dict[str, str]:
+async def unregister_plugin(plugin_id: str, request: Request = None) -> dict[str, str]:
     """P1-1: 注销插件 — 卸载 + 清理 PluginData（含 hook 与配置）。"""
+    _require_admin(request)
     _validate_plugin_id(plugin_id)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
@@ -200,6 +213,15 @@ async def put_plugin_config(plugin_id: str, request: Request) -> dict[str, objec
     if errors:
         raise HTTPException(status_code=400, detail={"message": "配置校验失败", "errors": errors})
 
+    # P5: secret 掩码回写防护——如果 PUT 值包含 ****（掩码标记），保留原加密值
+    from clipwright.plugins.config_types import mask_secret_value
+    _plugin = _loader.get(plugin_id)
+    if _plugin and hasattr(_plugin, 'config') and isinstance(_plugin.config, dict):
+        for fname, fdef in (data.get("fields") or {}).items():
+            if isinstance(fdef, dict) and isinstance(fdef.get("value"), str) and "****" in fdef["value"]:
+                orig_val = _plugin.config.get(fname)
+                if orig_val is not None:
+                    fdef["value"] = orig_val  # 保留原始加密值
     _loader.save_config(plugin_id, data)
     _loader.reload(plugin_id)
     return {"status": "ok", "plugin_id": plugin_id}
