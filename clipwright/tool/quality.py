@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 from pathlib import Path
@@ -10,13 +11,14 @@ from typing import Any, Optional
 from clipwright.config import logger
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
+from clipwright.tool.video import resolve_ffmpeg, resolve_ffprobe
 
 
 class BlackFrameDetectTool(BaseTool):
     """黑帧/全白帧检测 — 检查视频中是否有过暗或过亮的帧。"""
     name = "black_frame_detect"
     description = "检测视频中的黑帧/全白帧，返回异常帧的时间位置"
-    dependencies = ["ffmpeg", "ffprobe"]
+    dependencies = [resolve_ffmpeg(), "ffprobe"]
 
     async def execute(
         self,
@@ -28,8 +30,8 @@ class BlackFrameDetectTool(BaseTool):
         if not Path(video_path).exists():
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error="file not found")
         try:
-            result = subprocess.run(
-                ["ffmpeg", "-y", "-loglevel", "error", "-i", video_path,
+            result = await asyncio.to_thread(subprocess.run,
+                [resolve_ffmpeg(), "-y", "-loglevel", "error", "-i", video_path,
                  "-vf", f"blackdetect=d=0.5:pic_th={black_threshold}:pix_th={pixel_threshold}",
                  "-f", "null", "-"],
                 capture_output=True, text=True, timeout=120,
@@ -39,8 +41,8 @@ class BlackFrameDetectTool(BaseTool):
             black_segments = [float(d) for d in starts]
 
             # 检测全白（过曝）— T2: signalstats YAVG 替代全帧 ffprobe
-            probe = subprocess.run(
-                ["ffmpeg", "-y", "-loglevel", "error", "-i", video_path,
+            probe = await asyncio.to_thread(subprocess.run,
+                [resolve_ffmpeg(), "-y", "-loglevel", "error", "-i", video_path,
                  "-vf", "signalstats,metadata=print:key=lavfi.signalstats.YAVG",
                  "-f", "null", "-"],
                 capture_output=True, text=True, timeout=120,
@@ -86,8 +88,8 @@ class AudioSilenceDetectTool(BaseTool):
         if not Path(audio_path).exists():
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error="file not found")
         try:
-            result = subprocess.run(
-                ["ffmpeg", "-y", "-loglevel", "error", "-i", audio_path,
+            result = await asyncio.to_thread(subprocess.run,
+                [resolve_ffmpeg(), "-y", "-loglevel", "error", "-i", audio_path,
                  "-af", f"silencedetect=n={silence_threshold}dB:d={min_duration}",
                  "-f", "null", "-"],
                 capture_output=True, text=True, timeout=120,

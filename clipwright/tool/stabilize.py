@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import tempfile
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any, Optional
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
 from clipwright.tool.video import _ensure_output_path
+from clipwright.tool.video import resolve_ffmpeg, resolve_ffprobe
 
 
 class VideoStabilizeTool(BaseTool):
@@ -30,8 +32,8 @@ class VideoStabilizeTool(BaseTool):
         transforms = _ensure_output_path(None, "transforms_", ".trf")
         try:
             # Phase 1: 分析运动
-            detect = subprocess.run(
-                ["ffmpeg", "-y", "-i", input_path,
+            detect = await asyncio.to_thread(subprocess.run,
+                [resolve_ffmpeg(), "-y", "-i", input_path,
                  "-vf", f"vidstabdetect=shakiness={smoothing}:accuracy=15:result={transforms}",
                  "-f", "null", "-"],
                 capture_output=True, text=True, timeout=300,
@@ -43,8 +45,8 @@ class VideoStabilizeTool(BaseTool):
                 )
 
             # Phase 2: 应用稳定
-            result = subprocess.run(
-                ["ffmpeg", "-y", "-i", input_path,
+            result = await asyncio.to_thread(subprocess.run,
+                [resolve_ffmpeg(), "-y", "-i", input_path,
                  "-vf", f"vidstabtransform=input={transforms}:maxshift={max_shift}:crop=black",
                  "-c:a", "copy", out],
                 capture_output=True, text=True, timeout=300,

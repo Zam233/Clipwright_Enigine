@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from typing import Any, Optional
 
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
 from clipwright.tool.video import _ensure_output_path
+from clipwright.tool.video import resolve_ffmpeg, resolve_ffprobe
 
 
 class ChromaKeyTool(BaseTool):
@@ -27,8 +29,8 @@ class ChromaKeyTool(BaseTool):
     ) -> ToolExecResult:
         out = _ensure_output_path(output_path, "key_", ".mp4")
         try:
-            result = subprocess.run(
-                ["ffmpeg", "-y", "-i", input_path,
+            result = await asyncio.to_thread(subprocess.run,
+                [resolve_ffmpeg(), "-y", "-i", input_path,
                  "-vf", f"colorkey={color}:{similarity}:{blend}",
                  "-c:a", "copy", out],
                 capture_output=True, text=True, timeout=300,
