@@ -2168,7 +2168,7 @@ class RenderService:
                     inputs += ["-i", v["path"]]
                 chains = []
                 mix_inputs: list[str] = []
-                sc_source: str = ""
+                # 阶段 1：每路音源独立预处理链 [i:a]→[a{i}]
                 for i, v in enumerate(voices, start=1):
                     parts = []
                     # R9: atrim 用「源内偏移」（素材文件内的起点），adelay 用时间线
@@ -2197,29 +2197,42 @@ class RenderService:
                     if v["fade_out"] > 0 and v["dur"] > 0:
                         parts.append(f"afade=t=out:st={max(0, v['dur'] - v['fade_out'])}:d={v['fade_out']}")
                     parts.append(f"volume={v['volume']}")
-                    base = f"a{i}"
-                    chains.append(f"[{i}:a]{','.join(parts)}[{base}]")
-                    # D3: BGM 自动避让（ducking）——首个配音链路 asplit 出 sidechain
-                    # 源；BGM 链路经 sidechaincompress 在人声段自动压低（原实现
-                    # BGM 固定低音量压全程，人声间歇处音乐也被压平）。
-                    if v.get("is_voice") and not sc_source:
-                        chains.append(f"[{base}]asplit=2[scsrc][mix{i}]")
-                        sc_source = "scsrc"
-                        mix_inputs.append(f"mix{i}")
-                    elif v.get("is_bgm") and sc_source:
+                    chains.append(f"[{i}:a]{','.join(parts)}[a{i}]")
+
+                # 阶段 2：按角色路由（顺序无关）。D3 ducking：首个配音 asplit 出
+                # N 份侧链（每路 BGM 独占一份，asplit 输出必须全部被消费，否则
+                # ffmpeg 报 unconnected output —— 旧实现要求 BGM 排在人声之后，
+                # 常见顺序下 C11 必败静默回退单音源）。
+                voice_base = next((f"a{i}" for i, v in enumerate(voices, start=1)
+                                   if v.get("is_voice")), "")
+                bgm_bases = [f"a{i}" for i, v in enumerate(voices, start=1) if v.get("is_bgm")]
+                ducked_bgms: set[str] = set()
+                if voice_base and bgm_bases:
+                    taps = bgm_bases[:3]  # 侧链上限 3（正常场景 1 配音 + 1 BGM）
+                    split_out = "".join(f"[sc{k}]" for k in range(1, len(taps) + 1))
+                    chains.append(f"[{voice_base}]asplit={len(taps) + 1}[mixv]{split_out}")
+                    mix_inputs.append("mixv")
+                    for k, bb in enumerate(taps, start=1):
                         chains.append(
-                            f"[{base}][{sc_source}]sidechaincompress="
-                            f"threshold=0.03:ratio=4:attack=25:release=400[mix{i}]"
+                            f"[{bb}][sc{k}]sidechaincompress="
+                            f"threshold=0.03:ratio=4:attack=25:release=400[mix{bb}]"
                         )
-                        mix_inputs.append(f"mix{i}")
-                    else:
-                        mix_inputs.append(base)
+                        mix_inputs.append(f"mix{bb}")
+                        ducked_bgms.add(bb)
+                for i, v in enumerate(voices, start=1):
+                    base = f"a{i}"
+                    if v.get("is_voice") and voice_base:
+                        continue  # 已走 mixv
+                    if v.get("is_bgm") and base in ducked_bgms:
+                        continue  # 已走 sidechaincompress
+                    mix_inputs.append(base)
+
                 chains_mix_in = "".join(f"[{m}]" for m in mix_inputs)
                 chains.append(
                     f"{chains_mix_in}amix=inputs={len(mix_inputs)}:duration=first:normalize=0,"
                     f"loudnorm=I=-16:LRA=11:TP=-1.5[aout]"
                 )
-                await self._ff(inputs + [
+                r = await self._ff(inputs + [
                     "-filter_complex", ";".join(chains),
                     "-map", "0:v:0", "-map", "[aout]",
                     *(["-c:v", "copy"] if video_cached else
@@ -2230,13 +2243,18 @@ class RenderService:
                 if _is_valid_video(output_path):
                     logger.info("C11 真实混音成功: %d 音源 + LUFS 归一", len(voices))
                     return
+                # 可观测性：C11 失败 stderr 尾部进渲染日志（此前只记 warning，
+                # 失败原因如 unconnected output 无从排查）
+                self._final_ffmpeg_log.append(
+                    f"mix_audio(C11): 输出无效 {_sanitize_ffmpeg_error(r.stderr)}")
                 logger.warning("_mix_audio: C11 混音输出无效，回退单音源: %s", output_path)
             except Exception as e:
                 logger.warning("_mix_audio: C11 混音异常，回退单音源: %s", str(e)[:200])
 
-        # 回退：单音源直接混入
+        # 回退：单音源直接混入（优先人声——BGM 在前时 voices[0] 可能是音乐，
+        # 回退只保留一路时丢内容音频比丢伴奏更糟）
         if voices:
-            voice = voices[0]["path"]
+            voice = next((v["path"] for v in voices if v.get("is_voice")), voices[0]["path"])
             try:
                 await self._ff(["ffmpeg","-y","-loglevel","error",*(_hwaccel_args(encoder)),"-i",input_video,"-i",voice,
                                *(["-c:v","copy"] if video_cached else

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -42,7 +43,10 @@ async def upload_asset(file: UploadFile, project_id: str = Query("")) -> dict:
         raise HTTPException(status_code=400, detail="No file provided")
 
     manager = _get_manager(project_id or None)
-    ext = Path(file.filename).suffix or ".bin"
+    # 安全：扩展名来自客户端 filename——仅保留字母数字后缀（≤8 字符），防路径
+    # 字符/双扩展注入
+    raw_ext = Path(file.filename or "").suffix
+    ext = raw_ext if re.fullmatch(r"\.[A-Za-z0-9]{1,8}", raw_ext) else ".bin"
     tmp_dir = Path(tempfile.mkdtemp(prefix="asset_up_"))
     tmp = tmp_dir / f"upload{ext}"
     try:

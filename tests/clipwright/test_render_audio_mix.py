@@ -51,6 +51,49 @@ async def test_mix_audio_builds_multi_source_graph(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_mix_audio_ducking_order_independent(tmp_path: Path) -> None:
+    """D3 回归：BGM 在前、人声在后（时间线常见顺序）→ 侧链仍被消费，C11 成功。
+
+    旧实现 asplit 的 [scsrc] 仅在 BGM 排于人声之后才被消费，常见顺序下
+    ffmpeg 报 unconnected output → C11 必败静默回退单音源。
+    """
+    video = tmp_path / "video.mp4"
+    bgm = tmp_path / "bgm.m4a"
+    voice = tmp_path / "voice.wav"
+    for p in (video, bgm, voice):
+        p.write_bytes(b"x" * 64)
+    out = tmp_path / "out.mp4"
+
+    rs = RenderService(work_dir=tmp_path / "work")
+    captured: list[str] = []
+
+    async def fake_ff(cmd, **kwargs):
+        captured.append(" ".join(cmd))
+        out.write_bytes(b"mp4")
+        return type("R", (), {"returncode": 0})()
+
+    rs._ff = fake_ff  # type: ignore[method-assign]
+
+    segments = [
+        {"source_path": str(bgm), "volume": 0.3, "start_sec": 0, "duration_sec": 14,
+         "is_bgm": True},
+        {"source_path": str(voice), "volume": 0.9, "start_sec": 5, "duration_sec": 4,
+         "is_voice": True},
+    ]
+    await rs._mix_audio(str(video), segments, str(out), afp="", bfp="")
+
+    cmd = captured[0]
+    assert "asplit=" in cmd, "人声应 split 出侧链"
+    assert "sidechaincompress=" in cmd, "BGM 应经 ducking"
+    # asplit 的全部输出都被消费（无 unconnected）：sc1 恰好出现两次（定义+消费）
+    assert cmd.count("[sc1]") == 2
+    assert "[mixv]" in cmd
+    assert "amix=inputs=2" in cmd
+    # C11 成功不落失败日志
+    assert not any("mix_audio(C11)" in c for c in captured[1:]), captured
+
+
+@pytest.mark.asyncio
 async def test_mix_audio_single_source_fallback(tmp_path: Path) -> None:
     """单音源 → 回退简单混入（不构造 amix）。"""
     video = tmp_path / "video.mp4"

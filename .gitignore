@@ -89,3 +89,6 @@ _xtest/
 .mimosa/
 .v2c/
 .zcode/
+
+# runtime data (MG generations / render caches)
+clipwright/animation/mg/generations/

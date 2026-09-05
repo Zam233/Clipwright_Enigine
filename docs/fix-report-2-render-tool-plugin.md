@@ -579,3 +579,18 @@ X1 蒙版枚举：后端兼容 `rect`（=rectangle）别名，`ellipse` 经 geq 
 - **M6 generation_id 预览接线**：`_build_success` 成功路径持久化到 MGStorage；`GET /api/animation/mg/generations`（列表）/`/{generation_id}`（全文，ID 白名单校验）；前端 MgPreviewPage「最近生成」区 + API client（mgGenerations/mgGeneration），点选即经既有 /preview 渲染回看；管线 clip metadata 已携带 mg_generation_id。
 
 **最终回归（2026-09-06，第二轮）**：后端 `python -m pytest tests -q` = **1379 passed**；前端 `npx tsc --noEmit` ✓。
+
+### 端到端冒烟 + 完整安全审计（2026-09-06，第三轮）— 已执行
+
+**E2E 真实渲染冒烟（`scripts/e2e_smoke.py`，可重复执行）**：本机全要素可用（ffmpeg 8.1 full / Hyperframes chrome-headless-shell 冷启动 4s 后可用 / Mongo 运行中）。脚本合成源素材（testsrc2/sine），构造时间线：3 主视频（2×xfade 转场 wipeleft/fade）+ 静态 transform + opacity 关键帧（clip_local 标记）+ PIP 轨 + 双字幕 + LLM MG 片段（内置模板同源 HTML）+ BGM（ducking 角色）+ 变速人声（atempo 1.5），驱动 RenderService 全管线后校验：
+
+- 时长 **14.00s** 精确命中预期（3×5s − 2×0.5s 转场重叠，R1 校正生效）；视频/音频双流 ✓；零源降级；转场后帧与字幕时段帧亮度正常（非黑屏）；NVENC 自动启用；链式 MG 叠加 1 input 成功；`--no-mg` 变体同样通过。
+
+**冒烟暴露并修复的真实 bug（C11 ducking 顺序依赖）**：`_mix_audio` 的 BGM 自动避让用 `asplit` 从人声分出侧链，但仅当 **BGM 排在人声之后**才被消费——常见时间线顺序（BGM 在前）下 ffmpeg 报 `asplit output unconnected`，**C11 多源混音必然失败并静默回退单音源**（丢失 BGM 或人声其一）。修复：两阶段路由（每源独立预处理链 → 按角色分配 sidechain tap），顺序无关，侧链上限 3；人声/bgm 任一缺失时自动退化为纯 amix。另修：单源回退优先保留人声（此前 voices[0] 可能是 BGM，丢内容音频）；C11 失败 stderr 尾部写入 ffmpeg_log（此前不可排查）。回归测试 +1（`test_mix_audio_ducking_order_independent`）。
+
+**Mimosa 深度审计（scan `scan-2026-09-05T20-15-42`，seal `sha256:b99c3ea5…`）**：21 项发现，分诊如下——
+
+- **真修 4 项**：`services/edl.py` FCPXML 解析拒绝含 DTD/ENTITY 的 XML（实体扩张）；`tool/subtitle.py` + `tool/text_video.py` 的 `tempfile.mktemp` 竞态名 → `mkstemp`；`api/asset.py` 上传扩展名白名单（`.[A-Za-z0-9]{1,8}`，防双扩展/路径字符）。
+- **误报 7 项（已有校验）**：persona/repository 与 loader 的 ID 均经 `validate_id`/`is_safe_id`（拒 `../`）；remote_render 的 `.part` 名含 uuid；worker/api 扩展名已 sanitize；`utils/concat_list` 有 resolve+is_file 校验；`frame_extractor` 随机数仅用于抽样时机非安全用途。
+- **接受风险 6 项**：`scripts/diag_*.py` 3 项 SSRF 为本地诊断脚本（请求固定 localhost:8080，非服务端点）；`plugins/voice_ext/main.py` 2 项临时文件名为固定前缀+os.urandom（无用户输入路径成分）；`_local_backup_20260803/` 目录内 2 项为历史备份副本（非运行代码，建议移出仓库——未经确认未动）。
+- 覆盖缺口致状态 `inconclusive`（非阻断）：部分分析阶段未完整覆盖，核心源码静态结论如上。

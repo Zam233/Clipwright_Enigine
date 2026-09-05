@@ -11,6 +11,15 @@ from typing import Any, Optional
 
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
+
+
+def _mkstemp_txt() -> str:
+    """安全临时文本文件（mkstemp 原子创建，防 mktemp 可预测名竞态）。"""
+    fd, path = tempfile.mkstemp(suffix=".txt")
+    import os
+    os.close(fd)
+    return path
+
 from clipwright.tool.video import _ensure_output_path
 from clipwright.tool.video import resolve_ffmpeg
 from clipwright.config import logger
@@ -37,7 +46,7 @@ class GenerateTextVideoTool(BaseTool):
         out = _ensure_output_path(output_path, "textvid_", ".mp4")
         try:
             # 先写文本到文件（供 FFmpeg 的 textfile 读取）
-            text_file = Path(tempfile.mktemp(suffix=".txt"))
+            text_file = Path(_mkstemp_txt())
             text_file.write_text(text[:200], encoding="utf-8")
 
             # 生成纯色背景视频，用 ass 字幕叠加文字（避免 drawtext 的参数转义问题）

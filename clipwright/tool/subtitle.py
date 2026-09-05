@@ -12,6 +12,15 @@ from typing import Any, Optional
 from clipwright.config import logger
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
+
+
+def _mkstemp_txt() -> str:
+    """安全临时文本文件（mkstemp 原子创建，防 mktemp 可预测名竞态）。"""
+    fd, path = tempfile.mkstemp(suffix=".txt")
+    import os
+    os.close(fd)
+    return path
+
 from clipwright.tool.video import _ensure_output_path
 from clipwright.tool.video import resolve_ffmpeg
 
@@ -46,7 +55,7 @@ class SubtitleBurnTool(BaseTool):
 
         try:
             # 用 drawtext 逐条叠加（textfile 模式）
-            text_file = Path(tempfile.mktemp(suffix=".txt"))
+            text_file = Path(_mkstemp_txt())
             try:
                 # 只写第一条字幕（drawtext 不支持多段文本交替的 textfile）
                 # 对多段字幕用多个 drawtext filter

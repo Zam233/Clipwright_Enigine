@@ -91,6 +91,11 @@ def to_edl(clips: list[dict[str, Any]], fps: float = 30.0) -> str:
 def parse_fcpxml(content: str) -> list[dict[str, Any]]:
     """解析 FCPXML 为 Timeline clip 列表。"""
     clips: list[dict[str, Any]] = []
+    # 安全：拒绝带 DTD/实体的 XML——标准库 ElementTree 会展开内部实体，
+    # 恶意文件可借实体扩张耗尽内存（FCPXML 正常文件无需 DTD）
+    head = content[:4096].lstrip()
+    if "<!DOCTYPE" in head or "<!ENTITY" in head:
+        raise ValueError("不支持包含 DTD/实体的 XML（疑似实体扩张攻击）")
     try:
         root = ET.fromstring(content)
         ns = {"fcpxml": "http://www.apple.com/FCPXML/2007/"}
