@@ -38,19 +38,21 @@ class BlackFrameDetectTool(BaseTool):
             starts = re.findall(r"black_duration:([\d.]+)", result.stderr or "")
             black_segments = [float(d) for d in starts]
 
-            # 检测全白（过曝）
+            # 检测全白（过曝）— T2: signalstats YAVG 替代全帧 ffprobe
             probe = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_entries",
-                 "frame=pts_time,metadata", "-of", "json", video_path],
-                capture_output=True, text=True, timeout=30,
+                ["ffmpeg", "-y", "-loglevel", "error", "-i", video_path,
+                 "-vf", "signalstats,metadata=print:key=lavfi.signalstats.YAVG",
+                 "-f", "null", "-"],
+                capture_output=True, text=True, timeout=120,
             )
             white_segments = []
             try:
-                data = json.loads(probe.stdout)
-                for frm in (data.get("frames") or []):
-                    t = float(frm.get("pts_time", 0))
-                    white_segments.append(t)
-            except (ValueError, json.JSONDecodeError):
+                import re as _re
+                pat = _re.compile(r"pts_time:([\d.]+)\s*\n?.*?YAVG=([\d.]+)")
+                for t, yavg in pat.findall(probe.stderr or ""):
+                    if float(yavg) > 250:
+                        white_segments.append(float(t))
+            except Exception:
                 pass
 
             issues = []

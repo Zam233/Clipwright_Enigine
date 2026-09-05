@@ -28,7 +28,7 @@ class AudioExtractTool(BaseTool):
         ext = ext_map.get(format, ".wav")
         out = _ensure_output_path(output_path, "audio_", ext)
         try:
-            result = _ffmpeg("-i", input_path, "-vn", "-acodec", _codec_for(format), out)
+            result = await _ffmpeg("-i", input_path, "-vn", "-acodec", _codec_for(format), out)
             if result.returncode != 0:
                 return ToolExecResult(
                     status=ToolStatus.ERROR,
@@ -60,19 +60,17 @@ class BPMDetectTool(BaseTool):
         input_path: str,
         **kwargs: Any,
     ) -> ToolExecResult:
+        # T11: BPM 检测未实现真实算法——如实返回 fallback 标记供调用方区分
         try:
-            # 使用 ffmpeg 的 astats/volume 检测 + 简单 BPM 估计
-            result = _ffmpeg(
+            result = await _ffmpeg(
                 "-i", input_path,
                 "-af", "astats=measure_perchannel=0:length=0.05",
                 "-f", "null", "-",
             )
-            # 如果 ffmpeg 正常跑完但没输出 BPM，返回合理默认值
-            bpm = 120
             return ToolExecResult(
                 status=ToolStatus.SUCCESS,
                 tool_name=self.name,
-                output={"bpm": bpm, "input_path": input_path, "method": "default"},
+                output={"bpm": 120, "input_path": input_path, "method": "astats_fallback"},
             )
         except FileNotFoundError:
             return ToolExecResult(
@@ -104,7 +102,7 @@ class AudioReplaceTool(BaseTool):
             if mix:
                 # 混音：用 amix 过滤器
                 filter_complex = "[1:a]volume=1.0[a1];[0:a][a1]amix=inputs=2:duration=first"
-                result = _ffmpeg(
+                result = await _ffmpeg(
                     "-i", video_path, "-i", audio_path,
                     "-filter_complex", filter_complex,
                     "-c:v", "copy", "-c:a", "aac", out,
@@ -112,7 +110,7 @@ class AudioReplaceTool(BaseTool):
             else:
                 # 替换：直接用新音频
                 audio_input = f"[1:a]{vol_filter}" if vol_filter else "[1:a]"
-                result = _ffmpeg(
+                result = await _ffmpeg(
                     "-i", video_path, "-i", audio_path,
                     "-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0",
                     "-c:a", "aac", "-shortest", out,
@@ -162,13 +160,13 @@ class AudioNormalizeTool(BaseTool):
                     capture_output=True, text=True, timeout=120,
                 )
                 # 第二遍: 应用归一化
-                result = _ffmpeg(
+                result = await _ffmpeg(
                     "-i", input_path,
                     "-af", "loudnorm=linear=true",
                     "-c:a", "pcm_s16le", out,
                 )
             elif mode == "peak":
-                result = _ffmpeg(
+                result = await _ffmpeg(
                     "-i", input_path,
                     "-af", "volume=1.0:precision=double",
                     "-c:a", "pcm_s16le", out,

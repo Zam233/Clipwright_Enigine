@@ -34,7 +34,7 @@ class TypewriterAnimationTool(BaseTool):
         try:
             if input_path and input_path.strip():
                 # 在已有视频上叠加文字
-                result = _ffmpeg(
+                result = await _ffmpeg(
                     "-i", input_path,
                     "-vf", f"drawtext=text='{text}':fontsize={font_size}:fontcolor={color}:x=(w-text_w)/2:y=(h-text_h)/2",
                     "-c:a", "copy", out,
@@ -42,7 +42,7 @@ class TypewriterAnimationTool(BaseTool):
             else:
                 # 生成纯色背景 + 文字的短视频（5 秒）
                 escaped = text.replace(":", "\\:").replace("'", "'\\\\''")
-                result = _ffmpeg(
+                result = await _ffmpeg(
                     "-f", "lavfi", "-i", f"color=c=#1a1a1a:s=1920x1080:d=5",
                     "-vf", f"drawtext=text='{escaped}':fontsize={font_size}:fontcolor={color}:x=(w-text_w)/2:y=(h-text_h)/2",
                     "-c:v", "libx264", "-pix_fmt", "yuv420p", out,

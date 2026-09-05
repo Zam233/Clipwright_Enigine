@@ -29,14 +29,25 @@ class ColorCorrectTool(BaseTool):
     ) -> ToolExecResult:
         out = _ensure_output_path(output_path, "cc_", ".mp4")
         try:
-            # FFmpeg eq filter: brightness, contrast, saturation, gamma, hue
-            eq_filter = (
-                f"eq=brightness={brightness}:contrast={contrast}"
-                f":saturation={saturation}:gamma={gamma}:hue={hue}"
-            )
+            # T3: hue 不属于 eq 滤镜——拆为独立 hue 滤镜串联
+            filters = []
+            eq_parts = []
+            if brightness != 0:
+                eq_parts.append(f"brightness={brightness}")
+            if contrast != 1:
+                eq_parts.append(f"contrast={contrast}")
+            if saturation != 1:
+                eq_parts.append(f"saturation={saturation}")
+            if gamma != 1:
+                eq_parts.append(f"gamma={gamma}")
+            if eq_parts:
+                filters.append(f"eq={':'.join(eq_parts)}")
+            if hue != 0:
+                filters.append(f"hue=h={hue}")
+            vf = ",".join(filters) if filters else "null"
             result = subprocess.run(
                 ["ffmpeg", "-y", "-i", input_path,
-                 "-vf", eq_filter,
+                 "-vf", vf,
                  "-c:a", "copy", out],
                 capture_output=True, text=True, timeout=300,
             )

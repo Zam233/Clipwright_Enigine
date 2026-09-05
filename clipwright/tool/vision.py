@@ -28,7 +28,7 @@ class SceneDetectTool(BaseTool):
         **kwargs: Any,
     ) -> ToolExecResult:
         try:
-            result = _ffmpeg(
+            result = await _ffmpeg(
                 "-i", input_path,
                 "-filter:v", f"select='gt(scene,{threshold})',showinfo",
                 "-f", "null", "-",
