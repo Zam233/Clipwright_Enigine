@@ -27,6 +27,7 @@ from typing import Any, Callable, Optional
 from clipwright.config import logger
 from clipwright.schema.timeline import Timeline
 from clipwright.tool.design import color_to_drawtext, escape_drawtext_text
+from clipwright.utils.keyframes_expr import normalize_keyframe_times, property_expression
 
 # 任务 31：字幕新样式字段（与 schema/timeline.py Clip 对齐）。
 # 渲染时直接从 Clip 读取并合并进传给 TextStyle.from_dict 的 style dict；
@@ -715,9 +716,10 @@ def _prune_trim_cache_dir() -> None:
 _prune_trim_cache_dir()
 
 def _trim_cache_key(src: str, offset: float, dur: float, width: int, height: int,
-                    speed: float = 1.0, image_fit: str = "", transform: str = "") -> str:
-    # D1/D2/V4: 速度、填充模式与静态变换影响输出内容，必须进缓存键
-    raw = f"{src}|{offset:.2f}|{dur:.2f}|{width}x{height}|{speed:.3f}|{image_fit}|{transform}"
+                    speed: float = 1.0, image_fit: str = "", transform: str = "",
+                    kfs: str = "") -> str:
+    # D1/D2/V4/V3: 速度、填充模式、静态变换与关键帧都影响输出内容，必须进缓存键
+    raw = f"{src}|{offset:.2f}|{dur:.2f}|{width}x{height}|{speed:.3f}|{image_fit}|{transform}|{kfs}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -1155,7 +1157,9 @@ class RenderService:
                     font_color=clip.font_color or "#ffffff", font=clip.font or "",
                     position=pos, offset_y=offset_y, style=style,
                     anim_type=meta.get("anim_type", ""), renderer=meta.get("renderer", "drawtext"),
-                    category=category, _track_idx=track_idx, keyframes=clip.keyframes or [])
+                    category=category, _track_idx=track_idx, keyframes=clip.keyframes or [],
+                    # V3: 关键帧时间基标记（前端 exportTimeline 写 clip_local）
+                    kf_time_base=meta.get("kf_time_base"))
 
     @staticmethod
     def _extract_animation_overlay(clip, track_idx=0):
@@ -1222,9 +1226,19 @@ class RenderService:
                 _tr = 0.0
             _has_transform = (abs(_ts - 1.0) > 1e-3 or abs(_tr) > 1e-3
                               or abs(_tx) > 1e-4 or abs(_ty) > 1e-4)
+            # V3: 关键帧归一化到片段相对秒（前端 clip_local 标记 / 管线绝对秒启发式）
+            _kfs_raw = seg.get("keyframes") or []
+            _kf_marker = (seg.get("metadata") or {}).get("kf_time_base")
+            _kfs = normalize_keyframe_times(_kfs_raw, dur, seg.get("start_sec", 0) or 0.0,
+                                            time_base_marker=_kf_marker)
+            _kfs_digest = ""
+            if _kfs_raw:
+                _kfs_digest = hashlib.sha256(
+                    json.dumps(_kfs_raw, sort_keys=True, default=str).encode()).hexdigest()[:16]
             cache_key = _trim_cache_key(src, seg.get("source_offset", 0), dur, width, height,
                                         speed, image_fit,
-                                        transform=f"{_tx:.4f},{_ty:.4f},{_ts:.4f},{_tr:.4f}" if _has_transform else "")
+                                        transform=f"{_tx:.4f},{_ty:.4f},{_ts:.4f},{_tr:.4f}" if _has_transform else "",
+                                        kfs=_kfs_digest)
             with _trim_cache_lock:
                 cached = _trim_cache.get(cache_key)
                 if cached:
@@ -1236,11 +1250,13 @@ class RenderService:
             # R8: 先写临时名再原子替换——并发渲染同 key 不再互写半截文件
             out_tmp = out + ".part.mp4"
             try:
-                # D1: speed≠1 真实变速——原实现只按速度改时长并用 stream_loop
-                # 循环填充，播放速度不变（setpts 只存在于 tool/speed.py，未接入
-                # 时间线渲染）。trim 输出为 -an 无音轨，仅视频 setpts 即可；
-                # stream_loop 保留以在变速后仍能填满目标时长。
-                speed_prefix = f"setpts=PTS/{speed:.4f}," if abs(speed - 1.0) > 0.01 else ""
+                # V3c: 关键帧变速——有 speed 关键帧时走分段恒速近似（trim+concat），
+                # 全局 setpts 前缀跳过；无关键帧保持 D1 单段 setpts 路径
+                _kf_speed_expr = property_expression(_kfs, "speed", speed) if _kfs else None
+                if _kf_speed_expr:
+                    speed_prefix = ""
+                else:
+                    speed_prefix = f"setpts=PTS/{speed:.4f}," if abs(speed - 1.0) > 0.01 else ""
                 # D2: image_fit 落地——COVER=裁满（increase+crop），CONTAIN=信箱
                 # （decrease+pad，与原行为一致）；原实现两模式都走 pad 分支。
                 if image_fit == "contain":
@@ -1270,15 +1286,11 @@ class RenderService:
                     vf += (",format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
                            "a='if(lt(pow(X-(W/2),2)/pow(W/2,2)+pow(Y-(H/2),2)/pow(H/2,2),1),255,0)'")
 
-                kfs = seg.get("keyframes", [])
-                if kfs:
-                    parts = []
-                    for kf in kfs:
-                        t = kf.get("time", 0); op = kf.get("properties", {}).get("opacity", 1.0)
-                        if op < 1.0 and dur > 0 and t < dur:
-                            parts.append(f"between(t,{t},{t+0.1})*{op}+not(between(t,{t},{t+0.1}))")
-                    if parts:
-                        vf += f",format=rgba,colorchannelmixer=aa={'+'.join(parts)}"
+                # V3: opacity 关键帧 → 缓动感知分段插值表达式（替换旧 0.1s 窗口近似，
+                # 旧近似多关键帧时 alpha 叠加越界闪烁）
+                _kf_op = property_expression(_kfs, "opacity", 1.0) if _kfs else None
+                if _kf_op:
+                    vf += f",format=rgba,colorchannelmixer=aa={_kf_op}"
 
                 # 视频特效滤镜 (fx_*)
                 fx_parts = []
@@ -1304,17 +1316,77 @@ class RenderService:
                 if fx_parts:
                     vf += "," + ",".join(fx_parts)
 
-                # V4: 静态变换——scale/rotate 绕中心（与预览 Canvas 语义一致），
-                # translate 归一化偏移 × 画幅；以黑底画布 overlay 承载，越界裁切
-                if _has_transform:
-                    sw = max(2, int(width * abs(_ts)) // 2 * 2)
-                    sh = max(2, int(height * abs(_ts)) // 2 * 2)
-                    seg_chain = f"{vf},scale={sw}:{sh},rotate={_tr:.4f}*PI/180:c=black:ow={sw}:oh={sh}"
-                    ox = int(round((width - sw) / 2 + _tx * width))
-                    oy = int(round((height - sh) / 2 + _ty * height))
-                    fc = (f"color=c=black:s={width}:{height}:r={fps}:d={dur:.4f}[bg];"
-                          f"[0:v]{seg_chain}[segv];"
-                          f"[bg][segv]overlay=x={ox}:y={oy}:eof_action=pass[vout]")
+                # V3: 关键帧 transform（translate/scale，画幅比例单位，静态值为缺省
+                # 基线）——经 overlay/scale eval=frame 表达式逐帧求值；kf rotate 不
+                # 支持（仅预览），静态 rotate 保持 V4 行为
+                _kf_tx = property_expression(_kfs, "translate_x", _tx) if _kfs else None
+                _kf_ty = property_expression(_kfs, "translate_y", _ty) if _kfs else None
+                _kf_sc = property_expression(_kfs, "scale_x", _ts) if _kfs else None
+                _has_kf_transform = bool(_kf_tx or _kf_ty or _kf_sc)
+
+                # V3c: 分段恒速近似——speed 关键帧区间取平均速度，源区间按
+                # S(t)=∫v 累计（含 source_offset 基准）
+                pieces: list[tuple[float, float, float]] = []
+                if _kf_speed_expr:
+                    spd_pts = sorted(
+                        (float(kf.get("time", 0) or 0), float(kf["properties"]["speed"]))
+                        for kf in _kfs if "speed" in (kf.get("properties") or {})
+                    )
+                    if spd_pts:
+                        if spd_pts[0][0] > 1e-4:
+                            spd_pts.insert(0, (0.0, speed))
+                        if spd_pts[-1][0] < dur - 1e-4:
+                            spd_pts.append((dur, spd_pts[-1][1]))
+                        src_pos = float(seg.get("source_offset", 0) or 0)
+                        for (t0, v0), (t1, v1) in zip(spd_pts, spd_pts[1:]):
+                            if t1 - t0 <= 1e-4:
+                                continue
+                            v_avg = max(0.1, (max(0.1, v0) + max(0.1, v1)) / 2)
+                            pieces.append((src_pos, src_pos + v_avg * (t1 - t0), v_avg))
+                            src_pos += v_avg * (t1 - t0)
+
+                _needs_fc = _has_transform or _has_kf_transform or pieces
+                if _needs_fc:
+                    body = vf
+                    overlay_spec: tuple[str, str, str] | None = None
+                    if _has_kf_transform:
+                        sc_e = _kf_sc or (f"{_ts:.4f}" if abs(_ts - 1.0) > 1e-3 else None)
+                        tx_e = _kf_tx or (f"{_tx:.4f}" if abs(_tx) > 1e-4 else None)
+                        ty_e = _kf_ty or (f"{_ty:.4f}" if abs(_ty) > 1e-4 else None)
+                        if sc_e:
+                            body += f",scale=w='iw*({sc_e})':h='ih*({sc_e})':eval=frame"
+                        if abs(_tr) > 1e-3:
+                            body += f",rotate={_tr:.4f}*PI/180:c=black"
+                        ox_e = f"(main_w-overlay_w)/2+({tx_e})*main_w" if tx_e else "(main_w-overlay_w)/2"
+                        oy_e = f"(main_h-overlay_h)/2+({ty_e})*main_h" if ty_e else "(main_h-overlay_h)/2"
+                        overlay_spec = ("expr", ox_e, oy_e)
+                    elif _has_transform:
+                        # V4: 静态变换——scale/rotate 绕中心，translate × 画幅
+                        sw = max(2, int(width * abs(_ts)) // 2 * 2)
+                        sh = max(2, int(height * abs(_ts)) // 2 * 2)
+                        body += f",scale={sw}:{sh},rotate={_tr:.4f}*PI/180:c=black:ow={sw}:oh={sh}"
+                        ox = int(round((width - sw) / 2 + _tx * width))
+                        oy = int(round((height - sh) / 2 + _ty * height))
+                        overlay_spec = ("static", str(ox), str(oy))
+                    chains: list[str] = []
+                    if pieces:
+                        chains.append(f"[0:v]{body}[pre0]")
+                        for i, (s0, s1, v_i) in enumerate(pieces):
+                            chains.append(
+                                f"[pre0]trim=start={s0:.4f}:end={s1:.4f},"
+                                f"setpts=(PTS-START)/{v_i:.4f}[pc{i}]")
+                        concat_in = "".join(f"[pc{i}]" for i in range(len(pieces)))
+                        chains.append(f"{concat_in}concat=n={len(pieces)}:v=1:a=0[segv]")
+                    else:
+                        chains.append(f"[0:v]{body}[segv]")
+                    if overlay_spec:
+                        kind, a, b = overlay_spec
+                        chains.append(f"color=c=black:s={width}:{height}:r={fps}:d={dur:.4f}[bg]")
+                        if kind == "expr":
+                            chains.append(f"[bg][segv]overlay=x='{a}':y='{b}':eof_action=pass[vout]")
+                        else:
+                            chains.append(f"[bg][segv]overlay=x={a}:y={b}:eof_action=pass[vout]")
+                    fc = ";".join(chains)
                     cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)),
                            "-ss", str(seg.get("source_offset", 0)),
                            "-stream_loop", "-1", "-i", src, "-t", str(dur),
@@ -1510,7 +1582,7 @@ class RenderService:
         """
         if _caption_renderer() == "drawtext":
             return await self._apply_text_concat_drawtext(video, overlays, encoder, preset,
-                                                          progress_callback)
+                                                          progress_callback, width=width, height=height)
         return await self._apply_text_ass(video, overlays, encoder, preset, progress_callback,
                                           width=width, height=height)
 
@@ -1598,14 +1670,15 @@ class RenderService:
                 await progress_callback("text", pct, f"烧录 {done}/{len(dialogues)} 条字幕")
         return current
 
-    async def _apply_text_concat_drawtext(self, video, overlays, encoder, preset, progress_callback=None):
+    async def _apply_text_concat_drawtext(self, video, overlays, encoder, preset, progress_callback=None,
+                                          width=1920, height=1080):
         """将 drawtext filter 叠加到视频（单次 re-encode）。旧路径，仅 fallback 使用。"""
         from clipwright.tool.design import TextStyle
         filters = []
         for ov in overlays:
             if ov.get("renderer") == "hyperframes" or ov.get("diagram_params"):
                 continue
-            f = self._build_drawtext_filter(ov)
+            f = self._build_drawtext_filter(ov, width=width, height=height)
             if f:
                 filters.append(f)
         if not filters:
@@ -1859,7 +1932,7 @@ class RenderService:
 
     # ── drawtext 构建（同原版） ──────────────────
 
-    def _build_drawtext_filter(self, ov):
+    def _build_drawtext_filter(self, ov, width: int = 0, height: int = 0):
         from clipwright.tool.design import TextStyle
         # 生产加固 1.6：不再硬截断 100 字；长文本在静态路径自动拆分顺序窗口
         text = (ov.get("text") or "").strip()
@@ -1899,7 +1972,12 @@ class RenderService:
             # 超宽文本 → 降级为静态文字（fall through below）
 
         if kfs and len(kfs) >= 2 and len(text) <= 1000:
-            return self._build_kf_drawtext(text, ts, start, dur, kfs, font_arg)
+            # V3: kf_time_base 标记区分来源——前端导出（clip_local）translate 为
+            # 画幅比例；管线遗留（无标记）为像素
+            return self._build_kf_drawtext(text, ts, start, dur, kfs, font_arg,
+                                           marker=ov.get("kf_time_base"),
+                                           frame_w=width or 0,
+                                           frame_h=height or 0)
         # 生产加固 1.6：长文本 → 按字数比例拆成顺序 enable 窗口的多 drawtext
         chunks = _split_long_text(text)
         if len(chunks) > 1:
@@ -1922,10 +2000,18 @@ class RenderService:
         return base
 
     @staticmethod
-    def _build_kf_drawtext(text, ts, start_sec, duration_sec, keyframes, font_arg=""):
+    def _build_kf_drawtext(text, ts, start_sec, duration_sec, keyframes, font_arg="",
+                           marker: str | None = None, frame_w: int = 0, frame_h: int = 0):
+        from clipwright.utils.keyframes_expr import normalize_keyframe_times, property_expression
         if not keyframes: return ""
-        times = [kf["time"] for kf in keyframes]
-        s, e = min(times), max(times)
+        # V3: 时间基归一化（前端 clip_local / 管线 absolute → 片段相对秒），
+        # 表达式以成片时间轴 t 求值，整体偏移 +start_sec；easing 按段携带生效
+        norm = normalize_keyframe_times(keyframes, duration_sec, start_sec,
+                                        time_base_marker=marker)
+        if len(norm) < 2:
+            return ""
+        times = [kf["time"] for kf in norm]
+        s, e = min(times) + start_sec, max(times) + start_sec
         safe = escape_drawtext_text(text)
         pos = {"center": "(w-text_w)/2", "bottom": "(w-text_w)/2", "top": "(w-text_w)/2",
                "left": "20", "right": "w-text_w-20", "top_left": "20",
@@ -1937,21 +2023,20 @@ class RenderService:
         bx = pos.get(ts.position, "(w-text_w)/2")
         by = ymp.get(ts.position, "(h-text_h)/2")
 
-        def _ip(key, d):
-            vs = [(kf["time"], kf["properties"][key]) for kf in keyframes if key in kf.get("properties", {})]
-            if not vs: return str(d)
-            ex = str(vs[-1][1])
-            for i in range(len(vs)-2, -1, -1):
-                t0, v0 = vs[i]; t1, v1 = vs[i+1]
-                ex = f"if(lt(t,{t1}),{v0}+({v1}-{v0})*(t-{t0})/({t1}-{t0}),{ex})"
-            return ex
-
-        a, xo, yo = _ip("opacity","1"), _ip("translate_x","0"), _ip("translate_y","0")
-        sc = _ip("scale_x","1")
-        fs = f"({ts.font_size})*({sc})" if sc != "1" else str(ts.font_size)
+        # V3: 缓动感知的分段插值表达式（前端 translate 为画幅比例 → ×w/×h；
+        # 管线像素 translate 直接加）。window 缺失时回退 1，比例单位退化为像素
+        unit_x = f"*{frame_w}" if (marker == "clip_local" and frame_w) else ""
+        unit_y = f"*{frame_h}" if (marker == "clip_local" and frame_h) else ""
+        a = property_expression(norm, "opacity", 1.0, t_offset=start_sec) or "1"
+        xo = property_expression(norm, "translate_x", 0.0, t_offset=start_sec)
+        yo = property_expression(norm, "translate_y", 0.0, t_offset=start_sec)
+        sc = property_expression(norm, "scale_x", 1.0, t_offset=start_sec)
+        xo_s = f"(({xo})){unit_x}" if xo else "0"
+        yo_s = f"(({yo})){unit_y}" if yo else "0"
+        fs = f"({ts.font_size})*({sc})" if sc else str(ts.font_size)
         enable = f"between(t,{s},{max(e,start_sec+duration_sec)})"
         parts = [f"drawtext=text='{safe}'{font_arg}", f"fontsize={fs}", f"fontcolor={color_to_drawtext(ts.font_color)}",
-                 f"x={bx}+({xo})", f"y={by}+({yo})", f"alpha={a}",
+                 f"x={bx}+({xo_s})", f"y={by}+({yo_s})", f"alpha={a}",
                  # R4: 与其余 key=value 一致，不加前导冒号——旧写法经 ":".join 产生
                  # "alpha=1.0::enable=…"，ffmpeg 报 "No option name near ':enable'"
                  # 导致整批 drawtext 失败、文字静默消失。

@@ -260,8 +260,9 @@ class TestKeyframedDrawtextFilter:
         assert "borderw=6" in underlay
         assert "fontcolor=0x00FFFF@0.6" in underlay
         assert "fontcolor=0xffffff" in main
-        assert "enable='between(t,0.0,4.0)'" in underlay
-        assert "enable='between(t,0.0,4.0)'" in main
+        # V3: kf 时间归一化为片段相对秒（0..2）+ start_sec=1.0 → 窗口 1.0..max(3.0,4.0)
+        assert "enable='between(t,1.0,4.0)'" in underlay
+        assert "enable='between(t,1.0,4.0)'" in main
 
     def test_shadow(self) -> None:
         ts = TextStyle.from_dict({"font_color": "#ffffff", "shadow_x": 4.0, "shadow_y": -4.0,
@@ -287,6 +288,35 @@ class TestKeyframedDrawtextFilter:
         assert f.count("drawtext=") == 1
         assert "borderw=" not in f
         assert "shadowx=" not in f
+
+    def test_clip_local_marker_fraction_units_and_easing(self) -> None:
+        """V3: clip_local 标记 → translate 为画幅比例（×宽/×高）+ 缓动表达式。"""
+        ts = TextStyle.from_dict({"font_color": "#ffffff", "position": "bottom"})
+        kfs = [
+            {"time": 0, "properties": {"opacity": 0, "translate_y": 0.25}},
+            {"time": 0.5, "properties": {"opacity": 1, "translate_y": 0}, "easing": "ease-out-cubic"},
+        ]
+        f = RenderService._build_kf_drawtext("Hi", ts, 2.0, 4.0, kfs,
+                                             font_arg=":fontfile=_fonts/msyh.ttc",
+                                             marker="clip_local", frame_w=1920, frame_h=1080)
+        assert "*1920" in f or "*1080" in f, "比例 translate 应乘画幅"
+        assert "pow(" in f, "缓动应展开为 ffmpeg 表达式"
+        # alpha 关键帧插值存在
+        assert "alpha=if(" in f
+
+    def test_pipeline_pixel_units_unmarked(self) -> None:
+        """无标记（管线遗留）→ translate 像素直加，不乘画幅。"""
+        ts = TextStyle.from_dict({"font_color": "#ffffff", "position": "bottom"})
+        kfs = [
+            {"time": 0, "properties": {"translate_y": 30}},
+            {"time": 0.5, "properties": {"translate_y": 0}},
+        ]
+        f = RenderService._build_kf_drawtext("Hi", ts, 0.0, 4.0, kfs,
+                                             font_arg=":fontfile=_fonts/msyh.ttc",
+                                             frame_w=1920, frame_h=1080)
+        assert "*1920" not in f and "*1080" not in f
+        # 像素值直加（不乘画幅）：插值表达式首值为 30
+        assert "if(lt(t,0),30," in f
 
 
 class TestBoldFontResolution:
