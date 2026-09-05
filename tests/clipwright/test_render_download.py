@@ -75,7 +75,7 @@ class TestRenderDownloadChain:
                 return _FakeResult()
 
         monkeypatch.setattr(
-            render_mod, "_pick_render_service", staticmethod(lambda: _FakeService())
+            render_mod, "_new_render_service", staticmethod(lambda: _FakeService())
         )
 
     def _timeline_body(self) -> dict:

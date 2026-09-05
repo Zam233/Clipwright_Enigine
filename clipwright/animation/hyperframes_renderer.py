@@ -322,9 +322,12 @@ els.forEach(el=>{
         """
         try:
             # Bug3 合并：编码器走 render 的智能探测（GPU 可用时 h264_nvenc，否则 libx264）
-            from clipwright.services.render import _resolve_encoder, _hwaccel_args
+            from clipwright.services.render import (
+                _resolve_encoder, _hwaccel_args, _current_pix_fmt, run_tracked_ff,
+            )
             encoder = _resolve_encoder()
             hwaccel = _hwaccel_args(encoder)
+            pix_fmt = _current_pix_fmt()
 
             if start_sec > 0 or duration_sec > 0:
                 # 数值以原始形式格式化：int 保持 "265"、float 保留 "0.0"/"12.5"
@@ -349,14 +352,15 @@ els.forEach(el=>{
                 *inputs,
                 "-filter_complex", fc,
                 "-map", "[vout]", "-map", "0:a?",
-                "-c:v", encoder, "-pix_fmt", "yuv420p",
+                "-c:v", encoder, "-pix_fmt", pix_fmt,
                 "-c:a", "copy", output_path,
             ]
-            # 直接 subprocess.run（带超时防挂起）——不用 run_tracked_ff/check：
-            # 渲染失败时返回 False 由调用方回退，不中断整体导出。
-            subprocess.run(
-                cmd, capture_output=True, text=False, timeout=1800,
-            )
+            # R10: 走 run_tracked_ff——cancel_render 可 terminate 在跑的 ffmpeg，
+            # 且 rc≠0 时如实返回 False（此前恒 True，叠加失败被静默丢弃）。
+            r = run_tracked_ff(cmd, capture_output=True, text=False, timeout=1800)
+            if r.returncode != 0:
+                logger.warning("Hyperframes: 叠加失败 rc=%s: %s", r.returncode, output_path)
+                return False
             return True
         except Exception as e:
             logger.warning("Hyperframes: 叠加失败: %s", e)

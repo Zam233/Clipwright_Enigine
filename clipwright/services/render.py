@@ -311,6 +311,21 @@ def _current_pix_fmt() -> str:
     return ov or "yuv420p"
 
 
+def _encoder_stage_args(encoder: str, preset: str, pix_fmt: str | None = None) -> list[str]:
+    """R3: 编码器条件化的阶段输出参数。
+
+    - prores_ks 无 -preset 选项（传入会导致 encode error → 全部 trim 失败）；
+    - pix_fmt 缺省取当前渲染 override（_current_pix_fmt），修复 PIP/MG/overlay
+      阶段硬编码 yuv420p 破坏 10-bit/ProRes 交付的问题。
+    """
+    args = ["-c:v", encoder]
+    if encoder != "prores_ks":
+        args += ["-preset", preset]
+    args += ["-pix_fmt", pix_fmt or _current_pix_fmt()]
+    return args
+
+
+
 def _delivery_extra_args(encoder: str) -> list[str]:
     """交付级编码器附加参数（ProRes HQ profile / x265 静默模式）。"""
     if encoder.startswith("prores"):
@@ -435,12 +450,23 @@ def ffmpeg_available() -> tuple[bool, str]:
         _ffmpeg_checked = True
     return _ffmpeg_ok, _ffmpeg_version
 
+_xfade_support_cache: bool | None = None
+
+
 def _ffmpeg_supports_xfade() -> bool:
+    """R11: 进程内缓存探测结果（每次转场渲染都 shell out 一次 ffmpeg -filters）。"""
+    global _xfade_support_cache
+    if _xfade_support_cache is not None:
+        return _xfade_support_cache
     try:
         r = subprocess.run(["ffmpeg", "-filters"], capture_output=True, text=True, timeout=10)
-        return "xfade" in (r.stdout or "")
+        if "xfade" in (r.stdout or ""):
+            _xfade_support_cache = True
+        else:
+            _xfade_support_cache = False
     except Exception:
-        return True
+        _xfade_support_cache = None  # 探测失败不缓存，下次重试
+    return _xfade_support_cache
 
 def _sanitize_ffmpeg_error(stderr: bytes | str, max_len: int = 150) -> str:
     text = stderr.decode("utf-8", errors="replace") if isinstance(stderr, bytes) else str(stderr)
@@ -634,7 +660,13 @@ def _trim_cache_put_locked(cache_key: str, path: str) -> None:
 def _prune_trim_cache_dir() -> None:
     """按 mtime 删除超额旧文件（启动时 + 每次渲染前调用，成本一次 scandir）。"""
     try:
-        entries = sorted(_TRIM_CACHE_DIR.glob("trim_*.mp4"), key=lambda p: p.stat().st_mtime)
+        import time as _time
+        now = _time.time()
+        # R8: 10 分钟内的新文件可能被在用渲染引用——清理时跳过
+        entries = sorted(
+            (p for p in _TRIM_CACHE_DIR.glob("trim_*.mp4")
+             if now - p.stat().st_mtime > 600),
+            key=lambda p: p.stat().st_mtime)
         total = sum(p.stat().st_size for p in entries)
         for p in entries:
             if total <= _TRIM_CACHE_MAX_BYTES:
@@ -798,6 +830,33 @@ class RenderService:
             width, height, fps, bitrate, encoder, preset, _current_pix_fmt())
         cached_stage = _VIDEO_CACHE_DIR / f"stage_{stage_fp}.mp4"
         video_from_cache = False
+
+        # R1: 转场时间漂移校正——xfade 每处转场使成片缩短 td，下游字幕/音频/
+        # MG/PIP 若仍按原始 start_sec 放置，将随转场逐段累积偏移。
+        # 各片段累计漂移在此一次算出；文本烧写在 else 分支内应用，音频/MG/PIP
+        # 在 else 之后统一应用（缓存命中路径同样需要）。
+        _r1_seg_shifts: list[float] = []
+        if len(trimmed) > 2 and any(
+            video_segments[i].get("transition_in") for i in range(1, len(video_segments))
+        ) and await asyncio.to_thread(_ffmpeg_supports_xfade):
+            _cum = 0.0
+            for _i, seg in enumerate(video_segments):
+                _r1_seg_shifts.append(_cum)
+                if _i > 0:
+                    try:
+                        _cum += max(0.0, float(seg.get("transition_duration_sec", 0) or 0))
+                    except (TypeError, ValueError):
+                        pass
+
+        def _r1_shift(t: float) -> float:
+            for _j in range(len(video_segments) - 1, -1, -1):
+                try:
+                    if t >= float(video_segments[_j].get("start_sec", 0) or 0):
+                        return _r1_seg_shifts[_j]
+                except (TypeError, ValueError):
+                    continue
+            return 0.0
+
         if cached_stage.exists() and _is_valid_video(cached_stage):
             final_video = str(cached_stage)
             video_from_cache = True
@@ -808,10 +867,36 @@ class RenderService:
             final_video = await self._concat_segments(trimmed, video_segments, fps, bitrate,
                                                       encoder, preset, progress_callback)
 
+            # R1: 文本烧写前应用漂移（文本已烧入缓存命中路径，无需二次偏移）
+            if _r1_seg_shifts and text_overlays:
+                for _ov in text_overlays:
+                    try:
+                        _ov["start_sec"] = max(0.0, float(_ov["start_sec"]) - _r1_shift(float(_ov["start_sec"])))
+                    except (TypeError, ValueError):
+                        pass
+
             # M2: concat+text+overlay 合并为单次 filter_complex
             if final_video and text_overlays:
                 final_video = await self._apply_text_concat(final_video, text_overlays, encoder, preset,
                                                             progress_callback, width=width, height=height)
+
+        # R1: 音频/MG/PIP 的漂移校正（缓存命中路径同样应用）
+        if _r1_seg_shifts:
+            for _seg in audio_segments:
+                try:
+                    _seg["start_sec"] = max(0.0, float(_seg["start_sec"]) - _r1_shift(float(_seg["start_sec"])))
+                except (TypeError, ValueError):
+                    pass
+            for _seg in overlay_segments:
+                try:
+                    _seg["start_sec"] = max(0.0, float(_seg["start_sec"]) - _r1_shift(float(_seg["start_sec"])))
+                except (TypeError, ValueError):
+                    pass
+            for _ov in hf_ov_local:
+                try:
+                    _ov["start_sec"] = max(0.0, float(_ov["start_sec"]) - _r1_shift(float(_ov["start_sec"])))
+                except (TypeError, ValueError):
+                    pass
 
         # S2: HF 图解 + MG 动画 → 单次 Hyperframes 调用
         if final_video and await self._hyperframes_available_async():
@@ -820,6 +905,8 @@ class RenderService:
 
         # 画中画
         if final_video and overlay_segments:
+            if progress_callback:
+                await progress_callback("pip", 97, f"合成 {len(overlay_segments)} 个画中画")
             final_video = await self._apply_overlays_safe(final_video, overlay_segments, width, height)
 
         # 缓存 pre-audio 视频（供「仅音频变更」快路径复用）
@@ -832,6 +919,8 @@ class RenderService:
         # 音频（C12：混合失败必须标记到结果，而非静默静音成片）
         audio_warnings: list[str] = []
         if final_video:
+            if progress_callback:
+                await progress_callback("audio", 98, "混流音频")
             final_video, mix_marker = await self._mix_audio_safe(
                 final_video, audio_segments, audio_file_path, bitrate, audio_bitrate, bgm_file_path,
                 video_cached=video_from_cache)
@@ -860,7 +949,8 @@ class RenderService:
                 shutil.copy2(final_video, str(output))
             if not _is_valid_video(output):
                 logger.error("渲染输出为空文件: %s（源 %s）", output, final_video)
-                return RenderResult(False, error=f"渲染输出为空文件 (final={final_video})")
+                return RenderResult(False, error=f"渲染输出为空文件 (final={final_video})",
+                                ffmpeg_log=chr(10).join(self._final_ffmpeg_log[-50:]))
             dur = await asyncio.to_thread(_get_actual_duration, str(output))
             if progress_callback:
                 await progress_callback("done", 100, "渲染完成")
@@ -878,9 +968,11 @@ class RenderService:
                     f"成片实际时长 {dur:.1f}s 与时间线 {tl_dur:.1f}s 偏差较大"
                     f"（转场时长侵蚀/时长字段未校正）")
             return RenderResult(True, output_path=str(output.resolve()), duration_sec=dur,
+                                ffmpeg_log=chr(10).join(self._final_ffmpeg_log[-50:]),
                                 warnings=warnings)
 
-        return RenderResult(False, error=f"渲染失败 (video={len(video_segments)}, trimmed={len(trimmed)})")
+        return RenderResult(False, error=f"渲染失败 (video={len(video_segments)}, trimmed={len(trimmed)})",
+                            ffmpeg_log=chr(10).join(self._final_ffmpeg_log[-50:]))
 
     # ── 分段提取 ──────────────────────────────────
 
@@ -1095,6 +1187,8 @@ class RenderService:
                 return cached
 
             out = str(_TRIM_CACHE_DIR / f"trim_{cache_key}.mp4")
+            # R8: 先写临时名再原子替换——并发渲染同 key 不再互写半截文件
+            out_tmp = out + ".part.mp4"
             try:
                 # D1: speed≠1 真实变速——原实现只按速度改时长并用 stream_loop
                 # 循环填充，播放速度不变（setpts 只存在于 tool/speed.py，未接入
@@ -1162,10 +1256,13 @@ class RenderService:
                 cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)),
                        "-ss", str(seg.get("source_offset", 0)),
                        "-stream_loop", "-1", "-i", src, "-t", str(dur), "-vf", vf, "-r", str(fps),
-                       "-c:v", encoder, "-pix_fmt", _current_pix_fmt(),
-                       "-preset", preset, "-b:v", bitrate, "-an", out]
+                       *_encoder_stage_args(encoder, preset),
+                       "-b:v", bitrate, "-an", out_tmp]
                 r = self._run_ff(cmd, capture_output=True, text=False, timeout=600)
-                if r.returncode == 0 and _is_valid_video(out):
+                if r.returncode == 0 and _is_valid_video(out_tmp):
+                    # R8: 原子落位
+                    import os as _os
+                    _os.replace(out_tmp, out)
                     with _trim_cache_lock:
                         _trim_cache_put_locked(cache_key, out)
                     return out
@@ -1210,7 +1307,7 @@ class RenderService:
             timeout = 30 + int(dur) * 2
             self._run_ff(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
                            f"color=c=0x1a1a2e:s={width}x{height}:d={dur}",
-                           "-c:v", _resolve_encoder(), "-pix_fmt", _current_pix_fmt(), "-r", str(fps), out],
+                           "-c:v", _current_encoder(), "-pix_fmt", _current_pix_fmt(), "-r", str(fps), out],
                           capture_output=True, text=False, timeout=timeout)
             return out if _is_valid_video(out) else None
         except Exception:
@@ -1239,7 +1336,7 @@ class RenderService:
         out = Path(a).parent / "concat.mp4"
         self._run_ff(["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", a, "-i", b,
                        "-filter_complex", "[0:v]setsar=1[a];[1:v]setsar=1[b];[a][b]concat=n=2:v=1:a=0[v]",
-                       "-map", "[v]", "-c:v", encoder, "-preset", preset,
+                       "-map", "[v]", *_encoder_stage_args(encoder, preset),
                        "-b:v", bitrate, "-r", str(fps), str(out)],
                       capture_output=True, text=False, timeout=600)
         return str(out) if _is_valid_video(out) else a
@@ -1252,7 +1349,7 @@ class RenderService:
         self._run_ff(["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", left, "-i", right,
                        "-filter_complex",
                        f"[0:v]setsar=1[a];[1:v]setsar=1[b];[a][b]xfade=transition={tt}:duration={td}:offset={off}[v]",
-                       "-map", "[v]", "-c:v", encoder, "-preset", preset,
+                       "-map", "[v]", *_encoder_stage_args(encoder, preset),
                        "-b:v", bitrate, "-r", str(fps), out],
                       capture_output=True, text=False, timeout=600)
         if _is_valid_video(out):
@@ -1328,7 +1425,7 @@ class RenderService:
         timeout = 120 + n * 60  # 120s base + 60s per segment
         self._run_ff(["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), *inputs,
                        "-filter_complex", flt, "-map", "[v]",
-                       "-c:v", encoder, "-preset", preset,
+                       *_encoder_stage_args(encoder, preset),
                        "-b:v", bitrate, "-r", str(fps), str(out)],
                       capture_output=True, text=False, timeout=timeout)
         return str(out) if _is_valid_video(out) else clips[-1]
@@ -1421,7 +1518,7 @@ class RenderService:
             out = str(self._work_dir / f"txt_{bi}.mp4")
             cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", current,
                    "-vf", f"ass={ass_arg}",
-                   "-c:v", encoder, "-preset", preset, "-pix_fmt", _current_pix_fmt(),
+                   *_encoder_stage_args(encoder, preset),
                    "-c:a", "copy", out]
             r = await self._ff(cmd, capture_output=True, text=False, timeout=1800)
             if r.returncode == 0 and _is_valid_video(out):
@@ -1458,7 +1555,7 @@ class RenderService:
             # L2: 用 -vf 而非重新 -filter_complex，减少复杂度
             cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", current,
                    "-vf", ",".join(batch),
-                   "-c:v", encoder, "-preset", preset, "-pix_fmt", _current_pix_fmt(),
+                   *_encoder_stage_args(encoder, preset),
                    "-c:a", "copy", out]
             r = await self._ff(cmd, capture_output=True, text=False, timeout=1800)
             if r.returncode == 0 and _is_valid_video(out):
@@ -1510,21 +1607,32 @@ class RenderService:
                     await progress_callback("mg", pct, f"渲染 MG {completed}/{len(hf_ov_local)}")
                 return res
 
-            movs = await asyncio.gather(*(_render_one(m) for m in hf_ov_local))
-            # Phase 2: 串行叠加（合并决策：沿用远程线的 per-MOV
-            # render_overlay_on_video + 窗口 enable 语义——每 MOV 一次 re-encode，
-            # 任何单个失败仅跳过自身；本地线的链式合成保留方法但不再默认走此路径）
-            for mg, mov in zip(hf_ov_local, movs):
-                if isinstance(mov, BaseException):
-                    logger.warning("MG overlay render failed: %s", mov)
-                    continue
-                if mov and _is_valid_video(mov):
-                    out_v = str(self._work_dir / f"mg_ov_{uuid.uuid4().hex[:4]}.mp4")
-                    ok = HyperframesRenderer.render_overlay_on_video(
-                        mov, video, out_v,
-                        mg.get("start_sec", 0), mg.get("duration_sec", 0))
-                    if ok and _is_valid_video(out_v):
-                        video = out_v
+            movs = await asyncio.gather(*(_render_one(m) for m in hf_ov_local),
+                                        return_exceptions=True)
+            # R5/M2: Phase 2 改单次 filter_complex 链式合成（N 个 MOV 只做 1 次
+            # 全片重编，替代串行 N 次）；MOV>8 或命令行超限时由 chained 内部
+            # 递归拆批；链式失败回退 per-MOV 逐个叠加。
+            pairs = [(mov, float(mg.get("start_sec", 0) or 0),
+                      float(mg.get("duration_sec", 0) or 0))
+                     for mg, mov in zip(hf_ov_local, movs)
+                     if not isinstance(mov, BaseException) and mov and _is_valid_video(mov)]
+            if pairs:
+                if progress_callback:
+                    await progress_callback("mg", 90, "链式叠加 MG 动画")
+                chained = await self._apply_mg_overlay_chained(
+                    video, pairs, width, height, fps)
+                if chained != video:
+                    video = chained
+                else:
+                    logger.warning("R5: 链式 MG 叠加失败，回退 per-MOV 逐个叠加")
+                    for mg, mov in zip(hf_ov_local, movs):
+                        if isinstance(mov, BaseException):
+                            continue
+                        if mov and _is_valid_video(mov):
+                            video = await self._apply_mg_overlay(
+                                video, mov, width, height, fps,
+                                start_sec=float(mg.get("start_sec", 0) or 0),
+                                duration_sec=(float(mg.get("duration_sec", 0) or 0) or None))
             if progress_callback:
                 await progress_callback("mg", 95, "MG 叠加完成")
 
@@ -1676,7 +1784,7 @@ class RenderService:
             prev = f"v{i}"
         cmd += ["-filter_complex", ";".join(parts),
                 "-map", f"[{prev}]", "-map", "0:a?",
-                "-c:v", encoder, "-preset", preset, "-pix_fmt", _current_pix_fmt(),
+                *_encoder_stage_args(encoder, preset),
                 "-c:a", "copy", str(out)]
         return cmd
 
@@ -1775,11 +1883,14 @@ class RenderService:
         enable = f"between(t,{s},{max(e,start_sec+duration_sec)})"
         parts = [f"drawtext=text='{safe}'{font_arg}", f"fontsize={fs}", f"fontcolor={color_to_drawtext(ts.font_color)}",
                  f"x={bx}+({xo})", f"y={by}+({yo})", f"alpha={a}",
-                 f":enable='{enable}'"]
+                 # R4: 与其余 key=value 一致，不加前导冒号——旧写法经 ":".join 产生
+                 # "alpha=1.0::enable=…"，ffmpeg 报 "No option name near ':enable'"
+                 # 导致整批 drawtext 失败、文字静默消失。
+                 f"enable='{enable}'"]
         if ts.stroke_width > 0:
-            parts.append(f":borderw={ts.stroke_width}:bordercolor={color_to_drawtext(ts.stroke_color)}")
+            parts.append(f"borderw={ts.stroke_width}:bordercolor={color_to_drawtext(ts.stroke_color)}")
         if ts.shadow_x != 0 or ts.shadow_y != 0:
-            parts.append(f":shadowx={ts.shadow_x}:shadowy={ts.shadow_y}:shadowcolor={color_to_drawtext(ts.shadow_color)}")
+            parts.append(f"shadowx={ts.shadow_x}:shadowy={ts.shadow_y}:shadowcolor={color_to_drawtext(ts.shadow_color)}")
         main = ":".join(parts)
         if ts.glow_width > 0 and ts.glow_color:
             # glow 双通道：底层在前（同坐标/同 enable 窗口/随缩放），主文本在后
@@ -1836,7 +1947,8 @@ class RenderService:
         c = ";".join(filters)
         await self._ff(["ffmpeg","-y","-loglevel","error",*(_hwaccel_args(encoder)),*inputs,"-filter_complex",c,
                        "-map",f"[v{used-1}]","-map","0:a?",
-                       "-c:v",encoder,"-preset",preset,"-pix_fmt","yuv420p","-c:a","copy",output_path],
+                       *_encoder_stage_args(encoder, preset),
+                       "-c:a","copy",output_path],
                       capture_output=True, text=False, timeout=1800)
 
     async def _mix_audio_safe(self, video, segments, audio_path, bitrate, ab, bgm_path,
@@ -1884,6 +1996,8 @@ class RenderService:
                     "fade_out": float(seg.get("audio_fade_out_sec") or 0),
                     "is_voice": bool(seg.get("is_voice")),
                     "is_bgm": bool(seg.get("is_bgm")),
+                    # R9: 源内偏移与时间线位置分离
+                    "source_offset": float(seg.get("source_offset_sec", 0) or 0),
                 })
         if bfp and Path(bfp).exists():
             voices.append({"path": bfp, "volume": 0.3, "start": 0, "dur": 0,
@@ -1901,8 +2015,12 @@ class RenderService:
                 sc_source: str = ""
                 for i, v in enumerate(voices, start=1):
                     parts = []
-                    if v["dur"] > 0 and v["start"] >= 0:
-                        parts.append(f"atrim=start={v['start']}:duration={v['dur']}")
+                    # R9: atrim 用「源内偏移」（素材文件内的起点），adelay 用时间线
+                    # start_sec——此前两者混用导致源偏移素材播放错误区域
+                    so = v.get("source_offset", 0)
+                    atrim_start = so if so > 0 else v["start"]
+                    if v["dur"] > 0:
+                        parts.append(f"atrim=start={atrim_start}:duration={v['dur']}")
                     if v["start"] > 0:
                         parts.append(f"adelay={int(v['start'] * 1000)}|{int(v['start'] * 1000)}")
                     if v["fade_in"] > 0:
@@ -1936,9 +2054,9 @@ class RenderService:
                     "-filter_complex", ";".join(chains),
                     "-map", "0:v:0", "-map", "[aout]",
                     *(["-c:v", "copy"] if video_cached else
-                      ["-c:v", encoder, "-preset", preset, "-pix_fmt", _current_pix_fmt(),
+                      [*_encoder_stage_args(encoder, preset),
                        "-b:v", bitrate, *_delivery_extra_args(encoder)]),
-                    "-c:a", "aac", "-b:a", ab, output_path,
+                    "-c:a", "aac", "-b:a", ab, "-movflags", "+faststart", output_path,
                 ], capture_output=True, text=False, timeout=1800)
                 if _is_valid_video(output_path):
                     logger.info("C11 真实混音成功: %d 音源 + LUFS 归一", len(voices))

@@ -38,9 +38,9 @@ def _mk_fake_run(calls, overlay_dur: str = "6"):
 
 
 def _ffmpeg_call(calls):
-    """从记录的调用里取出 ffmpeg 命令（argv 列表）。"""
+    """从记录的调用里取出 ffmpeg overlay 命令（跳过 _resolve_encoder 的 -encoders 探测）。"""
     for (args, _kwargs) in calls:
-        if args[0][0] == "ffmpeg":
+        if args[0][0] == "ffmpeg" and "-filter_complex" in args[0]:
             return args[0]
     raise AssertionError("未记录到 ffmpeg 调用")
 
@@ -56,6 +56,8 @@ class TestOverlayFilterString:
         """(a) 基线表征：修复前窗口分支 setpts 归零时间戳（无 /TB 偏移）。"""
         calls = []
         monkeypatch.setattr(subprocess, "run", _mk_fake_run(calls))
+        import clipwright.services.render as _render_mod
+        monkeypatch.setattr(_render_mod, "run_tracked_ff", _mk_fake_run(calls))
         ok = HyperframesRenderer.render_overlay_on_video(
             "anim.mov", "base.mp4", "out.mp4",
             start_sec=265, duration_sec=6,
@@ -67,6 +69,8 @@ class TestOverlayFilterString:
         """(b) 修复目标：窗口分支 setpts 须带 +{start}/TB 平移，动画在窗口内才可见。"""
         calls = []
         monkeypatch.setattr(subprocess, "run", _mk_fake_run(calls))
+        import clipwright.services.render as _render_mod
+        monkeypatch.setattr(_render_mod, "run_tracked_ff", _mk_fake_run(calls))
         ok = HyperframesRenderer.render_overlay_on_video(
             "anim.mov", "base.mp4", "out.mp4",
             start_sec=265, duration_sec=6,
@@ -78,6 +82,8 @@ class TestOverlayFilterString:
         """窗口分支对小数 start 也应输出安全格式化偏移（如 +5.5/TB）。"""
         calls = []
         monkeypatch.setattr(subprocess, "run", _mk_fake_run(calls))
+        import clipwright.services.render as _render_mod
+        monkeypatch.setattr(_render_mod, "run_tracked_ff", _mk_fake_run(calls))
         HyperframesRenderer.render_overlay_on_video(
             "anim.mov", "base.mp4", "out.mp4",
             start_sec=5.5, duration_sec=6,
@@ -88,6 +94,8 @@ class TestOverlayFilterString:
         """(c) 默认参数 start=0/dur=0 保持旧路径 overlay=format=auto，无 setpts。"""
         calls = []
         monkeypatch.setattr(subprocess, "run", _mk_fake_run(calls))
+        import clipwright.services.render as _render_mod
+        monkeypatch.setattr(_render_mod, "run_tracked_ff", _mk_fake_run(calls))
         ok = HyperframesRenderer.render_overlay_on_video(
             "anim.mov", "base.mp4", "out.mp4",
         )
@@ -100,6 +108,8 @@ class TestOverlayFilterString:
         """窗口分支保留 enable=between(t,start,end) 与 eof_action=pass。"""
         calls = []
         monkeypatch.setattr(subprocess, "run", _mk_fake_run(calls))
+        import clipwright.services.render as _render_mod
+        monkeypatch.setattr(_render_mod, "run_tracked_ff", _mk_fake_run(calls))
         HyperframesRenderer.render_overlay_on_video(
             "anim.mov", "base.mp4", "out.mp4",
             start_sec=265, duration_sec=6,
@@ -113,6 +123,8 @@ class TestOverlayFilterString:
         """覆盖层超长时在 -i overlay 之前加 -t {dur} 截断（保留旧逻辑）。"""
         calls = []
         monkeypatch.setattr(subprocess, "run", _mk_fake_run(calls, overlay_dur="10"))
+        import clipwright.services.render as _render_mod
+        monkeypatch.setattr(_render_mod, "run_tracked_ff", _mk_fake_run(calls))
         HyperframesRenderer.render_overlay_on_video(
             "anim.mov", "base.mp4", "out.mp4",
             start_sec=265, duration_sec=6,
@@ -133,6 +145,8 @@ class TestOverlayMalformed:
         """start 远超主视频时长（如 100000s）不应崩溃，仍返回 bool。"""
         calls = []
         monkeypatch.setattr(subprocess, "run", _mk_fake_run(calls))
+        import clipwright.services.render as _render_mod
+        monkeypatch.setattr(_render_mod, "run_tracked_ff", _mk_fake_run(calls))
         ok = HyperframesRenderer.render_overlay_on_video(
             "anim.mov", "base.mp4", "out.mp4",
             start_sec=100000, duration_sec=6,
@@ -144,6 +158,8 @@ class TestOverlayMalformed:
         """start<0 但 dur>0 走窗口分支，不崩溃，setpts 偏移保留负号。"""
         calls = []
         monkeypatch.setattr(subprocess, "run", _mk_fake_run(calls))
+        import clipwright.services.render as _render_mod
+        monkeypatch.setattr(_render_mod, "run_tracked_ff", _mk_fake_run(calls))
         ok = HyperframesRenderer.render_overlay_on_video(
             "anim.mov", "base.mp4", "out.mp4",
             start_sec=-5, duration_sec=10,
@@ -157,6 +173,8 @@ class TestOverlayMalformed:
         """start<0 且 dur=0 走默认全时长叠加分支（保持旧行为）。"""
         calls = []
         monkeypatch.setattr(subprocess, "run", _mk_fake_run(calls))
+        import clipwright.services.render as _render_mod
+        monkeypatch.setattr(_render_mod, "run_tracked_ff", _mk_fake_run(calls))
         ok = HyperframesRenderer.render_overlay_on_video(
             "anim.mov", "base.mp4", "out.mp4",
             start_sec=-5, duration_sec=0,
@@ -172,6 +190,8 @@ class TestOverlayHangSafety:
         """ffmpeg/ffprobe 调用都必须携带 timeout，避免真实进程卡死测试。"""
         calls = []
         monkeypatch.setattr(subprocess, "run", _mk_fake_run(calls))
+        import clipwright.services.render as _render_mod
+        monkeypatch.setattr(_render_mod, "run_tracked_ff", _mk_fake_run(calls))
         HyperframesRenderer.render_overlay_on_video(
             "anim.mov", "base.mp4", "out.mp4",
             start_sec=5, duration_sec=6,
@@ -208,29 +228,33 @@ class TestOverlayRealFfmpeg:
     _RATE = "30"
 
     def _run_real(self, overlay, main, out, start, dur, timeout=_FFMPEG_TIMEOUT):
-        """调用函数并拦截其 ffmpeg 命令，用短超时真实执行（防挂起快速失败）。"""
+        """调用函数并拦截其 ffmpeg 命令，用短超时真实执行（防挂起快速失败）。
+
+        R10 合并: render_overlay_on_video 走 run_tracked_ff（内部用 Popen），
+        同时拦截 subprocess.run 与 run_tracked_ff 以覆盖两种调用路径。
+        """
         real_run = subprocess.run
         captured = {}
 
-        def fake_run(*args, **kwargs):
-            cmd = args[0]
-            if cmd[0] == "ffmpeg":
-                captured["cmd"] = cmd
-                return real_run(
-                    cmd, capture_output=True, text=False, timeout=timeout, check=True,
-                )
-            return real_run(*args, **kwargs)
+        def fake_ff(cmd, capture_output=False, text=False, timeout=None, **kw):
+            captured["cmd"] = cmd
+            return real_run(
+                cmd, capture_output=True, text=False, timeout=timeout or 120, check=True,
+            )
 
-        # 直接替换模块级 subprocess.run（等价 monkeypatch）
-        orig = subprocess.run
-        subprocess.run = fake_run
+        import clipwright.services.render as _render_mod
+        orig_run = subprocess.run
+        orig_rff = _render_mod.run_tracked_ff
+        subprocess.run = fake_ff
+        _render_mod.run_tracked_ff = fake_ff
         try:
             ok = HyperframesRenderer.render_overlay_on_video(
                 str(overlay), str(main), str(out),
                 start_sec=start, duration_sec=dur,
             )
         finally:
-            subprocess.run = orig
+            subprocess.run = orig_run
+            _render_mod.run_tracked_ff = orig_rff
         return ok, captured.get("cmd")
 
     def _make_lavfi(self, tmp_path, name, lavfi, duration, is_mov):

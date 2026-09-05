@@ -187,26 +187,28 @@ class TestApplyMGChainedOverlay:
         return svc, ff_cmds, overlay_calls
 
     async def test_each_mov_overlaid_in_order(self, monkeypatch, tmp_path) -> None:
-        """4 个 MG → 4 次 per-MOV 叠加，窗口 = 各自 (start_sec, duration_sec)。"""
+        """R5: 4 个 MG → 1 次链式 ffmpeg；-i 数 = N+1；N 个 enable 窗口按序。"""
         n = 4
         svc, ff_cmds, overlay_calls = self._build(monkeypatch, tmp_path,
                                                   [self._mk(tmp_path, i) for i in range(n)])
         out = await svc._apply_all_hyperframes("main.mp4", [], self._hf(n), 1920, 1080, 30.0)
         assert out != "main.mp4"
-        assert len(overlay_calls) == n
-        starts = [c[3] for c in overlay_calls]
-        assert starts == [float(i) for i in range(n)]
-        # 每次叠加的输出路径互不相同（防竞态）
-        outs = [c[2] for c in overlay_calls]
-        assert len(set(outs)) == n
+        assert len(ff_cmds) == 1, f"链式应只 1 次 ffmpeg: {len(ff_cmds)}"
+        cmd = ff_cmds[0]
+        assert sum(1 for t in cmd if t == "-i") == n + 1
+        flt = _filter_complex(cmd)
+        assert flt.count("enable='between(t,") == n
 
     async def test_chain_survives_missing_mov(self, monkeypatch, tmp_path) -> None:
-        """一个 MOV=None → 跳过该 MG，不崩溃，其余照常叠加。"""
+        """一个 MOV=None → 跳过该 MG，不崩溃，其余照常链式合成。"""
         returns: list[str | None] = [self._mk(tmp_path, 0), None, self._mk(tmp_path, 2)]
         svc, ff_cmds, overlay_calls = self._build(monkeypatch, tmp_path, returns)
         out = await svc._apply_all_hyperframes("main.mp4", [], self._hf(3), 1920, 1080, 30.0)
         assert out != "main.mp4"
-        assert len(overlay_calls) == 2
+        assert len(ff_cmds) == 1
+        cmd = ff_cmds[0]
+        # 主视频 + 2 个有效 MOV（None 已被 Phase 2 过滤）
+        assert sum(1 for t in cmd if t == "-i") == 3
 
     async def test_cmdline_length_under_30000(self, monkeypatch, tmp_path) -> None:
         """20 个 MG 的每次 ffmpeg 命令行总长 < 30000（Windows 命令行长度安全）。"""

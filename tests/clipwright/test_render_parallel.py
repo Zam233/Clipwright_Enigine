@@ -143,7 +143,7 @@ class TestMgHyperframesParallel:
         out, dt = _run_apply_all(svc, _mk_mgs(4))
 
         assert dt < 3.0, f"4 路并发 ≈1s，实际 {dt:.2f}s"
-        assert ff_count["n"] == 4, "4 个 MOV 渲染都必须完成"
+        assert ff_count["n"] == 5, "4 个 MOV 渲染 + 1 次链式合成"
         assert len(mov_paths) == 4, "每个 MOV 都应有独立输出路径"
         assert len(set(mov_paths)) == 4, "MOV 输出路径必须互不相同（防竞态）"
         assert out != "base.mp4"
@@ -165,6 +165,6 @@ class TestMgHyperframesParallel:
         out, dt = _run_apply_all(svc, _mk_mgs(4))
 
         assert dt < 2.5, f"失败不应悬挂 gather，实际 {dt:.2f}s"
-        assert ff_count["n"] == 4, "4 个渲染都被尝试"
-        assert len(overlay_calls) == 3, "失败 MOV 被跳过，其余 3 个叠加完成"
+        assert ff_count["n"] == 5, "4 个渲染都被尝试 + 1 次链式合成"
+        assert len(overlay_calls) == 0, "链式路径不逐个调用 render_overlay_on_video"
         assert out != "base.mp4"
