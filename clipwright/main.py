@@ -391,6 +391,8 @@ async def api_token_auth(request: Request, call_next):
     mode = settings.account_verify_mode
     auth_header = request.headers.get("Authorization", "") or ""
     bearer = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+    # V5: <video>/<img> 无法携带 Authorization 头——by-path 媒体代理允许 query token
+    is_by_path_media = is_api and request.method == "GET" and path == "/api/asset/by-path"
 
     if mode == "jwt":
         # 运维令牌（可选）或 Server JWT 本地验签
@@ -405,6 +407,8 @@ async def api_token_auth(request: Request, call_next):
                 ok = True
         if not ok and is_media:
             ok = bool(settings.api_token) and hmac.compare_digest(qtok, settings.api_token)
+        if not ok and is_by_path_media:
+            ok = (bool(settings.api_token) and hmac.compare_digest(qtok, settings.api_token)) or bool(_verify_access_jwt(qtok))
         if not ok and "/stream" in path:
             ok = _consume_sse_token(qtok)
         if not ok:
@@ -421,6 +425,9 @@ async def api_token_auth(request: Request, call_next):
     ok = hmac.compare_digest(bearer, settings.api_token)
     if not ok and is_media:
         # <video>/<audio> 标签无法携带 Authorization 头，允许 query token 校验
+        ok = hmac.compare_digest(qtok, settings.api_token)
+    if not ok and is_by_path_media:
+        # V5: 预览媒体代理同样允许 query token（中间件已在日志前抹除 token）
         ok = hmac.compare_digest(qtok, settings.api_token)
     if not ok and "/stream" in path:
         # P0-9: SSE 端点（EventSource 无法带请求头）允许短期一次性 token

@@ -560,6 +560,12 @@ P1 签名 fail-closed；P2 安装 sha256 + 失败回滚（含市场路径）；P
 **批次 M（MG 渲染）— 落地 M1–M5、M7；M6/M8 部分。**
 M1 自愈重跑先清动画/文字轨（幂等）；M2 链式 MG 合成（MOV>8 回退 per-MOV）；M3 `animation/mg/generation_cache.py` marker 哈希缓存（30min TTL，自愈/重试零 LLM 重付）；M4 overlay rc 校验；M5 Chrome 进程树击杀（taskkill /T）；M7 图片 src file:// + 背景守卫。M6 generation_id 预览、M8 clip 级进度：阶段级进度已覆盖（R6），预览接线待前端配合后补。
 
-### 前端批次 V — 已落地 V1/V2/V3/V8；V4–V7/V9/V10 与批次 X 一并执行
+### 前端批次 V — 已落地 V1–V10（V8 此前完成；自适应缩略图 LRU 上限未做，维持固定 24）
 
-V1 每音频元素独立 source/analyser（重叠不再互斥静音）；V2 时间码拆叶子组件（消除 60fps 级联重渲）；V3 关键帧契约对齐（translate_x/scale_x + 绝对秒）；V8 转场时间模型与 R1 对齐。V4–V7、V9、V10 及 X1–X4 于后续会话继续。
+V1 每音频元素独立 source/analyser（重叠不再互斥静音）；V2 时间码拆叶子组件（消除 60fps 级联重渲）；V3 关键帧契约对齐（translate_x/scale_x + 绝对秒）；V4 静态变换导出：trim 阶段识别 `metadata.transform`（translate 归一化/scale/rotate），经黑底画布 `overlay` 链合成并进 trim 缓存键（3 例单测锁定，含恒等变换不引入 filter_complex）；V5 token 模式媒体 401：后端 `GET /api/asset/by-path` 允许 query token（jwt 模式另收验签 JWT；中间件已在日志前抹除 token），前端 `withMediaToken` 自动附带 session token；V6 代理生成覆盖全部视频/图片素材 + 切换后经 `setTimeline` 旋点按 URL 变化全量重注册；V7 缩略图改用每素材独立隐藏 video 元素（不再 seek 预览元素，播放中抓帧零跳帧）；V9 播放头后 3s 窗口内片段 `preload` 升级 auto（消除边界闪白，幂等可高频调用）；V10 末帧 `dur−ε` 钳位（黑帧消除）、画布点击后 blur（空格焦点陷阱）、visibilitychange 自动暂停（防音画错位）、Undo/重做/导入后经 `setTimeline` 重注册媒体。
+
+### 批次 X — 全部落地（X1–X4）
+
+X1 蒙版枚举：后端兼容 `rect`（=rectangle）别名，`ellipse` 经 geq alpha 椭圆遮罩真实导出（此前前端两种蒙版导出全部静默失效）；X2 blend 收敛：UI 选项收敛到后端支持集 normal/screen/multiply/overlay，历史不支持值以「仅预览」保留；X3 文字锚点对齐：预览新增 `textLayout`（`metadata.position` → 轨序回退 {1:bottom,2:top,3:center} → 同轨 35px 堆叠，9 宫格映射与导出 drawtext 一致），描边预览 ×2 补偿 `borderw` 纯外侧语义，字距/阴影模糊标注「仅预览」，命中框同步新锚点（5+8 例单测）；X4 音频速率：混音链 `atrim` 时长按源时间换算（dur×speed）+ `atempo` 链式分级（单级限 0.5–2.0），与预览 playbackRate 语义一致（2 例单测）。
+
+**最终回归（2026-09-06）**：后端 `python -m pytest tests -q` = **1349 passed**（基线 1344 只增不减）；前端 `npx tsc --noEmit` ✓、`npm run test` = **377 passed**、`npm run build` ✓。

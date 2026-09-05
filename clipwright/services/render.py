@@ -715,10 +715,10 @@ def _prune_trim_cache_dir() -> None:
 _prune_trim_cache_dir()
 
 def _trim_cache_key(src: str, offset: float, dur: float, width: int, height: int,
-                    speed: float = 1.0, image_fit: str = "") -> str:
-    # D1/D2: 速度与填充模式影响输出内容，必须进缓存键
-    raw = f"{src}|{offset:.2f}|{dur:.2f}|{width}x{height}|{speed:.3f}|{image_fit}"
-    return hashlib.md5(raw.encode()).hexdigest()
+                    speed: float = 1.0, image_fit: str = "", transform: str = "") -> str:
+    # D1/D2/V4: 速度、填充模式与静态变换影响输出内容，必须进缓存键
+    raw = f"{src}|{offset:.2f}|{dur:.2f}|{width}x{height}|{speed:.3f}|{image_fit}|{transform}"
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 class RenderResult:
@@ -1207,10 +1207,24 @@ class RenderService:
                 self._fallback_count += 1
                 return self._generate_fallback(dur, width, height, fps, idx)
 
-            # M1: 缓存（D1/D2: speed 与 image_fit 进键）
+            # M1: 缓存（D1/D2: speed 与 image_fit 进键；V4: 静态变换进键）
             image_fit = str(seg.get("image_fit", "") or "").lower()
+            # V4: 静态变换（预览 metadata.transform 对齐导出）
+            _tf_raw = (seg.get("metadata") or {}).get("transform") or {}
+            try:
+                _tx = float(_tf_raw.get("x", 0) or 0)
+                _ty = float(_tf_raw.get("y", 0) or 0)
+                _ts = float(_tf_raw.get("scale", 1) or 1)
+                _tr = float(_tf_raw.get("rotation", 0) or 0)
+            except (TypeError, ValueError):
+                _tx = _ty = 0.0
+                _ts = 1.0
+                _tr = 0.0
+            _has_transform = (abs(_ts - 1.0) > 1e-3 or abs(_tr) > 1e-3
+                              or abs(_tx) > 1e-4 or abs(_ty) > 1e-4)
             cache_key = _trim_cache_key(src, seg.get("source_offset", 0), dur, width, height,
-                                        speed, image_fit)
+                                        speed, image_fit,
+                                        transform=f"{_tx:.4f},{_ty:.4f},{_ts:.4f},{_tr:.4f}" if _has_transform else "")
             with _trim_cache_lock:
                 cached = _trim_cache.get(cache_key)
                 if cached:
@@ -1290,11 +1304,29 @@ class RenderService:
                 if fx_parts:
                     vf += "," + ",".join(fx_parts)
 
-                cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)),
-                       "-ss", str(seg.get("source_offset", 0)),
-                       "-stream_loop", "-1", "-i", src, "-t", str(dur), "-vf", vf, "-r", str(fps),
-                       *_encoder_stage_args(encoder, preset),
-                       "-b:v", bitrate, "-an", out_tmp]
+                # V4: 静态变换——scale/rotate 绕中心（与预览 Canvas 语义一致），
+                # translate 归一化偏移 × 画幅；以黑底画布 overlay 承载，越界裁切
+                if _has_transform:
+                    sw = max(2, int(width * abs(_ts)) // 2 * 2)
+                    sh = max(2, int(height * abs(_ts)) // 2 * 2)
+                    seg_chain = f"{vf},scale={sw}:{sh},rotate={_tr:.4f}*PI/180:c=black:ow={sw}:oh={sh}"
+                    ox = int(round((width - sw) / 2 + _tx * width))
+                    oy = int(round((height - sh) / 2 + _ty * height))
+                    fc = (f"color=c=black:s={width}:{height}:r={fps}:d={dur:.4f}[bg];"
+                          f"[0:v]{seg_chain}[segv];"
+                          f"[bg][segv]overlay=x={ox}:y={oy}:eof_action=pass[vout]")
+                    cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)),
+                           "-ss", str(seg.get("source_offset", 0)),
+                           "-stream_loop", "-1", "-i", src, "-t", str(dur),
+                           "-filter_complex", fc, "-map", "[vout]", "-r", str(fps),
+                           *_encoder_stage_args(encoder, preset),
+                           "-b:v", bitrate, "-an", out_tmp]
+                else:
+                    cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)),
+                           "-ss", str(seg.get("source_offset", 0)),
+                           "-stream_loop", "-1", "-i", src, "-t", str(dur), "-vf", vf, "-r", str(fps),
+                           *_encoder_stage_args(encoder, preset),
+                           "-b:v", bitrate, "-an", out_tmp]
                 r = self._run_ff(cmd, capture_output=True, text=False, timeout=600)
                 if r.returncode == 0 and _is_valid_video(out_tmp):
                     # R8: 原子落位
