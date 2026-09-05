@@ -136,6 +136,87 @@ async def list_plugin_errors(limit: int = 50) -> list[dict]:
     return get_error_bus().list(limit=max(1, min(limit, 200)))
 
 
+@router.get("/health")
+async def plugin_health() -> dict[str, object]:
+    """P10: 插件健康聚合视图 — 单端点总览加载/签名/依赖/错误/Hook 注册状态。
+
+    overall: ok（无异常插件）/ degraded（有非致命问题）/ error（有加载失败类错误）。
+    """
+    from clipwright.plugins.error_bus import get_error_bus
+    from clipwright.plugins.hooks import HookPoint, HookRegistry
+    from clipwright.plugins.prompt_registry import PluginPromptRegistry
+
+    if _loader is None:
+        return {"overall": "ok", "plugins": [], "errors_total": 0}
+
+    errors = get_error_bus().list(limit=200)
+    err_count: dict[str, int] = {}
+    for e in errors:
+        err_count[e.get("plugin_id", "")] = err_count.get(e.get("plugin_id", ""), 0) + 1
+
+    hook_count: dict[str, int] = {}
+    for hp in HookPoint:
+        for fn in HookRegistry._hooks.get(hp, []):
+            pid = getattr(fn, "__plugin_id__", None)
+            if pid:
+                hook_count[pid] = hook_count.get(pid, 0) + 1
+
+    plugins: list[dict[str, object]] = []
+    discovered = set(_loader.discover())
+    for m in _loader.list_loaded():
+        pid = m.manifest.id
+        issues: list[str] = []
+        if err_count.get(pid):
+            issues.append(f"{err_count[pid]} 条错误")
+        if not m.enabled:
+            issues.append("已禁用")
+        if m.signed and not m.verified:
+            issues.append("签名校验失败")
+            plugins.append({
+                "plugin_id": pid, "name": m.manifest.name, "version": m.manifest.version,
+                "status": "error", "issues": issues,
+                "enabled": m.enabled, "signed": m.signed, "verified": m.verified,
+                "dependency_ok": m.dependency_ok, "missing_dependencies": m.missing_dependencies,
+                "hooks": hook_count.get(pid, 0),
+            })
+            continue
+        if not m.dependency_ok:
+            issues.append(f"缺依赖 {m.missing_dependencies}")
+        status = "degraded" if issues else "ok"
+        plugins.append({
+            "plugin_id": pid, "name": m.manifest.name, "version": m.manifest.version,
+            "status": status, "issues": issues,
+            "enabled": m.enabled, "signed": m.signed, "verified": m.verified,
+            "dependency_ok": m.dependency_ok, "missing_dependencies": m.missing_dependencies,
+            "hooks": hook_count.get(pid, 0),
+        })
+
+    # 已发现但未加载的插件（含被禁用/加载失败残留）
+    loaded_ids = {p["plugin_id"] for p in plugins}
+    for pid in sorted(discovered - loaded_ids):
+        issues = ["未加载"]
+        if err_count.get(pid):
+            issues.append(f"{err_count[pid]} 条错误")
+        plugins.append({
+            "plugin_id": pid, "name": pid, "version": "",
+            "status": "degraded", "issues": issues,
+            "enabled": _loader.is_enabled(pid),
+            "signed": None, "verified": None,
+            "dependency_ok": None, "missing_dependencies": [],
+            "hooks": hook_count.get(pid, 0),
+        })
+
+    statuses = {p["status"] for p in plugins}
+    overall = "error" if "error" in statuses else ("degraded" if "degraded" in statuses else "ok")
+    return {
+        "overall": overall,
+        "plugins": plugins,
+        "errors_total": len(errors),
+        "prompts_registered": sum(
+            len(v) for v in PluginPromptRegistry.list_registered().values()),
+    }
+
+
 @router.delete("/errors")
 async def clear_plugin_errors(plugin_id: str = "") -> dict[str, object]:
     """M7: 清空插件错误通道（可按插件过滤）。"""

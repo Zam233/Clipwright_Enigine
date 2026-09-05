@@ -111,18 +111,25 @@ class MGStorage:
             return None
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def list_generations(self) -> list[dict]:
-        """列出所有未保存的生成记录。"""
+    def list_generations(self, limit: int = 50) -> list[dict]:
+        """列出最近的生成记录摘要（新→旧）——M6 预览回看列表。
+
+        generation_id 允许自定义（无 gen_ 前缀），故按全量 .json 倒序；
+        API 层对单条查询做 ID 格式白名单校验。
+        """
         gens = []
         if self._generations_dir.exists():
-            for f in sorted(self._generations_dir.glob("*.json"), reverse=True):
+            for f in sorted(self._generations_dir.glob("*.json"), reverse=True)[: max(1, min(limit, 200))]:
                 try:
                     record = json.loads(f.read_text(encoding="utf-8"))
                     mg_def = record.get("mg_def", {})
                     gens.append({
-                        "generation_id": record.get("generation_id", ""),
+                        "generation_id": record.get("generation_id", f.stem),
                         "name": mg_def.get("name", ""),
                         "created_at": record.get("created_at", ""),
+                        "animation_id": mg_def.get("animation_id", ""),
+                        "element_count": len(mg_def.get("elements", []) or []),
+                        "duration_sec": mg_def.get("duration_sec", 0),
                     })
                 except Exception:
                     pass

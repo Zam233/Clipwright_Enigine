@@ -568,4 +568,14 @@ V1 每音频元素独立 source/analyser（重叠不再互斥静音）；V2 时�
 
 X1 蒙版枚举：后端兼容 `rect`（=rectangle）别名，`ellipse` 经 geq alpha 椭圆遮罩真实导出（此前前端两种蒙版导出全部静默失效）；X2 blend 收敛：UI 选项收敛到后端支持集 normal/screen/multiply/overlay，历史不支持值以「仅预览」保留；X3 文字锚点对齐：预览新增 `textLayout`（`metadata.position` → 轨序回退 {1:bottom,2:top,3:center} → 同轨 35px 堆叠，9 宫格映射与导出 drawtext 一致），描边预览 ×2 补偿 `borderw` 纯外侧语义，字距/阴影模糊标注「仅预览」，命中框同步新锚点（5+8 例单测）；X4 音频速率：混音链 `atrim` 时长按源时间换算（dur×speed）+ `atempo` 链式分级（单级限 0.5–2.0），与预览 playbackRate 语义一致（2 例单测）。
 
-**最终回归（2026-09-06）**：后端 `python -m pytest tests -q` = **1349 passed**（基线 1344 只增不减）；前端 `npx tsc --noEmit` ✓、`npm run test` = **377 passed**、`npm run build` ✓。
+### 后续收尾（V3 后端三缺口 / P8 / P10 / M6）— 已落地
+
+- **V3a 关键帧表达式模块**：新增 `utils/keyframes_expr.py`——时间基归一化（前端 exportTimeline 写 `kf_time_base=clip_local` 标记，管线绝对秒走启发式：min(time)≥start_sec 判绝对）、21 种 Penner 缓动 → ffmpeg 表达式（与前端 easing.ts 公式一一对应，未知回退 linear）、分段插值嵌套 if 构造、定点数字面量（禁科学计数法）。
+- **V3a drawtext**：`_build_kf_drawtext` 重写——easing 按段生效；translate 单位按来源区分（clip_local=画幅比例×w/h，管线遗留=像素）；enable 窗口按 start_sec 正确偏移（旧实现把片段相对时间当绝对时间，文字动画整体早于片段出现）。
+- **V3b 视频段**：transform 关键帧 → `scale eval=frame` + overlay 逐帧表达式（clip_local 比例单位，静态 transform 作缺省基线）；opacity 关键帧 → 真分段插值（替换旧 0.1s 窗口近似——多关键帧时 alpha 叠加越界闪烁）；关键帧内容进 trim 缓存键（sha256 摘要）。kf rotate 不支持（仅预览），静态 rotate 保持 V4。
+- **V3c 关键帧变速**：speed 关键帧 → 分段恒速近似（trim+concat，源区间按 ∫v 累计含 source_offset），预览时间重映射（M5）导出可见。
+- **P8 reload 回滚强化**：覆盖全部失败路径（PluginLoadError/任意异常/load 返回 None），回滚后对旧实例重新 initialize（shutdown 已释放资源），失败记错误总线，插件不静默消失。
+- **P10 插件健康视图**：`GET /api/plugin/health`——单端点聚合 ok/degraded/error 分类、错误计数、Hook 注册数、未加载插件与缺依赖清单。
+- **M6 generation_id 预览接线**：`_build_success` 成功路径持久化到 MGStorage；`GET /api/animation/mg/generations`（列表）/`/{generation_id}`（全文，ID 白名单校验）；前端 MgPreviewPage「最近生成」区 + API client（mgGenerations/mgGeneration），点选即经既有 /preview 渲染回看；管线 clip metadata 已携带 mg_generation_id。
+
+**最终回归（2026-09-06，第二轮）**：后端 `python -m pytest tests -q` = **1379 passed**；前端 `npx tsc --noEmit` ✓。

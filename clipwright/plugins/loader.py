@@ -372,7 +372,12 @@ class PluginLoader:
         logger.info("Plugin config saved: %s", plugin_id)
 
     def reload(self, plugin_id: str) -> None:
-        """重载插件——shutdown 后重新 initialize，使新配置生效（P1-5: 失败回滚保留旧实例）。"""
+        """重载插件——shutdown 后重新 initialize，使新配置生效。
+
+        P8 失败回滚：任何加载失败路径（PluginLoadError、其他异常、load 返回
+        None 如被禁用/目录缺失）都恢复旧实例并尝试重新 initialize（shutdown
+        已释放其资源）；回滚失败仍保留注册并记错误总线，插件不静默消失。
+        """
         if plugin_id not in self._plugins:
             logger.warning("插件 %s 未加载，无法重载", plugin_id)
             return
@@ -392,17 +397,29 @@ class PluginLoader:
         # M4: 清除 sys.modules 中该插件的陈旧模块（否则 reload 拿到旧代码）
         self._purge_plugin_modules(plugin_id)
 
+        reloaded = False
         try:
-            self.load(plugin_id)
-            logger.info("Plugin reloaded: %s", plugin_id)
+            reloaded = self.load(plugin_id) is not None
+            if reloaded:
+                logger.info("Plugin reloaded: %s", plugin_id)
         except PluginLoadError as e:
             logger.error("插件 %s 重载失败: %s", plugin_id, e)
             get_error_bus().record(plugin_id, "reload", f"重载失败: {e}")
-            # P1-5: 回滚 — 恢复旧实例，避免插件从注册表消失
+        except Exception as e:
+            logger.exception("插件 %s 重载异常: %s", plugin_id, e)
+            get_error_bus().record(plugin_id, "reload", f"重载异常: {e}")
+
+        if not reloaded:
+            # P8: 回滚 — 恢复旧实例，避免插件从注册表消失
             if old_plugin is not None:
                 self._plugins[plugin_id] = old_plugin
             if old_meta is not None:
                 self._metadatas[plugin_id] = old_meta
+            try:
+                if old_plugin is not None:
+                    old_plugin.initialize()
+            except Exception as e:
+                get_error_bus().record(plugin_id, "reload", f"回滚后旧实例 initialize 失败: {e}")
             logger.warning("插件 %s 已回滚到旧实例", plugin_id)
 
     @staticmethod

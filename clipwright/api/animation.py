@@ -84,6 +84,28 @@ async def list_mg_templates() -> list[dict]:
     return items
 
 
+@router.get("/mg/generations")
+async def list_mg_generations(limit: int = 50) -> list[dict]:
+    """M6: 列出最近 MG 生成记录摘要（新→旧），供按 generation_id 预览回看。"""
+    from clipwright.animation.mg.storage import MGStorage
+    return MGStorage().list_generations(limit=limit)
+
+
+@router.get("/mg/generations/{generation_id}")
+async def get_mg_generation(generation_id: str) -> dict:
+    """M6: 按 generation_id 取完整生成记录（mg_def）——可送 /preview 渲染回看。"""
+    import re
+
+    from clipwright.animation.mg.storage import MGStorage
+
+    if not re.fullmatch(r"[A-Za-z0-9_.\-]{1,80}", generation_id):
+        raise HTTPException(status_code=400, detail="非法的 generation_id")
+    record = MGStorage().load_generation(generation_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"生成记录不存在: {generation_id}")
+    return record
+
+
 @router.post("/preview")
 async def preview_mg(body: MgPreviewRequest) -> dict:
     """Phase 2.6: 单镜头 MG 动画预览 — 直接经 Hyperframes 渲染短视频，不入主渲染队列。

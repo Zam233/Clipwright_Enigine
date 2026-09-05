@@ -55,6 +55,86 @@ class TestReloadRollback:
         assert loader._plugins.get("p1") is old
         assert loader._metadatas.get("p1") == {"plugin_id": "p1"}
 
+    def test_reload_generic_exception_rolls_back(self, tmp_path) -> None:
+        """P8: 非.PluginLoadError 的任意异常同样回滚，插件不静默消失。"""
+        from clipwright.plugins.loader import PluginLoader
+        loader = PluginLoader(plugin_dir=tmp_path / "plugins", data_dir=tmp_path / "data")
+        old = object()
+        loader._plugins["p1"] = old  # type: ignore[assignment]
+        loader._metadatas["p1"] = {"plugin_id": "p1"}  # type: ignore[assignment]
+
+        def boom(_id):
+            raise RuntimeError("disk exploded")
+        loader.load = boom  # type: ignore[method-assign]
+
+        loader.reload("p1")
+        assert loader._plugins.get("p1") is old
+
+    def test_load_none_rolls_back_and_reinitializes(self, tmp_path) -> None:
+        """P8: load 返回 None（禁用/目录缺失）→ 回滚 + 旧实例重新 initialize。"""
+        from types import SimpleNamespace
+        from clipwright.plugins.loader import PluginLoader
+        loader = PluginLoader(plugin_dir=tmp_path / "plugins", data_dir=tmp_path / "data")
+        init_calls: list[str] = []
+        old = SimpleNamespace(initialize=lambda: init_calls.append("init"))
+        loader._plugins["p1"] = old
+        loader._metadatas["p1"] = {"plugin_id": "p1"}
+
+        loader.load = lambda _id: None  # type: ignore[method-assign,assignment]
+
+        loader.reload("p1")
+        assert loader._plugins.get("p1") is old
+        assert init_calls == ["init"], "shutdown 后旧实例应重新 initialize"
+
+
+class TestPluginHealthEndpoint:
+    def test_health_aggregates_states(self, tmp_path, monkeypatch) -> None:
+        """P10: 健康聚合视图——ok/degraded/未加载 分类与计数。"""
+        from types import SimpleNamespace
+        from fastapi.testclient import TestClient
+        from clipwright.main import app
+        from clipwright.api import plugin as plugin_api
+
+        fake_manifest = SimpleNamespace(id="p_loaded", name="已加载插件", version="1.0")
+        fake_meta = SimpleNamespace(
+            manifest=fake_manifest, enabled=True, signed=True, verified=True,
+            dependency_ok=False, missing_dependencies=["dep_x"],
+        )
+
+        class FakeLoader:
+            def list_loaded(self):
+                return [fake_meta]
+            def discover(self):
+                return ["p_loaded", "p_ghost"]
+            def is_enabled(self, pid):
+                return True
+
+        plugin_api.set_loader(FakeLoader())
+        client = TestClient(app)
+        resp = client.get("/api/plugin/health")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["overall"] == "degraded"
+        by_id = {p["plugin_id"]: p for p in body["plugins"]}
+        assert by_id["p_loaded"]["status"] == "degraded"
+        assert "缺依赖" in by_id["p_loaded"]["issues"][0]
+        assert by_id["p_ghost"]["issues"] == ["未加载"]
+
+    def test_health_without_loader(self) -> None:
+        from fastapi.testclient import TestClient
+        from clipwright.main import app
+        from clipwright.api import plugin as plugin_api
+
+        saved = plugin_api._loader
+        plugin_api._loader = None
+        try:
+            client = TestClient(app)
+            body = client.get("/api/plugin/health").json()
+            assert body["overall"] == "ok"
+            assert body["plugins"] == []
+        finally:
+            plugin_api._loader = saved
+
 
 class TestPersonaKnowledgeApi:
     def test_knowledge_put_delete_endpoints(self, tmp_path, monkeypatch) -> None:

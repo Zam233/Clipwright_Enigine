@@ -1185,6 +1185,15 @@ class MGGenerator:
             "generation_id": generation_id,
         })
 
+        # M6: 持久化生成记录——MGStorage 按 generation_id 落盘（预览/回看接线）；
+        # 持久化失败不阻断生成主流程
+        if html:
+            try:
+                from clipwright.animation.mg.storage import MGStorage
+                MGStorage().save_generation(mg_def, generation_id)
+            except Exception as exc:
+                logger.warning("MG 生成记录持久化失败 %s: %s", generation_id, exc)
+
         return {
             "success": bool(html),
             "html": html,

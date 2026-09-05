@@ -136,12 +136,12 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
 修改代码后，运行：
 ```bash
 # 后端全量回归（工作目录 J:\Clipwright）
-python -m pytest tests -q        # 期望 1154 passed
+python -m pytest tests -q        # 期望 1379 passed
 python -c "import clipwright.main"
 
 # 前端回归（工作目录 J:\Clipweight-Client）
 npx tsc --noEmit
-npm run test                     # 期望 361 passed
+npm run test                     # 期望 377 passed
 npm run build
 ```
 
