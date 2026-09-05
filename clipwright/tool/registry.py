@@ -116,7 +116,35 @@ class ToolRegistry:
     async def execute(
         cls, name: str, **kwargs: Any
     ) -> ToolExecResult:
-        """按名称执行工具，失败时自动尝试 fallback 链。"""
+        """按名称执行工具，失败时自动尝试 fallback 链。
+
+        T9: 对含路径/URL 参数的工具调用统一安全校验。
+        """
+        # T9: 路径/URL 参数安全校验（agent/LLM 驱动的调用可能注入任意路径）
+        from clipwright.security import (
+            assert_allowed_path, assert_public_url, SecurityViolation,
+        )
+        for key in ("input_path", "video_path", "audio_path", "file_path", "path"):
+            val = kwargs.get(key)
+            if val and isinstance(val, str) and not val.startswith(("http://", "https://")):
+                try:
+                    assert_allowed_path(val)
+                except SecurityViolation as e:
+                    return ToolExecResult(
+                        status=ToolStatus.ERROR, tool_name=name,
+                        error=f"路径安全校验失败: {e}",
+                    )
+        for key in ("url", "video_url", "audio_url", "input_url"):
+            val = kwargs.get(key)
+            if val and isinstance(val, str) and val.startswith(("http://", "https://")):
+                try:
+                    assert_public_url(val)
+                except SecurityViolation as e:
+                    return ToolExecResult(
+                        status=ToolStatus.ERROR, tool_name=name,
+                        error=f"URL 安全校验失败: {e}",
+                    )
+
         tool = cls._tools.get(name)
         if tool is None:
             logger.error("ToolRegistry: 工具未注册: %s", name)

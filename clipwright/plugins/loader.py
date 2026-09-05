@@ -530,11 +530,20 @@ class PluginLoader:
         return {}
 
     def _parse_manifest(self, plugin_id: str, plugin_path: Path) -> PluginManifest:
-        """解析 plugin.yaml，如不存在则创建默认清单。"""
+        """解析 plugin.yaml，如不存在则创建默认清单。
+
+        P7: 解析异常（YAML 格式错误/schema 校验失败）包装为 PluginLoadError，
+        避免一个坏插件中断整个 bootstrap。
+        """
         manifest_path = plugin_path / "plugin.yaml"
         if manifest_path.exists():
-            with open(manifest_path, encoding="utf-8") as f:
-                data: dict[str, Any] = yaml.safe_load(f) or {}
+            try:
+                with open(manifest_path, encoding="utf-8") as f:
+                    data: dict[str, Any] = yaml.safe_load(f) or {}
+            except yaml.YAMLError as e:
+                raise PluginLoadError(
+                    f"Plugin '{plugin_id}' plugin.yaml 解析失败: {e}"
+                ) from e
             # 去除可能重复的 id 字段
             data.pop("id", None)
             if "kind" in data and isinstance(data["kind"], str):
@@ -542,7 +551,12 @@ class PluginLoader:
                     data["kind"] = PluginKind(data["kind"])
                 except ValueError:
                     data["kind"] = PluginKind.CAPABILITY
-            return PluginManifest(id=plugin_id, **data)
+            try:
+                return PluginManifest(id=plugin_id, **data)
+            except Exception as e:
+                raise PluginLoadError(
+                    f"Plugin '{plugin_id}' manifest 校验失败: {e}"
+                ) from e
 
         return PluginManifest(
             id=plugin_id,
