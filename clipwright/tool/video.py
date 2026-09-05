@@ -454,14 +454,16 @@ class VideoConcatTool(BaseTool):
         **kwargs: Any,
     ) -> ToolExecResult:
         out = _ensure_output_path(output_path, "concat_", ".mp4")
+        # T12: 路径校验/转义/清单写入收敛到 utils.concat_list
+        from clipwright.utils.concat_list import validate_and_escape, write_list
+        lines, err = validate_and_escape(clips)
+        if err:
+            return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error=err)
+        file_list = _ensure_output_path(None, "concat_list_", ".txt")
         try:
             # 用 concat demuxer
-            file_list = _ensure_output_path(None, "concat_list_", ".txt")
-            with open(file_list, "w") as f:
-                for clip in clips:
-                    f.write(f"file '{clip}'\n")
+            write_list(lines, file_list)
             result = await _ffmpeg("-f", "concat", "-safe", "0", "-i", file_list, "-c", "copy", out)
-            os.unlink(file_list)
             if result.returncode != 0:
                 return ToolExecResult(
                     status=ToolStatus.ERROR,
@@ -481,6 +483,11 @@ class VideoConcatTool(BaseTool):
                 tool_name=self.name,
                 error="ffmpeg not found",
             )
+        finally:
+            try:
+                os.unlink(file_list)
+            except OSError:
+                pass
 
 
 class VideoOverlayTool(BaseTool):

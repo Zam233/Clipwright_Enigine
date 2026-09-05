@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import asyncio
 import subprocess
 import tempfile
 from pathlib import Path
@@ -12,13 +13,14 @@ from clipwright.config import logger
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
 from clipwright.tool.video import _ensure_output_path
+from clipwright.tool.video import resolve_ffmpeg
 
 
 class SubtitleBurnTool(BaseTool):
     """字幕烧录工具 — 将字幕文本以硬字幕形式叠加到视频。"""
     name = "subtitle_burn"
     description = "将字幕/文本烧录到视频（硬字幕），支持中文"
-    dependencies = ["ffmpeg"]
+    dependencies = [resolve_ffmpeg()]
 
     async def execute(
         self,
@@ -69,12 +71,12 @@ class SubtitleBurnTool(BaseTool):
                 if not filters:
                     return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error="no valid subtitles")
 
-                cmd = ["ffmpeg", "-y", "-loglevel", "error",
+                cmd = [resolve_ffmpeg(), "-y", "-loglevel", "error",
                        "-i", video_path,
                        "-vf", ",".join(filters),
                        "-c:v", "libx264", "-pix_fmt", "yuv420p",
                        "-c:a", "copy", out]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                result = await asyncio.to_thread(subprocess.run,cmd, capture_output=True, text=True, timeout=300)
                 if result.returncode != 0:
                     return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
                                           error=f"subtitle burn error: {result.stderr[:300]}")

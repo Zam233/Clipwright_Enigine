@@ -30,6 +30,20 @@ class VideoStabilizeTool(BaseTool):
     ) -> ToolExecResult:
         out = _ensure_output_path(output_path, "stab_", ".mp4")
         transforms = _ensure_output_path(None, "transforms_", ".trf")
+        # T12: transforms 文件在任何路径（检测失败/超时/异常）下都必须清理
+        try:
+            return await self._run(input_path, smoothing, max_shift, out, transforms)
+        finally:
+            Path(transforms).unlink(missing_ok=True)
+
+    async def _run(
+        self,
+        input_path: str,
+        smoothing: int,
+        max_shift: int,
+        out: str,
+        transforms: str,
+    ) -> ToolExecResult:
         try:
             # Phase 1: 分析运动
             detect = await asyncio.to_thread(subprocess.run,
@@ -51,8 +65,6 @@ class VideoStabilizeTool(BaseTool):
                  "-c:a", "copy", out],
                 capture_output=True, text=True, timeout=300,
             )
-            # 清理临时 transforms 文件
-            Path(transforms).unlink(missing_ok=True)
 
             if result.returncode != 0:
                 return ToolExecResult(

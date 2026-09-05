@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import subprocess
 import uuid
 import tempfile
@@ -12,6 +13,7 @@ from typing import Any, Optional
 from clipwright.config import logger
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
+from clipwright.tool.video import resolve_ffmpeg
 
 
 class VideoSpeedTool(BaseTool):
@@ -37,7 +39,7 @@ class VideoSpeedTool(BaseTool):
             if interpolate and speed < 1.0:
                 # 带运动插值的慢动作（minterpolate）
                 cmd = [
-                    "ffmpeg", "-y", "-loglevel", "error",
+                    resolve_ffmpeg(), "-y", "-loglevel", "error",
                     "-i", input_path,
                     "-vf", f"setpts={1/speed}*PTS,minterpolate=fps=30:mi_mode=mci",
                     "-c:v", "libx264", "-pix_fmt", "yuv420p",
@@ -58,14 +60,14 @@ class VideoSpeedTool(BaseTool):
                 audio_filters.append(f"atempo={atempo}")
 
                 cmd = [
-                    "ffmpeg", "-y", "-loglevel", "error",
+                    resolve_ffmpeg(), "-y", "-loglevel", "error",
                     "-i", input_path,
                     "-vf", f"setpts={1/speed}*PTS",
                     "-af", ",".join(audio_filters),
                     "-c:v", "libx264", "-pix_fmt", "yuv420p",
                     out,
                 ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            result = await asyncio.to_thread(subprocess.run,cmd, capture_output=True, text=True, timeout=300)
             if result.returncode != 0:
                 return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
                                       error=f"speed error: {result.stderr[:200]}")
@@ -126,7 +128,7 @@ class TransitionApplyTool(BaseTool):
             xfade = filter_map.get(transition, filter_map["crossfade"])
 
             # 获取 clip_a 的时长
-            probe_a = subprocess.run(
+            probe_a = await asyncio.to_thread(subprocess.run,
                 ["ffprobe", "-v", "error", "-show_entries", "format=duration",
                  "-of", "json", clip_a],
                 capture_output=True, text=True, timeout=10,
@@ -139,14 +141,14 @@ class TransitionApplyTool(BaseTool):
             xfade = xfade.replace("offset=1", f"offset={offset}")
 
             cmd = [
-                "ffmpeg", "-y", "-loglevel", "error",
+                resolve_ffmpeg(), "-y", "-loglevel", "error",
                 "-i", clip_a, "-i", clip_b,
                 "-filter_complex", xfade,
                 "-c:v", "libx264", "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "192k",
                 out,
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            result = await asyncio.to_thread(subprocess.run,cmd, capture_output=True, text=True, timeout=300)
             if result.returncode != 0:
                 return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
                                       error=f"transition error: {result.stderr[:200]}")
@@ -183,13 +185,13 @@ class VideoBlurTool(BaseTool):
             }
             vf = filter_map.get(blur_type, filter_map["gaussian"])
             cmd = [
-                "ffmpeg", "-y", "-loglevel", "error",
+                resolve_ffmpeg(), "-y", "-loglevel", "error",
                 "-i", input_path,
                 "-vf", vf,
                 "-c:v", "libx264", "-pix_fmt", "yuv420p",
                 "-c:a", "copy", out,
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            result = await asyncio.to_thread(subprocess.run,cmd, capture_output=True, text=True, timeout=120)
             if result.returncode != 0:
                 return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
                                       error=f"blur error: {result.stderr[:200]}")
@@ -232,7 +234,7 @@ class WatermarkTool(BaseTool):
             if image_path and Path(image_path).exists():
                 # 图片水印
                 cmd = [
-                    "ffmpeg", "-y", "-loglevel", "error",
+                    resolve_ffmpeg(), "-y", "-loglevel", "error",
                     "-i", input_path, "-i", image_path,
                     "-filter_complex",
                     f"[1:v]format=rgba,scale=iw*{scale}:ih*{scale}[wm];"
@@ -245,7 +247,7 @@ class WatermarkTool(BaseTool):
                 from clipwright.tool.design import escape_drawtext_text
                 safe_text = escape_drawtext_text(text)
                 cmd = [
-                    "ffmpeg", "-y", "-loglevel", "error",
+                    resolve_ffmpeg(), "-y", "-loglevel", "error",
                     "-i", input_path,
                     "-vf",
                     f"drawtext=text='{safe_text}':fontsize=24:fontcolor=white@{opacity}:"
@@ -256,7 +258,7 @@ class WatermarkTool(BaseTool):
             else:
                 return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error="image_path or text required")
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            result = await asyncio.to_thread(subprocess.run,cmd, capture_output=True, text=True, timeout=120)
             if result.returncode != 0:
                 return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
                                       error=f"watermark error: {result.stderr[:200]}")
@@ -295,7 +297,7 @@ class EffectVignetteTool(BaseTool):
             vf = effect_map.get(effect, effect_map["vignette"])
 
             cmd = [
-                "ffmpeg", "-y", "-loglevel", "error",
+                resolve_ffmpeg(), "-y", "-loglevel", "error",
                 "-i", input_path,
                 "-vf", vf,
                 "-c:v", "libx264", "-pix_fmt", "yuv420p",
@@ -303,7 +305,7 @@ class EffectVignetteTool(BaseTool):
             ]
 
             # sepia/old_film 需要额外音频
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            result = await asyncio.to_thread(subprocess.run,cmd, capture_output=True, text=True, timeout=120)
             if result.returncode != 0:
                 return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
                                       error=f"effect error: {result.stderr[:200]}")
@@ -422,13 +424,13 @@ class TextDiagramTool(BaseTool):
                                       output={"output_path": out}, output_path=out)
 
             cmd = [
-                "ffmpeg", "-y", "-loglevel", "error",
+                resolve_ffmpeg(), "-y", "-loglevel", "error",
                 "-i", input_path,
                 "-vf", ",".join(filters),
                 "-c:v", "libx264", "-pix_fmt", "yuv420p",
                 "-c:a", "copy", out,
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            result = await asyncio.to_thread(subprocess.run,cmd, capture_output=True, text=True, timeout=120)
             if result.returncode != 0:
                 return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
                                       error=f"diagram error: {result.stderr[:200]}")
@@ -460,8 +462,8 @@ class FaceDetectTool(BaseTool):
             # 提取一帧，用 vision service 分析
             frame = _CLIPWRIGHT_TEMP / f"tmp_{uuid.uuid4().hex[:8]}.jpg"
             try:
-                extract = subprocess.run(
-                    ["ffmpeg", "-y", "-loglevel", "error", "-ss", str(time_sec),
+                extract = await asyncio.to_thread(subprocess.run,
+                    [resolve_ffmpeg(), "-y", "-loglevel", "error", "-ss", str(time_sec),
                      "-i", input_path, "-vframes", "1", str(frame)],
                     capture_output=True, text=True, timeout=15,
                 )
@@ -531,7 +533,7 @@ class BackgroundRemoveTool(BaseTool):
                 if background_path and Path(background_path).exists():
                     # 绿幕 + 替换背景
                     cmd = [
-                        "ffmpeg", "-y", "-loglevel", "error",
+                        resolve_ffmpeg(), "-y", "-loglevel", "error",
                         "-i", input_path, "-i", background_path,
                         "-filter_complex",
                         f"[0:v]chromakey={color}:similarity={similarity}:blend={blend}[ck];"
@@ -543,7 +545,7 @@ class BackgroundRemoveTool(BaseTool):
                 else:
                     # 绿幕 + 纯色背景
                     cmd = [
-                        "ffmpeg", "-y", "-loglevel", "error",
+                        resolve_ffmpeg(), "-y", "-loglevel", "error",
                         "-i", input_path,
                         "-vf", f"chromakey={color}:similarity={similarity}:blend={blend}:color={background_color}",
                         "-c:v", "libx264", "-pix_fmt", "yuv420p",
@@ -551,7 +553,7 @@ class BackgroundRemoveTool(BaseTool):
                     ]
             elif method == "blur":
                 cmd = [
-                    "ffmpeg", "-y", "-loglevel", "error",
+                    resolve_ffmpeg(), "-y", "-loglevel", "error",
                     "-i", input_path,
                     "-vf", "split[fg][bg];[bg]gblur=sigma=20[bg];[bg][fg]overlay=format=auto",
                     "-c:v", "libx264", "-pix_fmt", "yuv420p",
@@ -561,7 +563,7 @@ class BackgroundRemoveTool(BaseTool):
                 return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
                                       error=f"unsupported method: {method}")
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            result = await asyncio.to_thread(subprocess.run,cmd, capture_output=True, text=True, timeout=300)
             if result.returncode != 0:
                 return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
                                       error=f"bgremove error: {result.stderr[:200]}")

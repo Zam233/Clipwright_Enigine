@@ -11,13 +11,14 @@ from typing import Any, Optional
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
 from clipwright.tool.video import _ensure_output_path, _ffmpeg
+from clipwright.tool.video import resolve_ffmpeg
 
 
 class TypewriterAnimationTool(BaseTool):
     """打字机文字动画工具（FFmpeg drawtext 单帧文字叠加）。"""
     name = "typewriter_animation"
     description = "在视频上叠加打字机效果的文字动画"
-    dependencies = ["ffmpeg"]
+    dependencies = [resolve_ffmpeg()]
 
     async def execute(
         self,

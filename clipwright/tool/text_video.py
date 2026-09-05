@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import asyncio
 import subprocess
 import tempfile
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any, Optional
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
 from clipwright.tool.video import _ensure_output_path
+from clipwright.tool.video import resolve_ffmpeg
 from clipwright.config import logger
 
 
@@ -18,7 +20,7 @@ class GenerateTextVideoTool(BaseTool):
     """从文本生成视频（纯色背景 + 文字叠加）。"""
     name = "generate_text_video"
     description = "从文字生成视频片段：纯色背景上叠加文字，用于无素材时的占位"
-    dependencies = ["ffmpeg"]
+    dependencies = [resolve_ffmpeg()]
 
     async def execute(
         self,
@@ -61,7 +63,7 @@ class GenerateTextVideoTool(BaseTool):
                 from clipwright.services.fontconfig import FontConfig
                 font_file = FontConfig.ffmpeg_fontspec(FontConfig.get_font_path())
                 cmd = [
-                    "ffmpeg", "-y", "-loglevel", "error",
+                    resolve_ffmpeg(), "-y", "-loglevel", "error",
                     "-f", "lavfi", "-i",
                     f"color=c={bg_color}:s={width}x{height}:d={duration_sec}",
                     "-vf",
@@ -75,7 +77,7 @@ class GenerateTextVideoTool(BaseTool):
                 cmd.append(out)
 
                 logger.debug("FFmpeg cmd: %s", " ".join(cmd))
-                result = subprocess.run(
+                result = await asyncio.to_thread(subprocess.run,
                     cmd, capture_output=True, text=True, timeout=120,
                 )
                 if result.returncode != 0:
@@ -85,7 +87,7 @@ class GenerateTextVideoTool(BaseTool):
                     logger.info("generate_text_video: 回退到纯色视频")
                     cmd[8] = f"color=c={bg_color}:s={width}x{height}:d={duration_sec}"
                     cmd[9:11] = []
-                    result = subprocess.run(
+                    result = await asyncio.to_thread(subprocess.run,
                         cmd, capture_output=True, text=True, timeout=120,
                     )
                     if result.returncode != 0:
