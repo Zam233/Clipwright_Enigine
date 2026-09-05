@@ -27,10 +27,20 @@ def _safe_extract(data: bytes, dest: Path, required_manifest: str) -> None:
         tf.extractall(dest)
 
 
-def install_plugin_from_bytes(data: bytes, plugin_id: str) -> Path:
-    """安装插件包：解包到临时目录 → 校验 → 原子移动到 plugins/{id} → 注册。"""
+def install_plugin_from_bytes(data: bytes, plugin_id: str, expected_sha256: str = "") -> Path:
+    """安装插件包：解包到临时目录 → 校验 → 原子移动到 plugins/{id} → 注册。
+
+    P2: 支持 expected_sha256 校验（下载端提供）；load 失败时自动回滚删除 plugin_dir。
+    """
     if len(data) > MAX_TARBALL_BYTES:
         raise ValueError("包大小超限")
+    # P2: sha256 完整性校验
+    if expected_sha256:
+        import hashlib
+        actual = hashlib.sha256(data).hexdigest()
+        if actual != expected_sha256:
+            raise ValueError(
+                f"sha256 校验失败: expected={expected_sha256[:16]}... actual={actual[:16]}...")
     plugin_dir = Path(settings.plugin_dir) / plugin_id
     if plugin_dir.exists():
         raise ValueError(f"插件 {plugin_id} 已安装")
@@ -50,12 +60,15 @@ def install_plugin_from_bytes(data: bytes, plugin_id: str) -> Path:
         loader = PluginLoader(plugin_dir=Path(settings.plugin_dir), data_dir=settings.plugin_data_dir)
         loaded = loader.load(plugin_id)
         if loaded is None:
-            # 加载失败 → 回滚
+            # 加载失败 → P2 回滚（含 loader 内部注册的残留清理）
             shutil.rmtree(plugin_dir, ignore_errors=True)
             raise ValueError(f"插件 {plugin_id} 加载失败")
         logger.info("市场插件安装成功: %s", plugin_id)
         return plugin_dir
     except Exception:
+        # P2: 回滚——即使 tmp == plugin_dir（已 move）也删除，不留坏插件卡死启动
+        if plugin_dir.exists():
+            shutil.rmtree(plugin_dir, ignore_errors=True)
         if tmp.exists() and tmp != plugin_dir:
             shutil.rmtree(tmp, ignore_errors=True)
         raise
