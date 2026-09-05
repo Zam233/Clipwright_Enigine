@@ -93,7 +93,7 @@ class Clip(BaseModel):
     # 蒙版（M4：仅 video / image 类型，渲染时裁剪到形状内）
     mask_type: Optional[str] = Field(
         default=None, pattern="^(none|rect|ellipse)?$",
-        description="蒙版类型 none/rect/ellipse",
+        description="蒙版类型 none/rect/ellipse（后端兼容 rectangle 别名；ellipse 导出经 geq alpha 遮罩）",
     )
     mask_rect: Optional[dict] = Field(
         default=None,

@@ -75,3 +75,70 @@ async def test_mix_audio_single_source_fallback(tmp_path: Path) -> None:
     cmd = captured[0]
     assert "amix" not in cmd
     assert str(voice) in cmd
+
+
+@pytest.mark.asyncio
+async def test_mix_audio_speed_atempo_chain(tmp_path: Path) -> None:
+    """X4: 非 1 速音源 → atrim 源时长×速率 + atempo 链式分级（0.5–2.0 界内）。"""
+    video = tmp_path / "video.mp4"
+    voice = tmp_path / "voice.wav"
+    bgm = tmp_path / "bgm.mp3"
+    for p in (video, voice, bgm):
+        p.write_bytes(b"x" * 64)
+    out = tmp_path / "out.mp4"
+
+    rs = RenderService(work_dir=tmp_path / "work")
+    captured: list[str] = []
+
+    async def fake_ff(cmd, **kwargs):
+        captured.append(" ".join(cmd))
+        out.write_bytes(b"mp4")
+        return type("R", (), {"returncode": 0})()
+
+    rs._ff = fake_ff  # type: ignore[method-assign]
+
+    # speed=4 → atrim duration = 5×4=20, atempo=2.0×2.0；source_offset=2 → atrim start=2
+    segments = [
+        {"source_path": str(voice), "volume": 0.8, "start_sec": 1.0, "duration_sec": 5,
+         "source_offset_sec": 2.0, "speed": 4.0},
+    ]
+    await rs._mix_audio(str(video), segments, str(out), afp="", bfp=str(bgm))
+
+    assert captured, "ffmpeg 未被调用"
+    cmd = captured[0]
+    assert "atrim=start=2.0:duration=20.000000" in cmd
+    assert "atempo=2.0" in cmd
+    assert cmd.count("atempo=2.0") == 2, "speed=4 应拆两级 atempo=2.0"
+    # adelay 仍用时间线 start_sec（1s → 1000ms）
+    assert "adelay=1000|1000" in cmd
+
+
+@pytest.mark.asyncio
+async def test_mix_audio_speed_slow_chain(tmp_path: Path) -> None:
+    """X4: 慢速 0.25 → atempo=0.5 两级；默认 1 速不产生 atempo。"""
+    video = tmp_path / "video.mp4"
+    voice = tmp_path / "voice.wav"
+    bgm = tmp_path / "bgm.mp3"
+    for p in (video, voice, bgm):
+        p.write_bytes(b"x" * 64)
+    out = tmp_path / "out.mp4"
+
+    rs = RenderService(work_dir=tmp_path / "work")
+    captured: list[str] = []
+
+    async def fake_ff(cmd, **kwargs):
+        captured.append(" ".join(cmd))
+        out.write_bytes(b"mp4")
+        return type("R", (), {"returncode": 0})()
+
+    rs._ff = fake_ff  # type: ignore[method-assign]
+
+    segments = [
+        {"source_path": str(voice), "volume": 0.8, "start_sec": 0, "duration_sec": 4,
+         "speed": 0.25},
+    ]
+    await rs._mix_audio(str(video), segments, str(out), afp="", bfp=str(bgm))
+
+    cmd = captured[0]
+    assert "atrim=start=0.0:duration=1.000000" in cmd
+    assert cmd.count("atempo=0.5") == 2, "speed=0.25 应拆两级 atempo=0.5"

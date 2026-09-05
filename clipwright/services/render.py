@@ -1237,9 +1237,10 @@ class RenderService:
                                  f"crop={width}:{height},setsar=1")
                 vf = speed_prefix + fit_scale
 
-                # D2: mask_type=rectangle 落地——按归一化 mask_rect 裁剪后还原画幅
+                # D2/X1: 蒙版落地——rectangle(=rect) 裁剪还原画幅；ellipse geq alpha 椭圆遮罩
                 mask_rect = seg.get("mask_rect")
-                if seg.get("mask_type") == "rectangle" and isinstance(mask_rect, dict):
+                _mask_type = seg.get("mask_type")
+                if _mask_type in ("rectangle", "rect") and isinstance(mask_rect, dict):
                     try:
                         mx = max(0.0, min(1.0, float(mask_rect.get("x", 0) or 0)))
                         my = max(0.0, min(1.0, float(mask_rect.get("y", 0) or 0)))
@@ -1250,6 +1251,10 @@ class RenderService:
                     if mw > 0.01 and mh > 0.01:
                         vf += (f",crop=iw*{mw:.4f}:ih*{mh:.4f}:iw*{mx:.4f}:ih*{my:.4f},"
                                f"scale={width}:{height},setsar=1")
+                elif _mask_type == "ellipse":
+                    # 椭圆蒙版：中心椭圆内保留，外 alpha=0（与预览 ellipse 蒙版对齐）
+                    vf += (",format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
+                           "a='if(lt(pow(X-(W/2),2)/pow(W/2,2)+pow(Y-(H/2),2)/pow(H/2,2),1),255,0)'")
 
                 kfs = seg.get("keyframes", [])
                 if kfs:
@@ -2030,6 +2035,8 @@ class RenderService:
                     "is_bgm": bool(seg.get("is_bgm")),
                     # R9: 源内偏移与时间线位置分离
                     "source_offset": float(seg.get("source_offset_sec", 0) or 0),
+                    # X4: 播放速率——atrim 时长按源时间换算 + atempo 补偿
+                    "speed": float(seg.get("speed", 1) or 1),
                 })
         if bfp and Path(bfp).exists():
             voices.append({"path": bfp, "volume": 0.3, "start": 0, "dur": 0,
@@ -2051,8 +2058,21 @@ class RenderService:
                     # start_sec——此前两者混用导致源偏移素材播放错误区域
                     so = v.get("source_offset", 0)
                     atrim_start = so if so > 0 else v["start"]
+                    sp = v.get("speed", 1) or 1
+                    # X4: 源时间 atrim 时长 = 时间线时长 × 速率；atempo（单级限
+                    # 0.5–2.0，越界链式分级）把源片段压/展到时间线时长，与预览
+                    # playbackRate 语义一致
                     if v["dur"] > 0:
-                        parts.append(f"atrim=start={atrim_start}:duration={v['dur']}")
+                        parts.append(f"atrim=start={atrim_start}:duration={v['dur'] * sp:.6f}")
+                    if abs(sp - 1.0) > 1e-3:
+                        remaining = sp
+                        while remaining > 2.0:
+                            parts.append("atempo=2.0")
+                            remaining /= 2.0
+                        while remaining < 0.5:
+                            parts.append("atempo=0.5")
+                            remaining /= 0.5
+                        parts.append(f"atempo={remaining:.6f}")
                     if v["start"] > 0:
                         parts.append(f"adelay={int(v['start'] * 1000)}|{int(v['start'] * 1000)}")
                     if v["fade_in"] > 0:
