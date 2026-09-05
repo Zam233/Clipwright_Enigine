@@ -108,9 +108,16 @@ class VideoTrimTool(BaseTool):
     dependencies = ["ffmpeg"]
 
     async def _ensure_local(self, input_path: str) -> str | None:
-        """URL 输入先下载到统一缓存目录（_cache/tmp/），返回本地路径；失败返回 None。"""
+        """URL 输入先下载到统一缓存目录（_cache/tmp/），返回本地路径；失败返回 None。
+
+        T6: 缓存键改 sha256(url) 防不同 URL 同名互串；下载前 assert_public_url 防 SSRF。
+        """
         if not input_path.startswith(("http://", "https://")):
             return input_path
+        # T6: SSRF 防护——仅允许公网 http(s) URL
+        from clipwright.security import assert_public_url
+        assert_public_url(input_path)
+        import hashlib
         from clipwright.security import allowed_media_roots
         roots = allowed_media_roots()
         cache_root = next((r for r in roots if r.name == "_cache"), None)
@@ -119,21 +126,23 @@ class VideoTrimTool(BaseTool):
             cache_root = _P(__file__).resolve().parent.parent.parent / "_cache"
         dl_dir = cache_root / "tmp"
         dl_dir.mkdir(parents=True, exist_ok=True)
-        name = input_path.split("/")[-1].split("?")[0] or f"url_{abs(hash(input_path))}.mp4"
-        out = dl_dir / name
+        # T6: sha256(url) 前 16 位作缓存键（旧 basename 键会互串）
+        url_hash = hashlib.sha256(input_path.encode()).hexdigest()[:16]
+        ext = input_path.split("?")[0].rsplit(".", 1)[-1][:5] or "mp4"
+        out = dl_dir / f"url_{url_hash}.{ext}"
         if out.exists() and out.stat().st_size > 2000:
             return str(out)
         try:
             result = await asyncio.to_thread(
                 subprocess.run,
-                ["ffmpeg", "-y", "-loglevel", "error",
+                [resolve_ffmpeg(), "-y", "-loglevel", "error",
                  "-i", input_path, "-c", "copy", "-movflags", "+faststart", str(out)],
                 capture_output=True, text=True, timeout=600,
             )
             if result.returncode != 0 or not out.exists() or out.stat().st_size <= 2000:
                 logger.warning("video_trim URL 下载失败: %s (%s)", input_path, result.stderr[:200])
                 return None
-            logger.info("video_trim 已下载网络素材: %s → %s", name, out)
+            logger.info("video_trim 已下载网络素材: %s → %s", input_path[:60], out)
             return str(out)
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             logger.warning("video_trim URL 下载异常: %s", e)
@@ -354,11 +363,32 @@ class VideoCropTool(BaseTool):
     ) -> ToolExecResult:
         out = _ensure_output_path(output_path, "crop_", ".mp4")
         try:
-            # 用 ffmpeg 的 crop 过滤器裁切居中区域
+            # T8: 先探测源尺寸，在 Python 中计算裁切参数（旧表达式缺 ih* 乘数恒错）
+            probe = await asyncio.to_thread(
+                subprocess.run,
+                [resolve_ffprobe(), "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height", "-of", "csv=p=0", input_path],
+                capture_output=True, text=True, timeout=30,
+            )
+            iw, ih = map(int, probe.stdout.strip().split(","))
+            aw, ah = map(int, aspect.split(":"))
+            target_ratio = aw / ah
+            source_ratio = iw / ih
+            if source_ratio > target_ratio:
+                crop_w = int(ih * target_ratio)
+                crop_h = ih
+            else:
+                crop_w = iw
+                crop_h = int(iw / target_ratio)
+            # 确保偶数尺寸
+            crop_w = crop_w // 2 * 2
+            crop_h = crop_h // 2 * 2
+            crop_x = (iw - crop_w) // 2
+            crop_y = (ih - crop_h) // 2
             result = await asyncio.to_thread(
                 subprocess.run,
-                ["ffmpeg", "-y", "-loglevel", "error", "-i", input_path,
-                 "-vf", f"crop={aspect.replace(':', '/')}:ih:iw/({aspect.replace(':', '/')}):(ih-iw/({aspect.replace(':', '/')}))/2",
+                [resolve_ffmpeg(), "-y", "-loglevel", "error", "-i", input_path,
+                 "-vf", f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y}",
                  "-c:v", "libx264", "-pix_fmt", "yuv420p",
                  "-c:a", "copy", out],
                 capture_output=True, text=True, timeout=120,
