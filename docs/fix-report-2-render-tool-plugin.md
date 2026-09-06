@@ -604,3 +604,15 @@ X1 蒙版枚举：后端兼容 `rect`（=rectangle）别名，`ellipse` 经 geq 
 - **V10c 导出帧**：「导出当前帧」从直接 dump 预览画布（带 safe-area 叠层/DPR 缩放/黑边）改为**离屏按时间线分辨率重渲**当前帧（复用合成原语，无 safe-area），与成片一致。
 
 **最终回归（2026-09-06，第四轮）**：后端 **1382 passed**；前端 **379 passed** + tsc + build ✓。两份修复报告全部条目（含全部备注的残余小项）至此闭环。
+
+### 全链路真实验证（2026-09-07，第五轮）— 管线级冒烟 + 真浏览器冒烟
+
+**管线级端到端（真实 LLM 驱动）**：本机 .env 含 LLM 配置，起后端后经 `POST /api/pipeline/run-async` 发起真实管线（persona=Zam × knowledge_longform，选题「为什么天空是蓝色的」）。16 分钟跑完 6 Agent 全链（structure→material→edit→animation→audio→quality×2），质检通过（0 error / 23 warning）；`final_timeline` 落库 Mongo（6 轨：14 视频 + 3 文字 + 70 字幕 + 14 音频 + 9 叠加视频 + 9 LLM MG）；经 `/api/render/queue` 渲染产出 12s 1080p 成片（ffprobe + 帧亮度校验通过）。**管线→时间线→渲染全链闭环。**
+
+**冒烟暴露并修复的真实 bug（结果恢复路径永久失效）**：`_load_result_from_mongo` 在事件循环线程调用 `PipelineModel.find_by_id`，而 Model 层 `_io` 帮手在运行中的 loop 里返回**未执行的协程**——恢复路径永远失败（日志刷 `'coroutine' object has no attribute 'items'`），管线完成 60 秒内存清理后前端/重启进程永远拿不到结果。修复：loader 改 async、Model 读取 `asyncio.to_thread` offload；重启后实测 `recovered_from_mongo: true`（6 轨时间线完整恢复）。3 例回归测试锁定。
+
+**真浏览器编辑器冒烟（browser-use，IAB + Chromium）**：起前端 dev server 后真实浏览器验证——首页加载与后端联通（项目列表）✓；未知路由 404 兜底（E2）✓；「空项目」创建进编辑器、四栏布局/素材库/节目监视器/时间轴/属性/Agent 面板/自动保存全部渲染 ✓；添加文字轨交互 ✓；后端项目 API 建项目 → 编辑器加载（2 轨 2 片段，分辨率/时长从时间线读取）✓；播放/暂停与播放头走动 ✓；缩略图抓帧（时间轴胶片条）✓；**预览画布合成像素级验证**——视频帧绘制（中心像素=成片主色）+ 字幕文字绘制（扫描带白色字形图案，X3 锚点真实浏览器确认）✓；全程无 JS 崩溃。
+
+**其他修复**：MG 生成列表测试的同秒排序 flaky 断言放宽。
+
+**最终回归（2026-09-07，第五轮）**：后端 **1387 passed**（1384 + 恢复 3 + flaky 修复后 1 — 计 1387 全绿）；前端 379 passed 不变。
