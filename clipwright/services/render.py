@@ -1317,12 +1317,12 @@ class RenderService:
                     vf += "," + ",".join(fx_parts)
 
                 # V3: 关键帧 transform（translate/scale，画幅比例单位，静态值为缺省
-                # 基线）——经 overlay/scale eval=frame 表达式逐帧求值；kf rotate 不
-                # 支持（仅预览），静态 rotate 保持 V4 行为
+                # 基线）——经 overlay/scale eval=frame 表达式逐帧求值
                 _kf_tx = property_expression(_kfs, "translate_x", _tx) if _kfs else None
                 _kf_ty = property_expression(_kfs, "translate_y", _ty) if _kfs else None
                 _kf_sc = property_expression(_kfs, "scale_x", _ts) if _kfs else None
-                _has_kf_transform = bool(_kf_tx or _kf_ty or _kf_sc)
+                _kf_rot = property_expression(_kfs, "rotate", _tr) if _kfs else None
+                _has_kf_transform = bool(_kf_tx or _kf_ty or _kf_sc or _kf_rot)
 
                 # V3c: 分段恒速近似——speed 关键帧区间取平均速度，源区间按
                 # S(t)=∫v 累计（含 source_offset 基准）
@@ -1353,10 +1353,27 @@ class RenderService:
                         sc_e = _kf_sc or (f"{_ts:.4f}" if abs(_ts - 1.0) > 1e-3 else None)
                         tx_e = _kf_tx or (f"{_tx:.4f}" if abs(_tx) > 1e-4 else None)
                         ty_e = _kf_ty or (f"{_ty:.4f}" if abs(_ty) > 1e-4 else None)
-                        if sc_e:
-                            body += f",scale=w='iw*({sc_e})':h='ih*({sc_e})':eval=frame"
-                        if abs(_tr) > 1e-3:
-                            body += f",rotate={_tr:.4f}*PI/180:c=black"
+                        if _kf_rot:
+                            # kf rotate：rotate 输出尺寸在 init 定死，不支持逐帧变
+                            # 尺寸的下游链——scale 关键帧取最大值恒定化（保留旋转
+                            # 动画；rotate+scale 同动画为有损近似，见报告 V3 备注）
+                            sc_max = _ts
+                            try:
+                                sc_vals = [float(kf["properties"]["scale_x"]) for kf in _kfs
+                                           if "scale_x" in (kf.get("properties") or {})]
+                                if sc_vals:
+                                    sc_max = max(max(sc_vals), _ts)
+                            except (TypeError, ValueError):
+                                pass
+                            sc_max = max(0.1, min(4.0, sc_max))
+                            sw = max(2, int(width * sc_max) // 2 * 2)
+                            sh = max(2, int(height * sc_max) // 2 * 2)
+                            body += f",scale={sw}:{sh},rotate='{_kf_rot}*PI/180':c=black:ow={sw}:oh={sh}"
+                        else:
+                            if sc_e:
+                                body += f",scale=w='iw*({sc_e})':h='ih*({sc_e})':eval=frame"
+                            if abs(_tr) > 1e-3:
+                                body += f",rotate={_tr:.4f}*PI/180:c=black"
                         ox_e = f"(main_w-overlay_w)/2+({tx_e})*main_w" if tx_e else "(main_w-overlay_w)/2"
                         oy_e = f"(main_h-overlay_h)/2+({ty_e})*main_h" if ty_e else "(main_h-overlay_h)/2"
                         overlay_spec = ("expr", ox_e, oy_e)
@@ -1762,7 +1779,7 @@ class RenderService:
                 if progress_callback:
                     await progress_callback("mg", 90, "链式叠加 MG 动画")
                 chained = await self._apply_mg_overlay_chained(
-                    video, pairs, width, height, fps)
+                    video, pairs, width, height, fps, progress_callback=progress_callback)
                 if chained != video:
                     video = chained
                 else:
@@ -1840,7 +1857,7 @@ class RenderService:
 
     async def _apply_mg_overlay_chained(
         self, video, movs: list[tuple[str, float, float]], width: int, height: int, fps: float,
-        max_len: int = 30000,
+        max_len: int = 30000, progress_callback=None, _counter: dict | None = None,
     ) -> str:
         """(c') 全部 MG MOV → 单次 filter_complex 链式 overlay（对比旧版 N 次全片 re-encode）。
 
@@ -1851,7 +1868,7 @@ class RenderService:
         - 缺失/损坏 MOV：调用方已过滤 None；此处再按文件存在性兜底跳过，
           链式图保证任何输入缺失都不断链、不使整次渲染失败。
         - cmdline 长度超过 ``max_len``（Windows 命令行限制）时拆成两半递归分批，
-          每批仍为单次 ffmpeg 调用。
+          每批仍为单次 ffmpeg 调用（M8：每批完成上报进度事件）。
         - 失败时回退返回原 ``video``，绝不让 MG 阶段拖垮整个导出。
         """
         # 合并决策：不再按 Path.exists() 预过滤——缺失/损坏 MOV 由上游
@@ -1860,6 +1877,7 @@ class RenderService:
         movs = [(m, s, d) for m, s, d in movs if m]
         if not movs:
             return video
+        counter = _counter if _counter is not None else {"done": 0, "total": len(movs)}
         out = str(self._work_dir / f"mg_chain_{uuid.uuid4().hex[:8]}.mp4")
         cmd = self._build_mg_chained_cmd(video, movs, width, height, out)
         length = len(" ".join(cmd))
@@ -1869,14 +1887,22 @@ class RenderService:
                 length, max_len)
             mid = len(movs) // 2
             first = await self._apply_mg_overlay_chained(
-                video, movs[:mid], width, height, fps, max_len=max_len)
-            return await self._apply_mg_overlay_chained(
-                first, movs[mid:], width, height, fps, max_len=max_len)
+                video, movs[:mid], width, height, fps, max_len=max_len,
+                progress_callback=progress_callback, _counter=counter)
+            result = await self._apply_mg_overlay_chained(
+                first, movs[mid:], width, height, fps, max_len=max_len,
+                progress_callback=progress_callback, _counter=counter)
+            return result
         logger.info("[Render] MG chained overlay: %d inputs, %d chars",
                     len(movs), length)
         try:
             r = await self._ff(cmd, capture_output=True, text=False, timeout=3600)
             if r.returncode == 0 and _is_valid_video(out):
+                counter["done"] += len(movs)
+                if progress_callback:
+                    frac = 90 + min(counter["done"] / max(counter["total"], 1), 1.0) * 4
+                    await progress_callback("mg", frac,
+                                            f"链式叠加 MG {counter['done']}/{counter['total']}")
                 return out
             logger.warning("[Render] MG chained overlay fail rc=%s", r.returncode)
         except Exception as e:

@@ -157,6 +157,54 @@ async def test_trim_keyframe_speed_piecewise(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_trim_keyframe_rotate_fixed_canvas(tmp_path, monkeypatch) -> None:
+    """kf rotate：scale 关键帧恒定化到最大值（rotate 输出尺寸 init 定死）。"""
+    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p: True)
+    render_mod._trim_cache.clear()
+    rs, captured = _make_rs(tmp_path)
+
+    segs = [{"source_path": str(tmp_path / "h.mp4"), "duration_sec": 3.0,
+             "metadata": {"kf_time_base": "clip_local"},
+             "keyframes": [
+                 {"time": 0, "properties": {"rotate": -90, "scale_x": 0.5}},
+                 {"time": 1, "properties": {"rotate": 0, "scale_x": 1}, "easing": "ease-out-cubic"},
+             ]}]
+    await rs._trim_segments_parallel(segs, 1920, 1080, 30, "5M", "libx264", "medium", None)
+
+    fc = captured[0][captured[0].index("-filter_complex") + 1]
+    # rotate 表达式逐帧 + 固定画布（最大 scale=1 → 1920x1080）
+    assert "rotate='" in fc and "PI/180" in fc
+    assert "scale=1920:1080" in fc
+    # 不应再用逐帧变尺寸 scale（会破坏 rotate 定尺寸约束）
+    assert "eval=frame" not in fc
+
+
+@pytest.mark.asyncio
+async def test_trim_mg_chained_progress_callback(tmp_path, monkeypatch) -> None:
+    """M8: 链式叠加成功后上报 per-batch 进度事件（90→94 区间单调）。"""
+    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p: True)
+    rs = RenderService(work_dir=tmp_path / "w")
+    events: list[tuple[str, float, str]] = []
+
+    async def cb(stage, pct, msg):
+        events.append((stage, pct, msg))
+
+    async def fake_ff(cmd, **kw):
+        Path(cmd[-1]).write_bytes(b"v" * 2048)
+        return type("R", (), {"returncode": 0, "stderr": b""})()
+
+    rs._ff = fake_ff  # type: ignore[method-assign]
+
+    movs = [(str(tmp_path / f"m{i}.mov"), float(i), 1.0) for i in range(2)]
+    out = await rs._apply_mg_overlay_chained(str(tmp_path / "in.mp4"), movs,
+                                             1280, 720, 30.0, progress_callback=cb)
+    assert out
+    mg_events = [e for e in events if e[0] == "mg" and "链式叠加" in e[2]]
+    assert mg_events and mg_events[-1][1] <= 94.5
+    assert "2/2" in mg_events[-1][2]
+
+
+@pytest.mark.asyncio
 async def test_trim_cache_key_distinguishes_keyframes(tmp_path, monkeypatch) -> None:
     """V3: 关键帧变化必须进缓存键。"""
     monkeypatch.setattr(render_mod, "_is_valid_video", lambda p: True)
