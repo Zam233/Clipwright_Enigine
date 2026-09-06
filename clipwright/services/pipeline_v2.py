@@ -1035,6 +1035,33 @@ class PipelineOrchestratorV2:
             _end_span(status="error", error=step.error)
             return step
 
+        # SA-1: PRE_AGENT Hook —— 取消检查后、执行前。插件可改写 input（返回
+        # {"input": {...}}）或跳过执行（返回 {"skip": True, "reason": ...}）。
+        # Hook 异常已在 HookRegistry.execute 内 per-hook 隔离（P8），此处仅防御兜底。
+        try:
+            from clipwright.plugins.hooks import HookPoint, HookRegistry
+            pre = HookRegistry.execute(HookPoint.PRE_AGENT, {
+                "pipeline_id": pid, "agent_name": agent_name,
+                "input": dict(input_data or {}), "context": context,
+            })
+            if isinstance(pre, dict) and pre.get("skip"):
+                reason = str(pre.get("reason") or "PRE_AGENT Hook 跳过")[:200]
+                step.status = PipelineStatus.CANCELLED
+                step.error = f"{agent_name} 已跳过（PRE_AGENT Hook: {reason}）"
+                step.completed_at = datetime.now(timezone.utc)
+                if step.started_at:
+                    step.duration_ms = int((step.completed_at - step.started_at).total_seconds() * 1000)
+                state.updated_at = datetime.now(timezone.utc)
+                add_event(pid, agent_name, "warning", step.error)
+                _end_span(status="ok", error="", output_summary=f"skipped: {reason}")
+                logger.info("PipelineV2 Agent[%s] 被 PRE_AGENT Hook 跳过: %s", agent_name, reason)
+                return step
+            new_input = pre.get("input") if isinstance(pre, dict) else None
+            if isinstance(new_input, dict) and new_input:
+                input_data = new_input
+        except Exception as he:
+            logger.warning("PRE_AGENT Hook 执行异常（忽略，继续执行）: %s", he)
+
         try:
             # F6: 移除 demands 注入——AgentBus 的 demand 无任何 Agent 消费
             # （无消费确认机制、列表无限残留），原注入纯属死机制；事件流保留
@@ -1083,6 +1110,18 @@ class PipelineOrchestratorV2:
                 except Exception:
                     pass
 
+            # SA-1: POST_AGENT Hook —— 决策落定后的只读观测点（不改写语义，
+            # 避免与自愈/retry 状态机冲突）。异常路径见下方 except 块。
+            try:
+                from clipwright.plugins.hooks import HookPoint, HookRegistry
+                HookRegistry.execute(HookPoint.POST_AGENT, {
+                    "pipeline_id": pid, "agent_name": agent_name,
+                    "decision": str(result.decision), "result": step.result,
+                    "error": getattr(result, "error", None) or "",
+                })
+            except Exception as he:
+                logger.warning("POST_AGENT Hook 执行异常（忽略）: %s", he)
+
             # 发布到总线
             bus.publish(agent_name, "result", {
                 "decision": str(result.decision),
@@ -1127,6 +1166,15 @@ class PipelineOrchestratorV2:
             add_event(pid, agent_name, "error", f"{agent_name} 异常: {str(e)[:200]}")
             logger.exception("Agent %s 异常: %s", agent_name, e)
             _end_span(status="error", error=str(e)[:200])
+            # SA-1: 异常路径同样触发 POST_AGENT（带 error，观测埋点完整性）
+            try:
+                from clipwright.plugins.hooks import HookPoint, HookRegistry
+                HookRegistry.execute(HookPoint.POST_AGENT, {
+                    "pipeline_id": pid, "agent_name": agent_name,
+                    "decision": "FAIL", "result": {}, "error": str(e)[:500],
+                })
+            except Exception as he:
+                logger.warning("POST_AGENT Hook（异常路径）执行异常: %s", he)
 
         step.completed_at = datetime.now(timezone.utc)
         if step.started_at:
