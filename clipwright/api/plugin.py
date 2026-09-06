@@ -116,6 +116,13 @@ async def disable_plugin(plugin_id: str, request: Request = None) -> dict[str, s
     except Exception as e:
         from clipwright.config import logger
         logger.warning("禁用插件 Prompt 清理失败 %s: %s", plugin_id, e)
+    # SA-2: 禁用时同步注销插件 Agent（能力即时收缩）
+    try:
+        from clipwright.agents.registry import AgentRegistry
+        AgentRegistry.unregister_plugin(plugin_id)
+    except Exception as e:
+        from clipwright.config import logger
+        logger.warning("禁用插件 Agent 清理失败 %s: %s", plugin_id, e)
     return {"status": "ok", "plugin_id": plugin_id, "enabled": "false"}
 
 
@@ -142,6 +149,7 @@ async def plugin_health() -> dict[str, object]:
 
     overall: ok（无异常插件）/ degraded（有非致命问题）/ error（有加载失败类错误）。
     """
+    from clipwright.agents.registry import AgentRegistry
     from clipwright.plugins.error_bus import get_error_bus
     from clipwright.plugins.hooks import HookPoint, HookRegistry
     from clipwright.plugins.prompt_registry import PluginPromptRegistry
@@ -160,6 +168,10 @@ async def plugin_health() -> dict[str, object]:
             pid = getattr(fn, "__plugin_id__", None)
             if pid:
                 hook_count[pid] = hook_count.get(pid, 0) + 1
+    # SA-2: 每插件 Agent 计数
+    agent_count: dict[str, int] = {}
+    for e in AgentRegistry.list_all():
+        agent_count[e.plugin_id] = agent_count.get(e.plugin_id, 0) + 1
 
     plugins: list[dict[str, object]] = []
     discovered = set(_loader.discover())
@@ -178,6 +190,7 @@ async def plugin_health() -> dict[str, object]:
                 "enabled": m.enabled, "signed": m.signed, "verified": m.verified,
                 "dependency_ok": m.dependency_ok, "missing_dependencies": m.missing_dependencies,
                 "hooks": hook_count.get(pid, 0),
+                "agents": agent_count.get(pid, 0),
             })
             continue
         if not m.dependency_ok:
@@ -189,6 +202,7 @@ async def plugin_health() -> dict[str, object]:
             "enabled": m.enabled, "signed": m.signed, "verified": m.verified,
             "dependency_ok": m.dependency_ok, "missing_dependencies": m.missing_dependencies,
             "hooks": hook_count.get(pid, 0),
+            "agents": agent_count.get(pid, 0),
         })
 
     # 已发现但未加载的插件（含被禁用/加载失败残留）
@@ -204,6 +218,7 @@ async def plugin_health() -> dict[str, object]:
             "signed": None, "verified": None,
             "dependency_ok": None, "missing_dependencies": [],
             "hooks": hook_count.get(pid, 0),
+            "agents": agent_count.get(pid, 0),
         })
 
     statuses = {p["status"] for p in plugins}
@@ -357,7 +372,8 @@ async def load_all_plugins() -> list[str]:
 
 @router.get("/capabilities")
 async def get_capabilities() -> dict:
-    """获取系统全部能力概览（插件 + 工具 + 技能 + 素材源）。"""
+    """获取系统全部能力概览（插件 + 工具 + 技能 + 素材源 + 插件 Agent）。"""
+    from clipwright.agents.registry import AgentRegistry
     from clipwright.material import MaterialRegistry
     from clipwright.skill import SkillRegistry
     from clipwright.tool import ToolRegistry
@@ -367,6 +383,16 @@ async def get_capabilities() -> dict:
         "skills": SkillRegistry.list(),
         "material_sources": MaterialRegistry.list(),
         "plugins": _loader.list_loaded() if _loader else [],
+        # SA-2: 插件 Agent 清单（名/插件/依赖/说明）
+        "agents": [
+            {
+                "name": e.name,
+                "plugin_id": e.plugin_id,
+                "deps": e.deps,
+                "description": e.description,
+            }
+            for e in AgentRegistry.list_all()
+        ],
     }
 
 

@@ -57,6 +57,8 @@ class PluginMetadata(BaseModel):
     # M2: 依赖解析结果
     dependency_ok: bool = Field(default=True, description="依赖是否全部满足")
     missing_dependencies: list[str] = Field(default_factory=list)
+    # SA-2: 插件注册的自定义 Agent 名（AgentRegistry 归属，管理面展示）
+    agents: list[str] = Field(default_factory=list)
 
 
 class CategoryPluginSpec(BaseModel):

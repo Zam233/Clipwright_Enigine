@@ -41,9 +41,10 @@ class Settings(BaseSettings):
     plugin_signature_key: str = ""
     # True 时未签名插件拒绝加载（市场开放前最低安全线）
     plugin_require_signature: bool = False
-    # 已知权限白名单（M1 权限声明校验；插件声明之外的权限将被拒绝）
+    # 已知权限白名单（M1 权限声明校验；插件声明之外的权限将被拒绝）。
+    # orchestrate（SA-2）：允许插件注册自定义 Agent 参与主管线编排/被子代理调用
     plugin_allowed_permissions: list[str] = Field(
-        default_factory=lambda: ["network", "fs_read", "fs_write", "shell", "http", "noop"],
+        default_factory=lambda: ["network", "fs_read", "fs_write", "shell", "http", "noop", "orchestrate"],
     )
 
     # --- IsoBase / LLM ---

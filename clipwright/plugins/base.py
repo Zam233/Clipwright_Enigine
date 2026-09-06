@@ -48,6 +48,7 @@ class BasePlugin(ABC):
 
     def plugin_info(self) -> dict[str, Any]:
         """返回插件提供的 capabilities 概览。"""
+        from clipwright.agents.registry import AgentRegistry
         from clipwright.skill.registry import SkillRegistry
         from clipwright.tool.registry import ToolRegistry
 
@@ -55,6 +56,7 @@ class BasePlugin(ABC):
             "id": self.manifest.id,
             "tools": ToolRegistry.list_by_plugin(self.manifest.id),
             "skills": SkillRegistry.list_by_plugin(self.manifest.id),
+            "agents": AgentRegistry.list_by_plugin(self.manifest.id),
         }
 
 

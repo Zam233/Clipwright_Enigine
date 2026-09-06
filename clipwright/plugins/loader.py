@@ -260,11 +260,13 @@ class PluginLoader:
         plugin.config = _decrypt_flat(config)
 
         # 7. 注册表快照（用于后续追踪插件注册的内容）
+        from clipwright.agents.registry import AgentRegistry
         from clipwright.skill.registry import SkillRegistry
         from clipwright.tool.registry import ToolRegistry
 
         _tools_before = set(ToolRegistry._tools.keys())
         _skills_before = set(SkillRegistry._skills.keys())
+        _agents_before = set(AgentRegistry.list_names())
 
         try:
             plugin.initialize()
@@ -280,6 +282,25 @@ class PluginLoader:
         for name in set(SkillRegistry._skills.keys()) - _skills_before:
             SkillRegistry._skills[name]._plugin_id = plugin_id  # type: ignore[attr-defined]
 
+        # SA-2: 插件 Agent 治理——initialize 新注册的 Agent 自动归属本插件，
+        # 且 manifest 必须声明 orchestrate 权限（fail-closed：不声明即拒绝加载，
+        # 防止插件绕过权限白名单获得编排能力）
+        new_agents = set(AgentRegistry.list_names()) - _agents_before
+        for name in new_agents:
+            entry = AgentRegistry.get_entry(name)
+            if entry is not None and not entry.plugin_id:
+                entry.plugin_id = plugin_id
+        if new_agents and "orchestrate" not in (manifest.permissions or []):
+            AgentRegistry.unregister_plugin(plugin_id)
+            get_error_bus().record(
+                plugin_id, "load",
+                "注册了 Agent 但 manifest 未声明 orchestrate 权限",
+            )
+            raise PluginLoadError(
+                f"Plugin '{plugin_id}' registered agents {sorted(new_agents)} "
+                "but manifest.permissions does not declare 'orchestrate'"
+            )
+
         self._plugins[plugin_id] = plugin
         self._metadatas[plugin_id] = PluginMetadata(
             manifest=manifest,
@@ -289,6 +310,7 @@ class PluginLoader:
             verified=bool(manifest.signature) and verify_manifest_signature(manifest),
             dependency_ok=not missing,
             missing_dependencies=missing,
+            agents=sorted(AgentRegistry.list_by_plugin(plugin_id)),
         )
 
         # M14: 插件加载审计
@@ -327,6 +349,12 @@ class PluginLoader:
         """卸载指定插件。"""
         plugin = self._plugins.pop(plugin_id, None)
         self._metadatas.pop(plugin_id, None)
+        # SA-2: 同步注销插件注册的 Agent（能力即时收缩）
+        try:
+            from clipwright.agents.registry import AgentRegistry
+            AgentRegistry.unregister_plugin(plugin_id)
+        except Exception as e:
+            logger.warning("插件 %s Agent 注销异常: %s", plugin_id, e)
         if plugin:
             try:
                 plugin.shutdown()
