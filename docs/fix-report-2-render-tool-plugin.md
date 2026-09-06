@@ -594,3 +594,13 @@ X1 蒙版枚举：后端兼容 `rect`（=rectangle）别名，`ellipse` 经 geq 
 - **误报 7 项（已有校验）**：persona/repository 与 loader 的 ID 均经 `validate_id`/`is_safe_id`（拒 `../`）；remote_render 的 `.part` 名含 uuid；worker/api 扩展名已 sanitize；`utils/concat_list` 有 resolve+is_file 校验；`frame_extractor` 随机数仅用于抽样时机非安全用途。
 - **接受风险 6 项**：`scripts/diag_*.py` 3 项 SSRF 为本地诊断脚本（请求固定 localhost:8080，非服务端点）；`plugins/voice_ext/main.py` 2 项临时文件名为固定前缀+os.urandom（无用户输入路径成分）；`_local_backup_20260803/` 目录内 2 项为历史备份副本（非运行代码，建议移出仓库——未经确认未动）。
 - 覆盖缺口致状态 `inconclusive`（非阻断）：部分分析阶段未完整覆盖，核心源码静态结论如上。
+
+### 残余小项清零（2026-09-06，第四轮）— 已执行
+
+- **kf rotate 导出**（原 V3/V4 备注"不支持"项落地）：rotate 关键帧经 `rotate='{expr}*PI/180'` 逐帧导出；因 ffmpeg rotate 输出尺寸在 init 定死、不支持逐帧变尺寸的下游链，同段 scale 关键帧**恒定化到最大值**（保留旋转动画的近似，rotate+scale 双动画为有损降级，报告如实备注）。回归测试锁定：含 rotate 关键帧时不再使用 `eval=frame` 变尺寸 scale。
+- **M8 MG 链式分批进度**：`_apply_mg_overlay_chained` 增加批次级 progress 事件（成功批计入 done/total，90→94 区间单调上报；cmdline 超限递归拆批时进度贯通）。
+- **V10b thumbImageCache 驱逐**：时间轴缩略图解码图缓存从无界 Map 改 LRU（默认 256 张，命中重排访问序）。
+- **V7b 自适应缩略图 LRU**：`TimelineEngine.setZoom` → `mediaManager.setThumbCacheLimit`（16–96 按缩放比例伸缩，收紧即淘汰）+ `renderers.setThumbImageCacheLimit`（×8）；放大时收紧缓存驻留、缩小时放宽避免重采。
+- **V10c 导出帧**：「导出当前帧」从直接 dump 预览画布（带 safe-area 叠层/DPR 缩放/黑边）改为**离屏按时间线分辨率重渲**当前帧（复用合成原语，无 safe-area），与成片一致。
+
+**最终回归（2026-09-06，第四轮）**：后端 **1382 passed**；前端 **379 passed** + tsc + build ✓。两份修复报告全部条目（含全部备注的残余小项）至此闭环。
