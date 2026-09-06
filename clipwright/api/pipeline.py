@@ -62,9 +62,16 @@ def _persist_pipeline_runtime(pipeline_id: str, **fields) -> None:
         logger.warning("pipeline runtime 持久化失败: %s", e)
 
 
-def _load_result_from_mongo(pipeline_id: str) -> dict | None:
-    """内存缺失时从 pipelines 集合重建结果字典（V2 全程落库的 state）。"""
-    try:
+async def _load_result_from_mongo(pipeline_id: str) -> dict | None:
+    """内存缺失时从 pipelines 集合重建结果字典（V2 全程落库的 state）。
+
+    本函数在事件循环中被调用——Model 的 ``_io`` 帮手在运行中的 loop 里会
+    返回未执行的协程（历史 bug：恢复路径永远失败于 'coroutine' object has
+    no attribute items），故整个读取必须 offload 到线程。
+    """
+    import asyncio
+
+    def _read() -> dict | None:
         from clipwright.models.pipeline_model import PipelineModel
         model = PipelineModel.find_by_id(pipeline_id)
         if model is None:
@@ -82,6 +89,9 @@ def _load_result_from_mongo(pipeline_id: str) -> dict | None:
             "output_path": doc.get("output_path") or "",
             "recovered_from_mongo": True,
         }
+
+    try:
+        return await asyncio.to_thread(_read)
     except Exception as e:
         logger.warning("pipeline 结果 Mongo 回退失败: %s", e)
         return None
@@ -529,7 +539,7 @@ async def stream_pipeline_trace(pipeline_id: str, request: Request):
             return
         if not existing:
             # A4: trace 已清理（完成 60s 后重连）→ 从 Mongo 检查点回放终态，避免静默空转
-            recovered = _load_result_from_mongo(pipeline_id)
+            recovered = await _load_result_from_mongo(pipeline_id)
             _status = (recovered or {}).get("status", "")
             if _status and _status != "running":
                 _type = ("done" if _status in ("completed", "pass")
@@ -594,7 +604,7 @@ async def get_pipeline_result(pipeline_id: str) -> dict:
     task = _running_pipelines.get(pipeline_id)
     if task is None:
         # 生产加固 1.2: 内存缺失（如进程重启）→ Mongo 回退
-        recovered = _load_result_from_mongo(pipeline_id)
+        recovered = await _load_result_from_mongo(pipeline_id)
         if recovered is not None:
             _pipeline_results[pipeline_id] = recovered
             return recovered
