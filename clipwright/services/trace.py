@@ -122,6 +122,8 @@ def add_event(
     event_type: str,
     summary: str,
     detail: Any = None,
+    parent_agent: str = "",
+    depth: int = 0,
 ) -> None:
     """添加一条追踪事件。
 
@@ -131,6 +133,8 @@ def add_event(
         event_type: llm / tool / skill / plugin / agent_start / agent_end / info
         summary: 简短描述
         detail: 详细数据（可选）
+        parent_agent: SA-4 子代理场景的宿主 Agent 名（顶层留空）
+        depth: SA-4 子代理嵌套深度（宿主=0，子代理=1…）
     """
     now = time.time()
     if pipeline_id not in _traces:
@@ -139,14 +143,19 @@ def add_event(
         _seq_counters[pipeline_id] = 0
         _seq_index[pipeline_id] = []
     seq = _next_seq(pipeline_id)
-    _traces[pipeline_id].append({
+    event = {
         "time": now,
         "seq": seq,
         "agent": agent,
         "type": event_type,
         "summary": summary,
         "detail": detail,
-    })
+    }
+    # SA-4: 子代理嵌套信息——仅非默认值时写入，保持既有事件形状不变
+    if parent_agent:
+        event["parent_agent"] = parent_agent
+        event["depth"] = depth
+    _traces[pipeline_id].append(event)
     _times = _trace_times.get(pipeline_id)
     if _times is not None:
         _times.append(now)

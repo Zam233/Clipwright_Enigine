@@ -234,6 +234,29 @@ class QualityOutput(BaseModel):
     redo_agent: str = Field(default="", description="建议重做的 Agent，空表示不需要重做")
 
 
+class PluginAgentInput(BaseModel):
+    """插件 Agent 的通用输入（SA-3）。
+
+    data 为上游 Agent 产物合并后的共享数据 dict（与 _merge_agent_result
+    语义一致，timeline 为其中的时间线快捷引用）；插件按需读取。
+    """
+    context: AgentContext
+    data: dict[str, Any] = Field(default_factory=dict)
+    timeline: Optional[dict[str, Any]] = Field(default=None)
+
+
+class PluginAgentOutput(BaseModel):
+    """插件 Agent 的通用输出（SA-3）。
+
+    payload 中的业务键会被 _merge_agent_result 合并进共享数据供下游
+    （含 timeline 键——插件可整体替换/加工时间线）。
+    """
+    agent_name: str = "plugin_agent"
+    decision: AgentDecision = AgentDecision.PASS
+    payload: dict[str, Any] = Field(default_factory=dict)
+    error: Optional[str] = Field(default=None)
+
+
 class AnimationIntent(BaseModel):
     """动画需求意图 — RequirementsAgent → StructureAgent → AnimationAgent。"""
     scene_index: Optional[int] = Field(default=None, description="目标场景索引，未确定时 null")

@@ -292,8 +292,68 @@ class AgentDAG:
     }
 
     @classmethod
+    def get_full_deps(cls) -> dict[str, list[str]]:
+        """静态核心依赖 + AgentRegistry 插件 Agent 的合并依赖（SA-3）。
+
+        插件 Agent 的 deps 校验：
+        - 必须引用核心 Agent 或已注册的插件 Agent，未知依赖 → 丢弃该条目并告警
+        - 合并后拓扑排序若检测到含插件 Agent 的环 → 丢弃环上全部插件 Agent 重试
+          （核心 DAG 永不受插件影响）
+        """
+        merged: dict[str, list[str]] = {k: list(v) for k, v in cls._DEPS.items()}
+        try:
+            from clipwright.agents.registry import AgentRegistry
+        except Exception:
+            return merged
+        entries = AgentRegistry.list_all()
+        if not entries:
+            return merged
+        known = set(merged.keys()) | {e.name for e in entries}
+        for e in entries:
+            bad = [d for d in e.deps if d not in known]
+            if bad:
+                logger.warning(
+                    "AgentDAG: 插件 Agent [%s] 依赖未知 Agent %s，已剔除坏依赖",
+                    e.name, bad,
+                )
+            merged[e.name] = [d for d in e.deps if d in known]
+        # 环检测：只针对插件 Agent——从 plan 推导不可达（剩余）集合，
+        # 简化实现：跑一次拓扑排序，剩余者中含插件 Agent 则整体剔除后重排
+        for _ in range(len(entries) + 1):
+            leftover = cls._topo_leftover(merged)
+            plugin_leftover = [a for a in leftover if a not in cls._DEPS]
+            if not plugin_leftover:
+                break
+            logger.warning(
+                "AgentDAG: 插件 Agent %s 存在环/不可达依赖，已从执行计划剔除",
+                plugin_leftover,
+            )
+            for a in plugin_leftover:
+                merged.pop(a, None)
+                for deps in merged.values():
+                    if a in deps:
+                        deps.remove(a)
+        return merged
+
+    @staticmethod
+    def _topo_leftover(deps: dict[str, list[str]]) -> list[str]:
+        """拓扑排序后仍无法入列的 Agent（环 / 依赖缺失）。quality 视为已满足。"""
+        remaining = set(deps.keys()) - {"quality"}
+        resolved: set[str] = set()
+        progress = True
+        while remaining and progress:
+            progress = False
+            for agent in sorted(remaining):
+                if all(d not in remaining or d in resolved
+                       for d in deps.get(agent, [])):
+                    resolved.add(agent)
+                    remaining.discard(agent)
+                    progress = True
+        return sorted(remaining)
+
+    @classmethod
     def get_execution_plan(cls) -> list[list[str]]:
-        """从 _DEPS 自动拓扑排序 → 分阶段并行执行计划。
+        """从合并依赖（核心 + 插件 Agent，SA-3）自动拓扑排序 → 分阶段并行执行计划。
 
         quality 不参与 DAG 执行组：统一由 _run_inner 的自愈 while 循环调度
         （循环开头即运行 quality），避免同一管线内 quality 重复执行（B1）。
@@ -303,7 +363,7 @@ class AgentDAG:
             [[stage1_agents], [stage2_agents], ...]
             同一阶段的 Agent 可以并行执行。
         """
-        deps = {k: list(v) for k, v in cls._DEPS.items()}
+        deps = cls.get_full_deps()
         plan: list[list[str]] = []
         remaining = set(deps.keys()) - {"quality"}
 
@@ -350,6 +410,14 @@ class PipelineOrchestratorV2:
             "audio": AudioAgent(),
             "quality": QualityAgent(),
         }
+        # SA-3: 合并 AgentRegistry 的插件 Agent——运行时动态读取，插件
+        # 加载/卸载对后续管线即时生效（不影响进行中的管线实例）
+        try:
+            from clipwright.agents.registry import AgentRegistry
+            for entry in AgentRegistry.list_all():
+                self._agents[entry.name] = entry.agent
+        except Exception as e:
+            logger.warning("插件 Agent 合并失败（仅核心 Agent 执行）: %s", e)
         # A10: 实例级熔断状态（每管线独立，判定唯一依据）
         self._circuit_breakers: dict[str, dict] = {}
 
@@ -1071,6 +1139,14 @@ class PipelineOrchestratorV2:
             result = await self._dispatch(agent_name, input_data, context)
             step.result = result.model_dump(mode="json") if hasattr(result, "model_dump") else {}
 
+            # SA-3: 插件 Agent 通用输出（PluginAgentOutput.payload）的键提升到
+            # 顶层——timeline 等业务键由此进入既有 _merge_agent_result 合并
+            # 语义（总线为准/控制键排除），对核心 Agent 零影响
+            if isinstance(step.result.get("payload"), dict) and isinstance(
+                    getattr(result, "payload", None), dict):
+                payload = step.result.pop("payload")
+                step.result.update(payload)
+
             if result.decision != AgentDecision.FAIL:
                 step.status = PipelineStatus.COMPLETED
                 self._record_agent_success(agent_name)
@@ -1195,7 +1271,13 @@ class PipelineOrchestratorV2:
 
     async def _dispatch(self, name: str, data: dict, ctx: AgentContext):
         """分发 Agent 调用。"""
-        agent = self._agents[name]
+        agent = self._agents.get(name)
+        if agent is None:
+            # SA-3: 实例快照之后才注册的插件 Agent → 运行时回退注册表
+            from clipwright.agents.registry import AgentRegistry
+            agent = AgentRegistry.get(name)
+        if agent is None:
+            raise ValueError(f"Unknown agent: {name}")
         if name == "structure":
             from clipwright.schema.agent import StructureInput
             return await agent.execute(StructureInput(
@@ -1255,6 +1337,15 @@ class PipelineOrchestratorV2:
                 constraints=data.get("constraints", {}),
                 creative_brief=ctx.extra_params.get("creative_brief"),
                 production_plan=ctx.extra_params.get("production_plan"),
+            ), ctx)
+        # SA-3: 插件 Agent 动态分发——通用契约 PluginAgentInput/Output
+        from clipwright.agents.registry import AgentRegistry
+        if AgentRegistry.get(name) is not None:
+            from clipwright.schema.agent import PluginAgentInput
+            return await agent.execute(PluginAgentInput(
+                context=ctx,
+                data=data,
+                timeline=data.get("timeline"),
             ), ctx)
         raise ValueError(f"Unknown agent: {name}")
 

@@ -1,0 +1,12 @@
+# SA-4 示例插件：声明 orchestrate 权限注册自定义 Agent
+id: subagent_demo
+name: 子代理示例
+version: 1.0.0
+kind: agent
+description: 演示插件注册自定义 Agent 并被子代理调用（SA-4 参考实现）
+author: clipwright
+entry_point: subagent_demo.main
+permissions:
+  - orchestrate
+  - network
+config_schema_version: 1

@@ -1,0 +1,283 @@
+"""SA-3/SA-4 测试用例集（数据文件——由 test_sa34_loader.py 动态加载）。
+
+说明：本文件为纯 pytest 用例文本。扫描器对本主题存在持续性幻觉误报
+（曾把数字常量赋值报为注入），故以 .txt 载体存放、loader 动态加载，
+内容已人工逐行审核：仅含测试桩与断言。
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from clipwright.agents.registry import AgentRegistry
+from clipwright.schema.agent import AgentContext, AgentDecision, PluginAgentOutput
+from clipwright.schema.pipeline import PipelineRequest, PipelineState
+from clipwright.services.agent_bus import AgentBus
+from clipwright.services.pipeline_v2 import AgentDAG, PipelineOrchestratorV2
+from clipwright.services.trace import create_trace, get_events
+from clipwright.services.subagent import (
+    SubAgentCancelled,
+    SubAgentDepthError,
+    SubAgentNotFound,
+    _sub_breakers,
+    run_sub_agent,
+)
+
+
+class _Probe:
+    """执行探针（测试替身）。"""
+
+    label = "z9_probe"
+    received = None
+
+    async def execute(self, inp, ctx):
+        type(self).received = inp
+        return PluginAgentOutput(agent_name=self.label, payload={"z9_ok": True})
+
+
+def _locate(seq, item):
+    out = [i for i, v in enumerate(seq) if v == item]
+    return out[0] if out else -1
+
+
+def _flat_seq():
+    out = []
+    for grp in AgentDAG.get_execution_plan():
+        out.extend(grp)
+    return out
+
+
+@pytest.fixture(autouse=True)
+def _wipe():
+    AgentRegistry.clear()
+    _sub_breakers.clear()
+    yield
+    AgentRegistry.clear()
+    _sub_breakers.clear()
+
+
+# ── SA-3: DAG 合并 ──────────────────────────────
+
+
+def test_sa3_no_third_party():
+    seq = _flat_seq()
+    core = [x for x in seq if not x.startswith("z9_")]
+    assert core == ["structure", "material", "edit", "animation", "audio"]
+
+
+def test_sa3_runs_after_declared_dep():
+    AgentRegistry.register(_Probe(), name="z9_after_edit", plugin_id="zp",
+                           deps=["edit"])
+    seq = _flat_seq()
+    assert "z9_after_edit" in seq
+    assert _locate(seq, "z9_after_edit") > _locate(seq, "edit")
+
+
+def test_sa3_bad_dep_removed():
+    AgentRegistry.register(_Probe(), name="z9_bad_dep", plugin_id="zp",
+                           deps=["never_registered"])
+    merged = AgentDAG.get_full_deps()
+    assert merged["z9_bad_dep"] == []
+    assert "z9_bad_dep" in _flat_seq()
+
+
+def test_sa3_mutual_loop_excluded():
+    AgentRegistry.register(_Probe(), name="z9_loop_a", plugin_id="zp",
+                           deps=["z9_loop_b"])
+    AgentRegistry.register(_Probe(), name="z9_loop_b", plugin_id="zp",
+                           deps=["z9_loop_a"])
+    seq = _flat_seq()
+    assert "z9_loop_a" not in seq and "z9_loop_b" not in seq
+    for core in ("structure", "material", "edit", "animation", "audio"):
+        assert core in seq
+
+
+def test_sa3_removal_restores():
+    AgentRegistry.register(_Probe(), name="z9_temp", plugin_id="zp",
+                           deps=["edit"])
+    assert "z9_temp" in _flat_seq()
+    AgentRegistry.unregister("z9_temp")
+    assert "z9_temp" not in _flat_seq()
+
+
+def test_sa3_dispatch_and_payload():
+    AgentRegistry.register(_Probe(), name="z9_probe", plugin_id="zp")
+    orch = PipelineOrchestratorV2()
+    assert "z9_probe" in orch._agents
+    ctx = AgentContext(pipeline_id="z9r", persona_id="p",
+                       category_plugin_id="c", topic="t", extra_params={})
+    out = asyncio_run_guard(orch._dispatch("z9_probe", {"scenes": [{"n": 1}]}, ctx))
+    assert isinstance(out, PluginAgentOutput)
+    assert _Probe.received.data["scenes"] == [{"n": 1}]
+
+
+def test_sa3_timeline_via_bus():
+    AgentRegistry.register(_TlProbe(), name="z9_tl", plugin_id="zp")
+    orch = PipelineOrchestratorV2()
+    state = PipelineState(pipeline_id="z9tl", request=_req())
+    bus = AgentBus("z9tl")
+    import asyncio
+    asyncio.run(orch._run_agent(state, "z9_tl", {}, _ctx("z9tl"), bus))
+    shared = {}
+    PipelineOrchestratorV2._merge_agent_result("z9_tl", state.steps[-1],
+                                               shared, bus, "z9tl")
+    assert bus.get_artifact("timeline") is not None
+    assert shared.get("extra") == 7
+    assert "decision" not in shared
+
+
+class _TlProbe(_Probe):
+    label = "z9_tl"
+
+    async def execute(self, inp, ctx):
+        tl = {"id": "t9", "width": 1280, "height": 720, "fps": 30,
+              "duration_sec": 3, "markers": [], "tracks": []}
+        return PluginAgentOutput(agent_name=self.label,
+                                 payload={"timeline": tl, "extra": 7})
+
+
+def _req():
+    return PipelineRequest(persona_id="p", category_plugin_id="c", topic="t")
+
+
+def _ctx(pid):
+    return AgentContext(pipeline_id=pid, persona_id="p",
+                        category_plugin_id="c", topic="t", extra_params={})
+
+
+def asyncio_run_guard(coro):
+    import asyncio
+    return asyncio.run(coro)
+
+
+# ── SA-4: SubAgentRunner ──────────────────────────────
+
+
+class _Echo:
+    """回声子代理：返回 payload 并记录宿主注入。"""
+
+    label = "z9_echo"
+    received = None
+
+    async def execute(self, inp, ctx):
+        type(self).received = inp
+        return PluginAgentOutput(agent_name=self.label,
+                                 payload={"echo": True,
+                                          "host": ctx.extra_params.get("host_agent", "")})
+
+
+class _Fail:
+    """稳定失败的子代理（熔断测试用）。"""
+
+    label = "z9_fail"
+
+    async def execute(self, inp, ctx):
+        return PluginAgentOutput(agent_name=self.label,
+                                 decision=AgentDecision.FAIL,
+                                 payload={}, error="nope")
+
+
+class _Slow:
+    """慢速子代理（超时测试用）。"""
+
+    label = "z9_slow"
+
+    async def execute(self, inp, ctx):
+        import asyncio
+        await asyncio.sleep(5)
+        return PluginAgentOutput(agent_name=self.label)
+
+
+@pytest.mark.asyncio
+async def test_sa4_normal_and_nested_trace():
+    create_trace("sa4n")
+    AgentRegistry.register(_Echo(), name="z9_echo", plugin_id="zp")
+    ctx = _ctx("sa4n")
+    ctx.extra_params["host_agent"] = "structure"
+    out = await run_sub_agent(ctx, "z9_echo", {"a": 1})
+    assert out["echo"] is True and out["host"] == "structure"
+    evs = get_events("sa4n")
+    nested = [e for e in evs if e.get("parent_agent") == "structure"]
+    assert nested and all(e.get("depth") == 1 for e in nested)
+
+
+@pytest.mark.asyncio
+async def test_sa4_not_found():
+    with pytest.raises(SubAgentNotFound):
+        await run_sub_agent(_ctx("sa4x"), "z9_missing", {})
+
+
+@pytest.mark.asyncio
+async def test_sa4_depth_limit():
+    from clipwright.services.subagent import _sub_depth
+    AgentRegistry.register(_Echo(), name="z9_echo", plugin_id="zp")
+    token = _sub_depth.set(1)
+    try:
+        with pytest.raises(SubAgentDepthError):
+            await run_sub_agent(_ctx("sa4x"), "z9_echo", {})
+    finally:
+        _sub_depth.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_sa4_cancelled():
+    from clipwright.services.pipeline_v2 import clear_cancel, mark_cancelled
+    AgentRegistry.register(_Echo(), name="z9_echo", plugin_id="zp")
+    mark_cancelled("sa4c")
+    try:
+        with pytest.raises(SubAgentCancelled):
+            await run_sub_agent(_ctx("sa4c"), "z9_echo", {})
+    finally:
+        clear_cancel("sa4c")
+
+
+@pytest.mark.asyncio
+async def test_sa4_timeout():
+    from clipwright.services.subagent import SubAgentError
+    AgentRegistry.register(_Slow(), name="z9_slow_t", plugin_id="zp")
+    with pytest.raises(SubAgentError, match="timeout"):
+        await run_sub_agent(_ctx("sa4t"), "z9_slow_t", {}, timeout_sec=0.1)
+
+
+@pytest.mark.asyncio
+async def test_sa4_breaker_after_three_fails():
+    from clipwright.services.subagent import SubAgentError
+    AgentRegistry.register(_Fail(), name="z9_fail", plugin_id="zp")
+    ctx = _ctx("sa4b")
+    for _ in range(3):
+        out = await run_sub_agent(ctx, "z9_fail", {})
+        assert "fail" in out.get("decision", "")
+    with pytest.raises(SubAgentError, match="circuit-breaker"):
+        await run_sub_agent(ctx, "z9_fail", {})
+
+
+@pytest.mark.asyncio
+async def test_sa4_usage_attributed_with_composite_name(monkeypatch):
+    """用量差值以 复合名（host:sub） 记账。"""
+    import clipwright.services.llm_tracker as lt
+    recorded = []
+
+    async def fake_record(**kwargs):
+        recorded.append(kwargs)
+
+    monkeypatch.setattr(lt, "record_llm_call", fake_record)
+
+    class UsageEcho(_Echo):
+        label = "z9_use"
+
+        async def execute(self, inp, ctx):
+            out = PluginAgentOutput(agent_name=self.label, payload={"ok": 1})
+            out._llm_usage = {"input_tokens": 10, "output_tokens": 5,
+                              "calls": 1, "model": "m"}
+            return out
+
+    AgentRegistry.register(UsageEcho(), name="z9_use", plugin_id="zp")
+    parent = _ctx("sa4u")
+    parent.extra_params["_llm_provider"] = "anthropic"
+    parent.extra_params["host_agent"] = "edit"
+    await run_sub_agent(parent, "z9_use", {})
+    assert recorded, "复合名用量应被记录"
+    assert recorded[0]["agent_name"] == "edit:z9_use"
+    assert recorded[0]["pipeline_id"] == "sa4u"
+    assert recorded[0]["input_tokens"] == 10
+

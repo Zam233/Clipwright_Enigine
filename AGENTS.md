@@ -52,7 +52,7 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
 
 ## 核心不变量
 
-1. **7 个 Agent**：RequirementsAgent → StructureAgent → MaterialAgent → EditAgent → AnimationAgent → AudioAgent → QualityAgent
+1. **7 核心 Agent + 插件 Agent**：RequirementsAgent → StructureAgent → MaterialAgent → EditAgent → AnimationAgent → AudioAgent → QualityAgent；第三方插件可经 AgentRegistry（`orchestrate` 权限）注册自定义 Agent 并入主管线 DAG 或作为子代理被调用（SA-2/3/4）
 2. **44+ 个 Tool**：原子能力层，通过 ToolRegistry 注册
 3. **4 个 Skill**：可组合的高级能力，通过 SkillRegistry 注册
 4. **33 个 API 路由组**：每个路由文件对应一组端点（225 条路由）
@@ -103,6 +103,23 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
 2. 实现 `execute()` 方法
 3. 在 `agents/__init__.py` 的代理列表中注册
 4. 更新 `docs/structure.md` 和 `docs/workflow.md`
+
+### 新增一个插件 Agent（SA-2/3/4）
+
+第三方插件可注册自定义 Agent（`clipwright/agents/registry.py`），两种形态：
+
+1. **随主管线执行**：manifest 声明 `kind: agent` + `permissions: [orchestrate]`，
+   插件 `initialize()` 内 `AgentRegistry.register(agent, name, plugin_id, deps=[...])`
+   ——Agent 按 deps 并入主管线 DAG（依赖核心 Agent 或其它已注册 Agent；
+   未知依赖/环会被剔除）。输入为 `PluginAgentInput`（context/data/timeline），
+   输出 `PluginAgentOutput`（decision/payload，payload 键合并进共享数据）
+2. **被子代理调用**：宿主 Agent/插件工具内
+   `await run_sub_agent(ctx, agent_name, payload)`（`services/subagent.py`）——
+   嵌套深度上限 2、宿主管线取消感知、用量以「宿主:子代理」复合名归因、
+   per (pipeline_id, agent) 熔断（3 次/60s 恢复）、默认 120s 超时
+3. Agent 边界 Hook：`HookPoint.PRE_AGENT`（可改写 input 或 skip）与
+   `POST_AGENT`（只读观测 decision/result/error）
+4. 参考：`clipwright/PLUGIN_AGENT_INTEGRATION.md`、`plugins/subagent_demo/`
 
 ### 新增一个 Service
 

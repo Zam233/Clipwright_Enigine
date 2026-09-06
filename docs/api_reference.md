@@ -477,6 +477,9 @@ curl -X POST http://localhost:8000/api/voice/dub \
 | `PUT /api/plugin/{plugin_id}/config` | 更新插件配置 |
 | `DELETE /api/plugin/{plugin_id}/config` | 删除插件配置 |
 | `GET /api/plugin/{plugin_id}/ui` | 获取插件 UI 定义 |
+| `GET /api/plugin/health` | 插件健康聚合（ok/degraded/error 分类 + Hook/Agent 计数） |
+
+**插件 Agent（SA-2/3/4）**：插件 manifest 声明 `kind: agent` + `permissions: [orchestrate]` 后，可在 `initialize()` 经 `AgentRegistry.register(agent, name, plugin_id, deps)` 注册自定义 Agent——按 deps 并入主管线 DAG（输入 `PluginAgentInput`、输出 `PluginAgentOutput`），或经 `services.subagent.run_sub_agent(ctx, name, payload)` 作为子代理被宿主 Agent 调用（嵌套深度上限 2、宿主取消感知、用量以「宿主:子代理」复合名归因、熔断 3 次/60s、默认 120s 超时）。Agent 边界 Hook `PRE_AGENT`（改写 input/skip）与 `POST_AGENT`（只读观测）已在管线接线。
 
 ---
 
