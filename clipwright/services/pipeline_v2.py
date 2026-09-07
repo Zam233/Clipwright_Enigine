@@ -1311,12 +1311,15 @@ class PipelineOrchestratorV2:
         elif name == "animation":
             tl = data.get("timeline")
             from clipwright.schema.agent import AnimationInput
+            from clipwright.plugins.generated_source import generated_image_entries
             return await agent.execute(AnimationInput(
                 context=ctx,
                 timeline=tl,
                 visual_config=data.get("visual_config", {}),
                 persona_prompt=data.get("persona_prompt"),
                 vision_prompt=data.get("vision_prompt"),
+                # D5: AI 生成图片历史 → 语义索引（无历史时为 []，零变化）
+                image_assets=generated_image_entries(),
                 creative_brief=ctx.extra_params.get("creative_brief"),
                 production_plan=ctx.extra_params.get("production_plan"),
             ), ctx)

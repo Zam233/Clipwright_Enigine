@@ -318,6 +318,36 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 | `GET /api/skill/list` | 列出所有 Skill |
 | `POST /api/skill/execute` | 执行 Skill |
 
+### AI 生成工具（火山引擎）
+
+三个生成类工具由内置第三方插件提供，经 `POST /api/tool/execute` 调用；产物统一下载落地到
+`PluginData/assets/`（生成 URL 24h 失效，落地前经 `assert_public_url` 防 SSRF），
+返回 `{success, url/path（本地）, remote_url, provider, ...}`。
+
+| 工具 | 插件 | Provider（默认加粗） | 关键参数 |
+|------|------|---------------------|----------|
+| `ai_image_generate` | ai_image_gen | **volcengine(Seedream)** / dalle / flux / local | prompt, width/height（按比例收敛到 Seedream 合法像素区间）, size（直传 `2K`/`2048x2048`，优先）, image（参考图，图生图）, seed |
+| `ai_video_generate` | ai_video_gen | **volcengine(Seedance)** / kling / runway | prompt, duration_sec（默认 5）, aspect_ratio, resolution（480p/720p/1080p）, image_url（首帧，图生视频）, seed |
+| `ai_music_generate` | ai_music_gen | **volcengine(豆包音乐)** / suno | prompt, instrumental（默认 true=纯音乐 BGM）, lyrics（人声歌曲，优先于 prompt）, duration_sec（纯音乐 [30,120]，人声 [30,240]）, genre/mood/model_version（人声可选） |
+
+环境变量/插件配置：
+
+- 图片/视频（方舟 Ark，Bearer Key）：`ARK_API_KEY`；可选 `ARK_BASE_URL`、`ARK_SEEDREAM_MODEL`（默认 `doubao-seedream-4-0-250828`）、`ARK_SEEDANCE_MODEL`（默认 `doubao-seedance-1-5-pro-251215`）；插件配置键 `api_key` / `ark_base_url` / `model` / `poll_interval_sec` / `poll_timeout_sec`
+- 音乐（火山引擎 OpenAPI，AK/SK V4 签名，服务 `imagination`）：`VOLC_ACCESS_KEY` / `VOLC_SECRET_KEY`（兼容 `VOLCENGINE_*` 前缀）；插件配置键 `access_key` / `secret_key`（secret 加密落盘） / `billing_mode`（prepaid→GenBGM/GenSongV4，postpaid→GenBGMForTime/GenSongForTime） / `poll_interval_sec` / `poll_timeout_sec`
+
+**工具可用性与素材入库（轮次 61）**：
+
+- 三个工具均按 provider 重写 `is_available()`（凭据配置优先、env 兜底）——未配置的工具会被
+  `ToolRegistry.list_agent_callable()` 过滤，Agent 的 function schemas 中不出现，即"只有可用工具才会被调用"。
+- 生成成功后产物登记进 `PluginData/plugins/<id>/generated.json` 历史索引，并经
+  `clipwright/plugins/generated_source.py::make_generated_source` 注册为 MaterialSource——
+  MaterialAgent 场景关键词 / AudioAgent BGM 关键词可检索命中（score 0.70-0.92），
+  视频/图片经候选素材进入时间线，音乐进入 BGM 铺轨链路。
+- AnimationAgent 主动从素材库检索图片（含 AI 生成图）建立语义索引供 LLM 选图入动画；
+  管线 animation 分发与需求服务动画重做均传入 AI 生成图片历史。
+- 需求服务在规划书与需求对话上下文注入「## AI 生成能力」概览（仅存在已配置工具时）；
+  简报 `asset_ratio` 支持 `ai_generated` 可选档。
+
 ---
 
 ## 需求分析 (Requirements Agent)

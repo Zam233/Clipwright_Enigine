@@ -188,6 +188,38 @@ def _material_library_overview() -> str:
         return ""
 
 
+# AI 生成能力概览（D4）：三个生成插件的工具与展示名，可用性以 is_available() 为准
+_AI_GEN_TOOLS = [
+    ("ai_image_generate", "图片生成"),
+    ("ai_video_generate", "视频生成"),
+    ("ai_music_generate", "音乐生成"),
+]
+
+
+def _ai_generation_overview() -> str:
+    """生成 AI 生成能力概览一行（D4）。无任何可用生成工具时返回 ""，保证零变化。
+
+    可用性即各工具 is_available()（凭据配置检测）——未配置的工具不会被
+    Agent 暴露给 LLM，此处也不呈现，保持「能力即已配置」的一致口径。
+    """
+    try:
+        from clipwright.tool.registry import ToolRegistry
+        available = []
+        for name, label in _AI_GEN_TOOLS:
+            tool = ToolRegistry.get(name)
+            if tool is not None and tool.is_available():
+                available.append(label)
+        if not available:
+            return ""
+        return (
+            f"AI 生成能力（已配置可用）: {', '.join(available)}。"
+            "素材库难以命中的画面（具象角色/特定品牌/概念视觉）可建议用户采用 AI 生成素材，"
+            "生成产物会自动入库并在后续素材阶段编入时间线。"
+        )
+    except Exception:
+        return ""
+
+
 # ── 对话窗口管理 ──────────────────────────────
 
 def compress_history(messages: list[dict]) -> list[dict]:
@@ -254,7 +286,7 @@ CREATIVE_BRIEF_SYSTEM = """你是一位专业的视频创作顾问。用户会�
       "fonts": {"title": "...", "body": "...", "number": "..."},
       "icons": "图标方案"
     },
-    "asset_ratio": {"footage": "30-40%", "mg": "60-70%"}
+    "asset_ratio": {"footage": "30-40%", "mg": "60-70%", "ai_generated": "AI 生成素材占比（可选，建议采用 AI 生成时填写，无则留空）"}
   },
   "is_ready": false,
   "missing_info": ["还未了解的信息"]
@@ -885,9 +917,12 @@ class RequirementsService:
             if isinstance(anim_style, dict):
                 visual_config = anim_style
         try:
+            from clipwright.plugins.generated_source import generated_image_entries
             out = await AnimationAgent().execute(
                 AnimationInput(
                     context=context, timeline=subset, visual_config=visual_config,
+                    # D5: AI 生成图片历史 → 语义索引（无历史时为 []，零变化）
+                    image_assets=generated_image_entries(),
                     creative_brief=brief_data, production_plan=plan_data,
                 ),
                 context,
@@ -1095,6 +1130,12 @@ class RequirementsService:
         rag_context = await self._retrieve_knowledge(persona_id, f"{topic} {script}", session_id)
         if rag_context:
             context += f"\n\n## 知识库参考\n{rag_context}"
+
+        # D4: 注入 AI 生成能力概览（无可用生成工具 → 零变化），
+        # 让需求对话阶段即可主动提出"此处适合 AI 生成素材"的方案建议
+        gen_overview = _ai_generation_overview()
+        if gen_overview:
+            context += f"\n\n## AI 生成能力\n{gen_overview}"
 
         user_prompt = messages[-1]["content"] if messages else "请开始对话。"
         if script:
@@ -1324,6 +1365,14 @@ class RequirementsService:
                     rag_context += f"\n\n## 素材库概览\n{overview}"
                 else:
                     rag_context = f"## 素材库概览\n{overview}"
+
+            # D4: 注入 AI 生成能力概览（无可用生成工具 → 零变化）
+            gen_overview = _ai_generation_overview()
+            if gen_overview:
+                if rag_context:
+                    rag_context += f"\n\n## AI 生成能力\n{gen_overview}"
+                else:
+                    rag_context = f"## AI 生成能力\n{gen_overview}"
 
             result = await agent.execute(
                 StructureInput(

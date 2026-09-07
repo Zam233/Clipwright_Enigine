@@ -83,6 +83,19 @@ TOOL_PROMPT = """
 3. 其他插件工具：根据需要查询（如 AI 生成图片/视频/音乐等）
 
 调用顺序：先 describe_llm_mg，再 list_animations，最后根据返回的能力信息为每个场景选择合适的动画标记。
+
+## AI 生成策略（何时调用生成工具）
+注意：下方 function schemas 只包含**当前已配置可用**的工具——没有出现的生成工具即未配置，不要尝试调用。
+
+当某个场景的画面素材库大概率无法命中时（具象角色/特定品牌/罕见场景/概念视觉，
+普通图库关键词难以描述），可用 AI 生成工具定向补料：
+- **ai_image_generate**：为场景生成关键帧图片/概念图（成本较低，可多用）
+- **ai_video_generate**：为关键场景生成短视频镜头（成本高、耗时数分钟，整条管线**最多调用 2 次**，只给最重要的画面）
+- 生成时 prompt 用具体、可视化的中文描述（主体+环境+风格+光线）
+
+生成产物会自动登记进素材库（按 prompt 语义可检索），后续素材阶段将自动按场景
+关键词检索并编入时间线——因此生成后请在场景描述中使用与生成 prompt 一致的
+关键词，便于素材阶段命中。
 """
 
 
@@ -644,7 +657,10 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                     lines.append(f"- 动画风格: {'；'.join(anim_parts)}")
             ratio = brief.get("asset_ratio")
             if isinstance(ratio, dict) and (ratio.get("footage") or ratio.get("mg")):
-                lines.append(f"- 素材/动画占比: 实拍 {ratio.get('footage', '')} · MG {ratio.get('mg', '')}")
+                line = f"- 素材/动画占比: 实拍 {ratio.get('footage', '')} · MG {ratio.get('mg', '')}"
+                if ratio.get("ai_generated"):
+                    line += f" · AI 生成 {ratio.get('ai_generated')}"
+                lines.append(line)
             if len(lines) > 1:
                 parts.append("\n".join(lines))
         if isinstance(plan, dict) and plan:

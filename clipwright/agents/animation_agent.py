@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -105,16 +106,29 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 input_data.visual_config, context.extra_params,
             )
 
-            # A7: 图片素材库语义索引 — 对 image_assets 逐个调用视觉分析器
-            # （VisionService.analyze_image）构建 {path, tags, description}；
-            # 分析失败回退文件名标签；无 image_assets 时保持原有行为（不调用分析器）。
+            # A7/D5: 图片语义索引 — 显式 image_assets（AI 生成图）∪ 素材库主动检索图片。
+            # 对合并结果逐个调用视觉分析器（VisionService.analyze_image）构建
+            # {path, tags, description}；分析失败回退文件名标签；两者皆空时保持
+            # 原有行为（不调用分析器）。
             self._image_index = []
             try:
-                image_assets = getattr(input_data, "image_assets", None) or []
-                if image_assets:
-                    self._image_index = await self._build_image_semantic_index(image_assets)
+                provided = list(getattr(input_data, "image_assets", None) or [])
+                found = await self._search_library_images(
+                    topic=str(context.topic or ""),
+                    creative_brief=getattr(input_data, "creative_brief", None),
+                )
+                merged: dict[str, dict[str, Any]] = {}
+                for entry in [*provided, *found]:
+                    path = str(entry.get("path") or entry.get("src") or "")
+                    if path and path not in merged:
+                        merged[path] = entry
+                if merged:
+                    self._image_index = await self._build_image_semantic_index(list(merged.values()))
                     if self._image_index:
-                        logger.info("AnimationAgent: 图片语义索引 %d 项", len(self._image_index))
+                        logger.info(
+                            "AnimationAgent: 图片语义索引 %d 项（显式 %d + 素材库检索 %d）",
+                            len(self._image_index), len(provided), len(found),
+                        )
                         add_event(context.pipeline_id, "animation", "image_index",
                                   f"图片语义索引 {len(self._image_index)} 项（LLM 选图入动画）")
             except Exception:
@@ -762,6 +776,69 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         self._llm_mg_generated += 1
 
     # ── A7: 图片素材库语义索引 ────────────────────────────────
+
+    async def _search_library_images(
+        self, topic: str, creative_brief: Any = None, top_k: int = 4,
+    ) -> list[dict[str, Any]]:
+        """D5: 主动从素材库检索图片（含 AI 生成图片源），供语义索引与 LLM 选图。
+
+        查询词取 topic + 简报风格描述（最多 2 个查询）；local_path 直用，
+        url-only 资产经 _cache_remote_image 落地后入索引（best-effort，失败跳过）。
+        任何异常都不阻塞动画阶段（返回 []）。
+        """
+        try:
+            from clipwright.material.registry import MaterialRegistry
+            if not MaterialRegistry.list():
+                return []
+            queries = [q for q in (str(topic or "").strip(),) if q]
+            if isinstance(creative_brief, dict):
+                style = str(creative_brief.get("style_direction", "") or "").strip()
+                if style:
+                    queries.append(style[:60])
+            results: list[Any] = []
+            for q in queries[:2]:
+                results.extend(await MaterialRegistry.search(q, top_k_per_source=top_k))
+            entries: list[dict[str, Any]] = []
+            for r in results:
+                asset = getattr(r, "asset", None)
+                if asset is None:
+                    continue
+                a_type = getattr(asset, "type", "")
+                if str(getattr(a_type, "value", a_type)) != "image":
+                    continue
+                path = getattr(asset, "local_path", None) or ""
+                if not path:
+                    path = await self._cache_remote_image(getattr(asset, "url", "") or "")
+                if not path:
+                    continue
+                entries.append({
+                    "path": str(path),
+                    "tags": [str(t) for t in (getattr(asset, "tags", None) or [])][:6],
+                    "description": str(getattr(asset, "title", "") or ""),
+                })
+            return entries
+        except Exception:
+            logger.exception("AnimationAgent: 素材库图片检索失败（跳过）")
+            return []
+
+    @staticmethod
+    async def _cache_remote_image(url: str) -> str:
+        """下载远程图片到 _cache/ 供视觉分析（经 SSRF 校验，失败返回空串）。"""
+        if not url:
+            return ""
+        try:
+            from clipwright.security import assert_public_url
+            assert_public_url(url)
+            dest = Path("_cache") / ("anim_img_" + hashlib.sha256(url.encode()).hexdigest()[:16])
+            if not dest.exists():
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                async with httpx.AsyncClient(timeout=20) as client:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    dest.write_bytes(resp.content)
+            return str(dest)
+        except Exception:
+            return ""
 
     async def _build_image_semantic_index(
         self, image_assets: list[dict[str, Any]],

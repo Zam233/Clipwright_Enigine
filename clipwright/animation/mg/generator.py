@@ -838,10 +838,13 @@ class MGGenerator:
                 )
         ratio = category_context.get("brief_asset_ratio")
         if isinstance(ratio, dict) and (ratio.get("footage") or ratio.get("mg")):
-            cat_parts.append(
+            line = (
                 f"- 简报素材/动画占比: 实拍 {ratio.get('footage', '')}"
                 f" · MG {ratio.get('mg', '')}"
             )
+            if ratio.get("ai_generated"):
+                line += f" · AI 生成 {ratio.get('ai_generated')}"
+            cat_parts.append(line)
         if cat_parts:
             parts.append(
                 "## 当前视频类型（category）特征\n"

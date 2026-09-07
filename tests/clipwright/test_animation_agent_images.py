@@ -146,6 +146,7 @@ async def _run_execute(
     inp = AnimationInput(context=ctx, timeline=timeline, image_assets=image_assets)
     with (
         patch.object(AnimationAgent, "_resolve_style", new=AsyncMock(return_value={})),
+            patch.object(AnimationAgent, "_search_library_images", new=AsyncMock(return_value=[])),
         patch("clipwright.services.vision.VisionService", fake_vision),
         patch("clipwright.animation.mg.MGGenerator", fake_mg),
     ):
@@ -294,6 +295,7 @@ class TestNoImageAssetsRegression:
         inp = AnimationInput(context=ctx, timeline=_timeline_with_mg_dynamic())
         with (
             patch.object(AnimationAgent, "_resolve_style", new=AsyncMock(return_value={})),
+            patch.object(AnimationAgent, "_search_library_images", new=AsyncMock(return_value=[])),
             patch("clipwright.services.vision.VisionService", _BoomVision),
             patch("clipwright.animation.mg.MGGenerator", fake_mg),
         ):

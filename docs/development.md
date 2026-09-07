@@ -110,6 +110,38 @@ PluginData/plugins/{plugin_id}/config.yaml
 
 插件内通过 `self.config` 访问合并后的配置。
 
+### AI 生成插件的 Provider 配置
+
+三个生成类插件（`ai_image_gen` / `ai_video_gen` / `ai_music_gen`）默认走火山引擎，
+均支持 env 兜底 + 插件配置覆盖（配置经管理面 `PUT /api/plugin/{id}/config` 写入
+`PluginData/plugins/{id}/config.yaml`，secret 字段加密落盘）：
+
+| 插件 | provider 取值 | env | 插件配置键 |
+|------|--------------|-----|-----------|
+| ai_image_gen | `volcengine`（默认）/ dalle / flux / local | `ARK_API_KEY`、`ARK_BASE_URL`、`ARK_SEEDREAM_MODEL` | `provider`、`api_key`、`ark_base_url`、`model` |
+| ai_video_gen | `volcengine`（默认）/ kling / runway | `ARK_API_KEY`、`ARK_BASE_URL`、`ARK_SEEDANCE_MODEL` | `provider`、`api_key`、`ark_base_url`、`model`、`poll_interval_sec`、`poll_timeout_sec` |
+| ai_music_gen | `volcengine`（默认）/ suno | `VOLC_ACCESS_KEY`、`VOLC_SECRET_KEY`（兼容 `VOLCENGINE_*`） | `provider`、`access_key`、`secret_key`、`billing_mode`（prepaid/postpaid）、`poll_interval_sec`、`poll_timeout_sec` |
+
+要点：
+- 火山方舟（图片 Seedream / 视频 Seedance）用 Bearer API Key；音乐大模型走火山
+  OpenAPI AK/SK V4 签名（自包含实现见 `plugins/ai_music_gen/main.py::_sign_v4`）。
+- 生成产物 URL 有效期短（图片/视频 24h），插件统一下载落地 `PluginData/assets/`
+  后返回本地路径；下载前经 `clipwright.security.assert_public_url` 防 SSRF。
+- 新增 provider 的模式：`__init__` 接收 provider/凭据 → `execute()` 分发 →
+  独立 `_gen_<provider>()` 方法 + 落地辅助；在 `initialize()` 读取 `self.config`。
+
+**工具可用性与生成历史入库（轮次 61）**：
+
+- 工具按 provider 重写 `is_available()` 检查凭据（配置优先、env 兜底）；未配置时
+  `ToolRegistry.list_agent_callable()` 自动隐藏该工具，Agent 不会把不可用工具暴露给 LLM。
+  新增需凭据的 provider 时，务必在对应 `is_available()` 分支补上检查。
+- 生成成功后调用 `clipwright.plugins.generated_source.record_generated(plugin_id, prompt=…, type=…, path=…)`
+  追加历史索引 `PluginData/plugins/<id>/generated.json`（字段：id/prompt/type/path/
+  duration_sec/resolution/created_at，上限 200 条，损坏自动重建）。
+- `initialize()` 中以 `make_generated_source(plugin_id, 源显示名, "image"|"video"|"audio")`
+  构造素材源并 `MaterialRegistry.register(...)`——MaterialAgent/AudioAgent 的关键词
+  检索即可命中历史产物，进入候选素材 → 时间线 / BGM 链路。
+
 ## 新增一个第三方插件
 
 ```bash
