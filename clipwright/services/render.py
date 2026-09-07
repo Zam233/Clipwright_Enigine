@@ -1510,6 +1510,7 @@ class RenderService:
         # 批1：start_sec 空洞黑帧填充——旧实现背靠背拼接，任何空洞之后的画面
         # 整体左移，而字幕/MG/音频按绝对时间定位 → 字幕盖错画面、A/V 错位
         filled: list[str] = []
+        filled_segments: list[dict] = []
         cursor = 0.0
         gap_idx = 0
         for seg_path, seg in zip(trimmed, segments):
@@ -1519,12 +1520,20 @@ class RenderService:
                 black = self._generate_fallback(start - cursor, width, height, fps, f"gap{gap_idx}")
                 if black:
                     filled.append(black)
+                    # 批A(R4)：segments 同步插入占位段——否则 xfade 配对错位，
+                    # 真实片段的 transition_in 落到黑帧接缝上
+                    filled_segments.append({
+                        "start_sec": cursor, "duration_sec": start - cursor,
+                        "transition_in": "fade", "transition_duration_sec": 0.3,
+                    })
                     self._final_ffmpeg_log.append(f"gap fill: {start - cursor:.2f}s 空洞黑帧填充")
             filled.append(seg_path)
+            filled_segments.append(seg)
             cursor = max(cursor, start + dur)
             gap_idx += 1
         if len(filled) != len(trimmed):
             trimmed = filled
+            segments = filled_segments
         if progress_callback:
             await progress_callback("concat", 55, f"拼接 {len(trimmed)} 个片段")
 

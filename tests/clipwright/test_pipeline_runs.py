@@ -264,30 +264,3 @@ def test_cancel_sets_flag_and_returns_cancelling() -> None:
 
 # ── B5/B13: V1 同步端点 deprecated 标记 ──
 
-def test_run_v2_deprecated_flag() -> None:
-    """/run-v2 响应体含 deprecated: true（B13：前端零调用，保留兼容）。"""
-    import clipwright.services.pipeline_v2 as pv2
-
-    class _FakeState:
-        status = "completed"
-        error = None
-        steps = []
-
-    async def _fake_run(self, request, pipeline_id=""):
-        return _FakeState()
-
-    orig = pv2.PipelineOrchestratorV2
-    try:
-        pv2.PipelineOrchestratorV2 = type(  # type: ignore[assignment]
-            "FakeOrch", (), {"run": _fake_run},
-        )
-        resp = client.post("/api/pipeline/run-v2", json={
-            "persona_id": "default",
-            "category_plugin_id": "knowledge_longform",
-            "topic": "t",
-            "extra_params": {},
-        })
-        assert resp.status_code == 200
-        assert resp.json().get("deprecated") is True
-    finally:
-        pv2.PipelineOrchestratorV2 = orig

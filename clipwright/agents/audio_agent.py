@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 from typing import Any
@@ -610,9 +611,11 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                             from clipwright.services.trace import add_event as _evt
                             _evt(context.pipeline_id, "audio", "warning", msg)
                         except Exception:
-                            pass
+                            logger.debug("demo 音频提示事件失败", exc_info=True)
             except Exception:
-                pass
+                # 批A(R14)：该块承载"成片将无声音"的用户告警，不能静默
+                logger.exception("AudioAgent: 音频兜底/告警块异常")
+                notes.append("音频兜底配置处理异常（详见日志）")
 
             # 批2：时长对账——画面轨总长 vs 音频轨终点。音频超长 → 末个画面
             # clip 冻结帧补齐（旧实现无任何对账，音频 80s 配画面 60s 以

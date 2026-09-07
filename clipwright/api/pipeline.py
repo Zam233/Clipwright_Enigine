@@ -12,14 +12,12 @@ from pydantic import BaseModel, Field
 
 from clipwright.schema.pipeline import PipelineRequest, PipelineState
 from clipwright.services.predictor import ScriptAnalyzer, MaterialAnalyzer
-from clipwright.services.pipeline import PipelineOrchestrator
 from clipwright.services.pipeline_v2 import PipelineOrchestratorV2
 from clipwright.services.trace import get_events, get_all_events, create_trace, add_event
 from clipwright.services.async_util import spawn_background
 from clipwright.config import logger, settings
 
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
-_orchestrator = PipelineOrchestrator()
 
 
 # 后台运行的任务 + 结果缓存
@@ -260,47 +258,9 @@ async def list_pipeline_tasks(request: Request, limit: int = 50) -> dict:
     }
 
 
-@router.post("/run-v2")
-async def run_pipeline_v2(request: PipelineRequest) -> dict:
-    """运行 PipelineV2（动态路由 + 自愈循环）。
-
-    Deprecated (B13): V1 同步端点，前端已改用 /run-async + SSE 追踪；保留兼容不删除。
-    """
-    import uuid
-    logger.warning("DEPRECATED: POST /api/pipeline/run-v2 被调用 (persona=%s)", request.persona_id)
-    pipeline_id = f"pl_v2_{uuid.uuid4().hex[:12]}"
-    create_trace(pipeline_id)
-    add_event(pipeline_id, "system", "info", f"PipelineV2 启动: {request.persona_id} / {request.category_plugin_id}")
-
-    orch_v2 = PipelineOrchestratorV2()
-    try:
-        state = await orch_v2.run(request, pipeline_id=pipeline_id)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Pipeline 执行失败: {e}")
-    return {
-        "pipeline_id": pipeline_id,
-        "status": state.status.value,
-        "steps": [{"agent": s.agent_name, "status": s.status.value} for s in state.steps],
-        "error": state.error,
-        "deprecated": True,
-    }
-
-
-@router.post("/run", response_model=PipelineState)
-async def run_pipeline(request: PipelineRequest) -> PipelineState:
-    """全流程执行，返回完整时间线。
-
-    Deprecated (B13): V1 同步端点，前端零调用；保留兼容不删除。
-    生产加固 1.1：内部引擎切换为 V2（熔断/自愈/检查点保障与主链路一致）。
-    """
-    logger.warning("DEPRECATED: POST /api/pipeline/run 被调用 (persona=%s)", request.persona_id)
-    state = await PipelineOrchestratorV2().run(request)
-    state.shared_data["execution_trace"] = get_all_events(state.pipeline_id)
-    if state.status == "failed":
-        raise HTTPException(status_code=400, detail=state.error)
-    # 附加 deprecated 标记（响应模型为 PipelineState，注入 shared_data 供调用方探测）
-    state.shared_data["deprecated"] = True
-    return state
+# 批A(R6)：废弃同步端点 /run 与 /run-v2 已移除——无 owner/预算/队列治理，
+# 且 /result 的 owner 校验使 jwt 模式下调用者根本读不到结果。
+# 统一使用 /run-async + SSE。
 
 
 @router.post("/run-async")

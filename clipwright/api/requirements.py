@@ -431,6 +431,23 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
                     add_event(pipeline_id, "system", "error", f"管线失败: {e}")
                     _pipeline_results[pipeline_id] = {"status": "failed", "error": str(e), "pipeline_id": pipeline_id}
                 finally:
+                    # 批A(R3)：失败/取消/超时 → 会话回 plan_ready（旧实现停留
+                    # pipeline_running，聊天永远回复"正在运行中"）；成功态
+                    # （pipeline_done）不回滚
+                    _result_status = (_pipeline_results.get(pipeline_id) or {}).get("status", "")
+                    if _result_status in ("failed", "cancelled", "timeout"):
+                        try:
+                            _fresh = await asyncio.to_thread(_service.get_session, req.session_id) or {}
+                            await asyncio.to_thread(
+                                _service._persist,
+                                req.session_id, "plan_ready",
+                                _fresh.get("messages", session.get("messages", [])),
+                                _fresh.get("creative_brief", session.get("creative_brief")),
+                                _fresh.get("production_plan", session.get("production_plan")),
+                                _fresh.get("user_inputs", session.get("user_inputs", {})),
+                            )
+                        except Exception:
+                            logger.warning("会话状态回滚失败: %s", req.session_id)
                     if _running_pipelines.get(pipeline_id) is asyncio.current_task():
                         _running_pipelines.pop(pipeline_id, None)
                     async def _cleanup():

@@ -238,7 +238,10 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
             pass
 
         # ── 7. 空镜头检测（frame_validator，有界并行；不检查音频轨）──
-        await self._check_blank_shots(video_clips, issues)
+        # 批A(R7)：受 quality_depth 门控——basic 跳过（远程逐 clip ffprobe
+        # 最多 30×30s，纯校验即拖慢管线数分钟）
+        if qdepth != "basic":
+            await self._check_blank_shots(video_clips, issues)
 
         # ── 8. 动画生效检查 ──
         self._check_animations(tracks, timeline, issues)

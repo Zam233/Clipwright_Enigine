@@ -84,6 +84,19 @@
 | 7.5 | load_all 容错；enable 端点异常处理；disable 移除生成插件注册物 | loader.py:252 / api/plugin.py:87-95 |✅ |
 | 7.6 | 确认分类器转折尾缀；_is_confirm 统一 | requirements_service.py:1045/1093 |✅ |
 
+| 7.6 | 确认分类器转折尾缀；_is_confirm 统一 | requirements_service.py:1045/1093 |✅ |
+
+## 轮 63：前端审计修复 + 轮 62 缺口补齐（2026-09-08）
+
+| # | 修复项 | 状态 |
+|---|--------|------|
+| A-后端 | R1 audio_agent 补 import json（上传配音实测曾静默失效）；R2 规划失败分支误粘贴成功消息→500；R3 失败/取消/超时会话回 plan_ready（单一 finally + 状态守卫）；R4 空洞填充同步 segments（转场不再错位）；R5 dry-run 检查全部 step；R6 移除废弃端点 /run、/run-v2 与 V1 编排器死导入；R7 空镜头探测受 quality_depth 门控；R9 有 error 无 redo_agent 如实 FAILED；R13 glow/stroke 并存 bord 取较大值；R10 下游闭包纳入插件 Agent（get_full_deps）；R11 持久化单线程串行化；R14 无声音告警块裸 except 改日志 | ✅ |
+| B-前端流程 | 静默演示降级移除（AgentPanel 四处 + autostart 两处 + HomePage，HTTP 错误展示后端 detail）；SSE 终态修正（error 非终态→建议列表、done 按 result.status 判定、补 timeout 分支、cancelled 中性化）；proceed 传 project_id；忽略时间线二次确认；ReviewPanel 超时公式对齐 + sessionStorage 持久化；confirmPlan 防重复启动；取消确认框；startSession 键名统一+补字段；streamChat 失败不二跑；EditorPage 降级换新 id；Markdown 表格渲染；进度条公式修正 | ✅ |
+| C-前端导出/编辑器 | ExportPage 提交 P0 崩溃修复（presets[presetId]?.name）；移除幽灵预设 bilibili_4k、ProRes/H.265/720p/480p 对齐后端、weibo 对齐竖屏；输出名扩展名随预设+时间戳；渲染队列取消按钮 + SSE cancelled/error 分支 + 类型补 cancelled；插件 toggle/loadAll 反映真实结果；完成事件展示 result.warnings 与 cover_paths；嵌套序列加未实现警告 | ✅ |
+| D-次级 | 下游闭包纳入插件 Agent（get_full_deps）；持久化单线程串行化（R11）；无声音告警块裸 except 改日志；semantic QA 读 skeleton.brief 延后（proceed 流 creative_brief 直达） | ✅（D3 延后） |
+
+回归：后端 1462 passed / 0 失败（移除 1 个废弃端点用例）；前端 tsc 0 错误 + vitest 379/379。
+
 ## 批次 8（后续独立任务，不在本轮）
 
 前端仓库（proceed project_id / agent_notes UI / ReviewPanel 统一 / SSE 真流式）；计划修改意见改写 raw_scenes；persona 剩余字段接线；渲染产物 TTL 清理。

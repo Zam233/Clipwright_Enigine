@@ -271,6 +271,12 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                 pix_fmt_override=params.get("pix_fmt", ""),
                 soft_subtitle_srt=_srt_path,  # D4
             )
+            # A10：SRT sidecar 用后即删（此前永久遗留 temp 目录）
+            if _srt_path:
+                try:
+                    Path(_srt_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
             _render_queue[task_id]["result"] = result.to_dict()
             _render_queue[task_id]["status"] = "completed" if result.success else "failed"
             _render_queue[task_id]["progress"] = 100

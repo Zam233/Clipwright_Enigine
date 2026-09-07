@@ -584,15 +584,6 @@ class RequirementsService:
                         "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
                         "metadata": {},
                     })
-                    messages.append({
-                        "role": "assistant", "content": (
-                            f"### 📋 成片规划书已生成\n\n共 **{plan_result.get('scene_count', 0)}** 个场景，"
-                            f"预估总时长 **{plan_result.get('total_duration_sec', 0):.0f}秒**\n\n"
-                            "确认无误请输入「确认」，或提出修改意见。"
-                        ),
-                        "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
-                        "metadata": {"plan_ready": True},
-                    })
             else:
                 status = "gathering"
                 messages.append({

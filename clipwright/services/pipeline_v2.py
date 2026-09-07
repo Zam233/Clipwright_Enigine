@@ -493,7 +493,7 @@ class PipelineOrchestratorV2:
 
         # Layer 1: 持久化初始状态到 MongoDB（在线程池执行以免阻塞事件循环）
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._persist_state, state, "running")
+        await loop.run_in_executor(None, self._persist_state_serial, state, "running")
 
         try:
             result = await asyncio.wait_for(
@@ -520,7 +520,7 @@ class PipelineOrchestratorV2:
             state.updated_at = datetime.now(timezone.utc)
             try:
                 await loop.run_in_executor(
-                    None, self._persist_state, state, state.status.value, "cancelled")
+                    None, self._persist_state_serial, state, state.status.value, "cancelled")
                 record_run_complete(pid, state.status.value, state.steps)
             except Exception:
                 logger.exception("PipelineV2 取消落盘失败: %s", pid)
@@ -550,7 +550,7 @@ class PipelineOrchestratorV2:
             logger.info("PipelineV2 取消: %s", pid)
 
         # Layer 1: 持久化最终状态（在线程池执行）
-        await loop.run_in_executor(None, self._persist_state, state, state.status.value, error_category)
+        await loop.run_in_executor(None, self._persist_state_serial, state, state.status.value, error_category)
         # Run registry: 记录运行结束（成功/失败共用，含 agent 跨度）
         record_run_complete(pid, state.status.value, state.steps)
         return state
@@ -596,6 +596,14 @@ class PipelineOrchestratorV2:
 
             # 检查是否需要自愈
             has_errors, redo_agent, quality_issues = self._check_quality(step)
+            # 批A(R9)：有 error 但无法映射重做目标 → 如实失败
+            # （旧实现落入 else 分支静默 COMPLETED + error issues）
+            if has_errors and not redo_agent:
+                state.status = PipelineStatus.FAILED
+                state.error = ("质检发现错误但无法定位重做目标: "
+                               + "；".join(i.message for i in quality_issues[:2]))
+                add_event(pid, "quality", "error", state.error)
+                break
             if has_errors and redo_agent and heal_count < self.MAX_SELF_HEAL_LOOPS:
                 heal_count += 1
                 logger.info("自愈循环 [%d/%d]: → 重做 %s", heal_count, self.MAX_SELF_HEAL_LOOPS, redo_agent)
@@ -745,7 +753,7 @@ class PipelineOrchestratorV2:
         try:
             _loop = asyncio.get_running_loop()
             await _loop.run_in_executor(
-                None, self._persist_state, state, state.status.value, "retry")
+                None, self._persist_state_serial, state, state.status.value, "retry")
             record_run_complete(pid, state.status.value, state.steps)
         except Exception:
             logger.exception("run_from_agent 终态持久化失败: %s", pid)
@@ -816,12 +824,13 @@ class PipelineOrchestratorV2:
                               _dry_tl)
                 # A4 修复：edit 失败时如实失败（旧实现无条件 COMPLETED，
                 # 预览页拿到 success + 空时间线）
-                _edit_failed = any(
-                    getattr(_s, "agent_name", "") == "edit"
-                    and getattr(_s, "status", None) == PipelineStatus.FAILED
+                # 批A(R5)：检查全部 step——旧实现只查 edit，上游 material/
+                # structure 失败仍会被无条件合并进预览
+                _any_failed = any(
+                    getattr(_s, "status", None) == PipelineStatus.FAILED
                     for _s in state.steps
                 )
-                if _dry_tl is None or _edit_failed:
+                if _dry_tl is None or _any_failed:
                     state.status = PipelineStatus.FAILED
                     state.error = "dry_run 粗剪失败：未能生成有效时间线预览"
                     add_event(pid, "system", "error", state.error)
@@ -985,8 +994,11 @@ class PipelineOrchestratorV2:
         animation，audio（依赖 animation）不会被重做——audio 先前铺好的
         旁白/BGM/字幕轨随 edit 重建时间线而静默丢失，成片无声交付。
         """
-        rev_deps: dict[str, set[str]] = {a: set() for a in AgentDAG._DEPS}
-        for dep, base in AgentDAG._DEPS.items():
+        # 批D(R10)：用合并插件 Agent 的完整依赖图（旧实现仅核心 DAG，
+        # 插件 Agent 在上游重做后不会被联动）
+        full_deps = AgentDAG.get_full_deps()
+        rev_deps: dict[str, set[str]] = {a: set() for a in full_deps}
+        for dep, base in full_deps.items():
             for b in base:
                 rev_deps.setdefault(b, set()).add(dep)
         closed: set[str] = set()
@@ -1316,7 +1328,7 @@ class PipelineOrchestratorV2:
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
-                None, self._persist_state, state, "running", ""
+                None, self._persist_state_serial, state, "running", ""
             )
         except Exception as e:
             logger.warning("C1 检查点持久化失败: %s", e)
@@ -1444,6 +1456,15 @@ class PipelineOrchestratorV2:
                 PipelineModel(_id=state.pipeline_id, **data).insert()
         except Exception as e:
             logger.warning("Pipeline 持久化失败: %s", e)
+
+    def _persist_state_serial(self, state, status_str: str, error_category: str = "") -> None:
+        """批D(R11)：持久化专用单线程执行器——并行组内各 Agent 同时落全量
+        状态时，默认线程池并发 find→update/insert 会竞态双插/互相覆盖；
+        单工作线程保证持久化按调用顺序串行。"""
+        if getattr(self, "_persist_pool", None) is None:
+            from concurrent.futures import ThreadPoolExecutor
+            self._persist_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cw-persist")
+        self._persist_pool.submit(self._persist_state, state, status_str, error_category).result()
 
     @staticmethod
     def _categorize_error(error: str) -> str:

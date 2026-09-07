@@ -225,13 +225,16 @@ class TextStyle:
             tags.append(rf"\blur{self.shadow_blur:g}")
         if self.shadow_x or self.shadow_y or self.shadow_blur:
             tags.append(r"\shad1")
-        if self.stroke_width > 0:
-            tags.append(rf"\bord{int(round(self.stroke_width))}")
+        # 批A(R13)：glow 与 stroke 并存时 \bord 取两者较大值（ASS override
+        # 后写覆盖先写——旧实现 glow 直接覆盖 stroke 宽度/颜色）
+        _bord = int(round(self.stroke_width))
         if self.glow_width > 0 and self.glow_color:
-            gw = int(round(self.glow_width))
-            # 修复：\c 等价 \1c（主填充色），会把整行文字染成发光色；
-            # 辉光应由 \3c（描边层）承载加宽模糊，填充保持 font_color
-            tags.append(rf"\bord{gw}\blur{gw}")
+            _bord = max(_bord, int(round(self.glow_width)))
+        if _bord > 0:
+            tags.append(rf"\bord{_bord}")
+        if self.glow_width > 0 and self.glow_color:
+            # 辉光由 \3c（描边层）承载加宽模糊，填充保持 font_color
+            tags.append(rf"\blur{int(round(self.glow_width))}")
             tags.append(rf"\3c{color_to_ass(self.glow_color)}")
         esc = text.replace("{", r"\{").replace("}", r"\}")
         # F3 实渲修复: ASS override tags 必须包裹在 {} 内才被 libass 当作样式解释，
