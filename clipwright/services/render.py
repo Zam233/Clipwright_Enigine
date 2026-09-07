@@ -327,6 +327,7 @@ def _get_preset() -> str:
 _ENC_OVERRIDE: contextvars.ContextVar[str] = contextvars.ContextVar("clipwright_enc_override", default="")
 _PRESET_OVERRIDE: contextvars.ContextVar[str] = contextvars.ContextVar("clipwright_preset_override", default="")
 _PFMT_OVERRIDE: contextvars.ContextVar[str] = contextvars.ContextVar("clipwright_pfmt_override", default="")
+_EXT_OVERRIDE: contextvars.ContextVar[str] = contextvars.ContextVar("clipwright_ext_override", default="mp4")
 
 
 def _current_encoder() -> str:
@@ -342,6 +343,13 @@ def _current_preset() -> str:
 def _current_pix_fmt() -> str:
     ov = _PFMT_OVERRIDE.get()
     return ov or "yuv420p"
+
+
+def _current_ext() -> str:
+    """批6：中间产物容器扩展名跟随交付预设（ProRes 必须 .mov——MP4 容器
+    不支持 prores 编码，旧实现全部中间阶段硬编码 .mp4 → 全链 trim 失败）。"""
+    ov = _EXT_OVERRIDE.get()
+    return (ov or "mp4").lstrip(".")
 
 
 def _encoder_stage_args(encoder: str, preset: str, pix_fmt: str | None = None) -> list[str]:
@@ -516,12 +524,31 @@ def _get_actual_duration(video_path: str) -> float:
     except Exception:
         return 0
 
-def _is_valid_video(path: str | Path, min_bytes: int = 1024) -> bool:
+def _is_valid_video(path: str | Path, min_bytes: int = 1024,
+                    require_streams: bool = False) -> bool:
     """ffmpeg 输出有效性：存在且非空（ffmpeg -y 失败也会留下 0 字节占位文件，
-    仅检查 exists() 会把失败误判为成功，导致最终导出空视频）。"""
+    仅检查 exists() 会把失败误判为成功，导致最终导出空视频）。
+
+    require_streams=True 时再经 ffprobe 校验时长 ≥1s 且含视频流——用于拼接/
+    转场/混音等关键产物，防止单帧残片被回退链判为有效而静默丢内容。
+    """
     try:
         p = Path(path)
-        return p.exists() and p.stat().st_size >= min_bytes
+        if not (p.exists() and p.stat().st_size >= min_bytes):
+            return False
+    except Exception:
+        return False
+    if not require_streams:
+        return True
+    try:
+        if _get_actual_duration(str(p)) < 1.0:
+            return False
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v", "-of", "json",
+             "-show_entries", "stream=codec_type", str(p)],
+            capture_output=True, text=True, timeout=20)
+        streams = (json.loads(r.stdout or "{}").get("streams") or [])
+        return bool(streams)
     except Exception:
         return False
 
@@ -697,7 +724,7 @@ def _prune_trim_cache_dir() -> None:
         now = _time.time()
         # R8: 10 分钟内的新文件可能被在用渲染引用——清理时跳过
         entries = sorted(
-            (p for p in _TRIM_CACHE_DIR.glob("trim_*.mp4")
+            (p for p in _TRIM_CACHE_DIR.glob("trim_*.*")
              if now - p.stat().st_mtime > 600),
             key=lambda p: p.stat().st_mtime)
         total = sum(p.stat().st_size for p in entries)
@@ -790,6 +817,7 @@ class RenderService:
         _ENC_OVERRIDE.set(encoder_override)
         _PRESET_OVERRIDE.set(preset_override)
         _PFMT_OVERRIDE.set(pix_fmt_override)
+        _EXT_OVERRIDE.set(str(output_path).rsplit(".", 1)[-1].lower() or "mp4")
         # 生产加固 1.7 + Phase 3.1: 每次渲染前清理超额缓存（一次 scandir，成本可忽略）
         _prune_trim_cache_dir()
         _prune_video_cache_dir()
@@ -899,7 +927,8 @@ class RenderService:
         else:
             # 拼接
             final_video = await self._concat_segments(trimmed, video_segments, fps, bitrate,
-                                                      encoder, preset, progress_callback)
+                                                      encoder, preset, progress_callback,
+                                                      width=width, height=height)
 
             # R1: 文本烧写前应用漂移（文本已烧入缓存命中路径，无需二次偏移）
             if _r1_seg_shifts and text_overlays:
@@ -974,7 +1003,8 @@ class RenderService:
                         ["ffmpeg", "-y", "-loglevel", "error", "-i", final_video,
                          "-i", soft_subtitle_srt,
                          "-map", "0:v:0", "-map", "0:a?", "-map", "1:0",
-                         "-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text", str(output)],
+                         "-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text",
+                         "-movflags", "+faststart", str(output)],
                         capture_output=True, text=False, timeout=600)
                     _srt_ok = _is_valid_video(output)
                 except Exception as e:
@@ -1246,9 +1276,9 @@ class RenderService:
             if cached and Path(cached).exists():
                 return cached
 
-            out = str(_TRIM_CACHE_DIR / f"trim_{cache_key}.mp4")
+            out = str(_TRIM_CACHE_DIR / f"trim_{cache_key}.{_current_ext()}")
             # R8: 先写临时名再原子替换——并发渲染同 key 不再互写半截文件
-            out_tmp = out + ".part.mp4"
+            out_tmp = out + ".part"
             try:
                 # V3c: 关键帧变速——有 speed 关键帧时走分段恒速近似（trim+concat），
                 # 全局 setpts 前缀跳过；无关键帧保持 D1 单段 setpts 路径
@@ -1459,7 +1489,7 @@ class RenderService:
             return False
 
     def _generate_fallback(self, dur, width, height, fps, idx):
-        out = str(self._work_dir / f"fallback_{idx}.mp4")
+        out = str(self._work_dir / f"fallback_{idx}.{_current_ext()}")
         try:
             # 超时按时长缩放：长片段（如 113s）色块编码超过固定 30s 会被误杀
             timeout = 30 + int(dur) * 2
@@ -1473,31 +1503,57 @@ class RenderService:
 
     # ── 拼接 ──────────────────────────────────────
 
-    async def _concat_segments(self, trimmed, segments, fps, bitrate, encoder, preset, progress_callback):
+    async def _concat_segments(self, trimmed, segments, fps, bitrate, encoder, preset, progress_callback,
+                               width: int = 1920, height: int = 1080):
         if not trimmed:
             return ""
+        # 批1：start_sec 空洞黑帧填充——旧实现背靠背拼接，任何空洞之后的画面
+        # 整体左移，而字幕/MG/音频按绝对时间定位 → 字幕盖错画面、A/V 错位
+        filled: list[str] = []
+        cursor = 0.0
+        gap_idx = 0
+        for seg_path, seg in zip(trimmed, segments):
+            start = float(seg.get("start_sec", 0) or 0)
+            dur = float(seg.get("duration_sec", 0) or 0)
+            if start > cursor + 0.05:
+                black = self._generate_fallback(start - cursor, width, height, fps, f"gap{gap_idx}")
+                if black:
+                    filled.append(black)
+                    self._final_ffmpeg_log.append(f"gap fill: {start - cursor:.2f}s 空洞黑帧填充")
+            filled.append(seg_path)
+            cursor = max(cursor, start + dur)
+            gap_idx += 1
+        if len(filled) != len(trimmed):
+            trimmed = filled
         if progress_callback:
             await progress_callback("concat", 55, f"拼接 {len(trimmed)} 个片段")
 
         if len(trimmed) == 1:
-            f = str(self._work_dir / "concat.mp4"); shutil.copy2(trimmed[0], f); return f
+            f = str(self._work_dir / f"concat.{_current_ext()}"); shutil.copy2(trimmed[0], f); return f
+        has_trans = any(segments[i].get("transition_in") for i in range(len(segments)) if i > 0)
         if len(trimmed) == 2:
+            # 修复：两片段时间线的转场此前被硬切短路
+            if has_trans and await asyncio.to_thread(_ffmpeg_supports_xfade):
+                return await self._concat_xfade_parallel(trimmed, segments, fps, bitrate, encoder, preset)
             return await self._ff_concat(self._run_concat, trimmed[0], trimmed[1], fps, bitrate, encoder, preset)
 
-        has_trans = any(segments[i].get("transition_in") for i in range(len(segments)) if i > 0)
         if has_trans and await asyncio.to_thread(_ffmpeg_supports_xfade):
             # Phase 3.2: 分治并行拼接（替代 O(N) 串行全片重编）
             return await self._concat_xfade_parallel(trimmed, segments, fps, bitrate, encoder, preset)
         return await self._ff_concat(self._run_concat_all, trimmed, fps, bitrate, encoder, preset)
 
-    def _run_concat(self, a, b, fps, bitrate, encoder, preset):
-        out = Path(a).parent / "concat.mp4"
+    def _run_concat(self, a, b, fps, bitrate, encoder, preset, out_name="concat.{ext}"):
+        out_name = out_name.format(ext=_current_ext())
+        out = Path(a).parent / out_name
         self._run_ff(["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", a, "-i", b,
                        "-filter_complex", "[0:v]setsar=1[a];[1:v]setsar=1[b];[a][b]concat=n=2:v=1:a=0[v]",
                        "-map", "[v]", *_encoder_stage_args(encoder, preset),
                        "-b:v", bitrate, "-r", str(fps), str(out)],
                       capture_output=True, text=False, timeout=600)
-        return str(out) if _is_valid_video(out) else a
+        if _is_valid_video(out, require_streams=True):
+            return str(out)
+        self._final_ffmpeg_log.append(f"concat({Path(a).name}+{Path(b).name}): 输出无效，丢弃 {Path(b).name}")
+        return a
 
     def _xfade_pair(self, left, right, tt, td, fps, bitrate, encoder, preset, out_name):
         """单次 xfade 合成（Phase 3.2：可并行）；输出无效时回退右片段。"""
@@ -1510,9 +1566,14 @@ class RenderService:
                        "-map", "[v]", *_encoder_stage_args(encoder, preset),
                        "-b:v", bitrate, "-r", str(fps), out],
                       capture_output=True, text=False, timeout=600)
-        if _is_valid_video(out):
+        if _is_valid_video(out, require_streams=True):
             return out
-        self._final_ffmpeg_log.append(f"xfade({Path(left).name}×{Path(right).name}): 输出无效，回退右片段")
+        self._final_ffmpeg_log.append(f"xfade({Path(left).name}×{Path(right).name}): 输出无效，降级硬切拼接")
+        fallback = self._run_concat(left, right, fps, bitrate, encoder, preset,
+                                    out_name=f"xc_{uuid.uuid4().hex[:6]}.{{ext}}")
+        if _is_valid_video(fallback, require_streams=True) and fallback != left:
+            return fallback
+        self._final_ffmpeg_log.append(f"xfade({Path(left).name}×{Path(right).name}): 硬切降级仍失败，保留右片段")
         return right
 
     async def _concat_xfade_parallel(self, trimmed, segments, fps, bitrate, encoder, preset):
@@ -1554,9 +1615,21 @@ class RenderService:
 
             async def _merge(pair: tuple[dict, dict]) -> dict:
                 left, right = pair
+                # td<0.2 视为无转场；转场时长不得超过左块时长（否则 offset 归 0
+                # → xfade EINVAL → 旧实现丢整个左块）
+                if right["td"] < 0.2 or right["td"] >= left["acc"]:
+                    out = await self._ff_concat(
+                        self._run_concat, left["path"], right["path"], fps, bitrate,
+                        encoder, preset, f"cc{round_no}_{uuid.uuid4().hex[:6]}.{{ext}}")
+                    if _is_valid_video(out, require_streams=True):
+                        return {"path": out, "acc": left["acc"] + right["acc"],
+                                "tt": right["tt"], "td": right["td"]}
+                    self._final_ffmpeg_log.append(
+                        f"concat({Path(left['path']).name}+{Path(right['path']).name}): 硬切失败，保留右块")
+                    return right
                 out = await self._ff_concat(
                     self._xfade_pair, left["path"], right["path"], right["tt"], right["td"],
-                    fps, bitrate, encoder, preset, f"xr{round_no}_{uuid.uuid4().hex[:6]}.mp4",
+                    fps, bitrate, encoder, preset, f"xr{round_no}_{uuid.uuid4().hex[:6]}.{{ext}}",
                 )
                 return {
                     "path": out,
@@ -1568,14 +1641,15 @@ class RenderService:
             merged = await asyncio.gather(*(_merge(p) for p in pairs))
             items = list(merged) + ([odd] if odd else [])
 
-        final = str(self._work_dir / "concat.mp4")
-        if _is_valid_video(items[0]["path"]):
+        final = str(self._work_dir / f"concat.{_current_ext()}")
+        if _is_valid_video(items[0]["path"], require_streams=True):
             shutil.copy2(items[0]["path"], final)
             return final
+        self._final_ffmpeg_log.append("xfade 分治拼接最终产物无效，仅保留首片段（后续内容缺失）")
         return trimmed[0]
 
     def _run_concat_all(self, clips, fps, bitrate, encoder, preset):
-        out = Path(clips[0]).parent / "concat.mp4"
+        out = Path(clips[0]).parent / f"concat.{_current_ext()}"
         inputs = sum([["-i", f] for f in clips], [])
         n = len(clips)
         # 每个输入先 setsar=1 归一化，保证 concat 输入参数一致（含旧缓存里 SAR 未归一化的片段）
@@ -1586,7 +1660,20 @@ class RenderService:
                        *_encoder_stage_args(encoder, preset),
                        "-b:v", bitrate, "-r", str(fps), str(out)],
                       capture_output=True, text=False, timeout=timeout)
-        return str(out) if _is_valid_video(out) else clips[-1]
+        if _is_valid_video(out, require_streams=True):
+            return str(out)
+        # 修复：旧实现失败只返回最后一个片段（其余全部丢失）。降级两两串接，
+        # 尽可能保留已成功拼接的部分，并逐段记录丢失
+        self._final_ffmpeg_log.append(f"concat_all({n} 段) 输出无效，降级两两串接")
+        acc = clips[0]
+        for idx, nxt in enumerate(clips[1:], start=1):
+            merged = self._run_concat(acc, nxt, fps, bitrate, encoder, preset,
+                                      out_name=f"cc_all_{idx}_{uuid.uuid4().hex[:6]}.{{ext}}")
+            if _is_valid_video(merged, require_streams=True):
+                acc = merged
+            else:
+                self._final_ffmpeg_log.append(f"concat 降级：第 {idx + 1} 段未能并入（该段内容缺失）")
+        return acc
 
     # ── M2: concat + text 合并 ────────────────────
 
@@ -1673,14 +1760,19 @@ class RenderService:
                 ass_arg = ass_path.resolve().relative_to(Path.cwd().resolve()).as_posix()
             except ValueError:
                 ass_arg = ass_path.name  # 跨盘符回退：仅文件名（依赖 CWD 与 work_dir 一致）
-            out = str(self._work_dir / f"txt_{bi}.mp4")
+            out = str(self._work_dir / f"txt_{bi}.{_current_ext()}")
             cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", current,
                    "-vf", f"ass={ass_arg}",
                    *_encoder_stage_args(encoder, preset),
                    "-c:a", "copy", out]
             r = await self._ff(cmd, capture_output=True, text=False, timeout=1800)
-            if r.returncode == 0 and _is_valid_video(out):
+            if r.returncode == 0 and _is_valid_video(out, require_streams=True):
                 current = out
+            else:
+                # 修复：烧录失败原先静默通过 → 成片零字幕交付且无任何日志
+                err_tail = _sanitize_ffmpeg_error(getattr(r, "stderr", b""))
+                self._final_ffmpeg_log.append(f"字幕烧录批次 {bi} 失败（该批字幕缺失）: {err_tail[:200]}")
+                logger.warning("字幕烧录批次 %d 失败，该批字幕未入片", bi)
             if progress_callback:
                 done = bi + len(batch)
                 pct = 60 + min(done / max(len(dialogues), 1), 1.0) * 10
@@ -1710,15 +1802,20 @@ class RenderService:
         current = video
         for bi in range(0, len(filters), batch_size):
             batch = filters[bi:bi + batch_size]
-            out = str(self._work_dir / f"txt_{bi}.mp4")
+            out = str(self._work_dir / f"txt_{bi}.{_current_ext()}")
             # L2: 用 -vf 而非重新 -filter_complex，减少复杂度
             cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", current,
                    "-vf", ",".join(batch),
                    *_encoder_stage_args(encoder, preset),
                    "-c:a", "copy", out]
             r = await self._ff(cmd, capture_output=True, text=False, timeout=1800)
-            if r.returncode == 0 and _is_valid_video(out):
+            if r.returncode == 0 and _is_valid_video(out, require_streams=True):
                 current = out
+            else:
+                # 修复：烧录失败原先静默通过 → 成片零字幕交付且无任何日志
+                err_tail = _sanitize_ffmpeg_error(getattr(r, "stderr", b""))
+                self._final_ffmpeg_log.append(f"字幕烧录批次 {bi} 失败（该批字幕缺失）: {err_tail[:200]}")
+                logger.warning("字幕烧录批次 %d 失败，该批字幕未入片", bi)
             if progress_callback:
                 done = bi + len(batch)
                 pct = 60 + min(done / max(len(filters), 1), 1.0) * 10
@@ -1801,7 +1898,7 @@ class RenderService:
             mov = str(self._work_dir / "overlay.mov")
             ok = await HyperframesRenderer.render_overlays(overlays, mov, width, height, fps)
             if ok and _is_valid_video(mov):
-                out_v = str(self._work_dir / "with_hf.mp4")
+                out_v = str(self._work_dir / f"with_hf.{_current_ext()}")
                 ok2 = HyperframesRenderer.render_overlay_on_video(mov, video, out_v)
                 if ok2 and _is_valid_video(out_v):
                     video = out_v
@@ -1842,7 +1939,7 @@ class RenderService:
         """
         from clipwright.animation.hyperframes_renderer import HyperframesRenderer
         try:
-            out_v = str(self._work_dir / f"mg_{uuid.uuid4().hex[:4]}.mp4")
+            out_v = str(self._work_dir / f"mg_{uuid.uuid4().hex[:4]}.{_current_ext()}")
             loop = asyncio.get_running_loop()
             ok = await loop.run_in_executor(
                 _ffmpeg_pool, contextvars.copy_context().run,
@@ -1878,7 +1975,7 @@ class RenderService:
         if not movs:
             return video
         counter = _counter if _counter is not None else {"done": 0, "total": len(movs)}
-        out = str(self._work_dir / f"mg_chain_{uuid.uuid4().hex[:8]}.mp4")
+        out = str(self._work_dir / f"mg_chain_{uuid.uuid4().hex[:8]}.{_current_ext()}")
         cmd = self._build_mg_chained_cmd(video, movs, width, height, out)
         length = len(" ".join(cmd))
         if length > max_len:
@@ -1897,7 +1994,7 @@ class RenderService:
                     len(movs), length)
         try:
             r = await self._ff(cmd, capture_output=True, text=False, timeout=3600)
-            if r.returncode == 0 and _is_valid_video(out):
+            if r.returncode == 0 and _is_valid_video(out, require_streams=True):
                 counter["done"] += len(movs)
                 if progress_callback:
                     frac = 90 + min(counter["done"] / max(counter["total"], 1), 1.0) * 4
@@ -2082,7 +2179,7 @@ class RenderService:
     # ── overlay / audio（同原版精简）─────────────
 
     async def _apply_overlays_safe(self, video, segments, width, height):
-        out = str(self._work_dir / "ov.mp4")
+        out = str(self._work_dir / f"ov.{_current_ext()}")
         try:
             await self._apply_overlays(video, segments, out, width, height)
             return out if _is_valid_video(out) else video
@@ -2136,11 +2233,11 @@ class RenderService:
         """混合音频（C12：失败必须标记而非静默静音成片）。返回 (video, failure_marker|None)。"""
         if not video or not Path(video).exists():
             return video, None
-        out = str(self._work_dir / "aud.mp4")
+        out = str(self._work_dir / f"aud.{_current_ext()}")
         try:
             await self._mix_audio(video, segments, out, audio_path, ab, bgm_path, bitrate,
                                   video_cached=video_cached)
-            if Path(out).exists() and _is_valid_video(out):
+            if Path(out).exists() and _is_valid_video(out, require_streams=True):
                 return out, None
             # 混合失败/输出无效 → 保留无声视频但标记失败
             return video, "audio_mix_failed"
@@ -2194,19 +2291,27 @@ class RenderService:
                     inputs += ["-i", v["path"]]
                 chains = []
                 mix_inputs: list[str] = []
+                # 修复（1.1c）：整文件型音源（显式配音/BGM，dur=0）按画面时长裁齐，
+                # 否则 duration=longest 下长 BGM 文件会把混音拖到远超画面
+                vdur = await asyncio.to_thread(_get_actual_duration, str(input_video))
                 # 阶段 1：每路音源独立预处理链 [i:a]→[a{i}]
                 for i, v in enumerate(voices, start=1):
                     parts = []
                     # R9: atrim 用「源内偏移」（素材文件内的起点），adelay 用时间线
                     # start_sec——此前两者混用导致源偏移素材播放错误区域
                     so = v.get("source_offset", 0)
-                    atrim_start = so if so > 0 else v["start"]
+                    # 修复：atrim 恒用「源内偏移」（默认 0）。旧实现把时间线 start
+                    # 当源偏移，逐句配音文件（时长数秒、start=20s）被裁成空流 → 整段静音
+                    atrim_start = so
                     sp = v.get("speed", 1) or 1
                     # X4: 源时间 atrim 时长 = 时间线时长 × 速率；atempo（单级限
                     # 0.5–2.0，越界链式分级）把源片段压/展到时间线时长，与预览
                     # playbackRate 语义一致
-                    if v["dur"] > 0:
-                        parts.append(f"atrim=start={atrim_start}:duration={v['dur'] * sp:.6f}")
+                    trim_dur = v["dur"]
+                    if trim_dur <= 0 and vdur > 0:
+                        trim_dur = max(0.5, vdur - v["start"])
+                    if trim_dur > 0:
+                        parts.append(f"atrim=start={atrim_start}:duration={trim_dur * sp:.6f}")
                     if abs(sp - 1.0) > 1e-3:
                         remaining = sp
                         while remaining > 2.0:
@@ -2218,10 +2323,13 @@ class RenderService:
                         parts.append(f"atempo={remaining:.6f}")
                     if v["start"] > 0:
                         parts.append(f"adelay={int(v['start'] * 1000)}|{int(v['start'] * 1000)}")
+                    # 修复：adelay 后 pts 含静音头部，fade 须用时间线绝对位置
+                    # （旧实现 st 相对源，对 start>0 的片段淡的是静音区）
                     if v["fade_in"] > 0:
-                        parts.append(f"afade=t=in:st=0:d={v['fade_in']}")
+                        parts.append(f"afade=t=in:st={v['start']:.6f}:d={v['fade_in']}")
                     if v["fade_out"] > 0 and v["dur"] > 0:
-                        parts.append(f"afade=t=out:st={max(0, v['dur'] - v['fade_out'])}:d={v['fade_out']}")
+                        fade_out_st = max(0.0, v["start"] + v["dur"] - v["fade_out"])
+                        parts.append(f"afade=t=out:st={fade_out_st:.6f}:d={v['fade_out']}")
                     parts.append(f"volume={v['volume']}")
                     chains.append(f"[{i}:a]{','.join(parts)}[a{i}]")
 
@@ -2247,15 +2355,20 @@ class RenderService:
                         ducked_bgms.add(bb)
                 for i, v in enumerate(voices, start=1):
                     base = f"a{i}"
-                    if v.get("is_voice") and voice_base:
-                        continue  # 已走 mixv
+                    # 修复：仅当存在 BGM（mixv 侧链已建）时跳过作为侧链源的第一路
+                    # 人声；其余人声必须直接进 amix——旧实现 continue 掉所有
+                    # is_voice，逐句配音只有第一句有声
+                    if v.get("is_voice") and voice_base == base and bgm_bases:
+                        continue  # 该路已作为 mixv 混入（ducking 侧链源）
                     if v.get("is_bgm") and base in ducked_bgms:
                         continue  # 已走 sidechaincompress
                     mix_inputs.append(base)
 
                 chains_mix_in = "".join(f"[{m}]" for m in mix_inputs)
+                # duration=longest：混音覆盖全部人声窗（旧 first 在首句结束处
+                # 截断，逐句配音只有第一句有声且 BGM 被截断）
                 chains.append(
-                    f"{chains_mix_in}amix=inputs={len(mix_inputs)}:duration=first:normalize=0,"
+                    f"{chains_mix_in}amix=inputs={len(mix_inputs)}:duration=longest:normalize=0,"
                     f"loudnorm=I=-16:LRA=11:TP=-1.5[aout]"
                 )
                 r = await self._ff(inputs + [
@@ -2286,7 +2399,8 @@ class RenderService:
                                *(["-c:v","copy"] if video_cached else
                                  ["-c:v",encoder,"-preset",preset,"-pix_fmt",_current_pix_fmt(),
                                   "-b:v",bitrate,*_delivery_extra_args(encoder)]),
-                               "-c:a","aac","-b:a",ab,"-map","0:v:0","-map","1:a:0",output_path],
+                               "-c:a","aac","-b:a",ab,"-map","0:v:0","-map","1:a:0",
+                               "-movflags","+faststart",output_path],
                               capture_output=True, text=False, timeout=600)
                 if _is_valid_video(output_path): return
                 logger.warning("_mix_audio: 配音混合输出无效: %s", output_path)

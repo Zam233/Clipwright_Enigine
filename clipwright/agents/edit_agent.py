@@ -202,7 +202,13 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             # → script_skeleton.voiceover → creative_brief 文案 → 场景拼接
             _sk = input_data.script_skeleton or {}
             _brief = input_data.creative_brief or {}
-            _brief_draft = _brief.get("brief_draft") or _brief.get("creative_brief") or {}
+            # 批2：会话存储的 creative_brief 即内层 draft（无 brief_draft 包装）——
+            # 兼容三种形态：{brief_draft} 包装 / {creative_brief} 包装 / 裸 draft
+            _brief_draft = (
+                _brief.get("brief_draft")
+                or _brief.get("creative_brief")
+                or (_brief if isinstance(_brief, dict) and _brief.get("overview") else {})
+            ) or {}
             global_voice = (
                 (context.extra_params or {}).get("script_text")
                 or _sk.get("voiceover")
@@ -349,6 +355,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                             candidate_clips=candidate_clips,
                             scene_duration=scene_duration,
                             context=context,
+                            width=canvas_w, height=canvas_h,
                             pip_scene_indices=llm_pip_scenes,
                         )
                     except Exception as e:
@@ -551,6 +558,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             )
 
         except Exception as e:
+            logger.exception("EditAgent 执行失败")
             return self.build_error_output(str(e), EditOutput)
 
     # ── 工具方法 ──
@@ -706,6 +714,8 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         scene_duration: float,
         context: AgentContext,
         pip_scene_indices: set[int] | None = None,
+        width: int = 1920,
+        height: int = 1080,
     ) -> list[dict[str, Any]]:
         """并行场景处理：仅用本地状态计算本场景的放置段，不触碰共享轨道 / current_time。
 
@@ -812,6 +822,8 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                             "generate_text_video",
                             text=scene_title,
                             duration_sec=seg_dur,
+                            width=width,
+                            height=height,
                         ),
                         timeout=_TRIM_TOOL_TIMEOUT_SEC,
                     )
@@ -843,6 +855,8 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                         "generate_text_video",
                         text=scene_title,
                         duration_sec=remaining,
+                        width=width,
+                        height=height,
                     ),
                     timeout=_TRIM_TOOL_TIMEOUT_SEC,
                 )

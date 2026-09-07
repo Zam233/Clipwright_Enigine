@@ -84,7 +84,9 @@ class RemoteRenderService:
         for track in timeline.tracks:
             for clip in track.clips or []:
                 kind = str(clip.kind) if clip.kind else str(track.kind)
-                if kind in ("video", "image") and clip.asset_id:
+                # 批6：audio clip（TTS 旁白/BGM/上传配音）一并上传——旧实现遗漏，
+                # 远程渲染产物丢失全部时间线音频
+                if kind in ("video", "image", "audio") and clip.asset_id:
                     p = Path(clip.asset_id)
                     if p.exists():
                         files[str(p.resolve())] = ""
@@ -364,7 +366,12 @@ class RemoteRenderService:
                      progress_callback=None, enable_progress=True,
                      cancel_id: str | None = None,
                      encoder_override: str = "", pix_fmt_override: str = "",
-                     force_render: bool = False) -> RenderResult:
+                     force_render: bool = False,
+                     soft_subtitle_srt: str = "") -> RenderResult:
+        # 批6：soft_subtitle_srt 签名对齐——此前 queue 路径无条件传该参数，
+        # 而本方法未接收 → TypeError，远程渲染 100% 失败。远程 worker 暂不支持
+        # mov_text 软字幕轨，收到该参数时忽略（字幕由时间线本身携带，worker 端
+        # RenderService 会按其 caption_renderer 设置处理）。
         """将 Timeline 渲染为 MP4 —— 与 RenderService.render 签名完全一致（drop-in 替代）。
 
         - **No-remote 快速路径**：``remote_render_url`` 为空时防御性直接走本地渲染。

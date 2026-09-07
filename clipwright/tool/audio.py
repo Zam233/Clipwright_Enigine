@@ -70,7 +70,8 @@ class BPMDetectTool(BaseTool):
             return ToolExecResult(
                 status=ToolStatus.SUCCESS,
                 tool_name=self.name,
-                output={"bpm": 120, "input_path": input_path, "method": "astats_fallback"},
+                output={"error": "BPM 自动检测尚未实现，请在请求中直接提供 beat_bpm",
+                       "input_path": input_path, "method": "unsupported"},
             )
         except FileNotFoundError:
             return ToolExecResult(

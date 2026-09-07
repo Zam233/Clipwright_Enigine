@@ -66,6 +66,10 @@ _RENDER_PARAMS: tuple[str, ...] = (
     "audio_file_path",
     "bgm_file_path",
     "enable_progress",
+    # 批6：交付级编码器/像素格式透传（ProRes/H.265/10bit 远程可达；
+    # 旧实现白名单丢弃这两个参数，worker 恒用默认编码器）
+    "encoder_override",
+    "pix_fmt_override",
 )
 
 

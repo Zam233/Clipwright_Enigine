@@ -48,8 +48,9 @@ def _snap_size(w: int, h: int) -> str:
         scale = (_MAX_TOTAL_PX / total) ** 0.5
     else:
         scale = 1.0
-    w2 = max(2, int(w * scale) // 2 * 2)
-    h2 = max(2, int(h * scale) // 2 * 2)
+    # 批5：向上取整到偶数——旧 int() 截断可能仍低于像素下限（1279x720 案例）
+    w2 = max(2, -((-int(w * scale)) // 2) * 2)
+    h2 = max(2, -((-int(h * scale)) // 2) * 2)
     return "{}x{}".format(w2, h2)
 
 
@@ -94,7 +95,9 @@ class AIImageGenTool(BaseTool):
             return bool(self._api_key or os.environ.get("OPENAI_API_KEY", ""))
         if self._provider == "flux":
             return bool(self._api_key or os.environ.get("FLUX_API_KEY", ""))
-        return True  # local SD 有默认地址
+        # local：需显式配置地址（默认 127.0.0.1:7860 通常未运行，
+        # 暴露必然失败的工具会误导 Agent 与能力页）
+        return bool(self._base_url or os.environ.get("SD_API_URL", ""))
 
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
         prompt = kwargs.get("prompt", "")
@@ -203,7 +206,9 @@ class AIImageGenTool(BaseTool):
             return {"success": True, "url": data.get("result", {}).get("sample", ""), "provider": "flux"}
 
     async def _gen_local(self, prompt: str, w: int, h: int) -> dict:
-        url = self._api_url or os.environ.get("SD_API_URL", "http://127.0.0.1:7860")
+        url = self._base_url or os.environ.get("SD_API_URL", "")
+        if not url:
+            return {"success": False, "error": "SD_API_URL 未配置（local 分支需显式地址）"}
         async with httpx.AsyncClient(timeout=120) as c:
             resp = await c.post(f"{url}/sdapi/v1/txt2img",
                 json={"prompt": prompt, "width": w, "height": h, "steps": 20})
@@ -245,7 +250,17 @@ class AIImageGenPlugin(CapabilityPlugin):
         logger.info("[AIImageGen] Tool + MaterialSource 已注册 (provider=%s)", provider)
 
     def shutdown(self) -> None:
-        pass
+        # 批7：disable 时真正移除工具与素材源（旧实现 pass → 禁用后
+        # 工具仍可用、能力概览仍播报）
+        try:
+            ToolRegistry.unregister("ai_image_generate")
+        except Exception:
+            pass
+        try:
+            from clipwright.material.registry import MaterialRegistry
+            MaterialRegistry.unregister("ai_image_gen")
+        except Exception:
+            pass
 
 
 __all__ = ["AIImageGenPlugin"]

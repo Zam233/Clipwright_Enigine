@@ -13,7 +13,7 @@ from clipwright.services.render import RenderService
 def _make_rs(tmp_path: Path):
     rs = RenderService(work_dir=tmp_path / "w")
     captured: list[list[str]] = []
-    rs._source_valid = lambda p: True  # type: ignore[method-assign]
+    rs._source_valid = lambda p, **kw: True  # type: ignore[method-assign]
 
     def fake_run(cmd, **kwargs):
         captured.append(list(cmd))
@@ -27,7 +27,7 @@ def _make_rs(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_trim_static_transform_uses_overlay(tmp_path, monkeypatch) -> None:
     """scale/rotate/translate → filter_complex 黑底 overlay 链（与预览语义一致）。"""
-    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p: True)
+    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p, **kw: True)
     render_mod._trim_cache.clear()
     rs, captured = _make_rs(tmp_path)
 
@@ -49,7 +49,7 @@ async def test_trim_static_transform_uses_overlay(tmp_path, monkeypatch) -> None
 @pytest.mark.asyncio
 async def test_trim_identity_transform_keeps_vf_path(tmp_path, monkeypatch) -> None:
     """无变换/恒等变换 → 走原 -vf 快路径，不引入 overlay 重链。"""
-    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p: True)
+    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p, **kw: True)
     render_mod._trim_cache.clear()
     rs, captured = _make_rs(tmp_path)
 
@@ -65,7 +65,7 @@ async def test_trim_identity_transform_keeps_vf_path(tmp_path, monkeypatch) -> N
 @pytest.mark.asyncio
 async def test_trim_cache_key_distinguishes_transform(tmp_path, monkeypatch) -> None:
     """不同 transform 值必须产生不同的缓存键（否则错误命中旧产物）。"""
-    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p: True)
+    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p, **kw: True)
     render_mod._trim_cache.clear()
     rs, captured = _make_rs(tmp_path)
 
@@ -83,7 +83,7 @@ async def test_trim_cache_key_distinguishes_transform(tmp_path, monkeypatch) -> 
 @pytest.mark.asyncio
 async def test_trim_keyframe_transform_expression_overlay(tmp_path, monkeypatch) -> None:
     """V3b: transform 关键帧 → overlay/scale 表达式逐帧求值（clip_local 比例单位）。"""
-    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p: True)
+    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p, **kw: True)
     render_mod._trim_cache.clear()
     rs, captured = _make_rs(tmp_path)
 
@@ -108,7 +108,7 @@ async def test_trim_keyframe_transform_expression_overlay(tmp_path, monkeypatch)
 @pytest.mark.asyncio
 async def test_trim_keyframe_opacity_true_interpolation(tmp_path, monkeypatch) -> None:
     """V3b: opacity 关键帧 → 单个 colorchannelmixer 分段表达式（非 0.1s 窗口近似）。"""
-    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p: True)
+    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p, **kw: True)
     render_mod._trim_cache.clear()
     rs, captured = _make_rs(tmp_path)
 
@@ -130,7 +130,7 @@ async def test_trim_keyframe_opacity_true_interpolation(tmp_path, monkeypatch) -
 @pytest.mark.asyncio
 async def test_trim_keyframe_speed_piecewise(tmp_path, monkeypatch) -> None:
     """V3c: speed 关键帧 → 分段恒速 trim+concat（每段 setpts=PTS-START)/v）。"""
-    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p: True)
+    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p, **kw: True)
     render_mod._trim_cache.clear()
     rs, captured = _make_rs(tmp_path)
 
@@ -159,7 +159,7 @@ async def test_trim_keyframe_speed_piecewise(tmp_path, monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_trim_keyframe_rotate_fixed_canvas(tmp_path, monkeypatch) -> None:
     """kf rotate：scale 关键帧恒定化到最大值（rotate 输出尺寸 init 定死）。"""
-    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p: True)
+    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p, **kw: True)
     render_mod._trim_cache.clear()
     rs, captured = _make_rs(tmp_path)
 
@@ -182,7 +182,7 @@ async def test_trim_keyframe_rotate_fixed_canvas(tmp_path, monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_trim_mg_chained_progress_callback(tmp_path, monkeypatch) -> None:
     """M8: 链式叠加成功后上报 per-batch 进度事件（90→94 区间单调）。"""
-    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p: True)
+    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p, **kw: True)
     rs = RenderService(work_dir=tmp_path / "w")
     events: list[tuple[str, float, str]] = []
 
@@ -207,7 +207,7 @@ async def test_trim_mg_chained_progress_callback(tmp_path, monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_trim_cache_key_distinguishes_keyframes(tmp_path, monkeypatch) -> None:
     """V3: 关键帧变化必须进缓存键。"""
-    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p: True)
+    monkeypatch.setattr(render_mod, "_is_valid_video", lambda p, **kw: True)
     render_mod._trim_cache.clear()
     rs, captured = _make_rs(tmp_path)
 

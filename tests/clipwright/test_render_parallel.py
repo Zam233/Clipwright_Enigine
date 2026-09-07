@@ -69,7 +69,7 @@ def _patch_mov_render(svc, monkeypatch, *, sleep_s=_MOV_SLEEP,
     # 渲染产物统一视为有效（hyperframes 未真实运行，磁盘无 MOV 文件）
     monkeypatch.setattr(
         "clipwright.services.render._is_valid_video",
-        lambda _p, min_bytes=1024: True,
+        lambda _p, min_bytes=1024, **kw: True,
     )
     if overlay_calls is not None:
         def fake_overlay(*a, **k):

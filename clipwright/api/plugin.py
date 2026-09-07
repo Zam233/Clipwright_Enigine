@@ -92,6 +92,12 @@ async def enable_plugin(plugin_id: str, request: Request = None) -> dict[str, st
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
     _loader.set_enabled(plugin_id, True)
+    try:
+        _loader.load(plugin_id)
+    except Exception as e:
+        # 批7：加载失败回退禁用态并返回 502（旧实现裸 500 且状态不一致）
+        _loader.set_enabled(plugin_id, False)
+        raise HTTPException(status_code=502, detail=f"插件加载失败: {str(e)[:200]}")
     return {"status": "ok", "plugin_id": plugin_id, "enabled": "true"}
 
 

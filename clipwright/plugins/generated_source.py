@@ -57,6 +57,12 @@ def record_generated(plugin_id: str, **entry: Any) -> None:
         p.write_text(json.dumps(items[-_MAX_HISTORY:], ensure_ascii=False, indent=1), encoding="utf-8")
     except Exception:
         pass
+    # 批5：新产物登记后使 MaterialAgent 检索缓存失效（TTL 1h 会掩蔽新素材）
+    try:
+        from clipwright.agents.material_agent import _search_cache
+        _search_cache.clear()
+    except Exception:
+        pass
 
 
 def _tokenize(text: str) -> set[str]:

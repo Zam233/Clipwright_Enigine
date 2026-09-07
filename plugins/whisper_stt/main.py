@@ -24,7 +24,17 @@ from clipwright.config import logger
 class WhisperTranscribeTool(BaseTool):
     """语音转文字 Tool — 调用 STTService 完成转录。"""
 
-    name = "whisper_transcribe"
+    name = "whisper_transcribe_local"  # 批7：不再覆盖内置同名工具
+
+    def is_available(self) -> bool:
+        """本地 whisper 引擎可用性（旧实现恒 True → 未装引擎时暴露必败工具）。"""
+        try:
+            import faster_whisper  # noqa: F401
+            return True
+        except Exception:
+            pass
+        import shutil
+        return shutil.which("whisper") is not None
     agent_callable = True
     description = "将音频文件转录为文字，返回带时间戳的分段文本"
     parameters_schema = {

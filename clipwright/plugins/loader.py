@@ -249,7 +249,14 @@ class PluginLoader:
             ) from e
 
         # 6. 实例化插件类，注入 manifest + config
-        plugin = self._instantiate_plugin(module, manifest)
+        # 批7：实例化异常包装为 PluginLoadError（旧实现直接向上抛，
+        # load_all 会中断其余全部插件的加载）
+        try:
+            plugin = self._instantiate_plugin(module, manifest)
+        except PluginLoadError:
+            raise
+        except Exception as e:
+            raise PluginLoadError(f"Failed to instantiate plugin '{plugin_id}': {e}") from e
         if plugin is None:
             get_error_bus().record(plugin_id, "load", "入口模块无导出插件类")
             raise PluginLoadError(
@@ -349,6 +356,12 @@ class PluginLoader:
         """卸载指定插件。"""
         plugin = self._plugins.pop(plugin_id, None)
         self._metadatas.pop(plugin_id, None)
+        # 批7：同步注销插件注册的 Hook（旧实现遗留 → disable 后钩子仍执行）
+        try:
+            from clipwright.plugins.hooks import HookRegistry
+            HookRegistry.unregister_plugin(plugin_id)
+        except Exception as e:
+            logger.warning("插件 %s Hook 注销异常: %s", plugin_id, e)
         # SA-2: 同步注销插件注册的 Agent（能力即时收缩）
         try:
             from clipwright.agents.registry import AgentRegistry
@@ -422,6 +435,13 @@ class PluginLoader:
 
         self._plugins.pop(plugin_id, None)
         self._metadatas.pop(plugin_id, None)
+        # 批7：reload 同步注销 Hook（旧实现 shutdown 不清 Hook → 配置热更新
+        # 每次多注册一份，钩子执行 N 次）
+        try:
+            from clipwright.plugins.hooks import HookRegistry
+            HookRegistry.unregister_plugin(plugin_id)
+        except Exception as e:
+            logger.warning("插件 %s Hook 注销异常(reload): %s", plugin_id, e)
         # M4: 清除 sys.modules 中该插件的陈旧模块（否则 reload 拿到旧代码）
         self._purge_plugin_modules(plugin_id)
 

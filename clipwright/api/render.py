@@ -165,7 +165,10 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
         _idempotency_render[idem_key] = task_id
     audit.record("render_queue", uid, {"task_id": task_id, "output_path": body.output_path or ""})
 
-    params = _resolve_settings(body.settings)
+    try:
+        params = _resolve_settings(body.settings)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     tl = body.timeline
     # P0-2: 入参白名单（timeline 媒体路径 + 音频/BGM）
     _validate_render_inputs(tl, body.audio_file_path or "", body.bgm_file_path or "")
@@ -281,6 +284,19 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                 })
             except Exception as e:
                 logger.warning("post_render hook 执行失败: %s", e)
+            # 批6.6：平台封面提取真实现（替代 platform_export 插件的日志假动作）
+            try:
+                if result.success and Path(out).exists():
+                    preset_name = str(body.settings.preset) if (body.settings and body.settings.preset) else ""
+                    cover_count = PLATFORM_EXPORT_COUNTS.get(preset_name)
+                    if cover_count:
+                        covers = await asyncio.to_thread(
+                            _extract_platform_covers, str(out), cover_count)
+                        if covers:
+                            _render_queue[task_id]["cover_paths"] = covers
+                            logger.info("平台封面已提取 %d 张: %s", len(covers), covers)
+            except Exception as e:
+                logger.warning("平台封面提取失败（不影响成片）: %s", e)
             # P8: webhook 事件接线 — 渲染完成/失败通知
             try:
                 from clipwright.api.webhook import dispatch_event
@@ -400,35 +416,78 @@ async def cancel_queue_render(task_id: str, request: Request) -> dict:
 
 
 @router.get("/queue/stream/{task_id}")
-async def stream_render_progress(task_id: str):
-    """SSE 流：实时推送渲染进度。"""
+async def stream_render_progress(task_id: str, request: Request):
+    """SSE 流：实时推送渲染进度。
+
+    批4：补 owner 校验（旧实现任何用户可订阅任意任务）；内存队列缺失时
+    回退 Mongo 终态（对齐 GET /queue/{task_id}）；事件循环内检测断连。
+    """
     from fastapi.responses import StreamingResponse
     import asyncio
 
+    from clipwright.authz import enforce_owner
+
+    def _load_mongo():
+        try:
+            from clipwright.context import mongo
+            if mongo.is_connected:
+                d = mongo.db["render_tasks"].find_one({"task_id": task_id})
+                if d:
+                    d.pop("_id", None)
+                return d
+        except Exception:
+            pass
+        return None
+
+    task = _render_queue.get(task_id)
+    recovered = None
+    if task is None:
+        recovered = await asyncio.to_thread(_load_mongo)
+    owner = (task or recovered or {}).get("owner_id", "")
+    if owner:
+        enforce_owner(request, owner, "渲染任务")
+
     async def event_stream():
         last_status = ""
-        # 生产加固 1.5: 终态驱动（completed/failed/cancelled）+ 2h 墙钟上限，
-        # 替代旧 5 分钟硬上限（长视频渲染不再中途断流）。
+        last_detail = ""
+        last_progress = -1
+        # 生产加固 1.5: 终态驱动 + 2h 墙钟上限；批4：断连检测 + 变化检测 +
+        # Mongo 终态回退（旧实现 0.5s 盲推 20 小时且清理后立即断流）。
         import time as _time
         _start = _time.time()
         while _time.time() - _start < 72000:
+            if await request.is_disconnected():
+                return
             task = _render_queue.get(task_id)
             if task is None:
-                yield f"data: {json.dumps({'type': 'error', 'message': 'Task not found'})}\n\n"
+                rec = await asyncio.to_thread(_load_mongo)
+                if rec and rec.get("status") in ("completed", "failed", "cancelled"):
+                    payload = json.dumps({
+                        'type': rec["status"], 'task_id': task_id,
+                        'result': rec.get("result"),
+                        'output_path': rec.get("output_path", ''),
+                    })
+                    yield f"data: {payload}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'Task not found'})}\n\n"
                 return
             status = task["status"]
-            if status != last_status:
+            progress = task.get("progress", 0)
+            detail = task.get("detail", "")
+            if status != last_status or progress != last_progress or detail != last_detail:
                 last_status = status
-            yield f"data: {json.dumps({
-                'type': 'progress',
-                'task_id': task_id,
-                'status': status,
-                'progress': task.get('progress', 0),
-                'phase': task.get('phase', ''),
-                'detail': task.get('detail', ''),
-                'clip_count': task.get('clip_count', 0),
-                'current_clip': task.get('current_clip', 0),
-            })}\n\n"
+                last_progress = progress
+                last_detail = detail
+                yield f"data: {json.dumps({
+                    'type': 'progress',
+                    'task_id': task_id,
+                    'status': status,
+                    'progress': progress,
+                    'phase': task.get('phase', ''),
+                    'detail': detail,
+                    'clip_count': task.get('clip_count', 0),
+                    'current_clip': task.get('current_clip', 0),
+                })}\n\n"
             if status in ("completed", "failed", "cancelled"):
                 payload = json.dumps({
                     'type': status, 'task_id': task_id,
@@ -483,8 +542,14 @@ async def serve_video(path: str):
     assert_allowed_path(src)
     if not src.exists() or not src.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
-    return FileResponse(str(src), media_type="video/mp4",
+    return FileResponse(str(src), media_type=_media_type_for(src.name),
                         headers={"Accept-Ranges": "bytes"})
+
+
+def _media_type_for(name: str) -> str:
+    """按扩展名返回媒体类型（ProRes .mov 等交付物此前被误标 video/mp4）。"""
+    return {".mov": "video/quicktime", ".webm": "video/webm",
+            ".mkv": "video/x-matroska"}.get(Path(name).suffix.lower(), "video/mp4")
 
 
 @router.get("/download/{filename}")
@@ -504,7 +569,7 @@ async def download_render(filename: str):
     # RFC 5987 编码文件名，支持中文（latin-1 无法直接承载 CJK）
     ascii_name = quote(filename)
     disposition = f"attachment; filename*=UTF-8''{ascii_name}"
-    return FileResponse(str(file_path), media_type="video/mp4",
+    return FileResponse(str(file_path), media_type=_media_type_for(filename),
                         headers={"Content-Disposition": disposition})
 
 
@@ -528,6 +593,9 @@ _EXPORT_PRESETS = {
 
 class RenderSettings(BaseModel):
     """渲染参数。"""
+    preset: str = Field(default="", description="导出预设名（tiktok/720p/prores422hq 等）")
+    soft_subtitle: bool = Field(default=False, description="字幕软轨封装（mov_text）而非烧入画面")
+    container_ext: str = Field(default="", description="容器扩展名（覆盖，如 mov）")
     width: int = Field(default=1920, ge=64, le=7680, description="输出宽度 (px)")
     height: int = Field(default=1080, ge=64, le=4320, description="输出高度 (px)")
     fps: float = Field(default=30.0, gt=0, le=120, description="输出帧率")
@@ -557,13 +625,20 @@ async def list_presets() -> dict:
 
 
 def _resolve_settings(s: RenderSettings | None) -> dict:
-    """根据设置和预设解析最终渲染参数。"""
-    base = s.model_dump() if s else {}
-    preset_name = base.pop("preset", "") or ""
-    if preset_name and preset_name in _EXPORT_PRESETS:
+    """根据设置和预设解析最终渲染参数。
+
+    批6：model_dump(exclude_unset=True)——旧实现全量 dump 让 width/height/fps
+    默认值恒定覆盖预设（tiktok 等竖屏预设形同虚设）；未知 preset 显式 400。
+    """
+    base = s.model_dump(exclude_unset=True) if s else {}
+    preset_name = str(base.get("preset", "") or "")
+    if preset_name and preset_name not in _EXPORT_PRESETS:
+        raise ValueError(f"未知导出预设: {preset_name}（可用: {', '.join(sorted(_EXPORT_PRESETS))}）")
+    if preset_name:
         preset = _EXPORT_PRESETS[preset_name].copy()
         preset.pop("note", None)
-        # 预设为基底，单个设置项可覆盖（空串不覆盖——避免 encoder/pix_fmt 默认空值顶掉预设）
+        # 预设为基底，显式传入的设置项可覆盖（空串不覆盖——避免 encoder/pix_fmt
+        # 默认空值顶掉预设）
         preset.update({k: v for k, v in base.items() if v is not None and v != "" and k != "preset"})
         return preset
     return {
@@ -574,6 +649,8 @@ def _resolve_settings(s: RenderSettings | None) -> dict:
         "audio_bitrate": base.get("audio_bitrate", "192k"),
         "encoder": base.get("encoder", ""),
         "pix_fmt": base.get("pix_fmt", ""),
+        "soft_subtitle": bool(base.get("soft_subtitle", False)),
+        "container_ext": str(base.get("container_ext", "") or ""),
     }
 
 
@@ -589,10 +666,19 @@ async def start_render(
     raw_output = body.output_path or ""
     if raw_output and not is_safe_download_name(raw_output):
         raise HTTPException(status_code=400, detail="非法输出文件名")
-    requested_name = Path(raw_output).name if raw_output else f"render_{uuid.uuid4().hex[:8]}.mp4"
-    out = str(_renders_dir() / requested_name)
     s = body.settings
-    params = _resolve_settings(s)
+    try:
+        params = _resolve_settings(s)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    requested_name = Path(raw_output).name if raw_output else ""
+    _ext = str(params.get("container_ext") or "mp4")
+    if requested_name:
+        stem = Path(requested_name).stem
+        requested_name = f"{stem}.{_ext}"
+    else:
+        requested_name = f"render_{uuid.uuid4().hex[:8]}.{_ext}"
+    out = str(_renders_dir() / requested_name)
     logger.info("渲染请求: tracks=%d, output=%s, params=%s",
                 len(tl.tracks or []), out, params)
     try:
@@ -605,6 +691,8 @@ async def start_render(
             audio_bitrate=params["audio_bitrate"],
             audio_file_path=body.audio_file_path or "",
             bgm_file_path=body.bgm_file_path or "",
+            encoder_override=params.get("encoder", ""),
+            pix_fmt_override=params.get("pix_fmt", ""),
         )
     except Exception as e:
         logger.exception("start_render failed: %s", e)
@@ -634,6 +722,11 @@ async def get_render_status(render_id: str) -> dict:
     if not is_safe_id(render_id):
         raise HTTPException(status_code=400, detail="无效的 render_id")
     file_path = anchor(f"renders/{render_id}.mp4")
+    if not file_path.exists():
+        # 批1：ProRes 等交付预设产出 .mov——状态回退一并探测
+        alt = anchor(f"renders/{render_id}.mov")
+        if alt.exists():
+            file_path = alt
     if file_path.exists():
         return {
             "render_id": render_id,

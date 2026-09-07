@@ -507,6 +507,24 @@ class PipelineOrchestratorV2:
             else:
                 error_category = self._categorize_error(state.error or "")
                 tracer.end_span(root_span, status="error", error=state.error)
+        except asyncio.CancelledError:
+            # A2 修复：取消也必须落终态（旧实现 CancelledError 直接向上传播，
+            # Mongo 停留 running/pending、运行历史留永久幽灵记录）。落盘后
+            # 继续向上传播，保持 TaskQueue 的取消/超时语义。
+            state.status = PipelineStatus.CANCELLED
+            state.error = state.error or "管线已取消"
+            clear_cancel(pid)
+            add_event(pid, "system", "cancelled", "管线已取消")
+            tracer.end_span(root_span, status="error", error="cancelled")
+            tracer.cleanup()
+            state.updated_at = datetime.now(timezone.utc)
+            try:
+                await loop.run_in_executor(
+                    None, self._persist_state, state, state.status.value, "cancelled")
+                record_run_complete(pid, state.status.value, state.steps)
+            except Exception:
+                logger.exception("PipelineV2 取消落盘失败: %s", pid)
+            raise
         except asyncio.TimeoutError:
             state.status = PipelineStatus.FAILED
             state.error = f"管线执行超时（>{timeout_sec}s）"
@@ -598,8 +616,8 @@ class PipelineOrchestratorV2:
                 if redo_step.result and getattr(redo_step, "status", None) != PipelineStatus.FAILED:
                     self._merge_agent_result(redo_agent, redo_step, result_data, bus, pid)
 
-                # P1 FIX: 联动重做依赖于 redo_agent 的下游 agent
-                downstream = self._get_downstream_agents(redo_agent)
+                # P1 FIX + A1 修复: 联动重做 redo_agent 的全部下游（传递闭包）
+                downstream = self._downstream_closure(redo_agent)
                 for dep_name in downstream:
                     if dep_name == "quality":
                         continue  # quality 由外层循环处理
@@ -677,19 +695,8 @@ class PipelineOrchestratorV2:
 
         # ── 4. 下游联动（传递闭包 + DAG 执行顺序；quality 由自愈循环处理）──
         # 直接依赖图的传递闭包：重做 edit 后，animation（依赖 edit）与 audio（依赖 animation）
-        # 都需联动，而 _get_downstream_agents 只返回一层，故按依赖图 BFS 求全部下游。
-        rev_deps: dict[str, set[str]] = {a: set() for a in AgentDAG._DEPS}
-        for dep, base in AgentDAG._DEPS.items():
-            for b in base:
-                rev_deps.setdefault(b, set()).add(dep)
-        downstream_set: set[str] = set()
-        frontier = list(rev_deps.get(agent_name, set()))
-        while frontier:
-            cur = frontier.pop()
-            if cur == "quality" or cur in downstream_set:
-                continue
-            downstream_set.add(cur)
-            frontier.extend(rev_deps.get(cur, set()))
+        # 都需联动——统一走 _downstream_closure（A1 修复后与自愈共用实现）。
+        downstream_set = set(self._downstream_closure(agent_name))
         plan_order = [a for group in AgentDAG.get_execution_plan() for a in group]
         for dep_name in plan_order:
             if dep_name == "quality" or dep_name not in downstream_set:
@@ -733,6 +740,15 @@ class PipelineOrchestratorV2:
         if state.status != PipelineStatus.FAILED:
             state.status = PipelineStatus.COMPLETED
         state.updated_at = datetime.now(timezone.utc)
+        # A3 修复：retry 与 run() 对等——终态持久化 + 运行历史记录
+        # （旧实现只写内存结果，重启后 Mongo 停留在失败快照且 /runs 无记录）
+        try:
+            _loop = asyncio.get_running_loop()
+            await _loop.run_in_executor(
+                None, self._persist_state, state, state.status.value, "retry")
+            record_run_complete(pid, state.status.value, state.steps)
+        except Exception:
+            logger.exception("run_from_agent 终态持久化失败: %s", pid)
         return state
 
     async def _run_inner(
@@ -798,6 +814,18 @@ class PipelineOrchestratorV2:
                     add_event(pid, "system", "timeline_snapshot",
                               f"粗剪时间线: {len(_dry_tl.get('tracks', []) or [])} 轨",
                               _dry_tl)
+                # A4 修复：edit 失败时如实失败（旧实现无条件 COMPLETED，
+                # 预览页拿到 success + 空时间线）
+                _edit_failed = any(
+                    getattr(_s, "agent_name", "") == "edit"
+                    and getattr(_s, "status", None) == PipelineStatus.FAILED
+                    for _s in state.steps
+                )
+                if _dry_tl is None or _edit_failed:
+                    state.status = PipelineStatus.FAILED
+                    state.error = "dry_run 粗剪失败：未能生成有效时间线预览"
+                    add_event(pid, "system", "error", state.error)
+                    return state
                 state.status = PipelineStatus.COMPLETED
                 add_event(pid, "system", "info", "dry_run 完成：已生成粗剪时间线预览")
                 return state
@@ -943,11 +971,34 @@ class PipelineOrchestratorV2:
 
     @staticmethod
     def _get_downstream_agents(agent: str) -> list[str]:
-        """获取依赖于此 agent 的所有下游（需联动重做）。"""
+        """获取依赖于此 agent 的所有下游（需联动重做）——仅直接一层。"""
         return [
             a for a, deps in AgentDAG._DEPS.items()
             if agent in deps
         ]
+
+    @staticmethod
+    def _downstream_closure(agent: str) -> list[str]:
+        """A1 修复：下游传递闭包（按 DAG 执行序返回）。
+
+        旧 _get_downstream_agents 只返回直接依赖者：自愈重做 edit 只联动
+        animation，audio（依赖 animation）不会被重做——audio 先前铺好的
+        旁白/BGM/字幕轨随 edit 重建时间线而静默丢失，成片无声交付。
+        """
+        rev_deps: dict[str, set[str]] = {a: set() for a in AgentDAG._DEPS}
+        for dep, base in AgentDAG._DEPS.items():
+            for b in base:
+                rev_deps.setdefault(b, set()).add(dep)
+        closed: set[str] = set()
+        frontier = list(rev_deps.get(agent, set()))
+        while frontier:
+            cur = frontier.pop()
+            if cur == "quality" or cur in closed:
+                continue
+            closed.add(cur)
+            frontier.extend(rev_deps.get(cur, set()))
+        plan_order = [a for group in AgentDAG.get_execution_plan() for a in group]
+        return [a for a in plan_order if a in closed]
 
     # ── 初始化 ────────────────────────────────────
 
@@ -1043,7 +1094,8 @@ class PipelineOrchestratorV2:
                     or persona_config.get("audio", {}).get("voice")
                     or "",
                     "auto_dub": extra_params.get("auto_dub", True),
-                    "subtitle_enabled": True,
+                    # 批2：不再硬编码 True——客户端/会话可关闭字幕
+                    "subtitle_enabled": bool(extra_params.get("subtitle_enabled", True)),
                 },
             },
             "quality": {
@@ -1214,11 +1266,13 @@ class PipelineOrchestratorV2:
             add_event(pid, agent_name, "agent_end",
                       f"{agent_name} → {step.status} ({step.duration_ms or '?'}ms)")
 
-            # C5: 细粒度进度 — 每个 agent 完成后发一个数值进度事件（SSE/轮询可消费）
+            # C5: 细粒度进度 — 每个 agent 成功完成后发数值进度事件。
+            # 批3：失败的 agent 不推进度（旧实现进度越过失败阶段，UI 失真）
             from clipwright.services.pipeline import get_agent_progress
-            add_event(pid, agent_name, "progress",
-                      f"{agent_name} 完成",
-                      {"progress": get_agent_progress(agent_name)})
+            if getattr(step, "status", None) != PipelineStatus.FAILED:
+                add_event(pid, agent_name, "progress",
+                          f"{agent_name} 完成",
+                          {"progress": get_agent_progress(agent_name)})
 
             if agent_name == "edit":
                 timeline_data = step.result.get("timeline")
@@ -1262,7 +1316,7 @@ class PipelineOrchestratorV2:
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
-                None, self._persist_state, state, state.status.value, ""
+                None, self._persist_state, state, "running", ""
             )
         except Exception as e:
             logger.warning("C1 检查点持久化失败: %s", e)

@@ -89,9 +89,11 @@ class TestSubtitleNoCumulativeOffset:
         assert len(dialogues) == 3
         bodies = [_dialogue_body(d) for d in dialogues]
         # 全部底部对齐（\an2 + 默认描边 \bord2），无逐条累积垂直偏移
-        assert all(b.startswith(r"{\an2\bord2}") for b in bodies)
+        # 批1 修复：每行显式携带 \fn \fs \1c \3c（单 Default 样式不再吞后续行样式）
+        prefix = r"{\fnMSYH\fs48\1c&H00FFFFFF\3c&H00000000\an2\bord2}"
+        assert all(b.startswith(prefix) for b in bodies)
         # 唯一差异只有转义文本本身 → override tags 完全一致
-        assert [b[len(r"{\an2\bord2}"):] for b in bodies] == ["第0条字幕", "第1条字幕", "第2条字幕"]
+        assert [b[len(prefix):] for b in bodies] == ["第0条字幕", "第1条字幕", "第2条字幕"]
         # 最后一条字幕不得被推出屏幕：offset_y 为 0，即贴底部安全区
         assert all(ov["offset_y"] == 0 for ov in overlays)
 
@@ -101,7 +103,8 @@ class TestSubtitleNoCumulativeOffset:
         ov = svc._extract_text_overlay(_caption("c1", 0, 2, "唯一字幕"), 1, [])
         dialogues = await _ass_dialogues(svc, [ov], monkeypatch)
         assert len(dialogues) == 1
-        assert _dialogue_body(dialogues[0]) == r"{\an2\bord2}唯一字幕"
+        assert _dialogue_body(dialogues[0]) == (
+        r"{\fnMSYH\fs48\1c&H00FFFFFF\3c&H00000000\an2\bord2}唯一字幕")
 
     async def test_top_position_variant(self, tmp_path, monkeypatch) -> None:
         """top 位置字幕：顶部对齐（\an8），同样不累积。"""
@@ -111,7 +114,8 @@ class TestSubtitleNoCumulativeOffset:
         dialogues = await _ass_dialogues(svc, ovs, monkeypatch)
         assert len(dialogues) == 2
         bodies = [_dialogue_body(d) for d in dialogues]
-        assert bodies == [r"{\an8\bord2}顶0", r"{\an8\bord2}顶1"]
+        prefix_top = r"{\fnMSYH\fs48\1c&H00FFFFFF\3c&H00000000\an8\bord2}"
+        assert bodies == [prefix_top + "顶0", prefix_top + "顶1"]
 
     async def test_empty_text_no_dialogue(self, tmp_path, monkeypatch) -> None:
         """空文本 clip：不生成 Dialogue，不崩溃（malformed input 防护）。"""

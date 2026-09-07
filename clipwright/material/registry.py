@@ -36,6 +36,11 @@ class MaterialRegistry:
         return cls._sources.get(source_id)
 
     @classmethod
+    def unregister(cls, source_id: str) -> None:
+        """批7：按 id 注销素材源（插件 disable 时清理注册物）。"""
+        cls._sources.pop(source_id, None)
+
+    @classmethod
     def list(cls) -> list[dict[str, str]]:
         return [
             {"id": s.source_id, "name": s.source_name}
@@ -48,6 +53,7 @@ class MaterialRegistry:
         query: str,
         top_k_per_source: int = 10,
         source_ids: Optional[list[str]] = None,
+        media_type: str = "",
     ) -> list[MaterialSearchResult]:
         """跨所有（或指定）素材源进行搜索。
 
@@ -61,7 +67,10 @@ class MaterialRegistry:
         all_results: list[MaterialSearchResult] = []
         for src in sources:
             try:
-                results = await src.search(query, top_k=top_k_per_source)
+                # 批5：透传 media_type——源的类型过滤参数此前是死参数。
+                # 未声明该参的源经 **kwargs 吸收（MaterialSource 基类有 **kwargs）
+                results = await src.search(query, top_k=top_k_per_source,
+                                           media_type=media_type)
                 for asset, score in results:
                     all_results.append(MaterialSearchResult(
                         asset=asset,

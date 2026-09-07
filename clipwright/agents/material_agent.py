@@ -341,6 +341,12 @@ async def _search_with_cache(
         top_k_per_source=top_k,
         source_ids=source_ids,
     )
+    # 批5：场景候选排除音频——BGM 由 AudioAgent 独立链路检索；音频混入
+    # 视频场景候选会被 video_trim 拒绝，烧掉候选位并把场景挤成占位
+    results = [
+        r for r in results
+        if str(getattr(r.asset, "type", "")) != "audio"
+    ]
     # 只缓存 AssetResult 对象的外部表示
     cached = []
     for r in results:

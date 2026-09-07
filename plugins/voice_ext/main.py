@@ -6,7 +6,7 @@
 支持的扩展提供商（通过 config.yaml provider 字段）：
   - "elevenlabs": ElevenLabs API（需 ELEVENLABS_API_KEY）
   - "azure": Azure Cognitive Services TTS（需 AZURE_SPEECH_KEY）
-  - "xtts": 本地 XTTS-v2（需 XTTS_API_URL）
+  - "xtts-unimplemented": 本地 XTTS-v2（需 XTTS_API_URL）
 """
 from __future__ import annotations
 import os
@@ -27,7 +27,7 @@ class ExtendedTTSTool(BaseTool):
         "properties": {
             "text": {"type": "string", "description": "要合成的文本"},
             "voice_id": {"type": "string", "description": "语音 ID"},
-            "provider": {"type": "string", "description": "提供商 elevenlabs/azure/xtts"},
+            "provider": {"type": "string", "description": "提供商 elevenlabs/azure/xtts-unimplemented"},
         },
         "required": ["text"],
     }

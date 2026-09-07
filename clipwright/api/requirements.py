@@ -20,6 +20,21 @@ _service = RequirementsService()
 
 # ── 请求模型 ──────────────────────────────────
 
+# 批4：需求会话归属表（对齐管线 _pipeline_owners 机制）
+_session_owners: dict[str, str] = {}
+
+
+def _require_session_owner(request: Request, session_id: str) -> None:
+    """jwt 模式下校验会话所有权；无主记录放行（兼容 off 模式与历史会话）。"""
+    from clipwright.authz import current_user_id, is_admin
+
+    uid = current_user_id(request)
+    if uid is None or is_admin(request):
+        return
+    if _session_owners.get(session_id) not in (uid, None):
+        raise HTTPException(status_code=403, detail=f"无权访问会话 {session_id}")
+
+
 class InitRequest(BaseModel):
     topic: str = ""
     persona_id: str = ""
@@ -60,7 +75,7 @@ class ProceedRequest(BaseModel):
 # ── API 端点 ─────────────────────────────────
 
 @router.post("/init")
-async def init_session(req: InitRequest) -> dict:
+async def init_session(req: InitRequest, request: Request) -> dict:
     """初始化需求对话会话。"""
     user_inputs = {
         "topic": req.topic,
@@ -71,11 +86,15 @@ async def init_session(req: InitRequest) -> dict:
         **req.extra,
     }
     session = await asyncio.to_thread(_service.create_session, user_inputs)
+    # 批4：登记会话归属（jwt 模式下其余端点据此校验）
+    from clipwright.authz import current_user_id
+    _session_owners[session.get("session_id", "")] = current_user_id(request) or ""
     return session
 
 
 @router.post("/edit")
-async def edit_timeline(req: EditRequest) -> dict:
+async def edit_timeline(req: EditRequest, request: Request) -> dict:
+    _require_session_owner(request, req.session_id)
     """时间线编辑：按选中素材 + 自然语言指令，三路分发（换素材 / 重做动画 / 数值调整）。
 
     整体用 wait_for 兜底：即使底层 Agent/LLM 意外卡死，也保证在时限内返回可重试错误。
@@ -106,7 +125,8 @@ async def edit_timeline(req: EditRequest) -> dict:
 
 
 @router.post("/chat")
-async def chat_message(req: ChatRequest) -> dict:
+async def chat_message(req: ChatRequest, request: Request) -> dict:
+    _require_session_owner(request, req.session_id)
     """发送对话消息（非流式）。
 
     整体用 wait_for 兜底：即使底层 LLM/线程意外卡死（asyncio.to_thread 的线程
@@ -132,7 +152,8 @@ async def chat_message(req: ChatRequest) -> dict:
 
 
 @router.post("/chat/stream/{session_id}")
-async def chat_stream(session_id: str, message: str = Form(...)):
+async def chat_stream(session_id: str, message: str = Form(...), request: Request = None):
+    _require_session_owner(request, session_id)
     """SSE 流式对话 — 逐块推送状态和结果。"""
     async def event_stream():
         try:
@@ -156,18 +177,26 @@ async def chat_stream(session_id: str, message: str = Form(...)):
 
 @router.post("/upload/{session_id}")
 async def upload_file(
+    request: Request,
     session_id: str,
     file: UploadFile = File(...),
 ):
     """上传参考文件（图片/文档等）。"""
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id required")
+    _require_session_owner(request, session_id)
 
     import tempfile
     import os
     suffix = os.path.splitext(file.filename or "file")[1] or ".bin"
+    # 批4：类型与大小限制（multipart 豁免全局 20MB 上限 → 此前完全无界）
+    if suffix.lower() not in (".txt", ".md", ".pdf", ".docx", ".png", ".jpg",
+                              ".jpeg", ".webp", ".gif", ".srt"):
+        raise HTTPException(status_code=415, detail=f"不支持的文件类型: {suffix}")
+    content = await file.read()
+    if len(content) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="文件过大（上限 20MB）")
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        content = await file.read()
         tmp.write(content)
         tmp_path = tmp.name
 
@@ -187,7 +216,8 @@ async def upload_file(
 
 
 @router.get("/session/{session_id}")
-async def get_session(session_id: str) -> dict:
+async def get_session(session_id: str, request: Request) -> dict:
+    _require_session_owner(request, session_id)
     """获取会话完整状态。"""
     session = await asyncio.to_thread(_service.get_session, session_id)
     if session is None:
@@ -196,7 +226,8 @@ async def get_session(session_id: str) -> dict:
 
 
 @router.get("/plan/{session_id}")
-async def get_plan(session_id: str) -> dict:
+async def get_plan(session_id: str, request: Request) -> dict:
+    _require_session_owner(request, session_id)
     """获取规划书。"""
     plan = await asyncio.to_thread(_service.get_plan, session_id)
     if plan is None:
@@ -206,6 +237,7 @@ async def get_plan(session_id: str) -> dict:
 
 @router.post("/proceed")
 async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
+    _require_session_owner(request, req.session_id)
     """确认规划书 → 启动管线，返回 pipeline_id 供前端追踪（SSE + result）。"""
     session = await asyncio.to_thread(_service.get_session, req.session_id)
     if not session:
@@ -272,9 +304,14 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
             "video_mode": user_inputs.get("video_mode", "voiceover"),
             "split_mode": user_inputs.get("split_mode", "period"),
             "auto_dub": user_inputs.get("auto_dub", True),
-            "subtitle_enabled": True,
+            # 批2：subtitle_enabled 不再硬编码 True（客户端/会话可关）
+            "subtitle_enabled": bool(user_inputs.get("subtitle_enabled", True)),
             "voice_id": user_inputs.get("voice_id", ""),
             "dub_segments": user_inputs.get("dub_segments", []),
+            # 批2：用户选择的素材源透传（旧实现遗漏 → 永远检索全部源/占位）
+            "material_source_ids": user_inputs.get("material_source_ids", []),
+            # 批2：animation_intents 通道补上缺失的插入行（C2 修复的遗留缺口）
+            "animation_intents": animation_intents,
             "creative_brief": session.get("creative_brief"),
             "production_plan": session.get("production_plan"),
             "pipeline_timeout_sec": _pipeline_timeout,
@@ -289,6 +326,16 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
     )
     add_event(pipeline_id, "system", "info",
               f"由需求确认启动管线: {pipeline_req.persona_id} / {pipeline_req.category_plugin_id}")
+    # 批2：proceed 即置 running（旧实现会话停在 plan_ready，运行中消息会走
+    # 规划修订分支与运行中的管线互踩）
+    await asyncio.to_thread(
+        _service._persist,
+        req.session_id, "pipeline_running",
+        session.get("messages", []),
+        session.get("creative_brief"),
+        session.get("production_plan"),
+        session.get("user_inputs", {}),
+    )
 
     # A5: 归属注册 + 运行态持久化 + 审计（与 run-async 对齐；此前 jwt 模式下
     # proceed 发起的管线无 owner，本人 /status /cancel /diagnostics 全部 403）
@@ -329,21 +376,37 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
                     # 避免内存结果 60s 清理后 timeline 丢失（API 直连场景）。
                     try:
                         final_tl = state.shared_data.get("final_timeline")
-                        if final_tl and req.project_id:
+                        if final_tl:
                             from clipwright.services.project_manager import ProjectManager
                             pm = ProjectManager()
-                            pm.save(req.project_id, {"timeline": final_tl})
-                            logger.info("管线时间线已保存到项目: %s", req.project_id)
+                            project_id = req.project_id
+                            if not project_id:
+                                # 批2：未关联项目时自动创建——旧实现 60s 内存清理后
+                                # 成品时间线永久丢失
+                                created = pm.create(
+                                    name=str(user_inputs.get("topic", "") or "需求会话成片")[:80],
+                                    timeline=final_tl,
+                                    persona_id=pipeline_req.persona_id,
+                                    plugin_id=pipeline_req.category_plugin_id,
+                                )
+                                project_id = created.get("id", "")
+                                _pipeline_results[pipeline_id]["project_id"] = project_id
+                                logger.info("成品时间线已自动落项目: %s", project_id)
+                            else:
+                                pm.save(project_id, {"timeline": final_tl})
+                                logger.info("管线时间线已保存到项目: %s", project_id)
                     except Exception as e:
                         logger.warning("管线时间线保存失败: %s", e)
-                    # 更新会话状态
+                    # 更新会话状态（批2：用当前消息列表——旧实现写回 proceed 时
+                    # 的过期快照，覆盖运行期间用户交换的消息）
+                    _fresh = await asyncio.to_thread(_service.get_session, req.session_id) or {}
                     await asyncio.to_thread(
                         _service._persist,
                         req.session_id, "pipeline_done",
-                        session.get("messages", []),
-                        session.get("creative_brief"),
-                        session.get("production_plan"),
-                        session.get("user_inputs", {}),
+                        _fresh.get("messages", session.get("messages", [])),
+                        _fresh.get("creative_brief", session.get("creative_brief")),
+                        _fresh.get("production_plan", session.get("production_plan")),
+                        _fresh.get("user_inputs", session.get("user_inputs", {})),
                     )
                     logger.info("管线完成: pipeline_id=%s, status=%s", pipeline_id, state.status)
                 except asyncio.CancelledError:

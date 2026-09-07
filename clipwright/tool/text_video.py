@@ -6,6 +6,7 @@ import os
 import asyncio
 import subprocess
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -23,6 +24,33 @@ def _mkstemp_txt() -> str:
 from clipwright.tool.video import _ensure_output_path
 from clipwright.tool.video import resolve_ffmpeg
 from clipwright.config import logger
+
+
+def _font_filter_arg() -> str:
+    """drawtext fontfile 参数。
+
+    本项目 ffmpeg 的过滤器解析器不识别反斜杠冒号转义（见
+    render._resolve_system_font 注释），Windows 盘符路径会被冒号截断——
+    复制字体到项目 ``_fonts/`` 用无盘符相对路径；Unix 直接绝对路径。
+    解析失败返回空串（drawtext 用默认字体，中文可能豆腐块，但占位视频仍可交付）。
+    """
+    try:
+        from clipwright.services.fontconfig import FontConfig
+        fpath = FontConfig.get_font_path()
+        if not fpath:
+            return ""
+        sp = Path(fpath)
+        if os.name == "nt":
+            import shutil
+            dest_dir = Path.cwd() / "_fonts"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / sp.name
+            if not dest.exists():
+                shutil.copy2(sp, dest)
+            return ":fontfile=_fonts/" + sp.name
+        return ":fontfile=" + sp.as_posix()
+    except Exception:
+        return ""
 
 
 class GenerateTextVideoTool(BaseTool):
@@ -63,14 +91,15 @@ class GenerateTextVideoTool(BaseTool):
 
             # 避免路径中的 C: 问题：使用简短文件名
             # 直接把文本写入当前目录的临时文件
-            local_text = Path(f"__text_{os.getpid()}.txt")
+            # 批1：uuid 命名——旧 getpid 固定名在 EditAgent 并发场景下互相覆盖
+            local_text = Path(f"__text_{uuid.uuid4().hex[:8]}.txt")
             try:
                 local_text.write_text(text[:200], encoding="utf-8")
                 local_path = str(local_text).replace("\\", "/")
 
-                # Windows 上 fontconfig 不可用，用 FontConfig 获取字体路径并转义
-                from clipwright.services.fontconfig import FontConfig
-                font_file = FontConfig.ffmpeg_fontspec(FontConfig.get_font_path())
+                # 批1：字体路径改走 _fonts/ 复制方案（ffmpeg_fontspec 的 \: 转义
+                # 会被本机构建的过滤器解析器截断 → drawtext 必败 → 纯色无字回退）
+                font_file = _font_filter_arg()
                 cmd = [
                     resolve_ffmpeg(), "-y", "-loglevel", "error",
                     "-f", "lavfi", "-i",

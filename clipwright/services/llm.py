@@ -380,17 +380,16 @@ class LLMService:
                 {"role": "user", "content": user_prompt},
             ]
             base_kwargs = {**kwargs}
-            first_round_kwargs = {**base_kwargs, "tools": tools}
 
         logger.debug("LLM with_tools 启动: system=%.300s, user=%.300s, tools=%s, max_rounds=%s",
                      system_prompt[:300], user_prompt[:300],
                      json.dumps(tools, ensure_ascii=False)[:300], max_tool_rounds)
         tool_executor_is_coro = asyncio.iscoroutinefunction(tool_executor)
-        is_first_round = True
 
         for _round in range(max_tool_rounds):
-            kw = {**base_kwargs, "tools": tools} if is_first_round else base_kwargs
-            is_first_round = False
+            # 批5 修复：每轮都必须携带 tools——旧实现仅首轮下发，模型按提示词
+            # 顺序先调 describe_llm_mg 后，第二轮再无任何工具可调
+            kw = {**base_kwargs, "tools": tools}
 
             resp = await self.generate(messages=messages, **kw)
             logger.debug("LLM with_tools 第%d轮: success=%s, tool_calls=%d, content=%.200s",

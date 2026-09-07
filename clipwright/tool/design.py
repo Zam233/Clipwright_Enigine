@@ -203,7 +203,20 @@ class TextStyle:
         override tags：\\an 对齐 / \\i1 斜体 / \\fsp 字距 / \\blur 阴影模糊 /
         \\bord 描边宽 / glow（\\bord+\\blur+\\c，libass 无原生外发光的双通道模拟）。
         """
-        tags = [rf"\an{ass_alignment(self.position)}"]
+        # 修复（ASS 单样式缺陷）：整个时间线只写一个 Default 样式（取第一条
+        # overlay），后续行若不带覆盖标签，字号/字体/颜色全部沿用第一条——
+        # 72px 标题 + 48px 字幕的时间线会全部按先到者渲染。每行显式携带
+        # \fn \fs \1c（描边/阴影色不同也逐行覆盖）。
+        tags = [
+            rf"\fn{self._ass_fontname(self.font)}",
+            rf"\fs{int(self.font_size)}",
+            rf"\1c{color_to_ass(self.font_color)}",
+        ]
+        if self.stroke_color and self.stroke_width > 0:
+            tags.append(rf"\3c{color_to_ass(self.stroke_color)}")
+        if self.shadow_color and (self.shadow_x or self.shadow_y or self.shadow_blur):
+            tags.append(rf"\4c{color_to_ass(self.shadow_color)}")
+        tags.append(rf"\an{ass_alignment(self.position)}")
         if self.font_italic:
             tags.append(r"\i1")
         if self.letter_spacing != 0:
@@ -216,13 +229,19 @@ class TextStyle:
             tags.append(rf"\bord{int(round(self.stroke_width))}")
         if self.glow_width > 0 and self.glow_color:
             gw = int(round(self.glow_width))
+            # 修复：\c 等价 \1c（主填充色），会把整行文字染成发光色；
+            # 辉光应由 \3c（描边层）承载加宽模糊，填充保持 font_color
             tags.append(rf"\bord{gw}\blur{gw}")
-            tags.append(rf"\c{color_to_ass(self.glow_color)}")
+            tags.append(rf"\3c{color_to_ass(self.glow_color)}")
         esc = text.replace("{", r"\{").replace("}", r"\}")
         # F3 实渲修复: ASS override tags 必须包裹在 {} 内才被 libass 当作样式解释，
         # 否则 \an2\i1... 会作为字面文本渲染进画面。
         tags_block = "{" + "".join(tags) + "}" if tags else ""
-        return f"Dialogue: 0,{ass_time(start_sec)},{ass_time(end_sec)},Default,,0,0,0,,{tags_block}{esc}"
+        # offset_y 修复：样式段 Margin 硬编码 10/10/10，行级不传 Margin 时
+        # 多段同屏文字全部锚定同一位置互相重叠；行级 MarginV 承载 offset_y
+        margin_v = 10 + max(0, int(self.offset_y or 0))
+        return (f"Dialogue: 0,{ass_time(start_sec)},{ass_time(end_sec)},Default,,"
+                f"0,0,{margin_v},,{tags_block}{esc}")
 
     def drawtext_position(self) -> tuple[str, str]:
         """返回当前 position 的 x/y 表达式（供 render.py glow 双通道复用坐标）。"""

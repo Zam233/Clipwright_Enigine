@@ -192,6 +192,11 @@ class Settings(BaseSettings):
     rag_chunk_overlap: int = 64
     rag_embed_batch_size: int = 20
 
+    # --- 结构 Agent ---
+    # A9：voiceover 双稿择优（双倍最大 LLM 调用，择优启发式只比较场景数）。
+    # 默认关闭；需要时置 true 开启。
+    structure_double_draft: bool = False
+
     # --- TTS / 声音克隆 ---
     # 阿里云百炼（DashScope）凭据，用于声音克隆与语音合成
     tts_dashscope_api_key: str = ""

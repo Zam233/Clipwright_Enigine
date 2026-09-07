@@ -573,6 +573,17 @@ class RequirementsService:
                 if plan_result:
                     plan_data = plan_result
                     status = "plan_ready"
+                else:
+                    # 批2：规划书生成失败 → 明确回退（旧实现卡死 brief_confirmed，
+                    # 后续任何消息都落不进任何分支，永远返回过期回复）
+                    status = "brief_ready"
+                    messages.append({
+                        "role": "assistant",
+                        "content": ("规划书生成遇到技术问题，已回退到方案确认态。"
+                                    "回复「确认」重试，或直接提出修改意见。"),
+                        "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                        "metadata": {},
+                    })
                     messages.append({
                         "role": "assistant", "content": (
                             f"### 📋 成片规划书已生成\n\n共 **{plan_result.get('scene_count', 0)}** 个场景，"
@@ -590,6 +601,28 @@ class RequirementsService:
                     "metadata": {},
                 })
 
+        elif status == "pipeline_running":
+            # 批2：运行中消息不再静默吞掉
+            messages.append({
+                "role": "assistant",
+                "content": "管线正在运行中，请稍候；完成后可在编辑器查看时间线并渲染成片。",
+                "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                "metadata": {},
+            })
+        elif status == "pipeline_done":
+            # 批2：旧实现对已完成会话静默吞消息。支持「重新生成」一键回到
+            # plan_ready（规划书仍在会话中，可直接再次 proceed）
+            if user_message.strip() in ("重新生成", "再来一版", "重新生成视频"):
+                status = "plan_ready"
+                reply = "好的，已回到规划书确认态。回复「确认」将按已确认的规划书再次启动管线。"
+            else:
+                reply = ("本会话的视频已生成完毕。如需调整，请在编辑器中修改时间线；"
+                         "回复「重新生成」可按已确认的规划书再次启动管线。")
+            messages.append({
+                "role": "assistant", "content": reply,
+                "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                "metadata": {},
+            })
         elif status == "plan_ready":
             if await self._is_confirm(user_message):
                 status = "plan_confirmed"
@@ -1048,11 +1081,21 @@ class RequirementsService:
         # 以否定词开头 → 非确认（"不可以"、"不要"、"有问题"、"不满意"）
         if low.startswith(("不", "没", "别", "勿", "莫", "未")):
             return False
-        # 以明确确认词开头 → 确认（"确认…"、"可以…"、"好的…"、"同意…"）
+        # 批7：确认词后带转折/修正尾缀 → 不是确认（"好的，不过再长一点"、
+        # "可以，但是要加片头"——旧实现误判为确认并直接推进流程）
         affirm_starts = ["没问题", "就这样", "可以了", "好的", "确认", "同意", "可以",
                          "行", "ok", "yes", "y", "对", "嗯", "确定", "通过", "批准"]
-        if any(low.startswith(kw) or low == kw for kw in affirm_starts):
-            return True
+        for kw in affirm_starts + strong:
+            if low.startswith(kw) or low == kw:
+                tail = low[len(kw):].strip()
+                if not tail:
+                    return True
+                if tail.startswith(("但是", "但", "不过", "然而", "除了", "就是",
+                                    "可是", "只是", "另外", "还有", "再", "希望",
+                                    "建议", "想", "要", "麻烦", "请", "能不能",
+                                    "最好", "其实")):
+                    return False  # 确认词后夹带修正意见 → 交由 LLM 语义判断
+                return True
 
         # ── 语义模糊 → 用 LLM 判断 ──
         try:

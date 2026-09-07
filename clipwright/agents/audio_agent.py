@@ -24,7 +24,8 @@ from clipwright.services.llm import LLMService
 from clipwright.tool.registry import ToolRegistry
 
 
-async def _search_bgm_from_library(bgm_slots: dict, top_k: int = 3) -> list[dict]:
+async def _search_bgm_from_library(bgm_slots: dict, top_k: int = 3,
+                                   extra_query: str = "") -> list[dict]:
     """从素材库检索 BGM 音频（A1）。
 
     先以 "music" 通用词检索，再按 bgm_slots 槽位风格词补充搜索；
@@ -38,6 +39,8 @@ async def _search_bgm_from_library(bgm_slots: dict, top_k: int = 3) -> list[dict
         if not MaterialRegistry.list():
             return []
         queries = ["music"]
+        if extra_query.strip():
+            queries.append(extra_query.strip()[:60])
         for v in bgm_slots.values():
             for item in (v if isinstance(v, list) else [v]):
                 if isinstance(item, str) and item.strip():
@@ -118,6 +121,22 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
             #     使时间轴总长锚定到配音实际长度（而非脚本估算值）。
             audio_path = context.extra_params.get("audio_path", "")
             audio_duration = float(context.extra_params.get("audio_duration_sec", 0) or 0)
+            if audio_path and Path(audio_path).exists():
+                # 批2：ffprobe 实测配音时长（旧实现用需求阶段估算值 → 画面/配音错位）
+                try:
+                    import subprocess as _sub
+                    _pr = _sub.run(
+                        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                         "-of", "json", audio_path],
+                        capture_output=True, text=True, timeout=15)
+                    _real = float((json.loads(_pr.stdout or "{}").get("format", {}) or {})
+                                  .get("duration", 0) or 0)
+                except Exception:
+                    _real = 0.0
+                if _real > 0:
+                    if abs(_real - audio_duration) > 1.0:
+                        notes.append(f"配音实测时长 {_real:.1f}s（估算 {audio_duration:.1f}s，已校正）")
+                    audio_duration = _real
             if audio_path and audio_duration > 0:
                 has_dub = any(
                     getattr(c, "metadata", {}).get("dubbing") for c in audio_track.clips
@@ -159,7 +178,8 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
             library_bgm: list[dict] = []
             try:
                 if MaterialRegistry.list():
-                    library_bgm = await _search_bgm_from_library(bgm_slots)
+                    # 批2：简报 bgm_requirement 真正参与检索（旧实现仅进 notes）
+                    library_bgm = await _search_bgm_from_library(bgm_slots, extra_query=brief_bgm)
             except Exception:
                 library_bgm = []
             if library_bgm:
@@ -243,10 +263,16 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                     for c in t.clips
                 )
                 if _tl_dur > 0 and not _has_real_bgm:
+                    # 批1：预过滤无路径条目（见 _valid_bgm_entries）
+                    library_bgm = self._valid_bgm_entries(library_bgm)
+                if _tl_dur > 0 and not _has_real_bgm and library_bgm:
                     _bgm_cursor = 0.0
                     _bgm_count = 0
                     _bgm_idx = 0
-                    while _bgm_cursor < _tl_dur - 0.5:
+                    _bgm_iters = 0
+                    _bgm_max_iters = len(library_bgm) * 8 + 8
+                    while _bgm_cursor < _tl_dur - 0.5 and _bgm_iters < _bgm_max_iters:
+                        _bgm_iters += 1
                         _entry = library_bgm[_bgm_idx % len(library_bgm)]
                         _bgm_idx += 1
                         _asset = _entry.get("asset")
@@ -294,6 +320,18 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                 auto_dub = bool(audio_config.get("auto_dub", True))
                 script_text = context.extra_params.get("script_text", "")
                 video_mode = context.extra_params.get("video_mode", "")
+                # 批2：voiceover 模式优先使用用户确认的逐场景口播稿（规划书
+                # raw_scenes），修复「确认的分镜口播 ≠ 实际配音文本」的契约断裂
+                _plan = context.extra_params.get("production_plan") or {}
+                _raw_scenes = _plan.get("raw_scenes") if isinstance(_plan, dict) else []
+                _scene_scripts = [
+                    str(s.get("voiceover_script") or "").strip()
+                    for s in (_raw_scenes or []) if isinstance(s, dict)
+                ]
+                _scene_scripts = [t for t in _scene_scripts if t]
+                if _scene_scripts:
+                    script_text = "\n".join(_scene_scripts)
+                    notes.append(f"旁白采用规划书逐场景口播稿（{len(_scene_scripts)} 场景）")
                 # B7: 已上传配音（audio_path）时跳过 TTS——原 has_dub（配音插入）
                 # 与 has_narration（TTS 门控）互不感知，两者同时满足会把上传配音
                 # 与整条 TTS 旁白同时混音，成片出现双语音叠加。
@@ -325,7 +363,8 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                             "dub_script",
                             voice_id=voice_id,
                             text=script_text,
-                            split_mode="sentence",
+                            # 批2：透传会话 split_mode（旧实现硬编码 sentence）
+                            split_mode=str(context.extra_params.get("split_mode") or "sentence"),
                         )
 
                         if res.status == "success":
@@ -407,9 +446,13 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                                 )
 
                                 # ── 7b. 由旁白分段生成字幕 clip（受 subtitle_enabled 门控）──
+                                # A8 修复：_realign_captions_to_narration 已把实测旁白字幕
+                                # 重建进 CAPTION 轨；此处再往 TEXT 轨追加同类 clip 会造成
+                                # 渲染双轨合并 → 同一句字幕烧两遍。检测到已重建即跳过。
                                 if (
                                     bool(audio_config.get("subtitle_enabled", True))
                                     and not audio_path
+                                    and not self._captions_realigned(timeline)
                                     and any(
                                         (getattr(c, "metadata", {}) or {}).get("text")
                                         for c in narr_track.clips
@@ -571,6 +614,29 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
             except Exception:
                 pass
 
+            # 批2：时长对账——画面轨总长 vs 音频轨终点。音频超长 → 末个画面
+            # clip 冻结帧补齐（旧实现无任何对账，音频 80s 配画面 60s 以
+            # 冻结帧 + 静音尾巴交付且无人知晓）
+            try:
+                _vclips = [c for t in timeline.tracks if t.kind == ClipKind.VIDEO
+                           for c in t.clips]
+                _video_dur = sum(c.duration_sec for c in _vclips)
+                _audio_ends = [c.start_sec + c.duration_sec for t in timeline.tracks
+                               if t.kind == ClipKind.AUDIO for c in t.clips
+                               if not (getattr(c, "metadata", {}) or {}).get("bgm")]
+                _audio_end = max(_audio_ends) if _audio_ends else 0.0
+                if _audio_end > _video_dur + 1.0 and _vclips:
+                    _extend = _audio_end - _video_dur
+                    _last = max(_vclips, key=lambda c: c.start_sec + c.duration_sec)
+                    _last.duration_sec = round(_last.duration_sec + _extend, 3)
+                    notes.append(
+                        f"时长对账：音频比画面长 {_extend:.1f}s，末尾画面冻结帧补齐")
+                elif _video_dur > _audio_end + 1.0 and _audio_end > 0:
+                    notes.append(
+                        f"时长对账：画面比音频长 {_video_dur - _audio_end:.1f}s（片尾静音）")
+            except Exception:
+                logger.debug("时长对账失败（忽略）", exc_info=True)
+
             return AudioOutput(
                 decision=AgentDecision.PASS,
                 timeline=timeline,
@@ -579,6 +645,33 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
 
         except Exception as e:
             return self.build_error_output(str(e), AudioOutput)
+
+    @staticmethod
+    def _valid_bgm_entries(entries: list[dict]) -> list[dict]:
+        """批1：过滤无 local_path/url 的 BGM 条目（全空时不进入铺轨循环，
+        杜绝旧实现 continue 不推进游标的死循环挂死管线）。"""
+        return [
+            _e for _e in (entries or [])
+            if (getattr(_e.get("asset"), "local_path", None)
+                or getattr(_e.get("asset"), "url", None))
+        ]
+
+    @staticmethod
+    def _captions_realigned(timeline) -> bool:
+        """字幕轨是否已按实测旁白重建（A8：realign 成功的标志 = source=narration_aligned）。
+
+        为真时 7b 不再向 TEXT 轨追加第二套字幕，避免双轨合并后同句烧两遍。
+        """
+        try:
+            for t in timeline.tracks:
+                if t.kind == ClipKind.CAPTION and any(
+                    (getattr(c, "metadata", {}) or {}).get("source") == "narration_aligned"
+                    for c in t.clips
+                ):
+                    return True
+        except Exception:
+            return False
+        return False
 
     @staticmethod
     def _realign_captions_to_narration(timeline, segments: list[dict]) -> None:

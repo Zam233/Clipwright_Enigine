@@ -63,7 +63,9 @@ def test_image_tool_availability_matrix(monkeypatch):
     assert img_mod.AIImageGenTool(provider="dalle", api_key="k").is_available() is True
     assert img_mod.AIImageGenTool(provider="dalle").is_available() is False
     assert img_mod.AIImageGenTool(provider="flux").is_available() is False
-    assert img_mod.AIImageGenTool(provider="local").is_available() is True  # SD 默认地址
+    # 批5：local 需显式配置地址（默认 127.0.0.1:7860 通常未运行）
+    assert img_mod.AIImageGenTool(provider="local").is_available() is False
+    assert img_mod.AIImageGenTool(provider="local", base_url="http://x").is_available() is True
 
 
 def test_video_tool_availability_matrix(monkeypatch):

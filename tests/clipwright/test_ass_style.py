@@ -100,7 +100,8 @@ class TestBuildAssStyle14Fields:
 class TestBuildAssDialogue:
     def test_basic_bottom(self) -> None:
         d = TextStyle(position="bottom").build_ass_dialogue("Hello", 1.0, 4.0)
-        assert d.startswith("Dialogue: 0,0:00:01.00,0:00:04.00,Default,,0,0,0,,")
+        # 批1：行级 MarginV 承载 offset_y（默认 0 → 10）；每行显式 \fn \fs \1c
+        assert d.startswith("Dialogue: 0,0:00:01.00,0:00:04.00,Default,,0,0,10,,")
         assert r"\an2" in d
         assert d.endswith("Hello")
 
@@ -127,7 +128,9 @@ class TestBuildAssDialogue:
         d = ts.build_ass_dialogue("Glow", 0.0, 1.0)
         assert r"\bord8" in d
         assert r"\blur8" in d
-        assert r"\c&H0000FFFF" in d
+        # 批1 修复：辉光由描边层 \3c 承载，不再污染主填充色 \1c
+        assert r"\3c&H0000FFFF" in d
+        assert r"\1c&H00FFFFFF" in d
 
     def test_escape_braces(self) -> None:
         d = TextStyle().build_ass_dialogue("a{b}c", 0.0, 1.0)
@@ -135,7 +138,7 @@ class TestBuildAssDialogue:
 
     def test_time_format(self) -> None:
         d = TextStyle().build_ass_dialogue("t", 75.5, 90.05)
-        assert d.startswith("Dialogue: 0,0:01:15.50,0:01:30.05,Default,,0,0,0,,")
+        assert d.startswith("Dialogue: 0,0:01:15.50,0:01:30.05,Default,,0,0,10,,")
 
 
 class TestApplyTextAss:

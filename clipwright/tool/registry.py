@@ -58,6 +58,11 @@ class ToolRegistry:
         ]
 
     @classmethod
+    def unregister(cls, name: str) -> None:
+        """批7：按名注销工具（插件 disable 时清理注册物）。"""
+        cls._tools.pop(name, None)
+
+    @classmethod
     def get(cls, name: str) -> Optional[BaseTool]:
         """按名称获取工具。"""
         return cls._tools.get(name)

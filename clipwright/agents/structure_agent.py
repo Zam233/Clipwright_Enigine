@@ -225,6 +225,33 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                 reused, reuse_warnings = _validate_scenes(confirmed_scenes)
                 if reused:
                     logger.info("StructureAgent: 复用已确认规划书的 %d 个场景（跳过重新生成）", len(reused))
+                    # 批2：确认简报摘要随 result_data（script_skeleton）流向下游
+                    # 素材/剪辑/音频——修复「复用路径下确认字段全部死亡」的契约断裂
+                    brief = input_data.creative_brief if isinstance(input_data.creative_brief, dict) else {}
+                    brief_summary = {
+                        k: brief[k] for k in (
+                            "title", "core_message", "key_elements", "era_background",
+                            "reference_style", "target_audience", "style_direction",
+                            "special_requirements",
+                        ) if brief.get(k)
+                    }
+                    # 批2：dub_segments 时间轴对齐——确认了配音分段时，场景时长按
+                    # 配音总长等比缩放（旧实现复用分支不消费该参数）
+                    dub_segments = context.extra_params.get("dub_segments") or []
+                    if dub_segments:
+                        try:
+                            dub_end = max(float(s.get("end_sec", 0) or 0) for s in dub_segments
+                                          if isinstance(s, dict))
+                            scene_total = sum(float(s.get("duration_sec", 0) or 0) for s in reused)
+                            if dub_end > 0 and scene_total > 0:
+                                scale = dub_end / scene_total
+                                if abs(scale - 1.0) > 0.02:
+                                    for s in reused:
+                                        s["duration_sec"] = round(
+                                            float(s.get("duration_sec", 0) or 0) * scale, 3)
+                                    reuse_warnings.append(f"场景时长已按配音时间轴缩放 ×{scale:.2f}")
+                        except Exception:
+                            logger.debug("dub_segments 对齐失败，保持原场景时长")
                     # 为缺少动画标记的场景调用 LLM 补充动画标记（不硬编码），
                     # 使 AnimationAgent 能创建动画（含 LLM 动态 MG 动画）。
                     reused = await self._enrich_scene_animations(reused, context)
@@ -239,6 +266,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                             "topic": context.topic,
                             "tone": tone,
                             "scene_count": len(reused),
+                            "brief": brief_summary,
                             "_warnings": reuse_warnings + ["复用已确认规划书场景"],
                         },
                         scenes=reused,
@@ -378,8 +406,10 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
                 scenes, warnings = await _generate_scenes()
 
-                # B7: 多方案择优 — voiceover（脚本驱动）场景双稿，择优启发式选择
-                if video_mode == "voiceover" and script_text.strip() and scenes:
+                # B7/A9: 多方案择优 — voiceover 双稿会双倍最大 LLM 开销与耗时
+                # （择优启发式只比较场景数）。批3 改为配置开关，默认关闭。
+                if (video_mode == "voiceover" and script_text.strip() and scenes
+                        and getattr(settings, "structure_double_draft", False)):
                     scenes_b, warnings_b = await _generate_scenes(
                         "\n\n（额外要求：请再输出一版节奏/结构安排与上述不同的替代方案，仍遵循全部约束）"
                     )
@@ -656,7 +686,8 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                 if anim_parts:
                     lines.append(f"- 动画风格: {'；'.join(anim_parts)}")
             ratio = brief.get("asset_ratio")
-            if isinstance(ratio, dict) and (ratio.get("footage") or ratio.get("mg")):
+            if isinstance(ratio, dict) and (ratio.get("footage") or ratio.get("mg")
+                                            or ratio.get("ai_generated")):
                 line = f"- 素材/动画占比: 实拍 {ratio.get('footage', '')} · MG {ratio.get('mg', '')}"
                 if ratio.get("ai_generated"):
                     line += f" · AI 生成 {ratio.get('ai_generated')}"

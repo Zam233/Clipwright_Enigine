@@ -106,7 +106,10 @@ def recover_pipeline_runtime() -> dict:
     stats = {"interrupted": 0, "owners": 0, "idem": 0}
     try:
         from clipwright.models.pipeline_model import PipelineModel
-        stale = PipelineModel.find_many({"status": "running"}, limit=500)
+        # A2 修复：pending 也可能是被中断的运行（checkpoint 曾把 running 覆写为
+        # pending），一并标记 interrupted
+        stale = PipelineModel.find_many(
+            {"status": {"$in": ["running", "pending"]}}, limit=500)
         for model in stale or []:
             try:
                 model.status = "interrupted"
@@ -506,11 +509,12 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
 
 
 @router.get("/trace/{pipeline_id}")
-async def get_pipeline_trace(pipeline_id: str):
-    """获取管线追踪事件（返回 JSON 数组或 SSE 流）。"""
-    # 简单检测：如果 Accept 不是 text/event-stream，返回 JSON
-    from fastapi import Request
-    from starlette.requests import Request as StarletteRequest
+async def get_pipeline_trace(pipeline_id: str, request: Request):
+    """获取管线追踪事件（返回 JSON 数组或 SSE 流）。
+
+    批4：补 owner 校验——trace 含提示词/脚本/时间线快照（与 SSE 版同标准）。
+    """
+    _enforce_pipeline_owner(request, pipeline_id)
     # 直接返回 JSON
     return get_all_events(pipeline_id)
 
@@ -592,8 +596,12 @@ async def stream_pipeline_trace(pipeline_id: str, request: Request):
 
 
 @router.get("/result/{pipeline_id}")
-async def get_pipeline_result(pipeline_id: str) -> dict:
-    """获取异步管线执行结果。如果管线仍在运行，最多轮询 5 分钟等待。"""
+async def get_pipeline_result(pipeline_id: str, request: Request) -> dict:
+    """获取异步管线执行结果。如果管线仍在运行，最多轮询 5 分钟等待。
+
+    批4：补 owner 校验——result 含完整时间线/脚本/质检，兄弟端点均已校验。
+    """
+    _enforce_pipeline_owner(request, pipeline_id)
     import asyncio
 
     # 先返回已有结果

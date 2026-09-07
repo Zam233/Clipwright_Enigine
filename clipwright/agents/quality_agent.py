@@ -82,9 +82,11 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
             special = brief.get("special_requirements")
             if isinstance(special, list) and special:
                 for req in special[:5]:
+                    # 批2：info → warning（客户端仅展示 error/warning 级，
+                    # info 意味着用户确认的特殊要求在结果页完全不可见）
                     issues.append(QualityIssue(
-                        severity="info", category="brief_requirement",
-                        message=f"简报要求: {req}",
+                        severity="warning", category="brief_requirement",
+                        message=f"简报要求（请人工核对是否落实）: {req}",
                     ))
         except Exception:
             pass
@@ -205,6 +207,36 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                 message="没有音频轨道，视频将无声",
             ))
 
+        # ── 6b. 批2 质检补盲：字幕缺失 / 画面-音频时长不一致 ──
+        try:
+            has_text = any(
+                t.kind in (ClipKind.CAPTION, ClipKind.TEXT) and t.clips
+                for t in tracks
+            )
+            if not has_text:
+                issues.append(QualityIssue(
+                    severity="warning", category="duration",
+                    message="时间线无任何字幕/文字 clip，成片将无字幕",
+                ))
+            video_dur = sum(
+                c.duration_sec for t in tracks if t.kind == ClipKind.VIDEO
+                for c in t.clips
+            )
+            audio_ends = [
+                c.start_sec + c.duration_sec
+                for t in tracks if t.kind == ClipKind.AUDIO for c in t.clips
+                if not (getattr(c, "metadata", {}) or {}).get("bgm")
+            ]
+            audio_end = max(audio_ends) if audio_ends else 0.0
+            if audio_end > 0 and abs(video_dur - audio_end) > 1.5:
+                issues.append(QualityIssue(
+                    severity="warning", category="duration",
+                    message=(f"画面轨总长 {video_dur:.1f}s 与音频终点 {audio_end:.1f}s "
+                             f"不一致（偏差 {abs(video_dur - audio_end):.1f}s）"),
+                ))
+        except Exception:
+            pass
+
         # ── 7. 空镜头检测（frame_validator，有界并行；不检查音频轨）──
         await self._check_blank_shots(video_clips, issues)
 
@@ -239,25 +271,14 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         #              原映射缺失使语义错误既不触发自愈也不令管线失败）
         #   animation/transition      → animation
         #   audio                     → audio
-        redo_agent = ""
-        error_cats = {i.category for i in errors}
-        # 依据 error 类别建议重做的 Agent（取最上游责任方，下游会联动重做）：
-        #   material / material_match → material（重新选材，配合重选循环）
-        #   structure/duration/rhythm → edit（重建粗剪时间线）
-        #   semantic → edit（C6: 文案错别字/简报偏差多源于文案与结构，映射 edit；
-        #              原映射缺失使语义错误既不触发自愈也不令管线失败）
-        #   animation/transition      → animation
-        #   audio                     → audio
+        # A5 修复：删除复制粘贴产生的重复块——旧实现 audio 分支立即被
+        # redo_agent="edit" 覆盖（audio 类 error 会错误重做 edit），且后两个
+        # 分支永不可达。保留单一映射表。
         redo_agent = ""
         error_cats = {i.category for i in errors}
         if error_cats & {"material", "material_match"}:
             redo_agent = "material"
         elif error_cats & {"structure", "duration", "rhythm", "semantic"}:
-            redo_agent = "edit"
-        elif error_cats & {"animation", "transition"}:
-            redo_agent = "animation"
-        elif "audio" in error_cats:
-            redo_agent = "audio"
             redo_agent = "edit"
         elif error_cats & {"animation", "transition"}:
             redo_agent = "animation"

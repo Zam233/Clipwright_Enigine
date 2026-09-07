@@ -45,7 +45,7 @@ async def test_mix_audio_builds_multi_source_graph(tmp_path: Path) -> None:
     assert "loudnorm=I=-16:LRA=11:TP=-1.5" in cmd
     # 音量与淡入被应用到片段链
     assert "volume=0.8" in cmd
-    assert "afade=t=in:st=0:d=0.5" in cmd
+    assert "afade=t=in:st=0.000000:d=0.5" in cmd
     # BGM 基准音量 0.3
     assert "volume=0.3" in cmd
 

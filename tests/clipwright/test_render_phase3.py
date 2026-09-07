@@ -87,6 +87,8 @@ async def test_concat_xfade_parallel_tree_shape(monkeypatch):
     from clipwright.services.render import RenderService
 
     svc = RenderService(work_dir=Path("."))
+    # 批1 新守卫：td ≥ 左块时长会降级硬切；stub 时长 5s 使 0.4 < acc 恒成立
+    monkeypatch.setattr("clipwright.services.render._get_actual_duration", lambda _p: 5.0)
     calls: list[tuple[str, str]] = []
 
     def fake_pair(left, right, tt, td, fps, bitrate, encoder, preset, out_name):
