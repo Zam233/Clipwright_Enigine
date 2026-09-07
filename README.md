@@ -480,7 +480,7 @@ Level 2 ─── LoRA微调 ────── 上传50+历史视频，微调Ag
 
 ## 开源协议
 
-本项目采用 **MIT License**，详见 [LICENSE](LICENSE)。第三方依赖各自遵循其开源协议。
+本项目采用 **MPL 2.0**（Mozilla Public License 2.0），详见 [LICENSE](LICENSE)。第三方依赖各自遵循其开源协议。
 
 ## 贡献
 
