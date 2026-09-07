@@ -26,6 +26,10 @@ class KnowledgeLongformPlugin(BaseCategoryPlugin):
             "high": {"base_shot_ms": 4000, "min_shot_ms": 800, "max_shot_ms": 10000},
         }
         shot_params = density_map.get(rhythm.cut_density_tier, density_map["medium"])
+        # 批8：Persona 显式 base_shot_duration_ms 优先于密度档位推导
+        if getattr(rhythm, "base_shot_duration_ms", None):
+            shot_params = {**shot_params,
+                           "base_shot_ms": int(rhythm.base_shot_duration_ms)}
 
         return {
             "shot_params": shot_params,

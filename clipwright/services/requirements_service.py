@@ -644,6 +644,64 @@ class RequirementsService:
         )
         return {**session, "reply": last_assistant}
 
+    async def _revise_raw_scenes(
+        self, scenes: list[dict], feedback: str,
+        brief_data: dict | None, user_inputs: dict,
+    ) -> list[dict] | None:
+        """批8：按用户修改意见用 LLM 改写 raw_scenes 场景本体（有界）。
+
+        修复契约断裂：旧实现修订只重译规划书文案，场景本体永不变更。
+        约束：单次 LLM 调用；失败/解析失败返回 None（回退旧行为——仅重译）。
+        """
+        if not feedback.strip():
+            return None
+        try:
+            system_prompt = (
+                "你是视频规划修订助手。给你当前规划的场景列表（JSON 数组）与用户修改意见，"
+                "输出修改后的完整场景 JSON 数组。规则：\n"
+                "1. 仅按修改意见做必要的增/删/改，未被提及的场景尽量保持原样；\n"
+                "2. 每个场景必须包含字段：title（标题）、description（画面描述）、"
+                "duration_sec（数字秒）、keywords（字符串数组）、voiceover_script（口播脚本）；\n"
+                "3. 不要在 description 中写动画标记；\n"
+                "4. 只输出 JSON 数组，不要输出任何其他文字。"
+            )
+            user_prompt = (
+                "当前场景列表：\n"
+                + json.dumps(scenes, ensure_ascii=False)[:8000]
+                + "\n\n用户修改意见："
+                + feedback[:1000]
+            )
+            resp = await self._llm.generate(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.3,
+            )
+            content = (resp.content or "").strip()
+            if content.startswith("```"):
+                lines = content.split("\n")
+                if lines[0].strip().startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip().startswith("```"):
+                    lines = lines[:-1]
+                content = "\n".join(lines).strip()
+            start = content.find("[")
+            end = content.rfind("]")
+            if start < 0 or end <= start:
+                return None
+            revised = json.loads(content[start:end + 1])
+            if not isinstance(revised, list) or not revised:
+                return None
+            valid = []
+            for s in revised:
+                if (isinstance(s, dict) and str(s.get("title", "")).strip()
+                        and str(s.get("description", "")).strip()
+                        and float(s.get("duration_sec", 0) or 0) > 0):
+                    valid.append(s)
+            return valid or None
+        except Exception:
+            logger.exception("规划修订：场景改写失败（回退原场景）")
+            return None
+
     async def _handle_plan_revision(
         self,
         messages: list[dict],
@@ -1353,10 +1411,22 @@ class RequirementsService:
             # B6/E2: 复用已确认的 raw_scenes 修订路径——不重跑 StructureAgent，
             # 仅带反馈重新翻译场景（简报未变、已有场景时）。
             if isinstance(existing_raw_scenes, list) and existing_raw_scenes:
-                logger.info(
-                    "规划书修订: 复用 %d 个已确认场景（跳过 StructureAgent），feedback=%s",
-                    len(existing_raw_scenes), feedback[:50],
+                # 批8：反馈先经 LLM 改写场景本体（有界改写；失败回退原场景），
+                # 修复「修改意见只改规划书文案、场景本体永不变更」的契约断裂
+                revised_scenes = await self._revise_raw_scenes(
+                    existing_raw_scenes, feedback, brief_data, user_inputs,
                 )
+                if revised_scenes:
+                    logger.info(
+                        "规划书修订: 场景本体已按反馈改写（%d → %d 个场景）",
+                        len(existing_raw_scenes), len(revised_scenes),
+                    )
+                    existing_raw_scenes = revised_scenes
+                else:
+                    logger.info(
+                        "规划书修订: 场景改写未产出（回退仅重译文案），feedback=%s",
+                        feedback[:50],
+                    )
                 web_context = await _build_web_context(
                     f"{topic} {user_inputs.get('script_text', '')}"[:300]
                 )

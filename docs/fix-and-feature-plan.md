@@ -895,3 +895,9 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ✅ 批7 收尾：TrackingTextTool 假 SUCCESS → DEPENDENCY_MISSING；logic_animations/diagram_style Hook 注册补 plugin_id（disable 后钩子不再残留执行）
 - ✅ 批3.6/D3 收尾：edit scene_time 死变量清理；semantic QA 简报回退链（script_skeleton.brief）
 - ✅ 回归：后端 1465 passed / 0 失败（含归档往返新增 3 项）
+
+### 执行轮次 65（persona 字段接线 + 计划修订改写场景 + 展示补全）
+- ✅ persona 接线：base_shot_duration_ms 四个 category 密度档位显式值优先；min_duration_sec 质检最短时长门接入（旧硬编码 10s）；target_loudness_lufs 经 audio_config → timeline.metadata → 渲染 loudnorm I 值全链打通（Timeline 新增 metadata 字段，additive）
+- ✅ 计划修订改写 raw_scenes：_revise_raw_scenes 有界 LLM 改写（单次调用/字段校验/失败回退仅重译）——修复「修改意见只改规划书文案、场景本体永不变更」契约断裂；_translate_plan 将改写后场景写入 plan.raw_scenes，管线 proceed 即消费新场景
+- ✅ 前端 agent_notes 建议展示（结构警告/素材/剪辑/音频备注前 4 条转建议）；PiP 与主画面同源备注；SSE 真流式评估结论注记（isobase 无 token 级流式，延后）
+- ✅ 回归：后端 1465 passed / 0 失败 · 前端 tsc 0 错误 + vitest 379/379

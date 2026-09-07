@@ -110,6 +110,20 @@
 
 回归：后端 1465 passed / 0 失败（含归档往返新增 3 项）。
 
+## 轮 65：persona 字段接线 + 计划修订改写场景 + 展示补全（2026-09-08）
+
+| # | 修复项 | 状态 |
+|---|--------|------|
+| 8c | persona base_shot_duration_ms：四个 category 密度档位接线（显式值优先） | ✅ |
+| 8d | persona min_duration_sec：质检最短时长门接入（旧硬编码 10s） | ✅ |
+| 8e | persona target_loudness_lufs：audio_agent 写入 timeline.metadata → 渲染 loudnorm I 值（新增 Timeline.metadata 字段） | ✅ |
+| 8f | 计划修订改写 raw_scenes：反馈先经 LLM 有界改写场景本体（失败回退仅重译），规划书与管线消费改写后场景 | ✅ |
+| 8g | 前端 agent_notes 建议展示（结构警告/素材/剪辑/音频备注 → 建议列表） | ✅ |
+| 3.6 | PiP 与主画面同源时备注提示；scene_time 死变量清理 | ✅ |
+| 评估 | SSE 真流式：isobase 上游无 token 级流式回调，需上游支持后实施（已在 llm.py 注记） | ⏸ |
+
+回归：后端 1465 passed / 0 失败；前端 tsc 0 错误 + vitest 379/379。
+
 ## 批次 8（后续独立任务，不在本轮）
 
 前端仓库（proceed project_id / agent_notes UI / ReviewPanel 统一 / SSE 真流式）；计划修改意见改写 raw_scenes；persona 剩余字段接线；渲染产物 TTL 清理。

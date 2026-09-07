@@ -80,6 +80,13 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
         try:
             timeline = input_data.timeline
             audio_config = input_data.audio_config or {}
+            # 批8：Persona 目标响度 → 时间线元数据（渲染端 loudnorm 消费）
+            _loud = audio_config.get("target_loudness_lufs")
+            if _loud is not None:
+                try:
+                    timeline.metadata["target_loudness_lufs"] = float(_loud)
+                except (TypeError, ValueError):
+                    pass
 
             if timeline is None:
                 return AudioOutput(decision=AgentDecision.PASS, timeline=timeline)

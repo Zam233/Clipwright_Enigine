@@ -507,36 +507,30 @@ class CustomJsonAnimationTool(BaseTool):
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error=str(e))
 
-# 模块加载时自动注册 Tool
-try:
+# 批7.4：注册归属重构——不再在模块加载期自动注册（旧写法 import 期副作用
+# 使工具 _plugin_id 为空，list_by_plugin 查不到、disable 不生效），改为由
+# TextAnimationsPlugin.initialize() 显式调用 register_all_tools(plugin_id)。
+
+_TEXT_TOOL_CLASSES = [
+    FadeInTextTool, SlideUpTextTool, SlideDownTextTool, SlideLeftTextTool,
+    SlideRightTextTool, ZoomInTextTool, ZoomOutTextTool, TypewriterTextTool,
+    ScaleBounceTextTool, RotateInTextTool, BlurInTextTool, WaveTextTool,
+    ShakeTextTool, GlowTextTool, RainbowTextTool, NeonTextTool,
+    TypingCursorTool, LetterRevealTool, PerspectiveTextTool, FlipInTextTool,
+    ElasticTextTool, MorphTextTool, PulseTextTool, GradientTextTool,
+    CustomJsonAnimationTool,
+]
+
+
+def register_all_tools(plugin_id: str) -> int:
+    """注册全部文字动画工具并归属到插件；返回注册数量。"""
     from clipwright.tool.registry import ToolRegistry
-    ToolRegistry.register(FadeInTextTool())
-    ToolRegistry.register(SlideUpTextTool())
-    ToolRegistry.register(SlideDownTextTool())
-    ToolRegistry.register(SlideLeftTextTool())
-    ToolRegistry.register(SlideRightTextTool())
-    ToolRegistry.register(ZoomInTextTool())
-    ToolRegistry.register(ZoomOutTextTool())
-    ToolRegistry.register(TypewriterTextTool())
-    ToolRegistry.register(ScaleBounceTextTool())
-    ToolRegistry.register(RotateInTextTool())
-    ToolRegistry.register(BlurInTextTool())
-    ToolRegistry.register(WaveTextTool())
-    ToolRegistry.register(ShakeTextTool())
-    ToolRegistry.register(GlowTextTool())
-    ToolRegistry.register(RainbowTextTool())
-    ToolRegistry.register(NeonTextTool())
-    ToolRegistry.register(TypingCursorTool())
-    ToolRegistry.register(LetterRevealTool())
-    ToolRegistry.register(PerspectiveTextTool())
-    ToolRegistry.register(FlipInTextTool())
-    ToolRegistry.register(ElasticTextTool())
-    ToolRegistry.register(MorphTextTool())
-    ToolRegistry.register(PulseTextTool())
-    ToolRegistry.register(GradientTextTool())
-    ToolRegistry.register(CustomJsonAnimationTool())
-except Exception:
-    pass
+    n = 0
+    for cls in _TEXT_TOOL_CLASSES:
+        ToolRegistry.register(cls(), plugin_id=plugin_id)
+        n += 1
+    return n
+
 
 # Plugin 类 — 供 PluginLoader 识别
 from clipwright.plugins import CapabilityPlugin
@@ -552,4 +546,5 @@ class TextAnimationsPlugin(CapabilityPlugin):
         description="25 种文字动画工具 + 自定义 JSON 动画",
     )
     def initialize(self) -> None:
-        self.logger.info("TextAnimationsPlugin loaded: 25 tools")
+        n = register_all_tools(self.manifest.id)
+        self.logger.info("TextAnimationsPlugin: %d tools registered", n)

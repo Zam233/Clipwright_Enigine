@@ -1105,6 +1105,9 @@ class PipelineOrchestratorV2:
                     or persona_config.get("audio", {}).get("voice_clone_model_id")
                     or persona_config.get("audio", {}).get("voice")
                     or "",
+                    # 批8：Persona 目标响度透传（渲染 loudnorm 消费；缺省 -16）
+                    "target_loudness_lufs": persona_config.get("audio", {}).get(
+                        "target_loudness_lufs"),
                     "auto_dub": extra_params.get("auto_dub", True),
                     # 批2：不再硬编码 True——客户端/会话可关闭字幕
                     "subtitle_enabled": bool(extra_params.get("subtitle_enabled", True)),

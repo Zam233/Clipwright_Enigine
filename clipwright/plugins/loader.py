@@ -356,12 +356,20 @@ class PluginLoader:
         """卸载指定插件。"""
         plugin = self._plugins.pop(plugin_id, None)
         self._metadatas.pop(plugin_id, None)
-        # 批7：同步注销插件注册的 Hook（旧实现遗留 → disable 后钩子仍执行）
+        # 批7：同步注销插件注册的 Hook 与 Tool（旧实现遗留 → disable 后钩子
+        # 仍执行、工具仍可调用）
         try:
             from clipwright.plugins.hooks import HookRegistry
             HookRegistry.unregister_plugin(plugin_id)
         except Exception as e:
             logger.warning("插件 %s Hook 注销异常: %s", plugin_id, e)
+        try:
+            from clipwright.tool.registry import ToolRegistry
+            removed = ToolRegistry.unregister_by_plugin(plugin_id)
+            if removed:
+                logger.info("插件 %s 工具已注销: %s", plugin_id, removed)
+        except Exception as e:
+            logger.warning("插件 %s Tool 注销异常: %s", plugin_id, e)
         # SA-2: 同步注销插件注册的 Agent（能力即时收缩）
         try:
             from clipwright.agents.registry import AgentRegistry

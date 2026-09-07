@@ -186,6 +186,9 @@ class Timeline(BaseModel):
     duration_sec: float = Field(default=0, ge=0, description="总时长（秒）")
     tracks: list[Track] = Field(default_factory=list)
     markers: list[TimelineMarker] = Field(default_factory=list, description="时间轴标记列表（M8）")
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="时间线扩展元数据（如 target_loudness_lufs → 渲染响度归一目标）")
 
     @property
     def total_duration_sec(self) -> float:

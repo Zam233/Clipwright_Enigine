@@ -99,10 +99,13 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                 message=f"视频时长 {timeline.duration_sec:.0f}s 超过上限 {max_duration}s",
             ))
 
-        if timeline.duration_sec < 10:
+        # 批8：最短时长门接入 Persona constraints.min_duration_sec（旧实现硬编码 10s）
+        min_duration = constraints.get("min_duration_sec", 10)
+        if timeline.duration_sec < min_duration:
             issues.append(QualityIssue(
                 severity="warning", category="duration",
-                message=f"视频时长仅 {timeline.duration_sec:.0f}s，可能太短",
+                message=(f"视频时长仅 {timeline.duration_sec:.0f}s，"
+                         f"低于 Persona 最短要求 {min_duration}s"),
             ))
 
         # ── 2. 轨道完整性 ──

@@ -339,6 +339,10 @@ class LLMService:
 
     # ── 工具调用支持 ──
 
+    # 注（轮65 评估）：isobase 上游 SDK 仅提供一次性 generate（无 token 级
+    # 流式回调），因此 requirements chat 的"真流式"需要更换/封装上游流式
+    # 接口后才能实现——现有 stream_chat 为"打字机式分片"而非 token 流。
+
     async def with_tools(
         self,
         system_prompt: str,

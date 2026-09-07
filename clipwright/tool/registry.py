@@ -63,6 +63,17 @@ class ToolRegistry:
         cls._tools.pop(name, None)
 
     @classmethod
+    def unregister_by_plugin(cls, plugin_id: str) -> list[str]:
+        """批7：注销插件注册的全部工具，返回被移除的工具名。"""
+        doomed = [
+            t.name for t in cls._tools.values()
+            if getattr(t, "_plugin_id", "") == plugin_id
+        ]
+        for n in doomed:
+            cls._tools.pop(n, None)
+        return doomed
+
+    @classmethod
     def get(cls, name: str) -> Optional[BaseTool]:
         """按名称获取工具。"""
         return cls._tools.get(name)

@@ -472,6 +472,11 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                             clip_label=f"pip_{i}",
                             processed_path=unit["processed_path"],
                         )
+                        # 批3.6：PiP 与主画面同源时提示（同帧自叠无信息量）
+                        if pip_clip.asset_id == (vid_track.clips[-1].asset_id
+                                                 if vid_track.clips else None):
+                            notes.append(
+                                f"场景{i+1}: 画中画与主画面同源，建议更换素材或移除画中画")
                         # 设置 PiP 位置（右下角，占画面 30%）
                         pip_clip.image_rect = {"x": 0.65, "y": 0.55, "w": 0.3, "h": 0.3}
                         pip_track.clips.append(pip_clip)
