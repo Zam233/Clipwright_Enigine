@@ -46,7 +46,7 @@
           "gap": 2,
           "visibleWhen": "loading",
           "children": [
-            { "type": "spinner", "label": "生成中（约30-120秒）…" }
+            { "type": "spinner", "label": "生成中（Seedance 异步任务，约 1-5 分钟）…" }
           ]
         },
         {
