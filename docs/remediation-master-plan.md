@@ -151,6 +151,16 @@
 
 回归：后端 1465 passed / 0 失败；前端 tsc 0 错误 + vitest 379/379。
 
+## 轮 68：SSE 真流式 + 归档加固 + 响应式存活线（2026-09-08）
+
+| # | 修复项 | 状态 |
+|---|--------|------|
+| 批1 | SSE 真流式：LLMService.stream_generate() async 生成器（isobase generate_stream 经线程→Queue 桥接为 AsyncIterator；修正"上游无流式"过时注释）；CREATIVE_BRIEF_SYSTEM 追加 reply 字段保序指令；stream_chat gathering 态走 _stream_gathering_llm 流式路径（增量提取 reply 字段文本 → delta 块 SSE 推送，失败回退缓冲路径）；chat() 加 on_delta 参数穿透 | ✅ |
+| 批2 | 归档/导入加固：媒体成员 ZIP_STORED（MP4/JPG 压缩无收益纯烧 CPU）；导入 file.size 预检 413 先于读取（旧实现先全量读再检查 → 2GB 上传先吃满内存）；SpooledTemporaryFile 直接传 ZipFile 不再 BytesIO 二次拷贝；流式解包（1MB 块 copyfileobj）；累计解压上限 2GB（解压炸弹防护） | ✅ |
+| 批3a | EditorToolbar 根加 overflow-x-auto（≤1280px 不再裁切）；去重分隔线；Properties 面板 hidden xl:block 安全底线 | ✅ |
+
+回归：后端 1465 passed / 0 失败；前端 tsc 0 错误 + vitest 379/379。
+
 ## 批次 8（后续独立任务，不在本轮）
 
 前端仓库（proceed project_id / agent_notes UI / ReviewPanel 统一 / SSE 真流式）；计划修改意见改写 raw_scenes；persona 剩余字段接线；渲染产物 TTL 清理。
