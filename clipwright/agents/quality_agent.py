@@ -258,8 +258,16 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         # 文案与简报一致性 + 错别字/风格；复用视觉 LLM 门控开关模式，
         # 默认关闭；LLM 失败/超时/非 JSON 静默跳过（零行为变化）。
         if enable_semantic:
+            # 批D(D3)：proceed 复用路径下简报摘要随 script_skeleton.brief
+            # 流转——creative_brief 缺失（raw /run-async）时回退使用
+            _brief_for_qa = input_data.creative_brief
+            if not _brief_for_qa:
+                _sk = getattr(input_data, "script_skeleton", None) or {}
+                _sk_brief = _sk.get("brief") if isinstance(_sk, dict) else None
+                if isinstance(_sk_brief, dict) and _sk_brief:
+                    _brief_for_qa = _sk_brief
             semantic_issues = await self._check_semantic_qa(
-                timeline, input_data.creative_brief, context
+                timeline, _brief_for_qa, context
             )
             issues.extend(semantic_issues)
 

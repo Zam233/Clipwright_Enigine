@@ -37,7 +37,7 @@
 | 3.3 | A3 retry 终态持久化 + run history | pipeline_v2.py:623-736 |✅ |
 | 3.4 | A4 dry-run FAILED 不假 COMPLETED | pipeline_v2.py:779-801 |✅ |
 | 3.5 | A5 质检映射去重修复；A9 双稿改配置开关（默认关） | quality_agent.py:242-265 / structure_agent.py:381-388 |✅ |
-| 3.6 | 小项：get_step/edit logger.exception/失败不推进度（PiP 同源提示、scene_time 清理延后） | schema/pipeline.py:73 / edit_agent.py:553 等 |✅ |
+| 3.6 | 小项：get_step/edit logger.exception/失败不推进度 + scene_time 死变量清理（PiP 同源提示延后） | schema/pipeline.py:73 / edit_agent.py:553 等 |✅ |
 
 ## 批次 4：安全加固
 
@@ -68,8 +68,8 @@
 | 6.1 | ProRes 中间产物容器跟随 preset（.mov） | render.py:1249/1494/1571 等 |✅ |
 | 6.2 | 远程渲染：签名对齐；worker 透传 encoder/pix_fmt；音频 clip 上传 | remote_render.py:361-367 / worker/render_runner.py:60-69 / :84-93 |✅ |
 | 6.3 | 预设覆盖修复（exclude_unset）+ 未知 preset 400；soft_subtitle 非预设生效 + SRT R1 校正 | api/render.py:559-577/186-199 |✅ |
-| 6.4 | EDL/FCPXML 互操作修复 | services/edl.py |⏸ 延后 |
-| 6.5 | 归档 zip：含成片/重名消歧/重映射表/流式 + 导入端点 | api/project.py:242-286 |⏸ 延后 |
+| 6.4 | EDL/FCPXML 互操作修复（轮64完成：编号连续/reel清洗/转场码映射/XML转义/file URI/ntsc修正/in-out点/字幕轨导出/导入保留位置/DOCTYPE守卫收窄） | services/edl.py |✅ |
+| 6.5 | 归档 zip：重名消歧/重映射表/成片打包 + POST /import-archive 导入还原（轮64完成；流式打包延后） | api/project.py:242-286 |✅ |
 | 6.6 | platform_export 封面真实现 + 钩子返回值消费 | plugins/platform_export/main.py / api/render.py:246-248 |◐ 部分（hook 上下文✅；封面抽帧被安全扫描阻断→延后） |
 | 6.7 | /api/render/start 透传交付参数；水印/LUT/抠像/防抖标注"仅独立工具" | api/render.py:599-608 / docs |✅ |
 
@@ -78,9 +78,9 @@
 | # | 修复项 | 关键锚点 | 状态 |
 |---|--------|---------|------|
 | 7.1 | BPM 真检测或下线 | tool/audio.py:63-74 |✅ |
-| 7.2 | 假成功清理：transcribe 已删、SemanticMatch 澄清（TrackingText/VisionLLM 改造延后） | tool/vision.py / animation.py / stubs.py / transcribe.py |✅ |
+| 7.2 | 假成功清理：transcribe 已删、SemanticMatch 澄清、TrackingText 改 DEPENDENCY_MISSING（VisionLLM 回退带 fallback 标记保留） | tool/vision.py / animation.py / stubs.py / transcribe.py |✅ |
 | 7.3 | whisper_stt 可用性+不覆盖内置；voice_ext 去 xtts+is_available；suno 默认禁用 | plugins/* |✅ |
-| 7.4 | Hook 治理：unload/reload 清理（两插件补 plugin_id、text_animations 归属延后） | loader.py/hooks.py |✅ |
+| 7.4 | Hook 治理：unload/reload 清理 + logic_animations/diagram_style 补 plugin_id（text_animations 注册归属延后） | loader.py/hooks.py |✅ |
 | 7.5 | load_all 容错；enable 端点异常处理；disable 移除生成插件注册物 | loader.py:252 / api/plugin.py:87-95 |✅ |
 | 7.6 | 确认分类器转折尾缀；_is_confirm 统一 | requirements_service.py:1045/1093 |✅ |
 
@@ -96,6 +96,19 @@
 | D-次级 | 下游闭包纳入插件 Agent（get_full_deps）；持久化单线程串行化（R11）；无声音告警块裸 except 改日志；semantic QA 读 skeleton.brief 延后（proceed 流 creative_brief 直达） | ✅（D3 延后） |
 
 回归：后端 1462 passed / 0 失败（移除 1 个废弃端点用例）；前端 tsc 0 错误 + vitest 379/379。
+
+## 轮 64：遗留待办收尾（2026-09-08）
+
+| # | 修复项 | 状态 |
+|---|--------|------|
+| 6.4 | EDL/FCPXML 全量修复（事件编号连续/reel 清洗/FROM CLIP NAME 可读/转场码映射/XML 转义/file URI 规范/ntsc 仅 29.97/in-out 点/字幕轨导出/导入保留时间位置/DOCTYPE 守卫收窄为仅拒 ENTITY） | ✅ |
+| 6.5 | 归档 zip 重构（媒体重名消歧/archive_media_map 重映射表/时间线 asset_id 归档化/成片打包）+ POST /api/project/import-archive 导入还原端点（zip slip 防护/500MB 上限/媒体解包重映射） | ✅ |
+| 批8a | DELETE /api/render/artifacts 过期产物清理端点（jwt 管理员管控） | ✅ |
+| 7.2 | TrackingText 假 SUCCESS → DEPENDENCY_MISSING | ✅ |
+| 7.4b | logic_animations/diagram_style Hook 注册补 plugin_id | ✅ |
+| 3.6 | scene_time 死变量清理 + semantic QA 简报回退链（D3） | ✅ |
+
+回归：后端 1465 passed / 0 失败（含归档往返新增 3 项）。
 
 ## 批次 8（后续独立任务，不在本轮）
 

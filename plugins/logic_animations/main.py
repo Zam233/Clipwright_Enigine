@@ -51,7 +51,8 @@ class LogicAnimationsPlugin(CapabilityPlugin):
     )
 
     def initialize(self) -> None:
-        HookRegistry.register(HookPoint.DIAGRAM_RENDERER_EXTEND, register_diagrams)
+        HookRegistry.register(HookPoint.DIAGRAM_RENDERER_EXTEND, register_diagrams,
+                              plugin_id="logic_animations")
         logger.info("LogicAnimationsPlugin: 注册 %d 种图解类型", len(RENDERER_MAP))
 
         from clipwright.plugins.prompt_registry import PluginPromptRegistry

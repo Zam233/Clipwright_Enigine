@@ -83,8 +83,9 @@ class TrackingTextTool(BaseTool):
         **kwargs: Any,
     ) -> ToolExecResult:
         return ToolExecResult(
-            status=ToolStatus.SUCCESS,
+            # 批7：诚实状态——占位假 SUCCESS 会让调用方误以为已产出动画
+            status=ToolStatus.DEPENDENCY_MISSING,
             tool_name=self.name,
-            output={"text": text, "note": "placeholder — Manim not yet integrated"},
-            warning="Tracking text requires Manim — not yet integrated",
+            output={"text": text, "note": "tracking text requires Manim (not yet integrated)"},
+            error="Tracking text requires Manim — not yet integrated",
         )

@@ -9,7 +9,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -241,16 +241,22 @@ async def purge_project(project_id: str, request: Request) -> dict[str, Any]:
 
 @router.get("/{project_id}/archive")
 async def archive_project(project_id: str, request: Request) -> StreamingResponse:
-    """P8: 项目归档 zip 导出 — project.json + 时间线引用的本地媒体文件打包。"""
+    """P8: 项目归档 zip 导出 — project.json + 时间线引用的本地媒体 + 成片。
+
+    批6.5 修复：媒体重名消歧（旧实现同名互相覆盖）；project.json 写入
+    archive_media_map 重映射表并在时间线内替换为归档相对路径（旧实现保留
+    绝对路径，归档自不可恢复）；成片一并打包。
+    """
     data = _load_owned(request, project_id)
     name = (data.get("name") or project_id).strip() or project_id
 
     buf = io.BytesIO()
+    media_map: dict[str, str] = {}   # 原始绝对路径 → 归档内相对路径
+    remap = {}                        # timeline 内 asset_id 替换表
+    used_names: set[str] = set()
+
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        # 1. project.json（含 timeline/agent_state）
-        zf.writestr(f"{project_id}/project.json",
-                    json.dumps(data, ensure_ascii=False, default=str, indent=2))
-        # 2. 时间线引用的本地媒体（去重 + 白名单校验 + 存在性）
+        # 1. 时间线引用的本地媒体（白名单校验 + 存在性 + 重名消歧）
         seen: set[str] = set()
         timeline = data.get("timeline") or {}
         for track in timeline.get("tracks", []):
@@ -265,12 +271,50 @@ async def archive_project(project_id: str, request: Request) -> StreamingRespons
                     assert_allowed_path(p)
                 except Exception:
                     continue  # 白名单外路径不入归档（防路径穿越）
-                if p.is_file():
-                    # 媒体文件名做 ASCII 安全处理（zip 头在 latin-1 下可能炸 CJK 文件名）
-                    safe_media = "".join(
-                        c if (c.isalnum() or c in "._-") else "_" for c in p.name
-                    )[:80] or "media"
-                    zf.write(p, arcname=f"{project_id}/media/{safe_media}")
+                if not p.is_file():
+                    continue
+                stem = "".join(
+                    c if (c.isalnum() or c in "._-") else "_" for c in p.stem
+                )[:60] or "media"
+                arc_name = f"{stem}{p.suffix.lower()}"
+                k = 2
+                while arc_name in used_names:  # 重名消歧
+                    arc_name = f"{stem}_{k}{p.suffix.lower()}"
+                    k += 1
+                used_names.add(arc_name)
+                arc = f"{project_id}/media/{arc_name}"
+                zf.write(p, arcname=arc)
+                media_map[path] = f"media/{arc_name}"
+                remap[path] = f"media/{arc_name}"
+        # 2. 成片（agent_state.output_path 指向的渲染产物）
+        output_path = ((data.get("agent_state") or {}) if isinstance(data.get("agent_state"), dict) else {}).get("output_path", "")
+        if output_path:
+            op = Path(output_path)
+            try:
+                from clipwright.security import assert_allowed_path
+                assert_allowed_path(op)
+            except Exception:
+                op = None
+            if op and op.is_file():
+                arc = f"{project_id}/renders/{op.name}"
+                zf.write(op, arcname=arc)
+                media_map[output_path] = f"renders/{op.name}"
+        # 3. project.json——时间线内 asset_id 已替换为归档相对路径，
+        #    并附 archive_media_map 供导入还原
+        def _remap_paths(obj):
+            if isinstance(obj, dict):
+                return {
+                    k: (_remap_paths(v) if k != "asset_id" else remap.get(v, v))
+                    for k, v in obj.items()
+                }
+            if isinstance(obj, list):
+                return [_remap_paths(v) for v in obj]
+            return obj
+        exported = _remap_paths(data)
+        exported["archive_media_map"] = media_map
+        exported["archive_format"] = "clipwright-v1"
+        zf.writestr(f"{project_id}/project.json",
+                    json.dumps(exported, ensure_ascii=False, default=str, indent=2))
 
     buf.seek(0)
     from urllib.parse import quote
@@ -284,6 +328,81 @@ async def archive_project(project_id: str, request: Request) -> StreamingRespons
                 f"attachment; filename=\"project.zip\"; filename*=UTF-8''{quote(safe_name + '.zip')}",
         },
     )
+
+
+@router.post("/import-archive")
+async def import_archive(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
+    """批6.5：导入项目归档 zip — 解包媒体到 PluginData/archives/<新id>/，
+    按 archive_media_map 还原时间线 asset_id，重建项目。"""
+    import uuid as _uuid
+
+    content = await file.read()
+    if len(content) > 500 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="归档过大（上限 500MB）")
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(content))
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="非法的 zip 归档")
+    names = zf.namelist()
+    # 防 zip slip：拒绝绝对路径与 ..
+    for n in names:
+        pn = Path(n)
+        if pn.is_absolute() or ".." in pn.parts:
+            raise HTTPException(status_code=400, detail="归档内含不安全路径")
+    pj_name = next((n for n in names if n.endswith("project.json")), None)
+    if not pj_name:
+        raise HTTPException(status_code=400, detail="归档缺少 project.json")
+    try:
+        data = json.loads(zf.read(pj_name))
+    except Exception:
+        raise HTTPException(status_code=400, detail="project.json 解析失败")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="project.json 结构非法")
+
+    new_id = f"proj_{_uuid.uuid4().hex[:12]}"
+    media_root = Path("PluginData") / "archives" / new_id
+    media_map = data.get("archive_media_map") or {}
+    # 解包媒体
+    for orig, arc_rel in media_map.items():
+        arc_path = f"{Path(pj_name).parent.as_posix()}/{arc_rel}"
+        if arc_path not in names:
+            continue
+        dest = media_root / arc_rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(zf.read(arc_path))
+    # 时间线 asset_id 重映射到解包后的本地路径（导出时已是 media/... 相对路径）
+    def _local_asset(v):
+        s = str(v or "")
+        if s.startswith("media/"):
+            cand = media_root / s
+            if cand.exists():
+                return str(cand)
+        return v
+
+    def _remap(obj):
+        if isinstance(obj, dict):
+            return {k: (_local_asset(v) if k == "asset_id" else _remap(v))
+                    for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_remap(v) for v in obj]
+        return obj
+    data.pop("archive_media_map", None)
+    data.pop("archive_format", None)
+    exported_tl = _remap(data.get("timeline"))
+
+    pm = ProjectManager()
+    created = pm.create(
+        name=str(data.get("name") or "导入项目")[:80],
+        timeline=exported_tl,
+        persona_id=data.get("persona_id"),
+        plugin_id=data.get("plugin_id"),
+        agent_state=data.get("agent_state"),
+    )
+    from clipwright import audit
+    audit.record("project_import", current_user_id(request),
+                 {"project_id": created.get("id")})
+    return {"status": "imported", "id": created.get("id"),
+            "name": created.get("name"), "media_count": len(media_map)}
 
 
 @router.post("/{project_id}/duplicate")

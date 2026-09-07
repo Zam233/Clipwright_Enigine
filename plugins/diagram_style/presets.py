@@ -100,6 +100,7 @@ class DiagramStylePlugin(BasePlugin):
     """P1-3: 图解风格插件 — 在 initialize() 中注册 Hook（不再依赖 import 期副作用）。"""
 
     def initialize(self) -> None:
-        HookRegistry.register(HookPoint.DIAGRAM_STYLE_PRESET, register_style_presets)
+        HookRegistry.register(HookPoint.DIAGRAM_STYLE_PRESET, register_style_presets,
+                              plugin_id="diagram_style")
         from clipwright.config import logger
         logger.info("DiagramStyle 插件已加载: %d 个配色主题", len(STYLE_PRESETS))

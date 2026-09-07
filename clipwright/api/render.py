@@ -73,6 +73,37 @@ def _renders_dir() -> Path:
     return anchor("renders")
 
 
+@router.delete("/artifacts")
+async def purge_render_artifacts(request: Request, days: int = 30) -> dict:
+    """批8a：清理过期渲染产物——删除 renders/ 中 mtime 超过 days 天的文件。
+
+    旧实现渲染产物无限堆积。jwt 模式仅管理员可调用；off 模式放行（本地开发）。
+    """
+    from clipwright.authz import current_user_id, is_admin
+
+    uid = current_user_id(request)
+    if uid is not None and not is_admin(request):
+        from clipwright.config import settings as _settings
+        if _settings.account_verify_mode != "off":
+            raise HTTPException(status_code=403, detail="仅管理员可清理渲染产物")
+    days = max(1, min(int(days), 365))
+    rd = _renders_dir()
+    removed = 0
+    cutoff = (Path.cwd().stat().st_mtime if False else 0)  # placeholder removed below
+    import time as _time
+    now = _time.time()
+    if rd.exists():
+        for f in rd.iterdir():
+            try:
+                if f.is_file() and (now - f.stat().st_mtime) > days * 86400:
+                    f.unlink()
+                    removed += 1
+            except Exception:
+                continue
+    audit.record("render_artifacts_purge", uid or "", {"days": days, "removed": removed})
+    return {"status": "ok", "removed": removed, "older_than_days": days}
+
+
 # P0-13: 错误信息脱敏 — 抹除服务器绝对路径
 import re as _re
 
