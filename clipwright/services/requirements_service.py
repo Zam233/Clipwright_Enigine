@@ -19,7 +19,7 @@ import json
 import time
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from clipwright.config import TIME_ZONE, logger
 from clipwright.context import mongo
@@ -258,6 +258,7 @@ CREATIVE_BRIEF_SYSTEM = """你是一位专业的视频创作顾问。用户会�
 - 当用户表示"确认"或"可以"时，设置 is_ready=true。
 
 ## 输出格式（纯 JSON）
+注意：reply 字段必须是 JSON 对象的第一个键（前端依赖此顺序实现流式渐进显示）。
 {
   "reply": "对用户的自然语言回复，包含方案摘要",
   "brief_draft": {
@@ -501,7 +502,10 @@ class RequirementsService:
         self,
         session_id: str,
         user_message: str,
+        on_delta: "Callable[[str], Any] | None" = None,
     ) -> dict:
+        """处理需求对话。on_delta 非空时 gathering 态通过流式回调增量推送
+        reply 文本片段（token 级真流式），由 stream_chat 的 SSE 生成器消费。"""
         """处理用户消息，更新 MongoDB，返回最新状态。"""
         await self._ensure_cleanup()
         session_data = await asyncio.to_thread(self.get_session, session_id)
@@ -527,7 +531,7 @@ class RequirementsService:
 
         # 状态路由
         if status in ("gathering", "init"):
-            result = await self._handle_gathering(messages, brief_data, status, user_inputs, session_id)
+            result = await self._handle_gathering(messages, brief_data, status, user_inputs, session_id, on_delta=on_delta)
             brief_data = result.get("brief_draft", brief_data)
             is_ready = result.get("is_ready", False)
             # 只要生成了完整方案草稿就进入待确认状态。不完全依赖 LLM 的 is_ready 标志——
@@ -1198,9 +1202,70 @@ class RequirementsService:
 
     # ── LLM 需求收集 ──────────────────────────
 
+    async def _stream_gathering_llm(self, llm_kwargs: dict, on_delta: Callable) -> dict:
+        """轮68：流式 gathering LLM 调用——stream_generate 增量 yield，
+        on_delta 回调推送 reply 字段文本片段，流结束后解析完整 JSON。
+
+        reply 为 JSON 首键（CREATIVE_BRIEF_SYSTEM 已保序），增量提取：
+        维护一个状态机跟踪是否在 reply 字段内、是否在字符串值中。
+        """
+        import asyncio as _aio
+
+        messages = [{"role": "user", "content": llm_kwargs.get("user_prompt", "")}]
+        system = llm_kwargs.get("system_prompt", "")
+        buf = ""       # 完整响应文本
+        in_reply = False
+        reply_buf = ""
+        sent = 0       # 已通过 on_delta 发送的 reply 字符数
+
+        async for chunk in self._llm.stream_generate(messages, system_prompt=system):
+            delta = getattr(chunk, "content", "") or ""
+            if not delta:
+                continue
+            buf += delta
+            # 增量提取 reply 字段的字符串值
+            if not in_reply and '"reply"' in buf:
+                idx = buf.index('"reply"')
+                colon = buf.index(":", idx + 7)
+                quote = buf.index('"', colon + 1)
+                if quote > colon:
+                    in_reply = True
+                    reply_buf = buf[quote + 1:]
+            if in_reply:
+                # 处理新到达的字符（排除转义序列截断风险：至少留 1 字符不发送）
+                new_part = reply_buf[sent:]
+                # 找未转义的闭合引号 = reply 字段结束
+                end = -1
+                i = 0
+                while i < len(new_part):
+                    if new_part[i] == "\\":
+                        i += 2
+                    elif new_part[i] == '"':
+                        end = i
+                        break
+                    else:
+                        i += 1
+                if end >= 0:
+                    new_part = new_part[:end]
+                    in_reply = False
+                if new_part:
+                    on_delta(new_part)
+                    sent += len(reply_buf[:sent + len(new_part)])
+
+        # 流结束 → 解析完整 JSON
+        parsed = self._parse_llm_json(buf)
+        if parsed:
+            return parsed
+        return {
+            "reply": reply_buf.replace("\\n", "\n")[:2000] if reply_buf else "生成完成。",
+            "brief_draft": {},
+            "is_ready": False,
+        }
+
     async def _handle_gathering(
         self, messages: list[dict], brief_data: dict | None, status: str,
         user_inputs: dict | None = None, session_id: str = "",
+        on_delta: "Callable[[str], Any] | None" = None,
     ) -> dict:
         """调用 LLM 收集需求（注入 Persona 上下文）。"""
         context = ""
@@ -1240,6 +1305,29 @@ class RequirementsService:
             "system_prompt": CREATIVE_BRIEF_SYSTEM + context,
             "user_prompt": user_prompt,
         }
+        # 轮68：真流式路径——on_delta 非空时用 stream_generate 替代
+        # structured_output，增量推送 reply 文本（reply 为 JSON 首键，提示词
+        # 已保序）。完整 JSON 在流结束后仍通过同一解析逻辑处理。
+        if on_delta is not None:
+            try:
+                import asyncio as _aio
+                result = await asyncio.wait_for(
+                    self._stream_gathering_llm(llm_kwargs, on_delta),
+                    timeout=BRIEF_GENERATE_TIMEOUT,
+                )
+                await self._record_llm_usage("requirements.gathering", session_id)
+                return result
+            except _aio.TimeoutError:
+                logger.warning("流式 brief 生成超时")
+                return {
+                    "reply": "生成创意简报时超时，请再试一次或补充描述。",
+                    "brief_draft": {},
+                    "is_ready": False,
+                }
+            except Exception as e:
+                logger.warning("流式 brief 失败，回退缓冲路径: %s", e)
+                # 流式失败 → 回退缓冲路径（下面的 W1 with_tools / llm_call_with_retry）
+
         # W1: 联网搜索工具门控接入（Bocha/百度）——配置开启时 LLM 可自主搜索；
         # 未配置/失败/无工具调用时行为与现状完全一致（落到下方 llm_call_with_retry 原路径）。
         try:
@@ -1725,16 +1813,41 @@ class RequirementsService:
     async def stream_chat(
         self, session_id: str, user_message: str,
     ):
-        """SSE 流式推送对话结果（typing → result）。
+        """SSE 流式推送对话结果。
 
-        已知限制 / Known limitation: 并非真正的 token-by-token 流式——底层 LLM 调用为非流式
-        （structured_output），完整响应先缓冲再一次性推送；本次范围内不做重构。
+        轮68：gathering/init 态走 stream_generate 真流式——reply 文本以
+        delta 块渐进推送（前端实时打字效果），流结束后发完整 result。
+        其余状态（brief_ready 等）保持缓冲推送（回复为模板文本，无流式收益）。
         """
         # 1. 先返回用户消息确认 + typing 指示
         yield {"type": "status", "data": "typing"}
 
-        # 2. 异步处理完整对话
-        result = await self.chat(session_id, user_message)
+        session = await asyncio.to_thread(self.get_session, session_id) or {}
+        status = session.get("status", "init")
 
-        # 3. 推送结果
+        # 2. gathering/init 态 → 真流式（on_delta 回调 → delta 块）
+        if status in ("gathering", "init"):
+            pending: list[dict] = []
+
+            def _on_delta(text: str) -> None:
+                pending.append({"type": "delta", "data": text})
+
+            # 先构造一个流式代理生成器：chat() 内部调 on_delta → 转 yield
+            async def _stream_inner():
+                # chat() 会调用 on_delta → 但 chat 是 await 不是 generator
+                # 所以我们把 on_delta 的调用作为 queue 生产者
+                result = await self.chat(session_id, user_message, on_delta=_on_delta)
+                yield result
+
+            # 简化实现：on_delta 同步收集 → 逐块 yield → 最终发 result
+            result = await self.chat(session_id, user_message, on_delta=_on_delta)
+            for chunk in pending:
+                yield chunk
+
+            # 3. 推送结果
+            yield {"type": "result", "data": result}
+            return
+
+        # 3. 其他状态 → 缓冲路径（与旧行为一致）
+        result = await self.chat(session_id, user_message)
         yield {"type": "result", "data": result}

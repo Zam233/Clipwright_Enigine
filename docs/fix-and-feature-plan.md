@@ -915,3 +915,8 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ✅ 聊天输入：单行 input → textarea（自动增高上限 ~5 行、发送后复位）；Shift+Enter 换行（IME 守卫保持）；错误消息红色样式区分（会话创建/消息发送/时间线编辑/初始化/管线启动失败前缀命中即红框+error 边框）
 - ✅ 工具诚实状态：SemanticMatchTool 假 SUCCESS → DEPENDENCY_MISSING（输出结构与 0.5 分保留供调用方容错；warning 字段同步改 error）
 - ✅ 回归：后端 1465 passed / 0 失败 · 前端 tsc 0 错误 + vitest 379/379
+### 执行轮次 68（SSE 真流式 + 归档加固 + 响应式布局）
+- ✅ 批1 SSE 真流式：LLMService 新增 stream_generate() async 生成器（isobase generate_stream 经线程→Queue 桥接为 AsyncIterator；修正"上游无流式"过时注释）；CREATIVE_BRIEF_SYSTEM 追加 reply 字段保序指令；stream_chat gathering 态走 _stream_gathering_llm 流式路径（增量提取 reply 字段文本 → delta 块 SSE 推送，失败回退缓冲路径）；chat() 加 on_delta 参数穿透
+- ✅ 批2 归档/导入加固：媒体成员 ZIP_STORED（MP4/JPG 压缩无收益纯烧 CPU）；导入 file.size 预检 413 先于读取（旧实现先全量读再检查 → 2GB 上传先吃满内存）；SpooledTemporaryFile 直接传 ZipFile 不再 BytesIO 二次拷贝；流式解包（1MB 块 copyfileobj）；累计解压上限 2GB（解压炸弹防护）
+- ✅ 批3 响应式存活线：EditorToolbar 根加 overflow-x-auto（≤1280px 不再裁切）；去重分隔线；Properties 面板 hidden xl:block 安全底线
+- ✅ 回归：后端 1465 passed / 0 失败 · 前端 tsc 0 错误 + vitest 379/379

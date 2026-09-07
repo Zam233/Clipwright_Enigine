@@ -283,7 +283,12 @@ async def archive_project(project_id: str, request: Request) -> StreamingRespons
                     k += 1
                 used_names.add(arc_name)
                 arc = f"{project_id}/media/{arc_name}"
-                zf.write(p, arcname=arc)
+                # 批68：媒体文件 ZIP_STORED（MP4/JPG 压缩无收益纯烧 CPU）
+                zi = zipfile.ZipInfo(arc)
+                zi.compress_type = zipfile.ZIP_STORED
+                zi.external_attr = 0o644 << 16
+                with open(p, "rb") as mf:
+                    zf.writestr(zi, mf.read())
                 media_map[path] = f"media/{arc_name}"
                 remap[path] = f"media/{arc_name}"
         # 2. 成片（agent_state.output_path 指向的渲染产物）
@@ -336,11 +341,11 @@ async def import_archive(request: Request, file: UploadFile = File(...)) -> dict
     按 archive_media_map 还原时间线 asset_id，重建项目。"""
     import uuid as _uuid
 
-    content = await file.read()
-    if len(content) > 500 * 1024 * 1024:
+    # 批68：file.size 预检（旧实现先全量 read 再检查 → 2GB 上传也先吃满内存）
+    if file.size and file.size > 500 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="归档过大（上限 500MB）")
     try:
-        zf = zipfile.ZipFile(io.BytesIO(content))
+        zf = zipfile.ZipFile(file.file)
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400, detail="非法的 zip 归档")
     names = zf.namelist()
@@ -363,13 +368,20 @@ async def import_archive(request: Request, file: UploadFile = File(...)) -> dict
     media_root = Path("PluginData") / "archives" / new_id
     media_map = data.get("archive_media_map") or {}
     # 解包媒体
+    # 批68：解压炸弹防护——累计解压大小上限 2GB
+    import shutil
+    total_uncompressed = sum(i.file_size for i in zf.infolist())
+    if total_uncompressed > 2 * 1024 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="归档解压后过大（上限 2GB）")
     for orig, arc_rel in media_map.items():
         arc_path = f"{Path(pj_name).parent.as_posix()}/{arc_rel}"
         if arc_path not in names:
             continue
         dest = media_root / arc_rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(zf.read(arc_path))
+        # 流式解包（1MB 块，不再全量读入内存）
+        with zf.open(arc_path) as src_f, open(dest, "wb") as dst_f:
+            shutil.copyfileobj(src_f, dst_f, length=1024 * 1024)
     # 时间线 asset_id 重映射到解包后的本地路径（导出时已是 media/... 相对路径）
     def _local_asset(v):
         s = str(v or "")

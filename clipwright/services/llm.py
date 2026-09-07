@@ -12,7 +12,7 @@ import asyncio
 import json
 import threading
 from functools import partial
-from typing import Any, Callable, Optional
+from typing import Any, AsyncIterator, Callable, Optional
 
 try:
     from isobase.llm import AnthropicMessages, OpenAIChat
@@ -336,6 +336,53 @@ class LLMService:
             logger.warning("LLM structured output JSON parse failed, returning raw content")
             logger.debug("LLM structured_output 原始内容: %s", content[:500])
             return {"content": content}
+
+    # ── 工具调用支持 ──
+
+    # 轮68 修正：isobase 已提供 generate_stream()（Anthropic/OpenAI 双实现，
+    # 同步迭代器 yield 增量 LLMResponse）。经线程→Queue 桥接为异步生成器后
+    # 即可实现 requirements chat 的 token 级真流式（见 stream_generate）。
+
+    async def stream_generate(
+        self,
+        messages: list[dict[str, str]],
+        model: Optional[str] = None,
+        timeout: int = 120,
+        use_flash: bool = False,
+        **kwargs: Any,
+    ) -> AsyncIterator[LLMResponse]:
+        """流式生成——同步迭代器经线程→Queue 桥接为异步增量 yield。
+
+        每个 yield 是上游 LLMResponse 增量块（content 为本次新增文本片段）；
+        最后一个块聚合完整 usage 与 tool_calls（content 为空）。异常时抛出。
+        """
+        client = self.flash_client if use_flash else self.client
+        mdl = model or (settings.llm_flash_model if use_flash else settings.llm_model)
+        if timeout:
+            kwargs["timeout"] = timeout
+        kwargs.pop("pipeline_id", None)
+
+        queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def _produce() -> None:
+            try:
+                for chunk in client.generate_stream(messages, model=mdl, **kwargs):
+                    loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
+            except Exception as exc:
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", exc))
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        loop.run_in_executor(None, _produce)
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            kind, payload = item
+            if kind == "error":
+                raise payload
+            yield payload
 
     # ── 工具调用支持 ──
 
