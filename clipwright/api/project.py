@@ -377,7 +377,10 @@ async def import_archive(request: Request, file: UploadFile = File(...)) -> dict
         arc_path = f"{Path(pj_name).parent.as_posix()}/{arc_rel}"
         if arc_path not in names:
             continue
-        dest = media_root / arc_rel
+        # 路径穿越防护：解析后必须仍在 media_root 内
+        dest = (media_root / arc_rel).resolve()
+        if not dest.is_relative_to(media_root.resolve()):
+            continue
         dest.parent.mkdir(parents=True, exist_ok=True)
         # 流式解包（1MB 块，不再全量读入内存）
         with zf.open(arc_path) as src_f, open(dest, "wb") as dst_f:
