@@ -124,6 +124,23 @@
 
 回归：后端 1465 passed / 0 失败；前端 tsc 0 错误 + vitest 379/379。
 
+## 轮 66：前端交互 P0 + 管线降级路径修复（2026-09-08）
+
+| # | 修复项 | 状态 |
+|---|--------|------|
+| B-P0 | 中文输入法 IME isComposing 守卫（聊天/选题输入，组词回车不再误发送） | ✅ |
+| B-P0 | SSE 重连回放去重（单调 seq 游标，重连不再重复日志/建议/MG 计数） | ✅ |
+| B-P1 | 建议生命周期（终态清空 + 同文案去重 + 上限 8 条；轮63 的 agent_notes 展示已落地） | ✅ |
+| E-P0 | 幽灵历史：pointerdown 不推送，pointerup 有实际变更才推送（move/trim/gain 三处）；preSnapshot/label 入 DragState | ✅ |
+| E-P0 | 多选拖拽互斥：每片落下前重读最新状态 + 排除全部同批片段 | ✅ |
+| E-P1 | rolling 同步 remap source_offset；trim-end 不越过同轨下一片段；粘贴/克隆深拷贝（剥 group_id/深拷贝 nested_timeline）；加轨推历史；拆分先校验后推历史；gain 推历史 | ✅ |
+| 后端-D1 | trim 失败时同步丢弃对应 segment（配对不再错位） | ✅ |
+| 后端-D2 | owner 校验 Mongo 回退（60s 清理后 jwt 用户不再 403） | ✅ |
+| 后端-D3 | 时长对账只统计主视频轨（排除画中画叠加层） | ✅ |
+| 后端-D4/D6 | 持久化线程池模块级单例；MG 缓存键修复（self._ck 从未赋值） | ✅ |
+
+回归：后端 1465 passed / 0 失败；前端 tsc 0 错误 + vitest 379/379。
+
 ## 批次 8（后续独立任务，不在本轮）
 
 前端仓库（proceed project_id / agent_notes UI / ReviewPanel 统一 / SSE 真流式）；计划修改意见改写 raw_scenes；persona 剩余字段接线；渲染产物 TTL 清理。

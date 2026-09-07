@@ -80,16 +80,17 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
         try:
             timeline = input_data.timeline
             audio_config = input_data.audio_config or {}
-            # 批8：Persona 目标响度 → 时间线元数据（渲染端 loudnorm 消费）
+            if timeline is None:
+                return AudioOutput(decision=AgentDecision.PASS, timeline=timeline)
+
+            # 批8：Persona 目标响度 → 时间线元数据（渲染端 loudnorm 消费）。
+            # 注意放在 timeline None 守卫之后（轮64审计 D14：写元数据曾先于守卫）
             _loud = audio_config.get("target_loudness_lufs")
             if _loud is not None:
                 try:
                     timeline.metadata["target_loudness_lufs"] = float(_loud)
                 except (TypeError, ValueError):
                     pass
-
-            if timeline is None:
-                return AudioOutput(decision=AgentDecision.PASS, timeline=timeline)
 
             # 1. 解析 Persona 音频配置
             bgm_slots = audio_config.get("bgm_slots", {})
@@ -628,8 +629,11 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
             # clip 冻结帧补齐（旧实现无任何对账，音频 80s 配画面 60s 以
             # 冻结帧 + 静音尾巴交付且无人知晓）
             try:
-                _vclips = [c for t in timeline.tracks if t.kind == ClipKind.VIDEO
-                           for c in t.clips]
+                # 批A(D3)：只统计主视频轨（PiP 叠加轨同为 VIDEO kind，
+                # 旧实现把叠加层计入总长并可能错误延长叠加层片段）
+                _video_tracks = [t for t in timeline.tracks if t.kind == ClipKind.VIDEO]
+                _main_vt = min(_video_tracks, key=lambda t: t.index) if _video_tracks else None
+                _vclips = list(_main_vt.clips) if _main_vt else []
                 _video_dur = sum(c.duration_sec for c in _vclips)
                 _audio_ends = [c.start_sec + c.duration_sec for t in timeline.tracks
                                if t.kind == ClipKind.AUDIO for c in t.clips

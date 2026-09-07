@@ -150,6 +150,17 @@ def _enforce_pipeline_owner(request: Request, pipeline_id: str) -> None:
     if uid is None or is_admin(request):
         return
     owner = _pipeline_owners.get(pipeline_id)
+    if owner is None:
+        # 批A(D2)：内存归属 60s 清理后回退 Mongo（runtime 持久化含 owner_id）
+        try:
+            col = _mongo_runtime_col()
+            if col is not None:
+                doc = col.find_one({"pipeline_id": pipeline_id})
+                if doc and doc.get("owner_id"):
+                    _pipeline_owners[pipeline_id] = doc["owner_id"]
+                    owner = doc["owner_id"]
+        except Exception:
+            pass
     if owner == uid:
         return
     raise HTTPException(status_code=403, detail=f"无权访问管线 {pipeline_id}")

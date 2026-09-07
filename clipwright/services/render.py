@@ -1472,7 +1472,14 @@ class RenderService:
         # 且不冻住事件循环（旧实现 _trim_one 为 async 内同步 subprocess，gather 实为串行）。
         tasks = [loop.run_in_executor(_ffmpeg_pool, contextvars.copy_context().run, _trim_one, i, s) for i, s in enumerate(segments)]
         results = await asyncio.gather(*tasks)
-        trimmed = [r for r in results if r and Path(r).exists()]
+        # 批A(D1)：trim 失败时同步丢弃对应 segment——旧实现只过滤 trimmed，
+        # 后续 zip(trimmed, segments) 位置错开 → 空洞检测/转场配对全部错位
+        kept = [
+            (seg, r) for seg, r in zip(segments, results)
+            if r and Path(r).exists()
+        ]
+        segments = [seg for seg, _ in kept]
+        trimmed = [t for _, t in kept]
 
         if progress_callback:
             await progress_callback("trim", 50, f"完成 {len(trimmed)}/{len(segments)} 裁剪")

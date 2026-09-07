@@ -389,6 +389,9 @@ class AgentDAG:
         return plan
 
 
+_PERSIST_POOL = None  # 批A(D4)：持久化串行线程池单例
+
+
 class PipelineOrchestratorV2:
     """Pipeline 编排器 v2 — 支持动态路由、自愈循环、Agent 总线 + 并行执行。"""
 
@@ -1464,10 +1467,13 @@ class PipelineOrchestratorV2:
         """批D(R11)：持久化专用单线程执行器——并行组内各 Agent 同时落全量
         状态时，默认线程池并发 find→update/insert 会竞态双插/互相覆盖；
         单工作线程保证持久化按调用顺序串行。"""
-        if getattr(self, "_persist_pool", None) is None:
+        # 批A(D4)：池为模块级单例（旧实现每 orchestrator 各建一线程且
+        # 永不关闭 → 长生命周期进程每条管线泄漏一个空闲线程）
+        global _PERSIST_POOL
+        if _PERSIST_POOL is None:
             from concurrent.futures import ThreadPoolExecutor
-            self._persist_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cw-persist")
-        self._persist_pool.submit(self._persist_state, state, status_str, error_category).result()
+            _PERSIST_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cw-persist")
+        _PERSIST_POOL.submit(self._persist_state, state, status_str, error_category).result()
 
     @staticmethod
     def _categorize_error(error: str) -> str:
