@@ -86,8 +86,9 @@ class SemanticMatchTool(BaseTool):
         candidate_paths: list[str],
         **kwargs: Any,
     ) -> ToolExecResult:
+        # 批7.2：诚实状态——占位假 SUCCESS 会让调用方误以为语义匹配已生效
         return ToolExecResult(
-            status=ToolStatus.SUCCESS,
+            status=ToolStatus.DEPENDENCY_MISSING,
             tool_name=self.name,
             output={
                 "query": query,
@@ -96,5 +97,5 @@ class SemanticMatchTool(BaseTool):
                     for p in candidate_paths
                 ],
             },
-            warning="CLIP model not integrated yet — all scores are dummy 0.5",
+            error="CLIP model not integrated yet — all scores are dummy 0.5",
         )

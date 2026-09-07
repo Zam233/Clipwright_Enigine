@@ -909,3 +909,9 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ✅ 编辑器 P1：rolling 编辑同步 remap source_offset_sec；trim-end 不越过同轨下一片段；粘贴/克隆深拷贝（structuredClone，剥 group_id、深拷贝 nested_timeline/keyframes）；加轨推历史；拆分先校验后推历史；gain 推历史
 - ✅ 后端：D1 trim 失败同步丢弃对应 segment（配对不错位）；D2 owner 校验 Mongo 回退；D3 时长对账只统计主视频轨；D4 持久化线程池模块级单例；D6 MG 缓存键修复（self._ck 从未赋值→缓存永失效）
 - ✅ 回归：后端 1465 passed / 0 失败 · 前端 tsc 0 错误 + vitest 379/379
+
+### 执行轮次 67（AgentPanel 体验打磨 + 工具诚实状态）
+- ✅ 日志面板：每条条目显示时间戳（tabular-nums）；悬停 title 可读完整摘要；自动滚动改以最后一条 id 为依赖并加贴底检测（修复 500 条上限后滚动失效 + 上翻阅读被拉底）；新增导出按钮（.log 下载）
+- ✅ 聊天输入：单行 input → textarea（自动增高上限 ~5 行、发送后复位）；Shift+Enter 换行（IME 守卫保持）；错误消息红色样式区分（会话创建/消息发送/时间线编辑/初始化/管线启动失败前缀命中即红框+error 边框）
+- ✅ 工具诚实状态：SemanticMatchTool 假 SUCCESS → DEPENDENCY_MISSING（输出结构与 0.5 分保留供调用方容错；warning 字段同步改 error）
+- ✅ 回归：后端 1465 passed / 0 失败 · 前端 tsc 0 错误 + vitest 379/379

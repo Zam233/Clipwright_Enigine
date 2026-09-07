@@ -141,6 +141,16 @@
 
 回归：后端 1465 passed / 0 失败；前端 tsc 0 错误 + vitest 379/379。
 
+## 轮 67：AgentPanel 体验打磨 + 工具诚实状态（2026-09-08）
+
+| # | 修复项 | 状态 |
+|---|--------|------|
+| 日志 | 每条时间戳显示；悬停 title 看完整摘要；自动滚动以最后一条 id 为依赖（500 条上限后不再失效）+ 贴底检测（上翻阅读不拉底）；导出按钮（.log 下载） | ✅ |
+| 聊天 | 单行 input → textarea（自动增高上限 ~5 行 / Shift+Enter 换行 / 发送后高度复位）；错误消息红色样式区分（会话创建/发送/编辑/初始化/启动失败前缀命中即红框） | ✅ |
+| 工具 | SemanticMatchTool 假 SUCCESS → DEPENDENCY_MISSING（CLIP 未接入如实反映；输出结构保留供调用方容错） | ✅ |
+
+回归：后端 1465 passed / 0 失败；前端 tsc 0 错误 + vitest 379/379。
+
 ## 批次 8（后续独立任务，不在本轮）
 
 前端仓库（proceed project_id / agent_notes UI / ReviewPanel 统一 / SSE 真流式）；计划修改意见改写 raw_scenes；persona 剩余字段接线；渲染产物 TTL 清理。
