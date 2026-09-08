@@ -952,3 +952,9 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ✅ 删除零消费者死状态（chatMessages/isStreaming/addChatMessage/setStreaming）
 - ✅ 内存上限：前端 requirementsMessages 200 条；后端 _session_owners 500
 - ✅ 回归：后端 1513 passed / 0 失败 · 前端 tsc 0 错误 + vitest 398/398
+
+### 执行轮次 73（编辑器正确性：快捷键穿透 / 数值钳制 / 修剪重叠）
+- ✅ 输入框内 Alt 组合不再触发编辑器快捷键（旧实现 Alt+S 在聊天输入框切换吸附并 preventDefault）
+- ✅ 关键帧属性按属性域钳制（opacity 0-1 / speed 0.25-4 / scale 0.01-10 / rotation ±3600 / position ±10000 / fx 亮度对比度）+ input min/max
+- ✅ trimClipStart 不越过同轨前一片段结尾（与 trimClipEnd 对称，不再拖出单轨重叠）
+- ✅ 回归：前端 tsc 0 错误 + vitest 403/403
