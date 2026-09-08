@@ -36,8 +36,12 @@ class MaterialAsset(BaseModel):
     file_size_bytes: Optional[int] = Field(default=None)
     resolution: Optional[str] = Field(default=None, description="如 1920x1080")
     source: str = Field(default="", description="来源源 ID")
-    # P5-B6: 版权/许可信息（素材源可提供；缺省为空，前端可展示）
+    # 版权/许可信息（素材源可提供；缺省为空，前端可展示）
     license: str = Field(default="", description="许可/版权标注")
+    # 轮 82（版权链）：作者与来源页/许可链接——商业交付需可追溯素材授权
+    author: str = Field(default="", description="作者/摄影师（如可得）")
+    license_url: str = Field(default="", description="许可条款链接")
+    source_url: str = Field(default="", description="素材来源页面链接")
 
     # 扩展
     metadata: dict[str, Any] = Field(default_factory=dict)

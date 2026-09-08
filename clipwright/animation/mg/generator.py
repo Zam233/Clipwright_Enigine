@@ -21,7 +21,7 @@ from clipwright.agents.base import unified_llm_call
 # 残留占位符检测：{word} 形式的字面量在最终 HTML 中出现即视为未填充
 _RESIDUAL_PLACEHOLDER_RE = re.compile(r"\{[a-zA-Z_][a-zA-Z0-9_]*\}")
 
-# M3: MG 生成结果内存缓存——同输入自愈/重试零 LLM 成本
+# MG 生成结果内存缓存——同输入自愈/重试零 LLM 成本
 # key = sha256(description+text+persona_style)，TTL 30 分钟
 import hashlib as _hl
 import time as _time
@@ -70,7 +70,7 @@ _NO_BACKGROUND_CONSTRAINT = (
     "不透明全幅背景（background 必须为 transparent）；动画叠加在实拍素材上。"
 )
 
-# A3 编排约束（外部调研准则：TapVid/601MEDIA/Descript 动画制作技巧）：
+# 编排约束（外部调研准则：TapVid/601MEDIA/Descript 动画制作技巧）：
 # 顺序揭示 / 每节拍一个主运动 / 方向强化语义 / 构图居中 / 连线止于节点边缘 /
 # 箭头方向随流程 / 次级元素错峰（stagger）。
 _MG_ORCHESTRATION_CONSTRAINTS = (
@@ -90,7 +90,7 @@ _MG_ORCHESTRATION_CONSTRAINTS = (
     "- 每次只变化一个变量：一个节拍内只变更一个视觉变量，因果流程清晰可见。\n"
 )
 
-# A3 批判检查项：构图 / 层级 / 方向 / 编排
+# 批判检查项：构图 / 层级 / 方向 / 编排
 _CRITIQUE_CHECK_ITEMS = (
     "\n## 评审检查项（必须逐项检查）\n"
     "- 构图（composition）：整体构图是否居中平衡，是否存在偏左/偏右或大面积留白。\n"
@@ -100,7 +100,7 @@ _CRITIQUE_CHECK_ITEMS = (
     "- 编排（orchestration）：是否顺序揭示、每节拍一个主运动、次级元素错峰入场。\n"
 )
 
-# A8 图片语义匹配检查项：所选图片必须与场景语义匹配（防 📡→石墨烯 类错配）
+# 图片语义匹配检查项：所选图片必须与场景语义匹配（防 📡→石墨烯 类错配）
 _CRITIQUE_IMAGE_MATCH_CHECK = (
     "\n## 图片语义匹配检查（动画包含 image 元素时必须检查）\n"
     "- 逐张核对 image 元素的 src 与场景标题/关键词/动画需求的语义匹配度；"
@@ -109,7 +109,7 @@ _CRITIQUE_IMAGE_MATCH_CHECK = (
     "明确要求——更换为语义匹配的图片，或移除全部 image 元素回退为纯矢量动画。\n"
 )
 
-# A8 批判修复指引：图片不匹配 → 换图或回退无图动画
+# 批判修复指引：图片不匹配 → 换图或回退无图动画
 _CRITIQUE_REPAIR_IMAGE_GUIDANCE = (
     "\n\n## 图片修复指引\n"
     "若评审指出图片语义不匹配：优先更换 image 元素的 src 为语义匹配的图片"
@@ -209,7 +209,7 @@ class MGGenerator:
         # 合并：pipeline_id 供 _trace_event 推送 MG method 追踪事件（远程线特性）
         self._pid = pipeline_id
 
-        # M3: 生成缓存——同输入（含 vision/fps 语境）直接返回缓存结果，
+        # 生成缓存——同输入（含 vision/fps 语境）直接返回缓存结果，
         # 自愈/重试零 LLM 成本。缓存 TTL 30 分钟，LRU 淘汰。
         _ck = _mg_cache_key(description, text_content, persona_style)
         _cached = _mg_cache_get(_ck)
@@ -224,9 +224,10 @@ class MGGenerator:
 
         mg_def = None
         llm_fail_reasons: list[str] = []
-        # 正常生成：至多 1 次盲重试（盲重试很贵，2-4 分钟/次）。
-        # 解析/校验失败改为走下面的「带错误回传的修复重试」，比盲重试高效得多。
-        for attempt in range(min(max_retries, 1) + 1):
+        # 正常生成：max_retries 控制盲重试次数（轮 81：修复旧 `min(max_retries, 1)`
+        # 把配置静默砍成至多 1 次的问题——配置 max_retries=0 现在真的跳过盲重试）。
+        # 解析/校验失败仍走「带错误回传的修复重试」，比盲重试高效。
+        for attempt in range(max(0, int(max_retries)) + 1):
             try:
                 # web_context 非空才传参：空（默认）与旧行为逐字节一致，
                 # 兼容测试中未声明 web_context 参数的 monkeypatch 桩函数
@@ -338,7 +339,7 @@ class MGGenerator:
             return mg_def
         if vision_prompt and str(vision_prompt).strip():
             return mg_def
-        # M7: 同时清除 style.background（否则 LLM 设纯色背景仍遮实拍）
+        # 同时清除 style.background（否则 LLM 设纯色背景仍遮实拍）
         style = mg_def.get("style")
         if isinstance(style, dict) and style.get("background", "transparent") != "transparent":
             style["background"] = "transparent"
@@ -387,7 +388,7 @@ class MGGenerator:
             "\n\n上次输出的动画 JSON 未通过 schema 校验。请只输出**修正后的完整 JSON**，"
             "确保它通过全部校验规则，不要输出任何解释或额外文本。"
         )
-        # A3：编排约束注入（修复重试同样遵循编排准则）
+        # 编排约束注入（修复重试同样遵循编排准则）
         system_prompt += _MG_ORCHESTRATION_CONSTRAINTS
         system_prompt += _STRICT_JSON_OUTPUT
 
@@ -554,7 +555,7 @@ class MGGenerator:
             "- issues 指出违反的原则与约束，具体到元素或关键帧。\n"
             "- suggestions 给出一到两条可执行的改进方向，供修复重试使用。\n"
         )
-        # A3：构图/层级/方向/编排检查项；A8：含 image 元素时增加图片语义匹配检查
+        # 构图/层级/方向/编排检查项；A8：含 image 元素时增加图片语义匹配检查
         system_prompt += _CRITIQUE_CHECK_ITEMS
         if self._has_image_elements(mg_def):
             system_prompt += _CRITIQUE_IMAGE_MATCH_CHECK
@@ -563,7 +564,7 @@ class MGGenerator:
 
         user_parts = [f"## 动画需求\n{description}"]
         if self._has_image_elements(mg_def):
-            # A8：图片语义匹配需要场景标题/关键词作为匹配依据
+            # 图片语义匹配需要场景标题/关键词作为匹配依据
             scene = scene_context or {}
             scene_lines = []
             if scene.get("title"):
@@ -621,7 +622,7 @@ class MGGenerator:
             "请根据评审意见重新设计，只输出**改进后的完整 JSON**，"
             "确保它通过全部校验规则并修复所有质量问题，不要输出任何解释或额外文本。"
         )
-        # A3：编排约束注入；A8：含 image 元素时注入图片换图/回退指引
+        # 编排约束注入；A8：含 image 元素时注入图片换图/回退指引
         system_prompt += _MG_ORCHESTRATION_CONSTRAINTS
         if self._has_image_elements(mg_def):
             system_prompt += _CRITIQUE_REPAIR_IMAGE_GUIDANCE
@@ -728,7 +729,7 @@ class MGGenerator:
         system_prompt = system_template
         if context_section:
             system_prompt += "\n\n" + context_section
-        # A3：编排约束注入（顺序揭示/单主运动/方向语义/构图居中/连线不穿节点/箭头随流程）
+        # 编排约束注入（顺序揭示/单主运动/方向语义/构图居中/连线不穿节点/箭头随流程）
         system_prompt += _MG_ORCHESTRATION_CONSTRAINTS
         system_prompt += _STRICT_JSON_OUTPUT
 
@@ -1178,7 +1179,7 @@ class MGGenerator:
             },
         )
 
-        # M3: 缓存生成结果（下次同输入零 LLM 调用）
+        # 缓存生成结果（下次同输入零 LLM 调用）
         _mg_cache_put(getattr(self, '_ck', ''), {
             "success": bool(html),
             "html": html,
@@ -1188,7 +1189,7 @@ class MGGenerator:
             "generation_id": generation_id,
         })
 
-        # M6: 持久化生成记录——MGStorage 按 generation_id 落盘（预览/回看接线）；
+        # 持久化生成记录——MGStorage 按 generation_id 落盘（预览/回看接线）；
         # 持久化失败不阻断生成主流程
         if html:
             try:

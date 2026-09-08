@@ -18,7 +18,7 @@ from typing import Any, Optional
 
 from clipwright.config import logger
 
-# E8/E9: 视觉识别结果缓存 — {str(path):mtime_ns → result}，TTL 1h，上限 512。
+# /E9: 视觉识别结果缓存 — {str(path):mtime_ns → result}，TTL 1h，上限 512。
 # 多 Agent 重复分析同一图片（AnimationAgent 图片索引 / Quality 帧检查）共享缓存。
 _VISION_CACHE: dict[str, tuple[dict[str, Any], float]] = {}
 _VISION_CACHE_MAX = 512

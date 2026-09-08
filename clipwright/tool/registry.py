@@ -129,6 +129,13 @@ class ToolRegistry:
         cls._FALLBACK_CHAINS[tool_name] = fallbacks
 
     @classmethod
+    def call_with_input(cls, name: str, tool_input: dict[str, Any]) -> Any:
+        """轮 90：以 dict 形参发起工具调用（返回协程，供 Agent 回调 await）。"""
+        input_dict = dict(tool_input or {})
+        runner = cls.execute
+        return runner(name, **input_dict)
+
+    @classmethod
     async def execute(
         cls, name: str, **kwargs: Any
     ) -> ToolExecResult:
@@ -136,7 +143,7 @@ class ToolRegistry:
 
         T9: 对含路径/URL 参数的工具调用统一安全校验。
         """
-        # T9: 路径/URL 参数安全校验（agent/LLM 驱动的调用可能注入任意路径）
+        # 路径/URL 参数安全校验（agent/LLM 驱动的调用可能注入任意路径）
         from clipwright.security import (
             assert_allowed_path, assert_public_url, SecurityViolation,
         )

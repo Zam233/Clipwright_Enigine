@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import abc
 import base64
+import hashlib
 import json
 import re
 import subprocess
@@ -810,7 +811,10 @@ class VoiceService:
         # 段内词级时间按字符比例近似（供 NEL/字幕/动画对齐消费）。
         cursor = 0.0
         for idx, seg in enumerate(segments_text):
-            seed = hash(seg) % 2147483647
+            # 轮 82（可复现）：Python 内置 hash() 对 str 带进程级随机盐
+            # （PYTHONHASHSEED），同一文案跨进程得到不同 seed → 合成结果不可复现。
+            # 改用 hashlib 确定性散列（含 voice_id/provider，同音色同文案必同 seed）。
+            seed = int(hashlib.sha256(f"{provider}:{voice_id}:{seg}".encode("utf-8")).hexdigest()[:8], 16)
             try:
                 synth_params: dict[str, Any] = {**params, "seed": seed}
                 sr = await self.synthesize(

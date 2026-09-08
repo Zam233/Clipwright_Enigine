@@ -1,0 +1,12 @@
+fields:
+  engine:
+    type: string
+    value: "llm"
+    label: "翻译引擎（llm/deepl）"
+    description: "llm = 使用主 LLM 翻译；deepl = DeepL API（需配置 deepl_api_key）"
+  deepl_api_key:
+    type: string
+    value: ""
+    secret: true
+    label: "DeepL API Key"
+    description: "从 https://www.deepl.com/pro-api 获取（免费版走 api-free.deepl.com）；留空则读环境变量 DEEPL_API_KEY"

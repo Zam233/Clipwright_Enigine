@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import re
 from typing import Any
@@ -24,7 +25,8 @@ async def analyze_reference_video(video_path: str) -> dict[str, Any]:
     # 1. 节奏：scene detect 输出镜头边界时间
     shot_durations: list[float] = []
     try:
-        r = subprocess.run(
+        r = await asyncio.to_thread(
+            subprocess.run,
             ["ffmpeg", "-i", video_path, "-vf",
              "select='gt(scene,0.35)',metadata=print:key=lavfi.scene_score",
              "-frames:v", "600", "-f", "null", "-"],
@@ -80,7 +82,8 @@ async def _sample_dominant_colors(video_path: str, frames: int = 8) -> list[list
     tmpdir = tempfile.mkdtemp(prefix="cw_style_")
     try:
         # 每 N 秒抽一帧 → 1x1 缩放取平均色（RGB）
-        r = subprocess.run(
+        r = await asyncio.to_thread(
+            subprocess.run,
             ["ffmpeg", "-i", video_path, "-vf", "fps=1/4,scale=1:1,format=rgb24",
              "-frames:v", str(frames), f"{tmpdir}/f%02d.bmp"],
             capture_output=True, text=True, timeout=180,

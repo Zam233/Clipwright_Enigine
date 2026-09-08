@@ -62,7 +62,7 @@ _ADJUST_FIELDS: dict[str, tuple[type, Any]] = {
 
 _memory_sessions: dict[str, dict] = {}
 
-# E5: 会话级缓存 — RAG 检索 (session_id → (query, result, ts)) 与 Persona 上下文 (persona_id → (result, ts))。
+# 会话级缓存 — RAG 检索 (session_id → (query, result, ts)) 与 Persona 上下文 (persona_id → (result, ts))。
 # TTL 10 分钟；同 session 同 query / 同 persona 复用，避免每条 chat 消息重复 embedding 与序列化。
 _SESSION_CACHE_TTL = 600.0
 _session_knowledge_cache: dict[str, tuple[str, str, float]] = {}
@@ -334,7 +334,7 @@ async def _cleanup_expired_sessions():
         try:
             if mongo.is_connected:
                 cutoff = datetime.now(tz=TIME_ZONE) - timedelta(hours=SESSION_TTL_HOURS)
-                # P0-6: 线程内执行（_io 在事件循环线程会返回未 await 的协程导致清理静默失效）
+                # 线程内执行（_io 在事件循环线程会返回未 await 的协程导致清理静默失效）
                 deleted = await asyncio.to_thread(
                     RequirementsSessionModel.delete_many, {
                         "updated_time": {"$lt": cutoff},
@@ -454,7 +454,7 @@ class RequirementsService:
         """加载现有会话，不存在则创建。"""
         if not session_id:
             return self.create_session(user_inputs)
-        # P0-6: _io() 在事件循环线程返回协程 → 必须 offload 到线程执行
+        # _io() 在事件循环线程返回协程 → 必须 offload 到线程执行
         existing = await asyncio.to_thread(self.get_session, session_id)
         if existing:
             return existing
@@ -578,7 +578,7 @@ class RequirementsService:
                     plan_data = plan_result
                     status = "plan_ready"
                 else:
-                    # 批2：规划书生成失败 → 明确回退（旧实现卡死 brief_confirmed，
+                    # 规划书生成失败 → 明确回退（旧实现卡死 brief_confirmed，
                     # 后续任何消息都落不进任何分支，永远返回过期回复）
                     status = "brief_ready"
                     messages.append({
@@ -597,7 +597,7 @@ class RequirementsService:
                 })
 
         elif status == "pipeline_running":
-            # 批2：运行中消息不再静默吞掉
+            # 运行中消息不再静默吞掉
             messages.append({
                 "role": "assistant",
                 "content": "管线正在运行中，请稍候；完成后可在编辑器查看时间线并渲染成片。",
@@ -605,7 +605,7 @@ class RequirementsService:
                 "metadata": {},
             })
         elif status == "pipeline_done":
-            # 批2：旧实现对已完成会话静默吞消息。支持「重新生成」一键回到
+            # 旧实现对已完成会话静默吞消息。支持「重新生成」一键回到
             # plan_ready（规划书仍在会话中，可直接再次 proceed）
             if user_message.strip() in ("重新生成", "再来一版", "重新生成视频"):
                 status = "plan_ready"
@@ -627,7 +627,7 @@ class RequirementsService:
                     "metadata": {},
                 })
             else:
-                # B6/E2: 规划书反馈闭环——不重置回 gathering，而是按反馈修订规划书
+                # /E2: 规划书反馈闭环——不重置回 gathering，而是按反馈修订规划书
                 # 并复用已确认的 raw_scenes（仅重新翻译，不重跑 StructureAgent）。
                 status, revised = await self._handle_plan_revision(
                     messages, brief_data, plan_data, user_inputs, session_id, user_message,
@@ -789,7 +789,7 @@ class RequirementsService:
 
         proposed: Timeline | None = Timeline.model_validate(timeline) if timeline else None
 
-        # W12: 区域级返工 — 收集时间窗内的片段 id（供意图分类与编辑动作限定范围）
+        # 区域级返工 — 收集时间窗内的片段 id（供意图分类与编辑动作限定范围）
         region_clip_ids: list[str] = []
         if proposed is not None and region_start_sec is not None and region_end_sec is not None:
             lo, hi = min(region_start_sec, region_end_sec), max(region_start_sec, region_end_sec)
@@ -1007,7 +1007,7 @@ class RequirementsService:
             out = await AnimationAgent().execute(
                 AnimationInput(
                     context=context, timeline=subset, visual_config=visual_config,
-                    # D5: AI 生成图片历史 → 语义索引（无历史时为 []，零变化）
+                    # AI 生成图片历史 → 语义索引（无历史时为 []，零变化）
                     image_assets=generated_image_entries(),
                     creative_brief=brief_data, production_plan=plan_data,
                 ),
@@ -1134,7 +1134,7 @@ class RequirementsService:
         # 以否定词开头 → 非确认（"不可以"、"不要"、"有问题"、"不满意"）
         if low.startswith(("不", "没", "别", "勿", "莫", "未")):
             return False
-        # 批7：确认词后带转折/修正尾缀 → 不是确认（"好的，不过再长一点"、
+        # 确认词后带转折/修正尾缀 → 不是确认（"好的，不过再长一点"、
         # "可以，但是要加片头"——旧实现误判为确认并直接推进流程）
         affirm_starts = ["没问题", "就这样", "可以了", "好的", "确认", "同意", "可以",
                          "行", "ok", "yes", "y", "对", "嗯", "确定", "通过", "批准"]
@@ -1343,7 +1343,7 @@ class RequirementsService:
         if rag_context:
             context += f"\n\n## 知识库参考\n{rag_context}"
 
-        # D4: 注入 AI 生成能力概览（无可用生成工具 → 零变化），
+        # 注入 AI 生成能力概览（无可用生成工具 → 零变化），
         # 让需求对话阶段即可主动提出"此处适合 AI 生成素材"的方案建议
         gen_overview = _ai_generation_overview()
         if gen_overview:
@@ -1383,7 +1383,7 @@ class RequirementsService:
                 logger.warning("流式 brief 失败，回退缓冲路径: %s", e)
                 # 流式失败 → 回退缓冲路径（下面的 W1 with_tools / llm_call_with_retry）
 
-        # W1: 联网搜索工具门控接入（Bocha/百度）——配置开启时 LLM 可自主搜索；
+        # 联网搜索工具门控接入（Bocha/百度）——配置开启时 LLM 可自主搜索；
         # 未配置/失败/无工具调用时行为与现状完全一致（落到下方 llm_call_with_retry 原路径）。
         try:
             from clipwright.services.web_search import WebSearchService
@@ -1551,10 +1551,10 @@ class RequirementsService:
                 if isinstance(raw_intents, list):
                     animation_intents = raw_intents
 
-            # B6/E2: 复用已确认的 raw_scenes 修订路径——不重跑 StructureAgent，
+            # /E2: 复用已确认的 raw_scenes 修订路径——不重跑 StructureAgent，
             # 仅带反馈重新翻译场景（简报未变、已有场景时）。
             if isinstance(existing_raw_scenes, list) and existing_raw_scenes:
-                # 批8：反馈先经 LLM 改写场景本体（有界改写；失败回退原场景），
+                # 反馈先经 LLM 改写场景本体（有界改写；失败回退原场景），
                 # 修复「修改意见只改规划书文案、场景本体永不变更」的契约断裂
                 revised_scenes = await self._revise_raw_scenes(
                     existing_raw_scenes, feedback, brief_data, user_inputs,
@@ -1597,7 +1597,7 @@ class RequirementsService:
             script = user_inputs.get("script_text", "")
             rag_context = await self._retrieve_knowledge(persona_id, f"{topic} {script}", session_id)
 
-            # W2: 注入联网搜索结果作为事实参考（未配置/失败/空结果 → 零变化）
+            # 注入联网搜索结果作为事实参考（未配置/失败/空结果 → 零变化）
             web_context = await _build_web_context(f"{topic} {script}"[:300])
             if web_context:
                 if rag_context:
@@ -1605,7 +1605,7 @@ class RequirementsService:
                 else:
                     rag_context = f"## 联网搜索参考\n{web_context}"
 
-            # A2: 注入素材库概览（空素材库 → 无额外段落，零变化）
+            # 注入素材库概览（空素材库 → 无额外段落，零变化）
             overview = _material_library_overview()
             if overview:
                 if rag_context:
@@ -1613,7 +1613,7 @@ class RequirementsService:
                 else:
                     rag_context = f"## 素材库概览\n{overview}"
 
-            # D4: 注入 AI 生成能力概览（无可用生成工具 → 零变化）
+            # 注入 AI 生成能力概览（无可用生成工具 → 零变化）
             gen_overview = _ai_generation_overview()
             if gen_overview:
                 if rag_context:
@@ -1631,7 +1631,7 @@ class RequirementsService:
                 ),
                 context,
             )
-            # C2: StructureAgent 的 LLM 用量（requirements 会话级，非 pipeline）
+            # StructureAgent 的 LLM 用量（requirements 会话级，非 pipeline）
             agent_usage = getattr(result, "_llm_usage", None)
             if agent_usage:
                 try:
@@ -1768,12 +1768,15 @@ class RequirementsService:
         try:
             ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
             if ext in ("txt", "md", "markdown"):
-                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read()[:5000]
+                # 轮 82：文件读取 offload（上传文件可达数 MB，同步读冻住事件循环）
+                content = (await asyncio.to_thread(
+                    lambda: open(file_path, "r", encoding="utf-8", errors="replace").read()
+                ))[:5000]
             elif ext in ("pdf",):
                 try:
                     import subprocess
-                    result = subprocess.run(
+                    result = await asyncio.to_thread(
+                        subprocess.run,
                         ["pdftotext", file_path, "-"],
                         capture_output=True, text=True, timeout=30,
                     )
@@ -1793,7 +1796,7 @@ class RequirementsService:
                 except Exception:
                     content = "[DOCX 文件]"
             elif ext in ("png", "jpg", "jpeg", "webp", "gif"):
-                # C6: 附件图片理解 — 视觉模型描述图片并提取标签，替代占位符
+                # 附件图片理解 — 视觉模型描述图片并提取标签，替代占位符
                 content = await self._describe_image(file_path, file_name)
             else:
                 content = f"[上传文件: {file_name}]"
@@ -1805,7 +1808,7 @@ class RequirementsService:
             if content else f"用户上传了文件: {file_name}"
         )
 
-        # P0-6: process_upload 为 async 上下文 → 线程内执行同步 Mongo 操作
+        # process_upload 为 async 上下文 → 线程内执行同步 Mongo 操作
         session = await asyncio.to_thread(self.get_session, session_id)
         if session:
             messages = session.get("messages", [])

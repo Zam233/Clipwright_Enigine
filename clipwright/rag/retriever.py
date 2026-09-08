@@ -93,7 +93,7 @@ class Retriever:
 
         docs: list[KnowledgeDoc] = []
         for entry in index:
-            # B14: 字段安全访问（旧索引可能缺 file/created_at 等字段）
+            # 字段安全访问（旧索引可能缺 file/created_at 等字段）
             if not isinstance(entry, dict):
                 continue
             fname = entry.get("file") or f"{entry.get('id', 'doc')}.md"

@@ -117,7 +117,7 @@ def parse_fcpxml(content: str) -> list[dict[str, Any]]:
     clips: list[dict[str, Any]] = []
     # 安全：拒绝带 DTD/实体的 XML——标准库 ElementTree 会展开内部实体，
     # 恶意文件可借实体扩张耗尽内存（FCPXML 正常文件无需 DTD）
-    # 批6.4：仅拒绝内部实体声明（实体扩张攻击向量）；标准 FCPXML 自带
+    # 4：仅拒绝内部实体声明（实体扩张攻击向量）；标准 FCPXML 自带
     # <!DOCTYPE xmeml> 声明，属正常内容不应拒绝
     head = content[:4096].lstrip()
     if "<!ENTITY" in head:
@@ -154,7 +154,7 @@ def parse_fcpxml(content: str) -> list[dict[str, Any]]:
                 except ValueError:
                     clip["duration_sec"] = 5
 
-            # 批6.4：保留时间位置（旧实现恒 0，导入丢失时间轴布局）
+            # 4：保留时间位置（旧实现恒 0，导入丢失时间轴布局）
             start_el = item.find("start")
             if start_el is not None and start_el.text:
                 try:
@@ -241,7 +241,7 @@ def to_fcpxml(clips: list[dict[str, Any]], timeline: dict | None = None) -> str:
             '            </file>',
             '          </clipitem>',
         ])
-    # 批6.4：字幕/文字轨导出（文本入 comments，NLE 可参考；此前整轨静默丢失）
+    # 4：字幕/文字轨导出（文本入 comments，NLE 可参考；此前整轨静默丢失）
     if text_clips:
         xml_parts.extend(['      <audio>', '        <track>'])
         for n, clip in enumerate(text_clips, 1):

@@ -45,14 +45,26 @@ class LutPresetsPlugin(StyleInterpreterPlugin):
     def initialize(self) -> None:
         LUT_DIR.mkdir(parents=True, exist_ok=True)
         available = {k: v for k, v in LUT_PRESETS.items() if (LUT_DIR / v["file"]).exists()}
+        # 轮 84（修双重死链）：注册进 StyleInterpreter——此前从未注册，
+        # interpret 永不被调用；签名也修正为基类要求的 (visual_config, persona_context)
+        from clipwright.services.style_interpreter import StyleInterpreter
+        StyleInterpreter.register_plugin(self)
         HookRegistry.register(HookPoint.DIAGRAM_STYLE_PRESET, self._style_preset_hook, plugin_id=self.manifest.id)
         logger.info("[LutPresets] %d/%d LUT 预设可用 (目录: %s)", len(available), len(LUT_PRESETS), LUT_DIR)
         if not available:
             logger.info("[LutPresets] 提示: 将 .cube 文件放入 %s/ 以启用", LUT_DIR)
 
-    def interpret(self, persona_style: dict[str, Any]) -> dict[str, Any]:
-        """根据 Persona 风格推荐 LUT。"""
-        tone = persona_style.get("tone", "").lower()
+    async def interpret(
+        self, visual_config: dict[str, Any], persona_context: dict[str, Any]
+    ) -> dict[str, Any]:
+        """根据 Persona 语气推荐 LUT（轮 84：修正签名以匹配基类抽象方法）。"""
+        identity = persona_context.get("identity", {}) or {}
+        tone = str(
+            visual_config.get("tone")
+            or identity.get("tone")
+            or persona_context.get("tone")
+            or ""
+        ).lower()
         mood_map = {
             "严肃": "documentary_neutral", "专业": "documentary_neutral",
             "活泼": "cyberpunk_neon", "搞笑": "cyberpunk_neon",

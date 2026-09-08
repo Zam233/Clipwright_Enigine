@@ -15,7 +15,18 @@ services:
       - "./projects:/app/projects"
       - "./PluginData:/app/PluginData"
       - "./library:/app/library"
+      # 轮 80：自定义类型/模板/版本快照/裁剪缓存持久化（容器重建不丢）
+      - "./user_types:/app/user_types"
+      - "./templates:/app/templates"
+      - "./versions:/app/versions"
+      - "./_cache:/app/_cache"
     env_file: [.env]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request,sys; d=json.loads(urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=4).read()); sys.exit(0 if d.get('status')=='ok' else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
 
   # 前端已独立（方式 A）：单独部署于 J:\Clipweight-Client，
   # 其 Dockerfile.frontend 在独立仓库中构建（npm run build → nginx，proxy /api→backend:8080）

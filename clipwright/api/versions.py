@@ -54,7 +54,7 @@ async def create_snapshot(project_id: str, req: SnapshotRequest, request: Reques
     if not timeline:
         raise HTTPException(status_code=400, detail="项目还没有时间线内容")
     version_id = _vm(project_id).snapshot(timeline, label=req.label or "")
-    # P5-B5: 审计
+    # 审计
     from clipwright import audit
     audit.record("project_version_create", current_user_id(request), {
         "project_id": project_id, "version_id": version_id, "label": req.label or "",

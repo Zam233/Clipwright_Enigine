@@ -27,7 +27,7 @@ class DynamicCategoryPlugin(BaseCategoryPlugin):
         self.description = config.get("description", "")
         self._shot_params = config.get("shot_params", {})
         self._persona_mapping = config.get("persona_mapping", {})
-        # B21: transform 规范（post_process_timeline 应用）
+        # transform 规范（post_process_timeline 应用）
         self._transform = config.get("transform", {}) or {}
 
     def translate_persona(self, params: ParameterLayer) -> dict[str, Any]:

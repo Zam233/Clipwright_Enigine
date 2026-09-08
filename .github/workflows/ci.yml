@@ -10,12 +10,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install ffmpeg (渲染/工具类测试依赖)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Install deps
         run: pip install -e ".[dev]"
       - name: Pytest
         run: python -m pytest -q
-      - name: Ruff (advisory)
-        run: python -m ruff check clipwright || true
+      - name: Ruff
+        run: python -m ruff check clipwright
 
   # 前端已独立（方式 A）：前端源码位于独立仓库 J:\Clipweight-Client
   # （本地映射），其 CI 由该仓库自行维护：

@@ -35,6 +35,11 @@ from clipwright.schema.tool import ToolExecResult, ToolStatus
 _client_cache: dict[tuple[str, Optional[str], Optional[str], Optional[str]], Any] = {}
 
 
+def clear_client_cache() -> None:
+    """清空共享客户端缓存（配置热更新后按新配置重建连接）。"""
+    _client_cache.clear()
+
+
 # ── A6: 进程级 LLM 用量累计 ──
 # 所有 LLMService 实例共享（含 Agent 内临时 new 的实例），供管线 per-agent
 # 差值记账：_run_agent 前后各取一次快照，差值即该 Agent 的 token 消耗。
@@ -182,7 +187,7 @@ class LLMService:
                      json.dumps(messages, ensure_ascii=False)[:500],
                      json.dumps(kwargs.get("tools", []), ensure_ascii=False)[:200])
 
-        # E3: transient 错误指数退避重试（避免 transient 失败触发管线自愈全链路重做）
+        # transient 错误指数退避重试（避免 transient 失败触发管线自愈全链路重做）
         def _is_transient(resp: Any) -> bool:
             sc = getattr(resp, "status_code", None)
             if sc is None:
@@ -259,7 +264,7 @@ class LLMService:
             partial(client.ask, prompt=prompt, **ask_kwargs),
         )
         logger.debug("LLM ask 响应: success=%s, content=%.300s", resp.success, resp.content or "")
-        # A6: ask 路径此前不记 usage——补齐 last_usage 与进程级累计
+        # ask 路径此前不记 usage——补齐 last_usage 与进程级累计
         if getattr(resp, "success", False) and getattr(resp, "usage", None):
             self.last_usage = {
                 "input_tokens": getattr(resp.usage, "input_tokens", 0),
@@ -438,7 +443,7 @@ class LLMService:
         tool_executor_is_coro = asyncio.iscoroutinefunction(tool_executor)
 
         for _round in range(max_tool_rounds):
-            # 批5 修复：每轮都必须携带 tools——旧实现仅首轮下发，模型按提示词
+            # 修复：每轮都必须携带 tools——旧实现仅首轮下发，模型按提示词
             # 顺序先调 describe_llm_mg 后，第二轮再无任何工具可调
             kw = {**base_kwargs, "tools": tools}
 

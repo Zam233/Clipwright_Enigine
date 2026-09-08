@@ -54,3 +54,7 @@ class SkillInfo(BaseModel):
     available: bool = Field(
         default=False, description="当前环境是否可用（依赖的工具是否都可用）"
     )
+    plugin_id: str = Field(
+        default="",
+        description="归属插件 ID（轮 87：内置技能为空串；插件技能随插件禁用而注销）",
+    )

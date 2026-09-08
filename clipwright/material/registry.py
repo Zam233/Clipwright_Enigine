@@ -67,7 +67,7 @@ class MaterialRegistry:
         all_results: list[MaterialSearchResult] = []
         for src in sources:
             try:
-                # 批5：透传 media_type——源的类型过滤参数此前是死参数。
+                # 透传 media_type——源的类型过滤参数此前是死参数。
                 # 未声明该参的源经 **kwargs 吸收（MaterialSource 基类有 **kwargs）
                 results = await src.search(query, top_k=top_k_per_source,
                                            media_type=media_type)

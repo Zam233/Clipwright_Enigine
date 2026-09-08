@@ -49,7 +49,9 @@ class GifStickerPlugin(CapabilityPlugin):
     def __init__(self) -> None:
         self._source: Optional[GiphySource] = None
     def initialize(self) -> None:
-        self._source = GiphySource()
+        # 优先使用插件配置 config.yaml 的 api_key，其次环境变量（最终回退公开测试 key）
+        cfg = self.config or {}
+        self._source = GiphySource(api_key=cfg.get("api_key", ""))
         MaterialRegistry.register(self._source, plugin_id=self.manifest.id)
         print("[GifSticker] Giphy GIF 库已注册")
     def shutdown(self) -> None:

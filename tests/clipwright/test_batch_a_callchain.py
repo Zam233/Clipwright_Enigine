@@ -177,7 +177,7 @@ async def test_run_async_cancel_interrupts_and_stream_closes(fake_orch_blocked, 
     assert result is not None, "取消后未写终态结果"
     assert result["status"] == "cancelled"
 
-    # A4: SSE 流在回放 cancelled 事件后应主动关闭（生成器自然耗尽）
+    # SSE 流在回放 cancelled 事件后应主动关闭（生成器自然耗尽）
     from clipwright.services.trace import get_all_events
 
     events = get_all_events(pid)

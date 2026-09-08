@@ -507,7 +507,7 @@ class CustomJsonAnimationTool(BaseTool):
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error=str(e))
 
-# 批7.4：注册归属重构——不再在模块加载期自动注册（旧写法 import 期副作用
+# 4：注册归属重构——不再在模块加载期自动注册（旧写法 import 期副作用
 # 使工具 _plugin_id 为空，list_by_plugin 查不到、disable 不生效），改为由
 # TextAnimationsPlugin.initialize() 显式调用 register_all_tools(plugin_id)。
 

@@ -33,7 +33,7 @@ from clipwright.services.subtitle import DEFAULT_CAPTION_STYLE, DEFAULT_TEXT_STY
 from clipwright.services.trace import add_event
 from clipwright.services.web_search import WebSearchService
 
-# W5: 数据/事实型 mg_dynamic 检测 — 命中则触发联网搜索，注入事实上下文
+# 数据/事实型 mg_dynamic 检测 — 命中则触发联网搜索，注入事实上下文
 # （中文 + 英文，大小写不敏感；图表/数据/百分比/年份/引语/增长率/GDP/报告等）
 _DATA_FACT_RE = re.compile(
     r"图表|数据|统计|对比|百分比|%|年份 20\d\d|引语|quote|citation|增长率|GDP|报告|survey",
@@ -74,7 +74,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         self._tl_width = 1920
         self._tl_height = 1080
         self._tl_fps = 30.0
-        # A7: 图片素材库语义索引 {path, tags, description} — execute() 中构建，
+        # 图片素材库语义索引 {path, tags, description} — execute() 中构建，
         # 供 mg_dynamic 生成 prompt 让 LLM 主动选择语义匹配图片（防 📡→石墨烯 类错配）
         self._image_index: list[dict[str, Any]] = []
 
@@ -107,7 +107,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 input_data.visual_config, context.extra_params,
             )
 
-            # A7/D5: 图片语义索引 — 显式 image_assets（AI 生成图）∪ 素材库主动检索图片。
+            # /D5: 图片语义索引 — 显式 image_assets（AI 生成图）∪ 素材库主动检索图片。
             # 对合并结果逐个调用视觉分析器（VisionService.analyze_image）构建
             # {path, tags, description}；分析失败回退文件名标签；两者皆空时保持
             # 原有行为（不调用分析器）。
@@ -209,7 +209,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                         prev_clip = clip
                         continue
 
-                    # B11: 遍历全部标记（原实现只取 markers[0]，多标记场景
+                    # 遍历全部标记（原实现只取 markers[0]，多标记场景
                     # 其余动画意图静默丢失）
                     for marker in markers:
                         marker_type = marker.get("type", "text")
@@ -320,7 +320,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         因为所有文字动画类型（fade/slide/typewriter/scale等）
         drawtext 都有实现方案（scale→fontsize 表达式）。
         """
-        # B11: 时长钳制——原 max(dur, 1.0) 让 0.2s 片段挂 1s 文字覆盖侵入下一
+        # 时长钳制——原 max(dur, 1.0) 让 0.2s 片段挂 1s 文字覆盖侵入下一
         # 场景；改为不越出宿主片段，下限 0.2s
         clip_duration = max(0.2, float(vid_clip.duration_sec or 0.2))
         text_content, text_source = self._extract_text_with_source(vid_clip, marker)
@@ -373,7 +373,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         if anim_id in ("typewriter", "char_by_char"):
             text_clip.metadata["typewriter"] = True
 
-        # B11: 启用重叠去重（_find_overlapping_clip 此前定义未调用）——
+        # 启用重叠去重（_find_overlapping_clip 此前定义未调用）——
         # 同轨道文字片段时间重叠会叠字渲染
         overlap = self._find_overlapping_clip(text_track, text_clip)
         if overlap is not None:
@@ -394,7 +394,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         persona_style: dict[str, Any],
     ) -> None:
         """长文本 → CAPTION clip，使用 FFmpeg drawtext 渲染。"""
-        # B11: 与文字动画同样钳制，不越出宿主片段
+        # 与文字动画同样钳制，不越出宿主片段
         clip_duration = max(0.2, float(vid_clip.duration_sec or 0.2))
         # 完整字幕样式字段（统一默认 + persona_style 覆盖，任务 32）
         style = _merge_style_defaults(DEFAULT_CAPTION_STYLE, persona_style)
@@ -469,7 +469,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             }
 
         # ── 创建逻辑动画 clip（非 MG） ──
-        # P2: 异步探测 Hyperframes 是否可用（含冷启动等待，最多 120s），
+        # 异步探测 Hyperframes 是否可用（含冷启动等待，最多 120s），
         # 避免首个 pipeline 因缓存探针冷启动返回 False 而误降级为静态 drawtext。
         # 只有真正等待超时（不可用）才走降级分支。
         hf_available = await self._hyperframes_available()
@@ -636,7 +636,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         persona_style: dict[str, Any] | None = None,
     ) -> None:
         """处理 mg_dynamic 标记 — 通过内置 llm_mg 引擎动态生成 MG 动画。"""
-        # P2: LLM MG 产物依赖 Hyperframes 渲染，入口同样用异步探测（含冷启动等待）。
+        # LLM MG 产物依赖 Hyperframes 渲染，入口同样用异步探测（含冷启动等待）。
         # 只有真正等待超时（不可用）才走降级分支（跳过，不降级为文字显示）。
         if not await self._hyperframes_available():
             logger.warning("AnimationAgent: Hyperframes 不可用，mg_dynamic 跳过")
@@ -679,13 +679,13 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             "description": scene_meta.get("description", ""),
         }
 
-        # A7: 图片语义索引注入 mg_dynamic 生成 prompt — 让 LLM 理解图片内容后
+        # 图片语义索引注入 mg_dynamic 生成 prompt — 让 LLM 理解图片内容后
         # 主动选择语义匹配的图片放入动画 image 元素（防图标语义错配）
         gen_description = description
         if getattr(self, "_image_index", None):
             gen_description = description + self._format_image_index_prompt(self._image_index)
 
-        # W5: 数据/事实型 mg_dynamic → 联网搜索，注入事实上下文
+        # 数据/事实型 mg_dynamic → 联网搜索，注入事实上下文
         # （门控：描述命中数据/事实关键词 AND WebSearchService 已配置才搜索；
         #  任何异常/空结果一律静默回退 web_context=""，行为与未配置时完全一致）
         web_context = ""
@@ -937,7 +937,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
     # ── 过渡动画处理 ──────────────────────────────────────
 
-    # B10: 当前 ffmpeg 支持的 xfade transition 值缓存（None = 探测失败，视为全支持）
+    # 当前 ffmpeg 支持的 xfade transition 值缓存（None = 探测失败，视为全支持）
     _xfade_supported: list[str] | None = None
 
     @classmethod
@@ -991,12 +991,12 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         duration_sec = anim_def.duration_sec if anim_def else 0.4
 
         # 映射到 FFmpeg xfade transition 类型（C4: 复用公共映射表；
-        # B10: 修正 slide_up 方向错误）
+        # 修正 slide_up 方向错误）
         from clipwright.animation.xfade_map import XFADE_MAP
         xfade_map = XFADE_MAP
 
         mapped = xfade_map.get(anim_id, "fade")
-        # B10: 运行时能力探测——当前 ffmpeg 不支持的 transition 值在 Agent 阶段
+        # 运行时能力探测——当前 ffmpeg 不支持的 transition 值在 Agent 阶段
         # 降级 fade 并发 trace warning（原实现在渲染期 EINVAL 且静默硬切）
         supported = self._probe_xfade_transitions()
         if supported is not None and mapped not in supported:
@@ -1176,7 +1176,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                     style_desc_parts.append(_v.strip())
             if style_desc_parts and not config.get("style_description"):
                 config["style_description"] = "；".join(style_desc_parts)
-        # Q2 主修复：原始层注入兜底色板（黑白红）。
+        # 主修复：原始层注入兜底色板（黑白红）。
         # persona 参数层 primary/secondary/accent 为 null 时（如 Zam），注入非空结构化字段，
         # 使 _apply_structured_overrides 无论走 LLM/tone-fallback/快路径都把结果盖回黑白红——
         # 注入是正确性保证（不依赖 LLM 恰好生成对色板）。

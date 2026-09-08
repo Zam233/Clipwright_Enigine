@@ -33,6 +33,16 @@ class MyMaterialLibPlugin(CapabilityPlugin):
     )
 
     def initialize(self) -> None:
+        # 轮 81：示例源默认禁用——catalog 指向不存在的 materials/*.mp4、URL 指向
+        # cdn.example.com，会让管线「检索成功但素材不可用」，最终全片占位却状态
+        # 成功，并掩盖「无可用素材源」告警。置环境变量 MY_MATERIAL_LIB_ENABLED=1
+        # 或编辑本文件后手动启用。
+        import os
+
+        if os.environ.get("MY_MATERIAL_LIB_ENABLED", "").lower() not in ("1", "true", "yes"):
+            print("[MyMaterialLib] 示例素材源保持禁用（设 MY_MATERIAL_LIB_ENABLED=1 启用）")
+            return
+
         plugin_dir = Path(__file__).resolve().parent
 
         # 1. JSON Catalog 源

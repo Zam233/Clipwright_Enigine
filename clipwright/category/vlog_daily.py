@@ -23,7 +23,7 @@ class VlogDailyPlugin(BaseCategoryPlugin):
             "high": {"base_shot_ms": 3000, "min_shot_ms": 1000, "max_shot_ms": 8000},
         }
         shot_params = density_map.get(params.rhythm.cut_density_tier, density_map["low"])
-        # 批8：Persona 显式 base_shot_duration_ms 优先于密度档位推导
+        # Persona 显式 base_shot_duration_ms 优先于密度档位推导
         if getattr(params.rhythm, "base_shot_duration_ms", None):
             shot_params = {**shot_params,
                            "base_shot_ms": int(params.rhythm.base_shot_duration_ms)}
@@ -46,6 +46,19 @@ class VlogDailyPlugin(BaseCategoryPlugin):
     def get_shot_params(self, translated: dict[str, Any]) -> dict[str, Any]:
         return translated.get("shot_params", {})
 
+    def get_structure_template(self) -> str:
+        """轮 84：Vlog 场景骨架——开场→过程→高光→收尾。"""
+        return (
+            "开场引入（约10%）：问候+本期主题一句话预告，出镜口播为主\n"
+            "过程记录（约40%）：按时间线记录本期事件，保持自然节奏与生活感\n"
+            "高光时刻（约30%）：本期最有趣的2-3个片段展开，配情绪字幕\n"
+            "感悟收尾（约20%）：当天感受/下期预告，轻松收束"
+        )
+
+
+    def get_annotation_templates(self) -> list[str]:
+        """轮 87：节奏/标注模板（原 translate_persona 死键，现在结构 prompt 消费）。"""
+        return ["hook", "reaction_shot", "climax_silence"]
     def get_mg_style_guidance(self) -> str:
         return (
             "Vlog 日常的 MG 动画风格：温暖、轻快、生活化。"

@@ -229,7 +229,7 @@ class TaskQueue:
     async def _process_queue(self) -> None:
         """从队列取任务执行（受信号量限制，按优先级 + aging 排序）。"""
         while self._pending_queue:
-            # A10: 高优先级先出队；轮69（D5）：等待越久有效优先级越高，
+            # 高优先级先出队；轮69（D5）：等待越久有效优先级越高，
             # 每等待 60s 加 1（上限 +2），防止低优先级任务永久饥饿
             now = time.monotonic()
 
@@ -255,7 +255,7 @@ class TaskQueue:
                 task.status = TaskStatus.RUNNING
                 task.started_at = datetime.now(tz=TIME_ZONE) if TIME_ZONE else datetime.now(timezone.utc)
                 self._persist(task)
-                # A2: 按任务级超时执行（管线任务传入与 pipeline_timeout_sec 对齐的值）
+                # 按任务级超时执行（管线任务传入与 pipeline_timeout_sec 对齐的值）
                 effective_timeout = getattr(task, "timeout_sec", 0) or self.task_timeout_sec
                 try:
                     task.result = await asyncio.wait_for(
@@ -281,7 +281,7 @@ class TaskQueue:
                         task.duration_sec = (now - task.started_at).total_seconds()
                     task.progress = 100
                     self._persist(task)
-                    # A10: 终态同步后从 Mongo 删除（recover_stale 会呈现最近中断项）
+                    # 终态同步后从 Mongo 删除（recover_stale 会呈现最近中断项）
                     self._drop(task_id)
                     self._cleanup_finished()
 

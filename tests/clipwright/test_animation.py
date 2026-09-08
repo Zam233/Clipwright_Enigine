@@ -138,13 +138,18 @@ class TestAnimationCatalog:
         assert len(kfs) >= 2
 
     def test_build_full_keyframes_entrance_end_state(self) -> None:
-        """入场结束后 opacity=1。"""
+        """入场结束后到出场前，所有含 opacity 的 keyframe 都应不透明（=1）。"""
         kfs = AnimationCatalog.build_full_keyframes("text_fade_in", 0, 5.0)
-        for kf in kfs:
+        assert len(kfs) >= 3
+        # 入场首帧透明
+        assert kfs[0]["properties"].get("opacity") == 0
+        # 出场末帧透明
+        assert kfs[-1]["properties"].get("opacity") == 0
+        # 入场收尾与保持段全部不透明
+        for kf in kfs[1:-1]:
             props = kf["properties"]
-            # exit 之前的 keyframe 都应 opacity=1
-            if kf["time"] < kfs[-1]["time"] and "opacity" in props:
-                pass  # 不强制断言，因 shake 等有 animated opacity
+            if "opacity" in props:
+                assert props["opacity"] == 1, f"保持段出现透明 keyframe: {kf}"
 
     def test_build_full_keyframes_shake(self) -> None:
         """shake 应保留完整震动 pattern + 出场。"""

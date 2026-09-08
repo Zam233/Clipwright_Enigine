@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Optional
 
@@ -19,6 +20,8 @@ from clipwright.material.registry import MaterialRegistry
 from clipwright.plugins import CapabilityPlugin
 from clipwright.schema.material import MaterialAsset, MaterialType
 from clipwright.schema.plugin import PluginManifest, PluginKind
+
+log = logging.getLogger("clipwright.plugins.pixabay")
 
 PIXABAY_BASE = "https://pixabay.com/api"
 
@@ -43,12 +46,12 @@ class PixabayMaterialSource(MaterialSource):
             try:
                 results.extend(await self._search_videos(query, top_k))
             except Exception:
-                pass
+                log.warning("Pixabay 视频搜索失败（429/网络？）: %s", query, exc_info=True)
         if media_type in ("photo", "all"):
             try:
                 results.extend(await self._search_images(query, top_k))
             except Exception:
-                pass
+                log.warning("Pixabay 图片搜索失败（429/网络？）: %s", query, exc_info=True)
         return results
 
     async def _search_videos(self, query: str, top_k: int) -> list[tuple[MaterialAsset, float]]:
@@ -73,6 +76,11 @@ class PixabayMaterialSource(MaterialSource):
                 duration_sec=float(hit.get("duration", 0)),
                 resolution=f"{best.get('width', 0)}x{best.get('height', 0)}",
                 source=self.source_id,
+                # 轮 82（版权链）：Pixabay Content License 免费商用
+                author=hit.get("user", ""),
+                source_url=hit.get("pageURL", ""),
+                license="Pixabay Content License",
+                license_url="https://pixabay.com/service/license-summary/",
                 metadata={"pixabay_id": hit["id"], "user": hit.get("user", ""), "pageURL": hit.get("pageURL", "")},
             )
             results.append((asset, 0.8))
@@ -95,6 +103,11 @@ class PixabayMaterialSource(MaterialSource):
                 tags=hit.get("tags", "").split(", "),
                 resolution=f"{hit.get('imageWidth', 0)}x{hit.get('imageHeight', 0)}",
                 source=self.source_id,
+                # 轮 82（版权链）
+                author=hit.get("user", ""),
+                source_url=hit.get("pageURL", ""),
+                license="Pixabay Content License",
+                license_url="https://pixabay.com/service/license-summary/",
                 metadata={"pixabay_id": hit["id"], "user": hit.get("user", ""), "pageURL": hit.get("pageURL", "")},
             )
             results.append((asset, 0.7))

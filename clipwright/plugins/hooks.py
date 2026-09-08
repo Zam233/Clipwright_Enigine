@@ -31,7 +31,7 @@ class HookRegistry:
 
     @classmethod
     def register(cls, point: HookPoint, fn: Callable, plugin_id: str = "", **kwargs: Any) -> None:
-        # P4: wrapper 闭包携带 plugin_id（绑定方法安全），unregister 时按 ID 精确清理
+        # wrapper 闭包携带 plugin_id（绑定方法安全），unregister 时按 ID 精确清理
         if plugin_id:
             def _wrapped(ctx: Any, _fn: Callable = fn) -> Any:
                 return _fn(ctx)
@@ -66,7 +66,7 @@ class HookRegistry:
                 if result:
                     context.update(result)
             except Exception as e:
-                # P8: 单钩子异常不阻塞同点其余钩子
+                # 单钩子异常不阻塞同点其余钩子
                 logger.warning("Hook 异常 (%s): %s", point.value, e)
         return context
 

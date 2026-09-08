@@ -44,3 +44,16 @@ def filter_by_owner(request: Request, items: list[dict], key: str = "owner_id") 
     if uid is None or is_admin(request):
         return items
     return [it for it in items if it.get(key) == uid]
+
+
+def require_admin(request: Request) -> None:
+    """管理端写保护：jwt 模式下仅 admin 角色可写；off/token 模式放行（本地语义）。
+
+    统一守卫（自 api/plugin.py 的 _require_admin 上移），供 settings、
+    plugin config 等敏感写端点复用。
+    """
+    uid = current_user_id(request)
+    if uid is None or is_admin(request):
+        return
+    raise HTTPException(status_code=403, detail="需要管理员权限")
+

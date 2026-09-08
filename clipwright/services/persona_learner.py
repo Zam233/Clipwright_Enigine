@@ -46,7 +46,7 @@ class PersonaLearner:
 
     def save(self) -> None:
         self._data["updated_at"] = datetime.now(timezone.utc).isoformat()
-        # B16: 确保数据目录存在（配置化 data_dir 时不再依赖模块导入期 mkdir）
+        # 确保数据目录存在（配置化 data_dir 时不再依赖模块导入期 mkdir）
         self._data_path.parent.mkdir(parents=True, exist_ok=True)
         self._data_path.write_text(json.dumps(self._data, ensure_ascii=False, indent=2), encoding="utf-8")
 

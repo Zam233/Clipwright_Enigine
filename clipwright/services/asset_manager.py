@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -58,7 +59,7 @@ class AssetInfo:
         self.file_size = file_size
         self.thumbnail_path = thumbnail_path
         self.error = error
-        # P9: 素材治理字段
+        # 素材治理字段
         self.sha256 = sha256
         self.used_count = used_count
         self.status = status
@@ -126,7 +127,7 @@ class AssetManager:
         if not src.exists():
             return AssetInfo(asset_id="", filename="", file_path="", media_type="", error=f"文件不存在: {file_path}")
 
-        # P9: 内容哈希去重（sha256）— 已存在同内容素材 → 复用（返回 deduplicated 标记）
+        # 内容哈希去重（sha256）— 已存在同内容素材 → 复用（返回 deduplicated 标记）
         import hashlib
         sha256 = _sha256_of(src)
         for existing in self._assets.values():
@@ -174,7 +175,10 @@ class AssetManager:
         thumb_path = ""
         if media_type in ("video", "image"):
             thumb_file = self._thumb_dir / f"{asset_id}_thumb.jpg"
-            self._generate_thumbnail(str(dest), str(thumb_file), media_type)
+            # 轮 82：缩略图（内部两次 30s 子进程）offload，不冻住事件循环
+            await asyncio.to_thread(
+                self._generate_thumbnail, str(dest), str(thumb_file), media_type
+            )
             if thumb_file.exists():
                 thumb_path = str(thumb_file.resolve())
 
@@ -313,7 +317,8 @@ class AssetManager:
         from clipwright.tool.video import resolve_ffprobe
         info: dict[str, Any] = {"duration": 0, "width": 0, "height": 0}
         try:
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 [resolve_ffprobe(), "-v", "error", "-print_format", "json",
                  "-show_format", "-show_streams", str(path)],
                 capture_output=True, text=True, timeout=30,

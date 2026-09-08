@@ -2,9 +2,9 @@
 
 ## 基础信息
 
-- **Base URL**: `http://localhost:8000`
+- **Base URL**: `http://localhost:8080`
 - **格式**: 全部请求/响应均为 JSON
-- **交互式文档**: `http://localhost:8000/docs`
+- **交互式文档**: `http://localhost:8080/docs`
 
 ---
 
@@ -71,8 +71,19 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 ### `GET /health`
 
 ```json
-{"status": "ok", "service": "clipwright-engine"}
+{
+  "status": "ok",
+  "service": "clipwright-engine",
+  "mongodb": "ok",
+  "llm": "ok",
+  "ffmpeg": "ok",
+  "hyperframes": "ok",
+  "queue_running": "0",
+  "queue_pending": "0"
+}
 ```
+
+`status` 取值 `ok` / `degraded`；MongoDB 断连（`disconnected`）计入不健康（轮 80 修复假绿，可作就绪探针）。`llm` 无 key 时为 `no_key`（不计入不健康）。
 
 ---
 
@@ -80,9 +91,7 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 
 | 端点 | 说明 |
 |------|------|
-| `POST /api/pipeline/run` | 全流程执行（同步），返回 `PipelineState` |
-| `POST /api/pipeline/run-v2` | 动态路由 + 并行执行 + 自愈循环 |
-| `POST /api/pipeline/run-async` | 异步启动管线，后台执行，通过 SSE 实时追踪 |
+| `POST /api/pipeline/run-async` | 异步启动管线（唯一入口；动态路由 + 并行执行 + 自愈循环），通过 SSE 实时追踪 |
 | `GET /api/pipeline/runs?limit=50` | 列出最近的管线运行记录（按时间倒序） |
 | `GET /api/pipeline/status/{pipeline_id}` | 查询管线状态 |
 | `GET /api/pipeline/result/{pipeline_id}` | 获取异步执行结果（含时间线 JSON） |
@@ -142,7 +151,7 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 }
 ```
 
-**预设**: `bilibili` `youtube` `tiktok` `weibo` `1080p` `720p` `480p`
+**预设**（9 个）: `bilibili` `youtube` `tiktok` `weibo` `1080p` `720p` `480p` `prores422hq`（ProRes 422 HQ，`.mov` 母带交付）`h265_10bit`（H.265 HEVC 10bit）
 
 ### `GET /api/render/queue/stream/{task_id}`
 
@@ -410,7 +419,7 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 ### `POST /api/voice/upload`
 
 ```bash
-curl -X POST http://localhost:8000/api/voice/upload \
+curl -X POST http://localhost:8080/api/voice/upload \
   -F "file=@sample.wav"
 ```
 
@@ -422,7 +431,7 @@ curl -X POST http://localhost:8000/api/voice/upload \
 ### `POST /api/voice/clone`
 
 ```bash
-curl -X POST http://localhost:8000/api/voice/clone \
+curl -X POST http://localhost:8080/api/voice/clone \
   -H "Content-Type: application/json" \
   -d '{"voice_name": "我的音色", "audio_url": "https://example.com/sample.wav", "provider": "qwen_tts"}'
 ```
@@ -430,7 +439,7 @@ curl -X POST http://localhost:8000/api/voice/clone \
 ### `POST /api/voice/synthesize`
 
 ```bash
-curl -X POST http://localhost:8000/api/voice/synthesize \
+curl -X POST http://localhost:8080/api/voice/synthesize \
   -H "Content-Type: application/json" \
   -d '{"voice_id": "v_xxx", "text": "你好世界"}'
 ```
@@ -443,7 +452,7 @@ curl -X POST http://localhost:8000/api/voice/synthesize \
 ### `POST /api/voice/dub`
 
 ```bash
-curl -X POST http://localhost:8000/api/voice/dub \
+curl -X POST http://localhost:8080/api/voice/dub \
   -H "Content-Type: application/json" \
   -d '{"voice_id": "v_xxx", "text": "第一段文案。第二段文案。", "split_mode": "sentence"}'
 ```
@@ -520,6 +529,24 @@ curl -X POST http://localhost:8000/api/voice/dub \
 | `POST /api/test/embed` | Embedding 测试 |
 | `POST /api/test/rerank` | Rerank 测试 |
 | `GET /api/test/config` | 模型配置 |
+
+---
+
+## 运行时配置 (/api/settings)
+
+把 `.env` 配置项搬到「设置 → 后端配置」页管理。优先级：`settings.json`（store）> 环境变量/.env > 默认值。
+secret 字段（密钥类）读取时只返回 `has_value` 与掩码占位、绝不回显明文；落盘经 Fernet 加密（未配置
+`CLIPWRIGHT_WEBHOOK_SECRET_KEY` 时拒绝保存 secret，返回 409）。所有端点需管理员权限（jwt 模式仅 admin；
+off/token 模式放行）。`requires_restart=true` 的字段（CORS/Mongo/端口/路径/最大并发渲染等）只在启动时读取，保存后需重启。
+
+| 端点 | 说明 |
+|------|------|
+| `GET /api/settings` | 分组返回全部字段元数据与当前生效值（`groups[].fields[]`，含 `kind/choices/secret/hot/requires_restart/source`） |
+| `PUT /api/settings` | 部分更新，body `{"values": {key: value}}`；value 为 `null`/`""` 表示清除该键覆盖（回退 env/默认）；返回 `applied/cleared/requires_restart/warnings` |
+| `POST /api/settings/reset` | 清除 store 覆盖，body `{"keys": [...]}`（空 = 全部），还原为 env/默认值 |
+
+`source` 取值：`store`（settings.json 覆盖）/ `env`（环境变量或 .env 显式提供）/ `default`（默认值）。
+热更新语义见 `docs/development.md`「运行时配置」。
 
 ---
 

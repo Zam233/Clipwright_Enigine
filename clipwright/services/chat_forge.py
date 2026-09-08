@@ -129,7 +129,7 @@ class ChatForge:
 
     # 单段知识库内容的最大字符数，超过则按 Markdown H1 分段读入
     MAX_KB_CHARS: int = 8000
-    # B5: 会话落盘目录（每个 session 一个 JSON；重启后恢复）
+    # 会话落盘目录（每个 session 一个 JSON；重启后恢复）
     SESSIONS_DIR = Path("chatforge_sessions")
 
     def __init__(self) -> None:
@@ -745,7 +745,8 @@ class ChatForge:
             ),
             rhythm=RhythmConfig(
                 cut_profile=_safe_str(r.get("cut_profile"), "even_flow"),
-                base_shot_duration_ms=_safe_int(r.get("base_shot_duration_ms"), 5000),
+                # 轮 87：LLM 未给出时不落 5000（保持 None → 类型插件档位生效）
+                base_shot_duration_ms=_safe_int(r.get("base_shot_duration_ms"), None),
                 cut_density_tier=_safe_str(r.get("cut_density_tier"), "medium"),
             ),
             visual=VisualConfig(

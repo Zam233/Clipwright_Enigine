@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, UploadFile
+from fastapi import APIRouter, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -23,6 +23,60 @@ _managers: dict[str, AssetManager] = {}
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2GB
 
 
+def _require_project_access(request: Request, project_id: str | None) -> None:
+    """轮 80（红线）：jwt 模式下带 project_id 的素材操作需为该项目的 owner。
+
+    全局库（project_id 为空）按设计全局共享，不做归属校验；
+    off/token 模式与 admin 放行。项目不存在或无主一律 403（fail-closed）。
+    """
+    if not project_id:
+        return
+    from clipwright.authz import current_user_id, is_admin
+    from clipwright.services.project_manager import ProjectManager
+
+    uid = current_user_id(request)
+    if uid is None or is_admin(request):
+        return
+    try:
+        data = ProjectManager().load(project_id)
+    except ValueError:
+        data = None
+    owner = (data or {}).get("owner_id") or ""
+    if owner != uid:
+        raise HTTPException(status_code=403, detail="无权访问该项目的素材")
+
+
+def _require_media_path_access(request: Request, path: Path) -> None:
+    """轮 80（红线）：by-path 校验 projects/renders 子树归属；其余白名单目录（全局共享）放行。"""
+    from clipwright.authz import current_user_id, is_admin
+
+    uid = current_user_id(request)
+    if uid is None or is_admin(request):
+        return
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return
+    from clipwright.paths import anchor
+    from clipwright.services.project_manager import ProjectManager
+
+    projects_root = anchor("projects").resolve()
+    if resolved.is_relative_to(projects_root):
+        rel = resolved.relative_to(projects_root)
+        pid = rel.parts[0] if rel.parts else ""
+        try:
+            data = ProjectManager().load(pid)
+        except ValueError:
+            data = None
+        if ((data or {}).get("owner_id") or "") != uid:
+            raise HTTPException(status_code=403, detail="无权访问该项目下的文件")
+        return
+    from clipwright.api.render import _enforce_render_file_owner
+    renders_root = anchor("renders").resolve()
+    if resolved.is_relative_to(renders_root):
+        _enforce_render_file_owner(request, resolved.name)
+
+
 def _get_manager(project_id: str | None) -> AssetManager:
     """获取指定项目的 AssetManager（惰性创建）。"""
     if not project_id:
@@ -34,11 +88,12 @@ def _get_manager(project_id: str | None) -> AssetManager:
 
 
 @router.post("/upload")
-async def upload_asset(file: UploadFile, project_id: str = Query("")) -> dict:
+async def upload_asset(request: Request, file: UploadFile, project_id: str = Query("")) -> dict:
     """上传媒体文件 -> 导入 + 格式检测 + 缩略图。
 
     project_id: 所属项目 ID（不传则为全局共享）。
     """
+    _require_project_access(request, project_id or None)
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
 
@@ -72,8 +127,9 @@ async def upload_asset(file: UploadFile, project_id: str = Query("")) -> dict:
 
 
 @router.get("/list")
-async def list_assets(project_id: str = Query("")) -> list[dict]:
+async def list_assets(request: Request, project_id: str = Query("")) -> list[dict]:
     """列出项目的所有已导入素材。"""
+    _require_project_access(request, project_id or None)
     manager = _get_manager(project_id or None)
     result: list[dict] = []
     for a in await manager.list_assets():
@@ -85,7 +141,7 @@ async def list_assets(project_id: str = Query("")) -> list[dict]:
 
 
 @router.get("/by-path")
-async def get_asset_by_path(path: str = Query(...)):
+async def get_asset_by_path(request: Request, path: str = Query(...)):
     """通过本地路径返回媒体文件流（安全白名单代理）。
 
     仅服务 allowed_media_roots() 白名单内的路径（renders / library /
@@ -100,6 +156,7 @@ async def get_asset_by_path(path: str = Query(...)):
     except SecurityViolation as e:
         # 显式转 403：绕过 main.py 全局 SecurityViolation 处理（返回 400），给出明确语义
         raise HTTPException(status_code=403, detail=f"Path not allowed: {e}") from e
+    _require_media_path_access(request, Path(path))
     if not target.is_file():
         raise HTTPException(status_code=404, detail="Path not found")
     return FileResponse(target, media_type=_guess_media_type(target))
@@ -127,8 +184,9 @@ def _guess_media_type(path: Path) -> str:
 
 
 @router.get("/{asset_id}")
-async def get_asset(asset_id: str, project_id: str = Query("")) -> dict:
+async def get_asset(request: Request, asset_id: str, project_id: str = Query("")) -> dict:
     """获取素材信息。"""
+    _require_project_access(request, project_id or None)
     manager = _get_manager(project_id or None)
     asset = manager.get(asset_id)
     if asset is None:
@@ -137,8 +195,9 @@ async def get_asset(asset_id: str, project_id: str = Query("")) -> dict:
 
 
 @router.get("/{asset_id}/file")
-async def get_asset_file(asset_id: str, project_id: str = Query("")):
+async def get_asset_file(request: Request, asset_id: str, project_id: str = Query("")):
     """获取素材文件（P0-1：返回前强制白名单校验）。"""
+    _require_project_access(request, project_id or None)
     from clipwright.security import SecurityViolation, assert_allowed_path
 
     manager = _get_manager(project_id or None)
@@ -153,8 +212,9 @@ async def get_asset_file(asset_id: str, project_id: str = Query("")):
 
 
 @router.get("/{asset_id}/thumbnail")
-async def get_asset_thumbnail(asset_id: str, project_id: str = Query("")):
+async def get_asset_thumbnail(request: Request, asset_id: str, project_id: str = Query("")):
     """获取素材缩略图（P0-1：返回前强制白名单校验）。"""
+    _require_project_access(request, project_id or None)
     from clipwright.security import SecurityViolation, assert_allowed_path
 
     manager = _get_manager(project_id or None)
@@ -169,8 +229,9 @@ async def get_asset_thumbnail(asset_id: str, project_id: str = Query("")):
 
 
 @router.delete("/{asset_id}")
-async def delete_asset(asset_id: str, project_id: str = Query("")) -> dict:
+async def delete_asset(request: Request, asset_id: str, project_id: str = Query("")) -> dict:
     """删除素材（仅删除软连接和元数据，保留原始文件）。"""
+    _require_project_access(request, project_id or None)
     manager = _get_manager(project_id or None)
     ok = manager.delete_asset(asset_id)
     if not ok:
@@ -190,13 +251,14 @@ class ImportUrlRequest(BaseModel):
 
 
 @router.post("/import-path")
-async def import_asset_by_path(req: ImportPathRequest) -> dict:
+async def import_asset_by_path(req: ImportPathRequest, request: Request) -> dict:
     """通过文件路径导入素材（白名单内创建软连接，白名单外安全复制）。"""
+    _require_project_access(request, req.project_id or None)
     from pathlib import Path
     src = Path(req.path)
     if not src.exists():
         raise HTTPException(status_code=400, detail=f"文件不存在: {req.path}")
-    # P0-1: 拒绝点文件（.env/.git/.ssh 等敏感文件不可导入，阻断任意文件读取链入口）
+    # 拒绝点文件（.env/.git/.ssh 等敏感文件不可导入，阻断任意文件读取链入口）
     if src.name.startswith("."):
         raise HTTPException(status_code=400, detail="不允许导入隐藏文件")
     manager = _get_manager(req.project_id or None)
@@ -207,14 +269,15 @@ async def import_asset_by_path(req: ImportPathRequest) -> dict:
 
 
 @router.post("/import-url")
-async def import_asset_by_url(req: ImportUrlRequest) -> dict:
+async def import_asset_by_url(req: ImportUrlRequest, request: Request) -> dict:
     """通过 URL 下载素材并导入到项目素材库（P0-7：SSRF 防护 + 流式大小上限）。"""
+    _require_project_access(request, req.project_id or None)
     import httpx
     from pathlib import Path
 
     from clipwright.security import SecurityViolation, assert_public_url
 
-    # P0-7: 拒绝回环/私网/链路本地/云元数据地址（防 SSRF）
+    # 拒绝回环/私网/链路本地/云元数据地址（防 SSRF）
     try:
         assert_public_url(req.url)
     except SecurityViolation as e:
@@ -224,7 +287,7 @@ async def import_asset_by_url(req: ImportUrlRequest) -> dict:
     tmp_dir = Path(tempfile.mkdtemp(prefix="asset_url_"))
     tmp = tmp_dir / f"download{ext}"
     try:
-        # P0-7: 流式写盘 + 大小上限，避免整读内存
+        # 流式写盘 + 大小上限，避免整读内存
         async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
             async with client.stream("GET", req.url) as resp:
                 resp.raise_for_status()
@@ -253,22 +316,25 @@ async def import_asset_by_url(req: ImportUrlRequest) -> dict:
 
 
 @router.post("/governance/patrol")
-async def patrol_assets(project_id: str = Query("")) -> dict:
+async def patrol_assets(request: Request, project_id: str = Query("")) -> dict:
     """P9: URL 失效巡检 — 检查 HTTP(S) 引用素材的可达性并标记。"""
+    _require_project_access(request, project_id or None)
     manager = _get_manager(project_id or None)
     return await manager.patrol_urls()
 
 
 @router.post("/governance/violations")
-async def detect_violations(project_id: str = Query("")) -> dict:
+async def detect_violations(request: Request, project_id: str = Query("")) -> dict:
     """P9: 违规内容检测 — 图片走视觉模型，文本走关键词；可选第三方服务。"""
+    _require_project_access(request, project_id or None)
     manager = _get_manager(project_id or None)
     return await manager.detect_violations()
 
 
 @router.get("/governance/summary")
-async def governance_summary(project_id: str = Query("")) -> dict:
+async def governance_summary(request: Request, project_id: str = Query("")) -> dict:
     """P9: 素材治理摘要 — 总数/去重数/使用统计/异常状态。"""
+    _require_project_access(request, project_id or None)
     manager = _get_manager(project_id or None)
     assets = await manager.list_assets()
     total = len(assets)

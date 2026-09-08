@@ -62,7 +62,7 @@ class AIVideoGenTool(BaseTool):
         base_url: str = "",
         model: str = "",
         poll_interval: float = 5.0,
-        # 批5：600s < TaskQueue 900s 超时，避免付费生成在下载阶段被队列杀掉
+        # 600s < TaskQueue 900s 超时，避免付费生成在下载阶段被队列杀掉
         poll_timeout: float = 600.0,
     ) -> None:
         self._provider = provider
@@ -137,7 +137,7 @@ class AIVideoGenTool(BaseTool):
                 return {"success": False, "error": "创建任务未返回 id"}
             while loop.time() < deadline:
                 await asyncio.sleep(self._poll_interval)
-                # 批5：单次轮询失败（网络/5xx）不再废弃整个付费任务
+                # 单次轮询失败（网络/5xx）不再废弃整个付费任务
                 try:
                     q = await c.get(_poll_task_path(task_id), headers=headers)
                     q.raise_for_status()
@@ -202,7 +202,7 @@ class AIVideoGenTool(BaseTool):
                     video_url = data.get("task_result", {}).get("videos", [{}])[0].get("url", "")
                     if not video_url:
                         return {"success": False, "error": "生成成功但未返回视频 URL", "task_id": task_id}
-                    # 批5：统一落地 + 登记（URL 有效期短，且需进入素材检索链路）
+                    # 统一落地 + 登记（URL 有效期短，且需进入素材检索链路）
                     local_path = await self._download(c, video_url)
                     record_generated("ai_video_gen", prompt=prompt, type="video",
                                      path=local_path,
@@ -268,7 +268,7 @@ class AIVideoGenPlugin(CapabilityPlugin):
         logger.info("[AIVideoGen] Tool + MaterialSource 已注册 (provider=%s)", tool._provider)
 
     def shutdown(self) -> None:
-        # 批7：disable 时真正移除工具与素材源（旧实现 pass → 禁用后
+        # disable 时真正移除工具与素材源（旧实现 pass → 禁用后
         # 工具仍可用、能力概览仍播报）
         try:
             ToolRegistry.unregister("ai_video_generate")

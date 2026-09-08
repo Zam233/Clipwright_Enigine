@@ -237,6 +237,26 @@ curl -X POST http://localhost:8000/api/template/batch/my_template \
   -d '[{"topic": "视频1"}, {"topic": "视频2"}]'
 ```
 
+## 运行时配置
+
+配置三来源，优先级从高到低：**store（`settings.json`）> 环境变量/.env > 默认值**。
+
+- 「设置 → 后端配置」页（`/api/settings`）读写的是 store；secret 字段以 Fernet 加密落盘
+  （需要 `CLIPWRIGHT_WEBHOOK_SECRET_KEY` 或 `CLIPWRIGHT_ACCOUNT_JWT_SECRET`，否则拒绝保存 secret）。
+- 清除某项覆盖即回退到 env/.env 值（无则默认值）。
+- **热更新语义**（`clipwright/config_schema.py` 每个字段标注 hot）：
+  - hot=true（默认）：每请求/每调用实时读取，保存后立即生效；变更钩子
+    （`services/settings_runtime.py`）会同步失效 LLM 客户端缓存、RAG embedder、
+    视觉服务单例、渲染编码器探测缓存。
+  - hot=false（需重启）：仅启动时读取一次——`HOST/PORT/DEBUG`、`MONGO_URI/DB`、
+    `CORS_ORIGINS`、`*_DIR` 路径、`MAX_CONCURRENT_RENDERS`（线程池导入时固定）、
+    `PLUGIN_SIGNATURE_KEY`、`WEBHOOK_SECRET_KEY`（Fernet 缓存）、`LLM_PROVIDER`
+    （模块级单例快照）等。
+- 新增 Settings 字段时必须在 `config_schema.py` 补元数据（覆盖度测试会红灯），
+  并在 `.env.example` 补示例键。
+- 注意：不要向 `.env` 写入 Settings 未声明的 `CLIPWRIGHT_*` 键——pydantic-settings
+  会抛 `extra_forbidden` 导致启动失败。
+
 ## 测试
 
 ```bash

@@ -260,7 +260,7 @@ class TestKeyframedDrawtextFilter:
         assert "borderw=6" in underlay
         assert "fontcolor=0x00FFFF@0.6" in underlay
         assert "fontcolor=0xffffff" in main
-        # V3: kf 时间归一化为片段相对秒（0..2）+ start_sec=1.0 → 窗口 1.0..max(3.0,4.0)
+        # kf 时间归一化为片段相对秒（0..2）+ start_sec=1.0 → 窗口 1.0..max(3.0,4.0)
         assert "enable='between(t,1.0,4.0)'" in underlay
         assert "enable='between(t,1.0,4.0)'" in main
 

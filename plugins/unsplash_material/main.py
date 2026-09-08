@@ -63,6 +63,11 @@ class UnsplashMaterialSource(MaterialSource):
                 tags=[query],
                 resolution=f"{photo.get('width', 0)}x{photo.get('height', 0)}",
                 source=self.source_id,
+                # 轮 82（版权链）：Unsplash License 免费商用
+                author=user.get("name", ""),
+                source_url=photo.get("links", {}).get("html", ""),
+                license="Unsplash License",
+                license_url="https://unsplash.com/license",
                 metadata={
                     "unsplash_id": photo["id"],
                     "photographer": user.get("name", ""),

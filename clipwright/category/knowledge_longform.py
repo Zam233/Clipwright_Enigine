@@ -26,7 +26,7 @@ class KnowledgeLongformPlugin(BaseCategoryPlugin):
             "high": {"base_shot_ms": 4000, "min_shot_ms": 800, "max_shot_ms": 10000},
         }
         shot_params = density_map.get(rhythm.cut_density_tier, density_map["medium"])
-        # 批8：Persona 显式 base_shot_duration_ms 优先于密度档位推导
+        # Persona 显式 base_shot_duration_ms 优先于密度档位推导
         if getattr(rhythm, "base_shot_duration_ms", None):
             shot_params = {**shot_params,
                            "base_shot_ms": int(rhythm.base_shot_duration_ms)}
@@ -50,6 +50,20 @@ class KnowledgeLongformPlugin(BaseCategoryPlugin):
     def get_shot_params(self, translated: dict[str, Any]) -> dict[str, Any]:
         return translated.get("shot_params", {})
 
+    def get_structure_template(self) -> str:
+        """轮 84：知识讲解类场景骨架——钩子→论点→论证→实例→总结。"""
+        return (
+            "钩子引入（约10%）：抛出问题/反常识观点/悬念，口播为主、不配图表\n"
+            "核心论点（约25%）：提出核心观点并拆解，配逻辑关系图/概念图辅助理解\n"
+            "论据论证（约30%）：数据、原理、因果链条逐层展开，数据处配图表可视化\n"
+            "现实实例（约20%）：真实案例/历史事件/应用场景佐证论点\n"
+            "总结升华（约15%）：回顾要点、给出判断或思考，收束全片"
+        )
+
+
+    def get_annotation_templates(self) -> list[str]:
+        """轮 87：节奏/标注模板（原 translate_persona 死键，现在结构 prompt 消费）。"""
+        return ["hook", "theory_acceleration", "real_world_return", "climax_silence"]
     def get_mg_style_guidance(self) -> str:
         return (
             "知识区长片的 MG 动画风格：优雅、学术、有质感。"

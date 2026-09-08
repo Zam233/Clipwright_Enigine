@@ -67,7 +67,7 @@ class MGRenderer:
         "stroke_width", "stroke_color", "border_width", "border_color",
     }
 
-    # D12：CSS 值中的 url(...) 会触发 headless Chrome 主动请求（SSRF /
+    # CSS 值中的 url(...) 会触发 headless Chrome 主动请求（SSRF /
     # 本地文件读取），LLM 生成的 MG JSON 不可信 → 一律中和。
     _URL_CSS_RE = re.compile(r"url\s*\(", re.IGNORECASE)
 
@@ -412,7 +412,7 @@ window.__timelines = window.__timelines || {{}}; window.__timelines['main'] = {{
                     "MG 元素 #%d 图片 src 被拒绝（D12：http(s)/越权路径/穿越路径）", idx
                 )
                 return None
-            # M7: 本地文件路径转 file:/// URI（headless Chrome 相对解析会裂图）
+            # 本地文件路径转 file:/// URI（headless Chrome 相对解析会裂图）
             w_val = fill(elem.get("width", 320))
             h_val = fill(elem.get("height", 240))
             radius_css = ""

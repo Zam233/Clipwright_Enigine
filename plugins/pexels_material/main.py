@@ -90,6 +90,13 @@ class PexelsMaterialSource(MaterialSource):
         resp = await self._client.get("/videos/search", params={
             "query": query, "per_page": min(top_k, 80), "size": "medium",
         })
+        # 轮 81：429 单次退避重试（免费额度 200 次/小时，限流是常态而非异常）
+        if resp.status_code == 429:
+            import asyncio as _aio
+            await _aio.sleep(2.0)
+            resp = await self._client.get("/videos/search", params={
+                "query": query, "per_page": min(top_k, 80), "size": "medium",
+            })
         resp.raise_for_status()
         data = resp.json()
 
@@ -111,6 +118,11 @@ class PexelsMaterialSource(MaterialSource):
                 duration_sec=float(video.get("duration", 0)),
                 resolution=f"{video.get('width', 0)}x{video.get('height', 0)}",
                 source=self.source_id,
+                # 轮 82（版权链）：Pexels License 免费商用但需尊重署名惯例
+                author=video.get("user", {}).get("name", ""),
+                source_url=video.get("url", ""),
+                license="Pexels License",
+                license_url="https://www.pexels.com/license/",
                 metadata={
                     "pexels_id": video["id"],
                     "photographer": video.get("user", {}).get("name", ""),
@@ -132,6 +144,13 @@ class PexelsMaterialSource(MaterialSource):
         resp = await self._client.get("/v1/search", params={
             "query": query, "per_page": min(top_k, 80),
         })
+        # 轮 81：429 单次退避重试（与视频搜索同策略）
+        if resp.status_code == 429:
+            import asyncio as _aio
+            await _aio.sleep(2.0)
+            resp = await self._client.get("/v1/search", params={
+                "query": query, "per_page": min(top_k, 80),
+            })
         resp.raise_for_status()
         data = resp.json()
 
@@ -147,6 +166,11 @@ class PexelsMaterialSource(MaterialSource):
                 tags=[f"pexels_{query}"],
                 resolution=f"{photo.get('width', 0)}x{photo.get('height', 0)}",
                 source=self.source_id,
+                # 轮 82（版权链）
+                author=photo.get("photographer", ""),
+                source_url=photo.get("url", ""),
+                license="Pexels License",
+                license_url="https://www.pexels.com/license/",
                 metadata={
                     "pexels_id": photo["id"],
                     "photographer": photo.get("photographer", ""),

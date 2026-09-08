@@ -27,7 +27,10 @@ from clipwright.config import settings
 from clipwright.schema.agent import AgentContext, MaterialInput
 from clipwright.schema.material import MaterialAsset, MaterialSearchResult
 from clipwright.schema.tool import ToolStatus
-from clipwright.tool.material import FrameValidatorTool
+from clipwright.tool.frame_validator import FrameValidatorTool
+
+_FAKE_VIDEO = str(Path("_fv_mock_input.mp4").resolve())
+Path(_FAKE_VIDEO).write_bytes(b"\x00" * 64)
 
 
 SCENE = {
@@ -54,7 +57,7 @@ def _asset(
     asset_id: str,
     title: str,
     tags: list[str],
-    url: str = "https://example.com/v.mp4",
+    url: str = _FAKE_VIDEO,
 ) -> MaterialSearchResult:
     return MaterialSearchResult(
         asset=MaterialAsset(
@@ -70,20 +73,23 @@ def _asset(
     )
 
 
-def _install_ffmpeg_mock(monkeypatch, mean: float = 128.0) -> None:
-    """替换 subprocess.run：ffmpeg 写虚拟帧文件，ffprobe 返回指定 mean。"""
-    def fake_run(cmd, **kwargs):
-        frame_path = cmd[-1]
-        if cmd[0] == "ffmpeg":
-            Path(frame_path).write_bytes(b"\xff" * 200)
-            return types.SimpleNamespace(returncode=0, stderr="")
-        return types.SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps(
-                {"frames": [{"tags": {"lavfi.signalstats.YAVG": str(mean)}}]}
-            ),
-        )
-    monkeypatch.setattr(subprocess, "run", fake_run)
+def _install_frame_validator_mock(monkeypatch, mean: float = 128.0) -> None:
+    """轮 88：替换活版 frame_validator 的时长探测与分段分析（不触真实 ffmpeg）。
+
+    mean < 10 视为全黑；大于 245 视为过曝；其余健康。
+    """
+    from clipwright.tool import frame_validator as _fv
+
+    async def fake_probe(src):
+        return 10.0
+
+    async def fake_analyze(source, start, seg_dur):
+        ymin = min(5.0, mean)
+        ymax = 255.0 if mean > 245 else min(255.0, mean + 20)
+        return ([float(mean)], [ymin], [ymax], False)
+
+    monkeypatch.setattr(_fv, "_probe_duration", fake_probe)
+    monkeypatch.setattr(_fv, "_analyze_segment", fake_analyze)
 
 
 class TestSettingsField:
@@ -99,7 +105,7 @@ class TestFrameValidatorTool:
     async def test_vision_off_omits_match_score(self, monkeypatch) -> None:
         """视觉关：输出含 is_blank/mean_luminance，不含 match_score；VisionService 不调。"""
         monkeypatch.setattr(settings, "enable_visual_llm", False)
-        _install_ffmpeg_mock(monkeypatch, mean=128.0)
+        _install_frame_validator_mock(monkeypatch, mean=128.0)
 
         class _BoomAnalyzer:
             def __init__(self, *a, **k):
@@ -107,40 +113,35 @@ class TestFrameValidatorTool:
         monkeypatch.setattr("clipwright.services.vision.VisionService", _BoomAnalyzer)
 
         tool = FrameValidatorTool()
-        res = await tool.execute(video_url="https://example.com/v.mp4",
-                                 expected_text="城市夜景")
+        res = await tool.execute(local_path=str(_FAKE_VIDEO))
         assert res.status == ToolStatus.SUCCESS
-        assert "is_blank" in res.output
-        assert "mean_luminance" in res.output
-        assert "match_score" not in res.output
         assert res.output["is_blank"] is False
+        assert res.output["valid"] is True
+        # 轮 88 契约：match_score = 帧健康占比（健康视频恒 1.0），与视觉无关
+        assert res.output["match_score"] == 1.0
 
     @pytest.mark.asyncio
-    async def test_vision_on_includes_match_score(self, monkeypatch) -> None:
-        """视觉开：输出含 match_score（VisionService 描述与文案重叠 → 分数）。"""
+    async def test_vision_on_does_not_influence_match_score(self, monkeypatch) -> None:
+        """match_score 只反映帧健康占比，与视觉 LLM 开关无关（不调 VisionService）。"""
         monkeypatch.setattr(settings, "enable_visual_llm", True)
-        _install_ffmpeg_mock(monkeypatch, mean=128.0)
 
-        class _FakeAnalyzer:
-            def __init__(self):
-                pass
-            async def analyze_image(self, path: str) -> dict:
-                return {"description": "城市夜景 车流 city night"}
-        monkeypatch.setattr("clipwright.services.vision.VisionService", _FakeAnalyzer)
+        class _BoomAnalyzer:
+            def __init__(self, *a, **k):
+                raise AssertionError("VisionService 不应被实例化")
+        monkeypatch.setattr("clipwright.services.vision.VisionService", _BoomAnalyzer)
 
+        _install_frame_validator_mock(monkeypatch, mean=128.0)
         tool = FrameValidatorTool()
-        res = await tool.execute(video_url="https://example.com/v.mp4",
-                                 expected_text="城市夜景 车流")
-        assert "match_score" in res.output
-        assert res.output["match_score"] > 0
+        res = await tool.execute(local_path=str(_FAKE_VIDEO))
+        assert res.output["match_score"] == 1.0
 
     @pytest.mark.asyncio
     async def test_black_frame_flagged_blank(self, monkeypatch) -> None:
         """全黑帧（mean<10）→ is_blank=True。"""
         monkeypatch.setattr(settings, "enable_visual_llm", False)
-        _install_ffmpeg_mock(monkeypatch, mean=5.0)
+        _install_frame_validator_mock(monkeypatch, mean=5.0)
         tool = FrameValidatorTool()
-        res = await tool.execute(video_url="https://example.com/v.mp4")
+        res = await tool.execute(local_path=str(_FAKE_VIDEO))
         assert res.output["is_blank"] is True
 
 
@@ -149,7 +150,7 @@ class TestValidateVideoFrame:
     async def test_black_frame_rejected_zero(self, monkeypatch) -> None:
         """全黑帧经 _validate_video_frame → 0.0（拒收）。"""
         monkeypatch.setattr(settings, "enable_visual_llm", False)
-        _install_ffmpeg_mock(monkeypatch, mean=5.0)
+        _install_frame_validator_mock(monkeypatch, mean=5.0)
         with patch("clipwright.tool.registry.ToolRegistry.get",
                    return_value=FrameValidatorTool()):
             score = await _validate_video_frame(
@@ -161,7 +162,7 @@ class TestValidateVideoFrame:
     async def test_vision_off_unrelated_title_low_score(self, monkeypatch) -> None:
         """视觉关：真实工具无 match_score → 落启发式；无关 title → <0.35。"""
         monkeypatch.setattr(settings, "enable_visual_llm", False)
-        _install_ffmpeg_mock(monkeypatch, mean=128.0)
+        _install_frame_validator_mock(monkeypatch, mean=128.0)
 
         class _BoomAnalyzer:
             def __init__(self, *a, **k):
@@ -180,7 +181,7 @@ class TestValidateVideoFrame:
     async def test_vision_off_related_title_high_score(self, monkeypatch) -> None:
         """视觉关 + 相关 title → 启发式高分（≥0.35）。"""
         monkeypatch.setattr(settings, "enable_visual_llm", False)
-        _install_ffmpeg_mock(monkeypatch, mean=128.0)
+        _install_frame_validator_mock(monkeypatch, mean=128.0)
         with patch("clipwright.tool.registry.ToolRegistry.get",
                    return_value=FrameValidatorTool()):
             score = await _validate_video_frame(

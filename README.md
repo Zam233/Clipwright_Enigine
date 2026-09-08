@@ -490,4 +490,4 @@ Level 2 ─── LoRA微调 ────── 上传50+历史视频，微调Ag
 - [docs/development.md](docs/development.md)（开发指南）
 - 计划与执行进度：[docs/fix-and-feature-plan.md](docs/fix-and-feature-plan.md)
 
-所有改动需通过：后端 `python -m pytest tests -q`（1154+）、前端 `npm run test`（349+）与 `npx tsc --noEmit`。
+所有改动需通过：后端 `python -m pytest tests -q`（1500+）、前端 `npm run test`（420+）与 `npx tsc --noEmit`。

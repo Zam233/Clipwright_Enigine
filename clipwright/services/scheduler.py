@@ -127,7 +127,10 @@ def run_due_once(now: Optional[datetime] = None) -> list[dict]:
         try:
             if _handler:
                 try:
-                    _handler({**doc.get("payload", {}), "schedule_id": sid, "name": doc.get("name", "")})
+                    # 轮 86（出片闭环）：附带 owner_id，供定时管线归属
+                    _handler({**doc.get("payload", {}), "schedule_id": sid,
+                              "name": doc.get("name", ""),
+                              "owner_id": doc.get("owner_id", "")})
                 except Exception as e:
                     logger.warning("定时任务回调失败 %s: %s", sid, e)
             _coll().update_one(

@@ -1,0 +1,22 @@
+fields:
+  provider:
+    type: string
+    value: "volcengine"
+    label: "生成 Provider（volcengine/openai/flux/sd）"
+    description: "volcengine = 火山方舟 Seedream；openai / flux / sd 需对应凭据"
+  api_key:
+    type: string
+    value: ""
+    secret: true
+    label: "API Key"
+    description: "当前 provider 的密钥（volcengine = ARK_API_KEY；留空则读对应环境变量）"
+  ark_base_url:
+    type: string
+    value: ""
+    label: "Ark Base URL"
+    description: "火山方舟 API 地址，默认官方端点；留空则读环境变量 ARK_BASE_URL"
+  model:
+    type: string
+    value: ""
+    label: "模型名"
+    description: "生成模型（如 doubao-seedream-4-0）；留空则读环境变量 ARK_SEEDREAM_MODEL"

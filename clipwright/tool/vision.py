@@ -86,7 +86,7 @@ class SemanticMatchTool(BaseTool):
         candidate_paths: list[str],
         **kwargs: Any,
     ) -> ToolExecResult:
-        # 批7.2：诚实状态——占位假 SUCCESS 会让调用方误以为语义匹配已生效
+        # 2：诚实状态——占位假 SUCCESS 会让调用方误以为语义匹配已生效
         return ToolExecResult(
             status=ToolStatus.DEPENDENCY_MISSING,
             tool_name=self.name,

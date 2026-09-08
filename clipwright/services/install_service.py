@@ -34,7 +34,7 @@ def install_plugin_from_bytes(data: bytes, plugin_id: str, expected_sha256: str 
     """
     if len(data) > MAX_TARBALL_BYTES:
         raise ValueError("包大小超限")
-    # P2: sha256 完整性校验
+    # sha256 完整性校验
     if expected_sha256:
         import hashlib
         actual = hashlib.sha256(data).hexdigest()
@@ -66,7 +66,7 @@ def install_plugin_from_bytes(data: bytes, plugin_id: str, expected_sha256: str 
         logger.info("市场插件安装成功: %s", plugin_id)
         return plugin_dir
     except Exception:
-        # P2: 回滚——即使 tmp == plugin_dir（已 move）也删除，不留坏插件卡死启动
+        # 回滚——即使 tmp == plugin_dir（已 move）也删除，不留坏插件卡死启动
         if plugin_dir.exists():
             shutil.rmtree(plugin_dir, ignore_errors=True)
         if tmp.exists() and tmp != plugin_dir:
@@ -74,10 +74,17 @@ def install_plugin_from_bytes(data: bytes, plugin_id: str, expected_sha256: str 
         raise
 
 
-def install_persona_from_bytes(data: bytes, persona_id: str) -> Path:
+def install_persona_from_bytes(data: bytes, persona_id: str, expected_sha256: str = "") -> Path:
     """安装 Persona 包：解包 → 校验 persona.yaml 可解析 → 移动到 personas/{id}。"""
     if len(data) > MAX_TARBALL_BYTES:
         raise ValueError("包大小超限")
+    if expected_sha256:
+        import hashlib
+
+        actual = hashlib.sha256(data).hexdigest()
+        if actual != expected_sha256:
+            raise ValueError(
+                f"sha256 校验失败: expected={expected_sha256[:16]}... actual={actual[:16]}...")
     persona_root = Path(settings.persona_dir)
     dest = persona_root / persona_id
     if dest.exists():
@@ -107,8 +114,8 @@ async def install_plugin(package_id: str, version: str = "") -> dict:
     """从市场下载并安装插件。"""
     from clipwright.services import market_client
 
-    data, _ = await market_client.download_plugin(package_id, version)
-    path = await _run_in_thread(install_plugin_from_bytes, data, package_id)
+    data, sha256 = await market_client.download_plugin(package_id, version)
+    path = await _run_in_thread(install_plugin_from_bytes, data, package_id, sha256 or "")
     return {"status": "ok", "plugin_id": package_id, "path": str(path)}
 
 
@@ -116,8 +123,8 @@ async def install_persona(package_id: str, version: str = "") -> dict:
     """从市场下载并安装 Persona。"""
     from clipwright.services import market_client
 
-    data, _ = await market_client.download_persona(package_id, version)
-    path = await _run_in_thread(install_persona_from_bytes, data, package_id)
+    data, sha256 = await market_client.download_persona(package_id, version)
+    path = await _run_in_thread(install_persona_from_bytes, data, package_id, sha256 or "")
     return {"status": "ok", "persona_id": package_id, "path": str(path)}
 
 

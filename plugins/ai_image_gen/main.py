@@ -48,7 +48,7 @@ def _snap_size(w: int, h: int) -> str:
         scale = (_MAX_TOTAL_PX / total) ** 0.5
     else:
         scale = 1.0
-    # 批5：向上取整到偶数——旧 int() 截断可能仍低于像素下限（1279x720 案例）
+    # 向上取整到偶数——旧 int() 截断可能仍低于像素下限（1279x720 案例）
     w2 = max(2, -((-int(w * scale)) // 2) * 2)
     h2 = max(2, -((-int(h * scale)) // 2) * 2)
     return "{}x{}".format(w2, h2)
@@ -250,7 +250,7 @@ class AIImageGenPlugin(CapabilityPlugin):
         logger.info("[AIImageGen] Tool + MaterialSource 已注册 (provider=%s)", provider)
 
     def shutdown(self) -> None:
-        # 批7：disable 时真正移除工具与素材源（旧实现 pass → 禁用后
+        # disable 时真正移除工具与素材源（旧实现 pass → 禁用后
         # 工具仍可用、能力概览仍播报）
         try:
             ToolRegistry.unregister("ai_image_generate")

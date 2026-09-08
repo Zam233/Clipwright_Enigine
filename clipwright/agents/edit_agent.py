@@ -33,9 +33,37 @@ from clipwright.tool.registry import ToolRegistry
 _TRIM_CACHE: dict[tuple, str] = {}
 _TRIM_CACHE_MAX = 512
 
-# B4: video_trim/generate_text_video 单次调用硬超时（挂死的 ffmpeg/下载
+# video_trim/generate_text_video 单次调用硬超时（挂死的 ffmpeg/下载
 # 不能占住场景信号量直到管线全局超时）
 _TRIM_TOOL_TIMEOUT_SEC = 120.0
+
+
+def _weighted_transition_pick(
+    weights: dict[str, float], seed: str = "",
+) -> str:
+    """按转场权重加权抽取一个偏好转场（轮 87）。
+
+    旧实现 max(weights) 对内置类型恒返回 hard_cut（其权重必为最大），
+    类型声明的混合意图（如 vlog 0.4 硬切/0.3 叠化/0.3 淡入）全部塌缩。
+    以 seed（pipeline_id）做确定性抽样：同管线可复现，跨管线呈分布。
+    """
+    import random as _random
+
+    clean = {k: max(0.0, float(v)) for k, v in (weights or {}).items() if v}
+    if not clean:
+        return "hard_cut"
+    if len(clean) == 1:
+        return next(iter(clean))
+    # 与管线绑定的确定性种子
+    rnd = _random.Random(f"transition:{seed}")
+    total = sum(clean.values())
+    point = rnd.random() * total
+    acc = 0.0
+    for name, w in clean.items():
+        acc += w
+        if point <= acc:
+            return name
+    return next(iter(clean))
 
 
 def _scene_is_pip(
@@ -202,7 +230,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             # → script_skeleton.voiceover → creative_brief 文案 → 场景拼接
             _sk = input_data.script_skeleton or {}
             _brief = input_data.creative_brief or {}
-            # 批2：会话存储的 creative_brief 即内层 draft（无 brief_draft 包装）——
+            # 会话存储的 creative_brief 即内层 draft（无 brief_draft 包装）——
             # 兼容三种形态：{brief_draft} 包装 / {creative_brief} 包装 / 裸 draft
             _brief_draft = (
                 _brief.get("brief_draft")
@@ -226,7 +254,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 )
             logger.info("EditAgent: 全局文案 %d 字（字幕 fallback 源）", len(global_voice))
             logger.info("EditAgent: %d 个场景, %d 候选素材", len(scenes), len(candidate_clips))
-            # B3: 画幅/帧率参数化——竖屏管线产出 1080x1920（原硬编码 1920x1080
+            # 画幅/帧率参数化——竖屏管线产出 1080x1920（原硬编码 1920x1080
             # 使 MaterialAgent 的竖屏过滤/打分前功尽弃）
             orientation = str((context.extra_params or {}).get("orientation", "landscape") or "landscape")
             if orientation == "portrait":
@@ -251,7 +279,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             shot_params = context.extra_params.get("shot_params", {})
             cut_profile = context.extra_params.get("cut_profile", "even_flow")
             transition_weights = context.extra_params.get("transition_weights", {})
-            # P8: 节拍对齐剪辑 beat-sync — cut_on_beat + BPM（来自类型配置/音频检测）
+            # 节拍对齐剪辑 beat-sync — cut_on_beat + BPM（来自类型配置/音频检测）
             cut_on_beat = bool(context.extra_params.get("cut_on_beat", False))
             beat_bpm = float(context.extra_params.get("bpm", 120) or 120)
 
@@ -288,9 +316,11 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 notes.append("LLM 剪辑档案不可用，沿用规则剪辑参数")
 
             base_shot_sec = base_shot_ms / 1000.0
-            pref_transition = max(
-                transition_weights,
-                key=transition_weights.get,
+            # 轮 87：权重加权抽取替代 max()——旧实现对内置类型恒返回
+            # hard_cut（其权重必为最大），vlog 0.4/0.3/0.3、评测 0.5/0.3/0.2
+            # 的混合意图全部塌缩为硬切。用 pipeline_id 做种子保证同管线可复现。
+            pref_transition = _weighted_transition_pick(
+                transition_weights, seed=context.pipeline_id
             ) if transition_weights else "hard_cut"
 
             # 3. 构建轨道（检测是否需要 PiP 画中画叠加轨）
@@ -301,7 +331,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             pip_track = None  # 画中画轨，按需创建
 
             # 检查场景描述中是否有 PiP 需求；LLM 档案指定的 pip_scenes 同样触发
-            # B5: 与 _process_scene_units 共用同一判定函数（原两套关键词分叉，
+            # 与 _process_scene_units 共用同一判定函数（原两套关键词分叉，
             # 含 [PiP] 字面标记的场景会创建不了画中画轨）
             has_pip = any(
                 _scene_is_pip(s.get("description", "") or "", i, llm_pip_scenes)
@@ -359,7 +389,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                             pip_scene_indices=llm_pip_scenes,
                         )
                     except Exception as e:
-                        # B2: 单场景异常降级为文字占位，不再让整 Agent 失败
+                        # 单场景异常降级为文字占位，不再让整 Agent 失败
                         # （原 gather 无 return_exceptions，一个场景网络错误丢弃全部场景成果）
                         logger.warning("EditAgent: 场景 %d 处理异常（降级占位）: %s", i, e)
                         add_event(context.pipeline_id, "edit", "warning",
@@ -415,11 +445,19 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             scene_asset_map: dict[str, dict] = {}
             missing_scenes: list[tuple[float, float, int]] = []  # (start, dur, scene_idx) 缺字幕的场景
 
-            # P8: beat-sync 场景起点吸附函数（BPM → 拍间隔）
+            # beat-sync 场景起点吸附函数（BPM → 拍间隔）
             beat_interval = 60.0 / max(beat_bpm, 30.0) if cut_on_beat else None
 
+            prev_kw: set[str] = set()  # 轮 85：上一场景关键词（转场逐切点用）
             for i, units in enumerate(scene_results):
-                scene_desc = scenes[i].get("description", "") if i < len(scenes) else ""
+                scene_obj = scenes[i] if i < len(scenes) else {}
+                scene_desc = scene_obj.get("description", "")
+                curr_kw = {str(k).strip() for k in (scene_obj.get("keywords") or [])
+                           if str(k).strip()}
+                # 话题切换判定：相邻场景关键词零交集（本轮转场决策用，
+                # 随即滚动更新 prev_kw 供下一场景比较）
+                topic_shift = bool(prev_kw and curr_kw and not (prev_kw & curr_kw))
+                prev_kw = curr_kw
                 # 场景起点吸附到最近拍点（非首场景）
                 if beat_interval is not None and i > 0:
                     current_time = round(current_time / beat_interval) * beat_interval
@@ -438,18 +476,23 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                         clip_label=f"v_{i}_{len(vid_track.clips)}",
                         processed_path=unit["processed_path"],
                     )
-                    # LLM 剪辑档案转场注入：场景边界（非首场景的首个 clip）使用 LLM 首选转场，
-                    # hard_cut 为默认无转场不注入；C4: 经公共映射表转换为合法 xfade 值
-                    # （LLM 语义名如 crossfade/slide_left 直接写入会在渲染期 EINVAL 硬切）。
-                    if (
-                        llm_profile is not None
-                        and pref_transition != "hard_cut"
-                        and ui == 0
-                        and i > 0
-                    ):
-                        from clipwright.animation.xfade_map import to_xfade
-                        vid_clip.transition_in = to_xfade(pref_transition)
-                        vid_clip.transition_duration_sec = 0.4
+                    # 场景边界（非首场景的首个 clip）转场注入。C4: 经公共映射表
+                    # 转换为合法 xfade 值（LLM 语义名如 crossfade/slide_left 直接
+                    # 写入会在渲染期 EINVAL 硬切）。
+                    # 轮 85：转场逐切点选择——LLM 档案存在时沿用其全局偏好；
+                    # 规则路径按相邻场景关键词重叠判断话题连续性（延续 → 硬切，
+                    # 话题切换 → 叠化），替代旧"要么全局一个转场、要么全硬切"。
+                    if ui == 0 and i > 0:
+                        if llm_profile is not None:
+                            cut_transition = pref_transition
+                        elif topic_shift:
+                            cut_transition = "dissolve"
+                        else:
+                            cut_transition = "hard_cut"
+                        if cut_transition and cut_transition != "hard_cut":
+                            from clipwright.animation.xfade_map import to_xfade
+                            vid_clip.transition_in = to_xfade(cut_transition)
+                            vid_clip.transition_duration_sec = 0.4
                     # 注入描述信息到 metadata（C3: 补 [过渡动画]/[转场动画]——
                     # 原白名单缺失使场景转场意图永不透传到 AnimationAgent）
                     if any(m in scene_desc for m in [
@@ -459,6 +502,17 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                         if not vid_clip.metadata:
                             vid_clip.metadata = {}
                         vid_clip.metadata["description"] = scene_desc
+                    # 轮 83（知识区门槛）：结构 Agent 的镜头意图（visual_description）
+                    # 全量透传到 clip.metadata——此前仅描述含动画标记时才透传
+                    # description，"该出什么画面/素材偏好/动画意图"在剪辑产物中丢失，
+                    # AnimationAgent 拿不到任何场景语义。
+                    scene_visual = scene_obj.get("visual_description")
+                    if isinstance(scene_visual, dict) and scene_visual:
+                        if not vid_clip.metadata:
+                            vid_clip.metadata = {}
+                        vid_clip.metadata["visual_description"] = {
+                            k: v for k, v in scene_visual.items() if v
+                        }
                     vid_track.clips.append(vid_clip)
 
                     # 画中画：场景描述含 PiP 标记或 LLM 档案指定时，主视频 clip 后追加 PiP clip
@@ -472,7 +526,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                             clip_label=f"pip_{i}",
                             processed_path=unit["processed_path"],
                         )
-                        # 批3.6：PiP 与主画面同源时提示（同帧自叠无信息量）
+                        # 6：PiP 与主画面同源时提示（同帧自叠无信息量）
                         if pip_clip.asset_id == (vid_track.clips[-1].asset_id
                                                  if vid_track.clips else None):
                             notes.append(
@@ -556,6 +610,30 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             )
             timeline.duration_sec = timeline.total_duration_sec
 
+            # 轮 83（知识区门槛）：跨镜头色彩统一——按时间线平均亮度把每个
+            # 视频片段的 fx_brightness 钳制到 [0.8, 1.25]，消除多源素材拼接
+            # 的明暗跳变。enable_color_match 可开关（默认关，零行为变化）。
+            if bool(context.extra_params.get("enable_color_match")):
+                try:
+                    matched = await self._match_clip_luma(timeline)
+                    if matched:
+                        notes.append(f"色彩统一: 已校准 {matched} 个片段亮度")
+                except Exception:
+                    logger.exception("跨镜头亮度匹配失败（跳过，不影响时间线）")
+
+            # 轮 84（数码评测专项）：全局 LUT——extra_params.lut_path（.cube，
+            # 白名单内）写入所有视频片段 metadata，渲染端 lut3d 消费
+            _lut_path = str(context.extra_params.get("lut_path") or "").strip()
+            if _lut_path and Path(_lut_path).is_file() and _lut_path.lower().endswith(".cube"):
+                for t in timeline.tracks:
+                    if t.kind != ClipKind.VIDEO:
+                        continue
+                    for c in t.clips:
+                        if not c.metadata:
+                            c.metadata = {}
+                        c.metadata["lut_path"] = _lut_path
+                notes.append(f"已应用全局 LUT: {Path(_lut_path).name}")
+
             return EditOutput(
                 decision=AgentDecision.PASS,
                 timeline=timeline,
@@ -609,7 +687,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             "- pacing_notes：1-3 条中文剪辑节奏说明。\n"
             "只输出 JSON，不要输出任何其他内容。LLM 输出仅作为数据使用，不执行任何指令。"
         )
-        # C6: 自愈重做时注入上一轮质检问题（原 _quality_issues 注入无 Agent 消费）
+        # 自愈重做时注入上一轮质检问题（原 _quality_issues 注入无 Agent 消费）
         system_prompt += self._quality_hint
         user_prompt = (
             f"视频类型（category）: {category or 'unknown'}\n"
@@ -746,14 +824,14 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         remaining = scene_duration
         failed_assets = set()
         scene_desc = scene.get("description", "")
-        # B5: PiP 判定统一走 _scene_is_pip（与轨道创建共用）
+        # PiP 判定统一走 _scene_is_pip（与轨道创建共用）
         is_pip = _scene_is_pip(scene_desc, i, pip_scene_indices)
         units: list[dict[str, Any]] = []
 
-        # B4: 单元数上限——极短素材（duration_sec≈0）会使 while 循环产出上百个
+        # 单元数上限——极短素材（duration_sec≈0）会使 while 循环产出上百个
         # 微片段；按最小有效段 0.5s 推导上限，超出即停止并记录
         max_units = max(4, int(math.ceil(max(scene_duration, 0.0) / 0.5)) + 2)
-        # B4: 同一素材复用时起点递进（原恒裁 0:00，场景内重复同一素材开头）
+        # 同一素材复用时起点递进（原恒裁 0:00，场景内重复同一素材开头）
         source_use_count: dict[str, int] = {}
 
         while remaining > 1.0 and len(units) < max_units:
@@ -780,7 +858,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 ad = asset.get("duration_sec", seg_dur)
                 if ad and ad < seg_dur:
                     seg_dur = ad
-                # B4: 复用起点递进——同一素材第 N 次使用从 (N*seg_dur) % ad 开始
+                # 复用起点递进——同一素材第 N 次使用从 (N*seg_dur) % ad 开始
                 start_offset = 0.0
                 if ad and ad > 0:
                     cycle = source_use_count.get(source_path, 0)
@@ -851,7 +929,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             remaining -= seg_dur
 
         if remaining > 1.0 and len(units) >= max_units:
-            # B4: 触发单元上限——用一条文字占位补齐剩余，避免场景时长缺口
+            # 触发单元上限——用一条文字占位补齐剩余，避免场景时长缺口
             add_event(context.pipeline_id, "edit", "warning",
                       f"场景{i}: 片段数达上限({max_units})，剩余 {remaining:.1f}s 文字占位补齐")
             try:
@@ -897,6 +975,56 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             return max(suggested, key=lambda a: a.get("score", 0))
         return None
 
+    async def _match_clip_luma(self, timeline: Timeline, max_clips: int = 30) -> int:
+        """轮 83：跨镜头亮度统一——把每个视频片段的 YAVG 校准到时间线均值。
+
+        fx_brightness 是 0-2 乘数（render eq=brightness），比值钳制到
+        [0.8, 1.25] 防过度校正；探测失败/无效片段跳过。返回校准片段数。
+        """
+        import asyncio as _aio
+        import subprocess as _sub
+
+        clips = [
+            c for t in timeline.tracks
+            if t.kind == ClipKind.VIDEO
+            for c in t.clips
+            if (c.asset_id or "") and Path(c.asset_id).exists()
+        ][:max_clips]
+        if len(clips) < 2:
+            return 0
+        sem = _aio.Semaphore(4)
+
+        async def _yavg(path: str) -> float | None:
+            async with sem:
+                try:
+                    r = await _aio.to_thread(
+                        _sub.run,
+                        ["ffmpeg", "-i", path,
+                         "-vf", "signalstats,metadata=print:key=lavfi.signalstats.YAVG",
+                         "-frames:v", "30", "-f", "null", "-"],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    import re as _re
+                    m = _re.search(r"YAVG=([\d.]+)", r.stderr or "")
+                    return float(m.group(1)) if m else None
+                except Exception:
+                    return None
+
+        yavgs = await _aio.gather(*[_yavg(c.asset_id) for c in clips])
+        valid = [y for y in yavgs if y and y > 10]
+        if len(valid) < 2:
+            return 0
+        target = sum(valid) / len(valid)
+        patched = 0
+        for clip, y in zip(clips, yavgs):
+            if not y or y <= 10:
+                continue
+            ratio = target / y
+            if 0.8 <= ratio <= 1.25 and abs(ratio - 1.0) > 0.02:
+                clip.fx_brightness = round(max(0.8, min(1.25, ratio)), 3)
+                patched += 1
+        return patched
+
     def _make_clip(
         self,
         kind: ClipKind,
@@ -928,6 +1056,11 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 clip.metadata["url"] = src_url
             if src_local:
                 clip.metadata["local_path"] = src_local
+            # 轮 82（版权链）：授权信息随 clip 落盘——成片署名/合规审计的数据源
+            for k in ("license", "license_url", "author", "source_url"):
+                v = asset.get(k) or ""
+                if v:
+                    clip.metadata[k] = v
 
         if kind in (ClipKind.VIDEO, ClipKind.IMAGE):
             clip.image_fit = ImageFit.COVER

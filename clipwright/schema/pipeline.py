@@ -71,7 +71,7 @@ class PipelineState(BaseModel):
         return step
 
     def get_step(self, agent_name: str) -> Optional[PipelineStep]:
-        # 批3：返回最后一条同名步骤——自愈/重试会追加同名步骤，旧实现返回
+        # 返回最后一条同名步骤——自愈/重试会追加同名步骤，旧实现返回
         # 首条（被重做覆盖的过期结果）
         for s in reversed(self.steps):
             if s.agent_name == agent_name:

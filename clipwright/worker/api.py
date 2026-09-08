@@ -21,10 +21,14 @@ from typing import Any, BinaryIO
 from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from clipwright.config import logger
+from clipwright.config import logger, settings
 from clipwright.services.async_util import spawn_background
+from clipwright.services.settings_store import apply_all as _apply_settings_overrides
 from clipwright.worker.render_runner import run_job
 from clipwright.worker.store import store
+
+# 与主应用一致：启动前应用 settings.json 的运行时配置覆盖
+_apply_settings_overrides(settings)
 
 
 def _resolve_worker_token() -> str:

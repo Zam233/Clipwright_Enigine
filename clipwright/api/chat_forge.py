@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from clipwright.schema.persona import PersonaManifest
@@ -70,14 +70,22 @@ async def chat_add_knowledge(req: ChatKnowledgeRequest) -> dict[str, Any]:
 
 
 @router.post("/commit", response_model=PersonaManifest)
-async def chat_commit(req: ChatCommitRequest) -> PersonaManifest:
+async def chat_commit(req: ChatCommitRequest, request: Request) -> PersonaManifest:
     """保存当前 Persona 草稿为正式配置。"""
     try:
-        return await _forge.commit(
+        manifest = await _forge.commit(
             session_id=req.session_id,
             persona_id=req.persona_id,
             persona_name=req.persona_name,
         )
+        # 轮 80（红线）：落盘产物标记归属，否则 jwt 模式下创建者自己读不到
+        from clipwright.authz import current_user_id
+        uid = current_user_id(request)
+        if uid and not manifest.owner_id:
+            manifest.owner_id = uid
+            from clipwright.persona.repository import PersonaRepository
+            PersonaRepository.from_settings().save_manifest(manifest)
+        return manifest
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Session not found: {req.session_id}")
 

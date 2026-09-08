@@ -2,6 +2,7 @@ fields:
   api_key:
     type: string
     value: ""
+    secret: true
     label: "Pexels API Key"
     description: "从 https://www.pexels.com/api/ 获取，免费版每小时 200 次请求"
   enable_visual_llm:

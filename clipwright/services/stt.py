@@ -87,7 +87,22 @@ class STTService:
 
         # 如果是视频，先提取音频（同步 ffmpeg，offload 到线程避免冻住事件循环）
         audio_file = await asyncio.to_thread(self._ensure_audio, path)
+        # 轮 81：临时 wav 用完即删（旧实现每次视频转写泄漏一个文件）
+        tmp_audio = audio_file != str(path)
 
+        try:
+            return await self._transcribe_any(audio_file, language, model_size, word_timestamps)
+        finally:
+            if tmp_audio:
+                try:
+                    Path(audio_file).unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    async def _transcribe_any(
+        self, audio_file: str, language: str, model_size: str, word_timestamps: bool
+    ) -> STTResult:
+        """依次尝试 whisper → faster-whisper → 保底占位。"""
         try:
             # 尝试 whisper Python 包（CPU 推理可达数分钟，必须 offload）
             result = await asyncio.to_thread(

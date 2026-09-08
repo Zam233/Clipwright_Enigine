@@ -355,7 +355,7 @@ els.forEach(el=>{
                 "-c:v", encoder, "-pix_fmt", pix_fmt,
                 "-c:a", "copy", output_path,
             ]
-            # R10: 走 run_tracked_ff——cancel_render 可 terminate 在跑的 ffmpeg，
+            # 走 run_tracked_ff——cancel_render 可 terminate 在跑的 ffmpeg，
             # 且 rc≠0 时如实返回 False（此前恒 True，叠加失败被静默丢弃）。
             r = run_tracked_ff(cmd, capture_output=True, text=False, timeout=1800)
             if r.returncode != 0:

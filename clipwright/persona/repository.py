@@ -332,7 +332,7 @@ class PersonaRepository:
         pdir = self.persona_path(persona_id)
         if pdir.exists():
             shutil.rmtree(pdir)
-        # B6: 删除级联向量 — 清理 ChromaDB 中的 persona 索引
+        # 删除级联向量 — 清理 ChromaDB 中的 persona 索引
         try:
             from clipwright.rag.retriever import Retriever
             Retriever().delete_index(persona_id)

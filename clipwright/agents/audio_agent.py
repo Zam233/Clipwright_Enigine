@@ -83,7 +83,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
             if timeline is None:
                 return AudioOutput(decision=AgentDecision.PASS, timeline=timeline)
 
-            # 批8：Persona 目标响度 → 时间线元数据（渲染端 loudnorm 消费）。
+            # Persona 目标响度 → 时间线元数据（渲染端 loudnorm 消费）。
             # 注意放在 timeline None 守卫之后（轮64审计 D14：写元数据曾先于守卫）
             _loud = audio_config.get("target_loudness_lufs")
             if _loud is not None:
@@ -131,7 +131,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
             audio_path = context.extra_params.get("audio_path", "")
             audio_duration = float(context.extra_params.get("audio_duration_sec", 0) or 0)
             if audio_path and Path(audio_path).exists():
-                # 批2：ffprobe 实测配音时长（旧实现用需求阶段估算值 → 画面/配音错位）
+                # ffprobe 实测配音时长（旧实现用需求阶段估算值 → 画面/配音错位）
                 try:
                     import subprocess as _sub
                     _pr = _sub.run(
@@ -160,12 +160,50 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                         duration_sec=audio_duration,
                         volume=1.0,
                         eq_preset="voice",
-                        metadata={"dubbing": True, "source": "upload"},
+                        metadata={"dubbing": True, "source": "upload",
+                                  # 轮 85：上传配音多为个人录制，默认降噪
+                                  "denoise": True},
                     )
                     audio_track.clips.insert(0, dub_clip)
                     if timeline.duration_sec < audio_duration:
                         timeline.duration_sec = audio_duration
                     notes.append(f"已导入配音文件: {audio_duration:.0f}s")
+
+                    # 轮 83（知识区门槛）：上传配音路径的字幕强制对齐。
+                    # EditAgent 的字幕是字数比例估算，与真实配音必然漂移；
+                    # 用 STTService.align（whisper 可用时强制对齐，否则按时长
+                    # 估算）把句级时间戳回写 CAPTION 轨（与自动 TTS 路径同语义）。
+                    try:
+                        from clipwright.services.stt import STTService
+
+                        caption_texts: list[str] = []
+                        for t in timeline.tracks:
+                            if t.kind != ClipKind.CAPTION:
+                                continue
+                            for c in t.clips:
+                                meta = getattr(c, "metadata", {}) or {}
+                                txt = (getattr(c, "text", "") or meta.get("text") or "").strip()
+                                if txt:
+                                    caption_texts.append(txt)
+                        if caption_texts and audio_duration > 0:
+                            stt = STTService()
+                            aligned = await stt.align(audio_path, "。".join(caption_texts))
+                            if aligned.success and aligned.segments:
+                                segs = [
+                                    {
+                                        "text": s.get("text", ""),
+                                        "start_sec": float(s.get("start", 0) or 0),
+                                        "end_sec": float(s.get("end", 0) or 0),
+                                        "audio_path": audio_path,
+                                    }
+                                    for s in aligned.segments
+                                    if (s.get("text") or "").strip()
+                                ]
+                                if segs:
+                                    self._realign_captions_to_narration(timeline, segs)
+                                    notes.append(f"上传配音字幕对齐: {len(segs)} 段")
+                    except Exception:
+                        logger.exception("上传配音字幕对齐失败（保留估算字幕）")
 
             # 3. 如果有 BPM 检测工具且配置启用，分析音频节奏
             bpm = 120
@@ -177,9 +215,17 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                             input_path=clip.asset_id,
                         )
                         if result.status == "success":
-                            detected = result.output.get("bpm", 120)
-                            bpm = detected
-                            notes.append(f"检测到 BPM: {bpm}")
+                            detected = result.output.get("bpm")
+                            if detected:
+                                bpm = detected
+                                notes.append(f"检测到 BPM: {bpm}")
+                            else:
+                                # 轮 82：检测失败不再伪造 120（method=failed，
+                                # 旧实现 notes 声称"检测到 BPM: 120"误导下游）
+                                notes.append(
+                                    f"BPM 自动检测失败（{result.output.get('error', 'unknown')}），"
+                                    "节拍剪辑跳过；可在需求中手填 beat_bpm"
+                                )
                             break
 
             # 3b. 素材库 BGM 检索（A1）：优先用素材库音频填充 BGM；
@@ -187,7 +233,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
             library_bgm: list[dict] = []
             try:
                 if MaterialRegistry.list():
-                    # 批2：简报 bgm_requirement 真正参与检索（旧实现仅进 notes）
+                    # 简报 bgm_requirement 真正参与检索（旧实现仅进 notes）
                     library_bgm = await _search_bgm_from_library(bgm_slots, extra_query=brief_bgm)
             except Exception:
                 library_bgm = []
@@ -220,7 +266,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                         clip.start_sec, timeline.duration_sec, bgm_slots
                     ),
                 }
-                # A1: 素材库音频 → 填充 bgm_style / bgm_library（无结果时零改动）
+                # 素材库音频 → 填充 bgm_style / bgm_library（无结果时零改动）
                 if library_bgm:
                     lib_asset = library_bgm[i % len(library_bgm)]["asset"]
                     lib_title = (getattr(lib_asset, "title", "") or "").strip()
@@ -272,7 +318,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                     for c in t.clips
                 )
                 if _tl_dur > 0 and not _has_real_bgm:
-                    # 批1：预过滤无路径条目（见 _valid_bgm_entries）
+                    # 预过滤无路径条目（见 _valid_bgm_entries）
                     library_bgm = self._valid_bgm_entries(library_bgm)
                 if _tl_dur > 0 and not _has_real_bgm and library_bgm:
                     _bgm_cursor = 0.0
@@ -329,7 +375,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                 auto_dub = bool(audio_config.get("auto_dub", True))
                 script_text = context.extra_params.get("script_text", "")
                 video_mode = context.extra_params.get("video_mode", "")
-                # 批2：voiceover 模式优先使用用户确认的逐场景口播稿（规划书
+                # voiceover 模式优先使用用户确认的逐场景口播稿（规划书
                 # raw_scenes），修复「确认的分镜口播 ≠ 实际配音文本」的契约断裂
                 _plan = context.extra_params.get("production_plan") or {}
                 _raw_scenes = _plan.get("raw_scenes") if isinstance(_plan, dict) else []
@@ -341,7 +387,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                 if _scene_scripts:
                     script_text = "\n".join(_scene_scripts)
                     notes.append(f"旁白采用规划书逐场景口播稿（{len(_scene_scripts)} 场景）")
-                # B7: 已上传配音（audio_path）时跳过 TTS——原 has_dub（配音插入）
+                # 已上传配音（audio_path）时跳过 TTS——原 has_dub（配音插入）
                 # 与 has_narration（TTS 门控）互不感知，两者同时满足会把上传配音
                 # 与整条 TTS 旁白同时混音，成片出现双语音叠加。
                 uploaded_dub = bool(audio_path)
@@ -372,7 +418,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                             "dub_script",
                             voice_id=voice_id,
                             text=script_text,
-                            # 批2：透传会话 split_mode（旧实现硬编码 sentence）
+                            # 透传会话 split_mode（旧实现硬编码 sentence）
                             split_mode=str(context.extra_params.get("split_mode") or "sentence"),
                         )
 
@@ -395,7 +441,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                                     timeline.tracks.append(narr_track)
 
                                 # 按顺序铺设旁白 clip
-                                # B9: 失败分段（无音频文件/零时长）不入轨——原实现
+                                # 失败分段（无音频文件/零时长）不入轨——原实现
                                 # 零长 clip 照样入轨并推进 cursor，字幕按成功段重排
                                 # 后与实际音频系统性漂移
                                 cursor = 0.0
@@ -420,6 +466,9 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                                             "text": seg.get("text", ""),
                                             "voice_id": voice_id,
                                             "seed": seg.get("seed"),
+                                            # 轮 85：TTS 输出干净，降噪无副作用；
+                                            # 渲染端 afftdn 仅对带此标记的音源生效
+                                            "denoise": True,
                                         },
                                     )
                                     narr_track.clips.append(clip)
@@ -455,7 +504,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                                 )
 
                                 # ── 7b. 由旁白分段生成字幕 clip（受 subtitle_enabled 门控）──
-                                # A8 修复：_realign_captions_to_narration 已把实测旁白字幕
+                                # 修复：_realign_captions_to_narration 已把实测旁白字幕
                                 # 重建进 CAPTION 轨；此处再往 TEXT 轨追加同类 clip 会造成
                                 # 渲染双轨合并 → 同一句字幕烧两遍。检测到已重建即跳过。
                                 if (
@@ -625,7 +674,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                 logger.exception("AudioAgent: 音频兜底/告警块异常")
                 notes.append("音频兜底配置处理异常（详见日志）")
 
-            # 批2：时长对账——画面轨总长 vs 音频轨终点。音频超长 → 末个画面
+            # 时长对账——画面轨总长 vs 音频轨终点。音频超长 → 末个画面
             # clip 冻结帧补齐（旧实现无任何对账，音频 80s 配画面 60s 以
             # 冻结帧 + 静音尾巴交付且无人知晓）
             try:
@@ -728,7 +777,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
             if new_clips:
                 t.clips = new_clips
                 logger.info("AudioAgent: 字幕轨按实测旁白时间重建 %d 条", len(new_clips))
-        # B9: 重建全部字幕轨（原实现 return 只处理首轨，多字幕轨时其余轨保留
+        # 重建全部字幕轨（原实现 return 只处理首轨，多字幕轨时其余轨保留
         # 过时的估算时间轴 → 音画/字膜漂移）
 
     @staticmethod
@@ -764,28 +813,37 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
     def _match_bgm_slot(
         clip_start: float, total_duration: float, bgm_slots: dict
     ) -> str:
-        """根据时间位置匹配合适的 BGM 槽位。"""
+        """根据时间位置匹配合适的 BGM 槽位。
+
+        轮 84 修复：persona 实际槽位键是 main_argument/reflection 等自定义名，
+        旧实现硬编码英文键全部失配 → 永远回退第一个槽位。现在补充常见
+        persona 键别名，并在全部失配时按进度线性映射到槽位序号。
+        """
         if not bgm_slots:
             return "default"
         progress = clip_start / max(total_duration, 1)
-        # 按进度选择：开头、中间、高潮、结尾
+        # 按进度选择：开头、中间、高潮、结尾（英/中/常见 persona 键别名）
         if progress < 0.15:
-            for key in ("intro", "opening", "hook"):
+            for key in ("intro", "opening", "hook", "开场", "引入"):
                 if key in bgm_slots:
                     return key
         elif progress < 0.4:
-            for key in ("backing", "background", "theory_backing"):
+            for key in ("backing", "background", "theory_backing", "main_argument",
+                        "论述", "主体", "铺垫"):
                 if key in bgm_slots:
                     return key
         elif progress < 0.7:
-            for key in ("climax", "build", "intensity"):
+            for key in ("climax", "build", "intensity", "高潮", "论证加速"):
                 if key in bgm_slots:
                     return key
         else:
-            for key in ("outro", "resolution", "ending"):
+            for key in ("outro", "resolution", "ending", "reflection", "总结", "收尾"):
                 if key in bgm_slots:
                     return key
-        return list(bgm_slots.keys())[0]
+        # 序号等分回退：按进度线性映射到槽位序（首槽位盖开头，末槽位盖结尾）
+        keys = list(bgm_slots.keys())
+        idx = min(len(keys) - 1, int(progress * len(keys) * 1.15))
+        return keys[max(0, idx)]
 
     # ── LLM BGM 情绪匹配（A2）────────────────────────────
 

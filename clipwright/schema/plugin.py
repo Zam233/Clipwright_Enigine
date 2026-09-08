@@ -51,10 +51,10 @@ class PluginMetadata(BaseModel):
     enabled: bool = Field(default=True)
     has_ui: bool = Field(default=False, description="是否定义了前端 UI (ui.json)")
     config: dict[str, Any] = Field(default_factory=dict)
-    # M1: 签名/权限状态
+    # 签名/权限状态
     signed: bool = Field(default=False, description="manifest 是否携带签名")
     verified: bool = Field(default=False, description="签名是否已验证通过（配置签名密钥时有效）")
-    # M2: 依赖解析结果
+    # 依赖解析结果
     dependency_ok: bool = Field(default=True, description="依赖是否全部满足")
     missing_dependencies: list[str] = Field(default_factory=list)
     # SA-2: 插件注册的自定义 Agent 名（AgentRegistry 归属，管理面展示）

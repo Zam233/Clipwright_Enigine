@@ -69,8 +69,13 @@ class Settings(BaseSettings):
 
     # --- 服务 ---
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 8080
     debug: bool = False
+
+    # --- 安全红线 ---
+    # 显式承认「无鉴权对外开放」才允许绑定非回环地址启动（fail-closed）。
+    # 仅用于受控本地/内网环境；生产部署应设置 api_token 或 account_verify_mode。
+    allow_insecure: bool = False
 
     # --- Pipeline 并行度（稳妥有界并发）---
     # 动画阶段逐片段 LLM MG 生成的并发路数；默认 6（LLM 生成是网络等待，并发翻倍时间近半）。
@@ -197,7 +202,7 @@ class Settings(BaseSettings):
     rag_embed_batch_size: int = 20
 
     # --- 结构 Agent ---
-    # A9：voiceover 双稿择优（双倍最大 LLM 调用，择优启发式只比较场景数）。
+    # voiceover 双稿择优（双倍最大 LLM 调用，择优启发式只比较场景数）。
     # 默认关闭；需要时置 true 开启。
     structure_double_draft: bool = False
 

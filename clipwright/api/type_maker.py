@@ -158,7 +158,7 @@ async def create_type(definition: TypeDefinition) -> dict:
     try:
         _hot_register(yaml_path)
     except Exception as e:
-        # B24: 热注册失败回滚 — 删除刚写的文件，避免半注册残留
+        # 热注册失败回滚 — 删除刚写的文件，避免半注册残留
         yaml_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"类型注册失败，已回滚: {e}") from e
 

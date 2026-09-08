@@ -10,7 +10,7 @@ from clipwright.rag.retriever import Retriever
 
 router = APIRouter(prefix="/api/persona", tags=["rag"])
 
-# P0-8: 懒加载单例 — ChromaDB 初始化失败时服务仍可启动，RAG 端点返回明确 503
+# 懒加载单例 — ChromaDB 初始化失败时服务仍可启动，RAG 端点返回明确 503
 _retriever: Retriever | None = None
 _retriever_error: str = ""
 _repo = PersonaRepository.from_settings()

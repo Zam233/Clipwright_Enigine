@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from typing import Any, Optional
 
@@ -29,7 +30,7 @@ class ColorCorrectTool(BaseTool):
     ) -> ToolExecResult:
         out = _ensure_output_path(output_path, "cc_", ".mp4")
         try:
-            # T3: hue 不属于 eq 滤镜——拆为独立 hue 滤镜串联
+            # hue 不属于 eq 滤镜——拆为独立 hue 滤镜串联
             filters = []
             eq_parts = []
             if brightness != 0:
@@ -45,7 +46,7 @@ class ColorCorrectTool(BaseTool):
             if hue != 0:
                 filters.append(f"hue=h={hue}")
             vf = ",".join(filters) if filters else "null"
-            result = subprocess.run(
+            result = await asyncio.to_thread(subprocess.run, 
                 ["ffmpeg", "-y", "-i", input_path,
                  "-vf", vf,
                  "-c:a", "copy", out],
@@ -82,7 +83,7 @@ class LutApplyTool(BaseTool):
     ) -> ToolExecResult:
         out = _ensure_output_path(output_path, "lut_", ".mp4")
         try:
-            result = subprocess.run(
+            result = await asyncio.to_thread(subprocess.run, 
                 ["ffmpeg", "-y", "-i", input_path,
                  "-vf", f"lut3d={lut_path}",
                  "-c:a", "copy", out],
@@ -123,7 +124,8 @@ class ColorMatchTool(BaseTool):
         out = _ensure_output_path(output_path, "cm_", ".mp4")
         try:
             # 1. 提取参考片段平均亮度（YAVG）
-            ref_probe = subprocess.run(
+            ref_probe = await asyncio.to_thread(
+                subprocess.run,
                 ["ffmpeg", "-i", reference_path,
                  "-vf", "signalstats,metadata=print:key=lavfi.signalstats.YAVG",
                  "-frames:v", "30", "-f", "null", "-"],
@@ -131,7 +133,8 @@ class ColorMatchTool(BaseTool):
             )
             ref_yavg = _extract_yavg(ref_probe.stderr)
             # 2. 提取目标片段平均亮度
-            tgt_probe = subprocess.run(
+            tgt_probe = await asyncio.to_thread(
+                subprocess.run,
                 ["ffmpeg", "-i", input_path,
                  "-vf", "signalstats,metadata=print:key=lavfi.signalstats.YAVG",
                  "-frames:v", "30", "-f", "null", "-"],
@@ -144,7 +147,7 @@ class ColorMatchTool(BaseTool):
                 delta = (ref_yavg - tgt_yavg) * 1.2 * float(strength)
                 delta = max(-0.5, min(0.5, delta))
             eq_filter = f"eq=brightness={delta:.4f}:contrast=1.0:saturation=1.0"
-            result = subprocess.run(
+            result = await asyncio.to_thread(subprocess.run, 
                 ["ffmpeg", "-y", "-i", input_path,
                  "-vf", eq_filter,
                  "-c:a", "copy", out],

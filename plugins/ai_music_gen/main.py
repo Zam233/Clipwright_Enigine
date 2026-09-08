@@ -219,7 +219,7 @@ class AIMusicGenTool(BaseTool):
                 await asyncio.sleep(self._poll_interval)
                 qbody = json.dumps({"TaskID": task_id}, ensure_ascii=False).encode("utf-8")
                 qheaders = _sign_v4(ak, sk, "QuerySong", qbody, datetime.now(timezone.utc))
-                # 批5：瞬态错误不再废弃已付费任务（连续失败有上限兜底）
+                # 瞬态错误不再废弃已付费任务（连续失败有上限兜底）
                 try:
                     q = await c.post(_music_url("QuerySong"), headers=qheaders, content=qbody)
                     q.raise_for_status()
@@ -297,7 +297,7 @@ class AIMusicGenTool(BaseTool):
             data = resp.json()
             audio_url = data.get("audio_url", "")
             if audio_url:
-                # 批5：统一落地 + 登记（与 volcengine 分支行为一致）
+                # 统一落地 + 登记（与 volcengine 分支行为一致）
                 assert_public_url(audio_url)
                 r = await c.get(audio_url)
                 r.raise_for_status()
@@ -340,7 +340,7 @@ class AIMusicGenPlugin(CapabilityPlugin):
                     tool._provider, tool._billing_mode)
 
     def shutdown(self) -> None:
-        # 批7：disable 时真正移除工具与素材源（旧实现 pass → 禁用后
+        # disable 时真正移除工具与素材源（旧实现 pass → 禁用后
         # 工具仍可用、能力概览仍播报）
         try:
             ToolRegistry.unregister("ai_music_generate")

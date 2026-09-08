@@ -95,7 +95,12 @@ class FolderDeleteRequest(BaseModel):
 
 @router.post("")
 async def create_project(req: ProjectCreateRequest, request: Request) -> dict[str, Any]:
-    """Create a new project (backend assigns id; P3-3B: 记录 owner_id)。"""
+    """Create a new project (backend assigns id; P3-3B: 记录 owner_id)。
+
+    轮 81：owner_id 随首次写入落盘（消灭二次写失败 → 无主项目 → 用户看不到
+    自己项目的竞态窗口）。
+    """
+    uid = current_user_id(request)
     data = _manager.create(
         name=req.name,
         timeline=req.timeline,
@@ -104,15 +109,9 @@ async def create_project(req: ProjectCreateRequest, request: Request) -> dict[st
         folder=req.folder,
         tags=req.tags,
         agent_state=req.agent_state,
+        owner_id=uid or "",
     )
-    uid = current_user_id(request)
-    if uid:
-        try:
-            _manager.save(data["id"], {"owner_id": uid})
-            data["owner_id"] = uid
-        except Exception as e:
-            logger.warning("owner_id 写入失败: %s", e)
-    # P5-B5: 审计
+    # 审计
     from clipwright import audit
     audit.record("project_create", uid, {"project_id": data["id"], "name": data.get("name", "")})
     return data
@@ -186,13 +185,13 @@ async def delete_project(project_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(e))
     if not ok:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-    # P5-B5: 审计
+    # 审计
     from clipwright import audit
     audit.record("project_delete", current_user_id(request), {"project_id": project_id})
     return {"status": "deleted", "id": project_id}
 
 
-# A2: 回收站（软删除 / 恢复 / 永久删除）
+# 回收站（软删除 / 恢复 / 永久删除）
 
 @router.post("/{project_id}/trash")
 async def trash_project(project_id: str, request: Request) -> dict[str, Any]:
@@ -283,7 +282,7 @@ async def archive_project(project_id: str, request: Request) -> StreamingRespons
                     k += 1
                 used_names.add(arc_name)
                 arc = f"{project_id}/media/{arc_name}"
-                # 批68：媒体文件 ZIP_STORED（MP4/JPG 压缩无收益纯烧 CPU）
+                # 媒体文件 ZIP_STORED（MP4/JPG 压缩无收益纯烧 CPU）
                 zi = zipfile.ZipInfo(arc)
                 zi.compress_type = zipfile.ZIP_STORED
                 zi.external_attr = 0o644 << 16
@@ -341,7 +340,7 @@ async def import_archive(request: Request, file: UploadFile = File(...)) -> dict
     按 archive_media_map 还原时间线 asset_id，重建项目。"""
     import uuid as _uuid
 
-    # 批68：file.size 预检（旧实现先全量 read 再检查 → 2GB 上传也先吃满内存）
+    # file.size 预检（旧实现先全量 read 再检查 → 2GB 上传也先吃满内存）
     if file.size and file.size > 500 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="归档过大（上限 500MB）")
     try:
@@ -368,7 +367,7 @@ async def import_archive(request: Request, file: UploadFile = File(...)) -> dict
     media_root = Path("PluginData") / "archives" / new_id
     media_map = data.get("archive_media_map") or {}
     # 解包媒体
-    # 批68：解压炸弹防护——累计解压大小上限 2GB
+    # 解压炸弹防护——累计解压大小上限 2GB
     import shutil
     total_uncompressed = sum(i.file_size for i in zf.infolist())
     if total_uncompressed > 2 * 1024 * 1024 * 1024:

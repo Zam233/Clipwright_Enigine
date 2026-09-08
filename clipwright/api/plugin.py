@@ -95,7 +95,7 @@ async def enable_plugin(plugin_id: str, request: Request = None) -> dict[str, st
     try:
         _loader.load(plugin_id)
     except Exception as e:
-        # 批7：加载失败回退禁用态并返回 502（旧实现裸 500 且状态不一致）
+        # 加载失败回退禁用态并返回 502（旧实现裸 500 且状态不一致）
         _loader.set_enabled(plugin_id, False)
         raise HTTPException(status_code=502, detail=f"插件加载失败: {str(e)[:200]}")
     return {"status": "ok", "plugin_id": plugin_id, "enabled": "true"}
@@ -109,7 +109,7 @@ async def disable_plugin(plugin_id: str, request: Request = None) -> dict[str, s
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
     _loader.set_enabled(plugin_id, False)
-    # P4: 禁用时同时注销 Hook + Prompt（能力即时收缩）
+    # 禁用时同时注销 Hook + Prompt（能力即时收缩）
     try:
         from clipwright.plugins.hooks import HookRegistry
         HookRegistry.unregister_plugin(plugin_id)
@@ -265,7 +265,7 @@ async def unregister_plugin(plugin_id: str, request: Request = None) -> dict[str
     except Exception as e:
         from clipwright.config import logger
         logger.warning("插件数据目录清理失败 %s: %s", plugin_id, e)
-    # P4: 统一注销 Hook + Prompt
+    # 统一注销 Hook + Prompt
     try:
         from clipwright.plugins.hooks import HookRegistry
         HookRegistry.unregister_plugin(plugin_id)
@@ -304,6 +304,7 @@ async def put_plugin_config(plugin_id: str, request: Request) -> dict[str, objec
 
     M13: 已发现但未加载的插件同样可保存（预配置），加载后生效。
     """
+    _require_admin(request)  # 配置可含 secret 凭据，jwt 模式下仅管理员可写
     _validate_plugin_id(plugin_id)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
@@ -330,7 +331,7 @@ async def put_plugin_config(plugin_id: str, request: Request) -> dict[str, objec
     if errors:
         raise HTTPException(status_code=400, detail={"message": "配置校验失败", "errors": errors})
 
-    # P5: secret 掩码回写防护——如果 PUT 值包含 ****（掩码标记），保留原加密值
+    # secret 掩码回写防护——如果 PUT 值包含 ****（掩码标记），保留原加密值
     from clipwright.plugins.config_types import mask_secret_value
     _plugin = _loader.get(plugin_id)
     if _plugin and hasattr(_plugin, 'config') and isinstance(_plugin.config, dict):
@@ -345,8 +346,9 @@ async def put_plugin_config(plugin_id: str, request: Request) -> dict[str, objec
 
 
 @router.delete("/{plugin_id}/config")
-async def delete_plugin_config(plugin_id: str) -> dict[str, str]:
+async def delete_plugin_config(plugin_id: str, request: Request) -> dict[str, str]:
     """删除数据目录的 config.yaml，回退到源码默认配置。"""
+    _require_admin(request)
     _validate_plugin_id(plugin_id)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")

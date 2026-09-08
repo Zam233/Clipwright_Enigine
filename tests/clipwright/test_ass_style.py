@@ -72,14 +72,14 @@ class TestBuildAssStyle14Fields:
         assert "PlayResY: 1080" in style
         style_line = [l for l in style.splitlines() if l.startswith("Style:")][0]
         expected = ("Style: Default,MSYH,60,&H00FFFFFF,&H00FFFFFF,&H000000FF,&H00000000,"
-                    "-1,-1,0,0,100,100,5,0,1,3,1,2,10,10,10,1")
+                    "-1,-1,0,0,100,100,5,0,1,3,1,2,96,96,64,1")
         assert style_line == expected
 
     def test_default_style_no_bold_no_italic_no_shadow(self) -> None:
         ts = TextStyle()
         style_line = [l for l in ts.build_ass_style().splitlines() if l.startswith("Style:")][0]
         expected = ("Style: Default,MSYH,48,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,"
-                    "0,0,0,0,100,100,0,0,1,0,0,2,10,10,10,1")
+                    "0,0,0,0,100,100,0,0,1,0,0,2,96,96,64,1")
         assert style_line == expected
 
     def test_shadow_flag_zero_when_no_shadow(self) -> None:
@@ -94,13 +94,13 @@ class TestBuildAssStyle14Fields:
         for pos, n in cases.items():
             style_line = [l for l in TextStyle(position=pos).build_ass_style().splitlines()
                           if l.startswith("Style:")][0]
-            assert style_line.rstrip().endswith(f",{n},10,10,10,1")
+            assert style_line.rstrip().endswith(f",{n},96,96,64,1")
 
 
 class TestBuildAssDialogue:
     def test_basic_bottom(self) -> None:
         d = TextStyle(position="bottom").build_ass_dialogue("Hello", 1.0, 4.0)
-        # 批1：行级 MarginV 承载 offset_y（默认 0 → 10）；每行显式 \fn \fs \1c
+        # 行级 MarginV 承载 offset_y（默认 0 → 10）；每行显式 \fn \fs \1c
         assert d.startswith("Dialogue: 0,0:00:01.00,0:00:04.00,Default,,0,0,10,,")
         assert r"\an2" in d
         assert d.endswith("Hello")
@@ -128,7 +128,7 @@ class TestBuildAssDialogue:
         d = ts.build_ass_dialogue("Glow", 0.0, 1.0)
         assert r"\bord8" in d
         assert r"\blur8" in d
-        # 批1 修复：辉光由描边层 \3c 承载，不再污染主填充色 \1c
+        # 修复：辉光由描边层 \3c 承载，不再污染主填充色 \1c
         assert r"\3c&H0000FFFF" in d
         assert r"\1c&H00FFFFFF" in d
 

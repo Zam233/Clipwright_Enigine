@@ -60,7 +60,8 @@ from clipwright.api import pipeline as pipeline_api
 from clipwright.api import persona as persona_api
 from clipwright.api import persona_forge as persona_forge_api
 from clipwright.api import chat_forge as chat_forge_api
-from clipwright.api import model_test as model_test_api
+from clipwright.api import model_probe as model_probe_api
+from clipwright.api import settings as settings_api
 from clipwright.api import rag as rag_api
 from clipwright.api import render as render_api
 from clipwright.api import tool as tool_api
@@ -101,6 +102,11 @@ from clipwright.animation import register_builtin_animations, AnimationRegistry 
 from clipwright.material import MaterialRegistry
 from clipwright.skill import register_builtin_skills, SkillRegistry
 from clipwright.tool import ToolRegistry, register_builtin_tools
+
+# 运行时配置覆盖：settings.json 的 store 值必须在 app/加载器/静态挂载
+# 构造之前应用到 settings 单例（CORS/uvicorn/Mongo 等只在启动时读一次）
+from clipwright.services import settings_store as _settings_store
+_settings_store.apply_all(settings)
 
 # 全局实例
 _plugin_loader: PluginLoader | None = None
@@ -207,10 +213,46 @@ async def lifespan(app: FastAPI):
         from clipwright.api import pipeline as _pipeline_api
 
         def _sched_handler(payload: dict) -> None:
-            """定时任务默认动作：写 trace 事件（管线/通知可扩展）。"""
-            from clipwright.services.trace import add_event as _te
-            _te(payload.get("schedule_id", "sched"), "system", "info",
-                f"定时任务触发: {payload.get('name', '')}")
+            """定时任务动作：payload 含 topic 时启动管线（轮 86 出片闭环），
+            否则退化为写 trace 事件。
+
+            定时出片用法：payload = {"topic": "...", "persona_id": "...",
+            "category_plugin_id": "...", "extra_params": {...}}——字段即
+            PipelineRequest；extra_params.auto_render=true 可连渲染一起自动跑。
+            """
+            if not payload.get("topic"):
+                from clipwright.services.trace import add_event as _te
+                _te(payload.get("schedule_id", "sched"), "system", "info",
+                    f"定时任务触发: {payload.get('name', '')}")
+                return
+            import asyncio as _asyncio
+            from types import SimpleNamespace as _NS
+
+            from clipwright.schema.pipeline import PipelineRequest as _PR
+
+            owner = payload.get("owner_id", "")
+            # 桩 Request：runner 只用 state.user_id / headers.get
+            _stub_req = _NS(state=_NS(user_id=owner or None, user_role=None),
+                            headers={})
+            _extra = payload.get("extra_params") or {}
+            _known = {k: v for k, v in payload.items() if k in _PR.model_fields}
+            _known.setdefault("persona_id", _extra.get("persona_id", "default"))
+            _known.setdefault("category_plugin_id",
+                              _extra.get("category_plugin_id", "knowledge_longform"))
+            try:
+                _req_model = _PR(**_known)
+            except Exception as e:
+                logger.error("定时管线 payload 非法（%s）: %s", payload.get("name", ""), e)
+                return
+
+            async def _run():
+                try:
+                    from clipwright.api import pipeline as _papi
+                    await _papi.run_pipeline_async(_req_model, _stub_req)
+                except Exception:
+                    logger.exception("定时管线启动失败: %s", payload.get("name", ""))
+
+            _asyncio.get_running_loop().create_task(_run())
 
         _sched.start(_sched_handler, interval_sec=2.0)
     except Exception as e:
@@ -263,11 +305,31 @@ from fastapi.responses import JSONResponse
 
 from clipwright.security import SecurityViolation
 
-# P0-14: 请求体大小上限（防超大 JSON/上传 DoS；分块上传端点自行处理流式上限）
+# 请求体大小上限（防超大 JSON/上传 DoS；分块上传端点自行处理流式上限）
 _MAX_BODY_BYTES = 20 * 1024 * 1024
 # multipart 文件上传端点（asset/voice 等）自行流式校验大小（2GB/100MB），
 # 全局 content-length 限制若对其生效会误拦大文件（如音频/视频素材）。
 _MULTIPART_CT = "multipart/form-data"
+
+
+# 轮 80（红线）：请求 ID + 结构化访问日志——排障时把日志行与请求关联起来。
+# 客户端可带 X-Request-ID（如前端生成），否则生成 12 位短 id；响应头回传。
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    import time as _time
+    import uuid as _uuid
+
+    rid = request.headers.get("X-Request-ID") or _uuid.uuid4().hex[:12]
+    request.state.request_id = rid
+    start = _time.perf_counter()
+    response = await call_next(request)
+    duration_ms = (_time.perf_counter() - start) * 1000
+    response.headers["X-Request-ID"] = rid
+    logger.info(
+        "%s %s -> %s %.1fms rid=%s",
+        request.method, request.url.path, response.status_code, duration_ms, rid,
+    )
+    return response
 
 
 @app.middleware("http")
@@ -282,7 +344,7 @@ async def limit_body_size(request: Request, call_next):
     return await call_next(request)
 
 
-# P5-B2: 速率限制（注册在鉴权之前 → 执行在鉴权之后，可用 user_id 做键）
+# 速率限制（注册在鉴权之前 → 执行在鉴权之后，可用 user_id 做键）
 from clipwright.services.rate_limit import RateLimiter as _RateLimiter
 
 _rate_limiter = _RateLimiter(settings.rate_limit_window_sec, settings.rate_limit_max_requests)
@@ -303,7 +365,9 @@ async def rate_limit_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-# P0-9: SSE 短期一次性 token 存储（内存，TTL 120s，单次使用）
+# SSE 短期一次性 token 存储（内存为主 + Mongo 镜像，TTL 120s，单次使用）。
+# 轮 80（红线）：内存字典在多 worker / 重启后失效——签发时同步写 Mongo
+# `sse_tokens`，消费方内存未命中时回退 Mongo（原子删除保证单次语义）。
 _sse_tokens: dict[str, float] = {}
 _sse_ttl = 120.0
 
@@ -313,7 +377,20 @@ def _issue_sse_token() -> str:
     import time as _time
 
     tok = _secrets.token_urlsafe(24)
-    _sse_tokens[tok] = _time.time() + _sse_ttl
+    exp = _time.time() + _sse_ttl
+    _sse_tokens[tok] = exp
+    try:
+        from datetime import datetime, timezone as _tz
+
+        from clipwright.context import mongo
+        if mongo.is_connected:
+            mongo.db["sse_tokens"].update_one(
+                {"token": tok},
+                {"$set": {"token": tok, "expires_at": datetime.fromtimestamp(exp, tz=_tz.utc)}},
+                upsert=True,
+            )
+    except Exception:
+        logger.warning("SSE token Mongo 镜像写入失败（仅内存生效）")
     return tok
 
 
@@ -323,9 +400,20 @@ def _consume_sse_token(tok: str) -> bool:
     if not tok:
         return False
     exp = _sse_tokens.pop(tok, None)
-    if exp is None or _time.time() > exp:
-        return False
-    return True
+    if exp is not None:
+        if _time.time() > exp:
+            return False
+        return True
+    # 内存未命中 → Mongo（多 worker / 进程重启场景），原子删除保证单次使用
+    try:
+        from clipwright.context import mongo
+        if mongo.is_connected:
+            doc = mongo.db["sse_tokens"].find_one_and_delete({"token": tok})
+            if doc is not None:
+                return True
+    except Exception:
+        logger.warning("SSE token Mongo 消费失败")
+    return False
 
 
 @app.post("/api/auth/sse-token")
@@ -368,7 +456,7 @@ def _verify_access_jwt(token: str) -> dict | None:
 
 @app.middleware("http")
 async def api_token_auth(request: Request, call_next):
-    # P0-9: 无论鉴权成败，先抹除 query 中的 token（防失败路径 token 进访问日志/Referer）
+    # 无论鉴权成败，先抹除 query 中的 token（防失败路径 token 进访问日志/Referer）
     if "token" in request.query_params:
         from urllib.parse import urlencode
 
@@ -378,7 +466,7 @@ async def api_token_auth(request: Request, call_next):
     else:
         qtok = ""
 
-    # P3-3B: 每请求重置身份（无鉴权/off/token 模式保持 None=管理员语义）
+    # 每请求重置身份（无鉴权/off/token 模式保持 None=管理员语义）
     request.state.user_id = None
     request.state.user_role = None
 
@@ -389,7 +477,7 @@ async def api_token_auth(request: Request, call_next):
     is_api = path.startswith("/api/") and not path.startswith("/api/health")
     # 渲染成片与克隆语音属敏感内容，令牌模式下同样需要鉴权
     is_media = path.startswith(("/renders/", "/voice_audio/"))
-    # P0-14: 运维/调试端点同样受令牌保护（/health 保持开放）
+    # 运维/调试端点同样受令牌保护（/health 保持开放）
     is_admin = path.startswith("/metrics") or path.startswith("/test")
     if not (is_api or is_media or is_admin):
         return await call_next(request)
@@ -397,7 +485,7 @@ async def api_token_auth(request: Request, call_next):
     mode = settings.account_verify_mode
     auth_header = request.headers.get("Authorization", "") or ""
     bearer = auth_header[7:] if auth_header.startswith("Bearer ") else ""
-    # V5: <video>/<img> 无法携带 Authorization 头——by-path 媒体代理允许 query token
+    # <video>/<img> 无法携带 Authorization 头——by-path 媒体代理允许 query token
     is_by_path_media = is_api and request.method == "GET" and path == "/api/asset/by-path"
 
     if mode == "jwt":
@@ -433,10 +521,10 @@ async def api_token_auth(request: Request, call_next):
         # <video>/<audio> 标签无法携带 Authorization 头，允许 query token 校验
         ok = hmac.compare_digest(qtok, settings.api_token)
     if not ok and is_by_path_media:
-        # V5: 预览媒体代理同样允许 query token（中间件已在日志前抹除 token）
+        # 预览媒体代理同样允许 query token（中间件已在日志前抹除 token）
         ok = hmac.compare_digest(qtok, settings.api_token)
     if not ok and "/stream" in path:
-        # P0-9: SSE 端点（EventSource 无法带请求头）允许短期一次性 token
+        # SSE 端点（EventSource 无法带请求头）允许短期一次性 token
         ok = _consume_sse_token(qtok)
     if not ok:
         return JSONResponse(
@@ -516,8 +604,11 @@ test_fe_path = Path(__file__).resolve().parent.parent / "test-frontend"
 if test_fe_path.exists():
     app.mount("/test", StaticFiles(directory=str(test_fe_path), html=True), name="test-frontend")
 
-# 挂载渲染输出目录（用于预览）
-renders_path = Path("renders")
+# 挂载渲染输出目录（用于预览）；render_output_dir 可配置，默认 renders，
+# 锚定到仓库根以与渲染服务的输出目录一致（旧实现用 CWD 相对路径，非仓库根
+# CWD 启动时挂载点会指向空目录）
+from clipwright.paths import anchor as _anchor_path
+renders_path = _anchor_path(settings.render_output_dir)
 renders_path.mkdir(parents=True, exist_ok=True)
 app.mount("/renders", StaticFiles(directory=str(renders_path)), name="renders")
 
@@ -532,7 +623,8 @@ app.include_router(persona_api.router)
 app.include_router(persona_forge_api.router)
 app.include_router(chat_forge_api.router)
 app.include_router(rag_api.router)
-app.include_router(model_test_api.router)
+app.include_router(model_probe_api.router)
+app.include_router(settings_api.router)
 app.include_router(render_api.router)
 app.include_router(tool_api.router)
 app.include_router(plugin_api.router)
@@ -609,7 +701,11 @@ async def health() -> dict[str, str]:
     except Exception:
         components["queue"] = "error"
 
-    all_ok = all(v == "ok" for v in components.values() if v not in ("no_key", "0", "disconnected"))
+    # Mongo 断连必须计入不健康（作为就绪探针时不能假绿）
+    all_ok = all(
+        v == "ok" for v in components.values()
+        if v not in ("no_key", "checking", "0", "disconnected")
+    )
     components["status"] = "ok" if all_ok else "degraded"
     return components
 
@@ -677,12 +773,33 @@ async def metrics() -> str:
     return "\n".join(lines) + "\n"
 
 
+def _enforce_security_gate() -> None:
+    """发布红线（fail-closed）：绑定非回环地址且未配置任何鉴权时拒绝启动。
+
+    满足其一即放行：回环地址 / 已配置 api_token 或 account_verify_mode != off /
+    显式 CLIPWRIGHT_ALLOW_INSECURE=true（自认风险的受控本地/内网环境）。
+    """
+    host = (settings.host or "").strip().lower()
+    loopback = host in ("127.0.0.1", "localhost", "::1", "")
+    authed = bool(settings.api_token) or settings.account_verify_mode in ("token", "jwt")
+    if loopback or authed or settings.allow_insecure:
+        return
+    raise SystemExit(
+        "\n[Clipwright] 拒绝启动：绑定非回环地址 %r 且未配置任何鉴权"
+        "（无 CLIPWRIGHT_API_TOKEN 且 CLIPWRIGHT_ACCOUNT_VERIFY_MODE=off），"
+        "全部 API 将对外裸奔。\n"
+        "  1) 生产：设置 CLIPWRIGHT_API_TOKEN（或 CLIPWRIGHT_ACCOUNT_VERIFY_MODE=token|jwt）\n"
+        "  2) 受控本地/内网：显式设置 CLIPWRIGHT_ALLOW_INSECURE=true 自认风险\n" % settings.host
+    )
+
+
 def _main() -> None:
     """入口：按 env 配置启动 uvicorn（CLIPWRIGHT_HOST / CLIPWRIGHT_PORT /
-    CLIPWRIGHT_DEBUG，默认 0.0.0.0:8000）。用法：``python -m clipwright.main``。
+    CLIPWRIGHT_DEBUG，默认 0.0.0.0:8080）。用法：``python -m clipwright.main``。
     """
     import uvicorn
 
+    _enforce_security_gate()
     uvicorn.run(
         "clipwright.main:app",
         host=settings.host,

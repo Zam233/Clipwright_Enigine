@@ -114,7 +114,7 @@ class VideoTrimTool(BaseTool):
         """
         if not input_path.startswith(("http://", "https://")):
             return input_path
-        # T6: SSRF 防护——仅允许公网 http(s) URL
+        # SSRF 防护——仅允许公网 http(s) URL
         from clipwright.security import assert_public_url
         assert_public_url(input_path)
         import hashlib
@@ -126,7 +126,7 @@ class VideoTrimTool(BaseTool):
             cache_root = _P(__file__).resolve().parent.parent.parent / "_cache"
         dl_dir = cache_root / "tmp"
         dl_dir.mkdir(parents=True, exist_ok=True)
-        # T6: sha256(url) 前 16 位作缓存键（旧 basename 键会互串）
+        # sha256(url) 前 16 位作缓存键（旧 basename 键会互串）
         url_hash = hashlib.sha256(input_path.encode()).hexdigest()[:16]
         ext = input_path.split("?")[0].rsplit(".", 1)[-1][:5] or "mp4"
         out = dl_dir / f"url_{url_hash}.{ext}"
@@ -363,7 +363,7 @@ class VideoCropTool(BaseTool):
     ) -> ToolExecResult:
         out = _ensure_output_path(output_path, "crop_", ".mp4")
         try:
-            # T8: 先探测源尺寸，在 Python 中计算裁切参数（旧表达式缺 ih* 乘数恒错）
+            # 先探测源尺寸，在 Python 中计算裁切参数（旧表达式缺 ih* 乘数恒错）
             probe = await asyncio.to_thread(
                 subprocess.run,
                 [resolve_ffprobe(), "-v", "error", "-select_streams", "v:0",
@@ -454,7 +454,7 @@ class VideoConcatTool(BaseTool):
         **kwargs: Any,
     ) -> ToolExecResult:
         out = _ensure_output_path(output_path, "concat_", ".mp4")
-        # T12: 路径校验/转义/清单写入收敛到 utils.concat_list
+        # 路径校验/转义/清单写入收敛到 utils.concat_list
         from clipwright.utils.concat_list import validate_and_escape, write_list
         lines, err = validate_and_escape(clips)
         if err:

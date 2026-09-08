@@ -257,7 +257,7 @@ async def test_no_audio_clips_uses_library_title(
     joined = "\n".join(out.audio_notes)
     assert "BGM 来自素材库: LibraryAmbient" in joined
     assert "建议 BGM: LibraryAmbient" in joined or "素材库 BGM 已入轨: 1 段" in joined
-    # C1: 素材库 BGM 真实入轨（原实现只写"建议"note，render 永远混不到 BGM）
+    # 素材库 BGM 真实入轨（原实现只写"建议"note，render 永远混不到 BGM）
     audio_track = next(t for t in inp.timeline.tracks if t.kind == ClipKind.AUDIO)
     bgm_clips = [c for c in audio_track.clips if "amb.mp3" in (c.asset_id or "")]
     assert len(bgm_clips) == 1

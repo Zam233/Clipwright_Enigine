@@ -91,13 +91,13 @@ class GenerateTextVideoTool(BaseTool):
 
             # 避免路径中的 C: 问题：使用简短文件名
             # 直接把文本写入当前目录的临时文件
-            # 批1：uuid 命名——旧 getpid 固定名在 EditAgent 并发场景下互相覆盖
+            # uuid 命名——旧 getpid 固定名在 EditAgent 并发场景下互相覆盖
             local_text = Path(f"__text_{uuid.uuid4().hex[:8]}.txt")
             try:
                 local_text.write_text(text[:200], encoding="utf-8")
                 local_path = str(local_text).replace("\\", "/")
 
-                # 批1：字体路径改走 _fonts/ 复制方案（ffmpeg_fontspec 的 \: 转义
+                # 字体路径改走 _fonts/ 复制方案（ffmpeg_fontspec 的 \: 转义
                 # 会被本机构建的过滤器解析器截断 → drawtext 必败 → 纯色无字回退）
                 font_file = _font_filter_arg()
                 cmd = [

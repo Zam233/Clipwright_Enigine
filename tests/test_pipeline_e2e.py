@@ -19,6 +19,7 @@ failed = 0
 results = []
 
 def check(name, condition, detail=""):
+    """断言辅助：失败立即抛出，保证 pytest 收集到的每个 test 都真实校验。"""
     global passed, failed
     if condition:
         passed += 1
@@ -26,6 +27,7 @@ def check(name, condition, detail=""):
     else:
         failed += 1
         results.append(f"  [FAIL] {name}: {detail}")
+        raise AssertionError(f"{name}: {detail}")
 
 
 async def test_dag_execution_order():
@@ -37,20 +39,22 @@ async def test_dag_execution_order():
     material_group = next(i for i, g in enumerate(plan) if "material" in g)
     check("structure 在 material 之前运行", structure_group < material_group,
           f"structure=组{structure_group}, material=组{material_group}")
-    # 验证 audio 和 animation 在同一组（并行）
+    # audio 依赖 animation（串行，防止并行覆盖时间轴）
     audio_group = next(i for i, g in enumerate(plan) if "audio" in g)
     anim_group = next(i for i, g in enumerate(plan) if "animation" in g)
-    check("audio 和 animation 并行", audio_group == anim_group,
-          f"audio=组{audio_group}, animation=组{anim_group}")
-    # 总共 5 组
+    check("animation 在 audio 之前运行", anim_group < audio_group,
+          f"animation=组{anim_group}, audio=组{audio_group}")
+    check("audio 不与 animation 同组（串行依赖）", audio_group != anim_group)
+    # 总共 5 组（quality 不参与执行组，由自愈循环调度）
     check("DAG 共 5 个执行组", len(plan) == 5, f"实际 {len(plan)} 组")
-    # 验证无环
+    # 验证无环：quality 有意不在执行组内
     all_agents = set(AgentDAG._DEPS.keys())
     remaining = set(all_agents)
     for group in plan:
         for agent in group:
             remaining.discard(agent)
-    check("所有 agent 都被调度", len(remaining) == 0, f"未调度: {remaining}")
+    check("除 quality 外所有 agent 都被调度", remaining == {"quality"},
+          f"未调度: {remaining}")
 
 
 async def test_circuit_breaker():
@@ -92,14 +96,14 @@ async def test_error_categorization():
 
 
 async def test_get_downstream_agents():
-    """测试下游 agent 推导 — 自愈联动。"""
-    print("\n=== Test 4: Downstream Agents (Self-Healing Chain) ===")
-    check("edit 下游 = animation, audio",
-          set(PipelineOrchestratorV2._get_downstream_agents("edit")) == {"animation", "audio"})
-    check("structure 下游 = material, edit",
+    """测试下游 agent 推导 — _get_downstream_agents 只返回直接一层。"""
+    print("\n=== Test 4: Downstream Agents (Direct Layer) ===")
+    check("edit 直接下游 = animation",
+          set(PipelineOrchestratorV2._get_downstream_agents("edit")) == {"animation"})
+    check("structure 直接下游 = material, edit",
           set(PipelineOrchestratorV2._get_downstream_agents("structure")) == {"material", "edit"})
-    check("animation 下游 = quality",
-          PipelineOrchestratorV2._get_downstream_agents("animation") == ["quality"])
+    check("animation 直接下游 = audio, quality",
+          set(PipelineOrchestratorV2._get_downstream_agents("animation")) == {"audio", "quality"})
     check("quality 无下游",
           PipelineOrchestratorV2._get_downstream_agents("quality") == [])
 
@@ -162,22 +166,27 @@ async def test_persist_state():
 
 
 async def test_self_healing_chain_simulation():
-    """模拟自愈循环 — Quality 返回 redo_agent='edit' 时联动重做 animation + audio。"""
+    """模拟自愈循环 — 重做联动用传递闭包 _downstream_closure（quality 由循环统一调度）。"""
     print("\n=== Test 7: Self-Healing Chain ===")
-    # 验证自愈逻辑的 _get_downstream_agents 返回正确
-    # 当 redo_agent='edit': 应重做 edit + animation + audio
-    redo = "edit"
-    downstream = PipelineOrchestratorV2._get_downstream_agents(redo)
-    check(f"重做 {redo} 时联动 {downstream}",
-          set(downstream) == {"animation", "audio"},
-          f"下游: {downstream}")
+    # 重做 edit：闭包 = animation + audio（audio 依赖 animation，必须联动重做）
+    downstream = PipelineOrchestratorV2._downstream_closure("edit")
+    check("重做 edit 时闭包联动 animation + audio",
+          set(downstream) == {"animation", "audio"}, f"闭包: {downstream}")
 
-    # 当 redo_agent='animation': 应重做 animation + quality
-    redo2 = "animation"
-    downstream2 = PipelineOrchestratorV2._get_downstream_agents(redo2)
-    check(f"重做 {redo2} 时联动 {downstream2}",
-          set(downstream2) == {"quality"},
-          f"下游: {downstream2}")
+    # 重做 animation：闭包 = audio
+    downstream2 = PipelineOrchestratorV2._downstream_closure("animation")
+    check("重做 animation 时闭包联动 audio",
+          set(downstream2) == {"audio"}, f"闭包: {downstream2}")
+
+    # 重做 structure：全链联动
+    downstream3 = PipelineOrchestratorV2._downstream_closure("structure")
+    check("重做 structure 时闭包联动全链",
+          set(downstream3) == {"material", "edit", "animation", "audio"},
+          f"闭包: {downstream3}")
+
+    # quality 直接下游包含 audio/animation（自愈循环据此判断重做来源）
+    direct = PipelineOrchestratorV2._get_downstream_agents("quality")
+    check("quality 无下游（quality 是终点）", direct == [])
 
     # 模拟 self-healing loop 代码逻辑
     quality_issues = [

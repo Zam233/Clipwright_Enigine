@@ -20,7 +20,7 @@ _service = RequirementsService()
 
 # ── 请求模型 ──────────────────────────────────
 
-# 批4：需求会话归属表（对齐管线 _pipeline_owners 机制）
+# 需求会话归属表（对齐管线 _pipeline_owners 机制）
 _session_owners: dict[str, str] = {}
 
 # 轮70（D10）：proceed 幂等表（Idempotency-Key 或 session_id → pipeline_id）
@@ -65,7 +65,7 @@ class EditRequest(BaseModel):
     message: str
     timeline: dict[str, Any] = {}
     selected_clip_ids: list[str] = []
-    # W12: 区域级返工 — 编辑范围（秒）；提供时仅返回/改写该时间窗内的片段
+    # 区域级返工 — 编辑范围（秒）；提供时仅返回/改写该时间窗内的片段
     region_start_sec: float | None = None
     region_end_sec: float | None = None
 
@@ -75,9 +75,9 @@ class ProceedRequest(BaseModel):
     persona_id: str = ""
     category_plugin_id: str = ""
     extra_params: dict[str, Any] = {}
-    # E2E 修复：管线完成后把 final_timeline 保存到该项目（防止内存结果 60s 清理后丢失）
+    # 修复：管线完成后把 final_timeline 保存到该项目（防止内存结果 60s 清理后丢失）
     project_id: str = ""
-    # C5: beat-sync 开关与 BPM——EditAgent 读取 cut_on_beat/bpm（卡点剪辑），
+    # beat-sync 开关与 BPM——EditAgent 读取 cut_on_beat/bpm（卡点剪辑），
     # 但此前全仓无任何写入方，功能永久禁用
     cut_on_beat: bool = False
     beat_bpm: float = Field(default=0, ge=0, le=300)
@@ -97,7 +97,7 @@ async def init_session(req: InitRequest, request: Request) -> dict:
         **req.extra,
     }
     session = await asyncio.to_thread(_service.create_session, user_inputs)
-    # 批4：登记会话归属（jwt 模式下其余端点据此校验）
+    # 登记会话归属（jwt 模式下其余端点据此校验）
     from clipwright.authz import current_user_id
     _session_owners[session.get("session_id", "")] = current_user_id(request) or ""
     # 轮72：归属表上限——会话本身有 TTL，此处防长进程无限增长
@@ -205,7 +205,7 @@ async def upload_file(
     import tempfile
     import os
     suffix = os.path.splitext(file.filename or "file")[1] or ".bin"
-    # 批4：类型与大小限制（multipart 豁免全局 20MB 上限 → 此前完全无界）
+    # 类型与大小限制（multipart 豁免全局 20MB 上限 → 此前完全无界）
     if suffix.lower() not in (".txt", ".md", ".pdf", ".docx", ".png", ".jpg",
                               ".jpeg", ".webp", ".gif", ".srt"):
         raise HTTPException(status_code=415, detail=f"不支持的文件类型: {suffix}")
@@ -276,7 +276,7 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
         pipeline_timeout_sec, _extract_quality_summary, _aggregate_agent_notes,
     )
 
-    # A5: proceed 与 /run-async 同权——预算熔断检查（原路径完全绕过预算）
+    # proceed 与 /run-async 同权——预算熔断检查（原路径完全绕过预算）
     from clipwright.services.budget import check_budget
     allowed, used = await check_budget()
     if not allowed:
@@ -308,14 +308,14 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
 
     user_inputs = session.get("user_inputs", {})
     # 长视频管线耗时随配音时长增长（逐场景素材处理），动态调高超时避免误超时。
-    # B7：前后端共用统一公式（audio×6 / scene×360 / min 1800），与前端 ReviewPanel 对齐。
+    # 前后端共用统一公式（audio×6 / scene×360 / min 1800），与前端 ReviewPanel 对齐。
     _audio_dur = float(user_inputs.get("audio_duration_sec", 0) or 0)
     _scene_count = int((plan_data or {}).get("scene_count", 0) or 0)
     # 规划书未给出场景数时按音频时长估算（约每 15 秒一个场景）兜底，保证场景余量不失效。
     if _scene_count <= 0 and _audio_dur > 0:
         _scene_count = int(_audio_dur / 15)
     _pipeline_timeout = pipeline_timeout_sec(_audio_dur, _scene_count)
-    # C2: 接通 animation_intents 通道——需求会话简报中的动画意图此前从未
+    # 接通 animation_intents 通道——需求会话简报中的动画意图此前从未
     # 放入 extra_params，StructureAgent（extra_params.get("animation_intents")）
     # 永远读到空，聊天里确认的动画意图从不影响成片
     _cb = session.get("creative_brief") or {}
@@ -335,29 +335,29 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
             "video_mode": user_inputs.get("video_mode", "voiceover"),
             "split_mode": user_inputs.get("split_mode", "period"),
             "auto_dub": user_inputs.get("auto_dub", True),
-            # 批2：subtitle_enabled 不再硬编码 True（客户端/会话可关）
+            # subtitle_enabled 不再硬编码 True（客户端/会话可关）
             "subtitle_enabled": bool(user_inputs.get("subtitle_enabled", True)),
             "voice_id": user_inputs.get("voice_id", ""),
             "dub_segments": user_inputs.get("dub_segments", []),
-            # 批2：用户选择的素材源透传（旧实现遗漏 → 永远检索全部源/占位）
+            # 用户选择的素材源透传（旧实现遗漏 → 永远检索全部源/占位）
             "material_source_ids": user_inputs.get("material_source_ids", []),
-            # 批2：animation_intents 通道补上缺失的插入行（C2 修复的遗留缺口）
+            # animation_intents 通道补上缺失的插入行（C2 修复的遗留缺口）
             "animation_intents": animation_intents,
             "creative_brief": session.get("creative_brief"),
             "production_plan": session.get("production_plan"),
             "pipeline_timeout_sec": _pipeline_timeout,
-            # C5: beat-sync 透传（用户 extra_params 显式值优先）
+            # beat-sync 透传（用户 extra_params 显式值优先）
             **({"cut_on_beat": True, "bpm": float(req.beat_bpm)}
                if req.cut_on_beat and req.beat_bpm > 0 else {}),
             **req.extra_params,
         },
-        # P8: dry-run 预览模式（仅生成粗剪时间线，跳过动画/音频/质检）
+        # dry-run 预览模式（仅生成粗剪时间线，跳过动画/音频/质检）
         dry_run=bool(req.extra_params.get("dry_run", False)),
         use_v2=True,
     )
     add_event(pipeline_id, "system", "info",
               f"由需求确认启动管线: {pipeline_req.persona_id} / {pipeline_req.category_plugin_id}")
-    # 批2：proceed 即置 running（旧实现会话停在 plan_ready，运行中消息会走
+    # proceed 即置 running（旧实现会话停在 plan_ready，运行中消息会走
     # 规划修订分支与运行中的管线互踩）
     await asyncio.to_thread(
         _service._persist,
@@ -368,7 +368,7 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
         session.get("user_inputs", {}),
     )
 
-    # A5: 归属注册 + 运行态持久化 + 审计（与 run-async 对齐；此前 jwt 模式下
+    # 归属注册 + 运行态持久化 + 审计（与 run-async 对齐；此前 jwt 模式下
     # proceed 发起的管线无 owner，本人 /status /cancel /diagnostics 全部 403）
     _pipeline_owners[pipeline_id] = uid or ""
     _persist_pipeline_runtime(pipeline_id, owner_id=uid or "")
@@ -382,18 +382,18 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
 
     async def _run(task_id: str = ""):
         try:
-            # A5: 走 TaskQueue 执行（并发上限 + 任务级超时与管线超时公式对齐）
+            # 走 TaskQueue 执行（并发上限 + 任务级超时与管线超时公式对齐）
             from clipwright.services.task_queue import get_task_queue
 
             async def _queue_handler(inner_task_id: str = "") -> None:
-                # A3 对齐: 注册运行中任务，使 /cancel 能即时中断
+                # 对齐: 注册运行中任务，使 /cancel 能即时中断
                 _running_pipelines[pipeline_id] = asyncio.current_task()
                 try:
                     orch = PipelineOrchestratorV2()
                     state = await orch.run(pipeline_req, pipeline_id=pipeline_id,
                                            task_id=inner_task_id or task_id)
                     state.shared_data["execution_trace"] = get_all_events(pipeline_id)
-                    # C7/C9: 质检摘要 + Agent 备注（与 run-async 对齐）
+                    # /C9: 质检摘要 + Agent 备注（与 run-async 对齐）
                     _rd = state.model_dump(mode="json")
                     _q = _extract_quality_summary(_rd)
                     if _q:
@@ -403,7 +403,7 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
                         _rd["agent_notes"] = _notes
                     _pipeline_results[pipeline_id] = _rd
                     add_event(pipeline_id, "system", "done", f"管线完成: {state.status}", _q)
-                    # E2E 修复：管线完成后把 final_timeline 保存到关联项目（若有），
+                    # 修复：管线完成后把 final_timeline 保存到关联项目（若有），
                     # 避免内存结果 60s 清理后 timeline 丢失（API 直连场景）。
                     try:
                         final_tl = state.shared_data.get("final_timeline")
@@ -412,7 +412,7 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
                             pm = ProjectManager()
                             project_id = req.project_id
                             if not project_id:
-                                # 批2：未关联项目时自动创建——旧实现 60s 内存清理后
+                                # 未关联项目时自动创建——旧实现 60s 内存清理后
                                 # 成品时间线永久丢失
                                 created = pm.create(
                                     name=str(user_inputs.get("topic", "") or "需求会话成片")[:80],
@@ -441,7 +441,7 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
                     )
                     logger.info("管线完成: pipeline_id=%s, status=%s", pipeline_id, state.status)
                 except asyncio.CancelledError:
-                    # A2 对齐: 用户取消写 cancelled 终态（原实现无 CancelledError
+                    # 对齐: 用户取消写 cancelled 终态（原实现无 CancelledError
                     # 处理，取消后 /result 回落到 Mongo 的 running 快照）
                     if pipeline_id in _user_cancel_requested:
                         _user_cancel_requested.discard(pipeline_id)

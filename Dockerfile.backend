@@ -1,14 +1,31 @@
 FROM python:3.12-slim
 # F1: fonts-noto-cjk 提供中文字体（/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc，
 # 与 render._resolve_system_font 的 unix 探测路径一致），字幕烧入不出现方块
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk \
+# git：pyproject 依赖 isobase @ git+https，pip 解析 VCS 依赖必需（缺失则构建必败）
+# nodejs/npm + chromium：Hyperframes（MG/逻辑动画）渲染依赖 npx + headless Chrome，
+# 缺失时 mg_dynamic 静默降级为文字占位，成片质量与本地开发严重不一致
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ffmpeg fonts-noto-cjk git nodejs npm chromium chromium-driver \
     && rm -rf /var/lib/apt/lists/*
+# Hyperframes 无头浏览器定位（Debian chromium 安装路径）
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+    CHROME_PATH=/usr/bin/chromium
 WORKDIR /app
 COPY pyproject.toml ./
 COPY clipwright ./clipwright
 COPY plugins ./plugins
-# F1: 移除原 `COPY skill ./skill 2>/dev/null || true` —— 重定向/|| 是非法
-# Dockerfile 语法（仅 RUN 支持），导致镜像构建必败；skill/ 目录本就不存在于仓库根
-RUN pip install --no-cache-dir .
+# 演示音频兜底（allow_demo_audio 依赖 data/demo/voice.mp3）
+COPY data ./data
+# extras：whisper 转写（/api/stt/*）等可选能力
+RUN pip install --no-cache-dir ".[extras]"
+# 非 root 运行（uid 10001；宿主挂载目录需对其可写）
+RUN useradd --create-home --uid 10001 clipwright \
+    && mkdir -p /app/renders /app/projects /app/personas /app/PluginData /app/library \
+    && chown -R clipwright:clipwright /app
+USER clipwright
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD python -c "import json,urllib.request,sys; \
+d=json.loads(urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=4).read()); \
+sys.exit(0 if d.get('status')=='ok' else 1)" || exit 1
 CMD ["python", "-m", "clipwright.main"]

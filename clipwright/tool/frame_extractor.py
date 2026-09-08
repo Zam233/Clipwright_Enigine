@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import random
 import subprocess
 import tempfile
 import uuid
@@ -69,10 +68,16 @@ async def _extract_from_source(
     frame_count: int,
     output_dir: Path,
 ) -> list[str]:
-    """Extract requested random frames from one video source."""
+    """Extract evenly-spaced frames from one video source.
+
+    轮 82（可复现）：均匀采样替代 random.uniform 随机时间点——视觉 LLM 打分
+    依赖这些帧，随机采样会让同一素材两次校验得分漂移，质检/选片不可复现。
+    采样区间避开片头 10% 与片尾 10%（黑场/转场高发区）。
+    """
     frame_paths: list[str] = []
-    for _ in range(frame_count):
-        timestamp = random.uniform(0.1 * duration, 0.9 * duration)
+    lo, hi = 0.1 * duration, 0.9 * duration
+    for i in range(frame_count):
+        timestamp = lo + (hi - lo) * (i + 0.5) / max(1, frame_count)
         output_path = output_dir / f"frame_{uuid.uuid4().hex[:8]}.jpg"
         try:
             if await _extract_frame(source, timestamp, output_path):

@@ -1,0 +1,23 @@
+fields:
+  provider:
+    type: string
+    value: "elevenlabs"
+    label: "默认 TTS Provider（elevenlabs/azure）"
+    description: "扩展 TTS 提供商的默认选择"
+  elevenlabs_api_key:
+    type: string
+    value: ""
+    secret: true
+    label: "ElevenLabs API Key"
+    description: "从 https://elevenlabs.io 获取；留空则读环境变量 ELEVENLABS_API_KEY"
+  azure_speech_key:
+    type: string
+    value: ""
+    secret: true
+    label: "Azure Speech Key"
+    description: "Azure 语音服务密钥；留空则读环境变量 AZURE_SPEECH_KEY"
+  azure_speech_region:
+    type: string
+    value: "eastus"
+    label: "Azure Speech Region"
+    description: "Azure 语音服务区域（如 eastus）；留空则读环境变量 AZURE_SPEECH_REGION"

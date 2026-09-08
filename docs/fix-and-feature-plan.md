@@ -977,3 +977,134 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ✅ trim-start/trim-end 接入移动吸附同一套目标集/阈值（此前 trim 显式关闭吸附）
 - ✅ 修正 applySnap 返回值语义误用（增量而非绝对时间）
 - ✅ 回归：前端 tsc 0 错误 + vitest 420/420
+
+### 执行轮次 78（批次 0：让回归可信）
+- ✅ CI：后端 ruff 去掉 `|| true`（不再 advisory）、显式安装 ffmpeg（3 个 ffmpeg skipif 用例不再静默跳过）；前端独立仓库新增 CI（tsc + vitest + eslint + build）
+- ✅ `api/model_test.py` → `api/model_probe.py`（`*_test.py` 命名不再有被 pytest 误收集的隐患）；pyproject 移除 `norecursedirs` 对 clipwright/api、services、material 的整目录排除
+- ✅ pyproject license 修正：MIT → MPL-2.0（与 LICENSE/README 一致）
+- ✅ 陈旧 `.pytest_cache/lastfailed`（16 项）清空（实测全部已修复）
+- ✅ 修复 3 个恒绿的假测试：`tests/test_pipeline_e2e.py` 的 check() 只计数从不断言——改为失败即抛后暴露 3 个过时期望（audio/animation 已由并行改串行依赖、自愈联动已改用传递闭包 `_downstream_closure`、quality 不进执行组），测试更新为当前 DAG 语义；`test_animation.py` 入场末态空断言循环补真实断言
+- ✅ 新增 3 个测试文件：`test_mongodb_service.py`（fake db 覆盖序列化/查询/count）、`test_render_runner.py`（run_job 状态机 + 纯函数）、`test_project_api.py`（owner 隔离/403/404/400）
+- ✅ 回归：后端 1546 passed / 0 失败 · 前端 tsc 0 错误 + vitest 420/420 + lint 0 error + build
+
+### 执行轮次 79（批次 1：配置中心 —— .env 搬进「设置」页）
+- ✅ `config_schema.py`（新）：89 个 Settings 字段的 UI 元数据（group/label/secret/hot），类型与枚举从 `Settings.model_fields` 派生防漂移；12 分组；覆盖度测试断言 0 漂移
+- ✅ `services/settings_store.py`（新）：`settings.json` 原子落盘（anchor），secret 用 webhook_crypto Fernet 加密；无密钥拒绝保存 secret（fail-closed 409）；优先级 store > env/.env > 默认；`_ENV_KEYS` 导入期快照（防 pydantic v2 setattr 污染 source 判定）
+- ✅ `services/settings_runtime.py`（新）：变更失效钩子（llm 客户端缓存 / rag embedder / vision 单例 / render 编码器探测与信号量）；`llm.clear_client_cache()`、`render.reset_render_caches()`、`api/vision.reset_vision_service()` 为本次新增
+- ✅ `api/settings.py`（新）：GET（分组元数据 + 当前值，secret 只回 has_value + 掩码）/ PUT（逐字段 TypeAdapter 校验、宽松类型转换、清除覆盖还原 env/默认、requires_restart 与警告）/ reset；全部走 `authz.require_admin`（自 plugin.py 上移统一）
+- ✅ main.py 在 app 构造前 `apply_all`（CORS/插件加载器/静态挂载读到覆盖值）；worker/api.py 同
+- ✅ 补缺口：`PUT/DELETE /api/plugin/{id}/config` 加管理员守卫（原 jwt 模式任意登录用户可改插件密钥）；`/renders` 静态挂载与 security 白名单接线 `render_output_dir`（原先硬编码 renders 且挂载用 CWD 相对路径）
+- ✅ `.env.example` 补齐全部 32 个缺失键（限流/预算/搜索/路径/并发/远程渲染下载上限等）并标注设置页入口与需重启项
+- ✅ 插件凭据进配置页：pexels/pixabay/unsplash/bgm_library/subtitle_translate/voice_ext/gif_sticker/ai_image_gen/ai_video_gen/ai_music_gen 补 config.yaml 声明（凭据字段 `secret: true` 加密落盘）；subtitle_translate/voice_ext/gif_sticker 代码改为 config 优先于 env
+- ✅ 前端：`services/api/backendConfig.ts` + `BackendConfigPage`（分组/搜索/需重启徽标/来源徽标/secret 掩码与清除/脏值保存条/加密密钥缺失警告/api_token 变更会话提示）+ 路由 `/settings/backend-config` + ConsoleShell 导航 + SettingsPage 入口卡片；`ConfigValueInput` 共享控件抽出，PluginsPage 配置弹窗改为复用
+- ✅ 测试：`test_settings_api.py` 17 项（掩码不泄漏/校验/优先级/清除还原/fail-closed/钩子/管理员守卫）；前端 BackendConfigPage 8 项
+- ✅ 回归：后端 1563 passed / 0 失败 · 前端 tsc 0 错误 + vitest 428/428 + lint 0 error + build
+
+### 执行轮次 80（批次 2：商业交付红线）
+- ✅ 端口默认 8000 → 8080（`config.py`，与文档/脚本/前端代理一致）；`_main` docstring 同步
+- ✅ 鉴权 fail-closed：`_enforce_security_gate()`——绑定非回环地址且无 api_token、verify_mode=off 时拒绝启动，除非显式 `CLIPWRIGHT_ALLOW_INSECURE=true`；`allow_insecure` 字段补配置元数据与 `.env.example`
+- ✅ `/health` 假绿修复：Mongo `disconnected` 计入不健康（可作就绪探针）；`checking` 冷启动宽限不再误判
+- ✅ 限流：部署模板 `.env.example` 默认开启（代码默认保持 off，避免破坏单机开发与测试流；多 worker 不共享窗口的限制已在配置页说明）
+- ✅ 请求 ID 中间件：`X-Request-ID` 透传/生成 + 响应头回传 + 每请求结构化访问日志（method path status 耗时 rid）
+- ✅ SSE 一次性 token：签发同步镜像 Mongo `sse_tokens`，消费端内存未命中回退 Mongo（`find_one_and_delete` 保持单次语义）——多 worker/重启不再失效
+- ✅ 多租户：`/api/asset/*` 全端点加项目归属校验（`_require_project_access`，jwt 模式非 owner/无主项目 403）；`/api/asset/by-path` 校验 projects/renders 子树归属；`/api/render/download|status|video|thumbnail` 按任务/项目归属校验（`_enforce_render_file_owner`/`_enforce_media_path_owner`，查不到归属 fail-closed）
+- ✅ Forge 产物 owner：persona_forge 4 个落盘点与 chat_forge commit 落盘前 `_stamp_owner`（修「创建者自己读不到自己 Persona」）
+- ✅ 市场安装 sha256：`market_client.download_*` 对实际下载内容计算 hash（原恒 None，完整性校验形同虚设）；install_plugin/install_persona 接线比对
+- ✅ Docker：镜像补 git（修 `isobase @ git+` 导致构建必败）、nodejs/npm + chromium（修 Hyperframes 在容器内静默降级）、COPY data/（demo 音频兜底）、extras（whisper）；非 root（uid 10001）+ HEALTHCHECK + `.dockerignore`；compose 补挂 user_types/templates/versions/_cache + healthcheck
+- ✅ 依赖锁定：`requirements.lock`（226 包，isobase 锁 commit 8644778）
+- ✅ 文档对账：api_reference 删除已移除的 `/run`、`/run-v2`；`/health` 响应形状对齐实现；渲染预设 7 → 9；端口 8000 → 8080；parity 路由计数 225 → 236；README 回归基线数字更新
+- ⏸ `services/voice.py` 转码 subprocess 补 timeout：安全扫描器持续拦截该文件写入（对既有 str 路径拼参模式的误报），留待人工加 `timeout=300`
+- ✅ 回归：后端 1563 passed / 0 失败（改动后复跑见轮 81）
+
+### 执行轮次 81（批次 3：稳定性与韧性）
+- ✅ 项目归属竞态：`ProjectManager.create()` 新增 `owner_id` 参数随首次写入落盘（消灭「create 后二次 save 写 owner 失败 → 无主项目 → jwt 模式创建者看不到自己项目」的竞态窗口）；`save()` 读-改-写加 `RLock`（并发 PATCH 不再互相覆盖）
+- ✅ `services/stt.py`：转写用临时 wav `finally` 清理（旧实现每次视频转写泄漏一个文件）；主流程拆出 `_transcribe_any` 供 realign 复用
+- ✅ 静默吞异常加 `logger.exception` 留痕：`quality_agent.py` 简报核对/音画时长两段（此前整段质检结果凭空消失）、`api/pipeline.py` 启动恢复僵尸管线/tasklink 持久化/队列取消三处、`pipeline_v2.py` LLM 用量记录（成本统计丢数）
+- ✅ 修 `mg/generator.py` 盲重试 `min(max_retries, 1)` 静默砍配置——`max_retries` 现按配置生效（0 = 真跳过）
+- ✅ `voice_ext` 插件 `xtts-unimplemented` provider 注册期拒绝（原先注册成功、运行期才报错）
+- ✅ 素材检索：空结果不写缓存（真无结果与源失败/限流不可区分，负缓存会把一次 429 放大成 TTL 内全部空候选）；pexels 视频/图片搜索 429 单次退避重试；pixabay 源失败从裸 `pass` 改为 warning 日志
+- ✅ 渲染韧性：`api/render.py` 产物清理端点 `audit` 未导入 NameError → 500 修复（顺带删死行）；平台封面提取真实现 `_extract_platform_covers`（ffprobe 时长 + 均匀抽帧到 renders/covers/，预设 tiktok/douyin/weibo×3、bilibili/youtube×4）——替换引用未定义符号被 except 吞掉的坏链
+- ✅ 出片硬门：质检新增占位占比检查——`asset_id` 为空的画面片段占比 > 50% → **error 级**问题（接入既有自愈/门禁，阻止「全占位成片标记 COMPLETED」）
+- ✅ async 阻塞 offload（12 处）：`requirements_service` 上传读取/pdftotext、`indexer`/`asset_manager` ffprobe 与缩略图、`style_analyzer` 两处 ffmpeg(180s)、`waveform` astats(120s)、`tool/audio` 探测与混音、`tool/color` 5 处 signalstats/eq、`tool/material` 2 处、`remote_render` 素材整文件读取
+- ✅ 回归：全量后端测试 0 失败（见轮 83 汇总）
+
+### 执行轮次 82（批次 4：可复现性与版权合规）
+- ✅ TTS seed 确定性化：`voice.py` 弃用进程随机盐的 `hash(seg)`，改 `sha256(provider:voice_id:seg)`——同文案同音色跨进程 seed 一致，合成可复现
+- ✅ 视觉抽帧确定性化：`frame_extractor` 均匀采样替代 `random.uniform`（避开首尾 10% 黑场区）——视觉 LLM 素材匹配分/质检分不再漂移
+- ✅ 版权链 schema：`MaterialAsset` 补 `author/license_url/source_url` 字段
+- ✅ 素材源授权抓取：pexels（视频+图片）/pixabay（视频+图片）/unsplash 填 `license`（Pexels License/Pixabay Content License/Unsplash License）+ author + source_url + license_url
+- ✅ 版权透传全链：`material_agent` 候选输出（两分支）与检索缓存（`_CachedResult` 序列化）保留 license 四字段；`edit_agent._make_clip` 落轨写入 `clip.metadata`——成片署名/合规审计的数据链路打通
+- ✅ 回归：相关测试 0 失败（见轮 83 汇总）
+
+### 执行轮次 83（批次 5：知识区「能发」门槛）
+- ✅ **字幕强制对齐（上传配音路径）**：`audio_agent` 上传配音分支接入 `STTService.align`（whisper 可用则强制对齐、否则按时长估算），实测句级时间戳回写 CAPTION 轨——此前上传配音的字幕一直是字数比例估算，与语音必然漂移
+- ✅ **中文断行 + 安全区**：`design.py` 新增 `wrap_cjk_lines`（每行 ≤16 字、标点避头尾、ASS `\N` 折行）与 `ass_safe_margins`（左右 5% 宽、底部竖屏 12%/横屏 6% 高，竖屏 1080x1920 底边距 230px 不再被平台 UI 遮挡）；Dialogue 构建接线；`test_ass_style` 期望更新为安全区边距
+- ✅ **结构意图透传**：`edit_agent` 把场景 `visual_description`（该出什么画面/素材偏好/动画意图）全量写入 `clip.metadata["visual_description"]`——此前仅描述含动画标记时才透传，AnimationAgent 拿不到场景语义
+- ✅ **BPM 真实现**：`bpm_detect` 从恒 120 的桩替换为 ffmpeg astats RMS 能量包络 + 自相关节拍估计（60-180 BPM 窗内取峰、×2/÷2 折叠到 70-180；合成 120BPM 信号实测检出 120.0）；检测失败返回 `method=failed` 不带 `bpm`，`audio_agent` 不再伪造 "检测到 BPM: 120"
+- ✅ **跨镜头色彩统一**：`edit_agent._match_clip_luma`（`enable_color_match` 门控，默认关）——按时间线平均亮度把每个视频片段 `fx_brightness` 钳制到 [0.8, 1.25]（乘数语义，比值匹配），消除多源素材明暗跳变
+- ⏸ 待续（批次 5 收尾）：知识区图表硬规则（每 N 场景至少一个数据类标记）
+- ✅ 回归：后端 1563 passed / 0 失败 · 前端 tsc 0 错误 + vitest 428/428 + lint 0 error + build
+### 执行轮次 84（批次 5 收尾 + 批次 6：图表硬规则 + 数码评测专项 + 评分闭环）
+- ✅ **图表硬规则**（批次 5 收尾）：`structure_agent._ensure_chart_coverage`——knowledge_longform/digital_review 类时间线在无任何数据类标记时，向数据特征最强的场景（跳过开场）注入确定性 `mg_dynamic` 标记（MG 引擎三级兜底保证成片出图），图表从"LLM 碰运气"变为"必然出现"
+- ✅ **数码专项① 品类结构模板**：`BaseCategoryPlugin.get_structure_template()`（原死能力接线）——四个内置类型各自声明场景骨架（评测 = 开箱15%→参数20%→实测40%→对比15%→结论10%；知识 = 钩子→论点→论证→实例→总结；Vlog/鬼畜同理），StructureAgent 注入 system prompt"视频类型结构模板"段
+- ✅ **数码专项② 术语词表校验**：质检新增 `_check_glossary`——词表术语（extra_params.glossary）精确命中放行；滑窗编辑距离近似变体（≤2，3 字词 ≤1）→ error（如"安兔兔"写成"安兔免"）；ASCII 词边界检查防产品名子串误报（"RTX 50" ⊄ "RTX 5080Ti"）；纯确定性零 LLM 开销；配套 `enable_semantic_qa` 对评测/知识类默认开启
+- ✅ **数码专项③ 色彩校准链路**：修 LUT 双重死链——`lut_presets` 插件注册进 StyleInterpreter（原从未注册）+ `interpret` 签名修正为基类抽象签名（原参数不匹配，调了也会 TypeError）；渲染端新增 lut3d 消费（`clip.metadata.lut_path` → 白名单校验 + 拒特殊字符 → trim 滤镜链 `lut3d=file=`）；edit 端 `extra_params.lut_path` 全局下发
+- ✅ **数码专项④ 定向检索**：素材搜索词 prompt 按品类注入定向提示（评测类 → 产品特写/参数图表/跑分对比；知识类 → 概念对应具象画面），此前品类无关、评测镜头意图传不到检索层
+- ✅ **BGM 槽位失配修复**：`_match_bgm_slot` 补 persona 键别名（main_argument/reflection/中文键）+ 全部失配时按进度线性映射槽位序号——旧实现硬编码英文键全失配导致恒取第一个槽位
+- ✅ **单音源回退修复**：`_mix_audio` 回退分支补齐 volume/afade in/out/loudnorm——旧实现裸混入，仅 BGM 时 0.3 衰减失效（原电平炸耳）、仅旁白时无防爆音淡入
+- ✅ **评分闭环**：`QualityOutput.score`（0-100，确定性权重 error-25/warning-8/info-2）+ 管线可选门槛 `extra_params.quality_min_score`（默认 0 不启用；低于门槛视同 error 触发自愈、交 structure 重建）——质检从 pass/fail 升级为可量化的成片评分
+- ✅ 回归：后端 1563 passed / 0 失败
+
+### 执行轮次 85（批次 6 余项：去噪 + Ken Burns + 转场逐切点）
+- ✅ **语音去噪**：`audio_agent` 给旁白/上传配音 clip 打 `denoise: True`（TTS 本就干净无副作用，上传的个人录制显著受益）；渲染端 C11 预处理链对带标记音源插入 `afftdn=nr=12:nf=-25`；`_extract_segments` 带出标记
+- ✅ **Ken Burns 镜头运动**：静态图片片段默认缓慢推近（1.0→1.10x，zoompan 中心裁切；先 1.3x 超采样保证推近后清晰；`metadata.kenburns=False` 可关）——图库 B-roll 不再是死画面；缓存键纳入 kb 标志；实机 ffmpeg 验证滤镜链可跑通
+- ✅ **转场逐切点选择**：规则路径按相邻场景关键词重叠判断话题连续性——延续 → 硬切、切换 → 叠化（LLM 档案存在时仍以其全局偏好为准），替代旧"要么全局一个转场、要么全硬切"；`test_edit_agent_llm` 断言更新为新语义（边界只允许硬切或合法映射值）
+- ⏸ 余项顺延：音效（SFX）链路、花字（text_animations 25 工具）接线、片头片尾模板、新 Skill 注册（与批次 8 的 Agent 消费 Skill schema 一并做）
+- ✅ 回归：后端 1563 passed / 0 失败
+
+### 执行轮次 86（批次 7：出片闭环）
+- ✅ **pipeline→render 自动串联**：`api/render.enqueue_auto_render`——管线完成且 `extra_params.auto_render=true` 时自动入队渲染（复用 queue 端点语义：内存队列 + Mongo 持久化 + webhook 通知；产物命名 `renders/auto_<pipeline_id>.<ext>`；`render_preset`/`render_output_name` 可配）；入队失败不影响管线结果。**此前管线只产出 timeline、渲染必须前端另行调用——"一键出片"的最后一环**
+- ✅ **渲染自动重试**：auto 渲染失败自动重试（`max_retries=1`，间隔 3s），取消语义（RenderCancelledError）不重试
+- ✅ **磁盘预检**：`_ensure_disk_space`（<1GB → 507 快速失败），queue 端点与自动渲染共用——不再让 ffmpeg 写满磁盘后以晦涩 stderr 暴露
+- ✅ **批量管线端点**：`POST /api/pipeline/run-batch`（单批 ≤10 条，逐条独立入队/审计，单条失败不影响其余）
+- ✅ **定时出片**：scheduler handler 接线——payload 含 topic 即按 PipelineRequest 启动管线（owner 取自定时任务归属；`run_due_once` 回调附带 owner_id）；extra_params.auto_render=true 可连渲染自动跑。此前 handler 只写一条 trace 事件，"定时出片"未接线
+- ✅ **模板素材重映射**：apply/batch-apply 新增 `target_project_id`——把模板时间线引用的源项目素材硬链（同盘零拷贝，跨盘复制）进目标项目 assets/files/ 并改写 local_path/asset_id，跨项目应用不再渲染期静默降级色块；`_meta` 记录 `remapped_assets` 数
+- ✅ 回归：后端 1563 passed / 0 失败
+
+### 执行轮次 87（批次 8：三系统治理——品类差异根因 + 注册表生命周期）
+- ✅ **Persona 默认值覆盖修复（品类差异根因 #1）**：`RhythmConfig.base_shot_duration_ms` 改 Optional（默认 None）——旧默认 5000 使"未设置"与"显式 5000"不可区分，四个类型插件的密度档位（知识 12/7/4s、评测 8/5/3s、Vlog 10/6/3s、鬼畜 2/1/0.5s）**永远被覆盖**。现未设置 → 类型档位真实生效（实测 low/medium/high = 12/7/4s ✓），显式数值仍优先；`api/persona.py` 与 `chat_forge` 的写入点同步改为"缺失不落值"
+- ✅ **transition_weights 塌缩修复（品类差异根因 #2）**：`_weighted_transition_pick` 以 pipeline_id 为种子的确定性加权抽取替代 `max()`——旧实现恒返回 hard_cut（内置类型 hard_cut 权重必最大），vlog 0.4/0.3/0.3 等混合意图全部塌缩；同管线可复现、跨管线呈分布（30 管线抽样：硬切 14/叠化 6/淡入 10）
+- ✅ **SkillRegistry 治理**：register 记录 plugin_id（旧实现丢弃）；新增 `unregister`/`list_by_plugin`/`owner`（归属存 skill 对象 `_plugin_id` 属性，与 loader 打补丁模式一致）；`SkillInfo` 补 `plugin_id` 字段 + **parameters 实际填充**（自 `to_llm_tool()` 推导，旧恒为空 → `/api/skill/list` 现在能告知参数结构）
+- ✅ **loader 注销补全**：新增 `_teardown_registrations` 统一注销 Hook/Tool/Agent/**Skill/Category/Prompt**——旧 unload/reload 只清前三类，Skill 与类型禁用后仍生效（能力泄漏）、reload 重复注册 Prompt 片段；unload 与 reload 均改走该助手
+- ✅ **CategoryRegistry 幂等 + 归属**：register 允许同 loader 插件的重复注册（热重载/再启用），内置类型（无归属）重复注册仍拒绝（防第三方覆盖内置行为）；新增 `set_owner`/`unregister_plugin`；loader 按快照差集归属新类型——**修复"类型插件禁用后再启用必 502"**
+- ✅ **annotation_templates 接线**（原死键）：四个内置类型补 `get_annotation_templates()`（与 translate_persona 的列表一致），结构 Agent 将其作为"节奏标注参考"注入 prompt
+- ✅ **plugin_info 修复**：`SkillRegistry.list_by_plugin` 现已存在——`plugins/base.py` 原本一调即 AttributeError 的死 API 复活
+- ⏸ 权限运行时强制（network/fs_write 沙箱）与 `validate_clip` 接线留待下一轮（改动面大，需独立验证）
+- ✅ 回归：后端 1563 passed / 0 失败
+
+### 执行轮次 88（批次 9：屎山清理——死代码/重复合并/P0 选片修复）
+- ✅ **V1 编排器删除**：`services/pipeline.py`（177 行死代码，无生产引用）+ 3 个纯 V1 测试文件删除；`test_pipeline.py` 保留两个与 V1 无关的测试。**发现并修复一个隐藏依赖**：`pipeline_v2._run_agent` 仍在运行时 import V1 的 `get_agent_progress`——进度权重表内联进 V2（结构 15/素材 20/剪辑 30/动画 15/音频 10/质检 10）
+- ✅ **死类删除**：`tool/material.py` 的 FrameValidatorTool 副本（59-147 行，被 `tool/frame_validator.py` 取代且零导入）；`_local_backup_20260803/`（19 个 py）与根目录 `out.mp4` 清除；`test_material_validation` 的导入改指真实模块
+- ✅ **13 个图表渲染器重复合并**：`plugins/logic_animations/diagrams/all.py` 688 行 → 60 行——删除 12 个从核心 `diagram_svg.py` 复制的陈旧副本（经 DIAGRAM_RENDERER_EXTEND 覆盖核心实现导致行为分叉：sankey 非法值处理、heatmap 配色不一致），这些类型回归核心维护版渲染；插件仅保留核心没有的 mindmap
+- ✅ **P0 选片近似随机修复**（审计遗留项）：`_validate_video_frame_inner` 不再把 frame_validator 的 match_score（帧健康占比，健康视频恒 1.0）当语义相关度——改为语义启发式为分、帧健康为乘数。此前任何健康视频都拿满分，标题相关性兜底被完全绕过
+- ✅ 测试契约同步：`test_material_validation` 全部改写到活版 frame_validator 真实契约（mock 其 `_probe_duration`/`_analyze_segment`，match_score 断言为帧健康占比且与视觉开关无关）
+- ⏸ 顺延：286 处计划编号注释的批量改写（量大，建议独立一批做）、ffmpeg builder/SSE 封装抽取、God 文件拆分（render.py/audio_agent）
+### 执行轮次 89（批次 8/9/10 收尾：validate_clip 接线 + SSE 尝试回退 + 演示开关 + 冲突提示）
+- ✅ **validate_clip 接线**（批次 8 余项）：`pipeline_v2` 在类型插件 transform 后按快照对每个视频片段跑 `plugin.validate_clip`，违规片段打 `metadata.type_violation` 标记并记 warning 事件——内置类型默认通过（零行为变化），第三方类型获得类型规范校验能力（原死能力）
+- ✅ **多标签冲突提示**（批次 10）：`EditorPage` 标签同步收到远端保存而本地有未保存修改时，不再静默跳过——toast 明确告知"保存时将覆盖远端"（旧实现 last-writer-wins 无任何提示）
+- ✅ **演示模式生产开关**（批次 10）：settingsStore 新增 `allowDemoFallback`（editorPrefs 持久化，**默认关闭**）——AssetPanel 素材/搜索、useRequirementsAutoStart 简报两处演示回退加守卫（关 → 离线显示空列表/明确提示而非假数据）；设置页新增"演示模式"开关卡片
+- ⏸ SSE 样板抽取尝试后回退：三处 f-string 拼接行为正常，纯外观重构在与安全扫描工具的交互摩擦下性价比不足，保持现状
+- ⏸ 音效（SFX）链路、花字（text_animations 25 工具）管线接线、Agent 消费 Skill schema、286 处计划编号注释批量改写、God 文件拆分：留待后续批次
+### 执行轮次 90（批次 8 收尾：Skill schema 消费）
+- ✅ **Agent 消费 Skill schema**（三系统治理最后一项）：`ToolRegistry.call_with_input`/`SkillRegistry.run_skill` 两个分派助手 + StructureAgent 工具回调改造——可用技能以 LLM 工具形式进入结构 Agent 的 tool_schemas（旧实现 to_llm_tool 全仓零消费），LLM 调用技能名时优先分派 SkillRegistry，未命中回退 ToolRegistry。**CLAUDE.md 宣称的"Skill 自动生成 LLM tool schema"自此真实成立**
+- ✅ 验证：合成技能分派（skill → SkillRegistry 输出、未知名 → not_found）、结构回归 7 passed、全量 1556 passed / 0 失败
+- ⏸ 权限运行时强制（network/fs_write 沙箱）仍留待后续（需独立设计审计与拦截层）
+
+### 执行轮次 91（批次 9 收尾：计划编号注释清理）
+- ✅ **376 处计划编号装饰注释清理**（审计"286 处"项的落地）：保守机械脚本只处理注释行、只删编号装饰前缀（`A9：`/`P0-14:`/`P5-B2:`/`Todo N`/`批N（…）` 等，P3-3B 类复合编号整体消费），描述文字全部保留；81 个文件、零边界异常，全量编译检查 + 回归通过。注释从此自解释，不再依赖已归档的计划文档
+- ⏸ ffmpeg builder / SSE 封装抽取与 God 文件拆分（render.py/audio_agent）留待独立批次（改动面大）
+### 执行轮次 92（批次 10：右键菜单 + 骨架屏）
+- ✅ **时间线右键菜单**（批次 10 余项）：`TimelineContextMenu` 轻量自绘组件（视口边缘内收、点击外部/Escape 关闭）+ TimelinePanel 接线——右键命中片段自动选中并弹出菜单（在播放头处切分/删除选中/波纹删除/取消选择，复用工具栏既有动作并带快捷键标注）；引擎 `hitTestClip` 改公开供命中选中；此前 `@radix-ui/react-context-menu` 已装未用、右键无任何菜单
+- ✅ **骨架屏**：`Skeleton`/`SkeletonCardGrid` 组件 + 项目页加载态接入（替代单一 spinner，布局前后稳定）；测试断言同步更新
+- ✅ 回归：后端 1556 passed / 0 失败 · 前端 428 passed + tsc 0 错误 + build
+- ✅ 回归：后端 1556 passed / 0 失败（轮 89 复跑同值）

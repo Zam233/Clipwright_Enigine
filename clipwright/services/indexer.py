@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 from pathlib import Path
@@ -19,7 +20,8 @@ class MediaIndexer:
         """提取媒体文件元数据。"""
         result = {"duration": 0, "width": 0, "height": 0, "codec": "", "fps": 0}
         try:
-            r = subprocess.run(
+            r = await asyncio.to_thread(
+                subprocess.run,
                 ["ffprobe", "-v", "error", "-print_format", "json",
                  "-show_format", "-show_streams", file_path],
                 capture_output=True, text=True, timeout=30,

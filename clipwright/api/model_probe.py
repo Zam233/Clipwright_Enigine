@@ -1,4 +1,7 @@
-"""模型测试 API — 快速验证 LLM / Embedding / Reranker。"""
+"""模型测试 API — 快速验证 LLM / Embedding / Reranker。
+
+模块名不用 ``*_test.py`` 后缀，避免被 pytest 当作测试收集。
+"""
 
 from __future__ import annotations
 
