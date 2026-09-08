@@ -26,6 +26,7 @@ SYSTEM_PROMPT_TPL = """你是一个{tone}风格的视频脚本创作者。
 - 学术密度: {academic_density}
 - 最长句长: {max_sentence_len} 字
 - 剪辑节奏: {cut_profile}
+{persona_identity}
 
 ## 动画标记规则
 每个场景 description 必须包含一个动画标记。优先使用 mg_dynamic（动态 LLM 生成），其次选用预置动画。
@@ -200,6 +201,30 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         super().__init__()
         self._llm = LLMService()
 
+    @staticmethod
+    def _build_system_prompt(
+        identity: dict, language: dict, rhythm: dict, constraints: dict,
+    ) -> str:
+        """构建结构生成 system prompt。
+
+        轮71：identity.positioning / class_perspective 此前从未进入提示词
+        （Persona 治理面板可编辑，但结构 Agent 永远读不到）。
+        """
+        tone = identity.get("tone") or "neutral"
+        extra_lines = []
+        if identity.get("positioning"):
+            extra_lines.append(f"- 账号定位: {identity['positioning']}")
+        if identity.get("class_perspective"):
+            extra_lines.append(f"- 阶层视角: {identity['class_perspective']}")
+        return SYSTEM_PROMPT_TPL.format(
+            tone=tone,
+            academic_density=language.get("academic_density", 0.1),
+            max_sentence_len=language.get("max_sentence_len", 30),
+            cut_profile=rhythm.get("cut_profile", "even_flow"),
+            max_duration=constraints.get("max_duration_sec", 900),
+            persona_identity="\n".join(extra_lines),
+        )
+
     async def execute(
         self, input_data: StructureInput, context: AgentContext
     ) -> StructureOutput:
@@ -210,11 +235,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             rhythm = persona_config.get("rhythm", {})
             constraints = persona_config.get("constraints", {})
 
-            tone = identity.get("tone", "neutral")
-            academic_density = language.get("academic_density", 0.1)
-            max_sentence_len = language.get("max_sentence_len", 30)
-            cut_profile = rhythm.get("cut_profile", "even_flow")
-            max_duration = constraints.get("max_duration_sec", 900)
+            tone = identity.get("tone") or "neutral"
 
             # 复用人在回路已确认的场景结构（production_plan.raw_scenes），
             # 避免管线重新生成导致与用户确认的规划书发生漂移（绕过审阅）。
@@ -274,13 +295,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                     output._llm_usage = None
                     return output
 
-            system_prompt = SYSTEM_PROMPT_TPL.format(
-                tone=tone,
-                academic_density=academic_density,
-                max_sentence_len=max_sentence_len,
-                cut_profile=cut_profile,
-                max_duration=max_duration,
-            )
+            system_prompt = self._build_system_prompt(identity, language, rhythm, constraints)
             system_prompt += TOOL_PROMPT
 
             if input_data.persona_prompt:

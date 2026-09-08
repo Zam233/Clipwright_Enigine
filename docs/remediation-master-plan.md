@@ -188,6 +188,15 @@
 
 回归：后端 1509 passed / 0 失败（+22：webhook 10 + D10/D13/D15 6 + 远程 6）；前端 tsc 0 错误 + vitest 387/387（+1 错误横幅清除）。
 
+## 轮 71：ReviewPanel 路径统一 + persona identity 接线（2026-09-08）
+
+| # | 修复项 | 状态 |
+|---|--------|------|
+| 前端 | ReviewPanel 规划确认统一走 `requirementsApi.proceed`（旧实现直连 `pipelineApi.runAsync`）：会话状态不再停在 plan_ready；`animation_intents`/`material_source_ids`/`subtitle_enabled` 等 user_inputs 不再丢失；owner/预算/超时公式/任务队列与 AgentPanel 路径完全一致；无会话时如实提示而非静默启动 | ✅ |
+| 后端 | persona `identity.positioning` / `identity.class_perspective` 接线：结构提示词新增「账号定位/阶层视角」行（Persona 治理面板可编辑但此前结构 Agent 永远读不到）；提取 `StructureAgent._build_system_prompt` 便于单测；`tone` 为 None 时回退 neutral | ✅ |
+
+回归：后端 1513 passed / 0 失败（+4 persona identity）；前端 tsc 0 错误 + vitest 389/389（+2 ReviewPanel 路径）。
+
 ## 批次 8（后续独立任务，不在本轮）
 
 前端仓库（proceed project_id / agent_notes UI / ReviewPanel 统一 / SSE 真流式）；计划修改意见改写 raw_scenes；persona 剩余字段接线；渲染产物 TTL 清理。

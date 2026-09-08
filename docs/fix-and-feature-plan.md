@@ -939,3 +939,8 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ✅ D7 远程渲染：轮询瞬态容忍 3 次；下载上限 4096MB 双重校验；取消传播限制入文档
 - ✅ 前端 P2：消息时间戳；错误横幅成功终态/新一轮启动自动清除
 - ✅ 回归：后端 1509 passed / 0 失败 · 前端 tsc 0 错误 + vitest 387/387
+
+### 执行轮次 71（ReviewPanel 路径统一 + persona identity 接线）
+- ✅ ReviewPanel 规划确认统一走 /proceed（旧实现直连 /run-async：会话停在 plan_ready、user_inputs 的 animation_intents/素材源/字幕开关全丢、超时公式与 owner 校验与 AgentPanel 分叉）；无会话如实提示
+- ✅ persona identity.positioning / class_perspective 进入结构提示词（提取 _build_system_prompt 可单测；tone None 回退 neutral）
+- ✅ 回归：后端 1513 passed / 0 失败 · 前端 tsc 0 错误 + vitest 389/389
