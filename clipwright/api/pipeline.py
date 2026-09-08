@@ -462,10 +462,17 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
         priority = max(1, min(5, int(req.headers.get("X-Priority", "3") or "3")))
     except (ValueError, TypeError):
         priority = 3
-    from clipwright.services.task_queue import get_task_queue
-    task_id = await get_task_queue().submit(
-        "pipeline", _queue_handler, priority=priority, timeout_sec=_submit_timeout,
-    )
+    from clipwright.services.task_queue import QueueFullError, get_task_queue
+    try:
+        task_id = await get_task_queue().submit(
+            "pipeline", _queue_handler, priority=priority, timeout_sec=_submit_timeout,
+        )
+    except QueueFullError as e:
+        # 轮69（D5）：队列背压——明确 429 而非 500，客户端可退避重试
+        _pipeline_results[pipeline_id] = {
+            "status": "failed", "error": str(e), "pipeline_id": pipeline_id,
+        }
+        raise HTTPException(status_code=429, detail=str(e))
 
     async def _task_slot():
         """把队列 task 与 pipeline 取消/清理关联。"""
@@ -1017,28 +1024,6 @@ async def predict_material(body: PredictMaterialRequest) -> dict:
     assert_allowed_path(Path(body.file_path))
     result = await MaterialAnalyzer.analyze(body.file_path, body.file_size)
     return result
-
-
-@router.post("/step/{agent_name}")
-async def run_single_agent(agent_name: str, request: PipelineRequest) -> dict:
-    """执行完整 Pipeline 并返回指定 Agent 的结果。
-
-    Deprecated (B5): 语义为「运行完整管线并返回指定 agent 步骤结果（非隔离执行）」，
-    前端零调用；保留兼容不删除，但调用方不应依赖其"单步"语义。
-    生产加固 1.1：内部引擎切换为 V2。
-    """
-    logger.warning("DEPRECATED: POST /api/pipeline/step/%s 被调用", agent_name)
-    state = await PipelineOrchestratorV2().run(request)
-    step = state.get_step(agent_name)
-    if step is None:
-        raise HTTPException(status_code=404, detail=f"Agent {agent_name} not executed")
-    return {
-        "agent_name": agent_name,
-        "status": step.status,
-        "result": step.result,
-        "error": step.error,
-        "deprecated": True,
-    }
 
 
 @router.post("/topic-suggest")

@@ -86,6 +86,63 @@ class TestImageElementRendering:
         assert "mg-e0" not in html
 
 
+class TestImageSrcSanitization:
+    """轮69（D12）：MG JSON 来自 LLM，不可信——URL 必须被中和，防 SSRF/越权读取。"""
+
+    def test_http_src_rejected(self) -> None:
+        d = _image_def()
+        d["elements"][0]["src"] = "http://169.254.169.254/latest/meta-data/"
+        html = MGRenderer.render(d)
+        assert "169.254" not in html
+        assert "<img" not in html  # 元素整体被拒，不留破图
+
+    def test_protocol_relative_src_rejected(self) -> None:
+        d = _image_def()
+        d["elements"][0]["src"] = "//evil.example/x.png"
+        html = MGRenderer.render(d)
+        assert "evil.example" not in html
+
+    def test_relative_traversal_rejected(self) -> None:
+        d = _image_def()
+        d["elements"][0]["src"] = "../../../etc/passwd"
+        html = MGRenderer.render(d)
+        assert "passwd" not in html
+
+    def test_file_uri_outside_allowlist_rejected(self) -> None:
+        d = _image_def()
+        d["elements"][0]["src"] = "file:///C:/Windows/win.ini"
+        html = MGRenderer.render(d)
+        assert "win.ini" not in html
+
+    def test_data_image_allowed(self) -> None:
+        d = _image_def()
+        d["elements"][0]["src"] = "data:image/png;base64,iVBORw0KGgo="
+        html = MGRenderer.render(d)
+        assert 'src="data:image/png;base64,iVBORw0KGgo="' in html
+
+    def test_css_url_in_body_background_neutralized(self) -> None:
+        d = _image_def()
+        d["style"]["background"] = "url(http://evil.example/x.png)"
+        html = MGRenderer.render(d)
+        assert "evil.example" not in html
+        assert "background:none" in html
+
+    def test_css_url_in_element_background_neutralized(self) -> None:
+        d = _image_def()
+        d["elements"].insert(0, {
+            "type": "bg", "background": "url(http://evil.example/x.png)",
+            "keyframes": [{"time": 0, "opacity": 0}, {"time": 1, "opacity": 1}],
+        })
+        html = MGRenderer.render(d)
+        assert "evil.example" not in html
+
+    def test_css_url_in_keyframe_neutralized(self) -> None:
+        d = _image_def()
+        d["elements"][0]["keyframes"][0]["background"] = "url(http://evil.example/x.png)"
+        html = MGRenderer.render(d)
+        assert "evil.example" not in html
+
+
 class TestImageElementValidation:
     """validator schema：接受 image，拒绝畸形元素。"""
 

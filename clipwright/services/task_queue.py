@@ -15,6 +15,7 @@ A10 (2026-08): 管线异步执行改走本队列（并发上限 + 排队 + 优�
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
@@ -30,6 +31,10 @@ class TaskStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     TIMEOUT = "timeout"  # A2: 与用户取消区分的执行超时终态
+
+
+class QueueFullError(RuntimeError):
+    """轮69（D5）：排队上限——调用方应回 429/503 而非无限堆积。"""
 
 
 def _mongo_collection(name: str = "task_queue"):
@@ -94,6 +99,8 @@ class PipelineTask:
         self.duration_sec: float = 0
         self.progress: float = 0
         self.progress_text: str = ""
+        # 轮69（D5）：入队单调时钟，用于优先级 aging（防低优先级饥饿）
+        self.enqueued_mono: float = time.monotonic()
         self.created_at = datetime.now(tz=TIME_ZONE) if TIME_ZONE else datetime.now(timezone.utc)
         self.started_at: Optional[datetime] = None
         self.completed_at: Optional[datetime] = None
@@ -117,9 +124,16 @@ class PipelineTask:
 class TaskQueue:
     """并发任务队列 — 最多 N 个任务同时执行，其余排队（按优先级）。"""
 
-    def __init__(self, max_concurrent: int = 3, task_timeout_sec: int = 900):
+    def __init__(
+        self,
+        max_concurrent: int = 3,
+        task_timeout_sec: int = 900,
+        max_pending: int = 200,
+    ):
         self.max_concurrent = max_concurrent
         self.task_timeout_sec = task_timeout_sec
+        # 轮69（D5）：排队上限——背压保护，超限 submit 抛 QueueFullError
+        self.max_pending = max(1, int(max_pending))
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._tasks: dict[str, PipelineTask] = {}
         self._pending_queue: list[str] = []
@@ -191,7 +205,14 @@ class TaskQueue:
 
         Returns:
             task_id
+
+        Raises:
+            QueueFullError: 排队任务数已达 max_pending（轮69 背压保护）。
         """
+        if self.pending_count >= self.max_pending:
+            raise QueueFullError(
+                f"任务队列已满（pending={self.pending_count}/{self.max_pending}），请稍后重试"
+            )
         task_id = f"task_{uuid.uuid4().hex[:12]}"
         priority = max(1, min(5, int(priority)))
         task = PipelineTask(task_id, task_type, handler, args, kwargs,
@@ -206,18 +227,31 @@ class TaskQueue:
         return task_id
 
     async def _process_queue(self) -> None:
-        """从队列取任务执行（受信号量限制，按优先级排序）。"""
+        """从队列取任务执行（受信号量限制，按优先级 + aging 排序）。"""
         while self._pending_queue:
-            # A10: 高优先级先出队
-            self._pending_queue.sort(
-                key=lambda tid: -self._tasks.get(tid).priority if self._tasks.get(tid) else 0,
-            )
+            # A10: 高优先级先出队；轮69（D5）：等待越久有效优先级越高，
+            # 每等待 60s 加 1（上限 +2），防止低优先级任务永久饥饿
+            now = time.monotonic()
+
+            def _effective(tid: str) -> float:
+                t = self._tasks.get(tid)
+                if t is None:
+                    return -1.0
+                aged = min(2.0, (now - t.enqueued_mono) / 60.0)
+                return t.priority + aged
+
+            self._pending_queue.sort(key=_effective, reverse=True)
             task_id = self._pending_queue.pop(0)
             task = self._tasks.get(task_id)
             if not task:
                 continue
 
             async with self._semaphore:
+                # 轮69（D5）：取消竞态——任务已从 pending 队列弹出、在信号量上
+                # 等待期间被 cancel()，此处必须二次检查，否则仍会执行
+                if task.status == TaskStatus.CANCELLED:
+                    logger.info("任务 %s 已在排队期被取消，跳过执行", task_id)
+                    continue
                 task.status = TaskStatus.RUNNING
                 task.started_at = datetime.now(tz=TIME_ZONE) if TIME_ZONE else datetime.now(timezone.utc)
                 self._persist(task)
@@ -271,11 +305,14 @@ class TaskQueue:
         return task.to_dict() if task else {"task_id": task_id, "status": "not_found"}
 
     def cancel(self, task_id: str) -> bool:
-        """取消一个任务（仅支持 pending 状态）。"""
+        """取消一个任务（仅支持 pending 状态；排队/等信号量两个阶段均生效）。"""
         task = self._tasks.get(task_id)
         if task and task.status == TaskStatus.PENDING:
             task.status = TaskStatus.CANCELLED
+            task.error = "任务被取消"
             self._pending_queue = [t for t in self._pending_queue if t != task_id]
+            # 轮69（D5）：取消即同步 Mongo（旧实现留 pending 记录到下次覆盖）
+            self._drop(task_id)
             return True
         return False
 
@@ -307,7 +344,8 @@ class TaskQueue:
 
     @property
     def pending_count(self) -> int:
-        return len(self._pending_queue)
+        """待执行任务数（轮69：含已出队但仍在等信号量的任务，旧实现少算）。"""
+        return sum(1 for t in self._tasks.values() if t.status == TaskStatus.PENDING)
 
 
 # 全局单例

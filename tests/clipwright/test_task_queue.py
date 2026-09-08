@@ -6,7 +6,13 @@ import asyncio
 
 import pytest
 
-from clipwright.services.task_queue import TaskQueue, _mongo_collection
+from clipwright.services.task_queue import (
+    PipelineTask,
+    QueueFullError,
+    TaskQueue,
+    TaskStatus,
+    _mongo_collection,
+)
 
 
 class TestPriorityOrdering:
@@ -83,6 +89,96 @@ class TestPipelineTaskEndpoint:
         schema = main_app.openapi()
         paths = list(schema.get("paths", {}).keys())
         assert any(p.endswith("/tasks") for p in paths)
+
+
+class TestBackpressureAndCancelRace:
+    """轮69（D5）：排队上限 / 取消竞态 / aging / pending 计数。"""
+
+    @pytest.mark.asyncio
+    async def test_queue_full_raises(self) -> None:
+        q = TaskQueue(max_pending=2)
+        for i in range(2):
+            t = PipelineTask(f"t{i}", "pipeline", _noop, (), {})
+            q._tasks[t.task_id] = t
+        with pytest.raises(QueueFullError):
+            await q.submit("pipeline", _noop)
+
+    @pytest.mark.asyncio
+    async def test_cancel_while_waiting_for_semaphore(self) -> None:
+        """已出队但等信号量期间被取消 → 不得执行（旧实现会照跑）。"""
+        ran: list[str] = []
+        q = TaskQueue(max_concurrent=1)
+        release = asyncio.Event()
+
+        async def blocker() -> None:
+            await release.wait()
+
+        async def victim() -> None:
+            ran.append("victim")
+
+        await q.submit("pipeline", blocker, priority=5)
+        tid = await q.submit("pipeline", victim, priority=1)
+        for _ in range(100):
+            task = q.get_task(tid)
+            if not q._pending_queue and task and task.status == TaskStatus.PENDING:
+                break
+            await asyncio.sleep(0.02)
+
+        assert q.cancel(tid) is True
+        release.set()
+        await asyncio.sleep(0.2)
+        assert ran == []
+        assert q.get_task(tid).status == TaskStatus.CANCELLED
+
+    @pytest.mark.asyncio
+    async def test_aging_prevents_starvation(self) -> None:
+        """等待 3 分钟的 priority=1 任务应超过新到的 priority=2 任务。"""
+        order: list[str] = []
+        q = TaskQueue(max_concurrent=1)
+        release = asyncio.Event()
+
+        async def blocker() -> None:
+            await release.wait()
+
+        def mk(label: str):
+            async def handler() -> None:
+                order.append(label)
+            return handler
+
+        await q.submit("pipeline", blocker, priority=5)
+        old_id = await q.submit("pipeline", mk("old_low"), priority=1)
+        q.get_task(old_id).enqueued_mono -= 180.0  # 模拟已等待 3 分钟
+        await q.submit("pipeline", mk("new_mid"), priority=2)
+
+        for _ in range(100):
+            if q.pending_count == 2:
+                break
+            await asyncio.sleep(0.02)
+        release.set()
+        for _ in range(100):
+            if len(order) >= 2:
+                break
+            await asyncio.sleep(0.02)
+        assert order == ["old_low", "new_mid"]
+
+    @pytest.mark.asyncio
+    async def test_pending_count_includes_semaphore_waiters(self) -> None:
+        q = TaskQueue(max_concurrent=1)
+        release = asyncio.Event()
+
+        async def blocker() -> None:
+            await release.wait()
+
+        await q.submit("pipeline", blocker)
+        await q.submit("pipeline", _noop)
+        for _ in range(100):
+            if not q._pending_queue:
+                break
+            await asyncio.sleep(0.02)
+        # 旧实现返回 len(_pending_queue)（此时为 0），少算等信号量的任务
+        assert q.pending_count == 1
+        release.set()
+        await asyncio.sleep(0.1)
 
 
 async def _noop():

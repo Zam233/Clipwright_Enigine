@@ -311,7 +311,7 @@ P6/P7 阶段新增/变更的路由与客户端（均已完成接线与回归）�
 
 其他接线说明：
 - `assetApi.get/fileUrl/byPathUrl` 补全（W14），对齐 asset.py 全部 9 端点。
-- 需求对话新增 SSE 流式消费（W1）：`POST /api/requirements/chat/stream/{id}` → `requirementsApi.streamChat`。
+- 需求对话新增 SSE 流式消费（W1）：`POST /api/requirements/chat/stream/{id}` → `requirementsApi.streamChat`；轮69 起消费 `delta` 块做打字气泡增量渲染（result 到达收尾替换，无 delta 时旧契约兼容）。
 - wsUrl 已彻底移除（W9）；`/api/project/{id}/versions` 系列校验 owner（P3-3B）。
 
 ---

@@ -161,6 +161,20 @@
 
 回归：后端 1465 passed / 0 失败；前端 tsc 0 错误 + vitest 379/379。
 
+## 轮 69：真流式落地 + 响应式抽屉 + 后端加固 D5/D9/D11/D12（2026-09-08）
+
+| # | 修复项 | 状态 |
+|---|--------|------|
+| 批1-后端 | stream_chat 真流式落地：旧实现把 on_delta 收集进列表、chat() 返回后一次性 yield（客户端仍是"最后一起出现"）→ 改 asyncio.Queue 桥接（chat 后台任务 + 队列逐块 yield + 断线 cancel）；_stream_gathering_llm 增量提取重写（旧 reply_buf 只在首块赋值 → 仅首块内容被推送；新实现维护值起点 + 已发送字符数，按安全前缀解码，切分点跨 `\n`/`\"`/`\uXXXX` 均不产生错字）；合法 JSON 缺 reply 键时用已提取文本兜底 | ✅ |
+| 批1-前端 | AgentPanel delta 消费：首个 delta 创建打字气泡（RequirementMessage.streaming + 光标）、后续 appendRequirementsDelta 增量追加、result 到达用权威回复收尾替换、失败转错误文案；自动滚动依赖末条内容长度（流式时消息数不变）；busy 指示器在流式气泡存在时隐藏 | ✅ |
+| 批3b | 响应式折叠抽屉：useMediaQuery hook（jsdom 无 matchMedia 时按宽屏）；workspaceStore.mobilePanel；EditorLayout <lg 隐藏 docked 面板、同组件渲染右侧滑出抽屉（遮罩点击/Esc/关闭按钮，回桌面宽度自动关闭）；Toolbar 三开关 <lg 路由为抽屉开合；Properties ≥xl 才停靠（1024px 不再三栏挤压预览）；<768 时间线加只读提示覆盖层 | ✅ |
+| D5 | TaskQueue 加固：max_pending 背压（QueueFullError → /run-async 429，旧实现无限堆积）；等信号量期间取消二次检查（旧实现 cancel 返回 True 但任务照跑）；优先级 aging（每等 60s +1，上限 +2，防低优先级饥饿）；pending_count 计入等信号量任务；cancel 同步清理 Mongo 记录 | ✅ |
+| D9 | trace 索引泄漏：_cleanup_stale 只清 _traces/_trace_times → 补清 _seq_counters/_seq_index；_expire_old_events 重建 seq 索引（旧实现索引与事件长度失配退化线性扫描）；_trim_events 去掉无效 `del` 死代码 | ✅ |
+| D11 | 删除 `POST /api/pipeline/step/{agent}`：零调用、无 owner/budget/queue 治理（可被用于绕过队列并发上限），文档同步移除 | ✅ |
+| D12 | MG 渲染 SSRF 防护：_safe_image_src 白名单（data:image 允许；http(s)/协议相对拒绝；file:// 与绝对路径须落在媒体白名单内且存在；相对路径禁 `..` 穿越）；_sanitize_css_value 中和所有含 `url(` 的 CSS 值（body/元素背景/关键帧/静态透传四路） | ✅ |
+
+回归：后端 1487 passed / 0 失败（+22：流式 8 + trace 2 + 队列 4 + MG 8）；前端 tsc 0 错误 + vitest 386/386（+7：delta 消费 2 + 抽屉 5）。
+
 ## 批次 8（后续独立任务，不在本轮）
 
 前端仓库（proceed project_id / agent_notes UI / ReviewPanel 统一 / SSE 真流式）；计划修改意见改写 raw_scenes；persona 剩余字段接线；渲染产物 TTL 清理。

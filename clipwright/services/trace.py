@@ -62,16 +62,14 @@ def _next_seq(pipeline_id: str) -> int:
 
 
 def _trim_events(pipeline_id: str) -> None:
-    """裁剪管线的事件列表，防止无限增长。"""
+    """裁剪管线的事件列表，防止无限增长（三张索引表同步裁剪）。"""
     events = _traces.get(pipeline_id)
     if events and len(events) > _MAX_EVENTS_PER_PIPELINE:
         # 保留最后 _MAX_EVENTS_PER_PIPELINE 条
-        dropped = len(events) - _MAX_EVENTS_PER_PIPELINE
         _traces[pipeline_id] = events[-_MAX_EVENTS_PER_PIPELINE:]
         _times = _trace_times.get(pipeline_id)
         if _times is not None:
             _trace_times[pipeline_id] = _times[-_MAX_EVENTS_PER_PIPELINE:]
-            del _times[:dropped]
         _seqs = _seq_index.get(pipeline_id)
         if _seqs is not None:
             _seq_index[pipeline_id] = _seqs[-_MAX_EVENTS_PER_PIPELINE:]
@@ -81,16 +79,23 @@ def _expire_old_events(pipeline_id: str) -> None:
     """惰性清除超过 TTL 的事件：仅当尾部事件过时时才整体裁剪（E6）。
 
     每次读只检查尾部时间戳，命中 TTL 才重建列表，避免每次读取全量复制。
+    轮69（D9）：seq 索引同步重建——否则索引长度与事件长度失配，
+    退化为线性扫描且残留已过期 seq。
     """
     events = _traces.get(pipeline_id)
     if not events:
         return
     cutoff = time.time() - _EVENT_TTL_SEC
     if events[-1]["time"] < cutoff:
-        _traces[pipeline_id] = [e for e in events if e["time"] >= cutoff]
+        keep = [e for e in events if e["time"] >= cutoff]
+        _traces[pipeline_id] = keep
         _times = _trace_times.get(pipeline_id)
         if _times is not None:
             _trace_times[pipeline_id] = [t for t in _times if t >= cutoff]
+        _seqs = _seq_index.get(pipeline_id)
+        if _seqs is not None and len(_seqs) == len(events):
+            keep_seqs = {e.get("seq") for e in keep}
+            _seq_index[pipeline_id] = [s for s in _seqs if s in keep_seqs]
 
 
 def create_trace(pipeline_id: str) -> None:
@@ -103,17 +108,25 @@ def create_trace(pipeline_id: str) -> None:
 
 
 def _cleanup_stale() -> None:
-    """清理无事件的管线键；超限时按最近事件时间淘汰最旧管线。"""
+    """清理无事件的管线键；超限时按最近事件时间淘汰最旧管线。
+
+    轮69（D9）：同时清除 _seq_counters/_seq_index——旧实现只清 _traces/
+    _trace_times，长生命周期进程下 seq 索引与计数器持续累积。
+    """
     if len(_traces) <= _MAX_PIPELINES:
         return
     for pid in [p for p, evs in _traces.items() if not evs]:
         _traces.pop(pid, None)
         _trace_times.pop(pid, None)
+        _seq_counters.pop(pid, None)
+        _seq_index.pop(pid, None)
     if len(_traces) > _MAX_PIPELINES:
         items = sorted(_traces.items(), key=lambda kv: kv[1][-1]["time"] if kv[1] else 0.0)
         for pid, _ in items[: len(_traces) - _MAX_PIPELINES]:
             _traces.pop(pid, None)
             _trace_times.pop(pid, None)
+            _seq_counters.pop(pid, None)
+            _seq_index.pop(pid, None)
 
 
 def add_event(

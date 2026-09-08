@@ -920,3 +920,13 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ✅ 批2 归档/导入加固：媒体成员 ZIP_STORED（MP4/JPG 压缩无收益纯烧 CPU）；导入 file.size 预检 413 先于读取（旧实现先全量读再检查 → 2GB 上传先吃满内存）；SpooledTemporaryFile 直接传 ZipFile 不再 BytesIO 二次拷贝；流式解包（1MB 块 copyfileobj）；累计解压上限 2GB（解压炸弹防护）
 - ✅ 批3 响应式存活线：EditorToolbar 根加 overflow-x-auto（≤1280px 不再裁切）；去重分隔线；Properties 面板 hidden xl:block 安全底线
 - ✅ 回归：后端 1465 passed / 0 失败 · 前端 tsc 0 错误 + vitest 379/379
+
+### 执行轮次 69（真流式落地 + 响应式抽屉 + 后端加固 D5/D9/D11/D12）
+- ✅ 批1 后端真流式：stream_chat 改 asyncio.Queue 桥接（旧实现缓冲后一次性 yield，客户端仍无打字效果）；_stream_gathering_llm 增量提取重写（旧 reply_buf 仅首块赋值 → 只有首块内容被推送；新实现按安全前缀解码，跨转义切分不产生错字）；合法 JSON 缺 reply 键时兜底
+- ✅ 批1 前端 delta 消费：打字气泡（streaming 光标）+ 增量追加 + result 收尾替换 + 失败转错误；自动滚动依赖末条内容长度；busy 指示器在流式期间隐藏
+- ✅ 批3b 响应式抽屉：<lg docked 面板隐藏并渲染为右侧滑出抽屉（遮罩/Esc/按钮关闭，回桌面宽度自动关闭）；Toolbar 开关路由为抽屉开合；Properties ≥xl 停靠；<768 时间线只读覆盖层
+- ✅ D5 TaskQueue：max_pending 背压（QueueFullError → 429）、等信号量取消二次检查、优先级 aging、pending_count 修正、cancel 同步 Mongo
+- ✅ D9 trace：清理/过期路径同步维护 _seq_counters/_seq_index（旧实现泄漏 + 索引失配退化线性扫描）
+- ✅ D11 删除无治理的 POST /api/pipeline/step/{agent}（零调用）
+- ✅ D12 MG SSRF：图片 src 白名单（data:image 允许 / http(s) 拒绝 / file&绝对路径须在媒体白名单 / 相对路径禁 .. 穿越）+ CSS url() 中和（body/元素背景/关键帧/静态透传四路）
+- ✅ 回归：后端 1487 passed / 0 失败 · 前端 tsc 0 错误 + vitest 386/386

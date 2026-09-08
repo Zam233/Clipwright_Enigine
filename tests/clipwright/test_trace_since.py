@@ -94,3 +94,43 @@ class TestSinceIndex:
         assert evts == []  # 全部过期 → 裁剪后为空
         # 索引同步清空
         assert T._trace_times.get(pid) == []
+        assert T._seq_index.get(pid) == []
+
+
+class TestSeqIndexSync:
+    """轮69（D9）：清理/裁剪路径必须同步维护 _seq_counters/_seq_index。"""
+
+    def test_cleanup_stale_clears_seq_dicts(self) -> None:
+        created: list[str] = []
+        try:
+            for i in range(T._MAX_PIPELINES + 5):
+                pid = f"pl_d9_{i}"
+                created.append(pid)
+                T._traces[pid] = []
+                T._trace_times[pid] = []
+                T._seq_counters[pid] = 7
+                T._seq_index[pid] = [1, 2, 3]
+            T._cleanup_stale()
+            assert len(T._traces) <= T._MAX_PIPELINES
+            # 不存在"事件已清、seq 键残留"的孤儿键
+            assert all(pid in T._traces for pid in T._seq_counters)
+            assert all(pid in T._traces for pid in T._seq_index)
+        finally:
+            for pid in created:
+                T.clear(pid)
+
+    def test_trim_keeps_three_indexes_aligned(self) -> None:
+        pid = "pl_d9_trim"
+        try:
+            _fresh_trace(pid)
+            for _ in range(T._MAX_EVENTS_PER_PIPELINE + 10):
+                T.add_event(pid, "agent", "info", "e")
+            n = T._MAX_EVENTS_PER_PIPELINE
+            assert len(T._traces[pid]) == n
+            assert len(T._trace_times[pid]) == n
+            assert len(T._seq_index[pid]) == n
+            # 索引对齐 → seq 游标二分定位正确
+            last_seq = T._traces[pid][-1]["seq"]
+            assert T.get_events_since_seq(pid, last_seq - 1) == T._traces[pid][-1:]
+        finally:
+            T.clear(pid)

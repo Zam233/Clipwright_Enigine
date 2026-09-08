@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +67,59 @@ class MGRenderer:
         "stroke_width", "stroke_color", "border_width", "border_color",
     }
 
+    # D12：CSS 值中的 url(...) 会触发 headless Chrome 主动请求（SSRF /
+    # 本地文件读取），LLM 生成的 MG JSON 不可信 → 一律中和。
+    _URL_CSS_RE = re.compile(r"url\s*\(", re.IGNORECASE)
+
+    @staticmethod
+    def _sanitize_css_value(value: Any) -> Any:
+        """D12：中和含 url(...) 的 CSS 值（返回 none）。"""
+        if isinstance(value, str) and MGRenderer._URL_CSS_RE.search(value):
+            logger.warning("MG CSS 值含 url()，已中和: %.80s", value)
+            return "none"
+        return value
+
+    @staticmethod
+    def _safe_image_src(src: str) -> str:
+        """D12：图片源白名单——防 SSRF 与越权本地文件读取。
+
+        - ``data:image/*``：允许（内联，无外部请求）
+        - ``http(s)://`` / 协议相对 ``//``：拒绝（Chrome 会主动请求 → SSRF）
+        - ``file://`` / 绝对路径：必须落在媒体白名单目录内且文件存在
+        - 相对路径：拒绝 ``..`` 穿越；存在则转 file:// URI，否则原样保留
+          （由 Chrome 相对 HTML 文档解析，不产生外部请求）
+
+        返回空串表示拒绝渲染该元素。
+        """
+        s = (src or "").strip()
+        if not s:
+            return ""
+        low = s.lower()
+        if low.startswith("data:image/"):
+            return s
+        if low.startswith(("http://", "https://", "//")):
+            return ""
+        if low.startswith("file://"):
+            raw = s[7:]
+            # file:///C:/... → C:/...；file://host/path 不接受 host 形式
+            if raw.startswith("/") and re.match(r"^/[A-Za-z]:", raw):
+                raw = raw[1:]
+            p = Path(raw)
+        else:
+            p = Path(s)
+        try:
+            if p.is_absolute():
+                from clipwright.security import assert_allowed_path
+                rp = assert_allowed_path(p.resolve())
+                return rp.as_uri() if rp.exists() else ""
+            if ".." in p.parts:
+                return ""
+            if p.exists():
+                return p.resolve().as_uri()
+            return s
+        except Exception:
+            return ""
+
     @staticmethod
     def _css_timing(easing: Any) -> str:
         """将 easing 字段转换为 CSS animation-timing-function 值。
@@ -111,8 +165,12 @@ class MGRenderer:
         w = width or mg_def.get("width", 1920)
         h = height or mg_def.get("height", 1080)
         dur = mg_def.get("duration_sec", 3.0)
-        bg = mg_def.get("style", {}).get("background", "transparent")
-        font_family = mg_def.get("style", {}).get("font_family", "sans-serif")
+        bg = MGRenderer._sanitize_css_value(
+            mg_def.get("style", {}).get("background", "transparent")
+        )
+        font_family = MGRenderer._sanitize_css_value(
+            mg_def.get("style", {}).get("font_family", "sans-serif")
+        )
 
         elements_html = []
         css_animations = []
@@ -255,7 +313,7 @@ window.__timelines = window.__timelines || {{}}; window.__timelines['main'] = {{
                 stop += f"transform:{tf};"
             for k, v in props.items():
                 css_key = MGRenderer.KEYFRAME_CSS_MAP.get(k, k)
-                stop += f"{css_key}:{fill(v)};"
+                stop += f"{css_key}:{fill(MGRenderer._sanitize_css_value(v))};"
             stop += "".join(style_attrs)
             stop += timing
             stop += "}"
@@ -276,7 +334,7 @@ window.__timelines = window.__timelines || {{}}; window.__timelines['main'] = {{
                 continue
             css_key = MGRenderer.KEYFRAME_CSS_MAP.get(k)
             if css_key and isinstance(v, (str, int, float)):
-                static_style += f"{css_key}:{fill(v)};"
+                static_style += f"{css_key}:{fill(MGRenderer._sanitize_css_value(v))};"
 
         if elem_type == "text":
             font_size = fill(elem.get("font_size", 48))
@@ -293,7 +351,7 @@ window.__timelines = window.__timelines || {{}}; window.__timelines['main'] = {{
             color = elem.get("background") or elem.get("color", "#0e101a")
             html = (
                 f'<div id="{eid}" class="mg-el clip" data-start="0" data-duration="{total_dur}" data-track-index="1" style="position:absolute;inset:0;z-index:0;'
-                f'background:{fill(color)};'
+                f'background:{MGRenderer._sanitize_css_value(fill(color))};'
                 + static_style
                 + '"></div>'
             )
@@ -334,7 +392,7 @@ window.__timelines = window.__timelines || {{}}; window.__timelines['main'] = {{
                 bg_css = "background:transparent;"
             else:
                 bg_val = elem.get("background") or color
-                bg_css = f"background:{fill(bg_val)};"
+                bg_css = f"background:{MGRenderer._sanitize_css_value(fill(bg_val))};"
 
             html = (
                 f'<div id="{eid}" class="mg-el mg-shape clip" data-start="0" data-duration="{total_dur}" data-track-index="1" style="{base_css}'
@@ -348,12 +406,13 @@ window.__timelines = window.__timelines || {{}}; window.__timelines['main'] = {{
             # 图片元素：<img> 渲染。src 为图片资源路径（素材库/本地文件/URL），
             # x/y 定位、width/height 尺寸；opacity/scale/translate 等关键帧动画
             # 复用上方通用 keyframe 机制（与 text/shape 等元素一致）。
-            src = fill(elem.get("src", ""))
+            src = MGRenderer._safe_image_src(str(fill(elem.get("src", ""))))
+            if not src:
+                logger.warning(
+                    "MG 元素 #%d 图片 src 被拒绝（D12：http(s)/越权路径/穿越路径）", idx
+                )
+                return None
             # M7: 本地文件路径转 file:/// URI（headless Chrome 相对解析会裂图）
-            if src and not src.startswith(("http://", "https://", "data:", "file://")):
-                from pathlib import Path as _P
-                if _P(src).exists():
-                    src = _P(src).resolve().as_uri()
             w_val = fill(elem.get("width", 320))
             h_val = fill(elem.get("height", 240))
             radius_css = ""

@@ -1202,65 +1202,120 @@ class RequirementsService:
 
     # ── LLM 需求收集 ──────────────────────────
 
+    @staticmethod
+    def _reply_value_start(buf: str) -> int:
+        """定位 JSON 中 reply 字符串值起点（左引号之后）；尚未就绪返回 -1。"""
+        key = '"reply"'
+        idx = buf.find(key)
+        if idx < 0:
+            return -1
+        colon = buf.find(":", idx + len(key))
+        if colon < 0:
+            return -1
+        q = colon + 1
+        while q < len(buf) and buf[q] in " \t\r\n":
+            q += 1
+        if q >= len(buf):
+            return -1
+        return q + 1 if buf[q] == '"' else -1
+
+    @staticmethod
+    def _safe_json_prefix_len(s: str) -> int:
+        """可安全 JSON 解码的前缀长度——不切断未完成的转义序列。"""
+        i, n = 0, len(s)
+        while i < n:
+            if s[i] == "\\":
+                if i + 1 >= n:
+                    return i
+                if s[i + 1] == "u":
+                    if i + 6 > n:
+                        return i
+                    i += 6
+                else:
+                    i += 2
+            else:
+                i += 1
+        return n
+
     async def _stream_gathering_llm(self, llm_kwargs: dict, on_delta: Callable) -> dict:
-        """轮68：流式 gathering LLM 调用——stream_generate 增量 yield，
-        on_delta 回调推送 reply 字段文本片段，流结束后解析完整 JSON。
+        """轮68/69：流式 gathering LLM 调用——stream_generate 增量 yield，
+        on_delta 回调推送 reply 字段的已解码文本增量。
 
-        reply 为 JSON 首键（CREATIVE_BRIEF_SYSTEM 已保序），增量提取：
-        维护一个状态机跟踪是否在 reply 字段内、是否在字符串值中。
+        reply 为 JSON 首键（CREATIVE_BRIEF_SYSTEM 已保序）；增量提取维护
+        「值起点 + 已发送字符数」，每个 chunk 解码新到的安全前缀，只发送新增
+        部分（轮69 修复：旧实现 reply_buf 只赋值一次，仅首块内容被推送）。
         """
-        import asyncio as _aio
-
         messages = [{"role": "user", "content": llm_kwargs.get("user_prompt", "")}]
         system = llm_kwargs.get("system_prompt", "")
-        buf = ""       # 完整响应文本
-        in_reply = False
-        reply_buf = ""
-        sent = 0       # 已通过 on_delta 发送的 reply 字符数
+        buf = ""
+        reply_start = -1
+        sent = 0
 
         async for chunk in self._llm.stream_generate(messages, system_prompt=system):
             delta = getattr(chunk, "content", "") or ""
             if not delta:
                 continue
             buf += delta
-            # 增量提取 reply 字段的字符串值
-            if not in_reply and '"reply"' in buf:
-                idx = buf.index('"reply"')
-                colon = buf.index(":", idx + 7)
-                quote = buf.index('"', colon + 1)
-                if quote > colon:
-                    in_reply = True
-                    reply_buf = buf[quote + 1:]
-            if in_reply:
-                # 处理新到达的字符（排除转义序列截断风险：至少留 1 字符不发送）
-                new_part = reply_buf[sent:]
-                # 找未转义的闭合引号 = reply 字段结束
-                end = -1
-                i = 0
-                while i < len(new_part):
-                    if new_part[i] == "\\":
-                        i += 2
-                    elif new_part[i] == '"':
-                        end = i
-                        break
-                    else:
-                        i += 1
-                if end >= 0:
-                    new_part = new_part[:end]
-                    in_reply = False
-                if new_part:
-                    on_delta(new_part)
-                    sent += len(reply_buf[:sent + len(new_part)])
+            if reply_start < 0:
+                reply_start = self._reply_value_start(buf)
+                if reply_start < 0:
+                    continue
+            raw = buf[reply_start:]
+            # 找未转义的闭合引号 = reply 值结束
+            closed = False
+            i = 0
+            while i < len(raw):
+                if raw[i] == "\\":
+                    i += 2
+                    continue
+                if raw[i] == '"':
+                    raw = raw[:i]
+                    closed = True
+                    break
+                i += 1
+            safe_len = len(raw) if closed else self._safe_json_prefix_len(raw)
+            if safe_len <= 0:
+                continue
+            try:
+                decoded = json.loads('"' + raw[:safe_len] + '"')
+            except json.JSONDecodeError:
+                continue
+            if len(decoded) > sent:
+                on_delta(decoded[sent:])
+                sent = len(decoded)
 
-        # 流结束 → 解析完整 JSON
+        # 流结束 → 解析完整 JSON；reply 缺失/为空时用已提取文本兜底
+        fallback_reply = self._reply_text_from_buf(buf, reply_start) or "生成完成。"
         parsed = self._parse_llm_json(buf)
         if parsed:
+            if not parsed.get("reply"):
+                parsed["reply"] = fallback_reply
             return parsed
         return {
-            "reply": reply_buf.replace("\\n", "\n")[:2000] if reply_buf else "生成完成。",
+            "reply": fallback_reply,
             "brief_draft": {},
             "is_ready": False,
         }
+
+    @staticmethod
+    def _reply_text_from_buf(buf: str, reply_start: int) -> str:
+        """从完整响应缓冲中取出 reply 字符串值（已解码），失败时返回原文截断。"""
+        if reply_start < 0:
+            return ""
+        raw = buf[reply_start:]
+        i = 0
+        while i < len(raw):
+            if raw[i] == "\\":
+                i += 2
+                continue
+            if raw[i] == '"':
+                raw = raw[:i]
+                break
+            i += 1
+        try:
+            return json.loads('"' + raw + '"')[:2000]
+        except json.JSONDecodeError:
+            return raw[:2000]
 
     async def _handle_gathering(
         self, messages: list[dict], brief_data: dict | None, status: str,
@@ -1825,27 +1880,38 @@ class RequirementsService:
         session = await asyncio.to_thread(self.get_session, session_id) or {}
         status = session.get("status", "init")
 
-        # 2. gathering/init 态 → 真流式（on_delta 回调 → delta 块）
+        # 2. gathering/init 态 → 真流式（on_delta 回调 → 队列 → 逐块 yield）
         if status in ("gathering", "init"):
-            pending: list[dict] = []
+            queue: asyncio.Queue = asyncio.Queue()
+            _DONE = object()
 
             def _on_delta(text: str) -> None:
-                pending.append({"type": "delta", "data": text})
+                queue.put_nowait({"type": "delta", "data": text})
 
-            # 先构造一个流式代理生成器：chat() 内部调 on_delta → 转 yield
-            async def _stream_inner():
-                # chat() 会调用 on_delta → 但 chat 是 await 不是 generator
-                # 所以我们把 on_delta 的调用作为 queue 生产者
-                result = await self.chat(session_id, user_message, on_delta=_on_delta)
-                yield result
+            async def _run() -> None:
+                try:
+                    result = await self.chat(session_id, user_message, on_delta=_on_delta)
+                    queue.put_nowait({"type": "result", "data": result})
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — 转成 SSE error 块，避免流中断无提示
+                    logger.exception("流式对话失败: %s", exc)
+                    queue.put_nowait(
+                        {"type": "error", "data": "对话处理失败，请稍后重试"}
+                    )
+                finally:
+                    queue.put_nowait(_DONE)
 
-            # 简化实现：on_delta 同步收集 → 逐块 yield → 最终发 result
-            result = await self.chat(session_id, user_message, on_delta=_on_delta)
-            for chunk in pending:
-                yield chunk
-
-            # 3. 推送结果
-            yield {"type": "result", "data": result}
+            task = asyncio.create_task(_run())
+            try:
+                while True:
+                    item = await queue.get()
+                    if item is _DONE:
+                        break
+                    yield item
+            finally:
+                if not task.done():
+                    task.cancel()
             return
 
         # 3. 其他状态 → 缓冲路径（与旧行为一致）

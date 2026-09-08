@@ -114,7 +114,6 @@ POST   /api/pipeline/run-async           # 异步管线 + SSE 追踪
 POST   /api/pipeline/submit              # ⚠ 未实现（规划中）
 POST   /api/pipeline/retry/{id}/{agent}  # 重试 Agent
 POST   /api/pipeline/batch               # ⚠ 未实现（规划中，模板批量见 template.py 孤儿代码）
-POST   /api/pipeline/step/{agent}        # 单 Agent 执行（deprecated 语义：跑全管线取一步）
 GET    /api/pipeline/trace/stream/{id}   # SSE 实时追踪
 GET    /api/pipeline/result/{id}         # 异步结果查询
 GET    /api/pipeline/tasks               # ⚠ 未实现（规划中）
