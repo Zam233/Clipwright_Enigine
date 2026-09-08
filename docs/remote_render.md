@@ -219,6 +219,10 @@ CLIPWRIGHT_REMOTE_RENDER_FALLBACK=true
 CLIPWRIGHT_REMOTE_RENDER_POLL_INTERVAL=1.5
 # 远程渲染超时（秒）
 CLIPWRIGHT_REMOTE_RENDER_TIMEOUT=1800
+# 产物下载上限（MB，轮70）
+CLIPWRIGHT_REMOTE_RENDER_MAX_DOWNLOAD_MB=4096
+# 轮询连续瞬态失败容忍次数（轮70）
+CLIPWRIGHT_REMOTE_RENDER_POLL_MAX_FAILURES=3
 ```
 
 | 变量 | 默认值 | 说明 |
@@ -228,6 +232,8 @@ CLIPWRIGHT_REMOTE_RENDER_TIMEOUT=1800
 | `CLIPWRIGHT_REMOTE_RENDER_FALLBACK` | `true` | 远程不可用（网络/超时/任务失败）时回退本地渲染 |
 | `CLIPWRIGHT_REMOTE_RENDER_POLL_INTERVAL` | `1.5` | 轮询 `GET /api/worker/jobs/{id}` 的间隔（秒） |
 | `CLIPWRIGHT_REMOTE_RENDER_TIMEOUT` | `1800` | 远程渲染整体超时（秒），超时按失败处理 |
+| `CLIPWRIGHT_REMOTE_RENDER_MAX_DOWNLOAD_MB` | `4096` | 产物下载大小上限（MB），超限中止下载 |
+| `CLIPWRIGHT_REMOTE_RENDER_POLL_MAX_FAILURES` | `3` | 轮询连续瞬态失败容忍次数，超限判定远程不可用 |
 
 **目标接线**（按上述 settings 字段设计；本地侧集成服务 `clipwright/services/remote_render.py` 尚待落地，todo 5/6）：当 `remote_render_url` 非空时，渲染请求改走远程路径 —— 上传 timeline 引用的素材到 Worker（`POST /api/worker/assets`，返回 hash 后以 `asset://<sha1>` 引用）→ `POST /api/worker/jobs` 提交任务 → 每 `poll_interval` 秒轮询状态 → 完成后 `GET /api/worker/jobs/{id}/download` 取回产物；`remote_render_url` 为空时不经远程，直接本地渲染。
 
@@ -250,3 +256,13 @@ CLIPWRIGHT_REMOTE_RENDER_TIMEOUT=1800
 - **同一 timeline**：本地侧用与远程请求完全相同的 timeline 数据走本地 `RenderService`，输出与「远程引入前」完全一致。
 - **不留半成品**：本地只保留最终 MP4；远程路径失败时不会在本地残留部分产物 / 中间文件（远程的中间产物留在 Worker 侧 `work_dir`，不影响本地）。
 - **`remote_render_url` 未设置**：不做任何远程尝试，行为与引入远程功能前逐字节一致 —— 回退开关无副作用，可随时安全地把 `remote_render_url` 置空回到纯本地模式。
+
+---
+
+## 轮70 加固与已知限制
+
+| 项 | 行为 |
+|----|------|
+| 轮询瞬态容忍 | 轮询期间连续网络错误默认容忍 3 次（`CLIPWRIGHT_REMOTE_RENDER_POLL_MAX_FAILURES`），期间按轮询间隔重试；超限才判定远程不可用（旧实现首次异常即放弃远程） |
+| 下载大小上限 | 产物下载上限默认 4096MB（`CLIPWRIGHT_REMOTE_RENDER_MAX_DOWNLOAD_MB`）；Content-Length 预检 + 流式累计双重校验，超限中止并删除 `.part-*` 临时文件 |
+| 取消传播（已知限制） | 本地取消会立即停止轮询/下载，但 Worker API 目前没有任务取消端点（`/api/worker/jobs` 仅 GET/POST/下载），**远程 job 会继续执行到结束**（浪费 Worker 资源，不影响本地结果与磁盘） |

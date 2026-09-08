@@ -38,12 +38,33 @@ async def run_blocking(func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 
+def _on_background_done(task: asyncio.Task) -> None:
+    """轮70（D15）：后台任务结束回调——记录未观察到的异常，避免静默丢失。"""
+    _BACKGROUND_TASKS.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        from clipwright.config import logger
+        logger.error("后台任务 %s 异常退出: %r", task.get_name(), exc, exc_info=exc)
+
+
 def spawn_background(coro: Awaitable[Any], name: str | None = None) -> asyncio.Task:
-    """创建后台任务并持有强引用，完成后自动从集合移除。"""
+    """创建后台任务并持有强引用，完成后自动从集合移除（异常写日志）。"""
     task = asyncio.create_task(coro, name=name)  # type: ignore[arg-type]
     _BACKGROUND_TASKS.add(task)
-    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    task.add_done_callback(_on_background_done)
     return task
+
+
+async def cancel_all_background(timeout: float = 5.0) -> int:
+    """轮70（D15）：关闭时取消全部后台任务并等待退出；返回取消数量。"""
+    pending = [t for t in _BACKGROUND_TASKS if not t.done()]
+    for t in pending:
+        t.cancel()
+    if pending:
+        await asyncio.wait(pending, timeout=timeout)
+    return len(pending)
 
 
 class _CachedProbe:

@@ -181,6 +181,54 @@ class TestBackpressureAndCancelRace:
         await asyncio.sleep(0.1)
 
 
+class TestCancelPropagation:
+    """轮70（D13）：handler 必须向上传播 CancelledError，否则队列把取消/超时误判为 COMPLETED。"""
+
+    @staticmethod
+    async def _cancel_queue_task(tid: str) -> None:
+        loop_task = next(
+            t for t in asyncio.all_tasks() if t.get_name() == f"task-queue-{tid}"
+        )
+        loop_task.cancel()
+        await asyncio.sleep(0.3)
+
+    @pytest.mark.asyncio
+    async def test_swallowing_handler_mislabeled_completed(self) -> None:
+        """反例固化（D13 根因）：吞掉取消 → 队列误判 COMPLETED。"""
+        q = TaskQueue(max_concurrent=1)
+        started = asyncio.Event()
+
+        async def swallower():
+            started.set()
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                return "swallowed"
+
+        tid = await q.submit("pipeline", swallower)
+        await asyncio.wait_for(started.wait(), 2)
+        await self._cancel_queue_task(tid)
+        assert q.get_task(tid).status == TaskStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_reraising_handler_marked_cancelled(self) -> None:
+        """修复语义：重新抛出 → 队列标记 CANCELLED。"""
+        q = TaskQueue(max_concurrent=1)
+        started = asyncio.Event()
+
+        async def reraiser():
+            started.set()
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                raise
+
+        tid = await q.submit("pipeline", reraiser)
+        await asyncio.wait_for(started.wait(), 2)
+        await self._cancel_queue_task(tid)
+        assert q.get_task(tid).status == TaskStatus.CANCELLED
+
+
 async def _noop():
     return None
 

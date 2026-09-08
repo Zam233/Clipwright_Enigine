@@ -366,8 +366,8 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
             # P8: webhook 事件接线 — 管线完成/失败通知
             ok = getattr(state, "status", None) is not None and str(getattr(state, "status", "")).lower() in ("completed", "pass")
             try:
-                from clipwright.api.webhook import dispatch_event
-                await dispatch_event(
+                from clipwright.api.webhook import dispatch_event_bg
+                dispatch_event_bg(
                     "pipeline.completed" if ok else "pipeline.failed",
                     {
                         "pipeline_id": pipeline_id,
@@ -399,6 +399,8 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
                 }
                 add_event(pipeline_id, "system", "timeout",
                           f"管线执行超时（> {_timeout_sec or '默认'}s），可对失败 Agent 发起重试")
+            # 轮70（D13）：向上传播——否则 TaskQueue 把已取消/超时的任务记为 COMPLETED
+            raise
         except Exception as e:
             logger.exception("pipeline._run_background failed: %s", e)
             add_event(pipeline_id, "system", "error", f"管线失败: {e}")
@@ -413,8 +415,8 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
             except Exception as he:
                 logger.warning("on_error hook 执行失败: %s", he)
             try:
-                from clipwright.api.webhook import dispatch_event
-                await dispatch_event("pipeline.failed", {
+                from clipwright.api.webhook import dispatch_event_bg
+                dispatch_event_bg("pipeline.failed", {
                     "pipeline_id": pipeline_id,
                     "topic": request.topic,
                     "error": str(e)[:300],

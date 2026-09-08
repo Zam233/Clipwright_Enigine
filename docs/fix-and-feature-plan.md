@@ -930,3 +930,12 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ✅ D11 删除无治理的 POST /api/pipeline/step/{agent}（零调用）
 - ✅ D12 MG SSRF：图片 src 白名单（data:image 允许 / http(s) 拒绝 / file&绝对路径须在媒体白名单 / 相对路径禁 .. 穿越）+ CSS url() 中和（body/元素背景/关键帧/静态透传四路）
 - ✅ 回归：后端 1487 passed / 0 失败 · 前端 tsc 0 错误 + vitest 386/386
+
+### 执行轮次 70（审计遗留 D7/D8/D10/D13/D15 + 前端 P2）
+- ✅ D8 Webhook：投递重试（网络错误/5xx 3 次指数退避，4xx 立即返回）；test 事件同签名路径；list/delete/toggle/test 接入 owner 隔离；dispatch_event_bg 非阻塞分发（4 个终态调用点，慢 webhook 不再拖住终态与 SSE done）；删除死遗留 services/webhook.py
+- ✅ D10 proceed 幂等：Idempotency-Key/session_id 命中在跑管线返回同一 pipeline_id（双击不再起两条管线）
+- ✅ D13 CancelledError 传播：终态写完后 raise（实证旧行为把取消任务标为 COMPLETED）
+- ✅ D15 后台任务卫生：done-callback 记录未观察异常；lifespan 关闭批量取消
+- ✅ D7 远程渲染：轮询瞬态容忍 3 次；下载上限 4096MB 双重校验；取消传播限制入文档
+- ✅ 前端 P2：消息时间戳；错误横幅成功终态/新一轮启动自动清除
+- ✅ 回归：后端 1509 passed / 0 失败 · 前端 tsc 0 错误 + vitest 387/387

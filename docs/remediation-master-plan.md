@@ -175,6 +175,19 @@
 
 回归：后端 1487 passed / 0 失败（+22：流式 8 + trace 2 + 队列 4 + MG 8）；前端 tsc 0 错误 + vitest 386/386（+7：delta 消费 2 + 抽屉 5）。
 
+## 轮 70：审计遗留 D7/D8/D10/D13/D15 + 前端 P2（2026-09-08）
+
+| # | 修复项 | 状态 |
+|---|--------|------|
+| D8 | Webhook 加固：投递重试（仅网络错误/5xx，3 次指数退避，4xx 立即返回）；`/{id}/test` 走与真实投递同一签名/重试路径（旧实现 test 无签名，配了 secret 的消费者一律拒收）；list/delete/toggle/test 接入 owner 隔离（`authz.filter_by_owner`/`enforce_owner`）；新增 `dispatch_event_bg` 非阻塞分发并替换 4 个管线/渲染终态调用点（旧实现串行 await，慢 webhook 最长 45s 拖住终态写入与 SSE done）；删除零引用的死遗留 `services/webhook.py`（无签名/明文 JSON） | ✅ |
+| D10 | proceed 幂等：`Idempotency-Key` 或 `session_id` 命中在跑/排队的管线时返回同一 pipeline_id（旧实现每次调用新建 pipeline_id → 双击起两条管线）；幂等表上限 500 条 | ✅ |
+| D13 | CancelledError 传播：`_run_background`/requirements `_queue_handler` 处理完终态后 `raise`（实证：吞掉取消时 TaskQueue 把任务标为 COMPLETED 而非 CANCELLED） | ✅ |
+| D15 | 后台任务卫生：`spawn_background` done-callback 记录未观察异常（旧实现静默丢弃）；新增 `cancel_all_background` 并在 lifespan 关闭时调用 | ✅ |
+| D7 | 远程渲染健壮性：轮询连续瞬态网络错误容忍 3 次（`REMOTE_RENDER_POLL_MAX_FAILURES`，旧实现首次异常即放弃远程）；产物下载上限 4096MB（`REMOTE_RENDER_MAX_DOWNLOAD_MB`，Content-Length 预检 + 流式累计双重校验，超限删 `.part-*`）；取消传播限制（Worker 无取消端点 → 远程 job 继续跑）写入文档 | ✅ |
+| 前端 P2 | 消息时间戳（非法/缺失时间戳不渲染）；错误横幅在成功终态与新一轮启动时自动清除（旧实现上一轮红色错误长期残留） | ✅ |
+
+回归：后端 1509 passed / 0 失败（+22：webhook 10 + D10/D13/D15 6 + 远程 6）；前端 tsc 0 错误 + vitest 387/387（+1 错误横幅清除）。
+
 ## 批次 8（后续独立任务，不在本轮）
 
 前端仓库（proceed project_id / agent_notes UI / ReviewPanel 统一 / SSE 真流式）；计划修改意见改写 raw_scenes；persona 剩余字段接线；渲染产物 TTL 清理。

@@ -336,8 +336,8 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                 logger.warning("平台封面提取失败（不影响成片）: %s", e)
             # P8: webhook 事件接线 — 渲染完成/失败通知
             try:
-                from clipwright.api.webhook import dispatch_event
-                await dispatch_event(
+                from clipwright.api.webhook import dispatch_event_bg
+                dispatch_event_bg(
                     "render.completed" if result.success else "render.failed",
                     {
                         "task_id": task_id,
@@ -358,8 +358,8 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                 _render_queue[task_id]["status"] = "failed"
                 _render_queue[task_id]["result"] = {"error": _sanitize_detail(str(e))}
             try:
-                from clipwright.api.webhook import dispatch_event
-                await dispatch_event("render.failed", {
+                from clipwright.api.webhook import dispatch_event_bg
+                dispatch_event_bg("render.failed", {
                     "task_id": task_id,
                     "error": _sanitize_detail(str(e))[:300],
                 })

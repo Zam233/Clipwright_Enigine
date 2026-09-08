@@ -23,6 +23,17 @@ _service = RequirementsService()
 # 批4：需求会话归属表（对齐管线 _pipeline_owners 机制）
 _session_owners: dict[str, str] = {}
 
+# 轮70（D10）：proceed 幂等表（Idempotency-Key 或 session_id → pipeline_id）
+_PROCEED_IDEM: dict[str, str] = {}
+
+
+def _proceed_idem_hit(key: str, running: dict, tasks: dict) -> Optional[str]:
+    """轮70（D10）：proceed 幂等命中——目标管线仍在运行/排队则返回既有 id。"""
+    pid = _PROCEED_IDEM.get(key)
+    if pid and (pid in running or pid in tasks):
+        return pid
+    return None
+
 
 def _require_session_owner(request: Request, session_id: str) -> None:
     """jwt 模式下校验会话所有权；无主记录放行（兼容 off 模式与历史会话）。"""
@@ -271,8 +282,23 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
 
     uid = current_user_id(request)
 
+    # 轮70（D10）：proceed 幂等——双击/网络重试命中在跑的管线时返回同一 pipeline_id，
+    # 不再起第二条管线（旧实现每次调用都新建 pipeline_id）
+    _idem_key = request.headers.get("Idempotency-Key", "") or f"sess:{req.session_id}"
+    _existing = _proceed_idem_hit(_idem_key, _running_pipelines, _pipeline_tasks)
+    if _existing:
+        logger.info("proceed 幂等命中: %s → %s", _idem_key, _existing)
+        return {
+            "session_id": req.session_id, "pipeline_id": _existing,
+            "status": "pipeline_started", "idempotent": True,
+        }
+
     # 预先生成 pipeline_id 并建立 trace，使前端可立即订阅 SSE / 轮询 result
     pipeline_id = f"pl_{uuid.uuid4().hex[:12]}"
+    _PROCEED_IDEM[_idem_key] = pipeline_id
+    if len(_PROCEED_IDEM) > 500:
+        for _k in list(_PROCEED_IDEM)[: len(_PROCEED_IDEM) - 500]:
+            _PROCEED_IDEM.pop(_k, None)
     create_trace(pipeline_id)
 
     user_inputs = session.get("user_inputs", {})
@@ -426,6 +452,8 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
                         }
                         add_event(pipeline_id, "system", "timeout",
                                   f"管线执行超时（>{_pipeline_timeout}s）")
+                    # 轮70（D13）：向上传播——否则 TaskQueue 把已取消/超时的任务记为 COMPLETED
+                    raise
                 except Exception as e:
                     logger.exception("Pipeline failed: %s", e)
                     add_event(pipeline_id, "system", "error", f"管线失败: {e}")

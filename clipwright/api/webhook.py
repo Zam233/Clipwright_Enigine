@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -14,9 +15,10 @@ from datetime import datetime
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from clipwright.authz import current_user_id, enforce_owner, filter_by_owner
 from clipwright.config import TIME_ZONE, logger
 from clipwright.paths import anchor
 from clipwright.services.webhook_crypto import (
@@ -28,6 +30,10 @@ router = APIRouter(prefix="/api/webhook", tags=["webhook"])
 
 # Webhook 配置持久化文件
 _WEBHOOKS_FILE = anchor("webhooks.json")
+
+# 轮70（D8）：投递重试——仅对网络错误与 5xx 重试（4xx 是请求本身的问题，重试无意义）
+_MAX_ATTEMPTS = 3
+_BACKOFF_SEC = (0.5, 1.5)
 
 # 支持的事件类型
 SUPPORTED_EVENTS = [
@@ -97,6 +103,55 @@ def _save_webhooks() -> None:
 _load_webhooks()
 
 
+def _signature_headers(secret_enc: str, body: str) -> dict[str, str]:
+    """轮70（D8）：按存储的加密 secret 生成签名头。
+
+    始终带 Content-Type: application/json（旧实现用 json= 由 httpx 自动设置，
+    改为 content= 后必须显式声明，否则无 secret 的订阅方收到无类型请求体）。
+    """
+    headers = {"Content-Type": "application/json"}
+    if not secret_enc:
+        return headers
+    try:
+        secret = _decrypt(secret_enc)
+    except Exception as e:
+        logger.warning("Webhook secret 解密失败，跳过签名: %s", e)
+        return headers
+    sig = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+    headers["X-ClipWright-Signature"] = f"sha256={sig}"
+    return headers
+
+
+async def _post_with_retry(url: str, body: str, headers: dict[str, str]) -> tuple[int, str, int]:
+    """轮70（D8）：投递并重试。返回 (status_code, error, attempts)。
+
+    仅网络异常与 5xx 重试；4xx 立即返回（重试不会改变结果）。
+    """
+    last_code, last_err = 0, ""
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(url, content=body, headers=headers)
+            if resp.status_code < 500:
+                err = "" if resp.status_code < 400 else f"HTTP {resp.status_code}"
+                return resp.status_code, err, attempt
+            last_code, last_err = resp.status_code, f"HTTP {resp.status_code}"
+        except Exception as e:
+            last_code, last_err = 0, str(e)[:200]
+        if attempt < _MAX_ATTEMPTS:
+            await asyncio.sleep(_BACKOFF_SEC[attempt - 1])
+    return last_code, last_err, _MAX_ATTEMPTS
+
+
+def _find_owned(webhook_id: str, request: Request) -> dict[str, Any]:
+    """按 id 查找并校验所有权（jwt 模式下非本人 403）。"""
+    webhook = next((w for w in _webhooks if w["webhook_id"] == webhook_id), None)
+    if webhook is None:
+        raise HTTPException(status_code=404, detail=f"Webhook '{webhook_id}' not found")
+    enforce_owner(request, webhook.get("owner_id"), "Webhook")
+    return webhook
+
+
 # ── API 端点 ───────────────────────────────────
 
 
@@ -107,10 +162,10 @@ async def list_supported_events() -> dict:
 
 
 @router.get("/list", response_model=list[WebhookConfig])
-async def list_webhooks() -> list[WebhookConfig]:
-    """列出所有已注册的 Webhook（secret 掩码，不回显）。"""
+async def list_webhooks(request: Request) -> list[WebhookConfig]:
+    """列出当前账号可管理的 Webhook（secret 掩码，不回显）。"""
     out = []
-    for w in _webhooks:
+    for w in filter_by_owner(request, _webhooks):
         masked = dict(w)
         masked["secret"] = "******" if masked.get("secret") else ""
         out.append(WebhookConfig(**masked))
@@ -118,7 +173,7 @@ async def list_webhooks() -> list[WebhookConfig]:
 
 
 @router.post("/register", response_model=WebhookConfig)
-async def register_webhook(req: RegisterWebhookRequest) -> WebhookConfig:
+async def register_webhook(req: RegisterWebhookRequest, request: Request) -> WebhookConfig:
     """注册新的 Webhook。"""
     invalid = [e for e in req.events if e not in SUPPORTED_EVENTS]
     if invalid:
@@ -141,6 +196,7 @@ async def register_webhook(req: RegisterWebhookRequest) -> WebhookConfig:
         # P8/P2-7: secret 加密落盘（不存明文）
         "secret": _encrypt(req.secret),
         "active": True,
+        "owner_id": current_user_id(request),  # 轮70（D8）：所有权隔离
         "created_at": datetime.now(tz=TIME_ZONE).isoformat(),
         "description": req.description,
     }
@@ -155,34 +211,32 @@ async def register_webhook(req: RegisterWebhookRequest) -> WebhookConfig:
 
 
 @router.delete("/{webhook_id}")
-async def delete_webhook(webhook_id: str) -> dict:
-    """删除 Webhook。"""
+async def delete_webhook(webhook_id: str, request: Request) -> dict:
+    """删除 Webhook（jwt 模式下仅本人/管理员）。"""
     global _webhooks
-    before = len(_webhooks)
+    _find_owned(webhook_id, request)
     _webhooks = [w for w in _webhooks if w["webhook_id"] != webhook_id]
-    if len(_webhooks) == before:
-        raise HTTPException(status_code=404, detail=f"Webhook '{webhook_id}' not found")
     _save_webhooks()
     return {"status": "deleted", "webhook_id": webhook_id}
 
 
 @router.put("/{webhook_id}/toggle")
-async def toggle_webhook(webhook_id: str) -> dict:
-    """启用/禁用 Webhook。"""
-    for w in _webhooks:
-        if w["webhook_id"] == webhook_id:
-            w["active"] = not w["active"]
-            _save_webhooks()
-            return {"webhook_id": webhook_id, "active": w["active"]}
-    raise HTTPException(status_code=404, detail=f"Webhook '{webhook_id}' not found")
+async def toggle_webhook(webhook_id: str, request: Request) -> dict:
+    """启用/禁用 Webhook（jwt 模式下仅本人/管理员）。"""
+    w = _find_owned(webhook_id, request)
+    w["active"] = not w["active"]
+    _save_webhooks()
+    return {"webhook_id": webhook_id, "active": w["active"]}
 
 
 @router.post("/{webhook_id}/test")
-async def test_webhook(webhook_id: str) -> dict:
-    """发送测试事件到指定 Webhook。"""
-    webhook = next((w for w in _webhooks if w["webhook_id"] == webhook_id), None)
-    if webhook is None:
-        raise HTTPException(status_code=404, detail=f"Webhook '{webhook_id}' not found")
+async def test_webhook(webhook_id: str, request: Request) -> dict:
+    """发送测试事件到指定 Webhook。
+
+    轮70（D8）：与真实投递同一签名/重试路径——配置了 secret 的订阅方可用
+    test 事件验证签名校验链路（旧实现 test 不带签名，消费者一律拒收）。
+    """
+    webhook = _find_owned(webhook_id, request)
 
     payload = {
         "event": "webhook.test",
@@ -193,15 +247,12 @@ async def test_webhook(webhook_id: str) -> dict:
     from clipwright.security import assert_public_url
     assert_public_url(webhook["url"])
 
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(webhook["url"], json=payload)
-            return {
-                "status": "sent",
-                "response_code": resp.status_code,
-            }
-    except Exception as e:
-        return {"status": "failed", "error": str(e)}
+    body = json.dumps(payload, ensure_ascii=False)
+    headers = _signature_headers(webhook.get("secret", ""), body)
+    code, err, attempts = await _post_with_retry(webhook["url"], body, headers)
+    if err:
+        return {"status": "failed", "response_code": code, "error": err, "attempts": attempts}
+    return {"status": "sent", "response_code": code, "attempts": attempts}
 
 
 @router.post("/notify")
@@ -248,24 +299,18 @@ async def dispatch_event(event: str, data: dict[str, Any]) -> int:
             from clipwright.security import assert_public_url
             assert_public_url(webhook["url"])
 
-            headers: dict[str, str] = {}
-            if webhook.get("secret"):
-                body = json.dumps(payload, ensure_ascii=False)
-                # P8/P2-7: 投递时解密存储的 secret
-                secret = _decrypt(webhook["secret"])
-                sig = hmac.new(
-                    secret.encode(), body.encode(), hashlib.sha256
-                ).hexdigest()
-                headers["X-ClipWright-Signature"] = f"sha256={sig}"
-
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(webhook["url"], json=payload, headers=headers)
-                delivery["response_code"] = resp.status_code
-                delivery["status"] = "success" if resp.status_code < 400 else "failed"
-                if resp.status_code >= 400:
-                    delivery["error"] = f"HTTP {resp.status_code}"
-                else:
-                    success_count += 1
+            body = json.dumps(payload, ensure_ascii=False)
+            headers = _signature_headers(webhook.get("secret", ""), body)
+            # 轮70（D8）：网络错误/5xx 重试（最多 3 次，指数退避）
+            code, err, attempts = await _post_with_retry(webhook["url"], body, headers)
+            delivery["response_code"] = code
+            delivery["attempts"] = attempts
+            if err:
+                delivery["status"] = "failed"
+                delivery["error"] = err
+            else:
+                delivery["status"] = "success"
+                success_count += 1
         except Exception as e:
             delivery["status"] = "failed"
             delivery["error"] = str(e)[:200]
@@ -276,3 +321,13 @@ async def dispatch_event(event: str, data: dict[str, Any]) -> int:
 
     logger.info("Webhook 事件分发: %s → %d/%d 成功", event, success_count, len(targets))
     return success_count
+
+
+def dispatch_event_bg(event: str, data: dict[str, Any]) -> None:
+    """轮70（D8）：非阻塞分发——管线/渲染完成路径不等待投递。
+
+    旧实现 await dispatch_event 串行投递（每个订阅者最长 15s×3 次重试），
+    慢 webhook 会拖住管线终态写入与 SSE done 事件。
+    """
+    from clipwright.services.async_util import spawn_background
+    spawn_background(dispatch_event(event, data), name=f"webhook-{event}")

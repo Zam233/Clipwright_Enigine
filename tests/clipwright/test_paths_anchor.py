@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import clipwright.paths as paths_module
 from clipwright.paths import anchor
@@ -87,10 +88,12 @@ class TestWebhookAnchored:
             url="http://8.8.8.8/webhook-test",
             events=["pipeline.completed"],
         )
-        cfg = await w.register_webhook(req)
+        # 轮70：register/list 增加 owner 校验参数（off 模式 user_id=None 放行）
+        fake_request = SimpleNamespace(state=SimpleNamespace(user_id=None, user_role=None))
+        cfg = await w.register_webhook(req, fake_request)
         assert cfg.webhook_id.startswith("wh_")
         assert cfg.url == "http://8.8.8.8/webhook-test"
         assert (tmp_path / "webhooks.json").exists()
 
-        listed = await w.list_webhooks()
+        listed = await w.list_webhooks(fake_request)
         assert any(x.webhook_id == cfg.webhook_id for x in listed)

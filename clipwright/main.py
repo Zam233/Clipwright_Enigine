@@ -224,6 +224,12 @@ async def lifespan(app: FastAPI):
         _sched.stop()
     except Exception:
         pass
+    # 轮70（D15）：取消仍存活的后台任务（webhook 投递/清理协程等）
+    try:
+        from clipwright.services.async_util import cancel_all_background
+        await cancel_all_background()
+    except Exception as e:
+        logger.warning("后台任务清理失败: %s", e)
     if _plugin_loader:
         _plugin_loader.clear()
     AnimRegistry.clear()

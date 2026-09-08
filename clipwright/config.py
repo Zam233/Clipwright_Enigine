@@ -134,6 +134,10 @@ class Settings(BaseSettings):
     remote_render_poll_interval: float = 1.5
     # 远程渲染超时（秒）
     remote_render_timeout: int = 1800
+    # 轮70（D7）：远程渲染产物下载上限（MB）——防远端异常产物打爆本地磁盘/内存
+    remote_render_max_download_mb: int = 4096
+    # 轮70（D7）：轮询连续瞬态失败容忍次数（超过才判定远程不可用）
+    remote_render_poll_max_failures: int = 3
 
     # --- 视觉识别模型 ---
     vision_provider: Literal["llm", "transformers", "none"] = "transformers"

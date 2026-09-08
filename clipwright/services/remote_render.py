@@ -180,6 +180,9 @@ class RemoteRenderService:
 
         interval = max(0.1, float(getattr(settings, "remote_render_poll_interval", 1.5)))
         timeout = int(getattr(settings, "remote_render_timeout", 1800))
+        # 轮70（D7）：瞬态网络错误容忍——旧实现首次 httpx 异常即放弃远程渲染
+        max_failures = max(1, int(getattr(settings, "remote_render_poll_max_failures", 3)))
+        consecutive_failures = 0
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         status_url = f"{base_url}/api/worker/jobs/{job_id}"
@@ -192,7 +195,17 @@ class RemoteRenderService:
             try:
                 r = await client.get(status_url, headers=headers)
             except httpx.HTTPError as e:
-                raise RemoteRenderError(f"轮询任务状态失败: {e}") from e
+                consecutive_failures += 1
+                if consecutive_failures >= max_failures:
+                    raise RemoteRenderError(
+                        f"轮询任务状态失败（连续 {consecutive_failures} 次）: {e}"
+                    ) from e
+                logger.warning(
+                    "远程渲染轮询瞬态失败 %d/%d: %s", consecutive_failures, max_failures, e
+                )
+                await asyncio.sleep(interval)
+                continue
+            consecutive_failures = 0
             if r.status_code == 404:
                 raise RemoteRenderError(f"任务不存在 (404): {job_id}")
             if r.status_code != 200:
@@ -222,7 +235,12 @@ class RemoteRenderService:
         """流式下载产物到 <output>.part-<uuid>，再原子替换为最终文件。
 
         finally 中必定删除 .part-* 临时文件，绝不遗留部分下载。
+        轮70（D7）：流式过程中累计大小超过 remote_render_max_download_mb 即中止
+        （旧实现无上限，异常远端产物可打爆本地磁盘）。
         """
+        from clipwright.config import settings
+
+        max_bytes = max(1, int(getattr(settings, "remote_render_max_download_mb", 4096))) * 1024 * 1024
         final = Path(output_path)
         final.parent.mkdir(parents=True, exist_ok=True)
         part = final.with_name(f"{final.name}.part-{uuid.uuid4().hex[:8]}")
@@ -235,8 +253,21 @@ class RemoteRenderService:
                     raise RemoteRenderError(f"任务或产物不存在 (404): {job_id}")
                 if resp.status_code != 200:
                     raise RemoteRenderError(f"下载产物失败 (HTTP {resp.status_code}): {job_id}")
+                # Content-Length 预检（若远端提供）
+                declared = resp.headers.get("content-length")
+                if declared and declared.isdigit() and int(declared) > max_bytes:
+                    raise RemoteRenderError(
+                        f"远程产物过大（{int(declared) // 1024 // 1024}MB > "
+                        f"{max_bytes // 1024 // 1024}MB 上限），已中止下载"
+                    )
+                written = 0
                 with open(part, "wb") as fh:
                     async for chunk in resp.aiter_bytes():
+                        written += len(chunk)
+                        if written > max_bytes:
+                            raise RemoteRenderError(
+                                f"远程产物超过 {max_bytes // 1024 // 1024}MB 上限，已中止下载"
+                            )
                         fh.write(chunk)
             if part.stat().st_size == 0:
                 raise RemoteRenderError(f"下载产物为空文件: {part}")
