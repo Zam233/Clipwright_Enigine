@@ -197,9 +197,17 @@
 
 回归：后端 1513 passed / 0 失败（+4 persona identity）；前端 tsc 0 错误 + vitest 389/389（+2 ReviewPanel 路径）。
 
-## 批次 8（后续独立任务，不在本轮）
+## 批次 8（已全部落地，2026-09-08 收口）
 
-前端仓库（proceed project_id / agent_notes UI / ReviewPanel 统一 / SSE 真流式）；计划修改意见改写 raw_scenes；persona 剩余字段接线；渲染产物 TTL 清理。
+| # | 项 | 落地轮次 | 状态 |
+|---|----|---------|------|
+| 8a | 前端 proceed 携带 project_id（成品时间线自动回存） | 轮68 前 | ✅ |
+| 8b | agent_notes UI 展示（结构警告/素材/剪辑/音频备注 → 建议） | 轮65 | ✅ |
+| 8c | ReviewPanel 与 AgentPanel 路径统一（统一 /proceed） | 轮71 | ✅ |
+| 8d | SSE 真流式（后端队列桥接 + 前端 delta 打字气泡） | 轮68/69 | ✅ |
+| 8e | 计划修改意见改写 raw_scenes（_revise_raw_scenes 有界改写） | 轮65 | ✅ |
+| 8f | persona 剩余字段接线（rhythm/min_duration/loudness/identity.positioning/class_perspective） | 轮65/71 | ✅ |
+| 8g | 渲染产物 TTL 清理（DELETE /api/render/artifacts） | 批8a 前 | ✅ |
 
 ## 验收总则
 
