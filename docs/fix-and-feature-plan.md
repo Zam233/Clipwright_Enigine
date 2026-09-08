@@ -958,3 +958,7 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ✅ 关键帧属性按属性域钳制（opacity 0-1 / speed 0.25-4 / scale 0.01-10 / rotation ±3600 / position ±10000 / fx 亮度对比度）+ input min/max
 - ✅ trimClipStart 不越过同轨前一片段结尾（与 trimClipEnd 对称，不再拖出单轨重叠）
 - ✅ 回归：前端 tsc 0 错误 + vitest 403/403
+
+### 执行轮次 74（SRT 导入落轨修复）
+- ✅ SRT 导入只落 caption 轨（无则新建），不再复用 text 轨——修复「字幕进 text 轨后样式级联整层失效」
+- ✅ 回归：前端 tsc 0 错误 + vitest 405/405
