@@ -21,7 +21,8 @@ def _mkstemp_txt() -> str:
     os.close(fd)
     return path
 
-from clipwright.tool.video import _ensure_output_path
+from clipwright.tool.video import _ensure_output_path, ENCODE_VIDEO_ARGS
+
 from clipwright.tool.video import resolve_ffmpeg
 from clipwright.config import logger
 
@@ -106,7 +107,7 @@ class GenerateTextVideoTool(BaseTool):
                     f"color=c={bg_color}:s={width}x{height}:d={duration_sec}",
                     "-vf",
                     f"drawtext=textfile={local_path}:fontsize={font_size}:fontcolor={font_color}:x=(w-text_w)/2:y=(h-text_h)/2{font_file}",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    *ENCODE_VIDEO_ARGS,
                 ]
                 if duration_sec > 1:
                     cmd += ["-c:a", "aac"]

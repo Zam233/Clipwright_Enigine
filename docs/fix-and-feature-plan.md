@@ -1107,4 +1107,9 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ✅ **时间线右键菜单**（批次 10 余项）：`TimelineContextMenu` 轻量自绘组件（视口边缘内收、点击外部/Escape 关闭）+ TimelinePanel 接线——右键命中片段自动选中并弹出菜单（在播放头处切分/删除选中/波纹删除/取消选择，复用工具栏既有动作并带快捷键标注）；引擎 `hitTestClip` 改公开供命中选中；此前 `@radix-ui/react-context-menu` 已装未用、右键无任何菜单
 - ✅ **骨架屏**：`Skeleton`/`SkeletonCardGrid` 组件 + 项目页加载态接入（替代单一 spinner，布局前后稳定）；测试断言同步更新
 - ✅ 回归：后端 1556 passed / 0 失败 · 前端 428 passed + tsc 0 错误 + build
+
+### 执行轮次 93（批次 6/9 收尾：片尾文字动画 + ffmpeg 编码参数去重）
+- ✅ **片尾收束文字动画**（批次 6）：`structure_agent._ensure_outro_animation`——knowledge/digital/vlog 三类结尾场景无动画标记时补 `[文字动画]text_fade_in`（与开场口播不配动画的约定互补，已有标记则不动）
+- ✅ **ffmpeg 编码参数去重**（批次 9）：`ENCODE_VIDEO_ARGS` 常量收敛工具层 13 处逐字复制（effects×11/text_video/subtitle），`*` 解包展开；render.py 编码协商独立不受影响
+- ✅ 回归：后端 1556 passed / 0 失败
 - ✅ 回归：后端 1556 passed / 0 失败（轮 89 复跑同值）

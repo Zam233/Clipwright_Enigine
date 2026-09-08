@@ -559,6 +559,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         scenes_needing = [s for s in scenes if not marker_re.search(s.get("description", "") or "")]
         if not scenes_needing:
             self._ensure_chart_coverage(scenes, context.category_plugin_id)
+            self._ensure_outro_animation(scenes, context.category_plugin_id)
             return scenes
 
         logger.info("StructureAgent: %d/%d 场景缺少动画标记，调用 LLM 补充", len(scenes_needing), len(scenes))
@@ -638,6 +639,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         except Exception as e:
             logger.warning("StructureAgent: LLM 补充动画标记失败: %s", e)
         self._ensure_chart_coverage(scenes, context.category_plugin_id)
+        self._ensure_outro_animation(scenes, context.category_plugin_id)
         return scenes
 
     # 轮 84（批次 5 收尾）：知识/评测类的图表硬规则适用类型
@@ -729,6 +731,32 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             category_plugin_id, best_idx,
         )
         return best_idx
+
+    # 轮 93（批次 6）：片尾文字动画规则适用类型（有结构模板的内容类）
+    _OUTRO_ANIMATION_CATEGORIES = {"knowledge_longform", "digital_review", "vlog_daily"}
+    _ANY_ANIMATION_MARKER_RE = re.compile(r"\[(?:文字动画|逻辑动画|过渡动画|动画)\]|mg_[a-z_]+")
+
+    @classmethod
+    def _ensure_outro_animation(cls, scenes: list[dict], category_plugin_id: str = "") -> int:
+        """片尾文字动画规则：结尾场景无任何动画标记时补一个淡入文字动画。
+
+        结尾"总结升华/购买建议/感谢观看"配一个收束文字动画是观感硬要求，
+        与开场口播不配动画的约定（_strip_opening_animation_markers）互补。
+        仅对 _OUTRO_ANIMATION_CATEGORIES 生效；已有标记则不动。
+        返回注入的场景序号（-1 = 未注入）。
+        """
+        if category_plugin_id not in cls._OUTRO_ANIMATION_CATEGORIES or not scenes:
+            return -1
+        last = scenes[-1]
+        desc = (last.get("description") or "").strip()
+        if cls._ANY_ANIMATION_MARKER_RE.search(desc):
+            return -1
+        last["description"] = f"{desc} [文字动画]text_fade_in".strip()
+        logger.info(
+            "StructureAgent: %s 类片尾规则生效——末场景补充收束文字动画",
+            category_plugin_id,
+        )
+        return len(scenes) - 1
 
     @staticmethod
     def _strip_opening_animation_markers(

@@ -88,6 +88,12 @@ def resolve_ffprobe() -> str:
     return _resolve_bin("ffprobe", settings.ffprobe_path)
 
 
+# 轮 94（批次 9）：通用输出编码参数——工具层统一引用（`*ENCODE_VIDEO_ARGS`
+# 展开），避免 8 文件 20+ 处逐字复制漂移；服务端 render.py 有独立编码协商，
+# 不走此常量。
+ENCODE_VIDEO_ARGS = ("-c:v", "libx264", "-pix_fmt", "yuv420p")
+
+
 def _check_ffmpeg() -> Optional[str]:
     """检测 ffmpeg 是否可用（解析到真实路径则可用）。"""
     try:

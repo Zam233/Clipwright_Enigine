@@ -13,7 +13,8 @@ from typing import Any, Optional
 from clipwright.config import logger
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
-from clipwright.tool.video import resolve_ffmpeg
+from clipwright.tool.video import resolve_ffmpeg, ENCODE_VIDEO_ARGS
+
 
 
 class VideoSpeedTool(BaseTool):
@@ -42,7 +43,7 @@ class VideoSpeedTool(BaseTool):
                     resolve_ffmpeg(), "-y", "-loglevel", "error",
                     "-i", input_path,
                     "-vf", f"setpts={1/speed}*PTS,minterpolate=fps=30:mi_mode=mci",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    *ENCODE_VIDEO_ARGS,
                     "-c:a", "aac", "-b:a", "192k", "-af", f"atempo={min(speed, 2.0)}",
                     out,
                 ]
@@ -64,7 +65,7 @@ class VideoSpeedTool(BaseTool):
                     "-i", input_path,
                     "-vf", f"setpts={1/speed}*PTS",
                     "-af", ",".join(audio_filters),
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    *ENCODE_VIDEO_ARGS,
                     out,
                 ]
             result = await asyncio.to_thread(subprocess.run,cmd, capture_output=True, text=True, timeout=300)
@@ -144,7 +145,7 @@ class TransitionApplyTool(BaseTool):
                 resolve_ffmpeg(), "-y", "-loglevel", "error",
                 "-i", clip_a, "-i", clip_b,
                 "-filter_complex", xfade,
-                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                *ENCODE_VIDEO_ARGS,
                 "-c:a", "aac", "-b:a", "192k",
                 out,
             ]
@@ -188,7 +189,7 @@ class VideoBlurTool(BaseTool):
                 resolve_ffmpeg(), "-y", "-loglevel", "error",
                 "-i", input_path,
                 "-vf", vf,
-                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                *ENCODE_VIDEO_ARGS,
                 "-c:a", "copy", out,
             ]
             result = await asyncio.to_thread(subprocess.run,cmd, capture_output=True, text=True, timeout=120)
@@ -239,7 +240,7 @@ class WatermarkTool(BaseTool):
                     "-filter_complex",
                     f"[1:v]format=rgba,scale=iw*{scale}:ih*{scale}[wm];"
                     f"[0:v][wm]overlay={pos}:format=auto,format=yuv420p",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    *ENCODE_VIDEO_ARGS,
                     "-c:a", "copy", out,
                 ]
             elif text:
@@ -252,7 +253,7 @@ class WatermarkTool(BaseTool):
                     "-vf",
                     f"drawtext=text='{safe_text}':fontsize=24:fontcolor=white@{opacity}:"
                     f"x={pos.split(':')[0]}:y={pos.split(':')[1]}",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    *ENCODE_VIDEO_ARGS,
                     "-c:a", "copy", out,
                 ]
             else:
@@ -300,7 +301,7 @@ class EffectVignetteTool(BaseTool):
                 resolve_ffmpeg(), "-y", "-loglevel", "error",
                 "-i", input_path,
                 "-vf", vf,
-                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                *ENCODE_VIDEO_ARGS,
                 "-c:a", "copy", out,
             ]
 
@@ -427,7 +428,7 @@ class TextDiagramTool(BaseTool):
                 resolve_ffmpeg(), "-y", "-loglevel", "error",
                 "-i", input_path,
                 "-vf", ",".join(filters),
-                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                *ENCODE_VIDEO_ARGS,
                 "-c:a", "copy", out,
             ]
             result = await asyncio.to_thread(subprocess.run,cmd, capture_output=True, text=True, timeout=120)
@@ -539,7 +540,7 @@ class BackgroundRemoveTool(BaseTool):
                         f"[0:v]chromakey={color}:similarity={similarity}:blend={blend}[ck];"
                         f"[ck][1:v]overlay=format=auto,format=yuv420p[out]",
                         "-map", "[out]", "-map", "0:a",
-                        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        *ENCODE_VIDEO_ARGS,
                         "-c:a", "aac", out,
                     ]
                 else:
@@ -548,7 +549,7 @@ class BackgroundRemoveTool(BaseTool):
                         resolve_ffmpeg(), "-y", "-loglevel", "error",
                         "-i", input_path,
                         "-vf", f"chromakey={color}:similarity={similarity}:blend={blend}:color={background_color}",
-                        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        *ENCODE_VIDEO_ARGS,
                         "-c:a", "copy", out,
                     ]
             elif method == "blur":
@@ -556,7 +557,7 @@ class BackgroundRemoveTool(BaseTool):
                     resolve_ffmpeg(), "-y", "-loglevel", "error",
                     "-i", input_path,
                     "-vf", "split[fg][bg];[bg]gblur=sigma=20[bg];[bg][fg]overlay=format=auto",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    *ENCODE_VIDEO_ARGS,
                     "-c:a", "copy", out,
                 ]
             else:
