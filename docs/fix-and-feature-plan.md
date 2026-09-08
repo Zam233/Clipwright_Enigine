@@ -944,3 +944,11 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ✅ ReviewPanel 规划确认统一走 /proceed（旧实现直连 /run-async：会话停在 plan_ready、user_inputs 的 animation_intents/素材源/字幕开关全丢、超时公式与 owner 校验与 AgentPanel 分叉）；无会话如实提示
 - ✅ persona identity.positioning / class_perspective 进入结构提示词（提取 _build_system_prompt 可单测；tone None 回退 neutral）
 - ✅ 回归：后端 1513 passed / 0 失败 · 前端 tsc 0 错误 + vitest 389/389
+
+### 执行轮次 72（AgentPanel P2 收尾 + 内存上限）
+- ✅ 建议列表逐条关闭 + 复制（剪贴板 + toast）；运行中耗时计时器 mm:ss
+- ✅ 日志 LogLine memo + 分组 useMemo（展开单条不再重渲染其余条目）
+- ✅ 多标签页管线追踪：sessionStorage + localStorage 镜像（12h TTL，终态双清）
+- ✅ 删除零消费者死状态（chatMessages/isStreaming/addChatMessage/setStreaming）
+- ✅ 内存上限：前端 requirementsMessages 200 条；后端 _session_owners 500
+- ✅ 回归：后端 1513 passed / 0 失败 · 前端 tsc 0 错误 + vitest 398/398

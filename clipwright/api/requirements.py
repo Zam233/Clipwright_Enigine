@@ -100,6 +100,11 @@ async def init_session(req: InitRequest, request: Request) -> dict:
     # 批4：登记会话归属（jwt 模式下其余端点据此校验）
     from clipwright.authz import current_user_id
     _session_owners[session.get("session_id", "")] = current_user_id(request) or ""
+    # 轮72：归属表上限——会话本身有 TTL，此处防长进程无限增长
+    # （被淘汰的会话在 _require_session_owner 中与未知会话同语义：放行）
+    if len(_session_owners) > 500:
+        for _k in list(_session_owners)[: len(_session_owners) - 500]:
+            _session_owners.pop(_k, None)
     return session
 
 

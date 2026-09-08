@@ -197,6 +197,19 @@
 
 回归：后端 1513 passed / 0 失败（+4 persona identity）；前端 tsc 0 错误 + vitest 389/389（+2 ReviewPanel 路径）。
 
+## 轮 72：AgentPanel P2 收尾 + 内存上限（2026-09-08）
+
+| # | 修复项 | 状态 |
+|---|--------|------|
+| 建议 | 逐条关闭（X）+ 复制（剪贴板 + toast）；旧实现只读文本、无法忽略 | ✅ |
+| 计时 | 运行中显示本轮耗时 mm:ss（`pipelineStartedAt` 在 setPipelineId 记录，终态清除） | ✅ |
+| 日志 | `LogLine` 加 `memo`（展开单条时其余 499 条不再重渲染，store 保留未动条目引用）+ 分组结果 `useMemo` | ✅ |
+| 多标签页 | 管线 id 从仅 sessionStorage 改为 sessionStorage + localStorage 镜像（12h TTL）：新标签页也能追踪运行中管线；终态两处同清（`services/storage/pipelineSession.ts`） | ✅ |
+| 死状态 | 删除零消费者的 `chatMessages`/`isStreaming`/`addChatMessage`/`setStreaming` | ✅ |
+| 内存 | 前端 `requirementsMessages` 内存上限 200 条（草稿仍 50 条）；后端 `_session_owners` 上限 500（会话有 TTL，防长进程增长） | ✅ |
+
+回归：后端 1513 passed / 0 失败；前端 tsc 0 错误 + vitest 398/398（+9：建议/计时 3 + pipelineSession 6）。
+
 ## 批次 8（已全部落地，2026-09-08 收口）
 
 | # | 项 | 落地轮次 | 状态 |
