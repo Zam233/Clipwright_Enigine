@@ -126,6 +126,56 @@ class HyperframesRenderer:
         return bool(await _hf_available())
 
     @staticmethod
+    @staticmethod
+    async def render_mg_html_to_mov(
+        html: str,
+        out_dir: str,
+        mov_path: str,
+        fps: float = 30.0,
+        timeout: float = 1800.0,
+        run_cmd=None,
+        validate=None,
+    ) -> str | None:
+        """P1-01: 单个 MG HTML → 独立目录 index.html → npx hyperframes render → MOV。
+
+        预览端点与主管线渲染路径共用此实现（旧预览把 mg_html 塞进 overlay 列表，
+        _overlay_to_html 只读 text 字段 → 恒产出空白视频）。
+
+        run_cmd: 执行命令的 async 可调用（签名 (cmd, **kwargs) -> CompletedProcess 风格），
+        由调用方注入以复用各自的追踪/并发治理；缺省用 asyncio.subprocess 直跑。
+        返回 MOV 路径，失败返回 None。
+        """
+        import uuid as _uuid
+        from pathlib import Path as _Path
+
+        if not html:
+            return None
+        mg_dir = _Path(out_dir) / f"mg_{_uuid.uuid4().hex[:8]}"
+        mg_dir.mkdir(parents=True, exist_ok=True)
+        (mg_dir / "index.html").write_text(html, encoding="utf-8")
+        cmd = [HyperframesRenderer._npx_cmd(), "hyperframes", "render",
+               str(mg_dir), "-o", mov_path, "--format", "mov",
+               "-f", str(int(fps)), "--quiet"]
+        try:
+            if run_cmd is not None:
+                r = await run_cmd(cmd)
+                returncode = getattr(r, "returncode", 1)
+            else:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    env=HyperframesRenderer._render_env(),
+                )
+                returncode = await proc.wait()
+        except Exception:
+            return None
+        if returncode != 0:
+            return None
+        # 有效性校验可由调用方注入（主管线用 _is_valid_video；缺省查文件存在）
+        ok = validate(mov_path) if validate is not None else _Path(mov_path).exists()
+        return mov_path if ok else None
+
     async def await_available(timeout: float = 120.0) -> bool:
         """轮询等待 Hyperframes 可用（冷启动预热用），超时返回 False。
 

@@ -105,7 +105,8 @@ async def list_types() -> list[TypeListItem]:
                             tags=config.get("tags", []),
                         ))
             except Exception:
-                logger.warning("Failed to parse type config: %s", config_path, exc_info=True)
+                # P1-16: 引用未定义的 config_path 会从 except 里抛 NameError → 整个列表 500
+                logger.warning("Failed to parse type config: %s", f.name, exc_info=True)
                 continue
 
     return result

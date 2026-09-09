@@ -369,6 +369,9 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
                 result_dict["agent_notes"] = _notes
             _pipeline_results[pipeline_id] = result_dict
             add_event(pipeline_id, "system", "done", f"管线完成: {state.status}", _q)
+            # P1-17: ok 判定提前——旧实现 ok 在下方 webhook 处才赋值，
+            # auto_render 分支先引用 → NameError → 真实结果被 except 覆盖为 failed
+            ok = str(getattr(state, "status", "")).lower() in ("completed", "pass")
             # 轮 86（出片闭环）：auto_render=true → 管线完成自动入队渲染。
             # 此前管线只产出 timeline，渲染必须由前端另行调用——"一键出片"
             # 的最后一环。入队失败不影响管线结果（只记事件）。
@@ -397,8 +400,7 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
                 })
             except Exception as e:
                 logger.warning("post_pipeline hook 执行失败: %s", e)
-            # webhook 事件接线 — 管线完成/失败通知
-            ok = getattr(state, "status", None) is not None and str(getattr(state, "status", "")).lower() in ("completed", "pass")
+            # webhook 事件接线 — 管线完成/失败通知（ok 已在 auto_render 前计算）
             try:
                 from clipwright.api.webhook import dispatch_event_bg
                 dispatch_event_bg(

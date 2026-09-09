@@ -584,6 +584,14 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             mg_params["accent"] = style["primary_color"]
 
         mg_dur = mg_def.get("duration_sec", duration)
+        # P1-03: 场景窗口短于 MG 自身时长时跳过——旧行为把 clip 钳到窗口但 HTML
+        # 仍按自身时长渲染，退场动画被硬切丢失且无重新配速。跳过是可预期行为。
+        if vid_clip.duration_sec < float(mg_dur) - 0.05:
+            self._add_trace_warning(
+                f"MG 动画 {anim_id} 时长 {mg_dur}s 超过场景窗口 "
+                f"{vid_clip.duration_sec:.2f}s，已跳过（窗口不足）"
+            )
+            return
         clip_dur = min(mg_dur, vid_clip.duration_sec)
 
         # 渲染为 HTML（时间线尺寸优先，动态解析分辨率/帧率）

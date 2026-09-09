@@ -416,3 +416,12 @@ async def test_malformed_input_records_errors_then_repair_retry(monkeypatch) -> 
     assert any("content" in e for e in validation_events[0][4]["errors"])
     method_events = [ev for ev in captured if ev[1] == "mg" and ev[2] == "method"]
     assert method_events[-1][4]["method"] == "llm_repair"
+
+
+@pytest.fixture(autouse=True)
+def _p1_02_mg_cache_isolation():
+    """P1-02 修复后缓存真实生效——测试间必须清缓存防同输入污染。"""
+    from clipwright.animation.mg.generator import _mg_cache_clear
+    _mg_cache_clear()
+    yield
+    _mg_cache_clear()

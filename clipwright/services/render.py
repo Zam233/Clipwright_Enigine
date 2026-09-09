@@ -1996,24 +1996,28 @@ class RenderService:
         return video
 
     async def _render_mg_mov(self, mg_ov: dict, width: int, height: int, fps: float) -> str | None:
-        """(a)+(b) 单个 MG HTML → 独立工作目录 → npx hyperframes render 产出 MOV。"""
+        """(a)+(b) 单个 MG HTML → 独立工作目录 → npx hyperframes render 产出 MOV。
+
+        P1-01: 核心逻辑抽到 HyperframesRenderer.render_mg_html_to_mov 供预览端点复用，
+        本方法注入 _ff 保持既有追踪/并发治理语义。
+        """
         html = mg_ov.get("mg_html", "")
         if not html:
             return None
-        mg_dir = Path(self._work_dir) / f"mg_{uuid.uuid4().hex[:8]}"
-        mg_dir.mkdir(parents=True, exist_ok=True)
-        (mg_dir / "index.html").write_text(html, encoding="utf-8")
 
         from clipwright.animation.hyperframes_renderer import HyperframesRenderer
-        mov = str(mg_dir / "mg_out.mov")
-        cmd = [HyperframesRenderer._npx_cmd(), "hyperframes", "render",
-               str(mg_dir), "-o", mov, "--format", "mov",
-               "-f", str(int(fps)), "--quiet"]
+        mov = str(Path(self._work_dir) / f"mg_{uuid.uuid4().hex[:8]}" / "mg_out.mov")
+
+        async def _run(cmd):
+            return await self._ff(cmd, capture_output=True, text=False, timeout=1800,
+                                  env=HyperframesRenderer._render_env())
+
         try:
-            r = await self._ff(cmd, capture_output=True, text=False, timeout=1800,
-                               env=HyperframesRenderer._render_env())
-            if r.returncode == 0 and _is_valid_video(mov):
-                return mov
+            out = await HyperframesRenderer.render_mg_html_to_mov(
+                html, self._work_dir, mov, fps=fps, run_cmd=_run,
+                validate=lambda p: _is_valid_video(p))
+            if out and _is_valid_video(out):
+                return out
         except Exception as e:
             logger.warning("MG render fail: %s", e)
         return None

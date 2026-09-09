@@ -151,11 +151,19 @@ async def preview_mg(body: MgPreviewRequest) -> dict:
     mov_path = Path("renders") / f"{name}.mov"
     mp4_path = renders_dir / f"{name}.mp4"
     try:
-        ok = await HyperframesRenderer.render_overlays(
-            [{"mg_html": html, "start_sec": 0, "duration_sec": dur}],
-            str(mov_path), width=body.width, height=body.height, fps=body.fps,
+        # P1-01: 与主管线渲染同构——mg_html 写独立目录 index.html 交给 hyperframes。
+        # 旧实现塞进 render_overlays 的 overlay 列表，_overlay_to_html 只读 text
+        # 字段 → 恒产出空白视频却报成功。
+        async def _run_preview(cmd):
+            return await run_tracked_ff(
+                cmd, capture_output=True, text=False, timeout=1800,
+                env=HyperframesRenderer._render_env(),
+            )
+
+        out = await HyperframesRenderer.render_mg_html_to_mov(
+            html, "renders", str(mov_path), fps=body.fps, run_cmd=_run_preview,
         )
-        if not ok or not mov_path.exists():
+        if not out or not mov_path.exists():
             raise HTTPException(status_code=500, detail="Hyperframes 渲染失败")
         # MOV → MP4（H.264 重编码，浏览器可直接播放）
         r = await run_tracked_ff(

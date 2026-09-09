@@ -48,6 +48,12 @@ def _mg_cache_get(key: str) -> dict[str, Any] | None:
     return data
 
 
+def _mg_cache_clear() -> None:
+    """P1-02: 清空生成缓存（测试隔离用——缓存真实生效后，同输入的相邻测试
+    会命中上一测试写入的缓存，走非预期路径）。"""
+    _MG_GEN_CACHE.clear()
+
+
 def _mg_cache_put(key: str, result: dict[str, Any]) -> None:
     if len(_MG_GEN_CACHE) >= _MG_GEN_CACHE_MAX:
         oldest = min(_MG_GEN_CACHE, key=lambda k: _MG_GEN_CACHE[k][0])
@@ -211,8 +217,10 @@ class MGGenerator:
 
         # 生成缓存——同输入（含 vision/fps 语境）直接返回缓存结果，
         # 自愈/重试零 LLM 成本。缓存 TTL 30 分钟，LRU 淘汰。
-        _ck = _mg_cache_key(description, text_content, persona_style)
-        _cached = _mg_cache_get(_ck)
+        # P1-02: 存到 self——generate() 里落缓存时也要用同一键（旧局部变量跨
+        # 作用域不可见，是 getattr(self,'_ck','') 恒空串笔误的根源）
+        self._ck = _mg_cache_key(description, text_content, persona_style)
+        _cached = _mg_cache_get(self._ck)
         if _cached is not None:
             self._trace_event(pipeline_id, "method",
                               "MG 生成命中缓存",
@@ -1180,14 +1188,17 @@ class MGGenerator:
         )
 
         # 缓存生成结果（下次同输入零 LLM 调用）
-        _mg_cache_put(getattr(self, '_ck', ''), {
-            "success": bool(html),
-            "html": html,
-            "mg_def": mg_def,
-            "method": method,
-            "fallback_template": fallback_template,
-            "generation_id": generation_id,
-        })
+        # P1-02：键存 self._ck（generate 入口统一计算）。绕过 generate 直接调
+        # _fallback_generate 的路径没有该键——跳过写缓存而非写坏键。
+        if getattr(self, "_ck", None):
+            _mg_cache_put(self._ck, {
+                "success": bool(html),
+                "html": html,
+                "mg_def": mg_def,
+                "method": method,
+                "fallback_template": fallback_template,
+                "generation_id": generation_id,
+            })
 
         # 持久化生成记录——MGStorage 按 generation_id 落盘（预览/回看接线）；
         # 持久化失败不阻断生成主流程

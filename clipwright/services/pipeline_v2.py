@@ -735,6 +735,60 @@ class PipelineOrchestratorV2:
         agent_context.extra_params.pop("_quality_heal_count", None)
         return quality_passed
 
+    def _finalize_timeline(self, final_tl, plugin, agent_context, pid):
+        """P1-18: 终局后处理——类型 transform + validate_clip 打标 + 成片署名轨。
+
+        首次运行（_run_inner）与自愈重试（run_from_agent）统一走此路径；
+        旧实现这套后处理只存在于 retry 路径，首跑与重试产出不一致。
+        """
+        if not final_tl:
+            return final_tl
+
+        if plugin is not None:
+            # 类型插件 transform 后处理（分辨率/帧率/标题字幕/时长截断）
+            try:
+                from clipwright.schema.timeline import Timeline as _Tl
+                processed = plugin.post_process_timeline(_Tl.model_validate(final_tl))
+                final_tl = processed.model_dump(mode="json")
+            except Exception as e:
+                logger.warning("B21 类型 transform 后处理失败（保留原时间线）: %s", e)
+            # 轮 89（批次 8）：validate_clip 接线（原零调用的死能力）——类型
+            # 插件可对每个视频 clip 做类型规范校验，违规 clip 打标供审阅
+            try:
+                validator = getattr(plugin, "validate_clip", None)
+                if callable(validator) and final_tl:
+                    _invalid = 0
+                    for _tr in final_tl.get("tracks", []) or []:
+                        if str(_tr.get("kind", "")).endswith("video"):
+                            for _c in _tr.get("clips", []) or []:
+                                try:
+                                    from clipwright.schema.timeline import Clip as _Clip
+                                    if not validator(_Clip.model_validate(_c)):
+                                        _invalid += 1
+                                        _meta = _c.setdefault("metadata", {}) or {}
+                                        _meta["type_violation"] = True
+                                except Exception:
+                                    continue
+                    if _invalid:
+                        add_event(pid, "system", "warning",
+                                  f"类型规范校验: {_invalid} 个片段不符合 {plugin.plugin_id} 规范（已打标）")
+            except Exception as e:
+                logger.warning("类型 validate_clip 校验失败（跳过）: %s", e)
+
+        # 轮 94（版权最后一公里）：成片自动署名轨——把时间线内含授权
+        # 元数据的素材去重后追加 2.5s 片尾字幕片段。credit_outro 默认开
+        # （商业交付署名是要求）；显式 false 关闭；无 license 素材零变化。
+        if agent_context.extra_params.get("credit_outro", True):
+            try:
+                _credits = _collect_credit_lines(final_tl)
+                if _credits:
+                    final_tl = _append_credit_outro(final_tl, _credits)
+                    add_event(pid, "system", "info",
+                              f"已追加素材署名轨（{_credits[1]} 个来源）")
+            except Exception:
+                logger.exception("署名轨生成失败（跳过）")
+        return final_tl
+
     async def run_from_agent(
         self,
         pipeline_id: str,
@@ -821,48 +875,8 @@ class PipelineOrchestratorV2:
             if bus.get_artifact("timeline")
             else None
         )
-        # 类型插件 transform 后处理（分辨率/帧率/标题字幕/时长截断）
-        if final_tl and plugin is not None:
-            try:
-                from clipwright.schema.timeline import Timeline as _Tl
-                processed = plugin.post_process_timeline(_Tl.model_validate(final_tl))
-                final_tl = processed.model_dump(mode="json")
-            except Exception as e:
-                logger.warning("B21 类型 transform 后处理失败（保留原时间线）: %s", e)
-            # 轮 89（批次 8）：validate_clip 接线（原零调用的死能力）——类型
-            # 插件可对每个视频 clip 做类型规范校验，违规 clip 打标供审阅
-            try:
-                validator = getattr(plugin, "validate_clip", None)
-                if callable(validator) and final_tl:
-                    _invalid = 0
-                    for _tr in final_tl.get("tracks", []) or []:
-                        if str(_tr.get("kind", "")).endswith("video"):
-                            for _c in _tr.get("clips", []) or []:
-                                try:
-                                    from clipwright.schema.timeline import Clip as _Clip
-                                    if not validator(_Clip.model_validate(_c)):
-                                        _invalid += 1
-                                        _meta = _c.setdefault("metadata", {}) or {}
-                                        _meta["type_violation"] = True
-                                except Exception:
-                                    continue
-                    if _invalid:
-                        add_event(pid, "system", "warning",
-                                  f"类型规范校验: {_invalid} 个片段不符合 {plugin.plugin_id} 规范（已打标）")
-            except Exception as e:
-                logger.warning("类型 validate_clip 校验失败（跳过）: %s", e)
-            # 轮 94（版权最后一公里）：成片自动署名轨——把时间线内含授权
-            # 元数据的素材去重后追加 2.5s 片尾字幕片段。credit_outro 默认开
-            # （商业交付署名是要求）；显式 false 关闭；无 license 素材零变化。
-            if final_tl and agent_context.extra_params.get("credit_outro", True):
-                try:
-                    _credits = _collect_credit_lines(final_tl)
-                    if _credits:
-                        final_tl = _append_credit_outro(final_tl, _credits)
-                        add_event(pid, "system", "info",
-                                  f"已追加素材署名轨（{_credits[1]} 个来源）")
-                except Exception:
-                    logger.exception("署名轨生成失败（跳过）")
+        # P1-18: 后处理统一走 _finalize_timeline（与首跑路径一致）
+        final_tl = self._finalize_timeline(final_tl, plugin, agent_context, pid)
         state.shared_data["final_timeline"] = final_tl
         _ft = state.shared_data.get("final_timeline")
         if _ft:
@@ -1042,11 +1056,16 @@ class PipelineOrchestratorV2:
         agent_context.extra_params.pop("_quality_heal_count", None)
 
         # 完成
-        state.shared_data["final_timeline"] = (
+        final_tl = (
             bus.get_artifact("timeline").model_dump(mode="json")
             if bus.get_artifact("timeline")
             else None
         )
+        # P1-18: 首跑同样应用类型 transform / validate_clip / 署名轨后处理
+        final_tl = self._finalize_timeline(
+            final_tl, plugin, agent_context, pid,
+        )
+        state.shared_data["final_timeline"] = final_tl
 
         # 与 V1 对齐：把最终时间线快照写入 trace，前端 SSE 据此进入审阅视图，
         # 不依赖 result 接口的轮询时机
@@ -1327,6 +1346,17 @@ class PipelineOrchestratorV2:
             # （补齐 Material/Edit/Animation/Audio/Quality 的记账缺口）
             _usage_before = llm_usage_snapshot()
             result = await self._dispatch(agent_name, input_data, context)
+            # P1-19: 在飞调用返回时若管线已取消——结果一律弃用（不写 timeline），
+            # 并记 wasted-call 事件（线程内 provider 请求无法真正中断，费用已产生）
+            if is_cancelled(pid):
+                step.status = PipelineStatus.CANCELLED
+                step.error = f"{agent_name} 在飞 LLM 调用已放弃（管线取消，wasted call）"
+                step.completed_at = datetime.now(timezone.utc)
+                state.updated_at = datetime.now(timezone.utc)
+                add_event(pid, agent_name, "cancelled",
+                          f"{agent_name} 的在飞 LLM 调用已放弃（wasted call，费用已产生）")
+                logger.warning("PipelineV2 Agent[%s] 在飞调用放弃（管线已取消）: %s", agent_name, pid)
+                return step
             step.result = result.model_dump(mode="json") if hasattr(result, "model_dump") else {}
 
             # SA-3: 插件 Agent 通用输出（PluginAgentOutput.payload）的键提升到
