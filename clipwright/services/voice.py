@@ -637,6 +637,11 @@ class VoiceService:
 
     def _get_provider(self, name: str) -> BaseVoiceProvider:
         if name not in self._providers:
+            # P1-25: 兼容下划线别名——前端默认选中的 id 曾是 qwen_tts，一提交即
+            # Unknown provider（已同步前端改连字符，这里兜底旧调用方）
+            normalized = "qwen-tts" if name == "qwen_tts" else name
+            name = normalized
+        if name not in self._providers:
             if name == "qwen-tts":
                 self._providers[name] = QwenTTSProvider()
             elif name == "cosyvoice":
@@ -852,11 +857,19 @@ class VoiceService:
             except Exception as e:
                 results.append({"index": idx, "text": seg, "error": str(e)[:200]})
 
-        return VoiceResult(data={
-            "segments": results,
-            "total": len(results),
-            "total_duration_sec": round(total_duration, 2),
-        })
+        # P1-24: 全段失败（voice 被删/合成全错）时如实置 success=False——
+        # 旧实现恒默认成功，调用方拿到 200 + 全 error segments 误以为成功
+        all_failed = bool(results) and all("error" in r for r in results)
+        first_err = next((r["error"] for r in results if "error" in r), None)
+        return VoiceResult(
+            success=not all_failed,
+            error=str(first_err or "语音合成全部失败") if all_failed else "",
+            data={
+                "segments": results,
+                "total": len(results),
+                "total_duration_sec": round(total_duration, 2),
+            },
+        )
 
     # ── CRUD 委托 ──
 

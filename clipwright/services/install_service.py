@@ -15,16 +15,27 @@ MAX_TARBALL_BYTES = 200 * 1024 * 1024
 
 
 def _safe_extract(data: bytes, dest: Path, required_manifest: str) -> None:
-    """安全解包：拒绝路径穿越条目；要求存在必需清单文件。"""
+    """安全解包：拒绝路径穿越/符号链接条目；要求存在必需清单文件。
+
+    P1-14: 旧实现 (a) startswith 前缀比较可被 `tmp/abc` vs `tmp/abc-evil`
+    绕过、(b) 未拒 symlink/hardlink 成员、(c) extractall 未用 filter="data"。
+    """
+    dest_resolved = dest.resolve()
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
         for member in tf.getmembers():
+            if member.issym() or member.islnk():
+                raise ValueError(f"拒绝符号链接/硬链接条目: {member.name}")
             target = (dest / member.name).resolve()
-            if not str(target).startswith(str(dest.resolve())):
+            if not target.is_relative_to(dest_resolved):
                 raise ValueError(f"非法路径条目: {member.name}")
         names = tf.getnames()
         if not any(n.endswith(required_manifest) for n in names):
             raise ValueError(f"缺少必需清单文件 {required_manifest}")
-        tf.extractall(dest)
+        # filter="data"（Python 3.12+）：进一步拒绝绝对路径/穿越/设备文件
+        try:
+            tf.extractall(dest, filter="data")
+        except TypeError:  # 老版本 Python 无 filter 参数
+            tf.extractall(dest)
 
 
 def install_plugin_from_bytes(data: bytes, plugin_id: str, expected_sha256: str = "") -> Path:

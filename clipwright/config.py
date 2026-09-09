@@ -43,8 +43,10 @@ class Settings(BaseSettings):
     plugin_require_signature: bool = False
     # 已知权限白名单（M1 权限声明校验；插件声明之外的权限将被拒绝）。
     # orchestrate（SA-2）：允许插件注册自定义 Agent 参与主管线编排/被子代理调用
+    # P1-14: 默认最小集——shell 从默认白名单移除（等于全放行让权限声明
+    # 沦为装饰）；需要 shell 的部署显式配置 CLIPWRIGHT_PLUGIN_ALLOWED_PERMISSIONS
     plugin_allowed_permissions: list[str] = Field(
-        default_factory=lambda: ["network", "fs_read", "fs_write", "shell", "http", "noop", "orchestrate"],
+        default_factory=lambda: ["network", "fs_read", "fs_write", "http", "noop", "orchestrate"],
     )
 
     # --- IsoBase / LLM ---

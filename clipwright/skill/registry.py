@@ -22,10 +22,25 @@ class SkillRegistry:
             cls._instance = super().__new__(cls)
         return cls._instance
 
+    #: P1-13: 被插件覆盖的旧技能（name → 旧实例），注销覆盖者时恢复
+    _shadowed: dict[str, BaseSkill] = {}
+
     @classmethod
     def register(cls, skill: BaseSkill, plugin_id: str = "", **kwargs) -> None:
         if not skill.name:
             raise ValueError(f"Skill must have a non-empty name: {type(skill).__name__}")
+        existing = cls._skills.get(skill.name)
+        if existing is not None:
+            old_src = str(getattr(existing, "_plugin_id", "") or "builtin")
+            new_src = str(plugin_id or "builtin")
+            if old_src == "builtin" and new_src != "builtin":
+                # P1-13: 插件不得覆盖内置技能（与 ToolRegistry 同语义）
+                from clipwright.config import logger as _logger
+                _logger.warning(
+                    "拒绝插件 %s 覆盖内置技能 %s（内置优先）", new_src, skill.name,
+                )
+                return
+            cls._shadowed[skill.name] = existing
         cls._skills[skill.name] = skill
         # 轮 87：归属记录在 skill 对象上（与 loader 的 _plugin_id 补丁同模式，
         # 旧实现把 plugin_id 参数直接丢弃）
@@ -33,8 +48,11 @@ class SkillRegistry:
 
     @classmethod
     def unregister(cls, name: str) -> bool:
-        """注销技能（插件禁用/卸载时调用）；返回是否实际移除。"""
+        """注销技能（插件禁用/卸载时调用）；P1-13: 恢复被覆盖的旧项。"""
         removed = cls._skills.pop(name, None) is not None
+        restored = cls._shadowed.pop(name, None)
+        if restored is not None:
+            cls._skills[name] = restored
         return removed
 
     @classmethod

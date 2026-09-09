@@ -42,10 +42,19 @@ class ToolRegistry:
         if existing is not None:
             old_src = getattr(existing, "_plugin_id", "") or "builtin"
             new_src = plugin_id or "builtin"
+            if old_src == "builtin" and new_src != "builtin":
+                # P1-13: 插件不得覆盖内置——旧实现静默顶掉，插件卸载后内置
+                # 永久消失（直到进程重启）
+                logger.warning(
+                    "拒绝插件 %s 覆盖内置工具 %s（内置优先）", new_src, tool.name,
+                )
+                return
             logger.warning(
                 "工具注册冲突: %s 已被 %s 注册，现被 %s 覆盖",
                 tool.name, old_src, new_src,
             )
+            # 被覆盖的旧实现保存到影子表，注销时恢复
+            cls._shadowed[tool.name] = existing
         tool._plugin_id = plugin_id  # type: ignore[attr-defined]
         cls._tools[tool.name] = tool
 
@@ -57,10 +66,16 @@ class ToolRegistry:
             if getattr(t, "_plugin_id", "") == plugin_id
         ]
 
+    #: P1-13: 被插件覆盖的旧工具（name → 旧实例），注销覆盖者时恢复
+    _shadowed: dict[str, "BaseTool"] = {}
+
     @classmethod
     def unregister(cls, name: str) -> None:
-        """批7：按名注销工具（插件 disable 时清理注册物）。"""
+        """批7：按名注销工具（插件 disable 时清理注册物）；P1-13: 恢复被覆盖的旧项。"""
         cls._tools.pop(name, None)
+        restored = cls._shadowed.pop(name, None)
+        if restored is not None:
+            cls._tools[name] = restored
 
     @classmethod
     def unregister_by_plugin(cls, plugin_id: str) -> list[str]:

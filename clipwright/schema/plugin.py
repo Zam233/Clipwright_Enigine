@@ -7,10 +7,11 @@
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class PluginKind(str, Enum):
@@ -32,6 +33,18 @@ class PluginManifest(BaseModel):
     description: str = Field(default="")
     author: str = Field(default="")
     entry_point: str = Field(default="", description="插件入口模块路径")
+
+    @field_validator("entry_point")
+    @classmethod
+    def _validate_entry_point(cls, v: str) -> str:
+        """P1-14: entry_point 只允许合法 Python 模块路径（防 path shadowing/
+        相对路径注入——旧实现无任何 pattern，插件可声明 'requests' 之类
+        顶层模块名 shadow 标准库）。"""
+        if v and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*", v):
+            raise ValueError(
+                f"entry_point 必须是合法的模块路径（如 main 或 pkg.main），收到: {v!r}"
+            )
+        return v
 
     # ── M10: manifest 增强（市场开放前最低治理字段）──
     license: str = Field(default="", description="开源协议（如 MIT/Apache-2.0）")

@@ -91,8 +91,11 @@ async def enable_plugin(plugin_id: str, request: Request = None) -> dict[str, st
     _validate_plugin_id(plugin_id)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
-    _loader.set_enabled(plugin_id, True)
+    # P1-12: set_enabled 也要进 try——它内部对未加载插件会触发 load()，签名/
+    # 依赖不满足时抛 PluginLoadError，落在 try 外会导致状态文件已写 enabled
+    # 而回滚（set_enabled(False)）永不执行 → 重启后「已启用但未加载」
     try:
+        _loader.set_enabled(plugin_id, True)
         _loader.load(plugin_id)
     except Exception as e:
         # 加载失败回退禁用态并返回 502（旧实现裸 500 且状态不一致）

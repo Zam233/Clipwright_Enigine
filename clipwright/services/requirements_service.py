@@ -596,6 +596,41 @@ class RequirementsService:
                     "metadata": {},
                 })
 
+        elif status in ("brief_confirmed", "plan_confirmed"):
+            # P1-20: 确认中间态此前没有路由分支——用户确认后再发任何消息都
+            # 落不进任何分支，会话看起来卡死。给出明确提示与可行的推进方式。
+            if status == "plan_confirmed" and user_message.strip() in ("重新生成", "再来一版", "重新生成视频"):
+                status = "plan_ready"
+                reply = "好的，已回到规划书确认态。回复「确认」将按规划书启动管线。"
+            elif status == "brief_confirmed" and await self._is_confirm(user_message):
+                # 方案确认态下再次确认 → 重走规划书生成
+                status = "brief_confirmed"
+                messages.append({
+                    "role": "assistant", "content": "收到，正在重新生成成片规划书，请稍候...",
+                    "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                    "metadata": {},
+                })
+                plan_result = await self._generate_plan(brief_data, user_inputs, session_id)
+                if plan_result:
+                    plan_data = plan_result
+                    status = "plan_ready"
+                else:
+                    messages.append({
+                        "role": "assistant", "content": "规划书生成遇到技术问题，请稍后回复「确认」重试。",
+                        "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                        "metadata": {},
+                    })
+            else:
+                hint = (
+                    "方案已确认，正在生成规划书；无需重复确认，稍候即可看到规划书。"
+                    if status == "brief_confirmed"
+                    else "规划书已确认，请等待管线启动；如需调整请回复「重新生成」后再提意见。"
+                )
+                messages.append({
+                    "role": "assistant", "content": hint,
+                    "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                    "metadata": {},
+                })
         elif status == "pipeline_running":
             # 运行中消息不再静默吞掉
             messages.append({
@@ -1138,11 +1173,18 @@ class RequirementsService:
         # "可以，但是要加片头"——旧实现误判为确认并直接推进流程）
         affirm_starts = ["没问题", "就这样", "可以了", "好的", "确认", "同意", "可以",
                          "行", "ok", "yes", "y", "对", "嗯", "确定", "通过", "批准"]
+        # P1-21: 单字/模糊确认词必须整句匹配——「对比一下」「行业分析」以
+        # 「行」「对」开头但并非确认，旧实现 startswith 误判推进流程
+        ambiguous = {"行", "对", "嗯", "y", "ok", "yes"}
         for kw in affirm_starts + strong:
             if low.startswith(kw) or low == kw:
                 tail = low[len(kw):].strip()
                 if not tail:
                     return True
+                if kw in ambiguous:
+                    if not tail.strip("。！!~？?，,、 …·-—"):
+                        return True  # 仅标点/语气符 → 视作整句确认
+                    continue  # 带其余内容 → 交由 LLM 语义判断
                 if tail.startswith(("但是", "但", "不过", "然而", "除了", "就是",
                                     "可是", "只是", "另外", "还有", "再", "希望",
                                     "建议", "想", "要", "麻烦", "请", "能不能",
@@ -1194,11 +1236,21 @@ class RequirementsService:
         if any(neg in msg for neg in negations):
             return False
         # Start-only affirmative tokens
+        # P1-21: 模糊短词（行/对/嗯/y/ok/yes）必须整句匹配——「对比一下」
+        # 「行业分析」以它们开头但并非确认（与 _is_confirm 主路径同语义）
         start_tokens = [
             "没问题", "就这样", "可以了", "好的", "确认", "同意", "可以",
             "行", "ok", "yes", "y", "对", "嗯", "确定", "通过", "批准",
         ]
-        return any(msg.startswith(kw) or msg == kw for kw in start_tokens)
+        ambiguous = {"行", "对", "嗯", "y", "ok", "yes"}
+        for kw in start_tokens:
+            if msg.startswith(kw) or msg == kw:
+                if kw in ambiguous:
+                    tail = msg[len(kw):].strip("。！!~？?，,、 …·-—")
+                    if tail:
+                        return False
+                return True
+        return False
 
     # ── LLM 需求收集 ──────────────────────────
 
@@ -1349,7 +1401,23 @@ class RequirementsService:
         if gen_overview:
             context += f"\n\n## AI 生成能力\n{gen_overview}"
 
+        # P1-22: 多轮澄清记忆——旧实现只把最后一条消息喂给 LLM，用户在
+        # 非确认分支提出的修改会被下一轮 LLM 遗忘。拼入最近 N 轮对话。
+        recent = [
+            m for m in messages[-12:]
+            if isinstance(m, dict) and m.get("content")
+        ]
+        history_text = chr(10).join(
+            f"{'用户' if m.get('role') == 'user' else '助手'}: {str(m['content'])[:500]}"
+            for m in recent[:-1]
+        ) if len(recent) > 1 else ""
         user_prompt = messages[-1]["content"] if messages else "请开始对话。"
+        if history_text:
+            header = "## 近期对话记录（供理解上下文，最新一条在最后）"
+            user_prompt = (
+                header + chr(10) + history_text + chr(10) * 2
+                + "## 用户最新输入" + chr(10) + user_prompt
+            )
         if script:
             user_prompt = (
                 f"## 用户提供的原始文稿（请基于此文稿生成创作方案）\n"
