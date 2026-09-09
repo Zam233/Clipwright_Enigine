@@ -116,7 +116,7 @@ class _CachedResult:
     __slots__ = ("asset", "source_name", "score")
     class _Asset:
         __slots__ = ("id", "title", "url", "local_path", "duration_sec", "tags", "type",
-                     "license", "resolution")
+                     "license", "license_url", "author", "source_url", "resolution")
         def __init__(self, d: dict):
             self.id = d["asset_id"]
             self.title = d.get("title", "")
@@ -127,6 +127,10 @@ class _CachedResult:
             self.type = d.get("type", "")
             # license 与对象面对齐（缓存命中/未命中打分行为一致）
             self.license = d.get("license", "")
+            # P2-29: 缓存命中路径保留授权四字段（缺失曾导致署名缺失）
+            self.license_url = d.get("license_url", "")
+            self.author = d.get("author", "")
+            self.source_url = d.get("source_url", "")
             self.resolution = d.get("resolution", "")
     def __init__(self, d: dict):
         self.asset = self._Asset(d)

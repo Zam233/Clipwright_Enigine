@@ -141,7 +141,7 @@ async def test_library_audio_fills_bgm_metadata(
     assert clip.metadata["bgm_style"] == "舒缓钢琴曲"
     # 槽位规则仍照常计算（不回归）
     assert clip.metadata["bgm_slot"] == "intro"
-    assert clip.metadata["bpm"] == 120
+    assert clip.metadata["bpm"] is None  # P2-31: 未检测不再伪造 120
     assert any(
         "BGM 来自素材库" in n and "舒缓钢琴曲" in n for n in out.audio_notes
     )
@@ -180,7 +180,7 @@ async def test_empty_library_no_change(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "bgm_library" not in clip.metadata
     assert "bgm_style" not in clip.metadata
     assert clip.metadata["bgm_slot"] == "intro"
-    assert clip.metadata["bpm"] == 120
+    assert clip.metadata["bpm"] is None  # P2-31: 未检测不再伪造 120
     assert clip.volume == 1.0  # B6: 不再硬压 0.3，改走 audio_fade 曲线
     assert clip.audio_fade_in_sec == 1.0
     assert not any("BGM 来自素材库" in n for n in out.audio_notes)

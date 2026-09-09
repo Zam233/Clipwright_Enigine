@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from clipwright.config import logger
@@ -65,18 +66,25 @@ class MaterialRegistry:
             sources = list(cls._sources.values())
 
         all_results: list[MaterialSearchResult] = []
+        per_source_timeout = 20.0  # P2-30: 单源超时——慢源不再拖死整体检索
         for src in sources:
             try:
                 # 透传 media_type——源的类型过滤参数此前是死参数。
                 # 未声明该参的源经 **kwargs 吸收（MaterialSource 基类有 **kwargs）
-                results = await src.search(query, top_k=top_k_per_source,
-                                           media_type=media_type)
+                # P2-30/P2-55: 单源 wait_for 超时 + 异常降级为空结果（不拖垮整场景）
+                results = await asyncio.wait_for(
+                    src.search(query, top_k=top_k_per_source, media_type=media_type),
+                    timeout=per_source_timeout,
+                )
                 for asset, score in results:
                     all_results.append(MaterialSearchResult(
                         asset=asset,
                         score=score,
                         source_name=src.source_name,
                     ))
+            except asyncio.TimeoutError:
+                logger.warning("素材源 %s 搜索超时 (>%ss, skipped)",
+                               src.source_id, per_source_timeout)
             except Exception as e:
                 logger.warning("素材源 %s 搜索失败 (skipped): %s", src.source_id, e)
 

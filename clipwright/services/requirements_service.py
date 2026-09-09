@@ -532,7 +532,10 @@ class RequirementsService:
         # 状态路由
         if status in ("gathering", "init"):
             result = await self._handle_gathering(messages, brief_data, status, user_inputs, session_id, on_delta=on_delta)
-            brief_data = result.get("brief_draft", brief_data)
+            _new_brief = result.get("brief_draft")
+            # P2-34: LLM 解析失败会返回 brief_draft={}——空结果不覆盖已有方案
+            if isinstance(_new_brief, dict) and _new_brief:
+                brief_data = _new_brief
             is_ready = result.get("is_ready", False)
             # 只要生成了完整方案草稿就进入待确认状态。不完全依赖 LLM 的 is_ready 标志——
             # 否则前端已展示方案（brief_ready）而后端仍停留 gathering，用户确认后会被
@@ -1854,13 +1857,26 @@ class RequirementsService:
                     content = "[PDF 文件，文本提取失败]"
             elif ext in ("docx",):
                 try:
+                    import re as _re
                     import zipfile
                     with zipfile.ZipFile(file_path) as z:
-                        texts = []
+                        xml = ""
                         for name in z.namelist():
-                            if name.startswith("word/document"):
-                                texts.append(z.read(name).decode("utf-8", errors="replace"))
-                        content = texts[0][:5000] if texts else "[DOCX 解析失败]"
+                            if name == "word/document.xml":
+                                xml = z.read(name).decode("utf-8", errors="replace")
+                                break
+                    if xml:
+                        # P2-32: 按段落抽取 <w:t> 文本——旧实现把整段 XML 原文
+                        # 注入提示词（token 浪费 + 干扰 LLM）
+                        lines = []
+                        for para in _re.split(r"</w:p>", xml):
+                            runs = _re.findall(r"<w:t[^>]*>([^<]*)</w:t>", para)
+                            line = "".join(runs).strip()
+                            if line:
+                                lines.append(line)
+                        content = (chr(10).join(lines)[:5000]) if lines else "[DOCX 解析失败：未找到文本]"
+                    else:
+                        content = "[DOCX 解析失败]"
                 except Exception:
                     content = "[DOCX 文件]"
             elif ext in ("png", "jpg", "jpeg", "webp", "gif"):

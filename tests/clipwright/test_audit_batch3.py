@@ -1,10 +1,13 @@
-"""审计计划 2026-09-10 批次 3 回归：P1-02 MG 缓存键 + P1-16 坏 YAML 不 500。"""
+"""审计计划 2026-09-10 批次 3/4 回归：P1-02 MG 缓存键 + P1-16 坏 YAML 不 500
++ P1-11 body 执行 + P1-21 确认词 + P1-13 内置保护。"""
 
 from __future__ import annotations
 
 import asyncio
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from clipwright.animation.mg.generator import MGGenerator, _mg_cache_get, _mg_cache_key, _mg_cache_put
 

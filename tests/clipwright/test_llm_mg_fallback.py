@@ -133,10 +133,10 @@ class TestFindBestTemplate:
         assert result["animation_id"] == "mg_quote_card"
 
     def test_no_match_returns_comparison(self) -> None:
-        """无关键词匹配时返回最通用的 comparison_split。"""
+        """P2-36: 无关键词匹配时返回通用 title_reveal（不再硬塞对比分栏）。"""
         result = FallbackEngine.find_best_template("一个复杂的自定义动画需求", TEMPLATES)
         assert result is not None
-        assert result["animation_id"] == "mg_comparison_split"
+        assert result["animation_id"] == "mg_title_reveal"  # P2-36
 
     def test_empty_templates(self) -> None:
         """空模板列表返回 None。"""
@@ -144,10 +144,10 @@ class TestFindBestTemplate:
         assert result is None
 
     def test_empty_description(self) -> None:
-        """空描述仍返回 comparison_split。"""
+        """P2-36: 空描述返回通用 title_reveal。"""
         result = FallbackEngine.find_best_template("", TEMPLATES)
         assert result is not None
-        assert result["animation_id"] == "mg_comparison_split"
+        assert result["animation_id"] == "mg_title_reveal"  # P2-36
 
 
 class TestExtractKeywords:

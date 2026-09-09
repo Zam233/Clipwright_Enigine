@@ -463,9 +463,10 @@ class PipelineOrchestratorV2:
 
     MAX_SELF_HEAL_LOOPS = 3
     # Agent 级熔断可观测镜像: agent_name → {"fail_count": int, "last_fail_at": datetime}
-    # 类级 dict 仅作为最近状态镜像（供 breaker-status 端点/运维观测），
-    # 不参与熔断判定——判定状态在实例级（见 __init__），避免管线 A 的连续失败
-    # 令并发管线 B 的步骤被熔断跳过。
+    # P2-49: 类级熔断表（判定依据，进程级共享）——run-async/retry/batch 各自
+    # new 编排器实例，实例级字典曾让熔断跨管线形同虚设。LLM provider 故障是
+    # 进程级事实：管线 A 连续失败触发的熔断同样保护并发管线 B（免重复计费）。
+    # 恢复期（_circuit_breaker_recovery_sec）内自动复位，误熔断影响有界。
     _circuit_breakers: dict[str, dict] = {}
     _circuit_breaker_threshold = 3
     _circuit_breaker_recovery_sec = 60
@@ -487,8 +488,8 @@ class PipelineOrchestratorV2:
                 self._agents[entry.name] = entry.agent
         except Exception as e:
             logger.warning("插件 Agent 合并失败（仅核心 Agent 执行）: %s", e)
-        # 实例级熔断状态（每管线独立，判定唯一依据）
-        self._circuit_breakers: dict[str, dict] = {}
+        # P2-49: 判定表指向类级共享（见类属性注释）
+        self._circuit_breakers = PipelineOrchestratorV2._circuit_breakers
 
     def _check_circuit_breaker(self, agent_name: str) -> bool:
         """检查 agent 是否熔断。返回 True 表示已熔断（应跳过）。"""

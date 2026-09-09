@@ -127,12 +127,25 @@ class SkillRegistry:
     @classmethod
     def _get_skill_info(cls, skill: BaseSkill) -> SkillInfo:
         # 轮 87：填充 parameters（旧实现恒为空 → /api/skill/list 无法告知参数结构）
+        # P2-52: to_llm_tool() 是 anthropic 格式——参数在 input_schema 键，
+        # 旧代码读 parameters 恒为 None；兼容两种格式并回退 _infer_parameters
         params: dict = {}
         try:
             tool_schema = skill.to_llm_tool() or {}
-            schema_params = tool_schema.get("parameters") or {}
+            schema_params = tool_schema.get("input_schema") or tool_schema.get("parameters") or {}
             if isinstance(schema_params, dict):
                 params = schema_params
+            if not params:
+                inferred = skill._infer_parameters()
+                if inferred:
+                    params = {
+                        "type": "object",
+                        "properties": {
+                            n: {"type": i.get("type", "string"),
+                                "description": i.get("description", "")}
+                            for n, i in inferred.items() if n not in ("kwargs", "self")
+                        },
+                    }
         except Exception:
             params = {}
         return SkillInfo(

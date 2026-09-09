@@ -792,6 +792,17 @@ async def retry_agent(pipeline_id: str, agent_name: str, request: Request) -> di
         raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found")
 
     # 重建上下文，只从失败 agent 开始重新执行
+    # P2-48: 在飞守卫——同一 pipeline 已在跑/排队时拒绝重复重试（双击/并发
+    # 曾会起两条 retry task 互相覆盖结果）
+    _existing_task = _running_pipelines.get(pipeline_id)
+    if _existing_task is not None and not _existing_task.done():
+        return {
+            "pipeline_id": pipeline_id,
+            "status": "retrying",
+            "agent": agent_name,
+            "message": "该管线已有重试在进行中（幂等返回）",
+        }
+
     state = _pipeline_results.get(pipeline_id)
     if not state:
         # 生产加固 1.2: 进程重启后内存丢失 → Mongo 回退重建 prior_state

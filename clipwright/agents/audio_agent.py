@@ -211,64 +211,58 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                 if _sfx_added:
                     notes.append(f"已添加 {_sfx_added} 个音效")
 
-                    # 轮 83（知识区门槛）：上传配音路径的字幕强制对齐。
-                    # EditAgent 的字幕是字数比例估算，与真实配音必然漂移；
-                    # 用 STTService.align（whisper 可用时强制对齐，否则按时长
-                    # 估算）把句级时间戳回写 CAPTION 轨（与自动 TTS 路径同语义）。
-                    try:
-                        from clipwright.services.stt import STTService
 
-                        caption_texts: list[str] = []
-                        for t in timeline.tracks:
-                            if t.kind != ClipKind.CAPTION:
-                                continue
-                            for c in t.clips:
-                                meta = getattr(c, "metadata", {}) or {}
-                                txt = (getattr(c, "text", "") or meta.get("text") or "").strip()
-                                if txt:
-                                    caption_texts.append(txt)
-                        if caption_texts and audio_duration > 0:
-                            stt = STTService()
-                            aligned = await stt.align(audio_path, "。".join(caption_texts))
-                            if aligned.success and aligned.segments:
-                                segs = [
-                                    {
-                                        "text": s.get("text", ""),
-                                        "start_sec": float(s.get("start", 0) or 0),
-                                        "end_sec": float(s.get("end", 0) or 0),
-                                        "audio_path": audio_path,
-                                    }
-                                    for s in aligned.segments
-                                    if (s.get("text") or "").strip()
-                                ]
-                                if segs:
-                                    self._realign_captions_to_narration(timeline, segs)
-                                    notes.append(f"上传配音字幕对齐: {len(segs)} 段")
-                    except Exception:
-                        logger.exception("上传配音字幕对齐失败（保留估算字幕）")
+                # 轮 83（知识区门槛）：上传配音路径的字幕强制对齐。
+                # EditAgent 的字幕是字数比例估算，与真实配音必然漂移；
+                # 用 STTService.align（whisper 可用时强制对齐，否则按时长
+                # 估算）把句级时间戳回写 CAPTION 轨（与自动 TTS 路径同语义）。
+                try:
+                    from clipwright.services.stt import STTService
 
-            # 3. 如果有 BPM 检测工具且配置启用，分析音频节奏
-            bpm = 120
-            if bpm_mode and ToolRegistry.get("bpm_detect") is not None:
-                for clip in audio_track.clips:
-                    if clip.asset_id:
-                        result = await ToolRegistry.execute(
-                            "bpm_detect",
-                            input_path=clip.asset_id,
-                        )
-                        if result.status == "success":
-                            detected = result.output.get("bpm")
-                            if detected:
-                                bpm = detected
-                                notes.append(f"检测到 BPM: {bpm}")
-                            else:
-                                # 轮 82：检测失败不再伪造 120（method=failed，
-                                # 旧实现 notes 声称"检测到 BPM: 120"误导下游）
-                                notes.append(
-                                    f"BPM 自动检测失败（{result.output.get('error', 'unknown')}），"
-                                    "节拍剪辑跳过；可在需求中手填 beat_bpm"
-                                )
-                            break
+                    caption_texts: list[str] = []
+                    for t in timeline.tracks:
+                        if t.kind != ClipKind.CAPTION:
+                            continue
+                        for c in t.clips:
+                            meta = getattr(c, "metadata", {}) or {}
+                            txt = (getattr(c, "text", "") or meta.get("text") or "").strip()
+                            if txt:
+                                caption_texts.append(txt)
+                    if caption_texts and audio_duration > 0:
+                        stt = STTService()
+                        aligned = await stt.align(audio_path, "。".join(caption_texts))
+                        if aligned.success and aligned.segments:
+                            segs = [
+                                {
+                                    "text": s.get("text", ""),
+                                    "start_sec": float(s.get("start", 0) or 0),
+                                    "end_sec": float(s.get("end", 0) or 0),
+                                    "audio_path": audio_path,
+                                }
+                                for s in aligned.segments
+                                if (s.get("text") or "").strip()
+                            ]
+                            if segs:
+                                self._realign_captions_to_narration(timeline, segs)
+                                notes.append(f"上传配音字幕对齐: {len(segs)} 段")
+                                # P1-23: NEL 事件线 + 动画对齐同样适用于上传配音
+                                # （旧实现只在 TTS 分支生效；此处 bpm 尚未检测，传 None
+                                # 只做 NEL 事件对齐不做节拍吸附）
+                                try:
+                                    from clipwright.services.narration_events import (
+                                        align_animations_to_nel,
+                                        attach_nel_to_timeline,
+                                    )
+                                    attach_nel_to_timeline(timeline, segs, bpm=None)
+                                    align_animations_to_nel(timeline)
+                                except Exception as e:
+                                    logger.warning("上传配音 NEL 提取/对齐失败（跳过）: %s", e)
+                except Exception:
+                    logger.exception("上传配音字幕对齐失败（保留估算字幕）")
+
+            # 3. BPM 检测延后到 BGM 入轨之后（P2-31：旧实现取 audio_track 第一个
+            # clip——那往往是旁白而非 BGM；且失败时残留伪 120 参与节拍对齐）
+            bpm: float | None = None
 
             # 3b. 素材库 BGM 检索（A1）：优先用素材库音频填充 BGM；
             #     无素材源/无音频结果/失败一律回退原有 bgm_slots 规则（零改动）。
@@ -303,6 +297,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
             for i, clip in enumerate(audio_track.clips):
                 clip.volume = clip.volume if clip.volume is not None else 0.7
                 meta: dict[str, Any] = {
+                    # P2-31: bpm=None 时不写伪 120（旧实现检测失败残留 120 误导下游）
                     "bpm": bpm,
                     "bgm_slot": self._match_bgm_slot(
                         clip.start_sec, timeline.duration_sec, bgm_slots
@@ -400,6 +395,33 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                         _bgm_cursor += _seg
                     if _bgm_count:
                         notes.append(f"素材库 BGM 已入轨: {_bgm_count} 段（volume=0.25）")
+
+            # 3b+. BPM 检测——优先 BGM clip（旧实现取第一个音频 clip，那常是
+            # 旁白：旁白的节奏被误用作踩点基准）；无 BGM 或检测失败 → bpm=None
+            # （下游节拍对齐自动跳过，不再伪造 120）
+            if bpm_mode and bpm is None and ToolRegistry.get("bpm_detect") is not None:
+                _bgm_clip = next(
+                    (c for t in timeline.tracks if t.kind == ClipKind.AUDIO
+                     for c in t.clips if (getattr(c, "metadata", {}) or {}).get("bgm") and c.asset_id),
+                    None,
+                )
+                if _bgm_clip is not None:
+                    result = await ToolRegistry.execute(
+                        "bpm_detect",
+                        input_path=_bgm_clip.asset_id,
+                    )
+                    if result.status == "success":
+                        detected = result.output.get("bpm")
+                        if detected:
+                            bpm = detected
+                            notes.append(f"检测到 BPM: {bpm}")
+                        else:
+                            notes.append(
+                                f"BPM 自动检测失败（{result.output.get('error', 'unknown')}），"
+                                "节拍剪辑跳过；可在需求中手填 beat_bpm"
+                            )
+                else:
+                    notes.append("无 BGM 音轨，跳过 BPM 检测（可在需求中手填 beat_bpm）")
 
             # 6. 如果没有音频 clip，添加一个占位 BGM 建议
             if not audio_track.clips:

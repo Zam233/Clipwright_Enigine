@@ -148,6 +148,16 @@ async def preview_mg(body: MgPreviewRequest) -> dict:
     name = f"preview_{uuid.uuid4().hex[:12]}"
     renders_dir = Path("renders")
     renders_dir.mkdir(parents=True, exist_ok=True)
+    # P2-37: 预览产物 TTL 清理——预览是随时可重生成的一次性产物，
+    # 旧实现只删临时 mov、mp4 永久累积（每次预览 ~数 MB）。清理 2 小时前的旧预览。
+    try:
+        import time as _time
+        _now = _time.time()
+        for old in renders_dir.glob("preview_*.mp4"):
+            if _now - old.stat().st_mtime > 2 * 3600:
+                old.unlink(missing_ok=True)
+    except Exception:
+        pass
     mov_path = Path("renders") / f"{name}.mov"
     mp4_path = renders_dir / f"{name}.mp4"
     try:

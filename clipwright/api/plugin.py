@@ -298,7 +298,19 @@ async def get_plugin_config(plugin_id: str) -> dict[str, object]:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
     if plugin_id not in _loader.discover():
         raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not found")
-    return _loader.get_typed_config(plugin_id)
+    # P2-50: get_typed_config 的掩码算在密文上（未先解密）——此处解密后
+    # 重新掩码，回显形态恢复为「明文前 4 字符 + ****」
+    from clipwright.plugins.config_types import decrypt_field_value, mask_secret_value
+    config = _loader.get_typed_config(plugin_id)
+    for fdef in (config.get("fields") or {}).values():
+        if isinstance(fdef, dict) and fdef.get("secret") is True:
+            try:
+                plain = decrypt_field_value(fdef, fdef.get("value"))
+                if isinstance(plain, str) and plain:
+                    fdef["value"] = mask_secret_value(plain)
+            except Exception:
+                continue
+    return config
 
 
 @router.put("/{plugin_id}/config")
@@ -335,14 +347,19 @@ async def put_plugin_config(plugin_id: str, request: Request) -> dict[str, objec
         raise HTTPException(status_code=400, detail={"message": "配置校验失败", "errors": errors})
 
     # secret 掩码回写防护——如果 PUT 值包含 ****（掩码标记），保留原加密值
-    from clipwright.plugins.config_types import mask_secret_value
-    _plugin = _loader.get(plugin_id)
-    if _plugin and hasattr(_plugin, 'config') and isinstance(_plugin.config, dict):
-        for fname, fdef in (data.get("fields") or {}).items():
-            if isinstance(fdef, dict) and isinstance(fdef.get("value"), str) and "****" in fdef["value"]:
-                orig_val = _plugin.config.get(fname)
-                if orig_val is not None:
-                    fdef["value"] = orig_val  # 保留原始加密值
+    # secret 掩码回写防护——PUT 值含 ****（掩码标记）时保留旧值。
+    # P1-10/P2-51: 旧守卫只对「已加载插件」生效（读实例 config）——未加载插件
+    # 的预配置保存会把掩码当真值落盘。现统一从 merged 配置解密取旧值，
+    # 未配置过（无旧值）时置空串而非保留掩码。
+    from clipwright.plugins.loader import _decrypt_flat
+    try:
+        _current_plain = _decrypt_flat(_loader._get_merged_config(plugin_id))
+    except Exception:
+        _current_plain = {}
+    for fname, fdef in (data.get("fields") or {}).items():
+        if isinstance(fdef, dict) and isinstance(fdef.get("value"), str) and "****" in fdef["value"]:
+            orig_val = _current_plain.get(fname)
+            fdef["value"] = orig_val if isinstance(orig_val, str) and orig_val else ""
     _loader.save_config(plugin_id, data)
     _loader.reload(plugin_id)
     return {"status": "ok", "plugin_id": plugin_id}
