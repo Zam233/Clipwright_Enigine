@@ -117,3 +117,62 @@ class TestOwnerGuards:
         _as(env, None)
         assert env.get("/api/project/../etc").status_code in (400, 404)
         assert env.get("/api/project/bad id!").status_code == 400
+
+
+class TestTimelineShapeGuard:
+    """P0-01：残缺 timeline（元数据桩）不得覆盖磁盘上的完整时间线。"""
+
+    def _create_with_timeline(self, env) -> str:
+        _as(env, None)
+        timeline = {
+            "id": "tl_1",
+            "width": 1920,
+            "height": 1080,
+            "fps": 30,
+            "duration_sec": 10,
+            "tracks": [
+                {"id": "t1", "kind": "video", "clips": [{"id": "c1", "kind": "video", "start_sec": 0, "duration_sec": 5}]}
+            ],
+        }
+        return env.post("/api/project", json={"name": "big", "timeline": timeline}).json()["id"]
+
+    def test_metadata_stub_timeline_does_not_overwrite(self, env) -> None:
+        pid = self._create_with_timeline(env)
+        stub = {"id": "tl_1", "duration_sec": 10, "track_count": 1, "clip_count": 1, "last_edit_at": "x"}
+        resp = env.put(f"/api/project/{pid}", json={"timeline": stub})
+        assert resp.status_code == 200
+        got = env.get(f"/api/project/{pid}").json()
+        # 完整 tracks 保留，桩未落盘
+        assert got["timeline"]["tracks"][0]["clips"][0]["id"] == "c1"
+        assert "track_count" not in got["timeline"]
+
+    def test_non_dict_timeline_ignored(self, env) -> None:
+        pid = self._create_with_timeline(env)
+        resp = env.put(f"/api/project/{pid}", json={"timeline": "junk"})
+        assert resp.status_code == 200
+        got = env.get(f"/api/project/{pid}").json()
+        assert isinstance(got["timeline"].get("tracks"), list)
+
+    def test_valid_timeline_still_overwrites(self, env) -> None:
+        pid = self._create_with_timeline(env)
+        new_tl = {"id": "tl_1", "tracks": [{"id": "t2", "kind": "video", "clips": []}]}
+        resp = env.put(f"/api/project/{pid}", json={"timeline": new_tl})
+        assert resp.status_code == 200
+        got = env.get(f"/api/project/{pid}").json()
+        assert got["timeline"]["tracks"][0]["id"] == "t2"
+
+    def test_absent_timeline_key_does_not_touch(self, env) -> None:
+        pid = self._create_with_timeline(env)
+        resp = env.put(f"/api/project/{pid}", json={"name": "renamed-only"})
+        assert resp.status_code == 200
+        got = env.get(f"/api/project/{pid}").json()
+        assert got["timeline"]["tracks"][0]["clips"][0]["id"] == "c1"
+        assert got["name"] == "renamed-only"
+
+    def test_empty_tracks_list_is_valid_shape(self, env) -> None:
+        """tracks=[] 是合法形状（用户清空时间线），必须允许覆盖。"""
+        pid = self._create_with_timeline(env)
+        resp = env.put(f"/api/project/{pid}", json={"timeline": {"id": "tl_1", "tracks": []}})
+        assert resp.status_code == 200
+        got = env.get(f"/api/project/{pid}").json()
+        assert got["timeline"]["tracks"] == []

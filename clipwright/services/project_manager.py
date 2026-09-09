@@ -130,6 +130,19 @@ class ProjectManager:
             existing = self._read_json(project_id)
             if existing is None:
                 raise FileNotFoundError(f"Project {project_id} not found")
+            # P0-01：timeline 形状防御——save 是整体覆盖语义，残缺 timeline
+            # （无 tracks 或 tracks 非 list）会顶掉磁盘上的完整时间线，直接忽略
+            incoming_timeline = project_data.get("timeline")
+            if incoming_timeline is not None and (
+                not isinstance(incoming_timeline, dict)
+                or not isinstance(incoming_timeline.get("tracks"), list)
+            ):
+                logger.warning(
+                    "拒绝非法 timeline 覆盖（缺 tracks 或形状不符）: %s", project_id
+                )
+                project_data = {
+                    k: v for k, v in project_data.items() if k != "timeline"
+                }
             # Merge: caller data overrides, but id is immutable
             existing.update(project_data)
             existing["id"] = project_id  # enforce immutable
