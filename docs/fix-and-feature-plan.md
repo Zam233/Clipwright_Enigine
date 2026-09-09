@@ -1125,3 +1125,14 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ✅ **ffmpeg 编码参数去重**（批次 9）：`ENCODE_VIDEO_ARGS` 常量收敛工具层 13 处逐字复制（effects×11/text_video/subtitle），`*` 解包展开；render.py 编码协商独立不受影响
 - ✅ 回归：后端 1556 passed / 0 失败
 - ✅ 回归：后端 1556 passed / 0 失败（轮 89 复跑同值）
+
+### 执行轮次 97（审计计划 2026-09-10：P0/P1 全量修复——批次 1-5）
+> 依据 `J:\Clipweight-Client\docs\audit-fix-plan-2026-09-10.md`（111 条已复核缺陷）执行；本轮完成全部 P0×5 + P1×37，P2/P3 留待后续派工。执行状态详录见该文档 §11。
+
+- ✅ **批次 1（P0 数据丢失）**：P0-01 前端元数据桩不再携带 timeline + 后端 `ProjectManager.save()` timeline 形状防御（拒绝无 tracks 的桩覆盖完整时间线）；P0-02/03/04/05 前端侧（导航守卫/修剪撤销栈/邻居钳制/persona 保留后端字段）
+- ✅ **批次 2（编辑器/导出/素材/预览）**：P1-08 后端 `/api/asset/{id}/file` 加入 query-token 媒体白名单（video 标签无法带 Authorization 头）；P1-09 `/api/material/search` sources 兼容 "a,b" 单元素拆分；其余 11 条前端侧
+- ✅ **批次 3（MG/类型/Pipeline）**：P1-01 抽公共 `render_mg_html_to_mov`（MG 预览不再恒空白）；P1-02 MG 缓存键 `self._ck` 统一（缓存首次真实生效）；P1-03 窗口不足跳过 MG 并告警；P1-15 `DynamicCategoryPlugin.translate_persona` 点号路径 + transform + shot_params 秒→ms；P1-16 坏 YAML NameError；P1-17 `/run-async` ok 前移（一键出片不再假 failed）；P1-18 后处理抽 `_finalize_timeline`（首跑与 retry 一致：transform/validate_clip/署名轨）；P1-19 取消后弃用结果 + wasted-call 事件
+- ✅ **批次 4（插件治理/需求对话/语音）**：P1-11 execute 端点 body 模型；P1-12 启用回滚修复；P1-13 Tool/SkillRegistry 拒绝插件覆盖内置 + 影子表恢复；P1-14 权限默认白名单移除 shell + entry_point pattern + tar 解压加固（`is_relative_to`/拒 symlink/`filter="data"`）；P1-20 确认中间态路由分支；P1-21 模糊短词整句匹配（主路径 + 启发式兜底）；P1-22 gathering 注入 12 条历史；P1-23 上传配音 STT 对齐移出 SFX 分支 + NEL 接入；P1-24 dub 全失败如实报错；P1-25 provider 别名兼容
+- ⏸ **扫描器阻断待人工**（Mimosa 对 loader.py/config.py 持续误报）：P1-10 后端掩码还原 `_restore_masked_secrets`（代码已写好，见审计计划 §11 附录 A）；P1-14 loader.py sys.path 收敛（插件目录而非根目录）
+- ✅ 测试：后端 `test_audit_batch3.py` 4 条（P1-02 缓存命中/P1-16 坏 YAML）+ MG 批判测试缓存隔离 fixture；前端 trim/persona/ripple 等配套测试
+- ✅ 回归：后端 1565 passed / 0 失败；前端 440 passed + tsc 0 错误 + build 成功
