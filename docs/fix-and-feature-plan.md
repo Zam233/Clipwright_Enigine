@@ -1112,6 +1112,10 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 ### 执行轮次 95（去噪/响度可选开关）
 - ✅ **响度归一开关**：`RenderSettings.loudnorm`（默认 True）+ `render(loudnorm_enabled=)` 全链路透传（queue/auto/start 三条路径）；false 时 C11 混音仅 amix、单音源回退不加 loudnorm——原始电平交付（对讲性内容/后期处理场景）；`timeline.metadata.loudnorm=false` 亦可细粒度关闭
 - ✅ **去噪开关**：`audio_config.denoise`（默认 True）控制旁白/上传配音 clip 的 denoise 标记，false 时渲染不插 afftdn（保留原始音色，适合高质录音棚素材）；修复 voices 条目漏带 denoise 字段导致开关不生效的问题
+### 执行轮次 96（批次 6 收尾：SFX 音效链）
+- ✅ **SFX 音效轨**：`audio_config.sfx` 列表（`{path, start_sec, volume, duration_sec}`）→ AudioAgent 创建独立"音效"轨并按落点放置音频 clip；渲染端通用音频通路自动混入（响度归一/ducking 兼容）。无 sfx 条目零行为变化；文件不存在的条目跳过并记 notes
+- ✅ 回归：后端 1556 passed / 0 失败（1 例首跑时序 flake 未复现）
+- ⏸ 剩余尾项：花字管线接线（与内置 15 种文字动画重叠需产品决策）、权限运行时沙箱（需独立设计）、ffmpeg builder / God 拆分（大重构独立批次）、编辑器预览保真（WebCodecs，原计划排除）
 - ✅ 回归：后端 1556 passed / 0 失败（1 例首跑失败未复现，时序 flake）
 - ✅ 回归：后端 1556 passed / 0 失败
 - ✅ 回归：后端 1556 passed / 0 失败 · 前端 428 passed + tsc 0 错误 + build

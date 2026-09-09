@@ -171,6 +171,46 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                         timeline.duration_sec = audio_duration
                     notes.append(f"已导入配音文件: {audio_duration:.0f}s")
 
+            # 轮 96（批次 6 余项）：SFX 音效链——audio_config.sfx 列表中的
+            # 音效文件按 start_sec 落到独立音效轨（无 sfx 条目零行为变化）。
+            # 条目: {"path": "...", "start_sec": 5.0, "volume": 0.6}
+            _sfx_list = audio_config.get("sfx") or []
+            if isinstance(_sfx_list, list) and _sfx_list:
+                sfx_track = next(
+                    (t for t in timeline.tracks if t.metadata.get("sfx")),
+                    None,
+                )
+                if sfx_track is None:
+                    sfx_track = Track(
+                        id="a_sfx",
+                        name="音效",
+                        kind=ClipKind.AUDIO,
+                        index=len(timeline.tracks),
+                        metadata={"sfx": True},
+                    )
+                    timeline.tracks.append(sfx_track)
+                _sfx_added = 0
+                for i, sfx in enumerate(_sfx_list):
+                    if not isinstance(sfx, dict):
+                        continue
+                    _p = str(sfx.get("path", "")).strip()
+                    if not _p or not Path(_p).exists():
+                        notes.append(f"SFX 文件不存在，跳过: {_p}")
+                        continue
+                    sfx_track.clips.append(Clip(
+                        id=f"sfx_{i}_{uuid.uuid4().hex[:6]}",
+                        kind=ClipKind.AUDIO,
+                        asset_id=_p,
+                        track_id=sfx_track.id,
+                        start_sec=max(0.0, float(sfx.get("start_sec", 0) or 0)),
+                        duration_sec=float(sfx.get("duration_sec", 1.0) or 1.0),
+                        volume=max(0.0, min(1.0, float(sfx.get("volume", 0.6) or 0.6))),
+                        metadata={"sfx": True},
+                    ))
+                    _sfx_added += 1
+                if _sfx_added:
+                    notes.append(f"已添加 {_sfx_added} 个音效")
+
                     # 轮 83（知识区门槛）：上传配音路径的字幕强制对齐。
                     # EditAgent 的字幕是字数比例估算，与真实配音必然漂移；
                     # 用 STTService.align（whisper 可用时强制对齐，否则按时长
