@@ -485,8 +485,12 @@ async def api_token_auth(request: Request, call_next):
     mode = settings.account_verify_mode
     auth_header = request.headers.get("Authorization", "") or ""
     bearer = auth_header[7:] if auth_header.startswith("Bearer ") else ""
-    # <video>/<img> 无法携带 Authorization 头——by-path 媒体代理允许 query token
-    is_by_path_media = is_api and request.method == "GET" and path == "/api/asset/by-path"
+    # <video>/<img> 无法携带 Authorization 头——媒体代理端点允许 query token
+    # （P1-08：/api/asset/{id}/file 与 by-path 同待遇，素材面板刷新后的预览依赖它）
+    is_by_path_media = is_api and request.method == "GET" and (
+        path == "/api/asset/by-path"
+        or (path.startswith("/api/asset/") and path.endswith("/file"))
+    )
 
     if mode == "jwt":
         # 运维令牌（可选）或 Server JWT 本地验签

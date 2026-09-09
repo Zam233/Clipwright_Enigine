@@ -25,6 +25,10 @@ async def search_materials(
     sources: Optional[list[str]] = None,
 ) -> list[MaterialSearchResult]:
     """跨素材源搜索素材。"""
+    # P1-09 兼容：Starlette 把 ?sources=a,b 解析成 ["a,b"]——拆开，
+    # 否则与任何 source_id 都不匹配 → 静默 0 条
+    if sources and len(sources) == 1 and "," in sources[0]:
+        sources = [x for x in sources[0].split(",") if x]
     return await MaterialRegistry.search(
         query=query,
         top_k_per_source=top_k,
