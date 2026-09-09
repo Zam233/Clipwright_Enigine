@@ -146,8 +146,9 @@ async def list_permissions() -> dict[str, object]:
 
 
 @router.get("/errors")
-async def list_plugin_errors(limit: int = 50) -> list[dict]:
-    """M7: 插件错误通道 — 最近错误列表（诊断用）。"""
+async def list_plugin_errors(limit: int = 50, request: Request = None) -> list[dict]:
+    """M7: 插件错误通道 — 最近错误列表（诊断用）。P3-09: admin 门禁。"""
+    _require_admin(request)
     from clipwright.plugins.error_bus import get_error_bus
     return get_error_bus().list(limit=max(1, min(limit, 200)))
 
@@ -242,8 +243,9 @@ async def plugin_health() -> dict[str, object]:
 
 
 @router.delete("/errors")
-async def clear_plugin_errors(plugin_id: str = "") -> dict[str, object]:
-    """M7: 清空插件错误通道（可按插件过滤）。"""
+async def clear_plugin_errors(plugin_id: str = "", request: Request = None) -> dict[str, object]:
+    """M7: 清空插件错误通道（可按插件过滤）。P3-09: admin 门禁。"""
+    _require_admin(request)
     from clipwright.plugins.error_bus import get_error_bus
     removed = get_error_bus().clear(plugin_id or None)
     return {"status": "ok", "removed": removed}

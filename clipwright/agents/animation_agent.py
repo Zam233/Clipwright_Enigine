@@ -622,7 +622,6 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "mg_html": html,
                 "mg_def": mg_def,
                 "mg_params": mg_params,
-                "mg_html_path": "",
                 "position": "center",
             },
         )

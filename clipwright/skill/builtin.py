@@ -67,7 +67,8 @@ class AnalyzeVideoStructureSkill(BaseSkill):
                 "input": {"input_path": audio_path},
                 "output": bpm_result,
             })
-            bpm = (bpm_result.get("output") or {}).get("bpm", 120)
+            # P3-08: 检测失败不再伪造 120（与 audio_agent 的修复同语义）
+            bpm = (bpm_result.get("output") or {}).get("bpm")
 
         # 聚合结果
         scenes = (scene_result.get("output") or {}).get("scene_changes", [])

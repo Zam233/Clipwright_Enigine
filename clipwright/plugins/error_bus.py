@@ -20,6 +20,7 @@ class PluginErrorBus:
 
     def __init__(self, cap: int = PLUGIN_ERROR_CAP) -> None:
         self._cap = cap
+        self._last_seen: dict[tuple[str, str, str], float] = {}  # P3-09a 去重
         self._errors: list[dict[str, Any]] = []
         self._lock = threading.Lock()
 
@@ -39,6 +40,14 @@ class PluginErrorBus:
             "ts": time.time(),
         }
         with self._lock:
+            # P3-09a: 去重——同 (plugin_id, phase, message) 60s 窗口内只记一次
+            # （热重载循环失败曾每秒刷屏把别的插件错误挤出容量上限）
+            key = (plugin_id, phase, entry["message"])
+            last = self._last_seen.get(key, 0.0)
+            now = entry["ts"]
+            if now - last < 60.0:
+                return
+            self._last_seen[key] = now
             self._errors.append(entry)
             if len(self._errors) > self._cap:
                 self._errors = self._errors[-self._cap:]

@@ -32,6 +32,9 @@ router.dependencies = [Depends(_guard_type_id)]
 # 用户自定义类型存储目录
 _USER_TYPES_DIR = anchor("user_types")
 
+# P3-14: 转场类型白名单——/preview 与 create 共用（旧实现两处字面量不一致）
+_ALLOWED_TRANSITIONS = frozenset({"cut", "fade", "dissolve", "wipe", "glitch", "pixel_dissolve", "slide"})
+
 
 # ── 请求/响应模型 ──────────────────────────────
 
@@ -231,7 +234,7 @@ async def preview_type(definition: TypeDefinition) -> dict:
         errors.append("min_shot_sec 必须大于 0")
     if sp.max_shot_sec < sp.min_shot_sec:
         errors.append("max_shot_sec 不能小于 min_shot_sec")
-    if sp.transition_type not in ("cut", "fade", "dissolve", "wipe", "glitch"):
+    if sp.transition_type not in _ALLOWED_TRANSITIONS:
         errors.append(f"不支持的转场类型: {sp.transition_type}")
 
     # 模拟翻译
@@ -267,7 +270,7 @@ def _validate_definition(definition: TypeDefinition) -> None:
     """B23: 类型定义引用/取值检查（创建/更新前）。"""
     errors: list[str] = []
     sp = definition.shot_params
-    if sp.transition_type not in ("cut", "fade", "dissolve", "wipe", "glitch", "pixel_dissolve", "slide"):
+    if sp.transition_type not in _ALLOWED_TRANSITIONS:
         errors.append(f"不支持的转场类型: {sp.transition_type}")
     if sp.min_shot_sec <= 0:
         errors.append("min_shot_sec 必须 > 0")
