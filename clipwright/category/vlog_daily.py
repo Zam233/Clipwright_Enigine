@@ -56,6 +56,10 @@ class VlogDailyPlugin(BaseCategoryPlugin):
         )
 
 
+    def recommended_extra_params(self) -> dict[str, Any]:
+        """Vlog 推荐：调色 + 自动出片；视觉 LLM 对生活素材收益低不默认开。"""
+        return {"enable_color_match": True, "auto_render": True}
+
     def get_annotation_templates(self) -> list[str]:
         """轮 87：节奏/标注模板（原 translate_persona 死键，现在结构 prompt 消费）。"""
         return ["hook", "reaction_shot", "climax_silence"]

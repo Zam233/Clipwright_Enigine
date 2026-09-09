@@ -61,6 +61,10 @@ class KnowledgeLongformPlugin(BaseCategoryPlugin):
         )
 
 
+    def recommended_extra_params(self) -> dict[str, Any]:
+        """知识区推荐：开视觉 LLM（语义选片）+ 跨镜头调色 + 自动出片。"""
+        return {"enable_visual_llm": True, "enable_color_match": True, "auto_render": True}
+
     def get_annotation_templates(self) -> list[str]:
         """轮 87：节奏/标注模板（原 translate_persona 死键，现在结构 prompt 消费）。"""
         return ["hook", "theory_acceleration", "real_world_return", "climax_silence"]

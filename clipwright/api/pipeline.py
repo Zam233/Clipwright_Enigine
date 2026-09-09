@@ -313,6 +313,20 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
     _pipeline_owners[pipeline_id] = uid or ""
     if idem_key:
         _idempotency_pipeline[idem_key] = pipeline_id
+    # 轮 94（知识区一键出片）：类型插件推荐参数注入——用户显式值优先。
+    # knowledge/digital 推荐 enable_visual_llm/enable_color_match/auto_render，
+    # 此前这些开关默认关，"零配置直出"无法享受类型定制的质量选项。
+    try:
+        from clipwright.category.registry import CategoryRegistry
+        _cat = CategoryRegistry.get(request.category_plugin_id)
+        _rec = getattr(_cat, "recommended_extra_params", None)
+        _recommended = _rec() if callable(_rec) else {}
+    except Exception:
+        _recommended = {}
+    if _recommended:
+        request.extra_params = request.extra_params or {}
+        for _k, _v in _recommended.items():
+            request.extra_params.setdefault(_k, _v)
     # 生产加固 1.2: 运行态元数据落 Mongo（重启可恢复）
     _persist_pipeline_runtime(pipeline_id, owner_id=uid or "", idem_key=idem_key)
     audit.record("pipeline_run", uid, {"pipeline_id": pipeline_id,

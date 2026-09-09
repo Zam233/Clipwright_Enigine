@@ -822,7 +822,8 @@ class RenderService:
                      cancel_id: str | None = None,
                      encoder_override: str = "", preset_override: str = "",
                      pix_fmt_override: str = "", force_render: bool = False,
-                     soft_subtitle_srt: str = "") -> RenderResult:
+                     soft_subtitle_srt: str = "",
+                     loudnorm_enabled: bool = True) -> RenderResult:
         # 审计 P0 修复：取消标识注入 context，线程池内 ffmpeg 调用可感知并 terminate
         _CURRENT_CANCEL_ID.set(cancel_id)
         # Phase 3.3: 单次渲染编码器/像素格式覆盖注入 context（随 ctx.run 传播）
@@ -864,7 +865,8 @@ class RenderService:
                     result = await self._render_inner(
                         timeline, output, width, height, fps, bitrate,
                         audio_bitrate, audio_file_path, bgm_file_path, progress_callback,
-                        soft_subtitle_srt=soft_subtitle_srt)
+                        soft_subtitle_srt=soft_subtitle_srt,
+                        loudnorm_enabled=loudnorm_enabled)
                     if result.success:
                         try:
                             Path(str(output) + ".fp").write_text(self._render_fp, encoding="utf-8")
@@ -879,7 +881,7 @@ class RenderService:
 
     async def _render_inner(self, timeline, output, width, height, fps, bitrate,
                             audio_bitrate, audio_file_path, bgm_file_path, progress_callback,
-                            soft_subtitle_srt: str = ""):
+                            soft_subtitle_srt: str = "", loudnorm_enabled: bool = True):
         video_segments, overlay_segments, text_overlays, audio_segments, hf_ov_local = \
             self._extract_segments(timeline)
 
@@ -1000,12 +1002,18 @@ class RenderService:
                 (getattr(timeline, "metadata", {}) or {}).get("target_loudness_lufs"))
         except (TypeError, ValueError):
             loudness_target = None
+        # 轮 95：响度归一开关——timeline.metadata.loudnorm=false 可覆盖关闭
+        #（请求级参数优先，时间线元数据兜底细粒度控制）
+        if loudnorm_enabled:
+            loudnorm_enabled = bool(
+                (getattr(timeline, "metadata", {}) or {}).get("loudnorm", True))
         if final_video:
             if progress_callback:
                 await progress_callback("audio", 98, "混流音频")
             final_video, mix_marker = await self._mix_audio_safe(
                 final_video, audio_segments, audio_file_path, bitrate, audio_bitrate, bgm_file_path,
-                video_cached=video_from_cache, loudness_target=loudness_target)
+                video_cached=video_from_cache, loudness_target=loudness_target,
+                loudnorm_enabled=loudnorm_enabled)
             if mix_marker:
                 audio_warnings.append(mix_marker)
                 logger.error("C12 音频混合失败已标记: %s (render=%s)", mix_marker, output)
@@ -2313,7 +2321,8 @@ class RenderService:
 
     async def _mix_audio_safe(self, video, segments, audio_path, bitrate, ab, bgm_path,
                               video_cached: bool = False,
-                              loudness_target: float | None = None):
+                              loudness_target: float | None = None,
+                              loudnorm_enabled: bool = True):
         """混合音频（C12：失败必须标记而非静默静音成片）。返回 (video, failure_marker|None)。"""
         if not video or not Path(video).exists():
             return video, None
@@ -2321,7 +2330,8 @@ class RenderService:
         try:
             await self._mix_audio(video, segments, out, audio_path, ab, bgm_path, bitrate,
                                   video_cached=video_cached,
-                                  loudness_target=loudness_target)
+                                  loudness_target=loudness_target,
+                                  loudnorm_enabled=loudnorm_enabled)
             if Path(out).exists() and _is_valid_video(out, require_streams=True):
                 return out, None
             # 混合失败/输出无效 → 保留无声视频但标记失败
@@ -2331,7 +2341,8 @@ class RenderService:
             return video, f"audio_mix_error: {str(e)[:120]}"
 
     async def _mix_audio(self, input_video, segments, output_path, afp="", ab="192k", bfp="", bitrate="5M",
-                         video_cached: bool = False, loudness_target: float | None = None):
+                         video_cached: bool = False, loudness_target: float | None = None,
+                         loudnorm_enabled: bool = True):
         """混音。任一路径失败都会抛出/返回 False，由 _mix_audio_safe 统一标记。
 
         C11: 真实混音 — 所有音频片段按时间窗裁剪 + 各自音量 + 淡入淡出，
@@ -2358,6 +2369,8 @@ class RenderService:
                     "fade_out": float(seg.get("audio_fade_out_sec") or 0),
                     "is_voice": bool(seg.get("is_voice")),
                     "is_bgm": bool(seg.get("is_bgm")),
+                    # 轮 95：语音降噪标记（afftdn 消费）
+                    "denoise": bool(seg.get("denoise")),
                     # 源内偏移与时间线位置分离
                     "source_offset": float(seg.get("source_offset_sec", 0) or 0),
                     # 播放速率——atrim 时长按源时间换算 + atempo 补偿
@@ -2458,9 +2471,11 @@ class RenderService:
                 # 截断，逐句配音只有第一句有声且 BGM 被截断）
                 # 响度目标可由 Persona audio.target_loudness_lufs 指定（缺省 -16）
                 _lufs = f"{loudness_target:g}" if loudness_target is not None else "-16"
+                # 轮 95：loudnorm_enabled=false 时仅 amix，不做响度归一
+                _tail = (f",loudnorm=I={_lufs}:LRA=11:TP=-1.5" if loudnorm_enabled else "")
                 chains.append(
-                    f"{chains_mix_in}amix=inputs={len(mix_inputs)}:duration=longest:normalize=0,"
-                    f"loudnorm=I={_lufs}:LRA=11:TP=-1.5[aout]"
+                    f"{chains_mix_in}amix=inputs={len(mix_inputs)}:duration=longest:normalize=0"
+                    f"{_tail}[aout]"
                 )
                 r = await self._ff(inputs + [
                     "-filter_complex", ";".join(chains),
@@ -2500,8 +2515,9 @@ class RenderService:
                 _vd = await asyncio.to_thread(_get_actual_duration, str(input_video))
                 if _vd > 0:
                     afilters.append(f"afade=t=out:st={max(0.0, _vd - fout):.2f}:d={fout:.2f}")
-            _lufs_fb = f"{loudness_target:g}" if loudness_target is not None else "-16"
-            afilters.append(f"loudnorm=I={_lufs_fb}:LRA=11:TP=-1.5")
+            if loudnorm_enabled:
+                _lufs_fb = f"{loudness_target:g}" if loudness_target is not None else "-16"
+                afilters.append(f"loudnorm=I={_lufs_fb}:LRA=11:TP=-1.5")
             try:
                 await self._ff(["ffmpeg","-y","-loglevel","error",*(_hwaccel_args(encoder)),"-i",input_video,"-i",voice,
                                "-af", ",".join(afilters),

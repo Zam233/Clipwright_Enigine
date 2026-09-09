@@ -72,6 +72,15 @@ class BaseCategoryPlugin(BasePlugin):
         """
         return []
 
+    def recommended_extra_params(self) -> dict[str, Any]:
+        """返回本类型一键出片的推荐管线参数（轮 94）。
+
+        api 层在启动管线时做「用户显式值优先」的合并：request.extra_params
+        里没有的键才注入推荐值。基类返回空 dict（不注入，零行为变化）。
+        常用键：enable_visual_llm / enable_color_match / auto_render。
+        """
+        return {}
+
     def get_mg_style_guidance(self) -> str:
         """返回本视频类型的 MG 动画风格指引。
 

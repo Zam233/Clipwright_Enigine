@@ -57,6 +57,72 @@ _run_registry_lock = threading.Lock()
 # 在下一个 agent 边界（_dispatch 前）生效。
 _CANCELLED: set[str] = set()
 
+# 轮 94（版权最后一公里）：署名轨常量
+_CREDIT_DUR_SEC = 2.5
+_CREDIT_MAX_SOURCES = 4  # 片尾字幕最多列出的来源数（超出折叠为「等 N 项」）
+
+
+def _collect_credit_lines(final_tl: dict) -> tuple[list[str], int]:
+    """从时间线 clip 元数据收集去重后的署名行；返回 (行列表, 去重来源数)。"""
+    seen: set[tuple] = set()
+    rows: list[str] = []
+    for tr in final_tl.get("tracks", []) or []:
+        for c in tr.get("clips", []) or []:
+            meta = c.get("metadata") or {}
+            lic = str(meta.get("license") or "").strip()
+            if not lic:
+                continue
+            author = str(meta.get("author") or "").strip()
+            title = str(meta.get("source_title") or lic).strip()
+            key = (lic, author)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(f"{title} · {author}（{lic}）" if author else f"{title}（{lic}）")
+    return rows, len(seen)
+
+
+def _append_credit_outro(final_tl: dict, credits: tuple[list[str], int]) -> dict:
+    """在时间线末尾追加 2.5s 署名字幕片段；返回新的 final_tl（深拷贝修改）。"""
+    import copy as _copy
+    import uuid as _uuid
+
+    from clipwright.schema.timeline import ClipKind as _CK
+
+    rows, source_count = credits
+    shown = rows[:_CREDIT_MAX_SOURCES]
+    if len(rows) > _CREDIT_MAX_SOURCES:
+        shown.append(f"…等 {len(rows)} 项，详见项目素材信息")
+    text = "素材来源\n" + "\n".join(shown)
+
+    tl = _copy.deepcopy(final_tl)
+    cap_track = next((t for t in tl.get("tracks", []) if t.get("kind") == "caption"), None)
+    if cap_track is None:
+        cap_track = {"id": f"t_credit_{_uuid.uuid4().hex[:6]}", "name": "署名",
+                     "kind": "caption", "index": len(tl.get("tracks", [])), "clips": []}
+        tl.setdefault("tracks", []).append(cap_track)
+    if not cap_track.get("clips"):
+        cap_track["clips"] = []
+    end = max(
+        (float(c.get("start_sec", 0) or 0) + float(c.get("duration_sec", 0) or 0))
+        for t in tl.get("tracks", []) for c in (t.get("clips", []) or [])
+    ) if any(t.get("clips") for t in tl.get("tracks", [])) else 0.0
+    cap_track["clips"].append({
+        "id": f"cc_credit_{_uuid.uuid4().hex[:6]}",
+        "kind": "caption",
+        "asset_id": "",
+        "track_id": cap_track["id"],
+        "start_sec": round(end, 3),
+        "duration_sec": _CREDIT_DUR_SEC,
+        "text": text,
+        "font_size": 30,
+        "position": "center",
+        "renderer": "ass",
+        "metadata": {"category": "credit", "source_count": source_count},
+    })
+    tl["duration_sec"] = round(float(tl.get("duration_sec", 0) or 0) + _CREDIT_DUR_SEC, 3)
+    return tl
+
 
 def mark_cancelled(pipeline_id: str) -> None:
     """标记管线取消（协作式）。"""
@@ -785,6 +851,18 @@ class PipelineOrchestratorV2:
                                   f"类型规范校验: {_invalid} 个片段不符合 {plugin.plugin_id} 规范（已打标）")
             except Exception as e:
                 logger.warning("类型 validate_clip 校验失败（跳过）: %s", e)
+            # 轮 94（版权最后一公里）：成片自动署名轨——把时间线内含授权
+            # 元数据的素材去重后追加 2.5s 片尾字幕片段。credit_outro 默认开
+            # （商业交付署名是要求）；显式 false 关闭；无 license 素材零变化。
+            if final_tl and agent_context.extra_params.get("credit_outro", True):
+                try:
+                    _credits = _collect_credit_lines(final_tl)
+                    if _credits:
+                        final_tl = _append_credit_outro(final_tl, _credits)
+                        add_event(pid, "system", "info",
+                                  f"已追加素材署名轨（{_credits[1]} 个来源）")
+                except Exception:
+                    logger.exception("署名轨生成失败（跳过）")
         state.shared_data["final_timeline"] = final_tl
         _ft = state.shared_data.get("final_timeline")
         if _ft:

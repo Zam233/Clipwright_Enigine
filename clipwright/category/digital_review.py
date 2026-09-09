@@ -57,6 +57,10 @@ class DigitalReviewPlugin(BaseCategoryPlugin):
         )
 
 
+    def recommended_extra_params(self) -> dict[str, Any]:
+        """数码评测推荐：开视觉 LLM + 调色 + 自动出片（色准/参数图依赖视觉）。"""
+        return {"enable_visual_llm": True, "enable_color_match": True, "auto_render": True}
+
     def get_annotation_templates(self) -> list[str]:
         """轮 87：节奏/标注模板（原 translate_persona 死键，现在结构 prompt 消费）。"""
         return ["hook", "product_broll", "theory_acceleration"]

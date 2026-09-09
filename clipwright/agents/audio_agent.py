@@ -80,6 +80,8 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
         try:
             timeline = input_data.timeline
             audio_config = input_data.audio_config or {}
+            # 轮 95：语音去噪开关（默认开；audio_config.denoise=false 关闭）
+            _denoise_on = bool(audio_config.get("denoise", True))
             if timeline is None:
                 return AudioOutput(decision=AgentDecision.PASS, timeline=timeline)
 
@@ -161,8 +163,8 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                         volume=1.0,
                         eq_preset="voice",
                         metadata={"dubbing": True, "source": "upload",
-                                  # 轮 85：上传配音多为个人录制，默认降噪
-                                  "denoise": True},
+                                  # 上传配音多为个人录制，默认降噪（audio_config.denoise 可关）
+                                  "denoise": _denoise_on},
                     )
                     audio_track.clips.insert(0, dub_clip)
                     if timeline.duration_sec < audio_duration:
@@ -466,9 +468,8 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                                             "text": seg.get("text", ""),
                                             "voice_id": voice_id,
                                             "seed": seg.get("seed"),
-                                            # 轮 85：TTS 输出干净，降噪无副作用；
                                             # 渲染端 afftdn 仅对带此标记的音源生效
-                                            "denoise": True,
+                                            "denoise": _denoise_on,
                                         },
                                     )
                                     narr_track.clips.append(clip)

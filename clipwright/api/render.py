@@ -256,6 +256,7 @@ async def enqueue_auto_render(
                     cancel_id=task_id,
                     encoder_override=params.get("encoder", ""),
                     pix_fmt_override=params.get("pix_fmt", ""),
+                    loudnorm_enabled=bool(params.get("loudnorm", True)),
                 )
                 if not result.success:
                     raise RuntimeError(result.error or "render failed")
@@ -456,6 +457,7 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                 encoder_override=params.get("encoder", ""),
                 pix_fmt_override=params.get("pix_fmt", ""),
                 soft_subtitle_srt=_srt_path,  # D4
+                loudnorm_enabled=bool(params.get("loudnorm", True)),
             )
             # SRT sidecar 用后即删（此前永久遗留 temp 目录）
             if _srt_path:
@@ -935,6 +937,8 @@ class RenderSettings(BaseModel):
     pix_fmt: str = Field(default="", description="像素格式覆盖（yuv420p/yuv420p10le/yuv422p10le；空=默认）")
     # 软字幕导出——字幕以 mov_text 轨封装而非烧入画面
     soft_subtitle: bool = Field(default=False, description="软字幕导出（mov_text 字幕轨，非烧入）")
+    # 轮 95：响度归一开关（默认开；false = 混音不做 loudnorm，保持原始电平）
+    loudnorm: bool = Field(default=True, description="响度归一（loudnorm LUFS）；false = 关闭")
 
 
 class RenderRequest(BaseModel):
@@ -979,6 +983,8 @@ def _resolve_settings(s: RenderSettings | None) -> dict:
         "pix_fmt": base.get("pix_fmt", ""),
         "soft_subtitle": bool(base.get("soft_subtitle", False)),
         "container_ext": str(base.get("container_ext", "") or ""),
+        # 轮 95：响度归一开关（显式 false 会经上面 update 保留）
+        "loudnorm": bool(base.get("loudnorm", True)),
     }
 
 
@@ -1021,6 +1027,7 @@ async def start_render(
             bgm_file_path=body.bgm_file_path or "",
             encoder_override=params.get("encoder", ""),
             pix_fmt_override=params.get("pix_fmt", ""),
+            loudnorm_enabled=bool(params.get("loudnorm", True)),
         )
     except Exception as e:
         logger.exception("start_render failed: %s", e)

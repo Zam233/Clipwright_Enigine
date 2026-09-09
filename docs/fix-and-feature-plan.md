@@ -1106,6 +1106,14 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 ### 执行轮次 92（批次 10：右键菜单 + 骨架屏）
 - ✅ **时间线右键菜单**（批次 10 余项）：`TimelineContextMenu` 轻量自绘组件（视口边缘内收、点击外部/Escape 关闭）+ TimelinePanel 接线——右键命中片段自动选中并弹出菜单（在播放头处切分/删除选中/波纹删除/取消选择，复用工具栏既有动作并带快捷键标注）；引擎 `hitTestClip` 改公开供命中选中；此前 `@radix-ui/react-context-menu` 已装未用、右键无任何菜单
 - ✅ **骨架屏**：`Skeleton`/`SkeletonCardGrid` 组件 + 项目页加载态接入（替代单一 spinner，布局前后稳定）；测试断言同步更新
+### 执行轮次 94（知识区一键出片：推荐预设 + 成片署名轨）
+- ✅ **类型插件推荐预设**：`recommended_extra_params()`（基类空实现）——knowledge/digital 推荐 `enable_visual_llm + enable_color_match + auto_render`，vlog 推荐 `enable_color_match + auto_render`，kichiku 仅 `auto_render`；`run_pipeline_async` 启动时做「用户显式值优先」合并（request.extra_params.setdefault）——零配置直出即享受类型定制质量选项，显式传 false 仍可关闭
+- ✅ **成片自动署名轨**（版权最后一公里）：`_collect_credit_lines` + `_append_credit_outro`——时间线内含 license 的素材去重后（source_title · author（license））在成片末尾追加 2.5s 署名字幕片段（超 4 来源折叠为「等 N 项」），时长相应 +2.5s；`credit_outro` 默认开、显式 false 关闭、无 license 素材零变化
+### 执行轮次 95（去噪/响度可选开关）
+- ✅ **响度归一开关**：`RenderSettings.loudnorm`（默认 True）+ `render(loudnorm_enabled=)` 全链路透传（queue/auto/start 三条路径）；false 时 C11 混音仅 amix、单音源回退不加 loudnorm——原始电平交付（对讲性内容/后期处理场景）；`timeline.metadata.loudnorm=false` 亦可细粒度关闭
+- ✅ **去噪开关**：`audio_config.denoise`（默认 True）控制旁白/上传配音 clip 的 denoise 标记，false 时渲染不插 afftdn（保留原始音色，适合高质录音棚素材）；修复 voices 条目漏带 denoise 字段导致开关不生效的问题
+- ✅ 回归：后端 1556 passed / 0 失败（1 例首跑失败未复现，时序 flake）
+- ✅ 回归：后端 1556 passed / 0 失败
 - ✅ 回归：后端 1556 passed / 0 失败 · 前端 428 passed + tsc 0 错误 + build
 
 ### 执行轮次 93（批次 6/9 收尾：片尾文字动画 + ffmpeg 编码参数去重）

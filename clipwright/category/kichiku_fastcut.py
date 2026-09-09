@@ -58,6 +58,10 @@ class KichikuFastcutPlugin(BaseCategoryPlugin):
         )
 
 
+    def recommended_extra_params(self) -> dict[str, Any]:
+        """鬼畜快剪推荐：仅自动出片（高饱和快切对调色/视觉不敏感）。"""
+        return {"auto_render": True}
+
     def get_annotation_templates(self) -> list[str]:
         """轮 87：节奏/标注模板（原 translate_persona 死键，现在结构 prompt 消费）。"""
         return ["hook", "quick_cut_sequence", "reaction_shot", "climax_silence"]
