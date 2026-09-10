@@ -35,6 +35,21 @@ from clipwright.schema.tool import ToolExecResult, ToolStatus
 _client_cache: dict[tuple[str, Optional[str], Optional[str], Optional[str]], Any] = {}
 
 
+def _resolve_llm_provider(provider: str) -> Any | None:
+    """解析 LLM provider 实现（懒注册内置 + 门面查询；异常 → None 走 legacy 兜底）。
+
+    B-1：provider 协议的唯一查询点——客户端构建、消息规范、能力校验共用。
+    """
+    try:
+        from clipwright.providers.llm import ensure_llm_providers_registered
+        ensure_llm_providers_registered()
+        from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+        impl = ContributionRegistry.resolve(ContributionKind.LLM_PROVIDER, provider)
+        return impl.object if impl is not None else None
+    except Exception:  # noqa: BLE001 — 解析失败不阻断（调用方走 legacy 分支）
+        return None
+
+
 def clear_client_cache() -> None:
     """清空共享客户端缓存（配置热更新后按新配置重建连接）。"""
     _client_cache.clear()
@@ -95,16 +110,11 @@ class LLMService:
         return self._flash_client
 
     def _build_client(self, flash: bool = False) -> AnthropicMessages | OpenAIChat:
-        """根据配置构建对应的 IsoBase LLM 客户端。
+        """根据配置构建对应的 IsoBase LLM 客户端（委托唯一构造点）。
 
         Args:
             flash: True 时使用 flash 模型配置（缺省项回退到主 LLM 配置）。
         """
-        if not ISOBASE_AVAILABLE:
-            raise RuntimeError(
-                "isobase 未安装，无法构建 LLM 客户端。"
-                "请运行: pip install 'isobase @ git+https://github.com/landspark/IsoBase.git'"
-            )
         if flash:
             api_key = settings.llm_flash_api_key or settings.llm_api_key or None
             base_url = settings.llm_flash_base_url or settings.llm_base_url or None
@@ -115,35 +125,48 @@ class LLMService:
             base_url = settings.llm_base_url or None
             model = settings.llm_model
             provider = self.provider
-        instructions = settings.llm_instructions
+        return self._construct_client(
+            provider, api_key=api_key, base_url=base_url, model=model,
+            instructions=settings.llm_instructions, max_tokens=8192, flash=flash,
+        )
 
+    @staticmethod
+    def _construct_client(
+        provider: str,
+        *,
+        api_key: str | None,
+        base_url: str | None,
+        model: str,
+        instructions: str,
+        max_tokens: int = 8192,
+        flash: bool = False,
+    ) -> Any:
+        """唯一构造点（B-1a/B-1）——provider 协议只在这里查询一次。
+
+        旧的实例级 `_build_client` 与静态 `build_client` 均委托到此，
+        消除两份重复分支（方案 §13.3 修正 3）。
+        """
+        if not ISOBASE_AVAILABLE:
+            raise RuntimeError(
+                "isobase 未安装，无法构建 LLM 客户端。"
+                "请运行: pip install 'isobase @ git+https://github.com/landspark/IsoBase.git'"
+            )
         # 命中共享缓存：同一 (provider, base_url, model, api_key) 只构建一次客户端
         cache_key = _client_cache_key(provider, base_url, model, api_key)
         cached = _client_cache.get(cache_key)
         if cached is not None:
             return cached
 
-        if provider == "anthropic":
-            client: Any = AnthropicMessages(
-                api_key=api_key,
-                base_url=base_url,
-                default_model=model,
-                instructions=instructions,
-                conversation_mode=False,
-                max_tokens=8192,
-            )
-        elif provider in ("openai", "ollama"):
-            client = OpenAIChat(
-                api_key=api_key,
-                base_url=base_url,
-                default_model=model,
-                instructions=instructions,
-                conversation_mode=False,
-                max_tokens=8192,
-            )
-        else:
-            raise ValueError(f"Unsupported LLM provider: {provider}")
+        impl = _resolve_llm_provider(provider)
+        if impl is None:
+            from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+            registered = [c.id for _, c in ContributionRegistry.list(ContributionKind.LLM_PROVIDER)]
+            raise ValueError(f"未安装 LLM provider: {provider}；已注册: {registered}")
 
+        client: Any = impl.build_client(
+            api_key=api_key, base_url=base_url, model=model,
+            instructions=instructions, max_tokens=max_tokens, flash=flash,
+        )
         _client_cache[cache_key] = client
         return client
 
@@ -313,7 +336,11 @@ class LLMService:
                      json.dumps(output_schema, ensure_ascii=False)[:200] if output_schema else "none")
         # 选择与目标客户端一致的 provider 来构造消息格式
         provider = (settings.llm_flash_provider or self.provider) if use_flash else self.provider
-        if provider == "anthropic":
+        # B-1：消息格式规范由 provider 协议提供（legacy 分支兜底）
+        impl = _resolve_llm_provider(provider)
+        if impl is not None:
+            messages = impl.normalize_messages(user_prompt, system_prompt)
+        elif provider == "anthropic":
             messages = [{"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"}]
         else:
             messages = [
@@ -424,8 +451,29 @@ class LLMService:
         Returns:
             最终的 LLMResponse（不再包含 tool_calls 的轮次）
         """
-        if self.provider == "anthropic":
-            messages: list[dict[str, Any]] = [
+        # B-1：消息规范 + 能力校验由 provider 协议提供（legacy 分支兜底）
+        impl = _resolve_llm_provider(self.provider)
+        if impl is not None:
+            caps = impl.capabilities(settings.llm_model)
+            if not caps.tool_calls:
+                raise ValueError(
+                    f"provider {self.provider} 不支持工具调用（tool_calls=false）——"
+                    "请改用支持工具的 provider 或去掉工具参数"
+                )
+            if impl.uses_system_kwarg():
+                messages: list[dict[str, Any]] = [
+                    {"role": "user", "content": user_prompt},
+                ]
+                base_kwargs = {**kwargs, "system": system_prompt}
+                first_round_kwargs = {**base_kwargs, "tools": tools}
+            else:
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ]
+                base_kwargs = {**kwargs}
+        elif self.provider == "anthropic":
+            messages = [
                 {"role": "user", "content": user_prompt},
             ]
             base_kwargs = {**kwargs, "system": system_prompt}
@@ -540,38 +588,16 @@ class LLMService:
         """使用指定参数构建 LLM 客户端（不依赖实例配置）。
 
         用于需要独立 LLM 配置的场景（如视觉识别使用不同的模型/API）。
+        B-1a：委托唯一构造点 `_construct_client`（与实例路径共用缓存与协议解析）。
         """
-        if not ISOBASE_AVAILABLE:
-            raise RuntimeError(
-                "isobase 未安装，无法构建 LLM 客户端。"
-                "请运行: pip install 'isobase @ git+https://github.com/landspark/IsoBase.git'"
-            )
         p = provider or settings.llm_provider
         k = api_key or settings.llm_api_key or None
         m = model or settings.llm_model
         u = base_url or settings.llm_base_url or None
-        instructions = settings.llm_instructions
-
-        # 同样走共享缓存：视觉等独立配置的客户端也复用（同一 key 只建一次）
-        cache_key = _client_cache_key(p, u, m, k)
-        cached = _client_cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-        if p == "anthropic":
-            client: Any = AnthropicMessages(
-                api_key=k, base_url=u, default_model=m,
-                instructions=instructions, conversation_mode=False, max_tokens=8192,
-            )
-        elif p in ("openai", "ollama"):
-            client = OpenAIChat(
-                api_key=k, base_url=u, default_model=m,
-                instructions=instructions, conversation_mode=False, max_tokens=8192,
-            )
-        else:
-            raise ValueError(f"Unsupported LLM provider: {p}")
-        _client_cache[cache_key] = client
-        return client
+        return LLMService._construct_client(
+            p, api_key=k, base_url=u, model=m,
+            instructions=settings.llm_instructions, max_tokens=8192, flash=False,
+        )
 
     def reset(self) -> None:
         """重置客户端（重新初始化时使用）。"""

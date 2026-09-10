@@ -147,6 +147,13 @@ async def lifespan(app: FastAPI):
     except Exception as _ingest_err:
         logger.warning("内置贡献入账失败（不影响启动）: %s", _ingest_err)
 
+    # 4.2 B-1：内置 LLM provider 注册（anthropic/openai/ollama；幂等）
+    try:
+        from clipwright.providers.llm import ensure_llm_providers_registered
+        ensure_llm_providers_registered()
+    except Exception as _prov_err:
+        logger.warning("LLM provider 注册失败（不影响启动）: %s", _prov_err)
+
     # 4.5 加载用户自定义视频类型
     from clipwright.category.dynamic import register_user_types
     user_type_ids = register_user_types()
