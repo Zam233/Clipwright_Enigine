@@ -1165,3 +1165,16 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ✅ **批次 7 抽查**：「结构 Agent 无场景校验」部分不成立（`_validate_scenes` 已过滤无效场景，但无数量/时长上限——留待产品定上限值）
 - ✅ 回归：edl/error_bus/plugin/skill 子集全过（106+4 passed）
 - ⏸ 剩余：前端 P2-01/02/03/04/05/07/15/17/18/19/20/21/22/24/26/38/42/43/45/47、后端 P2-35、P3-03/06/07/11/12/13/15、待验证 8 项——清单见审计计划 §12
+
+### 执行轮次 100（审计计划 2026-09-10：批次 6 终批）
+
+- ✅ **P2-35** 共享动画轨窗口冲突去重（logic/MG/LLM-MG 三处 append 前检查，此前仅 text 轨检测）
+- ✅ **P3-11** dry-run 走 `_merge_agent_result`（控制键排除、timeline 总线优先、保留回退链），与正式路径同语义
+- ✅ **P3-12** `_build_input` 异常归因到当前 agent（不再逃逸到后续阶段）
+- ✅ **P3-13** 幂等统一：新增 `services/idempotency.py`，run-async 与 proceed 共用键空间
+- ✅ **P3-15** persona `visual.transition_weights` 接线（显式覆盖类型默认）
+- ✅ **P3-03** 前端乱码修复（agent-pipeline-audit.md UTF-8→GBK 逆链还原 ~94%；Design-Plan 5 行局行还原；pexels config / playwright 注释核实已正常）
+- ✅ **P3-06 抽样** HomePage 6 处静默 catch 加 console.warn
+- ✅ 前端：P2-38 草稿按项目归属校验、P2-43 JSON 导入校验+确认、P2-45 窄屏只读停用快捷键、P2-19 速查表模态门
+- ✅ 回归：后端 1565 passed / 0 失败；前端 440 passed + tsc 0 + build
+- ⏸ 剩余（低优先级体验项）：P2-01/02/03/04/05/07/15/17/18/20/21/22/24/26/27/47、P3-06 其余同类 catch、P3-07、待验证 8 项——详见审计计划 §12
