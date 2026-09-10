@@ -54,10 +54,18 @@ def register(owner: str, item: Contribution) -> Optional[str]:
         if item.kind is ContributionKind.TOOL:
             from clipwright.tool.registry import ToolRegistry
             ToolRegistry.register(item.object, plugin_id=owner)
+            # 后置校验：ToolRegistry 对「插件覆盖内置」是静默拒绝（warn+return，
+            # 不抛异常）——不核对归属会让门面误记 owner 并在卸载时误删内置工具
+            applied = ToolRegistry.get(item.id)
+            if applied is None or getattr(applied, "_plugin_id", "") != owner:
+                return f"tool:{item.id} 注册未被注册表接受（疑似与内置冲突）"
 
         elif item.kind is ContributionKind.SKILL:
             from clipwright.skill.registry import SkillRegistry
             SkillRegistry.register(item.object, plugin_id=owner)
+            applied = SkillRegistry.get(item.id)
+            if applied is None or str(getattr(applied, "_plugin_id", "")) != owner:
+                return f"skill:{item.id} 注册未被注册表接受（疑似与内置冲突）"
 
         elif item.kind is ContributionKind.AGENT:
             from clipwright.agents.registry import AgentRegistry

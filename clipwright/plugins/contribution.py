@@ -137,8 +137,13 @@ class ContributionRegistry:
 
     @classmethod
     def register(cls, owner: str, items: Iterable[Contribution],
-                 policy: ConflictPolicy = ConflictPolicy.REJECT) -> RegistrationReport:
+                 policy: ConflictPolicy = ConflictPolicy.REJECT,
+                 dispatch: bool = True) -> RegistrationReport:
         """批量注册贡献，逐条执行五项校验（顺序即优先级）。
+
+        ``dispatch=False``：只登记进门面不转调各注册表——内置贡献镜像入库
+        用（M3：内置已由既有注册函数落进各注册表，门面只做归属与冲突基准，
+        避免二次注册）。
 
         校验顺序：
         1. owner 为插件时：必须已声明白名单，且 ``item.key`` 在白名单内
@@ -152,7 +157,7 @@ class ContributionRegistry:
         report = RegistrationReport()
         for item in items:
             reason = cls._validate(owner, item, policy)
-            if reason is None:
+            if reason is None and dispatch:
                 reason = _dispatch_register(owner, item)
             if reason is not None:
                 report.rejected.append((item, reason))

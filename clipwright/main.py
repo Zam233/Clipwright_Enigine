@@ -140,6 +140,13 @@ async def lifespan(app: FastAPI):
     # 4. 注册内置技能（可组合的高级能力，编排多个 Tool）
     register_builtin_skills()
 
+    # 4.1 A-5：内置贡献镜像入账门面（去重基准 + 管理可见；须在插件加载之前）
+    try:
+        from clipwright.plugins.builtin_contributions import ingest_builtin_contributions
+        ingest_builtin_contributions()
+    except Exception as _ingest_err:
+        logger.warning("内置贡献入账失败（不影响启动）: %s", _ingest_err)
+
     # 4.5 加载用户自定义视频类型
     from clipwright.category.dynamic import register_user_types
     user_type_ids = register_user_types()
