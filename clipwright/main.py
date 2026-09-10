@@ -154,6 +154,13 @@ async def lifespan(app: FastAPI):
     except Exception as _prov_err:
         logger.warning("LLM provider 注册失败（不影响启动）: %s", _prov_err)
 
+    # 4.3 B-2：内置 TTS provider 注册（qwen-tts/cosyvoice/minimax；幂等）
+    try:
+        from clipwright.providers.tts import ensure_tts_providers_registered
+        ensure_tts_providers_registered()
+    except Exception as _tts_err:
+        logger.warning("TTS provider 注册失败（不影响启动）: %s", _tts_err)
+
     # 4.5 加载用户自定义视频类型
     from clipwright.category.dynamic import register_user_types
     user_type_ids = register_user_types()

@@ -637,19 +637,20 @@ class VoiceService:
 
     def _get_provider(self, name: str) -> BaseVoiceProvider:
         if name not in self._providers:
-            # P1-25: 兼容下划线别名——前端默认选中的 id 曾是 qwen_tts，一提交即
-            # Unknown provider（已同步前端改连字符，这里兜底旧调用方）
-            normalized = "qwen-tts" if name == "qwen_tts" else name
-            name = normalized
-        if name not in self._providers:
-            if name == "qwen-tts":
-                self._providers[name] = QwenTTSProvider()
-            elif name == "cosyvoice":
-                self._providers[name] = CosyVoiceProvider(self._uploader)
-            elif name == "minimax":
-                self._providers[name] = MiniMaxProvider(self._uploader)
-            else:
-                raise ValueError(f"Unknown provider '{name}'. Choose from: qwen-tts, cosyvoice, minimax")
+            # B-2：provider 名唯一来源 = contribution.id（别名归一集中在
+            # providers/tts.normalize_tts_name——P1-25 的 qwen_tts 兼容在此收口）
+            from clipwright.providers.tts import resolve_tts_entry, tts_provider_names
+
+            entry = resolve_tts_entry(name)
+            if entry is None:
+                raise ValueError(
+                    f"Unknown provider '{name}'. Choose from: "
+                    + ", ".join(tts_provider_names() or ["qwen-tts", "cosyvoice", "minimax"])
+                )
+            if entry.name not in self._providers:
+                self._providers[entry.name] = entry.factory(self._uploader)
+            if entry.name != name:
+                self._providers[name] = self._providers[entry.name]  # 别名缓存
         return self._providers[name]
 
     def _model_for(self, provider_name: str) -> str:
