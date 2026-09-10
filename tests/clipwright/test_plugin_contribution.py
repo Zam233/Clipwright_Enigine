@@ -18,6 +18,15 @@ from clipwright.plugins.contribution import (
 
 
 @pytest.fixture(autouse=True)
+def _isolate_dispatch(monkeypatch):
+    """M1 契约测试只验证门面语义——dispatch 转调由 test_plugin_dispatch 覆盖，
+    此处隔离（否则假对象会被真实转调进各注册表并失败）。"""
+    import clipwright.plugins.contribution as _c
+    monkeypatch.setattr(_c, "_dispatch_register", lambda owner, item: None)
+    monkeypatch.setattr(_c, "_dispatch_unregister", lambda owner, keys: list(keys))
+
+
+@pytest.fixture(autouse=True)
 def _clean_registry():
     ContributionRegistry.clear_all()
     yield

@@ -24,6 +24,17 @@ class PluginKind(str, Enum):
     EDITOR = "editor"              # 编辑器插件（前端）
 
 
+class ContributionDecl(BaseModel):
+    """A-3：manifest 预声明的贡献面（「声明即授权」的最小单元）。
+
+    运行时注册未在此声明的 (kind, id) 将被门面拒绝——这是进程内 Python
+    插件唯一可执行的权限模型（无沙箱前提下的 Gate G-2 收口）。
+    """
+    kind: str = Field(description="贡献类型（见 ContributionKind 的 14 类）")
+    id: str = Field(pattern=r"^[a-z][a-z0-9_]{1,63}$", description="贡献 id（同 kind 内唯一）")
+    meta: dict[str, Any] = Field(default_factory=dict, description="kind 专属元数据")
+
+
 class PluginManifest(BaseModel):
     """插件元信息。"""
     id: str = Field(description="插件唯一 ID")
@@ -33,6 +44,20 @@ class PluginManifest(BaseModel):
     description: str = Field(default="")
     author: str = Field(default="")
     entry_point: str = Field(default="", description="插件入口模块路径")
+
+    # ── A-3: 统一贡献契约声明（「声明即授权」）──
+    api_version: str = Field(
+        default="1",
+        description='贡献契约版本；"2" 起支持 contributions 声明与门面注册',
+    )
+    contributions: list[ContributionDecl] = Field(
+        default_factory=list,
+        description="预声明的贡献 id 清单——运行时注册未在此声明的 id 将被拒绝",
+    )
+    override_builtin: bool = Field(
+        default=False,
+        description="允许覆盖内置贡献（需签名 + 管理员权限，由加载器入口校验）",
+    )
 
     @field_validator("entry_point")
     @classmethod

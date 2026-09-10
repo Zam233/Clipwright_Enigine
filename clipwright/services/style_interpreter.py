@@ -16,14 +16,40 @@ from clipwright.plugins.base import StyleInterpreterPlugin
 
 
 class StyleInterpreter:
-    """风格解释器调度器。"""
+    """风格解释器调度器。
+
+    §13.4 缺陷 1 修复：补归属与注销路径——旧实现是裸类级单槽（无 unregister、
+    第二个插件静默顶掉第一个）。现明确单槽语义：不同 owner 的第二个注册被拒，
+    卸载时可定向回收（能力不再泄漏）。
+    """
 
     _plugin: Optional[StyleInterpreterPlugin] = None
+    _owner: str = ""
 
     @classmethod
-    def register_plugin(cls, plugin: StyleInterpreterPlugin) -> None:
+    def register_plugin(cls, plugin: StyleInterpreterPlugin, owner: str = "") -> None:
+        # 单槽语义：不同 owner 的第二个注册直接拒绝（不静默顶掉）
+        if cls._plugin is not None and cls._owner and owner and cls._owner != owner:
+            raise ValueError(
+                f"StyleInterpreter 已被 {cls._owner} 注册（单槽）；"
+                f"拒绝 {owner} 的第二个注册"
+            )
         cls._plugin = plugin
-        logger.info("StyleInterpreter: 已注册插件 %s", plugin.manifest.id)
+        cls._owner = str(owner or "")
+        logger.info("StyleInterpreter: 已注册插件 %s (owner=%s)",
+                    plugin.manifest.id, cls._owner or "-")
+
+    @classmethod
+    def unregister_plugin(cls, owner: str) -> bool:
+        """按 owner 回收风格解释器（插件禁用/卸载路径）。返回是否实际回收。"""
+        if cls._plugin is None:
+            return False
+        if owner and cls._owner and cls._owner != owner:
+            return False  # 不是它的槽位，拒绝误回收
+        cls._plugin = None
+        cls._owner = ""
+        logger.info("StyleInterpreter: 已回收插件（owner=%s）", owner or "-")
+        return True
 
     @classmethod
     async def interpret(

@@ -153,6 +153,42 @@ async def list_plugin_errors(limit: int = 50, request: Request = None) -> list[d
     return get_error_bus().list(limit=max(1, min(limit, 200)))
 
 
+@router.get("/contributions")
+async def list_contributions(
+    kind: str = "",
+    slot: str = "",
+    owner: str = "",
+    request: Request = None,
+) -> dict[str, object]:
+    """A-6/D-1：列出已注册贡献（可按 kind / ui_slot 的 slot 名 / owner 过滤）。
+
+    D 的关键数据源：前端只调这一个端点即可拿到全部插件在某 slot 的贡献
+    （不必逐个插件拉取）。owner 过滤用于「谁提供了这个工具」的溯源。
+    """
+    from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+
+    filter_kind = None
+    if kind:
+        try:
+            filter_kind = ContributionKind(kind)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"未知贡献类型: {kind}")
+
+    out: list[dict[str, object]] = []
+    for owner_id, item in ContributionRegistry.list(filter_kind):
+        if owner and owner_id != owner:
+            continue
+        if slot and str(item.meta.get("slot", "")) != slot:
+            continue
+        out.append({
+            "kind": item.kind.value,
+            "id": item.id,
+            "owner": owner_id,
+            "meta": dict(item.meta),
+        })
+    return {"contributions": out, "total": len(out)}
+
+
 @router.get("/health")
 async def plugin_health() -> dict[str, object]:
     """P10: 插件健康聚合视图 — 单端点总览加载/签名/依赖/错误/Hook 注册状态。
