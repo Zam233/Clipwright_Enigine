@@ -1008,7 +1008,7 @@ def _construct_client(provider: str, api_key, base_url, model: str,
 - 回归：后端全量 **1609 passed / 0 失败**。
 - ⏳ **诚实范围**：渲染入口按 `renderer_backend` 选择 backend 的**切换**留待下一批（需真实渲染回归，方案标注 B-3 为最需克制处）；本次只登记 backend 与映射。
 
-### M7 · D-3 逐点迁移 —— ◐ 4/13 slot 完成
+### M7 · D-3 逐点迁移 —— ◐ 7/13 slot 完成
 
 - **D-1 后端兼容层** ✅：`/ui` 双格式兼容；`/contributions` 的 `ui_slot` 条目输出 SlotContribution 形状，旧 `ui.json` 按需包装为 `settings.section` slot（`legacy: true`）。
 - **已接入的 slot**：
@@ -1018,12 +1018,15 @@ def _construct_client(provider: str, api_key, base_url, model: str,
   | `editor.right-panel` ✅ | EditorLayout 右栏 | 无贡献时整列不渲染（零布局影响） |
   | `export.preset` ✅ | ExportPage | 插件预设并入预设表；应用时置空 preset 名走显式参数（规避 P1-06 400 陷阱） |
   | `nav.settings` ✅ | ConsoleShell 侧栏 | 内核导航之后追加；icon 白名单映射，未知回退 Puzzle |
-- **通用能力**：`usePluginContributions(kind)` 通用 kind 拉取（缓存/在途去重与 slot 一致）；`SlotContribution.kind` 字段；解析放宽（非 ui_slot 不做 slot 白名单校验）。
+  | `props.section` ✅ | PropertiesPanel | `payload.kinds` 按片段类型过滤（Slot 新增通用 filter 能力） |
+  | `shortcut` ✅ | EditorPage（keybindingEngine） | 受控 API 调用；卸载/贡献变化即注销（速查表自动收录） |
+  | `editor.toolbar` ✅ | EditorToolbar | 内核按钮之前；无贡献零渲染 |
+- **通用能力**：`usePluginContributions(kind)`、`Slot.filter`、`SlotContribution.kind`；插件动作统一为「受控 API 调用」（无任意 JS）。
 - **附带修复**：`persona/repository.delete_knowledge_doc` Windows 文件锁短重试（修掉已知测试 flake）。
 - 回归：前端 450 passed + tsc 0 + build；后端 1614 passed。
-- ⏳ **剩余 9 个 slot**：`nav.primary` / `page` / `editor.left-panel` / `editor.bottom-panel` / `editor.toolbar` / `timeline.tool` / `timeline.context-menu` / `props.section` / `shortcut`。
+- ⏳ **剩余 6 个 slot**：`nav.primary` / `page` / `editor.left-panel` / `editor.bottom-panel` / `timeline.tool` / `timeline.context-menu`。
 
 ### 待办队列（下一批）
 
-1. **M7 剩余 slot**：建议顺序 `props.section`（复用分区表）→ `shortcut`（keybindingEngine）→ `editor.toolbar` → `timeline.tool`/`timeline.context-menu` → `nav.primary` → `page`（需 PluginPage 壳 + 路由）
+1. **M7 剩余 slot**：`timeline.tool` / `timeline.context-menu`（时间轴引擎周边）→ `nav.primary` → `editor.left-panel`/`editor.bottom-panel` → `page`（需 PluginPage 壳 + 路由）
 2. **人工项**：加载器的 sys.path 收敛（文件级阻断未解除）
