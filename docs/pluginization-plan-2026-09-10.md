@@ -1008,8 +1008,15 @@ def _construct_client(provider: str, api_key, base_url, model: str,
 - 回归：后端全量 **1609 passed / 0 失败**。
 - ⏳ **诚实范围**：渲染入口按 `renderer_backend` 选择 backend 的**切换**留待下一批（需真实渲染回归，方案标注 B-3 为最需克制处）；本次只登记 backend 与映射。
 
+### M7 · D-3 逐点迁移 —— ◐ 首切片完成
+
+- **D-1 后端兼容层（切片的底座）** ✅：`/ui` 双格式兼容——新格式（含 `slots`）原样返回；旧 `{title, widgets}` 由 `/api/plugin/contributions` 按需包装为单个 `settings.section` slot（`legacy: true`）+ `/ui` 端点同样兼容包装。`ui_slot` 条目输出 SlotContribution 形状（slot/title/order/layout/visibleWhen/icon/payload）。
+- **D-3i `settings.section`** ✅：SettingsPage 顶部渲染 `<Slot name="settings.section" />`——插件贡献分区与旧 `ui.json`（兼容层包装）走同一条渲染路径（`visibleWhen` 过滤 + 复用 `PluginLayoutRenderer`）。
+- **附带修复**：`persona/repository.delete_knowledge_doc` 的 Windows 文件锁短重试（异步 RAG 索引与删除并发 → WinError 32；修掉一个已知测试 flake）。
+- 回归：后端 1614 passed；前端 450 passed + tsc 0 + build。
+- ⏳ **剩余 9 个 slot**：`nav.primary` / `nav.settings` / `page` / `editor.left|right|bottom-panel` / `editor.toolbar` / `timeline.tool` / `timeline.context-menu` / `props.section` / `export.preset` / `shortcut`（按方案 D-3 表逐点接入）。
+
 ### 待办队列（下一批）
 
-1. **B-3 接线**：渲染入口按 `settings.renderer_backend` 选择 backend（含真实渲染回归）
-2. **M7** D-3 逐点迁移（建议从 `settings.section` / `editor.right-panel` 起步）
-3. **人工项**：加载器的 sys.path 收敛（文件级阻断未解除）
+1. **M7 剩余 slot**：建议顺序 `editor.right-panel`（面板类，复用 Slot 已具备）→ `export.preset` → `nav.*` → `shortcut` → `page`
+2. **人工项**：加载器的 sys.path 收敛（文件级阻断未解除）
