@@ -974,10 +974,28 @@ def _construct_client(provider: str, api_key, base_url, model: str,
 - **D-3 逐点迁移** ⏸（10 个宿主接入点）。
 - 回归：前端 **450 passed** + tsc 0 + build。
 
+### M3 · 内置贡献声明式注册 —— ✅ 完成（镜像入账变体）
+
+- **实现方式取舍**：原方案 A-5 要「换注册入口」，但内置注册散落 8 处注册函数
+  （`tool/__init__.py`、`skill/builtin.py`、`main.py::_register_builtin_plugins`
+  等），逐处换入口的回归面大。改为**镜像入账**：启动时扫描 8 类注册表，把
+  「无插件归属」的内置条目以 `BUILTIN_OWNER` 登记进门面（`dispatch=False`
+  避免二次注册）——同样达成 G2/G3（门面持有冲突基准 + 管理可见）。
+- **附带修复（重要）**：`ToolRegistry`/`SkillRegistry` 对「插件覆盖内置」是
+  **静默拒绝**（warn + return，不抛异常）——dispatch 增加归属后置校验，
+  防止门面误记 owner 并在插件卸载时误删内置工具（Gate G-1 兜底）。
+- 调用点：`main.py` lifespan 内置注册完成后、插件加载前。
+- 测试 +4（条目数一致性 / 冲突基准 / 幂等 / 静默拒绝上报）；回归 **1588 passed**。
+
+### 分支组织说明
+
+插件化全部工作位于 **`feat/pluginization`** 分支（后端与前端仓库同名）；
+两仓 main/master 已回到插件化之前的状态（后端 `13302ec`、前端 `bbf76fd`，
+即审计计划收官点）。
+
 ### 待办队列（下一批）
 
-1. **M3** 内置贡献声明式注册（44 Tool / 4 Skill / 7 Agent / 4 Category 换注册入口 + 条目数断言）
-2. **M4** B-1a 客户端构建合并（`services/llm.py` 两处 → 单一构造点）+ 行为快照 → provider 协议化
-3. **M5** TTS/STT/RendererBackend（`_get_provider` 换门面解析；两个渲染 backend adapter + 取消语义）
-4. **M7** D-3 逐点迁移（建议从 `settings.section` / `editor.right-panel` 起步）
-5. **人工项**：加载器的 sys.path 收敛
+1. **M4** B-1a 客户端构建合并（`services/llm.py` 两处 → 单一构造点）+ 行为快照 → provider 协议化
+2. **M5** TTS/STT/RendererBackend（`_get_provider` 换门面解析；两个渲染 backend adapter + 取消语义）
+3. **M7** D-3 逐点迁移（建议从 `settings.section` / `editor.right-panel` 起步）
+4. **人工项**：加载器的 sys.path 收敛（文件级阻断未解除）
