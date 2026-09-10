@@ -159,7 +159,23 @@ def _new_render_service():
     """R2: 每任务新建服务实例——本地 RenderService 携带唯一 work_dir 与可变状态
     （_final_ffmpeg_log/_fallback_count/固定中间文件名），单例 + 并发渲染互踩
     （aud.mp4/ov.mp4 等固定名互写、finally rmtree 删掉对方工作目录）。
-    远程服务无本地状态，保持单例复用。"""
+    远程服务无本地状态，保持单例复用。
+
+    B-3（渲染后端选择）：`settings.renderer_backend` 显式指定（remote）优先，
+    其次沿用既有 `remote_render_url` 配置，最后回退本机——缺省行为不变。
+    后端注册表/协议适配器见 `clipwright/providers/render/`。
+    """
+    from clipwright.providers.render import render_backend_names
+
+    requested = str(getattr(settings, "renderer_backend", "") or "local").strip().lower()
+    if requested == "remote":
+        if "remote" not in render_backend_names():
+            logger.warning("renderer_backend=remote 但后端未注册，回退本机渲染")
+        else:
+            logger.info("渲染服务选择: RemoteRenderService (renderer_backend=remote)")
+            return RemoteRenderService()
+    elif requested not in ("", "local", "remote"):
+        logger.warning("未知 renderer_backend=%s，回退本机渲染", requested)
     if (settings.remote_render_url or "").strip():
         logger.info("渲染服务选择: RemoteRenderService (remote=%s)", settings.remote_render_url)
         return RemoteRenderService()
