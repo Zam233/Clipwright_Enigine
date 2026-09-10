@@ -993,9 +993,21 @@ def _construct_client(provider: str, api_key, base_url, model: str,
 两仓 main/master 已回到插件化之前的状态（后端 `13302ec`、前端 `bbf76fd`，
 即审计计划收官点）。
 
+### M4 · LLM Provider 协议化 —— ✅ 完成
+
+- **B-1a 单一构造点**：`LLMService._construct_client`（共享缓存 + 协议解析），实例 `_build_client` 与静态 `build_client` 均委托——消除两处重复分支，`vision.py` 调用签名不变。
+- **B-1 provider 落地**：`providers/llm/` 三个内置实现（anthropic/openai/ollama）含 `capabilities`/`normalize_messages`/`build_client`；`structured_output` 消息格式分支与 `with_tools` 的 system-kwarg 分支移入协议；未知 provider 报错列出已注册清单。
+- **能力协商（B-4 起手）**：`with_tools` 前断言 `caps.tool_calls`，声明不支持者得到明确报错（旧行为静默降级）。
+- 测试 +7（协议符合性 / 构造快照 / 缓存 / 未知 provider / 能力拒绝）；回归 **1595 passed**。
+
+### M5 · TTS/STT/RendererBackend —— ◐ TTS 完成
+
+- **B-2 TTS** ✅：三个内置 provider（qwen-tts/cosyvoice/minimax）以「工厂 + default_model」登记进门面；`_get_provider` 门面解析，provider 名唯一来源 = contribution.id；P1-25 下划线别名归一集中到 `normalize_tts_name`；`default_model` 与既有 `_model_for` 读同一 settings 键（行为不变）。测试 +4；回归 **1599 passed**。
+- **B-2 STT** ⏸：`stt.py` 两后端 provider 化待做。
+- **B-3 RendererBackend** ⏸：`LocalFFmpegBackend` / `RemoteRenderBackend` 两个 adapter + `cancel_token` 接线待做（方案标注「最需要克制的一处」）。
+
 ### 待办队列（下一批）
 
-1. **M4** B-1a 客户端构建合并（`services/llm.py` 两处 → 单一构造点）+ 行为快照 → provider 协议化
-2. **M5** TTS/STT/RendererBackend（`_get_provider` 换门面解析；两个渲染 backend adapter + 取消语义）
-3. **M7** D-3 逐点迁移（建议从 `settings.section` / `editor.right-panel` 起步）
-4. **人工项**：加载器的 sys.path 收敛（文件级阻断未解除）
+1. **M5 剩余**：STT provider 化 + RendererBackend 两 adapter（含取消语义）
+2. **M7** D-3 逐点迁移（建议从 `settings.section` / `editor.right-panel` 起步）
+3. **人工项**：加载器的 sys.path 收敛（文件级阻断未解除）
