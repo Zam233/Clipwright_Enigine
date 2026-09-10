@@ -99,6 +99,7 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
     ("tts_public_upload_services", "tts", "公网上传服务", False, True, "逗号分隔；CosyVoice/MiniMax 克隆需要"),
     # ── 渲染与编码 ──
     ("max_concurrent_renders", "render", "最大并发渲染", False, False, "线程池在导入时固定，需重启"),
+    ("renderer_backend", "render", "渲染后端", False, True, "local = 本机 ffmpeg；remote = 远程渲染服务（B-3）"),
     ("render_encoder", "render", "编码器", False, True, "空 = 自动探测（GPU 优先）"),
     ("render_preset", "render", "编码预设", False, True, "ultrafast / fast / medium / slow"),
     ("render_trim_cache", "render", "裁剪缓存", False, True, "（当前版本未接线，预留）"),

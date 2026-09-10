@@ -168,6 +168,13 @@ async def lifespan(app: FastAPI):
     except Exception as _stt_err:
         logger.warning("STT provider 注册失败（不影响启动）: %s", _stt_err)
 
+    # 4.5 B-3：内置渲染后端注册（local/remote；入口切换在下一批接线）
+    try:
+        from clipwright.providers.render import ensure_render_backends_registered
+        ensure_render_backends_registered()
+    except Exception as _rb_err:
+        logger.warning("渲染后端注册失败（不影响启动）: %s", _rb_err)
+
     # 4.5 加载用户自定义视频类型
     from clipwright.category.dynamic import register_user_types
     user_type_ids = register_user_types()

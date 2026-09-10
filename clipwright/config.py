@@ -49,6 +49,10 @@ class Settings(BaseSettings):
         default_factory=lambda: ["network", "fs_read", "fs_write", "http", "noop", "orchestrate"],
     )
 
+    # B-3：渲染后端选择（local=本机 ffmpeg；remote=远程渲染服务）。
+    # 缺省 local 保持既有行为；注册表见 clipwright/providers/render/。
+    renderer_backend: str = Field(default="local", description="渲染后端：local / remote")
+
     # --- IsoBase / LLM ---
     llm_provider: Literal["openai", "anthropic", "ollama"] = "anthropic"
     llm_api_key: str = ""
