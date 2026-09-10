@@ -180,12 +180,63 @@ async def list_contributions(
             continue
         if slot and str(item.meta.get("slot", "")) != slot:
             continue
-        out.append({
+        entry: dict[str, object] = {
             "kind": item.kind.value,
             "id": item.id,
             "owner": owner_id,
             "meta": dict(item.meta),
-        })
+        }
+        if item.kind is ContributionKind.UI_SLOT:
+            # D-2 渲染器直接消费 SlotContribution 形状（slot/title/order/layout…）
+            meta = dict(item.meta)
+            entry.update({
+                "slot": str(meta.get("slot", "")),
+                "title": str(meta.get("title") or item.id),
+                "order": meta.get("order", 100),
+                **({"icon": meta["icon"]} if meta.get("icon") else {}),
+                **({"visibleWhen": meta["visibleWhen"]} if meta.get("visibleWhen") else {}),
+                **({"layout": meta["layout"]} if meta.get("layout") else {}),
+                **({"payload": meta["payload"]} if meta.get("payload") else {}),
+            })
+        out.append(entry)
+
+    # D-1 兼容层：旧 ui.json（{title, widgets}）→ settings.section slot
+    # （仅在查询该 slot 或未按 slot 过滤时扫描；插件的 ui.json 不进门面，
+    #  由本端点按需包装——30 个内置插件一行不改即可被前端 Slot 渲染器消费）
+    if (not slot or slot == "settings.section") and _loader is not None:
+        seen = {str(e.get("id")) for e in out}
+        try:
+            discovered = _loader.discover()
+        except Exception:
+            discovered = []
+        for pid in discovered:
+            if owner and pid != owner:
+                continue
+            ui_file = _loader.plugin_dir / pid / "ui.json"
+            if not ui_file.exists():
+                continue
+            try:
+                import json as _json
+                raw = _json.loads(ui_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(raw, dict) or "slots" in raw or "widgets" not in raw:
+                continue  # 新格式或非布局文件
+            entry_id = f"{pid}_legacy"
+            if entry_id in seen:
+                continue
+            title = str(raw.get("title") or pid)
+            out.append({
+                "kind": "ui_slot",
+                "id": entry_id,
+                "owner": pid,
+                "slot": "settings.section",
+                "title": title,
+                "order": 200,
+                "layout": {"title": title, "widgets": raw.get("widgets") or []},
+                "legacy": True,
+                "meta": {"slot": "settings.section"},
+            })
     return {"contributions": out, "total": len(out)}
 
 
@@ -467,7 +518,13 @@ async def get_capabilities() -> dict:
 
 @router.get("/{plugin_id}/ui")
 async def get_plugin_ui(plugin_id: str) -> dict:
-    """返回插件的 UI 布局定义（ui.json）。"""
+    """返回插件的 UI 布局定义（ui.json）。
+
+    D-1 双格式兼容（方案 §6）：
+    - 新格式（含 ``slots`` 键）→ 原样返回；
+    - 旧格式（``{title, widgets}``）→ 包成单个 ``settings.section`` slot 返回，
+      并附 ``"legacy": true``——30 个内置插件的 ui.json 一行不改即可继续工作。
+    """
     _validate_plugin_id(plugin_id)  # 审计 P1 修复：阻断 ../ 路径穿越
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
@@ -476,6 +533,23 @@ async def get_plugin_ui(plugin_id: str) -> dict:
         return {"widgets": []}
     try:
         import json as _json
-        return _json.loads(ui_file.read_text(encoding="utf-8"))
+        raw = _json.loads(ui_file.read_text(encoding="utf-8"))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read plugin UI: {e}")
+
+    if isinstance(raw, dict) and "slots" in raw:
+        return raw  # 新格式原样
+    if isinstance(raw, dict) and "widgets" in raw:
+        # 旧格式 → settings.section slot（前端 Slot 渲染器统一消费）
+        title = str(raw.get("title") or "插件设置")
+        return {
+            "api_version": "2",
+            "legacy": True,
+            "slots": [{
+                "slot": "settings.section",
+                "id": f"{plugin_id}_legacy",
+                "title": title,
+                "layout": {"title": title, "widgets": raw.get("widgets") or []},
+            }],
+        }
+    return raw
