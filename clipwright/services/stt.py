@@ -102,26 +102,27 @@ class STTService:
     async def _transcribe_any(
         self, audio_file: str, language: str, model_size: str, word_timestamps: bool
     ) -> STTResult:
-        """依次尝试 whisper → faster-whisper → 保底占位。"""
-        try:
-            # 尝试 whisper Python 包（CPU 推理可达数分钟，必须 offload）
-            result = await asyncio.to_thread(
-                self._transcribe_whisper, audio_file, language, model_size, word_timestamps
-            )
-            if result.success:
-                return result
-        except Exception as e:
-            logger.debug("Whisper 不可用 (%s), 尝试 faster-whisper...", e)
+        """依次尝试已注册 STT 后端（whisper → faster-whisper → 插件后端）→ 保底占位。
 
-        try:
-            # 尝试 faster-whisper（同样 CPU 推理，offload）
-            result = await asyncio.to_thread(
-                self._transcribe_faster_whisper, audio_file, language, model_size, word_timestamps
-            )
-            if result.success:
-                return result
-        except Exception as e:
-            logger.debug("faster-whisper 不可用 (%s), 使用保底模式...", e)
+        B-2：后端顺序由 `providers/stt` 注册表决定（门面即注册表，插件可贡献
+        新 STT provider）；注册表不可用时回退旧硬编码顺序（行为兼容）。
+        """
+        from clipwright.providers.stt import resolve_stt_backends
+
+        backends = resolve_stt_backends(self) or [
+            ("whisper", self._transcribe_whisper),
+            ("faster-whisper", self._transcribe_faster_whisper),
+        ]
+        for name, fn in backends:
+            try:
+                # CPU 推理可达数分钟，必须 offload
+                result = await asyncio.to_thread(
+                    fn, audio_file, language, model_size, word_timestamps
+                )
+                if result.success:
+                    return result
+            except Exception as e:
+                logger.debug("%s 不可用 (%s)，尝试下一个后端...", name, e)
 
         # 保底：FFmpeg 提取音频信息 + 占位结果
         duration = await asyncio.to_thread(self._get_duration, audio_file)

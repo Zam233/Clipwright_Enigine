@@ -161,6 +161,13 @@ async def lifespan(app: FastAPI):
     except Exception as _tts_err:
         logger.warning("TTS provider 注册失败（不影响启动）: %s", _tts_err)
 
+    # 4.4 B-2：内置 STT provider 注册（whisper/faster-whisper；幂等）
+    try:
+        from clipwright.providers.stt import ensure_stt_providers_registered
+        ensure_stt_providers_registered()
+    except Exception as _stt_err:
+        logger.warning("STT provider 注册失败（不影响启动）: %s", _stt_err)
+
     # 4.5 加载用户自定义视频类型
     from clipwright.category.dynamic import register_user_types
     user_type_ids = register_user_types()
