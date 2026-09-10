@@ -512,8 +512,14 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "position": "center",
             },
         )
-        anim_track.clips.append(anim_clip)
-        anim_track.clips.sort(key=lambda c: c.start_sec)
+        # P2-35: 共享动画轨窗口冲突去重——同窗口已有动画时跳过新片段
+        # （旧实现仅 text 轨做重叠检测，logic/MG/LLM-MG 三处直接 append
+        #  造成同屏动画互相覆盖）
+        if self._find_overlapping_clip(anim_track, anim_clip) is not None:
+            logger.info("AnimationAgent: 动画窗口冲突，跳过 %s（同窗口已有动画）", anim_name)
+        else:
+            anim_track.clips.append(anim_clip)
+            anim_track.clips.sort(key=lambda c: c.start_sec)
 
     # ── MG 动画处理 ──────────────────────────────────────
 
@@ -625,8 +631,14 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "position": "center",
             },
         )
-        anim_track.clips.append(anim_clip)
-        anim_track.clips.sort(key=lambda c: c.start_sec)
+        # P2-35: 共享动画轨窗口冲突去重——同窗口已有动画时跳过新片段
+        # （旧实现仅 text 轨做重叠检测，logic/MG/LLM-MG 三处直接 append
+        #  造成同屏动画互相覆盖）
+        if self._find_overlapping_clip(anim_track, anim_clip) is not None:
+            logger.info("AnimationAgent: 动画窗口冲突，跳过 %s（同窗口已有动画）", anim_name)
+        else:
+            anim_track.clips.append(anim_clip)
+            anim_track.clips.sort(key=lambda c: c.start_sec)
         logger.info("AnimationAgent: [MG动画]%s → HTML已生成 (%s)", anim_name, anim_id)
 
     # ── LLM 动态 MG 动画处理 ──────────────────────────────
@@ -777,8 +789,14 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "position": "center",
             },
         )
-        anim_track.clips.append(anim_clip)
-        anim_track.clips.sort(key=lambda c: c.start_sec)
+        # P2-35: 共享动画轨窗口冲突去重——同窗口已有动画时跳过新片段
+        # （旧实现仅 text 轨做重叠检测，logic/MG/LLM-MG 三处直接 append
+        #  造成同屏动画互相覆盖）
+        if self._find_overlapping_clip(anim_track, anim_clip) is not None:
+            logger.info("AnimationAgent: 动画窗口冲突，跳过 %s（同窗口已有动画）", anim_name)
+        else:
+            anim_track.clips.append(anim_clip)
+            anim_track.clips.sort(key=lambda c: c.start_sec)
         logger.info("AnimationAgent: [LLM MG]%s → method=%s, html=%d chars",
                      anim_name, method, len(html))
         self._llm_mg_generated += 1

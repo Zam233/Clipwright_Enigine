@@ -23,13 +23,13 @@ _service = RequirementsService()
 # 需求会话归属表（对齐管线 _pipeline_owners 机制）
 _session_owners: dict[str, str] = {}
 
-# 轮70（D10）：proceed 幂等表（Idempotency-Key 或 session_id → pipeline_id）
-_PROCEED_IDEM: dict[str, str] = {}
+# P3-13: proceed 幂等统一到共享存储（与 /pipeline/run-async 共用键空间）
+from clipwright.services import idempotency as _idem
 
 
 def _proceed_idem_hit(key: str, running: dict, tasks: dict) -> Optional[str]:
     """轮70（D10）：proceed 幂等命中——目标管线仍在运行/排队则返回既有 id。"""
-    pid = _PROCEED_IDEM.get(key)
+    pid = _idem.lookup(key)
     if pid and (pid in running or pid in tasks):
         return pid
     return None
@@ -300,10 +300,7 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
 
     # 预先生成 pipeline_id 并建立 trace，使前端可立即订阅 SSE / 轮询 result
     pipeline_id = f"pl_{uuid.uuid4().hex[:12]}"
-    _PROCEED_IDEM[_idem_key] = pipeline_id
-    if len(_PROCEED_IDEM) > 500:
-        for _k in list(_PROCEED_IDEM)[: len(_PROCEED_IDEM) - 500]:
-            _PROCEED_IDEM.pop(_k, None)
+    _idem.bind(_idem_key, pipeline_id)
     create_trace(pipeline_id)
 
     user_inputs = session.get("user_inputs", {})

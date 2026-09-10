@@ -946,15 +946,33 @@ class PipelineOrchestratorV2:
                             if isinstance(result, Exception):
                                 add_event(pid, name, "error", f"{name} 异常: {str(result)[:200]}")
                                 continue
-                            result_data[name] = getattr(result, "result", {}) or {}
+                            # P3-11: 与正式路径同语义——走 _merge_agent_result
+                            # （控制键排除、timeline 以总线为准），不再裸 dict 合并；
+                            # dry-run 需保留 edit 的 timeline 供预览（总线优先，见下）
+                            self._merge_agent_result(name, result, result_data, bus, pid)
+                            _r = getattr(result, "result", None)
+                            if isinstance(_r, dict) and _r.get("timeline") is not None:
+                                result_data["_dry_edit_timeline"] = _r["timeline"]
                 state.shared_data["dry_run"] = True
                 # dry-run 与 V1 对齐——产出 final_timeline + timeline_snapshot
                 # 事件，否则 /run-async 的 dry-run 预览拿不到时间线（原实现只落
                 # result_data[name] 裸结果，未提取 edit 的 timeline）
                 _dry_tl = None
-                _dry_edit = result_data.get("edit")
-                if isinstance(_dry_edit, dict):
-                    _dry_tl = _dry_edit.get("timeline")
+                _tl_artifact = bus.get_artifact("timeline")
+                # P3-11: 仅真实 Timeline 实例走总线（mock/占位对象不参与判定）
+                try:
+                    from clipwright.schema.timeline import Timeline as _TLModel
+                    if isinstance(_tl_artifact, _TLModel):
+                        _dry_tl = _tl_artifact.model_dump(mode="json")
+                except Exception:
+                    _dry_tl = None
+                if _dry_tl is None:
+                    _dry_tl = result_data.get("_dry_edit_timeline")
+                if _dry_tl is None:
+                    _dry_edit = result_data.get("edit")
+                    if isinstance(_dry_edit, dict):
+                        _dry_tl = _dry_edit.get("timeline")
+                result_data.pop("_dry_edit_timeline", None)
                 state.shared_data["final_timeline"] = _dry_tl
                 if _dry_tl:
                     add_event(pid, "system", "timeline_snapshot",
@@ -989,8 +1007,20 @@ class PipelineOrchestratorV2:
 
             tasks = {}
             for agent_name in group:
-                input_data = self._build_input(agent_name, result_data, persona_config, plugin,
-                                               extra_params=agent_context.extra_params)
+                # P3-12: _build_input 的 ValueError 曾在 _run_agent 之外抛出，
+                # 异常归因到后续阶段；此处捕获并标注到当前 agent
+                try:
+                    input_data = self._build_input(
+                        agent_name, result_data, persona_config, plugin,
+                        extra_params=agent_context.extra_params)
+                except Exception as be:
+                    add_event(pid, agent_name, "error",
+                              f"{agent_name} 输入构建失败: {str(be)[:200]}")
+                    logger.exception("PipelineV2 _build_input 失败 agent=%s", agent_name)
+                    state.status = PipelineStatus.FAILED
+                    state.error = f"{agent_name} 输入构建失败: {str(be)[:200]}"
+                    state.updated_at = datetime.now(timezone.utc)
+                    return state
                 # Layer 2: span 在 _run_agent 内部创建（熔断后不创建 span）
                 tasks[agent_name] = self._run_agent(
                     state, agent_name, input_data, agent_context, bus, tracer,
@@ -1173,6 +1203,16 @@ class PipelineOrchestratorV2:
 
         persona_config = manifest.parameter.model_dump(mode="json") if manifest.parameter else {}
         translated = plugin.translate_persona(manifest.parameter) if manifest.parameter else {}
+
+        # P3-15: persona visual.transition_weights 接线（原死键）——显式设置时
+        # 覆盖类型插件的硬编码默认；未设置时保持类型默认（零行为变化）
+        try:
+            _pv_visual = getattr(manifest.parameter, "visual", None)
+            _pv_tw = getattr(_pv_visual, "transition_weights", None)
+            if _pv_tw:
+                translated = {**translated, "transition_weights": dict(_pv_tw)}
+        except Exception:
+            pass
 
         # 加载 Persona 的 prompt.md 风格指引与知识库上下文，供 StructureAgent 使用，
         # 避免管线生成的脚本与需求阶段确认的风格发生漂移。

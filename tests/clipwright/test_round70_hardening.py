@@ -13,26 +13,28 @@ class TestProceedIdempotency:
 
     def test_hit_when_running_or_queued(self) -> None:
         from clipwright.api import requirements as R
+        from clipwright.services import idempotency as I
 
-        R._PROCEED_IDEM.clear()
+        I.clear_all()  # P3-13: 幂等统一到共享存储
         try:
-            R._PROCEED_IDEM["sess:s1"] = "pl_x"
+            I.bind("sess:s1", "pl_x")
             assert R._proceed_idem_hit("sess:s1", {"pl_x": object()}, {}) == "pl_x"
             assert R._proceed_idem_hit("sess:s1", {}, {"pl_x": "task_1"}) == "pl_x"
         finally:
-            R._PROCEED_IDEM.clear()
+            I.clear_all()
 
     def test_miss_when_finished_or_unknown(self) -> None:
         from clipwright.api import requirements as R
+        from clipwright.services import idempotency as I
 
-        R._PROCEED_IDEM.clear()
+        I.clear_all()
         try:
-            R._PROCEED_IDEM["sess:s1"] = "pl_x"
+            I.bind("sess:s1", "pl_x")
             # 管线已结束（不在 running/tasks 映射）→ 允许再次 proceed
             assert R._proceed_idem_hit("sess:s1", {}, {}) is None
             assert R._proceed_idem_hit("sess:other", {"pl_x": object()}, {}) is None
         finally:
-            R._PROCEED_IDEM.clear()
+            I.clear_all()
 
 
 class TestBackgroundHygiene:

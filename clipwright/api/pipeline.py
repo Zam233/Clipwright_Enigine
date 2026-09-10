@@ -25,8 +25,8 @@ _running_pipelines: dict[str, asyncio.Task] = {}
 _pipeline_results: dict[str, dict] = {}
 # 管线归属（jwt 模式）；"" = 无主（off/token 模式/遗留）
 _pipeline_owners: dict[str, str] = {}
-# 幂等键（Idempotency-Key → pipeline_id；随结果缓存一并清理）
-_idempotency_pipeline: dict[str, str] = {}
+# P3-13: 幂等键统一到共享存储（与 /requirements/proceed 共用键空间）
+from clipwright.services import idempotency as _idem
 # pipeline_id → TaskQueue task_id（供取消/查询映射）
 _pipeline_tasks: dict[str, str] = {}
 # 用户主动取消的管线（用于区分用户取消与队列超时强杀——两者都会以
@@ -132,7 +132,7 @@ def recover_pipeline_runtime() -> dict:
                     _pipeline_owners.setdefault(pid, doc["owner_id"])
                     stats["owners"] += 1
                 if doc.get("idem_key"):
-                    _idempotency_pipeline.setdefault(doc["idem_key"], pid)
+                    _idem.bind_if_absent(doc["idem_key"], pid)
                     stats["idem"] += 1
                 if doc.get("task_id"):
                     _pipeline_tasks.setdefault(pid, doc["task_id"])
@@ -290,10 +290,9 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
     # 后续 budget 检查失败时回滚占位，避免留下指向永不执行管线的死键。
     idem_key = req.headers.get("Idempotency-Key", "")
     if idem_key:
-        existing = _idempotency_pipeline.get(idem_key)
+        existing = _idem.bind_if_absent(idem_key, pipeline_id)
         if existing:
             return {"pipeline_id": existing, "status": "deduplicated"}
-        _idempotency_pipeline[idem_key] = pipeline_id
 
     try:
         # 成本预算熔断（超月预算拒绝新管线）
@@ -306,13 +305,12 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
             )
     except Exception:
         # 占位回滚（仅当仍指向本管线）
-        if idem_key and _idempotency_pipeline.get(idem_key) == pipeline_id:
-            _idempotency_pipeline.pop(idem_key, None)
+        _idem.drop(idem_key, pipeline_id)
         raise
     # 记录归属
     _pipeline_owners[pipeline_id] = uid or ""
     if idem_key:
-        _idempotency_pipeline[idem_key] = pipeline_id
+        _idem.bind(idem_key, pipeline_id)
     # 轮 94（知识区一键出片）：类型插件推荐参数注入——用户显式值优先。
     # knowledge/digital 推荐 enable_visual_llm/enable_color_match/auto_render，
     # 此前这些开关默认关，"零配置直出"无法享受类型定制的质量选项。
@@ -468,9 +466,7 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
                 _pipeline_owners.pop(pipeline_id, None)
                 _pipeline_tasks.pop(pipeline_id, None)  # A3: 补清理，防映射泄漏
                 _user_cancel_requested.discard(pipeline_id)  # A2: 防集合泄漏
-                for k, v in list(_idempotency_pipeline.items()):
-                    if v == pipeline_id:
-                        _idempotency_pipeline.pop(k, None)
+                _idem.drop_by_pipeline(pipeline_id)
                 from clipwright.services.trace import clear
                 clear(pipeline_id)
             spawn_background(_cleanup(), name=f"pipeline-cleanup-{pipeline_id}")
