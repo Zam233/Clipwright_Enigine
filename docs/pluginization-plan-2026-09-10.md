@@ -1008,15 +1008,22 @@ def _construct_client(provider: str, api_key, base_url, model: str,
 - 回归：后端全量 **1609 passed / 0 失败**。
 - ⏳ **诚实范围**：渲染入口按 `renderer_backend` 选择 backend 的**切换**留待下一批（需真实渲染回归，方案标注 B-3 为最需克制处）；本次只登记 backend 与映射。
 
-### M7 · D-3 逐点迁移 —— ◐ 首切片完成
+### M7 · D-3 逐点迁移 —— ◐ 4/13 slot 完成
 
-- **D-1 后端兼容层（切片的底座）** ✅：`/ui` 双格式兼容——新格式（含 `slots`）原样返回；旧 `{title, widgets}` 由 `/api/plugin/contributions` 按需包装为单个 `settings.section` slot（`legacy: true`）+ `/ui` 端点同样兼容包装。`ui_slot` 条目输出 SlotContribution 形状（slot/title/order/layout/visibleWhen/icon/payload）。
-- **D-3i `settings.section`** ✅：SettingsPage 顶部渲染 `<Slot name="settings.section" />`——插件贡献分区与旧 `ui.json`（兼容层包装）走同一条渲染路径（`visibleWhen` 过滤 + 复用 `PluginLayoutRenderer`）。
-- **附带修复**：`persona/repository.delete_knowledge_doc` 的 Windows 文件锁短重试（异步 RAG 索引与删除并发 → WinError 32；修掉一个已知测试 flake）。
-- 回归：后端 1614 passed；前端 450 passed + tsc 0 + build。
-- ⏳ **剩余 9 个 slot**：`nav.primary` / `nav.settings` / `page` / `editor.left|right|bottom-panel` / `editor.toolbar` / `timeline.tool` / `timeline.context-menu` / `props.section` / `export.preset` / `shortcut`（按方案 D-3 表逐点接入）。
+- **D-1 后端兼容层** ✅：`/ui` 双格式兼容；`/contributions` 的 `ui_slot` 条目输出 SlotContribution 形状，旧 `ui.json` 按需包装为 `settings.section` slot（`legacy: true`）。
+- **已接入的 slot**：
+  | slot | 宿主 | 说明 |
+  |---|---|---|
+  | `settings.section` ✅ | SettingsPage | 插件设置分区 + legacy ui.json 同路径渲染 |
+  | `editor.right-panel` ✅ | EditorLayout 右栏 | 无贡献时整列不渲染（零布局影响） |
+  | `export.preset` ✅ | ExportPage | 插件预设并入预设表；应用时置空 preset 名走显式参数（规避 P1-06 400 陷阱） |
+  | `nav.settings` ✅ | ConsoleShell 侧栏 | 内核导航之后追加；icon 白名单映射，未知回退 Puzzle |
+- **通用能力**：`usePluginContributions(kind)` 通用 kind 拉取（缓存/在途去重与 slot 一致）；`SlotContribution.kind` 字段；解析放宽（非 ui_slot 不做 slot 白名单校验）。
+- **附带修复**：`persona/repository.delete_knowledge_doc` Windows 文件锁短重试（修掉已知测试 flake）。
+- 回归：前端 450 passed + tsc 0 + build；后端 1614 passed。
+- ⏳ **剩余 9 个 slot**：`nav.primary` / `page` / `editor.left-panel` / `editor.bottom-panel` / `editor.toolbar` / `timeline.tool` / `timeline.context-menu` / `props.section` / `shortcut`。
 
 ### 待办队列（下一批）
 
-1. **M7 剩余 slot**：建议顺序 `editor.right-panel`（面板类，复用 Slot 已具备）→ `export.preset` → `nav.*` → `shortcut` → `page`
+1. **M7 剩余 slot**：建议顺序 `props.section`（复用分区表）→ `shortcut`（keybindingEngine）→ `editor.toolbar` → `timeline.tool`/`timeline.context-menu` → `nav.primary` → `page`（需 PluginPage 壳 + 路由）
 2. **人工项**：加载器的 sys.path 收敛（文件级阻断未解除）
