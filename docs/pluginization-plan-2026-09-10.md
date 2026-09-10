@@ -1008,25 +1008,26 @@ def _construct_client(provider: str, api_key, base_url, model: str,
 - 回归：后端全量 **1609 passed / 0 失败**。
 - ⏳ **诚实范围**：渲染入口按 `renderer_backend` 选择 backend 的**切换**留待下一批（需真实渲染回归，方案标注 B-3 为最需克制处）；本次只登记 backend 与映射。
 
-### M7 · D-3 逐点迁移 —— ◐ 7/13 slot 完成
+### M7 · D-3 逐点迁移 —— ✅ 完成（13/13 slot）
 
 - **D-1 后端兼容层** ✅：`/ui` 双格式兼容；`/contributions` 的 `ui_slot` 条目输出 SlotContribution 形状，旧 `ui.json` 按需包装为 `settings.section` slot（`legacy: true`）。
-- **已接入的 slot**：
+- **全部 slot 接入**：
   | slot | 宿主 | 说明 |
   |---|---|---|
   | `settings.section` ✅ | SettingsPage | 插件设置分区 + legacy ui.json 同路径渲染 |
-  | `editor.right-panel` ✅ | EditorLayout 右栏 | 无贡献时整列不渲染（零布局影响） |
-  | `export.preset` ✅ | ExportPage | 插件预设并入预设表；应用时置空 preset 名走显式参数（规避 P1-06 400 陷阱） |
-  | `nav.settings` ✅ | ConsoleShell 侧栏 | 内核导航之后追加；icon 白名单映射，未知回退 Puzzle |
-  | `props.section` ✅ | PropertiesPanel | `payload.kinds` 按片段类型过滤（Slot 新增通用 filter 能力） |
-  | `shortcut` ✅ | EditorPage（keybindingEngine） | 受控 API 调用；卸载/贡献变化即注销（速查表自动收录） |
-  | `editor.toolbar` ✅ | EditorToolbar | 内核按钮之前；无贡献零渲染 |
-- **通用能力**：`usePluginContributions(kind)`、`Slot.filter`、`SlotContribution.kind`；插件动作统一为「受控 API 调用」（无任意 JS）。
-- **附带修复**：`persona/repository.delete_knowledge_doc` Windows 文件锁短重试（修掉已知测试 flake）。
+  | `editor.right-panel` / `editor.left-panel` / `editor.bottom-panel` ✅ | EditorLayout | 三向均无贡献零渲染；下栏为时间线上方横向条 |
+  | `export.preset` ✅ | ExportPage | 应用时置空 preset 名走显式参数（规避 P1-06 400 陷阱） |
+  | `nav.primary` / `nav.settings` ✅ | HomePage 侧栏 / ConsoleShell | 内核项之后追加；图标白名单 |
+  | `props.section` ✅ | PropertiesPanel | `payload.kinds` 按片段类型过滤（Slot.filter） |
+  | `shortcut` ✅ | EditorPage（keybindingEngine） | 卸载/贡献变化即注销；速查表自动收录 |
+  | `editor.toolbar` / `timeline.tool` / `timeline.context-menu` ✅ | 工具栏 / 时间轴 | 同一个受控动作执行器（无任意 JS） |
+  | `page` ✅ | `/plugin/$pageId` + PluginPage 壳 | 声明式 UILayout 渲染；内核 26 条路由不动；未匹配有友好提示 |
+- **通用能力**：`usePluginContributions(kind)`、`Slot.filter`、受控动作执行器（toolbar/shortcut/timeline 共用同一 payload 契约）。
+- **附带修复**：`persona/repository.delete_knowledge_doc` Windows 文件锁短重试。
 - 回归：前端 450 passed + tsc 0 + build；后端 1614 passed。
-- ⏳ **剩余 6 个 slot**：`nav.primary` / `page` / `editor.left-panel` / `editor.bottom-panel` / `timeline.tool` / `timeline.context-menu`。
 
 ### 待办队列（下一批）
 
-1. **M7 剩余 slot**：`timeline.tool` / `timeline.context-menu`（时间轴引擎周边）→ `nav.primary` → `editor.left-panel`/`editor.bottom-panel` → `page`（需 PluginPage 壳 + 路由）
-2. **人工项**：加载器的 sys.path 收敛（文件级阻断未解除）
+1. **M8（可选）**：受信任 bundle 档（iframe 沙箱 + postMessage；默认关闭，依赖 Gate G-2）
+2. **示例插件 e2e**（方案 §8.4）：`plugins/_example_full/`（tool + panel + preset + shortcut + page）→ 启用后四处出现、禁用后四处消失
+3. **人工项**：加载器的 sys.path 收敛（文件级阻断未解除）
