@@ -1000,14 +1000,16 @@ def _construct_client(provider: str, api_key, base_url, model: str,
 - **能力协商（B-4 起手）**：`with_tools` 前断言 `caps.tool_calls`，声明不支持者得到明确报错（旧行为静默降级）。
 - 测试 +7（协议符合性 / 构造快照 / 缓存 / 未知 provider / 能力拒绝）；回归 **1595 passed**。
 
-### M5 · TTS/STT/RendererBackend —— ◐ TTS 完成
+### M5 · TTS/STT/RendererBackend —— ✅ 完成
 
-- **B-2 TTS** ✅：三个内置 provider（qwen-tts/cosyvoice/minimax）以「工厂 + default_model」登记进门面；`_get_provider` 门面解析，provider 名唯一来源 = contribution.id；P1-25 下划线别名归一集中到 `normalize_tts_name`；`default_model` 与既有 `_model_for` 读同一 settings 键（行为不变）。测试 +4；回归 **1599 passed**。
-- **B-2 STT** ⏸：`stt.py` 两后端 provider 化待做。
-- **B-3 RendererBackend** ⏸：`LocalFFmpegBackend` / `RemoteRenderBackend` 两个 adapter + `cancel_token` 接线待做（方案标注「最需要克制的一处」）。
+- **B-2 TTS** ✅：三个内置 provider 登记进门面；`_get_provider` 门面解析（provider 名唯一来源 = contribution.id，P1-25 别名归一集中）；测试 +4。
+- **B-2 STT** ✅：whisper / faster-whisper 两后端登记进门面；`_transcribe_any` 遍历注册表（顺序与旧硬编码一致，插件后端确定性排后）；测试 +4（全打桩）。
+- **B-3 RendererBackend** ✅：`LocalFFmpegBackend` / `RemoteRenderBackend` 两个 adapter（实现体不动）——settings 字典→服务 kwargs 白名单映射、`on_progress→progress_callback`、`cancel_token→cancel_id`（P1-19 协议级落点）、capabilities/probe；`renderer_backend` 设置项（缺省 local）+ 元数据 + 启动注册；测试 +6。
+- 回归：后端全量 **1609 passed / 0 失败**。
+- ⏳ **诚实范围**：渲染入口按 `renderer_backend` 选择 backend 的**切换**留待下一批（需真实渲染回归，方案标注 B-3 为最需克制处）；本次只登记 backend 与映射。
 
 ### 待办队列（下一批）
 
-1. **M5 剩余**：STT provider 化 + RendererBackend 两 adapter（含取消语义）
+1. **B-3 接线**：渲染入口按 `settings.renderer_backend` 选择 backend（含真实渲染回归）
 2. **M7** D-3 逐点迁移（建议从 `settings.section` / `editor.right-panel` 起步）
 3. **人工项**：加载器的 sys.path 收敛（文件级阻断未解除）
