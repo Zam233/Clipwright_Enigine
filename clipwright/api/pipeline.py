@@ -345,8 +345,9 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
                     pass
             # 插件 hook — 管线前置
             try:
-                from clipwright.plugins.hooks import HookRegistry, HookPoint
-                HookRegistry.execute(HookPoint.PRE_PIPELINE, {
+                from clipwright.plugins.hooks import HookPoint
+                from clipwright.plugins.hooks_async import execute_async
+                await execute_async(HookPoint.PRE_PIPELINE, {
                     "pipeline_id": pipeline_id, "topic": request.topic,
                     "persona_id": request.persona_id,
                 })
@@ -391,8 +392,9 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
                     add_event(pipeline_id, "render", "warning", "自动渲染入队失败，请手动提交渲染")
             # 插件 hook — 管线后置
             try:
-                from clipwright.plugins.hooks import HookRegistry, HookPoint
-                HookRegistry.execute(HookPoint.POST_PIPELINE, {
+                from clipwright.plugins.hooks import HookPoint
+                from clipwright.plugins.hooks_async import execute_async
+                await execute_async(HookPoint.POST_PIPELINE, {
                     "pipeline_id": pipeline_id,
                     "status": str(getattr(state, "status", "")),
                 })
@@ -442,8 +444,9 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
             _pipeline_results[pipeline_id] = {"status": "failed", "error": str(e), "pipeline_id": pipeline_id}
             # 插件 hook — 错误通知
             try:
-                from clipwright.plugins.hooks import HookRegistry, HookPoint
-                HookRegistry.execute(HookPoint.ON_ERROR, {
+                from clipwright.plugins.hooks import HookPoint
+                from clipwright.plugins.hooks_async import execute_async
+                await execute_async(HookPoint.ON_ERROR, {
                     "pipeline_id": pipeline_id, "error": str(e)[:300],
                 })
             except Exception as he:

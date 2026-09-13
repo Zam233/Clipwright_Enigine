@@ -80,6 +80,24 @@ class PluginManifest(BaseModel):
     signature: str = Field(default="", description="manifest 签名（HMAC-SHA256 hex，M1）")
     config_schema_version: int = Field(default=1, description="配置结构版本（M15 配置迁移）")
 
+    # ── P9: 运行形态（插件子进程沙箱）──
+    runtime: str = Field(
+        default="inprocess",
+        description="inprocess=宿主进程内（内置/受信任插件）；subprocess=独立子进程（宿主不 import 其代码）",
+    )
+    runtime_config: dict[str, Any] = Field(
+        default_factory=dict,
+        description="运行形态配置：call_timeout（单次调用超时秒数）等",
+    )
+
+    @field_validator("runtime")
+    @classmethod
+    def _validate_runtime(cls, v: str) -> str:
+        value = str(v or "inprocess").strip().lower()
+        if value not in ("inprocess", "subprocess"):
+            raise ValueError(f"runtime 只能是 inprocess / subprocess，收到: {v!r}")
+        return value
+
     model_config = {"use_enum_values": True}
 
 

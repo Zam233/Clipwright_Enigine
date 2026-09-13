@@ -1355,10 +1355,11 @@ class PipelineOrchestratorV2:
 
         # SA-1: PRE_AGENT Hook —— 取消检查后、执行前。插件可改写 input（返回
         # {"input": {...}}）或跳过执行（返回 {"skip": True, "reason": ...}）。
-        # Hook 异常已在 HookRegistry.execute 内 per-hook 隔离（P8），此处仅防御兜底。
+        # Hook 异常已在调度器内 per-hook 隔离（P8），此处仅防御兜底。
         try:
-            from clipwright.plugins.hooks import HookPoint, HookRegistry
-            pre = HookRegistry.execute(HookPoint.PRE_AGENT, {
+            from clipwright.plugins.hooks import HookPoint
+            from clipwright.plugins.hooks_async import execute_async
+            pre = await execute_async(HookPoint.PRE_AGENT, {
                 "pipeline_id": pid, "agent_name": agent_name,
                 "input": dict(input_data or {}), "context": context,
             })
@@ -1451,8 +1452,9 @@ class PipelineOrchestratorV2:
             # SA-1: POST_AGENT Hook —— 决策落定后的只读观测点（不改写语义，
             # 避免与自愈/retry 状态机冲突）。异常路径见下方 except 块。
             try:
-                from clipwright.plugins.hooks import HookPoint, HookRegistry
-                HookRegistry.execute(HookPoint.POST_AGENT, {
+                from clipwright.plugins.hooks import HookPoint
+                from clipwright.plugins.hooks_async import execute_async
+                await execute_async(HookPoint.POST_AGENT, {
                     "pipeline_id": pid, "agent_name": agent_name,
                     "decision": str(result.decision), "result": step.result,
                     "error": getattr(result, "error", None) or "",
@@ -1520,8 +1522,9 @@ class PipelineOrchestratorV2:
             _end_span(status="error", error=str(e)[:200])
             # SA-1: 异常路径同样触发 POST_AGENT（带 error，观测埋点完整性）
             try:
-                from clipwright.plugins.hooks import HookPoint, HookRegistry
-                HookRegistry.execute(HookPoint.POST_AGENT, {
+                from clipwright.plugins.hooks import HookPoint
+                from clipwright.plugins.hooks_async import execute_async
+                await execute_async(HookPoint.POST_AGENT, {
                     "pipeline_id": pid, "agent_name": agent_name,
                     "decision": "FAIL", "result": {}, "error": str(e)[:500],
                 })

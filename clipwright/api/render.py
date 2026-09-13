@@ -450,8 +450,9 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
         _render_queue[task_id]["clip_count"] = sum(len(t.clips or []) for t in tl.tracks or [])
         # 插件 hook — 渲染前置
         try:
-            from clipwright.plugins.hooks import HookRegistry, HookPoint
-            HookRegistry.execute(HookPoint.PRE_RENDER, {"task_id": task_id})
+            from clipwright.plugins.hooks import HookPoint
+            from clipwright.plugins.hooks_async import execute_async
+            await execute_async(HookPoint.PRE_RENDER, {"task_id": task_id})
         except Exception as e:
             logger.warning("pre_render hook 执行失败: %s", e)
         try:
@@ -487,8 +488,9 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
             _render_queue[task_id]["output_path"] = str(out)
             # 插件 hook — 渲染后置
             try:
-                from clipwright.plugins.hooks import HookRegistry, HookPoint
-                HookRegistry.execute(HookPoint.POST_RENDER, {
+                from clipwright.plugins.hooks import HookPoint
+                from clipwright.plugins.hooks_async import execute_async
+                await execute_async(HookPoint.POST_RENDER, {
                     "task_id": task_id, "output_path": str(out),
                     "success": result.success,
                 })

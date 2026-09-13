@@ -148,6 +148,8 @@ class PluginLoader:
         self.data_dir = (data_dir or Path("PluginData")).resolve()
         self._plugins: dict[str, BasePlugin] = {}
         self._metadatas: dict[str, PluginMetadata] = {}
+        #: P9：runtime=subprocess 的插件宿主（plugin_id → PluginHost）
+        self._hosts: dict[str, Any] = {}
 
     def get_plugin_data_dir(self, plugin_id: str, ensure: bool = True) -> Path:
         """获取指定插件的数据存储目录（PluginData/plugins/<plugin_id>/）。
@@ -238,6 +240,10 @@ class PluginLoader:
 
         # 4. 解析配置（合并源码默认 + PluginData 覆盖，M15 迁移后）
         config = self._get_merged_config(plugin_id, target_schema=manifest.config_schema_version)
+
+        # 4.5 P9：子进程运行形态 —— 宿主**不 import 插件代码**，由 worker 代跑
+        if manifest.runtime == "subprocess":
+            return self._load_subprocess(plugin_id, plugin_path, manifest)
 
         # 5. 动态导入
         try:
@@ -358,9 +364,15 @@ class PluginLoader:
         )
 
     def unload(self, plugin_id: str) -> None:
-        """卸载指定插件。"""
+        """卸载指定插件（含子进程宿主的优雅关闭）。"""
         plugin = self._plugins.pop(plugin_id, None)
         self._metadatas.pop(plugin_id, None)
+        host = self._hosts.pop(plugin_id, None)
+        if host is not None:
+            try:
+                host.stop()  # P9：先停 worker，避免贡献对象被回收后仍有在途调用
+            except Exception as e:  # noqa: BLE001
+                logger.warning("插件 %s 子进程关闭异常: %s", plugin_id, e)
         self._teardown_registrations(plugin_id)
         if plugin:
             try:
@@ -368,6 +380,120 @@ class PluginLoader:
             except Exception as e:
                 logger.warning("插件 %s shutdown 异常: %s", plugin_id, e)
                 get_error_bus().record(plugin_id, "shutdown", f"shutdown() 异常: {e}")
+
+    def stop_all_hosts(self) -> None:
+        """关闭全部子进程宿主（应用退出时调用；幂等）。"""
+        for plugin_id, host in list(self._hosts.items()):
+            try:
+                host.stop()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("插件 %s 子进程关闭异常: %s", plugin_id, e)
+        self._hosts.clear()
+
+    # ── P9：子进程运行形态 ────────────────────────────
+
+    def _load_subprocess(self, plugin_id: str, plugin_path: Path,
+                         manifest: PluginManifest) -> Any:
+        """加载 runtime=subprocess 的插件（**宿主不 import 插件代码**）。
+
+        与进程内路径的区别：
+        - 不调用 `_import_plugin` / `_instantiate_plugin`，宿主 `sys.modules` 干净；
+        - 贡献由 worker 以纯数据声明返回，宿主用 `make_proxy` 造同形代理对象，
+          再经门面注册（因此注册表里拿到的是「会转发到子进程的活对象」）；
+        - 失败一律转 `PluginLoadError` 并写错误通道，不影响其它插件加载。
+        """
+        from clipwright.plugins.runtime import PluginHost, RpcError
+        from clipwright.plugins.runtime.proxies import make_proxy
+
+        runtime_config = dict(getattr(manifest, "runtime_config", {}) or {})
+        host = PluginHost(
+            plugin_id, plugin_path, self.get_plugin_data_dir(plugin_id),
+            call_timeout=float(runtime_config.get("call_timeout", 0) or 0) or 30.0,
+        )
+        try:
+            declarations = host.start()
+        except RpcError as e:
+            get_error_bus().record(plugin_id, "load", f"子进程启动失败: {e.message}")
+            raise PluginLoadError(
+                f"Plugin '{plugin_id}' 子进程启动失败 [{e.code}]: {e.message}"
+            ) from e
+        except Exception as e:  # noqa: BLE001
+            get_error_bus().record(plugin_id, "load", f"子进程启动异常: {e}")
+            raise PluginLoadError(
+                f"Plugin '{plugin_id}' 子进程启动异常: {e}"
+            ) from e
+
+        self._hosts[plugin_id] = host
+        try:
+            self._register_declarations(plugin_id, host, declarations, make_proxy)
+        except Exception:
+            self._hosts.pop(plugin_id, None)
+            host.stop()
+            raise
+
+        self._metadatas[plugin_id] = PluginMetadata(
+            manifest=manifest,
+            has_ui=(plugin_path / "ui.json").exists(),
+            enabled=self.is_enabled(plugin_id),
+            signed=bool(manifest.signature),
+            verified=bool(manifest.signature) and verify_manifest_signature(manifest),
+            dependency_ok=True,
+        )
+        try:
+            from clipwright import audit
+            audit.record("plugin_load", "", {
+                "plugin_id": plugin_id, "name": manifest.name,
+                "version": manifest.version, "runtime": "subprocess",
+            })
+        except Exception:
+            pass
+        return None  # 子进程插件没有宿主侧实例
+
+    def _register_declarations(self, plugin_id: str, host: Any,
+                               declarations: list[dict[str, Any]], make_proxy: Any) -> None:
+        """把 worker 的声明转成代理对象并经门面注册（声明即授权同样生效）。"""
+        from clipwright.plugins.contribution import (
+            Contribution,
+            ContributionKind,
+            ContributionRegistry,
+        )
+
+        _DECLARATIVE_KINDS = {
+            ContributionKind.UI_SLOT, ContributionKind.EXPORT_PRESET,
+        }
+        items: list[Any] = []
+        for decl in declarations:
+            kind_name = str(decl.get("kind") or "")
+            cid = str(decl.get("id") or "")
+            meta = dict(decl.get("meta") or {})
+            try:
+                kind = ContributionKind(kind_name)
+            except ValueError:
+                get_error_bus().record(
+                    plugin_id, "load", f"未知贡献类型 {kind_name}:{cid}",
+                )
+                continue
+            if kind in _DECLARATIVE_KINDS:
+                # 纯数据贡献（界面插槽/导出预设）：不需要代理对象，元数据即全部
+                items.append(Contribution(kind, cid, None, meta=meta))
+                continue
+            text = str(meta.get("prompt") or "") if kind is ContributionKind.PROMPT else ""
+            proxy = make_proxy(host, kind_name, cid, meta, text)
+            if proxy is None:
+                get_error_bus().record(
+                    plugin_id, "load",
+                    f"子进程档暂不支持 {kind_name}:{cid}（贡献已跳过）",
+                )
+                continue
+            items.append(Contribution(kind, cid, proxy, meta=meta))
+
+        report = ContributionRegistry.register(plugin_id, items)
+        for item, reason in report.rejected:
+            get_error_bus().record(plugin_id, "load", f"贡献被拒 {item.key}: {reason}")
+        if report.rejected and not report.accepted:
+            raise PluginLoadError(
+                f"Plugin '{plugin_id}' 的全部贡献均被拒绝：{report.rejected[0][1]}"
+            )
 
     def _teardown_registrations(self, plugin_id: str) -> None:
         """轮 87：注销插件注册到各注册表的内容。
