@@ -18,12 +18,11 @@ from typing import Any
 import httpx
 
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.security import assert_public_url
 from clipwright.tool.base import BaseTool
-from clipwright.tool.registry import ToolRegistry
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
-from clipwright.material.registry import MaterialRegistry
 from clipwright.plugins.generated_source import make_generated_source, record_generated
 
 DEFAULT_ARK_BASE = "https://ark.cn-beijing.volces.com/api/v3"
@@ -251,7 +250,8 @@ class AIVideoGenPlugin(CapabilityPlugin):
         author="Clipwright Team",
     )
 
-    def initialize(self) -> None:
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：AI 生视频工具 + 生成物素材源（provider 等取自配置）。"""
         cfg = self.config or {}
         tool = AIVideoGenTool(
             provider=cfg.get("provider", "volcengine"),
@@ -261,24 +261,18 @@ class AIVideoGenPlugin(CapabilityPlugin):
             poll_interval=float(cfg.get("poll_interval_sec", 5)),
             poll_timeout=float(cfg.get("poll_timeout_sec", 900)),
         )
-        ToolRegistry.register(tool, plugin_id=self.manifest.id)
-        MaterialRegistry.register(
-            make_generated_source("ai_video_gen", "AI 生成视频", "video"),
-            plugin_id=self.manifest.id)
-        logger.info("[AIVideoGen] Tool + MaterialSource 已注册 (provider=%s)", tool._provider)
+        return [
+            Contribution(ContributionKind.TOOL, "ai_video_generate", tool),
+            Contribution(
+                ContributionKind.MATERIAL_SOURCE, "ai_video_gen",
+                make_generated_source("ai_video_gen", "AI 生成视频", "video"),
+            ),
+        ]
+        logger.info("[AIVideoGen] Tool + MaterialSource 已贡献 (provider=%s)", tool._provider)
 
     def shutdown(self) -> None:
-        # disable 时真正移除工具与素材源（旧实现 pass → 禁用后
-        # 工具仍可用、能力概览仍播报）
-        try:
-            ToolRegistry.unregister("ai_video_generate")
-        except Exception:
-            pass
-        try:
-            from clipwright.material.registry import MaterialRegistry
-            MaterialRegistry.unregister("ai_video_gen")
-        except Exception:
-            pass
+        # P1：工具与素材源的回收由桥接层按门面账本统一完成（不再手写注销）
+        pass
 
 
 __all__ = ["AIVideoGenPlugin"]

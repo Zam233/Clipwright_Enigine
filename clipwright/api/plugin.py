@@ -331,11 +331,28 @@ async def list_contributions(
         except ValueError:
             raise HTTPException(status_code=400, detail=f"未知贡献类型: {kind}")
 
+    # P6：`meta.admin_only` 的贡献只发给管理员。
+    # 策略（产品确认）：插件页/界面默认对**所有登录用户**开放；插件若声明
+    # admin_only，则由后端在这里直接不投递（非管理员连定义都拿不到，
+    # 比前端隐藏更可靠——前端隐藏只是观感）。
+    # off/token 模式没有用户身份（user_id=None）——按本仓库既有语义视为管理员
+    # （与 `_require_admin` 一致），避免单机/本地部署丢掉 admin_only 插件页。
+    from clipwright.authz import current_user_id as _uid
+    from clipwright.authz import is_admin as _is_admin
+    if request is None:
+        requester_is_admin = False
+    elif _uid(request) is None:
+        requester_is_admin = True
+    else:
+        requester_is_admin = _is_admin(request)
+
     out: list[dict[str, object]] = []
     for owner_id, item in ContributionRegistry.list(filter_kind):
         if owner and owner_id != owner:
             continue
         if slot and str(item.meta.get("slot", "")) != slot:
+            continue
+        if item.meta.get("admin_only") and not requester_is_admin:
             continue
         meta = dict(item.meta)
         entry: dict[str, object] = {

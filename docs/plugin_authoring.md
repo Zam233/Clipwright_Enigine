@@ -93,6 +93,11 @@ contributions:
   仅触发一次受控 API 调用；同样受 `visibleWhen` 约束。
 - **导航类**（`nav.*`、`page`）的 `meta.payload.to` 必须是站内绝对路径
   （单斜杠开头、不含 `..`），否则前端不渲染该导航项。
+- **页面可见性（P6）**：插件页与界面**默认对所有登录用户开放**。要限制为管理员，
+  在贡献 `meta` 里声明 `admin_only: true`（或 `payload.admin_only: true`）——
+  后端 `contributions` 端点会**直接不投递**给非管理员（前端拿不到定义），
+  页面壳再按本地角色二次拦截并给出「仅管理员可访问」提示。
+  注意：`off` / `token` 鉴权模式没有用户身份，按本仓库既有语义视为管理员。
 - **受信任 bundle**：`meta.payload.bundle = true` 时由 `<iframe sandbox="allow-scripts">`
   承载，需后端开启 `plugin_allow_ui_bundle` **且** manifest 带签名；
   与宿主只通过 `postMessage({type:'resize'|'call'|'result'})` 通信，插件拿不到凭据。
