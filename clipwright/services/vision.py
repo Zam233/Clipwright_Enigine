@@ -140,6 +140,8 @@ class VisionService:
             api_key=settings.vision_llm_api_key or settings.llm_api_key,
             model=settings.vision_llm_model or settings.llm_model,
             base_url=settings.vision_llm_base_url or settings.llm_base_url or "",
+            # B3：视觉角色绑定优先（设置页「模型提供商」→ 角色 vision）
+            role="vision",
         )
         model_name = settings.vision_llm_model or settings.llm_model
 

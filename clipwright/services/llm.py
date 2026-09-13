@@ -35,6 +35,21 @@ from clipwright.schema.tool import ToolExecResult, ToolStatus
 _client_cache: dict[tuple[str, Optional[str], Optional[str], Optional[str]], Any] = {}
 
 
+def _resolve_role_binding(role: str) -> dict[str, Any] | None:
+    """B3：按角色解析 Provider 源凭据（无绑定/存储不可用 → None，调用方回退）。
+
+    角色 → 源 → 模型/凭据的映射由 `provider_sources` 统一维护；未配置绑定或
+    存储层异常时返回 None，调用方继续使用 settings 中的旧槽位配置（向后兼容）。
+    """
+    if not role:
+        return None
+    try:
+        from clipwright.services import provider_sources as _ps
+        return _ps.resolve(role)
+    except Exception:  # noqa: BLE001 — 解析失败不阻断（回退旧配置）
+        return None
+
+
 def _resolve_llm_provider(provider: str) -> Any | None:
     """解析 LLM provider 实现（懒注册内置 + 门面查询；异常 → None 走 legacy 兜底）。
 
@@ -125,6 +140,12 @@ class LLMService:
             base_url = settings.llm_base_url or None
             model = settings.llm_model
             provider = self.provider
+        bound = _resolve_role_binding("flash" if flash else "main")
+        if bound:
+            provider = bound.get("provider") or provider
+            api_key = bound.get("api_key") or api_key
+            base_url = bound.get("base_url") or base_url
+            model = bound.get("model") or model
         return self._construct_client(
             provider, api_key=api_key, base_url=base_url, model=model,
             instructions=settings.llm_instructions, max_tokens=8192, flash=flash,
@@ -584,16 +605,24 @@ class LLMService:
         api_key: str = "",
         model: str = "",
         base_url: str = "",
+        role: str = "",
     ) -> AnthropicMessages | OpenAIChat:
         """使用指定参数构建 LLM 客户端（不依赖实例配置）。
 
         用于需要独立 LLM 配置的场景（如视觉识别使用不同的模型/API）。
         B-1a：委托唯一构造点 `_construct_client`（与实例路径共用缓存与协议解析）。
+        B3：`role` 非空时优先采用该角色绑定的 Provider 源凭据（绑定缺失回退实参）。
         """
         p = provider or settings.llm_provider
         k = api_key or settings.llm_api_key or None
         m = model or settings.llm_model
         u = base_url or settings.llm_base_url or None
+        bound = _resolve_role_binding(role)
+        if bound:
+            p = bound.get("provider") or p
+            k = bound.get("api_key") or k
+            m = bound.get("model") or m
+            u = bound.get("base_url") or u
         return LLMService._construct_client(
             p, api_key=k, base_url=u, model=m,
             instructions=settings.llm_instructions, max_tokens=8192, flash=False,

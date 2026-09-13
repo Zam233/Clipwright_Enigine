@@ -62,6 +62,7 @@ from clipwright.api import persona_forge as persona_forge_api
 from clipwright.api import chat_forge as chat_forge_api
 from clipwright.api import model_probe as model_probe_api
 from clipwright.api import settings as settings_api
+from clipwright.api import providers as providers_api
 from clipwright.api import rag as rag_api
 from clipwright.api import render as render_api
 from clipwright.api import tool as tool_api
@@ -664,6 +665,7 @@ app.include_router(chat_forge_api.router)
 app.include_router(rag_api.router)
 app.include_router(model_probe_api.router)
 app.include_router(settings_api.router)
+app.include_router(providers_api.router)
 app.include_router(render_api.router)
 app.include_router(tool_api.router)
 app.include_router(plugin_api.router)
