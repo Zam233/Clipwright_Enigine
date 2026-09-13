@@ -599,9 +599,13 @@ async def get_plugin_ui(plugin_id: str) -> dict:
     if isinstance(raw, dict) and "slots" in raw:
         return raw  # 新格式原样
     if isinstance(raw, dict) and "widgets" in raw:
-        # 旧格式 → settings.section slot（前端 Slot 渲染器统一消费）
+        # 旧格式 → settings.section slot（前端 Slot 渲染器统一消费）。
+        # 兼容期同时保留原始 title/widgets 顶层字段——插件管理页的「预览 UI」
+        # 与既有第三方调用方仍按旧契约读取（D-1 曾丢掉这两个键导致预览失效）。
         title = str(raw.get("title") or "插件设置")
         return {
+            "title": title,
+            "widgets": raw.get("widgets") or [],
             "api_version": "2",
             "legacy": True,
             "slots": [{
