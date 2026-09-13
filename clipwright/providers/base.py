@@ -221,3 +221,32 @@ def missing_llm_provider_methods(impl: Any) -> list[str]:
     required = ("build_client", "capabilities", "normalize_messages",
                 "uses_system_kwarg", "default_model")
     return [m for m in required if not callable(getattr(impl, m, None))]
+
+
+#: B4 新增的传输参数（超时/代理/自定义头）
+TRANSPORT_PARAMS: tuple[str, ...] = ("timeout_sec", "proxy", "headers")
+
+
+def supported_transport_params(impl: Any) -> set[str]:
+    """provider 的 `build_client` 实际接受哪些传输参数（P1 兼容性修复）。
+
+    B4 给协议加了 `timeout_sec/proxy/headers`，但**存量第三方 provider** 是按旧
+    签名写的。若构造点无条件传这三个 kwarg，它们会在每次调用上抛 TypeError
+    （实测：即使源里没配超时/代理也会崩）。这里按签名过滤：
+
+    - 有 `**kwargs` → 三个都接受；
+    - 显式声明了某个参数 → 接受该参数；
+    - 都没有 → 返回空集合，调用方不传（并在配置了非默认值时给一次告警）。
+    """
+    import inspect
+
+    fn = getattr(impl, "build_client", None)
+    if not callable(fn):
+        return set()
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):  # pragma: no cover - C 扩展等无法取签名
+        return set(TRANSPORT_PARAMS)
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return set(TRANSPORT_PARAMS)
+    return {name for name in TRANSPORT_PARAMS if name in params}

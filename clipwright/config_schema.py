@@ -51,33 +51,37 @@ GROUPS: list[dict[str, str]] = [
     {"id": "service", "label": "服务与预算"},
 ]
 
+#: C1：提醒用户「角色绑定优先于本页平铺字段」——两处都能配同一件事，
+#: 但生效顺序是「模型提供商」的角色绑定 > 本页（settings）> 默认值。
+_BINDING_NOTE = "（在「模型提供商」绑定该角色后以绑定为准）"
+
 # (key, group, label, secret, hot, description)
 _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
     # ── 模型与生成 ──
-    ("llm_provider", "llm", "LLM Provider", False, False, "openai / anthropic / ollama；进程内单例已快照，需重启"),
-    ("llm_api_key", "llm", "LLM API Key", True, True, "主模型密钥"),
-    ("llm_model", "llm", "主模型", False, True, "复杂生成（简报/规划/场景编排）用模型名"),
-    ("llm_base_url", "llm", "LLM Base URL", False, True, "OpenAI 兼容 API 地址（Ollama/vLLM 等）"),
+    ("llm_provider", "llm", "LLM Provider", False, False, f"openai / anthropic / ollama；{_BINDING_NOTE}；需重启"),
+    ("llm_api_key", "llm", "LLM API Key", True, True, f"主模型密钥{_BINDING_NOTE}"),
+    ("llm_model", "llm", "主模型", False, True, f"复杂生成（简报/规划/场景编排）用模型名{_BINDING_NOTE}"),
+    ("llm_base_url", "llm", "LLM Base URL", False, True, f"OpenAI 兼容 API 地址（Ollama/vLLM 等）{_BINDING_NOTE}"),
     ("llm_instructions", "llm", "系统指令", False, True, "注入所有 LLM 会话的系统级指令"),
-    ("llm_flash_model", "llm", "Flash 模型", False, True, "轻量任务（意图判断/查询改写）用模型"),
-    ("llm_flash_provider", "llm", "Flash Provider", False, False, "缺省复用主 LLM provider；需重启"),
-    ("llm_flash_api_key", "llm", "Flash API Key", True, True, "缺省复用主 LLM 密钥"),
-    ("llm_flash_base_url", "llm", "Flash Base URL", False, True, "缺省复用主 LLM 地址"),
+    ("llm_flash_model", "llm", "Flash 模型", False, True, f"轻量任务（意图判断/查询改写）用模型{_BINDING_NOTE}"),
+    ("llm_flash_provider", "llm", "Flash Provider", False, False, f"缺省复用主 LLM provider；{_BINDING_NOTE}；需重启"),
+    ("llm_flash_api_key", "llm", "Flash API Key", True, True, f"缺省复用主 LLM 密钥{_BINDING_NOTE}"),
+    ("llm_flash_base_url", "llm", "Flash Base URL", False, True, f"缺省复用主 LLM 地址{_BINDING_NOTE}"),
     # ── 视觉识别 ──
     ("vision_provider", "vision", "视觉 Provider", False, True, "llm / transformers / none"),
     ("vision_model", "vision", "视觉模型", False, True, "transformers 分类模型名"),
     ("vision_top_k", "vision", "视觉 Top-K", False, True, "分类返回的标签数"),
     ("vision_device", "vision", "视觉设备", False, True, "cpu / cuda"),
     ("vision_llm_provider", "vision", "视觉 LLM Provider", False, True, "缺省复用主 LLM"),
-    ("vision_llm_model", "vision", "视觉 LLM 模型", False, True, "缺省复用主 LLM"),
-    ("vision_llm_api_key", "vision", "视觉 LLM Key", True, True, "缺省复用主 LLM 密钥"),
-    ("vision_llm_base_url", "vision", "视觉 LLM Base URL", False, True, "缺省复用主 LLM 地址"),
+    ("vision_llm_model", "vision", "视觉 LLM 模型", False, True, f"缺省复用主 LLM{_BINDING_NOTE}"),
+    ("vision_llm_api_key", "vision", "视觉 LLM Key", True, True, f"缺省复用主 LLM 密钥{_BINDING_NOTE}"),
+    ("vision_llm_base_url", "vision", "视觉 LLM Base URL", False, True, f"缺省复用主 LLM 地址{_BINDING_NOTE}"),
     # ── 检索与 RAG ──
-    ("rag_embed_provider", "rag", "Embedding Provider", False, True, "sentence_transformer / openai / ollama"),
-    ("rag_embed_model", "rag", "Embedding 模型", False, True, "向量模型名"),
+    ("rag_embed_provider", "rag", "Embedding Provider", False, True, f"sentence_transformer / openai / ollama{_BINDING_NOTE}"),
+    ("rag_embed_model", "rag", "Embedding 模型", False, True, f"向量模型名{_BINDING_NOTE}"),
     ("rag_embed_dim", "rag", "Embedding 维度", False, True, "向量维度（需与模型一致）"),
-    ("rag_embed_api_key", "rag", "Embedding Key", True, True, "云端嵌入密钥"),
-    ("rag_embed_base_url", "rag", "Embedding Base URL", False, True, "云端嵌入地址"),
+    ("rag_embed_api_key", "rag", "Embedding Key", True, True, f"云端嵌入密钥{_BINDING_NOTE}"),
+    ("rag_embed_base_url", "rag", "Embedding Base URL", False, True, f"云端嵌入地址{_BINDING_NOTE}"),
     ("rag_rerank_model", "rag", "Rerank 模型", False, True, "重排模型名"),
     ("rag_rerank_base_url", "rag", "Rerank Base URL", False, True, "重排服务地址"),
     ("rag_rerank_api_key", "rag", "Rerank Key", True, True, "重排服务密钥"),
@@ -87,9 +91,9 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
     ("rag_chunk_overlap", "rag", "分块重叠", False, True, "相邻分块重叠字符数"),
     ("rag_embed_batch_size", "rag", "嵌入批大小", False, True, "批量嵌入每批条数"),
     # ── 语音与 TTS ──
-    ("tts_dashscope_api_key", "tts", "DashScope Key", True, True, "阿里云百炼凭据（克隆/合成）"),
+    ("tts_dashscope_api_key", "tts", "DashScope Key", True, True, f"阿里云百炼凭据（克隆/合成）{_BINDING_NOTE}"),
     ("tts_workspace_id", "tts", "DashScope 工作空间", False, True, "百炼 workspace id"),
-    ("tts_default_provider", "tts", "默认 TTS Provider", False, True, "qwen-tts / cosyvoice / minimax"),
+    ("tts_default_provider", "tts", "默认 TTS Provider", False, True, f"qwen-tts / cosyvoice / minimax{_BINDING_NOTE}"),
     ("tts_qwen_model", "tts", "Qwen-TTS 模型", False, True, ""),
     ("tts_cosyvoice_model", "tts", "CosyVoice 模型", False, True, ""),
     ("tts_minimax_model", "tts", "MiniMax 模型", False, True, ""),

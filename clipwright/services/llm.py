@@ -214,10 +214,30 @@ class LLMService:
             raise ValueError(
                 f"LLM provider {provider} 未实现 build_client()，不符合 LLMProvider 协议"
             )
+        # P1：按 provider 实际签名过滤传输参数——存量第三方 provider 是按 B4 之前的
+        # 签名写的（没有 timeout_sec/proxy/headers），无条件传会让它们每次调用都
+        # TypeError。不支持的参数在这里丢掉；若用户确实配了非默认值则给一次告警。
+        from clipwright.providers.base import supported_transport_params, _warn_once
+        accepted = supported_transport_params(impl)
+        extra: dict[str, Any] = {}
+        if "timeout_sec" in accepted:
+            extra["timeout_sec"] = timeout_sec
+        if "proxy" in accepted:
+            extra["proxy"] = proxy
+        if "headers" in accepted:
+            extra["headers"] = headers
+        if accepted != {"timeout_sec", "proxy", "headers"}:
+            configured = (timeout_sec > 0) or bool(proxy) or bool(headers)
+            if configured:
+                _warn_once(
+                    impl,
+                    "provider 不支持传输参数（timeout/proxy/headers），"
+                    "源里配置的这些项将被忽略；升级 provider 后生效",
+                )
         client: Any = build(
             api_key=api_key, base_url=base_url, model=model,
             instructions=instructions, max_tokens=max_tokens, flash=flash,
-            timeout_sec=timeout_sec, proxy=proxy, headers=headers,
+            **extra,
         )
         _client_cache[cache_key] = client
         return client

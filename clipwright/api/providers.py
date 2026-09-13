@@ -169,12 +169,84 @@ async def fetch_models(source_id: str, request: Request = None) -> dict[str, Any
     resolved = ps.resolve_for_source(source_id) if hasattr(ps, "resolve_for_source") else None
     provider = str(src.get("provider") or "")
     try:
-        from clipwright.providers.model_listing import list_models_for_source
+        from clipwright.providers.model_listing import (
+            SUPPORTED_LISTING_PROVIDERS,
+            list_models_for_source,
+        )
         models = await list_models_for_source(provider, resolved or {})
         if not models:
-            return {"models": [], "note": "provider 未返回模型列表（可手动添加自定义模型）"}
+            if provider not in SUPPORTED_LISTING_PROVIDERS:
+                # B5：区分「不支持自动拉取」与「拉取失败」，提示语不再误导
+                return {"models": [], "note": (
+                    f"provider「{provider}」不支持自动获取模型列表（本地/自建端点常见），"
+                    "请用「自定义模型」手动添加"
+                )}
+            return {"models": [], "note": "未获取到模型（检查 API Key / Base URL，或手动添加）"}
         ps.set_models(source_id, [{"id": m, "name": m, "enabled": True} for m in models])
         return {"models": ps.get_source(source_id)["models"]}
     except Exception as e:  # noqa: BLE001 — 拉取失败不阻断（前端可自定义）
         logger.warning("获取模型列表失败 (%s): %s", provider, e)
         return {"models": [], "note": f"获取失败：{e}"}
+
+
+@router.post("/{source_id}/test")
+async def test_source(source_id: str, request: Request = None) -> dict[str, Any]:
+    """B3：测试某个源（不改动任何角色绑定）。
+
+    - `llm` / `embedding`：调用 provider 的模型列表端点做一次真实连通性 + 鉴权探测；
+    - `rerank`：发一次最小 rerank 请求（两篇文档）；
+    - `tts`：无统一探测协议 → 明确返回不支持，而不是假装成功。
+    返回 `{ok, latency_ms, detail}`，失败也返回 200（前端按 ok 展示）。
+    """
+    _require_admin(request)
+    import time
+
+    src = ps.get_source(source_id, public=False)
+    if src is None:
+        raise HTTPException(status_code=404, detail=f"源不存在: {source_id}")
+    resolved = ps.resolve_for_source(source_id) or {}
+    kind = str(src.get("kind") or "")
+    provider = str(src.get("provider") or "")
+    started = time.monotonic()
+
+    def _ms() -> int:
+        return int((time.monotonic() - started) * 1000)
+
+    if kind in ("llm", "embedding"):
+        try:
+            from clipwright.providers.model_listing import list_models_for_source
+            models = await list_models_for_source(provider, resolved)
+            if models:
+                return {"ok": True, "latency_ms": _ms(),
+                        "detail": f"连通正常，列出 {len(models)} 个模型"}
+            return {"ok": False, "latency_ms": _ms(), "detail": (
+                "未取到模型列表：可能是鉴权失败、Base URL 不正确，"
+                "或该 provider 不支持列表端点（可先用「获取模型列表」看具体提示）"
+            )}
+        except Exception as e:  # noqa: BLE001 — 探测失败按结果返回
+            return {"ok": False, "latency_ms": _ms(), "detail": f"探测异常：{e}"}
+
+    if kind == "rerank":
+        try:
+            from clipwright.providers.rerank import resolve_rerank_provider
+            impl = resolve_rerank_provider(provider or "http")
+            if impl is None:
+                return {"ok": False, "latency_ms": _ms(), "detail": f"未知 provider: {provider}"}
+            client = impl.create_reranker(
+                model=str((resolved.get("model") or "")),
+                api_key=resolved.get("api_key"), base_url=resolved.get("base_url"),
+                timeout_sec=float(resolved.get("timeout_sec") or 0.0),
+                proxy=str(resolved.get("proxy") or ""),
+                headers=dict(resolved.get("headers") or {}) or None,
+            )
+            ranked = await client.rerank(query="ping", documents=["a", "b"], top_n=2)
+            if ranked:
+                return {"ok": True, "latency_ms": _ms(),
+                        "detail": f"rerank 返回 {len(ranked)} 条结果"}
+            return {"ok": False, "latency_ms": _ms(),
+                    "detail": "rerank 无结果（检查端点路径/密钥；本地模型请确认已加载）"}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "latency_ms": _ms(), "detail": f"探测异常：{e}"}
+
+    return {"ok": False, "latency_ms": _ms(),
+            "detail": f"{kind} 类型暂不支持探测（语音合成无统一握手协议）"}

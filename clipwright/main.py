@@ -190,6 +190,16 @@ async def lifespan(app: FastAPI):
     except Exception as _rr_err:
         logger.warning("重排序 provider 注册失败（不影响启动）: %s", _rr_err)
 
+    # 4.8 B4：把既有平铺配置物化为一条 Provider 源（老用户升级后新页面不是空的）
+    #     幂等：已有任何源则跳过；未配过凭据则跳过（不产生噪音配置）
+    try:
+        from clipwright.services.provider_sources import ensure_migrated
+        migrated_id = ensure_migrated()
+        if migrated_id:
+            logger.info("已把既有 LLM 配置迁移为 Provider 源: %s", migrated_id)
+    except Exception as _mig_err:
+        logger.warning("Provider 源迁移失败（不影响启动）: %s", _mig_err)
+
     # 4.5 加载用户自定义视频类型
     from clipwright.category.dynamic import register_user_types
     user_type_ids = register_user_types()

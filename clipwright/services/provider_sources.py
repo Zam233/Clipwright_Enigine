@@ -29,6 +29,17 @@ ROLES: tuple[str, ...] = ("main", "flash", "vision", "embed", "rerank", "tts")
 #: 源的类型（对应前端顶部 tab）
 SOURCE_KINDS: tuple[str, ...] = ("llm", "embedding", "rerank", "tts")
 
+#: 角色 → 允许的源类型（P2：绑定前校验，避免把 TTS 源绑到 LLM 角色之后
+#: 在运行期才报「未安装 LLM provider」这种难以定位的错误）
+ROLE_EXPECTED_KINDS: dict[str, tuple[str, ...]] = {
+    "main": ("llm",),
+    "flash": ("llm",),
+    "vision": ("llm",),
+    "embed": ("embedding",),
+    "rerank": ("rerank",),
+    "tts": ("tts",),
+}
+
 _STORE_PATH: Optional[Path] = None
 _LOCK = threading.RLock()
 
@@ -183,6 +194,18 @@ def update_source(source_id: str, payload: dict[str, Any]) -> dict[str, Any]:
                 continue
             if "kind" in payload and str(payload["kind"]) not in SOURCE_KINDS:
                 raise ValueError(f"未知的源类型: {payload['kind']}")
+            # P2：改 kind 会让已绑定的角色错配（如 llm→tts 后 main 指向 TTS 源）
+            new_kind = str(payload.get("kind") or "")
+            if new_kind and new_kind != str(src.get("kind") or ""):
+                bound = [
+                    role for role, binding in (data.get("roles") or {}).items()
+                    if isinstance(binding, dict) and binding.get("source_id") == source_id
+                ]
+                if bound:
+                    raise ValueError(
+                        f"源仍被角色绑定（{', '.join(sorted(bound))}），不能改类型；"
+                        "请先解绑这些角色"
+                    )
             for key in ("name", "kind", "provider", "base_url", "proxy"):
                 if key in payload and payload[key] is not None:
                     src[key] = str(payload[key])
@@ -194,8 +217,11 @@ def update_source(source_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             if "models" in payload:
                 src["models"] = _normalize_models(payload.get("models"))
             src["updated_at"] = _now()
+            unbound = _unbind_stale_roles(data, source_id)  # P3
             _write(data)
-            return _public_source(src)
+            out = _public_source(src)
+            out["unbound_roles"] = unbound
+            return out
     raise FileNotFoundError(f"源不存在: {source_id}")
 
 
@@ -270,19 +296,16 @@ def upsert_model(source_id: str, model: dict[str, Any]) -> dict[str, Any]:
 
 
 def delete_model(source_id: str, model_id: str) -> dict[str, Any]:
+    """删除模型；引用它的角色自动解绑（P3：统一走 _unbind_stale_roles）。"""
     with _LOCK:
         src = get_source(source_id, public=False)
         if src is None:
             raise FileNotFoundError(f"源不存在: {source_id}")
         models = [m for m in _normalize_models(src.get("models")) if m["id"] != model_id]
-        # 角色若绑定该模型 → 解绑（避免指向已删除模型）
-        data = _read()
-        for role, binding in list(data.get("roles", {}).items()):
-            if (isinstance(binding, dict) and binding.get("source_id") == source_id
-                    and binding.get("model") == model_id):
-                data["roles"].pop(role, None)
-        _write(data)
-    return set_models(source_id, models)
+    result = set_models(source_id, models)
+    if isinstance(result, dict):
+        result.setdefault("unbound_roles", [])
+    return result
 
 
 # ── 角色绑定 ────────────────────────────────────────────
@@ -293,7 +316,11 @@ def get_roles() -> dict[str, Any]:
 
 
 def set_role(role: str, source_id: Optional[str], model: str = "") -> dict[str, Any]:
-    """把角色绑定到 (源, 模型)；source_id 为空则解绑（回退旧平铺配置）。"""
+    """把角色绑定到 (源, 模型)；source_id 为空则解绑（回退旧平铺配置）。
+
+    P2：校验「角色 ↔ 源类型」——把 TTS 源绑到 `main`/`flash`/`vision` 这类错配
+    会在运行期才炸（报「未安装 LLM provider: qwen-tts」），这里提前拒绝并说明。
+    """
     if role not in ROLES:
         raise ValueError(f"未知角色: {role}（可选: {', '.join(ROLES)}）")
     with _LOCK:
@@ -305,6 +332,13 @@ def set_role(role: str, source_id: Optional[str], model: str = "") -> dict[str, 
         src = next((s for s in data["sources"] if s.get("id") == source_id), None)
         if src is None:
             raise FileNotFoundError(f"源不存在: {source_id}")
+        expected = ROLE_EXPECTED_KINDS.get(role, ())
+        kind = str(src.get("kind") or "")
+        if expected and kind not in expected:
+            raise ValueError(
+                f"角色 {role} 需要 {'/'.join(expected)} 类型的源，"
+                f"而源 {src.get('name') or source_id} 的类型是 {kind or '未设置'}"
+            )
         model = str(model or "").strip()
         models = _normalize_models(src.get("models"))
         if model:
@@ -318,6 +352,29 @@ def set_role(role: str, source_id: Optional[str], model: str = "") -> dict[str, 
         }
         _write(data)
     return {"role": role, "bound": True, "source_id": source_id, "model": model}
+
+
+def _unbind_stale_roles(data: dict[str, Any], source_id: str) -> list[str]:
+    """P3：源内模型被删/被停用后，解绑引用它的角色（返回被解绑的角色名）。
+
+    绑定时的「模型必须在清单里且启用」校验，此前只在绑的那一刻生效；
+    绑定后把模型停用，`resolve()` 会继续用它——语义自相矛盾，且用户以为已失效。
+    """
+    src = next((s for s in data["sources"] if s.get("id") == source_id), None)
+    if src is None:
+        return []
+    usable = {
+        str(m.get("id")) for m in _normalize_models(src.get("models"))
+        if m.get("enabled", True)
+    }
+    unbound: list[str] = []
+    for role, binding in list((data.get("roles") or {}).items()):
+        if not isinstance(binding, dict) or binding.get("source_id") != source_id:
+            continue
+        if str(binding.get("model") or "") not in usable:
+            data["roles"].pop(role, None)
+            unbound.append(role)
+    return unbound
 
 
 # ── 运行时解析 ──────────────────────────────────────────

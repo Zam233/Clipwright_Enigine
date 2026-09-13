@@ -10,6 +10,9 @@ from typing import Any
 
 from clipwright.config import logger
 
+#: 支持自动拉取模型列表的 provider（其余类型返回空 + 提示手动添加）
+SUPPORTED_LISTING_PROVIDERS: tuple[str, ...] = ("", "anthropic", "openai", "ollama")
+
 
 async def list_models_for_source(provider: str, resolved: dict[str, Any]) -> list[str]:
     """返回模型 id 列表（失败/不支持 → 空列表）。"""
