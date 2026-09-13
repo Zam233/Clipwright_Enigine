@@ -123,8 +123,8 @@ class TestDispatchRoundTrip:
         expect = {
             ContributionKind.TOOL, ContributionKind.SKILL, ContributionKind.AGENT,
             ContributionKind.MATERIAL_SOURCE, ContributionKind.CATEGORY,
-            ContributionKind.STYLE_INTERPRETER, ContributionKind.HOOK,
-            ContributionKind.PROMPT,
+            ContributionKind.ANIMATION, ContributionKind.STYLE_INTERPRETER,
+            ContributionKind.HOOK, ContributionKind.PROMPT,
         }
         assert _WIRED_KINDS == expect
 

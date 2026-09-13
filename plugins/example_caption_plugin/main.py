@@ -8,13 +8,12 @@ from __future__ import annotations
 from typing import Any
 
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.schema.skill import SkillExecResult, SkillStatus
-from clipwright.skill import SkillRegistry
 from clipwright.skill.base import BaseSkill
 from clipwright.tool.base import BaseTool
-from clipwright.tool.registry import ToolRegistry
 
 
 # ── Plugin class ──────────────────────────────────────────────
@@ -34,11 +33,12 @@ class ExampleCaptionPlugin(CapabilityPlugin):
     def __init__(self) -> None:
         self._initialized = False
 
-    def initialize(self) -> None:
-        """注册插件提供的 Tool 和 Skill。"""
-        ToolRegistry.register(CaptionSegmentTool())
-        SkillRegistry.register(SummarizeCaptionSkill())
-        self._initialized = True
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：字幕切分工具 + 字幕总结技能。"""
+        return [
+            Contribution(ContributionKind.TOOL, "caption_segment", CaptionSegmentTool()),
+            Contribution(ContributionKind.SKILL, "summarize_captions", SummarizeCaptionSkill()),
+        ]
 
     def shutdown(self) -> None:
         self._initialized = False

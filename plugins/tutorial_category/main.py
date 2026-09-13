@@ -10,8 +10,10 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from clipwright.category.base import BaseCategoryPlugin
-from clipwright.category.registry import CategoryRegistry
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.plugin import PluginManifest, PluginKind
 
 
@@ -68,9 +70,9 @@ class TutorialCategoryPlugin(BaseCategoryPlugin):
             "图形规范对齐，把信息讲清楚比炫技更重要。"
         )
 
-    def initialize(self) -> None:
-        CategoryRegistry.register(self, plugin_id=self.manifest.id)
-        print(f"[TutorialCategory] 教程视频类型已注册")
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：类型插件把自身作为「视频类型」贡献出去。"""
+        return [Contribution(ContributionKind.CATEGORY, self.plugin_id, self)]
 
     def shutdown(self) -> None:
         pass

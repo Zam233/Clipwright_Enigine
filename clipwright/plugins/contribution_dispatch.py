@@ -10,6 +10,7 @@
     agent              → AgentRegistry.register（deps 从 meta 读）
     material_source    → MaterialRegistry.register / unregister
     category           → CategoryRegistry.register / unregister_plugin
+    animation          → AnimationRegistry.register / unregister_plugin
     style_interpreter  → StyleInterpreter.register_plugin（按 owner 多注册，meta.priority 定活跃项）/ unregister_plugin
     hook               → HookRegistry.register(point=meta["point"], ...) / unregister_plugin
     prompt             → PluginPromptRegistry.register / unregister
@@ -34,6 +35,7 @@ _WIRED_KINDS = {
     ContributionKind.AGENT,
     ContributionKind.MATERIAL_SOURCE,
     ContributionKind.CATEGORY,
+    ContributionKind.ANIMATION,
     ContributionKind.STYLE_INTERPRETER,
     ContributionKind.HOOK,
     ContributionKind.PROMPT,
@@ -106,6 +108,16 @@ def register(owner: str, item: Contribution) -> Optional[str]:
             from clipwright.category.registry import CategoryRegistry
             CategoryRegistry.register(item.object)
             CategoryRegistry.set_owner(item.id, owner)
+
+        elif item.kind is ContributionKind.ANIMATION:
+            from clipwright.animation.registry import AnimationRegistry
+            AnimationRegistry.register(item.object, plugin_id=owner)
+            # 后置校验：AnimationRegistry.register 对空 animation_id 才抛错，
+            # 这里确认归属真的写成 owner（否则卸载会漏收）
+            owned = [a for a in AnimationRegistry.list_by_plugin(owner)
+                     if getattr(a, "animation_id", "") == item.id]
+            if not owned:
+                return f"animation:{item.id} 注册未被注册表接受"
 
         elif item.kind is ContributionKind.STYLE_INTERPRETER:
             from clipwright.services.style_interpreter import StyleInterpreter
@@ -180,6 +192,9 @@ def unregister(owner: str, keys: list[str]) -> list[str]:
             elif kind_value == ContributionKind.CATEGORY.value:
                 from clipwright.category.registry import CategoryRegistry
                 CategoryRegistry.unregister_plugin(owner)
+            elif kind_value == ContributionKind.ANIMATION.value:
+                from clipwright.animation.registry import AnimationRegistry
+                AnimationRegistry.unregister_plugin(owner)
             elif kind_value == ContributionKind.STYLE_INTERPRETER.value:
                 from clipwright.services.style_interpreter import StyleInterpreter
                 StyleInterpreter.unregister_plugin(owner)

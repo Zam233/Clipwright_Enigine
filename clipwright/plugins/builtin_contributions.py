@@ -87,6 +87,19 @@ def _collect_categories() -> list[Contribution]:
     return out
 
 
+def _collect_animations() -> list[Contribution]:
+    """镜像内置动画定义（无插件归属的那些）。"""
+    from clipwright.animation.registry import AnimationRegistry
+
+    owned = set(getattr(AnimationRegistry, "_plugin_map", {}) or {})
+    out: list[Contribution] = []
+    for aid, defn in list(getattr(AnimationRegistry, "_animations", {}).items()):
+        if aid in owned:
+            continue
+        out.append(Contribution(ContributionKind.ANIMATION, aid, defn))
+    return out
+
+
 def _collect_style_interpreter() -> list[Contribution]:
     """镜像内置风格解释器（D3 后是多注册表：只取无插件归属的槽位）。"""
     from clipwright.services.style_interpreter import StyleInterpreter
@@ -176,6 +189,7 @@ def ingest_builtin_contributions() -> dict[str, int]:
         ContributionKind.AGENT: _collect_agents,
         ContributionKind.MATERIAL_SOURCE: _collect_material_sources,
         ContributionKind.CATEGORY: _collect_categories,
+        ContributionKind.ANIMATION: _collect_animations,
         ContributionKind.STYLE_INTERPRETER: _collect_style_interpreter,
         ContributionKind.HOOK: _collect_hooks,
         ContributionKind.PROMPT: _collect_prompts,

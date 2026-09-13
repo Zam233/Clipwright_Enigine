@@ -20,7 +20,7 @@ BUILTIN_OWNER = "__builtin__"
 
 
 class ContributionKind(str, Enum):
-    """16 类可贡献扩展点（名单冻结；新增需走契约评审）。"""
+    """17 类可贡献扩展点（名单冻结；新增需走契约评审）。"""
     # ── 现有（方案 A 收敛）──
     TOOL = "tool"
     SKILL = "skill"
@@ -35,6 +35,7 @@ class ContributionKind(str, Enum):
     TTS_PROVIDER = "tts_provider"
     STT_PROVIDER = "stt_provider"
     RENDERER_BACKEND = "renderer_backend"
+    ANIMATION = "animation"
     # ── 方案 B4：RAG 链路 Provider 化 ──
     EMBEDDING_PROVIDER = "embedding_provider"
     RERANK_PROVIDER = "rerank_provider"

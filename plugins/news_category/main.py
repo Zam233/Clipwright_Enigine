@@ -3,9 +3,13 @@
 特点：下三分之一人名条、来源引用叠加、分屏对比、正式节奏、证据高亮动画。
 """
 from __future__ import annotations
+
+from typing import Any
+
 from clipwright.category.base import BaseCategoryPlugin
-from clipwright.category.registry import CategoryRegistry
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.plugin import PluginManifest, PluginKind
+
 
 class NewsCategoryPlugin(BaseCategoryPlugin):
     plugin_id = "news_category"
@@ -40,9 +44,9 @@ class NewsCategoryPlugin(BaseCategoryPlugin):
             "配色克制（深蓝/白/灰），排版规整，避免花哨特效。"
         )
 
-    def initialize(self) -> None:
-        CategoryRegistry.register(self, plugin_id=self.manifest.id)
-        print("[NewsCategory] 新闻评论类型已注册")
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：类型插件把自身作为「视频类型」贡献出去。"""
+        return [Contribution(ContributionKind.CATEGORY, self.plugin_id, self)]
 
     def shutdown(self) -> None: pass
 
