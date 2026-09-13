@@ -10,7 +10,7 @@
     agent              → AgentRegistry.register（deps 从 meta 读）
     material_source    → MaterialRegistry.register / unregister
     category           → CategoryRegistry.register / unregister_plugin
-    style_interpreter  → StyleInterpreter.register_plugin / unregister_plugin
+    style_interpreter  → StyleInterpreter.register_plugin（按 owner 多注册，meta.priority 定活跃项）/ unregister_plugin
     hook               → HookRegistry.register(point=meta["point"], ...) / unregister_plugin
     prompt             → PluginPromptRegistry.register / unregister
 
@@ -109,7 +109,10 @@ def register(owner: str, item: Contribution) -> Optional[str]:
 
         elif item.kind is ContributionKind.STYLE_INTERPRETER:
             from clipwright.services.style_interpreter import StyleInterpreter
-            StyleInterpreter.register_plugin(item.object, owner=owner)
+            # D3：多注册（每个 owner 一个槽位）；meta.priority 决定活跃项
+            StyleInterpreter.register_plugin(
+                item.object, owner=owner, priority=int(item.meta.get("priority", 100) or 100),
+            )
 
         elif item.kind is ContributionKind.HOOK:
             from clipwright.plugins.hooks import HookPoint, HookRegistry

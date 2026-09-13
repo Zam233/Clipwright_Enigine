@@ -88,14 +88,16 @@ def _collect_categories() -> list[Contribution]:
 
 
 def _collect_style_interpreter() -> list[Contribution]:
+    """镜像内置风格解释器（D3 后是多注册表：只取无插件归属的槽位）。"""
     from clipwright.services.style_interpreter import StyleInterpreter
 
-    plugin = getattr(StyleInterpreter, "_plugin", None)
-    owner = str(getattr(StyleInterpreter, "_owner", "") or "")
-    if plugin is None or owner:
-        return []
-    plugin_id = str(getattr(getattr(plugin, "manifest", None), "id", "") or "builtin_style")
-    return [Contribution(ContributionKind.STYLE_INTERPRETER, plugin_id, plugin)]
+    out: list[Contribution] = []
+    for owner, _priority, plugin in StyleInterpreter.list_plugins():
+        if owner != StyleInterpreter._DEFAULT_SLOT:
+            continue  # 插件注册的槽位由其 owner 入账
+        plugin_id = str(getattr(getattr(plugin, "manifest", None), "id", "") or "builtin_style")
+        out.append(Contribution(ContributionKind.STYLE_INTERPRETER, plugin_id, plugin))
+    return out
 
 
 def _stable_id(prefix: str, target: Any, fallback: str) -> str:

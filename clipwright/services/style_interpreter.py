@@ -1,7 +1,7 @@
 """StyleInterpreter — 将 Persona 视觉参数转为图解样式。
 
 核心流程：
-1. 查找是否有 StyleInterpreterPlugin 插件已注册
+1. 查找是否有 StyleInterpreterPlugin 插件已注册（多个时按 priority 取活跃项）
 2. 如果有 → 委派给插件
 3. 如果没有 → 使用内置 LLM 驱动解释器
 4. 结构化字段（如 primary_color）优先级最高，覆盖 LLM 结果
@@ -16,40 +16,82 @@ from clipwright.plugins.base import StyleInterpreterPlugin
 
 
 class StyleInterpreter:
-    """风格解释器调度器。
+    """风格解释器调度器（多注册 + 优先级调度 + 按 owner 回收）。
 
-    §13.4 缺陷 1 修复：补归属与注销路径——旧实现是裸类级单槽（无 unregister、
-    第二个插件静默顶掉第一个）。现明确单槽语义：不同 owner 的第二个注册被拒，
-    卸载时可定向回收（能力不再泄漏）。
+    D3 修复：此前是「单槽 + 第二个 owner 直接 ValueError」——两台机器/两个插件
+    各自提供风格解释器时，后安装的那个**装不上**（贡献被拒，用户以为装了却无效）。
+    现在改为多注册表：
+
+    - 每个 owner 一个槽位，互不覆盖（`register_plugin` 不再抛错）；
+    - 运行时按 `priority` 选活跃项（越大越优先；同优先级先注册者胜，结果确定）；
+    - `unregister_plugin(owner)` 只回收自己的槽位，活跃位自动改选；
+    - `_plugin`/`_owner` 保留为「当前活跃项」的只读兼容视图（既有读取方无须改）。
     """
 
+    #: owner → (priority, plugin)；owner="__builtin__"/"" 表示内置/无归属注册
+    _plugins: dict[str, tuple[int, StyleInterpreterPlugin]] = {}
+    #: 注册顺序（同优先级时先注册者胜，保证调度确定）
+    _order: list[str] = []
+    #: 当前活跃项（兼容视图，随后按优先级同步）
     _plugin: Optional[StyleInterpreterPlugin] = None
     _owner: str = ""
+    #: 无归属注册使用的槽位名（与内置贡献镜像的 owner 对齐）
+    _DEFAULT_SLOT = "__default__"
 
     @classmethod
-    def register_plugin(cls, plugin: StyleInterpreterPlugin, owner: str = "") -> None:
-        # 单槽语义：不同 owner 的第二个注册直接拒绝（不静默顶掉）
-        if cls._plugin is not None and cls._owner and owner and cls._owner != owner:
-            raise ValueError(
-                f"StyleInterpreter 已被 {cls._owner} 注册（单槽）；"
-                f"拒绝 {owner} 的第二个注册"
-            )
-        cls._plugin = plugin
-        cls._owner = str(owner or "")
-        logger.info("StyleInterpreter: 已注册插件 %s (owner=%s)",
-                    plugin.manifest.id, cls._owner or "-")
+    def register_plugin(cls, plugin: StyleInterpreterPlugin, owner: str = "",
+                        priority: int = 100) -> None:
+        """注册（或替换本 owner 的）风格解释器插件。**不再拒绝其它 owner**。"""
+        slot = str(owner or "") or cls._DEFAULT_SLOT
+        if slot not in cls._order:
+            cls._order.append(slot)
+        cls._plugins[slot] = (int(priority), plugin)
+        cls._refresh_active()
+        logger.info("StyleInterpreter: 已注册插件 %s (owner=%s, priority=%s, 共 %d 个)",
+                    plugin.manifest.id, slot, priority, len(cls._plugins))
 
     @classmethod
-    def unregister_plugin(cls, owner: str) -> bool:
-        """按 owner 回收风格解释器（插件禁用/卸载路径）。返回是否实际回收。"""
-        if cls._plugin is None:
-            return False
-        if owner and cls._owner and cls._owner != owner:
+    def unregister_plugin(cls, owner: str = "") -> bool:
+        """按 owner 回收**该 owner 自己的**槽位（插件禁用/卸载）。返回是否回收。"""
+        slot = str(owner or "") or cls._DEFAULT_SLOT
+        if slot not in cls._plugins:
             return False  # 不是它的槽位，拒绝误回收
-        cls._plugin = None
-        cls._owner = ""
-        logger.info("StyleInterpreter: 已回收插件（owner=%s）", owner or "-")
+        cls._plugins.pop(slot, None)
+        cls._order = [o for o in cls._order if o != slot]
+        cls._refresh_active()
+        logger.info("StyleInterpreter: 已回收插件（owner=%s，剩 %d 个）", slot, len(cls._plugins))
         return True
+
+    @classmethod
+    def _refresh_active(cls) -> None:
+        """按 (priority 降序, 注册顺序升序) 选出活跃项，并同步兼容视图。"""
+        if not cls._plugins:
+            cls._plugin = None
+            cls._owner = ""
+            return
+        ranked = sorted(
+            cls._order,
+            key=lambda o: (-cls._plugins[o][0], cls._order.index(o)),
+        )
+        active = next((o for o in ranked if o in cls._plugins), "")
+        cls._owner = active
+        cls._plugin = cls._plugins[active][1] if active else None
+
+    @classmethod
+    def list_plugins(cls) -> list[tuple[str, int, StyleInterpreterPlugin]]:
+        """已注册的 (owner, priority, plugin)，按活跃度排序（管理面/镜像用）。"""
+        cls._refresh_active()
+        return [
+            (o, cls._plugins[o][0], cls._plugins[o][1])
+            for o in sorted(cls._order, key=lambda x: (-cls._plugins[x][0], cls._order.index(x)))
+            if o in cls._plugins
+        ]
+
+    @classmethod
+    def reset_for_tests(cls) -> None:
+        cls._plugins.clear()
+        cls._order.clear()
+        cls._refresh_active()
 
     @classmethod
     async def interpret(
@@ -66,7 +108,8 @@ class StyleInterpreter:
         Returns:
             DiagramStyle 兼容参数字典
         """
-        # 1. 优先用插件解释器
+        # 1. 优先用插件解释器（D3：多注册场景下用当前活跃项）
+        cls._refresh_active()
         if cls._plugin is not None:
             try:
                 result = await cls._plugin.interpret(visual_config, persona_context)

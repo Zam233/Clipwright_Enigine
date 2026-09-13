@@ -208,7 +208,13 @@ class LLMService:
             registered = [c.id for _, c in ContributionRegistry.list(ContributionKind.LLM_PROVIDER)]
             raise ValueError(f"未安装 LLM provider: {provider}；已注册: {registered}")
 
-        client: Any = impl.build_client(
+        # B2：协议方法缺失给可读错误（注册时已校验，此处兜住手工注册/dispatch=False 的路径）
+        build = getattr(impl, "build_client", None)
+        if not callable(build):
+            raise ValueError(
+                f"LLM provider {provider} 未实现 build_client()，不符合 LLMProvider 协议"
+            )
+        client: Any = build(
             api_key=api_key, base_url=base_url, model=model,
             instructions=instructions, max_tokens=max_tokens, flash=flash,
             timeout_sec=timeout_sec, proxy=proxy, headers=headers,
