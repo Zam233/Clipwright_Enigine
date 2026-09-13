@@ -542,12 +542,26 @@ curl -X POST http://localhost:8080/api/voice/dub \
 | `POST /api/providers/{id}/models` | 覆盖模型清单 |
 | `POST /api/providers/{id}/models/upsert` | 自定义模型（新增/覆盖 `{id,name?,enabled?}`） |
 | `DELETE /api/providers/{id}/models/{model_id}` | 删除模型（解绑引用它的角色） |
-| `POST /api/providers/{id}/models/fetch` | 「获取模型列表」（调用 provider 的 models 端点；失败返回 `note`，可改用自定义模型） |
+| `POST /api/providers/{id}/models/fetch` | 「获取模型列表」（调用 provider 的 models 端点；不支持自动拉取的 provider 会明确说明，可改用自定义模型） |
+| `POST /api/providers/{id}/test` | 源级连通性探测（**不改动角色绑定**）：`llm`/`embedding` 走模型列表端点、`rerank` 发一次最小请求、`tts` 明确返回不支持；返回 `{ok, latency_ms, detail}` |
+
+**绑定规则（重要）**：
+
+- 角色必须绑定**对应类型**的源（`main`/`flash`/`vision` ← `llm`，`embed` ← `embedding`，
+  `rerank` ← `rerank`，`tts` ← `tts`）；错配会被 400 拒绝，而不是留到运行期才炸。
+- 源被角色绑定期间**不允许改类型**（需先解绑）。
+- 模型被**停用或删除**后，引用它的角色自动解绑，响应里以 `unbound_roles` 回传。
+- 多把 API Key 目前只使用第一条（其余作为备用保存、便于手动切换），不做轮询。
 
 **角色消费点**：`main`/`flash`（`services/llm.py`，含 vision 走的 `vision` 角色）、
 `embed`/`rerank`（`rag/embedder.py`、`rag/reranker.py`）、`tts`（`services/voice.py`）。
 绑定缺失时全部回退既有 `settings.*_provider/model/api_key/base_url` 平铺字段（零行为变化）；
-源的 `timeout_sec/proxy/headers` 会真正落到传输层（LLM 内层 SDK / httpx）。
+源的 `timeout_sec/proxy/headers` 会真正落到传输层（LLM 内层 SDK / httpx）——
+注意 provider 未声明这些参数时会按签名过滤并给一次性告警（兼容旧版插件 provider）。
+
+**模型测试面**：`GET /api/test/config` 与 `POST /api/test/{llm,embed,rerank}` 报告的是
+**真实生效**的 provider/model，并附 `effective`（`provider_source` / `settings`）与 `source`
+（绑定的源名）——不再是只读旧平铺字段的"假配置"。
 
 **设置页下拉**：`GET /api/settings` 的 `llm_provider` / `rag_embed_provider` /
 `tts_default_provider` 选项已并入门面中已注册的 provider —— 插件注册的 provider

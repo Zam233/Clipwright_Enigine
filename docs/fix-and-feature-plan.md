@@ -1212,4 +1212,6 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - 🔍 **插件审查（同日第二轮）**：32 插件体检查出 10 项并全部修复——A1 子进程 loader 契约（load 返回句柄/幂等/reload 生效/卸载回收，此前会导致 `/load` 404、安装服务回滚删插件、卸载 404）、A2 类发现取到导入的基类（`text_animations` 25 工具全丢）、A3 素材源 `create_task` 永不 await 连接泄漏（6 插件）、A4 动画/素材源/解释器卸载残留、B1 子进程强制声明、B2/C1 零贡献可见性（管理页「N 项未生效」）、B3/B5 迁移清零、B4 缺配置提示、C3 解释器优先级可配与活跃项可查、C4 去掉内置 Giphy 公开 key 改显式 opt-in；附带修复工具影子表的同源复活问题
 - 📌 **原「仍未完成 3 项」已清零**：D2/P1 ✅（32/32）、P6 ✅（按确认策略）、P9 ✅（子进程沙箱）
 - ✅ 最终回归：后端 **1783 passed** / 1 skipped / 1 xfailed；前端 **510 passed**（71 文件）+ tsc 0 error + build 成功；插件体检 32 个中仅 7 项 `declared_only`（均为未配置密钥的预期状态，有日志原因 + 界面红标）
+- 🔍 **Provider 改动评审（同日第三轮）**：查出 5 bug + 4 欠缺 + 4 一致性问题并全部修复（后端 `91395e5`、前端 `011ecae`）——**P1 存量插件 provider 被传输参数打崩**（按签名过滤）、P2 角色↔源类型校验与绑定期禁改 kind、P3 模型停用自动解绑角色、P4 `/api/test/embed` 不再改全局 settings、P5 模型测试面显示真实生效配置（`effective`/`source`）；新增源级「测试连接」端点与前端按钮、前端角色分配支持**选模型**、`ensure_migrated()` 接入启动、多密钥文案据实修正、双配置优先级提示（后端 17 字段描述 + 前端说明）
+- ✅ 第三轮后回归：后端 **1797 passed**；前端 **515 passed**（71 文件）+ build 成功；providers e2e 6 passed
 - ℹ️ 既有 e2e 失败 8 条已在基线提交复现（home 健康检查需真实后端、panel-divider B18、preview-fixes/caption-style/agent-edit），非本轮引入
