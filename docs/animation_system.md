@@ -114,6 +114,91 @@ Hyperframes 渲染器依赖外部 npx HTML/CSS → MP4 能力，冷启动探针�
 - **启动预热**：`main.py` lifespan 中以非阻塞后台任务预热（`spawn_background(HyperframesRenderer.await_available(120.0), name="hyperframes-warmup")`），消除冷启动首跑降级。
 - **异步探测**：AnimationAgent（`_handle_logic_animation` / `_handle_llm_mg`）与渲染服务 S2 门控均改为异步等待 Hyperframes 可用性（120s / 60s），仅在真实不可用时才降级并记录 trace warning。
 
+## 确定性时间轴与生成期门禁（2026-09-13）
+
+HyperFrames 逐帧 seek + 多 worker 并行抓帧，任何"依赖先经过某帧才成立"的状态都会错帧；同时 producer 会轮询 `window.__timelines` 就绪（超时 45s）。本轮改造把两条渲染路径都对齐上游契约：
+
+- **真实时间轴（RuntimeTimelineLike）**：新增 `animation/hf_timeline.py`，在合成 HTML 中注册
+  `window.__timelines[<data-composition-id>] = { duration, totalDuration, pause, seek }`；
+  `seek(t)` 通过 WAAPI 把既有 `hf-*` / `mg_*` CSS `@keyframes` 动画暂停并逐帧 seek
+  （`Animation.currentTime = 合成时间 - 元素 data-start`），每帧都是 t 的纯函数。
+  不引入 GSAP/CDN（确定性渲染禁止渲染期网络抓取），也就没有新增运行时依赖与许可变更。
+  上游 `runtime/init.ts` 明确允许"部分实现"的 timeline，渲染路径只 seek 不 pause。
+- **overlay 合成路径重写**（`animation/hyperframes_renderer.py`）：删除自写 `setTimeout`
+  时序 JS；元素补齐 `class="clip hf-el"` + `data-start` + **`data-duration`**
+  （旧代码写的是非标准 `data-dur` → 框架拿不到时长，元素超出窗口后仍可见）+
+  `data-track-index`；出场动画只用 `forwards`（用 `both` 会在 delay 期间以"后声明者优先"
+  覆盖入场透明度）。SVG 图解容器加 `data-anim-subtree="1"`，子树里的入场动画一并被 seek。
+  实测（本机 4070 Ti，hyperframes 0.8.36，180 帧 overlay 合成）：**108.2s → 18.3s**，
+  `npx hyperframes lint` 从 1 error + 4 warning 变为 **0 error / 0 warning**。
+- **MG 模板路径**：`mg_renderer.py` 的 `{ paused: true }` 空对象桩替换为同一个真实时间轴
+  （桩既不满足 GSAP 适配器契约 `duration/seek`，也让 lint 判为"未注册"）。
+- **生成期门禁（`mg/config.yaml: generation.lint_gate`，默认开）**：`MGGenerator._lint_gated`
+  对生成的 HTML 跑 `hyperframes lint`，**error 级**问题即放弃该产物并走既有降级链，
+  warning 只记日志；CLI 不可用/超时一律放行（best-effort，不得反向阻断渲染）。
+- **渲染参数**：`render_mg_html_to_mov(quality=...)`（预览端点固定 `draft`）+
+  环境变量 `CLIPWRIGHT_HF_QUALITY` 覆盖；`_cli_cmd` 优先使用本地固定安装的
+  `node_modules/.bin/hyperframes`（或 `HYPERFRAMES_BIN`），避免每次走 `npx` 冷启动。
+- **Persona 字体落进 MG**：`MGGenerator._apply_persona_font` 把 Persona 的 `font`
+  写进 `style.font_family`（此前恒 `sans-serif`），只接受纯字体族名，拒绝路径/URL/CSS 注入；
+  模板或 LLM 显式指定字体时不覆盖。
+- **可选浏览器门禁 `hyperframes check`**（`generation.check_gate`，默认 `"off"`）：
+  `off` 不启用｜`warn` 只记录运行时/布局/动效/WCAG 对比度 findings（写 trace）｜
+  `strict` 时 error 级问题（如文字对比度不达标）即放弃产物走降级链。
+  比 lint 强在真的在 headless Chrome 里加载，代价是每次多起一次浏览器。
+- **渲染后视觉自评（P1-1，默认关闭）**：`animation/mg/visual_eval.py` 用
+  `hyperframes snapshot` 取 3 张关键帧（入场后/中段/退场前）→ 视觉 LLM 按 5 维度
+  评分表（可读性/视觉层级/构图安全区/一致性/完成度）打分；低分则把问题清单交给
+  既有的批判修复路径重做一次（`method="visual_repair"`）。
+  需同时满足 `critique.visual_eval.enabled: true` 与 `settings.enable_visual_llm: true`；
+  CLI 不可用、未配置视觉模型、返回非 JSON 一律静默跳过（绝不阻断生成）。
+- **环境开关**：`CLIPWRIGHT_HF_LINT_GATE=0` 关闭静态门禁；`CLIPWRIGHT_HF_QUALITY=draft|standard|high`
+  覆盖渲染质量档；`HYPERFRAMES_BIN` 指定本地 CLI 可执行文件。
+
+## 动效配方库（P2-1，`animation/mg/knowledge/`）
+
+给 LLM 生成注入"结构化动效骨架"，让每个镜头有可依循的 beat 节奏，而不是每次从零发明：
+
+- **数据**：`motion_recipes.yaml` —— 8 条配方（标题错峰揭示 / 数据冲击计数 / 左右对比 / 流程箭头链 /
+  引语卡片 / 中心辐射 / 柱状增长 / 聚焦推近）。每条含 `shot_types`、`keywords`、`intent`、
+  `structure.beats`（时间点 → 做什么）、`layout`、`easing`、`avoid`（禁忌）与 `source`。
+- **选取**：`knowledge.select_recipes(shot_type, text, limit)` —— 纯启发式（镜头类型命中 +3，
+  关键词命中 +2），零 LLM 调用、确定性；无命中回退 `defaults`。
+- **注入点**：`MGGenerator._knowledge_section()`，在**首次生成 / schema 修复 / 批判 / 视觉修复**
+  四条路径一致注入（避免修复把设计拉离既定 beat 结构）；开关
+  `prompt.knowledge_pack`（默认 true）与 `prompt.knowledge_max_recipes`（默认 2，上限 4），
+  片段长度封顶 3200 字符；库缺失/解析失败静默跳过。
+- **合规**：全部条目为**本项目自行撰写的结构与方法论提炼**（非上游原文，不含任何 HTML/CSS/JS 片段），
+  逐条登记来源仓库/路径/许可（heygen-com/hyperframes = Apache-2.0，
+  browser-use/video-use = MIT）。`tests/clipwright/test_mg_knowledge_pack.py` 会校验：
+  许可白名单、`distilled: true`、beat 完整性、无代码片段特征、YAML 头部保留来源说明。
+
+## 变量参数化（P1-5：上游 `data-composition-variables` / `--variables`）
+
+MG 产物不再只是"渲染时把占位符替换掉的静态 HTML"，而是**声明并绑定变量**的合成：
+
+- **声明**：`MGRenderer.build_variables()` 生成 `[{id, type, label, default}]` 写入
+  `<html data-composition-variables="…">`；类型自动推断（`number` / `color` / `string`），
+  `default` 取**本次运行值**（模板 default 兜底）。取值必须写进声明——上游用声明里的 default
+  去填 `data-var-text`，否则不传 `--variables` 时会渲染成模板默认文案。
+- **绑定**（整值占位符才绑定，混合文案仍内联替换）：
+  - 文本：`content` 正好是 `{key}` → `data-var-text="key"`，元素内保留解析后文案作兜底；
+  - 标量样式：值正好是 `{key}` → `var(--key, <解析值>)`（上游把每个标量变量挂成
+    `--key` 自定义属性，`var()` 兜底保证不传变量时结果与旧行为完全一致）；
+  - 图片：`src` 正好是 `{key}` → `data-var-src="key"`，同时保留兜底 `src`
+    （上游 lint `media_variable_src_no_fallback` 要求）。
+- **渲染**：`HyperframesRenderer.render_mg_html_to_mov(..., variables=…)` 追加
+  `--variables '<json>'`；预览端点传本次参数，主管线在模板路径传 `mg_params`
+  （LLM 路径无 params 时靠声明 default，结果一致）。`CLIPWRIGHT_HF_STRICT_VARIABLES=1`
+  时追加 `--strict-variables`（未声明键/类型不符直接失败，CI 用）。
+- **空值防线**：绑定变量的值为空时，兜底文本取空串——**绝不让 `{key}` 字面量进成片**。
+  该修复顺带清掉了两个内置模板（`mg_data_counter` / `mg_logo_intro`）里 `{text}`
+  未声明的残留占位符；`tests/clipwright/test_mg_variables.py::TestAllTemplatesClean`
+  现在锁定"14 个模板渲染后零残留占位符"。
+- **验收**：`scripts/verify_mg_variables.py` 做差分实验——同一份 HTML：
+  不传变量渲染可见 **2.394%**（兜底生效）、`--variables '{"text":""}'` 渲染可见 **0.000%**
+  （证明变量真的驱动文本）、换成更长文案渲染可见 **6.662%**；`lint` 0 error。
+
 ## 内容质量检查（空镜头与动画生效）
 
 QualityAgent 在动画编排之后对时间线做内容级校验，新增三类检查：

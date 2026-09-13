@@ -25,7 +25,7 @@
 
 | 前缀 | 文件 | 数量 | 路由 |
 |---|---|---|---|
-| `/api/animation` | animation.py | 4 | GET `/list` · GET `/onscreen` · GET `/transitions` · GET `/get/{animation_id}` |
+| `/api/animation` | animation.py | 9 | GET `/list` · GET `/onscreen` · GET `/transitions` · GET `/get/{animation_id}` · GET `/mg/list` · GET `/mg/generations` · GET `/mg/generations/{generation_id}` · POST `/mg/html` · POST `/preview` |
 | `/api/asset` | asset.py | 12 | POST `/upload` · GET `/list` · GET `/by-path` · GET `/{asset_id}` · GET `/{asset_id}/file` · GET `/{asset_id}/thumbnail` · DELETE `/{asset_id}` · POST `/import-path` · POST `/import-url` · POST `/governance/patrol` · POST `/governance/violations` · GET `/governance/summary` |
 | `/api/persona/forge/chat` | chat_forge.py | 5 | POST `/start` · POST `/message` · POST `/knowledge` · POST `/commit` · GET `/state/{session_id}` |
 | `/api/edl` | edl.py | 4 | POST `/import/edl` · POST `/import/fcpxml` · POST `/export/edl` · POST `/export/fcpxml` |
@@ -127,7 +127,7 @@ export { marketApi } from './market';
 
 | 后端前缀 | 覆盖方式 |
 |---|---|
-| `/api/animation` | `animationApi.list/onscreen/transitions/get`（project.ts） |
+| `/api/animation` | `animationApi.list/onscreen/transitions/get` + `mgList/mgGenerations/mgGeneration/mgHtml/preview`（project.ts，MgPreviewPage） |
 | `/api/asset` | `assetApi.list/upload/importPath/importUrl/…` + `assetApi.patrol/violations/summary`（governance） |
 | `/api/edl` | `edlApi.importEDL/importFCPXML/exportEDL/exportFCPXML` |
 | `/api/fonts` | `fontApi.list/getDefault/resolve/clearCache` |

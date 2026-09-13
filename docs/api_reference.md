@@ -476,6 +476,39 @@ curl -X POST http://localhost:8080/api/voice/dub \
 | `GET /api/animation/onscreen` | 列出屏幕动画 |
 | `GET /api/animation/transitions` | 列出转场动画 |
 | `GET /api/animation/get/{animation_id}` | 获取动画详情 |
+| `GET /api/animation/mg/list` | 列出内置 MG 模板（含 params 定义，供预览工坊） |
+| `GET /api/animation/mg/generations` | 列出最近 MG 生成记录（`limit`，新→旧） |
+| `GET /api/animation/mg/generations/{generation_id}` | 取单条生成记录（含 `mg_def`，可回看/重渲） |
+| `POST /api/animation/mg/html` | **HTML 即时预览**：返回合成 HTML 本身，不渲染、不起 Chromium（前端 iframe 内用 `window.__timelines[].seek()` 拖动播放） |
+| `POST /api/animation/preview` | 单镜头 MG 渲染预览：Hyperframes 直出 MP4（需本机 Chromium；不可用返回 503） |
+
+### `POST /api/animation/mg/html`
+
+请求体与 `POST /api/animation/preview` 完全一致（二选一）：
+
+```json
+{"animation_id": "mg_title_reveal", "params": {"text": "标题"}, "width": 1280, "height": 720, "fps": 30}
+```
+
+`animation_id`（内置模板）或 `mg_json`（LLM 生成的 MG 定义）二选一；`width`/`height` ≥ 320。
+
+响应：
+
+```json
+{"html": "<!DOCTYPE html>…", "duration_sec": 4.5, "width": 1280, "height": 720, "fps": 30,
+ "animation_id": "mg_title_reveal", "variables": {"text": "标题", "accent": "#fbbf24"}}
+```
+
+- 与主管线同源：HTML 内置 `hf_timeline` 运行时，动画已暂停并注册到 `window.__timelines[<composition-id>]`。
+- **变量参数化（P1-5）**：HTML 通过 `<html data-composition-variables="…">` 声明参数
+  （`id/type/label/default`），文本用 `data-var-text`、图片用 `data-var-src`、
+  标量样式用 `var(--key, 兜底值)` 绑定；响应里的 `variables` 是本次取值回显。
+  渲染时可由上游 `--variables '{"text":"…"}'` 覆盖（`render_mg_html_to_mov(variables=…)`），
+  不传则用声明里的 default，结果与旧的内联替换完全一致。
+- 前端约定（`src/features/preview/mgHtmlPreview.ts`）：放进 `sandbox="allow-scripts"` 的 iframe
+  （**不开 allow-same-origin**，LLM 生成的脚本不得在应用源执行），只用 `postMessage` 双向通信；
+  父页面发 `seek/play/pause`，iframe 回传 `{duration, time, playing}`。
+- 背景守卫与主管线一致：默认强制透明叠加（剥离不透明 bg 层）。
 
 ---
 

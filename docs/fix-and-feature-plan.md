@@ -1215,3 +1215,100 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - 🔍 **Provider 改动评审（同日第三轮）**：查出 5 bug + 4 欠缺 + 4 一致性问题并全部修复（后端 `91395e5`、前端 `011ecae`）——**P1 存量插件 provider 被传输参数打崩**（按签名过滤）、P2 角色↔源类型校验与绑定期禁改 kind、P3 模型停用自动解绑角色、P4 `/api/test/embed` 不再改全局 settings、P5 模型测试面显示真实生效配置（`effective`/`source`）；新增源级「测试连接」端点与前端按钮、前端角色分配支持**选模型**、`ensure_migrated()` 接入启动、多密钥文案据实修正、双配置优先级提示（后端 17 字段描述 + 前端说明）
 - ✅ 第三轮后回归：后端 **1797 passed**；前端 **515 passed**（71 文件）+ build 成功；providers e2e 6 passed
 - ℹ️ 既有 e2e 失败 8 条已在基线提交复现（home 健康检查需真实后端、panel-divider B18、preview-fixes/caption-style/agent-edit），非本轮引入
+
+### 执行轮次 104（2026-09-13：OpenCut / video-use / HyperFrames 采纳——确定性时间轴与生成期门禁）
+
+计划文档：`docs/opencut-video-use-hyperframes-adoption-2026-09-13.md`（总报告）、`docs/opencut-video-use-hyperframes-deepdive-2026-09-13.md`（细读）。
+
+- ✅ **HFR-1 overlay 合成路径注册真实时间轴**（用户点名项）：新增 `clipwright/animation/hf_timeline.py`，注册上游契约的 `RuntimeTimelineLike`（`duration/totalDuration/pause/seek`）到 `window.__timelines[<data-composition-id>]`；`seek(t)` 用 WAAPI 把既有 `hf-*`/`mg_*` CSS `@keyframes` 暂停并逐帧 seek（`currentTime = 合成时间 − 元素 data-start`），无 GSAP/CDN、无新增依赖与许可变更
+- ✅ **删除墙钟时序 JS**：`hyperframes_renderer._timing_js` 的 `setTimeout + visibility` 实现移除（上游 determinism-rules 明令禁止，逐帧 seek / 并行抓帧下必然错帧）
+- ✅ **补齐 clip 契约**：overlay 元素 `class="clip hf-el"` + `data-start` + **`data-duration`**（旧代码写非标准 `data-dur`，框架拿不到时长 → 元素超出窗口后仍可见）+ `data-track-index`；SVG 图解容器加 `data-anim-subtree="1"`；出场动画只用 `forwards`（用 `both` 会以"后声明者优先"覆盖入场透明度）
+- ✅ **MG 模板路径**：`mg_renderer` 的 `{paused:true}` 空对象桩换成同一真实时间轴（桩不满足 GSAP 适配器契约，且被 lint 判为未注册）
+- ✅ **实测（本机 4070 Ti / hyperframes 0.8.36）**：180 帧 overlay 合成 **108.2s → 18.3s**（旧实现还带 `sub_timeline_readiness_timeout` 警告）；`lint` 由 1 error + 4 warning → **0 error / 0 warning**；帧级取证显示旧实现「入场瞬间满不透明 + 超窗口不消失」，新实现入场 0.05s 时 >64α 占比 0%、保持段满值、退场后 0.000%
+- ✅ **HFR-4 生成期 lint 门禁**：`HyperframesRenderer.lint_html()`（best-effort，注入式 run_cmd）+ `MGGenerator._lint_gated()`；error 级即放弃产物走既有降级链，warning 放行，CLI 不可用一律放行；开关 `mg/config.yaml: generation.lint_gate`（默认 true）
+- ✅ **渲染参数**：`render_mg_html_to_mov(quality=...)`（预览端点固定 `draft`）、`CLIPWRIGHT_HF_QUALITY` 环境覆盖、`_cli_cmd()` 优先本地 `node_modules/.bin/hyperframes`（`HYPERFRAMES_BIN` 可指定），绕开 npx 冷启动
+- ✅ **HFR-3 Persona 字体落进 MG**：`MGGenerator._apply_persona_font`（此前恒 `sans-serif`）；只接受纯字体族名（拒绝路径/URL/CSS 注入，先按原始串校验再剥离），LLM/模板显式指定字体时不覆盖
+- ✅ **提示词质量红线**：`mg/config.yaml` 补「通用质量红线（跨引擎，硬性自检）」8 条（同屏 ≤6 元素、透明度分层 1.0/0.4/0.15、留白 ≥15%、节奏变奏、末帧 hold ≥1s 等）+ 「字体令牌」段，来源标注 MIT / Apache-2.0（方法论提炼，非原文照搬）
+- ✅ **回归**：后端 **1814 passed** / 1 skipped / 1 xfailed（新增 16 条采纳项测试：`tests/clipwright/test_mg_hf_adoption.py`）；`test_plugin_runtime_subprocess.py` 2 条失败经 `git stash` 复核为**既有编码问题**（与本次改动无关）
+- ✅ **续批（同日）：P1-1 渲染后视觉自评**——新增 `animation/mg/visual_eval.py`（`hyperframes snapshot` 取入场后/中段/退场前三帧 → 视觉 LLM 按 5 维度评分表打分 → `{score, issues, suggestions}`）；接进 `_finalize_with_critique`：批判通过后跑视觉自评，低分（`critique.visual_eval.min_score`）即带视觉问题清单走既有修复路径重做一次（`method="visual_repair"`）。门控 = `critique.visual_eval.enabled`（默认 false）∧ `settings.enable_visual_llm`；CLI/模型不可用或非 JSON 一律静默跳过
+- ✅ **续批：P1-2 可选浏览器门禁**——`HyperframesRenderer.check_html()`（运行时/布局/动效/WCAG 对比度，按 stage 汇总 findings）+ `MGGenerator._check_gated()`，`generation.check_gate: off|warn|strict`；本机实测新 overlay 合成 `check` 全 0 问题
+- ✅ **续批：门禁健壮性**——`_lint_gated` 先查 CLI 可用性（进程级缓存探针，不在时不做无谓 npx 调用），并支持 `CLIPWRIGHT_HF_LINT_GATE=0` 逃生阀
+- ✅ **续批：合规基线**——新建 `THIRD_PARTY_NOTICES.md`（两仓库），登记运行时依赖许可、方法论来源（MIT/Apache-2.0 标注）、商标声明与「将来内联第三方代码」的登记模板
+- ✅ **续批回归**：后端 **1830 passed** / 1 skipped / 1 xfailed（视觉自评 + check 门禁共 13 条新测试）
+
+### 执行轮次 105（2026-09-13：V1 渲染正确性硬规则——字幕最后合成 + 切点 30ms 淡化）
+
+- ✅ **规则 1（字幕必须在所有 overlay 之后）**：新增 `RenderService._compose_video_stages`，把视频合成阶段固化为 **图解/MG → 画中画 → 文本/字幕**；`_render_inner` 只调用这一个入口（顺序不再散落在主流程里，回归测试锁死）。此前文本先烧、MG/PIP 随后覆盖 → 动画挡字幕
+- ✅ **顺带修掉一个隐蔽缺陷**：视频阶段缓存（Phase 3.1 stage cache）写入的是**含 MG/PIP/文本**的产物，但缓存命中路径仍会再叠加一次 MG 与 PIP（重复合成）。现改为：命中缓存时不再执行任何视频合成阶段
+- ✅ **规则 3（切点 30ms 淡化）**：新增 `_apply_default_cut_fades` + `_CUT_FADE_DEFAULT_SEC=0.03`。本项目画面片段是 `-an` 裁剪（不带源声），音频全部来自时间线音频片段，故"切点"= 片段与静音相接的首尾边界；**同轨首尾相接的连续段（如逐句配音）不补**（避免接缝 30ms 下陷），显式设置（含显式 0）不覆盖。`voices` 构造改为「None=未设置 / 数值=显式」
+- ✅ **字幕路径跨目录修复**：work_dir 在仓库外/跨盘符时，旧实现回退成裸文件名 → ffmpeg 以 CWD 解析失败 → **整批字幕静默不入片**（本机 e2e 冒烟用的正是临时 work_dir，字幕长期缺失无人察觉）。改为「转义盘符冒号 + 单引号包裹」的绝对路径（实测 `'C\:/…'` 形式 rc=0，裸/转义未加引号/反斜杠三种形式全部失败）
+- ✅ **进度阶梯重排**：文本移到 PIP 之后，进度基准改为 95→97 封顶（后接音频 98 / 完成 99,100），MG 尾部 95/96→92/93、PIP 97→94；实测序列单调不减 `[0,0,50,55,70,90,90,91,92,94,95,97,98,99,100]`
+- ✅ **新增回归测试**：`tests/clipwright/test_render_stage_order.py`（9 条：阶段顺序、进度封顶、淡化的相接/隔离/显式零值/分组/归一化）
+- ✅ **新增实拍式验收脚本**：`scripts/verify_render_order.py`（真跑全管线并用命令录制器取证：阶段顺序 `concat → mg_overlay → text_ass → audio`、`afade` 值集 `{0.03, 1.0}`、进度单调；支持 `--temp-work` 验证跨目录场景）
+- ℹ️ 既有 e2e 冒烟 `scripts/e2e_smoke.py` 在本机基线即失败（3 个合成源被判定不可解码 → fallback，已用 `git stash` 复核与本次改动无关），未在本轮修复
+
+### 执行轮次 106（2026-09-13：e2e 冒烟 fallback=3 根因定位与修复——trim 临时名破坏 muxer 推断）
+
+**症状**：`scripts/e2e_smoke.py` 全要素可用却失败于 `发生 3 次源降级（fallback plate）`；成片亮度 `luma(t=2s)=44.2`（fallback 板），与本机 ffmpeg/Chromium 可用的事实矛盾。用 `git stash` 复核确认与本轮改动无关（基线同样失败）。
+
+**诊断过程**（诊断纪律：先建循环，再假设，再单变量探针）
+1. **循环**：合成与 e2e 完全相同的 testsrc2 源 → 直接调用 `RenderService._source_valid` + 原始 ffprobe（秒级、确定性）。**结果 True** → 假设"源不可解码"被否证。
+2. **打桩定位调用点**：monkeypatch `_generate_fallback` 打栈 → 确认调用方是 `_trim_one`（render.py:1530），且 `_final_ffmpeg_log` 给出真实错误：
+   `trim(...): [out#0 @ …] Error initializing the muxer for _cache\tmp\trim_cache\trim_<hash>…`
+3. **单变量探针**：同一输入分别写 `out.mp4` / `out.mp4.part` / `out.part.mp4` →
+   `rc=0` / **`rc≠0 且无产物`** / `rc=0`。ffmpeg 仅按输出后缀推断 muxer，`.part` 无效。
+
+**根因**：`215b2b7（2026-09-05）` 的"原子落位"改造把临时输出名写成 `out + ".part"`（即 `trim_x.mp4.part`），导致**每一次裁剪都失败** → `_fallback_count += 1` → 所有素材被替换为 fallback 板（成片看起来"渲染成功"但内容全错）。
+
+**修复**
+- ✅ 新增 `RenderService._atomic_temp_path()`：把媒体扩展名保留在末尾（`trim_x.part.mp4`），trim 两处分支统一走它；注释写明 ffmpeg 的 muxer 推断规则
+- ✅ `scripts/e2e_smoke.py`：`SMOKE PASS ✓` 的 ✓ 在 GBK 控制台抛 `UnicodeEncodeError`（跑通也报 exit 1）→ 改 ASCII，脚本可被 CI 直接调用
+
+**回归测试**（补上缺失的缝隙）
+- ✅ 新增 `tests/clipwright/test_render_trim_real.py`：① `_atomic_temp_path` 命名规则；② **真实 ffmpeg** 对照 `.mp4.part`（必失败）与 `.part.mp4`（必成功）；③ 真实裁剪一个合成源，断言 `_fallback_count == 0` 且无 `.part` 残留
+- ℹ️ 既有 `test_render_parallel.py` 等把 ffmpeg 边界整体 mock，只验证并行调度 → 这类"只有真实 ffmpeg 才知道"的错误没有任何缝隙可发现，这是本 bug 潜伏 8 天的原因
+
+**验证**：`scripts/e2e_smoke.py` → **SMOKE PASS，fallback=0，exit 0**；`luma(t=2s)` 由 44.2（fallback 板）→ **124.7**（真实素材）；trim 缓存目录 `.part` 残留 0
+
+### 执行轮次 107（2026-09-13：MG HTML 即时预览（P2-3）+ 前端测试收集修复）
+
+- ✅ **新端点 `POST /api/animation/mg/html`**：返回合成 HTML 本身，**不渲染、不起 Chromium**（后端与 `POST /preview` 共用抽出的 `_resolve_preview_mg`，背景守卫一致）；响应含 `html/duration_sec/width/height/fps/animation_id`
+- ✅ **前端 HTML 即时预览**（`src/features/preview/mgHtmlPreview.ts` + `admin/MgPreviewPage.tsx`）：iframe `sandbox="allow-scripts"`（**不开启 allow-same-origin**，LLM 生成的 HTML 不得在应用源执行脚本），只用 `postMessage` 双向通信；iframe 内驱动脚本用 `window.__timelines['main'].seek(t)` 逐帧驱动，配合播放/暂停与可拖时间轴，秒级看到与主管线同源的真效果；需要落片时仍可切「生成 MP4 预览」
+- ✅ **测试**：后端 `tests/clipwright/test_animation_mg_html.py` 5 条（HTML 契约/内联 mg_json/404/400/背景守卫）；前端 `src/features/preview/mgHtmlPreview.test.ts` 8 条（注入幂等、协议消息、状态解析、时间格式化）
+- ✅ **前端测试收集修复**：`vitest.config.ts` 的 exclude 增补 `_research/**`——外部仓库调研克隆（opencut/video-use/hyperframes）内含大量第三方 `.test.ts`，会把 `npm run test` 扫成 1120 个文件 / 551 失败；修复后 **72 文件 / 523 passed**，`tsc --noEmit` 与 `npm run build` 均通过
+- ✅ **文档**：`docs/api_reference.md` 补「动画」段（9 个端点 + `/mg/html` 请求/响应/前端安全约定）；`docs/frontend-backend-parity.md` 同步路由表与客户端矩阵
+
+### 执行轮次 108（2026-09-13：P2-1 上游动效配方库蒸馏——结构骨架 + 许可登记）
+
+- ✅ **配方库**：新增 `clipwright/animation/mg/knowledge/motion_recipes.yaml`（8 条配方：标题错峰揭示 / 数据冲击计数 / 左右对比 / 流程箭头链 / 引语卡片 / 中心辐射 / 柱状增长 / 聚焦推近）。每条含 `shot_types`、`keywords`、`intent`、`structure.beats`（时间点→做什么）、`layout`、`easing`、`avoid`（禁忌）、`source`
+- ✅ **加载与选取**：`animation/mg/knowledge/__init__.py` 提供 `load_pack/all_recipes/get_recipe/select_recipes/render_section`；选取为纯启发式（shot_type +3、关键词 +2、标题 +2，确定性，零 LLM 调用），无命中回退 `defaults`；片段长度封顶 3200 字符；库缺失/解析失败静默跳过
+- ✅ **提示词注入**：`MGGenerator._knowledge_section()` 在**首次生成 / schema 修复 / 质量批判 / 批判修复**四条路径一致注入（避免修复重试把设计拉离既定 beat 结构）；开关 `prompt.knowledge_pack`（默认 true）/ `prompt.knowledge_max_recipes`（默认 2，1-4）
+- ✅ **许可合规**：全部条目为本项目自行撰写的**结构与方法论提炼**（非原文，无任何 HTML/CSS/JS 片段），逐条登记来源仓库/路径/许可（hyperframes = Apache-2.0、video-use = MIT）；`THIRD_PARTY_NOTICES.md` 增加专门声明段
+- ✅ **测试**：新增 `tests/clipwright/test_mg_knowledge_pack.py` **29 条**——字段完整性、id 唯一、**许可白名单 + distilled 标记**、**禁止代码片段特征**（`<div`/`@keyframes`/`function(`/`gsap.`）、defaults 可解析、选取命中/回退/确定性/上限、段落渲染与长度上限、生成器四条注入路径与开关、库缺失不抛、YAML 头部来源说明
+- ✅ **回归**：MG/提示词子集 **445 passed**；后端全量见本轮收尾记录
+- ℹ️ **实现期自查发现并修复**：一次"看似无关"的编辑（删掉一行的换行）把 `_MG_ORCHESTRATION_CONSTRAINTS` 与下一行合并成语法错误，被测试收集阶段立即暴露（`generator.py:771`）——说明"编辑后必须跑一次 import/语法校验"这条纪律有效
+
+### 执行轮次 109（2026-09-13：V1 规则 2——无转场无损拼接，去掉二次编码）
+
+**背景**：裁剪阶段已把每段编码成最终参数（分辨率/fps/编码器/pix_fmt/SAR 统一且已 `setsar=1`），但旧实现拼接阶段仍用 `concat` **滤镜**再编码一遍 → 每个片段两代编码损失，整片还要重编一次（video-use 硬规则 2 所指）。
+
+- ✅ **新增无损拼接**：`RenderService._video_signature()`（ffprobe 取 codec/pix_fmt/WxH/fps/SAR）+ `_try_concat_copy()`（concat demuxer + `-c copy`）+ `_concat_segments` 在**无转场**时优先走它；`CLIPWRIGHT_CONCAT_COPY=0` 可关闭
+- ✅ **三重兜底**：任一指纹不一致 / copy 失败（产物无效）/ 开关关闭 → 记日志并回退既有 filter 拼接，行为不退化；有转场时**不**走 copy（转场必须重编码）
+- 🔍 **实拍探针发现并修复**：真实管线传给拼接的是**相对 CWD** 的 trim 缓存路径（`_cache/tmp/trim_cache/…`），而 ffconcat 的相对路径按**列表文件所在目录**解析 → 首版实现直接 `No such file or directory` 静默退化。已改为写入列表前 `Path(p).resolve()` 转绝对路径 + 正斜杠 + 单引号转义
+- ✅ **测试**：新增 `tests/clipwright/test_render_concat_copy.py` **10 条**（指纹探测、匹配片段走 copy 且时长=各段之和、参数不一致回退、开关、单输入空操作、**相对路径解析回归**、集成：无转场→`concat_copy` 产物 / 有转场→重编码路径 / 不一致→filter 回退）
+- ✅ **A/B 验收脚本**：新增 `scripts/verify_concat_copy.py`（同一条 3 片段无转场时间线，`copy=1/0` 各渲一次，预热 trim 缓存后对比）→ **VERIFY PASS**：copy 路径 9 次编码调用 / 1.4s / `copy-concat=True` / `filter-concat=False`；filter 路径 11 次 / 1.6s；两路 PSNR **61.7 dB**、时长均 6.00s
+- ✅ **回归**：全量见轮次收尾记录
+
+### 执行轮次 110（2026-09-13：P1-5 变量参数化——`data-composition-variables` / `--variables`）
+
+**目标**：MG 产物从"渲染时替换占位符的静态 HTML"升级为"声明并绑定变量的合成"，让同一份 HTML 可由变量驱动（也是上游 `--batch` 批量出片的前置条件）。
+
+- ✅ **声明**：`MGRenderer.build_variables()` → `[{id,type,label,default}]` 写入 `<html data-composition-variables="…">`；类型自动推断 number/color/string；`default` 取本次运行值（模板 default 兜底）——必须如此，因为上游用声明里的 default 填 `data-var-text`
+- ✅ **绑定**（仅整值占位符，混合文案仍内联替换）：文本 `data-var-text`；标量样式 `var(--key, 解析值)`（上游把标量变量挂成 `--key`，`var()` 兜底保证不传变量时与旧行为一致）；图片 `data-var-src` + 保留兜底 `src`（满足 lint `media_variable_src_no_fallback`）
+- ✅ **渲染接线**：`render_mg_html_to_mov(..., variables=…)` 追加 `--variables '<json>'`；预览端点传本次参数并回显 `variables`（`/mg/html` 响应新增字段）；主管线模板路径传 `mg_params`；`CLIPWRIGHT_HF_STRICT_VARIABLES=1` → `--strict-variables`（CI 用）
+- 🔍 **顺带修掉一处真实缺陷**：绑定变量值为空时兜底文本必须为空串，绝不能让 `{key}` 进画面——由此发现 **`mg_data_counter` / `mg_logo_intro` 两个内置模板残留未声明的 `{text}`**（旧的双保险只在生成器路径生效，直接渲染模板就会把 `{text}` 画到屏幕上）。修复后新增测试锁定"14 个模板零残留占位符"
+- ✅ **测试**：新增 `tests/clipwright/test_mg_variables.py` **13 条**（声明形状/类型推断/default 取值/属性 JSON 安全、文本与颜色绑定、混合文案仍内联、空值不泄漏占位符、图片 var-src 兜底、全模板零残留、`--variables`/`--strict-variables` 命令行接线、None→空串）；同步更新 4 处钉住旧内联写法的断言（`test_mg_placeholder_fill` / `test_mg_renderer` / `test_mg_background_transparency`，改为同时接受 `var(--k, 值)` 形式）
+- ✅ **差分验收**：新增 `scripts/verify_mg_variables.py` → **VERIFY PASS**：不传变量渲染可见 2.394%（兜底生效）／`--variables '{"text":""}'` 可见 **0.000%**（证明变量真驱动文本）／换更长文案可见 6.662%；lint 0 error
+- ✅ **回归**：后端全量 **1899 passed** / 1 skipped / 1 xfailed（仅剩 2 条既有 plugin 子进程编码问题）
+- ⏸ **本轮未做（有意）**：`hyperframes check` 进生成期（每 MG 多起一次 Chrome）、`snapshot` 视觉自评（需视觉模型 Key）、`--variables/--batch` 参数化（需重构占位符链路）、registry/skills 蒸馏成 few-shot 库、`@hyperframes/producer` 常驻 sidecar、前端 `<hyperframes-player>` 预览——理由与优先级见采纳报告 §3.4
+- 📌 **许可合规**：本轮未复制任何第三方代码；hyperframes 仅以外部 CLI 调用（Apache-2.0），提示词规则为方法论提炼并已标注来源。`THIRD_PARTY_NOTICES.md` 仍待建（采纳报告 §2.3 已给模板）
