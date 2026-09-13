@@ -180,15 +180,20 @@ async def list_contributions(
             continue
         if slot and str(item.meta.get("slot", "")) != slot:
             continue
+        meta = dict(item.meta)
         entry: dict[str, object] = {
             "kind": item.kind.value,
             "id": item.id,
             "owner": owner_id,
-            "meta": dict(item.meta),
+            "meta": meta,
         }
+        # 所有 kind 统一透传前端消费的顶层字段（export_preset/shortcut/
+        # timeline.tool 等非 ui_slot 类同样需要 payload/icon/visibleWhen）
+        for key in ("title", "order", "icon", "visibleWhen", "payload"):
+            if key in meta:
+                entry[key] = meta[key]
         if item.kind is ContributionKind.UI_SLOT:
             # D-2 渲染器直接消费 SlotContribution 形状（slot/title/order/layout…）
-            meta = dict(item.meta)
             entry.update({
                 "slot": str(meta.get("slot", "")),
                 "title": str(meta.get("title") or item.id),
