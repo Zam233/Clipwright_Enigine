@@ -522,6 +522,8 @@ async def unregister_plugin(plugin_id: str, request: Request = None) -> dict[str
     except Exception as e:
         from clipwright.config import logger
         logger.warning("插件 Prompt 清理失败 %s: %s", plugin_id, e)
+    # B5：卸载改变了贡献集合，失效读路径缓存（扫盘 + ui.json）
+    _invalidate_plugin_caches()
     return {"status": "unregistered", "plugin_id": plugin_id}
 
 
@@ -603,6 +605,8 @@ async def put_plugin_config(plugin_id: str, request: Request) -> dict[str, objec
             fdef["value"] = orig_val if isinstance(orig_val, str) and orig_val else ""
     _loader.save_config(plugin_id, data)
     _loader.reload(plugin_id)
+    # B5：重载会重新注册贡献（例如钩子/槽位随配置变化），失效读路径缓存
+    _invalidate_plugin_caches()
     return {"status": "ok", "plugin_id": plugin_id}
 
 
@@ -628,6 +632,8 @@ async def delete_plugin_config(plugin_id: str, request: Request) -> dict[str, st
         plugin.config = _extract_flat_values(_loader._get_merged_config(plugin_id))
 
     _loader.reload(plugin_id)
+    # B5：重载后贡献集合可能变化，失效读路径缓存
+    _invalidate_plugin_caches()
     return {"status": "ok", "plugin_id": plugin_id}
 
 
