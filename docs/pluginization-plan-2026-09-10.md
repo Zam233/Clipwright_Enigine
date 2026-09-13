@@ -1032,7 +1032,15 @@ def _construct_client(provider: str, api_key, base_url, model: str,
 - **浏览器侧** ✅：`e2e/plugin-slots.spec.ts`（2 条，Playwright + route mock 驱动启用/禁用两态）——启用：`settings.section` 与 `page` 两个 slot 在真实浏览器渲染；禁用：page 显示「不存在或已被禁用」、settings 分区消失。全量 e2e 套件 **39 passed**。
 - **顺带修正**：`shortcut` 是 slot 名而非独立 kind（示例插件与前端钩子统一为 `ui_slot`）；`/contributions` 对所有 kind 统一透传 `title/order/icon/visibleWhen/payload`；`PluginLayoutRenderer` 支持 `string` 作为 `input` 别名（后端配置控件惯用名）。
 
-### 待办队列（下一批）
+### M8 · 受信任 bundle 档 —— ✅ 完成（默认关闭）
 
-1. **M8（可选，且被外部阻塞）**：受信任 bundle 档（iframe 沙箱 + postMessage）。方案明确「默认关闭」，且其前置是 **Gate G-2 的剩余一半（签名强制）**——该半与加载器 `sys.path` 收敛同属被外部安全扫描器阻断的文件，故 M8 顺延。
-2. **人工项**：加载器的 `sys.path` 收敛 + 签名强制（两者同文件，阻断未解除）。
+- **后端门禁（fail-closed，全部在端点层实现）**：`GET /api/plugin/{id}/bundle` 依次校验——设置 `plugin_allow_ui_bundle`（默认 **False**）→ 插件已发现且存在 `bundle.html` → **manifest 带 `signature`**（受信任档要求签名）；通过才返回 HTML，附严格 CSP（`default-src 'self' 'unsafe-inline' data: blob:`）与 `nosniff`。签名门禁落在端点层，**不依赖被外部安全扫描器阻断的加载器文件**。
+- **前端宿主**：`PluginBundleFrame` 以 `<iframe sandbox="allow-scripts">` 加载（无 same-origin，插件拿不到宿主 DOM/存储/凭据）；postMessage 协议 `ready`/`resize`/`call`/`result`——宿主代发 API 请求，只接受本 iframe 来源的消息，resize 高度钳制 80–720。`Slot` 在 `payload.bundle=true` 时由 iframe 承载，否则走声明式 layout。
+- 测试：后端 +5（默认拒绝 / 无签名拒绝 / 签名放行带 CSP / 缺文件 404 / 未知插件 404）；前端 +2（sandbox 与 src 断言 / Slot 分流）。
+- 回归：后端 1622 passed；前端 452 passed + tsc 0 + build；Playwright 全量 39 passed。
+
+### 待办队列
+
+1. **人工项（唯一）**：加载器的 `sys.path` 收敛（与审计 P1-14 同源，外部安全扫描器阻断该文件写入）——解除后即可把 M8 的签名门禁从端点层下沉到加载层，并恢复 A-4 的原方案形态。
+
+**插件化方案 M1–M8 全部落地。**
