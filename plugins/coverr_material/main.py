@@ -12,6 +12,7 @@ from typing import Any, Optional
 import httpx
 
 from clipwright.material.base import MaterialSource
+from clipwright.material.base import close_source_sync
 from clipwright.plugins import CapabilityPlugin
 from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.material import MaterialAsset, MaterialType
@@ -80,12 +81,9 @@ class CoverrMaterialPlugin(CapabilityPlugin):
         )]
 
     def shutdown(self) -> None:
+        # A3：同步上下文里 create_task 永不 await（连接泄漏）→ 用同步安全助手
         if self._source:
-            import asyncio
-            try:
-                asyncio.create_task(self._source.close())
-            except Exception:
-                pass
+            close_source_sync(self._source)
 
 
 __all__ = ["CoverrMaterialPlugin"]

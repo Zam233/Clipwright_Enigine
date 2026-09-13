@@ -15,7 +15,9 @@ from typing import Any, Optional
 
 import httpx
 
+from clipwright.config import logger
 from clipwright.material.base import MaterialSource
+from clipwright.material.base import close_source_sync
 from clipwright.plugins import CapabilityPlugin
 from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.material import MaterialAsset, MaterialType
@@ -132,6 +134,8 @@ class PixabayMaterialPlugin(CapabilityPlugin):
         """新契约（P1 迁移）：配好 api_key 才贡献素材源。"""
         api_key = (self.config or {}).get("api_key", "") or os.environ.get("PIXABAY_API_KEY", "")
         if not api_key:
+            logger.info("[PixabayPlugin] 未配置 api_key（config.yaml 或 PIXABAY_API_KEY）"
+                        "——本次不贡献素材源")
             return []
         self._source = PixabayMaterialSource(api_key=api_key)
         return [Contribution(
@@ -139,12 +143,9 @@ class PixabayMaterialPlugin(CapabilityPlugin):
         )]
 
     def shutdown(self) -> None:
+        # A3：同步安全关闭（原 create_task 永不 await）
         if self._source:
-            import asyncio
-            try:
-                asyncio.create_task(self._source.close())
-            except Exception:
-                pass
+            close_source_sync(self._source)
 
 
 __all__ = ["PixabayMaterialPlugin"]

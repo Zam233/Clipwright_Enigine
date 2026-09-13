@@ -49,12 +49,19 @@ class ToolRegistry:
                     "拒绝插件 %s 覆盖内置工具 %s（内置优先）", new_src, tool.name,
                 )
                 return
-            logger.warning(
-                "工具注册冲突: %s 已被 %s 注册，现被 %s 覆盖",
-                tool.name, old_src, new_src,
-            )
-            # 被覆盖的旧实现保存到影子表，注销时恢复
-            cls._shadowed[tool.name] = existing
+            if old_src == new_src and old_src != "builtin":
+                # 同一 owner 的重复注册 = 重载/重复加载，不是「覆盖」：
+                # 压影子表会让卸载后 P1-13 的恢复逻辑把**陈旧代理**放回来
+                # （已实测：多 loader 实例加载同一插件后 unload，工具复活）。
+                cls._shadowed.pop(tool.name, None)
+                logger.debug("同源重复注册工具 %s（%s），直接替换", tool.name, new_src)
+            else:
+                logger.warning(
+                    "工具注册冲突: %s 已被 %s 注册，现被 %s 覆盖",
+                    tool.name, old_src, new_src,
+                )
+                # 被覆盖的旧实现保存到影子表，注销时恢复
+                cls._shadowed[tool.name] = existing
         tool._plugin_id = plugin_id  # type: ignore[attr-defined]
         cls._tools[tool.name] = tool
 
@@ -79,13 +86,31 @@ class ToolRegistry:
 
     @classmethod
     def unregister_by_plugin(cls, plugin_id: str) -> list[str]:
-        """批7：注销插件注册的全部工具，返回被移除的工具名。"""
+        """批7：注销插件注册的全部工具，返回被移除的工具名。
+
+        影子表处理（P1-13 完整化）：
+        - 被本插件覆盖的**他人**实现 → 卸载时恢复（此前只有 `unregister(name)`
+          会恢复，按插件批量注销时被覆盖项永久消失）；
+        - **同源**陈旧代理 → 直接丢弃（它是重载/重复加载的残留，恢复它等于
+          让已卸载插件的工具复活）。
+        """
         doomed = [
             t.name for t in cls._tools.values()
             if getattr(t, "_plugin_id", "") == plugin_id
         ]
         for n in doomed:
             cls._tools.pop(n, None)
+            shadow = cls._shadowed.pop(n, None)
+            if shadow is None:
+                continue
+            if getattr(shadow, "_plugin_id", "") == plugin_id:
+                continue  # 同源残留：丢弃
+            cls._tools[n] = shadow  # 恢复被本插件覆盖的他人实现
+            logger.info("工具 %s 已恢复为被覆盖的实现（卸载 %s）", n, plugin_id)
+        # 兜底：同源影子项即使不在 doomed 里也要清掉
+        for name, shadow in list(cls._shadowed.items()):
+            if getattr(shadow, "_plugin_id", "") == plugin_id:
+                cls._shadowed.pop(name, None)
         return doomed
 
     @classmethod

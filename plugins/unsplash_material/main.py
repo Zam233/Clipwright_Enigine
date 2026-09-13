@@ -15,7 +15,9 @@ from typing import Any, Optional
 
 import httpx
 
+from clipwright.config import logger
 from clipwright.material.base import MaterialSource
+from clipwright.material.base import close_source_sync
 from clipwright.plugins import CapabilityPlugin
 from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.material import MaterialAsset, MaterialType
@@ -100,6 +102,8 @@ class UnsplashMaterialPlugin(CapabilityPlugin):
         """新契约（P1 迁移）：配好 access_key 才贡献素材源。"""
         key = (self.config or {}).get("access_key", "") or os.environ.get("UNSPLASH_ACCESS_KEY", "")
         if not key:
+            logger.info("[UnsplashPlugin] 未配置 access_key（config.yaml 或 "
+                        "UNSPLASH_ACCESS_KEY）——本次不贡献素材源")
             return []
         self._source = UnsplashMaterialSource(access_key=key)
         return [Contribution(
@@ -107,12 +111,9 @@ class UnsplashMaterialPlugin(CapabilityPlugin):
         )]
 
     def shutdown(self) -> None:
+        # A3：同步安全关闭（原 create_task 永不 await）
         if self._source:
-            import asyncio
-            try:
-                asyncio.create_task(self._source.close())
-            except Exception:
-                pass
+            close_source_sync(self._source)
 
 
 __all__ = ["UnsplashMaterialPlugin"]

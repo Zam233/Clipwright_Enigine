@@ -403,7 +403,20 @@ class PluginLoader:
         - 失败一律转 `PluginLoadError` 并写错误通道，不影响其它插件加载。
         """
         from clipwright.plugins.runtime import PluginHost, RpcError
+        from clipwright.plugins.runtime.handle import SubprocessPluginHandle
         from clipwright.plugins.runtime.proxies import make_proxy
+
+        # B1：子进程是**不可信**运行形态，必须走「声明即授权」——manifest 必须
+        # 逐条列出贡献 id，否则拒绝加载（fail-closed）。缺少声明时 worker 声明
+        # 什么都无法核对，等于把权限模型关掉。
+        if not manifest.contributions:
+            get_error_bus().record(
+                plugin_id, "load", "子进程插件未声明 contributions（声明即授权）",
+            )
+            raise PluginLoadError(
+                f"Plugin '{plugin_id}' 使用 runtime=subprocess 但未在 manifest 的 "
+                "contributions 中声明任何贡献；子进程档要求逐条声明（声明即授权）"
+            )
 
         runtime_config = dict(getattr(manifest, "runtime_config", {}) or {})
         host = PluginHost(
@@ -425,7 +438,7 @@ class PluginLoader:
 
         self._hosts[plugin_id] = host
         try:
-            self._register_declarations(plugin_id, host, declarations, make_proxy)
+            self._register_declarations(plugin_id, host, declarations, make_proxy, manifest)
         except Exception:
             self._hosts.pop(plugin_id, None)
             host.stop()
@@ -439,6 +452,12 @@ class PluginLoader:
             verified=bool(manifest.signature) and verify_manifest_signature(manifest),
             dependency_ok=True,
         )
+        # A1：登记宿主侧句柄——load() 不再返回 None（否则 API 404、
+        # 安装服务回滚删插件、get()/reload()/幂等守卫全部失效）
+        handle = SubprocessPluginHandle(manifest, host, _decrypt_flat(
+            self._get_merged_config(plugin_id, target_schema=manifest.config_schema_version)
+        ))
+        self._plugins[plugin_id] = handle
         try:
             from clipwright import audit
             audit.record("plugin_load", "", {
@@ -447,16 +466,28 @@ class PluginLoader:
             })
         except Exception:
             pass
-        return None  # 子进程插件没有宿主侧实例
+        return handle
 
     def _register_declarations(self, plugin_id: str, host: Any,
-                               declarations: list[dict[str, Any]], make_proxy: Any) -> None:
-        """把 worker 的声明转成代理对象并经门面注册（声明即授权同样生效）。"""
+                               declarations: list[dict[str, Any]], make_proxy: Any,
+                               manifest: Any = None) -> None:
+        """把 worker 的声明转成代理对象并经门面注册（声明即授权同样生效）。
+
+        B1：先按 manifest 的声明建立白名单，再注册——worker 若声明了 manifest
+        没写的 id，会在这里被门面拒绝（与进程内新契约插件同一套权限模型）。
+        """
         from clipwright.plugins.contribution import (
             Contribution,
             ContributionKind,
             ContributionRegistry,
         )
+
+        declared_scope = {
+            f"{str(getattr(d, 'kind', '') or '')}:{str(getattr(d, 'id', '') or '')}"
+            for d in list(getattr(manifest, "contributions", []) or [])
+        }
+        if declared_scope:
+            ContributionRegistry.declared_scope(plugin_id, declared_scope)
 
         _DECLARATIVE_KINDS = {
             ContributionKind.UI_SLOT, ContributionKind.EXPORT_PRESET,
@@ -542,6 +573,42 @@ class PluginLoader:
             PluginPromptRegistry.unregister(plugin_id)
         except Exception as e:
             logger.warning("插件 %s Prompt 注销异常: %s", plugin_id, e)
+        # A1/A4：素材源按归属回收（此前依赖插件自己在 shutdown 里清，
+        # 子进程档没有宿主实例 → 泄漏；迁移后的插件也不再手写注销）
+        try:
+            from clipwright.material.registry import MaterialRegistry
+            owned_sources = [
+                sid for sid, src in list(getattr(MaterialRegistry, "_sources", {}).items())
+                if getattr(src, "_plugin_id", "") == plugin_id
+            ]
+            for sid in owned_sources:
+                MaterialRegistry.unregister(sid)
+            if owned_sources:
+                logger.info("插件 %s 素材源已注销: %s", plugin_id, owned_sources)
+        except Exception as e:
+            logger.warning("插件 %s MaterialSource 注销异常: %s", plugin_id, e)
+        # A4：动画定义与风格解释器回收（旧轨插件也会直注册，不能只靠门面）
+        try:
+            from clipwright.animation.registry import AnimationRegistry
+            removed_anims = AnimationRegistry.unregister_plugin(plugin_id)
+            if removed_anims:
+                logger.info("插件 %s 动画已注销: %d 个", plugin_id, len(removed_anims))
+        except Exception as e:
+            logger.warning("插件 %s Animation 注销异常: %s", plugin_id, e)
+        try:
+            from clipwright.services.style_interpreter import StyleInterpreter
+            if StyleInterpreter.unregister_plugin(plugin_id):
+                logger.info("插件 %s 风格解释器已回收", plugin_id)
+        except Exception as e:
+            logger.warning("插件 %s StyleInterpreter 注销异常: %s", plugin_id, e)
+        # A1：门面账本回收（子进程档没有宿主实例，走不到 _facade_shutdown()）
+        try:
+            from clipwright.plugins.contribution import ContributionRegistry
+            recycled = ContributionRegistry.unregister_plugin(plugin_id)
+            if recycled:
+                logger.info("插件 %s 门面账本已回收: %d 条", plugin_id, len(recycled))
+        except Exception as e:
+            logger.warning("插件 %s 门面账本回收异常: %s", plugin_id, e)
 
     def get(self, plugin_id: str) -> Optional[BasePlugin]:
         return self._plugins.get(plugin_id)
@@ -823,15 +890,29 @@ class PluginLoader:
     def _instantiate_plugin(
         self, module: object, manifest: PluginManifest
     ) -> Optional[BasePlugin]:
-        """在导入的模块中查找并实例化插件类。"""
+        """在导入的模块中查找并实例化插件类。
+
+        A2 修复：只接受**属于本插件**的类（定义在入口模块内，或插件包内的子模块）。
+        此前单纯扫 `dir(module)` 取第一个具体 BasePlugin 子类，会把入口模块里
+        `from clipwright.plugins import CapabilityPlugin` 这类**导入的基类**当成
+        插件类（字母序 'C' 排在 'T' 前）——`text_animations` 因此实例化了基类，
+        真正的 `TextAnimationsPlugin.initialize()`（注册 25 个工具）从未执行。
+        """
+        module_name = str(getattr(module, "__name__", "") or "")
+        package_prefix = f"{manifest.id}."
+
+        def _belongs_to_plugin(attr: object) -> bool:
+            owner = str(getattr(attr, "__module__", "") or "")
+            return owner == module_name or owner.startswith(package_prefix)
 
         def _is_concrete_plugin(attr: object) -> bool:
-            """判断是否是 BasePlugin 的非抽象子类。"""
+            """判断是否是 BasePlugin 的非抽象子类，且归属于本插件。"""
             return (
                 isinstance(attr, type)
                 and issubclass(attr, BasePlugin)
                 and attr is not BasePlugin
                 and not bool(getattr(attr, "__abstractmethods__", []))
+                and _belongs_to_plugin(attr)
             )
 
         # 优先扫描 __all__ 导出

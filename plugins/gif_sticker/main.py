@@ -7,7 +7,9 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 import httpx
+from clipwright.config import logger
 from clipwright.material.base import MaterialSource
+from clipwright.material.base import close_source_sync
 from clipwright.plugins import CapabilityPlugin
 from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.material import MaterialAsset, MaterialType
@@ -17,7 +19,9 @@ class GiphySource(MaterialSource):
     source_id: str = "giphy"
     source_name: str = "Giphy GIF 库"
     def __init__(self, api_key: str = "") -> None:
-        self._api_key = api_key or os.environ.get("GIPHY_API_KEY", "dc6zaTOxFJmzC")
+        # C4：不再回退到源码里硬编码的 Giphy 公共 beta key（全用户共享限流额度，
+        # 且属明文凭据）；未配置时由 contributions() 给出可读提示并零贡献
+        self._api_key = api_key or os.environ.get("GIPHY_API_KEY", "")
         self._client = httpx.AsyncClient(base_url="https://api.giphy.com/v1", timeout=10)
 
     async def search(self, query: str, top_k: int = 10, media_type: str = "all", **kw: Any) -> list[tuple[MaterialAsset, float]]:
@@ -49,17 +53,20 @@ class GifStickerPlugin(CapabilityPlugin):
     def __init__(self) -> None:
         self._source: Optional[GiphySource] = None
     def contributions(self) -> list[Any]:
-        """新契约（P1 迁移）：Giphy GIF 素材源。"""
-        # 优先使用插件配置 config.yaml 的 api_key，其次环境变量（最终回退公开测试 key）
+        """新契约（P1 迁移）：Giphy GIF 素材源（需 api_key / GIPHY_API_KEY）。"""
         cfg = self.config or {}
-        self._source = GiphySource(api_key=cfg.get("api_key", ""))
+        api_key = cfg.get("api_key", "") or os.environ.get("GIPHY_API_KEY", "")
+        if not api_key:
+            logger.info("[GifSticker] 未配置 api_key（config.yaml 或 GIPHY_API_KEY）"
+                        "——本次不贡献素材源")
+            return []
+        self._source = GiphySource(api_key=api_key)
         return [Contribution(
             ContributionKind.MATERIAL_SOURCE, self._source.source_id, self._source,
         )]
     def shutdown(self) -> None:
+        # A3：同步安全关闭（原 create_task 永不 await）
         if self._source:
-            import asyncio
-            try: asyncio.create_task(self._source.close())
-            except Exception: pass
+            close_source_sync(self._source)
 
 __all__ = ["GifStickerPlugin"]

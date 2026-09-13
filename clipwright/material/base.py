@@ -43,3 +43,38 @@ class MaterialSource(ABC):
     async def list_all(self) -> list[MaterialAsset]:
         """列出所有素材（用于管理界面）。"""
         return []
+
+    async def close(self) -> None:
+        """释放源持有的资源（HTTP 客户端等）。默认无事可做。"""
+        return None
+
+
+def close_source_sync(source: object) -> bool:
+    """在**同步上下文**安全地关闭素材源（A3 修复）。
+
+    插件的 `shutdown()` 是同步契约，此前各插件写 `asyncio.create_task(src.close())`：
+    没有运行中的事件循环时该协程永远不会被 await（RuntimeWarning: coroutine
+    ... was never awaited），httpx 连接一直不释放。这里统一处理：
+
+    - 有运行中的循环 → 交给该循环调度（当前线程内有 loop 的情况）；
+    - 没有 → `asyncio.run()` 直接跑完（同步路径/线程池卸载路径）。
+
+    返回是否真的执行了关闭。
+    """
+    import asyncio
+
+    closer = getattr(source, "close", None)
+    if not callable(closer):
+        return False
+    try:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            loop.create_task(closer())
+        else:
+            asyncio.run(closer())
+        return True
+    except Exception:  # noqa: BLE001 — 关闭失败不阻断卸载
+        return False

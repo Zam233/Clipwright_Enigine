@@ -14,7 +14,9 @@ from typing import Any, Optional
 
 import httpx
 
+from clipwright.config import logger
 from clipwright.material.base import MaterialSource
+from clipwright.material.base import close_source_sync
 from clipwright.plugins import CapabilityPlugin
 from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.material import MaterialAsset, MaterialType
@@ -224,6 +226,9 @@ class PexelsMaterialPlugin(CapabilityPlugin):
         # 优先使用 config.yaml 中的 api_key，其次环境变量
         api_key = (self.config or {}).get("api_key", "") or os.environ.get("PEXELS_API_KEY", "")
         if not api_key:
+            # B4：迁移前这里有一行 print 提示；改成结构化日志，用户仍能查到原因
+            logger.info("[PexelsPlugin] 未配置 api_key（config.yaml 或 PEXELS_API_KEY）"
+                        "——本次不贡献素材源")
             return []
         self._source = PexelsMaterialSource(api_key=api_key)
         return [Contribution(
@@ -231,12 +236,9 @@ class PexelsMaterialPlugin(CapabilityPlugin):
         )]
 
     def shutdown(self) -> None:
+        # A3：同步安全关闭（原 create_task 永不 await）
         if self._source:
-            import asyncio
-            try:
-                asyncio.create_task(self._source.close())
-            except Exception:
-                pass
+            close_source_sync(self._source)
 
 
 __all__ = ["PexelsMaterialPlugin"]

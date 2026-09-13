@@ -15,7 +15,9 @@ from typing import Any, Optional
 
 import httpx
 
+from clipwright.config import logger
 from clipwright.material.base import MaterialSource
+from clipwright.material.base import close_source_sync
 from clipwright.plugins import CapabilityPlugin
 from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.material import MaterialAsset, MaterialType
@@ -142,16 +144,16 @@ class BGMLibraryPlugin(CapabilityPlugin):
             items.append(Contribution(
                 ContributionKind.MATERIAL_SOURCE, src.source_id, src,
             ))
+        if not items:
+            # B4：迁移前的 print 提示改为结构化日志（用户仍能查到为什么没有 BGM 源）
+            logger.info("[BGMPlugin] 未配置 FREESOUND_API_KEY 与 BGM_LOCAL_DIR"
+                        "——本次不贡献素材源")
         return items
 
     def shutdown(self) -> None:
-        import asyncio
+        # A3：同步安全关闭（原 create_task 永不 await）
         for src in self._sources:
-            if hasattr(src, 'close'):
-                try:
-                    asyncio.create_task(src.close())
-                except Exception:
-                    pass
+            close_source_sync(src)
 
 
 __all__ = ["BGMLibraryPlugin"]

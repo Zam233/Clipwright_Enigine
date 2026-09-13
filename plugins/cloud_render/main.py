@@ -24,6 +24,7 @@ class CloudRenderPlugin(CapabilityPlugin):
         cfg = self.config or {}
         server_url = cfg.get("server_url", "")
         if not server_url:
+            logger.info("[CloudRender] 未配置 server_url——本次不贡献云渲染钩子")
             return []
         return [Contribution(
             ContributionKind.HOOK, "cloud_render_pre_render",

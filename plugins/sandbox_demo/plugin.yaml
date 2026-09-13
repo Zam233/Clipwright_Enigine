@@ -12,3 +12,11 @@ permissions:
   - network
 runtime_config:
   call_timeout: 10
+# B1：子进程档强制「声明即授权」——每条贡献都必须在这里声明
+api_version: "2"
+contributions:
+  - { kind: tool, id: sandbox_echo }
+  - { kind: tool, id: sandbox_write_probe }
+  - { kind: hook, id: sandbox_pre_render }
+  - { kind: ui_slot, id: sandbox_panel }
+  - { kind: prompt, id: sandbox_edit_prompt }

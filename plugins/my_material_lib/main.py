@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from clipwright.config import logger
 from clipwright.material import (
     JsonCatalogSource,
     RagKnowledgeSource,
@@ -41,6 +42,10 @@ class MyMaterialLibPlugin(CapabilityPlugin):
         import os
 
         if os.environ.get("MY_MATERIAL_LIB_ENABLED", "").lower() not in ("1", "true", "yes"):
+            # B4/C5：默认禁用是刻意的（轮 81），但要给出可查原因，
+            # 否则管理页只看到「已加载、零贡献」
+            logger.info("[MyMaterialLib] 示例素材源默认禁用（设 MY_MATERIAL_LIB_ENABLED=1 "
+                        "启用；catalog/URL 指向示例地址，启用会让管线拿到不可用素材）")
             return []
 
         plugin_dir = Path(__file__).resolve().parent
