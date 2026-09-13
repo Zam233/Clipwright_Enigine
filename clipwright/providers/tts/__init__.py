@@ -21,9 +21,13 @@ _TTS_ALIASES = {
 
 @dataclass(frozen=True)
 class TtsProviderEntry:
-    """TTS provider 的门面载荷：工厂 + 默认模型 + 是否需要上传器。"""
+    """TTS provider 的门面载荷：工厂 + 默认模型 + 是否需要上传器。
+
+    B4：工厂签名为 ``factory(uploader, creds)``——creds 为 Provider 源
+    「语音 TTS」角色绑定解析出的凭据（未绑定时为空凭据，行为回退 settings）。
+    """
     name: str
-    factory: Callable[[Any], Any]
+    factory: Callable[..., Any]
     default_model: Callable[[], str]
     needs_uploader: bool = False
 
@@ -50,17 +54,17 @@ def ensure_tts_providers_registered() -> None:
 
         if name == "qwen-tts":
             return TtsProviderEntry(
-                name=name, factory=lambda uploader: _voice.QwenTTSProvider(),
+                name=name, factory=lambda uploader, creds=None: _voice.QwenTTSProvider(creds),
                 default_model=lambda: settings.tts_qwen_model,
             )
         if name == "cosyvoice":
             return TtsProviderEntry(
-                name=name, factory=lambda uploader: _voice.CosyVoiceProvider(uploader),
+                name=name, factory=lambda uploader, creds=None: _voice.CosyVoiceProvider(uploader, creds),
                 default_model=lambda: settings.tts_cosyvoice_model,
                 needs_uploader=True,
             )
         return TtsProviderEntry(
-            name=name, factory=lambda uploader: _voice.MiniMaxProvider(uploader),
+            name=name, factory=lambda uploader, creds=None: _voice.MiniMaxProvider(uploader, creds),
             default_model=lambda: settings.tts_minimax_model,
             needs_uploader=True,
         )

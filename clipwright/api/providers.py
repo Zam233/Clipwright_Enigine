@@ -41,6 +41,42 @@ async def create_provider(payload: dict[str, Any] = Body(...), request: Request 
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.get("/available")
+async def available_providers(request: Request = None) -> dict[str, Any]:
+    """各类型可选的 provider 名（**门面驱动**，含插件贡献）。
+
+    P4/P5：前端下拉的选项来源必须是 ContributionRegistry，而不是硬编码列表——
+    插件注册的 llm_provider/tts_provider/embedding_provider/rerank_provider
+    在这里自动出现（启停插件即时生效）。
+    """
+    _require_admin(request)
+    from clipwright.providers.embedding import embedding_provider_names
+    from clipwright.providers.llm import ensure_llm_providers_registered
+    from clipwright.providers.rerank import rerank_provider_names
+    from clipwright.providers.tts import ensure_tts_providers_registered, tts_provider_names
+    from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+
+    ensure_llm_providers_registered()
+    ensure_tts_providers_registered()
+    out: dict[str, list[str]] = {}
+    for kind, names in (
+        (ContributionKind.LLM_PROVIDER, None),
+        (ContributionKind.TTS_PROVIDER, None),
+        (ContributionKind.EMBEDDING_PROVIDER, embedding_provider_names),
+        (ContributionKind.RERANK_PROVIDER, rerank_provider_names),
+    ):
+        listed = names() if names else [c.id for _, c in ContributionRegistry.list(kind)]
+        out[kind.value] = sorted(set(listed))
+    # 角色 ←→ 期望的 provider 类型（前端把「角色分配」渲染到对应 tab）
+    out["role_kinds"] = {
+        "main": "llm", "flash": "llm", "vision": "llm",
+        "embed": "embedding", "rerank": "rerank", "tts": "tts",
+    }
+    # tts_provider 的别名（历史 id → 规范 id）也要给前端做兼容显示
+    out["tts_aliases"] = {"qwen_tts": "qwen-tts"}
+    return out
+
+
 @router.get("/roles")
 async def get_roles(request: Request = None) -> dict[str, Any]:
     _require_admin(request)

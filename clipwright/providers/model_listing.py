@@ -35,7 +35,10 @@ async def list_models_for_source(provider: str, resolved: dict[str, Any]) -> lis
 
     try:
         import httpx
-        async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+        kwargs: dict[str, Any] = {"timeout": timeout, "headers": headers}
+        if resolved.get("proxy"):
+            kwargs["proxy"] = str(resolved["proxy"])
+        async with httpx.AsyncClient(**kwargs) as client:
             resp = await client.get(url)
             if resp.status_code >= 400:
                 logger.warning("模型列表拉取失败 %s: HTTP %s", url, resp.status_code)

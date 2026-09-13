@@ -19,6 +19,7 @@ import re
 import subprocess
 import threading
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -317,8 +318,51 @@ class PublicUploadManager:
 # ──────────────────────────────────────────────
 
 
+@dataclass
+class TtsCredentials:
+    """TTS 源凭据（B4）——Provider 源绑定「语音 TTS」角色时注入 provider。
+
+    字段为空的项回退既有 settings 行为；`timeout_sec`/`proxy`/`headers`
+    直接落到 httpx 传输层（源里配了就生效，不是只存不用）。
+    """
+
+    api_key: str = ""
+    base_url: str = ""
+    timeout_sec: float = 0.0
+    proxy: str = ""
+    headers: dict = field(default_factory=dict)
+
+    def merge_headers(self, headers: dict) -> dict:
+        merged = dict(headers)
+        merged.update({str(k): str(v) for k, v in (self.headers or {}).items()})
+        return merged
+
+    def client_kwargs(self, timeout: float = 120.0) -> dict:
+        kwargs: dict = {"timeout": float(self.timeout_sec or timeout)}
+        if self.proxy:
+            kwargs["proxy"] = self.proxy
+        return kwargs
+
+
 class BaseVoiceProvider(abc.ABC):
-    """声音服务提供者的抽象基类（仿 STTService）。"""
+    """声音服务提供者的抽象基类（仿 STTService）。
+
+    B4：Provider 源绑定「语音 TTS」角色后，凭据经 `TtsCredentials` 注入——
+    源为真源，未绑定/未填字段时回退既有 settings 键（行为不变）。
+    """
+
+    def __init__(self, creds: Optional["TtsCredentials"] = None) -> None:
+        self._cred = creds or TtsCredentials()
+
+    def _api_key(self, default: str) -> str:
+        return self._cred.api_key or default
+
+    def _headers(self, headers: dict) -> dict:
+        return self._cred.merge_headers(headers)
+
+    def _http(self, timeout: float = 120.0) -> Any:
+        """构造带超时/代理的异步客户端（源未配置时退化为默认传输）。"""
+        return httpx.AsyncClient(**self._cred.client_kwargs(timeout))
 
     @abc.abstractmethod
     async def clone(
@@ -366,10 +410,11 @@ class QwenTTSProvider(BaseVoiceProvider):
         url = "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization"
         logger.info("Qwen-TTS clone -> POST %s", url)
         headers = {
-            "Authorization": f"Bearer {settings.tts_dashscope_api_key}",
+            "Authorization": f"Bearer {self._api_key(settings.tts_dashscope_api_key)}",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=120) as client:
+        headers = self._headers(headers)
+        async with self._http() as client:
             resp = await client.post(url, json=payload, headers=headers)
 
         if resp.status_code != 200:
@@ -401,10 +446,11 @@ class QwenTTSProvider(BaseVoiceProvider):
             inp["instructions"] = instructions
         payload = {"model": model, "input": inp, "parameters": {"word_timestamp_enabled": True}}
         headers = {
-            "Authorization": f"Bearer {settings.tts_dashscope_api_key}",
+            "Authorization": f"Bearer {self._api_key(settings.tts_dashscope_api_key)}",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=120) as client:
+        headers = self._headers(headers)
+        async with self._http() as client:
             resp = await client.post(url, json=payload, headers=headers)
 
         if resp.status_code != 200:
@@ -415,7 +461,7 @@ class QwenTTSProvider(BaseVoiceProvider):
         if audio_info.get("data"):
             audio_bytes = base64.b64decode(audio_info["data"])
         elif audio_info.get("url"):
-            async with httpx.AsyncClient(timeout=120) as client:
+            async with self._http() as client:
                 r = await client.get(audio_info["url"])
             if r.status_code == 200:
                 audio_bytes = r.content
@@ -428,7 +474,12 @@ class QwenTTSProvider(BaseVoiceProvider):
 class CosyVoiceProvider(BaseVoiceProvider):
     """CosyVoice：clone 需公网 URL（PublicUpload），synth 走 dashscope SDK WebSocket。"""
 
-    def __init__(self, uploader: Optional[PublicUploadManager] = None) -> None:
+    def __init__(
+        self,
+        uploader: Optional[PublicUploadManager] = None,
+        creds: Optional[TtsCredentials] = None,
+    ) -> None:
+        super().__init__(creds)
         self._uploader = uploader
 
     async def clone(
@@ -458,10 +509,11 @@ class CosyVoiceProvider(BaseVoiceProvider):
         api_url = "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization"
         logger.info("CosyVoice clone -> POST %s", api_url)
         headers = {
-            "Authorization": f"Bearer {settings.tts_dashscope_api_key}",
+            "Authorization": f"Bearer {self._api_key(settings.tts_dashscope_api_key)}",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=120) as client:
+        headers = self._headers(headers)
+        async with self._http() as client:
             resp = await client.post(api_url, json=payload, headers=headers)
 
         if resp.status_code != 200:
@@ -499,7 +551,7 @@ class CosyVoiceProvider(BaseVoiceProvider):
         # SDK 仅支持全局 api_key：用锁串行化「改 key → 合成 → 还原」，避免并发请求相互覆盖凭据
         with _DASHSCOPE_KEY_LOCK:
             old_key = dashscope.api_key
-            dashscope.api_key = settings.tts_dashscope_api_key
+            dashscope.api_key = self._api_key(settings.tts_dashscope_api_key)
             try:
                 synth_kwargs: dict = dict(model=model, voice=voice_api_id)
                 for key in ("instructions", "volume", "speech_rate", "pitch_rate", "seed"):
@@ -519,7 +571,12 @@ class CosyVoiceProvider(BaseVoiceProvider):
 class MiniMaxProvider(BaseVoiceProvider):
     """MiniMax：clone 需公网 URL + audition text，synth 走 HTTP（hex/base64/url 响应）。"""
 
-    def __init__(self, uploader: Optional[PublicUploadManager] = None) -> None:
+    def __init__(
+        self,
+        uploader: Optional[PublicUploadManager] = None,
+        creds: Optional[TtsCredentials] = None,
+    ) -> None:
+        super().__init__(creds)
         self._uploader = uploader
 
     async def clone(
@@ -547,10 +604,11 @@ class MiniMaxProvider(BaseVoiceProvider):
         api_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
         logger.info("MiniMax clone -> POST %s", api_url)
         headers = {
-            "Authorization": f"Bearer {settings.tts_dashscope_api_key}",
+            "Authorization": f"Bearer {self._api_key(settings.tts_dashscope_api_key)}",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=120) as client:
+        headers = self._headers(headers)
+        async with self._http() as client:
             resp = await client.post(api_url, json=payload, headers=headers)
 
         if resp.status_code != 200:
@@ -577,11 +635,12 @@ class MiniMaxProvider(BaseVoiceProvider):
         }
         payload = {"model": model or "MiniMax/speech-2.8-turbo", "input": inp}
         headers = {
-            "Authorization": f"Bearer {settings.tts_dashscope_api_key}",
+            "Authorization": f"Bearer {self._api_key(settings.tts_dashscope_api_key)}",
             "Content-Type": "application/json",
         }
+        headers = self._headers(headers)
         logger.info("MiniMax synthesize -> POST %s", url)
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with self._http() as client:
             resp = await client.post(url, json=payload, headers=headers)
 
         if resp.status_code != 200:
@@ -596,7 +655,7 @@ class MiniMaxProvider(BaseVoiceProvider):
             if audio_info.get("data"):
                 audio_bytes = base64.b64decode(audio_info["data"])
             elif audio_info.get("url"):
-                async with httpx.AsyncClient(timeout=120) as client:
+                async with self._http() as client:
                     r = await client.get(audio_info["url"])
                 if r.status_code == 200:
                     audio_bytes = r.content
@@ -635,23 +694,56 @@ class VoiceService:
 
     # ── Provider 工厂 ──
 
-    def _get_provider(self, name: str) -> BaseVoiceProvider:
-        if name not in self._providers:
-            # B-2：provider 名唯一来源 = contribution.id（别名归一集中在
-            # providers/tts.normalize_tts_name——P1-25 的 qwen_tts 兼容在此收口）
-            from clipwright.providers.tts import resolve_tts_entry, tts_provider_names
+    @staticmethod
+    def _tts_credentials() -> TtsCredentials:
+        """B4：解析「语音 TTS」角色绑定的源凭据（未绑定 → 空凭据回退 settings）。"""
+        try:
+            from clipwright.services import provider_sources as ps
+            bound = ps.resolve("tts")
+        except Exception:  # noqa: BLE001 — 存储层异常不阻断（回退旧配置）
+            return TtsCredentials()
+        if not bound:
+            return TtsCredentials()
+        return TtsCredentials(
+            api_key=str(bound.get("api_key") or ""),
+            base_url=str(bound.get("base_url") or ""),
+            timeout_sec=float(bound.get("timeout_sec") or 0.0),
+            proxy=str(bound.get("proxy") or ""),
+            headers=dict(bound.get("headers") or {}),
+        )
 
-            entry = resolve_tts_entry(name)
+    def _get_provider(self, name: str) -> BaseVoiceProvider:
+        creds = self._tts_credentials()
+        # B-2：provider 名唯一来源 = contribution.id（别名归一集中在
+        # providers/tts.normalize_tts_name——P1-25 的 qwen_tts 兼容在此收口）。
+        # 先归一再查缓存，别名与规范名必落同一实例。
+        from clipwright.providers.tts import (
+            normalize_tts_name,
+            resolve_tts_entry,
+            tts_provider_names,
+        )
+
+        canonical = normalize_tts_name(name)
+        # 未绑定源（无任何凭据字段）时保持裸名缓存键——与既有注入点约定
+        # （`svc._providers["qwen-tts"]`）兼容；绑定了源则按凭据指纹分桶，
+        # 保证换绑/改密钥后不会复用旧 provider 实例。
+        if not (creds.api_key or creds.base_url or creds.proxy or creds.timeout_sec
+                or creds.headers):
+            cache_key = canonical
+        else:
+            cache_key = (f"{canonical}|{creds.api_key[:6]}|{creds.proxy}|"
+                         f"{creds.timeout_sec}|{creds.base_url}")
+        if cache_key not in self._providers:
+            entry = resolve_tts_entry(canonical)
             if entry is None:
                 raise ValueError(
                     f"Unknown provider '{name}'. Choose from: "
                     + ", ".join(tts_provider_names() or ["qwen-tts", "cosyvoice", "minimax"])
                 )
-            if entry.name not in self._providers:
-                self._providers[entry.name] = entry.factory(self._uploader)
-            if entry.name != name:
-                self._providers[name] = self._providers[entry.name]  # 别名缓存
-        return self._providers[name]
+            self._providers[cache_key] = entry.factory(self._uploader, creds)
+        if name != canonical:  # 别名 → 同一实例
+            self._providers[name] = self._providers[cache_key]
+        return self._providers[cache_key]
 
     def _model_for(self, provider_name: str) -> str:
         return {
@@ -674,8 +766,8 @@ class VoiceService:
         audition_text: str = "",
     ) -> VoiceResult:
         """克隆音色并持久化元数据。"""
-        if not settings.tts_dashscope_api_key:
-            return VoiceResult(success=False, error="未配置 TTS DashScope API Key，请在 .env 中设置 CLIPWRIGHT_TTS_DASHSCOPE_API_KEY")
+        if not (settings.tts_dashscope_api_key or self._tts_credentials().api_key):
+            return VoiceResult(success=False, error="未配置 TTS API Key：请在设置→模型提供商绑定语音源，或在 .env 中设置 CLIPWRIGHT_TTS_DASHSCOPE_API_KEY")
 
         provider_name = provider or settings.tts_default_provider
         model = target_model or self._model_for(provider_name)

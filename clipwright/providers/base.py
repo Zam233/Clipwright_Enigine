@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -45,6 +45,45 @@ class LLMProvider(Protocol):
         instructions: str,
         max_tokens: int,
         flash: bool,
+        timeout_sec: float = 0.0,
+        proxy: str = "",
+        headers: Mapping[str, Any] | None = None,
+    ) -> Any: ...
+
+    def default_model(self) -> str: ...
+
+
+@runtime_checkable
+class EmbeddingProvider(Protocol):
+    """向量化提供者（B4）—— 工厂形态：按源凭据产出 `BaseEmbedder` 同形对象。
+
+    产出对象需具备 `embed(texts)` / `embed_query(text)` / `dim`（属性或方法）：
+    向量库按维度建集合，换模型必须能读到维度。
+    """
+
+    name: str
+
+    def create_embedder(
+        self, *, model: str, api_key: str | None, base_url: str | None,
+        timeout_sec: float = 0.0, proxy: str = "", headers: Mapping[str, Any] | None = None,
+    ) -> Any: ...
+
+    def default_model(self) -> str: ...
+
+
+@runtime_checkable
+class RerankProvider(Protocol):
+    """重排序提供者（B4）—— 工厂形态；产出对象供 `rag/reranker.py` 调用。
+
+    产出对象的 `rerank(query, documents, model, top_n)` 返回按相关度降序的
+    `[(原文索引, 分数)]`；兼容各家响应格式的解析留在 core。
+    """
+
+    name: str
+
+    def create_reranker(
+        self, *, model: str, api_key: str | None, base_url: str | None,
+        timeout_sec: float = 0.0, proxy: str = "", headers: Mapping[str, Any] | None = None,
     ) -> Any: ...
 
     def default_model(self) -> str: ...

@@ -14,12 +14,42 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 
-from clipwright.config import settings
+from clipwright.config import logger, settings
 from clipwright.rag.vector_store import ScoredChunk
+
+
+def _bound_reranker() -> Any | None:
+    """B4：按「重排序」角色绑定产出 (客户端, 模型名)（未绑定 → None 走旧路径）。
+
+    绑定存在时源为唯一真源（provider/model/base_url/key/超时/代理/自定义头）；
+    provider 未注册或存储异常时返回 None，调用方回退既有 base_url 启发式分支。
+    """
+    try:
+        from clipwright.services import provider_sources as ps
+        bound = ps.resolve("rerank")
+    except Exception:  # noqa: BLE001 — 存储层异常不阻断（回退旧配置）
+        return None
+    if not bound:
+        return None
+
+    from clipwright.providers.rerank import resolve_rerank_provider
+    impl = resolve_rerank_provider(bound.get("provider") or "http")
+    if impl is None:
+        return None
+    model = str(bound.get("model") or settings.rag_rerank_model)
+    client = impl.create_reranker(
+        model=model,
+        api_key=bound.get("api_key"),
+        base_url=bound.get("base_url"),
+        timeout_sec=float(bound.get("timeout_sec") or 0.0),
+        proxy=str(bound.get("proxy") or ""),
+        headers=dict(bound.get("headers") or {}) or None,
+    )
+    return client, model
 
 
 class Reranker:
@@ -48,12 +78,46 @@ class Reranker:
 
         top_k = top_k or settings.rag_top_k
 
+        impl = _bound_reranker()
+        if impl is not None:
+            client, bound_model = impl
+            return await self._rerank_via_provider(client, bound_model, query, candidates, top_k)
+
         if self._base_url and not self._is_hf_mirror(self._base_url):
             # ── API 模式 ──
             return await self._rerank_api(query, candidates, top_k)
         else:
             # ── 本地模式 ──
             return self._rerank_local(query, candidates, top_k)
+
+    async def _rerank_via_provider(
+        self,
+        impl: Any,
+        model: str,
+        query: str,
+        candidates: list[ScoredChunk],
+        top_k: int,
+    ) -> list[ScoredChunk]:
+        """B4：走 Provider 源的「重排序」角色绑定（源为唯一真源）。"""
+        try:
+            ranked = await impl.rerank(
+                query=query,
+                documents=[c.text for c in candidates],
+                model=model,
+                top_n=min(top_k, len(candidates)),
+            )
+        except Exception as e:  # noqa: BLE001 — 与 API 模式同语义：失败回退原序
+            logger.warning("重排序 provider 调用失败（回退原始顺序）: %s", e)
+            return candidates[:top_k]
+        if not ranked:
+            return candidates[:top_k]
+        out: list[ScoredChunk] = []
+        for idx, score in ranked[:top_k]:
+            if 0 <= idx < len(candidates):
+                c = candidates[idx]
+                out.append(ScoredChunk(id=c.id, text=c.text, score=float(score),
+                                       metadata=c.metadata))
+        return out or candidates[:top_k]
 
     # ── 本地 CrossEncoder ──
 

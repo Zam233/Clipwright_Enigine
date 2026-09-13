@@ -20,10 +20,11 @@ def captured(monkeypatch):
     calls: list[dict] = []
 
     def fake(cls_or_self, provider, *, api_key, base_url, model, instructions,
-             max_tokens=8192, flash=False):
+             max_tokens=8192, flash=False, timeout_sec=0.0, proxy="", headers=None):
         calls.append({
             "provider": provider, "api_key": api_key,
             "base_url": base_url, "model": model, "flash": flash,
+            "timeout_sec": timeout_sec, "proxy": proxy, "headers": headers,
         })
         return {"provider": provider, "model": model}
 
@@ -31,12 +32,14 @@ def captured(monkeypatch):
     return calls
 
 
-def _make_bound_source(role: str, provider: str, model: str) -> str:
-    src = ps.create_source({
+def _make_bound_source(role: str, provider: str, model: str, **extra) -> str:
+    payload = {
         "name": f"src-{role}", "kind": "llm", "provider": provider,
         "base_url": f"https://{provider}.example.com",
         "api_keys": ["sk-bound-key-0001"], "models": [model],
-    })
+    }
+    payload.update(extra)
+    src = ps.create_source(payload)
     ps.set_role(role, src["id"], model)
     return src["id"]
 
@@ -107,3 +110,22 @@ class TestBuildClientRoleBinding:
         LLMService()._build_client(flash=False)
         assert captured[-1]["model"] == "legacy-main"
         assert captured[-1]["provider"] == "openai"
+
+    def test_transport_options_follow_binding(self, captured):
+        """B4：超时/代理/自定义头必须随角色绑定透传到 provider 传输层。"""
+        _make_bound_source("vision", "openai", "gpt-4o-mini",
+                           timeout_sec=42.5, proxy="http://127.0.0.1:7890",
+                           headers={"X-Tenant": "cw"})
+        LLMService.build_client(role="vision")
+        call = captured[-1]
+        assert call["timeout_sec"] == 42.5
+        assert call["proxy"] == "http://127.0.0.1:7890"
+        assert call["headers"] == {"X-Tenant": "cw"}
+
+    def test_transport_defaults_without_binding(self, captured):
+        """未绑定时不得凭空塞入传输参数（保持默认传输行为）。"""
+        LLMService.build_client(provider="openai", model="m")
+        call = captured[-1]
+        assert call["timeout_sec"] == 0.0
+        assert call["proxy"] == ""
+        assert not call["headers"]

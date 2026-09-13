@@ -1,7 +1,7 @@
 """OpenAI 兼容 LLM Provider（方案 B-1）—— openai 与本地 ollama。"""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 from clipwright.providers.base import ProviderCapabilities
 
@@ -31,15 +31,20 @@ class OpenAIProvider:
         ]
 
     def build_client(self, *, api_key: str | None, base_url: str | None, model: str,
-                     instructions: str, max_tokens: int, flash: bool) -> Any:
+                     instructions: str, max_tokens: int, flash: bool,
+                     timeout_sec: float = 0.0, proxy: str = "",
+                     headers: Mapping[str, Any] | None = None) -> Any:
         # 从 services.llm 延后取符号——与核心的 isobase 导入路径一致，
         # 且既有测试对 clipwright.services.llm.OpenAIChat 的打桩保持有效
+        from clipwright.providers.transport import apply_transport
         from clipwright.services import llm as _llm_mod
         OpenAIChat = getattr(_llm_mod, "OpenAIChat")
-        return OpenAIChat(
+        client = OpenAIChat(
             api_key=api_key, base_url=base_url, default_model=model,
             instructions=instructions, conversation_mode=False, max_tokens=max_tokens,
         )
+        # B4：超时/代理/自定义头必须落到传输层（isobase 构造时会丢弃它们）
+        return apply_transport(client, timeout_sec=timeout_sec, proxy=proxy, headers=headers)
 
 
 class OllamaProvider(OpenAIProvider):

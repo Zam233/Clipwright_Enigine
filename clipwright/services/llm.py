@@ -94,8 +94,20 @@ def _record_global_usage(input_tokens: int, output_tokens: int) -> None:
 
 def _client_cache_key(
     provider: str, base_url: Optional[str], model: Optional[str], api_key: Optional[str],
-) -> tuple[str, Optional[str], Optional[str], Optional[str]]:
-    return (provider, base_url, model, api_key)
+    transport: str = "",
+) -> tuple[str, Optional[str], Optional[str], Optional[str], str]:
+    # transport 是超时/代理/自定义头的指纹（B4）——同一凭据不同传输参数
+    # 必须各自缓存，否则代理/超时会串味。
+    return (provider, base_url, model, api_key, transport)
+
+
+def _transport_fingerprint(
+    timeout_sec: float = 0.0, proxy: str = "", headers: Optional[dict[str, Any]] = None,
+) -> str:
+    if not timeout_sec and not proxy and not headers:
+        return ""
+    hdr = "|".join(f"{k}={v}" for k, v in sorted((headers or {}).items()))
+    return f"t={timeout_sec};p={proxy};h={hdr}"
 
 
 class LLMService:
@@ -141,14 +153,19 @@ class LLMService:
             model = settings.llm_model
             provider = self.provider
         bound = _resolve_role_binding("flash" if flash else "main")
+        timeout_sec, proxy, headers = 0.0, "", None
         if bound:
             provider = bound.get("provider") or provider
             api_key = bound.get("api_key") or api_key
             base_url = bound.get("base_url") or base_url
             model = bound.get("model") or model
+            timeout_sec = float(bound.get("timeout_sec") or 0.0)
+            proxy = str(bound.get("proxy") or "")
+            headers = dict(bound.get("headers") or {}) or None
         return self._construct_client(
             provider, api_key=api_key, base_url=base_url, model=model,
             instructions=settings.llm_instructions, max_tokens=8192, flash=flash,
+            timeout_sec=timeout_sec, proxy=proxy, headers=headers,
         )
 
     @staticmethod
@@ -161,19 +178,26 @@ class LLMService:
         instructions: str,
         max_tokens: int = 8192,
         flash: bool = False,
+        timeout_sec: float = 0.0,
+        proxy: str = "",
+        headers: Optional[dict[str, Any]] = None,
     ) -> Any:
         """唯一构造点（B-1a/B-1）——provider 协议只在这里查询一次。
 
         旧的实例级 `_build_client` 与静态 `build_client` 均委托到此，
-        消除两份重复分支（方案 §13.3 修正 3）。
+        消除两份重复分支（方案 §13.3 修正 3）。B4：超时/代理/自定义头
+        由角色绑定解析后透传到 provider 的传输层。
         """
         if not ISOBASE_AVAILABLE:
             raise RuntimeError(
                 "isobase 未安装，无法构建 LLM 客户端。"
                 "请运行: pip install 'isobase @ git+https://github.com/landspark/IsoBase.git'"
             )
-        # 命中共享缓存：同一 (provider, base_url, model, api_key) 只构建一次客户端
-        cache_key = _client_cache_key(provider, base_url, model, api_key)
+        # 命中共享缓存：同 (provider, base_url, model, api_key, transport) 只构建一次
+        cache_key = _client_cache_key(
+            provider, base_url, model, api_key,
+            _transport_fingerprint(timeout_sec, proxy, headers),
+        )
         cached = _client_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -187,6 +211,7 @@ class LLMService:
         client: Any = impl.build_client(
             api_key=api_key, base_url=base_url, model=model,
             instructions=instructions, max_tokens=max_tokens, flash=flash,
+            timeout_sec=timeout_sec, proxy=proxy, headers=headers,
         )
         _client_cache[cache_key] = client
         return client
@@ -618,14 +643,19 @@ class LLMService:
         m = model or settings.llm_model
         u = base_url or settings.llm_base_url or None
         bound = _resolve_role_binding(role)
+        timeout_sec, proxy, headers = 0.0, "", None
         if bound:
             p = bound.get("provider") or p
             k = bound.get("api_key") or k
             m = bound.get("model") or m
             u = bound.get("base_url") or u
+            timeout_sec = float(bound.get("timeout_sec") or 0.0)
+            proxy = str(bound.get("proxy") or "")
+            headers = dict(bound.get("headers") or {}) or None
         return LLMService._construct_client(
             p, api_key=k, base_url=u, model=m,
             instructions=settings.llm_instructions, max_tokens=8192, flash=False,
+            timeout_sec=timeout_sec, proxy=proxy, headers=headers,
         )
 
     def reset(self) -> None:
@@ -633,14 +663,19 @@ class LLMService:
         self._client = None
         self._flash_client = None
         # 清理本实例对应的共享缓存项，保证配置热更新后下次构建新客户端
+        # （B4：缓存键含传输参数指纹，故按 (provider, base_url, model, api_key)
+        # 前缀匹配清理，覆盖该凭据下的全部传输变体）
         try:
-            for provider, base_url, model, api_key in (
-                (self.provider, settings.llm_base_url or None, settings.llm_model, settings.llm_api_key or None),
+            prefixes = [
+                (self.provider, settings.llm_base_url or None, settings.llm_model,
+                 settings.llm_api_key or None),
                 (settings.llm_flash_provider or self.provider,
                  settings.llm_flash_base_url or settings.llm_base_url or None,
                  settings.llm_flash_model or settings.llm_model,
                  settings.llm_flash_api_key or settings.llm_api_key or None),
-            ):
-                _client_cache.pop(_client_cache_key(provider, base_url, model, api_key), None)
+            ]
+            for key in list(_client_cache):
+                if key[:4] in prefixes:
+                    _client_cache.pop(key, None)
         except Exception:
             pass
