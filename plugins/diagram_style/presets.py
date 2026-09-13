@@ -106,3 +106,6 @@ class DiagramStylePlugin(BasePlugin):
             ContributionKind.HOOK, "diagram_style_presets", register_style_presets,
             meta={"point": "diagram_style_preset"},
         )]
+
+
+__all__ = ["DiagramStylePlugin", "STYLE_PRESETS"]

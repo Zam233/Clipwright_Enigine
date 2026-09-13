@@ -126,10 +126,14 @@ manifest 用 `runtime` 选择执行方式：
 - 宿主 `sys.modules` 里没有你的模块，插件碰不到宿主对象图；
 - 贡献以**纯数据声明**跨进程（kind/id/meta），宿主为每条贡献造同形代理对象
   （调用时转发 RPC），因此 `contributions()` 必须只返回声明、副作用放 `setup()`；
+- **必须逐条声明**：`runtime=subprocess` 时 manifest 的 `contributions` 为强制项，
+  未声明直接拒载（不可信形态必须走「声明即授权」，fail-closed）；
 - 权限在**你的进程内**强制：写盘需 `fs_write` 且只能写自己的 PluginData 目录、
   网络需 `network`/`http`、命令执行一律拒绝（权限白名单没有 `shell`）；
 - 单次调用超时由 `runtime_config.call_timeout` 控制（默认 30s）；worker 崩溃或超时后
   该插件所有调用都会收到可读错误（`RpcError`），不会静默返回空结果；
+- 宿主侧存在一个 `SubprocessPluginHandle`：`load()` / `get()` / `reload()` 对子进程
+  插件与进程内插件行为一致（可重复加载幂等、配置改动即时生效、卸载会回收贡献）；
 - 目前支持跨进程的 kind：`tool` / `hook` / `material_source` / `prompt` /
   `ui_slot` / `export_preset`；其它 kind 会在加载时被拒绝并写入错误通道
   （防止「装了却静默无效」）。
@@ -146,10 +150,16 @@ runtime_config:
 ## 6. 生命周期与失败可见性
 
 - `contributions()` 抛异常 → 写入插件错误通道并**让本次加载失败**（不再静默零贡献）。
-- `shutdown()` 由桥接层自动追加门面回收（工具/技能/Agent/hook/prompt 等一并注销）。
+- `shutdown()` 由桥接层自动追加门面回收（工具/技能/Agent/hook/prompt/动画/素材源/
+  风格解释器一并注销）；禁用插件不会留下可用的陈旧能力。
+- **零贡献是可见状态**：如果 `contributions()` 因缺少配置而返回空列表，
+  请在实现里用 `logger.info` 说明原因（内置素材源插件都这么做）；插件管理页会
+  显示「N 项未生效」（hover 列出具体 `kind:id`），后端也能从 `declared_only` 查到。
 - 插件启停会失效前端 Slot 缓存，界面无需刷新即同步。
+- 同一时刻只有一个**风格解释器**活跃：`meta.priority` 越大越优先（同优先级先注册者胜），
+  `GET /api/plugin/health` 的 `style_interpreter` 会给出活跃 owner 与候选项。
 - 诊断入口：`GET /api/plugin/errors`（错误通道）、`GET /api/plugin/list`
-  （贡献与 `declared_only`）、`GET /api/plugin/health`（总览）。
+  （贡献与 `declared_only`）、`GET /api/plugin/health`（总览 + 解释器状态）。
 
 ## 7. 迁移清单（旧契约 → 新契约）
 

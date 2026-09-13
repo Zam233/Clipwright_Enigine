@@ -1208,6 +1208,8 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ⏸ **明确延期**：P1 30+ 内置插件真迁移、P6 page 插槽鉴权、P9 权限运行时沙箱（理由见计划 §6.6）
 - 🔍 **复核（对着代码逐条）**：发现 D3 上一轮误标 ✅——`StyleInterpreter.register_plugin` 仍对不同 owner 抛 ValueError，第二个提供风格解释器的插件贡献会被拒（用户「装了却无效」）。已真修：改为每 owner 一个槽位的多注册表，按 `meta.priority` 选活跃项（同优先级先注册者胜）、`unregister_plugin` 只回收自己的槽位并改选、`_plugin/_owner` 保留为活跃项兼容视图；dispatch 透传 priority、内置镜像只镜像无归属槽位（`ee9a6b2`，测试 8 条）
 - 🔍 复核另补：B2 的 `build_client` 缺失给可读错误；B5 的贡献读缓存失效点扩展到 uninstall 与配置 PUT/DELETE（共 5 处）；B12 抽出 `resolveContainerExt` 独立模块并补 5 条测试（含非法声明安全负例）
-- 📌 **仍未完成 3 项**（非本次范围，理由见计划 §6.6）：D2/P1（30+ 内置插件真迁移）、P6（page 插槽鉴权）、P9（权限运行时沙箱）
-- ✅ 复核后回归：后端 **1724 passed** / 1 skipped / 1 xfailed；前端 **501 passed**（70 文件）+ tsc 0 error + build 成功
+- ✅ **收尾（第二轮）**：P9 子进程沙箱落地（`plugins/runtime/`：协议/worker/权限审计钩子/host/代理，宿主不 import 插件代码、越权写盘在 worker 内被拒、hook 异步化）；P1/D2 迁移完成 **32/32**（含 `text_animations` 25 工具、`mg_animations`/`lottie_animations`/`logic_animations`/`diagram_style` 钩子、`my_animations`/`kinetic_typography` 动画定义），全部补 manifest 声明；P6 插件页可见性按确认策略实现（默认所有登录用户 + `admin_only` 声明式限制）
+- 🔍 **插件审查（同日第二轮）**：32 插件体检查出 10 项并全部修复——A1 子进程 loader 契约（load 返回句柄/幂等/reload 生效/卸载回收，此前会导致 `/load` 404、安装服务回滚删插件、卸载 404）、A2 类发现取到导入的基类（`text_animations` 25 工具全丢）、A3 素材源 `create_task` 永不 await 连接泄漏（6 插件）、A4 动画/素材源/解释器卸载残留、B1 子进程强制声明、B2/C1 零贡献可见性（管理页「N 项未生效」）、B3/B5 迁移清零、B4 缺配置提示、C3 解释器优先级可配与活跃项可查、C4 去掉内置 Giphy 公开 key 改显式 opt-in；附带修复工具影子表的同源复活问题
+- 📌 **原「仍未完成 3 项」已清零**：D2/P1 ✅（32/32）、P6 ✅（按确认策略）、P9 ✅（子进程沙箱）
+- ✅ 最终回归：后端 **1783 passed** / 1 skipped / 1 xfailed；前端 **510 passed**（71 文件）+ tsc 0 error + build 成功；插件体检 32 个中仅 7 项 `declared_only`（均为未配置密钥的预期状态，有日志原因 + 界面红标）
 - ℹ️ 既有 e2e 失败 8 条已在基线提交复现（home 健康检查需真实后端、panel-divider B18、preview-fixes/caption-style/agent-edit），非本轮引入
