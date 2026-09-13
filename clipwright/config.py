@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     # 缺省 local 保持既有行为；注册表见 clipwright/providers/render/。
     renderer_backend: str = Field(default="local", description="渲染后端：local / remote")
 
+    # M8：受信任 UI bundle 档（默认关闭）。开启后仍需插件 manifest 带签名
+    # 才提供 /api/plugin/{id}/bundle（fail-closed：无签名一律 403）。
+    plugin_allow_ui_bundle: bool = Field(
+        default=False, description="允许插件 UI bundle（iframe 沙箱档；需插件签名）",
+    )
+
     # --- IsoBase / LLM ---
     llm_provider: Literal["openai", "anthropic", "ollama"] = "anthropic"
     llm_api_key: str = ""

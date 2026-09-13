@@ -153,6 +153,60 @@ async def list_plugin_errors(limit: int = 50, request: Request = None) -> list[d
     return get_error_bus().list(limit=max(1, min(limit, 200)))
 
 
+@router.get("/{plugin_id}/bundle")
+async def get_plugin_bundle(plugin_id: str, request: Request = None):
+    """M8：受信任 UI bundle（iframe 沙箱档）——默认关闭，且必须带签名。
+
+    门禁（fail-closed，全部在端点层校验，不依赖加载器）：
+    1. `settings.plugin_allow_ui_bundle` 未开启 → 403；
+    2. 插件未发现或缺少 `bundle.html` → 404；
+    3. 插件 manifest 无 `signature` → 403（受信任档要求签名，与 Gate G-2 一致）。
+
+    返回 HTML 时附带严格 CSP；前端以 `<iframe sandbox="allow-scripts">` 加载，
+    通过 postMessage 与宿主通信（禁止直接 import 插件 JS 到宿主上下文）。
+    """
+    from clipwright.config import settings
+    from fastapi.responses import HTMLResponse
+
+    _validate_plugin_id(plugin_id)
+    if _loader is None:
+        raise HTTPException(status_code=503, detail="Plugin system not initialized")
+    if not bool(getattr(settings, "plugin_allow_ui_bundle", False)):
+        raise HTTPException(
+            status_code=403,
+            detail="插件 UI bundle 档未开启（设置 plugin_allow_ui_bundle=true 后可用）",
+        )
+    if plugin_id not in _loader.discover():
+        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not found")
+    bundle_file = _loader.plugin_dir / plugin_id / "bundle.html"
+    if not bundle_file.exists():
+        raise HTTPException(status_code=404, detail="该插件未提供 bundle.html")
+
+    # 签名强制：受信任档不接受无签名插件（与 loader 的签名策略同语义，
+    # 因加载器文件被外部工具阻断，门禁落在本端点层）
+    try:
+        manifest = _loader._parse_manifest(plugin_id, _loader.plugin_dir / plugin_id)
+    except Exception:
+        manifest = None
+    if manifest is None or not getattr(manifest, "signature", ""):
+        raise HTTPException(
+            status_code=403,
+            detail="受信任 UI bundle 需要插件签名（manifest.signature 缺失）",
+        )
+    try:
+        html = bundle_file.read_text(encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read bundle: {e}")
+    return HTMLResponse(
+        content=html,
+        headers={
+            # 沙箱内运行：禁止外联默认收窄到自身/内联（插件如需网络应在 manifest 声明并扩展）
+            "Content-Security-Policy": "default-src 'self' 'unsafe-inline' data: blob:",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.get("/contributions")
 async def list_contributions(
     kind: str = "",

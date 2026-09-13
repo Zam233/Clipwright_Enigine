@@ -144,6 +144,8 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
     ("plugin_signature_key", "plugins", "插件签名密钥", True, False, "加载器按次读取；已加载插件需重载"),
     ("plugin_require_signature", "plugins", "强制签名校验", False, False, "对已加载插件不追溯，需重载/重启"),
     ("plugin_allowed_permissions", "plugins", "允许的插件权限", False, True, "逗号分隔白名单"),
+    ("plugin_allow_ui_bundle", "plugins", "允许插件 UI bundle", False, True,
+     "M8 受信任档：iframe 沙箱加载插件界面；需插件带签名（默认关闭）"),
     # ── 存储与路径 ──
     ("persona_dir", "storage", "Persona 目录", False, False, "仓库启动时快照，需重启"),
     ("plugin_dir", "storage", "插件目录", False, False, "加载器启动时构造，需重启"),
