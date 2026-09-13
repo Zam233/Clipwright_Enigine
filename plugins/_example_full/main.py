@@ -58,7 +58,7 @@ class ExampleFullPlugin(BasePlugin):
                     "layout": {
                         "title": "示例参数",
                         "widgets": [
-                            {"type": "text", "key": "note", "label": "备注",
+                            {"type": "input", "key": "note", "label": "备注",
                              "placeholder": "输入任意文字"},
                             {"type": "slider", "key": "strength", "label": "强度",
                              "min": 0, "max": 1, "step": 0.05, "value": 0.5},
@@ -97,7 +97,7 @@ class ExampleFullPlugin(BasePlugin):
                     "layout": {
                         "title": "示例页面",
                         "widgets": [
-                            {"type": "text", "key": "query", "label": "查询词"},
+                            {"type": "input", "key": "query", "label": "查询词"},
                             {"type": "button", "key": "run", "label": "执行示例工具",
                              "action": {"endpoint": "/api/tool/execute", "method": "POST",
                                         "body": {"name": "example_echo", "params": {}}}},
