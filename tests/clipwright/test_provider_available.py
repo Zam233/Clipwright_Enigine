@@ -110,3 +110,49 @@ class TestModelListingTransport:
         from clipwright.providers.model_listing import list_models_for_source
 
         assert await list_models_for_source("local", {}) == []
+
+
+class TestSettingsEnumChoicesFromFacade:
+    """P4/P5：设置页的 provider 下拉必须能看到门面/插件注册的 provider。"""
+
+    @pytest.fixture
+    def settings_client(self):
+        from clipwright.api import settings as settings_api
+
+        app = FastAPI()
+        app.include_router(settings_api.router)
+        return TestClient(app)
+
+    @staticmethod
+    def _choices(client, key: str) -> list:
+        groups = client.get("/api/settings").json()["groups"]
+        for g in groups:
+            for f in g["fields"]:
+                if f["key"] == key:
+                    return f["choices"]
+        raise AssertionError(f"未找到字段 {key}")
+
+    def test_embed_choices_include_local(self, settings_client):
+        choices = self._choices(settings_client, "rag_embed_provider")
+        assert "local" in choices and "sentence_transformer" in choices
+
+    def test_plugin_llm_provider_joins_choices(self, settings_client):
+        item = Contribution(ContributionKind.LLM_PROVIDER, "plugin-llm-x", object())
+        ContributionRegistry.register("plug_choices", [item], dispatch=False)
+        try:
+            assert "plugin-llm-x" in self._choices(settings_client, "llm_provider")
+        finally:
+            ContributionRegistry.unregister_plugin("plug_choices")
+        assert "plugin-llm-x" not in self._choices(settings_client, "llm_provider")
+
+    def test_plugin_tts_provider_joins_choices(self, settings_client):
+        item = Contribution(ContributionKind.TTS_PROVIDER, "plugin-tts-x", object())
+        ContributionRegistry.register("plug_choices2", [item], dispatch=False)
+        try:
+            assert "plugin-tts-x" in self._choices(settings_client, "tts_default_provider")
+        finally:
+            ContributionRegistry.unregister_plugin("plug_choices2")
+
+    def test_no_duplicate_choices(self, settings_client):
+        choices = self._choices(settings_client, "llm_provider")
+        assert len(choices) == len(set(choices))

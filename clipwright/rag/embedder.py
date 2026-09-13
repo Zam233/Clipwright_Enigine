@@ -113,6 +113,14 @@ class OpenAIEmbedder(BaseEmbedder):
 
 # ── 工厂 ──
 
+#: 历史 provider 名 → 实现分支（嵌入 provider 门面名为 `local`，
+#: settings 的历史值是 `sentence_transformer`；两者等价，P4/P5 并集下拉后
+#: 用户选任一个都必须可用）
+_EMBED_PROVIDER_ALIASES = {
+    "local": "sentence_transformer",
+    "sentence_transformers": "sentence_transformer",
+}
+
 _embedder_instance: Optional[BaseEmbedder] = None
 
 
@@ -158,7 +166,8 @@ def get_embedder() -> BaseEmbedder:
         _embedder_instance = bound_embedder
         return _embedder_instance
 
-    provider = settings.rag_embed_provider
+    provider = _EMBED_PROVIDER_ALIASES.get(settings.rag_embed_provider,
+                                           settings.rag_embed_provider)
     api_key = settings.rag_embed_api_key
     base_url = settings.rag_embed_base_url
 

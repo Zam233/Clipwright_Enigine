@@ -53,17 +53,56 @@ def _display_value(value: Any) -> Any:
     return value
 
 
+#: 配置键 → 贡献 kind（下拉选项需从门面动态补全的键）
+_DYNAMIC_CHOICE_KINDS: dict[str, str] = {
+    "llm_provider": "llm_provider",
+    "rag_embed_provider": "embedding_provider",
+    "tts_default_provider": "tts_provider",
+}
+
+
+def _dynamic_choices(key: str) -> list[str]:
+    """P4/P5：把门面中已注册的 provider 名并入下拉选项。
+
+    硬编码的 `Literal` choices 永远看不到插件注册的 provider——这里按 kind
+    查询 ContributionRegistry（含内置懒注册 + 插件贡献），并保留 schema 原有
+    选项（如 embedding 的历史名 `sentence_transformer`），二者并集。
+    """
+    kind_name = _DYNAMIC_CHOICE_KINDS.get(key)
+    if not kind_name:
+        return []
+    try:
+        from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+        kind = ContributionKind(kind_name)
+        if kind is ContributionKind.LLM_PROVIDER:
+            from clipwright.providers.llm import ensure_llm_providers_registered
+            ensure_llm_providers_registered()
+        elif kind is ContributionKind.TTS_PROVIDER:
+            from clipwright.providers.tts import ensure_tts_providers_registered
+            ensure_tts_providers_registered()
+        elif kind is ContributionKind.EMBEDDING_PROVIDER:
+            from clipwright.providers.embedding import ensure_embedding_providers_registered
+            ensure_embedding_providers_registered()
+        return [c.id for _, c in ContributionRegistry.list(kind)]
+    except Exception:  # noqa: BLE001 — 门面不可用不阻断配置读取
+        return []
+
+
 def _field_payload(key: str) -> dict[str, Any]:
     meta = FIELD_META[key]
     info: FieldInfo = Settings.model_fields[key]
     current = getattr(settings, key)
+    choices = list(meta.choices)
+    for extra in _dynamic_choices(key):
+        if extra not in choices:
+            choices.append(extra)
     payload: dict[str, Any] = {
         "key": key,
         "group": meta.group,
         "label": meta.label,
         "description": meta.description,
         "kind": meta.kind,
-        "choices": list(meta.choices),
+        "choices": choices,
         "secret": meta.secret,
         "hot": meta.hot,
         "requires_restart": not meta.hot,
