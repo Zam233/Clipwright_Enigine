@@ -505,7 +505,7 @@ curl -X POST http://localhost:8080/api/voice/dub \
 
 | 端点 | 说明 |
 |------|------|
-| `GET /api/plugin/list` | 列出已加载插件 |
+| `GET /api/plugin/list` | 列出已加载插件（含 `contributions`：已注册贡献 kind/id；`declared_only`：manifest 声明但未注册的键——用于发现「加载成功但零贡献」） |
 | `GET /api/plugin/discover` | 发现可用插件 |
 | `GET /api/plugin/capabilities` | 系统能力概览 |
 | `POST /api/plugin/load-all` | 加载全部插件 |
@@ -518,6 +518,40 @@ curl -X POST http://localhost:8080/api/voice/dub \
 | `GET /api/plugin/health` | 插件健康聚合（ok/degraded/error 分类 + Hook/Agent 计数） |
 
 **插件 Agent（SA-2/3/4）**：插件 manifest 声明 `kind: agent` + `permissions: [orchestrate]` 后，可在 `initialize()` 经 `AgentRegistry.register(agent, name, plugin_id, deps)` 注册自定义 Agent——按 deps 并入主管线 DAG（输入 `PluginAgentInput`、输出 `PluginAgentOutput`），或经 `services.subagent.run_sub_agent(ctx, name, payload)` 作为子代理被宿主 Agent 调用（嵌套深度上限 2、宿主取消感知、用量以「宿主:子代理」复合名归因、熔断 3 次/60s、默认 120s 超时）。Agent 边界 Hook `PRE_AGENT`（改写 input/skip）与 `POST_AGENT`（只读观测）已在管线接线。
+
+
+---
+
+## 模型提供商（Provider 源）
+
+「设置 → 模型提供商」页的数据面：一个**源**（凭据 + 模型清单）可被多个**角色**引用，
+角色由工程文件/业务流程消费，源里改密钥不影响工程。密钥以 Fernet 加密落盘
+（`ClipwrightData/provider_sources.json`；未配置 `CLIPWRIGHT_WEBHOOK_SECRET_KEY` 时明文兼容），
+接口一律只回显掩码。
+
+| 端点 | 说明 |
+|------|------|
+| `GET /api/providers?kind=` | 源列表（脱敏：`api_keys_masked`/`key_count`/`has_keys`）+ 角色绑定总览 |
+| `POST /api/providers` | 新建源 `{name,kind,provider,base_url,timeout_sec,proxy,headers,api_keys[],models[]}` |
+| `GET /api/providers/available` | 各类型可选 provider 名（**门面驱动**，含插件注册的 llm/tts/embedding/rerank provider）+ `role_kinds` 映射 |
+| `GET /api/providers/roles` | 角色绑定（`main/flash/vision/embed/rerank/tts`） |
+| `PUT /api/providers/roles` | 绑定/解绑角色 `{role, source_id, model}`（`source_id=""` 解绑） |
+| `GET /api/providers/{id}` | 源详情（脱敏） |
+| `PUT /api/providers/{id}` | 更新源（`api_keys` 传掩码=保留旧值） |
+| `DELETE /api/providers/{id}` | 删除源（引用它的角色自动解绑） |
+| `POST /api/providers/{id}/models` | 覆盖模型清单 |
+| `POST /api/providers/{id}/models/upsert` | 自定义模型（新增/覆盖 `{id,name?,enabled?}`） |
+| `DELETE /api/providers/{id}/models/{model_id}` | 删除模型（解绑引用它的角色） |
+| `POST /api/providers/{id}/models/fetch` | 「获取模型列表」（调用 provider 的 models 端点；失败返回 `note`，可改用自定义模型） |
+
+**角色消费点**：`main`/`flash`（`services/llm.py`，含 vision 走的 `vision` 角色）、
+`embed`/`rerank`（`rag/embedder.py`、`rag/reranker.py`）、`tts`（`services/voice.py`）。
+绑定缺失时全部回退既有 `settings.*_provider/model/api_key/base_url` 平铺字段（零行为变化）；
+源的 `timeout_sec/proxy/headers` 会真正落到传输层（LLM 内层 SDK / httpx）。
+
+**设置页下拉**：`GET /api/settings` 的 `llm_provider` / `rag_embed_provider` /
+`tts_default_provider` 选项已并入门面中已注册的 provider —— 插件注册的 provider
+会直接出现在下拉里，禁用插件后消失。
 
 ---
 

@@ -1193,3 +1193,16 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ✅ **待验证项再修 3 项**：MG 提示词注入实际画布尺寸（竖屏越界）、模板应用先建项目再带 target_project_id（素材重映射生效）、空时间线 SRT/EDL 导出提示
 - ✅ 回归：后端 1565 passed / 0 失败；前端 441 passed + tsc 0 + lint 0 error + build
 - 📊 **审计计划 111 条已复核项：全部完成**（P0 5/5、P1 37/37、P2 54/54、P3 15/15）；待验证 11 项中 6 项已核实处理、1 项部分不成立、4 项需真机实测（§7.3 剩余）；P3-06 同类 catch 余量为可选的批量留痕
+
+### 执行轮次 103（Provider 配置 + 插件化缺陷清算）
+
+计划文档：`J:\Clipweight-Client\docs\provider-config-and-pluginization-remediation-plan.md`（§6 执行记录）。
+
+- ✅ **B2+B3 模型提供商数据面**：源实体（存储 + `/api/providers` 源 CRUD / 角色绑定 / 模型清单 / 获取模型列表，密钥 Fernet 加密、只回显掩码）；LLM 按角色（main/flash/vision）取源凭据与模型，未绑定回退旧 settings；修掉「密文被当 API Key 使用/回显」隐患（`has_key()` 门控替代形态启发式）
+- ✅ **B4 传输层与协议扩展**：超时/代理/自定义头经传输层真正写入内层 SDK（isobase 构造时会丢弃）；新增 Embedding/Rerank 两个 provider 协议与贡献 kind（14→16 类）+ 内置实现；RAG 嵌入/重排序与语音 TTS 全部改为「角色绑定优先、旧 settings 兜底」
+- ✅ **B5 前端「模型提供商」页**：四个 tab（LLM / 嵌入 / 重排序 / 语音 TTS）× 源列表 × 源设置（多条 API Key、超时、代理、自定义请求头）× 模型清单 × 角色分配；provider 选项与设置页下拉均改为门面驱动（插件注册项自动出现、禁用即消失）
+- ✅ **B6 插件化缺陷逐条修复**：异常不再静默零贡献、provider 注册协议校验、能力缺省不再 fail-closed、内置镜像稳定 id 与幽灵项清理、贡献读缓存与镜像重扫、启停失效前端 Slot 缓存、导航路径白名单、插件面板受面板开关约束（新增「时间线」开关）、shortcut 消费 visibleWhen、props.section 未声明 kinds 按不适用处理
+- ✅ **B7 / P4 / P10 / P12**：bundle 档改「带 Authorization 取档 + srcDoc 注入（重申 CSP）」；贡献请求合并为单次全量；invalidate 广播使已挂载 hook 立即同步；导出预设支持容器表达；语音页 provider 门面驱动；`/api/plugin/list` 暴露 `contributions`/`declared_only`；新增 `docs/plugin_authoring.md` 插件作者指南并更新 `docs/api_reference.md`（模型提供商端点 + `/api/plugin/list` 字段）
+- ✅ 回归：后端 **1709 passed** / 1 skipped / 1 xfailed；前端 **493 passed** + tsc 0 error + build 成功；新增浏览器 e2e 7 passed
+- ⏸ **明确延期**：P1 30+ 内置插件真迁移、P6 page 插槽鉴权、P9 权限运行时沙箱（理由见计划 §6.6）
+- ℹ️ 既有 e2e 失败 8 条已在基线提交复现（home 健康检查需真实后端、panel-divider B18、preview-fixes/caption-style/agent-edit），非本轮引入
