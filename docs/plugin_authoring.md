@@ -17,6 +17,9 @@ from clipwright.plugins.base import BasePlugin
 from clipwright.plugins.contribution import Contribution, ContributionKind
 
 class MyPlugin(BasePlugin):
+    def setup(self):
+        """可选：副作用（建目录 / 读配置 / 预热），在 contributions() 之前执行。"""
+
     def contributions(self):
         return [
             Contribution(ContributionKind.TOOL, "my_echo", MyEchoTool(), meta={}),
@@ -53,7 +56,7 @@ contributions:
 > 声明了却没注册的条目会出现在 `GET /api/plugin/list` 的 `declared_only` 里；
 > 注册了却没声明的会被门面拒绝并写错误通道。
 
-## 2. 可贡献的 16 类扩展点
+## 2. 可贡献的 17 类扩展点
 
 | kind | 用途 | 关键 meta / 说明 |
 |------|------|------------------|
@@ -71,6 +74,7 @@ contributions:
 | `renderer_backend` | 渲染后端 | `render(...)` 必须接受 `cancel_token` |
 | `embedding_provider` | 向量化（RAG） | 工厂形态，产出 `embed/embed_query/dim` |
 | `rerank_provider` | 重排序（RAG） | 工厂形态，产出 `rerank(query, documents, model, top_n)` |
+| `animation` | 动画定义 | `object` 需是 `AnimationDef`；id 即 `animation_id` |
 | `ui_slot` | 前端插槽 | `meta.slot` 见下节 |
 | `export_preset` | 导出预设 | `meta.payload = {name,width,height,fps,bitrate,container?}` |
 
@@ -103,7 +107,38 @@ contributions:
 - LLM provider 的 `build_client` 需接受 `timeout_sec / proxy / headers`（可为空）；
   核心会把源里的这三项传下来（自定义头优先级最高）。
 
-## 5. 生命周期与失败可见性
+## 5. 运行形态：进程内 vs 子进程沙箱
+
+manifest 用 `runtime` 选择执行方式：
+
+| runtime | 说明 | 权限强制 |
+|---|---|---|
+| `inprocess`（默认） | 插件在宿主进程内加载（内置/自研插件） | 仅 manifest 声明校验 |
+| `subprocess` | 独立子进程加载，**宿主不 import 插件代码** | 进程内审计钩子（真拦截） |
+
+`subprocess` 档的语义：
+
+- 宿主 `sys.modules` 里没有你的模块，插件碰不到宿主对象图；
+- 贡献以**纯数据声明**跨进程（kind/id/meta），宿主为每条贡献造同形代理对象
+  （调用时转发 RPC），因此 `contributions()` 必须只返回声明、副作用放 `setup()`；
+- 权限在**你的进程内**强制：写盘需 `fs_write` 且只能写自己的 PluginData 目录、
+  网络需 `network`/`http`、命令执行一律拒绝（权限白名单没有 `shell`）；
+- 单次调用超时由 `runtime_config.call_timeout` 控制（默认 30s）；worker 崩溃或超时后
+  该插件所有调用都会收到可读错误（`RpcError`），不会静默返回空结果；
+- 目前支持跨进程的 kind：`tool` / `hook` / `material_source` / `prompt` /
+  `ui_slot` / `export_preset`；其它 kind 会在加载时被拒绝并写入错误通道
+  （防止「装了却静默无效」）。
+
+```yaml
+runtime: subprocess
+permissions: [network]          # 只给网络；写盘会被拒
+runtime_config:
+  call_timeout: 15
+```
+
+参考实现：`plugins/sandbox_demo/`（工具 + 钩子 + 提示词 + UI 声明，含写盘被拒的探针）。
+
+## 6. 生命周期与失败可见性
 
 - `contributions()` 抛异常 → 写入插件错误通道并**让本次加载失败**（不再静默零贡献）。
 - `shutdown()` 由桥接层自动追加门面回收（工具/技能/Agent/hook/prompt 等一并注销）。
@@ -111,9 +146,10 @@ contributions:
 - 诊断入口：`GET /api/plugin/errors`（错误通道）、`GET /api/plugin/list`
   （贡献与 `declared_only`）、`GET /api/plugin/health`（总览）。
 
-## 6. 迁移清单（旧契约 → 新契约）
+## 7. 迁移清单（旧契约 → 新契约）
 
 1. 把 `initialize()` 里的 `XxxRegistry.register(...)` 逐条改成 `contributions()` 返回值；
+   非注册的副作用（`mkdir`/环境清理/预热）搬到 `setup()`；
 2. `plugin.yaml` 加 `api_version: "2"` 与 `contributions:` 声明白名单；
 3. 删除 `initialize()` 主体（或保留为空），交给桥接层短路；
 4. 若依赖 `teardown` 清单回收，确认注册进的是门面可回收的 kind（否则在 `shutdown()` 自行清理）。
