@@ -1,0 +1,191 @@
+# MG 动效配方库（知识包）
+#
+# 用途：给 LLM MG 生成注入"结构化动效配方"（镜头类型 → 时间轴 beat → 元素/缓动/禁忌），
+# 让生成的动画有可依循的节奏骨架，而不是每次从零发明。
+#
+# ⚠️ 内容来源与许可（合规要求，勿删）
+# - 本文件全部条目由本项目自行撰写，是**结构与方法论的提炼**，不是上游文档的原文照抄：
+#   没有任何条目包含上游的 HTML/CSS/JS 片段或整段文字。
+# - 条目灵感来自（但不复制）以下上游 agent skill 的**主题与规则名**：
+#     * heygen-com/hyperframes — Apache-2.0：skills/hyperframes-animation/{rules,blueprints}/*、
+#       skills/hyperframes-core/references/determinism-rules.md
+#     * browser-use/video-use — MIT（Copyright (c) 2026 Browser Use）：SKILL.md 的动画时长/节奏规则
+# - 每条目的 source 字段登记来源仓库/路径/许可；测试 `test_mg_knowledge_pack.py` 会校验：
+#   ① 许可只允许 Apache-2.0 / MIT；② distilled 必须为 true；③ 条目内不得出现上游代码片段特征
+#   （`<`、`@keyframes`、`function(`）。
+# - 新增条目请沿同样格式登记来源；若哪天要直接引用上游原文，需同时更新
+#   `THIRD_PARTY_NOTICES.md` 并保留原版权声明。
+
+version: 1
+
+# 未匹配到任何关键词时使用（顺序即优先级）
+defaults: [hero-title-stagger, stat-count-punch]
+
+recipes:
+  - id: hero-title-stagger
+    title: 标题错峰揭示
+    shot_types: [title_reveal]
+    keywords: [标题, 开场, 片头, 主题, title, 开头, 引入]
+    intent: 主标题/副标题/装饰线以 0.2-0.45s 错峰入场，主标题最后落定并 hold ≥1s。
+    structure:
+      duration_sec: [3.0, 4.5]
+      beats:
+        - at: 0.00
+          do: 装饰线（line）width 0 → 目标宽，0.5s ease-out
+        - at: 0.25
+          do: 副标题 opacity 0→1 + translate_y 12→0，0.4s ease-out
+        - at: 0.45
+          do: 主标题 opacity 0→1 + scale 0.94→1，0.6s back-out（轻微 overshoot）
+        - at: 1.10
+          do: 细长光带（line）自左向右扫过，0.5s，accent 色约 20% 不透明度
+      layout: 主标题居中偏上；副标题在其下 12-20px；装饰线位于副标题下方或主标题上方
+      easing: [ease-out, back-out]
+      avoid: [三个元素都在 0s 入场, 主副标题同字号, 装饰线先于主标题落定]
+    source: {repo: heygen-com/hyperframes, path: skills/hyperframes-animation/rules/discrete-text-sequence.md, license: Apache-2.0, distilled: true}
+
+  - id: stat-count-punch
+    title: 数据冲击（计数 + 单位）
+    shot_types: [data_impact]
+    keywords: [数据, 数字, 增长, 百分比, 统计, 指标, 多少, kpi, gmvl, 倍]
+    intent: 数值以连续计数滚到目标值，落定瞬间一次轻微放大回弹，单位/标签随后补入。
+    structure:
+      duration_sec: [2.5, 4.0]
+      beats:
+        - at: 0.00
+          do: 数值 opacity 0→1 + translate_y 20→0，0.35s ease-out
+        - at: 0.15
+          do: 数字在 0.8-1.2s 内连续递增到目标值（多帧数字元素或 count-up 语义）
+        - at: 1.20
+          do: 落定瞬时 scale 1.0→1.10→1.0（0.25s，back-out）
+        - at: 1.45
+          do: 单位/百分比与说明标签 opacity 0→1，0.3s ease-out
+      layout: 数值为视觉主角（字号 ≥ 其他元素 1.8 倍），单位紧随其后且更小更淡
+      easing: [ease-out, back-out]
+      avoid: [数字跳变而非滚动, 单位与数值同字号, 同时揭示两个不同指标]
+    source: {repo: heygen-com/hyperframes, path: skills/hyperframes-animation/blueprints/dataviz-countup.md, license: Apache-2.0, distilled: true}
+
+  - id: compare-two-up
+    title: 左右对比
+    shot_types: [comparison]
+    keywords: [对比, 相比, 区别, 优劣, 前后, 新旧, vs, 左右]
+    intent: 两侧内容以镜像式错峰入场，中缝分隔线最后落下，用 accent 色标注差异点。
+    structure:
+      duration_sec: [3.0, 5.0]
+      beats:
+        - at: 0.00
+          do: 左侧卡片 opacity 0→1 + translate_x -24→0，0.45s ease-out
+        - at: 0.25
+          do: 右侧卡片 opacity 0→1 + translate_x 24→0，0.45s ease-out
+        - at: 0.60
+          do: 中缝分隔线（line）height 0→满高，0.35s ease-out
+        - at: 0.85
+          do: 差异标注（accent 色高亮块/描边）opacity 0→1，0.3s ease-out
+      layout: 两侧严格对称；标题同基线；标注不与卡片边缘或分隔线重叠
+      easing: [ease-out]
+      avoid: [左右同时入场, 两侧配色主次不分, 分隔线先于内容出现]
+    source: {repo: heygen-com/hyperframes, path: skills/hyperframes-animation/blueprints/comparison-split.md, license: Apache-2.0, distilled: true}
+
+  - id: flow-arrow-chain
+    title: 流程推进（箭头链）
+    shot_types: [flow]
+    keywords: [流程, 步骤, 链路, 顺序, 首先, 然后, 最后, 阶段, 漏斗]
+    intent: 节点自左向右（或自上而下）依次入场，箭头跟随已入场节点推进，方向语义必须与流程一致。
+    structure:
+      duration_sec: [4.0, 6.0]
+      beats:
+        - at: 0.00
+          do: 第 1 个节点 opacity 0→1 + scale 0.92→1，0.35s ease-out
+        - at: 0.35
+          do: 节点 1→2 的箭头 width 0→目标宽，0.3s ease-out（箭头晚于左节点、早于右节点）
+        - at: 0.65
+          do: 第 2 个节点入场（同上节奏）
+        - at: 后续每节点 +0.30
+          do: 节点与其左侧箭头成对推进（箭头先于右侧节点 0.15s）
+        - at: 末尾
+          do: 末节点落定后 hold ≥0.8s
+      layout: 节点等距；连线不得穿过节点本体；节点数 ≤ 5，超出则拆两镜
+      easing: [ease-out]
+      avoid: [箭头先于两端节点, 节点与箭头同时出现, 手绘式回环箭头]
+    source: {repo: heygen-com/hyperframes, path: skills/hyperframes-animation/rules/dynamic-content-sequencing.md, license: Apache-2.0, distilled: true}
+
+  - id: quote-card-hold
+    title: 引语卡片
+    shot_types: [quote]
+    keywords: [引用, 名言, 观点, 说, 提到, 强调句, 语录]
+    intent: 引语以整块卡片形式淡入并保持静止，末尾用署名/来源小字补入，节奏偏慢。
+    structure:
+      duration_sec: [3.5, 5.5]
+      beats:
+        - at: 0.00
+          do: 引号装饰符 opacity 0→1 + scale 1.3→1，0.4s ease-out
+        - at: 0.20
+          do: 引文正文 opacity 0→1 + translate_y 10→0，0.6s ease-out
+        - at: 1.00
+          do: 署名/出处 opacity 0→1，0.35s ease-out（字号 ≤ 正文 0.6 倍）
+        - at: 1.40
+          do: 静止 hold 到结尾（不做退场动画，由场景切换接管）
+      layout: 正文左对齐、行长不超过画布 60%；引号符号不遮挡首行文字
+      easing: [ease-out]
+      avoid: [逐字打字机效果（引语需一次读完）, 正文居中导致换行难读, 装饰元素抢戏]
+    source: {repo: browser-use/video-use, path: SKILL.md, license: MIT, distilled: true}
+
+  - id: hub-radial-map
+    title: 中心辐射（思维导图）
+    shot_types: [mindmap]
+    keywords: [导图, 辐射, 分支, 关系, 结构, 概念, 组成]
+    intent: 中心节点先落定，外围节点按角度顺序错峰展开，连线随节点生长。
+    structure:
+      duration_sec: [4.0, 6.0]
+      beats:
+        - at: 0.00
+          do: 中心节点 opacity 0→1 + scale 0.8→1，0.45s back-out
+        - at: 0.45 起
+          do: 外围节点按角度顺序每 0.18-0.25s 入场（opacity + scale 0.9→1）
+        - at: 随每个节点
+          do: 对应连线（line，旋转定位）同步淡入 0.25s
+        - at: 末尾
+          do: 全部节点 hold ≥1s
+      layout: 外围节点分布在同一半径或两档半径上；节点数 ≤ 6；连线从中心到节点边缘而非圆心到圆心
+      easing: [back-out, ease-out]
+      avoid: [节点同时铺开, 连线穿过中心节点文本, 文字压线]
+    source: {repo: heygen-com/hyperframes, path: skills/hyperframes-animation/rules/constellation-hub.md, license: Apache-2.0, distilled: true}
+
+  - id: growth-bars
+    title: 柱状增长
+    shot_types: [data_impact, comparison]
+    keywords: [柱状, 排行, 增长, 份额, 排名, 条形, 图表]
+    intent: 柱体自底向上生长，数值标注在柱顶随后淡入；最高柱用 accent 色区分。
+    structure:
+      duration_sec: [3.0, 5.0]
+      beats:
+        - at: 0.00
+          do: 坐标底线（line）width 0→满宽，0.3s ease-out
+        - at: 0.20 起
+          do: 柱体按左→右每根错峰 0.12-0.2s，height 0→目标（0.5s ease-out）
+        - at: 柱体落定后
+          do: 该柱数值标注 opacity 0→1（0.25s）
+        - at: 末柱落定后
+          do: 最高柱切换 accent 色并轻微放大 1.03，hold ≥0.8s
+      layout: Y 轴从 0 起；柱间距一致；标签不压柱体
+      easing: [ease-out]
+      avoid: [跳过 0 基线, 柱体与数值同时出现, 4 根以上柱体颜色各异]
+    source: {repo: heygen-com/hyperframes, path: skills/hyperframes-animation/rules/stat-bars-and-fills.md, license: Apache-2.0, distilled: true}
+
+  - id: spotlight-push-in
+    title: 聚焦推近
+    shot_types: [data_impact, title_reveal, quote]
+    keywords: [聚焦, 特写, 放大, 强调, 重点, 突出]
+    intent: 用整层缓慢推近（scale 1→1.06）制造"逼近感"，同时其他元素降透明度，把注意力压到单点。
+    structure:
+      duration_sec: [2.5, 4.0]
+      beats:
+        - at: 0.00
+          do: 聚焦层 opacity 0→1 + scale 1→1.06（整段匀速偏 ease-out，≥1.5s）
+        - at: 0.30
+          do: 次要元素 opacity 降至 0.4（0.4s ease-in-out）
+        - at: 0.60
+          do: 焦点元素描边/光晕 opacity 0→1（0.35s ease-out，克制，不做循环闪烁）
+      layout: 推近后焦点元素仍完整在画布内（预留 ≥8% 边距）
+      easing: [ease-out, ease-in-out]
+      avoid: [推近与元素缩放叠加导致抖动, 多个元素同时高亮, 循环脉冲光效]
+    source: {repo: heygen-com/hyperframes, path: skills/hyperframes-animation/rules/coordinate-target-zoom.md, license: Apache-2.0, distilled: true}
