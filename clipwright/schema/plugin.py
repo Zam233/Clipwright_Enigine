@@ -97,6 +97,13 @@ class PluginMetadata(BaseModel):
     missing_dependencies: list[str] = Field(default_factory=list)
     # SA-2: 插件注册的自定义 Agent 名（AgentRegistry 归属，管理面展示）
     agents: list[str] = Field(default_factory=list)
+    # P12: 已注册贡献（门面账本快照，形态 [{kind, id}]）与「声明了但未注册」的键
+    contributions: list[dict[str, Any]] = Field(
+        default_factory=list, description="已注册贡献（kind/id）",
+    )
+    declared_only: list[str] = Field(
+        default_factory=list, description="manifest 声明但运行时未注册的贡献键（kind:id）",
+    )
 
 
 class CategoryPluginSpec(BaseModel):

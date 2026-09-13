@@ -112,12 +112,34 @@ def _validate_plugin_id(plugin_id: str) -> str:
         raise HTTPException(status_code=400, detail=str(e))
 
 
+def _attach_contributions(items: list) -> None:
+    """P12：为每个插件补 `contributions` / `declared_only`（管理面溯源用）。
+
+    数据源是门面账本（双轨都会入账），因此「界面显示已加载但实际零贡献」
+    这类问题可以直接看出来。
+    """
+    from clipwright.plugins.contribution import ContributionRegistry
+
+    for meta in items:
+        pid = str(getattr(meta.manifest, "id", "") or "")
+        registered = ContributionRegistry.list_by_owner(pid)
+        meta.contributions = [{"kind": c.kind.value, "id": c.id} for c in registered]
+        registered_keys = {f"{c.kind.value}:{c.id}" for c in registered}
+        declared = {
+            f"{str(getattr(d, 'kind', '') or '')}:{str(getattr(d, 'id', '') or '')}"
+            for d in list(getattr(meta.manifest, "contributions", []) or [])
+        }
+        meta.declared_only = sorted(k for k in declared - registered_keys if k != ":")
+
+
 @router.get("/list", response_model=list[PluginMetadata])
 async def list_plugins() -> list[PluginMetadata]:
-    """列出所有已加载的第三方插件。"""
+    """列出所有已加载的第三方插件（P12：附已注册贡献与「声明未注册」清单）。"""
     if _loader is None:
         return []
-    return _loader.list_loaded()
+    items = _loader.list_loaded()
+    _attach_contributions(items)
+    return items
 
 
 @router.get("/discover", response_model=list[str])
