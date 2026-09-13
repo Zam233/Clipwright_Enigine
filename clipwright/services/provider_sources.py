@@ -435,9 +435,14 @@ def resolve_for_source(source_id: str) -> Optional[dict[str, Any]]:
 # ── 迁移（现有平铺配置 → 一条默认源）──────────────────────
 
 def ensure_migrated() -> Optional[str]:
-    """若尚无任何源，且旧平铺配置有凭据 → 物化一条默认源并绑定 LLM 角色。
+    """若尚无任何源，且旧平铺配置有凭据 → 物化一条默认源（**只做可见性，不绑定角色**）。
 
     幂等：已有源则直接返回 None（不覆盖用户配置）。
+
+    设计取舍：迁移只把既有凭据搬进新页面让用户看得见，**不替用户绑定角色**——
+    一旦绑定，`resolve()` 就会覆盖 `settings.llm_*`，用户在后端配置页改的 provider/
+    密钥/模型会静默失效（这正是「双配置」最危险的形态）。绑定由用户在模型提供商页
+    显式完成，届时「绑定优先」才是用户明确选择的结果。
     """
     from clipwright.config import settings
 
@@ -460,13 +465,11 @@ def ensure_migrated() -> Optional[str]:
         "timeout_sec": 120,
         "models": [model] if model else [],
     })
-    for role in ("main", "flash", "vision"):
-        try:
-            set_role(role, src["id"], model)
-        except Exception as e:  # noqa: BLE001 — 迁移不因单角色失败而中断
-            logger.warning("迁移绑定角色 %s 失败: %s", role, e)
-    logger.info("已从现有配置迁移出默认 Provider 源: %s", src["id"])
-    return str(src["id"])
+    logger.info(
+        "已把既有 LLM 配置迁移为 Provider 源 default（未绑定角色：绑定后才会覆盖"
+        "后端配置页的同名字段，请在「模型提供商」按需绑定 main/flash/vision）",
+    )
+    return str(src.get("id") or "default")
 
 
 def reset_for_tests(path: Optional[Path] = None) -> None:

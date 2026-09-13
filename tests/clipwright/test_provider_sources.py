@@ -148,8 +148,10 @@ class TestMigration:
         monkeypatch.setattr(settings, "llm_model", "deepseek-chat")
         sid = ps.ensure_migrated()
         assert sid == "default"
-        assert ps.resolve("main")["api_key"] == "sk-legacy-777"
-        assert ps.resolve("vision")["model"] == "deepseek-chat"
+        src = ps.get_source("default", public=False)
+        assert src["kind"] == "llm" and src["models"][0]["id"] == "deepseek-chat"
+        # 迁移**只做可见性**：不替用户绑定角色（绑定后才会覆盖 settings 平铺字段）
+        assert ps.get_roles() == {}
         # 幂等：已有源不再迁移
         assert ps.ensure_migrated() is None
 
