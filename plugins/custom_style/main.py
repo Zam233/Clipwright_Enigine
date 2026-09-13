@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from clipwright.plugins.base import StyleInterpreterPlugin
-from clipwright.services.style_interpreter import StyleInterpreter
+from clipwright.plugins.contribution import Contribution, ContributionKind
 
 
 class CustomStylePlugin(StyleInterpreterPlugin):
@@ -31,9 +31,15 @@ class CustomStylePlugin(StyleInterpreterPlugin):
     - 调用外部 API 获取设计师配色方案
     """
 
-    def initialize(self) -> None:
-        """注册到 StyleInterpreter。"""
-        StyleInterpreter.register_plugin(self)
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：把自身作为风格解释器贡献出去。
+
+        D3 后 StyleInterpreter 支持多 owner 共存；`meta.priority` 决定活跃项。
+        """
+        return [Contribution(
+            ContributionKind.STYLE_INTERPRETER, self.manifest.id, self,
+            meta={"priority": 100},
+        )]
 
     async def interpret(
         self,

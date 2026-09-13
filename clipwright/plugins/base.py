@@ -95,6 +95,10 @@ def _install_dual_track_bridge(cls: type) -> None:
     orig_init = cls.__dict__.get("initialize")
     if orig_init is not None and not getattr(orig_init, "_cw_bridge", False):
         def _bridged_initialize(self, _orig=orig_init):
+            # P1：先跑副作用（setup），再尝试新轨注册——迁移后的插件两者都要执行
+            setup = getattr(self, "setup", None)
+            if callable(setup):
+                setup()
             if run_contributions(self):
                 return None
             _record_old_track_hint(
@@ -152,12 +156,26 @@ class BasePlugin(ABC):
         return []
 
     def initialize(self) -> None:
-        """桥接入口（A-4）：contributions() 非空时由门面注册；否则空实现。
+        """桥接入口（A-4）：先跑 setup() 副作用，再由门面注册 contributions()。
 
         旧契约插件覆盖本方法——`__init_subclass__` 已包装：先尝试新轨注册，
         成功则**跳过**原 initialize 主体；无贡献声明时原样执行（含迁移提示）。
         """
+        setup = getattr(self, "setup", None)
+        if callable(setup):
+            setup()
         run_contributions(self)
+
+    def setup(self) -> None:
+        """可选生命周期位（P1 迁移引入）：放**副作用**（建目录、读配置、预热）。
+
+        与 `contributions()` 的分工：
+        - `setup()`：可以做任何事，但不能注册贡献；
+        - `contributions()`：只返回 Contribution 声明（纯数据，可序列化）。
+
+        这个分工是子进程运行时的前提——声明要能跨进程传。
+        默认空实现，插件按需覆盖。
+        """
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """A-4 双轨桥接：包装子类的 initialize/shutdown。"""
