@@ -1045,6 +1045,8 @@ class RenderService:
             warnings = list(audio_warnings)
             if self._fallback_count:
                 warnings.append(f"{self._fallback_count} 个片段源不可用，已降级纯色段")
+            # V4/V7：渲染后切点复核（默认关闭，best-effort）
+            await self._post_render_review(str(output), video_segments, warnings)
             try:
                 tl_dur = float(getattr(timeline, "duration_sec", 0) or 0)
             except (TypeError, ValueError):
@@ -1560,6 +1562,67 @@ class RenderService:
         if progress_callback:
             await progress_callback("trim", 50, f"完成 {len(trimmed)}/{len(segments)} 裁剪")
         return trimmed
+
+    async def _post_render_review(self, output: str, video_segments: list[dict],
+                                  result_warnings: list[str]) -> None:
+        """渲染后切点复核（V4/V7，默认关闭）：抽切点复核图，可选交视觉模型打分。
+
+        开关：环境变量 ``CLIPWRIGHT_POST_RENDER_REVIEW=1``（或 ``render_review`` 设置）。
+        产物写 ``CLIPWRIGHT_REVIEW_DIR``（缺省放渲染工作目录）。
+        任何失败只记日志、绝不改变渲染结果——自评是"多看一层"，不是新的失败点。
+        """
+        try:
+            enabled = (os.environ.get("CLIPWRIGHT_POST_RENDER_REVIEW") or "").strip() in ("1", "true", "yes")
+            if not enabled:
+                try:
+                    from clipwright.config import settings as _settings
+
+                    enabled = bool(getattr(_settings, "render_review", False))
+                except Exception:
+                    enabled = False
+            if not enabled:
+                return
+            from clipwright.services.timeline_view import (
+                build_review_sheets, cut_times_from_segments,
+            )
+
+            cut_times = cut_times_from_segments(video_segments)
+            if not cut_times:
+                logger.info("切点复核: 无切点（单片段时间线），跳过")
+                return
+            base = (os.environ.get("CLIPWRIGHT_REVIEW_DIR") or "").strip()
+            review_dir = (
+                Path(base) / f"review_{uuid.uuid4().hex[:8]}" if base
+                else Path(self._work_dir) / f"review_{uuid.uuid4().hex[:8]}"
+            )
+            sheets = await asyncio.to_thread(build_review_sheets, output, cut_times, review_dir)
+            if not sheets:
+                logger.warning("切点复核: 未能生成复核图（抽帧失败）")
+                return
+            logger.info("切点复核: %d 个切点 → %d 张复核图（%s）",
+                        len(cut_times), len(sheets), review_dir)
+            result_warnings.append(f"切点复核图 {len(sheets)} 张已生成: {review_dir}")
+            self._final_ffmpeg_log.append(f"切点复核: {len(sheets)} 张 → {review_dir}")
+            # 可选：交视觉模型打分（与 MG 视觉自评共用评分器与 enable_visual_llm 门控）
+            try:
+                from clipwright.animation.mg.visual_eval import MGVisualEvaluator
+
+                verdict = await MGVisualEvaluator().evaluate(
+                    sheets,
+                    description=f"{len(cut_times)} 个剪辑点的前后帧对照（查跳变/爆闪/字幕遮挡/overlay 错位）",
+                )
+            except Exception as exc:
+                logger.debug("切点复核: 视觉打分跳过（%s）", exc)
+                verdict = None
+            if verdict:
+                score = verdict.get("score")
+                logger.info("切点复核: 视觉评分 %s（问题 %d 条）",
+                            score, len(verdict.get("issues") or []))
+                result_warnings.append(f"切点复核视觉评分 {score}")
+                for issue in (verdict.get("issues") or [])[:3]:
+                    result_warnings.append(f"切点复核问题: {issue.get('detail', '')}")
+        except Exception as exc:
+            logger.warning("切点复核失败（不影响成片）: %s", exc)
 
     @staticmethod
     def expected_output_duration(
