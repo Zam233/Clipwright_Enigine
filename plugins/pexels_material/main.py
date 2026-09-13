@@ -15,8 +15,8 @@ from typing import Any, Optional
 import httpx
 
 from clipwright.material.base import MaterialSource
-from clipwright.material.registry import MaterialRegistry
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.material import MaterialAsset, MaterialType
 from clipwright.schema.plugin import PluginManifest, PluginKind
 
@@ -205,7 +205,7 @@ class PexelsMaterialSource(MaterialSource):
 # ── Plugin ────────────────────────────────────────────
 
 class PexelsMaterialPlugin(CapabilityPlugin):
-    """注册 Pexels 素材源到 MaterialRegistry。"""
+    """把 Pexels 素材源作为 material_source 贡献出去（P1 新契约）。"""
 
     manifest = PluginManifest(
         id="pexels_material",
@@ -219,15 +219,16 @@ class PexelsMaterialPlugin(CapabilityPlugin):
     def __init__(self) -> None:
         self._source: Optional[PexelsMaterialSource] = None
 
-    def initialize(self) -> None:
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：配好 api_key 才贡献素材源（未配置即零贡献）。"""
         # 优先使用 config.yaml 中的 api_key，其次环境变量
         api_key = (self.config or {}).get("api_key", "") or os.environ.get("PEXELS_API_KEY", "")
         if not api_key:
-            print(f"[PexelsPlugin] 跳过: 请在 {self.manifest.id}/config.yaml 中配置 api_key")
-            return
+            return []
         self._source = PexelsMaterialSource(api_key=api_key)
-        MaterialRegistry.register(self._source, plugin_id=self.manifest.id)
-        print(f"[PexelsPlugin] Pexels 素材库已注册（API Key: {api_key[:4]}...）")
+        return [Contribution(
+            ContributionKind.MATERIAL_SOURCE, self._source.source_id, self._source,
+        )]
 
     def shutdown(self) -> None:
         if self._source:

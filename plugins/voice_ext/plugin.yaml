@@ -5,3 +5,8 @@ kind: "capability"
 description: "TTS 语音提供商扩展模板 — 演示如何添加 ElevenLabs/Azure/XTTS 等新语音引擎"
 author: "Clipwright Team"
 entry_point: "voice_ext.main"
+
+# P1 迁移：新契约声明（声明即授权）
+api_version: "2"
+contributions:
+  - { kind: tool, id: extended_tts }

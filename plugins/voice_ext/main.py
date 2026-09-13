@@ -13,8 +13,8 @@ import os
 from typing import Any
 import httpx
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.tool.base import BaseTool
-from clipwright.tool.registry import ToolRegistry
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
 
@@ -85,7 +85,8 @@ class VoiceExtPlugin(CapabilityPlugin):
     manifest = PluginManifest(id="voice_ext", name="Voice Provider Extension", version="1.0.0",
         kind=PluginKind.CAPABILITY, description="Extended TTS providers (ElevenLabs/Azure/XTTS)", author="Clipwright Team")
 
-    def initialize(self) -> None:
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：扩展 TTS 工具（provider 取自配置；非法值直接拒绝加载）。"""
         cfg = self.config or {}
         provider = cfg.get("provider", "elevenlabs")
         if provider == "xtts-unimplemented":
@@ -93,8 +94,10 @@ class VoiceExtPlugin(CapabilityPlugin):
                 "voice_ext: provider=xtts-unimplemented 不可用——XTTS 尚未实现，"
                 "请在插件配置页选择 elevenlabs 或 azure"
             )
-        ToolRegistry.register(ExtendedTTSTool(default_provider=provider), plugin_id=self.manifest.id)
-        logger.info("[VoiceExt] 扩展 TTS Tool 已注册 (provider=%s)", provider)
+        return [Contribution(
+            ContributionKind.TOOL, "extended_tts",
+            ExtendedTTSTool(default_provider=provider),
+        )]
 
     def shutdown(self) -> None: pass
 

@@ -5,3 +5,8 @@ kind: "material"
 description: "从 Pexels 免费图库自动搜索匹配的视频和图片素材"
 author: "Clipwright Team"
 entry_point: "pexels_material.main"
+
+# P1 迁移：新契约声明
+api_version: "2"
+contributions:
+  - { kind: material_source, id: pexels }

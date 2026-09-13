@@ -5,3 +5,8 @@ kind: "material"
 description: "从 Unsplash 高质量免费图库搜索图片素材（需 API Key，Demo 版每小时 50 次）"
 author: "Clipwright Team"
 entry_point: "unsplash_material.main"
+
+# P1 迁移：新契约声明（声明即授权 —— 未声明的 id 会被门面拒绝）
+api_version: "2"
+contributions:
+  - { kind: material_source, id: unsplash }

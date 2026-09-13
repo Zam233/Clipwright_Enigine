@@ -5,3 +5,8 @@ kind: "capability"
 description: "云端渲染卸载 — 将 FFmpeg 渲染任务发送到远程服务器执行"
 author: "Clipwright Team"
 entry_point: "cloud_render.main"
+
+# P1 迁移：新契约声明（声明即授权）
+api_version: "2"
+contributions:
+  - { kind: hook, id: cloud_render_pre_render }

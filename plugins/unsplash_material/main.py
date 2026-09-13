@@ -16,8 +16,8 @@ from typing import Any, Optional
 import httpx
 
 from clipwright.material.base import MaterialSource
-from clipwright.material.registry import MaterialRegistry
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.material import MaterialAsset, MaterialType
 from clipwright.schema.plugin import PluginManifest, PluginKind
 
@@ -96,14 +96,15 @@ class UnsplashMaterialPlugin(CapabilityPlugin):
     def __init__(self) -> None:
         self._source: Optional[UnsplashMaterialSource] = None
 
-    def initialize(self) -> None:
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：配好 access_key 才贡献素材源。"""
         key = (self.config or {}).get("access_key", "") or os.environ.get("UNSPLASH_ACCESS_KEY", "")
         if not key:
-            print("[UnsplashPlugin] 跳过: 请配置 UNSPLASH_ACCESS_KEY")
-            return
+            return []
         self._source = UnsplashMaterialSource(access_key=key)
-        MaterialRegistry.register(self._source, plugin_id=self.manifest.id)
-        print("[UnsplashPlugin] Unsplash 图库已注册")
+        return [Contribution(
+            ContributionKind.MATERIAL_SOURCE, self._source.source_id, self._source,
+        )]
 
     def shutdown(self) -> None:
         if self._source:

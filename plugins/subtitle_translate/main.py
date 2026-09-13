@@ -15,10 +15,9 @@ from typing import Any
 import httpx
 
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.tool.base import BaseTool
-from clipwright.tool.registry import ToolRegistry
 from clipwright.skill.base import BaseSkill
-from clipwright.skill.registry import SkillRegistry
 from clipwright.schema.skill import SkillExecResult
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
@@ -104,11 +103,15 @@ class SubtitleTranslatePlugin(CapabilityPlugin):
         author="Clipwright Team",
     )
 
-    def initialize(self) -> None:
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：字幕翻译工具 + 双语字幕技能（engine 取自配置）。"""
         engine = (self.config or {}).get("engine", "llm")
-        ToolRegistry.register(SubtitleTranslateTool(engine=engine), plugin_id=self.manifest.id)
-        SkillRegistry.register(BilingualSubtitleSkill(), plugin_id=self.manifest.id)
-        logger.info("[SubtitleTranslate] Tool + Skill 已注册 (engine=%s)", engine)
+        return [
+            Contribution(ContributionKind.TOOL, "subtitle_translate",
+                         SubtitleTranslateTool(engine=engine)),
+            Contribution(ContributionKind.SKILL, "bilingual_subtitle",
+                         BilingualSubtitleSkill()),
+        ]
 
     def shutdown(self) -> None:
         pass

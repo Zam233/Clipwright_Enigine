@@ -8,8 +8,8 @@ import os
 from typing import Any, Optional
 import httpx
 from clipwright.material.base import MaterialSource
-from clipwright.material.registry import MaterialRegistry
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.material import MaterialAsset, MaterialType
 from clipwright.schema.plugin import PluginManifest, PluginKind
 
@@ -48,12 +48,14 @@ class GifStickerPlugin(CapabilityPlugin):
         kind=PluginKind.MATERIAL_SOURCE, description="Search GIFs and stickers from Giphy/Tenor", author="Clipwright Team")
     def __init__(self) -> None:
         self._source: Optional[GiphySource] = None
-    def initialize(self) -> None:
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：Giphy GIF 素材源。"""
         # 优先使用插件配置 config.yaml 的 api_key，其次环境变量（最终回退公开测试 key）
         cfg = self.config or {}
         self._source = GiphySource(api_key=cfg.get("api_key", ""))
-        MaterialRegistry.register(self._source, plugin_id=self.manifest.id)
-        print("[GifSticker] Giphy GIF 库已注册")
+        return [Contribution(
+            ContributionKind.MATERIAL_SOURCE, self._source.source_id, self._source,
+        )]
     def shutdown(self) -> None:
         if self._source:
             import asyncio

@@ -5,3 +5,9 @@ kind: "capability"
 description: "语音转文字工具 — 包装 STTService，提供 Whisper/faster-whisper 转录能力"
 author: "Clipwright Team"
 entry_point: "whisper_stt.main"
+
+# P1 迁移：新契约声明（声明即授权）
+api_version: "2"
+contributions:
+  - { kind: tool, id: whisper_transcribe_local }
+  - { kind: skill, id: transcribe_and_align }

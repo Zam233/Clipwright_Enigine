@@ -16,8 +16,8 @@ from typing import Any, Optional
 import httpx
 
 from clipwright.material.base import MaterialSource
-from clipwright.material.registry import MaterialRegistry
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.material import MaterialAsset, MaterialType
 from clipwright.schema.plugin import PluginManifest, PluginKind
 
@@ -125,23 +125,24 @@ class BGMLibraryPlugin(CapabilityPlugin):
     def __init__(self) -> None:
         self._sources: list[MaterialSource] = []
 
-    def initialize(self) -> None:
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：按配置贡献 Freesound / 本地目录两个 BGM 素材源。"""
+        items: list[Any] = []
         api_key = (self.config or {}).get("freesound_api_key", "") or os.environ.get("FREESOUND_API_KEY", "")
         if api_key:
             src = FreesoundBGMSource(api_key=api_key)
-            MaterialRegistry.register(src, plugin_id=self.manifest.id)
             self._sources.append(src)
-            print("[BGMPlugin] Freesound 音乐库已注册")
-
+            items.append(Contribution(
+                ContributionKind.MATERIAL_SOURCE, src.source_id, src,
+            ))
         local_dir = (self.config or {}).get("local_dir", "") or os.environ.get("BGM_LOCAL_DIR", "")
         if local_dir:
             src = LocalBGMSource(music_dir=local_dir)
-            MaterialRegistry.register(src, plugin_id=self.manifest.id)
             self._sources.append(src)
-            print(f"[BGMPlugin] 本地音乐库已注册: {local_dir}")
-
-        if not self._sources:
-            print("[BGMPlugin] 跳过: 请配置 FREESOUND_API_KEY 或 BGM_LOCAL_DIR")
+            items.append(Contribution(
+                ContributionKind.MATERIAL_SOURCE, src.source_id, src,
+            ))
+        return items
 
     def shutdown(self) -> None:
         import asyncio
