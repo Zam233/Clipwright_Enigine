@@ -6,8 +6,9 @@
 
 插件注册方式（P1-3: 统一在 initialize() 中注册，而非 import 期副作用）：
   class DiagramStylePlugin(BasePlugin):
-      def initialize(self):
-          HookRegistry.register(HookPoint.DIAGRAM_STYLE_PRESET, register_style_presets)
+      def contributions(self):
+          return [Contribution(ContributionKind.HOOK, "diagram_style_presets",
+                               register_style_presets, meta={"point": "diagram_style_preset"})]
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 from clipwright.plugins.base import BasePlugin
-from clipwright.plugins.hooks import HookRegistry, HookPoint
+from clipwright.plugins.contribution import Contribution, ContributionKind
 
 # ── 内置配色主题 ─────────────────────────────────────
 
@@ -97,10 +98,11 @@ def register_style_presets(context: dict) -> dict:
 
 
 class DiagramStylePlugin(BasePlugin):
-    """P1-3: 图解风格插件 — 在 initialize() 中注册 Hook（不再依赖 import 期副作用）。"""
+    """图解风格插件 — 新契约：贡献 DIAGRAM_STYLE_PRESET 钩子（P1 迁移）。"""
 
-    def initialize(self) -> None:
-        HookRegistry.register(HookPoint.DIAGRAM_STYLE_PRESET, register_style_presets,
-                              plugin_id="diagram_style")
-        from clipwright.config import logger
-        logger.info("DiagramStyle 插件已加载: %d 个配色主题", len(STYLE_PRESETS))
+    def contributions(self) -> list[Any]:
+        """把配色主题注册钩子作为 hook 贡献出去。"""
+        return [Contribution(
+            ContributionKind.HOOK, "diagram_style_presets", register_style_presets,
+            meta={"point": "diagram_style_preset"},
+        )]

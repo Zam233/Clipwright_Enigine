@@ -35,6 +35,54 @@ def loader(tmp_path):
     instance.stop_all_hosts()
 
 
+class TestAllBuiltinPluginsMigrated:
+    """P1/D2 收尾：内置插件必须全部走新契约（旧轨 initialize() 清零）。"""
+
+    def test_no_plugin_defines_its_own_initialize(self, loader):
+        import inspect
+
+        from clipwright.plugins.base import BasePlugin
+        from clipwright.plugins.runtime.handle import SubprocessPluginHandle
+
+        old_track: list[str] = []
+        subprocess_ids: list[str] = []
+        for plugin_dir in sorted((REPO / "plugins").iterdir()):
+            if not (plugin_dir / "plugin.yaml").exists():
+                continue
+            handle = loader.load(plugin_dir.name)
+            if handle is None:
+                continue
+            try:
+                if isinstance(handle, SubprocessPluginHandle):
+                    subprocess_ids.append(plugin_dir.name)
+                    continue
+                if not isinstance(handle, BasePlugin):  # pragma: no cover - 防御
+                    continue
+                if "initialize" in type(handle).__dict__:
+                    old_track.append(plugin_dir.name)
+            finally:
+                loader.unload(plugin_dir.name)  # 逐个卸载：不留跨用例状态
+        assert old_track == [], f"这些插件仍在旧轨 initialize()：{old_track}"
+        assert subprocess_ids, "至少应有一个子进程档示例插件"
+        assert len(inspect.signature(BasePlugin.contributions).parameters) == 1
+
+    def test_every_plugin_declares_contributions_in_manifest(self, loader):
+        """B1 的通用化：所有插件都应在 manifest 声明贡献（子进程档为强制）。"""
+        missing: list[str] = []
+        for plugin_dir in sorted((REPO / "plugins").iterdir()):
+            if not (plugin_dir / "plugin.yaml").exists():
+                continue
+            handle = loader.load(plugin_dir.name)
+            if handle is None:
+                continue
+            try:
+                if not list(getattr(handle.manifest, "contributions", []) or []):
+                    missing.append(plugin_dir.name)
+            finally:
+                loader.unload(plugin_dir.name)
+        assert missing == [], f"这些插件没有在 manifest 声明 contributions：{missing}"
+
+
 class TestA1SubprocessContract:
     def test_load_returns_handle_and_get_works(self, loader):
         handle = loader.load("sandbox_demo")

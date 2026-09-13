@@ -4,3 +4,32 @@ version: "1.0.0"
 kind: "capability"
 description: "25 种文字动画工具 + 自定义 JSON 动画 + 校验器"
 entry_point: "text_animations.animations"
+
+# P1 迁移：新契约声明（25 个文字动画工具）
+api_version: "2"
+contributions:
+  - { kind: tool, id: text_blur_in }
+  - { kind: tool, id: text_custom_json }
+  - { kind: tool, id: text_elastic }
+  - { kind: tool, id: text_fade_in }
+  - { kind: tool, id: text_flip_in }
+  - { kind: tool, id: text_glow }
+  - { kind: tool, id: text_gradient }
+  - { kind: tool, id: text_letter_reveal }
+  - { kind: tool, id: text_morph }
+  - { kind: tool, id: text_neon }
+  - { kind: tool, id: text_perspective }
+  - { kind: tool, id: text_pulse }
+  - { kind: tool, id: text_rainbow }
+  - { kind: tool, id: text_rotate_in }
+  - { kind: tool, id: text_scale_bounce }
+  - { kind: tool, id: text_shake }
+  - { kind: tool, id: text_slide_down }
+  - { kind: tool, id: text_slide_left }
+  - { kind: tool, id: text_slide_right }
+  - { kind: tool, id: text_slide_up }
+  - { kind: tool, id: text_typewriter }
+  - { kind: tool, id: text_typing_cursor }
+  - { kind: tool, id: text_wave }
+  - { kind: tool, id: text_zoom_in }
+  - { kind: tool, id: text_zoom_out }

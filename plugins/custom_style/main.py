@@ -34,11 +34,16 @@ class CustomStylePlugin(StyleInterpreterPlugin):
     def contributions(self) -> list[Any]:
         """新契约（P1 迁移）：把自身作为风格解释器贡献出去。
 
-        D3 后 StyleInterpreter 支持多 owner 共存；`meta.priority` 决定活跃项。
+        D3 后 StyleInterpreter 支持多 owner 共存；`meta.priority` 决定活跃项
+        （C3：可用插件配置 `priority` 覆盖，多个解释器共存时明确谁生效）。
         """
+        try:
+            priority = int((self.config or {}).get("priority", 100))
+        except (TypeError, ValueError):
+            priority = 100
         return [Contribution(
             ContributionKind.STYLE_INTERPRETER, self.manifest.id, self,
-            meta={"priority": 100},
+            meta={"priority": priority},
         )]
 
     async def interpret(

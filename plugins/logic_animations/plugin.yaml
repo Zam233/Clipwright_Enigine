@@ -4,3 +4,9 @@ version: "2.0.0"
 kind: "capability"
 description: "提供 12 种系统内建没有的复杂图解类型：思维导图/雷达图/甘特图/维恩3圆/热力图/桑基图/概念图/代码块/数据表格/引用卡片/对比卡片/组织结构图"
 entry_point: "logic_animations.main"
+
+# P1 迁移：新契约声明
+api_version: "2"
+contributions:
+  - { kind: hook, id: logic_animations_renderer }
+  - { kind: prompt, id: logic_animations_structure_prompt }

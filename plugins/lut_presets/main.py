@@ -52,10 +52,14 @@ class LutPresetsPlugin(StyleInterpreterPlugin):
                     len(available), len(LUT_PRESETS), LUT_DIR)
         if not available:
             logger.info("[LutPresets] 提示: 将 .cube 文件放入 %s/ 以启用", LUT_DIR)
+        try:
+            priority = int((self.config or {}).get("priority", 90))
+        except (TypeError, ValueError):
+            priority = 90
         return [
             Contribution(
                 ContributionKind.STYLE_INTERPRETER, self.manifest.id, self,
-                meta={"priority": 100},
+                meta={"priority": priority},
             ),
             Contribution(
                 ContributionKind.HOOK, "lut_presets_diagram_style",

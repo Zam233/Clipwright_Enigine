@@ -489,12 +489,27 @@ async def plugin_health() -> dict[str, object]:
 
     statuses = {p["status"] for p in plugins}
     overall = "error" if "error" in statuses else ("degraded" if "degraded" in statuses else "ok")
+    # C3：风格解释器是「多注册、按 priority 取活跃项」——把当前活跃 owner 与
+    # 候选项暴露出来，避免装了第二个插件却不知道没生效
+    style_state: dict[str, object] = {}
+    try:
+        from clipwright.services.style_interpreter import StyleInterpreter
+        style_state = {
+            "active": StyleInterpreter._owner or "",
+            "candidates": [
+                {"owner": owner, "priority": priority}
+                for owner, priority, _plugin in StyleInterpreter.list_plugins()
+            ],
+        }
+    except Exception as e:  # noqa: BLE001 — 诊断信息缺失不影响健康总览
+        logger.warning("风格解释器状态读取失败: %s", e)
     return {
         "overall": overall,
         "plugins": plugins,
         "errors_total": len(errors),
         "prompts_registered": sum(
             len(v) for v in PluginPromptRegistry.list_registered().values()),
+        "style_interpreter": style_state,
     }
 
 
