@@ -1206,4 +1206,8 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ✅ 回归：后端 **1716 passed** / 1 skipped / 1 xfailed；前端 **496 passed**（69 文件）+ tsc 0 error + lint 0 error + build 成功；新增端到端验收 5 passed、浏览器 e2e 7 passed
 - ✅ D4 收尾：`plugin_info()` 两轨形态统一为 `{id, contributions, tools, skills, agents}`（此前新/旧轨两套形态，消费方需分支解析）
 - ⏸ **明确延期**：P1 30+ 内置插件真迁移、P6 page 插槽鉴权、P9 权限运行时沙箱（理由见计划 §6.6）
+- 🔍 **复核（对着代码逐条）**：发现 D3 上一轮误标 ✅——`StyleInterpreter.register_plugin` 仍对不同 owner 抛 ValueError，第二个提供风格解释器的插件贡献会被拒（用户「装了却无效」）。已真修：改为每 owner 一个槽位的多注册表，按 `meta.priority` 选活跃项（同优先级先注册者胜）、`unregister_plugin` 只回收自己的槽位并改选、`_plugin/_owner` 保留为活跃项兼容视图；dispatch 透传 priority、内置镜像只镜像无归属槽位（`ee9a6b2`，测试 8 条）
+- 🔍 复核另补：B2 的 `build_client` 缺失给可读错误；B5 的贡献读缓存失效点扩展到 uninstall 与配置 PUT/DELETE（共 5 处）；B12 抽出 `resolveContainerExt` 独立模块并补 5 条测试（含非法声明安全负例）
+- 📌 **仍未完成 3 项**（非本次范围，理由见计划 §6.6）：D2/P1（30+ 内置插件真迁移）、P6（page 插槽鉴权）、P9（权限运行时沙箱）
+- ✅ 复核后回归：后端 **1724 passed** / 1 skipped / 1 xfailed；前端 **501 passed**（70 文件）+ tsc 0 error + build 成功
 - ℹ️ 既有 e2e 失败 8 条已在基线提交复现（home 健康检查需真实后端、panel-divider B18、preview-fixes/caption-style/agent-edit），非本轮引入
