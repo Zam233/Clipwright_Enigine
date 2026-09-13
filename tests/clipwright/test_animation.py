@@ -317,14 +317,85 @@ class TestHyperframesRenderer:
         assert ">2<" in html or "2</text>" in html
 
     def test_html_contains_timing_js(self) -> None:
-        """HTML 应包含 JavaScript 时序控制。"""
+        """HTML 应包含 seek-safe 的运行时时间轴（不再是 setTimeout 墙钟 JS）。"""
         from clipwright.animation.hyperframes_renderer import HyperframesRenderer
         overlays = [{"text": "T", "start_sec": 0.5, "duration_sec": 2,
                      "font_size": 48, "font_color": "#fff", "position": "center"}]
         html = HyperframesRenderer._build_html(overlays, 1920, 1080, 30)
         assert "<script>" in html
-        assert "setTimeout" in html
+        # 审计 HFR-2：墙钟定时器在逐帧 seek / 并行抓帧下不可复现 → 必须彻底移除
+        assert "setTimeout" not in html
+        # 注册 RuntimeTimelineLike（上游 lint 的 missing_timeline_registry /
+        # missing_data_no_timeline 均依赖这段字面量）
+        assert "window.__timelines[" in html
+        assert "totalDuration" in html
+        assert "seek:seek" in html
         assert "hf-fade-out" in html
+
+    def test_overlay_elements_declare_clip_contract(self) -> None:
+        """每个 overlay 元素必须携带 clip 时间契约（class / data-start / data-duration / track）。"""
+        from clipwright.animation.hyperframes_renderer import HyperframesRenderer
+        overlays = [{"text": "契约", "start_sec": 1, "duration_sec": 3,
+                     "font_size": 48, "font_color": "#fff", "position": "center",
+                     "anim_class": "hf-slide-up", "anim_duration": 0.4}]
+        html = HyperframesRenderer._build_html(overlays, 1920, 1080, 30)
+        assert 'class="clip hf-el"' in html
+        assert 'data-start="1"' in html
+        # 旧实现写的是非标准的 data-dur → 框架拿不到时长，元素超出窗口后仍可见
+        assert 'data-duration="3"' in html
+        assert 'data-track-index="1"' in html
+        # 出场动画只允许 forwards：若用 both，出场动画会在 delay 期间以「后声明者优先」
+        # 覆盖入场的透明度，元素一出现就是全不透明
+        assert "hf-fade-out 0.300s ease-in forwards" in html
+
+    def test_lint_html_parses_findings_and_is_best_effort(self) -> None:
+        """lint 门禁：error → ok=False；异常/空输出 → 放行（best-effort）。"""
+        import asyncio
+        import json as _json
+
+        from clipwright.animation.hyperframes_renderer import HyperframesRenderer
+
+        class _R:
+            def __init__(self, payload: str) -> None:
+                self.returncode = 1
+                self.stdout = payload.encode("utf-8")
+                self.stderr = b""
+
+        async def _case(payload):
+            async def _run(_cmd):
+                return _R(payload)
+            return await HyperframesRenderer.lint_html("<html></html>", run_cmd=_run)
+
+        ok, findings = asyncio.run(_case(_json.dumps({
+            "ok": False, "errorCount": 1,
+            "findings": [{"code": "missing_timeline_registry", "severity": "error",
+                          "message": "Missing `window.__timelines` registration."}],
+        })))
+        assert ok is False
+        assert findings and findings[0].startswith("[error]")
+
+        ok2, findings2 = asyncio.run(_case(_json.dumps({
+            "ok": True, "errorCount": 0,
+            "findings": [{"code": "timeline_track_too_dense", "severity": "warning",
+                          "message": "too dense"}],
+        })))
+        assert ok2 is True
+        assert findings2 and findings2[0].startswith("[warning]")
+
+        async def _boom(_cmd):
+            raise RuntimeError("cli missing")
+
+        ok3, findings3 = asyncio.run(HyperframesRenderer.lint_html("<html></html>", run_cmd=_boom))
+        assert ok3 is True and findings3 == []
+
+    def test_mg_render_registers_real_timeline(self) -> None:
+        """MG 模板产物注册真实时间轴（不再是 { paused: true } 空对象桩）。"""
+        from clipwright.animation.hf_timeline import timeline_script
+        script = timeline_script()
+        assert "{ paused: true }" not in script
+        assert "window.__timelines[" in script
+        assert "getAnimations" in script
+        assert "duration:function" in script and "seek:seek" in script
 
     def test_position_css_center(self) -> None:
         """居中位置 CSS 转换。"""

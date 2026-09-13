@@ -8,6 +8,15 @@ llm:
 
 generation:
   max_retries: 2
+  # 生成期门禁：产物 HTML 送 `hyperframes lint` 静态校验，存在 error 级问题
+  # （缺 data-width/height、无 window.__timelines 注册、时间元素缺 data-duration 等）
+  # 即放弃该产物并走既有降级链；warning 只记录。CLI 不可用时一律放行。
+  lint_gate: true
+  # 可选的浏览器门禁 `hyperframes check`（运行时/布局/动效/WCAG 对比度）：
+  # off = 不启用（默认，避免每次生成都起一次 headless Chrome）
+  # warn = 只记录 findings（写 trace），不阻断
+  # strict = error 级问题（如文字对比度不达标）即放弃产物、走既有降级链
+  check_gate: "off"
   default_duration_sec: 4.0
   # 分辨率兜底值（仅当调用方未传时间线尺寸时使用）。
   # 实际分辨率由时间线（C2）在运行时决定：MGRenderer 优先使用调用方传入的
@@ -21,8 +30,22 @@ generation:
 critique:
   enabled: true
   min_score: 60
+  # P1-1 渲染后视觉自评（默认关闭）：JSON 层面的自批判看不到画面。
+  # 开启后每次生成多一次 `hyperframes snapshot`（headless Chrome）+ 一次视觉 LLM 调用；
+  # 低分（< min_score）会带着视觉问题清单走既有的批判修复路径重做一次。
+  # 生效还需全局开关 settings.enable_visual_llm = true（与素材视觉质检共用）。
+  visual_eval:
+    enabled: false
+    min_score: 60
+    # null = 自动取三点：入场结束附近 / 中段 / 退场前
+    sample_times: null
 
 prompt:
+  # P2-1：动效配方库注入（animation/mg/knowledge/motion_recipes.yaml）。
+  # 按镜头类型/关键词挑选 1-2 条结构骨架（beat 节奏 + 构图 + 禁忌）进入系统提示词，
+  # 仅为方法论提炼、已逐条登记来源与许可；库缺失/解析失败自动跳过。
+  knowledge_pack: true
+  knowledge_max_recipes: 2
   system_template: |
     你是一位顶级 Motion Graphics 动画设计师，为知识类视频设计华丽、专业的 MG 动画。
     根据用户需求生成符合规范的 MG 动画 JSON。
@@ -422,6 +445,25 @@ prompt:
     - 缓动节奏：常规入场/出场以 ease-out 为主（快进慢出）；冲击感用快速放大+轻微回弹，
       例如 scale 1.0 → 1.15 → 1.0
     - 发光克制：避免装饰性发光滥用，只对单点关键元素做高质量光效，其余保持干净
+
+    ## 通用质量红线（跨引擎，硬性自检）
+    > 来源：browser-use/video-use（MIT）的 manim-video references 与
+    > heygen-com/hyperframes（Apache-2.0）motion 规则的方法论提炼，非原文照搬。
+    产出前逐条自检，命中任意一条即修改后再输出：
+    1. 同屏同时可见元素 ≤ 6 个；超出时降低次要元素透明度（主 1.0 / 陪衬 0.4 / 结构线 0.15）
+       或拆分成两个镜头
+    2. 一屏一个新概念：一个镜头只解释一件事，信息不要堆叠
+    3. 颜色即语义：同一概念全片同色，禁止同一镜头内出现两套相近却不同的语义色
+    4. 留白 ≥ 15%：元素不得铺满画布；关键信息不与边缘/安全区冲突
+    5. 节奏变奏：慢（铺垫）→ 中（推进）→ 快（高潮）→ 慢（收尾），禁止全程同一速度
+    6. 末帧 hold ≥ 1s：核心信息落定后至少静止 1s 再退场，禁止"刚看清就消失"
+    7. 数字类信息用连续计数动画（counter）而非跳变；图表须有轴标签/数值标注
+    8. 相邻镜头避免雷同：连续两个镜头的动画类型/主色/版式至少有一项不同
+
+    ## 字体令牌（Font Tokens）
+    style.font_family 必须取注入的「当前创作者（Persona）视觉风格」中的字体；
+    Persona 未提供字体时才使用 sans-serif。禁止指定与 Persona 无关的字体。
+    （运行时会用 Persona 字体覆盖默认 sans-serif，见 MGGenerator._apply_persona_font。）
 
 templates_search:
   similarity_threshold: 0.6

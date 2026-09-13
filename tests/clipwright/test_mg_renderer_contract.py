@@ -85,10 +85,17 @@ class TestMGRendererContract:
             assert 'data-track-index="1"' in seg
 
     def test_window_timelines_registered(self) -> None:
-        """脚本末尾应注册 window.__timelines['main']。"""
+        """脚本末尾应注册真实 RuntimeTimelineLike（不再是空对象桩）。"""
         html = MGRenderer.render(MG_CALLOUT_BADGE, {"text": "测试", "accent": "#fbbf24"})
         assert "window.__timelines" in html
-        assert "window.__timelines['main'] = { paused: true };" in html
+        # 审计 HFR-2：旧的 `= { paused: true }` 空对象桩既不满足上游 GSAP 适配器契约
+        # （需要 duration/seek），也让 lint 静态规则判为"没有注册"。
+        assert "window.__timelines['main'] = { paused: true };" not in html
+        assert "window.__timelines[compId]=" in html
+        assert "duration:function(){return total;}" in html
+        assert "seek:seek" in html
+        # 时间轴需在元素动画声明之后建立，才能收集到 WAAPI 句柄
+        assert html.index("el.style.animation") < html.index("window.__timelines[compId]=")
 
     def test_inline_style_preserved(self) -> None:
         """根 div 原有 style 应保留。"""

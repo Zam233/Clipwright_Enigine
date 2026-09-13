@@ -25,6 +25,13 @@ def _assert_no_placeholder(text: str) -> None:
     assert _RESIDUAL.search(text) is None, f"仍含字面占位符: {_RESIDUAL.findall(text)}"
 
 
+def _css_value_present(html: str, prop: str, value: str) -> bool:
+    """P1-5：整值占位符现在渲染为 `var(--key, <值>)`，断言需同时接受两种写法。"""
+    inline = f"{prop}:{value}"
+    var_form = rf"{re.escape(prop)}:var\(--[A-Za-z_][\w-]*, {re.escape(value)}\)"
+    return inline in html or re.search(var_form, html) is not None
+
+
 def _def_with_params_and_unknown() -> dict:
     """params 声明 {text}，但内容还引用了未声明的 {unknown}（旧实现会残留）。"""
     return {
@@ -83,7 +90,8 @@ class TestBuildLlmParamsUnion:
         params = g._build_llm_params(d, "世界", {"primary_color": "#ff0000"})
         assert params["accent"] == "#ff0000"
         html = MGRenderer.render(d, params)
-        assert "color:#ff0000" in html
+        # P1-5 变量参数化后，整值占位符会渲染成 `var(--accent, #ff0000)`（兜底即原值）
+        assert _css_value_present(html, "color", "#ff0000")
         _assert_no_placeholder(html)
 
 
@@ -93,8 +101,7 @@ class TestRendererComprehensiveFill:
     def test_keyframe_attribute_value_filled(self) -> None:
         """keyframe 属性值 box_shadow: "0 0 12px {accent}" 被填充。"""
         d = {
-            "animation_id": "mg_kf_fill",
-            "name": "关键帧填充",
+            "animation_id": "mg_kf_fill",            "name": "关键帧填充",
             "duration_sec": 3.0,
             "width": 1920,
             "height": 1080,
@@ -196,8 +203,12 @@ class TestRendererComprehensiveFill:
         }
         html = MGRenderer.render(d, {"w": "400", "accent": "#4f8cff", "border": "#fbbf24"})
         assert "width:400px" in html
-        assert "background:#4f8cff" in html
-        assert "border:3px solid #fbbf24" in html
+        assert _css_value_present(html, "background", "#4f8cff")
+        # 简写属性里的颜色占位符仍绑成变量（CSS 允许 var() 出现在简写分量位置）
+        assert (
+            "border:3px solid #fbbf24" in html
+            or "border:3px solid var(--border, #fbbf24)" in html
+        )
         _assert_no_placeholder(html)
 
 

@@ -24,6 +24,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from clipwright.animation.hf_timeline import timeline_script
 from clipwright.config import logger
 
 
@@ -140,6 +141,90 @@ class MGRenderer:
             return name
         return MGRenderer.EASING_MAP.get(name, "ease")
 
+    # ── 变量参数化（P1-5：上游 data-composition-variables / --variables） ──
+
+    #: 颜色类参数名 hint（用于推断上游变量 type=color）
+    _COLOR_HINTS = ("color", "colour", "accent", "primary", "secondary", "bg", "background")
+    _COLOR_VALUE_RE = re.compile(r"^#[0-9a-fA-F]{3,8}$|^rgba?\(")
+
+    @staticmethod
+    def _json_attr(payload: Any) -> str:
+        """把对象序列化为可安全嵌入 HTML 属性的 JSON（双引号属性 + &quot; 转义）。"""
+        import json as _json
+        return _json.dumps(payload, ensure_ascii=False).replace("&", "&amp;").replace('"', "&quot;")
+
+    @classmethod
+    def _infer_var_type(cls, pid: str, spec: Any, resolved: Any) -> str:
+        """推断上游变量类型：color / number / string（上游只认这几种标量）。"""
+        declared = ""
+        default: Any = resolved
+        if isinstance(spec, dict):
+            declared = str(spec.get("type", "") or "").lower()
+            if spec.get("default") is not None:
+                default = spec.get("default")
+        text = str(default if default not in (None, "") else resolved or "")
+        if declared == "number":
+            return "number"
+        try:
+            float(text)
+            return "number"
+        except (TypeError, ValueError):
+            pass
+        low = pid.lower()
+        if any(h in low for h in cls._COLOR_HINTS) or cls._COLOR_VALUE_RE.match(text):
+            return "color"
+        return "string"
+
+    @classmethod
+    def build_variables(cls, mg_def: dict[str, Any], params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        """生成 `data-composition-variables` 声明数组（id/type/label/default）。
+
+        取值优先级：调用方传入的 params（本次渲染的真实值）→ 模板声明的 default → 空串。
+        这样"不传 --variables 也能正确渲染"（上游用声明里的 default），
+        同时 Studio/批量渲染/`--variables` 覆盖都有据可依。
+        """
+        params = params or {}
+        declared = mg_def.get("params") or {}
+        ids: list[str] = [str(k) for k in declared]
+        # 模板未声明但元素里用到的占位符也要声明，否则会被判为未声明变量
+        for m in re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", json.dumps(mg_def, ensure_ascii=False)):
+            if m not in ids:
+                ids.append(m)
+        out: list[dict[str, Any]] = []
+        for pid in ids:
+            spec = declared.get(pid)
+            resolved = params.get(pid)
+            if resolved is None:
+                resolved = spec.get("default", "") if isinstance(spec, dict) else ""
+            out.append({
+                "id": pid,
+                "type": cls._infer_var_type(pid, spec, resolved),
+                "label": pid,
+                "default": "" if resolved is None else str(resolved),
+            })
+        return out
+
+    @staticmethod
+    def _bind_or_fill(raw: Any, params: dict[str, Any], bound_ids: set[str]) -> Any:
+        """标量占位符 → CSS 变量引用（带内联兜底），其余照旧内联替换。
+
+        - 整个值就是一个 `{key}` 且 key 已声明为变量 → `var(--key, <解析值>)`：
+          上游会把每个标量变量自动挂成 `--key` 自定义属性，因此 `--variables` 覆盖生效；
+          未传变量时 `var()` 的兜底值保证渲染结果与旧行为一致。
+        - 占位符嵌在更长的字符串里（如 `2px solid {accent}`）→ 只能内联替换。
+        """
+        if not isinstance(raw, str):
+            return raw
+        m = re.fullmatch(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", raw.strip())
+        if m and m.group(1) in bound_ids:
+            key = m.group(1)
+            resolved = str(params.get(key, "") or "")
+            return f"var(--{key}, {resolved})" if resolved else f"var(--{key})"
+        out = raw
+        for k, v in params.items():
+            out = out.replace("{" + k + "}", str(v))
+        return out
+
     @staticmethod
     def render(
         mg_def: dict[str, Any],
@@ -152,7 +237,9 @@ class MGRenderer:
 
         Args:
             mg_def: 从 JSON 加载的 MG 动画定义
-            params: 用户参数，替换 {text} {value} {unit} 等占位符
+            params: 用户参数，替换 {text} {value} {unit} 等占位符；
+                    同时声明为上游 HyperFrames 变量（data-composition-variables），
+                    文本/标量可被 --variables 覆盖
             width: 拟定分辨率宽度（调用方时间线尺寸优先，缺省回退 mg_def/1920）
             height: 拟定分辨率高度（调用方时间线尺寸优先，缺省回退 mg_def/1080）
             fps: 实际时间线帧率（写进 <html data-fps>）
@@ -171,13 +258,15 @@ class MGRenderer:
         font_family = MGRenderer._sanitize_css_value(
             mg_def.get("style", {}).get("font_family", "sans-serif")
         )
+        variables = MGRenderer.build_variables(mg_def, params)
+        bound_ids = {str(v["id"]) for v in variables}
 
         elements_html = []
         css_animations = []
         js_code = []
 
         for i, elem in enumerate(mg_def.get("elements", [])):
-            result = MGRenderer._render_element(elem, params, i, dur)
+            result = MGRenderer._render_element(elem, params, i, dur, bound_ids=bound_ids)
             if result:
                 elements_html.append(result["html"])
                 css_animations.append(result["css"])
@@ -185,9 +274,14 @@ class MGRenderer:
 
         all_css = "\n".join(css_animations)
         all_js = "\n".join(js_code)
+        # 审计 HFR-2：注册真实 RuntimeTimelineLike（替代旧的 {{paused:true}} 空对象桩）。
+        # 上游 init.ts 明确允许「部分实现」（duration/seek 即可），渲染路径只 seek 不 pause；
+        # 注册后 producer 不再等 timeline 就绪轮询（实测每次渲染省 45s+）。
+        timeline_js = timeline_script()
 
         return f"""<!DOCTYPE html>
-<html data-fps="{fps:g}" data-width="{w}" data-height="{h}">
+<html data-fps="{fps:g}" data-width="{w}" data-height="{h}"
+      data-composition-variables="{MGRenderer._json_attr(variables)}">
 <head><meta charset="utf-8"><style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{width:{w}px;height:{h}px;overflow:hidden;background:{bg};position:relative;font-family:{font_family}}}
@@ -204,15 +298,22 @@ const root=document.getElementById('root');
 const dur=parseFloat(root.dataset.duration);
 {all_js}
 }})();
-window.__timelines = window.__timelines || {{}}; window.__timelines['main'] = {{ paused: true }};
+{timeline_js}
 </script>
 </body></html>"""
 
     @staticmethod
     def _render_element(
         elem: dict, params: dict, idx: int, total_dur: float,
+        bound_ids: set[str] | None = None,
     ) -> dict | None:
-        """渲染单个元素 → {html, css, js}。"""
+        """渲染单个元素 → {html, css, js}。
+
+        bound_ids: 已声明为 HyperFrames 变量的参数键；这些键在**整个值就是一个占位符**时
+        会渲染成 `var(--key, 兜底值)`（CSS 属性）或 `data-var-text="key"`（文本），
+        从而支持 `--variables` 覆盖；其余情况仍内联替换，行为与旧实现一致。
+        """
+        bound_ids = bound_ids or set()
         elem_type = elem.get("type", "text")
         kfs = elem.get("keyframes", [])
         if not kfs:
@@ -230,7 +331,23 @@ window.__timelines = window.__timelines || {{}}; window.__timelines['main'] = {{
                     val = val.replace("{" + k + "}", str(v))
             return val
 
-        content = fill(elem.get("content", ""))
+        def bindable(val: Any) -> Any:
+            """先尝试变量绑定，再退回内联替换。"""
+            return MGRenderer._bind_or_fill(val, params, bound_ids)
+
+        # 文本绑定：内容整体就是一个占位符 → data-var-text（保留解析后文本作兜底）
+        var_text_id = ""
+        raw_content = elem.get("content", "")
+        if elem_type == "text" and isinstance(raw_content, str):
+            m = re.fullmatch(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", raw_content.strip())
+            if m and m.group(1) in bound_ids:
+                var_text_id = m.group(1)
+
+        if var_text_id:
+            # 兜底文本取解析值；值为空时用空串——绝不能把 `{key}` 字面量留在画面上
+            content = str(params.get(var_text_id, "") or "")
+        else:
+            content = fill(raw_content)
 
         # 位置计算
         x = elem.get("x", "center")
@@ -313,7 +430,7 @@ window.__timelines = window.__timelines || {{}}; window.__timelines['main'] = {{
                 stop += f"transform:{tf};"
             for k, v in props.items():
                 css_key = MGRenderer.KEYFRAME_CSS_MAP.get(k, k)
-                stop += f"{css_key}:{fill(MGRenderer._sanitize_css_value(v))};"
+                stop += f"{css_key}:{bindable(MGRenderer._sanitize_css_value(v))};"
             stop += "".join(style_attrs)
             stop += timing
             stop += "}"
@@ -334,14 +451,15 @@ window.__timelines = window.__timelines || {{}}; window.__timelines['main'] = {{
                 continue
             css_key = MGRenderer.KEYFRAME_CSS_MAP.get(k)
             if css_key and isinstance(v, (str, int, float)):
-                static_style += f"{css_key}:{fill(MGRenderer._sanitize_css_value(v))};"
+                static_style += f"{css_key}:{bindable(MGRenderer._sanitize_css_value(v))};"
 
         if elem_type == "text":
             font_size = fill(elem.get("font_size", 48))
-            font_color = fill(elem.get("font_color", "#ffffff"))
+            font_color = bindable(elem.get("font_color", "#ffffff"))
             font_weight = fill(elem.get("font_weight", "normal"))
+            var_attr = f' data-var-text="{var_text_id}"' if var_text_id else ""
             html = (
-                f'<div id="{eid}" class="mg-el clip" data-start="0" data-duration="{total_dur}" data-track-index="1" style="{base_css}'
+                f'<div id="{eid}" class="mg-el clip" data-start="0" data-duration="{total_dur}" data-track-index="1"{var_attr} style="{base_css}'
                 f'font-size:{font_size}px;color:{font_color};font-weight:{font_weight}'
                 + static_style
                 + f'">{MGRenderer._esc(content)}</div>'
@@ -351,7 +469,7 @@ window.__timelines = window.__timelines || {{}}; window.__timelines['main'] = {{
             color = elem.get("background") or elem.get("color", "#0e101a")
             html = (
                 f'<div id="{eid}" class="mg-el clip" data-start="0" data-duration="{total_dur}" data-track-index="1" style="position:absolute;inset:0;z-index:0;'
-                f'background:{MGRenderer._sanitize_css_value(fill(color))};'
+                f'background:{bindable(MGRenderer._sanitize_css_value(color))};'
                 + static_style
                 + '"></div>'
             )
@@ -359,7 +477,7 @@ window.__timelines = window.__timelines || {{}}; window.__timelines['main'] = {{
             shape = elem.get("shape", "rect")
             color = elem.get("color", "#4f8cff")
             sw = fill(elem.get("stroke_width", elem.get("border_width", 0)))
-            sw_color = fill(elem.get("stroke_color", elem.get("border_color", color)))
+            sw_color = elem.get("stroke_color", elem.get("border_color", color))
             w_val = fill(elem.get("width", 100))
             h_val = fill(elem.get("height", 100))
             border_radius = elem.get("border_radius", 0)
@@ -392,13 +510,13 @@ window.__timelines = window.__timelines || {{}}; window.__timelines['main'] = {{
                 bg_css = "background:transparent;"
             else:
                 bg_val = elem.get("background") or color
-                bg_css = f"background:{MGRenderer._sanitize_css_value(fill(bg_val))};"
+                bg_css = f"background:{bindable(MGRenderer._sanitize_css_value(bg_val))};"
 
             html = (
                 f'<div id="{eid}" class="mg-el mg-shape clip" data-start="0" data-duration="{total_dur}" data-track-index="1" style="{base_css}'
                 f'width:{w_val}px;height:{h_val}px;{bg_css}'
                 f'{radius_css}'
-                + (f'border:{sw}px solid {fill(sw_color)};' if sw_num > 0 else "")
+                + (f'border:{sw}px solid {bindable(sw_color)};' if sw_num > 0 else "")
                 + static_style
                 + '"></div>'
             )
@@ -412,6 +530,14 @@ window.__timelines = window.__timelines || {{}}; window.__timelines['main'] = {{
                     "MG 元素 #%d 图片 src 被拒绝（D12：http(s)/越权路径/穿越路径）", idx
                 )
                 return None
+            # P1-5：src 整体是占位符时绑定为变量（保留解析后的 src 作兜底，
+            # 上游 lint 的 media_variable_src_no_fallback 正是要求兜底存在）
+            var_src_attr = ""
+            _raw_src = elem.get("src", "")
+            if isinstance(_raw_src, str):
+                _m = re.fullmatch(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", _raw_src.strip())
+                if _m and _m.group(1) in bound_ids:
+                    var_src_attr = f' data-var-src="{_m.group(1)}"'
             # 本地文件路径转 file:/// URI（headless Chrome 相对解析会裂图）
             w_val = fill(elem.get("width", 320))
             h_val = fill(elem.get("height", 240))
@@ -420,7 +546,7 @@ window.__timelines = window.__timelines || {{}}; window.__timelines['main'] = {{
             if br not in (0, "0", 0.0):
                 radius_css = f"border-radius:{fill(br)};"
             html = (
-                f'<img id="{eid}" class="mg-el mg-image clip" data-start="0" data-duration="{total_dur}" data-track-index="1" '
+                f'<img id="{eid}" class="mg-el mg-image clip" data-start="0" data-duration="{total_dur}" data-track-index="1"{var_src_attr} '
                 f'src="{MGRenderer._esc(str(src))}" alt="" '
                 f'style="{base_css}width:{w_val}px;height:{h_val}px;'
                 f'object-fit:contain;{radius_css}'

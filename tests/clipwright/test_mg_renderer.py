@@ -6,6 +6,8 @@ MG definitions keep rendering identically after the renderer extension.
 
 from __future__ import annotations
 
+import re
+
 from clipwright.animation.mg_renderer import MGRenderer
 
 
@@ -130,7 +132,11 @@ class TestMGRendererBaseline:
         assert "{accent}" not in html
         assert "box-shadow:0 0 12px #f59e0b;" in html
         assert "text-shadow:0 0 20px #f59e0b;" in html
-        assert "color:#f59e0b" in html
+        # P1-5 变量参数化：整值占位符渲染为 var(--accent, #f59e0b)，兜底即原色值
+        assert (
+            "color:#f59e0b" in html
+            or re.search(r"color:var\(--accent, #f59e0b\)", html) is not None
+        )
 
 
 def _new_style_def() -> dict:

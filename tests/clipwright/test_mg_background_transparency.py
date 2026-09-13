@@ -244,16 +244,17 @@ class TestRendererXOffset:
         from clipwright.animation.mg_renderer import MGRenderer
         html = MGRenderer.render(self._minimal_def(), {"a": "左", "b": "右"},
                                  width=1920, height=1080, fps=30.0)
-        i1 = html.find("左")
-        i2 = html.find("右")
+        # P1-5 变量参数化后，文案也会出现在 <html data-composition-variables> 的 default 里，
+        # 因此改为从元素标记（data-var-text）起定位，取其后 300 字符内的样式
+        i1 = html.find('data-var-text="a"')
+        i2 = html.find('data-var-text="b"')
         assert i1 >= 0 and i2 >= 0
-        s1 = html[max(0, i1 - 300):i1]
-        s2 = html[max(0, i2 - 300):i2]
+        s1 = html[i1:i1 + 300]
+        s2 = html[i2:i2 + 300]
         # left/right 标签被 x_offset 分列到 50% 两侧
         assert "calc(50% + -320px)" in s1 or "calc(50% + 320px)" in s1
         assert "calc(50% + -320px)" in s2 or "calc(50% + 320px)" in s2
         # 两个位置必须不同（不再重叠）
-        assert "left:50%" not in s1.split(";")[0] or True  # center 分支已带 calc 偏移
         assert s1 != s2
 
     def test_no_x_offset_keeps_center(self) -> None:
