@@ -145,3 +145,79 @@ class RendererBackend(Protocol):
         on_progress: Callable[[float, str], None] | None = None,
         cancel_token: Any | None = None,
     ) -> Any: ...
+
+
+# ── B2/B3：协议符合性访问器的安全兜底 ──────────────────────
+# 第三方 provider 可能只实现 build_client（漏掉 capabilities/normalize_messages）。
+# 核心此前直接调用 → AttributeError（B2，报错不可读）；而「忘声明能力」时
+# ProviderCapabilities 全 False 会让工具能力静默消失（B3）。下面三个访问器
+# 统一处理：缺方法/抛异常 → 记一次可读告警 + 退回最小可用语义。
+
+_MISSING_WARNED: set[str] = set()
+
+
+def _warn_once(impl: Any, what: str) -> None:
+    name = f"{getattr(impl, 'name', '') or type(impl).__name__}:{what}"
+    if name in _MISSING_WARNED:
+        return
+    _MISSING_WARNED.add(name)
+    from clipwright.config import logger
+    logger.warning(
+        "provider %s 未实现 %s —— 按最小能力处理（第三方 provider 应补齐协议）",
+        getattr(impl, "name", "") or type(impl).__name__, what,
+    )
+
+
+def llm_capabilities(impl: Any, model: str = "") -> ProviderCapabilities:
+    """读取 provider 能力；缺方法/抛异常 → 最小能力 + 一次告警（不静默丢失）。"""
+    fn = getattr(impl, "capabilities", None)
+    if not callable(fn):
+        _warn_once(impl, "capabilities()")
+        return ProviderCapabilities(streaming=True, tool_calls=False)
+    try:
+        caps = fn(model)
+    except Exception as e:  # noqa: BLE001
+        _warn_once(impl, f"capabilities() 调用异常({e})")
+        return ProviderCapabilities(streaming=True, tool_calls=False)
+    if not isinstance(caps, ProviderCapabilities):
+        _warn_once(impl, "capabilities() 返回值不是 ProviderCapabilities")
+        return ProviderCapabilities(streaming=True, tool_calls=False)
+    return caps
+
+
+def llm_normalize_messages(impl: Any, user_prompt: str, system_prompt: str) -> list[dict[str, Any]]:
+    """消息规范；缺方法 → OpenAI 风格（system 独立消息）+ 一次告警。"""
+    fn = getattr(impl, "normalize_messages", None)
+    if callable(fn):
+        try:
+            out = fn(user_prompt, system_prompt)
+            if isinstance(out, list) and out:
+                return out
+        except Exception as e:  # noqa: BLE001
+            _warn_once(impl, f"normalize_messages() 调用异常({e})")
+    else:
+        _warn_once(impl, "normalize_messages()")
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+def llm_uses_system_kwarg(impl: Any) -> bool:
+    """是否把 system 作为独立 kwarg 传入（anthropic）；缺方法 → False + 一次告警。"""
+    fn = getattr(impl, "uses_system_kwarg", None)
+    if not callable(fn):
+        _warn_once(impl, "uses_system_kwarg()")
+        return False
+    try:
+        return bool(fn())
+    except Exception as e:  # noqa: BLE001
+        _warn_once(impl, f"uses_system_kwarg() 调用异常({e})")
+        return False
+
+
+def missing_llm_provider_methods(impl: Any) -> list[str]:
+    """列出缺失的协议方法（注册时校验用；空列表 = 符合协议）。"""
+    required = ("build_client", "capabilities", "normalize_messages",
+                "uses_system_kwarg", "default_model")
+    return [m for m in required if not callable(getattr(impl, m, None))]

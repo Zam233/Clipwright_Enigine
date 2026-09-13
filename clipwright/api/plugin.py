@@ -27,6 +27,81 @@ def _require_admin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="插件管理操作需要管理员权限")
 
 
+# ── B5/B6：贡献读取路径的缓存 ──────────────────────────────
+# `/contributions` 是设置页首屏的数据源，此前每请求都要：①扫盘 discover()
+# （O(插件数) 次 fs 访问）②读每个 ui.json；且启动后新注册的内置 hook/prompt
+# 不在门面里（镜像只在 lifespan 跑过一次）。这里加两层短 TTL 缓存。
+_PLUGIN_SCAN_TTL_SEC = 10.0
+_UI_FILE_TTL_SEC = 10.0
+_MIRROR_TTL_SEC = 10.0
+_scan_cache: dict[str, object] = {"at": 0.0, "ids": []}
+_ui_cache: dict[str, tuple[float, dict | None]] = {}
+_mirror_at: dict[str, float] = {"at": 0.0}
+
+
+def _now() -> float:
+    import time
+    return time.time()
+
+
+def _invalidate_plugin_caches() -> None:
+    """插件启停/重载后调用：立刻失效扫盘与 ui.json 缓存。"""
+    _scan_cache["at"] = 0.0
+    _scan_cache["ids"] = []
+    _ui_cache.clear()
+
+
+def _discover_plugins_cached() -> list[str]:
+    if _loader is None:
+        return []
+    if _now() - float(_scan_cache["at"]) < _PLUGIN_SCAN_TTL_SEC:  # type: ignore[arg-type]
+        return list(_scan_cache["ids"])  # type: ignore[arg-type]
+    try:
+        discovered = list(_loader.discover())
+    except Exception:  # noqa: BLE001 — 发现失败不应让贡献列表 500
+        discovered = []
+    _scan_cache["at"] = _now()
+    _scan_cache["ids"] = discovered
+    return discovered
+
+
+def _legacy_ui_file(plugin_id: str) -> dict | None:
+    """读插件 ui.json（旧格式才返回；带 mtime 失效的缓存）。"""
+    if _loader is None:
+        return None
+    ui_file = _loader.plugin_dir / plugin_id / "ui.json"
+    try:
+        mtime = ui_file.stat().st_mtime
+    except OSError:
+        return None
+    cached = _ui_cache.get(plugin_id)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    raw: dict | None = None
+    try:
+        import json as _json
+        data = _json.loads(ui_file.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and "slots" not in data and "widgets" in data:
+            raw = data
+    except Exception:  # noqa: BLE001 — 坏文件按「无 UI」处理
+        raw = None
+    _ui_cache[plugin_id] = (mtime, raw)
+    return raw
+
+
+def _maybe_refresh_builtin_mirror() -> None:
+    """B6：按 TTL 重扫内置贡献镜像（启动后新注册的 hook/prompt 也能入账）。"""
+    if _now() - _mirror_at["at"] < _MIRROR_TTL_SEC:
+        return
+    _mirror_at["at"] = _now()
+    try:
+        from clipwright.plugins.builtin_contributions import ingest_builtin_contributions
+        ingest_builtin_contributions()
+    except Exception as e:  # noqa: BLE001 — 读路径不能因镜像失败而失败
+        from clipwright.config import logger
+        logger.warning("内置贡献镜像重扫失败: %s", e)
+
+
 def _validate_plugin_id(plugin_id: str) -> str:
     """审计 P1 修复：所有含 plugin_id 的端点先校验 ID 合法性，
     防止 ../ 路径穿越（如 GET /{plugin_id}/ui 直接拼接文件路径）。"""
@@ -100,7 +175,9 @@ async def enable_plugin(plugin_id: str, request: Request = None) -> dict[str, st
     except Exception as e:
         # 加载失败回退禁用态并返回 502（旧实现裸 500 且状态不一致）
         _loader.set_enabled(plugin_id, False)
+        _invalidate_plugin_caches()
         raise HTTPException(status_code=502, detail=f"插件加载失败: {str(e)[:200]}")
+    _invalidate_plugin_caches()
     return {"status": "ok", "plugin_id": plugin_id, "enabled": "true"}
 
 
@@ -132,6 +209,7 @@ async def disable_plugin(plugin_id: str, request: Request = None) -> dict[str, s
     except Exception as e:
         from clipwright.config import logger
         logger.warning("禁用插件 Agent 清理失败 %s: %s", plugin_id, e)
+    _invalidate_plugin_caches()
     return {"status": "ok", "plugin_id": plugin_id, "enabled": "false"}
 
 
@@ -221,6 +299,9 @@ async def list_contributions(
     """
     from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
 
+    # B6：内置镜像按 TTL 重扫——启动后才注册的内置 hook/prompt 也能出现在门面
+    _maybe_refresh_builtin_mirror()
+
     filter_kind = None
     if kind:
         try:
@@ -264,23 +345,13 @@ async def list_contributions(
     #  由本端点按需包装——30 个内置插件一行不改即可被前端 Slot 渲染器消费）
     if (not slot or slot == "settings.section") and _loader is not None:
         seen = {str(e.get("id")) for e in out}
-        try:
-            discovered = _loader.discover()
-        except Exception:
-            discovered = []
+        discovered = _discover_plugins_cached()
         for pid in discovered:
             if owner and pid != owner:
                 continue
-            ui_file = _loader.plugin_dir / pid / "ui.json"
-            if not ui_file.exists():
+            raw = _legacy_ui_file(pid)
+            if raw is None:
                 continue
-            try:
-                import json as _json
-                raw = _json.loads(ui_file.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            if not isinstance(raw, dict) or "slots" in raw or "widgets" not in raw:
-                continue  # 新格式或非布局文件
             entry_id = f"{pid}_legacy"
             if entry_id in seen:
                 continue

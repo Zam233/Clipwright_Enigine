@@ -34,13 +34,22 @@ def run_contributions(plugin: Any) -> bool:
 
     返回 True 表示该插件走新轨（已由门面注册，不应再执行 initialize 主体）；
     返回 False 表示无贡献声明（旧轨，调用方继续原流程）。
+
+    B1 修复：`contributions()` 抛异常不能再当「无贡献」静默吞掉——那会让插件
+    「加载成功但零贡献」（实测踩到：示例插件把 shortcut 误写成不存在的 kind）。
+    异常写入插件错误通道后向上抛出，让加载器把本次加载判为失败。
     """
     plugin_id = str(getattr(getattr(plugin, "manifest", None), "id", "") or "")
     try:
         items = list(plugin.contributions() or [])
-    except Exception as e:  # noqa: BLE001
-        _clipwright_logger.warning("插件 %s contributions() 异常: %s", plugin_id, e)
-        items = []
+    except Exception as e:
+        _clipwright_logger.error("插件 %s contributions() 异常: %s", plugin_id, e)
+        try:
+            from clipwright.plugins.error_bus import get_error_bus
+            get_error_bus().record(plugin_id, "initialize", f"contributions() 异常: {e}")
+        except Exception:  # noqa: BLE001 — 错误通道不可用也必须抛
+            pass
+        raise RuntimeError(f"插件 {plugin_id} 的 contributions() 执行失败: {e}") from e
     if not items:
         return False
 

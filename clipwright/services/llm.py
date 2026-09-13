@@ -383,9 +383,11 @@ class LLMService:
         # 选择与目标客户端一致的 provider 来构造消息格式
         provider = (settings.llm_flash_provider or self.provider) if use_flash else self.provider
         # B-1：消息格式规范由 provider 协议提供（legacy 分支兜底）
+        # B2/B3：缺方法或能力未声明时由访问器给最小可用语义 + 可读告警
         impl = _resolve_llm_provider(provider)
         if impl is not None:
-            messages = impl.normalize_messages(user_prompt, system_prompt)
+            from clipwright.providers.base import llm_normalize_messages
+            messages = llm_normalize_messages(impl, user_prompt, system_prompt)
         elif provider == "anthropic":
             messages = [{"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"}]
         else:
@@ -498,15 +500,17 @@ class LLMService:
             最终的 LLMResponse（不再包含 tool_calls 的轮次）
         """
         # B-1：消息规范 + 能力校验由 provider 协议提供（legacy 分支兜底）
+        # B2/B3：协议方法缺失/能力未声明由访问器兜底（可读告警，不再 AttributeError）
         impl = _resolve_llm_provider(self.provider)
         if impl is not None:
-            caps = impl.capabilities(settings.llm_model)
+            from clipwright.providers.base import llm_capabilities, llm_uses_system_kwarg
+            caps = llm_capabilities(impl, settings.llm_model)
             if not caps.tool_calls:
                 raise ValueError(
                     f"provider {self.provider} 不支持工具调用（tool_calls=false）——"
                     "请改用支持工具的 provider 或去掉工具参数"
                 )
-            if impl.uses_system_kwarg():
+            if llm_uses_system_kwarg(impl):
                 messages: list[dict[str, Any]] = [
                     {"role": "user", "content": user_prompt},
                 ]

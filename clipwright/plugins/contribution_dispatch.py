@@ -39,14 +39,35 @@ _WIRED_KINDS = {
     ContributionKind.PROMPT,
 }
 
+#: Provider 类 kind（facade-only，但注册前要做协议符合性校验 —— B2）
+_PROVIDER_KINDS = {
+    ContributionKind.LLM_PROVIDER,
+    ContributionKind.EMBEDDING_PROVIDER,
+    ContributionKind.RERANK_PROVIDER,
+    ContributionKind.TTS_PROVIDER,
+    ContributionKind.STT_PROVIDER,
+    ContributionKind.RENDERER_BACKEND,
+}
+
 
 def register(owner: str, item: Contribution) -> Optional[str]:
     """把单个贡献转调到目标注册表。返回 None=成功，字符串=失败原因。
 
     B/D 新增的 kind（llm_provider / ui_slot 等）**没有后端注册表**——门面
     自己就是它们的注册表（消费方经 `ContributionRegistry.resolve/list` 读取），
-    因此直接接受（facade-only）。
+    因此直接接受（facade-only）。**B2 例外**：provider 类贡献先做协议符合性
+    校验，坏 provider 在注册时就被拒绝并给出可读原因（而不是运行期
+    AttributeError）。
     """
+    if item.kind in _PROVIDER_KINDS:
+        if item.kind is ContributionKind.LLM_PROVIDER:
+            from clipwright.providers.base import missing_llm_provider_methods
+            missing = missing_llm_provider_methods(item.object)
+            if missing:
+                return (f"llm_provider:{item.id} 不符合协议，缺少方法: "
+                        f"{', '.join(missing)}")
+        return None
+
     if item.kind not in _WIRED_KINDS:
         return None  # facade-only：由各消费方（B/D 里程碑）自行解析
 

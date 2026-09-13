@@ -98,6 +98,25 @@ def _collect_style_interpreter() -> list[Contribution]:
     return [Contribution(ContributionKind.STYLE_INTERPRETER, plugin_id, plugin)]
 
 
+def _stable_id(prefix: str, target: Any, fallback: str) -> str:
+    """B4：镜像 id 用「限定名 + 内容指纹」，不用位置索引。
+
+    位置索引（`builtin_{point}_{i}`）在注册顺序变化时会让门面残留幽灵项
+    （同一 hook 换了 id，旧项还在账本里）。这里改用稳定标识：
+    函数用 `module.qualname`，prompt 用内容，重复时补短指纹防碰撞。
+    """
+    if callable(target):
+        module = str(getattr(target, "__module__", "") or "")
+        qualname = str(getattr(target, "__qualname__", "") or getattr(target, "__name__", "") or "")
+        ident = f"{module}.{qualname}" if qualname else fallback
+    else:
+        # 非可调用（prompt 文本）：只用内容——顺序变化不得改变 id
+        text = str(target or "")
+        ident = text[:96] if text else fallback
+    fingerprint = format(id(target) & 0xFFFF, "04x")
+    return f"{prefix}:{ident}#{fingerprint}"
+
+
 def _collect_hooks() -> list[Contribution]:
     from clipwright.plugins.hooks import HookPoint, HookRegistry
 
@@ -107,7 +126,9 @@ def _collect_hooks() -> list[Contribution]:
             if getattr(fn, "__plugin_id__", ""):
                 continue  # 插件 hook（wrapper 带归属）
             out.append(Contribution(
-                ContributionKind.HOOK, f"builtin_{point.value}_{i}", fn,
+                ContributionKind.HOOK,
+                _stable_id(f"builtin_{point.value}", fn, f"hook_{i}"),
+                fn,
                 meta={"point": point.value},
             ))
     return out
@@ -122,12 +143,14 @@ def _collect_prompts() -> list[Contribution]:
         for i, entry in enumerate(list(entries)):
             if str(getattr(entry, "plugin_id", "") or ""):
                 continue
+            prompt_text = str(getattr(entry, "prompt", "") or "")
             out.append(Contribution(
                 ContributionKind.PROMPT,
-                f"builtin_{agent_name}_{i}", getattr(entry, "prompt", ""),
+                _stable_id(f"builtin_{agent_name}", prompt_text, f"prompt_{i}"),
+                prompt_text,
                 meta={
                     "agent": agent_name,
-                    "prompt": str(getattr(entry, "prompt", "") or ""),
+                    "prompt": prompt_text,
                     "priority": int(getattr(entry, "priority", 0) or 0),
                     "description": str(getattr(entry, "description", "") or ""),
                 },
@@ -140,6 +163,10 @@ def ingest_builtin_contributions() -> dict[str, int]:
 
     返回 ``{kind: count}``（供启动日志与 A-5 条目数断言测试使用）。
     幂等：重复调用只是覆盖同键（同 owner 幂等路径）。
+
+    B6 修复：启动后新注册的内置 hook/prompt 也要能入账——本函数可被
+    `/api/plugin/contributions` 等读路径按 TTL 触发重扫；同时清理本次扫描
+    未再出现的镜像项（B4 的位置索引 id 会在顺序变化时留下幽灵项）。
     """
     collectors: dict[ContributionKind, Callable[[], list[Contribution]]] = {
         ContributionKind.TOOL: _collect_tools,
@@ -163,6 +190,7 @@ def ingest_builtin_contributions() -> dict[str, int]:
             ContributionRegistry.register(
                 BUILTIN_OWNER, items, dispatch=False,
             )
+        _sweep_stale(kind, {item.id for item in items})
         counts[kind.value] = len(items)
     total = sum(counts.values())
     if total:
@@ -171,3 +199,18 @@ def ingest_builtin_contributions() -> dict[str, int]:
             total, ", ".join(f"{k}={v}" for k, v in sorted(counts.items()) if v),
         )
     return counts
+
+
+def _sweep_stale(kind: ContributionKind, live_ids: set[str]) -> list[str]:
+    """移除该 kind 下已不存在的内置镜像项（返回被移除的 id）。"""
+    stale = [
+        item.id for item in ContributionRegistry.list_by_owner(BUILTIN_OWNER)
+        if item.kind is kind and item.id not in live_ids
+    ]
+    if not stale:
+        return []
+    ContributionRegistry.unregister_keys(BUILTIN_OWNER, [
+        (kind, cid) for cid in stale
+    ])
+    logger.info("内置贡献镜像清理 %s: %d 项", kind.value, len(stale))
+    return stale

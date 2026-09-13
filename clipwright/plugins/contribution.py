@@ -193,6 +193,24 @@ class ContributionRegistry:
         return None
 
     @classmethod
+    def unregister_keys(cls, owner: str, keys: Iterable[tuple[ContributionKind, str]]) -> list[str]:
+        """按键精确回收（仅当当前 owner 匹配）——用于镜像项增量清理。
+
+        `unregister_plugin` 是「按 owner 整体回收」，内置镜像重扫时需要
+        只清掉不再存在的那几项，故提供本方法（B4/B6）。
+        """
+        owner = str(owner or "")
+        names: list[str] = []
+        for kind, cid in keys:
+            k = (kind, str(cid))
+            if cls._owners.get(k) != owner:
+                continue
+            cls._items.pop(k, None)
+            cls._owners.pop(k, None)
+            names.append(f"{kind.value}:{cid}")
+        return names
+
+    @classmethod
     def unregister_plugin(cls, owner: str) -> list[str]:
         """回收某 owner 的全部贡献；返回被回收的 ``kind:id`` 列表。"""
         owner = str(owner or "")
