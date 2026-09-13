@@ -240,7 +240,7 @@ async def main() -> int:
         for f in failures:
             print("  -", f)
         return 1
-    print("\nSMOKE PASS ✓")
+    print("\nSMOKE PASS")
     return 0
 
 
