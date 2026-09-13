@@ -1310,5 +1310,32 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ✅ **测试**：新增 `tests/clipwright/test_mg_variables.py` **13 条**（声明形状/类型推断/default 取值/属性 JSON 安全、文本与颜色绑定、混合文案仍内联、空值不泄漏占位符、图片 var-src 兜底、全模板零残留、`--variables`/`--strict-variables` 命令行接线、None→空串）；同步更新 4 处钉住旧内联写法的断言（`test_mg_placeholder_fill` / `test_mg_renderer` / `test_mg_background_transparency`，改为同时接受 `var(--k, 值)` 形式）
 - ✅ **差分验收**：新增 `scripts/verify_mg_variables.py` → **VERIFY PASS**：不传变量渲染可见 2.394%（兜底生效）／`--variables '{"text":""}'` 可见 **0.000%**（证明变量真驱动文本）／换更长文案可见 6.662%；lint 0 error
 - ✅ **回归**：后端全量 **1899 passed** / 1 skipped / 1 xfailed（仅剩 2 条既有 plugin 子进程编码问题）
+
+### 执行轮次 111（2026-09-13：#9 成片时长校验 + #10 HyperFrames 稳定性参数 + 转场失效修复）
+
+按采纳报告 §6 建议顺序开工的第 1、2 项，**并在过程中撞出一个长期存在的转场 bug**：
+
+- ✅ **#9 成片时长校验（V1 规则 5 / video-use self-eval 的 ffprobe 校验）**：新增
+  `expected_output_duration()`（= 时间线时长 − 转场累计侵蚀，仅当真正走 xfade 才扣减）与
+  `duration_deviation()`（容差 max(0.3s, 预期×1%)）；超容差记 warning + 日志，
+  `CLIPWRIGHT_STRICT_DURATION=1` 时直接判失败（CI 验收）。旧实现拿原始 duration_sec 比对，
+  有转场的片子必然误报，故此前只是"弱提示"
+- 🔍 **时长校验上线即抓到一个真 bug：Phase 3.2 并行 xfade 的产物名未格式化**
+  （`_xfade_pair` 直接用 `self._work_dir / "xr1_xxx.{ext}"`，而 `_run_concat` 会
+  `.format(ext=…)`）→ 文件扩展名是字面量 `{ext}` → ffmpeg 报 Error initializing the muxer
+  → **每次都被静默降级为硬切拼接，转场从未进入成片**；更糟的是转场漂移校正
+  （`_r1_seg_shifts`）仍按"会被缩短"把字幕/音频/MG 前移 → 转场越多、A/V 与字幕偏移越大。
+  修复：`_xfade_pair` 先格式化 `{ext}`。实测同一条 3×5s + 2×0.5s 转场的时间线：
+  成片时长 **15.0s → 14.0s**（= 预期值），e2e 冒烟 duration=14.00s 且不再触发时长告警
+- ✅ **#10 HyperFrames 稳定性/Windows 专项参数**：新增 `_extra_render_flags()`（统一注入两处渲染命令）：
+  `CLIPWRIGHT_HF_FRAMES_CACHE_DIR` → `--frames-cache-dir`（抽帧缓存移出系统盘，避免 Windows C: 写满）；
+  `CLIPWRIGHT_HF_BROWSER_TIMEOUT` / `_PROTOCOL_TIMEOUT` / `_PLAYER_READY_TIMEOUT` → 三类超时；
+  `CLIPWRIGHT_HF_LOW_MEMORY=1` → `--low-memory-mode`；`CLIPWRIGHT_HF_BROWSER_GPU` → `--browser-gpu`/`--no-browser-gpu`。
+  缺省一个 flag 都不加（行为零变化）
+- ✅ **测试**：新增 `tests/clipwright/test_render_duration_and_flags.py`（15 条：预期时长/转场侵蚀/
+  硬切不扣减/容差边界/垃圾输入、环境变量 flag 开关与命令注入）+
+  `tests/clipwright/test_render_xfade_path.py`（3 条**真实 ffmpeg**：产物名格式化 + xfade 时长
+  = 两段之和 − 转场、非法转场名安全回退、整条时间线成片时长 ≈ 预期且无告警）
+- ✅ **回归**：e2e 冒烟 SMOKE PASS（duration 14.00s / fallback=0）
 - ⏸ **本轮未做（有意）**：`hyperframes check` 进生成期（每 MG 多起一次 Chrome）、`snapshot` 视觉自评（需视觉模型 Key）、`--variables/--batch` 参数化（需重构占位符链路）、registry/skills 蒸馏成 few-shot 库、`@hyperframes/producer` 常驻 sidecar、前端 `<hyperframes-player>` 预览——理由与优先级见采纳报告 §3.4
 - 📌 **许可合规**：本轮未复制任何第三方代码；hyperframes 仅以外部 CLI 调用（Apache-2.0），提示词规则为方法论提炼并已标注来源。`THIRD_PARTY_NOTICES.md` 仍待建（采纳报告 §2.3 已给模板）

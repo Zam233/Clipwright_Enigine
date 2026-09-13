@@ -83,6 +83,41 @@ class HyperframesRenderer:
         return [HyperframesRenderer._npx_cmd(), "hyperframes", *args]
 
     @staticmethod
+    def _extra_render_flags() -> list[str]:
+        """渲染稳定性/Windows 专项参数（全部由环境变量驱动，缺省不传任何 flag）。
+
+        - ``CLIPWRIGHT_HF_FRAMES_CACHE_DIR`` → ``--frames-cache-dir``：把内容寻址的抽帧缓存
+          移出系统盘（Windows 上 C: 被抽帧缓存写满会直接导致长渲染失败）。
+        - ``CLIPWRIGHT_HF_BROWSER_TIMEOUT`` → ``--browser-timeout``（秒）；
+          ``CLIPWRIGHT_HF_PROTOCOL_TIMEOUT`` → ``--protocol-timeout``（毫秒）；
+          ``CLIPWRIGHT_HF_PLAYER_READY_TIMEOUT`` → ``--player-ready-timeout``（毫秒）：
+          重合成（多视频/多字体）在慢机器上易踩默认超时，按需放宽。
+        - ``CLIPWRIGHT_HF_LOW_MEMORY=1`` → ``--low-memory-mode``：低内存安全档（单 worker + 截图抓帧）。
+        - ``CLIPWRIGHT_HF_BROWSER_GPU`` → ``--browser-gpu`` / ``--no-browser-gpu``：显式指定
+          Chrome WebGL 走硬件还是 SwiftShader（容器里常见需要强制软件）。
+        """
+        flags: list[str] = []
+        cache_dir = (os.environ.get("CLIPWRIGHT_HF_FRAMES_CACHE_DIR") or "").strip()
+        if cache_dir:
+            flags += ["--frames-cache-dir", cache_dir]
+        for env_name, flag in (
+            ("CLIPWRIGHT_HF_BROWSER_TIMEOUT", "--browser-timeout"),
+            ("CLIPWRIGHT_HF_PROTOCOL_TIMEOUT", "--protocol-timeout"),
+            ("CLIPWRIGHT_HF_PLAYER_READY_TIMEOUT", "--player-ready-timeout"),
+        ):
+            val = (os.environ.get(env_name) or "").strip()
+            if val:
+                flags += [flag, val]
+        if (os.environ.get("CLIPWRIGHT_HF_LOW_MEMORY") or "").strip() in ("1", "true", "yes"):
+            flags.append("--low-memory-mode")
+        gpu = (os.environ.get("CLIPWRIGHT_HF_BROWSER_GPU") or "").strip().lower()
+        if gpu in ("1", "true", "yes", "on"):
+            flags.append("--browser-gpu")
+        elif gpu in ("0", "false", "no", "off"):
+            flags.append("--no-browser-gpu")
+        return flags
+
+    @staticmethod
     def _quality_flag() -> str | None:
         """渲染质量档：draft / standard / high（环境变量可覆盖，缺省不传→上游 standard）。"""
         q = (os.environ.get("CLIPWRIGHT_HF_QUALITY") or "").strip().lower()
@@ -341,6 +376,7 @@ class HyperframesRenderer:
         eff_quality = quality or HyperframesRenderer._quality_flag()
         if eff_quality:
             cmd += ["-q", eff_quality]
+        cmd += HyperframesRenderer._extra_render_flags()
         if variables:
             import json as _json
 
@@ -415,6 +451,7 @@ class HyperframesRenderer:
             _q = HyperframesRenderer._quality_flag()
             if _q:
                 cmd += ["-q", _q]
+            cmd += HyperframesRenderer._extra_render_flags()
             logger.info("HyperframesRenderer: 渲染 %d 个覆盖层 → %s", len(overlays), output_path)
             # 同步 subprocess（最长 1h）offload 到线程池，避免冻住事件循环。
             # 注入 HYPERFRAMES_BROWSER_PATH，避免 Windows 上浏览器探测失败导致 hang。

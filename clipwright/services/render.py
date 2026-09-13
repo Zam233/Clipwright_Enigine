@@ -1039,7 +1039,9 @@ class RenderService:
             if progress_callback:
                 await progress_callback("done", 100, "渲染完成")
             logger.info("渲染完成: %s (%.1fs)", output, dur)
-            # /D7: fallback 计数与实际时长偏差显式暴露（原先静默）
+            # /D7 + V1 规则 5：成片时长校验——与"时间线时长 − 转场累计侵蚀"比对
+            # （video-use 的 self-eval 会用 ffprobe 校验输出时长 == EDL 预期；
+            #   早期实现拿原始 duration_sec 比对，转场侵蚀被误报为偏差）
             warnings = list(audio_warnings)
             if self._fallback_count:
                 warnings.append(f"{self._fallback_count} 个片段源不可用，已降级纯色段")
@@ -1047,10 +1049,19 @@ class RenderService:
                 tl_dur = float(getattr(timeline, "duration_sec", 0) or 0)
             except (TypeError, ValueError):
                 tl_dur = 0.0
-            if tl_dur > 0 and abs(dur - tl_dur) > max(1.0, tl_dur * 0.05):
+            expected_dur = self.expected_output_duration(
+                tl_dur, video_segments, transitions_applied=bool(_r1_seg_shifts))
+            dev = self.duration_deviation(dur, expected_dur)
+            if dev is not None:
                 warnings.append(
-                    f"成片实际时长 {dur:.1f}s 与时间线 {tl_dur:.1f}s 偏差较大"
-                    f"（转场时长侵蚀/时长字段未校正）")
+                    f"成片实际时长 {dur:.2f}s 与预期 {expected_dur:.2f}s 偏差 "
+                    f"{dev:.2f}s（转场侵蚀已扣除；超出容差）")
+                logger.warning("时长校验: 实际 %.2fs / 预期 %.2fs / 偏差 %.2fs",
+                               dur, expected_dur, dev)
+                if (os.environ.get("CLIPWRIGHT_STRICT_DURATION") or "").strip() in ("1", "true", "yes"):
+                    return RenderResult(
+                        False, error=f"成片时长偏差超出容差: {dur:.2f}s vs {expected_dur:.2f}s",
+                        ffmpeg_log=chr(10).join(self._final_ffmpeg_log[-50:]), warnings=warnings)
             return RenderResult(True, output_path=str(output.resolve()), duration_sec=dur,
                                 ffmpeg_log=chr(10).join(self._final_ffmpeg_log[-50:]),
                                 warnings=warnings)
@@ -1551,6 +1562,50 @@ class RenderService:
         return trimmed
 
     @staticmethod
+    def expected_output_duration(
+        timeline_duration: float,
+        video_segments: list[dict] | None = None,
+        transitions_applied: bool = False,
+    ) -> float:
+        """成片**预期时长** = 时间线时长 − 转场累计侵蚀时长。
+
+        xfade 每处转场会把成片缩短 `transition_duration`；只有真正走 xfade 路径时
+        （`_r1_seg_shifts` 非空）才扣减，否则硬切拼接不缩短。用累计值校正后再比对，
+        才能把"正常的转场缩短"与"真实偏差"区分开——旧实现拿原始 duration_sec 比对，
+        有转场的片子必然误报。
+        """
+        try:
+            base = float(timeline_duration or 0)
+        except (TypeError, ValueError):
+            base = 0.0
+        if base <= 0:
+            return 0.0
+        erosion = 0.0
+        if transitions_applied and video_segments:
+            for seg in video_segments[1:]:
+                try:
+                    erosion += max(0.0, float(seg.get("transition_duration_sec", 0) or 0))
+                except (TypeError, ValueError, AttributeError):
+                    continue
+        return max(0.0, base - erosion)
+
+    @staticmethod
+    def duration_deviation(actual: float, expected: float) -> float | None:
+        """超出容差时返回偏差绝对值，否则 None。容差 = max(0.3s, 预期 × 1%)。
+
+        预期为 0（时间线未声明时长，如仅音频/仅图片的边界场景）时不做判定。
+        """
+        try:
+            a, e = float(actual or 0), float(expected or 0)
+        except (TypeError, ValueError):
+            return None
+        if e <= 0:
+            return None
+        tol = max(0.3, e * 0.01)
+        diff = abs(a - e)
+        return diff if diff > tol else None
+
+    @staticmethod
     def _atomic_temp_path(final_path: str) -> str:
         """原子替换用的临时路径：把媒体扩展名保留在**末尾**。
 
@@ -1742,7 +1797,14 @@ class RenderService:
         return a
 
     def _xfade_pair(self, left, right, tt, td, fps, bitrate, encoder, preset, out_name):
-        """单次 xfade 合成（Phase 3.2：可并行）；输出无效时回退右片段。"""
+        """单次 xfade 合成（Phase 3.2：可并行）；输出无效时回退右片段。
+
+        注意：调用方传进来的 out_name 形如 ``xr1_ab12cd.{ext}``，必须像
+        ``_run_concat`` 一样先 ``.format(ext=…)``——否则输出文件名带字面量 ``{ext}``，
+        ffmpeg 无法从 ``.{ext}`` 推断 muxer（"Error initializing the muxer"）→ 每次都
+        静默降级硬切拼接，转场从未进入成片（连带使转场漂移校正把字幕/音频错误前移）。
+        """
+        out_name = str(out_name).format(ext=_current_ext())
         acc = _get_actual_duration(left)
         off = max(0, acc - td)
         out = str(self._work_dir / out_name)
