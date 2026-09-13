@@ -184,25 +184,39 @@ class BasePlugin(ABC):
                 _clipwright_logger.warning("插件 %s 门面回收失败: %s", plugin_id, e)
 
     def plugin_info(self) -> dict[str, Any]:
-        """返回插件提供的 capabilities 概览（A-4：改读门面，覆盖全部 kind）。"""
+        """返回插件的贡献概览（A-4：统一形态 —— 两轨都带 `contributions`）。
+
+        D4 修复：旧轨此前返回 `{tools, skills, agents}`、新轨返回
+        `{contributions}`，消费方得写两套解析。现在统一为：
+        `{id, contributions: {kind: [id...]}, tools, skills, agents}`——
+        `contributions` 恒存在（新轨来自门面，旧轨由注册表直查补齐），
+        三个历史键保留供既有消费方继续使用。
+        """
+        from clipwright.agents.registry import AgentRegistry
         from clipwright.plugins.contribution import ContributionRegistry
+        from clipwright.skill.registry import SkillRegistry
+        from clipwright.tool.registry import ToolRegistry
+
+        tools = ToolRegistry.list_by_plugin(self.manifest.id)
+        skills = SkillRegistry.list_by_plugin(self.manifest.id)
+        agents = AgentRegistry.list_by_plugin(self.manifest.id)
 
         by_kind: dict[str, list[str]] = {}
         for c in ContributionRegistry.list_by_owner(self.manifest.id):
             by_kind.setdefault(c.kind.value, []).append(c.id)
-        # 兼容期兜底：旧轨插件未走门面，回退到各注册表直查
-        if not by_kind:
-            from clipwright.agents.registry import AgentRegistry
-            from clipwright.skill.registry import SkillRegistry
-            from clipwright.tool.registry import ToolRegistry
-
-            return {
-                "id": self.manifest.id,
-                "tools": ToolRegistry.list_by_plugin(self.manifest.id),
-                "skills": SkillRegistry.list_by_plugin(self.manifest.id),
-                "agents": AgentRegistry.list_by_plugin(self.manifest.id),
+        if not by_kind:  # 旧轨插件未走门面 → 用注册表直查结果补齐同一形态
+            by_kind = {
+                k: sorted(v) for k, v in (
+                    ("tool", tools), ("skill", skills), ("agent", agents),
+                ) if v
             }
-        return {"id": self.manifest.id, "contributions": by_kind}
+        return {
+            "id": self.manifest.id,
+            "contributions": by_kind,
+            "tools": tools,
+            "skills": skills,
+            "agents": agents,
+        }
 
 
 class MaterialSourcePlugin(BasePlugin):
