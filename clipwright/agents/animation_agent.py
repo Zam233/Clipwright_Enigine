@@ -736,7 +736,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             )
 
         try:
-            result = await mg_gen.generate(
+            # P2-B 多方案择优：新引擎提供 generate_best（variants=1 时等价旧行为）；
+            # 旧版/插件提供的引擎可能只有 generate → 回退调用，保持兼容。
+            _generate = getattr(mg_gen, "generate_best", None) or mg_gen.generate
+            result = await _generate(
                 description=gen_description,
                 text_content=text_parts or text_content,
                 persona_style=persona_style or {},

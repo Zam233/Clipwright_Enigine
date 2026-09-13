@@ -8,6 +8,10 @@ llm:
 
 generation:
   max_retries: 2
+  # 多方案生成 + 择优（P2-B）：1 = 单方案（默认，行为不变）；2-4 = 并行生成 N 个候选后
+  # 按评分取最优（视觉自评分优先，其次 LLM 自批判分）。N 个候选并行发起，
+  # 墙钟 ≈ 最慢一个，但 LLM 调用次数与 token 成本 ×N——只在"这条动画很重要"时开。
+  variants: 1
   # 生成期门禁：产物 HTML 送 `hyperframes lint` 静态校验，存在 error 级问题
   # （缺 data-width/height、无 window.__timelines 注册、时间元素缺 data-duration 等）
   # 即放弃该产物并走既有降级链；warning 只记录。CLI 不可用时一律放行。

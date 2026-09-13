@@ -259,7 +259,7 @@ Contrast ✗ #mg-e5 1.6:1 (need 3:1, t=1.111s)   ← Check failed
 | **P1-C** | 质量分级 + 本地 hyperframes 固定 + Windows 缓存/超时参数 | `hyperframes_renderer.py`、预览端点 | 预览耗时下降；C: 盘不增长 |
 | **P1-D** | Persona 字体注入 MG | `mg_renderer.py`、`mg/config.yaml` | snapshot 确认字形为 Persona 字体 |
 | **P2-A** | 上游 skills/registry 蒸馏成 MG 知识库 + few-shot | `mg/config.yaml`、模板目录 | 生成多样性与主观质量提升（抽检 20 条） |
-| **P2-B** | 多方案生成 + `compare` 择优；并行动画 sub-agent | `agents/animation_agent.py` | N 个动画 wall time ≈ 最慢一个 |
+| **P2-B** | 多方案生成 + `compare` 择优；并行动画 sub-agent | ✅ 已落地（2026-09-13 续批）：并行 sub-agent **早已存在**（`agents/animation_agent.py` 的 `logic_jobs` + 信号量 + gather，本表此前误判为未做）；本轮补 `MGGenerator.generate_best`（`generation.variants` 1–4 并行候选 → 视觉分优先/批判分次之择优） | 13 条测试：单方案等价、择优、视觉分优先、失败隔离、全失败回退、**并发墙钟 < 串行一半**、上限截断、无分取首个成功 |
 | **P2-C** | 时间模型（整数 tick + 有理数帧率）/ 命令模式（O1/O3） | `schema/timeline.py`、前端 | 23.976 素材对齐不再漂移；撤销栈单测通过 |
 
 ---

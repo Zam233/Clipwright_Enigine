@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -211,8 +212,7 @@ class MGGenerator:
         """
         persona_style = persona_style or {}
         scene_context = scene_context or {}
-        category_context = category_context or {}
-        # 合并：pipeline_id 供 _trace_event 推送 MG method 追踪事件（远程线特性）
+        category_context = category_context or {}        # 合并：pipeline_id 供 _trace_event 推送 MG method 追踪事件（远程线特性）
         self._pid = pipeline_id
 
         # 生成缓存——同输入（含 vision/fps 语境）直接返回缓存结果，
@@ -371,6 +371,90 @@ class MGGenerator:
             for elem in elements
         )
 
+    # ── 多方案生成 + 择优（P2-B） ──────────────────────────
+
+    _MAX_VARIANTS = 4
+
+    def _variant_count(self, variants: int | None = None) -> int:
+        """候选方案数：显式参数优先 → `generation.variants` 配置 → 1（默认单方案）。
+
+        上限 4：每个候选都是一次完整 LLM 生成（含批判/修复），再多只是烧 token。
+        """
+        raw = variants
+        if raw is None:
+            gen_config = self._config.get("generation", {}) if isinstance(self._config, dict) else {}
+            raw = gen_config.get("variants", 1)
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            n = 1
+        return max(1, min(self._MAX_VARIANTS, n))
+
+    @staticmethod
+    def _variant_score(result: dict[str, Any]) -> float:
+        """候选评分：视觉自评优先（真看图），其次 LLM 自批判分，都没有则 0。"""
+        for key in ("visual_score", "critique_score"):
+            try:
+                value = result.get(key)
+                if value is not None:
+                    return float(value)
+            except (TypeError, ValueError):
+                continue
+        return 0.0
+
+    async def generate_best(self, *, variants: int | None = None, **kwargs: Any) -> dict[str, Any]:
+        """多方案生成 + 择优：并行生成 N 个候选，按评分取最优。
+
+        - `variants=1`（默认）时等价于直接调用 `generate()`，行为零变化；
+        - N>1 时**并行**发起（有界并发，取 `settings.pipeline_concurrency`），
+          因此 N 个候选的墙钟 ≈ 最慢一个；单个候选异常不影响其他候选；
+        - 择优依据：视觉自评分 > LLM 自批判分 > 先到先得（都缺分时取第一个成功候选）；
+        - 全部失败时返回第一个失败结果，保持既有降级语义。
+
+        返回选中的结果 dict，并附加 `variants_considered` / `variant_scores` / `selected_index`。
+        """
+        n = self._variant_count(variants)
+        if n <= 1:
+            return await self.generate(**kwargs)
+
+        try:
+            from clipwright.config import settings
+
+            limit = max(1, int(getattr(settings, "pipeline_concurrency", 3) or 3))
+        except Exception:
+            limit = 3
+        sem = asyncio.Semaphore(limit)
+
+        async def _one(idx: int) -> dict[str, Any]:
+            async with sem:
+                try:
+                    return await self.generate(**kwargs)
+                except Exception as exc:  # 单个候选失败不拖垮整批
+                    logger.warning("MGGenerator: 候选 %d 生成异常: %s", idx, exc)
+                    return {"success": False, "html": "", "error": str(exc)[:200]}
+
+        results = await asyncio.gather(*(_one(i) for i in range(n)))
+        scores = [self._variant_score(r) if r.get("success") else -1.0 for r in results]
+        best = max(range(len(results)), key=lambda i: (scores[i], -i))
+        if not results[best].get("success"):
+            logger.warning("MGGenerator: %d 个候选全部失败，返回首个失败结果", n)
+            return results[0]
+
+        winner = dict(results[best])
+        winner["variants_considered"] = n
+        winner["variant_scores"] = scores
+        winner["selected_index"] = best
+        logger.info(
+            "MGGenerator: 多方案择优 %d 选 1 → #%d（分数 %s）",
+            n, best, [round(s, 1) for s in scores],
+        )
+        self._trace_event(
+            None, "variant_select",
+            f"多方案择优 {n} 选 1 → #{best}",
+            {"scores": scores, "selected": best, "method": winner.get("method")},
+        )
+        return winner
+
     async def _call_llm_repair(
         self,
         broken_def: dict[str, Any],
@@ -482,6 +566,7 @@ class MGGenerator:
         issues = critique.get("issues", [])
         suggestions = critique.get("suggestions", [])
         min_score = self._config.get("critique", {}).get("min_score", 60)
+        visual_score: float | None = None
 
         # web_context 非空才传参（兼容 monkeypatch 桩函数，见上方批判调用注释）；
         # 批判修复与视觉修复共用同一份 kwargs，因此在两条分支之前定义。
@@ -501,6 +586,7 @@ class MGGenerator:
                 v_cfg = (self._config.get("critique") or {}).get("visual_eval") or {}
                 v_min = v_cfg.get("min_score", min_score)
                 v_score = float(visual.get("score", 100) or 0)
+                visual_score = v_score
                 self._trace_event(
                     None, "quality",
                     f"MG 视觉自评 score={int(v_score)}（阈值 {v_min}）",
@@ -528,6 +614,7 @@ class MGGenerator:
                             description=description, text_content=text_content,
                             persona_style=persona_style,
                             vision_prompt=vision_prompt,
+                            critique_score=score, visual_score=visual_score,
                         )
                     logger.warning("MGGenerator: 视觉修复未产出新版本，接受原输出")
             return await self._build_success(mg_def, method, params=params,
@@ -535,7 +622,8 @@ class MGGenerator:
                                        description=description,
                                        text_content=text_content,
                                        persona_style=persona_style,
-                                       vision_prompt=vision_prompt)
+                                       vision_prompt=vision_prompt,
+                                       critique_score=score, visual_score=visual_score)
 
         if not self._issues_fixable(issues, suggestions):
             logger.warning("MGGenerator: 批判低分(score=%d)但问题不可修复，接受原输出", score)
@@ -544,7 +632,8 @@ class MGGenerator:
                                        description=description,
                                        text_content=text_content,
                                        persona_style=persona_style,
-                                       vision_prompt=vision_prompt)
+                                       vision_prompt=vision_prompt,
+                                       critique_score=score)
 
         # 低分且可修复 → 带批判反馈的一次修复重试（仅一次）
         repaired = await self._call_llm_critique_repair(
@@ -561,6 +650,7 @@ class MGGenerator:
                 description=description, text_content=text_content,
                 persona_style=persona_style,
                 vision_prompt=vision_prompt,
+                critique_score=score,
             )
 
         logger.warning("MGGenerator: 批判修复失败(score=%d)，进入降级", score)
@@ -1426,6 +1516,8 @@ class MGGenerator:
         text_content: str | None = None,
         persona_style: dict | None = None,
         vision_prompt: str = "",
+        critique_score: float | None = None,
+        visual_score: float | None = None,
     ) -> dict[str, Any]:
         """构建成功响应 + 渲染 HTML（含残留占位符兜底）。"""
         import uuid
@@ -1490,4 +1582,6 @@ class MGGenerator:
             "method": method,
             "fallback_template": fallback_template,
             "generation_id": generation_id,
+            "critique_score": critique_score,
+            "visual_score": visual_score,
         }

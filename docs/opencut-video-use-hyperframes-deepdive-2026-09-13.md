@@ -183,7 +183,7 @@ assert _RENDER_STAGES.index("text_subtitle") > _RENDER_STAGES.index("overlay_mg"
 | 3 | V5 + V9 提示词与硬校验 | 无 | 1d | 动画观感立刻提升 |
 | 4 | V4 自评闭环（+V7 工具） | 需 timeline_view Tool | 3–5d | 质量闭环的地基 |
 | 5 | O3 撤销增强（选择快照 + 历史面板） | 无 | 2–3d | 编辑器体验 |
-| 6 | V2 并行动画生成 | 需并发治理 | 3d | 缩短管线时长 |
+| 6 | V2 并行动画生成 + 多方案择优 | 无 | 3d | ✅ **2026-09-13 核对**：并行执行**早已存在**（`AnimationAgent` 收集 `logic_jobs` 后用 `Semaphore(pipeline_concurrency)` + `asyncio.gather` 并发跑，见 `agents/animation_agent.py`「串行是动画阶段的最大瓶颈」注释）——本报告此前把它列为"未做"是**误判**；本轮补的是**多方案生成 + 择优**（`MGGenerator.generate_best`，`generation.variants` 1-4，视觉分优先/批判分次之） |
 | 7 | O4 声明式参数契约 | 插件系统 | 3d | 插件生态 |
 | 8 | O6 预览纹理缓存 + 诊断 | 无 | 3–5d | 大时间线流畅度 |
 | 9 | O1 时间模型整数化 | 需 schema 迁移 | 5–10d | 根治对齐误差 |

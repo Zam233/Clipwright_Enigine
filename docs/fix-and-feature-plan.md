@@ -1362,3 +1362,27 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - 📌 **过程教训**：用 `Get-Content | Set-Content -Encoding UTF8` 往返改写文档，把
   `docs/fix-and-feature-plan.md` 写成了双重编码（中文全乱），已 `git checkout HEAD --` 恢复并改用
   edit 工具重做。**含中文的文档与源码一律用 edit 工具改，不要走 PowerShell 读写往返。**
+
+### 执行轮次 113（2026-09-13：P2-B 多方案择优 + 纠正一处误判）
+
+开工前先核对代码，**发现本报告此前把「并行动画生成」列为未做是误判**：
+
+- ✅ **核对结论**：`agents/animation_agent.py` 的 `execute()` 早已把逻辑动画（含 LLM MG）收集成
+  `logic_jobs`，主循环扫描后用 `asyncio.Semaphore(pipeline_concurrency)` + `asyncio.gather`
+  并发执行（源码注释写着「每个 LLM MG 生成 2-4 分钟，串行是动画阶段的最大瓶颈」），
+  并带 `mg_start`/`mg_end` 事件与单作业异常隔离。故 V2「并行动画 sub-agent」不是欠账
+- ✅ **本轮补的才是缺失部分——多方案生成 + 择优**：新增 `MGGenerator.generate_best()`：
+  `generation.variants`（1-4，默认 1 = 行为不变）个候选**并行**生成（有界并发），
+  按评分取最优（**视觉自评分 > LLM 自批判分 > 先到先得**），结果附
+  `variants_considered` / `variant_scores` / `selected_index` 并推 trace 事件；
+  单候选异常不影响其他候选，全部失败返回首个失败结果（保持既有降级语义）
+- ✅ **评分透传**：`_build_success` 新增 `critique_score` / `visual_score` 字段（批判/视觉闭环
+  此前只在日志里，调用方拿不到），`_finalize_with_critique` 四条出口统一回填
+- ✅ **接入**：`AnimationAgent._handle_llm_mg` 改调 `generate_best`，并用
+  `getattr(mg_gen, "generate_best", None) or mg_gen.generate` 回退——旧版/插件提供的引擎
+  只有 `generate` 时不炸（这条回退是必需的：改完立刻有 10 条用假引擎的单测失败）
+- ✅ **测试**：新增 `tests/clipwright/test_mg_variants.py` **13 条**（单方案等价、配置取值与
+  1-4 截断、评分优先级、择优、视觉分胜出、失败隔离、全失败回退、**并发墙钟 < 串行一半**、
+  无分取首个成功）
+- ✅ **文档更正**：采纳报告 §6 的 P2-B 行、深读 §1.3 第 6 行均改为「并行早已存在 + 本轮补择优」
+- ✅ **回归**：后端全量 **1942 passed** / 1 skipped / 1 xfailed
