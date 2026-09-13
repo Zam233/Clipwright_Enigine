@@ -1026,15 +1026,13 @@ def _construct_client(provider: str, api_key, base_url, model: str,
 - **附带修复**：`persona/repository.delete_knowledge_doc` Windows 文件锁短重试。
 - 回归：前端 450 passed + tsc 0 + build；后端 1614 passed。
 
-### 示例插件 e2e（§8.4）—— ✅ 后端全链路完成
+### 示例插件 e2e（§8.4）—— ✅ 完成（后端 + 浏览器两侧）
 
-- `plugins/_example_full/`：只实现 `contributions()` 的**新契约**示例插件——tool + 4 个 `ui_slot`（右栏面板 / 设置分区 / 页面 / 导航）+ `export_preset` + `shortcut`（`ui_slot` 的 `slot=shortcut`）；`plugin.yaml` 逐条声明（声明即授权）。
-- `tests/clipwright/test_example_plugin_e2e.py`（+3）：真实 `PluginLoader` 加载 → 贡献全部注册 → `/api/plugin/contributions` 按 slot 暴露（前端 **6 个 slot** 可由此插件点亮）→ **卸载后全部回收**（G7：能力与 UI 同步消失）。
-- 顺带修正一处契约误用：`shortcut` 是 **slot 名**（D-0 名单）而非独立贡献类型——示例插件与前端 `usePluginShortcuts` 均改用 `ui_slot`；`/contributions` 对所有 kind 统一透传 `title/order/icon/visibleWhen/payload`。
-- ⏳ 浏览器侧 e2e（Playwright：启用后四处出现、禁用后四处消失）需运行中的前后端，未在本轮执行。
+- **后端全链路** ✅：`plugins/_example_full/`（新契约示例插件）+ `tests/clipwright/test_example_plugin_e2e.py`（3 条）——加载注册 7 类贡献 → `/contributions` 按 slot 暴露 → 卸载全部回收（G7）。
+- **浏览器侧** ✅：`e2e/plugin-slots.spec.ts`（2 条，Playwright + route mock 驱动启用/禁用两态）——启用：`settings.section` 与 `page` 两个 slot 在真实浏览器渲染；禁用：page 显示「不存在或已被禁用」、settings 分区消失。全量 e2e 套件 **39 passed**。
+- **顺带修正**：`shortcut` 是 slot 名而非独立 kind（示例插件与前端钩子统一为 `ui_slot`）；`/contributions` 对所有 kind 统一透传 `title/order/icon/visibleWhen/payload`；`PluginLayoutRenderer` 支持 `string` 作为 `input` 别名（后端配置控件惯用名）。
 
 ### 待办队列（下一批）
 
-1. **M8（可选）**：受信任 bundle 档（iframe 沙箱 + postMessage；默认关闭，依赖 Gate G-2）
-2. **浏览器侧 e2e**：启动前后端后执行 `npx playwright test`（示例插件启用/禁用断言）
-3. **人工项**：加载器的 sys.path 收敛（文件级阻断未解除）
+1. **M8（可选，且被外部阻塞）**：受信任 bundle 档（iframe 沙箱 + postMessage）。方案明确「默认关闭」，且其前置是 **Gate G-2 的剩余一半（签名强制）**——该半与加载器 `sys.path` 收敛同属被外部安全扫描器阻断的文件，故 M8 顺延。
+2. **人工项**：加载器的 `sys.path` 收敛 + 签名强制（两者同文件，阻断未解除）。
