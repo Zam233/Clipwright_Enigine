@@ -6,6 +6,7 @@
 3. 节奏方差分析 — 镜头时长是否太均匀（缺少起伏）
 4. 动画覆盖率 — 文字轨是否有动画
 5. 转场覆盖率 — 视频片段之间是否有转场
+5b. 轨道相邻性（整数 tick 精确判定）— 视频轨片段重叠 / 间隙
 6. 音量峰值检查
 7. 空镜头检测 — video/image 素材黑帧/全白帧（frame_validator，有界并行）
 8. 动画生效检查 — renderer 降级 / mg_html 缺失 / clip 越界
@@ -196,6 +197,34 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
             issues.append(QualityIssue(
                 severity="info", category="transition",
                 message=f"{clip_gaps} 个片段间无转场效果（默认硬切）",
+            ))
+
+        # ── 5b. 轨道相邻性（整数 tick 精确判定，O1 第二阶段）──
+        # 视频/图片轨是**顺序拼接**：上一段终点与下一段起点必须严格相接。
+        # 重叠会让裁剪/顺序对不上；间隙不会渲染成黑帧（渲染端按顺序 concat），
+        # 而是让成片比时间线短——两者都是浮点秒判不准的结构问题，故用 tick 判。
+        try:
+            adjacency = timeline.adjacency_issues()
+        except Exception as exc:  # 结构异常不应让质检整体失败
+            logger.debug("QualityAgent: 相邻性检查跳过: %s", exc)
+            adjacency = []
+        _video_track_ids = {t.id for t in tracks
+                            if t.kind in (ClipKind.VIDEO, ClipKind.IMAGE)}
+        overlaps = [a for a in adjacency if a["kind"] == "overlap" and a["track_id"] in _video_track_ids]
+        gaps = [a for a in adjacency if a["kind"] == "gap" and a["track_id"] in _video_track_ids]
+        if overlaps:
+            worst = min(overlaps, key=lambda a: a["delta_ticks"])
+            issues.append(QualityIssue(
+                severity="warning", category="structure",
+                message=f"{len(overlaps)} 处视频片段重叠（最大 {-worst['delta_sec']:.3f}s："
+                        f"{worst['prev']} 与 {worst['next']}），渲染按顺序拼接会与时间线不一致",
+            ))
+        if gaps:
+            largest = max(gaps, key=lambda a: a["delta_ticks"])
+            issues.append(QualityIssue(
+                severity="info", category="structure",
+                message=f"{len(gaps)} 处视频片段间隙（最大 {largest['delta_sec']:.3f}s："
+                        f"{largest['prev']} 与 {largest['next']}），间隙不会渲染成黑帧，成片会变短",
             ))
 
         # ── 6. 音量检查 ──

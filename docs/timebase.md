@@ -96,17 +96,63 @@ timecode_to_ticks("00:10:00;00", "30000/1001")  # 71999928
 | `RenderService._apply_default_cut_fades` | 「相邻」= tick 差 ≤ `_ADJACENT_WINDOW_TICKS`（由 `_ADJACENT_WINDOW_SEC` 派生，6000 tick = 50ms）；窗口不可小于 30ms 淡化时长 |
 | `timeline_view.cut_times_from_segments` | tick 判重（不做毫秒取整，否则会把吸附好的帧边界挪走）；可传 `frame_rate` 按帧吸附 |
 
-## 6. 尚未完成（第二阶段）
+### 5.1 输入通道与真值（第二阶段）
 
-- Pydantic 侧 `int` tick 字段 + `width/height/fps_num/fps_den` 双写（过渡期保留 float 秒）；
-- 前端 branded type `type MediaTime = number & { __mediaTime: true }` 与统一换算工具
-  （禁止散落 `* fps`）；
-- 命令式撤销（与后端渲染时间的 tick 化联动）。
+| 方向 | 通道 | 真值 |
+|---|---|---|
+| 请求体 → 服务端 | `start_ticks` / `duration_ticks` / `source_offset_ticks`（Clip）、`fps_num` / `fps_den`（Timeline） | 折算成浮点秒/`fps`；**秒字段优先** |
+| 服务端 → 响应/落库 | 只有 `start_sec` / `duration_sec` / `source_offset_sec` / `fps` | 唯一序列化真值 |
+
+tick 输入**不落库、不回写 JSON**（有测试锁定）——同一段时间若同时存两种表示，
+改一个忘另一个就是静默漂移；需要精确 tick 时用派生属性现算
+（`Clip.start_ticks` / `duration_ticks` / `end_ticks`、`Timeline.total_duration_ticks`）。
+`Timeline.adjacency_issues()` 用 tick 判定相邻，返回 `overlap` / `gap` 条目；
+`QualityAgent` 把它接成质检项：视频轨重叠 → warning(structure)，间隙 → info(structure)。
+
+## 5.2 前端统一换算（O1 第二阶段）
+
+代码：`J:\Clipweight-Client\src\lib\mediaTime.ts`；测试：`src/lib/mediaTime.test.ts`（31 条）
++ `src/stores/previewStore.test.ts`（7 条）。与后端同一份语义（tick=120000、标准帧率表、
+标准帧率吸附**整数优先**、`ticksPerFrame` 不可整除时 half-even）。
+
+| 用途 | 前端 API |
+|---|---|
+| 秒 ↔ tick | `secondsToTicks` / `ticksToSeconds`（branded `MediaTime`） |
+| 帧 ↔ tick/秒 | `frameToTicks` / `ticksToFrame` / `frameToSeconds` / `secondsToFrame` / `frameDistance` |
+| 帧率 | `parseFrameRate` / `fromFps` / `frameRateName` / `isNtsc` / `ticksPerFrame` / `frameDuration` |
+| 吸附与判定 | `snapTicks` / `snapToFrame` / `isFrameAligned` |
+| 时间码 | `formatTimecodeFromSeconds` / `formatTimecodeFromTicks` / `timecodeToTicks`（NTSC 自动 drop-frame） |
+| 相邻性 | `findAdjacencyIssues`（与后端 `adjacency_issues` 同一判定） |
+
+已替换的散落换算（不再是 `* fps` / `1 / fps`）：
+
+- `src/lib/utils.ts` 的 `formatTimecode`（改为走 tick + drop-frame）；
+- `src/stores/previewStore.ts` 的 `stepForward` / `stepBackward` / `seekToEnd`；
+- `src/features/keyboard/useGlobalKeybindings.ts` 的 nudge / trim / slip / slide（6 处 `1 / fps`）；
+- `src/layouts/EditorLayout.tsx` 的帧号显示、`src/features/timeline/engine/renderers.ts` 的标尺帧号。
+
+**实测到的真实缺陷（已修）**：旧的按帧步进是 `Math.round(t * fps) ± 1`，用的是**最近**帧——
+播放头落在帧内（点击/拖拽/播放到一半的常态）时会连同偏移一起多走一格。
+实测 29.97fps 下 1000 个「帧内 60% 位置」样本，前进 **1000/1000** 次都跳到了 `k+2` 而不是 `k+1`
+（`mediaTime.test.ts` 里以对比断言锁定）。新的 `frameStep` 语义：帧边界上前后各一帧，
+帧内前进到下一个帧边界、后退到当前帧起点——与常见剪辑器一致，且永远落在帧网格上。
+
+## 6. 尚未完成（第三阶段）
+
+- 命令式撤销（命令对象带 tick 时间、与 O3「选择快照 + 历史面板」联动）；
+- 渲染前是否**自动**把所有 clip 时间吸附到帧边界（需要一并决定音频如何跟随，
+  否则会动到 A/V 相对位置）——目前只做 overlay/切点的吸附，clip 时间保持不变量；
+- 前端 `Timeline` 类型是否携带 `fps_num/fps_den`（当前只在请求方向支持分数帧率，
+  前端内部仍以 `fps: number` 为真值）。
 
 ## 7. 验证
 
 ```bash
 python scripts/verify_timebase.py     # VERIFY PASS，打印 §1–§3 的全部实测数字
-python -m pytest tests/clipwright/test_timebase.py -q
+python -m pytest tests/clipwright/test_timebase.py tests/clipwright/test_timeline_adjacency.py -q
 python scripts/e2e_smoke.py           # SMOKE PASS（帧吸附不改变真实成片）
+
+# 前端（工作目录 J:\Clipweight-Client）
+npx tsc --noEmit
+npx vitest run src/lib/mediaTime.test.ts src/stores/previewStore.test.ts
 ```

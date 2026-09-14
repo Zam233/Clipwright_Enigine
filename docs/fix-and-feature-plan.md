@@ -1437,3 +1437,41 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
   luma 124.7/126.1——帧吸附没有改变真实成片）；后端全量 **2056 passed** / 1 skipped / 1 xfailed
 - ⏳ **本轮未做（第二阶段）**：Pydantic 侧 `int` tick 字段 + `fps_num/fps_den` 双写、
   前端 branded type `MediaTime` 与统一换算工具（不要散落 `* fps`）、命令式撤销与 O3 联动
+
+### 执行轮次 115（2026-09-13：O1 第二阶段——tick 输入通道 + 前端统一换算）
+
+第二阶段把「同一份时间语义两端都能读能算」补齐，但**不引入第二个真值来源**。
+
+- ✅ **请求方向接受 tick（`schema/timeline.py`）**：`Clip` 的 before-validator 消费
+  `start_ticks`/`duration_ticks`/`source_offset_ticks` 折算成秒；`Timeline` 消费
+  `fps_num`/`fps_den` 折算成 `fps`（`frame_rate` 属性再吸附回精确有理数，吸附幂等因此不丢精度）。
+  **秒字段优先**；非整数 tick / 非正帧率直接校验失败（422 级）。`Clip` 是 `extra=allow` 的，
+  tick 键必须先被消费掉，否则会变成幽灵字段——有测试锁定
+- ✅ **序列化真值仍是浮点秒**：tick 不落库、不回写 JSON（有测试断言 `model_dump()` 里
+  没有 tick 字段）。理由写明在代码里：同一段时间存两种表示，改一个忘另一个就是静默漂移；
+  需要精确 tick 时用派生属性现算
+- ✅ **新增派生访问器**：`Clip.start_ticks`/`duration_ticks`/`source_offset_ticks`/`end_sec`/`end_ticks`
+  （tick 与帧率无关，故 Clip 可独立换算）；`Timeline.adjacency_issues()` 逐轨给出
+  `overlap`/`gap` 条目（严格相接不产出条目，`tolerance_ticks` 可显式放宽）
+- ✅ **接线 `QualityAgent`**（检查项 5b）：视频/图片轨重叠 → warning(structure)、间隙 →
+  info(structure)，并说明「渲染端是顺序拼接，间隙不会渲染成黑帧而是让成片变短」；
+  相邻性检查自身异常只记 debug、不影响质检结论
+- ✅ **前端统一换算**（`J:\Clipweight-Client\src\lib\mediaTime.ts`）：branded `MediaTime`、
+  与后端同一份帧率表与整数优先吸附、`secondsToTicks`（去二进制噪声）、`frameStep`、
+  `snapTicks`/`isFrameAligned`、drop-frame 时间码与往返、`findAdjacencyIssues`
+- ✅ **替换散落换算**：`lib/utils.ts formatTimecode`（改走 tick + NTSC drop-frame）、
+  `stores/previewStore.ts` 的 stepForward/stepBackward/seekToEnd、
+  `features/keyboard/useGlobalKeybindings.ts` 的 nudge/trim/slip/slide（6 处 `1 / fps`）、
+  `layouts/EditorLayout.tsx` 帧号、`timeline/engine/renderers.ts` 标尺帧号
+- ✅ **实测到的真实缺陷（本轮修掉）**：旧按帧步进是 `Math.round(t * fps) ± 1`（用**最近**帧），
+  播放头落在帧内时会连同偏移多走一格——29.97fps 下 1000 个「帧内 60%」样本，
+  前进 **1000/1000** 次跳到了 `k+2`。新的 `frameStep`：帧边界上前后各一帧、帧内前进到
+  下一个帧边界、后退到当前帧起点，且永远落在帧网格上（测试以对比断言锁定）
+- ✅ **测试**：后端新增 `tests/clipwright/test_timeline_adjacency.py` **39 条**
+  （tick 输入通道/非法输入/序列化不变/API 边界 422/相邻性 6 类/QualityAgent 4 条）；
+  前端新增 `src/lib/mediaTime.test.ts` **31 条** + `src/stores/previewStore.test.ts` **7 条**
+- ✅ **回归**：后端全量 **2095 passed** / 1 skipped / 1 xfailed（仍只有 2 条既有 plugin
+  子进程编码失败）；前端 `npx tsc --noEmit` 干净、`npm run test` **561 passed**（73 文件）；
+  `scripts/e2e_smoke.py` 仍 SMOKE PASS
+- ⏳ **留到第三阶段**：命令式撤销（与 O3 联动）、渲染前是否**自动**吸附 clip 时间到帧
+  （需同时决定音频如何跟随，否则会动 A/V 相对位置）、前端 `Timeline` 是否携带 `fps_num/fps_den`

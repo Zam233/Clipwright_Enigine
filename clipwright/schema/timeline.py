@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from clipwright.utils.timebase import (
     TICKS_PER_SECOND,
@@ -164,6 +164,59 @@ class Clip(BaseModel):
 
     model_config = {"use_enum_values": True, "extra": "allow"}
 
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_tick_input(cls, data: Any) -> Any:
+        """接受 tick 原生输入（`start_ticks` / `duration_ticks` / `source_offset_ticks`）。
+
+        O1 第二阶段：客户端可以直接用整数 tick 提交时间，服务端折算为浮点秒。
+        **浮点秒仍是唯一序列化真值**——tick 输入不落库、不回写 JSON，避免同一段时间
+        出现两个真值来源（改一个忘另一个 = 静默漂移）。显式给出秒字段时秒优先。
+        """
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        for tick_key, sec_key in (
+            ("start_ticks", "start_sec"),
+            ("duration_ticks", "duration_sec"),
+            ("source_offset_ticks", "source_offset_sec"),
+        ):
+            ticks = data.pop(tick_key, None)
+            if ticks is None or data.get(sec_key) is not None:
+                continue
+            if isinstance(ticks, bool) or not isinstance(ticks, int):
+                raise ValueError(f"{tick_key} 必须是整数 tick（收到 {type(ticks).__name__}）")
+            data[sec_key] = ticks_to_seconds(ticks)
+        return data
+
+    # ── 整数 tick 访问器（O1） ─────────────────────────────
+    # tick 与帧率无关，所以 Clip 能独立换算；帧对齐判定需要 fps，放在 Timeline 上。
+
+    @property
+    def start_ticks(self) -> int:
+        """起始时间的整数 tick。"""
+        return seconds_to_ticks(self.start_sec)
+
+    @property
+    def duration_ticks(self) -> int:
+        """持续时长的整数 tick。"""
+        return seconds_to_ticks(self.duration_sec)
+
+    @property
+    def source_offset_ticks(self) -> int:
+        """素材内偏移的整数 tick。"""
+        return seconds_to_ticks(self.source_offset_sec)
+
+    @property
+    def end_sec(self) -> float:
+        """结束时间（秒）。"""
+        return self.start_sec + self.duration_sec
+
+    @property
+    def end_ticks(self) -> int:
+        """结束时间的整数 tick（= start + duration，恒精确）。"""
+        return self.start_ticks + self.duration_ticks
+
 
 class Track(BaseModel):
     """时间轴轨道。"""
@@ -198,6 +251,36 @@ class Timeline(BaseModel):
     metadata: dict[str, Any] = Field(
         default_factory=dict,
         description="时间线扩展元数据（如 target_loudness_lufs → 渲染响度归一目标）")
+
+    model_config = {"use_enum_values": True, "extra": "allow"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_rate_input(cls, data: Any) -> Any:
+        """接受有理数帧率输入（`fps_num` / `fps_den`）。
+
+        O1 第二阶段：客户端可用分数帧率精确表达 29.97（`30000/1001`），服务端折算成
+        `fps` 浮点值；`frame_rate` 属性再吸附回精确有理数（吸附是幂等的），因此不丢精度。
+        显式给出 `fps` 时 `fps` 优先；非整数输入直接拒绝（避免 `fps_num=30000.5` 这类静默丢精度）。
+        """
+        if not isinstance(data, dict):
+            return data
+        num = data.pop("fps_num", None)
+        den = data.pop("fps_den", None)
+        if num is None and den is None:
+            return data
+        data = dict(data)
+        if data.get("fps") is not None:
+            return data
+        if den is None:
+            den = 1
+        for label, value in (("fps_num", num), ("fps_den", den)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"{label} 必须是整数（收到 {type(value).__name__}）")
+        if num is None or num <= 0 or den <= 0:
+            raise ValueError("fps_num/fps_den 必须为正整数")
+        data["fps"] = num / den
+        return data
 
     @property
     def total_duration_sec(self) -> float:
@@ -253,3 +336,41 @@ class Timeline(BaseModel):
     def timecode(self, sec: float, *, drop_frame: bool | None = None) -> str:
         """秒 → 时间码（`HH:MM:SS:FF`；NTSC 系默认 drop-frame）。"""
         return ticks_to_timecode(seconds_to_ticks(sec), self.frame_rate, drop_frame=drop_frame)
+
+    # ── 轨道相邻性（整数 tick 精确判定，O1 第二阶段） ─────────
+
+    def adjacency_issues(self, *, tolerance_ticks: int = 0, limit: int = 20) -> list[dict[str, Any]]:
+        """逐轨检查片段首尾相接情况，返回 `[{track_id, kind, prev, next, delta_ticks, delta_sec}]`。
+
+        `kind`：
+        - ``overlap``：下一段起点早于上一段终点（剪辑顺序/裁剪会被打乱）
+        - ``gap``：下一段起点晚于上一段终点（渲染端是顺序拼接，间隙**不会**渲染成黑帧）
+        - （相接不产出条目）
+
+        判定在整数 tick 上做（`tolerance_ticks=0` 即严格相接），不再用浮点 eps——
+        同一时间点经 `start + duration` 与下一段 `start` 两条路径算出时，浮点秒在
+        29.97fps 下约 20% 概率不严格相等（见 `utils/timebase.py`）。
+        `tolerance_ticks` 供调用方显式放宽（例如容忍 1 帧内的排布抖动）。
+        """
+        issues: list[dict[str, Any]] = []
+        for track in self.tracks:
+            clips = sorted(
+                (c for c in track.clips if getattr(c, "enabled", True)),
+                key=lambda c: c.start_ticks,
+            )
+            for prev, cur in zip(clips, clips[1:]):
+                delta = cur.start_ticks - prev.end_ticks
+                if abs(delta) <= tolerance_ticks:
+                    continue
+                issues.append({
+                    "track_id": track.id,
+                    "kind": "overlap" if delta < 0 else "gap",
+                    "prev": prev.id,
+                    "next": cur.id,
+                    "delta_ticks": delta,
+                    "delta_sec": ticks_to_seconds(delta),
+                })
+                if len(issues) >= limit:
+                    return issues
+        return issues
+

@@ -44,6 +44,19 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 | `keyframes` | list[dict] | [] | 关键帧动画序列 |
 | `metadata` | dict | {} | 扩展元数据 |
 
+**整数 tick 输入（可选，O1 第二阶段）**：请求体可以用整数 tick 提交时间，服务端折算成上面的秒字段：
+
+| 输入字段 | 类型 | 折算到 |
+|------|------|--------|
+| `start_ticks` | int ≥0 | `start_sec` |
+| `duration_ticks` | int >0 | `duration_sec` |
+| `source_offset_ticks` | int ≥0 | `source_offset_sec` |
+
+1 tick = 1/120000 秒（所有标准帧率的帧周期都是整数 tick：24→5000、29.97→4004、59.94→2002）。
+同时给出秒字段时**秒优先**；非整数 tick 直接 422。**响应里不会出现 tick 字段**——浮点秒
+仍是唯一序列化真值，避免同一段时间出现两个真值来源。`Timeline` 同理接受 `fps_num`/`fps_den`
+（有理数帧率，如 `30000/1001`）折算为 `fps`。详见 [整数时间基座](timebase.md)。
+
 ### 字幕样式字段 (Caption Style Fields)
 
 `caption` 片段额外支持以下样式字段（均为可选；颜色字段接受 `#RRGGBB` 或 `#RRGGBBAA`）：

@@ -154,7 +154,7 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
 修改代码后，运行：
 ```bash
 # 后端全量回归（工作目录 J:\Clipwright）
-python -m pytest tests -q        # 期望 2056 passed（+2 known plugin 失败）
+python -m pytest tests -q        # 期望 2095 passed（+2 known plugin 失败）
 python -c "import clipwright.main"
 python scripts/verify_timebase.py   # 整数时间基座核对（VERIFY PASS）
 python scripts/e2e_smoke.py         # 全管线冒烟（SMOKE PASS）
