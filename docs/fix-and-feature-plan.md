@@ -1665,3 +1665,40 @@ V4 自评闭环此前只做到「渲染后抽切点图 + 可选打分」，结�
   （用假裁决注入），真实模型措辞的归类准确率需要抽查（关键词表刻意保守，未命中即不派工）。
 - ⏳ **未做（仍属 V4/续）**：把 `redo_agent` 自动回灌到管线（当前是"写进结果 + 质检可消费"，
   自动重跑需要渲染层与管线层的编排决策）；复核图的人工回看 UI。
+
+### 执行轮次 121（2026-09-13：前端缺口批次 A——字幕导入 / 吸附源 / 改键健壮性）
+
+采纳报告 §4.2 第 7、10、11 项。全部在前端（`J:\Clipweight-Client`），后端零改动。
+
+- ✅ **字幕导入升级**（新模块 `features/subtitles/parse.ts`）：支持 **SRT / VTT / ASS / SSA**
+  （原先只有内联的 SRT/VTT 解析，ASS 完全不支持）：
+  · 格式识别按扩展名 + 内容双判（无扩展名也能认）；
+  · ASS 解析按 `[Events]` 的 `Format:` 行定位 Start/End/Text 字段（**Text 里含逗号也切不错**），
+    无 Format 行时按 SSA v4 默认字段顺序兜底；剥离 `{\...}` 覆盖标签与 HTML 标签、`\N` 还原换行；
+  · **逐条告警**（带行号）：时间倒挂 / 空文本 / 无时间戳块 / 无法解析的时间戳 / 无 `[Events]` /
+    被剥离的标签数——原先畸形 cue 是静默丢弃，用户只看到"未解析到条目"；
+  · **导入预览弹窗**：解析后先列出总条数、总时长与前 12 条的时间/文本 + 全部告警，
+    确认后才批量写入 caption 轨（不再"导进去才发现少了几句"）；
+  · cue 起止按时间线帧率**对齐到最近帧**（O1 的 tick 换算；向下取整会让字幕早一帧出现），
+    极短 cue 至少保留一帧。
+- ✅ **吸附源扩展**（`features/timeline/engine/snap.ts`）：新增**关键帧**吸附源
+  （编辑器内约定 clip_local 归一化 [0,1]，换算成绝对时间；被拖拽片段自身的关键帧不参与，
+  否则会吸回原地）；吸附目标带**来源标签**（片段边缘/播放头/书签/关键帧/网格/起点，
+  `SnapResult.snapSource`/`snapTime`），界面可以说明"吸到了什么"而不只是画一条线。
+  `collectSnapTargets` 保持原签名（老调用点不改），新增 `collectSnapTargetsDetailed` 保留来源。
+- ✅ **改键健壮性**（`features/keyboard/keybindingStore.ts`）：
+  · **冲突校验** `findKeybindingConflicts` + `conflictsWith`：判定用**归一化 combo**
+    （`Ctrl+Shift+Z` 与 `Shift+Ctrl+Z` 归一后相同——否则冲突检查形同虚设）；
+    速查表顶部显示冲突横幅（哪几组、哪些动作）；
+  · **版本迁移** `migrateOverrides`：存储带 `version`（当前 v2），老格式（裸 map）自动升级并回写；
+    **未来版本不认识就清空回退**（宁可用默认键位也不写坏别人的数据）；
+  · **严格导入** `importOverrides`：逐条校验并回报拒绝原因（非法 JSON / 版本过新 / 非法 combo），
+    合并语义（不覆盖其它已有绑定）、归一化入库、报告导入内容内部的 combo 冲突；
+  · 「输入框聚焦时禁用单字符键」此前已实现（`KeybindingEngine.isTypingTarget`），本轮核对确认。
+- ✅ **测试**：新增 `features/subtitles/parse.test.ts` **15 条**、`keybindingStore.test.ts` 增补 **15 条**；
+  更新 `EditorToolbar.test.tsx` 的 SRT 导入用例（适配"先预览再确认"的新流程，caption 轨路由断言不变）
+- ✅ **回归**：`npx tsc --noEmit` 干净、`npm run test` **675 passed**（83 文件）、`npm run build` 通过
+- ⚠️ **验证边界**：字幕导入预览与冲突横幅只有 jsdom 单测覆盖，未做浏览器目视验收；
+  ASS 解析的**样式还原**是刻意不做的（覆盖标签一律剥离、成片按纯文本渲染）——这是取舍不是缺陷。
+- ⏳ **未做（属批次 C）**：预览区吸附参考线（OpenCut 的 snap-guides 对应物）与画布变换手柄一起做，
+  否则预览里没有拖拽交互，参考线无处可显示。
