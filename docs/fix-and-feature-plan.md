@@ -1867,3 +1867,45 @@ ChatForge 六项欠账的最后一项：会话此前只能等模型产出**完�
   V6 的"EditAgent/StructureAgent 组装 prompt 时用短语视图"目前是**能力就绪**
   （工具输出已带短语视图），管线里把转写喂给这两个 Agent 的链路本身还不存在
   （转写产物当前只流向字幕轨）。
+
+### 执行轮次 127（2026-09-13：V8 项目决策记忆 `memory.md` 四段式）
+
+- ✅ **V8 四段式决策日志**（新服务 `services/project_memory.py`）：每个项目一份
+  `memory.md`，四段固定为 **Strategy（策略）/ Decisions（决策）/ Reasoning（理由）/
+  Outstanding（待办）**。存在的理由是**机器可读的历史已经有了、人可读的判断没有**：
+  时间线版本、Agent 状态、Persona 学习事件回答"改了啥"，回答不了"为什么这么改"。
+  · **追加语义**：程序只往对应段落**追加**条目（`append_entries`），绝不整体覆盖——
+    人工往 `memory.md` 里手写的段落/前言在下一次程序记账后仍然在（有专门回归测试）；
+  · **人工可编辑**：解析器容错（无 `-` 前缀的行、加粗、段落乱序、带前言都能读回），
+    末尾 `（时间，来源）` 元信息解析成 `at`/`source` 字段而非正文；
+  · **段落别名**：中英文都能认（`策略/方向 → Strategy`、`决策/决定 → Decisions`、
+    `理由/原因/依据 → Reasoning`、`待办/遗留/风险 → Outstanding`），未知段名**报错**
+    而不静默丢弃（错别字会被当场发现）；
+  · **原子落盘**：先写 `.md.tmp` 再 `replace`，不留半截文件；
+  · **摘要形态**：`render_summary` 每段取最近 N 条、溢出记"另有 X 条更早记录"，
+    可直接拼进提示词。
+- ✅ **接线**：
+  · API 三端点 `GET /api/project/{id}/memory`、`PUT .../memory`（整份覆盖，人工编辑保存）、
+    `POST .../memory/append`（追加）、`GET .../memory/summary`；沿用 `_load_owned` 做归属校验。
+    空记忆返回**空文档而不是 404**——新项目本来就没有记忆，前端不必特判。
+  · **归档往返**：`GET .../archive` 把 `memory.md` 打进 zip，`import-archive` 还原并回报
+    `memory_restored`（决策记忆不该在归档往返里丢）；顺带修掉导入时**新起 `ProjectManager()`
+    忽略自定义 `projects_dir`** 的既有不一致（改为复用模块级 `_manager`）。
+  · **复制项目**：`ProjectManager.duplicate` 一并复制 `memory.md`（副本与原项目共享同一套
+    策略背景，否则副本丢掉全部"为什么"）。
+  · **删除语义**：软删除（回收站）保留记忆——"恢复"后决策历史必须还在；彻底 purge 连目录一起删。
+    记忆**独立成文件**而非塞进 `project.json`，避免每次保存时间线都重写它。
+  · **Tool 化**：新工具 `project_memory`（`action=read|append`，已注册，工具总数 47），
+    让 Agent 自己记账与回读——结构/动画/质检 Agent 各自的"当时的判断"能跨重跑累积。
+- ✅ **测试**：新增 `test_project_memory.py` **53 条**——序列化往返/时间戳与来源 /人工手改再解析/
+  前言保留/13 组段落别名/未知段落报错/**追加不覆盖人工编辑**/裸字符串不拆字（回归）/
+  损坏文件不抛异常/原子写入无残留/摘要溢出计数/Tool 八项（含注册与 LLM schema）/
+  API 十四项（空记忆 200、追加、坏载荷 400、PUT 覆盖、summary limit、归档往返、
+  无记忆归档、复制带记忆、purge 删净、软删除保留、不进 `project.json`）。
+- ✅ **回归**：后端全量 **2311 passed** / 1 skipped / 1 xfailed（仍只有 2 条既有 plugin
+  子进程编码失败）
+- ⚠️ **验证边界**：本轮只建"记忆本身"的读写与生命周期。**还没有自动写入方**——
+  管线（Requirements/Structure/Edit/Animation/Quality）目前不会自己在收尾时调用
+  `append`，也没有把记忆摘要拼进任一 Agent 的系统提示词；这两件事属于"接线到管线"，
+  需要伴随管线改造（与 V6 的转写视图接线同一类欠账）。浏览器端的记忆编辑器 UI 亦未做
+  （API 已就绪）。

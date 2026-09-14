@@ -37,6 +37,13 @@ class ProjectManager:
     def _project_path(self, project_id: str) -> Path:
         return self._projects_dir / project_id / "project.json"
 
+    def project_dir(self, project_id: str) -> Path:
+        """项目目录（`project.json`、`memory.md`、缩略图等同级共存）。
+
+        V8 起 `memory.md` 也落在该目录，因此对外的公开访问器是必要的。
+        """
+        return self._projects_dir / project_id
+
     def _read_json(self, project_id: str) -> dict[str, Any] | None:
         path = self._project_path(project_id)
         if not path.exists():
@@ -317,6 +324,14 @@ class ProjectManager:
             data.pop("thumbnail_asset", None)
 
         self._write_json(new_id, data)
+        # V8：决策记忆随副本一起带走（副本与原项目共享同一套策略/决策背景，
+        # 否则副本会丢掉「为什么这么做」的全部上下文）
+        src_memory = self.project_dir(project_id) / "memory.md"
+        if src_memory.is_file():
+            try:
+                shutil.copy2(src_memory, self.project_dir(new_id) / "memory.md")
+            except OSError as exc:  # 记忆复制失败不影响项目复制本身
+                logger.warning("项目记忆复制失败 %s → %s: %s", project_id, new_id, exc)
         logger.info("项目已复制: %s → %s", project_id, new_id)
         return data
 

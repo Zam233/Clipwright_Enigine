@@ -235,6 +235,27 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 | `POST /api/project/{project_id}/tags` | 添加项目标签 |
 | `DELETE /api/project/{project_id}/tags/{tag}` | 删除项目标签 |
 | `GET /api/project/{project_id}/thumbnail` | 获取项目缩略图 |
+| `GET /api/project/{project_id}/memory` | 读取项目决策记忆 `memory.md`（四段式；空记忆返回空文档而非 404） |
+| `PUT /api/project/{project_id}/memory` | 整份覆盖项目决策记忆（人工编辑后保存） |
+| `POST /api/project/{project_id}/memory/append` | 追加记忆条目（不覆盖人工编辑；`{entries: {段名: [文本]}}` 或 `[[段名, 文本]]`） |
+| `GET /api/project/{project_id}/memory/summary` | 记忆摘要（`limit` 每段条数，可直接拼进提示词） |
+
+### 项目决策记忆（V8，`memory.md` 四段式）
+
+每个项目在自身目录（与 `project.json` 同级）下有一份 **`memory.md`**，四段固定：
+
+| 段落 | 别名（中文可写） | 记什么 |
+|------|------------------|--------|
+| `Strategy` | 策略 / 方向 | 这个片子的路线：选题角度、节奏定位、受众 |
+| `Decisions` | 决策 / 决定 | 做过哪些代价高或不可逆的选择 |
+| `Reasoning` | 理由 / 原因 / 依据 | 每条决策背后的依据（数据、反馈、约束） |
+| `Outstanding` | 待办 / 遗留 / 风险 | 未解决项、已知风险、需复核点 |
+
+- 程序只**追加**，不整体覆盖；人工手写的前言/条目在下一次程序记账后仍然保留。
+- 未知段名**报 400**，不静默丢弃（错别字当场暴露）。
+- `memory.md` **独立成文件**，不写入 `project.json`；随归档 zip 往返（导入回报 `memory_restored`），
+  复制项目时一并复制；回收站软删除**保留**记忆，彻底 purge 才删除目录。
+- Agent 侧对应原子工具 `project_memory`（`action=read|append`）。
 
 ---
 
@@ -274,6 +295,7 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 | `GET /api/persona/forge/chat/state/{session_id}` | 获取会话状态 |
 | `whisper_transcribe`（工具） | 转写输出含 `phrases`/`packed_text`/`silences`/`compression`（V6 短语级打包，逐词 JSON 字符数可降 90%+） |
 | `timeline_view`（工具） | 复核图工具（V7）：`mode=cuts` 切点三帧对照条 / `mode=overview` 全片联络表 |
+| `project_memory`（工具） | 项目决策记忆工具（V8）：`action=read` 读回四段式记忆与摘要 / `action=append` 追加决策与待办（不覆盖人工编辑） |
 | `GET /api/persona/forge/chat/sessions` | **列出会话**（`?scope=mine|all`；返回标题/消息数/知识数/六维完成度，按更新时间倒序） |
 | `DELETE /api/persona/forge/chat/sessions/{session_id}` | **删除会话**（内存 + `chatforge_sessions/` 落盘文件） |
 | `GET /api/persona/forge/chat/knowledge/{session_id}` | **列出知识条目**（id/来源/字数/预览） |

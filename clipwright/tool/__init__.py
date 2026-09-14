@@ -40,6 +40,7 @@ from clipwright.tool.quality import (
     SubtitleOverflowCheckTool,
 )
 from clipwright.tool.registry import ToolRegistry
+from clipwright.tool.project_memory import ProjectMemoryTool
 from clipwright.tool.speed import SpeedRampTool
 from clipwright.tool.stabilize import VideoStabilizeTool
 from clipwright.tool.stubs import VisionLLMTool
@@ -112,6 +113,7 @@ def register_builtin_tools() -> None:
         TransitionApplyTool(),
         WhisperTranscribeTool(),
         TimelineViewTool(),
+        ProjectMemoryTool(),
         TextToSpeechTool(),
         VoiceCloneTool(),
         ListAnimationsTool(),
@@ -174,6 +176,7 @@ __all__ = [
     "TransitionApplyTool",
     "WhisperTranscribeTool",
     "TimelineViewTool",
+    "ProjectMemoryTool",
     "TextToSpeechTool",
     "VoiceCloneTool",
     "ListAnimationsTool",
