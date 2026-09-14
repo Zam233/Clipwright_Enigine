@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 from clipwright.persona.repository import PersonaRepository
 from clipwright.schema.persona import (
@@ -555,6 +555,105 @@ class ChatForge:
             if isinstance(value, list) and value:
                 parts.append(f"{label}: " + ", ".join(str(c) for c in value[:5]))
         return "；".join(parts)
+
+    # ── 流式回复（历史欠账：会话此前只能等完整 JSON 再渲染） ──
+
+    async def message_stream(
+        self,
+        session_id: str,
+        user_message: str,
+        persona_id: str = "",
+        attachments: Optional[list[dict[str, Any]]] = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """流式发送消息：逐块 yield `{"type": "delta"|"done"|"error", ...}`。
+
+        与 `message()` 的差别只在**呈现时机**：这里把 LLM 的增量文本立刻吐出去，
+        末尾再做一次与同步路径相同的收尾（合并草稿、落盘、返回完整状态）——
+        因此两条路径产出**同一个会话状态**，前端可以随时从中途的流式切回同步接口。
+
+        离线（无 API key）时不假装流式：直接 yield 一次 fallback 文本 + done。
+        """
+        session = self._get_or_create_session(session_id)
+        normalized = self._normalize_attachments(attachments)
+        entry: dict[str, Any] = {"role": "user", "content": user_message}
+        if normalized:
+            entry["attachments"] = normalized
+            context = await self._attachments_to_context(normalized)
+            if context:
+                entry["attachment_context"] = context
+        session.messages.append(entry)
+        session.updated_at = datetime.now(timezone.utc)
+        self._persist_session(session)
+        logger.info("ChatForge stream: session=%s, len=%d, attachments=%d",
+                    session_id, len(user_message), len(normalized))
+
+        if not self._has_api_key():
+            fallback = self._fallback_response(session)
+            self._persist_session(session)
+            yield {"type": "delta", "text": fallback.get("reply", "")}
+            yield {"type": "done", **{k: v for k, v in fallback.items() if k != "reply"}}
+            return
+
+        system = self._build_system_prompt(session)
+        messages = [
+            {
+                "role": m["role"],
+                "content": (str(m.get("content", "")) + (
+                    "\n\n" + str(m["attachment_context"]) if m.get("attachment_context") else ""
+                )),
+            }
+            for m in session.messages
+        ]
+        full_messages = [{"role": "system", "content": system}] + messages
+
+        buffered: list[str] = []
+        try:
+            async for chunk in self._llm.stream_generate(messages=full_messages):
+                text = str(getattr(chunk, "content", "") or "")
+                if not text:
+                    continue
+                buffered.append(text)
+                yield {"type": "delta", "text": text}
+        except Exception as exc:  # 上游异常：把已产出的文本留住，别让用户白等
+            logger.warning("ChatForge 流式生成失败: %s", exc)
+            partial = "".join(buffered)
+            if partial:
+                session.messages.append({"role": "assistant", "content": partial})
+                session.updated_at = datetime.now(timezone.utc)
+                self._persist_session(session)
+            yield {"type": "error", "detail": f"流式生成中断: {exc}", "partial": partial}
+            return
+
+        raw = "".join(buffered)
+        try:
+            result = self._extract_json_from_llm(raw)
+            reply = str(result.get("reply", "") or "")
+            self._merge_draft(session.persona_draft, result.get("persona_draft", {}) or {})
+            session.messages.append({"role": "assistant", "content": reply})
+            session.updated_at = datetime.now(timezone.utc)
+            self._persist_session(session)
+            yield {
+                "type": "done",
+                "session_id": session.session_id,
+                "reply": reply,
+                "persona_draft": session.persona_draft,
+                "missing_dimensions": result.get("missing_dimensions", []),
+                "progress": result.get("progress", {}),
+            }
+        except (json.JSONDecodeError, KeyError) as exc:
+            # 与同步路径一致：解析失败时把原始文本当回复（宁可展示模型原文，也不吞掉）
+            session.messages.append({"role": "assistant", "content": raw})
+            session.updated_at = datetime.now(timezone.utc)
+            self._persist_session(session)
+            yield {
+                "type": "done",
+                "session_id": session.session_id,
+                "reply": raw,
+                "persona_draft": session.persona_draft,
+                "missing_dimensions": [],
+                "progress": {},
+                "_parse_error": str(exc),
+            }
 
     async def add_knowledge(
         self,

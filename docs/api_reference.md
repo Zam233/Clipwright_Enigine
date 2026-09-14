@@ -268,6 +268,7 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 |------|------|
 | `POST /api/persona/forge/chat/start` | 开始对话会话 |
 | `POST /api/persona/forge/chat/message` | 发送消息（可带 `attachments`：图片/文件，见下） |
+| `POST /api/persona/forge/chat/message/stream` | **流式发送消息（SSE）**：逐块 `delta`，末尾 `done`；中断时 `error`（带 `partial`） |
 | `POST /api/persona/forge/chat/knowledge` | 注入知识（超长按 H1 自动分段） |
 | `POST /api/persona/forge/chat/commit` | 提交并生成 `PersonaManifest` |
 | `GET /api/persona/forge/chat/state/{session_id}` | 获取会话状态 |
@@ -279,6 +280,23 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 | `DELETE /api/persona/forge/chat/knowledge/{session_id}/{kb_id}` | **删除单条知识** |
 | `DELETE /api/persona/forge/chat/knowledge/{session_id}` | 清空会话知识库 |
 
+**流式回复（SSE）**：`POST /api/persona/forge/chat/message/stream`，请求体与同步接口一致
+（含 `attachments`），响应 `text/event-stream`：
+
+```
+data: {"type":"delta","text":"好的，"}
+
+data: {"type":"done","session_id":"...","reply":"...","persona_draft":{...},"progress":{...},"missing_dimensions":[...]}
+
+data: {"type":"error","detail":"流式生成中断: ...","partial":"已产出的文本"}
+```
+
+- **POST 的 SSE**（正文可能很长、还可能带附件，EventSource 发不了 POST 体）→ 前端用
+  `fetch` + `ReadableStream` 读（`services/api/ssePost.ts`），非 2xx 时按普通 HTTP 错误抛出；
+- 收尾与同步路径**完全一致**（合并草稿 / 落盘 / 返回完整状态），因此前端可以在流中断后
+  无缝回退到同步接口，不会出现两套会话状态；
+- 上游中断时保留 `partial` 已产出的文本并写进会话（用户不必重问）。
+
 **附件（图片/文件消息）**：`POST .../message` 的请求体可带
 
 ```json
@@ -288,6 +306,7 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 ```
 
 - 限额：单条消息 ≤ 4 个附件、单附件 ≤ 8MB（超限 400，错误信息说明是哪一条）；
+
 - 图片在 `enable_visual_llm` 开启时**真做一次视觉分析**（写临时文件 → `VisionService`），
   分析结论作为该轮上下文喂给模型；未开启时只写一行「用户附了一张图片」——**不编造内容**；
 - 附件与派生文本随会话落盘，重启后仍在；知识条目在恢复老会话时自动补 `id`（历史数据没有 id）。

@@ -1811,3 +1811,31 @@ V4 自评闭环此前只做到「渲染后抽切点图 + 可选打分」，结�
   （未起 dev server）；预览 Ken Burns 是线性近似，导出按帧号线性（两者相差 < 一帧的缩放量）；
   手柄目前只支持**单片段**（多选时按第一个选中片段操作）。
 - ⏳ **未做**：多选手柄与框选联动、旋转手柄的角度读数浮层、手柄对齐其他片段（跨片段吸附）。
+
+### 执行轮次 125（2026-09-13：ChatForge 流式回复，清掉最后一项欠账）
+
+ChatForge 六项欠账的最后一项：会话此前只能等模型产出**完整 JSON** 才渲染，长回复时界面长时间空白。
+
+- ✅ **服务层** `ChatForge.message_stream()`（异步生成器）：逐块 yield
+  `{"type":"delta","text":...}`，末尾 `done`（**完整状态**：reply/草稿/进度/待补维度）。
+  与同步 `message()` 的收尾**完全一致**（合并草稿 / 落盘 / 助手消息存的是 reply 而不是整段 JSON），
+  有测试比对"同一模型输出下流式与同步产出同一会话状态"。
+  · 离线（无 API key）**不假装流式**：一次 fallback 文本 + done；
+  · 上游中断：保留已产出的 `partial` 文本、写进会话、以 `error` 事件说明原因（不让用户白等）；
+  · 解析失败：与同步路径一致地把原文当回复（宁可展示模型原文，也不吞掉）。
+- ✅ **API 层** `POST /api/persona/forge/chat/message/stream`（`text/event-stream`）：
+  **POST 的 SSE**——对话正文可能很长、还可能带附件，EventSource 发不了 POST 体；
+  附件非法/会话问题的错误以 `error` 事件给出（而不是 500）。
+- ✅ **前端**：新增 `services/api/ssePost.ts`（fetch + ReadableStream 手工按帧解析：
+  跨分片拼接、忽略心跳行、非 JSON 原样透传、非 2xx 抛响应体文本、AbortSignal 取消）；
+  `personaApi.chatForgeMessageStream()`；`PersonaForgePage.send()` 改为**边收边渲染**
+  （先插入空助手气泡、增量追加文本、done 时用 reply 定稿并更新草稿/进度），
+  流式失败自动**回退同步接口**（老后端/网络异常时行为与从前一致）。
+- ✅ **测试**：后端新增 `test_chat_forge_stream.py` **11 条**（增量与 done/草稿落盘/
+  流式与同步状态一致/解析失败回退/中断保留 partial/离线单块/附件进上下文/非法附件/
+  新会话按需创建/SSE 事件形状/附件错误事件）；前端新增 `ssePost.test.ts` **8 条**
+- ✅ **回归**：后端全量 **2218 passed** / 1 skipped / 1 xfailed（仍只有 2 条既有 plugin
+  子进程编码失败）；前端 `tsc --noEmit` 干净、`npm run test` **754 passed**（89 文件）、`npm run build` 通过
+- ⚠️ **验证边界**：流式**真机体验**（token 逐字出现）需要真实 LLM key + 浏览器：
+  本轮用假 LLM 的 `stream_generate` 验证事件序列与状态一致性，前端用假 fetch 验证帧解析；
+  未做浏览器目视验收。

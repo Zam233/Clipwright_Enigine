@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from clipwright.schema.persona import PersonaManifest
@@ -101,6 +102,42 @@ async def chat_message(req: ChatMessageRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(e))
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Session not found: {req.session_id}")
+
+
+@router.post("/message/stream")
+async def chat_message_stream(req: ChatMessageRequest):
+    """流式发送对话消息（SSE）——逐块 `delta`，末尾一个 `done`。
+
+    历史欠账：会话此前只能等模型产出完整 JSON 再渲染，长回复时界面长时间空白。
+    事件类型：`{"type":"delta","text":...}` / `{"type":"done",...完整状态}` /
+    `{"type":"error","detail":...,"partial":...}`（上游中断时保留已产出的文本）。
+
+    注意：这是 **POST 的 SSE**（消息体可能很大、还可能带附件），
+    因此前端用 fetch + ReadableStream 读，而不是 EventSource。
+    """
+    import json as _json
+
+    async def _event_stream():
+        try:
+            async for event in _forge.message_stream(
+                session_id=req.session_id,
+                user_message=req.message,
+                persona_id=req.persona_id,
+                attachments=[a.model_dump() for a in req.attachments] or None,
+            ):
+                yield f"data: {_json.dumps(event, ensure_ascii=False)}\n\n"
+        except ChatForgeAttachmentError as e:
+            yield f"data: {_json.dumps({'type': 'error', 'detail': str(e)}, ensure_ascii=False)}\n\n"
+        except KeyError:
+            yield f"data: {_json.dumps({'type': 'error', 'detail': f'Session not found: {req.session_id}'}, ensure_ascii=False)}\n\n"
+        except Exception as e:  # noqa: BLE001 - 流已开始，只能以事件形式报错
+            yield f"data: {_json.dumps({'type': 'error', 'detail': str(e)[:200]}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        _event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/knowledge")
