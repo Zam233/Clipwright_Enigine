@@ -166,6 +166,20 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 
 **预设**（9 个）: `bilibili` `youtube` `tiktok` `weibo` `1080p` `720p` `480p` `prores422hq`（ProRes 422 HQ，`.mov` 母带交付）`h265_10bit`（H.265 HEVC 10bit）
 
+**渲染后复核（V4，默认关闭；`settings.render_review=true` 或 `CLIPWRIGHT_POST_RENDER_REVIEW=1` 开启）**：
+开启后每次渲染额外产出「切点复核图」（每个剪辑点前后三帧对照）与「全片总览图」
+（12 帧等间隔联络表），并可选交视觉模型打分。响应体因此多三个字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `review_findings` | list | 复核问题的**派工列表**：`{kind, redo_agent, severity, detail, evidence, cut_times}`；`kind` ∈ animation/edit/audio/material/other，`redo_agent` 可直接喂给自愈机制；描述说不清时 `kind=other` 且**不派工** |
+| `visual_score` | float? | 视觉评分（0-100），未开启视觉模型时为 `null` |
+| `review_failed` | bool | 是否未过评分门槛（`settings.render_review_min_score`，默认 0 = 不启用；也可用 `CLIPWRIGHT_REVIEW_MIN_SCORE` 覆盖）。**只作标记，不改变渲染成功与否** |
+
+复核结论由 `services/post_review.py` 归类与投票（严重度加权，平票按 素材>动画>声音>剪辑）；
+调用方也可把 `review_findings` 放进 `QualityAgent` 的 `constraints`（键 `review_findings`），
+质检会转成 `QualityIssue` 并复用既有「分类 → redo_agent」映射。
+
 ### `GET /api/render/queue/stream/{task_id}`
 
 **事件格式**:

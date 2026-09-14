@@ -1629,3 +1629,39 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
 - ⏳ **未做**：SSE 流式回复（拆成独立轮次）；`chatforge_sessions/` 目录在全新 checkout 下仍是空的
   ——这是正常的（没有会话就没有文件），现在有列表端点可以直观看到；测试写的是临时目录，
   不会往仓库里落文件。
+
+### 执行轮次 120（2026-09-13：V4 残余——复核派工、全片总览、评分入门槛）
+
+V4 自评闭环此前只做到「渲染后抽切点图 + 可选打分」，结论**只进 warnings**（人看），
+没人接——复核"看见了"却派不了工。本轮把闭环补完。
+
+- ✅ **问题按类型派工**（新模块 `services/post_review.py`）：
+  · `classify_finding()`：按描述归类 `animation` / `edit` / `audio` / `material` / `other`
+    （关键词表按「素材 → 声音 → 动画 → 剪辑」的顺序匹配，避免"字幕"类描述被剪辑词抢走）；
+  · `route_findings()`：把视觉裁决转成 `[{kind, redo_agent, severity, detail, evidence, cut_times}]`
+    ——每条带**证据图路径**与覆盖的切点，可回看；
+  · `choose_redo_agent()`：整轮复核的主重做对象（严重度加权投票，平票按 素材>动画>声音>剪辑）；
+  · **匹配不上就归 `other` 且不派工**——宁可不重做，也不要瞎重做。
+- ✅ **全片总览图**（`--edl` 类比，`timeline_view.build_overview_sheet` + `overview_times`）：
+  全片均匀抽 12 帧拼成联络表（带时间戳，默认 4 列、避开首尾淡入淡出）。
+  切点复核图回答"每个剪辑点有没有问题"，总览图回答"整片大致什么样"（节奏是否单调、
+  有没有大段黑屏/同色块、字幕是否整段缺失）；单片段时间线也照样出总览图。
+- ✅ **复核结论进结果**：`RenderResult` 新增 `review_findings` / `visual_score` / `review_failed`
+  （`to_dict()` 一并暴露）；`_post_render_review` 返回派工列表。
+- ✅ **评分入门槛（熔断）**：`settings.render_review_min_score`（默认 0 = 不启用，
+  与质检 `quality_min_score` 同一语义），可用 `CLIPWRIGHT_REVIEW_MIN_SCORE` 覆盖；
+  低于门槛时置 `review_failed=True` 并写 warning——**不改变渲染成功与否**
+  （复核是"多看一层"，不是新的失败点）。
+- ✅ **QualityAgent 接线**：`constraints["review_findings"]` 进质检 → 转成 `QualityIssue`
+  （high→error 触发自愈、medium→warning、low→info），分类复用既有映射表，
+  因此 `redo_agent` 直接落到 animation/structure/audio/material；形状异常只记 debug 不影响质检。
+- ✅ **测试**：新增 `test_post_review_routing.py` **27 条**（归类/派工/投票/门槛/转质检/摘要）与
+  `test_post_review_overview.py` **21 条**（采样点边界、网格联络表、部分抽帧失败仍出图、
+  复核结论进 RenderResult、门槛置位、无裁决仍出图、QualityAgent 消费四条）
+- ✅ **回归**：后端全量 **2170 passed** / 1 skipped / 1 xfailed（仍只有 2 条既有 plugin
+  子进程编码失败）
+- ⚠️ **验证边界**：派工结论的**正确性依赖视觉模型输出的问题描述**（`CLIPWRIGHT_POST_RENDER_REVIEW=1`
+  + `enable_visual_llm=true` 时才真有裁决）；本轮测的是"给定裁决 → 派工/门槛/质检"这条链路
+  （用假裁决注入），真实模型措辞的归类准确率需要抽查（关键词表刻意保守，未命中即不派工）。
+- ⏳ **未做（仍属 V4/续）**：把 `redo_agent` 自动回灌到管线（当前是"写进结果 + 质检可消费"，
+  自动重跑需要渲染层与管线层的编排决策）；复核图的人工回看 UI。

@@ -98,6 +98,13 @@ class Settings(BaseSettings):
     # 素材帧验证是否启用视觉 LLM；默认 False（只做 ffmpeg 抽帧 is_blank + 本地启发式标题匹配）。
     # 打开后 frame_validator 工具调用 ImageAnalyzer 产出 match_score（视觉 API 成本）。
     enable_visual_llm: bool = False
+    # 渲染后复核（切点复核图 + 全片总览图，V4/V7）；默认关闭（每次多一次抽帧 + 可选视觉调用）。
+    # 打开后 RenderService 会把复核结论按问题类型派工（redo_agent），并写进 RenderResult。
+    render_review: bool = False
+    # 复核视觉评分门槛（V4 残余：评分入熔断）。<= 0 表示不启用门槛（默认，
+    # 与质检 quality_min_score 同一语义）；高于 0 时评分低于门槛会置 review_failed。
+    # 也可用环境变量 CLIPWRIGHT_REVIEW_MIN_SCORE 覆盖。
+    render_review_min_score: int = 0
 
     # --- 安全 ---
     # API 令牌：设置后所有 /api/* 请求需携带 Authorization: Bearer <token>

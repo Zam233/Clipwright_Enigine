@@ -18,8 +18,9 @@
 
 | 服务文件 | 说明 |
 |---------|------|
-| `render.py` | 渲染引擎（多轨/缓存/降级/成片时长校验/切点复核 hook）；转场漂移校正为纯函数并走整数 tick（`transition_shift_ticks`/`shift_ticks_for`/`corrected_start_sec`），视觉 overlay 吸附帧边界、音频不吸附（见 [整数时间基座](timebase.md)） |
-| `timeline_view.py` | 切点复核图（V4/V7）：切点前后 ±0.35s 三帧横向拼图，供人或视觉模型判定跳变/爆闪/字幕遮挡；切点用整数 tick 判重，可传 `frame_rate` 按帧吸附 |
+| `render.py` | 渲染引擎（多轨/缓存/降级/成片时长校验/切点复核 hook）；转场漂移校正为纯函数并走整数 tick（`transition_shift_ticks`/`shift_ticks_for`/`corrected_start_sec`），视觉 overlay 吸附帧边界、音频不吸附（见 [整数时间基座](timebase.md)）；`RenderResult` 暴露复核派工字段 `review_findings`/`visual_score`/`review_failed` |
+| `timeline_view.py` | 切点复核图（V4/V7）：切点前后 ±0.35s 三帧横向拼图，供人或视觉模型判定跳变/爆闪/字幕遮挡；切点用整数 tick 判重，可传 `frame_rate` 按帧吸附；另有**全片总览联络表**（12 帧等间隔 + 时间戳，`overview_times`/`build_overview_sheet`） |
+| `post_review.py` | 渲染后复核的**问题派工**（V4 残余）：按描述归类 animation/edit/audio/material/other、投票选主重做对象、视觉评分门槛判定、转 `QualityIssue` 供质检复用既有 redo 映射 |
 | `remote_render.py` | 远程渲染客户端（worker 协议：资产上传 → 提交 job → 轮询 → 下载） |
 
 ### AI 服务

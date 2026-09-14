@@ -227,6 +227,20 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                         f"{largest['prev']} 与 {largest['next']}），间隙不会渲染成黑帧，成片会变短",
             ))
 
+        # ── 5c. 渲染后复核结论（V4 残余）──
+        # 渲染阶段如果开了复核（切点复核图 + 全片总览图 + 视觉打分），结论会随
+        # RenderResult.review_findings 带出来；调用方放进 constraints 后这里消费，
+        # 转成质检问题并复用既有「分类 → redo_agent」映射，于是复核"看见了"就能派工。
+        try:
+            review_findings = (constraints or {}).get("review_findings") or []
+            if review_findings:
+                from clipwright.services.post_review import to_quality_issues
+
+                for item in to_quality_issues(list(review_findings)):
+                    issues.append(QualityIssue(**item))
+        except Exception as exc:  # 复核结论形状异常不应让质检失败
+            logger.debug("QualityAgent: 复核结论消费跳过: %s", exc)
+
         # ── 6. 音量检查 ──
         audio_clips = []
         for track in tracks:

@@ -847,18 +847,27 @@ def _trim_cache_key(src: str, offset: float, dur: float, width: int, height: int
 
 class RenderResult:
     def __init__(self, success: bool, output_path: str = "", error: str = "",
-                 duration_sec: float = 0, ffmpeg_log: str = "", warnings: list[str] | None = None):
+                 duration_sec: float = 0, ffmpeg_log: str = "", warnings: list[str] | None = None,
+                 review_findings: list[dict] | None = None, visual_score: float | None = None,
+                 review_failed: bool = False):
         self.success = success
         self.output_path = output_path
         self.error = error
         self.duration_sec = duration_sec
         self.ffmpeg_log = ffmpeg_log
         self.warnings = warnings or []
+        # V4 残余：渲染后复核的派工结论（每条带 redo_agent）；默认复核关闭时为空
+        self.review_findings = review_findings or []
+        self.visual_score = visual_score
+        self.review_failed = review_failed
 
     def to_dict(self) -> dict[str, Any]:
         return {"success": self.success, "output_path": self.output_path,
                 "error": self.error, "duration_sec": self.duration_sec,
-                "ffmpeg_log": self.ffmpeg_log, "warnings": self.warnings}
+                "ffmpeg_log": self.ffmpeg_log, "warnings": self.warnings,
+                "review_findings": self.review_findings,
+                "visual_score": self.visual_score,
+                "review_failed": self.review_failed}
 
 
 class RenderService:
@@ -870,6 +879,10 @@ class RenderService:
         self._work_dir.mkdir(parents=True, exist_ok=True)
         self._final_ffmpeg_log: list[str] = []
         self._fallback_count = 0  # D6: trim 失败降级纯色段的计数（原静默仅 log）
+        # V4 残余：渲染后复核结论（派工列表 / 视觉评分 / 是否未过门槛）
+        self._review_findings: list[dict] = []
+        self._review_visual_score: float | None = None
+        self._review_failed = False
 
     def _run_ff(self, cmd, **kw) -> subprocess.CompletedProcess:
         """同步执行 ffmpeg/外部命令（供已在线程池里的 sync 代码直接调用）。"""
@@ -1113,8 +1126,10 @@ class RenderService:
             warnings = list(audio_warnings)
             if self._fallback_count:
                 warnings.append(f"{self._fallback_count} 个片段源不可用，已降级纯色段")
-            # V4/V7：渲染后切点复核（默认关闭，best-effort）
-            await self._post_render_review(str(output), video_segments, warnings, fps=fps)
+            # V4/V7：渲染后切点复核 + 全片总览（默认关闭，best-effort）；
+            # 返回派工列表（每条带 redo_agent），随结果一起交给上层
+            await self._post_render_review(str(output), video_segments, warnings, fps=fps,
+                                           timeline_duration=float(getattr(timeline, "duration_sec", 0) or 0))
             try:
                 tl_dur = float(getattr(timeline, "duration_sec", 0) or 0)
             except (TypeError, ValueError):
@@ -1134,7 +1149,10 @@ class RenderService:
                         ffmpeg_log=chr(10).join(self._final_ffmpeg_log[-50:]), warnings=warnings)
             return RenderResult(True, output_path=str(output.resolve()), duration_sec=dur,
                                 ffmpeg_log=chr(10).join(self._final_ffmpeg_log[-50:]),
-                                warnings=warnings)
+                                warnings=warnings,
+                                review_findings=self._review_findings,
+                                visual_score=self._review_visual_score,
+                                review_failed=self._review_failed)
 
         return RenderResult(False, error=f"渲染失败 (video={len(video_segments)}, trimmed={len(trimmed)})",
                             ffmpeg_log=chr(10).join(self._final_ffmpeg_log[-50:]))
@@ -1632,8 +1650,9 @@ class RenderService:
         return trimmed
 
     async def _post_render_review(self, output: str, video_segments: list[dict],
-                                  result_warnings: list[str], fps: float | None = None) -> None:
-        """渲染后切点复核（V4/V7，默认关闭）：抽切点复核图，可选交视觉模型打分。
+                                  result_warnings: list[str], fps: float | None = None,
+                                  timeline_duration: float = 0.0) -> list[dict]:
+        """渲染后切点复核（V4/V7，默认关闭）：抽切点复核图 + 全片总览图，可选交视觉模型打分。
 
         开关：环境变量 ``CLIPWRIGHT_POST_RENDER_REVIEW=1``（或 ``render_review`` 设置）。
         产物写 ``CLIPWRIGHT_REVIEW_DIR``（缺省放渲染工作目录）。
@@ -1641,6 +1660,10 @@ class RenderService:
 
         `fps` 给了就在帧边界上取切点（O1）：抽帧 `-ss` 落在某帧起点，
         复核图上看到的跳变不会被半帧错位的采样掩盖。
+
+        **返回复核问题的派工列表**（V4 残余）：每条带 `redo_agent`，
+        由 `services/post_review.py` 按问题描述归类（剪辑/动画/声音/素材），
+        供上层自愈机制或质检消费——复核"看见了"必须有人接得住。
         """
         try:
             enabled = (os.environ.get("CLIPWRIGHT_POST_RENDER_REVIEW") or "").strip() in ("1", "true", "yes")
@@ -1652,48 +1675,120 @@ class RenderService:
                 except Exception:
                     enabled = False
             if not enabled:
-                return
+                return []
             from clipwright.services.timeline_view import (
-                build_review_sheets, cut_times_from_segments,
+                build_overview_sheet, build_review_sheets, cut_times_from_segments, overview_times,
             )
 
             cut_times = cut_times_from_segments(video_segments, frame_rate=fps)
-            if not cut_times:
-                logger.info("切点复核: 无切点（单片段时间线），跳过")
-                return
             base = (os.environ.get("CLIPWRIGHT_REVIEW_DIR") or "").strip()
             review_dir = (
                 Path(base) / f"review_{uuid.uuid4().hex[:8]}" if base
                 else Path(self._work_dir) / f"review_{uuid.uuid4().hex[:8]}"
             )
-            sheets = await asyncio.to_thread(build_review_sheets, output, cut_times, review_dir)
-            if not sheets:
-                logger.warning("切点复核: 未能生成复核图（抽帧失败）")
-                return
-            logger.info("切点复核: %d 个切点 → %d 张复核图（%s）",
-                        len(cut_times), len(sheets), review_dir)
-            result_warnings.append(f"切点复核图 {len(sheets)} 张已生成: {review_dir}")
-            self._final_ffmpeg_log.append(f"切点复核: {len(sheets)} 张 → {review_dir}")
+            sheets: list[str] = []
+            if cut_times:
+                sheets = await asyncio.to_thread(build_review_sheets, output, cut_times, review_dir)
+                if sheets:
+                    logger.info("切点复核: %d 个切点 → %d 张复核图（%s）",
+                                len(cut_times), len(sheets), review_dir)
+                    result_warnings.append(f"切点复核图 {len(sheets)} 张已生成: {review_dir}")
+                    self._final_ffmpeg_log.append(f"切点复核: {len(sheets)} 张 → {review_dir}")
+                else:
+                    logger.warning("切点复核: 未能生成复核图（抽帧失败）")
+            else:
+                logger.info("切点复核: 无切点（单片段时间线），只出全片总览")
+
+            # V4 残余：全片总览图（--edl 全片一瞥）——一眼看出节奏是否单调、
+            # 有没有大段黑屏/同色块、字幕是否整段缺失
+            overview: str | None = None
+            duration = float(timeline_duration or 0)
+            times = overview_times(duration)
+            if not times and video_segments:
+                # 时间线时长缺失时用片段末尾兜底
+                last = video_segments[-1] or {}
+                times = overview_times(float(last.get("start_sec", 0) or 0)
+                                       + float(last.get("duration_sec", 0) or 0))
+            if times:
+                try:
+                    overview = await asyncio.to_thread(
+                        build_overview_sheet, output, times, review_dir / "overview.png")
+                except Exception as exc:
+                    logger.debug("全片总览图失败: %s", exc)
+                    overview = None
+                if overview:
+                    logger.info("全片总览: %d 帧 → %s", len(times), overview)
+                    self._final_ffmpeg_log.append(f"全片总览: {len(times)} 帧 → {overview}")
+
+            if not sheets and not overview:
+                return []
+
+            evidence = ([overview] if overview else []) + list(sheets)
             # 可选：交视觉模型打分（与 MG 视觉自评共用评分器与 enable_visual_llm 门控）
+            verdict = None
             try:
                 from clipwright.animation.mg.visual_eval import MGVisualEvaluator
 
                 verdict = await MGVisualEvaluator().evaluate(
-                    sheets,
-                    description=f"{len(cut_times)} 个剪辑点的前后帧对照（查跳变/爆闪/字幕遮挡/overlay 错位）",
+                    evidence,
+                    description=(f"{len(cut_times)} 个剪辑点的前后帧对照 + 一张全片总览"
+                                 f"（查跳变/爆闪/字幕遮挡/overlay 错位/大段黑屏/节奏单调）"),
                 )
             except Exception as exc:
                 logger.debug("切点复核: 视觉打分跳过（%s）", exc)
                 verdict = None
+
+            findings: list[dict] = []
+            score = None
             if verdict:
+                from clipwright.services.post_review import route_findings, summarize
+
                 score = verdict.get("score")
                 logger.info("切点复核: 视觉评分 %s（问题 %d 条）",
                             score, len(verdict.get("issues") or []))
                 result_warnings.append(f"切点复核视觉评分 {score}")
-                for issue in (verdict.get("issues") or [])[:3]:
-                    result_warnings.append(f"切点复核问题: {issue.get('detail', '')}")
+                findings = route_findings(
+                    verdict, evidence=evidence, cut_times=cut_times, default_kind="edit",
+                )
+                summary = summarize(findings)
+                for finding in findings[:3]:
+                    result_warnings.append(
+                        f"切点复核问题[{finding['kind']}] {finding['detail']}")
+                if summary["needs_redo"]:
+                    result_warnings.append(
+                        f"切点复核建议重做: {summary['redo_agent'] or '未指定'}"
+                        f"（致命问题 {summary['high_count']} 条）")
+                self._final_ffmpeg_log.append(
+                    f"复核派工: {summary['by_kind']} → {summary['redo_agent'] or '未派工'}")
+
+                # 视觉评分门槛（V4 残余：评分入熔断）——`min_score <= 0` 默认不启用，
+                # 与质检的 quality_min_score 语义保持一致
+                from clipwright.services.post_review import visual_score_gate
+
+                min_score = 0
+                try:
+                    from clipwright.config import settings as _settings2
+
+                    min_score = getattr(_settings2, "render_review_min_score", 0) or 0
+                except Exception:
+                    min_score = 0
+                env_min = (os.environ.get("CLIPWRIGHT_REVIEW_MIN_SCORE") or "").strip()
+                if env_min:
+                    try:
+                        min_score = int(env_min)
+                    except ValueError:
+                        pass
+                if not visual_score_gate(score, min_score):
+                    result_warnings.append(
+                        f"切点复核视觉评分未过门槛（{score} < {min_score}）")
+                    self._review_failed = True
+
+            self._review_findings = findings
+            self._review_visual_score = score
+            return findings
         except Exception as exc:
             logger.warning("切点复核失败（不影响成片）: %s", exc)
+            return []
 
     @staticmethod
     def expected_output_duration(

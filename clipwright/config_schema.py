@@ -123,6 +123,8 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
     ("pipeline_concurrency", "pipeline", "动画生成并发", False, True, "MG 逐片段 LLM 并发路数"),
     ("material_concurrency", "pipeline", "素材检索并发", False, True, "场景级并行路数"),
     ("enable_visual_llm", "pipeline", "视觉 LLM 素材校验", False, True, "开启后产生视觉 API 成本"),
+    ("render_review", "render", "渲染后复核", False, True, "切点复核图 + 全片总览图；多一次抽帧，开启视觉时另计费"),
+    ("render_review_min_score", "render", "复核视觉评分门槛", False, True, "0=不启用；低于门槛只置 review_failed，不改渲染成败"),
     ("structure_double_draft", "pipeline", "结构双稿择优", False, True, "双倍 LLM 调用，择优启发式仅比场景数"),
     ("library_dir", "pipeline", "全局素材库目录", False, True, "无 project_id 上传的落点"),
     # ── 联网搜索 ──

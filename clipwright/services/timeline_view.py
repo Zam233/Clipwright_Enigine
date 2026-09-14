@@ -75,14 +75,14 @@ def cut_times_from_segments(
     return [seen[k] for k in sorted(seen)]
 
 
-def _grab_frame(video: str, at: float, out_png: Path, timeout: int = 60) -> bool:
+def _grab_frame(video: str, at: float, out_png: Path, timeout: int = 60, tile_width: int = TILE_WIDTH) -> bool:
     """用 ffmpeg 抽单帧（-ss 前置快速 seek）。"""
     import subprocess
 
     try:
         r = subprocess.run(
             ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{max(0.0, at):.3f}",
-             "-i", video, "-frames:v", "1", "-vf", f"scale={TILE_WIDTH}:-2", str(out_png)],
+             "-i", video, "-frames:v", "1", "-vf", f"scale={int(tile_width)}:-2", str(out_png)],
             capture_output=True, text=False, timeout=timeout,
         )
         return r.returncode == 0 and out_png.exists() and out_png.stat().st_size > 0
@@ -163,3 +163,102 @@ def build_review_sheets(
         if path:
             sheets.append(path)
     return sheets
+
+
+# ── 全片总览图（V4 残余：video-use 的 --edl 全片一瞥）────────────
+#
+# 切点复核图回答「每个剪辑点有没有问题」，总览图回答「整片大致什么样」——
+# 一眼看出节奏是否单调、有没有大段黑屏/同色块、字幕是否整段缺失。
+# 两条复核路径互补，都需要时才开。
+
+#: 总览图默认抽帧数（一部短片铺满一张联络表）
+OVERVIEW_FRAMES = 12
+#: 总览图单格宽度
+OVERVIEW_TILE_W = 320
+#: 总览图列数
+OVERVIEW_COLS = 4
+#: 首帧偏移：0 秒常常是淡入黑场，取一点点之后更有代表性
+OVERVIEW_HEAD_OFFSET = 0.5
+
+
+def overview_times(duration: float, count: int = OVERVIEW_FRAMES,
+                   head_offset: float = OVERVIEW_HEAD_OFFSET) -> list[float]:
+    """全片均匀采样点。
+
+    从 `head_offset` 开始、到 `duration - head_offset` 结束（避免首尾黑场/淡出），
+    `count <= 1` 时取中点。时长非法/过短时返回空列表（调用方跳过总览图）。
+    """
+    try:
+        total = float(duration or 0)
+    except (TypeError, ValueError):
+        return []
+    if total <= 0:
+        return []
+    n = max(1, int(count))
+    offset = max(0.0, min(float(head_offset), total / 4))
+    start = offset
+    end = max(start, total - offset)
+    if n == 1 or end <= start:
+        return [round((start + end) / 2, 3)]
+    step = (end - start) / (n - 1)
+    return [round(start + i * step, 3) for i in range(n)]
+
+
+def build_overview_sheet(
+    video: str,
+    times: list[float],
+    out_png: Path,
+    *,
+    cols: int = OVERVIEW_COLS,
+    tile_width: int = OVERVIEW_TILE_W,
+    tmp_dir: Path | None = None,
+) -> str | None:
+    """把全片均匀采样帧拼成一张联络表（每格带时间戳）。抽帧失败即少格；全失败返回 None。"""
+    from PIL import Image, ImageDraw
+
+    if not video or not times:
+        return None
+    work = Path(tmp_dir) if tmp_dir else out_png.parent / "_overview_frames"
+    work.mkdir(parents=True, exist_ok=True)
+
+    tiles: list[tuple[str, Image.Image]] = []
+    for idx, at in enumerate(times):
+        png = work / f"o_{idx:02d}.png"
+        if _grab_frame(video, at, png, tile_width=tile_width):
+            try:
+                tiles.append((f"{at:.2f}s", Image.open(png).convert("RGB")))
+            except Exception:
+                continue
+    if not tiles:
+        return None
+
+    grid_cols = max(1, int(cols))
+    rows = (len(tiles) + grid_cols - 1) // grid_cols
+    tile_w = max(t[1].width for t in tiles)
+    tile_h = max(t[1].height for t in tiles)
+    header_h = 30
+    label_h = 16
+    gap = 6
+    sheet = Image.new(
+        "RGB",
+        (tile_w * grid_cols + gap * (grid_cols + 1),
+         (tile_h + label_h) * rows + header_h + gap * (rows + 1)),
+        (18, 18, 22),
+    )
+    draw = ImageDraw.Draw(sheet)
+    draw.text((gap, 8), f"全片总览 · {len(tiles)} 帧（每格等间隔）", fill=(235, 235, 235))
+    for i, (label, img) in enumerate(tiles):
+        col = i % grid_cols
+        row = i // grid_cols
+        x = gap + col * (tile_w + gap)
+        y = header_h + gap + row * (tile_h + label_h + gap)
+        sheet.paste(img, (x, y))
+        draw.text((x + 4, y + img.height + 2), label, fill=(255, 140, 60))
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(out_png)
+    for _label, img in tiles:
+        try:
+            img.close()
+        except Exception:
+            pass
+    return str(out_png)
