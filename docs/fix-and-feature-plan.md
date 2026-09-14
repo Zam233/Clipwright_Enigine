@@ -1839,3 +1839,31 @@ ChatForge 六项欠账的最后一项：会话此前只能等模型产出**完�
 - ⚠️ **验证边界**：流式**真机体验**（token 逐字出现）需要真实 LLM key + 浏览器：
   本轮用假 LLM 的 `stream_generate` 验证事件序列与状态一致性，前端用假 fetch 验证帧解析；
   未做浏览器目视验收。
+
+### 执行轮次 126（2026-09-13：V6 短语级转写打包 + V7 timeline_view 工具化）
+
+- ✅ **V6 短语级转写打包**（新模块 `services/transcript_pack.py`）：把逐词/逐句 ASR 输出压成
+  **短语视图** `[start-end] S1 文本`。断句规则三条：静音 ≥0.5s、换人、单条超长
+  （时长/字数上限）——"短语"的边界是**停顿/换人/超长**，不是原输入的切分方式。
+  · **静音区间单独保留**（首/中/尾三类）作为切点候选——切点最容易落在这里，白丢就是浪费；
+  · 兼容多种键名（`text`/`word`/`content`、`start`/`start_sec`/`from`、`speaker`/`spk`/`channel`），
+    因此 STT 的 `segments` 可直接喂进来；坏数据跳过而不抛异常；
+  · **实测压缩**：600 词逐词 JSON（50,765 字符）→ 68 条短语（3,450 字符）= **下降 93.2%**
+    （验收目标 ≥60%）；`pack_transcript().compression` 把该度量随结果一起返回，可写进日志/追踪。
+  · 接线：`whisper_transcribe` 工具输出新增 `phrases` / `packed_text` / `silences` / `compression`，
+    需要把转写塞进 prompt 的调用方（Structure/Edit 组装）直接用紧凑视图。
+- ✅ **V7 `timeline_view` 工具化**（新模块 `tool/timeline_view.py`，已注册进 ToolRegistry）：
+  `mode=cuts`（每个切点前后三帧对照条）与 `mode=overview`（全片均匀抽帧联络表）。
+  此前复核图只挂在 `RenderService._post_render_review` 内部，**质检/自愈循环/编辑器都拿不到**；
+  现在它们可以调同一工具出证据（"这次重做有没有变好"也需要同一把尺子）。
+  best-effort：抽帧失败只是少几张图，不抛异常；输出目录不可写/视频不存在给明确错误。
+- ✅ **测试**：新增 `test_transcript_pack.py` **29 条**（键名兼容/垃圾输入/断句四规则/
+  静音三类/渲染格式/**压缩率 ≥60% 的验收断言**/空输入/说话人映射/序列化）；
+  `test_timeline_view_tool.py` **11 条**（cuts 出图与上限/0 与负切点过滤/overview 出图与需要时长/
+  视频缺失/空路径/目录不可写/注册进注册表/LLM schema）
+- ✅ **回归**：后端全量 **2258 passed** / 1 skipped / 1 xfailed（仍只有 2 条既有 plugin
+  子进程编码失败）
+- ⚠️ **验证边界**：压缩率用"字符数"度量（token 的近似），未用真实 tokenizer 计费口径；
+  V6 的"EditAgent/StructureAgent 组装 prompt 时用短语视图"目前是**能力就绪**
+  （工具输出已带短语视图），管线里把转写喂给这两个 Agent 的链路本身还不存在
+  （转写产物当前只流向字幕轨）。

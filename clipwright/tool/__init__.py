@@ -43,6 +43,7 @@ from clipwright.tool.registry import ToolRegistry
 from clipwright.tool.speed import SpeedRampTool
 from clipwright.tool.stabilize import VideoStabilizeTool
 from clipwright.tool.stubs import VisionLLMTool
+from clipwright.tool.timeline_view import TimelineViewTool
 from clipwright.tool.transcribe import WhisperTranscribeTool
 from clipwright.tool.voice import TextToSpeechTool, VoiceCloneTool
 from clipwright.tool.web_search_tool import WebFetchTool, WebSearchTool
@@ -110,6 +111,7 @@ def register_builtin_tools() -> None:
         LutApplyTool(),
         TransitionApplyTool(),
         WhisperTranscribeTool(),
+        TimelineViewTool(),
         TextToSpeechTool(),
         VoiceCloneTool(),
         ListAnimationsTool(),
@@ -171,6 +173,7 @@ __all__ = [
     "LutApplyTool",
     "TransitionApplyTool",
     "WhisperTranscribeTool",
+    "TimelineViewTool",
     "TextToSpeechTool",
     "VoiceCloneTool",
     "ListAnimationsTool",

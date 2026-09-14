@@ -44,6 +44,24 @@ class WhisperTranscribeTool(BaseTool):
                 "duration_sec": round(segments[-1]["end"], 1) if segments else 0,
             }
 
+            # V6 短语级打包：给需要把转写塞进 prompt 的调用方一个**紧凑视图**
+            # （逐词 JSON 动辄几十 KB，短语视图的字符数可降 90%+），
+            # 静音区间单独保留作为切点候选。
+            try:
+                from clipwright.services.transcript_pack import pack_segments
+
+                pack = pack_segments(
+                    segments,
+                    total_duration=output["duration_sec"] or None,
+                    raw_payload={"text": text, "segments": segments},
+                )
+                output["phrases"] = [p.to_dict() for p in pack.phrases]
+                output["packed_text"] = pack.text
+                output["silences"] = pack.silences
+                output["compression"] = round(pack.compression, 4)
+            except Exception as exc:  # 打包失败不影响转写结果
+                logger.warning("转写短语打包失败（忽略）: %s", exc)
+
             if output_format == "srt":
                 lines = []
                 for i, seg in enumerate(segments, 1):
