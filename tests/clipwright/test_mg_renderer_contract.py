@@ -103,6 +103,60 @@ class TestMGRendererContract:
         assert 'style="width:1920px;height:1080px;position:relative;overflow:hidden"' in html
 
 
+MG_BG_ONLY: dict = {
+    "animation_id": "mg_bg",
+    "duration_sec": 2.0,
+    "width": 1920,
+    "height": 1080,
+    "elements": [
+        {
+            "type": "bg",
+            "background": "#123456",
+            "keyframes": [{"time": 0, "opacity": 0}, {"time": 0.5, "opacity": 1}],
+        },
+    ],
+}
+
+
+class TestBgFullBleed:
+    """V3 验证时发现的真实缺陷：`bg` 全幅底层被套上 center 锚点的 translate(-50%,-50%)。
+
+    bg 是 `inset:0` 的全幅层，**没有** center 锚点。旧实现把 base_transform 一并写进
+    关键帧，于是背景层被平移自身尺寸的一半 → 只剩**左上四分之一**可见
+    （1920×1080 只剩 960×540；实测 Chrome 产物的 alpha 覆盖恰好 25%）。
+    """
+
+    def test_bg_keyframes_have_no_anchor_translate(self) -> None:
+        html = MGRenderer.render(MG_BG_ONLY, {}, width=1920, height=1080, fps=30)
+        # 取 bg 元素那段 @keyframes（第一个）
+        block = html.split("@keyframes mg_anim_0{", 1)[1].split("}", 1)[0]
+        assert "translateX(-50%)" not in block
+        assert "translateY(-50%)" not in block
+        assert "transform" not in block
+        assert "opacity" in block  # 动画本身仍然保留
+
+    def test_bg_uses_inset_full_bleed(self) -> None:
+        html = MGRenderer.render(MG_BG_ONLY, {}, width=1920, height=1080, fps=30)
+        assert "position:absolute;inset:0;z-index:0;" in html
+
+    def test_centered_elements_keep_anchor_translate(self) -> None:
+        """修复不能误伤：center 锚点的文本/形状仍必须带 -50% 位移（否则不再居中）。"""
+        html = MGRenderer.render(MG_CALLOUT_BADGE, {"text": "测试", "accent": "#fbbf24"})
+        assert "translateX(-50%) translateY(-50%)" in html
+
+    def test_bg_with_scale_keyframe_would_be_ineligible_in_fastpath(self) -> None:
+        """带变换关键帧的 bg 在 PIL 快路径必须被判为不适用（两路径语义保持一致）。"""
+        from clipwright.animation.mg_fastpath import fastpath_eligible
+
+        mg = dict(MG_BG_ONLY)
+        mg["elements"] = [{
+            "type": "bg", "background": "#123456",
+            "keyframes": [{"time": 0, "opacity": 1, "scale": 1.2}],
+        }]
+        ok, why = fastpath_eligible(mg, {})
+        assert not ok and "bg" in why
+
+
 class TestFmtSec:
     """_fmt_sec 秒数格式化辅助函数测试。"""
 

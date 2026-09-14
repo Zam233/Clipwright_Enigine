@@ -1909,3 +1909,76 @@ ChatForge 六项欠账的最后一项：会话此前只能等模型产出**完�
   `append`，也没有把记忆摘要拼进任一 Agent 的系统提示词；这两件事属于"接线到管线"，
   需要伴随管线改造（与 V6 的转写视图接线同一类欠账）。浏览器端的记忆编辑器 UI 亦未做
   （API 已就绪）。
+
+### 执行轮次 128（2026-09-14：V3 MG PIL 快路径 + 顺带修掉"全幅背景只剩四分之一"的真缺陷）
+
+- ✅ **V3 MG PIL 快路径**（新模块 `animation/mg_fastpath.py`）：`mg_def` → PIL 逐帧 →
+  RGBA 原始帧管道喂 ffmpeg → 带 alpha 的 MOV（qtrle/argb，与 Chrome 路径同格式）。
+  单 MG clip 一次 headless Chrome 启动被省掉。
+  · **白名单安全阀**：`fastpath_eligible()` 逐条检查元素类型/字段/关键帧属性/CSS 值
+    （颜色/长度/阴影/线性与径向渐变/transform-origin/缓动都做解析与拒绝），
+    任何不支持者判"不可用"并给出**可读原因**，回退 Chrome——**绝不猜**；
+  · **覆盖率 11/11（100%）**：11 个内置模板全部可用（不支持项举例：`image` 元素、
+    `radial-gradient` 显式尺寸形式、`inset`/`spread` 阴影、文本尺寸关键帧、未解析占位符）；
+  · **CSS 语义对齐**（逐条对照 `MGRenderer`）：定位锚点与 `-50%` 位移、变换链顺序
+    （translateX/Y→rotate→scale，作用于点从右往左）、变换原点、每个属性**独立时间线**、
+    缺失首末关键帧按 Chromium 语义用**底层值**补齐（而非"保持最后一帧"）、
+    逐区间缓动取自区间起点关键帧、文本盒宽度含末字间距、`letter-spacing`/`line-height`；
+  · **性能**（1280×720/30fps，`scripts/verify_mg_fastpath.py` 实测）：
+    flow_arrows 1.52s vs Chrome 16.20s（**10.7×**）、row_embed 0.72s vs 8.50s（**11.8×**）、
+    spotlight_hero_card 1.87s vs 14.53s（7.8×）、title_reveal 4.88s vs 16.73s（3.4×）；
+    关键优化：元素图层跨帧复用（尺寸不变只画一次）、恒等变换直贴、纯缩放走 `resize`
+    （PIL 实测 19.2ms → 6.2ms）、渐变/径向渐变按尺寸缓存、跳过 PNG 落盘直接管道编码；
+  · **保真度**：11 个模板逐帧比对（黑底合成 RGB 平均绝对差）0.01–0.05（≈2.5–12.8 灰阶）、
+    可见差异像素 2.8%–14.9%，剩余差异集中在阴影高斯模糊半径与字形抗锯齿（已在模块
+    docstring 逐条标注为近似）；
+  · **接线**：`_render_mg_mov` 先试快路径再回退 Chrome（任何失败静默回退，失败语义不变）；
+    `_extract_segments` 把 `mg_def`/`mg_params` 一并带进 overlay 列表（只凭 HTML 判不出来）；
+    LLM 路径新增存储 `mg_params`（此前不存 → 占位符未解析只能保守回退）；
+    `CLIPWRIGHT_MG_FASTPATH=0` 可关闭（默认开）。
+- ✅ **顺带修掉一个真缺陷：全幅背景只剩左上四分之一**（本轮最大的实质收获）。
+  `MGRenderer` 旧实现把 center 锚点的 `translateX(-50%) translateY(-50%)` 写进**所有**元素
+  的关键帧——**包括 `bg` 全幅底层**。但 `bg` 是 `inset:0` 的全幅层，本不该有该位移，
+  于是背景被平移自身尺寸的一半，只剩左上四分之一可见（1920×1080 → 960×540，alpha 覆盖率 **25%**）。
+  · **发现过程**：快路径与 Chrome 逐帧比对时，Chrome 侧"有效区"恒为
+    `W/2+64·dpr × H/2+16·dpr`（1920×1080→1024×556、1280×720→704×376、640×480→384×256、
+    3840×2160→2048×1110），一度被误判为"hyperframes 截图裁掉了 53%"。
+  · **逐项排除截图裁剪**（每项都有实测）：`--experimental-fast-capture=false`（切到
+    screenshot 后端）、`--no-low-memory-mode`、`--browser-gpu`、`--no-page-side-compositing`、
+    `-w 1`、`--resolution=landscape` 与 `=landscape-4k`（1×/2×）、用
+    `HYPERFRAMES_BROWSER_PATH` 换成系统 Chrome、给 `<html>` 补 `data-resolution` /
+    `data-composition-width/height` / `#stage`——**alpha 覆盖区完全一致**；
+    另写 puppeteer 探针直读 `innerWidth/devicePixelRatio`（= 合成尺寸，无裁剪），
+    再用 CDP 把视口钉死后渲染仍"缺一半"——最终定位到背景层自身的 `transform`。
+    那 `+64/+16` 正是"其它元素露出四分之一区域之外的边"。
+  · **修复**：`MGRenderer._render_element` 中 bg 不再拼接锚点位移（`anchor_transform`），
+    元素自身的关键帧变换保留；带变换关键帧的 bg 在快路径判为不适用（两路径语义一致）。
+  · **影响面**：所有含 `bg` 元素的 MG 产物（模板与 LLM 生成）在 Chrome 路径下背景都只有
+    四分之一，其余区域透明 → 成片里背景层缺失。修复后 `verify_mg_fastpath.py` 的
+    Chrome 有效区从 25%/72%/81% 回到 **100%**（9/11 模板；另 2 个模板本身没有全幅背景，
+    属正确行为），区域平均差同步从 0.07–0.10 降到 0.01–0.05。
+  · **回归守卫**：`test_mg_renderer_contract.py::TestBgFullBleed`（bg 关键帧无锚点位移 /
+    center 锚点元素仍有位移 / 带变换关键帧的 bg 判为不适用）；
+    新脚本 `scripts/verify_mg_bg_coverage.py` 走真实 Chrome 量 alpha 覆盖
+    （修复后 **100%**，阈值 ≥97%；修复前 25%）。
+- ✅ **测试**：新增 `test_mg_fastpath.py` **151 条**（解析/关键帧语义/白名单/像素级四组：
+  颜色 21 项、长度、阴影、线性与径向渐变方向与覆盖、transform-origin、缓动端点与过冲、
+  逐区间缓动、隐式端点补齐、几何锚点、旋转方向、缩放中心不动、z 序、形状（圆/环/拱/圆角）、
+  渐变全覆盖回归、文本字体色/字距/行高、参数替换、渲染入口与编码（ffprobe 校验 argb）、
+  图层缓存命中与尺寸变化重建）+ `test_mg_fastpath_wiring.py` **22 条**（开关取值、
+  快路径命中不启 Chrome、白名单拒绝/无 mg_def/开关关闭/异常/产物无效 四种回退、
+  空 HTML 不渲染、`mg_def`/`mg_params` 确实进 overlay 列表且端到端可判定）
+  + `test_mg_renderer_contract.py` 新增 **4 条** bg 回归。
+- ✅ **回归**：后端全量 **2488 passed** / 1 skipped / 1 xfailed（仍只有 2 条既有 plugin
+  子进程编码失败）
+- ⚠️ **验证边界**：
+  · 保真度是**数值比对**（黑底合成 RGB 平均差/可见像素占比），没有人眼验收；
+    对照图落在 `_mg_fastpath_verify/*_cmp_*.png`（本轮已清理，可随时重跑脚本再生成）；
+  · 剩余差异（阴影模糊半径、字形抗锯齿）未逐项追平——若要更严，需要把 PIL 的
+    GaussianBlur 半径与 Chrome 的 box-shadow σ 逐模板标定；
+  · 快路径**不支持**的元素/属性一律回退 Chrome，因此"快路径覆盖率"依赖模板的实际特征，
+    LLM 生成的新奇效果会自然回落到 Chrome（这是设计选择，不是缺陷）；
+  · 本轮还写过一版**自驱动 CDP 渲染器**（`Emulation.setDeviceMetricsOverride` 钉死视口 +
+  `Page.captureScreenshot` + 帧管道），实测 15 帧 1080p **2.12s**（hyperframes 同规格 ~10s），
+  但既然"裁剪"根因是我们自己的 bg 位移、Chrome 路径本身没问题，就不引入第二套
+  Chrome 驱动（缺少 lint 门禁/变量支持/media 就绪等上游能力），已删除并在文档留档。

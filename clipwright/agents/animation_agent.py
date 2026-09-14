@@ -786,6 +786,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "renderer": "mg_hyperframes",
                 "mg_html": html,
                 "mg_def": mg_def,
+                # V3：LLM 路径此前不存参数 → PIL 快路径无法安全复现（占位符未解析），
+                # 只能保守回退 Chrome。这里把生成期实际使用的参数存下来。
+                "mg_params": result.get("params") or {},
                 "mg_method": method,
                 "mg_generation_id": generation_id,
                 "mg_fallback_template": result.get("fallback_template"),

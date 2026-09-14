@@ -392,6 +392,11 @@ const dur=parseFloat(root.dataset.duration);
             xform_y = ""
 
         base_transform = f"{xform_x} {xform_y}".strip()
+        # 审计修复（V3 验证时发现）：`bg` 是 `inset:0` 的全幅底层，**没有** center 锚点的
+        # `translate(-50%,-50%)`。旧实现把 base_transform 一并写进关键帧 → 背景层被平移
+        # 自身尺寸的一半，只剩**左上四分之一**可见（实测 alpha 覆盖 25%：1920×1080 只剩
+        # 960×540，正是 `verify_mg_fastpath` 一开始误判为"Chrome 裁剪"的那 53%）。
+        anchor_transform = "" if elem_type == "bg" else base_transform
 
         # 构建 CSS keyframes
         css_parts = [f"@keyframes {anim_name}{{"]
@@ -424,7 +429,7 @@ const dur=parseFloat(root.dataset.duration);
             easing = props.pop("easing", None)
             timing = f"animation-timing-function:{MGRenderer._css_timing(easing)};" if easing else ""
 
-            tf = f"{base_transform} {' '.join(transforms)}".strip()
+            tf = f"{anchor_transform} {' '.join(transforms)}".strip()
             stop = f"  {pct:.1f}%{{"
             if tf:
                 stop += f"transform:{tf};"

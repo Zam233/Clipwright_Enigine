@@ -153,7 +153,9 @@ HyperFrames 逐帧 seek + 多 worker 并行抓帧，任何"依赖先经过某帧
   需同时满足 `critique.visual_eval.enabled: true` 与 `settings.enable_visual_llm: true`；
   CLI 不可用、未配置视觉模型、返回非 JSON 一律静默跳过（绝不阻断生成）。
 - **环境开关**：`CLIPWRIGHT_HF_LINT_GATE=0` 关闭静态门禁；`CLIPWRIGHT_HF_QUALITY=draft|standard|high`
-  覆盖渲染质量档；`HYPERFRAMES_BIN` 指定本地 CLI 可执行文件。
+  覆盖渲染质量档；`HYPERFRAMES_BIN` 指定本地 CLI 可执行文件；
+  `CLIPWRIGHT_MG_FASTPATH=0` 关闭 MG PIL 快路径（见「MG 渲染快路径」）；
+  `CLIPWRIGHT_HF_STRICT_VARIABLES=1` 变量严格模式（CI 用）。
 
 ## 动效配方库（P2-1，`animation/mg/knowledge/`）
 
@@ -198,6 +200,69 @@ MG 产物不再只是"渲染时把占位符替换掉的静态 HTML"，而是**�
 - **验收**：`scripts/verify_mg_variables.py` 做差分实验——同一份 HTML：
   不传变量渲染可见 **2.394%**（兜底生效）、`--variables '{"text":""}'` 渲染可见 **0.000%**
   （证明变量真的驱动文本）、换成更长文案渲染可见 **6.662%**；`lint` 0 error。
+
+## MG 渲染快路径（V3：PIL 逐帧，绕开 Chrome）
+
+`mg_hyperframes` 每个 MG clip 都要起一次 headless Chrome。但**绝大多数 MG 定义不需要浏览器**：
+纯色/渐变底 + 文本 + 矩形/圆形/圆环/弧线，配上 opacity/scale/rotate/translate/width/height
+关键帧——这些用 Pillow 逐帧画得出来，而且语义确定。
+
+- **实现**：`animation/mg_fastpath.py`。`mg_def` → PIL 逐帧 → RGBA 原始帧管道喂 ffmpeg →
+  带 alpha 的 MOV（qtrle/argb，与 Chrome 路径同格式，下游 overlay 合成链不变）。
+- **安全阀是白名单**：`fastpath_eligible()` 逐条检查元素类型/字段/关键帧属性/CSS 值；
+  任何不支持的东西都判"不可用"并回退 Chrome，**绝不猜**。拒绝原因可读并写进日志
+  （便于统计"这部片子为什么没走快路径"）。
+- **覆盖率**：11 个内置模板 **11/11（100%）**可用（`coverage_report`）。
+  不支持项举例：`image` 元素、`radial-gradient` 的显式尺寸形式（`circle 300px`）、
+  `inset` 阴影、`spread` 阴影、文本尺寸关键帧、未解析的 `{placeholder}`。
+- **性能与保真**：`scripts/verify_mg_fastpath.py` 对每个模板同时跑两条路径并逐帧比对
+  （需要在"Chrome 有效区"内比对，见下方缺陷记录）：
+
+  | 模板（1280×720，30fps） | 帧数 | 快路径 | Chrome | 提速 | 区域内平均差 | 可见差异像素 |
+  |---|---|---|---|---|---|---|
+  | mg_flow_arrows | 126 | 1.52s | 16.20s | **10.7×** | 0.01 | 5.3% |
+  | mg_row_embed | 105 | 0.72s | 8.50s | **11.8×** | 0.03 | 4.3% |
+  | mg_title_reveal | 120 | 4.88s | 16.73s | 3.4× | 0.04 | 10.8% |
+  | mg_quote_card | 135 | 4.11s | 15.61s | 3.8× | 0.05 | 14.9% |
+  | mg_spotlight_hero_card | 120 | 1.87s | 14.53s | 7.8× | 0.02 | 2.8% |
+
+  （平均差是"黑底合成后 RGB 的归一化绝对差"，0.01 ≈ 2.5 灰阶；剩余差异主要来自
+  阴影高斯模糊半径与字形抗锯齿，属可接受的近似，已在模块 docstring 逐条标注。）
+- **开关**：`CLIPWRIGHT_MG_FASTPATH=0/false/no/off` 关闭（默认开）。关闭后行为与接线前完全一致。
+  快路径任何失败（依赖缺失、异常、产物无效）都**静默回退** Chrome，不改变失败语义。
+- **接线**：`RenderService._render_mg_mov` 先试快路径，`_extract_segments` 把
+  `mg_def`/`mg_params` 一并带进 overlay 列表（只凭 HTML 无法判定能否绕开 Chrome）；
+  LLM 路径新增存储 `mg_params`（此前不存 → 占位符未解析只能保守回退）。
+
+## 缺陷记录：全幅背景被平移（2026-09-14 由 V3 验证发现并修复）
+
+`MGRenderer` 旧实现把 center 锚点的 `translateX(-50%) translateY(-50%)` 写进**所有**元素的
+关键帧——包括 `bg` 全幅底层。但 `bg` 是 `inset:0` 的全幅层，本不该有该位移，于是它被平移
+**自身尺寸的一半**，只剩**左上四分之一**可见：
+
+| 合成尺寸 | 背景实际覆盖 | alpha 覆盖率 |
+|---|---|---|
+| 1920×1080 | 960×540 | **25%** |
+| 1280×720 | 640×360 | 25% |
+| 640×480 | 320×240 | 25% |
+
+这一现象一度被误判为"hyperframes 截图被裁掉 53%"——因为测出的"有效区"恰好是
+`W/2+64·dpr × H/2+16·dpr`（其实是"被平移的背景 + 其它元素露出的边"的并集，
+64/16 正是其它元素超出四分之一区域的部分）。逐项排查已排除截图裁剪：换捕获后端
+（screenshot / drawElementImage）、`--no-low-memory-mode`、`--browser-gpu`、
+`--no-page-side-compositing`、`-w 1`、`--resolution`（1×/2×）、系统 Chrome 代替
+chrome-headless-shell、给 `<html>` 补 `data-resolution`/`data-composition-width`/`#stage`
+——alpha 覆盖区全都一模一样（每项都有实测记录）。
+
+- **修复**：`MGRenderer._render_element` 中 bg 不再拼接锚点位移（`anchor_transform`），
+  元素自身的关键帧变换（scale/rotate/translate）保留。
+- **回归守卫**：`tests/clipwright/test_mg_renderer_contract.py::TestBgFullBleed`
+  锁死"bg 关键帧无锚点位移、center 锚点元素仍有位移、带变换关键帧的 bg 在快路径判为不适用"；
+  `scripts/verify_mg_bg_coverage.py` 走真实 Chrome 渲染量 alpha 覆盖（修复后 **100%**，
+  修复前 25%，阈值 ≥97%）。
+- 影响面：所有含 `bg` 元素的 MG 产物（模板与 LLM 生成）在 Chrome 路径下的背景都只有四分之一，
+  其余区域透明 → 成片里背景层缺失。修复后 `verify_mg_fastpath.py` 的 Chrome 有效区
+  从 25%/72%/81% 全部回到 **100%**（9/11 模板；另 2 个本身无全幅背景，属正确行为）。
 
 ## 内容质量检查（空镜头与动画生效）
 

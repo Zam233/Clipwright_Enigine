@@ -1584,4 +1584,8 @@ class MGGenerator:
             "generation_id": generation_id,
             "critique_score": critique_score,
             "visual_score": visual_score,
+            # V3：把本次实际用于渲染的占位符参数一并返回。调用方（AnimationAgent）
+            # 会把它存进 clip.metadata.mg_params —— MG PIL 快路径需要"结构化定义 +
+            # 已解析参数"才能判定能否绕开 Chrome；缺参数时它只会保守回退。
+            "params": dict(params or {}),
         }

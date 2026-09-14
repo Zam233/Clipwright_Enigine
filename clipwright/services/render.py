@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import functools
 import hashlib
 import os
 import json
@@ -368,6 +369,19 @@ def _current_ext() -> str:
     不支持 prores 编码，旧实现全部中间阶段硬编码 .mp4 → 全链 trim 失败）。"""
     ov = _EXT_OVERRIDE.get()
     return (ov or "mp4").lstrip(".")
+
+
+def _mg_fastpath_enabled() -> bool:
+    """V3：MG PIL 快路径开关（默认开；`CLIPWRIGHT_MG_FASTPATH=0/false/no` 关闭）。
+
+    为什么默认开：快路径有**严格白名单**兜底——任何本模块不支持的元素类型/属性/CSS 值
+    都会判定为"不可用"并回退 Chrome 路径，因此开启它不会改变"能不能渲染"，
+    只改变"谁来渲染"。出问题的兜底手段是把该环境变量设为 0。
+    """
+    raw = (_os.environ.get("CLIPWRIGHT_MG_FASTPATH") or "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return True
 
 
 def _encoder_stage_args(encoder: str, preset: str, pix_fmt: str | None = None) -> list[str]:
@@ -1340,8 +1354,15 @@ class RenderService:
                     meta = clip.metadata or {}
                     if meta.get("renderer") == "mg_hyperframes" and meta.get("mg_html"):
                         mg_html = self._ensure_mg_placeholders_filled(meta, clip.text or "")
-                        hf_ov_local.append(dict(mg_html=mg_html, start_sec=clip.start_sec,
-                                                duration_sec=clip.duration_sec, _track_idx=track.index))
+                        # V3：把 mg_def/mg_params 一起带上——PIL 快路径需要结构化定义
+                        # （按白名单判定是否可绕开 Chrome），只看 HTML 是判不出来的。
+                        hf_ov_local.append(dict(
+                            mg_html=mg_html, start_sec=clip.start_sec,
+                            duration_sec=clip.duration_sec, _track_idx=track.index,
+                            mg_def=meta.get("mg_def"),
+                            mg_params=meta.get("mg_params"),
+                            anim_type=meta.get("anim_type") or "",
+                        ))
                     else:
                         text_overlays.append(self._extract_animation_overlay(clip, track.index))
         return video_segments, overlay_segments, text_overlays, audio_segments, hf_ov_local
@@ -2613,17 +2634,52 @@ class RenderService:
         return video
 
     async def _render_mg_mov(self, mg_ov: dict, width: int, height: int, fps: float) -> str | None:
-        """(a)+(b) 单个 MG HTML → 独立工作目录 → npx hyperframes render 产出 MOV。
+        """(a)+(b) 单个 MG → 独立工作目录 → MOV（**先试 PIL 快路径，再回退 Chrome**）。
 
         P1-01: 核心逻辑抽到 HyperframesRenderer.render_mg_html_to_mov 供预览端点复用，
         本方法注入 _ff 保持既有追踪/并发治理语义。
+        V3: `mg_def` 可用且全部特征都在快路径白名单内时，直接 PIL 逐帧 + ffmpeg 编码，
+        省掉一次 headless Chrome 启动（实测 1280×720/120 帧：19.2s → 6.9s，2.8×；
+        黑底 RGB 平均差 0.06%，见 `scripts/verify_mg_fastpath.py`）。
+        快路径**任何**失败都静默回退 Chrome，绝不改变失败语义。
         """
         html = mg_ov.get("mg_html", "")
         if not html:
             return None
 
         from clipwright.animation.hyperframes_renderer import HyperframesRenderer
-        mov = str(Path(self._work_dir) / f"mg_{uuid.uuid4().hex[:8]}" / "mg_out.mov")
+        work = Path(self._work_dir) / f"mg_{uuid.uuid4().hex[:8]}"
+        work.mkdir(parents=True, exist_ok=True)
+        mov = str(work / "mg_out.mov")
+
+        # ── V3：PIL 快路径（默认开，CLIPWRIGHT_MG_FASTPATH=0 关闭） ──
+        if _mg_fastpath_enabled():
+            mg_def = mg_ov.get("mg_def")
+            if isinstance(mg_def, dict) and mg_def.get("elements"):
+                try:
+                    from clipwright.animation.mg_fastpath import (
+                        fastpath_eligible, render_mg_fastpath,
+                    )
+                    params = mg_ov.get("mg_params")
+                    params = params if isinstance(params, dict) else {}
+                    ok, reason = fastpath_eligible(mg_def, params)
+                    if ok:
+                        loop = asyncio.get_running_loop()
+                        out = await loop.run_in_executor(
+                            _ffmpeg_pool, contextvars.copy_context().run,
+                            functools.partial(
+                                render_mg_fastpath, mg_def, mov,
+                                (int(width), int(height)), float(fps), params=params,
+                            ),
+                        )
+                        if out and _is_valid_video(out):
+                            logger.info("[Render] MG 快路径命中: %s", mg_ov.get("anim_type") or "mg")
+                            return out
+                        logger.info("[Render] MG 快路径未产出有效 MOV，回退 Chrome")
+                    else:
+                        logger.info("[Render] MG 快路径不适用（%s），走 Chrome", reason)
+                except Exception as e:  # 快路径绝不成为新的失败点
+                    logger.warning("MG 快路径异常，回退 Chrome: %s", e)
 
         async def _run(cmd):
             return await self._ff(cmd, capture_output=True, text=False, timeout=1800,
