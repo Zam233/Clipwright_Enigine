@@ -189,7 +189,7 @@ assert _RENDER_STAGES.index("text_subtitle") > _RENDER_STAGES.index("overlay_mg"
 | 2 | V1 合成顺序与默认淡化 | 无 | 1d | 影响所有成片正确性 |
 | 3 | V5 + V9 提示词与硬校验 | 无 | 1d | 动画观感立刻提升 |
 | 4 | V4 自评闭环（+V7 工具） | 需 timeline_view Tool | 3–5d | 质量闭环的地基 |
-| 5 | O3 撤销增强（选择快照 + 历史面板） | 无 | 2–3d | 编辑器体验 |
+| 5 | O3 撤销增强（选择快照 + 历史面板） | 无 | 2–3d | 编辑器体验 · ✅ **2026-09-13 完成**（见 §4.2 第 1 项执行进度） |
 | 6 | V2 并行动画生成 + 多方案择优 | 无 | 3d | ✅ **2026-09-13 核对**：并行执行**早已存在**（`AnimationAgent` 收集 `logic_jobs` 后用 `Semaphore(pipeline_concurrency)` + `asyncio.gather` 并发跑，见 `agents/animation_agent.py`「串行是动画阶段的最大瓶颈」注释）——本报告此前把它列为"未做"是**误判**；本轮补的是**多方案生成 + 择优**（`MGGenerator.generate_best`，`generation.variants` 1-4，视觉分优先/批判分次之） |
 | 7 | O4 声明式参数契约 | 插件系统 | 3d | 插件生态 |
 | 8 | O6 预览纹理缓存 + 诊断 | 无 | 3–5d | 大时间线流畅度 |
@@ -476,7 +476,7 @@ npx hyperframes add <name>                        # 按需取用，条目 licens
 
 | # | 缺口 | 补法 | 工期 |
 |---|---|---|---|
-| 1 | 撤销缺"选择恢复 + 历史面板" | `historyStore.pushState` 附带 `selection`；undo/redo 后恢复；新增历史面板消费 `jumpTo` | 2–3d |
+| 1 | 撤销缺"选择恢复 + 历史面板" | `historyStore.pushState` 附带 `selection`；undo/redo 后恢复；新增历史面板消费 `jumpTo` | 2–3d · ✅ **2026-09-13 完成**：`pushState` 自动抓取选择（40 处调用点零改动）；`pruneSelection` 裁掉已不存在的片段；因 `setTimeline` 默认 `deselectAll()`，改由 historyStore 内部 `swapTimeline()` 用 `preserveSelection` 切换并写回选择；`jumpTo` 把未来状态转入可重做栈 + 新增 `redoTo`；`features/history/HistoryPanel.tsx` 面板（中文动作名映射层 + 片段数/选中数/相对时间/可重做段）。前端 586 passed / 76 文件 |
 | 2 | 关键帧无曲线编辑 | 数据层加 `bezier?: {h1,h2}`（`Keyframe.easing` 已可扩展）；属性面板加曲线图（Canvas 小图即可）；属性路径扩展成白名单（含特效参数） | 4–6d |
 | 3 | 遮罩太弱 | `mask_type` 扩到 polygon/star/heart 等 + feather/inverted；预览端 Canvas `clip()` + 模糊羽化 | 3–5d |
 | 4 | 时间模型浮点 | 后端 schema 引入整数 tick + 有理数帧率，API 兼容层双写；前端 branded type + 统一换算工具 | 5–10d（P2）· **后端第一阶段已做**（见 §1.2 O1 执行进度） |

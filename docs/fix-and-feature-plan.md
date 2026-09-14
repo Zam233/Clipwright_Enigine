@@ -1475,3 +1475,37 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
   `scripts/e2e_smoke.py` 仍 SMOKE PASS
 - ⏳ **留到第三阶段**：命令式撤销（与 O3 联动）、渲染前是否**自动**吸附 clip 时间到帧
   （需同时决定音频如何跟随，否则会动 A/V 相对位置）、前端 `Timeline` 是否携带 `fps_num/fps_den`
+
+### 执行轮次 116（2026-09-13：O3 撤销增强——选择快照 + 历史面板）
+
+采纳报告 §1.3 第 5 项 / §4.2 第 1 项。全部在前端（`J:\Clipweight-Client`），后端零改动。
+
+- ✅ **选择快照**（`stores/historyStore.ts`）：历史条目除时间线引用外再存 `selection`
+  （选中片段、选中轨道、框选区间）。`pushState` **自动抓取当前选择**——所有 ~40 个调用点
+  都是「改动前压栈」，因此抓到的就是「改动前的选择」，**调用点一行没改**
+- ✅ **恢复时裁剪幽灵选择**：`pruneSelection` 把快照裁到目标时间线里仍存在的片段/轨道上
+  （撤销可能退回「那个片段还不存在」的状态，原样恢复会让属性面板指向不存在的片段）
+- ✅ **由 historyStore 自己完成时间线切换**：`store.timeline.setTimeline` 默认会
+  `deselectAll()`（防悬空选择），原先 `undo()` 恢复的选择会被紧随其后的 `setTimeline`
+  立刻清掉。新增 `setTimeline(timeline, { preserveSelection: true })`，
+  historyStore 内部 `swapTimeline()` 用它切换 + 写回选择；
+  `EditorToolbar` / `useGlobalKeybindings` / 历史面板三处调用点删掉了多余的
+  `if (tl) setTimeline(tl)`（留着反而会清掉刚恢复的选择）
+- ✅ **副作用修正**：撤销不再顺手把工具模式重置为 `select`（原来经 `deselectAll` 会被重置），
+  有测试锁定
+- ✅ **jumpTo 保留未来状态**：原来跳转直接丢弃其后历史；现在被丢弃的状态（含跳转前的当前状态）
+  按「远 → 近」转入可重做栈，跳到最旧之后仍能一步步重做回最新；新增
+  `redoTo(index)` 支持面板直接点到某一步
+- ✅ **历史面板**（`features/history/HistoryPanel.tsx` + `labels.ts`）：替换工具栏里原来那个
+  「只列 label + 时间」的小下拉。显示当前状态小结（轨道/片段/时长）、中文动作名、
+  每一步的片段数与选中片段数、相对时间，标出「撤销将回到这一步」与「可重做」段；
+  点击回到该状态、Esc/遮罩关闭、可清空。动作名走 `historyLabel` 映射层——
+  **不去改 40 处已稳定的键名**，未登记键原样回退、`import edl` 这类动态标签按前缀拼装
+- ✅ **测试**：前端新增 `src/features/history/labels.test.ts` **7 条**、
+  `src/features/history/HistoryPanel.test.tsx` **7 条**（jsdom + testing-library，
+  含「点击某一步 → 时间线切回且选择恢复」）、`stores/historyStore.test.ts` 增补 **11 条**
+  （自动抓取/显式覆盖/裁剪幽灵选择/undo 自己切换/工具模式不重置/可重做段三轮/redoTo/重做标签沿用）
+- ✅ **回归**：`npx tsc --noEmit` 干净、`npm run test` **586 passed**（76 文件，新增 25 条）、
+  `npm run build` 通过
+- ⚠️ **验证边界**：面板是 jsdom 单测覆盖，**没有做浏览器目视验收**（本轮未起 dev server；
+  本地 5173 未运行）。要目视确认请 `npm run dev` 打开编辑器点工具栏的历史图标
