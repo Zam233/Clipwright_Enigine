@@ -129,6 +129,13 @@ assert _RENDER_STAGES.index("text_subtitle") > _RENDER_STAGES.index("overlay_mg"
 - **落地设计**：先在**后端 schema 层**引入 `FrameRate` 与整数 tick 的等价物（Pydantic：`int` ticks + `width/height/fps_num/fps_den`），API 兼容层保留 float 秒字段（过渡期双写）；前端 TS 用 branded type `type MediaTime = number & { __mediaTime: true }`，统一时间工具函数（不要散落 `* fps`）。
 - **验收**：`30000/1001` 时间线上切 100 次，累计漂移 = 0 帧；既有测试（后端 1154、前端 349）全绿。
 - **风险**：改动面最大的一项，建议排在 P2，且先做只读兼容层。
+- **执行进度（2026-09-13，第一阶段完成）**：后端整数时间基座已落地，**API 契约不变**（浮点秒字段仍是唯一序列化来源，新属性不进 JSON）：
+  - `clipwright/utils/timebase.py`：`TICKS_PER_SECOND=120000`、`FrameRate`（有理数帧率 + 标准帧率吸附 + drop-frame 时间码 + 时间码往返）、tick 换算（`seconds_to_ticks`/`ticks_to_seconds`/`frame_to_ticks`/`ticks_to_frame`）、帧边界吸附（`snap_ticks` 三种模式）与 `format_ticks`。
+  - `schema/timeline.py`：`Timeline.frame_rate` / `total_duration_ticks` / `frame_count` / `frame_aligned_duration_sec()` / `timecode()`，全部是**派生属性**（不改变 JSON 形状）。
+  - `services/render.py`：转场漂移校正改为纯函数 + tick 整数（`transition_shift_ticks` / `shift_ticks_for` / `corrected_start_sec`）；视觉 overlay 校正后**吸附渲染帧边界**（`CLIPWRIGHT_FRAME_ALIGN_OVERLAY=0` 可关），**音频不吸附**（只做 tick 精确减法，避免半帧以内的 A/V 相位偏移）；`_apply_default_cut_fades` 的「相邻」判定改为 tick 比较，50ms 窗口变成具名常量并写明它与 30ms 淡化的关系。
+  - `services/timeline_view.py`：切点用 tick 判重（去掉毫秒取整，避免把吸附好的帧边界又挪走），可选按帧率吸附，post-render hook 传入 fps。
+  - **实测证据**（`python scripts/verify_timebase.py`，VERIFY PASS）：29.97fps 的 200000 个帧边界里，浮点 `frame*(k-1)+frame != frame*k` 有 **41202 个（20.6%）**，tick 下 **0 个**；`int(sec*120000)` 在毫秒刻度 651/19999（3.3%）、帧刻度 569/19999（2.8%）上少 1 tick（1.007s → 120839，应为 120840）；10000 次 15 帧累加浮点得 5005.000000000789、tick 得 600600000 精确落在帧边界；12 段 29.97 时间线漂移校正后 11/11 个 overlay 起点落在整帧，吸附位移最大 5.00ms（< 半帧 16.68ms）。测试 `tests/clipwright/test_timebase.py` **114 条**；`python scripts/e2e_smoke.py` 仍 SMOKE PASS（14.00s、fallback=0、luma 124.7）。
+  - **未做（第二阶段）**：Pydantic 侧 `int` tick 字段 + `fps_num/fps_den` 双写、前端 branded type `MediaTime` 与统一换算工具、命令式撤销（O3 联动）。
 
 ### O2 轨道模型：判别联合 + 主轨单例
 
@@ -186,7 +193,7 @@ assert _RENDER_STAGES.index("text_subtitle") > _RENDER_STAGES.index("overlay_mg"
 | 6 | V2 并行动画生成 + 多方案择优 | 无 | 3d | ✅ **2026-09-13 核对**：并行执行**早已存在**（`AnimationAgent` 收集 `logic_jobs` 后用 `Semaphore(pipeline_concurrency)` + `asyncio.gather` 并发跑，见 `agents/animation_agent.py`「串行是动画阶段的最大瓶颈」注释）——本报告此前把它列为"未做"是**误判**；本轮补的是**多方案生成 + 择优**（`MGGenerator.generate_best`，`generation.variants` 1-4，视觉分优先/批判分次之） |
 | 7 | O4 声明式参数契约 | 插件系统 | 3d | 插件生态 |
 | 8 | O6 预览纹理缓存 + 诊断 | 无 | 3–5d | 大时间线流畅度 |
-| 9 | O1 时间模型整数化 | 需 schema 迁移 | 5–10d | 根治对齐误差 |
+| 9 | O1 时间模型整数化 | 需 schema 迁移 | 5–10d | 根治对齐误差 · **后端第一阶段已完成（2026-09-13）**：`utils/timebase.py` + `Timeline` 派生属性 + 漂移校正/切点走 tick，API 契约不变；剩余第二阶段（schema 双写 + 前端 branded type） |
 | 10 | O5 本地草稿 + 迁移链 | 无 | 3d | 离线与稳健性 |
 
 ---
@@ -472,7 +479,7 @@ npx hyperframes add <name>                        # 按需取用，条目 licens
 | 1 | 撤销缺"选择恢复 + 历史面板" | `historyStore.pushState` 附带 `selection`；undo/redo 后恢复；新增历史面板消费 `jumpTo` | 2–3d |
 | 2 | 关键帧无曲线编辑 | 数据层加 `bezier?: {h1,h2}`（`Keyframe.easing` 已可扩展）；属性面板加曲线图（Canvas 小图即可）；属性路径扩展成白名单（含特效参数） | 4–6d |
 | 3 | 遮罩太弱 | `mask_type` 扩到 polygon/star/heart 等 + feather/inverted；预览端 Canvas `clip()` + 模糊羽化 | 3–5d |
-| 4 | 时间模型浮点 | 后端 schema 引入整数 tick + 有理数帧率，API 兼容层双写；前端 branded type + 统一换算工具 | 5–10d（P2） |
+| 4 | 时间模型浮点 | 后端 schema 引入整数 tick + 有理数帧率，API 兼容层双写；前端 branded type + 统一换算工具 | 5–10d（P2）· **后端第一阶段已做**（见 §1.2 O1 执行进度） |
 | 5 | 无本地离线草稿 | IndexedDB 缓存媒体句柄/缩略图/波形 + 未保存改动；配额提示 | 3d |
 | 6 | 预览无纹理缓存/诊断 | OffscreenCanvas 内容哈希缓存 + 每帧分段耗时与命中率面板 | 3–5d |
 | 7 | 吸附源少 | 增加"关键帧/书签"吸附源 + 预览区吸附参考线（OpenCut 做法：`preview/components/snap-guides.tsx`） | 2d |

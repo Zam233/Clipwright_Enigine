@@ -29,6 +29,13 @@ from clipwright.config import logger
 from clipwright.schema.timeline import Timeline
 from clipwright.tool.design import color_to_drawtext, escape_drawtext_text
 from clipwright.utils.keyframes_expr import normalize_keyframe_times, property_expression
+from clipwright.utils.timebase import (
+    FrameRate,
+    TimebaseError,
+    seconds_to_ticks,
+    snap_ticks,
+    ticks_to_seconds,
+)
 
 # 任务 31：字幕新样式字段（与 schema/timeline.py Clip 对齐）。
 # 渲染时直接从 Clip 读取并合并进传给 TextStyle.from_dict 的 style dict；
@@ -464,6 +471,82 @@ def _fmt_sec(v: float) -> str:
     12.5 → "12.5", 15.0 → "15", 0.0 → "0"。
     """
     return f"{v:g}"
+
+
+# ── 转场漂移校正（O1：在整数 tick 上算） ────────────────────
+#
+# xfade 每处转场让成片缩短 transition_duration，下游字幕/MG/PIP/音频必须按
+# **该时间点之前累计的转场时长**整体前移。累计值用整数 tick 相加，再用整数
+# 减法校正起点；浮点累加会让「同一时间点」经两条路径算出不同值
+# （30000/1001 下约 20% 不严格相等，见 utils/timebase.py），而这里算出来的
+# 起点正是要跟音频/字幕逐段比较的值。
+
+
+def transition_shift_ticks(video_segments: list[dict]) -> list[int]:
+    """每个片段之前累计的转场漂移（tick 整数）。
+
+    `shifts[i]` = 第 i 段起点之前所有转场的时长之和。非法/缺失时长按 0 计。
+    """
+    shifts: list[int] = []
+    cumulative = 0
+    for index, seg in enumerate(video_segments or []):
+        shifts.append(cumulative)
+        if index > 0:
+            try:
+                duration = max(0.0, float((seg or {}).get("transition_duration_sec", 0) or 0))
+            except (TypeError, ValueError):
+                duration = 0.0
+            cumulative += seconds_to_ticks(duration)
+    return shifts
+
+
+def shift_ticks_for(t_sec: float, video_segments: list[dict], shifts: list[int]) -> int:
+    """时间点 `t_sec` 所属片段之前累计的漂移（tick）。"""
+    for index in range(len(video_segments) - 1, -1, -1):
+        try:
+            if float(t_sec) >= float((video_segments[index] or {}).get("start_sec", 0) or 0):
+                return shifts[index]
+        except (TypeError, ValueError, IndexError):
+            continue
+    return 0
+
+
+def frame_align_overlay_enabled() -> bool:
+    """校正后的 overlay 起点是否吸附到渲染帧边界（`CLIPWRIGHT_FRAME_ALIGN_OVERLAY=0` 关闭）。
+
+    吸附让 overlay/字幕的 `enable=between(t,a,b)` 落在整帧上，「显示 N 帧」准确；
+    不吸附时改前/改后的差通常小于 1 帧，肉眼不可见但会让帧计数不准。
+    音频不吸附（见 `corrected_start_sec(align=False)`）。
+    """
+    return (os.environ.get("CLIPWRIGHT_FRAME_ALIGN_OVERLAY") or "1").strip() != "0"
+
+
+def corrected_start_sec(
+    start: Any,
+    video_segments: list[dict],
+    shifts: list[int],
+    frame_rate: Any = None,
+    *,
+    align: bool = True,
+) -> float | None:
+    """按转场漂移前移时间点，返回校正后的秒（非法输入返回 None，调用方保持原值）。
+
+    `align=True`（视觉 overlay）时吸附到帧边界；`align=False`（音频）只做 tick
+    精确减法——音频没有帧概念，挪半个帧以内只会引入与画面的无谓相位偏移。
+    """
+    try:
+        at = float(start)
+        ticks = seconds_to_ticks(at) - shift_ticks_for(at, video_segments, shifts)
+    except (TypeError, ValueError, TimebaseError):
+        return None
+    if ticks < 0:
+        ticks = 0
+    if align and frame_align_overlay_enabled():
+        try:
+            ticks = snap_ticks(ticks, FrameRate.from_fps(float(frame_rate or 30.0)), mode="nearest")
+        except (TimebaseError, TypeError, ValueError):
+            pass
+    return ticks_to_seconds(ticks)
 
 def _caption_renderer() -> str:
     """字幕渲染器：ass（默认，libass 全 14 字段）| drawtext（旧滤镜回退）。"""
@@ -911,27 +994,23 @@ class RenderService:
         # MG/PIP 若仍按原始 start_sec 放置，将随转场逐段累积偏移。
         # 各片段累计漂移在此一次算出；文本烧写在 else 分支内应用，音频/MG/PIP
         # 在 else 之后统一应用（缓存命中路径同样需要）。
+        #
+        # O1 时间基座：累计漂移与校正后的起点都在**整数 tick** 上算，再回写秒。
+        # 理由：浮点累加同一时间点经两条路径会不等（30000/1001 下约 20%，
+        # 见 utils/timebase.py），而校正后的起点是要跟音频/字幕逐段比较的值。
         _r1_seg_shifts: list[float] = []
+        _r1_seg_shifts_ticks: list[int] = []
         if len(trimmed) > 2 and any(
             video_segments[i].get("transition_in") for i in range(1, len(video_segments))
         ) and await asyncio.to_thread(_ffmpeg_supports_xfade):
-            _cum = 0.0
-            for _i, seg in enumerate(video_segments):
-                _r1_seg_shifts.append(_cum)
-                if _i > 0:
-                    try:
-                        _cum += max(0.0, float(seg.get("transition_duration_sec", 0) or 0))
-                    except (TypeError, ValueError):
-                        pass
+            _r1_seg_shifts_ticks = transition_shift_ticks(video_segments)
+            _r1_seg_shifts = [ticks_to_seconds(t) for t in _r1_seg_shifts_ticks]
 
-        def _r1_shift(t: float) -> float:
-            for _j in range(len(video_segments) - 1, -1, -1):
-                try:
-                    if t >= float(video_segments[_j].get("start_sec", 0) or 0):
-                        return _r1_seg_shifts[_j]
-                except (TypeError, ValueError):
-                    continue
-            return 0.0
+        def _r1_correct(start: Any, *, align: bool = True) -> float | None:
+            """按累计漂移前移（tick 精确；视觉 overlay 吸附帧边界，音频不吸附）。"""
+            return corrected_start_sec(
+                start, video_segments, _r1_seg_shifts_ticks, fps, align=align
+            )
 
         if cached_stage.exists() and _is_valid_video(cached_stage):
             final_video = str(cached_stage)
@@ -947,21 +1026,11 @@ class RenderService:
             # 漂移校正（R1）：文本/MG/PIP 的 start_sec 都要按 xfade 累计漂移前移，
             # 且必须在本轮合成之前完成。音频段的漂移在下面单独处理（缓存命中同样需要）。
             if _r1_seg_shifts:
-                for _ov in text_overlays or []:
-                    try:
-                        _ov["start_sec"] = max(0.0, float(_ov["start_sec"]) - _r1_shift(float(_ov["start_sec"])))
-                    except (TypeError, ValueError):
-                        pass
-                for _seg in overlay_segments or []:
-                    try:
-                        _seg["start_sec"] = max(0.0, float(_seg["start_sec"]) - _r1_shift(float(_seg["start_sec"])))
-                    except (TypeError, ValueError):
-                        pass
-                for _ov in hf_ov_local or []:
-                    try:
-                        _ov["start_sec"] = max(0.0, float(_ov["start_sec"]) - _r1_shift(float(_ov["start_sec"])))
-                    except (TypeError, ValueError):
-                        pass
+                for _group in (text_overlays, overlay_segments, hf_ov_local):
+                    for _item in _group or []:
+                        _fixed = _r1_correct(_item.get("start_sec", 0))
+                        if _fixed is not None:
+                            _item["start_sec"] = _fixed
 
             # 合成顺序（video-use 硬规则 1：字幕/文字必须在所有 overlay 之后）：
             # 图解 + MG 动画 → 画中画 → 文本/字幕。旧的顺序把文字烧在中途，
@@ -974,10 +1043,9 @@ class RenderService:
         # 音频段漂移校正（缓存命中路径同样需要：音频在视频阶段之后混入）
         if _r1_seg_shifts:
             for _seg in audio_segments:
-                try:
-                    _seg["start_sec"] = max(0.0, float(_seg["start_sec"]) - _r1_shift(float(_seg["start_sec"])))
-                except (TypeError, ValueError):
-                    pass
+                _fixed = _r1_correct(_seg.get("start_sec", 0), align=False)
+                if _fixed is not None:
+                    _seg["start_sec"] = _fixed
 
         # 缓存 pre-audio 视频（供「仅音频变更」快路径复用）
         if final_video and _is_valid_video(final_video):
@@ -1046,7 +1114,7 @@ class RenderService:
             if self._fallback_count:
                 warnings.append(f"{self._fallback_count} 个片段源不可用，已降级纯色段")
             # V4/V7：渲染后切点复核（默认关闭，best-effort）
-            await self._post_render_review(str(output), video_segments, warnings)
+            await self._post_render_review(str(output), video_segments, warnings, fps=fps)
             try:
                 tl_dur = float(getattr(timeline, "duration_sec", 0) or 0)
             except (TypeError, ValueError):
@@ -1564,12 +1632,15 @@ class RenderService:
         return trimmed
 
     async def _post_render_review(self, output: str, video_segments: list[dict],
-                                  result_warnings: list[str]) -> None:
+                                  result_warnings: list[str], fps: float | None = None) -> None:
         """渲染后切点复核（V4/V7，默认关闭）：抽切点复核图，可选交视觉模型打分。
 
         开关：环境变量 ``CLIPWRIGHT_POST_RENDER_REVIEW=1``（或 ``render_review`` 设置）。
         产物写 ``CLIPWRIGHT_REVIEW_DIR``（缺省放渲染工作目录）。
         任何失败只记日志、绝不改变渲染结果——自评是"多看一层"，不是新的失败点。
+
+        `fps` 给了就在帧边界上取切点（O1）：抽帧 `-ss` 落在某帧起点，
+        复核图上看到的跳变不会被半帧错位的采样掩盖。
         """
         try:
             enabled = (os.environ.get("CLIPWRIGHT_POST_RENDER_REVIEW") or "").strip() in ("1", "true", "yes")
@@ -1586,7 +1657,7 @@ class RenderService:
                 build_review_sheets, cut_times_from_segments,
             )
 
-            cut_times = cut_times_from_segments(video_segments)
+            cut_times = cut_times_from_segments(video_segments, frame_rate=fps)
             if not cut_times:
                 logger.info("切点复核: 无切点（单片段时间线），跳过")
                 return
@@ -2627,6 +2698,13 @@ class RenderService:
     # 本项目的画面片段是 -an 裁剪（不带源声），音频全部来自时间线上的音频片段，
     # 因此"切点"= 音频片段自身与静音相接的首尾边界。
     _CUT_FADE_DEFAULT_SEC = 0.03
+    #: 「相邻」判定窗口（秒）。O1：以 tick 整数表达，判定不再混用浮点 eps。
+    #: 窗口本身仍保留 50ms——时间线里的片段起点是 Agent/LLM 给出的浮点秒，
+    #: 本应首尾相接的两段可能带几毫秒的量化缝；一旦端点严格相等（==0 tick）
+    #: 立即判相邻，这个窗口只在"有缝但听不出来"时兜底。窗口不可小于
+    #: 淡化时长（30ms），否则接缝会被误判成两个独立切点而多补一次淡化。
+    _ADJACENT_WINDOW_SEC = 0.05
+    _ADJACENT_WINDOW_TICKS = seconds_to_ticks(_ADJACENT_WINDOW_SEC)  # 6000 tick = 50ms
 
     @classmethod
     def _apply_default_cut_fades(cls, voices: list[dict]) -> None:
@@ -2640,6 +2718,9 @@ class RenderService:
           表示调用方已决定，不做覆盖。
 
         方法结束时把 None 归一为数值，供下游 ``> 0`` 比较使用。
+
+        O1：端点量化到整数 tick 后比较（`gap` 为非负 tick 数），
+        「严格相接」= `gap == 0`，与浮点 eps 无关。
         """
         if not voices:
             return
@@ -2651,10 +2732,16 @@ class RenderService:
                 return "bgm"
             return "other"
 
-        eps = 0.05
+        def _ticks(value: Any) -> int:
+            try:
+                return seconds_to_ticks(float(value or 0))
+            except (TypeError, ValueError, TimebaseError):
+                return 0
+
+        eps = cls._ADJACENT_WINDOW_TICKS
         for v in voices:
-            start = float(v.get("start") or 0)
-            dur = float(v.get("dur") or 0)
+            start = _ticks(v.get("start"))
+            dur = _ticks(v.get("dur"))
             end = start + dur if dur > 0 else start
             gj = _group(v)
             touching_start = False
@@ -2662,8 +2749,8 @@ class RenderService:
             for other in voices:
                 if other is v or _group(other) != gj:
                     continue
-                o_start = float(other.get("start") or 0)
-                o_dur = float(other.get("dur") or 0)
+                o_start = _ticks(other.get("start"))
+                o_dur = _ticks(other.get("dur"))
                 o_end = o_start + o_dur if o_dur > 0 else o_start
                 if abs(o_end - start) <= eps:
                     touching_start = True

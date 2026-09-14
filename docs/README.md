@@ -33,3 +33,4 @@
 | [动画系统](animation_system.md) | 动画编目、渲染管线与 MG 动画 |
 | [服务概览](services_overview.md) | 全部后端服务层模块说明 |
 | [需求分析 Agent](requirements_agent.md) | Requirements Agent 设计与职责 |
+| [整数时间基座](timebase.md) | 整数 tick + 有理数帧率：换算纪律、时间码、漂移校正与切点的接线点 |

@@ -11,6 +11,15 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from clipwright.utils.timebase import (
+    TICKS_PER_SECOND,
+    FrameRate,
+    seconds_to_ticks,
+    snap_ticks,
+    ticks_to_seconds,
+    ticks_to_timecode,
+)
+
 
 class ClipKind(str, Enum):
     """剪辑片段类型。"""
@@ -202,3 +211,45 @@ class Timeline(BaseModel):
                 if end > max_end:
                     max_end = end
         return max_end
+
+    # ── 整数时间基（O1 第一阶段） ───────────────────────────
+    # 字段仍是浮点秒（API/前端兼容），但**判定**（相等/相邻/帧对齐）请走 tick：
+    # `start_sec + duration_sec == next.start_sec` 在 30000/1001 下约 20% 概率不成立
+    # （见 utils/timebase.py 的实测说明）。
+
+    @property
+    def frame_rate(self) -> FrameRate:
+        """有理数帧率（29.97 → 30000/1001）。"""
+        return FrameRate.from_fps(float(self.fps))
+
+    @property
+    def ticks_per_second(self) -> int:
+        return TICKS_PER_SECOND
+
+    def to_ticks(self, sec: float) -> int:
+        """秒（浮点）→ 整数 tick。"""
+        return seconds_to_ticks(sec)
+
+    def to_seconds(self, ticks: int) -> float:
+        """整数 tick → 秒（浮点）。"""
+        return ticks_to_seconds(ticks)
+
+    @property
+    def total_duration_ticks(self) -> int:
+        """总时长（tick 整数，按浮点总时长量化）。"""
+        return seconds_to_ticks(self.total_duration_sec)
+
+    @property
+    def frame_count(self) -> int:
+        """总帧数（按实际时长向下取整）。"""
+        return self.frame_rate.frame_index(seconds_to_ticks(self.total_duration_sec))
+
+    def frame_aligned_duration_sec(self) -> float:
+        """把总时长对齐到帧边界（向上取整，避免最后一帧被截掉）。"""
+        return ticks_to_seconds(
+            snap_ticks(seconds_to_ticks(self.total_duration_sec), self.frame_rate, mode="ceil")
+        )
+
+    def timecode(self, sec: float, *, drop_frame: bool | None = None) -> str:
+        """秒 → 时间码（`HH:MM:SS:FF`；NTSC 系默认 drop-frame）。"""
+        return ticks_to_timecode(seconds_to_ticks(sec), self.frame_rate, drop_frame=drop_frame)

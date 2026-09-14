@@ -147,14 +147,17 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
 | [动画系统](docs/animation_system.md) | 动画编目、渲染管线与 MG 动画 |
 | [服务概览](docs/services_overview.md) | 全部后端服务层模块说明 |
 | [需求分析 Agent](docs/requirements_agent.md) | Requirements Agent 设计与职责 |
+| [整数时间基座](docs/timebase.md) | `utils/timebase.py`：整数 tick + 有理数帧率（O1），换算纪律、时间码、漂移校正接线点 |
 
 ## 验证清单
 
 修改代码后，运行：
 ```bash
 # 后端全量回归（工作目录 J:\Clipwright）
-python -m pytest tests -q        # 期望 1379 passed
+python -m pytest tests -q        # 期望 2056 passed（+2 known plugin 失败）
 python -c "import clipwright.main"
+python scripts/verify_timebase.py   # 整数时间基座核对（VERIFY PASS）
+python scripts/e2e_smoke.py         # 全管线冒烟（SMOKE PASS）
 
 # 前端回归（工作目录 J:\Clipweight-Client）
 npx tsc --noEmit
@@ -175,4 +178,5 @@ npm run build
 | [语音与 TTS](docs/voice_tts.md) | services/voice.py, api/voice.py |
 | [动画系统](docs/animation_system.md) | animation/ 全部 |
 | [服务概览](docs/services_overview.md) | services/ 全部服务 |
+| [整数时间基座](docs/timebase.md) | utils/timebase.py, schema/timeline.py 的时间派生属性, services/render.py 漂移校正, services/timeline_view.py |
 | [需求分析 Agent](docs/requirements_agent.md) | agents/requirements_agent.py, services/requirements_service.py |

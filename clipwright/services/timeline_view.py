@@ -20,6 +20,13 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from clipwright.config import logger
+from clipwright.utils.timebase import (
+    TimebaseError,
+    as_frame_rate,
+    seconds_to_ticks,
+    snap_ticks,
+    ticks_to_seconds,
+)
 
 #: 单个切点抽帧的窗口（秒）：以切点为中心，取 -WINDOW / 0 / +WINDOW 三帧
 CUT_WINDOW_SEC = 0.35
@@ -29,24 +36,43 @@ TILE_WIDTH = 426
 DEFAULT_MAX_CUTS = 12
 
 
-def cut_times_from_segments(segments: Iterable[dict[str, Any]], *, skip_head: bool = True) -> list[float]:
+def cut_times_from_segments(
+    segments: Iterable[dict[str, Any]],
+    *,
+    skip_head: bool = True,
+    frame_rate: Any = None,
+) -> list[float]:
     """推导切点时间（秒，升序去重）。
 
     切点 = 每个片段（除第一个）的 start_sec —— 即剪辑点/转场点。首帧（0）不算切点
     （除非 skip_head=False），否则每条时间线都会恒定产出第一张无意义图。
+
+    O1：先用整数 tick 量化再判重（切点身份 = tick，不用浮点近似），并按需吸附帧边界：
+    给了 `frame_rate` 时切点落在整帧起点，抽帧 `-ss` 值即「某帧的开头」，
+    复核图上看到的跳变不会被半帧错位的采样干扰。
     """
-    times: list[float] = []
+    fr = None
+    if frame_rate is not None:
+        try:
+            fr = as_frame_rate(frame_rate)
+        except TimebaseError:
+            fr = None
+    seen: dict[int, float] = {}
     for seg in segments or []:
         try:
-            start = float(seg.get("start_sec", 0) or 0)
-        except (TypeError, ValueError):
+            ticks = seconds_to_ticks(float(seg.get("start_sec", 0) or 0))
+        except (TypeError, ValueError, TimebaseError):
             continue
-        if start < 0:
+        if ticks < 0:
             continue
-        if skip_head and start <= 1e-6:
+        if skip_head and ticks == 0:
             continue
-        times.append(round(start, 3))
-    return sorted(set(times))
+        if fr is not None:
+            ticks = snap_ticks(ticks, fr, mode="nearest")
+        # 保留完整精度（不做毫秒取整）：取整会把刚吸附到的帧边界又挪走，
+        # 复核图的抽帧 `-ss` 就不再落在整帧起点上。标注文本自行 `:.2f` 格式化。
+        seen.setdefault(ticks, ticks_to_seconds(ticks))
+    return [seen[k] for k in sorted(seen)]
 
 
 def _grab_frame(video: str, at: float, out_png: Path, timeout: int = 60) -> bool:

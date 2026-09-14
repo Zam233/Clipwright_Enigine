@@ -1386,3 +1386,54 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
   无分取首个成功）
 - ✅ **文档更正**：采纳报告 §6 的 P2-B 行、深读 §1.3 第 6 行均改为「并行早已存在 + 本轮补择优」
 - ✅ **回归**：后端全量 **1942 passed** / 1 skipped / 1 xfailed
+
+### 执行轮次 114（2026-09-13：O1 时间模型整数化·后端第一阶段）
+
+采纳报告 §1.2 O1 的落地设计「先在**后端 schema 层**引入 `FrameRate` 与整数 tick
+的等价物，API 兼容层保留 float 秒字段」——本轮完成第一阶段，**API 契约零变更**
+（浮点秒字段仍是唯一序列化来源，新增的只是派生属性与方法）。
+
+- ✅ **新模块** `clipwright/utils/timebase.py`：
+  `TICKS_PER_SECOND = 120000`（选型依据写在模块 docstring：所有常用帧率的帧周期都是整数
+  tick，24/25/30/50/60→5000/4800/4000/2400/2000，23.976→5005、29.97→4004、59.94→2002、
+  119.88→1001；`1e9`/`90000` 都无法整除 1001 系帧率，48000/1001 是唯一非精确项）；
+  `FrameRate`（有理数帧率、标准帧率吸附且**整数优先**——否则 30.0 会被吸附成 30000/1001、
+  drop-frame 时间码、时间码往返、`exact_ticks_per_frame`）；
+  tick 换算（`seconds_to_ticks` 走 `Decimal(repr(sec))` 四舍五入、`ticks_to_seconds` 走
+  `Fraction` 精确求值）、`frame_to_ticks`/`ticks_to_frame`、`snap_ticks`（floor/ceil/nearest，
+  负数正确）、`is_frame_aligned`、`format_ticks`
+- ✅ **`schema/timeline.py`**：新增派生属性 `frame_rate` / `ticks_per_second` / `to_ticks` /
+  `to_seconds` / `total_duration_ticks` / `frame_count` / `frame_aligned_duration_sec()` /
+  `timecode()`——全部不进入 `model_dump()`（有测试锁定），前后端契约不变
+- ✅ **`services/render.py`**：
+  · 转场漂移校正提取为纯函数 `transition_shift_ticks` / `shift_ticks_for` /
+    `corrected_start_sec`（可单测，不必起 ffmpeg），累计与减法都在 tick 上；
+  · 视觉 overlay（文本/MG/PIP）校正后**吸附渲染帧边界**，`CLIPWRIGHT_FRAME_ALIGN_OVERLAY=0`
+    可关；**音频不吸附**（音频没有帧概念，挪半帧以内只会引入与画面的无谓相位偏移），
+    音频只做 tick 精确减法（8.3µs 分辨率远低于可闻阈值）；
+  · `_apply_default_cut_fades` 的「相邻」判定改为 tick 比较：`_ADJACENT_WINDOW_TICKS` 由
+    `_ADJACENT_WINDOW_SEC` 派生（6000 tick = 50ms），并在 docstring 写明窗口不可小于 30ms
+    淡化时长的理由（否则接缝会被误判成两个独立切点）
+- ✅ **`services/timeline_view.py`**：切点用 tick 判重——去掉原来的毫秒取整（取整会把刚吸附
+  好的帧边界又挪走，`-ss` 就不落在整帧起点），新增可选 `frame_rate` 参数按帧吸附；
+  `_post_render_review` 新增 `fps` 形参并在调用处传入
+- ✅ **实测证据**（`python scripts/verify_timebase.py` → VERIFY PASS）：
+  · **边界相等性**：29.97fps 的 200000 个帧边界里，浮点 `frame*(k-1)+frame != frame*k`
+    有 **41202 个（20.6%）**，整数 tick 下 **0 个**——这是「相邻/间隙/重叠」只能近似判定的根因；
+  · **截断误差**：`int(sec*120000)` 在毫秒刻度 651/19999（3.3%）、帧刻度 569/19999（2.8%）
+    上少 1 tick（1.007s → 120839，应为 120840；65/30s → 259999，应为 260000）；
+  · **累加精度**：10000 次 15 帧累加，浮点得 `5005.000000000789`，tick 得 `600600000`
+    精确落在帧边界；
+  · **漂移校正**：12 段 29.97 时间线（每段 0.5s 转场）校正后 11/11 个 overlay 起点落在整帧，
+    吸附最大位移 **5.00ms**（< 半帧 16.68ms）；
+  · **时间码**：29.97/59.94 drop-frame 与 30/25 非 drop-frame 共 11 组往返一致
+    （含 00:01:00;02、00:10:00;00 这些 drop-frame 关键值）
+- ✅ **测试**：新增 `tests/clipwright/test_timebase.py` **114 条**（常量与标准帧率表、
+  解析/吸附/非法输入、tick 换算与截断纪律、吸附三模式、边界相等性、
+  10000 次累加、时间码往返与非法时间码、`Timeline` 派生属性与 JSON 形状不变、
+  漂移校正纯函数、音频不吸附与环境开关、切点 tick 判重与帧吸附、
+  淡化相邻窗口常量一致性）
+- ✅ **回归**：`python scripts/e2e_smoke.py` 仍 **SMOKE PASS**（duration 14.00s、fallback=0、
+  luma 124.7/126.1——帧吸附没有改变真实成片）；后端全量 **2056 passed** / 1 skipped / 1 xfailed
+- ⏳ **本轮未做（第二阶段）**：Pydantic 侧 `int` tick 字段 + `fps_num/fps_den` 双写、
+  前端 branded type `MediaTime` 与统一换算工具（不要散落 `* fps`）、命令式撤销与 O3 联动
