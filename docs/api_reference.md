@@ -166,6 +166,21 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 
 **预设**（9 个）: `bilibili` `youtube` `tiktok` `weibo` `1080p` `720p` `480p` `prores422hq`（ProRes 422 HQ，`.mov` 母带交付）`h265_10bit`（H.265 HEVC 10bit）
 
+### `GET /api/render/backends`
+
+列出**全部渲染后端**（内建 `local`/`remote` + 插件贡献的 `renderer_backend`）：
+
+```json
+{ "backends": [{ "name": "local", "available": true,
+                 "capabilities": {"name": "local", "pix_fmt": "yuv420p", "supports_gpu": false,
+                                  "supports_soft_subtitle": true, "cancel": "cancel_id"} }],
+  "requested": "local", "effective": "local", "remote_render_url": false }
+```
+
+`requested` = `settings.renderer_backend` 的配置值；`effective` = **回退后真正生效**的后端
+（未注册/探测失败时回退 `local`，排障时一眼看出为什么走了本机）。
+插件如何贡献后端见 [插件作者指南](plugin_authoring.md) 的「渲染后端贡献」。
+
 **渲染后复核（V4，默认关闭；`settings.render_review=true` 或 `CLIPWRIGHT_POST_RENDER_REVIEW=1` 开启）**：
 开启后每次渲染额外产出「切点复核图」（每个剪辑点前后三帧对照）与「全片总览图」
 （12 帧等间隔联络表），并可选交视觉模型打分。响应体因此多三个字段：

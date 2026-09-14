@@ -71,7 +71,7 @@ contributions:
 | `llm_provider` | 大模型提供者 | 必须实现 `build_client/capabilities/normalize_messages/uses_system_kwarg/default_model`（注册时校验） |
 | `tts_provider` | 语音合成 | `meta` 走 `TtsProviderEntry` 工厂形态 |
 | `stt_provider` | 语音识别 | `transcribe/align/is_available` |
-| `renderer_backend` | 渲染后端 | `render(...)` 必须接受 `cancel_token` |
+| `renderer_backend` | 渲染后端 | 实现 `render(timeline, output_path, settings, on_progress=None, cancel_token=None)`；详见下方「渲染后端贡献」 |
 | `embedding_provider` | 向量化（RAG） | 工厂形态，产出 `embed/embed_query/dim` |
 | `rerank_provider` | 重排序（RAG） | 工厂形态，产出 `rerank(query, documents, model, top_n)` |
 | `animation` | 动画定义 | `object` 需是 `AnimationDef`；id 即 `animation_id` |
@@ -79,6 +79,38 @@ contributions:
 | `export_preset` | 导出预设 | `meta.payload = {name,width,height,fps,bitrate,container?}` |
 
 ## 3. UI 槽位与前端约定
+
+### 渲染后端贡献（`renderer_backend`）
+
+插件可以贡献一个**渲染后端**，让成片交给远端 worker 或常驻 sidecar（例如
+`@hyperframes/producer`）产出。协议与内建后端一致：
+
+```python
+class MyProducerBackend:
+    name = "producer"                     # 与 contribution id 一致，供 settings.renderer_backend 选择
+
+    def capabilities(self) -> dict:       # 能力声明：前端 /api/render/backends 会原样展示
+        return {"name": self.name, "supports_gpu": True, "sidecar": "@hyperframes/producer"}
+
+    async def probe(self) -> bool:        # 可用性探测（sidecar 是否在线）
+        return True
+
+    async def render(self, timeline, output_path, settings, on_progress=None, cancel_token=None):
+        # settings 是 dict（width/height/fps/bitrate/audio_bitrate/audio_file_path/... 收口在这里）
+        # on_progress(percent: float, message: str)；cancel_token 是字符串 id 或对象
+        return {"success": True, "output_path": output_path, "duration_sec": 12.3, "warnings": []}
+```
+
+接入方式：
+1. 插件在 `contributions()` 里注册 `Contribution(ContributionKind.RENDERER_BACKEND, "producer", backend)`；
+2. 管理员把 `renderer_backend` 设为该 id（设置页 / `PUT /api/settings`）；
+3. `GET /api/render/backends` 会列出所有后端（含内建 local/remote）与其可用性，
+   未注册或探测失败时渲染入口**自动回退本机**并在日志里说明原因。
+
+协议只到 `render()` 为止：只实现该协议的插件后端会经内部适配器（kwargs 收口 +
+`progress_callback` → `on_progress` 映射）接入，既有调用方无需改动。
+
+## 3.1 UI 槽位与前端约定
 
 - **slot 名单冻结**：`nav.primary` / `nav.settings` / `page` / `editor.left-panel` /
   `editor.right-panel` / `editor.bottom-panel` / `editor.toolbar` / `timeline.tool` /

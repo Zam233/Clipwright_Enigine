@@ -1702,3 +1702,34 @@ V4 自评闭环此前只做到「渲染后抽切点图 + 可选打分」，结�
   ASS 解析的**样式还原**是刻意不做的（覆盖标签一律剥离、成片按纯文本渲染）——这是取舍不是缺陷。
 - ⏳ **未做（属批次 C）**：预览区吸附参考线（OpenCut 的 snap-guides 对应物）与画布变换手柄一起做，
   否则预览里没有拖拽交互，参考线无处可显示。
+
+### 执行轮次 122（2026-09-13：P2-2 收尾——渲染后端经贡献注册表选择 + sidecar 插件后端）
+
+背景：`providers/render/`（方案 B-3）早已把 local/remote 两个后端注册进统一贡献注册表，
+但**渲染入口没接上**——`_new_render_service()` 仍只认 "local"/"remote" 两个字符串 +
+`remote_render_url`，所以**插件贡献的渲染后端选不中**。这正是"@hyperframes/producer
+常驻 sidecar 插件化"落地的最后一环（worker 端与客户端此前已完成）。
+
+- ✅ **入口改走注册表**（`api/render.py::_new_render_service`）：
+  `settings.renderer_backend` 经 `resolve_render_backend()` 解析，**任意贡献后端**（含插件）
+  都能被选中；未注册/未知名称记 warning 并回退本机，warning 里列出可用后端名；
+  `remote_render_url` 非空仍按 remote 处理（缺省行为不变）。
+- ✅ **协议适配器**（`_BackendServiceAdapter`）：插件后端只实现
+  `render(timeline, output_path, settings, on_progress=None, cancel_token=None)` 协议时，
+  适配器把 `render(**kwargs)` 的 kwargs 收进 `settings` 字典、把 `progress_callback`
+  映射成 `on_progress`——既有调用方（`/api/render/start` 等）零改动。
+  贡献对象既无服务实例又不实现 render() 时回退本机而不是抛错。
+- ✅ **后端发现端点** `GET /api/render/backends`：列出内建 + 贡献后端的能力声明
+  （`capabilities()`）与**可用性探测**（`probe()`），并给出 `requested`（配置值）与
+  `effective`（回退后真正生效的后端）——排障时一眼看出为什么走了本机。
+- ✅ **文档**：`plugin_authoring.md` 新增「渲染后端贡献」一节（协议签名 + 接入三步 +
+  只实现协议也能接入）；`api_reference.md` 补 `/api/render/backends` 说明。
+- ✅ **测试**：新增 `test_render_backend_plugin_sidecar.py` **16 条**（注册表解析/
+  内建与插件后端选择/协议适配器 kwargs 与 on_progress 翻译/未知后端回退/贡献对象无 render 回退/
+  端点列出内建与插件后端及 effective 回退）；顺带修复 `test_render_backend_selection.py`
+  被先前的编辑弄坏的一处用例体
+- ✅ **回归**：后端全量 **2186 passed** / 1 skipped / 1 xfailed（仍只有 2 条既有 plugin
+  子进程编码失败）
+- ⚠️ **验证边界**：`@hyperframes/producer` 本身**没有真实 sidecar 进程**参与测试——
+  本轮验证的是"贡献进来 → 被选中 → 协议被正确调用 → 结果透传"这条链路（用假后端）；
+  真机联调需要 producer 侧进程与 `remote_render_url`。

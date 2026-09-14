@@ -161,25 +161,68 @@ def _new_render_service():
     （aud.mp4/ov.mp4 等固定名互写、finally rmtree 删掉对方工作目录）。
     远程服务无本地状态，保持单例复用。
 
-    B-3（渲染后端选择）：`settings.renderer_backend` 显式指定（remote）优先，
-    其次沿用既有 `remote_render_url` 配置，最后回退本机——缺省行为不变。
-    后端注册表/协议适配器见 `clipwright/providers/render/`。
+    B-3 / P2-2（渲染后端选择，2026-09-13 接线完成）：
+    `settings.renderer_backend` 走**统一贡献注册表**（`providers/render/`）解析，
+    因此除了内建 local/remote，**插件贡献的渲染后端**（如 `
+    @hyperframes/producer` 常驻 sidecar）也能被选中；未注册/未知名称回退本机。
+    历史配置 `remote_render_url` 非空时仍按 remote 处理（缺省行为不变）。
     """
-    from clipwright.providers.render import render_backend_names
+    from clipwright.providers.render import render_backend_names, resolve_render_backend
 
     requested = str(getattr(settings, "renderer_backend", "") or "local").strip().lower()
-    if requested == "remote":
-        if "remote" not in render_backend_names():
-            logger.warning("renderer_backend=remote 但后端未注册，回退本机渲染")
+    if requested not in ("", "local"):
+        backend = resolve_render_backend(requested)
+        if backend is None:
+            logger.warning("renderer_backend=%s 未注册（可用: %s），回退本机渲染",
+                           requested, ", ".join(render_backend_names()) or "无")
         else:
-            logger.info("渲染服务选择: RemoteRenderService (renderer_backend=remote)")
-            return RemoteRenderService()
-    elif requested not in ("", "local", "remote"):
-        logger.warning("未知 renderer_backend=%s，回退本机渲染", requested)
+            logger.info("渲染服务选择: 贡献注册表后端 %s", requested)
+            return _backend_as_service(backend)
     if (settings.remote_render_url or "").strip():
         logger.info("渲染服务选择: RemoteRenderService (remote=%s)", settings.remote_render_url)
         return RemoteRenderService()
     return RenderService()
+
+
+def _backend_as_service(backend: object):
+    """把渲染后端适配成**既有调用方认得的服务对象**。
+
+    内建后端本身包装了服务实例（`LocalFFmpegBackend._svc()`），直接取出即可；
+    插件贡献的后端可能只实现 `RendererBackend.render(timeline, output, settings, ...)`
+    协议（与 `RenderService.render` 的关键字参数不同），这时用 `_BackendServiceAdapter`
+    把 `render(**kwargs)` 调用翻译成后端协议——调用方（`/api/render/start` 等）无需感知。
+    """
+    get_service = getattr(backend, "_svc", None)
+    if callable(get_service):
+        try:
+            return get_service()
+        except Exception:  # noqa: BLE001 - 取不到就按协议适配
+            pass
+    if hasattr(backend, "render"):
+        return _BackendServiceAdapter(backend)
+    logger.warning("渲染后端 %r 既无服务实例也不实现 render()，回退本机渲染", backend)
+    return RenderService()
+
+
+class _BackendServiceAdapter:
+    """把 `RendererBackend` 协议适配成 `RenderService` 风格（关键字参数收口）。
+
+    只做两件事：① 把 `render(timeline, output, **kwargs)` 的 kwargs 收进 `settings`
+    字典（协议约定），② 把 `progress_callback` 映射成 `on_progress`。
+    后端返回的对象原样透传（调用方只看 `.success/.output_path/.warnings/.duration_sec`）。
+    """
+
+    def __init__(self, backend: object) -> None:
+        self._backend = backend
+        self.name = getattr(backend, "name", "plugin")
+
+    async def render(self, timeline, output_path, **kwargs):
+        settings_dict = dict(kwargs)
+        on_progress = settings_dict.pop("progress_callback", None)
+        return await self._backend.render(  # type: ignore[attr-defined]
+            timeline, str(output_path), settings_dict,
+            on_progress=on_progress,
+        )
 
 
 def _ensure_disk_space(min_free_gb: float = 1.0) -> None:
@@ -972,6 +1015,53 @@ class RenderRequest(BaseModel):
 async def list_presets() -> dict:
     """列出所有导出预设。"""
     return {"presets": _EXPORT_PRESETS}
+
+
+@router.get("/backends")
+async def list_render_backends() -> dict:
+    """列出可用渲染后端（B-3 / P2-2）。
+
+    返回**内建后端 + 插件贡献的后端**（贡献类型 `renderer_backend`），
+    每个带能力声明与可用性探测结果。前端据此展示"本机 / 云端 / 插件 sidecar"选择，
+    排障时也能一眼看出为什么回退到了本机。
+    """
+    from clipwright.providers.render import (
+        render_backend_names, resolve_preferred_render_backend, resolve_render_backend,
+    )
+
+    names = render_backend_names()
+    items: list[dict] = []
+    for name in names:
+        backend = resolve_render_backend(name)
+        capabilities: dict = {}
+        available: bool | None = None
+        if backend is not None:
+            caps = getattr(backend, "capabilities", None)
+            if callable(caps):
+                try:
+                    capabilities = dict(caps() or {})
+                except Exception:  # noqa: BLE001
+                    capabilities = {}
+            probe = getattr(backend, "probe", None)
+            if callable(probe):
+                try:
+                    available = bool(await probe())
+                except Exception:  # noqa: BLE001
+                    available = False
+        items.append({"name": name, "available": available, "capabilities": capabilities})
+
+    requested = str(getattr(settings, "renderer_backend", "") or "local").strip().lower() or "local"
+    try:
+        preferred = resolve_preferred_render_backend()
+        preferred_name = getattr(preferred, "name", "") or requested
+    except Exception:  # noqa: BLE001
+        preferred_name = requested
+    return {
+        "backends": items,
+        "requested": requested,
+        "effective": preferred_name,
+        "remote_render_url": bool((settings.remote_render_url or "").strip()),
+    }
 
 
 def _resolve_settings(s: RenderSettings | None) -> dict:
