@@ -1558,3 +1558,37 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
   `PreviewPanel.tsx` 里的标识符，把该文件（含 perf.ts）的**中文注释双重编码**并吃了换行。
   已 `git checkout HEAD --` 恢复后改用 edit 工具重做。**含中文的源码/文档一律用 edit/write
   工具改，任何 PowerShell 文本往返都会毁文件**——这条已在轮次 112 记过一次，本轮再次验证。
+
+### 执行轮次 118（2026-09-13：O5 本地草稿 + 迁移链）
+
+采纳报告 §1.3 第 10 项 / §4.2 第 5 项。全部在前端（`J:\Clipweight-Client`），后端零改动。
+
+- ✅ **本地草稿**（`services/storage/drafts.ts`）：IndexedDB 两个 store——
+  `drafts`（项目时间线快照 + 时间戳 + dirty 标志）与 `media_snapshots`（缩略图/波形/时长）。
+  编辑时**1 秒防抖写本地**（无网络），服务端自动保存仍是 5 秒防抖 + 网络；
+  服务端保存成功后**删除本地草稿**，避免下次误提示「恢复草稿」。
+- ✅ **恢复提示**：打开项目时若草稿比服务端新（`isDraftNewer`，1 秒容差；服务端没给时间戳时
+  **保守提示**——宁可多问一次也不静默丢改动），底部横幅「恢复草稿 / 丢弃」，恢复时同时清空
+  选择与历史（否则会指向不存在的片段）。
+- ✅ **刷新后缩略图/波形不再空白**：媒体**文件**句柄没法持久化（blob URL 刷新即失效），
+  但**派生数据**可以——`mediaManager.exportSnapshots()`/`applySnapshots()` 在注册时间线后
+  用快照立即补上（**只补空、不覆盖**已有数据），缩略图只保留最新 24 个 bucket。
+- ✅ **配额处理**：写入遇 `QuotaExceededError` → 淘汰一半媒体快照后重试一次；仍失败返回
+  `{ok:false, reason:'quota'}` 并 toast 提示（不静默吞掉）。媒体快照默认上限 200 条，超出淘汰最旧。
+- ✅ **后端可注入**（`DraftBackend`）：默认 IndexedDB 适配器，单测用内存后端——
+  不引入 `fake-indexeddb` 依赖，配额/淘汰/陈旧判定都能确定性验证；**所有 API 失败即降级**
+  （草稿是增强，不是新的失败点）。
+- ✅ **偏好迁移链**（`services/storage/migrations.ts`）：版本号 `clipwright.prefsVersion`，
+  有序 + 幂等步骤，**升级前备份**到 `clipwright.<key>.backup.vN`；任一步抛错则停下并报告、
+  **不删用户数据**，下次启动从该步续跑。当前两步：① 清掉早期明文 `authToken` 与残留
+  WebSocket 地址（把 store 里的临时修补固化为正式迁移）；② 补齐并钳制
+  `defaultFps`/`defaultResolution`/`autoSave`/`showPerfPanel`（P2-02 那三个死设置的形状兜底）。
+  在 `localPrefs.ts` 模块加载时执行——各 store 都要先 import 它，因此这是最早且唯一的入口。
+- ✅ **测试**：新增 `drafts.test.ts` **18 条**、`migrations.test.ts` **10 条**
+  （含配额重试/持续配额/坏数据/后端抛错降级/备份内容为迁移前值/某步失败停在原地）
+- ✅ **回归**：`npx tsc --noEmit` 干净、`npm run test` **639 passed**（81 文件）、`npm run build` 通过
+- ⚠️ **验证边界**：IndexedDB **适配器本身**（`createIndexedDbBackend`）没有自动化覆盖——
+  jsdom 无 IndexedDB，单测跑的是内存后端（逻辑层一致）。真机验收：
+  `npm run dev` → 编辑后不保存直接刷新 → 应出现「恢复草稿」横幅；恢复后缩略图/波形应立即出现。
+- 📌 **顺带修的**：备份与版本号写入顺序（备份必须在步骤执行**前**取，否则备份到的是迁移后的值；
+  版本号必须在步骤成功后写，否则会出现「版本说做完了、数据没改」）——两个坑都是本轮测试抓出来的。
