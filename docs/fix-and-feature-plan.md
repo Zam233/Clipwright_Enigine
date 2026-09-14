@@ -1592,3 +1592,40 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
   `npm run dev` → 编辑后不保存直接刷新 → 应出现「恢复草稿」横幅；恢复后缩略图/波形应立即出现。
 - 📌 **顺带修的**：备份与版本号写入顺序（备份必须在步骤执行**前**取，否则备份到的是迁移后的值；
   版本号必须在步骤成功后写，否则会出现「版本说做完了、数据没改」）——两个坑都是本轮测试抓出来的。
+
+### 执行轮次 119（2026-09-13：ChatForge 六项历史欠账）
+
+用户在本轮前后明确点过「检查 ChatForge 在前端是否还在、要补什么欠账」。本轮把六项欠账一次清掉
+（SSE 流式留到最后一项，其余全部完成）。
+
+- ✅ **会话列表**（后端原先只有 `start` + `state/{id}`，没有列表）：
+  `GET /api/persona/forge/chat/sessions?scope=mine|all` —— 返回标题（首条用户消息）、
+  用户消息数（**不含 `[系统]` 注入的知识消息**）、知识条数、创建/更新时间、**六维完成度**
+  （由草稿推导，不调模型）与草稿摘要；按更新时间倒序。`DELETE /sessions/{id}` 同时删内存与落盘文件。
+  会话新增 `owner_id` 归属（jwt 模式下 `scope=mine` 过滤）。
+- ✅ **知识库 CRUD**（原先只能追加）：知识条目新增稳定 `id`；新增
+  `GET /knowledge/{sid}`（列表）、`GET /knowledge/{sid}/{kb_id}`（全文）、
+  `PUT .../{kb_id}`（编辑内容/来源）、`DELETE .../{kb_id}`、`DELETE /knowledge/{sid}`（清空）。
+  **老会话 JSON 里没有 id → 恢复时自动补**（否则编辑/删除无从下手，有测试锁定）。
+  编辑**只改存储上下文、不重跑模型**（重分析要花一次模型调用，应由用户显式触发）。
+- ✅ **图片/附件消息**（原先 `ChatMessageRequest` 只有 session_id/message/persona_id）：
+  请求体新增 `attachments[{type,name,mime,data_url}]`，限额 ≤4 个、单附件 ≤8MB（超限 400 且指明第几个）；
+  图片在 `enable_visual_llm` 开启时**真做视觉分析**（写临时文件 → `VisionService.analyze_image` →
+  删文件），分析结论作为该轮上下文喂给模型；未开启时只留一行「用户附了一张图片」——
+  **不编造内容**。附件与派生文本随会话落盘，重启后仍在。
+- ✅ **前端会话 id 持久化**（原先刷新/离开即丢，只能手抄 id）：`clipwright.forgeSessionId`
+  写入 localStorage，进入页面自动填回恢复框并提示上次会话。
+- ✅ **前端 UI**：会话列表面板（点条目切换、右侧垃圾桶删除）、知识库管理面板
+  （列出 → 内联编辑 → 保存/删除）、图片附件按钮（选图 → 待发送队列 chips → 随消息发送 →
+  气泡内渲染缩略图）、客户端先做与后端一致的限额校验。
+- ✅ **测试**：后端新增 `tests/clipwright/test_chat_forge_debts.py` **27 条**
+  （列表/排序/owner 过滤/删除/落盘恢复/知识 CRUD/老会话补 id/附件四类限额/视觉摘要容错/API 端点）；
+  前端新增 `PersonaForgePage.chatforge.test.tsx` **6 条**。
+  测试里把 `SESSIONS_DIR` 指到临时目录并**强制离线路径**（本机 .env 配了 key，
+  否则 `_process` 会真去打模型接口，测试又慢又不确定）。
+- ✅ **文档**：`docs/api_reference.md` 的 Chat Forge 一节补全 11 个端点与附件语义。
+- ✅ **回归**：后端全量 **2122 passed** / 1 skipped / 1 xfailed（仍只有 2 条既有 plugin
+  子进程编码失败）；前端 `tsc --noEmit` 干净、`npm run test` **645 passed**（82 文件）。
+- ⏳ **未做**：SSE 流式回复（拆成独立轮次）；`chatforge_sessions/` 目录在全新 checkout 下仍是空的
+  ——这是正常的（没有会话就没有文件），现在有列表端点可以直观看到；测试写的是临时目录，
+  不会往仓库里落文件。

@@ -231,10 +231,30 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 | 端点 | 说明 |
 |------|------|
 | `POST /api/persona/forge/chat/start` | 开始对话会话 |
-| `POST /api/persona/forge/chat/message` | 发送消息 |
-| `POST /api/persona/forge/chat/knowledge` | 注入知识 |
+| `POST /api/persona/forge/chat/message` | 发送消息（可带 `attachments`：图片/文件，见下） |
+| `POST /api/persona/forge/chat/knowledge` | 注入知识（超长按 H1 自动分段） |
 | `POST /api/persona/forge/chat/commit` | 提交并生成 `PersonaManifest` |
 | `GET /api/persona/forge/chat/state/{session_id}` | 获取会话状态 |
+| `GET /api/persona/forge/chat/sessions` | **列出会话**（`?scope=mine|all`；返回标题/消息数/知识数/六维完成度，按更新时间倒序） |
+| `DELETE /api/persona/forge/chat/sessions/{session_id}` | **删除会话**（内存 + `chatforge_sessions/` 落盘文件） |
+| `GET /api/persona/forge/chat/knowledge/{session_id}` | **列出知识条目**（id/来源/字数/预览） |
+| `GET /api/persona/forge/chat/knowledge/{session_id}/{kb_id}` | 读取单条知识全文 |
+| `PUT /api/persona/forge/chat/knowledge/{session_id}/{kb_id}` | **编辑知识**（`content`/`source`；只改存储上下文，**不重跑模型**） |
+| `DELETE /api/persona/forge/chat/knowledge/{session_id}/{kb_id}` | **删除单条知识** |
+| `DELETE /api/persona/forge/chat/knowledge/{session_id}` | 清空会话知识库 |
+
+**附件（图片/文件消息）**：`POST .../message` 的请求体可带
+
+```json
+{ "session_id": "abc", "message": "参考这张图",
+  "attachments": [{ "type": "image", "name": "ref.png", "mime": "image/png",
+                    "data_url": "data:image/png;base64,..." }] }
+```
+
+- 限额：单条消息 ≤ 4 个附件、单附件 ≤ 8MB（超限 400，错误信息说明是哪一条）；
+- 图片在 `enable_visual_llm` 开启时**真做一次视觉分析**（写临时文件 → `VisionService`），
+  分析结论作为该轮上下文喂给模型；未开启时只写一行「用户附了一张图片」——**不编造内容**；
+- 附件与派生文本随会话落盘，重启后仍在；知识条目在恢复老会话时自动补 `id`（历史数据没有 id）。
 
 ### RAG 知识库
 
