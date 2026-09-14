@@ -101,12 +101,31 @@ class Clip(BaseModel):
 
     # 蒙版（M4：仅 video / image 类型，渲染时裁剪到形状内）
     mask_type: Optional[str] = Field(
-        default=None, pattern="^(none|rect|ellipse)?$",
-        description="蒙版类型 none/rect/ellipse（后端兼容 rectangle 别名；ellipse 导出经 geq alpha 遮罩）",
+        default=None, pattern="^(none|rect|rectangle|ellipse|polygon|star|heart)?$",
+        description=("蒙版类型 none/rect/rectangle/ellipse/polygon/star/heart"
+                     "（ellipse/polygon 导出经 geq alpha 遮罩；star/heart 目前仅预览生效，"
+                     "导出会记警告并跳过蒙版）"),
     )
     mask_rect: Optional[dict] = Field(
         default=None,
-        description="归一化蒙版矩形 {x, y, w, h}，各值范围 0-1",
+        description="归一化蒙版矩形 {x, y, w, h}，各值范围 0-1；polygon/star/heart 用中心与半径（w/h 视为宽高占比）",
+    )
+    # O-遮罩升级：形状参数与边缘处理
+    mask_points: Optional[int] = Field(
+        default=None, ge=3, le=12,
+        description="polygon 边数 / star 角数（默认 5）",
+    )
+    mask_rotation: Optional[float] = Field(
+        default=None, ge=-180, le=180,
+        description="蒙版旋转角度（度，正为顺时针）",
+    )
+    mask_feather: Optional[float] = Field(
+        default=None, ge=0, le=50,
+        description="边缘羽化宽度（像素，0=硬边）；导出用 geq 在隐函数上做线性过渡",
+    )
+    mask_inverted: Optional[bool] = Field(
+        default=None,
+        description="反相蒙版（保留形状之外，形状内部透明）",
     )
 
     # 嵌套序列（C3：片段内嵌子时间线，预览递归合成）

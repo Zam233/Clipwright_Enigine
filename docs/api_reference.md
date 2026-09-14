@@ -38,6 +38,13 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 | `fx_hue` | float 0-360? | null | 色相旋转角度 |
 | `image_fit` | ImageFit? | null | 画面适配 (cover/contain/fill) |
 | `image_rect` | dict? | null | 归一化矩形 {x,y,w,h} |
+| `mask_type` | string? | null | 蒙版：`none`/`rect`/`rectangle`/`ellipse`/`polygon`/`star`/`heart`（`star`/`heart` **仅预览生效**，导出记 warning 并跳过） |
+| `mask_rect` | dict? | null | 蒙版区域/形状框 `{x,y,w,h}`（归一化；多边形/星形/心形用其中心与半径） |
+| `mask_points` | int? | null | `polygon` 边数 / `star` 角数（3-12，默认 5） |
+| `mask_rotation` | float? | null | 蒙版旋转（度，-180~180） |
+| `mask_feather` | float? | null | 边缘羽化宽度（像素 0-50）；导出用 geq 在隐函数上做线性过渡 |
+| `mask_inverted` | bool? | null | 反相（形状之外可见，内部透明） |
+| `keyframes[].bezier` | dict? | null | 自定义缓动 `{x1,y1,x2,y2}`（CSS `cubic-bezier`），**存在时优先于 `easing` 名字** |
 | `text` | string? | null | 文字内容 |
 | `font` / `font_size` / `font_color` / `text_align` | — | null | 文字样式 |
 | `transition_in` / `transition_out` / `transition_duration_sec` | — | null | 转场 |

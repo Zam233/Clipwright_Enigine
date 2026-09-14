@@ -477,8 +477,8 @@ npx hyperframes add <name>                        # 按需取用，条目 licens
 | # | 缺口 | 补法 | 工期 |
 |---|---|---|---|
 | 1 | 撤销缺"选择恢复 + 历史面板" | `historyStore.pushState` 附带 `selection`；undo/redo 后恢复；新增历史面板消费 `jumpTo` | 2–3d · ✅ **2026-09-13 完成**：`pushState` 自动抓取选择（40 处调用点零改动）；`pruneSelection` 裁掉已不存在的片段；因 `setTimeline` 默认 `deselectAll()`，改由 historyStore 内部 `swapTimeline()` 用 `preserveSelection` 切换并写回选择；`jumpTo` 把未来状态转入可重做栈 + 新增 `redoTo`；`features/history/HistoryPanel.tsx` 面板（中文动作名映射层 + 片段数/选中数/相对时间/可重做段）。前端 586 passed / 76 文件 |
-| 2 | 关键帧无曲线编辑 | 数据层加 `bezier?: {h1,h2}`（`Keyframe.easing` 已可扩展）；属性面板加曲线图（Canvas 小图即可）；属性路径扩展成白名单（含特效参数） | 4–6d |
-| 3 | 遮罩太弱 | `mask_type` 扩到 polygon/star/heart 等 + feather/inverted；预览端 Canvas `clip()` + 模糊羽化 | 3–5d |
+| 2 | 关键帧无曲线编辑 | 数据层加 `bezier?: {h1,h2}`（`Keyframe.easing` 已可扩展）；属性面板加曲线图（Canvas 小图即可）；属性路径扩展成白名单（含特效参数） | 4–6d · ✅ **2026-09-13 完成（曲线部分）**：`easing.ts` 的 `cubicBezierEase`（Newton+二分，与浏览器同解）、`Keyframe.bezier`、`BezierCurveEditor`（SVG 可拖控制点 + 6 预设 + 中点读数）接入属性面板；**属性路径白名单未做**（现有 `KEYFRAME_PROP_RANGES` 已限制可编辑属性） |
+| 3 | 遮罩太弱 | `mask_type` 扩到 polygon/star/heart 等 + feather/inverted；预览端 Canvas `clip()` + 模糊羽化 | 3–5d · ✅ **2026-09-13 完成**：schema 增 `mask_points/mask_rotation/mask_feather/mask_inverted`，后端 `mask_alpha_expression()`（ellipse 距离线性过渡 / polygon 内法向之积羽化 / 反相 255-a），预览支持全部形状 + evenodd 反相 + 多圈描边羽化；star/heart **仅预览**（导出记 warning，不静默跳过）。顺带查出并修掉 4 个让蒙版/变换/关键帧静默失效的渲染缺陷 |
 | 4 | 时间模型浮点 | 后端 schema 引入整数 tick + 有理数帧率，API 兼容层双写；前端 branded type + 统一换算工具 | 5–10d（P2）· **后端第一阶段已做**（见 §1.2 O1 执行进度） |
 | 5 | 无本地离线草稿 | IndexedDB 缓存媒体句柄/缩略图/波形 + 未保存改动；配额提示 | 3d · ✅ **2026-09-13 完成**：草稿（时间线快照）+ 媒体派生数据快照（缩略图/波形/时长，刷新后立即显示）+ 恢复横幅 + 配额淘汰重试 + 偏好迁移链（版本号/备份/幂等步骤）。媒体**文件**句柄仍不持久化（blob URL 刷新即失效）——这是边界，不是缺陷 |
 | 6 | 预览无纹理缓存/诊断 | OffscreenCanvas 内容哈希缓存 + 每帧分段耗时与命中率面板 | 3–5d · ✅ **2026-09-13 完成**：`features/preview/layerCache.ts`（内容键 LRU 48 层 + 占位不入缓存 + 上下文复位）+ `perf.ts`/`PreviewPerfOverlay.tsx`（resolve/composite 分段、p95、绘制帧率、命中率，store 推送节流 250ms）；视频按源帧号量化（复用 O1 换算）、MG 动画不入缓存。**实测操作次数口径**：1080p 四轨拖动 120 步，内容光栅化 3360→1200（**−64.3%**）、seek 240→120（**−50%**）、命中率 33.3%、每帧层数不变。墙钟毫秒需真机手动验收（见执行轮次 117） |

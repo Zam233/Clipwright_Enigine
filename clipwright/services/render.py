@@ -465,6 +465,106 @@ def _prune_video_cache_dir() -> None:
     except Exception:
         pass
 
+def _geq_time_expr(expr: str) -> str:
+    """把关键帧表达式的时间变量 `t` 换成 geq 的 `T`。
+
+    只替换**独立的** `t`（`\\bt\\b`）：`lt(...)`、`pow(...)` 里的字母不受影响，
+    否则把 `lt` 换成 `lT` 会让 ffmpeg 报未知函数。
+    """
+    return re.sub(r"\bt\b", "T", expr or "")
+
+
+def mask_alpha_expression(
+    kind: str,
+    mask_rect: dict | None,
+    *,
+    points: int | None = None,
+    rotation: float | None = None,
+    feather: float | None = None,
+    inverted: bool | None = None,
+    width: int,
+    height: int,
+) -> tuple[str | None, str | None]:
+    """形状蒙版 → geq 的 alpha 表达式（纯函数，便于单测）。
+
+    返回 `(表达式, 警告)`：表达式为 None 表示该形状后端不支持（此时警告说明原因）。
+    几何约定与预览一致：`mask_rect = {x, y, w, h}` 归一化，中心取 `(x+w/2, y+h/2)`，
+    半径取 `w/2`、`h/2`（椭圆为半轴，多边形为外接半径）。
+
+    羽化是在**隐函数**上做线性过渡（椭圆用归一化距离 d，多边形用各边内法向距离的最小值），
+    因此与预览的软边近似在观感上一致；反相即 `255 - a`。
+    """
+    if kind in ("star", "heart"):
+        return None, f"{kind} 蒙版当前仅预览生效（导出未支持），已跳过蒙版"
+    if not isinstance(mask_rect, dict):
+        return None, None
+    try:
+        mx = max(0.0, min(1.0, float(mask_rect.get("x", 0) or 0)))
+        my = max(0.0, min(1.0, float(mask_rect.get("y", 0) or 0)))
+        mw = max(0.0, min(1.0, float(mask_rect.get("w", 0) or 0)))
+        mh = max(0.0, min(1.0, float(mask_rect.get("h", 0) or 0)))
+    except (TypeError, ValueError):
+        return None, None
+    if mw <= 0.01 or mh <= 0.01:
+        return None, None
+
+    cx = (mx + mw / 2) * width
+    cy = (my + mh / 2) * height
+    rx = max(1.0, mw / 2 * width)
+    ry = max(1.0, mh / 2 * height)
+    # 羽化宽度换算成隐函数单位：椭圆用「相对最短半轴」，多边形用像素
+    feather_px = max(0.0, float(feather or 0))
+    invert = bool(inverted)
+
+    if kind == "rect":
+        # 矩形蒙版：区域内可见（不裁剪画幅），支持羽化与反相
+        fx_px = f"{feather_px:.2f}"
+        inner_x = f"(min(min(X-({cx-rx:.2f}),({cx+rx:.2f})-X),min(Y-({cy-ry:.2f}),({cy+ry:.2f})-Y)))"
+        if feather_px <= 0:
+            body = f"if(gte({inner_x},0),255,0)"
+        else:
+            body = f"255*clip(({inner_x})/{fx_px}+0.5,0,1)"
+        return (f"255-({body})" if invert else body), None
+
+    if kind == "ellipse":
+        d = (f"(pow(X-{cx:.2f},2)/pow({rx:.2f},2)+pow(Y-{cy:.2f},2)/pow({ry:.2f},2))")
+        if feather_px <= 0:
+            body = f"if(lt({d},1),255,0)"
+        else:
+            # 羽化带换算到 d 空间：1 个单位 = 最短半轴像素
+            band = max(1e-6, feather_px / max(1.0, min(rx, ry)))
+            body = f"255*clip((1+{band:.6f}-{d})/(2*{band:.6f}),0,1)"
+        return (f"255-({body})" if invert else body), None
+
+    if kind == "polygon":
+        import math
+
+        sides = int(points or 5)
+        sides = max(3, min(12, sides))
+        rot = math.radians(float(rotation or 0))
+        inner = math.cos(math.pi / sides)
+        # 每条边的内法向单位向量在归一化椭圆坐标下的判定值
+        terms: list[str] = []
+        for i in range(sides):
+            theta = rot + 2 * math.pi * i / sides
+            nx = math.cos(theta)
+            ny = math.sin(theta)
+            terms.append(
+                f"({inner:.6f}-(({nx:.6f})*(X-{cx:.2f})/{rx:.2f}+({ny:.6f})*(Y-{cy:.2f})/{ry:.2f}))"
+            )
+        if feather_px <= 0:
+            expr = "*".join(f"if(gte({t},0),1,0)" for t in terms)
+            body = f"255*({expr})"
+        else:
+            band = max(1e-6, feather_px / max(1.0, min(rx, ry)))
+            # 每条边给一个线性过渡因子，乘积即"圆角羽化"（无需几何布尔运算）
+            expr = "*".join(f"clip(({t})/{band:.6f}+1,0,1)" for t in terms)
+            body = f"255*({expr})"
+        return (f"255-({body})" if invert else body), None
+
+    return None, None
+
+
 def _fmt_sec(v: float) -> str:
     """把秒数格式化为紧凑字符串（去掉尾零，避免浮点噪声污染 filter 表达式）。
 
@@ -838,10 +938,12 @@ _prune_trim_cache_dir()
 
 def _trim_cache_key(src: str, offset: float, dur: float, width: int, height: int,
                     speed: float = 1.0, image_fit: str = "", transform: str = "",
-                    kfs: str = "", kb: str = "") -> str:
+                    kfs: str = "", kb: str = "", mask: str = "") -> str:
     # /D2/V4/V3: 速度、填充模式、静态变换与关键帧都影响输出内容，必须进缓存键
     # 轮 85: kenburns 改变画面（图片推近），同样必须进键
-    raw = f"{src}|{offset:.2f}|{dur:.2f}|{width}x{height}|{speed:.3f}|{image_fit}|{transform}|{kfs}|{kb}"
+    # O-遮罩升级: 蒙版（类型/区域/羽化/反相/点数/旋转）同样改变像素，**必须进键**——
+    # 否则同一素材换个蒙版会命中上一版缓存，表现为"蒙版没生效"
+    raw = f"{src}|{offset:.2f}|{dur:.2f}|{width}x{height}|{speed:.3f}|{image_fit}|{transform}|{kfs}|{kb}|{mask}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -883,6 +985,8 @@ class RenderService:
         self._review_findings: list[dict] = []
         self._review_visual_score: float | None = None
         self._review_failed = False
+        # 蒙版相关警告（star/heart 后端不支持等），渲染结束时并入 warnings
+        self._mask_warnings: list[str] = []
 
     def _run_ff(self, cmd, **kw) -> subprocess.CompletedProcess:
         """同步执行 ffmpeg/外部命令（供已在线程池里的 sync 代码直接调用）。"""
@@ -1126,6 +1230,10 @@ class RenderService:
             warnings = list(audio_warnings)
             if self._fallback_count:
                 warnings.append(f"{self._fallback_count} 个片段源不可用，已降级纯色段")
+            # O-遮罩升级：star/heart 等后端不支持的蒙版在这里显式告知（不静默丢）
+            for _mw in self._mask_warnings:
+                if _mw not in warnings:
+                    warnings.append(_mw)
             # V4/V7：渲染后切点复核 + 全片总览（默认关闭，best-effort）；
             # 返回派工列表（每条带 redo_agent），随结果一起交给上层
             await self._post_render_review(str(output), video_segments, warnings, fps=fps,
@@ -1180,6 +1288,12 @@ class RenderService:
                              image_fit=str(getattr(clip, 'image_fit', None) or ''),
                              mask_type=getattr(clip, 'mask_type', None),
                              mask_rect=clip.mask_rect,
+                             # O-遮罩升级：形状参数与边缘处理必须随 segment 传下去，
+                             # 否则 filter 层永远拿到 None（新版字段曾整体漏传）
+                             mask_points=getattr(clip, 'mask_points', None),
+                             mask_rotation=getattr(clip, 'mask_rotation', None),
+                             mask_feather=getattr(clip, 'mask_feather', None),
+                             mask_inverted=getattr(clip, 'mask_inverted', None),
                              # /M6: 音频淡入淡出
                              audio_fade_in_sec=getattr(clip, 'audio_fade_in_sec', None),
                              audio_fade_out_sec=getattr(clip, 'audio_fade_out_sec', None),
@@ -1188,7 +1302,13 @@ class RenderService:
                              fx_contrast=getattr(clip, 'fx_contrast', None),
                              fx_saturation=getattr(clip, 'fx_saturation', None),
                              fx_blur=getattr(clip, 'fx_blur', None),
-                             fx_hue=getattr(clip, 'fx_hue', None))
+                             fx_hue=getattr(clip, 'fx_hue', None),
+                             # ⚠ 必修：`metadata` 与 `keyframes` 此前**没有进 segment 字典**，
+                             # 于是 trim 层读到的永远是空 → 静态变换（metadata.transform）、
+                             # 关键帧变换与 opacity 关键帧全部**静默不生效**（画面与无动画一致）。
+                             # 两者是 trim 滤镜链的直接输入，必须在提取阶段带上。
+                             metadata=dict(clip.metadata or {}),
+                             keyframes=list(clip.keyframes or []))
                 if k in ("video", "image"):
                     entry["source_path"] = clip.asset_id
                     # 轮 84（数码评测专项）：LUT 调色入口——clip.metadata.lut_path
@@ -1401,7 +1521,17 @@ class RenderService:
                                         speed, image_fit,
                                         transform=f"{_tx:.4f},{_ty:.4f},{_ts:.4f},{_tr:.4f}" if _has_transform else "",
                                         kfs=_kfs_digest,
-                                        kb="1" if seg.get("kenburns") else "")
+                                        kb="1" if seg.get("kenburns") else "",
+                                        mask=json.dumps({
+                                            "t": seg.get("mask_type"),
+                                            "r": seg.get("mask_rect"),
+                                            "f": seg.get("mask_feather"),
+                                            "i": seg.get("mask_inverted"),
+                                            "p": seg.get("mask_points"),
+                                            "rot": seg.get("mask_rotation"),
+                                            "op": bool(_kfs_raw and any(
+                                                "opacity" in (kf.get("properties") or {}) for kf in _kfs_raw)),
+                                        }, sort_keys=True, default=str) if seg.get("mask_type") else "")
             with _trim_cache_lock:
                 cached = _trim_cache.get(cache_key)
                 if cached:
@@ -1444,6 +1574,8 @@ class RenderService:
                     fit_scale = (f"scale={width}:{height}:force_original_aspect_ratio=increase,"
                                  f"crop={width}:{height},setsar=1")
                 vf = speed_prefix + fit_scale
+                # 本片段是否带 alpha（蒙版 / opacity 关键帧）——决定后面是否强制走 overlay 合成
+                _mask_alpha_pending = False
                 if _kb:
                     # Ken Burns：中心缓慢推近至 1.10x（zoompan d=1 逐输出帧递增）
                     _kb_frames = max(1, int(dur * fps))
@@ -1453,9 +1585,24 @@ class RenderService:
                            f"fps={fps}:s={width}x{height}")
 
                 # /X1: 蒙版落地——rectangle(=rect) 裁剪还原画幅；ellipse geq alpha 椭圆遮罩
+                # O-遮罩升级（2026-09-13）：ellipse/rect 支持 feather/inverted，polygon 支持
+                # points/rotation/feather/inverted；star/heart 后端不支持 → 记警告并跳过。
+                #
+                # ⚠ 关键修复：**蒙版必须经 overlay 合成才生效**。片段裁剪产物是不透明编码
+                # （yuv420p），贴在 vf 链尾的 geq alpha 会随编码一起丢掉——旧实现正是如此，
+                # 椭圆蒙版从未真正生效。这里记录"本片段带蒙版"，下面据此强制走 filter_complex
+                # 的「黑底 + overlay」路径，让 alpha 真的参与合成。
                 mask_rect = seg.get("mask_rect")
                 _mask_type = seg.get("mask_type")
-                if _mask_type in ("rectangle", "rect") and isinstance(mask_rect, dict):
+                if _mask_type == "none":
+                    _mask_type = None
+                _mask_feather = seg.get("mask_feather")
+                _mask_inverted = seg.get("mask_inverted")
+                _mask_points = seg.get("mask_points")
+                _mask_rotation = seg.get("mask_rotation")
+
+                if _mask_type in ("rectangle", "rect") and isinstance(mask_rect, dict) \
+                        and not _mask_feather and not _mask_inverted:
                     try:
                         mx = max(0.0, min(1.0, float(mask_rect.get("x", 0) or 0)))
                         my = max(0.0, min(1.0, float(mask_rect.get("y", 0) or 0)))
@@ -1466,16 +1613,38 @@ class RenderService:
                     if mw > 0.01 and mh > 0.01:
                         vf += (f",crop=iw*{mw:.4f}:ih*{mh:.4f}:iw*{mx:.4f}:ih*{my:.4f},"
                                f"scale={width}:{height},setsar=1")
-                elif _mask_type == "ellipse":
-                    # 椭圆蒙版：中心椭圆内保留，外 alpha=0（与预览 ellipse 蒙版对齐）
-                    vf += (",format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
-                           "a='if(lt(pow(X-(W/2),2)/pow(W/2,2)+pow(Y-(H/2),2)/pow(H/2,2),1),255,0)'")
+                elif _mask_type in ("rect", "rectangle", "ellipse", "polygon", "star", "heart"):
+                    _alpha_expr, _mask_warning = mask_alpha_expression(
+                        "rect" if _mask_type in ("rect", "rectangle") else _mask_type,
+                        mask_rect if isinstance(mask_rect, dict) else None,
+                        points=_mask_points, rotation=_mask_rotation,
+                        feather=_mask_feather, inverted=_mask_inverted,
+                        width=width, height=height,
+                    )
+                    if _alpha_expr:
+                        vf += (",format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
+                               f"a='{_alpha_expr}'")
+                        # 记号：本片段带蒙版 → 下面强制走「黑底 + overlay」合成，
+                        # 否则 alpha 会被不透明编码吃掉（详见上方注释）
+                        _mask_alpha_pending = True
+                    if _mask_warning and _mask_warning not in self._mask_warnings:
+                        self._mask_warnings.append(_mask_warning)
+                        self._final_ffmpeg_log.append(f"蒙版: {_mask_warning}")
+                        logger.warning("蒙版: %s", _mask_warning)
 
                 # opacity 关键帧 → 缓动感知分段插值表达式（替换旧 0.1s 窗口近似，
                 # 旧近似多关键帧时 alpha 叠加越界闪烁）
+                #
+                # ⚠ 实现注意：`colorchannelmixer` 的参数是 `<double>`（不支持时间表达式），
+                # 旧写法 `colorchannelmixer=aa=<expr>` 会让 ffmpeg 直接报 Filter not found，
+                # 整条 trim 失败降级成纯色段。时间相关的 alpha 只能走 `geq`（逐帧求值），
+                # 变量名是 **T**（时间轴秒），因此把表达式里的 `t` 换成 `T`。
                 _kf_op = property_expression(_kfs, "opacity", 1.0) if _kfs else None
                 if _kf_op:
-                    vf += f",format=rgba,colorchannelmixer=aa={_kf_op}"
+                    vf += (",format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
+                           f"a='255*({_geq_time_expr(_kf_op)})'")
+                    # opacity 关键帧同样是 alpha：必须经 overlay 合成才不会丢
+                    _mask_alpha_pending = True
 
                 # 视频特效滤镜 (fx_*)
                 fx_parts = []
@@ -1546,7 +1715,7 @@ class RenderService:
                             pieces.append((src_pos, src_pos + v_avg * (t1 - t0), v_avg))
                             src_pos += v_avg * (t1 - t0)
 
-                _needs_fc = _has_transform or _has_kf_transform or pieces
+                _needs_fc = _has_transform or _has_kf_transform or pieces or _mask_alpha_pending
                 if _needs_fc:
                     body = vf
                     overlay_spec: tuple[str, str, str] | None = None
@@ -1586,6 +1755,9 @@ class RenderService:
                         ox = int(round((width - sw) / 2 + _tx * width))
                         oy = int(round((height - sh) / 2 + _ty * height))
                         overlay_spec = ("static", str(ox), str(oy))
+                    if overlay_spec is None and _mask_alpha_pending:
+                        # 只有蒙版/透明度关键帧时：黑底原尺寸合成，让 alpha 真正生效
+                        overlay_spec = ("static", "0", "0")
                     chains: list[str] = []
                     if pieces:
                         chains.append(f"[0:v]{body}[pre0]")
@@ -1599,7 +1771,11 @@ class RenderService:
                         chains.append(f"[0:v]{body}[segv]")
                     if overlay_spec:
                         kind, a, b = overlay_spec
-                        chains.append(f"color=c=black:s={width}:{height}:r={fps}:d={dur:.4f}[bg]")
+                        # ⚠ filter_complex 里 `s=W:H` 是**非法**写法（冒号是选项分隔符），
+                        # ffmpeg 会报 "No option name near ':H'" 并让整条 trim 失败 →
+                        # 静默降级成纯色段。必须用 `size=WxH`（或把冒号转义）。
+                        chains.append(
+                            f"color=c=black:size={width}x{height}:r={fps}:d={dur:.4f}[bg]")
                         if kind == "expr":
                             chains.append(f"[bg][segv]overlay=x='{a}':y='{b}':eof_action=pass[vout]")
                         else:

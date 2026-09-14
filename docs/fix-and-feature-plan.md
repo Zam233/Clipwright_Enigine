@@ -1733,3 +1733,49 @@ V4 自评闭环此前只做到「渲染后抽切点图 + 可选打分」，结�
 - ⚠️ **验证边界**：`@hyperframes/producer` 本身**没有真实 sidecar 进程**参与测试——
   本轮验证的是"贡献进来 → 被选中 → 协议被正确调用 → 结果透传"这条链路（用假后端）；
   真机联调需要 producer 侧进程与 `remote_render_url`。
+
+### 执行轮次 123（2026-09-13：关键帧曲线编辑 + 遮罩升级；牵出三个静默失效的真 bug）
+
+采纳报告 §4.2 第 2、3 项。**这一轮最大的产出不是新功能，而是修掉了三个"看起来在跑、
+实际没生效"的核心渲染缺陷**——它们让「动效渲染」长期静默降级。全部经真实 ffmpeg 像素级验证。
+
+- 🐞 **缺陷 1（致命）：segment 字典没带 `metadata` 与 `keyframes`**。
+  `_extract_segments()` 构造的 segment 只有位置/速度/音量等字段，**没有 `metadata` 与
+  `keyframes`**；而 trim 层正是从这里读 `metadata.transform`（静态变换）与 keyframes
+  （关键帧变换 / opacity 关键帧）。结果：**静态位移旋转缩放、关键帧动画、透明度关键帧全部
+  不生效**，成片与无动画版本逐帧一致。已补 `metadata=dict(clip.metadata or {})` 与
+  `keyframes=list(clip.keyframes or [])`，并加回归测试锁定"变换确实改变画面"。
+- 🐞 **缺陷 2：`color=c=black:s=W:H` 在 filter_complex 里是非法写法**。
+  冒号是选项分隔符 → ffmpeg 报 `No option name near ':H'` → 整条 trim 失败 →
+  **静默降级成纯色段**（日志里只有一行不易察觉的 trim 失败）。凡走「黑底 + overlay」的
+  片段（变换/关键帧/蒙版）都会中招。改为 `size=WxH` 并加回归测试对比像素。
+- 🐞 **缺陷 3：`colorchannelmixer=aa=<表达式>` 不可能生效**。
+  `colorchannelmixer` 的参数是 `<double>`，不支持时间表达式 → `Filter not found`。
+  opacity 关键帧改用 `geq` 逐帧求值（时间变量是 `T`，用 `\bt\b` 精确替换避免把 `lt` 换成 `lT`）。
+- 🐞 **缺陷 4（同源）：蒙版 alpha 会被不透明编码吃掉**。片段裁剪产物是 yuv420p 不透明编码，
+  贴在 vf 链尾的 `geq` alpha 随编码一起丢——所以**椭圆蒙版此前从未真正生效**。
+  现在带 alpha 的片段（蒙版 / opacity 关键帧）强制走 filter_complex 的「黑底 + overlay」合成；
+  顺带修掉 trim 缓存键**不含蒙版字段**（换蒙版会命中上一版缓存）。
+- ✅ **关键帧缓动曲线编辑**（前端）：`easing.ts` 新增 `cubicBezierEase`（Newton + 二分兜底，
+  与浏览器 `cubic-bezier()` 同解）、`normalizeBezier`（x 夹 [0,1]、y 允许过冲）、
+  `sampleBezier`/`bezierToCss` 与 6 个预设；`Keyframe.bezier` 数据字段；
+  新增 `BezierCurveEditor`（SVG 曲线 + 两个可拖控制点 + 预设按钮 + 中点读数），
+  接进属性面板关键帧区（按播放头定位"当前区段"，缓动取自区段**结束帧**，
+  与 `interpolateProperties` 一致）；显式选 easing 名字时清掉自定义曲线（避免"下拉看似没生效"）。
+- ✅ **遮罩升级**（前后端）：`mask_type` 扩到 `polygon|star|heart`，新增
+  `mask_points`（3-12 边/角）、`mask_rotation`、`mask_feather`（0-50px）、`mask_inverted`；
+  后端纯函数 `mask_alpha_expression()` 生成 geq 表达式（椭圆用归一化距离开方做线性过渡、
+  多边形用各边内法向判定值之积实现"圆角羽化"、反相即 `255-a`），**star/heart 明确记警告并跳过**
+  （不假装做了）；预览端支持全部形状 + `evenodd` 一次成洞的反相 + 多圈描边近似羽化。
+- ✅ **测试**：后端新增 `test_mask_shapes.py` **18 条**（表达式纯函数 + 真实渲染的中心/角落
+  亮度对比：椭圆/反相椭圆/六边形/羽化/star 警告/rect 裁剪不变）与
+  `test_render_transform_compose.py` **3 条**（变换确实改变画面、与无变换版本不同、
+  opacity 关键帧整帧均值在 0.5 时刻近全黑）；前端新增 `bezier.test.ts` **15 条**、
+  `BezierCurveEditor.test.tsx` **9 条**、`maskShapes.test.ts` **12 条**；
+  更新两处**钉住坏语法**的旧断言（`color=c=black:s=` → `size=`；`colorchannelmixer` → `geq`）
+- ✅ **回归**：后端全量 **2207 passed** / 1 skipped / 1 xfailed（仍只有 2 条既有 plugin
+  子进程编码失败）；前端 `tsc --noEmit` 干净、`npm run test` **711 passed**（86 文件）、
+  `npm run build` 通过
+- ⚠️ **验证边界**：羽化在预览是"多圈描边近似"、导出是 geq 线性过渡（观感一致但不是同一算法）；
+  star/heart 目前**仅预览生效**（导出会记 warning）；curve 编辑器只覆盖"两帧之间"的缓动，
+  没有做多维属性曲线（X/Y/缩放各自一条曲线）——那需要把 `bezier` 从关键帧级下沉到属性级。
