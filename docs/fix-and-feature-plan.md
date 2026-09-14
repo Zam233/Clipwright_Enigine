@@ -1509,3 +1509,52 @@ P1 文档对账 → P3 账号管理（Server 3A + 主项目 3B）→ P4 市场 �
   `npm run build` 通过
 - ⚠️ **验证边界**：面板是 jsdom 单测覆盖，**没有做浏览器目视验收**（本轮未起 dev server；
   本地 5173 未运行）。要目视确认请 `npm run dev` 打开编辑器点工具栏的历史图标
+
+### 执行轮次 117（2026-09-13：O6 预览纹理缓存 + 诊断）
+
+采纳报告 §1.3 第 8 项 / §4.2 第 6 项。全部在前端（`J:\Clipweight-Client`），后端零改动。
+
+- ✅ **层缓存**（`features/preview/layerCache.ts`）：按**内容键**（FNV-1a）把一层光栅化到
+  离屏画布（OffscreenCanvas 优先、退化 canvas、再退化直绘），命中直接贴图。LRU 48 层，
+  统计命中/未命中/淘汰/占比/字节估算。关键正确性约束写进代码：
+  · 键必须覆盖一切影响像素的输入（素材、**源帧号**、媒体版本、几何、变换、文字样式…）；
+  · **占位/降级内容不入缓存**（`paint` 返回 false → 丢弃并清空层）——否则素材稍后就绪时
+    会把占位冻结在画面上；
+  · 复用离屏画布前复位上下文（filter/shadow/composite/alpha），否则上一层的阴影会漏过来；
+  · 上下文状态（globalAlpha/混合/filter/裁剪/蒙版/转场位移）仍留在主画布，贴图时生效，
+    语义与改前一致。
+- ✅ **接了哪些层**：视频 / 图片 / 文字 / 字幕 / 形状。**视频按源帧号量化**
+  （`lib/mediaTime` 的 `secondsToFrame`，与 O1 同一套换算）——60Hz rAF 跑 30fps 时间线时
+  同一源帧被画两次，第二次直接命中。**MG 动画占位不入缓存**（正弦脉冲时间相关且自带 alpha）。
+- ✅ **失效**：`mediaManager.onChange` → 模块级媒体版本自增（进键）+ `invalidatePrefix('media')`
+- ✅ **诊断**（`features/preview/perf.ts` + `PreviewPerfOverlay.tsx`）：
+  每帧分阶段计时（resolve 素材查找/seek 与 composite 绘制分开）、环形缓冲 120 帧、
+  均值与 p95、最近一秒实际绘制帧率、层数/帧、缓存命中率与占用；
+  **store 推送节流 250ms**（诊断面板每帧刷新会把 React 重渲染变成新瓶颈）。
+  浮层默认关，由 `settingsStore.showPerfPanel` 控制（持久化），预览工具条加了开关。
+- ✅ **可测入口**：从 `draw()` 里提取 `compositeTimelineClips(ctx, timeline, t, geom, dpr, perf)`，
+  预览循环与单测走同一条代码路径。
+- ✅ **实测（`previewCompositeCache.test.ts`，1080p 四轨 = 两路视频 + 字幕 + MG，
+  120 步拖动、每帧内步进 2 次，冷/热两跑唯一差别是缓存是否保留）**：
+
+  | 指标 | 冷（等价改前） | 热（改后） | 变化 |
+  |---|---|---|---|
+  | 内容光栅化操作数 | 3360 | 1200 | **−64.3%** |
+  | seek 调用 | 240 | 120 | **−50.0%** |
+  | drawImage 总数 | 600 | 480 | −20.0% |
+  | 缓存命中率 | — | 33.3% | — |
+  | 每帧合成层数 | 4 | 4（完全一致） | 未少画层 |
+
+- ✅ **测试**：前端新增 `layerCache.test.ts` **12 条**、`perf.test.ts` **8 条**、
+  `previewCompositeCache.test.ts` **5 条**（含冷/热对比、静止帧 19/20 帧命中、
+  媒体版本失效、占位不入缓存、MG 不缓存）
+- ✅ **回归**：`npx tsc --noEmit` 干净、`npm run test` **611 passed**（79 文件）、`npm run build` 通过
+- ⚠️ **验证边界**：上表是**操作次数**口径（可复现、可进 CI），**不是墙钟毫秒**——
+  可信的毫秒数需要真实浏览器 + 视频解码 + GPU。手动墙钟验收：
+  `npm run dev` → 打开 1080p 三轨时间线 → 点预览工具条的「性能诊断」→
+  来回拖播放头，读「总耗时 / 素材解析 / 缓存命中率」；对照关闭缓存的基线需要临时把
+  `LayerCache` 的 `createCanvas` 换成 `() => null`（走直绘路径）。
+- 📌 **过程教训（再次踩到）**：本轮用 `Get-Content -Raw | Set-Content -Encoding utf8` 批量替换
+  `PreviewPanel.tsx` 里的标识符，把该文件（含 perf.ts）的**中文注释双重编码**并吃了换行。
+  已 `git checkout HEAD --` 恢复后改用 edit 工具重做。**含中文的源码/文档一律用 edit/write
+  工具改，任何 PowerShell 文本往返都会毁文件**——这条已在轮次 112 记过一次，本轮再次验证。

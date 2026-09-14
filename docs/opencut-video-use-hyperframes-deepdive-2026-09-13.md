@@ -192,7 +192,7 @@ assert _RENDER_STAGES.index("text_subtitle") > _RENDER_STAGES.index("overlay_mg"
 | 5 | O3 撤销增强（选择快照 + 历史面板） | 无 | 2–3d | 编辑器体验 · ✅ **2026-09-13 完成**（见 §4.2 第 1 项执行进度） |
 | 6 | V2 并行动画生成 + 多方案择优 | 无 | 3d | ✅ **2026-09-13 核对**：并行执行**早已存在**（`AnimationAgent` 收集 `logic_jobs` 后用 `Semaphore(pipeline_concurrency)` + `asyncio.gather` 并发跑，见 `agents/animation_agent.py`「串行是动画阶段的最大瓶颈」注释）——本报告此前把它列为"未做"是**误判**；本轮补的是**多方案生成 + 择优**（`MGGenerator.generate_best`，`generation.variants` 1-4，视觉分优先/批判分次之） |
 | 7 | O4 声明式参数契约 | 插件系统 | 3d | 插件生态 |
-| 8 | O6 预览纹理缓存 + 诊断 | 无 | 3–5d | 大时间线流畅度 |
+| 8 | O6 预览纹理缓存 + 诊断 | 无 | 3–5d | 大时间线流畅度 · ✅ **2026-09-13 完成**（见 §4.2 第 6 项执行进度） |
 | 9 | O1 时间模型整数化 | 需 schema 迁移 | 5–10d | 根治对齐误差 · **后端第一阶段已完成（2026-09-13）**：`utils/timebase.py` + `Timeline` 派生属性 + 漂移校正/切点走 tick，API 契约不变；剩余第二阶段（schema 双写 + 前端 branded type） |
 | 10 | O5 本地草稿 + 迁移链 | 无 | 3d | 离线与稳健性 |
 
@@ -481,7 +481,7 @@ npx hyperframes add <name>                        # 按需取用，条目 licens
 | 3 | 遮罩太弱 | `mask_type` 扩到 polygon/star/heart 等 + feather/inverted；预览端 Canvas `clip()` + 模糊羽化 | 3–5d |
 | 4 | 时间模型浮点 | 后端 schema 引入整数 tick + 有理数帧率，API 兼容层双写；前端 branded type + 统一换算工具 | 5–10d（P2）· **后端第一阶段已做**（见 §1.2 O1 执行进度） |
 | 5 | 无本地离线草稿 | IndexedDB 缓存媒体句柄/缩略图/波形 + 未保存改动；配额提示 | 3d |
-| 6 | 预览无纹理缓存/诊断 | OffscreenCanvas 内容哈希缓存 + 每帧分段耗时与命中率面板 | 3–5d |
+| 6 | 预览无纹理缓存/诊断 | OffscreenCanvas 内容哈希缓存 + 每帧分段耗时与命中率面板 | 3–5d · ✅ **2026-09-13 完成**：`features/preview/layerCache.ts`（内容键 LRU 48 层 + 占位不入缓存 + 上下文复位）+ `perf.ts`/`PreviewPerfOverlay.tsx`（resolve/composite 分段、p95、绘制帧率、命中率，store 推送节流 250ms）；视频按源帧号量化（复用 O1 换算）、MG 动画不入缓存。**实测操作次数口径**：1080p 四轨拖动 120 步，内容光栅化 3360→1200（**−64.3%**）、seek 240→120（**−50%**）、命中率 33.3%、每帧层数不变。墙钟毫秒需真机手动验收（见执行轮次 117） |
 | 7 | 吸附源少 | 增加"关键帧/书签"吸附源 + 预览区吸附参考线（OpenCut 做法：`preview/components/snap-guides.tsx`） | 2d |
 | 8 | 特效预览还原度 | 预览端为 `filter_id` 提供近似 CSS/canvas 效果，或明确标注"仅渲染后可见" | 2–3d |
 | 9 | **预览画布不能直接操作画面** | 预览区加变换手柄（拖拽移动/四角缩放/旋转）+ 命中测试 + 吸附参考线；写回 `metadata.transform`（属性面板已有该字段与滑杆，数据层无需改） | 4–6d |
