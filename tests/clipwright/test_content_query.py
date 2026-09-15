@@ -280,6 +280,10 @@ class TestRouteQuery:
         ("有语音的镜头", "has_speech", True),
         ("静止不动的镜头", "motion", ["static", "low"]),
         ("运动剧烈的镜头", "motion", ["medium", "high"]),
+        # R10 端到端 demo 发现的缺口：不带程度词的"运动的"原本没被路由，
+        # 于是"有哪些画面是运动的"变成清单查询、把**所有**镜头都列出来（看着有输出、其实没过滤）
+        ("有哪些画面是运动的？", "motion", ["medium", "high"]),
+        ("有动感的段落", "motion", ["medium", "high"]),
     ])
     def test_filter_routing(self, question: str, key: str, value: Any) -> None:
         assert cq.route_query(question)["filters"].get(key) == value
@@ -300,6 +304,12 @@ class TestRouteQuery:
 
     def test_list_detection(self) -> None:
         assert cq.route_query("列出所有镜头")["list_all"] is True
+
+    def test_list_question_still_applies_filters(self) -> None:
+        """清单式问法（"有哪些…"）不能**吞掉**结构化条件，否则会列出不相关的镜头。"""
+        routed = cq.route_query("有哪些画面是运动的？")
+        assert routed["list_all"] is True
+        assert routed["filters"].get("motion") == ["medium", "high"]
         assert cq.route_query("素材里一共有多少个镜头")["list_all"] is True
         assert cq.route_query("找咖啡杯")["list_all"] is False
 

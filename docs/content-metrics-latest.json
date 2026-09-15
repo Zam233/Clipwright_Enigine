@@ -1,0 +1,83 @@
+[
+  {
+    "round": "R1",
+    "script": "verify_content_index.py",
+    "ok": true,
+    "seconds": 32.47,
+    "metric": "索引底座：切分/缓存/失效",
+    "boundary": "合成硬切视频；L0 只做统计，无 ML 调用",
+    "tail": "Loading weights: 100%|██████████| 200/200 [00:00<00:00, 6079.14it/s]\n[20:59:54] INFO    clipwright: 素材无音轨或抽取失败（跳过音频层）: sample2.mp4\n[20:59:54] INFO    clipwright: 内容索引构建完成: 645c69350662 → 2 镜头 / 5894ms"
+  },
+  {
+    "round": "R2",
+    "script": "verify_shot_detection.py",
+    "ok": true,
+    "seconds": 1.86,
+    "metric": "镜头切分 F1 1.000 / visual_tags 覆盖 0.00→1.00",
+    "boundary": "合成帧上的 CLIP/ImageNet 标签不可信（实测输出“屏幕录制/左轮手枪”）",
+    "tail": "  · 结论：渐变转场与同色相邻段属**方法学盲区**（前者不是硬切、后者像素无差异），需靠其它信号（音频事件/语义层）补；亮度突跳是否误报取决于幅度与阈值，不可当作必然，应在真实素材上量。\n\nSHOT DETECTION VERIFY PASS"
+  },
+  {
+    "round": "R3",
+    "script": "verify_audio_events.py",
+    "ok": true,
+    "seconds": 1.71,
+    "metric": "音频事件时间误差 0.020s",
+    "boundary": "合成音频；未安装 STT 后端，转写路径从未真正跑过",
+    "tail": "[5] 工具端到端：8 个音频事件，按镜头切片 3 组，摘要={'silence': 2, 'onset': 4, 'loud': 2}\n\nAUDIO EVENTS VERIFY PASS"
+  },
+  {
+    "round": "R4",
+    "script": "verify_content_query.py",
+    "ok": true,
+    "seconds": 28.38,
+    "metric": "内容问答区间命中 32/32 = 100%",
+    "boundary": "30 条问答为自写夹具；向量只覆盖镜头文字，覆盖不到像素（R9 才补上）",
+    "tail": "Loading weights:   0%|          | 0/200 [00:00<?, ?it/s]\nLoading weights: 100%|██████████| 200/200 [00:00<00:00, 6157.18it/s]\n[21:00:26] INFO    clipwright: 内容索引构建完成: 3f27d25d8cd6 → 2 镜头 / 5947ms"
+  },
+  {
+    "round": "R5",
+    "script": "verify_edit_intent.py",
+    "ok": true,
+    "seconds": 0.47,
+    "metric": "意图解析 50/50 = 100%；幻觉拦截 20/20 = 100%",
+    "boundary": "50 条为自写常见说法；LLM 解析路径仅打桩测试",
+    "tail": "  拦截 20/20\n\nEDIT INTENT VERIFY PASS"
+  },
+  {
+    "round": "R6",
+    "script": "verify_intent_resolver.py",
+    "ok": true,
+    "seconds": 4.29,
+    "metric": "落位 17/17；歧义反问 5/5 = 100%",
+    "boundary": "自写夹具；会话短名单只在进程内存；反问策略是阈值+规则",
+    "tail": "[21:00:32] INFO    clipwright: 意图落位：1 个操作 / 1 个待确认问题\n[21:00:32] INFO    clipwright: 嵌入不可用（检索退化为关键词）：Error code: 401 - {'error': {'message': 'Incorrect API key provided: sk-dd23f***********************6f99. You can find your API key at https://platform.openai.com/account/api-keys.', 'type': 'invalid_request_error', 'code': 'invalid_api_key', 'param': None}, 'status': 401}\n[21:00:32] INFO    clipwright: 意图落位：1 个操作 / 0 个待确认问题"
+  },
+  {
+    "round": "R7",
+    "script": "verify_intent_apply.py",
+    "ok": true,
+    "seconds": 0.43,
+    "metric": "一句话→成片 25/25；dry-run 只读；硬错误零执行",
+    "boundary": "合成时间线（无真实素材与模型）",
+    "tail": "[21:00:33] INFO    clipwright: 意图落位：1 个操作 / 0 个待确认问题\n[21:00:33] INFO    clipwright: 意图落位：0 个操作 / 0 个待确认问题\n[21:00:33] INFO    clipwright: 意图落位：0 个操作 / 0 个待确认问题"
+  },
+  {
+    "round": "R8",
+    "script": "verify_scene_grounding.py",
+    "ok": true,
+    "seconds": 0.41,
+    "metric": "引用不存在的素材 = 0（18/18）",
+    "boundary": "构造索引与场景；规则检索，无向量语义（R9 才补）",
+    "tail": "检查项 18/18 通过\n========================================================================\nSCENE GROUNDING VERIFY PASS"
+  },
+  {
+    "round": "R9",
+    "script": "verify_semantic_search.py",
+    "ok": true,
+    "seconds": 206.94,
+    "metric": "语义 recall@10 100% vs 关键词 16.7%",
+    "boundary": "**合成画面**，测的是颜色/图案属性；真实素材召回率未验证",
+    "tail": "Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]\nLoading weights: 100%|██████████| 398/398 [00:00<00:00, 27333.40it/s]\n[21:00:49] INFO    clipwright: CLIP 已加载: openai/clip-vit-base-patch32"
+  }
+]

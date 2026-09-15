@@ -538,11 +538,15 @@ async def build_index(
 
     # ── R9：画面语义向量（供"换个说法也能搜到"用）──
     # 存进索引随索引落盘，之后检索只是点积（不再碰模型）。
-    # 开关默认开，但 CLIP 不可用时**静默跳过**并在 sources 里如实标注——不假装有向量。
+    # 与零样本标注共用 `content_index_clip_enabled` 开关：两者用的是同一个 CLIP 模型，
+    # "关掉 CLIP"应当意味着**完全不加载它**（否则 `--no-label` 这类快路径仍会拉 600MB 权重，
+    # 实测就是被这个坑到：号称跳过标注、实际还是跑了 30 秒的向量计算）。
+    # CLIP 不可用时**静默跳过**并在 sources 里如实标注——不假装有向量。
     #
     # 进度值取 0.93：与"画面标注"的末值同档。**必须落在音频层（0.94）之前或与之相等**，
     # 否则进度回调会倒退（实测：第一版用 0.98，直接把"进度单调"的既有用例打红）。
-    if getattr(settings, "content_index_visual_vectors", True) and frames:
+    if (getattr(settings, "content_index_visual_vectors", True)
+            and settings.content_index_clip_enabled and frames):
         try:
             from clipwright.services import content_semantic as sem
 
