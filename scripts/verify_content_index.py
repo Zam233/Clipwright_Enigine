@@ -55,6 +55,8 @@ def _make_video(path: Path, segments: list[tuple[str, float]], fps: int = 10) ->
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", action="store_true", help="保留临时目录（排查用）")
+    ap.add_argument("--no-label", action="store_true",
+                    help="跳过画面标注（R2）：只验证 L0 索引底座，不加载 CLIP")
     args = ap.parse_args()
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
@@ -67,6 +69,9 @@ async def main() -> int:
     ci.settings.project_dir = tmp / "projects"
     ci.settings.library_dir.mkdir(parents=True, exist_ok=True)
     ci.settings.content_index_mirror_mongo = False
+    if args.no_label:
+        ci.settings.content_index_clip_enabled = False
+        ci.settings.content_index_visual_llm = False
 
     failures: list[str] = []
     try:
@@ -99,6 +104,17 @@ async def main() -> int:
                   f"亮度{s.stats.brightness:6.1f} 对比{s.stats.contrast:5.1f} "
                   f"锐度{s.stats.sharpness:8.1f} 运动{s.stats.motion:5.1f} "
                   f"镜头={s.visual.camera_motion:<7s} {' '.join(flags)}")
+        # ── R2：画面维度 ──
+        labeled = [s for s in idx.shots if s.visual.tags or s.visual.description]
+        print(f"[2b] 画面标注（R2）：{len(labeled)}/{len(idx.shots)} 镜头有语义标签"
+              f"{'（已跳过：--no-label）' if args.no_label else ''}")
+        for s in idx.shots:
+            if s.visual.tags or s.visual.shot_size != "unknown" or s.visual.has_face is not None:
+                q = s.stats
+                print(f"      s{s.index:<2d} 标签={s.visual.tags[:4]} "
+                      f"景别={s.visual.shot_size:<13s} 人脸={s.visual.has_face} "
+                      f"过曝={q.overexposed_ratio:.3f} 欠曝={q.underexposed_ratio:.3f} "
+                      f"边缘={q.edge_energy:6.2f} 来源={s.evidence.get('visual.tags', '-')}")
 
         # 断言：切分合理 + 黑场被识别 + 噪声段运动最大
         if len(idx.shots) < 5:
@@ -150,6 +166,9 @@ async def main() -> int:
         print(f"[5] 覆盖率: " + " ".join(f"{k}={v:.2f}" for k, v in cov.items()))
         if cov["stats"] < 1.0:
             failures.append(f"统计覆盖率不足：{cov['stats']}")
+        if not args.no_label and cov["visual_tags"] < 0.5:
+            failures.append(
+                f"画面标签覆盖率过低：{cov['visual_tags']}（CLIP 未生效或全部低于阈值）")
 
         print("[6] 本地索引总览:", json.dumps(ci.summarize_index_files(), ensure_ascii=False))
 

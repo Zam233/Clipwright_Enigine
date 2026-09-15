@@ -23,7 +23,8 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 #: 索引结构版本——结构或语义变化时 +1（缓存键的一部分，天然失效旧索引）
-INDEX_VERSION = 1
+#: v2（R2）：ShotStats 增加质量维度（过曝/欠曝/边缘能量），ShotVisual 增加景别与人脸。
+INDEX_VERSION = 2
 
 #: `asset:{sha256[:12]}#s{n}` 的解析正则
 _SHOT_REF_RE = re.compile(r"^asset:(?P<sha>[0-9a-fA-F]{8,64})#s(?P<idx>\d+)$")
@@ -86,6 +87,10 @@ class ShotStats(BaseModel):
     is_black: bool = Field(default=False, description="近全黑（平均亮度 < 阈值）")
     is_white: bool = Field(default=False, description="近全白（平均亮度 > 阈值）")
     frame_count: int = Field(default=0, description="本镜头实际抽到的帧数")
+    # ── R2：质量维度（可直接用于"别用糊的/别用过曝的"这类筛选）──
+    overexposed_ratio: float = Field(default=0.0, description="过曝像素占比（>245 灰阶）")
+    underexposed_ratio: float = Field(default=0.0, description="欠曝像素占比（<10 灰阶）")
+    edge_energy: float = Field(default=0.0, description="相邻像素差均值（越低越糊）")
 
 
 class ShotSpeech(BaseModel):
@@ -203,10 +208,17 @@ class ContentIndex(BaseModel):
         black = sum(1 for s in self.shots if s.stats.is_black)
         with_text = sum(1 for s in self.shots if s.speech.text)
         with_desc = sum(1 for s in self.shots if s.visual.description)
+        with_tags = sum(1 for s in self.shots if s.visual.tags)
+        with_face = sum(1 for s in self.shots if s.visual.has_face)
         sizes: dict[str, int] = {}
         for s in self.shots:
             if s.visual.shot_size != "unknown":
                 sizes[s.visual.shot_size] = sizes.get(s.visual.shot_size, 0) + 1
+        tag_counts: dict[str, int] = {}
+        for s in self.shots:
+            for t in s.visual.tags:
+                tag_counts[t] = tag_counts.get(t, 0) + 1
+        top_tags = sorted(tag_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
         return {
             "sha256": self.sha256[:12],
             "filename": self.filename,
@@ -216,7 +228,10 @@ class ContentIndex(BaseModel):
             "black_shots": black,
             "shots_with_speech": with_text,
             "shots_with_description": with_desc,
+            "shots_with_tags": with_tags,
+            "shots_with_face": with_face,
             "shot_sizes": sizes,
+            "top_tags": [{"tag": t, "count": c} for t, c in top_tags],
             "avg_shot_sec": round(
                 sum(s.duration_sec for s in self.shots) / len(self.shots), 2
             ) if self.shots else 0.0,
@@ -235,8 +250,12 @@ class ContentIndex(BaseModel):
             extra.append(f"{s['black_shots']} 段黑场")
         if s["shots_with_speech"]:
             extra.append(f"{s['shots_with_speech']} 段有语音")
+        if s["shots_with_face"]:
+            extra.append(f"{s['shots_with_face']} 段有人脸")
         if s["shot_sizes"]:
             extra.append("景别 " + "/".join(f"{k}:{v}" for k, v in s["shot_sizes"].items()))
+        if s["top_tags"]:
+            extra.append("常见标签 " + "、".join(f"{t['tag']}×{t['count']}" for t in s["top_tags"][:6]))
         if extra:
             lines.append("；".join(extra))
         if s["sample_shots"]:

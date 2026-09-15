@@ -283,13 +283,28 @@ class TestIndexModel:
 
 @pytest.fixture()
 def isolated_library(tmp_path, monkeypatch):
-    """把素材库/项目目录指到 tmp，避免污染真实数据。"""
+    """把素材库/项目目录指到 tmp，避免污染真实数据。
+
+    同时**关掉画面标注**（CLIP/云端）：这一组测的是索引底座（切分/统计/存储/缓存），
+    标注有自己的测试（`test_content_vision.py`）。开着会让每条端到端用例都去跑一次
+    模型推理，既慢又让"索引底座"的回归被模型可用性绑架。
+    """
     lib = tmp_path / "library"
     proj = tmp_path / "projects"
     lib.mkdir()
     proj.mkdir()
     monkeypatch.setattr(ci.settings, "library_dir", lib, raising=False)
     monkeypatch.setattr(ci.settings, "project_dir", proj, raising=False)
+    monkeypatch.setattr(ci.settings, "content_index_clip_enabled", False, raising=False)
+    monkeypatch.setattr(ci.settings, "content_index_visual_llm", False, raising=False)
+    # 连本地分类器也一起关掉：否则每条端到端用例都会加载一次 ViT（单进程累计上百秒），
+    # 而这些用例只关心索引底座（切分/统计/存储/缓存）。画面标注见 test_content_vision.py。
+    from clipwright.services import content_vision as _cv
+
+    async def _no_label(frames, **kwargs):
+        return [{} for _ in frames]
+
+    monkeypatch.setattr(_cv, "label_shots", _no_label)
     return lib, proj
 
 

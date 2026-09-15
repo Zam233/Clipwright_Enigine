@@ -142,11 +142,17 @@ def index_is_fresh(index: Optional[ContentIndex], sha256: str, fingerprint: str)
 
 
 def current_fingerprint() -> str:
-    """当前索引的模型指纹（R1 只有规则/ffmpeg；R2/R3 会把模型名并进来）。"""
+    """当前索引的模型指纹。
+
+    凡是**产出索引字段**的东西都算进来：视觉分类模型、CLIP 权重、嵌入模型、
+    以及是否启用云端多模态描述（换后端 = 字段语义变了 = 必须重建）。
+    """
     return model_fingerprint(
         index_version=str(INDEX_VERSION),
         visual=(settings.vision_model if settings.vision_provider == "transformers" else ""),
+        clip=(settings.content_index_clip_model if settings.content_index_clip_enabled else ""),
         embed=(settings.rag_embed_model or ""),
+        cloud_llm="1" if settings.content_index_visual_llm else "",
         speech="",
     )
 
@@ -492,6 +498,36 @@ async def build_index(
             confidence={"camera_motion": 0.4 if motion != "unknown" else 0.0},
         ))
 
+    # ── R2：画面维度（本地模型优先 + 云端按需）＋ 质量维度 ──
+    if settings.content_index_enabled and frames:
+        if progress:
+            await _maybe_await(progress(0.88, f"画面标注（{len(shots)} 镜头）"))
+        try:
+            from clipwright.services import content_vision as cv2mod
+
+            labels = await cv2mod.label_shots(
+                frames,
+                concurrency=settings.content_index_label_concurrency,
+                use_clip=settings.content_index_clip_enabled,
+                use_llm=settings.content_index_visual_llm,
+                llm_max_shots=settings.content_index_llm_max_shots,
+                progress=progress, progress_base=0.88, progress_span=0.05,
+            )
+            for shot, extra in zip(shots, labels):
+                if not extra:
+                    continue
+                for field, value in (extra.get("visual") or {}).items():
+                    setattr(shot.visual, field, value)
+                shot.evidence.update(extra.get("evidence") or {})
+                shot.confidence.update(extra.get("confidence") or {})
+                quality = cv2mod.detect_quality_flags(shot.keyframes or [])
+                for field, value in quality.items():
+                    setattr(shot.stats, field, value)
+                if quality:
+                    shot.evidence["stats.quality"] = "pillow+numpy"
+        except Exception as exc:  # 标注失败不能拖垮索引
+            logger.warning("画面标注失败（索引仍可用）: %s", exc)
+
     index = ContentIndex(
         sha256=sha, asset_id=asset_id, asset_path=str(path),
         filename=filename or path.name,
@@ -500,7 +536,9 @@ async def build_index(
         fps=round(float(meta.get("fps") or 0.0), 3),
         index_version=INDEX_VERSION, model_fingerprint=fingerprint,
         scene_threshold=thr, shots=shots,
-        sources={"shots": "ffmpeg:scene", "stats": "pillow+numpy"},
+        sources={"shots": "ffmpeg:scene", "stats": "pillow+numpy",
+                 "visual": "clip_zero_shot" if settings.content_index_clip_enabled else "classifier",
+                 "cloud_llm": "on" if settings.content_index_visual_llm else "off"},
         created_at=now_iso(),
     )
     if not keep_frames:

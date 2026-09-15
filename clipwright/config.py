@@ -119,8 +119,18 @@ class Settings(BaseSettings):
     content_index_max_shots: int = 2000
     # 是否把索引镜像到 Mongo（跨项目"我所有素材里找 X"的唯一载体）。
     content_index_mirror_mongo: bool = True
-    # 云端多模态对（被选中的）镜头做画面描述；默认关（R2 才接线，开启后产生视觉 API 成本）。
+    # 云端多模态对（被选中的）镜头做画面描述；默认关（开启后产生视觉 API 成本）。
     content_index_visual_llm: bool = False
+    # 云端多模态每次索引最多调用多少个镜头（预算闸门；0 = 不限制，仍受月预算约束）。
+    content_index_llm_max_shots: int = 12
+    # 是否用 CLIP 零样本给镜头打标签（开放词表，能回答"找有咖啡杯的镜头"这类问题）。
+    content_index_clip_enabled: bool = True
+    # CLIP 权重名（HF）；首次使用会下载（约 600MB）。
+    content_index_clip_model: str = "openai/clip-vit-base-patch32"
+    # 零样本标签词表（JSON：{"中文标签": "english prompt"}）；留空用内置默认词表。
+    content_index_clip_vocab: str = ""
+    # 镜头标注并发（CPU 推理，过高反而拖慢整机）。
+    content_index_label_concurrency: int = 4
 
     # --- 安全 ---
     # API 令牌：设置后所有 /api/* 请求需携带 Authorization: Bearer <token>
