@@ -70,6 +70,16 @@ class EditRequest(BaseModel):
     region_end_sec: float | None = None
 
 
+class IntentRequest(BaseModel):
+    """R6：自然语言指令 → 意图 → 落位预览（**不修改时间线**）。"""
+    message: str
+    timeline: dict[str, Any] = {}
+    selected_clip_ids: list[str] = []
+    region_start_sec: float | None = None
+    region_end_sec: float | None = None
+    project_id: str = ""
+
+
 class ProceedRequest(BaseModel):
     session_id: str
     persona_id: str = ""
@@ -138,6 +148,44 @@ async def edit_timeline(req: EditRequest, request: Request) -> dict:
     except Exception as e:
         logger.exception("Timeline edit error: %s", e)
         raise HTTPException(status_code=500, detail="时间线编辑失败，请稍后重试")
+
+
+@router.post("/{session_id}/intent")
+async def preview_intent(session_id: str, req: IntentRequest, request: Request) -> dict:
+    """R6：把一句自然语言指令解析成**剪辑意图**并落位到具体片段（预览，不修改时间线）。
+
+    返回：`intent`（人话总结）、`resolution`（影响的片段 + 预览清单）、
+    `questions`（必须由用户拍板的问题，带具体选项）、`problems`（校验错误/警告）、
+    `blocked`（有硬错误时为 True，此时不落位——幻觉操作在这里被拦住）。
+
+    前端"意图确认卡"直接渲染本响应；确认后的执行在 R7 的 apply 通路。
+    """
+    _require_session_owner(request, session_id)
+    from clipwright.schema.timeline import Timeline
+    from clipwright.services.intent_resolver import preview_intent as _preview
+
+    try:
+        timeline = Timeline.model_validate(req.timeline) if req.timeline else Timeline(id="empty")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"时间线数据非法: {str(exc)[:120]}")
+    region = ((req.region_start_sec, req.region_end_sec)
+              if req.region_start_sec is not None and req.region_end_sec is not None else None)
+    try:
+        result = await asyncio.wait_for(
+            _preview(
+                req.message, timeline=timeline, session_id=session_id,
+                selected_clip_ids=req.selected_clip_ids, region=region,
+                project_id=req.project_id or None,
+                llm=getattr(_service, "_llm", None),
+            ),
+            timeout=120,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="意图解析超时，请简化指令后重试")
+    except Exception as exc:
+        logger.exception("意图预览失败: %s", exc)
+        raise HTTPException(status_code=500, detail="意图解析失败")
+    return {"session_id": session_id, **result}
 
 
 @router.post("/chat")

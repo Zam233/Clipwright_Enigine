@@ -184,7 +184,7 @@ asset:{sha256[:12]}#s{shot_index}      # 稳定、可跨会话、可写进日志
 | R3 | ✅ 完成（2026-09-14） | `services/content_audio.py`（音频事件 + 对齐 + 关键词）、`services/event_lexicon.py`（5 个领域词表）、`tool/event_spot.py`（已注册，工具总数 49）、6 个新 Settings、`scripts/verify_audio_events.py`、`tests/clipwright/test_content_audio.py`（57 条） | 音频事件时间误差 **0.020s**（门槛 ≤0.3s）；跨镜头转写按交集切分正确；进球事件落在真值 ±0.3s 且带证据句 |
 | R4 | ✅ 完成（2026-09-14，**M1 达成**） | `services/content_query.py`（混合检索 + 自然语言路由）、`tool/content_query.py`（已注册，工具总数 50）、RequirementsAgent 上下文注入、1 个新 Settings、`scripts/verify_content_query.py`、`tests/clipwright/test_content_query.py`（78 条） | **32/32 = 100%** 区间命中（门槛 ≥80%）：A 组检索层 22/22、B 组端到端 10/10 |
 | R5 | ✅ 完成（2026-09-14） | `services/edit_intent.py`（op/target/constraints 契约 + 校验 + 规则解析器 + LLM schema）、`_ADJUST_FIELDS` 归一为单一事实来源、`scripts/verify_edit_intent.py`、`tests/clipwright/test_edit_intent.py`（79 条） | **解析 50/50 = 100%**（门槛 ≥85%）；**幻觉操作拦截 20/20 = 100%** |
-| R6 | 待开工 | 引用落位 + 指代/澄清 + 意图确认卡 | 指代 ≥ 85%，歧义 100% 反问 |
+| R6 | ✅ 完成（2026-09-14） | `services/intent_resolver.py`（引用落位 + 指代消解 + 会话短名单 + 反问）、`api/requirements.py` 新增 `POST /api/requirements/{sid}/intent`（只预览不执行）、客户端 `IntentCard.tsx` + `AgentPanel` 预检门禁 + `requirementsApi.intent()`、`scripts/verify_intent_resolver.py`、`tests/clipwright/test_intent_resolver.py`（58 条）+ 客户端 15 条 | 脚本 **INTENT RESOLVER VERIFY PASS**（17 例）；歧义用例 **100% 反问并给选项**；预览**只读**（不写时间线）；`blocked` 时确认按钮禁用 |
 | R7 | 待开工 | ops → timeline patch + dry-run 校验（M2） | 3 条"一句话→成片"跑通 |
 | R8–R10 | 待开工 | 见 §3 | — |
 
@@ -288,6 +288,32 @@ asset:{sha256[:12]}#s{shot_index}      # 稳定、可跨会话、可写进日志
 **R5 被实测暴露的问题（已修）**：规则解析器最初只认"动词在前"的说法（"去掉黑场"），
 漏掉中文更常见的**把字句与后置动词**（"把掌声那几段删掉"）；`add` 也没允许量词插入
 （"加**个**字幕"）。基准一跑就现形——这类"口语语法覆盖"问题只能靠夹具集发现，靠读代码发现不了。
+
+**R6 的实测结论（引用落位 + 确认门禁）**：
+
+| 项 | 结果 |
+|----|------|
+| 引用落位（索引命中片段 → 时间线 clip） | 按 `asset:{sha}#s{n}` 回连 clip，命中即给出精确 clip_id（脚本 17 例全过） |
+| 会话指代（"刚才那几段"/"上面找到的"） | `SessionRefState` 保留最近 5 个短名单，指代走短名单并集；无短名单时**不猜**，转反问 |
+| 歧义处理 | 匹配为空或候选过多（>12）时**100% 反问并给出可选项**，不自行挑一个执行 |
+| 序号语义 | `第2个` 解释为**时间线位置**（会话相对位置会随上一轮编辑漂移，用户看到的是时间线） |
+| 预览只读性 | `/intent` 走 `preview_intent()`——只读时间线与索引，返回 `preview/questions/problems`，**不写任何状态**；脚本有断言 |
+| 降级标注 | 命中片段若索引信息不完整，`degraded` 只标在**实际匹配到的片段**上，不扩散到整条时间线 |
+| 前端门禁 | 有未答问题 / `problems` 含 error / `blocked` 三种情况都**禁用确认按钮**（客户端 15 条测试覆盖，含"`/intent` 挂了静默降级回旧路径"） |
+
+**R6 被实测暴露的问题（已修）**：
+- 序号最初按"会话内第 N 个"解释，与用户心智（时间线第 N 个）不一致 → 改为时间线位置；
+- 指代词最初被当作**文本检索词**送进 `route_query`（"这段"会匹配到含"这"字幕的片段）→ 改为映射到 `selected`，
+  并加 `is_deictic_phrase()` 在 R5 层拦截；
+- `degraded` 最初只要时间线里存在无索引片段就置位 → 收敛到"仅匹配到的片段"。
+
+**R6 的实现边界（如实）**：
+- 反问策略是**阈值 + 规则**（空命中 / >12 候选 / 指代无短名单），不是概率化的澄清决策；
+- 会话短名单只活在**进程内存**里（`_MAX_SHORTLISTS=5`），重启即失忆，也未按 session 做跨进程共享；
+- 「歧义 100% 反问」是在**自写夹具**上的结果，且反向也有代价：过于保守时会多问一句
+  （基准里这被记为"可接受的啰嗦"，但真实体验好坏未做用户测试）；
+- 前端确认卡只做**渲染 + 门禁**，点"确认执行"仍走既有的 `/edit` 通路；
+  真正由 ops 驱动的时间线补丁执行是 R7 的活。
 
 **R5 的实现边界（如实）**：
 - 基准夹具是**我自己写的 50 条**，不是真实用户语料；因此 100% 说明"常见说法已覆盖 + 无回归"，

@@ -458,11 +458,66 @@ def _num(match: Optional[re.Match[str]], group: int = 1) -> Optional[float]:
     return parse_cn_number(match.group(group))
 
 
+#: 指代词（"刚才那段""它们"）——它们是**指代**而不是内容条件，必须交给会话状态解析，
+#: 否则会被当成关键词去和素材文本比，结果必然是空匹配（实测踩过）。
+DEICTIC_RECENT_WORDS: tuple[str, ...] = ("刚才", "刚刚", "上一个", "那段", "这一段", "那个片段")
+DEICTIC_PLURAL_WORDS: tuple[str, ...] = ("它们", "这些", "那些", "这几个", "这几个片段")
+
+
+#: 显式片段 id 的形态（`c3` / `clip_07` / `mg_ab12`…）——用户会从界面复制 id 来说话。
+#: 刻意**不**把普通英文词当 id（否则 "iphone" 会被当引用）。
+_ID_LIKE_RE = re.compile(r"^(?:clip|mg|anim|shape|cap|txt|aud|vid|asset)_?[\w\-]{1,40}$|^c\d{1,3}$",
+                         re.IGNORECASE)
+#: 时间区间说法："0 到 3.5 秒" / "第 5 秒到第 8 秒" / "5-8s"
+_RANGE_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(rf"{_NUM}\s*(?:到|至|-|~)\s*{_NUM}\s*秒"),
+    re.compile(rf"第\s*{_NUM}\s*秒\s*(?:到|至|-|~)\s*第?\s*{_NUM}\s*秒"),
+    re.compile(rf"{_NUM}\s*(?:到|至|-|~)\s*{_NUM}\s*s", re.IGNORECASE),
+)
+
+
+def parse_time_range(text: str) -> Optional[tuple[float, float]]:
+    """解析"0 到 3.5 秒"这类时间区间（解析不出返回 None）。"""
+    for pattern in _RANGE_RES:
+        m = pattern.search(text or "")
+        if not m:
+            continue
+        nums = [parse_cn_number(g) for g in m.groups() if g]
+        nums = [n for n in nums if n is not None]
+        if len(nums) >= 2:
+            lo, hi = float(nums[0]), float(nums[1])
+            return (lo, hi) if hi > lo else (hi, lo)
+    return None
+
+
+def is_deictic_phrase(text: str) -> bool:
+    """是否是指代说法（而非内容描述）。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if re.fullmatch(r"第\s*\d+\s*个?", t):
+        return True
+    return any(w in t for w in DEICTIC_RECENT_WORDS + DEICTIC_PLURAL_WORDS)
+
+
 def _target_from_phrase(phrase: str) -> IntentTarget:
     """内容条件短语 → target：**复用 R4 的路由**，让"去掉黑场"和"找黑场"共享词汇。"""
     phrase = (phrase or "").strip(" 的，。,.!！?？")
     if not phrase:
         return IntentTarget(all=True)
+    rng = parse_time_range(phrase)
+    if rng:
+        return IntentTarget(time_range=rng)
+    if _ID_LIKE_RE.fullmatch(phrase):
+        return IntentTarget(ref=[phrase])
+    ordinal = re.fullmatch(r"第\s*(\d+)\s*个?", phrase)
+    if ordinal:
+        # "第 N 个"按**时间线上的位置**理解（可见、可预期），而不是"最近提到的那批里的第 N 个"
+        # ——后者要依赖会话状态，用户看不到自己指的是什么（实测这条歧义最容易出错）
+        return IntentTarget(index=[max(1, int(ordinal.group(1))) - 1])
+    if is_deictic_phrase(phrase):
+        # 指代 → "选中/会话所指"；由 intent_resolver 用会话状态或区域填充
+        return IntentTarget(selected=True)
     try:
         from clipwright.services.content_query import route_query
 

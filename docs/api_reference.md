@@ -483,6 +483,7 @@ data: {"type":"error","detail":"流式生成中断: ...","partial":"已产出的
 | `GET /api/requirements/session/{session_id}` | 获取会话状态 |
 | `GET /api/requirements/plan/{session_id}` | 获取制作规划书 |
 | `POST /api/requirements/proceed` | 确认规划书并启动管线 |
+| `POST /api/requirements/{session_id}/intent` | **意图落位预览（R6，只读）**。请求：`{message, timeline, selected_clip_ids?, region_start_sec?, region_end_sec?, project_id?}`；响应：`{intent, resolution:{preview[], affected_clip_ids[], questions[]}, problems[]}`，`blocked=true` 表示含硬错误不可执行。**不写任何状态**——供前端"意图确认卡"在执行前展示"将改动什么 + 需要用户拍板的问题"。非法时间线 400、超时 504 |
 
 ---
 
