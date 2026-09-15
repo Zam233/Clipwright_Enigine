@@ -1982,3 +1982,55 @@ ChatForge 六项欠账的最后一项：会话此前只能等模型产出**完�
   `Page.captureScreenshot` + 帧管道），实测 15 帧 1080p **2.12s**（hyperframes 同规格 ~10s），
   但既然"裁剪"根因是我们自己的 bg 位移、Chrome 路径本身没问题，就不引入第二套
   Chrome 驱动（缺少 lint 门禁/变量支持/media 就绪等上游能力），已删除并在文档留档。
+
+### 执行轮次 129（2026-09-14：素材内容索引 R1——"Agent 知道自己在剪什么"的底座）
+
+> 本轮起执行新计划 `docs/content-understanding-plan-2026-09-14.md`（R1–R10）。
+> 该计划针对的结构性缺口：**素材的视觉内容看完就丢**——`MediaIndexer` 只抽 ffprobe 元数据
+> 与文件名标签，`VisionLLMTool` 的打分用完即弃，`ProductionPlan` 是无任何素材引用的自由文本。
+
+- ✅ **R1 索引底座**（新模块 `services/content_index.py` + `schema/content.py`）：
+  把一段素材变成**镜头级结构化记录**，内容寻址落盘 + 可选 Mongo 镜像。
+  · **L0 全程零 ML、零云端调用**：ffprobe 元数据 → ffmpeg `select='gt(scene,θ)'` 切分 →
+    镜头区间（碎片合并 / 上限裁剪，纯函数）→ 每镜头均匀抽帧（默认 2 帧）→ 廉价统计
+    （亮度/对比度/Laplacian 锐度/饱和度/帧间差/黑场白场）→ 落盘；
+  · **内容寻址**：`ShotRef = asset:{sha256[:12]}#s{n}`；索引文件按 sha256 命名
+    （`<素材库>/content_index/<sha256>.json`），同一素材**跨项目复用同一份索引**
+    （`AssetManager` 本就按 sha256 去重）；路径不做寻址——素材会被移动/重命名/重复导入；
+  · **缓存与失效**：键 = `sha256 + INDEX_VERSION + model_fingerprint()`。换内容、换结构版本、
+    换视觉/嵌入模型都会自动重建——避免"旧模型填的字段与新模型混在一份索引里"这种无法解释的状态；
+  · **诚实缺省**：R1 只填得出来的字段。`visual.description`/`tags`/`speech`/`embeddings`
+    保持空（`coverage()` 如实显示 0.00），`camera_motion` 是帧间差阈值启发式（置信度 0.4），
+    单帧或黑/白场给 `unknown` 而**不假装"静止"**，景别 `shot_size` 刻意留 `unknown`
+    （没有人脸/尺寸估计前编一个值就是假数据）；
+  · **摘要形态**：`summary()`/`summary_text()` 给 Agent 的是"几行统计 + 少量镜头样本"
+    （沿用 V6 短语打包的原则：进上下文的是压缩结构，不是原始数据）；
+  · **Mongo 镜像 best-effort**：`mirror_index()` upsert 到 `content_index` 集合
+    （`sha256` + `text` 索引），`find_indexes()` 支持跨项目按 sha/关键词检索；
+    未连接或写入失败只记日志，**不影响本地索引**。
+- ✅ **接线**：7 个 Settings 字段（`content_index_enabled` / `_scene_threshold` /
+  `_min_shot_sec` / `_keyframes_per_shot` / `_max_shots` / `_mirror_mongo` / `_visual_llm`）
+  + `config_schema.py` 元数据与「素材内容索引」分组（`test_settings_api.py` 覆盖度检查通过）。
+- ✅ **测试**：新增 `test_content_index.py` **83 条**——内容寻址（格式/往返/大小写/垃圾输入/
+  7 类非法引用）、模型指纹（顺序无关/换模型变/空值等价）、镜头区间（切分/去重/越界裁剪/
+  碎片并入前一个/首段过短并入后一个/全碎片塌缩/上限保留最长且仍有序/连续性/浮点去重）、
+  场景时间解析、廉价统计（空输入/黑场/白场/灰/噪声锐度>平坦/帧间差/单帧运动未知/饱和度/
+  6 组运动分类边界/黑白场运动 unknown）、索引模型（时长派生/shot_at 二分/摘要计数/
+  样本上限/覆盖率/embedding 文本/缓存字段不落盘/Mongo 文档）、存储（往返/内容寻址/
+  缺失返回 None/损坏不抛/版本不符失效/原子写无残留/新鲜度四条/与 `asset_manager._sha256_of`
+  算法一致）、Mongo（未连接跳过/假集合 upsert+检索+排除式投影+跨项目）、端到端（ffprobe/
+  切点/建索引出镜头与统计/黑场命中/缓存命中/force 重建/进度单调/keep_frames 清理/
+  闪白合并/ensure_index 门面/缺文件报错/JSON 往返）。
+- ✅ **验收脚本**：`scripts/verify_content_index.py`——合成 6 段硬切视频 →
+  **5 镜头**（噪声段吞并了尾段，合理）；首段纯黑判定黑场 ✓、纯白段判白场 ✓、
+  噪声段 `motion=80.3` 且分类 `high`（其它段 0.0）✓；缓存命中原样返回（`build_ms` 不变）✓；
+  换模型指纹 `index_is_fresh=False` ✓；另一段素材得到不同 sha 并落盘两份索引 ✓。
+- ✅ **回归**：后端全量 **2571 passed** / 1 skipped / 1 xfailed（仍只有 2 条既有 plugin
+  子进程编码失败）
+- ⚠️ **验证边界**：
+  · 全部验证都用**合成素材**（无真实素材，见计划 §6 决定 4）：切分质量目前只证明
+    "硬切能被切开"，**尚未**在真实拍摄素材上量过镜头切分 F1（计划 §4 目标 ≥0.90，R2 做）；
+  · `camera_motion` 启发式阈值（2/8/20）来自合成样本，真实素材上需要重新标定；
+  · 时间分辨率受 `fps` 与抽帧时间点影响，`motion` 是**同镜头内两帧差**，不等于真实运镜速度；
+  · Mongo 镜像只与假集合做过语义测试，**未与真实 Mongo 实例**做端到端验证（本机未起库）；
+  · 索引尚未自动生成（素材导入不会触发），也没有 SSE 进度与后台任务——按计划属 R4 接线。

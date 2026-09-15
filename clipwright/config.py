@@ -106,6 +106,22 @@ class Settings(BaseSettings):
     # 也可用环境变量 CLIPWRIGHT_REVIEW_MIN_SCORE 覆盖。
     render_review_min_score: int = 0
 
+    # --- 素材内容索引（R1：镜头级结构化索引，"Agent 知道自己在剪什么"的底座）---
+    # 默认开启：L0 索引只做 ffmpeg 切分 + 抽帧 + 廉价统计，零 ML、零云端调用。
+    content_index_enabled: bool = True
+    # ffmpeg 场景检测阈值（越小越敏感、镜头越多）；0.3 与 scene_detect 工具默认一致。
+    content_index_scene_threshold: float = 0.3
+    # 低于该时长的镜头并入邻居（转场/闪帧碎片），避免索引被碎片污染。
+    content_index_min_shot_sec: float = 0.3
+    # 每镜头抽几帧算统计；>=2 才能算帧间差（运动强度）。
+    content_index_keyframes_per_shot: int = 2
+    # 单段素材最多保留的镜头数（超长素材兜底）。
+    content_index_max_shots: int = 2000
+    # 是否把索引镜像到 Mongo（跨项目"我所有素材里找 X"的唯一载体）。
+    content_index_mirror_mongo: bool = True
+    # 云端多模态对（被选中的）镜头做画面描述；默认关（R2 才接线，开启后产生视觉 API 成本）。
+    content_index_visual_llm: bool = False
+
     # --- 安全 ---
     # API 令牌：设置后所有 /api/* 请求需携带 Authorization: Bearer <token>
     # 留空为开发模式（直接放行，启动时打印警告）

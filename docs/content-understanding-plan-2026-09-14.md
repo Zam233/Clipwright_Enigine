@@ -166,16 +166,40 @@ asset:{sha256[:12]}#s{shot_index}      # 稳定、可跨会话、可写进日志
 
 ---
 
-## 6. 需要拍板的 4 件事
+## 6. 拍板结果（2026-09-14，已确认）
 
-1. **索引存储位置**：默认 `<assets_dir>/<sha256>/content_index.json`（随素材走，删素材即删索引）；可选镜像到 Mongo `content_index` 集合（支持跨项目"我所有素材里找 X"）。
-2. **是否允许把素材帧送云端多模态**：默认**不送**（只用本地模型），需要时按项目开开关。
-3. **是否下载 CLIP/SigLIP 权重**（约 600MB，HF，宽松许可）：默认下（R9 需要）。
-4. **评测素材来源**：有真实素材最好（3 个项目即可起步）；没有则用合成视频 + 公开素材建基准集。
+| # | 事项 | 决定 | 落点 |
+|---|------|------|------|
+| 1 | 索引存储 | **本地内容寻址 + 可选 Mongo 镜像**（默认开镜像） | `<素材库>/content_index/<sha256>.json`；Mongo 集合 `content_index`（`sha256` / `text` 索引），`find_indexes()` 支持跨项目"我所有素材里找 X" |
+| 2 | 素材帧送云端多模态 | **允许** | 设置项 `content_index_visual_llm`（默认关，开启后产生视觉 API 成本）；只对**候选镜头**调用，且走 `budget.py` 月度预算 |
+| 3 | 下载 CLIP/SigLIP 权重 | **下载**（R9 使用） | HF 宽松许可权重；`vision_provider=transformers` 路径 |
+| 4 | 评测素材来源 | **无真实素材** → 合成 + 公开素材建基准集 | `scripts/` 下用 ffmpeg 合成确定性素材做回归；语义检索基准另建 |
+
+## 7. 执行进度
+
+| 轮 | 状态 | 交付物 | 验证 |
+|----|------|--------|------|
+| R1 | ✅ 完成（2026-09-14） | `schema/content.py`、`services/content_index.py`、`scripts/verify_content_index.py`、`tests/clipwright/test_content_index.py`（83 条）、7 个 Settings 字段 + 元数据 | 脚本 PASS：合成 6 段硬切视频 → 5 镜头；黑场/白场/噪声运动全部识别；缓存命中（`build_ms` 不变）；换 sha 与换模型指纹均正确失效；`pytest` 全绿 |
+| R2 | 待开工 | 本地小模型画面标签 + 质量/镜头语言 | 切分 F1 ≥ 0.90 |
+| R3 | 待开工 | ASR → 镜头对齐 + 领域词表 | 对齐误差 ≤ 0.3s |
+| R4 | 待开工 | `tool/content_query.py` + Agent 上下文注入（M1） | 30 条问答区间命中 ≥ 80% |
+| R5–R10 | 待开工 | 见 §3 | — |
+
+**R1 的实现边界（如实）**：
+- 只做 **L0**：ffmpeg 场景切分 + 抽帧 + 廉价统计（亮度/对比度/锐度/饱和度/帧间差/黑场白场）。
+  **没有任何 ML 或云端调用**——`visual.description` / `visual.tags` / `speech` / `embeddings`
+  在 R1 后仍为空（`coverage()` 会如实显示 0），这些是 R2/R3/R9 的活。
+- `camera_motion` 是**帧间差阈值启发式**（`static/low/medium/high`），置信度标 0.4；
+  单帧或黑/白场时给 `unknown` 而不假装"静止"。
+- `visual.shot_size`（景别）刻意留 `unknown`：R1 没有人体/人脸估计，编一个值就是假数据。
+- Mongo 镜像是 best-effort：未连接/写入失败只记日志，**不影响本地索引**。
+- 索引文件里的 `keyframes` 默认保留（R2 要用）；`keep_frames=False` 时清理抽帧目录。
+- 尚未接线：素材导入时自动建索引、`task_queue` 后台任务与 SSE 进度（都属 R4 的"Agent 接线"）。
+  当前入口只有 `build_index()` / `ensure_index()` 两个异步函数。
 
 ---
 
-## 7. 与既有计划的关系
+## 8. 与既有计划的关系
 
 - 本计划**不推翻** `docs/fix-and-feature-plan.md` 的既有条目，而是补齐其中"Agent 对素材内容无感知"这一结构性缺口（此前 P8–P10 的资产治理只做了 sha256 去重/used_count/巡检，没做内容语义）。
 - 复用并强化既有件：V6 短语打包（已被索引层消费）、V7 复核图（升级为"喂多模态的帧网格"）、V8 项目记忆（承接落位证据）、`mg_fastpath`（集锦包装的记分牌/标题动画渲染提速 3.4–11.8×）。

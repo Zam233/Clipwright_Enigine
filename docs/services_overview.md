@@ -23,6 +23,7 @@
 | `animation/mg_fastpath.py` | MG PIL 快路径（V3）：白名单判定 + 逐帧绘制 + 原始帧管道编码成带 alpha MOV，模板覆盖率 11/11，实测 3.4–11.8× 提速；任何不支持的特征一律回退 Chrome |
 | `post_review.py` | 渲染后复核的**问题派工**（V4 残余）：按描述归类 animation/edit/audio/material/other、投票选主重做对象、视觉评分门槛判定、转 `QualityIssue` 供质检复用既有 redo 映射 |
 | `transcript_pack.py` | 短语级转写打包（V6）：逐词/逐句 ASR → 短语视图 `[start-end] S1 文本`（断句按停顿 ≥0.5s/换人/超长），静音区间单独保留作为切点候选；实测 600 词输入压缩 **93.2%** |
+| `content_index.py` | 素材内容索引（R1）：ffmpeg 场景切分 → 镜头区间（碎片合并/上限）→ 抽帧 → 廉价统计（亮度/对比度/锐度/饱和度/帧间差/黑场白场）→ 内容寻址落盘 `<素材库>/content_index/<sha256>.json` + 可选 Mongo 镜像（跨项目检索）。缓存键 = `sha256 + 索引版本 + 模型指纹`；**L0 全程零 ML 零云端** |
 | `remote_render.py` | 远程渲染客户端（worker 协议：资产上传 → 提交 job → 轮询 → 下载） |
 
 ### AI 服务
