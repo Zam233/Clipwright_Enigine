@@ -186,8 +186,9 @@ asset:{sha256[:12]}#s{shot_index}      # 稳定、可跨会话、可写进日志
 | R5 | ✅ 完成（2026-09-14） | `services/edit_intent.py`（op/target/constraints 契约 + 校验 + 规则解析器 + LLM schema）、`_ADJUST_FIELDS` 归一为单一事实来源、`scripts/verify_edit_intent.py`、`tests/clipwright/test_edit_intent.py`（79 条） | **解析 50/50 = 100%**（门槛 ≥85%）；**幻觉操作拦截 20/20 = 100%** |
 | R6 | ✅ 完成（2026-09-14） | `services/intent_resolver.py`（引用落位 + 指代消解 + 会话短名单 + 反问）、`api/requirements.py` 新增 `POST /api/requirements/{sid}/intent`（只预览不执行）、客户端 `IntentCard.tsx` + `AgentPanel` 预检门禁 + `requirementsApi.intent()`、`scripts/verify_intent_resolver.py`、`tests/clipwright/test_intent_resolver.py`（58 条）+ 客户端 15 条 | 脚本 **INTENT RESOLVER VERIFY PASS**（17 例）；歧义用例 **100% 反问并给选项**；预览**只读**（不写时间线）；`blocked` 时确认按钮禁用 |
 | R7 | ✅ 完成（2026-09-14，**M2 达成**） | `services/intent_apply.py`（plan → dry-run → apply 三步）、`api/requirements.py` 新增 `POST /api/requirements/{sid}/intent/apply`、客户端确认卡改为执行**用户确认过的那份意图**、`scripts/verify_intent_apply.py`、`tests/clipwright/test_intent_apply.py`（99 条） | 脚本 **25/25 通过**（3 条"一句话→成片" + 3 类门禁）；dry-run **逐字节只读**；有硬错误**一条都不执行**；R5 顺带补了两个解析缺口（"第2个**片段**"、"**所有**片段"） |
-| R8 | 待开工 | `ProductionPlan.raw_scenes` 携带 `material_refs`；需求/结构/剪辑 Agent 读索引 | — |
-| R9–R10 | 待开工 | 见 §3 | — |
+| R8 | ✅ 完成（2026-09-14） | `services/scene_grounding.py`（场景 → 真实镜头引用）、StructureAgent 注入索引摘要 + 两条路径都接地、`RequirementsAgent.translate_scenes` 透传 refs + 接地摘要、EditAgent 把 refs 写进 `clip.metadata`、`scripts/verify_scene_grounding.py`、`tests/clipwright/test_scene_grounding.py`（37 条）+ `test_scene_grounding_wiring.py`（12 条） | 脚本 **18/18 通过**；**引用不存在的素材 = 0**（验收指标）；无索引/无相关画面时**如实留白不凑数**；结构化条件不命中退化为文本匹配并如实标注 |
+| R9 | 待开工 | 真 `semantic_match`（CLIP/SigLIP 视觉向量）、素材向量索引、`scripts/verify_semantic_search.py` | 召回率 @10 ≥ 70%（30 条查询） |
+| R10 | 待开工 | 标注基准集（用户原话 → 期望区间/时间线）、指标脚本、真实素材 demo、文档收尾 | 全指标汇总表 |
 
 **R1 的实现边界（如实）**：
 - 只做 **L0**：ffmpeg 场景切分 + 抽帧 + 廉价统计（亮度/对比度/锐度/饱和度/帧间差/黑场白场）。
@@ -289,6 +290,41 @@ asset:{sha256[:12]}#s{shot_index}      # 稳定、可跨会话、可写进日志
 **R5 被实测暴露的问题（已修）**：规则解析器最初只认"动词在前"的说法（"去掉黑场"），
 漏掉中文更常见的**把字句与后置动词**（"把掌声那几段删掉"）；`add` 也没允许量词插入
 （"加**个**字幕"）。基准一跑就现形——这类"口语语法覆盖"问题只能靠夹具集发现，靠读代码发现不了。
+
+**R8 的实测结论（方案接地：规划书引用真实素材）**：
+
+| 项 | 结果 |
+|----|------|
+| 验收脚本 | `scripts/verify_scene_grounding.py` **18/18 通过**（6 组案例） |
+| **引用不存在的素材占比** | **0**（验收指标；`validate_material_refs()` 是这条不变量的实现） |
+| 跨素材检索 | 足球素材 + 城市素材两个索引里，按场景描述各取所需（3/3 场景都有引用） |
+| 相关性排序 | 最相关的镜头排在引用列表首位（"球员射门进球" → `#s2` 射门得分，不是 `#s1` 带球） |
+| 无相关画面 | **如实留白**：`material_refs=[]` + `material_gap` 说明"库里没有与「一碗牛肉面」相关的画面"——**不塞最接近的凑数** |
+| 无索引 | 不产生任何假引用 + 说明"没有内容索引，规划书无法引用真实素材" |
+| 结构化条件退化 | 描述含"全景"→ `route_query` 给出 `shot_size=wide` 硬条件，但 R2 对看不出景别的镜头写 `unknown`，硬过滤零命中 → **退化为文本匹配并标注 `material_match=degraded`** |
+| 下游承接 | 场景引用 → `clip.metadata["material_refs"]`，"这一刀用了哪个镜头"可在时间线上回查 |
+
+**R8 被实测暴露并修复的问题**：
+
+- **硬过滤会把真素材全滤掉**：场景描述里天然出现"全景/特写"，`route_query` 把它变成
+  `shot_size` 硬条件；而 R2 出于诚实把看不出景别的镜头写成 `unknown`——两者一叠加，
+  "整库只有一个 wide" 这种真实情形下会报"没有可用素材"（实测第一版就是这样）。
+  修：两遍检索 + 退化标注。**错误地说"没素材"比"匹配得不够准"代价大得多**。
+- **得分为 0 的"命中"就是凑数**：退化到全库后如果连一个关键词都对不上，
+  取前 3 个镜头等于凭空引用——下游会以为这一场有素材。修：**得分为 0 一律不算命中**，
+  改报缺口。
+
+**R8 的实现边界（如实）**：
+
+- 验收用的索引与场景都是**构造数据**（合成素材、无真实模型），
+  证明的是"接地链路与诚实性规则正确"，**不等于**真实素材上的匹配质量；
+- 接地用的是**关键词/标签打分的规则检索**（零成本、可解释），**不含向量语义匹配**
+  （视觉向量是 R9 的活）——所以"意思相近但用词不同"的场景目前匹配不到；
+- **没有做"结构 → 时间线一致性"的强校验**：引用写进了 `clip.metadata` 供回查，
+  但"时间线里实际用的素材是否覆盖了方案引用的素材"没有自动断言
+  （EditAgent 的选段逻辑仍以素材检索结果为准，引用是**标注与意图**，不是强制约束）；
+- `_ground_scenes` 在**复用时保留已有引用**（不覆盖人工指定），但"人工指定错了一个
+  不存在的 ref"只会被 `validate_material_refs` 报出来，**不会自动纠正**。
 
 **R7 的实测结论（一句话 → 成片，M2 达成）**：
 

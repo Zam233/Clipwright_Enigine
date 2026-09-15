@@ -174,7 +174,11 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
         self, scenes: list[dict], brief: dict[str, Any] | None = None,
         pipeline_id: str = "", web_context: str = "",
     ) -> dict[str, Any]:
-        """将 StructureAgent 的场景列表翻译为用户友好的规划书。"""
+        """将 StructureAgent 的场景列表翻译为用户友好的规划书。
+
+        R8：场景上的 `material_refs`（真实镜头引用）**原样透传**到 `raw_scenes`——
+        规划书是用户确认的对象，确认时看到的必须就是下游执行时用的那份引用。
+        """
         import json
 
         scenes_json = json.dumps(scenes, ensure_ascii=False, indent=2)
@@ -198,6 +202,10 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
                 if not result.get("scene_count"):
                     result["scene_count"] = len(scenes)
                 result["raw_scenes"] = scenes
+                # R8：接地情况对用户可见（哪些场景用了真实镜头、哪些没料）
+                grounded = self._material_summary(scenes)
+                if grounded:
+                    result["material_summary"] = grounded
                 return result
         except Exception as e:
             logger.warning("规划书翻译失败: %s，使用降级", e)
@@ -208,7 +216,18 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
             "total_duration_sec": sum(s.get("duration_sec", 0) for s in scenes),
             "scene_count": len(scenes),
             "raw_scenes": scenes,
+            "material_summary": self._material_summary(scenes),
         }
+
+    @staticmethod
+    def _material_summary(scenes: list[dict]) -> str:
+        """R8：规划书接地摘要（无索引/未接地时返回 ""，不产生空段落）。"""
+        try:
+            from clipwright.services.scene_grounding import summary_text
+
+            return summary_text(scenes)
+        except Exception:
+            return ""
 
     @staticmethod
     def _default_markdown(scenes: list[dict]) -> str:
@@ -223,5 +242,13 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
         for i, s in enumerate(scenes, 1):
             lines.append(f"### 场景 {i}: {s.get('title', '')}")
             lines.append(f"- **时长**: {s.get('duration_sec', 0)}秒")
-            lines.append(f"- **描述**: {s.get('description', '')}\n")
+            lines.append(f"- **描述**: {s.get('description', '')}")
+            # R8：把"这一场用哪些真实镜头"写进规划书——用户确认时就能看到引用，
+            # 而不是等剪完了才发现用的不是他以为的那段素材。
+            refs = s.get("material_refs") or []
+            if refs:
+                lines.append(f"- **素材引用**: {', '.join(str(r) for r in refs)}")
+            elif s.get("material_gap"):
+                lines.append(f"- **素材缺口**: {s['material_gap']}")
+            lines.append("")
         return "\n".join(lines)

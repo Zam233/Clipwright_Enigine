@@ -513,6 +513,13 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                         vid_clip.metadata["visual_description"] = {
                             k: v for k, v in scene_visual.items() if v
                         }
+                    # R8：规划书承接的真实镜头引用随片段落盘——这样"这一刀用的是哪个镜头"
+                    # 在时间线上可回查（方案 → 成片的一致性不再靠人眼比对）。
+                    from clipwright.services.scene_grounding import refs_to_clip_metadata
+                    for key, value in refs_to_clip_metadata(scene_obj).items():
+                        if not vid_clip.metadata:
+                            vid_clip.metadata = {}
+                        vid_clip.metadata[key] = value
                     vid_track.clips.append(vid_clip)
 
                     # 画中画：场景描述含 PiP 标记或 LLM 档案指定时，主视频 clip 后追加 PiP clip

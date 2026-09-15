@@ -295,6 +295,14 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                         scenes=reused,
                     )
                     output._llm_usage = None
+                    # R8：复用路径同样接地。**已带上引用的场景原样保留**
+                    # （`keep_existing=True`），所以人工指定的引用不会被检索结果覆盖；
+                    # 只补那些"用户确认时还没有引用"的场景。
+                    grounded, gnotes = self._ground_scenes(
+                        reused, context, list(output.script_skeleton.get("_warnings") or []))
+                    if grounded:
+                        output.scenes = grounded
+                        output.script_skeleton["_warnings"] = gnotes
                     return output
 
             system_prompt = self._build_system_prompt(identity, language, rhythm, constraints)
@@ -328,6 +336,17 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
             # 自愈重做时注入上一轮质检问题（原 _quality_issues 注入无 Agent 消费）
             system_prompt += self.quality_issues_hint(context)
+
+            # R8：把"素材库里实际有什么"注入结构 prompt——**先看料再排场景**，
+            # 而不是先排出场景再去找料（找不到就编）。没有索引时返回 ""，零变化。
+            index_context = self._index_context(context)
+            if index_context:
+                system_prompt += (
+                    "\n\n## 素材库里已建索引的内容（排场景前请先看料）\n"
+                    "下面是你手上**真实可用**的画面。场景描述里的画面要求应尽量落在这些内容上；"
+                    "库里确实没有的，就在 description 里说明「需补充素材」，"
+                    "不要假设有拍不到的画面。\n" + index_context
+                )
 
             video_mode = context.extra_params.get("video_mode", "voiceover")
             script_text = context.extra_params.get("script_text", "")
@@ -471,6 +490,9 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             scenes = self._strip_opening_animation_markers(
                 scenes, context.category_plugin_id
             )
+            # R8：给每个场景钉上真实素材镜头引用（`material_refs`），
+            # 让规划书从"一段文字描述"变成"指名道姓用哪些镜头"，下游不再各剪各的。
+            scenes, warnings = self._ground_scenes(scenes, context, warnings)
 
             output = StructureOutput(
                 decision=AgentDecision.PASS,
@@ -488,6 +510,45 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         except Exception as e:
             logger.exception("StructureAgent 失败: %s", e)
             return self.build_error_output(str(e), StructureOutput)
+
+    # ── R8：方案接地（场景 → 真实镜头引用）────────────────────
+
+    @staticmethod
+    def _index_context(context: AgentContext) -> str:
+        """已建索引素材的内容摘要（无索引 → ""，行为与接线前完全一致）。"""
+        from clipwright.services.content_query import index_context_text
+
+        project_id = str((context.extra_params or {}).get("project_id") or "") or None
+        try:
+            return index_context_text(project_id)
+        except Exception as exc:  # noqa: BLE001 — 索引读不到不该影响结构生成
+            logger.info("结构 Agent 读取内容索引失败，跳过注入：%s", exc)
+            return ""
+
+    def _ground_scenes(
+        self, scenes: list[dict[str, Any]], context: AgentContext, warnings: list[str],
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """给场景钉真实镜头引用；**失败一律降级**（不阻断管线）。
+
+        引用由索引检索确定性算出，不由 LLM 编——"模型编素材路径"是幻觉重灾区，
+        与 R5 拦截幻觉 op 是同一个道理。
+        """
+        from clipwright.services.scene_grounding import ground_scenes, load_project_indexes
+
+        project_id = str((context.extra_params or {}).get("project_id") or "") or None
+        try:
+            indexes = load_project_indexes(project_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("读取内容索引失败，规划书接地跳过：%s", exc)
+            return scenes, warnings
+        if not indexes:
+            return scenes, warnings
+        grounded, notes = ground_scenes(scenes, indexes)
+        if not grounded:
+            return scenes, warnings
+        hits = sum(1 for s in grounded if s.get("material_refs"))
+        logger.info("StructureAgent: 规划书接地 %d/%d 个场景引用了真实镜头", hits, len(grounded))
+        return grounded, list(warnings) + notes
 
     def _build_anim_guide(self) -> str:
         """构建动画引导（精简版 top-N + tool 指引）。
