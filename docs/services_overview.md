@@ -25,6 +25,8 @@
 | `transcript_pack.py` | 短语级转写打包（V6）：逐词/逐句 ASR → 短语视图 `[start-end] S1 文本`（断句按停顿 ≥0.5s/换人/超长），静音区间单独保留作为切点候选；实测 600 词输入压缩 **93.2%** |
 | `content_index.py` | 素材内容索引（R1）：ffmpeg 场景切分 → 镜头区间（碎片合并/上限）→ 抽帧 → 廉价统计（亮度/对比度/锐度/饱和度/帧间差/黑场白场）→ 内容寻址落盘 `<素材库>/content_index/<sha256>.json` + 可选 Mongo 镜像（跨项目检索）。缓存键 = `sha256 + 索引版本 + 模型指纹`；**L0 全程零 ML 零云端** |
 | `content_vision.py` | 镜头画面标注（R2）：CLIP 零样本（词表可配置）+ 本地分类器兜底 + 云端多模态按需（默认关，带每次索引的镜头数闸门）；OpenCV 人脸/行人 → 景别与 `has_face`；过曝/欠曝/边缘能量等质量维度。**CLIP 文本只编码一次、图片整批前向**；检测前统一降采样（HOG 在小图上会崩进程，已加防护） |
+| `content_audio.py` | 音频维度（R3）：短时能量 → `silence`/`loud`/`onset` 事件（分位数自适应阈值，恒定电平不出事件）；转写片段按**时间交集**对齐到镜头并抽关键词；ffmpeg 抽音轨 + 标准库 `wave` 读取（不引入 librosa）。事件时间精度实测 0.020s |
+| `event_lexicon.py` | 领域事件词表（R3）：`generic`/`sports`/`food`/`tech_review`/`knowledge` 五套词表 + 中文事件名；词表命中优先级最高（长词优先），支持设置项 JSON 追加 |
 | `remote_render.py` | 远程渲染客户端（worker 协议：资产上传 → 提交 job → 轮询 → 下载） |
 
 ### AI 服务

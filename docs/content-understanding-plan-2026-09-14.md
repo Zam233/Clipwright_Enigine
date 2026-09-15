@@ -181,7 +181,7 @@ asset:{sha256[:12]}#s{shot_index}      # 稳定、可跨会话、可写进日志
 |----|------|--------|------|
 | R1 | ✅ 完成（2026-09-14） | `schema/content.py`、`services/content_index.py`、`scripts/verify_content_index.py`、`tests/clipwright/test_content_index.py`（83 条）、7 个 Settings 字段 + 元数据 | 脚本 PASS：合成 6 段硬切视频 → 5 镜头；黑场/白场/噪声运动全部识别；缓存命中（`build_ms` 不变）；换 sha 与换模型指纹均正确失效；`pytest` 全绿 |
 | R2 | ✅ 完成（2026-09-14） | `services/content_vision.py`（画面标注 + 镜头语言 + 质量）、`VisionService.analyze_image(provider=…)` 按调用覆盖后端、`INDEX_VERSION=2`、5 个新 Settings、`scripts/verify_shot_detection.py`、`tests/clipwright/test_content_vision.py`（39 条） | 切分 F1 **easy 1.000 / texture 1.000**（目标 ≥0.90）；`visual_tags` 覆盖率 **0.00 → 1.00**；CLIP 零样本与本地分类器双路可用；OpenCV HOG 崩溃防护有回归用例 |
-| R3 | 待开工 | ASR → 镜头对齐 + 领域词表 | 对齐误差 ≤ 0.3s |
+| R3 | ✅ 完成（2026-09-14） | `services/content_audio.py`（音频事件 + 对齐 + 关键词）、`services/event_lexicon.py`（5 个领域词表）、`tool/event_spot.py`（已注册，工具总数 49）、6 个新 Settings、`scripts/verify_audio_events.py`、`tests/clipwright/test_content_audio.py`（57 条） | 音频事件时间误差 **0.020s**（门槛 ≤0.3s）；跨镜头转写按交集切分正确；进球事件落在真值 ±0.3s 且带证据句 |
 | R4 | 待开工 | `tool/content_query.py` + Agent 上下文注入（M1） | 30 条问答区间命中 ≥ 80% |
 | R5–R10 | 待开工 | 见 §3 | — |
 
@@ -221,6 +221,28 @@ asset:{sha256[:12]}#s{shot_index}      # 稳定、可跨会话、可写进日志
   ≤640，且图小于窗口时跳过 HOG——回归用例 `TestDetectorSafety` 会在崩溃时杀掉测试进程，
   因此它"跑得过"本身就是证据。
 - `INDEX_VERSION` 升到 **2**（ShotStats 增加质量字段），旧索引自动重建（不做迁移）。
+
+**R3 的实测结论（音频维度）**：
+
+| 项 | 结果 |
+|----|------|
+| 音频事件时间误差（大响段） | **0.020s**（门槛 ≤0.3s ✓） |
+| 事件类型 | `silence` / `loud` / `onset` 三类，阈值分位数自适应并随事件记录 |
+| 转写对齐 | 3 段转写落到 3 个镜头全命中；跨镜头片段按**交集切分**给两侧；边界片段归后一镜头 |
+| 关键词 | 域词表命中优先（"进球集锦" > "进球"），无分词器依赖（CJK 二元组 + ASCII 词） |
+| 领域事件定位 | 解说"球进了，绝杀！"→ `goal` 事件 @ [2.6-3.2]，置信度 0.75，**带证据句** |
+
+**R3 的实现边界（如实）**：
+- **只做能量类事件**：区分人声/音乐/掌声需要声学模型，本轮不做（所以事件类型里没有
+  "speech"）。`silence`/`loud`/`onset` 都是可测量量，不含语义判断。
+- **自动转写这条链在本机没有被真正跑通**：机器上**没有安装任何 STT 后端**
+  （whisper / faster-whisper 均缺失，插件 STT 也没注册），因此
+  `align_transcript_to_shots` 走的是"取音轨 → STT 不可用 → 记录原因并跳过"的分支；
+  对齐逻辑本身用**合成转写**验证（含跨镜头切分与边界归属）。真实转写接入后需重跑本组验证。
+- 恒定电平（整段数字静音/纯音）**不出任何事件**——没有动态范围就没有"事件"；
+  全静音属于素材级属性，由语音层（无 speech）表达。
+- 事件时间精度 = 文本片段的时间精度（词表命中只能定位到"这段话的区间"），
+  不是"事件发生的精确帧"；要更精确需要词级时间戳或专用动作模型。
 
 **R2 的实现边界（如实）**：
 - **合成素材上的标签不可信**：实测纯色/纹理合成帧上，CLIP 只能给出"屏幕录制/字幕板/空镜"这类

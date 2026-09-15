@@ -296,6 +296,7 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 | `whisper_transcribe`（工具） | 转写输出含 `phrases`/`packed_text`/`silences`/`compression`（V6 短语级打包，逐词 JSON 字符数可降 90%+） |
 | `timeline_view`（工具） | 复核图工具（V7）：`mode=cuts` 切点三帧对照条 / `mode=overview` 全片联络表 |
 | `project_memory`（工具） | 项目决策记忆工具（V8）：`action=read` 读回四段式记忆与摘要 / `action=append` 追加决策与待办（不覆盖人工编辑） |
+| `event_spot`（工具） | 领域事件定位（R3）：`mode=text` 用领域词表（generic/sports/food/tech_review/knowledge）在文本/转写里找事件，返回时间区间 + 命中词 + 证据句 + 置信度；`mode=audio` 检测音频事件（静音/大响段/起始沿）并按镜头切分 |
 | `GET /api/persona/forge/chat/sessions` | **列出会话**（`?scope=mine|all`；返回标题/消息数/知识数/六维完成度，按更新时间倒序） |
 | `DELETE /api/persona/forge/chat/sessions/{session_id}` | **删除会话**（内存 + `chatforge_sessions/` 落盘文件） |
 | `GET /api/persona/forge/chat/knowledge/{session_id}` | **列出知识条目**（id/来源/字数/预览） |

@@ -485,6 +485,14 @@ async def build_index(
         progress=progress, progress_base=0.25, progress_span=0.6)
 
     shots: list[ShotRecord] = []
+    #: 音频/语音层的统计（写在索引 sources 里，便于排查"为什么没语音"）
+    _extra_summary: dict[str, Any] = {}
+    speech_stats: dict[str, Any] = {}
+    sources: dict[str, str] = {
+        "shots": "ffmpeg:scene", "stats": "pillow+numpy",
+        "visual": "clip_zero_shot" if settings.content_index_clip_enabled else "classifier",
+        "cloud_llm": "on" if settings.content_index_visual_llm else "off",
+    }
     for i, (t0, t1) in enumerate(ranges):
         shot_frames = frames[i] if i < len(frames) else []
         stats = compute_shot_stats(shot_frames)
@@ -528,6 +536,52 @@ async def build_index(
         except Exception as exc:  # 标注失败不能拖垮索引
             logger.warning("画面标注失败（索引仍可用）: %s", exc)
 
+    # ── R3：音频维度（音频事件 + 语音对齐 + 关键词事件） ──
+    if settings.content_index_audio_events and ranges:
+        try:
+            from clipwright.services import content_audio as camod
+            from clipwright.services.event_lexicon import resolve_lexicon
+
+            if progress:
+                await _maybe_await(progress(0.94, "音频事件检测"))
+            wav = await camod.extract_audio_wav(path, frames_root.parent / "audio" / f"{sha[:12]}.wav")
+            if wav is not None:
+                signal, sr = camod.read_wav_mono(wav)
+                if signal is not None and sr > 0:
+                    audio_events = camod.merge_events(camod.detect_audio_events(signal, sr))
+                    for shot in shots:
+                        shot.audio_events = camod.events_for_shot(audio_events, shot.t0, shot.t1)
+                    index_audio_summary = camod.summarize_audio_events(audio_events)
+                    sources["audio_events"] = "short_term_rms"
+                    _extra_summary = index_audio_summary
+                else:
+                    logger.info("音频解码失败，跳过音频事件: %s", path.name)
+        except Exception as exc:  # 音频层失败不能拖垮索引
+            logger.warning("音频事件检测失败（索引仍可用）: %s", exc)
+
+    if settings.content_index_asr and ranges:
+        try:
+            from clipwright.services import content_audio as camod
+
+            if progress:
+                await _maybe_await(progress(0.96, "转写对齐"))
+            lex = resolve_lexicon(getattr(settings, "content_index_event_domain", "generic"),
+                                  getattr(settings, "content_index_event_lexicon", "") or "")
+            speech_rows, stats = await camod.align_transcript_to_shots(
+                path, ranges, language=settings.content_index_asr_language, lexicon=lex)
+            for shot, row in zip(shots, speech_rows):
+                if row.get("text"):
+                    shot.speech.text = row["text"]
+                    shot.speech.phrases = row.get("phrases") or []
+                    shot.speech.keywords = row.get("keywords") or []
+                    shot.speech.speaker = row.get("speaker") or ""
+                    shot.evidence["speech"] = "stt+overlap_align"
+                    shot.confidence["speech"] = 0.6
+            sources["speech"] = f"stt/{stats.get('error') or 'ok'}"
+            speech_stats = stats
+        except Exception as exc:
+            logger.warning("转写对齐失败（索引仍可用）: %s", exc)
+
     index = ContentIndex(
         sha256=sha, asset_id=asset_id, asset_path=str(path),
         filename=filename or path.name,
@@ -536,15 +590,19 @@ async def build_index(
         fps=round(float(meta.get("fps") or 0.0), 3),
         index_version=INDEX_VERSION, model_fingerprint=fingerprint,
         scene_threshold=thr, shots=shots,
-        sources={"shots": "ffmpeg:scene", "stats": "pillow+numpy",
-                 "visual": "clip_zero_shot" if settings.content_index_clip_enabled else "classifier",
-                 "cloud_llm": "on" if settings.content_index_visual_llm else "off"},
+        sources=sources,
         created_at=now_iso(),
     )
     if not keep_frames:
         # 不保留代表帧时把临时抽帧目录清掉（索引只留统计与语义）
         shutil.rmtree(frames_root, ignore_errors=True)
     index.build_ms = int((time.perf_counter() - started) * 1000)
+    # 音频/语音层统计落到 sources（不在 schema 里新增易变字段；摘要里已能表达）
+    if _extra_summary:
+        index.sources["audio_loud"] = str(_extra_summary.get("by_kind", {}).get("loud", 0))
+        index.sources["audio_silence"] = str(_extra_summary.get("by_kind", {}).get("silence", 0))
+    if speech_stats:
+        index.sources["speech_shots"] = str(speech_stats.get("shots_with_speech", 0))
     save_index(index, project_id)
     if progress:
         await _maybe_await(progress(0.95, "写入索引"))

@@ -131,6 +131,15 @@ class Settings(BaseSettings):
     content_index_clip_vocab: str = ""
     # 镜头标注并发（CPU 推理，过高反而拖慢整机）。
     content_index_label_concurrency: int = 4
+    # 音频事件检测（静音/大响段/起始沿，纯 numpy，无模型）——默认开。
+    content_index_audio_events: bool = True
+    # 自动转写并对齐到镜头；默认关（需要装 whisper/faster-whisper 或注册插件 STT 后端）。
+    content_index_asr: bool = False
+    content_index_asr_language: str = "zh"
+    # 领域事件词表（generic/sports/food/tech_review/knowledge）。
+    content_index_event_domain: str = "generic"
+    # 追加词表（JSON：{"sports": ["远射"]}）；留空只用内置词表。
+    content_index_event_lexicon: str = ""
 
     # --- 安全 ---
     # API 令牌：设置后所有 /api/* 请求需携带 Authorization: Bearer <token>
