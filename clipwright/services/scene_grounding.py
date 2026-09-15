@@ -70,6 +70,33 @@ def valid_refs(indexes: Iterable[ContentIndex]) -> set[str]:
     return set(_shot_index_map(indexes))
 
 
+def _semantic_fallback(
+    query: str, hits: list[tuple[ContentIndex, Any]], *, min_score: float = 0.24,
+) -> list[tuple[str, float]]:
+    """关键词全不命中时的画面语义兜底（R9）：`[(ref, 相似度)]` 降序。
+
+    `min_score` 比 `content_query.VISUAL_BASELINE` 略高：规划的引用会直接进方案让用户确认，
+    门槛要比"候选列表"更严一点——宁可承认没料，也别钉一个勉强像的镜头。
+    阈值是经验值，需在真实素材上标定。
+    """
+    try:
+        from clipwright.services import content_semantic as sem
+
+        have = [(idx, shot) for idx, shot in hits
+                if (shot.embeddings or {}).get(sem.VISUAL_MODALITY)]
+        if not have:
+            return []
+        shots = [shot for _idx, shot in have]
+        scores = sem.semantic_scores(query, shots)
+        ranked = sorted(
+            ((_ref_of(have[i][0], have[i][1]), float(s)) for i, s in scores.items()),
+            key=lambda item: (-item[1], item[0]))
+        return [(ref, score) for ref, score in ranked if score >= min_score]
+    except Exception as exc:  # noqa: BLE001 — 语义兜底失败就等于"没命中"
+        logger.info("画面语义兜底不可用：%s", exc)
+        return []
+
+
 def ground_scene(
     scene: dict[str, Any],
     indexes: list[ContentIndex],
@@ -140,13 +167,21 @@ def ground_scene(
         scored.append((float(score), idx, shot))
     scored.sort(key=lambda item: (-item[0], _ref_of(item[1], item[2])))
 
-    # **得分为 0 的不算命中**：退化到"全库"之后，如果连一个关键词/标签都对不上，
-    # 随便挑前 3 个镜头就是"凑数引用"——下游会以为这一场有素材，剪出来却完全不相关。
-    # 宁可如实说"库里没有这类画面"，让上层去补素材或改写方案。
+    # 得分为 0 的走**画面语义**兜底（R9）：标签写得跟用户说法不一样时，
+    # 只有像素向量还能把他们连起来（"标签写暖色调、用户说红色"）。
     positive = [item for item in scored if item[0] > 0]
     if not positive:
+        sem_hits = _semantic_fallback(clean, hits)
+        if sem_hits:
+            refs = [r for r, _s in sem_hits][:max_refs]
+            out["material_refs"] = refs
+            out["material_scores"] = {r: round(s, 3) for r, s in sem_hits[:max_refs]}
+            out["material_match"] = "visual"
+            out["material_note"] = "关键词与标签都没命中，已按画面语义（CLIP 视觉向量）匹配"
+            out.pop("material_gap", None)
+            return out
         out["material_refs"] = []
-        out["material_gap"] = f"素材库里没有与「{clean}」相关的画面（关键词与标签均未命中）"
+        out["material_gap"] = f"素材库里没有与「{clean}」相关的画面（关键词、标签与画面语义均未命中）"
         return out
 
     refs: list[str] = []

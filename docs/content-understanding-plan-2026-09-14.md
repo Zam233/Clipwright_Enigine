@@ -187,7 +187,7 @@ asset:{sha256[:12]}#s{shot_index}      # 稳定、可跨会话、可写进日志
 | R6 | ✅ 完成（2026-09-14） | `services/intent_resolver.py`（引用落位 + 指代消解 + 会话短名单 + 反问）、`api/requirements.py` 新增 `POST /api/requirements/{sid}/intent`（只预览不执行）、客户端 `IntentCard.tsx` + `AgentPanel` 预检门禁 + `requirementsApi.intent()`、`scripts/verify_intent_resolver.py`、`tests/clipwright/test_intent_resolver.py`（58 条）+ 客户端 15 条 | 脚本 **INTENT RESOLVER VERIFY PASS**（17 例）；歧义用例 **100% 反问并给选项**；预览**只读**（不写时间线）；`blocked` 时确认按钮禁用 |
 | R7 | ✅ 完成（2026-09-14，**M2 达成**） | `services/intent_apply.py`（plan → dry-run → apply 三步）、`api/requirements.py` 新增 `POST /api/requirements/{sid}/intent/apply`、客户端确认卡改为执行**用户确认过的那份意图**、`scripts/verify_intent_apply.py`、`tests/clipwright/test_intent_apply.py`（99 条） | 脚本 **25/25 通过**（3 条"一句话→成片" + 3 类门禁）；dry-run **逐字节只读**；有硬错误**一条都不执行**；R5 顺带补了两个解析缺口（"第2个**片段**"、"**所有**片段"） |
 | R8 | ✅ 完成（2026-09-14） | `services/scene_grounding.py`（场景 → 真实镜头引用）、StructureAgent 注入索引摘要 + 两条路径都接地、`RequirementsAgent.translate_scenes` 透传 refs + 接地摘要、EditAgent 把 refs 写进 `clip.metadata`、`scripts/verify_scene_grounding.py`、`tests/clipwright/test_scene_grounding.py`（37 条）+ `test_scene_grounding_wiring.py`（12 条） | 脚本 **18/18 通过**；**引用不存在的素材 = 0**（验收指标）；无索引/无相关画面时**如实留白不凑数**；结构化条件不命中退化为文本匹配并如实标注 |
-| R9 | 待开工 | 真 `semantic_match`（CLIP/SigLIP 视觉向量）、素材向量索引、`scripts/verify_semantic_search.py` | 召回率 @10 ≥ 70%（30 条查询） |
+| R9 | ✅ 完成（2026-09-14） | `services/content_semantic.py`（CLIP 视觉向量 + 中文提示词改写 + 多模板集成）、`tool/vision.py` 的 `semantic_match` **换掉假分 0.5**、向量写进索引（`content_index_visual_vectors`）、`content_query` 加入画面语义分、`scene_grounding` 语义兜底、`scripts/verify_semantic_search.py`、`tests/clipwright/test_content_semantic.py`（52 条） | 脚本 **7/7 通过**：语义路 recall@10 **100%（30/30）** vs 关键词基线 **16.7%（5/30）**（门槛 ≥70%）；中文直送 CLIP 仅 66.7%，量化了改写的价值 |
 | R10 | 待开工 | 标注基准集（用户原话 → 期望区间/时间线）、指标脚本、真实素材 demo、文档收尾 | 全指标汇总表 |
 
 **R1 的实现边界（如实）**：
@@ -290,6 +290,43 @@ asset:{sha256[:12]}#s{shot_index}      # 稳定、可跨会话、可写进日志
 **R5 被实测暴露的问题（已修）**：规则解析器最初只认"动词在前"的说法（"去掉黑场"），
 漏掉中文更常见的**把字句与后置动词**（"把掌声那几段删掉"）；`add` 也没允许量词插入
 （"加**个**字幕"）。基准一跑就现形——这类"口语语法覆盖"问题只能靠夹具集发现，靠读代码发现不了。
+
+**R9 的实测结论（画面语义检索）**：
+
+| 项 | 结果 |
+|----|------|
+| 验收脚本 | `scripts/verify_semantic_search.py` **7/7 通过**（真实 CLIP 模型，非打桩） |
+| 语料 | 120 个合成镜头（8 色 × 5 图案 × 3 变体）；top-10 随机命中率 8.3% |
+| **语义路 recall@10** | **100%（30/30）**（门槛 ≥70%） |
+| 关键词基线 recall@10 | **16.7%（5/30）**——素材标签写"暖色调画面"、用户说"红色"时字面匹配失效 |
+| 中文直送 CLIP（对照） | 66.7%（20/30）→ **中文提示词改写带来 +33 个百分点** |
+| 假分移除 | `tool/vision.py` 的 `semantic_match` 此前对所有候选返回假分 `0.5`，现为真 CLIP 余弦 |
+| 向量复用 | 向量写进索引（`ShotRecord.embeddings["clip"]`），第二次调用**不再碰模型**（有断言） |
+
+**R9 被实测暴露并修复的问题**：
+
+- **transformers 5.x 的 API 变更**：`get_image_features()` / `get_text_features()` 返回的是
+  `BaseModelOutputWithPooling` 而不是张量（旧版是张量），直接 `.norm()` 会抛
+  `'BaseModelOutputWithPooling' object has no attribute 'norm'`——实测第一版**所有向量都是空的**，
+  而检索"安静地"返回 0 命中（看起来像"没搜到"，其实是根本没算出来）。
+  修：`_feature_tensor()` 兼容三种返回形态。
+- **维度不匹配必须吵**：若索引里的向量来自另一个模型/版本，静默按 0 分处理会让人把
+  "向量不可比"误判成"语义检索没命中"（两者排查方向完全不同）。修：告警 + 跳过 + 提示重建。
+- **中文提示词里的虚词稀释信号**：第一版把未命中的中文原样拼进提示词，
+  "找红色的画面"变成"找 red 的画面"——实测 recall 只有 66.7%。修：只保留命中的英文词 + 多模板集成。
+
+**R9 的实现边界（如实）**：
+
+- 基准是**合成画面 + 自写查询**，测的是**颜色/图案/明暗这类画面属性**——
+  这是合成帧能承载的语义上限。"这是不是一场足球赛"这种场景语义在合成帧上做不了
+  （R2 已实测 CLIP 对合成帧会给出"屏幕录制/左轮手枪"这类离谱标签），
+  **真实素材上的召回率仍未验证**；
+- CLIP 文本塔不认中文，靠的是 60 余条**手写词表**做中→英改写：
+  表外的说法（长句、方言、专业术语）会原样送去编码，效果无保证；
+- `VISUAL_BASELINE=0.20`（余弦零点）与 `scene_grounding` 的 `0.24` 阈值都是**经验值**，
+  需在真实素材上标定；
+- 检索是**穷举点积**（没有向量库索引）：镜头数上万时延迟会线性增长，本轮没测这个规模；
+- 云端多模态仍未真实调用（R2 的欠账，与本轮无关但同样存在）。
 
 **R8 的实测结论（方案接地：规划书引用真实素材）**：
 

@@ -143,6 +143,10 @@ class Settings(BaseSettings):
     # "模糊镜头"判定阈值（Laplacian 方差上界；越小越严）。
     # 现在还没有跨题材通用的绝对锐度尺度，这个值是经验起点，应在真实素材上标定。
     content_index_blurry_sharpness: float = 120.0
+    # R9：给每个镜头算 CLIP 视觉向量（存进索引，供"换个说法也能搜到"的语义检索）。
+    # 关掉后索引里没有画面向量，语义检索退化为纯文本检索（仍可用，但搜不到
+    # "画面是海边、却没人写下海边"的镜头）。CLIP 不可用时自动跳过并如实标注。
+    content_index_visual_vectors: bool = True
 
     # --- 安全 ---
     # API 令牌：设置后所有 /api/* 请求需携带 Authorization: Bearer <token>

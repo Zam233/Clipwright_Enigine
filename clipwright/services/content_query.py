@@ -38,6 +38,13 @@ from clipwright.schema.content import ContentIndex, ShotRecord, format_shot_ref
 #: 融合权重：语义与关键词各占一半，结构化条件做硬过滤（不计分）
 W_EMBED = 0.55
 W_KEYWORD = 0.45
+#: R9：画面语义分权重。**不压低前两项**——文本路在"用户搜的就是镜头文字里的词"时
+#: 是最准的（关键词精确匹配），视觉路的价值在"用户换了说法"。
+#: 三项权重之和 > 1 是有意的：分数只用于排序与阈值，不解释成概率。
+W_VISUAL = 0.5
+#: CLIP 余弦的"零点"：不相关的图文对也常在 0.15-0.25，超过它才算有信号。
+#: 这是经验值，需在真实素材上标定（合成基准见 `scripts/verify_semantic_search.py`）。
+VISUAL_BASELINE = 0.20
 #: 关键词里标签精确命中的权重（标签是人/模型给的强信号）
 TAG_WEIGHT = 1.0
 TEXT_WEIGHT = 0.6
@@ -470,16 +477,53 @@ async def search_shots(
             vectors = await asyncio.to_thread(_embed_texts, texts)
         if not query_vec or len(vectors) != len(candidates):
             vectors = []
+
+    # ── R9：画面语义分（CLIP 视觉向量 vs 文本查询）──
+    # 这一路看的是**像素**：文本描述里没写、但画面确实是那个样子的镜头，
+    # 只有它能找出来（R4 的文本向量只覆盖镜头文字，覆盖不到画面）。
+    # 没有向量（未建/模型不可用）时整段跳过，行为与 R7 之前完全一致。
+    visual_scores: dict[str, float] = {}
+    visual_used = False
+    if text_query and has_content_tokens:
+        try:
+            from clipwright.services import content_semantic as sem
+
+            have_vec = [s for _i, s in candidates
+                        if (s.embeddings or {}).get(sem.VISUAL_MODALITY)]
+            if have_vec:
+                raw = await asyncio.to_thread(
+                    sem.semantic_scores, text_query,
+                    [s for _i, s in candidates])
+                if raw:
+                    visual_used = True
+                    for i, value in raw.items():
+                        idx, shot = candidates[i]
+                        visual_scores[format_shot_ref(idx.sha256, shot.index)] = float(value)
+        except Exception as exc:  # noqa: BLE001 — 视觉路失败不该挡住文本检索
+            logger.info("画面语义分不可用，本次检索退化为文本路：%s", exc)
+
     for i, (idx, shot) in enumerate(candidates):
         kw, why = keyword_score(shot, text_query)
         emb = _cosine(query_vec, vectors[i]) if vectors and i < len(vectors) else 0.0
         emb = max(0.0, emb)
-        if vectors:
+        vis = visual_scores.get(format_shot_ref(idx.sha256, shot.index), 0.0)
+        # CLIP 余弦有正值基线（不相关的画面也有 0.2 左右），做**零点平移**再当分用，
+        # 否则它会整体抬高原分数，"没命中"也会变成"勉强命中"。
+        vis_adj = max(0.0, vis - VISUAL_BASELINE) / max(1e-6, 1.0 - VISUAL_BASELINE)
+        if vectors and visual_used:
+            score = W_EMBED * emb + W_KEYWORD * kw + W_VISUAL * vis_adj
+            if emb > 0.2:
+                why.append(f"语义相似 {emb:.2f}")
+        elif vectors:
             score = W_EMBED * emb + W_KEYWORD * kw
             if emb > 0.2:
                 why.append(f"语义相似 {emb:.2f}")
+        elif visual_used:
+            score = W_KEYWORD * kw + W_VISUAL * vis_adj
         else:
             score = kw
+        if visual_used and vis_adj > 0.15:
+            why.append(f"画面像 {vis:.2f}")
         # 显式条件命中：即使文本不匹配也要留下（否则"黑场在哪"永远问不出结果）
         if eff_filters and score < min_score:
             score = min_score
@@ -487,7 +531,8 @@ async def search_shots(
         if score < min_score:
             continue
         scored.append(_as_hit(idx, shot, score, why,
-                              keyword=round(kw, 4), embedding=round(emb, 4)))
+                              keyword=round(kw, 4), embedding=round(emb, 4),
+                              visual=round(vis, 4) if visual_used else 0.0))
     # 排序型问题（"最长/最亮/最糊…"）若一个文本分都没打出来，说明问题里剩下的只是口水词——
     # 此时排序本身就是答案，直接给有序清单（实测："最长的那一个镜头"曾因此返回空）。
     # **必须在 `not scored` 提前返回之前**判断，否则会先掉进"没有得分"的分支。

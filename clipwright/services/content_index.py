@@ -536,6 +536,29 @@ async def build_index(
         except Exception as exc:  # 标注失败不能拖垮索引
             logger.warning("画面标注失败（索引仍可用）: %s", exc)
 
+    # ── R9：画面语义向量（供"换个说法也能搜到"用）──
+    # 存进索引随索引落盘，之后检索只是点积（不再碰模型）。
+    # 开关默认开，但 CLIP 不可用时**静默跳过**并在 sources 里如实标注——不假装有向量。
+    #
+    # 进度值取 0.93：与"画面标注"的末值同档。**必须落在音频层（0.94）之前或与之相等**，
+    # 否则进度回调会倒退（实测：第一版用 0.98，直接把"进度单调"的既有用例打红）。
+    if getattr(settings, "content_index_visual_vectors", True) and frames:
+        try:
+            from clipwright.services import content_semantic as sem
+
+            if progress:
+                await _maybe_await(progress(0.93, f"视觉向量（{len(shots)} 镜头）"))
+            _idx_stub = ContentIndex(sha256=sha, asset_path=str(path), shots=shots)
+            _idx_stub, vec_count = await asyncio.to_thread(
+                sem.attach_visual_vectors, _idx_stub)
+            if vec_count:
+                sources["embeddings_visual"] = f"clip:{settings.content_index_clip_model}"
+            else:
+                sources["embeddings_visual"] = "unavailable"
+        except Exception as exc:  # 向量层失败不能拖垮索引
+            logger.warning("视觉向量计算失败（索引仍可用，语义检索退化为文本）: %s", exc)
+            sources["embeddings_visual"] = "failed"
+
     # ── R3：音频维度（音频事件 + 语音对齐 + 关键词事件） ──
     if settings.content_index_audio_events and ranges:
         try:
@@ -605,7 +628,9 @@ async def build_index(
         index.sources["speech_shots"] = str(speech_stats.get("shots_with_speech", 0))
     save_index(index, project_id)
     if progress:
-        await _maybe_await(progress(0.95, "写入索引"))
+        # 0.97 而不是 0.95：转写层（0.96）之后才写索引，用 0.95 会让进度倒退
+        # （转写默认关闭所以一直没暴露；顺手修掉）
+        await _maybe_await(progress(0.97, "写入索引"))
 
     should_mirror = settings.content_index_mirror_mongo if mirror is None else mirror
     if should_mirror:
