@@ -140,6 +140,9 @@ class Settings(BaseSettings):
     content_index_event_domain: str = "generic"
     # 追加词表（JSON：{"sports": ["远射"]}）；留空只用内置词表。
     content_index_event_lexicon: str = ""
+    # "模糊镜头"判定阈值（Laplacian 方差上界；越小越严）。
+    # 现在还没有跨题材通用的绝对锐度尺度，这个值是经验起点，应在真实素材上标定。
+    content_index_blurry_sharpness: float = 120.0
 
     # --- 安全 ---
     # API 令牌：设置后所有 /api/* 请求需携带 Authorization: Bearer <token>

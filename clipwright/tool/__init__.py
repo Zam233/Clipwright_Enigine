@@ -19,6 +19,7 @@ from clipwright.tool.audio import (
 from clipwright.tool.base import BaseTool
 from clipwright.tool.chroma_key import ChromaKeyTool
 from clipwright.tool.color import ColorCorrectTool, ColorMatchTool, LutApplyTool
+from clipwright.tool.content_query import ContentQueryTool
 from clipwright.tool.event_spot import EventSpotTool
 from clipwright.tool.effects import (
     BackgroundRemoveTool,
@@ -116,6 +117,7 @@ def register_builtin_tools() -> None:
         TimelineViewTool(),
         ProjectMemoryTool(),
         EventSpotTool(),
+        ContentQueryTool(),
         TextToSpeechTool(),
         VoiceCloneTool(),
         ListAnimationsTool(),
@@ -180,6 +182,7 @@ __all__ = [
     "TimelineViewTool",
     "ProjectMemoryTool",
     "EventSpotTool",
+    "ContentQueryTool",
     "TextToSpeechTool",
     "VoiceCloneTool",
     "ListAnimationsTool",

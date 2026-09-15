@@ -111,6 +111,8 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
      "generic / sports / food / tech_review / knowledge"),
     ("content_index_event_lexicon", "content_index", "追加事件词表（JSON）", False, True,
      '形如 {"sports": ["远射"]}；留空只用内置词表'),
+    ("content_index_blurry_sharpness", "content_index", "模糊判定阈值", False, True,
+     "Laplacian 方差上界；经验值，需在真实素材上标定"),
     # ── 检索与 RAG ──
     ("rag_embed_provider", "rag", "Embedding Provider", False, True, f"sentence_transformer / openai / ollama{_BINDING_NOTE}"),
     ("rag_embed_model", "rag", "Embedding 模型", False, True, f"向量模型名{_BINDING_NOTE}"),

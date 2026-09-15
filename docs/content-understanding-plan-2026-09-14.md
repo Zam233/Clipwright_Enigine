@@ -182,7 +182,7 @@ asset:{sha256[:12]}#s{shot_index}      # 稳定、可跨会话、可写进日志
 | R1 | ✅ 完成（2026-09-14） | `schema/content.py`、`services/content_index.py`、`scripts/verify_content_index.py`、`tests/clipwright/test_content_index.py`（83 条）、7 个 Settings 字段 + 元数据 | 脚本 PASS：合成 6 段硬切视频 → 5 镜头；黑场/白场/噪声运动全部识别；缓存命中（`build_ms` 不变）；换 sha 与换模型指纹均正确失效；`pytest` 全绿 |
 | R2 | ✅ 完成（2026-09-14） | `services/content_vision.py`（画面标注 + 镜头语言 + 质量）、`VisionService.analyze_image(provider=…)` 按调用覆盖后端、`INDEX_VERSION=2`、5 个新 Settings、`scripts/verify_shot_detection.py`、`tests/clipwright/test_content_vision.py`（39 条） | 切分 F1 **easy 1.000 / texture 1.000**（目标 ≥0.90）；`visual_tags` 覆盖率 **0.00 → 1.00**；CLIP 零样本与本地分类器双路可用；OpenCV HOG 崩溃防护有回归用例 |
 | R3 | ✅ 完成（2026-09-14） | `services/content_audio.py`（音频事件 + 对齐 + 关键词）、`services/event_lexicon.py`（5 个领域词表）、`tool/event_spot.py`（已注册，工具总数 49）、6 个新 Settings、`scripts/verify_audio_events.py`、`tests/clipwright/test_content_audio.py`（57 条） | 音频事件时间误差 **0.020s**（门槛 ≤0.3s）；跨镜头转写按交集切分正确；进球事件落在真值 ±0.3s 且带证据句 |
-| R4 | 待开工 | `tool/content_query.py` + Agent 上下文注入（M1） | 30 条问答区间命中 ≥ 80% |
+| R4 | ✅ 完成（2026-09-14，**M1 达成**） | `services/content_query.py`（混合检索 + 自然语言路由）、`tool/content_query.py`（已注册，工具总数 50）、RequirementsAgent 上下文注入、1 个新 Settings、`scripts/verify_content_query.py`、`tests/clipwright/test_content_query.py`（78 条） | **32/32 = 100%** 区间命中（门槛 ≥80%）：A 组检索层 22/22、B 组端到端 10/10 |
 | R5–R10 | 待开工 | 见 §3 | — |
 
 **R1 的实现边界（如实）**：
@@ -243,6 +243,33 @@ asset:{sha256[:12]}#s{shot_index}      # 稳定、可跨会话、可写进日志
   全静音属于素材级属性，由语音层（无 speech）表达。
 - 事件时间精度 = 文本片段的时间精度（词表命中只能定位到"这段话的区间"），
   不是"事件发生的精确帧"；要更精确需要词级时间戳或专用动作模型。
+
+**R4 的实测结论（检索层，M1 达成）**：
+
+| 组 | 题目数 | 命中 | 说明 |
+|----|--------|------|------|
+| A：检索层（注入的确定性索引） | 22 | **22/22 = 100%** | 关键词/语音/结构化/排序/时间定位全覆盖 |
+| B：端到端（真跑合成视频建索引后提问） | 10 | **10/10 = 100%** | 期望值全部来自**视频构造方式**（黑段 0–1.2s、白段 2.2–3.2s、大响音 1.0–2.0s），不是从索引里读出来 |
+| 合计 | 32 | **32/32 = 100%**（门槛 ≥80%） | 按类型：keyword 7/7、speech 4/4、structural 16/16、shot_at 5/5 |
+
+**R4 被实测逼出来的两个设计修正**（都不是"加个模型"能解决的）：
+1. **自然语言 → 结构化条件的路由**：用户说的是"黑场在哪""哪些镜头有人脸""最长的镜头"，
+   而这些词**根本不在镜头文本里**，纯关键词检索必然落空。于是加了 `route_query()`：
+   "说法 → 条件/排序"的规则表（黑场→`is_black`、过曝→`min_overexposed`、掌声→`loud` 事件、
+   最长→按时长排序…），命中后把该说法从查询词里剔除，避免污染关键词打分。
+2. **排序/清单式问题必须直接给清单**：`"最长的那一个镜头"` 剔除口水词后没有内容词元，
+   若仍走"打分→过滤"就会返回空。现在"清单式问法（哪些/列出/一共…）"或"无有效词元"
+   一律走清单模式（条件+排序即答案），并保留"为什么"（`结构化条件命中`/`按 X 排序`）。
+
+**R4 的实现边界（如实）**：
+- 命中率是**合成基准**上的数字：A 组用注入索引（隔离标签质量），B 组用合成视频
+  （内容由构造决定）。**真实素材上的问答命中率仍未验证**；
+- 文本向量召回用的是**镜头文本**（描述+标签+语音），**不含画面**——画面语义要等 R9 的
+  视觉向量；本轮默认跑关键词+结构化（`--embed` 可开向量路径）；
+- 路由规则表是**人工词表**：说法超出覆盖范围（方言、隐喻）会退回关键词路径；
+- 任务书里的"30 条问答"实际做成了 **32 条**（A 22 + B 10），因为分两组才能说清是谁的问题。
+- 只接线了 RequirementsAgent（简报阶段拿到素材内容摘要）；EditAgent/StructureAgent 的
+  接线按计划留在 R8（方案接地：`raw_scenes` 带 material_refs）。
 
 **R2 的实现边界（如实）**：
 - **合成素材上的标签不可信**：实测纯色/纹理合成帧上，CLIP 只能给出"屏幕录制/字幕板/空镜"这类

@@ -131,6 +131,19 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
         if overview:
             user_context += f"\n素材库概览: {overview}"
 
+        # R4：注入**已建索引**素材的内容摘要（"手上这段素材里有什么"）。
+        # 没有索引时返回 ""，行为与接线前完全一致（零变化）。
+        # 刻意只给摘要不塞全量索引：细节由 Agent 用 `content_query` 工具现查。
+        # 项目 id 取 `extra_params.project_id`（管线注入），缺失时退化为公共素材库。
+        from clipwright.services.content_query import index_context_text
+        project_id = str((context.extra_params or {}).get("project_id") or "") or None
+        content_context = index_context_text(project_id)
+        if content_context:
+            user_context += (
+                "\n\n已建索引的素材内容（据此判断「素材里有没有」，细节可用 content_query 工具查）：\n"
+                + content_context
+            )
+
         system_prompt = CREATIVE_BRIEF_SYSTEM
         from clipwright.plugins.prompt_registry import PluginPromptRegistry
         plugin_prompts = PluginPromptRegistry.get_for_agent("requirements")
