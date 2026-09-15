@@ -80,6 +80,13 @@ class IntentRequest(BaseModel):
     project_id: str = ""
 
 
+class IntentApplyRequest(IntentRequest):
+    """R7：意图 → 补丁 → dry-run（可选执行）。继承 `/intent` 的入参，多三项。"""
+    apply: bool = False
+    answers: dict[str, str] = {}
+    intent_raw: dict[str, Any] = {}
+
+
 class ProceedRequest(BaseModel):
     session_id: str
     persona_id: str = ""
@@ -185,6 +192,50 @@ async def preview_intent(session_id: str, req: IntentRequest, request: Request) 
     except Exception as exc:
         logger.exception("意图预览失败: %s", exc)
         raise HTTPException(status_code=500, detail="意图解析失败")
+    return {"session_id": session_id, **result}
+
+
+@router.post("/{session_id}/intent/apply")
+async def apply_intent(session_id: str, req: IntentApplyRequest, request: Request) -> dict:
+    """R7：把意图**编译成时间线补丁**，dry-run 校验后（可选）真正执行。
+
+    与 `/intent` 的关系：`/intent` 负责"说清要干什么"（只读预览），本端点负责"干"。
+    `apply=false`（默认）时返回补丁 + dry-run 报告，**不修改时间线**；
+    `apply=true` 时只有 dry-run 无硬错误才执行，并在响应里回传新的 `timeline`。
+
+    `answers` 是用户在确认卡上做的选择（`{问题码: 选项值}`），会回填进意图；
+    `intent_raw` 可传入 `/intent` 已解析过的意图，保证"执行的就是用户确认的那份"，
+    避免同一句话被解析两次得出不同结果。
+
+    响应：`patch`（补丁明细）、`report`（dry-run：预览文案 + 前后片段数/时长 + 问题）、
+    `applied`（是否真的落了）、`blocked`（有硬错误或仍有未答问题）、`timeline`（仅 applied 时）。
+    """
+    _require_session_owner(request, session_id)
+    from clipwright.schema.timeline import Timeline
+    from clipwright.services.intent_apply import plan_validate_apply
+
+    try:
+        timeline = Timeline.model_validate(req.timeline) if req.timeline else Timeline(id="empty")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"时间线数据非法: {str(exc)[:120]}")
+    region = ((req.region_start_sec, req.region_end_sec)
+              if req.region_start_sec is not None and req.region_end_sec is not None else None)
+    try:
+        result = await asyncio.wait_for(
+            plan_validate_apply(
+                req.message, timeline=timeline, session_id=session_id,
+                selected_clip_ids=req.selected_clip_ids, region=region,
+                project_id=req.project_id or None,
+                answers=req.answers, intent_raw=req.intent_raw or None,
+                llm=getattr(_service, "_llm", None), apply=req.apply,
+            ),
+            timeout=120,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="意图执行超时，请简化指令后重试")
+    except Exception as exc:
+        logger.exception("意图执行失败: %s", exc)
+        raise HTTPException(status_code=500, detail="意图执行失败")
     return {"session_id": session_id, **result}
 
 

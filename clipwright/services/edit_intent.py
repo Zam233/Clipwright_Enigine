@@ -510,11 +510,16 @@ def _target_from_phrase(phrase: str) -> IntentTarget:
         return IntentTarget(time_range=rng)
     if _ID_LIKE_RE.fullmatch(phrase):
         return IntentTarget(ref=[phrase])
-    ordinal = re.fullmatch(r"第\s*(\d+)\s*个?", phrase)
+    ordinal = re.fullmatch(
+        r"第\s*([0-9〇零一二三四五六七八九十百千两]+)\s*(?:个|段|条|支|块)?\s*"
+        r"(?:片段|镜头|视频|素材|clip)?", phrase, re.I)
     if ordinal:
         # "第 N 个"按**时间线上的位置**理解（可见、可预期），而不是"最近提到的那批里的第 N 个"
         # ——后者要依赖会话状态，用户看不到自己指的是什么（实测这条歧义最容易出错）
-        return IntentTarget(index=[max(1, int(ordinal.group(1))) - 1])
+        # 中文数字与阿拉伯数字都认（"第三个片段" / "第3个片段"）
+        num = parse_cn_number(ordinal.group(1))
+        if num:
+            return IntentTarget(index=[max(1, int(num)) - 1])
     if is_deictic_phrase(phrase):
         # 指代 → "选中/会话所指"；由 intent_resolver 用会话状态或区域填充
         return IntentTarget(selected=True)
@@ -533,6 +538,26 @@ def _target_from_phrase(phrase: str) -> IntentTarget:
     except Exception:
         pass
     return IntentTarget(query=phrase)
+
+
+#: 显式全量意图（"所有片段/全部/整条时间线"）
+_GLOBAL_SCOPE_RE = re.compile(
+    r"(所有片段|全部片段|所有的片段|所有镜头|所有素材|整条时间线|整段时间线|整条片|"
+    r"全部|所有|每(?:一)?个片段|每个镜头)"
+)
+
+
+def _scope_target(text: str) -> IntentTarget:
+    """整体 vs 选中：文字里明说"所有/全部/整条"就是整条时间线，否则按用户选中理解。
+
+    为什么必须区分：`set`/`trim` 这类无内容条件的操作原本一律落到"选中的片段"，
+    于是"把**所有**片段速度调成 1.5 倍"会在没选中的会话里直接落空
+    （实测就是这样——R7 的"一句话→成片"跑通验收暴露的）。
+    中文里"全部/所有"是显式全量意图，与"这段/那几段"（指代）必须分开处理。
+    """
+    if _GLOBAL_SCOPE_RE.search(text or ""):
+        return IntentTarget(all=True)
+    return IntentTarget(selected=True)
 
 
 def parse_intent_rules(message: str) -> EditIntent:
@@ -570,13 +595,13 @@ def parse_intent_rules(message: str) -> EditIntent:
     if m:
         value = _num(m)
         if value:
-            ops.append(IntentOp(op="set", target=IntentTarget(selected=True),
+            ops.append(IntentOp(op="set", target=_scope_target(text),
                                 field="speed", value=value))
             text = text.replace(m.group(0), " ")
     # ── set volume ──
     if re.search(r"(音量|声音)", text) and re.search(r"(调大|大一点|提高|调高|调小|小一点|降低|调低)", text):
         bigger = bool(re.search(r"(调大|大一点|提高|调高)", text))
-        ops.append(IntentOp(op="set", target=IntentTarget(selected=True),
+        ops.append(IntentOp(op="set", target=_scope_target(text),
                             field="volume", value=0.9 if bigger else 0.4))
         text = re.sub(r"(音量|声音|调大|大一点|提高|调高|调小|小一点|降低|调低)", " ", text)
 
@@ -651,7 +676,7 @@ def parse_intent_rules(message: str) -> EditIntent:
     if m:
         value = _num(m)
         if value:
-            ops.append(IntentOp(op="trim", target=IntentTarget(selected=True),
+            ops.append(IntentOp(op="trim", target=_scope_target(text),
                                 duration_sec=value))
             text = text.replace(m.group(0), " ")
 
