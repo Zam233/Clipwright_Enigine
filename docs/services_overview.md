@@ -28,6 +28,7 @@
 | `content_audio.py` | 音频维度（R3）：短时能量 → `silence`/`loud`/`onset` 事件（分位数自适应阈值，恒定电平不出事件）；转写片段按**时间交集**对齐到镜头并抽关键词；ffmpeg 抽音轨 + 标准库 `wave` 读取（不引入 librosa）。事件时间精度实测 0.020s |
 | `event_lexicon.py` | 领域事件词表（R3）：`generic`/`sports`/`food`/`tech_review`/`knowledge` 五套词表 + 中文事件名；词表命中优先级最高（长词优先），支持设置项 JSON 追加 |
 | `content_query.py` | 素材内容检索（R4）：`route_query()` 把自然语言说法路由成结构化条件/排序（黑场/有人脸/特写/掌声/最长…），混合打分（结构化硬过滤 → 标签+关键词 + 向量 → 可选 rerank），清单/排序式问题直接给关联清单；每条命中带 `ref` 与"为什么命中"。**向量只用于语义召回，结构化条件当硬过滤** |
+| `edit_intent.py` | 自然语言剪辑意图（R5）：`FIELD_SPECS`（22 个真实时间线字段 + 类型/值域钳制）与 `OP_SPECS`（keep/remove/reorder/trim/set/add/transition）成为**唯一事实来源**（`requirements_service._ADJUST_FIELDS` 直接引用它）；`validate_intent()` 拒绝未知 op/字段/取值、钳制越界值；`parse_intent_rules()` 是零 token 的确定性解析器（把字句/后置动词/量词插入都覆盖），`parse_intent_llm()` 走受 schema 约束的结构化输出；`describe_intent()` 供意图确认卡 |
 | `remote_render.py` | 远程渲染客户端（worker 协议：资产上传 → 提交 job → 轮询 → 下载） |
 
 ### AI 服务

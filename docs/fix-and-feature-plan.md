@@ -2165,3 +2165,41 @@ ChatForge 六项欠账的最后一项：会话此前只能等模型产出**完�
   · 只接了 RequirementsAgent；EditAgent/StructureAgent 的素材内容接线按计划留到 R8
     （方案接地：`raw_scenes` 带 `material_refs`）；
   · 云端多模态仍未真实调用（与 R2 同一欠账）。
+
+### 执行轮次 133（2026-09-14：R5 自然语言剪辑意图——解析 50/50，幻觉拦截 20/20）
+
+- ✅ **意图契约**（新模块 `services/edit_intent.py`）：把"用户那句话"变成**可校验的结构化操作**。
+  · **op 词表固定**：keep / remove / reorder / trim / set / add / transition；未知 op 直接报错并
+    列出可用值（**不**让模型自由发挥）——这就是"不幻觉、不失控"的落点；
+  · **target 七种寻址**：all / selected / time_range / query / filter / ref / index；
+  · **字段白名单**：`FIELD_SPECS` 覆盖 22 个**真实时间线字段**（在既有 9 个基础上补
+    image_fit / blend_mode / mask_type / mask_feather / mask_rotation / text_align /
+    font_weight / letter_spacing / transition_duration_sec / audio_fade_in|out_sec），
+    每项带类型 + 值域钳制；
+  · **不另起炉灶**：`requirements_service._ADJUST_FIELDS` 改为**直接引用** `FIELD_SPECS`
+    （唯一事实来源），并加了"两张表必须一致"的回归测试——避免系统里出现两套 NL 白名单。
+- ✅ **`validate_intent()`**：未知 op/字段、非法取值、结构化操作缺对象、时间区间倒置、
+  非法枚举、非法重排依据、非法新增类型一律 error；越界值钳制并给 warning；
+  **不可变**（返回副本，不动调用方对象）；超操作数上限、单片段时间线有提示。
+- ✅ **两条解析路径**：`parse_intent_rules()`（确定性、零 token、可回归；覆盖把字句、
+  后置动词、量词插入"加**个**字幕"、中文数字、组合指令）与 `parse_intent_llm()`
+  （受 `intent_json_schema()` 约束的结构化输出，异常/非法一律退化为空意图）。
+  统一入口 `parse_intent()`：规则优先 → 解析不出才回退 LLM → **一律过校验**。
+- ✅ **内容条件复用 R4**：`_target_from_phrase()` 直接调 `route_query()`，
+  因此"去掉黑场"与"找黑场"共享同一套词汇（两套领域语言会互相不认识，这是要避免的）。
+- ✅ **`describe_intent()`**：人话总结（供 R6 的意图确认卡直接用）。
+- ✅ **测试**：新增 `test_edit_intent.py` **79 条**——字段规格唯一性（含值域行为一致）、
+  中文数字 11 组、规则解析 24 项、内容条件路由 6 项（含路由不可用时退化）、校验 18 项、
+  LLM 路径 6 项（含 schema 覆盖与 Few-shot 与解析器一致性）、统一入口 5 项、描述 5 项。
+- ✅ **验收（计划 §4 的 R5 门槛）**：`scripts/verify_edit_intent.py`
+  **解析正确 50/50 = 100%**（门槛 ≥85%）、**幻觉拦截 20/20 = 100%**。
+  基准一跑就暴露了规则解析器的真实缺口：只认"动词在前"的说法（"去掉黑场"），
+  漏掉中文更常见的**把字句/后置动词**（"把掌声那几段删掉"）与量词插入；已修。
+- ✅ **回归**：后端全量 **2824 passed** / 1 skipped / 1 xfailed（仍只有 2 条既有 plugin
+  子进程编码失败）
+- ⚠️ **验证边界**：
+  · 50 条夹具是**我自己写的常见说法**，不是真实用户语料——100% 只说明"常见说法覆盖 + 无回归"，
+    **不等于**真实用户输入上的正确率；
+  · LLM 解析路径只有**打桩测试**，未对接真实模型跑过（与云端多模态同一欠账）；
+  · 长尾说法**故意不猜**：进 `unresolved` 交给 R6 反问；中文数字不支持"两百五十六"式省略写与财务大写；
+  · 本轮只做"NL → 意图"，**还没落到时间线**（R7 才执行），因此"用户用 NL 达到目的"尚未闭环。

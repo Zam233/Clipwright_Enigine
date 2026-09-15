@@ -183,7 +183,10 @@ asset:{sha256[:12]}#s{shot_index}      # 稳定、可跨会话、可写进日志
 | R2 | ✅ 完成（2026-09-14） | `services/content_vision.py`（画面标注 + 镜头语言 + 质量）、`VisionService.analyze_image(provider=…)` 按调用覆盖后端、`INDEX_VERSION=2`、5 个新 Settings、`scripts/verify_shot_detection.py`、`tests/clipwright/test_content_vision.py`（39 条） | 切分 F1 **easy 1.000 / texture 1.000**（目标 ≥0.90）；`visual_tags` 覆盖率 **0.00 → 1.00**；CLIP 零样本与本地分类器双路可用；OpenCV HOG 崩溃防护有回归用例 |
 | R3 | ✅ 完成（2026-09-14） | `services/content_audio.py`（音频事件 + 对齐 + 关键词）、`services/event_lexicon.py`（5 个领域词表）、`tool/event_spot.py`（已注册，工具总数 49）、6 个新 Settings、`scripts/verify_audio_events.py`、`tests/clipwright/test_content_audio.py`（57 条） | 音频事件时间误差 **0.020s**（门槛 ≤0.3s）；跨镜头转写按交集切分正确；进球事件落在真值 ±0.3s 且带证据句 |
 | R4 | ✅ 完成（2026-09-14，**M1 达成**） | `services/content_query.py`（混合检索 + 自然语言路由）、`tool/content_query.py`（已注册，工具总数 50）、RequirementsAgent 上下文注入、1 个新 Settings、`scripts/verify_content_query.py`、`tests/clipwright/test_content_query.py`（78 条） | **32/32 = 100%** 区间命中（门槛 ≥80%）：A 组检索层 22/22、B 组端到端 10/10 |
-| R5–R10 | 待开工 | 见 §3 | — |
+| R5 | ✅ 完成（2026-09-14） | `services/edit_intent.py`（op/target/constraints 契约 + 校验 + 规则解析器 + LLM schema）、`_ADJUST_FIELDS` 归一为单一事实来源、`scripts/verify_edit_intent.py`、`tests/clipwright/test_edit_intent.py`（79 条） | **解析 50/50 = 100%**（门槛 ≥85%）；**幻觉操作拦截 20/20 = 100%** |
+| R6 | 待开工 | 引用落位 + 指代/澄清 + 意图确认卡 | 指代 ≥ 85%，歧义 100% 反问 |
+| R7 | 待开工 | ops → timeline patch + dry-run 校验（M2） | 3 条"一句话→成片"跑通 |
+| R8–R10 | 待开工 | 见 §3 | — |
 
 **R1 的实现边界（如实）**：
 - 只做 **L0**：ffmpeg 场景切分 + 抽帧 + 廉价统计（亮度/对比度/锐度/饱和度/帧间差/黑场白场）。
@@ -270,6 +273,29 @@ asset:{sha256[:12]}#s{shot_index}      # 稳定、可跨会话、可写进日志
 - 任务书里的"30 条问答"实际做成了 **32 条**（A 22 + B 10），因为分两组才能说清是谁的问题。
 - 只接线了 RequirementsAgent（简报阶段拿到素材内容摘要）；EditAgent/StructureAgent 的
   接线按计划留在 R8（方案接地：`raw_scenes` 带 material_refs）。
+
+**R5 的实测结论（NL → 意图）**：
+
+| 项 | 结果 |
+|----|------|
+| 解析准确率（50 条中文原话，确定性规则解析器） | **50/50 = 100%**（门槛 ≥85%） |
+| 幻觉操作拦截（20 条不存在的 op/字段/取值） | **20/20 = 100%**（拒绝或安全钳制，无一条漏到执行） |
+| op 词表 | keep / remove / reorder / trim / set / add / transition（未知 op 直接报错并列出可用值） |
+| target 寻址 | all / selected / time_range / query / filter / ref / index |
+| 字段白名单 | 22 个真实时间线字段（含 image_fit/blend_mode/mask_*/text_align/audio_fade_*） |
+| 内容条件复用 | `_target_from_phrase` 走 R4 的 `route_query`——"去掉黑场"与"找黑场"共享同一套词汇 |
+
+**R5 被实测暴露的问题（已修）**：规则解析器最初只认"动词在前"的说法（"去掉黑场"），
+漏掉中文更常见的**把字句与后置动词**（"把掌声那几段删掉"）；`add` 也没允许量词插入
+（"加**个**字幕"）。基准一跑就现形——这类"口语语法覆盖"问题只能靠夹具集发现，靠读代码发现不了。
+
+**R5 的实现边界（如实）**：
+- 基准夹具是**我自己写的 50 条**，不是真实用户语料；因此 100% 说明"常见说法已覆盖 + 无回归"，
+  **不等于**真实用户输入上的正确率；
+- LLM 解析路径只有**打桩测试**（`structured_output` 返回构造的 JSON），没有对接真实模型跑过；
+- 规则解析器对长尾说法**故意不猜**：解析不出就进 `unresolved`（由 R6 反问），
+  基准里 4 条长尾正是按"必须进 unresolved"判定的；
+- 中文数字支持常规写法（〇-十/百/千），不支持"两百五十六"这类省略式与财务大写。
 
 **R2 的实现边界（如实）**：
 - **合成素材上的标签不可信**：实测纯色/纹理合成帧上，CLIP 只能给出"屏幕录制/字幕板/空镜"这类

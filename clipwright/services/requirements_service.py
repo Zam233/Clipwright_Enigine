@@ -46,18 +46,11 @@ PLAN_TRANSLATE_TIMEOUT = 240     # 规划书翻译单次调用超时（秒）
 SESSION_TTL_HOURS = 48           # 会话过期时间
 SESSION_CLEANUP_INTERVAL = 3600  # 清理检查间隔（秒）
 
-# 时间线数值调整字段白名单 + 边界钳制（值域外拒绝/钳位）
-_ADJUST_FIELDS: dict[str, tuple[type, Any]] = {
-    "speed": (float, lambda v: max(0.25, min(4.0, float(v)))),
-    "volume": (float, lambda v: max(0.0, min(1.0, float(v)))),
-    "opacity": (float, lambda v: max(0.0, min(1.0, float(v)))),
-    "duration_sec": (float, lambda v: max(0.1, float(v))),
-    "start_sec": (float, lambda v: max(0.0, float(v))),
-    "source_offset_sec": (float, lambda v: max(0.0, float(v))),
-    "font_size": (float, lambda v: max(8.0, min(200.0, float(v)))),
-    "font_color": (str, lambda v: v if isinstance(v, str) else "#FFFFFF"),
-    "text": (str, lambda v: str(v)),
-}
+# 时间线数值调整字段白名单 + 边界钳制（R5 起**唯一事实来源在 edit_intent.FIELD_SPECS**，
+# 此处保留别名以兼容既有调用与测试；新增字段请改 edit_intent.py，不要在这里加第二份）。
+from clipwright.services.edit_intent import FIELD_SPECS as _FIELD_SPECS
+
+_ADJUST_FIELDS: dict[str, tuple[type, Any]] = dict(_FIELD_SPECS)
 
 
 _memory_sessions: dict[str, dict] = {}
