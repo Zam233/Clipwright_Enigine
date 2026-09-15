@@ -10,6 +10,7 @@
 | API 参考 | [docs/api_reference.md](docs/api_reference.md) |
 | 开发指南 | [docs/development.md](docs/development.md) |
 | 修复与功能补全计划 | [docs/fix-and-feature-plan.md](docs/fix-and-feature-plan.md)（§10 执行进度） |
+| 素材内容理解与 NL 落位计划 | [docs/content-understanding-plan-2026-09-14.md](docs/content-understanding-plan-2026-09-14.md)（内容索引→检索→NL 意图→落位校验，10 轮） |
 | 前后端对账 | [docs/frontend-backend-parity.md](docs/frontend-backend-parity.md) |
 | 项目上下文 | [CLAUDE.md](CLAUDE.md) |
 

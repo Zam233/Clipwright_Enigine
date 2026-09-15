@@ -34,3 +34,4 @@
 | [服务概览](services_overview.md) | 全部后端服务层模块说明 |
 | [需求分析 Agent](requirements_agent.md) | Requirements Agent 设计与职责 |
 | [整数时间基座](timebase.md) | 整数 tick + 有理数帧率：换算纪律、时间码、漂移校正与切点的接线点 |
+| [素材内容理解与 NL 落位计划](content-understanding-plan-2026-09-14.md) | 内容索引（镜头级）→ 检索 → NL 意图 → 落位校验：让 Agent 知道在剪什么、用户说人话就能达到目的 |
