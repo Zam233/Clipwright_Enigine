@@ -2697,3 +2697,57 @@ R1–R10 的验收全在合成素材上，"真实素材"一直是最大的未验
   产出重叠的时间线**，渲染出来就是两段画面叠在一起。风险等级：中（用户可见的正确性），
   触发门槛低（任何一次"改时长"），所以这条必须修而不是排期。
 
+### 执行轮次 146（2026-09-14：README 更新——先核实再写，清掉 4 处过期硬数字 + 1 个坏链接）
+
+用户指令"更新 README"。README 是外部读者（评审、使用者）看到的第一份材料，
+所以**先把每个能核的数字重新测一遍**，再动笔——不凭印象改文档。
+
+**核实出来确实是错的（全部实测，不是推断）**：
+
+| 位置 | 原文 | 实测 | 性质 |
+| --- | --- | --- | --- |
+| 贡献章节 | 后端 `pytest` "1500+" | **3187 passed / 0 failed** | 过期约 2.1 倍 |
+| 贡献章节 | 前端 `npm run test` "420+" | **771 passed / 90 files** | 过期约 1.8 倍 |
+| 架构图 | "44 工具" | **49 个已注册工具**（`ToolRegistry.list()`） | 过期 |
+| 本期改进 | "37+ 动画" 保留（未核，不动）；路由总数未写 | `/api` 路由实测 **269 条 / 37 个路由文件** | 原文写"225 条"（在 AGENTS.md），README 未写 → 补上实测值 |
+| Persona 章节 | `[docs/persona-schema.md](https://docs/persona-schema.md)` | **该文件不存在**；正确目标为 `docs/Persona.md` | **坏链接**（写成了 http:// 外链，点开必然 404） |
+
+**新增内容（README 完全没提的两条主线）**：
+
+- **「素材内容理解：让 Agent 知道自己在剪什么」**——R1–R10 自成一段：四层能力（镜头级索引
+  `ShotRef` / `content_query` / `EditIntent` / 落位→dry-run→执行）+ 实测指标表 + **验证边界**。
+  验证边界**整段搬进 README**，因为它就是这个项目的诚实度所在：合成素材测的是颜色与图案、
+  夹具是自写的、未装 STT、云端多模态从未在评测里调用、4K 耗时是上采样得来的。
+  数字与边界同框，读者才不会把 100% 读成"真实素材上 100%"。
+- **「时间线正确性：改时长统一收拢」**——把轮次 145 的语义写成用户能读懂的不变量
+  （不许重叠 / 保留刻意留白 / 变速同时改时长 / `start_sec` 不自动重排 / 硬错误零执行）。
+- **贡献章节的验证清单表格**：把"改动后必须全绿"的 5 项检查连同**实测基线**列成表
+  （3187 / 9/9 指标 / 771 / tsc / build），并写明"数字是实测基线而非配额"。
+- **路线图补阶段七（素材内容理解，✅）与阶段八（真实画面理解，🔄 进行中）**。
+- **API 核心端点补上内容理解入口**：`requirements/{sid}/intent`、`intent/apply`、
+  `requirements/edit`，以及四个内容理解工具（`content_query`/`semantic_match`/`event_spot`/`timeline_view`）。
+
+**同步动的前端 README（同一套纪律，只写核过的）**：
+
+- 技术栈：store 数 10 → **12**（实测 `src/stores/*.ts`）、路由数补 **28 条**（从 `router.tsx` 提取）。
+- 路由表：原表 22 行，实测 28 条 → 补 `/login`、`/market`、`/settings/backend-config`、
+  `/settings/providers`、`/plugin/$pageId`、`/settings/mg-preview`，并修正 `/export` → `/export/$projectId`。
+- 目录结构：`services/ws/(WebSocket)` **该目录已空**（WS 已移除），改为 `api/(含 SSE 流) · storage/(草稿与迁移) · media/ · tabSync`；
+  `features/` 补 `subtitles`/`history`/`plugins`；`stores/` 补 `auth`/`toast`；代理补 `/srv` → 8090。
+- 新增 **「一句话改片」**：`IntentCard`（意图确认卡）/ 歧义反问 / `TimelineDiffView` / `ReviewPanel`，
+  并写明"时间线不变量在前端同样成立：前端只渲染结果，不各自重算"。
+- 实施状态补 Phase 6/7；新增**验证基线表**（771 / tsc / build + 后端 3187 对照）。
+
+**验证**：README 断链检查 **0 条**、替换字符 **0 个**（脚本 `data/_readmechk.py`，用完即删）。
+前端 `npx tsc --noEmit`（退出码 0）与 `npm run build`（`✓ built in 18.80s`）复跑通过，
+基线表里的数字**当场测的**不是抄的。
+
+**仍未动的两处（如实说）**：
+
+- `AGENTS.md` 里"44+ Tool / 225 条路由 / `python -m pytest tests -q`（期望 1154 passed）/
+  `npm run test`（期望 349 passed）"同样是**过期数字**——本轮只被要求更新 README，
+  没顺手改 AGENTS.md（改项目地图的影响面比 README 大，且它带着"验证清单"的
+  契约含义，值得单独一轮核完再改）；
+- 前端 README 里 `ClipWright-Design-Specification.md` / `-Frontend-Design-Plan.md` 两份
+  设计文档只说"存在"（实测确认存在），**内容是否与当前设计令牌一致未核**。
+

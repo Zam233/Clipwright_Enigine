@@ -7,6 +7,8 @@
 - 快速开始
 - 前端编辑器
 - 后端引擎
+  - 素材内容理解
+  - 时间线正确性
 - Persona 配置
 - 视频类型
 - 特化三级跳
@@ -134,7 +136,7 @@
 │                                                      │
 │  ┌────────────────────────────────────────────────┐  │
 │  │        Tool 层 / Skill 层 / Material 层          │  │
-│  │  44 工具 · 4 技能 · 3 素材源 · 37+ 动画          │  │
+│  │  49 工具 · 4 技能 · 3 素材源 · 37+ 动画          │  │
 │  │  FFmpeg · CLIP · Whisper · JSON规范             │  │
 │  └────────────────────────────────────────────────┘  │
 │                                                      │
@@ -343,9 +345,18 @@ GET    /api/render/download/{name}    # 下载渲染结果
 
 # 需求分析
 POST   /api/requirements/init         # 初始化需求会话
-POST   /api/requirements/chat         # 发送需求消息
+POST   /api/requirements/chat         # 发送需求消息（SSE 流式见 chat/stream）
 GET    /api/requirements/plan/{id}    # 获取制作规划书
 POST   /api/requirements/proceed      # 确认并启动管线
+POST   /api/requirements/edit         # 对选中片段下达自然语言编辑指令
+POST   /api/requirements/{sid}/intent # 一句话 → 结构化剪辑意图（含歧义反问）
+POST   /api/requirements/{sid}/intent/apply # dry-run / 执行补丁（硬错误零执行）
+
+# 素材内容理解（也可经 /api/tool/execute 调用）
+#   content_query  自然语言问素材内容，返回带 ShotRef 的区间
+#   semantic_match 画面语义检索（CLIP 向量）
+#   event_spot     音频事件定位    scene_detect  镜头切分
+#   timeline_view  切点复核图 / 全片联络表（人工核对"剪得对不对"）
 
 # 声音克隆与 TTS
 POST   /api/voice/upload              # 上传音频文件
@@ -400,18 +411,63 @@ GET    /api/preprocess/task/{id}      # 任务状态
 
 前端编辑器加载这个 JSON 并渲染为可视化时间轴。用户在编辑器里的每个操作，最终也是修改这个 JSON 结构。Agent 的输出和用户的修改在同一个数据模型上工作 —— 这就是互操作性的基础。
 
-### 本期改进
+### 素材内容理解：让 Agent 知道自己在剪什么
+
+管线要"剪得好"，前提是 Agent **看得见素材里有什么**。这条线（R1–R10）把素材从"文件名 + 时长"变成**可寻址、可检索、可被自然语言改动的镜头级内容**。
+
+**四层能力**：
+
+1. **镜头级内容索引**——每个镜头有唯一地址 `asset:{sha256[:12]}#s{n}`（`ShotRef`），索引里存画面维度（CLIP 零样本标签 / 景别 / 明暗 / 运镜 / 质量）、音频维度（音频事件 + 转写对齐）、以及两个向量（`clip` 视觉、`text` 文字）。索引落盘并可镜像到 MongoDB，按素材 sha 缓存与失效。
+2. **内容查询工具 `content_query`**——让 Agent（和用户）用自然语言问"哪几段有人在说话""最亮的镜头是哪几个"，返回**带 `ShotRef` 的区间**而不是一段模型自由发挥的文字。混合检索 = 结构化条件 + 文字 + 向量 + 音频事件。
+3. **自然语言剪辑意图 `EditIntent`**——把一句话解析成**受约束的结构化操作**（`keep/remove/reorder/trim/set/add/transition` + `target` + `constraints`），未知 op/字段/取值一律拒绝，不自由发挥。规则解析器零 token 覆盖常见说法，LLM 解析走 schema 约束。
+4. **落位 → 预览 → 执行**——抽象 target（"所有黑场""第 2 个片段"）落到**具体 clip**；歧义/零命中时**反问并给选项**而不是猜；执行走 dry-run → apply 两步，**硬错误一条都不执行**。
+
+**实测数字**（复跑：`python scripts/verify_all_metrics.py`，9/9 全绿）：
+
+| 能力 | 指标 | 实测 | 门槛 |
+| --- | --- | --- | --- |
+| 镜头切分 | F1（真实素材像素级） | **1.000**（3/3 真切点，0 误报） | ≥0.85 |
+| 图文检索 | 区间命中（`content_query`） | **32/32 = 100%** | ≥80% |
+| 画面语义检索 | recall@10 | **100%** vs 关键词 16.7% | ≥80% |
+| 意图解析 | 正确解析 | **50/50 = 100%**；幻觉拦截 **20/20** | ≥90% |
+| 引用落位 | 引用不存在的素材占比 | **0**（18/18 引用全部可验证） | =0 |
+| 一句话→成片 | 端到端 | **25/25**；dry-run 逐字节只读 | 全通过 |
+| 建索引成本 | 1080p | **214 ms/s**（10 分钟素材 ≈ 2.1 分钟） | ≤3 分钟 |
+
+**验证边界（必须一起读，否则上面的数字会被误读成"真实素材效果"）**：
+
+- 切分/检索的**合成素材**测试测的是颜色与图案属性，真实画面召回率另做补测（Pexels 8 段，top-1 75%、top-3 82.1%）；
+- 全部 30 条问答、50 条指令、18 个场景为**自写夹具**；LLM 解析路径仅打桩测试；
+- 本机**未装 STT 后端**，转写路径从未真正跑过；
+- 云端多模态（真实画面理解）**默认关闭**，从未在评测中实际调用；`visual.description` 目前是**用已测字段拼出来的描述**（`evidence=composed:stats+clip+audio`，置信度 0.5），不是模型级视觉理解；
+- 4K 的耗时数字是 1080p **上采样**得到的，不是真 4K 素材实测。
+
+计划与逐轮记录见 [docs/content-understanding-plan-2026-09-14.md](docs/content-understanding-plan-2026-09-14.md)，基准集与门槛对照见 [docs/content-understanding-benchmark.md](docs/content-understanding-benchmark.md)。一键复跑全部指标：`python scripts/verify_all_metrics.py`。
+
+### 时间线正确性：改时长统一收拢
+
+时间线是前后端之间**唯一的真相**，所以它的不变量有专门的回归用例守着：
+
+- **改时长的所有入口共用一条收拢规则**（`reflow_after_duration_change`）：变短 → 后续片段左移，变长 → 后续片段右推，**绝不产生重叠**；并且**只抽掉真正被改掉的那段时间**，片段之间刻意留的呼吸/黑场前的一拍不会被压掉。
+- 三个入口（`trim` / 变速 / `set duration_sec`）与需求服务的数值调整路径走**同一份实现**——此前它们是各自实现，实测出现"同一句『把这句改到 10 秒』走两条路得到两种结果"，这类不一致已经变成回归用例（`test_set_and_trim_agree_on_the_same_change`）。
+- **变速同时改时长**：渲染端是 `setpts=PTS/speed`，1.5 倍速真的会把这段缩短到 2/3；时长不变就会让模型与渲染输出不一致。
+- `start_sec` 是用户**显式指定位置**，刻意**不**自动重排（只如实告警），自动"帮你挪"会把用户意图改掉。
+- 改完结构**收尾重算总时长**；dry-run 内置"输入未被改动"自检，**有硬错误一条都不执行**。
+
+### 其余本期改进
 
 - **MG 动画质量深度改进**：专业动效提示词（easing/发光/渐变/粒子/错峰）、`mg_renderer` 支持 `line`/`circle`/`ring`/`arc`/`bg` 元素与逐关键帧 easing、8 个内置专业模板、StructureAgent `mg_dynamic` 引导、Generator LLM 自批判闭环。
 - **字幕样式**：Clip 新增 11 个样式字段（字重/斜体/字距/描边宽色/阴影 x·y·blur·色/发光宽色），导出 drawtext 双通道渲染，新字幕默认样式统一（font_size=48）。
+- **时间模型 O1**：时间线时长与 tick 换算统一，消除浮点漂移。
+- **插件化**：统一贡献契约 + manifest 签名（HMAC）+ 权限白名单 + 依赖解析 + 启停持久化 + 配置迁移 + reload 回滚 + secret 加密 + 审计日志；子进程插件 RPC 强制 UTF-8（`-X utf8` + `PYTHONIOENCODING`），中文回传不再损坏。
 - **新端点 `GET /api/pipeline/runs`**：列出最近管线运行记录，供 Pipeline 管理页展示。
 
-完整路由清单见 [docs/api_reference.md](docs/api_reference.md)。
+完整路由清单（**37 个路由文件 / 269 条 `/api` 路由**）见 [docs/api_reference.md](docs/api_reference.md)。
 
 
 ## Persona 配置
 
-（此部分与上一版 README 基本一致，保留核心内容，省略字段细节表以控制篇幅。完整字段说明见 [docs/persona-schema.md](https://docs/persona-schema.md)）
+（此部分与上一版 README 基本一致，保留核心内容，省略字段细节表以控制篇幅。完整字段说明见 [docs/Persona.md](docs/Persona.md)）
 
 ### 最小配置示例
 
@@ -475,6 +531,8 @@ Level 2 ─── LoRA微调 ────── 上传50+历史视频，微调Ag
 | 阶段四 | AudioAgent + QualityAgent 增强；渲染队列  | ✅ 完成 |
 | 阶段五 | 前端完整时间轴编辑器；LoRA 微调管线       | ✅ 完成 |
 | 阶段六 | 账号管理 / 插件与 Persona 市场 / 商业交付加固（P0–P10） | ✅ 完成 |
+| 阶段七 | **素材内容理解**（R1–R10）：镜头级索引 + 内容查询 + 自然语言剪辑意图落位 + 量化评测门禁 | ✅ 完成 |
+| 阶段八 | 真实画面理解（云端多模态开启后的评测）、跨素材一致性、成片级自动复核 | 🔄 进行中 |
 
 ------
 
@@ -490,4 +548,14 @@ Level 2 ─── LoRA微调 ────── 上传50+历史视频，微调Ag
 - [docs/development.md](docs/development.md)（开发指南）
 - 计划与执行进度：[docs/fix-and-feature-plan.md](docs/fix-and-feature-plan.md)
 
-所有改动需通过：后端 `python -m pytest tests -q`（1500+）、前端 `npm run test`（420+）与 `npx tsc --noEmit`。
+### 验证清单（改动后必须全绿）
+
+| 检查 | 命令 | 当前基线 |
+| --- | --- | --- |
+| 后端全量回归 | `python -m pytest tests -q`（工作目录 `J:\Clipwright`） | **3187 passed / 0 failed**（3 skipped、1 xfailed） |
+| 后端可导入 | `python -c "import clipwright.main"` | OK |
+| 内容理解指标门禁 | `python scripts/verify_all_metrics.py` | **9/9 PASS**（完整跑约 4.6 分钟） |
+| 前端单测 | `npm run test`（工作目录 `J:\Clipweight-Client`） | **771 passed / 90 files** |
+| 前端类型与构建 | `npx tsc --noEmit` · `npm run build` | 均无错误 |
+
+> 数字是**实测基线**而非配额：改动让它们下降时，先确认是预期变化还是回归。指标脚本输出的"验证边界"段落必须和数字一起读——它写着每个数字是在什么素材、什么条件下测出来的。
