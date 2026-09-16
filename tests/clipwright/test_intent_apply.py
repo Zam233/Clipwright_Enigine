@@ -427,6 +427,78 @@ class TestShrinkIsNotAppliedTwice:
         assert [p[1] for p in positions(new)] == [0.0, 2.0, 6.0, 10.0]
 
 
+class TestSetDurationReflows:
+    """回归：`set duration_sec` 必须与 `trim` 走**同一条收拢规则**。
+
+    真缺陷（本轮自查发现）：结构化补丁里"改时长"有两条语义等价的路——
+    `trim duration_sec=10` 会收拢，而 `set duration_sec=10` 只写字段、不重排，
+    于是 c0@0+10 直接压在 c1@4+4 上（只丢一条 warning）。同一句"把这句改到 10 秒"
+    走两条路得到两种结果，用户无从理解。
+
+    为什么测试没抓到：`TestSet` 只测过 speed/volume/font_size/text，
+    `TestTrim` 只走 trim 分支——两条入口各测各的，**没有任何一条断言它们结果相同**。
+    """
+
+    def test_longer_duration_pushes_following_clips_right(self):
+        plan = ia.PatchPlan(ops=[ia.PatchOp(op="set", clip_ids=["c0"],
+                                            field="duration_sec", value=10.0)])
+        new, report = ia.apply_patch(five(), plan)
+        assert not report.has_errors()
+        assert positions(new) == [("c0", 0.0, 10.0), ("c1", 10.0, 4.0),
+                                  ("c2", 14.0, 4.0), ("c3", 18.0, 4.0),
+                                  ("c4", 22.0, 4.0)]
+        ordered = sorted(positions(new), key=lambda p: p[1])
+        for prev, cur in zip(ordered, ordered[1:]):
+            assert cur[1] >= prev[1] + prev[2] - 1e-6      # 不许重叠
+        assert new.duration_sec == pytest.approx(26.0)
+
+    def test_shorter_duration_pulls_following_clips_left(self):
+        plan = ia.PatchPlan(ops=[ia.PatchOp(op="set", clip_ids=["c0"],
+                                            field="duration_sec", value=2.0)])
+        new, _report = ia.apply_patch(five(), plan)
+        assert [p[1] for p in positions(new)] == [0.0, 2.0, 6.0, 10.0, 14.0]
+
+    def test_set_and_trim_agree_on_the_same_change(self):
+        """同样的"改到 10 秒"，两条入口的结果必须逐字节相同。"""
+        by_set, _r1 = ia.apply_patch(five(), ia.PatchPlan(ops=[
+            ia.PatchOp(op="set", clip_ids=["c0"], field="duration_sec", value=10.0)]))
+        by_trim, _r2 = ia.apply_patch(five(), ia.PatchPlan(ops=[
+            ia.PatchOp(op="trim", clip_ids=["c0"], duration_sec=10.0)]))
+        assert positions(by_set) == positions(by_trim)
+        assert float(by_set.duration_sec) == pytest.approx(float(by_trim.duration_sec))
+
+    def test_duration_below_min_is_clamped_with_warning(self):
+        plan = ia.PatchPlan(ops=[ia.PatchOp(op="set", clip_ids=["c0"],
+                                            field="duration_sec", value=0.05)])
+        new, report = ia.apply_patch(five(), plan)
+        assert float(new.tracks[0].clips[0].duration_sec) == pytest.approx(ia.MIN_CLIP_SEC)
+        assert any("低于最小时长" in p.message for p in report.problems)
+
+    def test_reflow_preserves_intentional_gaps(self):
+        """与 trim/删除同一条不变量：只抽掉被改掉的那段时间，刻意留白不许被吃。"""
+        plan = ia.PatchPlan(ops=[ia.PatchOp(op="set", clip_ids=["c0"],
+                                            field="duration_sec", value=2.0)])
+        new, _report = ia.apply_patch(make_timeline(
+            [("c0", 0.0, 4.0), ("c1", 4.0, 4.0), ("c2", 10.0, 4.0), ("c3", 14.0, 4.0)]), plan)
+        assert [p[1] for p in positions(new)] == [0.0, 2.0, 8.0, 12.0]
+
+    def test_start_sec_is_not_reflowed(self):
+        """`start_sec` 是显式指定位置，不属于"改时长"——自动重排会改写用户意图。"""
+        plan = ia.PatchPlan(ops=[ia.PatchOp(op="set", clip_ids=["c2"],
+                                            field="start_sec", value=6.0)])
+        new, report = ia.apply_patch(five(), plan)
+        assert positions(new)[2] == ("c2", 6.0, 4.0)
+        assert [p[1] for p in positions(new)] == [0.0, 4.0, 6.0, 12.0, 16.0]
+        assert any("重叠" in p.message for p in report.problems)     # 如实告警，不自作聪明
+
+    def test_non_duration_field_does_not_move_anything(self):
+        """对照：亮度/不透明度等字段改不到占用时长，位置一个都不许动。"""
+        plan = ia.PatchPlan(ops=[ia.PatchOp(op="set", clip_ids=["c0"],
+                                            field="fx_brightness", value=1.4)])
+        new, _report = ia.apply_patch(five(), plan)
+        assert [p[1] for p in positions(new)] == [0.0, 4.0, 8.0, 12.0, 16.0]
+
+
 # ── reorder ───────────────────────────────────────────────
 
 

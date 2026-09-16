@@ -52,6 +52,13 @@ from clipwright.services.edit_intent import FIELD_SPECS as _FIELD_SPECS
 
 _ADJUST_FIELDS: dict[str, tuple[type, Any]] = dict(_FIELD_SPECS)
 
+#: 会改变片段占用时长的字段（改完必须收拢，否则与相邻片段重叠）。
+#: 从 `intent_apply` 取同一份清单，避免两处各写一份而漂移。
+from clipwright.services.intent_apply import (  # noqa: E402
+    MIN_CLIP_SEC as _MIN_CLIP_SEC,
+    STRUCTURAL_DURATION_FIELDS as _STRUCTURAL_DURATION_FIELDS,
+)
+
 
 _memory_sessions: dict[str, dict] = {}
 
@@ -1120,6 +1127,7 @@ class RequirementsService:
 
         notes: list[str] = []
         applied = 0
+        duration_changes: dict[str, float] = {}
         for op in ops:
             cid = op.get("clip_id")
             field = op.get("field")
@@ -1132,14 +1140,42 @@ class RequirementsService:
             _track, clip = found
             try:
                 kind, clamp_fn = _ADJUST_FIELDS[field]
-                if kind is float:
-                    setattr(clip, field, clamp_fn(value))
+                if field in _STRUCTURAL_DURATION_FIELDS:
+                    # **改时长必须收拢**，与结构化补丁（trim/变速/set duration_sec）
+                    # 共用同一条规则（`reflow_after_duration_change`）：否则 c0 从 4s
+                    # 改到 10s 会与 c1 重叠（自查发现的"同义操作两种行为"缺陷，
+                    # 两条入口都要修）。
+                    before_dur = float(clip.duration_sec or 0.0)
+                    target = float(clamp_fn(value))
+                    clip.duration_sec = max(_MIN_CLIP_SEC, target)
+                    duration_changes[cid] = before_dur - float(clip.duration_sec)
                 else:
                     setattr(clip, field, clamp_fn(value))
                 applied += 1
             except (TypeError, ValueError):
                 continue
+        moved: list[str] = []
+        from clipwright.services.intent_apply import (
+            recalc_timeline_duration as _recalc,
+            reflow_after_duration_change as _reflow,
+        )
+
+        if duration_changes:
+            try:
+                moved = _reflow(timeline, duration_changes)
+            except Exception as exc:  # noqa: BLE001 — 重排失败不该让调整整体失败
+                logger.warning("时长调整后的重排失败（已应用数值）: %s", exc)
+
+        # 总时长要跟着片段实际占用走，否则时间线模型说 10s、渲染输出 13s
+        # （自查发现：结构化补丁入口会重算，本入口此前漏了）。
+        try:
+            _recalc(timeline)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("重算总时长失败: %s", exc)
         notes.append(f"已应用 {applied} 项调整")
+        if moved:
+            notes.append(f"其中 {len(duration_changes)} 项改动了时长，"
+                         f"已顺移 {len(moved)} 个后续片段避免重叠")
         return timeline, notes
 
     async def _is_confirm(self, message: str) -> bool:

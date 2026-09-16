@@ -138,6 +138,58 @@ async def test_adjust_no_ops_returns_original_timeline(service):
     assert "0 项" in res["reply"]
 
 
+# ── adjust：改时长必须收拢（与结构化补丁同一条规则）─────
+
+async def test_adjust_longer_duration_pushes_following_clip(service):
+    """`duration_sec` 变长 → 后续片段右推，不许重叠（renders 端按模型位置输出）。"""
+    tl = _mk_timeline()
+    llm = FakeLLM(intent="adjust", ops=[
+        {"clip_id": "c1", "field": "duration_sec", "value": 8.0},
+    ])
+    res = await _apply(service, tl, ["c1"], llm)
+    proposed = Timeline.model_validate(res["proposed_timeline"])
+    clips = proposed.tracks[0].clips
+    assert [(c.id, float(c.start_sec), float(c.duration_sec)) for c in clips] == [
+        ("c1", 0.0, 8.0), ("c2", 8.0, 5.0)]
+    assert float(proposed.duration_sec) == pytest.approx(13.0)
+    assert "顺移 1 个后续片段" in res["reply"]
+
+
+async def test_adjust_shorter_duration_pulls_following_clip(service):
+    tl = _mk_timeline()
+    llm = FakeLLM(intent="adjust", ops=[
+        {"clip_id": "c1", "field": "duration_sec", "value": 2.0},
+    ])
+    res = await _apply(service, tl, ["c1"], llm)
+    proposed = Timeline.model_validate(res["proposed_timeline"])
+    clips = proposed.tracks[0].clips
+    assert [(c.id, float(c.start_sec), float(c.duration_sec)) for c in clips] == [
+        ("c1", 0.0, 2.0), ("c2", 2.0, 5.0)]
+
+
+async def test_adjust_start_sec_does_not_reflow(service):
+    """`start_sec` 是用户显式指定的位置，不触发重排（与 intent_apply 口径一致）。"""
+    tl = _mk_timeline()
+    llm = FakeLLM(intent="adjust", ops=[
+        {"clip_id": "c2", "field": "start_sec", "value": 2.0},
+    ])
+    res = await _apply(service, tl, ["c2"], llm)
+    proposed = Timeline.model_validate(res["proposed_timeline"])
+    clips = proposed.tracks[0].clips
+    assert float(clips[1].start_sec) == 2.0
+    assert "顺移" not in res["reply"]
+
+
+async def test_adjust_duration_below_min_is_clamped(service):
+    tl = _mk_timeline()
+    llm = FakeLLM(intent="adjust", ops=[
+        {"clip_id": "c1", "field": "duration_sec", "value": 0.05},
+    ])
+    res = await _apply(service, tl, ["c1"], llm)
+    proposed = Timeline.model_validate(res["proposed_timeline"])
+    assert float(proposed.tracks[0].clips[0].duration_sec) >= 0.2
+
+
 # ── adjust：text/font_color 字符串字段 ───────────────
 
 async def test_adjust_accepts_string_fields(service):

@@ -437,6 +437,39 @@ def _track_of(timeline: Timeline, clip_id: str) -> str:
 # ── 执行（validate 与 apply 共用同一份实现）────────────────
 
 
+def reflow_after_duration_change(
+    timeline: Timeline,
+    changes: dict[str, float],
+    *,
+    ripple: bool = True,
+) -> list[str]:
+    """时长变化后**统一收拢/右推**（供所有"改时长"的入口共用）。
+
+    为什么要做成公共函数：时间线里"改一个片段的时长"有**多条入口**——
+    结构化补丁（`intent_apply` 的 trim / 变速 / set duration_sec）与需求服务的
+    数值调整路径（`requirements_service._edit_adjust`）。各自实现一遍必然漂移
+    （实测就是这样：变速会收拢、直接 `set duration_sec` 不会，同一句"改到 10 秒"
+    走 `trim` 正确、走 `set` 就与相邻片段重叠）。
+
+    参数 `changes`：`clip_id → (变化前的时长 - 变化后的时长)`，**有符号**：
+    正 = 变短（后续片段左移）、负 = 变长（后续片段右推，否则重叠）。
+    返回被移动的片段 id。
+    """
+    if not ripple or not changes:
+        return []
+    moved: list[str] = []
+    for track in timeline.tracks:
+        moved.extend(_ripple_track(track, set(), changes))
+    return moved
+
+
+#: 「改这些字段会改变片段占用的时间」→ 需要收拢/右推。
+#: `duration_sec` 会改变占用时长；`start_sec` **不列入**——那是用户显式指定位置，
+#: 自动重排会把"我就要它从第 5 秒开始"这个意图改掉，与"改时长"不是一类事。
+#: `source_offset_sec` 只是素材内的取用窗口，不改变时间线占用，也不需要收拢。
+STRUCTURAL_DURATION_FIELDS: tuple[str, ...] = ("duration_sec",)
+
+
 def _ripple_track(
     track: Track, removed: set[str], shrink: Optional[dict[str, float]] = None,
 ) -> list[str]:
@@ -672,8 +705,7 @@ def _execute(
             if ids and plan.ripple:
                 # 裁短后同样收拢（与删除保持一致），否则会在时间线上留下无人解释的空洞。
                 # 只用**本 op 的** `op_shrink`（见上面 `shrink` 的踩坑记录）。
-                for track in new.tracks:
-                    touched.update(_ripple_track(track, set(), op_shrink))
+                touched.update(reflow_after_duration_change(new, op_shrink))
             if ids:
                 report.preview.append(f"· 裁剪 {len(ids)} 个片段的时长"
                                       + ("（其余片段前移补上空缺）" if plan.ripple else ""))
@@ -730,17 +762,31 @@ def _execute(
                         # 有符号：变快 → 正（收拢）；变慢 → 负（后续片段右推，避免重叠）
                         set_shrink[cid] = round(before_dur - scaled, 6)
                         speed_changed.append(cid)
+                elif pop.field in STRUCTURAL_DURATION_FIELDS:
+                    # **直接改时长也要收拢**——与 `trim`/变速用同一条规则。
+                    #
+                    # 自查发现的真缺陷：`set duration_sec=10` 原先只写字段、不重排，
+                    # 于是 c0@0+10 与 c1@4+4 **直接重叠**（只给一条 warning）；
+                    # 而语义等价的 `trim duration_sec=10` 会把 c1 顺移到 10.0s。
+                    # 同一句"改到 10 秒"走两条路得到两种结果，用户无从理解。
+                    before_dur = float(clip.duration_sec or 0.0)
+                    target = max(min_clip_sec, float(value))
+                    if target != float(value):
+                        report.problems.append(PatchProblem(
+                            level="warning", where=where,
+                            message=f"片段 {cid} 的时长 {float(value):.2f}s 低于最小时长，"
+                                    f"已放宽到 {min_clip_sec:.2f}s"))
+                    set_shrink[cid] = round(before_dur - target, 6)
+                    value = round(target, 6)
                 setattr(clip, pop.field, value)
                 applied += 1
                 content_touched.add(cid)
                 touched.add(cid)
-            if speed_changed and plan.ripple:
-                # 变速改了时长 → 同样要收拢/右推（见上：变快为正、变慢为负），
-                # 否则"改速度"之后时间线上会出现空洞或重叠。
+            if set_shrink and plan.ripple:
+                # 时长变了（变速或直接改时长）→ 统一收拢/右推。
                 # 只用**本 op 的** `set_shrink`（见上面 `shrink` 的踩坑记录：
                 # 共用字典会让位移被重复应用，吃掉刻意留白）。
-                for track in new.tracks:
-                    touched.update(_ripple_track(track, set(), set_shrink))
+                touched.update(reflow_after_duration_change(new, set_shrink))
             if applied:
                 report.preview.append(f"· 设置 {applied} 个片段的 {pop.field} = {value!r}")
             if speed_changed:
@@ -967,8 +1013,19 @@ def _fit_total(
     return note, problems, affected
 
 
-def _recalc_duration(timeline: Timeline) -> None:
+def recalc_timeline_duration(timeline: Timeline) -> None:
+    """按片段实际占用重算 `timeline.duration_sec`（所有"改结构"的入口都要收尾调用）。
+
+    为什么要公开：改时长/裁剪/删除之后，`timeline.duration_sec` 是**给渲染与前端读的
+    权威总时长**。入口 A（结构化补丁）在 `apply_patch` 末尾重算，入口 B
+    （`requirements_service._edit_adjust`）此前**不重算**——实测：片段被推到 13.0s，
+    `duration_sec` 还停在 10.0。同一份时间线两个总时长，导出时长/进度条都会错。
+    """
     timeline.duration_sec = _total_duration(timeline)
+
+
+#: 兼容内部旧名
+_recalc_duration = recalc_timeline_duration
 
 
 def _invariant_checks(timeline: Timeline, plan: PatchPlan) -> list[PatchProblem]:
