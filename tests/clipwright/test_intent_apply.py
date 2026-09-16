@@ -321,6 +321,62 @@ class TestSet:
         assert not any("不支持" in p.message for p in report.problems)
 
 
+class TestSpeedAdjustsDuration:
+    """变速必须**同时改时长**——这是"审计角色"在人工评分表里直接指出的问题。
+
+    渲染端对 speed 的处理是 `setpts=PTS/speed`（见 `services/render.py`），
+    1.5 倍速**真的会把这段缩短到 2/3**；`duration_sec` 不变的话，时间线模型说的时长
+    与渲染输出不一致，后面所有片段的起止位置也全错。
+    """
+
+    def test_faster_speeds_shrink_and_pull_up(self):
+        plan = ia.PatchPlan(ops=[ia.PatchOp(op="set", clip_ids=["c0", "c1", "c2"],
+                                            field="speed", value=1.5)])
+        new, report = ia.apply_patch(make_timeline([("c0", 0.0, 3.0), ("c1", 3.0, 3.0),
+                                                    ("c2", 6.0, 3.0)]), plan)
+        assert not report.has_errors()
+        got = positions(new)
+        assert [(p[0], p[1], p[2]) for p in got] == [("c0", 0.0, 2.0), ("c1", 2.0, 2.0),
+                                                    ("c2", 4.0, 2.0)]
+        assert new.duration_sec == pytest.approx(6.0)
+        assert any("变速同时调整时长" in line for line in report.preview)
+
+    def test_slower_speeds_grow_and_push_right(self):
+        """变慢是**反方向**：后续片段必须右推，否则与前一个重叠。"""
+        plan = ia.PatchPlan(ops=[ia.PatchOp(op="set", clip_ids=["c0", "c1", "c2"],
+                                            field="speed", value=0.5)])
+        new, _report = ia.apply_patch(make_timeline([("c0", 0.0, 3.0), ("c1", 3.0, 3.0),
+                                                     ("c2", 6.0, 3.0)]), plan)
+        got = positions(new)
+        assert [(p[0], p[1], p[2]) for p in got] == [("c0", 0.0, 6.0), ("c1", 6.0, 6.0),
+                                                    ("c2", 12.0, 6.0)]
+        assert new.duration_sec == pytest.approx(18.0)
+        # 不许重叠
+        ordered = sorted(got, key=lambda p: p[1])
+        for prev, cur in zip(ordered, ordered[1:]):
+            assert cur[1] >= prev[1] + prev[2] - 1e-6
+
+    def test_same_speed_is_a_noop_on_duration(self):
+        plan = ia.PatchPlan(ops=[ia.PatchOp(op="set", clip_ids=["c0"], field="speed", value=1.0)])
+        new, report = ia.apply_patch(five(), plan)
+        assert float(new.tracks[0].clips[0].duration_sec) == 4.0
+        assert not any("变速同时调整时长" in line for line in report.preview)
+
+    def test_speed_change_keeps_min_clip_sec(self):
+        """极慢的素材被压到极快时，时长不许低于最小时长。"""
+        plan = ia.PatchPlan(ops=[ia.PatchOp(op="set", clip_ids=["c0"], field="speed", value=4.0)])
+        new, _report = ia.apply_patch(make_timeline([("c0", 0.0, 0.5)]), plan)
+        assert float(new.tracks[0].clips[0].duration_sec) >= ia.MIN_CLIP_SEC
+
+    def test_non_speed_fields_do_not_touch_duration(self):
+        """只有 speed 会耦合时长；亮度等字段不该动时长。"""
+        plan = ia.PatchPlan(ops=[ia.PatchOp(op="set", clip_ids=["c0"],
+                                            field="fx_brightness", value=1.2)])
+        new, _report = ia.apply_patch(five(), plan)
+        assert float(new.tracks[0].clips[0].duration_sec) == 4.0
+        assert float(new.tracks[0].clips[0].fx_brightness) == pytest.approx(1.2)
+
+
 # ── reorder ───────────────────────────────────────────────
 
 
@@ -521,7 +577,11 @@ class TestDryRun:
         ])
         report = ia.validate_patch(tl, plan)
         assert tl.model_dump() == before         # 预览绝不能改时间线
-        assert report.clips_after == 2
+        # 5 片段 / 20s → 删 1 个（16s）→ c0 变速 2× 变 2s 并收拢（14s）→ 收到 8s 剩 3 个。
+        # 变速那一环现在会**同时改时长**（见 TestSpeedAdjustsDuration），所以这里的数字
+        # 与"变速不改时长"的旧行为不同。
+        assert report.clips_after == 3
+        assert report.duration_after == pytest.approx(8.0)
         assert report.dry_run is True
 
     def test_validate_reports_before_and_after_numbers(self):
@@ -534,7 +594,9 @@ class TestDryRun:
     def test_preview_first_line_summarizes_the_change(self):
         plan = ia.PatchPlan(ops=[ia.PatchOp(op="remove", clip_ids=["c1"])])
         report = ia.validate_patch(five(), plan)
-        assert "片段 5 → 4 个" in report.preview[0]
+        # "片段数 N → M"：写成"片段 N → M 个"会有歧义（"片段 2" 既可读成数量
+        # 也可读成"第 2 个片段"——实测审计角色就把它读出歧义并报了问题）。
+        assert "片段数 5 → 4" in report.preview[0]
         assert "20.0s → 16.0s" in report.preview[0]
 
     def test_apply_with_errors_returns_original_untouched(self):
