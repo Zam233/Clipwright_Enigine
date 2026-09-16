@@ -21,6 +21,11 @@ import httpx
 from clipwright.config import logger, settings
 from clipwright.rag.vector_store import ScoredChunk
 
+#: 「显式关闭重排」的模型名（与"配置写错了"区分开——前者是 INFO，后者是 WARNING）。
+#: 本地交叉编码器首次加载实测约 306 秒，所以关掉是常见且合理的选择；
+#: `.env.example` 默认就给这个值，避免留一个"看起来像模型名但不合法"的名字。
+DISABLED_MODEL_NAMES: frozenset[str] = frozenset({"", "disabled", "none", "off", "no"})
+
 
 def _bound_reranker() -> Any | None:
     """B4：按「重排序」角色绑定产出 (客户端, 模型名)（未绑定 → None 走旧路径）。
@@ -55,6 +60,22 @@ def _bound_reranker() -> Any | None:
 class Reranker:
     """重排序器 — 本地 CrossEncoder 或 API 服务。"""
 
+    #: 进程级失败记录：`配置键 → 失败原因`。
+    #:
+    #: 为什么需要：`search_shots(rerank=True)` 是**每次检索**都会走的默认路径，
+    #: 而重排器配置无效时每次都要走一遍导入/连接尝试（实测单次 23 秒）——
+    #: 同样的失败重试 N 次毫无意义，只是把"配置错了"变成"系统很慢"。
+    #:
+    #: 为什么**按配置键控**而不是一个全局布尔：全局闩锁会把"改好配置"也一起锁死
+    #: （必须重启进程才恢复），而且会让测试之间互相污染——实测第一版就是这么
+    #: 打红了两条既有用例（一个测试把闩锁打开，后面的测试全被短路）。
+    #: 现在：同一份无效配置不再重试；换了配置（模型名/地址/key 任一变化）就重新尝试。
+    _unavailable: dict[tuple[str, str, bool], str] = {}
+
+    def _config_key(self) -> tuple[str, str, bool]:
+        return (str(self._model_name or ""), str(self._base_url or ""),
+                bool(self._api_key))
+
     def __init__(
         self,
         model_name: str | None = None,
@@ -65,6 +86,15 @@ class Reranker:
         self._base_url = base_url or settings.rag_rerank_base_url
         self._api_key = api_key or settings.rag_rerank_api_key
         self._model = None  # 懒加载（仅本地模式）
+
+    @classmethod
+    def reset_failure_latch(cls) -> None:
+        """清掉全部失败记录（改完配置后调用，不必重启进程）。"""
+        cls._unavailable.clear()
+
+    @property
+    def unavailable_reason(self) -> str | None:
+        return type(self)._unavailable.get(self._config_key())
 
     async def rerank(
         self,
@@ -78,17 +108,47 @@ class Reranker:
 
         top_k = top_k or settings.rag_top_k
 
+        # **Provider 绑定优先于一切**（既有设计：绑定存在时源为唯一真源）。
+        #
+        # 顺序很重要：实测踩到——`.env` 里把 `RAG_RERANK_MODEL` 设成 `disabled`（有意关闭本地重排）
+        # 之后，如果把"显式关闭"的判定放在绑定之前，就会**把用户的 provider 绑定也一起关掉**，
+        # 绑定的自有模型根本没机会生效。绑定给了模型，就听绑定的。
         impl = _bound_reranker()
         if impl is not None:
             client, bound_model = impl
-            return await self._rerank_via_provider(client, bound_model, query, candidates, top_k)
+            return await self._rerank_via_provider(
+                client, bound_model, query, candidates, top_k)
+
+        latched = type(self)._unavailable.get(self._config_key())
+        if latched:
+            logger.debug("重排器不可用（同一配置已失败过，跳过重试）：%s", latched)
+            return candidates[:top_k]
+
+        # 显式关闭 vs 配置错误：两者的日志级别必须不同。
+        # `disabled`/`none`/空 是**有意关闭**（本地交叉编码器首次加载约 306 秒，
+        # 关掉是合理选择），打 WARNING 会让人以为配置坏了；
+        # 而"看起来像模型名但不含 `/`"才是配置错误，必须显式告警。
+        if str(self._model_name or "").strip().lower() in DISABLED_MODEL_NAMES:
+            type(self)._unavailable[self._config_key()] = "已显式关闭（DISABLED_MODEL_NAMES）"
+            logger.info("重排器已显式关闭（%r），检索按融合分排序", self._model_name)
+            return candidates[:top_k]
 
         if self._base_url and not self._is_hf_mirror(self._base_url):
             # ── API 模式 ──
-            return await self._rerank_api(query, candidates, top_k)
+            try:
+                return await self._rerank_api(query, candidates, top_k)
+            except Exception as exc:  # noqa: BLE001 — 失败回退原序，并记闩锁
+                type(self)._unavailable[self._config_key()] = f"API 模式失败：{exc}"
+                logger.warning("重排序 API 失败（回退原始顺序，后续检索不再重试）: %s", exc)
+                return candidates[:top_k]
         else:
             # ── 本地模式 ──
-            return self._rerank_local(query, candidates, top_k)
+            try:
+                return self._rerank_local(query, candidates, top_k)
+            except Exception as exc:  # noqa: BLE001 — 失败回退原序，并记闩锁
+                type(self)._unavailable[self._config_key()] = f"本地模式失败：{exc}"
+                logger.warning("重排序不可用（回退原始顺序，后续检索不再重试）: %s", exc)
+                return candidates[:top_k]
 
     async def _rerank_via_provider(
         self,
@@ -124,11 +184,12 @@ class Reranker:
     def _lazy_load_local(self):
         if self._model is not None:
             return
-        from sentence_transformers import CrossEncoder
-
-        if self._base_url:
-            os.environ.setdefault("HF_ENDPOINT", self._base_url)
-
+        # **先校验模型名，再导入 sentence_transformers**。
+        #
+        # 顺序很重要（实测：一次检索白等 23 秒）：这句 import 在本环境要 20 秒左右，
+        # 而"模型名不含 `/`"是无配置时最常见的状态——先 import 再报错等于
+        # **每次检索都先浪费 20 秒，然后静默退回无重排**。
+        # 配置错误应该在毫秒级暴露，而不是用"慢"来掩盖。
         model_name = self._model_name
         if "/" not in model_name:
             raise RuntimeError(
@@ -136,6 +197,12 @@ class Reranker:
                 f"需要完整的 HuggingFace 仓库名，例如 'BAAI/bge-reranker-v2-m3'。"
                 f"请检查 CLIPWRIGHT_RAG_RERANK_MODEL 配置。"
             )
+
+        from sentence_transformers import CrossEncoder
+
+        if self._base_url:
+            os.environ.setdefault("HF_ENDPOINT", self._base_url)
+
         self._model = CrossEncoder(model_name)
 
     def _rerank_local(
