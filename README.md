@@ -177,11 +177,14 @@
 > 账号/市场服务为独立仓库 `K:\Clipwright Server`（可选，端口 8090）。
 
 ```powershell
-# 一键启动（检查依赖 → 启动 MongoDB → 后端 8080 → 前端 5173）
+# 一键启动（环境体检 → 后端 8080 → 前端 5173）
 scripts\start.ps1
 
 # 停止
 scripts\stop.ps1
+
+# 只跑环境体检（Python/Node/Mongo/ffmpeg/模型缓存/端口/安全红线）
+powershell -ExecutionPolicy Bypass -File scripts\check_env.ps1
 ```
 
 或手动分步启动：
@@ -196,8 +199,14 @@ npm install --cache "D:\.npm-cache"
 npm run dev            # http://localhost:5173
 ```
 
+> **`CLIPWRIGHT_HOST` 是启动期配置**：改它（或 `PORT` / Mongo / 并发渲染等标注"需重启"的项）要**重启后端**才生效。
+> 默认 `127.0.0.1`；改成 `0.0.0.0` 供局域网访问时**必须同时配鉴权**（`CLIPWRIGHT_API_TOKEN`
+> 或 `CLIPWRIGHT_ACCOUNT_VERIFY_MODE=token|jwt`），否则后端会按安全红线**拒绝启动**（fail-closed）——
+> 体检脚本会在启动前就拦下并给出改法。
+
 **端口约定**：后端 8080（唯一标准）· 前端 5173 · 账号/市场服务 8090 · MongoDB 27017。
 **前端代理**：`/api` → 8080，`/srv` → 8090（账号服务）。
+**健康检查**：`GET /health`（`status: ok` 表示所有组件正常；Mongo 断连即 `degraded`）。
 
 ## 前端编辑器
 

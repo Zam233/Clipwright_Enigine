@@ -2751,3 +2751,116 @@ R1–R10 的验收全在合成素材上，"真实素材"一直是最大的未验
 - 前端 README 里 `ClipWright-Design-Specification.md` / `-Frontend-Design-Plan.md` 两份
   设计文档只说"存在"（实测确认存在），**内容是否与当前设计令牌一致未核**。
 
+### 执行轮次 147（2026-09-14：一键启动脚本核查——实测出 5 个真问题，其中 1 个让后端根本起不来）
+
+用户指令"检查一键启动脚本是否需要更新"。做法：**先真跑一遍**（`start.ps1` 全流程），
+再逐条对照"脚本假设"与"实际行为"。实测比读代码值钱——下面 5 条里 4 条是跑出来的。
+
+#### 🔴 P0：按项目自带的 `.env.example` 配置，后端**起不来**，且前端照常启动
+
+- **实测**：`.env.example` 里 `CLIPWRIGHT_HOST=0.0.0.0` + `CLIPWRIGHT_API_TOKEN=`（空）+
+  `CLIPWRIGHT_ALLOW_INSECURE=false`，而 `_enforce_security_gate()` 是 **fail-closed**：
+  绑定非回环地址又无鉴权 → `raise SystemExit`。实测退出码 **1**，stderr 是
+  「拒绝启动：绑定非回环地址 '0.0.0.0' 且未配置任何鉴权」。
+- **为什么一直没被发现**：后端是 `Start-Process -WindowStyle Hidden` 起的，
+  错误只进了 `logs/backend.err.log`；而 `start.ps1` 的就绪循环**只等不查**——
+  等满 60s，打印一句"警告: 后端未就绪"，然后**照常启动前端**。
+  用户体验 = 打开一个连不上的编辑器，没有任何指向真因的线索。
+- **修法（三处一起）**：
+  1. `.env.example` 默认改 `CLIPWRIGHT_HOST=127.0.0.1`（本机开发开箱即用），
+     并注明"要改 0.0.0.0 必须同时配鉴权，否则后端拒绝启动"；
+  2. 本机 `.env` 同步改 `127.0.0.1` → 实测 `_enforce_security_gate()` **PASS**；
+  3. `check_env.ps1` 加**同一条规则**的启动前检查（有我在上面那条就 fail-closed，
+     启动前就拦住，不再让用户对着白屏猜）。
+
+#### 🟠 P1：后端日志中文乱码（编码），且脚本没带 `-X utf8`
+
+- **实测**：`Start-Process` 把 stdout/stderr **重定向到文件**时，Python 按控制台
+  locale 决定编码 → `stdout encoding = gbk`，中文日志写成 `¼��ʧ��`（cp936 编不出的
+  字符还会直接抛 `UnicodeEncodeError`）。
+- **修法**：启动参数加 `-X utf8`。复测：`encoding = utf-8`，
+  `logs/backend.err.log` 里中文 115 处、私用区/替换字符 **0**、UTF-8 解码 OK。
+  这与 `plugins/runtime/host.py` 里子进程插件宿主用 `-X utf8` 是同一个原因。
+
+#### 🟠 P1：`/health` **永远返回 `degraded`**（真 bug，docker 健康检查因此永远失败）
+
+- **怎么发现的**：验证 `start.ps1` 的就绪探测时顺手看了一眼 `/health`，
+  6 个组件全 `ok` 却报 `degraded`。逐项算 `all_ok` 发现元凶：
+  判定把 `components["service"]`（值 = `"clipwright-engine"`，是**名字**）
+  也拿去比 `== "ok"` → 恒 False。
+- **影响（用实测的消费者说话）**：`docker-compose.yml:25` 的健康检查判
+  `status == 'ok'` → **容器永远 unhealthy**；监控/就绪探针同理。
+  一个"永远降级"的健康检查等于没有健康检查。前端 `healthApi.check()` 也读它。
+- **同源的第二处**：豁免名单里的 `"disconnected"` 与紧邻注释
+  「Mongo 断连必须计入不健康」**自相矛盾**——`docs/api_reference.md:106` 早就写着
+  "轮 80 修复假绿"，代码却一直把断连排除在外（**文档承诺了、代码没做**）。
+  已一并对齐：`disconnected` 计入不健康；豁免只留 `no_key`（功能取舍）与
+  `checking`（冷启动未出结论）。
+- **修法**：按 key 排除非状态字段（`service`/`queue_*`/`status`），删掉多余的
+  `'0'` 豁免。复测：`status` 从 `degraded` → **`ok`**；重启后端实测 `ok`。
+- **顺手删掉一处**：先前我怀疑 `'0'` 豁免是"修过一半"的痕迹——结论是它多余（队列计数
+  已按 key 排除），留着只会让下一个人困惑。
+- **回归测试 +3**：`tests/clipwright/test_health_status.py`（此前 `/health` **零测试**）：
+  ① 全绿必须 `ok`（修前必失败）；② Mongo 断连必须 `degraded`；
+  ③ ffmpeg 不可用必须 `degraded`。难点是端点内部真去探 ffmpeg/Hyperframes
+  （带缓存 + 后台线程）——用 `monkeypatch` 换掉探针底层函数并轮询等缓存回填，
+  不依赖机器上装没装 ffmpeg。
+
+#### 🟠 P1：`provider_sources.json` 带**明文 API Key** 落盘，且没被 `.gitignore` 覆盖
+
+- **实测**：`start.ps1` 跑起来后仓库根目录出现 `provider_sources.json`，
+  里面 `api_keys: ["sk-dd23…"]` 是**明文**（未配 `CLIPWRIGHT_WEBHOOK_SECRET_KEY` 时
+  `encrypt_secret` 退化为明文，日志有告警）。而 `git status` 显示它是 **`??`（未跟踪）**
+  → 任何一次 `git add -A` 都会把它**连密钥一起提交**。`git check-ignore` 确认
+  先前**没有**忽略规则（`settings.json` 同样）。
+- **修法**：`.gitignore` 追加 `provider_sources.json` / `settings.json` 及 `.bad` 变体
+  （**纯字节追加**——该文件本身带着既有非 UTF-8 字节，整体解码会炸，见轮 141 的同类坑）。
+  复测 `git check-ignore -v` 命中第 100/101 行。
+- **顺带修掉一个过期承诺**：README § 快速开始 原写"一键启动（检查依赖 → 启动 MongoDB → …）"，
+  但脚本并不启动 MongoDB（只检查 27017 是否在听）、也没有 ffmpeg/模型缓存检查。
+  已改为"环境体检 → 后端 8080 → 前端 5173"，并补上「`CLIPWRIGHT_HOST` 属启动期配置、
+  改后需重启后端」「改成 0.0.0.0 必须配鉴权」这两条实测得出的说明。
+
+#### 🟡 P2：`check_env.ps1` 缺两项关键能力检查
+
+- **ffmpeg / ffprobe**：渲染、抽帧、建索引、STT **全依赖**它，脚本一个字都没检查。
+  缺失时后端起得来，但功能在运行到一半才失败。
+- **模型缓存**：`.env` 用 `sentence_transformer` + `BAAI/bge-small-zh-v1.5`，
+  没缓存就现场下载百 MB 级；离线环境直接失败。已按 `HF_HOME ∪ {USERPROFILE}\.cache\huggingface`
+  探 `models--{org}--{name}` 目录判定，仅**提醒不阻断**。
+- 实测本机：ffmpeg/ffprobe OK；`BAAI/bge-small-zh-v1.5`（192.8 MB）与
+  `google/vit-base-patch16-224`（692.7 MB）均已缓存。
+
+#### 🐞 我自己在这一轮引入的回归（已修，并做成可检查的）
+
+- **两个 `.ps1` 丢了 UTF-8 BOM**：我用编辑器重写 `start.ps1` / `check_env.ps1`，
+  而编辑器不带 BOM；**本机一键启动用的是 Windows PowerShell 5.1（不是 pwsh 7）**，
+  5.1 读 `.ps1` **只看 BOM** 判断编码，没有 BOM 就按 cp936 解码 → 中文注释与提示串被
+  解成乱码 → **`ParseException`，脚本全废，连"哪一行错"都读不出来**。
+  这是**真回归**：改之前两个文件都有 BOM（`git cat-file -p HEAD:…` 实测首 3 字节
+  `EF BB BF`）。
+- **修法 + 防再犯**：新增 `scripts/fix_ps1_bom.py`——补 BOM 并用 PowerShell 自己的
+  `Parser.ParseFile` 做**语法检查**（不执行），`--check` 可进门禁。
+  实测 3 个脚本「BOM 就位 + 语法解析通过」。
+
+#### 验证（全部实测）
+
+- `check_env.ps1` 全绿运行；**故障注入测试**：临时把 `.env` 改回 `0.0.0.0`
+  → 脚本输出 `[FAIL] 安全红线（host=0.0.0.0 且无鉴权）…` 且 **exit 1**，
+  随后还原 `.env`。
+- `start.ps1` 端到端跑通：环境体检 → 后端 8080 → 就绪探测 → 前端 5173（`VITE v6.4.3 ready`）。
+- 后端日志 UTF-8 解码 OK、中文 115 处、**0** 处乱码。
+- `/health` 复测 `status: "ok"`（此前恒 `degraded`）。
+- 新增测试 3 条通过；`fix_ps1_bom.py` 3/3 就绪。
+
+#### 仍未做（如实说，不与本轮混为一谈）
+
+- `stop.ps1` 仍按端口强杀，不校验"这个进程是不是我们的"——误伤同端口其它服务的风险
+  是**既有**的，没动（改动它的收益/风险比不划算：真正的修法是记录 PID 文件，
+  属于另一件事）；
+- 明文 API Key 落盘的**根因**（未配加密密钥时退化明文）没改，只堵了"会不会被提交"
+  这一层；要根治得默认生成/要求 `CLIPWRIGHT_WEBHOOK_SECRET_KEY`，涉及配置迁移；
+- `check_env.ps1` 读 `.env` 派生默认值，**不读 `settings.json`**（设置页落盘、
+  优先级更高）。当前本机无 `settings.json`，够用；若哪天在设置页改过
+  host/token，脚本的判定会与实际不一致——已在脚本注释里写明这个边界。
+

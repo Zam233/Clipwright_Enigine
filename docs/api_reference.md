@@ -103,7 +103,11 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 }
 ```
 
-`status` 取值 `ok` / `degraded`；MongoDB 断连（`disconnected`）计入不健康（轮 80 修复假绿，可作就绪探针）。`llm` 无 key 时为 `no_key`（不计入不健康）。
+`status` 取值 `ok` / `degraded`。**参与判定的只有"健康状态字段"**：`service`（这是服务**名字**）、`queue_running` / `queue_pending`（这是**计数**）不参与——它们恒不等于 `ok`，混进判定会让 `status` **永远为 `degraded`**（轮 147 修，之前 `docker-compose.yml` 的健康检查判 `status == 'ok'`，等于容器永远 unhealthy）。
+
+- MongoDB 断连（`disconnected`）**计入不健康**：轮 80 的文档这样写，但代码里一直把它放在豁免名单里（注释与实现自相矛盾），轮 147 才真正对齐——就绪探针不许假绿。
+- `llm` 无 key 时 `no_key`（**不**计入不健康：未配置 LLM 是功能取舍，不影响服务能用）；`checking` 表示冷启动探测尚未出结论，也不计入。
+- 冷启动后首次请求可能短暂看到 `ffmpeg: not_found`（后台探针还没回填），几秒后复探即 `ok`。
 
 ---
 

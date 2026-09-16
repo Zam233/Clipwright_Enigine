@@ -766,10 +766,23 @@ async def health() -> dict[str, str]:
     except Exception:
         components["queue"] = "error"
 
-    # Mongo 断连必须计入不健康（作为就绪探针时不能假绿）
+    # Mongo 断连必须计入不健康（作为就绪探针时不能假绿）。
+    #
+    # 判定只允许"健康状态字段"参与：
+    #  · `service` 是**名字**（"clipwright-engine"）、`queue_running`/`queue_pending`
+    #    是**计数**——它们恒不等于 "ok"，混进来会让 all_ok 永远为 False。
+    #    实测：/health **永远返回 degraded**，即使 Mongo/LLM/ffmpeg/Hyperframes
+    #    全部为 ok。而 docker-compose.yml 的健康检查正是判 `status == 'ok'`
+    #    → **容器永远 unhealthy**，真故障时也分辨不出来。
+    #  · `"disconnected"` 原先也在豁免名单里，与上一行注释**自相矛盾**
+    #    （注释说断连必须计入、代码却把它排除）。那正是"Mongo 掉了但探针仍绿"
+    #    的来源，属于假绿，不能留。豁免只保留 `no_key`（LLM 未配置是**功能取舍**，
+    #    不影响服务能用）与 `checking`（冷启动探测中，不是结论）。
+    _non_status_keys = ("service", "queue_running", "queue_pending",
+                        "queue", "status")
     all_ok = all(
-        v == "ok" for v in components.values()
-        if v not in ("no_key", "checking", "0", "disconnected")
+        v == "ok" for k, v in components.items()
+        if k not in _non_status_keys and v not in ("no_key", "checking")
     )
     components["status"] = "ok" if all_ok else "degraded"
     return components
