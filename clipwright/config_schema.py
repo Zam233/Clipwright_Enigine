@@ -115,6 +115,8 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
      "Laplacian 方差上界；经验值，需在真实素材上标定"),
     ("content_index_visual_vectors", "content_index", "画面语义向量（R9）", False, True,
      "给每个镜头算 CLIP 视觉向量存进索引；关掉后语义检索退化为纯文本检索"),
+    ("content_index_gradual_detect", "content_index", "渐变转场补检", False, True,
+     "补检交叉溶解/淡入淡出（scene 滤镜测不到）；实测 2/2 检出但有 1 处涌浪误报"),
     # ── 检索与 RAG ──
     ("rag_embed_provider", "rag", "Embedding Provider", False, True, f"sentence_transformer / openai / ollama{_BINDING_NOTE}"),
     ("rag_embed_model", "rag", "Embedding 模型", False, True, f"向量模型名{_BINDING_NOTE}"),

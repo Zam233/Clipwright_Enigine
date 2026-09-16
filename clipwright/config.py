@@ -147,6 +147,11 @@ class Settings(BaseSettings):
     # 关掉后索引里没有画面向量，语义检索退化为纯文本检索（仍可用，但搜不到
     # "画面是海边、却没人写下海边"的镜头）。CLIP 不可用时自动跳过并如实标注。
     content_index_visual_vectors: bool = True
+    # 渐变转场补检（交叉溶解/淡入淡出）：ffmpeg 的 scene 滤镜只看相邻帧差异，
+    # 测不到溶接，会把溶接处当成同一个镜头。
+    # 实测（4 段真实素材、2 处合成溶接）：**2/2 溶接检出**，但海浪镜头的连续涌动
+    # 会误报 1 处（涌浪也是"持续的大幅变化"）。需要零误报的场合可以关掉。
+    content_index_gradual_detect: bool = True
 
     # --- 安全 ---
     # API 令牌：设置后所有 /api/* 请求需携带 Authorization: Bearer <token>

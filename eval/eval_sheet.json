@@ -1,0 +1,128 @@
+{
+  "materials": [
+    "pexels_11918917_426p.mp4",
+    "pexels_6748729_426p.mp4",
+    "pexels_10433645_426p.mp4",
+    "pexels_8064422_640p.mp4",
+    "pexels_10273284_426p.mp4",
+    "pexels_26233701_640p.mp4",
+    "pexels_7624596_640p.mp4",
+    "pexels_35282483_640p.mp4"
+  ],
+  "items": [
+    {
+      "task": "删掉第2个片段",
+      "intent": "目标：删掉第2个片段\n- 删除匹配的片段：第 1 个片段",
+      "dry_run": [
+        "共 1 项改动：片段 9 → 8 个，总时长 129.0s → 83.4s",
+        "· 删除：pexels_6748729_426p.（删除 1 个片段）"
+      ],
+      "problems": [],
+      "applied": true,
+      "blocked": false,
+      "before": 129.032,
+      "after": 83.365,
+      "clips_before": 9,
+      "clips_after": 8,
+      "scores": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "notes": ""
+    },
+    {
+      "task": "把所有片段速度调成1.5倍",
+      "intent": "目标：把所有片段速度调成1.5倍\n- 设置片段字段（走 FIELD_SPECS 白名单与值域）：整条时间线（speed → 1.5）\n没理解的部分（需要确认）：把所有片段",
+      "dry_run": [
+        "共 1 项改动：片段 8 → 8 个，总时长 83.4s → 83.4s",
+        "· 设置 8 个片段的 speed = 1.5"
+      ],
+      "problems": [],
+      "applied": true,
+      "blocked": false,
+      "before": 83.365,
+      "after": 83.365,
+      "clips_before": 8,
+      "clips_after": 8,
+      "scores": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "notes": ""
+    },
+    {
+      "task": "剪到10秒",
+      "intent": "目标：剪到10秒\n约束：总时长 10s",
+      "dry_run": [
+        "共 1 项改动：片段 8 → 1 个，总时长 83.4s → 10.0s",
+        "· 收尾：总时长 83.4s → 目标 10.0s（尾部裁 8 个片段，整段删除 7 个）"
+      ],
+      "problems": [],
+      "applied": true,
+      "blocked": false,
+      "before": 83.365,
+      "after": 10.0,
+      "clips_before": 8,
+      "clips_after": 1,
+      "scores": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "notes": ""
+    },
+    {
+      "task": "把画面调亮一点",
+      "intent": "目标：把画面调亮一点\n- 设置片段字段（走 FIELD_SPECS 白名单与值域）：选中的片段（fx_brightness → 1.15）",
+      "dry_run": [
+        "共 1 项改动：片段 1 → 1 个，总时长 10.0s → 10.0s",
+        "· 设置 1 个片段的 fx_brightness = 1.15"
+      ],
+      "problems": [],
+      "applied": true,
+      "blocked": false,
+      "before": 10.0,
+      "after": 10.0,
+      "clips_before": 1,
+      "clips_after": 1,
+      "scores": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "notes": ""
+    },
+    {
+      "task": "做成一个有感染力的集锦",
+      "intent": "目标：做成一个有感染力的集锦\n没理解的部分（需要确认）：做成一个有感染力的集锦",
+      "dry_run": [],
+      "problems": [
+        "没能从这句话里解析出可执行的操作：「做成一个有感染力的集锦」——可以说成「删掉第 2 个片段」「把所有片段速度调成 1.5 倍」这类明确的改法"
+      ],
+      "applied": false,
+      "blocked": true,
+      "before": 0.0,
+      "after": 0.0,
+      "clips_before": 0,
+      "clips_after": 0,
+      "scores": {
+        "C1": 0,
+        "C2": 0,
+        "C3": 0,
+        "C4": 0,
+        "C5": 0
+      },
+      "notes": ""
+    }
+  ]
+}

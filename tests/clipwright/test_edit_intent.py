@@ -111,6 +111,76 @@ class TestParseRules:
         assert intent.ops[0].op == "reorder" and intent.ops[0].by == "motion"
         assert intent.ops[0].desc is True
 
+
+class TestFxFields:
+    """调色/滤镜字段：R10 之后生成人工评分表时发现"把画面调亮一点"解析不出来——
+    `Clip.fx_brightness` 等字段**存在且渲染端支持**，但不在白名单里 → NL 改不到。"""
+
+    def test_fx_fields_are_in_the_whitelist(self) -> None:
+        for field in ("fx_brightness", "fx_contrast", "fx_saturation", "fx_blur", "fx_hue"):
+            assert field in ei.FIELD_SPECS, field
+
+    def test_fx_ranges_match_timeline_schema(self) -> None:
+        """白名单值域必须与 `schema/timeline.py` 的字段约束一致（1.0 = 原样）。"""
+        from clipwright.schema.timeline import Clip
+
+        for field, high in (("fx_brightness", 2.0), ("fx_contrast", 2.0),
+                            ("fx_saturation", 2.0), ("fx_blur", 10.0), ("fx_hue", 360.0)):
+            constraints = Clip.model_fields[field].metadata
+            ge = next((c.ge for c in constraints if hasattr(c, "ge")), None)
+            le = next((c.le for c in constraints if hasattr(c, "le")), None)
+            assert ge == 0.0, (field, ge)
+            assert le == high, (field, le)
+            # 钳制函数不许超出 schema 允许范围
+            _kind, clamp = ei.FIELD_SPECS[field]
+            assert clamp(high * 10) == high
+
+    @pytest.mark.parametrize("message,field,value", [
+        ("把画面调亮一点", "fx_brightness", 1.15),
+        ("调暗一些", "fx_brightness", 0.85),
+        ("加个对比度", "fx_contrast", 1.25),
+        ("颜色鲜艳点", "fx_saturation", 1.25),
+        ("做成黑白", "fx_saturation", 0.0),
+        ("模糊一点", "fx_blur", 3.0),
+        ("画质清晰一点", "fx_blur", 0.0),
+        ("提亮", "fx_brightness", 1.15),
+    ])
+    def test_common_phrasings_parse(self, message, field, value) -> None:
+        intent = ei.parse_intent_rules(message)
+        ops = [o for o in intent.ops if o.op == "set"]
+        assert ops, f"{message} 没有解析出任何操作"
+        assert ops[0].field == field and float(ops[0].value) == value
+        assert not intent.unresolved, intent.unresolved
+
+    def test_graded_brightness(self) -> None:
+        """程度词要有区分度：'亮一点' 与 '亮很多' 不该给同一个值。"""
+        mild = ei.parse_intent_rules("调亮一点").ops[0].value
+        strong = ei.parse_intent_rules("亮很多").ops[0].value
+        assert float(strong) > float(mild)
+
+    def test_fx_op_survives_validation(self) -> None:
+        intent = ei.parse_intent_rules("把画面调亮一点")
+        norm, problems = ei.validate_intent(intent, clip_count=3)
+        assert [p for p in problems if p.level == "error"] == []
+        assert norm.ops[0].field == "fx_brightness"
+
+    def test_fx_patch_applies_to_clip(self) -> None:
+        """端到端到时间线：解析出的 fx 值真的写进 `Clip` 字段。"""
+        from clipwright.schema.timeline import Clip, Timeline, Track
+        from clipwright.services import intent_apply as ia
+
+        tl = Timeline(id="t", fps=25, tracks=[Track(
+            id="tr", name="V1", kind="video", index=0,
+            clips=[Clip(id="c0", kind="video", asset_id="a.mp4", track_id="tr",
+                        start_sec=0.0, duration_sec=2.0),
+                   Clip(id="c1", kind="video", asset_id="a.mp4", track_id="tr",
+                        start_sec=2.0, duration_sec=2.0)])])
+        plan = ia.PatchPlan(ops=[ia.PatchOp(op="set", clip_ids=["c0", "c1"],
+                                            field="fx_brightness", value=1.15)])
+        new, report = ia.apply_patch(tl, plan)
+        assert not report.has_errors()
+        assert all(float(c.fx_brightness) == pytest.approx(1.15) for c in new.tracks[0].clips)
+
     def test_reorder_ascending(self) -> None:
         assert ei.parse_intent_rules("按时长从小到大排序").ops[0].desc is False
 

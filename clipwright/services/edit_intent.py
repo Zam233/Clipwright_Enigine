@@ -96,6 +96,15 @@ FIELD_SPECS: dict[str, tuple[type, Callable[[Any], Any]]] = {
     "transition_duration_sec": (float, _clamp_float(0.0, 30.0)),
     "audio_fade_in_sec": (float, _clamp_float(0.0, 30.0)),
     "audio_fade_out_sec": (float, _clamp_float(0.0, 30.0)),
+    # 调色/滤镜（R10 之后的实测补缺）：`Clip` 上本来就有这些字段、渲染端也支持，
+    # 但**不在白名单里 → NL 根本改不到**。"把画面调亮一点"是最常见的剪辑诉求之一，
+    # 实测（生成人工评分表时）它直接落进"解析不出可执行的操作"。
+    # 值域与 `schema/timeline.py` 的字段约束一致（1.0 = 原样）。
+    "fx_brightness": (float, _clamp_float(0.0, 2.0)),
+    "fx_contrast": (float, _clamp_float(0.0, 2.0)),
+    "fx_saturation": (float, _clamp_float(0.0, 2.0)),
+    "fx_blur": (float, _clamp_float(0.0, 10.0)),
+    "fx_hue": (float, _clamp_float(0.0, 360.0)),
 }
 #: 兼容旧名（`requirements_service` 与既有测试引用 `_ADJUST_FIELDS`）
 _ADJUST_FIELDS = FIELD_SPECS
@@ -604,6 +613,32 @@ def parse_intent_rules(message: str) -> EditIntent:
         ops.append(IntentOp(op="set", target=_scope_target(text),
                             field="volume", value=0.9 if bigger else 0.4))
         text = re.sub(r"(音量|声音|调大|大一点|提高|调高|调小|小一点|降低|调低)", " ", text)
+
+    # ── 调色/滤镜（fx_*）──
+    # 中文口语几乎不说"亮度参数"，说的是"调亮一点/暗一点/鲜艳点/去色/糊一点"。
+    # 值语义是**绝对倍率**（1.0 = 原样），"一点"约 ×1.15、不加程度词约 ×1.3、明显 ×1.6，
+    # 这些系数是经验值、需要在真实素材上标定；刻意不做"相对当前值"的运算，
+    # 因为补丁是幂等的（同一条指令跑两次结果一致），相对语义会让重跑漂移。
+    _fx_prefix = r"(?:把|将)?(?:整个|整体|全部|所有)?(?:画面|视频|镜头|素材|片子|颜色|色调|画质)?"
+    for pattern, field, value, label in (
+        # 程度强的说法放前面：`亮(?:一点|一些|点)?` 里的程度词是可选的，
+        # 会先吃掉"亮很多"里的"亮"，导致强弱两档拿到同一个值（实测踩到）。
+        (r"亮很多|亮不少|大幅(?:调亮|提亮)|明显(?:调亮|提亮)", "fx_brightness", 1.6, "大幅调亮"),
+        (rf"{_fx_prefix}(?:调|变|弄|弄的)?亮(?:一点|一些|点)?|(?:把|将)?{_fx_prefix}(?:提亮|调亮|加亮)", "fx_brightness", 1.15, "调亮"),
+        (rf"{_fx_prefix}(?:调|变|弄)?暗(?:一点|一些|点)?|(?:把|将)?{_fx_prefix}(?:压暗|调暗)", "fx_brightness", 0.85, "调暗"),
+        (r"(?:加个|加|提高|增强|增加)?(?:一点|些)?对比(?:度)?(?:高一点|强一点|一点|一些)?", "fx_contrast", 1.25, "加对比度"),
+        (r"(?:降低|减|去掉|减少)(?:一点|些)?(?:的)?对比(?:度)?", "fx_contrast", 0.8, "降对比度"),
+        (rf"{_fx_prefix}(?:鲜艳|饱和)(?:一点|一些|点)?|(?:加|提高|增强)(?:一点|些)?饱和(?:度)?", "fx_saturation", 1.25, "加饱和度"),
+        (r"(?:做成|变成|改成)?(?:去色|黑白|褪色)|(?:降低|减)(?:一点|些)?饱和(?:度)?", "fx_saturation", 0.0, "去色"),
+        (rf"{_fx_prefix}(?:模糊|虚化|糊)(?:一点|一些|点)", "fx_blur", 3.0, "加模糊"),
+        (rf"{_fx_prefix}(?:画质)?(?:锐化|清晰一点|锐一点|清楚一点)", "fx_blur", 0.0, "去模糊"),
+    ):
+        m = re.search(pattern, text)
+        if not m:
+            continue
+        ops.append(IntentOp(op="set", target=_scope_target(text), field=field, value=value))
+        text = text.replace(m.group(0), " ")
+        break       # 一次只说一个画面调整；多个说法（"又亮又艳"）留给 LLM 路径
 
     # ── remove / keep（内容条件）──
     # 中文里动词可以在前（"去掉黑场"）也可以在后（"把掌声那几段删掉"）；

@@ -209,33 +209,168 @@ def parse_scene_times(ffmpeg_stderr: str) -> list[float]:
     return [float(m.group(1)) for m in _SCENE_TS_RE.finditer(ffmpeg_stderr or "")]
 
 
+def _hist_intersection(a: Any, b: Any) -> float:
+    """归一化直方图交集（1.0 = 完全相同，0.0 = 毫无重叠）。
+
+    **两张图都必须是 L1 归一化（和为 1）**。踩坑记录：第一版用
+    `cv2.normalize(hist, hist)` 的默认 L2 归一化，于是"交集"的和可以 **>1**，
+    `1 - 交集` 出现**负值**——实测一处交叉溶解的跨度是 -0.92，
+    看起来像"完全负相关"，实际是归一化口径错了。
+    """
+    import numpy as np
+
+    return float(np.minimum(a, b).sum())
+
+
+def _l1(hist: Any) -> Any:
+    """L1 归一化（和为 1）——直方图交集的正确前提。"""
+    total = float(hist.sum())
+    if total <= 1e-12:
+        return hist
+    return hist / total
+
+
+def detect_gradual_transitions(
+    video_path: str | Path,
+    *,
+    sample_fps: float = 10.0,
+    window: int = 3,
+    gradual_threshold: float = 0.45,
+    hard_threshold: float = 0.45,
+    sustained_ratio: float = 0.4,
+) -> list[float]:
+    """检测**渐变转场**（交叉溶解 / 淡入淡出）——ffmpeg 的 `scene` 滤镜测不到这一类。
+
+    为什么需要（R2 就记录了这个方法学盲区，一直没修）：`select=gt(scene,thr)` 看的是
+    **相邻两帧**的差异；而交叉溶解是"每帧只差一点点、累计起来画面全换了"，
+    于是单帧差异永远低于阈值 → 溶接处被当成同一个镜头。
+
+    做法（经典且零模型、零网络）：
+    1. 低分辨率、低帧率采样（默认 10fps / 96×54），算 HSV 直方图（**L1 归一化**）；
+    2. `d[i] = 1 - 直方图交集(h[i-1], h[i])` —— 单步变化量；
+    3. `S[i] = 1 - 交集(h[i-w], h[i+w])` —— **跨窗口累计变化量**；
+    4. 判定渐变：`S[i] >= gradual_threshold`、窗口内没有单步超过 `hard_threshold`
+       （否则是硬切，交给 ffmpeg 那条路），**并且窗口内变化是"持续"的**。
+
+    第 4 条的"持续性"是真实素材标定加上的（只靠累计量分不开）：
+    实测海浪镜头的自然变化（水花翻涌）累计跨度 0.609，而一处弱交叉溶解只有 0.603——
+    **单看累计量两者重叠**。区别在于：溶解是"每一帧都在变"（`d` 中位数 ≈ S/2w），
+    浪花是"某一帧突变、其余帧几乎不动"（`d` 中位数 ≈ 0）。
+    所以要求 `median(d over window) >= S/(2w) * sustained_ratio`。
+    """
+    try:
+        import cv2
+        import numpy as np
+    except Exception as exc:  # noqa: BLE001 — 没有 cv2 就跳过这条路
+        logger.info("cv2 不可用，渐变转场检测跳过：%s", exc)
+        return []
+
+    path = str(video_path)
+    try:
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            return []
+        native_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 25.0
+        step = max(1, int(round(native_fps / max(0.5, sample_fps))))
+        hists: list[Any] = []
+        times: list[float] = []
+        idx = 0
+        while True:
+            ok = cap.grab()
+            if not ok:
+                break
+            if idx % step == 0:
+                ok, frame = cap.retrieve()
+                if ok and frame is not None:
+                    small = cv2.resize(frame, (96, 54), interpolation=cv2.INTER_AREA)
+                    hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+                    hist = cv2.calcHist([hsv], [0, 1], None, [18, 16], [0, 180, 0, 256])
+                    hists.append(_l1(hist.flatten().astype("float32")))
+                    times.append(idx / native_fps)
+            idx += 1
+        cap.release()
+    except Exception as exc:  # noqa: BLE001
+        logger.info("渐变转场检测失败（跳过）：%s", exc)
+        return []
+
+    if len(hists) < window * 2 + 2:
+        return []
+    diffs = [1.0 - _hist_intersection(hists[i - 1], hists[i]) for i in range(1, len(hists))]
+    # `diffs[i-1]` 对应"从 i-1 到 i"，与 hists 下标错开 1；这里的窗口按 times 索引对齐
+    out: list[float] = []
+    for i in range(window, len(hists) - window):
+        span = 1.0 - _hist_intersection(hists[i - window], hists[i + window])
+        if span < gradual_threshold:
+            continue
+        local = diffs[max(0, i - window - 1): i + window]
+        if not local:
+            continue
+        if max(local) >= hard_threshold:
+            continue        # 窗口里有硬切 → 那是硬切，不重复报
+        expected = span / max(1, 2 * window)
+        median = float(np.median(local))
+        if median < expected * sustained_ratio:
+            continue        # 单帧突变（水花/闪光），不是持续渐变 → 不是转场
+        out.append(round(float(times[i]), 3))
+
+    # 合并相邻命中（同一个溶接会连续多帧满足条件）
+    merged: list[float] = []
+    for t in out:
+        if merged and t - merged[-1] <= 1.0:
+            merged[-1] = round((merged[-1] + t) / 2, 3)     # 取中心
+            continue
+        merged.append(t)
+    return merged
+
+
 async def detect_cut_times(
     video_path: str | Path,
     threshold: float = 0.3,
     *,
     timeout: float = 600.0,
+    detect_gradual: bool = True,
 ) -> list[float]:
-    """ffmpeg 场景检测 → 切点时间戳列表（失败返回空表，由调用方兜底成"整段一个镜头"）。"""
+    """ffmpeg 场景检测（硬切）+ 渐变转场检测 → 合并去重后的切点时间戳。
+
+    失败一律返回空表，由调用方兜底成"整段一个镜头"（不猜）。
+    `detect_gradual=False` 可关掉渐变检测（老行为；给对比实验用）。
+    """
     path = str(video_path)
     cmd = [
         "ffmpeg", "-v", "info", "-i", path,
         "-filter:v", f"select='gt(scene,{threshold})',showinfo",
         "-an", "-f", "null", "-",
     ]
+    hard: list[float] = []
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
         _out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        hard = parse_scene_times(err.decode("utf-8", errors="replace"))
     except asyncio.TimeoutError:
         logger.warning("场景检测超时（%ss）: %s", timeout, path)
-        return []
     except FileNotFoundError:
         logger.warning("ffmpeg 不可用，场景检测跳过: %s", path)
-        return []
     except Exception as exc:
         logger.warning("场景检测失败: %s", exc)
-        return []
-    return parse_scene_times(err.decode("utf-8", errors="replace"))
+
+    if not detect_gradual:
+        return hard
+    if not getattr(settings, "content_index_gradual_detect", True):
+        return hard
+
+    gradual = await asyncio.to_thread(detect_gradual_transitions, path)
+    if not gradual:
+        return hard
+    # 去重：与硬切重合（±0.5s）的不重复报
+    merged = list(hard)
+    for t in gradual:
+        if not any(abs(t - h) <= 0.5 for h in merged):
+            merged.append(t)
+    if len(merged) > len(hard):
+        logger.info("渐变转场补检 %d 处（ffmpeg 硬切 %d 处）: %s",
+                    len(merged) - len(hard), len(hard), path)
+    return sorted(merged)
 
 
 _META_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -535,6 +670,24 @@ async def build_index(
                     shot.evidence["stats.quality"] = "pillow+numpy"
         except Exception as exc:  # 标注失败不能拖垮索引
             logger.warning("画面标注失败（索引仍可用）: %s", exc)
+
+    # ── 本地描述合成（真实素材实测暴露的缺口）──
+    # `visual.description` 此前只来自云端多模态 / 分类器兜底，而 CLIP 一旦给出标签
+    # 分类器分支就被跳过 → 真实素材上描述覆盖率是 **0**，每段素材只剩 1 个标签，
+    # 检索可匹配文本极少、方案接地 0 命中。
+    # 这里用**已测到的字段**（明暗/景别/运镜/质量/标签/语音/音频事件）拼一句可检索的中文描述：
+    # 零模型调用、零网络，且 `evidence` 写明来源是 composed，不与"模型级理解"混为一谈。
+    if settings.content_index_enabled and shots:
+        try:
+            from clipwright.services import content_describe as cd
+
+            filled = cd.fill_descriptions(
+                shots, blurry_threshold=float(settings.content_index_blurry_sharpness))
+            if filled:
+                sources["visual_description"] = "composed:stats+clip+audio"
+                logger.info("补写本地合成描述 %d/%d 个镜头", filled, len(shots))
+        except Exception as exc:  # 描述合成失败不能拖垮索引
+            logger.warning("本地描述合成失败（索引仍可用）: %s", exc)
 
     # ── R9：画面语义向量（供"换个说法也能搜到"用）──
     # 存进索引随索引落盘，之后检索只是点积（不再碰模型）。

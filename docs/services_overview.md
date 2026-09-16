@@ -33,6 +33,7 @@
 | `intent_apply.py` | 意图 → 时间线补丁（R7）：`plan_patch()` 把 `(intent, resolution)` 编译成具体补丁（remove/keep/reorder/trim/set/add/transition/fit）；`validate_patch()` 是 **dry-run**（只读、内置"输入未被改动"自检），产出"片段数与总时长的前后值 + 逐条预览 + 问题清单"；`apply_patch()` **有硬错误就一条都不执行**；`_ripple_track()` 的收拢规则是"只抽掉被删/被裁的时长，保留幸存片段之间原有的留白，且不制造新重叠"；`apply_answers()` 把确认卡上的选择回填进意图 |
 | `scene_grounding.py` | 方案接地（R8）：把规划书里的每个场景钉到**真实镜头**（`asset:{sha}#s{n}`）——引用由索引检索**确定性**算出而非 LLM 编；命中不足写 `material_gap` 而**不塞最接近的凑数**（凑数引用会让下游以为有素材）；结构化条件零命中时**退化为文本匹配并标注 `degraded`**（因 R2 对看不出景别的镜头如实写 `unknown`，硬过滤会滤掉真素材）；关键词/标签全不命中时再走**画面语义兜底**（R9）；`validate_material_refs()` 是"引用不存在的素材占比 = 0"这条不变量的实现 |
 | `content_semantic.py` | 画面语义检索（R9）：CLIP 图像/文本向量（`ShotRecord.embeddings["clip"]`，写进索引随索引落盘，检索时只做点积）；**中文提示词改写**（60 余条词表 + 多模板集成——CLIP 文本塔不认中文，实测改写带来 +33 个百分点）；`semantic_scores()`/`rank_shots()` 供检索层与接地层调用；CLIP 不可用或向量维度不匹配时**如实告警并降级**，绝不返回假分 |
+| `content_describe.py` | 本地画面描述合成（真实素材补测）：用**已测到的字段**（明暗/景别/运镜/质量/标签/语音/音频事件）拼一句可检索的中文描述。真实素材上 `visual.description` 原本覆盖率 **0**（只有云端多模态会给，而它默认关闭），导致检索可匹配文本极少、方案接地 0 命中；本模块**零模型调用**补上描述，`evidence` 写明 `composed:stats+clip+audio`、置信度 0.5，不与模型级理解混为一谈 |
 | `remote_render.py` | 远程渲染客户端（worker 协议：资产上传 → 提交 job → 轮询 → 下载） |
 
 ### AI 服务
