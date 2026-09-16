@@ -514,6 +514,39 @@ def _execute(
                 where=where, message=f"{len(missing)} 个片段已不存在（补丁过期）：{'、'.join(missing[:3])}"))
         return [c for c in ids if c in live]
 
+    # 原始时间线本来就有同轨重叠时，收拢会**把被删片段之后的片段往右推**
+    # （保底逻辑只防"移到前一个片段身上"，防不了"本来就叠在一起"）——
+    # 于是"删了一个片段，总时长反而变长"，非常反直觉。
+    # 真实素材实测踩到过（多段素材的镜头各自从 0 起算，全落在同一时间段）。
+    # 这里**只告警不改行为**：重叠可能是用户刻意的叠加，脚本不该擅自"修好"它。
+    if plan.ripple:
+        for track in new.tracks:
+            ordered = sorted(track.clips, key=lambda c: float(c.start_sec or 0.0))
+            for prev, cur in zip(ordered, ordered[1:]):
+                if float(cur.start_sec) < float(prev.start_sec) + float(prev.duration_sec) - 1e-6:
+                    report.problems.append(PatchProblem(
+                        level="warning", where=f"track:{getattr(track, 'id', '')}",
+                        message=f"该轨道原本就存在重叠（{_clip_id(prev)} 与 {_clip_id(cur)}）——"
+                                "收拢后其后的片段会被右推、总时长可能变长；"
+                                "若本意是顺序摆放，请先整理该轨道"))
+                    break
+
+    # 片段 id 重复：补丁是**按 id 匹配**的，重复 id 会让"删一个"变成"删一串"。
+    # 真实素材实测踩到过（拼时间线时 id 生成规则撞车）：先如实告警，别让用户
+    # 在不知道的情况下多删。
+    dup_ids: set[str] = set()
+    seen_ids: set[str] = set()
+    for _t, clip in iter_clips(new):
+        cid = _clip_id(clip)
+        if cid in seen_ids:
+            dup_ids.add(cid)
+        seen_ids.add(cid)
+    if dup_ids:
+        report.problems.append(PatchProblem(
+            level="warning", where="timeline",
+            message=f"时间线里存在重复的片段 id（{'、'.join(sorted(dup_ids)[:3])}）——"
+                    "补丁按 id 匹配，会一次改动所有同 id 片段；建议先修掉重复 id"))
+
     for i, pop in enumerate(plan.ops):
         where = f"ops[{i}].{pop.op}"
 

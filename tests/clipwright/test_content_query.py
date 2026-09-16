@@ -339,6 +339,89 @@ class TestRouteQuery:
         assert [h["index"] for h in res["hits"]] == [1]   # 显式条件优先，不被路由覆盖
 
 
+class TestVisualOnlyHitsSurvive:
+    """真实素材实测修的两个缺陷（合成基准里完全没暴露，因为那时是直接调
+    `sem.rank_shots(min_score=0)`，从没走 `search_shots` 的融合 + 门槛）。
+
+    缺陷现象：CLIP 视觉分**排序完全正确**（海浪镜头排第一），但融合分只有
+    0.04 左右，被绝对的 `min_score=0.05` 整体吃掉 → 所有真实素材查询返回 0 命中。
+    根因：把绝对阈值套在"尺度随可用信号组合变化"的融合分上。
+    """
+
+    def _index_with_visual(self) -> ContentIndex:
+        from clipwright.services import content_semantic as sem
+
+        def _shot(i: int, vec: list[float], text: str) -> ShotRecord:
+            s = ShotRecord(index=i, t0=float(i), t1=float(i) + 1, duration_sec=1.0,
+                           index_text=text)
+            s.embeddings = {sem.VISUAL_MODALITY: vec}
+            return s
+
+        # 真实素材实测的量级：命中约 0.27，不相关约 0.16
+        return ContentIndex(sha256="cc" * 32, asset_path="real.mp4", filename="real.mp4",
+                            shots=[_shot(0, [1.0, 0.0], "水面"),
+                                   _shot(1, [0.0, 1.0], "食物")])
+
+    def test_visual_only_match_is_returned(self, monkeypatch) -> None:
+        from clipwright.services import content_semantic as sem
+
+        monkeypatch.setattr(cq, "_embed_texts", lambda texts: [])       # 文本向量不可用
+        # 视觉：镜头 0 明显更像（0.27），镜头 1 不相关（0.16）
+        monkeypatch.setattr(sem, "semantic_scores",
+                            lambda q, shots, **kw: {0: 0.27, 1: 0.16})
+        idx = self._index_with_visual()
+        res = asyncio.run(cq.search_shots("找海边的镜头", indexes=[idx],
+                                          rerank=False, min_score=0.05))
+        assert [h["index"] for h in res["hits"]] == [0], res
+        assert res["hits"][0]["visual"] == 0.27
+        assert any("画面像" in w for w in res["hits"][0]["why"])
+
+    def test_unrelated_visual_is_still_rejected(self, monkeypatch) -> None:
+        """放宽门槛不等于"什么都返回"：低于 VISUAL_FLOOR 的必须仍然被拒。"""
+        from clipwright.services import content_semantic as sem
+
+        monkeypatch.setattr(cq, "_embed_texts", lambda texts: [])
+        monkeypatch.setattr(sem, "semantic_scores",
+                            lambda q, shots, **kw: {0: 0.21, 1: 0.16})
+        idx = self._index_with_visual()
+        res = asyncio.run(cq.search_shots("找海边的镜头", indexes=[idx], rerank=False))
+        assert res["hits"] == []
+        assert "画面" in res["note"]
+
+    def test_visual_score_affects_ranking(self, monkeypatch) -> None:
+        from clipwright.services import content_semantic as sem
+
+        monkeypatch.setattr(cq, "_embed_texts", lambda texts: [])
+        monkeypatch.setattr(sem, "semantic_scores",
+                            lambda q, shots, **kw: {0: 0.24, 1: 0.30})
+        idx = self._index_with_visual()
+        res = asyncio.run(cq.search_shots("某个画面", indexes=[idx], rerank=False))
+        assert [h["index"] for h in res["hits"]] == [1, 0]
+
+
+class TestDegradationIsLoud:
+    """降级必须**可见**：embedder 挂了与"素材里确实没有"是两件完全不同的事。
+
+    真实素材实测：本机 `.env` 把嵌入 provider 指向一个无效的云端 key，
+    于是文本向量路静默消失，所有查询返回 0 命中——不给出降级原因根本查不出来。
+    """
+
+    def test_no_hit_note_lists_degraded_reasons(self, monkeypatch) -> None:
+        monkeypatch.setattr(cq, "_embed_texts", lambda texts: [])
+        idx = ContentIndex(sha256="dd" * 32, asset_path="x.mp4", filename="x.mp4",
+                           shots=[ShotRecord(index=0, t0=0.0, t1=1.0, duration_sec=1.0)])
+        res = asyncio.run(cq.search_shots("海边", indexes=[idx], rerank=False))
+        assert res["hits"] == []
+        reasons = res.get("degraded") or []
+        assert any("文本向量" in r for r in reasons)
+        assert any("画面向量" in r for r in reasons)
+        assert "降级原因" in res["note"]
+
+    def test_successful_search_reports_signal_flags(self, indexed) -> None:
+        res = asyncio.run(cq.search_shots("咖啡", rerank=False))
+        assert "embedding_used" in res and "visual_used" in res
+
+
 class TestShotAt:
     def test_inside_shot(self, indexed) -> None:
         hit = asyncio.run(cq.shot_at(4.5))

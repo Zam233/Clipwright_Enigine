@@ -92,3 +92,6 @@ _xtest/
 
 # runtime data (MG generations / render caches)
 clipwright/animation/mg/generations/
+
+# real-material benchmark corpus (Pexels downloads; too large to commit)
+data/

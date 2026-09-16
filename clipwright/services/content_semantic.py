@@ -63,6 +63,7 @@ QUERY_GLOSS: dict[str, str] = {
     "观众": "crowd audience cheering", "庆祝": "celebration cheering people",
     "跑步": "person running outdoors", "运动": "sports action person",
     "美食": "food dish meal", "食物": "food meal plate", "面条": "noodles bowl food",
+    "做饭": "cooking in kitchen", "炒菜": "frying food in pan", "烘焙": "baking bread",
     "咖啡": "coffee cup cafe", "厨房": "kitchen cooking", "烹饪": "cooking in kitchen",
     "人脸": "close up of a person face", "人物": "person portrait",
     "特写": "extreme close up detail", "全景": "wide shot landscape",

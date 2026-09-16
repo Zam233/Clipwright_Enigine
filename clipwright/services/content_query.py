@@ -42,9 +42,20 @@ W_KEYWORD = 0.45
 #: 是最准的（关键词精确匹配），视觉路的价值在"用户换了说法"。
 #: 三项权重之和 > 1 是有意的：分数只用于排序与阈值，不解释成概率。
 W_VISUAL = 0.5
-#: CLIP 余弦的"零点"：不相关的图文对也常在 0.15-0.25，超过它才算有信号。
-#: 这是经验值，需在真实素材上标定（合成基准见 `scripts/verify_semantic_search.py`）。
-VISUAL_BASELINE = 0.20
+#: CLIP 余弦的"零点"（经验值）：不相关的图文对也常在 0.14–0.20。
+#:
+#: **真实素材实测修正**（2026-09-14，4 段 Pexels 素材）：命中的镜头原始余弦约
+#: 0.24–0.27，不相关的约 0.14–0.24——两者**有重叠**，所以单靠"减一个零点"
+#: 不足以分辨。因此零点只用于把分数拉到 0 附近，真正的**分辨**交给
+#: `VISUAL_FLOOR`（进不进候选）与集合内归一化（排序）。
+VISUAL_BASELINE = 0.18
+#: 视觉命的**下限**：低于它的镜头不进候选。
+#: 真实素材实测：正确镜头 ≥ 0.24，错误镜头 ≤ 0.24（4 段素材、1 镜头/段的小样本，
+#: 这个阈值需要在更大素材集上重标）。
+VISUAL_FLOOR = 0.22
+#: 文本向量（bge）的命中下限。bge 的中文短文本余弦普遍偏高（0.3–0.6），
+#: 0.35 以下是"几乎无关"那一档。
+EMBED_FLOOR = 0.35
 #: 关键词里标签精确命中的权重（标签是人/模型给的强信号）
 TAG_WEIGHT = 1.0
 TEXT_WEIGHT = 0.6
@@ -238,6 +249,11 @@ def keyword_score(shot: ShotRecord, query: str) -> tuple[float, list[str]]:
         coverage = len(text_hits) / max(1, len(q_tokens))
         score = max(score, TEXT_WEIGHT * min(1.0, coverage * 2))
     return (min(1.0, score), hits)
+
+
+def _visual_adj(raw: float) -> float:
+    """CLIP 原始余弦 → 可用于排序的分数（减零点；负值压到 0）。"""
+    return max(0.0, float(raw) - VISUAL_BASELINE) / max(1e-6, 1.0 - VISUAL_BASELINE)
 
 
 def _embed_texts(texts: list[str]) -> list[list[float]]:
@@ -511,28 +527,32 @@ async def search_shots(
         emb = _cosine(query_vec, vectors[i]) if vectors and i < len(vectors) else 0.0
         emb = max(0.0, emb)
         vis = visual_scores.get(format_shot_ref(idx.sha256, shot.index), 0.0)
-        # CLIP 余弦有正值基线（不相关的画面也有 0.2 左右），做**零点平移**再当分用，
-        # 否则它会整体抬高原分数，"没命中"也会变成"勉强命中"。
-        vis_adj = max(0.0, vis - VISUAL_BASELINE) / max(1e-6, 1.0 - VISUAL_BASELINE)
-        if vectors and visual_used:
-            score = W_EMBED * emb + W_KEYWORD * kw + W_VISUAL * vis_adj
-            if emb > 0.2:
-                why.append(f"语义相似 {emb:.2f}")
-        elif vectors:
-            score = W_EMBED * emb + W_KEYWORD * kw
-            if emb > 0.2:
-                why.append(f"语义相似 {emb:.2f}")
-        elif visual_used:
-            score = W_KEYWORD * kw + W_VISUAL * vis_adj
-        else:
-            score = kw
-        if visual_used and vis_adj > 0.15:
+        vis_adj = _visual_adj(vis)
+
+        # 三路信号各自出分，融合分只用于**排序**；"进不进候选"由各路自己的下限决定。
+        #
+        # 为什么要改（真实素材实测）：原先用"融合分 ≥ min_score(0.05)"当门槛，
+        # 而 CLIP 视觉分的量级本来就小（真实素材命中约 abt 0.09，乘 W_VISUAL=0.5 后 0.044），
+        # 于是**只有视觉命中的正确结果被整体过滤掉**——实测"找海边的镜头"排在第一位的是
+        # 海浪镜头，却因为 0.044 < 0.05 返回 0 结果。绝对阈值套在"尺度随信号组合变化"
+        # 的融合分上，是这个缺陷的根因。
+        score = W_KEYWORD * kw + (W_EMBED * emb if vectors else 0.0) \
+            + (W_VISUAL * vis_adj if visual_used else 0.0)
+        if emb > 0.2:
+            why.append(f"语义相似 {emb:.2f}")
+        if visual_used and vis >= VISUAL_FLOOR:
             why.append(f"画面像 {vis:.2f}")
-        # 显式条件命中：即使文本不匹配也要留下（否则"黑场在哪"永远问不出结果）
-        if eff_filters and score < min_score:
-            score = min_score
-            why = ["结构化条件命中"] + why
-        if score < min_score:
+
+        # 显式条件命中：即使三路都不匹配也要留下（否则"黑场在哪"永远问不出结果）
+        if eff_filters:
+            scored.append(_as_hit(idx, shot, max(score, min_score),
+                                  ["结构化条件命中"] + why,
+                                  keyword=round(kw, 4), embedding=round(emb, 4),
+                                  visual=round(vis, 4) if visual_used else 0.0))
+            continue
+
+        passed = kw > 0 or emb >= EMBED_FLOOR or (visual_used and vis >= VISUAL_FLOOR)
+        if not passed:
             continue
         scored.append(_as_hit(idx, shot, score, why,
                               keyword=round(kw, 4), embedding=round(emb, 4),
@@ -550,9 +570,22 @@ async def search_shots(
                 "embedding_used": bool(vectors),
                 "summary": render_hits(query, hits, len(candidates))}
     if not scored:
+        # 「为什么一个都没命中」必须说清楚：三路各自可能缺席，
+        # 而"嵌入门面挂了"与"素材里确实没有"是**完全不同的两件事**
+        # （实测：本机 embedder 指向一个无效的云端 key，检索静默退化为"只剩视觉分"，
+        #  表现就是所有查询都返回 0 命中——不说清原因根本查不出来）。
+        reasons: list[str] = []
+        if not vectors:
+            reasons.append("文本向量不可用（嵌入后端未就绪或调用失败）")
+        if not visual_used:
+            reasons.append("画面向量不可用（索引未建视觉向量或 CLIP 缺失）")
+        note = f"没有任何镜头命中（门槛：关键词>0 / 文本向量≥{EMBED_FLOOR} / 画面≥{VISUAL_FLOOR}）"
+        if reasons:
+            note += "；降级原因：" + "、".join(reasons)
         return {"query": query, "hits": [], "total_candidates": len(candidates),
-                "filters": eff_filters,
-                "note": f"没有任何镜头得分 ≥ {min_score}", "summary": ""}
+                "filters": eff_filters, "embedding_used": bool(vectors),
+                "visual_used": visual_used, "degraded": reasons,
+                "note": note, "summary": ""}
 
     scored.sort(key=lambda h: h["score"], reverse=True)
     if eff_order:
@@ -570,6 +603,7 @@ async def search_shots(
         "filters": eff_filters,
         "order_by": eff_order,
         "embedding_used": bool(vectors),
+        "visual_used": visual_used,
         "summary": render_hits(query, top, len(candidates)),
     }
 

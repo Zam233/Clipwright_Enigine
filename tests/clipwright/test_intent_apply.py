@@ -159,7 +159,45 @@ class TestRemoveKeep:
         new, report = ia.apply_patch(tl, plan)
         assert [p[0] for p in positions(new)] == ["c0", "c2"]
         assert positions(new)[1][1] >= 8.0        # 不早于 c0 的末尾
-        assert not any("重叠" in p.message for p in report.problems)
+        # 结果里不允许出现**新**重叠（只按位置判断，不靠文案）
+        got = sorted(positions(new), key=lambda p: p[1])
+        for prev, cur in zip(got, got[1:]):
+            assert cur[1] >= prev[1] + prev[2] - 1e-6
+
+    def test_preexisting_overlap_is_warned_about(self):
+        """源时间线本来就有重叠时必须**告警**（真实素材实测踩过）：
+
+        收拢只防"左移压到前一个片段"，防不了"本来就叠在一起"——
+        那种情况下被删片段之后的片段会被**右推**，于是"删了一个片段总时长反而变长"。
+        这是反直觉的，所以必须让用户看到；但**不改行为**：重叠可能是刻意的叠加。
+        """
+        tl = make_timeline([("c0", 0.0, 8.0), ("c1", 2.0, 2.0), ("c2", 6.0, 2.0)])
+        plan = ia.PatchPlan(ops=[ia.PatchOp(op="remove", clip_ids=["c1"])])
+        _new, report = ia.apply_patch(tl, plan)
+        warnings = [p for p in report.problems if p.level == "warning"]
+        assert any("原本就存在重叠" in p.message for p in warnings), report.problems
+
+    def test_sequential_track_has_no_overlap_warning(self):
+        """顺序摆放的时间线（正常情况）不该出现这条告警——否则就是噪音。"""
+        plan = ia.PatchPlan(ops=[ia.PatchOp(op="remove", clip_ids=["c1"])])
+        _new, report = ia.apply_patch(five(), plan)
+        assert not any("原本就存在重叠" in p.message for p in report.problems)
+
+    def test_duplicate_clip_ids_are_warned_about(self):
+        """片段 id 重复时补丁会"删一个删一串"——真实素材实测踩过（id 生成规则撞车）。
+
+        必须在**执行前**就告警：等 `_invariant_checks`（执行后）才发现时，
+        用户已经多删了内容。
+        """
+        tl = make_timeline([("dup", 0.0, 2.0), ("dup", 2.0, 2.0), ("c9", 4.0, 2.0)])
+        plan = ia.PatchPlan(ops=[ia.PatchOp(op="remove", clip_ids=["dup"])])
+        _new, report = ia.apply_patch(tl, plan)
+        assert any("重复的片段 id" in p.message for p in report.problems), report.problems
+
+    def test_unique_ids_have_no_duplicate_warning(self):
+        plan = ia.PatchPlan(ops=[ia.PatchOp(op="remove", clip_ids=["c1"])])
+        _new, report = ia.apply_patch(five(), plan)
+        assert not any("重复的片段 id" in p.message for p in report.problems)
 
     def test_remove_from_untouched_track_changes_nothing(self):
         """只删 A 轨时 B 轨必须一像素不动（收拢是按轨道算的）。"""
