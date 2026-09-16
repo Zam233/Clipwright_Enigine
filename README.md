@@ -561,9 +561,10 @@ Level 2 ─── LoRA微调 ────── 上传50+历史视频，微调Ag
 
 | 检查 | 命令 | 当前基线 |
 | --- | --- | --- |
-| 后端全量回归 | `python -m pytest tests -q`（工作目录 `J:\Clipwright`） | **3187 passed / 0 failed**（3 skipped、1 xfailed） |
+| 后端全量回归 | `python -m pytest tests -q`（工作目录 `J:\Clipwright`） | **3190 passed / 0 failed**（3 skipped、1 xfailed） |
 | 后端可导入 | `python -c "import clipwright.main"` | OK |
 | 内容理解指标门禁 | `python scripts/verify_all_metrics.py` | **9/9 PASS**（完整跑约 4.6 分钟） |
+| PowerShell 脚本可解析 | `python scripts/fix_ps1_bom.py --check` | 3/3（`.ps1` 必须带 UTF-8 BOM） |
 | 前端单测 | `npm run test`（工作目录 `J:\Clipweight-Client`） | **771 passed / 90 files** |
 | 前端类型与构建 | `npx tsc --noEmit` · `npm run build` | 均无错误 |
 
