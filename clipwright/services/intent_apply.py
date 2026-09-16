@@ -525,6 +525,13 @@ def _execute(
     report.duration_before = _total_duration(new)
     touched: set[str] = set()
     content_touched: set[str] = set()
+    #: **每个 op 各自一份**"时长变化"字典（`clip_id → 变化量`，正=变短、负=变长），用完即弃。
+    #:
+    #: 踩坑记录（真 bug）：最初整个补丁共用一份 `shrink`，而裁剪分支与变速分支
+    #: 各自调用一次 `_ripple_track(..., shrink)` → **同一份位移被重复收拢**。
+    #: 实测「c0 裁到 2s + c1 变速 2×」在带 2s 刻意留白的时间线上把留白吃掉、
+    #: 总时长从 14.0s 变成 12.0s。**紧邻排布的时间线看不出来**（"保底不重叠"会把重复位移
+    #: 夹回前一片段末尾，恰好等于正确位置），所以只测单个 op 的用例全绿也照样漏。
     shrink: dict[str, float] = {}
 
     def live_check(ids: list[str], where: str) -> list[str]:
@@ -636,6 +643,7 @@ def _execute(
                 report.problems.append(PatchProblem(
                     where=where, message="裁剪没有给出任何目标时长/位移，无法执行"))
                 continue
+            op_shrink: dict[str, float] = {}      # 本 op 的位移，收拢后即弃
             for cid in ids:
                 found = _find(new, cid)
                 if found is None:
@@ -658,13 +666,14 @@ def _execute(
                     continue
                 final = round(max(min_clip_sec, new_dur), 6)
                 clip.duration_sec = final
-                shrink[cid] = max(0.0, before - final)
+                op_shrink[cid] = max(0.0, before - final)
                 touched.add(cid)
                 content_touched.add(cid)
             if ids and plan.ripple:
-                # 裁短后同样收拢（与删除保持一致），否则会在时间线上留下无人解释的空洞
+                # 裁短后同样收拢（与删除保持一致），否则会在时间线上留下无人解释的空洞。
+                # 只用**本 op 的** `op_shrink`（见上面 `shrink` 的踩坑记录）。
                 for track in new.tracks:
-                    touched.update(_ripple_track(track, set(), shrink))
+                    touched.update(_ripple_track(track, set(), op_shrink))
             if ids:
                 report.preview.append(f"· 裁剪 {len(ids)} 个片段的时长"
                                       + ("（其余片段前移补上空缺）" if plan.ripple else ""))
@@ -686,6 +695,7 @@ def _execute(
             mismatch = 0
             applied = 0
             speed_changed: list[str] = []
+            set_shrink: dict[str, float] = {}     # 本 op 的位移（仅变速会产生），收拢后即弃
             for cid in ids:
                 found = _find(new, cid)
                 if found is None:
@@ -718,7 +728,7 @@ def _execute(
                         scaled = max(MIN_CLIP_SEC, before_dur * old_speed / new_speed)
                         clip.duration_sec = round(scaled, 6)
                         # 有符号：变快 → 正（收拢）；变慢 → 负（后续片段右推，避免重叠）
-                        shrink[cid] = round(before_dur - scaled, 6)
+                        set_shrink[cid] = round(before_dur - scaled, 6)
                         speed_changed.append(cid)
                 setattr(clip, pop.field, value)
                 applied += 1
@@ -727,8 +737,10 @@ def _execute(
             if speed_changed and plan.ripple:
                 # 变速改了时长 → 同样要收拢/右推（见上：变快为正、变慢为负），
                 # 否则"改速度"之后时间线上会出现空洞或重叠。
+                # 只用**本 op 的** `set_shrink`（见上面 `shrink` 的踩坑记录：
+                # 共用字典会让位移被重复应用，吃掉刻意留白）。
                 for track in new.tracks:
-                    touched.update(_ripple_track(track, set(), shrink))
+                    touched.update(_ripple_track(track, set(), set_shrink))
             if applied:
                 report.preview.append(f"· 设置 {applied} 个片段的 {pop.field} = {value!r}")
             if speed_changed:

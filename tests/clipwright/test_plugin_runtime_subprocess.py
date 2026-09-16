@@ -118,8 +118,58 @@ class TestSubprocessBoot:
     async def test_ping_and_unknown_method(self, host):
         instance, _ = host
         assert await instance.invoke("ping", {}) == "pong"
+        # 错误原因也必须是**可读中文**：worker 曾经用文本模式 stdout 写响应，
+        # 中文被按子进程 locale（cp936）编码、宿主按 UTF-8 解码 → 乱码，
+        # 于是这条 `match="未知方法"` 也是失败的（长期被当成"已知基线失败"接受）。
         with pytest.raises(RpcError, match="未知方法"):
             await instance.invoke("nope", {})
+
+
+class TestStdioEncodingContract:
+    """**中文必须无损往返**——插件化最容易被忽略的一条契约（本项目中文优先）。
+
+    真 bug（本轮自查发现并修复）：worker 用文本模式 `sys.stdout.write(encode(...).decode())`
+    写响应，文本模式会按**子进程 locale**（中文 Windows = cp936）重新编码，
+    宿主却固定按 UTF-8 解码。实测 `{"b": "两"}` 发出的字节是 `\\xc1\\xbd`，
+    宿主解码直接抛 UnicodeDecodeError。影响是功能性的：插件回传的中文
+    （字幕文本、错误原因）全部损坏。此前被当成"2 条已知基线失败"，实际是真缺陷。
+    """
+
+    def test_worker_writes_binary_stdout(self):
+        """防回归：worker 不许再写文本模式 stdout（写二进制才不受 locale 影响）。
+
+        只检查**函数体代码**（跳过 docstring）：docstring 里正写着这个反例
+        `out.write(encode(...).decode())`，用整段源码匹配会误伤自己。
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        from clipwright.plugins.runtime import worker
+
+        func = ast.parse(textwrap.dedent(inspect.getsource(worker._serve))).body[0]
+        assert isinstance(func, ast.AsyncFunctionDef | ast.FunctionDef)
+        body = "\n".join(ast.unparse(node) for node in func.body[1:])   # [0] 是 docstring
+        assert "sys.stdout.buffer" in body, "worker 必须写 sys.stdout.buffer"
+        assert ".decode()" not in body, "worker 不许把 UTF-8 字节 decode 回 str 再交给文本流"
+    def test_host_forces_utf8_child(self):
+        """防回归：宿主起 worker 时必须强制 UTF-8（保护插件自己的 print/异常 traceback）。"""
+        import inspect
+
+        from clipwright.plugins.runtime import host
+
+        src = inspect.getsource(host.PluginHost._start)
+        assert '"-X", "utf8"' in src
+        assert "PYTHONIOENCODING" in src
+
+    @pytest.mark.asyncio
+    async def test_non_ascii_survives_full_roundtrip(self, host):
+        """端到端：中文既有在**参数**里、也要在**返回值**里无损往返。"""
+        instance, _ = host
+        payload = {"a": 1, "b": "两", "c": "中文字幕：进球！", "d": "emoji 🙂"}
+        result = await instance.invoke("tool.call", {"id": "sandbox_echo", "input": payload})
+        assert result["success"] is True
+        assert result["output"]["echo"] == payload
 
 
 class TestPermissionEnforcement:

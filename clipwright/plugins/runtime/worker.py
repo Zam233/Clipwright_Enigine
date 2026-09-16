@@ -274,9 +274,20 @@ def _tool_result(value: Any) -> Any:
 
 
 async def _serve(runtime: PluginRuntime) -> int:
-    """NDJSON 主循环（stdin 读请求，stdout 写响应）。"""
+    """NDJSON 主循环（stdin 读请求，stdout 写响应）。
+
+    **必须写 `sys.stdout.buffer`（二进制），不能写文本模式的 `sys.stdout`。**
+    踩坑记录（真 bug，长期被当成"已知的 2 条失败"接受）：原先写的是
+    `out.write(encode(...).decode())`——`encode()` 出 UTF-8 字节、`.decode()` 又变回 str，
+    于是文本模式 stdout 会**按子进程的本地编码**（中文 Windows 上是 cp936）重新编码，
+    而宿主固定按 UTF-8 解码 → 中文响应变乱码：
+    `{"b": "两"}` 实际发出的字节是 `\xc1\xbd`，宿主解码直接抛 UnicodeDecodeError。
+    对本项目（中文优先）来说这是**功能性**缺陷，不是显示问题：插件回传的中文
+    （字幕文本、错误信息）全部损坏，`RpcError` 的中文原因也因此匹配不上。
+    改为直接写二进制后，无论子进程 locale 是什么都稳定是 UTF-8。
+    """
     loop = asyncio.get_running_loop()
-    out = sys.stdout
+    out = sys.stdout.buffer      # 二进制写出：不受子进程 locale 影响
     while True:
         line = await loop.run_in_executor(None, sys.stdin.buffer.readline)
         if not line:
@@ -287,17 +298,17 @@ async def _serve(runtime: PluginRuntime) -> int:
             check_version(message)
             req_id = int(message.get("id", -1))
             if message.get("method") == "shutdown":
-                out.write(encode(ok(req_id, {"bye": True})).decode())
+                out.write(encode(ok(req_id, {"bye": True})))
                 out.flush()
                 return 0
             result = await runtime.handle(str(message.get("method") or ""),
                                           dict(message.get("params") or {}))
-            out.write(encode(ok(req_id, result)).decode())
+            out.write(encode(ok(req_id, result)))
         except RpcError as e:
-            out.write(encode(fail(req_id, e)).decode())
+            out.write(encode(fail(req_id, e)))
         except Exception as e:  # noqa: BLE001 — 插件异常必须回成错误帧而非崩掉 worker
             traceback.print_exc(file=sys.stderr)
-            out.write(encode(fail(req_id, RpcError(ERR_PLUGIN_ERROR, str(e)))).decode())
+            out.write(encode(fail(req_id, RpcError(ERR_PLUGIN_ERROR, str(e)))))
         out.flush()
 
 

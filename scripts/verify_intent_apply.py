@@ -106,8 +106,19 @@ async def case_2() -> None:
     speeds = {c.id: round(float(c.speed), 3) for t in new.tracks for c in t.clips}
     check("5 个视频片段速度均为 1.5", all(v == 1.5 for k, v in speeds.items() if k.startswith("c")),
           str(speeds))
-    check("总时长不变（变速不改时长）", round(float(new.duration_sec), 3) == 20.0,
-          f"{new.duration_sec}")
+    # **变速要同时改时长**（口径在"真实素材补测/轮次 142-143"改过，脚本这里的断言随之更新）：
+    # 渲染端对 speed 的处理是 `setpts=PTS/speed`，1.5 倍速真的会把这段缩短到 2/3；
+    # 若模型里的时长不变，时间线说的时长与渲染输出就不一致、后续片段起止位置也全错。
+    # 语义按 NLE 习惯：保持**素材区间**不变，时长 = 素材区间 ÷ 速度。
+    video_clips = [(c.id, round(float(c.start_sec), 3), round(float(c.duration_sec), 3))
+                   for c in new.tracks[0].clips]
+    check("视频片段时长按速度缩短（4s → 2.667s）",
+          all(abs(d - 8 / 3) < 1e-3 for _i, _s, d in video_clips), str(video_clips))
+    check("总时长按速度缩短（20s → 13.333s）",
+          abs(float(new.duration_sec) - 20 / 1.5) < 1e-3, f"{new.duration_sec}")
+    check("变速后片段依然连续、无重叠",
+          [s for _i, s, _d in video_clips] == [0.0, 2.667, 5.333, 8.0, 10.667],
+          str([s for _i, s, _d in video_clips]))
 
 
 async def case_3() -> None:

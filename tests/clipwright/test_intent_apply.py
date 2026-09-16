@@ -377,6 +377,56 @@ class TestSpeedAdjustsDuration:
         assert float(new.tracks[0].clips[0].fx_brightness) == pytest.approx(1.2)
 
 
+class TestShrinkIsNotAppliedTwice:
+    """回归：**同一个补丁里多个 op 各自收拢时，位移不许被重复应用**。
+
+    真 bug（本轮自查发现）：`shrink` 字典最初是整个补丁共用的，
+    裁剪分支与变速分支各调用一次 `_ripple_track(..., shrink)`
+    → 前一个 op 的位移被**再应用一遍**。
+
+    为什么测试没抓到：**紧邻排布的时间线看不出来**——"保底不重叠"会把重复位移夹回
+    前一片段末尾，恰好等于正确位置。只有存在**刻意留白**的时间线才会暴露（留白被吃掉）。
+    """
+
+    def _gapped(self):
+        # c1 结束于 8.0，c2 起于 10.0 → 2s 刻意留白
+        return make_timeline([("c0", 0.0, 4.0), ("c1", 4.0, 4.0),
+                              ("c2", 10.0, 4.0), ("c3", 14.0, 4.0)])
+
+    def test_trim_plus_speed_preserves_gaps(self):
+        plan = ia.PatchPlan(ops=[
+            ia.PatchOp(op="trim", clip_ids=["c0"], duration_sec=2.0),
+            ia.PatchOp(op="set", clip_ids=["c1"], field="speed", value=2.0),
+        ])
+        new, report = ia.apply_patch(self._gapped(), plan)
+        got = positions(new)
+        # 位移共 4s（c0 裁掉 2 + c1 变速少 2）：c2 应落在 10-4 = 6.0（留白保留）
+        assert [(p[0], p[1], p[2]) for p in got] == [
+            ("c0", 0.0, 2.0), ("c1", 2.0, 2.0), ("c2", 6.0, 4.0), ("c3", 10.0, 4.0)]
+        assert new.duration_sec == pytest.approx(14.0)
+        assert not report.has_errors()
+
+    def test_trim_alone_keeps_gap(self):
+        """对照：只有 trim 时留白也必须保留（同一个不变量）。"""
+        plan = ia.PatchPlan(ops=[ia.PatchOp(op="trim", clip_ids=["c0"], duration_sec=2.0)])
+        new, _report = ia.apply_patch(self._gapped(), plan)
+        assert [p[1] for p in positions(new)] == [0.0, 2.0, 8.0, 12.0]
+
+    def test_speed_alone_keeps_gap(self):
+        plan = ia.PatchPlan(ops=[ia.PatchOp(op="set", clip_ids=["c1"], field="speed", value=2.0)])
+        new, _report = ia.apply_patch(self._gapped(), plan)
+        assert [p[1] for p in positions(new)] == [0.0, 4.0, 8.0, 12.0]
+
+    def test_two_trims_do_not_compound(self):
+        plan = ia.PatchPlan(ops=[
+            ia.PatchOp(op="trim", clip_ids=["c0"], duration_sec=2.0),
+            ia.PatchOp(op="trim", clip_ids=["c1"], duration_sec=2.0),
+        ])
+        new, _report = ia.apply_patch(self._gapped(), plan)
+        # 两处各裁 2s：c2 应落在 10-4 = 6.0
+        assert [p[1] for p in positions(new)] == [0.0, 2.0, 6.0, 10.0]
+
+
 # ── reorder ───────────────────────────────────────────────
 
 

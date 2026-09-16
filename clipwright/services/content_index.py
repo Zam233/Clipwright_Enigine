@@ -368,6 +368,39 @@ def detect_gradual_transitions(
     return [round(t, 3) for t, span in cands if span >= max(gradual_threshold, 0.75)]
 
 
+async def detect_cuts_and_transitions(
+    video_path: str | Path,
+    threshold: float = 0.3,
+    *,
+    timeout: float = 600.0,
+    detect_gradual: bool | None = None,
+) -> tuple[list[float], list[float]]:
+    """**一次**扫描同时给出 `(切点, 疑似转场)`。
+
+    为什么要有这个入口（自查发现的性能缺陷）：`build_index` 原先分别调用
+    `detect_cut_times()`（内部会做一遍直方图扫描）与 `detect_transition_candidates()`
+    （又做一遍）——**同一段素材解码+直方图算了两次**。实测 45.7s 素材上扫描合计 0.70s
+    而建索引总耗时 27.9s（此处只占 1%，因为 CLIP 标注是大头），但扫描成本随素材**时长**
+    线性增长、CLIP 成本随**镜头数**增长，长素材上重复的那份会越来越显眼。
+    """
+    hard = await _ffmpeg_scene_cuts(video_path, threshold, timeout)
+    if detect_gradual is None:
+        detect_gradual = bool(getattr(settings, "content_index_gradual_detect", True))
+    if not detect_gradual:
+        return hard, []
+    strong, weak = await asyncio.to_thread(detect_transition_candidates, video_path)
+    return _merge_cut_times(hard, strong), weak
+
+
+def _merge_cut_times(hard: list[float], strong: list[float]) -> list[float]:
+    """合并硬切与强证据转场：与强证据重合（±0.5s）的不重复报。"""
+    merged = list(hard)
+    for t in strong:
+        if not any(abs(t - h) <= 0.5 for h in merged):
+            merged.append(t)
+    return sorted(merged)
+
+
 async def detect_cut_times(
     video_path: str | Path,
     threshold: float = 0.3,
@@ -375,47 +408,40 @@ async def detect_cut_times(
     timeout: float = 600.0,
     detect_gradual: bool = True,
 ) -> list[float]:
-    """ffmpeg 场景检测（硬切）+ 渐变转场检测 → 合并去重后的切点时间戳。
+    """切点时间戳（硬切 + 渐变转场补检）。**薄封装**，保留给既有调用方。
 
+    新代码优先用 `detect_cuts_and_transitions()`，避免重复扫描。
     失败一律返回空表，由调用方兜底成"整段一个镜头"（不猜）。
-    `detect_gradual=False` 可关掉渐变检测（老行为；给对比实验用）。
     """
+    cuts, _suspected = await detect_cuts_and_transitions(
+        video_path, threshold, timeout=timeout, detect_gradual=detect_gradual)
+    return cuts
+
+
+async def _ffmpeg_scene_cuts(
+    video_path: str | Path, threshold: float, timeout: float,
+) -> list[float]:
+    """ffmpeg `scene` 滤镜的硬切检测（原始实现，供上面两个入口共用）。"""
     path = str(video_path)
     cmd = [
         "ffmpeg", "-v", "info", "-i", path,
         "-filter:v", f"select='gt(scene,{threshold})',showinfo",
         "-an", "-f", "null", "-",
     ]
-    hard: list[float] = []
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
         _out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        hard = parse_scene_times(err.decode("utf-8", errors="replace"))
+        return parse_scene_times(err.decode("utf-8", errors="replace"))
     except asyncio.TimeoutError:
         logger.warning("场景检测超时（%ss）: %s", timeout, path)
+        return []
     except FileNotFoundError:
         logger.warning("ffmpeg 不可用，场景检测跳过: %s", path)
+        return []
     except Exception as exc:
         logger.warning("场景检测失败: %s", exc)
-
-    if not detect_gradual:
-        return hard
-    if not getattr(settings, "content_index_gradual_detect", True):
-        return hard
-
-    gradual = await asyncio.to_thread(detect_gradual_transitions, path)
-    if not gradual:
-        return hard
-    # 去重：与硬切重合（±0.5s）的不重复报
-    merged = list(hard)
-    for t in gradual:
-        if not any(abs(t - h) <= 0.5 for h in merged):
-            merged.append(t)
-    if len(merged) > len(hard):
-        logger.info("渐变转场补检 %d 处（ffmpeg 硬切 %d 处）: %s",
-                    len(merged) - len(hard), len(hard), path)
-    return sorted(merged)
+        return []
 
 
 _META_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -652,19 +678,17 @@ async def build_index(
     duration = float(meta.get("duration") or 0.0)
     if progress:
         await _maybe_await(progress(0.15, "场景切分"))
-    cuts = await detect_cut_times(path, thr) if duration > 0 else []
+    # **一次**拿到切点与疑似转场（原先分两处调用 → 同一段素材扫两遍，见
+    # `detect_cuts_and_transitions` 的说明）。
+    if duration > 0:
+        cuts, suspected = await detect_cuts_and_transitions(path, thr)
+    else:
+        cuts, suspected = [], []
     ranges = build_shot_ranges(cuts, duration, min_shot_sec=min_shot_sec, max_shots=max_shots)
 
-    # 弱证据的渐变转场：**只标注、不切**。
-    # 真实素材实测：连续运动的镜头（涌浪/快速运镜）与弱交叉溶解的累计跨度重叠，
-    # 分不开；而"误切"的代价（索引粒度错、下游选到半截画面）比"漏切 + 标注可见"大得多。
-    suspected: list[float] = []
-    if getattr(settings, "content_index_gradual_detect", True) and duration > 0:
-        try:
-            _strong, suspected = await asyncio.to_thread(
-                detect_transition_candidates, path)
-        except Exception as exc:  # 标不出来不能拖垮索引
-            logger.info("渐变候选扫描失败（跳过标注）：%s", exc)
+    # 弱证据的渐变转场**只标注、不切**（理由见 detect_transition_candidates）：
+    # 连续运动的镜头（涌浪/快速运镜）与弱交叉溶解的累计跨度重叠、分不开，
+    # 而"误切"的代价（索引粒度错、下游选到半截画面）远大于"漏切 + 标注可见"。
 
     frames_root = index_dir(project_id) / "frames" / (sha[:12] or path.stem)
     if force and frames_root.exists():

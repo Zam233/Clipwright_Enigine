@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import os
 import sys
 import threading
 from pathlib import Path
@@ -95,15 +96,28 @@ class PluginHost:
 
     async def _start(self) -> list[dict[str, Any]]:
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        # **强制子进程 UTF-8 I/O**（`-X utf8` + PYTHONIOENCODING）。
+        #
+        # 与 worker 写二进制 stdout 是同一处缺陷的两道防线：worker 自己写的是
+        # `sys.stdout.buffer`（不受 locale 影响），但**插件代码**可能直接 `print()` 中文日志、
+        # 或让异常 traceback（走文本模式 stderr）带上中文——那些路径由子进程的
+        # locale 编码决定，宿主却固定按 UTF-8 解码（`_drain_stderr`），
+        # 中文 Windows 上（cp936）同样会损坏甚至抛 UnicodeDecodeError。
+        # 实测：不加 `-X utf8` 时，worker 回传 `{"b": "两"}` 的字节是 `\xc1\xbd`。
         cmd = [
-            self._python, "-m", "clipwright.plugins.runtime.worker",
+            self._python, "-X", "utf8",
+            "-m", "clipwright.plugins.runtime.worker",
             str(self.plugin_dir), self.plugin_id, str(self.data_dir),
         ]
+        env = dict(os.environ)
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        env.setdefault("PYTHONUTF8", "1")
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         self._reader_task = asyncio.get_running_loop().create_task(self._read_responses())
         self._stderr_task = asyncio.get_running_loop().create_task(self._drain_stderr())
