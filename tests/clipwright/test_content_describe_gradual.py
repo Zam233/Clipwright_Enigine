@@ -173,19 +173,55 @@ class TestGradualTransitions:
             "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(out)],
             check=True, capture_output=True)
 
-    def test_crossfade_is_detected(self, tmp_path):
-        """**ffmpeg 老路径测不到溶接**（R2 记录的方法学盲区）——补检必须能测到。"""
+    def test_crossfade_is_flagged_or_split(self, tmp_path):
+        """**ffmpeg 老路径测不到溶接**（R2 记录的方法学盲区）——补检必须能发现它。
+
+        验收口径是"**发现**"而不是"必须切开"：见 `detect_transition_candidates` 的两级设计——
+        强证据才切（误切的代价是索引粒度错），弱证据只标注。所以这里断言
+        "强证据切开 或 弱证据标注"，两者都算发现，但都要能在结果里看到。
+        """
         a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"
         out = tmp_path / "xfade.mp4"
         self._rich(a, "testsrc2")
         self._rich(b, "smptebars")
         self._xfade(a, b, out, offset=3.4)
 
-        hard_only = ci.detect_cut_times(out, 0.3, detect_gradual=False)
-        graduals = ci.detect_gradual_transitions(out)
-        assert graduals, "溶接未被检出（这正是要修的方法学盲区）"
+        hard_only = asyncio.run(ci.detect_cut_times(out, 0.3, detect_gradual=False))
+        assert hard_only == [], "ffmpeg 老路径本就测不到溶接（这条断言是盲区的证据）"
+        strong, weak = ci.detect_transition_candidates(out)
+        found = strong + weak
+        assert found, "溶接既没被切开也没被标注（这正是要修的方法学盲区）"
         # 真值：offset=3.4 + dur/2=0.3 → 中心约 3.70s
-        assert any(abs(t - 3.70) <= 0.9 for t in graduals), (graduals, hard_only)
+        assert any(abs(t - 3.70) <= 0.9 for t in found), (strong, weak)
+
+    def test_strong_is_a_subset_of_candidates(self, tmp_path):
+        """强/弱两级：强证据用来切，弱证据只标注；两者不重叠。"""
+        a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"
+        out = tmp_path / "xfade.mp4"
+        self._rich(a, "testsrc2")
+        self._rich(b, "smptebars")
+        self._xfade(a, b, out, offset=3.4)
+        strong, weak = ci.detect_transition_candidates(out)
+        assert not (set(strong) & set(weak))
+        # 阈值可调：把强阈值降到 0 以下，所有候选都应变成"强"
+        strong2, weak2 = ci.detect_transition_candidates(out, strong_threshold=0.0)
+        assert len(strong2) >= len(strong)
+        assert weak2 == []
+
+    def test_weak_only_transition_is_not_split(self, tmp_path):
+        """**弱证据不许切**——实测误切的代价（索引粒度错、下游选到半截画面）比漏切大。"""
+        a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"
+        out = tmp_path / "soft.mp4"
+        self._rich(a, "testsrc2")
+        self._rich(b, "rgbtestsrc")
+        self._xfade(a, b, out, offset=3.4)
+        strong, weak = ci.detect_transition_candidates(out)
+        if not weak:
+            pytest.skip("该夹具没有产生弱证据候选（阈值敏感，不强行断言）")
+        cuts = asyncio.run(ci.detect_cut_times(out, 0.3))
+        for t in weak:
+            assert not any(abs(t - c) <= 0.5 for c in cuts), \
+                f"弱证据 {t} 不该进切点（会造成误切）"
 
     def test_soft_crossfade_between_similar_scenes(self, tmp_path):
         """相似画面之间的溶接（更难）也要能检出。"""

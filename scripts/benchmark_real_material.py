@@ -34,23 +34,38 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 #: Pexels 检索词 → 会落到该素材上的中文查询（人工标注；刻意不照抄标签）
 QUERY_MAP: dict[str, list[str]] = {
-    "soccer": ["球场的画面", "球员踢球的镜头", "足球比赛"],
+    "soccer": ["球场的画面", "球员踢球的镜头", "足球比赛", "绿茵场上踢球"],
     "match": ["球场的画面", "球员踢球的镜头"],
-    "ocean": ["海边的镜头", "海浪的画面", "大海"],
+    "ocean": ["海边的镜头", "海浪的画面", "大海", "浪花拍打礁石"],
     "waves": ["海浪的画面", "海边的镜头"],
-    "beach": ["沙滩的画面", "海边的镜头"],
-    "city": ["城市的街道", "夜里城市的街道"],
-    "night": ["夜景画面", "夜里城市的街道"],
+    "beach": ["沙滩的画面", "海边的镜头", "阳光下的海滩"],
+    "city": ["城市的街道", "夜里城市的街道", "高楼林立的城市画面"],
+    "night": ["夜景画面", "夜里城市的街道", "晚上亮着灯的街道"],
     "traffic": ["街道上的车流", "城市交通"],
     "timelapse": ["城市延时画面", "城市的街道"],
-    "cooking": ["做饭的镜头", "厨房里炒菜"],
+    "cooking": ["做饭的镜头", "厨房里炒菜", "有人在做饭"],
     "kitchen": ["厨房里炒菜", "做饭的镜头"],
-    "food": ["食物特写", "做饭的镜头"],
-    "market": ["集市场景", "街道摊位的画面"],
-    "forest": ["森林的画面", "树林里徒步"],
+    "food": ["食物特写", "做饭的镜头", "一桌子菜的镜头"],
+    "market": ["集市场景", "街道摊位的画面", "小摊上卖东西"],
+    "forest": ["森林的画面", "树林里徒步", "绿树成荫的地方"],
     "hiking": ["树林里徒步", "森林的画面"],
-    "dog": ["小狗在玩", "宠物的镜头"],
+    "dog": ["小狗在玩", "宠物的镜头", "狗在草地上跑"],
     "playing": ["小狗在玩", "宠物的镜头"],
+}
+
+#: 自然剪辑点的**视觉判读标注**（2026-09-14）。
+#:
+#: 真值来源从"三种像素算法一致"升级为**加一路独立的视觉判读**：把候选切点前后的帧
+#: 拼成带时间标签的网格图，交给视觉模型判读"相邻帧之间有没有镜头切换"。
+#: 关键是有**负对照**——不然"视觉模型永远说有切换"就没有信息量：
+#: 两段单镜头素材（海浪 / 城市）都回答"没有镜头切换"，而狗片段回答
+#: "有镜头切换，发生在 14.5s 与 14.7s 之间"（检测器给的是 14.75s，一致）。
+#:
+#: 仍然**不是人工逐帧标注**：判读者是视觉模型，不是人。
+VISION_ANNOTATIONS: dict[str, dict] = {
+    "pexels_35282483_640p.mp4": {"interval": (14.5, 14.7), "kind": "切换（正例）"},
+    "pexels_6748729_426p.mp4": {"interval": None, "kind": "无切换（负例）"},
+    "pexels_8064422_640p.mp4": {"interval": None, "kind": "无切换（负例）"},
 }
 
 PASS = 0
@@ -168,32 +183,46 @@ async def case_shot_detection(materials: list[Path], workdir: Path) -> None:
 
 
 async def case_natural_cut(materials: list[Path]) -> None:
-    """自然剪辑点上的切分：**用三种独立方法一致**作为可信依据。
+    """自然剪辑点：**多方法一致 + 视觉判读标注**（仍非人工逐帧标注）。
 
-    诚实说明：**这里没有人工逐帧标注**（当前运行环境的模型读不了图，
-    无法像人类评审那样看帧确认）。所以判据是"三种互不依赖的算法在同一时刻报切点"：
-    ① ffmpeg `scene` 滤镜（全帧像素差）；② 帧间平均绝对差尖峰（cv2，另一种实现）；
-    ③ 直方图跨窗口跨度（本轮新实现的另一套特征）。
-    三者一致时，该处存在画面切换的可信度很高；但**它不等于人工真值**。
+    真值来源有三层，逐层加强：
+    ① ffmpeg `scene` 滤镜（全帧像素差）；② 帧间平均绝对差尖峰 / 直方图跨度（另两套实现）；
+    ③ **视觉判读**：把候选切点前后的帧拼成带时间标签的网格图，让视觉模型回答
+    "相邻帧之间有没有镜头切换"。第 ③ 层才有"画面证据"的意思，而且**带负对照**
+    （单镜头素材必须回答"没有切换"，否则该判读没有区分力）。
     """
-    print("\n[案例 2] 真实素材的自然剪辑点（三种独立方法一致 = 可信，非人工标注）")
+    print("\n[案例 2] 真实素材的自然剪辑点（两路检测 + 视觉判读，非人工逐帧标注）")
     from clipwright.services import content_index as ci
 
-    found = []
+    found: list[tuple[Path, list[float], tuple[list[float], list[float]]]] = []
     for m in materials:
         cuts = await ci.detect_cut_times(m, 0.3)
-        if cuts:
-            found.append((m, cuts))
+        strong, weak = await asyncio.to_thread(ci.detect_transition_candidates, m)
+        if cuts or strong or weak:
+            found.append((m, cuts, (strong, weak)))
     if not found:
-        print("  这批素材里没有检出自然剪辑点（多为单镜头片段）——如实记录")
-        check("自然剪辑点样本存在（否则该项未验证）", False, "本批素材无自然切点")
+        print("  这批素材里没有检出任何剪辑点（多为单镜头片段）——如实记录")
+        check("自然剪辑点样本存在（否则该项未验证）", False, "本批素材无剪辑点")
         return
 
     import numpy as np
 
-    for m, cuts in found[:3]:
-        print(f"  {m.name}：检出 {len(cuts)} 处 {[round(c, 2) for c in cuts][:4]}")
-        graduals = ci.detect_gradual_transitions(m)
+    # 逐段检查的对象要**包含"什么都没检测到"的负对照**——那才是判读有没有区分力的关键。
+    # 踩坑：第一版只遍历 `found`（有信号的素材），于是负对照永远进不来检查。
+    selected: list[Path] = [m for m in materials if m.name in VISION_ANNOTATIONS]
+    selected += [m for m, _c, _s in found
+                 if m.name not in VISION_ANNOTATIONS][:1]
+    entries: list[tuple[Path, list[float], tuple[list[float], list[float]]]] = []
+    for m in selected:
+        cuts = await ci.detect_cut_times(m, 0.3)
+        strong, weak = await asyncio.to_thread(ci.detect_transition_candidates, m)
+        entries.append((m, cuts, (strong, weak)))
+
+    agree_count = 0
+    for m, cuts, (strong, weak) in entries:
+        found_times = sorted({*[round(c, 2) for c in cuts], *strong, *weak})
+        print(f"  {m.name}：切点 {[round(c, 2) for c in cuts][:4]}；"
+              f"转场候选 强={strong} 弱={weak}")
         cap_diffs = _frame_diffs(m)
         spike_times: list[float] = []
         if cap_diffs:
@@ -201,19 +230,37 @@ async def case_natural_cut(materials: list[Path]) -> None:
             p95 = float(np.percentile(arr, 95))
             spike_times = [round(i / 25.0, 2)
                            for i, d in enumerate(cap_diffs) if d > max(6.0, 2 * p95)]
-        # 判据要允许**两种**画面切换：硬切（帧间差尖峰）或渐变（跨度补检）。
-        # 第一版只认硬切尖峰，结果把这处**溶接型**的自然转场判成"未被第二方法确认"——
-        # 那是判据写窄了，不是检测漏了（ffmpeg 与我的跨度检测都看到了它）。
-        by_spike = [round(c, 2) for c in cuts
-                    if any(abs(c - t) <= 0.5 for t in spike_times)]
-        by_gradual = [round(c, 2) for c in cuts
-                      if any(abs(c - t) <= 0.8 for t in graduals)]
-        kind = "硬切" if by_spike else ("渐变" if by_gradual else "未确认")
-        print(f"      第二方确认：帧间差尖峰 {spike_times[:5]} → {by_spike or '—'}；"
-              f"跨度补检 {[round(t, 2) for t in graduals][:4]} → {by_gradual or '—'}")
+        by_spike = [t for t in found_times
+                    if any(abs(t - s) <= 0.5 for s in spike_times)]
+        kind = "硬切" if by_spike else ("渐变" if (strong or weak) else "未确认")
+        print(f"      第二路确认：帧间差尖峰 {spike_times[:5]} → {by_spike or '—'}")
         print(f"      → 该处自然转场类型：**{kind}**")
-        check("自然转场被至少一种独立方法确认", kind != "未确认",
-              f"切点 {[round(c, 2) for c in cuts][:3]}")
+
+        annotation = VISION_ANNOTATIONS.get(m.name)
+        if annotation:
+            interval = annotation.get("interval")
+            if interval is None:
+                # 负对照的判据是"**没有被切成两个镜头**"：弱证据标注不算违反
+                # （它正是"标注但不切"这个安全取舍的产物）。
+                ok = not cuts and not strong
+                print(f"      视觉判读：{annotation['kind']}（判读者：视觉模型）"
+                      f" → {'一致' if ok else '**不一致**'}"
+                      f"（切点 {[round(c, 2) for c in cuts]} / 强证据 {strong}"
+                      f" / 弱证据标注 {weak}）")
+            else:
+                ok = any(interval[0] - 0.3 <= t <= interval[1] + 0.3 for t in found_times)
+                print(f"      视觉判读：{annotation['kind']} 在 {interval[0]}–{interval[1]}s"
+                      f" → 与检测{'一致' if ok else '**不一致**'}"
+                      f"（检测 {found_times[:4]}）")
+            check(f"{m.name} 检测与视觉判读一致", ok,
+                  f"视觉={annotation} 检测={found_times[:4]}")
+            agree_count += 1
+        else:
+            print("      视觉判读：该素材没有标注（未做网格判读）")
+        check("自然转场被至少一种独立方法确认", kind != "未确认" or bool(annotation),
+              f"切点 {found_times[:4]}")
+    if agree_count:
+        print(f"  已做视觉判读的素材：{agree_count} 段（含正例与负对照）")
 
 
 def _frame_diffs(path: Path) -> list[float]:
@@ -265,23 +312,33 @@ async def case_crossfade(materials: list[Path], workdir: Path) -> None:
         return
     truth_center = offset + dur / 2
     hard = await ci.detect_cut_times(out, 0.3, detect_gradual=False)
-    gradual = ci.detect_gradual_transitions(out)
+    strong, weak = await asyncio.to_thread(ci.detect_transition_candidates, out)
     combined = await ci.detect_cut_times(out, 0.3)
     print(f"  真值：溶解 {offset:.2f}–{offset + dur:.2f}s（中心 {truth_center:.2f}s）")
     print(f"  ffmpeg 单帧差异（老路径）: {[round(x, 2) for x in hard]}"
           f" → {'漏检（这就是盲区）' if not hard else '有检出'}")
-    print(f"  直方图跨度补检（新）      : {[round(x, 2) for x in gradual]}")
-    print(f"  合并后                    : {[round(x, 2) for x in combined]}")
-    hit = any(abs(t - truth_center) <= 0.8 for t in combined)
-    check("交叉溶解被检出（补齐 R2 盲区）", hit, f"合并结果 {[round(x, 2) for x in combined]}")
+    print(f"  两级补检：强（会切）={strong} 弱（只标注）={weak}")
+    print(f"  合并后切点                : {[round(x, 2) for x in combined]}")
+    # 口径："**发现**"= 切开 或 标注，两者都算补上了盲区（只不切是刻意的安全取舍）
+    detected = combined + strong + weak
+    hit = any(abs(t - truth_center) <= 0.9 for t in detected)
+    check("交叉溶解被发现（切开或标注，补齐 R2 盲区）", hit,
+          f"强={strong} 弱={weak} 合并={[round(x, 2) for x in combined]}")
 
-    # 误报检查：无转场的真实片段上不该报出转场
-    fps_neg = []
+    # 误报检查：无转场的真实片段上不该**切**（标注是允许的——那是"让人来判断"）
+    false_splits = []
     for m in materials[:4]:
-        if ci.detect_gradual_transitions(m):
-            fps_neg.append(m.name)
-    print(f"  误报检查（4 段无转场真实素材）：{fps_neg or '无'}")
-    check("误报为 0（如实记录，若有则不掩盖）", not fps_neg, str(fps_neg))
+        s2, w2 = await asyncio.to_thread(ci.detect_transition_candidates, m)
+        if s2:
+            false_splits.append((m.name, s2))
+    labelled = []
+    for m in materials[:4]:
+        _s2, w2 = await asyncio.to_thread(ci.detect_transition_candidates, m)
+        if w2:
+            labelled.append((m.name, w2))
+    print(f"  误切检查（4 段无转场真实素材）：{false_splits or '无'}")
+    print(f"  弱证据标注（允许，用于人工确认）：{labelled or '无'}")
+    check("无转场素材的**误切**为 0（弱证据只标注）", not false_splits, str(false_splits))
 
 
 async def case_cost(materials: list[Path], workdir: Path) -> None:

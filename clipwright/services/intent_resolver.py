@@ -133,18 +133,42 @@ class ResolutionReport:
                     seen.append(cid)
         return seen
 
-    def preview_lines(self) -> list[str]:
-        """"将会发生什么"的人话清单（意图确认卡直接渲染）。"""
+    def preview_lines(self, timeline: Any = None) -> list[str]:
+        """"将会发生什么"的人话清单（意图确认卡直接渲染）。
+
+        给了 `timeline` 时用**时间线序号**（"第2个片段"）而不是裸 clip id——
+        真实素材上的 clip id / 文件名（`pexels_6748729_426p.mp4`）用户根本对不上号，
+        而确认卡的全部意义就是"让人在改动前看清改的是哪几个"。
+        """
+        order: dict[str, int] = {}
+        labels: dict[str, str] = {}
+        if timeline is not None:
+            order = {cid: i + 1 for i, cid in enumerate(clip_ids_in_order(timeline))}
+            for _t, clip in iter_clips(timeline):
+                text = str(getattr(clip, "text", "") or "").strip()
+                asset = Path(str(getattr(clip, "asset_id", "") or "")).name
+                labels[str(getattr(clip, "id", ""))] = text or asset
         lines: list[str] = []
         for item in self.resolved:
             op = item.op
-            where = "、".join(item.clip_ids[:4]) or "（无匹配）"
+            where = "、".join(self._label(cid, order, labels) for cid in item.clip_ids[:4]) \
+                or "（无匹配）"
             if len(item.clip_ids) > 4:
                 where += f" 等 {len(item.clip_ids)} 个片段"
             lines.append(f"{op.op} → {where}" + ("（降级匹配）" if item.degraded else ""))
         return lines
 
-    def as_dict(self) -> dict[str, Any]:
+    @staticmethod
+    def _label(cid: str, order: dict[str, int], labels: dict[str, str]) -> str:
+        pos = order.get(cid)
+        name = labels.get(cid) or ""
+        if pos and name:
+            return f"第{pos}个片段（{name[:16]}）"
+        if pos:
+            return f"第{pos}个片段"
+        return cid
+
+    def as_dict(self, timeline: Any = None) -> dict[str, Any]:
         return {
             "resolved": [
                 {"op": item.op.op, "clip_ids": item.clip_ids,
@@ -157,7 +181,7 @@ class ResolutionReport:
             ],
             "problems": self.problems,
             "affected_clip_ids": self.affected_clip_ids(),
-            "preview": self.preview_lines(),
+            "preview": self.preview_lines(timeline),
         }
 
 
@@ -518,7 +542,7 @@ async def preview_intent(
     return {
         "intent": describe_intent(intent),
         "intent_raw": intent.model_dump(),
-        "resolution": report.as_dict(),
+        "resolution": report.as_dict(timeline),
         "problems": problems_payload,
         "blocked": False,
     }

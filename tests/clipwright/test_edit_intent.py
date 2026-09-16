@@ -515,8 +515,17 @@ class TestDescribe:
         assert ei.IntentTarget(selected=True).describe() == "选中的片段"
         assert "3.0" in ei.IntentTarget(time_range=(3.0, 5.0)).describe()
         assert "指定片段" in ei.IntentTarget(ref=["cl_1"]).describe()
-        assert "第 0、2 个片段" in ei.IntentTarget(index=[0, 2]).describe()
+        # **对外文案一律 1 起**：index 内部 0 基，但用户看到/说出的"第 N 个"是 1 起。
+        # 曾经直接印 0 基值 →「删掉第2个片段」的摘要写成"第 1 个片段"，与用户原话矛盾
+        # （生成人工评分表时被"评分 Agent"抓到）。
+        assert "第 1、3 个片段" in ei.IntentTarget(index=[0, 2]).describe()
         assert "条件" in ei.IntentTarget(filter={"is_black": True}).describe()
         assert "内容匹配" in ei.IntentTarget(query="咖啡杯").describe()
         assert ei.IntentTarget().describe() == "（未指定）"
+
+    def test_ordinal_round_trip_through_rules_and_description(self) -> None:
+        """用户说"第2个" → 内部 index=[1] → 文案必须仍写"第 2 个片段"。"""
+        intent = ei.parse_intent_rules("删掉第2个片段")
+        assert intent.ops[0].target.index == [1]          # 内部 0 基
+        assert "第 2 个片段" in ei.describe_intent(intent)   # 对外 1 起
         assert ei.IntentTarget().is_empty() is True

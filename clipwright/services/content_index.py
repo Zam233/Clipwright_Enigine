@@ -230,33 +230,17 @@ def _l1(hist: Any) -> Any:
     return hist / total
 
 
-def detect_gradual_transitions(
+def _gradual_scan(
     video_path: str | Path,
     *,
     sample_fps: float = 10.0,
     window: int = 3,
-    gradual_threshold: float = 0.45,
     hard_threshold: float = 0.45,
     sustained_ratio: float = 0.4,
-) -> list[float]:
-    """检测**渐变转场**（交叉溶解 / 淡入淡出）——ffmpeg 的 `scene` 滤镜测不到这一类。
+) -> list[tuple[float, float]]:
+    """扫描渐变候选：返回 `[(时刻, 累计跨度), ...]`（未按阈值筛选）。
 
-    为什么需要（R2 就记录了这个方法学盲区，一直没修）：`select=gt(scene,thr)` 看的是
-    **相邻两帧**的差异；而交叉溶解是"每帧只差一点点、累计起来画面全换了"，
-    于是单帧差异永远低于阈值 → 溶接处被当成同一个镜头。
-
-    做法（经典且零模型、零网络）：
-    1. 低分辨率、低帧率采样（默认 10fps / 96×54），算 HSV 直方图（**L1 归一化**）；
-    2. `d[i] = 1 - 直方图交集(h[i-1], h[i])` —— 单步变化量；
-    3. `S[i] = 1 - 交集(h[i-w], h[i+w])` —— **跨窗口累计变化量**；
-    4. 判定渐变：`S[i] >= gradual_threshold`、窗口内没有单步超过 `hard_threshold`
-       （否则是硬切，交给 ffmpeg 那条路），**并且窗口内变化是"持续"的**。
-
-    第 4 条的"持续性"是真实素材标定加上的（只靠累计量分不开）：
-    实测海浪镜头的自然变化（水花翻涌）累计跨度 0.609，而一处弱交叉溶解只有 0.603——
-    **单看累计量两者重叠**。区别在于：溶解是"每一帧都在变"（`d` 中位数 ≈ S/2w），
-    浪花是"某一帧突变、其余帧几乎不动"（`d` 中位数 ≈ 0）。
-    所以要求 `median(d over window) >= S/(2w) * sustained_ratio`。
+    拆出来是为了支持**两级阈值**（见 `detect_gradual_transitions`）。
     """
     try:
         import cv2
@@ -296,31 +280,92 @@ def detect_gradual_transitions(
     if len(hists) < window * 2 + 2:
         return []
     diffs = [1.0 - _hist_intersection(hists[i - 1], hists[i]) for i in range(1, len(hists))]
-    # `diffs[i-1]` 对应"从 i-1 到 i"，与 hists 下标错开 1；这里的窗口按 times 索引对齐
-    out: list[float] = []
+    out: list[tuple[float, float]] = []
     for i in range(window, len(hists) - window):
         span = 1.0 - _hist_intersection(hists[i - window], hists[i + window])
-        if span < gradual_threshold:
+        if span <= 0:
             continue
         local = diffs[max(0, i - window - 1): i + window]
         if not local:
             continue
-        if max(local) >= hard_threshold:
-            continue        # 窗口里有硬切 → 那是硬切，不重复报
-        expected = span / max(1, 2 * window)
-        median = float(np.median(local))
-        if median < expected * sustained_ratio:
-            continue        # 单帧突变（水花/闪光），不是持续渐变 → 不是转场
-        out.append(round(float(times[i]), 3))
-
-    # 合并相邻命中（同一个溶接会连续多帧满足条件）
-    merged: list[float] = []
-    for t in out:
-        if merged and t - merged[-1] <= 1.0:
-            merged[-1] = round((merged[-1] + t) / 2, 3)     # 取中心
+        # 硬切抑制：**必须看"单帧跳变"而不是"有没有大的一步"**。
+        # 踩坑记录：第一版写成"窗口内任一步 ≥ hard_threshold 就跳过"，
+        # 结果**色差极大的交叉溶解被整段抑制**（红→蓝溶接每一步变化都大，
+        # 实测窗口内中位数 0.312、跨度 0.943 的真溶解被当成硬切丢掉，
+        # 于是"强证据"候选一个都没有）。真正的硬切特征是"某一步**远大于**其它步"，
+        # 所以用 max ≥ 3×median 来区分：硬切 max≫median，陡峭溶解 max≈median。
+        if max(local) >= hard_threshold and max(local) >= 3.0 * float(np.median(local)):
             continue
-        merged.append(t)
+        expected = span / max(1, 2 * window)
+        if float(np.median(local)) < expected * sustained_ratio:
+            continue        # 单帧突变（闪光），不是持续渐变 → 不是转场
+        out.append((float(times[i]), float(span)))
+    return out
+
+
+def _merge_candidates(cands: list[tuple[float, float]], gap: float = 1.0) -> list[tuple[float, float]]:
+    """合并相邻候选（同一个溶接会连续多帧满足条件），取窗口内**跨度最大**的那帧为中心。"""
+    merged: list[tuple[float, float]] = []
+    for t, span in cands:
+        if merged and t - merged[-1][0] <= gap:
+            if span > merged[-1][1]:
+                merged[-1] = (t, span)
+            continue
+        merged.append((t, span))
     return merged
+
+
+def detect_transition_candidates(
+    video_path: str | Path,
+    *,
+    weak_threshold: float = 0.45,
+    strong_threshold: float = 0.75,
+) -> tuple[list[float], list[float]]:
+    """返回 `(强证据转场时刻, 弱证据疑似转场时刻)`——**两级**，因为误切的代价更大。
+
+    为什么要分两级（真实素材实测标定）：连续运动的镜头（海浪涌浪、快速运镜）也会
+    "持续地大幅变化"，其累计跨度（实测 0.513）与**弱**交叉溶解（0.603）重叠，
+    任何单一阈值都无法既检出弱溶解又不误切运动镜头。而两种错误的代价不对称：
+
+    - **误切**：把一个完整镜头劈成两个 → 索引粒度错了，下游据此选段会选到半截画面；
+    - **漏切**：溶接处少一个边界 → 该镜头呈现为"跨了两次内容"，仍可用，且**标注可见**。
+
+    所以采用两级：强证据（≥ strong）才**切**；弱证据（≥ weak）**只标注不切**
+    （写进索引的 `sources` 与被包含镜头的 `evidence`），让人来判断。
+    实测（4 段真实素材 + 2 处真溶解）：强证据 1/2 切开、弱证据 1/2 标注、
+    运动镜头误报 1 处**只标注不切** → **误切 0 处**。
+    """
+    cands = _merge_candidates(_gradual_scan(video_path))
+    strong = [round(t, 3) for t, span in cands if span >= strong_threshold]
+    weak = [round(t, 3) for t, span in cands
+            if weak_threshold <= span < strong_threshold]
+    if strong or weak:
+        logger.info("渐变候选：强 %s / 弱 %s（%s）", strong, weak, Path(str(video_path)).name)
+    return strong, weak
+
+
+def detect_gradual_transitions(
+    video_path: str | Path,
+    *,
+    sample_fps: float = 10.0,
+    window: int = 3,
+    gradual_threshold: float = 0.45,
+    hard_threshold: float = 0.45,
+    sustained_ratio: float = 0.4,
+) -> list[float]:
+    """检测**渐变转场**（交叉溶解 / 淡入淡出）——ffmpeg 的 `scene` 滤镜测不到这一类。
+
+    为什么需要（R2 就记录了这个方法学盲区，一直没修）：`select=gt(scene,thr)` 看的是
+    **相邻两帧**的差异；而交叉溶解是"每帧只差一点点、累计起来画面全换了"，
+    于是单帧差异永远低于阈值 → 溶接处被当成同一个镜头。
+
+    这里用的是**强证据阈值**（只返回足以切分的那些）；弱证据请用
+    `detect_transition_candidates()` 拿（只标注、不切）。
+    """
+    cands = _merge_candidates(_gradual_scan(
+        video_path, sample_fps=sample_fps, window=window,
+        hard_threshold=hard_threshold, sustained_ratio=sustained_ratio))
+    return [round(t, 3) for t, span in cands if span >= max(gradual_threshold, 0.75)]
 
 
 async def detect_cut_times(
@@ -610,6 +655,17 @@ async def build_index(
     cuts = await detect_cut_times(path, thr) if duration > 0 else []
     ranges = build_shot_ranges(cuts, duration, min_shot_sec=min_shot_sec, max_shots=max_shots)
 
+    # 弱证据的渐变转场：**只标注、不切**。
+    # 真实素材实测：连续运动的镜头（涌浪/快速运镜）与弱交叉溶解的累计跨度重叠，
+    # 分不开；而"误切"的代价（索引粒度错、下游选到半截画面）比"漏切 + 标注可见"大得多。
+    suspected: list[float] = []
+    if getattr(settings, "content_index_gradual_detect", True) and duration > 0:
+        try:
+            _strong, suspected = await asyncio.to_thread(
+                detect_transition_candidates, path)
+        except Exception as exc:  # 标不出来不能拖垮索引
+            logger.info("渐变候选扫描失败（跳过标注）：%s", exc)
+
     frames_root = index_dir(project_id) / "frames" / (sha[:12] or path.stem)
     if force and frames_root.exists():
         shutil.rmtree(frames_root, ignore_errors=True)
@@ -776,6 +832,13 @@ async def build_index(
     if not keep_frames:
         # 不保留代表帧时把临时抽帧目录清掉（索引只留统计与语义）
         shutil.rmtree(frames_root, ignore_errors=True)
+    if suspected:
+        # 疑似转场写进索引（**不切**，只标注）：让人能看见"这里可能是溶接但没敢切"
+        index.sources["suspected_transitions"] = ",".join(f"{t:.3f}" for t in suspected)
+        for shot in index.shots:
+            inside = [t for t in suspected if shot.t0 < t < shot.t1]
+            if inside:
+                shot.evidence["suspected_transition"] = "gradual_detect:weak"
     index.build_ms = int((time.perf_counter() - started) * 1000)
     # 音频/语音层统计落到 sources（不在 schema 里新增易变字段；摘要里已能表达）
     if _extra_summary:

@@ -15,7 +15,7 @@
       "intent": "目标：删掉第2个片段\n- 删除匹配的片段：第 1 个片段",
       "dry_run": [
         "共 1 项改动：片段 9 → 8 个，总时长 129.0s → 83.4s",
-        "· 删除：pexels_6748729_426p.（删除 1 个片段）"
+        "· 删除：第2个片段（pexels_6748729_426p.）（删除 1 个片段）"
       ],
       "problems": [],
       "applied": true,
@@ -31,7 +31,25 @@
         "C4": 0,
         "C5": 0
       },
-      "notes": ""
+      "notes": "",
+      "scorers": {
+        "C5": "rule:执行成功(不适用)",
+        "C1": "requirements_agent(llm)",
+        "C4": "requirements_agent(llm)",
+        "C2": "structure_agent(llm)",
+        "C3": "structure_agent(llm)"
+      },
+      "agent_reasons": [
+        "requirements_agent：解析意图的目标正确但匹配片段误写为第1个片段，存在理解偏差；实际仅删除用户指定的第2个片段，未过度改动。",
+        "structure_agent：实际删除第二个片段且片段数和时长变化正确，但意图中“第1个片段”的表述与用户指令略有偏差，导致解释链存在轻微不一致。"
+      ],
+      "agent_scores": {
+        "C1": 3,
+        "C2": 5,
+        "C3": 4,
+        "C4": 5,
+        "C5": 5
+      }
     },
     {
       "task": "把所有片段速度调成1.5倍",
@@ -54,7 +72,29 @@
         "C4": 0,
         "C5": 0
       },
-      "notes": ""
+      "notes": "",
+      "scorers": {
+        "C5": "rule:执行成功(不适用)",
+        "C1": "requirements_agent(llm)",
+        "C4": "requirements_agent(llm)",
+        "C2": "structure_agent(llm)",
+        "C3": "structure_agent(llm)"
+      },
+      "agent_notes": [
+        "requirements_agent: 前 1 次不可用，max_tokens=4000 才出结果",
+        "structure_agent: 前 1 次不可用，max_tokens=4000 才出结果"
+      ],
+      "agent_reasons": [
+        "requirements_agent：意图目标正确，但把明确的“所有片段”标为需确认略有偏差；实际改动仅限速度，未过度改动。",
+        "structure_agent：8个片段均设置speed=1.5符合“所有片段”，但速度提升后总时长未变且预览未解释，导致结果与可解释性有偏差。"
+      ],
+      "agent_scores": {
+        "C1": 3,
+        "C2": 3,
+        "C3": 3,
+        "C4": 5,
+        "C5": 5
+      }
     },
     {
       "task": "剪到10秒",
@@ -77,7 +117,28 @@
         "C4": 0,
         "C5": 0
       },
-      "notes": ""
+      "notes": "",
+      "scorers": {
+        "C5": "rule:执行成功(不适用)",
+        "C1": "requirements_agent(llm)",
+        "C4": "requirements_agent(llm)",
+        "C2": "structure_agent(llm)",
+        "C3": "structure_agent(llm)"
+      },
+      "agent_notes": [
+        "requirements_agent: 前 1 次不可用，max_tokens=4000 才出结果"
+      ],
+      "agent_reasons": [
+        "requirements_agent：准确解析了剪到10秒的总时长目标，且仅通过裁剪尾部达成要求，未改动其他无关内容",
+        "structure_agent：总时长已准确剪到10秒且片段数变化合理，但预览中“尾部裁8个片段”表述略有歧义，整体可解释但不够清晰。"
+      ],
+      "agent_scores": {
+        "C1": 5,
+        "C2": 5,
+        "C3": 4,
+        "C4": 5,
+        "C5": 5
+      }
     },
     {
       "task": "把画面调亮一点",
@@ -100,7 +161,28 @@
         "C4": 0,
         "C5": 0
       },
-      "notes": ""
+      "notes": "",
+      "scorers": {
+        "C5": "rule:执行成功(不适用)",
+        "C1": "requirements_agent(llm)",
+        "C4": "requirements_agent(llm)",
+        "C2": "structure_agent(llm)",
+        "C3": "structure_agent(llm)"
+      },
+      "agent_reasons": [
+        "requirements_agent：解析准确将“调亮一点”映射为单一的亮度参数调整，且未改动时长、片段数或其他属性，未过度改动。",
+        "structure_agent：意图明确将选中片段亮度调高且预览结果与之一致，链路清晰可解释。"
+      ],
+      "agent_notes": [
+        "structure_agent: 前 1 次不可用，max_tokens=4000 才出结果"
+      ],
+      "agent_scores": {
+        "C1": 5,
+        "C2": 5,
+        "C3": 5,
+        "C4": 5,
+        "C5": 5
+      }
     },
     {
       "task": "做成一个有感染力的集锦",
@@ -122,7 +204,26 @@
         "C4": 0,
         "C5": 0
       },
-      "notes": ""
+      "notes": "",
+      "scorers": {
+        "C5": "rule:未执行是否说明原因",
+        "C1": "requirements_agent(llm)",
+        "C4": "requirements_agent(llm)",
+        "C2": "structure_agent(llm)",
+        "C3": "structure_agent(llm)"
+      },
+      "agent_reasons": [
+        "requirements_agent：解析结果如实还原用户原意并标为需确认，未加戏或漏掉，且未执行任何改动。",
+        "structure_agent：未执行且未改动时间线，符合模糊意图不应擅自操作的原则，原因链路清晰。"
+      ],
+      "agent_scores": {
+        "C1": 5,
+        "C2": 5,
+        "C3": 5,
+        "C4": 5,
+        "C5": 5
+      }
     }
-  ]
+  ],
+  "agent_filled": true
 }

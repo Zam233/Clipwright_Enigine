@@ -430,6 +430,16 @@ class LLMService:
             )
 
         content = resp.content.strip()
+        if not content:
+            # `success=True` + **空 content** 是个很容易被误读的状态（实测：
+            # 推理型模型在 max_tokens 偏小时会把预算全用在推理上，返回 200 但正文为空，
+            # 于是调用方拿到 `{}`/`{"content": ""}`，看起来像"模型没意见"而不是"额度不够"）。
+            # 这里必须吵出来，并给出最可能的原因。
+            logger.warning(
+                "LLM 返回空内容（status=%s, max_tokens=%s）——若为推理型模型，"
+                "通常是 max_tokens 偏小、预算被推理过程用完；请调大 max_tokens 重试",
+                resp.status_code, kwargs.get("max_tokens"))
+            return {}
         if content.startswith("```"):
             lines = content.splitlines()
             content = "\n".join(line for line in lines if not line.startswith("```"))

@@ -158,7 +158,11 @@ class IntentTarget(BaseModel):
         if self.ref:
             return "指定片段 " + "/".join(self.ref[:3])
         if self.index:
-            return "第 " + "、".join(str(i) for i in self.index[:3]) + " 个片段"
+            # **序号对外一律 1 起**：`index` 内部是 0 基（方便列表寻址），
+            # 但用户看到/说出的"第 N 个"是 1 起。这里直接印 0 基值是真 bug——
+            # 实测「删掉第2个片段」的意图摘要写成"第 1 个片段"，与用户原话矛盾，
+            # 连"评分 Agent"都被误导（生成人工评分表时抓到）。
+            return "第 " + "、".join(str(i + 1) for i in self.index[:3]) + " 个片段"
         if self.filter:
             return "满足条件 " + "、".join(f"{k}={v}" for k, v in self.filter.items())
         if self.query:

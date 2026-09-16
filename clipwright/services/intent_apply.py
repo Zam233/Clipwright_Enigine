@@ -179,13 +179,23 @@ def _label(clip: Any) -> str:
 
 
 def _fmt_clips(ids: Iterable[str], timeline: Timeline, limit: int = 3) -> str:
-    """`前3个片段的标签…`——给人看的摘要，不是给程序用的。"""
-    labels: list[str] = []
+    """`第2个片段（进球片段）等 3 个`——给人看的摘要，不是给程序用的。
+
+    **带时间线序号**是有意为之（生成评分表时暴露的）：原来只显示片段标签/文件名
+    （真实素材上是 `pexels_6748729_426p.mp4` 这种），用户和评审者都无法确认
+    "它动的是不是我说的那一个"——实测连"评分 Agent"都会因此误判（它从文件名里的
+    "1" 推断成"删了第 1 个"，而实际删的是第 2 个）。
+    """
     index = {_clip_id(c): c for _t, c in iter_clips(timeline)}
+    order = _time_order_ids(timeline)
+    ordinal = {cid: i + 1 for i, cid in enumerate(order)}
     ids = list(ids)
+    labels: list[str] = []
     for cid in ids[:limit]:
         clip = index.get(cid)
-        labels.append(_label(clip) if clip is not None else cid)
+        pos = ordinal.get(cid)
+        prefix = f"第{pos}个片段" if pos else cid
+        labels.append(f"{prefix}（{_label(clip)}）" if clip is not None else prefix)
     more = len(ids) - len(labels)
     text = "、".join(labels)
     return f"{text} 等 {len(ids)} 个" if more > 0 else text
@@ -1043,7 +1053,7 @@ async def plan_validate_apply(
             "intent": describe_intent(intent), "intent_raw": intent.model_dump(),
             "patch": plan.model_dump(),
             "report": validate_patch(timeline, plan, stats=stats).model_dump(),
-            "resolution": resolution.as_dict(),
+            "resolution": resolution.as_dict(timeline),
             "problems": problems_payload + [
                 {"level": "error", "where": "resolution",
                  "message": q.text} for q in resolution.questions],
@@ -1056,14 +1066,14 @@ async def plan_validate_apply(
             return {
                 "intent": describe_intent(intent), "intent_raw": intent.model_dump(),
                 "patch": plan.model_dump(), "report": report.model_dump(),
-                "resolution": resolution.as_dict(),
+                "resolution": resolution.as_dict(timeline),
                 "problems": problems_payload + [p.model_dump() for p in report.problems],
                 "notes": notes + plan.notes, "blocked": True, "applied": False,
             }
         return {
             "intent": describe_intent(intent), "intent_raw": intent.model_dump(),
             "patch": plan.model_dump(), "report": report.model_dump(),
-            "resolution": resolution.as_dict(),
+            "resolution": resolution.as_dict(timeline),
             "problems": problems_payload + [p.model_dump() for p in report.problems],
             "notes": notes + plan.notes, "blocked": False, "applied": True,
             "timeline": new_timeline.model_dump(),
@@ -1073,7 +1083,7 @@ async def plan_validate_apply(
     return {
         "intent": describe_intent(intent), "intent_raw": intent.model_dump(),
         "patch": plan.model_dump(), "report": report.model_dump(),
-        "resolution": resolution.as_dict(),
+        "resolution": resolution.as_dict(timeline),
         "problems": problems_payload + [p.model_dump() for p in report.problems],
         "notes": notes + plan.notes,
         "blocked": report.has_errors() or bool(resolution.questions),
