@@ -2864,3 +2864,82 @@ R1–R10 的验收全在合成素材上，"真实素材"一直是最大的未验
   优先级更高）。当前本机无 `settings.json`，够用；若哪天在设置页改过
   host/token，脚本的判定会与实际不一致——已在脚本注释里写明这个边界。
 
+### 执行轮次 148（2026-09-14：前端去重与页面能力补全——4 个共享面板取代 8 处重复实现）
+
+用户报的四个问题（原话）：「首页、设置出现大量的重复」「人格页面希望直接展示 `/persona/`
+中的内容并实现全部功能」「类型页面仅可以展现全部类型」「插件管理希望实现 `/settings/plugins`
+中的全部功能」「设置页面点进去后太过于混乱，希望按系统控制台左侧顺序排序，插件 Hook 进设置页
+的排到最后」。本轮只动前端 `J:\Clipweight-Client`（后端无改动）。
+
+#### 复现到的"大量重复"具体是什么（先量出来，再改）
+
+| 重复项 | 实现 A | 实现 B | 实测差异 |
+| --- | --- | --- | --- |
+| 人格 | 首页 tab：4 张简化卡（只有 name + tone） | `/persona` PersonaPage：画廊 + 节奏指纹 + 参数条 + 知识领域 + 导入/导出/复制/对话创建 | 首页点不开参数、不能导入导出 |
+| 类型 | 首页 tab：小卡片（name + desc） | `/settings/type-maker` TypeMakerPage：CRUD + 预览 | 首页看不到内置/自定义、无标签 |
+| 插件 | 首页 tab：只列名字（无任何操作） | `/settings/plugins` PluginsPage：启停/配置/UI 预览/错误通道 | 首页看到插件却什么都做不了 |
+| 设置 | 首页 tab `HomeSettings` | 独立 SettingsPage | **字段都不同**：首页给「帧率/分辨率/吸附/标尺帧标记」，独立页给「默认帧率/吸附阈值/默认分辨率预设」——同一件事两种说法 |
+| 控制台入口顺序 | SettingsPage 里手写 6 个按钮 | ConsoleShell 里手写 15 项 | 实测顺序不一致：设置页是「后端配置→模型测试→学习训练→素材预处理→视频编辑器→字幕」，左栏是「模型提供商→模型测试→后端配置→工具→插件→类型→模板→…」→ 用户在设置页看到的顺序与点进去后的左栏对不上 |
+
+#### 修法：抽共享面板，两边渲染同一份（不是把 B 抄进 A）
+
+新增 `src/features/settings/`：`PersonaGalleryPanel` / `TypeCatalogPanel` / `PluginsPanel` /
+`PreferencesPanel` / `ConsoleEntriesPanel` / `consoleNav.ts` / `useTypeCatalog.ts`，
+外加 `features/plugins/pluginModel.ts`（插件列表 normalize + 健康数据挂载）。
+
+- **人格**：`PersonaPage` 退化为外壳（只留返回链接与页头），内容全在 `PersonaGalleryPanel`；
+  首页 tab 渲染同一份，`onPick` 回调让"点卡片 = 选中该人格并进入创作表单"（首页语义），
+  独立页为空时点击进入人物详情页。
+- **类型**：新增只读 `TypeCatalogPanel`，首页 tab 与新增路由 `/settings/types` 共用。
+  按用户要求**不提供任何增删改**；写操作只留在「类型制作器」一处——两个地方都能改必然改出不一致。
+- **插件**：`PluginsPage` 退化为 `ConsoleShell` 外壳，内容全在 `PluginsPanel`；首页 tab 渲染同一份。
+- **设置**：`PreferencesPanel` 按分区开关（首页关掉用量/素材源/快捷键，独立页全开）；
+  `ConsoleEntriesPanel` 的入口列表**直接读 `consoleNav.ts`**。
+- **顺序单一来源**：`CONSOLE_NAV` 成为控制台顺序的唯一事实来源，`ConsoleShell` 左栏与设置页
+  入口列表都读它；插件贡献的 `nav.settings` 项追加在**最后**（内核固定在前、插件在后）。
+  插件 Hook 进设置页的 `settings.section` slot 也从页面**最顶部**移到**最末尾**——
+  此前用户一进设置先看到一堆插件分区，自己的偏好被挤到下面，这也是"乱"的来源之一。
+
+#### 顺带把 `/settings/plugins` 补成"完整功能"（这三项此前前端没有入口）
+
+后端端点一直存在，前端从未消费——即"用户看不到自己装的插件为什么没生效"：
+
+- **健康聚合**（`/api/plugin/health`）：机架行显示 `HEALTH:*` + 错误数 + prompt 数；
+  列表项上显示**签名校验失败**、**缺依赖**、Hook 数、每插件 issues；「健康详情」弹层列出
+  全部插件的 status/签名/依赖/Hook/Agent 计数，以及**风格解释器活跃 owner 与候选**
+  （C3：多注册按 priority 取活跃项——不显示出来，用户装了第二个插件也不知道自己没生效）。
+- **贡献清单**（`/api/plugin/contributions`）：kind:id → owner，支持按 owner 过滤查询。
+- **卸载删除**（`DELETE /api/plugin/{id}`）：带确认弹窗（明确说"会从插件目录移除，不只是禁用"）。
+- 同时把这五个弹层收敛成一个 `Modal` 外壳（此前是五份几乎相同的 fixed 容器）。
+
+#### 我自己引入的回归（已修）
+
+- 🐞 **画廊在"参数层不全"的人格上直接崩**：`PersonaGalleryPanel` 无条件读
+  `persona.parameter.rhythm.cut_density_tier`。既有测试的夹具是
+  `parameter: { identity: { tone } }`（没有 rhythm），实测 **TypeError 让整页白屏**。
+  这个脆弱性从原 PersonaPage 原样搬了过来——所以是"我引入了它进入首页路径"。
+  **已修**：identity / language / rhythm 三层都取不到就退化（缺哪层少显示哪块），
+  画廊是入口页，一条脏数据不该让整页崩。
+- 🐞 **`SettingsPage.test.tsx` 缺 `cleanup()`**：多个 describe 的 DOM 累积在 body 里，
+  结构断言会看到两份页面（实测 `Found multiple elements with the text: 本机偏好`）。
+  已补 `afterEach(cleanup)`。
+
+#### 验证
+
+- 前端全量单测 **779 passed / 90 files**（原 771 → 新增 8 条：插件健康/贡献/删除 5 条、
+  设置页结构 3 条；同时改写了断言旧简化实现的 4 条）。
+- `npx tsc --noEmit` 退出码 0；`npm run build` 通过（`✓ built in 13.47s`）。
+- 新增测试即回归护栏：①控制台入口顺序**必须等于** `CONSOLE_NAV`（顺序漂移会被测出来）；
+  ②首页插件 tab 必须带启停开关与健康/贡献/错误通道入口；③类型 tab 必须显示 id 与内置标记。
+
+#### 代价与边界（如实说）
+
+- **产物重复**：HomePage 静态引用了四个面板，而它们同时是懒加载路由的 chunk →
+  构建产物里各有一份重复，主包 gzip 约 **+16 KB**（116.39 → 132.59 kB）。
+  要换回按需加载，需把这些面板改成 `lazy()` + `Suspense`；本轮优先保证"单一实现"。
+- **未做视觉核对**：本轮以单测 + 类型 + 构建为验收手段，**没有真开浏览器逐页看**。
+  布局层面（栅格、间距）的回归风险由单测覆盖不到，若有视觉问题需下一轮补。
+- **`/settings/types` 与 `/settings/type-maker` 都在控制台左栏**（`TYPE` 与 `MAKE` 两项）：
+  一个总览、一个制作器。若觉得左栏过长，可把总览收进制作器页内的一个 tab——本轮按
+  用户"类型页面仅可以展现全部类型"的字面要求保留为独立页。
+
