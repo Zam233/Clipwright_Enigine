@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
@@ -20,6 +21,8 @@ from pydantic import BaseModel, Field
 from clipwright.config import logger
 
 router = APIRouter(prefix="/api/pipeline", tags=["supervisor"])
+#: 跨管线的管理端点（审核队列等）
+admin_router = APIRouter(prefix="/api/supervisor", tags=["supervisor"])
 
 
 @router.get("/{pipeline_id}/ledger")
@@ -321,5 +324,81 @@ async def post_cancel_subagent(
         "cancelled": True,
         "status": tracker.get(subagent_id).status if tracker.get(subagent_id) else "cancelled",
     }
+
+
+# ── B8：派生子代理与审核门 ──────────────────────────────────
+
+
+class SpawnSubagentBody(BaseModel):
+    """派生临时 worker（PRD F10）。"""
+
+    role: str = Field(description="角色名，例如「素材可用性核查员」")
+    system_prompt: str = Field(default="", description="该角色的任务说明")
+    tools: list[str] = Field(default_factory=list, description="工具子集（不得越权）")
+    provider: str = Field(default="")
+    model: str = Field(default="")
+    timeout_sec: float = Field(default=60.0)
+    max_turns: int = Field(default=5)
+
+
+@router.post("/{pipeline_id}/subagents")
+async def post_spawn_subagent(
+    pipeline_id: str, payload: SpawnSubagentBody, request: Request,
+) -> dict:
+    """派生一个子代理。
+
+    - 不带执行权限：直接实例化并执行；
+    - 带 `run_shell` / `run_python`：返回 `pending_review`，需人工审核后才实例化。
+    """
+    from clipwright.api.pipeline import _enforce_pipeline_owner
+    from clipwright.supervisor.spawn import SpawnError, spawn_subagent
+
+    _enforce_pipeline_owner(request, pipeline_id)
+    ctx = SimpleNamespace(pipeline_id=pipeline_id, extra_params={})
+    try:
+        return await spawn_subagent(ctx, **payload.model_dump())
+    except SpawnError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class ReviewWorkerBody(BaseModel):
+    approve: bool = Field(description="是否批准实例化")
+    confirm_high_risk: bool = Field(default=False, description="risk=high/critical 时必须为 true")
+
+
+@admin_router.get("/workers/pending-review")
+async def get_pending_worker_reviews(request: Request) -> dict:
+    """待审核的临时 worker（带独立 LLM 的风险等级与理由）。"""
+    from clipwright.supervisor.worker_registry import all_pending_reviews
+
+    items = [w.to_public() for w in all_pending_reviews()]
+    return {"count": len(items), "items": items}
+
+
+@admin_router.post("/workers/{worker_id}/review")
+async def post_review_worker(
+    worker_id: str, payload: ReviewWorkerBody, request: Request,
+) -> dict:
+    """人工审核（两级门的第二级）。"""
+    from clipwright.supervisor.spawn import SpawnError, review_worker
+
+    try:
+        return await review_worker(
+            worker_id,
+            approve=payload.approve,
+            confirm_high_risk=payload.confirm_high_risk,
+        )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except SpawnError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@admin_router.get("/tools")
+async def get_supervisor_tools(request: Request) -> dict:
+    """主代理可授予的工具全集 + 需要审核的工具（前端审核页说明用）。"""
+    from clipwright.supervisor.spawn import worker_tool_matrix
+
+    return worker_tool_matrix()
 
 

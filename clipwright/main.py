@@ -685,6 +685,7 @@ app.mount("/voice_audio", StaticFiles(directory=str(tts_output_path)), name="voi
 # 注册路由
 app.include_router(pipeline_api.router)
 app.include_router(supervisor_api.router)
+app.include_router(supervisor_api.admin_router)
 app.include_router(persona_api.router)
 app.include_router(persona_forge_api.router)
 app.include_router(chat_forge_api.router)

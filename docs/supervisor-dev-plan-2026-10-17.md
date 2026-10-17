@@ -413,6 +413,18 @@ v1.1 追加：`subagent_start` / `subagent_progress` / `subagent_end` / `exec`�
 
 > B7 单独看是"空跑"——还没有东西会创建子代理。它是 B8 的地基：`spawn` 直接调 `tracker.register()`，前端 F6 可并行开工。
 
+### B8 — 已完成
+
+| 交付 | 位置 | 验证 |
+|---|---|---|
+| 临时 worker 注册表 | `supervisor/worker_registry.py` | 按管线归属、有界 200；`SUPERVISOR_TOOLS` 全集与 `EXEC_TOOLS` 标记；**不写 AgentRegistry**（A17） |
+| 派生 | `supervisor/spawn.py::spawn_subagent` | 工具子集校验（越权即拒）、星型拓扑（`host_agent` 存在即拒，A19）、预算闸 |
+| 两级审核门 | `spawn.py` + `review.py` | 带 `run_shell/run_python` → 独立 LLM 判风险 → `pending_review`，**未过门不实例化**（A22）；`high/critical` 需 `confirm_high_risk`（A22） |
+| 独立判定 | `supervisor/review.py::assess` | **输入白名单**（只取 role/prompt/tools/timeout/max_turns/command/cwd/workspace），非白名单键丢弃（A23）；失败 fail-safe `high`（A26） |
+| 执行 | `spawn._run_worker` | 走 `LLMService.ask`（可带 `use_route`）；成功/失败都落 tracker + registry；失败不影响管线 |
+| 端点 | `api/supervisor.py` | `POST /{pid}/subagents`、`GET /api/supervisor/workers/pending-review`、`POST /api/supervisor/workers/{wid}/review`、`GET /api/supervisor/tools` |
+| 测试 | `tests/test_subagent_spawn.py` | **15 passed**（含未过门不执行、high 需二次确认、输入隔离、fail-safe） |
+
 ### B1 起的前置条件
 
 - F9 已提供 `failure` / `degradations`，账本（B1）只需把 `_run_agent` 单点处的结果落成 `LedgerEntry`；
