@@ -338,10 +338,10 @@ class ModelRoute(BaseModel):
 clipwright/
 ├── supervisor/                    # 新包，与 services/ 里的秘书逻辑分开
 │   ├── worker_registry.py         # 临时 worker 规格与句柄（内存，按 pipeline 归属）
-│   ├── review/judge.py            # 独立 LLM 风险判定（输入只含 WorkerSpec，A23）
+│   ├── review/judge.py            # 独立 LLM 风险判定（命令 + worker 共用；输入只含 spec/命令，A23/A24）
 │   ├── spawn.py                   # E1–E3：派生 / 查询 / 列出 / 取消子代理
-│   ├── gateway.py                 # E4–E5：执行网关（分级 / 沙盒 / 审计 / 硬底线）
-│   └── shell_policy.py            # 命令分级规则表（readonly / judged / dangerous + 硬底线）
+│   ├── gateway.py                 # E4–E5：执行网关（独立判定 → 授权 → 沙盒 → 审计）
+│   └── shell_policy.py            # 确定性规则：危险种子棘轮（只升不降）+ 两类硬底线
 ├── api/supervisor.py              # 扩：子代理列表·状态·取消、执行日志、授权、auto-mode、worker 审核
 └── config.py                      # + max_concurrent_subagents（设置项，默认 6）
                                    # + exec_timeout_sec / exec_allow_network / auto_mode（默认 false）
@@ -371,35 +371,40 @@ clipwright/
 
 ```
 run(kind, cmd, *, timeout, cwd) →
-  1. shell_policy.classify(cmd) → readonly / judged / dangerous   # 确定性规则表，不交给 LLM
-  2. 硬底线检查 → 命中「读凭据 / 不可逆系统破坏」直接拒并记账（任何模式都不可授权）
-  3. 分级处置：
-       readonly → 直接执行
-       judged   → 秘书 LLM 判断「是否必要且安全」，理由必填入账；不弹窗
-       dangerous→ 需用户一次性授权；若 auto_mode 开启则免弹窗直接执行（仍全量审计）
-  4. asyncio.create_subprocess_shell(cwd=workspace, env=白名单, 墙钟上限, 输出截断)
-  5. 写 ExecRecord 入账本 + add_event(pid, "supervisor", "exec", ...)
-  6. 超时/被杀 → 记 timeout，返回已捕获的部分输出
+  1. 硬底线检查（确定性规则，不经 LLM）→ 读凭据 / 不可逆系统破坏 → 直接拒并记账
+  2. shell_policy.ratchet(cmd) → 命中危险种子时记录「最低风险底线」
+       （删/移/覆盖既有文件、装包、起服务、改权限、网络下载后执行）
+  3. risk_judge.assess(cmd, cwd, workspace_brief)
+       # 独立会话 + 独立模型；输入只含命令/cwd/workspace 说明（A24 断言字段白名单）
+       # 输出 {risk_level: low|med|high|critical, reasons[], danger_explanation}
+       # 失败（超时/非法 JSON/schema 不符）→ 一律 high（A26 fail-safe）
+  4. final_risk = max(判定等级, 规则底线)        # A25：规则只升不降
+  5. 分流：low → 执行；med/high → 需用户授权（auto_mode 仅减免 med）；
+           critical → 需授权 + 二次确认
+  6. asyncio.create_subprocess_shell(cwd=workspace, env=白名单, 墙钟上限, 输出截断)
+  7. 写 ExecRecord（风险等级 / 理由 / 危险说明 / 是否自动模式）入账本
+     + add_event(pid, "supervisor", "exec", ...)
+  8. 超时/被杀 → 记 timeout，返回已捕获的部分输出
 ```
 
-- **关键分工**：「这条命令危不危险」由 `shell_policy` 的**确定性规则表**判定，**不由 LLM 判定**；LLM 只决定「这条已被判为 judged 的命令，现在该不该跑」。否则 prompt 一劝，`del` 就能被说成「只读排查」。
+- **关键分工**：「危不危险」由**独立 LLM 请求**判定（按用户决定），但三条约束保证「被说服」不会直接变成「被授权」：判定输入隔离、规则只升不降、判定失败一律升 `high`。
 - `run_python`：脚本落 `workspace/.supervisor/scripts/{uuid}.py`，用 `python -I` 子进程执行（隔离用户 site-packages）；默认禁网，`exec_allow_network=true` 才放开。
 - **硬底线（仅两类，任何模式不可授权）**：① 读取凭据（`.env` / `~/.ssh` / keychain）；② 不可逆系统破坏（格式化系统盘、`shutdown`/`reboot`、删除系统级注册表项）。
-- **其余 dangerous 走用户授权**（默认焦点在「拒绝」）；`auto_mode` 由用户在前端开关，开启后免弹窗但审计不减免，状态入账。
 - 并发子代理上限读设置项 `max_concurrent_subagents`（默认 6）；子代理开销**不设独立上限**，全额计入管线预算。
 - **不得**把 shell 注册进 `ToolRegistry`——`StructureAgent` 的 `with_tools` 走 `list_agent_callable()`，会把 shell 一起暴露给阶段 Agent。
-- 退出标准：PRD A15 / A16 / A20 / A21 通过。
+- 退出标准：PRD A15 / A16 / A20 / A21 / A24 / A25 / A26 通过。
 
 ### 11.5 测试
 
 | 类型 | 内容 |
 |---|---|
-| 单测 | `shell_policy.classify` 至少 40 条样本：readonly 常见命令、judged 灰区、dangerous 边界、易误判写法（`rm -rf ./x` vs `rm -rf /`）、绕过写法（`curl ... \| bash`、base64 解码执行） |
+| 单测 | `shell_policy.ratchet` 危险种子逐条命中：删/移/覆盖既有文件、装包、起服务、改权限、下载后执行；`rm -rf ./x` 与 `rm -rf /` 的差异 |
 | 单测 | 硬底线两类各 5 条样本：任何 `auto_mode` 下都被拒 |
+| 单测 | `risk_judge`（命令）：输入白名单只含命令/cwd/workspace 说明（A24）；非法 JSON 与超时 → `high`（A26）；LLM 判 `low` 但命中种子 → 升 `med`（A25） |
 | 单测 | gateway 的截断、环境变量剥离（断言子进程读不到 `*_API_KEY`） |
 | 集成 | 派生 → 执行 → 回收；并发上限按设置生效；取消；深度拒绝 |
-| 集成 | `judged` 必须产出判断理由；理由为空时拒绝执行（不能默默放行） |
-| 集成 | `auto_mode` 开/关：开时 dangerous 不弹窗、关后恢复弹窗；开关状态入账 |
+| 集成 | 独立判定必须产出理由与危险说明；字段缺失时按 `high` 处理（fail-safe） |
+| 集成 | `auto_mode` 开/关：开时 `med` 不弹窗、`high` 仍弹；开关状态入账 |
 | 集成 | 带 shell 的 worker：未审核 spawn 必须失败；`risk=high` 不带 `confirm_high_risk` 必须拒绝（A22） |
 | 单测 | 独立判定的请求体只含 `WorkerSpec`，断言不含主代理对话/理由字段（A23） |
 | 单测 | 预算未配置时：任何派工都不得返回「预算不足」；配置上限时才触发止损（A6 两段） |
@@ -410,7 +415,7 @@ run(kind, cmd, *, timeout, cwd) →
 | 风险 | 缓解 |
 |---|---|
 | shell 被阶段 Agent 看见 | 只注册进 `SUPERVISOR_TOOLS`，不进 `ToolRegistry`；测试断言兜底 |
-| LLM 把危险命令说成「只读排查」 | 分级由确定性规则表判定，LLM 只在 judged 层决定「跑不跑」，无权改分级 |
+| LLM 把危险命令说成「只读排查」 | 独立判定输入隔离（无主代理辩解）+ 规则只升不降 + 判定失败 fail-safe 到 `high` |
 | 自动模式被长期开着遗忘 | 开关状态常驻显示 + 每次开启写账本 + 会话结束自动复位为关 |
 | 临时 worker 无限派生 / 吃掉预算 | 并发上限可配（默认 6）；子代理开销不设独立上限但全额计入管线预算，成本条单列显示 |
 | Python 逃逸 | 文档层面明确「审计边界 ≠ 安全边界」；不可信代码一律要求容器；默认禁网 |
