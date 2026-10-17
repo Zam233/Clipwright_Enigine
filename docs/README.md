@@ -35,4 +35,7 @@
 | [需求分析 Agent](requirements_agent.md) | Requirements Agent 设计与职责 |
 | [整数时间基座](timebase.md) | 整数 tick + 有理数帧率：换算纪律、时间码、漂移校正与切点的接线点 |
 | [素材内容理解与 NL 落位计划](content-understanding-plan-2026-09-14.md) | 内容索引（镜头级）→ 检索 → NL 意图 → 落位校验：让 Agent 知道在剪什么、用户说人话就能达到目的 |
+| [调度中枢方案（v1.4/v1.5）](supervisor-dev-plan-2026-10-17.md) | 确定性骨架 + 调度层：账本 / 归因 / 策略阶梯 / 子代理 / 执行网关 |
+| [**全 Agent 化 PRD（路线 C，草案）**](agent-native-prd-2026-10-17.md) | 主 agent 直接编排工具与技能，6 阶段管线降级为它可调用的能力；含代价、分期 C0–C7、验收 A1–A13、8 个待决问题 |
+
 | [内容理解基准集与指标](content-understanding-benchmark.md) | R1–R10 的基准集构成、量化指标（含门槛 vs 实测）、**每个数字的验证边界**；一键复跑 `scripts/verify_all_metrics.py` |
