@@ -337,6 +337,19 @@ v1.1 追加：`subagent_start` / `subagent_progress` / `subagent_end` / `exec`�
 | SSE 事件 | `add_event(..., "ledger_entry")` | 前端可按 type 分流 |
 | 测试 | `tests/test_episode_ledger.py` | **9 passed** |
 
+### B2 — 已完成
+
+| 交付 | 位置 | 验证 |
+|---|---|---|
+| 归因（规则 R1–R4） | `services/attribution.py` | R1 资源缺失 → 不可修复；R3 上游申报；R2 需症状参照（不硬判）；R4 类别表兜底（低置信） |
+| LLM 兜底 | `attribution.attribute_with_llm` | 仅规则全不命中且有证据时调用；`use_flash`、超时 15s、失败回退规则结论并标 `source=fallback` |
+| 诊断书（模板化，无 LLM） | `services/diagnosis.py` | conclusion/problems/evidence/attempted/suggestions/cost；不可修复时给「接受降级」，重试过的给「换模型」 |
+| 影子模式 | `config.supervisor_mode = off/shadow/on`（默认 off） | `_shadow_analyze` 在 `run()` 与 `run_from_agent()` 末尾调用；off 时零开销；**只写 shared_data + trace，不改执行** |
+| 配置元数据 | `config_schema.py`（新增两行 `_ROWS`） | Settings 覆盖面测试要求每个字段都有 UI 元数据，已补齐（挂 `pipeline` 组） |
+| 端点 | `api/supervisor.py` | `GET /{pid}/attribution`（`?llm=true` 才启用兜底）、`GET /{pid}/diagnosis`；内存未命中回查 Mongo |
+| SSE | `add_event(..., "attribution" / "diag_report")` | 前端按 type 分流 |
+| 测试 | `tests/test_attribution_diagnosis.py` | **23 passed**（含端点与 LLM 兜底的两条反例：规则命中不调 LLM、兜底失败回退） |
+
 ### B1 起的前置条件
 
 - F9 已提供 `failure` / `degradations`，账本（B1）只需把 `_run_agent` 单点处的结果落成 `LedgerEntry`；

@@ -79,6 +79,14 @@ class Settings(BaseSettings):
     llm_flash_api_key: Optional[str] = None
     llm_flash_base_url: Optional[str] = None
 
+    # --- 调度中枢（PRD v1.4 / 开发计划 B2 起）---
+    # off    = 关闭（默认）：行为与改造前完全一致
+    # shadow = 影子：只记录归因与诊断书，不改执行（B2 的验收状态）
+    # on     = 启用：后续批次（B3+）才允许真正派工/执行
+    supervisor_mode: Literal["off", "shadow", "on"] = "off"
+    # 归因/诊断的兜底 LLM 调用超时（秒）；规则命中时不调用 LLM
+    supervisor_attribution_timeout_sec: float = 15.0
+
     # --- 服务 ---
     host: str = "0.0.0.0"
     port: int = 8080

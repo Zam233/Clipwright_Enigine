@@ -45,3 +45,28 @@ class LedgerEntry(BaseModel):
     usage: dict[str, Any] = Field(default_factory=dict, description="input/output tokens 等")
     duration_ms: int = Field(default=0)
     ts: datetime = Field(default_factory=_utcnow)
+
+
+class Attribution(BaseModel):
+    """归因结论（PRD F2）——「这次失败该怪谁」。"""
+
+    primary_stage: str = Field(default="", description="主责任阶段；空 = 未能定位")
+    upstream_chain: list[str] = Field(default_factory=list, description="连带的上游阶段（按执行序）")
+    evidence_refs: list[str] = Field(default_factory=list, description="证据：账本条目 id")
+    confidence: str = Field(default="low", description="high / mid / low")
+    unrepairable: bool = Field(default=False, description="资源确实不存在等，重试无意义")
+    reason: str = Field(default="", description="人话理由（诊断书直接用）")
+    source: str = Field(default="rule", description="rule / llm / fallback")
+
+
+class DiagnosisReport(BaseModel):
+    """诊断书（PRD F5）——给人看的一页结论。"""
+
+    conclusion: str = Field(default="")
+    problems: list[dict[str, Any]] = Field(default_factory=list)
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    attempted: list[dict[str, Any]] = Field(default_factory=list)
+    suggestions: list[dict[str, Any]] = Field(default_factory=list)
+    cost: dict[str, Any] = Field(default_factory=dict)
+    mode: str = Field(default="shadow", description="生成时的调度中枢模式（shadow/on）")
+    pipeline_id: str = Field(default="")

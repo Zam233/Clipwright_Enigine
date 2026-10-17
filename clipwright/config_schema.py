@@ -205,6 +205,11 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
     ("mongo_uri", "service", "MongoDB URI", True, False, "可能含凭据；连接在启动时建立，需重启"),
     ("mongo_db_name", "service", "MongoDB 库名", False, False, "需重启"),
     ("llm_monthly_token_budget", "service", "LLM 月度预算", False, True, "全局 token 预算；0 = 不限"),
+    # ── 调度中枢（PRD v1.4 / B2）──
+    ("supervisor_mode", "pipeline", "调度中枢模式", False, True,
+     "off = 关闭（默认）；shadow = 只记录归因与诊断书不改执行；on = 启用派工（B3+）"),
+    ("supervisor_attribution_timeout_sec", "pipeline", "归因兜底超时(秒)", False, True,
+     "规则不命中时的 LLM 兜底超时；失败回退规则结论"),
 ]
 
 

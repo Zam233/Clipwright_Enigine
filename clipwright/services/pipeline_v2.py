@@ -619,11 +619,56 @@ class PipelineOrchestratorV2:
             clear_cancel(pid)
             logger.info("PipelineV2 取消: %s", pid)
 
+        # ── B2 影子秘书：只记录归因与诊断书，不改变执行 ──
+        # mode=off（默认）时零开销；shadow 与 on 的区别在 B3 才出现。
+        await self._shadow_analyze(state, pid)
+
         # Layer 1: 持久化最终状态（在线程池执行）
         await loop.run_in_executor(None, self._persist_state_serial, state, state.status.value, error_category)
         # Run registry: 记录运行结束（成功/失败共用，含 agent 跨度）
         record_run_complete(pid, state.status.value, state.steps)
         return state
+
+    @staticmethod
+    def _quality_issues_of(state) -> list:
+        """取最近一次质检 issues（影子分析用；没有则空列表）。"""
+        for step in reversed(state.steps or []):
+            if getattr(step, "agent_name", "") != "quality":
+                continue
+            result = getattr(step, "result", None) or {}
+            issues = result.get("issues")
+            if issues:
+                return list(issues)
+        return []
+
+    async def _shadow_analyze(self, state, pid: str) -> None:
+        """B2：影子模式下的归因 + 诊断书（只写 shared_data 与 trace）。"""
+        try:
+            from clipwright.config import settings
+
+            mode = getattr(settings, "supervisor_mode", "off")
+            if mode == "off":
+                return
+
+            from clipwright.services.attribution import attribute_with_llm
+            from clipwright.services.diagnosis import build_diagnosis
+            from clipwright.services.episode_ledger import get_ledger
+
+            ledger = get_ledger(pid)
+            issues = self._quality_issues_of(state)
+            attr = await attribute_with_llm(ledger, issues=issues)
+            report = build_diagnosis(
+                ledger, attribution=attr, issues=issues, mode=mode, pipeline_id=pid,
+            )
+            state.shared_data["attribution"] = attr.model_dump(mode="json")
+            state.shared_data["diagnosis"] = report.model_dump(mode="json")
+            add_event(pid, "supervisor", "attribution",
+                      f"归因: {attr.primary_stage or '未定位'}（{attr.confidence}/{attr.source}）",
+                      attr.model_dump(mode="json"))
+            add_event(pid, "supervisor", "diag_report", report.conclusion,
+                      {k: report.model_dump(mode="json").get(k) for k in ("suggestions", "cost")})
+        except Exception as e:  # noqa: BLE001 — 影子分析不得影响管线终态
+            logger.warning("影子分析失败（忽略）: %s", e)
 
     async def _self_heal_quality(
         self, state: PipelineState, result_data: dict, persona_config: dict, plugin,
@@ -923,6 +968,8 @@ class PipelineOrchestratorV2:
         if state.status != PipelineStatus.FAILED:
             state.status = PipelineStatus.COMPLETED
         state.updated_at = datetime.now(timezone.utc)
+        # B2：retry 与首跑对等——影子归因与诊断书同样产出
+        await self._shadow_analyze(state, pid)
         # 修复：retry 与 run() 对等——终态持久化 + 运行历史记录
         # （旧实现只写内存结果，重启后 Mongo 停留在失败快照且 /runs 无记录）
         try:
