@@ -219,7 +219,10 @@ def build_executor(
             # 关键语义：**没执行**。必须让模型知道它现在只有「等」，不能假装拿到了结果
             return {
                 "status": "pending_approval",
-                "note": "该命令需要用户授权，尚未执行。请先用只读手段继续，或在结论里说明等待授权。",
+                "note": (
+                    "该命令需要用户授权，尚未执行。"
+                    "请先用只读手段继续，或在结论里说明等待授权。"
+                ),
             }
         if status == "rejected":
             return {"status": "rejected", "reason": str(out.get("reason", ""))}

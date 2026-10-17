@@ -36,7 +36,12 @@ _SYSTEM = (
 
 
 def _fail_safe(reason: str) -> dict[str, Any]:
-    return {"risk": "high", "reasons": [reason], "suggested_action": "人工确认", "source": "fallback"}
+    return {
+        "risk": "high",
+        "reasons": [reason],
+        "suggested_action": "人工确认",
+        "source": "fallback",
+    }
 
 
 #: 判定输入白名单——只有这些键允许进入请求体（A23/A24 的可检验形式）
@@ -62,8 +67,6 @@ async def assess(spec_blob: dict[str, Any], *, timeout: float | None = None) -> 
     )
 
     try:
-        import json
-
         from clipwright.services.llm import LLMService
         from clipwright.services.model_router import risk_judge_route, use_route
 

@@ -259,7 +259,9 @@ async def run_python(
     )
 
 
-async def approve(pipeline_id: str, approval_id: str, *, confirm_high_risk: bool = False) -> dict[str, Any]:
+async def approve(
+    pipeline_id: str, approval_id: str, *, confirm_high_risk: bool = False,
+) -> dict[str, Any]:
     item = (_PENDING.get(pipeline_id) or {}).pop(approval_id, None)
     if item is None:
         raise KeyError(f"待授权记录不存在: {approval_id}")

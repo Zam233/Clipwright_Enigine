@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Sequence
+from typing import Iterable
 from uuid import uuid4
 
 from clipwright.schema.supervisor import Attribution, SupervisorDecision

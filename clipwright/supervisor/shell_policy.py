@@ -35,7 +35,9 @@ DANGER_SEEDS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(rm|del|erase|Remove-Item|rmdir)\b", re.IGNORECASE),
     re.compile(r"\b(mv|move|Move-Item|copy|cp)\b", re.IGNORECASE),
     re.compile(r"\b(pip|npm|apt|apt-get|choco|winget)\s+install\b", re.IGNORECASE),
-    re.compile(r"\b(start|uvicorn|node|python\s+-m\s+http)\b.*(serve|server|--port)", re.IGNORECASE),
+    re.compile(
+        r"\b(start|uvicorn|node|python\s+-m\s+http)\b.*(serve|server|--port)", re.IGNORECASE,
+    ),
     re.compile(r"\b(chmod|chown|icacls|attrib)\b", re.IGNORECASE),
     re.compile(r"(curl|wget|Invoke-WebRequest)\b.*\|\s*(bash|sh|python)", re.IGNORECASE),
     re.compile(r">\s*[^\s|&]+", re.IGNORECASE),  # 输出重定向覆盖文件

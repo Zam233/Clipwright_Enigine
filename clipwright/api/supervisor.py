@@ -316,7 +316,10 @@ async def post_cancel_subagent(
     if not tracker.cancel(subagent_id):
         raise HTTPException(
             status_code=409,
-            detail=f"子代理不可取消或已结束（status={node.status}, cancellable={node.cancellable}）",
+            detail=(
+                "子代理不可取消或已结束"
+                f"（status={node.status}, cancellable={node.cancellable}）"
+            ),
         )
     return {
         "pipeline_id": pipeline_id,
