@@ -340,10 +340,10 @@ clipwright/
 │   ├── worker_registry.py         # 临时 worker 规格与句柄（内存，按 pipeline 归属）
 │   ├── spawn.py                   # E1–E3：派生 / 查询 / 列出 / 取消子代理
 │   ├── gateway.py                 # E4–E5：执行网关（分级 / 沙盒 / 审计 / 拒绝模式）
-│   └── shell_policy.py            # 命令分级规则表（readonly / mutating / destructive）
-├── api/supervisor.py              # 扩：子代理列表·状态·取消、执行日志、授权端点
-└── config.py                      # + max_concurrent_subagents / exec_timeout_sec /
-                                   #   exec_allow_network / exec_mode(off|gated|auto)
+│   └── shell_policy.py            # 命令分级规则表（readonly / judged / dangerous + 硬底线）
+├── api/supervisor.py              # 扩：子代理列表·状态·取消、执行日志、授权端点、auto-mode 开关
+└── config.py                      # + max_concurrent_subagents（设置项，可配）
+                                   # + exec_timeout_sec / exec_allow_network / auto_mode（默认 false）
 ```
 
 ### 11.2 B7 子代理观测（F12）
@@ -365,26 +365,35 @@ clipwright/
 
 ```
 run(kind, cmd, *, timeout, cwd) →
-  1. shell_policy.classify(cmd)   → readonly / mutating / destructive
-  2. 档位校验（exec_mode: off|gated|auto，默认 gated）；destructive 恒拒
-  3. asyncio.create_subprocess_shell(cwd=workspace, env=白名单, 墙钟上限, 输出截断)
-  4. 写 ExecRecord 入账本 + add_event(pid, "supervisor", "exec", ...)
-  5. 超时/被杀 → 记 timeout，返回已捕获的部分输出
+  1. shell_policy.classify(cmd) → readonly / judged / dangerous   # 确定性规则表，不交给 LLM
+  2. 硬底线检查 → 命中「读凭据 / 不可逆系统破坏」直接拒并记账（任何模式都不可授权）
+  3. 分级处置：
+       readonly → 直接执行
+       judged   → 秘书 LLM 判断「是否必要且安全」，理由必填入账；不弹窗
+       dangerous→ 需用户一次性授权；若 auto_mode 开启则免弹窗直接执行（仍全量审计）
+  4. asyncio.create_subprocess_shell(cwd=workspace, env=白名单, 墙钟上限, 输出截断)
+  5. 写 ExecRecord 入账本 + add_event(pid, "supervisor", "exec", ...)
+  6. 超时/被杀 → 记 timeout，返回已捕获的部分输出
 ```
 
+- **关键分工**：「这条命令危不危险」由 `shell_policy` 的**确定性规则表**判定，**不由 LLM 判定**；LLM 只决定「这条已被判为 judged 的命令，现在该不该跑」。否则 prompt 一劝，`del` 就能被说成「只读排查」。
 - `run_python`：脚本落 `workspace/.supervisor/scripts/{uuid}.py`，用 `python -I` 子进程执行（隔离用户 site-packages）；默认禁网，`exec_allow_network=true` 才放开。
-- **必须拒绝并留痕**：`rm -rf /`、`format`、`shutdown`、`reg add|delete`、`net user`、`sudo`、写系统盘、读 `~/.ssh` 或 `.env`、`curl ... | bash` 管道。
+- **硬底线（仅两类，任何模式不可授权）**：① 读取凭据（`.env` / `~/.ssh` / keychain）；② 不可逆系统破坏（格式化系统盘、`shutdown`/`reboot`、删除系统级注册表项）。
+- **其余 dangerous 走用户授权**（默认焦点在「拒绝」）；`auto_mode` 由用户在前端开关，开启后免弹窗但审计不减免，状态入账。
+- 并发子代理上限读设置项 `max_concurrent_subagents`（默认 6）；子代理开销**不设独立上限**，全额计入管线预算。
 - **不得**把 shell 注册进 `ToolRegistry`——`StructureAgent` 的 `with_tools` 走 `list_agent_callable()`，会把 shell 一起暴露给阶段 Agent。
-- 退出标准：PRD A15 / A16 通过。
+- 退出标准：PRD A15 / A16 / A20 / A21 通过。
 
 ### 11.5 测试
 
 | 类型 | 内容 |
 |---|---|
-| 单测 | `shell_policy.classify` 至少 30 条样本（含 `rm -rf ./x` 这类易误判写法、绕过写法） |
-| 单测 | gateway 的拒绝、截断、环境变量剥离（断言子进程读不到 `*_API_KEY`） |
-| 集成 | 派生 → 执行 → 回收；并发上限；取消；深度拒绝 |
-| 安全 | 12 类危险命令全部被拒且留痕；`.env` / `~/.ssh` 读取被拒 |
+| 单测 | `shell_policy.classify` 至少 40 条样本：readonly 常见命令、judged 灰区、dangerous 边界、易误判写法（`rm -rf ./x` vs `rm -rf /`）、绕过写法（`curl ... \| bash`、base64 解码执行） |
+| 单测 | 硬底线两类各 5 条样本：任何 `auto_mode` 下都被拒 |
+| 单测 | gateway 的截断、环境变量剥离（断言子进程读不到 `*_API_KEY`） |
+| 集成 | 派生 → 执行 → 回收；并发上限按设置生效；取消；深度拒绝 |
+| 集成 | `judged` 必须产出判断理由；理由为空时拒绝执行（不能默默放行） |
+| 集成 | `auto_mode` 开/关：开时 dangerous 不弹窗、关后恢复弹窗；开关状态入账 |
 | 兼容 | `off` 模式下 gateway 不注册任何工具：断言 `ToolRegistry.list_agent_callable()` 不含 exec 类 |
 
 ### 11.6 风险
@@ -392,7 +401,9 @@ run(kind, cmd, *, timeout, cwd) →
 | 风险 | 缓解 |
 |---|---|
 | shell 被阶段 Agent 看见 | 只注册进 `SUPERVISOR_TOOLS`，不进 `ToolRegistry`；测试断言兜底 |
-| 临时 worker 无限派生 / 吃掉预算 | 并发上限 + 每轮派生数上限 + 子代理总开销 ≤ 管线预算 30% |
+| LLM 把危险命令说成「只读排查」 | 分级由确定性规则表判定，LLM 只在 judged 层决定「跑不跑」，无权改分级 |
+| 自动模式被长期开着遗忘 | 开关状态常驻显示 + 每次开启写账本 + 会话结束自动复位为关 |
+| 临时 worker 无限派生 / 吃掉预算 | 并发上限可配（默认 6）；子代理开销不设独立上限但全额计入管线预算，成本条单列显示 |
 | Python 逃逸 | 文档层面明确「审计边界 ≠ 安全边界」；不可信代码一律要求容器；默认禁网 |
 
 
