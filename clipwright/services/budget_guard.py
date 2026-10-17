@@ -75,11 +75,27 @@ def _calls(pipeline_id: str) -> list[dict[str, Any]]:
 
 
 def _cost(call: dict[str, Any], prices: dict[str, dict[str, float]]) -> float:
-    model = str(call.get("model") or "")
-    provider = str(call.get("provider") or "")
-    price = prices.get(f"{provider}/{model}") or prices.get(model) or {"in": 0.0, "out": 0.0}
-    tin = int(call.get("input_tokens") or 0)
-    tout = int(call.get("output_tokens") or 0)
+    return cost_of(
+        str(call.get("provider") or ""),
+        str(call.get("model") or ""),
+        int(call.get("input_tokens") or 0),
+        int(call.get("output_tokens") or 0),
+        prices,
+    )
+
+
+def cost_of(
+    provider: str,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    prices: Optional[dict[str, dict[str, float]]] = None,
+) -> float:
+    """一次调用的美元成本（单价缺失按 0 计——宁可少算也不阻断）。"""
+    table = prices if prices is not None else _prices()
+    price = table.get(f"{provider}/{model}") or table.get(model) or {"in": 0.0, "out": 0.0}
+    tin = max(0, int(input_tokens or 0))
+    tout = max(0, int(output_tokens or 0))
     return (tin / 1000.0) * float(price.get("in") or 0.0) + (tout / 1000.0) * float(
         price.get("out") or 0.0
     )

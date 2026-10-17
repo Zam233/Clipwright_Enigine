@@ -105,7 +105,7 @@ async def _sample_dominant_colors(video_path: str, frames: int = 8) -> list[list
                     data = fp.read()
                 if len(data) >= 54:
                     b, g, r_ = data[54], data[55], data[56]
-                    colors.append([int(r_), int(g_), int(b)])
+                    colors.append([int(r_), int(g), int(b)])
     finally:
         import shutil
         shutil.rmtree(tmpdir, ignore_errors=True)

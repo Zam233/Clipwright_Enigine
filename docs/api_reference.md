@@ -125,6 +125,36 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 | `POST /api/pipeline/predict-script` | 分析文稿并推荐配置（请求体：`PredictScriptRequest`）。返回字数、句数、估算时长、推荐 Persona、推荐类型插件、情绪基调、关键主题 |
 | `POST /api/pipeline/predict-material` | 分析素材文件并推荐使用方式（请求体：`PredictMaterialRequest`）。返回时长、分辨率、方向、是否有视频/音频、用途建议 |
 
+## 调度中枢（Supervisor，v1.4）
+
+> 实现：`clipwright/api/supervisor.py`（`router` + `admin_router`）。
+> `/api/pipeline` 前缀下的这些端点**不属于** `pipeline.py`，注意别在那边找。
+
+| 端点 | 说明 |
+|------|------|
+| `GET /api/pipeline/{pid}/ledger?stage=` | 账本（每条阶段尝试的判定/失败类别/降级/用量/耗时）；未知管线返回 `found=false` |
+| `GET /api/pipeline/{pid}/attribution?llm=` | 归因（规则 R1–R4 优先，`llm=true` 才允许规则不命中时走兜底判定） |
+| `GET /api/pipeline/{pid}/diagnosis` | 诊断书（模板化，无 LLM）：结论/问题/证据/已尝试/建议/成本 |
+| `GET /api/pipeline/{pid}/decisions` | 调度决策序列 + `accepted_degraded` |
+| `GET /api/pipeline/{pid}/budget` | 预算快照（未配置预算 → `level=unlimited`、`ratio=null`，**不阻断**） |
+| `POST /api/pipeline/{pid}/dispatch` | 人工改派：`{target_stage, reason, issues?, auto_retry?}` → 登记 + **真跑一次重跑**；返回 `retry:{retried, reason}` |
+| `POST /api/pipeline/{pid}/accept-suggestion` | 执行诊断建议：`{suggestion_id?, action, target_stage?}`。`accept_degraded` 只登记；`retry_with_model`/`redo_stage` 触发重跑；`manual` 不执行 |
+| `GET /api/pipeline/{pid}/subagents` | 子代理树（含状态/模型/耗时/成本）；空树不是 404 |
+| `POST /api/pipeline/{pid}/subagents` | 派生临时 worker（带 `run_shell`/`run_python` 时返回 `pending_review`，未审核不实例化） |
+| `POST /api/pipeline/{pid}/subagents/{sid}/cancel` | 取消子代理（不存在 404 / 已结束或不可取消 409） |
+| `POST /api/pipeline/{pid}/exec` | 请求执行：`{kind: shell\|python, command\|code, cwd?, timeout_sec?}` → `done/failed/pending_approval/rejected` |
+| `GET /api/pipeline/{pid}/exec` | 执行日志（命令/风险等级/理由/退出码/耗时/输出尾部） |
+| `GET /api/pipeline/{pid}/exec/pending-approvals` | 待授权命令队列 |
+| `POST /api/pipeline/{pid}/exec/{aid}/approve\|reject` | 授权 / 拒绝（high、critical 需 `confirm_high_risk=true`） |
+| `GET\|PUT /api/pipeline/{pid}/exec/auto-mode` | 自动模式开关（只减免 `med`，`high`/`critical` 仍弹） |
+| `GET /api/supervisor/workers/pending-review` | 带执行权限的待审 worker（含独立 LLM 风险结论） |
+| `POST /api/supervisor/workers/{wid}/review` | 人工审核 `{approve, confirm_high_risk}` |
+| `GET /api/supervisor/tools` | 主代理可授予的工具全集、需审核的工具、`executable`（哪些真有执行通道） |
+| `GET\|PUT /api/supervisor/routes` | 模型路由表 + provider 白名单 |
+| `GET\|PUT /api/supervisor/mode` | 调度中枢模式 `off\|shadow\|on`（默认 off） |
+
+执行网关的三条不可协商规则：硬底线（读凭据 / 不可逆破坏）**任何模式都拒绝且不可授权**；风险等级由确定性规则与**独立 LLM 判定**取 `max()`（规则只升不降，判定失败一律升 `high`）；每条执行（含被拒/超时）都写 `ExecRecord` 并入 trace。
+
 ### `GET /api/pipeline/runs`
 
 列出最近管线运行记录（新增端点，供前端 Pipeline 管理页使用）。

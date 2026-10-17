@@ -63,10 +63,12 @@ class WhisperTranscribeTool(BaseTool):
                 logger.warning("转写短语打包失败（忽略）: %s", exc)
 
             if output_format == "srt":
+                from clipwright.services.subtitle import _to_srt_time
+
                 lines = []
                 for i, seg in enumerate(segments, 1):
-                    start = _srt_time(seg["start"])
-                    end = _srt_time(seg["end"])
+                    start = _to_srt_time(float(seg["start"]))
+                    end = _to_srt_time(float(seg["end"]))
                     lines.append(f"{i}\n{start} --> {end}\n{seg['text']}\n")
                 output["srt"] = "\n".join(lines)
 

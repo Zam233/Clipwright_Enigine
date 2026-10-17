@@ -61,6 +61,16 @@
 | `/api/webhook` | webhook.py | 8 | GET `/events` · GET `/list` · POST `/register` · DELETE `/{webhook_id}` · PUT `/{webhook_id}/toggle` · POST `/{webhook_id}/test` · POST `/notify` · GET `/deliveries` |
 | **合计** | **33 个 router** | **225** | |
 
+### 1.1 调度中枢路由（`api/supervisor.py`，v1.4 新增）
+
+| 前缀 | 路由数 | 端点 | 客户端 |
+|---|---|---|---|
+| `/api/pipeline`（supervisor 部分） | 13 | GET `/{pid}/ledger` · GET `/{pid}/attribution` · GET `/{pid}/diagnosis` · GET `/{pid}/decisions` · GET `/{pid}/budget` · POST `/{pid}/dispatch` · POST `/{pid}/accept-suggestion` · GET `/{pid}/subagents` · POST `/{pid}/subagents` · POST `/{pid}/subagents/{sid}/cancel` · POST `/{pid}/exec` · GET `/{pid}/exec` · GET `/{pid}/exec/pending-approvals` + POST `/exec/{aid}/approve|reject` + GET/PUT `/exec/auto-mode` | `supervisorApi` |
+| `/api/supervisor`（admin） | 5 | GET `/workers/pending-review` · POST `/workers/{wid}/review` · GET `/tools` · GET/PUT `/routes` · GET/PUT `/mode` | `supervisorApi` |
+
+> 这两组端点与 `pipeline.py` 共用 `/api/pipeline` 前缀，但**归属不同文件**：`api/supervisor.py` 注册的 `router` 与 `admin_router`。
+> 「改派 / 建议」不是只登记：`POST /dispatch` 与 `POST /accept-suggestion` 会走 `api/pipeline.start_agent_retry` 真跑一次重跑，跑不起来时返回 `retry.retried=false` + 原因。
+
 ---
 
 ## 2. 前端客户端清单（② 客户端 inventory）
@@ -93,6 +103,7 @@
 | `vision.ts` | `visionApi` | 2 | `/api/vision`（2/2） |
 | `market.ts` | `marketApi` | 8 | `/api/market`（插件/Persona 市场安装） |
 | `client.ts` | `getApiClient` / `resetApiClient` | — | Axios 工厂（baseURL 同源/8080，SSE 见 sse.ts） |
+| `supervisor.ts` | `supervisorApi` | 22 | `/api/pipeline`（调度中枢：账本/归因/诊断书/决策/预算/改派/子代理/执行/授权）+ `/api/supervisor`（审核队列/工具/路由表/模式） |
 | `index.ts` | 聚合桶 | — | 导出全部业务模块 |
 
 ### 2.1 聚合桶导出（index.ts）

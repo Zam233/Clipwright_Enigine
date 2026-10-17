@@ -1695,7 +1695,7 @@ class RenderService:
                     _lut_s = str(_lut)
                     if (
                         _lut_s.lower().endswith(".cube")
-                        and not _re.search(r"['\":,;]", _lut_s)
+                        and not re.search(r"['\":,;]", _lut_s)
                         and Path(_lut_s).is_file()
                     ):
                         try:

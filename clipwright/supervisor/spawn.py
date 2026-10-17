@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any, Optional
 
 from clipwright.config import logger
@@ -183,6 +184,7 @@ async def _run_worker(pid: str, worker_id: str) -> dict[str, Any]:
         f"{spec.system_prompt}\n\n"
         "请完成本次任务并输出结论。只输出结论正文，不要寒暄。"
     )
+    started = time.monotonic()
     try:
         from clipwright.services.llm import LLMService
         from clipwright.services.model_router import ModelRoute, use_route
@@ -213,26 +215,94 @@ async def _run_worker(pid: str, worker_id: str) -> dict[str, Any]:
         text = str(getattr(resp, "content", "") or "")
         if not getattr(resp, "success", True):
             raise RuntimeError(f"worker LLM 调用失败: {getattr(resp, 'status_code', '?')}")
+
+        # 子代理的开销必须入账，否则「成本条单列子代理开销」（PRD F6）永远是 0：
+        # 1) 写 llm_tracker（agent_name 带 `:` 命名空间 → budget_guard 认定为子代理）；
+        # 2) 把金额与耗时写回节点，子代理树里就能看到这次排查花了多少。
+        cost_usd, duration_ms, usage = _account_usage(pid, spec, route, resp)
+        await _record_subagent_usage(pid, spec, usage)
+        if node_id:
+            tracker.update(node_id, cost_usd=cost_usd, duration_ms=duration_ms)
+
         reg.mark(worker_id, "done")
         if node_id:
-            tracker.finish(node_id, status="done", last_output=text[:500])
+            tracker.finish(node_id, status="done", last_output=text[:500],
+                           duration_ms=duration_ms)
         return {
             "worker_id": worker_id,
             "subagent_id": node_id,
             "status": "done",
             "output": text[:2000],
+            "cost_usd": cost_usd,
+            "duration_ms": duration_ms,
         }
     except Exception as e:  # noqa: BLE001 — worker 失败不影响管线
         logger.warning("临时 worker 执行失败 %s: %s", worker_id, e)
         reg.mark(worker_id, "failed")
         if node_id:
-            tracker.finish(node_id, status="failed", last_output=str(e)[:200])
+            tracker.finish(node_id, status="failed", last_output=str(e)[:200],
+                           duration_ms=int((time.monotonic() - started) * 1000))
         return {
             "worker_id": worker_id,
             "subagent_id": node_id,
             "status": "failed",
             "error": str(e)[:300],
         }
+
+
+def _account_usage(
+    pid: str, spec: WorkerSpec, route: Optional[Any], resp: Any,
+) -> tuple[float, int, dict[str, Any]]:
+    """把一次 worker LLM 调用的用量算成 (花费, 耗时, 用量明细)。
+
+    只做纯计算；落库由 `_record_subagent_usage` 在事件循环里 `await` 完成。
+    """
+    from clipwright.config import settings
+    from clipwright.services.budget_guard import cost_of
+
+    usage = getattr(resp, "usage", None)
+    in_tok = int(getattr(usage, "input_tokens", 0) or 0) if usage else 0
+    out_tok = int(getattr(usage, "output_tokens", 0) or 0) if usage else 0
+    provider = spec.provider or str(getattr(route, "provider", "") or "") or str(
+        getattr(settings, "llm_provider", "") or ""
+    )
+    model = spec.model or str(getattr(route, "model", "") or "") or str(
+        getattr(settings, "llm_model", "") or ""
+    )
+    duration_ms = int(float(getattr(resp, "duration_ms", 0) or 0))
+    cost = cost_of(provider, model, in_tok, out_tok)
+    return round(cost, 6), duration_ms, {
+        "provider": provider,
+        "model": model,
+        "input_tokens": in_tok,
+        "output_tokens": out_tok,
+        "duration_ms": duration_ms,
+    }
+
+
+async def _record_subagent_usage(
+    pid: str, spec: WorkerSpec, usage: dict[str, Any],
+) -> None:
+    """把子代理的这次调用写进 llm_tracker（失败不影响 worker 成败）。"""
+    if not (usage.get("input_tokens") or usage.get("output_tokens")):
+        return
+    try:
+        from clipwright.services.llm_tracker import record_llm_call
+
+        await record_llm_call(
+            pipeline_id=pid,
+            # 命名空间约定：`supervisor:角色` —— budget_guard 据此单列子代理开销
+            agent_name=f"supervisor:{spec.role}"[:80],
+            model=str(usage.get("model") or ""),
+            provider=str(usage.get("provider") or ""),
+            input_tokens=int(usage.get("input_tokens") or 0),
+            output_tokens=int(usage.get("output_tokens") or 0),
+            duration_ms=float(usage.get("duration_ms") or 0),
+            prompt_summary=spec.role[:80],
+            status="success",
+        )
+    except Exception as e:  # noqa: BLE001 — 记账失败不得让 worker 失败
+        logger.warning("子代理用量记账失败 %s: %s", pid, e)
 
 
 def worker_tool_matrix() -> dict[str, Any]:

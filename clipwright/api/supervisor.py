@@ -206,16 +206,45 @@ class DispatchOrderBody(BaseModel):
     target_stage: str = Field(description="要重做的核心阶段")
     reason: str = Field(default="", description="人工改派理由（入账留痕）")
     issues: list[dict[str, Any]] = Field(default_factory=list)
+    auto_retry: bool = Field(
+        default=True,
+        description="是否立刻按工单重跑该阶段（false=只登记，稍后由调用方触发）",
+    )
+
+
+async def _try_retry(pipeline_id: str, stage: str, request: Request) -> dict[str, Any]:
+    """按工单/建议真跑一次重试；失败**不抛**，把原因如实交回前端。
+
+    刻意不复用 `/retry` 端点的 HTTP 语义：调度面板要能显示「已登记但没能重跑，
+    因为 xxx」，而不是把 400/404 变成一句「请求失败」。
+    """
+    if not stage:
+        return {"retried": False, "reason": "没有指定目标阶段"}
+    try:
+        from clipwright.api.pipeline import start_agent_retry
+
+        res = await start_agent_retry(pipeline_id, stage, request)
+        return {
+            "retried": True,
+            "status": str(res.get("status", "")),
+            "message": str(res.get("message", "")),
+        }
+    except HTTPException as e:
+        return {"retried": False, "reason": str(e.detail)}
+    except Exception as e:  # noqa: BLE001 — 重试失败不得影响工单登记
+        logger.warning("调度重试启动失败 %s/%s: %s", pipeline_id, stage, e)
+        return {"retried": False, "reason": f"{type(e).__name__}: {e}"}
 
 
 @router.post("/{pipeline_id}/dispatch")
 async def post_pipeline_dispatch(
     pipeline_id: str, payload: DispatchOrderBody, request: Request,
 ) -> dict:
-    """人工改派工单（PRD F7）。
+    """人工改派工单（PRD F7）：校验 → 记录 → 留痕 → **按工单重跑**。
 
-    B5 范围：**校验 + 记录 + 留痕**。真正的执行由管线在自愈/重试时消费这些工单
-    （返回 `requires_retry=true` 提示调用方走 retry 端点触发）。
+    注意重跑是真的跑（走 `start_agent_retry`，与 `/retry` 端点同一条路径）。
+    跑不起来（管线不在内存、目标阶段没有前置成功结果、已在跑）时返回
+    `retry.retried=false` + 原因，工单仍然入账——用户可以稍后重试，不会白填理由。
     """
     from clipwright.agents.registry import CORE_AGENT_NAMES
     from clipwright.api.pipeline import _enforce_pipeline_owner, _pipeline_results
@@ -249,23 +278,72 @@ async def post_pipeline_dispatch(
             orders.append(order)
     add_event(pipeline_id, "supervisor", "dispatch",
               f"人工改派 → {payload.target_stage}：{payload.reason[:80]}", order)
+
+    retry_info: dict[str, Any] = {"retried": False, "reason": "未请求自动重跑"}
+    if payload.auto_retry:
+        retry_info = await _try_retry(pipeline_id, payload.target_stage, request)
     return {
         "pipeline_id": pipeline_id,
         "order": order,
         "accepted": True,
-        "requires_retry": True,
+        "requires_retry": not retry_info.get("retried", False),
+        "retry": retry_info,
     }
+
+
+class SuggestionBody(BaseModel):
+    """诊断书建议（PRD F7）。`action` 为空时按「接受降级」处理（兼容旧调用）。"""
+
+    suggestion_id: str = Field(default="")
+    action: str = Field(default="accept_degraded")
+    target_stage: str = Field(default="")
 
 
 @router.post("/{pipeline_id}/accept-suggestion")
 async def post_accept_suggestion(
-    pipeline_id: str, request: Request, suggestion_id: str = "",
+    pipeline_id: str, request: Request, payload: SuggestionBody | None = None,
+    suggestion_id: str = "",
 ) -> dict:
-    """接受降级 / 一键执行建议（PRD F7）。B5 只处理「接受降级」。"""
+    """执行诊断书建议：接受降级 / 换模型重跑 / 重做某阶段（PRD F7）。
+
+    - `accept_degraded`（默认）：只登记「已接受降级」，不动产物；
+    - `retry_with_model` / `redo_stage`：按 `target_stage` 真跑一次重试；
+    - `manual`：不做事，返回 `accepted=false` 并说明需要人工处理。
+    """
     from clipwright.api.pipeline import _enforce_pipeline_owner, _pipeline_results
     from clipwright.services.trace import add_event
 
+    body = payload or SuggestionBody()
+    sid = body.suggestion_id or suggestion_id
+    action = (body.action or "accept_degraded").strip()
     _enforce_pipeline_owner(request, pipeline_id)
+
+    if action in ("retry_with_model", "redo_stage"):
+        retry_info = await _try_retry(pipeline_id, body.target_stage, request)
+        add_event(
+            pipeline_id, "supervisor", "warning",
+            f"按诊断建议重做 {body.target_stage}（{action}）"
+            + ("" if retry_info.get("retried") else f"：未启动（{retry_info.get('reason')}）"),
+            {"action": action, "suggestion_id": sid, **retry_info},
+        )
+        return {
+            "pipeline_id": pipeline_id,
+            "accepted": bool(retry_info.get("retried")),
+            "accepted_degraded": False,
+            "action": action,
+            "target_stage": body.target_stage,
+            "retry": retry_info,
+        }
+
+    if action == "manual":
+        return {
+            "pipeline_id": pipeline_id,
+            "accepted": False,
+            "accepted_degraded": False,
+            "action": action,
+            "reason": "该建议需要人工处理，系统不会自动执行",
+        }
+
     result = _pipeline_results.get(pipeline_id)
     if isinstance(result, dict):
         shared = result.setdefault("shared_data", {})
@@ -277,14 +355,19 @@ async def post_accept_suggestion(
                     "id": f"dec_{uuid4().hex[:8]}",
                     "strategy": "S4_accept_degraded",
                     "target_stage": "",
-                    "reason": f"人工接受降级（suggestion={suggestion_id or '-'}）",
+                    "reason": f"人工接受降级（suggestion={sid or '-'}）",
                     "allow_degrade": True,
                     "aborted": False,
                     "stage_attempts": {},
                     "mode": "manual",
                 })
     add_event(pipeline_id, "supervisor", "warning", "人工接受降级交付")
-    return {"pipeline_id": pipeline_id, "accepted_degraded": True}
+    return {
+        "pipeline_id": pipeline_id,
+        "accepted": True,
+        "accepted_degraded": True,
+        "action": "accept_degraded",
+    }
 
 
 # ── B7：子代理观测与控制 ─────────────────────────────────────

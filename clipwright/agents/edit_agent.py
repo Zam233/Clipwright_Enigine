@@ -13,6 +13,7 @@ import asyncio
 import json
 import math
 import uuid
+from pathlib import Path
 from typing import Any
 
 from clipwright.agents.base import BaseAgent

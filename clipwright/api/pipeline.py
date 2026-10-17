@@ -766,7 +766,15 @@ async def retry_agent(pipeline_id: str, agent_name: str, request: Request) -> di
     改用 PipelineOrchestratorV2.run_from_agent：从 prior_state 重放目标 agent 之前的
     成功结果，只重跑目标 agent + 下游联动 + 统一自愈质检循环（不再全量重跑）。
     目标 agent 无可用前置结果/无记录时明确 400。
+
+    实现委托 `start_agent_retry`——调度中枢（`/api/pipeline/{pid}/dispatch`、
+    诊断书建议）走的是**同一条**重试路径，避免出现「面板说会重试、实际没人跑」。
     """
+    return await start_agent_retry(pipeline_id, agent_name, request)
+
+
+async def start_agent_retry(pipeline_id: str, agent_name: str, request: Request) -> dict:
+    """启动一次「从某个 Agent 起重跑」（HTTP 端点与调度中枢共用）。"""
     _enforce_pipeline_owner(request, pipeline_id)
     # retry 与主入口同权——预算熔断检查（原路径完全绕过预算）
     from clipwright import audit as _audit

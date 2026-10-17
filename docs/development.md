@@ -264,6 +264,30 @@ pytest tests/ -v
 
 # 只运行非 e2e 测试（更快）
 pytest tests/clipwright/ -v
+```
+
+### 跨平台测试约定（CI 跑 Linux，本机多为 Windows）
+
+- **字体**：字幕/快路径的断言不许写死 `_fonts/msyh.ttc` 这类 Windows 文件名——用
+  `render._resolve_system_font()` / `_resolve_bold_font()` 的结果组期望串；确实只对 Windows
+  成立的用 `@pytest.mark.skipif(sys.platform != "win32")` 显式跳过。CI 已安装
+  `fonts-noto-cjk`（缺 CJK 字体时 PIL 渲染中文会直接失败，那是真实功能缺口）。
+- **可选依赖**：特征依赖（如 `cv2`）缺失时用 `pytest.importorskip` / `skipif` **软跳过**，
+  不要让它红——但也不要在缺依赖时假装测过。
+- **路径语义**：`Path("C:/x").is_absolute()` 在 POSIX 上是 False。判断「带盘符的绝对路径」
+  必须显式用正则，别只依赖 `Path` 语义（安全白名单曾因此在 Linux 上漏判）。
+
+### Lint 门禁分两层
+
+```bash
+# 错误类：必须为 0（语法错误、未定义名、非法比较）—— CI 阻断项
+python -m ruff check clipwright --select E9,F63,F7,F82,F823
+
+# 风格类：历史债（约 1100 条，主要是 E501 长行 / F401 未使用导入 / I001 导入排序）
+python -m ruff check clipwright --statistics
+```
+
+风格债按批次清理，不做一次性大范围格式化（巨型 diff 无法评审）。新写代码请保持零错误类问题。
 
 ## MG 动画插件开发
 

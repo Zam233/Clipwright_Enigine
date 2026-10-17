@@ -1762,7 +1762,7 @@ class DiagramRenderer:
         n_leaves = count_leaves(root)
         leaf_w = min(200, (w - 200) / max(n_leaves, 1))
         counter = [0]
-        flat: list[Node] = []
+        flat: list[node_t] = []
 
         def layout(nd: node_t, depth: int) -> float:
             nd["y"] = 190 + depth * 150

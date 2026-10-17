@@ -39,17 +39,28 @@ def _ctx(extra: dict | None = None) -> SimpleNamespace:
     return SimpleNamespace(pipeline_id="pl_spawn", extra_params=dict(extra or {}))
 
 
-def _fake_llm(monkeypatch, *, ok: bool = True, content: str = "结论：第 3 段是占位图"):
+def _fake_llm(monkeypatch, *, ok: bool = True, content: str = "结论：第 3 段是占位图",
+              usage: tuple[int, int] | None = None):
+    def _resp():  # noqa: ANN202
+        return SimpleNamespace(
+            success=ok,
+            content=content if ok else "",
+            status_code=200,
+            duration_ms=120,
+            usage=(SimpleNamespace(input_tokens=usage[0], output_tokens=usage[1])
+                   if usage else None),
+        )
+
     async def fake_ask(self, prompt, **kwargs):  # noqa: ANN001
         fake_ask.called = True
-        return SimpleNamespace(success=ok, content=content if ok else "", status_code=200)
+        return _resp()
 
     fake_ask.called = False
 
     async def fake_with_tools(self, **kwargs):  # noqa: ANN001
         fake_with_tools.called = True
         fake_with_tools.kwargs = dict(kwargs)
-        return SimpleNamespace(success=ok, content=content if ok else "", status_code=200)
+        return _resp()
 
     fake_with_tools.called = False
     fake_with_tools.kwargs = {}
@@ -379,3 +390,46 @@ def test_zero_limit_means_unlimited(monkeypatch):
 
     result = asyncio.run(sp.spawn_subagent(_ctx(), role="不受限"))
     assert result["status"] == "done"
+
+
+# ── 子代理开销入账（PRD F6：成本条必须单列）────────────────────
+
+
+def test_subagent_usage_is_accounted_and_priced(monkeypatch):
+    """子代理的 token 必须进 llm_tracker，并折算进「子代理开销」。"""
+    from clipwright.config import settings
+    from clipwright.services import budget_guard, llm_tracker
+
+    llm_tracker._llm_calls.clear()
+    monkeypatch.setattr(settings, "model_prices", {"m1": {"in": 1.0, "out": 2.0}},
+                        raising=False)
+    _fake_llm(monkeypatch, usage=(1000, 500))
+
+    result = asyncio.run(sp.spawn_subagent(
+        _ctx(), role="素材可用性核查员", provider="p", model="m1",
+    ))
+    assert result["status"] == "done"
+    # 1000 in × $1/1k + 500 out × $2/1k = 2.0
+    assert result["cost_usd"] == pytest.approx(2.0)
+    assert result["duration_ms"] == 120
+
+    snap = budget_guard.snapshot("pl_spawn")
+    assert snap["subagent_tokens"] == 1500
+    assert snap["subagentSpentUsd"] == pytest.approx(2.0)
+    # 未配置预算 → 仍然不阻断（只记账）
+    assert snap["level"] == "unlimited"
+
+    node = get_tracker("pl_spawn").get(result["subagent_id"])
+    assert node.cost_usd == pytest.approx(2.0)
+    assert node.duration_ms == 120
+
+
+def test_subagent_without_usage_does_not_fabricate_cost(monkeypatch):
+    """provider 不回 usage 时不得编造开销（宁可 0，也不虚增）。"""
+    from clipwright.services import llm_tracker
+
+    llm_tracker._llm_calls.clear()
+    _fake_llm(monkeypatch)  # usage=None
+    result = asyncio.run(sp.spawn_subagent(_ctx(), role="无用量角色"))
+    assert result["cost_usd"] == 0.0
+    assert llm_tracker.get_llm_calls("pl_spawn") == []

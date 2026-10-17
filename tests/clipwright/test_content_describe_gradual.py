@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import shutil
 import subprocess
 from pathlib import Path
@@ -125,8 +126,16 @@ class TestComposeDescription:
 
 pytestmark_ffmpeg = pytest.mark.skipif(not FFMPEG, reason="需要 ffmpeg 生成真实像素素材")
 
+#: 渐变检测靠像素直方图（cv2），缺 opencv 时函数会优雅降级成「无候选」——
+#: 那种情况下断言必然失败，所以要**软跳过**而不是让 CI 红。
+_HAS_CV2 = importlib.util.find_spec("cv2") is not None
+pytestmark_gradual = pytest.mark.skipif(
+    not FFMPEG or not _HAS_CV2,
+    reason="渐变转场检测需要 ffmpeg + opencv(cv2)",
+)
 
-@pytestmark_ffmpeg
+
+@pytestmark_gradual
 class TestGradualTransitions:
     @staticmethod
     def _rich(path: Path, kind: str = "testsrc2", seconds: float = 4.0, fps: int = 25) -> None:

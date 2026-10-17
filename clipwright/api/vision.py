@@ -49,7 +49,6 @@ async def import_image(
         raise HTTPException(status_code=400, detail=analysis["error"])
 
     # 2. 构建素材条目
-    from pathlib import Path
     p = Path(image_path)
     asset = MaterialAsset(
         id=f"vision_{p.stem}",
