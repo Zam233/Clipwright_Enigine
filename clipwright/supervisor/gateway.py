@@ -1,0 +1,241 @@
+"""执行网关（PRD F11 / 开发计划 B9）。
+
+流程（与 PRD 表一致）：
+
+1. 硬底线（确定性）→ 读凭据 / 不可逆系统破坏：直接拒绝并记账；
+2. 危险种子棘轮 → 给出最低等级（只升不降）；
+3. 独立 LLM 判风险 → 失败 fail-safe 到 high；
+4. `final = max(LLM, 棘轮)`；
+5. 分流：low 直接执行；med 在自动模式下放行，否则等授权；
+   high/critical 一律需要授权（critical 还需二次确认）；
+6. 执行：`asyncio.create_subprocess_shell`，cwd=workspace，环境变量剥离密钥，
+   墙钟超时，输出截断；
+7. 全程入账（`ExecRecord`）并写 trace。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+from datetime import datetime, timezone
+from typing import Any, Optional
+from uuid import uuid4
+
+from clipwright.config import logger
+from clipwright.supervisor import review as rv
+from clipwright.supervisor.shell_policy import hard_floor, max_level, ratchet_level
+
+_MAX_RECORDS = 500
+_SECRET_HINTS = ("API_KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL")
+
+
+# ── 内存状态（按 pipeline）────────────────────────────────────
+
+_RECORDS: dict[str, list[dict[str, Any]]] = {}
+_PENDING: dict[str, dict[str, dict[str, Any]]] = {}
+_AUTO: dict[str, bool] = {}
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def records(pipeline_id: str) -> list[dict[str, Any]]:
+    return list(_RECORDS.get(pipeline_id) or [])
+
+
+def pending_approvals(pipeline_id: str) -> list[dict[str, Any]]:
+    return list((_PENDING.get(pipeline_id) or {}).values())
+
+
+def auto_mode(pipeline_id: str) -> bool:
+    return bool(_AUTO.get(pipeline_id))
+
+
+def set_auto_mode(pipeline_id: str, enabled: bool) -> bool:
+    _AUTO[pipeline_id] = bool(enabled)
+    _trace(pipeline_id, "warning" if enabled else "info",
+           f"自动模式{'开启' if enabled else '关闭'}")
+    return _AUTO[pipeline_id]
+
+
+def clear_gateway(pipeline_id: str = "") -> None:
+    if pipeline_id:
+        _RECORDS.pop(pipeline_id, None)
+        _PENDING.pop(pipeline_id, None)
+        _AUTO.pop(pipeline_id, None)
+    else:
+        _RECORDS.clear()
+        _PENDING.clear()
+        _AUTO.clear()
+
+
+def _trace(pid: str, level: str, summary: str, detail: Any = None) -> None:
+    try:
+        from clipwright.services.trace import add_event
+
+        add_event(pid, "supervisor", "exec", summary, detail)
+    except Exception:  # noqa: BLE001
+        logger.debug("exec 事件写入失败（忽略）")
+
+
+def _record(pid: str, record: dict[str, Any]) -> dict[str, Any]:
+    bucket = _RECORDS.setdefault(pid, [])
+    bucket.append(record)
+    if len(bucket) > _MAX_RECORDS:
+        del bucket[: len(bucket) - _MAX_RECORDS]
+    return record
+
+
+def _sanitized_env() -> dict[str, str]:
+    """剥离密钥类环境变量（PRD F11 沙盒要求）。"""
+    env: dict[str, str] = {}
+    for key, value in os.environ.items():
+        upper = key.upper()
+        if any(h in upper for hint in _SECRET_HINTS for h in (hint,)):
+            continue
+        env[key] = value
+    return env
+
+
+def _truncate(text: str, limit: int = 4000) -> str:
+    return text if len(text) <= limit else text[:limit] + f"…[截断 {len(text) - limit} 字符]"
+
+
+async def _execute(pid: str, command: str, *, cwd: str, timeout_sec: float,
+                   risk: str, reasons: list[str], kind: str) -> dict[str, Any]:
+    record = {
+        "id": f"ex_{uuid4().hex[:8]}",
+        "ts": _utcnow_iso(),
+        "kind": kind,
+        "command": command,
+        "cwd": cwd,
+        "riskLevel": risk,
+        "riskReasons": reasons,
+        "autoMode": auto_mode(pid),
+        "exitCode": None,
+        "durationMs": 0,
+        "outputTail": "",
+    }
+    started = asyncio.get_event_loop().time()
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            cwd=cwd or None,
+            env=_sanitized_env(),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=float(timeout_sec))
+            record["exitCode"] = proc.returncode
+            record["outputTail"] = _truncate((out or b"").decode("utf-8", "replace"))
+        except asyncio.TimeoutError:
+            proc.kill()
+            record["outputTail"] = f"命令超时（>{timeout_sec}s），已终止"
+            record["exitCode"] = -1
+    except Exception as e:  # noqa: BLE001
+        record["outputTail"] = f"执行失败: {type(e).__name__}: {e}"
+        record["exitCode"] = -1
+    record["durationMs"] = int((asyncio.get_event_loop().time() - started) * 1000)
+    record["status"] = "done" if record.get("exitCode") == 0 else "failed"
+    _record(pid, record)
+    _trace(pid, "info", f"执行 {kind}: {command[:60]} → exit={record['exitCode']}", record)
+    return record
+
+
+async def run_command(
+    pipeline_id: str,
+    command: str,
+    *,
+    cwd: str = "",
+    timeout_sec: float = 60.0,
+    kind: str = "shell",
+    timeout_override: Optional[float] = None,
+) -> dict[str, Any]:
+    """网关入口：判定 → 分流 → （必要时）等待授权 → 执行。"""
+    cmd = str(command or "").strip()
+    if not cmd:
+        return {"status": "rejected", "reason": "命令为空"}
+
+    # 1) 硬底线
+    floor = hard_floor(cmd)
+    if floor:
+        rec = _record(pipeline_id, {
+            "id": f"ex_{uuid4().hex[:8]}",
+            "ts": _utcnow_iso(), "kind": kind, "command": cmd, "cwd": cwd,
+            "riskLevel": "critical", "riskReasons": [floor], "autoMode": auto_mode(pipeline_id),
+            "exitCode": None, "durationMs": 0,
+            "rejected": {"reason": f"硬底线：{floor}"},
+        })
+        _trace(pipeline_id, "error", f"拒绝执行（硬底线）：{floor}", rec)
+        return {"status": "rejected", "reason": floor, "record": rec}
+
+    # 2) 棘轮 + 3) 独立判定
+    ratchet = ratchet_level(cmd)
+    assessment = await rv.assess(
+        {"command": cmd, "cwd": cwd, "workspace": "管线 workspace"},
+        timeout=timeout_override,
+    )
+    reasons = list(assessment.get("reasons") or [])
+    final = max_level(str(assessment.get("risk") or "high"), ratchet)
+    if final != assessment.get("risk"):
+        reasons.append(f"危险种子规则上调为 {final}")
+
+    # 5) 分流
+    if final != "low":
+        needs_confirm = rv.requires_confirm({"risk": final})
+        if not (auto_mode(pipeline_id) and final == "med"):
+            approval_id = f"ap_{uuid4().hex[:8]}"
+            item = {
+                "id": approval_id,
+                "pipeline_id": pipeline_id,
+                "command": cmd,
+                "cwd": cwd,
+                "kind": kind,
+                "riskLevel": final,
+                "riskReasons": reasons,
+                "dangerExplanation": "；".join(reasons)[:300],
+                "needsConfirm": needs_confirm,
+                "requestedBy": "supervisor",
+                "expiresAt": "",
+            }
+            _PENDING.setdefault(pipeline_id, {})[approval_id] = item
+            _trace(pipeline_id, "warning", f"等待授权（{final}）：{cmd[:60]}", item)
+            return {"status": "pending_approval", "approval": item}
+
+    return await _execute(
+        pipeline_id, cmd, cwd=cwd, timeout_sec=timeout_sec,
+        risk=final, reasons=reasons, kind=kind,
+    )
+
+
+async def approve(pipeline_id: str, approval_id: str, *, confirm_high_risk: bool = False) -> dict[str, Any]:
+    item = (_PENDING.get(pipeline_id) or {}).pop(approval_id, None)
+    if item is None:
+        raise KeyError(f"待授权记录不存在: {approval_id}")
+    if item.get("needsConfirm") and not confirm_high_risk:
+        # 放回队列，要求二次确认
+        _PENDING.setdefault(pipeline_id, {})[approval_id] = item
+        raise ValueError("风险等级 high/critical，需显式二次确认（confirm_high_risk=true）")
+    return await _execute(
+        pipeline_id, item["command"], cwd=item.get("cwd", ""),
+        timeout_sec=60.0, risk=str(item.get("riskLevel") or "high"),
+        reasons=list(item.get("riskReasons") or []), kind=str(item.get("kind") or "shell"),
+    )
+
+
+def reject(pipeline_id: str, approval_id: str) -> dict[str, Any]:
+    item = (_PENDING.get(pipeline_id) or {}).pop(approval_id, None)
+    if item is None:
+        raise KeyError(f"待授权记录不存在: {approval_id}")
+    rec = _record(pipeline_id, {
+        "id": f"ex_{uuid4().hex[:8]}",
+        "ts": _utcnow_iso(), "kind": str(item.get("kind") or "shell"),
+        "command": item.get("command", ""), "cwd": item.get("cwd", ""),
+        "riskLevel": item.get("riskLevel", "high"), "riskReasons": item.get("riskReasons") or [],
+        "autoMode": auto_mode(pipeline_id), "exitCode": None, "durationMs": 0,
+        "rejected": {"reason": "用户拒绝授权"},
+    })
+    _trace(pipeline_id, "warning", "用户拒绝执行授权")
+    return {"status": "rejected", "record": rec}

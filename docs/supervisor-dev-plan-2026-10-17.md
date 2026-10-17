@@ -425,6 +425,18 @@ v1.1 追加：`subagent_start` / `subagent_progress` / `subagent_end` / `exec`�
 | 端点 | `api/supervisor.py` | `POST /{pid}/subagents`、`GET /api/supervisor/workers/pending-review`、`POST /api/supervisor/workers/{wid}/review`、`GET /api/supervisor/tools` |
 | 测试 | `tests/test_subagent_spawn.py` | **15 passed**（含未过门不执行、high 需二次确认、输入隔离、fail-safe） |
 
+### B9 — 已完成
+
+| 交付 | 位置 | 验证 |
+|---|---|---|
+| 确定性规则 | `supervisor/shell_policy.py` | 硬底线（读凭据 / 不可逆系统破坏，**不经 LLM、不可授权**）；危险种子只用于**上调**等级（A25） |
+| 执行网关 | `supervisor/gateway.py` | 硬底线 → 棘轮 → 独立判定 → `max()` → 分流（low 直跑 / med 自动模式可免 / high 与 critical 需授权 / critical 二次确认） |
+| 沙盒 | 同上 | cwd 可指定；环境变量剥离 `*_API_KEY/TOKEN/SECRET/PASSWORD/...`；墙钟超时并 kill；输出截断 4000 字符 |
+| 审计 | `ExecRecord` + trace | 每条执行（含被拒/超时）都有记录：命令、cwd、风险等级、理由、是否自动模式、退出码、耗时、输出摘要 |
+| 审核队列 | `gateway.pending_approvals / approve / reject` | high/critical 未带 `confirm_high_risk` 会被放回队列（A22 同语义） |
+| 端点 | `api/supervisor.py` | `GET /exec`、`GET /exec/pending-approvals`、`POST /exec/{aid}/approve|reject`、`GET/PUT /exec/auto-mode` |
+| 测试 | `tests/test_exec_gateway.py` | **20 passed**（硬底线 5 类、棘轮上调、自动模式只减免 med、密钥剥离、审计字段、端点） |
+
 ### B1 起的前置条件
 
 - F9 已提供 `failure` / `degradations`，账本（B1）只需把 `_run_agent` 单点处的结果落成 `LedgerEntry`；

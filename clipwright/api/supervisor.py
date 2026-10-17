@@ -402,3 +402,92 @@ async def get_supervisor_tools(request: Request) -> dict:
     return worker_tool_matrix()
 
 
+# ── B9：执行日志与授权 ──────────────────────────────────────
+
+
+class AutoModeBody(BaseModel):
+    enabled: bool = Field(description="自动模式开关（只减免 med，high/critical 仍弹）")
+
+
+class ApproveExecBody(BaseModel):
+    confirm_high_risk: bool = Field(default=False, description="high/critical 必须为 true")
+
+
+@router.get("/{pipeline_id}/exec")
+async def get_pipeline_exec(pipeline_id: str, request: Request) -> dict:
+    """执行日志（PRD F11）。"""
+    from clipwright.api.pipeline import _enforce_pipeline_owner
+    from clipwright.supervisor.gateway import records
+
+    _enforce_pipeline_owner(request, pipeline_id)
+    items = records(pipeline_id)
+    return {"pipeline_id": pipeline_id, "count": len(items), "records": items}
+
+
+@router.get("/{pipeline_id}/exec/pending-approvals")
+async def get_pending_approvals(pipeline_id: str, request: Request) -> dict:
+    """待授权的命令（授权弹窗数据源）。"""
+    from clipwright.api.pipeline import _enforce_pipeline_owner
+    from clipwright.supervisor.gateway import pending_approvals
+
+    _enforce_pipeline_owner(request, pipeline_id)
+    items = pending_approvals(pipeline_id)
+    return {"pipeline_id": pipeline_id, "count": len(items), "items": items}
+
+
+@router.post("/{pipeline_id}/exec/{approval_id}/approve")
+async def post_approve_exec(
+    pipeline_id: str, approval_id: str, payload: ApproveExecBody, request: Request,
+) -> dict:
+    """授权一条待执行命令（PRD F11）。"""
+    from clipwright.api.pipeline import _enforce_pipeline_owner
+    from clipwright.supervisor.gateway import approve
+
+    _enforce_pipeline_owner(request, pipeline_id)
+    try:
+        return await approve(
+            pipeline_id, approval_id,
+            confirm_high_risk=payload.confirm_high_risk,
+        )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{pipeline_id}/exec/{approval_id}/reject")
+async def post_reject_exec(pipeline_id: str, approval_id: str, request: Request) -> dict:
+    """拒绝一条待执行命令。"""
+    from clipwright.api.pipeline import _enforce_pipeline_owner
+    from clipwright.supervisor.gateway import reject
+
+    _enforce_pipeline_owner(request, pipeline_id)
+    try:
+        return reject(pipeline_id, approval_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/{pipeline_id}/exec/auto-mode")
+async def get_auto_mode(pipeline_id: str, request: Request) -> dict:
+    """读取自动模式（PRD F11：默认关，状态入账）。"""
+    from clipwright.api.pipeline import _enforce_pipeline_owner
+    from clipwright.supervisor.gateway import auto_mode
+
+    _enforce_pipeline_owner(request, pipeline_id)
+    return {"pipeline_id": pipeline_id, "enabled": auto_mode(pipeline_id)}
+
+
+@router.put("/{pipeline_id}/exec/auto-mode")
+async def put_auto_mode(
+    pipeline_id: str, payload: AutoModeBody, request: Request,
+) -> dict:
+    """写入自动模式（用户显式开关；只减免 med 的弹窗）。"""
+    from clipwright.api.pipeline import _enforce_pipeline_owner
+    from clipwright.supervisor.gateway import set_auto_mode
+
+    _enforce_pipeline_owner(request, pipeline_id)
+    enabled = set_auto_mode(pipeline_id, payload.enabled)
+    return {"pipeline_id": pipeline_id, "enabled": enabled}
+
+
