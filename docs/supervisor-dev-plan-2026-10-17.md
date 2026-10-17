@@ -287,3 +287,40 @@ class ModelRoute(BaseModel):
 | Q2 | 免费套餐是否开启秘书/路由 | B4（决定 tier 允许集） |
 | Q4 | 单管线最大换模型次数、单次决策成本上限 | B3/B4 硬规则 |
 | Q5 | 是否允许跨 provider（合规） | B4 三阶段 |
+
+---
+
+## 10. 执行进度
+
+### B0 — 已完成（提交 `400b30b`）
+
+| 交付 | 位置 | 验证 |
+|---|---|---|
+| `Degradation` / `FailureReport` / `AgentOutputBase` | `schema/agent.py` | 7 个输出类继承；契约测试 8 条通过 |
+| 两种 FAIL 的语义分离 | `AgentOutputBase._require_failure_on_execution_fail` | 质检「判定失败」不强制 failure；「执行失败」宽松补 `unknown`+计数、严格抛错 |
+| 降级登记（单点埋设，ContextVar） | `services/degradation.py` | `degradation_scope` + `note_degradation`，Agent 零改动 |
+| 失败构造带 failure | `agents/base.py::build_error_output` | 覆盖 5 个 Agent 的异常出口 |
+| LLM 兜底登记 | `agents/base.py::llm_or_fallback` | 超时/失败两条分支分别登记 |
+| 分镜回退登记 | `structure_agent.py`（超时回退 + 无有效场景回退） | 2 处 |
+| 编排层作用域接入 | `pipeline_v2._run_agent`（`degradation_scope` 包 `_dispatch`，去重后并入输出 + trace 事件） | 降级不再止步于 Agent |
+| 后处理降级 | `pipeline_v2._finalize_timeline`（transform 失败 / 类型违规） | 后处理降级进 `shared_data["degradations"]` |
+| 全量回归 | `python -m pytest tests -q` | **3198 passed, 3 skipped, 1 xfailed** |
+
+### 降级点盘点（B0 初筛，B1 逐处判定）
+
+| 统计口径 | 数量 | 说明 |
+|---|---|---|
+| `agents/*.py` 中的 `except` 块 | 95 | 初筛清单，非全部需登记 |
+| `pipeline_v2.py` 中的 `except` 块 | 32 | 主要为落库/上报的防御性兜底，多数不需登记 |
+| `llm_or_fallback` 调用点 | 6 | 已在 `llm_or_fallback` 内部统一接线，**调用点无需改** |
+| `_fallback_*` 辅助函数 | 1（`_fallback_scenes`） | 已接线 |
+| `agents/*.py` 中 `logger.warning` | 39 | 判定「是否意味着产物打折」的候选面 |
+| 当前 `note_degradation` / `_append_finalize_degradation` 调用点 | 7 | B0 交付 |
+
+**B1 处置原则**：只有「静默改变产物内容」的路径需要登记（占位素材、默认音色、保留原时间线、丢弃片段、降级模型）；落库失败、遥测失败、日志类 `except` **不登记**，避免账本被噪声淹没。
+
+### B1 起的前置条件
+
+- F9 已提供 `failure` / `degradations`，账本（B1）只需把 `_run_agent` 单点处的结果落成 `LedgerEntry`；
+- `step.result` 已自动携带 `failure` / `degradations`（`model_dump`），**无需新增 RPC 或额外通道**。
+
