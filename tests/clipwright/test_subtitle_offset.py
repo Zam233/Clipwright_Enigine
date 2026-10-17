@@ -89,7 +89,7 @@ class TestSubtitleNoCumulativeOffset:
         assert len(dialogues) == 3
         bodies = [_dialogue_body(d) for d in dialogues]
         # 全部底部对齐（\an2 + 默认描边 \bord2），无逐条累积垂直偏移
-        # 批1 修复：每行显式携带 \fn \fs \1c \3c（单 Default 样式不再吞后续行样式）
+        # 修复：每行显式携带 \fn \fs \1c \3c（单 Default 样式不再吞后续行样式）
         prefix = r"{\fnMSYH\fs48\1c&H00FFFFFF\3c&H00000000\an2\bord2}"
         assert all(b.startswith(prefix) for b in bodies)
         # 唯一差异只有转义文本本身 → override tags 完全一致

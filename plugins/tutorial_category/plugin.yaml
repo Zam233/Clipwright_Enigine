@@ -5,3 +5,8 @@ kind: "category"
 description: "教程/教学视频类型 — 长镜头、步骤结构、代码高亮、章节标记、慢节奏"
 author: "Clipwright Team"
 entry_point: "tutorial_category.main"
+
+# P1 迁移：新契约声明（声明即授权 —— 未声明的 id 会被门面拒绝）
+api_version: "2"
+contributions:
+  - { kind: category, id: tutorial_category }

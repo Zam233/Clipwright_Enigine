@@ -46,23 +46,23 @@ PLAN_TRANSLATE_TIMEOUT = 240     # 规划书翻译单次调用超时（秒）
 SESSION_TTL_HOURS = 48           # 会话过期时间
 SESSION_CLEANUP_INTERVAL = 3600  # 清理检查间隔（秒）
 
-# 时间线数值调整字段白名单 + 边界钳制（值域外拒绝/钳位）
-_ADJUST_FIELDS: dict[str, tuple[type, Any]] = {
-    "speed": (float, lambda v: max(0.25, min(4.0, float(v)))),
-    "volume": (float, lambda v: max(0.0, min(1.0, float(v)))),
-    "opacity": (float, lambda v: max(0.0, min(1.0, float(v)))),
-    "duration_sec": (float, lambda v: max(0.1, float(v))),
-    "start_sec": (float, lambda v: max(0.0, float(v))),
-    "source_offset_sec": (float, lambda v: max(0.0, float(v))),
-    "font_size": (float, lambda v: max(8.0, min(200.0, float(v)))),
-    "font_color": (str, lambda v: v if isinstance(v, str) else "#FFFFFF"),
-    "text": (str, lambda v: str(v)),
-}
+# 时间线数值调整字段白名单 + 边界钳制（R5 起**唯一事实来源在 edit_intent.FIELD_SPECS**，
+# 此处保留别名以兼容既有调用与测试；新增字段请改 edit_intent.py，不要在这里加第二份）。
+from clipwright.services.edit_intent import FIELD_SPECS as _FIELD_SPECS
+
+_ADJUST_FIELDS: dict[str, tuple[type, Any]] = dict(_FIELD_SPECS)
+
+#: 会改变片段占用时长的字段（改完必须收拢，否则与相邻片段重叠）。
+#: 从 `intent_apply` 取同一份清单，避免两处各写一份而漂移。
+from clipwright.services.intent_apply import (  # noqa: E402
+    MIN_CLIP_SEC as _MIN_CLIP_SEC,
+    STRUCTURAL_DURATION_FIELDS as _STRUCTURAL_DURATION_FIELDS,
+)
 
 
 _memory_sessions: dict[str, dict] = {}
 
-# E5: 会话级缓存 — RAG 检索 (session_id → (query, result, ts)) 与 Persona 上下文 (persona_id → (result, ts))。
+# 会话级缓存 — RAG 检索 (session_id → (query, result, ts)) 与 Persona 上下文 (persona_id → (result, ts))。
 # TTL 10 分钟；同 session 同 query / 同 persona 复用，避免每条 chat 消息重复 embedding 与序列化。
 _SESSION_CACHE_TTL = 600.0
 _session_knowledge_cache: dict[str, tuple[str, str, float]] = {}
@@ -334,7 +334,7 @@ async def _cleanup_expired_sessions():
         try:
             if mongo.is_connected:
                 cutoff = datetime.now(tz=TIME_ZONE) - timedelta(hours=SESSION_TTL_HOURS)
-                # P0-6: 线程内执行（_io 在事件循环线程会返回未 await 的协程导致清理静默失效）
+                # 线程内执行（_io 在事件循环线程会返回未 await 的协程导致清理静默失效）
                 deleted = await asyncio.to_thread(
                     RequirementsSessionModel.delete_many, {
                         "updated_time": {"$lt": cutoff},
@@ -454,7 +454,7 @@ class RequirementsService:
         """加载现有会话，不存在则创建。"""
         if not session_id:
             return self.create_session(user_inputs)
-        # P0-6: _io() 在事件循环线程返回协程 → 必须 offload 到线程执行
+        # _io() 在事件循环线程返回协程 → 必须 offload 到线程执行
         existing = await asyncio.to_thread(self.get_session, session_id)
         if existing:
             return existing
@@ -532,7 +532,10 @@ class RequirementsService:
         # 状态路由
         if status in ("gathering", "init"):
             result = await self._handle_gathering(messages, brief_data, status, user_inputs, session_id, on_delta=on_delta)
-            brief_data = result.get("brief_draft", brief_data)
+            _new_brief = result.get("brief_draft")
+            # P2-34: LLM 解析失败会返回 brief_draft={}——空结果不覆盖已有方案
+            if isinstance(_new_brief, dict) and _new_brief:
+                brief_data = _new_brief
             is_ready = result.get("is_ready", False)
             # 只要生成了完整方案草稿就进入待确认状态。不完全依赖 LLM 的 is_ready 标志——
             # 否则前端已展示方案（brief_ready）而后端仍停留 gathering，用户确认后会被
@@ -578,7 +581,7 @@ class RequirementsService:
                     plan_data = plan_result
                     status = "plan_ready"
                 else:
-                    # 批2：规划书生成失败 → 明确回退（旧实现卡死 brief_confirmed，
+                    # 规划书生成失败 → 明确回退（旧实现卡死 brief_confirmed，
                     # 后续任何消息都落不进任何分支，永远返回过期回复）
                     status = "brief_ready"
                     messages.append({
@@ -596,8 +599,43 @@ class RequirementsService:
                     "metadata": {},
                 })
 
+        elif status in ("brief_confirmed", "plan_confirmed"):
+            # P1-20: 确认中间态此前没有路由分支——用户确认后再发任何消息都
+            # 落不进任何分支，会话看起来卡死。给出明确提示与可行的推进方式。
+            if status == "plan_confirmed" and user_message.strip() in ("重新生成", "再来一版", "重新生成视频"):
+                status = "plan_ready"
+                reply = "好的，已回到规划书确认态。回复「确认」将按规划书启动管线。"
+            elif status == "brief_confirmed" and await self._is_confirm(user_message):
+                # 方案确认态下再次确认 → 重走规划书生成
+                status = "brief_confirmed"
+                messages.append({
+                    "role": "assistant", "content": "收到，正在重新生成成片规划书，请稍候...",
+                    "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                    "metadata": {},
+                })
+                plan_result = await self._generate_plan(brief_data, user_inputs, session_id)
+                if plan_result:
+                    plan_data = plan_result
+                    status = "plan_ready"
+                else:
+                    messages.append({
+                        "role": "assistant", "content": "规划书生成遇到技术问题，请稍后回复「确认」重试。",
+                        "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                        "metadata": {},
+                    })
+            else:
+                hint = (
+                    "方案已确认，正在生成规划书；无需重复确认，稍候即可看到规划书。"
+                    if status == "brief_confirmed"
+                    else "规划书已确认，请等待管线启动；如需调整请回复「重新生成」后再提意见。"
+                )
+                messages.append({
+                    "role": "assistant", "content": hint,
+                    "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                    "metadata": {},
+                })
         elif status == "pipeline_running":
-            # 批2：运行中消息不再静默吞掉
+            # 运行中消息不再静默吞掉
             messages.append({
                 "role": "assistant",
                 "content": "管线正在运行中，请稍候；完成后可在编辑器查看时间线并渲染成片。",
@@ -605,7 +643,7 @@ class RequirementsService:
                 "metadata": {},
             })
         elif status == "pipeline_done":
-            # 批2：旧实现对已完成会话静默吞消息。支持「重新生成」一键回到
+            # 旧实现对已完成会话静默吞消息。支持「重新生成」一键回到
             # plan_ready（规划书仍在会话中，可直接再次 proceed）
             if user_message.strip() in ("重新生成", "再来一版", "重新生成视频"):
                 status = "plan_ready"
@@ -627,7 +665,7 @@ class RequirementsService:
                     "metadata": {},
                 })
             else:
-                # B6/E2: 规划书反馈闭环——不重置回 gathering，而是按反馈修订规划书
+                # /E2: 规划书反馈闭环——不重置回 gathering，而是按反馈修订规划书
                 # 并复用已确认的 raw_scenes（仅重新翻译，不重跑 StructureAgent）。
                 status, revised = await self._handle_plan_revision(
                     messages, brief_data, plan_data, user_inputs, session_id, user_message,
@@ -789,7 +827,7 @@ class RequirementsService:
 
         proposed: Timeline | None = Timeline.model_validate(timeline) if timeline else None
 
-        # W12: 区域级返工 — 收集时间窗内的片段 id（供意图分类与编辑动作限定范围）
+        # 区域级返工 — 收集时间窗内的片段 id（供意图分类与编辑动作限定范围）
         region_clip_ids: list[str] = []
         if proposed is not None and region_start_sec is not None and region_end_sec is not None:
             lo, hi = min(region_start_sec, region_end_sec), max(region_start_sec, region_end_sec)
@@ -1007,7 +1045,7 @@ class RequirementsService:
             out = await AnimationAgent().execute(
                 AnimationInput(
                     context=context, timeline=subset, visual_config=visual_config,
-                    # D5: AI 生成图片历史 → 语义索引（无历史时为 []，零变化）
+                    # AI 生成图片历史 → 语义索引（无历史时为 []，零变化）
                     image_assets=generated_image_entries(),
                     creative_brief=brief_data, production_plan=plan_data,
                 ),
@@ -1089,6 +1127,7 @@ class RequirementsService:
 
         notes: list[str] = []
         applied = 0
+        duration_changes: dict[str, float] = {}
         for op in ops:
             cid = op.get("clip_id")
             field = op.get("field")
@@ -1101,14 +1140,42 @@ class RequirementsService:
             _track, clip = found
             try:
                 kind, clamp_fn = _ADJUST_FIELDS[field]
-                if kind is float:
-                    setattr(clip, field, clamp_fn(value))
+                if field in _STRUCTURAL_DURATION_FIELDS:
+                    # **改时长必须收拢**，与结构化补丁（trim/变速/set duration_sec）
+                    # 共用同一条规则（`reflow_after_duration_change`）：否则 c0 从 4s
+                    # 改到 10s 会与 c1 重叠（自查发现的"同义操作两种行为"缺陷，
+                    # 两条入口都要修）。
+                    before_dur = float(clip.duration_sec or 0.0)
+                    target = float(clamp_fn(value))
+                    clip.duration_sec = max(_MIN_CLIP_SEC, target)
+                    duration_changes[cid] = before_dur - float(clip.duration_sec)
                 else:
                     setattr(clip, field, clamp_fn(value))
                 applied += 1
             except (TypeError, ValueError):
                 continue
+        moved: list[str] = []
+        from clipwright.services.intent_apply import (
+            recalc_timeline_duration as _recalc,
+            reflow_after_duration_change as _reflow,
+        )
+
+        if duration_changes:
+            try:
+                moved = _reflow(timeline, duration_changes)
+            except Exception as exc:  # noqa: BLE001 — 重排失败不该让调整整体失败
+                logger.warning("时长调整后的重排失败（已应用数值）: %s", exc)
+
+        # 总时长要跟着片段实际占用走，否则时间线模型说 10s、渲染输出 13s
+        # （自查发现：结构化补丁入口会重算，本入口此前漏了）。
+        try:
+            _recalc(timeline)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("重算总时长失败: %s", exc)
         notes.append(f"已应用 {applied} 项调整")
+        if moved:
+            notes.append(f"其中 {len(duration_changes)} 项改动了时长，"
+                         f"已顺移 {len(moved)} 个后续片段避免重叠")
         return timeline, notes
 
     async def _is_confirm(self, message: str) -> bool:
@@ -1134,15 +1201,22 @@ class RequirementsService:
         # 以否定词开头 → 非确认（"不可以"、"不要"、"有问题"、"不满意"）
         if low.startswith(("不", "没", "别", "勿", "莫", "未")):
             return False
-        # 批7：确认词后带转折/修正尾缀 → 不是确认（"好的，不过再长一点"、
+        # 确认词后带转折/修正尾缀 → 不是确认（"好的，不过再长一点"、
         # "可以，但是要加片头"——旧实现误判为确认并直接推进流程）
         affirm_starts = ["没问题", "就这样", "可以了", "好的", "确认", "同意", "可以",
                          "行", "ok", "yes", "y", "对", "嗯", "确定", "通过", "批准"]
+        # P1-21: 单字/模糊确认词必须整句匹配——「对比一下」「行业分析」以
+        # 「行」「对」开头但并非确认，旧实现 startswith 误判推进流程
+        ambiguous = {"行", "对", "嗯", "y", "ok", "yes"}
         for kw in affirm_starts + strong:
             if low.startswith(kw) or low == kw:
                 tail = low[len(kw):].strip()
                 if not tail:
                     return True
+                if kw in ambiguous:
+                    if not tail.strip("。！!~？?，,、 …·-—"):
+                        return True  # 仅标点/语气符 → 视作整句确认
+                    continue  # 带其余内容 → 交由 LLM 语义判断
                 if tail.startswith(("但是", "但", "不过", "然而", "除了", "就是",
                                     "可是", "只是", "另外", "还有", "再", "希望",
                                     "建议", "想", "要", "麻烦", "请", "能不能",
@@ -1194,11 +1268,21 @@ class RequirementsService:
         if any(neg in msg for neg in negations):
             return False
         # Start-only affirmative tokens
+        # P1-21: 模糊短词（行/对/嗯/y/ok/yes）必须整句匹配——「对比一下」
+        # 「行业分析」以它们开头但并非确认（与 _is_confirm 主路径同语义）
         start_tokens = [
             "没问题", "就这样", "可以了", "好的", "确认", "同意", "可以",
             "行", "ok", "yes", "y", "对", "嗯", "确定", "通过", "批准",
         ]
-        return any(msg.startswith(kw) or msg == kw for kw in start_tokens)
+        ambiguous = {"行", "对", "嗯", "y", "ok", "yes"}
+        for kw in start_tokens:
+            if msg.startswith(kw) or msg == kw:
+                if kw in ambiguous:
+                    tail = msg[len(kw):].strip("。！!~？?，,、 …·-—")
+                    if tail:
+                        return False
+                return True
+        return False
 
     # ── LLM 需求收集 ──────────────────────────
 
@@ -1343,13 +1427,29 @@ class RequirementsService:
         if rag_context:
             context += f"\n\n## 知识库参考\n{rag_context}"
 
-        # D4: 注入 AI 生成能力概览（无可用生成工具 → 零变化），
+        # 注入 AI 生成能力概览（无可用生成工具 → 零变化），
         # 让需求对话阶段即可主动提出"此处适合 AI 生成素材"的方案建议
         gen_overview = _ai_generation_overview()
         if gen_overview:
             context += f"\n\n## AI 生成能力\n{gen_overview}"
 
+        # P1-22: 多轮澄清记忆——旧实现只把最后一条消息喂给 LLM，用户在
+        # 非确认分支提出的修改会被下一轮 LLM 遗忘。拼入最近 N 轮对话。
+        recent = [
+            m for m in messages[-12:]
+            if isinstance(m, dict) and m.get("content")
+        ]
+        history_text = chr(10).join(
+            f"{'用户' if m.get('role') == 'user' else '助手'}: {str(m['content'])[:500]}"
+            for m in recent[:-1]
+        ) if len(recent) > 1 else ""
         user_prompt = messages[-1]["content"] if messages else "请开始对话。"
+        if history_text:
+            header = "## 近期对话记录（供理解上下文，最新一条在最后）"
+            user_prompt = (
+                header + chr(10) + history_text + chr(10) * 2
+                + "## 用户最新输入" + chr(10) + user_prompt
+            )
         if script:
             user_prompt = (
                 f"## 用户提供的原始文稿（请基于此文稿生成创作方案）\n"
@@ -1383,7 +1483,7 @@ class RequirementsService:
                 logger.warning("流式 brief 失败，回退缓冲路径: %s", e)
                 # 流式失败 → 回退缓冲路径（下面的 W1 with_tools / llm_call_with_retry）
 
-        # W1: 联网搜索工具门控接入（Bocha/百度）——配置开启时 LLM 可自主搜索；
+        # 联网搜索工具门控接入（Bocha/百度）——配置开启时 LLM 可自主搜索；
         # 未配置/失败/无工具调用时行为与现状完全一致（落到下方 llm_call_with_retry 原路径）。
         try:
             from clipwright.services.web_search import WebSearchService
@@ -1551,10 +1651,10 @@ class RequirementsService:
                 if isinstance(raw_intents, list):
                     animation_intents = raw_intents
 
-            # B6/E2: 复用已确认的 raw_scenes 修订路径——不重跑 StructureAgent，
+            # /E2: 复用已确认的 raw_scenes 修订路径——不重跑 StructureAgent，
             # 仅带反馈重新翻译场景（简报未变、已有场景时）。
             if isinstance(existing_raw_scenes, list) and existing_raw_scenes:
-                # 批8：反馈先经 LLM 改写场景本体（有界改写；失败回退原场景），
+                # 反馈先经 LLM 改写场景本体（有界改写；失败回退原场景），
                 # 修复「修改意见只改规划书文案、场景本体永不变更」的契约断裂
                 revised_scenes = await self._revise_raw_scenes(
                     existing_raw_scenes, feedback, brief_data, user_inputs,
@@ -1597,7 +1697,7 @@ class RequirementsService:
             script = user_inputs.get("script_text", "")
             rag_context = await self._retrieve_knowledge(persona_id, f"{topic} {script}", session_id)
 
-            # W2: 注入联网搜索结果作为事实参考（未配置/失败/空结果 → 零变化）
+            # 注入联网搜索结果作为事实参考（未配置/失败/空结果 → 零变化）
             web_context = await _build_web_context(f"{topic} {script}"[:300])
             if web_context:
                 if rag_context:
@@ -1605,7 +1705,7 @@ class RequirementsService:
                 else:
                     rag_context = f"## 联网搜索参考\n{web_context}"
 
-            # A2: 注入素材库概览（空素材库 → 无额外段落，零变化）
+            # 注入素材库概览（空素材库 → 无额外段落，零变化）
             overview = _material_library_overview()
             if overview:
                 if rag_context:
@@ -1613,7 +1713,7 @@ class RequirementsService:
                 else:
                     rag_context = f"## 素材库概览\n{overview}"
 
-            # D4: 注入 AI 生成能力概览（无可用生成工具 → 零变化）
+            # 注入 AI 生成能力概览（无可用生成工具 → 零变化）
             gen_overview = _ai_generation_overview()
             if gen_overview:
                 if rag_context:
@@ -1631,7 +1731,7 @@ class RequirementsService:
                 ),
                 context,
             )
-            # C2: StructureAgent 的 LLM 用量（requirements 会话级，非 pipeline）
+            # StructureAgent 的 LLM 用量（requirements 会话级，非 pipeline）
             agent_usage = getattr(result, "_llm_usage", None)
             if agent_usage:
                 try:
@@ -1768,12 +1868,15 @@ class RequirementsService:
         try:
             ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
             if ext in ("txt", "md", "markdown"):
-                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read()[:5000]
+                # 轮 82：文件读取 offload（上传文件可达数 MB，同步读冻住事件循环）
+                content = (await asyncio.to_thread(
+                    lambda: open(file_path, "r", encoding="utf-8", errors="replace").read()
+                ))[:5000]
             elif ext in ("pdf",):
                 try:
                     import subprocess
-                    result = subprocess.run(
+                    result = await asyncio.to_thread(
+                        subprocess.run,
                         ["pdftotext", file_path, "-"],
                         capture_output=True, text=True, timeout=30,
                     )
@@ -1783,17 +1886,30 @@ class RequirementsService:
                     content = "[PDF 文件，文本提取失败]"
             elif ext in ("docx",):
                 try:
+                    import re as _re
                     import zipfile
                     with zipfile.ZipFile(file_path) as z:
-                        texts = []
+                        xml = ""
                         for name in z.namelist():
-                            if name.startswith("word/document"):
-                                texts.append(z.read(name).decode("utf-8", errors="replace"))
-                        content = texts[0][:5000] if texts else "[DOCX 解析失败]"
+                            if name == "word/document.xml":
+                                xml = z.read(name).decode("utf-8", errors="replace")
+                                break
+                    if xml:
+                        # P2-32: 按段落抽取 <w:t> 文本——旧实现把整段 XML 原文
+                        # 注入提示词（token 浪费 + 干扰 LLM）
+                        lines = []
+                        for para in _re.split(r"</w:p>", xml):
+                            runs = _re.findall(r"<w:t[^>]*>([^<]*)</w:t>", para)
+                            line = "".join(runs).strip()
+                            if line:
+                                lines.append(line)
+                        content = (chr(10).join(lines)[:5000]) if lines else "[DOCX 解析失败：未找到文本]"
+                    else:
+                        content = "[DOCX 解析失败]"
                 except Exception:
                     content = "[DOCX 文件]"
             elif ext in ("png", "jpg", "jpeg", "webp", "gif"):
-                # C6: 附件图片理解 — 视觉模型描述图片并提取标签，替代占位符
+                # 附件图片理解 — 视觉模型描述图片并提取标签，替代占位符
                 content = await self._describe_image(file_path, file_name)
             else:
                 content = f"[上传文件: {file_name}]"
@@ -1805,7 +1921,7 @@ class RequirementsService:
             if content else f"用户上传了文件: {file_name}"
         )
 
-        # P0-6: process_upload 为 async 上下文 → 线程内执行同步 Mongo 操作
+        # process_upload 为 async 上下文 → 线程内执行同步 Mongo 操作
         session = await asyncio.to_thread(self.get_session, session_id)
         if session:
             messages = session.get("messages", [])

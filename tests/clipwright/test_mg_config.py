@@ -94,7 +94,7 @@ class TestMGConfig:
         assert "元素数量 >= 3" in tpl
         assert "至少 2 个关键帧带 easing" in tpl
         assert "duration_sec" in tpl
-        # T3：默认禁止不透明背景层（动画叠加实拍画面）
+        # 默认禁止不透明背景层（动画叠加实拍画面）
         assert "禁止背景层" in tpl
 
     def test_two_embedded_examples_parse_and_validate(self) -> None:
@@ -105,7 +105,7 @@ class TestMGConfig:
             ok, errors = validate_mg_json(ex)
             assert ok, f"embedded example invalid: {errors}"
             assert "easing" in json.dumps(ex)
-            # T3：示例不得使用不透明全幅背景（bg 背景必须为 transparent）
+            # 示例不得使用不透明全幅背景（bg 背景必须为 transparent）
             bg_elems = [e for e in ex.get("elements", []) if e.get("type") == "bg"]
             for bg in bg_elems:
                 assert bg.get("background") in (None, "transparent"), (

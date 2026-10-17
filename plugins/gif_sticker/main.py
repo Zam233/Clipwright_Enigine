@@ -7,17 +7,32 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 import httpx
+from clipwright.config import logger
 from clipwright.material.base import MaterialSource
-from clipwright.material.registry import MaterialRegistry
+from clipwright.material.base import close_source_sync
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.material import MaterialAsset, MaterialType
 from clipwright.schema.plugin import PluginManifest, PluginKind
+
+#: Giphy 官方文档里的公开 beta key（共享限流）——**仅在显式 opt-in 时使用**，
+#: 避免把它当作默认凭据内置（C4）。开启方式：GIPHY_PUBLIC_BETA_KEY=1
+_GIPHY_PUBLIC_BETA_KEY = "dc6zaTOxFJmzC"
+
+
+def _public_beta_key() -> str:
+    """显式开启时才返回公开 beta key（默认空 → 零贡献 + 提示配置）。"""
+    enabled = os.environ.get("GIPHY_PUBLIC_BETA_KEY", "").lower() in ("1", "true", "yes")
+    return _GIPHY_PUBLIC_BETA_KEY if enabled else ""
+
 
 class GiphySource(MaterialSource):
     source_id: str = "giphy"
     source_name: str = "Giphy GIF 库"
     def __init__(self, api_key: str = "") -> None:
-        self._api_key = api_key or os.environ.get("GIPHY_API_KEY", "dc6zaTOxFJmzC")
+        # C4：不再默认使用源码里硬编码的 Giphy 公共 beta key（全用户共享限流额度，
+        # 且属明文凭据）。需要该便捷路径的用户显式设 GIPHY_PUBLIC_BETA_KEY=1。
+        self._api_key = api_key or os.environ.get("GIPHY_API_KEY", "") or _public_beta_key()
         self._client = httpx.AsyncClient(base_url="https://api.giphy.com/v1", timeout=10)
 
     async def search(self, query: str, top_k: int = 10, media_type: str = "all", **kw: Any) -> list[tuple[MaterialAsset, float]]:
@@ -48,14 +63,23 @@ class GifStickerPlugin(CapabilityPlugin):
         kind=PluginKind.MATERIAL_SOURCE, description="Search GIFs and stickers from Giphy/Tenor", author="Clipwright Team")
     def __init__(self) -> None:
         self._source: Optional[GiphySource] = None
-    def initialize(self) -> None:
-        self._source = GiphySource()
-        MaterialRegistry.register(self._source, plugin_id=self.manifest.id)
-        print("[GifSticker] Giphy GIF 库已注册")
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：Giphy GIF 素材源（需 api_key / GIPHY_API_KEY）。"""
+        cfg = self.config or {}
+        api_key = (cfg.get("api_key", "") or os.environ.get("GIPHY_API_KEY", "")
+                   or _public_beta_key())
+        if not api_key:
+            logger.info("[GifSticker] 未配置 api_key（config.yaml 或 GIPHY_API_KEY）"
+                        "——本次不贡献素材源（如需 Giphy 公开 beta key 兜底，"
+                        "显式设 GIPHY_PUBLIC_BETA_KEY=1）")
+            return []
+        self._source = GiphySource(api_key=api_key)
+        return [Contribution(
+            ContributionKind.MATERIAL_SOURCE, self._source.source_id, self._source,
+        )]
     def shutdown(self) -> None:
+        # A3：同步安全关闭（原 create_task 永不 await）
         if self._source:
-            import asyncio
-            try: asyncio.create_task(self._source.close())
-            except Exception: pass
+            close_source_sync(self._source)
 
 __all__ = ["GifStickerPlugin"]

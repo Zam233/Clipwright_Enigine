@@ -5,3 +5,9 @@ kind: "capability"
 description: "字幕翻译 — 通过 LLM 或 DeepL API 翻译字幕文本，支持双语字幕生成"
 author: "Clipwright Team"
 entry_point: "subtitle_translate.main"
+
+# P1 迁移：新契约声明（声明即授权）
+api_version: "2"
+contributions:
+  - { kind: tool, id: subtitle_translate }
+  - { kind: skill, id: bilingual_subtitle }

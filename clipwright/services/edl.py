@@ -24,38 +24,57 @@ class EDLSegment:
 
 
 def parse_edl(content: str) -> list[dict[str, Any]]:
-    """解析 EDL 格式为 Timeline clip 列表。"""
+    """解析 EDL 格式为 Timeline clip 列表。
+
+    P2-41: (a) 解析 FCM 头 / `;` 帧分隔符确定时间基（不再硬编 30）；
+    (b) 按事件行通道字段（V/A/V2/A2...）分轨，不再全部落 v1。
+    """
     clips: list[dict[str, Any]] = []
     # EDL format:
     # 001  AX       V     C        00:00:00:00 00:00:10:00 00:00:00:00 00:00:10:00
     # * FROM CLIP NAME: example.mp4
     pattern = re.compile(
-        r"(\d{3})\s+(\S+)\s+\S+\s+(\S+)\s+"
+        r"(\d{3})\s+(\S+)\s+(\S+)\s+(\S+)\s+"
         r"(\d{2}:\d{2}:\d{2}[:;]\d{2})\s+(\d{2}:\d{2}:\d{2}[:;]\d{2})\s+"
         r"(\d{2}:\d{2}:\d{2}[:;]\d{2})\s+(\d{2}:\d{2}:\d{2}[:;]\d{2})"
     )
+    # P2-41a: FCM 头决定非丢帧时间基（NON-DROP FRAME=30 / DROP FRAME=29.97）
+    fps = 30.0
+    if re.search(r"FCM:\s*DROP FRAME", content, re.IGNORECASE):
+        fps = 29.97
     lines = content.split("\n")
     for i, line in enumerate(lines):
         m = pattern.match(line)
         if not m:
             continue
         reel = m.group(2)
-        transition = m.group(3)
-        src_start = _edl_time(m.group(4))
-        src_end = _edl_time(m.group(5))
-        dest_start = _edl_time(m.group(6))
-        dest_end = _edl_time(m.group(7))
+        channel = m.group(3)
+        transition = m.group(4)
+        src_start = _edl_time(m.group(5), fps)
+        src_end = _edl_time(m.group(6), fps)
+        dest_start = _edl_time(m.group(7), fps)
+        dest_end = _edl_time(m.group(8), fps)
+        dest_start = _edl_time(m.group(7), fps)
+        dest_end = _edl_time(m.group(8), fps)
 
         # Check next line for clip name
         clip_name = reel
         if i + 1 < len(lines) and lines[i + 1].startswith("* FROM CLIP NAME:"):
             clip_name = lines[i + 1].split(":", 1)[1].strip()
 
+        # P2-41b: 按通道字段分轨（V→video、A→audio，带编号的 V2/A2 同理）；
+        # 旧实现所有事件硬塞 v1
+        ch = channel.strip().upper()
+        if ch.startswith("A"):
+            kind, track_id = "audio", f"a{ch[1:] or '1'}"
+        else:
+            kind, track_id = "video", f"v{ch[1:] or '1'}"
+
         clips.append({
             "id": f"edl_{len(clips)}",
-            "kind": "video",
+            "kind": kind,
             "asset_id": clip_name,
-            "track_id": "v1",
+            "track_id": track_id,
             "start_sec": round(dest_start, 2),
             "duration_sec": round(dest_end - dest_start, 2),
             "source_offset_sec": round(src_start, 2),
@@ -117,7 +136,7 @@ def parse_fcpxml(content: str) -> list[dict[str, Any]]:
     clips: list[dict[str, Any]] = []
     # 安全：拒绝带 DTD/实体的 XML——标准库 ElementTree 会展开内部实体，
     # 恶意文件可借实体扩张耗尽内存（FCPXML 正常文件无需 DTD）
-    # 批6.4：仅拒绝内部实体声明（实体扩张攻击向量）；标准 FCPXML 自带
+    # 4：仅拒绝内部实体声明（实体扩张攻击向量）；标准 FCPXML 自带
     # <!DOCTYPE xmeml> 声明，属正常内容不应拒绝
     head = content[:4096].lstrip()
     if "<!ENTITY" in head:
@@ -154,7 +173,7 @@ def parse_fcpxml(content: str) -> list[dict[str, Any]]:
                 except ValueError:
                     clip["duration_sec"] = 5
 
-            # 批6.4：保留时间位置（旧实现恒 0，导入丢失时间轴布局）
+            # 4：保留时间位置（旧实现恒 0，导入丢失时间轴布局）
             start_el = item.find("start")
             if start_el is not None and start_el.text:
                 try:
@@ -241,7 +260,7 @@ def to_fcpxml(clips: list[dict[str, Any]], timeline: dict | None = None) -> str:
             '            </file>',
             '          </clipitem>',
         ])
-    # 批6.4：字幕/文字轨导出（文本入 comments，NLE 可参考；此前整轨静默丢失）
+    # 4：字幕/文字轨导出（文本入 comments，NLE 可参考；此前整轨静默丢失）
     if text_clips:
         xml_parts.extend(['      <audio>', '        <track>'])
         for n, clip in enumerate(text_clips, 1):
@@ -291,11 +310,18 @@ def timeline_clips_to_edl_segments(clips: list[dict]) -> list[EDLSegment]:
     return segs
 
 
-def _edl_time(t: str) -> float:
-    """EDL 时间 → 秒。"""
+def _edl_time(t: str, fps: float = 30.0) -> float:
+    """EDL 时间 → 秒。
+
+    P2-41: 旧实现硬编 /30——drop-frame（`;` 分隔符）以 29.97 计帧，
+    非 30fps 时间基的 EDL 会整体漂移。
+    """
     parts = re.split(r"[:;]", t)
     if len(parts) == 4:
-        return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2]) + int(parts[3]) / 30
+        frames = int(parts[3])
+        sep_is_df = ";" in t
+        frame_rate = 29.97 if (sep_is_df and fps == 30) else fps
+        return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2]) + frames / frame_rate
     return 0
 
 

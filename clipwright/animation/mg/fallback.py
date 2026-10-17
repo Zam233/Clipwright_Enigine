@@ -88,9 +88,13 @@ class FallbackEngine:
                     if t.get("animation_id") == best_id:
                         return t
 
-        for t in templates:
-            if t.get("animation_id") == "mg_comparison_split":
-                return t
+        # P2-36: 无关键词命中时不再硬塞「对比分栏」模板——内容不是对比关系时
+        # 出来的 MG 语义错乱。改用内容通用模板（title_reveal）作为默认，
+        # 调用方 trace 会记录 fallback_template 便于观测。
+        for default_id in ("mg_title_reveal", "title_reveal"):
+            for t in templates:
+                if t.get("animation_id") == default_id:
+                    return t
 
         return templates[0] if templates else None
 

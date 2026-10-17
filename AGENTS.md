@@ -10,6 +10,7 @@
 | API 参考 | [docs/api_reference.md](docs/api_reference.md) |
 | 开发指南 | [docs/development.md](docs/development.md) |
 | 修复与功能补全计划 | [docs/fix-and-feature-plan.md](docs/fix-and-feature-plan.md)（§10 执行进度） |
+| 素材内容理解与 NL 落位计划 | [docs/content-understanding-plan-2026-09-14.md](docs/content-understanding-plan-2026-09-14.md)（内容索引→检索→NL 意图→落位校验，10 轮） |
 | 前后端对账 | [docs/frontend-backend-parity.md](docs/frontend-backend-parity.md) |
 | 项目上下文 | [CLAUDE.md](CLAUDE.md) |
 
@@ -147,14 +148,17 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
 | [动画系统](docs/animation_system.md) | 动画编目、渲染管线与 MG 动画 |
 | [服务概览](docs/services_overview.md) | 全部后端服务层模块说明 |
 | [需求分析 Agent](docs/requirements_agent.md) | Requirements Agent 设计与职责 |
+| [整数时间基座](docs/timebase.md) | `utils/timebase.py`：整数 tick + 有理数帧率（O1），换算纪律、时间码、漂移校正接线点 |
 
 ## 验证清单
 
 修改代码后，运行：
 ```bash
 # 后端全量回归（工作目录 J:\Clipwright）
-python -m pytest tests -q        # 期望 1379 passed
+python -m pytest tests -q        # 期望 2095 passed（+2 known plugin 失败）
 python -c "import clipwright.main"
+python scripts/verify_timebase.py   # 整数时间基座核对（VERIFY PASS）
+python scripts/e2e_smoke.py         # 全管线冒烟（SMOKE PASS）
 
 # 前端回归（工作目录 J:\Clipweight-Client）
 npx tsc --noEmit
@@ -175,4 +179,5 @@ npm run build
 | [语音与 TTS](docs/voice_tts.md) | services/voice.py, api/voice.py |
 | [动画系统](docs/animation_system.md) | animation/ 全部 |
 | [服务概览](docs/services_overview.md) | services/ 全部服务 |
+| [整数时间基座](docs/timebase.md) | utils/timebase.py, schema/timeline.py 的时间派生属性, services/render.py 漂移校正, services/timeline_view.py |
 | [需求分析 Agent](docs/requirements_agent.md) | agents/requirements_agent.py, services/requirements_service.py |

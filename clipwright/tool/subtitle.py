@@ -21,7 +21,8 @@ def _mkstemp_txt() -> str:
     os.close(fd)
     return path
 
-from clipwright.tool.video import _ensure_output_path
+from clipwright.tool.video import _ensure_output_path, ENCODE_VIDEO_ARGS
+
 from clipwright.tool.video import resolve_ffmpeg
 
 
@@ -83,7 +84,7 @@ class SubtitleBurnTool(BaseTool):
                 cmd = [resolve_ffmpeg(), "-y", "-loglevel", "error",
                        "-i", video_path,
                        "-vf", ",".join(filters),
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                       *ENCODE_VIDEO_ARGS,
                        "-c:a", "copy", out]
                 result = await asyncio.to_thread(subprocess.run,cmd, capture_output=True, text=True, timeout=300)
                 if result.returncode != 0:

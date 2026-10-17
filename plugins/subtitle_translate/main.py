@@ -15,10 +15,9 @@ from typing import Any
 import httpx
 
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.tool.base import BaseTool
-from clipwright.tool.registry import ToolRegistry
 from clipwright.skill.base import BaseSkill
-from clipwright.skill.registry import SkillRegistry
 from clipwright.schema.skill import SkillExecResult
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
@@ -62,9 +61,10 @@ class SubtitleTranslateTool(BaseTool):
         return {"success": True, "translated": result.strip(), "engine": "llm"}
 
     async def _translate_deepl(self, text: str, target: str, source: str) -> dict:
-        key = os.environ.get("DEEPL_API_KEY", "")
+        # 优先使用插件配置 config.yaml 的 deepl_api_key，其次环境变量
+        key = (self.config or {}).get("deepl_api_key", "") or os.environ.get("DEEPL_API_KEY", "")
         if not key:
-            return {"success": False, "error": "DEEPL_API_KEY 未配置"}
+            return {"success": False, "error": "DEEPL_API_KEY 未配置（可在插件配置页设置）"}
         async with httpx.AsyncClient(timeout=15) as c:
             resp = await c.post("https://api-free.deepl.com/v2/translate",
                 headers={"Authorization": f"DeepL-Auth-Key {key}"},
@@ -103,11 +103,15 @@ class SubtitleTranslatePlugin(CapabilityPlugin):
         author="Clipwright Team",
     )
 
-    def initialize(self) -> None:
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：字幕翻译工具 + 双语字幕技能（engine 取自配置）。"""
         engine = (self.config or {}).get("engine", "llm")
-        ToolRegistry.register(SubtitleTranslateTool(engine=engine), plugin_id=self.manifest.id)
-        SkillRegistry.register(BilingualSubtitleSkill(), plugin_id=self.manifest.id)
-        logger.info("[SubtitleTranslate] Tool + Skill 已注册 (engine=%s)", engine)
+        return [
+            Contribution(ContributionKind.TOOL, "subtitle_translate",
+                         SubtitleTranslateTool(engine=engine)),
+            Contribution(ContributionKind.SKILL, "bilingual_subtitle",
+                         BilingualSubtitleSkill()),
+        ]
 
     def shutdown(self) -> None:
         pass

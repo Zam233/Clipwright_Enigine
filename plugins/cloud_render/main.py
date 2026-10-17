@@ -11,7 +11,7 @@ GET /render/{id}/status（轮询进度），GET /render/{id}/download（下载�
 from __future__ import annotations
 from typing import Any
 from clipwright.plugins import CapabilityPlugin
-from clipwright.plugins.hooks import HookRegistry, HookPoint
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
 
@@ -19,14 +19,18 @@ class CloudRenderPlugin(CapabilityPlugin):
     manifest = PluginManifest(id="cloud_render", name="Cloud Render", version="1.0.0",
         kind=PluginKind.CAPABILITY, description="Offload FFmpeg rendering to remote server", author="Clipwright Team")
 
-    def initialize(self) -> None:
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：配好 server_url 才注入云渲染 PRE_RENDER 钩子。"""
         cfg = self.config or {}
         server_url = cfg.get("server_url", "")
         if not server_url:
-            print("[CloudRender] 跳过: 请配置 server_url")
-            return
-        HookRegistry.register(HookPoint.PRE_RENDER, self._make_hook(server_url, cfg.get("api_token", "")), plugin_id=self.manifest.id)
-        logger.info("[CloudRender] 云渲染已启用: %s", server_url)
+            logger.info("[CloudRender] 未配置 server_url——本次不贡献云渲染钩子")
+            return []
+        return [Contribution(
+            ContributionKind.HOOK, "cloud_render_pre_render",
+            self._make_hook(server_url, cfg.get("api_token", "")),
+            meta={"point": "pre_render"},
+        )]
 
     @staticmethod
     def _make_hook(server_url: str, token: str):

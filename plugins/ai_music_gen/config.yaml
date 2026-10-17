@@ -1,0 +1,39 @@
+fields:
+  provider:
+    type: string
+    value: "volcengine"
+    label: "生成 Provider（volcengine/suno）"
+    description: "volcengine = 豆包音乐大模型（AK/SK V4 签名）；suno 需 SUNO_API_KEY"
+  api_key:
+    type: string
+    value: ""
+    secret: true
+    label: "Suno API Key"
+    description: "Suno provider 的密钥；留空则读环境变量 SUNO_API_KEY"
+  access_key:
+    type: string
+    value: ""
+    secret: true
+    label: "火山引擎 Access Key"
+    description: "火山引擎访问控制 AK；留空则读环境变量 VOLC_ACCESS_KEY"
+  secret_key:
+    type: string
+    value: ""
+    secret: true
+    label: "火山引擎 Secret Key"
+    description: "火山引擎访问控制 SK；留空则读环境变量 VOLC_SECRET_KEY"
+  billing_mode:
+    type: string
+    value: "prepaid"
+    label: "计费模式（prepaid/postpaid）"
+    description: "火山引擎音乐生成服务的计费方式"
+  poll_interval_sec:
+    type: int
+    value: 5
+    label: "轮询间隔(秒)"
+    description: "异步生成任务的状态轮询间隔"
+  poll_timeout_sec:
+    type: int
+    value: 480
+    label: "轮询超时(秒)"
+    description: "异步生成任务的最长等待时间"

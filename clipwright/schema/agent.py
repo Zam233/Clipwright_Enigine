@@ -225,13 +225,16 @@ class QualityOutput(BaseModel):
 
     agent_name: str = "quality_agent"
     decision: AgentDecision = AgentDecision.PASS
-    # C7: 输入兼容 passed/pass 两种键（历史别名），输出统一序列化为 "passed"——
+    # 输入兼容 passed/pass 两种键（历史别名），输出统一序列化为 "passed"——
     # 原 serialization_alias="pass" 使读取 result["passed"] 的消费方拿不到值
     passed: bool = Field(default=True, validation_alias=AliasChoices("passed", "pass"))
     issues: list[QualityIssue] = Field(default_factory=list)
     fix_suggestions: list[str] = Field(default_factory=list)
     error: Optional[str] = Field(default=None)
     redo_agent: str = Field(default="", description="建议重做的 Agent，空表示不需要重做")
+    # 轮 84（评分闭环）：0-100 成片质量分——确定性权重（error -25 / warning -8 /
+    # info -2）由 issue 列表推导；passed 判定不变（分数仅供审阅与可选门槛）
+    score: int = Field(default=100, ge=0, le=100, description="成片质量分（0-100）")
 
 
 class PluginAgentInput(BaseModel):

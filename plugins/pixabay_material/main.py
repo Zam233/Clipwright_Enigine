@@ -9,16 +9,21 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Optional
 
 import httpx
 
+from clipwright.config import logger
 from clipwright.material.base import MaterialSource
-from clipwright.material.registry import MaterialRegistry
+from clipwright.material.base import close_source_sync
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.material import MaterialAsset, MaterialType
 from clipwright.schema.plugin import PluginManifest, PluginKind
+
+log = logging.getLogger("clipwright.plugins.pixabay")
 
 PIXABAY_BASE = "https://pixabay.com/api"
 
@@ -43,12 +48,12 @@ class PixabayMaterialSource(MaterialSource):
             try:
                 results.extend(await self._search_videos(query, top_k))
             except Exception:
-                pass
+                log.warning("Pixabay 视频搜索失败（429/网络？）: %s", query, exc_info=True)
         if media_type in ("photo", "all"):
             try:
                 results.extend(await self._search_images(query, top_k))
             except Exception:
-                pass
+                log.warning("Pixabay 图片搜索失败（429/网络？）: %s", query, exc_info=True)
         return results
 
     async def _search_videos(self, query: str, top_k: int) -> list[tuple[MaterialAsset, float]]:
@@ -73,6 +78,11 @@ class PixabayMaterialSource(MaterialSource):
                 duration_sec=float(hit.get("duration", 0)),
                 resolution=f"{best.get('width', 0)}x{best.get('height', 0)}",
                 source=self.source_id,
+                # 轮 82（版权链）：Pixabay Content License 免费商用
+                author=hit.get("user", ""),
+                source_url=hit.get("pageURL", ""),
+                license="Pixabay Content License",
+                license_url="https://pixabay.com/service/license-summary/",
                 metadata={"pixabay_id": hit["id"], "user": hit.get("user", ""), "pageURL": hit.get("pageURL", "")},
             )
             results.append((asset, 0.8))
@@ -95,6 +105,11 @@ class PixabayMaterialSource(MaterialSource):
                 tags=hit.get("tags", "").split(", "),
                 resolution=f"{hit.get('imageWidth', 0)}x{hit.get('imageHeight', 0)}",
                 source=self.source_id,
+                # 轮 82（版权链）
+                author=hit.get("user", ""),
+                source_url=hit.get("pageURL", ""),
+                license="Pixabay Content License",
+                license_url="https://pixabay.com/service/license-summary/",
                 metadata={"pixabay_id": hit["id"], "user": hit.get("user", ""), "pageURL": hit.get("pageURL", "")},
             )
             results.append((asset, 0.7))
@@ -115,22 +130,22 @@ class PixabayMaterialPlugin(CapabilityPlugin):
     def __init__(self) -> None:
         self._source: Optional[PixabayMaterialSource] = None
 
-    def initialize(self) -> None:
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：配好 api_key 才贡献素材源。"""
         api_key = (self.config or {}).get("api_key", "") or os.environ.get("PIXABAY_API_KEY", "")
         if not api_key:
-            print(f"[PixabayPlugin] 跳过: 请配置 PIXABAY_API_KEY")
-            return
+            logger.info("[PixabayPlugin] 未配置 api_key（config.yaml 或 PIXABAY_API_KEY）"
+                        "——本次不贡献素材源")
+            return []
         self._source = PixabayMaterialSource(api_key=api_key)
-        MaterialRegistry.register(self._source, plugin_id=self.manifest.id)
-        print(f"[PixabayPlugin] Pixabay 素材库已注册")
+        return [Contribution(
+            ContributionKind.MATERIAL_SOURCE, self._source.source_id, self._source,
+        )]
 
     def shutdown(self) -> None:
+        # A3：同步安全关闭（原 create_task 永不 await）
         if self._source:
-            import asyncio
-            try:
-                asyncio.create_task(self._source.close())
-            except Exception:
-                pass
+            close_source_sync(self._source)
 
 
 __all__ = ["PixabayMaterialPlugin"]

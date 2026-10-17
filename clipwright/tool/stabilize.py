@@ -30,7 +30,7 @@ class VideoStabilizeTool(BaseTool):
     ) -> ToolExecResult:
         out = _ensure_output_path(output_path, "stab_", ".mp4")
         transforms = _ensure_output_path(None, "transforms_", ".trf")
-        # T12: transforms 文件在任何路径（检测失败/超时/异常）下都必须清理
+        # transforms 文件在任何路径（检测失败/超时/异常）下都必须清理
         try:
             return await self._run(input_path, smoothing, max_shift, out, transforms)
         finally:

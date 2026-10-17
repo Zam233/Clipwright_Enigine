@@ -92,3 +92,12 @@ _xtest/
 
 # runtime data (MG generations / render caches)
 clipwright/animation/mg/generations/
+
+# real-material benchmark corpus (Pexels downloads; too large to commit)
+data/
+
+# runtime secrets (plaintext API keys when no encryption key is configured)
+provider_sources.json
+settings.json
+provider_sources.json.bad
+settings.json.bad

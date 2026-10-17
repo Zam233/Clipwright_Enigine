@@ -52,10 +52,76 @@ DEFAULT_PIPELINE_TIMEOUT_SEC = 1800  # 30 分钟
 _run_registry: list[dict] = []
 _run_registry_lock = threading.Lock()
 
-# G2: 协作式取消标记（per-pipeline）。
+# 协作式取消标记（per-pipeline）。
 # 不强制中断 in-flight LLM 调用（asyncio.to_thread 不可取消），
 # 在下一个 agent 边界（_dispatch 前）生效。
 _CANCELLED: set[str] = set()
+
+# 轮 94（版权最后一公里）：署名轨常量
+_CREDIT_DUR_SEC = 2.5
+_CREDIT_MAX_SOURCES = 4  # 片尾字幕最多列出的来源数（超出折叠为「等 N 项」）
+
+
+def _collect_credit_lines(final_tl: dict) -> tuple[list[str], int]:
+    """从时间线 clip 元数据收集去重后的署名行；返回 (行列表, 去重来源数)。"""
+    seen: set[tuple] = set()
+    rows: list[str] = []
+    for tr in final_tl.get("tracks", []) or []:
+        for c in tr.get("clips", []) or []:
+            meta = c.get("metadata") or {}
+            lic = str(meta.get("license") or "").strip()
+            if not lic:
+                continue
+            author = str(meta.get("author") or "").strip()
+            title = str(meta.get("source_title") or lic).strip()
+            key = (lic, author)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(f"{title} · {author}（{lic}）" if author else f"{title}（{lic}）")
+    return rows, len(seen)
+
+
+def _append_credit_outro(final_tl: dict, credits: tuple[list[str], int]) -> dict:
+    """在时间线末尾追加 2.5s 署名字幕片段；返回新的 final_tl（深拷贝修改）。"""
+    import copy as _copy
+    import uuid as _uuid
+
+    from clipwright.schema.timeline import ClipKind as _CK
+
+    rows, source_count = credits
+    shown = rows[:_CREDIT_MAX_SOURCES]
+    if len(rows) > _CREDIT_MAX_SOURCES:
+        shown.append(f"…等 {len(rows)} 项，详见项目素材信息")
+    text = "素材来源\n" + "\n".join(shown)
+
+    tl = _copy.deepcopy(final_tl)
+    cap_track = next((t for t in tl.get("tracks", []) if t.get("kind") == "caption"), None)
+    if cap_track is None:
+        cap_track = {"id": f"t_credit_{_uuid.uuid4().hex[:6]}", "name": "署名",
+                     "kind": "caption", "index": len(tl.get("tracks", [])), "clips": []}
+        tl.setdefault("tracks", []).append(cap_track)
+    if not cap_track.get("clips"):
+        cap_track["clips"] = []
+    end = max(
+        (float(c.get("start_sec", 0) or 0) + float(c.get("duration_sec", 0) or 0))
+        for t in tl.get("tracks", []) for c in (t.get("clips", []) or [])
+    ) if any(t.get("clips") for t in tl.get("tracks", [])) else 0.0
+    cap_track["clips"].append({
+        "id": f"cc_credit_{_uuid.uuid4().hex[:6]}",
+        "kind": "caption",
+        "asset_id": "",
+        "track_id": cap_track["id"],
+        "start_sec": round(end, 3),
+        "duration_sec": _CREDIT_DUR_SEC,
+        "text": text,
+        "font_size": 30,
+        "position": "center",
+        "renderer": "ass",
+        "metadata": {"category": "credit", "source_count": source_count},
+    })
+    tl["duration_sec"] = round(float(tl.get("duration_sec", 0) or 0) + _CREDIT_DUR_SEC, 3)
+    return tl
 
 
 def mark_cancelled(pipeline_id: str) -> None:
@@ -128,7 +194,7 @@ def record_run_start(pipeline_id: str, topic: str) -> None:
             "_start_dt": now,
             "agents": [],
         })
-        # B9: 有界注册表——裁剪至最近 200 条，防止无界增长
+        # 有界注册表——裁剪至最近 200 条，防止无界增长
         del _run_registry[:-200]
 
 
@@ -397,9 +463,10 @@ class PipelineOrchestratorV2:
 
     MAX_SELF_HEAL_LOOPS = 3
     # Agent 级熔断可观测镜像: agent_name → {"fail_count": int, "last_fail_at": datetime}
-    # A10: 类级 dict 仅作为最近状态镜像（供 breaker-status 端点/运维观测），
-    # 不参与熔断判定——判定状态在实例级（见 __init__），避免管线 A 的连续失败
-    # 令并发管线 B 的步骤被熔断跳过。
+    # P2-49: 类级熔断表（判定依据，进程级共享）——run-async/retry/batch 各自
+    # new 编排器实例，实例级字典曾让熔断跨管线形同虚设。LLM provider 故障是
+    # 进程级事实：管线 A 连续失败触发的熔断同样保护并发管线 B（免重复计费）。
+    # 恢复期（_circuit_breaker_recovery_sec）内自动复位，误熔断影响有界。
     _circuit_breakers: dict[str, dict] = {}
     _circuit_breaker_threshold = 3
     _circuit_breaker_recovery_sec = 60
@@ -421,8 +488,8 @@ class PipelineOrchestratorV2:
                 self._agents[entry.name] = entry.agent
         except Exception as e:
             logger.warning("插件 Agent 合并失败（仅核心 Agent 执行）: %s", e)
-        # A10: 实例级熔断状态（每管线独立，判定唯一依据）
-        self._circuit_breakers: dict[str, dict] = {}
+        # P2-49: 判定表指向类级共享（见类属性注释）
+        self._circuit_breakers = PipelineOrchestratorV2._circuit_breakers
 
     def _check_circuit_breaker(self, agent_name: str) -> bool:
         """检查 agent 是否熔断。返回 True 表示已熔断（应跳过）。"""
@@ -455,7 +522,7 @@ class PipelineOrchestratorV2:
         if cb["fail_count"] >= self._circuit_breaker_threshold:
             logger.warning("Agent 熔断触发: %s (连续失败 %d/%d 次)",
                           agent_name, cb["fail_count"], self._circuit_breaker_threshold)
-        # A10: 同步镜像（观测端点用）
+        # 同步镜像（观测端点用）
         PipelineOrchestratorV2._circuit_breakers[agent_name] = {
             "fail_count": cb["fail_count"], "last_fail_at": cb["last_fail_at"],
         }
@@ -466,7 +533,7 @@ class PipelineOrchestratorV2:
         if cb and cb["fail_count"] > 0:
             cb["fail_count"] = 0
             logger.info("Agent 熔断重置: %s", agent_name)
-        # A10: 镜像同步归零（保留 last_fail_at 供恢复期展示）
+        # 镜像同步归零（保留 last_fail_at 供恢复期展示）
         PipelineOrchestratorV2._circuit_breakers[agent_name] = {
             "fail_count": 0, "last_fail_at": (cb or {}).get("last_fail_at"),
         }
@@ -511,7 +578,7 @@ class PipelineOrchestratorV2:
                 error_category = self._categorize_error(state.error or "")
                 tracer.end_span(root_span, status="error", error=state.error)
         except asyncio.CancelledError:
-            # A2 修复：取消也必须落终态（旧实现 CancelledError 直接向上传播，
+            # 修复：取消也必须落终态（旧实现 CancelledError 直接向上传播，
             # Mongo 停留 running/pending、运行历史留永久幽灵记录）。落盘后
             # 继续向上传播，保持 TaskQueue 的取消/超时语义。
             state.status = PipelineStatus.CANCELLED
@@ -544,7 +611,7 @@ class PipelineOrchestratorV2:
         tracer.cleanup()
         state.updated_at = datetime.now(timezone.utc)
 
-        # G2: 协作式取消——若期间被标记取消，终态改为 CANCELLED 并写 trace/result
+        # 协作式取消——若期间被标记取消，终态改为 CANCELLED 并写 trace/result
         if is_cancelled(pid):
             state.status = PipelineStatus.CANCELLED
             state.error = state.error or "管线已取消"
@@ -582,13 +649,13 @@ class PipelineOrchestratorV2:
                 {
                     "timeline": tl,
                     "constraints": persona_config.get("constraints", {}),
-                    # C8: 显式带上 creative_brief（质检的简报一致性检查依赖它）
+                    # 显式带上 creative_brief（质检的简报一致性检查依赖它）
                     "creative_brief": agent_context.extra_params.get("creative_brief"),
                 },
                 agent_context, bus,
             )
 
-            # C8: 质检自身异常 ≠ 通过——原实现 step 异常时 result 为空，
+            # 质检自身异常 ≠ 通过——原实现 step 异常时 result 为空，
             # _check_quality 返回 (False,"",[])，quality_passed=True 直接放行
             if getattr(step, "status", None) == PipelineStatus.FAILED and not getattr(step, "result", None):
                 state.status = PipelineStatus.FAILED
@@ -599,6 +666,26 @@ class PipelineOrchestratorV2:
 
             # 检查是否需要自愈
             has_errors, redo_agent, quality_issues = self._check_quality(step)
+            # 轮 84（评分闭环）：可选分数门槛——extra_params.quality_min_score
+            # > 0 时，质检分低于门槛视同 error 触发自愈（默认 0 = 不启用，
+            # 保持既有 pass/fail 语义）
+            min_score = 0
+            try:
+                min_score = int(agent_context.extra_params.get("quality_min_score", 0) or 0)
+            except (TypeError, ValueError):
+                min_score = 0
+            score = step.result.get("score") if step and step.result else None
+            if (
+                not has_errors
+                and min_score > 0
+                and isinstance(score, (int, float))
+                and score < min_score
+            ):
+                has_errors = True
+                # 分数型缺陷无明确责任方 → 交由最上游 structure 重建
+                redo_agent = "structure"
+                add_event(pid, "quality", "error",
+                          f"质量分 {score} 低于门槛 {min_score}，触发自愈重做 structure")
             # 批A(R9)：有 error 但无法映射重做目标 → 如实失败
             # （旧实现落入 else 分支静默 COMPLETED + error issues）
             if has_errors and not redo_agent:
@@ -613,7 +700,7 @@ class PipelineOrchestratorV2:
                 add_event(pid, "system", "info",
                           f"自愈[{heal_count}]: 重做 {redo_agent}, 问题={len(quality_issues)}个")
 
-                # P1: 将质检问题注入 agent_context 供重做时参考
+                # 将质检问题注入 agent_context 供重做时参考
                 agent_context.extra_params["_quality_issues"] = quality_issues[:5]
                 agent_context.extra_params["_quality_heal_count"] = heal_count
 
@@ -627,7 +714,7 @@ class PipelineOrchestratorV2:
                 if redo_step.result and getattr(redo_step, "status", None) != PipelineStatus.FAILED:
                     self._merge_agent_result(redo_agent, redo_step, result_data, bus, pid)
 
-                # P1 FIX + A1 修复: 联动重做 redo_agent 的全部下游（传递闭包）
+                # FIX + A1 修复: 联动重做 redo_agent 的全部下游（传递闭包）
                 downstream = self._downstream_closure(redo_agent)
                 for dep_name in downstream:
                     if dep_name == "quality":
@@ -648,6 +735,60 @@ class PipelineOrchestratorV2:
         agent_context.extra_params.pop("_quality_issues", None)
         agent_context.extra_params.pop("_quality_heal_count", None)
         return quality_passed
+
+    def _finalize_timeline(self, final_tl, plugin, agent_context, pid):
+        """P1-18: 终局后处理——类型 transform + validate_clip 打标 + 成片署名轨。
+
+        首次运行（_run_inner）与自愈重试（run_from_agent）统一走此路径；
+        旧实现这套后处理只存在于 retry 路径，首跑与重试产出不一致。
+        """
+        if not final_tl:
+            return final_tl
+
+        if plugin is not None:
+            # 类型插件 transform 后处理（分辨率/帧率/标题字幕/时长截断）
+            try:
+                from clipwright.schema.timeline import Timeline as _Tl
+                processed = plugin.post_process_timeline(_Tl.model_validate(final_tl))
+                final_tl = processed.model_dump(mode="json")
+            except Exception as e:
+                logger.warning("B21 类型 transform 后处理失败（保留原时间线）: %s", e)
+            # 轮 89（批次 8）：validate_clip 接线（原零调用的死能力）——类型
+            # 插件可对每个视频 clip 做类型规范校验，违规 clip 打标供审阅
+            try:
+                validator = getattr(plugin, "validate_clip", None)
+                if callable(validator) and final_tl:
+                    _invalid = 0
+                    for _tr in final_tl.get("tracks", []) or []:
+                        if str(_tr.get("kind", "")).endswith("video"):
+                            for _c in _tr.get("clips", []) or []:
+                                try:
+                                    from clipwright.schema.timeline import Clip as _Clip
+                                    if not validator(_Clip.model_validate(_c)):
+                                        _invalid += 1
+                                        _meta = _c.setdefault("metadata", {}) or {}
+                                        _meta["type_violation"] = True
+                                except Exception:
+                                    continue
+                    if _invalid:
+                        add_event(pid, "system", "warning",
+                                  f"类型规范校验: {_invalid} 个片段不符合 {plugin.plugin_id} 规范（已打标）")
+            except Exception as e:
+                logger.warning("类型 validate_clip 校验失败（跳过）: %s", e)
+
+        # 轮 94（版权最后一公里）：成片自动署名轨——把时间线内含授权
+        # 元数据的素材去重后追加 2.5s 片尾字幕片段。credit_outro 默认开
+        # （商业交付署名是要求）；显式 false 关闭；无 license 素材零变化。
+        if agent_context.extra_params.get("credit_outro", True):
+            try:
+                _credits = _collect_credit_lines(final_tl)
+                if _credits:
+                    final_tl = _append_credit_outro(final_tl, _credits)
+                    add_event(pid, "system", "info",
+                              f"已追加素材署名轨（{_credits[1]} 个来源）")
+            except Exception:
+                logger.exception("署名轨生成失败（跳过）")
+        return final_tl
 
     async def run_from_agent(
         self,
@@ -735,14 +876,8 @@ class PipelineOrchestratorV2:
             if bus.get_artifact("timeline")
             else None
         )
-        # B21: 类型插件 transform 后处理（分辨率/帧率/标题字幕/时长截断）
-        if final_tl and plugin is not None:
-            try:
-                from clipwright.schema.timeline import Timeline as _Tl
-                processed = plugin.post_process_timeline(_Tl.model_validate(final_tl))
-                final_tl = processed.model_dump(mode="json")
-            except Exception as e:
-                logger.warning("B21 类型 transform 后处理失败（保留原时间线）: %s", e)
+        # P1-18: 后处理统一走 _finalize_timeline（与首跑路径一致）
+        final_tl = self._finalize_timeline(final_tl, plugin, agent_context, pid)
         state.shared_data["final_timeline"] = final_tl
         _ft = state.shared_data.get("final_timeline")
         if _ft:
@@ -751,7 +886,7 @@ class PipelineOrchestratorV2:
         if state.status != PipelineStatus.FAILED:
             state.status = PipelineStatus.COMPLETED
         state.updated_at = datetime.now(timezone.utc)
-        # A3 修复：retry 与 run() 对等——终态持久化 + 运行历史记录
+        # 修复：retry 与 run() 对等——终态持久化 + 运行历史记录
         # （旧实现只写内存结果，重启后 Mongo 停留在失败快照且 /runs 无记录）
         try:
             _loop = asyncio.get_running_loop()
@@ -790,9 +925,9 @@ class PipelineOrchestratorV2:
             except Exception:
                 pass
 
-        # P2: DAG 自动拓扑排序执行
+        # DAG 自动拓扑排序执行
         for group_idx, group in enumerate(AgentDAG.get_execution_plan()):
-            # P8: dry-run 预览模式 — 只执行到 edit（粗剪时间线），
+            # dry-run 预览模式 — 只执行到 edit（粗剪时间线），
             # 跳过 animation/audio/quality 组，快速出规划预览。
             if request.dry_run and "edit" in group:
                 add_event(pid, "system", "info",
@@ -811,21 +946,39 @@ class PipelineOrchestratorV2:
                             if isinstance(result, Exception):
                                 add_event(pid, name, "error", f"{name} 异常: {str(result)[:200]}")
                                 continue
-                            result_data[name] = getattr(result, "result", {}) or {}
+                            # P3-11: 与正式路径同语义——走 _merge_agent_result
+                            # （控制键排除、timeline 以总线为准），不再裸 dict 合并；
+                            # dry-run 需保留 edit 的 timeline 供预览（总线优先，见下）
+                            self._merge_agent_result(name, result, result_data, bus, pid)
+                            _r = getattr(result, "result", None)
+                            if isinstance(_r, dict) and _r.get("timeline") is not None:
+                                result_data["_dry_edit_timeline"] = _r["timeline"]
                 state.shared_data["dry_run"] = True
-                # A9: dry-run 与 V1 对齐——产出 final_timeline + timeline_snapshot
+                # dry-run 与 V1 对齐——产出 final_timeline + timeline_snapshot
                 # 事件，否则 /run-async 的 dry-run 预览拿不到时间线（原实现只落
                 # result_data[name] 裸结果，未提取 edit 的 timeline）
                 _dry_tl = None
-                _dry_edit = result_data.get("edit")
-                if isinstance(_dry_edit, dict):
-                    _dry_tl = _dry_edit.get("timeline")
+                _tl_artifact = bus.get_artifact("timeline")
+                # P3-11: 仅真实 Timeline 实例走总线（mock/占位对象不参与判定）
+                try:
+                    from clipwright.schema.timeline import Timeline as _TLModel
+                    if isinstance(_tl_artifact, _TLModel):
+                        _dry_tl = _tl_artifact.model_dump(mode="json")
+                except Exception:
+                    _dry_tl = None
+                if _dry_tl is None:
+                    _dry_tl = result_data.get("_dry_edit_timeline")
+                if _dry_tl is None:
+                    _dry_edit = result_data.get("edit")
+                    if isinstance(_dry_edit, dict):
+                        _dry_tl = _dry_edit.get("timeline")
+                result_data.pop("_dry_edit_timeline", None)
                 state.shared_data["final_timeline"] = _dry_tl
                 if _dry_tl:
                     add_event(pid, "system", "timeline_snapshot",
                               f"粗剪时间线: {len(_dry_tl.get('tracks', []) or [])} 轨",
                               _dry_tl)
-                # A4 修复：edit 失败时如实失败（旧实现无条件 COMPLETED，
+                # 修复：edit 失败时如实失败（旧实现无条件 COMPLETED，
                 # 预览页拿到 success + 空时间线）
                 # 批A(R5)：检查全部 step——旧实现只查 edit，上游 material/
                 # structure 失败仍会被无条件合并进预览
@@ -854,14 +1007,26 @@ class PipelineOrchestratorV2:
 
             tasks = {}
             for agent_name in group:
-                input_data = self._build_input(agent_name, result_data, persona_config, plugin,
-                                               extra_params=agent_context.extra_params)
+                # P3-12: _build_input 的 ValueError 曾在 _run_agent 之外抛出，
+                # 异常归因到后续阶段；此处捕获并标注到当前 agent
+                try:
+                    input_data = self._build_input(
+                        agent_name, result_data, persona_config, plugin,
+                        extra_params=agent_context.extra_params)
+                except Exception as be:
+                    add_event(pid, agent_name, "error",
+                              f"{agent_name} 输入构建失败: {str(be)[:200]}")
+                    logger.exception("PipelineV2 _build_input 失败 agent=%s", agent_name)
+                    state.status = PipelineStatus.FAILED
+                    state.error = f"{agent_name} 输入构建失败: {str(be)[:200]}"
+                    state.updated_at = datetime.now(timezone.utc)
+                    return state
                 # Layer 2: span 在 _run_agent 内部创建（熔断后不创建 span）
                 tasks[agent_name] = self._run_agent(
                     state, agent_name, input_data, agent_context, bus, tracer,
                 )
 
-            # P1: 并行执行 + 多路错误聚合
+            # 并行执行 + 多路错误聚合
             results = await asyncio.gather(*tasks.values(), return_exceptions=True)
 
             errors: list[tuple[str, Exception]] = []
@@ -893,7 +1058,7 @@ class PipelineOrchestratorV2:
                 if hasattr(result, "result") and result.result:
                     self._merge_agent_result(name, result, result_data, bus, pid)
 
-            # P1: 多路错误
+            # 多路错误
             if errors:
                 error_msgs = "; ".join(f"{n}: {e}" for n, e in errors)
                 state.status = PipelineStatus.FAILED
@@ -907,7 +1072,7 @@ class PipelineOrchestratorV2:
             return state
 
         # ── 质检 + 自愈循环 (P1: 联动重做 animation + audio) ──
-        # C8: 检查自愈结果——原实现返回值被丢弃，质检 3 轮 error 未修复的
+        # 检查自愈结果——原实现返回值被丢弃，质检 3 轮 error 未修复的
         # 管线仍报纯 COMPLETED。现终态置为 FAILED（配合 diagnostics/retry 闭环）。
         _quality_ok = await self._self_heal_quality(
             state, result_data, persona_config, plugin, agent_context, bus, pid,
@@ -922,11 +1087,16 @@ class PipelineOrchestratorV2:
         agent_context.extra_params.pop("_quality_heal_count", None)
 
         # 完成
-        state.shared_data["final_timeline"] = (
+        final_tl = (
             bus.get_artifact("timeline").model_dump(mode="json")
             if bus.get_artifact("timeline")
             else None
         )
+        # P1-18: 首跑同样应用类型 transform / validate_clip / 署名轨后处理
+        final_tl = self._finalize_timeline(
+            final_tl, plugin, agent_context, pid,
+        )
+        state.shared_data["final_timeline"] = final_tl
 
         # 与 V1 对齐：把最终时间线快照写入 trace，前端 SSE 据此进入审阅视图，
         # 不依赖 result 接口的轮询时机
@@ -1034,6 +1204,16 @@ class PipelineOrchestratorV2:
         persona_config = manifest.parameter.model_dump(mode="json") if manifest.parameter else {}
         translated = plugin.translate_persona(manifest.parameter) if manifest.parameter else {}
 
+        # P3-15: persona visual.transition_weights 接线（原死键）——显式设置时
+        # 覆盖类型插件的硬编码默认；未设置时保持类型默认（零行为变化）
+        try:
+            _pv_visual = getattr(manifest.parameter, "visual", None)
+            _pv_tw = getattr(_pv_visual, "transition_weights", None)
+            if _pv_tw:
+                translated = {**translated, "transition_weights": dict(_pv_tw)}
+        except Exception:
+            pass
+
         # 加载 Persona 的 prompt.md 风格指引与知识库上下文，供 StructureAgent 使用，
         # 避免管线生成的脚本与需求阶段确认的风格发生漂移。
         self._persona_prompt = getattr(manifest, "prompt", "") or ""
@@ -1103,16 +1283,16 @@ class PipelineOrchestratorV2:
                 "timeline": result_data.get("timeline"),
                 "audio_config": {
                     **persona_config.get("audio", {}),
-                    # B12: 优先透传前端 voice_id/auto_dub；未提供时回退 persona + 默认 auto_dub=True
+                    # 优先透传前端 voice_id/auto_dub；未提供时回退 persona + 默认 auto_dub=True
                     "voice_id": extra_params.get("voice_id")
                     or persona_config.get("audio", {}).get("voice_clone_model_id")
                     or persona_config.get("audio", {}).get("voice")
                     or "",
-                    # 批8：Persona 目标响度透传（渲染 loudnorm 消费；缺省 -16）
+                    # Persona 目标响度透传（渲染 loudnorm 消费；缺省 -16）
                     "target_loudness_lufs": persona_config.get("audio", {}).get(
                         "target_loudness_lufs"),
                     "auto_dub": extra_params.get("auto_dub", True),
-                    # 批2：不再硬编码 True——客户端/会话可关闭字幕
+                    # 不再硬编码 True——客户端/会话可关闭字幕
                     "subtitle_enabled": bool(extra_params.get("subtitle_enabled", True)),
                 },
             },
@@ -1162,7 +1342,7 @@ class PipelineOrchestratorV2:
         add_event(pid, agent_name, "agent_start", f"Agent: {agent_name}")
         logger.info("PipelineV2 Agent[%s] 开始", agent_name)
 
-        # G2: 协作式取消——在 dispatch 前检查取消标记，命中则跳过该 agent
+        # 协作式取消——在 dispatch 前检查取消标记，命中则跳过该 agent
         if is_cancelled(pid):
             step.status = PipelineStatus.CANCELLED
             step.error = f"Agent {agent_name} 已跳过（管线取消）"
@@ -1175,10 +1355,11 @@ class PipelineOrchestratorV2:
 
         # SA-1: PRE_AGENT Hook —— 取消检查后、执行前。插件可改写 input（返回
         # {"input": {...}}）或跳过执行（返回 {"skip": True, "reason": ...}）。
-        # Hook 异常已在 HookRegistry.execute 内 per-hook 隔离（P8），此处仅防御兜底。
+        # Hook 异常已在调度器内 per-hook 隔离（P8），此处仅防御兜底。
         try:
-            from clipwright.plugins.hooks import HookPoint, HookRegistry
-            pre = HookRegistry.execute(HookPoint.PRE_AGENT, {
+            from clipwright.plugins.hooks import HookPoint
+            from clipwright.plugins.hooks_async import execute_async
+            pre = await execute_async(HookPoint.PRE_AGENT, {
                 "pipeline_id": pid, "agent_name": agent_name,
                 "input": dict(input_data or {}), "context": context,
             })
@@ -1201,12 +1382,23 @@ class PipelineOrchestratorV2:
             logger.warning("PRE_AGENT Hook 执行异常（忽略，继续执行）: %s", he)
 
         try:
-            # F6: 移除 demands 注入——AgentBus 的 demand 无任何 Agent 消费
+            # 移除 demands 注入——AgentBus 的 demand 无任何 Agent 消费
             # （无消费确认机制、列表无限残留），原注入纯属死机制；事件流保留
-            # A6: dispatch 前取用量快照，结束后差值即该 Agent 的 token 消耗
+            # dispatch 前取用量快照，结束后差值即该 Agent 的 token 消耗
             # （补齐 Material/Edit/Animation/Audio/Quality 的记账缺口）
             _usage_before = llm_usage_snapshot()
             result = await self._dispatch(agent_name, input_data, context)
+            # P1-19: 在飞调用返回时若管线已取消——结果一律弃用（不写 timeline），
+            # 并记 wasted-call 事件（线程内 provider 请求无法真正中断，费用已产生）
+            if is_cancelled(pid):
+                step.status = PipelineStatus.CANCELLED
+                step.error = f"{agent_name} 在飞 LLM 调用已放弃（管线取消，wasted call）"
+                step.completed_at = datetime.now(timezone.utc)
+                state.updated_at = datetime.now(timezone.utc)
+                add_event(pid, agent_name, "cancelled",
+                          f"{agent_name} 的在飞 LLM 调用已放弃（wasted call，费用已产生）")
+                logger.warning("PipelineV2 Agent[%s] 在飞调用放弃（管线已取消）: %s", agent_name, pid)
+                return step
             step.result = result.model_dump(mode="json") if hasattr(result, "model_dump") else {}
 
             # SA-3: 插件 Agent 通用输出（PluginAgentOutput.payload）的键提升到
@@ -1254,13 +1446,15 @@ class PipelineOrchestratorV2:
                         status="success" if result.decision != AgentDecision.FAIL else "error",
                     )
                 except Exception:
-                    pass
+                    # 轮 81：留痕——用量记录失败静默丢数会让成本统计/预算熔断失真
+                    logger.exception("LLM 用量记录失败 pipeline=%s agent=%s", pid, agent_name)
 
             # SA-1: POST_AGENT Hook —— 决策落定后的只读观测点（不改写语义，
             # 避免与自愈/retry 状态机冲突）。异常路径见下方 except 块。
             try:
-                from clipwright.plugins.hooks import HookPoint, HookRegistry
-                HookRegistry.execute(HookPoint.POST_AGENT, {
+                from clipwright.plugins.hooks import HookPoint
+                from clipwright.plugins.hooks_async import execute_async
+                await execute_async(HookPoint.POST_AGENT, {
                     "pipeline_id": pid, "agent_name": agent_name,
                     "decision": str(result.decision), "result": step.result,
                     "error": getattr(result, "error", None) or "",
@@ -1284,13 +1478,25 @@ class PipelineOrchestratorV2:
             add_event(pid, agent_name, "agent_end",
                       f"{agent_name} → {step.status} ({step.duration_ms or '?'}ms)")
 
-            # C5: 细粒度进度 — 每个 agent 成功完成后发数值进度事件。
-            # 批3：失败的 agent 不推进度（旧实现进度越过失败阶段，UI 失真）
-            from clipwright.services.pipeline import get_agent_progress
+            # 细粒度进度 — 每个 agent 成功完成后发数值进度事件。
+            # 失败的 agent 不推进度（旧实现进度越过失败阶段，UI 失真）
+            # 轮 88：进度权重表内联（原 get_agent_progress 随 V1 编排器删除；
+            # 权重总和 100，按 DAG 执行顺序累计）
             if getattr(step, "status", None) != PipelineStatus.FAILED:
+                _progress_weights = {
+                    "structure": 15, "material": 20, "edit": 30,
+                    "animation": 15, "audio": 10, "quality": 10,
+                }
+                _order = ["structure", "material", "edit", "animation", "audio", "quality"]
+                _total = 0
+                if agent_name in _progress_weights:
+                    for _name in _order:
+                        _total += _progress_weights.get(_name, 0)
+                        if _name == agent_name:
+                            break
                 add_event(pid, agent_name, "progress",
                           f"{agent_name} 完成",
-                          {"progress": get_agent_progress(agent_name)})
+                          {"progress": min(100, _total)})
 
             if agent_name == "edit":
                 timeline_data = step.result.get("timeline")
@@ -1316,8 +1522,9 @@ class PipelineOrchestratorV2:
             _end_span(status="error", error=str(e)[:200])
             # SA-1: 异常路径同样触发 POST_AGENT（带 error，观测埋点完整性）
             try:
-                from clipwright.plugins.hooks import HookPoint, HookRegistry
-                HookRegistry.execute(HookPoint.POST_AGENT, {
+                from clipwright.plugins.hooks import HookPoint
+                from clipwright.plugins.hooks_async import execute_async
+                await execute_async(HookPoint.POST_AGENT, {
                     "pipeline_id": pid, "agent_name": agent_name,
                     "decision": "FAIL", "result": {}, "error": str(e)[:500],
                 })
@@ -1329,7 +1536,7 @@ class PipelineOrchestratorV2:
             step.duration_ms = int((step.completed_at - step.started_at).total_seconds() * 1000)
         state.updated_at = datetime.now(timezone.utc)
 
-        # C1: 断点续跑落库 — 每完成一个 agent 即持久化检查点（含已完成的 steps 与
+        # 断点续跑落库 — 每完成一个 agent 即持久化检查点（含已完成的 steps 与
         # 共享数据），进程崩溃/重启后可从最后一个完整步骤恢复/重放。
         try:
             loop = asyncio.get_running_loop()
@@ -1390,7 +1597,7 @@ class PipelineOrchestratorV2:
                 visual_config=data.get("visual_config", {}),
                 persona_prompt=data.get("persona_prompt"),
                 vision_prompt=data.get("vision_prompt"),
-                # D5: AI 生成图片历史 → 语义索引（无历史时为 []，零变化）
+                # AI 生成图片历史 → 语义索引（无历史时为 []，零变化）
                 image_assets=generated_image_entries(),
                 creative_brief=ctx.extra_params.get("creative_brief"),
                 production_plan=ctx.extra_params.get("production_plan"),
@@ -1434,7 +1641,7 @@ class PipelineOrchestratorV2:
                 return
             from clipwright.models.pipeline_model import PipelineModel
             # 截断过大的 shared_data 字段，避免 MongoDB 16MB 限制。
-            # B8：递归截断内部字符串并保留 dict/list 结构，不再把容器 str() 成字符串。
+            # 递归截断内部字符串并保留 dict/list 结构，不再把容器 str() 成字符串。
             truncated_shared = truncate_shared_data(state.shared_data or {})
             data = {
                 "status": status or state.status.value,

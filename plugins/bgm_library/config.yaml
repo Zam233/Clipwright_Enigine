@@ -1,0 +1,12 @@
+fields:
+  freesound_api_key:
+    type: string
+    value: ""
+    secret: true
+    label: "Freesound API Key"
+    description: "从 https://freesound.org/apiv2/apply 获取；留空则读环境变量 FREESOUND_API_KEY"
+  local_dir:
+    type: string
+    value: ""
+    label: "本地 BGM 目录"
+    description: "本地音乐库目录路径；留空则读环境变量 BGM_LOCAL_DIR"

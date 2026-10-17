@@ -16,6 +16,12 @@ router = APIRouter(prefix="/api/vision", tags=["vision"])
 _service = VisionService()
 
 
+def reset_vision_service() -> None:
+    """配置热更新后重建视觉服务单例（模型分类器在实例内缓存）。"""
+    global _service
+    _service = VisionService()
+
+
 @router.post("/analyze")
 async def analyze_image(image_path: str = Body(...)) -> dict:
     """分析图片/视频内容，返回自动识别的标签和描述。"""

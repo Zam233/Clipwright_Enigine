@@ -87,26 +87,42 @@ class STTService:
 
         # 如果是视频，先提取音频（同步 ffmpeg，offload 到线程避免冻住事件循环）
         audio_file = await asyncio.to_thread(self._ensure_audio, path)
+        # 轮 81：临时 wav 用完即删（旧实现每次视频转写泄漏一个文件）
+        tmp_audio = audio_file != str(path)
 
         try:
-            # 尝试 whisper Python 包（CPU 推理可达数分钟，必须 offload）
-            result = await asyncio.to_thread(
-                self._transcribe_whisper, audio_file, language, model_size, word_timestamps
-            )
-            if result.success:
-                return result
-        except Exception as e:
-            logger.debug("Whisper 不可用 (%s), 尝试 faster-whisper...", e)
+            return await self._transcribe_any(audio_file, language, model_size, word_timestamps)
+        finally:
+            if tmp_audio:
+                try:
+                    Path(audio_file).unlink(missing_ok=True)
+                except OSError:
+                    pass
 
-        try:
-            # 尝试 faster-whisper（同样 CPU 推理，offload）
-            result = await asyncio.to_thread(
-                self._transcribe_faster_whisper, audio_file, language, model_size, word_timestamps
-            )
-            if result.success:
-                return result
-        except Exception as e:
-            logger.debug("faster-whisper 不可用 (%s), 使用保底模式...", e)
+    async def _transcribe_any(
+        self, audio_file: str, language: str, model_size: str, word_timestamps: bool
+    ) -> STTResult:
+        """依次尝试已注册 STT 后端（whisper → faster-whisper → 插件后端）→ 保底占位。
+
+        B-2：后端顺序由 `providers/stt` 注册表决定（门面即注册表，插件可贡献
+        新 STT provider）；注册表不可用时回退旧硬编码顺序（行为兼容）。
+        """
+        from clipwright.providers.stt import resolve_stt_backends
+
+        backends = resolve_stt_backends(self) or [
+            ("whisper", self._transcribe_whisper),
+            ("faster-whisper", self._transcribe_faster_whisper),
+        ]
+        for name, fn in backends:
+            try:
+                # CPU 推理可达数分钟，必须 offload
+                result = await asyncio.to_thread(
+                    fn, audio_file, language, model_size, word_timestamps
+                )
+                if result.success:
+                    return result
+            except Exception as e:
+                logger.debug("%s 不可用 (%s)，尝试下一个后端...", name, e)
 
         # 保底：FFmpeg 提取音频信息 + 占位结果
         duration = await asyncio.to_thread(self._get_duration, audio_file)

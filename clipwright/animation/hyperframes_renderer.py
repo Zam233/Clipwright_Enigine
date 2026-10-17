@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from clipwright.animation.catalog import AnimationCatalog
+from clipwright.animation.hf_timeline import timeline_script
 from clipwright.config import logger
 from clipwright.services.async_util import cached_probe
 
@@ -27,10 +28,11 @@ from clipwright.services.async_util import cached_probe
 def _probe_hyperframes() -> bool:
     """同步阻塞探测（在后台线程里跑，绝不进事件循环线程）。"""
     try:
-        npx = HyperframesRenderer._npx_cmd()
         # 冷启动 npx 首次解析全局包可能超过 15s（下载/校验），放宽到 90s
-        r = subprocess.run([npx, "hyperframes", "--version"],
-                           capture_output=True, text=False, timeout=90)
+        r = subprocess.run(
+            [*HyperframesRenderer._cli_cmd("--version")],
+            capture_output=True, text=False, timeout=90,
+        )
         return r.returncode == 0
     except Exception:
         return False
@@ -49,6 +51,77 @@ class HyperframesRenderer:
     _BROWSER_CACHE_GLOB = (
         r"C:\Users\*\.cache\hyperframes\chrome\chrome-headless-shell\*\chrome-headless-shell-win64\chrome-headless-shell.exe"
     )
+
+    @staticmethod
+    def _local_bin() -> str | None:
+        """本地固定安装的 hyperframes 可执行文件（优先于 npx，免冷启动）。
+
+        解析顺序：
+        1. 环境变量 ``HYPERFRAMES_BIN``（部署/CI 显式指定）
+        2. 仓库根 ``node_modules/.bin/hyperframes[.cmd|.ps1]``（`npm i -D hyperframes`）
+        3. 无 → 返回 None，调用方回退 ``npx hyperframes``
+        """
+        env_bin = os.environ.get("HYPERFRAMES_BIN")
+        if env_bin and Path(env_bin).exists():
+            return env_bin
+        try:
+            repo_root = Path(__file__).resolve().parents[2]
+        except IndexError:  # pragma: no cover - 极浅目录布局
+            return None
+        for name in ("hyperframes.cmd", "hyperframes.ps1", "hyperframes"):
+            candidate = repo_root / "node_modules" / ".bin" / name
+            if candidate.exists():
+                return str(candidate)
+        return None
+
+    @staticmethod
+    def _cli_cmd(*args: str) -> list[str]:
+        """构造 hyperframes CLI 命令（本地 bin 优先，回退 npx）。"""
+        local = HyperframesRenderer._local_bin()
+        if local:
+            return [local, *args]
+        return [HyperframesRenderer._npx_cmd(), "hyperframes", *args]
+
+    @staticmethod
+    def _extra_render_flags() -> list[str]:
+        """渲染稳定性/Windows 专项参数（全部由环境变量驱动，缺省不传任何 flag）。
+
+        - ``CLIPWRIGHT_HF_FRAMES_CACHE_DIR`` → ``--frames-cache-dir``：把内容寻址的抽帧缓存
+          移出系统盘（Windows 上 C: 被抽帧缓存写满会直接导致长渲染失败）。
+        - ``CLIPWRIGHT_HF_BROWSER_TIMEOUT`` → ``--browser-timeout``（秒）；
+          ``CLIPWRIGHT_HF_PROTOCOL_TIMEOUT`` → ``--protocol-timeout``（毫秒）；
+          ``CLIPWRIGHT_HF_PLAYER_READY_TIMEOUT`` → ``--player-ready-timeout``（毫秒）：
+          重合成（多视频/多字体）在慢机器上易踩默认超时，按需放宽。
+        - ``CLIPWRIGHT_HF_LOW_MEMORY=1`` → ``--low-memory-mode``：低内存安全档（单 worker + 截图抓帧）。
+        - ``CLIPWRIGHT_HF_BROWSER_GPU`` → ``--browser-gpu`` / ``--no-browser-gpu``：显式指定
+          Chrome WebGL 走硬件还是 SwiftShader（容器里常见需要强制软件）。
+        """
+        flags: list[str] = []
+        cache_dir = (os.environ.get("CLIPWRIGHT_HF_FRAMES_CACHE_DIR") or "").strip()
+        if cache_dir:
+            flags += ["--frames-cache-dir", cache_dir]
+        for env_name, flag in (
+            ("CLIPWRIGHT_HF_BROWSER_TIMEOUT", "--browser-timeout"),
+            ("CLIPWRIGHT_HF_PROTOCOL_TIMEOUT", "--protocol-timeout"),
+            ("CLIPWRIGHT_HF_PLAYER_READY_TIMEOUT", "--player-ready-timeout"),
+        ):
+            val = (os.environ.get(env_name) or "").strip()
+            if val:
+                flags += [flag, val]
+        if (os.environ.get("CLIPWRIGHT_HF_LOW_MEMORY") or "").strip() in ("1", "true", "yes"):
+            flags.append("--low-memory-mode")
+        gpu = (os.environ.get("CLIPWRIGHT_HF_BROWSER_GPU") or "").strip().lower()
+        if gpu in ("1", "true", "yes", "on"):
+            flags.append("--browser-gpu")
+        elif gpu in ("0", "false", "no", "off"):
+            flags.append("--no-browser-gpu")
+        return flags
+
+    @staticmethod
+    def _quality_flag() -> str | None:
+        """渲染质量档：draft / standard / high（环境变量可覆盖，缺省不传→上游 standard）。"""
+        q = (os.environ.get("CLIPWRIGHT_HF_QUALITY") or "").strip().lower()
+        return q if q in ("draft", "standard", "high") else None
 
     @staticmethod
     def _npx_cmd() -> str:
@@ -126,6 +199,214 @@ class HyperframesRenderer:
         return bool(await _hf_available())
 
     @staticmethod
+    async def lint_html(
+        html: str, *, timeout: float = 120.0, run_cmd=None,
+    ) -> tuple[bool, list[str]]:
+        """上游静态门禁：对合成 HTML 跑 `hyperframes lint --json`（best-effort）。
+
+        返回 ``(ok, findings)``：``ok=False`` 表示存在 **error 级** 问题（warning 不影响
+        渲染，例如 `timeline_track_too_dense` / `studio_missing_editable_id`）。
+        渲染器/CLI 不可用、超时、JSON 解析失败一律返回 ``(True, [])``——
+        门禁失败绝不允许反向阻断渲染。
+
+        run_cmd 与 ``render_mg_html_to_mov`` 同约定（注入可复用的追踪/并发治理）。
+        """
+        import json as _json
+        import tempfile as _tempfile
+
+        if not html:
+            return True, []
+        work = Path(_tempfile.mkdtemp(prefix="hf_lint_"))
+        try:
+            (work / "index.html").write_text(html, encoding="utf-8")
+            cmd = HyperframesRenderer._cli_cmd("lint", str(work), "--json")
+            try:
+                if run_cmd is not None:
+                    r = await run_cmd(cmd)
+                    raw = getattr(r, "stdout", b"") or b""
+                else:
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    try:
+                        raw, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+                    except asyncio.TimeoutError:
+                        proc.kill()
+                        return True, []
+            except Exception:
+                return True, []
+            if isinstance(raw, str):
+                text = raw
+            else:
+                text = (raw or b"").decode("utf-8", errors="replace")
+            payload = _json.loads(text or "{}")
+            findings = payload.get("findings") or []
+            messages = [
+                f"[{f.get('severity')}] {f.get('code')}: {f.get('message')}"
+                for f in findings
+                if isinstance(f, dict)
+            ]
+            has_error = any(
+                isinstance(f, dict) and f.get("severity") == "error" for f in findings
+            )
+            return (not has_error), messages
+        except Exception:
+            return True, []
+        finally:
+            import shutil as _shutil
+            _shutil.rmtree(work, ignore_errors=True)
+
+    @staticmethod
+    async def check_html(
+        html: str, *, timeout: float = 300.0, run_cmd=None,
+    ) -> tuple[bool, list[str]]:
+        """上游浏览器门禁：`hyperframes check --json`（运行时 / 布局 / 动效 / WCAG 对比度）。
+
+        比 ``lint_html`` 更强的地方：真的在 headless Chrome 里加载合成，能抓到运行时报错、
+        文本溢出与越界、动效连续性，以及**文字对比度不达标**（本项目 MG 模板实测命中过
+        1.6:1 < 3:1）。
+
+        代价是每次要起一次 Chrome，因此只在生成期按需开启（`generation.check_gate`）。
+        返回 ``(ok, findings)``；ok=False 表示存在 error 级问题；CLI 不可用/超时/解析失败
+        一律返回 ``(True, [])``（best-effort，不得反向阻断渲染）。
+        """
+        import json as _json
+        import tempfile as _tempfile
+
+        if not html:
+            return True, []
+        work = Path(_tempfile.mkdtemp(prefix="hf_check_"))
+        try:
+            (work / "index.html").write_text(html, encoding="utf-8")
+            cmd = HyperframesRenderer._cli_cmd("check", str(work), "--json")
+            try:
+                if run_cmd is not None:
+                    r = await run_cmd(cmd)
+                    raw = getattr(r, "stdout", b"") or b""
+                else:
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    try:
+                        raw, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+                    except asyncio.TimeoutError:
+                        proc.kill()
+                        return True, []
+            except Exception:
+                return True, []
+            text = raw if isinstance(raw, str) else (raw or b"").decode("utf-8", errors="replace")
+            payload = _json.loads(text or "{}")
+            messages: list[str] = []
+            has_error = False
+            for stage in ("lint", "runtime", "layout", "motion", "contrast"):
+                section = payload.get(stage)
+                if not isinstance(section, dict):
+                    continue
+                for f in section.get("findings") or []:
+                    if not isinstance(f, dict):
+                        continue
+                    severity = f.get("severity")
+                    messages.append(
+                        f"[{stage}/{severity}] {f.get('code')}: {f.get('message')}"
+                    )
+                    if severity == "error":
+                        has_error = True
+            return (not has_error), messages
+        except Exception:
+            return True, []
+        finally:
+            import shutil as _shutil
+            _shutil.rmtree(work, ignore_errors=True)
+
+    @staticmethod
+    async def render_mg_html_to_mov(
+        html: str,
+        out_dir: str,
+        mov_path: str,
+        fps: float = 30.0,
+        timeout: float = 1800.0,
+        run_cmd=None,
+        validate=None,
+        quality: str | None = None,
+        lint_gate: bool = False,
+        variables: dict | None = None,
+    ) -> str | None:
+        """P1-01: 单个 MG HTML → 独立目录 index.html → npx hyperframes render → MOV。
+
+        预览端点与主管线渲染路径共用此实现（旧预览把 mg_html 塞进 overlay 列表，
+        _overlay_to_html 只读 text 字段 → 恒产出空白视频）。
+
+        run_cmd: 执行命令的 async 可调用（签名 (cmd, **kwargs) -> CompletedProcess 风格），
+        由调用方注入以复用各自的追踪/并发治理；缺省用 asyncio.subprocess 直跑。
+        quality: draft / standard / high（缺省读 CLIPWRIGHT_HF_QUALITY，预览建议 draft）。
+        lint_gate: True 时渲染前跑 `hyperframes lint`，存在 error 级问题即放弃本次渲染
+        （返回 None，由调用方走既有降级链）。
+        variables: 传给上游 `--variables` 的变量覆盖（P1-5）。HTML 里已声明
+        `data-composition-variables` 的 default，因此**不传也能正确渲染**；传了则以本次
+        参数为准（同一份 HTML 可用于多组文案/配色，也是 `--batch` 的前置条件）。
+        `CLIPWRIGHT_HF_STRICT_VARIABLES=1` 时追加 `--strict-variables`（CI 用：未声明键/
+        类型不符直接失败，而不是静默降级）。
+        返回 MOV 路径，失败返回 None。
+        """
+        import uuid as _uuid
+        from pathlib import Path as _Path
+
+        if not html:
+            return None
+        mg_dir = _Path(out_dir) / f"mg_{_uuid.uuid4().hex[:8]}"
+        mg_dir.mkdir(parents=True, exist_ok=True)
+        (mg_dir / "index.html").write_text(html, encoding="utf-8")
+
+        if lint_gate:
+            ok, findings = await HyperframesRenderer.lint_html(html, run_cmd=run_cmd)
+            if not ok:
+                logger.warning(
+                    "HyperframesRenderer: MG HTML 未通过 lint 门禁: %s", " | ".join(findings[:5])
+                )
+                return None
+
+        cmd = HyperframesRenderer._cli_cmd(
+            "render", str(mg_dir), "-o", mov_path, "--format", "mov",
+            "-f", str(int(fps)), "--quiet",
+        )
+        eff_quality = quality or HyperframesRenderer._quality_flag()
+        if eff_quality:
+            cmd += ["-q", eff_quality]
+        cmd += HyperframesRenderer._extra_render_flags()
+        if variables:
+            import json as _json
+
+            payload = _json.dumps(
+                {str(k): "" if v is None else str(v) for k, v in variables.items() if k},
+                ensure_ascii=False,
+            )
+            cmd += ["--variables", payload]
+            if (os.environ.get("CLIPWRIGHT_HF_STRICT_VARIABLES") or "").strip() in ("1", "true", "yes"):
+                cmd += ["--strict-variables"]
+        try:
+            if run_cmd is not None:
+                r = await run_cmd(cmd)
+                returncode = getattr(r, "returncode", 1)
+            else:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    env=HyperframesRenderer._render_env(),
+                )
+                returncode = await proc.wait()
+        except Exception:
+            return None
+        if returncode != 0:
+            return None
+        # 有效性校验可由调用方注入（主管线用 _is_valid_video；缺省查文件存在）
+        ok = validate(mov_path) if validate is not None else _Path(mov_path).exists()
+        return mov_path if ok else None
+
     async def await_available(timeout: float = 120.0) -> bool:
         """轮询等待 Hyperframes 可用（冷启动预热用），超时返回 False。
 
@@ -163,11 +444,14 @@ class HyperframesRenderer:
             out = Path(output_path)
             out.parent.mkdir(parents=True, exist_ok=True)
 
-            cmd = [
-                HyperframesRenderer._npx_cmd(), "hyperframes", "render",
-                str(work_dir), "-o", str(out),
+            cmd = HyperframesRenderer._cli_cmd(
+                "render", str(work_dir), "-o", str(out),
                 "--format", "mov", "-f", str(int(fps)), "--quiet",
-            ]
+            )
+            _q = HyperframesRenderer._quality_flag()
+            if _q:
+                cmd += ["-q", _q]
+            cmd += HyperframesRenderer._extra_render_flags()
             logger.info("HyperframesRenderer: 渲染 %d 个覆盖层 → %s", len(overlays), output_path)
             # 同步 subprocess（最长 1h）offload 到线程池，避免冻住事件循环。
             # 注入 HYPERFRAMES_BROWSER_PATH，避免 Windows 上浏览器探测失败导致 hang。
@@ -213,14 +497,16 @@ class HyperframesRenderer:
             if elem:
                 elems.append(elem)
 
-        js = HyperframesRenderer._timing_js()
+        # 注册真实时间轴（RuntimeTimelineLike）替代旧的 setTimeout 墙钟 JS：
+        # seek-safe + 消除 producer 的 timeline 就绪轮询超时（实测 108.2s → 18.0s）。
+        js = timeline_script()
 
         return f"""<!DOCTYPE html>
 <html data-fps="{int(fps)}" data-width="{width}" data-height="{height}">
 <head><meta charset="utf-8"><style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{width:{width}px;height:{height}px;overflow:hidden;background:transparent;position:relative}}
-.hf-el{{position:absolute;visibility:hidden;animation-fill-mode:forwards}}
+.hf-el{{position:absolute}}
 .hf-diagram{{display:flex;align-items:center;gap:20px;font-family:sans-serif;color:#fff}}
 .hf-diagram .item{{font-size:28px;padding:10px 20px;background:rgba(255,255,255,0.12);border-radius:8px;white-space:nowrap}}
 .hf-diagram .arrow{{font-size:28px;color:#4f8cff;white-space:nowrap}}
@@ -259,11 +545,12 @@ body{{width:{width}px;height:{height}px;overflow:hidden;background:transparent;p
             ds.text_color = font_color
             svg = DiagramRenderer.render(diagram_params, ds, width, height)
             if svg:
-                # SVG 图解自带逐元素入场动画，不通过 HF JS 控制
-                # 隐藏直到 start 时刻，然后由 CSS animation 控制可见性
+                # 图解 SVG 自带逐元素入场动画（位于子树内），容器只声明时间窗口；
+                # data-anim-subtree="1" 让运行时时间轴把子树里的 CSS 动画一并 seek。
                 return (
-                    f'<div class="hf-el hf-diagram-svg" data-i="d{index}" data-start="{start}" '
-                    f'data-dur="{dur}" data-anim-class="hf-diagram-reveal" data-anim-dur="0.01" '
+                    f'<div class="clip hf-el hf-diagram-svg" id="hf-d{index}" data-i="d{index}" '
+                    f'data-start="{start}" data-duration="{dur}" data-track-index="1" '
+                    f'data-anim-class="hf-diagram-reveal" data-anim-dur="0.01" data-anim-subtree="1" '
                     f'style="position:absolute;top:0;left:0;width:{width}px;height:{height}px">'
                     f'{svg}</div>'
                 )
@@ -275,39 +562,44 @@ body{{width:{width}px;height:{height}px;overflow:hidden;background:transparent;p
         is_caption = ov.get("category") == "caption"
         bg_css = "background:rgba(0,0,0,0.55);padding:8px 20px;border-radius:6px" if is_caption else ""
 
+        # 入场 + 出场两段 CSS 动画全部由运行时时间轴 seek（见 hf_timeline）：
+        # - 入场：animation-fill-mode both（起始前保持 0% 帧），保持段由 forwards hold
+        # - 出场：只有 forwards（不能 both！否则出场动画在 delay 期间会以「后声明者优先」
+        #   覆盖入场的透明度，导致元素一出现就是全不透明）
+        try:
+            dur_f = max(0.0, float(dur))
+        except (TypeError, ValueError):
+            dur_f = 3.0
+        exit_dur = min(0.3, dur_f * 0.15)
+        exit_start = max(0.0, dur_f - exit_dur)
+        try:
+            anim_dur_f = max(0.01, float(anim_duration))
+        except (TypeError, ValueError):
+            anim_dur_f = 0.5
+        anim_css = (
+            f"animation:{anim_class} {anim_dur_f:.3f}s ease-out both,"
+            f"hf-fade-out {exit_dur:.3f}s ease-in forwards;"
+            f"animation-delay:0s,{exit_start:.3f}s;"
+        )
+
         return (
-            f'<div class="hf-el" data-i="{index}" data-start="{start}" '
-            f'data-dur="{dur}" data-anim-class="{anim_class}" '
-            f'data-anim-dur="{anim_duration}" '
-            f'style="font-size:{font_size}px;color:{font_color};'
+            f'<div class="clip hf-el" id="hf-{index}" data-i="{index}" data-start="{start}" '
+            f'data-duration="{dur}" data-track-index="1" '
+            f'data-anim-class="{anim_class}" data-anim-dur="{anim_duration}" '
+            f'style="{anim_css}font-size:{font_size}px;color:{font_color};'
             f'{pos_css};{bg_css}">{_html_esc(text)}</div>'
         )
 
     @staticmethod
     def _timing_js() -> str:
-        """JavaScript 时序控制：入场动画 → 保持 → 出场淡出。"""
-        return """(function(){
-const els=document.querySelectorAll('.hf-el');
-els.forEach(el=>{
-  const s=parseFloat(el.dataset.start)||0;
-  const d=parseFloat(el.dataset.dur)||3;
-  const ac=el.dataset.animClass||'hf-fade-in';
-  const ad=parseFloat(el.dataset.animDur)||0.5;
-  const exitDur=Math.min(0.3,d*0.15);
-  const exitStart=Math.max(s, s+d-exitDur);
-  function show(){
-    el.style.visibility='visible';
-    el.style.animation=ac+' '+ad+'s ease-out forwards';
-    el.style.animationDelay='0s';
-  }
-  function exit(){
-    el.style.animation='hf-fade-out '+exitDur+'s ease-in forwards';
-    el.style.animationDelay='0s';
-  }
-  if(s<=0){show();}else{setTimeout(show,s*1000);}
-  if(d>0.5){setTimeout(exit,exitStart*1000);}
-});
-})();"""
+        """已废弃：保留为返回运行时时间轴片段（旧调用方/测试兼容）。
+
+        审计 HFR-2：旧实现用 ``setTimeout`` 驱动 visibility + CSS animation，
+        在逐帧 seek / 并行抓帧下不是 seek-safe，且没有注册 ``window.__timelines``
+        导致每次渲染多付 45s+ 就绪轮询。现统一走 ``hf_timeline`` 的
+        RuntimeTimelineLike 实现。
+        """
+        return timeline_script()
 
     @staticmethod
     def render_overlay_on_video(
@@ -355,7 +647,7 @@ els.forEach(el=>{
                 "-c:v", encoder, "-pix_fmt", pix_fmt,
                 "-c:a", "copy", output_path,
             ]
-            # R10: 走 run_tracked_ff——cancel_render 可 terminate 在跑的 ffmpeg，
+            # 走 run_tracked_ff——cancel_render 可 terminate 在跑的 ffmpeg，
             # 且 rc≠0 时如实返回 False（此前恒 True，叠加失败被静默丢弃）。
             r = run_tracked_ff(cmd, capture_output=True, text=False, timeout=1800)
             if r.returncode != 0:

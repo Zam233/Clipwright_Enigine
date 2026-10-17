@@ -89,7 +89,7 @@ async def test_mix_audio_ducking_order_independent(tmp_path: Path) -> None:
     assert cmd.count("[sc1]") == 2
     assert "[mixv]" in cmd
     assert "amix=inputs=2" in cmd
-    # C11 成功不落失败日志
+    # 成功不落失败日志
     assert not any("mix_audio(C11)" in c for c in captured[1:]), captured
 
 

@@ -5,3 +5,9 @@ kind: "material"
 description: "背景音乐素材源 — 支持 Freesound.org API 和本地音乐目录搜索"
 author: "Clipwright Team"
 entry_point: "bgm_library.main"
+
+# P1 迁移：新契约声明（声明即授权 —— 未声明的 id 会被门面拒绝）
+api_version: "2"
+contributions:
+  - { kind: material_source, id: freesound }
+  - { kind: material_source, id: local_bgm }

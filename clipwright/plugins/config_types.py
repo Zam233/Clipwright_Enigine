@@ -30,7 +30,7 @@ _TYPE_MAP: dict[str, type | tuple[type, ...]] = {
     "list": list,
 }
 
-# P1-7: secret 字段加密/解密（复用 webhook_crypto 的 Fernet；未配置密钥时明文兼容）
+# secret 字段加密/解密（复用 webhook_crypto 的 Fernet；未配置密钥时明文兼容）
 from clipwright.services.webhook_crypto import encrypt_secret as _enc, decrypt_secret as _dec
 
 _SECRET_KEY = "secret"

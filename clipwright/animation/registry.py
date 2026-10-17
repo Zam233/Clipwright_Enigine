@@ -75,6 +75,15 @@ class AnimationRegistry:
         return [cls._animations[aid] for aid in aids if aid in cls._animations]
 
     @classmethod
+    def unregister_plugin(cls, plugin_id: str) -> list[str]:
+        """按插件回收其注册的动画定义（插件禁用/卸载路径）。返回被回收的 id。"""
+        aids = [aid for aid, pid in cls._plugin_map.items() if pid == plugin_id]
+        for aid in aids:
+            cls._animations.pop(aid, None)
+            cls._plugin_map.pop(aid, None)
+        return aids
+
+    @classmethod
     def clear(cls) -> None:
         cls._animations.clear()
         cls._plugin_map.clear()

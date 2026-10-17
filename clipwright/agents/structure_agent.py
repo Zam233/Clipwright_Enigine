@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 
 from clipwright.agents.base import BaseAgent
@@ -14,6 +15,7 @@ from clipwright.schema.agent import (
     StructureOutput,
 )
 from clipwright.schema.tool import ToolExecResult
+from clipwright.schema.skill import SkillExecResult
 from clipwright.services.llm import LLMService
 from clipwright.tool.base import AgentToolkit
 from clipwright.tool.registry import ToolRegistry
@@ -246,7 +248,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                 reused, reuse_warnings = _validate_scenes(confirmed_scenes)
                 if reused:
                     logger.info("StructureAgent: 复用已确认规划书的 %d 个场景（跳过重新生成）", len(reused))
-                    # 批2：确认简报摘要随 result_data（script_skeleton）流向下游
+                    # 确认简报摘要随 result_data（script_skeleton）流向下游
                     # 素材/剪辑/音频——修复「复用路径下确认字段全部死亡」的契约断裂
                     brief = input_data.creative_brief if isinstance(input_data.creative_brief, dict) else {}
                     brief_summary = {
@@ -256,7 +258,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                             "special_requirements",
                         ) if brief.get(k)
                     }
-                    # 批2：dub_segments 时间轴对齐——确认了配音分段时，场景时长按
+                    # dub_segments 时间轴对齐——确认了配音分段时，场景时长按
                     # 配音总长等比缩放（旧实现复用分支不消费该参数）
                     dub_segments = context.extra_params.get("dub_segments") or []
                     if dub_segments:
@@ -293,6 +295,14 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                         scenes=reused,
                     )
                     output._llm_usage = None
+                    # R8：复用路径同样接地。**已带上引用的场景原样保留**
+                    # （`keep_existing=True`），所以人工指定的引用不会被检索结果覆盖；
+                    # 只补那些"用户确认时还没有引用"的场景。
+                    grounded, gnotes = self._ground_scenes(
+                        reused, context, list(output.script_skeleton.get("_warnings") or []))
+                    if grounded:
+                        output.scenes = grounded
+                        output.script_skeleton["_warnings"] = gnotes
                     return output
 
             system_prompt = self._build_system_prompt(identity, language, rhythm, constraints)
@@ -310,8 +320,33 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             if plugin_prompts:
                 system_prompt += "\n\n## 插件能力\n" + "\n\n".join(plugin_prompts)
 
-            # C6: 自愈重做时注入上一轮质检问题（原 _quality_issues 注入无 Agent 消费）
+            # 轮 84（数码评测专项）：品类结构模板——类型插件可声明"这类视频
+            # 该按什么骨架展开"（如评测 = 开箱→参数→实测→总结），此前系统
+            # prompt 品类无关，结构全靠 LLM 自由发挥；外部插件的
+            # get_structure_template 能力也在此一并接线（原为死能力）。
+            category_tpl = self._get_category_structure_template(
+                context.category_plugin_id
+            )
+            if category_tpl:
+                system_prompt += (
+                    f"\n\n## 视频类型结构模板（{context.category_plugin_id}）\n"
+                    "场景划分应严格遵循以下段落骨架（段落顺序与占比可按选题微调，"
+                    "但不可缺失核心段落）：\n" + category_tpl
+                )
+
+            # 自愈重做时注入上一轮质检问题（原 _quality_issues 注入无 Agent 消费）
             system_prompt += self.quality_issues_hint(context)
+
+            # R8：把"素材库里实际有什么"注入结构 prompt——**先看料再排场景**，
+            # 而不是先排出场景再去找料（找不到就编）。没有索引时返回 ""，零变化。
+            index_context = self._index_context(context)
+            if index_context:
+                system_prompt += (
+                    "\n\n## 素材库里已建索引的内容（排场景前请先看料）\n"
+                    "下面是你手上**真实可用**的画面。场景描述里的画面要求应尽量落在这些内容上；"
+                    "库里确实没有的，就在 description 里说明「需补充素材」，"
+                    "不要假设有拍不到的画面。\n" + index_context
+                )
 
             video_mode = context.extra_params.get("video_mode", "voiceover")
             script_text = context.extra_params.get("script_text", "")
@@ -393,6 +428,18 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                     }
                     for tool in available_tools.values()
                 ]
+                # 轮 90（批次 8 收尾）：Skill schema 消费——可用技能以 LLM 工具
+                # 形式暴露（旧实现 to_llm_tool 全仓零消费，CLAUDE.md 宣称的
+                # "自动生成 LLM tool schema" 名存实亡）。执行经 _tool_executor
+                # 分派到 SkillRegistry。
+                from clipwright.skill.registry import SkillRegistry as _SkillRegistry
+                for _info in _SkillRegistry.list():
+                    if not _info.available or _info.name in available_tools:
+                        continue
+                    _skill = _SkillRegistry.get(_info.name)
+                    if _skill is None:
+                        continue
+                    tool_schemas.append(_skill.to_llm_tool("openai"))
                 logger.info("StructureAgent: 可用工具=%s, tool_schemas数量=%d", list(available_tools.keys()), len(tool_schemas))
 
                 async def _generate_scenes(variant_hint: str = "") -> tuple[list[dict], list[str]]:
@@ -421,7 +468,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
                 scenes, warnings = await _generate_scenes()
 
-                # B7/A9: 多方案择优 — voiceover 双稿会双倍最大 LLM 开销与耗时
+                # /A9: 多方案择优 — voiceover 双稿会双倍最大 LLM 开销与耗时
                 # （择优启发式只比较场景数）。批3 改为配置开关，默认关闭。
                 if (video_mode == "voiceover" and script_text.strip() and scenes
                         and getattr(settings, "structure_double_draft", False)):
@@ -443,6 +490,9 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             scenes = self._strip_opening_animation_markers(
                 scenes, context.category_plugin_id
             )
+            # R8：给每个场景钉上真实素材镜头引用（`material_refs`），
+            # 让规划书从"一段文字描述"变成"指名道姓用哪些镜头"，下游不再各剪各的。
+            scenes, warnings = self._ground_scenes(scenes, context, warnings)
 
             output = StructureOutput(
                 decision=AgentDecision.PASS,
@@ -460,6 +510,45 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         except Exception as e:
             logger.exception("StructureAgent 失败: %s", e)
             return self.build_error_output(str(e), StructureOutput)
+
+    # ── R8：方案接地（场景 → 真实镜头引用）────────────────────
+
+    @staticmethod
+    def _index_context(context: AgentContext) -> str:
+        """已建索引素材的内容摘要（无索引 → ""，行为与接线前完全一致）。"""
+        from clipwright.services.content_query import index_context_text
+
+        project_id = str((context.extra_params or {}).get("project_id") or "") or None
+        try:
+            return index_context_text(project_id)
+        except Exception as exc:  # noqa: BLE001 — 索引读不到不该影响结构生成
+            logger.info("结构 Agent 读取内容索引失败，跳过注入：%s", exc)
+            return ""
+
+    def _ground_scenes(
+        self, scenes: list[dict[str, Any]], context: AgentContext, warnings: list[str],
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """给场景钉真实镜头引用；**失败一律降级**（不阻断管线）。
+
+        引用由索引检索确定性算出，不由 LLM 编——"模型编素材路径"是幻觉重灾区，
+        与 R5 拦截幻觉 op 是同一个道理。
+        """
+        from clipwright.services.scene_grounding import ground_scenes, load_project_indexes
+
+        project_id = str((context.extra_params or {}).get("project_id") or "") or None
+        try:
+            indexes = load_project_indexes(project_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("读取内容索引失败，规划书接地跳过：%s", exc)
+            return scenes, warnings
+        if not indexes:
+            return scenes, warnings
+        grounded, notes = ground_scenes(scenes, indexes)
+        if not grounded:
+            return scenes, warnings
+        hits = sum(1 for s in grounded if s.get("material_refs"))
+        logger.info("StructureAgent: 规划书接地 %d/%d 个场景引用了真实镜头", hits, len(grounded))
+        return grounded, list(warnings) + notes
 
     def _build_anim_guide(self) -> str:
         """构建动画引导（精简版 top-N + tool 指引）。
@@ -530,6 +619,8 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         marker_re = re.compile(r"\[(?:文字动画|逻辑动画|过渡动画|动画)\]")
         scenes_needing = [s for s in scenes if not marker_re.search(s.get("description", "") or "")]
         if not scenes_needing:
+            self._ensure_chart_coverage(scenes, context.category_plugin_id)
+            self._ensure_outro_animation(scenes, context.category_plugin_id)
             return scenes
 
         logger.info("StructureAgent: %d/%d 场景缺少动画标记，调用 LLM 补充", len(scenes_needing), len(scenes))
@@ -608,7 +699,125 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             logger.info("StructureAgent: LLM 补充了 %d 个动画标记", enriched)
         except Exception as e:
             logger.warning("StructureAgent: LLM 补充动画标记失败: %s", e)
+        self._ensure_chart_coverage(scenes, context.category_plugin_id)
+        self._ensure_outro_animation(scenes, context.category_plugin_id)
         return scenes
+
+    # 轮 84（批次 5 收尾）：知识/评测类的图表硬规则适用类型
+    _DATA_CHART_CATEGORIES = {"knowledge_longform", "digital_review"}
+    _DATA_CHART_MARKER_RE = re.compile(r"\[逻辑动画\]|mg_[a-z_]+")
+    _DATA_CHART_KEYWORDS = (
+        "对比", "增长", "提升", "下降", "排名", "占比", "数据", "参数",
+        "性能", "跑分", "续航", "价格", "销量", "实测", "评测", "优势",
+    )
+
+    @staticmethod
+    def _get_category_structure_template(category_plugin_id: str) -> str:
+        """轮 84：从类型插件取结构模板（get_structure_template，原死能力接线）。
+
+        轮 87：同时拼接 get_annotation_templates（节奏标注参考）——
+        此前该能力零消费。无类型/插件未实现/模板为空 → 返回空串（不注入）。
+        """
+        if not category_plugin_id:
+            return ""
+        try:
+            from clipwright.category.registry import CategoryRegistry
+
+            plugin = CategoryRegistry.get(category_plugin_id)
+        except Exception:
+            return ""
+        if plugin is None:
+            return ""
+        parts: list[str] = []
+        getter = getattr(plugin, "get_structure_template", None)
+        if callable(getter):
+            try:
+                tpl = str(getter() or "").strip()
+            except Exception:
+                logger.exception("类型插件结构模板获取失败: %s", category_plugin_id)
+                tpl = ""
+            if tpl:
+                parts.append(tpl)
+        ann_getter = getattr(plugin, "get_annotation_templates", None)
+        if callable(ann_getter):
+            try:
+                anns = [str(a) for a in (ann_getter() or []) if str(a).strip()]
+            except Exception:
+                anns = []
+            if anns:
+                parts.append("节奏标注参考（可在合适场景的 description 中落位）："
+                             + "、".join(anns))
+        return "\n".join(parts)
+
+
+    @classmethod
+    def _ensure_chart_coverage(cls, scenes: list[dict], category_plugin_id: str = "") -> int:
+        """图表硬规则：知识/评测类时间线至少一个数据类动画标记。
+
+        图表引擎（24 种 diagram preset + MG 模板）齐备但触发靠 LLM 写标记的
+        概率事件——而"知识讲解必须有图表"是内容质量硬要求。候选场景（跳过
+        开场）中无任何数据类标记时，向数据特征最强的场景注入确定性
+        mg_dynamic 标记（MG 引擎自带 LLM→关键词→模板三级兜底，保证成片出图）。
+
+        返回注入的场景序号（-1 = 已有覆盖/不适用，未注入）。
+        """
+        if category_plugin_id not in cls._DATA_CHART_CATEGORIES or len(scenes) < 2:
+            return -1
+        if any(
+            cls._DATA_CHART_MARKER_RE.search(s.get("description", "") or "")
+            for s in scenes
+        ):
+            return -1
+        keywords = cls._DATA_CHART_KEYWORDS
+        best_idx, best_score = -1, 0
+        for i, s in enumerate(scenes):
+            if i == 0:
+                continue  # 开场口播不强行配图
+            text = f"{s.get('title', '')} {s.get('description', '')}"
+            score = sum(text.count(k) for k in keywords)
+            if score > best_score:
+                best_idx, best_score = i, score
+        if best_idx < 0:
+            best_idx = 1  # 无数据特征词时取第一个正片场景
+        s = scenes[best_idx]
+        safe_title = re.sub(r'["\\]', "'", (s.get("title", "") or ""))[:40]
+        desc = (s.get("description") or "").strip()
+        marker = (
+            f'[逻辑动画]mg_dynamic:{{"description":"{safe_title} 核心数据对比图表",'
+            f'"text":"","style":"tech_dark"}}'
+        )
+        s["description"] = f"{desc} {marker}".strip()
+        logger.info(
+            "StructureAgent: %s 类图表硬规则生效——场景 %d 注入数据图表标记",
+            category_plugin_id, best_idx,
+        )
+        return best_idx
+
+    # 轮 93（批次 6）：片尾文字动画规则适用类型（有结构模板的内容类）
+    _OUTRO_ANIMATION_CATEGORIES = {"knowledge_longform", "digital_review", "vlog_daily"}
+    _ANY_ANIMATION_MARKER_RE = re.compile(r"\[(?:文字动画|逻辑动画|过渡动画|动画)\]|mg_[a-z_]+")
+
+    @classmethod
+    def _ensure_outro_animation(cls, scenes: list[dict], category_plugin_id: str = "") -> int:
+        """片尾文字动画规则：结尾场景无任何动画标记时补一个淡入文字动画。
+
+        结尾"总结升华/购买建议/感谢观看"配一个收束文字动画是观感硬要求，
+        与开场口播不配动画的约定（_strip_opening_animation_markers）互补。
+        仅对 _OUTRO_ANIMATION_CATEGORIES 生效；已有标记则不动。
+        返回注入的场景序号（-1 = 未注入）。
+        """
+        if category_plugin_id not in cls._OUTRO_ANIMATION_CATEGORIES or not scenes:
+            return -1
+        last = scenes[-1]
+        desc = (last.get("description") or "").strip()
+        if cls._ANY_ANIMATION_MARKER_RE.search(desc):
+            return -1
+        last["description"] = f"{desc} [文字动画]text_fade_in".strip()
+        logger.info(
+            "StructureAgent: %s 类片尾规则生效——末场景补充收束文字动画",
+            category_plugin_id,
+        )
+        return len(scenes) - 1
 
     @staticmethod
     def _strip_opening_animation_markers(
@@ -719,7 +928,15 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
     async def _tool_executor(self, tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
         logger.debug("StructureAgent 工具回调: %s → %s", tool_name, json.dumps(tool_input, ensure_ascii=False)[:300])
-        result: ToolExecResult = await ToolRegistry.execute(tool_name, **tool_input)
+        # 轮 90：名字命中技能注册表 → 优先走 SkillRegistry（技能与工具同池暴露）
+        from clipwright.skill.registry import SkillRegistry as _SkillRegistry
+        if _SkillRegistry.get(tool_name) is not None:
+            _skill_result = await _SkillRegistry.run_skill(tool_name, tool_input)
+            if isinstance(_skill_result, SkillExecResult):
+                return _skill_result.model_dump(mode="json")
+            return {"status": "success", "skill_name": tool_name,
+                    "output": _skill_result if isinstance(_skill_result, dict) else {"result": _skill_result}}
+        result: ToolExecResult = await ToolRegistry.call_with_input(tool_name, tool_input)
         return result.model_dump(mode="json")
 
     async def _tool_executor_for_llm(
@@ -738,7 +955,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
     def _parse_scenes(self, content: str) -> list[dict]:
         content = (content or "").strip().lstrip('\ufeff').lstrip('\u200b')
-        # B1: 围栏剥离修复——原实现无条件丢弃首行与末行，当 LLM 输出
+        # 围栏剥离修复——原实现无条件丢弃首行与末行，当 LLM 输出
         # 「说明文字 + 围栏 JSON」或围栏未闭合时会把 JSON 截坏。
         if content.startswith("```"):
             lines = content.splitlines()
@@ -753,7 +970,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             return self._scenes_from_parsed(parsed)
         except json.JSONDecodeError:
             pass
-        # B1: 放弃逐字符括号深度扫描。提示词强制场景 JSON 的字符串值内含
+        # 放弃逐字符括号深度扫描。提示词强制场景 JSON 的字符串值内含
         # `[逻辑动画]mg_dynamic:{...}` 等标记，字符串内的括号会使深度计数
         # 永不归零/提前归零，解析必然失败并静默降级 fallback_scenes。
         # 改为文本定位 + json.JSONDecoder（JSON 语法自身正确处理字符串内括号）。

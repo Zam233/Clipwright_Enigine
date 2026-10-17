@@ -79,6 +79,63 @@ def ass_alignment(position: str | None) -> int:
     return _ASS_ALIGNMENT.get(position or "", 2)
 
 
+# 轮 83（知识区门槛）：安全区与中文断行常量
+# 避头尾：这些标点不应出现在行首（中文排版规范）
+_CJK_NO_LINE_START = set("，。、；：？！）】》\"''…—%·.,;:?!)]}")
+_MAX_CJK_LINE_CHARS = 16  # 每行最大字数（可读性上限，超出折行）
+
+
+def ass_safe_margins(width: int, height: int) -> tuple[int, int, int]:
+    """按分辨率计算 ASS (MarginL, MarginR, MarginV) 安全区边距。
+
+    旧实现固定 10px：竖屏 1080x1920 下字幕贴底边，被平台 UI（点赞栏/
+    字幕条/进度条）遮挡。规则：左右 5% 宽、底部——竖屏取 12% 高（平台
+    UI 安全区）、横屏取 6% 高，均设 10px 下限。
+    """
+    w, h = int(width), int(height)
+    mx = max(10, int(w * 0.05))
+    vertical = h > w
+    mv = max(10, int(h * (0.12 if vertical else 0.06)))
+    return (mx, mx, mv)
+
+
+def wrap_cjk_lines(text: str, max_chars: int = _MAX_CJK_LINE_CHARS) -> str:
+    """中文断行：按每行最大字数折行（ASS `\\N`），标点避头尾。
+
+    规则：优先在既有空白/换行处断；超出 max_chars 的长行再按字数硬切，
+    切分时把避头尾标点并入上一行末尾。无标点的纯长句按字数直接折行。
+    """
+    text = (text or "").strip()
+    if len(text) <= max_chars:
+        return text
+    # 先按自然分隔切短句
+    import re as _re
+
+    parts = [p for p in _re.split(r"(?<=[，。、；：？！,. ;:?!])", text) if p]
+    lines: list[str] = []
+    cur = ""
+    for part in parts:
+        if not part:
+            continue
+        if cur and len(cur) + len(part.rstrip()) <= max_chars:
+            cur += part
+            continue
+        if cur:
+            lines.append(cur)
+        # 单段仍超长 → 硬切并处理避头尾
+        while len(part) > max_chars:
+            head, part = part[:max_chars], part[max_chars:]
+            # 避头尾：下一行首字符是标点 → 并入本行尾
+            while part and part[0] in _CJK_NO_LINE_START and len(head) < max_chars + 2:
+                head += part[0]
+                part = part[1:]
+            lines.append(head)
+        cur = part
+    if cur:
+        lines.append(cur)
+    return "\\N".join(lines)
+
+
 def ass_time(sec: float) -> str:
     """秒 → ASS 时间 `H:MM:SS.cc`（厘秒精度）。"""
     cs = max(0, int(round(float(sec) * 100)))
@@ -192,7 +249,8 @@ class TextStyle:
             "[V4+ Styles]\n"
             "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
             f"Style: Default,{fontname},{self.font_size},{primary},{primary},{outline},{back},"
-            f"{bold},{italic},0,0,100,100,{spacing},0,1,{outline_w},{shadow},{align},10,10,10,1"
+            f"{bold},{italic},0,0,100,100,{spacing},0,1,{outline_w},{shadow},{align},"
+            f"{ass_safe_margins(play_res_x, play_res_y)[0]},{ass_safe_margins(play_res_x, play_res_y)[1]},{ass_safe_margins(play_res_x, play_res_y)[2]},1"
         )
 
     def build_ass_dialogue(self, text: str, start_sec: float, end_sec: float) -> str:
@@ -237,8 +295,11 @@ class TextStyle:
             tags.append(rf"\blur{int(round(self.glow_width))}")
             tags.append(rf"\3c{color_to_ass(self.glow_color)}")
         esc = text.replace("{", r"\{").replace("}", r"\}")
-        # F3 实渲修复: ASS override tags 必须包裹在 {} 内才被 libass 当作样式解释，
+        # 实渲修复: ASS override tags 必须包裹在 {} 内才被 libass 当作样式解释，
         # 否则 \an2\i1... 会作为字面文本渲染进画面。
+        # 轮 83（知识区门槛）：中文断行——每行 ≤16 字 + 标点避头尾，
+        # 用 ASS \N 折行（长句不再整段铺满/溢出画面）
+        esc = wrap_cjk_lines(esc)
         tags_block = "{" + "".join(tags) + "}" if tags else ""
         # offset_y 修复：样式段 Margin 硬编码 10/10/10，行级不传 Margin 时
         # 多段同屏文字全部锚定同一位置互相重叠；行级 MarginV 承载 offset_y

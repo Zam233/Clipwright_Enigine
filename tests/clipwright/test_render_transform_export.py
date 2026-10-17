@@ -101,13 +101,21 @@ async def test_trim_keyframe_transform_expression_overlay(tmp_path, monkeypatch)
     assert "overlay=x=" in fc
     assert "main_w" in fc
     assert "ease" in fc or "pow(" in fc
-    # 有 overlay 链必有黑底画布
-    assert "color=c=black:s=1920:1080" in fc
+    # 有 overlay 链必有黑底画布。
+    # ⚠ 必须是 `size=WxH`：filter_complex 里 `s=W:H` 的冒号是选项分隔符，
+    # ffmpeg 会报 "No option name near ':H'" 让整条 trim 失败（2026-09-13 修复）
+    assert "color=c=black:size=1920x1080" in fc
+    assert "color=c=black:s=1920:1080" not in fc
 
 
 @pytest.mark.asyncio
 async def test_trim_keyframe_opacity_true_interpolation(tmp_path, monkeypatch) -> None:
-    """V3b: opacity 关键帧 → 单个 colorchannelmixer 分段表达式（非 0.1s 窗口近似）。"""
+    """V3b: opacity 关键帧 → geq alpha 分段表达式（非 0.1s 窗口近似）。
+
+    ⚠ 旧断言是 `colorchannelmixer=aa=<expr>`——`colorchannelmixer` 的参数是
+    `<double>`，**不支持时间表达式**，那条链会让 ffmpeg 报 Filter not found
+    （整条 trim 失败降级成纯色段）。现改为 geq（逐帧求值，时间变量是 `T`）。
+    """
     monkeypatch.setattr(render_mod, "_is_valid_video", lambda p, **kw: True)
     render_mod._trim_cache.clear()
     rs, captured = _make_rs(tmp_path)
@@ -121,10 +129,13 @@ async def test_trim_keyframe_opacity_true_interpolation(tmp_path, monkeypatch) -
     await rs._trim_segments_parallel(segs, 1920, 1080, 30, "5M", "libx264", "medium", None)
 
     cmd = captured[0]
-    vf_idx = cmd.index("-vf")
-    vf = cmd[vf_idx + 1]
-    assert "colorchannelmixer=aa=if(" in vf
-    assert "between(t,0,0.1)" not in vf, "旧 0.1s 窗口近似应被替换"
+    fc = cmd[cmd.index("-filter_complex") + 1]
+    assert "geq=" in fc and "a='255*(" in fc
+    # 时间变量必须是 geq 的 T（小写 t 是别的滤镜的变量）
+    assert "T" in fc and "between(t,0,0.1)" not in fc, "旧 0.1s 窗口近似应被替换"
+    assert "colorchannelmixer=aa=if(" not in fc, "colorchannelmixer 不支持时间表达式"
+    # 蒙版/透明度类 alpha 必须经 overlay 合成（黑底 + overlay）
+    assert "overlay=" in fc and "color=c=black:size=1920x1080" in fc
 
 
 @pytest.mark.asyncio

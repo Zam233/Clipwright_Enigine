@@ -6,7 +6,7 @@ from typing import Any
 
 from clipwright.config import logger
 from clipwright.plugins.base import CapabilityPlugin
-from clipwright.plugins.hooks import HookRegistry, HookPoint
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from .diagrams.all import RENDERER_MAP
 
@@ -50,16 +50,20 @@ class LogicAnimationsPlugin(CapabilityPlugin):
         description="12 种系统内建没有的复杂图解：思维导图/雷达图/甘特图/维恩3圆/热力图/桑基图/概念图/代码块/数据表格/引用卡片/对比卡片/组织结构图",
     )
 
-    def initialize(self) -> None:
-        HookRegistry.register(HookPoint.DIAGRAM_RENDERER_EXTEND, register_diagrams,
-                              plugin_id="logic_animations")
-        logger.info("LogicAnimationsPlugin: 注册 %d 种图解类型", len(RENDERER_MAP))
-
-        from clipwright.plugins.prompt_registry import PluginPromptRegistry
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：图解渲染钩子 + 给 structure Agent 的提示词片段。"""
         desc_list = "\n".join(f"  - {fid} — {desc}" for fid, desc in _DESCRIPTIONS.items())
-        PluginPromptRegistry.register(
-            "logic_animations", "structure",
-            f"## 高级图解类型（来自 logic_animations 插件）\n"
-            f"以下高级图解可通过 mg_dynamic 或 [逻辑动画] 调用：\n{desc_list}",
-            priority=3,
+        prompt = (
+            "## 高级图解类型（来自 logic_animations 插件）\n"
+            f"以下高级图解可通过 mg_dynamic 或 [逻辑动画] 调用：\n{desc_list}"
         )
+        return [
+            Contribution(
+                ContributionKind.HOOK, "logic_animations_renderer",
+                register_diagrams, meta={"point": "diagram_renderer_extend"},
+            ),
+            Contribution(
+                ContributionKind.PROMPT, "logic_animations_structure_prompt", prompt,
+                meta={"agent": "structure", "prompt": prompt, "priority": 3},
+            ),
+        ]

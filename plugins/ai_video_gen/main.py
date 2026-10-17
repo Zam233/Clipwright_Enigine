@@ -18,12 +18,11 @@ from typing import Any
 import httpx
 
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.security import assert_public_url
 from clipwright.tool.base import BaseTool
-from clipwright.tool.registry import ToolRegistry
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
-from clipwright.material.registry import MaterialRegistry
 from clipwright.plugins.generated_source import make_generated_source, record_generated
 
 DEFAULT_ARK_BASE = "https://ark.cn-beijing.volces.com/api/v3"
@@ -62,7 +61,7 @@ class AIVideoGenTool(BaseTool):
         base_url: str = "",
         model: str = "",
         poll_interval: float = 5.0,
-        # 批5：600s < TaskQueue 900s 超时，避免付费生成在下载阶段被队列杀掉
+        # 600s < TaskQueue 900s 超时，避免付费生成在下载阶段被队列杀掉
         poll_timeout: float = 600.0,
     ) -> None:
         self._provider = provider
@@ -137,7 +136,7 @@ class AIVideoGenTool(BaseTool):
                 return {"success": False, "error": "创建任务未返回 id"}
             while loop.time() < deadline:
                 await asyncio.sleep(self._poll_interval)
-                # 批5：单次轮询失败（网络/5xx）不再废弃整个付费任务
+                # 单次轮询失败（网络/5xx）不再废弃整个付费任务
                 try:
                     q = await c.get(_poll_task_path(task_id), headers=headers)
                     q.raise_for_status()
@@ -202,7 +201,7 @@ class AIVideoGenTool(BaseTool):
                     video_url = data.get("task_result", {}).get("videos", [{}])[0].get("url", "")
                     if not video_url:
                         return {"success": False, "error": "生成成功但未返回视频 URL", "task_id": task_id}
-                    # 批5：统一落地 + 登记（URL 有效期短，且需进入素材检索链路）
+                    # 统一落地 + 登记（URL 有效期短，且需进入素材检索链路）
                     local_path = await self._download(c, video_url)
                     record_generated("ai_video_gen", prompt=prompt, type="video",
                                      path=local_path,
@@ -251,7 +250,8 @@ class AIVideoGenPlugin(CapabilityPlugin):
         author="Clipwright Team",
     )
 
-    def initialize(self) -> None:
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：AI 生视频工具 + 生成物素材源（provider 等取自配置）。"""
         cfg = self.config or {}
         tool = AIVideoGenTool(
             provider=cfg.get("provider", "volcengine"),
@@ -261,24 +261,18 @@ class AIVideoGenPlugin(CapabilityPlugin):
             poll_interval=float(cfg.get("poll_interval_sec", 5)),
             poll_timeout=float(cfg.get("poll_timeout_sec", 900)),
         )
-        ToolRegistry.register(tool, plugin_id=self.manifest.id)
-        MaterialRegistry.register(
-            make_generated_source("ai_video_gen", "AI 生成视频", "video"),
-            plugin_id=self.manifest.id)
-        logger.info("[AIVideoGen] Tool + MaterialSource 已注册 (provider=%s)", tool._provider)
+        return [
+            Contribution(ContributionKind.TOOL, "ai_video_generate", tool),
+            Contribution(
+                ContributionKind.MATERIAL_SOURCE, "ai_video_gen",
+                make_generated_source("ai_video_gen", "AI 生成视频", "video"),
+            ),
+        ]
+        logger.info("[AIVideoGen] Tool + MaterialSource 已贡献 (provider=%s)", tool._provider)
 
     def shutdown(self) -> None:
-        # 批7：disable 时真正移除工具与素材源（旧实现 pass → 禁用后
-        # 工具仍可用、能力概览仍播报）
-        try:
-            ToolRegistry.unregister("ai_video_generate")
-        except Exception:
-            pass
-        try:
-            from clipwright.material.registry import MaterialRegistry
-            MaterialRegistry.unregister("ai_video_gen")
-        except Exception:
-            pass
+        # P1：工具与素材源的回收由桥接层按门面账本统一完成（不再手写注销）
+        pass
 
 
 __all__ = ["AIVideoGenPlugin"]

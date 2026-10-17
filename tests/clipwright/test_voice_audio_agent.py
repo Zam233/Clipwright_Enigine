@@ -237,9 +237,9 @@ async def test_bgm_logic_untouched() -> None:
 
     assert out.decision == AgentDecision.PASS
     bgm_clip = tl.tracks[0].clips[0]
-    assert bgm_clip.metadata.get("bpm") == 120
+    assert bgm_clip.metadata.get("bpm") is None  # P2-31: 未检测不再伪造 120
     assert bgm_clip.metadata.get("bgm_slot") == "intro"
-    # B6: 淡入淡出改用 audio_fade 真实曲线——不再把首个 clip 音量硬压 0.3
+    # 淡入淡出改用 audio_fade 真实曲线——不再把首个 clip 音量硬压 0.3
     assert bgm_clip.volume == 1.0
     assert bgm_clip.audio_fade_in_sec == 1.0
     assert bgm_clip.audio_fade_out_sec == 2.0

@@ -5,3 +5,9 @@ kind: "capability"
 description: "平台专属导出预设 — Bilibili/Douyin/YouTube/微信视频号/小红书"
 author: "Clipwright Team"
 entry_point: "platform_export.main"
+
+# P1 迁移：新契约声明（声明即授权 —— 未声明的 id 会被门面拒绝）
+api_version: "2"
+contributions:
+  - { kind: hook, id: platform_export_pre_render }
+  - { kind: hook, id: platform_export_post_render }

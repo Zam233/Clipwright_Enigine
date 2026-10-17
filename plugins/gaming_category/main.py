@@ -3,8 +3,10 @@
 特点：反应摄像头 PIP、击杀信息叠加、快速缩放高光、Meme 音效触发、按游戏回合分章。
 """
 from __future__ import annotations
+
+from typing import Any
 from clipwright.category.base import BaseCategoryPlugin
-from clipwright.category.registry import CategoryRegistry
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.plugin import PluginManifest, PluginKind
 
 class GamingCategoryPlugin(BaseCategoryPlugin):
@@ -39,9 +41,9 @@ class GamingCategoryPlugin(BaseCategoryPlugin):
             "配色高饱和（电光蓝/霓虹紫/荧光绿），带发光描边与颗粒质感。"
         )
 
-    def initialize(self) -> None:
-        CategoryRegistry.register(self, plugin_id=self.manifest.id)
-        print("[GamingCategory] 游戏集锦类型已注册")
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：类型插件把自身作为「视频类型」贡献出去。"""
+        return [Contribution(ContributionKind.CATEGORY, self.plugin_id, self)]
 
     def shutdown(self) -> None: pass
 

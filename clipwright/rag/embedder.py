@@ -113,16 +113,61 @@ class OpenAIEmbedder(BaseEmbedder):
 
 # ── 工厂 ──
 
+#: 历史 provider 名 → 实现分支（嵌入 provider 门面名为 `local`，
+#: settings 的历史值是 `sentence_transformer`；两者等价，P4/P5 并集下拉后
+#: 用户选任一个都必须可用）
+_EMBED_PROVIDER_ALIASES = {
+    "local": "sentence_transformer",
+    "sentence_transformers": "sentence_transformer",
+}
+
 _embedder_instance: Optional[BaseEmbedder] = None
 
 
+def _embedder_from_binding() -> Optional[BaseEmbedder]:
+    """B4：按 Provider 源的「嵌入」角色绑定构建嵌入客户端（未绑定 → None）。
+
+    绑定存在时源即唯一真源（provider/model/base_url/key/超时/代理/自定义头）；
+    绑定缺失或 provider 未注册时返回 None，调用方回退既有 settings 分支。
+    """
+    try:
+        from clipwright.services import provider_sources as ps
+        bound = ps.resolve("embed")
+    except Exception:  # noqa: BLE001 — 存储层异常不阻断（回退旧配置）
+        return None
+    if not bound:
+        return None
+
+    from clipwright.providers.embedding import resolve_embedding_provider
+    impl = resolve_embedding_provider(bound.get("provider") or settings.rag_embed_provider)
+    if impl is None:
+        return None
+    return impl.create_embedder(
+        model=bound.get("model") or settings.rag_embed_model,
+        api_key=bound.get("api_key"),
+        base_url=bound.get("base_url"),
+        timeout_sec=float(bound.get("timeout_sec") or 0.0),
+        proxy=str(bound.get("proxy") or ""),
+        headers=dict(bound.get("headers") or {}) or None,
+    )
+
+
 def get_embedder() -> BaseEmbedder:
-    """获取（缓存的）嵌入模型实例。"""
+    """获取（缓存的）嵌入模型实例。
+
+    优先级：Provider 源的「嵌入」角色绑定（B4） > 既有 settings 三键回退。
+    """
     global _embedder_instance
     if _embedder_instance is not None:
         return _embedder_instance
 
-    provider = settings.rag_embed_provider
+    bound_embedder = _embedder_from_binding()
+    if bound_embedder is not None:
+        _embedder_instance = bound_embedder
+        return _embedder_instance
+
+    provider = _EMBED_PROVIDER_ALIASES.get(settings.rag_embed_provider,
+                                           settings.rag_embed_provider)
     api_key = settings.rag_embed_api_key
     base_url = settings.rag_embed_base_url
 

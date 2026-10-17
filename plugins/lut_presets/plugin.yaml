@@ -5,3 +5,9 @@ kind: "style"
 description: "LUT 调色预设包 — 电影感/复古/赛博朋克/纪录片/美食暖调，配合 LutApplyTool 使用"
 author: "Clipwright Team"
 entry_point: "lut_presets.main"
+
+# P1 迁移：新契约声明（声明即授权）
+api_version: "2"
+contributions:
+  - { kind: style_interpreter, id: lut_presets }
+  - { kind: hook, id: lut_presets_diagram_style }

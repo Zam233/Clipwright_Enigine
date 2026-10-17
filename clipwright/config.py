@@ -43,8 +43,20 @@ class Settings(BaseSettings):
     plugin_require_signature: bool = False
     # 已知权限白名单（M1 权限声明校验；插件声明之外的权限将被拒绝）。
     # orchestrate（SA-2）：允许插件注册自定义 Agent 参与主管线编排/被子代理调用
+    # P1-14: 默认最小集——shell 从默认白名单移除（等于全放行让权限声明
+    # 沦为装饰）；需要 shell 的部署显式配置 CLIPWRIGHT_PLUGIN_ALLOWED_PERMISSIONS
     plugin_allowed_permissions: list[str] = Field(
-        default_factory=lambda: ["network", "fs_read", "fs_write", "shell", "http", "noop", "orchestrate"],
+        default_factory=lambda: ["network", "fs_read", "fs_write", "http", "noop", "orchestrate"],
+    )
+
+    # B-3：渲染后端选择（local=本机 ffmpeg；remote=远程渲染服务）。
+    # 缺省 local 保持既有行为；注册表见 clipwright/providers/render/。
+    renderer_backend: str = Field(default="local", description="渲染后端：local / remote")
+
+    # M8：受信任 UI bundle 档（默认关闭）。开启后仍需插件 manifest 带签名
+    # 才提供 /api/plugin/{id}/bundle（fail-closed：无签名一律 403）。
+    plugin_allow_ui_bundle: bool = Field(
+        default=False, description="允许插件 UI bundle（iframe 沙箱档；需插件签名）",
     )
 
     # --- IsoBase / LLM ---
@@ -69,8 +81,13 @@ class Settings(BaseSettings):
 
     # --- 服务 ---
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 8080
     debug: bool = False
+
+    # --- 安全红线 ---
+    # 显式承认「无鉴权对外开放」才允许绑定非回环地址启动（fail-closed）。
+    # 仅用于受控本地/内网环境；生产部署应设置 api_token 或 account_verify_mode。
+    allow_insecure: bool = False
 
     # --- Pipeline 并行度（稳妥有界并发）---
     # 动画阶段逐片段 LLM MG 生成的并发路数；默认 6（LLM 生成是网络等待，并发翻倍时间近半）。
@@ -81,6 +98,60 @@ class Settings(BaseSettings):
     # 素材帧验证是否启用视觉 LLM；默认 False（只做 ffmpeg 抽帧 is_blank + 本地启发式标题匹配）。
     # 打开后 frame_validator 工具调用 ImageAnalyzer 产出 match_score（视觉 API 成本）。
     enable_visual_llm: bool = False
+    # 渲染后复核（切点复核图 + 全片总览图，V4/V7）；默认关闭（每次多一次抽帧 + 可选视觉调用）。
+    # 打开后 RenderService 会把复核结论按问题类型派工（redo_agent），并写进 RenderResult。
+    render_review: bool = False
+    # 复核视觉评分门槛（V4 残余：评分入熔断）。<= 0 表示不启用门槛（默认，
+    # 与质检 quality_min_score 同一语义）；高于 0 时评分低于门槛会置 review_failed。
+    # 也可用环境变量 CLIPWRIGHT_REVIEW_MIN_SCORE 覆盖。
+    render_review_min_score: int = 0
+
+    # --- 素材内容索引（R1：镜头级结构化索引，"Agent 知道自己在剪什么"的底座）---
+    # 默认开启：L0 索引只做 ffmpeg 切分 + 抽帧 + 廉价统计，零 ML、零云端调用。
+    content_index_enabled: bool = True
+    # ffmpeg 场景检测阈值（越小越敏感、镜头越多）；0.3 与 scene_detect 工具默认一致。
+    content_index_scene_threshold: float = 0.3
+    # 低于该时长的镜头并入邻居（转场/闪帧碎片），避免索引被碎片污染。
+    content_index_min_shot_sec: float = 0.3
+    # 每镜头抽几帧算统计；>=2 才能算帧间差（运动强度）。
+    content_index_keyframes_per_shot: int = 2
+    # 单段素材最多保留的镜头数（超长素材兜底）。
+    content_index_max_shots: int = 2000
+    # 是否把索引镜像到 Mongo（跨项目"我所有素材里找 X"的唯一载体）。
+    content_index_mirror_mongo: bool = True
+    # 云端多模态对（被选中的）镜头做画面描述；默认关（开启后产生视觉 API 成本）。
+    content_index_visual_llm: bool = False
+    # 云端多模态每次索引最多调用多少个镜头（预算闸门；0 = 不限制，仍受月预算约束）。
+    content_index_llm_max_shots: int = 12
+    # 是否用 CLIP 零样本给镜头打标签（开放词表，能回答"找有咖啡杯的镜头"这类问题）。
+    content_index_clip_enabled: bool = True
+    # CLIP 权重名（HF）；首次使用会下载（约 600MB）。
+    content_index_clip_model: str = "openai/clip-vit-base-patch32"
+    # 零样本标签词表（JSON：{"中文标签": "english prompt"}）；留空用内置默认词表。
+    content_index_clip_vocab: str = ""
+    # 镜头标注并发（CPU 推理，过高反而拖慢整机）。
+    content_index_label_concurrency: int = 4
+    # 音频事件检测（静音/大响段/起始沿，纯 numpy，无模型）——默认开。
+    content_index_audio_events: bool = True
+    # 自动转写并对齐到镜头；默认关（需要装 whisper/faster-whisper 或注册插件 STT 后端）。
+    content_index_asr: bool = False
+    content_index_asr_language: str = "zh"
+    # 领域事件词表（generic/sports/food/tech_review/knowledge）。
+    content_index_event_domain: str = "generic"
+    # 追加词表（JSON：{"sports": ["远射"]}）；留空只用内置词表。
+    content_index_event_lexicon: str = ""
+    # "模糊镜头"判定阈值（Laplacian 方差上界；越小越严）。
+    # 现在还没有跨题材通用的绝对锐度尺度，这个值是经验起点，应在真实素材上标定。
+    content_index_blurry_sharpness: float = 120.0
+    # R9：给每个镜头算 CLIP 视觉向量（存进索引，供"换个说法也能搜到"的语义检索）。
+    # 关掉后索引里没有画面向量，语义检索退化为纯文本检索（仍可用，但搜不到
+    # "画面是海边、却没人写下海边"的镜头）。CLIP 不可用时自动跳过并如实标注。
+    content_index_visual_vectors: bool = True
+    # 渐变转场补检（交叉溶解/淡入淡出）：ffmpeg 的 scene 滤镜只看相邻帧差异，
+    # 测不到溶接，会把溶接处当成同一个镜头。
+    # 实测（4 段真实素材、2 处合成溶接）：**2/2 溶接检出**，但海浪镜头的连续涌动
+    # 会误报 1 处（涌浪也是"持续的大幅变化"）。需要零误报的场合可以关掉。
+    content_index_gradual_detect: bool = True
 
     # --- 安全 ---
     # API 令牌：设置后所有 /api/* 请求需携带 Authorization: Bearer <token>
@@ -197,7 +268,7 @@ class Settings(BaseSettings):
     rag_embed_batch_size: int = 20
 
     # --- 结构 Agent ---
-    # A9：voiceover 双稿择优（双倍最大 LLM 调用，择优启发式只比较场景数）。
+    # voiceover 双稿择优（双倍最大 LLM 调用，择优启发式只比较场景数）。
     # 默认关闭；需要时置 true 开启。
     structure_double_draft: bool = False
 

@@ -19,6 +19,8 @@ from clipwright.tool.audio import (
 from clipwright.tool.base import BaseTool
 from clipwright.tool.chroma_key import ChromaKeyTool
 from clipwright.tool.color import ColorCorrectTool, ColorMatchTool, LutApplyTool
+from clipwright.tool.content_query import ContentQueryTool
+from clipwright.tool.event_spot import EventSpotTool
 from clipwright.tool.effects import (
     BackgroundRemoveTool,
     EffectVignetteTool,
@@ -40,9 +42,11 @@ from clipwright.tool.quality import (
     SubtitleOverflowCheckTool,
 )
 from clipwright.tool.registry import ToolRegistry
+from clipwright.tool.project_memory import ProjectMemoryTool
 from clipwright.tool.speed import SpeedRampTool
 from clipwright.tool.stabilize import VideoStabilizeTool
 from clipwright.tool.stubs import VisionLLMTool
+from clipwright.tool.timeline_view import TimelineViewTool
 from clipwright.tool.transcribe import WhisperTranscribeTool
 from clipwright.tool.voice import TextToSpeechTool, VoiceCloneTool
 from clipwright.tool.web_search_tool import WebFetchTool, WebSearchTool
@@ -110,6 +114,10 @@ def register_builtin_tools() -> None:
         LutApplyTool(),
         TransitionApplyTool(),
         WhisperTranscribeTool(),
+        TimelineViewTool(),
+        ProjectMemoryTool(),
+        EventSpotTool(),
+        ContentQueryTool(),
         TextToSpeechTool(),
         VoiceCloneTool(),
         ListAnimationsTool(),
@@ -171,6 +179,10 @@ __all__ = [
     "LutApplyTool",
     "TransitionApplyTool",
     "WhisperTranscribeTool",
+    "TimelineViewTool",
+    "ProjectMemoryTool",
+    "EventSpotTool",
+    "ContentQueryTool",
     "TextToSpeechTool",
     "VoiceCloneTool",
     "ListAnimationsTool",

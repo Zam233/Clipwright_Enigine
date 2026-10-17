@@ -15,9 +15,11 @@ from typing import Any, Optional
 
 import httpx
 
+from clipwright.config import logger
 from clipwright.material.base import MaterialSource
-from clipwright.material.registry import MaterialRegistry
+from clipwright.material.base import close_source_sync
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.material import MaterialAsset, MaterialType
 from clipwright.schema.plugin import PluginManifest, PluginKind
 
@@ -63,6 +65,11 @@ class UnsplashMaterialSource(MaterialSource):
                 tags=[query],
                 resolution=f"{photo.get('width', 0)}x{photo.get('height', 0)}",
                 source=self.source_id,
+                # 轮 82（版权链）：Unsplash License 免费商用
+                author=user.get("name", ""),
+                source_url=photo.get("links", {}).get("html", ""),
+                license="Unsplash License",
+                license_url="https://unsplash.com/license",
                 metadata={
                     "unsplash_id": photo["id"],
                     "photographer": user.get("name", ""),
@@ -91,22 +98,22 @@ class UnsplashMaterialPlugin(CapabilityPlugin):
     def __init__(self) -> None:
         self._source: Optional[UnsplashMaterialSource] = None
 
-    def initialize(self) -> None:
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：配好 access_key 才贡献素材源。"""
         key = (self.config or {}).get("access_key", "") or os.environ.get("UNSPLASH_ACCESS_KEY", "")
         if not key:
-            print("[UnsplashPlugin] 跳过: 请配置 UNSPLASH_ACCESS_KEY")
-            return
+            logger.info("[UnsplashPlugin] 未配置 access_key（config.yaml 或 "
+                        "UNSPLASH_ACCESS_KEY）——本次不贡献素材源")
+            return []
         self._source = UnsplashMaterialSource(access_key=key)
-        MaterialRegistry.register(self._source, plugin_id=self.manifest.id)
-        print("[UnsplashPlugin] Unsplash 图库已注册")
+        return [Contribution(
+            ContributionKind.MATERIAL_SOURCE, self._source.source_id, self._source,
+        )]
 
     def shutdown(self) -> None:
+        # A3：同步安全关闭（原 create_task 永不 await）
         if self._source:
-            import asyncio
-            try:
-                asyncio.create_task(self._source.close())
-            except Exception:
-                pass
+            close_source_sync(self._source)
 
 
 __all__ = ["UnsplashMaterialPlugin"]

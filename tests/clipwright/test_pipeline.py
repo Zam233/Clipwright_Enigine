@@ -1,4 +1,4 @@
-"""Pipeline 编排测试。"""
+"""Pipeline 请求模型与类型注册表测试（V1 编排器已删除）。"""
 
 from __future__ import annotations
 
@@ -8,17 +8,8 @@ from clipwright.category import CategoryRegistry, KnowledgeLongformPlugin
 from clipwright.schema.pipeline import PipelineRequest
 
 
-@pytest.mark.asyncio
-async def test_pipeline_orchestrator_imports() -> None:
-    """验证 Pipeline 编排器可正确导入。"""
-    from clipwright.services.pipeline import PipelineOrchestrator
-    orchestrator = PipelineOrchestrator()
-    assert orchestrator is not None
-
-
 def test_category_registry() -> None:
     """验证类型插件注册表。"""
-    # 先清空，避免与其他测试文件（如 test_pipeline_diag.py 顶层注册）的执行顺序耦合
     CategoryRegistry.clear()
     CategoryRegistry.register(KnowledgeLongformPlugin())
     plugin = CategoryRegistry.get("knowledge_longform")

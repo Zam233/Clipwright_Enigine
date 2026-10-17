@@ -45,7 +45,7 @@ _MAX_PIPELINES = 1000
 # 事件自动清理 TTL（秒）：创建超过此时间的事件在读取时被清除
 _EVENT_TTL_SEC = 3600  # 1 小时
 
-# E6: per-pipeline 事件时间索引（与 _traces[pid] 同步 append），
+# per-pipeline 事件时间索引（与 _traces[pid] 同步 append），
 # get_events(since) 用 bisect 二分定位起始下标，避免全量过滤。
 _trace_times: dict[str, list[float]] = {}
 

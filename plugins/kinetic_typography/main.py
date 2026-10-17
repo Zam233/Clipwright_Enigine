@@ -16,8 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 from clipwright.plugins import CapabilityPlugin
-from clipwright.plugins.hooks import HookRegistry, HookPoint
-from clipwright.animation.registry import AnimationRegistry
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.animation import AnimationDef, AnimationType
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
@@ -91,20 +90,9 @@ class KineticTypographyPlugin(CapabilityPlugin):
         author="Clipwright Team",
     )
 
-    def initialize(self) -> None:
-        HookRegistry.register(HookPoint.ANIMATION_CATALOG_EXTEND, _extend_catalog, plugin_id=self.manifest.id)
-        for anim_id, anim_def in KINETIC_ANIMATIONS.items():
-            defn = AnimationDef(
-                animation_id=anim_id, name=anim_def["name"],
-                type=AnimationType.ONSCREEN, description=f"Kinetic typography: {anim_def['name']}",
-                author="Clipwright Team", tags=["kinetic", "typography"],
-            )
-            AnimationRegistry.register(defn, plugin_id=self.manifest.id)
-        logger.info("[KineticTypography] %d 种动态文字动画已注册", len(KINETIC_ANIMATIONS))
-
-        from clipwright.plugins.prompt_registry import PluginPromptRegistry
-        PluginPromptRegistry.register(
-            "kinetic_typography", "structure",
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：动态文字动画定义 + 目录扩展钩子 + structure 提示词。"""
+        prompt = (
             "## 高级文字动画（来自 kinetic_typography 插件）\n"
             "可用高级文字动画标记：\n"
             "- [文字动画]逐词强调 — 逐词放大变色强调\n"
@@ -113,9 +101,27 @@ class KineticTypographyPlugin(CapabilityPlugin):
             "- [文字动画]3D透视 — 3D 透视旋转\n"
             "- [文字动画]渐变填充 — 颜色渐变填充\n"
             "- [文字动画]描边绘制 — 描边绘制入场\n\n"
-            "使用 [文字动画]名称：要显示的文字 格式标记。",
-            priority=3,
+            "使用 [文字动画]名称：要显示的文字 格式标记。"
         )
+        items: list[Any] = [
+            Contribution(
+                ContributionKind.HOOK, "kinetic_catalog_extend", _extend_catalog,
+                meta={"point": "animation_catalog_extend"},
+            ),
+            Contribution(
+                ContributionKind.PROMPT, "kinetic_structure_prompt", prompt,
+                meta={"agent": "structure", "prompt": prompt, "priority": 3},
+            ),
+        ]
+        for anim_id, anim_def in KINETIC_ANIMATIONS.items():
+            defn = AnimationDef(
+                animation_id=anim_id, name=anim_def["name"],
+                type=AnimationType.ONSCREEN,
+                description=f"Kinetic typography: {anim_def['name']}",
+                author="Clipwright Team", tags=["kinetic", "typography"],
+            )
+            items.append(Contribution(ContributionKind.ANIMATION, anim_id, defn))
+        return items
 
     def shutdown(self) -> None:
         pass

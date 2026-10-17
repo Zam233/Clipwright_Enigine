@@ -507,9 +507,9 @@ class CustomJsonAnimationTool(BaseTool):
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error=str(e))
 
-# 批7.4：注册归属重构——不再在模块加载期自动注册（旧写法 import 期副作用
+# 4：注册归属重构——不再在模块加载期自动注册（旧写法 import 期副作用
 # 使工具 _plugin_id 为空，list_by_plugin 查不到、disable 不生效），改为由
-# TextAnimationsPlugin.initialize() 显式调用 register_all_tools(plugin_id)。
+# 这些类由 TextAnimationsPlugin.contributions() 逐条声明（P1 新契约）。
 
 _TEXT_TOOL_CLASSES = [
     FadeInTextTool, SlideUpTextTool, SlideDownTextTool, SlideLeftTextTool,
@@ -534,6 +534,7 @@ def register_all_tools(plugin_id: str) -> int:
 
 # Plugin 类 — 供 PluginLoader 识别
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.plugin import PluginManifest, PluginKind
 
 class TextAnimationsPlugin(CapabilityPlugin):
@@ -545,6 +546,15 @@ class TextAnimationsPlugin(CapabilityPlugin):
         kind=PluginKind.CAPABILITY,
         description="25 种文字动画工具 + 自定义 JSON 动画",
     )
-    def initialize(self) -> None:
-        n = register_all_tools(self.manifest.id)
-        self.logger.info("TextAnimationsPlugin: %d tools registered", n)
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：25 个文字动画工具逐条声明。
+
+        工具 id 取 `<tool.name>`（与注册表键一致），声明清单见 plugin.yaml。
+        """
+        return [
+            Contribution(ContributionKind.TOOL, cls().name, cls())
+            for cls in _TEXT_TOOL_CLASSES
+        ]
+
+
+__all__ = ["TextAnimationsPlugin", "_TEXT_TOOL_CLASSES"]

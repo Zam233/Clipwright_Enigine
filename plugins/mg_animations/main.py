@@ -1,15 +1,18 @@
-"""MG 动画插件 — 自定义运动图形动画，JSON 格式定义，自动注册到 AnimationRegistry。"""
+"""MG 动画插件 — 自定义运动图形动画，JSON 格式定义，注册为动画与目录扩展。
+
+P1 迁移：由 `initialize()` 手写注册改为新契约 `contributions()`（声明式）。
+两个 hook 从闭包提为模块级函数，便于随声明一起交给门面注册。
+"""
 
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
 from clipwright.config import logger
 from clipwright.plugins.base import BasePlugin
-from clipwright.plugins.hooks import HookRegistry, HookPoint
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.animation import (
     AnimationDef,
     AnimationTarget,
@@ -21,6 +24,8 @@ from clipwright.schema.animation import (
 
 # MG 动画也可通过 DIAGRAM_RENDERER_EXTEND hook 注册为逻辑动画类型
 # 让结构 Agent 能在 prompt 中列出它们
+
+_ANIMATIONS_DIR = Path(__file__).resolve().parent / "animations"
 
 
 def _load_mg_animations(
@@ -48,102 +53,95 @@ def _load_mg_animations(
     return mg_anims
 
 
+def _mg_renderer_extender(ctx: dict) -> dict:
+    """DIAGRAM_RENDERER_EXTEND：把 MG 动画登记为逻辑图解渲染器。"""
+    renderers = ctx.get("renderers", [])
+    for mg in _load_mg_animations(_ANIMATIONS_DIR):
+        aid = mg["animation_id"]
+        if any(r.get("id") == aid for r in renderers):
+            continue
+        renderers.append({
+            "id": aid,
+            "name": mg["name"],
+            "desc": mg.get("description", ""),
+            "category": "mg",
+        })
+    ctx["renderers"] = renderers
+    return ctx
+
+
+def _mg_catalog_extender(ctx: dict) -> dict:
+    """ANIMATION_CATALOG_EXTEND：把 MG 动画加入逻辑动画目录。"""
+    extensions = ctx.get("extensions", [])
+    for mg in _load_mg_animations(_ANIMATIONS_DIR):
+        aid = mg["animation_id"]
+        if any(e.get("id") == aid for e in extensions):
+            continue
+        extensions.append({
+            "id": aid,
+            "name": mg["name"],
+            "category": "logic",
+            "desc": mg.get("description", ""),
+        })
+    ctx["extensions"] = extensions
+    return ctx
+
+
+def _build_anim_def(mg_def: dict[str, Any]) -> AnimationDef:
+    """JSON 定义 → AnimationDef（首个元素的头两帧归一化到 0-1）。"""
+    duration = mg_def.get("duration_sec", 3.0)
+    first_kfs: list[Keyframe] = []
+    if mg_def.get("elements"):
+        first_elem = mg_def["elements"][0]
+        for kf in first_elem.get("keyframes", [])[:2]:
+            norm_time = min(1.0, kf["time"] / max(duration, 0.01))
+            first_kfs.append(Keyframe(
+                time=norm_time,
+                properties={k: v for k, v in kf.items() if k != "time"},
+            ))
+    return AnimationDef(
+        animation_id=mg_def["animation_id"],
+        name=mg_def["name"],
+        type=AnimationType.ONSCREEN,
+        target=AnimationTarget.ANY,
+        duration_sec=duration,
+        easing=EasingFunction.EASE_OUT,
+        keyframes=first_kfs,
+        description=mg_def.get("description", ""),
+        properties_meta={
+            "mg_json": PropertyDef(
+                type="string", default="",
+                description="MG 动画 JSON 定义（插件加载时自动注入）",
+            ),
+        },
+    )
+
+
 class MGAnimationPlugin(BasePlugin):
-    """MG 动画插件 — 注册运动图形动画到 AnimationRegistry 和 HookRegistry。"""
+    """MG 动画插件 — 以新契约贡献动画定义与两个目录扩展钩子。"""
 
-    def initialize(self) -> None:
-        """注册所有 MG 动画。"""
-        plugin_dir = Path(__file__).resolve().parent
-        animations_dir = plugin_dir / "animations"
-        mg_anims = _load_mg_animations(animations_dir)
-
+    def contributions(self) -> list[Any]:
+        """JSON 里的每个 MG 动画 + 两个目录扩展 hook。"""
+        items: list[Any] = [
+            Contribution(
+                ContributionKind.HOOK, "mg_renderer_extend", _mg_renderer_extender,
+                meta={"point": "diagram_renderer_extend"},
+            ),
+            Contribution(
+                ContributionKind.HOOK, "mg_catalog_extend", _mg_catalog_extender,
+                meta={"point": "animation_catalog_extend"},
+            ),
+        ]
+        mg_anims = _load_mg_animations(_ANIMATIONS_DIR)
         if not mg_anims:
-            logger.warning("MG 动画插件: 未找到任何动画定义")
-            return
-
-        from clipwright.animation.registry import AnimationRegistry
-
-        registered_count = 0
-
+            logger.warning("MG 动画插件: 未找到任何动画定义（仅贡献目录扩展钩子）")
+            return items
         for mg_def in mg_anims:
-            anim_id = mg_def["animation_id"]
-            anim_name = mg_def["name"]
-            duration = mg_def.get("duration_sec", 3.0)
+            anim_def = _build_anim_def(mg_def)
+            items.append(Contribution(
+                ContributionKind.ANIMATION, anim_def.animation_id, anim_def,
+            ))
+        return items
 
-            # 1. 注册为 ONSCREEN 类型，使 AnimationRegistry 能查到
-            # MG 关键帧时间是绝对秒数，需归一化到 0-1
-            first_kfs = []
-            if mg_def.get("elements"):
-                first_elem = mg_def["elements"][0]
-                for kf in first_elem.get("keyframes", [])[:2]:
-                    norm_time = min(1.0, kf["time"] / max(duration, 0.01))
-                    first_kfs.append(Keyframe(
-                        time=norm_time,
-                        properties={k: v for k, v in kf.items() if k != "time"},
-                    ))
 
-            anim_def = AnimationDef(
-                animation_id=anim_id,
-                name=anim_name,
-                type=AnimationType.ONSCREEN,
-                target=AnimationTarget.ANY,
-                duration_sec=duration,
-                easing=EasingFunction.EASE_OUT,
-                keyframes=first_kfs,
-                description=mg_def.get("description", ""),
-                properties_meta={
-                    "mg_json": PropertyDef(
-                        type="string", default="",
-                        description="MG 动画 JSON 定义（插件加载时自动注入）",
-                    ),
-                },
-            )
-            AnimationRegistry.register(anim_def, plugin_id="mg_animations")
-            registered_count += 1
-
-        # 2. 通过 DIAGRAM_RENDERER_EXTEND hook 注册为逻辑动画类型
-        #    使 AnimationCatalog.get_logic_animations() 能返回它们
-        def _mg_renderer_extender(ctx: dict) -> dict:
-            renderers = ctx.get("renderers", [])
-            plugin_dir_local = Path(__file__).resolve().parent
-            mg_data = _load_mg_animations(plugin_dir_local / "animations")
-            for mg in mg_data:
-                aid = mg["animation_id"]
-                # 检查是否已注册
-                if any(r.get("id") == aid for r in renderers):
-                    continue
-                renderers.append({
-                    "id": aid,
-                    "name": mg["name"],
-                    "desc": mg.get("description", ""),
-                    "category": "mg",
-                })
-            ctx["renderers"] = renderers
-            return ctx
-
-        HookRegistry.register(HookPoint.DIAGRAM_RENDERER_EXTEND, _mg_renderer_extender)
-
-        # 3. 通过 ANIMATION_CATALOG_EXTEND hook 在逻辑动画列表中注册
-        def _mg_catalog_extender(ctx: dict) -> dict:
-            extensions = ctx.get("extensions", [])
-            plugin_dir_local = Path(__file__).resolve().parent
-            mg_data = _load_mg_animations(plugin_dir_local / "animations")
-            for mg in mg_data:
-                aid = mg["animation_id"]
-                if any(e.get("id") == aid for e in extensions):
-                    continue
-                extensions.append({
-                    "id": aid,
-                    "name": mg["name"],
-                    "category": "logic",
-                    "desc": mg.get("description", ""),
-                })
-            ctx["extensions"] = extensions
-            return ctx
-
-        HookRegistry.register(HookPoint.ANIMATION_CATALOG_EXTEND, _mg_catalog_extender)
-
-        logger.info(
-            "MG 动画插件初始化完成: %d 个动画已注册, %d 个 renderer hooks, %d 个 catalog hooks",
-            registered_count, 1, 1,
-        )
+__all__ = ["MGAnimationPlugin"]

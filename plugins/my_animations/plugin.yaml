@@ -5,3 +5,9 @@ kind: "capability"
 description: "示例动画插件 — 注册自定义的屏幕动画和转场动画"
 author: "Clipwright Team"
 entry_point: "my_animations.main"
+
+# P1 迁移：新契约声明
+api_version: "2"
+contributions:
+  - { kind: animation, id: shake_alert }
+  - { kind: animation, id: radial_wipe }

@@ -4,3 +4,8 @@ version: "1.0.0"
 kind: "style"
 description: "根据 Persona 的 tone 和 identity 动态生成图解配色和字体方案。注册 StyleInterpreterPlugin，完全接管风格解释逻辑。"
 entry_point: "custom_style.main"
+
+# P1 迁移：新契约声明（声明即授权）
+api_version: "2"
+contributions:
+  - { kind: style_interpreter, id: custom_style }

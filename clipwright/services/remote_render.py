@@ -84,7 +84,7 @@ class RemoteRenderService:
         for track in timeline.tracks:
             for clip in track.clips or []:
                 kind = str(clip.kind) if clip.kind else str(track.kind)
-                # 批6：audio clip（TTS 旁白/BGM/上传配音）一并上传——旧实现遗漏，
+                # audio clip（TTS 旁白/BGM/上传配音）一并上传——旧实现遗漏，
                 # 远程渲染产物丢失全部时间线音频
                 if kind in ("video", "image", "audio") and clip.asset_id:
                     p = Path(clip.asset_id)
@@ -128,12 +128,18 @@ class RemoteRenderService:
     ) -> None:
         """multipart 上传素材（携带 hash 表单字段校验）；stored:false 视为已存在。"""
         try:
-            with open(path, "rb") as f:
-                files = {"file": (Path(path).name, f, "application/octet-stream")}
-                data = {"hash": sha1}
-                r = await client.post(
-                    f"{base_url}/api/worker/assets", headers=headers, files=files, data=data
-                )
+            # 轮 82：整文件读取 offload——素材是数百 MB 视频时，同步 open/read
+            # 会把事件循环冻住数百 ms～秒级
+            def _read() -> bytes:
+                with open(path, "rb") as f:
+                    return f.read()
+
+            content = await asyncio.to_thread(_read)
+            files = {"file": (Path(path).name, content, "application/octet-stream")}
+            data = {"hash": sha1}
+            r = await client.post(
+                f"{base_url}/api/worker/assets", headers=headers, files=files, data=data
+            )
         except OSError as e:
             raise RemoteRenderError(f"读取本地素材失败 {path}: {e}") from e
         except httpx.HTTPError as e:
@@ -399,7 +405,7 @@ class RemoteRenderService:
                      encoder_override: str = "", pix_fmt_override: str = "",
                      force_render: bool = False,
                      soft_subtitle_srt: str = "") -> RenderResult:
-        # 批6：soft_subtitle_srt 签名对齐——此前 queue 路径无条件传该参数，
+        # soft_subtitle_srt 签名对齐——此前 queue 路径无条件传该参数，
         # 而本方法未接收 → TypeError，远程渲染 100% 失败。远程 worker 暂不支持
         # mov_text 软字幕轨，收到该参数时忽略（字幕由时间线本身携带，worker 端
         # RenderService 会按其 caption_renderer 设置处理）。

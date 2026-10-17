@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,11 +29,20 @@ class ProjectManager:
     def __init__(self, projects_dir: str | Path | None = None) -> None:
         self._projects_dir = Path(projects_dir) if projects_dir else settings.project_dir
         self._projects_dir.mkdir(parents=True, exist_ok=True)
+        # 轮 81：save() 是「读-改-写」序列，无锁时并发 PATCH 会互相覆盖丢更新
+        self._save_lock = threading.RLock()
 
     # ── helpers ──
 
     def _project_path(self, project_id: str) -> Path:
         return self._projects_dir / project_id / "project.json"
+
+    def project_dir(self, project_id: str) -> Path:
+        """项目目录（`project.json`、`memory.md`、缩略图等同级共存）。
+
+        V8 起 `memory.md` 也落在该目录，因此对外的公开访问器是必要的。
+        """
+        return self._projects_dir / project_id
 
     def _read_json(self, project_id: str) -> dict[str, Any] | None:
         path = self._project_path(project_id)
@@ -74,9 +84,9 @@ class ProjectManager:
             "updated_at": data.get("updated_at"),
             "persona_id": data.get("persona_id"),
             "plugin_id": data.get("plugin_id"),
-            # A2: 回收站软删除标记（None/缺省 = 正常；有值 = 已删除，list 默认隐藏）
+            # 回收站软删除标记（None/缺省 = 正常；有值 = 已删除，list 默认隐藏）
             "deleted_at": data.get("deleted_at"),
-            # P3-3B: owner 隔离所需的归属字段
+            # owner 隔离所需的归属字段
             "owner_id": data.get("owner_id", ""),
             "track_count": len((data.get("timeline") or {}).get("tracks", [])),
             "duration_sec": (data.get("timeline") or {}).get("duration_sec", 0),
@@ -94,8 +104,13 @@ class ProjectManager:
         folder: str = "",
         tags: list[str] | None = None,
         agent_state: Any = None,
+        owner_id: str = "",
     ) -> dict[str, Any]:
-        """Create a new project with backend-assigned id."""
+        """Create a new project with backend-assigned id.
+
+        owner_id 随首次写入落盘（轮 81）：原先 create 后二次 save 写 owner，
+        二次写失败会产生「无主项目」，jwt 模式下创建者自己看不到。
+        """
         project_id = f"proj_{uuid.uuid4().hex[:12]}"
         now = self._now()
         data = {
@@ -107,6 +122,7 @@ class ProjectManager:
             "folder": folder,
             "tags": tags or [],
             "agent_state": agent_state,
+            "owner_id": owner_id,
             "created_at": now,
             "updated_at": now,
         }
@@ -117,14 +133,28 @@ class ProjectManager:
     def save(self, project_id: str, project_data: dict[str, Any]) -> dict[str, Any]:
         """Update existing project (create NOT allowed here). Returns full dict."""
         _safe_id(project_id)
-        existing = self._read_json(project_id)
-        if existing is None:
-            raise FileNotFoundError(f"Project {project_id} not found")
-        # Merge: caller data overrides, but id is immutable
-        existing.update(project_data)
-        existing["id"] = project_id  # enforce immutable
-        existing["updated_at"] = self._now()
-        self._write_json(project_id, existing)
+        with self._save_lock:  # 轮 81：读-改-写加锁，防并发丢更新
+            existing = self._read_json(project_id)
+            if existing is None:
+                raise FileNotFoundError(f"Project {project_id} not found")
+            # P0-01：timeline 形状防御——save 是整体覆盖语义，残缺 timeline
+            # （无 tracks 或 tracks 非 list）会顶掉磁盘上的完整时间线，直接忽略
+            incoming_timeline = project_data.get("timeline")
+            if incoming_timeline is not None and (
+                not isinstance(incoming_timeline, dict)
+                or not isinstance(incoming_timeline.get("tracks"), list)
+            ):
+                logger.warning(
+                    "拒绝非法 timeline 覆盖（缺 tracks 或形状不符）: %s", project_id
+                )
+                project_data = {
+                    k: v for k, v in project_data.items() if k != "timeline"
+                }
+            # Merge: caller data overrides, but id is immutable
+            existing.update(project_data)
+            existing["id"] = project_id  # enforce immutable
+            existing["updated_at"] = self._now()
+            self._write_json(project_id, existing)
         logger.info("项目已保存: %s", project_id)
         return existing
 
@@ -143,7 +173,7 @@ class ProjectManager:
         logger.info("项目已删除: %s", project_id)
         return True
 
-    # A2: 回收站软删除 — 标记 deleted_at，保留数据可恢复；list 默认隐藏
+    # 回收站软删除 — 标记 deleted_at，保留数据可恢复；list 默认隐藏
     def soft_delete(self, project_id: str) -> bool:
         """软删除：写入 deleted_at。返回 False 表示项目不存在。"""
         _safe_id(project_id)
@@ -294,6 +324,14 @@ class ProjectManager:
             data.pop("thumbnail_asset", None)
 
         self._write_json(new_id, data)
+        # V8：决策记忆随副本一起带走（副本与原项目共享同一套策略/决策背景，
+        # 否则副本会丢掉「为什么这么做」的全部上下文）
+        src_memory = self.project_dir(project_id) / "memory.md"
+        if src_memory.is_file():
+            try:
+                shutil.copy2(src_memory, self.project_dir(new_id) / "memory.md")
+            except OSError as exc:  # 记忆复制失败不影响项目复制本身
+                logger.warning("项目记忆复制失败 %s → %s: %s", project_id, new_id, exc)
         logger.info("项目已复制: %s → %s", project_id, new_id)
         return data
 

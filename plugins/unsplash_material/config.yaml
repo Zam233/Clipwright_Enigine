@@ -1,0 +1,7 @@
+fields:
+  access_key:
+    type: string
+    value: ""
+    secret: true
+    label: "Unsplash Access Key"
+    description: "从 https://unsplash.com/developers 获取；留空则读环境变量 UNSPLASH_ACCESS_KEY"

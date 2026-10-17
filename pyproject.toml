@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 authors = [
     { name = "Zam233" },
 ]
-license = { text = "MIT" }
+license = { text = "MPL-2.0" }
 
 dependencies = [
     "fastapi>=0.115.0",
@@ -45,7 +45,6 @@ extras = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-norecursedirs = ["clipwright/api", "clipwright/services", "clipwright/material"]
 
 [tool.ruff]
 line-length = 100

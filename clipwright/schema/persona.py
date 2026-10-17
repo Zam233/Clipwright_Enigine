@@ -29,7 +29,7 @@ class IdentityConfig(BaseModel):
     position: Optional[list[float]] = Field(
         default=None, description="政治光谱二维坐标 [经济轴, 文化轴]"
     )
-    # P0-5: 前端 UI 使用字符串定位描述（与 numeric position 并存，保证往返不丢失）
+    # 前端 UI 使用字符串定位描述（与 numeric position 并存，保证往返不丢失）
     positioning: Optional[str] = Field(default=None, description="定位描述（前端 UI 字符串）")
     class_perspective: Optional[str] = Field(default=None)
     knowledge_domains: list[str] = Field(default_factory=list)
@@ -54,9 +54,12 @@ class RhythmConfig(BaseModel):
     cut_profile: str = Field(default="even_flow", description="命名节奏配置")
     surge_sections: list[str] = Field(default_factory=list)
     pause_sections: list[str] = Field(default_factory=list)
-    base_shot_duration_ms: int = Field(default=5000, ge=100)
+    # 轮 87：Optional——旧默认 5000 使"未设置"与"显式 5000"不可区分，
+    # 类型插件的密度档位（知识 4/7/12s 等）永远被 Persona 默认值覆盖。
+    # None = 未设置 → 类型插件档位生效；显式数值仍优先生效。
+    base_shot_duration_ms: Optional[int] = Field(default=None, ge=100)
     cut_density_tier: str = Field(default="medium")
-    # P0-5: 前端 UI 字段（保留往返）
+    # 前端 UI 字段（保留往返）
     pause_frequency: Optional[float] = Field(default=None, ge=0)
 
 
@@ -67,7 +70,7 @@ class VisualConfig(BaseModel):
     palette: str = Field(default="neutral", description="配色方案名称")
     primary_color: Optional[str] = Field(default=None, pattern="^#[0-9a-fA-F]{6}$")
     accent_color: Optional[str] = Field(default=None, pattern="^#[0-9a-fA-F]{6}$")
-    # P0-5: 前端 UI 字段（保留往返）
+    # 前端 UI 字段（保留往返）
     background_color: Optional[str] = Field(default=None, pattern="^#[0-9a-fA-F]{6}$")
     animation_style: Optional[str] = Field(default=None, description="动画风格描述（前端 UI 字符串）")
     animation_styles: dict[str, str] = Field(
@@ -353,7 +356,7 @@ class PersonaManifest(BaseModel):
     persona_name: str = Field(default="")
     version: str = Field(default="1.0.0")
     description: str = Field(default="")
-    # P3-3B: 创建者账号 ID（jwt 模式）；空串 = 遗留/公共 persona（off/token 模式）
+    # 创建者账号 ID（jwt 模式）；空串 = 遗留/公共 persona（off/token 模式）
     owner_id: str = Field(default="")
 
     # 继承与组合

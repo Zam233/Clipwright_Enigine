@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from pydantic import BaseModel
+
 from fastapi import APIRouter, HTTPException
 
 from clipwright.schema.tool import ToolExecResult, ToolInfo
@@ -40,9 +42,16 @@ async def list_tools() -> list[ToolInfo]:
     return ToolRegistry.list()
 
 
+class _ExecuteRequest(BaseModel):
+    """P1-11: name/params 收进 body（旧签名 name 是查询参数 → 前端必 422）。"""
+    name: str
+    params: dict[str, Any] = {}
+
+
 @router.post("/execute", response_model=ToolExecResult)
-async def execute_tool(name: str, params: dict[str, Any] = {}) -> ToolExecResult:
+async def execute_tool(req: _ExecuteRequest) -> ToolExecResult:
     """按名称执行工具（P0-4: 路径类参数强制白名单校验）。"""
+    name, params = req.name, req.params
     _validate_tool_params(params)
     result = await ToolRegistry.execute(name, **params)
     if result.status == "not_found":

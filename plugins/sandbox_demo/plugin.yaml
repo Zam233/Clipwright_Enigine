@@ -1,0 +1,22 @@
+id: sandbox_demo
+name: 沙箱示例（子进程）
+version: 1.0.0
+kind: capability
+api_version: "1"
+description: 演示 runtime=subprocess 的沙箱插件：工具/钩子/提示词/UI 声明跨进程工作，写盘被权限钩子拒绝
+entry_point: main.py
+# 子进程运行时：宿主不 import 本插件代码，插件在自己的进程里跑
+runtime: subprocess
+# 只声明 network —— 因此写盘会被 worker 内的审计钩子拒绝（fs_write 未授予）
+permissions:
+  - network
+runtime_config:
+  call_timeout: 10
+# B1：子进程档强制「声明即授权」——每条贡献都必须在这里声明
+api_version: "2"
+contributions:
+  - { kind: tool, id: sandbox_echo }
+  - { kind: tool, id: sandbox_write_probe }
+  - { kind: hook, id: sandbox_pre_render }
+  - { kind: ui_slot, id: sandbox_panel }
+  - { kind: prompt, id: sandbox_edit_prompt }

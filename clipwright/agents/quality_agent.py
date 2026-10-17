@@ -6,6 +6,7 @@
 3. 节奏方差分析 — 镜头时长是否太均匀（缺少起伏）
 4. 动画覆盖率 — 文字轨是否有动画
 5. 转场覆盖率 — 视频片段之间是否有转场
+5b. 轨道相邻性（整数 tick 精确判定）— 视频轨片段重叠 / 间隙
 6. 音量峰值检查
 7. 空镜头检测 — video/image 素材黑帧/全白帧（frame_validator，有界并行）
 8. 动画生效检查 — renderer 降级 / mg_html 缺失 / clip 越界
@@ -43,6 +44,10 @@ _FRAME_CHECK_CONCURRENCY = 4  # frame_validator 并行度（Semaphore）
 _FRAME_CHECK_TIMEOUT_SEC = 30.0  # 单 clip 帧校验超时（秒），超时记 warning
 _ANIMATION_RENDERERS = ("hyperframes", "mg_hyperframes")  # 允许的动画渲染器
 _FLOAT_EPS = 1e-6
+# 轮 84（数码评测专项）：语义质检默认开启的类型——型号/参数/文案一致性
+# 是这两类内容的发布硬要求；其余类型维持默认关闭（显式设置仍可覆盖）
+_SEMANTIC_QA_DEFAULT_ON = {"digital_review", "knowledge_longform"}
+_GLOSSARY_MAX_ISSUES = 10  # 词表校验最多报的问题数，防长文本刷屏
 
 
 class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
@@ -57,12 +62,15 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         constraints = input_data.constraints or {}
         timeline = input_data.timeline
 
-        # C3: 质检深度默认策略 — basic（仅结构/时长/节奏，零媒体/LLM 开销）
+        # 质检深度默认策略 — basic（仅结构/时长/节奏，零媒体/LLM 开销）
         #   standard（默认，现有行为）/ deep（强制视觉 LLM + 语义质检）。
         # 显式设置 quality_depth 时以它为准，否则沿用各自的独立门控默认值。
         qdepth = str(constraints.get("quality_depth", "standard")).lower()
         enable_visual = constraints.get("enable_visual_llm", False)
-        enable_semantic = constraints.get("enable_semantic_qa", False)
+        # 轮 84（数码评测专项）：语义质检对评测/知识类默认开启——型号/参数/文案
+        # 一致性是这两类内容的发布硬要求；其余类型维持默认关闭。
+        semantic_default = context.category_plugin_id in _SEMANTIC_QA_DEFAULT_ON
+        enable_semantic = constraints.get("enable_semantic_qa", semantic_default)
         if qdepth == "basic":
             enable_visual = enable_semantic = False
         elif qdepth == "deep":
@@ -82,14 +90,14 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
             special = brief.get("special_requirements")
             if isinstance(special, list) and special:
                 for req in special[:5]:
-                    # 批2：info → warning（客户端仅展示 error/warning 级，
+                    # info → warning（客户端仅展示 error/warning 级，
                     # info 意味着用户确认的特殊要求在结果页完全不可见）
                     issues.append(QualityIssue(
                         severity="warning", category="brief_requirement",
                         message=f"简报要求（请人工核对是否落实）: {req}",
                     ))
         except Exception:
-            pass
+            logger.exception("简报要求核对失败（该项质检结果缺失）")
 
         # ── 1. 时长校验 ──
         max_duration = constraints.get("max_duration_sec", 900)
@@ -99,7 +107,7 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                 message=f"视频时长 {timeline.duration_sec:.0f}s 超过上限 {max_duration}s",
             ))
 
-        # 批8：最短时长门接入 Persona constraints.min_duration_sec（旧实现硬编码 10s）
+        # 最短时长门接入 Persona constraints.min_duration_sec（旧实现硬编码 10s）
         min_duration = constraints.get("min_duration_sec", 10)
         if timeline.duration_sec < min_duration:
             issues.append(QualityIssue(
@@ -191,6 +199,48 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                 message=f"{clip_gaps} 个片段间无转场效果（默认硬切）",
             ))
 
+        # ── 5b. 轨道相邻性（整数 tick 精确判定，O1 第二阶段）──
+        # 视频/图片轨是**顺序拼接**：上一段终点与下一段起点必须严格相接。
+        # 重叠会让裁剪/顺序对不上；间隙不会渲染成黑帧（渲染端按顺序 concat），
+        # 而是让成片比时间线短——两者都是浮点秒判不准的结构问题，故用 tick 判。
+        try:
+            adjacency = timeline.adjacency_issues()
+        except Exception as exc:  # 结构异常不应让质检整体失败
+            logger.debug("QualityAgent: 相邻性检查跳过: %s", exc)
+            adjacency = []
+        _video_track_ids = {t.id for t in tracks
+                            if t.kind in (ClipKind.VIDEO, ClipKind.IMAGE)}
+        overlaps = [a for a in adjacency if a["kind"] == "overlap" and a["track_id"] in _video_track_ids]
+        gaps = [a for a in adjacency if a["kind"] == "gap" and a["track_id"] in _video_track_ids]
+        if overlaps:
+            worst = min(overlaps, key=lambda a: a["delta_ticks"])
+            issues.append(QualityIssue(
+                severity="warning", category="structure",
+                message=f"{len(overlaps)} 处视频片段重叠（最大 {-worst['delta_sec']:.3f}s："
+                        f"{worst['prev']} 与 {worst['next']}），渲染按顺序拼接会与时间线不一致",
+            ))
+        if gaps:
+            largest = max(gaps, key=lambda a: a["delta_ticks"])
+            issues.append(QualityIssue(
+                severity="info", category="structure",
+                message=f"{len(gaps)} 处视频片段间隙（最大 {largest['delta_sec']:.3f}s："
+                        f"{largest['prev']} 与 {largest['next']}），间隙不会渲染成黑帧，成片会变短",
+            ))
+
+        # ── 5c. 渲染后复核结论（V4 残余）──
+        # 渲染阶段如果开了复核（切点复核图 + 全片总览图 + 视觉打分），结论会随
+        # RenderResult.review_findings 带出来；调用方放进 constraints 后这里消费，
+        # 转成质检问题并复用既有「分类 → redo_agent」映射，于是复核"看见了"就能派工。
+        try:
+            review_findings = (constraints or {}).get("review_findings") or []
+            if review_findings:
+                from clipwright.services.post_review import to_quality_issues
+
+                for item in to_quality_issues(list(review_findings)):
+                    issues.append(QualityIssue(**item))
+        except Exception as exc:  # 复核结论形状异常不应让质检失败
+            logger.debug("QualityAgent: 复核结论消费跳过: %s", exc)
+
         # ── 6. 音量检查 ──
         audio_clips = []
         for track in tracks:
@@ -238,7 +288,7 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                              f"不一致（偏差 {abs(video_dur - audio_end):.1f}s）"),
                 ))
         except Exception:
-            pass
+            logger.exception("音画时长一致性校验失败（该项质检结果缺失）")
 
         # ── 7. 空镜头检测（frame_validator，有界并行；不检查音频轨）──
         # 批A(R7)：受 quality_depth 门控——basic 跳过（远程逐 clip ffprobe
@@ -274,6 +324,13 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
             )
             issues.extend(semantic_issues)
 
+        # ── 11. 术语词表校验（轮 84 数码评测专项；glossary 非空才执行）──
+        # 型号/参数/品牌词拼写是评测类发布的硬约束；纯确定性检查（编辑距离
+        # ≤2 的近似词 → error），零 LLM 开销。
+        glossary = context.extra_params.get("glossary") or []
+        if isinstance(glossary, list) and glossary:
+            issues.extend(self._check_glossary(timeline, [str(t) for t in glossary if str(t).strip()]))
+
         # ── 判定 ──
         errors = [i for i in issues if i.severity == "error"]
         decision = AgentDecision.FAIL if errors else AgentDecision.PASS
@@ -285,7 +342,7 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         #              原映射缺失使语义错误既不触发自愈也不令管线失败）
         #   animation/transition      → animation
         #   audio                     → audio
-        # A5 修复：删除复制粘贴产生的重复块——旧实现 audio 分支立即被
+        # 修复：删除复制粘贴产生的重复块——旧实现 audio 分支立即被
         # redo_agent="edit" 覆盖（audio 类 error 会错误重做 edit），且后两个
         # 分支永不可达。保留单一映射表。
         redo_agent = ""
@@ -299,13 +356,31 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         elif "audio" in error_cats:
             redo_agent = "audio"
 
+        # 轮 84（评分闭环）：确定性 0-100 质量分（error -25 / warning -8 / info -2）
+        score = self._compute_score(issues)
+
         return QualityOutput(
             decision=decision,
             passed=len(errors) == 0,
             issues=issues,
             fix_suggestions=[i.message for i in issues if i.severity in ("error", "warning")],
             redo_agent=redo_agent,
+            score=score,
         )
+
+    @staticmethod
+    def _compute_score(issues: list[QualityIssue]) -> int:
+        """由 issue 列表推导 0-100 质量分（确定性权重，无 LLM）。
+
+        权重：error -25（致命缺陷）、warning -8（观感缺陷）、info -2（提示）。
+        passed 判定不使用该分数——分数是审阅参考与可选门槛
+        （extra_params.quality_min_score，默认 0 = 不启用）。
+        """
+        penalty = sum(
+            -25 if i.severity == "error" else (-8 if i.severity == "warning" else -2)
+            for i in issues
+        )
+        return max(0, min(100, 100 + penalty))
 
     # ── 帧级素材匹配检查 ─────────────────────────────────
 
@@ -534,6 +609,88 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         path = meta.get("local_path") or meta.get("url") or clip.asset_id or ""
         return str(path).strip()
 
+    # ── 11. 术语词表校验（轮 84 数码评测专项）──────────────
+
+    @staticmethod
+    def _levenshtein(a: str, b: str, cap: int = 3) -> int:
+        """编辑距离（带提前截断上限，避免长串无谓计算）。"""
+        if abs(len(a) - len(b)) > cap:
+            return cap + 1
+        prev = list(range(len(b) + 1))
+        for i, ca in enumerate(a, 1):
+            cur = [i]
+            for j, cb in enumerate(b, 1):
+                cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+            if min(cur) > cap:
+                return cap + 1
+            prev = cur
+        return prev[-1]
+
+    def _check_glossary(self, timeline: Timeline, terms: list[str]) -> list[QualityIssue]:
+        """词表校验：字幕/文字轨中出现词表术语的「近似变体」→ error。
+
+        评测类视频的型号/参数拼写是发布硬约束（如 RTX 5080 写成 5080Ti）。
+        确定性检查：精确命中放行；编辑距离 ≤2 的滑窗片段（词长 ≥4）判疑似
+        错误。纯文本计算，零 LLM/媒体开销。最多报 _GLOSSARY_MAX_ISSUES 条。
+        """
+        issues: list[QualityIssue] = []
+        if timeline is None or not terms:
+            return issues
+        texts: list[str] = []
+        for t in timeline.tracks:
+            if t.kind not in (ClipKind.CAPTION, ClipKind.TEXT):
+                continue
+            for c in t.clips:
+                txt = (getattr(c, "text", "") or "").strip()
+                if txt:
+                    texts.append(txt)
+        if not texts:
+            return issues
+
+        import re as _re
+
+        for term in terms:
+            if len(term) < 3:
+                continue
+            if any(term in txt for txt in texts):
+                continue  # 精确命中
+            # 滑窗近似匹配：短词（≤3 字）误报率高，仅允许距离 1
+            max_dist = 1 if len(term) <= 3 else 2
+            lo, hi = len(term) - max_dist, len(term) + max_dist
+            for txt in texts:
+                found = None
+                # 从最长窗口降序匹配：报告最接近词表词形的片段（如「安兔免」
+                # 而非其前缀「安兔」）
+                for size in range(hi, max(2, lo) - 1, -1):
+                    for start in range(0, max(1, len(txt) - size + 1)):
+                        token = txt[start:start + size]
+                        if token == term or not token.strip():
+                            continue
+                        # 词边界检查：窗口边缘紧贴 ASCII 字母/数字时视为更长
+                        # 单词的内部片段（如 "RTX 50" ⊂ "RTX 5080Ti"），跳过，
+                        # 避免把正确产品名的子串误判为近似词
+                        prev_ch = txt[start - 1] if start > 0 else ""
+                        next_ch = txt[start + size] if start + size < len(txt) else ""
+                        if (prev_ch.isascii() and prev_ch.isalnum()) or (
+                            next_ch.isascii() and next_ch.isalnum()
+                        ):
+                            continue
+                        if self._levenshtein(token, term, cap=max_dist) <= max_dist:
+                            found = token
+                            break
+                    if found:
+                        break
+                if found:
+                    issues.append(QualityIssue(
+                        severity="error", category="glossary",
+                        message=(f"术语疑似拼写错误：文本出现「{found}」，"
+                                 f"词表术语为「{term}」"),
+                    ))
+                    break
+            if len(issues) >= _GLOSSARY_MAX_ISSUES:
+                break
+        return issues
+
     async def _check_blank_shots(
         self, video_clips: list[Clip], issues: list[QualityIssue]
     ) -> None:
@@ -544,6 +701,19 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         """
         if not video_clips:
             return
+
+        # 轮 81：出片硬门——全占位时间线（asset_id 为空的文字/纯色占位）此前
+        # 一路 COMPLETED。占位占比过高 → error 级，接入自愈/门禁阻止「全占位
+        # 成片当成功交付」。
+        placeholders = [c for c in video_clips if not (c.asset_id or "").strip()]
+        if video_clips and len(placeholders) / len(video_clips) > 0.5:
+            issues.append(QualityIssue(
+                severity="error", category="material",
+                message=(f"时间线中 {len(placeholders)}/{len(video_clips)} 个画面片段为无素材占位"
+                         "（素材检索失败或素材不可用），成片将为文字/纯色占位；"
+                         "请检查素材源配置或 API Key"),
+            ))
+
         to_check = video_clips[:_MAX_FRAME_CHECK_CLIPS]
         if len(video_clips) > _MAX_FRAME_CHECK_CLIPS:
             issues.append(QualityIssue(

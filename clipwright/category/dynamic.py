@@ -27,18 +27,83 @@ class DynamicCategoryPlugin(BaseCategoryPlugin):
         self.description = config.get("description", "")
         self._shot_params = config.get("shot_params", {})
         self._persona_mapping = config.get("persona_mapping", {})
-        # B21: transform 规范（post_process_timeline 应用）
+        # transform 规范（post_process_timeline 应用）
         self._transform = config.get("transform", {}) or {}
 
+    @staticmethod
+    def _resolve_path(data: dict[str, Any], path: str) -> Any:
+        """P1-15: 按 "." 逐层取嵌套值——旧实现 `"rhythm.cut_density_tier" in data`
+        恒为 False（model_dump 是嵌套 dict），映射整体空转。"""
+        cur: Any = data
+        for part in str(path).split("."):
+            if not isinstance(cur, dict) or part not in cur:
+                return None
+            cur = cur[part]
+        return cur
+
+    def _apply_transform(self, mapping: dict[str, Any], value: Any) -> Any:
+        """P1-15: mapping.transform — direct（默认）/ scale（×scale_factor）/ lookup（查表）。"""
+        t = str(mapping.get("transform", "direct") or "direct")
+        if value is None:
+            return None
+        try:
+            if t == "scale":
+                factor = float(mapping.get("scale_factor", 1.0) or 1.0)
+                return value * factor if isinstance(value, (int, float)) else value
+            if t == "lookup":
+                table = mapping.get("lookup") or {}
+                return table.get(str(value), value)
+        except (TypeError, ValueError):
+            return value
+        return value
+
+    def _shot_params_ms(self) -> dict[str, Any]:
+        """P1-15: YAML shot_params（秒键）→ EditAgent 消费的 ms 键。
+
+        旧实现把 YAML 原样并入 extra_params.shot_params，而 EditAgent 读的是
+        base_shot_ms/min_shot_ms/max_shot_ms → 自定义类型的节奏配置整体失效。
+        """
+        out: dict[str, Any] = {}
+        for k, v in (self._shot_params or {}).items():
+            if k.endswith("_sec") and isinstance(v, (int, float)):
+                out[f"{k[:-4]}_ms"] = int(round(v * 1000))
+            elif k == "base_shot_duration_ms" and isinstance(v, (int, float)):
+                out["base_shot_ms"] = int(v)
+            elif k == "base_shot_ms":
+                out["base_shot_ms"] = v
+            else:
+                out[k] = v
+        return out
+
     def translate_persona(self, params: ParameterLayer) -> dict[str, Any]:
-        """使用 YAML 中定义的映射规则翻译 Persona 参数。"""
+        """使用 YAML 中定义的映射规则翻译 Persona 参数。
+
+        P1-15: 返回值并入 shot_params（ms 键）与 shot_params 中的开关
+        （cut_on_beat / transition_weights）——内置类型均会返回 shot_params，
+        动态类型此前只返回映射结果，EditAgent 拿到空 shot_params 回退 5000ms。
+        """
         translated: dict[str, Any] = {}
         data = params.model_dump(mode="json") if params else {}
         for key, mapping in self._persona_mapping.items():
+            if not isinstance(mapping, dict):
+                continue
             source = mapping.get("source", key)
-            if source in data:
-                translated[key] = data[source]
-        return translated
+            value = self._resolve_path(data, source)
+            value = self._apply_transform(mapping, value)
+            if value is not None:
+                translated[key] = value
+
+        result: dict[str, Any] = {**translated}
+        shot_params = self._shot_params_ms()
+        if shot_params:
+            result["shot_params"] = shot_params
+        # YAML shot_params 里的编排开关提升到 extra_params 顶层（与内置类型对齐）
+        sp = self._shot_params or {}
+        if sp.get("cut_on_beat") is not None:
+            result["cut_on_beat"] = bool(sp["cut_on_beat"])
+        if sp.get("transition_type"):
+            result["transition_weights"] = {str(sp["transition_type"]): 1.0}
+        return result
 
     def get_shot_params(self, translated: dict[str, Any]) -> dict[str, Any]:
         return {**self._shot_params, **translated}

@@ -12,10 +12,9 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.tool.base import BaseTool
-from clipwright.tool.registry import ToolRegistry
 from clipwright.skill.base import BaseSkill
-from clipwright.skill.registry import SkillRegistry
 from clipwright.schema.skill import SkillExecResult
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
@@ -108,13 +107,15 @@ class WhisperSTTPlugin(CapabilityPlugin):
         author="Clipwright Team",
     )
 
-    def initialize(self) -> None:
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：本地 Whisper 转录工具 + 转录对齐技能。"""
         model_size = (self.config or {}).get("model_size", "base")
-        tool = WhisperTranscribeTool(default_model=model_size)
-        ToolRegistry.register(tool, plugin_id=self.manifest.id)
-        skill = TranscribeAndAlignSkill()
-        SkillRegistry.register(skill, plugin_id=self.manifest.id)
-        logger.info("[WhisperSTT] Tool + Skill 已注册 (model=%s)", model_size)
+        return [
+            Contribution(ContributionKind.TOOL, "whisper_transcribe_local",
+                         WhisperTranscribeTool(default_model=model_size)),
+            Contribution(ContributionKind.SKILL, "transcribe_and_align",
+                         TranscribeAndAlignSkill()),
+        ]
 
     def shutdown(self) -> None:
         pass

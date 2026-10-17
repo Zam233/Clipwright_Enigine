@@ -27,6 +27,81 @@ def _require_admin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="插件管理操作需要管理员权限")
 
 
+# ── B5/B6：贡献读取路径的缓存 ──────────────────────────────
+# `/contributions` 是设置页首屏的数据源，此前每请求都要：①扫盘 discover()
+# （O(插件数) 次 fs 访问）②读每个 ui.json；且启动后新注册的内置 hook/prompt
+# 不在门面里（镜像只在 lifespan 跑过一次）。这里加两层短 TTL 缓存。
+_PLUGIN_SCAN_TTL_SEC = 10.0
+_UI_FILE_TTL_SEC = 10.0
+_MIRROR_TTL_SEC = 10.0
+_scan_cache: dict[str, object] = {"at": 0.0, "ids": []}
+_ui_cache: dict[str, tuple[float, dict | None]] = {}
+_mirror_at: dict[str, float] = {"at": 0.0}
+
+
+def _now() -> float:
+    import time
+    return time.time()
+
+
+def _invalidate_plugin_caches() -> None:
+    """插件启停/重载后调用：立刻失效扫盘与 ui.json 缓存。"""
+    _scan_cache["at"] = 0.0
+    _scan_cache["ids"] = []
+    _ui_cache.clear()
+
+
+def _discover_plugins_cached() -> list[str]:
+    if _loader is None:
+        return []
+    if _now() - float(_scan_cache["at"]) < _PLUGIN_SCAN_TTL_SEC:  # type: ignore[arg-type]
+        return list(_scan_cache["ids"])  # type: ignore[arg-type]
+    try:
+        discovered = list(_loader.discover())
+    except Exception:  # noqa: BLE001 — 发现失败不应让贡献列表 500
+        discovered = []
+    _scan_cache["at"] = _now()
+    _scan_cache["ids"] = discovered
+    return discovered
+
+
+def _legacy_ui_file(plugin_id: str) -> dict | None:
+    """读插件 ui.json（旧格式才返回；带 mtime 失效的缓存）。"""
+    if _loader is None:
+        return None
+    ui_file = _loader.plugin_dir / plugin_id / "ui.json"
+    try:
+        mtime = ui_file.stat().st_mtime
+    except OSError:
+        return None
+    cached = _ui_cache.get(plugin_id)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    raw: dict | None = None
+    try:
+        import json as _json
+        data = _json.loads(ui_file.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and "slots" not in data and "widgets" in data:
+            raw = data
+    except Exception:  # noqa: BLE001 — 坏文件按「无 UI」处理
+        raw = None
+    _ui_cache[plugin_id] = (mtime, raw)
+    return raw
+
+
+def _maybe_refresh_builtin_mirror() -> None:
+    """B6：按 TTL 重扫内置贡献镜像（启动后新注册的 hook/prompt 也能入账）。"""
+    if _now() - _mirror_at["at"] < _MIRROR_TTL_SEC:
+        return
+    _mirror_at["at"] = _now()
+    try:
+        from clipwright.plugins.builtin_contributions import ingest_builtin_contributions
+        ingest_builtin_contributions()
+    except Exception as e:  # noqa: BLE001 — 读路径不能因镜像失败而失败
+        from clipwright.config import logger
+        logger.warning("内置贡献镜像重扫失败: %s", e)
+
+
 def _validate_plugin_id(plugin_id: str) -> str:
     """审计 P1 修复：所有含 plugin_id 的端点先校验 ID 合法性，
     防止 ../ 路径穿越（如 GET /{plugin_id}/ui 直接拼接文件路径）。"""
@@ -37,12 +112,34 @@ def _validate_plugin_id(plugin_id: str) -> str:
         raise HTTPException(status_code=400, detail=str(e))
 
 
+def _attach_contributions(items: list) -> None:
+    """P12：为每个插件补 `contributions` / `declared_only`（管理面溯源用）。
+
+    数据源是门面账本（双轨都会入账），因此「界面显示已加载但实际零贡献」
+    这类问题可以直接看出来。
+    """
+    from clipwright.plugins.contribution import ContributionRegistry
+
+    for meta in items:
+        pid = str(getattr(meta.manifest, "id", "") or "")
+        registered = ContributionRegistry.list_by_owner(pid)
+        meta.contributions = [{"kind": c.kind.value, "id": c.id} for c in registered]
+        registered_keys = {f"{c.kind.value}:{c.id}" for c in registered}
+        declared = {
+            f"{str(getattr(d, 'kind', '') or '')}:{str(getattr(d, 'id', '') or '')}"
+            for d in list(getattr(meta.manifest, "contributions", []) or [])
+        }
+        meta.declared_only = sorted(k for k in declared - registered_keys if k != ":")
+
+
 @router.get("/list", response_model=list[PluginMetadata])
 async def list_plugins() -> list[PluginMetadata]:
-    """列出所有已加载的第三方插件。"""
+    """列出所有已加载的第三方插件（P12：附已注册贡献与「声明未注册」清单）。"""
     if _loader is None:
         return []
-    return _loader.list_loaded()
+    items = _loader.list_loaded()
+    _attach_contributions(items)
+    return items
 
 
 @router.get("/discover", response_model=list[str])
@@ -91,13 +188,18 @@ async def enable_plugin(plugin_id: str, request: Request = None) -> dict[str, st
     _validate_plugin_id(plugin_id)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
-    _loader.set_enabled(plugin_id, True)
+    # P1-12: set_enabled 也要进 try——它内部对未加载插件会触发 load()，签名/
+    # 依赖不满足时抛 PluginLoadError，落在 try 外会导致状态文件已写 enabled
+    # 而回滚（set_enabled(False)）永不执行 → 重启后「已启用但未加载」
     try:
+        _loader.set_enabled(plugin_id, True)
         _loader.load(plugin_id)
     except Exception as e:
-        # 批7：加载失败回退禁用态并返回 502（旧实现裸 500 且状态不一致）
+        # 加载失败回退禁用态并返回 502（旧实现裸 500 且状态不一致）
         _loader.set_enabled(plugin_id, False)
+        _invalidate_plugin_caches()
         raise HTTPException(status_code=502, detail=f"插件加载失败: {str(e)[:200]}")
+    _invalidate_plugin_caches()
     return {"status": "ok", "plugin_id": plugin_id, "enabled": "true"}
 
 
@@ -109,7 +211,7 @@ async def disable_plugin(plugin_id: str, request: Request = None) -> dict[str, s
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
     _loader.set_enabled(plugin_id, False)
-    # P4: 禁用时同时注销 Hook + Prompt（能力即时收缩）
+    # 禁用时同时注销 Hook + Prompt（能力即时收缩）
     try:
         from clipwright.plugins.hooks import HookRegistry
         HookRegistry.unregister_plugin(plugin_id)
@@ -129,6 +231,7 @@ async def disable_plugin(plugin_id: str, request: Request = None) -> dict[str, s
     except Exception as e:
         from clipwright.config import logger
         logger.warning("禁用插件 Agent 清理失败 %s: %s", plugin_id, e)
+    _invalidate_plugin_caches()
     return {"status": "ok", "plugin_id": plugin_id, "enabled": "false"}
 
 
@@ -143,10 +246,167 @@ async def list_permissions() -> dict[str, object]:
 
 
 @router.get("/errors")
-async def list_plugin_errors(limit: int = 50) -> list[dict]:
-    """M7: 插件错误通道 — 最近错误列表（诊断用）。"""
+async def list_plugin_errors(limit: int = 50, request: Request = None) -> list[dict]:
+    """M7: 插件错误通道 — 最近错误列表（诊断用）。P3-09: admin 门禁。"""
+    _require_admin(request)
     from clipwright.plugins.error_bus import get_error_bus
     return get_error_bus().list(limit=max(1, min(limit, 200)))
+
+
+@router.get("/{plugin_id}/bundle")
+async def get_plugin_bundle(plugin_id: str, request: Request = None):
+    """M8：受信任 UI bundle（iframe 沙箱档）——默认关闭，且必须带签名。
+
+    门禁（fail-closed，全部在端点层校验，不依赖加载器）：
+    1. `settings.plugin_allow_ui_bundle` 未开启 → 403；
+    2. 插件未发现或缺少 `bundle.html` → 404；
+    3. 插件 manifest 无 `signature` → 403（受信任档要求签名，与 Gate G-2 一致）。
+
+    返回 HTML 时附带严格 CSP；前端以 `<iframe sandbox="allow-scripts">` 加载，
+    通过 postMessage 与宿主通信（禁止直接 import 插件 JS 到宿主上下文）。
+    """
+    from clipwright.config import settings
+    from fastapi.responses import HTMLResponse
+
+    _validate_plugin_id(plugin_id)
+    if _loader is None:
+        raise HTTPException(status_code=503, detail="Plugin system not initialized")
+    if not bool(getattr(settings, "plugin_allow_ui_bundle", False)):
+        raise HTTPException(
+            status_code=403,
+            detail="插件 UI bundle 档未开启（设置 plugin_allow_ui_bundle=true 后可用）",
+        )
+    if plugin_id not in _loader.discover():
+        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not found")
+    bundle_file = _loader.plugin_dir / plugin_id / "bundle.html"
+    if not bundle_file.exists():
+        raise HTTPException(status_code=404, detail="该插件未提供 bundle.html")
+
+    # 签名强制：受信任档不接受无签名插件（与 loader 的签名策略同语义，
+    # 因加载器文件被外部工具阻断，门禁落在本端点层）
+    try:
+        manifest = _loader._parse_manifest(plugin_id, _loader.plugin_dir / plugin_id)
+    except Exception:
+        manifest = None
+    if manifest is None or not getattr(manifest, "signature", ""):
+        raise HTTPException(
+            status_code=403,
+            detail="受信任 UI bundle 需要插件签名（manifest.signature 缺失）",
+        )
+    try:
+        html = bundle_file.read_text(encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read bundle: {e}")
+    return HTMLResponse(
+        content=html,
+        headers={
+            # 沙箱内运行：禁止外联默认收窄到自身/内联（插件如需网络应在 manifest 声明并扩展）
+            "Content-Security-Policy": "default-src 'self' 'unsafe-inline' data: blob:",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/contributions")
+async def list_contributions(
+    kind: str = "",
+    slot: str = "",
+    owner: str = "",
+    request: Request = None,
+) -> dict[str, object]:
+    """A-6/D-1：列出已注册贡献（可按 kind / ui_slot 的 slot 名 / owner 过滤）。
+
+    D 的关键数据源：前端只调这一个端点即可拿到全部插件在某 slot 的贡献
+    （不必逐个插件拉取）。owner 过滤用于「谁提供了这个工具」的溯源。
+    """
+    from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+
+    # B6：内置镜像按 TTL 重扫——启动后才注册的内置 hook/prompt 也能出现在门面
+    _maybe_refresh_builtin_mirror()
+
+    filter_kind = None
+    if kind:
+        try:
+            filter_kind = ContributionKind(kind)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"未知贡献类型: {kind}")
+
+    # P6：`meta.admin_only` 的贡献只发给管理员。
+    # 策略（产品确认）：插件页/界面默认对**所有登录用户**开放；插件若声明
+    # admin_only，则由后端在这里直接不投递（非管理员连定义都拿不到，
+    # 比前端隐藏更可靠——前端隐藏只是观感）。
+    # off/token 模式没有用户身份（user_id=None）——按本仓库既有语义视为管理员
+    # （与 `_require_admin` 一致），避免单机/本地部署丢掉 admin_only 插件页。
+    from clipwright.authz import current_user_id as _uid
+    from clipwright.authz import is_admin as _is_admin
+    if request is None:
+        requester_is_admin = False
+    elif _uid(request) is None:
+        requester_is_admin = True
+    else:
+        requester_is_admin = _is_admin(request)
+
+    out: list[dict[str, object]] = []
+    for owner_id, item in ContributionRegistry.list(filter_kind):
+        if owner and owner_id != owner:
+            continue
+        if slot and str(item.meta.get("slot", "")) != slot:
+            continue
+        if item.meta.get("admin_only") and not requester_is_admin:
+            continue
+        meta = dict(item.meta)
+        entry: dict[str, object] = {
+            "kind": item.kind.value,
+            "id": item.id,
+            "owner": owner_id,
+            "meta": meta,
+        }
+        # 所有 kind 统一透传前端消费的顶层字段（export_preset/shortcut/
+        # timeline.tool 等非 ui_slot 类同样需要 payload/icon/visibleWhen）
+        for key in ("title", "order", "icon", "visibleWhen", "payload"):
+            if key in meta:
+                entry[key] = meta[key]
+        if item.kind is ContributionKind.UI_SLOT:
+            # D-2 渲染器直接消费 SlotContribution 形状（slot/title/order/layout…）
+            entry.update({
+                "slot": str(meta.get("slot", "")),
+                "title": str(meta.get("title") or item.id),
+                "order": meta.get("order", 100),
+                **({"icon": meta["icon"]} if meta.get("icon") else {}),
+                **({"visibleWhen": meta["visibleWhen"]} if meta.get("visibleWhen") else {}),
+                **({"layout": meta["layout"]} if meta.get("layout") else {}),
+                **({"payload": meta["payload"]} if meta.get("payload") else {}),
+            })
+        out.append(entry)
+
+    # D-1 兼容层：旧 ui.json（{title, widgets}）→ settings.section slot
+    # （仅在查询该 slot 或未按 slot 过滤时扫描；插件的 ui.json 不进门面，
+    #  由本端点按需包装——30 个内置插件一行不改即可被前端 Slot 渲染器消费）
+    if (not slot or slot == "settings.section") and _loader is not None:
+        seen = {str(e.get("id")) for e in out}
+        discovered = _discover_plugins_cached()
+        for pid in discovered:
+            if owner and pid != owner:
+                continue
+            raw = _legacy_ui_file(pid)
+            if raw is None:
+                continue
+            entry_id = f"{pid}_legacy"
+            if entry_id in seen:
+                continue
+            title = str(raw.get("title") or pid)
+            out.append({
+                "kind": "ui_slot",
+                "id": entry_id,
+                "owner": pid,
+                "slot": "settings.section",
+                "title": title,
+                "order": 200,
+                "layout": {"title": title, "widgets": raw.get("widgets") or []},
+                "legacy": True,
+                "meta": {"slot": "settings.section"},
+            })
+    return {"contributions": out, "total": len(out)}
 
 
 @router.get("/health")
@@ -229,18 +489,34 @@ async def plugin_health() -> dict[str, object]:
 
     statuses = {p["status"] for p in plugins}
     overall = "error" if "error" in statuses else ("degraded" if "degraded" in statuses else "ok")
+    # C3：风格解释器是「多注册、按 priority 取活跃项」——把当前活跃 owner 与
+    # 候选项暴露出来，避免装了第二个插件却不知道没生效
+    style_state: dict[str, object] = {}
+    try:
+        from clipwright.services.style_interpreter import StyleInterpreter
+        style_state = {
+            "active": StyleInterpreter._owner or "",
+            "candidates": [
+                {"owner": owner, "priority": priority}
+                for owner, priority, _plugin in StyleInterpreter.list_plugins()
+            ],
+        }
+    except Exception as e:  # noqa: BLE001 — 诊断信息缺失不影响健康总览
+        logger.warning("风格解释器状态读取失败: %s", e)
     return {
         "overall": overall,
         "plugins": plugins,
         "errors_total": len(errors),
         "prompts_registered": sum(
             len(v) for v in PluginPromptRegistry.list_registered().values()),
+        "style_interpreter": style_state,
     }
 
 
 @router.delete("/errors")
-async def clear_plugin_errors(plugin_id: str = "") -> dict[str, object]:
-    """M7: 清空插件错误通道（可按插件过滤）。"""
+async def clear_plugin_errors(plugin_id: str = "", request: Request = None) -> dict[str, object]:
+    """M7: 清空插件错误通道（可按插件过滤）。P3-09: admin 门禁。"""
+    _require_admin(request)
     from clipwright.plugins.error_bus import get_error_bus
     removed = get_error_bus().clear(plugin_id or None)
     return {"status": "ok", "removed": removed}
@@ -265,7 +541,7 @@ async def unregister_plugin(plugin_id: str, request: Request = None) -> dict[str
     except Exception as e:
         from clipwright.config import logger
         logger.warning("插件数据目录清理失败 %s: %s", plugin_id, e)
-    # P4: 统一注销 Hook + Prompt
+    # 统一注销 Hook + Prompt
     try:
         from clipwright.plugins.hooks import HookRegistry
         HookRegistry.unregister_plugin(plugin_id)
@@ -278,6 +554,8 @@ async def unregister_plugin(plugin_id: str, request: Request = None) -> dict[str
     except Exception as e:
         from clipwright.config import logger
         logger.warning("插件 Prompt 清理失败 %s: %s", plugin_id, e)
+    # B5：卸载改变了贡献集合，失效读路径缓存（扫盘 + ui.json）
+    _invalidate_plugin_caches()
     return {"status": "unregistered", "plugin_id": plugin_id}
 
 
@@ -295,7 +573,19 @@ async def get_plugin_config(plugin_id: str) -> dict[str, object]:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
     if plugin_id not in _loader.discover():
         raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not found")
-    return _loader.get_typed_config(plugin_id)
+    # P2-50: get_typed_config 的掩码算在密文上（未先解密）——此处解密后
+    # 重新掩码，回显形态恢复为「明文前 4 字符 + ****」
+    from clipwright.plugins.config_types import decrypt_field_value, mask_secret_value
+    config = _loader.get_typed_config(plugin_id)
+    for fdef in (config.get("fields") or {}).values():
+        if isinstance(fdef, dict) and fdef.get("secret") is True:
+            try:
+                plain = decrypt_field_value(fdef, fdef.get("value"))
+                if isinstance(plain, str) and plain:
+                    fdef["value"] = mask_secret_value(plain)
+            except Exception:
+                continue
+    return config
 
 
 @router.put("/{plugin_id}/config")
@@ -304,6 +594,7 @@ async def put_plugin_config(plugin_id: str, request: Request) -> dict[str, objec
 
     M13: 已发现但未加载的插件同样可保存（预配置），加载后生效。
     """
+    _require_admin(request)  # 配置可含 secret 凭据，jwt 模式下仅管理员可写
     _validate_plugin_id(plugin_id)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
@@ -330,23 +621,31 @@ async def put_plugin_config(plugin_id: str, request: Request) -> dict[str, objec
     if errors:
         raise HTTPException(status_code=400, detail={"message": "配置校验失败", "errors": errors})
 
-    # P5: secret 掩码回写防护——如果 PUT 值包含 ****（掩码标记），保留原加密值
-    from clipwright.plugins.config_types import mask_secret_value
-    _plugin = _loader.get(plugin_id)
-    if _plugin and hasattr(_plugin, 'config') and isinstance(_plugin.config, dict):
-        for fname, fdef in (data.get("fields") or {}).items():
-            if isinstance(fdef, dict) and isinstance(fdef.get("value"), str) and "****" in fdef["value"]:
-                orig_val = _plugin.config.get(fname)
-                if orig_val is not None:
-                    fdef["value"] = orig_val  # 保留原始加密值
+    # secret 掩码回写防护——如果 PUT 值包含 ****（掩码标记），保留原加密值
+    # secret 掩码回写防护——PUT 值含 ****（掩码标记）时保留旧值。
+    # P1-10/P2-51: 旧守卫只对「已加载插件」生效（读实例 config）——未加载插件
+    # 的预配置保存会把掩码当真值落盘。现统一从 merged 配置解密取旧值，
+    # 未配置过（无旧值）时置空串而非保留掩码。
+    from clipwright.plugins.loader import _decrypt_flat
+    try:
+        _current_plain = _decrypt_flat(_loader._get_merged_config(plugin_id))
+    except Exception:
+        _current_plain = {}
+    for fname, fdef in (data.get("fields") or {}).items():
+        if isinstance(fdef, dict) and isinstance(fdef.get("value"), str) and "****" in fdef["value"]:
+            orig_val = _current_plain.get(fname)
+            fdef["value"] = orig_val if isinstance(orig_val, str) and orig_val else ""
     _loader.save_config(plugin_id, data)
     _loader.reload(plugin_id)
+    # B5：重载会重新注册贡献（例如钩子/槽位随配置变化），失效读路径缓存
+    _invalidate_plugin_caches()
     return {"status": "ok", "plugin_id": plugin_id}
 
 
 @router.delete("/{plugin_id}/config")
-async def delete_plugin_config(plugin_id: str) -> dict[str, str]:
+async def delete_plugin_config(plugin_id: str, request: Request) -> dict[str, str]:
     """删除数据目录的 config.yaml，回退到源码默认配置。"""
+    _require_admin(request)
     _validate_plugin_id(plugin_id)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
@@ -365,6 +664,8 @@ async def delete_plugin_config(plugin_id: str) -> dict[str, str]:
         plugin.config = _extract_flat_values(_loader._get_merged_config(plugin_id))
 
     _loader.reload(plugin_id)
+    # B5：重载后贡献集合可能变化，失效读路径缓存
+    _invalidate_plugin_caches()
     return {"status": "ok", "plugin_id": plugin_id}
 
 
@@ -407,7 +708,13 @@ async def get_capabilities() -> dict:
 
 @router.get("/{plugin_id}/ui")
 async def get_plugin_ui(plugin_id: str) -> dict:
-    """返回插件的 UI 布局定义（ui.json）。"""
+    """返回插件的 UI 布局定义（ui.json）。
+
+    D-1 双格式兼容（方案 §6）：
+    - 新格式（含 ``slots`` 键）→ 原样返回；
+    - 旧格式（``{title, widgets}``）→ 包成单个 ``settings.section`` slot 返回，
+      并附 ``"legacy": true``——30 个内置插件的 ui.json 一行不改即可继续工作。
+    """
     _validate_plugin_id(plugin_id)  # 审计 P1 修复：阻断 ../ 路径穿越
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
@@ -416,6 +723,27 @@ async def get_plugin_ui(plugin_id: str) -> dict:
         return {"widgets": []}
     try:
         import json as _json
-        return _json.loads(ui_file.read_text(encoding="utf-8"))
+        raw = _json.loads(ui_file.read_text(encoding="utf-8"))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read plugin UI: {e}")
+
+    if isinstance(raw, dict) and "slots" in raw:
+        return raw  # 新格式原样
+    if isinstance(raw, dict) and "widgets" in raw:
+        # 旧格式 → settings.section slot（前端 Slot 渲染器统一消费）。
+        # 兼容期同时保留原始 title/widgets 顶层字段——插件管理页的「预览 UI」
+        # 与既有第三方调用方仍按旧契约读取（D-1 曾丢掉这两个键导致预览失效）。
+        title = str(raw.get("title") or "插件设置")
+        return {
+            "title": title,
+            "widgets": raw.get("widgets") or [],
+            "api_version": "2",
+            "legacy": True,
+            "slots": [{
+                "slot": "settings.section",
+                "id": f"{plugin_id}_legacy",
+                "title": title,
+                "layout": {"title": title, "widgets": raw.get("widgets") or []},
+            }],
+        }
+    return raw

@@ -106,21 +106,24 @@ async def get_mg_generation(generation_id: str) -> dict:
     return record
 
 
-@router.post("/preview")
-async def preview_mg(body: MgPreviewRequest) -> dict:
-    """Phase 2.6: 单镜头 MG 动画预览 — 直接经 Hyperframes 渲染短视频，不入主渲染队列。
+def _mg_variables(mg_def: dict, params: dict[str, str]) -> list[dict]:
+    """复用 MGRenderer 的变量声明逻辑（预览端点回显用）。"""
+    try:
+        from clipwright.animation.mg_renderer import MGRenderer
+
+        return MGRenderer.build_variables(mg_def, params or {})
+    except Exception:
+        return []
+
+
+def _resolve_preview_mg(body: MgPreviewRequest) -> tuple[dict, float, str]:
+    """解析预览请求 → (mg_def, duration_sec, html)。
 
     ``animation_id``（内置模板）或 ``mg_json``（LLM 生成定义）二选一；
-    返回 MP4 播放 URL（走 /api/render/download 静态服务）。
+    背景守卫与主管线一致（默认透明叠加）。渲染型与 HTML 即时预览共用本函数。
     """
-    import uuid
-    from pathlib import Path
-
-    from clipwright.animation.hyperframes_renderer import HyperframesRenderer
     from clipwright.animation.mg.generator import MGGenerator
     from clipwright.animation.mg_renderer import MGRenderer
-    from clipwright.config import logger
-    from clipwright.services.render import run_tracked_ff
 
     mg_def = body.mg_json if isinstance(body.mg_json, dict) and body.mg_json else None
     if mg_def is None:
@@ -130,12 +133,7 @@ async def preview_mg(body: MgPreviewRequest) -> dict:
     if not isinstance(mg_def, dict) or not mg_def.get("elements"):
         raise HTTPException(status_code=400, detail="无效的 MG 定义（缺少 elements）")
 
-    # 背景守卫与主管线一致：默认透明叠加
     mg_def = MGGenerator._ensure_no_background(mg_def, "")
-
-    if not await HyperframesRenderer.ais_available():
-        raise HTTPException(status_code=503, detail="Hyperframes 渲染器不可用，无法预览")
-
     dur = min(float(mg_def.get("duration_sec", 3.0) or 3.0), 8.0)
     try:
         html = MGRenderer.render(
@@ -144,18 +142,85 @@ async def preview_mg(body: MgPreviewRequest) -> dict:
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"MG 渲染失败: {e}")
+    return mg_def, dur, html
+
+
+@router.post("/mg/html")
+async def preview_mg_html(body: MgPreviewRequest) -> dict:
+    """HTML 即时预览（P2-3）：返回合成 HTML 本身，**不渲染**、不起 Chromium。
+
+    前端把它塞进 sandbox iframe，用 `window.__timelines['main'].seek(t)` 驱动播放
+    （与主管线同源的 hf_timeline 运行时），因此是秒级的"真效果"预览；
+    需要落地成片时再走 `POST /api/animation/preview`（Hyperframes 渲染 MP4）。
+    """
+    mg_def, dur, html = _resolve_preview_mg(body)
+    variables = {k: str(v) for k, v in (body.params or {}).items()}
+    return {
+        "html": html,
+        "duration_sec": round(dur, 2),
+        "width": body.width,
+        "height": body.height,
+        "fps": body.fps,
+        "animation_id": mg_def.get("animation_id", ""),
+        # P1-5：声明过的变量与本次取值，前端可在 iframe 内驱动/展示
+        "variables": {str(v["id"]): v.get("default", "") for v in _mg_variables(mg_def, variables)},
+    }
+
+
+@router.post("/preview")
+async def preview_mg(body: MgPreviewRequest) -> dict:
+    """Phase 2.6: 单镜头 MG 动画预览 — 直接经 Hyperframes 渲染短视频，不入主渲染队列。
+
+    ``animation_id``（内置模板）或 ``mg_json``（LLM 生成定义）二选一；
+    返回 MP4 播放 URL（走 /api/render/download 静态服务）。
+    只要 HTML 级预览时用 `POST /api/animation/mg/html`（不渲染、秒级）。
+    """
+    import uuid
+    from pathlib import Path
+
+    from clipwright.animation.hyperframes_renderer import HyperframesRenderer
+    from clipwright.config import logger
+    from clipwright.services.render import run_tracked_ff
+
+    mg_def, dur, html = _resolve_preview_mg(body)
+
+    if not await HyperframesRenderer.ais_available():
+        raise HTTPException(status_code=503, detail="Hyperframes 渲染器不可用，无法预览")
 
     name = f"preview_{uuid.uuid4().hex[:12]}"
     renders_dir = Path("renders")
     renders_dir.mkdir(parents=True, exist_ok=True)
+    # P2-37: 预览产物 TTL 清理——预览是随时可重生成的一次性产物，
+    # 旧实现只删临时 mov、mp4 永久累积（每次预览 ~数 MB）。清理 2 小时前的旧预览。
+    try:
+        import time as _time
+        _now = _time.time()
+        for old in renders_dir.glob("preview_*.mp4"):
+            if _now - old.stat().st_mtime > 2 * 3600:
+                old.unlink(missing_ok=True)
+    except Exception:
+        pass
     mov_path = Path("renders") / f"{name}.mov"
     mp4_path = renders_dir / f"{name}.mp4"
     try:
-        ok = await HyperframesRenderer.render_overlays(
-            [{"mg_html": html, "start_sec": 0, "duration_sec": dur}],
-            str(mov_path), width=body.width, height=body.height, fps=body.fps,
+        # P1-01: 与主管线渲染同构——mg_html 写独立目录 index.html 交给 hyperframes。
+        # 旧实现塞进 render_overlays 的 overlay 列表，_overlay_to_html 只读 text
+        # 字段 → 恒产出空白视频却报成功。
+        async def _run_preview(cmd):
+            return await run_tracked_ff(
+                cmd, capture_output=True, text=False, timeout=1800,
+                env=HyperframesRenderer._render_env(),
+            )
+
+        out = await HyperframesRenderer.render_mg_html_to_mov(
+            html, "renders", str(mov_path), fps=body.fps, run_cmd=_run_preview,
+            # 预览是"快速看效果"场景：draft 档显著缩短出片时间（上游 Quality 分级），
+            # 需要看最终画质时用正式渲染管线。
+            quality="draft",
+            # P1-5：把本次参数作为上游变量覆盖传入（HTML 声明里的 default 是兜底）
+            variables={k: str(v) for k, v in (body.params or {}).items()},
         )
-        if not ok or not mov_path.exists():
+        if not out or not mov_path.exists():
             raise HTTPException(status_code=500, detail="Hyperframes 渲染失败")
         # MOV → MP4（H.264 重编码，浏览器可直接播放）
         r = await run_tracked_ff(

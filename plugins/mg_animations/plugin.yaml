@@ -3,3 +3,13 @@ version: 1.0.0
 kind: capability
 description: 自定义 MG 动画（运动图形），以 JSON 格式定义，支持文字/形状/图标的逐帧动画
 entry_point: mg_animations.main
+
+# P1 迁移：新契约声明（动画 id 随 animations/*.json 而定）
+api_version: "2"
+contributions:
+  - { kind: hook, id: mg_renderer_extend }
+  - { kind: hook, id: mg_catalog_extend }
+  - { kind: animation, id: mg_title_reveal }
+  - { kind: animation, id: mg_data_counter }
+  - { kind: animation, id: mg_countdown }
+  - { kind: animation, id: mg_logo_intro }

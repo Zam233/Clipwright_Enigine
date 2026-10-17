@@ -21,12 +21,12 @@ from clipwright.services.llm import LLMService
 from clipwright.services.trace import add_event
 
 # 搜索缓存: query_hash → list[result]
-# B12: TTL + LRU 淘汰（原 dict 满后静默拒绝写入，缓存悄悄退化）
+# TTL + LRU 淘汰（原 dict 满后静默拒绝写入，缓存悄悄退化）
 _search_cache: dict[str, tuple[float, list[dict]]] = {}
 _SEARCH_CACHE_MAX = 200
 _SEARCH_CACHE_TTL_SEC = 3600.0
 
-# C4c 有界重选阈值：首轮最优匹配分低于该值 → 触发至多一次补充搜索（防无限成本 D9）。
+# 有界重选阈值：首轮最优匹配分低于该值 → 触发至多一次补充搜索（防无限成本 D9）。
 # 可经 plugin_config.reselect_threshold 覆盖。
 _RESELECT_THRESHOLD = 0.45
 
@@ -41,7 +41,7 @@ def _llm_configured() -> bool:
     )
 
 
-# C4b 文本相关性兜底：纯本地分词，零网络。拉丁词整词 + 单个 CJK 字符。
+# 文本相关性兜底：纯本地分词，零网络。拉丁词整词 + 单个 CJK 字符。
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _LATIN_RE = re.compile(r"[a-zA-Z0-9]+")
 
@@ -116,7 +116,7 @@ class _CachedResult:
     __slots__ = ("asset", "source_name", "score")
     class _Asset:
         __slots__ = ("id", "title", "url", "local_path", "duration_sec", "tags", "type",
-                     "license", "resolution")
+                     "license", "license_url", "author", "source_url", "resolution")
         def __init__(self, d: dict):
             self.id = d["asset_id"]
             self.title = d.get("title", "")
@@ -125,8 +125,12 @@ class _CachedResult:
             self.duration_sec = d.get("duration_sec", 0)
             self.tags = d.get("tags", [])
             self.type = d.get("type", "")
-            # B12: license 与对象面对齐（缓存命中/未命中打分行为一致）
+            # license 与对象面对齐（缓存命中/未命中打分行为一致）
             self.license = d.get("license", "")
+            # P2-29: 缓存命中路径保留授权四字段（缺失曾导致署名缺失）
+            self.license_url = d.get("license_url", "")
+            self.author = d.get("author", "")
+            self.source_url = d.get("source_url", "")
             self.resolution = d.get("resolution", "")
     def __init__(self, d: dict):
         self.asset = self._Asset(d)
@@ -134,11 +138,31 @@ class _CachedResult:
         self.score = d.get("score", 0.0)
 
 
+# 轮 84（数码评测专项）：品类定向检索提示——搜索词 prompt 此前品类无关，
+# 评测类的"产品特写/参数图/跑分对比"镜头意图传不到检索层
+_CATEGORY_SEARCH_HINTS: dict[str, str] = {
+    "digital_review": (
+        "- 数码评测类：优先搜索产品特写（如'智能手机特写''笔记本开箱'）、"
+        "参数/数据图表（如'跑分对比图''参数表格'）、使用场景实拍；"
+        "涉及具体型号时图库通常无解，改搜同类产品的通用特写\n"
+    ),
+    "knowledge_longform": (
+        "- 知识讲解类：优先搜索与讲解概念对应的具象画面（实验室/城市/历史影像/自然现象），"
+        "抽象概念用隐喻画面表达\n"
+    ),
+}
+
+
+def _category_search_hint(category_plugin_id: str) -> str:
+    return _CATEGORY_SEARCH_HINTS.get(category_plugin_id or "", "")
+
+
 async def _llm_search_queries_batch(
     scenes: list[dict[str, Any]],
     pipeline_id: str = "",
     persona_style: str = "",
     brief_hint: str = "",
+    category_hint: str = "",
 ) -> list[list[str]] | None:
     """一次 LLM 调用为全部场景生成搜索词（省 N-1 次 LLM 往返）。
 
@@ -164,6 +188,7 @@ async def _llm_search_queries_batch(
         "\n\n要求：\n"
         "- 每个关键词必须是**具体的视觉画面**（如'城市夜景''键盘打字'），不能是抽象概念\n"
         "- 优先推荐实拍风格画面\n"
+        f"{category_hint}"
         "- 按场景编号输出，每行格式：\"场景N: 关键词1/关键词2/关键词3\"\n"
         "- 只输出关键词行，不要额外说明"
         f"{style_hint}{brief_hint_text}"
@@ -296,11 +321,15 @@ async def _validate_video_frame_inner(
         if output.get("is_blank"):
             logger.debug("MaterialAgent: 跳过全黑帧 %s", video_url[:40])
             return 0.0
-        if "match_score" in output:
-            try:
-                return float(output["match_score"])
-            except (TypeError, ValueError):
-                pass
+        # 轮 88（P0 修复：选片近似随机）：活版 frame_validator 的 match_score
+        # 是「帧健康占比」（无黑帧/过曝样本比例，健康视频恒 1.0），不是语义
+        # 相关度——旧实现直接把它当候选分返回，健康视频一律满分，标题相关性
+        # 兜底被完全绕过。现在语义启发式为分、帧健康为乘数。
+        _sem = _heuristic_title_match_score(title, tags, expected_text)
+        _health = output.get("match_score")
+        if isinstance(_health, (int, float)):
+            return round(_sem * max(0.0, min(1.0, float(_health))), 3)
+        return round(_sem, 3)
     except asyncio.TimeoutError:
         logger.debug("MaterialAgent: 帧验证超时 %s", video_url[:40])
         if isinstance(r, str):
@@ -341,12 +370,16 @@ async def _search_with_cache(
         top_k_per_source=top_k,
         source_ids=source_ids,
     )
-    # 批5：场景候选排除音频——BGM 由 AudioAgent 独立链路检索；音频混入
+    # 场景候选排除音频——BGM 由 AudioAgent 独立链路检索；音频混入
     # 视频场景候选会被 video_trim 拒绝，烧掉候选位并把场景挤成占位
     results = [
         r for r in results
         if str(getattr(r.asset, "type", "")) != "audio"
     ]
+    # 轮 81：空结果不写缓存——「真无结果」与「源失败/限流」不可区分，
+    # 负缓存会把一次 429/网络抖动放大成 TTL 内同查询全部空候选
+    if not results:
+        return results
     # 只缓存 AssetResult 对象的外部表示
     cached = []
     for r in results:
@@ -359,13 +392,17 @@ async def _search_with_cache(
             "tags": r.asset.tags,
             "type": getattr(r.asset, "type", ""),
             "license": getattr(r.asset, "license", ""),
+            # 轮 82（版权链）：缓存命中路径同样保留授权字段
+            "license_url": getattr(r.asset, "license_url", ""),
+            "author": getattr(r.asset, "author", ""),
+            "source_url": getattr(r.asset, "source_url", ""),
             "resolution": getattr(r.asset, "resolution", ""),
             "source_name": r.source_name,
             "score": r.score,
         })
 
     if len(_search_cache) >= _SEARCH_CACHE_MAX:
-        # B12: LRU——淘汰最旧条目（原实现满后静默拒绝写入）
+        # LRU——淘汰最旧条目（原实现满后静默拒绝写入）
         oldest = min(_search_cache.items(), key=lambda kv: kv[1][0])
         _search_cache.pop(oldest[0], None)
     _search_cache[key] = (_time.time(), cached)
@@ -676,6 +713,7 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                 pipeline_id=context.pipeline_id,
                 persona_style=" ".join(persona_style_keywords),
                 brief_hint=brief_material_hint,
+                category_hint=_category_search_hint(context.category_plugin_id),
             )
 
             sem = asyncio.Semaphore(scene_concurrency)
@@ -699,7 +737,7 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                 *(_process_scene(i, s) for i, s in enumerate(scenes)),
                 return_exceptions=True,
             )
-            # B2: 单场景异常降级为空候选占位，不让整 Agent 失败
+            # 单场景异常降级为空候选占位，不让整 Agent 失败
             candidate_clips = []
             for i, r in enumerate(results):
                 if isinstance(r, Exception):
@@ -848,7 +886,7 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
             quality = min(1.0, (w * h) / (1920 * 1080))
             return match * 0.7 + quality * 0.3
 
-        # C4b: 无视觉结果（未启用视觉/校验全失败/占位 0.5）时，
+        # 无视觉结果（未启用视觉/校验全失败/占位 0.5）时，
         # 排序键用本地文本相关性分替代占位 0.5；真实校验分（含 frame_validator）仍优先。
         def _match_sort_score(r, ms: float) -> float:
             if ms == 0.5:
@@ -860,7 +898,7 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
 
         # 首轮与 C4c 重选共用：排序 → 取前 5 → 最优分（复用 Todo 8 的排序键逻辑）
         def _rank_candidates(cands: list) -> tuple[list, float]:
-            # P2: Persona 风格匹配分（每个候选项使用自身的 tags）
+            # Persona 风格匹配分（每个候选项使用自身的 tags）
             cands.sort(key=lambda x: (
                 _match_sort_score(x[0], x[1]) * 0.5 +          # 帧验证匹配度（占位 → 文本相关性）
                 _orientation_score(x[0]) * 0.25 +               # 方向优先级
@@ -885,6 +923,11 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                         "source": r.source_name if hasattr(r, 'source_name') else "",
                         "duration_sec": r.asset.duration_sec,
                         "tags": r.asset.tags,
+                        # 轮 82（版权链）：授权信息透传到候选/时间线，商业交付可追溯
+                        "license": getattr(r.asset, "license", ""),
+                        "license_url": getattr(r.asset, "license_url", ""),
+                        "author": getattr(r.asset, "author", ""),
+                        "source_url": getattr(r.asset, "source_url", ""),
                     })
                 else:
                     sug.append({
@@ -895,6 +938,10 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                         "score": round(ms, 3),
                         "duration_sec": r.get("duration_sec", 0),
                         "tags": r.get("tags", []),
+                        "license": r.get("license", ""),
+                        "license_url": r.get("license_url", ""),
+                        "author": r.get("author", ""),
+                        "source_url": r.get("source_url", ""),
                     })
             best = max((ms for _, ms in cands), default=0.0)
             return sug, best

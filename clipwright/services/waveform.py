@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 from typing import Any
@@ -32,8 +33,9 @@ class WaveformGenerator:
             samples = 10000
 
         try:
-            # 使用 FFmpeg astats 提取音量数据
-            result = subprocess.run(
+            # 使用 FFmpeg astats 提取音量数据（轮 82：offload，120s 子进程不冻事件循环）
+            result = await asyncio.to_thread(
+                subprocess.run,
                 ["ffmpeg", "-i", audio_path, "-af",
                  f"astats=measure_perchannel=0:length=0.01",
                  "-f", "null", "-"],

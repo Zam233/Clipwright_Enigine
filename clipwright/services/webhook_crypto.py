@@ -64,3 +64,8 @@ def decrypt_secret(stored: str) -> str:
 
 def is_encrypted(stored: str) -> bool:
     return bool(stored) and not stored.startswith(("whsec_", "sk_")) and "==" in stored
+
+
+def has_key() -> bool:
+    """是否配置了可用加密密钥（决定 secret 能否安全落盘）。"""
+    return _get_fernet() is not None

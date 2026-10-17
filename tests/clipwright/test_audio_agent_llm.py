@@ -215,8 +215,8 @@ async def test_allocations_injected_into_bgm_clips(monkeypatch: pytest.MonkeyPat
     assert "volume_envelope" not in clips["bgm3"].metadata
     assert "pause_design" not in clips["bgm3"].metadata
     # 既有行为不回归
-    assert clips["bgm1"].metadata["bpm"] == 120
-    # B6: 淡入淡出改用 audio_fade 真实曲线，不再硬压音量 0.3
+    assert clips["bgm1"].metadata["bpm"] is None  # P2-31: 未检测不再伪造 120
+    # 淡入淡出改用 audio_fade 真实曲线，不再硬压音量 0.3
     assert clips["bgm1"].volume == 1.0
     assert clips["bgm1"].audio_fade_in_sec == 1.0
     assert clips["bgm1"].audio_fade_out_sec == 2.0
@@ -241,7 +241,7 @@ async def test_llm_failure_falls_back_to_rules(monkeypatch: pytest.MonkeyPatch) 
     assert clips["bgm2"].metadata["bgm_slot"] == "climax"
     assert clips["bgm3"].metadata["bgm_slot"] == "outro"
     for c in clips.values():
-        assert c.metadata["bpm"] == 120
+        assert c.metadata["bpm"] is None  # P2-31: 未检测不再伪造 120
         assert "bgm_style" not in c.metadata
         assert "volume_envelope" not in c.metadata
         assert "pause_design" not in c.metadata

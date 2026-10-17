@@ -9,7 +9,16 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from clipwright.utils.timebase import (
+    TICKS_PER_SECOND,
+    FrameRate,
+    seconds_to_ticks,
+    snap_ticks,
+    ticks_to_seconds,
+    ticks_to_timecode,
+)
 
 
 class ClipKind(str, Enum):
@@ -92,12 +101,31 @@ class Clip(BaseModel):
 
     # 蒙版（M4：仅 video / image 类型，渲染时裁剪到形状内）
     mask_type: Optional[str] = Field(
-        default=None, pattern="^(none|rect|ellipse)?$",
-        description="蒙版类型 none/rect/ellipse（后端兼容 rectangle 别名；ellipse 导出经 geq alpha 遮罩）",
+        default=None, pattern="^(none|rect|rectangle|ellipse|polygon|star|heart)?$",
+        description=("蒙版类型 none/rect/rectangle/ellipse/polygon/star/heart"
+                     "（ellipse/polygon 导出经 geq alpha 遮罩；star/heart 目前仅预览生效，"
+                     "导出会记警告并跳过蒙版）"),
     )
     mask_rect: Optional[dict] = Field(
         default=None,
-        description="归一化蒙版矩形 {x, y, w, h}，各值范围 0-1",
+        description="归一化蒙版矩形 {x, y, w, h}，各值范围 0-1；polygon/star/heart 用中心与半径（w/h 视为宽高占比）",
+    )
+    # O-遮罩升级：形状参数与边缘处理
+    mask_points: Optional[int] = Field(
+        default=None, ge=3, le=12,
+        description="polygon 边数 / star 角数（默认 5）",
+    )
+    mask_rotation: Optional[float] = Field(
+        default=None, ge=-180, le=180,
+        description="蒙版旋转角度（度，正为顺时针）",
+    )
+    mask_feather: Optional[float] = Field(
+        default=None, ge=0, le=50,
+        description="边缘羽化宽度（像素，0=硬边）；导出用 geq 在隐函数上做线性过渡",
+    )
+    mask_inverted: Optional[bool] = Field(
+        default=None,
+        description="反相蒙版（保留形状之外，形状内部透明）",
     )
 
     # 嵌套序列（C3：片段内嵌子时间线，预览递归合成）
@@ -155,6 +183,59 @@ class Clip(BaseModel):
 
     model_config = {"use_enum_values": True, "extra": "allow"}
 
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_tick_input(cls, data: Any) -> Any:
+        """接受 tick 原生输入（`start_ticks` / `duration_ticks` / `source_offset_ticks`）。
+
+        O1 第二阶段：客户端可以直接用整数 tick 提交时间，服务端折算为浮点秒。
+        **浮点秒仍是唯一序列化真值**——tick 输入不落库、不回写 JSON，避免同一段时间
+        出现两个真值来源（改一个忘另一个 = 静默漂移）。显式给出秒字段时秒优先。
+        """
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        for tick_key, sec_key in (
+            ("start_ticks", "start_sec"),
+            ("duration_ticks", "duration_sec"),
+            ("source_offset_ticks", "source_offset_sec"),
+        ):
+            ticks = data.pop(tick_key, None)
+            if ticks is None or data.get(sec_key) is not None:
+                continue
+            if isinstance(ticks, bool) or not isinstance(ticks, int):
+                raise ValueError(f"{tick_key} 必须是整数 tick（收到 {type(ticks).__name__}）")
+            data[sec_key] = ticks_to_seconds(ticks)
+        return data
+
+    # ── 整数 tick 访问器（O1） ─────────────────────────────
+    # tick 与帧率无关，所以 Clip 能独立换算；帧对齐判定需要 fps，放在 Timeline 上。
+
+    @property
+    def start_ticks(self) -> int:
+        """起始时间的整数 tick。"""
+        return seconds_to_ticks(self.start_sec)
+
+    @property
+    def duration_ticks(self) -> int:
+        """持续时长的整数 tick。"""
+        return seconds_to_ticks(self.duration_sec)
+
+    @property
+    def source_offset_ticks(self) -> int:
+        """素材内偏移的整数 tick。"""
+        return seconds_to_ticks(self.source_offset_sec)
+
+    @property
+    def end_sec(self) -> float:
+        """结束时间（秒）。"""
+        return self.start_sec + self.duration_sec
+
+    @property
+    def end_ticks(self) -> int:
+        """结束时间的整数 tick（= start + duration，恒精确）。"""
+        return self.start_ticks + self.duration_ticks
+
 
 class Track(BaseModel):
     """时间轴轨道。"""
@@ -190,6 +271,36 @@ class Timeline(BaseModel):
         default_factory=dict,
         description="时间线扩展元数据（如 target_loudness_lufs → 渲染响度归一目标）")
 
+    model_config = {"use_enum_values": True, "extra": "allow"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_rate_input(cls, data: Any) -> Any:
+        """接受有理数帧率输入（`fps_num` / `fps_den`）。
+
+        O1 第二阶段：客户端可用分数帧率精确表达 29.97（`30000/1001`），服务端折算成
+        `fps` 浮点值；`frame_rate` 属性再吸附回精确有理数（吸附是幂等的），因此不丢精度。
+        显式给出 `fps` 时 `fps` 优先；非整数输入直接拒绝（避免 `fps_num=30000.5` 这类静默丢精度）。
+        """
+        if not isinstance(data, dict):
+            return data
+        num = data.pop("fps_num", None)
+        den = data.pop("fps_den", None)
+        if num is None and den is None:
+            return data
+        data = dict(data)
+        if data.get("fps") is not None:
+            return data
+        if den is None:
+            den = 1
+        for label, value in (("fps_num", num), ("fps_den", den)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"{label} 必须是整数（收到 {type(value).__name__}）")
+        if num is None or num <= 0 or den <= 0:
+            raise ValueError("fps_num/fps_den 必须为正整数")
+        data["fps"] = num / den
+        return data
+
     @property
     def total_duration_sec(self) -> float:
         """计算所有轨道中最长的结束时间。"""
@@ -202,3 +313,83 @@ class Timeline(BaseModel):
                 if end > max_end:
                     max_end = end
         return max_end
+
+    # ── 整数时间基（O1 第一阶段） ───────────────────────────
+    # 字段仍是浮点秒（API/前端兼容），但**判定**（相等/相邻/帧对齐）请走 tick：
+    # `start_sec + duration_sec == next.start_sec` 在 30000/1001 下约 20% 概率不成立
+    # （见 utils/timebase.py 的实测说明）。
+
+    @property
+    def frame_rate(self) -> FrameRate:
+        """有理数帧率（29.97 → 30000/1001）。"""
+        return FrameRate.from_fps(float(self.fps))
+
+    @property
+    def ticks_per_second(self) -> int:
+        return TICKS_PER_SECOND
+
+    def to_ticks(self, sec: float) -> int:
+        """秒（浮点）→ 整数 tick。"""
+        return seconds_to_ticks(sec)
+
+    def to_seconds(self, ticks: int) -> float:
+        """整数 tick → 秒（浮点）。"""
+        return ticks_to_seconds(ticks)
+
+    @property
+    def total_duration_ticks(self) -> int:
+        """总时长（tick 整数，按浮点总时长量化）。"""
+        return seconds_to_ticks(self.total_duration_sec)
+
+    @property
+    def frame_count(self) -> int:
+        """总帧数（按实际时长向下取整）。"""
+        return self.frame_rate.frame_index(seconds_to_ticks(self.total_duration_sec))
+
+    def frame_aligned_duration_sec(self) -> float:
+        """把总时长对齐到帧边界（向上取整，避免最后一帧被截掉）。"""
+        return ticks_to_seconds(
+            snap_ticks(seconds_to_ticks(self.total_duration_sec), self.frame_rate, mode="ceil")
+        )
+
+    def timecode(self, sec: float, *, drop_frame: bool | None = None) -> str:
+        """秒 → 时间码（`HH:MM:SS:FF`；NTSC 系默认 drop-frame）。"""
+        return ticks_to_timecode(seconds_to_ticks(sec), self.frame_rate, drop_frame=drop_frame)
+
+    # ── 轨道相邻性（整数 tick 精确判定，O1 第二阶段） ─────────
+
+    def adjacency_issues(self, *, tolerance_ticks: int = 0, limit: int = 20) -> list[dict[str, Any]]:
+        """逐轨检查片段首尾相接情况，返回 `[{track_id, kind, prev, next, delta_ticks, delta_sec}]`。
+
+        `kind`：
+        - ``overlap``：下一段起点早于上一段终点（剪辑顺序/裁剪会被打乱）
+        - ``gap``：下一段起点晚于上一段终点（渲染端是顺序拼接，间隙**不会**渲染成黑帧）
+        - （相接不产出条目）
+
+        判定在整数 tick 上做（`tolerance_ticks=0` 即严格相接），不再用浮点 eps——
+        同一时间点经 `start + duration` 与下一段 `start` 两条路径算出时，浮点秒在
+        29.97fps 下约 20% 概率不严格相等（见 `utils/timebase.py`）。
+        `tolerance_ticks` 供调用方显式放宽（例如容忍 1 帧内的排布抖动）。
+        """
+        issues: list[dict[str, Any]] = []
+        for track in self.tracks:
+            clips = sorted(
+                (c for c in track.clips if getattr(c, "enabled", True)),
+                key=lambda c: c.start_ticks,
+            )
+            for prev, cur in zip(clips, clips[1:]):
+                delta = cur.start_ticks - prev.end_ticks
+                if abs(delta) <= tolerance_ticks:
+                    continue
+                issues.append({
+                    "track_id": track.id,
+                    "kind": "overlap" if delta < 0 else "gap",
+                    "prev": prev.id,
+                    "next": cur.id,
+                    "delta_ticks": delta,
+                    "delta_sec": ticks_to_seconds(delta),
+                })
+                if len(issues) >= limit:
+                    return issues
+        return issues
+

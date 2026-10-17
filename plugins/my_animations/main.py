@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from clipwright.animation import AnimationRegistry
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.animation import (
     AnimationDef,
     AnimationTarget,
@@ -30,10 +31,9 @@ class MyAnimationPackPlugin(CapabilityPlugin):
         author="Clipwright Team",
     )
 
-    def initialize(self) -> None:
-        # 1. Onscreen: 抖动警告
-        AnimationRegistry.register(
-            AnimationDef(
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：两个示例动画定义（抖动警告 / 径向擦除）。"""
+        shake = AnimationDef(
                 animation_id="shake_alert",
                 name="抖动警告",
                 type=AnimationType.ONSCREEN,
@@ -56,13 +56,8 @@ class MyAnimationPackPlugin(CapabilityPlugin):
                         "type": "float", "default": 1, "range": [0, 1]
                     },
                 },
-            ),
-            plugin_id=self.manifest.id,
         )
-
-        # 2. Transition: 径向擦除
-        AnimationRegistry.register(
-            AnimationDef(
+        radial = AnimationDef(
                 animation_id="radial_wipe",
                 name="径向擦除",
                 type=AnimationType.TRANSITION,
@@ -81,9 +76,11 @@ class MyAnimationPackPlugin(CapabilityPlugin):
                     },
                 },
                 description="以画面中心为圆点的径向擦除过渡",
-            ),
-            plugin_id=self.manifest.id,
         )
+        return [
+            Contribution(ContributionKind.ANIMATION, shake.animation_id, shake),
+            Contribution(ContributionKind.ANIMATION, radial.animation_id, radial),
+        ]
 
     def shutdown(self) -> None:
         pass

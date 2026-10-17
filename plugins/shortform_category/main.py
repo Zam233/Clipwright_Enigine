@@ -13,10 +13,8 @@ from __future__ import annotations
 from typing import Any
 
 from clipwright.category.base import BaseCategoryPlugin
-from clipwright.category.registry import CategoryRegistry
-from clipwright.plugins.hooks import HookRegistry, HookPoint
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.plugin import PluginManifest, PluginKind
-from clipwright.config import logger
 
 
 class ShortformCategoryPlugin(BaseCategoryPlugin):
@@ -74,10 +72,15 @@ class ShortformCategoryPlugin(BaseCategoryPlugin):
     def get_dimensions(self) -> dict:
         return {"width": 1080, "height": 1920, "aspect": "9:16"}
 
-    def initialize(self) -> None:
-        CategoryRegistry.register(self, plugin_id=self.manifest.id)
-        HookRegistry.register(HookPoint.PRE_RENDER, self._inject_vertical, plugin_id=self.manifest.id)
-        logger.info("[ShortformCategory] 短视频类型已注册 (1080x1920 9:16)")
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：视频类型 + 强制竖屏的 PRE_RENDER 钩子。"""
+        return [
+            Contribution(ContributionKind.CATEGORY, self.plugin_id, self),
+            Contribution(
+                ContributionKind.HOOK, "shortform_force_vertical", self._inject_vertical,
+                meta={"point": "pre_render"},
+            ),
+        ]
 
     @staticmethod
     def _inject_vertical(context: dict[str, Any]) -> dict[str, Any]:

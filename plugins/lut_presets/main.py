@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from clipwright.plugins.base import StyleInterpreterPlugin
-from clipwright.plugins.hooks import HookRegistry, HookPoint
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
 
@@ -42,17 +42,46 @@ class LutPresetsPlugin(StyleInterpreterPlugin):
         author="Clipwright Team",
     )
 
-    def initialize(self) -> None:
-        LUT_DIR.mkdir(parents=True, exist_ok=True)
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：风格解释器 + DIAGRAM_STYLE_PRESET 钩子。
+
+        副作用（建 LUT 目录）放 setup()；可用 LUT 数量仅用于日志。
+        """
         available = {k: v for k, v in LUT_PRESETS.items() if (LUT_DIR / v["file"]).exists()}
-        HookRegistry.register(HookPoint.DIAGRAM_STYLE_PRESET, self._style_preset_hook, plugin_id=self.manifest.id)
-        logger.info("[LutPresets] %d/%d LUT 预设可用 (目录: %s)", len(available), len(LUT_PRESETS), LUT_DIR)
+        logger.info("[LutPresets] %d/%d LUT 预设可用 (目录: %s)",
+                    len(available), len(LUT_PRESETS), LUT_DIR)
         if not available:
             logger.info("[LutPresets] 提示: 将 .cube 文件放入 %s/ 以启用", LUT_DIR)
+        try:
+            priority = int((self.config or {}).get("priority", 90))
+        except (TypeError, ValueError):
+            priority = 90
+        return [
+            Contribution(
+                ContributionKind.STYLE_INTERPRETER, self.manifest.id, self,
+                meta={"priority": priority},
+            ),
+            Contribution(
+                ContributionKind.HOOK, "lut_presets_diagram_style",
+                self._style_preset_hook, meta={"point": "diagram_style_preset"},
+            ),
+        ]
 
-    def interpret(self, persona_style: dict[str, Any]) -> dict[str, Any]:
-        """根据 Persona 风格推荐 LUT。"""
-        tone = persona_style.get("tone", "").lower()
+    def setup(self) -> None:
+        """副作用位（P1）：确保 LUT 目录存在（与注册无关，须无条件执行）。"""
+        LUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    async def interpret(
+        self, visual_config: dict[str, Any], persona_context: dict[str, Any]
+    ) -> dict[str, Any]:
+        """根据 Persona 语气推荐 LUT（轮 84：修正签名以匹配基类抽象方法）。"""
+        identity = persona_context.get("identity", {}) or {}
+        tone = str(
+            visual_config.get("tone")
+            or identity.get("tone")
+            or persona_context.get("tone")
+            or ""
+        ).lower()
         mood_map = {
             "严肃": "documentary_neutral", "专业": "documentary_neutral",
             "活泼": "cyberpunk_neon", "搞笑": "cyberpunk_neon",

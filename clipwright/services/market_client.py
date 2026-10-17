@@ -41,21 +41,29 @@ async def get_persona(package_id: str) -> dict:
 
 
 async def download_plugin(package_id: str, version: str = "") -> tuple[bytes, Optional[str]]:
-    """返回 (包内容, sha256)；sha256 未知时第二项为 None。"""
+    """返回 (包内容, sha256)。
+
+    轮 80（红线）：对实际下载内容计算 sha256 并交由安装侧比对——此前恒返回
+    None，install_service 的完整性校验形同虚设。
+    """
+    import hashlib
+
     url = f"{_base()}/api/market/plugins/{package_id}/download"
     if version:
         url += f"?version={version}"
     async with httpx.AsyncClient(timeout=300) as client:
         resp = await client.get(url)
         resp.raise_for_status()
-        return resp.content, None
+        return resp.content, hashlib.sha256(resp.content).hexdigest()
 
 
 async def download_persona(package_id: str, version: str = "") -> tuple[bytes, Optional[str]]:
+    import hashlib
+
     url = f"{_base()}/api/market/personas/{package_id}/download"
     if version:
         url += f"?version={version}"
     async with httpx.AsyncClient(timeout=300) as client:
         resp = await client.get(url)
         resp.raise_for_status()
-        return resp.content, None
+        return resp.content, hashlib.sha256(resp.content).hexdigest()

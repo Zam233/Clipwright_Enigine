@@ -19,7 +19,7 @@ from typing import Any
 import httpx
 
 from clipwright.plugins import CapabilityPlugin
-from clipwright.plugins.hooks import HookRegistry, HookPoint
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.animation.registry import AnimationRegistry
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
@@ -91,24 +91,37 @@ class LottieAnimationsPlugin(CapabilityPlugin):
         author="Clipwright Team",
     )
 
-    def initialize(self) -> None:
+    def setup(self) -> None:
+        """副作用位（P1）：确保 Lottie 目录存在（与注册无关，须无条件执行）。"""
         LOTTIE_DIR.mkdir(parents=True, exist_ok=True)
-        HookRegistry.register(HookPoint.ANIMATION_CATALOG_EXTEND, _extend_catalog, plugin_id=self.manifest.id)
-        HookRegistry.register(HookPoint.DIAGRAM_RENDERER_EXTEND, _extend_renderer, plugin_id=self.manifest.id)
-        local = _load_local_lottie()
-        logger.info("[LottieAnimations] %d 个本地 Lottie 动画已注册 (目录: %s/)", len(local), LOTTIE_DIR)
 
-        from clipwright.plugins.prompt_registry import PluginPromptRegistry
-        names = ", ".join(local.keys()) if local else "无本地动画"
-        PluginPromptRegistry.register(
-            "lottie_animations", "structure",
-            f"## Lottie 动画（来自 lottie_animations 插件）\n"
-            f"可使用 [逻辑动画]动画名 标记调用 Lottie 动画。当前可用：{names}。\n"
-            f"Lottie 动画支持复杂矢量动效，适合图标动画、加载动画、角色动画等。",
-            priority=2,
-        )
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：目录/渲染器扩展钩子 + 给 structure Agent 的提示词。"""
+        local = _load_local_lottie()
+        logger.info("[LottieAnimations] %d 个本地 Lottie 动画可用 (目录: %s/)",
+                    len(local), LOTTIE_DIR)
         if not local:
             logger.info("[LottieAnimations] 提示: 将 .json 文件放入 %s/ 以启用", LOTTIE_DIR)
+        names = ", ".join(local.keys()) if local else "无本地动画"
+        prompt = (
+            "## Lottie 动画（来自 lottie_animations 插件）\n"
+            f"可使用 [逻辑动画]动画名 标记调用 Lottie 动画。当前可用：{names}。\n"
+            "Lottie 动画支持复杂矢量动效，适合图标动画、加载动画、角色动画等。"
+        )
+        return [
+            Contribution(
+                ContributionKind.HOOK, "lottie_catalog_extend", _extend_catalog,
+                meta={"point": "animation_catalog_extend"},
+            ),
+            Contribution(
+                ContributionKind.HOOK, "lottie_renderer_extend", _extend_renderer,
+                meta={"point": "diagram_renderer_extend"},
+            ),
+            Contribution(
+                ContributionKind.PROMPT, "lottie_structure_prompt", prompt,
+                meta={"agent": "structure", "prompt": prompt, "priority": 2},
+            ),
+        ]
 
     def shutdown(self) -> None:
         pass

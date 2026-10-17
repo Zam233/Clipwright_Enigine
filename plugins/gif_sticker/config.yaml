@@ -1,0 +1,7 @@
+fields:
+  api_key:
+    type: string
+    value: ""
+    secret: true
+    label: "Giphy API Key"
+    description: "从 https://developers.giphy.com 获取；留空则读环境变量 GIPHY_API_KEY（最终回退公开测试 key，仅限开发）"

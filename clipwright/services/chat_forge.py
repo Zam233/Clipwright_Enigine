@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 from clipwright.persona.repository import PersonaRepository
 from clipwright.schema.persona import (
@@ -105,11 +105,17 @@ class ChatForgeSession:
     knowledge_base: list[dict[str, str]] = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # 会话归属（jwt 模式下用于「我的会话」过滤；off 模式为空串）
+    owner_id: str = ""
 
     @property
     def is_expired(self) -> bool:
         # 已知限制：1h 内存过期保留（非本需求范围）
         return datetime.now(timezone.utc) - self.updated_at > timedelta(hours=1)
+
+
+class ChatForgeAttachmentError(ValueError):
+    """附件不合法（类型/数量/体积）——由 API 层转 400。"""
 
 
 def _default_draft() -> dict[str, Any]:
@@ -129,8 +135,13 @@ class ChatForge:
 
     # 单段知识库内容的最大字符数，超过则按 Markdown H1 分段读入
     MAX_KB_CHARS: int = 8000
-    # B5: 会话落盘目录（每个 session 一个 JSON；重启后恢复）
+    # 会话落盘目录（每个 session 一个 JSON；重启后恢复）
     SESSIONS_DIR = Path("chatforge_sessions")
+    # 单条消息的附件上限：数量与单张图片的 Base64 体积（4 张 × 8MB ≈ 32MB 会话文件上限）
+    MAX_ATTACHMENTS: int = 4
+    MAX_ATTACHMENT_CHARS: int = 8 * 1024 * 1024
+    # 附件类型白名单
+    ATTACHMENT_TYPES = ("image", "file")
 
     def __init__(self) -> None:
         self._llm = LLMService()
@@ -154,6 +165,7 @@ class ChatForge:
                 "knowledge_base": session.knowledge_base,
                 "created_at": session.created_at.isoformat(),
                 "updated_at": session.updated_at.isoformat(),
+                "owner_id": session.owner_id,
             }
             path = self._session_path(session.session_id)
             tmp = path.with_suffix(".tmp")
@@ -180,13 +192,24 @@ class ChatForge:
                         knowledge_base=data.get("knowledge_base", []),
                         created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.now(timezone.utc),
                         updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else datetime.now(timezone.utc),
+                        owner_id=data.get("owner_id", "") or "",
                     )
                     if not session.is_expired:
+                        self._ensure_knowledge_ids(session)
                         self._sessions[sid] = session
                 except Exception:
                     continue
         except Exception as e:
             logger.warning("ChatForge 会话恢复失败: %s", e)
+
+    # ── 知识库条目 id（历史数据没有 id，读入时补齐） ──
+
+    @staticmethod
+    def _ensure_knowledge_ids(session: ChatForgeSession) -> None:
+        """给缺 id 的知识条目补一个稳定 id（老会话 JSON 里没有 id）。"""
+        for index, doc in enumerate(session.knowledge_base):
+            if not doc.get("id"):
+                doc["id"] = f"kb_{index}_{uuid.uuid4().hex[:6]}"
 
     # ── 会话管理 ──
 
@@ -203,6 +226,180 @@ class ChatForge:
         session = ChatForgeSession(session_id=session_id or uuid.uuid4().hex[:12])
         self._sessions[session.session_id] = session
         return session
+
+    # ── 会话列表 / 删除（历史欠账：只有 start+state，没有列表） ──
+
+    def list_sessions(self, owner_id: str = "", include_all: bool = True) -> list[dict[str, Any]]:
+        """列出未过期会话（按最近更新倒序）。
+
+        `owner_id` 非空且 `include_all=False` 时只返回该用户的会话
+        （jwt 模式下「我的会话」；off 模式 owner 为空，调用方传 include_all=True）。
+        """
+        self._cleanup_expired()
+        items: list[dict[str, Any]] = []
+        for session in self._sessions.values():
+            if not include_all and owner_id and session.owner_id and session.owner_id != owner_id:
+                continue
+            # 「用户消息」不含知识库/系统注入的消息（它们以 [系统] 开头，不是用户说的话）
+            user_messages = [
+                m for m in session.messages
+                if m.get("role") == "user" and not str(m.get("content", "")).startswith("[系统]")
+            ]
+            # 首条用户消息作为标题（列表页一眼能认出来是哪个会话）
+            title = user_messages[0]["content"][:40].strip() if user_messages else ""
+            items.append({
+                "session_id": session.session_id,
+                "title": title,
+                "message_count": len(user_messages),
+                "knowledge_count": len(session.knowledge_base),
+                "owner_id": session.owner_id,
+                "created_at": session.created_at.isoformat(),
+                "updated_at": session.updated_at.isoformat(),
+                "progress": self._progress_of(session.persona_draft),
+                "draft_summary": self._draft_summary(session.persona_draft),
+            })
+        items.sort(key=lambda x: x["updated_at"], reverse=True)
+        return items
+
+    def delete_session(self, session_id: str) -> bool:
+        """删除会话（内存 + 磁盘）。返回是否真的删掉了。"""
+        existed = self._sessions.pop(session_id, None) is not None
+        try:
+            path = self._session_path(session_id)
+            if path.exists():
+                path.unlink()
+                existed = True
+        except Exception as e:
+            logger.warning("ChatForge 会话删除失败 %s: %s", session_id, e)
+        return existed
+
+    def set_session_owner(self, session_id: str, owner_id: str) -> None:
+        """记录会话归属（start 时由 API 层写入；jwt 模式下用于列表过滤）。"""
+        session = self._sessions.get(session_id)
+        if session and owner_id:
+            session.owner_id = owner_id
+            self._persist_session(session)
+
+    @staticmethod
+    def _progress_of(draft: dict[str, Any]) -> dict[str, float]:
+        """由草稿推导六维完成度（列表页展示进度；不调 LLM）。"""
+        default = _default_draft()
+        progress: dict[str, float] = {}
+        for dimension, defaults in default.items():
+            current = draft.get(dimension) or {}
+            if not isinstance(current, dict):
+                progress[dimension] = 0.0
+                continue
+            filled = 0
+            total = 0
+            for key, default_value in defaults.items():
+                total += 1
+                value = current.get(key)
+                if isinstance(default_value, list):
+                    if value:
+                        filled += 1
+                elif isinstance(default_value, dict):
+                    if value:
+                        filled += 1
+                elif value not in (None, "", default_value):
+                    filled += 1
+            progress[dimension] = round(filled / total, 2) if total else 0.0
+        return progress
+
+    @staticmethod
+    def _draft_summary(draft: dict[str, Any]) -> dict[str, str]:
+        """草稿摘要（列表页副标题）。"""
+        identity = draft.get("identity") or {}
+        rhythm = draft.get("rhythm") or {}
+        visual = draft.get("visual") or {}
+        return {
+            "tone": str(identity.get("tone") or ""),
+            "cut_profile": str(rhythm.get("cut_profile") or ""),
+            "palette": str(visual.get("palette") or ""),
+        }
+
+    # ── 知识库 CRUD（历史欠账：只能追加） ──
+
+    def list_knowledge(self, session_id: str) -> Optional[list[dict[str, Any]]]:
+        """列出会话知识库条目（含 id / 长度，便于前端编辑）。"""
+        session = self._sessions.get(session_id)
+        if not session:
+            return None
+        self._ensure_knowledge_ids(session)
+        return [
+            {
+                "id": doc["id"],
+                "source": doc.get("source", ""),
+                "chars": len(doc.get("content", "")),
+                "preview": (doc.get("content", "") or "")[:120],
+            }
+            for doc in session.knowledge_base
+        ]
+
+    def get_knowledge(self, session_id: str, kb_id: str) -> Optional[dict[str, Any]]:
+        """读取单条知识（编辑前先取全文）。"""
+        session = self._sessions.get(session_id)
+        if not session:
+            return None
+        self._ensure_knowledge_ids(session)
+        for doc in session.knowledge_base:
+            if doc["id"] == kb_id:
+                return dict(doc)
+        return None
+
+    def update_knowledge(
+        self,
+        session_id: str,
+        kb_id: str,
+        content: Optional[str] = None,
+        source: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        """编辑一条知识（内容/来源）。
+
+        只改**存储的上下文**，不重跑 LLM——重跑一次分析要花一次模型调用，
+        应该由用户显式决定（前端提供「重新分析」按钮 → 调 `add_knowledge` 的独立重分析入口）。
+        返回更新后的条目；会话或条目不存在返回 None。
+        """
+        session = self._sessions.get(session_id)
+        if not session:
+            return None
+        self._ensure_knowledge_ids(session)
+        for doc in session.knowledge_base:
+            if doc["id"] != kb_id:
+                continue
+            if content is not None:
+                doc["content"] = content[: self.MAX_KB_CHARS]
+            if source is not None and source.strip():
+                doc["source"] = source.strip()[:200]
+            session.updated_at = datetime.now(timezone.utc)
+            self._persist_session(session)
+            return dict(doc)
+        return None
+
+    def delete_knowledge(self, session_id: str, kb_id: str) -> bool:
+        """删除一条知识（连同其分段）。返回是否删掉了。"""
+        session = self._sessions.get(session_id)
+        if not session:
+            return False
+        self._ensure_knowledge_ids(session)
+        before = len(session.knowledge_base)
+        session.knowledge_base = [d for d in session.knowledge_base if d["id"] != kb_id]
+        if len(session.knowledge_base) == before:
+            return False
+        session.updated_at = datetime.now(timezone.utc)
+        self._persist_session(session)
+        return True
+
+    def clear_knowledge(self, session_id: str) -> int:
+        """清空会话知识库，返回删除条数。"""
+        session = self._sessions.get(session_id)
+        if not session:
+            return 0
+        removed = len(session.knowledge_base)
+        session.knowledge_base = []
+        session.updated_at = datetime.now(timezone.utc)
+        self._persist_session(session)
+        return removed
 
     # ── 核心对话 ──
 
@@ -228,14 +425,235 @@ class ChatForge:
         session_id: str,
         user_message: str,
         persona_id: str = "",
+        attachments: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
-        """发送一条消息并获取 AI 回复。"""
+        """发送一条消息并获取 AI 回复。
+
+        `attachments` 支持图片/文件（历史欠账：原先只收纯文本）：
+        - 校验类型/数量/体积（超出即抛 `ChatForgeAttachmentError`，由 API 层转 400）；
+        - 图片在视觉能力开启时做一次分析，把**分析文本**作为该轮上下文喂给 LLM；
+          未开启时只留一行占位说明（不假装看过图）；
+        - 附件与派生文本都随会话落盘，刷新/重启后仍在。
+        """
         session = self._get_or_create_session(session_id)
-        session.messages.append({"role": "user", "content": user_message})
+        normalized = self._normalize_attachments(attachments)
+        entry: dict[str, Any] = {"role": "user", "content": user_message}
+        if normalized:
+            entry["attachments"] = normalized
+            context = await self._attachments_to_context(normalized)
+            if context:
+                entry["attachment_context"] = context
+        session.messages.append(entry)
         session.updated_at = datetime.now(timezone.utc)
         self._persist_session(session)  # B5
-        logger.info("ChatForge message: session=%s, len=%d", session_id, len(user_message))
+        logger.info("ChatForge message: session=%s, len=%d, attachments=%d",
+                    session_id, len(user_message), len(normalized))
         return await self._process(session, user_message, persona_id)
+
+    # ── 附件（图/文件消息） ──
+
+    def _normalize_attachments(self, attachments: Optional[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+        """校验并归一化附件。非法输入抛 `ChatForgeAttachmentError`。"""
+        if not attachments:
+            return []
+        if len(attachments) > self.MAX_ATTACHMENTS:
+            raise ChatForgeAttachmentError(
+                f"单条消息最多 {self.MAX_ATTACHMENTS} 个附件（收到 {len(attachments)} 个）")
+
+        normalized: list[dict[str, Any]] = []
+        for index, raw in enumerate(attachments):
+            if not isinstance(raw, dict):
+                raise ChatForgeAttachmentError(f"第 {index + 1} 个附件格式不合法")
+            kind = str(raw.get("type") or "").strip().lower()
+            if kind not in self.ATTACHMENT_TYPES:
+                raise ChatForgeAttachmentError(
+                    f"第 {index + 1} 个附件类型不合法（支持 {', '.join(self.ATTACHMENT_TYPES)}）")
+            data_url = str(raw.get("data_url") or raw.get("url") or "")
+            if not data_url:
+                raise ChatForgeAttachmentError(f"第 {index + 1} 个附件缺少 data_url")
+            if len(data_url) > self.MAX_ATTACHMENT_CHARS:
+                raise ChatForgeAttachmentError(
+                    f"第 {index + 1} 个附件过大（上限 {self.MAX_ATTACHMENT_CHARS // (1024 * 1024)}MB）")
+            normalized.append({
+                "type": kind,
+                "name": str(raw.get("name") or f"attachment_{index + 1}")[:200],
+                "mime": str(raw.get("mime") or "")[:100],
+                "data_url": data_url,
+            })
+        return normalized
+
+    async def _attachments_to_context(self, attachments: list[dict[str, Any]]) -> str:
+        """把附件转成喂给 LLM 的文本上下文。
+
+        图片：视觉能力开启时真分析（写临时文件 → `VisionService.analyze_image` → 删文件），
+        否则只写一行「用户附了一张图片」——**不编造内容**。
+        """
+        lines: list[str] = []
+        for attachment in attachments:
+            name = attachment.get("name", "attachment")
+            if attachment.get("type") == "image":
+                analysis = await self._analyze_image_attachment(attachment)
+                if analysis:
+                    lines.append(f"[图片分析·{name}] {analysis}")
+                else:
+                    lines.append(f"[图片·{name}] 用户附了一张图片（未启用视觉分析，仅作为参考材料）")
+            else:
+                lines.append(f"[文件·{name}] 用户附了一个文件（未解析内容，仅作为参考材料）")
+        if not lines:
+            return ""
+        return "（用户本轮随消息上传了以下材料）\n" + "\n".join(lines)
+
+    async def _analyze_image_attachment(self, attachment: dict[str, Any]) -> str:
+        """对图片附件做一次视觉分析（best-effort，任何失败返回空串）。"""
+        try:
+            from clipwright.config import settings
+
+            if not getattr(settings, "enable_visual_llm", False):
+                return ""
+            data_url = attachment.get("data_url", "")
+            if "," not in data_url or not data_url.startswith("data:"):
+                return ""
+            header, _, payload = data_url.partition(",")
+            if "base64" not in header:
+                return ""
+            import base64
+            import tempfile
+
+            suffix = ".png" if "png" in header else ".jpg"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
+                handle.write(base64.b64decode(payload))
+                tmp_path = handle.name
+            try:
+                from clipwright.services.vision import VisionService
+
+                result = await VisionService().analyze_image(tmp_path)
+                return self._summarize_vision(result)
+            finally:
+                try:
+                    Path(tmp_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.debug("ChatForge 图片附件分析跳过: %s", exc)
+            return ""
+
+    @staticmethod
+    def _summarize_vision(result: Any) -> str:
+        """把视觉分析结果压成一行文本（字段名不固定，按可用键拼）。"""
+        if not isinstance(result, dict):
+            return ""
+        parts: list[str] = []
+        tags = result.get("tags") or result.get("labels")
+        if isinstance(tags, list) and tags:
+            parts.append("标签: " + ", ".join(str(t) for t in tags[:8]))
+        for key, label in (("description", "描述"), ("caption", "画面"), ("name", "名称")):
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(f"{label}: {value.strip()[:200]}")
+        for key, label in (("dominant_colors", "主色"), ("colors", "主色")):
+            value = result.get(key)
+            if isinstance(value, list) and value:
+                parts.append(f"{label}: " + ", ".join(str(c) for c in value[:5]))
+        return "；".join(parts)
+
+    # ── 流式回复（历史欠账：会话此前只能等完整 JSON 再渲染） ──
+
+    async def message_stream(
+        self,
+        session_id: str,
+        user_message: str,
+        persona_id: str = "",
+        attachments: Optional[list[dict[str, Any]]] = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """流式发送消息：逐块 yield `{"type": "delta"|"done"|"error", ...}`。
+
+        与 `message()` 的差别只在**呈现时机**：这里把 LLM 的增量文本立刻吐出去，
+        末尾再做一次与同步路径相同的收尾（合并草稿、落盘、返回完整状态）——
+        因此两条路径产出**同一个会话状态**，前端可以随时从中途的流式切回同步接口。
+
+        离线（无 API key）时不假装流式：直接 yield 一次 fallback 文本 + done。
+        """
+        session = self._get_or_create_session(session_id)
+        normalized = self._normalize_attachments(attachments)
+        entry: dict[str, Any] = {"role": "user", "content": user_message}
+        if normalized:
+            entry["attachments"] = normalized
+            context = await self._attachments_to_context(normalized)
+            if context:
+                entry["attachment_context"] = context
+        session.messages.append(entry)
+        session.updated_at = datetime.now(timezone.utc)
+        self._persist_session(session)
+        logger.info("ChatForge stream: session=%s, len=%d, attachments=%d",
+                    session_id, len(user_message), len(normalized))
+
+        if not self._has_api_key():
+            fallback = self._fallback_response(session)
+            self._persist_session(session)
+            yield {"type": "delta", "text": fallback.get("reply", "")}
+            yield {"type": "done", **{k: v for k, v in fallback.items() if k != "reply"}}
+            return
+
+        system = self._build_system_prompt(session)
+        messages = [
+            {
+                "role": m["role"],
+                "content": (str(m.get("content", "")) + (
+                    "\n\n" + str(m["attachment_context"]) if m.get("attachment_context") else ""
+                )),
+            }
+            for m in session.messages
+        ]
+        full_messages = [{"role": "system", "content": system}] + messages
+
+        buffered: list[str] = []
+        try:
+            async for chunk in self._llm.stream_generate(messages=full_messages):
+                text = str(getattr(chunk, "content", "") or "")
+                if not text:
+                    continue
+                buffered.append(text)
+                yield {"type": "delta", "text": text}
+        except Exception as exc:  # 上游异常：把已产出的文本留住，别让用户白等
+            logger.warning("ChatForge 流式生成失败: %s", exc)
+            partial = "".join(buffered)
+            if partial:
+                session.messages.append({"role": "assistant", "content": partial})
+                session.updated_at = datetime.now(timezone.utc)
+                self._persist_session(session)
+            yield {"type": "error", "detail": f"流式生成中断: {exc}", "partial": partial}
+            return
+
+        raw = "".join(buffered)
+        try:
+            result = self._extract_json_from_llm(raw)
+            reply = str(result.get("reply", "") or "")
+            self._merge_draft(session.persona_draft, result.get("persona_draft", {}) or {})
+            session.messages.append({"role": "assistant", "content": reply})
+            session.updated_at = datetime.now(timezone.utc)
+            self._persist_session(session)
+            yield {
+                "type": "done",
+                "session_id": session.session_id,
+                "reply": reply,
+                "persona_draft": session.persona_draft,
+                "missing_dimensions": result.get("missing_dimensions", []),
+                "progress": result.get("progress", {}),
+            }
+        except (json.JSONDecodeError, KeyError) as exc:
+            # 与同步路径一致：解析失败时把原始文本当回复（宁可展示模型原文，也不吞掉）
+            session.messages.append({"role": "assistant", "content": raw})
+            session.updated_at = datetime.now(timezone.utc)
+            self._persist_session(session)
+            yield {
+                "type": "done",
+                "session_id": session.session_id,
+                "reply": raw,
+                "persona_draft": session.persona_draft,
+                "missing_dimensions": [],
+                "progress": {},
+                "_parse_error": str(exc),
+            }
 
     async def add_knowledge(
         self,
@@ -252,7 +670,12 @@ class ChatForge:
         chunks = self._split_knowledge(content, source)
 
         for chunk in chunks:
-            session.knowledge_base.append(chunk)
+            # 每条知识一个稳定 id（前端编辑/删除要靠它定位）
+            session.knowledge_base.append({
+                "id": f"kb_{uuid.uuid4().hex[:10]}",
+                "source": chunk["source"],
+                "content": chunk["content"],
+            })
 
         session.updated_at = datetime.now(timezone.utc)
         self._persist_session(session)  # B5
@@ -394,8 +817,16 @@ class ChatForge:
 
         # 构建消息列表
         system = self._build_system_prompt(session)
-        messages = [{"role": "user" if i == 0 and m.get("role") != "system" else m["role"], "content": m["content"]}
-                    for i, m in enumerate(session.messages)]
+        messages = [
+            {
+                "role": m["role"],
+                # 附件派生文本（图片分析等）并入该轮上下文：模型看不到图，看的是分析结论
+                "content": (str(m.get("content", "")) + (
+                    "\n\n" + str(m["attachment_context"]) if m.get("attachment_context") else ""
+                )),
+            }
+            for m in session.messages
+        ]
 
         # 如果用户发送了消息，追加当前消息
         if user_msg:
@@ -745,7 +1176,8 @@ class ChatForge:
             ),
             rhythm=RhythmConfig(
                 cut_profile=_safe_str(r.get("cut_profile"), "even_flow"),
-                base_shot_duration_ms=_safe_int(r.get("base_shot_duration_ms"), 5000),
+                # 轮 87：LLM 未给出时不落 5000（保持 None → 类型插件档位生效）
+                base_shot_duration_ms=_safe_int(r.get("base_shot_duration_ms"), None),
                 cut_density_tier=_safe_str(r.get("cut_density_tier"), "medium"),
             ),
             visual=VisualConfig(

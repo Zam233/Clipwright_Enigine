@@ -22,12 +22,11 @@ from typing import Any
 import httpx
 
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.security import assert_public_url
 from clipwright.tool.base import BaseTool
-from clipwright.tool.registry import ToolRegistry
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
-from clipwright.material.registry import MaterialRegistry
 from clipwright.plugins.generated_source import make_generated_source, record_generated
 
 # 火山引擎 OpenAPI（音视频理解与处理 / 豆包音乐大模型）
@@ -219,7 +218,7 @@ class AIMusicGenTool(BaseTool):
                 await asyncio.sleep(self._poll_interval)
                 qbody = json.dumps({"TaskID": task_id}, ensure_ascii=False).encode("utf-8")
                 qheaders = _sign_v4(ak, sk, "QuerySong", qbody, datetime.now(timezone.utc))
-                # 批5：瞬态错误不再废弃已付费任务（连续失败有上限兜底）
+                # 瞬态错误不再废弃已付费任务（连续失败有上限兜底）
                 try:
                     q = await c.post(_music_url("QuerySong"), headers=qheaders, content=qbody)
                     q.raise_for_status()
@@ -297,7 +296,7 @@ class AIMusicGenTool(BaseTool):
             data = resp.json()
             audio_url = data.get("audio_url", "")
             if audio_url:
-                # 批5：统一落地 + 登记（与 volcengine 分支行为一致）
+                # 统一落地 + 登记（与 volcengine 分支行为一致）
                 assert_public_url(audio_url)
                 r = await c.get(audio_url)
                 r.raise_for_status()
@@ -321,7 +320,8 @@ class AIMusicGenPlugin(CapabilityPlugin):
         author="Clipwright Team",
     )
 
-    def initialize(self) -> None:
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：AI 生乐工具 + 生成物素材源（密钥等取自配置）。"""
         cfg = self.config or {}
         tool = AIMusicGenTool(
             provider=cfg.get("provider", "volcengine"),
@@ -332,25 +332,19 @@ class AIMusicGenPlugin(CapabilityPlugin):
             poll_interval=float(cfg.get("poll_interval_sec", 5)),
             poll_timeout=float(cfg.get("poll_timeout_sec", 480)),
         )
-        ToolRegistry.register(tool, plugin_id=self.manifest.id)
-        MaterialRegistry.register(
-            make_generated_source("ai_music_gen", "AI 生成音乐", "audio"),
-            plugin_id=self.manifest.id)
-        logger.info("[AIMusicGen] Tool + MaterialSource 已注册 (provider=%s, billing=%s)",
+        return [
+            Contribution(ContributionKind.TOOL, "ai_music_generate", tool),
+            Contribution(
+                ContributionKind.MATERIAL_SOURCE, "ai_music_gen",
+                make_generated_source("ai_music_gen", "AI 生成音乐", "audio"),
+            ),
+        ]
+        logger.info("[AIMusicGen] Tool + MaterialSource 已贡献 (provider=%s, billing=%s)",
                     tool._provider, tool._billing_mode)
 
     def shutdown(self) -> None:
-        # 批7：disable 时真正移除工具与素材源（旧实现 pass → 禁用后
-        # 工具仍可用、能力概览仍播报）
-        try:
-            ToolRegistry.unregister("ai_music_generate")
-        except Exception:
-            pass
-        try:
-            from clipwright.material.registry import MaterialRegistry
-            MaterialRegistry.unregister("ai_music_gen")
-        except Exception:
-            pass
+        # P1：工具与素材源的回收由桥接层按门面账本统一完成（不再手写注销）
+        pass
 
 
 __all__ = ["AIMusicGenPlugin"]

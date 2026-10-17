@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import subprocess
 from typing import Any, Optional
 
@@ -49,10 +50,70 @@ class AudioExtractTool(BaseTool):
             )
 
 
+def _estimate_bpm_from_rms_stderr(ffmpeg_stderr: str) -> Optional[float]:
+    """从 ffmpeg astats 的 stderr 输出估计 BPM（轮 82）。
+
+    astats 以 50ms 窗逐窗输出 ``RMS level dB`` 行；把 dB 折算成线性幅度得到
+    能量包络，自相关取 60~180 BPM 对应滞后窗内的峰值周期，再折叠到 70~180。
+    返回 None 表示无法估计（行数不足/无能量）。
+    """
+    import math
+    import re as _re
+
+    try:
+        import numpy as _np
+    except ImportError:  # pragma: no cover - numpy 为硬依赖，防御兜底
+        return None
+
+    values: list[float] = []
+    for line in (ffmpeg_stderr or "").splitlines():
+        m = _re.search(r"RMS level dB:\s*(-?[\d.]+|-?inf)", line)
+        if not m:
+            continue
+        raw = m.group(1)
+        if "inf" in raw:
+            values.append(0.0)  # 静音窗
+        else:
+            try:
+                db = float(raw)
+                values.append(0.0 if db <= -90 else 10 ** (db / 20))
+            except ValueError:
+                continue
+    # 至少 ~6 秒的包络才能稳定估计节拍周期
+    if len(values) < 120:
+        return None
+    env = _np.asarray(values, dtype=float)
+    env = env - env.mean()
+    norm = float(_np.sqrt((env ** 2).sum()))
+    if norm <= 1e-9 or not math.isfinite(norm):
+        return None
+    env = env / norm
+
+    # 自相关（50ms/窗 → lag_sec = lag * 0.05）
+    win_hz = 20.0  # 1/0.05s
+    full = _np.correlate(env, env, mode="full")
+    ac = full[len(env) - 1:]
+    lo_lag = int(win_hz * 60 / 180)   # 180 BPM
+    hi_lag = int(win_hz * 60 / 60)    # 60 BPM
+    if hi_lag >= len(ac):
+        return None
+    # 窗口内取自相关峰（跳过滞后 0 附近）
+    lag = lo_lag + int(_np.argmax(ac[lo_lag:hi_lag + 1]))
+    if lag <= 0:
+        return None
+    bpm = win_hz * 60.0 / lag
+    # 折叠到 70~180（误差容忍：能量包络常检出半周期/倍周期）
+    while bpm < 70:
+        bpm *= 2
+    while bpm > 180:
+        bpm /= 2
+    return round(bpm, 1)
+
+
 class BPMDetectTool(BaseTool):
-    """BPM 检测工具（通过 FFmpeg 提取音频 + 简单峰值计数）。"""
+    """BPM 检测工具（ffmpeg RMS 能量包络 + 自相关节拍周期估计）。"""
     name = "bpm_detect"
-    description = "检测音频文件的 BPM（基于能量峰值分析）"
+    description = "检测音频文件的 BPM（基于能量包络自相关分析）"
     dependencies = ["ffmpeg"]
 
     async def execute(
@@ -60,18 +121,35 @@ class BPMDetectTool(BaseTool):
         input_path: str,
         **kwargs: Any,
     ) -> ToolExecResult:
-        # T11: BPM 检测未实现真实算法——如实返回 fallback 标记供调用方区分
+        """轮 82：真实 BPM 估计，替换返回恒 120 的桩。
+
+        算法（确定性、无新依赖）：
+        1. ffmpeg astats 按 50ms 窗输出 RMS 电平（stderr 逐行）；
+        2. dB → 线性幅度并归一化，得到能量包络；
+        3. 对包络做自相关，在 60~180 BPM 对应滞后窗口内取峰值周期；
+        4. ×2/÷2 折叠到 70~180 常用区间。
+        检测失败/音频过短时返回 `method="failed"` 且不带 `bpm` 键，
+        调用方据此跳过节拍剪辑（不再伪造 120）。
+        """
         try:
             result = await _ffmpeg(
                 "-i", input_path,
-                "-af", "astats=measure_perchannel=0:length=0.05",
+                "-af", "astats=metadata=1:reset=1:length=0.05",
                 "-f", "null", "-",
             )
+            bpm = _estimate_bpm_from_rms_stderr(result)
+            if bpm is None:
+                return ToolExecResult(
+                    status=ToolStatus.SUCCESS,
+                    tool_name=self.name,
+                    output={"error": "BPM 检测失败（音频过短或无节奏能量）",
+                            "input_path": input_path, "method": "failed"},
+                )
             return ToolExecResult(
                 status=ToolStatus.SUCCESS,
                 tool_name=self.name,
-                output={"error": "BPM 自动检测尚未实现，请在请求中直接提供 beat_bpm",
-                       "input_path": input_path, "method": "unsupported"},
+                output={"bpm": bpm, "input_path": input_path,
+                        "method": "autocorrelation-rms"},
             )
         except FileNotFoundError:
             return ToolExecResult(
@@ -155,7 +233,7 @@ class AudioNormalizeTool(BaseTool):
                 # EBU R128 loudnorm 两遍处理
                 import json
                 # 第一遍: 分析
-                probe = subprocess.run(
+                probe = await asyncio.to_thread(subprocess.run, 
                     ["ffmpeg", "-y", "-i", input_path, "-af",
                      "loudnorm=print_format=json", "-f", "null", "-"],
                     capture_output=True, text=True, timeout=120,
@@ -223,7 +301,8 @@ class AudioMixTool(BaseTool):
             mix_inputs = "".join(f"[v{i}]" for i in range(len(input_paths)))
             filter_complex = ";".join(vol_filters) + f";{mix_inputs}{amix}[a]"
 
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 [*cmd_args, "-filter_complex", filter_complex,
                  "-map", "[a]", "-c:a", "pcm_s16le", out],
                 capture_output=True, text=True, timeout=300,

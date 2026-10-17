@@ -14,9 +14,11 @@ from typing import Any, Optional
 
 import httpx
 
+from clipwright.config import logger
 from clipwright.material.base import MaterialSource
-from clipwright.material.registry import MaterialRegistry
+from clipwright.material.base import close_source_sync
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.material import MaterialAsset, MaterialType
 from clipwright.schema.plugin import PluginManifest, PluginKind
 
@@ -90,6 +92,13 @@ class PexelsMaterialSource(MaterialSource):
         resp = await self._client.get("/videos/search", params={
             "query": query, "per_page": min(top_k, 80), "size": "medium",
         })
+        # 轮 81：429 单次退避重试（免费额度 200 次/小时，限流是常态而非异常）
+        if resp.status_code == 429:
+            import asyncio as _aio
+            await _aio.sleep(2.0)
+            resp = await self._client.get("/videos/search", params={
+                "query": query, "per_page": min(top_k, 80), "size": "medium",
+            })
         resp.raise_for_status()
         data = resp.json()
 
@@ -111,6 +120,11 @@ class PexelsMaterialSource(MaterialSource):
                 duration_sec=float(video.get("duration", 0)),
                 resolution=f"{video.get('width', 0)}x{video.get('height', 0)}",
                 source=self.source_id,
+                # 轮 82（版权链）：Pexels License 免费商用但需尊重署名惯例
+                author=video.get("user", {}).get("name", ""),
+                source_url=video.get("url", ""),
+                license="Pexels License",
+                license_url="https://www.pexels.com/license/",
                 metadata={
                     "pexels_id": video["id"],
                     "photographer": video.get("user", {}).get("name", ""),
@@ -132,6 +146,13 @@ class PexelsMaterialSource(MaterialSource):
         resp = await self._client.get("/v1/search", params={
             "query": query, "per_page": min(top_k, 80),
         })
+        # 轮 81：429 单次退避重试（与视频搜索同策略）
+        if resp.status_code == 429:
+            import asyncio as _aio
+            await _aio.sleep(2.0)
+            resp = await self._client.get("/v1/search", params={
+                "query": query, "per_page": min(top_k, 80),
+            })
         resp.raise_for_status()
         data = resp.json()
 
@@ -147,6 +168,11 @@ class PexelsMaterialSource(MaterialSource):
                 tags=[f"pexels_{query}"],
                 resolution=f"{photo.get('width', 0)}x{photo.get('height', 0)}",
                 source=self.source_id,
+                # 轮 82（版权链）
+                author=photo.get("photographer", ""),
+                source_url=photo.get("url", ""),
+                license="Pexels License",
+                license_url="https://www.pexels.com/license/",
                 metadata={
                     "pexels_id": photo["id"],
                     "photographer": photo.get("photographer", ""),
@@ -181,7 +207,7 @@ class PexelsMaterialSource(MaterialSource):
 # ── Plugin ────────────────────────────────────────────
 
 class PexelsMaterialPlugin(CapabilityPlugin):
-    """注册 Pexels 素材源到 MaterialRegistry。"""
+    """把 Pexels 素材源作为 material_source 贡献出去（P1 新契约）。"""
 
     manifest = PluginManifest(
         id="pexels_material",
@@ -195,23 +221,24 @@ class PexelsMaterialPlugin(CapabilityPlugin):
     def __init__(self) -> None:
         self._source: Optional[PexelsMaterialSource] = None
 
-    def initialize(self) -> None:
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：配好 api_key 才贡献素材源（未配置即零贡献）。"""
         # 优先使用 config.yaml 中的 api_key，其次环境变量
         api_key = (self.config or {}).get("api_key", "") or os.environ.get("PEXELS_API_KEY", "")
         if not api_key:
-            print(f"[PexelsPlugin] 跳过: 请在 {self.manifest.id}/config.yaml 中配置 api_key")
-            return
+            # B4：迁移前这里有一行 print 提示；改成结构化日志，用户仍能查到原因
+            logger.info("[PexelsPlugin] 未配置 api_key（config.yaml 或 PEXELS_API_KEY）"
+                        "——本次不贡献素材源")
+            return []
         self._source = PexelsMaterialSource(api_key=api_key)
-        MaterialRegistry.register(self._source, plugin_id=self.manifest.id)
-        print(f"[PexelsPlugin] Pexels 素材库已注册（API Key: {api_key[:4]}...）")
+        return [Contribution(
+            ContributionKind.MATERIAL_SOURCE, self._source.source_id, self._source,
+        )]
 
     def shutdown(self) -> None:
+        # A3：同步安全关闭（原 create_task 永不 await）
         if self._source:
-            import asyncio
-            try:
-                asyncio.create_task(self._source.close())
-            except Exception:
-                pass
+            close_source_sync(self._source)
 
 
 __all__ = ["PexelsMaterialPlugin"]

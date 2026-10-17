@@ -61,6 +61,14 @@ class DialogueBuildRequest(BaseModel):
     answers: dict[str, Any]
 
 
+
+def _stamp_owner(request: Request, manifest: "PersonaManifest") -> None:
+    """轮 80（红线）：forge 产物落盘前标记归属，否则 jwt 模式下创建者自己都会被 403/隐藏。"""
+    from clipwright.authz import current_user_id
+    uid = current_user_id(request)
+    if uid and not manifest.owner_id:
+        manifest.owner_id = uid
+
 @router.post("/from-prompt", response_model=PersonaManifest)
 async def forge_from_prompt(req: ForgeFromPromptRequest, request: Request) -> PersonaManifest:
     """自然语言描述 → Persona。
@@ -73,6 +81,7 @@ async def forge_from_prompt(req: ForgeFromPromptRequest, request: Request) -> Pe
             persona_id=req.persona_id,
             persona_name=req.persona_name,
         )
+        _stamp_owner(request, manifest)
         await _forge.save_persona(manifest)
         _audit_forge(request, "from_prompt", manifest.persona_id, manifest.persona_name)
         return manifest
@@ -95,6 +104,7 @@ async def forge_from_script(req: ForgeFromScriptRequest, request: Request) -> Pe
             persona_name=req.persona_name,
             script_format=req.script_format,
         )
+        _stamp_owner(request, manifest)
         await _forge.save_persona(manifest)
         _audit_forge(request, "from_script", manifest.persona_id, manifest.persona_name)
         return manifest
@@ -115,6 +125,7 @@ async def forge_refine(req: ForgeRefineRequest, request: Request) -> PersonaMani
 
         manifest = load_persona_by_id(req.persona_id)
         updated = await _forge.refine(manifest, req.feedback)
+        _stamp_owner(request, updated)
         await _forge.save_persona(updated)
         _audit_forge(request, "refine", updated.persona_id, updated.persona_name)
         return updated
@@ -154,6 +165,7 @@ async def dialogue_build(req: DialogueBuildRequest, request: Request) -> Persona
             persona_name=req.persona_name,
             answers=req.answers,
         )
+        _stamp_owner(request, manifest)
         await _forge.save_persona(manifest)
         _audit_forge(request, "dialogue_build", manifest.persona_id, manifest.persona_name)
         return manifest

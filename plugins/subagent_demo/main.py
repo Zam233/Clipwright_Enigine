@@ -11,8 +11,8 @@
 from __future__ import annotations
 
 from clipwright.agents.base import BaseAgent
-from clipwright.agents.registry import AgentRegistry
 from clipwright.plugins.base import BasePlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.agent import (
     AgentContext,
     AgentDecision,
@@ -48,14 +48,13 @@ class SummarizerAgent(BaseAgent):
 class SubagentDemoPlugin(BasePlugin):
     """插件入口：注册/注销 demo_summarizer。"""
 
-    def initialize(self) -> None:
-        AgentRegistry.register(
-            SummarizerAgent(),
-            name="demo_summarizer",
-            plugin_id=self.manifest.id,
-            deps=["edit"],
-            description="示例：上游文本摘要子代理",
-        )
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：示例子代理（deps=edit 决定并入主管线 DAG 的位置）。"""
+        return [Contribution(
+            ContributionKind.AGENT, "demo_summarizer", SummarizerAgent(),
+            meta={"deps": ["edit"], "description": "示例：上游文本摘要子代理"},
+        )]
 
     def shutdown(self) -> None:
-        AgentRegistry.unregister_plugin(self.manifest.id)
+        # 门面回收（AgentRegistry 按归属注销）由桥接层统一处理
+        pass

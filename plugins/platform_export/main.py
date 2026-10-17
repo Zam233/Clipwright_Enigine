@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from clipwright.plugins import CapabilityPlugin
-from clipwright.plugins.hooks import HookRegistry, HookPoint
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
 
@@ -97,10 +97,18 @@ class PlatformExportPlugin(CapabilityPlugin):
         author="Clipwright Team",
     )
 
-    def initialize(self) -> None:
-        HookRegistry.register(HookPoint.PRE_RENDER, _pre_render_hook, plugin_id=self.manifest.id)
-        HookRegistry.register(HookPoint.POST_RENDER, _post_render_hook, plugin_id=self.manifest.id)
-        logger.info("[PlatformExport] %d 个平台预设已注册: %s", len(PLATFORM_PRESETS), ", ".join(PLATFORM_PRESETS.keys()))
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：渲染前注入平台预设、渲染后产出平台化产物。"""
+        return [
+            Contribution(
+                ContributionKind.HOOK, "platform_export_pre_render", _pre_render_hook,
+                meta={"point": "pre_render"},
+            ),
+            Contribution(
+                ContributionKind.HOOK, "platform_export_post_render", _post_render_hook,
+                meta={"point": "post_render"},
+            ),
+        ]
 
     def shutdown(self) -> None:
         pass

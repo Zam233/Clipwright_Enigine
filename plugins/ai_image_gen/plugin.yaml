@@ -5,3 +5,9 @@ kind: "capability"
 description: "AI 文生图 — 默认火山方舟 Seedream（24h URL 自动落地本地），可切 DALL-E / Flux / 本地 SD"
 author: "Clipwright Team"
 entry_point: "ai_image_gen.main"
+
+# P1 迁移：新契约声明（声明即授权）
+api_version: "2"
+contributions:
+  - { kind: tool, id: ai_image_generate }
+  - { kind: material_source, id: ai_image_gen }

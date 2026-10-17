@@ -49,7 +49,7 @@ async def record_llm_call(
         "LLM call: pipeline=%s agent=%s model=%s tokens=%d/%d (%.0fms)",
         pipeline_id, agent_name, model, input_tokens, output_tokens, duration_ms,
     )
-    # C2: 持久化到 Mongo（事件循环线程 to_thread；失败仅告警）
+    # 持久化到 Mongo（事件循环线程 to_thread；失败仅告警）
     try:
         if mongo.is_connected:
             await asyncio.to_thread(mongo.db["llm_calls"].insert_one, dict(record))

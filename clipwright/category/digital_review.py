@@ -23,7 +23,7 @@ class DigitalReviewPlugin(BaseCategoryPlugin):
             "high": {"base_shot_ms": 3000, "min_shot_ms": 800, "max_shot_ms": 8000},
         }
         shot_params = density_map.get(params.rhythm.cut_density_tier, density_map["medium"])
-        # 批8：Persona 显式 base_shot_duration_ms 优先于密度档位推导
+        # Persona 显式 base_shot_duration_ms 优先于密度档位推导
         if getattr(params.rhythm, "base_shot_duration_ms", None):
             shot_params = {**shot_params,
                            "base_shot_ms": int(params.rhythm.base_shot_duration_ms)}
@@ -46,6 +46,24 @@ class DigitalReviewPlugin(BaseCategoryPlugin):
     def get_shot_params(self, translated: dict[str, Any]) -> dict[str, Any]:
         return translated.get("shot_params", {})
 
+    def get_structure_template(self) -> str:
+        """轮 84（数码评测专项）：评测类场景骨架——开箱→参数→实测→对比→结论。"""
+        return (
+            "开箱与外观（约15%）：第一印象、包装配件、外观细节与做工特写，画面以产品实拍/特写为主\n"
+            "核心参数（约20%）：关键规格、价格定位，必须配参数表格或对比数据图表\n"
+            "实测体验（约40%）：性能/续航/屏幕/影像等核心项目逐项实测，给出实测数据并配对比图表\n"
+            "横向对比（约15%）：与同价位竞品的关键项对比，用对比图表呈现差异\n"
+            "总结建议（约10%）：优缺点回顾、适合人群、一句话购买建议"
+        )
+
+
+    def recommended_extra_params(self) -> dict[str, Any]:
+        """数码评测推荐：开视觉 LLM + 调色 + 自动出片（色准/参数图依赖视觉）。"""
+        return {"enable_visual_llm": True, "enable_color_match": True, "auto_render": True}
+
+    def get_annotation_templates(self) -> list[str]:
+        """轮 87：节奏/标注模板（原 translate_persona 死键，现在结构 prompt 消费）。"""
+        return ["hook", "product_broll", "theory_acceleration"]
     def get_mg_style_guidance(self) -> str:
         return (
             "数码评测的 MG 动画风格：科技感、精致、冷色调。"

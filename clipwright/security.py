@@ -64,7 +64,8 @@ def allowed_media_roots() -> list[Path]:
     # 锚定到项目根目录（clipwright 包的父目录），避免 CWD 依赖
     _base = Path(__file__).resolve().parent.parent
     return [
-        _base / "renders",
+        anchor(settings.render_output_dir),  # 默认 = _base/renders；可配置
+        _base / "renders",  # 保留：历史数据可能仍在默认目录
         _base / "library",
         _base / "editor_projects",
         _base / "projects",

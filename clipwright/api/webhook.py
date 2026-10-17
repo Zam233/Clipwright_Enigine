@@ -193,7 +193,7 @@ async def register_webhook(req: RegisterWebhookRequest, request: Request) -> Web
         "webhook_id": f"wh_{uuid.uuid4().hex[:10]}",
         "url": req.url,
         "events": req.events,
-        # P8/P2-7: secret 加密落盘（不存明文）
+        # /P2-7: secret 加密落盘（不存明文）
         "secret": _encrypt(req.secret),
         "active": True,
         "owner_id": current_user_id(request),  # 轮70（D8）：所有权隔离

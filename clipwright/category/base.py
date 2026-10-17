@@ -55,6 +55,32 @@ class BaseCategoryPlugin(BasePlugin):
         """验证单个片段是否符合本类型的规范。"""
         return True
 
+    def get_structure_template(self) -> str:
+        """返回本视频类型的场景结构模板（轮 84：原死能力接线）。
+
+        结构 Agent 会把模板注入 system prompt（"视频类型结构模板"段），
+        引导场景划分遵循该骨架。基类返回空串（不注入，零行为变化）；
+        子类可覆盖，返回多行文本：每行"段落名（时长占比）：内容要点"。
+        """
+        return ""
+
+    def get_annotation_templates(self) -> list[str]:
+        """返回本类型的节奏/标注模板名（轮 87：原死能力接线）。
+
+        结构 Agent 将其作为"段落标注参考"注入 prompt，帮助 LLM 在场景中
+        落位 hook/高潮/收束等节奏标注。基类返回空列表（不注入）。
+        """
+        return []
+
+    def recommended_extra_params(self) -> dict[str, Any]:
+        """返回本类型一键出片的推荐管线参数（轮 94）。
+
+        api 层在启动管线时做「用户显式值优先」的合并：request.extra_params
+        里没有的键才注入推荐值。基类返回空 dict（不注入，零行为变化）。
+        常用键：enable_visual_llm / enable_color_match / auto_render。
+        """
+        return {}
+
     def get_mg_style_guidance(self) -> str:
         """返回本视频类型的 MG 动画风格指引。
 

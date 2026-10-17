@@ -242,7 +242,21 @@ class PersonaRepository:
         fpath = kdir / fname
         removed = False
         if fpath.exists():
-            fpath.unlink()
+            # Windows 文件锁健壮性：新增文档触发的异步 RAG 索引可能仍在读该文件，
+            # 直接 unlink 会抛 PermissionError(WinError 32)——短重试后放弃（真删不掉时
+            # 由调用方感知失败，不静默假装成功）。
+            import time as _time
+            last_err: Exception | None = None
+            for _ in range(5):
+                try:
+                    fpath.unlink()
+                    last_err = None
+                    break
+                except PermissionError as e:  # pragma: no cover - 平台相关
+                    last_err = e
+                    _time.sleep(0.05)
+            if last_err is not None:
+                raise last_err
             removed = True
         # 更新索引
         index_path = kdir / "index.yaml"
@@ -332,7 +346,7 @@ class PersonaRepository:
         pdir = self.persona_path(persona_id)
         if pdir.exists():
             shutil.rmtree(pdir)
-        # B6: 删除级联向量 — 清理 ChromaDB 中的 persona 索引
+        # 删除级联向量 — 清理 ChromaDB 中的 persona 索引
         try:
             from clipwright.rag.retriever import Retriever
             Retriever().delete_index(persona_id)

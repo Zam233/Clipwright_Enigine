@@ -45,12 +45,12 @@ async def get_persona(persona_id: str, request: Request) -> PersonaManifest:
 async def create_persona(manifest: PersonaManifest, request: Request) -> PersonaManifest:
     if _repo.exists(manifest.persona_id):
         raise HTTPException(status_code=409, detail=f"Persona {manifest.persona_id} already exists")
-    # P3-3B: 记录创建者
+    # 记录创建者
     uid = current_user_id(request)
     if uid and not manifest.owner_id:
         manifest.owner_id = uid
     _repo.save_manifest(manifest)
-    # P5-B5: 审计
+    # 审计
     from clipwright import audit
     audit.record("persona_create", uid, {"persona_id": manifest.persona_id})
     return manifest
@@ -101,7 +101,9 @@ async def reference_style(persona_id: str, req: ReferenceStyleRequest, request: 
         if analysis.get("rhythm"):
             # rhythm: 镜头时长均值 → base_shot_duration_ms；密度 → cut_density_tier
             rh = analysis["rhythm"]
-            param.rhythm.base_shot_duration_ms = int(rh.get("shot_duration_mu_ms", param.rhythm.base_shot_duration_ms))
+            _mu = rh.get("shot_duration_mu_ms")
+            if _mu is not None:  # 轮 87：缺失时不写（保持 None = 交类型插件档位）
+                param.rhythm.base_shot_duration_ms = int(_mu)
             if rh.get("pacing_variance_per_minute", 0.3) > 0.5:
                 param.rhythm.cut_density_tier = "high"
             elif rh.get("pacing_variance_per_minute", 0.3) < 0.2:
@@ -136,7 +138,7 @@ async def delete_persona(persona_id: str, request: Request) -> dict:
     if not _repo.exists(persona_id):
         raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
     _repo.delete(persona_id)
-    # P5-B5: 审计
+    # 审计
     from clipwright import audit
     audit.record("persona_delete", current_user_id(request), {"persona_id": persona_id})
     return {"status": "deleted", "persona_id": persona_id}

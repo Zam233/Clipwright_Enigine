@@ -31,11 +31,22 @@ class HookRegistry:
 
     @classmethod
     def register(cls, point: HookPoint, fn: Callable, plugin_id: str = "", **kwargs: Any) -> None:
-        # P4: wrapper 闭包携带 plugin_id（绑定方法安全），unregister 时按 ID 精确清理
+        # wrapper 闭包携带 plugin_id（绑定方法安全），unregister 时按 ID 精确清理
         if plugin_id:
             def _wrapped(ctx: Any, _fn: Callable = fn) -> Any:
                 return _fn(ctx)
+
             _wrapped.__plugin_id__ = plugin_id
+            _acall = getattr(fn, "acall", None)
+            if callable(_acall):
+                # P9：把异步能力挂在 wrapper 上——同步 `execute()` 走 _wrapped（阻塞
+                # RPC），异步 `execute_async()` 走 .acall（不阻塞事件循环）。两者都保留，
+                # 不能只留一个：只留同步会让异步调用点退化成阻塞，只留异步会让同步
+                # 调用点拿到未 await 的协程。
+                async def _wrapped_acall(ctx: Any, _acall: Callable = _acall) -> Any:
+                    return await _acall(ctx)
+
+                _wrapped.acall = _wrapped_acall  # type: ignore[attr-defined]
             fn = _wrapped
         cls._hooks.setdefault(point, []).append(fn)
         logger.debug("Hook registered: %s -> %s", point.value, getattr(fn, "__name__", str(fn)))
@@ -66,9 +77,18 @@ class HookRegistry:
                 if result:
                     context.update(result)
             except Exception as e:
-                # P8: 单钩子异常不阻塞同点其余钩子
+                # 单钩子异常不阻塞同点其余钩子
                 logger.warning("Hook 异常 (%s): %s", point.value, e)
         return context
+
+    @classmethod
+    def hook_list(cls, point: HookPoint) -> list[Callable]:
+        """该注入点已注册的钩子（副本）。
+
+        P9：异步调度（`plugins.hooks_async.execute_async`）与镜像统计读这里，
+        避免外部直接摸 `_hooks` 私有表。
+        """
+        return list(cls._hooks.get(point, []))
 
     @classmethod
     def clear(cls) -> None:

@@ -10,13 +10,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from clipwright.config import logger
 from clipwright.material import (
     JsonCatalogSource,
-    MaterialRegistry,
     RagKnowledgeSource,
     UrlMaterialSource,
 )
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.plugin import PluginManifest, PluginKind
 
 
@@ -32,8 +33,23 @@ class MyMaterialLibPlugin(CapabilityPlugin):
         author="Clipwright Team",
     )
 
-    def initialize(self) -> None:
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：示例素材源（默认禁用，需 MY_MATERIAL_LIB_ENABLED=1）。
+
+        轮 81 的禁用语义保留：catalog 指向不存在的文件、URL 指向 cdn.example.com，
+        启用会让管线「检索成功但素材不可用」，因此默认返回零贡献。
+        """
+        import os
+
+        if os.environ.get("MY_MATERIAL_LIB_ENABLED", "").lower() not in ("1", "true", "yes"):
+            # B4/C5：默认禁用是刻意的（轮 81），但要给出可查原因，
+            # 否则管理页只看到「已加载、零贡献」
+            logger.info("[MyMaterialLib] 示例素材源默认禁用（设 MY_MATERIAL_LIB_ENABLED=1 "
+                        "启用；catalog/URL 指向示例地址，启用会让管线拿到不可用素材）")
+            return []
+
         plugin_dir = Path(__file__).resolve().parent
+        items: list[Any] = []
 
         # 1. JSON Catalog 源
         catalog_path = plugin_dir / "catalog.json"
@@ -43,7 +59,9 @@ class MyMaterialLibPlugin(CapabilityPlugin):
                 catalog_path=catalog_path,
                 source_name="JSON Catalog",
             )
-            MaterialRegistry.register(json_source, plugin_id=self.manifest.id)
+            items.append(Contribution(
+                ContributionKind.MATERIAL_SOURCE, json_source.source_id, json_source,
+            ))
 
         # 2. URL 素材源
         url_source = UrlMaterialSource(
@@ -61,7 +79,9 @@ class MyMaterialLibPlugin(CapabilityPlugin):
             title="City Timelapse",
             tags=["city", "timelapse", "urban"],
         )
-        MaterialRegistry.register(url_source, plugin_id=self.manifest.id)
+        items.append(Contribution(
+            ContributionKind.MATERIAL_SOURCE, url_source.source_id, url_source,
+        ))
 
         # 3. RAG 知识库（指向 demo Persona）
         rag_source = RagKnowledgeSource(
@@ -69,7 +89,10 @@ class MyMaterialLibPlugin(CapabilityPlugin):
             persona_id="zam_knowledge_critical",
             source_name="RAG Knowledge",
         )
-        MaterialRegistry.register(rag_source, plugin_id=self.manifest.id)
+        items.append(Contribution(
+            ContributionKind.MATERIAL_SOURCE, rag_source.source_id, rag_source,
+        ))
+        return items
 
     def shutdown(self) -> None:
         pass

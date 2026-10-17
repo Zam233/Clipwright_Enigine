@@ -13,8 +13,8 @@ import os
 from typing import Any
 import httpx
 from clipwright.plugins import CapabilityPlugin
+from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.tool.base import BaseTool
-from clipwright.tool.registry import ToolRegistry
 from clipwright.schema.plugin import PluginManifest, PluginKind
 from clipwright.config import logger
 
@@ -50,9 +50,10 @@ class ExtendedTTSTool(BaseTool):
             return {"success": False, "error": str(e)}
 
     async def _synth_elevenlabs(self, text: str, voice_id: str) -> dict:
-        key = os.environ.get("ELEVENLABS_API_KEY", "")
+        # 优先使用插件配置 config.yaml，其次环境变量
+        key = (self.config or {}).get("elevenlabs_api_key", "") or os.environ.get("ELEVENLABS_API_KEY", "")
         if not key:
-            return {"success": False, "error": "ELEVENLABS_API_KEY 未配置"}
+            return {"success": False, "error": "ELEVENLABS_API_KEY 未配置（可在插件配置页设置）"}
         vid = voice_id or "21m00Tcm4TlvDq8ikWAM"  # Rachel
         async with httpx.AsyncClient(timeout=30) as c:
             resp = await c.post(f"https://api.elevenlabs.io/v1/text-to-speech/{vid}",
@@ -64,10 +65,11 @@ class ExtendedTTSTool(BaseTool):
             return {"success": True, "audio_path": out, "provider": "elevenlabs"}
 
     async def _synth_azure(self, text: str, voice_id: str) -> dict:
-        key = os.environ.get("AZURE_SPEECH_KEY", "")
-        region = os.environ.get("AZURE_SPEECH_REGION", "eastus")
+        cfg = self.config or {}
+        key = cfg.get("azure_speech_key", "") or os.environ.get("AZURE_SPEECH_KEY", "")
+        region = cfg.get("azure_speech_region", "") or os.environ.get("AZURE_SPEECH_REGION", "eastus")
         if not key:
-            return {"success": False, "error": "AZURE_SPEECH_KEY 未配置"}
+            return {"success": False, "error": "AZURE_SPEECH_KEY 未配置（可在插件配置页设置）"}
         ssml = f'<speak version="1.0" xml:lang="zh-CN"><voice name="{voice_id}">{text}</voice></speak>'
         async with httpx.AsyncClient(timeout=30) as c:
             resp = await c.post(f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1",
@@ -83,11 +85,19 @@ class VoiceExtPlugin(CapabilityPlugin):
     manifest = PluginManifest(id="voice_ext", name="Voice Provider Extension", version="1.0.0",
         kind=PluginKind.CAPABILITY, description="Extended TTS providers (ElevenLabs/Azure/XTTS)", author="Clipwright Team")
 
-    def initialize(self) -> None:
+    def contributions(self) -> list[Any]:
+        """新契约（P1 迁移）：扩展 TTS 工具（provider 取自配置；非法值直接拒绝加载）。"""
         cfg = self.config or {}
         provider = cfg.get("provider", "elevenlabs")
-        ToolRegistry.register(ExtendedTTSTool(default_provider=provider), plugin_id=self.manifest.id)
-        logger.info("[VoiceExt] 扩展 TTS Tool 已注册 (provider=%s)", provider)
+        if provider == "xtts-unimplemented":
+            raise ValueError(
+                "voice_ext: provider=xtts-unimplemented 不可用——XTTS 尚未实现，"
+                "请在插件配置页选择 elevenlabs 或 azure"
+            )
+        return [Contribution(
+            ContributionKind.TOOL, "extended_tts",
+            ExtendedTTSTool(default_provider=provider),
+        )]
 
     def shutdown(self) -> None: pass
 

@@ -21,6 +21,7 @@
 | 文档 | 说明 |
 |------|------|
 | [开发指南](development.md) | 技术栈、开发规范、设计约束 |
+| [插件作者指南](plugin_authoring.md) | 新契约 `contributions()`：16 类扩展点、UI 槽位、Provider 源与迁移清单 |
 | [安全部署指南](security.md) | API 令牌认证、CORS、文件白名单与生产部署清单 |
 
 ## 新增模块
@@ -32,3 +33,6 @@
 | [动画系统](animation_system.md) | 动画编目、渲染管线与 MG 动画 |
 | [服务概览](services_overview.md) | 全部后端服务层模块说明 |
 | [需求分析 Agent](requirements_agent.md) | Requirements Agent 设计与职责 |
+| [整数时间基座](timebase.md) | 整数 tick + 有理数帧率：换算纪律、时间码、漂移校正与切点的接线点 |
+| [素材内容理解与 NL 落位计划](content-understanding-plan-2026-09-14.md) | 内容索引（镜头级）→ 检索 → NL 意图 → 落位校验：让 Agent 知道在剪什么、用户说人话就能达到目的 |
+| [内容理解基准集与指标](content-understanding-benchmark.md) | R1–R10 的基准集构成、量化指标（含门槛 vs 实测）、**每个数字的验证边界**；一键复跑 `scripts/verify_all_metrics.py` |

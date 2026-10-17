@@ -16,6 +16,15 @@ from pydantic import BaseModel
 from clipwright.authz import current_user_id, enforce_owner, filter_by_owner
 from clipwright.config import logger
 from clipwright.services.project_manager import ProjectManager
+from clipwright.services.project_memory import (
+    SECTIONS,
+    append_entries,
+    load_memory,
+    memory_path,
+    parse_memory,
+    render_summary,
+    save_memory,
+)
 
 router = APIRouter(prefix="/api/project", tags=["project"])
 _manager = ProjectManager()
@@ -91,11 +100,27 @@ class FolderDeleteRequest(BaseModel):
     name: str
 
 
+class MemoryWriteRequest(BaseModel):
+    """PUT 全量写入：整份 Markdown 覆盖（人工编辑用）。"""
+    content: str = ""
+
+
+class MemoryAppendRequest(BaseModel):
+    """POST 追加：`{section: [text, ...]}` 或 `[[section, text], ...]`。"""
+    entries: Any = None
+    source: str = ""
+
+
 # ── Routes ──
 
 @router.post("")
 async def create_project(req: ProjectCreateRequest, request: Request) -> dict[str, Any]:
-    """Create a new project (backend assigns id; P3-3B: 记录 owner_id)。"""
+    """Create a new project (backend assigns id; P3-3B: 记录 owner_id)。
+
+    轮 81：owner_id 随首次写入落盘（消灭二次写失败 → 无主项目 → 用户看不到
+    自己项目的竞态窗口）。
+    """
+    uid = current_user_id(request)
     data = _manager.create(
         name=req.name,
         timeline=req.timeline,
@@ -104,15 +129,9 @@ async def create_project(req: ProjectCreateRequest, request: Request) -> dict[st
         folder=req.folder,
         tags=req.tags,
         agent_state=req.agent_state,
+        owner_id=uid or "",
     )
-    uid = current_user_id(request)
-    if uid:
-        try:
-            _manager.save(data["id"], {"owner_id": uid})
-            data["owner_id"] = uid
-        except Exception as e:
-            logger.warning("owner_id 写入失败: %s", e)
-    # P5-B5: 审计
+    # 审计
     from clipwright import audit
     audit.record("project_create", uid, {"project_id": data["id"], "name": data.get("name", "")})
     return data
@@ -186,13 +205,13 @@ async def delete_project(project_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(e))
     if not ok:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-    # P5-B5: 审计
+    # 审计
     from clipwright import audit
     audit.record("project_delete", current_user_id(request), {"project_id": project_id})
     return {"status": "deleted", "id": project_id}
 
 
-# A2: 回收站（软删除 / 恢复 / 永久删除）
+# 回收站（软删除 / 恢复 / 永久删除）
 
 @router.post("/{project_id}/trash")
 async def trash_project(project_id: str, request: Request) -> dict[str, Any]:
@@ -283,7 +302,7 @@ async def archive_project(project_id: str, request: Request) -> StreamingRespons
                     k += 1
                 used_names.add(arc_name)
                 arc = f"{project_id}/media/{arc_name}"
-                # 批68：媒体文件 ZIP_STORED（MP4/JPG 压缩无收益纯烧 CPU）
+                # 媒体文件 ZIP_STORED（MP4/JPG 压缩无收益纯烧 CPU）
                 zi = zipfile.ZipInfo(arc)
                 zi.compress_type = zipfile.ZIP_STORED
                 zi.external_attr = 0o644 << 16
@@ -320,6 +339,10 @@ async def archive_project(project_id: str, request: Request) -> StreamingRespons
         exported["archive_format"] = "clipwright-v1"
         zf.writestr(f"{project_id}/project.json",
                     json.dumps(exported, ensure_ascii=False, default=str, indent=2))
+        # 4. V8：项目决策记忆 `memory.md`（有才打包，无则跳过）
+        mem = load_memory(_project_dir_of(project_id))
+        if not mem.is_empty():
+            zf.writestr(f"{project_id}/memory.md", mem.to_markdown())
 
     buf.seek(0)
     from urllib.parse import quote
@@ -341,7 +364,7 @@ async def import_archive(request: Request, file: UploadFile = File(...)) -> dict
     按 archive_media_map 还原时间线 asset_id，重建项目。"""
     import uuid as _uuid
 
-    # 批68：file.size 预检（旧实现先全量 read 再检查 → 2GB 上传也先吃满内存）
+    # file.size 预检（旧实现先全量 read 再检查 → 2GB 上传也先吃满内存）
     if file.size and file.size > 500 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="归档过大（上限 500MB）")
     try:
@@ -368,7 +391,7 @@ async def import_archive(request: Request, file: UploadFile = File(...)) -> dict
     media_root = Path("PluginData") / "archives" / new_id
     media_map = data.get("archive_media_map") or {}
     # 解包媒体
-    # 批68：解压炸弹防护——累计解压大小上限 2GB
+    # 解压炸弹防护——累计解压大小上限 2GB
     import shutil
     total_uncompressed = sum(i.file_size for i in zf.infolist())
     if total_uncompressed > 2 * 1024 * 1024 * 1024:
@@ -405,7 +428,7 @@ async def import_archive(request: Request, file: UploadFile = File(...)) -> dict
     data.pop("archive_format", None)
     exported_tl = _remap(data.get("timeline"))
 
-    pm = ProjectManager()
+    pm = _manager
     created = pm.create(
         name=str(data.get("name") or "导入项目")[:80],
         timeline=exported_tl,
@@ -416,8 +439,20 @@ async def import_archive(request: Request, file: UploadFile = File(...)) -> dict
     from clipwright import audit
     audit.record("project_import", current_user_id(request),
                  {"project_id": created.get("id")})
+    # V8：归档里带了 `memory.md` 就一并还原（决策记忆不该在归档往返中丢失）
+    mem_name = next((n for n in names if n.endswith("memory.md")), None)
+    memory_restored = False
+    if mem_name:
+        try:
+            restored = parse_memory(zf.read(mem_name).decode("utf-8"))
+            if not restored.is_empty():
+                save_memory(_project_dir_of(created.get("id") or ""), restored)
+                memory_restored = True
+        except Exception as exc:  # 记忆还原失败不影响项目导入本身
+            logger.warning("归档记忆还原失败: %s", exc)
     return {"status": "imported", "id": created.get("id"),
-            "name": created.get("name"), "media_count": len(media_map)}
+            "name": created.get("name"), "media_count": len(media_map),
+            "memory_restored": memory_restored}
 
 
 @router.post("/{project_id}/duplicate")
@@ -510,3 +545,92 @@ async def get_thumbnail(project_id: str, request: Request, force: bool = Query(F
         return FileResponse(result, media_type="image/jpeg")
 
     raise HTTPException(status_code=404, detail="No thumbnail available")
+
+
+# ── V8：项目决策记忆 `memory.md` 四段式 ──
+
+def _project_dir_of(project_id: str) -> Path:
+    """项目目录（`project.json` / `memory.md` 同级的目录）。"""
+    return _manager.project_dir(project_id)
+
+
+def _memory_payload(memory, project_id: str) -> dict[str, Any]:
+    return {
+        "project_id": project_id,
+        "path": str(memory_path(_project_dir_of(project_id))),
+        "sections": {s: [e.text for e in (memory.entries.get(s) or [])] for s in SECTIONS},
+        "entries": {
+            s: [{"text": e.text, "at": e.at, "source": e.source} for e in (memory.entries.get(s) or [])]
+            for s in SECTIONS
+        },
+        "count": memory.count(),
+        "empty": memory.is_empty(),
+        "markdown": memory.to_markdown(),
+    }
+
+
+@router.get("/{project_id}/memory")
+async def get_project_memory(project_id: str, request: Request) -> dict[str, Any]:
+    """读取项目决策记忆（四段式 `memory.md`）。
+
+    文件不存在时返回空记忆而不是 404 —— 新项目本来就没有记忆，前端不必特判。
+    """
+    _load_owned(request, project_id)  # P3-3B
+    memory = load_memory(_project_dir_of(project_id))
+    return _memory_payload(memory, project_id)
+
+
+@router.put("/{project_id}/memory")
+async def put_project_memory(
+    project_id: str, req: MemoryWriteRequest, request: Request
+) -> dict[str, Any]:
+    """全量覆盖项目记忆（人工编辑 `memory.md` 后保存）。"""
+    _load_owned(request, project_id)  # P3-3B
+    memory = parse_memory(req.content)
+    save_memory(_project_dir_of(project_id), memory)
+    return _memory_payload(memory, project_id)
+
+
+@router.post("/{project_id}/memory/append")
+async def append_project_memory(
+    project_id: str, req: MemoryAppendRequest, request: Request
+) -> dict[str, Any]:
+    """向项目记忆追加条目（Agent 收尾/关键决策时记账；不做覆盖，保住人工编辑）。"""
+    _load_owned(request, project_id)  # P3-3B
+    raw = req.entries
+    if isinstance(raw, dict):
+        items: list[tuple[str, str]] = []
+        for section, texts in raw.items():
+            # 注意：字符串可迭代，不特判会把 "竖屏科普" 拆成单字条目
+            if isinstance(texts, str):
+                items.append((section, texts))
+            else:
+                items.extend((section, str(t)) for t in texts)
+    elif isinstance(raw, (list, tuple)):
+        items = []
+        for item in raw:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                items.append((str(item[0]), str(item[1])))
+    else:
+        raise HTTPException(status_code=400, detail="entries 必须是 {段名: [文本]} 或 [[段名, 文本]]")
+    if not items:
+        raise HTTPException(status_code=400, detail="entries 不能为空")
+    try:
+        memory = append_entries(_project_dir_of(project_id), items, source=req.source)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _memory_payload(memory, project_id)
+
+
+@router.get("/{project_id}/memory/summary")
+async def get_project_memory_summary(
+    project_id: str, request: Request, limit: int = Query(5, ge=1, le=50)
+) -> dict[str, Any]:
+    """紧凑摘要（喂给 LLM 的形态）；空记忆返回空串。"""
+    _load_owned(request, project_id)  # P3-3B
+    memory = load_memory(_project_dir_of(project_id))
+    return {
+        "project_id": project_id,
+        "count": memory.count(),
+        "summary": render_summary(memory, limit=limit),
+    }

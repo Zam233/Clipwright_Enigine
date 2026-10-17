@@ -1,0 +1,7 @@
+fields:
+  api_key:
+    type: string
+    value: ""
+    secret: true
+    label: "Pixabay API Key"
+    description: "从 https://pixabay.com/api/docs/ 获取；留空则读环境变量 PIXABAY_API_KEY"

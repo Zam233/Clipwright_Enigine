@@ -171,13 +171,13 @@ def test_image_download_rejects_private_url(monkeypatch):
 
 
 def test_image_default_provider_via_plugin_config(monkeypatch):
-    captured = {}
-    monkeypatch.setattr(img_mod.ToolRegistry, "register",
-                        classmethod(lambda cls, tool, plugin_id="": captured.update(tool=tool)))
+    """P1 迁移后：provider 默认值由 contributions() 决定（不再经 ToolRegistry 注册）。"""
     plugin = img_mod.AIImageGenPlugin()
     plugin.config = None
-    plugin.initialize()
-    assert captured["tool"]._provider == "volcengine"
+    items = plugin.contributions()
+    tools = [c for c in items if getattr(c.kind, "value", "") == "tool"]
+    assert tools, "迁移后应通过 contributions() 贡献工具"
+    assert tools[0].object._provider == "volcengine"
 
 
 # ── 视频：Seedance（异步任务） ───────────────────────────

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import pytest
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -307,3 +308,12 @@ class TestIssuesFixable:
 
     def test_plain_issue_fixable(self) -> None:
         assert MGGenerator._issues_fixable(["元素过少"], []) is True
+
+
+@pytest.fixture(autouse=True)
+def _p1_02_mg_cache_isolation():
+    """P1-02 修复后缓存真实生效——测试间必须清缓存防同输入污染。"""
+    from clipwright.animation.mg.generator import _mg_cache_clear
+    _mg_cache_clear()
+    yield
+    _mg_cache_clear()

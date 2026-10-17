@@ -18,7 +18,7 @@ from typing import Any, Optional
 
 from clipwright.config import logger
 
-# E8/E9: 视觉识别结果缓存 — {str(path):mtime_ns → result}，TTL 1h，上限 512。
+# /E9: 视觉识别结果缓存 — {str(path):mtime_ns → result}，TTL 1h，上限 512。
 # 多 Agent 重复分析同一图片（AnimationAgent 图片索引 / Quality 帧检查）共享缓存。
 _VISION_CACHE: dict[str, tuple[dict[str, Any], float]] = {}
 _VISION_CACHE_MAX = 512
@@ -77,25 +77,27 @@ class VisionService:
 
     # ── 公开接口 ──
 
-    async def analyze_image(self, image_path: str) -> dict[str, Any]:
+    async def analyze_image(self, image_path: str, provider: str | None = None) -> dict[str, Any]:
         """分析图片内容，生成标签和描述（E9：path+mtime 缓存，TTL 1h，上限 512）。
 
-        Returns:
-            {"tags": [...], "description": str, "labels": [...], "model": str}
+        `provider` 可按调用覆盖全局 `settings.vision_provider`（`llm` / `transformers`）：
+        内容索引要"本地优先、云端按需"——同一进程里两种调用并存，
+        因此**缓存键必须带上 provider**，否则会拿到另一种后端的结果。
         """
         path = Path(image_path)
         if not path.exists():
             return {"tags": [], "description": "", "labels": [], "model": "", "error": "文件不存在"}
 
-        key = _vision_cache_key(image_path)
+        from clipwright.config import settings
+
+        prov = (provider or settings.vision_provider or "").strip().lower()
+        key = f"{prov}|{_vision_cache_key(image_path)}"
         cached = _VISION_CACHE.get(key)
         if cached and (time.time() - cached[1]) < _VISION_CACHE_TTL:
             return dict(cached[0])
 
-        from clipwright.config import settings
-
         # 1. LLM 多模态（Qwen-VL / Claude Vision / GPT-4V）
-        if settings.vision_provider == "llm":
+        if prov == "llm":
             try:
                 result = await self._classify_llm(image_path)
                 self._cache_store(key, result)
@@ -104,7 +106,7 @@ class VisionService:
                 logger.debug("LLM 图片识别失败: %s", e)
 
         # 2. transformers 图像分类
-        if settings.vision_provider == "transformers":
+        if prov == "transformers":
             try:
                 result = await self._classify_transformers(image_path)
                 self._cache_store(key, result)
@@ -140,6 +142,8 @@ class VisionService:
             api_key=settings.vision_llm_api_key or settings.llm_api_key,
             model=settings.vision_llm_model or settings.llm_model,
             base_url=settings.vision_llm_base_url or settings.llm_base_url or "",
+            # B3：视觉角色绑定优先（设置页「模型提供商」→ 角色 vision）
+            role="vision",
         )
         model_name = settings.vision_llm_model or settings.llm_model
 

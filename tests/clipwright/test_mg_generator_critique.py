@@ -253,3 +253,12 @@ class TestCritiqueConfig:
             pytest.skip("critique 配置未落地")
         assert cfg["critique"].get("min_score", 60) == 60
         assert 0 <= cfg["critique"]["min_score"] <= 100
+
+
+@pytest.fixture(autouse=True)
+def _p1_02_mg_cache_isolation():
+    """P1-02 修复后缓存真实生效——测试间必须清缓存防同输入污染。"""
+    from clipwright.animation.mg.generator import _mg_cache_clear
+    _mg_cache_clear()
+    yield
+    _mg_cache_clear()
