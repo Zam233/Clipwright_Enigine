@@ -210,6 +210,13 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
      "off = 关闭（默认）；shadow = 只记录归因与诊断书不改执行；on = 启用派工（B3+）"),
     ("supervisor_attribution_timeout_sec", "pipeline", "归因兜底超时(秒)", False, True,
      "规则不命中时的 LLM 兜底超时；失败回退规则结论"),
+    # ── 模型路由（PRD F8 / B4）──
+    ("model_routes", "llm", "模型路由表", False, True,
+     "按阶段配置候选模型（JSON）；留空 = 全部沿用主/闪模型"),
+    ("model_whitelist", "llm", "模型白名单", False, True,
+     "provider/model 或裸 model 精确白名单；留空 = 允许所有已配置 provider"),
+    ("risk_judge_model", "llm", "风险判定模型", False, True,
+     "命令风险判定用模型；必须命中白名单，留空 = 最便宜的 cheap 档"),
 ]
 
 

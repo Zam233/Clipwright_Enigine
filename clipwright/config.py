@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import timezone, timedelta
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -86,6 +86,15 @@ class Settings(BaseSettings):
     supervisor_mode: Literal["off", "shadow", "on"] = "off"
     # 归因/诊断的兜底 LLM 调用超时（秒）；规则命中时不调用 LLM
     supervisor_attribution_timeout_sec: float = 15.0
+
+    # --- 模型路由（PRD F8 / 开发计划 B4）---
+    # 按阶段配置候选模型：[{"provider","model","tier","price_in","price_out"}]；
+    # 留空 = 不路由，所有阶段沿用主/闪模型（与改造前完全一致）。
+    model_routes: dict[str, list[dict[str, Any]]] = {}
+    # 精确白名单（"provider/model" 或裸 model）；留空 = 允许所有已配置 provider。
+    model_whitelist: list[str] = []
+    # 命令风险判定所用模型（B9）；必须命中白名单，留空 = 最便宜的 cheap 档。
+    risk_judge_model: str = ""
 
     # --- 服务 ---
     host: str = "0.0.0.0"

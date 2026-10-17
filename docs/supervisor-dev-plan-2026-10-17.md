@@ -361,6 +361,20 @@ v1.1 追加：`subagent_start` / `subagent_progress` / `subagent_end` / `exec`�
 | 自愈接线 | `pipeline_v2._decide_for_heal` + `_self_heal_quality` | `off` 零开销；`shadow` 只记录；`on` 时 S4 接受降级、S6 止损、目标阶段改写 `redo_agent` |
 | 测试 | `tests/test_supervisor_strategy.py` | **18 passed**（含禁用升级、阶梯耗尽、派工门禁与 `_run_agent` 复用） |
 
+### B4 — 已完成
+
+| 交付 | 位置 | 验证 |
+|---|---|---|
+| 路由表与选择 | `services/model_router.py` | 按阶段偏好档位（选材/音频偏便宜、结构/剪辑偏标准强）+ 价格排序；`budget_ratio≥0.7` 时禁止升级；失败模型自动跳过 |
+| 白名单（共用） | `model_router.allowed_providers / is_route_allowed` | 显式 `model_whitelist` 精确匹配；否则按「主/闪 provider + 已配置 llm 源」放行。**B9 的 risk_judge 复用同一份** |
+| risk_judge 路由 | `model_router.risk_judge_route` | 显式 `risk_judge_model` 必须过白名单（否则忽略并告警）；未配置时取最便宜 cheap 档 |
+| 跨 provider 凭据 | `model_router.resolve_provider_credentials` | 角色绑定 → 同 provider 源 → settings；取不到就回退默认，绝不串用别的 key |
+| LLM 覆盖（单点埋设） | `services/llm.py::_routed_client_and_model` | 无路由零变化；同 provider 只换 model；跨 provider 用 `_construct_client`（缓存）；`generate` / `ask` / `structured_output` 全部生效 |
+| 熔断键 (stage, model) | `pipeline_v2._breaker_key / _failed_models_for` | A 模型失败不连坐 B 模型；已熔断的模型会从路由候选中剔除 |
+| 账本记账 | `_run_agent` | `LedgerEntry.model` 在无 usage 时回落到路由 key（A9/A18 留痕） |
+| 配置 | `config.py` + `config_schema.py` | `model_routes` / `model_whitelist` / `risk_judge_model`（留空=不路由，行为与改造前一致） |
+| 测试 | `tests/test_model_router.py` | **21 passed**（含跨 provider 构建、无凭据回退、白名单拒绝） |
+
 ### B1 起的前置条件
 
 - F9 已提供 `failure` / `degradations`，账本（B1）只需把 `_run_agent` 单点处的结果落成 `LedgerEntry`；

@@ -1487,11 +1487,52 @@ class PipelineOrchestratorV2:
 
     # ── Agent 执行 ────────────────────────────────
 
+    # ── B4：模型路由与熔断键 ──────────────────────
+
+    @staticmethod
+    def _breaker_key(agent_name: str, model_key: str = "") -> str:
+        """熔断键：有模型时按 (阶段, 模型) 隔离，否则退化为阶段名。
+
+        PRD §6.5 / A9：A 模型失败不得连坐 B 模型——所以模型维度必须进键。
+        """
+        return f"{agent_name}::{model_key}" if model_key else agent_name
+
+    def _failed_models_for(self, agent_name: str) -> list[str]:
+        """该阶段已熔断过的模型（喂给路由，避免继续选它）。"""
+        prefix = f"{agent_name}::"
+        out: list[str] = []
+        for key, cb in (self._circuit_breakers or {}).items():
+            if not key.startswith(prefix):
+                continue
+            if int(cb.get("fail_count") or 0) < self._circuit_breaker_threshold:
+                continue
+            out.append(key[len(prefix):])
+        return out
+
+    def _choose_route_for(self, agent_name: str):
+        """选模型路由（B4）。关闭状态或未配置路由表时返回 None。"""
+        try:
+            from clipwright.config import settings
+
+            if getattr(settings, "supervisor_mode", "off") == "off":
+                return None
+            from clipwright.services.model_router import choose_route
+
+            return choose_route(agent_name, failed_pairs=self._failed_models_for(agent_name))
+        except Exception as e:  # noqa: BLE001 — 路由失败沿用默认模型
+            logger.debug("模型路由选择失败（沿用默认）: %s", e)
+            return None
+
     async def _run_agent(self, state, agent_name, input_data, context, bus,
                          tracer=None):
         """执行单个 Agent，集成总线通信。在熔断检查通过后创建 span。"""
+        # ── B4：先选模型路由，再按 (阶段, 模型) 检查熔断 ──
+        # 路由表为空时 route=None，breaker_key 退化为 agent 名——行为与改造前一致。
+        _route = self._choose_route_for(agent_name)
+        _breaker_key = self._breaker_key(agent_name, _route.key if _route else "")
+
         # 熔断检查 — 不创建 span
-        if self._check_circuit_breaker(agent_name):
+        if self._check_circuit_breaker(_breaker_key):
             step = state.add_step(agent_name)
             step.status = PipelineStatus.FAILED
             step.started_at = datetime.now(timezone.utc)
@@ -1572,8 +1613,9 @@ class PipelineOrchestratorV2:
             # F9 单点埋设：Agent 内部的降级登记（llm_or_fallback / 模板化分镜 /
             # 占位素材…）通过 ContextVar 收集，无需 6 个 Agent 各自改签名。
             from clipwright.services.degradation import degradation_scope
+            from clipwright.services.model_router import use_route
             _agent_degradations: list = []
-            with degradation_scope(_agent_degradations):
+            with degradation_scope(_agent_degradations), use_route(_route):
                 result = await self._dispatch(agent_name, input_data, context)
             if _agent_degradations and hasattr(result, "degradations"):
                 # Agent 自己登记过的保留在前，作用域内收集的补在后面（去重同 kind+detail）
@@ -1614,13 +1656,13 @@ class PipelineOrchestratorV2:
 
             if result.decision != AgentDecision.FAIL:
                 step.status = PipelineStatus.COMPLETED
-                self._record_agent_success(agent_name)
+                self._record_agent_success(_breaker_key)
                 _end_span(status="ok", error="",
                           output_summary=f"决策=PASS, keys={list(step.result.keys()) if step.result else []}")
             else:
                 step.status = PipelineStatus.FAILED
                 step.error = getattr(result, "error", None) or f"{agent_name} failed"
-                self._record_agent_failure(agent_name)
+                self._record_agent_failure(_breaker_key)
                 _end_span(status="error", error=step.error,
                           metadata={"error_category": self._categorize_error(step.error or "")})
 
@@ -1719,7 +1761,7 @@ class PipelineOrchestratorV2:
         except Exception as e:
             step.status = PipelineStatus.FAILED
             step.error = str(e)
-            self._record_agent_failure(agent_name)
+            self._record_agent_failure(_breaker_key)
             add_event(pid, agent_name, "error", f"{agent_name} 异常: {str(e)[:200]}")
             logger.exception("Agent %s 异常: %s", agent_name, e)
             _end_span(status="error", error=str(e)[:200])
@@ -1754,7 +1796,7 @@ class PipelineOrchestratorV2:
                 failure=_res.get("failure"),
                 degradations=list(_res.get("degradations") or []),
                 warnings=list(_res.get("_warnings") or _res.get("warnings") or []),
-                model=str(_usage.get("model", "") or ""),
+                model=str(_usage.get("model", "") or (_route.key if _route else "")),
                 usage=_usage,
                 duration_ms=step.duration_ms or 0,
             )
