@@ -260,3 +260,30 @@ def test_review_queue_endpoint_and_action(monkeypatch):
     assert ok.status_code == 200
     assert ok.json()["status"] == "done"
     assert _client().get("/api/supervisor/workers/pending-review").json()["count"] == 0
+
+# ── 并发上限（max_concurrent_subagents）───────────────────────
+
+
+def test_concurrency_limit_is_enforced(monkeypatch):
+    from clipwright.config import settings
+
+    monkeypatch.setattr(settings, "max_concurrent_subagents", 1, raising=False)
+    tracker = get_tracker("pl_spawn")
+    tracker.register("已占位的子代理")  # 处于 pending 不算 running
+    tracker.update(tracker.list_nodes()[0].id, status="running")
+
+    with pytest.raises(sp.SpawnError, match="并发子代理已达上限"):
+        asyncio.run(sp.spawn_subagent(_ctx(), role="再来一个"))
+
+
+def test_zero_limit_means_unlimited(monkeypatch):
+    from clipwright.config import settings
+
+    monkeypatch.setattr(settings, "max_concurrent_subagents", 0, raising=False)
+    _fake_llm(monkeypatch)
+    tracker = get_tracker("pl_spawn")
+    tracker.register("占位")
+    tracker.update(tracker.list_nodes()[0].id, status="running")
+
+    result = asyncio.run(sp.spawn_subagent(_ctx(), role="不受限"))
+    assert result["status"] == "done"

@@ -81,7 +81,22 @@ async def spawn_subagent(
     except Exception:  # noqa: BLE001
         pass
 
-    # 4) 登记（tracker 负责观测，registry 负责规格与审核状态）
+    # 4) 并发上限（PRD §12 已定⑤：设置项 max_concurrent_subagents）
+    limit = 0
+    try:
+        from clipwright.config import settings
+
+        limit = int(getattr(settings, "max_concurrent_subagents", 6) or 6)
+    except Exception:  # noqa: BLE001
+        limit = 6
+    active = [
+        n for n in get_tracker(pid).list_nodes()
+        if n.status in ("running", "pending_review")
+    ]
+    if limit > 0 and len(active) >= limit:
+        raise SpawnError(f"并发子代理已达上限（{limit}），请等现有子代理结束或取消后再派生")
+
+    # 5) 登记（tracker 负责观测，registry 负责规格与审核状态）
     tracker = get_tracker(pid)
     node = tracker.register(
         spec.role,

@@ -222,6 +222,13 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
      "留空 = 无上限（只记账不阻断）；填写后达 70% 降级、100% 停止派工"),
     ("model_prices", "llm", "模型单价表", False, True,
      '{"provider/model": {"in": 0.003, "out": 0.015}}（每 1k token）；未配置的模型按 0 计'),
+    # ── 子代理与执行（PRD F10/F11）──
+    ("max_concurrent_subagents", "pipeline", "子代理并发上限", False, True,
+     "同一管线同时存活的子代理数（默认 6）"),
+    ("exec_allow_network", "pipeline", "允许执行联网", False, True,
+     "默认禁网；打开后执行网关的子进程可联网（诊断用）"),
+    ("exec_timeout_sec", "pipeline", "执行超时(秒)", False, True,
+     "单条命令/脚本的墙钟上限（默认 60）"),
 ]
 
 

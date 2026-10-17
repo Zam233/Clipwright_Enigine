@@ -423,7 +423,9 @@ v1.1 追加：`subagent_start` / `subagent_progress` / `subagent_end` / `exec`�
 | 独立判定 | `supervisor/review.py::assess` | **输入白名单**（只取 role/prompt/tools/timeout/max_turns/command/cwd/workspace），非白名单键丢弃（A23）；失败 fail-safe `high`（A26） |
 | 执行 | `spawn._run_worker` | 走 `LLMService.ask`（可带 `use_route`）；成功/失败都落 tracker + registry；失败不影响管线 |
 | 端点 | `api/supervisor.py` | `POST /{pid}/subagents`、`GET /api/supervisor/workers/pending-review`、`POST /api/supervisor/workers/{wid}/review`、`GET /api/supervisor/tools` |
-| 测试 | `tests/test_subagent_spawn.py` | **15 passed**（含未过门不执行、high 需二次确认、输入隔离、fail-safe） |
+| 并发上限 | `spawn.py` + `config.max_concurrent_subagents` | 运行中（`pending/running`）达上限即抛 `SpawnError`，**0 = 不限**；额度随 `tracker.finish/cancel` 自动释放（A14） |
+| 模型自由 | `spawn_subagent(provider=, model=)` | 子代理模型**由主代理自由指定**，允许跨 provider（`use_route` 覆盖，不走路由表的档位选择）；不传则继承管线路由。provider 打错时该 worker 计 `failed`，不影响管线 |
+| 测试 | `tests/test_subagent_spawn.py` | **17 passed**（含未过门不执行、high 需二次确认、输入隔离、fail-safe、并发上限两例） |
 
 ### B9 — 已完成
 
@@ -434,8 +436,9 @@ v1.1 追加：`subagent_start` / `subagent_progress` / `subagent_end` / `exec`�
 | 沙盒 | 同上 | cwd 可指定；环境变量剥离 `*_API_KEY/TOKEN/SECRET/PASSWORD/...`；墙钟超时并 kill；输出截断 4000 字符 |
 | 审计 | `ExecRecord` + trace | 每条执行（含被拒/超时）都有记录：命令、cwd、风险等级、理由、是否自动模式、退出码、耗时、输出摘要 |
 | 审核队列 | `gateway.pending_approvals / approve / reject` | high/critical 未带 `confirm_high_risk` 会被放回队列（A22 同语义） |
+| Python 执行 | `gateway.run_python` | 脚本落 `{cwd}/.supervisor/scripts/{uuid}.py`（无 `cwd` 时落系统临时目录，**不写进程 cwd**），用 `"{sys.executable}" -I` 子进程执行（隔离用户 site-packages）；`risk_text` 走同一套「硬底线→棘轮→独立判定→max」链 |
 | 端点 | `api/supervisor.py` | `GET /exec`、`GET /exec/pending-approvals`、`POST /exec/{aid}/approve|reject`、`GET/PUT /exec/auto-mode` |
-| 测试 | `tests/test_exec_gateway.py` | **20 passed**（硬底线 5 类、棘轮上调、自动模式只减免 med、密钥剥离、审计字段、端点） |
+| 测试 | `tests/test_exec_gateway.py` | **26 passed**（硬底线 5 类、棘轮上调、自动模式只减免 med、密钥剥离、审计字段、`run_python` 三例含落盘位置、禁网与放开、端点） |
 
 ### B1 起的前置条件
 

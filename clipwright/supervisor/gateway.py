@@ -87,12 +87,14 @@ def _record(pid: str, record: dict[str, Any]) -> dict[str, Any]:
     return record
 
 
-def _sanitized_env() -> dict[str, str]:
-    """剥离密钥类环境变量（PRD F11 沙盒要求）。"""
+def _sanitized_env(allow_network: bool = False) -> dict[str, str]:
+    """剥离密钥类环境变量（PRD F11 沙盒要求）；禁网时再去掉代理变量。"""
     env: dict[str, str] = {}
     for key, value in os.environ.items():
         upper = key.upper()
         if any(h in upper for hint in _SECRET_HINTS for h in (hint,)):
+            continue
+        if not allow_network and upper in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
             continue
         env[key] = value
     return env
@@ -103,7 +105,8 @@ def _truncate(text: str, limit: int = 4000) -> str:
 
 
 async def _execute(pid: str, command: str, *, cwd: str, timeout_sec: float,
-                   risk: str, reasons: list[str], kind: str) -> dict[str, Any]:
+                   risk: str, reasons: list[str], kind: str,
+                   allow_network: bool = False) -> dict[str, Any]:
     record = {
         "id": f"ex_{uuid4().hex[:8]}",
         "ts": _utcnow_iso(),
@@ -122,7 +125,7 @@ async def _execute(pid: str, command: str, *, cwd: str, timeout_sec: float,
         proc = await asyncio.create_subprocess_shell(
             command,
             cwd=cwd or None,
-            env=_sanitized_env(),
+            env=_sanitized_env(allow_network),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
@@ -152,14 +155,24 @@ async def run_command(
     timeout_sec: float = 60.0,
     kind: str = "shell",
     timeout_override: Optional[float] = None,
+    risk_text: Optional[str] = None,
 ) -> dict[str, Any]:
-    """网关入口：判定 → 分流 → （必要时）等待授权 → 执行。"""
+    """网关入口：判定 → 分流 → （必要时）等待授权 → 执行。
+
+    `risk_text`：用 Python 脚本时把**代码正文**喂给判定器（命令里只有临时文件路径）。
+    """
+    from clipwright.config import settings as _settings
+
     cmd = str(command or "").strip()
     if not cmd:
         return {"status": "rejected", "reason": "命令为空"}
+    allow_network = bool(getattr(_settings, "exec_allow_network", False))
+    default_timeout = float(getattr(_settings, "exec_timeout_sec", 60.0) or 60.0)
+    timeout_sec = timeout_sec or default_timeout
+    judged_text = (risk_text or cmd)
 
-    # 1) 硬底线
-    floor = hard_floor(cmd)
+    # 1) 硬底线（命令与代码正文都要查）
+    floor = hard_floor(cmd) or hard_floor(judged_text)
     if floor:
         rec = _record(pipeline_id, {
             "id": f"ex_{uuid4().hex[:8]}",
@@ -172,9 +185,9 @@ async def run_command(
         return {"status": "rejected", "reason": floor, "record": rec}
 
     # 2) 棘轮 + 3) 独立判定
-    ratchet = ratchet_level(cmd)
+    ratchet = ratchet_level(judged_text)
     assessment = await rv.assess(
-        {"command": cmd, "cwd": cwd, "workspace": "管线 workspace"},
+        {"command": judged_text[:4000], "cwd": cwd, "workspace": "管线 workspace"},
         timeout=timeout_override,
     )
     reasons = list(assessment.get("reasons") or [])
@@ -206,7 +219,43 @@ async def run_command(
 
     return await _execute(
         pipeline_id, cmd, cwd=cwd, timeout_sec=timeout_sec,
-        risk=final, reasons=reasons, kind=kind,
+        risk=final, reasons=reasons, kind=kind, allow_network=allow_network,
+    )
+
+
+async def run_python(
+    pipeline_id: str,
+    code: str,
+    *,
+    cwd: str = "",
+    timeout_sec: float = 60.0,
+) -> dict[str, Any]:
+    """执行 Python 脚本（E5）：落临时文件 → `python -I` 子进程 → 走同一网关。
+
+    `-I` 隔离用户 site-packages；是否联网由 `exec_allow_network` 决定（默认禁）。
+    脚本落盘位置：给了 `cwd` 就落在该工作目录下（便于脚本读取相对路径素材），
+    否则落系统临时目录——**不要**落进程 cwd，那会把脚本写进仓库/安装目录。
+    """
+    import sys
+    import tempfile
+
+    body = str(code or "")
+    if not body.strip():
+        return {"status": "rejected", "reason": "脚本为空"}
+    root = cwd or os.path.join(tempfile.gettempdir(), "clipwright-supervisor")
+    base = os.path.join(root, ".supervisor", "scripts")
+    try:
+        os.makedirs(base, exist_ok=True)
+        path = os.path.join(base, f"{uuid4().hex}.py")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+    except Exception as e:  # noqa: BLE001
+        return {"status": "rejected", "reason": f"脚本落盘失败: {e}"}
+
+    cmd = f'"{sys.executable}" -I "{path}"'
+    return await run_command(
+        pipeline_id, cmd, cwd=cwd, timeout_sec=timeout_sec, kind="python",
+        risk_text=body,
     )
 
 

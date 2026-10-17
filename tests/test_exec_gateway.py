@@ -235,3 +235,59 @@ def test_auto_mode_endpoint_roundtrip():
 def test_reject_endpoint_404_for_unknown():
     client = _client()
     assert client.post("/api/pipeline/pl_x/exec/ap_missing/reject").status_code == 404
+
+# ── run_python（E5）与禁网 ──────────────────────────────────
+
+
+def test_run_python_executes_script(monkeypatch):
+    _assess(monkeypatch, risk="low")
+    out = asyncio.run(gw.run_python("pl_x", "print('py-ok')"))
+    assert out["exitCode"] == 0
+    assert "py-ok" in out["outputTail"]
+
+
+def test_run_python_checks_code_for_hard_floor(monkeypatch):
+    _assess(monkeypatch, risk="low")
+    out = asyncio.run(gw.run_python("pl_x", "print(open('.env').read())"))
+    assert out["status"] == "rejected"
+    assert "硬底线" in out["record"]["rejected"]["reason"]
+
+
+def test_run_python_rejects_empty():
+    out = asyncio.run(gw.run_python("pl_x", "   "))
+    assert out["status"] == "rejected"
+
+
+def test_run_python_temp_script_lands_in_cwd_when_given(monkeypatch, tmp_path):
+    """给了 cwd 就落该目录（脚本要能读相对路径素材）。"""
+    _assess(monkeypatch, risk="low")
+    out = asyncio.run(gw.run_python("pl_x", "print('in-cwd')", cwd=str(tmp_path)))
+    assert out["exitCode"] == 0
+    scripts = tmp_path / ".supervisor" / "scripts"
+    assert scripts.is_dir() and list(scripts.glob("*.py"))
+
+
+def test_run_python_temp_script_not_written_into_process_cwd(monkeypatch, tmp_path):
+    """没给 cwd 时落系统临时目录——不得把脚本写进仓库/安装目录。"""
+    import tempfile
+    from pathlib import Path
+
+    _assess(monkeypatch, risk="low")
+    monkeypatch.chdir(tmp_path)
+    out = asyncio.run(gw.run_python("pl_x", "print('no-cwd')"))
+    assert out["exitCode"] == 0
+    assert not (tmp_path / ".supervisor").exists()
+    landed = Path(tempfile.gettempdir()) / "clipwright-supervisor" / ".supervisor" / "scripts"
+    assert landed.is_dir() and list(landed.glob("*.py"))
+
+
+def test_network_env_is_stripped_by_default(monkeypatch):
+    _assess(monkeypatch, risk="low")
+    os.environ["HTTP_PROXY"] = "http://proxy.local:8080"
+    try:
+        out = asyncio.run(gw.run_python(
+            "pl_x", "import os;print(os.environ.get('HTTP_PROXY','MISSING'))",
+        ))
+        assert "MISSING" in out["outputTail"]
+    finally:
+        os.environ.pop("HTTP_PROXY", None)

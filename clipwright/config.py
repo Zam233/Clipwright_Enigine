@@ -96,6 +96,13 @@ class Settings(BaseSettings):
     # 命令风险判定所用模型（B9）；必须命中白名单，留空 = 最便宜的 cheap 档。
     risk_judge_model: str = ""
 
+    # --- 子代理与执行（PRD F10/F11）---
+    # 同一管线同时存活的子代理上限（PRD §12 已定⑤：在设置中配置）
+    max_concurrent_subagents: int = 6
+    # 执行网关是否允许联网（默认禁网；打开后可用于诊断）
+    exec_allow_network: bool = False
+    exec_timeout_sec: float = 60.0
+
     # --- 预算（PRD F6 / 开发计划 B5）---
     # **留空 = 无上限**：只记账、不阻断、不降级（这是用户显式选择的取舍）。
     pipeline_budget_usd: Optional[float] = None

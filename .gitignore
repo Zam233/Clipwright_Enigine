@@ -101,3 +101,5 @@ provider_sources.json
 settings.json
 provider_sources.json.bad
 settings.json.bad
+# supervisor run_python temp scripts (machine-local, not for VCS)
+.supervisor/
