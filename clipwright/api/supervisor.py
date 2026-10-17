@@ -491,3 +491,83 @@ async def put_auto_mode(
     return {"pipeline_id": pipeline_id, "enabled": enabled}
 
 
+# ── B4 补充：路由表与模式开关（管理员）──────────────────────
+
+
+class RoutesBody(BaseModel):
+    routes: dict[str, list[dict[str, Any]]] | None = None
+    whitelist: list[str] | None = None
+
+
+class ModeBody(BaseModel):
+    mode: str = Field(description="off / shadow / on")
+
+
+def _persist_settings(patch: dict[str, Any]) -> tuple[list[str], list[str], str]:
+    """先热更新内存，再尽力持久化（存储不可用不拦请求，但如实回报）。"""
+    from clipwright.config import settings as _settings
+
+    for key, value in patch.items():
+        try:
+            setattr(_settings, key, value)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        from clipwright.services import settings_store
+
+        applied, cleared = settings_store.save(patch)
+        settings_store.apply_all()
+        return applied, cleared, "persisted"
+    except Exception as e:  # noqa: BLE001 — 落盘失败仍已热生效
+        logger.warning("路由/模式配置持久化失败（内存已生效）: %s", e)
+        return list(patch), [], "memory_only"
+
+
+@admin_router.get("/routes")
+async def get_model_routes(request: Request) -> dict:
+    """模型路由表 + 白名单（PRD F8 / B4）。"""
+    from clipwright.services.model_router import (
+        _explicit_whitelist,
+        allowed_providers,
+        route_table,
+    )
+
+    stages = ("structure", "material", "edit", "animation", "audio", "quality")
+    return {
+        "routes": {st: [r.to_public() for r in route_table(st)] for st in stages},
+        "whitelist": _explicit_whitelist(),
+        "allowed_providers": sorted(allowed_providers()),
+    }
+
+
+@admin_router.put("/routes")
+async def put_model_routes(payload: RoutesBody, request: Request) -> dict:
+    """写入路由表 / 白名单。`routes={}` 或 `whitelist=[]` 表示回退默认。"""
+    patch: dict[str, Any] = {}
+    if payload.routes is not None:
+        patch["model_routes"] = payload.routes
+    if payload.whitelist is not None:
+        patch["model_whitelist"] = payload.whitelist
+    if not patch:
+        raise HTTPException(status_code=400, detail="没有需要更新的字段")
+    applied, cleared, how = _persist_settings(patch)
+    return {"applied": applied, "cleared": cleared, "how": how}
+
+
+@admin_router.get("/mode")
+async def get_supervisor_mode(request: Request) -> dict:
+    """调度中枢模式（off / shadow / on）。"""
+    from clipwright.config import settings as _settings
+
+    return {"mode": getattr(_settings, "supervisor_mode", "off")}
+
+
+@admin_router.put("/mode")
+async def put_supervisor_mode(payload: ModeBody, request: Request) -> dict:
+    """切换调度中枢模式（热生效；可持久化）。"""
+    if payload.mode not in ("off", "shadow", "on"):
+        raise HTTPException(status_code=400, detail=f"非法模式: {payload.mode}")
+    applied, cleared, how = _persist_settings({"supervisor_mode": payload.mode})
+    return {"mode": payload.mode, "applied": applied, "cleared": cleared, "how": how}
+
+
