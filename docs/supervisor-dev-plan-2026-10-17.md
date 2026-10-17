@@ -390,6 +390,17 @@ v1.1 追加：`subagent_start` / `subagent_progress` / `subagent_end` / `exec`�
 | 接受降级 | `POST /api/pipeline/{id}/accept-suggestion` | 置 `accepted_degraded` + 记一条 S4 决策（mode=manual） |
 | 测试 | `tests/test_budget_guard.py` | **14 passed** |
 
+### B6 — 已完成（机制层等价性）
+
+| 交付 | 位置 | 验证 |
+|---|---|---|
+| `off` 模式不做路由 | `tests/test_supervisor_off_equivalence.py` | 即使配了 `model_routes`，`_choose_route_for` 仍返回 None |
+| `off` 模式不做决策 / 不写归因诊断 | 同上 | `_decide_for_heal` / `_shadow_analyze` 均不改 `shared_data` |
+| 零 LLM 增量（A5 机制保证） | 同上 | 把 `LLMService.structured_output` 打桩成抛错，归因/诊断仍正常（纯函数） |
+| 账本旁路不受开关影响 | 同上 | `off` 下账本照记（B1 是观测层） |
+| 默认值 | `config.supervisor_mode` | 默认 `off`（改造后默认行为与改造前一致） |
+| 待人工验证 | A10 逐字节 timeline 比对 / A5 A/B 20 条账单 | 需真实管线跑批（脚本见 §6 测试计划） |
+
 ### B1 起的前置条件
 
 - F9 已提供 `failure` / `degradations`，账本（B1）只需把 `_run_agent` 单点处的结果落成 `LedgerEntry`；
