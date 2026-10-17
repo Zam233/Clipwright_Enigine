@@ -375,6 +375,21 @@ v1.1 追加：`subagent_start` / `subagent_progress` / `subagent_end` / `exec`�
 | 配置 | `config.py` + `config_schema.py` | `model_routes` / `model_whitelist` / `risk_judge_model`（留空=不路由，行为与改造前一致） |
 | 测试 | `tests/test_model_router.py` | **21 passed**（含跨 provider 构建、无凭据回退、白名单拒绝） |
 
+### B5 — 已完成
+
+| 交付 | 位置 | 验证 |
+|---|---|---|
+| 预算（可选闸） | `services/budget_guard.py` | `pipeline_budget_usd` 留空 → `level=unlimited`、`ratio=None`、`is_blocked=False`（只记账不阻断）；配置后 70% `warn` / 100% `blocked` |
+| 成本口径 | 同上 `_cost` | token 折算货币；单价优先 `model_prices`，缺失回退 `model_routes` 价格；未知模型按 0 计（宁可少算不阻断） |
+| 子代理开销 | `snapshot.subagent_tokens / subagentSpentUsd` | 按 `host:sub` 复合名单列（PRD §7.3 要求可见） |
+| 预算接入路由 | `pipeline_v2._choose_route_for` | 传 `budget_ratio`，≥70% 时路由只给 cheap/std |
+| 预算接入决策 | `pipeline_v2._decide_for_heal` | `is_blocked` → `choose_strategy(budget_exhausted=True)` → S6 止损 |
+| 预算接入派工 | `pipeline_v2.execute_order` | 耗尽时抛 ValueError（API 映射 409） |
+| 预算端点 | `GET /api/pipeline/{id}/budget` | 形状对齐前端 `BudgetSnapshot` |
+| 人工改派 | `POST /api/pipeline/{id}/dispatch` | 核心阶段白名单；预算耗尽 409；记录 `manual_orders` + trace，返回 `requires_retry` |
+| 接受降级 | `POST /api/pipeline/{id}/accept-suggestion` | 置 `accepted_degraded` + 记一条 S4 决策（mode=manual） |
+| 测试 | `tests/test_budget_guard.py` | **14 passed** |
+
 ### B1 起的前置条件
 
 - F9 已提供 `failure` / `degradations`，账本（B1）只需把 `_run_agent` 单点处的结果落成 `LedgerEntry`；

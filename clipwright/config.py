@@ -96,6 +96,12 @@ class Settings(BaseSettings):
     # 命令风险判定所用模型（B9）；必须命中白名单，留空 = 最便宜的 cheap 档。
     risk_judge_model: str = ""
 
+    # --- 预算（PRD F6 / 开发计划 B5）---
+    # **留空 = 无上限**：只记账、不阻断、不降级（这是用户显式选择的取舍）。
+    pipeline_budget_usd: Optional[float] = None
+    # 单价表：{"provider/model" 或 "model": {"in": 0.003, "out": 0.015}}（每 1k token）
+    model_prices: dict[str, dict[str, float]] = {}
+
     # --- 服务 ---
     host: str = "0.0.0.0"
     port: int = 8080

@@ -1320,6 +1320,13 @@ class PipelineOrchestratorV2:
 
             ledger = get_ledger(pid)
             attr = attribute(ledger, issues=issues)
+            blocked = False
+            try:
+                from clipwright.services.budget_guard import is_blocked
+
+                blocked = is_blocked(pid)
+            except Exception:  # noqa: BLE001 — 预算统计失败不拦派工
+                blocked = False
             state.shared_data["attribution"] = attr.model_dump(mode="json")
             decisions = [d for d in (state.shared_data.get("decisions") or []) if isinstance(d, dict)]
             used = [(str(d.get("target_stage", "")), str(d.get("strategy", ""))) for d in decisions]
@@ -1329,6 +1336,7 @@ class PipelineOrchestratorV2:
                 stage_attempts={stage: ledger.attempts(stage)} if stage else {},
                 used_pairs=used,
                 model_swaps=sum(1 for d in decisions if d.get("strategy") == "S2_model"),
+                budget_exhausted=blocked,
                 mode=mode,
             )
             record_decision(state, decision, pid=pid)
@@ -1350,6 +1358,20 @@ class PipelineOrchestratorV2:
         target = str(getattr(order, "target_stage", "") or "")
         if target not in CORE_AGENT_NAMES:
             raise ValueError(f"派工单目标阶段非法: {target!r}（只允许核心阶段）")
+
+        # B5：预算耗尽时拒绝新的派工（未配置预算时 is_blocked 恒为 False）
+        try:
+            from clipwright.services.budget_guard import is_blocked
+
+            pid = str(getattr(state, "pipeline_id", "") or "")
+            if pid and is_blocked(pid):
+                raise ValueError(
+                    "预算已耗尽，拒绝新的派工（请到设置里提高预算，或人工接管）"
+                )
+        except ValueError:
+            raise
+        except Exception:  # noqa: BLE001 — 统计失败不阻断派工
+            pass
 
         extra = {**agent_context.extra_params}
         order_id = str(getattr(order, "id", "") or "")
@@ -1509,8 +1531,11 @@ class PipelineOrchestratorV2:
             out.append(key[len(prefix):])
         return out
 
-    def _choose_route_for(self, agent_name: str):
-        """选模型路由（B4）。关闭状态或未配置路由表时返回 None。"""
+    def _choose_route_for(self, agent_name: str, pid: str = ""):
+        """选模型路由（B4）。关闭状态或未配置路由表时返回 None。
+
+        B5：预算占比 >=70% 时只允许 cheap/std（PRD §6.2 优先级 1）。
+        """
         try:
             from clipwright.config import settings
 
@@ -1518,7 +1543,19 @@ class PipelineOrchestratorV2:
                 return None
             from clipwright.services.model_router import choose_route
 
-            return choose_route(agent_name, failed_pairs=self._failed_models_for(agent_name))
+            ratio = None
+            if pid:
+                try:
+                    from clipwright.services.budget_guard import budget_ratio
+
+                    ratio = budget_ratio(pid)
+                except Exception:  # noqa: BLE001 — 预算统计失败不收敛模型
+                    ratio = None
+            return choose_route(
+                agent_name,
+                failed_pairs=self._failed_models_for(agent_name),
+                budget_ratio=ratio,
+            )
         except Exception as e:  # noqa: BLE001 — 路由失败沿用默认模型
             logger.debug("模型路由选择失败（沿用默认）: %s", e)
             return None
@@ -1528,7 +1565,7 @@ class PipelineOrchestratorV2:
         """执行单个 Agent，集成总线通信。在熔断检查通过后创建 span。"""
         # ── B4：先选模型路由，再按 (阶段, 模型) 检查熔断 ──
         # 路由表为空时 route=None，breaker_key 退化为 agent 名——行为与改造前一致。
-        _route = self._choose_route_for(agent_name)
+        _route = self._choose_route_for(agent_name, str(getattr(state, "pipeline_id", "") or ""))
         _breaker_key = self._breaker_key(agent_name, _route.key if _route else "")
 
         # 熔断检查 — 不创建 span

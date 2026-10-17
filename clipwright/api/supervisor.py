@@ -1,14 +1,21 @@
 """调度中枢 API（PRD v1.4 / 开发计划 B1 起）。
 
-B1 交付：
-- `GET /api/pipeline/{pipeline_id}/ledger` —— 账本（可按 stage 过滤）
+已交付：
+- B1 `GET /api/pipeline/{id}/ledger` —— 账本（可按 stage 过滤）
+- B2 `GET /api/pipeline/{id}/attribution` / `GET /{id}/diagnosis`
+- B3 `GET /api/pipeline/{id}/decisions`
+- B5 `GET /api/pipeline/{id}/budget` / `POST /{id}/dispatch` / `POST /{id}/accept-suggestion`
 
-后续批次在此追加：归因、诊断书、派工单、子代理树、执行日志、审核队列。
+后续批次在此追加：子代理树、执行日志、审核队列。
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from typing import Any
+from uuid import uuid4
+
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from clipwright.config import logger
 
@@ -175,5 +182,105 @@ async def get_pipeline_decisions(pipeline_id: str, request: Request) -> dict:
         "accepted_degraded": bool(shared.get("accepted_degraded")),
         "decisions": decisions,
     }
+
+
+# ── B5：预算与人工接管 ───────────────────────────────────────
+
+
+@router.get("/{pipeline_id}/budget")
+async def get_pipeline_budget(pipeline_id: str, request: Request) -> dict:
+    """预算快照（PRD F6）。未配置预算时 level=unlimited、ratio=None。"""
+    from clipwright.api.pipeline import _enforce_pipeline_owner
+    from clipwright.services.budget_guard import snapshot
+
+    _enforce_pipeline_owner(request, pipeline_id)
+    return snapshot(pipeline_id)
+
+
+class DispatchOrderBody(BaseModel):
+    """人工改派工单（PRD F7）。"""
+
+    target_stage: str = Field(description="要重做的核心阶段")
+    reason: str = Field(default="", description="人工改派理由（入账留痕）")
+    issues: list[dict[str, Any]] = Field(default_factory=list)
+
+
+@router.post("/{pipeline_id}/dispatch")
+async def post_pipeline_dispatch(
+    pipeline_id: str, payload: DispatchOrderBody, request: Request,
+) -> dict:
+    """人工改派工单（PRD F7）。
+
+    B5 范围：**校验 + 记录 + 留痕**。真正的执行由管线在自愈/重试时消费这些工单
+    （返回 `requires_retry=true` 提示调用方走 retry 端点触发）。
+    """
+    from clipwright.agents.registry import CORE_AGENT_NAMES
+    from clipwright.api.pipeline import _enforce_pipeline_owner, _pipeline_results
+    from clipwright.services.budget_guard import is_blocked
+    from clipwright.services.trace import add_event
+
+    _enforce_pipeline_owner(request, pipeline_id)
+    if payload.target_stage not in CORE_AGENT_NAMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"目标阶段非法: {payload.target_stage}（只允许核心阶段）",
+        )
+    if is_blocked(pipeline_id):
+        raise HTTPException(status_code=409, detail="预算已耗尽，拒绝新的派工")
+
+    order = {
+        "id": f"ord_{uuid4().hex[:8]}",
+        "target_stage": payload.target_stage,
+        "reason": payload.reason[:300],
+        "issues": payload.issues[:5],
+        "source": "manual",
+    }
+    result = _pipeline_results.get(pipeline_id)
+    if isinstance(result, dict):
+        shared = result.setdefault("shared_data", {})
+        if not isinstance(shared, dict):
+            shared = {}
+            result["shared_data"] = shared
+        orders = shared.setdefault("manual_orders", [])
+        if isinstance(orders, list):
+            orders.append(order)
+    add_event(pipeline_id, "supervisor", "dispatch",
+              f"人工改派 → {payload.target_stage}：{payload.reason[:80]}", order)
+    return {
+        "pipeline_id": pipeline_id,
+        "order": order,
+        "accepted": True,
+        "requires_retry": True,
+    }
+
+
+@router.post("/{pipeline_id}/accept-suggestion")
+async def post_accept_suggestion(
+    pipeline_id: str, request: Request, suggestion_id: str = "",
+) -> dict:
+    """接受降级 / 一键执行建议（PRD F7）。B5 只处理「接受降级」。"""
+    from clipwright.api.pipeline import _enforce_pipeline_owner, _pipeline_results
+    from clipwright.services.trace import add_event
+
+    _enforce_pipeline_owner(request, pipeline_id)
+    result = _pipeline_results.get(pipeline_id)
+    if isinstance(result, dict):
+        shared = result.setdefault("shared_data", {})
+        if isinstance(shared, dict):
+            shared["accepted_degraded"] = True
+            decisions = shared.setdefault("decisions", [])
+            if isinstance(decisions, list):
+                decisions.append({
+                    "id": f"dec_{uuid4().hex[:8]}",
+                    "strategy": "S4_accept_degraded",
+                    "target_stage": "",
+                    "reason": f"人工接受降级（suggestion={suggestion_id or '-'}）",
+                    "allow_degrade": True,
+                    "aborted": False,
+                    "stage_attempts": {},
+                    "mode": "manual",
+                })
+    add_event(pipeline_id, "supervisor", "warning", "人工接受降级交付")
+    return {"pipeline_id": pipeline_id, "accepted_degraded": True}
 
 

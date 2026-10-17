@@ -217,6 +217,11 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
      "provider/model 或裸 model 精确白名单；留空 = 允许所有已配置 provider"),
     ("risk_judge_model", "llm", "风险判定模型", False, True,
      "命令风险判定用模型；必须命中白名单，留空 = 最便宜的 cheap 档"),
+    # ── 预算（PRD F6 / B5）──
+    ("pipeline_budget_usd", "service", "管线预算(USD)", False, True,
+     "留空 = 无上限（只记账不阻断）；填写后达 70% 降级、100% 停止派工"),
+    ("model_prices", "llm", "模型单价表", False, True,
+     '{"provider/model": {"in": 0.003, "out": 0.015}}（每 1k token）；未配置的模型按 0 计'),
 ]
 
 
