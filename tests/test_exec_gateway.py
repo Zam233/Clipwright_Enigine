@@ -59,7 +59,33 @@ def test_hard_floor_patterns(cmd):
     assert hard_floor(cmd), f"应命中硬底线: {cmd}"
 
 
-def test_hard_floor_rejects_without_calling_llm(monkeypatch):
+def test_hard_floor_is_judged_by_llm_and_locked_to_critical(monkeypatch):
+    """用户决策（2026-10-17）：硬底线不再一票否决，而是**交给独立 LLM 判**，
+    并把等级钉到 critical + 要求两级确认。"""
+    called = {"n": 0}
+
+    async def fake(blob, timeout=None):  # noqa: ANN001
+        called["n"] += 1
+        return {"risk": "low", "reasons": ["读个 env 而已"]}
+
+    monkeypatch.setattr(rv, "assess", fake)
+    out = asyncio.run(gw.run_command("pl_x", "cat .env"))
+    # LLM 必须被问到（不能像旧实现那样直接拒）
+    assert called["n"] == 1
+    assert out["status"] == "pending_approval"
+    assert out["approval"]["riskLevel"] == "critical"
+    assert out["approval"]["hardFloor"] is True
+    assert out["approval"]["needsDoubleConfirm"] is True
+    # 判定理由如实带上硬底线命中原因（可审计）
+    assert any("硬底线命中" in r for r in out["approval"]["riskReasons"])
+
+
+def test_hard_floor_config_can_restore_never_authorizable(monkeypatch):
+    """设置项 `exec_hard_floor_never_authorizable=true` → 回到不可授权语义。"""
+    from clipwright.config import settings
+
+    monkeypatch.setattr(settings, "exec_hard_floor_never_authorizable", True,
+                        raising=False)
     called = {"n": 0}
 
     async def fake(blob, timeout=None):  # noqa: ANN001
@@ -70,8 +96,7 @@ def test_hard_floor_rejects_without_calling_llm(monkeypatch):
     out = asyncio.run(gw.run_command("pl_x", "cat .env"))
     assert out["status"] == "rejected"
     assert called["n"] == 0
-    rec = gw.records("pl_x")[-1]
-    assert rec["rejected"]["reason"].startswith("硬底线")
+    assert "不可授权" in gw.records("pl_x")[-1]["rejected"]["reason"]
 
 
 # ── 棘轮（就高不就低）──────────────────────────────────────
@@ -139,14 +164,35 @@ def test_auto_mode_only_waives_med(monkeypatch):
     assert high["status"] == "pending_approval"  # high 仍要授权
 
 
-def test_critical_requires_confirm_on_approve(monkeypatch):
+def test_critical_requires_two_levels_of_confirmation(monkeypatch):
+    """critical 要两级：`confirm_high_risk` 之后还要 `second_confirm`。"""
     _assess(monkeypatch, risk="critical")
     out = asyncio.run(gw.run_command("pl_x", "pip install requests"))
     aid = out["approval"]["id"]
+    assert out["approval"]["needsDoubleConfirm"] is True
+
     with pytest.raises(ValueError, match="二次确认"):
         asyncio.run(gw.approve("pl_x", aid))
-    ok = asyncio.run(gw.approve("pl_x", aid, confirm_high_risk=True))
+    with pytest.raises(ValueError, match="再次确认"):
+        asyncio.run(gw.approve("pl_x", aid, confirm_high_risk=True))
+    # 两级都给齐才执行
+    ok = asyncio.run(gw.approve("pl_x", aid, confirm_high_risk=True, second_confirm=True))
     assert "exitCode" in ok
+
+
+def test_approval_window_expires(monkeypatch):
+    """授权窗口过期后不能再执行（防「三天前的高危命令被顺手点过」）。"""
+    _assess(monkeypatch, risk="high")
+    out = asyncio.run(gw.run_command("pl_x", 'python -c "print(1)"'))
+    aid = out["approval"]["id"]
+    item = gw.pending_approvals("pl_x")[0]
+    assert item["expiresAt"], "待授权条目必须带过期时间"
+    # 手动把它改成已过期
+    gw._PENDING["pl_x"][aid]["expiresAt"] = "2000-01-01T00:00:00+00:00"
+    with pytest.raises(ValueError, match="过期"):
+        asyncio.run(gw.approve("pl_x", aid, confirm_high_risk=True))
+    assert gw.pending_approvals("pl_x") == []
+    assert "过期" in gw.records("pl_x")[-1]["rejected"]["reason"]
 
 
 # ── fail-safe 与输入隔离 ───────────────────────────────────
@@ -279,13 +325,24 @@ def test_post_exec_rejects_unknown_kind(monkeypatch):
     assert r.status_code == 400
 
 
-def test_post_exec_hard_floor_is_not_authorizable(monkeypatch):
+def test_post_exec_hard_floor_returns_critical_approval(monkeypatch):
+    """硬底线经 LLM 判定后仍要人批，且是 critical（前端会弹两级确认）。"""
     _assess(monkeypatch, risk="low")
     client = _client()
     out = client.post("/api/pipeline/pl_req/exec", json={
         "kind": "shell", "command": "cat .env",
     }).json()
-    assert out["status"] == "rejected"
+    assert out["status"] == "pending_approval"
+    assert out["approval"]["riskLevel"] == "critical"
+
+    aid = out["approval"]["id"]
+    # 只给一级确认 → 400，不放行
+    r1 = client.post(f"/api/pipeline/pl_req/exec/{aid}/approve",
+                     json={"confirm_high_risk": True})
+    assert r1.status_code == 400
+    r2 = client.post(f"/api/pipeline/pl_req/exec/{aid}/approve",
+                     json={"confirm_high_risk": True, "second_confirm": True})
+    assert r2.status_code == 200
 
 
 # ── run_python（E5）与禁网 ──────────────────────────────────
@@ -299,10 +356,12 @@ def test_run_python_executes_script(monkeypatch):
 
 
 def test_run_python_checks_code_for_hard_floor(monkeypatch):
+    """脚本正文里的 `.env` 也命中硬底线 → critical 等两级确认。"""
     _assess(monkeypatch, risk="low")
     out = asyncio.run(gw.run_python("pl_x", "print(open('.env').read())"))
-    assert out["status"] == "rejected"
-    assert "硬底线" in out["record"]["rejected"]["reason"]
+    assert out["status"] == "pending_approval"
+    assert out["approval"]["riskLevel"] == "critical"
+    assert any("硬底线命中" in r for r in out["approval"]["riskReasons"])
 
 
 def test_run_python_rejects_empty():

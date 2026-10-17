@@ -177,6 +177,14 @@ def _maybe_coerce(key: str, value: Any) -> Any:
         return value  # 保留原值，由 _validate_value 统一报 422
     if meta.kind == "bool" and isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes", "on")
+    # 对象型字段（单价表/路由表）：前端文本域可能把 JSON 当字符串发上来
+    if meta.kind in ("dict", "json") and isinstance(value, str):
+        try:
+            import json
+
+            return json.loads(value)
+        except Exception:  # noqa: BLE001 — 留给 _validate_value 统一报 422
+            return value
     return value
 
 

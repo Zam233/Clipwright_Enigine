@@ -432,14 +432,14 @@ v1.1 追加：`subagent_start` / `subagent_progress` / `subagent_end` / `exec`�
 
 | 交付 | 位置 | 验证 |
 |---|---|---|
-| 确定性规则 | `supervisor/shell_policy.py` | 硬底线（读凭据 / 不可逆系统破坏，**不经 LLM、不可授权**）；危险种子只用于**上调**等级（A25） |
-| 执行网关 | `supervisor/gateway.py` | 硬底线 → 棘轮 → 独立判定 → `max()` → 分流（low 直跑 / med 自动模式可免 / high 与 critical 需授权 / critical 二次确认） |
+| 确定性规则 | `supervisor/shell_policy.py` | 硬底线（读凭据 / 不可逆系统破坏）**只做标记**：命中即钉 `critical` + 两级确认（v1.5）；危险种子只用于**上调**等级（A25） |
+| 执行网关 | `supervisor/gateway.py` | 硬底线标记 → 棘轮 → 独立判定 → `max()` → 分流（low 直跑 / med 自动模式可免 / high 一次确认 / **critical 两级确认**）；授权窗口 10 分钟过期 |
 | 沙盒 | 同上 | cwd 可指定；环境变量剥离 `*_API_KEY/TOKEN/SECRET/PASSWORD/...`；墙钟超时并 kill；输出截断 4000 字符 |
 | 审计 | `ExecRecord` + trace | 每条执行（含被拒/超时）都有记录：命令、cwd、风险等级、理由、是否自动模式、退出码、耗时、输出摘要 |
-| 审核队列 | `gateway.pending_approvals / approve / reject` | high/critical 未带 `confirm_high_risk` 会被放回队列（A22 同语义） |
+| 审核队列 | `gateway.pending_approvals / approve / reject` | `high` 未带 `confirm_high_risk` 放回队列；**`critical` 还要 `second_confirm`**；授权窗口 10 分钟过期即拒并留审计 |
 | Python 执行 | `gateway.run_python` | 脚本落 `{cwd}/.supervisor/scripts/{uuid}.py`（无 `cwd` 时落系统临时目录，**不写进程 cwd**），用 `"{sys.executable}" -I` 子进程执行（隔离用户 site-packages）；`risk_text` 走同一套「硬底线→棘轮→独立判定→max」链 |
-| 端点 | `api/supervisor.py` | `POST /exec`（请求执行：shell 命令或 python 脚本；返回 `done/failed/pending_approval/rejected` 四种结局）、`GET /exec`、`GET /exec/pending-approvals`、`POST /exec/{aid}/approve|reject`、`GET/PUT /exec/auto-mode` |
-| 测试 | `tests/test_exec_gateway.py` | **31 passed**（硬底线 5 类、棘轮上调、自动模式只减免 med、密钥剥离、审计字段、`run_python` 三例含落盘位置、禁网与放开、端点 + `POST /exec` 五例） |
+| 端点 | `api/supervisor.py` | `POST /exec`（请求执行：shell 命令或 python 脚本；返回 `done/failed/pending_approval/rejected` 四种结局）、`GET /exec`、`GET /exec/pending-approvals`、`POST /exec/{aid}/approve|reject`（body 带 `second_confirm`）、`GET/PUT /exec/auto-mode` |
+| 测试 | `tests/test_exec_gateway.py` | **33 passed**（硬底线标记 + 回退开关、两级确认、授权过期、棘轮上调、自动模式只减免 med、密钥剥离、审计字段、`run_python` 三例含落盘位置、禁网与放开、端点 + `POST /exec` 五例） |
 
 ### B1 起的前置条件
 
@@ -494,7 +494,9 @@ clipwright/
 
 ```
 run(kind, cmd, *, timeout, cwd) →
-  1. 硬底线检查（确定性规则，不经 LLM）→ 读凭据 / 不可逆系统破坏 → 直接拒并记账
+1. 硬底线检查（确定性规则，**只做标记**）→ 读凭据 / 不可逆系统破坏 → 命中则把等级钉到 `critical`
+   并要求两级确认（v1.5 用户决策：不再由规则一票否决）；设置项
+   `exec_hard_floor_never_authorizable=true` 可回退为「直接拒绝、不可授权」
   2. shell_policy.ratchet(cmd) → 命中危险种子时记录「最低风险底线」
        （删/移/覆盖既有文件、装包、起服务、改权限、网络下载后执行）
   3. risk_judge.assess(cmd, cwd, workspace_brief)
@@ -515,7 +517,7 @@ run(kind, cmd, *, timeout, cwd) →
 
 - **关键分工**：「危不危险」由**独立 LLM 请求**判定（按用户决定），但三条约束保证「被说服」不会直接变成「被授权」：判定输入隔离、规则只升不降、判定失败一律升 `high`。
 - `run_python`：脚本落 `workspace/.supervisor/scripts/{uuid}.py`，用 `python -I` 子进程执行（隔离用户 site-packages）；默认禁网，`exec_allow_network=true` 才放开。
-- **硬底线（仅两类，任何模式不可授权）**：① 读取凭据（`.env` / `~/.ssh` / keychain）；② 不可逆系统破坏（格式化系统盘、`shutdown`/`reboot`、删除系统级注册表项）。
+- **硬底线（仅两类，v1.5 起改为「标记 + LLM 判定 + 两级确认」）**：① 读取凭据（`.env` / `~/.ssh` / keychain）；② 不可逆系统破坏（格式化系统盘、`shutdown`/`reboot`、删除系统级注册表项）。命中后仍调独立 LLM（理由要能审计），但等级钉 `critical` 且必须连过「授权窗口 + 再次确认窗口」；设置项 `exec_hard_floor_never_authorizable=true` 可回退为直接拒绝。
 - 并发子代理上限读设置项 `max_concurrent_subagents`（默认 6）；子代理开销**不设独立上限**，全额计入管线预算。
 - **不得**把 shell 注册进 `ToolRegistry`——`StructureAgent` 的 `with_tools` 走 `list_agent_callable()`，会把 shell 一起暴露给阶段 Agent。
 - 退出标准：PRD A15 / A16 / A20 / A21 / A24 / A25 / A26 通过。
@@ -525,7 +527,7 @@ run(kind, cmd, *, timeout, cwd) →
 | 类型 | 内容 |
 |---|---|
 | 单测 | `shell_policy.ratchet` 危险种子逐条命中：删/移/覆盖既有文件、装包、起服务、改权限、下载后执行；`rm -rf ./x` 与 `rm -rf /` 的差异 |
-| 单测 | 硬底线两类各 5 条样本：任何 `auto_mode` 下都被拒 |
+| 单测 | 硬底线两类样本：命中后仍调用 LLM、等级钉 `critical`、`needsDoubleConfirm=true`；回退开关打开时直接拒且不调 LLM |
 | 单测 | `risk_judge`（命令）：输入白名单只含命令/cwd/workspace 说明（A24）；非法 JSON 与超时（5s）→ `high`（A26）；LLM 判 `low` 但命中种子 → 升 `med`（A25）；串行逐条判定不批处理 |
 | 单测 | gateway 的截断、环境变量剥离（断言子进程读不到 `*_API_KEY`） |
 | 集成 | 派生 → 执行 → 回收；并发上限按设置生效；取消；深度拒绝 |
@@ -545,5 +547,18 @@ run(kind, cmd, *, timeout, cwd) →
 | 自动模式被长期开着遗忘 | 开关状态常驻显示 + 每次开启写账本 + 会话结束自动复位为关 |
 | 临时 worker 无限派生 / 吃掉预算 | 并发上限可配（默认 6）；子代理开销不设独立上限但全额计入管线预算，成本条单列显示 |
 | Python 逃逸 | 文档层面明确「审计边界 ≠ 安全边界」；不可信代码一律要求容器；默认禁网 |
+| **硬底线改为可授权后的风险** | 用户决策（v1.5）接受这个取舍。三道补偿：① 仍调独立 LLM 并记录它的理由；② 等级钉 `critical` + **两级确认**（连点两下也过不去）；③ 授权窗口 10 分钟过期；④ 一条设置项即可回退到「直接拒绝」 |
+| 自动派生产生额外费用 | 只在 `mode=on` + 归因 `low` 时派；只授只读工具；每阶段最多一次；花费写回 trace 与子代理节点 |
+
+### 11.7 B10 — 自动派生只读核查员（v1.5 用户决策）
+
+| 交付 | 位置 | 说明 |
+|---|---|---|
+| 派生时机 | `pipeline_v2._maybe_spawn_diagnostician` | `mode=on` 且归因 `confidence == "low"` 时触发；`shadow`/`off` 一律不派生（off 等价性不破） |
+| 只读边界 | `pipeline_v2._spawn_diagnostician` | 工具集只含 `read_file / list_dir / list_subagents` → 无执行权限，因此**不过**执行权限审核门 |
+| 防重复与不阻塞 | `state.shared_data["_diag_spawned"]` + 后台协程 | 同一阶段只派一次；核查员跑多久都不耽误自愈决策 |
+| 开关 | `supervisor_auto_spawn`（默认 True） | 在设置页可关，关掉即完全不派生 |
+| 测试 | `tests/test_supervisor_auto_spawn.py` | **8 passed**（off/shadow 不派生、低置信才派、同阶段只一次、开关生效、只读工具、失败不影响管线） |
+
 
 

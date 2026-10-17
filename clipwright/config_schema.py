@@ -225,10 +225,15 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
     # ── 子代理与执行（PRD F10/F11）──
     ("max_concurrent_subagents", "pipeline", "子代理并发上限", False, True,
      "同一管线同时存活的子代理数（默认 6）"),
+    ("supervisor_auto_spawn", "pipeline", "自动派生只读核查员", False, True,
+     "归因置信度 low 时由编排层派一个只读子代理查看现场；仅 supervisor_mode=on 生效"),
     ("exec_allow_network", "pipeline", "允许执行联网", False, True,
      "默认禁网；打开后执行网关的子进程可联网（诊断用）"),
     ("exec_timeout_sec", "pipeline", "执行超时(秒)", False, True,
      "单条命令/脚本的墙钟上限（默认 60）"),
+    ("exec_hard_floor_never_authorizable", "pipeline", "硬底线永不授权", False, True,
+     "默认 False：硬底线（读凭据/不可逆破坏）交 LLM 判定 + 两级人工确认；"
+     "改 True 回到「规则直接拒绝、不可授权」的旧语义"),
 ]
 
 
@@ -245,6 +250,10 @@ def _derive_kind(annotation: Any) -> tuple[str, tuple[str, ...]]:
         return "float", ()
     if annotation is list or origin is list:
         return "list", ()
+    # 对象型配置（model_prices / model_routes）必须报 "dict"：前端据此渲染 JSON 文本域。
+    # 旧实现在这里落到 "string"，于是单价表在设置页只能以单行文本编辑，填进去就 422。
+    if annotation is dict or origin is dict:
+        return "dict", ()
     args = get_args(annotation)
     if args:  # Optional[...] / Union[...]：取非 None 的那个
         non_none = [a for a in args if a is not type(None)]

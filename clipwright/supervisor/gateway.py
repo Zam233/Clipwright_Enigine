@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -38,6 +38,24 @@ _AUTO: dict[str, bool] = {}
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+#: 待授权窗口有效期：过期后授权会被拒绝并记审计（防止「三天前的高危命令」被顺手点过）
+_APPROVAL_TTL_SEC = 600.0
+
+
+def _expiry_iso(ttl_sec: float) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=ttl_sec)).isoformat()
+
+
+def _expired(item: dict[str, Any]) -> bool:
+    raw = str(item.get("expiresAt") or "")
+    if not raw:
+        return False
+    try:
+        return datetime.now(timezone.utc) > datetime.fromisoformat(raw)
+    except Exception:  # noqa: BLE001 — 时间解析失败按「未过期」处理，避免误放行也避免误拒
+        return False
 
 
 def records(pipeline_id: str) -> list[dict[str, Any]]:
@@ -172,19 +190,27 @@ async def run_command(
     judged_text = (risk_text or cmd)
 
     # 1) 硬底线（命令与代码正文都要查）
+    #
+    # **策略由用户拍板（2026-10-17）**：硬底线不再自己一票否决，而是与其他风险一道
+    # 交给**独立 LLM** 判定；命中硬底线只做两件事——把等级钉在 `critical`（只升不降），
+    # 并要求**两级人工确认**（授权窗口 + 再次确认窗口）。
+    # 想回到「规则直接拒绝、不可授权」的旧语义：设置 `exec_hard_floor_never_authorizable=true`。
     floor = hard_floor(cmd) or hard_floor(judged_text)
-    if floor:
+    floor_locked = bool(floor) and bool(
+        getattr(_settings, "exec_hard_floor_never_authorizable", False)
+    )
+    if floor and floor_locked:
         rec = _record(pipeline_id, {
             "id": f"ex_{uuid4().hex[:8]}",
             "ts": _utcnow_iso(), "kind": kind, "command": cmd, "cwd": cwd,
             "riskLevel": "critical", "riskReasons": [floor], "autoMode": auto_mode(pipeline_id),
             "exitCode": None, "durationMs": 0,
-            "rejected": {"reason": f"硬底线：{floor}"},
+            "rejected": {"reason": f"硬底线（配置为不可授权）：{floor}"},
         })
-        _trace(pipeline_id, "error", f"拒绝执行（硬底线）：{floor}", rec)
+        _trace(pipeline_id, "error", f"拒绝执行（硬底线，配置为不可授权）：{floor}", rec)
         return {"status": "rejected", "reason": floor, "record": rec}
 
-    # 2) 棘轮 + 3) 独立判定
+    # 2) 棘轮 + 3) 独立判定（硬底线命中时仍要走这一步：让 LLM 给出它自己的理由）
     ratchet = ratchet_level(judged_text)
     assessment = await rv.assess(
         {"command": judged_text[:4000], "cwd": cwd, "workspace": "管线 workspace"},
@@ -192,12 +218,17 @@ async def run_command(
     )
     reasons = list(assessment.get("reasons") or [])
     final = max_level(str(assessment.get("risk") or "high"), ratchet)
-    if final != assessment.get("risk"):
+    if floor:
+        # 规则只升不降：命中硬底线一律钉到 critical，并把它写进理由里（可审计）
+        final = max_level(final, "critical")
+        reasons.append(f"硬底线命中（{floor}）：无论如何都要两级确认")
+    elif final != assessment.get("risk"):
         reasons.append(f"危险种子规则上调为 {final}")
+    needs_double_confirm = final == "critical"
 
     # 5) 分流
     if final != "low":
-        needs_confirm = rv.requires_confirm({"risk": final})
+        needs_confirm = rv.requires_confirm({"risk": final}) or needs_double_confirm
         if not (auto_mode(pipeline_id) and final == "med"):
             approval_id = f"ap_{uuid4().hex[:8]}"
             item = {
@@ -210,8 +241,11 @@ async def run_command(
                 "riskReasons": reasons,
                 "dangerExplanation": "；".join(reasons)[:300],
                 "needsConfirm": needs_confirm,
+                "needsDoubleConfirm": needs_double_confirm,
+                "hardFloor": bool(floor),
                 "requestedBy": "supervisor",
-                "expiresAt": "",
+                # 授权窗口 10 分钟过期：一条高危命令挂三天后再点，风险判断早已失context
+                "expiresAt": _expiry_iso(_APPROVAL_TTL_SEC),
             }
             _PENDING.setdefault(pipeline_id, {})[approval_id] = item
             _trace(pipeline_id, "warning", f"等待授权（{final}）：{cmd[:60]}", item)
@@ -260,15 +294,43 @@ async def run_python(
 
 
 async def approve(
-    pipeline_id: str, approval_id: str, *, confirm_high_risk: bool = False,
+    pipeline_id: str, approval_id: str, *,
+    confirm_high_risk: bool = False,
+    second_confirm: bool = False,
 ) -> dict[str, Any]:
-    item = (_PENDING.get(pipeline_id) or {}).pop(approval_id, None)
+    """用户授权一条待执行命令。
+
+    两级确认的语义（critical / 命中硬底线时）：
+    1. `confirm_high_risk=true` —— 第一级：你在授权窗口里点了「允许执行」；
+    2. `second_confirm=true` —— 第二级：你再过一遍**再次确认窗口**（默认焦点仍在拒绝）。
+    缺任何一级都放回队列并报错，不放行。
+    """
+    item = (_PENDING.get(pipeline_id) or {}).get(approval_id)
     if item is None:
         raise KeyError(f"待授权记录不存在: {approval_id}")
+    if _expired(item):
+        (_PENDING.get(pipeline_id) or {}).pop(approval_id, None)
+        rec = _record(pipeline_id, {
+            "id": f"ex_{uuid4().hex[:8]}",
+            "ts": _utcnow_iso(), "kind": str(item.get("kind") or "shell"),
+            "command": item.get("command", ""), "cwd": item.get("cwd", ""),
+            "riskLevel": item.get("riskLevel", "high"),
+            "riskReasons": item.get("riskReasons") or [],
+            "autoMode": auto_mode(pipeline_id), "exitCode": None, "durationMs": 0,
+            "rejected": {"reason": "授权窗口已过期（超过 10 分钟）"},
+        })
+        _trace(pipeline_id, "warning", "授权窗口已过期，命令未执行", rec)
+        raise ValueError("授权窗口已过期（>10 分钟），请重新发起执行")
+
     if item.get("needsConfirm") and not confirm_high_risk:
-        # 放回队列，要求二次确认
-        _PENDING.setdefault(pipeline_id, {})[approval_id] = item
         raise ValueError("风险等级 high/critical，需显式二次确认（confirm_high_risk=true）")
+    if item.get("needsDoubleConfirm") and not second_confirm:
+        raise ValueError(
+            "该命令被判定为极高风险（含不可逆/凭据类），需在再次确认窗口里再确认一次"
+            "（second_confirm=true）"
+        )
+
+    (_PENDING.get(pipeline_id) or {}).pop(approval_id, None)
     return await _execute(
         pipeline_id, item["command"], cwd=item.get("cwd", ""),
         timeout_sec=60.0, risk=str(item.get("riskLevel") or "high"),

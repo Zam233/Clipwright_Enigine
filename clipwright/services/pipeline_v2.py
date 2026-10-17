@@ -1340,10 +1340,89 @@ class PipelineOrchestratorV2:
                 mode=mode,
             )
             record_decision(state, decision, pid=pid)
+            # B10：自动派生只读核查员（仅 mode=on + 归因低置信 + 设置项开启）
+            self._maybe_spawn_diagnostician(state, pid, attr, issues, mode=mode)
             return decision
         except Exception as e:  # noqa: BLE001 — 决策失败回退到既有自愈逻辑
             logger.warning("调度决策失败（回退既有自愈）: %s", e)
             return None
+
+    def _maybe_spawn_diagnostician(self, state, pid: str, attr, issues, *, mode: str) -> None:
+        """归因说不清时，派一个**只读**子代理去看现场（不阻塞自愈决策）。
+
+        三条边界：
+        1. 只有 `mode == "on"` 才派生（shadow/off 一律不派生，保证 off 等价性）；
+        2. 只授予 `read_file / list_dir / list_subagents`——没有执行权限，因此**不需要**
+           走执行权限审核门（那是给 shell/python 的）；
+        3. 同一阶段只派一次，且派出去是后台任务：核查员跑多久都不耽误自愈决策。
+        """
+        try:
+            from clipwright.config import settings
+
+            if mode != "on" or not getattr(settings, "supervisor_auto_spawn", True):
+                return
+            if str(getattr(attr, "confidence", "")) != "low":
+                return
+            key = str(getattr(attr, "primary_stage", "") or "unknown")
+            done = state.shared_data.setdefault("_diag_spawned", [])
+            if not isinstance(done, list):
+                done = []
+                state.shared_data["_diag_spawned"] = done
+            if key in done:
+                return
+            done.append(key)
+
+            import asyncio
+
+            coro = self._spawn_diagnostician(state, pid, key, issues)
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # 没有事件循环（同步调用/单测）：直接跑完，别丢任务也别假成功
+                asyncio.run(coro)
+            else:
+                loop.create_task(coro)
+        except Exception as e:  # noqa: BLE001 — 派生失败绝不影响管线
+            logger.warning("自动派生核查员失败（忽略）: %s", e)
+
+    async def _spawn_diagnostician(self, state, pid: str, stage: str, issues: list) -> None:
+        """真正的派生与执行（抽出来便于单测直接 await）。"""
+        from types import SimpleNamespace
+
+        from clipwright.supervisor.spawn import spawn_subagent
+
+        issue_text = "；".join(
+            str((i or {}).get("title") or (i or {}).get("message") or "")[:80]
+            for i in (issues or [])[:5]
+        ) or "（质检未给出结构化问题）"
+        ctx = SimpleNamespace(pipeline_id=pid, extra_params={})
+        try:
+            res = await spawn_subagent(
+                ctx,
+                role="失败现场核查员",
+                system_prompt=(
+                    f"管线在阶段「{stage}」失败或产物不达标，归因置信度低。\n"
+                    f"已知问题：{issue_text}\n"
+                    "请用只读手段（读文件、列目录、看子代理）核实：这个阶段依赖的输入"
+                    "到底存不存在、是不是占位/空文件。只输出结论：结论 + 证据（文件路径/大小），"
+                    "不要给修复建议，不要试图修改任何东西。"
+                ),
+                tools=["read_file", "list_dir", "list_subagents"],
+                timeout_sec=45.0,
+                max_turns=4,
+            )
+            add_event(
+                pid, "supervisor", "info",
+                f"核查员结论（{stage}）：{str(res.get('output', ''))[:200]}",
+                {
+                    "subagent_id": res.get("subagent_id"),
+                    "role": "失败现场核查员",
+                    "cost_usd": res.get("cost_usd"),
+                    "duration_ms": res.get("duration_ms"),
+                },
+            )
+        except Exception as e:  # noqa: BLE001 — 子代理失败不影响管线
+            logger.warning("核查员执行失败（忽略）: %s", e)
 
     async def execute_order(self, state, order, *, result_data: dict, persona_config: dict,
                             plugin, agent_context, bus):

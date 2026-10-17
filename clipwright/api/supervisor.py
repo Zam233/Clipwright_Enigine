@@ -497,6 +497,10 @@ class AutoModeBody(BaseModel):
 
 class ApproveExecBody(BaseModel):
     confirm_high_risk: bool = Field(default=False, description="high/critical 必须为 true")
+    second_confirm: bool = Field(
+        default=False,
+        description="critical / 命中硬底线时，再次确认窗口的结果（第二级确认）",
+    )
 
 
 class ExecBody(BaseModel):
@@ -570,7 +574,10 @@ async def get_pending_approvals(pipeline_id: str, request: Request) -> dict:
 async def post_approve_exec(
     pipeline_id: str, approval_id: str, payload: ApproveExecBody, request: Request,
 ) -> dict:
-    """授权一条待执行命令（PRD F11）。"""
+    """授权一条待执行命令（PRD F11）。
+
+    `critical`（含命中硬底线的命令）需要**两级确认**：`confirm_high_risk` + `second_confirm`。
+    """
     from clipwright.api.pipeline import _enforce_pipeline_owner
     from clipwright.supervisor.gateway import approve
 
@@ -579,6 +586,7 @@ async def post_approve_exec(
         return await approve(
             pipeline_id, approval_id,
             confirm_high_risk=payload.confirm_high_risk,
+            second_confirm=payload.second_confirm,
         )
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))

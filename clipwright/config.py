@@ -99,9 +99,16 @@ class Settings(BaseSettings):
     # --- 子代理与执行（PRD F10/F11）---
     # 同一管线同时存活的子代理上限（PRD §12 已定⑤：在设置中配置）
     max_concurrent_subagents: int = 6
+    # 自动派生：归因置信度 low 时，由编排层派一个**只读**核查员去看现场。
+    # 仅在 supervisor_mode="on" 时生效（shadow/off 一律不派生，保证 off 等价性）。
+    supervisor_auto_spawn: bool = True
     # 执行网关是否允许联网（默认禁网；打开后可用于诊断）
     exec_allow_network: bool = False
     exec_timeout_sec: float = 60.0
+    # 硬底线（读凭据 / 不可逆破坏）是否仍然「不可授权」。
+    # 默认 False = 按用户决策交由独立 LLM 判定 + 两级人工确认（授权窗口 + 再次确认）。
+    # 改成 True 即回到「确定性规则直接拒绝、任何模式都不放行」的旧语义，无需改代码。
+    exec_hard_floor_never_authorizable: bool = False
 
     # --- 预算（PRD F6 / 开发计划 B5）---
     # **留空 = 无上限**：只记账、不阻断、不降级（这是用户显式选择的取舍）。
