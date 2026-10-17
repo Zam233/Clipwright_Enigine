@@ -196,8 +196,9 @@ class ModelRoute(BaseModel):
 ### 4.7 F6 预算（`services/budget_guard.py`）
 
 - 数据源：`llm_tracker` 累计（已有 input/output token 与 model）。
-- 阈值：`≥70%` → 允许集收窄为 `cheap/std`，并触发一次 S4/S5 评估；`≥100%` → 拒绝派工、落诊断书、状态置 `FAILED(budget_exhausted)`。
-- 配置：`pipeline_budget_usd`（PRD Q1 待定，先读 env，缺省不启用）。
+- **预算为可选配置**（PRD F6 / §12 已定⑥）：`pipeline_budget_usd` 留空 = 无上限——不降级、不阻断、不返回「预算不足」，只记账。
+- 配置后阈值：`≥70%` → 允许集收窄为 `cheap/std`，并触发一次 S4/S5 评估；`≥100%` → 拒绝派工、落诊断书、状态置 `FAILED(budget_exhausted)`。
+- 配置来源：设置项（运行时可改），不再依赖 env；`budget_enabled` 由「是否填了金额」推导。
 
 ### 4.8 F5 诊断书（`services/diagnosis.py`）
 
@@ -221,10 +222,13 @@ class ModelRoute(BaseModel):
 
 权限：沿用 `_enforce_pipeline_owner`；`/supervisor/routes` 与 `/mode` 限管理员。
 
+**v1.1 追加端点**（子代理列表/取消、执行日志与授权、`auto-mode`、worker 审核）：见 §11.2–§11.4，本表不再重复。
+
 ### 4.10 SSE 事件（沿用现有 SSE-only 链路）
 
 新增事件类型（`add_event` 的 `event_type` 字段）：
 `ledger_entry`、`attribution`、`dispatch`、`diag_report`、`budget`。
+v1.1 追加：`subagent_start` / `subagent_progress` / `subagent_end` / `exec`（见 §11.2、§11.4）。
 前端按 `type` 分流渲染，无需新连接。
 
 ---
@@ -233,14 +237,14 @@ class ModelRoute(BaseModel):
 
 | 批次 | 内容 | 主要改动文件 | 退出标准 | 依赖 |
 |---|---|---|---|---|
-| **B0** | F9 契约层：`AgentOutputBase` + 6 类继承 + 4 处已知降级点 + 降级点盘点补漏 + 契约测试 | `schema/agent.py`、6 个 `agents/*.py`、`agents/base.py` | 6 个 FAIL 用例字段齐备；无静默 fallback（清单归零） | 无 |
+| **B0** | F9 契约层：`AgentOutputBase` + 6 类继承 + 4 处已知降级点 + 降级点盘点补漏 + 契约测试 | `schema/agent.py`、6 个 `agents/*.py`、`agents/base.py` | **A11**（6 个 FAIL 分支字段齐备）＋ **A12**（降级路径全覆盖、清单归零） | 无 |
 | **B1** | F1 账本：单点埋设 + Mongo + `GET /ledger` + SSE `ledger_entry` | `services/episode_ledger.py`、`services/pipeline_v2.py`、`api/supervisor.py`、`main.py` | 任取失败管线可答「哪一步、什么降级、证据」 | B0 |
-| **B2** | **影子秘书**：F2 归因 + F5 诊断书 + `shadow` 模式（只记录不派工） | `services/attribution.py`、`services/diagnosis.py`、`api/pipeline.py`(`/diagnostics` 改造) | 影子模式跑满 30 条失败管线，产出 PRD A1/A2/A4 的度量数据；执行行为与 `off` 完全一致 | B1 |
-| **B3** | F3 策略 + F4 派工（`on` 模式）：`execute_order`、禁令、决策留痕 | `services/supervisor.py`、`services/pipeline_v2.py` | A3 用例通过：同策略不连续；失败管线优先走 S3/S5 | B2（且影子准确率达标） |
-| **B4** | F8 模型路由：路由表 + `model_override` + 熔断键 `(stage, model)` + 记账 | `services/model_router.py`、`services/llm.py`、`services/pipeline_v2.py`、`config.py` | A9 留痕完整；A 模型失败不连坐 B 模型（构造用例） | B3 |
-| **B5** | F6 预算止损 + F7 升级接管 | `services/budget_guard.py`、`api/supervisor.py` | A6 不越硬预算；接管后管线可继续且留痕 | B4 |
-| **B6** | 回归与等价性：`off` 模式 A10、全量 pytest、`/runs` 与 `/diagnostics` 向后兼容 | `tests/` | `python -m pytest tests -q` 全绿；A10 逐字节比对通过 | B5 |
-| **B7–B9**（v1.1 追加） | 子代理观测 → 动态子代理 → 执行网关（F12/F10/F11） | 见 §11 | PRD A14–A19 | B3（秘书能派工之后） |
+| **B2** | **影子秘书**：F2 归因 + F5 诊断书 + `shadow` 模式（只记录不派工） | `services/attribution.py`、`services/diagnosis.py`、`api/pipeline.py`(`/diagnostics` 改造) | 影子模式跑满 30 条失败管线，产出 **A1/A2/A4** 的度量数据；执行行为与 `off` 完全一致 | B1 |
+| **B3** | F3 策略 + F4 派工（`on` 模式）：`execute_order`、禁令、决策留痕 | `services/supervisor.py`、`services/pipeline_v2.py` | **A3**（同策略不连续）＋ **A13**（下游申报触发上游重做） | B2（且影子准确率达标） |
+| **B4** | F8 模型路由：路由表 + `model_override` + 熔断键 `(stage, model)` + 记账 | `services/model_router.py`、`services/llm.py`、`services/pipeline_v2.py`、`config.py` | **A9**（留痕五字段）＋ **A18**（跨 provider 生效且记账不阻断）＋ 熔断不连坐 | B3 |
+| **B5** | F6 预算（**可选，未配置=无上限**）+ F7 升级接管 | `services/budget_guard.py`、`api/supervisor.py` | **A6** 两段（配置时止损 / 未配置不得被拒）；接管后管线可继续且留痕 | B4 |
+| **B6** | 回归与等价性：`off` 模式、全量 pytest、`/runs` 与 `/diagnostics` 向后兼容 | `tests/` | **A10**（逐字节等价）＋ **A5**（成功路径成本增量=0，A/B 各 20 条）＋ pytest 全绿 | B5 |
+| **B7–B9**（v1.1 追加） | 子代理观测 → 动态子代理 → 执行网关（F12/F10/F11） | 见 §11 | **A14**（B7）／**A17·A19·A22·A23**（B8）／**A15·A16·A20·A21·A24–A26**（B9） | B3（秘书能派工之后） |
 
 > **顺序不可压缩的两处**：B0 必须在 B1 前（否则账本没内容）；B2 的 shadow 必须在 B3 前（否则拿生产流量试归因规则）。
 
@@ -280,14 +284,15 @@ class ModelRoute(BaseModel):
 
 ---
 
-## 9. 待决问题（阻塞 B5/B4 的部分）
+## 9. 待决问题（与 PRD §12 保持一致）
 
 | 编号 | 问题 | 阻塞 |
 |---|---|---|
-| Q1 | 每管线硬预算金额与计费口径 | B5 |
-| Q2 | 免费套餐是否开启秘书/路由 | B4（决定 tier 允许集） |
+| Q3 | 是否允许用户手动改派工单（人工接管深度） | B5（F7 范围） |
 | Q4 | 单管线最大换模型次数、单次决策成本上限 | B3/B4 硬规则 |
-| Q5 | 是否允许跨 provider（合规） | B4 三阶段 |
+| Q6 | 诊断书是否暴露内部阶段名 | B2（诊断书文案） |
+
+> 已定项（不阻塞开工）：免费套餐移出本期；跨 provider 开放且记账不阻断；命令风险由独立 LLM 判定（规则只升不降 + fail-safe）；自动模式用户开关；并发上限入设置、子代理开销不设独立上限；预算/单价在设置中配置、**不填即无上限**；带执行权限的 worker 需「独立 LLM 判风险 → 人工审核」。
 
 ---
 
@@ -327,9 +332,9 @@ class ModelRoute(BaseModel):
 
 ---
 
-## 11. v1.1 追加：执行能力与动态子代理（B7–B9）
+## 11. v1.4 追加：执行能力与动态子代理（B7–B9）
 
-> 对应 PRD v1.1 新增的 F10（动态子代理）/ F11（执行能力）/ F12（子代理观测）。
+> 对应 PRD **v1.4** 的 F10（动态子代理）/ F11（执行能力）/ F12（子代理观测）。
 > **顺序刻意排成 B7 观测 → B8 派生 → B9 执行网关**：先能看见、再能派活、最后才给 shell。
 
 ### 11.1 新增模块
@@ -375,7 +380,9 @@ run(kind, cmd, *, timeout, cwd) →
   2. shell_policy.ratchet(cmd) → 命中危险种子时记录「最低风险底线」
        （删/移/覆盖既有文件、装包、起服务、改权限、网络下载后执行）
   3. risk_judge.assess(cmd, cwd, workspace_brief)
-       # 独立会话 + 独立模型；输入只含命令/cwd/workspace 说明（A24 断言字段白名单）
+       # 独立会话 + 独立模型（设置项 risk_judge_model，默认 cheap 档，与主代理解耦）
+       # 输入只含命令/cwd/workspace 说明（A24 断言字段白名单）
+       # 超时默认 5s（可配）；串行命令逐条判定，不批处理
        # 输出 {risk_level: low|med|high|critical, reasons[], danger_explanation}
        # 失败（超时/非法 JSON/schema 不符）→ 一律 high（A26 fail-safe）
   4. final_risk = max(判定等级, 规则底线)        # A25：规则只升不降
@@ -400,7 +407,7 @@ run(kind, cmd, *, timeout, cwd) →
 |---|---|
 | 单测 | `shell_policy.ratchet` 危险种子逐条命中：删/移/覆盖既有文件、装包、起服务、改权限、下载后执行；`rm -rf ./x` 与 `rm -rf /` 的差异 |
 | 单测 | 硬底线两类各 5 条样本：任何 `auto_mode` 下都被拒 |
-| 单测 | `risk_judge`（命令）：输入白名单只含命令/cwd/workspace 说明（A24）；非法 JSON 与超时 → `high`（A26）；LLM 判 `low` 但命中种子 → 升 `med`（A25） |
+| 单测 | `risk_judge`（命令）：输入白名单只含命令/cwd/workspace 说明（A24）；非法 JSON 与超时（5s）→ `high`（A26）；LLM 判 `low` 但命中种子 → 升 `med`（A25）；串行逐条判定不批处理 |
 | 单测 | gateway 的截断、环境变量剥离（断言子进程读不到 `*_API_KEY`） |
 | 集成 | 派生 → 执行 → 回收；并发上限按设置生效；取消；深度拒绝 |
 | 集成 | 独立判定必须产出理由与危险说明；字段缺失时按 `high` 处理（fail-safe） |
