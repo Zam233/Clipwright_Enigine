@@ -338,12 +338,14 @@ class ModelRoute(BaseModel):
 clipwright/
 ├── supervisor/                    # 新包，与 services/ 里的秘书逻辑分开
 │   ├── worker_registry.py         # 临时 worker 规格与句柄（内存，按 pipeline 归属）
+│   ├── review/judge.py            # 独立 LLM 风险判定（输入只含 WorkerSpec，A23）
 │   ├── spawn.py                   # E1–E3：派生 / 查询 / 列出 / 取消子代理
-│   ├── gateway.py                 # E4–E5：执行网关（分级 / 沙盒 / 审计 / 拒绝模式）
+│   ├── gateway.py                 # E4–E5：执行网关（分级 / 沙盒 / 审计 / 硬底线）
 │   └── shell_policy.py            # 命令分级规则表（readonly / judged / dangerous + 硬底线）
-├── api/supervisor.py              # 扩：子代理列表·状态·取消、执行日志、授权端点、auto-mode 开关
-└── config.py                      # + max_concurrent_subagents（设置项，可配）
+├── api/supervisor.py              # 扩：子代理列表·状态·取消、执行日志、授权、auto-mode、worker 审核
+└── config.py                      # + max_concurrent_subagents（设置项，默认 6）
                                    # + exec_timeout_sec / exec_allow_network / auto_mode（默认 false）
+                                   # + pipeline_budget_usd / model_prices（**可空：空=无上限**）
 ```
 
 ### 11.2 B7 子代理观测（F12）
@@ -359,7 +361,11 @@ clipwright/
 - 临时 worker：`WorkerSpec` → 动态构造的 `BaseAgent` 子类实例（system_prompt / 工具子集 / model_spec 由闭包注入）。
 - **工具集校验**：`worker.tools ⊆ SUPERVISOR_TOOLS`，构造期强校验，运行期再校验一次。
 - **深度**：worker 内调用 `spawn_subagent` 直接抛 `SubagentDepthError`（对应 PRD A19）。
-- 退出标准：能派「素材可用性核查员」查第 3 段是否占位图；管线结束后 `WorkerRegistry` 为空（A17）。
+- **执行权限审核门（A22/A23）**：worker 工具集含 shell/python 时，`spawn` 前必须过两级门——
+  1. `review/judge.py`：用**独立会话 + 独立模型**（不复用主代理上下文，请求体只含 `WorkerSpec`）输出 `{risk, reasons[], 建议}`；判定失败按 `high` 处理（fail-safe）。
+  2. 人工审核：`WorkerRegistry` 记录 `pending_review`，`spawn` 返回「待审核」而非实例化；`POST /workers/{wid}/review` 批准后放行。`risk=high` 要求 `confirm_high_risk=true`。
+  3. 未过门的 worker 不得实例化（单测直接断言）；两级结论 + 审核人 + 时间入账本。
+- 退出标准：能派「素材可用性核查员」查第 3 段是否占位图；管线结束后 `WorkerRegistry` 为空（A17）；带 shell 的 worker 未审核时 spawn 失败。
 
 ### 11.4 B9 执行网关（F11）
 
@@ -394,6 +400,9 @@ run(kind, cmd, *, timeout, cwd) →
 | 集成 | 派生 → 执行 → 回收；并发上限按设置生效；取消；深度拒绝 |
 | 集成 | `judged` 必须产出判断理由；理由为空时拒绝执行（不能默默放行） |
 | 集成 | `auto_mode` 开/关：开时 dangerous 不弹窗、关后恢复弹窗；开关状态入账 |
+| 集成 | 带 shell 的 worker：未审核 spawn 必须失败；`risk=high` 不带 `confirm_high_risk` 必须拒绝（A22） |
+| 单测 | 独立判定的请求体只含 `WorkerSpec`，断言不含主代理对话/理由字段（A23） |
+| 单测 | 预算未配置时：任何派工都不得返回「预算不足」；配置上限时才触发止损（A6 两段） |
 | 兼容 | `off` 模式下 gateway 不注册任何工具：断言 `ToolRegistry.list_agent_callable()` 不含 exec 类 |
 
 ### 11.6 风险
