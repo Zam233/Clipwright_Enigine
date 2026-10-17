@@ -240,6 +240,7 @@ class ModelRoute(BaseModel):
 | **B4** | F8 模型路由：路由表 + `model_override` + 熔断键 `(stage, model)` + 记账 | `services/model_router.py`、`services/llm.py`、`services/pipeline_v2.py`、`config.py` | A9 留痕完整；A 模型失败不连坐 B 模型（构造用例） | B3 |
 | **B5** | F6 预算止损 + F7 升级接管 | `services/budget_guard.py`、`api/supervisor.py` | A6 不越硬预算；接管后管线可继续且留痕 | B4 |
 | **B6** | 回归与等价性：`off` 模式 A10、全量 pytest、`/runs` 与 `/diagnostics` 向后兼容 | `tests/` | `python -m pytest tests -q` 全绿；A10 逐字节比对通过 | B5 |
+| **B7–B9**（v1.1 追加） | 子代理观测 → 动态子代理 → 执行网关（F12/F10/F11） | 见 §11 | PRD A14–A19 | B3（秘书能派工之后） |
 
 > **顺序不可压缩的两处**：B0 必须在 B1 前（否则账本没内容）；B2 的 shadow 必须在 B3 前（否则拿生产流量试归因规则）。
 
@@ -323,4 +324,75 @@ class ModelRoute(BaseModel):
 
 - F9 已提供 `failure` / `degradations`，账本（B1）只需把 `_run_agent` 单点处的结果落成 `LedgerEntry`；
 - `step.result` 已自动携带 `failure` / `degradations`（`model_dump`），**无需新增 RPC 或额外通道**。
+
+---
+
+## 11. v1.1 追加：执行能力与动态子代理（B7–B9）
+
+> 对应 PRD v1.1 新增的 F10（动态子代理）/ F11（执行能力）/ F12（子代理观测）。
+> **顺序刻意排成 B7 观测 → B8 派生 → B9 执行网关**：先能看见、再能派活、最后才给 shell。
+
+### 11.1 新增模块
+
+```
+clipwright/
+├── supervisor/                    # 新包，与 services/ 里的秘书逻辑分开
+│   ├── worker_registry.py         # 临时 worker 规格与句柄（内存，按 pipeline 归属）
+│   ├── spawn.py                   # E1–E3：派生 / 查询 / 列出 / 取消子代理
+│   ├── gateway.py                 # E4–E5：执行网关（分级 / 沙盒 / 审计 / 拒绝模式）
+│   └── shell_policy.py            # 命令分级规则表（readonly / mutating / destructive）
+├── api/supervisor.py              # 扩：子代理列表·状态·取消、执行日志、授权端点
+└── config.py                      # + max_concurrent_subagents / exec_timeout_sec /
+                                   #   exec_allow_network / exec_mode(off|gated|auto)
+```
+
+### 11.2 B7 子代理观测（F12）
+
+- 数据源：现有 `trace.add_event(pid, agent, type, summary, detail, parent_agent, depth)` 已支持父子与深度 —— 新增事件类型 `subagent_start / subagent_progress / subagent_end`，不新建通道。
+- 端点：`GET /api/pipeline/{pid}/subagents`（树）、`POST /api/pipeline/{pid}/subagents/{sid}/cancel`。
+- 退出标准：并发 3 个子代理状态实时、取消后并发额度立即释放（PRD A14）。
+
+### 11.3 B8 动态子代理（F10）
+
+- `WorkerRegistry.register(spec) -> worker_id`，**按 pipeline 归属**；管线结束 `gc()`，不写 `AgentRegistry`。
+- 复用路径：核心 6 阶段走已有的 `execute_order`；插件 agent 走 `AgentRegistry.get`。
+- 临时 worker：`WorkerSpec` → 动态构造的 `BaseAgent` 子类实例（system_prompt / 工具子集 / model_spec 由闭包注入）。
+- **工具集校验**：`worker.tools ⊆ SUPERVISOR_TOOLS`，构造期强校验，运行期再校验一次。
+- **深度**：worker 内调用 `spawn_subagent` 直接抛 `SubagentDepthError`（对应 PRD A19）。
+- 退出标准：能派「素材可用性核查员」查第 3 段是否占位图；管线结束后 `WorkerRegistry` 为空（A17）。
+
+### 11.4 B9 执行网关（F11）
+
+```
+run(kind, cmd, *, timeout, cwd) →
+  1. shell_policy.classify(cmd)   → readonly / mutating / destructive
+  2. 档位校验（exec_mode: off|gated|auto，默认 gated）；destructive 恒拒
+  3. asyncio.create_subprocess_shell(cwd=workspace, env=白名单, 墙钟上限, 输出截断)
+  4. 写 ExecRecord 入账本 + add_event(pid, "supervisor", "exec", ...)
+  5. 超时/被杀 → 记 timeout，返回已捕获的部分输出
+```
+
+- `run_python`：脚本落 `workspace/.supervisor/scripts/{uuid}.py`，用 `python -I` 子进程执行（隔离用户 site-packages）；默认禁网，`exec_allow_network=true` 才放开。
+- **必须拒绝并留痕**：`rm -rf /`、`format`、`shutdown`、`reg add|delete`、`net user`、`sudo`、写系统盘、读 `~/.ssh` 或 `.env`、`curl ... | bash` 管道。
+- **不得**把 shell 注册进 `ToolRegistry`——`StructureAgent` 的 `with_tools` 走 `list_agent_callable()`，会把 shell 一起暴露给阶段 Agent。
+- 退出标准：PRD A15 / A16 通过。
+
+### 11.5 测试
+
+| 类型 | 内容 |
+|---|---|
+| 单测 | `shell_policy.classify` 至少 30 条样本（含 `rm -rf ./x` 这类易误判写法、绕过写法） |
+| 单测 | gateway 的拒绝、截断、环境变量剥离（断言子进程读不到 `*_API_KEY`） |
+| 集成 | 派生 → 执行 → 回收；并发上限；取消；深度拒绝 |
+| 安全 | 12 类危险命令全部被拒且留痕；`.env` / `~/.ssh` 读取被拒 |
+| 兼容 | `off` 模式下 gateway 不注册任何工具：断言 `ToolRegistry.list_agent_callable()` 不含 exec 类 |
+
+### 11.6 风险
+
+| 风险 | 缓解 |
+|---|---|
+| shell 被阶段 Agent 看见 | 只注册进 `SUPERVISOR_TOOLS`，不进 `ToolRegistry`；测试断言兜底 |
+| 临时 worker 无限派生 / 吃掉预算 | 并发上限 + 每轮派生数上限 + 子代理总开销 ≤ 管线预算 30% |
+| Python 逃逸 | 文档层面明确「审计边界 ≠ 安全边界」；不可信代码一律要求容器；默认禁网 |
+
 
