@@ -17,6 +17,7 @@ from clipwright.schema.agent import (
 from clipwright.schema.tool import ToolExecResult
 from clipwright.schema.skill import SkillExecResult
 from clipwright.services.llm import LLMService
+from clipwright.services.degradation import note_degradation
 from clipwright.tool.base import AgentToolkit
 from clipwright.tool.registry import ToolRegistry
 from clipwright.config import logger
@@ -464,6 +465,13 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                         return sc, wa
                     except asyncio.TimeoutError:
                         logger.warning("StructureAgent: LLM 超时（>%ss），使用 fallback", self.timeout_sec)
+                        # F9：超时回退到模板化分镜属于「完成了但打了折扣」，必须留痕
+                        note_degradation(
+                            "llm_timeout_fallback",
+                            detail=f"StructureAgent: 分镜生成 LLM 超时（>{self.timeout_sec}s）",
+                            scope="scenes",
+                            impact="改用模板化分镜，结构与文案质量下降",
+                        )
                         return self._fallback_scenes(context.topic, tone, script_text), [f"LLM 超时（>{self.timeout_sec}s）"]
 
                 scenes, warnings = await _generate_scenes()
@@ -481,6 +489,13 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
             if not scenes:
                 logger.info("StructureAgent: 无有效场景，使用 fallback")
+                # F9：LLM 正常返回但没解析出可用场景 → 同样是降级
+                note_degradation(
+                    "scenes_fallback",
+                    detail="StructureAgent: LLM 未产出可用的有效场景，改用模板化分镜",
+                    scope="scenes",
+                    impact="改用模板化分镜，结构与文案质量下降",
+                )
                 scenes = self._fallback_scenes(context.topic, tone, script_text)
 
             # 为缺少动画标记的场景调用 LLM 补充动画标记（不硬编码），供 AnimationAgent 创建动画

@@ -736,6 +736,18 @@ class PipelineOrchestratorV2:
         agent_context.extra_params.pop("_quality_heal_count", None)
         return quality_passed
 
+    @staticmethod
+    def _append_finalize_degradation(agent_context, kind: str, detail: str,
+                                     scope: str = "", impact: str = "") -> None:
+        """F9：后处理阶段的降级不在任何 Agent 作用域内，单独登记到上下文。"""
+        from clipwright.schema.agent import Degradation
+        try:
+            sink = agent_context.extra_params.setdefault("_finalize_degradations", [])
+            sink.append(Degradation(kind=kind, detail=detail, scope=scope,
+                                    impact=impact).model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 — 登记失败不得影响出片
+            logger.debug("后处理降级登记失败（忽略）", exc_info=True)
+
     def _finalize_timeline(self, final_tl, plugin, agent_context, pid):
         """P1-18: 终局后处理——类型 transform + validate_clip 打标 + 成片署名轨。
 
@@ -753,6 +765,11 @@ class PipelineOrchestratorV2:
                 final_tl = processed.model_dump(mode="json")
             except Exception as e:
                 logger.warning("B21 类型 transform 后处理失败（保留原时间线）: %s", e)
+                self._append_finalize_degradation(
+                    agent_context, "plugin_transform_failed",
+                    detail=f"类型插件 {getattr(plugin, 'plugin_id', '?')} 后处理失败（{e}）",
+                    scope="global", impact="分辨率/帧率/标题/时长截断等类型规范未生效",
+                )
             # 轮 89（批次 8）：validate_clip 接线（原零调用的死能力）——类型
             # 插件可对每个视频 clip 做类型规范校验，违规 clip 打标供审阅
             try:
@@ -773,6 +790,11 @@ class PipelineOrchestratorV2:
                     if _invalid:
                         add_event(pid, "system", "warning",
                                   f"类型规范校验: {_invalid} 个片段不符合 {plugin.plugin_id} 规范（已打标）")
+                        self._append_finalize_degradation(
+                            agent_context, "type_violation",
+                            detail=f"{_invalid} 个片段不符合 {plugin.plugin_id} 规范",
+                            scope="clips", impact="违规范片段已打标，成片可能不符类型约定",
+                        )
             except Exception as e:
                 logger.warning("类型 validate_clip 校验失败（跳过）: %s", e)
 
@@ -879,6 +901,12 @@ class PipelineOrchestratorV2:
         # P1-18: 后处理统一走 _finalize_timeline（与首跑路径一致）
         final_tl = self._finalize_timeline(final_tl, plugin, agent_context, pid)
         state.shared_data["final_timeline"] = final_tl
+        # F9：后处理降级并入共享数据（与首跑路径同语义）
+        _fin_deg = agent_context.extra_params.pop("_finalize_degradations", None)
+        if _fin_deg:
+            state.shared_data["degradations"] = _fin_deg
+            add_event(pid, "system", "degradation",
+                      f"后处理降级 {len(_fin_deg)} 处", _fin_deg[:10])
         _ft = state.shared_data.get("final_timeline")
         if _ft:
             add_event(pid, "system", "timeline_snapshot",
@@ -1097,6 +1125,12 @@ class PipelineOrchestratorV2:
             final_tl, plugin, agent_context, pid,
         )
         state.shared_data["final_timeline"] = final_tl
+        # F9：后处理降级并入共享数据，供诊断/账本消费（无降级时零变化）
+        _fin_deg = agent_context.extra_params.pop("_finalize_degradations", None)
+        if _fin_deg:
+            state.shared_data["degradations"] = _fin_deg
+            add_event(pid, "system", "degradation",
+                      f"后处理降级 {len(_fin_deg)} 处", _fin_deg[:10])
 
         # 与 V1 对齐：把最终时间线快照写入 trace，前端 SSE 据此进入审阅视图，
         # 不依赖 result 接口的轮询时机
@@ -1387,7 +1421,28 @@ class PipelineOrchestratorV2:
             # dispatch 前取用量快照，结束后差值即该 Agent 的 token 消耗
             # （补齐 Material/Edit/Animation/Audio/Quality 的记账缺口）
             _usage_before = llm_usage_snapshot()
-            result = await self._dispatch(agent_name, input_data, context)
+            # F9 单点埋设：Agent 内部的降级登记（llm_or_fallback / 模板化分镜 /
+            # 占位素材…）通过 ContextVar 收集，无需 6 个 Agent 各自改签名。
+            from clipwright.services.degradation import degradation_scope
+            _agent_degradations: list = []
+            with degradation_scope(_agent_degradations):
+                result = await self._dispatch(agent_name, input_data, context)
+            if _agent_degradations and hasattr(result, "degradations"):
+                # Agent 自己登记过的保留在前，作用域内收集的补在后面（去重同 kind+detail）
+                try:
+                    existing = list(getattr(result, "degradations", []) or [])
+                    seen = {(d.kind, d.detail) for d in existing}
+                    for d in _agent_degradations:
+                        if (d.kind, d.detail) not in seen:
+                            existing.append(d)
+                            seen.add((d.kind, d.detail))
+                    result.degradations = existing
+                    add_event(pid, agent_name, "degradation",
+                              f"{agent_name}: 降级 {len(_agent_degradations)} 处",
+                              [d.model_dump(mode="json") for d in existing[:10]])
+                except Exception as de:
+                    logger.warning("降级并入输出失败（不影响执行）: %s", de)
+
             # P1-19: 在飞调用返回时若管线已取消——结果一律弃用（不写 timeline），
             # 并记 wasted-call 事件（线程内 provider 请求无法真正中断，费用已产生）
             if is_cancelled(pid):

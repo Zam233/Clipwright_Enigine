@@ -86,11 +86,24 @@ class BaseAgent(ABC, Generic[I, O]):
         """从注册表获取策略。"""
         return self._strategy_registry.get(name)
 
-    def build_error_output(self, error_msg: str, output_cls: type[O]) -> O:
-        """构造错误输出。"""
+    def build_error_output(self, error_msg: str, output_cls: type[O],
+                           *, category: str = "internal_defect",
+                           retryable: str = "retry_same") -> O:
+        """构造执行失败输出（F9：必须携带结构化 FailureReport）。
+
+        这是「执行失败」而非「判定失败」——后者（如质检判片子不合格）不应设置
+        error，见 ``schema.agent.AgentOutputBase`` 的约定说明。
+        """
+        from clipwright.schema.agent import FailureReport
+
         return output_cls(
             decision=AgentDecision.FAIL,
             error=error_msg,
+            failure=FailureReport(
+                category=category,
+                blocking_point=str(error_msg)[:200],
+                retryable=retryable,
+            ),
         )
 
     # ── 统一基座（P5）：超时 + 优雅降级，供各 Agent 复用 ──
@@ -124,16 +137,33 @@ class BaseAgent(ABC, Generic[I, O]):
         )
 
     async def llm_or_fallback(self, coro_factory, fallback, timeout: float | None = None, retries: int = 1):
-        """LLM 调用 + 重试 + 超时兜底：失败一律返回 fallback 并记录日志。"""
+        """LLM 调用 + 重试 + 超时兜底：失败一律返回 fallback 并记录日志。
+
+        F9：兜底成功≠没出事——这里必须登记降级，否则「LLM 挂了、用模板顶上」
+        在下游看来与「LLM 正常产出」完全一样。
+        """
         from clipwright.config import logger
+        from clipwright.services.degradation import note_degradation
 
         try:
             return await self.llm_call_with_retry(coro_factory, retries=retries, timeout=timeout)
         except asyncio.TimeoutError:
             logger.warning("%s: LLM 调用超时，使用兜底", self.agent_name)
+            note_degradation(
+                "llm_timeout_fallback",
+                detail=f"{self.agent_name}: LLM 调用超时（>{timeout or self.timeout_sec}s）",
+                scope=self.agent_name,
+                impact="该步骤使用兜底结果继续，成品质量可能下降",
+            )
             return fallback
         except Exception as e:
             logger.warning("%s: LLM 调用失败（%s），使用兜底", self.agent_name, e)
+            note_degradation(
+                "llm_error_fallback",
+                detail=f"{self.agent_name}: LLM 调用失败（{e}）",
+                scope=self.agent_name,
+                impact="该步骤使用兜底结果继续，成品质量可能下降",
+            )
             return fallback
 
     @staticmethod
