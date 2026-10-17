@@ -37,6 +37,13 @@ def _validate_tools(tools: list[str]) -> tuple[str, ...]:
     return cleaned
 
 
+def _schemas_for_worker(tools: tuple[str, ...]) -> list[dict[str, Any]]:
+    """工具名 → LLM tool schema（未定义 schema 的工具会被忽略，但仍在授权名单里）。"""
+    from clipwright.supervisor.worker_tools import schemas_for
+
+    return schemas_for(tools)
+
+
 async def spawn_subagent(
     context: Any,
     *,
@@ -186,7 +193,23 @@ async def _run_worker(pid: str, worker_id: str) -> dict[str, Any]:
         )
         svc = LLMService()
         with use_route(route):
-            resp = await svc.ask(prompt)
+            # 带工具的 worker 走真正的 tool-call 循环：工具执行全部经
+            # `worker_tools.build_executor`（执行类落到 gateway），不是把工具名写在
+            # 规格单上就算数。无工具则退回单次问答，省一轮 token。
+            if spec.tools:
+                from clipwright.supervisor.worker_tools import build_executor
+
+                resp = await svc.with_tools(
+                    system_prompt=f"你是被临时派来的子代理（{spec.role}）。只办交给你的那一件事。",
+                    user_prompt=prompt,
+                    tool_executor=build_executor(
+                        pid, node_id or "", allowed=spec.tools,
+                    ),
+                    tools=_schemas_for_worker(spec.tools),
+                    max_tool_rounds=max(1, int(spec.max_turns or 5)),
+                )
+            else:
+                resp = await svc.ask(prompt)
         text = str(getattr(resp, "content", "") or "")
         if not getattr(resp, "success", True):
             raise RuntimeError(f"worker LLM 调用失败: {getattr(resp, 'status_code', '?')}")
@@ -212,9 +235,13 @@ async def _run_worker(pid: str, worker_id: str) -> dict[str, Any]:
         }
 
 
-def worker_tool_matrix() -> dict[str, list[str]]:
-    """运维/前端用：当前允许的工具与「需审核」的工具。"""
+def worker_tool_matrix() -> dict[str, Any]:
+    """运维/前端用：当前允许的工具、需审核的工具，以及哪些真的有执行通道。"""
+    from clipwright.supervisor.worker_tools import available_schemas
+
     return {
         "allowed": sorted(SUPERVISOR_TOOLS),
         "exec_requires_review": sorted(EXEC_TOOLS),
+        # 只有出现在这里的工具才会被真正接住（其余只是允许名单）
+        "executable": available_schemas(),
     }

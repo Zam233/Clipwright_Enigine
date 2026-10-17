@@ -5,8 +5,8 @@
 - B2 `GET /api/pipeline/{id}/attribution` / `GET /{id}/diagnosis`
 - B3 `GET /api/pipeline/{id}/decisions`
 - B5 `GET /api/pipeline/{id}/budget` / `POST /{id}/dispatch` / `POST /{id}/accept-suggestion`
-
-后续批次在此追加：子代理树、执行日志、审核队列。
+- B7/B8 子代理树、取消、派生、worker 审核门
+- B9 `POST /{id}/exec`（请求执行 shell/python）+ 执行日志 + 授权/拒绝 + 自动模式
 """
 
 from __future__ import annotations
@@ -411,6 +411,51 @@ class AutoModeBody(BaseModel):
 
 class ApproveExecBody(BaseModel):
     confirm_high_risk: bool = Field(default=False, description="high/critical 必须为 true")
+
+
+class ExecBody(BaseModel):
+    """请求执行一条命令或一段 Python 脚本（PRD F11）。"""
+
+    kind: str = Field(default="shell", description="shell=命令行 / python=脚本")
+    command: str = Field(default="", description="kind=shell 时的命令原文")
+    code: str = Field(default="", description="kind=python 时的脚本正文")
+    cwd: str = Field(default="", description="工作目录；留空=管线 workspace 或临时目录")
+    timeout_sec: float = Field(default=0.0, description="0=用设置项 exec_timeout_sec")
+
+
+@router.post("/{pipeline_id}/exec")
+async def post_pipeline_exec(
+    pipeline_id: str, payload: ExecBody, request: Request,
+) -> dict:
+    """请求执行（主代理 / 用户的唯一执行入口）。
+
+    返回三种结局之一，前端据此分流：
+    - `done` / `failed`：已执行（低风险，或自动模式下的中风险）；
+    - `pending_approval`：`med` 及以上，等用户授权（带危险说明）；
+    - `rejected`：命中硬底线或为空，**不可授权**。
+    """
+    from clipwright.api.pipeline import _enforce_pipeline_owner
+    from clipwright.services.budget_guard import is_blocked
+    from clipwright.supervisor import gateway as gw
+
+    _enforce_pipeline_owner(request, pipeline_id)
+    kind = str(payload.kind or "shell").strip().lower()
+    if kind not in ("shell", "python"):
+        raise HTTPException(status_code=400, detail=f"不支持的 kind: {kind}")
+    if is_blocked(pipeline_id):
+        raise HTTPException(status_code=409, detail="预算已耗尽，拒绝新的执行请求")
+
+    timeout_sec = float(payload.timeout_sec or 0.0)  # 0 → 网关回落到设置项 exec_timeout_sec
+    if kind == "python":
+        out = await gw.run_python(
+            pipeline_id, payload.code, cwd=payload.cwd, timeout_sec=timeout_sec,
+        )
+    else:
+        out = await gw.run_command(
+            pipeline_id, payload.command, cwd=payload.cwd,
+            timeout_sec=timeout_sec, kind="shell",
+        )
+    return {"pipeline_id": pipeline_id, **out}
 
 
 @router.get("/{pipeline_id}/exec")

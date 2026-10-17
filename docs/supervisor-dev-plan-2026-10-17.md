@@ -421,11 +421,12 @@ v1.1 追加：`subagent_start` / `subagent_progress` / `subagent_end` / `exec`�
 | 派生 | `supervisor/spawn.py::spawn_subagent` | 工具子集校验（越权即拒）、星型拓扑（`host_agent` 存在即拒，A19）、预算闸 |
 | 两级审核门 | `spawn.py` + `review.py` | 带 `run_shell/run_python` → 独立 LLM 判风险 → `pending_review`，**未过门不实例化**（A22）；`high/critical` 需 `confirm_high_risk`（A22） |
 | 独立判定 | `supervisor/review.py::assess` | **输入白名单**（只取 role/prompt/tools/timeout/max_turns/command/cwd/workspace），非白名单键丢弃（A23）；失败 fail-safe `high`（A26） |
-| 执行 | `spawn._run_worker` | 走 `LLMService.ask`（可带 `use_route`）；成功/失败都落 tracker + registry；失败不影响管线 |
+| 执行 | `spawn._run_worker` | 走 `LLMService.ask`（无工具）或 `with_tools`（有工具，工具执行经 `worker_tools.build_executor`）；可带 `use_route`；成功/失败都落 tracker + registry；失败不影响管线 |
 | 端点 | `api/supervisor.py` | `POST /{pid}/subagents`、`GET /api/supervisor/workers/pending-review`、`POST /api/supervisor/workers/{wid}/review`、`GET /api/supervisor/tools` |
 | 并发上限 | `spawn.py` + `config.max_concurrent_subagents` | 运行中（`pending/running`）达上限即抛 `SpawnError`，**0 = 不限**；额度随 `tracker.finish/cancel` 自动释放（A14） |
 | 模型自由 | `spawn_subagent(provider=, model=)` | 子代理模型**由主代理自由指定**，允许跨 provider（`use_route` 覆盖，不走路由表的档位选择）；不传则继承管线路由。provider 打错时该 worker 计 `failed`，不影响管线 |
-| 测试 | `tests/test_subagent_spawn.py` | **17 passed**（含未过门不执行、high 需二次确认、输入隔离、fail-safe、并发上限两例） |
+| 工具通道 | `supervisor/worker_tools.py` | 工具 schema（openai 格式）+ 执行器；`run_shell`/`run_python` 转 gateway 不越权，派生/取消类工具对 worker 直接拒；`GET /api/supervisor/tools` 的 `executable` 字段说明哪些工具真的有执行通道 |
+| 测试 | `tests/test_subagent_spawn.py` | **23 passed**（含未过门不执行、high 需二次确认、输入隔离、fail-safe、并发上限两例、tool-call 循环、执行器三层拦截 6 例） |
 
 ### B9 — 已完成
 
@@ -437,8 +438,8 @@ v1.1 追加：`subagent_start` / `subagent_progress` / `subagent_end` / `exec`�
 | 审计 | `ExecRecord` + trace | 每条执行（含被拒/超时）都有记录：命令、cwd、风险等级、理由、是否自动模式、退出码、耗时、输出摘要 |
 | 审核队列 | `gateway.pending_approvals / approve / reject` | high/critical 未带 `confirm_high_risk` 会被放回队列（A22 同语义） |
 | Python 执行 | `gateway.run_python` | 脚本落 `{cwd}/.supervisor/scripts/{uuid}.py`（无 `cwd` 时落系统临时目录，**不写进程 cwd**），用 `"{sys.executable}" -I` 子进程执行（隔离用户 site-packages）；`risk_text` 走同一套「硬底线→棘轮→独立判定→max」链 |
-| 端点 | `api/supervisor.py` | `GET /exec`、`GET /exec/pending-approvals`、`POST /exec/{aid}/approve|reject`、`GET/PUT /exec/auto-mode` |
-| 测试 | `tests/test_exec_gateway.py` | **26 passed**（硬底线 5 类、棘轮上调、自动模式只减免 med、密钥剥离、审计字段、`run_python` 三例含落盘位置、禁网与放开、端点） |
+| 端点 | `api/supervisor.py` | `POST /exec`（请求执行：shell 命令或 python 脚本；返回 `done/failed/pending_approval/rejected` 四种结局）、`GET /exec`、`GET /exec/pending-approvals`、`POST /exec/{aid}/approve|reject`、`GET/PUT /exec/auto-mode` |
+| 测试 | `tests/test_exec_gateway.py` | **31 passed**（硬底线 5 类、棘轮上调、自动模式只减免 med、密钥剥离、审计字段、`run_python` 三例含落盘位置、禁网与放开、端点 + `POST /exec` 五例） |
 
 ### B1 起的前置条件
 
@@ -458,6 +459,7 @@ v1.1 追加：`subagent_start` / `subagent_progress` / `subagent_end` / `exec`�
 clipwright/
 ├── supervisor/                    # 新包，与 services/ 里的秘书逻辑分开
 │   ├── worker_registry.py         # 临时 worker 规格与句柄（内存，按 pipeline 归属）
+│   ├── worker_tools.py            # worker 的工具 schema + 执行器（执行类一律走 gateway）
 │   ├── review/judge.py            # 独立 LLM 风险判定（命令 + worker 共用；输入只含 spec/命令，A23/A24）
 │   ├── spawn.py                   # E1–E3：派生 / 查询 / 列出 / 取消子代理
 │   ├── gateway.py                 # E4–E5：执行网关（独立判定 → 授权 → 沙盒 → 审计）
@@ -480,6 +482,7 @@ clipwright/
 - 复用路径：核心 6 阶段走已有的 `execute_order`；插件 agent 走 `AgentRegistry.get`。
 - 临时 worker：`WorkerSpec` → 动态构造的 `BaseAgent` 子类实例（system_prompt / 工具子集 / model_spec 由闭包注入）。
 - **工具集校验**：`worker.tools ⊆ SUPERVISOR_TOOLS`，构造期强校验，运行期再校验一次。
+- **工具是真的能用**（`supervisor/worker_tools.py`）：带工具的 worker 走 `LLMService.with_tools` 的 tool-call 循环，schema 按 openai 格式下发；执行器再做三层拦截——① 不在该 worker 授权名单 → 拒；② `spawn_subagent`/`cancel_subagent` → 拒（星型拓扑）；③ `run_shell`/`run_python` → **一律转 `gateway`**（判定 → 授权 → 沙盒 → 审计），拿到 `pending_approval` 时如实告诉模型「尚未执行」，不允许它假装已经看到结果。
 - **深度**：worker 内调用 `spawn_subagent` 直接抛 `SubagentDepthError`（对应 PRD A19）。
 - **执行权限审核门（A22/A23）**：worker 工具集含 shell/python 时，`spawn` 前必须过两级门——
   1. `review/judge.py`：用**独立会话 + 独立模型**（不复用主代理上下文，请求体只含 `WorkerSpec`）输出 `{risk, reasons[], 建议}`；判定失败按 `high` 处理（fail-safe）。

@@ -236,6 +236,58 @@ def test_reject_endpoint_404_for_unknown():
     client = _client()
     assert client.post("/api/pipeline/pl_x/exec/ap_missing/reject").status_code == 404
 
+
+def test_post_exec_runs_low_risk_shell(monkeypatch):
+    """主代理/用户的执行入口：低风险直接执行并返回结果。"""
+    _assess(monkeypatch, risk="low")
+    client = _client()
+    out = client.post("/api/pipeline/pl_req/exec", json={
+        "kind": "shell", "command": 'python -c "print(7)"',
+    }).json()
+    assert out["status"] in ("done", "failed")
+    assert out["exitCode"] == 0
+    assert "7" in out["outputTail"]
+    assert out["pipeline_id"] == "pl_req"
+
+
+def test_post_exec_python_kind_accepts_code(monkeypatch):
+    _assess(monkeypatch, risk="low")
+    client = _client()
+    out = client.post("/api/pipeline/pl_req/exec", json={
+        "kind": "python", "code": "print('api-py')",
+    }).json()
+    assert out["exitCode"] == 0
+    assert "api-py" in out["outputTail"]
+    assert out["kind"] == "python"
+
+
+def test_post_exec_high_risk_returns_pending_approval(monkeypatch):
+    _assess(monkeypatch, risk="high")
+    client = _client()
+    out = client.post("/api/pipeline/pl_req/exec", json={
+        "kind": "shell", "command": 'python -c "print(8)"',
+    }).json()
+    assert out["status"] == "pending_approval"
+    assert out["approval"]["riskLevel"] == "high"
+    assert client.get("/api/pipeline/pl_req/exec/pending-approvals").json()["count"] == 1
+
+
+def test_post_exec_rejects_unknown_kind(monkeypatch):
+    _assess(monkeypatch, risk="low")
+    client = _client()
+    r = client.post("/api/pipeline/pl_req/exec", json={"kind": "ruby", "command": "puts 1"})
+    assert r.status_code == 400
+
+
+def test_post_exec_hard_floor_is_not_authorizable(monkeypatch):
+    _assess(monkeypatch, risk="low")
+    client = _client()
+    out = client.post("/api/pipeline/pl_req/exec", json={
+        "kind": "shell", "command": "cat .env",
+    }).json()
+    assert out["status"] == "rejected"
+
+
 # ── run_python（E5）与禁网 ──────────────────────────────────
 
 
