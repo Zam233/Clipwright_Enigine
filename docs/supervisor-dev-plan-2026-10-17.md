@@ -325,6 +325,18 @@ v1.1 追加：`subagent_start` / `subagent_progress` / `subagent_end` / `exec`�
 
 **B1 处置原则**：只有「静默改变产物内容」的路径需要登记（占位素材、默认音色、保留原时间线、丢弃片段、降级模型）；落库失败、遥测失败、日志类 `except` **不登记**，避免账本被噪声淹没。
 
+### B1 — 已完成
+
+| 交付 | 位置 | 验证 |
+|---|---|---|
+| `LedgerEntry` 数据契约 | `schema/supervisor.py` | 与 PRD §8 字段对齐；`failure` / `degradations` 直接复用 F9/B0 的模型 |
+| 账本（内存 + Mongo 旁路） | `services/episode_ledger.py` | 每阶段 attempt 递增、失败/降级入账、`summary()` 可截断、注册表有界（200） |
+| 单点埋设 | `pipeline_v2._run_agent` | 只有一处 `arecord`；Agent 内部零改动；Mongo 写走线程池不阻塞事件循环 |
+| 后处理降级入账 | `pipeline_v2`（首跑 + retry 两处） | `stage="postprocess"` 独立条目 |
+| 账本端点 | `api/supervisor.py` + `main.py` | `GET /api/pipeline/{pid}/ledger`（支持 `?stage=`，内存未命中回查 Mongo，未知管线返回 `found=false` 而非 404） |
+| SSE 事件 | `add_event(..., "ledger_entry")` | 前端可按 type 分流 |
+| 测试 | `tests/test_episode_ledger.py` | **9 passed** |
+
 ### B1 起的前置条件
 
 - F9 已提供 `failure` / `degradations`，账本（B1）只需把 `_run_agent` 单点处的结果落成 `LedgerEntry`；
@@ -381,6 +393,7 @@ run(kind, cmd, *, timeout, cwd) →
        （删/移/覆盖既有文件、装包、起服务、改权限、网络下载后执行）
   3. risk_judge.assess(cmd, cwd, workspace_brief)
        # 独立会话 + 独立模型（设置项 risk_judge_model，默认 cheap 档，与主代理解耦）
+       # **判定模型必须命中 provider 白名单**（共用主代理的白名单，不另开通道）
        # 输入只含命令/cwd/workspace 说明（A24 断言字段白名单）
        # 超时默认 5s（可配）；串行命令逐条判定，不批处理
        # 输出 {risk_level: low|med|high|critical, reasons[], danger_explanation}

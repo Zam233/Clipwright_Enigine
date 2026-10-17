@@ -907,6 +907,15 @@ class PipelineOrchestratorV2:
             state.shared_data["degradations"] = _fin_deg
             add_event(pid, "system", "degradation",
                       f"后处理降级 {len(_fin_deg)} 处", _fin_deg[:10])
+            # B1：后处理降级不属于任何 Agent 作用域，单独记一条账本条目
+            try:
+                from clipwright.services.episode_ledger import get_ledger
+
+                await get_ledger(pid).arecord(
+                    stage="postprocess", decision="pass", degradations=_fin_deg,
+                )
+            except Exception as _pp_err:  # noqa: BLE001
+                logger.warning("后处理降级入账失败（忽略）: %s", _pp_err)
         _ft = state.shared_data.get("final_timeline")
         if _ft:
             add_event(pid, "system", "timeline_snapshot",
@@ -1131,6 +1140,15 @@ class PipelineOrchestratorV2:
             state.shared_data["degradations"] = _fin_deg
             add_event(pid, "system", "degradation",
                       f"后处理降级 {len(_fin_deg)} 处", _fin_deg[:10])
+            # B1：后处理降级不属于任何 Agent 作用域，单独记一条账本条目
+            try:
+                from clipwright.services.episode_ledger import get_ledger
+
+                await get_ledger(pid).arecord(
+                    stage="postprocess", decision="pass", degradations=_fin_deg,
+                )
+            except Exception as _pp_err:  # noqa: BLE001
+                logger.warning("后处理降级入账失败（忽略）: %s", _pp_err)
 
         # 与 V1 对齐：把最终时间线快照写入 trace，前端 SSE 据此进入审阅视图，
         # 不依赖 result 接口的轮询时机
@@ -1590,6 +1608,30 @@ class PipelineOrchestratorV2:
         if step.started_at:
             step.duration_ms = int((step.completed_at - step.started_at).total_seconds() * 1000)
         state.updated_at = datetime.now(timezone.utc)
+
+        # ── F1 / B1：账本单点写入 ─────────────────────────────
+        # 只有这一处写账本：失败（F9 的 failure）与降级（B0 的 degradations）都
+        # 已经随 step.result 一起回来了，Agent 内部无需感知账本的存在。
+        try:
+            from clipwright.services.episode_ledger import get_ledger
+
+            _res = step.result or {}
+            _ledger = get_ledger(pid)
+            _usage = _res.get("llm_usage") or {}
+            await _ledger.arecord(
+                stage=agent_name,
+                decision=(step.status.value if hasattr(step.status, "value") else str(step.status)),
+                failure=_res.get("failure"),
+                degradations=list(_res.get("degradations") or []),
+                warnings=list(_res.get("_warnings") or _res.get("warnings") or []),
+                model=str(_usage.get("model", "") or ""),
+                usage=_usage,
+                duration_ms=step.duration_ms or 0,
+            )
+            add_event(pid, agent_name, "ledger_entry",
+                      f"账本: {agent_name} 第 {_ledger.attempts(agent_name)} 次尝试")
+        except Exception as _ledger_err:  # noqa: BLE001 — 账本失败不得影响出片
+            logger.warning("账本写入失败（不影响执行）: %s", _ledger_err)
 
         # 断点续跑落库 — 每完成一个 agent 即持久化检查点（含已完成的 steps 与
         # 共享数据），进程崩溃/重启后可从最后一个完整步骤恢复/重放。

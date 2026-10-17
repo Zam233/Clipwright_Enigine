@@ -57,6 +57,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from clipwright.api import pipeline as pipeline_api
+from clipwright.api import supervisor as supervisor_api
 from clipwright.api import persona as persona_api
 from clipwright.api import persona_forge as persona_forge_api
 from clipwright.api import chat_forge as chat_forge_api
@@ -683,6 +684,7 @@ app.mount("/voice_audio", StaticFiles(directory=str(tts_output_path)), name="voi
 
 # 注册路由
 app.include_router(pipeline_api.router)
+app.include_router(supervisor_api.router)
 app.include_router(persona_api.router)
 app.include_router(persona_forge_api.router)
 app.include_router(chat_forge_api.router)
