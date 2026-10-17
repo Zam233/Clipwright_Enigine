@@ -284,3 +284,42 @@ async def post_accept_suggestion(
     return {"pipeline_id": pipeline_id, "accepted_degraded": True}
 
 
+# ── B7：子代理观测与控制 ─────────────────────────────────────
+
+
+@router.get("/{pipeline_id}/subagents")
+async def get_pipeline_subagents(pipeline_id: str, request: Request) -> dict:
+    """子代理树（PRD F12）。无子代理时返回空结构而非 404。"""
+    from clipwright.api.pipeline import _enforce_pipeline_owner
+    from clipwright.supervisor.tracker import get_tracker
+
+    _enforce_pipeline_owner(request, pipeline_id)
+    return get_tracker(pipeline_id).snapshot()
+
+
+@router.post("/{pipeline_id}/subagents/{subagent_id}/cancel")
+async def post_cancel_subagent(
+    pipeline_id: str, subagent_id: str, request: Request,
+) -> dict:
+    """取消单个子代理（不可取消/已结束 → 409）。"""
+    from clipwright.api.pipeline import _enforce_pipeline_owner
+    from clipwright.supervisor.tracker import get_tracker
+
+    _enforce_pipeline_owner(request, pipeline_id)
+    tracker = get_tracker(pipeline_id)
+    node = tracker.get(subagent_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"子代理不存在: {subagent_id}")
+    if not tracker.cancel(subagent_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"子代理不可取消或已结束（status={node.status}, cancellable={node.cancellable}）",
+        )
+    return {
+        "pipeline_id": pipeline_id,
+        "subagent_id": subagent_id,
+        "cancelled": True,
+        "status": tracker.get(subagent_id).status if tracker.get(subagent_id) else "cancelled",
+    }
+
+

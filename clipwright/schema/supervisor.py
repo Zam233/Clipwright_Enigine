@@ -59,8 +59,27 @@ class Attribution(BaseModel):
     source: str = Field(default="rule", description="rule / llm / fallback")
 
 
+class SubagentNode(BaseModel):
+    """子代理树的一个节点（PRD F12 / B7）。
+
+    字段一律 snake_case，与账本/决策保持一致（前端类型同步）。
+    """
+
+    id: str
+    parent_id: Optional[str] = Field(default=None, description="父节点；None = 秘书直管")
+    role: str = Field(default="", description="角色名，例如「素材可用性核查员」")
+    kind: str = Field(default="ephemeral", description="stage / plugin / ephemeral")
+    status: str = Field(default="pending", description="pending/running/done/failed/cancelled")
+    model: dict[str, str] = Field(default_factory=dict, description="{provider, model}")
+    duration_ms: int = Field(default=0)
+    cost_usd: float = Field(default=0.0)
+    last_output: str = Field(default="")
+    cancellable: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=_utcnow)
+    ts: datetime = Field(default_factory=_utcnow)
+
+
 class SupervisorDecision(BaseModel):
-    """调度决策（PRD F3/F4）——「这次用哪招、派给谁、为什么」。"""
 
     id: str
     strategy: str = Field(description="S1_same / S2_model / S3_upstream / S4_accept_degraded / S5_new_path / S6_abort")

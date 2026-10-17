@@ -401,6 +401,18 @@ v1.1 追加：`subagent_start` / `subagent_progress` / `subagent_end` / `exec`�
 | 默认值 | `config.supervisor_mode` | 默认 `off`（改造后默认行为与改造前一致） |
 | 待人工验证 | A10 逐字节 timeline 比对 / A5 A/B 20 条账单 | 需真实管线跑批（脚本见 §6 测试计划） |
 
+### B7 — 已完成
+
+| 交付 | 位置 | 验证 |
+|---|---|---|
+| 子代理节点契约 | `schema/supervisor.py::SubagentNode` | snake_case，与前端类型一一对应（含 children 树） |
+| 追踪器 | `supervisor/tracker.py` | 状态机 pending→running→done/failed/cancelled；有界注册表（200）；取消回调；`tree()` 父子嵌套；`snapshot()` 按状态计数 |
+| 事件 | tracker `_event` | `subagent_start / subagent_progress / subagent_end`（复用 trace/SSE） |
+| 端点 | `api/supervisor.py` | `GET /{pid}/subagents`（空返回不是 404）、`POST /{pid}/subagents/{sid}/cancel`（不存在 404 / 不可取消或已结束 409） |
+| 测试 | `tests/test_subagent_tracker.py` | **10 passed** |
+
+> B7 单独看是"空跑"——还没有东西会创建子代理。它是 B8 的地基：`spawn` 直接调 `tracker.register()`，前端 F6 可并行开工。
+
 ### B1 起的前置条件
 
 - F9 已提供 `failure` / `degradations`，账本（B1）只需把 `_run_agent` 单点处的结果落成 `LedgerEntry`；
