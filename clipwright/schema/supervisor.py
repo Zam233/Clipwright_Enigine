@@ -59,6 +59,21 @@ class Attribution(BaseModel):
     source: str = Field(default="rule", description="rule / llm / fallback")
 
 
+class SupervisorDecision(BaseModel):
+    """调度决策（PRD F3/F4）——「这次用哪招、派给谁、为什么」。"""
+
+    id: str
+    strategy: str = Field(description="S1_same / S2_model / S3_upstream / S4_accept_degraded / S5_new_path / S6_abort")
+    target_stage: str = Field(default="", description="要重做的阶段；S4/S6 时为空")
+    reason: str = Field(default="", description="为什么选这个策略（人话）")
+    allow_degrade: bool = Field(default=False, description="是否允许接受降级交付")
+    aborted: bool = Field(default=False, description="S6 时置 True")
+    stage_attempts: dict[str, int] = Field(default_factory=dict)
+    previous_strategy: str = Field(default="", description="同阶段上一次用过的策略（防重复）")
+    mode: str = Field(default="shadow", description="生成时的 supervisor_mode")
+    ts: datetime = Field(default_factory=_utcnow)
+
+
 class DiagnosisReport(BaseModel):
     """诊断书（PRD F5）——给人看的一页结论。"""
 

@@ -350,6 +350,17 @@ v1.1 追加：`subagent_start` / `subagent_progress` / `subagent_end` / `exec`�
 | SSE | `add_event(..., "attribution" / "diag_report")` | 前端按 type 分流 |
 | 测试 | `tests/test_attribution_diagnosis.py` | **23 passed**（含端点与 LLM 兜底的两条反例：规则命中不调 LLM、兜底失败回退） |
 
+### B3 — 已完成
+
+| 交付 | 位置 | 验证 |
+|---|---|---|
+| 策略选择 S1–S6 | `services/supervisor.py::choose_strategy` | 纯函数：不可修复→S4；无归因→S6；首次→S1（有上游链→S3）；第二次→S2（无换模型预算→S5）；三次以上→S5 |
+| 同策略禁用（G2/A3） | 同上 `_escalate` | 同阶段同策略已用过即沿阶梯升级，阶梯用尽→S6 转人工；S3 重复时回落到症状阶段 |
+| 决策留痕 | `services/supervisor.py::record_decision` | 写 `shared_data["decisions"]`（仅留 50 条）+ trace 事件 `dispatch` |
+| 派工执行 | `pipeline_v2.execute_order` | 复用 `_run_agent`；核心阶段白名单校验（非核心直接 ValueError）；`_order_id` / `_quality_issues` 注入上下文 |
+| 自愈接线 | `pipeline_v2._decide_for_heal` + `_self_heal_quality` | `off` 零开销；`shadow` 只记录；`on` 时 S4 接受降级、S6 止损、目标阶段改写 `redo_agent` |
+| 测试 | `tests/test_supervisor_strategy.py` | **18 passed**（含禁用升级、阶梯耗尽、派工门禁与 `_run_agent` 复用） |
+
 ### B1 起的前置条件
 
 - F9 已提供 `failure` / `degradations`，账本（B1）只需把 `_run_agent` 单点处的结果落成 `LedgerEntry`；

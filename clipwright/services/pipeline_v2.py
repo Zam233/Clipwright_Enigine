@@ -733,6 +733,25 @@ class PipelineOrchestratorV2:
                           f"质量分 {score} 低于门槛 {min_score}，触发自愈重做 structure")
             # 批A(R9)：有 error 但无法映射重做目标 → 如实失败
             # （旧实现落入 else 分支静默 COMPLETED + error issues）
+            # ── B3：调度决策（shadow 只记录；on 才改变执行）──
+            decision = await self._decide_for_heal(state, pid, quality_issues) if has_errors else None
+            if decision is not None and decision.mode == "on":
+                if decision.strategy == "S4_accept_degraded":
+                    state.shared_data["accepted_degraded"] = True
+                    add_event(pid, "supervisor", "warning",
+                              f"接受降级：{decision.reason}")
+                    quality_passed = True
+                    break
+                if decision.strategy == "S6_abort":
+                    state.status = PipelineStatus.FAILED
+                    state.error = f"调度中枢止损：{decision.reason}"
+                    add_event(pid, "supervisor", "error", state.error)
+                    break
+                if decision.target_stage:
+                    if decision.target_stage != redo_agent:
+                        add_event(pid, "supervisor", "info",
+                                  f"归因改派：{redo_agent or '无'} → {decision.target_stage}")
+                    redo_agent = decision.target_stage
             if has_errors and not redo_agent:
                 state.status = PipelineStatus.FAILED
                 state.error = ("质检发现错误但无法定位重做目标: "
@@ -1283,6 +1302,70 @@ class PipelineOrchestratorV2:
             frontier.extend(rev_deps.get(cur, set()))
         plan_order = [a for group in AgentDAG.get_execution_plan() for a in group]
         return [a for a in plan_order if a in closed]
+
+    # ── B3：调度决策与派工执行 ─────────────────────
+
+    async def _decide_for_heal(self, state, pid: str, issues: list):
+        """影子/启用模式下为自愈选择策略（off 直接返回 None，零开销）。"""
+        try:
+            from clipwright.config import settings
+
+            mode = getattr(settings, "supervisor_mode", "off")
+            if mode == "off":
+                return None
+
+            from clipwright.services.attribution import attribute
+            from clipwright.services.episode_ledger import get_ledger
+            from clipwright.services.supervisor import choose_strategy, record_decision
+
+            ledger = get_ledger(pid)
+            attr = attribute(ledger, issues=issues)
+            state.shared_data["attribution"] = attr.model_dump(mode="json")
+            decisions = [d for d in (state.shared_data.get("decisions") or []) if isinstance(d, dict)]
+            used = [(str(d.get("target_stage", "")), str(d.get("strategy", ""))) for d in decisions]
+            stage = attr.primary_stage
+            decision = choose_strategy(
+                attr,
+                stage_attempts={stage: ledger.attempts(stage)} if stage else {},
+                used_pairs=used,
+                model_swaps=sum(1 for d in decisions if d.get("strategy") == "S2_model"),
+                mode=mode,
+            )
+            record_decision(state, decision, pid=pid)
+            return decision
+        except Exception as e:  # noqa: BLE001 — 决策失败回退到既有自愈逻辑
+            logger.warning("调度决策失败（回退既有自愈）: %s", e)
+            return None
+
+    async def execute_order(self, state, order, *, result_data: dict, persona_config: dict,
+                            plugin, agent_context, bus):
+        """按派工单执行一个核心阶段（复用 `_dispatch`，不新增执行通道）。
+
+        与 `run_sub_agent` 的区别：后者只认 `AgentRegistry` 里的插件 Agent，
+        而核心 6 阶段**禁止**注册进 registry（`CORE_AGENT_NAMES`）。所以派工必须
+        走编排层自己的 `_run_agent`。
+        """
+        from clipwright.agents.registry import CORE_AGENT_NAMES
+
+        target = str(getattr(order, "target_stage", "") or "")
+        if target not in CORE_AGENT_NAMES:
+            raise ValueError(f"派工单目标阶段非法: {target!r}（只允许核心阶段）")
+
+        extra = {**agent_context.extra_params}
+        order_id = str(getattr(order, "id", "") or "")
+        if order_id:
+            extra["_order_id"] = order_id
+            # 同时挂到共享上下文：Agent 与 Hook 都能看到「这次执行属于哪张派工单」
+            agent_context.extra_params["_order_id"] = order_id
+        issues = getattr(order, "issues", None)
+        if issues:
+            extra["_quality_issues"] = list(issues)[:5]
+            agent_context.extra_params["_quality_issues"] = list(issues)[:5]
+
+        input_data = self._build_input(
+            target, result_data, persona_config, plugin, extra_params=extra,
+        )
+        return await self._run_agent(state, target, input_data, agent_context, bus)
 
     # ── 初始化 ────────────────────────────────────
 

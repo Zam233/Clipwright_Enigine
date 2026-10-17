@@ -157,3 +157,23 @@ async def get_pipeline_diagnosis(pipeline_id: str, request: Request) -> dict:
     )
     return {"found": bool(entries), **report.model_dump(mode="json")}
 
+
+@router.get("/{pipeline_id}/decisions")
+async def get_pipeline_decisions(pipeline_id: str, request: Request) -> dict:
+    """调度决策序列（PRD F3/F4，调度面板数据源）。"""
+    from clipwright.api.pipeline import _enforce_pipeline_owner, _pipeline_results
+
+    _enforce_pipeline_owner(request, pipeline_id)
+    result = _pipeline_results.get(pipeline_id) or {}
+    shared = result.get("shared_data") if isinstance(result, dict) else {}
+    shared = shared if isinstance(shared, dict) else {}
+    decisions = shared.get("decisions") or []
+    return {
+        "pipeline_id": pipeline_id,
+        "found": bool(decisions),
+        "count": len(decisions),
+        "accepted_degraded": bool(shared.get("accepted_degraded")),
+        "decisions": decisions,
+    }
+
+
