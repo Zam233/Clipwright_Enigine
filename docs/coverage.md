@@ -3,15 +3,15 @@
 > 计划 §12.37 承诺的交付物：把 PRD 的 60 项验收逐条落到"现在什么状态、证据在哪、还差什么"。
 > **状态定义**：`通过` = 有自动化证据且已跑过；`部分` = 有实现/单测但缺真机或端到端；`未做` = 没有；`人工` = 只能由人判定。
 >
-> 生成于 2026-10-18。最近一次全量后端回归（2026-10-18 第 25 轮末）：**4017 passed / 3 skipped / 1 xfailed / 0 failed**（6 分 51 秒，`python -m pytest tests -q`）；前端 **108 文件 / 939 项全绿**、`tsc --noEmit` 0 错、`eslint` 0 错、`npm run build` 成功。
+> 生成于 2026-10-18。最近一次全量后端回归（第 26 轮末）：**4032 passed / 3 skipped / 1 xfailed / 0 failed**（6 分 09 秒，`python -m pytest tests -q`）；前端 **108 文件 / 939 项全绿**、`tsc --noEmit` 0 错、`eslint` 0 错、`npm run build` 成功。
 > **2026-10-18 补记**：新增 `scripts/e2e_pipeline_probe.py` 真机端到端探针（真 LLM + Mongo + 完整管线 dry-run），V2/V3/V5/V45 的证据随之更新；补上此前遗漏的 **Part IV（V52–V60）** 逐条表；总数改为按本文件实际行数统计（此前"通过 34"与表内不符）。
 
 ## 总览
 
 | 状态 | 数量 | 说明 |
 |---|---|---|
-| 通过 | 38 | 有自动化证据 |
-| 部分 | 14 | 有实现或单测，缺真机/端到端/事件留痕 |
+| 通过 | 41 | 有自动化证据 |
+| 部分 | 11 | 有实现或单测，缺真机/端到端/事件留痕 |
 | 未做 | 3 | V17（裁判未接真 LLM）、V34（4K 单帧未渲）、V50（无素材） |
 | 人工 | 4 | V16、V30、V40、V41 |
 | 合计 | 59 + V49（部分 4/7） | V1–V60 共 60 行 |
@@ -35,7 +35,7 @@
 | V11 | 含「忽略以上指令」的类型提示词 → 400 | 通过 | `schema/category_spec.detect_prompt_injection()` 规则检测（忽略指令/泄露提示词/角色重置/越狱模式），`test_prompt_safety.py` |
 | V12 | `param_rules` 越界键（如 `fps`）→ 400 | 通过 | `rule_key_allowed()` 白名单（剂量类 + `transition_weights./subtitle_/bgm_/pip_` 前缀），`test_prompt_safety.py` |
 | V13 | 同输入两次裁决逐字节一致 | 通过 | `test_resolution_determinism.py`（4 项：同输入同字节、字典顺序无关、sort_keys 稳定、冲突顺序稳定） |
-| V14 | 既有后端测试全绿 | 通过 | 全量 `python -m pytest tests -q`：**4017 passed / 3 skipped / 1 xfailed / 0 failed**（6 分 51 秒，2026-10-18 第 25 轮末）；此前 A-06 的 genre 必填回归已修并复跑确认 |
+| V14 | 既有后端测试全绿 | 通过 | 全量 `python -m pytest tests -q`：**4032 passed / 3 skipped / 1 xfailed / 0 failed**（6 分 09 秒，第 26 轮末）；此前 A-06 的 genre 必填回归已修并复跑确认 |
 | V15 | 身份层注入且顺序固定 | 部分 | `identity_text()` 顺序有单测；仅两处 Agent 注入 |
 | **V16** | 三类型可判别 | **人工** | 需开 `enable_genre_judge` 或人工盲评 |
 | V17 | 错配可判且给证据 | 未做 | 裁判（L2/L3）未接真实 LLM |
@@ -67,7 +67,7 @@
 | V36 | 卡点子代理超时降级 | 通过 | 子代理超时/取消机制（前序批次）+ 单测 |
 | V37 | 交付九件套齐全 | 通过 | `out/dist/plate_shot` 九文件、`gate_check` V37 通过 |
 | V38 | token 与渲染时长入账 | 部分 | report 有 `render_sec`；**LLM token 未入账** |
-| V39 | 后端测试全绿 | 通过 | 同 V14（4017 passed / 0 failed） |
+| V39 | 后端测试全绿 | 通过 | 同 V14（4032 passed / 0 failed） |
 | **V40** | 人工终审（3 人 ≥2 说得出类型） | **人工** | — |
 | **V41** | 素材落位 10 个 ≥8 认可 | **人工** | 代码侧已闭环（落位→写回→剪辑取用）；判据需真实素材与人 |
 | V42 | 素材缺口显式化 | 通过 | `gate_check` V42 + `placement_report.gaps` |
@@ -95,13 +95,13 @@
 | 编号 | 验收项 | 状态 | 证据 / 差距 |
 |---|---|---|---|
 | V52 | plan 由结构化对象渲染，同 plan 两次渲染逐字节一致 | 通过 | `services/plan_renderer.py`；`test_plan_first.py`（渲染两次比对 + 模板化标题）；无时间戳/随机量 |
-| V53 | 字段漂移消除：`CreativeBrief` ⊇ prompt 声明字段集 | 部分 | `test_plan_first.py::TestBriefFieldDrift`（模板与 model_fields 双射、旧数据补默认）——**真机"一次真实 brief 落库检查"未做** |
+| V53 | 字段漂移消除：`CreativeBrief` ⊇ prompt 声明字段集 | 通过 | 单测 `test_plan_first.py::TestBriefFieldDrift`（模板与 `model_fields` 双射、旧数据补默认、未知字段丢弃）；**真实产物检查**：`examples/mv_poc/plate_shot/brief.json`（真实落盘简报）9 个键 **0 个未知**、可被 `CreativeBrief(**d)` 正常解析 |
 | V54 | 类型 `plan_schema.required` 缺项 → 拒绝 | 通过 | `plan_validator.validate_plan` + `test_plan_first.py`（缺必填维度/未知维度 400、`assert_confirmable` 抛错） |
 | V55 | plan 是结构阶段上游：空 plan → 结构阶段明确失败 | 通过 | `services/plan_first.py` + `agents/structure_agent.py`（`plan_first=True` 且无 plan → `failure_reason=plan_missing`）；`test_plan_first_wiring.py` 断言 FAIL 与文案 |
 | V56 | 段落不连续/重叠/时长偏差 >25% → 拒绝 | 通过 | `test_plan_first.py`（`plan_section_gap`/`plan_section_overlap`/`plan_section_not_from_zero`/`DRIFT_WARN 0.10`→`DRIFT_REJECT 0.25` 两段式） |
 | V57 | `beats` 与音频 BPM 不一致 → 拒绝 | 通过 | `validate_plan(..., audio_grid=...)` + `test_plan_first.py::test_beats_mismatch/match` |
-| V58 | 执行改段 → `plan_drift` 事件可查且 plan 被写回 | 部分 | 漂移检测（3 类码）+ JSONL `append_drift` + **trace 事件**（`plan_first.emit_drift_events`，`structure_agent` 接线）；`test_plan_first_wiring.py`（27 项，含"每条漂移一个事件""无漂移不写""trace 挂了不抛"）；**仍缺：把漂移写回 session 的 plan**（现在只是记录，不改规划本体的状态） |
-| V59 | 交付同时含 `brief.md` 与 `plan.md`，内容与源对象一致 | 部分 | `render_brief_markdown` / `render_plan_markdown` 单测 + `tools/gate_check.py` 检查清单里 V59 判定（双文档存在）；**真实交付里同时产出的场景未跑**（现有 POC 交付只有九件套，无 md 双文档） |
+| V58 | 执行改段 → `plan_drift` 事件可查且 plan 被写回 | 通过 | 三通道齐：① trace 事件（`plan_first.emit_drift_events`）；② JSONL（`append_drift`）；③ **写回会话规划书**（`requirements_service.apply_plan_drift/write_back_plan_drift`，`proceed` 把 `session_id` 透传给管线，结构阶段 `await asyncio.to_thread(...)` 写回）。**真机端到端**（`scripts/e2e_pipeline_probe.py --with-plan --writeback`）：注入合法规划（2 段 0→20s、`plan_first`）→ 管线 `completed`，trace 2 条 `plan_drift`（`duration` + `section_count`），回读 `/api/requirements/session/{id}` 得 `production_plan._drift` **2 条**（code 齐全）、规划本体（`sections`）原样保留；时间线总长 20.0s = 规划目标时长。单测：`test_plan_drift_writeback.py`（11 项，含幂等去重/上限 20 条/无会话返回 0/写回失败不抛） |
+| V59 | 交付同时含 `brief.md` 与 `plan.md`，内容与源对象一致 | 通过 | 真实交付 `out/dist/plate_shot/` 里 **`brief.md` 与 `plan.md` 都存在**，且与 `render_brief_markdown(brief)` / `render_plan_markdown(plan, brief)` 的输出**逐字节相等**（本轮比对）；新增 `test_mv_bundle.py::test_pack_md_content_matches_source_objects` 把这条固化为回归；`tools/gate_check.py` 的 V59 判定同时检查双文档存在 |
 | V60 | 老 session（只有 scenes）→ 反向生成 `legacy` plan，不报错且下游可跑 | 部分 | `services/requirements_service._legacy_plan_from_scenes` + `test_legacy_plan.py`（4 项：legacy 标记、scene_count、总时长、保留既有字段）；**下游"可跑"未在真机验证** |
 
 ---
@@ -149,6 +149,7 @@ python scripts/render_plate_shot.py --seconds 6 --fps 30 --width 960 --height 54
 python scripts/e2e_pipeline_probe.py --timeout 480                        # 内置类型直跑
 python scripts/e2e_pipeline_probe.py --scenario floor --set min_shot_ms=300
 python scripts/e2e_pipeline_probe.py --scenario floor --floor 45000 --max-ms 200000 --set min_shot_ms=300
+python scripts/e2e_pipeline_probe.py --with-plan                       # V58：注入规划 → plan_drift 事件 + JSONL
 
 # 前端
 cd J:\Clipweight-Client
@@ -159,7 +160,8 @@ npx tsc --noEmit; npx eslint src; npm run test; npm run build
 
 ## 结论（一句话）
 
-**能自动化的项目里：38 项通过、14 项部分、3 项未做（V17/V34/V50）、1 项部分达标（V49 4/7）；另有 4 项只能由人判定（V16/V30/V40/V41），以及 4 项计划外人工验收（A5/A8/A10/A13）。**
-"部分"集中在三类：① 真机端到端（V2/V21/V25/V32/V35/V45/V54–V60 的部分项）；② 事件留痕与写回（V38/V45/V58/V59）；③ 需要素材或真落库的项（V33/V34/V41/V53）。
+**能自动化的项目里：41 项通过、11 项部分、3 项未做（V17/V34/V50）、1 项部分达标（V49 4/7）；另有 4 项只能由人判定（V16/V30/V40/V41），以及 4 项计划外人工验收（A5/A8/A10/A13）。**
+"部分"集中在三类：① 真机端到端（V2/V21/V25/V32/V35/V45）；② 事件留痕与写回（V38/V45）；③ 需要素材或真落库的项（V33/V34/V41）。
 "未做"三项里，V17 是类型裁判接真 LLM（依赖 D7 决策，默认不开），V50 需要外部素材，V34 需要 4K 单帧渲染窗口。
-**本轮新增的两条硬信息**：① V3 的黄条链路已完整（真机 trace 夹具直通前端），可从"部分"升级；② `min_shot_ms` 不是逐段硬下限——真机跑出 30s 片段，这是 PRD 措辞与实际实现的缝隙，已单列待拍板（PRD D23）。另外 V14/V39 随全量回归转"通过"（4017 passed / 0 failed）。
+**本轮已收口**：V53（真实 brief 落盘 0 未知字段）、V58（trace + JSONL + 会话写回三通道，真机回读 `_drift` 2 条）、V59（真实交付 `brief.md`/`plan.md` 与源对象逐字节一致）。
+**仍未拍板**：PRD D23（`min_shot_ms` 是否作逐段硬下限）——真机已跑出 30s 片段，改实现前需要先定策略。

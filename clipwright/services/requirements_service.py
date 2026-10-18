@@ -19,7 +19,7 @@ import json
 import time
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from clipwright.config import TIME_ZONE, logger
 from clipwright.context import mongo
@@ -361,6 +361,71 @@ def start_cleanup_task():
 
 
 # ── 主服务类 ──────────────────────────────────
+
+def apply_plan_drift(
+    plan: dict | None,
+    drifts: Iterable[dict[str, Any]],
+    *,
+    max_entries: int = 20,
+) -> dict:
+    """V58：把执行偏离**并入规划书对象**（写回的那一半，纯函数，可单测）。
+
+    规则：
+    - 规划书原样保留（段落/卡点/缺口一律不动），只在 ``_drift`` 下追加偏离；
+    - 幂等：同 ``(code, index)`` 只留最后一条——重跑同一条管线不会把记录刷成一堆；
+    - 最多保留 ``max_entries`` 条（超了丢最旧的），避免规划书被日志撑爆。
+    """
+    merged: dict[str, Any] = dict(plan or {})
+    existing = list(merged.get("_drift") or [])
+    for item in drifts or []:
+        if not isinstance(item, dict):
+            continue
+        record = dict(item)
+        key = (record.get("code"), record.get("index"))
+        existing = [
+            old for old in existing
+            if (old.get("code"), old.get("index")) != key
+        ]
+        existing.append(record)
+    if existing:
+        merged["_drift"] = existing[-max_entries:]
+    return merged
+
+
+def write_back_plan_drift(session_id: str, drifts: Iterable[dict[str, Any]]) -> int:
+    """把偏离写回会话里的规划书（内存缓存 + Mongo）。返回本次并入的条数。
+
+    失败只记日志——写回是留痕，不允许影响出片。
+    """
+    items = [dict(d) for d in (drifts or []) if isinstance(d, dict)]
+    if not session_id or not items:
+        return 0
+    try:
+        session = _memory_sessions.get(session_id)
+        model = None
+        if _mongo_ok():
+            model = RequirementsSessionModel.find_by_id(session_id)
+        plan = (session or {}).get("production_plan")
+        if plan is None and model is not None:
+            plan = getattr(model, "production_plan", None)
+            if plan is None and hasattr(model, "to_dict"):
+                plan = (model.to_dict() or {}).get("production_plan")
+        merged = apply_plan_drift(plan if isinstance(plan, dict) else None, items)
+        wrote = False
+        if session is not None:
+            session["production_plan"] = merged
+            wrote = True
+        if model is not None:
+            model.production_plan = merged
+            model.updated_time = datetime.now(tz=TIME_ZONE)
+            model.update()
+            wrote = True
+        # 没有任何落点（会话不存在）→ 如实返回 0，不假装写回成功
+        return len(items) if wrote else 0
+    except Exception as e:  # noqa: BLE001 - 写回失败不得影响出片
+        logger.warning("规划偏离写回失败（已跳过）: %s", e)
+        return 0
+
 
 class RequirementsService:
     """需求服务 — 对话 + 持久化 + 规划书生成。"""

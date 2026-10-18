@@ -651,7 +651,40 @@ SP1 ──► R-01 ──► R-02/R-03 ──► R-04 ──► 门 1
 **下一轮候选**：
 1. 拍板 `min_shot_ms` 逐段夹紧策略（拉长画面 / 重复素材 / 允许低于下限但记 C2），然后实现 + 真机复测；
 2. 用真实素材跑一次非 dry-run（V2/V21/V35/V45 的成片半边）——当前链路能跑完，缺的是素材；
-3. V58 补 trace 事件 + plan 写回；V59 让真实交付同时产出 `brief.md` 与 `plan.md`。
+3. V58 补 plan 写回 session。
+
+### 12.47 第 26 轮：V58 端到端取证 + V53/V59 收口
+
+**这一轮只做"用真机证据判分"**：上轮把自己的缺陷找出来了，这轮先把还能证的三条证掉。
+
+| 验收 | 原来 | 现在 | 证据 |
+|---|---|---|---|
+| V53 字段漂移 | 部分（缺真实落库检查） | **通过** | `examples/mv_poc/plate_shot/brief.json`（真实落盘简报）9 键 **0 未知**、`CreativeBrief(**d)` 正常解析；配合 `test_plan_first.py::TestBriefFieldDrift` 的模板↔model 双射断言 |
+| V59 双文档交付 | 部分（以为没有真实双文档交付） | **通过** | `out/dist/plate_shot/` 里 `brief.md`+`plan.md` 都在，且与 `render_brief_markdown` / `render_plan_markdown` 输出**逐字节相等**；新增 `test_mv_bundle.py::test_pack_md_content_matches_source_objects` 固化 |
+| V58 漂移事件 | 部分（有单测、无端到端） | **部分（证据升级）** | 探针新增 `--with-plan`：注入合法规划（2 段 0→20s、`screen_kinds=["plate"]`、`plan_first=true`）→ 管线 `completed`，trace 出现 `plan_drift` 事件（`plan_drift_section_count: planned 2 / executed 4`），同一记录进 `out/e2e/plan_drift.jsonl`；**时间线总长 20.0s = 规划目标时长**。仍缺"把漂移写回 session 的 plan"，故不改判 |
+
+**额外收获**：带规划那次总时长 20.0s，不带规划的几次是 60–670s（占位素材撑的）。plan 的 `target_duration_sec` 在真实管线里**确实约束成片总长**，比单测里的 `duration_scale` 断言更有说服力。
+
+**覆盖表**：通过 40 / 部分 12 / V49 部分 4/7 / 未做 3 / 人工 4 = 60 行（V53、V59 各 +1 通过）。
+
+### 12.48 第 26 轮（续）：V58 写回打通 —— 踩到"事件循环线程里的 Mongo"
+
+V58 的最后一块是"把偏离写回会话里的规划书"。实现路径：
+
+1. `requirements_service.apply_plan_drift(plan, drifts)`：**纯函数**，把偏离并入 `plan["_drift"]`，规划本体（sections/beats/gaps）一字不动；同 `(code, index)` 幂等去重，最多留 20 条。
+2. `write_back_plan_drift(session_id, drifts)`：写内存缓存 + Mongo；**没有任何落点（会话不存在）时返回 0**，不假装写成功。
+3. `api/requirements.proceed` 把 `session_id` 放进 `extra_params`（此前只有 audit 里有），结构阶段才能知道写给谁。
+4. `StructureAgent` 在检测到偏离后 `await write_back_plan_drift_if_session(...)`。
+
+**踩的坑（值得记）**：第一次真机跑，trace 有 `plan_drift`、会话里 `_drift` 却是空的，函数**返回 0 不报错**。原因是写回在事件循环线程里同步调用了会话模型的 Mongo 访问——`_io()` 在那儿返回协程，取字段即失败，被 `except` 静默吞掉。改成 `await asyncio.to_thread(write_back_plan_drift, ...)` 后立刻正常。这与仓库 `_persist` 注释里"必须 offload 到线程"是同一个坑，**只靠单测永远发现不了**（单测不在协程里跑）。
+
+**真机证据**（`python scripts/e2e_pipeline_probe.py --with-plan --writeback`）：
+- 管线 `completed`，trace 里 **2 条** `plan_drift`（`duration` + `section_count`）；
+- 回读 `/api/requirements/session/{id}`：`production_plan._drift` **2 条**（两个 code 齐全），`sections` 原样保留；
+- 时间线总长 20.0s = 规划 `target_duration_sec`。
+
+**V58 → 通过**（trace + JSONL + 写回三通道齐）；覆盖表：通过 41 / 部分 11。
+
 
 
 

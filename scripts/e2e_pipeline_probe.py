@@ -74,6 +74,28 @@ def _register_probe_category(floor_ms: int = 1200, max_ms: int = 20000) -> None:
         CategoryRegistry.register(_ProbeFloorPlugin())
 
 
+def _probe_plan() -> dict:
+    """构造一份**合法但与执行必然偏离**的规划书（V58 端到端取证用）。
+
+    规划段落连续 0→20s、画面类型声明为 plate；结构阶段实际产出的场景时长/数量
+    几乎必然不同 → `detect_drift` 应报 `plan_drift_duration` 与
+    `plan_drift_section_count`，且这批偏离要同时出现在 trace 里。
+    """
+    return {
+        "type": "vlog_daily",
+        "target_duration_sec": 20.0,
+        "sections": [
+            {"id": "A", "name": "开场", "t0": 0.0, "t1": 6.0, "purpose": "建立场景",
+             "screen_kinds": ["plate"]},
+            {"id": "B", "name": "主体", "t0": 6.0, "t1": 20.0, "purpose": "展开论证",
+             "screen_kinds": ["plate"]},
+        ],
+        "screen_kinds": ["plate"],
+        "material_strategy": {"gaps": ["手部特写 x2"]},
+        "legacy": False,
+    }
+
+
 def _parse_overrides(pairs: list[str] | None) -> dict:
     """``--set min_shot_ms=300`` → ``{"min_shot_ms": 300}``（数字/布尔自动转）。"""
     out: dict = {}
@@ -187,6 +209,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="探针类型的 max_shot_ms（毫秒）；要与 --floor 组成合法区间才能真正检验下限")
     parser.add_argument("--set", dest="overrides", action="append", metavar="KEY=VALUE",
                         help="额外塞进 extra_params 的取值，可重复（如 --set min_shot_ms=300）")
+    parser.add_argument("--with-plan", action="store_true",
+                        help="注入一份合法规划书并开 plan_first，验证执行偏离是否进 trace（V58）")
+    parser.add_argument("--writeback", action="store_true",
+                        help="建真实需求会话 + 规划，跑完回读会话验证偏离是否写回规划书（V58 写回半边）")
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--interval", type=float, default=3.0)
     args = parser.parse_args(argv)
@@ -204,6 +230,12 @@ def main(argv: list[str] | None = None) -> int:
     started = time.perf_counter()
     extra: dict = {"creative_prompt": args.prompt, "creative_avoid": ["花哨转场"]}
     extra.update(_parse_overrides(args.overrides))
+    if args.with_plan:
+        extra["plan"] = _probe_plan()
+        extra["plan_first"] = True
+        extra["plan_drift_path"] = str(ROOT / "out" / "e2e" / "plan_drift.jsonl")
+        report["scenario"] = "plan_drift"
+        report["injected_plan"] = {"target_duration_sec": 20.0, "sections": ["A 0-6s", "B 6-20s"]}
     if args.scenario == "floor":
         _register_probe_category(args.floor, args.max_ms)
         args.category = PROBE_CATEGORY
@@ -213,6 +245,31 @@ def main(argv: list[str] | None = None) -> int:
     report["extra_params"] = extra
 
     with TestClient(app) as client:
+        if args.writeback:
+            # V58 写回：先建一个真实需求会话并把规划写进去（模拟"规划已确认"），
+            # 再让管线带上 session_id 跑，最后回读会话看规划书有没有被写回。
+            init_res = client.post("/api/requirements/init", json={
+                "topic": args.topic,
+                "persona_id": args.persona,
+                "category_plugin_id": args.category,
+            })
+            session_id = str((init_res.json() or {}).get("session_id") or "")
+            report["session_id"] = session_id
+            report["session_init_http"] = init_res.status_code
+            if not session_id:
+                report["error"] = f"会话创建失败: {init_res.text[:300]}"
+                _write(report, started)
+                return 1
+            from clipwright.api.requirements import _service
+
+            _service._persist(
+                session_id, "plan_confirmed", [],
+                {"overview": "探针简报", "core_message": "版画质感"},
+                _probe_plan(), {},
+            )
+            extra["session_id"] = session_id
+            report["scenario"] = "writeback"
+
         payload = {
             "persona_id": args.persona,
             "category_plugin_id": args.category,
@@ -272,6 +329,19 @@ def main(argv: list[str] | None = None) -> int:
                 "all_clips_at_or_above_floor": bool(durations) and all(d >= floor_sec for d in durations),
             }
         report["prompt_resolution_events"] = types.get("prompt_resolution", 0)
+        report["plan_drift_events"] = types.get("plan_drift", 0)
+        if args.writeback:
+            sess = client.get(f"/api/requirements/session/{report['session_id']}")
+            payload = sess.json() if sess.status_code < 400 else {}
+            plan = (payload or {}).get("production_plan") or {}
+            drift = plan.get("_drift") if isinstance(plan, dict) else None
+            report["writeback"] = {
+                "session_http": sess.status_code,
+                "plan_has_drift": bool(drift),
+                "drift_count": len(drift or []),
+                "drift_codes": sorted({str(d.get("code")) for d in (drift or []) if isinstance(d, dict)}),
+                "plan_body_kept": bool(isinstance(plan, dict) and plan.get("sections")),
+            }
         report["agents_seen"] = sorted(
             {
                 str(e.get("agent"))

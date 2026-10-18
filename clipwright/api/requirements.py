@@ -441,6 +441,8 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
             "animation_intents": animation_intents,
             "creative_brief": session.get("creative_brief"),
             "production_plan": session.get("production_plan"),
+            # V58：管线带上会话 id，结构阶段的规划偏离才能写回本会话的规划书
+            "session_id": req.session_id,
             "pipeline_timeout_sec": _pipeline_timeout,
             # beat-sync 透传（用户 extra_params 显式值优先）
             **({"cut_on_beat": True, "bpm": float(req.beat_bpm)}

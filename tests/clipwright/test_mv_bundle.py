@@ -22,6 +22,7 @@ from clipwright.services.mv_bundle import (
     render_storyboard,
     validate_bundle,
 )
+from clipwright.services.plan_renderer import render_brief_markdown, render_plan_markdown
 from tools.check_sync import check_sync
 
 
@@ -175,6 +176,19 @@ class TestPackDist:
         result = pack_dist(load_bundle(bundle_dir), tmp_path / "dist", preview=preview)
         assert "preview.mp4" in result["files"]
         assert result["missing"] == []
+
+    def test_pack_md_content_matches_source_objects(self, tmp_path) -> None:
+        """V59：交付里的 plan.md / brief.md 必须与各自源对象渲染结果逐字节一致。"""
+        bundle_dir = _make_bundle(tmp_path / "bundle")
+        bundle = load_bundle(bundle_dir)
+        pack_dist(bundle, tmp_path / "dist")
+        dist = tmp_path / "dist"
+        assert (dist / "plan.md").read_text(encoding="utf-8") == render_plan_markdown(
+            bundle.plan, bundle.brief or None
+        )
+        assert (dist / "brief.md").read_text(encoding="utf-8") == render_brief_markdown(
+            bundle.brief
+        )
 
     def test_pack_without_plan_skips_plan_md(self, tmp_path) -> None:
         bundle_dir = _make_bundle(tmp_path / "bundle", with_plan=False)

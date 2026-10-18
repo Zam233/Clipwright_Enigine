@@ -22,6 +22,29 @@ from clipwright.tool.base import AgentToolkit
 from clipwright.tool.registry import ToolRegistry
 from clipwright.config import logger
 
+
+async def write_back_plan_drift_if_session(
+    context: Any,
+    drifts: list[dict[str, Any]],
+) -> int:
+    """V58 写回：有 ``session_id`` 就把偏离并入会话里的规划书；没有则跳过。
+
+    **必须 offload 到线程**：会话模型的 Mongo 访问在事件循环线程里会返回协程
+    （仓库既有的 `_io()` 陷阱，`_persist` 也是这么绕开的）；直接在协程里同步调用
+    会静默失败——本轮真机就踩到过"返回 0、写入没发生"。
+    """
+    session_id = str((getattr(context, "extra_params", None) or {}).get("session_id") or "")
+    if not session_id or not drifts:
+        return 0
+    try:
+        from clipwright.services.requirements_service import write_back_plan_drift
+
+        return await asyncio.to_thread(write_back_plan_drift, session_id, drifts)
+    except Exception as exc:  # noqa: BLE001 - 写回失败不得影响出片
+        logger.warning("规划偏离写回失败（已跳过）: %s", exc)
+        return 0
+
+
 SYSTEM_PROMPT_TPL = """你是一个{tone}风格的视频脚本创作者。
 
 ## Persona 特征
@@ -555,6 +578,8 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                             append_drift(drift_path, drifts)
                         # V58：同一批偏离同时进 trace，前端运行详情可查
                         emit_drift_events(context.pipeline_id, drifts)
+                        # V58：会话里的规划书同步写回（有 session_id 才写）
+                        await write_back_plan_drift_if_session(context, drifts)
                         warnings = list(warnings) + [
                             f"plan_drift: {item.get('code')}" for item in drifts
                         ]
