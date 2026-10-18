@@ -157,6 +157,8 @@ class Task(BaseModel):
     usage: TaskUsage = Field(default_factory=TaskUsage)
     finish: Optional[TaskFinish] = None
     context_digest: list[dict[str, Any]] = Field(default_factory=list)
+    #: 人工插话（C5）：进了规划器才算数，出下一版计划后被消费清空
+    hints: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 
@@ -178,6 +180,7 @@ class Task(BaseModel):
             "usage": self.usage.model_dump(mode="json"),
             "finish": self.finish.model_dump(mode="json") if self.finish else None,
             "context_digest": self.context_digest,
+            "hints": self.hints,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }

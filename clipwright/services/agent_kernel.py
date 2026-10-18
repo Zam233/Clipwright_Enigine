@@ -66,13 +66,16 @@ class KernelDeps:
 
 
 async def default_executor(task: Task, step: PlanStep) -> dict[str, Any]:
-    from clipwright.services.recording import maybe_record
     from clipwright.tool.surface import execute as surface_execute
 
     if step.capability == "run_pipeline":
         from clipwright.services import pipeline_capability
 
         return await pipeline_capability.run(task, step)
+    if step.capability == "spawn_subagent":
+        from clipwright.services import subagent_capability
+
+        return await subagent_capability.run(task, step)
     idem = f"{task.id}:{step.id}:{step.attempt}"
     outcome = await surface_execute(
         step.capability, step.args, pipeline_id=task.id, idem_key=idem,
@@ -134,9 +137,13 @@ class LLMPlanner:
 
     async def plan(self, task: Task) -> Plan:
         capabilities = _capability_catalog()
+        context = context_bundle(task)
+        hints = "\n".join(f"- {h}" for h in task.hints[:8]) or "（无）"
         prompt = (
             f"需求：{task.request.topic}\n"
             f"目标时长：{task.request.duration_sec or '未指定'} 秒\n"
+            f"用户临时要求（必须遵守）：\n{hints}\n\n"
+            f"已知上下文：\n{context}\n\n"
             f"可用能力（只能从这里选）：\n{capabilities}\n\n"
             "请给出 1-6 步的执行计划。只输出 JSON，不要解释。"
         )
@@ -184,8 +191,38 @@ class LLMPlanner:
         return {"action": "finish", "conclusion": f"{step.capability} 未成功：{outcome.get('error') or ''}"}
 
 
+def context_bundle(task: Task, *, max_chars: int = 1200) -> str:
+    """把任务上下文压成给模型的短文本（Q5：摘要优先 + 关键数值结构化保留）。
+
+    为什么不用"把最近 N 条观察全塞进去"：长任务的观察里 90% 是噪声，
+    真正有用的是**路径/数值/状态**这些可核对的事实。压缩后必须仍然包含它们，
+    否则模型会基于模糊记忆做决定——那比上下文不够更糟。
+    """
+    lines: list[str] = []
+    plan = task.plan
+    if plan:
+        for step in plan.steps:
+            if step.status == 'pending':
+                continue
+            brief = f"（{step.result_brief}）" if step.result_brief else ''
+            err = f" 失败：{step.error}" if step.error else ''
+            lines.append(f"- [{step.status}] {step.title or step.capability}{brief}{err}")
+    # 结构化事实：从 digest 里把数值/路径类字段原样保留
+    facts: list[str] = []
+    for entry in task.context_digest:
+        step_id = str(entry.get('step_id') or '')
+        for key, value in (entry.get('facts') or {}).items():
+            if isinstance(value, (int, float, bool)) or (
+                isinstance(value, str) and len(value) <= 80
+            ):
+                facts.append(f"{step_id}.{key}={value}")
+    if facts:
+        lines.append("关键数值：" + "；".join(facts[-24:]))
+    text = "\n".join(lines) or "（无历史）"
+    return text[:max_chars]
+
+
 def _capability_catalog() -> str:
-    """给规划器的能力清单（只列可直调档位，dangerous 不出现）。"""
     try:
         from clipwright.tool.surface import build_surface
 
@@ -294,10 +331,15 @@ class AgentKernel:
         note = str(text or "").strip()
         if not note:
             raise KernelError("注入内容为空")
-        _INJECT.setdefault(task_id, []).append(note[:500])
+        # C5：插话必须进**任务状态**（而不只是事件流），否则规划器根本看不见，
+        # 用户会觉得"我说了它没听"。消费点在下一次 plan/reflect。
+        task.hints.append(note[:500])
+        task.touch()
         from clipwright.services.task_events import emit
 
-        emit(task_id, "inject", f"人工注入：{note[:80]}", {"text": note[:500]})
+        emit(task_id, "inject", f"人工注入：{note[:80]}", {"text": note[:500],
+                                                          "pending_hints": len(task.hints)})
+        self._checkpoint(task)
         return task
 
     # ── 规划 ─────────────────────────────────────
@@ -306,8 +348,12 @@ class AgentKernel:
         from clipwright.services.task_events import emit
 
         task.status = "planning"
+        hints_used = list(task.hints)
         plan = await self.deps.planner.plan(task)  # type: ignore[union-attr]
         task.plan = plan
+        # 插话被这一版计划消费掉（否则会一直挂着，让用户以为没被听到）
+        if hints_used:
+            task.hints = [h for h in task.hints if h not in hints_used]
         task.status = "pending"
         task.touch()
         from clipwright.services.recording import maybe_record
