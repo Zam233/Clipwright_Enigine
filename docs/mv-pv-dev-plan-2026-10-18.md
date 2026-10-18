@@ -486,12 +486,27 @@ SP1 ──► R-01 ──► R-02/R-03 ──► R-04 ──► 门 1
 
 **仍未做（F-04）**：创作页去「配音驱动/视觉驱动」二选一 + 提示词区落位。抽屉与蒸馏已就绪，但**入口还没挂到 `HomePage`**——下轮第一件事。
 
-### 12.23 下一轮
+### 12.24 第 11 轮：F-04 创作页改造完成
 
-1. **F-04**：`HomePage` 去驱动模式二选一、加提示词区、挂右侧对话按钮（组件已备）；
+| 项 | 结果 |
+|---|---|
+| R1 去二选一 | `HomePage` 删除「配音驱动 / 视觉驱动」两个按钮；`mode` 改为**由材料自动派生**（`useEffect`: 有配音→voiceover，否则→visual），下游 `mode === 'voiceover'` 闸门行为不变（音色选择/自动配音/切分方式照常） |
+| R2 提示词区 | 新增 `features/creation/CreativePromptField.tsx`：文本（≤4000）+ 避免项 chips（可单独移除）+ 字符计数 + 「和 AI 聊聊」按钮 |
+| 数据落点 | `projectStore` 新增 `creativePrompt` / `creativeAvoid` 与 setter；`launch()` 时随任务写入（供需求阶段消费） |
+| R3 抽屉入口 | `ChatForgeDrawer` 挂载在创作页；开屏注入 `type/topic/has_audio/existing_prompt/existing_avoid`；回填 `prompt + avoid` |
+| 验证 | **前端 105 files / 918 tests 通过**（新增 6：组件 3 + 源码约束 3）；`tsc` 通过；`eslint` 0 error（余 3 条历史 warning）；`build` 7.24s 通过 |
+
+**源码约束测试**（本轮新增的"反向验收"）：直接读 `HomePage.tsx` 源码，断言 `配音驱动` / `视觉驱动` 字样**不再出现**、`CreativePromptField` 与 `ChatForgeDrawer` 已挂载、`setMode(audio ? 'voiceover' : 'visual')` 存在。这类测试防的是"改回来"。
+
+**尚未接进管线**：`creativePrompt` 只写进 projectStore，**需求阶段还没消费它**（真正生效需要后端从 `extra_params.creative_prompt` 读并合入类型规范/任务提示词）。下一轮补这一环。
+
+### 12.25 下一轮
+
+1. **提示词进管线**：需求/结构阶段读 `creative_prompt` 并合入 `plan`/类型规范，端到端跑一次；
 2. **F-06**：规划确认页（brief/plan 双栏）；
 3. **R-11/R-12 收口**：字幕带与文字动画抽成可复用构件；
 4. **S 轨**：MV 标签集 + 乐句级 query。
+
 
 
 
