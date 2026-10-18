@@ -59,6 +59,70 @@
       }
       kicker.style.opacity = String(0.8 * ease((t - 2.2) / 0.6));
     };
+  } else if (kind === 'lyric_graphic') {
+    /* 纯图形歌词（V49 第 7 类形态）：没有外部素材，全靠排版 + 逐词高亮 + 版面网格。
+     * 歌词文本来自 data.lines（数据文件），**不写在本文件里**——V31 的纪律。
+     * 高亮进度由 t 推导，不用定时器；亮度只升不降，避免触发闪光闸。 */
+    var lyricLines = (data.lines && data.lines.length) ? data.lines : [];
+    var grid = document.createElement('canvas');
+    grid.width = W; grid.height = H;
+    grid.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%';
+    stage.appendChild(grid);
+    var g2d = grid.getContext('2d');
+    var lineNodes = [];
+    for (var li = 0; li < lyricLines.length; li++) {
+      var words = String(lyricLines[li].text || '').split(/\s+/);
+      var row = el([
+        'position:absolute', 'left:' + px(80), 'top:' + px(132 + li * 76),
+        'font:' + font(46, 700), 'letter-spacing:' + px(1),
+        'color:#f2ead8', 'opacity:0', 'white-space:pre'
+      ].join(';'));
+      var spans = [];
+      for (var wi = 0; wi < words.length; wi++) {
+        var sp = document.createElement('span');
+        sp.textContent = words[wi] + (wi < words.length - 1 ? ' ' : '');
+        sp.style.opacity = '0.28';
+        row.appendChild(sp);
+        spans.push(sp);
+      }
+      lineNodes.push({ row: row, spans: spans, t0: Number(lyricLines[li].t0 || 0), t1: Number(lyricLines[li].t1 || 0) });
+    }
+    var tagL = el([
+      'position:absolute', 'left:' + px(80), 'bottom:' + px(48),
+      'font:' + font(16, 400, 'ui-monospace, monospace'), 'color:#8a8a8a', 'opacity:0'
+    ].join(';'), title);
+    scene.renderFrame = function (t) {
+      // 版面：竖线栅格 + 一条随进度推进的墨线（纯图形，不依赖素材）
+      var progress = ease(t / Math.max(DURATION, 0.001));
+      g2d.clearRect(0, 0, W, H);
+      g2d.fillStyle = '#0b0a08';
+      g2d.fillRect(0, 0, W, H);
+      g2d.strokeStyle = 'rgba(242,234,216,0.10)';
+      g2d.lineWidth = Math.max(1, W / 900);
+      for (var c = 0; c < 9; c++) {
+        var x = W * (0.08 + 0.105 * c);
+        g2d.beginPath();
+        g2d.moveTo(x, H * 0.08);
+        g2d.lineTo(x, H * 0.92);
+        g2d.stroke();
+      }
+      g2d.fillStyle = 'rgba(200,60,48,0.85)';
+      g2d.fillRect(W * 0.08, H * (0.90 - 0.62 * progress), W * 0.84, Math.max(2, H / 260));
+      for (var i = 0; i < lineNodes.length; i++) {
+        var item = lineNodes[i];
+        var lineOn = ease((t - item.t0) / 0.25);
+        item.row.style.opacity = String(lineOn);
+        var span = Math.max(0.001, (item.t1 - item.t0));
+        var local = ease((t - item.t0) / span);
+        for (var s = 0; s < item.spans.length; s++) {
+          // 逐词点亮：第 s 个词在 local 走过 s/(n+1) 时点亮，只升不降
+          var lit = local >= (s + 1) / (item.spans.length + 1) ? 1 : 0.28;
+          item.spans[s].style.opacity = String(lit);
+          item.spans[s].style.color = lit === 1 ? '#f2ead8' : '#8f887a';
+        }
+      }
+      tagL.style.opacity = String(0.75 * ease((t - 1.2) / 0.8));
+    };
   } else if (kind === 'generative') {
     var canvas = document.createElement('canvas');
     canvas.width = W; canvas.height = H;

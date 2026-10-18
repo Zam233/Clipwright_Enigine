@@ -37,12 +37,20 @@ ARCHETYPES: dict[str, str] = {
     "generative": "generative lines",
     "code_data": "code & counters",
     "vj_light": "vj light bars",
+    # V49 第 7 类：纯图形歌词（无外部素材，靠排版 + 逐词高亮）
+    "lyric_graphic": "pure lyric graphic",
 }
+#: 需要额外数据的形态 → 数据文件（歌词文本刻意不进 scene.js，V31）
+DATA_FILES: dict[str, str] = {"lyric_graphic": "lyric_lines.json"}
 
 
 def _scene_js(kind: str, seconds: float) -> str:
     source = (SCENE_DIR / "scene.js").read_text(encoding="utf-8")
-    payload = {"kind": kind, "duration_sec": seconds, "title": ARCHETYPES[kind]}
+    payload: dict[str, object] = {"kind": kind, "duration_sec": seconds, "title": ARCHETYPES[kind]}
+    data_name = DATA_FILES.get(kind)
+    if data_name:
+        data = json.loads((SCENE_DIR / data_name).read_text(encoding="utf-8"))
+        payload["lines"] = data.get("lines") or []
     return "window.__arch = " + json.dumps(payload, ensure_ascii=False) + ";\n" + source
 
 
