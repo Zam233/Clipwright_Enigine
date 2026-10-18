@@ -89,10 +89,10 @@
 | 指标 | 值 |
 |---|---|
 | 直调档位 | read, write_local, costly |
-| 工具面条目 | 51（可用 51） |
-| 按档位 | {"costly": 9, "read": 16, "write_local": 26} |
+| 工具面条目 | 55（可用 55） |
+| 按档位 | {"costly": 9, "read": 16, "write_local": 30} |
 | 覆盖率（可用安全工具） | 100%（池 51 项） |
 | 真实 dry-run | 0 项（其余走结构预检） |
-| 结构预检 | 51 项（参数/路径可验证，不验滤镜语义） |
+| 结构预检 | 55 项（参数/路径可验证，不验滤镜语义） |
 | 排除的 dangerous | video_download, run_python, run_shell |
 

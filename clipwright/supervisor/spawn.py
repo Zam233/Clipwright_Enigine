@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Optional
 
@@ -115,6 +116,8 @@ async def spawn_subagent(
     )
     entry = get_workers(pid).register(spec)
     entry.subagent_id = node.id
+    # 取消回调：真正 cancel 掉执行中的协程（没有它，cancelled 只是一行状态文字）
+    tracker.set_cancel_cb(node.id, lambda: _cancel_entry(entry))
 
     # 5) 执行权限 → 两级门的第一级（独立 LLM）
     if spec.needs_exec_review:
@@ -178,6 +181,9 @@ async def _run_worker(pid: str, worker_id: str) -> dict[str, Any]:
     reg.mark(worker_id, "running")
     if node_id:
         tracker.update(node_id, status="running", last_output="执行中")
+    # 取消要真能停：把当前 asyncio task 挂到 entry 上，tracker.cancel 的 cancel_cb
+    # 会 cancel 它（此前只把节点标成 cancelled，底层 LLM 调用仍在跑）
+    entry.async_task = asyncio.current_task()
 
     def _on_call(tool: str, ok: bool, brief: str) -> None:
         entry.note_call(tool, ok=ok, brief=brief)
@@ -201,10 +207,13 @@ async def _run_worker(pid: str, worker_id: str) -> dict[str, Any]:
             # 带工具的 worker 走真正的 tool-call 循环：工具执行全部经
             # `worker_tools.build_executor`（执行类落到 gateway），不是把工具名写在
             # 规格单上就算数。无工具则退回单次问答，省一轮 token。
+            #
+            # **墙钟必须真的生效**：此前 spec.timeout_sec 只写进规格单、没有实际约束，
+            # 一个挂住的模型调用会把 Kernel 的一步永久卡住（任务级墙钟闸在步内压根不跑）。
             if spec.tools:
                 from clipwright.supervisor.worker_tools import build_executor
 
-                resp = await svc.with_tools(
+                coro = svc.with_tools(
                     system_prompt=f"你是被临时派来的子代理（{spec.role}）。只办交给你的那一件事。",
                     user_prompt=prompt,
                     tool_executor=build_executor(
@@ -214,7 +223,8 @@ async def _run_worker(pid: str, worker_id: str) -> dict[str, Any]:
                     max_tool_rounds=max(1, int(spec.max_turns or 5)),
                 )
             else:
-                resp = await svc.ask(prompt)
+                coro = svc.ask(prompt)
+            resp = await asyncio.wait_for(coro, timeout=float(spec.timeout_sec or 60.0))
         text = str(getattr(resp, "content", "") or "")
         if not getattr(resp, "success", True):
             raise RuntimeError(f"worker LLM 调用失败: {getattr(resp, 'status_code', '?')}")
@@ -242,6 +252,49 @@ async def _run_worker(pid: str, worker_id: str) -> dict[str, Any]:
             "tool_calls": list(entry.tool_calls),
             "tokens": int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0),
         }
+    except asyncio.TimeoutError:
+        # 超时按「可重试」上报：主代理可以直接决定再试一次或换人
+        logger.warning("临时 worker 超时 %s（>%ss）", worker_id, spec.timeout_sec)
+        reg.mark(worker_id, "failed")
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        message = f"子代理超时（>{spec.timeout_sec}s）"
+        if node_id:
+            tracker.finish(node_id, status="failed", last_output=message,
+                           duration_ms=elapsed_ms)
+        return {
+            "worker_id": worker_id,
+            "subagent_id": node_id,
+            "role": spec.role,
+            "status": "failed",
+            "error": message,
+            "failure": {
+                "category": "timeout",
+                "retryable": "retry_same",
+                "blocking_point": message,
+                "evidence": [{"kind": "timeout", "text": message}],
+                "tool_calls": len(entry.tool_calls),
+            },
+            "tool_calls": list(entry.tool_calls),
+            "duration_ms": elapsed_ms,
+        }
+    except asyncio.CancelledError:
+        # 被 tracker.cancel 取消：不是失败，如实标 cancelled
+        logger.info("临时 worker 被取消 %s", worker_id)
+        reg.mark(worker_id, "cancelled")
+        if node_id:
+            tracker.finish(node_id, status="cancelled", last_output="已取消",
+                           duration_ms=int((time.monotonic() - started) * 1000))
+        return {
+            "worker_id": worker_id,
+            "subagent_id": node_id,
+            "role": spec.role,
+            "status": "cancelled",
+            "error": "子代理被取消",
+            "failure": {"category": "cancelled", "retryable": "permanent",
+                        "blocking_point": "人工取消", "evidence": [],
+                        "tool_calls": len(entry.tool_calls)},
+            "tool_calls": list(entry.tool_calls),
+        }
     except Exception as e:  # noqa: BLE001 — worker 失败不影响管线
         logger.warning("临时 worker 执行失败 %s: %s", worker_id, e)
         reg.mark(worker_id, "failed")
@@ -260,6 +313,16 @@ async def _run_worker(pid: str, worker_id: str) -> dict[str, Any]:
             "tool_calls": list(entry.tool_calls),
             "duration_ms": elapsed_ms,
         }
+
+
+def _cancel_entry(entry: Any) -> None:
+    """取消 worker 的执行协程（tracker.cancel 的回调）。"""
+    task = getattr(entry, "async_task", None)
+    if task is not None and not task.done():
+        try:
+            task.cancel()
+        except Exception as e:  # noqa: BLE001 — 取消失败只告警
+            logger.warning("取消 worker 执行失败 %s: %s", getattr(entry, "id", "?"), e)
 
 
 def _classify_failure(exc: Exception, tool_calls: list[dict[str, Any]]) -> dict[str, Any]:

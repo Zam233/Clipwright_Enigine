@@ -62,6 +62,17 @@ class SubagentTracker:
         self._event("subagent_start", node, "子代理登记")
         return node
 
+    def set_cancel_cb(self, subagent_id: str, cancel_cb: "Callable[[], None]") -> bool:
+        """补挂取消回调。
+
+        派生流程是「先注册节点 → 再拿到执行句柄」，所以无法在 register 时一次给全；
+        没有回调时 `cancel()` 只能改状态文字，底层协程还在跑。
+        """
+        if subagent_id not in self._nodes:
+            return False
+        self._cancel_cbs[subagent_id] = cancel_cb
+        return True
+
     def update(self, subagent_id: str, **fields: Any) -> Optional[SubagentNode]:
         """更新节点字段（status/last_output/model/duration_ms/cost_usd）。"""
         node = self._nodes.get(subagent_id)

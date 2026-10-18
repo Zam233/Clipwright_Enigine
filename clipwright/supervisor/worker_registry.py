@@ -85,6 +85,8 @@ class WorkerEntry:
     review: dict[str, Any] = field(default_factory=dict)
     #: worker 内部的工具调用轨迹（主代理据此判断"它到底查了什么"）
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    #: 执行中的 asyncio task（取消时要真的 cancel，而不是只改状态文本）
+    async_task: Any = None
     created_at: datetime = field(default_factory=_utcnow)
     ts: datetime = field(default_factory=_utcnow)
 

@@ -148,7 +148,51 @@ def build_surface(*, tiers: Iterable[str] = SURFACE_TIERS) -> list[SurfaceEntry]
         )
     if not out:
         raise CapabilityMatrixError("工具面为空：注册表或矩阵未初始化")
+    out.extend(_skill_surface_entries(allowed))
     return sorted(out, key=lambda e: (e.tier, e.name))
+
+
+def _skill_surface_entries(allowed: tuple[str, ...]) -> list[SurfaceEntry]:
+    """把 Skill 也放进工具面（否则主 Agent **一个技能都调不了**）。
+
+    之前 `build_surface()` 只遍历 matrix 里 kind=="tool" 的条目，于是 4 个内置技能
+    （分镜分析/字幕生成/节奏分析/配音脚本）永远进不了 Kernel——`surface.execute`
+    也会以"不在工具面内"拒绝。技能本身已实现 `to_llm_tool()` 与
+    `SkillRegistry.execute()`，缺的只是这层接线。
+    """
+    from clipwright.skill import register_builtin_skills
+    from clipwright.skill.registry import SkillRegistry
+
+    if not SkillRegistry.list():
+        register_builtin_skills()
+
+    entries: list[SurfaceEntry] = []
+    for info in SkillRegistry.list():
+        if "write_local" not in allowed:
+            break
+        skill = SkillRegistry.get(info.name)
+        if skill is None:
+            continue
+        try:
+            schema = skill.to_llm_tool("openai")
+        except Exception as e:  # noqa: BLE001
+            raise SurfaceError(f"技能 {info.name} 的 schema 推断失败: {e}") from e
+        function = schema.get("function") or {}
+        base_desc = str(function.get("description") or "")
+        function["description"] = _describe(info.name, "write_local", base_desc + "（组合技能）")
+        entries.append(
+            SurfaceEntry(
+                name=str(info.name),
+                tier="write_local",
+                description=str(function["description"]),
+                schema=schema,
+                available=bool(info.available),
+                idempotent=False,
+                dry_run=False,
+                cost_hint=_COST_HINT["write_local"],
+            )
+        )
+    return entries
 
 
 def schemas(*, tiers: Iterable[str] = SURFACE_TIERS, available_only: bool = True
@@ -170,19 +214,23 @@ def surface_stats(*, tiers: Iterable[str] = SURFACE_TIERS) -> dict[str, Any]:
     by_tier: dict[str, int] = {}
     for e in entries:
         by_tier[e.tier] = by_tier.get(e.tier, 0) + 1
-    # 分母取"允许直调的档位中的可用工具"，不把 dangerous 算进覆盖率（它本就不该直调）
-    pool = [
-        e for e in build_matrix_cached()
+    # 分母与分子必须同口径：都只算"允许直调档位里的**工具**"，
+    # 否则把 Skill 算进分子会让覆盖率 >100%（这属于自欺欺人）。
+    tool_pool = {
+        e.name for e in build_matrix_cached()
         if e.kind == "tool" and e.tier in SURFACE_TIERS and e.available
-    ]
-    covered = [e for e in entries if e.available]
+    }
+    covered = [e for e in entries if e.available and e.name in tool_pool]
+    skills = [e for e in entries if _is_skill(e.name)]
     return {
         "total_capabilities": stat["total"],
         "surface_count": len(entries),
-        "surface_available": len(covered),
+        "surface_available": len([e for e in entries if e.available]),
         "by_tier": by_tier,
-        "pool": len(pool),
-        "coverage_ratio": round(len(covered) / len(pool), 4) if pool else 0.0,
+        "pool": len(tool_pool),
+        "coverage_ratio": round(len(covered) / len(tool_pool), 4) if tool_pool else 0.0,
+        "skills_in_surface": len(skills),
+        "skills_available": len([e for e in skills if e.available]),
         "dry_run_capable": sum(1 for e in entries if e.dry_run),
         # 结构预检对全部工具可用（参数/路径可验证），但它是 structural 而非 semantic
         "preflight_capable": len(entries),
@@ -272,6 +320,28 @@ def _cost_of(result: Any) -> Optional[float]:
     return None
 
 
+def _is_skill(name: str) -> bool:
+    try:
+        from clipwright.skill.registry import SkillRegistry
+
+        return SkillRegistry.get(name) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def _execute_skill(name: str, payload: dict[str, Any]) -> Any:
+    """执行一个 Skill（失败也返回结构化结果，不抛给 Kernel）。"""
+    from clipwright.schema.skill import SkillExecResult, SkillStatus
+    from clipwright.skill.registry import SkillRegistry
+
+    try:
+        return await SkillRegistry.execute(name, **payload)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Skill 执行异常 %s: %s", name, e)
+        return SkillExecResult(status=SkillStatus.ERROR, skill_name=name,
+                               error=f"{type(e).__name__}: {e}")
+
+
 async def execute(
     name: str,
     args: Optional[dict[str, Any]] = None,
@@ -319,11 +389,16 @@ async def execute(
 
     started = time.monotonic()
     try:
-        result = await ToolRegistry.execute(name, **payload)
+        if _is_skill(name):
+            result = await _execute_skill(name, payload)
+        else:
+            result = await ToolRegistry.execute(name, **payload)
         duration_ms = (time.monotonic() - started) * 1000
-        status = str(getattr(result, "status", "ok") or "ok")
-        # ToolStatus 是 str 枚举（success/error/...），统一成 ok/error 便于前端判断
-        ok = status in ("success", "ok", "ToolStatus.SUCCESS")
+        raw_status = getattr(result, "status", "ok")
+        # 三种工具/技能的状态枚举序列化方式不完全一致（"success" / "ToolStatus.SUCCESS" /
+        # 枚举对象），统一归一化，避免"成功被当成失败"这种最难发现的错。
+        status = str(raw_status).lower().rsplit(".", 1)[-1]
+        ok = status in ("success", "ok")
         cost = _cost_of(result)
         payload_out: dict[str, Any] = {
             "status": "ok" if ok else "error",
@@ -336,6 +411,10 @@ async def execute(
             "cost_unknown": cost is None and entry.tier == "costly",
             "replayed": False,
         }
+        # 技能内部的工具调用轨迹（主代理要能看出"这个技能实际干了什么"）
+        tool_calls = getattr(result, "tool_calls", None)
+        if tool_calls:
+            payload_out["tool_calls"] = list(tool_calls)[:20]
     except Exception as e:  # noqa: BLE001 — 工具异常不能带崩 Kernel
         duration_ms = (time.monotonic() - started) * 1000
         payload_out = {
