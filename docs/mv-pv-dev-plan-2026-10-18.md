@@ -773,6 +773,32 @@ V58 的最后一块是"把偏离写回会话里的规划书"。实现路径：
 
 **V45 → 通过**（留痕 + 到达模型 + 量化影响三件齐，且如实写明节奏层不成立）；覆盖表：通过 46 / 部分 6。
 
+### 12.53 第 29 轮：造出 MV 真类型（`lyric_mv`），V35 第一次有东西可判
+
+**发现**：查 V35 时发现两件更基础的事——① `lyric_mv` **根本没注册**（`main.py` 只注册了四个内置类型，MV 线的核心类型不在其中）；② 四个内置类型**全部没有声明** prompts / param_rules / traits，`load_spec()` 对它们只能从旧钩子合成 structure/animation 两个槽位。也就是说 Part I 的机制在运行时基本空转，只有 TypeMaker 里新建的类型才真正用它。
+
+**做了什么**：新增 `clipwright/category/lyric_mv.py`，第一个按新契约写全的内置类型：
+
+| 部分 | 内容 |
+|---|---|
+| 10 槽位 | genre（"整片是一支歌词 MV"）/ anti_patterns（禁口播、禁弹跳、禁图表）/ lexicon + structure/material/edit/animation/audio/subtitle/quality 全填；合计 549 字符（上限 4000） |
+| 参数规则 | `base_shot_ms` ceiling 6000（soft）、`min_shot_ms` floor 300（soft）、`cut_on_beat` require **strict**、`transition_weights.hard_cut` floor 0.5（soft） |
+| 代理指标 | `avg_shot_ms ≤ 3200`（**strict**）、`text_overlay_ratio ≥ 0.4`（**strict**） |
+| 声明 | `search_hint`（版画/油墨/套印…）、`required_animation_markers`、`plan_schema`、`requires=["beat_grid","lyrics"]` |
+| 校验 | `validate_bundle()` **0 问题**（无悬空数字、无越权键、无注入模式） |
+
+**V35 真机结果**（`scripts/check_genre_v35.py`，30 秒 + BPM 128 + 8 行歌词）：
+
+- 管线 `completed`，时间线拿来跑 `/genre-check`：`avg_shot_ms = 6166.67`（**不达标**）、`text_overlay_ratio = 0.988`（达标）、`beat_align_ratio = 1.0`（切点全部落拍）；
+- 综合 **1/2「不通过」**，`judge: skipped` 如实标注未做 LLM 复核。
+
+**所以 V35 保持"部分"，但性质变了**：以前是"没有真实成片时间线可判"，现在变成"判定链路真通了、判定器有区分度，但真实产出确实不够格"。判定器的区分度由单测锁住：MV 形态时间线（8×3s + 文字覆盖 90%）判过，长镜头（1×20s）判不过。
+
+**根因又落回 D23**：片段时长由结构阶段的场景时长决定，类型声明 `avg_shot_ms ≤ 3200` 也压不下来——"切点落拍"能生效（1.0）、"镜头要短"不能生效。要让 MV 类型真正成立，必须让类型节奏介入场景时长分配，这正是 D23 那把钥匙管的范围。
+
+**一处顺手修正的度量口径**：`text_overlay_ratio` 统计的是 TEXT 轨（歌词文字），不是 CAPTION 轨（字幕）；我第一版单测用 CAPTION 轨构造，指标恒为 0——已改正并在注释里写明，避免下一个人踩同一个坑。
+
+
 
 
 

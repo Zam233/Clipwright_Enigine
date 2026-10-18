@@ -99,6 +99,7 @@ from clipwright.category import (
     DigitalReviewPlugin,
     KichikuFastcutPlugin,
     KnowledgeLongformPlugin,
+    LyricMvPlugin,
     VlogDailyPlugin,
 )
 from clipwright.plugins import PluginLoader
@@ -350,6 +351,8 @@ def _register_builtin_plugins() -> None:
     CategoryRegistry.register(KichikuFastcutPlugin())
     CategoryRegistry.register(DigitalReviewPlugin())
     CategoryRegistry.register(VlogDailyPlugin())
+    # MV/PV 线的主类型；plan/PRD 一直在用它，但此前没有注册（V35 因此无从判起）
+    CategoryRegistry.register(LyricMvPlugin())
 
 
 app = FastAPI(
