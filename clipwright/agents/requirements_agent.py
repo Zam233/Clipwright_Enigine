@@ -130,6 +130,15 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
         references = input_data.reference_materials or []
 
         user_context = f"选题: {topic}\n"
+
+        # F-04 落点：用户创作提示词优先于类型/Persona 默认风格
+        from clipwright.services.creative_prompt import resolve_creative_prompt
+
+        creative_prompt, creative_avoid = resolve_creative_prompt(context.extra_params)
+        if creative_prompt:
+            user_context += f"用户创作提示词（优先遵守）: {creative_prompt}\n"
+        if creative_avoid:
+            user_context += "用户明确不要的: " + "；".join(creative_avoid) + "\n"
         if script:
             user_context += f"文稿预览: {script[:500]}\n"
         if references:

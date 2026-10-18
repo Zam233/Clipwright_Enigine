@@ -335,6 +335,13 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                 if block:
                     system_prompt += "\n\n" + block
 
+            # F-04 落点：用户创作提示词（L1，优先于类型默认风格）
+            from clipwright.services.creative_prompt import creative_prompt_block
+
+            user_prompt_block = creative_prompt_block(context.extra_params)
+            if user_prompt_block:
+                system_prompt += "\n\n" + user_prompt_block
+
             if input_data.persona_prompt:
                 system_prompt += f"\n\n## Persona Prompt\n{input_data.persona_prompt}\n"
             if input_data.vision_prompt:
