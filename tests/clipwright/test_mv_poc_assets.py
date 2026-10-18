@@ -31,6 +31,57 @@ def _render_module():
     return module
 
 
+class TestPlateShotAssets:
+    """R-11…R-13 的集成资产：版画镜头场景 + 歌词行。"""
+
+    PLATE_DIR = ROOT / "examples" / "mv_poc" / "plate_shot"
+
+    def test_scene_is_lint_clean(self) -> None:
+        source = (self.PLATE_DIR / "scene.js").read_text(encoding="utf-8")
+        assert scan_text(source, "scene.js") == []
+
+    def test_lines_json_schema(self) -> None:
+        payload = json.loads((self.PLATE_DIR / "lines.json").read_text(encoding="utf-8"))
+        assert payload["duration_sec"] > 0
+        assert payload["keyword"]
+        times = [line["t0"] for line in payload["lines"]]
+        assert times == sorted(times)
+        for line in payload["lines"]:
+            assert line["t1"] > line["t0"]
+            assert line["text"]
+
+    def test_scene_uses_data_uri_assets_only(self) -> None:
+        source = (self.PLATE_DIR / "scene.js").read_text(encoding="utf-8")
+        assert "window.__plate" in source
+        # 不许从网络/相对路径取素材（渲染期禁止网络）
+        assert "http://" not in source and "https://" not in source
+        assert "fetch(" not in source
+
+    def test_scene_builder_injects_assets(self) -> None:
+        module = _load_script_module()
+        assets = {
+            "ground": "data:image/png;base64,AAA",
+            "clean": "data:image/png;base64,BBB",
+            "misreg": "data:image/png;base64,CCC",
+            "glyph": "data:image/png;base64,DDD",
+        }
+        lines = json.loads((self.PLATE_DIR / "lines.json").read_text(encoding="utf-8"))
+        js = module.build_scene_js(assets, lines)
+        assert js.startswith("window.__plate = ")
+        assert "data:image/png;base64,AAA" in js
+        assert scan_text(js, "plate_shot") == []
+
+
+def _load_script_module():
+    spec = importlib.util.spec_from_file_location(
+        "render_plate_shot", ROOT / "scripts" / "render_plate_shot.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
 class TestChatAssets:
     def test_scene_js_is_lint_clean(self) -> None:
         source = (CHAT_DIR / "scene.js").read_text(encoding="utf-8")

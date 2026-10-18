@@ -380,12 +380,32 @@ SP1 ──► R-01 ──► R-02/R-03 ──► R-04 ──► 门 1
 **新增 39 项单测**（`test_plate_library.py`）。门 2 仍差两项人工判定：
 "不看字能认出 3/5"（当前字符版画能认出胸像，需用真实剪影复测）与 9 张剪影配准 ≤1px（需要素材）。
 
-### 12.9 下一轮
+### 12.9 第 3 轮：歌词/卡点服务 + 版画镜头真机集成（R-11/R-13 + M1 接入）
 
-1. **R-11…R-13**：歌词模型、字幕带、拍点服务（`mv_cues`）——门 3 的前半；
-2. **R-14/R-15**：腐坏组合与四个专属转场（winclose/zoom/shatter/slices）；
-3. **A-08/A-09**：`declares` 迁出 5 处硬编码 + 指标采集/同一性校验 L1；
-4. 把 `plate` 接进场景脚本（JS 侧通过预渲染 PNG/SVG 资产引用），并出第一版"版画镜头"。
+| 任务 | 实现 | 验收 |
+|---|---|---|
+| R-11 歌词模型 | `schema/lyrics.py`：`LyricsDoc → LyricLine → LyricWord`，行/词/音节/关键词；**不存歌词原文**，只存 `text_ref`；校验重叠与倒序 | 12 项单测（含"行重叠被拒""band=False 不走字幕带"） |
+| R-13 拍点与 cues | `services/mv_cues.py`：`BeatGrid`（beat/half/bar 吸附、`error_frames`、`is_on_grid`）、`make_cue`（实测起音优先，其次网格吸附，否则标 `init`）、`cues_from_lyrics`、`build_cues`、`grid_hit_rate`、`save/load_cues` | 12 项单测（含 V24 命中率、cues JSON 往返、source=init 标记） |
+| **版画镜头集成** | `examples/mv_poc/plate_shot/{scene.js,lines.json}` + `scripts/render_plate_shot.py`：版画库渲染 PNG → base64 内联 → 场景按 `t` 组合（错版在 2.5s 切入）+ 大字关键词 + 字幕带 + 亮度棘轮 | **180 帧两次渲染 sha256 全等、闪光 0 违规**；单帧核对：三墨胸像 + 红色错版边 + 字符纹理 + 衬线字幕 |
+
+**两个只有抽帧才看得出来、已修掉的问题**：
+
+1. **字符版画被盖住**：glyph 层压在墨层之下且墨层不透明 → 纹理等于没画；改为压在墨层之上（opacity 0.32）。
+2. **关键词与头部重叠**属构图问题（不是 bug），已记录；正式类型规范里由 `genre` 的版式约定约束。
+
+**产物**：`out/plate_shot/{a.mov,report.json,f_clean.png,f_broken.png}`（960×540 / 6s / 182MB）。
+
+### 12.10 下一轮
+
+1. **R-14/R-15**：腐坏组合（错版+降帧+撕裂）与四个专属转场（winclose/zoom/shatter/slices）；
+2. **A-08/A-09**：`declares` 迁出 5 处硬编码 + 指标采集/同一性校验 L1；
+3. **R-16 进流程**：把闪光检测接进渲染脚本的默认门禁（现在 plate/chat 两个脚本各自调用，需统一）；
+4. 用 `mv_cues` 替换 POC 里写死的时间，让"卡点"从代码常量变成 cues 驱动。
+
+### 12.11 第 3 轮遗留问题
+
+- 全量回归（`pytest tests -q`）在后台跑了 **>40 分钟仍未结束**，怀疑有测试卡在网络/子进程上；下一轮改为分片跑（`-k` 切块 + `--timeout`）以定位"顺序污染 + 卡死"两件事。
+
 
 
 
