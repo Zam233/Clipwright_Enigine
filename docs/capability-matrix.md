@@ -77,4 +77,19 @@
 | `run_python` | meta | dangerous | ✓ | ✓ | ✗ | ✗ | 同上；脚本落临时文件、默认禁网 |
 | `run_shell` | meta | dangerous | ✓ | ✓ | ✗ | ✗ | 经 ExecutionGateway：硬底线标记 + 独立 LLM 判定 + 两级确认 |
 
-> 覆盖度是 C1 的硬门槛（PRD A7）：`LLM 可见` 这一列必须从当前的少数几项爬到 ≥90%。
+> 覆盖度是 C1 的硬门槛（PRD A7）：`LLM 可见` 这一列是**旧的** `agent_callable` 标记，不代表 Kernel 实际能看到什么——真正的工具面见下一节。
+
+## Kernel 工具面（C1）
+
+> 口径：`read` / `write_local` / `costly` 可被 Kernel 直调；`dangerous` 只能经执行网关（PRD F6 红线 2/5）。
+
+| 指标 | 值 |
+|---|---|
+| 直调档位 | read, write_local, costly |
+| 工具面条目 | 48（可用 46） |
+| 按档位 | {"costly": 9, "read": 14, "write_local": 25} |
+| 覆盖率（可用安全工具） | 100%（池 46 项） |
+| 真实 dry-run | 0 项（其余走结构预检） |
+| 结构预检 | 48 项（参数/路径可验证，不验滤镜语义） |
+| 排除的 dangerous | video_download, run_python, run_shell |
+
