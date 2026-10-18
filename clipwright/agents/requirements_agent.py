@@ -13,8 +13,27 @@ from typing import Any
 
 from clipwright.agents.base import BaseAgent
 from clipwright.schema.agent import AgentContext, AgentDecision, AnimationIntent, RequirementsInput, RequirementsOutput
+from clipwright.schema.requirements import (
+    CreativeBrief,
+    brief_field_names,
+    brief_prompt_template,
+)
 from clipwright.services.llm import LLMService
 from clipwright.config import logger
+
+
+def _brief_default(name: str) -> Any:
+    """取模型字段的默认值（缺省键补齐用，避免下游到处 ``.get(key, "")``）。"""
+    field = CreativeBrief.model_fields.get(name)
+    if field is None:
+        return ""
+    factory = getattr(field, "default_factory", None)
+    if factory is not None:
+        try:
+            return factory()  # type: ignore[call-arg]
+        except TypeError:
+            return None
+    return field.default
 
 
 CREATIVE_BRIEF_SYSTEM = """你是一位专业的视频创作顾问。你的任务是与用户对话，收集创作需求，逐步完善创作方案。
@@ -47,27 +66,19 @@ animation_intents 格式:
 
 只在用户明确需要视觉信息呈现（图表/对比/数据可视化/标题动画）时填写 animation_intents。
 
-## 输出格式（纯 JSON）
-{
-  "reply": "对用户的自然语言回复",
-  "brief_draft": {
-    "title": "视频标题",
-    "overview": "概述",
-    "target_audience": "目标受众",
-    "core_message": "核心信息",
-    "style_direction": "风格方向",
-    "structure_suggestion": "结构建议",
-    "duration_estimate": "预估时长",
-    "key_elements": ["元素1"],
-    "special_requirements": [],
-    "animation_intents": []
-  },
-  "is_ready": false,
-  "missing_info": ["还未了解的信息"]
-}
+## brief_draft 字段与输出格式（纯 JSON）
 
-当 is_ready=true 时，brief_draft 必须完整填写。
+字段表与 JSON 骨架由 `CreativeBrief` 模型自动生成（改模型即改提示词，结构上不可能漂移）：
+
+{{BRIEF_TEMPLATE}}
+
+当 is_ready=true 时，brief_draft 必须按上表**完整**填写（列表字段给数组，文本字段给字符串）。
 """
+
+#: A-01：字段表从模型生成，杜绝"提示词 10 字段 / 模型 7 字段"的漂移。
+CREATIVE_BRIEF_SYSTEM = CREATIVE_BRIEF_SYSTEM.replace(
+    "{{BRIEF_TEMPLATE}}", brief_prompt_template()
+)
 
 
 PLAN_TRANSLATE_SYSTEM = """你是一位专业的视频创作顾问。请将结构 Agent 生成的场景规划翻译为用户友好的 Markdown 规划书。
@@ -152,8 +163,26 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
 
         result = await self.llm_or_fallback(lambda: self._llm.structured_output(system_prompt=system_prompt, user_prompt=user_context, pipeline_id=context.pipeline_id), fallback={}, retries=2)
         if isinstance(result, dict) and "brief_draft" in result:
-            return result["brief_draft"]
+            return self._normalize_brief(result["brief_draft"])
         return {}
+
+    @staticmethod
+    def _normalize_brief(draft: Any) -> dict[str, Any]:
+        """A-01：按模型字段收口——未知键记 warning 后丢弃，缺省键补空。
+
+        旧实现把模型输出原样透传，``core_message`` 等字段在落库时被静默丢弃，
+        出了事没人知道。这里显式登记"模型多给了什么"。
+        """
+        if not isinstance(draft, dict):
+            return {}
+        known = set(brief_field_names())
+        unknown = [key for key in draft if key not in known]
+        if unknown:
+            logger.warning("CreativeBrief 收到未知字段（已丢弃）: %s", unknown)
+        normalized = {key: value for key, value in draft.items() if key in known}
+        for name in known:
+            normalized.setdefault(name, _brief_default(name))
+        return normalized
 
     @staticmethod
     def _extract_animation_intents(brief: dict[str, Any]) -> list[AnimationIntent]:

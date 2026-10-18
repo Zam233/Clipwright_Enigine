@@ -1,0 +1,362 @@
+# MV/PV 能力开发计划（据 `mv-pv-prd-2026-10-18.md` v1.2 拆解）
+
+> 一句话：**先证伪，再铺开**。用 2 天 + 1 周证明"确定性场景脚本 + 三道闸"这条路走得通（门 1），再按三条并行轨道铺开 50 人日的工作；任何一道门不过，就地停或缩，不硬推。
+
+- 状态：可执行草案
+- 日期：2026-10-18
+- 依据：`docs/mv-pv-prd-2026-10-18.md`（Part I 机制 / Part II 能力 / Part III 覆盖审计）
+- 需求编号引用：PRD 的 `D1–D22`（决策）、`F1–F14`（功能）、`C1–C13`（能力）、`M0–M8`（里程碑）、`V1–V60`（验收）
+
+---
+
+## 0. 一页结论
+
+| 项 | 结论 |
+|---|---|
+| 总工作量（WBS 明细求和） | **≈66 人日**：后端 A（渲染）26.5 ＋ 后端 B（Agent/规划/素材）26 ＋ 前端 8 ＋ 内容/美术 6 |
+| 与 PRD 粗估的差异 | PRD 写 "Part I 12 + Part II 34–38 ≈ 46–50"，此处 **60 人日（开发）+ 6（内容）**。差异原因：① 前端（8）与素材线（5.5–6）在 PRD 里没单列为独立工作量；② 渲染任务被拆细（R-01…R-19），细粒度估算通常高于里程碑级粗估。**以本表为准**，PRD 的 34–38 作为量级参考 |
+| 工期（建议配置） | **2 后端 + 1 前端 + 0.5 内容 ≈ 10–11 周**（3 人 × 10 周 = 150 人日产能，实际负载约 45–55%，缺口是联调/返工/验收缓冲）；1 后端 + 0.5 前端 ≈ 18–20 周 |
+| 关键路径 | `Spike → M0(P0 并行) → M1 → M3 → 门 3 → M6/M8 → M7 → 交付` |
+| 三道门（不可跳过） | **门 1** 渲染可行（W2）→ **门 2** 画面质量（W3）→ **门 3** POC 过三闸（W5）→ **门 4** 交付完整（W8） |
+| 最贵的一条 | M1 版画/印刷库（4 人日）：三墨分版、错版、降帧、撕裂、字符版画——**这是"像不像 MV"的全部来源** |
+| 最容易假的一条 | "提示词定义了类型"（P0）：必须用"请求传违规值 → 成片被顶回边界"来验，不接受"代码里有这个字段" |
+| 未决项阻塞 | D14（闪光超标处置）阻塞门 3 判定；D13（主 agent 写场景代码）阻塞 M0 收口；D10（逐词来源）阻塞 M2 排期；D12/D15 可后置 |
+| 停下来的条件 | 门 1 不过 → 停整条渲染路线；门 3 不过 → 停 M1/M3 加码，回到最小可用；任一 milestone 超期 >50% → 触发范围裁剪而非延期 |
+
+**建议开工顺序（前 3 件事）**
+
+1. **Spike A**（0.5 天）：`scene_script` 合成类型 + `seek(t)` 调 `renderFrame`，渲 5 秒，两次哈希一致。
+2. **V53 修字段漂移**（0.5 天）：`CreativeBrief` 与 prompt 字段对齐 + 单测（这是独立小胜利，且是 M8 的前置）。
+3. **D14 拍板 + 闪光检测脚本原型**（1 天）：先用一个 10 秒纯色闪片验证检测器能不能报出违规——**先有量表，再谈治理**。
+
+---
+
+## 1. 计划边界与前提
+
+### 1.1 已定前提（PRD 已拍板，本计划直接采用）
+
+| 编号 | 结论 | 对计划的影响 |
+|---|---|---|
+| D1 | 三级冲突：品味级用户赢 / 规范级类型赢 / 同一性级换类型 | P1 前端要三态呈现，不能只做"黄条" |
+| D3 | 提示词 ≤4000 字符/类型 | 校验器必须在上线前落地，否则后期批量清理 |
+| D4 | 5 处硬编码**本期清除** | 排进 P1，且必须留一个周期的兜底日志（可测） |
+| D7 | LLM 同一性裁判默认关、L1 指标恒开 | `genre_conformance` 必须支持"零 LLM 成本"模式 |
+| D9 | 背景透明度：动画 agent 提案、主 agent 裁决 | M0 的场景脚手架要带 `composition_mode` 参数与事件 |
+| D17 | 素材类纳入范围（识别 + 落位） | 独立轨道 S（M6），不是"顺手做" |
+| D18/D19 | 去驱动二选一 + 内置提示词对话 | 前端轨道独立排 M7 |
+| D20–D22 | plan-first、维度由 `plan_schema` 定、规划书确定性渲染 | M8 必须先有 schema 再有生成，顺序不可颠倒 |
+
+### 1.2 未决项与默认兜底（不阻塞开工）
+
+| 编号 | 事项 | 若 W1 结束仍未定，按此默认执行 |
+|---|---|---|
+| D10 | 逐词时间来源 | 默认"whisper 打底 + onset 校正"，全部标 `init`，进"待耳朵确认"清单 |
+| D12 | 4K 策略 | 默认"仅 2 张 hero 矢量化，其余 ≤1.75x"，4K 导出需人工确认 |
+| D13 | 主 agent 能否直接写场景代码 | 默认"能，但只允许写 `compositions/` 下自有分区，且必须过三道闸" |
+| D14 | 闪光超标处置 | 默认 **拒绝交付**（按 PRD 推荐值执行；若要改，最晚门 3 前定） |
+| D15 | 渲染预算 | 默认 1080p60 单支 ≤30 分钟、4K 只渲指定帧；超预算降半帧率采样 |
+
+### 1.3 团队与环境
+
+| 角色 | 人数 | 主要负载 |
+|---|---|---|
+| 后端 A（渲染/创意） | 1 | M0–M5（场景脚本、版画库、卡点、腐坏、4K） |
+| 后端 B（Agent/规划） | 1 | P0–P2、M6、M8 |
+| 前端 | 1 | 类型编辑器、创作页、ChatForge 抽屉、规划确认页 |
+| 内容/美术（0.5） | 0.5 | 4 个内置类型的规范撰写、MV 示例工程包、版画设计、字体授权核对 |
+
+**环境前置**（S0 一天内确认）：HyperFrames/playwright 可用、`ffmpeg` 可用、Node ≥20、Python ≥3.12、磁盘预留 ≥50GB（逐帧渲染产物）、CI 能跑 lint + pytest + 前端三件套。
+
+---
+
+## 2. 风险前置：三个 Spike（≤3 天，先做）
+
+| ID | 目标 | 判定 | 失败含义 |
+|---|---|---|---|
+| **SP1** | `scene_script` 能渲：一个 5 秒合成，`renderFrame(t)` 画圆与文字，两次渲染逐帧哈希一致 | 渲出 150 帧、sha256 全等 | 确定性路线不成立 → 整条 Part II 停 |
+| **SP2** | 成本实测：1080p60 一段 30 秒纯 HTML 场景的渲染时长 / 磁盘 / 峰值内存 | 单段 ≤8 分钟、≤3GB 产物 | 超 3 倍 → 必须先做降采样与缓存，M0 延期 |
+| **SP3** | 三墨分版可行性：Python 侧对一张 PNG 做墨色分版 + alpha 清理 + 三版导出 | 三版可独立着色、边缘无脏点 | 挪到 JS 侧或改用 SVG 输入（影响 M1 设计） |
+
+> Spike 代码允许丢弃，**但结论必须写成 `docs/spike-results-2026-10-18.md` 三行**（结论 / 数字 / 影响），否则等于没做。
+
+---
+
+## 3. 工作分解（WBS）
+
+任务字段：`ID｜名称｜范围｜落点｜依赖｜验收｜估算(人日)`
+
+### 轨道 R：渲染与创意（后端 A，26.5 人日）
+
+| ID | 任务 | 范围 | 落点 | 依赖 | 验收 | 估 |
+|---|---|---|---|---|---|---|
+| R-01 | scene_script 合成类型 | `compositions/<n>/{index.html,scene.js}` 约定；`seek(t)` 调 `renderFrame(t,ctx)`；`data-composition-id` 注册 | `animation/hf_timeline.py`（扩展）、`animation/scene_renderer.py`（新） | SP1 | V21、V22 | 2 |
+| R-02 | 确定性纪律工具 | lint 扫 `Date.now/Math.random/setTimeout/rAF/fetch`；运行时冻结 `Math.random/Date`；`prng(t,salt)` | `tools/lint_determinism.py`、`animation/scene_runtime.js`、`animation/scene_prng.js` | R-01 | V23 | 1 |
+| R-03 | 逐帧哈希闸 | 同工程两次渲染逐帧比对，输出差异帧清单 | `tools/hash_frames.py` | R-01 | V22 | 0.5 |
+| R-04 | **Day-1 聊天界面场景** | 标题栏 + 线程 + 3 条消息按拍落下 + 光标按 `t` 闪 + 状态灯；背景模式可配 | `examples/mv_poc/chat/*` | R-01 | 门 1 | 1.5 |
+| R-05 | 30 秒 POC 装配 | 界面 3 镜 + 版画 2 镜 + 代码 1 镜；出 `report.json` | `examples/mv_poc/` | R-01…R-04、M-02 | 门 3 | 1.5 |
+| R-06 | 版画库：三墨分版 | `inks(bitmap,palette)`：按最近墨色分三版、每版独立角色/位移/显影 | `animation/plate/inks.py` | SP3 | V28 | 1.5 |
+| R-07 | 版画库：纸底与错版 | `ground()`（噪点/点阵/光斑/裁切标记）、`misregistration(px)` | 同上 | R-06 | V28、V29 | 1 |
+| R-08 | 版画库：降帧与撕裂 | `decimate(fps)`、`tear(dir,holdFrames≥6)` | 同上 | R-06 | V29 | 1 |
+| R-09 | 字符版画与 RGB 分离 | `glyphPlate(text,gradient)`、`rgbSplit(px)` | 同上 | R-06 | V30 | 1 |
+| R-10 | 剪影管线与配准 | `cleanAlpha(16)`、派生图按实际比例、配准表 `{s,tx,ty}` | `services/silhouette.py`、`assets/character/registration.json` | R-06 | V33 | 1 |
+| R-11 | 歌词模型与字幕带 | `lyrics.json`（行/词/音节/关键词）、字幕带构件（位置字号锁定） | `components/lyrics/*`、`schema/lyrics.py` | R-01 | V25 | 1.5 |
+| R-12 | 四个文字动画 | 逐词出现、逐块印上（结巴）、字母下垂、终端流 | `components/lyrics/*` | R-11 | V30 相关 | 1.5 |
+| R-13 | 卡点服务 | `build_grid(bpm,offset)`、`snap(t,unit)`、`build_cues(lyrics,audio)` | `services/mv_cues.py` | 已有 onset/bpm | V24、V25 | 2 |
+| R-14 | 腐坏特效 | `decimate/tear/rgbSplit` 组合 + "界面镜头内插版画再回界面"辅助 | `components/decay/*` | R-08、R-09 | V29 | 1.5 |
+| R-15 | 四个专属转场 | `winclose / zoom / shatter / slices` | `components/transitions/*` | R-14 | V29 | 1.5 |
+| R-16 | 闪光检测器 | 逐帧亮度直方图 + 大面积占比 + 边界扫描；输出违规秒数 | `tools/check_flash.py` | — | V26、V27 | 1.5 |
+| R-17 | 4K 与矢量化 | hero 资产描路径、4K 单帧导出、边缘检查 | `tools/vectorize.py` | R-10 | V34 | 2 |
+| R-18 | 编排与工程包载入 | `mv.json/cues.json/lyrics.json` 载入 + `dist/` 六件套生成 | `services/mv_bundle.py`、`tools/pack_dist.py` | R-05…R-13 | V37、V38 | 2 |
+| R-19 | 同步检查 | 负时间片头偏移、音画同步误差 | `tools/check_sync.py` | R-18 | V32 | 1 |
+
+### 轨道 A：Agent 与规划（后端 B，20 人日）
+
+| ID | 任务 | 范围 | 落点 | 依赖 | 验收 | 估 |
+|---|---|---|---|---|---|---|
+| A-01 | **V53 字段漂移修复**（先做） | `CreativeBrief` 补 `core_message/structure_suggestion/key_elements/special_requirements`；或改 prompt 对齐；加集合断言单测 | `schema/requirements.py`、`agents/requirements_agent.py` | — | V53 | 0.5 |
+| A-02 | 提示词/spec 数据模型 | `PromptSlot/ParamRule/SignatureTrait/TypeDeclares/PromptBundle/PlanSchema` | `schema/category_spec.py`（新） | — | — | 1 |
+| A-03 | `PromptAuthority` 裁决器 | L0–L5、L2 先定域、5 种 mode、C1–C10 分类、三产物（params/prompts/traits） | `services/prompt_authority.py`（新） | A-02 | V2、V5、V18 | 2 |
+| A-04 | 槽位注入与旧钩子归一 | `get_prompt_bundle()` + 适配器（`str|list[str]|list[dict]` 归一）；身份层段注入各 Agent | `category/base.py`、`agents/*.py` | A-03 | V1、V6、V15 | 1.5 |
+| A-05 | 剪辑钳制点接管 | `edit_agent` 改读裁决产物，删本地 5000 兜底 | `agents/edit_agent.py:280-320,738-745` | A-03 | V2 | 1 |
+| A-06 | 自定义类型契约与校验 | `TypeDefinition` 加 4 字段 + `extra=forbid`；悬空数字/规则冲突/指标矛盾/越权检测 | `api/type_maker.py` | A-02 | V8、V9、V10、V11、V12、V20 | 1.5 |
+| A-07 | 动态类型读提示词 | `DynamicCategoryPlugin.get_prompt_bundle()` | `category/dynamic.py` | A-04 | V8 | 0.5 |
+| A-08 | `declares` 迁出 5 处硬编码 | 读 `declares`；旧集合兜底 + deprecation 日志（下期删） | `structure_agent.py`、`material_agent.py`、`quality_agent.py` | A-04 | V7 | 1 |
+| A-09 | 指标采集与同一性校验 | `trait_collector`（结构/剪辑期指标）+ `genre_conformance`（L1 恒开、L2/L3 默认关） | `services/trait_collector.py`、`services/genre_conformance.py`（新） | A-03 | V16、V17 | 2 |
+| A-10 | 四个端点 | `validate / resolve / prompt-resolution / genre-check` | `api/type_maker.py`、`api/pipeline.py` | A-06、A-09 | V13 | 1 |
+| A-11 | `get_type_spec` 进能力面 | 只读能力 + 能力矩阵重生成 | `tool/surface.py`、`docs/capability-matrix.md` | A-04 | 覆盖率 100% | 0.5 |
+| A-12 | **M8 PlanDocument 契约** | `PlanDocument`（sections/screen_kinds/beats/material_strategy/risks/acceptance/custom_sections） | `schema/plan.py`（新） | A-02 | V52 | 1 |
+| A-13 | `plan_schema` 校验器 | required/optional/custom_allowed；段落连续/时长偏差/卡点自洽 | `services/plan_validator.py`（新） | A-12 | V54、V56、V57 | 1.5 |
+| A-14 | 规划动态生成 | 需求 agent 按 `plan_schema` 生成结构化 plan（替换写死 10 字段的 prompt） | `agents/requirements_agent.py` | A-12、A-13 | V54 | 1.5 |
+| A-15 | `plan_renderer` 确定性渲染 | plan → `plan.md`（模板可插），同 plan 两次渲染逐字节一致 | `services/plan_renderer.py`（新） | A-12 | V52、V59 | 1 |
+| A-16 | 结构阶段读 plan | `StructureAgent` 从 plan 读段落目的/画面类型/卡点；**空 plan 明确失败** | `agents/structure_agent.py` | A-14 | V55 | 1 |
+| A-17 | 漂移留痕 | `plan_drift` 事件（谁改/哪段/原因）+ plan 回写 | `services/plan_drift.py`（新）、`api/requirements.py` | A-16 | V58 | 1 |
+| A-18 | 老数据兼容 | 只有 scenes → 反向生成 `legacy:true` plan | `services/requirements_service.py` | A-16 | V60 | 0.5 |
+
+### 轨道 S：素材（后端 B 兼，5.5–6 人日）
+
+| ID | 任务 | 范围 | 落点 | 依赖 | 验收 | 估 |
+|---|---|---|---|---|---|---|
+| S-01 | MV 标签集与批量索引 | 面向 MV 的标签（特写手部/舞台/纸纹理…）+ 对给定目录批量索引 | `services/content_index.py`（扩展） | 已有索引 | V41 前置 | 2 |
+| S-02 | 乐句级 query 构造 | 歌词行/关键词 → 检索 query；返回带分数候选 | `services/content_query.py`（扩展） | S-01 | V41 | 1 |
+| S-03 | 按拍点落位 | 切点先落拍网格，再在拍内选 in 点；记 `matched_by` + 分数 | `services/scene_grounding.py`（扩展） | S-02、R-13 | V41、V42 | 1.5 |
+| S-04 | 授权台账与缺口 | 素材来源/授权字段、"不可用区间"、`material_gap` 显式化 | `api/asset.py`、`services/asset_governance.py` | — | V42、V43 | 1–1.5 |
+
+### 轨道 F：前端（前端 8 人日）
+
+| ID | 任务 | 范围 | 落点 | 依赖 | 验收 | 估 |
+|---|---|---|---|---|---|---|
+| F-01 | 类型编辑器扩展 | 身份层 3 槽位（genre 必填）+ 阶段 7 槽位 + 规则表 + 指标表 | `src/pages/admin/TypeMakerPage.tsx`、`src/services/api/typeMaker.ts` | A-06 | V1、V20（前端侧） | 2 |
+| F-02 | 冲突/变形预览 | 保存前 `resolve`；`type_deformation` 时**不给豁免按钮**，给"切换类型/按规范调整" | 同上 | A-10 | V18 | 1 |
+| F-03 | 类型符合度展示 | 管线详情「类型符合度」一栏（指标 + 证据） | Pipeline 详情页 | A-09 | V16 前端侧 | 1 |
+| F-04 | **创作页改造（§II.12）** | 去「配音/视觉驱动」开关；加提示词区（`prompt/style_refs/avoid`） | `src/pages/HomePage.tsx` | M7 后端 | V44、V45 | 1.5 |
+| F-05 | ChatForge 抽屉 | 右侧常驻按钮 → 抽屉；上下文注入（歌/类型/提示词/素材摘要）；结论回填 + 留痕 | `src/features/chatforge/ChatForgeDrawer.tsx`、`src/services/api/chatForge.ts` | 后端 `scope=mv_prompt` + `commit-prompt` | V46、V47、V48 | 1.5 |
+| F-06 | 规划确认页 | brief 与 plan 双栏；结构化字段可编辑；自定义维度必填 reason；缺口显著展示 | `src/pages/PlanReviewPage.tsx` | A-14、A-15 | V59 前端侧 | 1 |
+
+### 内容轨道（内容/美术 0.5 人，6 人日）
+
+| ID | 任务 | 产物 | 估 |
+|---|---|---|---|
+| C-01 | 4 个内置类型的规范 | `knowledge_longform / digital_review / kichiku_fastcut / vlog_daily` 各写 `genre / anti_patterns / lexicon / signature_traits` | 2 |
+| C-02 | `lyric_mv` 类型规范 | 身份层文案 + 7 条指标 + `plan_schema`（含 `beats` 必填） | 1 |
+| C-03 | MV 示例工程包 | 30 秒 POC 的 `mv.json/cues.json/lyrics.json/chat_script.json` + 说明 | 1.5 |
+| C-04 | 版画美术 | 9 张剪影三墨化验收、茄子/番茄字符画设计、专色校验 | 1 |
+| C-05 | 字体授权核对 | OFL 白名单、`font_roles` 映射、CREDITS 模板 | 0.5 |
+
+---
+
+## 4. 依赖与关键路径
+
+### 4.1 关键路径
+
+```
+SP1 ──► R-01 ──► R-02/R-03 ──► R-04 ──► 门 1
+                                   │
+                    ┌──────────────┴──────────┐
+                 R-06..R-10 (M1)            R-11..R-13 (M2)
+                    │                          │
+                    └────────► R-05 ◄──────────┘
+                               │
+                           门 3 (POC 过三闸)
+                               │
+              ┌────────────────┼─────────────────┐
+        R-14/R-15 (M3)      S-01..S-03 (M6)    A-12..A-18 (M8)
+                               │                 │
+                          R-18/R-19          A-16 → F-06
+                               │
+                           门 4 (交付)
+```
+
+### 4.2 并行冲突点（单写者规则，必须写进开发约定）
+
+| 共享物 | 冲突场景 | 规则 |
+|---|---|---|
+| `components/`（构件库） | 前端 F-04/F-05 与渲染 R-11/R-12 同时改 | 前端只读 `components/`，渲染方是唯一写者；接口由 R-01 的 `renderFrame` 契约固定 |
+| `cues.json` | R-13 与 S-03 都写 | R-13 是唯一写者；S-03 只读 |
+| `docs/capability-matrix.md` | A-11 与任何新增能力 | 由能力矩阵脚本重生成，禁止手改 |
+| `docs/api_reference.md` / `docs/frontend-backend-parity.md` | A-10/A-11/A-17 都有新端点 | 每个 PR 内自己那一节，禁止整文件重排 |
+| `schema/*.py` | A-02 与 A-12 并行加模型 | 两个新文件（`category_spec.py`、`plan.py`），不改既有文件 |
+
+---
+
+## 5. 周计划（2 后端 + 1 前端 + 0.5 内容）
+
+| 周 | 后端 A（渲染） | 后端 B（Agent/规划） | 前端 | 内容 | 周末可演示物 |
+|---|---|---|---|---|---|
+| **S0**（2 天） | SP1/SP2/SP3 | A-01 修字段漂移；定 D14 | 环境与契约对齐 | 字体授权初核 | Spike 结论一页纸 |
+| **W1** | R-01, R-02, R-03, R-04 | A-02, A-03 起 | F-01 骨架 | C-01 起 | **聊天界面 5 秒场景 + 哈希全等** |
+| **W2** | R-04 收口, R-05 起 | A-03 收口, A-04, A-05 | F-01 收口 | C-01 | **门 1**：聊天界面 30 秒出画面、确定性通过 |
+| **W3** | R-06, R-07, R-10 | A-06, A-07, A-08 | F-02 | C-04 起 | **门 2**：三墨分版/纸底/错版单帧检查图 |
+| **W4** | R-11, R-12, R-13 | A-09, A-10 | F-03 | C-02 | 字幕带 + 关键词 + 拍点表（`cues.json`） |
+| **W5** | R-08, R-09, R-14, R-15, R-05 | A-11；A-12 起 | F-04 | C-03 起 | **门 3**：30 秒 POC 过三道闸 + `report.json` 数字 |
+| **W6** | R-16（闪光）, R-18 起 | A-12, A-13, A-14 | F-04 收口 | C-03 | 闪光检测报告 + 结构化 plan 示例 |
+| **W7** | R-17, R-19 | A-15, A-16, A-17 | F-05 | C-05 | `plan.md` 确定性渲染 + ChatForge 抽屉可用 |
+| **W8** | R-18 收口 | A-18, S-01–S-03 | F-06 | C-04 收口 | **门 4**：`dist/` 六件套 + 素材落位样例 |
+| **W9** | 修尾 + V21–V43 复核 | S-04 + V52–V60 复核 | V44–V48 复核 | 交付文档 | 全量验收报告 |
+
+> 计划里 W5 的 M3 与 W6 的 R-16 有交叠：**闪光检测器必须早于腐坏特效收口**——腐坏效果最容易触发闪耀，先有量表再调效果。
+
+---
+
+## 6. 四道门（门禁与 Kill criteria）
+
+| 门 | 时间 | 通过条件（缺一不可） | 不过怎么办 |
+|---|---|---|---|
+| **门 1 渲染可行** | W2 末 | ① 聊天界面 30 秒场景渲出 1080p60；② 两次渲染逐帧哈希全等；③ lint 能拦下 `Math.random` 注入；④ 单段渲染 ≤8 分钟（SP2 结论） | **停**。重新评估渲染路线（可能是 HyperFrames 的 worker/seek 用法问题），暂停 M1 之后所有投入 |
+| **门 2 画面质量** | W3 末 | ① 三墨可独立取用、alpha<16 已清零；② 错版 10/18/28px 可视化正确；③ 9 张剪影配准叠加偏差 ≤1px；④ 人工抽检"不看字能认出 3/5" | 砍到最小可用（只做 inks + ground + tear），其余排到 M1.5；**不许**用"占位图"糊过去 |
+| **门 3 POC 过三闸** | W5 末 | ① 30 秒 POC 三画面各 ≥1 段；② 确定性哈希全等；③ 拍点命中率 ≥95%、误差 ≤1 帧；④ 闪光 violations = 0（且检测器先用"故意闪片"校准过，能报出已知违规）；⑤ `report.json` 数字非空 | 若 ④ 不过：先改效果（不是先放宽标准）；若 ③ 不过：`cues.json` 标 `init` 并降级为行级时间；**两项都不过则停整条 Part II** |
+| **门 4 交付完整** | W8 末 | ① `dist/` 六件套齐全；② 素材落位抽检 ≥8/10；③ `brief.md/plan.md` 与源对象一致；④ 全量 pytest + 前端三件套绿 | 只交付"能跑的子集"，明确标注未完成项，不装作完成 |
+
+### Kill / 裁剪规则（超期时优先砍什么）
+
+| 情况 | 裁剪顺序（先砍后保） |
+|---|---|
+| 超期 ≤20% | 砍 M5（4K）→ 砍 R-12 四个文字动画中后两个 |
+| 超期 20–50% | 再砍 M3 四个专属转场（只留 `slices` + `tear`）→ 砍 R-09 `rgbSplit` |
+| 超期 >50% | 停 M1 加码，只交付"最小版画集"；M8 只做 `sections + material_strategy` 两维 |
+| 门 1 不过 | **不裁剪，直接停**（后续投入会全部作废） |
+
+---
+
+## 7. 工程质量纪律（Definition of Done）
+
+每个任务完成的最小标准（缺一项视为未完成）：
+
+1. **代码**：通过 `ruff --select E9,F63,F7,F82,F823`（0 命中）；类型注解齐全；
+2. **单测**：新增/修改逻辑有对应测试；涉及"不许假功能"的点必须写"反例测试"（如传违规值被拦住）；
+3. **回归**：`python -m pytest tests -q` 全绿（基线 3566 passed / 3 skipped / 1 xfailed）；
+4. **前端**：`npx tsc --noEmit` + `npm run test` + `npm run build` + eslint 0 error；
+5. **文档**：按 AGENTS.md 的文档维护规则同步 `docs/`（api_reference / frontend-backend-parity / README 索引）；新增能力必须重跑 `python -m clipwright.services.capability_matrix --out docs/capability-matrix.md`；
+6. **留痕**：涉及裁决/漂移/冲突的逻辑必须写事件（`prompt_resolution` / `param_conflict` / `plan_drift` / `composition_mode`）；
+7. **PR**：一支任务一个 PR，标题带任务 ID（如 `R-06 版画库：三墨分版`），描述里贴验收证据（截图/数字/测试名）。
+
+### 新增的 CI 门（本计划首次上线）
+
+| 门 | 触发 | 命令 |
+|---|---|---|
+| 确定性 lint | 任何 `examples/**/scene.js` 变更 | `python -m tools.lint_determinism examples/` |
+| 逐帧哈希 | 门 1/门 3 前手动，W6 起进夜间 | `python tools/hash_frames.py examples/mv_poc` |
+| 闪光检查 | 同上 | `python tools/check_flash.py out/poc.mp4` |
+
+> CI 里**不跑**逐帧渲染（太慢），只跑 lint；渲染类验收靠"里程碑打点 + 留档产物"。
+
+---
+
+## 8. 分工到人
+
+| 人 | 主责 | 交接点 |
+|---|---|---|
+| 后端 A | R-01…R-19 | 与前端在 R-01 契约、R-11 `lyrics.json` 结构上对齐；与内容在 R-06 墨色阈值上对齐 |
+| 后端 B | A-01…A-18、S-01…S-04 | 与后端 A 在 R-13 `cues.json`（唯一写者 R-13）对齐；与前端在 A-10 端点契约对齐 |
+| 前端 | F-01…F-06 | 依赖 A-06（类型契约）、A-10（端点）、A-14/A-15（plan 渲染结果） |
+| 内容/美术 | C-01…C-05 | C-02 的 `lyric_mv` 规范必须在 W4 前给到，否则 A-09 的指标无值可测 |
+
+**协作节奏**：周一 30 分钟对齐（只讲"卡在哪、要不要改范围"）；周五出"本周可演示物 + 门禁进度"；跨轨接口变更必须当天在 `docs/mv-pv-prd-2026-10-18.md` 对应章节改一行，**不接受口头约定**。
+
+---
+
+## 9. 工期三档
+
+| 档 | 配置 | 工期 | 交付范围 |
+|---|---|---|---|
+| **现实档（推荐）** | 2 后端 + 1 前端 + 0.5 内容 | **10–11 周** | 门 1–4 全过 + V1–V60 主体 |
+| 乐观档 | 同上 + 后端 A 全职压到 W5、内容提前交付 | 8–9 周 | 同上，M5（4K）与部分文字动画后置 |
+| 悲观档 | 1 后端 + 0.5 前端 | 18–20 周 | 只到门 3（POC 可用），M6/M8 延后 |
+
+> 口径说明：66 人日 ÷ 3 人 ≈ 22 个工作日（≈4.5 周）是**纯产能下限**；实际工期取决于关键路径串行（门 1→门 2→门 3 不能压缩）与联调返工，故取 10–11 周。
+
+**成本口径提醒**：本计划的人日只含"人"，不含模型调用与渲染算力。M0–M8 期间会持续跑 LLM（规划生成、版画描述、场景代码），建议在 W2 前把 `pipeline_budget_usd` 与 `unknown_cost_calls` 的记账打开（PRD Part I G5/V38 已要求入账）。
+
+---
+
+## 10. 未决项与阻塞（按阻塞时间排序）
+
+| 编号 | 事项 | 阻塞谁 | 最晚决策时间 | 默认兜底 |
+|---|---|---|---|---|
+| **D14** | 闪光超标：拒绝交付 vs 标记交付 | 门 3 判定、R-16 行为 | **W1 末** | 拒绝交付 |
+| **D13** | 主 agent 能否直接写场景代码 | M0 收口、S-03 | W2 末 | 能（限自身分区 + 过三闸） |
+| **D10** | 逐词时间来源 | M2（R-13）排期 | W3 末 | whisper 打底 + onset 校正，全标 init |
+| **D12** | 4K 策略 | M5（R-17） | W6 末 | 仅 2 张 hero 矢量化 |
+| **D15** | 渲染预算 | R-18、CI 夜间任务 | W6 末 | 1080p60 ≤30 分钟/支 |
+
+---
+
+## 11. 进度追踪
+
+- **看板四列**：`待开工 / 进行中 / 待验收 / 已验收`（任务 ID 即卡片号，WBS 表为唯一真相）。
+- **周报三行**：本周完成（任务 ID + 验收证据）／卡点（阻塞项 + 需要的决策）／下周计划（含门禁进度）。
+- **里程碑存档**：每道门过时把产物存 `out/gates/gate{1..4}/`（视频、单帧、`report.json`、截图），**不留存就等于没过**。
+- **PRD 变更联动**：PRD 新增/修改章节 → 计划里对应任务的"范围/验收/估算"必须在同一周内更新，并在周报里说明工期影响。
+
+---
+
+## 12. 执行状态（滚动更新）
+
+### 12.1 已完成（第一轮）
+
+| 任务 | 产物 | 证据 |
+|---|---|---|
+| **A-01** 字段漂移修复 | `schema/requirements.py` 重写：`CreativeBrief` 补齐 `core_message/structure_suggestion/key_elements/special_requirements/animation_intents`；提示词字段表与 JSON 骨架由 `brief_prompt_template()` **从模型生成**（结构上不可能再漂）；`RequirementsAgent._normalize_brief()` 显式登记未知字段 | `test_plan_first.py::TestFieldDrift`（4 项，含"字段集双向一致"断言） |
+| **A-02** 规范契约 | `schema/category_spec.py`：10 槽位（含 `global→genre` 别名）、`ParamRule`（5 mode × strict/soft）、`SignatureTrait`、`TypeDeclares`（含 `plan_schema`、`requires`、`neighbors`）、`PromptBundle`（截断/预算/归一）、`PlanDocument` 全套 + 纯函数校验（悬空数字、规则自洽、指标与 genre 矛盾） | `test_category_spec.py`（31 项） |
+| **A-03** 裁决器 | `services/prompt_authority.py`：L0–L5 分层、L2 规则后置生效、C1/C2/C6/C9 冲突记录、平台底线强制、变形判定（`min>max`、指标结构性不可满足）、提示词预算丢弃 | `test_prompt_authority.py`（19 项，含"用户传 300 被顶回 1200"与"鬼畜变形"两条硬验收） |
+| **A-12/A-13/A-15** 规划内核 | `services/plan_validator.py`（必填维度/段落连续/时长偏差 10%/25%/卡点自洽/自定义维度需理由/legacy 反推）、`services/plan_renderer.py`（确定性 Markdown，brief + plan 两套） | `test_plan_first.py`（22 项，含"两次渲染逐字节一致"） |
+| **R-01** 场景脚本合成 | `animation/scene_renderer.py`：全帧合成 HTML、`window.__scene.renderFrame(t,ctx)` 契约、`window.__timelines.seek(t)` 注册、运行时冻结（`Math.random`→prng、`Date.now`→0、定时器抛错）、`composition_mode()` 汇报合成路径（不替 agent 决策） | `test_scene_renderer.py`（12 项，含"生成的运行时自身 lint 干净"） |
+| **R-02** 确定性 lint | `tools/lint_determinism.py`：12 条禁用模式（定时器/日期/随机/网络/存储/动态 import）、`deterministic-ok` 豁免、CLI 退出码 | `test_dev_tools.py::TestDeterminismLint`（7 项） |
+| **R-03** 逐帧哈希 | `tools/hash_frames.py`：rgb24 流切帧 sha256、PNG 目录、两两比对（含长度不一致）、CLI | 同上（5 项） |
+| **R-16** 闪光检测 | `tools/check_flash.py`：BT.601 亮度、大面积亮暗翻转判定、1 秒窗统计、`analyze_video`（ffmpeg 缩略解码）、CLI | 同上（9 项，含**"已知答案"校准：4Hz 闪片必须报违规**） |
+
+### 12.2 验收口径与门禁
+
+- 新增 99 个单测全绿；`ruff --select E9,F63,F7,F82,F823` 全绿。
+- **SP1 已通过（真机）**：`hyperframes@0.8.171` 装好后，1 秒 @24fps 的场景两次渲染 **24/24 帧 sha256 全等**，单次约 5.6–5.7s（含浏览器启动）。详见 `docs/spike-results-2026-10-18.md`。
+- 过程中撞到两个坑，已写进代码与文档：
+  1. **全局冻结 `setTimeout`/`rAF` 会让 HyperFrames 直接渲染失败**（`Render failed`）——改为"作者脚本 IIFE 遮蔽"，平台继续用真全局；
+  2. **`ais_available()` 新进程首调恒为 False**（非阻塞缓存），验收脚本必须用 `await_available()`。
+- 门 1 剩余要件：**SP2 已过**（1080p60 × 300 帧两次渲染全等，22.5s/次，19MB/5s ≈ 4.5 秒渲染 / 1 秒成片）；剩下 **R-04 Day-1 聊天界面场景**（要出"用户看得懂的画面"而不只是色块）。
+
+### 12.3 下一轮
+
+1. SP1 真机渲染（依赖 hyperframes 安装完成）+ `hash_frames` 双跑比对；
+2. A-04/A-05（槽位注入 + 剪辑钳制点接管）——把裁决器接进 `edit_agent`，让 V2 从"单测过"变成"成片过"；
+3. A-06（`type_maker` 契约 + `extra=forbid` + 校验接线）；
+4. R-04（Day-1 聊天界面场景）落盘到 `examples/mv_poc/chat/`。
+
+## 附 A 任务 → 验收 对照（速查）
+
+| 任务 | 验收编号 | 任务 | 验收编号 |
+|---|---|---|---|
+| R-01/R-03 | V21、V22 | A-03 | V2、V5、V18 |
+| R-02 | V23 | A-04 | V1、V6、V15 |
+| R-05 | 门 3 | A-06 | V8–V12、V20 |
+| R-06/R-07 | V28 | A-08 | V7 |
+| R-08/R-09/R-15 | V29、V30 | A-09 | V16、V17 |
+| R-10 | V33 | A-10 | V13 |
+| R-11/R-13 | V24、V25 | A-12–A-18 | V52–V60 |
+| R-16 | V26、V27 | S-01–S-03 | V41、V42 |
+| R-17 | V34 | S-04 | V43 |
+| R-18/R-19 | V32、V37、V38 | F-04–F-06 | V44–V48 |
+
+## 附 B 第一天就能开始的三个动作
+
+1. **`SP1`**：写一个 30 行的 `compositions/spike/index.html` + `scene.js`，用现有 `render_mg_html_to_mov()` 渲 5 秒，跑两次 sha256。结论写进 `docs/spike-results-2026-10-18.md`。
+2. **`A-01`**：把 `CreativeBrief` 的字段补到与 prompt 一致（或改 prompt 对齐），并加一条"字段集包含"单测——**这是全表里最短的一条，也是唯一一条今天就能合进主干、明天就能证明"不再丢字段"的**。
+3. **`R-16` 原型**：用现有 ffmpeg 生成一段 10 秒的 4Hz 黑白闪片，写 40 行脚本看能不能报出违规。检测器的"已知答案测试"是后面所有闪光闸的地基。
