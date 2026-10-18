@@ -500,12 +500,25 @@ SP1 ──► R-01 ──► R-02/R-03 ──► R-04 ──► 门 1
 
 **尚未接进管线**：`creativePrompt` 只写进 projectStore，**需求阶段还没消费它**（真正生效需要后端从 `extra_params.creative_prompt` 读并合入类型规范/任务提示词）。下一轮补这一环。
 
-### 12.25 下一轮
+### 12.26 第 12 轮：创作提示词真正进管线（补上 F-04 的最后一环）
 
-1. **提示词进管线**：需求/结构阶段读 `creative_prompt` 并合入 `plan`/类型规范，端到端跑一次；
+| 层 | 交付 | 验证 |
+|---|---|---|
+| 后端 | `services/creative_prompt.py`：`resolve_creative_prompt`（截断 4000 / avoid 去重限 6）、`creative_prompt_block`（明确"优先级高于类型默认风格"，并声明**与平台硬底线冲突时以硬底线为准**）、`merge_into_prompts` | 17 项单测 |
+| 后端接线 | `StructureAgent`：system prompt 注入创作提示词块；`RequirementsAgent._generate_brief`：把提示词与 avoid 写进 `user_context` | 接线断言（`inspect.getsource`）+ requirements/structure 回归 **128 passed** |
+| 前端 | `AgentPanel`：`requirementsApi.init` 的 `extra` 与 `proceed` 的 `extra_params` 都带上 `creative_prompt` / `creative_avoid`（**非空才传**，不污染请求） | 3 项源码约束测试（防"UI 能填、请求没带"）；前端 **106 files / 921 tests 通过** |
+
+**至此 F-04 链路闭合**：创作页输入 → `projectStore` → AgentPanel 请求 → 后端 `extra_params` → 结构/需求 prompt。
+
+**但仍未做端到端真机验证**：这条链没有在真实管线里跑过一次（需要一次带提示词的真实 LLM 运行 + 成片对比）。列为下一轮第一项，**不把它算作已完成**。
+
+### 12.27 下一轮
+
+1. **端到端跑一次**：带创作提示词的真实管线，确认结构 prompt 里确有该段、成片有对应变化；
 2. **F-06**：规划确认页（brief/plan 双栏）；
 3. **R-11/R-12 收口**：字幕带与文字动画抽成可复用构件；
 4. **S 轨**：MV 标签集 + 乐句级 query。
+
 
 
 
