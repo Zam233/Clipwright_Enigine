@@ -339,6 +339,11 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         if isinstance(glossary, list) and glossary:
             issues.extend(self._check_glossary(timeline, [str(t) for t in glossary if str(t).strip()]))
 
+        # ── 10.5 类型同一性（A-09 / PRD F12）──
+        # L1 可测代理恒开（零 LLM 成本）：用 signature_traits 判"这是不是该类型的片子"；
+        # L2/L3 LLM 裁判默认关闭（D7），关闭时在 info 里显式声明"未做复核"，不许装作判过。
+        issues.extend(_check_type_conformance(timeline, context))
+
         # ── 判定 ──
         errors = [i for i in issues if i.severity == "error"]
         decision = AgentDecision.FAIL if errors else AgentDecision.PASS
@@ -816,3 +821,71 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                                 f"{timeline.duration_sec:.1f}s）",
                         location=clip.id,
                     ))
+
+
+# ── A-09：类型同一性校验（模块级，便于单测与复用）──────────────────────────
+
+
+def _check_type_conformance(timeline, context) -> list[QualityIssue]:
+    """用 ``signature_traits`` 判"这是不是该类型的片子"（PRD F12 L1）。
+
+    - L1 可测代理恒开（零 LLM 成本）；
+    - L2/L3 LLM 裁判默认关闭（D7），关闭时追加一条 info 明确"未做复核"；
+    - 类型未声明 ``signature_traits`` → 返回空（零行为变化）。
+    """
+    category_id = getattr(context, "category_plugin_id", "") or ""
+    if not category_id or timeline is None:
+        return []
+    try:
+        from clipwright.services.genre_conformance import check_conformance
+        from clipwright.services.trait_collector import collect_traits
+        from clipwright.services.type_spec_runtime import load_spec
+
+        spec = load_spec(category_id)
+        if not spec.traits:
+            return []
+
+        extra = getattr(context, "extra_params", {}) or {}
+        grid = None
+        try:
+            from clipwright.services.mv_cues import build_grid
+
+            bpm = float(extra.get("bpm") or 0)
+            if bpm > 0:
+                grid = build_grid(bpm, float(extra.get("beat_zero_sec") or 0))
+        except Exception:  # noqa: BLE001 - 网格不可用不影响 L1
+            grid = None
+
+        measured = collect_traits(timeline, grid=grid)
+        report = check_conformance(
+            spec.traits,
+            measured,
+            enable_genre_judge=bool(extra.get("enable_genre_judge", False)),
+        )
+    except Exception as exc:  # noqa: BLE001 - 校验失败不得让质检整体崩
+        logger.warning("类型同一性校验失败（已跳过）: %s", exc)
+        return []
+
+    out: list[QualityIssue] = []
+    for item in report.traits:
+        if item.passed:
+            continue
+        out.append(
+            QualityIssue(
+                severity="error" if item.enforce == "strict" else "warning",
+                category="type_conformance",
+                message=(
+                    f"类型「{category_id}」指标不符：{item.render()}"
+                    + (f"（{item.reason}）" if item.reason else "")
+                ),
+            )
+        )
+    if report.judge == "skipped":
+        out.append(
+            QualityIssue(
+                severity="info",
+                category="type_conformance",
+                message="未做 LLM 同一性复核（D7 默认关闭）；L1 可测指标已计算",
+            )
+        )
+    return out

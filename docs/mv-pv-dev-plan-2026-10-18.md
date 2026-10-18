@@ -417,12 +417,23 @@ SP1 ──► R-01 ──► R-02/R-03 ──► R-04 ──► 门 1
 
 结论：**用 `-q` + 分片**跑回归，别用 `-v` 全量；`-v` 只用来定位单个可疑测试。
 
-### 12.13 下一轮
+### 12.13 第 5 轮：指标采集 + 同一性校验 L1（A-09）
 
-1. 拿本轮 verbose 跑完的结果确认那 5 个失败是否仍复现（若复现，用它前后的测试序列做二分）；
-2. **M2 收口**：把 `mv_cues` 接进 POC（时间不再是代码常量）；
-3. **M3 收口**：把四个转场接进场景（按拍点触发）；
-4. **A-09**：指标采集 + L1 同一性校验（`trait_collector` + `genre_conformance`）。
+| 任务 | 实现 | 验收 |
+|---|---|---|
+| 指标采集 | `services/trait_collector.py`：9 个指标（`avg/base_shot_ms`、`repeat_shot_ratio`、`chart_count`、`argument_segment_count`、`text_overlay_ratio`、`illustration_clip_ratio`、`beat_align_ratio`、`keyframe_density`），全部确定性、缺键补 0 | 11 项单测（含速度换算、重复率、网格命中、空时间线） |
+| 同一性校验 | `services/genre_conformance.py`：`evaluate_traits`（L1）+ `check_conformance`（strict→error / soft→warning；**L2/L3 默认 `skipped`**，裁判异常降级不阻断） | 10 项单测（含"默认关裁判必须显式 skipped""裁判异常降级"） |
+| 质检接线 | `QualityAgent._check_type_conformance`（模块级函数）：类型未声明 `signature_traits` → 零变化；有声明 → strict 记 error、soft 记 warning、裁判跳过记 info；`bpm/beat_zero_sec` 存在时用网格算卡点命中 | 7 项单测 + 20 项既有质检回归全绿 |
+
+**这一轮的设计要点**：`enable_genre_judge=False` 时报告里必须出现 `judge: "skipped"` 与"未做 LLM 同一性复核"——**不允许"看起来通过了"**。这是 D7 的落地方式：省钱可以，但要留下"没做复核"的痕迹。
+
+### 12.14 下一轮
+
+1. 取 verbose 全量跑结果，确认 5 个失败是否复现（再做二分）；
+2. **M2/M3 收口**：`mv_cues` 与四个转场接进 POC 场景（时间不再是常量）；
+3. **A-10 剩余端点**：`POST /api/pipeline/{id}/genre-check`（复用 `trait_collector` + `check_conformance`）；
+4. **F 轨启动**：类型编辑器接新契约（`prompts/param_rules/signature_traits`）。
+
 
 
 
