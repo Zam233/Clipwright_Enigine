@@ -85,8 +85,27 @@ npx tsc --noEmit; npx eslint src; npm run test; npm run build
 - **四个内置类型曾零声明**：`load_spec()` 对它们只能从旧钩子合成两个槽位；现已全部补齐（`lyric_mv` 10 槽位，其余四个各 7 槽位 + 规则 + 指标）。
 - **创作提示词进不了剪辑阶段**：A/B 实测暴露，已补注入（但节奏仍不稳定，结论已写进 V45）。
 
-## 7. 建议的下一步（按性价比排序）
+## 7. 交付物清单（本轮新增，按层）
 
+| 层 | 数量 | 代表文件 |
+|---|---|---|
+| 服务 | 17 | `type_prompts.py`（10 槽位注入）、`prompt_authority.py`、`plan_first.py` + `plan_validator.py` + `plan_renderer.py`、`mv_cues.py`、`mv_material.py`、`mv_bundle.py`、`genre_conformance.py`、`trait_collector.py`、`creative_prompt.py`、`prompt_distill.py`、`preroll.py`、`shot_floor.py`、`type_switch.py` |
+| 工具 | 11 | `lint_determinism.py`、`hash_frames.py`、`check_flash.py`、`check_sync.py`、`pack_dist.py`、`gate_check.py`、`creative_ab.py`、`aliasing.py`、`registration_check.py`、`plate_check.py` |
+| 脚本 | 17 | `e2e_pipeline_probe.py`、`ab_creative_prompt.py`、`check_genre_v35.py`、`e2e_legacy_plan.py`、`e2e_preroll_v32.py`、`e2e_shot_floor_d23.py`、`check_v49.py`、`check_v33_registration.py`、`check_v34_4k.py`、`check_v25_word_timing.py`、`build_poc_30s.py`、`render_archetypes.py`、`render_plate_shot.py`、`render_mv_poc.py`、`smoke_llm_prompt.py` |
+| 类型插件 | 6 | `lyric_mv.py`（首个全契约类型）+ 四个内置类型补齐规范 + `base.with_slots` 迁移辅助 |
+| 测试 | 49 个新文件 | 覆盖类型规范、裁决、规划、MV 素材/卡点、闸门、前端接线 |
+| 前端 | 8 处 | `TypeSpecEditor`、`ChatForgeDrawer`、`CreativePromptField`、`PlanReviewPanel`、`TypeConformancePanel`、`ExportPage`（片头）、`PipelineAdminPage`（用量）、`HomePage`（D23 策略） |
+| 文档 | 4 份 | `mv-pv-prd-2026-10-18.md`（单一真相）、`mv-pv-dev-plan-2026-10-18.md`（WBS + 38 轮执行日志）、`coverage.md`（逐条状态）、本报告 |
+
+## 8. 现在要交付，只差三件事
+
+1. **D23 默认策略**（选 `record` 或 `extend`；`loop` 需渲染层支持）。选完立刻解锁 V2 与 V35 —— 两条都有现成脚本可复测，不需要再写代码。
+2. **V50 的四类素材样例**（手绘 / 2D 骨骼 / 3D / 实拍）。纯内容工作：素材到位后跑一遍"识别→落位→卡点"即可出样例。
+3. **四项人工验收排期**（V16 类型判别 / V30 版画可辨 / V40 三人终审 / V41 落位认可），另加计划外 A5 / A8 / A10 / A13。
+
+除这三件外，工程侧没有剩余自动项：V17 是"要不要开 D7 裁判"的产品开关，其余 52 项均有可复跑证据。
+
+## 9. 建议的下一步（按性价比排序）
 1. **拍 D23**：唯一一个"拍完就能连带解锁 V2 + V35"的决策。三个候选已实现为开关（`shot_floor_policy`），真机对照数据在 `out/d23/report.json`；选 `extend` 可用 `check_genre_v35.py` 立即复测 V35。
 2. V50 的四个素材样例（手绘 / 2D 骨骼 / 3D / 实拍）——这一项本质是内容工作，不是工程工作。
 3. 决定 V17（裁判接真 LLM）要不要做（D7 曾拍板"默认不开"）。
