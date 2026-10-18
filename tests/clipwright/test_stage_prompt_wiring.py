@@ -51,6 +51,34 @@ def _scenes() -> list[dict]:
 
 class TestEditAgentInjection:
     @pytest.mark.asyncio
+    async def test_creative_prompt_reaches_edit_agent(self, monkeypatch) -> None:
+        """V45 A/B 发现：创作提示词此前只进 structure/requirements，剪辑阶段看不到。"""
+        from clipwright.agents.edit_agent import EditAgent
+
+        agent = EditAgent()
+        captured: dict[str, str] = {}
+
+        async def _fake_structured_output(**kwargs):
+            captured["system_prompt"] = kwargs.get("system_prompt", "")
+            return {
+                "base_shot_ms": 3000,
+                "transition_weights": {"hard_cut": 1.0},
+                "pip_scenes": [],
+                "pacing_notes": ["稳"],
+            }
+
+        monkeypatch.setattr(agent._llm, "structured_output", _fake_structured_output)
+        monkeypatch.setattr(
+            "clipwright.agents.edit_agent.settings",
+            type("S", (), {"llm_api_key": "test-key"})(),
+        )
+        await agent._llm_decide_edit_profile(
+            _scenes(), {}, "vlog_daily",
+            extra_params={"creative_prompt": "硬切为主，不要花哨转场"},
+        )
+        assert "硬切为主，不要花哨转场" in captured["system_prompt"]
+
+    @pytest.mark.asyncio
     async def test_edit_prompt_carries_identity_and_stage(self, probe_category, monkeypatch) -> None:
         from clipwright.agents.edit_agent import EditAgent
 

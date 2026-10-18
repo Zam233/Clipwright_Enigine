@@ -357,6 +357,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 context.category_plugin_id,
                 pipeline_id=context.pipeline_id,
                 quality_hint=self.quality_issues_hint(context),  # C6
+                extra_params=context.extra_params,
             )
             llm_pip_scenes: set[int] = set()
             if llm_profile is not None:
@@ -717,6 +718,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         category: str,
         pipeline_id: str = "",
         quality_hint: str = "",
+        extra_params: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """LLM 剪辑档案决策：基准镜头时长 / 转场权重 / PiP 场景 / 节奏备注。
 
@@ -757,6 +759,13 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         from clipwright.services.type_prompts import compose as compose_type_prompt
 
         system_prompt = compose_type_prompt(system_prompt, category, "edit")
+        # V45 A/B 实测发现：用户创作提示词此前只进 requirements/structure，
+        # **剪辑阶段看不到**，所以"硬切为主"影响不了镜头节奏。这里补上。
+        from clipwright.services.creative_prompt import creative_prompt_block
+
+        creative_block = creative_prompt_block(extra_params)
+        if creative_block:
+            system_prompt = system_prompt.rstrip() + "\n\n" + creative_block
         user_prompt = (
             f"视频类型（category）: {category or 'unknown'}\n"
             f"Persona 剪辑偏好: {json.dumps(persona or {}, ensure_ascii=False)}\n\n"
