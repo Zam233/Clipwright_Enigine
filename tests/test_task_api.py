@@ -131,5 +131,9 @@ def test_events_stream_emits_sse_frames(monkeypatch):
 
 
 class _FakeRequest:
+    """最小 Request：SSE 生成器只用 is_disconnected()；鉴权只读 state。"""
+
+    state = type("S", (), {"user_id": None, "user_role": None})()
+
     async def is_disconnected(self) -> bool:
         return False

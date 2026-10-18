@@ -28,6 +28,11 @@ class ToolExecResult(BaseModel):
     )
     error: Optional[str] = Field(default=None, description="错误信息")
     warning: Optional[str] = Field(default=None, description="警告信息")
+    #: 本次调用的成本（美元）。只有工具作者知道真实成本（如视觉模型按次计费）；
+    #: 留空表示"未知"——消费方必须记成未知，而不是当成 0（PRD A5 的口径）。
+    cost_usd: Optional[float] = Field(
+        default=None, description="本工具调用成本（美元）；None = 未知"
+    )
 
     model_config = {"use_enum_values": True}
 

@@ -118,15 +118,31 @@ def _mongo_ready() -> bool:
 
 
 def _persist(task_id: str, event: TaskEvent) -> None:
-    """Mongo 旁路：写失败只告警（事件流不能因为落库失败而中断）。"""
+    """Mongo 旁路：写失败只告警（事件流不能因为落库失败而中断）。
+
+    **不能在事件循环里同步写**：`emit()` 到处都是同步调用，若这里直接
+    `insert_one`，Mongo 一通就会周期性卡住整个任务（长任务尤其明显）。
+    所以：有运行中的循环就丢到线程池（fire-and-forget），没有循环（单测/脚本）
+    才同步写。
+    """
     if not _mongo_ready():
         return
-    try:
-        from clipwright.context import mongo
+    payload = {"task_id": task_id, **event.to_public()}
 
-        mongo.db["task_events"].insert_one({
-            "task_id": task_id,
-            **event.to_public(),
-        })
-    except Exception as e:  # noqa: BLE001
-        logger.warning("任务事件落库失败 %s: %s", task_id, e)
+    def _write() -> None:
+        try:
+            from clipwright.context import mongo
+
+            mongo.db["task_events"].insert_one(payload)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("任务事件落库失败 %s: %s", task_id, e)
+
+    try:
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _write()
+        return
+    # 线程池执行：不阻塞事件循环，也不占用默认执行器的顺序（异常已在 _write 内消化）
+    loop.run_in_executor(None, _write)

@@ -25,6 +25,43 @@ router = APIRouter(prefix="/api/task", tags=["task"])
 #: 任务后台协程（用于"同一任务不并发跑两份"）
 _RUNNING: dict[str, asyncio.Task] = {}
 
+#: 任务归属（task_id → user_id）。与 pipeline 的 `_pipeline_owners` 同思路：
+#: off/token 模式下 uid 为空，不产生任何限制；jwt 模式下才是真的隔离。
+_TASK_OWNERS: dict[str, str] = {}
+
+
+def _enforce_task_owner(request: Request, task_id: str) -> None:
+    """jwt 模式下校验任务归属（无主记录 403，安全优先）。
+
+    为什么要显式做：task id 会出现在 URL 里，没有这条检查时，任何登录用户
+    拿到别人的 id 就能读事件流、暂停、取消、甚至往别人任务里插话。
+    """
+    from clipwright.authz import current_user_id, is_admin
+
+    uid = current_user_id(request)
+    if uid is None or is_admin(request):
+        return
+    owner = _TASK_OWNERS.get(task_id)
+    if owner is None:
+        # 无主任务：只有"老入口转过来且登记过 owner"或单机模式才可能发生。
+        # jwt 模式下宁可按无主处理（403），也不放行。
+        raise HTTPException(status_code=403, detail=f"无权访问任务 {task_id}")
+    if owner != uid:
+        raise HTTPException(status_code=403, detail=f"无权访问任务 {task_id}")
+
+
+def _register_owner(task_id: str, request: Request) -> None:
+    from clipwright.authz import current_user_id
+
+    uid = current_user_id(request)
+    if uid:
+        _TASK_OWNERS[task_id] = uid
+
+
+def clear_owners() -> None:
+    """测试用。"""
+    _TASK_OWNERS.clear()
+
 
 class CreateTaskBody(BaseModel):
     topic: str = Field(description="用户一句话需求")
@@ -88,6 +125,7 @@ async def create_task(payload: CreateTaskBody, request: Request) -> dict:
     )
     kernel = _kernel()
     task = kernel.create(request_value)
+    _register_owner(task.id, request)   # 归属登记：后面的每个端点都靠它隔离
     await kernel.plan(task)
     if not payload.plan_only:
         _schedule(task.id)
@@ -98,6 +136,7 @@ async def create_task(payload: CreateTaskBody, request: Request) -> dict:
 async def get_task(task_id: str, request: Request) -> dict:
     from clipwright.services.task_events import events
 
+    _enforce_task_owner(request, task_id)
     task = _kernel().get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
@@ -109,6 +148,7 @@ async def get_task_events(task_id: str, request: Request,
                           since_seq: int = Query(default=0, ge=0)) -> dict:
     from clipwright.services.task_events import events_since
 
+    _enforce_task_owner(request, task_id)
     items = [e.to_public() for e in events_since(task_id, since_seq)]
     return {"task_id": task_id, "since_seq": since_seq, "count": len(items), "items": items}
 
@@ -117,6 +157,8 @@ async def get_task_events(task_id: str, request: Request,
 async def stream_task_events(task_id: str, request: Request) -> StreamingResponse:
     """SSE：与 trace 流同构（seq 游标 + data 帧）。"""
     from clipwright.services.task_events import events_since
+
+    _enforce_task_owner(request, task_id)
 
     async def generator():
         last_seq = 0
@@ -135,6 +177,7 @@ async def stream_task_events(task_id: str, request: Request) -> StreamingRespons
 
 @router.post("/{task_id}/resume")
 async def resume_task(task_id: str, request: Request) -> dict:
+    _enforce_task_owner(request, task_id)
     kernel = _kernel()
     task = kernel.get(task_id)
     if task is None:
@@ -147,6 +190,7 @@ async def resume_task(task_id: str, request: Request) -> dict:
 async def pause_task(task_id: str, request: Request) -> dict:
     from clipwright.services.agent_kernel import KernelError
 
+    _enforce_task_owner(request, task_id)
     try:
         task = _kernel().pause(task_id)
     except KernelError as e:
@@ -158,6 +202,7 @@ async def pause_task(task_id: str, request: Request) -> dict:
 async def cancel_task(task_id: str, request: Request) -> dict:
     from clipwright.services.agent_kernel import KernelError
 
+    _enforce_task_owner(request, task_id)
     try:
         task = _kernel().cancel(task_id)
     except KernelError as e:
@@ -169,6 +214,7 @@ async def cancel_task(task_id: str, request: Request) -> dict:
 async def inject_task(task_id: str, payload: InjectBody, request: Request) -> dict:
     from clipwright.services.agent_kernel import KernelError
 
+    _enforce_task_owner(request, task_id)
     try:
         _kernel().inject(task_id, payload.text)
     except KernelError as e:
@@ -181,6 +227,7 @@ async def replan_task(task_id: str, request: Request) -> dict:
     """重新生成计划（人工改主意 / 计划不满意时）。"""
     from clipwright.services.agent_kernel import KernelError
 
+    _enforce_task_owner(request, task_id)
     kernel = _kernel()
     task = kernel.get(task_id)
     if task is None:
@@ -197,9 +244,16 @@ async def replan_task(task_id: str, request: Request) -> dict:
 @router.get("")
 async def list_tasks(request: Request, limit: int = Query(default=20, ge=1, le=100)) -> dict:
     """任务列表（C6 管理页用；内存 + 检查点目录）。"""
+    from clipwright.authz import current_user_id, is_admin
     from clipwright.services.agent_kernel import _TASKS  # noqa: PLC2701 — 只读快照
 
-    items = sorted(_TASKS.values(), key=lambda t: t.updated_at, reverse=True)[:limit]
+    uid = current_user_id(request)
+    admin = is_admin(request)
+    visible = [
+        t for t in _TASKS.values()
+        if admin or uid is None or _TASK_OWNERS.get(t.id) in (None, uid)
+    ]
+    items = sorted(visible, key=lambda t: t.updated_at, reverse=True)[:limit]
     return {
         "count": len(items),
         "items": [

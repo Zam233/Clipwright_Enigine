@@ -127,6 +127,8 @@ class TaskUsage(BaseModel):
     tokens: int = 0
     cost_usd: float = 0.0
     wall_sec: float = 0.0
+    #: 成本未知的 costly 调用次数（金额闸对它们无效，必须可见而不是当成 0）
+    unknown_cost_calls: int = 0
 
 
 class TaskFinish(BaseModel):

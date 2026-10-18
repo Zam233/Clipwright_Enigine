@@ -459,6 +459,9 @@ class AgentKernel:
             cost = outcome["record"].get("cost_usd")
             if isinstance(cost, (int, float)):
                 task.usage.cost_usd += float(cost)
+        # 成本未知的 costly 调用要计数：金额闸对"未知成本"是盲的，这件事必须可见
+        if outcome.get("cost_unknown"):
+            task.usage.unknown_cost_calls += 1
 
         emit(task.id, "tool_result", f"{step.capability} → {status}",
              {"step_id": step.id, "status": status, "brief": step.result_brief,

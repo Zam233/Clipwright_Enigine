@@ -152,6 +152,15 @@ def _enforce_pipeline_owner(request: Request, pipeline_id: str) -> None:
         return
     owner = _pipeline_owners.get(pipeline_id)
     if owner is None:
+        # 路线 C：任务 id 也会走这条校验（子代理树/执行日志用 task id 当 pipeline id），
+        # 任务归属登记在 api/task.py 的 `_TASK_OWNERS` 里。
+        try:
+            from clipwright.api.task import _TASK_OWNERS
+
+            owner = _TASK_OWNERS.get(pipeline_id)
+        except Exception:  # noqa: BLE001 — 归属表不可用不影响老路径
+            owner = None
+    if owner is None:
         # 批A(D2)：内存归属 60s 清理后回退 Mongo（runtime 持久化含 owner_id）
         try:
             col = _mongo_runtime_col()

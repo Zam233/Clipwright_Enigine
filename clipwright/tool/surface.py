@@ -64,6 +64,8 @@ class ToolCallRecord:
     status: str
     duration_ms: float
     error: Optional[str] = None
+    #: 工具自报成本；None = 未知（costly 档必须如实记"未知"，而不是记 0）
+    cost_usd: Optional[float] = None
     replayed: bool = False
     ts: float = field(default_factory=time.time)
 
@@ -252,6 +254,24 @@ def _preflight(entry: SurfaceEntry, payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _cost_of(result: Any) -> Optional[float]:
+    """工具自报成本（美元）；没报就是 None，**不要伪造 0**。
+
+    工具的作者知道这次调用花了多少（例如视觉模型按次计费），由它在
+    `ToolExecResult` 上挂 `cost_usd`，或把 `cost_usd` 放进 output。两者都没有时
+    返回 None，让调用方把这次记成"成本未知"而不是 0。
+    """
+    direct = getattr(result, "cost_usd", None)
+    if isinstance(direct, (int, float)):
+        return round(float(direct), 6)
+    output = getattr(result, "output", None)
+    if isinstance(output, dict):
+        value = output.get("cost_usd")
+        if isinstance(value, (int, float)):
+            return round(float(value), 6)
+    return None
+
+
 async def execute(
     name: str,
     args: Optional[dict[str, Any]] = None,
@@ -304,12 +324,16 @@ async def execute(
         status = str(getattr(result, "status", "ok") or "ok")
         # ToolStatus 是 str 枚举（success/error/...），统一成 ok/error 便于前端判断
         ok = status in ("success", "ok", "ToolStatus.SUCCESS")
+        cost = _cost_of(result)
         payload_out: dict[str, Any] = {
             "status": "ok" if ok else "error",
             "output": getattr(result, "output", None),
             "output_path": getattr(result, "output_path", None),
             "error": getattr(result, "error", None),
             "warning": getattr(result, "warning", None),
+            "cost_usd": cost,
+            # costly 档却报不出成本 → 标明"未知"，不假装是 0
+            "cost_unknown": cost is None and entry.tier == "costly",
             "replayed": False,
         }
     except Exception as e:  # noqa: BLE001 — 工具异常不能带崩 Kernel
@@ -324,6 +348,7 @@ async def execute(
     payload_out["record"] = _audit(
         name, entry, pipeline_id, key, payload, payload_out["status"],
         duration_ms, payload_out.get("error"),
+        cost_usd=payload_out.get("cost_usd"),
     )
     if key:
         if len(_IDEM_CACHE) >= _MAX_CACHE:
@@ -334,7 +359,8 @@ async def execute(
 
 def _audit(name: str, entry: SurfaceEntry, pipeline_id: str, idem_key: str,
            args: dict[str, Any], status: str, duration_ms: float,
-           error: Optional[str], *, replayed: bool = False) -> dict[str, Any]:
+           error: Optional[str], *, cost_usd: Optional[float] = None,
+           replayed: bool = False) -> dict[str, Any]:
     import json
 
     brief = json.dumps(args, ensure_ascii=False, default=str)
@@ -347,6 +373,7 @@ def _audit(name: str, entry: SurfaceEntry, pipeline_id: str, idem_key: str,
         status=status,
         duration_ms=round(duration_ms, 2),
         error=error,
+        cost_usd=cost_usd,
         replayed=replayed,
     )
     _RECORDS.append(record)

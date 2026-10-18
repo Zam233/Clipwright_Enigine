@@ -1,0 +1,27 @@
+feat(agent-hardening): 收口上一轮自查的四个缺口 + golden 捕获工具
+
+按“全部完成”把这四条补掉，每条都有测试：
+
+1. 任务端点鉴权（安全级）
+   - api/task.py 新增 _TASK_OWNERS 与 _enforce_task_owner，10 个端点全部接入
+   - create 时登记归属；list 按归属过滤；admin 可跨账号
+   - off/token 模式（无 user_id）不受影响，单机部署不被挡
+   - _enforce_pipeline_owner 增加任务归属回退：任务 id 当 pipeline id 调
+     /subagents、/exec 等端点时也能通过（否则前端子代理区必然 403）
+2. 事件落库不再阻塞事件循环
+   - task_events._persist：有运行中循环 → run_in_executor 丢线程池；
+     无循环（脚本/单测）才同步写。Mongo 一通不再周期性卡住长任务
+3. 成本如实（A5 口径）
+   - ToolExecResult 新增 cost_usd（工具自报）；surface 回填 cost_usd 与 cost_unknown
+   - costly 档没报成本 → 记 unknown 而不是 0；TaskUsage 新增 unknown_cost_calls
+   - 只读工具没成本不算异常（不误报）
+4. A14 配置只读的测试（此前只有红线没有断言）
+   - 断言能力面不存在 set_settings/update_config/set_persona 之类能力
+   - 断言 kernel 模块源码不含 settings_store / apply_all
+   - 断言 require_admin 对普通用户 403、admin 与 off 模式放行
+5. golden 捕获工具（C6 前置）
+   - services/golden_capture.py：真跑一条选题 → 落录制 + 写基线
+   - **不覆盖已有基线**（除非 overwrite=True）；失败任务不写基线；不留半成品录制
+   - 指标从录制算（与回放同源），修掉“读还没改名的文件”这个自测出来的 bug
+
+测试：新增 18 条（hardening 13 / capture 5）；后端全量 3511 passed, 3 skipped, 1 xfailed
