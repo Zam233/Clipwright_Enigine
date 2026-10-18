@@ -136,6 +136,17 @@ class BaseCategoryPlugin(BasePlugin):
         )
 
 
+def with_slots(legacy: PromptBundle, **slots: PromptSlot) -> PromptBundle:
+    """把新声明的槽位并入旧钩子合成的槽位（同键以新声明为准）。
+
+    内置类型从"只有旧钩子"迁到新契约时用这个：既保住 `get_structure_template()`
+    等旧钩子产出的内容，又允许逐槽位显式覆盖，不必一刀切重写。
+    """
+    merged = dict(legacy.slots or {})
+    merged.update({key: slot for key, slot in slots.items() if slot is not None})
+    return PromptBundle(slots=merged)
+
+
 def _render_legacy(value: Any) -> str:
     """把旧钩子的三种返回形态归一成可读文本（修 ``list[dict]`` 被 repr 的 bug）。
 

@@ -3,7 +3,7 @@
 > 计划 §12.37 承诺的交付物：把 PRD 的 60 项验收逐条落到"现在什么状态、证据在哪、还差什么"。
 > **状态定义**：`通过` = 有自动化证据且已跑过；`部分` = 有实现/单测但缺真机或端到端；`未做` = 没有；`人工` = 只能由人判定。
 >
-> 生成于 2026-10-18。最近一次全量后端回归（第 29 轮末）：**4079 passed / 3 skipped / 1 xfailed / 0 failed**（6 分 20 秒，`python -m pytest tests -q`）；前端 **108 文件 / 939 项全绿**、`tsc --noEmit` 0 错、`eslint` 0 错、`npm run build` 成功。
+> 生成于 2026-10-18。最近一次全量后端回归（第 30 轮末）：**4113 passed / 3 skipped / 1 xfailed / 0 failed**（7 分 14 秒，`python -m pytest tests -q`）；前端 **108 文件 / 939 项全绿**、`tsc --noEmit` 0 错、`eslint` 0 错、`npm run build` 成功。
 > **2026-10-18 补记**：新增 `scripts/e2e_pipeline_probe.py` 真机端到端探针（真 LLM + Mongo + 完整管线 dry-run），V2/V3/V5/V45 的证据随之更新；补上此前遗漏的 **Part IV（V52–V60）** 逐条表；总数改为按本文件实际行数统计（此前"通过 34"与表内不符）。
 
 ## 总览
@@ -22,7 +22,7 @@
 
 | 编号 | 验收项 | 状态 | 证据 / 差距 |
 |---|---|---|---|
-| V1 | 10 槽位可声明并注入对应阶段 | 通过 | 新增 `services/type_prompts.py`（固定序 原文 → 身份 → 阶段）；7 个阶段各自落地：`structure`（`compose_structure_prompt`）、`material`（`_category_search_hint` 回落 material 槽位首句）、`edit`（剪辑档案 prompt）、`animation`（`_mg_category_context["stage_prompt"]` → MG 上下文段落）、`audio`+`subtitle`（音频 Agent 同时管字幕，`compose_many`）、`quality`（语义质检 prompt）；身份层另注入 requirements。测试：`test_type_prompts.py` 8 项 + `test_stage_prompt_wiring.py` 5 项（edit/audio/quality 用打桩 LLM **捕获真实 system prompt**，animation 走 MG 上下文段落，structure 走模块函数）。**说明**：material 是唯一没有 LLM 消费者的阶段，规范落到检索式上 |
+| V1 | 10 槽位可声明并注入对应阶段 | 通过 | 新增 `services/type_prompts.py`（固定序 原文 → 身份 → 阶段）；7 个阶段各自落地：`structure`（`compose_structure_prompt`）、`material`（`_category_search_hint` 回落 material 槽位首句）、`edit`（剪辑档案 prompt）、`animation`（`_mg_category_context["stage_prompt"]` → MG 上下文段落）、`audio`+`subtitle`（音频 Agent 同时管字幕，`compose_many`）、`quality`（语义质检 prompt）；身份层另注入 requirements。测试：`test_type_prompts.py` 8 项 + `test_stage_prompt_wiring.py` 5 项（edit/audio/quality 用打桩 LLM **捕获真实 system prompt**，animation 走 MG 上下文段落，structure 走模块函数）。**说明**：material 是唯一没有 LLM 消费者的阶段，规范落到检索式上。**第 30 轮补齐声明侧**：五个内置类型全部有了自己的规范——`lyric_mv` 10 槽位，`knowledge_longform` / `kichiku_fastcut` / `digital_review` / `vlog_daily` 各 7 槽位 + 2 条参数规则 + 2 条指标（`test_builtin_type_specs.py` 34 项，`validate_bundle` 全 0 问题）；真机 vlog_daily 运行的 `prompt_resolution.slots` 里出现 **7 个槽位**（此前只有旧钩子合成的 2 个） |
 | V2 | `min_shot_ms` strict floor 生效 | 部分 | 单测：`test_prompt_authority.py`（传 300 → 1200）+ `test_type_spec_runtime.py`。**真机证据**（`scripts/e2e_pipeline_probe.py --scenario floor`）：探针类型声明 `min_shot_ms ≥ 1200 strict`，用户给 300 → trace 里 `prompt_resolution` 显示 `min_shot_ms=1200, source_layer=L2_prompt, overridden_by=prompt`，冲突 `C1`；同一探针把 floor 提到 1200 时时间线片段 35/55/70/55/40s。**已定位缺陷**：`min_shot_ms` 目前只钳制 LLM 剪辑档案的 `base_shot_ms` 与兜底时长，**不构成每段时长的硬下限**——floor=45000（合法区间）那次跑出 30/120/90/60s，首段低于下限（详见「本轮新定位的缺陷」） |
 | V3 | strict 冲突 → C1 事件 + 前端黄条 | 通过 | 后端：C1 记录进 trace（真机 `prompt_resolution.detail.conflicts[0]`）。前端：`TypeConformancePanel` 新增 strict 冲突黄条 `type-conflict-banner` + 类型变形横幅 `type-deformation-banner`，`PipelineAdminPage` 运行详情内直接渲染；`TypeConformancePanel.test.tsx`（10 项），其中一项**用真机 trace 夹具**（`__fixtures__/trace-real-floor.json`，由探针产出）断言黄条出现且来源层显示"类型提示词" |
 | V4 | soft 规则只记录 `param_conflict` | 通过 | `test_prompt_authority.py::test_soft_floor_keeps_user_value_and_records_c2` |
@@ -35,7 +35,7 @@
 | V11 | 含「忽略以上指令」的类型提示词 → 400 | 通过 | `schema/category_spec.detect_prompt_injection()` 规则检测（忽略指令/泄露提示词/角色重置/越狱模式），`test_prompt_safety.py` |
 | V12 | `param_rules` 越界键（如 `fps`）→ 400 | 通过 | `rule_key_allowed()` 白名单（剂量类 + `transition_weights./subtitle_/bgm_/pip_` 前缀），`test_prompt_safety.py` |
 | V13 | 同输入两次裁决逐字节一致 | 通过 | `test_resolution_determinism.py`（4 项：同输入同字节、字典顺序无关、sort_keys 稳定、冲突顺序稳定） |
-| V14 | 既有后端测试全绿 | 通过 | 全量 `python -m pytest tests -q`：**4079 passed / 3 skipped / 1 xfailed / 0 failed**（6 分 20 秒，第 29 轮末）；此前 A-06 的 genre 必填回归已修并复跑确认 |
+| V14 | 既有后端测试全绿 | 通过 | 全量 `python -m pytest tests -q`：**4113 passed / 3 skipped / 1 xfailed / 0 failed**（7 分 14 秒，第 30 轮末）；此前 A-06 的 genre 必填回归已修并复跑确认 |
 | V15 | 身份层注入且顺序固定 | 通过 | `type_prompts.compose` 固定序（原文 → 身份 → 阶段）有单测断言索引关系；身份层实际注入 5 处：requirements、structure、edit、audio、quality（后三处用打桩 LLM 捕获 system prompt 验证内容与顺序） |
 | **V16** | 三类型可判别 | **人工** | 需开 `enable_genre_judge` 或人工盲评 |
 | V17 | 错配可判且给证据 | 未做 | 裁判（L2/L3）未接真实 LLM |
@@ -67,7 +67,7 @@
 | V36 | 卡点子代理超时降级 | 通过 | 子代理超时/取消机制（前序批次）+ 单测 |
 | V37 | 交付九件套齐全 | 通过 | `out/dist/plate_shot` 九文件、`gate_check` V37 通过 |
 | V38 | token 与渲染时长入账 | 通过 | **token**：`pipeline_v2._usage_totals_from_steps` 汇总各 Agent `llm_usage` 成运行总账（`input/output/total/calls/by_agent`），`GET /api/pipeline/runs` 返回 `usage`；真机 dry-run 记到 **10859 tokens / 3 calls**（structure 5697+2465、material 645+597、edit 1133+322）。**渲染耗时**：渲染任务完成时写 `render_seconds`（wall-clock）并同步 Mongo（`api/render.py` 两个入队路径都补），真机 2 秒片子渲染 **2.4s**；`result.duration_sec` 是成片时长（2.0），两者分开记、避免同名混淆；CLI 侧另有 `report.json.render_sec` |
-| V39 | 后端测试全绿 | 通过 | 同 V14（4079 passed / 0 failed） |
+| V39 | 后端测试全绿 | 通过 | 同 V14（4113 passed / 0 failed） |
 | **V40** | 人工终审（3 人 ≥2 说得出类型） | **人工** | — |
 | **V41** | 素材落位 10 个 ≥8 认可 | **人工** | 代码侧已闭环（落位→写回→剪辑取用）；判据需真实素材与人 |
 | V42 | 素材缺口显式化 | 通过 | `gate_check` V42 + `placement_report.gaps` |

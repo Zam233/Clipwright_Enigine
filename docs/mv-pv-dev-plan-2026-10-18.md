@@ -798,6 +798,27 @@ V58 的最后一块是"把偏离写回会话里的规划书"。实现路径：
 
 **一处顺手修正的度量口径**：`text_overlay_ratio` 统计的是 TEXT 轨（歌词文字），不是 CAPTION 轨（字幕）；我第一版单测用 CAPTION 轨构造，指标恒为 0——已改正并在注释里写明，避免下一个人踩同一个坑。
 
+### 12.54 第 30 轮：给另外四个内置类型补上规范（Part I 不再只有一个类型在用）
+
+第 29 轮发现"四个内置类型 prompts / param_rules / traits 全空"，于是 Part I 的机制在运行时只对 `lyric_mv` 生效。这一轮把剩下四个补齐：
+
+| 类型 | 槽位 | 参数规则 | 代理指标 |
+|---|---|---|---|
+| knowledge_longform | genre/anti_patterns/lexicon/structure/edit/animation/quality（7） | `base_shot_ms` floor 3000、`transition_weights.hard_cut` floor 0.5 | `avg_shot_ms ≥ 2500`、`argument_segment_count ≥ 3` |
+| kichiku_fastcut | 7 个（同上） | `base_shot_ms` ceiling **1500 strict**、`hard_cut` floor 0.7 | `avg_shot_ms ≤ 1800`、`repeat_shot_ratio ≥ 0.15` |
+| digital_review | 7 个 | `base_shot_ms` ceiling 8000、`hard_cut` floor 0.4 | `avg_shot_ms ≤ 7000`、`argument_segment_count ≥ 4` |
+| vlog_daily | 7 个 | `base_shot_ms` floor 3000、`hard_cut` floor 0.3 | `avg_shot_ms ≥ 2000`、`text_overlay_ratio ≤ 0.6` |
+
+**做法上的两点讲究**：
+
+1. **旧钩子不丢**：新增 `base.with_slots(legacy, **slots)`，把新声明并入 `super().get_prompt_bundle()`（旧钩子合成的 structure/animation），逐槽位覆盖而不是推倒重写——第三方插件若只实现旧钩子，行为完全不变。
+2. **不给校验器留把柄**：旧 structure 模板里的"约10%""约25%"、旧 MG 指引里的"0.3-0.6s"都会触发 `dangling_number`（数字必须有对应 param_rule 才能写）。迁移时把这些段落改写成不含可量化边界的说法，而不是给校验器开豁免——**"不可执行"标注（〔不可执行〕）只该用在真不可执行的地方**。
+
+**验证**：`test_builtin_type_specs.py` 34 项（每类型 7 项 + load_spec 4 项 + 类型可区分 2 项）；四个类型的 `validate_bundle` 全 0 问题；真机 vlog_daily 运行的 trace 里 `prompt_resolution.slots` 出现 **7 个槽位**（genre 47 字符 / anti_patterns 39 / structure 52 / edit 38 / animation 33 / quality 34 / lexicon 41），此前只有 2 个。
+
+**全量回归**：4113 passed / 3 skipped / 1 xfailed / 0 failed（7 分 14 秒）。
+
+
 
 
 
