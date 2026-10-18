@@ -776,7 +776,14 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
         返回注入的场景序号（-1 = 已有覆盖/不适用，未注入）。
         """
-        if category_plugin_id not in cls._DATA_CHART_CATEGORIES or len(scenes) < 2:
+        # A-08：类型可声明 required_animation_markers: [data_chart]；
+        # 未声明时回落到旧集合（D4：本期迁出，一周期后删）。
+        from clipwright.services.type_spec_runtime import required_markers
+
+        wants_chart = "data_chart" in required_markers(category_plugin_id) or (
+            category_plugin_id in cls._DATA_CHART_CATEGORIES
+        )
+        if not wants_chart or len(scenes) < 2:
             return -1
         if any(
             cls._DATA_CHART_MARKER_RE.search(s.get("description", "") or "")
@@ -821,7 +828,14 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         仅对 _OUTRO_ANIMATION_CATEGORIES 生效；已有标记则不动。
         返回注入的场景序号（-1 = 未注入）。
         """
-        if category_plugin_id not in cls._OUTRO_ANIMATION_CATEGORIES or not scenes:
+        # A-08：declares.outro_animation 优先，未声明回落旧集合。
+        from clipwright.services.type_spec_runtime import declare_flag
+
+        if not declare_flag(
+            category_plugin_id,
+            "outro_animation",
+            category_plugin_id in cls._OUTRO_ANIMATION_CATEGORIES,
+        ) or not scenes:
             return -1
         last = scenes[-1]
         desc = (last.get("description") or "").strip()
@@ -850,7 +864,15 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
           开场允许动画标记（原样保留），符合其高能开场特性；
         - 知识类及其余类型（knowledge_longform 等，含未指定类型）：维持原有剥离行为。
         """
-        if category_plugin_id in _OPENING_ANIMATION_ALLOWED_PLUGIN_IDS:
+        # A-08：declares.opening_animation=True 表示"开场允许动画标记"；
+        # 未声明时回落旧集合（快速类型允许，其余剥离）。
+        from clipwright.services.type_spec_runtime import declare_flag
+
+        if declare_flag(
+            category_plugin_id,
+            "opening_animation",
+            category_plugin_id in _OPENING_ANIMATION_ALLOWED_PLUGIN_IDS,
+        ):
             return scenes
         import re
         if not scenes:

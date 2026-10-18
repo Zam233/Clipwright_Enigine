@@ -155,12 +155,75 @@ def bounds_of(shot_params: dict[str, Any] | None) -> tuple[Any, Any]:
     return shot.get("min_shot_ms"), shot.get("max_shot_ms")
 
 
+# ── A-08：类型声明（declares）取代 Agent 里的硬编码集合 ────────────────────
+
+
+def declare_flag(category_id: str, field: str, legacy_default: bool) -> bool:
+    """读 ``declares`` 的布尔声明；未声明时回落到旧硬编码判断。
+
+    ``legacy_default`` 就是旧实现里那个 ``category_id in {...}`` 的结论——保留它
+    一个发布周期做兜底（PRD D4），并在首次回落时打 deprecation 日志。
+    """
+    spec = load_spec(category_id)
+    value = getattr(spec.declares, field, None)
+    if value is None:
+        if legacy_default:
+            _log_legacy(field, category_id)
+        return bool(legacy_default)
+    return bool(value)
+
+
+def required_markers(category_id: str) -> list[str]:
+    """本类型必须落位的动画标记（如 ``data_chart``）。"""
+    return list(load_spec(category_id).declares.required_animation_markers or [])
+
+
+def requires_marker(category_id: str, marker: str, legacy_default: bool = False) -> bool:
+    markers = required_markers(category_id)
+    if markers:
+        return marker in markers
+    return declare_flag(category_id, "semantic_qa_default", legacy_default) and False
+
+
+def search_hint(category_id: str, legacy_default: str = "") -> str:
+    """本类型的选片/搜图规范（取代 ``_CATEGORY_SEARCH_HINTS`` 字典）。"""
+    spec = load_spec(category_id)
+    hint = (spec.declares.search_hint or "").strip()
+    if hint:
+        return hint
+    if legacy_default:
+        _log_legacy("search_hint", category_id)
+    return legacy_default
+
+
+_LEGACY_LOGGED: set[tuple[str, str]] = set()
+
+
+def _log_legacy(field: str, category_id: str) -> None:
+    """同一 (字段, 类型) 只记一次，避免刷屏。"""
+    key = (field, category_id or "<none>")
+    if key in _LEGACY_LOGGED:
+        return
+    _LEGACY_LOGGED.add(key)
+    import logging
+
+    logging.getLogger(__name__).info(
+        "类型 %s 未声明 %s，暂时回落到旧硬编码判断（D4：本期需迁出到 declares）",
+        category_id or "<none>",
+        field,
+    )
+
+
 __all__ = [
     "TypeSpec",
     "bounds_of",
     "clamp_profile",
+    "declare_flag",
     "load_spec",
+    "required_markers",
+    "requires_marker",
     "resolve_params",
     "resolve_shot_params",
+    "search_hint",
     "stage_text",
 ]

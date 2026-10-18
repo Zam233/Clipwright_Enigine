@@ -69,7 +69,15 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         enable_visual = constraints.get("enable_visual_llm", False)
         # 轮 84（数码评测专项）：语义质检对评测/知识类默认开启——型号/参数/文案
         # 一致性是这两类内容的发布硬要求；其余类型维持默认关闭。
-        semantic_default = context.category_plugin_id in _SEMANTIC_QA_DEFAULT_ON
+        # A-08：优先读类型声明（declares.semantic_qa_default），
+        # 未声明时回落到旧集合 _SEMANTIC_QA_DEFAULT_ON（D4：本期迁出，一周期后删）。
+        from clipwright.services.type_spec_runtime import declare_flag
+
+        semantic_default = declare_flag(
+            context.category_plugin_id,
+            "semantic_qa_default",
+            context.category_plugin_id in _SEMANTIC_QA_DEFAULT_ON,
+        )
         enable_semantic = constraints.get("enable_semantic_qa", semantic_default)
         if qdepth == "basic":
             enable_visual = enable_semantic = False

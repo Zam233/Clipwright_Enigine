@@ -45,6 +45,14 @@ from clipwright.animation.plate.registration import (
     registration_error,
     save_registration,
 )
+from clipwright.animation.plate.transitions import (
+    TRANSITIONS,
+    decay_sequence,
+    shatter,
+    slices,
+    winclose,
+    zoom,
+)
 from clipwright.animation.plate.vectorize import (
     boundary_pixels,
     mask_to_svg_path,
@@ -60,10 +68,12 @@ __all__ = [
     "INK_ORDER",
     "MISREGISTRATION_STEPS",
     "Registration",
+    "TRANSITIONS",
     "apply_registration",
     "boundary_pixels",
     "clean_alpha",
     "compose",
+    "decay_sequence",
     "decimate_indices",
     "derive_size",
     "glyph_plate",
@@ -78,8 +88,12 @@ __all__ = [
     "render_ground",
     "rgb_split",
     "save_registration",
+    "shatter",
     "simplify",
+    "slices",
     "split_inks",
     "tear",
     "trace_contours",
+    "winclose",
+    "zoom",
 ]

@@ -154,7 +154,11 @@ _CATEGORY_SEARCH_HINTS: dict[str, str] = {
 
 
 def _category_search_hint(category_plugin_id: str) -> str:
-    return _CATEGORY_SEARCH_HINTS.get(category_plugin_id or "", "")
+    """选片规范：优先类型声明（declares.search_hint），否则回落旧字典（A-08）。"""
+    from clipwright.services.type_spec_runtime import search_hint
+
+    legacy = _CATEGORY_SEARCH_HINTS.get(category_plugin_id or "", "")
+    return search_hint(category_plugin_id, legacy)
 
 
 async def _llm_search_queries_batch(
