@@ -362,6 +362,32 @@ SP1 ──► R-01 ──► R-02/R-03 ──► R-04 ──► 门 1
 3. **R-11…R-13**（歌词模型 / 字幕带 / 拍点服务）；
 4. 定位全量回归的顺序污染。
 
+### 12.8 第 2 轮：M1 版画库（R-06…R-10）完成，门 2 证据已出
+
+| 任务 | 实现 | 验收 |
+|---|---|---|
+| R-06 三墨分版 | `animation/plate/inks.py`：`clean_alpha`（alpha<16 清零）、`split_inks`（按加权 RGB 距离分版，可 tint）、`compose`（可带位移套印）、`layer_coverage` | 单测断言"三版像素数之和 = 全部不透明像素" |
+| R-07 纸底与错版 | `plate/ground.py`：噪点/点阵/暗角/四角裁切标记，`RandomState(seed)` 确定性；`plate/degrade.py`：`misregistration`（10/18/28px + 露细红版 `_outline`） | 同 seed 两次渲染逐字节相同；错版可见红边 |
+| R-08 降帧与撕裂 | `degrade.decimate_indices`（只依赖帧率）、`tear`（水平/竖直、断口红边）、`hold_frames_ok` | 单测覆盖取样规律与"保持 ≥6 帧" |
+| R-09 字符版画 | `plate/glyph.py`：超采样（2x）+ gamma 密度 + 按墨色着色 + 轮廓字符 | 1920 单帧可读出"胸像"轮廓 |
+| R-10 配准 | `plate/registration.py`：`Registration`、JSON 读写、`apply_registration`、`derive_size`（按实际比例） | 配准 JSON 往返、偏差计算 |
+| R-17 前置 | `plate/vectorize.py`：边界像素 → 轮廓 → Douglas–Peucker 简化 → SVG path | 方块轮廓 ≤8 点、面积 300–420（20×20 掩膜） |
+
+**门 2 证据**：`python -m tools.plate_check --json` → `out/plate/check_sheet.png`
+（六格：纸底 / 三墨套印 / 错版 28px / 撕裂 / 字符版画 / RGB 分离），两次渲染
+**逐字节一致**（sha256 `8b317bb0…`），单帧 `out/plate/glyph_1920.png` 可分辨轮廓。
+
+**新增 39 项单测**（`test_plate_library.py`）。门 2 仍差两项人工判定：
+"不看字能认出 3/5"（当前字符版画能认出胸像，需用真实剪影复测）与 9 张剪影配准 ≤1px（需要素材）。
+
+### 12.9 下一轮
+
+1. **R-11…R-13**：歌词模型、字幕带、拍点服务（`mv_cues`）——门 3 的前半；
+2. **R-14/R-15**：腐坏组合与四个专属转场（winclose/zoom/shatter/slices）；
+3. **A-08/A-09**：`declares` 迁出 5 处硬编码 + 指标采集/同一性校验 L1；
+4. 把 `plate` 接进场景脚本（JS 侧通过预渲染 PNG/SVG 资产引用），并出第一版"版画镜头"。
+
+
 
 ### 12.3 已发现的遗留问题（待下一轮）
 
