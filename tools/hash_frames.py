@@ -83,29 +83,41 @@ def _which(name: str) -> str | None:
 
 
 def hash_video(path: str | Path, width: int = 0, height: int = 0) -> list[str]:
-    """解出视频逐帧哈希（rgb24）。宽高未知时用 ffprobe 探测。"""
+    """解出视频逐帧哈希（rgb24）。宽高未知时用 ffprobe 探测。
+
+    **2026-10-18 修**：调用方给了与源不同的 ``width/height`` 时，原实现**不加缩放**
+    就按给定尺寸切字节，导致把一帧切成四块（960x540 传 480x270 → 900 帧被切成
+    3600 块），帧号与"帧数一致"这类结论全失真。现在：
+    1. 传入宽高与源不符 → 解码时加 ``scale`` 滤镜，保证切分粒度就是真实帧；
+    2. 解码字节数不能被帧尺寸整除 → 直接报错，不再静默丢弃尾巴。
+    """
     video = Path(path)
     if not video.exists():
         raise FileNotFoundError(video)
+    probe_w, probe_h = _probe_size(video)
     if not (width and height):
-        width, height = _probe_size(video)
+        width, height = probe_w, probe_h
     if not (width and height):
         raise RuntimeError(f"无法确定 {video} 的宽高，请显式传 --width/--height")
     ffmpeg = _which("ffmpeg")
     if ffmpeg is None:
         raise RuntimeError("未找到 ffmpeg")
-    proc = subprocess.run(
-        [
-            ffmpeg, "-v", "error", "-i", str(video),
-            "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
-        ],
-        capture_output=True, timeout=1800,
-    )
+    cmd = [ffmpeg, "-v", "error", "-i", str(video)]
+    if probe_w and probe_h and (probe_w, probe_h) != (width, height):
+        cmd += ["-vf", f"scale={width}:{height}"]
+    cmd += ["-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+    proc = subprocess.run(cmd, capture_output=True, timeout=1800)
     if proc.returncode != 0:
         raise RuntimeError(
             f"ffmpeg 解码失败：{proc.stderr.decode('utf-8', 'replace')[:400]}"
         )
-    return hash_frames_from_raw(proc.stdout, width * height * 3)
+    frame_size = width * height * 3
+    if frame_size and len(proc.stdout) % frame_size:
+        raise RuntimeError(
+            f"{video.name}: 解码字节数 {len(proc.stdout)} 不是帧尺寸 {frame_size} 的整数倍，"
+            "帧切分会错位（检查传入的 width/height 是否与源一致）"
+        )
+    return hash_frames_from_raw(proc.stdout, frame_size)
 
 
 def hash_png_dir(path: str | Path) -> list[str]:

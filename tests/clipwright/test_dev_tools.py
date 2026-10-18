@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from tools.check_flash import (
     FrameMetric,
@@ -68,6 +69,27 @@ class TestFrameHash:
         assert not result.equal
         assert result.first_diff == 1
         assert "差异" in result.summary()
+
+    def test_hash_video_scales_when_size_differs(self, tmp_path) -> None:
+        """真机回归：给错宽高必须缩放解码，帧数要等于真实帧数（不是 4 倍）。"""
+        import shutil
+        import subprocess
+
+        if shutil.which("ffmpeg") is None:
+            pytest.skip("未安装 ffmpeg")
+        from tools.hash_frames import hash_video
+
+        clip = tmp_path / "clip.mp4"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+             "color=c=black:s=64x36:d=1:r=10", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(clip)],
+            check=True, capture_output=True,
+        )
+        frames_native = hash_video(clip, 64, 36)
+        frames_scaled = hash_video(clip, 32, 18)
+        # 900 帧不该被切成 3600 块：两种粒度都必须是 10 帧
+        assert len(frames_native) == 10, len(frames_native)
+        assert len(frames_scaled) == 10, len(frames_scaled)
 
     def test_compare_length_mismatch(self) -> None:
         result = compare(["a"], ["a", "b"])
