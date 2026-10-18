@@ -463,12 +463,25 @@ SP1 ──► R-01 ──► R-02/R-03 ──► R-04 ──► 门 1
 
 **诚实标注**：`detect_drift` 的端到端调用（真的跑一次结构阶段并落 JSONL）尚未在管线里跑过——单测覆盖了纯函数与"缺 plan 必失败"路径，但"有 plan 时正常出片 + 有漂移时落盘"还缺一次集成验证，列入下一轮。
 
-### 12.19 下一轮
+### 12.20 第 9 轮：F 轨启动（F-01/F-02 类型规范编辑器）
 
-1. **F 轨启动**（`J:\Clipweight-Client`）：类型编辑器接 `prompts/param_rules/signature_traits` + 冲突预览；
-2. **plan-first 集成验证**：给结构阶段喂一个真实 plan，确认出片且 drift 落盘；
+| 项 | 结果 |
+|---|---|
+| 前端契约 | `src/services/api/typeMaker.ts`：新增 `PromptSlot / ParamRule / SignatureTrait / TypeDeclares / ResolveResult / ValidateResult / GenreCheckResult`，以及 `validate()` / `resolve()` / `genreCheck()` 三个方法；导出 `IDENTITY_SLOTS / STAGE_SLOTS / SLOT_LABELS` |
+| 新组件 | `src/features/settings/TypeSpecEditor.tsx`：身份层 3 槽位（genre 必填引导）+ 阶段层 7 槽位 + 参数规则表（可增删）+ 指标表（可增删）+ 字符计数（/4000）+ 校验/裁决预览/保存 |
+| F-02 冲突预览 | 保存前先 `validate`（错误则拒存）；`resolve` 预览显示 C1/C2 冲突与丢弃槽位；**`type_deformation` 时只显示"这不是参数问题"与出路说明，不提供豁免按钮**（与 PRD 一致） |
+| 接线 | `TypeMakerPage` 卡片新增「规范」图标 → 打开编辑器；保存后 `reload()` |
+| 验证 | `npx tsc --noEmit` 通过；`npx eslint` 变更文件 0 error 0 warning；**前端全量 103 files / 907 tests passed**（新增 12 项）；`npm run build` 见下 |
+
+**这轮踩到的两个前端约定**：① UI 组件必须从 `@/components/ui` 桶文件导入（`@/components/ui/Button` 会触发 TS1149 大小写冲突）；② `cn` 在 `@/lib/utils` 而不是 `@/lib/cn`。
+
+### 12.21 下一轮
+
+1. **F-04/F-05**：创作页去「配音/视觉驱动」二选一 + 提示词区 + ChatForge 抽屉（依赖后端 `scope=mv_prompt` 与 `commit-prompt`）；
+2. **F-06**：规划确认页（brief/plan 双栏 + 自定义维度必填 reason）；
 3. **R-11/R-12 收口**：字幕带与文字动画抽成可复用构件；
 4. **S 轨**：MV 标签集 + 乐句级 query。
+
 
 
 
