@@ -733,6 +733,20 @@ V58 的最后一块是"把偏离写回会话里的规划书"。实现路径：
 
 **覆盖表**：通过 44 / 部分 8 / V49 部分 4/7 / 未做 3 / 人工 4 = 60 行（V1、V15 各 +1 通过）。
 
+### 12.51 第 27 轮（续）：V38 渲染耗时入账 + 一次非 dry-run 真机
+
+**先跑了一次真管线**（`python scripts/e2e_pipeline_probe.py --with-plan --full`）：`status=completed`，190.7 秒跑完 8 个 Agent 组（structure→material→edit→animation+demo_summarizer→audio→quality），trace 里出现 `logic_anim`/`mg_start`/`mg_end`/`text_anim`（动画真的生成了）。两点如实记录：
+
+1. **管线不负责渲染**：事件里没有渲染组，`usage.render_sec` 因此为 0——不是漏记账，是渲染走独立的任务队列（`POST /api/render/queue`）。所以"渲染时长"要记在渲染任务上，不是管线运行记录上。
+2. audio 组报 `无配音与BGM配置（voice 未配置、无 TTS/音乐 key），成片将无声音`——本机没有配音/BGM 凭据，这属于环境事实，不假装有声。
+
+**补上渲染耗时入账**：`api/render.py` 两条入队路径（手动 `/queue` 与管线自动入队）在渲染完成时写 `render_seconds`（wall-clock），并随终态同步 Mongo。真机取证：拿一段 2 秒占位素材入队渲染 → `status=completed`、**`render_seconds=2.4`**、`result.duration_sec=2.0`。
+
+**这里有个容易混的点**：`RenderResult.duration_sec` 是**成片时长**，不是渲染耗时；原代码只有它，所以"渲染跑了多久"其实一直没记。新字段刻意分开命名（`render_seconds` vs `duration_sec`）并在注释里写明，避免下一轮又看错。
+
+**V38 → 通过**（token 与渲染耗时两半都有真机值）；覆盖表：通过 45 / 部分 7。
+
+
 
 
 

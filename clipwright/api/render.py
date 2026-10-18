@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 import tempfile
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -295,6 +296,7 @@ async def enqueue_auto_render(
 
     async def _run():
         attempt = 0
+        _render_started = time.perf_counter()
         while True:
             _render_queue[task_id]["status"] = "rendering"
             _render_queue[task_id]["progress"] = 0
@@ -320,6 +322,11 @@ async def enqueue_auto_render(
                 if not result.success:
                     raise RuntimeError(result.error or "render failed")
                 _render_queue[task_id]["result"] = result.to_dict()
+                # V38：渲染**耗时**入账。注意 result.duration_sec 是成片时长，
+                # 不是这台机器实际跑了多久——两者同名极易混淆，故单独记 render_seconds。
+                _render_queue[task_id]["render_seconds"] = round(
+                    time.perf_counter() - _render_started, 2
+                )
                 _render_queue[task_id]["status"] = "completed"
                 _render_queue[task_id]["progress"] = 100
                 _render_queue[task_id]["output_path"] = str(out)
@@ -526,6 +533,10 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                 except Exception:
                     pass
             _render_queue[task_id]["result"] = result.to_dict()
+            # V38：渲染**耗时**（wall-clock）入账；注意 result.duration_sec 是成片时长
+            _render_queue[task_id]["render_seconds"] = round(
+                _time.perf_counter() - _wait_started, 2
+            )
             _render_queue[task_id]["status"] = "completed" if result.success else "failed"
             _render_queue[task_id]["progress"] = 100
             _render_queue[task_id]["output_path"] = str(out)
@@ -593,6 +604,7 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                     "status": _render_queue[task_id]["status"],
                     "progress": _render_queue[task_id].get("progress", 0),
                     "result": _render_queue[task_id].get("result"),
+                    "render_seconds": _render_queue[task_id].get("render_seconds"),
                     "output_path": _render_queue[task_id].get("output_path", ""),
                     "owner_id": _render_queue[task_id].get("owner_id", ""),
                     "updated_at": datetime.now(tz=TIME_ZONE),

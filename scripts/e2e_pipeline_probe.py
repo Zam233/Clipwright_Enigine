@@ -213,8 +213,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="注入一份合法规划书并开 plan_first，验证执行偏离是否进 trace（V58）")
     parser.add_argument("--writeback", action="store_true",
                         help="建真实需求会话 + 规划，跑完回读会话验证偏离是否写回规划书（V58 写回半边）")
-    parser.add_argument("--timeout", type=float, default=600.0)
+    parser.add_argument("--full", action="store_true",
+                        help="不做 dry-run：真跑动画/音频/质检/渲染（慢，用于取 render_sec 与成片）")
     parser.add_argument("--interval", type=float, default=3.0)
+    parser.add_argument("--timeout", type=float, default=600.0)
     args = parser.parse_args(argv)
 
     from fastapi.testclient import TestClient
@@ -243,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
         report["scenario"] = "floor"
         report["injected_rules"] = [{"key": "min_shot_ms", "mode": "floor", "value": args.floor, "enforce": "strict"}]
     report["extra_params"] = extra
+    report["dry_run"] = not args.full
 
     with TestClient(app) as client:
         if args.writeback:
@@ -274,7 +277,7 @@ def main(argv: list[str] | None = None) -> int:
             "persona_id": args.persona,
             "category_plugin_id": args.category,
             "topic": args.topic,
-            "dry_run": True,
+            "dry_run": not args.full,
             "extra_params": extra,
         }
         res = client.post("/api/pipeline/run-async", json=payload)

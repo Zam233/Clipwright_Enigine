@@ -3,15 +3,15 @@
 > 计划 §12.37 承诺的交付物：把 PRD 的 60 项验收逐条落到"现在什么状态、证据在哪、还差什么"。
 > **状态定义**：`通过` = 有自动化证据且已跑过；`部分` = 有实现/单测但缺真机或端到端；`未做` = 没有；`人工` = 只能由人判定。
 >
-> 生成于 2026-10-18。最近一次全量后端回归（第 27 轮末）：**4056 passed / 3 skipped / 1 xfailed / 0 failed**（6 分 05 秒，`python -m pytest tests -q`）；前端 **108 文件 / 939 项全绿**、`tsc --noEmit` 0 错、`eslint` 0 错、`npm run build` 成功。
+> 生成于 2026-10-18。最近一次全量后端回归（第 27 轮末）：**4056 passed / 3 skipped / 1 xfailed / 0 failed**（6 分 37 秒，`python -m pytest tests -q`）；前端 **108 文件 / 939 项全绿**、`tsc --noEmit` 0 错、`eslint` 0 错、`npm run build` 成功。
 > **2026-10-18 补记**：新增 `scripts/e2e_pipeline_probe.py` 真机端到端探针（真 LLM + Mongo + 完整管线 dry-run），V2/V3/V5/V45 的证据随之更新；补上此前遗漏的 **Part IV（V52–V60）** 逐条表；总数改为按本文件实际行数统计（此前"通过 34"与表内不符）。
 
 ## 总览
 
 | 状态 | 数量 | 说明 |
 |---|---|---|
-| 通过 | 44 | 有自动化证据 |
-| 部分 | 8 | 有实现或单测，缺真机/端到端/事件留痕 |
+| 通过 | 45 | 有自动化证据 |
+| 部分 | 7 | 有实现或单测，缺真机/端到端/事件留痕 |
 | 未做 | 3 | V17（裁判未接真 LLM）、V34（4K 单帧未渲）、V50（无素材） |
 | 人工 | 4 | V16、V30、V40、V41 |
 | 合计 | 59 + V49（部分 4/7） | V1–V60 共 60 行 |
@@ -35,7 +35,7 @@
 | V11 | 含「忽略以上指令」的类型提示词 → 400 | 通过 | `schema/category_spec.detect_prompt_injection()` 规则检测（忽略指令/泄露提示词/角色重置/越狱模式），`test_prompt_safety.py` |
 | V12 | `param_rules` 越界键（如 `fps`）→ 400 | 通过 | `rule_key_allowed()` 白名单（剂量类 + `transition_weights./subtitle_/bgm_/pip_` 前缀），`test_prompt_safety.py` |
 | V13 | 同输入两次裁决逐字节一致 | 通过 | `test_resolution_determinism.py`（4 项：同输入同字节、字典顺序无关、sort_keys 稳定、冲突顺序稳定） |
-| V14 | 既有后端测试全绿 | 通过 | 全量 `python -m pytest tests -q`：**4056 passed / 3 skipped / 1 xfailed / 0 failed**（6 分 05 秒，第 27 轮末）；此前 A-06 的 genre 必填回归已修并复跑确认 |
+| V14 | 既有后端测试全绿 | 通过 | 全量 `python -m pytest tests -q`：**4056 passed / 3 skipped / 1 xfailed / 0 failed**（6 分 37 秒，第 27 轮末）；此前 A-06 的 genre 必填回归已修并复跑确认 |
 | V15 | 身份层注入且顺序固定 | 通过 | `type_prompts.compose` 固定序（原文 → 身份 → 阶段）有单测断言索引关系；身份层实际注入 5 处：requirements、structure、edit、audio、quality（后三处用打桩 LLM 捕获 system prompt 验证内容与顺序） |
 | **V16** | 三类型可判别 | **人工** | 需开 `enable_genre_judge` 或人工盲评 |
 | V17 | 错配可判且给证据 | 未做 | 裁判（L2/L3）未接真实 LLM |
@@ -66,7 +66,7 @@
 | V35 | 成片被判 `lyric_mv` | 部分 | `/genre-check` 端点 + 8 项单测；**无真实成片时间线** |
 | V36 | 卡点子代理超时降级 | 通过 | 子代理超时/取消机制（前序批次）+ 单测 |
 | V37 | 交付九件套齐全 | 通过 | `out/dist/plate_shot` 九文件、`gate_check` V37 通过 |
-| V38 | token 与渲染时长入账 | 部分 | **token 入账 ✓ 真机**：`pipeline_v2._usage_totals_from_steps` 把各 Agent 的 `llm_usage` 汇总成运行总账（`usage.input_tokens/output_tokens/total_tokens/calls/by_agent/render_sec`），`GET /api/pipeline/runs` 已带该字段；真机一次 dry-run：**total 10859 tokens / 3 calls**（structure 5697+2465、material 645+597、edit 1133+322）。**渲染时长**：管线总账取 `render` 步骤时长（单测覆盖），但真渲一次未跑，dry-run 下 `render_sec=0.0`；POC 侧的 `report.json.render_sec` 仍是真实渲染耗时来源 |
+| V38 | token 与渲染时长入账 | 通过 | **token**：`pipeline_v2._usage_totals_from_steps` 汇总各 Agent `llm_usage` 成运行总账（`input/output/total/calls/by_agent`），`GET /api/pipeline/runs` 返回 `usage`；真机 dry-run 记到 **10859 tokens / 3 calls**（structure 5697+2465、material 645+597、edit 1133+322）。**渲染耗时**：渲染任务完成时写 `render_seconds`（wall-clock）并同步 Mongo（`api/render.py` 两个入队路径都补），真机 2 秒片子渲染 **2.4s**；`result.duration_sec` 是成片时长（2.0），两者分开记、避免同名混淆；CLI 侧另有 `report.json.render_sec` |
 | V39 | 后端测试全绿 | 通过 | 同 V14（4056 passed / 0 failed） |
 | **V40** | 人工终审（3 人 ≥2 说得出类型） | **人工** | — |
 | **V41** | 素材落位 10 个 ≥8 认可 | **人工** | 代码侧已闭环（落位→写回→剪辑取用）；判据需真实素材与人 |
@@ -160,10 +160,10 @@ npx tsc --noEmit; npx eslint src; npm run test; npm run build
 
 ## 结论（一句话）
 
-**能自动化的项目里：44 项通过、8 项部分、3 项未做（V17/V34/V50）、1 项部分达标（V49 4/7）；另有 4 项只能由人判定（V16/V30/V40/V41），以及 4 项计划外人工验收（A5/A8/A10/A13）。**
+**能自动化的项目里：45 项通过、7 项部分、3 项未做（V17/V34/V50）、1 项部分达标（V49 4/7）；另有 4 项只能由人判定（V16/V30/V40/V41），以及 4 项计划外人工验收（A5/A8/A10/A13）。**
 "部分"集中在三类：① 真机端到端（V2/V25/V32/V35/V45）；② 事件留痕与写回（V38/V45）；③ 需要素材或真落库的项（V33/V34/V41）。
 "未做"三项里，V17 是类型裁判接真 LLM（依赖 D7 决策，默认不开），V50 需要外部素材，V34 需要 4K 单帧渲染窗口。
-**第 27 轮收口**：V1/V15（10 槽位逐阶段注入 + 身份层固定序，5 处行为级测试）、V38 的 token 半边（真机 10859 tokens / 3 calls 入账到运行记录）。
+**第 27 轮收口**：V1/V15（10 槽位逐阶段注入 + 身份层固定序）、V38（token 真机 10859 入账 + 渲染耗时 render_seconds 真机 2.4s）。
 **前一轮收口**：V21（30 秒 POC）、V53（真实 brief）、V58（三通道写回）、V59（交付双文档逐字节一致）。
 **本轮修的隐患**：`tools/hash_frames.hash_video` 在调用方传入的宽高与源不一致时**不加缩放就按给定尺寸切字节**，把一帧切成四块（900 帧报成 3600）；已改为"尺寸不符则解码时缩放 + 字节数不整除即报错"，并补真机回归测试。
 **仍未拍板**：PRD D23（`min_shot_ms` 是否作逐段硬下限）——真机已跑出 30s 片段，改实现前需要先定策略。
