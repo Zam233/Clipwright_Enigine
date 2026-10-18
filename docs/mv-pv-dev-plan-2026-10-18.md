@@ -452,12 +452,24 @@ SP1 ──► R-01 ──► R-02/R-03 ──► R-04 ──► 门 1
 
 **这轮修掉的一个接口不一致**：渲染脚本原先写的是 `{bpm, beat_zero_sec, items}`，而 `mv_cues.load_cues` 期望 `{grid: {bpm, beat_zero_sec}, items}`——**同一个文件两种形态**，打包时直接暴露成 `bundle_no_grid`。已统一：渲染脚本改用 `save_cues()` 落盘，工程目录与 `out/` 各存一份。
 
-### 12.17 下一轮
+### 12.18 第 8 轮：plan-first 接线（A-16/A-17）
 
-1. **F 轨启动**（前端仓库 `J:\Clipweight-Client`）：类型编辑器接 `prompts/param_rules/signature_traits` + 冲突预览；
-2. **R-11/R-12 收口**：字幕带与文字动画抽成可复用构件（现在内联在 `plate_shot/scene.js`）；
-3. **S 轨**：MV 标签集 + 乐句级 query；
-4. **门 4 预演**：用 `pack_dist` 输出当"交付门"的检查对象，把 V21–V43 里能自动化的先接成脚本。
+| 项 | 结果 |
+|---|---|
+| 新模块 | `services/plan_first.py`：`resolve_plan`（`_plan` / `plan` / `production_plan.plan` 三种来源）、`require_plan`（plan-first 缺计划 → `PlanMissing`）、`plan_prompt_block`（段落目的/画面/卡点/素材缺口渲染）、`detect_drift`（时长/段数/画面类型偏离）、`append_drift`（JSONL） |
+| A-16 接线 | `StructureAgent.execute`：注入规划块；**plan_first=True 且无 plan → 直接返回 FAIL（`failure_reason=plan_missing`，warning 里带 V55）**，不退回自由生成 |
+| A-17 接线 | 场景最终化后 `detect_drift` → 有偏离则按 `extra_params.plan_drift_path` 追加 JSONL，并把 `plan_drift: <code>` 写进 `_warnings`；留痕失败只 warning，不影响出片 |
+| 测试 | 24 项新单测（plan 三来源、空 plan 报错含 V55、prompt 块含目的/画面/BPM/缺口、三类漂移、JSONL 追加、未开 plan_first 零变化）；structure 相关回归 **48 passed** |
+
+**诚实标注**：`detect_drift` 的端到端调用（真的跑一次结构阶段并落 JSONL）尚未在管线里跑过——单测覆盖了纯函数与"缺 plan 必失败"路径，但"有 plan 时正常出片 + 有漂移时落盘"还缺一次集成验证，列入下一轮。
+
+### 12.19 下一轮
+
+1. **F 轨启动**（`J:\Clipweight-Client`）：类型编辑器接 `prompts/param_rules/signature_traits` + 冲突预览；
+2. **plan-first 集成验证**：给结构阶段喂一个真实 plan，确认出片且 drift 落盘；
+3. **R-11/R-12 收口**：字幕带与文字动画抽成可复用构件；
+4. **S 轨**：MV 标签集 + 乐句级 query。
+
 
 
 

@@ -309,6 +309,32 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             system_prompt = self._build_system_prompt(identity, language, rhythm, constraints)
             system_prompt += TOOL_PROMPT
 
+            # A-16（plan-first）：先取规划；开了 plan_first 却没有规划 → 明确失败，
+            # 不许悄悄退回"自由生成"（验收 V55）。
+            from clipwright.services.plan_first import (
+                PlanMissing,
+                plan_prompt_block,
+                require_plan,
+            )
+
+            try:
+                plan = require_plan(context.extra_params)
+            except PlanMissing as exc:
+                logger.error("StructureAgent: plan-first 缺少规划，明确失败: %s", exc)
+                return StructureOutput(
+                    decision=AgentDecision.FAIL,
+                    script_skeleton={
+                        "topic": context.topic,
+                        "_warnings": [str(exc)],
+                        "failure_reason": "plan_missing",
+                    },
+                    scenes=[],
+                )
+            if plan is not None:
+                block = plan_prompt_block(plan)
+                if block:
+                    system_prompt += "\n\n" + block
+
             if input_data.persona_prompt:
                 system_prompt += f"\n\n## Persona Prompt\n{input_data.persona_prompt}\n"
             if input_data.vision_prompt:
@@ -505,6 +531,22 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             scenes = self._strip_opening_animation_markers(
                 scenes, context.category_plugin_id
             )
+
+            # A-17：执行偏离规划 → plan_drift 留痕（JSONL 追加；无 plan 时零变化）
+            if plan is not None:
+                try:
+                    from clipwright.services.plan_first import append_drift, detect_drift
+
+                    drifts = detect_drift(plan, scenes)
+                    if drifts:
+                        drift_path = (context.extra_params or {}).get("plan_drift_path")
+                        if drift_path:
+                            append_drift(drift_path, drifts)
+                        warnings = list(warnings) + [
+                            f"plan_drift: {item.get('code')}" for item in drifts
+                        ]
+                except Exception as exc:  # noqa: BLE001 - 留痕失败不得影响出片
+                    logger.warning("plan_drift 记录失败（已跳过）: %s", exc)
             # R8：给每个场景钉上真实素材镜头引用（`material_refs`），
             # 让规划书从"一段文字描述"变成"指名道姓用哪些镜头"，下游不再各剪各的。
             scenes, warnings = self._ground_scenes(scenes, context, warnings)
