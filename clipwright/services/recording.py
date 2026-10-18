@@ -211,3 +211,78 @@ def merge_recordings(paths: Iterable[str | Path], out: str | Path) -> int:
                 fh.write(json.dumps(entry.to_json(), ensure_ascii=False) + "\n")
                 written += 1
     return written
+
+
+# ── 录制作用域（Kernel 用）────────────────────────────────────
+
+from contextvars import ContextVar, Token  # noqa: E402 — 与上方纯函数分区
+
+_ACTIVE: ContextVar[Optional[Recorder]] = ContextVar("clipwright_recorder", default=None)
+
+
+class recording_scope:
+    """`with recording_scope(Recorder(path)):` —— 让 Kernel 自动记录调用。
+
+    用 ContextVar 而不是全局单例：并发跑多条任务时不能互相串录制。
+    """
+
+    def __init__(self, recorder: Optional[Recorder]) -> None:
+        self.recorder = recorder
+        self._token: Optional[Token] = None
+
+    def __enter__(self) -> Optional[Recorder]:
+        self._token = _ACTIVE.set(self.recorder)
+        return self.recorder
+
+    def __exit__(self, *exc: Any) -> None:
+        if self._token is not None:
+            _ACTIVE.reset(self._token)
+
+
+def current_recorder() -> Optional[Recorder]:
+    return _ACTIVE.get()
+
+
+def maybe_record(kind: str, name: str, args: Any, result: Any = None,
+                 *, error: Optional[str] = None) -> None:
+    """有录制作用域时记一条；没有就什么都不做（生产默认路径零开销）。"""
+    recorder = current_recorder()
+    if recorder is None:
+        return
+    try:
+        recorder.record(kind, name, args, result, error=error)
+    except Exception:  # noqa: BLE001 — 录制失败绝不能影响主流程
+        pass
+
+
+def make_replay_planner(replayer: Replayer):  # noqa: ANN201 — 返回协议对象
+    """从录制构造一个"假规划器"（A2 回放用，不联网）。"""
+    from clipwright.schema.task import Plan  # 延迟导入避免循环
+
+    async def plan(task):  # noqa: ANN001, ANN202
+        payload = replayer.result_of("llm", "plan", {"topic": task.request.topic})
+        return Plan.model_validate(payload)
+
+    async def reflect(task, step, outcome):  # noqa: ANN001, ANN202
+        return replayer.result_of(
+            "llm", "reflect", {"step_id": step.id, "status": step.status},
+        )
+
+    class _ReplayPlanner:
+        pass
+
+    planner = _ReplayPlanner()
+    planner.plan = plan          # type: ignore[attr-defined]
+    planner.reflect = reflect    # type: ignore[attr-defined]
+    return planner
+
+
+def make_replay_executor(replayer: Replayer):  # noqa: ANN201
+    """从录制构造执行器：同一 Step 直接取录制结果，绝不真跑工具。"""
+
+    async def executor(task, step):  # noqa: ANN001, ANN202
+        return replayer.result_of(
+            "tool", step.capability, {"step_id": step.id, "args": step.args},
+        )
+
+    return executor

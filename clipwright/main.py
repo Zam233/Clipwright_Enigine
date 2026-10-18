@@ -68,6 +68,7 @@ from clipwright.api import rag as rag_api
 from clipwright.api import render as render_api
 from clipwright.api import tool as tool_api
 from clipwright.api import tool_surface as tool_surface_api
+from clipwright.api import task as task_api
 from clipwright.api import plugin as plugin_api
 from clipwright.api import animation as animation_api
 from clipwright.api import material as material_api
@@ -697,6 +698,7 @@ app.include_router(providers_api.router)
 app.include_router(render_api.router)
 app.include_router(tool_api.router)
 app.include_router(tool_surface_api.router)
+app.include_router(task_api.router)
 app.include_router(plugin_api.router)
 app.include_router(skill_api.router)
 app.include_router(material_api.router)

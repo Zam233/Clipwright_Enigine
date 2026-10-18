@@ -1,0 +1,32 @@
+feat(agent-c2): Agent Kernel 内核 —— plan/act/observe/reflect + 四道闸 + 事件流 + 检查点
+
+C2 是路线 C 第一次真正动"决策"。只做三件事：想、选、记；**不直接碰副作用**——
+所有执行仍经 tool.surface（因而受档位与网关约束）。
+
+新增：
+1. schema/task.py
+   - Task / Plan / PlanStep / TaskEvent / TaskLimits / TaskUsage / TaskFinish 契约
+   - Step 状态机封闭（pending→running→done|failed|skipped），事件类型固定 15 种
+   - TaskLimits.validate_or_raise()：回合/调用数/墙钟不可置空（Q1），
+     budget_usd 填 0 视作配置错误而非"无上限"
+2. services/task_events.py
+   - append-only 事件流（内存热层 + Mongo 旁路，落库失败只告警）
+   - seq 单调、按任务有界、events_since 支持 SSE 游标
+3. services/agent_kernel.py
+   - PLANNER/EXECUTOR 依赖注入：测试用 fake，生产用 LLMPlanner + default_executor
+   - 主循环：每轮先查暂停/取消 → 查闸 → 取下一个 pending step → 执行 → observe → reflect
+   - 闸命中不算失败而是**收尾**：产出结论 + 已完成 + 未完成原因（A1）
+   - observe 保留结构化数值（facts），工作记忆 24 条上限后压缩更早明细（A11 起步）
+   - 检查点：每步后落 JSON；resume 从检查点续跑，已完成 Step 不重跑（A6）
+   - reflect/plan 异常被收住并转成收尾原因（避免后台协程静默死掉）
+4. services/recording.py 扩容
+   - recording_scope（ContextVar，避免并发任务串录制）+ maybe_record
+   - make_replay_planner / make_replay_executor：只读录制，缺失即抛 RecordingMiss
+   - 录制点放在 Kernel 而非执行器：任何执行器（真实/回放/测试）都能被录
+5. api/task.py（PRD §8.4）
+   - POST /api/task（plan_only 默认 true，只出计划）、GET /{id}、/events、/events/stream
+   - pause / resume / cancel / inject / plan；GET /api/task 列表
+   - 执行走后台协程 + 同任务不并发跑两份
+
+测试：新增 29 条（内核 18 / 回放 4 / API 7）；
+后端全量 3467 passed, 3 skipped, 1 xfailed
