@@ -421,7 +421,26 @@ def _delete_path(data: dict[str, Any], path: str) -> None:
 
 
 def _bounded_value(current: Any, rule: ParamRule) -> tuple[Any, bool]:
-    """按 mode 计算规则值，并返回是否与原值冲突。"""
+    """按 mode 计算规则值，并返回是否与原值冲突。
+
+    真机取证时发现的小瑕疵：规则值走浮点比较，``floor=1200`` 会把用户给的
+    ``min_shot_ms=300`` 改写成 ``1200.0``，冲突文案随之变成「改回 1200.0」。
+    数值语义上没错（下游 `int()` 兜底），但对外文案不干净，所以在"原值或规则值
+    是整数、结果也是整数"时收窄回 ``int``。
+    """
+    value, violated = _bounded_value_raw(current, rule)
+    if (
+        isinstance(value, float)
+        and value.is_integer()
+        and (isinstance(rule.value, int) or isinstance(current, int))
+        and not isinstance(rule.value, bool)
+        and not isinstance(current, bool)
+    ):
+        return int(value), violated
+    return value, violated
+
+
+def _bounded_value_raw(current: Any, rule: ParamRule) -> tuple[Any, bool]:
     if rule.value is None:
         return None, False
     if rule.mode == "exact":

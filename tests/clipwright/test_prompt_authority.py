@@ -29,6 +29,17 @@ class TestRuleEnforcement:
         assert conflict.user_value == 300
         assert conflict.winner_layer == "L2_prompt"
 
+    def test_strict_floor_keeps_integer_type_and_clean_message(self) -> None:
+        """真机取证回归：floor 改写后仍是 int，冲突文案不出现「1200.0」。"""
+        authority = _authority(
+            rules=[ParamRule(key="min_shot_ms", mode="floor", value=1200, enforce="strict")]
+        )
+        resolution = authority.resolve(user={"min_shot_ms": 300})
+        value = resolution.param("min_shot_ms")
+        assert value == 1200
+        assert isinstance(value, int) and not isinstance(value, bool)
+        assert "1200.0" not in resolution.conflicts[0].message
+
     def test_soft_floor_keeps_user_value_and_records_c2(self) -> None:
         authority = _authority(
             rules=[ParamRule(key="min_shot_ms", mode="floor", value=1200, enforce="soft")]

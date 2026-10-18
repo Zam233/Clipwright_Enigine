@@ -624,6 +624,33 @@ SP1 ──► R-01 ──► R-02/R-03 ──► R-04 ──► 门 1
 | 素材依赖 | V50、V33/V34/V41 | **需素材** |
 | 人工判定 | V16/V20/V30/V40/V41 + A8/A10/A5/A13 | **需人** |
 
+### 12.46 第 25 轮：真机端到端探针（V2/V3/V5/V45 实证）+ 覆盖表补 V52–V60
+
+**做了什么**：新增 `scripts/e2e_pipeline_probe.py`——用 `TestClient` 起真后端、真 LLM（`deepseek-flash`）、真 Mongo，跑 `POST /api/pipeline/run-async`（`dry_run=true`），轮询状态、拉 `/trace/{id}`、把 `report-*.json` 与 `trace-*.json` 落 `out/e2e/`。三种场景：
+
+| 场景 | 命令 | 实测结果 |
+|---|---|---|
+| 内置类型直跑 | `--timeout 480` | `completed`，28 事件，`prompt_resolution` ×1（`vlog_daily`，3 参数全 `L1_user`，2 槽位，无冲突）；时间线 5 轨、视频 5 段（35–70s），素材全是占位 `_cache\tmp\textvid_*.mp4` |
+| 探针类型 · floor 1200 | `--scenario floor --set min_shot_ms=300` | `completed`，`min_shot_ms` 300 → **1200 / L2_prompt / overridden_by=prompt**，冲突 `C1`，槽位 `genre ← category:probe_floor` |
+| 探针类型 · floor 45000（合法区间） | `--scenario floor --floor 45000 --max-ms 200000 --set min_shot_ms=300` | `completed`，`min_shot_ms=45000 / L2_prompt`；但成片四段 **30/120/90/60s**，首段低于下限 |
+| 探针类型 · floor 90000（越界） | `--scenario floor --floor 90000 --set min_shot_ms=300` | `completed`，冲突 C1 + **C9 类型变形**（`min_shot_ms(90000) > max_shot_ms(20000)`，文案含"不提供豁免"）；7 段全 ≥110s |
+
+**结论（写进 PRD 措辞的那一层）**：
+1. **参数裁决链路真机通了**：用户在 `extra_params` 里给越界值 → 类型规则改写 → trace 留痕（值、来源层、`overridden_by`、冲突码）→ 前端能读。V5 从"单测过"变成"真机过"。
+2. **`min_shot_ms` 不是逐段硬下限**：`edit_agent` 只拿它去钳 LLM 剪辑档案的 `base_shot_ms`（`_clamp_llm_profile`），片段时长由 `scene.duration_sec × duration_scale` 决定，不再被 min 夹。**floor=45000 那次跑出 30s 首段就是证据**。是否逐段夹紧牵动"配音优先对齐"策略，单列为待拍板项（见 `docs/coverage.md`「本轮新定位的缺陷」）。
+3. **dry-run 出不了片**：视频片段全是占位 `textvid_*.mp4`，所以"提示词对成片的量化影响"（V45 后半、V21/V35）**仍然未测**，不能拿它冒充成片证据。
+
+**顺带修的小瑕疵**：`PromptAuthority._bounded_value` 走浮点比较，`floor=1200` 会把用户值改写成 `1200.0`，冲突文案变成"改回 1200.0"。改为"原值或规则值是整数且结果也是整数时收窄回 `int`"，新增 `test_strict_floor_keeps_integer_type_and_clean_message`（真机 trace 里已确认 `min_shot_ms=1200`）。
+
+**前端（V3 收口）**：`TypeConformancePanel` 顶部加 strict 冲突黄条（`type-conflict-banner`）与类型变形横幅（`type-deformation-banner`）；`PipelineAdminPage` 运行详情内已渲染该面板。测试 10 项，其中一项**用真机 trace 夹具**渲染断言（夹具 `src/features/pipeline/__fixtures__/trace-real-floor.json` 由探针产出，只保留 `prompt_resolution`/`agent_*` 事件）。`tsc --noEmit` 0 错、`eslint` 0 错。
+
+**覆盖表**：补上此前遗漏的 **Part IV（V52–V60）**，并按文件实际行数重算总数：**通过 38 / 部分 14 / V49 部分 4/7 / 未做 3 / 人工 4 = 60 行**。V3、V14、V39 转"通过"（V14/V39 依据是重跑全量：**4017 passed / 3 skipped / 1 xfailed / 0 failed**，6 分 51 秒）；V2 保留"部分"但把缺陷性质写清（不是没接线，是**语义边界**与 PRD 措辞不符，已立 D23 待拍板）。前端同轮：108 文件 / 939 项全绿、`tsc --noEmit` 0 错、`eslint` 0 错、`npm run build` 成功。
+
+**下一轮候选**：
+1. 拍板 `min_shot_ms` 逐段夹紧策略（拉长画面 / 重复素材 / 允许低于下限但记 C2），然后实现 + 真机复测；
+2. 用真实素材跑一次非 dry-run（V2/V21/V35/V45 的成片半边）——当前链路能跑完，缺的是素材；
+3. V58 补 trace 事件 + plan 写回；V59 让真实交付同时产出 `brief.md` 与 `plan.md`。
+
 
 
 
