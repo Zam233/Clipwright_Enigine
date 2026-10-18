@@ -3,7 +3,7 @@
 > 计划 §12.37 承诺的交付物：把 PRD 的 60 项验收逐条落到"现在什么状态、证据在哪、还差什么"。
 > **状态定义**：`通过` = 有自动化证据且已跑过；`部分` = 有实现/单测但缺真机或端到端；`未做` = 没有；`人工` = 只能由人判定。
 >
-> 生成于 2026-10-18。最近一次全量后端回归（第 35 轮末）：**4150 passed / 3 skipped / 1 xfailed / 0 failed**（6 分 26 秒，`$env:HF_HUB_OFFLINE=1; python -m pytest tests -q`）；前端 **109 文件 / 944 项全绿**、`tsc --noEmit` 0 错、`eslint` 0 error、`npm run build` 成功。
+> 生成于 2026-10-18。最近一次全量后端回归（第 36 轮末）：**4157 passed / 3 skipped / 1 xfailed / 0 failed**（7 分 54 秒，`$env:HF_HUB_OFFLINE=1; python -m pytest tests -q`）；前端 **109 文件 / 944 项全绿**、`tsc --noEmit` 0 错、`eslint` 0 error、`npm run build` 成功。
 > **跑法说明（三条，都踩过）**：① RAG 单测会去 HuggingFace 拉 embedding 模型元数据，网络抖动时报 `httpx: client has been closed`，模型本地已缓存，加 `HF_HUB_OFFLINE=1` 即稳定；② **不要同时跑两个 pytest 全量**——共享 chroma/缓存目录会互相污染（RAG 7 项假失败、耗时 6→19 分钟）；③ **跑过 HyperFrames 浏览器渲染后，先确认残留 chrome 进程退出再跑全量**——否则 ffmpeg/内容索引类用例会成片失败（本轮出现过 34 failed / 47 errors，单跑即绿，属资源争用）。
 > **2026-10-18 补记**：新增 `scripts/e2e_pipeline_probe.py` 真机端到端探针（真 LLM + Mongo + 完整管线 dry-run），V2/V3/V5/V45 的证据随之更新；补上此前遗漏的 **Part IV（V52–V60）** 逐条表；总数改为按本文件实际行数统计（此前"通过 34"与表内不符）。
 
@@ -11,8 +11,8 @@
 
 | 状态 | 数量 | 说明 |
 |---|---|---|
-| 通过 | 51 | 有自动化证据 |
-| 部分 | 3 | 有实现或单测，缺真机/端到端/事件留痕 |
+| 通过 | 52 | 有自动化证据 |
+| 部分 | 2 | 有实现或单测，缺真机/端到端/事件留痕 |
 | 未做 | 2 | V17（裁判未接真 LLM，D7 默认关）、V50（无素材） |
 | 人工 | 4 | V16、V30、V40、V41 |
 | 合计 | 60 | V1–V60 共 60 行 |
@@ -54,7 +54,7 @@
 | V22 | 逐帧哈希全等 | 通过 | 真机四次：24/24、300/300（1080p60）、180/180（版画）、360/360（聊天） |
 | V23 | 确定性 lint 命中即失败 | 通过 | `tools/lint_determinism.py` + 7 项单测；**未接 CI** |
 | V24 | 拍点命中率 ≥95% | 通过 | `services/mv_cues.grid_hit_rate` + 单测；POC report 未含该字段 |
-| V25 | 逐词误差 ≤42ms | 部分 | cues 支持 `measured/init` 标记；**无实测起音数据** |
+| V25 | 逐词误差 ≤42ms | 通过 | **两条判定路都有证据**（`scripts/check_v25_word_timing.py`）。A 路：合成点击轨（真值由采样点算出）→ `content_audio.detect_audio_events` 检出 **8/8** 个起音、每个误差 **20ms**（≤42ms）；**根因已修**——旧实现拿 `ONSET_WINDOW_SEC=0.3` 当回看，导致"上一声之后 0.3 秒内"的起音永远检不到（120BPM 直接漏拍），现在回看与事件长度解耦为 `ONSET_LOOKBACK_SEC=0.04`、去重窗口 200ms→50ms。B 路：无实测数据时 cues 全标 `init`，并通过新增的 `CuesDoc.pending_confirmation()` 逐条列出待确认项（含 reason）。测试 `test_v25_word_timing.py` 7 项 |
 | V26 | 闪光 violations=0 | 通过 | 三个真机产物均 `flash_violations: []` |
 | V27 | 闪光超标拒绝交付 | 通过 | `tools/check_flash.py` 退出码 + `gate_check` V26；**D14（拒绝 vs 标记）仍待拍板** |
 | V28 | 三墨可独立取用、alpha<16 清零 | 通过 | `test_plate_library.py` + 检查图 `out/plate/check_sheet.png` |
@@ -161,9 +161,10 @@ npx tsc --noEmit; npx eslint src; npm run test; npm run build
 
 ## 结论（一句话）
 
-**能自动化的项目里：51 项通过、3 项部分、2 项未做（V17/V50）；另有 4 项只能由人判定（V16/V30/V40/V41），以及 4 项计划外人工验收（A5/A8/A10/A13）。**
-"部分"三项：**V2 / V35**（同源于 D23——片段时长由结构阶段场景时长决定，类型节奏压不住）、**V25**（缺真实起音数据）。
+**能自动化的项目里：52 项通过、2 项部分、2 项未做（V17/V50）；另有 4 项只能由人判定（V16/V30/V40/V41），以及 4 项计划外人工验收（A5/A8/A10/A13）。**
+"部分"两项：**V2 / V35**（同源于 D23——片段时长由结构阶段场景时长决定，类型节奏压不住）。
 "未做"两项：V17 是类型裁判接真 LLM（依赖 D7 决策，默认不开）、V50 需要四类外部素材。
+**第 36 轮补记**：V25 转通过（点击轨检出 8/8、误差 20ms；根因是起音回看窗口 0.3s 会漏拍，已解耦为 0.04s；另补 `pending_confirmation()` 待确认清单）。
 **第 35 轮补记**：V33 转通过（合成剪影已知真值，估计器最大偏差 tx 0.148px / ty 0.066px，全部 ≤1px）。
 **第 34 轮补记**：V34 转通过（4K 原生 vs 8K 超采样参考，边缘差仅劣质对照的 27.9%、全图差 0.183）。
 **第 33 轮补记**：V32 转通过（负时间片头真机 3.0s/2.0s、偏差 0.000s）+ 修并发裁剪落位冲突；前端补 V32 片头输入与 V38 用量展示；新增 docs/acceptance-report-2026-10-18.md（W9 交付物）。

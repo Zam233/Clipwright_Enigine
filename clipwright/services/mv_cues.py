@@ -90,6 +90,25 @@ class CuesDoc(BaseModel):
     def init_count(self) -> int:
         return sum(1 for item in self.items if item.source != "measured")
 
+    def pending_confirmation(self) -> list[dict[str, Any]]:
+        """待确认清单：`init`（初值未实测）的 cue，逐条列出供耳朵复核。
+
+        V25 给的是"逐词误差 ≤42ms **或** 标 init 并列入待确认清单"。没有实测起音
+        数据时走的就是这条：**不是假装准，而是把没验证过的项显式列出来**。
+        """
+        return [
+            {
+                "name": item.name,
+                "time_sec": round(item.t, 4),
+                "source": item.source,
+                "snapped": item.snapped,
+                "note": item.note,
+                "reason": "无实测起音数据，时间为按拍吸附的初值",
+            }
+            for item in self.items
+            if item.source != "measured"
+        ]
+
 
 def build_grid(bpm: float, beat_zero_sec: float = 0.0) -> BeatGrid:
     if bpm < 0:
