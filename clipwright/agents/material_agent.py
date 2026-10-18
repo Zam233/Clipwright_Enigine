@@ -41,6 +41,44 @@ def _llm_configured() -> bool:
     )
 
 
+def annotate_mv_placement(
+    scenes: list[dict[str, Any]],
+    candidate_clips: list[dict[str, Any]],
+    *,
+    bits_per_second: float | None = None,
+) -> dict[str, Any] | None:
+    """把"每段落到哪个镜头"写回场景（S 轨接线；纯逻辑，便于单测）。
+
+    ``candidate_clips`` 是 MaterialAgent 的中间产物（每个场景一条，含
+    ``suggested_assets``）；这里把它们摊平成候选池，交给 ``mv_material`` 打分落位。
+    返回 ``placement_report``；没有任何候选时返回 ``None``（不产生空噪音）。
+    """
+    from clipwright.services.mv_cues import build_grid
+    from clipwright.services.mv_material import annotate_scenes_with_placement
+
+    pool: list[dict[str, Any]] = []
+    for clip in candidate_clips or []:
+        for asset in clip.get("suggested_assets") or []:
+            if not isinstance(asset, dict):
+                continue
+            asset_id = asset.get("asset_id") or asset.get("id") or ""
+            if not asset_id:
+                continue  # 没有 id 的候选落不了位，直接跳过（不产生空引用）
+            pool.append(
+                {
+                    "asset_id": asset_id,
+                    "description": asset.get("description") or asset.get("title") or "",
+                    "duration_sec": asset.get("duration_sec") or asset.get("duration") or 0.0,
+                    "tags": asset.get("tags") or (),
+                    "license_ok": bool(asset.get("license_ok", True)),
+                }
+            )
+    if not pool:
+        return None
+    grid = build_grid(bits_per_second) if bits_per_second and bits_per_second > 0 else None
+    return annotate_scenes_with_placement(scenes, pool, grid=grid)
+
+
 # 文本相关性兜底：纯本地分词，零网络。拉丁词整词 + 单个 CJK 字符。
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _LATIN_RE = re.compile(r"[a-zA-Z0-9]+")
@@ -159,6 +197,17 @@ def _category_search_hint(category_plugin_id: str) -> str:
 
     legacy = _CATEGORY_SEARCH_HINTS.get(category_plugin_id or "", "")
     return search_hint(category_plugin_id, legacy)
+
+
+#: 需要"按句落位"的类型（MV/PV）；也可用 ``extra_params.mv_placement`` 显式开启。
+_MV_PLACEMENT_CATEGORIES = frozenset({"lyric_mv", "mv", "pv", "music_video"})
+
+
+def _placement_enabled(context: Any) -> bool:
+    extra = getattr(context, "extra_params", {}) or {}
+    if extra.get("mv_placement"):
+        return True
+    return str(getattr(context, "category_plugin_id", "") or "") in _MV_PLACEMENT_CATEGORIES
 
 
 async def _llm_search_queries_batch(
@@ -761,6 +810,24 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
             notes: list[str] = []
             if use_vision_llm:
                 notes.append(f"视觉LLM分析已启用 (每候选 {vision_frame_count} 帧)")
+
+            # S 轨接线：MV 类型（或显式开启）时，把"每句落到哪个镜头"写回场景并留痕
+            placement_stats = None
+            if _placement_enabled(context):
+                try:
+                    placement_stats = annotate_mv_placement(
+                        scenes,
+                        candidate_clips,
+                        bits_per_second=float((context.extra_params or {}).get("bpm") or 0) or None,
+                    )
+                except Exception as exc:  # noqa: BLE001 - 落位失败不得阻断选材
+                    logger.warning("MaterialAgent: 素材落位失败（已跳过）: %s", exc)
+                    placement_stats = None
+            if placement_stats is not None:
+                notes.append(
+                    f"素材落位：{placement_stats['covered']}/{placement_stats['total']} 段有依据，"
+                    f"缺口 {len(placement_stats['gaps'])}、授权不明 {len(placement_stats['rejected'])}"
+                )
 
             # 场景级 note（如 C4c 重选结果）上浮到全局 material_notes
             for r in candidate_clips:

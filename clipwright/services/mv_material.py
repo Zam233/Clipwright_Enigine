@@ -217,12 +217,75 @@ def placement_report(result: PlacementResult) -> dict[str, Any]:
     }
 
 
+def annotate_scenes_with_placement(
+    scenes: Iterable[dict[str, Any]],
+    candidates: Iterable[dict[str, Any]],
+    *,
+    grid: Any = None,
+    min_score: float = MIN_MATCH_SCORE,
+) -> dict[str, Any]:
+    """把落位结果**写回场景**（S 轨接进管线的接口，纯函数）。
+
+    ``candidates`` 是素材候选的字典形式（来自素材库/内容索引），至少含
+    ``asset_id``；可选 ``description`` / ``duration_sec`` / ``tags`` / ``license_ok``。
+
+    每个匹配到的场景会得到：
+    - ``material_refs``：命中的素材 id（供 EditAgent 直接用）；
+    - ``placement``：``{score, matched_by, start_sec, tags}``——**依据必须留痕**。
+
+    返回 ``placement_report`` 同构的统计（含 gaps/rejected），供 material_notes 汇总。
+    """
+    scene_list = list(scenes or [])
+    pool: list[MaterialCandidate] = []
+    for raw in candidates or []:
+        if not isinstance(raw, dict):
+            continue
+        asset_id = str(raw.get("asset_id") or raw.get("id") or "")
+        if not asset_id:
+            continue
+        pool.append(
+            MaterialCandidate(
+                asset_id=asset_id,
+                description=str(raw.get("description") or ""),
+                duration_sec=float(raw.get("duration_sec") or 0.0),
+                tags=tuple(str(t) for t in (raw.get("tags") or ())),
+                license_ok=bool(raw.get("license_ok", True)),
+            )
+        )
+
+    lines = [
+        {
+            "i": index,
+            "text": f"{scene.get('title', '')} {scene.get('description', '')}".strip(),
+            "t0": float(scene.get("start_sec") or 0.0),
+            "t1": float(scene.get("start_sec") or 0.0) + float(scene.get("duration_sec") or 0.0),
+        }
+        for index, scene in enumerate(scene_list)
+    ]
+    result = place_materials(lines, pool, grid=grid, min_score=min_score)
+
+    by_index = {p.line_index: p for p in result.placements}
+    for index, scene in enumerate(scene_list):
+        placement = by_index.get(index)
+        if placement is None:
+            continue
+        scene["material_refs"] = [placement.asset_id]
+        scene["placement"] = {
+            "score": placement.score,
+            "matched_by": placement.matched_by,
+            "start_sec": placement.start_sec,
+            "tags": list(placement.tags),
+        }
+    return placement_report(result)
+
+
 __all__ = [
     "MIN_MATCH_SCORE",
     "MV_TAGS",
     "MaterialCandidate",
     "Placement",
     "PlacementResult",
+    "annotate_scenes_with_placement",
     "build_lyric_queries",
     "place_materials",
     "placement_report",

@@ -550,13 +550,24 @@ SP1 ──► R-01 ──► R-02/R-03 ──► R-04 ──► 门 1
 
 **一个环境细节**：摘要里原本用 `✓`/`✗`，在 GBK 控制台抛 `UnicodeEncodeError`；改成 `[ok]`/`[FAIL]`/`[warn]` 后跨平台可打印。**能跑通的脚本才叫验收工具**——打印崩了等于没有。
 
-### 12.33 剩余工作（按性质分三类）
+### 12.34 第 16 轮：S 轨接进选材（S-03 接线）
 
-| 类别 | 内容 | 谁能做 |
-|---|---|---|
-| **代码接线** | S 轨接进 `material_agent`；F-03/F-06 前端；A-18 legacy plan 接线；R-05/R-12/R-17 | 我 |
-| **真机验证** | 带创作提示词的端到端管线跑一次；plan-first 集成（真实 plan 跑结构阶段）；`is_available` 真实渲染链路 | 我（需要一次完整运行） |
-| **人工验收** | V16 三类型盲评、V20 终审、V30 字符版画抽检、V34 4K 边缘、V41 落位认可度、A8 可用性、A10 盲评、A5 真实账单 | **必须你安排人** |
+| 项 | 结果 |
+|---|---|
+| 新函数 | `services/mv_material.annotate_scenes_with_placement()`：把候选池摊平 → `place_materials` → **写回场景**（`material_refs` + `placement{score, matched_by, start_sec, tags}`），返回落位统计 |
+| Agent 接线 | `material_agent.annotate_mv_placement()`（纯逻辑）+ `_placement_enabled()`（`lyric_mv/mv/pv/music_video` 或 `extra_params.mv_placement=True`）；在 `execute` 选材完成后调用，把"覆盖 X/Y 段、缺口 N、授权不明 M"写进 `material_notes` |
+| 降级 | 落位异常只 warning、不阻断选材；没有候选时返回 `None`（不产生空噪音）；无 id 的候选直接跳过（不产生空引用） |
+| 验证 | 10 项接线单测（写回依据、未匹配留 untouched 且记 gap、无候选返回 None、坏候选容错、网格吸附、授权不明不落位）+ material 相关回归 **99 passed / 1 skipped** |
+
+**仍未做**：这套落位没有在真实素材上跑过（V41 的"10 个落位 ≥8 认可"是人工判据），也没有接进 EditAgent 的实际取用（目前只写回场景字段）。
+
+### 12.35 下一轮
+
+1. **A-18**：legacy plan 接线（老会话只有 scenes 时反向生成 plan）；
+2. **F-06**：规划确认页；
+3. **EditAgent 消费 `material_refs`**（把落位真正变成时间线片段）；
+4. 带提示词的端到端真机跑一次。
+
 
 
 
