@@ -425,6 +425,32 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
     tl = body.timeline
     # 入参白名单（timeline 媒体路径 + 音频/BGM）
     _validate_render_inputs(tl, body.audio_file_path or "", body.bgm_file_path or "")
+
+    # V32：负时间片头——画面整体后移 + 音频延后同样时长，否则音画会整体漂
+    _audio_path = body.audio_file_path or ""
+    _preroll_plan: dict = {}
+    if body.preroll_sec and body.preroll_sec > 0:
+        from clipwright.services.preroll import apply_preroll, delay_audio, plan as preroll_plan
+
+        _plan = preroll_plan(tl, body.preroll_sec)
+        _preroll_plan = _plan.as_dict()
+        tl = apply_preroll(tl, body.preroll_sec)
+        if _audio_path:
+            try:
+                _delayed = delay_audio(
+                    _audio_path,
+                    body.preroll_sec,
+                    Path(tempfile.gettempdir()) / f"{task_id}_preroll.wav",
+                )
+                _audio_path = str(_delayed)
+                _preroll_plan["audio_delayed"] = True
+            except Exception as exc:  # noqa: BLE001 - 延迟失败必须显式标记，不能静默漂移
+                logger.warning("片头音频延迟失败（成片将音画不同步）: %s", exc)
+                _preroll_plan["audio_delayed"] = False
+                _preroll_plan["audio_delay_error"] = str(exc)[:200]
+        else:
+            _preroll_plan["audio_delayed"] = False
+        _render_queue[task_id]["preroll"] = _preroll_plan
     # 使用请求 output_path 的 basename（防御：仅取 basename 拼到 renders/，白名单校验）。
     # 先对原始串做 is_safe_download_name 校验（拒绝路径分隔符 / \\、.. 与 Windows 非法字符），
     # 再取 basename 拼接到 renders/ 目录，杜绝路径穿越。
@@ -517,7 +543,7 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                 width=params["width"], height=params["height"],
                 fps=params["fps"], bitrate=params["bitrate"],
                 audio_bitrate=params["audio_bitrate"],
-                audio_file_path=body.audio_file_path or "",
+                audio_file_path=_audio_path,
                 bgm_file_path=body.bgm_file_path or "",
                 progress_callback=on_progress,
                 cancel_id=task_id,
@@ -1021,6 +1047,11 @@ class RenderRequest(BaseModel):
     settings: Optional[RenderSettings] = None
     audio_file_path: Optional[str] = None  # 用户上传的配音文件路径
     bgm_file_path: Optional[str] = None  # 背景音乐文件路径
+    # V32 负时间片头：画面整体后移 N 秒、音频延后同秒数（成片总长 = 原时长 + N）
+    preroll_sec: float = Field(
+        default=0.0, ge=0, le=15.0,
+        description="负时间片头秒数（0 = 无片头；画面先起、音乐后进）",
+    )
 
 
 @router.get("/presets")

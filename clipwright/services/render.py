@@ -1566,7 +1566,7 @@ class RenderService:
             # 文件后缀推断 muxer，`x.mp4.part` 会直接失败
             # （"Error initializing the muxer" / "Error opening output files"）→
             # 每个片段静默降级为 fallback 板。见 _atomic_temp_path。
-            out_tmp = self._atomic_temp_path(out)
+            out_tmp = self._atomic_temp_path(out, unique=uuid.uuid4().hex[:8])
             try:
                 # 关键帧变速——有 speed 关键帧时走分段恒速近似（trim+concat），
                 # 全局 setpts 前缀跳过；无关键帧保持 D1 单段 setpts 路径
@@ -1816,9 +1816,14 @@ class RenderService:
                            "-b:v", bitrate, "-an", out_tmp]
                 r = self._run_ff(cmd, capture_output=True, text=False, timeout=600)
                 if r.returncode == 0 and _is_valid_video(out_tmp):
-                    # 原子落位
+                    # 原子落位；并发同键时可能已被别的线程落位 → 视为成功
                     import os as _os
-                    _os.replace(out_tmp, out)
+                    try:
+                        _os.replace(out_tmp, out)
+                    except OSError as exc:
+                        if not (Path(out).exists() and _is_valid_video(out)):
+                            raise exc
+                        Path(out_tmp).unlink(missing_ok=True)
                     with _trim_cache_lock:
                         _trim_cache_put_locked(cache_key, out)
                     return out
@@ -2032,16 +2037,24 @@ class RenderService:
         return diff if diff > tol else None
 
     @staticmethod
-    def _atomic_temp_path(final_path: str) -> str:
+    def _atomic_temp_path(final_path: str, unique: str = "") -> str:
         """原子替换用的临时路径：把媒体扩展名保留在**末尾**。
 
         ffmpeg 只按输出文件名的后缀推断 muxer（除非显式 `-f`）。因此
         `trim_x.mp4.part` 会失败（"Error initializing the muxer"），而
         `trim_x.part.mp4` 正常——2026-09-05 的原子替换改造踩过这个坑，
         导致所有 trim 失败并静默降级为 fallback 板。
+
+        ``unique``：**并发同键裁剪必须各写各的临时文件**。两段素材完全相同
+        （同源、同起点、同时长）时会算出同一个 cache_key，两个线程写同一个
+        `.part` 文件 → Windows 上第二个 `os.replace` 撞"文件被占用"，
+        整条渲染失败（第 32 轮 V32 实测踩到）。
         """
         p = Path(str(final_path))
-        return str(p.with_name(f"{p.stem}.part{p.suffix}")) if p.suffix else f"{p}.part"
+        token = f".{unique}" if unique else ""
+        if p.suffix:
+            return str(p.with_name(f"{p.stem}{token}.part{p.suffix}"))
+        return f"{p}{token}.part"
 
     def _source_valid(self, src: str) -> bool:
         """检查源视频文件是否可解码（有视频流且时长可读）。"""
