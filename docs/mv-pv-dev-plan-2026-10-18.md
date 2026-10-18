@@ -561,12 +561,23 @@ SP1 ──► R-01 ──► R-02/R-03 ──► R-04 ──► 门 1
 
 **仍未做**：这套落位没有在真实素材上跑过（V41 的"10 个落位 ≥8 认可"是人工判据），也没有接进 EditAgent 的实际取用（目前只写回场景字段）。
 
-### 12.35 下一轮
+### 12.36 第 17 轮：落位闭环（EditAgent 取用）+ A-18 legacy plan
 
-1. **A-18**：legacy plan 接线（老会话只有 scenes 时反向生成 plan）；
-2. **F-06**：规划确认页；
-3. **EditAgent 消费 `material_refs`**（把落位真正变成时间线片段）；
-4. 带提示词的端到端真机跑一次。
+| 项 | 结果 |
+|---|---|
+| S→C4 闭环 | `edit_agent._prefer_material_refs(scene, assets)`：把场景 `material_refs` 指定的素材提到最前（按 refs 顺序稳定排序，其余保持原相对顺序）；在 `_process_scene` 里紧接 `sorted_assets` 构建之后、取素材循环之前调用 | 8 项单测（提升/顺序/无 refs 零变化/缺失 id 忽略/`id` 作为回退键/重复 id 稳定）+ 接线断言（调用点在取素材循环之前） |
+| A-18 legacy plan | `RequirementsService._legacy_plan_from_scenes()`：老会话/翻译失败但有 `raw_scenes` 时，反向生成 `PlanDocument`（标 `legacy=true`）并**过校验器**（段落连续、时长不漂），通过则进入 `plan_ready` 并附提示"legacy 模式"；真没料则返回 `None`（不硬造） | 4 项单测（正常生成/无场景 None/非法场景被拒/覆盖旧文本为确定性渲染） |
+| 回归 | 落位与 edit 相关 **10 passed**；requirements 相关 **85 passed** |  |
+
+**仍未做**：端到端真机（带提示词 + 带落位）跑一次；F-06 规划确认页；R-05/R-12/R-17。
+
+### 12.37 下一轮
+
+1. **F-06**：规划确认页（brief/plan 双栏 + legacy 标记）；
+2. **R-12**：字幕带与文字动画抽成可复用构件；
+3. **端到端真机**：带创作提示词 + 落位的完整管线跑一次，抓 prompt 与成片证据；
+4. 汇总 `docs/coverage.md`（V1–V60 覆盖情况 + 人工项清单）。
+
 
 
 

@@ -67,6 +67,38 @@ def _weighted_transition_pick(
     return next(iter(clean))
 
 
+def _prefer_material_refs(
+    scene: dict[str, Any], assets: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """把场景 ``material_refs`` 指定的素材提到最前（S 轨落位 → 剪辑取用的闭环）。
+
+    - 没有 ``material_refs`` → 原样返回（零行为变化）；
+    - refs 里缺的 id 忽略（素材可能未通过校验）；
+    - 其余素材保持原相对顺序，确定性（不用 set 迭代顺序）。
+    """
+    refs = [str(r) for r in (scene.get("material_refs") or []) if r]
+    if not refs or not assets:
+        return assets
+    wanted = set(refs)
+    preferred: list[dict[str, Any]] = []
+    rest: list[dict[str, Any]] = []
+    for asset in assets:
+        asset_id = str(asset.get("asset_id") or asset.get("id") or "")
+        if asset_id in wanted:
+            preferred.append(asset)
+        else:
+            rest.append(asset)
+    if not preferred:
+        return assets
+    # 按 refs 顺序稳定排序（同 id 多候选时保持各自原顺序）
+    ordered: list[dict[str, Any]] = []
+    for ref in refs:
+        ordered.extend(
+            a for a in preferred if str(a.get("asset_id") or a.get("id") or "") == ref
+        )
+    return ordered + rest
+
+
 def _scene_is_pip(
     scene_desc: str, scene_index: int, llm_pip_scenes: set[int] | None = None,
 ) -> bool:
@@ -842,6 +874,9 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         for c in scene_candidates:
             suggested = c.get("suggested_assets", [])
             sorted_assets.extend(sorted(suggested, key=lambda a: a.get("score", 0), reverse=True))
+        # S 轨落位结果优先：场景上带 material_refs（素材 Agent 按句落位写回）时，
+        # 把这些素材提到最前，其余按分数排后——落位与剪辑取用就此闭环。
+        sorted_assets = _prefer_material_refs(scene, sorted_assets)
 
         # 循环取素材填充场景，直到用完场景时长或素材耗尽
         scene_time = 0.0  # 本地时间游标（替代共享 current_time，仅推进、不用于轨道放置）

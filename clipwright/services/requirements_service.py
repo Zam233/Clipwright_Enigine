@@ -581,16 +581,29 @@ class RequirementsService:
                     plan_data = plan_result
                     status = "plan_ready"
                 else:
-                    # 规划书生成失败 → 明确回退（旧实现卡死 brief_confirmed，
-                    # 后续任何消息都落不进任何分支，永远返回过期回复）
-                    status = "brief_ready"
-                    messages.append({
-                        "role": "assistant",
-                        "content": ("规划书生成遇到技术问题，已回退到方案确认态。"
-                                    "回复「确认」重试，或直接提出修改意见。"),
-                        "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
-                        "metadata": {},
-                    })
+                    # A-18 兼容：老会话/翻译失败但有 scenes 时，由 scenes 反向生成
+                    # legacy plan（标 legacy=true），仍可确认与执行——不再卡在 brief_ready
+                    legacy = self._legacy_plan_from_scenes(plan_data, session_id)
+                    if legacy is not None:
+                        plan_data = legacy
+                        status = "plan_ready"
+                        messages.append({
+                            "role": "assistant",
+                            "content": "规划书已按现有场景生成（legacy 模式），可确认执行或要求重做。",
+                            "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                            "metadata": {"legacy_plan": True},
+                        })
+                    else:
+                        # 规划书生成失败 → 明确回退（旧实现卡死 brief_confirmed，
+                        # 后续任何消息都落不进任何分支，永远返回过期回复）
+                        status = "brief_ready"
+                        messages.append({
+                            "role": "assistant",
+                            "content": ("规划书生成遇到技术问题，已回退到方案确认态。"
+                                        "回复「确认」重试，或直接提出修改意见。"),
+                            "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                            "metadata": {},
+                        })
             else:
                 status = "gathering"
                 messages.append({
@@ -1607,6 +1620,44 @@ class RequirementsService:
             return ""
 
     # ── 规划书生成 ──────────────────────────
+
+    def _legacy_plan_from_scenes(self, plan_data: dict | None, session_id: str) -> dict | None:
+        """A-18：老会话/翻译失败但有 scenes 时，反向生成 legacy plan（标 legacy）。
+
+        - 没有 ``raw_scenes`` → 返回 ``None``（真没料，不硬造）；
+        - 生成后仍走 ``PlanDocument`` 校验（段落连续、时长不漂），校验不过则放弃；
+        - 输出的 ``markdown_content`` 由确定性渲染器生成，保证可复核。
+        """
+        scenes = []
+        if isinstance(plan_data, dict):
+            scenes = plan_data.get("raw_scenes") or []
+        if not scenes:
+            return None
+        try:
+            from clipwright.services.plan_renderer import render_plan_markdown
+            from clipwright.services.plan_validator import plan_from_scenes, validate_plan
+
+            plan = plan_from_scenes(scenes)
+            result = validate_plan(plan)
+            if not result.ok:
+                logger.info(
+                    "RequirementsService: legacy plan 校验未过（%s），放弃反向生成",
+                    [i.code for i in result.errors],
+                )
+                return None
+            payload = dict(plan_data or {})
+            payload["plan"] = plan.model_dump()
+            payload["raw_scenes"] = scenes
+            payload["scene_count"] = len(plan.sections)
+            payload["total_duration_sec"] = plan.target_duration_sec
+            payload["legacy"] = True
+            payload["markdown_content"] = render_plan_markdown(plan)
+            payload["summary"] = "按现有场景生成的 legacy 规划（非 plan-first 产物）"
+            logger.info("RequirementsService: 会话 %s 使用 legacy plan（%d 段）", session_id[:12], len(plan.sections))
+            return payload
+        except Exception as exc:  # noqa: BLE001 - 兜底失败不应影响主流程
+            logger.warning("RequirementsService: legacy plan 生成失败: %s", exc)
+            return None
 
     async def _generate_plan(
         self, brief_data: dict | None, user_inputs: dict, session_id: str,
