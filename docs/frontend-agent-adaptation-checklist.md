@@ -36,11 +36,29 @@
 2. 两个入口互斥展示：经典模式不显示「计划」入口，agent 模式不显示「重试 Agent 按钮」。
 3. SSE 只订阅一条：`/trace/stream` 与 `/events/stream` 不得同时开（否则事件重复、成本翻倍）。
 
-## 3. 验收记录（待填）
+## 3. 基线审计（2026-10-17，C0 结束时的事实）
 
-| # | 验收人 | 日期 | 结论 | 证据 |
-|---|---|---|---|---|
-| 1 | | | | |
-| … | | | | |
+> 这一节是**当前事实**，不是目标。结论：**13 项里只有 1 项已就绪，其余 12 项尚未适配**——
+> 因为主 agent 化目前只到 C0（后端三件套），前端还没动。这份审计给 C3/C4 一个可对照的起点。
+
+| # | 模块 | 是否已适配 | 证据 |
+|---|---|---|---|
+| 1 | `services/api/pipeline.ts` | ❌ 未适配 | 仍是 12 个 pipeline 方法；无 `taskApi`（`src/services/api/pipeline.ts:1-124`） |
+| 2 | `types/pipeline.ts` | ❌ 未适配 | 事件类型仍是 `mag_start/agent_start/mg_*` 等管线语义；无 `TaskEvent`（`src/types/pipeline.ts:88-115`） |
+| 3 | `stores/agentStore.ts` | ❌ 未适配 | `phase`/`logs`/`suggestions` 直接来自管线事件（`src/stores/agentStore.ts:42-60`） |
+| 4 | `features/agent/AgentPanel.tsx` | ❌ 未适配 | 直接开 `EventSource(pipelineApi.getTraceStreamUrl(pid))`、消费 `clearSuggestions`（`AgentPanel.tsx:948,963`） |
+| 5 | `ReviewPanel.tsx` / `TimelineDiffView.tsx` | ❌ 未适配 | 读 `agentStore.suggestions`（管线自愈建议语义） |
+| 6 | `features/supervisor/useSupervisorEvents.ts` | ⚠️ 部分 | 已按 type 分流（v1.5 资产），但只认 `ledger_entry/attribution/...`，无 `task_event`（`useSupervisorEvents.ts:26-40`） |
+| 7 | `features/supervisor/*` 抽屉 | ⚠️ 部分 | 决策/诊断/执行/子代理面板可用（v1.5 资产可复用），但「计划变更」「Step 归因」没有 |
+| 8 | `pages/HomePage.tsx` | ❌ 未适配 | 只调 `predictScript`；任务创建仍走管线入口（`HomePage.tsx:190`） |
+| 9 | `pages/ExportPage.tsx` | ✅ **已就绪** | 渲染队列 SSE 独立于 agent 编排，**不需要改** |
+| 10 | `pages/admin/PipelineAdminPage.tsx` | ❌ 未适配 | 只读 `GET /api/pipeline/runs`，无任务列表视图 |
+| 11 | `layouts/EditorLayout.tsx` | ⚠️ 部分 | 只挂了 `<SupervisorLauncher />`，无「计划」入口（`EditorLayout.tsx:319`） |
+| 12 | 配置建议条（Q2） | ❌ 缺失 | 无任何"agent 建议改配置"的 UI |
+| 13 | 错误与降级文案 | ❌ 未适配 | 按 `agent_end`/`error` 事件报错，没有收尾三件套展示 |
+
+**结论**：现在去跑"前端验收"只会得到 1/13 通过。正确的顺序是先做完 C3（后端双轨 + Task API）
+与 C4（前端计划视图），再按本表逐项打勾。本文件 §3 到时替换为「验收记录」。
 
 > 验收口径：**每一项必须有证据**（测试文件:用例名 / e2e 录屏 / 截图）。没有证据视为未通过——这是上一轮"接线没接上却被当成做完"的教训。
+
