@@ -818,6 +818,31 @@ V58 的最后一块是"把偏离写回会话里的规划书"。实现路径：
 
 **全量回归**：4113 passed / 3 skipped / 1 xfailed / 0 failed（7 分 14 秒）。
 
+### 12.55 第 31 轮：V60 真机拉通（老会话 → legacy plan → 真管线）
+
+**做法**：新增 `scripts/e2e_legacy_plan.py`，全链路只用真组件，只在必要处做一次明确的失败模拟：
+
+1. `POST /api/requirements/init` 建真会话；
+2. `_service._persist` 把会话写成**老形态**：`production_plan = {"raw_scenes": [3 段]}`（没有 `plan` 键），状态 `brief_ready`；
+3. **唯一的人为注入**：把 `_generate_plan`（LLM 翻译）换成返回 `None`，模拟"翻译失败"——不这么做，真 LLM 会直接给出新规划，永远进不到 legacy 兜底分支；
+4. `POST /api/requirements/chat` 发「确认」→ 走 `brief_ready` 分支 → legacy 反向生成；
+5. `POST /api/requirements/proceed` 真起管线。
+
+**结果**：
+
+| 阶段 | 观测 |
+|---|---|
+| 前 | `status=brief_ready`，`production_plan` 只有 `raw_scenes` |
+| 后 | `status=plan_ready`、`legacy: true`、`sections=3`、`markdown_content` 非空、`scene_count=3`、**`raw_scenes` 原样保留** |
+| 下游 | `proceed` → `pipeline_id` 返回，轮询到 **`completed`**（28.5 秒） |
+
+再加上分支回归 `test_legacy_plan_session.py` 2 项（有 scenes 走 legacy；**真的没有 scenes 时明确回退 `brief_ready`，不硬造规划**），V60 → **通过**。
+
+**一个反面用例值得单独说**：老会话兜底最容易被写成"反正要给个规划"，于是凭空捏一份。这里的第二项测试锁住反面——没有 `raw_scenes` 就回退到"确认态"，并把原因写进消息里，而不是假装成功。
+
+**覆盖表**：通过 47 / 部分 5 / V49 部分 4/7 / 未做 3 / 人工 4 = 60 行。
+
+
 
 
 

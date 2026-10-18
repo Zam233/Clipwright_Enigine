@@ -10,8 +10,8 @@
 
 | 状态 | 数量 | 说明 |
 |---|---|---|
-| 通过 | 46 | 有自动化证据 |
-| 部分 | 6 | 有实现或单测，缺真机/端到端/事件留痕 |
+| 通过 | 47 | 有自动化证据 |
+| 部分 | 5 | 有实现或单测，缺真机/端到端/事件留痕 |
 | 未做 | 3 | V17（裁判未接真 LLM）、V34（4K 单帧未渲）、V50（无素材） |
 | 人工 | 4 | V16、V30、V40、V41 |
 | 合计 | 59 + V49（部分 4/7） | V1–V60 共 60 行 |
@@ -102,7 +102,7 @@
 | V57 | `beats` 与音频 BPM 不一致 → 拒绝 | 通过 | `validate_plan(..., audio_grid=...)` + `test_plan_first.py::test_beats_mismatch/match` |
 | V58 | 执行改段 → `plan_drift` 事件可查且 plan 被写回 | 通过 | 三通道齐：① trace 事件（`plan_first.emit_drift_events`）；② JSONL（`append_drift`）；③ **写回会话规划书**（`requirements_service.apply_plan_drift/write_back_plan_drift`，`proceed` 把 `session_id` 透传给管线，结构阶段 `await asyncio.to_thread(...)` 写回）。**真机端到端**（`scripts/e2e_pipeline_probe.py --with-plan --writeback`）：注入合法规划（2 段 0→20s、`plan_first`）→ 管线 `completed`，trace 2 条 `plan_drift`（`duration` + `section_count`），回读 `/api/requirements/session/{id}` 得 `production_plan._drift` **2 条**（code 齐全）、规划本体（`sections`）原样保留；时间线总长 20.0s = 规划目标时长。单测：`test_plan_drift_writeback.py`（11 项，含幂等去重/上限 20 条/无会话返回 0/写回失败不抛） |
 | V59 | 交付同时含 `brief.md` 与 `plan.md`，内容与源对象一致 | 通过 | 真实交付 `out/dist/plate_shot/` 里 **`brief.md` 与 `plan.md` 都存在**，且与 `render_brief_markdown(brief)` / `render_plan_markdown(plan, brief)` 的输出**逐字节相等**（本轮比对）；新增 `test_mv_bundle.py::test_pack_md_content_matches_source_objects` 把这条固化为回归；`tools/gate_check.py` 的 V59 判定同时检查双文档存在 |
-| V60 | 老 session（只有 scenes）→ 反向生成 `legacy` plan，不报错且下游可跑 | 部分 | `services/requirements_service._legacy_plan_from_scenes` + `test_legacy_plan.py`（4 项：legacy 标记、scene_count、总时长、保留既有字段）；**下游"可跑"未在真机验证** |
+| V60 | 老 session（只有 scenes）→ 反向生成 `legacy` plan，不报错且下游可跑 | 通过 | `scripts/e2e_legacy_plan.py` 真机全链路：API 建会话 → 写成"老形态"（只有 `production_plan.raw_scenes`，状态 `brief_ready`）→ 只把 `_generate_plan` 换成返回 None（模拟翻译失败）→ API 发「确认」→ 状态转 `plan_ready`、`legacy: true`、3 段落、`markdown_content` 有内容、`scene_count=3`、**老 `raw_scenes` 保留**；随后 `POST /api/requirements/proceed` 真起管线 → **completed**（28.5s）。分支回归：`test_legacy_plan_session.py` 2 项（有 scenes 走 legacy、无 scenes 明确回退 `brief_ready` 不硬造）；另有 `test_legacy_plan.py` 4 项纯函数测试 |
 
 ---
 
@@ -160,10 +160,10 @@ npx tsc --noEmit; npx eslint src; npm run test; npm run build
 
 ## 结论（一句话）
 
-**能自动化的项目里：46 项通过、6 项部分、3 项未做（V17/V34/V50）、1 项部分达标（V49 4/7）；另有 4 项只能由人判定（V16/V30/V40/V41），以及 4 项计划外人工验收（A5/A8/A10/A13）。**
+**能自动化的项目里：47 项通过、5 项部分、3 项未做（V17/V34/V50）、1 项部分达标（V49 4/7）；另有 4 项只能由人判定（V16/V30/V40/V41），以及 4 项计划外人工验收（A5/A8/A10/A13）。**
 "部分"集中在三类：① 真机端到端（V2/V25/V32/V35/V45）；② 事件留痕与写回（V38/V45）；③ 需要素材或真落库的项（V33/V34/V41）。
 "未做"三项里，V17 是类型裁判接真 LLM（依赖 D7 决策，默认不开），V50 需要外部素材，V34 需要 4K 单帧渲染窗口。
-**第 27–28 轮收口**：V1/V15（10 槽位逐阶段注入 + 身份层固定序）、V38（token 真机 10859 入账 + 渲染耗时 render_seconds 真机 2.4s）、V45（A/B 量化：关键词命中 0→18~22，节奏无稳定方向）。
+**第 27–28 轮收口**：V1/V15（10 槽位逐阶段注入 + 身份层固定序）、V38（token 真机 10859 入账 + 渲染耗时 render_seconds 真机 2.4s）、V45（A/B 量化）、V60（老会话→legacy plan→真管线跑通）。
 **前一轮收口**：V21（30 秒 POC）、V53（真实 brief）、V58（三通道写回）、V59（交付双文档逐字节一致）。
 **本轮修的隐患**：`tools/hash_frames.hash_video` 在调用方传入的宽高与源不一致时**不加缩放就按给定尺寸切字节**，把一帧切成四块（900 帧报成 3600）；已改为"尺寸不符则解码时缩放 + 字节数不整除即报错"，并补真机回归测试。
 **仍未拍板**：PRD D23（`min_shot_ms` 是否作逐段硬下限）——真机已跑出 30s 片段，改实现前需要先定策略。
