@@ -375,6 +375,35 @@ async def validate_type(payload: dict[str, Any]) -> ValidateResult:
     )
 
 
+@router.post("/switch", response_model=dict)
+async def switch_type(payload: dict[str, Any]) -> dict:
+    """类型切换（V19）：``type_deformation`` 时的唯一合法出路之一。
+
+    只记录 ``from_type → to_type`` 与理由，**不修改任何类型定义**——
+    切换的语义是"换一套规范重新出片"。
+    """
+    try:
+        return run_switch(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def run_switch(payload: dict[str, Any]) -> dict[str, Any]:
+    """纯逻辑实现（便于单测）。"""
+    from clipwright.services.type_switch import append_switch, plan_switch, switch_note
+
+    record = plan_switch(
+        str(payload.get("from_type") or ""),
+        str(payload.get("to_type") or ""),
+        reason=str(payload.get("reason") or ""),
+        require_known=not bool(payload.get("allow_unknown")),
+    )
+    path = payload.get("log_path")
+    if path:
+        append_switch(str(path), record)
+    return {"ok": True, **record.as_dict(), "note": switch_note(record)}
+
+
 @router.post("/{type_id}/genre-check", response_model=dict)
 async def genre_check(type_id: str, payload: dict[str, Any]) -> dict:
     """干跑类型同一性校验（A-10 / F12）：给时间线，返回指标与逐条判定。

@@ -82,6 +82,22 @@ def _load_script_module():
     return module
 
 
+    def test_lyrics_text_not_embedded_in_lines(self) -> None:
+        """V31：场景数据里的 lines 只带时间，歌词文本单独放 texts（按索引取）。"""
+        module = _load_script_module()
+        lines = json.loads((self.PLATE_DIR / "lines.json").read_text(encoding="utf-8"))
+        assets = {k: "data:image/png;base64,AAA" for k in ("ground", "clean", "misreg", "glyph")}
+        js = module.build_scene_js(assets, lines, 2.5)
+        payload = json.loads(js.split("window.__plate = ", 1)[1].split(";\n", 1)[0])
+        for meta in payload["lines"]:
+            assert set(meta) == {"i", "t0", "t1"}, meta
+        assert payload["texts"]["0"]
+
+    def test_scene_reads_texts_by_index(self) -> None:
+        source = (self.PLATE_DIR / "scene.js").read_text(encoding="utf-8")
+        assert "data.texts" in source
+        assert "line.text" not in source
+
     def test_cut_time_is_cue_driven(self) -> None:
         """R-13 接入 R-14：腐坏切入时间来自 cues，而不是代码常量。"""
         module = _load_script_module()

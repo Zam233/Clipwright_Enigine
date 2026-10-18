@@ -9,9 +9,9 @@
 
 | 状态 | 数量 | 说明 |
 |---|---|---|
-| 通过 | 32 | 有自动化证据 |
+| 通过 | 34 | 有自动化证据 |
 | 部分 | 17 | 有实现或单测，缺真机/端到端/事件留痕 |
-| 未做 | 3 | V19、V49、V50 |
+| 未做 | 2 | V49、V50 |
 | 人工 | 8 | V16、V30、V40、V41，以及计划外的人工项（见文末） |
 
 ---
@@ -38,7 +38,7 @@
 | **V16** | 三类型可判别 | **人工** | 需开 `enable_genre_judge` 或人工盲评 |
 | V17 | 错配可判且给证据 | 未做 | 裁判（L2/L3）未接真实 LLM |
 | V18 | `type_deformation` 不给豁免 | 通过 | `test_prompt_authority.py` + `TypeSpecEditor.test.tsx`（断言无"豁免"按钮） |
-| **V19** | 类型切换记录 `from_type/to_type` | **未做** | F13 的切换动作未接 |
+| V19 | 类型切换记录 `from_type/to_type` | 通过 | `services/type_switch.py`（`plan_switch` 校验两端类型、`append_switch` 写 JSONL）+ `POST /api/type-maker/switch`；`test_type_switch.py`（8 项） |
 | V20 | `genre` 与指标矛盾 → 拒 | 通过 | `test_category_spec.py::TestTraits` |
 
 ---
@@ -57,7 +57,7 @@
 | V28 | 三墨可独立取用、alpha<16 清零 | 通过 | `test_plate_library.py` + 检查图 `out/plate/check_sheet.png` |
 | V29 | 错版/降帧/撕裂可参数化 | 通过 | `test_plate_library.py::TestDegrade`、`test_plate_transitions.py` |
 | **V30** | 字符版画不看字能认出（20 张） | **人工** | 已有 1920 单帧可辨胸像（`out/plate/glyph_1920.png`），抽检要人做 |
-| V31 | `scene.js` 不含歌词文本 | **未满足** | `examples/mv_poc/plate_shot/scene.js` 直接吃 `data.lines[].text`，违反"歌词只从 `text(i)` 取"的纪律（需改成 text 字典注入） |
+| V31 | `scene.js` 不含歌词文本 | 通过 | 已修：场景数据拆成 `lines`（仅 i/t0/t1）+ `texts`（按索引取），`scene.js` 读 `data.texts[i]`；有源码断言 + 数据形状断言；重渲后帧哈希与修改前**完全一致**（行为等价） |
 | V32 | 负时间片头音画同步 | 部分 | `tools/check_sync.py` + 6 项单测；**未做负时间片头实现** |
 | V33 | 剪影配准 ≤1px | 部分 | `plate/registration.py` + 单测；**无真实剪影素材** |
 | **V34** | 4K hero 特写无锯齿 | 未做 | 矢量化原语有（`vectorize.py`），4K 单帧未渲 |

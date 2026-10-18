@@ -111,12 +111,26 @@ def build_cues_for_shot(
 
 
 def build_scene_js(assets: dict[str, str], lines: dict, cut_at: float | None = None) -> str:
+    """构造场景数据：**歌词文本单独放 ``texts``，场景按索引取**（V31 纪律）。"""
+    texts = {}
+    metas = []
+    for index, line in enumerate(lines.get("lines") or []):
+        line_index = int(line.get("i", index))
+        texts[str(line_index)] = str(line.get("text") or "")
+        metas.append(
+            {
+                "i": line_index,
+                "t0": float(line.get("t0") or 0.0),
+                "t1": float(line.get("t1") or 0.0),
+            }
+        )
     payload = {
         "ground": assets["ground"],
         "clean": assets["clean"],
         "misreg": assets["misreg"],
         "glyph": assets["glyph"],
-        "lines": lines.get("lines") or [],
+        "lines": metas,
+        "texts": texts,
         "keyword": lines.get("keyword") or "",
         "cut_at": float(cut_at if cut_at is not None else (lines.get("cut_at") or 2.5)),
         "duration_sec": lines.get("duration_sec") or 6,

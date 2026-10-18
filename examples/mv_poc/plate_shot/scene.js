@@ -63,6 +63,13 @@
     return null;
   }
 
+  // V31：歌词文本只从 texts[i] 取（不把整段歌词塞进每行对象里）
+  function lineText(line) {
+    if (!line) { return ''; }
+    var texts = data.texts || {};
+    return texts[String(line.i)] || '';
+  }
+
   function ease(x) { return Math.max(0, Math.min(1, x)); }
 
   var scene = {
@@ -83,7 +90,7 @@
       // 字幕带：跟着歌词行（行级时间），换行时重设
       var line = lineAt(t);
       if (line) {
-        band.textContent = line.text;
+        band.textContent = lineText(line);
         band.style.opacity = '1';
       } else {
         band.style.opacity = '0';
