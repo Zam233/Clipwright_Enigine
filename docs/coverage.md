@@ -32,7 +32,7 @@
 | V10 | 悬空数字 → 保存被拒 | 通过 | `test_category_spec.py::TestDanglingNumbers` |
 | V11 | 含「忽略以上指令」的类型提示词 → 400 | 通过 | `schema/category_spec.detect_prompt_injection()` 规则检测（忽略指令/泄露提示词/角色重置/越狱模式），`test_prompt_safety.py` |
 | V12 | `param_rules` 越界键（如 `fps`）→ 400 | 通过 | `rule_key_allowed()` 白名单（剂量类 + `transition_weights./subtitle_/bgm_/pip_` 前缀），`test_prompt_safety.py` |
-| V13 | 同输入两次裁决逐字节一致 | 部分 | `plan_renderer` 有确定性测试；**`PromptAuthority` 本身无逐字节断言** |
+| V13 | 同输入两次裁决逐字节一致 | 通过 | `test_resolution_determinism.py`（4 项：同输入同字节、字典顺序无关、sort_keys 稳定、冲突顺序稳定） |
 | V14 | 既有后端测试全绿 | 部分 | 最近全量 3775 passed / 1 failed（已修未重跑） |
 | V15 | 身份层注入且顺序固定 | 部分 | `identity_text()` 顺序有单测；仅两处 Agent 注入 |
 | **V16** | 三类型可判别 | **人工** | 需开 `enable_genre_judge` 或人工盲评 |
@@ -71,7 +71,7 @@
 | V42 | 素材缺口显式化 | 通过 | `gate_check` V42 + `placement_report.gaps` |
 | V43 | 授权不明不进成片 | 通过 | `test_mv_material.py::test_license_unclear_is_rejected_not_used` |
 | V44 | 创作页无二选一 | 通过 | `CreativePromptField.test.tsx`（源码约束 3 项） |
-| V45 | 提示词生效且留痕 | 部分 | **留痕已落地**：`type_spec_runtime.emit_prompt_resolution()` 写 trace（参数来源层/冲突/槽位/变形），`test_prompt_resolution_event.py`（6 项）；"生效"仍需端到端真机验证 |
+| V45 | 提示词生效且留痕 | 部分 | **留痕 ✓**（`emit_prompt_resolution` 写 trace）；**到达模型 ✓ 真机**（`scripts/smoke_llm_prompt.py`：真 LLM「deepseek-flash」复述出全部四个关键约束，`ok: true`）；**对成片的量化影响未测** |
 | V46 | 对话按钮打开抽屉带上下文 | 通过 | `ChatForgeDrawer.test.tsx`（5 项） |
 | V47 | 结论回填且记 session_id | 通过 | 抽屉回填 + `AgentPanel.creativePrompt.test.ts` |
 | V48 | 对话失败不阻塞创作 | 通过 | 抽屉测试（会话失败不调消息接口） |
