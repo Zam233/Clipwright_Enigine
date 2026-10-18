@@ -475,12 +475,24 @@ SP1 ──► R-01 ──► R-02/R-03 ──► R-04 ──► 门 1
 
 **这轮踩到的两个前端约定**：① UI 组件必须从 `@/components/ui` 桶文件导入（`@/components/ui/Button` 会触发 TS1149 大小写冲突）；② `cn` 在 `@/lib/utils` 而不是 `@/lib/cn`。
 
-### 12.21 下一轮
+### 12.22 第 10 轮：F-05 后端蒸馏 + 前端抽屉
 
-1. **F-04/F-05**：创作页去「配音/视觉驱动」二选一 + 提示词区 + ChatForge 抽屉（依赖后端 `scope=mv_prompt` 与 `commit-prompt`）；
-2. **F-06**：规划确认页（brief/plan 双栏 + 自定义维度必填 reason）；
+| 层 | 交付 | 验证 |
+|---|---|---|
+| 后端 | `services/prompt_distill.py`：对话 → `{prompt, avoid, rationale}`。优先 LLM 结构化蒸馏；失败/未配置退**规则蒸馏**并标 `degraded=True`；否定句（不要/禁止/avoid…）自动进 `avoid`；去重、限 6 条、prompt 截断 4000 | 15 项单测（LLM 异常降级、空 payload 降级、空 transcript 不调 LLM、规则否定抽取） |
+| 后端 | `api/chat_forge.py`：`ChatStartRequest` 增 `scope` / `context`；新增 `POST /api/persona/forge/chat/commit-prompt` | 端点枚举确认存在；chat_forge 相关回归 81 passed |
+| 前端 | `services/api/chatForge.ts`（3 个方法）+ `features/chatforge/ChatForgeDrawer.tsx`：右侧抽屉、对话区、蒸馏结果、**「填入提示词区」回填 prompt+avoid+sessionId** | 5 项测试；tsc 通过 |
+| 关键行为 | 会话建不起来时**明确降级提示且不再调消息接口**（不假装成功）；`degraded=True` 时界面标注"规则兜底（未用 LLM）" | 两条都有测试锁定 |
+
+**仍未做（F-04）**：创作页去「配音驱动/视觉驱动」二选一 + 提示词区落位。抽屉与蒸馏已就绪，但**入口还没挂到 `HomePage`**——下轮第一件事。
+
+### 12.23 下一轮
+
+1. **F-04**：`HomePage` 去驱动模式二选一、加提示词区、挂右侧对话按钮（组件已备）；
+2. **F-06**：规划确认页（brief/plan 双栏）；
 3. **R-11/R-12 收口**：字幕带与文字动画抽成可复用构件；
 4. **S 轨**：MV 标签集 + 乐句级 query。
+
 
 
 
