@@ -1,0 +1,24 @@
+feat(agent-closure): 任务→项目→编辑器闭环 + 产物接口 + 管理页任务列表
+
+补掉上一轮自查里唯一属于「产品闭环缺口」的一条，并把管理页并入任务视图。
+
+后端：
+1. POST /api/task/{id}/to-project
+   - 把任务的 timeline 落成一个项目（复用 ProjectManager.create，owner 随请求）
+   - 无 timeline → 409 并说明原因（不假装成功）
+   - 写 audit（project_create_from_task）
+2. GET /api/task/{id}/result
+   - 产物快照：has_timeline / tracks / clips / duration_sec / output_path
+   - 前端据此决定「禁用按钮 + 明说没有可编辑时间线」，而不是给一个点了会失败的按钮
+
+前端：
+3. features/task/TaskArtifacts.tsx：产物区（轨道/片段/时长）+「在编辑器中打开」
+   - 落项目成功 → navigate('/editor/{project_id}')
+   - 失败 → 原样显示后端 detail（含 409 的说明）
+4. features/task/TaskListSection.tsx：管理页「管线监控」顶部加最近任务列表
+   - 老 runs 视图保留（C7 退役后再删），两代数据结构同屏便于对照
+5. TaskPage 接入 TaskArtifacts
+
+测试：后端新增 6 条（task→project 与 result 快照，含归属校验）；
+前端新增 4 条（有/无时间线、成功跳转、失败显示原因）；
+后端全量 3517 passed；前端 895 passed + tsc 0 错 + eslint 0 error + build 通过

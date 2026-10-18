@@ -241,6 +241,74 @@ async def replan_task(task_id: str, request: Request) -> dict:
     return {"task": task.to_public()}
 
 
+class ToProjectBody(BaseModel):
+    """把任务产物放进一个新项目（供编辑器继续剪）。"""
+
+    name: str = Field(default="", description="项目名；留空用任务标题")
+
+
+@router.post("/{task_id}/to-project")
+async def task_to_project(task_id: str, request: Request,
+                          payload: ToProjectBody | None = None) -> dict:
+    """把任务产出的 timeline 落成一个项目，返回 project_id（前端据此跳编辑器）。
+
+    为什么需要这一步：任务是"出片"，编辑器是"继续剪"。两者之间必须有一步
+    显式的"落成项目"，否则用户拿到一个 timeline 却没有地方打开它。
+    """
+    from clipwright.api.pipeline import _enforce_pipeline_owner  # noqa: F401 — 保持同一套鉴权语义
+    from clipwright.api.project import _manager
+    from clipwright.authz import current_user_id
+    from clipwright.services.pipeline_capability import last_result
+
+    _enforce_task_owner(request, task_id)
+
+    result = last_result(task_id)
+    timeline = None
+    if isinstance(result, dict):
+        timeline = result.get("timeline") or (result.get("shared_data") or {}).get("timeline")
+    if not timeline:
+        raise HTTPException(
+            status_code=409,
+            detail="这条任务还没有可编辑的 timeline（管线未产出，或任务未执行到出片步骤）",
+        )
+
+    task = _kernel().get(task_id)
+    name = (payload.name if payload else "") or (task.request.topic if task else "") or "未命名任务"
+    data = _manager.create(
+        name=name[:80],
+        timeline=timeline,
+        persona_id=(task.request.persona_id if task else "") or None,
+        plugin_id=(task.request.category_plugin_id if task else "") or None,
+        owner_id=current_user_id(request) or "",
+    )
+    from clipwright import audit
+
+    audit.record("project_create_from_task", current_user_id(request),
+                 {"project_id": data["id"], "task_id": task_id})
+    return {"task_id": task_id, "project_id": data["id"], "name": data.get("name", name)}
+
+
+@router.get("/{task_id}/result")
+async def task_result(task_id: str, request: Request) -> dict:
+    """任务产物快照（timeline 概览 + 是否有可编辑时间线）。"""
+    from clipwright.services.pipeline_capability import last_result
+
+    _enforce_task_owner(request, task_id)
+    result = last_result(task_id)
+    timeline = None
+    if isinstance(result, dict):
+        timeline = result.get("timeline") or (result.get("shared_data") or {}).get("timeline")
+    tracks = (timeline or {}).get("tracks") or []
+    return {
+        "task_id": task_id,
+        "has_timeline": bool(timeline),
+        "tracks": len(tracks),
+        "clips": sum(len(t.get("clips") or []) for t in tracks),
+        "duration_sec": float((timeline or {}).get("duration_sec") or 0.0),
+        "output_path": (result or {}).get("output_path") or "",
+    }
+
+
 @router.get("")
 async def list_tasks(request: Request, limit: int = Query(default=20, ge=1, le=100)) -> dict:
     """任务列表（C6 管理页用；内存 + 检查点目录）。"""
