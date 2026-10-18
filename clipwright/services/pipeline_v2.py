@@ -198,13 +198,53 @@ def record_run_start(pipeline_id: str, topic: str) -> None:
         del _run_registry[:-200]
 
 
+def _usage_totals_from_steps(steps: list[PipelineStep]) -> dict[str, Any]:
+    """V38：把各 Agent 的 ``llm_usage`` 汇总成一次运行的总账。
+
+    此前 token 只按 Agent 记在 ``step.result["llm_usage"]`` 与 trace 事件里，
+    运行记录上没有任何总账——"这次跑了多少钱"只能靠翻每个 Agent 的明细手工加。
+    这里给出 ``{input_tokens, output_tokens, total_tokens, calls, by_agent}``；
+    渲染耗时取名为 render 的步骤（没有就为 0，不猜测）。
+    """
+    totals: dict[str, Any] = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "calls": 0,
+        "by_agent": {},
+    }
+    render_ms = 0
+    for step in steps or []:
+        result = getattr(step, "result", None) or {}
+        if not isinstance(result, dict):
+            continue
+        usage = result.get("llm_usage") or {}
+        if isinstance(usage, dict) and usage:
+            in_tokens = int(usage.get("input_tokens") or 0)
+            out_tokens = int(usage.get("output_tokens") or 0)
+            calls = int(usage.get("calls") or (1 if (in_tokens or out_tokens) else 0))
+            totals["input_tokens"] += max(0, in_tokens)
+            totals["output_tokens"] += max(0, out_tokens)
+            totals["calls"] += max(0, calls)
+            totals["by_agent"][getattr(step, "agent_name", "") or "unknown"] = {
+                "input_tokens": max(0, in_tokens),
+                "output_tokens": max(0, out_tokens),
+            }
+        if "render" in str(getattr(step, "agent_name", "") or "").lower():
+            render_ms = max(render_ms, int(getattr(step, "duration_ms", 0) or 0))
+    totals["total_tokens"] = totals["input_tokens"] + totals["output_tokens"]
+    totals["render_sec"] = round(render_ms / 1000.0, 2) if render_ms else 0.0
+    return totals
+
+
 def record_run_complete(pipeline_id: str, status: str, steps: list[PipelineStep]) -> None:
     """在结果落库处更新运行结束（成功与失败分支共用）。
 
     把 PipelineStep 列表转换为前端期望的 agent 跨度
-    ``[{agent, start, dur, status}]``。
+    ``[{agent, start, dur, status}]``，并附上 V38 的用量总账 ``usage``。
     """
     spans: list[dict] = []
+    usage = _usage_totals_from_steps(steps)
     with _run_registry_lock:
         for run in _run_registry:
             if run["id"] != pipeline_id:
@@ -231,6 +271,7 @@ def record_run_complete(pipeline_id: str, status: str, steps: list[PipelineStep]
             run["status"] = status
             run["duration_ms"] = int((now - start_dt).total_seconds() * 1000) if start_dt else 0
             run["agents"] = spans
+            run["usage"] = usage
             run.pop("_start_dt", None)
             return
         # 开始记录缺失（如进程内直接调用执行器）→ 补一条完成的记录
@@ -241,6 +282,7 @@ def record_run_complete(pipeline_id: str, status: str, steps: list[PipelineStep]
             "duration_ms": 0,
             "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "agents": spans,
+            "usage": usage,
         })
 
 

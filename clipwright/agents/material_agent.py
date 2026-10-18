@@ -192,11 +192,19 @@ _CATEGORY_SEARCH_HINTS: dict[str, str] = {
 
 
 def _category_search_hint(category_plugin_id: str) -> str:
-    """选片规范：优先类型声明（declares.search_hint），否则回落旧字典（A-08）。"""
+    """选片规范：优先类型声明（declares.search_hint），其次 material 阶段槽位，最后旧字典。
+
+    V1：material 是 10 槽位里唯一**没有 LLM 消费者**的阶段（选片走检索），所以它的
+    自然语言规范在这里落到检索式上——否则该槽位就是"写了没人读"的死配置。
+    """
     from clipwright.services.type_spec_runtime import search_hint
+    from clipwright.services.type_prompts import first_line
 
     legacy = _CATEGORY_SEARCH_HINTS.get(category_plugin_id or "", "")
-    return search_hint(category_plugin_id, legacy)
+    declared = search_hint(category_plugin_id, legacy)
+    if declared:
+        return declared
+    return first_line(category_plugin_id or "", "material") or legacy
 
 
 #: 需要"按句落位"的类型（MV/PV）；也可用 ``extra_params.mv_placement`` 显式开启。

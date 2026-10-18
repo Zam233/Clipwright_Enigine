@@ -709,6 +709,31 @@ V58 的最后一块是"把偏离写回会话里的规划书"。实现路径：
 
 **覆盖表**：通过 42 / 部分 10 / V49 部分 4/7 / 未做 3 / 人工 4 = 60 行（V21 转通过）。
 
+### 12.50 第 27 轮：10 槽位逐阶段注入（V1/V15）+ token 入账（V38 半边）
+
+**问题**：类型插件能声明 10 个槽位（3 身份 + 7 阶段），但此前**只有取值侧的消费**（`clamp_profile`/`required_markers`/`search_hint`/`declare_flag`），提示词槽位本身**没有注入任何 Agent**——声明了等于装饰。
+
+**做法**：新增 `services/type_prompts.py`，固定序拼接 `原文 → 身份层 → 阶段规范`（`compose` / `compose_many` / `first_line` / `stage_summary`），然后逐阶段落地：
+
+| 阶段 | 注入点 | 验证方式 |
+|---|---|---|
+| 身份层（genre/anti_patterns/lexicon） | requirements / structure / edit / audio / quality | edit、audio、quality 三处**打桩 LLM 捕获真实 system prompt** 断言内容与顺序 |
+| `structure` | `structure_agent.compose_structure_prompt()` | 模块函数单测（`execute()` 依赖 LLM+工具链，捕获成本高，故抽函数） |
+| `material` | `_category_search_hint()` 在 `declares.search_hint` 为空时回落 material 槽位首句 | 单测：探针类型给出槽位 → 检索式命中该句 |
+| `edit` | 剪辑档案 LLM prompt | 捕获断言 |
+| `animation` | `_mg_category_context["stage_prompt"]` → `MGGenerator._build_context_section` 逐行列出 | 静态方法单测（有/无 stage_prompt 两态） |
+| `audio` + `subtitle` | 音频 Agent 同一个 LLM 调用（它同时管字幕生成） | 捕获断言两个槽位都在 |
+| `quality` | 语义质检 LLM prompt | 捕获断言 |
+
+**V1/V15 → 通过**。测试 13 项（`test_type_prompts.py` 8 + `test_stage_prompt_wiring.py` 5）；相关子集 548 passed。
+
+**V38 的 token 半边**：`pipeline_v2._usage_totals_from_steps()` 把各 Agent 的 `llm_usage` 汇总成运行总账（`input/output/total/calls/by_agent/render_sec`），`GET /api/pipeline/runs` 返回 `usage`。真机一次 dry-run：**10859 tokens / 3 calls**（structure 5697+2465、material 645+597、edit 1133+322）。**渲染时长仍是半个**：字段接了、单测覆盖，但真渲一次没跑，dry-run 下 `render_sec=0.0`，故 V38 保留"部分"。
+
+**一处既有测试随之更新**：`test_pipeline_runs.py` 的契约断言原来锁死 6 个键，现加 `usage`（并在断言里锁定 usage 的 6 个子键）。
+
+**覆盖表**：通过 44 / 部分 8 / V49 部分 4/7 / 未做 3 / 人工 4 = 60 行（V1、V15 各 +1 通过）。
+
+
 
 
 

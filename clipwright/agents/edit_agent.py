@@ -753,6 +753,10 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         )
         # 自愈重做时注入上一轮质检问题（原 _quality_issues 注入无 Agent 消费）
         system_prompt += self._quality_hint
+        # V1/V15：类型身份 + 剪辑阶段规范（含反模式），固定序注入
+        from clipwright.services.type_prompts import compose as compose_type_prompt
+
+        system_prompt = compose_type_prompt(system_prompt, category, "edit")
         user_prompt = (
             f"视频类型（category）: {category or 'unknown'}\n"
             f"Persona 剪辑偏好: {json.dumps(persona or {}, ensure_ascii=False)}\n\n"

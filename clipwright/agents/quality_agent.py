@@ -546,6 +546,12 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
             "你是一名视频质检编辑。检查给定视频文案与创意简报的一致性、"
             "错别字与风格问题。只输出 JSON。"
         )
+        # V1/V15：类型身份 + 质检阶段规范（该类型特有的检查点/反模式）
+        from clipwright.services.type_prompts import compose as compose_type_prompt
+
+        system_prompt = compose_type_prompt(
+            system_prompt, getattr(context, "category_plugin_id", "") or "", "quality"
+        )
         user_prompt = (
             "【创意简报】\n"
             f"{brief_text}\n\n"

@@ -169,6 +169,12 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
         plugin_prompts = PluginPromptRegistry.get_for_agent("requirements")
         if plugin_prompts:
             system_prompt += "\n\n## 插件能力扩展\n" + "\n\n".join(plugin_prompts)
+        # V15：需求阶段先吃"这是什么片子"（身份层），再谈字段；无槽位时零变化
+        from clipwright.services.type_prompts import compose as compose_type_prompt
+
+        system_prompt = compose_type_prompt(
+            system_prompt, getattr(context, "category_plugin_id", "") or "", ""
+        )
 
         result = await self.llm_or_fallback(lambda: self._llm.structured_output(system_prompt=system_prompt, user_prompt=user_context, pipeline_id=context.pipeline_id), fallback={}, retries=2)
         if isinstance(result, dict) and "brief_draft" in result:

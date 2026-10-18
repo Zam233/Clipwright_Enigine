@@ -245,7 +245,10 @@ async def list_pipeline_runs(request: Request, limit: int = 50) -> list[dict]:
     """获取管线运行记录（真实执行历史，供 PipelineAdminPage 展示）。
 
     返回形状: {id, topic, status, duration_ms, started_at,
-               agents: [{agent, start, dur, status}]}
+               agents: [{agent, start, dur, status}],
+               usage: {input_tokens, output_tokens, total_tokens, calls,
+                       by_agent: {agent: {input_tokens, output_tokens}}, render_sec}}
+    ``usage`` 是 V38 的用量总账：token 按 Agent 汇总，渲染耗时取 render 步骤。
     数据源：内存注册表（当前进程真实运行）优先，Mongo PipelineModel 持久化历史兜底。
     P3-3B: jwt 模式下按 owner 过滤（无主记录隐藏）。
     """

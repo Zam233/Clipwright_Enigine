@@ -45,6 +45,17 @@ async def write_back_plan_drift_if_session(
         return 0
 
 
+def compose_structure_prompt(base: str, category_id: str) -> str:
+    """结构阶段的类型注入（身份 + structure 槽位，固定序）。
+
+    抽成模块级函数是为了能单测：结构阶段的 ``execute()`` 牵动 LLM + 工具链，
+    在单测里捕获 system prompt 成本太高，容易变成"测试跑不动、接线悄悄丢掉"。
+    """
+    from clipwright.services.type_prompts import compose
+
+    return compose(base, category_id, "structure")
+
+
 SYSTEM_PROMPT_TPL = """你是一个{tone}风格的视频脚本创作者。
 
 ## Persona 特征
@@ -330,6 +341,10 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                     return output
 
             system_prompt = self._build_system_prompt(identity, language, rhythm, constraints)
+            # V1/V15：类型身份 + 结构阶段规范固定序注入（无槽位时零变化）
+            system_prompt = compose_structure_prompt(
+                system_prompt, context.category_plugin_id or ""
+            )
             system_prompt += TOOL_PROMPT
 
             # A-16（plan-first）：先取规划；开了 plan_first 却没有规划 → 明确失败，
