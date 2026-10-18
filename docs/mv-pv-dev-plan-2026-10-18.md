@@ -331,14 +331,51 @@ SP1 ──► R-01 ──► R-02/R-03 ──► R-04 ──► 门 1
 - 过程中撞到两个坑，已写进代码与文档：
   1. **全局冻结 `setTimeout`/`rAF` 会让 HyperFrames 直接渲染失败**（`Render failed`）——改为"作者脚本 IIFE 遮蔽"，平台继续用真全局；
   2. **`ais_available()` 新进程首调恒为 False**（非阻塞缓存），验收脚本必须用 `await_available()`。
-- 门 1 剩余要件：**SP2 已过**（1080p60 × 300 帧两次渲染全等，22.5s/次，19MB/5s ≈ 4.5 秒渲染 / 1 秒成片）；剩下 **R-04 Day-1 聊天界面场景**（要出"用户看得懂的画面"而不只是色块）。
+- 门 1 剩余要件：**已全部补齐**。见 12.5。
 
-### 12.3 下一轮
+### 12.5 门 1 通过（R-04 完成）
 
-1. SP1 真机渲染（依赖 hyperframes 安装完成）+ `hash_frames` 双跑比对；
+| 要件 | 证据 |
+|---|---|
+| scene_script 契约 | `animation/scene_renderer.py` + 16 项单测 |
+| 确定性 lint | `tools/lint_determinism.py`（12 条规则）+ 7 项单测；`examples/mv_poc/chat/scene.js` lint 干净 |
+| 逐帧哈希闸 | `tools/hash_frames.py` + 5 项单测 |
+| **聊天界面场景** | `examples/mv_poc/chat/{scene.js,chat_script.json}` → **12s / 360 帧两次渲染全等**，闪光 0 违规，56.3MB |
+| 成本 | 1080p60：22.5s / 5s（≈4.5 秒渲染 1 秒成片）；960×540@30：19.9–25.6s / 12s |
+| 视觉核对 | t=8s 单帧：标题栏 + 状态灯 + 双向气泡 + 输入框 + 打字光标，确认是"一条对的聊天界面" |
+
+**门 1 判定：通过。** 依据：`docs/spike-results-2026-10-18.md`、`out/mv_poc/report.json`。
+
+### 12.6 本轮新增实现（A-04/A-05/A-06/A-07）
+
+| 任务 | 内容 | 证据 |
+|---|---|---|
+| A-04 槽位归一变电压 | `category/base.py` 新增 `get_prompt_bundle/get_param_rules/get_signature_traits/get_declares`；旧钩子适配器把 `str` / `list[str]` / `list[dict]` 归一（**修 A1/A2 的 repr 注入**） | `test_type_spec_runtime.py::TestLegacyAdapter`（4 项，断言 `{`/`'role'` 不出现） |
+| A-05 钳制点接管 | `services/type_spec_runtime.py`：`load_spec` / `resolve_shot_params` / `resolve_params` / `stage_text` / `clamp_profile`；`edit_agent` 改读裁决产物，冲突与变形风险写进 `notes` | 22 项（含"strict floor 把 300 顶回 1200 且记 C1"） |
+| A-06 类型契约加固 | `TypeDefinition` 加 `prompts/param_rules/signature_traits/declares/waivers`，`extra=forbid`，槽位白名单校验；新增 `POST /api/type-maker/validate` 与 `/resolve` | "未知字段被拒""悬空数字被拒""global 别名可用"等 6 项 |
+| A-07 动态类型读规范 | `category/dynamic.py` 读 YAML 的 `prompts/param_rules/signature_traits/declares`，非法项跳过不崩 | 3 项 |
+
+### 12.7 下一轮
+
+1. **M1 版画库**（R-06…R-10）：三墨分版 / 纸底 / 错版 / 降帧 / 撕裂 / 字符版画 / 配准——门 2 的主体；
+2. **A-09**（指标采集 + 同一性校验 L1）+ **A-08**（`declares` 迁出 5 处硬编码）；
+3. **R-11…R-13**（歌词模型 / 字幕带 / 拍点服务）；
+4. 定位全量回归的顺序污染。
+
+
+### 12.3 已发现的遗留问题（待下一轮）
+
+| 问题 | 现象 | 判断 |
+|---|---|---|
+| 全量回归偶发 5 个失败 | `test_animation_agent_images.py` 5 项在**全量跑**时失败，**单独跑 11/11 通过**；与新测试同跑也通过 | 顺序/状态污染，**不是本批代码引入**；需单独定位（下一轮用 `-p no:cacheprovider --tb=long` 缩小范围） |
+| 全量回归耗时 | 3656 passed / 5 failed / 3 skipped / 1 xfailed，**17 分 01 秒** | 后续里程碑验收需拆成子集跑，否则每轮成本太高 |
+
+### 12.4 下一轮
+
+1. R-04（Day-1 聊天界面场景）落盘 `examples/mv_poc/chat/`，跑 30 秒 + 双渲染哈希，补齐门 1；
 2. A-04/A-05（槽位注入 + 剪辑钳制点接管）——把裁决器接进 `edit_agent`，让 V2 从"单测过"变成"成片过"；
 3. A-06（`type_maker` 契约 + `extra=forbid` + 校验接线）；
-4. R-04（Day-1 聊天界面场景）落盘到 `examples/mv_poc/chat/`。
+4. 定位上面那条顺序污染。
 
 ## 附 A 任务 → 验收 对照（速查）
 

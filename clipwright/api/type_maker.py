@@ -11,11 +11,21 @@ from typing import Any, Optional
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from clipwright.category.registry import CategoryRegistry
 from clipwright.config import logger
 from clipwright.paths import anchor
+from clipwright.schema.category_spec import (
+    SLOT_ALIASES,
+    SLOT_KEYS,
+    ParamRule,
+    PromptBundle,
+    PromptSlot,
+    SignatureTrait,
+    TypeDeclares,
+    validate_bundle,
+)
 from clipwright.security import validate_id
 
 router = APIRouter(prefix="/api/type-maker", tags=["type-maker"])
@@ -57,6 +67,8 @@ class PersonaMappingItem(BaseModel):
 
 class TypeDefinition(BaseModel):
     """视频类型定义。"""
+    model_config = {"extra": "forbid"}  # A-06：未知字段直接 400，不再静默丢弃
+
     id: str = Field(description="类型唯一标识 (英文, 如 my_knowledge)")
     name: str = Field(description="显示名称")
     description: str = Field(default="", description="类型描述")
@@ -64,6 +76,30 @@ class TypeDefinition(BaseModel):
     persona_mapping: dict[str, PersonaMappingItem] = Field(default_factory=dict)
     post_process: dict[str, Any] = Field(default_factory=dict, description="后处理配置")
     tags: list[str] = Field(default_factory=list)
+    # ── 类型规范（PRD Part I F1/F3/F14，A-06）──
+    prompts: dict[str, PromptSlot] = Field(default_factory=dict, description="10 槽位提示词")
+    param_rules: list[ParamRule] = Field(default_factory=list, description="机器可读参数规则")
+    signature_traits: list[SignatureTrait] = Field(default_factory=list, description="同一性指标")
+    declares: TypeDeclares = Field(default_factory=TypeDeclares, description="类型声明块")
+    waivers: list[str] = Field(default_factory=list, description="不可执行数字的豁免理由")
+
+    @property
+    def prompt_bundle(self) -> PromptBundle:
+        return PromptBundle(slots=dict(self.prompts))
+
+    @field_validator("prompts")
+    @classmethod
+    def _known_slots_only(cls, value: dict[str, PromptSlot]) -> dict[str, PromptSlot]:
+        unknown = [key for key in value if key not in SLOT_KEYS and key not in SLOT_ALIASES]
+        if unknown:
+            raise ValueError(f"未知提示词槽位: {unknown}；合法槽位: {list(SLOT_KEYS)}")
+        return value
+
+
+class ValidateResult(BaseModel):
+    ok: bool
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TypeListItem(BaseModel):
@@ -283,8 +319,80 @@ def _validate_definition(definition: TypeDefinition) -> None:
             errors.append(f"映射项 {key} 缺少 source")
         if item.transform not in ("direct", "scale", "lookup"):
             errors.append(f"映射项 {key} 的 transform 不支持: {item.transform}")
+    # A-06：规范契约校验（悬空数字 / 规则自洽 / 指标与 genre 矛盾 / 槽位合法）
+    for issue in spec_issues(definition):
+        if issue.severity == "error":
+            errors.append(f"[{issue.code}] {issue.message}")
     if errors:
         raise HTTPException(status_code=400, detail="；".join(errors))
+
+
+def spec_issues(definition: TypeDefinition) -> list[Any]:
+    """把 TypeDefinition 转成规范校验问题列表（供 create/update 与 /validate 共用）。"""
+    return validate_bundle(
+        definition.prompt_bundle,
+        definition.param_rules,
+        definition.signature_traits,
+    )
+
+
+def _coerce_definition(payload: dict[str, Any]) -> TypeDefinition:
+    """宽松构造（/validate 用）：允许前端只提交部分字段。"""
+    return TypeDefinition(**payload)
+
+
+@router.post("/validate", response_model=ValidateResult)
+async def validate_type(payload: dict[str, Any]) -> ValidateResult:
+    """干跑校验：不落盘，返回全部错误与告警。"""
+    try:
+        definition = _coerce_definition(payload)
+    except Exception as exc:  # noqa: BLE001 - 结构错误一律 400 语义
+        return ValidateResult(
+            ok=False,
+            errors=[{"code": "invalid_definition", "message": str(exc), "where": ""}],
+        )
+    issues = spec_issues(definition)
+    return ValidateResult(
+        ok=not any(i.severity == "error" for i in issues),
+        errors=[
+            {"code": i.code, "message": i.message, "where": i.where}
+            for i in issues
+            if i.severity == "error"
+        ],
+        warnings=[
+            {"code": i.code, "message": i.message, "where": i.where}
+            for i in issues
+            if i.severity != "error"
+        ],
+    )
+
+
+@router.post("/resolve", response_model=dict)
+async def resolve_type(payload: dict[str, Any]) -> dict:
+    """干跑裁决：给定用户参数，返回最终参数 + 冲突 + 变形判定（A-10 前身）。"""
+    from clipwright.services.prompt_authority import PromptAuthority
+
+    try:
+        definition = _coerce_definition(payload)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    user_params = payload.get("user_params") or {}
+    authority = PromptAuthority(
+        prompts=definition.prompt_bundle,
+        rules=definition.param_rules,
+        traits=definition.signature_traits,
+        category_id=definition.id,
+    )
+    resolution = authority.resolve(user=user_params)
+    return {
+        "params": resolution.params,
+        "trace": resolution.trace,
+        "conflicts": [c.model_dump() for c in resolution.conflicts],
+        "traits": [t.model_dump() for t in resolution.traits],
+        "deformation": resolution.deformation,
+        "prompts": resolution.prompts,
+        "dropped_slots": resolution.dropped_slots,
+    }
 
 
 def _find_yaml(type_id: str) -> Optional[Path]:

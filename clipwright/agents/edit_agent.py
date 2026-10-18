@@ -277,7 +277,20 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 )
 
             # 2. 获取 Persona 剪辑参数（经 category_plugin 翻译）
-            shot_params = context.extra_params.get("shot_params", {})
+            # A-05：类型规则在这里收口（strict 覆盖用户值 / soft 只记录），
+            # 下游不再直接读原始 shot_params 并自行兜底 5000。
+            from clipwright.services.type_spec_runtime import resolve_shot_params
+
+            shot_params, _type_resolution = resolve_shot_params(
+                context.extra_params, context.category_plugin_id
+            )
+            for _conflict in _type_resolution.conflicts:
+                notes.append(f"类型规范[{_conflict.code}] {_conflict.message}")
+            if _type_resolution.deformation:
+                notes.append(
+                    "类型变形风险："
+                    + "；".join(_type_resolution.deformation.get("reasons") or [])
+                )
             cut_profile = context.extra_params.get("cut_profile", "even_flow")
             transition_weights = context.extra_params.get("transition_weights", {})
             # 节拍对齐剪辑 beat-sync — cut_on_beat + BPM（来自类型配置/音频检测）
@@ -735,14 +748,17 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             logger.warning("EditAgent: LLM 剪辑档案非法（回退规则）: %s", preview)
             return None
 
-        # 按 persona shot_params 边界钳制 base_shot_ms（LLM 越界值收敛到合法区间）
+        # 按 shot_params 边界钳制 base_shot_ms（LLM 越界值收敛到合法区间）。
+        # A-05：边界可能来自类型 strict 规则（已由 resolve_shot_params 收口），
+        # 收敛逻辑抽成纯函数以便单测（type_spec_runtime.clamp_profile）。
+        from clipwright.services.type_spec_runtime import clamp_profile
+
         shot_params = (persona or {}).get("shot_params") or {}
-        lo = shot_params.get("min_shot_ms")
-        hi = shot_params.get("max_shot_ms")
-        if isinstance(lo, (int, float)) and lo > 0:
-            profile["base_shot_ms"] = max(profile["base_shot_ms"], int(lo))
-        if isinstance(hi, (int, float)) and hi > 0:
-            profile["base_shot_ms"] = min(profile["base_shot_ms"], int(hi))
+        profile = clamp_profile(
+            profile,
+            lo=shot_params.get("min_shot_ms"),
+            hi=shot_params.get("max_shot_ms"),
+        )
 
         logger.info("EditAgent: LLM 剪辑档案生效: %s", json.dumps(profile, ensure_ascii=False))
         return profile
