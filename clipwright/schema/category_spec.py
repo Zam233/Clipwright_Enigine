@@ -43,6 +43,67 @@ MAX_PROMPT_CHARS_PER_STAGE = 1200
 #: 不可执行数字的显式豁免标记。
 WAIVER_MARKER = "〔不可执行〕"
 
+#: `param_rules` 允许作用的键（白名单，V12）。
+#: 只允许"剂量类"参数——放行 fps/渲染参数等于把渲染管线交给类型提示词，属越权。
+ALLOWED_RULE_KEYS: tuple[str, ...] = (
+    "min_shot_ms",
+    "max_shot_ms",
+    "base_shot_ms",
+    "cut_on_beat",
+    "bpm",
+    "beat_zero_sec",
+)
+#: 允许的键前缀（值可以是任意叶子，如 ``transition_weights.hard_cut``）。
+ALLOWED_RULE_PREFIXES: tuple[str, ...] = (
+    "transition_weights.",
+    "subtitle_",
+    "bgm_",
+    "pip_",
+)
+
+#: 提示词越权模式（V11 / PRD F9）：命中即拒存。
+_INJECTION_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"忽略(?:以上|之前|上述|前面)(?:的)?(?:所有)?(?:指令|提示|规则|要求)", "要求忽略既有指令"),
+    (r"ignore\s+(?:all\s+)?(?:previous|above|prior)\s+(?:instructions?|prompts?|rules?)", "要求忽略既有指令"),
+    (r"(?:输出|打印|显示|重复|复述)(?:你的)?(?:系统)?(?:提示词|system\s*prompt|prompt)", "要求泄露系统提示词"),
+    (r"reveal\s+your\s+(?:system\s+)?prompt", "要求泄露系统提示词"),
+    (r"你现在是(?:一个)?(?:不受限制|没有限制|无限制)", "角色重置"),
+    (r"developer\s+mode|jailbreak|越狱模式", "越狱模式"),
+)
+_INJECTION_RE = tuple((re.compile(p, re.IGNORECASE), why) for p, why in _INJECTION_PATTERNS)
+
+
+def rule_key_allowed(key: str) -> bool:
+    """判断某个 ``param_rules.key`` 是否在白名单内（V12）。"""
+    name = (key or "").strip()
+    if not name:
+        return False
+    if name in ALLOWED_RULE_KEYS:
+        return True
+    return any(name.startswith(prefix) for prefix in ALLOWED_RULE_PREFIXES)
+
+
+def detect_prompt_injection(prompts: PromptBundle) -> list[SpecIssue]:
+    """扫描提示词里的越权模式（V11 / PRD F9）。"""
+    issues: list[SpecIssue] = []
+    for key, slot in prompts.normalized().slots.items():
+        text = slot.effective_text()
+        for pattern, why in _INJECTION_RE:
+            match = pattern.search(text)
+            if match:
+                issues.append(
+                    SpecIssue(
+                        code="prompt_injection",
+                        message=(
+                            f"槽位 {key} 命中越权模式（{why}）："
+                            f"「{match.group(0)[:40]}」——类型提示词不得改写系统指令或索取系统提示词"
+                        ),
+                        where=key,
+                    )
+                )
+                break
+    return issues
+
 _NUMBER_CLAIM_RE = re.compile(r"\d+(?:\.\d+)?\s*(?:ms|毫秒|秒|s|%|倍)")
 _SLOW_STYLE_WORDS = ("缓慢", "长镜", "慢节奏", "舒缓", "不急于")
 
@@ -329,6 +390,17 @@ def validate_param_rules(rules: list[ParamRule]) -> list[SpecIssue]:
                     where=key,
                 )
             )
+        if not rule_key_allowed(key):
+            issues.append(
+                SpecIssue(
+                    code="rule_key_not_allowed",
+                    message=(
+                        f"{key} 不在参数规则白名单内（只允许剂量类参数："
+                        f"{list(ALLOWED_RULE_KEYS)} 或 {list(ALLOWED_RULE_PREFIXES)} 前缀）"
+                    ),
+                    where=key,
+                )
+            )
     return issues
 
 
@@ -396,6 +468,7 @@ def validate_bundle(
     issues.extend(find_dangling_numbers(prompts, rules))
     issues.extend(validate_param_rules(rules))
     issues.extend(validate_traits_against_genre(prompts, traits))
+    issues.extend(detect_prompt_injection(prompts))
     return issues
 
 
