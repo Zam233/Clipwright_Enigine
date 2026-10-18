@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "scene": "plate_shot",
+  "frames": 180,
+  "fps": 30.0,
+  "seconds": 6.0,
+  "deterministic": true,
+  "first_diff": null,
+  "render_sec": 25.69,
+  "mov_bytes": 182977968,
+  "flash_ok": true,
+  "flash_violations": [],
+  "html_bytes": 3309263,
+  "bpm": 130.0,
+  "beat_zero_sec": 0.344,
+  "cut_at": 1.267077,
+  "cues": [
+    {
+      "name": "line_0",
+      "t": 1.267077,
+      "source": "init",
+      "snapped": "half",
+      "note": "text(0)"
+    },
+    {
+      "name": "line_1",
+      "t": 4.267077,
+      "source": "init",
+      "snapped": "half",
+      "note": "text(1)"
+    }
+  ]
+}

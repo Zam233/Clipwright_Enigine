@@ -1,0 +1,11 @@
+{
+  "title": "版画镜头（POC）",
+  "overview": "用三墨分版 + 字符版画 + 错版，验证版画库能真的进入画面",
+  "target_audience": "内部验收",
+  "core_message": "界面是舞台，版画是内心",
+  "style_direction": "印刷质感、暖色近黑纸底、三墨套印",
+  "structure_suggestion": "套印 2.5s → 腐坏",
+  "duration_estimate": "6s",
+  "key_elements": ["纸底", "三墨胸像", "字符纹理", "红色错版边"],
+  "special_requirements": ["闪光违规必须为 0", "两次渲染逐帧一致"]
+}

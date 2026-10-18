@@ -441,12 +441,24 @@ SP1 ──► R-01 ──► R-02/R-03 ──► R-04 ──► 门 1
 
 **教训（已进记忆）**：用 `edit` 在函数体内插入 `def` 会把类/函数结构搞坏——本轮 `quality_agent` 与 `type_maker` 各踩一次，都是靠 `ast.parse` + 端点枚举发现的，不是测试发现的。
 
-### 12.15 下一轮
+### 12.16 第 7 轮：工程包与交付（R-18/R-19）+ 端到端打包验证
 
-1. **F 轨启动**：类型编辑器接 `prompts/param_rules/signature_traits`（前端 + 冲突预览）；
-2. **R-11/R-12 收口**：字幕带与四个文字动画接进场景（现在文字是场景内联的）；
-3. **R-18/R-19**：工程包载入 + `dist/` 六件套 + `check_sync`；
-4. **S 轨**：MV 标签集与乐句级 query（依赖 `content_index` 扩展）。
+| 任务 | 实现 | 验收 |
+|---|---|---|
+| R-18 工程包载入 | `services/mv_bundle.py`：`load_bundle`（mv/cues/lyrics/chat_script/plan/brief/report，坏文件记 `missing` 不抛）、`validate_bundle`（片段连续/网格非零/必需文件） | 13 项单测（含坏 cues 不崩、段间空洞、零 BPM） |
+| R-18 交付打包 | `pack_dist`：storyboard / cues / plan.md / brief.md / report / selftest / assets_gap / CREDITS（+ 可选 preview），**确定性文本**；`tools/pack_dist.py` CLI | 5 项单测 + **真机打包**：`out/dist/plate_shot` 九个文件齐全、`missing: []` |
+| R-19 同步检查 | `tools/check_sync.py`：`check_sync(video, audio, preroll)` 纯函数 + `probe_duration`（ffprobe）+ CLI；容差 0.05s | 6 项单测（含"漏掉片头偏移必须报不同步"） |
+| 端到端 | plate_shot 工程包补齐 `mv.json / plan.json / brief.json`，渲染脚本回写标准形态 `cues.json`（`{grid, items}`）与 `report.json`；`ffmpeg` 转出 `preview.mp4` | `python -m tools.pack_dist ... --preview` → **`ok: true, missing: []`** |
+
+**这轮修掉的一个接口不一致**：渲染脚本原先写的是 `{bpm, beat_zero_sec, items}`，而 `mv_cues.load_cues` 期望 `{grid: {bpm, beat_zero_sec}, items}`——**同一个文件两种形态**，打包时直接暴露成 `bundle_no_grid`。已统一：渲染脚本改用 `save_cues()` 落盘，工程目录与 `out/` 各存一份。
+
+### 12.17 下一轮
+
+1. **F 轨启动**（前端仓库 `J:\Clipweight-Client`）：类型编辑器接 `prompts/param_rules/signature_traits` + 冲突预览；
+2. **R-11/R-12 收口**：字幕带与文字动画抽成可复用构件（现在内联在 `plate_shot/scene.js`）；
+3. **S 轨**：MV 标签集 + 乐句级 query；
+4. **门 4 预演**：用 `pack_dist` 输出当"交付门"的检查对象，把 V21–V43 里能自动化的先接成脚本。
+
 
 
 

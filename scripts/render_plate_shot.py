@@ -197,10 +197,17 @@ async def main_async(args: argparse.Namespace) -> int:
         "cut_at": cut_at,
         "cues": cue_items,
     }
-    (out_dir / "cues.json").write_text(
-        json.dumps({"bpm": args.bpm, "beat_zero_sec": args.beat_zero, "items": cue_items},
-                   ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    # 工程包的"时间唯一真相"：用标准形态落盘（grid + items），供 mv_bundle.load_cues 读取
+    from clipwright.services.mv_cues import BeatGrid, Cue, CuesDoc, save_cues
+
+    cues_doc = CuesDoc(
+        grid=BeatGrid(bpm=args.bpm, beat_zero_sec=args.beat_zero),
+        items=[Cue(**item) for item in cue_items],
+    )
+    save_cues(out_dir / "cues.json", cues_doc)
+    save_cues(SCENE_DIR / "cues.json", cues_doc)
+    (SCENE_DIR / "report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     (out_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
