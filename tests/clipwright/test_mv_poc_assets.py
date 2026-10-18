@@ -82,6 +82,32 @@ def _load_script_module():
     return module
 
 
+    def test_cut_time_is_cue_driven(self) -> None:
+        """R-13 接入 R-14：腐坏切入时间来自 cues，而不是代码常量。"""
+        module = _load_script_module()
+        lines = json.loads((self.PLATE_DIR / "lines.json").read_text(encoding="utf-8"))
+        _, cut_130 = module.build_cues_for_shot(lines, bpm=130.0, beat_zero_sec=0.344)
+        _, cut_90 = module.build_cues_for_shot(lines, bpm=90.0, beat_zero_sec=0.344)
+        assert cut_130 != cut_90, "换 BPM 后切入拍点必须变化，否则仍是常量"
+
+    def test_cut_lands_on_grid(self) -> None:
+        module = _load_script_module()
+        lines = json.loads((self.PLATE_DIR / "lines.json").read_text(encoding="utf-8"))
+        items, cut_at = module.build_cues_for_shot(lines, bpm=130.0, beat_zero_sec=0.344)
+        assert items, "应生成 cues"
+        # 半拍网格：cut_at 应落在 0.344 + k * (60/130/2)
+        beat = 60.0 / 130.0
+        steps = (cut_at - 0.344) / (beat / 2)
+        assert abs(steps - round(steps)) < 1e-6, f"cut_at={cut_at} 不在半拍网格上"
+
+    def test_scene_js_uses_given_cut_time(self) -> None:
+        module = _load_script_module()
+        lines = json.loads((self.PLATE_DIR / "lines.json").read_text(encoding="utf-8"))
+        assets = {k: "data:image/png;base64,AAA" for k in ("ground", "clean", "misreg", "glyph")}
+        js = module.build_scene_js(assets, lines, 3.25)
+        assert '"cut_at": 3.25' in js
+
+
 class TestChatAssets:
     def test_scene_js_is_lint_clean(self) -> None:
         source = (CHAT_DIR / "scene.js").read_text(encoding="utf-8")

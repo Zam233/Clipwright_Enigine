@@ -328,12 +328,20 @@ def _validate_definition(definition: TypeDefinition) -> None:
 
 
 def spec_issues(definition: TypeDefinition) -> list[Any]:
-    """把 TypeDefinition 转成规范校验问题列表（供 create/update 与 /validate 共用）。"""
-    return validate_bundle(
+    """把 TypeDefinition 转成规范校验问题列表（供 create/update 与 /validate 共用）。
+
+    向后兼容（PRD F6）：**完全没写 prompts 的老类型**视为"未启用新契约"，
+    不强制 ``genre``（否则所有历史 YAML 与第三方定义会一夜之间失效）。
+    一旦写了任何一个槽位，就按新契约校验（含 genre 必填、悬空数字等）。
+    """
+    issues = validate_bundle(
         definition.prompt_bundle,
         definition.param_rules,
         definition.signature_traits,
     )
+    if not (definition.prompts or {}):
+        issues = [issue for issue in issues if issue.code != "genre_required"]
+    return issues
 
 
 def _coerce_definition(payload: dict[str, Any]) -> TypeDefinition:
@@ -367,9 +375,65 @@ async def validate_type(payload: dict[str, Any]) -> ValidateResult:
     )
 
 
+@router.post("/{type_id}/genre-check", response_model=dict)
+async def genre_check(type_id: str, payload: dict[str, Any]) -> dict:
+    """干跑类型同一性校验（A-10 / F12）：给时间线，返回指标与逐条判定。
+
+    L1 恒开；L2/L3 裁判由 ``payload.enable_genre_judge`` 控制（默认关，D7）。
+    """
+    try:
+        return run_genre_check(type_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def run_genre_check(type_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """纯逻辑实现（便于单测）：时间线 + 类型 → 指标 + 判定。"""
+    from clipwright.schema.timeline import Timeline
+    from clipwright.services.genre_conformance import check_conformance
+    from clipwright.services.mv_cues import build_grid
+    from clipwright.services.trait_collector import collect_traits
+    from clipwright.services.type_spec_runtime import load_spec
+
+    raw_timeline = payload.get("timeline")
+    if not isinstance(raw_timeline, dict):
+        raise ValueError("payload.timeline 必须是时间线 JSON 对象")
+    try:
+        timeline = Timeline(**raw_timeline)
+    except Exception as exc:  # noqa: BLE001 - 结构错误一律 400 语义
+        raise ValueError(f"时间线非法: {exc}") from exc
+
+    spec = load_spec(type_id)
+    grid = None
+    bpm = float(payload.get("bpm") or 0)
+    if bpm > 0:
+        grid = build_grid(bpm, float(payload.get("beat_zero_sec") or 0))
+
+    measured = collect_traits(
+        timeline,
+        scenes=payload.get("scenes"),
+        grid=grid,
+    )
+    report = check_conformance(
+        spec.traits,
+        measured,
+        enable_genre_judge=bool(payload.get("enable_genre_judge", False)),
+    )
+    return {
+        "type_id": type_id,
+        "traits_declared": len(spec.traits),
+        "measured": measured,
+        "ok": report.ok,
+        "judge": report.judge,
+        "judge_detail": report.judge_detail,
+        "summary": report.summary(),
+        "traits": [item.model_dump() for item in report.traits],
+        "mismatches": report.mismatches,
+        "warnings": report.warnings,
+    }
 @router.post("/resolve", response_model=dict)
 async def resolve_type(payload: dict[str, Any]) -> dict:
-    """干跑裁决：给定用户参数，返回最终参数 + 冲突 + 变形判定（A-10 前身）。"""
+    """干跑裁决：给定用户参数，返回最终参数 + 冲突 + 变形判定。"""
     from clipwright.services.prompt_authority import PromptAuthority
 
     try:

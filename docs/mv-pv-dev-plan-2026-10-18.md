@@ -427,12 +427,27 @@ SP1 ──► R-01 ──► R-02/R-03 ──► R-04 ──► 门 1
 
 **这一轮的设计要点**：`enable_genre_judge=False` 时报告里必须出现 `judge: "skipped"` 与"未做 LLM 同一性复核"——**不允许"看起来通过了"**。这是 D7 的落地方式：省钱可以，但要留下"没做复核"的痕迹。
 
-### 12.14 下一轮
+### 12.14 第 6 轮：cue 驱动收口（M2/M3）+ `/genre-check` 端点（A-10）+ 全量回归结论
 
-1. 取 verbose 全量跑结果，确认 5 个失败是否复现（再做二分）；
-2. **M2/M3 收口**：`mv_cues` 与四个转场接进 POC 场景（时间不再是常量）；
-3. **A-10 剩余端点**：`POST /api/pipeline/{id}/genre-check`（复用 `trait_collector` + `check_conformance`）；
-4. **F 轨启动**：类型编辑器接新契约（`prompts/param_rules/signature_traits`）。
+| 项 | 结果 |
+|---|---|
+| **全量回归** | `pytest tests -v > log`：**3775 passed / 1 failed / 3 skipped / 1 xfailed，6 分 53 秒**。上一轮记录的"5 个 `test_animation_agent_images` 失败"**本轮未复现**（顺序相关，非稳定失败） |
+| 唯一失败 | `test_type_system.py::test_validate_definition_ok` —— **是我 A-06 引入的回归**：新校验强制 `genre` 必填，把没写 prompts 的老类型全判错。已修：**写了 prompts 才走新契约校验；完全没写视为未启用，不强制 genre**（与 PRD F6 的兼容承诺一致） |
+| 修后验证 | `test_type_system.py` + `test_type_spec_runtime.py` 共 **26 passed** |
+| M2/M3 收口 | `scripts/render_plate_shot.py` 增加 `build_cues_for_shot()`：歌词行 → `mv_cues.build_cues`（半拍吸附）→ **`cut_at` 来自 cues，不再是常量**。实测 130BPM 下 `cut_at=1.267s`（0.344 + 4×半拍），换 90BPM 会变 |
+| 真机 | 180 帧两次渲染 sha256 全等、闪光 0 违规；`out/plate_shot/cues.json` 落盘（`source: init`，等实测起音替换） |
+| A-10 端点 | `POST /api/type-maker/{type_id}/genre-check`：入参时间线 → 采集指标 → L1 判定（L2/L3 受 `enable_genre_judge` 控制），返回 `measured/ok/judge/mismatches/summary`；逻辑抽成 `run_genre_check()` 便于单测 | 
+| 端点单测 | 8 项（缺时间线/非法时间线/无声明类型/严格不达标/快速类型通过/BPM 启用卡点指标/未知类型/摘要含"未做 LLM 复核"） |
+
+**教训（已进记忆）**：用 `edit` 在函数体内插入 `def` 会把类/函数结构搞坏——本轮 `quality_agent` 与 `type_maker` 各踩一次，都是靠 `ast.parse` + 端点枚举发现的，不是测试发现的。
+
+### 12.15 下一轮
+
+1. **F 轨启动**：类型编辑器接 `prompts/param_rules/signature_traits`（前端 + 冲突预览）；
+2. **R-11/R-12 收口**：字幕带与四个文字动画接进场景（现在文字是场景内联的）；
+3. **R-18/R-19**：工程包载入 + `dist/` 六件套 + `check_sync`；
+4. **S 轨**：MV 标签集与乐句级 query（依赖 `content_index` 扩展）。
+
 
 
 

@@ -71,7 +71,46 @@ def build_assets(width: int, height: int) -> dict[str, str]:
     }
 
 
-def build_scene_js(assets: dict[str, str], lines: dict) -> str:
+def build_cues_for_shot(
+    lines: dict,
+    *,
+    bpm: float = 130.0,
+    beat_zero_sec: float = 0.344,
+) -> tuple[list[dict], float]:
+    """由歌词行 + BPM 生成 cues，并取出"腐坏切入"的拍点（R-13 接入 R-14）。
+
+    返回 ``(cues_items, cut_at)``：``cut_at`` 不再是代码里的常量，而是
+    "第一个关键词 cue 吸附到半拍后的时间"。
+    """
+    from clipwright.schema.lyrics import LyricLine, LyricsDoc, LyricWord
+    from clipwright.services.mv_cues import build_cues
+
+    lyric_lines = []
+    for raw in lines.get("lines") or []:
+        words = [
+            LyricWord(w=index, t0=float(raw.get("t0", 0.0)), t1=float(raw.get("t1", 0.0)))
+            for index in range(1)
+        ]
+        lyric_lines.append(
+            LyricLine(
+                i=int(raw.get("i", len(lyric_lines))),
+                t0=float(raw.get("t0", 0.0)),
+                t1=float(raw.get("t1", 0.0)),
+                text_ref=f"text({raw.get('i', 0)})",
+                words=words,
+            )
+        )
+    doc = LyricsDoc(lines=lyric_lines)
+    cues = build_cues(doc, bpm=bpm, beat_zero_sec=beat_zero_sec, unit="half")
+    items = [item.model_dump() for item in cues.items]
+    cut_at = lines.get("cut_at")
+    keyword_cue = next((item for item in cues.items if item.name.startswith("line_")), None)
+    if keyword_cue is not None:
+        cut_at = keyword_cue.t
+    return items, float(cut_at if cut_at is not None else (lines.get("cut_at") or 2.5))
+
+
+def build_scene_js(assets: dict[str, str], lines: dict, cut_at: float | None = None) -> str:
     payload = {
         "ground": assets["ground"],
         "clean": assets["clean"],
@@ -79,7 +118,7 @@ def build_scene_js(assets: dict[str, str], lines: dict) -> str:
         "glyph": assets["glyph"],
         "lines": lines.get("lines") or [],
         "keyword": lines.get("keyword") or "",
-        "cut_at": lines.get("cut_at") or 2.5,
+        "cut_at": float(cut_at if cut_at is not None else (lines.get("cut_at") or 2.5)),
         "duration_sec": lines.get("duration_sec") or 6,
     }
     source = (SCENE_DIR / "scene.js").read_text(encoding="utf-8")
@@ -98,7 +137,10 @@ async def main_async(args: argparse.Namespace) -> int:
         return 1
 
     lines = json.loads((SCENE_DIR / "lines.json").read_text(encoding="utf-8"))
-    scene_js = build_scene_js(build_assets(args.width, args.height), lines)
+    cue_items, cut_at = build_cues_for_shot(
+        lines, bpm=args.bpm, beat_zero_sec=args.beat_zero
+    )
+    scene_js = build_scene_js(build_assets(args.width, args.height), lines, cut_at)
     hits = scan_text(scene_js, str(SCENE_DIR / "scene.js"))
     if hits:
         print(json.dumps({"ok": False, "reason": "scene.js 未过确定性 lint",
@@ -150,7 +192,16 @@ async def main_async(args: argparse.Namespace) -> int:
         "flash_ok": flash.ok,
         "flash_violations": flash.violations,
         "html_bytes": (out_dir / "plate_shot.html").stat().st_size,
+        "bpm": args.bpm,
+        "beat_zero_sec": args.beat_zero,
+        "cut_at": cut_at,
+        "cues": cue_items,
     }
+    (out_dir / "cues.json").write_text(
+        json.dumps({"bpm": args.bpm, "beat_zero_sec": args.beat_zero, "items": cue_items},
+                   ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     (out_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -164,6 +215,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fps", type=float, default=30.0)
     parser.add_argument("--width", type=int, default=960)
     parser.add_argument("--height", type=int, default=540)
+    parser.add_argument("--bpm", type=float, default=130.0)
+    parser.add_argument("--beat-zero", type=float, default=0.344, dest="beat_zero")
     args = parser.parse_args(argv)
     return asyncio.run(main_async(args))
 
