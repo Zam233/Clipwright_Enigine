@@ -3,7 +3,7 @@
 > 计划 §12.37 承诺的交付物：把 PRD 的 60 项验收逐条落到"现在什么状态、证据在哪、还差什么"。
 > **状态定义**：`通过` = 有自动化证据且已跑过；`部分` = 有实现/单测但缺真机或端到端；`未做` = 没有；`人工` = 只能由人判定。
 >
-> 生成于 2026-10-18。最近一次全量后端回归（第 37 轮末）：**4173 passed / 3 skipped / 1 xfailed / 0 failed**（6 分 07 秒，`$env:HF_HUB_OFFLINE=1; python -m pytest tests -q`）；前端 **109 文件 / 944 项全绿**、`tsc --noEmit` 0 错、`eslint` 0 error、`npm run build` 成功。
+> 生成于 2026-10-18。最近一次全量后端回归（第 37 轮末）：**4173 passed / 3 skipped / 1 xfailed / 0 failed**（6 分 07 秒，`$env:HF_HUB_OFFLINE=1; python -m pytest tests -q`）；前端 **110 文件 / 948 项全绿**、`tsc --noEmit` 0 错、`eslint` 0 error、`npm run build` 成功。
 > **跑法说明（三条，都踩过）**：① RAG 单测会去 HuggingFace 拉 embedding 模型元数据，网络抖动时报 `httpx: client has been closed`，模型本地已缓存，加 `HF_HUB_OFFLINE=1` 即稳定；② **不要同时跑两个 pytest 全量**——共享 chroma/缓存目录会互相污染（RAG 7 项假失败、耗时 6→19 分钟）；③ **跑过 HyperFrames 浏览器渲染后，先确认残留 chrome 进程退出再跑全量**——否则 ffmpeg/内容索引类用例会成片失败（本轮出现过 34 failed / 47 errors，单跑即绿，属资源争用）。
 > **2026-10-18 补记**：新增 `scripts/e2e_pipeline_probe.py` 真机端到端探针（真 LLM + Mongo + 完整管线 dry-run），V2/V3/V5/V45 的证据随之更新；补上此前遗漏的 **Part IV（V52–V60）** 逐条表；总数改为按本文件实际行数统计（此前"通过 34"与表内不符）。
 
