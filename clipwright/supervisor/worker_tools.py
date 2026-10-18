@@ -15,7 +15,7 @@ worker 真的拿着 `run_shell` 时，必须有东西把模型发出的 tool_cal
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Optional
 
 from clipwright.config import logger
 
@@ -231,18 +231,58 @@ def build_executor(
     *,
     allowed: Iterable[str] = (),
     cwd: str = "",
+    on_call: Optional[Callable[[str, bool, str], None]] = None,
 ) -> Callable[[str, dict[str, Any]], Any]:
     """为单个 worker 构造工具执行器（异步）。
 
     `allowed` 是**该 worker 被授予**的工具名；执行器再校验一次，
     防止模型凭空调用没授权的工具（构造期校验 + 运行期校验双保险）。
+    `on_call(tool, ok, brief)`：把每次调用回报给上层（主代理据此判断子代理干了什么）。
     """
     allow = {str(x) for x in allowed}
 
-    async def executor(name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
-        tool = str(name or "")
-        args = tool_input if isinstance(tool_input, dict) else {}
+    def _report(tool: str, ok: bool, brief: str) -> None:
+        if on_call is None:
+            return
+        try:
+            on_call(tool, ok, brief)
+        except Exception:  # noqa: BLE001 — 回报失败不影响 worker
+            pass
 
+    async def executor(name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+        result = await _dispatch(name, tool_input, allow=allow, pipeline_id=pipeline_id,
+                                 cwd=cwd, report=_report)
+        return result
+
+    return executor
+
+
+async def _dispatch(
+    name: str,
+    tool_input: dict[str, Any],
+    *,
+    allow: set[str],
+    pipeline_id: str,
+    cwd: str,
+    report: Callable[[str, bool, str], None],
+) -> dict[str, Any]:
+    tool = str(name or "")
+    args = tool_input if isinstance(tool_input, dict) else {}
+    out = await _dispatch_inner(tool, args, allow=allow, pipeline_id=pipeline_id, cwd=cwd)
+    ok = "error" not in out
+    report(tool, ok, str(out.get("error") or "")[:120])
+    return out
+
+
+async def _dispatch_inner(
+    tool: str,
+    args: dict[str, Any],
+    *,
+    allow: set[str],
+    pipeline_id: str,
+    cwd: str,
+) -> dict[str, Any]:
+    if True:  # 保持缩进层级的占位（原 executor 主体）
         if tool not in SUPERVISOR_TOOLS:
             return _error(f"未知工具: {tool}")
         if tool not in allow:
@@ -323,8 +363,6 @@ def build_executor(
             "exitCode": out.get("exitCode"),
             "outputTail": str(out.get("outputTail", ""))[:4000],
         }
-
-    return executor
 
 
 def available_schemas() -> dict[str, Any]:

@@ -83,8 +83,22 @@ class WorkerEntry:
     status: str = "draft"  # draft|pending_review|approved|rejected|running|done|failed
     subagent_id: str = ""
     review: dict[str, Any] = field(default_factory=dict)
+    #: worker 内部的工具调用轨迹（主代理据此判断"它到底查了什么"）
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
     created_at: datetime = field(default_factory=_utcnow)
     ts: datetime = field(default_factory=_utcnow)
+
+    def note_call(self, tool: str, *, ok: bool, error: str = "", brief: str = "") -> None:
+        """记录一次工具调用（有界 20 条：主代理只需要知道大概做了哪些事）。"""
+        self.tool_calls.append({
+            "tool": str(tool)[:40],
+            "ok": bool(ok),
+            "error": str(error)[:200],
+            "brief": str(brief)[:200],
+        })
+        if len(self.tool_calls) > 20:
+            del self.tool_calls[: len(self.tool_calls) - 20]
+        self.ts = _utcnow()
 
     def to_public(self) -> dict[str, Any]:
         return {
@@ -93,6 +107,7 @@ class WorkerEntry:
             "status": self.status,
             "subagent_id": self.subagent_id,
             "review": self.review,
+            "tool_calls": list(self.tool_calls),
             "spec": self.spec.to_public(),
             "created_at": self.created_at.isoformat(),
         }

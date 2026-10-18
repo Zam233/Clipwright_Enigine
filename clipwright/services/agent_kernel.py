@@ -72,7 +72,8 @@ async def default_executor(task: Task, step: PlanStep) -> dict[str, Any]:
         from clipwright.services import pipeline_capability
 
         return await pipeline_capability.run(task, step)
-    if step.capability == "spawn_subagent":
+    if step.capability in ("spawn_subagent", "get_subagent_status",
+                           "list_subagents", "cancel_subagent"):
         from clipwright.services import subagent_capability
 
         return await subagent_capability.run(task, step)
@@ -190,10 +191,39 @@ class LLMPlanner:
 
     async def reflect(self, task: Task, step: PlanStep, outcome: dict[str, Any]
                       ) -> dict[str, Any]:
-        # 执行成功 → 继续；失败/拒绝 → 交给调用方按规则收尾（不额外花一次模型调用）
+        """根据结果决定下一步。
+
+        关键点：**失败要让主代理有机会再判断一次**，而不是一律收尾。
+        规则（不额外花模型调用）：
+        - 成功 → continue；
+        - 失败且 `failure.retryable == "retry_same"` 且这是第 1 次尝试 → retry（重跑同一步）；
+        - 其它失败（needs_human / permanent / 未知）→ finish，并把类别与证据写进结论。
+        """
         if outcome.get("status") == "ok":
             return {"action": "continue"}
-        return {"action": "finish", "conclusion": f"{step.capability} 未成功：{outcome.get('error') or ''}"}
+
+        failure = outcome.get("failure") or {}
+        retryable = str(failure.get("retryable") or "")
+        category = str(failure.get("category") or "unknown")
+
+        if retryable == "retry_same" and step.attempt < 2:
+            return {
+                "action": "retry",
+                "why": f"{category} 可重试（第 {step.attempt} 次失败）",
+            }
+
+        evidence = failure.get("evidence") or []
+        tail = ""
+        if evidence:
+            first = evidence[0]
+            tail = f"（{first.get('kind')}: {str(first.get('text'))[:120]}）"
+        return {
+            "action": "finish",
+            "conclusion": (
+                f"{step.capability} 未成功：{category}"
+                f"（retryable={retryable or 'unknown'}）{tail}"
+            ),
+        }
 
 
 def context_bundle(task: Task, *, max_chars: int = 1200) -> str:
@@ -460,24 +490,34 @@ class AgentKernel:
         )
 
         status = str(outcome.get("status") or "error")
-        if status == "pending_approval":
-            # 等授权 ≠ 失败：Step 保持未完成、任务暂停，用户授权后 resume 继续
+        if status in ("pending_approval", "needs_human_review"):
+            # 等授权 / 等人审 ≠ 失败：Step 保持未完成、任务暂停，处理完 resume 继续
             from clipwright.services.task_events import emit as _emit
 
             step.status = "pending"
-            step.result_brief = f"等待授权（{outcome.get('risk')}）"
-            emit(task.id, "approval_request", f"需要授权：{outcome.get('command') or ''}"[:120],
+            step.result_brief = (
+                f"等待授权（{outcome.get('risk')}）"
+                if status == "pending_approval"
+                else "等待人工审核"
+            )
+            emit(task.id, "approval_request",
+                 (f"需要授权：{outcome.get('command') or ''}" if status == "pending_approval"
+                  else f"需要人工审核子代理：{outcome.get('role') or ''}")[:120],
                  {"step_id": step.id, "approval_id": outcome.get("approval_id"),
-                  "risk": outcome.get("risk"), "reasons": outcome.get("reasons")})
+                  "risk": outcome.get("risk"), "reasons": outcome.get("reasons"),
+                  "kind": status})
             _CONTROL[task.id] = "pause"
             task.status = "paused"
-            emit(task.id, "step_end", f"暂停等待授权：{step.title or step.capability}",
+            emit(task.id, "step_end", f"暂停等待处理：{step.title or step.capability}",
                  {"step_id": step.id, "status": "pending"})
             return outcome
         step.status = "done" if status in ("ok", "dry_run") else "failed"
         step.error = outcome.get("error")
         step.result_brief = _brief(outcome)
         task.usage.tool_calls += 1
+        # 子代理的失败细节要进观察摘要，主代理才能在下一轮reflect里用上
+        if isinstance(outcome.get("failure"), dict):
+            step.error = str(outcome["failure"].get("blocking_point") or step.error or "")[:300]
         if isinstance(outcome.get("record"), dict):
             cost = outcome["record"].get("cost_usd")
             if isinstance(cost, (int, float)):
@@ -503,6 +543,12 @@ class AgentKernel:
                     facts[key] = value
                 elif isinstance(value, str) and len(value) <= 120:
                     facts[key] = value
+        # 失败结构也进摘要（主代理据此判断"换人/重试/收尾"）
+        failure = outcome.get("failure")
+        if isinstance(failure, dict):
+            facts["failure_category"] = str(failure.get("category") or "")
+            facts["failure_retryable"] = str(failure.get("retryable") or "")
+            facts["failure_tool_calls"] = int(failure.get("tool_calls") or 0)
         task.context_digest.append({
             "step_id": step.id,
             "capability": step.capability,
@@ -542,7 +588,14 @@ class AgentKernel:
 
         decision = await self._reflect(task, step, outcome)
         action = str(decision.get("action") or "continue")
-        if action == "replan":
+        if action == "retry":
+            # 主代理判断「这次失败值得再试一次」→ 同一步回到 pending，下一轮重跑
+            step.status = "pending"
+            step.error = None
+            emit(task.id, "replan", f"重试：{step.title or step.capability}",
+                 {"why": str(decision.get("why") or "")[:200], "retry_step": step.id,
+                  "attempt": step.attempt})
+        elif action == "replan":
             steps = _steps_from(decision, prefix=f"r{len(task.plan.steps) + 1}_")
             if steps:
                 task.plan.steps.extend(steps)

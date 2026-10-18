@@ -1,0 +1,29 @@
+feat(supervisor): 主代理可调度/查询/取消子代理，子代理失败详情结构化回传
+
+之前只能 spawn，且失败只回一句截断字符串——主代理无法判断"是它失败了、在等我审核、
+还是根本没派出去"，所谓"进一步判断"其实是猜。这轮补齐三件事：
+
+1. 调度面（不只会上车）
+   - Kernel 新增 get_subagent_status / list_subagents / cancel_subagent 能力
+   - 查询/取消都走 tracker，主代理可"再看看"或掐掉跑偏的子代理
+
+2. 失败详情结构化（spawn 侧）
+   - WorkerEntry 新增 tool_calls 轨迹（≤20 条，含每个工具成败与摘要）
+   - _run_worker 失败时回传 failure：{category, retryable, blocking_point, evidence[], tool_calls}
+     category 由异常归类（timeout / external_unavailable / input_insufficient /
+     tool_failed / model_incapable / unknown），retryable 给 retry_same / needs_human / permanent
+   - 成功时也带上 output/tokens/cost/duration 与工具轨迹
+   - pending_review 单独映射为 needs_human_review（不是失败，带 risk 与理由）
+
+3. 主代理据信息做判断（Kernel 侧）
+   - reflect 规则：可重试失败 + 第 1 次尝试 → **retry 重跑同一步**；
+     不可重试 → 收尾并把 category + 证据写进结论
+   - 等授权 / 等人审 → Step 保持 pending、任务 paused、发 approval_request（不算失败）
+   - observe 摘要记录 failure_category / failure_retryable / failure_tool_calls，
+     后续 replan 能看到"上次为什么失败"
+
+4. 子代理工具轨迹接线：worker_tools.build_executor 增加 on_call 回调，
+   spawn 把每次工具调用写进 WorkerEntry（主代理通过 capability 输出看到它查了什么）
+
+测试：新增 11 条（查询/取消 3、失败与审核 4、retry vs finish 4）；
+后端全量 3557 passed

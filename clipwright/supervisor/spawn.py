@@ -179,6 +179,9 @@ async def _run_worker(pid: str, worker_id: str) -> dict[str, Any]:
     if node_id:
         tracker.update(node_id, status="running", last_output="执行中")
 
+    def _on_call(tool: str, ok: bool, brief: str) -> None:
+        entry.note_call(tool, ok=ok, brief=brief)
+
     prompt = (
         f"你的角色：{spec.role}\n"
         f"{spec.system_prompt}\n\n"
@@ -205,7 +208,7 @@ async def _run_worker(pid: str, worker_id: str) -> dict[str, Any]:
                     system_prompt=f"你是被临时派来的子代理（{spec.role}）。只办交给你的那一件事。",
                     user_prompt=prompt,
                     tool_executor=build_executor(
-                        pid, node_id or "", allowed=spec.tools,
+                        pid, node_id or "", allowed=spec.tools, on_call=_on_call,
                     ),
                     tools=_schemas_for_worker(spec.tools),
                     max_tool_rounds=max(1, int(spec.max_turns or 5)),
@@ -231,23 +234,72 @@ async def _run_worker(pid: str, worker_id: str) -> dict[str, Any]:
         return {
             "worker_id": worker_id,
             "subagent_id": node_id,
+            "role": spec.role,
             "status": "done",
             "output": text[:2000],
             "cost_usd": cost_usd,
             "duration_ms": duration_ms,
+            "tool_calls": list(entry.tool_calls),
+            "tokens": int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0),
         }
     except Exception as e:  # noqa: BLE001 — worker 失败不影响管线
         logger.warning("临时 worker 执行失败 %s: %s", worker_id, e)
         reg.mark(worker_id, "failed")
+        elapsed_ms = int((time.monotonic() - started) * 1000)
         if node_id:
             tracker.finish(node_id, status="failed", last_output=str(e)[:200],
-                           duration_ms=int((time.monotonic() - started) * 1000))
+                           duration_ms=elapsed_ms)
+        # 把失败「为什么失败、能不能重试」交给主代理：只回一句 str(e) 等于让它瞎猜
         return {
             "worker_id": worker_id,
             "subagent_id": node_id,
+            "role": spec.role,
             "status": "failed",
-            "error": str(e)[:300],
+            "error": str(e)[:500],
+            "failure": _classify_failure(e, entry.tool_calls),
+            "tool_calls": list(entry.tool_calls),
+            "duration_ms": elapsed_ms,
         }
+
+
+def _classify_failure(exc: Exception, tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
+    """把异常归类成主代理能据以决策的形状（类别 + 可否重试 + 证据）。"""
+    name = type(exc).__name__.lower()
+    message = str(exc)[:500]
+    last_tool = tool_calls[-1] if tool_calls else None
+
+    category = "unknown"
+    retryable = "unknown"
+    if "timeout" in name or "超时" in message:
+        category, retryable = "timeout", "retry_same"
+    elif "ratelimit" in name or "429" in message:
+        category, retryable = "external_unavailable", "retry_same"
+    elif "connection" in name or "network" in message:
+        category, retryable = "external_unavailable", "retry_same"
+    elif "permission" in name or "unauthorized" in name or "401" in message:
+        category, retryable = "input_insufficient", "needs_human"
+    elif last_tool and not last_tool.get("ok"):
+        # 失败发生在某次工具调用之后 → 很可能是工具导致的
+        category, retryable = "tool_failed", "retry_same"
+    elif "llm" in name or "status_code" in message:
+        category, retryable = "model_incapable", "retry_same"
+
+    evidence = [
+        {"kind": "error", "text": message},
+    ]
+    if last_tool:
+        evidence.append({
+            "kind": "last_tool_call",
+            "text": f"{last_tool.get('tool')} ok={last_tool.get('ok')} "
+                    f"{last_tool.get('error') or last_tool.get('brief') or ''}"[:200],
+        })
+    return {
+        "category": category,
+        "retryable": retryable,
+        "blocking_point": message[:200],
+        "evidence": evidence,
+        "tool_calls": len(tool_calls),
+    }
 
 
 def _account_usage(
