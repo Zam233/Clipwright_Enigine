@@ -66,14 +66,13 @@ class KernelDeps:
 
 
 async def default_executor(task: Task, step: PlanStep) -> dict[str, Any]:
+    from clipwright.services.recording import maybe_record
     from clipwright.tool.surface import execute as surface_execute
 
     if step.capability == "run_pipeline":
-        # C3 才把老管线包成能力；现在明确拒绝，不假装能跑
-        return {
-            "status": "refused",
-            "error": "run_pipeline 能力在 C3 接入（当前仅工具面可执行）",
-        }
+        from clipwright.services import pipeline_capability
+
+        return await pipeline_capability.run(task, step)
     idem = f"{task.id}:{step.id}:{step.attempt}"
     outcome = await surface_execute(
         step.capability, step.args, pipeline_id=task.id, idem_key=idem,

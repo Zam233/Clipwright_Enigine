@@ -210,6 +210,15 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
      "off = 关闭（默认）；shadow = 只记录归因与诊断书不改执行；on = 启用派工（B3+）"),
     ("supervisor_attribution_timeout_sec", "pipeline", "归因兜底超时(秒)", False, True,
      "规则不命中时的 LLM 兜底超时；失败回退规则结论"),
+    # ── 路线 C：全 agent 化（PRD F12 / C2–C3）──
+    ("agent_mode", "pipeline", "主 Agent 模式", False, True,
+     "off = 老管线（默认）；shadow = 只规划不执行；on = Kernel 执行（run_pipeline 可用）"),
+    ("agent_max_turns", "pipeline", "Agent 回合上限", False, True,
+     "单个任务最多几个 plan-step 回合（默认 30，不可置空）"),
+    ("agent_max_tool_calls", "pipeline", "Agent 工具调用上限", False, True,
+     "单个任务最多几次工具调用（默认 80，不可置空）"),
+    ("agent_max_wall_sec", "pipeline", "Agent 墙钟上限(秒)", False, True,
+     "单个任务最长运行时间（默认 3600，不可置空）"),
     # ── 模型路由（PRD F8 / B4）──
     ("model_routes", "llm", "模型路由表", False, True,
      "按阶段配置候选模型（JSON）；留空 = 全部沿用主/闪模型"),

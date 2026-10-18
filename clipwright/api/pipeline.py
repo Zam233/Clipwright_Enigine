@@ -275,13 +275,73 @@ async def list_pipeline_tasks(request: Request, limit: int = 50) -> dict:
 # 统一使用 /run-async + SSE。
 
 
+async def _start_as_task(request: PipelineRequest, req: Request, uid: str = "") -> dict:
+    """把老 `run-async` 请求转成一条 Task（双轨兼容层）。
+
+    兼容承诺：返回体仍带 `pipeline_id`（=task id），老客户端拿它去轮询
+    `/status`、`/result`、`/cancel` 时能正常工作（那几个端点已加 Task 回退）。
+    """
+    from clipwright.schema.task import TaskRequest
+    from clipwright.services.agent_kernel import AgentKernel
+    from clipwright.services.task_events import emit
+
+    task_request = TaskRequest(
+        topic=request.topic,
+        persona_id=request.persona_id,
+        category_plugin_id=request.category_plugin_id,
+        duration_sec=float((request.extra_params or {}).get("duration_sec") or 0),
+        plan_only=False,          # 老入口的语义就是"直接开跑"
+        extra={"pipeline_request": request.model_dump(mode="json")},
+    )
+    kernel = AgentKernel()
+    task = kernel.create(task_request, mode="on")
+    # 归属登记：老端点的 owner 校验靠 `_pipeline_owners`，task 也得进这张表
+    if uid:
+        _pipeline_owners[task.id] = uid
+    emit(task.id, "task_start", "由 /run-async 转入 agent 任务",
+         {"compat": True, "legacy_topic": request.topic[:80]})
+    from clipwright.api.task import _schedule
+
+    _schedule(task.id)
+    return {
+        "pipeline_id": task.id,
+        "task_id": task.id,
+        "status": "started",
+        "mode": "agent",
+    }
+
+
+def _task_of(pipeline_id: str):
+    """若该 id 是 agent 任务则返回 Task，否则 None（兼容层用）。"""
+    from clipwright.services.agent_kernel import AgentKernel
+
+    if not pipeline_id.startswith("task_"):
+        return None
+    return AgentKernel().get(pipeline_id)
+
+
+_STATUS_MAP = {
+    "pending": "running", "planning": "running", "running": "running",
+    "paused": "paused", "done": "completed", "failed": "failed",
+    "cancelled": "cancelled",
+}
+
+
 @router.post("/run-async")
 async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
-    """异步启动管线，立即返回 pipeline_id，进度通过 SSE trace 推送。"""
+    """异步启动管线，立即返回 pipeline_id，进度通过 SSE trace 推送。
+
+    双轨（路线 C / PRD F12）：`agent_mode=on` 时转为 Task，返回体保持兼容
+    （`pipeline_id` 字段照旧存在，只是值等于 task id）；`off`/`shadow` 走原路径。
+    """
     import uuid
 
     from clipwright import audit
     from clipwright.authz import current_user_id
+
+    # 双轨分流：只有 on 才转 Task；off 必须与今天完全一致（A13）
+    if str(getattr(settings, "agent_mode", "off")).lower() == "on":
+        return await _start_as_task(request, req, uid=current_user_id(req))
 
     uid = current_user_id(req)
     pipeline_id = f"pl_{uuid.uuid4().hex[:12]}"
@@ -653,6 +713,24 @@ async def get_pipeline_result(pipeline_id: str, request: Request) -> dict:
     _enforce_pipeline_owner(request, pipeline_id)
     import asyncio
 
+    # 双轨兼容：agent 任务的结果（有管线产物就返回管线结果，没有就返回任务快照）
+    agent_task = _task_of(pipeline_id)
+    if agent_task is not None:
+        from clipwright.services.pipeline_capability import last_result
+
+        pipeline_out = last_result(pipeline_id)
+        if pipeline_out is not None:
+            pipeline_out = dict(pipeline_out)
+            pipeline_out.setdefault("task_id", pipeline_id)
+            return pipeline_out
+        return {
+            "pipeline_id": pipeline_id,
+            "task_id": pipeline_id,
+            "status": _STATUS_MAP.get(agent_task.status, agent_task.status),
+            "mode": "agent",
+            "task": agent_task.to_public(),
+        }
+
     # 先返回已有结果
     result = _pipeline_results.get(pipeline_id)
     if result is not None:
@@ -693,10 +771,24 @@ async def get_pipeline_result(pipeline_id: str, request: Request) -> dict:
 async def get_pipeline_status(pipeline_id: str, request: Request) -> dict:
     """查询管线执行状态（P3-3B: 校验所有权）。"""
     _enforce_pipeline_owner(request, pipeline_id)
+
+    # 双轨兼容：agent 模式下 id 是 task id（必须在 Mongo 回退之前判断）
+    agent_task = _task_of(pipeline_id)
+    if agent_task is not None:
+        from clipwright.services.pipeline_capability import last_result
+
+        return {
+            "pipeline_id": pipeline_id,
+            "status": _STATUS_MAP.get(agent_task.status, agent_task.status),
+            "has_result": last_result(pipeline_id) is not None
+            or agent_task.status == "done",
+            "mode": "agent",
+        }
+
     result = _pipeline_results.get(pipeline_id)
     if result is None:
-        # 生产加固 1.2: Mongo 回退
-        result = _load_result_from_mongo(pipeline_id)
+        # 生产加固 1.2: Mongo 回退（async，旧实现漏了 await → 拿到 coroutine 就 .get 了）
+        result = await _load_result_from_mongo(pipeline_id)
         if result is not None:
             _pipeline_results[pipeline_id] = result
     if result is not None:
@@ -969,6 +1061,18 @@ async def cancel_pipeline(pipeline_id: str, request: Request) -> dict:
     from clipwright.services.trace import get_all_events as _ga
 
     _enforce_pipeline_owner(request, pipeline_id)
+
+    # 双轨兼容：agent 任务的取消
+    agent_task = _task_of(pipeline_id)
+    if agent_task is not None:
+        from clipwright.services.agent_kernel import AgentKernel, KernelError
+
+        try:
+            cancelled = AgentKernel().cancel(pipeline_id)
+        except KernelError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        return {"pipeline_id": pipeline_id, "status": cancelled.status, "mode": "agent"}
+
     if not _ga(pipeline_id):
         raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found")
 

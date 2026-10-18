@@ -87,6 +87,16 @@ class Settings(BaseSettings):
     # 归因/诊断的兜底 LLM 调用超时（秒）；规则命中时不调用 LLM
     supervisor_attribution_timeout_sec: float = 15.0
 
+    # --- 路线 C 双轨开关（PRD F12）---
+    # off    = 老 6 阶段管线是唯一入口（行为与今天完全一致，A13 的对照基线）
+    # shadow = Kernel 只规划、不执行（零副作用，用来看计划质量与预估成本）
+    # on     = Kernel 执行；run_pipeline 能力随之可用
+    agent_mode: Literal["off", "shadow", "on"] = "off"
+    # Kernel 四道闸（PRD F5 / Q1 已裁定；数值可调，不可置空）
+    agent_max_turns: int = 30
+    agent_max_tool_calls: int = 80
+    agent_max_wall_sec: float = 3600.0
+
     # --- 模型路由（PRD F8 / 开发计划 B4）---
     # 按阶段配置候选模型：[{"provider","model","tier","price_in","price_out"}]；
     # 留空 = 不路由，所有阶段沿用主/闪模型（与改造前完全一致）。
