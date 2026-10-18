@@ -1,0 +1,21 @@
+feat(agent-c0): 能力矩阵 + 录制回放 + golden 选题（路线 C 的 C0 三件套）
+
+C0 的目的不是写 agent 循环，而是先让三件事可被验证：
+
+1. capability_matrix（services/capability_matrix.py）
+   - 以实际注册表为事实来源生成矩阵：57 项能力 = 49 工具 + 4 skill + 4 编排层能力
+   - 权限档显式裁定表（read/write_local/costly/dangerous）：新增工具不填档位即抛错，
+     已删除工具残留在档位表里也抛错，防止悄悄多出一个没人管的能力
+   - 现状如实记录：LLM 可见 12/57（21%）、dry-run 仅 1 项（管线），这正是 C1 的待办
+   - CLI 生成 docs/capability-matrix.md，人只裁档位、机器填表格
+2. recording（services/recording.py）
+   - 键 = sha256(kind, name, canonical_json(args))，dict 顺序与浮点噪声不产生重复录制
+   - 回放缺失必须抛 RecordingMiss，不允许偷偷走真实模型/工具（否则回放等于又跑一遍）
+   - 失败调用也留痕；录制可合并去重（按选题分别录、再汇总）
+3. golden_runs（services/golden_runs.py + tests/golden/topics.json）
+   - 10 个代表性选题，覆盖 4 个内置类型插件、12s-480s 四档时长，含刻意设计的素材缺失考题
+   - 指标化比对：质量类 ±10%、成本/耗时 +30% 单向惩罚；改进不惩罚；基线缺失/残留都要可见
+4. docs/frontend-agent-adaptation-checklist.md
+   - 13 项前端 pipeline 依赖盘点 → C 之后的要求与验收证据（两仓同步）
+
+测试：新增 35 条（矩阵 9 / 录制 11 / golden 15）；后端全量 3420 passed, 3 skipped, 1 xfailed
