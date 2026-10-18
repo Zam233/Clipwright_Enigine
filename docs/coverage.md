@@ -100,7 +100,7 @@
 | V55 | plan 是结构阶段上游：空 plan → 结构阶段明确失败 | 通过 | `services/plan_first.py` + `agents/structure_agent.py`（`plan_first=True` 且无 plan → `failure_reason=plan_missing`）；`test_plan_first_wiring.py` 断言 FAIL 与文案 |
 | V56 | 段落不连续/重叠/时长偏差 >25% → 拒绝 | 通过 | `test_plan_first.py`（`plan_section_gap`/`plan_section_overlap`/`plan_section_not_from_zero`/`DRIFT_WARN 0.10`→`DRIFT_REJECT 0.25` 两段式） |
 | V57 | `beats` 与音频 BPM 不一致 → 拒绝 | 通过 | `validate_plan(..., audio_grid=...)` + `test_plan_first.py::test_beats_mismatch/match` |
-| V58 | 执行改段 → `plan_drift` 事件可查且 plan 被写回 | 部分 | 漂移检测 + `append_drift` JSONL 落盘有（`structure_agent.py`、`test_plan_first_wiring.py` 3 类漂移）；**缺 trace 事件、缺把漂移写回 session 的 plan**（现由 `extra_params.plan_drift_path` 指定文件） |
+| V58 | 执行改段 → `plan_drift` 事件可查且 plan 被写回 | 部分 | 漂移检测（3 类码）+ JSONL `append_drift` + **trace 事件**（`plan_first.emit_drift_events`，`structure_agent` 接线）；`test_plan_first_wiring.py`（27 项，含"每条漂移一个事件""无漂移不写""trace 挂了不抛"）；**仍缺：把漂移写回 session 的 plan**（现在只是记录，不改规划本体的状态） |
 | V59 | 交付同时含 `brief.md` 与 `plan.md`，内容与源对象一致 | 部分 | `render_brief_markdown` / `render_plan_markdown` 单测 + `tools/gate_check.py` 检查清单里 V59 判定（双文档存在）；**真实交付里同时产出的场景未跑**（现有 POC 交付只有九件套，无 md 双文档） |
 | V60 | 老 session（只有 scenes）→ 反向生成 `legacy` plan，不报错且下游可跑 | 部分 | `services/requirements_service._legacy_plan_from_scenes` + `test_legacy_plan.py`（4 项：legacy 标记、scene_count、总时长、保留既有字段）；**下游"可跑"未在真机验证** |
 

@@ -146,6 +146,48 @@ class TestAppendDrift:
         assert not path.exists()
 
 
+class TestEmitDriftEvents:
+    """V58：偏离除了落 JSONL，还必须进 trace（前端运行详情可查）。"""
+
+    def test_emits_one_event_per_drift(self, monkeypatch) -> None:
+        from clipwright.services import trace as trace_module
+        from clipwright.services.plan_first import emit_drift_events
+
+        captured: list[tuple] = []
+
+        def _fake_add_event(pid, agent, event_type, summary, detail=None, **_kw):
+            captured.append((pid, agent, event_type, summary, detail))
+
+        monkeypatch.setattr(trace_module, "add_event", _fake_add_event)
+        drifts = [{"code": "plan_drift_duration", "planned": 6.0, "executed": 2.0}]
+        assert emit_drift_events("p" * 32, drifts) == 1
+        pid, agent, event_type, summary, detail = captured[0]
+        assert (pid, agent, event_type) == ("p" * 32, "structure", "plan_drift")
+        assert "plan_drift_duration" in summary
+        assert detail == drifts[0]
+
+    def test_no_drift_no_event(self, monkeypatch) -> None:
+        from clipwright.services import trace as trace_module
+        from clipwright.services.plan_first import emit_drift_events
+
+        monkeypatch.setattr(
+            trace_module, "add_event",
+            lambda *a, **k: pytest.fail("无偏离时不应写 trace"),
+        )
+        assert emit_drift_events("p" * 32, []) == 0
+        assert emit_drift_events("", [{"code": "x"}]) == 0
+
+    def test_trace_failure_does_not_raise(self, monkeypatch) -> None:
+        from clipwright.services import trace as trace_module
+        from clipwright.services.plan_first import emit_drift_events
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("trace 挂了")
+
+        monkeypatch.setattr(trace_module, "add_event", _boom)
+        assert emit_drift_events("p" * 32, [{"code": "x"}]) == 0
+
+
 def _structure_input(context: AgentContext) -> StructureInput:
     return StructureInput(
         context=context,

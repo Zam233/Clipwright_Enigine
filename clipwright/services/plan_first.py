@@ -164,10 +164,45 @@ def append_drift(path: str | Path, entries: Iterable[dict[str, Any]]) -> int:
     return len(entries)
 
 
+def emit_drift_events(
+    pipeline_id: str,
+    drifts: Iterable[dict[str, Any]],
+    *,
+    agent: str = "structure",
+) -> int:
+    """V58：把执行偏离写成 **trace 事件**（除 JSONL 之外的第二个可查入口）。
+
+    为什么两条路都留：JSONL 便于跨管线汇总审计，trace 事件便于前端在运行详情里
+    直接看到"这段为什么跟规划不一样"。任一通道失败都不得影响出片。
+    """
+    items = list(drifts or [])
+    if not pipeline_id or not items:
+        return 0
+    try:
+        from clipwright.services.trace import add_event
+    except Exception:  # noqa: BLE001 - trace 不可用时不阻断
+        return 0
+    written = 0
+    for item in items:
+        try:
+            add_event(
+                pipeline_id,
+                agent,
+                "plan_drift",
+                f"执行偏离规划：{item.get('code')}",
+                detail=item,
+            )
+            written += 1
+        except Exception:  # noqa: BLE001 - 单条失败继续
+            continue
+    return written
+
+
 __all__ = [
     "PlanMissing",
     "append_drift",
     "detect_drift",
+    "emit_drift_events",
     "is_plan_first",
     "plan_prompt_block",
     "require_plan",

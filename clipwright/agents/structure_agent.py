@@ -539,16 +539,22 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                 scenes, context.category_plugin_id
             )
 
-            # A-17：执行偏离规划 → plan_drift 留痕（JSONL 追加；无 plan 时零变化）
+            # A-17：执行偏离规划 → plan_drift 留痕（JSONL + trace 事件；无 plan 时零变化）
             if plan is not None:
                 try:
-                    from clipwright.services.plan_first import append_drift, detect_drift
+                    from clipwright.services.plan_first import (
+                        append_drift,
+                        detect_drift,
+                        emit_drift_events,
+                    )
 
                     drifts = detect_drift(plan, scenes)
                     if drifts:
                         drift_path = (context.extra_params or {}).get("plan_drift_path")
                         if drift_path:
                             append_drift(drift_path, drifts)
+                        # V58：同一批偏离同时进 trace，前端运行详情可查
+                        emit_drift_events(context.pipeline_id, drifts)
                         warnings = list(warnings) + [
                             f"plan_drift: {item.get('code')}" for item in drifts
                         ]

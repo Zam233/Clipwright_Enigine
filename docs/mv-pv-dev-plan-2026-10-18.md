@@ -640,6 +640,8 @@ SP1 ──► R-01 ──► R-02/R-03 ──► R-04 ──► 门 1
 2. **`min_shot_ms` 不是逐段硬下限**：`edit_agent` 只拿它去钳 LLM 剪辑档案的 `base_shot_ms`（`_clamp_llm_profile`），片段时长由 `scene.duration_sec × duration_scale` 决定，不再被 min 夹。**floor=45000 那次跑出 30s 首段就是证据**。是否逐段夹紧牵动"配音优先对齐"策略，单列为待拍板项（见 `docs/coverage.md`「本轮新定位的缺陷」）。
 3. **dry-run 出不了片**：视频片段全是占位 `textvid_*.mp4`，所以"提示词对成片的量化影响"（V45 后半、V21/V35）**仍然未测**，不能拿它冒充成片证据。
 
+**顺带补的 V58 半边**：`plan_drift` 原来只落 JSONL（还要靠 `extra_params.plan_drift_path`），现新增 `plan_first.emit_drift_events()`，同一批偏离同时写 trace 事件（`type=plan_drift`，detail 带 code/planned/executed），`structure_agent` 已接线；`test_plan_first_wiring.py` 3 项新单测（每条漂移一事件、无漂移不写、trace 抛错不影响出片）。**V58 仍是"部分"**：还缺"把漂移写回 session 的 plan"，现在只是记录，不改规划本体。
+
 **顺带修的小瑕疵**：`PromptAuthority._bounded_value` 走浮点比较，`floor=1200` 会把用户值改写成 `1200.0`，冲突文案变成"改回 1200.0"。改为"原值或规则值是整数且结果也是整数时收窄回 `int`"，新增 `test_strict_floor_keeps_integer_type_and_clean_message`（真机 trace 里已确认 `min_shot_ms=1200`）。
 
 **前端（V3 收口）**：`TypeConformancePanel` 顶部加 strict 冲突黄条（`type-conflict-banner`）与类型变形横幅（`type-deformation-banner`）；`PipelineAdminPage` 运行详情内已渲染该面板。测试 10 项，其中一项**用真机 trace 夹具**渲染断言（夹具 `src/features/pipeline/__fixtures__/trace-real-floor.json` 由探针产出，只保留 `prompt_resolution`/`agent_*` 事件）。`tsc --noEmit` 0 错、`eslint` 0 错。
