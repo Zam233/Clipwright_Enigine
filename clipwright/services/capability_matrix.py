@@ -104,6 +104,8 @@ TIER_MAP: dict[str, PermissionTier] = {
     "read_file": "read",
     "list_dir": "read",
     "write_file": "write_local",   # 只写白名单目录，父目录不自动创建
+    # —— 类型规范查询（PRD Part I F10 / A-11，只读）——
+    "get_type_spec": "read",
 }
 
 #: 编排层能力（不属于 ToolRegistry，但 agent 同样可以"调用"）

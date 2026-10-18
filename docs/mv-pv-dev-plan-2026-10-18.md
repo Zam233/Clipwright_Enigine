@@ -526,12 +526,25 @@ SP1 ──► R-01 ──► R-02/R-03 ──► R-04 ──► 门 1
 
 **仍未接线**：这套落位尚未接进管线（真实素材检索仍走 `content_query`），也还没有用真实素材跑过 V41 的"10 个落位 ≥8 认可"人工判据。
 
-### 12.29 下一轮
+### 12.30 第 14 轮：A-11 类型规范查询进能力面
+
+| 项 | 结果 |
+|---|---|
+| 新工具 | `tool/type_spec_tool.py`：`get_type_spec(category_id, stage="")` 只读，返回 10 槽位文本、`identity_text`、`param_rules`、`signature_traits`、`declares`、以及 **`strict_rules` / `strict_traits`**（主 agent 据此判断"能不能豁免"）；可选 `stage` 返回该阶段应注入文本 |
+| 语义 | 类型不存在 → `found=false`（不抛异常，因为"查不到"本身是信息）；空 id → `error` |
+| 能力矩阵 | `TIER_MAP` 增 `get_type_spec: read`；重新生成 `docs/capability-matrix.md`：**61 项能力、工具面 56（52 工具 + 4 技能）、覆盖率 100%** |
+| 注册 | `register_builtin_tools()` 注册；`build_surface()` 自动纳入（tier=read） |
+| 验证 | 6 项单测（含"surface 里有且 tier=read""dangerous 永不入面"）；surface/matrix 相关回归 7 passed；lint 通过 |
+
+**踩坑（第二次）**：我又用 PowerShell `Set-Content` 去改含中文的测试文件，把文件写成了乱码（`SyntaxError: unterminated triple-quoted string literal`）。已用 write 工具整文件重写修复。**这条教训上轮就记过，这轮又犯——以后任何含中文的文件只用 write/edit。**
+
+### 12.31 下一轮
 
 1. **S 轨接线 + 真实素材验证**（V41）；
-2. **F-06**：规划确认页（brief/plan 双栏）；
-3. **R-11/R-12 收口**：字幕带与文字动画抽成可复用构件；
-4. 提示词的端到端真机验证（上轮遗留）。
+2. **F-06**：规划确认页；
+3. **R-11/R-12 收口**；
+4. 提示词端到端真机验证。
+
 
 
 

@@ -7,11 +7,11 @@
 
 | 指标 | 值 |
 |---|---|
-| 能力总数 | 60 |
-| 按类型 | {"tool": 52, "skill": 4, "pipeline": 1, "subagent": 1, "meta": 2} |
-| 按权限档 | {"read": 16, "write_local": 30, "costly": 11, "dangerous": 3} |
-| LLM 可调用（当前） | 15（25%） |
-| 依赖可用 | 60 |
+| 能力总数 | 61 |
+| 按类型 | {"tool": 53, "skill": 4, "pipeline": 1, "subagent": 1, "meta": 2} |
+| 按权限档 | {"read": 17, "write_local": 30, "costly": 11, "dangerous": 3} |
+| LLM 可调用（当前） | 16（26%） |
+| 依赖可用 | 61 |
 | 支持 dry-run（当前） | 1 |
 | dangerous 档 | video_download, run_python, run_shell |
 
@@ -35,6 +35,7 @@
 | `content_query` | tool | read | ✓ | ✗ | ✓ | ✗ |  |
 | `face_detect` | tool | read | ✓ | ✗ | ✓ | ✗ |  |
 | `frame_validator` | tool | read | ✓ | ✗ | ✓ | ✗ |  |
+| `get_type_spec` | tool | read | ✓ | ✓ | ✓ | ✗ |  |
 | `list_animations` | tool | read | ✓ | ✓ | ✓ | ✗ |  |
 | `list_dir` | tool | read | ✓ | ✓ | ✓ | ✗ |  |
 | `material_filter` | tool | read | ✓ | ✗ | ✓ | ✗ |  |
@@ -89,10 +90,10 @@
 | 指标 | 值 |
 |---|---|
 | 直调档位 | read, write_local, costly |
-| 工具面条目 | 55（可用 55） |
-| 按档位 | {"costly": 9, "read": 16, "write_local": 30} |
-| 覆盖率（可用安全工具） | 100%（池 51 项） |
+| 工具面条目 | 56（可用 56） |
+| 按档位 | {"costly": 9, "read": 17, "write_local": 30} |
+| 覆盖率（可用安全工具） | 100%（池 52 项） |
 | 真实 dry-run | 0 项（其余走结构预检） |
-| 结构预检 | 55 项（参数/路径可验证，不验滤镜语义） |
+| 结构预检 | 56 项（参数/路径可验证，不验滤镜语义） |
 | 排除的 dangerous | video_download, run_python, run_shell |
 
