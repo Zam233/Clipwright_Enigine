@@ -427,6 +427,59 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 duration_scale = 1.0
                 notes.append(f"无时长缩放: total={total_scene_duration:.0f}s, target={target_duration:.0f}s")
 
+            # 4.5 镜头下限策略（D23）：类型声明了 min_shot_ms，但逐段时长此前不受它约束。
+            # 策略默认 off（零行为变化）；record 只记 C2、extend/loop 把场景时长抬到下限。
+            from clipwright.services.shot_floor import (
+                apply_scene_floor,
+                fill_mode,
+                normalize_policy,
+            )
+
+            _floor_policy = normalize_policy(
+                (context.extra_params or {}).get("shot_floor_policy")
+            )
+            _floor_ms = float(shot_params.get("min_shot_ms") or 0)
+            if _floor_policy != "off" and _floor_ms > 0:
+                _outcome = apply_scene_floor(
+                    [float(s.get("duration_sec", 5.0)) * duration_scale for s in scenes],
+                    _floor_ms / 1000.0,
+                    policy=_floor_policy,
+                )
+                if _outcome.changed:
+                    # 只有 extend/loop 会改时长；按缩放前的比例写回场景
+                    for _index, _scene in enumerate(scenes):
+                        _scene["duration_sec"] = round(
+                            _outcome.durations[_index] / duration_scale
+                            if duration_scale
+                            else _outcome.durations[_index],
+                            6,
+                        )
+                    notes.append(
+                        f"镜头下限策略[{_floor_policy}]：{len(_outcome.conflicts)} 段低于 "
+                        f"{_floor_ms:.0f}ms，已抬到下限（fill={fill_mode(_floor_policy) or 'none'}）"
+                    )
+                if _outcome.conflicts:
+                    try:
+                        from clipwright.services.trace import add_event
+
+                        add_event(
+                            context.pipeline_id,
+                            "edit",
+                            "shot_floor",
+                            f"镜头下限策略 {_floor_policy}：{len(_outcome.conflicts)} 段低于下限",
+                            detail={
+                                "policy": _floor_policy,
+                                "min_shot_ms": _floor_ms,
+                                "fill": fill_mode(_floor_policy),
+                                "conflicts": _outcome.conflicts,
+                            },
+                        )
+                    except Exception as exc:  # noqa: BLE001 - 留痕失败不得影响出片
+                        logger.warning("shot_floor 事件写入失败（已跳过）: %s", exc)
+                    notes.extend(
+                        f"镜头下限[{c['code']}] {c['message']}" for c in _outcome.conflicts
+                    )
+
             # 5. 对每个场景取素材（多段素材拼接，填满场景时长）
             # 场景裁剪/文字占位是主要 IO（网络下载 + ffmpeg）→ 场景级有界并行。
             # 关键：场景处理只计算本地放置段（不触碰共享轨道 / current_time），
