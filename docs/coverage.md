@@ -71,7 +71,7 @@
 | V42 | 素材缺口显式化 | 通过 | `gate_check` V42 + `placement_report.gaps` |
 | V43 | 授权不明不进成片 | 通过 | `test_mv_material.py::test_license_unclear_is_rejected_not_used` |
 | V44 | 创作页无二选一 | 通过 | `CreativePromptField.test.tsx`（源码约束 3 项） |
-| V45 | 提示词生效且留痕 | 部分 | 进 `extra_params` 并注入 prompt；**未写 `prompt_resolution` 事件** |
+| V45 | 提示词生效且留痕 | 部分 | **留痕已落地**：`type_spec_runtime.emit_prompt_resolution()` 写 trace（参数来源层/冲突/槽位/变形），`test_prompt_resolution_event.py`（6 项）；"生效"仍需端到端真机验证 |
 | V46 | 对话按钮打开抽屉带上下文 | 通过 | `ChatForgeDrawer.test.tsx`（5 项） |
 | V47 | 结论回填且记 session_id | 通过 | 抽屉回填 + `AgentPanel.creativePrompt.test.ts` |
 | V48 | 对话失败不阻塞创作 | 通过 | 抽屉测试（会话失败不调消息接口） |

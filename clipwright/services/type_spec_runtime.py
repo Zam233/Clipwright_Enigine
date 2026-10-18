@@ -149,6 +149,69 @@ def clamp_profile(
     return profile
 
 
+def emit_prompt_resolution(
+    pipeline_id: str,
+    agent: str,
+    resolution: PromptResolution,
+    *,
+    category_id: str = "",
+    stage: str = "",
+) -> dict[str, Any]:
+    """把一次裁决写进管线 trace（PRD F8 / V45，留痕）。
+
+    记录内容刻意"可核对"：
+    - 每个参数的**最终值与来源层**（谁赢了）；
+    - 冲突（C1/C2/C6/C9）；
+    - 提示词槽位与来源、被丢弃的槽位；
+    - 类型变形判定。
+
+    返回落进 trace 的 payload（便于单测断言，不必读存储）。
+    """
+    payload: dict[str, Any] = {
+        "category_id": category_id,
+        "stage": stage,
+        "params": {
+            key: {
+                "value": value,
+                "source_layer": (resolution.trace.get(key) or {}).get("source_layer", ""),
+                "overridden_by": (resolution.trace.get(key) or {}).get("overridden_by", ""),
+            }
+            for key, value in (resolution.params or {}).items()
+        },
+        "conflicts": [
+            {
+                "code": conflict.code,
+                "key": conflict.key,
+                "message": conflict.message,
+                "enforce": conflict.enforce,
+            }
+            for conflict in resolution.conflicts
+        ],
+        "slots": resolution.slots,
+        "dropped_slots": resolution.dropped_slots,
+        "traits": [trait.model_dump() for trait in resolution.traits],
+        "deformation": resolution.deformation,
+    }
+    try:
+        from clipwright.services.trace import add_event
+
+        add_event(
+            pipeline_id,
+            agent,
+            "prompt_resolution",
+            (
+                f"类型规范裁决：{len(payload['params'])} 个参数、"
+                f"{len(payload['conflicts'])} 个冲突、{len(payload['slots'])} 个槽位"
+            ),
+            detail=payload,
+        )
+    except Exception as exc:  # noqa: BLE001 - 留痕失败不得影响出片
+        import logging
+
+        logging.getLogger(__name__).warning("prompt_resolution 事件写入失败（已跳过）: %s", exc)
+    return payload
+
+
 def bounds_of(shot_params: dict[str, Any] | None) -> tuple[Any, Any]:
     """取 ``(min_shot_ms, max_shot_ms)``；缺失返回 ``(None, None)``。"""
     shot = shot_params or {}
@@ -219,6 +282,7 @@ __all__ = [
     "bounds_of",
     "clamp_profile",
     "declare_flag",
+    "emit_prompt_resolution",
     "load_spec",
     "required_markers",
     "requires_marker",

@@ -311,10 +311,21 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             # 2. 获取 Persona 剪辑参数（经 category_plugin 翻译）
             # A-05：类型规则在这里收口（strict 覆盖用户值 / soft 只记录），
             # 下游不再直接读原始 shot_params 并自行兜底 5000。
-            from clipwright.services.type_spec_runtime import resolve_shot_params
+            from clipwright.services.type_spec_runtime import (
+                emit_prompt_resolution,
+                resolve_shot_params,
+            )
 
             shot_params, _type_resolution = resolve_shot_params(
                 context.extra_params, context.category_plugin_id
+            )
+            # F8/V45：裁决结果写进 trace（参数来源、冲突、槽位、变形判定）
+            emit_prompt_resolution(
+                context.pipeline_id,
+                "edit_agent",
+                _type_resolution,
+                category_id=context.category_plugin_id,
+                stage="edit",
             )
             for _conflict in _type_resolution.conflicts:
                 notes.append(f"类型规范[{_conflict.code}] {_conflict.message}")
