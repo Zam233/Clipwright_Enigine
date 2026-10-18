@@ -885,6 +885,22 @@ V58 的最后一块是"把偏离写回会话里的规划书"。实现路径：
 
 **覆盖表**：通过 49 / 部分 4 / 未做 3 / 人工 4 = 60 行。
 
+### 12.58 第 34 轮：交付全量验收报告 + 两块前端（V32 片头 / V38 用量）
+
+**W9 的最后一件交付物**：新增 `docs/acceptance-report-2026-10-18.md` —— 一页纸结论 + 四项"部分"卡在哪与谁能解 + 复跑命令全集 + 历史修复择要 + 下一步建议。写好之后的自我检查：里面没有一个"通过"是靠"应该有"支撑的，全部指向可复跑的脚本或测试。
+
+**两块前端**（此前只在后端有数据，界面上看不到）：
+
+| 页面 | 改动 |
+|---|---|
+| `ExportPage` | **V32 片头秒数**输入（0–15s）。归一逻辑抽到 `services/api/preroll.ts`（`clampPreroll` 非法/负数归零、保留一位小数、上限 15；`prerollPayload(0) → {}`），有 4 项单测。文案写清"画面先起 N 秒、音乐延后同样时长（成片约 +N 秒）" |
+| `PipelineAdminPage` | **V38 用量展示**：新增「LLM 用量」stat 卡（`usage.total_tokens` 求和）+ 每条 run 的 token/调用次数/渲染耗时行（`data-testid="run-usage"`）。没有用量记录时显示 `—`。测试补 1 项，并顺带修正原有"成本显示 —"用例（现在两处都可能显示 `—`，按数量断言而不是 `findByText`） |
+
+**一个 tsc 坑值得记**：把 `clampPreroll` 从 `ExportPage.tsx` 里 `export` 出去会直接崩掉 `router.tsx` —— 该路由用 `Promise<typeof import(...)>` 把整个模块当 `Record<string, ComponentType>`，任何额外具名导出都会被当成组件类型。修法：工具函数搬到独立模块，页面只 import。
+
+**前端门禁**：109 文件 / 944 项全绿；`tsc --noEmit` 0 错；`eslint` 0 error（148 条历史 warning）；`npm run build` 成功。后端全量 4137 passed。
+
+
 
 
 
