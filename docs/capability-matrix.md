@@ -7,11 +7,11 @@
 
 | 指标 | 值 |
 |---|---|
-| 能力总数 | 57 |
-| 按类型 | {"tool": 49, "skill": 4, "pipeline": 1, "subagent": 1, "meta": 2} |
-| 按权限档 | {"read": 14, "write_local": 29, "costly": 11, "dangerous": 3} |
-| LLM 可调用（当前） | 12（21%） |
-| 依赖可用 | 55 |
+| 能力总数 | 60 |
+| 按类型 | {"tool": 52, "skill": 4, "pipeline": 1, "subagent": 1, "meta": 2} |
+| 按权限档 | {"read": 16, "write_local": 30, "costly": 11, "dangerous": 3} |
+| LLM 可调用（当前） | 15（25%） |
+| 依赖可用 | 60 |
 | 支持 dry-run（当前） | 1 |
 | dangerous 档 | video_download, run_python, run_shell |
 
@@ -25,8 +25,8 @@
 | `text_to_speech` | tool | costly | ✓ | ✗ | ✗ | ✗ |  |
 | `vision_llm` | tool | costly | ✓ | ✗ | ✗ | ✗ |  |
 | `voice_clone` | tool | costly | ✓ | ✗ | ✗ | ✗ |  |
-| `web_fetch` | tool | costly | ✗ | ✓ | ✗ | ✗ |  |
-| `web_search` | tool | costly | ✗ | ✓ | ✗ | ✗ |  |
+| `web_fetch` | tool | costly | ✓ | ✓ | ✗ | ✗ |  |
+| `web_search` | tool | costly | ✓ | ✓ | ✗ | ✗ |  |
 | `whisper_transcribe` | tool | costly | ✓ | ✗ | ✗ | ✗ |  |
 | `video_download` | tool | dangerous | ✓ | ✗ | ✗ | ✗ |  |
 | `audio_silence_detect` | tool | read | ✓ | ✗ | ✓ | ✗ |  |
@@ -36,9 +36,11 @@
 | `face_detect` | tool | read | ✓ | ✗ | ✓ | ✗ |  |
 | `frame_validator` | tool | read | ✓ | ✗ | ✓ | ✗ |  |
 | `list_animations` | tool | read | ✓ | ✓ | ✓ | ✗ |  |
+| `list_dir` | tool | read | ✓ | ✓ | ✓ | ✗ |  |
 | `material_filter` | tool | read | ✓ | ✗ | ✓ | ✗ |  |
 | `media_probe` | tool | read | ✓ | ✗ | ✓ | ✗ |  |
 | `project_memory` | tool | read | ✓ | ✗ | ✓ | ✗ |  |
+| `read_file` | tool | read | ✓ | ✓ | ✓ | ✗ |  |
 | `scene_detect` | tool | read | ✓ | ✗ | ✓ | ✗ |  |
 | `semantic_match` | tool | read | ✓ | ✗ | ✓ | ✗ |  |
 | `subtitle_overflow` | tool | read | ✓ | ✗ | ✓ | ✗ |  |
@@ -68,6 +70,7 @@
 | `video_thumbnail` | tool | write_local | ✓ | ✗ | ✗ | ✗ |  |
 | `video_trim` | tool | write_local | ✓ | ✗ | ✗ | ✗ |  |
 | `watermark` | tool | write_local | ✓ | ✗ | ✗ | ✗ |  |
+| `write_file` | tool | write_local | ✓ | ✓ | ✗ | ✗ |  |
 | `analyze_audio_rhythm` | skill | write_local | ✓ | ✓ | ✗ | ✗ | 组合能力（4 个内置 Skill） |
 | `analyze_video_structure` | skill | write_local | ✓ | ✓ | ✗ | ✗ | 组合能力（4 个内置 Skill） |
 | `dub_script` | skill | write_local | ✓ | ✓ | ✗ | ✗ | 组合能力（4 个内置 Skill） |
@@ -86,10 +89,10 @@
 | 指标 | 值 |
 |---|---|
 | 直调档位 | read, write_local, costly |
-| 工具面条目 | 48（可用 46） |
-| 按档位 | {"costly": 9, "read": 14, "write_local": 25} |
-| 覆盖率（可用安全工具） | 100%（池 46 项） |
+| 工具面条目 | 51（可用 51） |
+| 按档位 | {"costly": 9, "read": 16, "write_local": 26} |
+| 覆盖率（可用安全工具） | 100%（池 51 项） |
 | 真实 dry-run | 0 项（其余走结构预检） |
-| 结构预检 | 48 项（参数/路径可验证，不验滤镜语义） |
+| 结构预检 | 51 项（参数/路径可验证，不验滤镜语义） |
 | 排除的 dangerous | video_download, run_python, run_shell |
 

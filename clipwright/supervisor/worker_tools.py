@@ -108,6 +108,58 @@ _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    "write_file": {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": (
+                "把文本写入文件（覆盖同名文件，最多 200KB）。只能写在允许的目录内，"
+                "不会自动创建父目录。适合落核查结论、写清单。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "文件路径"},
+                    "content": {"type": "string", "description": "要写入的文本"},
+                    "append": {"type": "boolean", "description": "true=追加，false=覆盖"},
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    "web_search": {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": (
+                "联网搜索，返回网页结果列表（标题/URL/摘要）。用于查实时事实或超出模型知识的信息。"
+                "未配置搜索服务时返回空结果。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "搜索关键词"},
+                    "max_results": {"type": "integer", "description": "最多返回几条（默认 5）"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    "web_fetch": {
+        "type": "function",
+        "function": {
+            "name": "web_fetch",
+            "description": "抓取一个网页并返回纯文本正文（默认 4000 字符）。用于深读某条搜索结果。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "http(s) 地址"},
+                    "max_chars": {"type": "integer", "description": "最多返回多少字符"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
 }
 
 
@@ -126,25 +178,51 @@ def _error(message: str) -> dict[str, Any]:
 
 
 def _read_file(path: str, max_chars: int = 4000) -> dict[str, Any]:
-    p = str(path or "").strip()
-    if not p:
-        return _error("path 为空")
-    try:
-        with open(os.path.expanduser(p), "r", encoding="utf-8", errors="replace") as fh:
-            return {"path": p, "content": fh.read()[: int(max_chars or 4000)]}
-    except Exception as e:  # noqa: BLE001 — 读失败如实回报给模型
-        return _error(f"读取失败: {type(e).__name__}: {e}")
+    """读文件：**委托给注册表里的 read_file 工具**，保证白名单/体积语义只有一份。"""
+    return _delegate("read_file", {"path": path, "max_chars": max_chars})
 
 
 def _list_dir(path: str) -> dict[str, Any]:
-    p = str(path or "").strip()
-    if not p:
-        return _error("path 为空")
+    return _delegate("list_dir", {"path": path})
+
+
+def _write_file(path: str, content: str, append: bool = False) -> dict[str, Any]:
+    return _delegate("write_file", {"path": path, "content": content, "append": append})
+
+
+def _delegate(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """同步调用注册表工具（worker 执行器是 async，但工具本体多为此类轻活）。
+
+    用 asyncio.run 会炸（已在事件循环内），所以这里走线程池跑一个独立循环。
+    这不是最优解但最稳：worker 工具调用本来就是"一次一个"的串行模式。
+    """
+    import asyncio
+    import concurrent.futures
+
+    from clipwright.tool.registry import ToolRegistry
+
+    # 注册表可能还没初始化（脚本/测试进程先用了 worker）→ 懒注册一次，别报"未注册"
+    if ToolRegistry.get(tool_name) is None:
+        try:
+            from clipwright.tool import register_builtin_tools
+
+            register_builtin_tools()
+        except Exception:  # noqa: BLE001 — 注册失败则走下面的错误分支
+            pass
+
+    async def _run() -> dict[str, Any]:
+        result = await ToolRegistry.execute(tool_name, **args)
+        status = str(getattr(result, "status", "") or "")
+        if status not in ("success", "ok", "ToolStatus.SUCCESS"):
+            return _error(str(getattr(result, "error", "") or f"{tool_name} 失败"))
+        return dict(getattr(result, "output", None) or {})
+
     try:
-        entries = sorted(os.listdir(os.path.expanduser(p)))[:200]
-        return {"path": p, "entries": entries}
-    except Exception as e:  # noqa: BLE001
-        return _error(f"列目录失败: {type(e).__name__}: {e}")
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_run())
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(lambda: asyncio.run(_run())).result(timeout=30)
 
 
 def build_executor(
@@ -177,6 +255,20 @@ def build_executor(
             return _read_file(str(args.get("path", "")), int(args.get("max_chars") or 4000))
         if tool == "list_dir":
             return _list_dir(str(args.get("path", "")))
+        if tool == "write_file":
+            return _write_file(
+                str(args.get("path", "")),
+                str(args.get("content", "")),
+                bool(args.get("append", False)),
+            )
+        if tool in ("web_search", "web_fetch"):
+            # 联网工具：走注册表同一份实现（含未配置时的 DEPENDENCY_MISSING 语义）
+            payload = (
+                {"query": str(args.get("query", "")), "max_results": int(args.get("max_results") or 5)}
+                if tool == "web_search"
+                else {"url": str(args.get("url", ""))}
+            )
+            return _delegate(tool, payload)
         if tool == "list_subagents":
             from .tracker import get_tracker
 

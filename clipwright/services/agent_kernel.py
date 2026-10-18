@@ -76,6 +76,11 @@ async def default_executor(task: Task, step: PlanStep) -> dict[str, Any]:
         from clipwright.services import subagent_capability
 
         return await subagent_capability.run(task, step)
+    if step.capability in ("run_shell", "run_python"):
+        # dangerous 档不走工具面，经执行网关（判定 → 授权 → 沙盒 → 审计）
+        from clipwright.services import exec_capability
+
+        return await exec_capability.run(task, step)
     idem = f"{task.id}:{step.id}:{step.attempt}"
     outcome = await surface_execute(
         step.capability, step.args, pipeline_id=task.id, idem_key=idem,
@@ -399,6 +404,10 @@ class AgentKernel:
 
             task.usage.turns += 1
             outcome = await self._run_step(task, step)
+            if task.status == "paused":
+                # 等授权：不 reflect、不推进计划，落检查点后退出主循环
+                self._checkpoint(task)
+                return task
             await self._after_step(task, step, outcome)
             if task.terminal:
                 break
@@ -451,6 +460,20 @@ class AgentKernel:
         )
 
         status = str(outcome.get("status") or "error")
+        if status == "pending_approval":
+            # 等授权 ≠ 失败：Step 保持未完成、任务暂停，用户授权后 resume 继续
+            from clipwright.services.task_events import emit as _emit
+
+            step.status = "pending"
+            step.result_brief = f"等待授权（{outcome.get('risk')}）"
+            emit(task.id, "approval_request", f"需要授权：{outcome.get('command') or ''}"[:120],
+                 {"step_id": step.id, "approval_id": outcome.get("approval_id"),
+                  "risk": outcome.get("risk"), "reasons": outcome.get("reasons")})
+            _CONTROL[task.id] = "pause"
+            task.status = "paused"
+            emit(task.id, "step_end", f"暂停等待授权：{step.title or step.capability}",
+                 {"step_id": step.id, "status": "pending"})
+            return outcome
         step.status = "done" if status in ("ok", "dry_run") else "failed"
         step.error = outcome.get("error")
         step.result_brief = _brief(outcome)

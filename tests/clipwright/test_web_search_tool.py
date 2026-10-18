@@ -35,32 +35,45 @@ def _stub_fetch_service(content: str = "") -> MagicMock:
     return svc
 
 
-# ── is_available 配置门控 ─────────────────────────────────
+# ── is_available / is_configured 语义（2026-10 调整）──────────
+#
+# 契约变化：`is_available()` 只表示"工具本体可用（无外部二进制依赖）"，
+# **配置缺失不再等于不可用**——否则主 Agent 的 Kernel 工具面里根本没有 web_search，
+# 它永远不知道自己能联网。阶段 Agent 的可见性改由 `is_configured()` 把关
+# （见 ToolRegistry.list_agent_callable）。
 
 
-async def test_search_is_available_false_when_not_configured(monkeypatch) -> None:
-    """未配置（enable_web_search=False）→ WebSearchTool 不可用。"""
+async def test_search_is_available_even_when_not_configured(monkeypatch) -> None:
+    """未配置 → 工具仍可用，但 is_configured() 为 False。"""
     monkeypatch.setattr(settings, "enable_web_search", False)
     monkeypatch.setattr(settings, "web_search_api_key", "")
-    assert WebSearchTool().is_available() is False
+    tool = WebSearchTool()
+    assert tool.is_available() is True
+    assert tool.is_configured() is False
 
 
-async def test_search_is_available_true_when_configured(monkeypatch) -> None:
-    """已配置（enable_web_search=True + api_key）→ WebSearchTool 可用。"""
+async def test_search_is_configured_when_configured(monkeypatch) -> None:
+    """已配置（enable_web_search=True + api_key）→ 可用且已配置。"""
     monkeypatch.setattr(settings, "enable_web_search", True)
     monkeypatch.setattr(settings, "web_search_api_key", "k")
-    assert WebSearchTool().is_available() is True
+    tool = WebSearchTool()
+    assert tool.is_available() is True
+    assert tool.is_configured() is True
 
 
-async def test_fetch_is_available_gated_by_config(monkeypatch) -> None:
-    """WebFetchTool 可用性与搜索配置同开关。"""
+async def test_fetch_configured_flag_follows_search_config(monkeypatch) -> None:
+    """WebFetchTool 的 is_configured 与搜索同开关；本体始终可用。"""
     monkeypatch.setattr(settings, "enable_web_search", False)
     monkeypatch.setattr(settings, "web_search_api_key", "")
-    assert WebFetchTool().is_available() is False
+    tool = WebFetchTool()
+    assert tool.is_available() is True
+    assert tool.is_configured() is False
 
     monkeypatch.setattr(settings, "enable_web_search", True)
     monkeypatch.setattr(settings, "web_search_api_key", "k")
-    assert WebFetchTool().is_available() is True
+    tool = WebFetchTool()
+    assert tool.is_available() is True
+    assert tool.is_configured() is True
 
 
 # ── WebSearchTool.execute ─────────────────────────────────

@@ -18,7 +18,7 @@ from clipwright.config import logger
 
 _MAX_PIPELINES = 200
 
-#: 主代理可授予的工具全集（子集校验用；B9 会启用 run_shell/run_python）
+#: 主代理可授予的工具全集（子集校验用）
 SUPERVISOR_TOOLS: frozenset[str] = frozenset({
     "spawn_subagent",
     "get_subagent_status",
@@ -28,6 +28,10 @@ SUPERVISOR_TOOLS: frozenset[str] = frozenset({
     "run_python",
     "read_file",
     "list_dir",
+    # 文件写 + 联网：子代理也要能查资料、落结论（写仍限白名单目录）
+    "write_file",
+    "web_search",
+    "web_fetch",
 })
 
 #: 执行类工具：授予即代表该 worker 有「动手」能力 → 必须过两级审核门

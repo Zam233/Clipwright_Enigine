@@ -151,6 +151,12 @@ def test_worker_with_tools_runs_tool_loop(monkeypatch):
 def test_worker_executor_reads_file(monkeypatch, tmp_path):
     from clipwright.supervisor.worker_tools import build_executor
 
+    # worker 的 read_file 现已委托给注册表工具（白名单语义只有一份）；
+    # 这里只验委托链路通不通，白名单本身在 test_fs_tools 里单独测
+    import clipwright.security as security
+
+    monkeypatch.setattr(security, "assert_allowed_path", lambda p: p)
+
     target = tmp_path / "note.txt"
     target.write_text("占位图", encoding="utf-8")
     ex = build_executor("pl_spawn", "sa_x", allowed=("read_file",))

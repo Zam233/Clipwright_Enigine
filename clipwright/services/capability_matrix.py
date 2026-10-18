@@ -100,6 +100,10 @@ TIER_MAP: dict[str, PermissionTier] = {
     "web_fetch": "costly",         # 外网读取：不计费但可能触碰外网配额
     "video_download": "dangerous",  # 下载外部资源到本地：来源不可控
     "describe_llm_mg": "costly",
+    # —— 文件读写（主 Agent / 子代理基础能力）——
+    "read_file": "read",
+    "list_dir": "read",
+    "write_file": "write_local",   # 只写白名单目录，父目录不自动创建
 }
 
 #: 编排层能力（不属于 ToolRegistry，但 agent 同样可以"调用"）
