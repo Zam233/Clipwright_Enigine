@@ -23,7 +23,13 @@ from clipwright.tool.registry import ToolRegistry
 
 
 def _context() -> AgentContext:
-    """快速节奏类型 + persona cut_profile 的默认上下文（规则 base_shot_ms=2000）。"""
+    """快速节奏类型 + persona cut_profile 的默认上下文（规则 base_shot_ms=2000）。
+
+    `shot_cap_policy="off"`：本文件断言的是**剪辑档案注入**与**时长缩放**语义，
+    与 D23 的节奏归一正交。默认 `split` 会把 6–8s 场景按 `max_shot_ms=3000` 切成
+    多镜（节奏层自己有一套专门的测试：`test_edit_agent_shot_rhythm.py`），那会让
+    这里的"clip = 场景时长 × scale"断言失去意义，故显式关闭。
+    """
     return AgentContext(
         pipeline_id="a1-test",
         persona_id="p_fast",
@@ -35,6 +41,7 @@ def _context() -> AgentContext:
                 "min_shot_ms": 300,
                 "max_shot_ms": 3000,
             },
+            "shot_cap_policy": "off",
             "cut_profile": "rapid_fire",
             "transition_weights": {"hard_cut": 0.8, "dissolve": 0.2},
         },

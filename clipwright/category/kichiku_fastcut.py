@@ -24,7 +24,9 @@ class KichikuFastcutPlugin(BaseCategoryPlugin):
 
     def translate_persona(self, params: ParameterLayer) -> dict[str, Any]:
         density_map = {
-            "low": {"base_shot_ms": 2000, "min_shot_ms": 500, "max_shot_ms": 4000},
+            # 本类型声明 avg_shot_ms ≤ 1800ms（同一性指标），low 档基准必须落在
+            # 指标区间内，否则该档永远判不过（V2/V35 自洽性）。
+            "low": {"base_shot_ms": 1800, "min_shot_ms": 500, "max_shot_ms": 4000},
             "medium": {"base_shot_ms": 1000, "min_shot_ms": 300, "max_shot_ms": 3000},
             "high": {"base_shot_ms": 500, "min_shot_ms": 100, "max_shot_ms": 2000},
         }

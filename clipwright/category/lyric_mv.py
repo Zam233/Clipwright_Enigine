@@ -37,9 +37,12 @@ class LyricMvPlugin(BaseCategoryPlugin):
     def translate_persona(self, params: ParameterLayer) -> dict[str, Any]:
         tier = getattr(params.rhythm, "cut_density_tier", "medium")
         density_map = {
-            "low": {"base_shot_ms": 3600, "min_shot_ms": 900, "max_shot_ms": 8000},
-            "medium": {"base_shot_ms": 2400, "min_shot_ms": 600, "max_shot_ms": 6000},
-            "high": {"base_shot_ms": 1600, "min_shot_ms": 400, "max_shot_ms": 4000},
+            # V35 自洽性：本类型声明 avg_shot_ms ≤3200ms（strict），节奏参数就必须有
+            # 能力兑现它——上限超过 3200 的镜头会让同一性指标永远判不过。原先
+            # low/medium 上限是 8000/6000，切分策略（shot_cap_policy=split）无从下手。
+            "low": {"base_shot_ms": 3000, "min_shot_ms": 900, "max_shot_ms": 3200},
+            "medium": {"base_shot_ms": 2400, "min_shot_ms": 600, "max_shot_ms": 3000},
+            "high": {"base_shot_ms": 1600, "min_shot_ms": 400, "max_shot_ms": 2000},
         }
         shot_params = density_map.get(tier, density_map["medium"])
         if getattr(params.rhythm, "base_shot_duration_ms", None):

@@ -1,11 +1,11 @@
-"""D23 真机对照：同一个类型下限，`record` 与 `extend` 两种策略产出什么样。
+"""D23 真机对照：同一个类型下限，四种策略产出什么样。
 
-做法：同一主题、同一份规划（24 秒）、同一个 `min_shot_ms=9000`，跑两次 dry-run：
+做法：同一主题、同一份规划（24 秒）、同一个 `min_shot_ms=9000`，跑多次 dry-run：
 
 - `record`：片段照旧，但 trace 里出现 `shot_floor` 事件 + 逐条 C2；
-- `extend`：低于下限的场景被抬到 9 秒，成片总时长随之变长。
-
-**这是给 D23 决策用的证据，不替谁拍板**：默认策略仍是 `off`。
+- `extend`：低于下限的场景被抬到 9 秒，成片总时长随之变长；
+- `merge`（**D23 拍板后的管线默认**）：低于下限的相邻场景合并，镜头变少变长、
+  **总时长不变**——既不假装参数生效，也不把成片悄悄拉长 50%。
 
 用法::
 
@@ -118,23 +118,47 @@ def main(argv: list[str] | None = None) -> int:
                       timeout=args.timeout, interval=args.interval)
         extend = _run(client, policy="extend", topic="下限对照·抬到下限",
                       timeout=args.timeout, interval=args.interval)
+        merge = _run(client, policy="merge", topic="下限对照·合并保时长",
+                     timeout=args.timeout, interval=args.interval)
 
     report = {
-        "ok": bool(record.get("ok") and extend.get("ok")),
+        "ok": bool(record.get("ok") and extend.get("ok") and merge.get("ok")),
         "floor_ms": FLOOR_MS,
         "record": record,
         "extend": extend,
+        "merge": merge,
         "conclusion": {
             "record_conflicts": len((record.get("shot_floor_event") or {}).get("conflicts") or []),
             "record_min_clip_sec": record.get("min_clip_sec"),
             "extend_min_clip_sec": extend.get("min_clip_sec"),
             "extend_meets_floor": extend.get("all_clips_at_or_above_floor"),
-            "duration_change_sec": (
+            "merge_min_clip_sec": merge.get("min_clip_sec"),
+            "merge_meets_floor": merge.get("all_clips_at_or_above_floor"),
+            # 注意：跨运行比总时长没有意义——每次 dry-run 的结构阶段是独立 LLM 采样
+            # （本次实测三次规划分别是 24s / 45s / 300s）。"merge 不改总时长"由
+            # test_shot_floor.TestMergeToFloor 的和不变断言证明，这里只登记本运行
+            # 自己的时长与合并组。
+            "per_run_duration_sec": {
+                "record": record.get("timeline_duration_sec"),
+                "extend": extend.get("timeline_duration_sec"),
+                "merge": merge.get("timeline_duration_sec"),
+            },
+            "merge_groups": [
+                c.get("merged_from")
+                for c in ((merge.get("shot_floor_event") or {}).get("conflicts") or [])
+                if isinstance(c, dict)
+            ],
+            "extend_duration_change_sec": (
                 round((extend.get("timeline_duration_sec") or 0)
                       - (record.get("timeline_duration_sec") or 0), 3)
             ),
+            "default_policy": "merge（D23 已拍板：保总时长优先）",
+            "cap_policy": "split（对应上界 max_shot_ms，见 V35）",
         },
-        "caveat": "默认策略仍是 off；本报告只是把 D23 的两种候选跑成可比较的数字",
+        "caveat": (
+            "三种策略都跑真机 dry-run；结构阶段每次独立采样，故跨运行总时长不可比。"
+            "merge 是管线默认，extend/record 保留可切换"
+        ),
         "elapsed_sec": round(time.perf_counter() - started, 1),
     }
     target = ROOT / "out" / "d23" / "report.json"

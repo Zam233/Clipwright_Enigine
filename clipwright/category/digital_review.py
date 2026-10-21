@@ -24,7 +24,9 @@ class DigitalReviewPlugin(BaseCategoryPlugin):
 
     def translate_persona(self, params: ParameterLayer) -> dict[str, Any]:
         density_map = {
-            "low": {"base_shot_ms": 8000, "min_shot_ms": 2000, "max_shot_ms": 15000},
+            # 本类型声明 avg_shot_ms ≤ 7000ms（同一性指标：评测要看清参数页），
+            # low 档基准从 8000 收到 7000，否则该档注定不达标。
+            "low": {"base_shot_ms": 7000, "min_shot_ms": 2000, "max_shot_ms": 15000},
             "medium": {"base_shot_ms": 5000, "min_shot_ms": 1500, "max_shot_ms": 10000},
             "high": {"base_shot_ms": 3000, "min_shot_ms": 800, "max_shot_ms": 8000},
         }
