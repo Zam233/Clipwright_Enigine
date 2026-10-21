@@ -408,18 +408,18 @@ def run_switch(payload: dict[str, Any]) -> dict[str, Any]:
 async def genre_check(type_id: str, payload: dict[str, Any]) -> dict:
     """干跑类型同一性校验（A-10 / F12）：给时间线，返回指标与逐条判定。
 
-    L1 恒开；L2/L3 裁判由 ``payload.enable_genre_judge`` 控制（默认关，D7）。
+    L1 恒开；L2/L3 裁判由 ``payload.enable_genre_judge`` 或服务端配置
+    ``CLIPWRIGHT_GENRE_JUDGE_ENABLED`` 控制（D7 默认关）。
     """
     try:
-        return run_genre_check(type_id, payload)
+        return await run_genre_check_async(type_id, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def run_genre_check(type_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """纯逻辑实现（便于单测）：时间线 + 类型 → 指标 + 判定。"""
+def _prepare_genre_check(type_id: str, payload: dict[str, Any]):
+    """把 payload 变成 (spec, timeline, measured)；非法输入抛 ValueError。"""
     from clipwright.schema.timeline import Timeline
-    from clipwright.services.genre_conformance import check_conformance
     from clipwright.services.mv_cues import build_grid
     from clipwright.services.trait_collector import collect_traits
     from clipwright.services.type_spec_runtime import load_spec
@@ -443,11 +443,10 @@ def run_genre_check(type_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         scenes=payload.get("scenes"),
         grid=grid,
     )
-    report = check_conformance(
-        spec.traits,
-        measured,
-        enable_genre_judge=bool(payload.get("enable_genre_judge", False)),
-    )
+    return spec, timeline, measured
+
+
+def _genre_result(type_id: str, spec, measured, report) -> dict[str, Any]:
     return {
         "type_id": type_id,
         "traits_declared": len(spec.traits),
@@ -460,6 +459,51 @@ def run_genre_check(type_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         "mismatches": report.mismatches,
         "warnings": report.warnings,
     }
+
+
+def run_genre_check(type_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """纯逻辑实现（**只跑 L1**，便于单测）：时间线 + 类型 → 指标 + 判定。"""
+    from clipwright.services.genre_conformance import check_conformance
+
+    spec, _timeline, measured = _prepare_genre_check(type_id, payload)
+    report = check_conformance(spec.traits, measured, enable_genre_judge=False)
+    return _genre_result(type_id, spec, measured, report)
+
+
+async def run_genre_check_async(
+    type_id: str,
+    payload: dict[str, Any],
+    *,
+    llm: Any = None,
+) -> dict[str, Any]:
+    """含 LLM 裁判的完整实现（V17）：开关关时行为与 ``run_genre_check`` 一致。"""
+    from clipwright.services.genre_conformance import acheck_conformance
+    from clipwright.services.genre_judge import judge_enabled, llm_judge
+
+    spec, timeline, measured = _prepare_genre_check(type_id, payload)
+    enabled = judge_enabled(payload)
+    judge_fn: Any = None
+    if enabled:
+
+        async def _judge(traits, measured_now, report):
+            return await llm_judge(
+                traits,
+                measured_now,
+                report,
+                type_id=type_id,
+                timeline=timeline,
+                llm=llm,
+            )
+
+        judge_fn = _judge
+
+    report = await acheck_conformance(
+        spec.traits,
+        measured,
+        enable_genre_judge=enabled,
+        judge=judge_fn,
+    )
+    return _genre_result(type_id, spec, measured, report)
 @router.post("/resolve", response_model=dict)
 async def resolve_type(payload: dict[str, Any]) -> dict:
     """干跑裁决：给定用户参数，返回最终参数 + 冲突 + 变形判定。"""

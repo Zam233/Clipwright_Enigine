@@ -1000,6 +1000,84 @@ V58 的最后一块是"把偏离写回会话里的规划书"。实现路径：
 
 **单测**：`test_shot_floor.py` 16 项（四策略语义、浮点容差、负时长钳制、冲突载荷、fill 标记）。全量 4173 passed。
 
+### 12.63 第 39 轮：D23 拍板落地（merge/split）+ V17 真 LLM 裁判 + 类型自洽性 + 前端 e2e 全绿
+
+三件事一次收口，目标是把 `coverage.md` 里剩下的"部分/未做"清零。
+
+**① D23 拍板 → 两个"保总时长"策略（V2 / V35 转通过）**
+
+拍板结论：`min_shot_ms`/`max_shot_ms` 都是硬约束，但**不许靠拉长成片来合规**。于是新增：
+
+| 方向 | 策略 | 行为 | 总时长 |
+|---|---|---|---|
+| 低于下限 | `merge`（**默认**） | 相邻场景合并到达标，镜头变少变长 | **不变** |
+| 高于上限 | `split`（**默认**） | 超长场景平分成多镜 | **不变** |
+| 低于下限 | `record` / `extend` / `loop` | 只记 C2 / 抬到下限 / 写 loop 标记 | 留存取证用 |
+
+`edit_agent` 在**取素材之前**做场景归一；合并/切分后场景序号会变，所以每个归一后的场景带 `_orig_index`，候选素材与 PiP 配置仍按原场景号索引（否则第 2 镜起会拿不到素材——这条专门有测试）。
+
+真机对照（`scripts/e2e_shot_floor_d23.py`，floor=9s）：
+
+| 策略 | 片段（秒） | 成片 | 结论 |
+|---|---|---|---|
+| `record` | 5/3/5/6/5/6 | 24s | 5 条 C2，片段不达标 |
+| `extend` | 9×5 | **45s** | 达标但膨胀 |
+| `merge` | 最小 **15s** | 该次运行不变 | 达标且不膨胀 |
+
+V35 的根因也在这条线上：`lyric_mv` 声明 `avg_shot_ms ≤3200`（strict），但既有 `max_shot_ms=6000` 又缺切分策略，真机平均镜头 6166.7ms。修法两层——**上界切分**（`shot_cap_policy=split`）+ **类型自洽**（`lyric_mv` 三档上限收到 3200/3000/2000；`kichiku_fastcut` low 基准 2000→1800、`digital_review` low 基准 8000→7000）。真机复跑：**avg_shot_ms 2926.83 ✓**、text_overlay 0.98 ✓、`mismatches: []` → 成片被判 `lyric_mv`。
+
+新增不变量测试 `test_type_rhythm_consistency.py`（60 项，5 个内置类型 × 3 档 × 4 条）：基准节奏必须落在同一声明类型的同一性指标区间内——**这类"自己跟自己的指标打架"的问题值得钉死**，它比任何单点 bug 都更难在真机里看出来。
+
+**② V17：类型同一性接真 LLM 裁判**
+
+新增 `services/genre_judge.py`：裁判提示（含 L3 反例检验要求）+ JSON 结构化输出 + 容错解析 + 时间线摘要（分轨统计 `video_clip_count`/`caption_clip_count`，避免裁判把字幕段当镜头）。`genre_conformance.acheck_conformance` 是 async 通道，`/api/type-maker/{id}/genre-check` 与质检 Agent 都改走它；错配时写 `severity=error` 并带判据与证据（不是一句"气质不符"）。开关保持 D7 默认关：单次请求 `enable_genre_judge` 或服务端 `CLIPWRIGHT_GENRE_JUDGE_ENABLED`。
+
+真机取证（`scripts/e2e_genre_judge_v17.py`，真 deepseek-flash，3/3 命中期望）：
+
+| 用例 | L1 | 裁判 | 说明 |
+|---|---|---|---|
+| `mv_shaped`（8×3s + 逐句歌词字幕 + 120BPM） | 2/2 过 | `passed` 0.90 | 形态即 MV |
+| `talk_slice`（**同样 8×3s、同样字幕覆盖率**，字幕是口播稿） | **2/2 过** | **`mismatch` 0.96** | V17 的核心一格：指标全过、形态不对 |
+| `long_take`（1×20s 无字） | 不过 | `mismatch` 0.99 | 不洗白 |
+
+**③ 前端 e2e：13 项失败的收口**
+
+- `panel-divider` B18 断言方向写错：Agent 面板贴右侧，`applyDrag` 对它是 `w - dx`（右拖变窄），测试却断言 `before + DRAG_DX`；产品无 bug，断言改为 `before - DRAG_DX`。
+- `home` 健康检查用例：状态卡片实际挂在"创建"面板里，首页默认停在 home 标签；用例先点"开始创作"再断言。
+- 另三处此前已修：字幕无论在哪条轨道都底锚（`captionLayout.ts` 真 bug）、`agent-edit` 的 `window.confirm` 未被接受、`caption-style` 单选取值语义按 P2-05 改为多选级联。
+
+**回归**：后端全量 **4335 passed / 4 skipped / 1 xfailed / 0 failed**（5 分 42 秒，`HF_HUB_OFFLINE=1`）；前端 `tsc --noEmit` 0 错、`npm run test` **950 passed**、e2e **54 passed / 0 failed**（`npx playwright test`）。
+
+**仍未做（诚实清单）**：V50 的四类真实片源（机制 + 校验脚本已就绪，`scripts/check_v50_material_samples.py` 现在如实报 4 类缺失）；V16/V30/V40/V41 主观验收；A5/A8/A10/A13。
+
+### 12.64 第 40 轮：PV 引擎插件化（可被子 agent 调用）+ 素材源打假 + 前端 bug 收口
+
+**① PV 引擎以插件形式接入，并让 agent 能调用它**
+
+对方仓库 `eternal-questioning-pv` 的引擎是**命令行**（`_build/pv/build.py` 有 `stills|frames|probe`；`_build/audit.py` 的退出码就是验收结论 R01–R36）。所以不是重新实现，而是包一层适配器：
+
+| 层 | 内容 |
+|---|---|
+| `plugins/pv_engine/adapter.py` | 引擎目录解析（`CLIPWRIGHT_PV_ENGINE_DIR` → 配置 `engine_dir` → 常见相对路径）、`EnginePaths.validate()`、子进程执行（cwd=build_dir、UTF-8、超时即返回结构化失败）、三种参数构造 |
+| `plugins/pv_engine/main.py` | 三个工具 + 一个技能：`pv_engine_probe`（只读，读镜头表统计时长/缺口）、`pv_engine_audit`（只读，退出码→判定）、`pv_engine_stills`（`write_local`，出静帧）、`pv_engine_review` 技能（probe → audit → 可选 stills 串成一条复核流程） |
+| `plugin.yaml` / `config.yaml` | 贡献声明 tool×3 + skill×1；配置 `engine_dir`、两个超时 |
+| 能力分级 | `capability_matrix.TIER_MAP` 登记三档；三个工具列入 `OPTIONAL_PLUGIN_TOOLS`（未装插件时不做"工具消失"误报） |
+| 可被 agent 调用 | 工具 `dependencies=[]` + `is_configured()`（按引擎目录存在与否判定），因此 `list_agent_callable()` 能列出它们，**引擎不在时为"未配置"而不是"无依赖"** |
+
+**真机取证**（克隆对方仓库到临时目录，`CLIPWRIGHT_PV_ENGINE_DIR` 指过去）：`probe` → `53 shots 291.13 s covered / gaps: []`；`audit` → `exit_code 1 / verdict=fail`（**这是对方仓库自身 R01–R36 的现状，不是插件失败**，插件只负责如实转述）；`stills` 需要他们的印刷/AI 图层素材，仓库里 `.gitignore` 掉了，故离线只演示 probe/audit。**边界写清楚**：引擎仓库不含素材，别指望它在没有素材的机器上出画面。
+
+**② 素材源打假（只留真 API）**
+
+逐个发真请求核对，结论落进 `docs/material_system.md` 的审计表：
+
+- 真实可用：`pexels` / `pixabay` / `unsplash`（HTTP API）、`gif_sticker`、`bgm_library`、`local_material`；
+- **删掉**：`coverr_material`（`https://coverr.co/api/videos` 返回 200 但字段只有 `thumbnail/poster/playback_id`；`cdn.coverr.co/.../1080p.mp4` 返回 text/html，Mux 播放地址也取不到 → 拿不到可下载 MP4，留着就是假功能）、`my_material_lib`（示例里全是 `example.com` 占位 URL，没有真实目录 → 删除）；
+- **补上真的**：`plugins/local_material` + `LocalFolderSource`（英文词 + 中文逐字分词打分、`refresh(force)`、`max_files` 上限、空查询给中性分），把"本地素材盘"接成与网络素材同一条落位/去重链路——V50 就靠它。
+
+**③ 前端 bug 收口**（承载在 §12.63 ③，此处登记结论）：e2e 从 13 项红降到 0，其中 1 个是真产品 bug（字幕在非首轨时按轨道序兜底跑到顶部），其余是测试与 UI 演进脱节（Agent 分割条方向、健康卡片所在标签页、`window.confirm`、单选取值语义）。
+
+**文档**：新增 `docs/pv-engine-plugin.md`（架构、目录解析、三个工具的输入输出、能力分级、真机证据、边界），`docs/README.md` 索引同步；`docs/material_system.md` 增审计表 + `local_material` 小节。
+
 
 
 

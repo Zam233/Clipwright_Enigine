@@ -138,12 +138,65 @@ def check_conformance(
     return report
 
 
+async def acheck_conformance(
+    traits: Iterable[SignatureTrait],
+    measured: dict[str, float],
+    *,
+    enable_genre_judge: bool = False,
+    judge: Optional[Any] = None,
+) -> ConformanceReport:
+    """``check_conformance`` 的 async 版：``judge`` 是 **async** 回调。
+
+    V17：LLM 裁判本质是网络调用，必须 await；同步版 ``check_conformance``
+    只能接同步回调（单测/无 LLM 场景），两者 L1 逻辑完全一致。
+    """
+    traits = list(traits)
+    results = evaluate_traits(traits, measured)
+    report = ConformanceReport(traits=results)
+
+    for result in results:
+        if result.passed:
+            continue
+        if result.enforce == "strict":
+            report.mismatches.append(f"{result.name} 未达标：{result.render()}")
+        else:
+            report.warnings.append(f"{result.name} 未达标（soft，不阻断）：{result.render()}")
+
+    report.ok = not any(t.enforce == "strict" and not t.passed for t in results)
+
+    if not enable_genre_judge:
+        report.judge = STATUS_SKIP
+        report.judge_detail = {"reason": "D7：LLM 同一性裁判默认关闭（L1 指标仍已计算）"}
+        return report
+
+    if judge is None:
+        report.judge = STATUS_SKIP
+        report.judge_detail = {"reason": "已开启裁判但未注入 judge 回调"}
+        return report
+
+    try:
+        payload = await judge(traits, measured, report)
+        payload = payload or {}
+    except Exception as exc:  # noqa: BLE001 - 裁判失败不得阻断出片（D6）
+        report.judge = STATUS_SKIP
+        report.judge_detail = {"reason": f"裁判异常，已降级：{exc}"}
+        return report
+
+    report.judge = "mismatch" if payload.get("mismatch") else "passed"
+    report.judge_detail = dict(payload)
+    if report.judge == "mismatch" and payload.get("reasons"):
+        report.mismatches.extend(str(r) for r in payload["reasons"])
+        report.ok = False
+    return report
+
+
 __all__ = [
     "ConformanceReport",
     "STATUS_FAIL",
     "STATUS_PASS",
     "STATUS_SKIP",
     "TraitResult",
+    "acheck_conformance",
     "check_conformance",
     "evaluate_traits",
 ]

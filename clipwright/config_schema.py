@@ -226,6 +226,11 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
      "provider/model 或裸 model 精确白名单；留空 = 允许所有已配置 provider"),
     ("risk_judge_model", "llm", "风险判定模型", False, True,
      "命令风险判定用模型；必须命中白名单，留空 = 最便宜的 cheap 档"),
+    # ── 类型同一性 LLM 裁判（PRD F12 L2/L3 / V17）──
+    ("genre_judge_enabled", "llm", "类型裁判整体开关", False, True,
+     "默认关（D7）：关时 genre-check 写 judge=skipped；开则真调 LLM 做同一性复核"),
+    ("genre_judge_use_flash", "llm", "类型裁判用闪模型", False, True,
+     "开（默认）= 闪模型省 token；关 = 主模型（判据更细但更贵）"),
     # ── 预算（PRD F6 / B5）──
     ("pipeline_budget_usd", "service", "管线预算(USD)", False, True,
      "留空 = 无上限（只记账不阻断）；填写后达 70% 降级、100% 停止派工"),

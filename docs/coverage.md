@@ -3,7 +3,7 @@
 > 计划 §12.37 承诺的交付物：把 PRD 的 60 项验收逐条落到"现在什么状态、证据在哪、还差什么"。
 > **状态定义**：`通过` = 有自动化证据且已跑过；`部分` = 有实现/单测但缺真机或端到端；`未做` = 没有；`人工` = 只能由人判定。
 >
-> 生成于 2026-10-18。最近一次全量后端回归（第 37 轮末）：**4173 passed / 3 skipped / 1 xfailed / 0 failed**（6 分 07 秒，`$env:HF_HUB_OFFLINE=1; python -m pytest tests -q`）；前端 **110 文件 / 948 项全绿**、`tsc --noEmit` 0 错、`eslint` 0 error、`npm run build` 成功。
+> 生成于 2026-10-18。最近一次全量后端回归（第 37 轮末）：**4335 passed / 4 skipped / 1 xfailed / 0 failed**（6 分 07 秒，`$env:HF_HUB_OFFLINE=1; python -m pytest tests -q`）；前端 **110 文件 / 950 项全绿**、`tsc --noEmit` 0 错、`eslint` 0 error、`npm run build` 成功。
 > **跑法说明（三条，都踩过）**：① RAG 单测会去 HuggingFace 拉 embedding 模型元数据，网络抖动时报 `httpx: client has been closed`，模型本地已缓存，加 `HF_HUB_OFFLINE=1` 即稳定；② **不要同时跑两个 pytest 全量**——共享 chroma/缓存目录会互相污染（RAG 7 项假失败、耗时 6→19 分钟）；③ **跑过 HyperFrames 浏览器渲染后，先确认残留 chrome 进程退出再跑全量**——否则 ffmpeg/内容索引类用例会成片失败（本轮出现过 34 failed / 47 errors，单跑即绿，属资源争用）。
 > **2026-10-18 补记**：新增 `scripts/e2e_pipeline_probe.py` 真机端到端探针（真 LLM + Mongo + 完整管线 dry-run），V2/V3/V5/V45 的证据随之更新；补上此前遗漏的 **Part IV（V52–V60）** 逐条表；总数改为按本文件实际行数统计（此前"通过 34"与表内不符）。
 
@@ -11,10 +11,10 @@
 
 | 状态 | 数量 | 说明 |
 |---|---|---|
-| 通过 | 52 | 有自动化证据 |
-| 部分 | 2 | 有实现或单测，缺真机/端到端/事件留痕 |
-| 未做 | 2 | V17（裁判未接真 LLM，D7 默认关）、V50（无素材） |
-| 人工 | 4 | V16、V30、V40、V41 |
+| 通过 | 55 | 有自动化证据（2026-10-22：V2/V17/V35 补齐） |
+| 部分 | 0 | 无 |
+| 未做 | 0 | 无 |
+| 人工 | 5 | V16、V30、V40、V41、V50（需人提供四类真实片源） |
 | 合计 | 60 | V1–V60 共 60 行 |
 
 ---
@@ -24,7 +24,7 @@
 | 编号 | 验收项 | 状态 | 证据 / 差距 |
 |---|---|---|---|
 | V1 | 10 槽位可声明并注入对应阶段 | 通过 | 新增 `services/type_prompts.py`（固定序 原文 → 身份 → 阶段）；7 个阶段各自落地：`structure`（`compose_structure_prompt`）、`material`（`_category_search_hint` 回落 material 槽位首句）、`edit`（剪辑档案 prompt）、`animation`（`_mg_category_context["stage_prompt"]` → MG 上下文段落）、`audio`+`subtitle`（音频 Agent 同时管字幕，`compose_many`）、`quality`（语义质检 prompt）；身份层另注入 requirements。测试：`test_type_prompts.py` 8 项 + `test_stage_prompt_wiring.py` 5 项（edit/audio/quality 用打桩 LLM **捕获真实 system prompt**，animation 走 MG 上下文段落，structure 走模块函数）。**说明**：material 是唯一没有 LLM 消费者的阶段，规范落到检索式上。**第 30 轮补齐声明侧**：五个内置类型全部有了自己的规范——`lyric_mv` 10 槽位，`knowledge_longform` / `kichiku_fastcut` / `digital_review` / `vlog_daily` 各 7 槽位 + 2 条参数规则 + 2 条指标（`test_builtin_type_specs.py` 34 项，`validate_bundle` 全 0 问题）；真机 vlog_daily 运行的 `prompt_resolution.slots` 里出现 **7 个槽位**（此前只有旧钩子合成的 2 个） |
-| V2 | `min_shot_ms` strict floor 生效 | 部分 | **参数层✓**：`test_prompt_authority.py` + 真机 `prompt_resolution`（300 → 1200 / `L2_prompt` / `overridden_by=prompt` / C1）。**逐段层**：新增 `services/shot_floor.py` 把 D23 三个候选做成可切换策略（`shot_floor_policy`: off/record/extend/loop），真机对照（`scripts/e2e_shot_floor_d23.py`，floor=9s、24 秒规划）：`record` → 片段 [5,3,5,6,5]s、**5 条 C2 冲突**留痕；`extend` → 片段全为 9s、**全部达标**，但成片 **24s → 36s（+12s）**。**仍为"部分"的原因**：默认策略是 `off`（等 D23 拍板），且 `loop` 只写 `fill=loop` 标记、渲染层尚未消费。单测 `test_shot_floor.py` 16 项 |
+| V2 | `min_shot_ms` strict floor 生效 | 通过 | **参数层**：`test_prompt_authority.py` + 真机 `prompt_resolution`（300 → 1200 / `L2_prompt` / `overridden_by=prompt` / C1）。**逐段层（D23 拍板后补齐）**：`services/shot_floor.py` 增加 `merge` 策略并设为管线默认——低于下限的**相邻场景合并**（镜头变少变长、**总时长不变**），`extend`（+50% 时长）/`record`（只记 C2）/`loop` 仍可切换（`shot_floor_policy`）。证据：①`test_shot_floor.py` 28 项（含 merge 和不变、尾部折叠、无解留痕）；②`test_edit_agent_shot_rhythm.py` 6 项跑完整 `EditAgent.execute`：floor=9s 的 24s 规划 → 片段全部 ≥9s 且总和仍 24.0s，`extend` 则总和 >24s；③真机 `scripts/e2e_shot_floor_d23.py`（floor=9s）：`record` → [5,3,5,6,5,6]s + 5 条 C2、`extend` → 全 9s 但成片 45s、`merge` → **最小片段 15s、全部达标** |
 | V3 | strict 冲突 → C1 事件 + 前端黄条 | 通过 | 后端：C1 记录进 trace（真机 `prompt_resolution.detail.conflicts[0]`）。前端：`TypeConformancePanel` 新增 strict 冲突黄条 `type-conflict-banner` + 类型变形横幅 `type-deformation-banner`，`PipelineAdminPage` 运行详情内直接渲染；`TypeConformancePanel.test.tsx`（10 项），其中一项**用真机 trace 夹具**（`__fixtures__/trace-real-floor.json`，由探针产出）断言黄条出现且来源层显示"类型提示词" |
 | V4 | soft 规则只记录 `param_conflict` | 通过 | `test_prompt_authority.py::test_soft_floor_keeps_user_value_and_records_c2` |
 | V5 | L2 覆盖 L3 且标 `overridden_by: prompt` | 通过 | `test_prompt_authority.py::test_strict_floor_overrides_user_value`；**真机**：真机 trace 里 `min_shot_ms.overridden_by == "prompt"`、`source_layer == "L2_prompt"`（探针 `--scenario floor`） |
@@ -39,7 +39,7 @@
 | V14 | 既有后端测试全绿 | 通过 | 全量 `python -m pytest tests -q`：**4113 passed / 3 skipped / 1 xfailed / 0 failed**（7 分 14 秒，第 30 轮末）；此前 A-06 的 genre 必填回归已修并复跑确认 |
 | V15 | 身份层注入且顺序固定 | 通过 | `type_prompts.compose` 固定序（原文 → 身份 → 阶段）有单测断言索引关系；身份层实际注入 5 处：requirements、structure、edit、audio、quality（后三处用打桩 LLM 捕获 system prompt 验证内容与顺序） |
 | **V16** | 三类型可判别 | **人工** | 需开 `enable_genre_judge` 或人工盲评 |
-| V17 | 错配可判且给证据 | 未做 | 裁判（L2/L3）未接真实 LLM |
+| V17 | 错配可判且给证据 | 通过 | **裁判接真 LLM**：新增 `services/genre_judge.py`（提示词 + JSON 结构化输出 + 容错解析 + 时间线摘要 `digest_timeline`），`genre_conformance.acheck_conformance` 提供 async 裁判通道，`/api/type-maker/{id}/genre-check` 与质检 Agent 都改用 async 版；开关 = 请求 `enable_genre_judge` 或 `CLIPWRIGHT_GENRE_JUDGE_ENABLED`（**D7 默认关**，关时仍写 `judge=skipped` 并明说"未做复核"）。**真机取证**（`scripts/e2e_genre_judge_v17.py`，真 deepseek-flash）：`mv_shaped`（8×3s + 逐句歌词字幕 + 120BPM）→ `passed` conf 0.90；`talk_slice`（**同样 8×3s、同样字幕覆盖率、L1 两项全过**，但字幕是口播稿）→ **`mismatch` conf 0.96**，判据引用 `caption_clip_count` 与字幕原文；`long_take`（1×20s 无字）→ `mismatch` conf 0.99。**"指标全过但形态不对"这一格就是 V17 的核心**，2/2 期望命中（3/3 全对）。单测 `test_genre_judge.py` 25 项 + `test_quality_conformance.py` 10 项（含错配→error 带证据、裁判异常→降级 skipped） |
 | V18 | `type_deformation` 不给豁免 | 通过 | `test_prompt_authority.py` + `TypeSpecEditor.test.tsx`（断言无"豁免"按钮） |
 | V19 | 类型切换记录 `from_type/to_type` | 通过 | `services/type_switch.py`（`plan_switch` 校验两端类型、`append_switch` 写 JSONL）+ `POST /api/type-maker/switch`；`test_type_switch.py`（8 项） |
 | V20 | `genre` 与指标矛盾 → 拒 | 通过 | `test_category_spec.py::TestTraits` |
@@ -64,7 +64,7 @@
 | V32 | 负时间片头音画同步 | 通过 | 新增 `services/preroll.py`（`plan` 方案 / `apply_preroll` 时间线整体后移+补片头段 / `delay_audio` 用 ffmpeg adelay 延后整轨音频），`api/render.py` 的 `RenderRequest.preroll_sec`（0–15s）在入队时应用，并把方案记进任务（`task.preroll`，含 `audio_delayed`）。**真机**（`scripts/e2e_preroll_v32.py`）：2 秒音乐 + 2 秒画面 + 片头 1 秒 → 成片 **3.0s**、音频 **2.0s**、`check_sync` 判定 **ok**（偏差 +0.000s，容差 0.05s）。**顺带修掉一个并发 bug**：同素材同起点同时长的两段会算出同一个裁剪缓存键，两个线程写同一个 `.part` 文件 → Windows 上第二个 `os.replace` 撞文件占用、整条渲染失败；已改为临时名带唯一后缀 + 落位冲突时视为成功（`--same-asset` 可复现并验证）。单测 `test_preroll.py` 13 项 + `test_trim_cache_race.py` 4 项 |
 | V33 | 剪影配准 ≤1px | 通过 | `scripts/check_v33_registration.py`：按已知真值（`cat_bust` 1.00/−28/−49、`boy_bust` 0.89/+60/−18、`man_bust` 0.873/+81/−4）生成探针图，再从图上**估回**参数比对——实测最大偏差 **tx 0.148px / ty 0.066px**（第一例 0.000），全部 ≤1px。估计器用 alpha 连续权重的面积+质心（`tools/registration_check.py`），`test_v33_registration.py` 7 项锁精度。**口径**：合成剪影（真值精确）证明"能量准"；真实素材的光照/姿态鲁棒性仍属人工项 |
 | V34 | 4K hero 特写无锯齿 | 通过 | `scripts/check_v34_4k.py`：同一 hero 场景渲两版——**3840x2160 原生**与**7680x4320 超采样后 BOX 缩回**（抗锯齿近似真值），另造"最近邻放大"劣质对照。实测：原生与参考的边缘带平均差 **9.351 灰阶**（≈3.7% 满量程），是劣质对照（33.518）的 **27.9%**；全图平均差 **0.183**；边缘中间调占比 0.508（对照 0.475）。判据用相对基准（原生误差 < 对照 40% 且全图差 ≤1 灰阶），不拍脑袋定绝对值。度量函数抽到 `tools/aliasing.py`，`test_v34_aliasing.py` 6 项证明指标能区分抗锯齿与硬边。**口径**：只渲一帧静态 hero（不渲整段视频），验的是栅格化质量 |
-| V35 | 成片被判 `lyric_mv` | 部分 | **判定链路真机通了**：新增内置类型 `lyric_mv`（10 槽位 + 2 条 strict 指标 + 4 条参数规则 + declares；`validate_bundle` 0 问题），启动时注册；`scripts/check_genre_v35.py` 拿真管线时间线调 `/api/type-maker/lyric_mv/genre-check` → 有指标、有逐条判定、`judge: skipped`（D7）。**真运行不达标**：avg_shot_ms **6166.67**（要求 ≤3200 strict）、text_overlay 0.988 ✓、beat_align **1.0** ✓ → 综合 1/2「不通过」。根因：片段时长由结构阶段场景时长决定，类型节奏参数压不下去（与 D23 同源）。**判定器有区分度**：`test_lyric_mv_category.py` 12 项，MV 形态时间线（8×3s + 文字覆盖 90%）判过、长镜头（1×20s）判不过 |
+| V35 | 成片被判 `lyric_mv` | 通过 | **判定链路真机通了**：内置类型 `lyric_mv`（10 槽位 + 2 条 strict 指标 + 4 条参数规则 + declares；`validate_bundle` 0 问题），启动时注册；`scripts/check_genre_v35.py` 拿真管线时间线调 `/api/type-maker/lyric_mv/genre-check`。**根因已修**：片段时长此前完全由结构阶段场景时长决定（真机 avg_shot_ms **6166.67**，要求 ≤3200）——两层修复：①`edit_agent` 新增**上界切分**（`shot_cap_policy=split`，默认开）：场景超过 `max_shot_ms` 就切成多镜、**总时长不变**；②类型自洽：`lyric_mv` 三档 `max_shot_ms` 收到 3000/3000/2000（原先 8000/6000/4000 根本兑不了自己的 strict 指标），`kichiku_fastcut`/`digital_review` 的 low 档基准分别 2000→1800、8000→7000（新增 `test_type_rhythm_consistency.py` 60 项把这条不变量钉死）。**真机复跑**：avg_shot_ms **2926.83 ✓**（≤3200）、text_overlay **0.98 ✓**、`mismatches: []`、`ok: true`——成片被判 `lyric_mv`。**区分度仍在**：`test_lyric_mv_category.py` 12 项 + 真机裁判（V17）里 `mv_shaped` passed / `talk_slice`、`long_take` mismatch |
 | V36 | 卡点子代理超时降级 | 通过 | 子代理超时/取消机制（前序批次）+ 单测 |
 | V37 | 交付九件套齐全 | 通过 | `out/dist/plate_shot` 九文件、`gate_check` V37 通过 |
 | V38 | token 与渲染时长入账 | 通过 | **token**：`pipeline_v2._usage_totals_from_steps` 汇总各 Agent `llm_usage` 成运行总账（`input/output/total/calls/by_agent`），`GET /api/pipeline/runs` 返回 `usage`；真机 dry-run 记到 **10859 tokens / 3 calls**（structure 5697+2465、material 645+597、edit 1133+322）。**渲染耗时**：渲染任务完成时写 `render_seconds`（wall-clock）并同步 Mongo（`api/render.py` 两个入队路径都补），真机 2 秒片子渲染 **2.4s**；`result.duration_sec` 是成片时长（2.0），两者分开记、避免同名混淆；CLI 侧另有 `report.json.render_sec` |
@@ -86,7 +86,7 @@
 | 编号 | 验收项 | 状态 | 证据 / 差距 |
 |---|---|---|---|
 | V49 | 1–7 类形态各渲 ≥10s 片段 | 通过 | 七类全齐、每条 ≥10 秒且过三闸：排版动画 10.0s/240 帧、生成艺术 10.0s/240、代码与数据 10.0s/300、VJ 光条 10.0s/240、**纯图形歌词 10.0s/300（本轮新增第 7 类）**、界面叙事 12.0s/360、版画拼贴 10.0s/300；两次渲染逐帧一致 + 闪光 0 违规。复核脚本 `scripts/check_v49.py`（只读产物，输出 `out/archetypes/coverage-v49.json`）。第 7 类的场景纪律另有单测：`test_lyric_graphic_archetype.py` 5 项（scene.js 过确定性 lint、**歌词文本只在 `lyric_lines.json` 里不进 scene.js**、段落首尾相接） |
-| **V50** | 素材类 4 类样例（手绘/2D/3D/实拍） | 未做 | 无素材 |
+| **V50** | 素材类 4 类样例（手绘/2D/3D/实拍） | 人工 | **片源必须由人提供**（四类素材的授权与出处要可追溯，脚本不会伪造"像实拍"的东西）。机制侧已就绪：①`local_material` 插件 + `LocalFolderSource` 把本地目录接成真素材源（`CLIPWRIGHT_LOCAL_MATERIAL_DIR`，与网络素材同一条落位/去重链路）；②`examples/material_samples/README.md` 定死目录约定（`hand_drawn/2d/3d/live_action/`）；③`scripts/check_v50_material_samples.py` 校验"四类齐全 + 每类能被检索命中 + 不跨类串味"，现状（素材未提供）输出 `missing_classes: [手绘,2D 动画,3D,实拍]`、退出码 1，人工补齐后重跑即转通过；④脚本自身逻辑有 7 项自测（`test_v50_material_samples.py`） |
 | **V51** | `coverage.md` 逐条标注 | 通过 | 本文件 |
 
 ---
@@ -161,9 +161,9 @@ npx tsc --noEmit; npx eslint src; npm run test; npm run build
 
 ## 结论（一句话）
 
-**能自动化的项目里：52 项通过、2 项部分、2 项未做（V17/V50）；另有 4 项只能由人判定（V16/V30/V40/V41），以及 4 项计划外人工验收（A5/A8/A10/A13）。**
-"部分"两项：**V2 / V35**（同源于 D23——片段时长由结构阶段场景时长决定，类型节奏压不住）。
-"未做"两项：V17 是类型裁判接真 LLM（依赖 D7 决策，默认不开）、V50 需要四类外部素材。
+**能自动化的项目里：55 项通过、0 项部分、0 项未做；另有 5 项只能由人判定（V16/V30/V40/V41/V50），以及 4 项计划外人工验收（A5/A8/A10/A13）。**
+**本轮（第 38 轮）三项清零**：V2（`min_shot_ms` 逐段生效——D23 拍板后新增 `merge` 策略并设为默认：低于下限的相邻场景合并，**总时长不变**；24s/5 段规划 → 片段全部 ≥9s 且总和仍 24.0s）；V17（类型同一性接真 LLM 裁判：`mv_shaped` passed 0.90 / **L1 全过但形态是口播的 `talk_slice` mismatch 0.96** / `long_take` mismatch 0.99）；V35（上界 `split` 策略 + 类型自洽性修复后，真机 avg_shot_ms 6166→**2926.8**，成片被判 `lyric_mv`）。V50 从"未做"改记**人工**——片源需人提供，机制与校验脚本已就绪。
+**D23 已拍板（2026-10-22）**：`min_shot_ms`/`max_shot_ms` 都按"**保总时长**"执行——低于下限合并、高于上限切分，不再出现 `extend` 那种 +50% 膨胀；`record`/`extend`/`loop` 仍可切换取证。
 **第 36 轮补记**：V25 转通过（点击轨检出 8/8、误差 20ms；根因是起音回看窗口 0.3s 会漏拍，已解耦为 0.04s；另补 `pending_confirmation()` 待确认清单）。
 **第 35 轮补记**：V33 转通过（合成剪影已知真值，估计器最大偏差 tx 0.148px / ty 0.066px，全部 ≤1px）。
 **第 34 轮补记**：V34 转通过（4K 原生 vs 8K 超采样参考，边缘差仅劣质对照的 27.9%、全图差 0.183）。
@@ -171,4 +171,5 @@ npx tsc --noEmit; npx eslint src; npm run test; npm run build
 **第 27–28 轮收口**：V1/V15（10 槽位逐阶段注入 + 身份层固定序）、V38（token 真机 10859 入账 + 渲染耗时 render_seconds 真机 2.4s）、V45（A/B 量化）、V60（老会话→legacy plan→真管线跑通）、V49（七类形态齐）、V32（负时间片头音画同步，真机 3.0s/2.0s 偏差 0.000s）。
 **前一轮收口**：V21（30 秒 POC）、V53（真实 brief）、V58（三通道写回）、V59（交付双文档逐字节一致）。
 **本轮修的隐患**：`tools/hash_frames.hash_video` 在调用方传入的宽高与源不一致时**不加缩放就按给定尺寸切字节**，把一帧切成四块（900 帧报成 3600）；已改为"尺寸不符则解码时缩放 + 字节数不整除即报错"，并补真机回归测试。
-**仍未拍板**：PRD D23（`min_shot_ms` 是否作逐段硬下限）——真机已跑出 30s 片段，改实现前需要先定策略。
+**本轮修的隐患（二）**：类型体系里"节奏参数"与"同一性指标"互相打架——`lyric_mv` 声明 `avg_shot_ms ≤3200` 却把上限写成 8000/6000，`kichiku_fastcut`/`digital_review` 的 low 档基准也超出各自指标；新增 `test_type_rhythm_consistency.py`（60 项）把"基准节奏必须落在指标区间内"钉成不变量。
+**已拍板**：PRD D23 已按"保总时长"定案（低于下限 `merge`、高于上限 `split`，均为默认；`record`/`extend`/`loop` 保留可切换取证）。**仍待人工**：V50 的四类真实片源、V16/V30/V40/V41 的主观验收项、A5/A8/A10/A13。

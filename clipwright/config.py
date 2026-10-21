@@ -106,6 +106,13 @@ class Settings(BaseSettings):
     # 命令风险判定所用模型（B9）；必须命中白名单，留空 = 最便宜的 cheap 档。
     risk_judge_model: str = ""
 
+    # --- 类型同一性 LLM 裁判（PRD F12 L2/L3 / V17）---
+    # D7 决定：**默认关**（关时 genre-check 写 judge="skipped"，绝不假装判过）。
+    # 单次请求可用 payload.enable_genre_judge 覆盖；本项用于真机取证/服务级开启。
+    genre_judge_enabled: bool = False
+    # 裁判用闪模型（省 token）；False 用主模型
+    genre_judge_use_flash: bool = True
+
     # --- 子代理与执行（PRD F10/F11）---
     # 同一管线同时存活的子代理上限（PRD §12 已定⑤：在设置中配置）
     max_concurrent_subagents: int = 6
