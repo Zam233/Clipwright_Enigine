@@ -31,6 +31,19 @@
 
 ## 素材源
 
+> **2026-10-18 审计结论（逐个核过是否真调用外部 API）**
+>
+> | 插件 | 判定 | 依据 |
+> |---|---|---|
+> | `pexels_material` | ✅ 真实 | `https://api.pexels.com`，需 `PEXELS_API_KEY`；带 license/署名 |
+> | `pixabay_material` | ✅ 真实 | `https://pixabay.com/api`，需 `PIXABAY_API_KEY`；带 license |
+> | `unsplash_material` | ✅ 真实 | `https://api.unsplash.com`，需 `UNSPLASH_ACCESS_KEY`；带署名链 |
+> | `gif_sticker` | ✅ 真实 | Giphy API；公开 beta key 需显式 `GIPHY_PUBLIC_BETA_KEY=1` 才启用 |
+> | `bgm_library` | ✅ 真实 | Freesound API，需 `FREESOUND_API_KEY` |
+> | `local_material` | ✅ 真实（本轮新增） | 扫描真实本地目录，返回真实文件路径，不依赖网络 |
+> | ~~`coverr_material`~~ | ❌ **已删除** | `coverr.co/api/videos` 确实返回 200，但响应是 Algolia 结构、只含缩略图与 `playback_id`；实测其 CDN/Mux 链接均拿不到可下载 mp4 → 无法兑现"视频素材"契约 |
+> | ~~`my_material_lib`~~ | ❌ **已删除**（换成 `local_material`） | 示例插件：catalog 指向不存在的文件、URL 指向 `cdn.example.com`，启用只会让管线拿到不可用素材 |
+
 ### Pexels 素材源（内置）
 
 通过 Pexels API 搜索免费视频素材。需配置 API Key。
@@ -38,12 +51,17 @@
 - 插件路径：`plugins/pexels_material/`
 - 配置项：API Key、结果数量、安全过滤
 
-### 本地文件素材源
+### 本地素材文件夹（内置，`local_material`）
 
-扫描指定目录中的媒体文件，建立本地索引。
+扫描指定目录中的真实媒体文件，接入多源检索。**只索引、不搬文件**，离线可用。
 
-- 支持格式：MP4, MOV, AVI, PNG, JPG 等
-- 索引方式：文件系统扫描 + 元数据提取
+- 插件路径：`plugins/local_material/`（源实现：`clipwright/material/local_source.py`）
+- 配置：插件配置 `material_dir`，或环境变量 `CLIPWRIGHT_LOCAL_MATERIAL_DIR`
+- 支持格式：MP4/MOV/MKV/WEBM/AVI/M4V、PNG/JPG/WEBP/BMP/TIF
+- 检索：按文件名与子目录名做关键词匹配（英文按词、中文按字），分数 0.5–0.95；
+  未给关键词时返回中性 0.5 分（不冒充"相关"）
+- 未配置或目录为空 → **零贡献并写明原因**，不假装有素材
+- 限制：不提取时长/分辨率（拿不到就留空，不编造）；不生成缩略图
 
 ## MaterialAgent
 

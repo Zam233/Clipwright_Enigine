@@ -1,0 +1,12 @@
+id: "local_material"
+name: "本地素材文件夹"
+version: "1.0.0"
+kind: "material"
+description: "把本地素材目录接入多源检索（扫描真实文件，不依赖网络）"
+author: "Clipwright Team"
+entry_point: "local_material.main"
+
+# P1 迁移：新契约声明（声明即授权）
+api_version: "2"
+contributions:
+  - { kind: material_source, id: local_material }

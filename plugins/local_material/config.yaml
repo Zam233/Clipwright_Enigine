@@ -1,4 +1,9 @@
 fields:
+  material_dir:
+    type: string
+    value: ""
+    label: "本地素材目录"
+    description: "要接入的素材文件夹绝对路径（留空则读环境变量 CLIPWRIGHT_LOCAL_MATERIAL_DIR）。只索引，不移动文件。"
   enable_visual_llm:
     type: bool
     value: false
