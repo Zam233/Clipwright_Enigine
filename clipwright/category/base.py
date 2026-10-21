@@ -10,6 +10,13 @@ from abc import abstractmethod
 from typing import Any
 
 from clipwright.plugins.base import BasePlugin
+from clipwright.schema.category_spec import (
+    ParamRule,
+    PromptBundle,
+    PromptSlot,
+    SignatureTrait,
+    TypeDeclares,
+)
 from clipwright.schema.persona import ParameterLayer
 from clipwright.schema.timeline import Clip, Timeline
 
@@ -89,3 +96,102 @@ class BaseCategoryPlugin(BasePlugin):
         基类返回空字符串（不注入）；子类可覆盖，返回自然语言风格描述。
         """
         return ""
+
+    # ── 类型规范（PRD Part I F1/F4，A-04）──────────────────────────────
+    #
+    # 新契约：类型用 ``get_prompt_bundle()`` 给 10 个槽位；旧钩子由基类适配成
+    # ``structure`` / ``animation`` 槽位——**第三方插件一行不改也有提示词**。
+
+    def get_prompt_bundle(self) -> PromptBundle:
+        """返回提示词包。默认由三个旧钩子合成（适配器，F4）。"""
+        slots: dict[str, PromptSlot] = {}
+        identity: list[str] = []
+        structure = _render_legacy(self.get_structure_template())
+        if structure:
+            annotations = _render_legacy(self.get_annotation_templates())
+            if annotations:
+                structure = f"{structure}\n{annotations}"
+            slots["structure"] = PromptSlot(text=structure, priority=80)
+        animation = _render_legacy(self.get_mg_style_guidance())
+        if animation:
+            slots["animation"] = PromptSlot(text=animation, priority=70)
+        if identity:
+            slots["genre"] = PromptSlot(text="\n".join(identity), priority=90)
+        return PromptBundle(slots=slots)
+
+    def get_param_rules(self) -> list[ParamRule]:
+        """机器可读参数规则；基类为空（零行为变化）。"""
+        return []
+
+    def get_signature_traits(self) -> list[SignatureTrait]:
+        """同一性的可测代理指标；基类为空。"""
+        return []
+
+    def get_declares(self) -> TypeDeclares:
+        """类型声明块；基类把旧钩子/推荐参数转成声明（零行为变化）。"""
+        return TypeDeclares(
+            required_animation_markers=[],
+            semantic_qa_default=None,
+            search_hint="",
+        )
+
+
+def with_slots(legacy: PromptBundle, **slots: PromptSlot) -> PromptBundle:
+    """把新声明的槽位并入旧钩子合成的槽位（同键以新声明为准）。
+
+    内置类型从"只有旧钩子"迁到新契约时用这个：既保住 `get_structure_template()`
+    等旧钩子产出的内容，又允许逐槽位显式覆盖，不必一刀切重写。
+    """
+    merged = dict(legacy.slots or {})
+    merged.update({key: slot for key, slot in slots.items() if slot is not None})
+    return PromptBundle(slots=merged)
+
+
+def _render_legacy(value: Any) -> str:
+    """把旧钩子的三种返回形态归一成可读文本（修 ``list[dict]`` 被 repr 的 bug）。
+
+    - ``str``：原样（去空白）；
+    - ``list[str]``：逐行 ``- item``；
+    - ``list[dict]``：渲染成 ``- {role}（权重 {weight}）：{desc}``，取常见键名。
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (list, tuple)):
+        lines: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                text = item.strip()
+                if text:
+                    lines.append(text if text.startswith("-") else f"- {text}")
+                continue
+            if isinstance(item, dict):
+                lines.append(_render_legacy_dict(item))
+        return "\n".join(line for line in lines if line)
+    return str(value).strip()
+
+
+def _render_legacy_dict(item: dict[str, Any]) -> str:
+    role = item.get("role") or item.get("type") or item.get("name") or ""
+    desc = item.get("desc") or item.get("description") or item.get("content") or ""
+    weight = item.get("weight")
+    position = item.get("position")
+    style = item.get("style")
+    parts: list[str] = []
+    if role:
+        parts.append(str(role))
+    if weight is not None:
+        parts.append(f"（权重 {weight}）")
+    if position:
+        parts.append(f"[{position}]")
+    if style:
+        parts.append(f"[{style}]")
+    head = "".join(parts).strip()
+    if head and desc:
+        return f"- {head}：{desc}"
+    if head:
+        return f"- {head}"
+    if desc:
+        return f"- {desc}"
+    return ""

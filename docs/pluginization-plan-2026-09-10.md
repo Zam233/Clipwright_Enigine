@@ -304,7 +304,7 @@ class ContributionDecl(BaseModel):
 `plugin.yaml` 示例（迁移后的形态）：
 
 ```yaml
-id: my_material_lib
+id: local_material
 name: 我的素材库
 version: 1.2.0
 kind: material

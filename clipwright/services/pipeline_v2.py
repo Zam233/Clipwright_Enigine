@@ -198,13 +198,53 @@ def record_run_start(pipeline_id: str, topic: str) -> None:
         del _run_registry[:-200]
 
 
+def _usage_totals_from_steps(steps: list[PipelineStep]) -> dict[str, Any]:
+    """V38：把各 Agent 的 ``llm_usage`` 汇总成一次运行的总账。
+
+    此前 token 只按 Agent 记在 ``step.result["llm_usage"]`` 与 trace 事件里，
+    运行记录上没有任何总账——"这次跑了多少钱"只能靠翻每个 Agent 的明细手工加。
+    这里给出 ``{input_tokens, output_tokens, total_tokens, calls, by_agent}``；
+    渲染耗时取名为 render 的步骤（没有就为 0，不猜测）。
+    """
+    totals: dict[str, Any] = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "calls": 0,
+        "by_agent": {},
+    }
+    render_ms = 0
+    for step in steps or []:
+        result = getattr(step, "result", None) or {}
+        if not isinstance(result, dict):
+            continue
+        usage = result.get("llm_usage") or {}
+        if isinstance(usage, dict) and usage:
+            in_tokens = int(usage.get("input_tokens") or 0)
+            out_tokens = int(usage.get("output_tokens") or 0)
+            calls = int(usage.get("calls") or (1 if (in_tokens or out_tokens) else 0))
+            totals["input_tokens"] += max(0, in_tokens)
+            totals["output_tokens"] += max(0, out_tokens)
+            totals["calls"] += max(0, calls)
+            totals["by_agent"][getattr(step, "agent_name", "") or "unknown"] = {
+                "input_tokens": max(0, in_tokens),
+                "output_tokens": max(0, out_tokens),
+            }
+        if "render" in str(getattr(step, "agent_name", "") or "").lower():
+            render_ms = max(render_ms, int(getattr(step, "duration_ms", 0) or 0))
+    totals["total_tokens"] = totals["input_tokens"] + totals["output_tokens"]
+    totals["render_sec"] = round(render_ms / 1000.0, 2) if render_ms else 0.0
+    return totals
+
+
 def record_run_complete(pipeline_id: str, status: str, steps: list[PipelineStep]) -> None:
     """在结果落库处更新运行结束（成功与失败分支共用）。
 
     把 PipelineStep 列表转换为前端期望的 agent 跨度
-    ``[{agent, start, dur, status}]``。
+    ``[{agent, start, dur, status}]``，并附上 V38 的用量总账 ``usage``。
     """
     spans: list[dict] = []
+    usage = _usage_totals_from_steps(steps)
     with _run_registry_lock:
         for run in _run_registry:
             if run["id"] != pipeline_id:
@@ -231,6 +271,7 @@ def record_run_complete(pipeline_id: str, status: str, steps: list[PipelineStep]
             run["status"] = status
             run["duration_ms"] = int((now - start_dt).total_seconds() * 1000) if start_dt else 0
             run["agents"] = spans
+            run["usage"] = usage
             run.pop("_start_dt", None)
             return
         # 开始记录缺失（如进程内直接调用执行器）→ 补一条完成的记录
@@ -241,6 +282,7 @@ def record_run_complete(pipeline_id: str, status: str, steps: list[PipelineStep]
             "duration_ms": 0,
             "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "agents": spans,
+            "usage": usage,
         })
 
 
@@ -619,11 +661,56 @@ class PipelineOrchestratorV2:
             clear_cancel(pid)
             logger.info("PipelineV2 取消: %s", pid)
 
+        # ── B2 影子秘书：只记录归因与诊断书，不改变执行 ──
+        # mode=off（默认）时零开销；shadow 与 on 的区别在 B3 才出现。
+        await self._shadow_analyze(state, pid)
+
         # Layer 1: 持久化最终状态（在线程池执行）
         await loop.run_in_executor(None, self._persist_state_serial, state, state.status.value, error_category)
         # Run registry: 记录运行结束（成功/失败共用，含 agent 跨度）
         record_run_complete(pid, state.status.value, state.steps)
         return state
+
+    @staticmethod
+    def _quality_issues_of(state) -> list:
+        """取最近一次质检 issues（影子分析用；没有则空列表）。"""
+        for step in reversed(state.steps or []):
+            if getattr(step, "agent_name", "") != "quality":
+                continue
+            result = getattr(step, "result", None) or {}
+            issues = result.get("issues")
+            if issues:
+                return list(issues)
+        return []
+
+    async def _shadow_analyze(self, state, pid: str) -> None:
+        """B2：影子模式下的归因 + 诊断书（只写 shared_data 与 trace）。"""
+        try:
+            from clipwright.config import settings
+
+            mode = getattr(settings, "supervisor_mode", "off")
+            if mode == "off":
+                return
+
+            from clipwright.services.attribution import attribute_with_llm
+            from clipwright.services.diagnosis import build_diagnosis
+            from clipwright.services.episode_ledger import get_ledger
+
+            ledger = get_ledger(pid)
+            issues = self._quality_issues_of(state)
+            attr = await attribute_with_llm(ledger, issues=issues)
+            report = build_diagnosis(
+                ledger, attribution=attr, issues=issues, mode=mode, pipeline_id=pid,
+            )
+            state.shared_data["attribution"] = attr.model_dump(mode="json")
+            state.shared_data["diagnosis"] = report.model_dump(mode="json")
+            add_event(pid, "supervisor", "attribution",
+                      f"归因: {attr.primary_stage or '未定位'}（{attr.confidence}/{attr.source}）",
+                      attr.model_dump(mode="json"))
+            add_event(pid, "supervisor", "diag_report", report.conclusion,
+                      {k: report.model_dump(mode="json").get(k) for k in ("suggestions", "cost")})
+        except Exception as e:  # noqa: BLE001 — 影子分析不得影响管线终态
+            logger.warning("影子分析失败（忽略）: %s", e)
 
     async def _self_heal_quality(
         self, state: PipelineState, result_data: dict, persona_config: dict, plugin,
@@ -688,6 +775,25 @@ class PipelineOrchestratorV2:
                           f"质量分 {score} 低于门槛 {min_score}，触发自愈重做 structure")
             # 批A(R9)：有 error 但无法映射重做目标 → 如实失败
             # （旧实现落入 else 分支静默 COMPLETED + error issues）
+            # ── B3：调度决策（shadow 只记录；on 才改变执行）──
+            decision = await self._decide_for_heal(state, pid, quality_issues) if has_errors else None
+            if decision is not None and decision.mode == "on":
+                if decision.strategy == "S4_accept_degraded":
+                    state.shared_data["accepted_degraded"] = True
+                    add_event(pid, "supervisor", "warning",
+                              f"接受降级：{decision.reason}")
+                    quality_passed = True
+                    break
+                if decision.strategy == "S6_abort":
+                    state.status = PipelineStatus.FAILED
+                    state.error = f"调度中枢止损：{decision.reason}"
+                    add_event(pid, "supervisor", "error", state.error)
+                    break
+                if decision.target_stage:
+                    if decision.target_stage != redo_agent:
+                        add_event(pid, "supervisor", "info",
+                                  f"归因改派：{redo_agent or '无'} → {decision.target_stage}")
+                    redo_agent = decision.target_stage
             if has_errors and not redo_agent:
                 state.status = PipelineStatus.FAILED
                 state.error = ("质检发现错误但无法定位重做目标: "
@@ -736,6 +842,18 @@ class PipelineOrchestratorV2:
         agent_context.extra_params.pop("_quality_heal_count", None)
         return quality_passed
 
+    @staticmethod
+    def _append_finalize_degradation(agent_context, kind: str, detail: str,
+                                     scope: str = "", impact: str = "") -> None:
+        """F9：后处理阶段的降级不在任何 Agent 作用域内，单独登记到上下文。"""
+        from clipwright.schema.agent import Degradation
+        try:
+            sink = agent_context.extra_params.setdefault("_finalize_degradations", [])
+            sink.append(Degradation(kind=kind, detail=detail, scope=scope,
+                                    impact=impact).model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 — 登记失败不得影响出片
+            logger.debug("后处理降级登记失败（忽略）", exc_info=True)
+
     def _finalize_timeline(self, final_tl, plugin, agent_context, pid):
         """P1-18: 终局后处理——类型 transform + validate_clip 打标 + 成片署名轨。
 
@@ -753,6 +871,11 @@ class PipelineOrchestratorV2:
                 final_tl = processed.model_dump(mode="json")
             except Exception as e:
                 logger.warning("B21 类型 transform 后处理失败（保留原时间线）: %s", e)
+                self._append_finalize_degradation(
+                    agent_context, "plugin_transform_failed",
+                    detail=f"类型插件 {getattr(plugin, 'plugin_id', '?')} 后处理失败（{e}）",
+                    scope="global", impact="分辨率/帧率/标题/时长截断等类型规范未生效",
+                )
             # 轮 89（批次 8）：validate_clip 接线（原零调用的死能力）——类型
             # 插件可对每个视频 clip 做类型规范校验，违规 clip 打标供审阅
             try:
@@ -773,6 +896,11 @@ class PipelineOrchestratorV2:
                     if _invalid:
                         add_event(pid, "system", "warning",
                                   f"类型规范校验: {_invalid} 个片段不符合 {plugin.plugin_id} 规范（已打标）")
+                        self._append_finalize_degradation(
+                            agent_context, "type_violation",
+                            detail=f"{_invalid} 个片段不符合 {plugin.plugin_id} 规范",
+                            scope="clips", impact="违规范片段已打标，成片可能不符类型约定",
+                        )
             except Exception as e:
                 logger.warning("类型 validate_clip 校验失败（跳过）: %s", e)
 
@@ -879,6 +1007,21 @@ class PipelineOrchestratorV2:
         # P1-18: 后处理统一走 _finalize_timeline（与首跑路径一致）
         final_tl = self._finalize_timeline(final_tl, plugin, agent_context, pid)
         state.shared_data["final_timeline"] = final_tl
+        # F9：后处理降级并入共享数据（与首跑路径同语义）
+        _fin_deg = agent_context.extra_params.pop("_finalize_degradations", None)
+        if _fin_deg:
+            state.shared_data["degradations"] = _fin_deg
+            add_event(pid, "system", "degradation",
+                      f"后处理降级 {len(_fin_deg)} 处", _fin_deg[:10])
+            # B1：后处理降级不属于任何 Agent 作用域，单独记一条账本条目
+            try:
+                from clipwright.services.episode_ledger import get_ledger
+
+                await get_ledger(pid).arecord(
+                    stage="postprocess", decision="pass", degradations=_fin_deg,
+                )
+            except Exception as _pp_err:  # noqa: BLE001
+                logger.warning("后处理降级入账失败（忽略）: %s", _pp_err)
         _ft = state.shared_data.get("final_timeline")
         if _ft:
             add_event(pid, "system", "timeline_snapshot",
@@ -886,6 +1029,8 @@ class PipelineOrchestratorV2:
         if state.status != PipelineStatus.FAILED:
             state.status = PipelineStatus.COMPLETED
         state.updated_at = datetime.now(timezone.utc)
+        # B2：retry 与首跑对等——影子归因与诊断书同样产出
+        await self._shadow_analyze(state, pid)
         # 修复：retry 与 run() 对等——终态持久化 + 运行历史记录
         # （旧实现只写内存结果，重启后 Mongo 停留在失败快照且 /runs 无记录）
         try:
@@ -1097,6 +1242,21 @@ class PipelineOrchestratorV2:
             final_tl, plugin, agent_context, pid,
         )
         state.shared_data["final_timeline"] = final_tl
+        # F9：后处理降级并入共享数据，供诊断/账本消费（无降级时零变化）
+        _fin_deg = agent_context.extra_params.pop("_finalize_degradations", None)
+        if _fin_deg:
+            state.shared_data["degradations"] = _fin_deg
+            add_event(pid, "system", "degradation",
+                      f"后处理降级 {len(_fin_deg)} 处", _fin_deg[:10])
+            # B1：后处理降级不属于任何 Agent 作用域，单独记一条账本条目
+            try:
+                from clipwright.services.episode_ledger import get_ledger
+
+                await get_ledger(pid).arecord(
+                    stage="postprocess", decision="pass", degradations=_fin_deg,
+                )
+            except Exception as _pp_err:  # noqa: BLE001
+                logger.warning("后处理降级入账失败（忽略）: %s", _pp_err)
 
         # 与 V1 对齐：把最终时间线快照写入 trace，前端 SSE 据此进入审阅视图，
         # 不依赖 result 接口的轮询时机
@@ -1184,6 +1344,171 @@ class PipelineOrchestratorV2:
             frontier.extend(rev_deps.get(cur, set()))
         plan_order = [a for group in AgentDAG.get_execution_plan() for a in group]
         return [a for a in plan_order if a in closed]
+
+    # ── B3：调度决策与派工执行 ─────────────────────
+
+    async def _decide_for_heal(self, state, pid: str, issues: list):
+        """影子/启用模式下为自愈选择策略（off 直接返回 None，零开销）。"""
+        try:
+            from clipwright.config import settings
+
+            mode = getattr(settings, "supervisor_mode", "off")
+            if mode == "off":
+                return None
+
+            from clipwright.services.attribution import attribute
+            from clipwright.services.episode_ledger import get_ledger
+            from clipwright.services.supervisor import choose_strategy, record_decision
+
+            ledger = get_ledger(pid)
+            attr = attribute(ledger, issues=issues)
+            blocked = False
+            try:
+                from clipwright.services.budget_guard import is_blocked
+
+                blocked = is_blocked(pid)
+            except Exception:  # noqa: BLE001 — 预算统计失败不拦派工
+                blocked = False
+            state.shared_data["attribution"] = attr.model_dump(mode="json")
+            decisions = [d for d in (state.shared_data.get("decisions") or []) if isinstance(d, dict)]
+            used = [(str(d.get("target_stage", "")), str(d.get("strategy", ""))) for d in decisions]
+            stage = attr.primary_stage
+            decision = choose_strategy(
+                attr,
+                stage_attempts={stage: ledger.attempts(stage)} if stage else {},
+                used_pairs=used,
+                model_swaps=sum(1 for d in decisions if d.get("strategy") == "S2_model"),
+                budget_exhausted=blocked,
+                mode=mode,
+            )
+            record_decision(state, decision, pid=pid)
+            # B10：自动派生只读核查员（仅 mode=on + 归因低置信 + 设置项开启）
+            self._maybe_spawn_diagnostician(state, pid, attr, issues, mode=mode)
+            return decision
+        except Exception as e:  # noqa: BLE001 — 决策失败回退到既有自愈逻辑
+            logger.warning("调度决策失败（回退既有自愈）: %s", e)
+            return None
+
+    def _maybe_spawn_diagnostician(self, state, pid: str, attr, issues, *, mode: str) -> None:
+        """归因说不清时，派一个**只读**子代理去看现场（不阻塞自愈决策）。
+
+        三条边界：
+        1. 只有 `mode == "on"` 才派生（shadow/off 一律不派生，保证 off 等价性）；
+        2. 只授予 `read_file / list_dir / list_subagents`——没有执行权限，因此**不需要**
+           走执行权限审核门（那是给 shell/python 的）；
+        3. 同一阶段只派一次，且派出去是后台任务：核查员跑多久都不耽误自愈决策。
+        """
+        try:
+            from clipwright.config import settings
+
+            if mode != "on" or not getattr(settings, "supervisor_auto_spawn", True):
+                return
+            if str(getattr(attr, "confidence", "")) != "low":
+                return
+            key = str(getattr(attr, "primary_stage", "") or "unknown")
+            done = state.shared_data.setdefault("_diag_spawned", [])
+            if not isinstance(done, list):
+                done = []
+                state.shared_data["_diag_spawned"] = done
+            if key in done:
+                return
+            done.append(key)
+
+            import asyncio
+
+            coro = self._spawn_diagnostician(state, pid, key, issues)
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # 没有事件循环（同步调用/单测）：直接跑完，别丢任务也别假成功
+                asyncio.run(coro)
+            else:
+                loop.create_task(coro)
+        except Exception as e:  # noqa: BLE001 — 派生失败绝不影响管线
+            logger.warning("自动派生核查员失败（忽略）: %s", e)
+
+    async def _spawn_diagnostician(self, state, pid: str, stage: str, issues: list) -> None:
+        """真正的派生与执行（抽出来便于单测直接 await）。"""
+        from types import SimpleNamespace
+
+        from clipwright.supervisor.spawn import spawn_subagent
+
+        issue_text = "；".join(
+            str((i or {}).get("title") or (i or {}).get("message") or "")[:80]
+            for i in (issues or [])[:5]
+        ) or "（质检未给出结构化问题）"
+        ctx = SimpleNamespace(pipeline_id=pid, extra_params={})
+        try:
+            res = await spawn_subagent(
+                ctx,
+                role="失败现场核查员",
+                system_prompt=(
+                    f"管线在阶段「{stage}」失败或产物不达标，归因置信度低。\n"
+                    f"已知问题：{issue_text}\n"
+                    "请用只读手段（读文件、列目录、看子代理）核实：这个阶段依赖的输入"
+                    "到底存不存在、是不是占位/空文件。只输出结论：结论 + 证据（文件路径/大小），"
+                    "不要给修复建议，不要试图修改任何东西。"
+                ),
+                tools=["read_file", "list_dir", "list_subagents"],
+                timeout_sec=45.0,
+                max_turns=4,
+            )
+            add_event(
+                pid, "supervisor", "info",
+                f"核查员结论（{stage}）：{str(res.get('output', ''))[:200]}",
+                {
+                    "subagent_id": res.get("subagent_id"),
+                    "role": "失败现场核查员",
+                    "cost_usd": res.get("cost_usd"),
+                    "duration_ms": res.get("duration_ms"),
+                },
+            )
+        except Exception as e:  # noqa: BLE001 — 子代理失败不影响管线
+            logger.warning("核查员执行失败（忽略）: %s", e)
+
+    async def execute_order(self, state, order, *, result_data: dict, persona_config: dict,
+                            plugin, agent_context, bus):
+        """按派工单执行一个核心阶段（复用 `_dispatch`，不新增执行通道）。
+
+        与 `run_sub_agent` 的区别：后者只认 `AgentRegistry` 里的插件 Agent，
+        而核心 6 阶段**禁止**注册进 registry（`CORE_AGENT_NAMES`）。所以派工必须
+        走编排层自己的 `_run_agent`。
+        """
+        from clipwright.agents.registry import CORE_AGENT_NAMES
+
+        target = str(getattr(order, "target_stage", "") or "")
+        if target not in CORE_AGENT_NAMES:
+            raise ValueError(f"派工单目标阶段非法: {target!r}（只允许核心阶段）")
+
+        # B5：预算耗尽时拒绝新的派工（未配置预算时 is_blocked 恒为 False）
+        try:
+            from clipwright.services.budget_guard import is_blocked
+
+            pid = str(getattr(state, "pipeline_id", "") or "")
+            if pid and is_blocked(pid):
+                raise ValueError(
+                    "预算已耗尽，拒绝新的派工（请到设置里提高预算，或人工接管）"
+                )
+        except ValueError:
+            raise
+        except Exception:  # noqa: BLE001 — 统计失败不阻断派工
+            pass
+
+        extra = {**agent_context.extra_params}
+        order_id = str(getattr(order, "id", "") or "")
+        if order_id:
+            extra["_order_id"] = order_id
+            # 同时挂到共享上下文：Agent 与 Hook 都能看到「这次执行属于哪张派工单」
+            agent_context.extra_params["_order_id"] = order_id
+        issues = getattr(order, "issues", None)
+        if issues:
+            extra["_quality_issues"] = list(issues)[:5]
+            agent_context.extra_params["_quality_issues"] = list(issues)[:5]
+
+        input_data = self._build_input(
+            target, result_data, persona_config, plugin, extra_params=extra,
+        )
+        return await self._run_agent(state, target, input_data, agent_context, bus)
 
     # ── 初始化 ────────────────────────────────────
 
@@ -1305,11 +1630,67 @@ class PipelineOrchestratorV2:
 
     # ── Agent 执行 ────────────────────────────────
 
+    # ── B4：模型路由与熔断键 ──────────────────────
+
+    @staticmethod
+    def _breaker_key(agent_name: str, model_key: str = "") -> str:
+        """熔断键：有模型时按 (阶段, 模型) 隔离，否则退化为阶段名。
+
+        PRD §6.5 / A9：A 模型失败不得连坐 B 模型——所以模型维度必须进键。
+        """
+        return f"{agent_name}::{model_key}" if model_key else agent_name
+
+    def _failed_models_for(self, agent_name: str) -> list[str]:
+        """该阶段已熔断过的模型（喂给路由，避免继续选它）。"""
+        prefix = f"{agent_name}::"
+        out: list[str] = []
+        for key, cb in (self._circuit_breakers or {}).items():
+            if not key.startswith(prefix):
+                continue
+            if int(cb.get("fail_count") or 0) < self._circuit_breaker_threshold:
+                continue
+            out.append(key[len(prefix):])
+        return out
+
+    def _choose_route_for(self, agent_name: str, pid: str = ""):
+        """选模型路由（B4）。关闭状态或未配置路由表时返回 None。
+
+        B5：预算占比 >=70% 时只允许 cheap/std（PRD §6.2 优先级 1）。
+        """
+        try:
+            from clipwright.config import settings
+
+            if getattr(settings, "supervisor_mode", "off") == "off":
+                return None
+            from clipwright.services.model_router import choose_route
+
+            ratio = None
+            if pid:
+                try:
+                    from clipwright.services.budget_guard import budget_ratio
+
+                    ratio = budget_ratio(pid)
+                except Exception:  # noqa: BLE001 — 预算统计失败不收敛模型
+                    ratio = None
+            return choose_route(
+                agent_name,
+                failed_pairs=self._failed_models_for(agent_name),
+                budget_ratio=ratio,
+            )
+        except Exception as e:  # noqa: BLE001 — 路由失败沿用默认模型
+            logger.debug("模型路由选择失败（沿用默认）: %s", e)
+            return None
+
     async def _run_agent(self, state, agent_name, input_data, context, bus,
                          tracer=None):
         """执行单个 Agent，集成总线通信。在熔断检查通过后创建 span。"""
+        # ── B4：先选模型路由，再按 (阶段, 模型) 检查熔断 ──
+        # 路由表为空时 route=None，breaker_key 退化为 agent 名——行为与改造前一致。
+        _route = self._choose_route_for(agent_name, str(getattr(state, "pipeline_id", "") or ""))
+        _breaker_key = self._breaker_key(agent_name, _route.key if _route else "")
+
         # 熔断检查 — 不创建 span
-        if self._check_circuit_breaker(agent_name):
+        if self._check_circuit_breaker(_breaker_key):
             step = state.add_step(agent_name)
             step.status = PipelineStatus.FAILED
             step.started_at = datetime.now(timezone.utc)
@@ -1387,7 +1768,29 @@ class PipelineOrchestratorV2:
             # dispatch 前取用量快照，结束后差值即该 Agent 的 token 消耗
             # （补齐 Material/Edit/Animation/Audio/Quality 的记账缺口）
             _usage_before = llm_usage_snapshot()
-            result = await self._dispatch(agent_name, input_data, context)
+            # F9 单点埋设：Agent 内部的降级登记（llm_or_fallback / 模板化分镜 /
+            # 占位素材…）通过 ContextVar 收集，无需 6 个 Agent 各自改签名。
+            from clipwright.services.degradation import degradation_scope
+            from clipwright.services.model_router import use_route
+            _agent_degradations: list = []
+            with degradation_scope(_agent_degradations), use_route(_route):
+                result = await self._dispatch(agent_name, input_data, context)
+            if _agent_degradations and hasattr(result, "degradations"):
+                # Agent 自己登记过的保留在前，作用域内收集的补在后面（去重同 kind+detail）
+                try:
+                    existing = list(getattr(result, "degradations", []) or [])
+                    seen = {(d.kind, d.detail) for d in existing}
+                    for d in _agent_degradations:
+                        if (d.kind, d.detail) not in seen:
+                            existing.append(d)
+                            seen.add((d.kind, d.detail))
+                    result.degradations = existing
+                    add_event(pid, agent_name, "degradation",
+                              f"{agent_name}: 降级 {len(_agent_degradations)} 处",
+                              [d.model_dump(mode="json") for d in existing[:10]])
+                except Exception as de:
+                    logger.warning("降级并入输出失败（不影响执行）: %s", de)
+
             # P1-19: 在飞调用返回时若管线已取消——结果一律弃用（不写 timeline），
             # 并记 wasted-call 事件（线程内 provider 请求无法真正中断，费用已产生）
             if is_cancelled(pid):
@@ -1411,13 +1814,13 @@ class PipelineOrchestratorV2:
 
             if result.decision != AgentDecision.FAIL:
                 step.status = PipelineStatus.COMPLETED
-                self._record_agent_success(agent_name)
+                self._record_agent_success(_breaker_key)
                 _end_span(status="ok", error="",
                           output_summary=f"决策=PASS, keys={list(step.result.keys()) if step.result else []}")
             else:
                 step.status = PipelineStatus.FAILED
                 step.error = getattr(result, "error", None) or f"{agent_name} failed"
-                self._record_agent_failure(agent_name)
+                self._record_agent_failure(_breaker_key)
                 _end_span(status="error", error=step.error,
                           metadata={"error_category": self._categorize_error(step.error or "")})
 
@@ -1516,7 +1919,7 @@ class PipelineOrchestratorV2:
         except Exception as e:
             step.status = PipelineStatus.FAILED
             step.error = str(e)
-            self._record_agent_failure(agent_name)
+            self._record_agent_failure(_breaker_key)
             add_event(pid, agent_name, "error", f"{agent_name} 异常: {str(e)[:200]}")
             logger.exception("Agent %s 异常: %s", agent_name, e)
             _end_span(status="error", error=str(e)[:200])
@@ -1535,6 +1938,30 @@ class PipelineOrchestratorV2:
         if step.started_at:
             step.duration_ms = int((step.completed_at - step.started_at).total_seconds() * 1000)
         state.updated_at = datetime.now(timezone.utc)
+
+        # ── F1 / B1：账本单点写入 ─────────────────────────────
+        # 只有这一处写账本：失败（F9 的 failure）与降级（B0 的 degradations）都
+        # 已经随 step.result 一起回来了，Agent 内部无需感知账本的存在。
+        try:
+            from clipwright.services.episode_ledger import get_ledger
+
+            _res = step.result or {}
+            _ledger = get_ledger(pid)
+            _usage = _res.get("llm_usage") or {}
+            await _ledger.arecord(
+                stage=agent_name,
+                decision=(step.status.value if hasattr(step.status, "value") else str(step.status)),
+                failure=_res.get("failure"),
+                degradations=list(_res.get("degradations") or []),
+                warnings=list(_res.get("_warnings") or _res.get("warnings") or []),
+                model=str(_usage.get("model", "") or (_route.key if _route else "")),
+                usage=_usage,
+                duration_ms=step.duration_ms or 0,
+            )
+            add_event(pid, agent_name, "ledger_entry",
+                      f"账本: {agent_name} 第 {_ledger.attempts(agent_name)} 次尝试")
+        except Exception as _ledger_err:  # noqa: BLE001 — 账本失败不得影响出片
+            logger.warning("账本写入失败（不影响执行）: %s", _ledger_err)
 
         # 断点续跑落库 — 每完成一个 agent 即持久化检查点（含已完成的 steps 与
         # 共享数据），进程崩溃/重启后可从最后一个完整步骤恢复/重放。

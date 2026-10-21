@@ -1,0 +1,273 @@
+"""主代理调度子代理 + 子代理失败详情回传（收口批次）。
+
+要证明的不是"能 spawn"，而是三件更细的事：
+1. 主代理能**查看/取消**子代理，不只会上车；
+2. 子代理失败时回传的是**结构化失败**（类别/可否重试/证据/工具轨迹/花费），
+   而不是一句截断字符串；
+3. 主代理据此**再做一次判断**：可重试的失败自动重试一次，不可重试的才收尾；
+   等人工审核时任务暂停（不是失败）。
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from clipwright.config import settings
+from clipwright.schema.task import Plan, PlanStep, TaskRequest
+from clipwright.services import agent_kernel as ak
+from clipwright.services import subagent_capability as sc
+from clipwright.services import task_events as te
+from clipwright.supervisor.tracker import get_tracker
+
+
+@pytest.fixture(autouse=True)
+def _clean(monkeypatch):
+    ak.reset_kernel_state()
+    te.clear()
+    monkeypatch.setattr(settings, "agent_mode", "on", raising=False)
+    yield
+    ak.reset_kernel_state()
+    te.clear()
+
+
+def _task():
+    from clipwright.schema.task import Task
+
+    return Task(id="task_sub", request=TaskRequest(topic="x"))
+
+
+# ── 1. 查询 / 取消 ────────────────────────────────────
+
+
+def test_list_subagents_reports_tree():
+    tracker = get_tracker("task_sub")
+    node = tracker.register("核查员")
+    tracker.update(node.id, status="running", last_output="正在看第 3 段")
+
+    out = asyncio.run(sc.run(_task(), PlanStep(id="s1", capability="list_subagents")))
+    assert out["status"] == "ok"
+    assert out["output"]["count"] == 1
+    assert out["output"]["subagents"][0]["role"] == "核查员"
+    assert "第 3 段" in out["output"]["subagents"][0]["last_output"]
+
+
+def test_get_status_and_missing():
+    tracker = get_tracker("task_sub")
+    node = tracker.register("核查员")
+    tracker.update(node.id, status="done")
+
+    ok = asyncio.run(sc.run(_task(), PlanStep(
+        id="s1", capability="get_subagent_status", args={"subagent_id": node.id},
+    )))
+    assert ok["output"]["status"] == "done"
+
+    bad = asyncio.run(sc.run(_task(), PlanStep(
+        id="s1", capability="get_subagent_status", args={"subagent_id": "sa_nope"},
+    )))
+    assert bad["status"] == "error"
+    assert bad["failure"]["category"] == "not_found"
+    assert bad["failure"]["retryable"] == "permanent"
+
+
+def test_cancel_subagent():
+    tracker = get_tracker("task_sub")
+    node = tracker.register("核查员")
+    tracker.update(node.id, status="running")
+
+    out = asyncio.run(sc.run(_task(), PlanStep(
+        id="s1", capability="cancel_subagent", args={"subagent_id": node.id},
+    )))
+    assert out["status"] == "ok"
+    assert out["output"]["status"] == "cancelled"
+
+
+# ── 2. 失败详情、等审核、成功结论 ─────────────────────────
+
+
+def test_failure_report_is_structured(monkeypatch):
+    from clipwright.supervisor import spawn as sp
+
+    async def fake_spawn(ctx, **kwargs):  # noqa: ANN001
+        return {
+            "worker_id": "w_1", "subagent_id": "sa_1", "role": kwargs["role"],
+            "status": "failed", "error": "LLM 调用失败: 429",
+            "failure": {
+                "category": "external_unavailable", "retryable": "retry_same",
+                "blocking_point": "429 限流",
+                "evidence": [{"kind": "error", "text": "429 限流"}],
+                "tool_calls": 2,
+            },
+            "tool_calls": [
+                {"tool": "read_file", "ok": True, "brief": "读了 a.mp4 清单"},
+                {"tool": "web_search", "ok": False, "error": "未配置"},
+            ],
+            "duration_ms": 1200,
+        }
+
+    monkeypatch.setattr(sp, "spawn_subagent", fake_spawn)
+    out = asyncio.run(sc.run(_task(), PlanStep(
+        id="s1", capability="spawn_subagent", args={"role": "核查员"},
+    )))
+    assert out["status"] == "error"
+    assert out["failure"]["category"] == "external_unavailable"
+    assert out["failure"]["retryable"] == "retry_same"
+    # 主代理能看到它调了哪些工具、哪个失败
+    assert [c["tool"] for c in out["tool_calls"]] == ["read_file", "web_search"]
+    assert out["cost_usd"] is None
+
+
+def test_pending_review_is_not_failure(monkeypatch):
+    from clipwright.supervisor import spawn as sp
+
+    async def fake_spawn(ctx, **kwargs):  # noqa: ANN001
+        return {
+            "worker_id": "w_2", "subagent_id": "sa_2", "status": "pending_review",
+            "review": {"risk": "high", "reasons": ["会删除目录"]},
+            "needs_human_review": True,
+        }
+
+    monkeypatch.setattr(sp, "spawn_subagent", fake_spawn)
+    out = asyncio.run(sc.run(_task(), PlanStep(
+        id="s1", capability="spawn_subagent", args={"role": "运维核查员"},
+    )))
+    assert out["status"] == "needs_human_review"
+    assert out["risk"] == "high"
+    assert "人工审核" in out["note"]
+
+
+def test_success_conclusion_visible_to_main_agent(monkeypatch):
+    from clipwright.supervisor import spawn as sp
+
+    async def fake_spawn(ctx, **kwargs):  # noqa: ANN001
+        return {
+            "worker_id": "w_3", "subagent_id": "sa_3", "status": "done",
+            "output": "第 3 段是占位图，建议换实拍",
+            "cost_usd": 0.02, "tokens": 1500, "duration_ms": 900,
+            "tool_calls": [{"tool": "read_file", "ok": True, "brief": "看清单"}],
+        }
+
+    monkeypatch.setattr(sp, "spawn_subagent", fake_spawn)
+    out = asyncio.run(sc.run(_task(), PlanStep(
+        id="s1", capability="spawn_subagent", args={"role": "核查员"},
+    )))
+    assert out["status"] == "ok"
+    assert "占位图" in out["output"]["conclusion"]
+    assert out["output"]["cost_usd"] == 0.02
+    assert out["output"]["tokens"] == 1500
+    assert out["output"]["tool_calls"][0]["tool"] == "read_file"
+
+
+def test_spawn_rejection_has_failure_block(monkeypatch):
+    from clipwright.supervisor import spawn as sp
+
+    async def boom(ctx, **kwargs):  # noqa: ANN001
+        raise sp.SpawnError("并发子代理已达上限（6）")
+
+    monkeypatch.setattr(sp, "spawn_subagent", boom)
+    out = asyncio.run(sc.run(_task(), PlanStep(
+        id="s1", capability="spawn_subagent", args={"role": "核查员"},
+    )))
+    assert out["status"] == "refused"
+    assert out["failure"]["category"] == "spawn_rejected"
+    assert "并发" in out["failure"]["blocking_point"]
+
+
+# ── 3. 主代理据失败再做判断（retry vs finish）────────────────
+
+
+class _RecordingPlanner:
+    """记下 reflect 收到的 outcome，用来证明失败信息真的到了主代理手里。"""
+
+    def __init__(self, steps):  # noqa: ANN001
+        self.steps = steps
+        self.outcomes: list[dict] = []
+
+    async def plan(self, task):  # noqa: ANN001, ANN201
+        return Plan(steps=[s.model_copy(deep=True) for s in self.steps])
+
+    async def reflect(self, task, step, outcome):  # noqa: ANN001, ANN201
+        self.outcomes.append(dict(outcome))
+        return await ak.LLMPlanner().reflect(task, step, outcome)
+
+
+def _kernel(tmp_path, planner, executor):
+    return ak.AgentKernel(ak.KernelDeps(planner=planner, executor=executor,
+                                        checkpoint_dir=tmp_path / "tasks"))
+
+
+def test_retryable_failure_is_retried_once(tmp_path):
+    """可重试的失败 → 主代理自动再试一次，第二次成功则任务完成。"""
+    attempts = {"n": 0}
+
+    async def flaky(task, step):  # noqa: ANN001, ANN201
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return {"status": "error", "error": "429 限流",
+                    "failure": {"category": "external_unavailable",
+                                "retryable": "retry_same",
+                                "evidence": [{"kind": "error", "text": "429"}]}}
+        return {"status": "ok", "output": {"conclusion": "看到了"}}
+
+    planner = _RecordingPlanner([PlanStep(id="s1", capability="spawn_subagent")])
+    k = _kernel(tmp_path, planner, flaky)
+    task = k.create(TaskRequest(topic="x", plan_only=False))
+    task = asyncio.run(k.run(task))
+
+    assert attempts["n"] == 2, "第一次失败应触发重试"
+    assert task.status == "done"
+    assert task.plan.steps[0].attempt == 2
+    assert any(e.type == "replan" for e in te.events(task.id))
+
+
+def test_permanent_failure_finishes_with_category(tmp_path):
+    async def broken(task, step):  # noqa: ANN001, ANN201
+        return {"status": "error", "error": "权限不足",
+                "failure": {"category": "input_insufficient", "retryable": "needs_human",
+                            "evidence": [{"kind": "error", "text": "401 未授权"}]}}
+
+    planner = _RecordingPlanner([PlanStep(id="s1", capability="spawn_subagent")])
+    k = _kernel(tmp_path, planner, broken)
+    task = k.create(TaskRequest(topic="x", plan_only=False))
+    task = asyncio.run(k.run(task))
+
+    assert task.status == "failed"
+    assert "input_insufficient" in task.finish.reason
+    assert "401" in task.finish.reason
+
+
+def test_needs_human_review_pauses_task(tmp_path):
+    async def waiting(task, step):  # noqa: ANN001, ANN201
+        return {"status": "needs_human_review", "approval_id": "w_9",
+                "risk": "high", "reasons": ["会删除目录"], "role": "运维核查员"}
+
+    planner = _RecordingPlanner([
+        PlanStep(id="s1", capability="spawn_subagent", args={"role": "运维核查员"}),
+        PlanStep(id="s2", capability="media_probe", args={"input_path": "a.mp4"}),
+    ])
+    k = _kernel(tmp_path, planner, waiting)
+    task = k.create(TaskRequest(topic="x", plan_only=False))
+    task = asyncio.run(k.run(task))
+
+    assert task.status == "paused"
+    assert task.plan.steps[0].status == "pending", "等审核不算完成"
+    assert task.plan.steps[1].status == "pending", "暂停后不推进下一步"
+    assert any(e.type == "approval_request" for e in te.events(task.id))
+    assert task.finish is None
+
+
+def test_failure_evidence_reaches_digest(tmp_path):
+    async def broken(task, step):  # noqa: ANN001, ANN201
+        return {"status": "error", "error": "工具失败",
+                "failure": {"category": "tool_failed", "retryable": "permanent",
+                            "evidence": [], "tool_calls": 3}}
+
+    planner = _RecordingPlanner([PlanStep(id="s1", capability="spawn_subagent")])
+    k = _kernel(tmp_path, planner, broken)
+    task = k.create(TaskRequest(topic="x", plan_only=False))
+    task = asyncio.run(k.run(task))
+
+    facts = task.context_digest[0]["facts"]
+    assert facts.get("failure_category") == "tool_failed"
+    assert facts.get("failure_tool_calls") == 3

@@ -136,6 +136,55 @@ class LLMService:
             self._flash_client = self._build_client(flash=True)
         return self._flash_client
 
+    def _routed_client_and_model(self, use_flash: bool = False):
+        """B4：若当前上下文有模型路由，返回 (client, model) 覆盖默认模型。
+
+        - 无路由（`model_routes` 留空 / off 模式）→ 返回默认 client 与 None，
+          行为与改造前完全一致；
+        - 同 provider → 复用现有 client，只换 model；
+        - 跨 provider → 用该 provider 的凭据构建（共享客户端缓存），凭据缺失时
+          记 warning 并回退默认，绝不静默串用别的 provider 的 key。
+        """
+        try:
+            from clipwright.services.model_router import active_route, resolve_provider_credentials
+
+            route = active_route()
+        except Exception:  # noqa: BLE001
+            route = None
+        if route is None:
+            return (self.flash_client if use_flash else self.client), None
+
+        default_provider = (
+            settings.llm_flash_provider or self.provider
+        ) if use_flash else self.provider
+        if not route.provider or route.provider == default_provider:
+            return (self.flash_client if use_flash else self.client), (route.model or None)
+
+        creds = resolve_provider_credentials(route.provider)
+        if not creds:
+            logger.warning(
+                "模型路由目标 provider 无可用凭据，沿用默认模型: %s", route.key,
+            )
+            return (self.flash_client if use_flash else self.client), (route.model or None)
+
+        try:
+            client = self._construct_client(
+                route.provider,
+                api_key=creds.get("api_key"),
+                base_url=creds.get("base_url"),
+                model=route.model or creds.get("model") or settings.llm_model,
+                instructions=settings.llm_instructions,
+                max_tokens=8192,
+                flash=False,
+                timeout_sec=float(creds.get("timeout_sec") or 0.0),
+                proxy=str(creds.get("proxy") or ""),
+                headers=dict(creds.get("headers") or {}) or None,
+            )
+        except Exception as e:  # noqa: BLE001 — 跨 provider 构造失败回退默认
+            logger.warning("跨 provider 客户端构建失败（回退默认）: %s", e)
+            return (self.flash_client if use_flash else self.client), (route.model or None)
+        return client, (route.model or None)
+
     def _build_client(self, flash: bool = False) -> AnthropicMessages | OpenAIChat:
         """根据配置构建对应的 IsoBase LLM 客户端（委托唯一构造点）。
 
@@ -276,7 +325,10 @@ class LLMService:
             kwargs["timeout"] = timeout
         # 过滤仅用于日志/追踪的元数据参数，不透传给 API
         kwargs.pop("pipeline_id", None)
-        client = self.flash_client if use_flash else self.client
+        # B4：路由覆盖（无路由时返回默认 client 与 None）
+        client, _routed_model = self._routed_client_and_model(use_flash)
+        if _routed_model and not model:
+            model = _routed_model
         logger.debug("LLM generate 请求: flash=%s, model=%s, timeout=%ds, messages=%s, tools=%s",
                      use_flash, model or settings.llm_model, timeout,
                      json.dumps(messages, ensure_ascii=False)[:500],
@@ -354,7 +406,9 @@ class LLMService:
         ask_kwargs = {**kwargs, "stream": False}
         if tools is not None:
             ask_kwargs["tools"] = tools
-        client = self.flash_client if use_flash else self.client
+        client, _routed_model = self._routed_client_and_model(use_flash)
+        if _routed_model and not ask_kwargs.get("model"):
+            ask_kwargs["model"] = _routed_model
         resp = await asyncio.to_thread(
             partial(client.ask, prompt=prompt, **ask_kwargs),
         )
@@ -406,8 +460,18 @@ class LLMService:
         logger.debug("LLM structured_output 请求: flash=%s, system=%.300s, user=%.300s, schema=%s",
                      use_flash, system_prompt[:300], user_prompt[:300],
                      json.dumps(output_schema, ensure_ascii=False)[:200] if output_schema else "none")
-        # 选择与目标客户端一致的 provider 来构造消息格式
-        provider = (settings.llm_flash_provider or self.provider) if use_flash else self.provider
+        # 选择与目标客户端一致的 provider 来构造消息格式（B4：路由优先）
+        _route_provider = ""
+        try:
+            from clipwright.services.model_router import active_route
+
+            _route = active_route()
+            _route_provider = str(getattr(_route, "provider", "") or "") if _route else ""
+        except Exception:  # noqa: BLE001
+            _route_provider = ""
+        provider = _route_provider or (
+            (settings.llm_flash_provider or self.provider) if use_flash else self.provider
+        )
         # B-1：消息格式规范由 provider 协议提供（legacy 分支兜底）
         # B2/B3：缺方法或能力未声明时由访问器给最小可用语义 + 可读告警
         impl = _resolve_llm_provider(provider)

@@ -50,6 +50,8 @@ from clipwright.tool.timeline_view import TimelineViewTool
 from clipwright.tool.transcribe import WhisperTranscribeTool
 from clipwright.tool.voice import TextToSpeechTool, VoiceCloneTool
 from clipwright.tool.web_search_tool import WebFetchTool, WebSearchTool
+from clipwright.tool.fs_tools import ListDirTool, ReadFileTool, WriteFileTool
+from clipwright.tool.type_spec_tool import GetTypeSpecTool
 from clipwright.tool.subtitle import SubtitleBurnTool
 from clipwright.tool.text_video import GenerateTextVideoTool
 from clipwright.tool.video import (
@@ -124,6 +126,12 @@ def register_builtin_tools() -> None:
         DescribeLLMMGTool(),
         WebSearchTool(),
         WebFetchTool(),
+        # ── 文件读写（主 Agent / 子代理的基础能力）──
+        ReadFileTool(),
+        ListDirTool(),
+        WriteFileTool(),
+        # —— 类型规范查询（只读；主 agent 判断"能不能豁免"用）——
+        GetTypeSpecTool(),
     ]
     for tool in tools:
         ToolRegistry.register(tool)
@@ -189,4 +197,7 @@ __all__ = [
     "DescribeLLMMGTool",
     "WebSearchTool",
     "WebFetchTool",
+    "ReadFileTool",
+    "ListDirTool",
+    "WriteFileTool",
 ]

@@ -1,0 +1,15 @@
+id: "pv_engine"
+name: "PV Engine（eternal-questioning-pv）"
+version: "1.0.0"
+kind: "capability"
+description: "把 github.com/Zam233/eternal-questioning-pv 的逐帧渲染引擎接成 agent 可调用的工具与技能"
+author: "Clipwright Team"
+entry_point: "pv_engine.main"
+
+# P1 迁移：新契约声明（声明即授权）
+api_version: "2"
+contributions:
+  - { kind: tool, id: pv_engine_probe }
+  - { kind: tool, id: pv_engine_audit }
+  - { kind: tool, id: pv_engine_stills }
+  - { kind: skill, id: pv_engine_review }

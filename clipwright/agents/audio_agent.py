@@ -285,7 +285,8 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                 scenes_emotions = self._collect_scenes_emotions(input_data, timeline)
                 if scenes_emotions:
                     llm_alloc = await self._llm_match_bgm(
-                        scenes_emotions, bgm_slots, context.pipeline_id
+                        scenes_emotions, bgm_slots, context.pipeline_id,
+                        getattr(context, "category_plugin_id", "") or "",
                     )
                     allocs = llm_alloc.get("allocations", [])
                     if allocs:
@@ -959,6 +960,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
         scenes_emotions: list[dict],
         bgm_slots: dict,
         pipeline_id: str = "",
+        category_id: str = "",
     ) -> dict:
         """按场景情绪调用 LLM 推荐 BGM 槽位分配（风格 + 音量包络 + 停顿设计）。
 
@@ -996,6 +998,12 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                 "- slot 必须是给定槽位之一，每个槽位最多一条 allocation；\n"
                 "- 包络至少 2 个点，t 由 0 递增到 1，音量 0-1；\n"
                 "- 停顿秒数必须 >= 0。"
+            )
+            # V1/V15：类型身份 + 音频/字幕两阶段规范（音频 Agent 同时管字幕生成）
+            from clipwright.services.type_prompts import compose_many as compose_type_prompts
+
+            system_prompt = compose_type_prompts(
+                system_prompt, category_id, ("audio", "subtitle")
             )
             user_prompt = (
                 f"以下是 {len(scenes_emotions)} 个分镜场景（含标题/描述/情绪），"

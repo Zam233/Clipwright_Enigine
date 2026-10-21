@@ -146,7 +146,13 @@ def test_get_runs_endpoint_shape() -> None:
     assert len(data) == 1
     run = data[0]
     # 对齐 PipelineAdminPage normalize(): id/topic/status/duration_ms/started_at/agents
-    assert set(run.keys()) == {"id", "topic", "status", "duration_ms", "started_at", "agents"}
+    # V38：再加用量总账 usage（token / render_sec）
+    assert set(run.keys()) == {
+        "id", "topic", "status", "duration_ms", "started_at", "agents", "usage",
+    }
+    assert set(run["usage"].keys()) == {
+        "input_tokens", "output_tokens", "total_tokens", "calls", "by_agent", "render_sec",
+    }
     assert run["id"] == "pl_api_1"
     assert run["topic"] == "API话题"
     assert run["status"] == "completed"

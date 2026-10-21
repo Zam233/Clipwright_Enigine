@@ -1,0 +1,16 @@
+fields:
+  engine_dir:
+    type: string
+    value: ""
+    label: "PV 引擎目录"
+    description: "eternal-questioning-pv 仓库根目录（含 _build/audit.py 与 _build/pv/build.py）。留空则读环境变量 CLIPWRIGHT_PV_ENGINE_DIR。"
+  audit_timeout_sec:
+    type: int
+    value: 300
+    label: "审计超时（秒）"
+    description: "引擎审计是纯数据检查，超时通常意味着数据/路径有问题"
+  stills_timeout_sec:
+    type: int
+    value: 900
+    label: "抽帧超时（秒）"
+    description: "抽静帧需要解码素材与逐帧渲染，给足时间"

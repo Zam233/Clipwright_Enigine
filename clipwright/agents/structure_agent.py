@@ -17,9 +17,44 @@ from clipwright.schema.agent import (
 from clipwright.schema.tool import ToolExecResult
 from clipwright.schema.skill import SkillExecResult
 from clipwright.services.llm import LLMService
+from clipwright.services.degradation import note_degradation
 from clipwright.tool.base import AgentToolkit
 from clipwright.tool.registry import ToolRegistry
 from clipwright.config import logger
+
+
+async def write_back_plan_drift_if_session(
+    context: Any,
+    drifts: list[dict[str, Any]],
+) -> int:
+    """V58 写回：有 ``session_id`` 就把偏离并入会话里的规划书；没有则跳过。
+
+    **必须 offload 到线程**：会话模型的 Mongo 访问在事件循环线程里会返回协程
+    （仓库既有的 `_io()` 陷阱，`_persist` 也是这么绕开的）；直接在协程里同步调用
+    会静默失败——本轮真机就踩到过"返回 0、写入没发生"。
+    """
+    session_id = str((getattr(context, "extra_params", None) or {}).get("session_id") or "")
+    if not session_id or not drifts:
+        return 0
+    try:
+        from clipwright.services.requirements_service import write_back_plan_drift
+
+        return await asyncio.to_thread(write_back_plan_drift, session_id, drifts)
+    except Exception as exc:  # noqa: BLE001 - 写回失败不得影响出片
+        logger.warning("规划偏离写回失败（已跳过）: %s", exc)
+        return 0
+
+
+def compose_structure_prompt(base: str, category_id: str) -> str:
+    """结构阶段的类型注入（身份 + structure 槽位，固定序）。
+
+    抽成模块级函数是为了能单测：结构阶段的 ``execute()`` 牵动 LLM + 工具链，
+    在单测里捕获 system prompt 成本太高，容易变成"测试跑不动、接线悄悄丢掉"。
+    """
+    from clipwright.services.type_prompts import compose
+
+    return compose(base, category_id, "structure")
+
 
 SYSTEM_PROMPT_TPL = """你是一个{tone}风格的视频脚本创作者。
 
@@ -306,7 +341,44 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                     return output
 
             system_prompt = self._build_system_prompt(identity, language, rhythm, constraints)
+            # V1/V15：类型身份 + 结构阶段规范固定序注入（无槽位时零变化）
+            system_prompt = compose_structure_prompt(
+                system_prompt, context.category_plugin_id or ""
+            )
             system_prompt += TOOL_PROMPT
+
+            # A-16（plan-first）：先取规划；开了 plan_first 却没有规划 → 明确失败，
+            # 不许悄悄退回"自由生成"（验收 V55）。
+            from clipwright.services.plan_first import (
+                PlanMissing,
+                plan_prompt_block,
+                require_plan,
+            )
+
+            try:
+                plan = require_plan(context.extra_params)
+            except PlanMissing as exc:
+                logger.error("StructureAgent: plan-first 缺少规划，明确失败: %s", exc)
+                return StructureOutput(
+                    decision=AgentDecision.FAIL,
+                    script_skeleton={
+                        "topic": context.topic,
+                        "_warnings": [str(exc)],
+                        "failure_reason": "plan_missing",
+                    },
+                    scenes=[],
+                )
+            if plan is not None:
+                block = plan_prompt_block(plan)
+                if block:
+                    system_prompt += "\n\n" + block
+
+            # F-04 落点：用户创作提示词（L1，优先于类型默认风格）
+            from clipwright.services.creative_prompt import creative_prompt_block
+
+            user_prompt_block = creative_prompt_block(context.extra_params)
+            if user_prompt_block:
+                system_prompt += "\n\n" + user_prompt_block
 
             if input_data.persona_prompt:
                 system_prompt += f"\n\n## Persona Prompt\n{input_data.persona_prompt}\n"
@@ -464,6 +536,13 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                         return sc, wa
                     except asyncio.TimeoutError:
                         logger.warning("StructureAgent: LLM 超时（>%ss），使用 fallback", self.timeout_sec)
+                        # F9：超时回退到模板化分镜属于「完成了但打了折扣」，必须留痕
+                        note_degradation(
+                            "llm_timeout_fallback",
+                            detail=f"StructureAgent: 分镜生成 LLM 超时（>{self.timeout_sec}s）",
+                            scope="scenes",
+                            impact="改用模板化分镜，结构与文案质量下降",
+                        )
                         return self._fallback_scenes(context.topic, tone, script_text), [f"LLM 超时（>{self.timeout_sec}s）"]
 
                 scenes, warnings = await _generate_scenes()
@@ -481,6 +560,13 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
             if not scenes:
                 logger.info("StructureAgent: 无有效场景，使用 fallback")
+                # F9：LLM 正常返回但没解析出可用场景 → 同样是降级
+                note_degradation(
+                    "scenes_fallback",
+                    detail="StructureAgent: LLM 未产出可用的有效场景，改用模板化分镜",
+                    scope="scenes",
+                    impact="改用模板化分镜，结构与文案质量下降",
+                )
                 scenes = self._fallback_scenes(context.topic, tone, script_text)
 
             # 为缺少动画标记的场景调用 LLM 补充动画标记（不硬编码），供 AnimationAgent 创建动画
@@ -490,6 +576,30 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             scenes = self._strip_opening_animation_markers(
                 scenes, context.category_plugin_id
             )
+
+            # A-17：执行偏离规划 → plan_drift 留痕（JSONL + trace 事件；无 plan 时零变化）
+            if plan is not None:
+                try:
+                    from clipwright.services.plan_first import (
+                        append_drift,
+                        detect_drift,
+                        emit_drift_events,
+                    )
+
+                    drifts = detect_drift(plan, scenes)
+                    if drifts:
+                        drift_path = (context.extra_params or {}).get("plan_drift_path")
+                        if drift_path:
+                            append_drift(drift_path, drifts)
+                        # V58：同一批偏离同时进 trace，前端运行详情可查
+                        emit_drift_events(context.pipeline_id, drifts)
+                        # V58：会话里的规划书同步写回（有 session_id 才写）
+                        await write_back_plan_drift_if_session(context, drifts)
+                        warnings = list(warnings) + [
+                            f"plan_drift: {item.get('code')}" for item in drifts
+                        ]
+                except Exception as exc:  # noqa: BLE001 - 留痕失败不得影响出片
+                    logger.warning("plan_drift 记录失败（已跳过）: %s", exc)
             # R8：给每个场景钉上真实素材镜头引用（`material_refs`），
             # 让规划书从"一段文字描述"变成"指名道姓用哪些镜头"，下游不再各剪各的。
             scenes, warnings = self._ground_scenes(scenes, context, warnings)
@@ -761,7 +871,14 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
         返回注入的场景序号（-1 = 已有覆盖/不适用，未注入）。
         """
-        if category_plugin_id not in cls._DATA_CHART_CATEGORIES or len(scenes) < 2:
+        # A-08：类型可声明 required_animation_markers: [data_chart]；
+        # 未声明时回落到旧集合（D4：本期迁出，一周期后删）。
+        from clipwright.services.type_spec_runtime import required_markers
+
+        wants_chart = "data_chart" in required_markers(category_plugin_id) or (
+            category_plugin_id in cls._DATA_CHART_CATEGORIES
+        )
+        if not wants_chart or len(scenes) < 2:
             return -1
         if any(
             cls._DATA_CHART_MARKER_RE.search(s.get("description", "") or "")
@@ -806,7 +923,14 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         仅对 _OUTRO_ANIMATION_CATEGORIES 生效；已有标记则不动。
         返回注入的场景序号（-1 = 未注入）。
         """
-        if category_plugin_id not in cls._OUTRO_ANIMATION_CATEGORIES or not scenes:
+        # A-08：declares.outro_animation 优先，未声明回落旧集合。
+        from clipwright.services.type_spec_runtime import declare_flag
+
+        if not declare_flag(
+            category_plugin_id,
+            "outro_animation",
+            category_plugin_id in cls._OUTRO_ANIMATION_CATEGORIES,
+        ) or not scenes:
             return -1
         last = scenes[-1]
         desc = (last.get("description") or "").strip()
@@ -835,7 +959,15 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
           开场允许动画标记（原样保留），符合其高能开场特性；
         - 知识类及其余类型（knowledge_longform 等，含未指定类型）：维持原有剥离行为。
         """
-        if category_plugin_id in _OPENING_ANIMATION_ALLOWED_PLUGIN_IDS:
+        # A-08：declares.opening_animation=True 表示"开场允许动画标记"；
+        # 未声明时回落旧集合（快速类型允许，其余剥离）。
+        from clipwright.services.type_spec_runtime import declare_flag
+
+        if declare_flag(
+            category_plugin_id,
+            "opening_animation",
+            category_plugin_id in _OPENING_ANIMATION_ALLOWED_PLUGIN_IDS,
+        ):
             return scenes
         import re
         if not scenes:

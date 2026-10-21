@@ -69,7 +69,15 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         enable_visual = constraints.get("enable_visual_llm", False)
         # 轮 84（数码评测专项）：语义质检对评测/知识类默认开启——型号/参数/文案
         # 一致性是这两类内容的发布硬要求；其余类型维持默认关闭。
-        semantic_default = context.category_plugin_id in _SEMANTIC_QA_DEFAULT_ON
+        # A-08：优先读类型声明（declares.semantic_qa_default），
+        # 未声明时回落到旧集合 _SEMANTIC_QA_DEFAULT_ON（D4：本期迁出，一周期后删）。
+        from clipwright.services.type_spec_runtime import declare_flag
+
+        semantic_default = declare_flag(
+            context.category_plugin_id,
+            "semantic_qa_default",
+            context.category_plugin_id in _SEMANTIC_QA_DEFAULT_ON,
+        )
         enable_semantic = constraints.get("enable_semantic_qa", semantic_default)
         if qdepth == "basic":
             enable_visual = enable_semantic = False
@@ -331,6 +339,11 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         if isinstance(glossary, list) and glossary:
             issues.extend(self._check_glossary(timeline, [str(t) for t in glossary if str(t).strip()]))
 
+        # ── 10.5 类型同一性（A-09 / PRD F12）──
+        # L1 可测代理恒开（零 LLM 成本）：用 signature_traits 判"这是不是该类型的片子"；
+        # L2/L3 LLM 裁判默认关闭（D7），关闭时在 info 里显式声明"未做复核"，不许装作判过。
+        issues.extend(await _check_type_conformance(timeline, context))
+
         # ── 判定 ──
         errors = [i for i in issues if i.severity == "error"]
         decision = AgentDecision.FAIL if errors else AgentDecision.PASS
@@ -532,6 +545,12 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         system_prompt = (
             "你是一名视频质检编辑。检查给定视频文案与创意简报的一致性、"
             "错别字与风格问题。只输出 JSON。"
+        )
+        # V1/V15：类型身份 + 质检阶段规范（该类型特有的检查点/反模式）
+        from clipwright.services.type_prompts import compose as compose_type_prompt
+
+        system_prompt = compose_type_prompt(
+            system_prompt, getattr(context, "category_plugin_id", "") or "", "quality"
         )
         user_prompt = (
             "【创意简报】\n"
@@ -808,3 +827,108 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                                 f"{timeline.duration_sec:.1f}s）",
                         location=clip.id,
                     ))
+
+
+# ── A-09：类型同一性校验（模块级，便于单测与复用）──────────────────────────
+
+
+async def _check_type_conformance(timeline, context) -> list[QualityIssue]:
+    """用 ``signature_traits`` 判"这是不是该类型的片子"（PRD F12 L1 + V17 L2）。
+
+    - L1 可测代理恒开（零 LLM 成本）；
+    - L2/L3 LLM 裁判默认关闭（D7）；开启时真调 LLM 并把判据写进问题清单，
+      关闭时追加一条 info 明确"未做复核"（绝不假装判过）；
+    - 类型未声明 ``signature_traits`` → 返回空（零行为变化）。
+    """
+    category_id = getattr(context, "category_plugin_id", "") or ""
+    if not category_id or timeline is None:
+        return []
+    try:
+        from clipwright.services.genre_conformance import acheck_conformance
+        from clipwright.services.genre_judge import judge_enabled, llm_judge
+        from clipwright.services.trait_collector import collect_traits
+        from clipwright.services.type_spec_runtime import load_spec
+
+        spec = load_spec(category_id)
+        if not spec.traits:
+            return []
+
+        extra = getattr(context, "extra_params", {}) or {}
+        grid = None
+        try:
+            from clipwright.services.mv_cues import build_grid
+
+            bpm = float(extra.get("bpm") or 0)
+            if bpm > 0:
+                grid = build_grid(bpm, float(extra.get("beat_zero_sec") or 0))
+        except Exception:  # noqa: BLE001 - 网格不可用不影响 L1
+            grid = None
+
+        measured = collect_traits(timeline, grid=grid)
+        enabled = judge_enabled(extra)
+        judge_fn = None
+        if enabled:
+
+            async def _judge(traits, measured_now, report):
+                return await llm_judge(
+                    traits,
+                    measured_now,
+                    report,
+                    type_id=category_id,
+                    timeline=timeline,
+                )
+
+            judge_fn = _judge
+
+        report = await acheck_conformance(
+            spec.traits,
+            measured,
+            enable_genre_judge=enabled,
+            judge=judge_fn,
+        )
+    except Exception as exc:  # noqa: BLE001 - 校验失败不得让质检整体崩
+        logger.warning("类型同一性校验失败（已跳过）: %s", exc)
+        return []
+
+    out: list[QualityIssue] = []
+    for item in report.traits:
+        if item.passed:
+            continue
+        out.append(
+            QualityIssue(
+                severity="error" if item.enforce == "strict" else "warning",
+                category="type_conformance",
+                message=(
+                    f"类型「{category_id}」指标不符：{item.render()}"
+                    + (f"（{item.reason}）" if item.reason else "")
+                ),
+            )
+        )
+    if report.judge == "skipped":
+        out.append(
+            QualityIssue(
+                severity="info",
+                category="type_conformance",
+                message="未做 LLM 同一性复核（D7 默认关闭）；L1 可测指标已计算",
+            )
+        )
+    elif report.judge == "mismatch":
+        # V17：裁判判错配 → 进 error（带判据），让重做循环知道"指标可能都过了，
+        # 但形态不是这个类型"，否则只按 strict 指标重做会一直改不动气质。
+        detail = report.judge_detail or {}
+        reasons = [str(r) for r in (detail.get("reasons") or []) if str(r).strip()]
+        evidence = detail.get("evidence") or []
+        rendered_evidence = "；".join(
+            f"{e.get('metric')}={e.get('value')}（应 {e.get('expectation')}）"
+            for e in evidence
+            if isinstance(e, dict) and e.get("metric")
+        )
+        message = "类型同一性裁判判为错配（LLM 裁判）"
+        if reasons:
+            message += "：" + "；".join(reasons[:4])
+        if rendered_evidence:
+            message += f"。证据：{rendered_evidence}"
+        out.append(
+            QualityIssue(severity="error", category="type_conformance", message=message)
+        )
+    return out

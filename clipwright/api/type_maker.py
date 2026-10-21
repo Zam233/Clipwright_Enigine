@@ -11,11 +11,21 @@ from typing import Any, Optional
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from clipwright.category.registry import CategoryRegistry
 from clipwright.config import logger
 from clipwright.paths import anchor
+from clipwright.schema.category_spec import (
+    SLOT_ALIASES,
+    SLOT_KEYS,
+    ParamRule,
+    PromptBundle,
+    PromptSlot,
+    SignatureTrait,
+    TypeDeclares,
+    validate_bundle,
+)
 from clipwright.security import validate_id
 
 router = APIRouter(prefix="/api/type-maker", tags=["type-maker"])
@@ -57,6 +67,8 @@ class PersonaMappingItem(BaseModel):
 
 class TypeDefinition(BaseModel):
     """视频类型定义。"""
+    model_config = {"extra": "forbid"}  # A-06：未知字段直接 400，不再静默丢弃
+
     id: str = Field(description="类型唯一标识 (英文, 如 my_knowledge)")
     name: str = Field(description="显示名称")
     description: str = Field(default="", description="类型描述")
@@ -64,6 +76,30 @@ class TypeDefinition(BaseModel):
     persona_mapping: dict[str, PersonaMappingItem] = Field(default_factory=dict)
     post_process: dict[str, Any] = Field(default_factory=dict, description="后处理配置")
     tags: list[str] = Field(default_factory=list)
+    # ── 类型规范（PRD Part I F1/F3/F14，A-06）──
+    prompts: dict[str, PromptSlot] = Field(default_factory=dict, description="10 槽位提示词")
+    param_rules: list[ParamRule] = Field(default_factory=list, description="机器可读参数规则")
+    signature_traits: list[SignatureTrait] = Field(default_factory=list, description="同一性指标")
+    declares: TypeDeclares = Field(default_factory=TypeDeclares, description="类型声明块")
+    waivers: list[str] = Field(default_factory=list, description="不可执行数字的豁免理由")
+
+    @property
+    def prompt_bundle(self) -> PromptBundle:
+        return PromptBundle(slots=dict(self.prompts))
+
+    @field_validator("prompts")
+    @classmethod
+    def _known_slots_only(cls, value: dict[str, PromptSlot]) -> dict[str, PromptSlot]:
+        unknown = [key for key in value if key not in SLOT_KEYS and key not in SLOT_ALIASES]
+        if unknown:
+            raise ValueError(f"未知提示词槽位: {unknown}；合法槽位: {list(SLOT_KEYS)}")
+        return value
+
+
+class ValidateResult(BaseModel):
+    ok: bool
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TypeListItem(BaseModel):
@@ -283,8 +319,217 @@ def _validate_definition(definition: TypeDefinition) -> None:
             errors.append(f"映射项 {key} 缺少 source")
         if item.transform not in ("direct", "scale", "lookup"):
             errors.append(f"映射项 {key} 的 transform 不支持: {item.transform}")
+    # A-06：规范契约校验（悬空数字 / 规则自洽 / 指标与 genre 矛盾 / 槽位合法）
+    for issue in spec_issues(definition):
+        if issue.severity == "error":
+            errors.append(f"[{issue.code}] {issue.message}")
     if errors:
         raise HTTPException(status_code=400, detail="；".join(errors))
+
+
+def spec_issues(definition: TypeDefinition) -> list[Any]:
+    """把 TypeDefinition 转成规范校验问题列表（供 create/update 与 /validate 共用）。
+
+    向后兼容（PRD F6）：**完全没写 prompts 的老类型**视为"未启用新契约"，
+    不强制 ``genre``（否则所有历史 YAML 与第三方定义会一夜之间失效）。
+    一旦写了任何一个槽位，就按新契约校验（含 genre 必填、悬空数字等）。
+    """
+    issues = validate_bundle(
+        definition.prompt_bundle,
+        definition.param_rules,
+        definition.signature_traits,
+    )
+    if not (definition.prompts or {}):
+        issues = [issue for issue in issues if issue.code != "genre_required"]
+    return issues
+
+
+def _coerce_definition(payload: dict[str, Any]) -> TypeDefinition:
+    """宽松构造（/validate 用）：允许前端只提交部分字段。"""
+    return TypeDefinition(**payload)
+
+
+@router.post("/validate", response_model=ValidateResult)
+async def validate_type(payload: dict[str, Any]) -> ValidateResult:
+    """干跑校验：不落盘，返回全部错误与告警。"""
+    try:
+        definition = _coerce_definition(payload)
+    except Exception as exc:  # noqa: BLE001 - 结构错误一律 400 语义
+        return ValidateResult(
+            ok=False,
+            errors=[{"code": "invalid_definition", "message": str(exc), "where": ""}],
+        )
+    issues = spec_issues(definition)
+    return ValidateResult(
+        ok=not any(i.severity == "error" for i in issues),
+        errors=[
+            {"code": i.code, "message": i.message, "where": i.where}
+            for i in issues
+            if i.severity == "error"
+        ],
+        warnings=[
+            {"code": i.code, "message": i.message, "where": i.where}
+            for i in issues
+            if i.severity != "error"
+        ],
+    )
+
+
+@router.post("/switch", response_model=dict)
+async def switch_type(payload: dict[str, Any]) -> dict:
+    """类型切换（V19）：``type_deformation`` 时的唯一合法出路之一。
+
+    只记录 ``from_type → to_type`` 与理由，**不修改任何类型定义**——
+    切换的语义是"换一套规范重新出片"。
+    """
+    try:
+        return run_switch(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def run_switch(payload: dict[str, Any]) -> dict[str, Any]:
+    """纯逻辑实现（便于单测）。"""
+    from clipwright.services.type_switch import append_switch, plan_switch, switch_note
+
+    record = plan_switch(
+        str(payload.get("from_type") or ""),
+        str(payload.get("to_type") or ""),
+        reason=str(payload.get("reason") or ""),
+        require_known=not bool(payload.get("allow_unknown")),
+    )
+    path = payload.get("log_path")
+    if path:
+        append_switch(str(path), record)
+    return {"ok": True, **record.as_dict(), "note": switch_note(record)}
+
+
+@router.post("/{type_id}/genre-check", response_model=dict)
+async def genre_check(type_id: str, payload: dict[str, Any]) -> dict:
+    """干跑类型同一性校验（A-10 / F12）：给时间线，返回指标与逐条判定。
+
+    L1 恒开；L2/L3 裁判由 ``payload.enable_genre_judge`` 或服务端配置
+    ``CLIPWRIGHT_GENRE_JUDGE_ENABLED`` 控制（D7 默认关）。
+    """
+    try:
+        return await run_genre_check_async(type_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _prepare_genre_check(type_id: str, payload: dict[str, Any]):
+    """把 payload 变成 (spec, timeline, measured)；非法输入抛 ValueError。"""
+    from clipwright.schema.timeline import Timeline
+    from clipwright.services.mv_cues import build_grid
+    from clipwright.services.trait_collector import collect_traits
+    from clipwright.services.type_spec_runtime import load_spec
+
+    raw_timeline = payload.get("timeline")
+    if not isinstance(raw_timeline, dict):
+        raise ValueError("payload.timeline 必须是时间线 JSON 对象")
+    try:
+        timeline = Timeline(**raw_timeline)
+    except Exception as exc:  # noqa: BLE001 - 结构错误一律 400 语义
+        raise ValueError(f"时间线非法: {exc}") from exc
+
+    spec = load_spec(type_id)
+    grid = None
+    bpm = float(payload.get("bpm") or 0)
+    if bpm > 0:
+        grid = build_grid(bpm, float(payload.get("beat_zero_sec") or 0))
+
+    measured = collect_traits(
+        timeline,
+        scenes=payload.get("scenes"),
+        grid=grid,
+    )
+    return spec, timeline, measured
+
+
+def _genre_result(type_id: str, spec, measured, report) -> dict[str, Any]:
+    return {
+        "type_id": type_id,
+        "traits_declared": len(spec.traits),
+        "measured": measured,
+        "ok": report.ok,
+        "judge": report.judge,
+        "judge_detail": report.judge_detail,
+        "summary": report.summary(),
+        "traits": [item.model_dump() for item in report.traits],
+        "mismatches": report.mismatches,
+        "warnings": report.warnings,
+    }
+
+
+def run_genre_check(type_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """纯逻辑实现（**只跑 L1**，便于单测）：时间线 + 类型 → 指标 + 判定。"""
+    from clipwright.services.genre_conformance import check_conformance
+
+    spec, _timeline, measured = _prepare_genre_check(type_id, payload)
+    report = check_conformance(spec.traits, measured, enable_genre_judge=False)
+    return _genre_result(type_id, spec, measured, report)
+
+
+async def run_genre_check_async(
+    type_id: str,
+    payload: dict[str, Any],
+    *,
+    llm: Any = None,
+) -> dict[str, Any]:
+    """含 LLM 裁判的完整实现（V17）：开关关时行为与 ``run_genre_check`` 一致。"""
+    from clipwright.services.genre_conformance import acheck_conformance
+    from clipwright.services.genre_judge import judge_enabled, llm_judge
+
+    spec, timeline, measured = _prepare_genre_check(type_id, payload)
+    enabled = judge_enabled(payload)
+    judge_fn: Any = None
+    if enabled:
+
+        async def _judge(traits, measured_now, report):
+            return await llm_judge(
+                traits,
+                measured_now,
+                report,
+                type_id=type_id,
+                timeline=timeline,
+                llm=llm,
+            )
+
+        judge_fn = _judge
+
+    report = await acheck_conformance(
+        spec.traits,
+        measured,
+        enable_genre_judge=enabled,
+        judge=judge_fn,
+    )
+    return _genre_result(type_id, spec, measured, report)
+@router.post("/resolve", response_model=dict)
+async def resolve_type(payload: dict[str, Any]) -> dict:
+    """干跑裁决：给定用户参数，返回最终参数 + 冲突 + 变形判定。"""
+    from clipwright.services.prompt_authority import PromptAuthority
+
+    try:
+        definition = _coerce_definition(payload)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    user_params = payload.get("user_params") or {}
+    authority = PromptAuthority(
+        prompts=definition.prompt_bundle,
+        rules=definition.param_rules,
+        traits=definition.signature_traits,
+        category_id=definition.id,
+    )
+    resolution = authority.resolve(user=user_params)
+    return {
+        "params": resolution.params,
+        "trace": resolution.trace,
+        "conflicts": [c.model_dump() for c in resolution.conflicts],
+        "traits": [t.model_dump() for t in resolution.traits],
+        "deformation": resolution.deformation,
+        "prompts": resolution.prompts,
+        "dropped_slots": resolution.dropped_slots,
+    }
 
 
 def _find_yaml(type_id: str) -> Optional[Path]:

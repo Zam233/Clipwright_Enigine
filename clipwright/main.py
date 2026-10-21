@@ -57,6 +57,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from clipwright.api import pipeline as pipeline_api
+from clipwright.api import supervisor as supervisor_api
 from clipwright.api import persona as persona_api
 from clipwright.api import persona_forge as persona_forge_api
 from clipwright.api import chat_forge as chat_forge_api
@@ -66,6 +67,8 @@ from clipwright.api import providers as providers_api
 from clipwright.api import rag as rag_api
 from clipwright.api import render as render_api
 from clipwright.api import tool as tool_api
+from clipwright.api import tool_surface as tool_surface_api
+from clipwright.api import task as task_api
 from clipwright.api import plugin as plugin_api
 from clipwright.api import animation as animation_api
 from clipwright.api import material as material_api
@@ -96,6 +99,7 @@ from clipwright.category import (
     DigitalReviewPlugin,
     KichikuFastcutPlugin,
     KnowledgeLongformPlugin,
+    LyricMvPlugin,
     VlogDailyPlugin,
 )
 from clipwright.plugins import PluginLoader
@@ -347,6 +351,8 @@ def _register_builtin_plugins() -> None:
     CategoryRegistry.register(KichikuFastcutPlugin())
     CategoryRegistry.register(DigitalReviewPlugin())
     CategoryRegistry.register(VlogDailyPlugin())
+    # MV/PV 线的主类型；plan/PRD 一直在用它，但此前没有注册（V35 因此无从判起）
+    CategoryRegistry.register(LyricMvPlugin())
 
 
 app = FastAPI(
@@ -683,6 +689,8 @@ app.mount("/voice_audio", StaticFiles(directory=str(tts_output_path)), name="voi
 
 # 注册路由
 app.include_router(pipeline_api.router)
+app.include_router(supervisor_api.router)
+app.include_router(supervisor_api.admin_router)
 app.include_router(persona_api.router)
 app.include_router(persona_forge_api.router)
 app.include_router(chat_forge_api.router)
@@ -692,6 +700,8 @@ app.include_router(settings_api.router)
 app.include_router(providers_api.router)
 app.include_router(render_api.router)
 app.include_router(tool_api.router)
+app.include_router(tool_surface_api.router)
+app.include_router(task_api.router)
 app.include_router(plugin_api.router)
 app.include_router(skill_api.router)
 app.include_router(material_api.router)

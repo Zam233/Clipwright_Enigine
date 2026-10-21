@@ -13,6 +13,7 @@ import asyncio
 import json
 import math
 import uuid
+from pathlib import Path
 from typing import Any
 
 from clipwright.agents.base import BaseAgent
@@ -64,6 +65,38 @@ def _weighted_transition_pick(
         if point <= acc:
             return name
     return next(iter(clean))
+
+
+def _prefer_material_refs(
+    scene: dict[str, Any], assets: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """把场景 ``material_refs`` 指定的素材提到最前（S 轨落位 → 剪辑取用的闭环）。
+
+    - 没有 ``material_refs`` → 原样返回（零行为变化）；
+    - refs 里缺的 id 忽略（素材可能未通过校验）；
+    - 其余素材保持原相对顺序，确定性（不用 set 迭代顺序）。
+    """
+    refs = [str(r) for r in (scene.get("material_refs") or []) if r]
+    if not refs or not assets:
+        return assets
+    wanted = set(refs)
+    preferred: list[dict[str, Any]] = []
+    rest: list[dict[str, Any]] = []
+    for asset in assets:
+        asset_id = str(asset.get("asset_id") or asset.get("id") or "")
+        if asset_id in wanted:
+            preferred.append(asset)
+        else:
+            rest.append(asset)
+    if not preferred:
+        return assets
+    # 按 refs 顺序稳定排序（同 id 多候选时保持各自原顺序）
+    ordered: list[dict[str, Any]] = []
+    for ref in refs:
+        ordered.extend(
+            a for a in preferred if str(a.get("asset_id") or a.get("id") or "") == ref
+        )
+    return ordered + rest
 
 
 def _scene_is_pip(
@@ -276,7 +309,31 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 )
 
             # 2. 获取 Persona 剪辑参数（经 category_plugin 翻译）
-            shot_params = context.extra_params.get("shot_params", {})
+            # A-05：类型规则在这里收口（strict 覆盖用户值 / soft 只记录），
+            # 下游不再直接读原始 shot_params 并自行兜底 5000。
+            from clipwright.services.type_spec_runtime import (
+                emit_prompt_resolution,
+                resolve_shot_params,
+            )
+
+            shot_params, _type_resolution = resolve_shot_params(
+                context.extra_params, context.category_plugin_id
+            )
+            # F8/V45：裁决结果写进 trace（参数来源、冲突、槽位、变形判定）
+            emit_prompt_resolution(
+                context.pipeline_id,
+                "edit_agent",
+                _type_resolution,
+                category_id=context.category_plugin_id,
+                stage="edit",
+            )
+            for _conflict in _type_resolution.conflicts:
+                notes.append(f"类型规范[{_conflict.code}] {_conflict.message}")
+            if _type_resolution.deformation:
+                notes.append(
+                    "类型变形风险："
+                    + "；".join(_type_resolution.deformation.get("reasons") or [])
+                )
             cut_profile = context.extra_params.get("cut_profile", "even_flow")
             transition_weights = context.extra_params.get("transition_weights", {})
             # 节拍对齐剪辑 beat-sync — cut_on_beat + BPM（来自类型配置/音频检测）
@@ -300,6 +357,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 context.category_plugin_id,
                 pipeline_id=context.pipeline_id,
                 quality_hint=self.quality_issues_hint(context),  # C6
+                extra_params=context.extra_params,
             )
             llm_pip_scenes: set[int] = set()
             if llm_profile is not None:
@@ -368,6 +426,177 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             else:
                 duration_scale = 1.0
                 notes.append(f"无时长缩放: total={total_scene_duration:.0f}s, target={target_duration:.0f}s")
+
+            # 4.5 镜头节奏归一（D23 拍板版）：类型声明的 min/max_shot_ms 此前只钳
+            # LLM 剪辑档案的 base_shot_ms，不夹逐段时长——真机因此跑出过低片段（V2）
+            # 和 6.1s 平均镜头的"歌词 MV"（V35）。默认策略**保总时长**：
+            #   低于下限 → merge（相邻场景合并，镜头变少变长）
+            #   高于上限 → split（超长场景切分，镜头变多变短）
+            # 历史候选仍可切换：shot_floor_policy=record/extend/loop、
+            # shot_cap_policy=record。含 off 时零行为变化。
+            from clipwright.services.shot_floor import (
+                apply_scene_floor,
+                fill_mode,
+                merge_to_floor,
+                normalize_cap_policy,
+                normalize_policy,
+                split_to_ceiling,
+            )
+
+            _floor_policy = normalize_policy(
+                (context.extra_params or {}).get("shot_floor_policy") or "merge"
+            )
+            _cap_policy = normalize_cap_policy(
+                (context.extra_params or {}).get("shot_cap_policy") or "split"
+            )
+            _floor_ms = float(shot_params.get("min_shot_ms") or 0)
+            _cap_ms = float(shot_params.get("max_shot_ms") or 0)
+
+            def _scale(design_sec: float) -> float:
+                return design_sec * duration_scale
+
+            def _unscale(actual_sec: float) -> float:
+                return actual_sec / duration_scale if duration_scale else actual_sec
+
+            def _design_sec(scene: dict[str, Any]) -> float:
+                """场景设计时长：未声明时按类型的基准节奏（`base_shot_ms`）估。
+
+                缺 `duration_sec` 的场景，其真实时长要到放置段才由 `base_shot_sec`
+                决定；这里若硬塞 5.0 秒，会把"还没定时长"的场景当成超长场景切碎
+                （实测过一次：3 个无时长场景被切成 6 段）。
+                """
+                declared = scene.get("duration_sec")
+                if declared in (None, "", 0, 0.0):
+                    return float(shot_params.get("base_shot_ms") or 5000) / 1000.0
+                return float(declared)
+
+            def _emit_rhythm_event(kind: str, label: str, detail: dict[str, Any]) -> None:
+                try:
+                    from clipwright.services.trace import add_event
+
+                    add_event(
+                        context.pipeline_id, "edit", kind,
+                        f"{label}：{len(detail.get('conflicts') or [])} 段需要调整",
+                        detail=detail,
+                    )
+                except Exception as exc:  # noqa: BLE001 - 留痕失败不得影响出片
+                    logger.warning("%s 事件写入失败（已跳过）: %s", kind, exc)
+
+            # ── 4.5a 下限 ──
+            if _floor_policy == "merge" and _floor_ms > 0:
+                _outcome = merge_to_floor(
+                    [_scale(_design_sec(s)) for s in scenes],
+                    _floor_ms / 1000.0,
+                )
+                if _outcome.changed:
+                    _merged_scenes: list[dict[str, Any]] = []
+                    for _group in _outcome.groups:
+                        if len(_group) == 1:
+                            _scene = dict(scenes[_group[0]])
+                        else:
+                            # 合并：保留首场景的语义（标题/描述/文案），时长相加
+                            _scene = dict(scenes[_group[0]])
+                            _scene["merged_from"] = list(_group)
+                            _scene["title"] = scenes[_group[0]].get(
+                                "title", f"场景{_group[0] + 1}"
+                            )
+                        _scene["_orig_index"] = _group[0]
+                        _scene["duration_sec"] = round(
+                            _unscale(_outcome.durations[len(_merged_scenes)]), 6
+                        )
+                        _merged_scenes.append(_scene)
+                    # 只重绑本地列表，**不改调用方传进来的 script_skeleton["scenes"]**：
+                    # 就地 `scenes[:] = ...` 会让复用同一份输入的第二次执行拿到已被切碎
+                    # 的场景，进而无限细分（实测跑出 221 个片段）。
+                    scenes = _merged_scenes
+                    notes.append(
+                        f"镜头下限策略[merge]：{len(_outcome.conflicts)} 处合并，"
+                        f"场景 {len(_outcome.groups)} 段、总时长不变"
+                    )
+                if _outcome.conflicts and _outcome.changed:
+                    _emit_rhythm_event(
+                        "shot_floor", f"镜头下限策略 {_floor_policy}",
+                        {
+                            "policy": _floor_policy,
+                            "min_shot_ms": _floor_ms,
+                            "fill": "merge",
+                            "conflicts": _outcome.conflicts,
+                        },
+                    )
+                    notes.extend(
+                        f"镜头下限[{c['code']}] {c['message']}" for c in _outcome.conflicts
+                    )
+            elif _floor_policy not in ("off", "merge") and _floor_ms > 0:
+                _outcome = apply_scene_floor(
+                    [_scale(_design_sec(s)) for s in scenes],
+                    _floor_ms / 1000.0,
+                    policy=_floor_policy,
+                )
+                if _outcome.changed:
+                    # 只有 extend/loop 会改时长；按缩放前的比例写回场景
+                    for _index, _scene in enumerate(scenes):
+                        _scene["duration_sec"] = round(
+                            _unscale(_outcome.durations[_index]), 6
+                        )
+                    notes.append(
+                        f"镜头下限策略[{_floor_policy}]：{len(_outcome.conflicts)} 段低于 "
+                        f"{_floor_ms:.0f}ms，已抬到下限（fill={fill_mode(_floor_policy) or 'none'}）"
+                    )
+                if _outcome.conflicts:
+                    _emit_rhythm_event(
+                        "shot_floor", f"镜头下限策略 {_floor_policy}",
+                        {
+                            "policy": _floor_policy,
+                            "min_shot_ms": _floor_ms,
+                            "fill": fill_mode(_floor_policy),
+                            "conflicts": _outcome.conflicts,
+                        },
+                    )
+                    notes.extend(
+                        f"镜头下限[{c['code']}] {c['message']}" for c in _outcome.conflicts
+                    )
+
+            # ── 4.5b 上限（V35：MV 的"一句词一镜"靠这里落地）──
+            if _cap_policy == "split" and _cap_ms > 0:
+                _cap_outcome = split_to_ceiling(
+                    [_scale(_design_sec(s)) for s in scenes],
+                    _cap_ms / 1000.0,
+                )
+                if _cap_outcome.changed:
+                    _split_scenes: list[dict[str, Any]] = []
+                    for _index, _count in enumerate(_cap_outcome.groups):
+                        _base_scene = scenes[_index]
+                        for _part in range(_count):
+                            _scene = dict(_base_scene)
+                            if _count > 1:
+                                _scene["split_from"] = _index
+                                _scene["split_part"] = _part
+                                # 切分出的后续镜用同场景素材但换起点，避免完全重复
+                                _scene["title"] = (
+                                    f"{_base_scene.get('title', f'场景{_index + 1}')}"
+                                    f"·{_part + 1}"
+                                )
+                            _scene["_orig_index"] = _index
+                            _scene["duration_sec"] = round(
+                                _unscale(_cap_outcome.durations[len(_split_scenes)]), 6
+                            )
+                            _split_scenes.append(_scene)
+                    scenes = _split_scenes
+                    notes.append(
+                        f"镜头上限策略[split]：{len(_cap_outcome.conflicts)} 段超上限，"
+                        f"场景 {len(_cap_outcome.groups)} → {len(scenes)} 镜、总时长不变"
+                    )
+                    _emit_rhythm_event(
+                        "shot_ceiling", f"镜头上限策略 {_cap_policy}",
+                        {
+                            "policy": _cap_policy,
+                            "max_shot_ms": _cap_ms,
+                            "conflicts": _cap_outcome.conflicts,
+                        },
+                    )
+                    notes.extend(
+                        f"镜头上限[{c['code']}] {c['message']}" for c in _cap_outcome.conflicts
+                    )
 
             # 5. 对每个场景取素材（多段素材拼接，填满场景时长）
             # 场景裁剪/文字占位是主要 IO（网络下载 + ffmpeg）→ 场景级有界并行。
@@ -660,6 +889,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         category: str,
         pipeline_id: str = "",
         quality_hint: str = "",
+        extra_params: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """LLM 剪辑档案决策：基准镜头时长 / 转场权重 / PiP 场景 / 节奏备注。
 
@@ -696,6 +926,17 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         )
         # 自愈重做时注入上一轮质检问题（原 _quality_issues 注入无 Agent 消费）
         system_prompt += self._quality_hint
+        # V1/V15：类型身份 + 剪辑阶段规范（含反模式），固定序注入
+        from clipwright.services.type_prompts import compose as compose_type_prompt
+
+        system_prompt = compose_type_prompt(system_prompt, category, "edit")
+        # V45 A/B 实测发现：用户创作提示词此前只进 requirements/structure，
+        # **剪辑阶段看不到**，所以"硬切为主"影响不了镜头节奏。这里补上。
+        from clipwright.services.creative_prompt import creative_prompt_block
+
+        creative_block = creative_prompt_block(extra_params)
+        if creative_block:
+            system_prompt = system_prompt.rstrip() + "\n\n" + creative_block
         user_prompt = (
             f"视频类型（category）: {category or 'unknown'}\n"
             f"Persona 剪辑偏好: {json.dumps(persona or {}, ensure_ascii=False)}\n\n"
@@ -734,14 +975,17 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             logger.warning("EditAgent: LLM 剪辑档案非法（回退规则）: %s", preview)
             return None
 
-        # 按 persona shot_params 边界钳制 base_shot_ms（LLM 越界值收敛到合法区间）
+        # 按 shot_params 边界钳制 base_shot_ms（LLM 越界值收敛到合法区间）。
+        # A-05：边界可能来自类型 strict 规则（已由 resolve_shot_params 收口），
+        # 收敛逻辑抽成纯函数以便单测（type_spec_runtime.clamp_profile）。
+        from clipwright.services.type_spec_runtime import clamp_profile
+
         shot_params = (persona or {}).get("shot_params") or {}
-        lo = shot_params.get("min_shot_ms")
-        hi = shot_params.get("max_shot_ms")
-        if isinstance(lo, (int, float)) and lo > 0:
-            profile["base_shot_ms"] = max(profile["base_shot_ms"], int(lo))
-        if isinstance(hi, (int, float)) and hi > 0:
-            profile["base_shot_ms"] = min(profile["base_shot_ms"], int(hi))
+        profile = clamp_profile(
+            profile,
+            lo=shot_params.get("min_shot_ms"),
+            hi=shot_params.get("max_shot_ms"),
+        )
 
         logger.info("EditAgent: LLM 剪辑档案生效: %s", json.dumps(profile, ensure_ascii=False))
         return profile
@@ -815,16 +1059,21 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         """
         clip_index = 0  # 每个场景重置素材索引
         scene_title = scene.get("title", f"场景{i+1}")
+        # 场景经 merge/split 归一后序号会变，但候选素材 / PiP 配置仍按**原场景号**索引
+        lookup_index = int(scene.get("_orig_index", i))
 
         # 获取此场景的全部候选素材（按分数排序）
         scene_candidates = [
             c for c in candidate_clips
-            if c.get("scene_index") == i
+            if c.get("scene_index") == lookup_index
         ]
         sorted_assets = []
         for c in scene_candidates:
             suggested = c.get("suggested_assets", [])
             sorted_assets.extend(sorted(suggested, key=lambda a: a.get("score", 0), reverse=True))
+        # S 轨落位结果优先：场景上带 material_refs（素材 Agent 按句落位写回）时，
+        # 把这些素材提到最前，其余按分数排后——落位与剪辑取用就此闭环。
+        sorted_assets = _prefer_material_refs(scene, sorted_assets)
 
         # 循环取素材填充场景，直到用完场景时长或素材耗尽
         scene_time = 0.0  # 本地时间游标（替代共享 current_time，仅推进、不用于轨道放置）
@@ -832,7 +1081,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         failed_assets = set()
         scene_desc = scene.get("description", "")
         # PiP 判定统一走 _scene_is_pip（与轨道创建共用）
-        is_pip = _scene_is_pip(scene_desc, i, pip_scene_indices)
+        is_pip = _scene_is_pip(scene_desc, lookup_index, pip_scene_indices)
         units: list[dict[str, Any]] = []
 
         # 单元数上限——极短素材（duration_sec≈0）会使 while 循环产出上百个

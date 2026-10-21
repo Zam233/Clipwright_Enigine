@@ -7,6 +7,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from clipwright.config import logger
 from clipwright.schema.persona import PersonaManifest
 from clipwright.services.persona_forge import PersonaForge
 

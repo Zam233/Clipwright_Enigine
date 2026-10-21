@@ -1068,6 +1068,19 @@ class MGGenerator:
         guidance = category_context.get("mg_style_guidance")
         if guidance:
             cat_parts.append(f"- 动画风格指引: {guidance}")
+        # V1：类型插件声明的 animation 阶段规范（10 槽位之一），逐行进提示词
+        stage_prompt = category_context.get("stage_prompt")
+        if stage_prompt:
+            stage_lines = [
+                f"  · {line.strip()}"
+                for line in str(stage_prompt).splitlines()
+                if line.strip()
+            ]
+            if stage_lines:
+                cat_parts.append(
+                    "- 本阶段类型规范（类型插件声明，优先于默认动效偏好）:\n"
+                    + "\n".join(stage_lines)
+                )
         brief_style = category_context.get("brief_animation_style")
         if isinstance(brief_style, dict) and brief_style:
             style_items = []

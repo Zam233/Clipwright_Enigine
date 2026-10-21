@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
 
 from clipwright.schema.timeline import Clip, ClipKind, Track
@@ -233,18 +236,26 @@ class TestStaticDrawtextFilter:
         assert "shadowcolor=" not in f
 
     def test_legacy_caption_pinned_output(self) -> None:
-        """基线锁定：无新字段 caption 的滤镜串结构不变（颜色已按要求 #→0x）。"""
+        """基线锁定：无新字段 caption 的滤镜串结构不变（颜色已按要求 #→0x）。
+
+        字体路径由运行环境决定（Windows 落 `_fonts/`，POSIX 落系统字体），
+        所以这里只锁**结构**：把解析出来的字体代入期望串，其余逐字节比对。
+        """
+        from clipwright.services.render import _resolve_system_font
+
         ov = self._ov({"font_color": "#ffffff"})
         f = RenderService()._build_drawtext_filter(ov)
-        expected = ("drawtext=text='Hello':fontfile=_fonts/msyh.ttc:fontsize=48:"
+        expected = (f"drawtext=text='Hello':fontfile={_resolve_system_font()}:fontsize=48:"
                     "fontcolor=0xffffff:x=(w-text_w)/2:y=h-text_h-20-0:"
                     "enable='between(t,1.0,4.0)'")
         assert f == expected
 
     def test_bold_fontfile(self) -> None:
+        from clipwright.services.render import _resolve_bold_font
+
         ov = self._ov({"font_color": "#ffffff", "font_weight": "bold"})
         f = RenderService()._build_drawtext_filter(ov)
-        assert "fontfile=_fonts/msyhbd.ttc" in f
+        assert f"fontfile={_resolve_bold_font('msyh')}" in f
 
 
 class TestKeyframedDrawtextFilter:
@@ -324,6 +335,7 @@ class TestBoldFontResolution:
         from clipwright.services.render import _resolve_bold_font
         return _resolve_bold_font(family)
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="断言 Windows 字体文件名（POSIX 上回退系统字体）")
     def test_known_families(self) -> None:
         assert self._resolve("msyh") == "_fonts/msyhbd.ttc"
         assert self._resolve("微软雅黑") == "_fonts/msyhbd.ttc"
@@ -331,8 +343,13 @@ class TestBoldFontResolution:
         assert self._resolve("SimHei") == "_fonts/simhei.ttf"
 
     def test_unknown_family_falls_back(self) -> None:
+        """未知字族回退到「当前环境可用的系统字体」——不应凭空空串或抛错。"""
+        from clipwright.services.render import _resolve_system_font
+
         f = self._resolve("no-such-family-xyz")
-        assert f == "" or f.startswith("_fonts/")
+        assert f == _resolve_system_font()
+        assert f == "" or Path(f).exists(), "回退字体必须真实存在（否则 drawtext 会报错）"
 
     def test_empty_family_defaults_to_msyh(self) -> None:
-        assert self._resolve("") == "_fonts/msyhbd.ttc"
+        """空字族 = 默认 msyh 字族（Windows 落 msyhbd，POSIX 回退系统字体）。"""
+        assert self._resolve("") == self._resolve("msyh")

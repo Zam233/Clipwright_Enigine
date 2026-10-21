@@ -35,4 +35,12 @@
 | [需求分析 Agent](requirements_agent.md) | Requirements Agent 设计与职责 |
 | [整数时间基座](timebase.md) | 整数 tick + 有理数帧率：换算纪律、时间码、漂移校正与切点的接线点 |
 | [素材内容理解与 NL 落位计划](content-understanding-plan-2026-09-14.md) | 内容索引（镜头级）→ 检索 → NL 意图 → 落位校验：让 Agent 知道在剪什么、用户说人话就能达到目的 |
+| [调度中枢方案（v1.4/v1.5）](supervisor-dev-plan-2026-10-17.md) | 确定性骨架 + 调度层：账本 / 归因 / 策略阶梯 / 子代理 / 执行网关 |
+| [**全 Agent 化 PRD（路线 C，草案）**](agent-native-prd-2026-10-17.md) | 主 agent 直接编排工具与技能，6 阶段管线降级为它可调用的能力；含代价、分期 C0–C7、验收 A1–A13、8 个待决问题 |
+| [**MV/PV 制作能力与类型规范 PRD（合并版 v1.2）**](mv-pv-prd-2026-10-18.md) | 单一真相：Part I 类型插件提示词化（10 槽位 + `param_rules` + `signature_traits` + `plan_schema`，提示词定义类型、参数只调剂量，含决策权矩阵与 D1–D22）；Part II MV/PV 能力（场景脚本 + 三构件库 + 版画库 + 歌词卡点 + 三道闸 + 素材识别落位 + 需求 agent 动态规划 + 7 子 agent，M0–M8，V1–V60）；**Part III 覆盖审计：20 类 MV/PV 逐类判定（能 18 / 不能 2）+ 三条边界 + 可选能力线成本** |
+| [**MV/PV 能力开发计划**](mv-pv-dev-plan-2026-10-18.md) | 据 PRD v1.2 拆的 WBS：3 个 Spike → 轨道 R（渲染 26.5）/ A（Agent 与规划 20）/ S（素材 5.5–6）/ F（前端 8）+ 内容 6 人日；四道门与 Kill 规则、10–11 周周计划、单写者规则、DoD 与新增 CI 门 |
+| [**验收覆盖表（V1–V60）**](coverage.md) | 逐条列出 60 项验收的当前状态（通过/部分/未做/人工）、证据位置与差距；含复跑命令清单与"只能由人判定"的清单 |
+| [**全量验收报告（V1–V60）**](acceptance-report-2026-10-18.md) | 计划 W9 的交付物：一页纸结论（52 通过 / 2 部分 / 2 未做 / 4 人工）、两项"部分"卡在哪与谁能解、复跑命令全集、历史修复记录、下一步建议 |
+| [**PV 引擎插件（pv_engine）**](pv-engine-plugin.md) | 把 eternal-questioning-pv 的逐帧渲染引擎接成 agent 可调用的 3 个工具 + 1 个技能；含权限档、引擎目录解析、真机 probe/audit 证据，以及"引擎不含素材"的诚实边界 |
+
 | [内容理解基准集与指标](content-understanding-benchmark.md) | R1–R10 的基准集构成、量化指标（含门槛 vs 实测）、**每个数字的验证边界**；一键复跑 `scripts/verify_all_metrics.py` |

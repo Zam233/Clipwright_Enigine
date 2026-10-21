@@ -165,6 +165,17 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                                 self._mg_category_context["mg_style_guidance"] = guidance
                             except Exception:
                                 pass
+                        # V1：动画阶段的类型规范（10 槽位里的 animation）进 MG 提示词
+                        try:
+                            from clipwright.services.type_spec_runtime import stage_text
+
+                            anim_stage = stage_text(
+                                getattr(context, "category_plugin_id", "") or "", "animation"
+                            )
+                            if anim_stage:
+                                self._mg_category_context["stage_prompt"] = anim_stage
+                        except Exception:
+                            pass
             except Exception:
                 self._mg_category_context = {}
 

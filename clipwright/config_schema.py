@@ -205,6 +205,49 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
     ("mongo_uri", "service", "MongoDB URI", True, False, "可能含凭据；连接在启动时建立，需重启"),
     ("mongo_db_name", "service", "MongoDB 库名", False, False, "需重启"),
     ("llm_monthly_token_budget", "service", "LLM 月度预算", False, True, "全局 token 预算；0 = 不限"),
+    # ── 调度中枢（PRD v1.4 / B2）──
+    ("supervisor_mode", "pipeline", "调度中枢模式", False, True,
+     "off = 关闭（默认）；shadow = 只记录归因与诊断书不改执行；on = 启用派工（B3+）"),
+    ("supervisor_attribution_timeout_sec", "pipeline", "归因兜底超时(秒)", False, True,
+     "规则不命中时的 LLM 兜底超时；失败回退规则结论"),
+    # ── 路线 C：全 agent 化（PRD F12 / C2–C3）──
+    ("agent_mode", "pipeline", "主 Agent 模式", False, True,
+     "off = 老管线（默认）；shadow = 只规划不执行；on = Kernel 执行（run_pipeline 可用）"),
+    ("agent_max_turns", "pipeline", "Agent 回合上限", False, True,
+     "单个任务最多几个 plan-step 回合（默认 30，不可置空）"),
+    ("agent_max_tool_calls", "pipeline", "Agent 工具调用上限", False, True,
+     "单个任务最多几次工具调用（默认 80，不可置空）"),
+    ("agent_max_wall_sec", "pipeline", "Agent 墙钟上限(秒)", False, True,
+     "单个任务最长运行时间（默认 3600，不可置空）"),
+    # ── 模型路由（PRD F8 / B4）──
+    ("model_routes", "llm", "模型路由表", False, True,
+     "按阶段配置候选模型（JSON）；留空 = 全部沿用主/闪模型"),
+    ("model_whitelist", "llm", "模型白名单", False, True,
+     "provider/model 或裸 model 精确白名单；留空 = 允许所有已配置 provider"),
+    ("risk_judge_model", "llm", "风险判定模型", False, True,
+     "命令风险判定用模型；必须命中白名单，留空 = 最便宜的 cheap 档"),
+    # ── 类型同一性 LLM 裁判（PRD F12 L2/L3 / V17）──
+    ("genre_judge_enabled", "llm", "类型裁判整体开关", False, True,
+     "默认关（D7）：关时 genre-check 写 judge=skipped；开则真调 LLM 做同一性复核"),
+    ("genre_judge_use_flash", "llm", "类型裁判用闪模型", False, True,
+     "开（默认）= 闪模型省 token；关 = 主模型（判据更细但更贵）"),
+    # ── 预算（PRD F6 / B5）──
+    ("pipeline_budget_usd", "service", "管线预算(USD)", False, True,
+     "留空 = 无上限（只记账不阻断）；填写后达 70% 降级、100% 停止派工"),
+    ("model_prices", "llm", "模型单价表", False, True,
+     '{"provider/model": {"in": 0.003, "out": 0.015}}（每 1k token）；未配置的模型按 0 计'),
+    # ── 子代理与执行（PRD F10/F11）──
+    ("max_concurrent_subagents", "pipeline", "子代理并发上限", False, True,
+     "同一管线同时存活的子代理数（默认 6）"),
+    ("supervisor_auto_spawn", "pipeline", "自动派生只读核查员", False, True,
+     "归因置信度 low 时由编排层派一个只读子代理查看现场；仅 supervisor_mode=on 生效"),
+    ("exec_allow_network", "pipeline", "允许执行联网", False, True,
+     "默认禁网；打开后执行网关的子进程可联网（诊断用）"),
+    ("exec_timeout_sec", "pipeline", "执行超时(秒)", False, True,
+     "单条命令/脚本的墙钟上限（默认 60）"),
+    ("exec_hard_floor_never_authorizable", "pipeline", "硬底线永不授权", False, True,
+     "默认 False：硬底线（读凭据/不可逆破坏）交 LLM 判定 + 两级人工确认；"
+     "改 True 回到「规则直接拒绝、不可授权」的旧语义"),
 ]
 
 
@@ -221,6 +264,10 @@ def _derive_kind(annotation: Any) -> tuple[str, tuple[str, ...]]:
         return "float", ()
     if annotation is list or origin is list:
         return "list", ()
+    # 对象型配置（model_prices / model_routes）必须报 "dict"：前端据此渲染 JSON 文本域。
+    # 旧实现在这里落到 "string"，于是单价表在设置页只能以单行文本编辑，填进去就 422。
+    if annotation is dict or origin is dict:
+        return "dict", ()
     args = get_args(annotation)
     if args:  # Optional[...] / Union[...]：取非 None 的那个
         non_none = [a for a in args if a is not type(None)]
