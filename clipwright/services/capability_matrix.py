@@ -106,7 +106,22 @@ TIER_MAP: dict[str, PermissionTier] = {
     "write_file": "write_local",   # 只写白名单目录，父目录不自动创建
     # —— 类型规范查询（PRD Part I F10 / A-11，只读）——
     "get_type_spec": "read",
+    # —— PV 引擎（plugins/pv_engine）：体检/审计只读，抽帧写工作区 ——
+    "pv_engine_probe": "read",
+    "pv_engine_audit": "read",
+    "pv_engine_stills": "write_local",
 }
+
+#: 由**插件**贡献、只在插件加载后才存在的工具。
+#:
+#: 为什么单列：本模块的 stale 校验是"档位有、工具必须有"，用意是防止删工具忘删档位；
+#: 但插件工具在插件未加载时天然不存在（例如 `pv_engine` 的引擎工具，只有加载插件才注册）。
+#: 把这类工具登记在这里，既保留"内置工具必须对齐"的强约束，又不误伤插件工具。
+OPTIONAL_PLUGIN_TOOLS: frozenset[str] = frozenset({
+    "pv_engine_probe",
+    "pv_engine_audit",
+    "pv_engine_stills",
+})
 
 #: 编排层能力（不属于 ToolRegistry，但 agent 同样可以"调用"）
 META_CAPABILITIES: tuple[dict[str, Any], ...] = (
@@ -200,7 +215,13 @@ def _tool_entries() -> list[CapabilityEntry]:
             "以下工具未在 capability_matrix.TIER_MAP 里裁权限档："
             f"{sorted(unknown)}（新增能力必须显式定档，不能静默漏掉）"
         )
-    stale = sorted(set(TIER_MAP) - {str(i.name) for i in ToolRegistry.list()})
+    # 插件贡献的工具只在插件加载后存在（例如 pv_engine 的引擎工具）；
+    # 未加载时不能因为"档位有、工具没有"就判为 stale
+    stale = sorted(
+        set(TIER_MAP)
+        - {str(i.name) for i in ToolRegistry.list()}
+        - OPTIONAL_PLUGIN_TOOLS
+    )
     if stale:
         raise CapabilityMatrixError(
             f"TIER_MAP 里有已不存在的工具：{stale}（删工具时同步删档位）"

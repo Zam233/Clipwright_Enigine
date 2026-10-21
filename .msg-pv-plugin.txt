@@ -1,0 +1,16 @@
+PV 引擎插件（pv_engine）：把 eternal-questioning-pv 接成 agent 可调用的工具与技能
+
+- plugins/pv_engine/adapter.py：引擎目录解析（入参 > 插件配置 > CLIPWRIGHT_PV_ENGINE_DIR）、
+  子进程调用（cwd=_build、UTF-8、超时映射）、命令构造（probe/audit/stills）
+- plugins/pv_engine/main.py：3 个工具 + 1 个技能
+  pv_engine_probe(read) / pv_engine_audit(read，退出码即结论) /
+  pv_engine_stills(write_local) / pv_engine_review(技能：probe→audit→可选 stills)
+  均 agent_callable=True，并用 is_configured() 门控：未配引擎时不进阶段 agent 工具面
+- capability_matrix：新增三档位 + OPTIONAL_PLUGIN_TOOLS 白名单（插件未加载时不误判 stale）
+- 真机证据（引擎已克隆到本地并配 CLIPWRIGHT_PV_ENGINE_DIR）：
+  probe → 53 shots / 291.13s covered / gaps: []；audit → exit_code 1、verdict=fail
+  （FAIL 1 条是引擎仓库自身 shots_v20.json 的状态，插件如实转述）
+- docs/pv-engine-plugin.md + docs/README.md 索引
+- 测试 tests/clipwright/test_pv_engine_plugin.py：27 项（假引擎覆盖适配层/工具/门控/档位）
+  + 1 项真引擎 probe 集成（配了引擎才跑）
+- 全量 4218 passed / 0 failed
