@@ -1078,6 +1078,32 @@ V35 的根因也在这条线上：`lyric_mv` 声明 `avg_shot_ms ≤3200`（stri
 
 **文档**：新增 `docs/pv-engine-plugin.md`（架构、目录解析、三个工具的输入输出、能力分级、真机证据、边界），`docs/README.md` 索引同步；`docs/material_system.md` 增审计表 + `local_material` 小节。
 
+### 12.65 第 41 轮：前后端适配核查（三层对账 + 补 4 处缺口）
+
+用户问"前端适配后端了吗"。**不能靠翻代码回答**——先写哨兵，再让哨兵出结论。
+
+**哨兵先修准**（这步最值得记）：
+
+| 原来的毛病 | 后果 | 修法 |
+|---|---|---|
+| 路径正则把 `$` 排除在字符类外 | `` `/api/x/${id}/y` `` 这类**带参调用一条都没查**（114 → 224 条） | 起点只匹配 `/api/`，终点用 `_extract_path` 扫描 |
+| `\$\{[^}]*\}` 在内层 `}` 处截断 | 嵌套模板串 `` `${a ? `?x=${b}` : ''}` `` 造 3 条假 404 | `_collapse_templates` 花括号配平 |
+| 注释里的路径 / `url.includes('/api/asset/')` | 各造 1 条假 404 | 剥注释 + 比较上下文识别 |
+| 前端把查询串拼进模板串 | `/api/plugin/contributions${suffix}` 与后端路由对不上 | `_match_candidates` 变体匹配 |
+
+三层判定（`scripts/check_frontend_contract.py`，单测 10 项）结果：**224 条前端调用 / 268 条后端路由 / 0 条 404 / 0 条 405**；字段层 3 个核心模型里 `Timeline`、`GenreCheckResult` 完全一致，`HealthResponse` 漂移。
+
+**修掉的 4 处"没适配"**：
+
+1. **`/health` 组件状态整块丢失**（真漂移）：后端逐项探测 mongo/llm/ffmpeg/hyperframes/队列，前端类型只有 `{status, service}`。补类型 + `useBackendHealthDetail()` + `buildHealthComponents()`（缺字段就不出现，不假造），首页引擎卡片加组件 chip，e2e 断言 5 个 chip。
+2. **`genreCheck` 有客户端没入口**（V17 后端白做）：`TypeMakerPage` 加「类型复核」弹层——贴时间线、可选 LLM 复核（默认关 = D7）、展示逐条指标与裁判证据；示例时间线经后端真实校验 `2/2 通过`（`scripts/check_frontend_genre_sample.py`）。
+3. **`shot_cap_policy` 未暴露**：与下限并列加「镜头上限」选择（默认 `default` 不下发），`AgentPanel` 非 default 才下发。
+4. **演示回退冒充真实素材源**：`AssetPanel` 的假结果原来标 `source: 'pexels'`（后端刚删假源，前端又造一个），且点详情必 404。改标 `demo`、加"演示占位结果"提示、详情/收藏对 demo 禁用。
+
+**不补的 3 类**（写清理由）：47 条后端独有的运维/实验端点；管线运行时开裁判（更该在类型创作时决定，已放在复核弹层）；`/srv` 下的账号/市场接口（8090 独立服务）。
+
+**门禁**：后端 4345 passed / 0 failed（含参数化契约单测 10 项）；前端 961 项全绿、`tsc` 0 错、`eslint` 0 error、e2e 55 passed、`npm run build` 成功。文档：新增 `docs/frontend-backend-parity-check-2026-10-22.md`，`docs/README.md` 索引同步。
+
 
 
 
