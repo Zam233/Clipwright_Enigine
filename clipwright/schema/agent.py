@@ -37,6 +37,13 @@ FAILURE_CATEGORIES: tuple[str, ...] = (
     "external_unavailable",  # 外部服务不可用（素材源/TTS/渲染）
     "constraint_conflict",   # Persona/简报/类型约束互相冲突
     "internal_defect",       # 自身代码缺陷
+    # ── 路线 C（主 Agent 化）新增：阶段子代理/能力层会产出这些类别 ──
+    "policy_refused",        # 越权/白名单外/功能已下线（不可重试）
+    "budget_exhausted",      # 预算耗尽（需人工）
+    "cancelled",             # 人工取消（不可重试）
+    "invalid_input",         # 参数/品类 ID 非法（需人工修）
+    "not_found",             # 引用的对象不存在（阶段/子代理 id）
+    "stage_failed",          # 老 pipeline_failed 的阶段版
     "unknown",
 )
 

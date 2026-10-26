@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from clipwright.config import logger
+from clipwright.config import logger, settings
 from clipwright.services.requirements_service import RequirementsService
 
 router = APIRouter(prefix="/api/requirements", tags=["requirements"])
@@ -28,10 +28,25 @@ from clipwright.services import idempotency as _idem
 
 
 def _proceed_idem_hit(key: str, running: dict, tasks: dict) -> Optional[str]:
-    """轮70（D10）：proceed 幂等命中——目标管线仍在运行/排队则返回既有 id。"""
+    """轮70（D10）：proceed 幂等命中——目标仍在运行/排队则返回既有 id。
+
+    `agent_mode=on` 时目标可能是**任务**（`task_*`）而不是管线：任务只登记在
+    `api.task._RUNNING` 里，不进 `_running_pipelines`/`_pipeline_tasks`。旧实现只查后两张表，
+    于是双击 proceed 会各建一个 Task、双倍扣费（审计 P1-1）。这里补查任务表。
+    """
     pid = _idem.lookup(key)
-    if pid and (pid in running or pid in tasks):
+    if not pid:
+        return None
+    if pid in running or pid in tasks:
         return pid
+    if pid.startswith("task_"):
+        try:
+            from clipwright.api.task import _RUNNING as _TASK_RUNNING
+
+            if pid in _TASK_RUNNING:
+                return pid
+        except Exception:  # noqa: BLE001 — 任务表不可用不影响老路径
+            return None
     return None
 
 
@@ -350,6 +365,123 @@ async def get_plan(session_id: str, request: Request) -> dict:
     return plan
 
 
+def _opt_bool(value) -> bool | None:
+    """user_inputs 里的开关可能是 bool / "true" / "1"，统一归一化（None 表示沿用工作区现值）。"""
+    if value is None or isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    return text in {"1", "true", "yes", "on", "是", "开"}
+
+
+def _ensure_legacy_workspace(req, user_inputs: dict, pipeline_req) -> str:
+    """老管线（``agent_mode=off``）也确保工作区存在，并把 root 注入 extra_params。
+
+    与 ``_proceed_as_task`` 的区别：不建 Task、不改返回体，只做目录/meta + 参数透传，
+    保证 off 分支的对外行为与今天一致。失败只告警，不阻断管线。
+    """
+    try:
+        from clipwright.services.workspace import ensure_workspace
+
+        ws, _ = ensure_workspace(
+            str(getattr(req, "project_id", "") or req.session_id),
+            name=str(user_inputs.get("workspace_name")
+                     or user_inputs.get("topic") or req.session_id)[:60],
+            auto_index=_opt_bool(user_inputs.get("workspace_auto_index")),
+            vision=_opt_bool(user_inputs.get("workspace_vision")),
+        )
+        pipeline_req.extra_params["workspace_root"] = str(ws.dirs().root)
+        pipeline_req.extra_params["workspace_project_id"] = ws.project_id
+        return str(ws.dirs().root)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("工作区初始化失败（管线继续）: %s", exc)
+        return ""
+
+
+async def _proceed_as_task(*, session: dict, req: "ProceedRequest", request: Request,
+                           user_inputs: dict, plan_data: dict | None,
+                           pipeline_req, pipeline_id: str) -> dict:
+    """agent_mode=on 的分支：需求确认 → 主 Agent 任务（PRD §6.1）。
+
+    - 先确保工作区存在（后面的 material 步骤直接从工作区索引检索）；
+    - Task 的 extra 带上 workspace_root / session_id / production_plan，执行器
+      （default_executor → run_pipeline）就能拿到完整上下文；
+    - 返回体保留 ``pipeline_id``（值 = task id），前端老代码不会立刻炸。
+    """
+    from clipwright.api.task import _register_owner, _schedule
+    from clipwright.schema.task import TaskRequest
+    from clipwright.services.agent_kernel import AgentKernel
+    from clipwright.services.workspace import ensure_workspace
+
+    ws_project_id = str(getattr(req, "project_id", "") or req.session_id)
+    ws_name = str(user_inputs.get("workspace_name") or ws_project_id)
+    ws, _ws_meta = ensure_workspace(
+        ws_project_id,
+        name=ws_name,
+        auto_index=_opt_bool(user_inputs.get("workspace_auto_index")),
+        vision=_opt_bool(user_inputs.get("workspace_vision")),
+    )
+
+    # 需求文档落盘（PRD §17.4 / §18.3）：brief.md + plan.md 是主 agent 每一步都要读的东西。
+    # 这是**唯一**触发点（requirements 不是 delegate 阶段）——放在这里而不是阶段里。
+    _docs: dict[str, str] = {}
+    try:
+        _docs = ws.write_docs(session.get("creative_brief"), plan_data)
+    except Exception as _doc_err:  # noqa: BLE001 — 文档写失败不阻断开工，但要在日志里可见
+        logger.warning("需求文档落盘失败（继续）: %s", _doc_err)
+
+    extra = dict(pipeline_req.extra_params)
+    extra.update({
+        "workspace_root": str(ws.dirs().root),
+        "workspace_project_id": ws.project_id,
+        "session_id": req.session_id,
+        "production_plan": plan_data,
+        "creative_brief": session.get("creative_brief"),
+        "docs": _docs,
+    })
+    task_req = TaskRequest(
+        topic=str(pipeline_req.topic or req.session_id),
+        persona_id=pipeline_req.persona_id,
+        category_plugin_id=pipeline_req.category_plugin_id,
+        duration_sec=float(user_inputs.get("audio_duration_sec") or 0),
+        plan_only=False,
+        extra=extra,
+    )
+    kernel = AgentKernel()
+    task = kernel.create(task_req)
+    _register_owner(task.id, request)
+    await kernel.plan(task)
+    _schedule(task.id)
+    await asyncio.to_thread(
+        _service._persist,
+        req.session_id, "pipeline_running",
+        session.get("messages", []),
+        session.get("creative_brief"),
+        session.get("production_plan"),
+        session.get("user_inputs", {}),
+    )
+    logger.info("proceed 双轨：session=%s → task=%s（workspace=%s）",
+                req.session_id, task.id, ws.dirs().root)
+    # 幂等键重新绑定到 **task.id**：进入本函数前绑的是 `pl_xxx`，但 task 路径返回
+    # `task_yyy`——不重绑的话双击 proceed 会各建一个 Task、双倍扣费（审计 P1-1）。
+    try:
+        _idem_key = request.headers.get("Idempotency-Key", "") or f"sess:{req.session_id}"
+        _idem.bind(_idem_key, task.id)
+    except Exception as _idem_err:  # noqa: BLE001 — 幂等登记失败不影响本次创建
+        logger.warning("proceed 幂等键重绑失败（task=%s）: %s", task.id, _idem_err)
+    return {
+        "session_id": req.session_id,
+        # 兼容字段：老前端读 pipeline_id
+        "pipeline_id": task.id,
+        "task_id": task.id,
+        "status": "pipeline_started",
+        "mode": "task",
+        "workspace_root": str(ws.dirs().root),
+        "plan": task.plan.model_dump(mode="json") if task.plan else None,
+    }
+
+
 @router.post("/proceed")
 async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
     _require_session_owner(request, req.session_id)
@@ -453,6 +585,30 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
         dry_run=bool(req.extra_params.get("dry_run", False)),
         use_v2=True,
     )
+    # ── 单轨（PRD master-agent-prd-2026-10-26 §4.1 P2）──
+    # 创作只有一条路：主 Agent（Task）。老 6 阶段管线默认下线（settings.pipeline_enabled=false）。
+    _agent_on = str(getattr(settings, "agent_mode", "off")).lower() == "on"
+    _pipeline_on = bool(getattr(settings, "pipeline_enabled", False))
+    if _agent_on:
+        return await _proceed_as_task(
+            session=session, req=req, request=request,
+            user_inputs=user_inputs, plan_data=plan_data,
+            pipeline_req=pipeline_req, pipeline_id=pipeline_id,
+        )
+    if not _pipeline_on:
+        # 不静默换一条路：把"现在没有可用的创作通道"直接说清楚
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "老 6 阶段管线已下线，且 agent_mode != on：当前没有可用的创作通道。"
+                "请把 agent_mode 设为 on（主 Agent 模式）；灰度回滚可把 pipeline_enabled 设为 true。"
+            ),
+        )
+
+    # 工作区（PRD workspace-prd-2026-10-24）：老管线也把产物归口到同一根目录，
+    # 并把 root 透传给 Agent（素材检索/渲染落点都据此）。失败不阻断管线。
+    _ensure_legacy_workspace(req, user_inputs, pipeline_req)
+
     add_event(pipeline_id, "system", "info",
               f"由需求确认启动管线: {pipeline_req.persona_id} / {pipeline_req.category_plugin_id}")
     # proceed 即置 running（旧实现会话停在 plan_ready，运行中消息会走
@@ -524,6 +680,22 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
                             else:
                                 pm.save(project_id, {"timeline": final_tl})
                                 logger.info("管线时间线已保存到项目: %s", project_id)
+                            # 工作区：工程文件 + 时间线快照落同一根目录（可整体备份/diff）
+                            try:
+                                from clipwright.services.workspace import Workspace
+
+                                _ws_done = Workspace(str(project_id or req.session_id))
+                                _ws_done.ensure(name=str(pipeline_req.topic or "")[:60])
+                                _ws_done.write_project_files(
+                                    {
+                                        "project_id": project_id,
+                                        "pipeline": pipeline_req.model_dump(mode="json"),
+                                        "status": str(getattr(state, "status", "")),
+                                    },
+                                    final_tl if isinstance(final_tl, dict) else None,
+                                )
+                            except Exception as _ws_write_err:  # noqa: BLE001
+                                logger.warning("工作区工程文件写入失败: %s", _ws_write_err)
                     except Exception as e:
                         logger.warning("管线时间线保存失败: %s", e)
                     # 更新会话状态（批2：用当前消息列表——旧实现写回 proceed 时

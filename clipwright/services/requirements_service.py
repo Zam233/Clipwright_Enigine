@@ -568,9 +568,12 @@ class RequirementsService:
         session_id: str,
         user_message: str,
         on_delta: "Callable[[str], Any] | None" = None,
+        on_reasoning: "Callable[[str], Any] | None" = None,
     ) -> dict:
         """处理需求对话。on_delta 非空时 gathering 态通过流式回调增量推送
-        reply 文本片段（token 级真流式），由 stream_chat 的 SSE 生成器消费。"""
+        reply 文本片段（token 级真流式），由 stream_chat 的 SSE 生成器消费。
+
+        `on_reasoning` 收到模型思考内容的**逐块增量**（provider 支持时）。"""
         """处理用户消息，更新 MongoDB，返回最新状态。"""
         await self._ensure_cleanup()
         session_data = await asyncio.to_thread(self.get_session, session_id)
@@ -596,7 +599,8 @@ class RequirementsService:
 
         # 状态路由
         if status in ("gathering", "init"):
-            result = await self._handle_gathering(messages, brief_data, status, user_inputs, session_id, on_delta=on_delta)
+            result = await self._handle_gathering(messages, brief_data, status, user_inputs, session_id,
+                                              on_delta=on_delta, on_reasoning=on_reasoning)
             _new_brief = result.get("brief_draft")
             # P2-34: LLM 解析失败会返回 brief_draft={}——空结果不覆盖已有方案
             if isinstance(_new_brief, dict) and _new_brief:
@@ -1003,7 +1007,6 @@ class RequirementsService:
         user_inputs: dict[str, Any],
     ) -> tuple[Timeline, list[str]]:
         """替换素材：对每个选中 clip 构建 1-场景骨架 → MaterialAgent → 取最优建议素材替换。"""
-        from clipwright.agents.material_agent import MaterialAgent
         from clipwright.schema.agent import AgentContext, MaterialInput
         from clipwright.persona.loader import load_persona_by_id, resolve_inheritance
 
@@ -1036,7 +1039,12 @@ class RequirementsService:
                 "description": clip.metadata.get("description") or clip_text or "",
             }
             try:
-                out = await MaterialAgent().execute(
+                # P3：局部修补也走统一阶段执行通道（不再各自 new Agent 实例，
+                # 否则"管线里能跑、预览里跑不通"的两套行为会一直漂移）
+                from clipwright.services import stage_subagent
+
+                out = await stage_subagent.run_inline(
+                    "material",
                     MaterialInput(
                         context=context,
                         script_skeleton={"scenes": [scene]},
@@ -1086,7 +1094,6 @@ class RequirementsService:
         user_inputs: dict[str, Any],
     ) -> tuple[Timeline, list[str]]:
         """重做动画：构建只含选中 clip 的子集时间线 → AnimationAgent → 按 id 合并回当前时间线。"""
-        from clipwright.agents.animation_agent import AnimationAgent
         from clipwright.schema.agent import AgentContext, AnimationInput
 
         persona_id = user_inputs.get("persona_id", "default")
@@ -1120,7 +1127,10 @@ class RequirementsService:
                 visual_config = anim_style
         try:
             from clipwright.plugins.generated_source import generated_image_entries
-            out = await AnimationAgent().execute(
+            from clipwright.services import stage_subagent
+
+            out = await stage_subagent.run_inline(
+                "animation",
                 AnimationInput(
                     context=context, timeline=subset, visual_config=visual_config,
                     # AI 生成图片历史 → 语义索引（无历史时为 []，零变化）
@@ -1399,7 +1409,8 @@ class RequirementsService:
                 i += 1
         return n
 
-    async def _stream_gathering_llm(self, llm_kwargs: dict, on_delta: Callable) -> dict:
+    async def _stream_gathering_llm(self, llm_kwargs: dict, on_delta: Callable,
+                                    on_reasoning: Callable | None = None) -> dict:
         """轮68/69：流式 gathering LLM 调用——stream_generate 增量 yield，
         on_delta 回调推送 reply 字段的已解码文本增量。
 
@@ -1414,6 +1425,13 @@ class RequirementsService:
         sent = 0
 
         async for chunk in self._llm.stream_generate(messages, system_prompt=system):
+            # 思考内容逐块转发（PRD §19.4：thinking 真流式；provider 不给就什么都不发）
+            _reason = getattr(chunk, "reasoning_content", "") or ""
+            if _reason and on_reasoning is not None:
+                try:
+                    on_reasoning(_reason)
+                except Exception:  # noqa: BLE001 — 回调失败不影响生成
+                    pass
             delta = getattr(chunk, "content", "") or ""
             if not delta:
                 continue
@@ -1483,6 +1501,7 @@ class RequirementsService:
         self, messages: list[dict], brief_data: dict | None, status: str,
         user_inputs: dict | None = None, session_id: str = "",
         on_delta: "Callable[[str], Any] | None" = None,
+        on_reasoning: "Callable[[str], Any] | None" = None,
     ) -> dict:
         """调用 LLM 收集需求（注入 Persona 上下文）。"""
         context = ""
@@ -1545,7 +1564,7 @@ class RequirementsService:
             try:
                 import asyncio as _aio
                 result = await asyncio.wait_for(
-                    self._stream_gathering_llm(llm_kwargs, on_delta),
+                    self._stream_gathering_llm(llm_kwargs, on_delta, on_reasoning),
                     timeout=BRIEF_GENERATE_TIMEOUT,
                 )
                 await self._record_llm_usage("requirements.gathering", session_id)
@@ -1734,7 +1753,6 @@ class RequirementsService:
         跳过 StructureAgent 重新生成，仅带反馈重新 _translate_plan，避免重复完整 LLM 生成。
         """
         try:
-            from clipwright.agents.structure_agent import StructureAgent
             from clipwright.schema.agent import AgentContext, StructureInput
             from clipwright.persona.loader import load_persona_by_id, resolve_inheritance
             from clipwright.persona.validator import validate_manifest
@@ -1795,7 +1813,8 @@ class RequirementsService:
                     web_context=web_context,
                 )
 
-            agent = StructureAgent()
+            # 说明：早期这里 `agent = StructureAgent()` 后直接 execute；
+            # 现在统一走 `stage_subagent.run_inline("structure", …)`（单一实例化通道）。
             context = AgentContext(
                 pipeline_id=session_id,
                 persona_id=persona_id,
@@ -1837,7 +1856,10 @@ class RequirementsService:
                 else:
                     rag_context = f"## AI 生成能力\n{gen_overview}"
 
-            result = await agent.execute(
+            from clipwright.services import stage_subagent
+
+            result = await stage_subagent.run_inline(
+                "structure",
                 StructureInput(
                     context=context,
                     persona_config=persona_config,
@@ -2120,9 +2142,14 @@ class RequirementsService:
             def _on_delta(text: str) -> None:
                 queue.put_nowait({"type": "delta", "data": text})
 
+            def _on_reasoning(text: str) -> None:
+                # 思考增量（前端"正在思考 ▾"展开后追加）
+                queue.put_nowait({"type": "reasoning", "data": text})
+
             async def _run() -> None:
                 try:
-                    result = await self.chat(session_id, user_message, on_delta=_on_delta)
+                    result = await self.chat(session_id, user_message, on_delta=_on_delta,
+                                             on_reasoning=_on_reasoning)
                     queue.put_nowait({"type": "result", "data": result})
                 except asyncio.CancelledError:
                     raise

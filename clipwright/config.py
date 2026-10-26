@@ -36,6 +36,18 @@ class Settings(BaseSettings):
     plugin_data_dir: Path = Path("PluginData")
     project_dir: Path = Path("projects")
 
+    # --- 工作区（PRD docs/workspace-prd-2026-10-24.md）---
+    # 项目唯一产物根：工程文件 / 素材 / 下载 / 成片 / 缓存都在同一目录，可整体备份。
+    workspace_dir: Path = Path("workspaces")
+    # 轮询 materials/ 发现新素材（用户手动投放的入口）
+    workspace_scan_enabled: bool = True
+    workspace_scan_interval_sec: int = 20
+    # 视觉解读：默认本地 CLIP（零 API 费用）；provider=llm 才按次计费
+    workspace_vision_enabled: bool = True
+    workspace_vision_daily_budget_usd: float = 1.0
+    # cache/ 上限（超出按最旧删除），0 = 不限制
+    workspace_cache_max_gb: float = 2.0
+
     # --- 插件治理（M1/M2/M8/M15）---
     # manifest 签名密钥；空则从 account_jwt_secret 派生；再为空则不启用签名强制
     plugin_signature_key: str = ""
@@ -92,6 +104,19 @@ class Settings(BaseSettings):
     # shadow = Kernel 只规划、不执行（零副作用，用来看计划质量与预估成本）
     # on     = Kernel 执行；run_pipeline 能力随之可用
     agent_mode: Literal["off", "shadow", "on"] = "off"
+    # 老 6 阶段管线是否仍是**可执行路径**（PRD master-agent-prd §4.1 P2）。
+    # false（默认）= 创作只走主 Agent；run_pipeline 能力与 /api/pipeline/run 一律拒绝，
+    # 返回"请改用 run_stage/主 Agent"的可执行提示。true 仅用于灰度对比与回滚。
+    pipeline_enabled: bool = False
+    # 主 agent 每步决策策略（PRD §16.10.1）：off=只走规则；auto=失败必判/成功轻量步走规则；
+    # always=每步都调 LLM 决策（贵但最像真 agent）。
+    agent_decide_policy: Literal["off", "auto", "always"] = "auto"
+    # 决策上下文预算（字符）：超出按优先级裁剪，并记 context_loaded.trimmed（§17.11）
+    context_budget_chars: int = 6000
+    # 单份工作区报告上限（字符）；超出截断并标记（§17.3）
+    report_max_chars: int = 20000
+    # 允许创建工作区的父目录列表（§17.8）；空 = 只用 workspace_dir
+    workspace_roots: list[Path] = []
     # Kernel 四道闸（PRD F5 / Q1 已裁定；数值可调，不可置空）
     agent_max_turns: int = 30
     agent_max_tool_calls: int = 80
@@ -181,6 +206,9 @@ class Settings(BaseSettings):
     content_index_clip_enabled: bool = True
     # CLIP 权重名（HF）；首次使用会下载（约 600MB）。
     content_index_clip_model: str = "openai/clip-vit-base-patch32"
+    # CLIP 权重的**本地目录**（离线/内网环境用）：填了就只从本地加载，绝不联网。
+    # 空 = 按 HF 缓存加载（缓存缺失时会尝试下载，内网下会超时）。
+    content_index_clip_model_path: str = ""
     # 零样本标签词表（JSON：{"中文标签": "english prompt"}）；留空用内置默认词表。
     content_index_clip_vocab: str = ""
     # 镜头标注并发（CPU 推理，过高反而拖慢整机）。

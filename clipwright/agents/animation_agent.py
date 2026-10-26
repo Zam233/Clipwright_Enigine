@@ -66,6 +66,47 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
     agent_name = "animation_agent"
 
+    #: 能力 → 优先工具（插件可用 capability 声明接管；白名单随注册表实时变化）
+    capability_prefer: dict[str, tuple[str, ...]] = {}
+    tool_whitelist: tuple[str, ...] = (
+        "list_animations", "describe_llm_mg",
+        "pv_engine_doctor", "pv_engine_stills",
+    )
+
+    def _text_anim_defs(self) -> list[Any]:
+        """当前已注册的文字动画（实时；插件增删立即生效）。"""
+        try:
+            from clipwright.animation.registry import AnimationRegistry, AnimationType
+
+            return list(AnimationRegistry.list(AnimationType.TEXT))
+        except Exception:  # noqa: BLE001 — 注册表不可用时退回 catalog
+            return []
+
+    def _anim_properties(self, anim_id: str) -> set[str]:
+        """该动画全部关键帧里出现过的属性名（判断"是不是逐字/淡入"的语义依据）。"""
+        for anim in self._text_anim_defs():
+            if str(getattr(anim, "animation_id", "")) != anim_id:
+                continue
+            props: set[str] = set()
+            for kf in getattr(anim, "keyframes", []) or []:
+                props |= set(getattr(kf, "properties", {}) or {})
+            return props
+        return set()
+
+    def _default_text_anim_id(self) -> str:
+        """默认文字动画：取"有 opacity 曲线"的第一个，再退第一个，最后才用历史默认值。"""
+        defs = self._text_anim_defs()
+        for anim in defs:
+            if "opacity" in self._anim_properties(str(getattr(anim, "animation_id", ""))):
+                return str(anim.animation_id)
+        if defs:
+            return str(getattr(defs[0], "animation_id", "text_fade_in"))
+        return "text_fade_in"
+
+    def _is_typewriter_like(self, anim_id: str) -> bool:
+        """是否逐字出现：按关键帧属性 ``char_progress`` 判定，不再写死 id 白名单。"""
+        return "char_progress" in self._anim_properties(anim_id)
+
     def __init__(self) -> None:
         super().__init__()
         self._catalog = AnimationCatalog()
@@ -85,6 +126,11 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         self._pid = context.pipeline_id
         add_event(context.pipeline_id, "animation", "agent_start",
                   "AnimationAgent 开始（文字动画/逻辑动画分流）")
+        # 工具/技能列表实时可见（插件增删立即生效）——写进 trace 便于排障
+        _live_tools = [s["function"]["name"] for s in self.tool_schemas()]
+        _live_skills = [s.name for s in self.list_skills()]
+        add_event(context.pipeline_id, "animation", "capabilities",
+                  f"实时工具: {', '.join(_live_tools) or '无'}｜实时技能: {', '.join(_live_skills) or '无'}")
 
         # 捕获 Persona 的 prompt / 视觉需求 prompt，供 MG 处理器与风格解析使用
         self._persona_prompt = getattr(input_data, "persona_prompt", None) or ""
@@ -224,7 +270,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                     # 其余动画意图静默丢失）
                     for marker in markers:
                         marker_type = marker.get("type", "text")
-                        anim_id = marker.get("anim_id", "text_fade_in")
+                        anim_id = marker.get("anim_id") or self._default_text_anim_id()
                         anim_name = marker.get("name", "淡入")
 
                         if marker_type == "text":
@@ -345,7 +391,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         # description 正则兜底提取的是场景描述（「混剪」/「镜头」-style），
         # 禁止路由到字幕轨避免污染，降级为普通 TEXT clip（保留入场动画）。
         is_long_text = len(text_content) > 50
-        is_typewriter = anim_id in ("typewriter", "char_by_char")
+        is_typewriter = self._is_typewriter_like(anim_id)
         can_caption = text_source in ("marker", "metadata")
         if is_long_text and is_typewriter and can_caption:
             self._handle_caption(
@@ -381,7 +427,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "stroke_color": persona_style.get("stroke_color", "#000000"),
             },
         )
-        if anim_id in ("typewriter", "char_by_char"):
+        if is_typewriter:
             text_clip.metadata["typewriter"] = True
 
         # 启用重叠去重（_find_overlapping_clip 此前定义未调用）——

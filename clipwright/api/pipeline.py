@@ -355,6 +355,18 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
     if str(getattr(settings, "agent_mode", "off")).lower() == "on":
         return await _start_as_task(request, req, uid=current_user_id(req))
 
+    # P2（PRD master-agent-prd §4.1）：老管线默认下线，返回 410 并给出替代路径。
+    # 想灰度对比/回滚时把 pipeline_enabled 设为 true。
+    if not bool(getattr(settings, "pipeline_enabled", False)):
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "老 6 阶段管线已下线：创作请走主 Agent —— "
+                "POST /api/requirements/proceed（agent_mode=on 时转 Task）或 POST /api/task；"
+                "灰度对比请把 pipeline_enabled 设为 true"
+            ),
+        )
+
     uid = current_user_id(req)
     pipeline_id = f"pl_{uuid.uuid4().hex[:12]}"
     # 幂等键去重（双击/网络重试不重复扣费）
@@ -631,20 +643,61 @@ async def run_pipeline_batch(batch: BatchPipelineRequest, req: Request) -> dict:
 
 @router.get("/trace/{pipeline_id}")
 async def get_pipeline_trace(pipeline_id: str, request: Request):
-    """获取管线追踪事件（返回 JSON 数组或 SSE 流）。
+    """获取追踪事件（JSON）。
 
-    批4：补 owner 校验——trace 含提示词/脚本/时间线快照（与 SSE 版同标准）。
+    兼容层（P3）：`pipeline_id` 也可能是 agent 任务 id（`task_*`）——主 Agent 化之后
+    前端仍用同一个订阅面板，这里把 task 事件映射成 trace 形状，避免前端为"两条链路"
+    写两套订阅。批4：补 owner 校验——trace 含提示词/脚本/时间线快照。
     """
+    # 先做归属校验（`_enforce_pipeline_owner` 已支持 task id：查 api/task 的归属表），
+    # 再决定从 task_events 还是管线 trace 取数——task 分支不能绕过鉴权。
     _enforce_pipeline_owner(request, pipeline_id)
+    if _task_of(pipeline_id) is not None:
+        from clipwright.services.task_events import events as task_events
+
+        return [
+            {"seq": e.seq, "type": e.type, "message": e.message,
+             "detail": e.detail, "ts": e.ts.isoformat(), "source": "task"}
+            for e in task_events(pipeline_id)
+        ]
     # 直接返回 JSON
     return get_all_events(pipeline_id)
 
 
 @router.get("/trace/stream/{pipeline_id}")
 async def stream_pipeline_trace(pipeline_id: str, request: Request):
-    """SSE 流：实时推送管线执行追踪事件（LLM、Tool、Skill、Plugin 调用）。"""
+    """SSE 流：实时推送追踪事件（LLM、Tool、Skill、Plugin 调用）。
+
+    兼容层（P3）：task id 走 `task_events` 的增量游标，形状与管线 trace 对齐。
+    """
     # jwt 模式校验管线所有权（trace 含提示词/脚本/时间线快照，禁止跨用户订阅）
     _enforce_pipeline_owner(request, pipeline_id)
+
+    if _task_of(pipeline_id) is not None:
+        async def task_stream():
+            from clipwright.services.task_events import events_since
+
+            cursor = 0
+            idle = 0
+            while True:
+                batch = events_since(pipeline_id, cursor)
+                for e in batch:
+                    cursor = max(cursor, int(e.seq))
+                    payload = {"seq": e.seq, "type": e.type, "message": e.message,
+                               "detail": e.detail, "ts": e.ts.isoformat(), "source": "task"}
+                    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    idle = 0
+                if not batch:
+                    idle += 1
+                    if idle % 10 == 0:
+                        yield ": keep-alive\n\n"
+                task_obj = _task_of(pipeline_id)
+                if task_obj is not None and task_obj.terminal and not batch:
+                    return
+                await asyncio.sleep(1)
+
+        return StreamingResponse(task_stream(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache"})
 
     async def event_stream():
         # 生产加固 1.8: 单调 seq 游标（替代浮点时间戳，时钟回拨不丢事件）
@@ -896,6 +949,17 @@ async def start_agent_retry(pipeline_id: str, agent_name: str, request: Request)
     except Exception:
         pass
     _audit.record("pipeline_retry", _uid, {"pipeline_id": pipeline_id, "agent": agent_name})
+
+    # P2 闸口（审计 P2-7）：老管线已下线时，retry 也不许偷偷把编排器拉起来——
+    # 否则只要有切换前的残留结果，就还能从这条后门重跑老管线。
+    if not bool(getattr(settings, "pipeline_enabled", False)):
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "老 6 阶段管线已下线，retry 不再可用：请用主 Agent 的 run_stage 重派该阶段"
+                "（replan_closure 会算出需要连带重做的下游）。灰度回滚请把 pipeline_enabled 设为 true"
+            ),
+        )
 
     from clipwright.services.trace import get_all_events
     events = get_all_events(pipeline_id)

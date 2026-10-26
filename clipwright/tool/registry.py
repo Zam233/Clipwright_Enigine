@@ -165,6 +165,32 @@ class ToolRegistry:
             out.append(tool)
         return out
 
+    @classmethod
+    def list_by_capability(cls, capability: str, *, usable_only: bool = True) -> list[BaseTool]:
+        """列出声明了某语义能力的工具（实时）。
+
+        Agent 不再写死工具名，而是按能力取实现——插件声明
+        ``capability = "frame_check"`` 即可接管该能力（见 ``tool.capabilities``）。
+        """
+        from clipwright.tool.capabilities import is_usable
+
+        out: list[BaseTool] = []
+        for tool in cls._tools.values():
+            if str(getattr(tool, "capability", "") or "") != capability:
+                continue
+            if usable_only and not is_usable(tool):
+                continue
+            out.append(tool)
+        out.sort(key=lambda t: -int(getattr(t, "capability_priority", 0) or 0))
+        return out
+
+    @classmethod
+    def resolve_capability(cls, capability: str, *, prefer: list[str] | None = None) -> Optional[BaseTool]:
+        """按能力名解析到当前可用工具（None = 该能力当前没有实现）。"""
+        from clipwright.tool.capabilities import resolve
+
+        return resolve(capability, prefer=prefer or ())
+
     # 工具回退链：主工具失败时尝试的替代工具
     _FALLBACK_CHAINS: dict[str, list[str]] = {
         "video_trim": [],  # 签名不兼容 video_concat，不设 fallback

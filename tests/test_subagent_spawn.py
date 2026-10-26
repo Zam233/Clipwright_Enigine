@@ -409,6 +409,8 @@ def test_subagent_usage_is_accounted_and_priced(monkeypatch):
     llm_tracker._llm_calls.clear()
     monkeypatch.setattr(settings, "model_prices", {"m1": {"in": 1.0, "out": 2.0}},
                         raising=False)
+    # 模型白名单校验（B7）之后，provider 必须是已配置来源；这里白名单显式放开
+    monkeypatch.setattr(settings, "model_whitelist", ["p/m1"], raising=False)
     _fake_llm(monkeypatch, usage=(1000, 500))
 
     result = asyncio.run(sp.spawn_subagent(
@@ -439,3 +441,18 @@ def test_subagent_without_usage_does_not_fabricate_cost(monkeypatch):
     result = asyncio.run(sp.spawn_subagent(_ctx(), role="无用量角色"))
     assert result["cost_usd"] == 0.0
     assert llm_tracker.get_llm_calls("pl_spawn") == []
+
+
+def test_rejects_model_outside_whitelist(monkeypatch):
+    """B7：越权 provider/model 必须在派发前拒绝，不许静默回退默认模型。"""
+    from clipwright.config import settings
+
+    monkeypatch.setattr(settings, "model_whitelist", [], raising=False)
+    called: list[int] = []
+    _fake_llm(monkeypatch)
+    with pytest.raises(sp.SpawnError) as exc:
+        asyncio.run(sp.spawn_subagent(
+            _ctx(), role="越权角色", provider="不存在的源", model="x1",
+        ))
+    assert "白名单" in str(exc.value)
+    assert called == []  # 拒绝发生在任何 LLM 调用之前

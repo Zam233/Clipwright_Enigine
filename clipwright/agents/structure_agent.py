@@ -481,14 +481,11 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                 available_tools: dict[str, Any] = {}
                 for tool in ToolRegistry.list_agent_callable():
                     available_tools[tool.name] = tool
-                if "list_animations" not in available_tools:
-                    list_tool = ToolRegistry.get("list_animations")
-                    if list_tool and list_tool.is_available():
-                        available_tools["list_animations"] = list_tool
-                if "describe_llm_mg" not in available_tools:
-                    mg_tool = ToolRegistry.get("describe_llm_mg")
-                    if mg_tool and mg_tool.is_available():
-                        available_tools["describe_llm_mg"] = mg_tool
+                # 两个"必备"能力的兜底：同样走能力解析（插件可接管，缺了也不硬塞）
+                for _cap in ("list_animations", "describe_mg"):
+                    _tool = self.resolve_tool(_cap)
+                    if _tool is not None:
+                        available_tools.setdefault(_tool.name, _tool)
                 tool_schemas = [
                     {
                         "type": "function",

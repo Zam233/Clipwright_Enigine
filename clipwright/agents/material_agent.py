@@ -367,9 +367,11 @@ async def _validate_video_frame(r: Any, expected_text: str) -> float:
 async def _validate_video_frame_inner(
     r: Any, video_url: str, title: str, tags: list, expected_text: str,
 ) -> float:
-    from clipwright.tool.registry import ToolRegistry
+    # 能力动态解析：任何声明 capability="frame_check" 的工具（含插件）都可接管，
+    # 没有插件时落到内置 frame_validator；两者都没有才走启发式。
+    from clipwright.tool.capabilities import resolve as _resolve_capability
     try:
-        tool = ToolRegistry.get("frame_validator")
+        tool = _resolve_capability("frame_check")
         if tool is None:
             if isinstance(r, str):
                 return 0.5
@@ -672,9 +674,16 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
         if url and url in _VISION_SCORE_CACHE:
             return _VISION_SCORE_CACHE[url]
         try:
-            from clipwright.tool.registry import ToolRegistry
-            result = await ToolRegistry.execute(
-                "vision_llm",
+            # 能力动态解析：插件可用 capability="vision_score" 接管视觉打分，
+            # 缺实现时返回 NOT_FOUND，下面的 output 兜底保持旧行为。
+            from clipwright.tool.capabilities import resolve as _resolve_capability
+            from clipwright.tool.registry import ToolRegistry as _ToolRegistry
+
+            _vision_tool = _resolve_capability("vision_score")
+            if _vision_tool is None:
+                return 0.5
+            result = await _ToolRegistry.execute(
+                _vision_tool.name,
                 asset=asset,
                 scene_context={
                     "title": scene_title,
@@ -730,16 +739,38 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                 pass
 
             if not scenes:
+                # D7（PRD §19.5）：scenes 为空是**上游没给**，不是"素材阶段完成"。
+                # 旧实现返回 PASS + 空候选，于是 editor 成为第一个失败点且归因 unknown。
+                from clipwright.schema.agent import FailureReport
+
+                _reason = "分镜场景为空：structure 没有产出可用 scenes"
                 return MaterialOutput(
-                    decision=AgentDecision.PASS,
+                    decision=AgentDecision.FAIL,
+                    error=_reason,
+                    failure=FailureReport(
+                        category="input_insufficient",
+                        blocking_point=_reason[:200],
+                        retryable="needs_upstream",
+                        needs=[{"from_stage": "structure", "field": "scenes",
+                                "why": "素材匹配需要场景（title/description/时长）"}],
+                        evidence=[{"kind": "empty_scenes", "text": "scenes=[]"}],
+                    ),
                     candidate_clips=[],
-                    material_notes=["无场景，跳过素材匹配"],
+                    material_notes=["无场景，无法匹配素材"],
                 )
 
             if not has_sources:
                 logger.warning("MaterialAgent: 无注册素材源，将使用文字占位")
                 return MaterialOutput(
                     decision=AgentDecision.PASS,
+                    # 无素材源仍然是"完成"（文字占位是合法产物），
+                    # 但必须**显式登记降级**，让上层能区分"素材为空"与"素材正常"。
+                    degradations=[{
+                        "kind": "material_placeholder",
+                        "detail": "无注册素材源，所有场景使用文字占位",
+                        "scope": "global",
+                        "impact": "成片以文字/纯色占位，画面质量显著下降",
+                    }],
                     candidate_clips=[{
                         "scene_index": i,
                         "scene_title": scene.get("title", ""),

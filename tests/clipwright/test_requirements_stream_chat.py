@@ -39,7 +39,7 @@ class TestTrueStreaming:
         svc = _make_service("gathering")
         gate = asyncio.Event()
 
-        async def fake_chat(session_id, user_message, on_delta=None):
+        async def fake_chat(session_id, user_message, on_delta=None, on_reasoning=None):
             if on_delta:
                 on_delta("你好")
             await asyncio.wait_for(gate.wait(), timeout=1.5)
@@ -76,7 +76,7 @@ class TestTrueStreaming:
     async def test_non_gathering_state_has_no_delta(self) -> None:
         svc = _make_service("brief_ready")
 
-        async def fake_chat(session_id, user_message, on_delta=None):
+        async def fake_chat(session_id, user_message, on_delta=None, on_reasoning=None):
             assert on_delta is None  # 非 gathering 态不传回调
             return {"reply": "请确认", "is_ready": True}
 
@@ -90,7 +90,7 @@ class TestTrueStreaming:
         started = asyncio.Event()
         cancelled = asyncio.Event()
 
-        async def slow_chat(session_id, user_message, on_delta=None):
+        async def slow_chat(session_id, user_message, on_delta=None, on_reasoning=None):
             started.set()
             try:
                 await asyncio.sleep(30)

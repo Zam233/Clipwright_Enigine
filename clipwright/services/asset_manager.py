@@ -95,9 +95,14 @@ class AssetManager:
     删除素材仅删除软连接和 JSON 元数据，不删除原始文件。
     """
 
-    def __init__(self, project_id: str | None = None) -> None:
+    def __init__(self, project_id: str | None = None,
+                 workspace_root: Path | str | None = None) -> None:
         self._project_id = project_id
-        if project_id:
+        if workspace_root:
+            # 工作区（PRD workspace-prd-2026-10-24）：素材落 <workspace>/assets，
+            # 与工程文件/下载/成片同根，便于整体备份。
+            base = Path(workspace_root) / "assets"
+        elif project_id:
             base = settings.project_dir / project_id / "assets"
         else:
             base = settings.library_dir

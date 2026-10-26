@@ -336,3 +336,22 @@ P6/P7 阶段新增/变更的路由与客户端（均已完成接线与回归）�
 1. `/api/test/*` 无专属客户端模块（ModelsPage 内联），如后续统一 API 管理可抽取 `modelTestApi`。
 2. `SettingsPage.tsx:51`「WebSocket 地址」为 WsClient 移除后的遗留字段，属 UI 清理项，不影响对账结论。
 3. 本报告基于 2026-08-04 工作区快照；路由新增/变更后需重跑 §6 命令并更新本报告。
+## 7. 工作区（2026-10-24 增量）
+
+| 后端路由 | 前端客户端 | 状态 |
+|---|---|---|
+| `POST/GET /api/workspace`、`/enable`、`/scan`、`/materials`、`/events` | `src/services/api/workspace.ts`（`workspaceApi`） | ✅ 已接：首页 04 步（开关+路径）、`/task/{id}` 工作区面板（计数/扫描/上传/素材表） |
+| `POST /api/requirements/proceed` | `AgentPanel.confirmPlan` / `ReviewPanel.confirm` → `features/agent/proceedResult.ts` | ✅ 单轨：`agent_mode=on` 返回 `task_id` → 跳 `/task/{id}` 订阅 Task 事件 |
+
+说明：`/api/workspace/{id}/events` 已改成 **JSON**（`/events/stream` 才是 SSE），面板仍用"操作后 reload"，
+未挂常驻订阅——避免首页/任务页各开一条长连接；需要实时进度时改挂 `/events/stream`。
+
+## 8. 主 Actor 化（2026-10-26 增量）
+
+| 变化 | 影响面 | 状态 |
+|---|---|---|
+| `POST /api/pipeline/run-async` 在 `pipeline_enabled=false` 时返回 **410** | 老前端若有入口会拿到明确错误而非"管线卡住" | ✅ 新入口只走 `/api/requirements/proceed` → Task |
+| `GET /api/pipeline/trace/{id}`、`/trace/stream/{id}` 接受 `task_*` | `AgentPanel`/管理页复用同一订阅面板（事件映射为 trace 形状，含 `source:"task"`） | ✅ 无需为两条链路写两套订阅 |
+| 新增能力 `run_stage/spawn_stage/get_stage/list_stages/replan_closure/validate_stage_plan` | 主 Agent 内部通道（暂未做独立 UI；任务页已有阶段事件卡片） | ⚠️ 无独立 UI（不需要：阶段结果经 `step_end` 事件展示） |
+| `POST /api/render/*` 新增 `workspace_root` | 成片落 `workspace/renders/`（留空 = 全局 `renders/`） | ✅ 后端就绪；前端渲染调用暂未传（保持旧落点） |
+

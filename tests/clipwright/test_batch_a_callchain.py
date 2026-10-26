@@ -27,6 +27,22 @@ _MIN_REQUEST = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _force_agent_mode_off(monkeypatch):
+    """本模块测的是「老 API 直跑」链路（pipeline_id 前缀 pl_、运行中取消、幂等去重）。
+
+    这些断言只在 ``agent_mode=off`` 下成立；而本机 settings.json 可能已被操作者
+    调成 ``on``（双轨会把请求转成 Task，pipeline_id 变成 task_xxx），
+    且 settings API 测试会把 store 覆盖 apply 到共享 settings 单例。
+    测试不该依赖本机配置 / 执行顺序 → 显式钉住 off。
+    """
+    from clipwright.config import settings
+
+    monkeypatch.setattr(settings, "agent_mode", "off")
+    # P2 起老管线默认下线（run-async 返回 410）；本模块就是要测这条链路，显式打开
+    monkeypatch.setattr(settings, "pipeline_enabled", True, raising=False)
+
+
 class _FakeRequest:
     """最小 Request 桩：off/token 鉴权模式下 current_user_id 走 state.user_id。"""
 

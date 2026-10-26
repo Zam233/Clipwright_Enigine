@@ -265,10 +265,26 @@ class VideoDownloadTool(BaseTool):
         self,
         url: str,
         output_dir: Optional[str] = None,
+        workspace_root: Optional[str] = None,
         **kwargs: Any,
     ) -> ToolExecResult:
+        """下载视频。
+
+        落点优先级：``output_dir`` > ``<workspace_root>/materials/video`` > 临时目录。
+        **默认进工作区**：PRD 明确"下载的视频保存在工作区下的一个文件夹"，旧实现一律写
+        `tempfile.mkdtemp()`，于是工作区 `materials/` 永远是空的、扫描器无事可做。
+        """
         import tempfile
-        base = Path(output_dir) if output_dir else Path(tempfile.mkdtemp(prefix="dl_"))
+
+        if output_dir:
+            base = Path(output_dir)
+        elif workspace_root:
+            from clipwright.services.workspace import kind_of
+
+            kind = kind_of(url.split("?")[0]) or "video"
+            base = Path(workspace_root) / "materials" / kind
+        else:
+            base = Path(tempfile.mkdtemp(prefix="dl_"))
         base.mkdir(parents=True, exist_ok=True)
         name = url.split("/")[-1].split("?")[0] or f"dl_{hash(url) % 100000}.mp4"
         out = str(base / name)

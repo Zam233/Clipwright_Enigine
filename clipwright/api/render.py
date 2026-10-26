@@ -245,6 +245,28 @@ def _ensure_disk_space(min_free_gb: float = 1.0) -> None:
         pass
 
 
+def _render_out_path(filename: str, *, workspace_root: str | None = None) -> str:
+    """成片输出路径：工作区内 → ``<ws>/renders/<filename>``，否则全局 ``renders/<filename>``。
+
+    安全：只接受 ``settings.workspace_dir`` 之内的 root（防任意目录写盘）；文件名已由
+    调用方做过 ``is_safe_download_name`` 校验。
+    """
+    name = Path(filename).name
+    if workspace_root:
+        try:
+            from clipwright.services.workspace import workspace_root as _ws_root
+
+            base = Path(workspace_root).resolve()
+            if base.is_relative_to(_ws_root().resolve()):
+                out_dir = base / "renders"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                return str(out_dir / name)
+            logger.warning("忽略非法 workspace_root（不在工作区根内）: %s", workspace_root)
+        except Exception as exc:  # noqa: BLE001 — 落点解析失败回退全局目录
+            logger.warning("工作区渲染落点解析失败（回退全局 renders）: %s", exc)
+    return f"renders/{name}"
+
+
 async def enqueue_auto_render(
     pipeline_id: str,
     timeline,
@@ -460,7 +482,9 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
     requested_name = Path(raw_output).name if raw_output else ""
     # 预设携带容器扩展名（prores→mov）；用户显式指定文件名时尊重用户
     _ext = str(params.get("container_ext") or "mp4")
-    out = f"renders/{requested_name}" if requested_name else f"renders/{task_id}.{_ext}"
+    _fname = requested_name or f"{task_id}.{_ext}"
+    # B10：带 workspace_root 时成片落工作区 renders/（PRD「项目一切都在工作区」）
+    out = _render_out_path(_fname, workspace_root=body.workspace_root)
 
     # 软字幕——从时间线字幕轨生成 SRT sidecar（供 render 封装 mov_text 轨）
     _srt_path = ""
@@ -1047,6 +1071,10 @@ class RenderRequest(BaseModel):
     settings: Optional[RenderSettings] = None
     audio_file_path: Optional[str] = None  # 用户上传的配音文件路径
     bgm_file_path: Optional[str] = None  # 背景音乐文件路径
+    # B10：成片落工作区 `<workspace>/renders/`（PRD「项目一切都在工作区」）。
+    # 只接受 settings.workspace_dir 之内的路径；不传则沿用全局 renders/。
+    workspace_root: Optional[str] = Field(
+        default=None, description="工作区根目录（留空 = 全局 renders/）")
     # V32 负时间片头：画面整体后移 N 秒、音频延后同秒数（成片总长 = 原时长 + N）
     preroll_sec: float = Field(
         default=0.0, ge=0, le=15.0,

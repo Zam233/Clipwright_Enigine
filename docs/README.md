@@ -7,6 +7,8 @@
 | [架构总览](structure.md) | 五层架构设计：原子能力层 → Agent 编排层 → 类型插件层 → Persona 配置层 → 用户接口层 |
 | [Persona 系统](Persona.md) | 四层复合数字人格体系：参数层 / 示例层 / 嵌入层 / 模型层 |
 | [Agent 工作流](workflow.md) | 7 Agent LangGraph 管线：Persona 解码 → 结构 → 素材 → 剪辑 → 动画 → 音效 → 质检 |
+| [**主 Actor 化 PRD（2026-10-26）**](master-agent-prd-2026-10-26.md) | 移除 6 阶段管线：主 Agent 派发阶段子代理（黑板/契约/自愈闭包）+ 能力目录修复 + 11 条实测 bug |
+| [工作区 PRD（2026-10-24）](workspace-prd-2026-10-24.md) | 一个项目一个工作区：工程文件/素材/成片/缓存同根，自动索引 + 视觉解读 |
 
 ## 使用指南
 

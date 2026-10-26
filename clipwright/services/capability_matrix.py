@@ -104,12 +104,26 @@ TIER_MAP: dict[str, PermissionTier] = {
     "read_file": "read",
     "list_dir": "read",
     "write_file": "write_local",   # 只写白名单目录，父目录不自动创建
+    # 工作区文档协议（PRD §17.5）：报告只读；edit_file 只能改 docs/*.md
+    "list_reports": "read",
+    "read_report": "read",
+    "edit_file": "write_local",
+    "list_artifacts": "read",
+    "read_artifact": "read",
     # —— 类型规范查询（PRD Part I F10 / A-11，只读）——
     "get_type_spec": "read",
-    # —— PV 引擎（plugins/pv_engine）：体检/审计只读，抽帧写工作区 ——
+    # —— PV 引擎（plugins/pv_engine）——
+    # 只读：体检/审计/能力内省；写工作区：脚手架/抽帧/Timeline 转换；
+    # costly：整片渲染与音频分析（解码整段音频、可能跑 whisper）。
+    "pv_engine_doctor": "read",
     "pv_engine_probe": "read",
     "pv_engine_audit": "read",
+    "pv_engine_init": "write_local",
     "pv_engine_stills": "write_local",
+    "pv_engine_timeline_to_project": "write_local",
+    "pv_engine_render": "costly",
+    "pv_engine_beats": "costly",
+    "pv_engine_align": "costly",
 }
 
 #: 由**插件**贡献、只在插件加载后才存在的工具。
@@ -118,20 +132,60 @@ TIER_MAP: dict[str, PermissionTier] = {
 #: 但插件工具在插件未加载时天然不存在（例如 `pv_engine` 的引擎工具，只有加载插件才注册）。
 #: 把这类工具登记在这里，既保留"内置工具必须对齐"的强约束，又不误伤插件工具。
 OPTIONAL_PLUGIN_TOOLS: frozenset[str] = frozenset({
+    "pv_engine_doctor",
     "pv_engine_probe",
     "pv_engine_audit",
+    "pv_engine_init",
     "pv_engine_stills",
+    "pv_engine_timeline_to_project",
+    "pv_engine_render",
+    "pv_engine_beats",
+    "pv_engine_align",
 })
 
 #: 编排层能力（不属于 ToolRegistry，但 agent 同样可以"调用"）
 META_CAPABILITIES: tuple[dict[str, Any], ...] = (
     {
-        "name": "run_pipeline",
-        "kind": "pipeline",
+        "name": "replan_closure",
+        "kind": "subagent",
+        "tier": "read",
+        "idempotent": True,
+        "dry_run": False,
+        "notes": "质检建议重做某阶段时，查出**必须连带重做**的下游阶段"
+                 "（含被重做的那个），args={redo_agent}",
+    },
+    {
+        "name": "validate_stage_plan",
+        "kind": "subagent",
+        "tier": "read",
+        "idempotent": True,
+        "dry_run": False,
+        "notes": "校验一串阶段是否满足依赖，缺前置会返回 missing_upstream，args={stages}",
+    },
+    {
+        "name": "delegate",
+        "kind": "subagent",
         "tier": "costly",
         "idempotent": False,
-        "dry_run": True,   # 管线自带 dry_run：只生成粗剪时间线预览
-        "notes": "老 6 阶段管线，降级为可调用能力；常规套路/预算敏感时应优先选它",
+        "dry_run": True,
+        "notes": "派一个阶段子代理（structure/material/edit/animation/audio/quality）："
+                 "同步执行，结果**直接回主 agent**；args={stage, …}",
+    },
+    {
+        "name": "get_stage",
+        "kind": "subagent",
+        "tier": "read",
+        "idempotent": True,
+        "dry_run": False,
+        "notes": "查某个阶段最近一次结果（产物/摘要/写入的键/成本），args={stage}",
+    },
+    {
+        "name": "list_stages",
+        "kind": "subagent",
+        "tier": "read",
+        "idempotent": True,
+        "dry_run": False,
+        "notes": "列出本任务派过的阶段 + 黑板键与归属",
     },
     {
         "name": "spawn_subagent",
@@ -140,6 +194,30 @@ META_CAPABILITIES: tuple[dict[str, Any], ...] = (
         "idempotent": False,
         "dry_run": False,
         "notes": "星型拓扑、深度 1；只读角色不需审核门，带执行权限需两级审核",
+    },
+    {
+        "name": "get_subagent_status",
+        "kind": "subagent",
+        "tier": "read",
+        "idempotent": True,
+        "dry_run": False,
+        "notes": "查单个子代理：状态/结论/成本/耗时，args={subagent_id}",
+    },
+    {
+        "name": "list_subagents",
+        "kind": "subagent",
+        "tier": "read",
+        "idempotent": True,
+        "dry_run": False,
+        "notes": "列出本任务派过的全部子代理（角色/状态/成本）",
+    },
+    {
+        "name": "cancel_subagent",
+        "kind": "subagent",
+        "tier": "write_local",
+        "idempotent": False,
+        "dry_run": False,
+        "notes": "取消一个还在跑的子代理，args={subagent_id}",
     },
     {
         "name": "run_shell",

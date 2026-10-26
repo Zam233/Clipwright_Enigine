@@ -113,20 +113,28 @@ def _scene_is_pip(
     )
 
 
-def _split_sentences(text: str) -> list[str]:
+def _split_sentences(text: str, mode: str = "punctuation") -> list[str]:
     """按中文标点切分口播文案为句子（字幕粒度）。
 
-    边界：'，。；：' 作为边界**消费**（不进入字幕）；'！？' 保留在前句末尾。
-    结果去空。长句（>40 字）二次按逗号切分，逗号同样消费。
+    ``mode`` 与前端「切分方式」一致（``extra_params.split_mode``）：
+
+    - ``period``：只在 ``。！？!?`` 断句（长句保留，靠 ASS 自动折行）；
+    - ``punctuation``（默认，保持既有行为）：``，。；：`` 也作为边界并**消费**，
+      ``！？`` 保留在前句末尾；超 40 字的长句再按逗号二次切分。
+
+    结果去空。前端预览用的是同一套规则，因此"预览几段 = 成片几段"。
     """
     t = (text or "").strip()
     if not t:
         return []
+    period_mode = str(mode or "").lower() == "period"
+    bounds = "。！？!?" if period_mode else "，。！；？：!?"
+    keep = "！？!?" if period_mode else "！？"
     parts: list[str] = []
     buf = ""
     for ch in t:
-        if ch in "，。！；？：":
-            if ch in "！？":
+        if ch in bounds:
+            if ch in keep:
                 parts.append((buf + ch).strip())
             elif buf.strip():
                 parts.append(buf.strip())
@@ -139,7 +147,7 @@ def _split_sentences(text: str) -> list[str]:
     for p in parts:
         if not p:
             continue
-        if len(p) > 40:
+        if not period_mode and len(p) > 40:
             # 长句按逗号二次切分，逗号作为边界消费（不留段尾）
             sub = ""
             for ch in p:
@@ -245,6 +253,14 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
     """剪辑 Agent：从脚本骨架和素材生成粗剪时间线。"""
 
     agent_name = "edit_agent"
+    #: 能力 → 优先实现（插件可用 capability 声明接管）
+    capability_prefer: dict[str, tuple[str, ...]] = {}
+    #: 允许本 Agent 用 LLM 主动调用的工具（空=不开启工具循环）。
+    #: 每次调用实时解析：插件卸载后名字自然消失，不需要改代码。
+    tool_whitelist: tuple[str, ...] = (
+        "pv_engine_doctor", "pv_engine_timeline_to_project",
+        "pv_engine_stills", "pv_engine_audit",
+    )
 
     def __init__(self) -> None:
         super().__init__()
@@ -302,9 +318,25 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             canvas_fps = max(1, min(120, canvas_fps))
             if not scenes:
                 logger.warning("EditAgent: 场景列表为空，无法生成时间线")
+                # D5（PRD §19.5）：失败必须**说清原因与缺什么**——旧实现只写 edit_notes，
+                # 上层拿不到 error/failure 只能归因 unknown，用户看到「unknown（retryable=retry_same）」。
+                from clipwright.schema.agent import FailureReport
+
+                _reason = "分镜场景为空：structure 阶段没有产出可用 scenes（或 script_skeleton.scenes 缺失）"
                 return EditOutput(
                     decision=AgentDecision.FAIL,
-                    timeline=Timeline(id=_uid("tl"), width=canvas_w, height=canvas_h, fps=canvas_fps),
+                    error=_reason,
+                    failure=FailureReport(
+                        category="input_insufficient",
+                        blocking_point=_reason[:200],
+                        retryable="needs_upstream",
+                        needs=[{"from_stage": "structure", "field": "scenes",
+                                "why": "剪辑需要分镜场景（title/description/duration）"}],
+                        evidence=[{"kind": "empty_scenes", "text": "scenes=[]"}],
+                    ),
+                    # 失败时**不返回时间线**（D6）：空壳 Timeline 一旦入库，
+                    # 下游 animation/audio 会以为"有时间线"继续跑，最终交付空片。
+                    timeline=None,
                     edit_notes=["场景列表为空"],
                 )
 
@@ -382,6 +414,8 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             ) if transition_weights else "hard_cut"
 
             # 3. 构建轨道（检测是否需要 PiP 画中画叠加轨）
+            # 字幕切分方式与前端「按句号/按标点」一致（缺省 punctuation 保持旧行为）
+            _split_mode = str(context.extra_params.get("split_mode") or "punctuation")
             vid_track = Track(id=_uid("t"), name="视频轨", kind=ClipKind.VIDEO, index=0)
             text_track = Track(id=_uid("t"), name="文字轨", kind=ClipKind.TEXT, index=1)
             caption_track = Track(id=_uid("t"), name="字幕轨", kind=ClipKind.CAPTION, index=2)
@@ -626,8 +660,9 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                         fallback_note = f"场景{i}: 处理异常降级文字占位"
                         try:
                             text_result = await asyncio.wait_for(
-                                ToolRegistry.execute(
-                                    "generate_text_video",
+                                # 能力动态解析：capability="text_placeholder"
+                                self.call_tool(
+                                    "text_placeholder",
                                     text=scene.get("title", f"场景{i+1}"),
                                     duration_sec=scene_duration,
                                 ),
@@ -799,7 +834,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 # animation_agent 的文字动画仍在 TEXT 轨，互不冲突。
                 # 场景无 voiceover_script 时标记待补，场景循环后由全局文案按比例分配。
                 scene_voice = scenes[i].get("voiceover_script") or scenes[i].get("text") or ""
-                sentences = _split_sentences(str(scene_voice))
+                sentences = _split_sentences(str(scene_voice), _split_mode)
                 if sentences and scene_total_dur > 0:
                     _append_caption_sentences(
                         caption_track, sentences, scene_start_time, scene_total_dur,
@@ -810,7 +845,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             # 全局文案补充：缺失 voiceover_script 的场景，用全局口播文案按场景时长比例分配字幕
             # （保证 CAPTION 轨有内容，前端 findCaptionTrack 可命中；不依赖 LLM 逐场景产出 voiceover_script）。
             if missing_scenes:
-                global_sentences = _split_sentences(global_voice)
+                global_sentences = _split_sentences(global_voice, _split_mode)
                 if global_sentences:
                     g_seg_lens = [max(len(s), 1) for s in global_sentences]
                     g_total_len = sum(g_seg_lens)
@@ -869,6 +904,25 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                             c.metadata = {}
                         c.metadata["lut_path"] = _lut_path
                 notes.append(f"已应用全局 LUT: {Path(_lut_path).name}")
+
+            # PV 引擎联动（PRD F10）：时间线里只要有 ``metadata.pv`` 的 caption，
+            # 就用引擎抽一张静帧挂到 clip.metadata.preview_still，供人工/质检复核。
+            # 引擎没装/没配 → 静默跳过并记事件，绝不阻断剪辑。
+            _pv_project = await self._attach_pv_preview(timeline, context)
+
+            # 可选：让 LLM 用实时工具面（白名单）做一轮受控自检/修复建议。
+            # 默认关闭（额外 LLM 成本），需要时 extra_params.enable_pv_llm_tools=true。
+            if _pv_project and bool(context.extra_params.get("enable_pv_llm_tools")):
+                _loop = await self.run_tool_loop(
+                    system_prompt=("你是 PV 引擎编排助手。只使用给定工具检查项目，"
+                                   "发现问题给出可执行的修复建议，不要编造文件路径。"),
+                    user_prompt=(f"项目文件：{_pv_project}\n"
+                                 "请运行审计并汇报 verdict、FAIL 规则与修复建议。"),
+                    tools=self.tool_whitelist,
+                    max_rounds=2, max_calls=4, pipeline_id=context.pipeline_id,
+                )
+                notes.append(f"PV 自检：{_loop.get('status')}"
+                             f"（工具调用 {len(_loop.get('tool_calls') or [])} 次）")
 
             return EditOutput(
                 decision=AgentDecision.PASS,
@@ -1129,7 +1183,8 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                               f"video_trim({source_path.split('/')[-1][:30]}, start={start_offset:.1f}s, dur={seg_dur:.1f}s)")
                     try:
                         trim_result = await asyncio.wait_for(
-                            ToolRegistry.execute(
+                            # 能力动态解析：插件贡献的裁剪实现（capability="video_trim"）优先
+                            self.call_tool(
                                 "video_trim",
                                 input_path=source_path,
                                 start_sec=start_offset,
@@ -1157,8 +1212,8 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                           f"generate_text_video({scene_title}, dur={seg_dur:.1f}s)")
                 try:
                     text_result = await asyncio.wait_for(
-                        ToolRegistry.execute(
-                            "generate_text_video",
+                        self.call_tool(
+                            "text_placeholder",
                             text=scene_title,
                             duration_sec=seg_dur,
                             width=width,
@@ -1190,8 +1245,8 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                       f"场景{i}: 片段数达上限({max_units})，剩余 {remaining:.1f}s 文字占位补齐")
             try:
                 text_result = await asyncio.wait_for(
-                    ToolRegistry.execute(
-                        "generate_text_video",
+                    self.call_tool(
+                        "text_placeholder",
                         text=scene_title,
                         duration_sec=remaining,
                         width=width,
@@ -1230,6 +1285,61 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         if suggested:
             return max(suggested, key=lambda a: a.get("score", 0))
         return None
+
+    async def _attach_pv_preview(self, timeline: Timeline, context: Any) -> str:
+        """用 PV 引擎给第一个「引擎化」字幕抽一张静帧，挂到 clip.metadata。
+
+        - 只处理 ``metadata.pv`` 存在且未显式关闭的 caption/text clip；
+        - 工具按**能力名**解析（``pv_timeline`` / ``pv_preview``），插件没装即跳过；
+        - 全流程包在 try/except + 超时里：预览是锦上添花，不许把剪辑带塌。
+        返回生成的 project.json 路径（没有则空串）。
+        """
+        pv_clips = [
+            c for t in timeline.tracks for c in t.clips
+            if str(getattr(c, "kind", "")) in ("caption", "text")
+            and ((getattr(c, "metadata", None) or {}).get("pv") or {}).get("enabled", True)
+            and bool(((getattr(c, "metadata", None) or {}).get("pv") or {}))
+        ]
+        if not pv_clips:
+            return ""
+        if self.resolve_tool("pv_timeline") is None:
+            add_event(context.pipeline_id, "edit", "info", "pv_engine: skipped（未配置）")
+            return ""
+
+        try:
+            tl = timeline.model_dump(mode="json") if hasattr(timeline, "model_dump") else dict(timeline)  # type: ignore[arg-type]
+            made = await asyncio.wait_for(
+                self.call_tool("pv_timeline", timeline=tl), timeout=60,
+            )
+            project_path = str(((made.output or {}) if made.status == "success" else {}).get("project_path") or "")
+            if not project_path:
+                add_event(context.pipeline_id, "edit", "info",
+                          f"pv_engine: 项目转换失败（{str(made.error)[:60]}），跳过预览")
+                return
+            first = pv_clips[0]
+            mid = float(first.start_sec) + min(0.5, max(0.05, float(first.duration_sec) / 2))
+            still = await asyncio.wait_for(
+                self.call_tool("pv_preview", times=[mid], shots=project_path), timeout=90,
+            )
+            files = (still.output or {}).get("still_files") or []
+            if files:
+                if first.metadata is None:
+                    first.metadata = {}
+                first.metadata["preview_still"] = files[0]
+                add_event(context.pipeline_id, "edit", "tool",
+                          f"pv_engine: 预览帧 {Path(files[0]).name} → clip={first.id[:8]}")
+            else:
+                add_event(context.pipeline_id, "edit", "info",
+                          "pv_engine: 未产出静帧（多半缺 assets），已跳过")
+        except asyncio.TimeoutError:
+            add_event(context.pipeline_id, "edit", "info", "pv_engine: 预览超时，已跳过")
+            return ""
+        except Exception as exc:  # noqa: BLE001 — 预览失败不影响剪辑
+            logger.warning("EditAgent: PV 预览失败（跳过）: %s", exc)
+            add_event(context.pipeline_id, "edit", "info",
+                      f"pv_engine: 预览异常（{str(exc)[:60]}），已跳过")
+            return ""
+        return project_path
 
     async def _match_clip_luma(self, timeline: Timeline, max_clips: int = 30) -> int:
         """轮 83：跨镜头亮度统一——把每个视频片段的 YAVG 校准到时间线均值。

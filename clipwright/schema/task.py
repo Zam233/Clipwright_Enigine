@@ -41,6 +41,13 @@ EVENT_TYPES: tuple[str, ...] = (
     "checkpoint",
     "task_end",
     "inject",
+    # ── 主 agent 化（PRD §16.3/§16.4/§17.11）：叙述、意图、思考、汇报、文档、上下文 ──
+    "narration",       # "我打算这么做，因为…"（规划后 / 改计划后）
+    "intent",          # 每次 delegate/工具执行**之前**的一句话（步骤要说的话）
+    "thinking",        # provider 的 reasoning_content 增量（无则不发）
+    "report",          # 阶段完成后的汇报卡（headline + bullets + artifacts + cost）
+    "doc_write",       # 工作区文档写入（docs/*.md、reports/*.md）
+    "context_loaded",  # 每跳决策装载了哪些上下文（sources/trimmed/bytes）
 )
 
 

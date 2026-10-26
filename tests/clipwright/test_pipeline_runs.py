@@ -25,8 +25,15 @@ client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
-def _clean_registry() -> None:
-    """每个用例前清空内存注册表，避免用例间串扰。"""
+def _clean_registry(monkeypatch) -> None:
+    """每个用例前清空内存注册表，避免用例间串扰。
+
+    P2 起老管线默认下线（retry 会先返回 410）；本模块测的是 retry 的 404/400 语义，
+    显式打开 pipeline_enabled 固定被测行为。
+    """
+    from clipwright.config import settings
+
+    monkeypatch.setattr(settings, "pipeline_enabled", True, raising=False)
     pv2.clear_run_records()
     yield
     pv2.clear_run_records()

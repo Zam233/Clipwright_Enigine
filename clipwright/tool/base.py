@@ -41,6 +41,12 @@ class BaseTool(ABC):
     # 插件注册工具时若希望 Agent 能主动调用（如 ai_image_generate），
     # 置为 True；纯编排路径工具（如 video_trim）保持默认 False。
     agent_callable: bool = False
+    #: 语义能力名（见 ``clipwright.tool.capabilities``）。声明后该工具自动成为
+    #: 该能力的候选，Agent 无需知道工具叫什么——插件因此可以"接管"一个能力，
+    #: 而不必修改 Agent 源码。空串 = 不参与能力解析（只能按名字调用）。
+    capability: str = ""
+    #: 同能力的候选优先级（大的优先；同档按注册顺序）。
+    capability_priority: int = 0
 
     @abstractmethod
     async def execute(self, **kwargs: Any) -> Any:

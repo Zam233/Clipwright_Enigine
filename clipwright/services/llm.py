@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from functools import partial
 from typing import Any, AsyncIterator, Callable, Optional
 
@@ -83,6 +84,30 @@ def llm_usage_snapshot() -> dict[str, int]:
     """返回当前进程 LLM 用量累计快照（A6 per-agent 差值记账用）。"""
     with _usage_lock:
         return dict(_usage_totals)
+
+
+# ── 思考内容（PRD §19.4：thinking 事件的数据来源）─────────────────
+# LLMService.generate 拿到 `reasoning_content` 时记一份；主 agent 每步结束后
+# `take_last_reasoning()` 取走并发成 thinking 事件（取走即清，避免重复推送）。
+_LAST_REASONING: dict[str, Any] = {"text": "", "ts": 0.0}
+
+
+def _remember_reasoning(text: str) -> None:
+    if not text:
+        return
+    _LAST_REASONING["text"] = str(text)[:4000]
+    _LAST_REASONING["ts"] = time.time()
+
+
+def take_last_reasoning(max_age_sec: float = 180.0) -> str:
+    """取走最近一次思考内容（过期或不存在返回空串）。"""
+    text = str(_LAST_REASONING.get("text") or "")
+    ts = float(_LAST_REASONING.get("ts") or 0.0)
+    _LAST_REASONING["text"] = ""
+    _LAST_REASONING["ts"] = 0.0
+    if not text or (time.time() - ts) > max_age_sec:
+        return ""
+    return text
 
 
 def _record_global_usage(input_tokens: int, output_tokens: int) -> None:
@@ -378,6 +403,7 @@ class LLMService:
             display_text = (reasoning[:200] if reasoning else resp.content[:200]) if resp.content else ""
             if reasoning:
                 _push_llm("🤔 LLM 推理", {"推理": reasoning[:500]})
+                _remember_reasoning(reasoning)
             if resp.content:
                 _push_llm("💬 LLM 响应", {"响应": resp.content[:500]})
         except Exception:

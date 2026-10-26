@@ -1,15 +1,22 @@
 id: "pv_engine"
-name: "PV Engine（eternal-questioning-pv）"
-version: "1.0.0"
+name: "PV Engine（逐帧渲染引擎）"
+version: "2.0.0"
 kind: "capability"
-description: "把 github.com/Zam233/eternal-questioning-pv 的逐帧渲染引擎接成 agent 可调用的工具与技能"
+description: "把逐帧纯函数渲染引擎接成 agent 可调用的工具与技能：双布局探测、契约内省、结构化审计、带预算渲染、Timeline 桥"
 author: "Clipwright Team"
 entry_point: "pv_engine.main"
 
 # P1 迁移：新契约声明（声明即授权）
 api_version: "2"
 contributions:
+  - { kind: tool, id: pv_engine_doctor }
+  - { kind: tool, id: pv_engine_init }
   - { kind: tool, id: pv_engine_probe }
   - { kind: tool, id: pv_engine_audit }
   - { kind: tool, id: pv_engine_stills }
+  - { kind: tool, id: pv_engine_render }
+  - { kind: tool, id: pv_engine_beats }
+  - { kind: tool, id: pv_engine_align }
+  - { kind: tool, id: pv_engine_timeline_to_project }
   - { kind: skill, id: pv_engine_review }
+  - { kind: skill, id: pv_engine_authoring }

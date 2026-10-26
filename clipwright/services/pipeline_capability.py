@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Optional
 
 from clipwright.config import logger, settings
@@ -40,6 +41,35 @@ def clear_results() -> None:
     _LAST_RESULT.clear()
 
 
+def _failure(category: str, retryable: str, message: str) -> dict[str, Any]:
+    """Kernel 的 FailureReport 形状（category/retryable/blocking_point/evidence）。"""
+    text = str(message or "")[:300]
+    return {
+        "category": category,
+        "retryable": retryable,
+        "blocking_point": text,
+        "evidence": [{"kind": "error", "text": text}],
+    }
+
+
+def _classify_failure(exc: BaseException) -> dict[str, Any]:
+    """把管线异常转成可行动的分类，而不是一律 unknown。
+
+    - ``Unknown category plugin`` / 空类型：配置输入问题 → invalid_input / needs_human
+    - 超时：timeout / retry_same（Kernel 会再试一次）
+    - 其它：internal_defect / retry_same
+    """
+    msg = f"{type(exc).__name__}: {exc}"
+    low = str(exc).lower()
+    if isinstance(exc, asyncio.TimeoutError) or "timeout" in low or "timed out" in low:
+        return _failure("timeout", "retry_same", msg)
+    if "unknown category plugin" in low or "视频类型" in str(exc) or "categoryregistry" in low:
+        return _failure("invalid_input", "needs_human", msg)
+    if isinstance(exc, ValueError):
+        return _failure("invalid_input", "needs_human", msg)
+    return _failure("internal_defect", "retry_same", msg)
+
+
 def build_request(task: Task, step: PlanStep) -> PipelineRequest:
     """把 Step 参数 + 任务请求合成 PipelineRequest（Step 参数优先）。"""
     args = dict(step.args or {})
@@ -57,7 +87,23 @@ def build_request(task: Task, step: PlanStep) -> PipelineRequest:
 
 
 async def run(task: Task, step: PlanStep, *, owner: str = "") -> dict[str, Any]:
-    """执行一次管线（阻塞直到管线结束）。"""
+    """执行一次管线（阻塞直到管线结束）。
+
+    **P2 起默认下线**（PRD master-agent-prd §4.1）：`settings.pipeline_enabled=False` 时
+    一律拒绝，并给出可执行的替代路径（`run_stage` 链），而不是让主 Agent 干瞪眼。
+    """
+    from clipwright.config import settings as _settings
+
+    if not bool(getattr(_settings, "pipeline_enabled", False)):
+        return {
+            "status": "refused",
+            "error": (
+                "老 6 阶段管线已下线：创作请用 run_stage 依次派 "
+                "structure → material → edit → animation → audio（quality 收尾）。"
+                "确需灰度对比时把 pipeline_enabled 设为 true。"
+            ),
+            "failure": _failure("policy_refused", "permanent", "pipeline_enabled=false"),
+        }
     if not enabled():
         return {
             "status": "refused",
@@ -65,6 +111,8 @@ async def run(task: Task, step: PlanStep, *, owner: str = "") -> dict[str, Any]:
                 f"agent_mode={agent_mode()}：run_pipeline 只在 on 模式下可调用"
                 "（off 走老 API，shadow 只规划不执行）"
             ),
+            "failure": _failure("policy_refused", "permanent",
+                                f"agent_mode={agent_mode()}"),
         }
 
     # 预算闸：与老入口同一把（流水线本身也会扣费）
@@ -76,6 +124,8 @@ async def run(task: Task, step: PlanStep, *, owner: str = "") -> dict[str, Any]:
             return {
                 "status": "refused",
                 "error": f"本月 token 预算已耗尽（已用 {used}），拒绝再起管线",
+                "failure": _failure("budget_exhausted", "needs_human",
+                                    f"已用 {used}"),
             }
     except Exception as e:  # noqa: BLE001 — 预算统计失败不阻断，但要留痕
         logger.warning("预算检查失败（继续执行）: %s", e)
@@ -90,7 +140,13 @@ async def run(task: Task, step: PlanStep, *, owner: str = "") -> dict[str, Any]:
         state = await orch.run(request, pipeline_id=pipeline_id, task_id=task.id)
     except Exception as e:  # noqa: BLE001 — 管线异常转成 Step 失败，交给 Kernel 收尾
         logger.warning("run_pipeline 能力执行失败 %s: %s", task.id, e)
-        return {"status": "error", "error": f"{type(e).__name__}: {e}"}
+        return {
+            "status": "error",
+            "error": f"{type(e).__name__}: {e}",
+            # 结构化失败：否则 Kernel 只能把一切归为 "unknown/unknown"，
+            # 用户看到的结论就是「未成功：unknown」，等于没给原因。
+            "failure": _classify_failure(e),
+        }
 
     result = state.model_dump(mode="json")
     _remember(task.id, result)
@@ -105,11 +161,18 @@ async def run(task: Task, step: PlanStep, *, owner: str = "") -> dict[str, Any]:
         "duration_sec": float((timeline or {}).get("duration_sec") or 0.0),
         "output_path": result.get("output_path") or "",
     }
-    return {
+    out: dict[str, Any] = {
         "status": "ok" if ok else "error",
         "output": output,
         "error": None if ok else (result.get("error") or f"管线状态 {status}"),
     }
+    if not ok:
+        # 管线"跑完了但状态不是成功"同样要给分类（否则又是一句 unknown）
+        out["failure"] = _failure(
+            "pipeline_failed", "retry_same",
+            result.get("error") or f"管线状态 {status}",
+        )
+    return out
 
 
 def _remember(task_id: str, result: dict[str, Any]) -> None:

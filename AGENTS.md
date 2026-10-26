@@ -11,6 +11,8 @@
 | 开发指南 | [docs/development.md](docs/development.md) |
 | 修复与功能补全计划 | [docs/fix-and-feature-plan.md](docs/fix-and-feature-plan.md)（§10 执行进度） |
 | 素材内容理解与 NL 落位计划 | [docs/content-understanding-plan-2026-09-14.md](docs/content-understanding-plan-2026-09-14.md)（内容索引→检索→NL 意图→落位校验，10 轮） |
+| **主 Actor 化 PRD（下期主线）** | [docs/master-agent-prd-2026-10-26.md](docs/master-agent-prd-2026-10-26.md)（移除 6 阶段管线 → 主 Agent 派发阶段子代理 + 黑板书 + 上轮实测 bug 清单） |
+| 工作区 PRD（已落地） | [docs/workspace-prd-2026-10-24.md](docs/workspace-prd-2026-10-24.md)（一个项目一个工作区：materials/assets/renders/cache） |
 | 前后端对账 | [docs/frontend-backend-parity.md](docs/frontend-backend-parity.md) |
 | 项目上下文 | [CLAUDE.md](CLAUDE.md) |
 
@@ -23,7 +25,7 @@ scripts\stop.ps1         # 停止全部
 
 - 后端：`uvicorn clipwright.main:app --port 8080`（`CLIPWRIGHT_PORT=8080`，见 `.env.example`）
 - 前端：**独立仓库** `J:\Clipweight-Client`（`npm run dev`，vite 5173；`/api` 代理 → 8080，`/srv` 代理 → 账号服务 8090）
-- 账号/市场服务（可选）：`K:\Clipwright Server` 独立仓库，端口 8090
+- 账号/市场服务：`K:\Clipwright Server` 独立仓库，端口 8090 —— `scripts\start.ps1` 会自动拉起（首次自动生成 `.env` 与随机 JWT secret；目录可用 `$env:CLIPWRIGHT_SERVER_DIR` 覆盖，端口用 `$env:CLIPWRIGHT_SERVER_PORT`）
 
 ## 项目结构（后端 monorepo + 前端独立仓库）
 
@@ -63,12 +65,37 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
 8. **五层架构**：原子能力层 → Agent 编排层 → 类型插件层 → Persona 配置层 → 用户接口层
 9. **Persona 配置不直接调用原子能力**：必须经过类型插件层翻译
 10. **实时链路为 SSE-only**：pipeline trace / requirements chat / render queue 流；WebSocket 已移除
+11. **Agent 不写死工具名**：业务 Agent 通过**语义能力名**（`frame_check` / `video_trim` / `pv_audit` …）经
+    `clipwright/tool/capabilities.py` 在调用时刻解析到具体工具；插件给工具声明 `capability` 即可接管，
+    装卸/配置变化下一次调用立即生效。新增能力先加 `CAPABILITY_ALIASES` 与 `TIER_MAP`。
 
 ## 鉴权三模式
 
 `CLIPWRIGHT_ACCOUNT_VERIFY_MODE = off | token | jwt`（默认 off）。jwt 模式本地验签共享密钥，中间件写 `request.state.user_id/user_role`；前端 access token 仅内存 + refresh 走 Server httpOnly cookie（`cw_refresh`）。
 
 ## 本期改进（P8–P10 摘要）
+
+- **主 Actor 化（本期已落地，见 [docs/master-agent-prd-2026-10-26.md](docs/master-agent-prd-2026-10-26.md)）**：
+  老 6 阶段管线**执行路径已切断**（`settings.pipeline_enabled=false` 默认；`run_pipeline` 能力拒绝、
+  `POST /api/pipeline/run-async` 返回 410、`proceed` 单轨、规划失败退化为 6 个 `run_stage`）；
+  新增阶段子代理通道 `run_stage/spawn_stage/get_stage/list_stages` + 黑板
+  (`services/task_blackboard.py`：`by` 归属、timeline 单向覆盖、2MB 转指针) + 阶段契约
+  (`schema/stage.py`、`services/stage_inputs.py`、`services/stage_merge.py`) + 自愈闭包
+  (`services/stage_closure.py`：`edit → [animation, audio]`，quality 永不入闭包)。
+  **能力目录修好了**：`_capability_catalog()` 现在合并 `META_CAPABILITIES`（此前主 Agent
+  看不见 `spawn_subagent`/`run_stage`，永远不会主动派子代理）。
+- **工作区（本期已落地）**：首页「一句话出片（主 Agent）」与 `/task` 启动页已下线，主 Agent 改由「新建制作」承载（`requirements/proceed` 单轨：`agent_mode=on` → Task）；「新建制作」新增 04 工作区（工程/素材/下载/成片同根，`materials/` 唯一用户写入区）＋自动索引与视觉解读。见 [docs/workspace-prd-2026-10-24.md](docs/workspace-prd-2026-10-24.md)。
+- **视觉解读变真（本期）**：`label_shot` 改为 clip → **llm** → 本地分类器；`vision_llm_model=deepseek-chat`
+  （DeepSeek flash 多模态）；`imread_unicode()` 修中文路径（`cv2.imread` 读不了中文名）；
+  结果带 `source`（`llm/clip/classifier/filename`），**只看了文件名一律 `degraded`**，不再假装 `ok`。
+- **配音与字幕（本期）**：上传配音入口始终可见（旧实现被 `mode` 派生自我隐藏，用户根本没有上传入口）；
+  上传配音的字幕对齐从 `sfx` 分支里移出、**默认执行**（实测时间；段数不一致按配音时长等比；样式继承）；
+  不上传时用自动配音生成旁白，字幕按 TTS 句级时间戳对齐。见 docs/voice_tts.md。
+- **能力解析层（本期）**：`tool/capabilities.py` + `BaseAgent.resolve_tool/call_tool/call_skill/tool_schemas/run_tool_loop`；
+  Material/Edit/Animation/Audio/Quality 的硬编码工具名全部改为能力解析；Tool/Skill 列表实时读取。
+- **PV 引擎插件 v2**：双布局（`engine/` 包与上游 `_build/`）、契约内省（doctor）、结构化审计、
+  带预算渲染、Timeline→project 桥、拍点/对齐；插件配置注入修复（`loader._inject_plugin_config`）。
+  详见 [docs/pv-engine-plugin.md](docs/pv-engine-plugin.md)、[docs/pv-engine-known-gaps.md](docs/pv-engine-known-gaps.md)。
 
 - **运营调度**：webhook 事件接线（pipeline/render 完成·失败，secret Fernet 加密落盘）、定时调度（interval/daily + Mongo scheduled_runs）、热点选题、脚本续写/改写、beat-sync、色彩匹配工具、参考成片风格模仿、dry-run 预览、管线诊断。
 - **资产治理**：sha256 去重、used_count、素材巡检/违规检测（`/api/asset/governance/*`）。
@@ -155,14 +182,14 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
 修改代码后，运行：
 ```bash
 # 后端全量回归（工作目录 J:\Clipwright）
-python -m pytest tests -q        # 期望 2095 passed（+2 known plugin 失败）
+python -m pytest tests -q        # 期望 4436 passed / 4 skipped（2026-10-26 实测）
 python -c "import clipwright.main"
 python scripts/verify_timebase.py   # 整数时间基座核对（VERIFY PASS）
 python scripts/e2e_smoke.py         # 全管线冒烟（SMOKE PASS）
 
 # 前端回归（工作目录 J:\Clipweight-Client）
 npx tsc --noEmit
-npm run test                     # 期望 377 passed
+npm run test                     # 期望 970 passed（112 files）
 npm run build
 ```
 

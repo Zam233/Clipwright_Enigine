@@ -71,6 +71,10 @@ def allowed_media_roots() -> list[Path]:
     return [
         anchor(settings.render_output_dir),  # 默认 = _base/renders；可配置
         _base / "renders",  # 保留：历史数据可能仍在默认目录
+        anchor(settings.workspace_dir),  # 工作区（素材/成片/工程文件都在里面）
+        # 用户自选的工作区父目录（PRD §17.8）：不跟着放开的话，
+        # 在新目录下建的工作区里的文件会被文件 API / 渲染落点拒绝
+        *(anchor(p) for p in (getattr(settings, "workspace_roots", None) or [])),
         _base / "library",
         _base / "editor_projects",
         _base / "projects",

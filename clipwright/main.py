@@ -94,6 +94,7 @@ from clipwright.api import font as font_api
 from clipwright.api import requirements as requirements_api
 from clipwright.api import versions as versions_api
 from clipwright.api import scheduler as scheduler_api
+from clipwright.api import workspace as workspace_api
 from clipwright.category import (
     CategoryRegistry,
     DigitalReviewPlugin,
@@ -322,9 +323,21 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("定时调度器启动失败: %s", e)
 
+    # 工作区素材轮询（PRD workspace-prd-2026-10-24 §5.1）：发现 materials/ 新素材并索引
+    try:
+        from clipwright.services import workspace_watcher as _ws_watcher
+        _ws_watcher.start()
+    except Exception as e:
+        logger.warning("工作区扫描器启动失败: %s", e)
+
     yield
 
     # 清理
+    try:
+        from clipwright.services import workspace_watcher as _ws_watcher
+        _ws_watcher.stop()
+    except Exception:
+        pass
     try:
         from clipwright.services import scheduler as _sched
         _sched.stop()
@@ -687,6 +700,13 @@ tts_output_path = Path(settings.tts_output_dir)
 tts_output_path.mkdir(parents=True, exist_ok=True)
 app.mount("/voice_audio", StaticFiles(directory=str(tts_output_path)), name="voice_audio")
 
+# 挂载 PV 引擎产物目录（抽帧预览 / 成片）：pv_engine 插件按
+# PluginData/pv_engine/<job_id>/... 落盘，这里给出可直接访问的 URL
+# （否则 Agent 只能回绝对路径，前端无法显示）。
+_pv_engine_path = _anchor_path(settings.plugin_data_dir) / "pv_engine"
+_pv_engine_path.mkdir(parents=True, exist_ok=True)
+app.mount("/pv-engine", StaticFiles(directory=str(_pv_engine_path)), name="pv-engine")
+
 # 注册路由
 app.include_router(pipeline_api.router)
 app.include_router(supervisor_api.router)
@@ -727,6 +747,7 @@ app.include_router(stats_api.router)
 app.include_router(requirements_api.router)
 app.include_router(versions_api.router)
 app.include_router(scheduler_api.router)
+app.include_router(workspace_api.router)
 
 
 @app.get("/health")

@@ -39,6 +39,8 @@ def _clean(monkeypatch):
     te.clear()
     pc.clear_results()
     monkeypatch.setattr(settings, "agent_mode", "off", raising=False)
+    # 本模块测的是老管线能力包装本身（P2 起 pipeline_enabled 默认 false 会先拒绝）
+    monkeypatch.setattr(settings, "pipeline_enabled", True, raising=False)
     yield
     ak.reset_kernel_state()
     te.clear()

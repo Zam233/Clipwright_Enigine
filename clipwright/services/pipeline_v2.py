@@ -155,6 +155,40 @@ def clear_cancel(pipeline_id: str | None = None) -> None:
         _CANCELLED.discard(pipeline_id)
 
 
+def resolve_category_plugin(category_plugin_id: str) -> tuple[Any, str, str]:
+    """按类型 id 取插件；空 id 落默认类型，未知 id 带可用列表报错。
+
+    返回 ``(plugin, defaulted_id, error)``，三者互斥：
+
+    - 正常命中：``(plugin, "", "")``
+    - 空 id（未指定类型）：``(plugin, "<默认 id>", "")``——与 Persona 的
+      ``load_persona_or_default`` 对齐；调用方应把 defaulted_id 写回请求，
+      否则后续 AgentContext / trace 里仍是空串。
+    - 取不到：``(None, "", "<人话原因>")``，原因里列出可用类型。
+
+    为什么单独抽出来：agent 模式下 Kernel 的退化单步计划可能不带 args，
+    这条路径必须能自己兜住，且要能脱离 `_init`（Persona/RAG）单测。
+    """
+    from clipwright.category.registry import CategoryRegistry
+
+    plugin = CategoryRegistry.get(str(category_plugin_id or ""))
+    if plugin is not None:
+        return plugin, "", ""
+
+    available = CategoryRegistry.list()
+    if not str(category_plugin_id or "").strip():
+        if not available:
+            return None, "", "没有已注册的视频类型插件（CategoryRegistry 为空），无法启动管线"
+        default_id = str(available[0]["id"])
+        plugin = CategoryRegistry.get(default_id)
+        if plugin is None:  # 列表与注册表不一致（竞态/卸载）
+            return None, "", f"默认类型插件 {default_id} 未注册（注册表不一致）"
+        return plugin, default_id, ""
+
+    names = "、".join(str(c["id"]) for c in available) or "无"
+    return None, "", f"Unknown category plugin: {category_plugin_id}（可用类型：{names}）"
+
+
 def _registry_snapshot() -> list[dict]:
     """深拷贝当前内存注册表（剔除内部时间戳字段）。"""
     with _run_registry_lock:
@@ -1326,6 +1360,12 @@ class PipelineOrchestratorV2:
         旧 _get_downstream_agents 只返回直接依赖者：自愈重做 edit 只联动
         animation，audio（依赖 animation）不会被重做——audio 先前铺好的
         旁白/BGM/字幕轨随 edit 重建时间线而静默丢失，成片无声交付。
+
+        主 Agent 侧有同一份语义（`services/stage_closure.closure`）。这里保留
+        **插件感知**的版本：`AgentDAG.get_full_deps()` 会并入插件 Agent 的依赖，
+        而 `stage_closure.STAGE_DEPS` 是核心 6 阶段常量。两者对核心阶段必须一致，
+        由 `tests/test_stage_closure_p2.py::test_core_deps_match_pipeline_dag` 看住，
+        避免"管线里连带重做 audio、主 Agent 里不重做"这种双份语义漂移。
         """
         # 批D(R10)：用合并插件 Agent 的完整依赖图（旧实现仅核心 DAG，
         # 插件 Agent 在上游重做后不会被联动）
@@ -1522,9 +1562,22 @@ class PipelineOrchestratorV2:
             state.shared_data["persona_warnings"] = warnings
         add_event(pid, "system", "info", f"加载 Persona: {request.persona_id}")
 
-        plugin = CategoryRegistry.get(request.category_plugin_id)
-        if plugin is None:
-            raise ValueError(f"Unknown category plugin: {request.category_plugin_id}")
+        plugin, _defaulted_id, _cat_error = resolve_category_plugin(request.category_plugin_id)
+        if _cat_error:
+            raise ValueError(_cat_error)
+        if _defaulted_id:
+            # 未指定类型：与 persona 的 load_persona_or_default 对齐——落到默认类型，
+            # 而不是把 `Unknown category plugin: `（空字符串）抛给用户。
+            # agent 模式最容易踩这条：Kernel 的退化单步计划此前不带任何 args。
+            request.category_plugin_id = _defaulted_id
+            try:
+                if getattr(state, "request", None) is not None:
+                    state.request.category_plugin_id = _defaulted_id
+            except Exception:  # noqa: BLE001 — 状态同步失败不影响主线
+                pass
+            state.shared_data["category_defaulted_to"] = _defaulted_id
+            add_event(pid, "system", "warning",
+                      f"未指定视频类型，已使用默认类型：{_defaulted_id}")
 
         persona_config = manifest.parameter.model_dump(mode="json") if manifest.parameter else {}
         translated = plugin.translate_persona(manifest.parameter) if manifest.parameter else {}

@@ -75,10 +75,12 @@ def test_read_tier_is_idempotent_and_writes_are_not():
 
 
 def test_meta_capabilities_present():
+    """编排能力清单（P4 前）：run_pipeline 已下线（条目删除），delegate 接替阶段派发。"""
     names = {e.name for e in cm.build_matrix() if e.kind in ("pipeline", "subagent", "meta")}
-    assert {"run_pipeline", "spawn_subagent", "run_shell", "run_python"} <= names
+    assert {"delegate", "spawn_subagent", "run_shell", "run_python"} <= names
+    assert "run_pipeline" not in names          # 已下线，不再广告（能力代码留作回滚）
     stat = cm.coverage()
-    assert stat["by_kind"]["pipeline"] == 1
+    assert stat["by_kind"].get("pipeline", 0) == 0   # 管线能力清零（键不存在也算 0）
     assert stat["by_kind"]["skill"] >= 4
 
 

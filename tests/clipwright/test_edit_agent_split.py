@@ -57,3 +57,23 @@ def test_split_long_sentence_consumes_comma():
     assert "。" not in joined
     nf = lambda s: "".join(ch for ch in s if ch not in "，。！；？：")
     assert nf(joined) == nf(text)
+
+
+# ── 切分方式与前端一致（period / punctuation）──
+
+def test_period_mode_only_splits_sentence_end() -> None:
+    """按句号切分：逗号不断句（前端预览同规则）。"""
+    assert _split_sentences("第一句，第二句。第三句！", "period") == [
+        "第一句，第二句", "第三句！",
+    ]
+
+
+def test_punctuation_mode_is_default_and_splits_comma() -> None:
+    assert _split_sentences("第一句，第二句。第三句！") == ["第一句", "第二句", "第三句！"]
+    assert _split_sentences("第一句，第二句。", "punctuation") == ["第一句", "第二句"]
+
+
+def test_period_mode_keeps_long_sentence_whole() -> None:
+    """按句号切分时长句不再二次按逗号切（预览段数 = 成片段数）。"""
+    long = "甲" * 30 + "，" + "乙" * 30
+    assert _split_sentences(long, "period") == [long]

@@ -54,6 +54,12 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
     """质检 Agent：校验时间线是否符合 Persona 规范和硬约束。"""
 
     agent_name = "quality_agent"
+    #: 能力 → 优先实现（插件可按 capability 声明接管）
+    capability_prefer: dict[str, tuple[str, ...]] = {}
+    #: 本 Agent 需要的能力白名单（实时解析；引擎缺失时退化为"跳过"并如实记录）
+    tool_whitelist: tuple[str, ...] = (
+        "pv_engine_doctor", "pv_engine_timeline_to_project", "pv_engine_audit",
+    )
 
     async def execute(
         self, input_data: QualityInput, context: AgentContext
@@ -344,6 +350,12 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         # L2/L3 LLM 裁判默认关闭（D7），关闭时在 info 里显式声明"未做复核"，不许装作判过。
         issues.extend(await _check_type_conformance(timeline, context))
 
+        # ── 10.6 PV 引擎审计（PRD F10）──
+        # 有 metadata.pv 的字幕 → 用引擎自己的规则再质检一遍（R01–R11），
+        # FAIL 记 error、WARN 记 warning；引擎未配置则显式记 info，
+        # 让报告里能看出"这项没做"，而不是假装做过。
+        issues.extend(await self._check_pv_engine(timeline))
+
         # ── 判定 ──
         errors = [i for i in issues if i.severity == "error"]
         decision = AgentDecision.FAIL if errors else AgentDecision.PASS
@@ -380,6 +392,54 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
             redo_agent=redo_agent,
             score=score,
         )
+
+    async def _check_pv_engine(self, timeline: Timeline) -> list[QualityIssue]:
+        """把引擎侧的规则审计并入质检（只处理元数据里声明 ``metadata.pv`` 的字幕）。"""
+        pv_clips = [
+            c for t in timeline.tracks for c in t.clips
+            if str(getattr(c, "kind", "")) in ("caption", "text")
+            and ((getattr(c, "metadata", None) or {}).get("pv") or {}).get("enabled", True)
+            and bool(((getattr(c, "metadata", None) or {}).get("pv") or {}))
+        ]
+        if not pv_clips:
+            return []
+        if self.resolve_tool("pv_audit") is None:
+            return [QualityIssue(severity="info", category="animation",
+                                 message="pv_engine: skipped（未配置引擎，PV 规则未跑）")]
+        try:
+            tl = timeline.model_dump(mode="json")
+            made = await asyncio.wait_for(
+                self.call_tool("pv_timeline", timeline=tl), timeout=60,
+            )
+            path = str(((made.output or {}) if made.status == "success" else {}).get("project_path") or "")
+            if not path:
+                return [QualityIssue(severity="info", category="animation",
+                                     message="pv_engine: 项目转换失败，PV 规则未跑")]
+            audit = await asyncio.wait_for(self.call_tool("pv_audit", shots=path), timeout=180)
+            out = audit.output or {}
+            results: list[QualityIssue] = []
+            for rule in out.get("rules") or []:
+                level = str(rule.get("level") or "")
+                if level not in ("FAIL", "WARN"):
+                    continue
+                results.append(QualityIssue(
+                    severity="error" if level == "FAIL" else "warning",
+                    category="animation",
+                    message=f"[pv {rule.get('id')}] {str(rule.get('message') or '')[:160]}",
+                ))
+            if not results and out.get("verdict") == "error":
+                results.append(QualityIssue(
+                    severity="warning", category="animation",
+                    message=f"pv_engine: 审计未跑通（{str(out.get('error') or '')[:80]}）",
+                ))
+            return results
+        except asyncio.TimeoutError:
+            return [QualityIssue(severity="warning", category="animation",
+                                 message="pv_engine: 审计超时，已跳过")]
+        except Exception as exc:  # noqa: BLE001 — 引擎侧异常不该判片子不合格
+            logger.warning("QualityAgent: pv_engine 审计跳过: %s", exc)
+            return [QualityIssue(severity="info", category="animation",
+                                 message=f"pv_engine: 审计跳过（{str(exc)[:80]}）")]
 
     @staticmethod
     def _compute_score(issues: list[QualityIssue]) -> int:
@@ -750,7 +810,8 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                     return  # 无路径无法校验 → 跳过
                 try:
                     result = await asyncio.wait_for(
-                        ToolRegistry.execute("frame_validator", video_url=path),
+                        # 能力动态解析：插件声明 capability="frame_check" 即可接管
+                        self.call_tool("frame_check", video_url=path),
                         timeout=_FRAME_CHECK_TIMEOUT_SEC,
                     )
                 except asyncio.TimeoutError:

@@ -868,3 +868,29 @@ off/token 模式放行）。`requires_restart=true` 的字段（CORS/Mongo/端�
 | `generate_captions` | 字幕生成 |
 | `analyze_audio_rhythm` | 音频节奏分析 |
 | `dub_script` | 文案切分 + 逐段配音 |
+## 工作区 (/api/workspace)
+
+> 实现依据：[workspace-prd-2026-10-24.md](workspace-prd-2026-10-24.md)。
+> 一个项目 = 一个工作区目录（工程文件 / 素材 / 下载 / 成片 / 缓存同根，可整体备份）。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/workspace` | 创建或取回（幂等）。body：`{project_id, name?, root?, auto_index?, vision?}`；`root` 必须位于 `settings.workspace_dir` 内 |
+| GET | `/api/workspace/{project_id}` | 状态：`counts{total,video,image,audio,indexed,pending}` / `index{vision,provider,spent_today_usd}` / `scan{auto,last_scan_at}` / `health` |
+| POST | `/api/workspace/{project_id}/enable` | 只改开关：`{auto_index?, vision?}` |
+| POST | `/api/workspace/{project_id}/scan` | 扫描 `materials/` 并索引新增；`dry_run=true` 只列 `would_index` |
+| GET | `/api/workspace/{project_id}/materials?kind=` | 已索引素材（sha256/路径/状态/标签/视觉摘要） |
+| POST | `/api/workspace/{project_id}/materials` | 上传到 `materials/<kind>/`，落盘后同步索引一次；不支持扩展名 → 400 |
+| DELETE | `/api/workspace/{project_id}/materials/{sha256}?purge=` | 默认只删索引记录；`purge=true` 才删磁盘文件 |
+| GET | `/api/workspace/{project_id}/events?since=` | **JSON**：扫描/索引进度事件（`{events[], last_seq}`，立即返回；旧实现是 SSE，普通 GET 会挂到超时） |
+| GET | `/api/workspace/{project_id}/events/stream?since=` | SSE：同一份事件的长连接版本（`seq` 游标 + `data:` 帧） |
+
+**目录约定**：`materials/` 是唯一用户写入区（系统下载也落这里），新文件由轮询
+（`settings.workspace_scan_interval_sec`，默认 20s）发现；`assets/` 是
+`AssetManager` 视图（files/thumbnails/index.json），`renders/`/`cache/`/`logs/` 由系统写。
+
+**索引流水线**：`MediaIndexer.extract_metadata/classify` → `AssetManager.import_file`
+（sha256 去重 + 缩略图）→ `content_vision.label_shot`（CLIP 本地 / LLM 描述，按
+`settings.vision_provider`）。视觉预算：`workspace_vision_daily_budget_usd`，超限标
+`deferred` 但索引仍完成。
+
