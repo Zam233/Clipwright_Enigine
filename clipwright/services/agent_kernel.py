@@ -310,6 +310,31 @@ class LLMPlanner:
             "- finish：收尾（给出 conclusion 一句结论）\n"
             "必须用 `say` 说明你为什么这么决定（一句人话，给用户看）。只输出 JSON。"
         )
+        # 真流式（PRD §19.4 / 用户裁定）：思考逐块 emit；provider 不支持流式时回退非流式
+        if bool(getattr(settings, "agent_decide_stream", True)):
+            from clipwright.services.task_events import emit as _emit
+
+            def _on_reasoning(delta: str) -> None:
+                _emit(task.id, "thinking", delta[:120],
+                      {"delta": delta, "done": False, "step_id": step.id})
+
+            try:
+                data = await asyncio.wait_for(
+                    LLMService().structured_output_stream(
+                        system_prompt="你是视频创作任务的主 agent，正在根据上一步结果决定下一步。",
+                        user_prompt=prompt,
+                        output_schema=_DECIDE_SCHEMA,
+                        use_flash=True,
+                        on_reasoning=_on_reasoning,
+                    ),
+                    timeout=min(self.timeout_sec, 25.0),
+                )
+                _emit(task.id, "thinking", "", {"delta": "", "done": True,
+                                                "step_id": step.id})
+                return _normalize_decision(data)
+            except Exception as exc:  # noqa: BLE001 — 流式失败退回非流式
+                logger.info("流式决策失败，回退非流式: %s", exc)
+
         data = await asyncio.wait_for(
             LLMService().structured_output(
                 system_prompt="你是视频创作任务的主 agent，正在根据上一步结果决定下一步。",
@@ -320,16 +345,7 @@ class LLMPlanner:
             ),
             timeout=min(self.timeout_sec, 25.0),
         )
-        action = str((data or {}).get("action") or "continue")
-        if action not in ("continue", "replan", "finish"):
-            action = "continue"
-        out: dict[str, Any] = {"action": action, "say": str((data or {}).get("say") or "")[:200]}
-        if action == "replan":
-            out["steps"] = list((data or {}).get("steps") or [])
-            out["why"] = out["say"]
-        if action == "finish":
-            out["conclusion"] = str((data or {}).get("conclusion") or out["say"] or "planner_finish")
-        return out
+        return _normalize_decision(data)
 
     async def reflect(self, task: Task, step: PlanStep, outcome: dict[str, Any]
                       ) -> dict[str, Any]:
@@ -1098,6 +1114,20 @@ class AgentKernel:
         if task is None:
             raise KernelError(f"任务不存在: {task_id}")
         return task
+
+
+def _normalize_decision(data: dict[str, Any] | None) -> dict[str, Any]:
+    """把 LLM 的决策 JSON 归一化（动作、say、steps、conclusion）。"""
+    action = str((data or {}).get("action") or "continue")
+    if action not in ("continue", "replan", "finish"):
+        action = "continue"
+    out: dict[str, Any] = {"action": action, "say": str((data or {}).get("say") or "")[:200]}
+    if action == "replan":
+        out["steps"] = list((data or {}).get("steps") or [])
+        out["why"] = out["say"]
+    if action == "finish":
+        out["conclusion"] = str((data or {}).get("conclusion") or out["say"] or "planner_finish")
+    return out
 
 
 def _summary_of_outcome(outcome: dict[str, Any]) -> str:

@@ -1345,7 +1345,7 @@ interface CopilotTab {
 
 **硬要求：不再跳 `/task/{taskId}`。**
 
-- `proceedResult.ts` 只写 store（`taskId` 进 `copilotStore`），不 `navigate`；`/task/$taskId` 路由保留一个版本周期（老书签），页面内提示"该流程已并入编辑器"；
+- `proceedResult.ts` 只写 store（`taskId` 进 `copilotStore`），不 `navigate`；**`/task/$taskId` 路由与 `TaskPage` 已整体删除**（用户裁定：该入口直接删掉），任务列表点条目也改为开「任务运行」标签；
 - "任务运行"标签（`kind:'task-run'`）= 复用现有展示件重组，不重写：
   - 顶部状态条（状态/时长/花费，复用 `TaskToolbar` 的展示逻辑）→ `PlanPanel` → `EventFeed`（全量日志、工具、Skill、阶段行）→ 阶段时间线（每 stage 一行：summary/writes/cost）→ 底部 `RunningSubagents` → `TaskArtifacts`；
 - SSE 单实例：由 `CopilotDock` 持有 `useTaskEvents`，切标签**不断流**、关标签不重建连接（验收 U8）；
@@ -1538,12 +1538,12 @@ interface CopilotTab {
 
 > 下表是"第二批时点"的记录，第三批已把每一行关闭；保留原文只为可追溯。
 > 当前唯一保留项：`pipeline_capability.py` / `pipeline_v2.py` / `api/pipeline` 执行路由的**代码本体**
-> （作为回滚开关，按 §15.2 七步清单单独 PR 物理删除）与 `agent_decide_policy=auto` 的设计选择。
+> （作为回滚开关，按 §15.2 七步清单单独 PR 物理删除）。
 
 | 项 | 第二批时点 | 第三批结果 |
 |---|---|---|
 | S2 `delegate` 改名 | 部分完成（inputs 已落地，名字仍是 run_stage） | ✅ 改名完成 + 旧名兼容 + 检查点映射 |
-| S3 思考流 | 整段 done 帧 | ✅ **requirements 对话为真流式**（逐块转 `reasoning_content`）；任务决策路径仍整段（`structured_output` 无流式 chunk），前端累积展示 |
+| S3 思考流 | 整段 done 帧 | ✅ **两条路径都是真流式**：requirements 对话逐块转 `reasoning_content`；任务决策走新增的 `LLMService.structured_output_stream`（边收边 emit `thinking` 增量，失败回退非流式） |
 | S4 D5/D6/D7 | 已完成 | ✅ 已提交 |
 | S5 运行时 | 真取消/守门 ✅，状态持久化未做 | ✅ checkpoint sidecar（黑板+阶段表） |
 | F2 任务运行标签 | 基础版 | ✅ 保留 |
@@ -1564,7 +1564,7 @@ interface CopilotTab {
 | P1 已有工作区时忽略传入 root | ✅ 根不同直接 `WorkspaceError`（"换根只对新建生效"） |
 | P2 脏 localStorage 规范化后未回写 | ✅ `bindProject` 时回写 |
 
-未修（记录在案）：`run_pipeline` 仍在 `capability_matrix`（`_capability_catalog` 已过滤，留作回滚）、成功轻量步跳过 LLM 决策（`agent_decide_policy=auto` 的设计选择，`always` 可全量判）。
+已修（第四批）：`run_pipeline` 已从 `META_CAPABILITIES` 删除、`DRY_RUN_CAPABLE` 清空；`agent_decide_policy` 默认改为 **`always`（每步都走 LLM 决策）**；`agent_decide_stream=true` 让决策时思考逐块到达；`/task/$taskId` 入口整体删除。
 
 ### 20.4 第二批（继续未实现清单）
 
@@ -1599,3 +1599,13 @@ interface CopilotTab {
 
 > 至此 §20.2 里"未实现"的条目全部关闭；唯一保留的是 **P4 物理删除**（`pipeline_v2.py` / `api/pipeline` 执行路由）
 > 与 `pipeline_capability` 的代码本体——它们作为回滚开关存在，按 §15.2 的七步清单单独 PR 处理。
+
+### 20.6 第四批（用户裁定后的三处收紧）
+
+| 裁定 | 实现 |
+|---|---|
+| **删掉 `/task` 入口** | `router.tsx` 删除 `taskDetailRoute` 与 `TaskPage` 懒加载；`pages/TaskPage.tsx` 删除；`TaskListSection` 点条目改为 `copilotStore.openTab`（不再 navigate） |
+| **思考真流式** | 新增 `LLMService.structured_output_stream()`：走 `stream_generate`，逐块回调 `reasoning_content`，结束后解析 JSON；`AgentKernel._decide` 用它并在失败时回退非流式；kernel 不再依赖 `take_last_reasoning` 兜整段 |
+| **每步决策都走 LLM** | `settings.agent_decide_policy` 默认 `always`；`auto` 的"成功轻量步走规则"快通道只在显式配置时生效 |
+
+回归：后端全量绿、前端 983 passed、`tsc` 干净。

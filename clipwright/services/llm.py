@@ -474,6 +474,48 @@ class LLMService:
         logger.debug("LLM chat 响应: content=%.500s", resp.content)
         return resp.content
 
+    async def structured_output_stream(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        output_schema: Optional[dict[str, Any]] = None,
+        use_flash: bool = False,
+        on_reasoning: Optional[Callable[[str], Any]] = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """**流式**结构化输出：边收边把 reasoning 增量转发出去，最后解析 JSON。
+
+        与 `structured_output` 的区别：走 `stream_generate`，因此 provider 返回
+        `reasoning_content` 时可以让主 agent 的思考**逐块**到达前端（PRD §19.4）。
+        解析失败会抛异常，调用方负责回退到非流式 `structured_output`。
+        """
+        messages = [{"role": "user", "content": user_prompt}]
+        chunks: list[str] = []
+        async for chunk in self.stream_generate(
+            messages, system_prompt=system_prompt, use_flash=use_flash, **kwargs
+        ):
+            reasoning = getattr(chunk, "reasoning_content", "") or ""
+            if reasoning and on_reasoning is not None:
+                try:
+                    on_reasoning(reasoning)
+                except Exception:  # noqa: BLE001 — 回调失败不影响生成
+                    pass
+            content = getattr(chunk, "content", "") or ""
+            if content:
+                chunks.append(content)
+
+        text = "".join(chunks).strip()
+        if not text:
+            raise ValueError("流式结构化输出为空")
+        if text.startswith("```"):
+            text = "\n".join(
+                line for line in text.splitlines() if not line.startswith("```")
+            ).strip()
+        start, end = text.find("{"), text.rfind("}")
+        if start >= 0 and end > start:
+            text = text[start:end + 1]
+        return json.loads(text)
+
     async def structured_output(
         self,
         system_prompt: str,

@@ -229,7 +229,9 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
      "false（默认）= 创作只走主 Agent，run_pipeline 与 /api/pipeline/run 被拒绝；"
      "true 仅用于灰度对比与回滚"),
     ("agent_decide_policy", "pipeline", "主 Agent 决策策略", False, True,
-     "off=只走规则；auto（默认）=失败必判、成功轻量步走规则；always=每步都调 LLM 决策"),
+     "off=只走规则；auto=失败必判、成功轻量步走规则；always（默认）=每步都调 LLM 决策"),
+    ("agent_decide_stream", "pipeline", "决策走流式", False, True,
+     "true（默认）=决策时思考逐块到前端；provider 不支持时自动回退非流式"),
     ("context_budget_chars", "pipeline", "决策上下文预算(字符)", False, True,
      "超出按优先级裁剪，并记 context_loaded.trimmed"),
     ("report_max_chars", "pipeline", "工作区报告上限(字符)", False, True,

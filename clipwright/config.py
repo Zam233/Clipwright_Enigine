@@ -109,8 +109,10 @@ class Settings(BaseSettings):
     # 返回"请改用 run_stage/主 Agent"的可执行提示。true 仅用于灰度对比与回滚。
     pipeline_enabled: bool = False
     # 主 agent 每步决策策略（PRD §16.10.1）：off=只走规则；auto=失败必判/成功轻量步走规则；
-    # always=每步都调 LLM 决策（贵但最像真 agent）。
-    agent_decide_policy: Literal["off", "auto", "always"] = "auto"
+    # always（默认）=**每步都调 LLM 决策**（用户裁定：每步决策都走 llm）。
+    agent_decide_policy: Literal["off", "auto", "always"] = "always"
+    # 决策是否走流式（思考逐块到达前端）；provider 不支持时自动回退非流式
+    agent_decide_stream: bool = True
     # 决策上下文预算（字符）：超出按优先级裁剪，并记 context_loaded.trimmed（§17.11）
     context_budget_chars: int = 6000
     # 单份工作区报告上限（字符）；超出截断并标记（§17.3）
