@@ -19,7 +19,7 @@ CONTROL_ARGS: frozenset[str] = frozenset({
     "dry_run", "merge", "idem_key", "inputs",
 })
 
-_QUERY_CAPS: frozenset[str] = frozenset({"get_stage", "list_stages"})
+_QUERY_CAPS: frozenset[str] = frozenset({"get_stage", "list_stages", "wait_for_stage"})
 #: 阶段派发能力名（`run_stage` 为旧名，仅为兼容历史检查点保留）
 _DISPATCH_CAPS: frozenset[str] = frozenset({"delegate", "run_stage"})
 
@@ -77,7 +77,7 @@ def _query(task: Task, step: PlanStep) -> dict[str, Any]:
 
     stage = str(args.get("stage") or "")
     if not stage:
-        return {"status": "refused", "error": "get_stage 需要 stage（如 「edit」）"}
+        return {"status": "refused", "error": f"{step.capability} 需要 stage（如 「edit」）"}
     result = stage_subagent.get_stage(task.id, stage)
     if result is None:
         return {
@@ -86,6 +86,12 @@ def _query(task: Task, step: PlanStep) -> dict[str, Any]:
             "failure": {"category": "not_found", "retryable": "needs_upstream",
                         "blocking_point": f"未派出 {stage}", "evidence": []},
         }
+    if step.capability == "wait_for_stage":
+        # 同步语义是默认：`wait_for_stage` 只是"拿最新结果并声明已收敛"的显式入口，
+        # 供将来 `delegate(async=true)` 的 pending 结果收敛到同一形状（PRD §18.8 约束 2）。
+        return {"status": "ok",
+                "output": {**result, "waited": True,
+                           "converged": str(result.get("status")) not in ("pending", "running")}}
     return {"status": "ok", "output": result}
 
 

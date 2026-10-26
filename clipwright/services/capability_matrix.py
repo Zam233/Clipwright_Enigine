@@ -172,6 +172,14 @@ META_CAPABILITIES: tuple[dict[str, Any], ...] = (
                  "同步执行，结果**直接回主 agent**；args={stage, …}",
     },
     {
+        "name": "wait_for_stage",
+        "kind": "subagent",
+        "tier": "read",
+        "idempotent": True,
+        "dry_run": False,
+        "notes": "取某阶段最新结果并声明已收敛（给将来的 async 派发用），args={stage}",
+    },
+    {
         "name": "get_stage",
         "kind": "subagent",
         "tier": "read",
@@ -237,8 +245,9 @@ META_CAPABILITIES: tuple[dict[str, Any], ...] = (
     },
 )
 
-#: 已支持 dry-run 的能力（C0 现状：只有管线；C1 要为 write_local/costly 补齐）
-DRY_RUN_CAPABLE: frozenset[str] = frozenset({"run_pipeline"})
+#: 已支持**真实** dry-run 的能力。`run_pipeline` 下线后为空——
+#: 其余能力走 `tool/surface._preflight` 的结构预检（fidelity=structural）。
+DRY_RUN_CAPABLE: frozenset[str] = frozenset()
 
 #: 只读能力按定义可重放；写入/执行类默认不可重放（重放靠幂等键复用结果）
 _READ_TIER: PermissionTier = "read"

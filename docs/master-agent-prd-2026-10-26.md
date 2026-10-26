@@ -1534,18 +1534,22 @@ interface CopilotTab {
 回归：后端 **4448 passed / 4 skipped / 1 xfailed**；前端 **979 passed**（`tsc` 干净）。
 新增测试：`tests/test_docs_protocol.py`（11 条）、`src/stores/copilotStore.test.ts`（6 条）、`src/features/copilot/CopilotTabBar.test.tsx`（3 条）。
 
-### 20.2 未实现（第二批之后更新的清单）
+### 20.2 未实现清单（**2026-10-26 第三批后：全部关闭**）
 
-| 项 | 现状 | 依赖 |
+> 下表是"第二批时点"的记录，第三批已把每一行关闭；保留原文只为可追溯。
+> 当前唯一保留项：`pipeline_capability.py` / `pipeline_v2.py` / `api/pipeline` 执行路由的**代码本体**
+> （作为回滚开关，按 §15.2 七步清单单独 PR 物理删除）与 `agent_decide_policy=auto` 的设计选择。
+
+| 项 | 第二批时点 | 第三批结果 |
 |---|---|---|
-| ~~S2 `delegate` 完全改名~~ | **部分完成**：`StageSpec.inputs` 显式传参 + `stage_inputs.validate` 已落地（给了 inputs 就**不读黑板**，缺则返回 `needs`）；能力名仍是 `run_stage`（改名待做） | 改名需同步 checkpoint 旧名映射与 44 处测试 |
-| ~~S3 思考流~~ | **基础完成**：`llm.take_last_reasoning()` 取 provider 的 `reasoning_content`，kernel 在 `_run_step`/`_decide` 后 emit `thinking`；前端 `ThinkingDisclosure` 可展开。**token 级流式未做**（目前是整段 done 帧） | provider 的 stream chunk 若带 reasoning 再做增量 |
-| ~~S4 D5/D6/D7~~ | **完成**：edit 空场景失败带 `input_insufficient + needs`；失败阶段的空壳 timeline 不再入库；material `scenes=[]` → FAIL，无素材源 → PASS + `degradation` | — |
-| S5 运行时 | 真取消（kernel 持 `_TASK_HANDLES` + `cancel()` 打断协程）✅；收尾守门（创作流程无 `final_timeline` 不算完成）✅；**状态持久化（黑板/runs 进 checkpoint）未做** | 需扩 checkpoint 结构 |
-| ~~F2 任务运行标签~~ | **完成基础版**：`CopilotTaskRunTab`（工具栏 + 思考条 + 计划 + 阶段行 + 事件流 + 子 agent chip + 产物）；`proceedResult` 不再跳 `/task`，改为开标签 | — |
-| `subagent` / `stage` / `docs` 标签 | `subagent` 仍是占位（可先看任务运行里的产出）；`stage`/`docs` 占位 | docs 需要 `GET /api/workspace/{id}/reports`（未做） |
-| **F4 04 步目录选择 UI** | 后端 `roots` 端点已就绪，前端下拉未做 | — |
-| `run_pipeline` 条目 | 仍在 `capability_matrix`（`_capability_catalog` 已过滤），留作回滚开关 | 物理删除随 P4 |
+| S2 `delegate` 改名 | 部分完成（inputs 已落地，名字仍是 run_stage） | ✅ 改名完成 + 旧名兼容 + 检查点映射 |
+| S3 思考流 | 整段 done 帧 | ✅ **requirements 对话为真流式**（逐块转 `reasoning_content`）；任务决策路径仍整段（`structured_output` 无流式 chunk），前端累积展示 |
+| S4 D5/D6/D7 | 已完成 | ✅ 已提交 |
+| S5 运行时 | 真取消/守门 ✅，状态持久化未做 | ✅ checkpoint sidecar（黑板+阶段表） |
+| F2 任务运行标签 | 基础版 | ✅ 保留 |
+| subagent / stage / docs 标签 | 占位 | ✅ 三个标签全部实装（reports/docs 端点已加） |
+| F4 04 步目录选择 | 未做 | ✅ 下拉 + 父目录语义 |
+| `run_pipeline` 条目 | 留在矩阵 | ✅ 从 `META_CAPABILITIES` 删除；`DRY_RUN_CAPABLE` 清空；`coverage.by_kind.pipeline == 0` |
 
 ### 20.3 独立 code review（第三轮）与处置
 审阅结论：**"不能开工交付"**——因为 F2/F3/F4 仍是占位、且存在 1 个 P0 + 若干 P1。已修：

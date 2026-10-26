@@ -80,7 +80,8 @@ async def default_executor(task: Task, step: PlanStep) -> dict[str, Any]:
         from clipwright.services import subagent_capability
 
         return await subagent_capability.run(task, step)
-    if step.capability in ("delegate", "run_stage", "get_stage", "list_stages"):
+    if step.capability in ("delegate", "run_stage", "get_stage", "list_stages",
+                           "wait_for_stage"):
         # `run_stage` 是旧名：老检查点里存的是它，加载时会被映射成 delegate，这里兜住存量数据
         # 阶段子代理：同步执行，结果直接回主 agent（没有"派出去不管"的语义，
         # 所以**不存在** spawn_stage 这种 fire-and-forget 别名——那会让数据绕过主 agent）。

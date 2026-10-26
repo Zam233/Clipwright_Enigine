@@ -27,8 +27,10 @@ from clipwright.schema.task import PlanStep, Task
 
 #: Kernel 可直接授予的只读/低危工具（与 supervisor.SUPERVISOR_TOOLS 的交集）
 READONLY_TOOLS: frozenset[str] = frozenset({
+    # PRD §17.5.2：子 agent **不得**写文件（报告由 runtime 落盘），
+    # 所以 write_file 不在这里——调研员只能读与检索。
     "read_file", "list_dir", "list_subagents", "get_subagent_status",
-    "write_file", "web_search", "web_fetch",
+    "web_search", "web_fetch",
 })
 EXEC_TOOLS: frozenset[str] = frozenset({"run_shell", "run_python"})
 
