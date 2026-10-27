@@ -174,5 +174,40 @@ def test_legacy_capability_names_are_aliases_not_branches():
     assert ak._TOOL_ALIAS["get_stage"] == "get_agent_run"
 
 
+def test_legacy_query_names_still_work_after_alias_migration(monkeypatch):
+    """历史检查点存的是 `get_stage(stage=…)` / `get_subagent_status(subagent_id=…)`。
+
+    别名表把它们指向新工具，参数名也必须认——否则"兼容"只是纸面上的。
+    """
+    from clipwright.schema.stage import StageResult
+    from clipwright.services import stage_subagent
+
+    async def fake_stage(task, spec):  # noqa: ANN001
+        return StageResult(stage=spec.stage, status="ok", summary="剪辑完成",
+                           duration_ms=3)
+
+    monkeypatch.setattr(stage_subagent, "run_stage", fake_stage)
+    task = _task("task_alias")
+    asyncio.run(agent_run.run(RunSpec(kind="stage", stage="edit", depth=1), task))
+
+    # 旧参数名 stage
+    got = asyncio.run(sf.execute("get_agent_run", {"stage": "edit"},
+                                 pipeline_id="task_alias", task=task))
+    assert got["status"] == "ok"
+    assert got["output"]["waited"] is True and got["output"]["converged"] is True
+
+    # 旧字段名 stages / blackboard
+    listed = asyncio.run(sf.execute("list_agent_runs", {},
+                                    pipeline_id="task_alias", task=task))
+    assert listed["status"] == "ok"
+    assert "stages" in listed["output"] and "blackboard" in listed["output"]
+
+    # 旧参数名 subagent_id：不存在的 id 要如实报"没找到"，而不是报"缺参数"
+    miss = asyncio.run(sf.execute("get_agent_run", {"subagent_id": "sa_none"},
+                                  pipeline_id="task_alias", task=task))
+    assert miss["status"] == "error" and "没有找到" in miss["error"]
+
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))

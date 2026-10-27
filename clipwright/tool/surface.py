@@ -540,7 +540,8 @@ async def _execute_agent(name: str, payload: dict[str, Any], *,
     entry = next(e for e in build_surface() if e.name == name)
 
     if name == CANCEL_AGENT_RUN:
-        run_id = str(payload.get("run_id") or "")
+        # 兼容旧参数名：历史检查点里存的是 subagent_id
+        run_id = str(payload.get("run_id") or payload.get("subagent_id") or "")
         ok, detail = agent_run.cancel(run_id)
         out = {"status": "ok" if ok else "error",
                "output": detail, "error": None if ok else detail.get("error")}
@@ -551,17 +552,34 @@ async def _execute_agent(name: str, payload: dict[str, Any], *,
     if name in (GET_AGENT_RUN, LIST_AGENT_RUNS):
         if name == LIST_AGENT_RUNS:
             runs = agent_run.list_runs(str(getattr(task, "id", "") or pipeline_id))
-            out = {"status": "ok", "output": {"count": len(runs), "runs": runs[:50]}}
+            try:
+                from clipwright.services import task_blackboard as bb
+
+                board = bb.describe(str(getattr(task, "id", "") or pipeline_id))
+            except Exception:  # noqa: BLE001 — 黑板不可用不影响 run 列表
+                board = {}
+            out = {"status": "ok",
+                   "output": {"count": len(runs), "runs": runs[:50],
+                              # 兼容旧字段名（历史提示词/前端仍读这两个键）
+                              "stages": runs[:50], "blackboard": board}}
         else:
             found = agent_run.inspect(
-                run_id=str(payload.get("run_id") or ""),
+                run_id=str(payload.get("run_id") or payload.get("subagent_id") or ""),
                 task_id=str(getattr(task, "id", "") or pipeline_id),
                 stage=str(payload.get("stage") or ""),
             )
-            out = ({"status": "ok", "output": found} if found is not None else
-                   {"status": "error", "error": "没有找到对应的 run",
-                    "failure": {"category": "not_found", "retryable": "needs_upstream",
-                                "blocking_point": "run_id/stage 未命中", "evidence": []}})
+            if found is None:
+                out = {"status": "error", "error": "没有找到对应的 run",
+                       "failure": {"category": "not_found",
+                                   "retryable": "needs_upstream",
+                                   "blocking_point": "run_id/stage 未命中",
+                                   "evidence": []}}
+            else:
+                # 兼容旧 `wait_for_stage` 语义：查一次即视作已收敛（同步派发本来就等完了）
+                status = str(found.get("status") or "")
+                out = {"status": "ok",
+                       "output": {**found, "waited": True,
+                                  "converged": status not in ("pending", "running")}}
         out["record"] = _audit(name, entry, pipeline_id, idem_key, payload,
                                out["status"], 0.0, out.get("error"))
         return out
