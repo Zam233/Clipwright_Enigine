@@ -63,45 +63,53 @@ class KernelDeps:
     planner: Optional[Planner] = None
     executor: Optional[Executor] = None
     checkpoint_dir: Path = _DEFAULT_CHECKPOINT_DIR
+    #: 主循环形态覆盖（modern-agent PRD §5.2 的 `kernel_mode`）；
+    #: None = 跟 `settings.kernel_mode`，显式给值优先。
+    kernel_mode: Optional[str] = None
+    #: tool loop 驱动器（离线测试注入假驱动器；None = 真实 `agent_loop.run_loop`）
+    driver: Optional[Any] = None
 
 
 # ── 默认执行器：走工具面（唯一副作用入口）────────────────────────
 
+#: 旧能力名 → 工具面工具名（兼容历史检查点用的**别名表**，不是能力解释器）。
+#: 新实现只认工具面里的名字：原子工具 + `delegate_agent` / `research_agent`。
+_TOOL_ALIAS: dict[str, str] = {
+    "delegate": "delegate_agent",
+    "run_stage": "delegate_agent",
+    "spawn_stage": "delegate_agent",
+    "spawn_subagent": "research_agent",
+    # 查询/取消类旧名统一收敛到 agent run 工具（不再有另一套能力名解释层）
+    "get_stage": "get_agent_run",
+    "wait_for_stage": "get_agent_run",
+    "get_subagent_status": "get_agent_run",
+    "list_stages": "list_agent_runs",
+    "list_subagents": "list_agent_runs",
+    "cancel_subagent": "cancel_agent_run",
+}
+
+#: 必须经执行网关（判定 → 授权 → 沙盒 → 审计）的危险档，不进工具面
+_GATEWAY_CAPS: frozenset[str] = frozenset({"run_shell", "run_python"})
+
 
 async def default_executor(task: Task, step: PlanStep) -> dict[str, Any]:
+    """plan adapter 的执行器：**不做能力字符串分支**，一律走工具面。
+
+    历史上这里是一串按能力名逐项判断的条件分支，那正是"编排管线穿着 agent 外衣"
+    的标本：模型说一句话，代码再翻译成另一个名字。现在只剩两条路——
+    危险档走执行网关，其余走 `surface.execute`（派发类工具也在里面）。
+    """
     from clipwright.tool.surface import execute as surface_execute
 
-    if step.capability == "run_pipeline":
-        from clipwright.services import pipeline_capability
-
-        return await pipeline_capability.run(task, step)
-    if step.capability in ("spawn_subagent", "get_subagent_status",
-                           "list_subagents", "cancel_subagent"):
-        from clipwright.services import subagent_capability
-
-        return await subagent_capability.run(task, step)
-    if step.capability in ("delegate", "run_stage", "get_stage", "list_stages",
-                           "wait_for_stage"):
-        # `run_stage` 是旧名：老检查点里存的是它，加载时会被映射成 delegate，这里兜住存量数据
-        # 阶段子代理：同步执行，结果直接回主 agent（没有"派出去不管"的语义，
-        # 所以**不存在** spawn_stage 这种 fire-and-forget 别名——那会让数据绕过主 agent）。
-        from clipwright.services import stage_capability
-
-        return await stage_capability.run(task, step)
-    if step.capability in ("replan_closure", "validate_stage_plan"):
-        from clipwright.services import stage_closure
-
-        return await stage_closure.run(task, step)
-    if step.capability in ("run_shell", "run_python"):
-        # dangerous 档不走工具面，经执行网关（判定 → 授权 → 沙盒 → 审计）
+    name = _TOOL_ALIAS.get(step.capability, step.capability)
+    if name in _GATEWAY_CAPS:
         from clipwright.services import exec_capability
 
         return await exec_capability.run(task, step)
-    idem = f"{task.id}:{step.id}:{step.attempt}"
-    outcome = await surface_execute(
-        step.capability, step.args, pipeline_id=task.id, idem_key=idem,
+    return await surface_execute(
+        name, step.args, pipeline_id=task.id,
+        idem_key=f"{task.id}:{step.id}:{step.attempt}", task=task,
     )
-    return outcome
 
 
 # ── 默认规划器：LLM + 退化 ────────────────────────────────────
@@ -481,10 +489,21 @@ def limits_from_settings() -> TaskLimits:
 
 
 class AgentKernel:
-    def __init__(self, deps: Optional[KernelDeps] = None) -> None:
-        self.deps = deps or KernelDeps()
+    def __init__(self, deps: Optional[KernelDeps] = None, *,
+                 kernel_mode: Optional[str] = None) -> None:
+        deps = deps or KernelDeps()
+        # 注入决定"决策源归属"：调用方塞了 planner/executor（离线测试、回放、
+        # 自定义规划器）就等于声明"大脑由我提供"，不再叠加真实模型 tool loop。
+        # 生产路径 `AgentKernel()` 不注入任何东西 → 走 settings.kernel_mode。
+        self._injected = deps.planner is not None or deps.executor is not None
+        self.deps = deps
         self.deps.planner = self.deps.planner or LLMPlanner()
         self.deps.executor = self.deps.executor or default_executor
+        self.kernel_mode = (
+            kernel_mode
+            or deps.kernel_mode
+            or ("plan" if self._injected else str(getattr(settings, "kernel_mode", "plan")))
+        )
 
     # ── 生命周期 ─────────────────────────────────
 
@@ -600,6 +619,121 @@ class AgentKernel:
             _TASK_HANDLES.pop(task.id, None)
 
     async def _run_loop(self, task: Task, *, started: float) -> Task:
+        """主循环入口：按 `kernel_mode` 分派（modern-agent PRD §2.2 / §5.2）。
+
+        - `tool_loop`（默认）/ `shadow`：模型拿工具 schema 自主调用 → `agent_loop.run_loop`
+        - `plan`：旧的计划表 adapter（`_run_plan_loop`），仅回滚与测试可达
+        - 条件不具备（无凭据 / provider 不支持工具）→ 明确记 `degradation` 后回退 plan
+        """
+        from clipwright.services import agent_loop
+        from clipwright.services.task_events import emit
+
+        mode = str(self.kernel_mode)
+        if mode in ("tool_loop", "shadow"):
+            available, why = agent_loop.tool_loop_available()
+            if available:
+                return await self._run_tool_loop(task, started=started,
+                                                 shadow=(mode == "shadow"))
+            emit(task.id, "degradation",
+                 f"tool loop 不可用（{why}），回退 plan adapter",
+                 {"kind": "kernel_mode_fallback", "reason": why, "mode": mode})
+        elif mode != "plan":
+            emit(task.id, "degradation", f"未知 kernel_mode={mode}，回退 plan adapter",
+                 {"kind": "kernel_mode_invalid", "mode": mode})
+        return await self._run_plan_loop(task, started=started)
+
+    async def _run_tool_loop(self, task: Task, *, started: float,
+                             shadow: bool = False) -> Task:
+        """原生 tool-use loop：不预生成步骤表，模型每轮自主决定调哪个工具。"""
+        from clipwright.services import agent_loop, context_loader
+        from clipwright.services.task_events import emit
+
+        task.status = "running"
+        task.touch()
+        _TASK_HANDLES[task.id] = asyncio.current_task()  # type: ignore[assignment]
+
+        # 上下文装配（PRD §2.5 / §17.11）：按预算裁剪并记 context_loaded
+        context_text = ""
+        try:
+            loaded = context_loader.load(task)
+            context_text = loaded.get("text", "")
+            emit(task.id, "context_loaded", "上下文已装载",
+                 {"bytes": loaded.get("bytes", 0), "sources": loaded.get("sources", []),
+                  "trimmed": loaded.get("trimmed", False)})
+        except Exception as exc:  # noqa: BLE001 — 上下文失败不能阻断主循环
+            logger.warning("上下文装载失败 %s: %s", task.id, exc)
+
+        def _guard() -> Optional[str]:
+            hit = self._control_hit(task)
+            if hit:
+                return hit
+            return self._gate_hit(task, started)
+
+        def _on_tool_call(name: str, result: dict[str, Any]) -> None:
+            task.usage.tool_calls += 1
+            cost = result.get("cost_usd")
+            if isinstance(cost, (int, float)):
+                task.usage.cost_usd = round(task.usage.cost_usd + float(cost), 6)
+
+        task.usage.turns += 1
+        driver = self.deps.driver or agent_loop.run_loop
+        outcome = await driver(
+            task, context_text=context_text, shadow=shadow,
+            guard=_guard, on_tool_call=_on_tool_call,
+        )
+        task.usage.wall_sec = round(time.monotonic() - started, 2)
+
+        status = str(outcome.get("status") or "error")
+        reason = str(outcome.get("stopped_reason") or "")
+        if status == "aborted":
+            # 取消/暂停/触闸：保留终态与检查点，可 resume
+            if task.status not in ("cancelled", "paused"):
+                task.status = "paused"
+            self._checkpoint(task)
+            return task
+
+        finish = outcome.get("finish") or {}
+        if status == "ok":
+            conclusion = str(finish.get("conclusion") or "")
+            # 收尾守门（§18.10.4）：声称完成但黑板里没有可渲染时间线 → 如实标失败
+            gate_reason = "tool_loop_completed"
+            if not shadow:
+                try:
+                    from clipwright.services import task_blackboard as _bb
+
+                    board = _bb.get(task.id)
+                    if not (board.get("final_timeline") or board.get("timeline")):
+                        gate_reason = "缺少可渲染时间线（final_timeline 为空）"
+                except Exception:  # noqa: BLE001 — 守门失败不阻断收尾
+                    pass
+            task.finish = TaskFinish(
+                conclusion=conclusion or f"工具循环结束：{len(outcome.get('tool_calls') or [])} 次调用",
+                completed=[], unfinished=[],
+                reason=gate_reason,
+            )
+            task.status = "done" if gate_reason == "tool_loop_completed" else "failed"
+            task.touch()
+            emit(task.id, "task_end", task.finish.conclusion,
+                 {"reason": task.finish.reason, "usage": task.usage.model_dump(),
+                  "tool_calls": len(outcome.get("tool_calls") or [])})
+            self._checkpoint(task)
+            return task
+
+        failure = outcome.get("failure") or {}
+        task.finish = TaskFinish(
+            conclusion=f"工具循环失败：{outcome.get('error') or reason}",
+            completed=[], unfinished=[f"tool_loop:{reason}"],
+            reason=f"tool_loop_error:{reason}",
+        )
+        task.status = "failed"
+        task.touch()
+        emit(task.id, "task_end", task.finish.conclusion,
+             {"reason": task.finish.reason, "failure": failure,
+              "usage": task.usage.model_dump()})
+        self._checkpoint(task)
+        return task
+
+    async def _run_plan_loop(self, task: Task, *, started: float) -> Task:
         from clipwright.services.task_events import emit
 
         if task.plan is None:

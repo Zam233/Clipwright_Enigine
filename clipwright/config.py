@@ -113,6 +113,14 @@ class Settings(BaseSettings):
     agent_decide_policy: Literal["off", "auto", "always"] = "always"
     # 决策是否走流式（思考逐块到达前端）；provider 不支持时自动回退非流式
     agent_decide_stream: bool = True
+    # 主循环形态（modern-agent PRD §2.2 / §5.2 M1，PRD 原名 kernel_mode）：
+    #   tool_loop = 原生 tool-use loop（模型拿 surface.schemas() 自主调用工具，默认）
+    #   shadow    = 跑 tool_loop 但只记录不产生副作用，用于与 plan 对比（§5.2）
+    #   plan      = 旧的计划表执行（`_run_step` adapter，仅回滚用；M3 之后仅测试可达）
+    kernel_mode: Literal["plan", "tool_loop", "shadow"] = "tool_loop"
+    # tool loop 的模型回合 / 工具调用上限（0 = 沿用 TaskLimits）
+    agent_loop_max_turns: int = 12
+    agent_loop_max_tool_calls: int = 60
     # 决策上下文预算（字符）：超出按优先级裁剪，并记 context_loaded.trimmed（§17.11）
     context_budget_chars: int = 6000
     # 单份工作区报告上限（字符）；超出截断并标记（§17.3）

@@ -113,6 +113,11 @@ def _query(task: Task, step: PlanStep) -> dict[str, Any]:
 
 
 async def _spawn(task: Task, step: PlanStep) -> dict[str, Any]:
+    """薄适配（modern-agent PRD §5.3 M2）：装配 `RunSpec(kind="research")` → `agent_run`。
+
+    工具白名单校验留在这里是**策略**（不是执行解释）：Kernel 只授予只读子集，
+    `run_shell` / `run_python` 必须走 supervisor 的两级审核门。
+    """
     args = dict(step.args or {})
     role = str(args.get("role") or "").strip()
     if not role:
@@ -133,77 +138,79 @@ async def _spawn(task: Task, step: PlanStep) -> dict[str, Any]:
     if not tools:
         return {"status": "refused", "error": "子代理工具集必须是非空的只读子集"}
 
-    from types import SimpleNamespace
+    from clipwright.schema.run import RunSpec
+    from clipwright.services import agent_run
 
-    from clipwright.supervisor.spawn import SpawnError, spawn_subagent
-
-    ctx = SimpleNamespace(pipeline_id=task.id, extra_params={})
-    try:
-        result = await spawn_subagent(
-            ctx,
-            role=role,
-            system_prompt=str(args.get("system_prompt") or "")[:4000],
-            tools=sorted(tools),
-            provider=str(args.get("provider") or ""),
-            model=str(args.get("model") or ""),
-            timeout_sec=float(args.get("timeout_sec") or 45.0),
-            max_turns=int(args.get("max_turns") or 4),
-        )
-    except SpawnError as e:
-        return {
-            "status": "refused",
-            "error": f"派生被拒绝: {e}",
-            "failure": {"category": "spawn_rejected", "retryable": "needs_human",
-                        "blocking_point": str(e)[:200], "evidence": []},
-        }
-    except Exception as e:  # noqa: BLE001 — 派生失败不影响主任务
-        return {"status": "error", "error": f"{type(e).__name__}: {e}",
-                "failure": {"category": "unknown", "retryable": "unknown",
-                            "blocking_point": str(e)[:200], "evidence": []}}
-
-    raw_status = str(result.get("status") or "")
+    spec = RunSpec(
+        kind="research",
+        role=role,
+        brief=str(args.get("system_prompt") or args.get("brief") or "")[:4000],
+        tools=sorted(tools),
+        provider=str(args.get("provider") or ""),
+        model=str(args.get("model") or ""),
+        timeout_sec=float(args.get("timeout_sec") or 45.0),
+        max_turns=int(args.get("max_turns") or 4),
+        depth=1,
+        trace_id=task.id,
+    )
+    result = await agent_run.run(spec, task)
+    # 上游 supervisor 的 subagent_id 比 run_id 更贴近前端卡片（有节点、有 tracker），
+    # 有就用它，没有才退回 run_id。
+    sa_id = str(result.outputs.get("subagent_id") or result.run_id)
     common = {
-        "subagent_id": result.get("subagent_id"),
+        "subagent_id": sa_id,
         "role": role,
-        "cost_usd": result.get("cost_usd"),
-        "duration_ms": result.get("duration_ms"),
-        "tool_calls": result.get("tool_calls") or [],
-        "tokens": result.get("tokens"),
+        "cost_usd": result.cost_usd,
+        "duration_ms": result.duration_ms,
+        "tool_calls": list(result.tool_calls),
+        "tokens": result.tokens,
     }
 
-    if raw_status == "pending_review":
+    if result.status == "needs":
         # 不是失败：它在等人审。主代理必须知道"别重试、去催人"
-        review = result.get("review") or {}
+        review = (result.failure or {}).get("review") or result.outputs.get("review") or {}
         return {
+            **common,
             "status": "needs_human_review",
-            "approval_id": result.get("worker_id"),
+            "approval_id": result.run_id,
             "risk": review.get("risk"),
             "reasons": review.get("reasons") or [],
-            "note": "该子代理带执行权限，等待人工审核；审核通过后会用同一 worker_id 执行",
-            **common,
+            "note": "该子代理带执行权限，等待人工审核；审核通过后用同一 run_id 执行",
         }
 
-    if raw_status == "done":
+    if result.status in ("ok", "degraded"):
         return {
             "status": "ok",
             "output": {
-                "subagent_id": common["subagent_id"],
+                "subagent_id": result.run_id,
                 "role": role,
-                "conclusion": str(result.get("output") or "")[:2000],
+                "conclusion": result.summary[:2000],
+                **result.outputs,
                 "tool_calls": common["tool_calls"],
-                "cost_usd": common["cost_usd"],
-                "tokens": common["tokens"],
-                "duration_ms": common["duration_ms"],
+                "cost_usd": result.cost_usd,
+                "tokens": result.tokens,
+                "duration_ms": result.duration_ms,
+            },
+        }
+
+    if result.status == "refused":
+        return {
+            **common,
+            "status": "refused",
+            "error": result.error or "派生被拒绝",
+            "failure": result.failure or {
+                "category": "spawn_rejected", "retryable": "needs_human",
+                "blocking_point": (result.error or "")[:200], "evidence": [],
             },
         }
 
     return {
+        **common,
         "status": "error",
-        "error": str(result.get("error") or f"子代理状态 {raw_status}"),
-        "failure": result.get("failure") or {
+        "error": result.error or f"子代理状态 {result.status}",
+        "failure": result.failure or {
             "category": "unknown", "retryable": "unknown",
-            "blocking_point": str(result.get("error") or raw_status)[:200],
+            "blocking_point": (result.error or result.status)[:200],
             "evidence": [],
         },
-        **common,
     }

@@ -232,6 +232,13 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
      "off=只走规则；auto=失败必判、成功轻量步走规则；always（默认）=每步都调 LLM 决策"),
     ("agent_decide_stream", "pipeline", "决策走流式", False, True,
      "true（默认）=决策时思考逐块到前端；provider 不支持时自动回退非流式"),
+    ("kernel_mode", "pipeline", "Kernel 主循环形态", False, True,
+     "tool_loop（默认）=模型拿工具 schema 自主调用（原生 tool-use loop）；"
+     "shadow=跑 loop 只记录不落副作用；plan=旧计划表 adapter，仅回滚/测试用"),
+    ("agent_loop_max_turns", "pipeline", "tool loop 模型回合上限", False, True,
+     "单次 tool-use loop 最多几轮模型往返（默认 12，不可置空）"),
+    ("agent_loop_max_tool_calls", "pipeline", "tool loop 工具调用上限", False, True,
+     "单次 tool-use loop 最多几次工具调用（默认 60，含派发子 agent）"),
     ("context_budget_chars", "pipeline", "决策上下文预算(字符)", False, True,
      "超出按优先级裁剪，并记 context_loaded.trimmed"),
     ("report_max_chars", "pipeline", "工作区报告上限(字符)", False, True,

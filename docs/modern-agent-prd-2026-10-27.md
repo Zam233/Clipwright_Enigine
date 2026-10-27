@@ -894,3 +894,62 @@ python -m clipwright.services.replay --bundle <bundle.json> --dry-run
 - [ ] M2 stage/research 同 AgentRun，B/C 通过；M3 无计划表执行和 pipeline 生产 import，J 通过。
 - [ ] M4 三层 memory、golden 三次对比、replay/few-shot，E/F 通过。
 - [ ] 每期后端 4461 passed、前端 983 passed（或重新锁定的新基线）全绿；所有目标项有代码、测试或 trace 证据。
+
+---
+
+## 10. 执行记录（2026-10-27 落地批次）
+
+> 纪律沿用 `master-agent-prd-2026-10-26.md` §18.1：**"设计"与"已落地"必须分开写**，
+> 每条给出可核对的文件与测试，不给"日志看起来像 agent"这种说法留位置。
+
+### 10.1 状态总表
+
+| 期 | 项 | 状态 | 证据 |
+|---|---|---|---|
+| M0 | `schema/run.py`（RunSpec / AgentResult / RunEvent） | 已落地 | `clipwright/schema/run.py`；`tests/test_agent_run.py` |
+| M0 | `services/agent_run.py` 统一运行时（stage + research） | 已落地 | `clipwright/services/agent_run.py`；同契约断言在 `test_agent_run.py::test_stage_and_research_share_envelope` |
+| M1 | `kernel_mode = tool_loop / shadow / plan` | 已落地 | `clipwright/config.py`、`config_schema.py` |
+| M1 | `services/agent_loop.py`：每轮把 `surface.schemas()` 传给 provider | 已落地 | `tests/test_agent_loop.py::test_build_tools_contains_schemas_every_round` |
+| M1 | 闸在**工具执行前**生效（取消/暂停/预算/墙钟），可恢复 | 已落地 | `test_agent_loop.py::test_guard_aborts_before_side_effects`；`agent_kernel._run_tool_loop` 把 `aborted` 落成 `paused` + 检查点 |
+| M1 | shadow 模式（记录调用序列、不落副作用） | 已落地 | `test_agent_loop.py::test_shadow_mode_runs_no_side_effects` |
+| M1 | Plan 降级为"初始假设"，不进循环游标 | 已落地（tool_loop 路径） | `test_agent_loop.py::test_prompt_does_not_require_step_array` |
+| M1 | 条件不具备时**显式**降级并记 `degradation(kernel_mode_fallback)` | 已落地 | `agent_loop.tool_loop_available()` + `agent_kernel._run_loop` |
+| M2 | `delegate_agent` / `research_agent` 是一等工具 | 已落地 | `tool/surface.py`；`test_agent_run.py::test_agent_tools_are_first_class_surface_tools` |
+| M2 | 查询/取消同契约：`get_agent_run` / `list_agent_runs` / `cancel_agent_run` | 已落地 | `surface._execute_agent`；`agent_run.inspect/cancel` |
+| M2 | `stage_capability` / `subagent_capability` 退化为薄适配 | 已落地 | `stage_capability._delegate`、`subagent_capability._spawn` |
+| M2 | 幂等/深度/成本口径统一（同一 `idem_key` 不重复干活） | 已落地 | `agent_run._IDEM`；`test_agent_run.py::test_idem_key_replays_without_rework` |
+| M2 | 阶段成本/工具轨迹进同一 `AgentResult`（`tokens` / `tool_calls`） | 已落地 | `schema/run.py` |
+| M3 | `run_pipeline` 从能力矩阵与执行器下线 | 已落地 | `test_pipeline_capability.py::test_kernel_no_longer_routes_run_pipeline` |
+| M3 | `default_executor` 去掉能力字符串分支，改为别名表 | 已落地 | `test_agent_run.py::test_legacy_capability_names_are_aliases_not_branches` |
+| M3 | 删除 `_run_step` / `next_step()` 生产调用 | **未做** | 仍留 `plan` adapter（回滚路径），见 10.2 |
+| M3 | `pipeline_v2.py` / `api/pipeline` 执行路由物理删除 | **未做** | 已有 410 门禁与 `pipeline_enabled=false` 默认，物理删除待专批 |
+| M4 | 三层记忆（working / episodic / semantic）+ provenance/TTL/撤回 | 已落地 | `services/memory.py`；`tests/test_memory_layers.py` |
+| M4 | 记忆证据进 `context_loaded` | 已落地 | `context_loader._memory_digest`（`sources.recall`） |
+| M4 | 指标记录、聚合与前后对比 | 已落地 | `services/evaluation.py`；`tests/test_evaluation.py` |
+| M4 | replay bundle（事件 + run + 记忆 + 指标） | 已落地 | `evaluation.replay_bundle`；写入 `<workspace>/traces/<task>.json` |
+| M4 | golden 用例集与 prompt/few-shot 候选注册表 | **未做** | 只有 `load_golden/append_golden` 读写，尚无候选门禁 |
+
+### 10.2 明确未做的两件事（不许含糊）
+
+1. **`plan` adapter 未物理删除。** `kernel_mode` 默认 `tool_loop`，`plan` 只作回滚与
+   测试可达；`_run_step` / `_after_step` / `next_step()` 仍在 `agent_kernel.py` 里。
+   删除它需要同时迁移 18 条 plan 语义用例（回合闸、墙钟闸、checkpoint 续跑、
+   授权暂停），这是 §5.4 的独立一批活，硬塞进本批会让"回滚能力"与"测试基线"同时失守。
+   **判据**：`grep -R "next_step()" clipwright/` 仍会命中外 1 处。
+2. **`pipeline_v2.py` 与 `api/pipeline` 执行路由未物理删除。** 已有三重约束
+   （`pipeline_enabled=false` 默认拒执行、执行路由 410、`run_pipeline` 已出矩阵），
+   但文件仍在，`api/pipeline.py` 的历史只读查询仍需它。删除按 §4.2 第 1–3 步的
+   迁移顺序做，不能先删后补。
+
+### 10.3 本批新增测试
+
+| 文件 | 覆盖 |
+|---|---|
+| `tests/test_agent_loop.py` | 每轮 tools 非空、tool_call 执行与回填、闸前中止、调用上限留痕、shadow 无副作用、降级判定、提示词不含步骤表 |
+| `tests/test_agent_run.py` | 深度守卫、幂等复用、同契约信封、指标/情景记忆落账、失败钉住、工具入口唯一、别名表非分支 |
+| `tests/test_memory_layers.py` | 三层隔离、无 provenance 降级、TTL/撤回、压缩承认省略、钉住保命、episodic 追加落盘 |
+| `tests/test_evaluation.py` | 指标与聚合、成本未知不填 0、差值对比、replay bundle 四要素、golden 读写 |
+
+基线与新增：后端 **4494 passed / 4 skipped / 1 xfailed**（本批前 4461，新增 23 条契约用例，
+另有 2 条旧断言按 M3 事实改写：`test_kernel_no_longer_routes_run_pipeline`、
+`test_default_executor_routes_spawn_capability`）。

@@ -1,0 +1,263 @@
+"""Kernel 原生 tool-use loop（PRD §2.2）：模型拿工具 schema 自主行动。
+
+关键区别（也是"agent 还是编排管线"的分界线）：
+
+- **不再**让模型先吐 `steps[]` 再由代码按数组执行；
+- 每轮把 `surface.schemas()` 作为 `tools` 传给 provider（派发类工具
+  `delegate_agent` / `research_agent` 已在工具面内，见 `tool/surface.py`），
+  模型发 tool_call → 执行 → 结果按 provider 协议回填 → 模型继续或给终态。
+
+Plan 只作为**初始假设**（`initial_hypothesis`）放进提示词，不做循环游标。
+
+开关见 `settings.kernel_mode`（`tool_loop` 默认 / `shadow` / `plan` 回滚）。
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from typing import Any
+
+from clipwright.config import logger, settings
+from clipwright.services.task_events import emit
+
+#: 派发类工具名（唯一定义在工具面，这里只是可读别名，避免两处 schema 漂移）
+DELEGATE_TOOL = "delegate_agent"
+RESEARCH_TOOL = "research_agent"
+
+
+class LoopAborted(RuntimeError):
+    """工具循环被外部闸中止（取消/暂停/预算/墙钟）——由 Kernel 解释成任务终态。"""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def agent_tool_schemas() -> list[dict[str, Any]]:
+    """派发类工具的 schema（直接从工具面取，不再手抄一份）。"""
+    from clipwright.tool.surface import AGENT_TOOLS, build_surface
+
+    return [e.schema for e in build_surface() if e.name in AGENT_TOOLS]
+
+
+def is_agent_tool(name: str) -> bool:
+    from clipwright.tool.surface import AGENT_TOOLS
+
+    return name in AGENT_TOOLS
+
+
+def tool_loop_available() -> tuple[bool, str]:
+    """现在能不能真的跑 tool loop；返回 `(可用, 原因)`。
+
+    三个必要条件，缺一就明确降级回 plan adapter（不允许"看起来在跑 loop"）：
+
+    1. `kernel_mode` 是 `tool_loop` / `shadow`；
+    2. provider 声明 `tool_calls` 能力（协议层支持原生工具回填）；
+    3. 有可用的模型凭据（没有 key 的 tool loop 只会得到一个 401 的失败轨迹）。
+
+    第 3 条同时保证：单元测试环境（注入 fake planner、不配 key）走 plan adapter，
+    不会因为默认 `tool_loop` 而对真实 provider 发起网络请求。
+    """
+    mode = str(getattr(settings, "kernel_mode", "plan"))
+    if mode not in ("tool_loop", "shadow"):
+        return False, f"kernel_mode={mode}"
+    if not str(getattr(settings, "llm_api_key", "") or "").strip():
+        return False, "no_llm_credential"
+    try:
+        from clipwright.providers.base import llm_capabilities
+        from clipwright.services.llm import _resolve_llm_provider
+
+        impl = _resolve_llm_provider(settings.llm_provider)
+        if impl is None:
+            return False, "no_provider_impl"
+        if not llm_capabilities(impl, settings.llm_model).tool_calls:
+            return False, f"provider={settings.llm_provider} tool_calls=false"
+    except Exception as exc:  # noqa: BLE001 — 能力自省失败按不可用处理
+        return False, f"capability_probe_failed:{type(exc).__name__}"
+    return True, "ok"
+
+
+def build_tools() -> list[dict[str, Any]]:
+    """本轮可用的工具集 = 工具面（已含 `delegate_agent` / `research_agent`）。"""
+    from clipwright.tool.surface import schemas as surface_schemas
+
+    try:
+        return list(surface_schemas())
+    except Exception as exc:  # noqa: BLE001 — 工具面构建失败要响，但循环仍可退化
+        logger.warning("工具面构建失败: %s", exc)
+        return agent_tool_schemas()
+
+
+def _system_prompt(task: Any) -> str:
+    return (
+        "你是视频创作系统的主 agent。你直接调用工具来推进任务：可以读取工作区文件/报告/产物，"
+        "也可以派子 agent 去做具体阶段。每次只做当前最必要的一步；做完就停下来汇报。\n"
+        "规则：\n"
+        "- 不要假装完成：没有可渲染时间线/产物时，如实说明缺什么；\n"
+        "- 缺输入时先补上游（派对应阶段/调研），不要凭空编造；\n"
+        "- 派子 agent 时用 inputs 显式传参（artifact 引用或内联值）；\n"
+        "- 任务受限：回合、工具调用次数、墙钟、预算都会强制中止。"
+    )
+
+
+def _user_prompt(task: Any, context_text: str) -> str:
+    request = getattr(task, "request", task)
+    topic = str(getattr(request, "topic", "") or "")
+    hypothesis = ""
+    plan = getattr(task, "plan", None)
+    if plan is not None and getattr(plan, "steps", None):
+        hypothesis = "\n\n## 初始假设（仅供参照，不是必须执行的步骤表）\n" + "\n".join(
+            f"- {getattr(s, 'title', '') or getattr(s, 'capability', '')}" for s in plan.steps[:8]
+        )
+    return f"## 用户需求\n{topic}\n\n## 当前上下文\n{context_text}{hypothesis}"
+
+
+async def run_loop(task: Any, *, context_text: str = "",
+                   shadow: bool = False,
+                   guard: Any = None,
+                   on_tool_call: Any = None) -> dict[str, Any]:
+    """跑完一次 tool-use loop，返回 `{status, finish, tool_calls, cost, stopped_reason}`。
+
+    - `shadow=True`（PRD §5.2）：照常让模型选工具、照常记录调用序列与成本，但**不执行**
+      ——工具执行器只回填"录制/影子结果"，用于把 tool loop 的决策与 plan 模式的决策做对比。
+    - `guard`：无参可调用，返回非空字符串即中止（取消/暂停/预算/墙钟）。
+      模型请求**进行中**也能停：检查点落在每次工具执行前，中止后 Kernel 从检查点恢复。
+    - `on_tool_call`：每次真实工具调用后回调（Kernel 用它累计 usage.tool_calls / cost）。
+    """
+    from clipwright.services.llm import LLMService
+
+    task_id = str(getattr(task, "id", "") or "")
+    tools = build_tools()
+    emit(task_id, "narration",
+         "主 agent 开始行动（工具循环·影子）" if shadow else "主 agent 开始行动（工具循环）",
+         {"mode": "shadow" if shadow else "tool_loop", "tools": len(tools)})
+
+    calls: list[dict[str, Any]] = []
+    started = time.monotonic()
+    limits = getattr(task, "limits", None)
+    max_rounds = int(getattr(settings, "agent_loop_max_turns", 0)
+                     or getattr(limits, "max_turns", 30) or 30)
+    max_calls = int(getattr(settings, "agent_loop_max_tool_calls", 0)
+                    or getattr(limits, "max_tool_calls", 80) or 80)
+
+    async def _executor(name: str, args: dict[str, Any]) -> dict[str, Any]:
+        nonlocal calls
+        # 闸在**每次工具执行前**检查：模型请求进行中也能停（PRD §5.2 验收「取消在
+        # 模型请求中间也能恢复」）——旧实现的闸只在 plan-step 边界跑，900s 阶段停不住。
+        if guard is not None:
+            reason = guard()
+            if reason:
+                raise LoopAborted(str(reason))
+        if len(calls) >= max_calls:
+            # 上限也要留痕：静默丢弃会让"为什么没做完"变成谜
+            calls.append({"tool": name, "ok": False, "status": "refused",
+                          "duration_ms": 0})
+            emit(task_id, "tool_result", f"{name} → refused（调用次数到顶）",
+                 {"tool": name, "status": "refused", "limit": max_calls})
+            return {"status": "refused",
+                    "error": f"工具调用次数已达上限（{max_calls}）"}
+        emit(task_id, "tool_call", f"{name}", {"tool": name, "args": args,
+                                               "shadow": shadow})
+        if shadow:
+            # 影子：不执行副作用，只记录"模型想调什么"
+            calls.append({"tool": name, "ok": True, "status": "shadowed",
+                          "duration_ms": 0})
+            return {"status": "ok", "shadow": True,
+                    "note": "shadow 模式未执行；调用序列已记录用于对比"}
+        t0 = time.monotonic()
+        try:
+            from clipwright.tool.surface import execute as surface_execute
+
+            # 原子工具与派发类工具走**同一个入口**（surface.execute）：
+            # 同一份档位裁定、同一份幂等键、同一份审计记录。
+            result = await surface_execute(
+                name, args, pipeline_id=task_id,
+                idem_key=f"{task_id}:{name}:{len(calls)}", task=task,
+            )
+        except LoopAborted:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 工具异常不能让循环崩
+            result = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        elapsed = int((time.monotonic() - t0) * 1000)
+        calls.append({"tool": name, "ok": result.get("status") == "ok",
+                      "status": result.get("status"), "duration_ms": elapsed})
+        if on_tool_call is not None:
+            try:
+                on_tool_call(name, result)
+            except Exception:  # noqa: BLE001 — 记账失败不影响执行
+                pass
+        emit(task_id, "tool_result", f"{name} → {result.get('status')}",
+             {"tool": name, "status": result.get("status"),
+              "error": result.get("error"), "duration_ms": elapsed,
+              "brief": _brief_of(result)})
+        return result
+
+    try:
+        resp = await LLMService().with_tools(
+            system_prompt=_system_prompt(task),
+            user_prompt=_user_prompt(task, context_text),
+            tool_executor=_executor,
+            tools=tools,
+            max_tool_rounds=max(1, min(max_rounds, 12)),
+            pipeline_id=task_id,
+        )
+    except LoopAborted as exc:
+        emit(task_id, "gate_hit", f"触闸：{exc.reason}",
+             {"reason": exc.reason, "tool_calls": len(calls)})
+        return {
+            "status": "aborted",
+            "error": exc.reason,
+            "tool_calls": calls,
+            "stopped_reason": exc.reason,
+            "duration_ms": int((time.monotonic() - started) * 1000),
+        }
+    except Exception as exc:  # noqa: BLE001 — provider 不支持工具/网络问题
+        logger.warning("tool-use loop 失败: %s", exc)
+        return {
+            "status": "error",
+            "error": f"{type(exc).__name__}: {exc}",
+            "tool_calls": calls,
+            "stopped_reason": "loop_error",
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "failure": {"category": "external_unavailable", "retryable": "retry_same",
+                        "blocking_point": str(exc)[:200], "evidence": []},
+        }
+
+    text = str(getattr(resp, "content", "") or "").strip()
+    emit(task_id, "report", "主 agent 本轮结论",
+         {"stage": "kernel", "status": "ok", "bullets": [text[:300]] if text else [],
+          "tool_calls": len(calls)})
+    return {
+        "status": "ok",
+        "finish": {"conclusion": text[:800], "completed": [], "unfinished": [],
+                   "reason": "tool_loop_finished"},
+        "tool_calls": calls,
+        "stopped_reason": "model_final",
+        "duration_ms": int((time.monotonic() - started) * 1000),
+    }
+
+
+async def _dispatch_agent(task: Any, name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """（保留给脚本/测试直接派发用；主循环走 surface.execute）"""
+    from clipwright.tool.surface import execute as surface_execute
+
+    return await surface_execute(
+        name, args, pipeline_id=str(getattr(task, "id", "") or ""), task=task,
+    )
+
+
+def _brief_of(result: dict[str, Any]) -> str:
+    out = result.get("output")
+    if isinstance(out, dict):
+        for key in ("summary", "conclusion", "brief"):
+            value = out.get(key)
+            if value:
+                return str(value)[:220]
+        if out:
+            return json.dumps({k: out[k] for k in list(out)[:4]}, ensure_ascii=False)[:220]
+    return str(result.get("error") or "")[:220]
+
+
+__all__ = ["DELEGATE_TOOL", "RESEARCH_TOOL", "LoopAborted", "agent_tool_schemas",
+           "build_tools", "is_agent_tool", "run_loop", "tool_loop_available"]

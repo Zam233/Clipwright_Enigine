@@ -27,6 +27,95 @@ from clipwright.config import logger
 #: 可直接进 Kernel 工具面的档位（dangerous 只能经 ExecutionGateway）
 SURFACE_TIERS: tuple[str, ...] = ("read", "write_local", "costly")
 
+#: 派发类工具（modern-agent PRD §2.4）：子 agent 就是工具，不再有"能力名解释器"。
+#: 它们不在 ToolRegistry 里（不是原子工具），但必须和普通工具同处一个工具面——
+#: 否则模型看到的是"一堆原子工具"而不是"可以派活的 agent 系统"。
+DELEGATE_AGENT = "delegate_agent"
+RESEARCH_AGENT = "research_agent"
+GET_AGENT_RUN = "get_agent_run"
+LIST_AGENT_RUNS = "list_agent_runs"
+CANCEL_AGENT_RUN = "cancel_agent_run"
+AGENT_TOOLS: tuple[str, ...] = (DELEGATE_AGENT, RESEARCH_AGENT,
+                                GET_AGENT_RUN, LIST_AGENT_RUNS, CANCEL_AGENT_RUN)
+
+_AGENT_TOOL_SPECS: dict[str, dict[str, Any]] = {
+    DELEGATE_AGENT: {
+        "description": (
+            "派一个阶段子 agent 做一件具体的事（structure/material/edit/animation/audio/quality）。"
+            "inputs 必须显式给出（上一份结果的 artifact 引用或内联值），运行时不会替你从黑板补。"
+            "返回 AgentResult：summary / outputs(preview) / writes / needs / report_path。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "stage": {"type": "string",
+                          "enum": ["structure", "material", "edit", "animation",
+                                   "audio", "quality"]},
+                "brief": {"type": "string", "description": "这次要它做什么（一句话）"},
+                "inputs": {"type": "object",
+                           "description": "显式输入；artifact 引用形如 {\"artifact\":\"art_xx\",\"path\":\"...\"}"},
+                "expect": {"type": "object",
+                           "description": "期望产出字段 → schema 名（用于结果校验）"},
+            },
+            "required": ["stage"],
+        },
+    },
+    RESEARCH_AGENT: {
+        "description": (
+            "派一个只读调研员核实事实（文件是否存在、素材库里有什么、外部资料）。"
+            "它不能写文件、不能再派子 agent。返回 AgentResult（summary/outputs/cost）。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "role": {"type": "string", "description": "调研角色（如 素材核查员）"},
+                "brief": {"type": "string", "description": "要核实的具体问题"},
+                "tools": {"type": "array", "items": {"type": "string"},
+                          "description": "允许它用的只读工具子集"},
+            },
+            "required": ["brief"],
+        },
+    },
+    GET_AGENT_RUN: {
+        "description": (
+            "查一次子 agent 的结果：给 run_id 查那一次；给 stage（edit/quality/…）"
+            "查该任务最近一次同阶段 run。返回 AgentResult 全量（含失败原因与报告路径）。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "stage": {"type": "string"},
+            },
+        },
+    },
+    LIST_AGENT_RUNS: {
+        "description": "列出本次任务派过的所有子 agent（含状态、成本、结论摘要）。",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    CANCEL_AGENT_RUN: {
+        "description": "取消一个还在跑的子 agent（不可取消时如实报错，不假装成功）。",
+        "parameters": {
+            "type": "object",
+            "properties": {"run_id": {"type": "string"}},
+            "required": ["run_id"],
+        },
+    },
+}
+
+#: agent 工具各自的档位（get/list 只读；cancel 是控制动作，按本地写处理）
+_AGENT_TOOL_TIER: dict[str, str] = {
+    DELEGATE_AGENT: "costly",
+    RESEARCH_AGENT: "costly",
+    GET_AGENT_RUN: "read",
+    LIST_AGENT_RUNS: "read",
+    CANCEL_AGENT_RUN: "write_local",
+}
+
+#: 确定性领域工具（PRD §4.4 必须保留）：闭包重算与阶段计划校验。
+#: 它们是"领域不变量"，不是编排：模型可以选择要不要重算，但不能跳过校验。
+DOMAIN_TOOLS: tuple[str, ...] = ("replan_closure", "validate_stage_plan")
+
 _MAX_RECORDS = 500
 _MAX_CACHE = 512
 
@@ -149,7 +238,73 @@ def build_surface(*, tiers: Iterable[str] = SURFACE_TIERS) -> list[SurfaceEntry]
     if not out:
         raise CapabilityMatrixError("工具面为空：注册表或矩阵未初始化")
     out.extend(_skill_surface_entries(allowed))
+    out.extend(_agent_surface_entries(allowed))
+    out.extend(_domain_surface_entries(allowed))
     return sorted(out, key=lambda e: (e.tier, e.name))
+
+
+def _domain_surface_entries(allowed: tuple[str, ...]) -> list[SurfaceEntry]:
+    """确定性领域工具进工具面（否则 plan adapter 的旧步骤会被工具面拒绝）。"""
+    if "read" not in allowed:
+        return []
+    specs = {
+        "replan_closure": (
+            "改一个阶段后，按依赖闭包算出还需要连带重做哪些阶段（只算，不执行）。",
+            {"type": "object",
+             "properties": {"stage": {"type": "string"},
+                            "reason": {"type": "string"}},
+             "required": ["stage"]},
+        ),
+        "validate_stage_plan": (
+            "校验一份阶段计划：依赖顺序、必需输入、非法组合。返回问题清单。",
+            {"type": "object",
+             "properties": {"stages": {"type": "array", "items": {"type": "string"}}},
+             "required": ["stages"]},
+        ),
+    }
+    entries: list[SurfaceEntry] = []
+    for name, (desc, params) in specs.items():
+        text = _describe(name, "read", desc)
+        entries.append(SurfaceEntry(
+            name=name, tier="read", description=text,
+            schema={"type": "function",
+                    "function": {"name": name, "description": text,
+                                 "parameters": params}},
+            available=True, idempotent=True, dry_run=False,
+            cost_hint=_COST_HINT["read"],
+        ))
+    return entries
+
+
+def _agent_surface_entries(allowed: tuple[str, ...]) -> list[SurfaceEntry]:
+    """派发/查询类 agent 工具进同一工具面（agent 就是工具）。"""
+    entries: list[SurfaceEntry] = []
+    for name in AGENT_TOOLS:
+        tier = _AGENT_TOOL_TIER[name]
+        if tier not in allowed:
+            continue
+        spec = _AGENT_TOOL_SPECS[name]
+        desc = _describe(name, tier, spec["description"])
+        entries.append(
+            SurfaceEntry(
+                name=name,
+                tier=tier,
+                description=desc,
+                schema={
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": desc,
+                        "parameters": spec["parameters"],
+                    },
+                },
+                available=True,
+                idempotent=False,
+                dry_run=False,
+                cost_hint=_COST_HINT.get(tier, ""),
+            )
+        )
+    return entries
 
 
 def _skill_surface_entries(allowed: tuple[str, ...]) -> list[SurfaceEntry]:
@@ -342,6 +497,109 @@ async def _execute_skill(name: str, payload: dict[str, Any]) -> Any:
                                error=f"{type(e).__name__}: {e}")
 
 
+async def _execute_domain(name: str, payload: dict[str, Any], *,
+                         pipeline_id: str, idem_key: str,
+                         task: Any = None) -> dict[str, Any]:
+    """确定性领域工具（闭包/校验）：走 stage_closure，不产生执行副作用。"""
+    from clipwright.schema.task import PlanStep
+    from clipwright.services import stage_closure
+
+    if task is None and pipeline_id:
+        try:
+            from clipwright.services.agent_kernel import AgentKernel
+
+            task = AgentKernel().get(pipeline_id)
+        except Exception:  # noqa: BLE001 — 无上下文时 stage_closure 会如实拒绝
+            task = None
+    if task is None:
+        return {"status": "refused", "error": f"{name} 需要任务上下文"}
+    step = PlanStep(id=f"{name}", capability=name, args=payload)
+    entry = next(e for e in build_surface() if e.name == name)
+    started = time.monotonic()
+    result = await stage_closure.run(task, step)
+    status = str(result.get("status") or "error")
+    result["record"] = _audit(name, entry, pipeline_id, idem_key, payload, status,
+                              (time.monotonic() - started) * 1000,
+                              result.get("error"))
+    return result
+
+
+async def _execute_agent(name: str, payload: dict[str, Any], *,
+                         pipeline_id: str, idem_key: str,
+                         task: Any = None) -> dict[str, Any]:
+    """agent 类工具的统一定向：派发 / 查询 / 取消，全部返回 AgentResult 形状。"""
+    from clipwright.services import agent_run
+
+    if task is None and pipeline_id:
+        try:
+            from clipwright.services.agent_kernel import AgentKernel
+
+            task = AgentKernel().get(pipeline_id)
+        except Exception as exc:  # noqa: BLE001 — 反查失败按缺少上下文处理
+            logger.warning("agent 工具反查任务失败 %s: %s", pipeline_id, exc)
+    entry = next(e for e in build_surface() if e.name == name)
+
+    if name == CANCEL_AGENT_RUN:
+        run_id = str(payload.get("run_id") or "")
+        ok, detail = agent_run.cancel(run_id)
+        out = {"status": "ok" if ok else "error",
+               "output": detail, "error": None if ok else detail.get("error")}
+        out["record"] = _audit(name, entry, pipeline_id, idem_key, payload,
+                               out["status"], 0.0, out.get("error"))
+        return out
+
+    if name in (GET_AGENT_RUN, LIST_AGENT_RUNS):
+        if name == LIST_AGENT_RUNS:
+            runs = agent_run.list_runs(str(getattr(task, "id", "") or pipeline_id))
+            out = {"status": "ok", "output": {"count": len(runs), "runs": runs[:50]}}
+        else:
+            found = agent_run.inspect(
+                run_id=str(payload.get("run_id") or ""),
+                task_id=str(getattr(task, "id", "") or pipeline_id),
+                stage=str(payload.get("stage") or ""),
+            )
+            out = ({"status": "ok", "output": found} if found is not None else
+                   {"status": "error", "error": "没有找到对应的 run",
+                    "failure": {"category": "not_found", "retryable": "needs_upstream",
+                                "blocking_point": "run_id/stage 未命中", "evidence": []}})
+        out["record"] = _audit(name, entry, pipeline_id, idem_key, payload,
+                               out["status"], 0.0, out.get("error"))
+        return out
+
+    if task is None:
+        return {"status": "refused",
+                "error": f"{name} 需要任务上下文（task 或有效 pipeline_id），当前都没有"}
+
+    from clipwright.schema.run import RunSpec
+
+    spec = RunSpec(
+        kind="stage" if name == DELEGATE_AGENT else "research",
+        stage=str(payload.get("stage") or ""),
+        role=str(payload.get("role") or ""),
+        brief=str(payload.get("brief") or ""),
+        inputs=dict(payload.get("inputs") or {}),
+        expect=dict(payload.get("expect") or {}),
+        tools=list(payload.get("tools") or []),
+        depth=1,
+        idem_key=idem_key[:120],
+        trace_id=pipeline_id,
+    )
+    result = await agent_run.run(spec, task)
+    status = "ok" if result.status in ("ok", "degraded", "needs") else "error"
+    out = {
+        "status": status,
+        "output": result.to_tool_payload(),
+        "error": result.error or None,
+        "cost_usd": result.cost_usd,
+        "cost_unknown": bool(result.cost_unknown),
+        "replayed": False,
+    }
+    out["record"] = _audit(name, entry, pipeline_id, idem_key, payload, status,
+                           float(result.duration_ms),
+                           result.error or None, cost_usd=result.cost_usd)
+    return out
+
+
 async def execute(
     name: str,
     args: Optional[dict[str, Any]] = None,
@@ -349,15 +607,27 @@ async def execute(
     pipeline_id: str = "",
     idem_key: str = "",
     dry_run: bool = False,
+    task: Any = None,
 ) -> dict[str, Any]:
     """执行一次 Kernel 工具调用（唯一入口）。
 
     返回统一形状：`{status, output?, error?, replayed?, dry_run?, record}`。
     `status` 取值：ok / error / refused / dry_run。
+
+    派发类工具（`delegate_agent` / `research_agent`）也走这里：与原子工具同一个入口、
+    同一份审计、同一个幂等键。它们需要 `Task` 上下文，`task` 未传时按 `pipeline_id`
+    向 Kernel 反查——这样"模型调工具"和"代码调工具"仍是同一条路。
     """
     from clipwright.tool.registry import ToolRegistry
 
     payload = dict(args or {})
+    if name in AGENT_TOOLS:
+        return await _execute_agent(name, payload, pipeline_id=pipeline_id,
+                                   idem_key=idem_key, task=task)
+    if name in DOMAIN_TOOLS:
+        return await _execute_domain(name, payload, pipeline_id=pipeline_id,
+                                     idem_key=idem_key, task=task)
+
     surface = {e.name: e for e in build_surface()}
     entry = surface.get(name)
     if entry is None:

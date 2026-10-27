@@ -107,6 +107,13 @@ def load(task: Any, *, failure: dict[str, Any] | None = None,
         parts.append(("artifacts", "## 已有产物\n" + arts, 3))
         sources.append({"name": "artifacts", "bytes": len(arts), "missing": False})
 
+    # ②b 记忆召回（PRD §2.5 / §5.5 M4）：语义记忆 + 本任务情景记忆，带来源
+    mem_txt, mem_refs = _memory_digest(task)
+    if mem_txt:
+        parts.append(("memory", "## 相关记忆（含来源）\n" + mem_txt, 3))
+        sources.append({"name": "memory", "bytes": len(mem_txt), "missing": False,
+                        "recall": mem_refs})
+
     # ③ 最近报告
     if root is not None:
         reports_txt, n_reports = _reports_digest(root, LIMITS["reports"])
@@ -146,6 +153,39 @@ def load(task: Any, *, failure: dict[str, Any] | None = None,
     text = "\n\n".join(out).strip() or "（无历史上下文）"
     return {"text": text, "sources": sources, "trimmed": trimmed,
             "bytes": len(text), "budget": budget}
+
+
+def _memory_digest(task: Any) -> tuple[str, list[dict[str, Any]]]:
+    """记忆召回摘要：返回 `(文本, 召回证据)`。
+
+    召回证据要进 `context_loaded`——"模型为什么这么决定"必须能追到具体条目，
+    不能只有一句"参考了历史经验"。
+    """
+    task_id = str(getattr(task, "id", "") or "")
+    try:
+        request = getattr(task, "request", task)
+        topic = str(getattr(request, "topic", "") or "")
+    except Exception:  # noqa: BLE001
+        topic = ""
+    try:
+        from clipwright.services import memory
+
+        hits = memory.recall(topic or "创作", task_id=task_id, k=4)
+    except Exception as exc:  # noqa: BLE001 — 记忆不可用不能阻断装载
+        logger.warning("记忆召回失败: %s", exc)
+        return "", []
+    if not hits:
+        return "", []
+    lines: list[str] = []
+    refs: list[dict[str, Any]] = []
+    for hit in hits:
+        prov = hit.get("provenance") or {}
+        src = prov.get("source") or hit.get("layer")
+        lines.append(f"- [{hit.get('layer')}/{hit.get('kind') or 'fact'}] "
+                     f"{str(hit.get('text'))[:200]}（来源：{src}）")
+        refs.append({"id": hit.get("id"), "layer": hit.get("layer"),
+                     "score": hit.get("score"), "source": src})
+    return "\n".join(lines), refs
 
 
 def _artifacts_preview(task: Any, root: Path | None) -> str:

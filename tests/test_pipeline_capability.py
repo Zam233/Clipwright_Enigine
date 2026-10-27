@@ -257,18 +257,24 @@ def test_result_returns_pipeline_output_when_available(monkeypatch):
 # ── Kernel 侧接线 ────────────────────────────────────────
 
 
-def test_kernel_executes_run_pipeline_capability(monkeypatch):
-    """默认执行器必须真的把 run_pipeline 转给能力，而不是返回"未接入"。"""
+def test_kernel_no_longer_routes_run_pipeline(monkeypatch):
+    """M3（modern-agent PRD §4.1）：`run_pipeline` 已从执行器与能力矩阵下线。
+
+    这条用例以前断言"默认执行器必须把 run_pipeline 转给能力"；现在断言相反的
+    事实——它必须被**拒绝**，并明确告诉主 agent 改用 delegate_agent。
+    """
     monkeypatch.setattr(settings, "agent_mode", "on", raising=False)
+    monkeypatch.setattr(settings, "pipeline_enabled", False, raising=False)
     calls: list[str] = []
 
-    async def fake_run(task, step, owner=""):  # noqa: ANN001
+    async def fake_run(task, step, owner=""):  # noqa: ANN001, ARG001
         calls.append(step.capability)
-        return {"status": "ok", "output": {"tracks": 1, "clips": 2, "duration_sec": 10.0}}
+        return {"status": "ok"}
 
     monkeypatch.setattr(pc, "run", fake_run)
     k = ak.AgentKernel(ak.KernelDeps(planner=FixedPlanner(), executor=ak.default_executor))
     task = k.create(TaskRequest(topic="x", plan_only=False))
     task = asyncio.run(k.run(task))
-    assert calls == ["run_pipeline"]
-    assert task.status == "done"
+    assert calls == [], "老管线能力不得被执行器再路由一次"
+    assert task.status != "done"
+

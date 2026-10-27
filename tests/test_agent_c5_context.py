@@ -199,13 +199,22 @@ def test_subagent_capability_spawns_readonly_worker(monkeypatch):
 
 
 def test_default_executor_routes_spawn_capability(monkeypatch, tmp_path):
-    calls: list[str] = []
+    """M2：`spawn_subagent` 现在按别名走 `research_agent`（统一 AgentRun），
 
-    async def fake_run(task, step):  # noqa: ANN001
-        calls.append(step.capability)
-        return {"status": "ok", "output": {"subagent_id": "sa_9"}}
+    不再直接调用 `subagent_capability.run`——两层适配已被一条路取代。
+    """
+    from clipwright.schema.run import AgentResult
+    from clipwright.services import agent_run
 
-    monkeypatch.setattr(sub, "run", fake_run)
+    seen: list[str] = []
+
+    async def fake_agent_run(spec, task):  # noqa: ANN001
+        seen.append(f"{spec.kind}:{spec.role}")
+        return AgentResult(run_id="run_c5", kind="research", role=spec.role,
+                           status="ok", summary="核查完成",
+                           outputs={"subagent_id": "sa_9"})
+
+    monkeypatch.setattr(agent_run, "run", fake_agent_run)
 
     class P(RecordingPlanner):
         async def plan(self, task):  # noqa: ANN001, ANN201
@@ -216,7 +225,7 @@ def test_default_executor_routes_spawn_capability(monkeypatch, tmp_path):
                                      checkpoint_dir=tmp_path / "tasks"))
     task = k.create(TaskRequest(topic="x", plan_only=False))
     task = asyncio.run(k.run(task))
-    assert calls == ["spawn_subagent"]
+    assert seen == ["research:核查员"]
     assert task.status == "done"
 
 
