@@ -406,3 +406,52 @@
   面板只展示均值、离散度、每次运行的状态/原因/回合/工具/成本/耗时，口径不在前端二次解释；
 - 验收：`EvalPanel.test.tsx` 3 条（列表+详情、波动告警、空态给生成命令）。
 
+---
+
+## 12. 前端缺口调研（GPT-5.6 SOL，2026-10-27）
+
+> 调研对象：modern agent 化（tool-use loop + 统一 AgentRun）之后的前端。
+> 方法：读源码 + 逐调用链核对，不跑真实浏览器。实施方对每条独立复核，结论一致处不重复论证。
+
+### 12.1 三个已报缺口的根部结论
+
+| # | 现象 | 断在哪一层（复核结论） |
+|---|---|---|
+| 1 | 「正在思考」点开没有流式内容 | **后端根本没发**：`agent_loop.run_loop` 只发 `narration/tool_call/tool_result/report`，没有 `thinking`；`agent_kernel._emit_thinking`（`agent_kernel.py:1053`）是死代码；`llm.py` 的 `on_reasoning` 只在**需求对话**的 gathering 流里用（`requirements_service.py:1427-1465`）。前端 `ThinkingDisclosure` 的拼接逻辑是对的，只是永远没数据。 |
+| 2 | 文案无法完整传入 agent | **两层截断**：① `context_loader.LIMITS["brief"]=400`、`plan=1400`（`context_loader.py:22-25,49-55`），主 agent 每次只看到 brief 前 400 字；② `context_loader` **不读 `request.extra["script_text"]`**，脚本虽进了 `TaskRequest.extra`（`requirements.py:536-555`）却不在主 agent 上下文里。阶段侧 `stage_inputs` 能从 `extra_params` 拿到 `creative_brief`/`script_text`，但主 agent 派活时手里没有全文，`delegate_agent` 也不会自动补（`stage_subagent.py:277-303` 显式 inputs 时 `board={}`）。 |
+| 3 | 上传配音提示 `deduplicated` | **不是幂等命中，是素材 SHA-256 去重被当成错误**：`asset_manager.import_file` 命中同内容时返回原资产并设 `error="deduplicated"`（`asset_manager.py:135-156`），`api/asset.py:119-124` 只要 `info.error` 就抛 **HTTP 400**，前端 `HomePage.pickAudio` 把 `detail` 原样显示（`HomePage.tsx:418-423`）。文件其实已经入库、`used_count` 也加了。幂等服务 `services/idempotency.py` 与配音上传无关。 |
+
+### 12.2 新发现（实施方已复核 N1/N3，其余待排期）
+
+| 编号 | 缺口 | 证据 | 严重度 |
+|---|---|---|---|
+| N1 | `task_end.reason` 映射仍按旧口径：非 `plan_completed` 一律 failed → **成功任务显示失败** | `taskStore.ts:139-146`；后端已改用 `tool_loop_completed`/`dry_run_preview`/`gate:*`（`agent_kernel.py:720-749`） | **P0（已修）** |
+| N2 | `PlanPanel` 仍把 Plan 当执行进度展示，而它已是「初始假设」（`hypothesis_only=True`） | `PlanPanel.tsx:63-107`、`taskStore.ts:49-97` vs `schema/task.py:81-95` | P1 |
+| N3 | 子 agent 详情仍查 tracker 快照，不消费 `agent_run_*` 结果 | `CopilotSubagentTab.tsx:20-37` → `api/supervisor.py:387-398` | P1 |
+| N4 | 审批只有日志，没有提交 `approval_id` 的入口 | `CopilotTaskRunTab.tsx:133-159` vs `agent_kernel.py:633-642`（paused + approval_id） | P1 |
+| N5 | `context_loaded.trimmed` 后端传成 bool，loader 实际返回 list → 用户看不到"裁掉了哪段" | `agent_kernel.py:600-607` vs `context_loader.py:136-155` | P1 |
+| N6 | 工具 call↔result 用**工具名**作 key 配对，同名并发会串 | `CopilotTaskRunTab.tsx:78-103` vs 后端每次调用都有 seq/causation | P1 |
+| N7 | 事件在 store（400 条）与 EventFeed（120 条）二次截断，thinking 无独立缓冲 | `taskStore.ts:17`、`EventFeed.tsx:20-32` | P2 |
+| N8 | `doc_write`/`report`/`context_loaded` 只有一句话，没有结构化详情与跳转 | `EventFeed.tsx:20-57` | P2 |
+| N9 | 子 agent 筹码把 `replayed` 当状态，未消费 `AgentResult.failure/needs` | `RunningSubagents.tsx:27-33,49-55` | P2 |
+
+### 12.3 本批已修（N1）
+
+`src/stores/taskStore.ts` 新增 `terminalStatusOf(reason)` 并替换旧三元判断：
+
+- `tool_loop_completed` / `plan_completed` / `task_completed` / `dry_run_preview` → `done`
+- `cancelled` / `cancel` → `cancelled`；`paused` → `paused`
+- 其余（`gate:*` / `tool_loop_error:*` / `tool_loop_unavailable:*` / 守门未过 / 空原因）→ `failed`
+
+验收：`src/stores/taskStore.test.ts` 追加 5 条（原 15 条保留，共 20 条）；前端全量 995 passed / 116 files。
+
+### 12.4 建议的修复顺序（未做）
+
+| 批次 | 修什么 | 验收 |
+|---|---|---|
+| F1 | thinking 真流式：`with_tools` 暴露 reasoning 回调 → `agent_loop` 逐块发 `thinking`（按 task/run 缓冲，不共用全局单槽） | 模拟 reasoning 分片，SSE 收到多条 delta，前端连续拼接 |
+| F2 | 文案 artifact 化：`docs/script.md` + `delegate_agent` 强制 `input_refs` + `context_loaded` 返回 artifact 长度/hash | 10k 字脚本 proceed，阶段拿到的 hash/长度与原文一致 |
+| F3 | 素材去重改 200 复用：`deduplicated: true` + `status: "reused"`，前端显示“已存在，已复用” | 同一音频二次上传 200，asset_id/path 相同，used_count+1 |
+| F4 | 子 agent 详情与审批：消费 `agent_run_*` 结果 + 真实 approval action | 回放 run 事件能看 result/failure/cost；审批能提交并恢复任务 |
+| F5 | 事件详情/并发配对/长任务回看（N5–N9） | 同名工具并发不串；doc/report 可展开；>400 条仍可查摘要 |
+
