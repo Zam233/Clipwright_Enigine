@@ -21,7 +21,8 @@ from clipwright.config import logger, settings
 
 DEFAULT_BUDGET_CHARS = 6000
 #: 各段默认上限（字符）
-LIMITS = {"brief": 400, "plan": 1400, "artifacts": 600, "reports": 1800, "failure": 900}
+LIMITS = {"brief": 400, "plan": 1400, "artifacts": 600, "reports": 1800,
+          "failure": 900, "script": 2000}
 
 
 def _budget() -> int:
@@ -101,6 +102,14 @@ def load(task: Any, *, failure: dict[str, Any] | None = None,
             0,
         ))
 
+    # ①b 文案 artifact（B8）：全文**不塞进上下文**，只给「路径 + 全长 + sha256 + 前 N 字」。
+    # 这样 10k 字脚本不会把其他段挤没，子 agent 要全文时按路径读并校验 hash。
+    script_txt, script_src = _script_digest(task, root)
+    if script_src is not None:
+        sources.append(script_src)
+    if script_txt:
+        parts.append(("script", "## 文案（artifact）\n" + script_txt, 1))
+
     # ② 产物 preview
     arts = _artifacts_preview(task, root)
     if arts:
@@ -153,6 +162,56 @@ def load(task: Any, *, failure: dict[str, Any] | None = None,
     text = "\n\n".join(out).strip() or "（无历史上下文）"
     return {"text": text, "sources": sources, "trimmed": trimmed,
             "bytes": len(text), "budget": budget}
+
+
+def _script_digest(task: Any, root: Path | None) -> tuple[str, dict[str, Any] | None]:
+    """文案 artifact 摘要（B8）：`(上下文片段, sources 条目)`。
+
+    优先用 `extra["script_path"]`（proceed 时落的 `docs/script.md`），否则回落到
+    `<workspace>/docs/script.md`。内容只取前 `LIMITS["script"]` 字，并如实标出
+    `truncated / chars / sha256`——调用方据此知道"是不是全文"。
+    """
+    path: Path | None = None
+    try:
+        request = getattr(task, "request", task)
+        extra = dict(getattr(request, "extra", {}) or {})
+        raw = str(extra.get("script_path") or "")
+        if raw:
+            path = Path(raw)
+    except Exception:  # noqa: BLE001
+        path = None
+    if path is None and root is not None:
+        candidate = root / "docs" / "script.md"
+        if candidate.is_file():
+            path = candidate
+    if path is None or not path.is_file():
+        return "", None
+
+    try:
+        full = path.read_text(encoding="utf-8")
+    except OSError:
+        return "", {"name": "script", "bytes": 0, "missing": True, "path": str(path)}
+
+    import hashlib
+
+    limit = int(LIMITS.get("script") or 2000)
+    body = full[:limit]
+    truncated = len(full) > limit
+    src = {
+        "name": "script",
+        "bytes": len(body),
+        "chars": len(full),
+        "sha256": hashlib.sha256(full.encode("utf-8")).hexdigest(),
+        "path": str(path),
+        "truncated": truncated,
+        "missing": False,
+    }
+    head = (
+        f"- 文件：{path}\n"
+        f"- 全文长度：{len(full)} 字（sha256={src['sha256'][:16]}…）\n"
+        f"- 下面是前 {len(body)} 字{'（已截断，需要全文请按 input_refs 读取该文件）' if truncated else ''}\n\n"
+    )
+    return head + body, src
 
 
 def _memory_digest(task: Any) -> tuple[str, list[dict[str, Any]]]:

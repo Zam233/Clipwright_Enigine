@@ -187,12 +187,31 @@ def test_finish_gate_requires_timeline_for_creation_flow() -> None:
 
 
 def test_thinking_event_emitted_when_reasoning_present(monkeypatch) -> None:
-    from clipwright.services import agent_kernel, llm
+    """思考来源改为「按 task_id 隔离的缓冲」（B5），不再读全局单槽 `_LAST_REASONING`。
+
+    全局单槽在并发任务间会串台（A 的思考被 B 取走），所以这里断言的是新通道：
+    `agent_loop` 收下的 reasoning → `_emit_thinking` 从**本任务**缓冲取出发事件。
+    """
+    from clipwright.services import agent_kernel, agent_loop
     from clipwright.services.task_events import events
 
-    llm._remember_reasoning("我先看看素材库里有什么")  # noqa: SLF001
     task = _task("t_think")
+    agent_loop._append_thinking(task.id, "我先看看素材库里有什么")  # noqa: SLF001
     step = PlanStep(id="p1", capability="delegate", args={"stage": "structure"})
     agent_kernel._emit_thinking(task, step)  # noqa: SLF001
     items = [e for e in events(task.id) if e.type == "thinking"]
     assert items and "素材库" in items[-1].detail["delta"]
+
+
+def test_emit_thinking_does_not_steal_other_task_buffer() -> None:
+    """B5 隔离：另一个任务的思考不能被本任务取走。"""
+    from clipwright.services import agent_kernel, agent_loop
+    from clipwright.services.task_events import events
+
+    agent_loop._append_thinking("t_someone_else", "别人的思考")  # noqa: SLF001
+    task = _task("t_mine")
+    step = PlanStep(id="p1", capability="delegate", args={"stage": "structure"})
+    agent_kernel._emit_thinking(task, step)  # noqa: SLF001
+    assert [e for e in events(task.id) if e.type == "thinking"] == []
+    # 别人的缓冲仍可取回（没被偷走）
+    assert agent_loop.take_thinking("t_someone_else") == "别人的思考"

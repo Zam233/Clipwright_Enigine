@@ -18,8 +18,10 @@ C0 量出的事实：57 项能力里只有 12 项（21%）当前能被 LLM 看�
 
 from __future__ import annotations
 
+import hashlib
 import time
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from clipwright.config import logger
@@ -54,6 +56,14 @@ _AGENT_TOOL_SPECS: dict[str, dict[str, Any]] = {
                 "brief": {"type": "string", "description": "这次要它做什么（一句话）"},
                 "inputs": {"type": "object",
                            "description": "显式输入；artifact 引用形如 {\"artifact\":\"art_xx\",\"path\":\"...\"}"},
+                "input_refs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "artifact 路径清单（如 docs/script.md）。运行时校验存在性并计算 sha256，"
+                        "把全文并入该阶段输入——长文案不必塞进提示词"
+                    ),
+                },
                 "expect": {"type": "object",
                            "description": "期望产出字段 → schema 名（用于结果校验）"},
             },
@@ -591,12 +601,32 @@ async def _execute_agent(name: str, payload: dict[str, Any], *,
 
     from clipwright.schema.run import RunSpec
 
+    # B8：显式 input_refs（artifact 路径）→ 校验存在性 + 计算 sha256 + 并入 inputs。
+    # 长文案（10k 字）不该靠提示词传递：模型给路径，运行时读文件、验 hash、注入全文。
+    refs, ref_error = _resolve_input_refs(payload.get("input_refs"), task)
+    if ref_error:
+        out = {"status": "refused", "error": ref_error,
+               "failure": {"category": "needs_upstream", "retryable": "retry_with_upstream",
+                           "blocking_point": ref_error[:200], "evidence": []}}
+        out["record"] = _audit(name, entry, pipeline_id, idem_key, payload,
+                               "refused", 0.0, ref_error)
+        return out
+
+    merged_inputs = dict(payload.get("inputs") or {})
+    if refs:
+        merged_inputs.setdefault("input_refs", refs)
+        script_ref = next((r for r in refs if r["name"] in ("script.md", "script")), None)
+        if script_ref is not None:
+            # 文案全文（原样，不截断）——阶段侧直接拿到与原文一致的内容
+            merged_inputs.setdefault("script_text", script_ref["text"])
+            merged_inputs.setdefault("script_sha256", script_ref["sha256"])
+
     spec = RunSpec(
         kind="stage" if name == DELEGATE_AGENT else "research",
         stage=str(payload.get("stage") or ""),
         role=str(payload.get("role") or ""),
         brief=str(payload.get("brief") or ""),
-        inputs=dict(payload.get("inputs") or {}),
+        inputs=merged_inputs,
         expect=dict(payload.get("expect") or {}),
         tools=list(payload.get("tools") or []),
         depth=1,
@@ -751,6 +781,66 @@ async def execute(
             _IDEM_CACHE.pop(next(iter(_IDEM_CACHE)))
         _IDEM_CACHE[key] = dict(payload_out)
     return payload_out
+
+
+def _resolve_input_refs(raw: Any, task: Any) -> tuple[list[dict[str, Any]], str]:
+    """校验 `input_refs`（artifact 路径清单）→ `(refs, error)`。
+
+    B8（2026-10-28 PRD）：长文案不能靠提示词传递。规则：
+    - 空/未给 → `([], "")`（老调用不受影响）；
+    - 每项必须是字符串路径，相对路径按任务工作区根解析；
+    - 文件必须存在且在工作区内（防读任意系统文件）；
+    - 读全文并算 sha256，返回 `{name, path, chars, sha256, text}`；
+    任一项不合格就整体拒绝，并把原因写清楚（模型据此补上游，而不是硬着头皮跑）。
+    """
+    if raw is None or raw == [] or raw == "":
+        return [], ""
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return [], "input_refs 必须是字符串数组"
+
+    root: Path | None = None
+    try:
+        request = getattr(task, "request", task)
+        extra = dict(getattr(request, "extra", {}) or {})
+        ws_root = str(extra.get("workspace_root") or "")
+        if ws_root and Path(ws_root).is_dir():
+            root = Path(ws_root).resolve()
+    except Exception:  # noqa: BLE001
+        root = None
+
+    refs: list[dict[str, Any]] = []
+    for item in raw[:8]:
+        if not isinstance(item, str) or not item.strip():
+            return [], "input_refs 里有非法项（必须是路径字符串）"
+        candidate = Path(item.strip())
+        if not candidate.is_absolute():
+            if root is None:
+                return [], (f"input_refs 里的相对路径「{item}」需要工作区才能解析，"
+                            "但当前任务没有 workspace_root")
+            candidate = root / candidate
+        try:
+            resolved = candidate.resolve()
+        except OSError as exc:
+            return [], f"input_refs 路径无法解析：{item}（{exc}）"
+        if not resolved.is_file():
+            return [], f"input_refs 指向的文件不存在：{item}"
+        if root is not None and not resolved.is_relative_to(root):
+            return [], f"input_refs 只允许工作区内的 artifact：{item}"
+        try:
+            text = resolved.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            return [], f"input_refs 读取失败：{item}（{exc}）"
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        refs.append({
+            "name": resolved.name,
+            "path": str(resolved),
+            "chars": len(text),
+            "sha256": digest,
+            "text": text,
+        })
+    return refs, ""
 
 
 def _audit(name: str, entry: SurfaceEntry, pipeline_id: str, idem_key: str,

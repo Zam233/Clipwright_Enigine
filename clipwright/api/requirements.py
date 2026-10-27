@@ -407,6 +407,21 @@ async def _proceed_as_task(*, session: dict, req: "ProceedRequest", request: Req
     except Exception as _doc_err:  # noqa: BLE001 — 文档写失败不阻断开工，但要在日志里可见
         logger.warning("需求文档落盘失败（继续）: %s", _doc_err)
 
+    # B8（2026-10-28 PRD）：文案 artifact 化。全文落 docs/script.md，
+    # 上下文里只放「路径 + 全长 + sha256 + 前 N 字」，子 agent 需要全文时按
+    # input_refs 取原文件并校验 hash（旧实现只把文案塞进 extra，超预算就被裁掉）。
+    _script_meta: dict[str, str] = {}
+    _script_text = str(
+        user_inputs.get("script_text")
+        or (pipeline_req.extra_params or {}).get("script_text")
+        or ""
+    )
+    if _script_text.strip():
+        try:
+            _script_meta = ws.write_script(_script_text)
+        except Exception as _script_err:  # noqa: BLE001 — 落盘失败不阻断开工
+            logger.warning("文案落盘失败（继续，仅有内联文案）: %s", _script_err)
+
     # dry-run 预览（PRD closeout B2）：用户勾了"只预览"就必须只预览。
     # 之前它只落在 `pipeline_req.dry_run` 这个随老管线一起失效的字段上，
     # Task 路径完全看不到 → 勾了预览照样真跑真扣钱。
@@ -423,6 +438,10 @@ async def _proceed_as_task(*, session: dict, req: "ProceedRequest", request: Req
         "production_plan": plan_data,
         "creative_brief": session.get("creative_brief"),
         "docs": _docs,
+        # B8：文案 artifact（全文路径 / 字数 / sha256），供 context_loader 与 input_refs 使用
+        **({"script_path": _script_meta["script"],
+            "script_chars": int(_script_meta["script_chars"]),
+            "script_sha256": _script_meta["script_sha256"]} if _script_meta else {}),
         # Task 执行侧唯一读的口径（见 agent_kernel._run_tool_loop）
         "dry_run": _dry_run,
     })

@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -505,6 +506,29 @@ class Workspace:
             add_event(self.project_id, "info", "文档已更新：docs/",
                       {"files": list(out.keys())})
         return out
+
+    def write_script(self, script_text: str) -> dict[str, str]:
+        """把完整文案落成 `docs/script.md`（B8：文案 artifact 化）。
+
+        为什么必须落盘：`TaskRequest.extra["script_text"]` 只有**截断后**的摘要能进
+        上下文装载（预算有限），10k 字文案在提示词里活不下来。落成 artifact 后，
+        上下文里给「路径 + 全长 + sha256 + 前 N 字」，子 agent 需要全文时按
+        `input_refs` 取原文件，读完校验 hash 就知道有没有被截断或改过。
+
+        返回 `{script: 绝对路径, script_chars: ..., script_sha256: ...}`（字符串值，
+        便于直接并进 `extra`）。
+        """
+        dirs = self.dirs()
+        dirs.docs.mkdir(parents=True, exist_ok=True)
+        path = dirs.docs / "script.md"
+        text = str(script_text or "")
+        path.write_text(text, encoding="utf-8")
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        return {
+            "script": str(path),
+            "script_chars": str(len(text)),
+            "script_sha256": digest,
+        }
 
     def write_project_files(self, project: dict[str, Any] | None = None,
                             timeline: dict[str, Any] | None = None) -> dict[str, str]:
