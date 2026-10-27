@@ -421,8 +421,63 @@ Pydantic/存储层允许字段缺省；数值约束为 temperature `0..2`、top_
 - 证据：`tests/test_agent_loop.py` +5、`tests/clipwright/test_llm_generation_params.py` +6、`AgentPanel.test.tsx` +1。
 - **偏离（必须记）**：`with_tools` 每轮走的是**非流式** `generate`（isobase 工具轮不支持 stream+tools 组合），因此 thinking 是「每轮一块」而非 token 级 delta；token 级思考仍由需求对话的 `structured_output_stream` 承担。前端两种形态都按同一 `thinking` 事件渲染。
 
-### 尚未完成（下一轮继续）
+### B6 `/v1/models` 探测契约收口 ✅
 
-B6（`/v1/models` 前端四态）、B8（文案 artifact 化 + `input_refs`）、B10（Plan 降级 UI）、
-B11（子 agent 与审批 run 化）、B12（事件呈现收口）、B7（跨仓库全量回归与文档同步）。
+- `providers/model_listing.py`：新增 `ModelListingResult{status, models, note, error_code}`；
+  `status` = `ok | empty | unsupported | error`，`error_code` = `provider_unsupported | http_error |
+  invalid_response | credential_error | timeout`；解析兼容 `data[].id` 与 `models[].name`；
+  `list_models_for_source` 保留为列表兼容壳。
+- `api/providers.py::fetch_models`：返回 `{status, models, source_id, provider, note, error_code?}`，
+  **只有 `ok` 才覆盖已存模型**；失败仍 HTTP 200、source 不存在仍 404。
+- 前端：`fetchModels` 返回状态机；`ProvidersPage` 加 `fetch-state` 四态显示（loading/ok/empty/error），
+  失败/不支持时保留已有模型与手动新增入口，不再提示「已获取」。
+- 证据：新增 `tests/clipwright/test_model_listing_contract.py`（14 项）；`ProvidersPage.test.tsx` +3。
+
+### B8 文案 artifact 化 + `input_refs` ✅（已报缺口 2）
+
+- `Workspace.write_script()` → `docs/script.md`（全文不截断）+ `{script, script_chars, script_sha256}`；
+  `proceed` 把三者并进 `TaskRequest.extra`（`script_path` / `script_chars` / `script_sha256`）。
+- `context_loader`：新增 `script` 段（`LIMITS["script"]=2000`）——只给「路径 + 全长 + sha256 前 16 位 + 前 N 字」，
+  超长标 `truncated`；`sources` 条目带 `chars/sha256/path/truncated`；预算紧张时 `trimmed` 保留 `script` 键名。
+- `delegate_agent` schema 新增 `input_refs: string[]`；`tool/surface._resolve_input_refs` 校验
+  存在性 + 工作区边界 + 读取，计算 sha256，并把**全文**注入阶段 `inputs.script_text`（+`script_sha256`）。
+  非法（缺失/越界/相对路径无工作区）一律 `refused` + `needs_upstream`，不硬跑。
+- 证据：新增 `tests/clipwright/test_script_artifact.py`（12 项；含「10k 字 → 阶段 script_text 与原文逐字一致」）。
+
+### B10 Plan 降级为「初始假设」的 UI 收口 ✅（N2）
+
+- `Plan.hypothesis_only?`（后端默认 true）；`PlanPanel` 默认按假设展示：标题「初始假设」、
+  徽章「仅供参考，不是执行进度」、说明卡、pending 步骤标「设想」、成本文案「假设成本」、
+  主按钮「开始（按现场推进）」；`hypothesis_only === false` 的老数据保留原「计划 / 按计划执行」语义。
+- 证据：`task-ui.test.tsx` +3（假设态 / 老计划 / 按钮），既有成本与失败用例同步新文案。
+
+### B11 子 agent 与审批 run 化 UI ✅（N3 / N4 / N9）
+
+- N4：`ApprovalRows` 每条待授权直接给「授权 / 拒绝」→ `supervisorApi.approveExec/rejectExec`，
+  高风险二次确认（critical 传 `second_confirm`），结果回显「已授权 / 已拒绝 / 提交失败：…」。
+- N3：`CopilotSubagentTab` 消费 `agent_run_start/update/end`（`foldRunDetail`），展示状态/成本/耗时/
+  报告路径/失败原因/还缺什么；只有完全没有事件时才回落 supervisor 快照并明说来源。
+- N9：`RunningSubagents` 不再把 `replayed` 当状态（改 `running·回放` 后缀），透出 `failure`（红色）与
+  `needs`（`needs（缺输入）`），chip `title` 带原因。
+- 证据：新增 `CopilotRunDetails.test.tsx`（10 项）。
+
+### B12 事件呈现收口 ✅（N5 / N6 / N7 / N8）
+
+- N5（后端）：`context_loaded.detail.trimmed` 从 bool 改为**被裁段名 list**（+`budget`/`phase=run`）。
+- N6：`pairToolCalls` 优先按 `causation_id`（后端对 tool_result 写 `seq:<调用序号>`）配对，同名并发不串台；
+  老数据回落按名 FIFO 且行上标「按名配对」。
+- N7：`EventFeed` 渲染 store 全部事件（旧实现再切 120 条），触及 `MAX_TASK_EVENTS` 时明说已丢弃。
+- N8：`doc_write/report/context_loaded/degradation` 等行内可展开结构化 detail，产物路径可复制。
+- 顺带：`toTaskEvent` / `hydrateEvents` 保留 `causation_id/run_id/span`（否则配对与 run 视图全瞎）。
+- 证据：新增 `EventPresentation.test.tsx`（10 项）、`test_agent_kernel.py` +1（trimmed 必须为 list）。
+
+### B7 跨仓库回归与文档同步 ✅
+
+- 后端：`python -m pytest tests -q` → **4496 passed / 4 skipped / 1 xfailed**；`ruff check clipwright
+  --select E9,F63,F7,F82,F823` → 0。
+- 前端：`npx vitest run` → **1032 passed / 119 files**；`npx tsc --noEmit` 0；`npm run lint` 0 error
+  （169 warnings，与基线同量级）；`npm run build` ✅。
+- 踩坑记录：本地用 `PYTHONIOENCODING=utf-8` 跑全量会让 `test_eval_loop.py::test_replay_missing_file_is_loud`
+  假红（子进程 stdout 用 cp936 解码），CI 无此变量 —— 全量回归**不要**设该环境变量。
+
 
