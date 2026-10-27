@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from clipwright.category.registry import CategoryRegistry
-from clipwright.services.pipeline_v2 import resolve_category_plugin
+from clipwright.category.registry import resolve_category_plugin
 
 
 class _Cat:

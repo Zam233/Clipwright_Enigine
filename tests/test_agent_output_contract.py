@@ -110,7 +110,7 @@ def test_llm_or_fallback_records_timeout_degradation():
 
 def test_finalize_timeline_records_transform_degradation():
     """类型插件后处理失败保留原时间线，但必须登记降级。"""
-    from clipwright.services.pipeline_v2 import PipelineOrchestratorV2
+    from clipwright.services import timeline_finalize
 
     class _FakePlugin:
         plugin_id = "fake_type"
@@ -122,12 +122,16 @@ def test_finalize_timeline_records_transform_degradation():
         # 关掉署名轨后处理，本用例只验 transform 失败路径
         extra_params: dict = {"credit_outro": False}
 
-    orchard = object.__new__(PipelineOrchestratorV2)
     ctx = _Ctx()
     tl = {"tracks": []}
-    out = PipelineOrchestratorV2._finalize_timeline(orchard, tl, _FakePlugin(), ctx, "pl_test")
+    recorded: list[tuple] = []
+
+    out = timeline_finalize.finalize(
+        tl, plugin=_FakePlugin(), extra_params=ctx.extra_params, pid="pl_test",
+        on_degradation=lambda kind, detail, scope, impact: recorded.append(
+            (kind, detail, scope, impact)),
+    )
 
     assert out == tl, "后处理失败时必须保留原时间线"
-    recorded = ctx.extra_params.get("_finalize_degradations") or []
     assert recorded, "后处理失败必须登记降级（否则占位/未生效被当成正常交付）"
-    assert recorded[0]["kind"] == "plugin_transform_failed"
+    assert recorded[0][0] == "plugin_transform_failed"

@@ -1,6 +1,6 @@
-"""阶段结果合并（PRD §3.5）：语义与 `pipeline_v2._merge_agent_result` 一致。
+"""阶段结果合并（PRD §3.5）：语义与老编排器的 `_merge_agent_result` 一致。
 
-原实现（`pipeline_v2.py:1312-1333`）：
+原实现（老编排器 `_merge_agent_result`）：
 
 - 非控制键并入共享结果；
 - 控制键 `{timeline, agent_name, decision, error, status}` 排除（否则下游
@@ -104,8 +104,25 @@ def merge(stage: str, payload: dict[str, Any], *, task_id: str,
             bb.put(task_id, "timeline", value, by=stage)
             written.append("timeline")
             if stage == "audio":
-                # 音频是最后一道时间线生产者 → 同时定稿
-                bb.put(task_id, "final_timeline", value, by=stage)
+                # 音频是最后一道时间线生产者 → 同时定稿。
+                # 定稿前必须过**确定性收尾**（类型 transform / 规范校验 / 片尾授权），
+                # 这是 PRD §4.4 的保留不变量：编排可以交给模型，领域规范不行。
+                from clipwright.services import timeline_finalize
+
+                plugin = None
+                try:
+                    from clipwright.category.registry import CategoryRegistry
+
+                    plugin = CategoryRegistry.get(str(payload.get("category_plugin_id") or ""))
+                except Exception:  # noqa: BLE001 — 拿不到插件就只做片尾
+                    plugin = None
+                finalized = timeline_finalize.finalize(
+                    value if isinstance(value, dict) else None,
+                    plugin=plugin,
+                    extra_params=dict(payload.get("extra_params") or {}),
+                    pid=task_id,
+                )
+                bb.put(task_id, "final_timeline", finalized, by=stage)
                 written.append("final_timeline")
         except bb.BlackboardError as exc:
             logger.warning("时间线合并被拒绝 %s（by=%s）: %s", task_id, stage, exc)

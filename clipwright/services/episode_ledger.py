@@ -2,7 +2,7 @@
 
 设计要点（与计划 §4.2 对齐）：
 
-1. **单点埋设**：只有 `pipeline_v2._run_agent` 一处调用 `arecord`，6 个 Agent
+1. **单点埋设**：只有阶段执行入口一处调用 `arecord`，6 个 Agent
    内部零改动；降级来自 B0 的 `degradations` 字段，失败来自 F9 的 `failure`。
 2. **进程内 + Mongo**：内存保证同步读取（API/诊断书立刻可用），Mongo 异步落库
    供跨进程诊断；未连库时静默降级为纯内存，不影响管线。

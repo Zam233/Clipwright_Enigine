@@ -261,6 +261,16 @@ def _after_run(result: AgentResult, spec: RunSpec, task: Any) -> None:
     except Exception as exc:  # noqa: BLE001 — 记账失败不影响返回
         logger.warning("metrics 记账失败 %s: %s", result.run_id, exc)
     try:
+        from clipwright.services import circuit_breaker
+
+        key = result.stage or result.role or result.kind
+        if result.status in ("ok", "degraded"):
+            circuit_breaker.record_success(key)
+        elif result.status in ("failed", "refused"):
+            circuit_breaker.record_failure(key)
+    except Exception as exc:  # noqa: BLE001 — 熔断记账失败不影响返回
+        logger.warning("熔断记账失败 %s: %s", result.run_id, exc)
+    try:
         from clipwright.services import memory
 
         memory.remember(

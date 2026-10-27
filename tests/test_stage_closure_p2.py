@@ -41,27 +41,18 @@ def test_replan_plan_prefixes_redo_stage() -> None:
     assert stage_closure.replan_plan("不存在") == []
 
 
-def test_validate_plan_reports_missing_upstream() -> None:
-    assert stage_closure.validate_plan(["structure", "material", "edit"]) == []
-    assert stage_closure.validate_plan(["edit"]) == ["structure", "material"]
-    assert stage_closure.validate_plan(["animation", "audio"]) == ["edit"]
+def test_stage_deps_is_the_single_source_of_truth() -> None:
+    """M3：老编排器的 DAG 已删除，`stage_closure.STAGE_DEPS` 是依赖关系的唯一真值。
 
-
-def test_core_deps_match_pipeline_dag() -> None:
-    """核心依赖必须与老管线 DAG 一致（防"两边连带重做范围不同"的漂移）。
-
-    `stage_closure.STAGE_DEPS` 是主 Agent 侧的唯一真值；`pipeline_v2.AgentDAG._DEPS`
-    是插件感知版（P4 物理删除前仍在）。两者对核心 6 阶段必须逐字相等。
-    P4 之后本用例自动跳过（管线文件不存在）。
+    这里锁住它的**语义**（不是形状）：每个阶段只依赖上游，`structure` 无依赖。
     """
-    pv2 = pytest.importorskip("clipwright.services.pipeline_v2")
-    from clipwright.services.pipeline_v2 import AgentDAG
+    from clipwright.services.stage_closure import EXECUTION_ORDER, STAGE_DEPS
 
-    dag = {k: tuple(v) for k, v in AgentDAG._DEPS.items()}
-    assert stage_closure.STAGE_DEPS == dag
-    assert pv2 is not None
-
-
+    assert STAGE_DEPS["structure"] == ()
+    for stage in EXECUTION_ORDER[1:]:
+        assert STAGE_DEPS[stage], f"{stage} 必须有上游依赖"
+        for dep in STAGE_DEPS[stage]:
+            assert EXECUTION_ORDER.index(dep) < EXECUTION_ORDER.index(stage)
 def test_capability_replan_closure_returns_stages(monkeypatch) -> None:
     from clipwright.schema.task import PlanStep
 

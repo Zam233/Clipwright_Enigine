@@ -1095,3 +1095,73 @@ M3 删除的是"计划表执行"，所以一批测试的**被测对象**不存�
   的用例、1 份 `test_pipeline_capability.py`，新增 `test_m3_removals.py` 6 条 +
   `tests/kernel_stubs.py` 共享桩）
 - 前端 **983 passed / 115 files**，`tsc --noEmit` 干净（新增 3 个 `agent_run_*` 事件标签）
+
+---
+
+## 13. pipeline_v2 拆除 + 阶段 token 归因（2026-10-27 第三批）
+
+### 13.1 `services/pipeline_v2.py` 已物理删除（2197 行 → 0）
+
+删除前先按 §4.2 的迁移顺序把三块**非执行**职责搬到中立模块，然后才删文件：
+
+| 迁出内容 | 新家 | 谁在用 |
+|---|---|---|
+| 取消标记、运行记录（内存有界 + Mongo 只读合并）、用量汇总、错误归类、shared_data 截断 | `services/pipeline_history.py` | `GET /api/pipeline/runs`、`/diagnostics`、`/cancel`、golden |
+| 熔断表（原 `PipelineOrchestratorV2._circuit_breakers` 类属性） | `services/circuit_breaker.py` | `GET /api/pipeline/breaker-status`；`agent_run` 每次 run 记一笔 |
+| `resolve_category_plugin` | `clipwright/category/registry.py` | 类型插件解析（按 id 查表，本就不该 import 编排器） |
+| 最终时间线收尾：类型 transform / `validate_clip` 规范校验 / 片尾授权名单 | `services/timeline_finalize.py` | `stage_merge` 在 `final_timeline` 定稿时调用 |
+
+**为什么熔断表要接新路径**：抽出来只是第一步，不接新路径它就成了一张永远空的表
+（`/breaker-status` 恒 `ok`）。现在 `agent_run._after_run` 按 `stage or role` 记成功/失败，
+端点读的是真实数据；键支持 `stage::model`，所以"某个模型挂了"不会升级成"这个阶段不许跑"。
+
+**为什么片尾/规范校验必须留**：它们是领域不变量（§4.4），不是编排顺序。模型可以选择
+调什么工具，不能选择跳过类型规范校验或伪造片尾授权。
+
+### 13.2 生产入口的收敛
+
+| 位置 | 改动 |
+|---|---|
+| `POST /api/pipeline/run-async` | 只剩两条路：`agent_mode=on` → 转 Task；否则 **410**。268 行后台编排死代码删除 |
+| `POST /api/pipeline/retry/{pid}/{agent}` | 恒 **410**，并给出可执行指引（`delegate_agent` 重派 + `replan_closure` 算下游） |
+| `POST /api/requirements/proceed` | **恒走 Task**：不再有"agent_mode=off 就走老管线"的分支，也不再给"当前没有可用创作通道"的 409；写入死代码与 `_ensure_legacy_workspace` 删除 |
+| `plugins` PRE_PIPELINE hook | 宿主从"后台编排循环"改挂 `_start_as_task`（插件契约不变） |
+
+### 13.3 阶段 token 归因（P1-1 收口）
+
+- `BaseAgent.run_tool_loop` 记录 `last_tool_calls`（成功/超时/失败三条分支都记）；
+- `stage_subagent.run_stage` 用**进程级 token 差值**算本次阶段真实消耗，写进
+  `StageResult.tokens`，并把 `last_tool_calls` 写进 `StageResult.tool_calls`；
+- `AgentResult` 通过 adapter 原样带出 → 评估、前端成本条、审计都拿到真实数字。
+
+口径说明：token 与 `cost_usd` 同一来源（`llm_usage_snapshot()` 差值），
+所以两者永远同源；拿不到就是 0/未知，不猜。
+
+### 13.4 测试迁移（本批删了 14 份 / 3 段，全部给出理由）
+
+| 处理 | 文件 | 理由 |
+|---|---|---|
+| 删整份 | `test_pipeline_e2e` / `test_pipeline_checkpoint` / `test_pipeline_persona_flow` / `test_pipeline_v2_quality_once` / `test_pipeline_v2_audio_config` / `test_pipeline_v2_persist_shape` / `test_pipeline_v2_retry_from_agent` / `test_pipeline_agent_hooks` / `test_dry_run` / `test_vision_llm_material` / `test_supervisor_auto_spawn` / `test_supervisor_off_equivalence` / `test_supervisor_strategy` | 被测对象（编排器/DAG/自愈循环/派工宿主）已物理删除 |
+| 迁 import | `test_pipeline_cancel*` / `test_pipeline_runs` / `test_pipeline_usage_accounting` / `test_pipeline_v2_registry_bound` / `test_breaker_status` / `test_model_router` / `test_pipeline_category_default` / `test_agent_output_contract` | 断言仍然有效，只是被测模块换了住处 |
+| 删片段 | `test_pipeline_cancel`（保留标记 + 任务取消端到端）/ `test_budget_guard`（2 条派工闸）/ `test_stage_closure_p2`（DAG 对照）/ `test_workspace`（2 条 legacy workspace）/ sa34 用例集（SA-3 段） | 断言的是已删路径 |
+| 新增 | `tests/test_attribution_and_finalize.py`（9 条：token 归因 / 熔断表 / 片尾与规范校验） | 把搬出去的能力重新钉住 |
+
+### 13.5 本批基线与机械检查
+
+- 后端 **4388 passed / 4 skipped / 1 xfailed**（本批起点 4492：删 99 条只测已删子系统的用例、
+  新增 9 条归因/收尾用例）
+- 前端未变（983 passed）
+- `grep -R "pipeline_v2" clipwright/` → **0 处 import**（仅剩 4 处历史说明性 docstring）
+- `grep -R "PipelineOrchestratorV2\|AgentDAG" clipwright/` → **0 处代码引用**
+- `clipwright/services/pipeline_v2.py` → **不存在**
+
+### 13.6 仍然存在的两处"薄适配层"（不遮掩）
+
+`services/stage_capability.py` / `services/subagent_capability.py` 仍各有一张能力名表与
+几处 `if`。它们现在只服务旧调用方与旧检查点，**不是**主执行路径
+（Kernel 的 `default_executor` 已删，工具面里是 `delegate_agent` / `research_agent` /
+`get_agent_run` / `list_agent_runs` / `cancel_agent_run`）。
+
+再往下拆的前提是"先把调用方清零"：`api/requirements.py` 已改走 Task，
+剩下的调用方是回归用例本身。这批不再动它，避免为了一条 grep 把 40+ 条能力用例改成空转。
+

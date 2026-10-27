@@ -1,7 +1,7 @@
 """调度中枢：策略选择（PRD F3 / 开发计划 B3）。
 
 职责刻意收窄：**只决定「用哪一招、派给谁」**，不执行、不碰 timeline。
-执行走 `pipeline_v2.execute_order`（复用既有 `_dispatch`），审计走账本。
+执行走主 Agent 的阶段派发（`delegate_agent` → `services.agent_run`），审计走账本。
 
 策略库固定 6 种（PRD F3，不开放自由生成）：
 - S1_same            同参重做（首次失败、疑似偶发）

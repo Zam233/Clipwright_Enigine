@@ -1,4 +1,4 @@
-"""阶段输入装配（PRD §3.4）：把 `pipeline_v2._dispatch` 里的隐性知识搬成显式函数。
+"""阶段输入装配（PRD §3.4）：把老编排器 `_dispatch` 里的隐性知识搬成显式函数。
 
 管线时代这段逻辑藏在 `PipelineOrchestratorV2._dispatch`（约 70 行 if/elif）里，
 只有走管线才能用。主 Agent 派阶段时必须能复用同一套装配规则，否则两侧会漂移
@@ -96,7 +96,7 @@ def suggestions_for(missing: Iterable[str]) -> list[str]:
 def assemble(stage: str, *, task: Any, board: dict[str, Any],
              context: AgentContext | None = None,
              override: dict[str, Any] | None = None) -> Any:
-    """按阶段构造 `XInput`；构造规则与 `pipeline_v2._dispatch` 逐条对应。"""
+    """按阶段构造 `XInput`；构造规则与老编排器 `_dispatch` 逐条对应。"""
     ctx = context or build_context(task)
     data: dict[str, Any] = {**(board or {}), **(override or {})}
     extra = ctx.extra_params

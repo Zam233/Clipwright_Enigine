@@ -1,7 +1,7 @@
 """任务黑板：阶段之间的数据交换台（PRD docs/master-agent-prd-2026-10-26.md §3.2）。
 
 **为什么需要它**：管线时代靠 `PipelineState.shared_data` 隐式串数据——输入装配写在
-`pipeline_v2._dispatch` 里、合并语义写在 `_merge_agent_result` 里，主 Agent 完全看不到。
+老编排器的 `_dispatch` 里、合并语义写在 `_merge_agent_result` 里，主 Agent 完全看不到。
 主 Agent 要派阶段子代理，就必须有一份"显式的、带归属的、可校验的"共享数据。
 
 三条纪律：

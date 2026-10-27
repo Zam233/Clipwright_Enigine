@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field
 
 from clipwright.schema.pipeline import PipelineRequest, PipelineState
 from clipwright.services.predictor import ScriptAnalyzer, MaterialAnalyzer
-from clipwright.services.pipeline_v2 import PipelineOrchestratorV2
 from clipwright.services.trace import get_events, get_all_events, create_trace, add_event
 from clipwright.services.async_util import spawn_background
 from clipwright.config import logger, settings
@@ -254,7 +253,7 @@ async def list_pipeline_runs(request: Request, limit: int = 50) -> list[dict]:
     """
     from clipwright.authz import current_user_id, is_admin
 
-    from clipwright.services.pipeline_v2 import get_run_records
+    from clipwright.services.pipeline_history import get_run_records
     # find_many 走 _io() → 线程内执行，避免事件循环中协程误用导致 Mongo 历史丢失
     records = await asyncio.to_thread(get_run_records, max(1, min(limit, 500)))
     uid = current_user_id(request)
@@ -296,6 +295,19 @@ async def _start_as_task(request: PipelineRequest, req: Request, uid: str = "") 
     from clipwright.schema.task import TaskRequest
     from clipwright.services.agent_kernel import AgentKernel
     from clipwright.services.task_events import emit
+
+    # 插件 hook —— 管线前置（M3 后 Task 是唯一创作入口，所以 hook 挂在这里：
+    # 插件契约不变，只是宿主从后台编排循环换成了 Task 创建）。
+    try:
+        from clipwright.plugins.hooks import HookPoint
+        from clipwright.plugins.hooks_async import execute_async
+
+        await execute_async(HookPoint.PRE_PIPELINE, {
+            "pipeline_id": pipeline_id, "topic": request.topic,
+            "persona_id": request.persona_id,
+        })
+    except Exception as e:  # noqa: BLE001 — hook 失败不能拦住开工
+        logger.warning("pre_pipeline hook 执行失败: %s", e)
 
     task_request = TaskRequest(
         topic=request.topic,
@@ -341,271 +353,24 @@ _STATUS_MAP = {
 
 @router.post("/run-async")
 async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
-    """异步启动管线，立即返回 pipeline_id，进度通过 SSE trace 推送。
+    """老管线入口：只剩"转 Task"与 410 两条路。
 
-    双轨（路线 C / PRD F12）：`agent_mode=on` 时转为 Task，返回体保持兼容
-    （`pipeline_id` 字段照旧存在，只是值等于 task id）；`off`/`shadow` 走原路径。
+    `agent_mode=on` → 转成主 Agent 任务（返回体仍带 `pipeline_id`，老客户端不受影响）；
+    否则 410。**没有第三条路**——执行引擎（`PipelineOrchestratorV2`）已在 M3 物理删除，
+    所以这里不再有后台编排代码可留。
     """
-    import uuid
-
-    from clipwright import audit
     from clipwright.authz import current_user_id
 
-    # 双轨分流：只有 on 才转 Task；off 必须与今天完全一致（A13）
     if str(getattr(settings, "agent_mode", "off")).lower() == "on":
         return await _start_as_task(request, req, uid=current_user_id(req))
 
-    # M3（modern-agent PRD §4.1）：老管线执行入口**永久**下线——不再看
-    # `pipeline_enabled` 这个开关。留着开关等于留一条"物理上还在"的编排路径，
-    # 谁把它翻成 true 谁就把管线带回来了。历史只读查询（/runs、/status、/result）保留。
-    if True:
-        raise HTTPException(
-            status_code=410,
-            detail=(
-                "老 6 阶段管线已下线：创作请走主 Agent —— "
-                "POST /api/requirements/proceed（agent_mode=on 时转 Task）或 POST /api/task"
-            ),
-        )
-
-    uid = current_user_id(req)
-    pipeline_id = f"pl_{uuid.uuid4().hex[:12]}"
-    # 幂等键去重（双击/网络重试不重复扣费）
-    # set-before-run 原子占位——检查后同步写入（中间无 await，无并发窗口），
-    # 后续 budget 检查失败时回滚占位，避免留下指向永不执行管线的死键。
-    idem_key = req.headers.get("Idempotency-Key", "")
-    if idem_key:
-        existing = _idem.bind_if_absent(idem_key, pipeline_id)
-        if existing:
-            return {"pipeline_id": existing, "status": "deduplicated"}
-
-    try:
-        # 成本预算熔断（超月预算拒绝新管线）
-        from clipwright.services.budget import check_budget
-        allowed, used = await check_budget()
-        if not allowed:
-            raise HTTPException(
-                status_code=429,
-                detail=f"本月 LLM token 预算已耗尽（已用 {used} / {settings.llm_monthly_token_budget}）",
-            )
-    except Exception:
-        # 占位回滚（仅当仍指向本管线）
-        _idem.drop(idem_key, pipeline_id)
-        raise
-    # 记录归属
-    _pipeline_owners[pipeline_id] = uid or ""
-    if idem_key:
-        _idem.bind(idem_key, pipeline_id)
-    # 轮 94（知识区一键出片）：类型插件推荐参数注入——用户显式值优先。
-    # knowledge/digital 推荐 enable_visual_llm/enable_color_match/auto_render，
-    # 此前这些开关默认关，"零配置直出"无法享受类型定制的质量选项。
-    try:
-        from clipwright.category.registry import CategoryRegistry
-        _cat = CategoryRegistry.get(request.category_plugin_id)
-        _rec = getattr(_cat, "recommended_extra_params", None)
-        _recommended = _rec() if callable(_rec) else {}
-    except Exception:
-        _recommended = {}
-    if _recommended:
-        request.extra_params = request.extra_params or {}
-        for _k, _v in _recommended.items():
-            request.extra_params.setdefault(_k, _v)
-    # 生产加固 1.2: 运行态元数据落 Mongo（重启可恢复）
-    _persist_pipeline_runtime(pipeline_id, owner_id=uid or "", idem_key=idem_key)
-    audit.record("pipeline_run", uid, {"pipeline_id": pipeline_id,
-                                       "persona_id": request.persona_id,
-                                       "category_plugin_id": request.category_plugin_id})
-    create_trace(pipeline_id)
-    add_event(pipeline_id, "system", "info",
-              f"管线异步启动: {request.persona_id} / {request.category_plugin_id} (v2={'是' if request.use_v2 else '否'})")
-
-    async def _run_background(task_id: str = ""):
-        try:
-            # 队列进度联动
-            if task_id:
-                try:
-                    from clipwright.services.task_queue import get_task_queue
-                    get_task_queue().update_progress(task_id, 1, "管线启动")
-                except Exception:
-                    pass
-            # 插件 hook — 管线前置
-            try:
-                from clipwright.plugins.hooks import HookPoint
-                from clipwright.plugins.hooks_async import execute_async
-                await execute_async(HookPoint.PRE_PIPELINE, {
-                    "pipeline_id": pipeline_id, "topic": request.topic,
-                    "persona_id": request.persona_id,
-                })
-            except Exception as e:
-                logger.warning("pre_pipeline hook 执行失败: %s", e)
-            # 生产加固 1.1：管线引擎统一 V2（熔断/自愈/DAG/检查点）；
-            # use_v2 字段保留兼容但被忽略，V1 编排器不再服务任何端点。
-            orch = PipelineOrchestratorV2()
-            state = await orch.run(request, pipeline_id=pipeline_id, task_id=task_id)
-            state.shared_data["execution_trace"] = get_all_events(pipeline_id)
-            result_dict = state.model_dump(mode="json")
-            # /C9: 质检摘要 + Agent 备注（前端此前看不到质检发现的问题）
-            _q = _extract_quality_summary(result_dict)
-            if _q:
-                result_dict["quality_issues"] = _q
-            _notes = _aggregate_agent_notes(result_dict)
-            if _notes:
-                result_dict["agent_notes"] = _notes
-            _pipeline_results[pipeline_id] = result_dict
-            add_event(pipeline_id, "system", "done", f"管线完成: {state.status}", _q)
-            # P1-17: ok 判定提前——旧实现 ok 在下方 webhook 处才赋值，
-            # auto_render 分支先引用 → NameError → 真实结果被 except 覆盖为 failed
-            ok = str(getattr(state, "status", "")).lower() in ("completed", "pass")
-            # 轮 86（出片闭环）：auto_render=true → 管线完成自动入队渲染。
-            # 此前管线只产出 timeline，渲染必须由前端另行调用——"一键出片"
-            # 的最后一环。入队失败不影响管线结果（只记事件）。
-            if ok and isinstance(request.extra_params, dict) and request.extra_params.get("auto_render"):
-                try:
-                    from clipwright.api.render import enqueue_auto_render
-                    _auto = await enqueue_auto_render(
-                        pipeline_id=pipeline_id,
-                        timeline=state.shared_data.get("timeline"),
-                        owner_id=uid or "",
-                        preset=str(request.extra_params.get("render_preset", "") or ""),
-                        output_name=str(request.extra_params.get("render_output_name", "") or ""),
-                    )
-                    result_dict["auto_render"] = _auto
-                    add_event(pipeline_id, "render", "info",
-                              f"自动渲染已入队: {_auto.get('task_id')} → {_auto.get('output_path')}")
-                except Exception:
-                    logger.exception("自动渲染入队失败（不影响管线结果）: %s", pipeline_id)
-                    add_event(pipeline_id, "render", "warning", "自动渲染入队失败，请手动提交渲染")
-            # 插件 hook — 管线后置
-            try:
-                from clipwright.plugins.hooks import HookPoint
-                from clipwright.plugins.hooks_async import execute_async
-                await execute_async(HookPoint.POST_PIPELINE, {
-                    "pipeline_id": pipeline_id,
-                    "status": str(getattr(state, "status", "")),
-                })
-            except Exception as e:
-                logger.warning("post_pipeline hook 执行失败: %s", e)
-            # webhook 事件接线 — 管线完成/失败通知（ok 已在 auto_render 前计算）
-            try:
-                from clipwright.api.webhook import dispatch_event_bg
-                dispatch_event_bg(
-                    "pipeline.completed" if ok else "pipeline.failed",
-                    {
-                        "pipeline_id": pipeline_id,
-                        "topic": request.topic,
-                        "persona_id": request.persona_id,
-                        "status": str(getattr(state, "status", "")),
-                    },
-                )
-            except Exception as we:
-                logger.warning("pipeline webhook dispatch failed: %s", we)
-        except asyncio.CancelledError:
-            # /A2: 取消即时性 + 语义区分——用户取消（_user_cancel_requested 命中）
-            # 写 cancelled；未命中说明是队列 wait_for 超时强杀（asyncio.wait_for 超时
-            # 会 cancel 内层协程），写 timeout 终态并给出可重试建议，避免误报"已取消"。
-            if pipeline_id in _user_cancel_requested:
-                _user_cancel_requested.discard(pipeline_id)
-                logger.info("管线任务已取消: %s", pipeline_id)
-                _pipeline_results[pipeline_id] = {
-                    "status": "cancelled", "pipeline_id": pipeline_id,
-                    "error": "管线已取消（任务中断）",
-                }
-                add_event(pipeline_id, "system", "cancelled", "管线已取消（任务中断）")
-            else:
-                _timeout_sec = (request.extra_params or {}).get("pipeline_timeout_sec", "")
-                logger.warning("管线任务被队列超时中断: %s", pipeline_id)
-                _pipeline_results[pipeline_id] = {
-                    "status": "timeout", "pipeline_id": pipeline_id,
-                    "error": f"管线执行超时（> {_timeout_sec or '默认'}s），可从失败步骤重试",
-                }
-                add_event(pipeline_id, "system", "timeout",
-                          f"管线执行超时（> {_timeout_sec or '默认'}s），可对失败 Agent 发起重试")
-            # 轮70（D13）：向上传播——否则 TaskQueue 把已取消/超时的任务记为 COMPLETED
-            raise
-        except Exception as e:
-            logger.exception("pipeline._run_background failed: %s", e)
-            add_event(pipeline_id, "system", "error", f"管线失败: {e}")
-            # 即使异常也写一个结果，让前端能查到错误
-            _pipeline_results[pipeline_id] = {"status": "failed", "error": str(e), "pipeline_id": pipeline_id}
-            # 插件 hook — 错误通知
-            try:
-                from clipwright.plugins.hooks import HookPoint
-                from clipwright.plugins.hooks_async import execute_async
-                await execute_async(HookPoint.ON_ERROR, {
-                    "pipeline_id": pipeline_id, "error": str(e)[:300],
-                })
-            except Exception as he:
-                logger.warning("on_error hook 执行失败: %s", he)
-            try:
-                from clipwright.api.webhook import dispatch_event_bg
-                dispatch_event_bg("pipeline.failed", {
-                    "pipeline_id": pipeline_id,
-                    "topic": request.topic,
-                    "error": str(e)[:300],
-                })
-            except Exception as we:
-                logger.warning("pipeline webhook dispatch failed: %s", we)
-        finally:
-            # 60秒后清理内存，给前端足够时间轮询
-            async def _cleanup():
-                await asyncio.sleep(60)
-                _pipeline_results.pop(pipeline_id, None)
-                _running_pipelines.pop(pipeline_id, None)
-                _pipeline_owners.pop(pipeline_id, None)
-                _pipeline_tasks.pop(pipeline_id, None)  # A3: 补清理，防映射泄漏
-                _user_cancel_requested.discard(pipeline_id)  # A2: 防集合泄漏
-                _idem.drop_by_pipeline(pipeline_id)
-                from clipwright.services.trace import clear
-                clear(pipeline_id)
-            spawn_background(_cleanup(), name=f"pipeline-cleanup-{pipeline_id}")
-
-    # 管线异步执行走 TaskQueue（并发限流 + 排队 + 优先级 + Mongo 持久化）
-    async def _queue_handler(task_id: str = ""):
-        # 注册当前运行中的 asyncio 任务（= TaskQueue 处理协程），使 /cancel 能
-        # 即时 task.cancel() 中断运行（CancelledError 由 _run_background 捕获写终态）。
-        _running_pipelines[pipeline_id] = asyncio.current_task()
-        try:
-            await _run_background(task_id=task_id)
-        finally:
-            if _running_pipelines.get(pipeline_id) is asyncio.current_task():
-                _running_pipelines.pop(pipeline_id, None)
-
-    # 任务级超时与管线超时公式对齐（默认 900s 会强杀动画阶段长管线）
-    _ep = request.extra_params or {}
-    _pt = _ep.get("pipeline_timeout_sec")
-    if not isinstance(_pt, (int, float)) or _pt <= 0:
-        _pt = pipeline_timeout_sec(float(_ep.get("audio_duration_sec", 0) or 0), 0)
-    _submit_timeout = float(_pt) + 120.0  # 缓冲：让 orchestrator 自己的超时先生效
-
-    # X-Priority 是 HTTP 头，必须从 Request 读取（request 是 body 模型，
-    # 无 headers 属性——曾导致主入口无条件 AttributeError 500）
-    priority = 3
-    try:
-        priority = max(1, min(5, int(req.headers.get("X-Priority", "3") or "3")))
-    except (ValueError, TypeError):
-        priority = 3
-    from clipwright.services.task_queue import QueueFullError, get_task_queue
-    try:
-        task_id = await get_task_queue().submit(
-            "pipeline", _queue_handler, priority=priority, timeout_sec=_submit_timeout,
-        )
-    except QueueFullError as e:
-        # 轮69（D5）：队列背压——明确 429 而非 500，客户端可退避重试
-        _pipeline_results[pipeline_id] = {
-            "status": "failed", "error": str(e), "pipeline_id": pipeline_id,
-        }
-        raise HTTPException(status_code=429, detail=str(e))
-
-    async def _task_slot():
-        """把队列 task 与 pipeline 取消/清理关联。"""
-        try:
-            await asyncio.sleep(0.1)
-            _pipeline_tasks[pipeline_id] = task_id
-            _persist_pipeline_runtime(pipeline_id, task_id=task_id)
-        except Exception:
-            # 轮 81：留痕——关联持久化失败会导致重启后取消/恢复找不到队列任务
-            logger.exception("pipeline-tasklink 持久化失败 pipeline=%s task=%s", pipeline_id, task_id)
-    spawn_background(_task_slot(), name=f"pipeline-tasklink-{pipeline_id}")
-    return {"pipeline_id": pipeline_id, "task_id": task_id, "status": "started"}
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "老 6 阶段管线已下线：创作请走主 Agent —— "
+            "POST /api/requirements/proceed（agent_mode=on 时转 Task）或 POST /api/task"
+        ),
+    )
 
 
 class BatchPipelineRequest(BaseModel):
@@ -872,7 +637,7 @@ async def get_pipeline_status(pipeline_id: str, request: Request) -> dict:
 @router.get("/diagnostics/{pipeline_id}")
 async def pipeline_diagnostics(pipeline_id: str, request: Request) -> dict:
     """P8: 失败诊断报告 — 失败 run 生成结构化诊断（阶段/原因/建议）。"""
-    from clipwright.services.pipeline_v2 import PipelineOrchestratorV2
+    from clipwright.services.pipeline_history import categorize_error
 
     _enforce_pipeline_owner(request, pipeline_id)
     result = _pipeline_results.get(pipeline_id)
@@ -890,7 +655,7 @@ async def pipeline_diagnostics(pipeline_id: str, request: Request) -> dict:
             failed_step = s
             break
 
-    category = PipelineOrchestratorV2._categorize_error(error or (failed_step or {}).get("error") or "")
+    category = categorize_error(error or (failed_step or {}).get("error") or "")
     suggestions: list[str] = []
     if category == "transient":
         suggestions.append("可重试：等待网络恢复后重跑，或对失败 Agent 单独重试（POST /retry/{id}/{agent}）")
@@ -918,151 +683,35 @@ async def pipeline_diagnostics(pipeline_id: str, request: Request) -> dict:
 
 @router.post("/retry/{pipeline_id}/{agent_name}")
 async def retry_agent(pipeline_id: str, agent_name: str, request: Request) -> dict:
-    """重试指定 Agent（从失败的管线中恢复，B3）。
+    """重试指定 Agent —— **已下线**（老管线执行引擎在 M3 删除）。
 
-    改用 PipelineOrchestratorV2.run_from_agent：从 prior_state 重放目标 agent 之前的
-    成功结果，只重跑目标 agent + 下游联动 + 统一自愈质检循环（不再全量重跑）。
-    目标 agent 无可用前置结果/无记录时明确 400。
-
-    实现委托 `start_agent_retry`——调度中枢（`/api/pipeline/{pid}/dispatch`、
-    诊断书建议）走的是**同一条**重试路径，避免出现「面板说会重试、实际没人跑」。
+    主 Agent 侧的正确做法：`delegate_agent(stage=…)` 重派该阶段，
+    连带下游由 `replan_closure` 计算。
     """
     return await start_agent_retry(pipeline_id, agent_name, request)
 
 
 async def start_agent_retry(pipeline_id: str, agent_name: str, request: Request) -> dict:
-    """启动一次「从某个 Agent 起重跑」（HTTP 端点与调度中枢共用）。"""
+    """「从某个 Agent 起重跑」——**已下线**。
+
+    M3 之后没有"重跑某个 agent"这回事：主 Agent 用 `delegate_agent` 重新派该阶段，
+    依赖闭包由 `replan_closure` 算。这里保留 410 与可执行指引，不做静默降级。
+    """
     _enforce_pipeline_owner(request, pipeline_id)
-    # retry 与主入口同权——预算熔断检查（原路径完全绕过预算）
-    from clipwright import audit as _audit
-    from clipwright.services.budget import check_budget as _check_budget
-    _allowed, _used = await _check_budget()
-    if not _allowed:
-        raise HTTPException(
-            status_code=429,
-            detail=f"本月 LLM token 预算已耗尽（已用 {_used} / {settings.llm_monthly_token_budget}），无法重试",
-        )
-    _uid = None
-    try:
-        from clipwright.authz import current_user_id as _cuid
-        _uid = _cuid(request)
-    except Exception:
-        pass
-    _audit.record("pipeline_retry", _uid, {"pipeline_id": pipeline_id, "agent": agent_name})
-
-    # P2 闸口（审计 P2-7）：老管线已下线时，retry 也不许偷偷把编排器拉起来——
-    # 否则只要有切换前的残留结果，就还能从这条后门重跑老管线。
-    # M3：retry 同样永久下线（老管线执行入口已删，不留后门）。
-    if True:
-        raise HTTPException(
-            status_code=410,
-            detail=(
-                "老 6 阶段管线已下线，retry 不再可用：请用主 Agent 的 run_stage 重派该阶段"
-                "（replan_closure 会算出需要连带重做的下游）"
-            ),
-        )
-
-    from clipwright.services.trace import get_all_events
-    events = get_all_events(pipeline_id)
-    if not events:
-        raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found")
-
-    # 重建上下文，只从失败 agent 开始重新执行
-    # P2-48: 在飞守卫——同一 pipeline 已在跑/排队时拒绝重复重试（双击/并发
-    # 曾会起两条 retry task 互相覆盖结果）
-    _existing_task = _running_pipelines.get(pipeline_id)
-    if _existing_task is not None and not _existing_task.done():
-        return {
-            "pipeline_id": pipeline_id,
-            "status": "retrying",
-            "agent": agent_name,
-            "message": "该管线已有重试在进行中（幂等返回）",
-        }
-
-    state = _pipeline_results.get(pipeline_id)
-    if not state:
-        # 生产加固 1.2: 进程重启后内存丢失 → Mongo 回退重建 prior_state
-        state = _load_result_from_mongo(pipeline_id)
-        if state:
-            _pipeline_results[pipeline_id] = state
-    if not state:
-        raise HTTPException(status_code=400, detail="Pipeline result not available for retry")
-
-    request_data = state.get("request")
-    if not isinstance(request_data, dict):
-        raise HTTPException(status_code=400, detail="Pipeline result missing request data")
-    request = PipelineRequest(**request_data)
-
-    # 前置校验：目标 agent 必须存在于 steps 且之前有成功结果，否则同步 400
-    steps = state.get("steps") or []
-    target_index = None
-    for i, s in enumerate(steps):
-        if isinstance(s, dict) and s.get("agent_name") == agent_name:
-            target_index = i
-            break
-    if target_index is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Pipeline {pipeline_id} 中未找到 Agent {agent_name}",
-        )
-    has_preceding = any(
-        isinstance(s, dict) and s.get("status") == "completed" and s.get("result")
-        for s in steps[:target_index]
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "老 6 阶段管线已下线，retry 不再可用：请用主 Agent 的 delegate_agent 重派该阶段"
+            "（replan_closure 会算出需要连带重做的下游）"
+        ),
     )
-    if not has_preceding:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Pipeline {pipeline_id} 无可用前置成功结果，无法从 {agent_name} 恢复",
-        )
-
-    add_event(pipeline_id, "system", "info", f"重试 Agent: {agent_name}")
-
-    # retry 超时与管线超时公式对齐（原实现裸 create_task 无超时，挂死即永久占用）
-    _retry_ep = (state.get("request") or {}).get("extra_params") or {}
-    _retry_to = _retry_ep.get("pipeline_timeout_sec")
-    if not isinstance(_retry_to, (int, float)) or _retry_to <= 0:
-        _retry_to = pipeline_timeout_sec(
-            float(_retry_ep.get("audio_duration_sec", 0) or 0), 0)
-    _retry_timeout = float(_retry_to) + 120.0
-
-    async def _retry():
-        try:
-            orch_v2 = PipelineOrchestratorV2()
-            new_state = await asyncio.wait_for(
-                orch_v2.run_from_agent(pipeline_id, request, agent_name, prior_state=state),
-                timeout=_retry_timeout,
-            )
-            result_dict = new_state.model_dump(mode="json")
-            _pipeline_results[pipeline_id] = result_dict
-            add_event(pipeline_id, "system", "done", f"重试完成: {new_state.status}")
-        except asyncio.TimeoutError:
-            logger.warning("重试超时: %s (%ss)", pipeline_id, _retry_timeout)
-            _pipeline_results[pipeline_id] = {
-                "status": "timeout", "pipeline_id": pipeline_id,
-                "error": f"重试执行超时（>{_retry_timeout}s）",
-            }
-            add_event(pipeline_id, "system", "timeout", f"重试超时（>{_retry_timeout}s）")
-        except Exception as e:
-            logger.exception("重试失败: %s", e)
-            # 失败也写终态结果——原实现只发事件不写结果，/result 会 404/超时
-            _pipeline_results[pipeline_id] = {
-                "status": "failed", "error": str(e), "pipeline_id": pipeline_id,
-            }
-            add_event(pipeline_id, "system", "error", f"重试失败: {e}")
-
-    task = asyncio.create_task(_retry())
-    _running_pipelines[pipeline_id] = task
-    return {"pipeline_id": pipeline_id, "status": "retrying", "agent": agent_name}
 
 
-# ── P8: 管线配置模板复用 ─────────────────────────────
-# 命名保存/加载 PipelineRequest 模板（含 persona/plugin/extra_params），
-# 供「一键复用同一套配置启动多个选题」的场景。
-
-import re as _re
-
-_PIPE_TEMPLATE_ID_RE = _re.compile(r"^[\w\u4e00-\u9fff-]{1,64}$")  # 字母数字下划线中文连字符
-_pipe_templates: dict[str, dict] = {}  # name → {request: {...}, owner_id, updated_at}
+#: 模板名的合法字符（字母数字下划线/中文/连字符，1–64）
+_PIPE_TEMPLATE_ID_RE = __import__("re").compile(r"^[\w\u4e00-\u9fff-]{1,64}$")
+#: 管线模板登记表（name → {request, owner_id, updated_at}）。
+#: 与执行引擎无关（模板只是"把一组请求参数存起来"），所以它留在这里。
+_pipe_templates: dict[str, dict] = {}
 
 
 class PipelineTemplateSaveRequest(BaseModel):
@@ -1134,7 +783,7 @@ async def cancel_pipeline(pipeline_id: str, request: Request) -> dict:
     3. 终态写入 CANCELLED / cancelled 并写 trace 事件。
     若管线已结束/不存在，返回 404。
     """
-    from clipwright.services.pipeline_v2 import mark_cancelled
+    from clipwright.services.pipeline_history import mark_cancelled
     from clipwright.services.trace import get_all_events as _ga
 
     _enforce_pipeline_owner(request, pipeline_id)
@@ -1182,35 +831,9 @@ async def cancel_pipeline(pipeline_id: str, request: Request) -> dict:
 @router.get("/breaker-status")
 async def pipeline_breaker_status(request: Request) -> dict:
     """C8: 熔断健康探测 — 返回各 Agent 熔断计数与状态（运维/前端监控用）。"""
-    from datetime import datetime, timezone
-    from clipwright.services.pipeline_v2 import PipelineOrchestratorV2
+    from clipwright.services import circuit_breaker
 
-    now = datetime.now(timezone.utc)
-    breakers = PipelineOrchestratorV2._circuit_breakers
-    threshold = PipelineOrchestratorV2._circuit_breaker_threshold
-    recovery = PipelineOrchestratorV2._circuit_breaker_recovery_sec
-    agents: list[dict] = []
-    tripped = 0
-    for name, cb in sorted(breakers.items()):
-        count = int(cb.get("fail_count", 0))
-        last = cb.get("last_fail_at")
-        elapsed = (now - last).total_seconds() if last else None
-        is_open = count >= threshold and (elapsed is None or elapsed <= recovery)
-        if is_open:
-            tripped += 1
-        agents.append({
-            "agent": name,
-            "fail_count": count,
-            "threshold": threshold,
-            "open": is_open,
-            "recovery_sec": recovery,
-            "seconds_since_fail": round(elapsed, 1) if elapsed is not None else None,
-        })
-    return {
-        "status": "degraded" if tripped > 0 else "ok",
-        "tripped_agents": tripped,
-        "agents": agents,
-    }
+    return circuit_breaker.snapshot()
 
 
 class PredictScriptRequest(BaseModel):

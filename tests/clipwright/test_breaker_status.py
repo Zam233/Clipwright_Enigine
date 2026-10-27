@@ -5,14 +5,13 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from clipwright.main import app
-from clipwright.services.pipeline_v2 import PipelineOrchestratorV2
+from clipwright.services import circuit_breaker
 
 client = TestClient(app)
 
 
 def test_breaker_status_ok_when_no_failures() -> None:
-    # 清空熔断状态（类级共享）
-    PipelineOrchestratorV2._circuit_breakers = {}
+    circuit_breaker.reset()
     resp = client.get("/api/pipeline/breaker-status")
     assert resp.status_code == 200
     body = resp.json()
@@ -23,10 +22,14 @@ def test_breaker_status_ok_when_no_failures() -> None:
 
 def test_breaker_status_reports_open_breaker() -> None:
     from datetime import datetime, timezone
-    PipelineOrchestratorV2._circuit_breakers = {
-        "edit": {"fail_count": 3, "last_fail_at": datetime.now(timezone.utc)},
-        "audio": {"fail_count": 1, "last_fail_at": datetime.now(timezone.utc)},
-    }
+    # 直接写注册表（等价于"edit 连续失败 3 次、audio 失败 1 次"）
+    from clipwright.services import circuit_breaker as _cb
+
+    _cb.reset()
+    _cb._BREAKERS["edit"] = {"fail_count": 3,
+                             "last_fail_at": datetime.now(timezone.utc)}
+    _cb._BREAKERS["audio"] = {"fail_count": 1,
+                              "last_fail_at": datetime.now(timezone.utc)}
     try:
         resp = client.get("/api/pipeline/breaker-status")
         assert resp.status_code == 200
@@ -38,4 +41,4 @@ def test_breaker_status_reports_open_breaker() -> None:
         assert by_name["edit"]["fail_count"] == 3
         assert by_name["audio"]["open"] is False
     finally:
-        PipelineOrchestratorV2._circuit_breakers = {}
+        circuit_breaker.reset()

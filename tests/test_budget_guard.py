@@ -178,33 +178,3 @@ def test_accept_suggestion_marks_degraded():
 # ── 派工闸 ────────────────────────────────────────────────
 
 
-def test_execute_order_refuses_when_budget_blocked(monkeypatch):
-    from clipwright.services import pipeline_v2 as pv
-
-    monkeypatch.setattr(bg, "is_blocked", lambda pid: True)
-    orch = object.__new__(pv.PipelineOrchestratorV2)
-    order = SimpleNamespace(id="o1", target_stage="edit", issues=[])
-    with pytest.raises(ValueError, match="预算"):
-        asyncio.run(orch.execute_order(
-            SimpleNamespace(pipeline_id="pl_b", shared_data={}), order,
-            result_data={}, persona_config={}, plugin=None,
-            agent_context=SimpleNamespace(extra_params={}), bus=None,
-        ))
-
-
-def test_decide_for_heal_aborts_when_budget_blocked(monkeypatch):
-    from clipwright.config import settings as st
-    from clipwright.services import pipeline_v2 as pv
-    from clipwright.services.episode_ledger import clear_ledgers, get_ledger
-
-    clear_ledgers()
-    monkeypatch.setattr(st, "supervisor_mode", "on", raising=False)
-    monkeypatch.setattr(bg, "is_blocked", lambda pid: True)
-    get_ledger("pl_b", persist=False).record(stage="edit", decision="fail")
-
-    orch = object.__new__(pv.PipelineOrchestratorV2)
-    state = SimpleNamespace(shared_data={})
-    decision = asyncio.run(orch._decide_for_heal(state, "pl_b", []))
-    assert decision.strategy == "S6_abort"
-    assert "预算" in decision.reason
-    clear_ledgers()

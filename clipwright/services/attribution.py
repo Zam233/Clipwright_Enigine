@@ -9,8 +9,8 @@
 3. **置信度低就不硬派工**：`confidence=low` 时 B3 会升级给人而不是盲目重做——这
    一条是「归因错了比重做错阶段更贵」的落地。
 
-阶段顺序与 `services.pipeline_v2.AgentDAG._DEPS` 保持一致（structure→…→quality）；
-此处复制一份是为了避免 attribution ← pipeline_v2 的循环依赖，改动时请同步两处。
+阶段顺序与 `services.stage_closure.STAGE_DEPS` 保持一致（structure→…→quality）；
+M3 删除老编排器后，`stage_closure` 是依赖关系的唯一真值。
 """
 
 from __future__ import annotations

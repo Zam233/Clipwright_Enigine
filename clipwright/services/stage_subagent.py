@@ -404,6 +404,14 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
 
     usage_after = llm_usage_snapshot()
     cost, cost_unknown = _cost_from_usage(usage_before, usage_after, route)
+    # 归因（modern-agent PRD §2.4.2）：token 与工具轨迹随 StageResult 上交，
+    # 上层（AgentResult / 评估 / 前端成本条）才有真实数字可用。
+    # token 取进程级用量差值 —— 与 cost 同一口径（都是"这个阶段实际花掉的"）。
+    tokens = max(0, (int(usage_after.get("input_tokens", 0))
+                     + int(usage_after.get("output_tokens", 0)))
+                 - (int(usage_before.get("input_tokens", 0))
+                    + int(usage_before.get("output_tokens", 0))))
+    stage_tool_calls = list(getattr(agent, "last_tool_calls", None) or [])
 
     # 4) 合并
     writes: list[str] = []
@@ -446,6 +454,8 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
         redo_agent=str(payload.get("redo_agent") or ""),
         cost_usd=cost,
         cost_unknown=cost_unknown,
+        tokens=tokens,
+        tool_calls=stage_tool_calls,
         duration_ms=int((time.monotonic() - started) * 1000),
         provider=str(getattr(route, "provider", "") or "") or _default_route()[0],
         model=str(getattr(route, "model", "") or "") or _default_route()[1],

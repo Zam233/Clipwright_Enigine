@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from clipwright.schema.pipeline import PipelineStatus, PipelineStep
-from clipwright.services import pipeline_v2 as pv2
+from clipwright.services import pipeline_history as pv2
 
 # ── Test app ──
 
@@ -208,7 +208,7 @@ def test_cancel_unknown_pipeline_404() -> None:
 
 def test_cancel_sets_flag_and_returns_cancelling() -> None:
     from clipwright.api.pipeline import create_trace, add_event
-    from clipwright.services.pipeline_v2 import clear_cancel, is_cancelled
+    from clipwright.services.pipeline_history import clear_cancel, is_cancelled
     create_trace("pl_cancel_api")
     add_event("pl_cancel_api", "system", "info", "started")
     try:

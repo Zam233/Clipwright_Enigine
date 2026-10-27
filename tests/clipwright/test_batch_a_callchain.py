@@ -74,21 +74,6 @@ async def _wait_for_async(predicate, timeout_sec: float = 10.0):
             return value
         await asyncio.sleep(0.05)
     return None
-
-
-@pytest.fixture()
-def fake_orch_blocked(monkeypatch):
-    """永不完成的 orchestrator（供取消测试）。"""
-    from clipwright.api import pipeline as pipeline_api
-
-    class _FakeOrchBlocked:
-        async def run(self, request, pipeline_id: str = "", task_id: str = ""):
-            await asyncio.sleep(60)
-            raise AssertionError("管线应在取消时被中断，而不是跑完")
-
-    monkeypatch.setattr(pipeline_api, "PipelineOrchestratorV2", _FakeOrchBlocked)
-
-
 # ── A2: 任务级超时 ──────────────────────────────
 
 

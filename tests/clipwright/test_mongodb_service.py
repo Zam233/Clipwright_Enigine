@@ -1,6 +1,6 @@
 """MongoDbModel 持久化底座单测 — 不依赖真实 MongoDB。
 
-用 fake db / fake cursor 替换 ``mongo._db``（与 test_pipeline_v2_persist_shape
+用 fake db / fake cursor 替换 ``mongo._db``（与已删除的 persist-shape 用例
 的 monkeypatch 方式一致），覆盖：序列化往返、find_by_id 的 ObjectId/字符串
 双路径、find_one/find_many 的 filter+sort+skip+limit 透传、count 返回 int。
 """

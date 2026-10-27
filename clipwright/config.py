@@ -102,11 +102,10 @@ class Settings(BaseSettings):
     # --- 路线 C 双轨开关（PRD F12）---
     # off    = 老 6 阶段管线是唯一入口（行为与今天完全一致，A13 的对照基线）
     # shadow = Kernel 只规划、不执行（零副作用，用来看计划质量与预估成本）
-    # on     = Kernel 执行；run_pipeline 能力随之可用
+    # on     = Kernel 执行（创作唯一入口；老 6 阶段管线已删除）
     agent_mode: Literal["off", "shadow", "on"] = "off"
-    # 老 6 阶段管线是否仍是**可执行路径**（PRD master-agent-prd §4.1 P2）。
-    # false（默认）= 创作只走主 Agent；run_pipeline 能力与 /api/pipeline/run 一律拒绝，
-    # 返回"请改用 run_stage/主 Agent"的可执行提示。true 仅用于灰度对比与回滚。
+    # 老 6 阶段管线执行开关——**已失效**（M3 删除执行引擎后，/run-async 与 retry
+    # 永久 410，与此开关无关）。保留字段只为兼容旧配置文件的解析，不要再用它。
     pipeline_enabled: bool = False
     # 主 agent 每步决策策略（PRD §16.10.1）：off=只走规则；auto=失败必判/成功轻量步走规则；
     # always（默认）=**每步都调 LLM 决策**（用户裁定：每步决策都走 llm）。

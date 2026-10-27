@@ -183,23 +183,24 @@ def test_resolve_credentials_unknown_provider_returns_none():
 
 
 def test_breaker_key_separates_models():
-    from clipwright.services.pipeline_v2 import PipelineOrchestratorV2 as O
+    from clipwright.services import circuit_breaker as cb
 
-    assert O._breaker_key("edit") == "edit"
-    assert O._breaker_key("edit", "anthropic/a") == "edit::anthropic/a"
-    assert O._breaker_key("edit", "anthropic/a") != O._breaker_key("edit", "anthropic/b")
+    assert cb.key_of("edit") == "edit"
+    assert cb.key_of("edit", "anthropic/a") == "edit::anthropic/a"
+    assert cb.key_of("edit", "anthropic/a") != cb.key_of("edit", "anthropic/b")
 
 
 def test_failed_models_for_collects_only_open_breakers(monkeypatch):
-    from clipwright.services.pipeline_v2 import PipelineOrchestratorV2 as O
+    from clipwright.services import circuit_breaker as cb
 
-    orch = object.__new__(O)
-    orch._circuit_breakers = {
-        "edit::anthropic/a": {"fail_count": 3},
-        "edit::anthropic/b": {"fail_count": 1},
-        "material::anthropic/a": {"fail_count": 5},
-    }
-    assert orch._failed_models_for("edit") == ["anthropic/a"]
+    cb.reset()
+    cb._BREAKERS["edit::anthropic/a"] = {"fail_count": 3, "last_fail_at": None}
+    cb._BREAKERS["edit::anthropic/b"] = {"fail_count": 1, "last_fail_at": None}
+    cb._BREAKERS["material::anthropic/a"] = {"fail_count": 5, "last_fail_at": None}
+    try:
+        assert cb.failed_models_for("edit") == ["anthropic/a"]
+    finally:
+        cb.reset()
 
 # ── LLMService 的覆盖应用（单点埋设）─────────────────────────
 # 说明：这里只验「分支选择」，不构建真实客户端——真实构造依赖 isobase 与凭据，

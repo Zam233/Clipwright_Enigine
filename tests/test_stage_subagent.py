@@ -124,7 +124,7 @@ def test_assemble_structure_builds_real_input() -> None:
     assert obj.context.topic == "甲"
 
 
-# ── 合并语义（与 pipeline_v2._merge_agent_result 对齐）──────
+# ── 合并语义（与老编排器的 _merge_agent_result 对齐，已迁入 stage_merge）──────
 
 
 def test_merge_excludes_control_keys() -> None:

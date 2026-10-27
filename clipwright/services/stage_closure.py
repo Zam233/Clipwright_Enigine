@@ -1,10 +1,10 @@
 """阶段依赖与自愈闭包（PRD §3.7）。
 
-**为什么要有独立的一份**：依赖关系原来只存在于 `pipeline_v2.AgentDAG._DEPS` 里，
-而 `pipeline_v2` 在 P4 会被删除。主 Agent 要能回答"edit 重做之后该连带重做谁"，
+**为什么要有独立的一份**：依赖关系原来只存在于老编排器的 DAG 里，而那个模块已在 M3
+物理删除。主 Agent 要能回答"edit 重做之后该连带重做谁"，
 这件事不能靠 LLM 记性——必须由代码保证。
 
-语义与 `pipeline_v2._downstream_closure` 一致（含当年那个真实故障的教训）：
+语义与老编排器的下游闭包实现一致（含当年那个真实故障的教训）：
 `_get_downstream_agents` 只返回直接依赖者时，重做 `edit` 只联动 `animation`，
 `audio` 不重做 → 先前铺好的旁白/BGM/字幕随 edit 重建时间线静默丢失，成片无声交付。
 所以这里做**传递闭包**，并且 quality 永远不进闭包（它是裁判，不是被重做的环节）。
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Iterable
 
-#: 阶段依赖（与 `pipeline_v2.AgentDAG._DEPS` 同源；P4 删管线后这里是唯一真值）
+#: 阶段依赖（老编排器 DAG 已删除，这里是唯一真值）
 STAGE_DEPS: dict[str, tuple[str, ...]] = {
     "structure": (),
     "material": ("structure",),

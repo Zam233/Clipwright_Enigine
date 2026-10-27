@@ -263,6 +263,11 @@ class BaseAgent(ABC, Generic[I, O]):
         - **可降级**：没有可用工具、LLM 不可用、超时 → 返回 ``{"status": "skipped"|"error"}``，
           调用方继续走原逻辑（引擎/插件缺失绝不能把管线带塌）。
         """
+        # 归因（modern-agent PRD §2.4.2）：最近的工具轨迹留给调用方读
+        # （`stage_subagent` 用它填 `StageResult.tool_calls`，
+        # 这样"这个阶段到底调了什么工具"不再只是日志里的一句话）。
+        self.last_tool_calls = []
+
         schemas = self.tool_schemas(tools)
         if not schemas:
             return {"status": "skipped", "reason": "no_tools", "tool_calls": []}
@@ -302,13 +307,16 @@ class BaseAgent(ABC, Generic[I, O]):
                 )
             )
         except asyncio.TimeoutError:
+            self.last_tool_calls = list(calls)
             return {"status": "error", "reason": "timeout", "tool_calls": calls}
         except Exception as e:  # noqa: BLE001 — 工具循环失败按降级处理
             from clipwright.config import logger
 
             logger.warning("%s: 工具循环失败（%s）", self.agent_name, e)
+            self.last_tool_calls = list(calls)
             return {"status": "error", "reason": str(e)[:200], "tool_calls": calls}
 
+        self.last_tool_calls = list(calls)
         return {
             "status": "ok",
             "content": getattr(resp, "content", "") or "",
@@ -377,7 +385,7 @@ class BaseAgent(ABC, Generic[I, O]):
     def quality_issues_hint(context: Any) -> str:
         """C6: 自愈重做时提取上一轮质检问题段落（注入 LLM 提示词尾部）。
 
-        pipeline_v2 自愈循环此前把 _quality_issues 写入 extra_params，但没有任何
+        老编排器的自愈循环此前把 _quality_issues 写入 extra_params，但没有任何
         Agent 读取——被要求重做的 Agent 不知道为什么重做。无问题/非自愈时返回空串。
         """
         issues = (getattr(context, "extra_params", {}) or {}).get("_quality_issues") or []
