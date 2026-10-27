@@ -290,3 +290,74 @@ Pydantic/存储层允许字段缺省；数值约束为 temperature `0..2`、top_
 - 不迁移旧模型参数到新的顶层全局字段；逐模型配置放在 source models item，避免 role/provider 串配置。
 - 不改变需求对话业务流程、阶段顺序、预算闸和子 agent 星型拓扑；这些是本轮验收的前置不变量。
 - 不删除旧前端字段、旧事件 detail 或旧 localStorage；至少保留一个发布周期的向后兼容读取。
+
+---
+
+## 8. 与既有缺口清单的合并（本节为合并视图，实际以本节为准）
+
+> 背景：这份 PRD 只规划了本次六项改造。上一轮前端缺口调研（见
+> `docs/modern-agent-closeout-plan-2026-10-27.md` §12）报出的 **3 条已报缺口 + 9 条新发现（N1–N9）**
+> 当时**没有**并入本文件。本节把它们逐条映射到批次，避免两份清单各自为政。
+
+### 8.1 覆盖核对（逐条比对，不用"应当已包含"敷衍）
+
+| 来源 | 缺口 | 本 PRD 原文是否已覆盖 | 结论 |
+|---|---|---|---|
+| 已报 1 | 「正在思考」无流式内容 | **否**。原文只在 §2.5 写「reasoning 内容仍走既有 `thinking` 事件」——它**假设 thinking 已经能用**，而缺口正是「`agent_loop` 根本不发 thinking，`_emit_thinking` 是死代码」 | 并入 **B5**（改名扩范围） |
+| 已报 2 | 文案无法完整传入 agent | **否**。全文未出现 `brief` / `script_text` / artifact 引用 | 新增 **B8** |
+| 已报 3 | 上传配音提示 `deduplicated` | **否**。原文两处"去重"都是「SSE 按 seq 去重」，与素材 SHA-256 去重无关 | 新增 **B9** |
+| N1 | `task_end.reason` 映射旧口径 → 成功显示失败 | 否（不在本 PRD 范围） | **已修复**（`cdfcf96`，`terminalStatusOf` + 5 条用例），不排期 |
+| N2 | `PlanPanel` 仍把 Plan 当执行进度 | 否 | 新增 **B10** |
+| N3 | 子 agent 详情查 tracker 快照，不消费 `agent_run_*` | 否 | 并入 **B11** |
+| N4 | 审批只有日志，没有提交 `approval_id` 的入口 | 否 | 并入 **B11** |
+| N5 | `context_loaded.trimmed` 后端传 bool，loader 返回 list | 否 | 并入 **B12** |
+| N6 | 工具 call↔result 用工具名配对，同名并发会串 | 否 | 并入 **B12** |
+| N7 | 事件在 store(400) 与 EventFeed(120) 二次截断 | 否 | 并入 **B12** |
+| N8 | `doc_write`/`report`/`context_loaded` 无结构化详情与跳转 | 否 | 并入 **B12** |
+| N9 | 子 agent 筹码把 `replayed` 当状态，未消费 `failure/needs` | 否 | 并入 **B11** |
+
+### 8.2 批次调整（B1–B7 + 新增 B8–B12）
+
+| 批次 | 目标 | 人日 | 依赖 | 覆盖的缺口 |
+|---|---|---|---|---|
+| B1 | 统一 Copilot 单层标签 | 1.0 | — | 本次 1 |
+| B2 | 主 agent 说话再行动（preamble 先行） | 1.0 | — | 本次 2 |
+| B3 | 子 agent 显式 provider/model 放开 | 1.0 | B2 | 本次 3 |
+| B4 | 逐模型 generation 参数 | 1.5 | — | 本次 4 |
+| **B5** | **reasoning 链路：流式 thinking + reasoning_effort** | 2.0 | B2 | 本次 5 + **已报 1** |
+| B6 | `/v1/models` 探测前端接入与失败语义 | 1.0 | — | 本次 6 |
+| B7 | 跨仓库回归与文档同步 | 0.5 | B1–B6、B8–B12 | — |
+| **B8** | 文案 artifact 化 + delegate 强制 `input_refs` | 1.5 | — | **已报 2** |
+| **B9** | 素材去重改 200 复用（`deduplicated: true` / `status: "reused"`） | 0.5 | — | **已报 3** |
+| **B10** | Plan 降级为「初始假设」的 UI 收口 | 1.0 | B1 | **N2** |
+| **B11** | 子 agent 与审批的 run 化 UI（消费 `agent_run_*` + 真实 approve） | 1.5 | B2、B3 | **N3/N4/N9** |
+| **B12** | 事件呈现收口（trimmed 传 list / 按 seq 配对 / 详情可展开 / 独立 thinking 缓冲） | 1.5 | B2、B5 | **N5/N6/N7/N8** |
+
+合计约 **14 人日**（原 7 批 ≈ 8 人日 + 新增 5 批 ≈ 6 人日）。
+
+### 8.3 B5 扩范围后的规格（替代 §2.5 的"假设 thinking 已可用"）
+
+- **后端生产端**：`LLMService.with_tools` 增加 `on_reasoning` 参数并逐块转发 provider 的
+  reasoning delta；`agent_loop.run_loop` 每收到一块 emit `thinking`（`detail={delta, done:false, round}`），
+  结束时 emit 一条 `done:true`。缓冲按 `task_id/run_id`，**不再复用全局单槽 `_LAST_REASONING`**。
+- **顺序约束**：同一轮内 `thinking` → `narration(preamble)` → `tool_call`，seq 必须单调；
+  模型只给 tool_call 不给 content 时不得伪造 narration/thinking。
+- **降级**：provider 不返回 reasoning 时，不发 `thinking`（前端显示"未提供"，保持现状语义）；
+  `reasoning_effort` 不支持时按 §2.5 记 degradation，但**不能**因此吞掉 thinking。
+
+### 8.4 B8/B9 的最小规格（原文未覆盖，这里补上）
+
+- **B8 文案 artifact 化**：
+  - `proceed` 落 `docs/script.md`（全文，不截断）；`TaskRequest.extra` 增加 `script_path` 与 `script_sha256`；
+  - `context_loader` 增加 `script` 段（默认给前 2000 字 + artifact 路径 + 全长/hash），
+    `LIMITS` 增加 `script` 键，`trimmed` 保留被裁键名；
+  - `delegate_agent` schema 增加 `input_refs: string[]`（artifact 路径），`agent_run` 解析并校验存在性与 hash；
+  - 验收：10k 字脚本 proceed → `context_loaded.sources` 含 script artifact（长度/hash 一致）→
+    `delegate_agent.args.input_refs` 有值 → 阶段拿到的 `creative_brief/script_text` 与原文一致。
+- **B9 素材去重**：
+  - `asset_manager` 不再用 `error="deduplicated"` 表达复用，改为 `status="reused"` + `deduplicated=True`；
+  - `api/asset.py` 对复用返回 **200**（不再 400），真正的格式/权限/写盘错误继续 4xx/5xx；
+  - 前端 `HomePage.pickAudio` / `AssetPanel.handleUpload` 显示「文件已存在，已复用」并继续使用返回的
+    `file_path`/`duration_sec`；
+  - 验收：同一 mp3 二次上传 → 200、`asset_id/file_path` 相同、`used_count` +1、UI 不报错。
+
