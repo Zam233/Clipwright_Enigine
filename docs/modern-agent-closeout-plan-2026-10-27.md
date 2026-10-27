@@ -314,3 +314,27 @@
 - 前端：未改动，仍 983 passed
 - 机械检查：`stage_capability|subagent_capability` → 仅 2 处历史注释；`pipeline_v2` 仍 0 import。
 
+---
+
+## 10. 执行记录（第二批：B9 / B10，2026-10-27）
+
+### 10.1 本轮完成
+
+| 批次 | 状态 | 关键改动 | 验收 |
+|---|---|---|---|
+| B9 前端 Task SSE 运行观测 | ✅ | `RunningSubagents` **改用任务事件**（`agent_run_start/update/end` 折叠成筹码，不再轮询 `/api/pipeline/{id}/subagents`）；`CopilotTaskRunTab` 新增三张卡片——模型轮次（intent/narration/thinking）、工具调用（call↔result 配对：状态/耗时/错误）、授权（`approval_request` 单列，等授权≠失败）；管理页空态改成"老管线已下线、新创作在上方任务列表" | 前端 **987 passed / 115 files**，`tsc --noEmit` 干净；`CopilotTaskRunTab.test.tsx` 新增 4 条（模型轮次 / 工具配对 / 授权卡 / 筹码来自事件） |
+| B10 M4 评估闭环 | ✅ | 新增 `services/replay.py`（`python -m clipwright.services.replay --bundle …`：校验事件投影自洽——序号单调、工具 call↔result 配对与因果、子 run 有始有终、必须有 task_end；退出码 0/1）与 `services/prompt_registry.py`（候选注册表 + 离线门禁 + 三次对比报告） | 后端 **4431 passed / 4 skipped / 1 xfailed**（本批 +11 条）；`tests/test_eval_loop.py`（11 条：CLI 退出码 / 缺证据必报 / 候选元数据强校验 / **成功率下降永不放过** / 成本超限 / 三次运行波动告警 / ≥30 步事实保持） |
+
+### 10.2 修正一处此前的判断（不是"补做"，是纠错）
+
+`PipelineRequest.dry_run` **不是死字段**：前端 `AgentPanel` / `ReviewPanel` / `HomePage` 都在请求体里
+传 `dry_run`，B2 之后 `_proceed_as_task` 正是读它写进 `Task.extra`。所以本轮**保留**该字段，
+只把它确认为"唯一传输口径"。上一轮把它列入"待清理"是错的，这里更正。
+
+### 10.3 仍未完成
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| B10 的 golden 真实选题三次跑 | ⚠️ 机制就绪、数据未跑 | 报告/门禁/方差告警都已实现并有单测；真正"同一选题跑三次"需要模型凭据与耗时，属运营动作，不是代码缺口 |
+| B9 的 `RunningSubagents` 旧轮询接口下线 | ⚠️ 前端已不调用 | 后端 `GET /api/pipeline/{id}/subagents` 仍保留（supervisor 抽屉在用），要不要删取决于 drawer 是否迁移 |
+
