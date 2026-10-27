@@ -604,7 +604,10 @@ class AgentKernel:
             context_text = loaded.get("text", "")
             emit(task.id, "context_loaded", "上下文已装载",
                  {"bytes": loaded.get("bytes", 0), "sources": loaded.get("sources", []),
-                  "trimmed": loaded.get("trimmed", False)})
+                  # B12/N5：`trimmed` 是**被裁掉的段名 list**，不是布尔。旧实现传 bool，
+                  # 前端永远看不到"裁掉了哪一段"。
+                  "trimmed": loaded.get("trimmed", []),
+                  "budget": loaded.get("budget", 0), "phase": "run"})
         except Exception as exc:  # noqa: BLE001 — 上下文失败不能阻断主循环
             logger.warning("上下文装载失败 %s: %s", task.id, exc)
 

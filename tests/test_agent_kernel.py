@@ -96,6 +96,22 @@ def test_run_emits_full_event_chain(tmp_path):
     assert task.status in ("done", "failed")
 
 
+def test_context_loaded_reports_trimmed_as_list(tmp_path):
+    """B12/N5：`trimmed` 必须是「被裁掉的段名 list」，不能退化成布尔。"""
+    k = _kernel(tmp_path)
+    task = k.create(TaskRequest(topic="做个视频", plan_only=False))
+    task = asyncio.run(k.run(task))
+
+    ctx_events = [e for e in te.events(task.id) if e.type == "context_loaded"]
+    assert ctx_events, "缺 context_loaded 事件"
+    for ev in ctx_events:
+        detail = ev.detail or {}
+        if "trimmed" in detail:
+            assert isinstance(detail["trimmed"], list), (
+                f"trimmed 应是 list，实际是 {type(detail['trimmed']).__name__}"
+            )
+
+
 def test_plan_is_only_a_hypothesis_and_never_executes(tmp_path, monkeypatch):
     """Q3 + M3：`plan()` 只产出初始假设，驱动器一次都不许被调用。"""
     driver = ScriptedDriver()
