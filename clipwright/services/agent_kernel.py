@@ -814,12 +814,12 @@ class AgentKernel:
         """每步一次的决策（PRD §16.10.1）：护栏先行，其余交 LLM。
 
         - `agent_decide_policy=off` → 只用规则（旧行为，回归基线）；
-        - `auto`（默认）→ 失败必判；成功的"只读/查询类"步骤按规则 continue（省一轮 token）；
-        - `always` → 每步都判。
+        - `always`（**默认**，用户裁定"每步决策都走 llm"）→ 每步都调 LLM 决策；
+        - `auto` → 失败必判；成功的"只读/查询类"步骤按规则 continue（省一轮 token，需显式配置）。
         """
         from clipwright.config import settings
 
-        policy = str(getattr(settings, "agent_decide_policy", "auto") or "auto").lower()
+        policy = str(getattr(settings, "agent_decide_policy", "always") or "always").lower()
         ok = str(outcome.get("status") or "") == "ok"
         failure = outcome.get("failure") or {}
         retryable = str(failure.get("retryable") or "") if isinstance(failure, dict) else ""
