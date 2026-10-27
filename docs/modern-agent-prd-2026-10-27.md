@@ -950,6 +950,20 @@ python -m clipwright.services.replay --bundle <bundle.json> --dry-run
 | `tests/test_memory_layers.py` | 三层隔离、无 provenance 降级、TTL/撤回、压缩承认省略、钉住保命、episodic 追加落盘 |
 | `tests/test_evaluation.py` | 指标与聚合、成本未知不填 0、差值对比、replay bundle 四要素、golden 读写 |
 
-基线与新增：后端 **4494 passed / 4 skipped / 1 xfailed**（本批前 4461，新增 23 条契约用例，
+基线与新增：后端 **4495 passed / 4 skipped / 1 xfailed**（本批前 4461，新增 24 条契约用例，
 另有 2 条旧断言按 M3 事实改写：`test_kernel_no_longer_routes_run_pipeline`、
 `test_default_executor_routes_spawn_capability`）。
+
+### 10.4 追补：别名迁移的参数名兼容（`3b270fe`）
+
+`default_executor` 改成别名表后暴露一个只有跑历史检查点才会遇到的坑：老计划步里存的是
+`get_subagent_status(subagent_id=…)`、`get_stage(stage=…)`、`list_stages`，而新工具只认
+`run_id`。适配层当时已经换成新工具，参数名却没认旧的——运行时会退化成"缺参数"。
+
+已修（`clipwright/tool/surface.py::_execute_agent`）：
+
+- `get_agent_run` / `cancel_agent_run` 把 `subagent_id` 认作 `run_id` 的旧名；
+- `list_agent_runs` 输出同时给 `runs` 与新字段下的旧名 `stages` / `blackboard`；
+- `get_agent_run` 补 `waited` / `converged`（旧 `wait_for_stage` 语义）；
+- 回归用例：`tests/test_agent_run.py::test_legacy_query_names_still_work_after_alias_migration`
+  （断言"不存在的 id 要报没找到，而不是报缺参数"）。
