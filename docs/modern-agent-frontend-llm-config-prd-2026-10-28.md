@@ -361,3 +361,68 @@ Pydantic/存储层允许字段缺省；数值约束为 temperature `0..2`、top_
     `file_path`/`duration_sec`；
   - 验收：同一 mp3 二次上传 → 200、`asset_id/file_path` 相同、`used_count` +1、UI 不报错。
 
+---
+
+## 9. 实施记录（按批次，含证据与偏离说明）
+
+> 基线：后端 `4436 passed / 4 skipped / 1 xfailed` + ruff 门禁；前端 `995 passed / 116 files`
+> （计入本批新增用例后为 **1004+ passed / 117 files**）+ `tsc` + `lint`（0 error）+ `build`。
+
+### B9 素材去重改 200 复用 ✅（已报缺口 3）
+
+| 改动 | 位置 | 证据 |
+|---|---|---|
+| 复用不再写 `error`，改 `status="reused"` + `deduplicated=True` | `clipwright/services/asset_manager.py`（`AssetInfo` 新增字段 + dedup 分支） | `tests/clipwright/test_asset_governance.py::test_upload_same_audio_twice_returns_200_and_reused`：二次上传 → 200、`asset_id/file_path` 相同、`used_count` +1 |
+| 复用时不覆盖库内文件名 | `clipwright/api/asset.py::upload_asset` | 同上断言 `filename` 两次一致 |
+| 治理摘要按 `deduplicated` 统计 | `clipwright/api/asset.py::governance_summary` | 兼容旧 `error=="deduplicated"` |
+| 前端两种入口都提示「已存在，已复用」 | `src/pages/HomePage.tsx`（配音）、`src/features/assets/AssetPanel.tsx`（批量素材） | `HomePage.test.tsx::B9` 断言提示文案而不是红字错误 |
+
+**偏离**：`AssetPanel` 只做 toast 级提示（组件 837 行、依赖多，未新增独立测试文件），由 `tsc + build` 保证类型与构建正确性。
+
+### B1 统一 Copilot 单层标签 ✅
+
+- `copilotStore`：新增 `'logs'` kind、`LOGS_TAB`、`FIXED_TABS`；`normalizeTabs` 把固定标签前置并补 `logs`、按 `MAX_TABS` 限长；`closeTab` 对固定标签 no-op。
+- `AgentPanel.tsx`：原「标题行 + 需求/日志二选一」拆除，改出 `RequirementsPane`（离线横幅 + 需求视图 + BottomBar + 时间轴差异浮层）与导出 `LogPanel`；`AgentPanel` 保留为兼容壳。
+- `CopilotDock.tsx`：`requirements → RequirementsPane`、`logs → LogPanel`，全局只有一排标签。
+- 证据：新增 `src/features/copilot/CopilotDock.test.tsx`（标签总数 = 固定+动态、`执行日志` 只出现一次、切 logs 不清空需求会话 store）、`CopilotTabBar.test.tsx` +3、`copilotStore.test.ts` +2；`EditorLayout.test.tsx` 的 AgentPanel mock 同步补齐导出（此前 8 项红）。
+
+### B2 主 agent 说话再行动 ✅
+
+- `LLMService.with_tools(on_preamble=...)`：确认 `success` 且存在 `tool_calls` 后**同步**回调一次（同轮多工具只一条；无 content 不回调；回调异常只记 warning）。
+- `agent_loop`：回调 emit `narration`，`detail={kind:"preamble", round, before_tool, tool_count, shadow}`；系统提示词新增「动手前先说话」规则。
+- 前端：`CopilotTaskRunTab` 的模型轮次把 `detail.kind==="preamble"` 标成「动手前」，排在工具调用卡片之前。
+- 证据：`tests/test_agent_loop.py` +4（序列 `narration→tool_call→tool_result`、无 content 不发、多工具单条、回调异常不阻断）；`CopilotTaskRunTab.test.tsx` +1。
+
+### B3 子 agent 任意 provider/model ✅
+
+- 新增 `model_router.resolve_explicit_route(provider, model)` → `ExplicitRoute{ok, route, reason, message}`；
+  失败分类 `provider_missing / provider_not_configured / model_missing / model_not_configured`。
+- `stage_subagent` / `supervisor.spawn` 的 `is_route_allowed` 换成显式解析；`_policy_failure` 支持传 category。
+- 自动选路（`choose_route` / `risk_judge_route`）**继续**受 `model_whitelist` 约束。
+- `ProviderCapabilities` 新增 `arbitrary_models`（openai/ollama = True，anthropic = False）：来源无模型清单时只有声明的 provider 放行。
+- 证据：`tests/test_model_router.py` +6、`tests/test_stage_subagent.py` +1（白名单非空仍放行 + 回填 provider/model）、`tests/test_subagent_spawn.py` 改写 2 项。
+- **顺带修的真实缺陷**：这三处测试此前会把 source 写进用户真实 `provider_sources.json`（并覆盖 `main` 角色绑定）。已加 autouse 隔离 fixture，并手工清理被写入的 10 个测试源、恢复角色绑定。
+
+### B4 逐模型 generation 参数 ✅
+
+- `provider_sources`：`GENERATION_LIMITS` / `normalize_generation`（越界截断、非法丢弃、未知键丢弃）/ `generation_for(provider, model)`；模型项无配置时不写空字段。
+- `ModelRoute.generation`；`LLMService._effective_generation_kwargs` 统一合并（模型配置 < route < 显式 kwargs）并按 `ProviderCapabilities.generation_params` 过滤，不支持的参数不下发且登记 `unsupported_parameter`。
+- 生效点：`generate`、`stream_generate`（`with_tools` 每轮都经 `generate` → 首轮/后续轮一致）；`chat` 的 `temperature/max_tokens` 改可选以免硬默认压掉配置。
+- 前端：`ProviderModel.generation` + `validateGeneration`（与后端同区间），模型行「生成参数」入口 + 三个数字输入 + 非法值 inline 错误 + 当前生效值展示。
+- 证据：`tests/clipwright/test_llm_generation_params.py`（9 项，含「每轮参数一致」「显式覆盖」「不支持则不发」）；`ProvidersPage.test.tsx` +2。
+
+### B5 reasoning 链路 ✅（已报缺口 1）
+
+- `LLMService.generate/with_tools` 新增 `on_reasoning`（with_tools 带 round 转发）。
+- `agent_loop`：reasoning → `thinking` 事件（`detail={delta, done:false, round}`），收尾一条 `done:true`；顺序 `thinking → narration(preamble) → tool_call`。
+- 缓冲改 `agent_loop._THINKING`（按 task_id，`take_thinking` 取走即清），`agent_kernel._emit_thinking` 不再读全局单槽 `_LAST_REASONING`（那是跨任务串台源）。
+- `reasoning_effort`：模型项可配（`REASONING_EFFORTS` 校验）、请求级 `extra.reasoning_effort` 可传；capability 不支持 → 不下发 + `degradation(scope="reasoning_effort")`，**thinking 照常转发**。
+- 前端：需求视图「推理强度」下拉（默认跟随模型配置），随 `proceed.extra_params.reasoning_effort` 下发，并明确提示不支持的模型会忽略。
+- 证据：`tests/test_agent_loop.py` +5、`tests/clipwright/test_llm_generation_params.py` +6、`AgentPanel.test.tsx` +1。
+- **偏离（必须记）**：`with_tools` 每轮走的是**非流式** `generate`（isobase 工具轮不支持 stream+tools 组合），因此 thinking 是「每轮一块」而非 token 级 delta；token 级思考仍由需求对话的 `structured_output_stream` 承担。前端两种形态都按同一 `thinking` 事件渲染。
+
+### 尚未完成（下一轮继续）
+
+B6（`/v1/models` 前端四态）、B8（文案 artifact 化 + `input_refs`）、B10（Plan 降级 UI）、
+B11（子 agent 与审批 run 化）、B12（事件呈现收口）、B7（跨仓库全量回归与文档同步）。
+
