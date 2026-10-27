@@ -483,6 +483,7 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
     import uuid
     from clipwright.authz import current_user_id
     from clipwright.schema.pipeline import PipelineRequest
+    from clipwright.services.trace import create_trace
     from clipwright.api.pipeline import (
         _pipeline_tasks, _running_pipelines, pipeline_timeout_sec,
     )

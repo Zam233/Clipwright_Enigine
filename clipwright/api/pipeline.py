@@ -248,9 +248,12 @@ async def _start_as_task(request: PipelineRequest, req: Request, uid: str = "") 
         from clipwright.plugins.hooks import HookPoint
         from clipwright.plugins.hooks_async import execute_async
 
+        # 这里还没有 task id（下一步才 create），用请求里的标识传给插件；
+        # 之前误用了 `pipeline_id`——该变量属于已删除的老管线后台任务，F821。
         await execute_async(HookPoint.PRE_PIPELINE, {
-            "pipeline_id": pipeline_id, "topic": request.topic,
+            "topic": request.topic,
             "persona_id": request.persona_id,
+            "category_plugin_id": request.category_plugin_id,
         })
     except Exception as e:  # noqa: BLE001 — hook 失败不能拦住开工
         logger.warning("pre_pipeline hook 执行失败: %s", e)
