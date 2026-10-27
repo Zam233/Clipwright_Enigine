@@ -318,6 +318,82 @@ class LLMService:
 
     # ── 基础接口 ──
 
+    def _effective_generation_kwargs(
+        self,
+        model: Optional[str] | None,
+        use_flash: bool,
+        kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """解析并合并逐模型生成参数（2026-10-28 PRD B4）。
+
+        优先级（后者覆盖前者）：来源里的模型项 `generation` → 活动 route 的
+        `generation` → 调用方显式 kwargs。随后按 provider capability 过滤：
+        不支持的参数**不下发**，登记 `unsupported_parameter` 降级（不假装生效）。
+
+        `generate`/`stream_generate` 都走这里，因此工具循环每一轮拿到的参数一致。
+        """
+        try:
+            from clipwright.providers.base import llm_capabilities
+            from clipwright.services.degradation import note_degradation
+            from clipwright.services.model_router import active_route
+            from clipwright.services.provider_sources import (
+                GENERATION_LIMITS,
+                generation_for,
+            )
+        except Exception:  # noqa: BLE001 — 依赖不可用时不做任何改写
+            return kwargs
+
+        keys = tuple(GENERATION_LIMITS)
+        try:
+            route = active_route()
+        except Exception:  # noqa: BLE001
+            route = None
+        provider = str(getattr(route, "provider", "") or "") or (
+            (settings.llm_flash_provider or self.provider) if use_flash else self.provider
+        )
+        target_model = (
+            model or str(getattr(route, "model", "") or "")
+            or (settings.llm_flash_model if use_flash else settings.llm_model)
+        )
+
+        resolved: dict[str, Any] = {}
+        try:
+            resolved.update(generation_for(provider, target_model) or {})
+        except Exception as e:  # noqa: BLE001
+            logger.debug("读取逐模型生成参数失败（%s/%s）: %s", provider, target_model, e)
+        route_gen = getattr(route, "generation", None) if route is not None else None
+        if isinstance(route_gen, dict):
+            resolved.update({k: v for k, v in route_gen.items() if v is not None})
+        for key in keys:
+            if key in kwargs and kwargs[key] is not None:
+                resolved[key] = kwargs[key]
+        if not resolved:
+            return kwargs
+
+        impl = _resolve_llm_provider(provider)
+        caps = llm_capabilities(impl, str(target_model)) if impl is not None else None
+        allowed = set(getattr(caps, "generation_params", keys) if caps else keys)
+
+        merged = dict(kwargs)
+        for key in keys:
+            if key not in resolved:
+                continue
+            value = resolved[key]
+            if key in allowed:
+                merged[key] = value
+                continue
+            merged.pop(key, None)
+            if key in kwargs and kwargs[key] is not None:
+                # 只有调用方**显式**要求过才值得报降级；模型配置里的值静默忽略即可
+                # （那是配置与 provider 能力不匹配，日志足够）
+                note_degradation(
+                    kind="unsupported_parameter",
+                    detail=f"{provider}/{target_model} 不支持 {key}={value}，已忽略",
+                    scope="llm",
+                    impact="使用 provider 默认值",
+                )
+        return merged
+
     async def generate(
         self,
         messages: list[dict[str, str]],
@@ -354,6 +430,8 @@ class LLMService:
         client, _routed_model = self._routed_client_and_model(use_flash)
         if _routed_model and not model:
             model = _routed_model
+        # B4：逐模型生成参数（模型配置 / route / 显式 kwargs 合并后按能力过滤）
+        kwargs = self._effective_generation_kwargs(model, use_flash, kwargs)
         logger.debug("LLM generate 请求: flash=%s, model=%s, timeout=%ds, messages=%s, tools=%s",
                      use_flash, model or settings.llm_model, timeout,
                      json.dumps(messages, ensure_ascii=False)[:500],
@@ -451,12 +529,21 @@ class LLMService:
     async def chat(
         self,
         messages: list[dict[str, str]],
-        temperature: float = 0.7,
-        max_tokens: int = 4096,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
         use_flash: bool = False,
         **kwargs: Any,
     ) -> str:
-        """发送聊天请求，返回纯文本内容。"""
+        """发送聊天请求，返回纯文本内容。
+
+        B4：`temperature/max_tokens` 默认 None = 交给逐模型配置；只有调用方显式
+        传值时才覆盖配置。两者最终都未解析出值时，退回旧默认（0.7 / 4096）。
+        """
+        eff = self._effective_generation_kwargs(None, use_flash, {})
+        if temperature is None:
+            temperature = float(eff.get("temperature", 0.7))
+        if max_tokens is None:
+            max_tokens = int(eff.get("max_tokens", 4096))
         logger.debug("LLM chat 请求: flash=%s, messages=%.500s, temperature=%s",
                      use_flash, json.dumps(messages, ensure_ascii=False)[:500], temperature)
         resp = await self.generate(
@@ -609,6 +696,8 @@ class LLMService:
         if timeout:
             kwargs["timeout"] = timeout
         kwargs.pop("pipeline_id", None)
+        # B4：流式路径同样使用逐模型生成参数（首轮/后续轮一致）
+        kwargs = self._effective_generation_kwargs(mdl, use_flash, kwargs)
 
         queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()
         loop = asyncio.get_running_loop()

@@ -79,17 +79,18 @@ async def spawn_subagent(
         max_turns=int(max_turns or 5),
     )
 
-    # 2.5) 模型白名单：越权 provider/model 必须在**派发前**拒绝。
-    # 旧实现直接 ModelRoute(provider, model) 就走，`_routed_client_and_model` 拿不到凭据时
-    # 只打一行 warning 就回退默认模型——用户以为派了 X，实际跑的是默认模型，属于欺骗。
+    # 2.5) 显式 route：只校验「provider 已配置 + 模型可用」，不受 model_whitelist 阻断
+    # （2026-10-28 PRD B3）。旧实现走 is_route_allowed，白名单非空时把用户点名的
+    # 模型挡在门外；`_routed_client_and_model` 拿不到凭据时又只打 warning 回退默认
+    # 模型（用户以为派了 X，实际跑默认模型，属于欺骗）——现在解析失败直接拒绝。
     if spec.provider or spec.model:
-        from clipwright.services.model_router import ModelRoute, is_route_allowed
+        from clipwright.services.model_router import resolve_explicit_route
 
-        _route = ModelRoute(provider=spec.provider, model=spec.model)
-        if not is_route_allowed(_route):
+        resolved = resolve_explicit_route(spec.provider, spec.model)
+        if not resolved.ok:
             raise SpawnError(
-                f"模型不在白名单：{_route.key}（请先在「模型提供商」里配置该来源，"
-                "或把 provider/model 留空以继承默认模型）"
+                f"显式模型不可用：{resolved.message}（{resolved.reason}）"
+                "；或把 provider/model 留空以继承默认模型"
             )
 
     # 3) 预算闸（未配置预算恒不阻断）

@@ -30,6 +30,16 @@ def _clean_routes(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _isolate_provider_sources(tmp_path):
+    """B3：显式 route 测试会真的创建 provider 源——必须隔离，不能写进用户配置。"""
+    from clipwright.services import provider_sources as ps
+
+    ps.reset_for_tests(tmp_path / "provider_sources.json")
+    yield
+    ps.reset_for_tests(None)
+
+
 def _prov() -> str:
     return str(settings.llm_provider)
 
@@ -277,3 +287,85 @@ def test_llm_service_cross_provider_builds_client_with_credentials(monkeypatch):
     assert model == "their-model"
     assert built["constructed"] == "other-provider"
     assert built["model"] == "their-model"
+
+
+# ── B3：显式 route（子 agent 指定 provider/model）────────────────
+
+
+def _make_source(provider: str, models: list[str], *, kind: str = "llm") -> str:
+    from clipwright.services import provider_sources as ps
+
+    src = ps.create_source({
+        "name": f"src-{provider}", "kind": kind, "provider": provider,
+        "base_url": f"https://{provider}.example.com",
+        "api_keys": ["sk-explicit-0001"], "models": list(models),
+    })
+    return str(src["id"])
+
+
+def test_resolve_explicit_route_unknown_provider(monkeypatch):
+    monkeypatch.setattr(settings, "llm_provider", "openai", raising=False)
+    res = mr.resolve_explicit_route("从没配过的源", "any-model")
+    assert res.ok is False
+    assert res.reason == "provider_not_configured"
+    assert res.route is None
+    assert "未配置" in res.message
+
+
+def test_resolve_explicit_route_configured_model(monkeypatch):
+    monkeypatch.setattr(settings, "llm_provider", "openai", raising=False)
+    _make_source("anthropic", ["claude-3-haiku"])
+    res = mr.resolve_explicit_route("anthropic", "claude-3-haiku")
+    assert res.ok is True
+    assert res.route is not None
+    assert res.route.key == "anthropic/claude-3-haiku"
+
+
+def test_resolve_explicit_route_model_not_in_source(monkeypatch):
+    """来源有清单、模型不在其中、adapter 又不许任意模型 → 如实拒绝。"""
+    monkeypatch.setattr(settings, "llm_provider", "openai", raising=False)
+    _make_source("anthropic", ["claude-3-haiku"])
+    res = mr.resolve_explicit_route("anthropic", "claude-3-opus")
+    assert res.ok is False
+    assert res.reason == "model_not_configured"
+    assert "不在" in res.message
+
+
+def test_resolve_explicit_route_empty_list_requires_adapter_declaration(monkeypatch):
+    """来源没有模型清单时：只有声明了 arbitrary_models 的 provider 才放行。"""
+    monkeypatch.setattr(settings, "llm_provider", "openai", raising=False)
+    _make_source("anthropic", [])  # 有源、有密钥、无模型清单
+    _make_source("openai", [])     # openai adapter 声明 arbitrary_models=True
+
+    anthropic_res = mr.resolve_explicit_route("anthropic", "claude-3-haiku")
+    assert anthropic_res.ok is False
+    assert anthropic_res.reason == "model_not_configured"
+
+    openai_res = mr.resolve_explicit_route("openai", "gpt-whatever-2026")
+    assert openai_res.ok is True
+    assert openai_res.route is not None
+    assert openai_res.route.model == "gpt-whatever-2026"
+
+
+def test_resolve_explicit_route_ignores_model_whitelist(monkeypatch):
+    """白名单非空也不能挡住已配置 provider + 可用模型的显式 route。"""
+    monkeypatch.setattr(settings, "llm_provider", "openai", raising=False)
+    monkeypatch.setattr(settings, "model_whitelist", ["openai/gpt-x"], raising=False)
+    _make_source("anthropic", ["claude-3-haiku"])
+    # 自动选路仍然受白名单约束
+    assert mr.is_route_allowed(mr.ModelRoute(provider="anthropic", model="claude-3-haiku")) is False
+    # 显式 route 不看白名单，只看 provider 是否已配置 + 模型是否可用
+    assert mr.resolve_explicit_route("anthropic", "claude-3-haiku").ok is True
+
+
+def test_resolve_explicit_route_falls_back_to_bound_model(monkeypatch):
+    """模型留空时用该来源的绑定/默认模型，而不是直接报错。"""
+    monkeypatch.setattr(settings, "llm_provider", "openai", raising=False)
+    from clipwright.services import provider_sources as ps
+
+    sid = _make_source("anthropic", ["claude-3-haiku"])
+    ps.set_role("main", sid, "claude-3-haiku")
+    res = mr.resolve_explicit_route("anthropic", "")
+    assert res.ok is True
+    assert res.route is not None
+    assert res.route.model == "claude-3-haiku"

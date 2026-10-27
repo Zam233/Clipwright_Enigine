@@ -49,6 +49,16 @@ def _clean(monkeypatch):
     monkeypatch.setattr(settings, "agent_mode", "on")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_provider_sources(tmp_path):
+    """B3：显式 route 测试会创建 provider 源——必须隔离，不能写进用户配置。"""
+    from clipwright.services import provider_sources as ps
+
+    ps.reset_for_tests(tmp_path / "provider_sources.json")
+    yield
+    ps.reset_for_tests(None)
+
+
 def _patch_agent(monkeypatch, payload, delay: float = 0.0):
     monkeypatch.setattr(stage_subagent, "agent_for",
                         lambda stage: _FakeAgent(payload, delay=delay))
@@ -220,13 +230,48 @@ def test_run_stage_timeout_is_categorized(monkeypatch) -> None:
     assert result.failure.retryable == "retry_same"
 
 
-def test_run_stage_rejects_model_outside_whitelist(monkeypatch) -> None:
+def test_run_stage_rejects_unconfigured_provider(monkeypatch) -> None:
+    """B3：显式 provider 未配置 → 派发前拒绝，且失败分类可读（不是笼统 policy_refused）。"""
     _patch_agent(monkeypatch, {"scenes": []})
     monkeypatch.setattr(settings, "model_whitelist", [], raising=False)
     result = asyncio.run(stage_subagent.run_stage(
         _Task(), StageSpec(stage="structure", provider="不存在的源", model="x1")))
     assert result.status == "refused"
-    assert "白名单" in result.error
+    assert "未配置" in result.error
+    assert result.failure is not None
+    assert result.failure.category == "provider_not_configured"
+
+
+def test_run_stage_explicit_route_not_blocked_by_whitelist(monkeypatch) -> None:
+    """B3：白名单非空时，已配置 provider + 可用模型的显式 route 仍要放行。"""
+    from clipwright.services import provider_sources as ps
+
+    src = ps.create_source({
+        "name": "显式源", "kind": "llm", "provider": "anthropic",
+        "base_url": "https://anthropic.example.com",
+        "api_keys": ["sk-explicit-0001"], "models": [{"id": "claude-3-haiku"}],
+    })
+    assert src["id"]
+    monkeypatch.setattr(settings, "model_whitelist", ["openai/gpt-x"], raising=False)
+    seen: dict[str, object] = {}
+
+    class _Spy:
+        async def execute(self, input_obj, context):
+            from clipwright.services.model_router import active_route
+
+            seen["route"] = active_route()
+            return {"scenes": []}
+
+    monkeypatch.setattr(stage_subagent, "agent_for", lambda stage: _Spy())
+    result = asyncio.run(stage_subagent.run_stage(
+        _Task(), StageSpec(stage="structure", provider="anthropic", model="claude-3-haiku")))
+    assert result.status != "refused", result.error
+    route = seen.get("route")
+    assert getattr(route, "provider", "") == "anthropic"
+    assert getattr(route, "model", "") == "claude-3-haiku"
+    # AgentResult 回填实际生效的 provider/model
+    assert result.provider == "anthropic"
+    assert result.model == "claude-3-haiku"
 
 
 def test_stage_result_exposes_no_fake_cost(monkeypatch) -> None:

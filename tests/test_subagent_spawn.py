@@ -35,6 +35,16 @@ def _clean():
     AgentRegistry.clear()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_provider_sources(tmp_path):
+    """B3：spawn 测试会创建 provider 源——必须隔离，不能写进用户配置。"""
+    from clipwright.services import provider_sources as ps
+
+    ps.reset_for_tests(tmp_path / "provider_sources.json")
+    yield
+    ps.reset_for_tests(None)
+
+
 def _ctx(extra: dict | None = None) -> SimpleNamespace:
     return SimpleNamespace(pipeline_id="pl_spawn", extra_params=dict(extra or {}))
 
@@ -404,13 +414,18 @@ def test_zero_limit_means_unlimited(monkeypatch):
 def test_subagent_usage_is_accounted_and_priced(monkeypatch):
     """子代理的 token 必须进 llm_tracker，并折算进「子代理开销」。"""
     from clipwright.config import settings
-    from clipwright.services import budget_guard, llm_tracker
+    from clipwright.services import budget_guard, llm_tracker, provider_sources as ps
 
     llm_tracker._llm_calls.clear()
     monkeypatch.setattr(settings, "model_prices", {"m1": {"in": 1.0, "out": 2.0}},
                         raising=False)
-    # 模型白名单校验（B7）之后，provider 必须是已配置来源；这里白名单显式放开
-    monkeypatch.setattr(settings, "model_whitelist", ["p/m1"], raising=False)
+    # B3：显式 route 要求 provider 真的已配置（有凭据 + 模型清单），不再靠白名单放行
+    monkeypatch.setattr(settings, "model_whitelist", [], raising=False)
+    ps.create_source({
+        "name": "spawn-src", "kind": "llm", "provider": "p",
+        "base_url": "https://p.example.com",
+        "api_keys": ["sk-spawn-0001"], "models": [{"id": "m1"}],
+    })
     _fake_llm(monkeypatch, usage=(1000, 500))
 
     result = asyncio.run(sp.spawn_subagent(
@@ -443,8 +458,8 @@ def test_subagent_without_usage_does_not_fabricate_cost(monkeypatch):
     assert llm_tracker.get_llm_calls("pl_spawn") == []
 
 
-def test_rejects_model_outside_whitelist(monkeypatch):
-    """B7：越权 provider/model 必须在派发前拒绝，不许静默回退默认模型。"""
+def test_rejects_unconfigured_provider(monkeypatch):
+    """B3：未配置的 provider 必须在派发前拒绝，不许静默回退默认模型。"""
     from clipwright.config import settings
 
     monkeypatch.setattr(settings, "model_whitelist", [], raising=False)
@@ -454,5 +469,6 @@ def test_rejects_model_outside_whitelist(monkeypatch):
         asyncio.run(sp.spawn_subagent(
             _ctx(), role="越权角色", provider="不存在的源", model="x1",
         ))
-    assert "白名单" in str(exc.value)
+    assert "未配置" in str(exc.value)
+    assert "provider_not_configured" in str(exc.value)
     assert called == []  # 拒绝发生在任何 LLM 调用之前

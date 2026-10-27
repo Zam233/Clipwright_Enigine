@@ -47,19 +47,25 @@ class ModelRoute:
     tier: str = "std"
     price_in: float = 0.0
     price_out: float = 0.0
+    #: 逐模型生成参数（temperature/top_p/max_tokens），来源是「模型提供商」里的
+    #: 模型项配置（2026-10-28 PRD B4）；None/空 = 沿用调用方或默认值。
+    generation: Optional[dict[str, Any]] = None
 
     @property
     def key(self) -> str:
         return f"{self.provider}/{self.model}"
 
     def to_public(self) -> dict[str, Any]:
-        return {
+        out = {
             "provider": self.provider,
             "model": self.model,
             "tier": self.tier,
             "price_in": self.price_in,
             "price_out": self.price_out,
         }
+        if self.generation:
+            out["generation"] = dict(self.generation)
+        return out
 
 
 # ── 白名单（与 B9 的 risk_judge 共用）─────────────────────────
@@ -104,6 +110,144 @@ def is_route_allowed(route: ModelRoute) -> bool:
     if explicit:
         return route.key in explicit or route.model in explicit
     return route.provider in allowed_providers()
+
+
+# ── 显式 route（子 agent 指定 provider/model；2026-10-28 PRD B3）─────
+#
+# 显式 route 与「自动选路」是两件事：
+# - 自动选路（choose_route / risk_judge_route）继续受 `model_whitelist` 约束；
+# - 显式 route 只校验「provider 已配置 + 模型可用」，**不受 whitelist 阻断**
+#   ——用户/主 agent 点名要某个模型时，白名单不该把它挡掉。
+# 但「模型可用」必须真的可判：来源没配模型清单时，只有当 provider adapter
+# 明确声明「允许任意模型」才放行，否则如实拒绝（不能因为列表接口失败就放权）。
+
+
+@dataclass(frozen=True)
+class ExplicitRoute:
+    """显式 route 解析结果（失败给可读原因，不静默回退默认模型）。"""
+
+    ok: bool
+    route: Optional[ModelRoute] = None
+    #: provider_missing / provider_not_configured / model_missing / model_not_configured
+    reason: str = ""
+    message: str = ""
+
+    @property
+    def category(self) -> str:
+        """失败分类（供 FailureReport.category 使用）。"""
+        return self.reason or "ok"
+
+
+def _generation_for(provider: str, model: str) -> Optional[dict[str, Any]]:
+    """该 (provider, model) 的逐模型生成参数（无配置 → None）。"""
+    try:
+        from clipwright.services.provider_sources import generation_for
+
+        gen = generation_for(provider, model)
+    except Exception as e:  # noqa: BLE001 — 读取失败按未配置处理
+        logger.debug("读取模型生成参数失败（%s/%s）: %s", provider, model, e)
+        return None
+    return gen or None
+
+
+def _source_models(provider: str) -> list[str]:
+    """某 provider 在「模型提供商」里配置的模型 id（只取启用的）。"""
+    out: list[str] = []
+    try:
+        from clipwright.services import provider_sources as _ps
+
+        for src in _ps.list_sources(kind="llm", public=True):
+            if str(src.get("provider") or "") != provider:
+                continue
+            for m in src.get("models") or []:
+                if not isinstance(m, dict):
+                    continue
+                mid = str(m.get("id") or "")
+                if mid and m.get("enabled", True) and mid not in out:
+                    out.append(mid)
+    except Exception as e:  # noqa: BLE001 — 源存储不可用 → 视为无清单
+        logger.debug("读取 provider 模型清单失败（%s）: %s", provider, e)
+    return out
+
+
+def provider_allows_arbitrary_models(provider: str) -> bool:
+    """provider adapter 是否明确声明「允许任意模型 id」。
+
+    只有声明了的（OpenAI 兼容网关 / Ollama 这类不维护固定清单的）才在
+    「来源没有模型清单」时放行；其余一律要求先把模型加进来源。
+    """
+    try:
+        from clipwright.providers.base import llm_capabilities
+        from clipwright.services.llm import _resolve_llm_provider
+
+        impl = _resolve_llm_provider(provider)
+        if impl is None:
+            return False
+        caps = llm_capabilities(impl, "")
+        return bool(getattr(caps, "arbitrary_models", False))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("读取 provider 能力失败（%s）: %s", provider, e)
+        return False
+
+
+def resolve_explicit_route(provider: str, model: str = "") -> ExplicitRoute:
+    """解析子 agent 显式指定的 provider/model。
+
+    - provider 未配置 → `provider_not_configured`（调用方据此拒绝，且**不**回退默认 client）；
+    - 模型为空 → 用该来源绑定/默认模型；
+    - 来源有模型清单而目标模型不在其中（且 adapter 不允许任意模型）→ `model_not_configured`；
+    - 来源无模型清单且 adapter 未声明允许任意模型 → `model_not_configured`。
+    """
+    prov = str(provider or "").strip()
+    if not prov:
+        return ExplicitRoute(False, reason="provider_missing", message="未指定 provider")
+    configured = allowed_providers()
+    if prov not in configured:
+        return ExplicitRoute(
+            False, reason="provider_not_configured",
+            message=(f"provider {prov} 未配置（已配置：{sorted(configured) or '无'}）；"
+                     "请先在「模型提供商」里添加该来源"),
+        )
+    creds = resolve_provider_credentials(prov)
+    if not creds:
+        return ExplicitRoute(
+            False, reason="provider_not_configured",
+            message=f"provider {prov} 没有可用的凭据（来源已失效或未填密钥）",
+        )
+
+    wanted = str(model or "").strip() or str(creds.get("model") or "").strip()
+    if not wanted:
+        try:
+            from clipwright.services.llm import _resolve_llm_provider
+
+            impl = _resolve_llm_provider(prov)
+            wanted = str(getattr(impl, "default_model", lambda: "")() or "").strip()
+        except Exception:  # noqa: BLE001
+            wanted = ""
+    if not wanted:
+        return ExplicitRoute(
+            False, reason="model_missing",
+            message=f"provider {prov} 未指定模型，且来源里没有默认模型",
+        )
+
+    available = _source_models(prov)
+    if wanted in available:
+        return ExplicitRoute(True, route=ModelRoute(
+            provider=prov, model=wanted, generation=_generation_for(prov, wanted)))
+    if provider_allows_arbitrary_models(prov):
+        return ExplicitRoute(True, route=ModelRoute(
+            provider=prov, model=wanted, generation=_generation_for(prov, wanted)))
+    if available:
+        return ExplicitRoute(
+            False, reason="model_not_configured",
+            message=(f"模型 {wanted} 不在 provider {prov} 的模型清单里"
+                     f"（可用：{available[:8]}）"),
+        )
+    return ExplicitRoute(
+        False, reason="model_not_configured",
+        message=(f"provider {prov} 还没有模型清单，无法确认 {wanted} 可用；"
+                 "请先在「模型提供商」里获取或添加该模型"),
+    )
 
 
 def resolve_provider_credentials(provider: str) -> Optional[dict[str, Any]]:

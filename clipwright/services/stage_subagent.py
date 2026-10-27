@@ -332,21 +332,27 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
         _record(task_id, result)
         return result
 
-    # 2) 路由（含白名单校验：越权立即拒绝，不静默回退）
+    # 2) 路由：显式 provider/model 只校验「已配置 provider + 模型可用」，
+    #    不受 model_whitelist 阻断（2026-10-28 PRD B3）；解析失败如实拒绝，
+    #    绝不静默回退默认模型（用户以为派了 X、实际跑默认模型属于欺骗）。
     route = None
     if spec.provider or spec.model:
-        from clipwright.services.model_router import ModelRoute, is_route_allowed
+        from clipwright.services.model_router import resolve_explicit_route
 
-        route = ModelRoute(provider=spec.provider, model=spec.model)
-        if not is_route_allowed(route):
+        resolved = resolve_explicit_route(spec.provider, spec.model)
+        if not resolved.ok:
             result = StageResult(
                 stage=stage, status="refused",
-                error=f"模型不在白名单：{route.key}",
-                failure=_policy_failure(route.key),
+                error=f"显式模型不可用：{resolved.message}",
+                failure=_policy_failure(
+                    f"{spec.provider or '<默认>'}/{spec.model or '<默认>'}",
+                    category=resolved.reason or "provider_not_configured",
+                ),
                 duration_ms=int((time.monotonic() - started) * 1000),
             )
             _record(task_id, result)
             return result
+        route = resolved.route
 
     # 3) 执行
     from clipwright.services.degradation import degradation_scope
@@ -632,13 +638,19 @@ def _timeout_failure(stage: str, timeout_sec: float) -> Any:
     )
 
 
-def _policy_failure(key: str) -> Any:
+def _policy_failure(key: str, category: str = "policy_refused") -> Any:
+    """策略拒绝的失败报告。
+
+    `category` 默认仍是 `policy_refused`（白名单时代语义）；显式 route 解析失败时
+    带上具体原因（`provider_not_configured` / `model_not_configured` …），
+    让主 agent 能看出「是 provider 没配」还是「模型名不对」（PRD B3）。
+    """
     from clipwright.schema.agent import FailureReport
 
     return FailureReport(
         # 与 PRD §5.4/A9 及 stage/pipeline 两处 capability 统一用 policy_refused
-        category="policy_refused",
-        blocking_point=f"模型不在白名单：{key}",
+        category=category or "policy_refused",
+        blocking_point=f"模型不可用：{key}",
         retryable="permanent",
     )
 

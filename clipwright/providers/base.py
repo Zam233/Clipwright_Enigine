@@ -22,6 +22,15 @@ class ProviderCapabilities:
     vision: bool = False
     max_context_tokens: int = 0
     max_concurrency: int = 0
+    #: 是否允许「来源没有模型清单时也接受任意 model id」（OpenAI 兼容网关/Ollama 这类
+    #: 不维护固定清单的 provider 声明 True）。显式 route 校验据此决定放行还是拒绝
+    #: （2026-10-28 PRD B3）。默认 False = 必须有清单才能确认模型可用。
+    arbitrary_models: bool = False
+    #: 是否支持 `reasoning_effort` 参数（2026-10-28 PRD B5）；False = 忽略并报降级。
+    reasoning_effort: bool = False
+    #: 支持的生成参数（temperature/top_p/max_tokens…）。逐模型配置按此过滤，
+    #: 不支持的参数**不下发**并登记 degradation（2026-10-28 PRD B4）。
+    generation_params: tuple[str, ...] = ("temperature", "top_p", "max_tokens")
 
 
 @runtime_checkable

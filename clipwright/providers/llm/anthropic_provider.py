@@ -18,6 +18,10 @@ class AnthropicProvider:
         return ProviderCapabilities(
             streaming=True, tool_calls=True, json_mode=False, vision=True,
             max_context_tokens=200_000, max_concurrency=4,
+            # Anthropic 有权威模型清单（/v1/models）：来源没清单时不放行任意 id
+            arbitrary_models=False,
+            # 支持 extended thinking，但预算映射由 adapter 语义决定（B5 单独处理）
+            reasoning_effort=True,
         )
 
     def default_model(self) -> str:
