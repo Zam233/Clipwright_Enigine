@@ -161,7 +161,13 @@ async def delete_model(source_id: str, model_id: str, request: Request = None) -
 
 @router.post("/{source_id}/models/fetch")
 async def fetch_models(source_id: str, request: Request = None) -> dict[str, Any]:
-    """「获取模型列表」：调用 provider 实现的 list_models；失败返回空列表 + 原因。"""
+    """「获取模型列表」（2026-10-28 PRD B6 契约）。
+
+    响应：`{status, models, source_id, provider, note, error_code?}`
+    - `status`：`ok` | `empty` | `unsupported` | `error`；失败仍是 HTTP 200（source 不存在 404）；
+    - **只有 `status="ok"` 才覆盖已存模型**，空/失败一律保留旧清单，前端可继续手动添加；
+    - 旧的 `models` / `note` 字段保留（旧前端只读这两个）。
+    """
     _require_admin(request)
     src = ps.get_source(source_id, public=False)
     if src is None:
@@ -169,24 +175,30 @@ async def fetch_models(source_id: str, request: Request = None) -> dict[str, Any
     resolved = ps.resolve_for_source(source_id) if hasattr(ps, "resolve_for_source") else None
     provider = str(src.get("provider") or "")
     try:
-        from clipwright.providers.model_listing import (
-            SUPPORTED_LISTING_PROVIDERS,
-            list_models_for_source,
-        )
-        models = await list_models_for_source(provider, resolved or {})
-        if not models:
-            if provider not in SUPPORTED_LISTING_PROVIDERS:
-                # B5：区分「不支持自动拉取」与「拉取失败」，提示语不再误导
-                return {"models": [], "note": (
-                    f"provider「{provider}」不支持自动获取模型列表（本地/自建端点常见），"
-                    "请用「自定义模型」手动添加"
-                )}
-            return {"models": [], "note": "未获取到模型（检查 API Key / Base URL，或手动添加）"}
-        ps.set_models(source_id, [{"id": m, "name": m, "enabled": True} for m in models])
-        return {"models": ps.get_source(source_id)["models"]}
+        from clipwright.providers.model_listing import list_models_result
+
+        result = await list_models_result(provider, resolved or {})
     except Exception as e:  # noqa: BLE001 — 拉取失败不阻断（前端可自定义）
         logger.warning("获取模型列表失败 (%s): %s", provider, e)
-        return {"models": [], "note": f"获取失败：{e}"}
+        result = None
+        body = {
+            "status": "error", "error_code": "http_error",
+            "models": [], "note": f"获取失败：{e}",
+            "source_id": source_id, "provider": provider,
+        }
+    if result is not None:
+        body = {**result.to_public(), "source_id": source_id, "provider": provider}
+
+    if result is not None and result.status == "ok" and result.models:
+        ps.set_models(
+            source_id,
+            [{"id": m, "name": m, "enabled": True} for m in result.models],
+        )
+        # 回传落库后的形态（含 enabled），前端可直接渲染
+        body["models"] = ps.get_source(source_id)["models"]
+    elif result is not None and result.status == "ok":
+        body["models"] = []
+    return body
 
 
 @router.post("/{source_id}/test")
