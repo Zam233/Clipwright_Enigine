@@ -173,6 +173,8 @@ async def run_loop(task: Any, *, context_text: str = "",
     from clipwright.services.llm import LLMService
 
     task_id = str(getattr(task, "id", "") or "")
+    # 每次 run_loop 都是新的思考缓冲（同一任务续跑时不该继承上一次的残留）
+    _THINKING.pop(task_id, None)
     tools = build_tools()
     emit(task_id, "narration",
          "主 agent 开始行动（工具循环·影子）" if shadow else "主 agent 开始行动（工具循环）",
@@ -291,6 +293,35 @@ async def run_loop(task: Any, *, context_text: str = "",
               "before_tool": names[:5], "tool_count": len(tool_calls),
               "shadow": shadow})
 
+    def _on_reasoning(delta: str, round_no: int) -> None:
+        """B5：provider 给的 reasoning 逐轮转发成 `thinking`（不再闷在日志里）。
+
+        顺序契约：同一轮里 thinking → narration(preamble) → tool_call。
+        `generate` 的 on_reasoning 在本轮 tool_calls 判定**之前**触发，因此 thinking
+        天然早于 narration。
+        """
+        if not delta:
+            return
+        _append_thinking(task_id, delta)
+        emit(task_id, "thinking", delta[:2000],
+             {"delta": delta, "done": False, "round": round_no, "shadow": shadow})
+
+    thinking_round = {"n": 0}
+
+    def _reasoning_cb(delta: str, round_no: int = 1) -> None:
+        thinking_round["n"] = max(thinking_round["n"], int(round_no or 1))
+        _on_reasoning(delta, round_no)
+
+    # B5：任务级 reasoning_effort（未设置时沿用模型配置；provider 不支持则在
+    # llm 层记 degradation 并在事件流里给出"已忽略"）。
+    _request = getattr(task, "request", task)
+    _effort = ""
+    try:
+        _extra = getattr(_request, "extra", None) or {}
+        _effort = str((_extra or {}).get("reasoning_effort") or "").strip().lower()
+    except Exception:  # noqa: BLE001
+        _effort = ""
+    reasoning_kwargs: dict[str, Any] = {"reasoning_effort": _effort} if _effort else {}
     try:
         resp = await LLMService().with_tools(
             system_prompt=_system_prompt(task),
@@ -299,7 +330,9 @@ async def run_loop(task: Any, *, context_text: str = "",
             tools=tools,
             max_tool_rounds=max(1, min(max_rounds, 12)),
             on_preamble=_on_preamble,
+            on_reasoning=_reasoning_cb,
             pipeline_id=task_id,
+            **reasoning_kwargs,
         )
     except LoopAborted as exc:
         emit(task_id, "gate_hit", f"触闸：{exc.reason}",
@@ -324,6 +357,11 @@ async def run_loop(task: Any, *, context_text: str = "",
         }
 
     text = str(getattr(resp, "content", "") or "").strip()
+    # B5：思考收尾（有 thinking 才发 done，避免前端凭空显示"思考结束"）
+    if _THINKING.get(task_id):
+        emit(task_id, "thinking", "",
+             {"delta": "", "done": True, "round": thinking_round["n"] or 1,
+              "shadow": shadow})
     emit(task_id, "report", "主 agent 本轮结论",
          {"stage": "kernel", "status": "ok", "bullets": [text[:300]] if text else [],
           "tool_calls": len(calls)}, span="kernel")
@@ -362,5 +400,34 @@ def _brief_of(result: dict[str, Any]) -> str:
     return str(result.get("error") or "")[:220]
 
 
+# ── B5：thinking 缓冲（按 task_id 隔离，不再复用全局单槽 `_LAST_REASONING`）──
+#
+# 背景：全局单槽在并发子任务之间会互相覆盖（A 任务的思考被 B 任务取走），而且
+# agent_loop 此前**根本没有**发 thinking——`agent_kernel._emit_thinking` 是死代码，
+# 前端只能显示"未提供思考内容"。这里按 task_id 存一份可取的缓冲：
+# 运行期逐轮追加，收尾时 `take_thinking(task_id)` 取走并清空。
+
+_THINKING: dict[str, list[str]] = {}
+_THINKING_MAX_CHARS = 20_000
+
+
+def _append_thinking(task_id: str, delta: str) -> None:
+    if not delta:
+        return
+    buf = _THINKING.setdefault(task_id, [])
+    buf.append(delta)
+    # 防爆：超长时丢最早的块（思考只是过程信息，不能撑爆内存）
+    total = sum(len(x) for x in buf)
+    while buf and total > _THINKING_MAX_CHARS:
+        total -= len(buf.pop(0))
+
+
+def take_thinking(task_id: str) -> str:
+    """取走并清空某任务的思考缓冲（诊断/回放/测试用）。"""
+    parts = _THINKING.pop(task_id, [])
+    return "".join(parts)
+
+
 __all__ = ["DELEGATE_TOOL", "RESEARCH_TOOL", "LoopAborted", "agent_tool_schemas",
-           "build_tools", "is_agent_tool", "run_loop", "tool_loop_available"]
+           "build_tools", "is_agent_tool", "run_loop", "take_thinking",
+           "tool_loop_available"]

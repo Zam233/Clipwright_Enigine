@@ -203,3 +203,102 @@ def test_unsupported_parameter_is_dropped_with_degradation(monkeypatch):
     assert "top_p" not in calls[-1], "不支持的参数不许下发（不能假装生效）"
     assert calls[-1]["temperature"] == 0.4
     assert any(d.kind == "unsupported_parameter" for d in sink)
+
+
+# ── B5：reasoning_effort 能力协商与降级 ─────────────────────
+
+
+def _effort_provider(monkeypatch, *, supported: bool):
+    from clipwright.providers.base import ProviderCapabilities
+
+    class _Impl:
+        name = "openai"
+
+        def capabilities(self, model: str) -> ProviderCapabilities:
+            return ProviderCapabilities(
+                streaming=True, tool_calls=True,
+                reasoning_effort=supported,
+            )
+
+    monkeypatch.setattr("clipwright.services.llm._resolve_llm_provider", lambda _p: _Impl())
+
+
+def test_reasoning_effort_sent_when_provider_supports(monkeypatch):
+    _src("openai", [{"id": "m1", "reasoning_effort": "high"}])
+    svc, calls = _svc_with_captured_generate(monkeypatch)
+    _effort_provider(monkeypatch, supported=True)
+
+    asyncio.run(svc.generate(messages=[{"role": "user", "content": "hi"}]))
+    assert calls[-1]["reasoning_effort"] == "high"
+
+
+def test_reasoning_effort_dropped_with_degradation_when_unsupported(monkeypatch):
+    """不支持的 provider：不下发，且降级里写明 requested（不是"已生效"）。"""
+    from clipwright.services import degradation
+
+    _src("openai", [{"id": "m1"}])
+    svc, calls = _svc_with_captured_generate(monkeypatch)
+    _effort_provider(monkeypatch, supported=False)
+
+    sink: list[Any] = []
+    with degradation.degradation_scope(sink):
+        asyncio.run(svc.generate(messages=[{"role": "user", "content": "hi"}],
+                                 reasoning_effort="high"))
+
+    assert "reasoning_effort" not in calls[-1]
+    assert any("reasoning_effort" in d.detail and "high" in d.detail for d in sink)
+    assert any(d.scope == "reasoning_effort" for d in sink)
+
+
+def test_reasoning_effort_from_model_config(monkeypatch):
+    """模型项配置的 reasoning_effort 生效（请求未显式设置时）。"""
+    _src("openai", [{"id": "m1", "reasoning_effort": "low"}])
+    svc, calls = _svc_with_captured_generate(monkeypatch)
+    _effort_provider(monkeypatch, supported=True)
+
+    asyncio.run(svc.generate(messages=[{"role": "user", "content": "hi"}]))
+    assert calls[-1]["reasoning_effort"] == "low"
+
+
+def test_reasoning_effort_absent_by_default(monkeypatch):
+    """没有配置也没有请求 → 不下发（旧行为不变）。"""
+    _src("openai", [{"id": "m1"}])
+    svc, calls = _svc_with_captured_generate(monkeypatch)
+    _effort_provider(monkeypatch, supported=True)
+
+    asyncio.run(svc.generate(messages=[{"role": "user", "content": "hi"}]))
+    assert "reasoning_effort" not in calls[-1]
+
+
+def test_invalid_reasoning_effort_is_ignored_in_config():
+    from clipwright.services.provider_sources import normalize_reasoning_effort
+
+    assert normalize_reasoning_effort("HIGH") == "high"
+    assert normalize_reasoning_effort("extreme") == ""
+    assert normalize_reasoning_effort(None) == ""
+
+
+def test_thinking_still_flows_even_if_effort_unsupported(monkeypatch):
+    """reasoning_effort 不支持不能连带吞掉 thinking（PRD §8.3 明确要求）。"""
+    from clipwright.services import degradation
+    from clipwright.services.llm import LLMResponse
+
+    _src("openai", [{"id": "m1"}])
+    _effort_provider(monkeypatch, supported=False)
+
+    class _Client:
+        def generate(self, **kwargs):  # noqa: ANN003
+            return LLMResponse(content="ok", success=True, status_code=200,
+                               reasoning_content="我先想想")
+
+    monkeypatch.setattr(LLMService, "_routed_client_and_model",
+                        lambda self, use_flash=False: (_Client(), None))
+    seen: list[str] = []
+    sink: list[Any] = []
+    with degradation.degradation_scope(sink):
+        asyncio.run(LLMService().generate(
+            messages=[{"role": "user", "content": "hi"}],
+            reasoning_effort="high", on_reasoning=seen.append,
+        ))
+    assert seen == ["我先想想"]
+    assert any(d.scope == "reasoning_effort" for d in sink)

@@ -367,8 +367,6 @@ class LLMService:
         for key in keys:
             if key in kwargs and kwargs[key] is not None:
                 resolved[key] = kwargs[key]
-        if not resolved:
-            return kwargs
 
         impl = _resolve_llm_provider(provider)
         caps = llm_capabilities(impl, str(target_model)) if impl is not None else None
@@ -392,6 +390,34 @@ class LLMService:
                     scope="llm",
                     impact="使用 provider 默认值",
                 )
+
+        # B5：reasoning_effort 单独处理——不支持的 provider 不但不下发，还要
+        # 报「请求值与生效值分离」的降级（用户看到的是"已忽略"，不是"已生效"）。
+        requested = kwargs.get("reasoning_effort")
+        if requested is None:
+            requested = getattr(route, "reasoning_effort", None) if route is not None else None
+        if requested is None:
+            try:
+                from clipwright.services.provider_sources import reasoning_effort_for
+
+                requested = reasoning_effort_for(provider, str(target_model)) or None
+            except Exception:  # noqa: BLE001
+                requested = None
+        if requested:
+            requested = str(requested).lower()
+            if bool(getattr(caps, "reasoning_effort", False)):
+                merged["reasoning_effort"] = requested
+            else:
+                merged.pop("reasoning_effort", None)
+                note_degradation(
+                    kind="unsupported_parameter",
+                    detail=(f"模型 {provider}/{target_model} 不支持 reasoning_effort，"
+                            f"已忽略 {requested}。"),
+                    scope="reasoning_effort",
+                    impact="使用 provider 默认推理强度",
+                )
+        else:
+            merged.pop("reasoning_effort", None)
         return merged
 
     async def generate(
@@ -402,6 +428,7 @@ class LLMService:
         timeout: int = 120,
         use_flash: bool = False,
         max_retries: int = 2,
+        on_reasoning: Optional[Callable[[str], Any]] = None,
         **kwargs: Any,
     ) -> LLMResponse:
         """发送非流式生成请求。
@@ -482,6 +509,13 @@ class LLMService:
             if reasoning:
                 _push_llm("🤔 LLM 推理", {"推理": reasoning[:500]})
                 _remember_reasoning(reasoning)
+                # B5（2026-10-28 PRD）：把本轮 reasoning 交给调用方（agent_loop 据此
+                # emit `thinking`）。回调异常只记日志，不阻断生成本身。
+                if on_reasoning is not None:
+                    try:
+                        on_reasoning(reasoning)
+                    except Exception as cb_exc:  # noqa: BLE001
+                        logger.warning("on_reasoning 回调失败（不阻断生成）: %s", cb_exc)
             if resp.content:
                 _push_llm("💬 LLM 响应", {"响应": resp.content[:500]})
         except Exception:
@@ -735,6 +769,7 @@ class LLMService:
         tools: list[dict[str, Any]],
         max_tool_rounds: int = 10,
         on_preamble: Optional[Callable[[str, int, list[Any]], Any]] = None,
+        on_reasoning: Optional[Callable[[str], Any]] = None,
         **kwargs: Any,
     ) -> LLMResponse:
         """执行带工具调用循环的 LLM 请求。
@@ -756,6 +791,9 @@ class LLMService:
                 说出的那段话（"我打算先派 structure 阶段，因为…"）确认后**同步**回调一次，
                 让上层把 narration 事件排在 tool_call 之前（2026-10-28 PRD B2）。
                 同轮多个 tool_call 只回调一次；无 content 不回调；回调异常只记日志。
+            on_reasoning: 可选回调 `fn(delta)`。provider 返回 reasoning 时**每轮**转发一次
+                （2026-10-28 PRD B5）：agent_loop 据此 emit `thinking`，顺序在
+                narration/tool_call 之前。回调异常只记日志，绝不吞掉生成本身。
             **kwargs: 透传给 LLMService.generate() 的额外参数
 
         Returns:
@@ -807,7 +845,15 @@ class LLMService:
             # 顺序先调 describe_llm_mg 后，第二轮再无任何工具可调
             kw = {**base_kwargs, "tools": tools}
 
-            resp = await self.generate(messages=messages, **kw)
+            # B5：reasoning 回调带上「第几轮」，上层据此给 thinking 事件标注 round
+            round_cb: Any = None
+            if on_reasoning is not None:
+                def round_cb(delta: str, _rnd: int = _round + 1) -> None:  # noqa: ANN001
+                    try:
+                        on_reasoning(delta, _rnd)
+                    except TypeError:
+                        on_reasoning(delta)
+            resp = await self.generate(messages=messages, on_reasoning=round_cb, **kw)
             logger.debug("LLM with_tools 第%d轮: success=%s, tool_calls=%d, content=%.200s",
                          _round + 1, resp.success, len(resp.tool_calls or []), resp.content or "")
 

@@ -449,3 +449,117 @@ def test_preamble_callback_failure_does_not_block_tools(monkeypatch):
     ))
     assert resp.success is True
     assert calls == ["local_probe"], "回调异常后工具仍然要执行"
+
+
+# ── B5：reasoning → thinking 事件（已报缺口 1）────────────────
+
+
+def _reasoning_env(monkeypatch, *, reasoning_per_round: list[str]):
+    """真实 with_tools 路径 + 逐轮 reasoning，返回 (events, rounds)。"""
+    from types import SimpleNamespace
+
+    from clipwright.services import llm as llm_mod
+    from clipwright.services.llm import LLMResponse, LLMService
+
+    rounds = {"n": 0}
+    seen: list[dict[str, Any]] = []
+
+    async def fake_generate(self, messages=None, on_reasoning=None, **kwargs):  # noqa: ANN001
+        rounds["n"] += 1
+        idx = rounds["n"] - 1
+        text = reasoning_per_round[idx] if idx < len(reasoning_per_round) else ""
+        seen.append({"round": rounds["n"], "reasoning": text})
+        if text and on_reasoning is not None:
+            on_reasoning(text)
+        if rounds["n"] == 1:
+            return LLMResponse(
+                content="我打算先看看素材。", success=True, status_code=200,
+                tool_calls=[SimpleNamespace(id="c1", name="local_probe", arguments="{}")],
+            )
+        return LLMResponse(content="做完了", success=True, status_code=200)
+
+    async def fake_execute(name, args=None, **kwargs):  # noqa: ANN001, ARG001
+        return {"status": "ok"}
+
+    monkeypatch.setattr(LLMService, "generate", fake_generate)
+    monkeypatch.setattr(sf, "execute", fake_execute)
+    monkeypatch.setattr(llm_mod, "_resolve_llm_provider", lambda *a, **k: None)
+
+    events: list[dict[str, Any]] = []
+    monkeypatch.setattr(agent_loop, "emit",
+                        lambda tid, t, m, d=None, **kw: events.append(
+                            {"type": t, "message": m, "detail": d}))
+    return events, rounds, seen
+
+
+def test_reasoning_becomes_thinking_events(monkeypatch):
+    """provider 的 reasoning 必须进事件流（旧实现整段丢在日志里，前端只能显示"未提供"）。"""
+    events, rounds, _ = _reasoning_env(
+        monkeypatch, reasoning_per_round=["先判断素材够不够。", "素材够，可以派 edit。"])
+
+    out = asyncio.run(agent_loop.run_loop(_task()))
+    assert out["status"] == "ok", out.get("stopped_reason")
+    assert rounds["n"] >= 2
+
+    thinking = [e for e in events if e["type"] == "thinking"]
+    assert thinking, "reasoning 没有变成 thinking 事件"
+    deltas = [e for e in thinking if not (e["detail"] or {}).get("done")]
+    assert len(deltas) == 2, "逐轮各发一块"
+    assert deltas[0]["message"].startswith("先判断素材")
+    assert deltas[0]["detail"]["round"] == 1
+    assert deltas[1]["detail"]["round"] == 2
+    # 收尾有一条 done，且只发一次
+    assert sum(1 for e in thinking if (e["detail"] or {}).get("done")) == 1
+
+
+def test_thinking_precedes_narration_and_tool_call(monkeypatch):
+    """顺序契约：thinking → narration(preamble) → tool_call。"""
+    events, _, _ = _reasoning_env(monkeypatch, reasoning_per_round=["先看一眼。", ""])
+
+    asyncio.run(agent_loop.run_loop(_task()))
+    seq = [e["type"] for e in events]
+    i_think = next(i for i, e in enumerate(events) if e["type"] == "thinking")
+    i_pre = next(i for i, e in enumerate(events)
+                 if e["type"] == "narration" and (e["detail"] or {}).get("kind") == "preamble")
+    i_call = seq.index("tool_call")
+    assert i_think < i_pre < i_call
+
+
+def test_no_thinking_when_provider_has_no_reasoning(monkeypatch):
+    """provider 不返回 reasoning → 不发 thinking，也不许伪造（前端显示"未提供"）。"""
+    events, _, _ = _reasoning_env(monkeypatch, reasoning_per_round=["", ""])
+
+    asyncio.run(agent_loop.run_loop(_task()))
+    assert [e for e in events if e["type"] == "thinking"] == []
+
+
+def test_thinking_buffer_is_per_task(monkeypatch):
+    """缓冲按 task 隔离：A 的思考不会被 B 取走（旧实现是全局单槽）。"""
+    _reasoning_env(monkeypatch, reasoning_per_round=["A 的思考", ""])
+    asyncio.run(agent_loop.run_loop(_task()))
+    assert "A 的思考" in agent_loop.take_thinking("task_loop")
+    assert agent_loop.take_thinking("task_loop") == ""  # 取走即清空
+    assert agent_loop.take_thinking("另一个任务") == ""
+
+
+def test_on_reasoning_failure_does_not_break_generation(monkeypatch):
+    """回调炸了只记日志，不吞掉生成本身（B5 实施步骤要求）。"""
+    from clipwright.services import llm as llm_mod
+    from clipwright.services.llm import LLMResponse, LLMService
+
+    monkeypatch.setattr(llm_mod, "_resolve_llm_provider", lambda *a, **k: None)
+
+    class _Client:
+        def generate(self, **kwargs):  # noqa: ANN003
+            return LLMResponse(content="ok", success=True, status_code=200,
+                               reasoning_content="想了想")
+
+    monkeypatch.setattr(LLMService, "_routed_client_and_model",
+                        lambda self, use_flash=False: (_Client(), None))
+
+    def boom(delta):  # noqa: ANN001
+        raise RuntimeError("回调炸了")
+
+    resp = asyncio.run(LLMService().generate(
+        messages=[{"role": "user", "content": "hi"}], on_reasoning=boom))
+    assert resp.success is True and resp.content == "ok"

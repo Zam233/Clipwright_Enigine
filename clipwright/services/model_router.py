@@ -50,6 +50,8 @@ class ModelRoute:
     #: 逐模型生成参数（temperature/top_p/max_tokens），来源是「模型提供商」里的
     #: 模型项配置（2026-10-28 PRD B4）；None/空 = 沿用调用方或默认值。
     generation: Optional[dict[str, Any]] = None
+    #: 推理强度（low/medium/high，2026-10-28 PRD B5）；None = 不传。
+    reasoning_effort: Optional[str] = None
 
     @property
     def key(self) -> str:
@@ -65,6 +67,8 @@ class ModelRoute:
         }
         if self.generation:
             out["generation"] = dict(self.generation)
+        if self.reasoning_effort:
+            out["reasoning_effort"] = self.reasoning_effort
         return out
 
 

@@ -1051,18 +1051,25 @@ def _preview_of(value: Any) -> Any:
 
 
 def _emit_thinking(task: Task, step: PlanStep) -> None:
-    """把本步模型的 `reasoning_content` 发成 `thinking` 事件（有才有，不伪造）。"""
-    try:
-        from clipwright.services.llm import take_last_reasoning
+    """把本步的思考内容发成 `thinking` 事件（有才有，不伪造）。
 
-        text = take_last_reasoning()
+    B5（2026-10-28 PRD）：思考来源改为**按 task_id 隔离**的缓冲
+    （`agent_loop.take_thinking`），不再读全局单槽 `_LAST_REASONING`——并发子任务
+    会互相覆盖，A 的思考被 B 取走属于串台。tool_loop 模式下 thinking 已在
+    `run_loop` 里逐轮实时发出，这里只服务 plan 适配器的收尾补齐。
+    """
+    try:
+        from clipwright.services.agent_loop import take_thinking
+
+        text = take_thinking((task.id if hasattr(task, "id") else "") or "")
     except Exception:  # noqa: BLE001 — 取不到思考内容不影响主流程
         return
     if not text:
         return
     from clipwright.services.task_events import emit
 
-    emit(task.id, "thinking", text[:120], {"delta": text, "done": True, "step_id": step.id})
+    emit(task.id, "thinking", text[:120],
+         {"delta": text, "done": True, "step_id": step.id})
 
 
 def _emit_report(task: Task, step: PlanStep, outcome: dict[str, Any]) -> None:

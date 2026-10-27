@@ -244,6 +244,34 @@ def delete_source(source_id: str) -> dict[str, Any]:
 
 # ── 模型清单 ────────────────────────────────────────────
 
+#: reasoning_effort 的合法取值（2026-10-28 PRD B5）
+REASONING_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
+
+
+def normalize_reasoning_effort(raw: Any) -> str:
+    """校验 reasoning_effort；非法值返回空串（= 不设置）。"""
+    value = str(raw or "").strip().lower()
+    return value if value in REASONING_EFFORTS else ""
+
+
+def reasoning_effort_for(provider: str, model: str) -> str:
+    """取某 (provider, model) 配置的 reasoning_effort（无则空串）。"""
+    target_provider = str(provider or "").strip()
+    target_model = str(model or "").strip()
+    if not target_provider:
+        return ""
+    try:
+        sources = [s for s in list_sources(kind="llm", public=True)
+                   if str(s.get("provider") or "") == target_provider]
+    except Exception:  # noqa: BLE001
+        return ""
+    for src in sources:
+        for m in _normalize_models(src.get("models")):
+            if target_model and m["id"] == target_model:
+                return normalize_reasoning_effort(m.get("reasoning_effort"))
+    return ""
+
+
 #: 逐模型 generation 参数（2026-10-28 PRD B4）：键 → (下限, 上限, 是否整数)
 GENERATION_LIMITS: dict[str, tuple[float, float, bool]] = {
     "temperature": (0.0, 2.0, False),
@@ -321,6 +349,9 @@ def _normalize_models(raw: Any) -> list[dict[str, Any]]:
         item: dict[str, Any] = {"id": mid, "name": name, "enabled": enabled}
         if generation:
             item["generation"] = generation
+        effort = normalize_reasoning_effort(m.get("reasoning_effort")) if isinstance(m, dict) else ""
+        if effort:
+            item["reasoning_effort"] = effort
         out.append(item)
     # 去重（保留首个）
     seen: set[str] = set()
