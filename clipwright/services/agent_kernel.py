@@ -221,16 +221,18 @@ class LLMPlanner:
             f"可选视频类型：{_cats}（不指定则用默认类型）\n"
             "**老管线已下线**：不要再用 run_pipeline；创作按阶段派发。\n\n"
             "编排能力的用法（目录里带「编排」标记的那几个）：\n"
-            "- delegate(stage=structure|material|edit|animation|audio|quality, inputs={…}, brief=…)："
-            "派一个**子 agent**做真正干活的那一步：`inputs` 由你显式提供（上一份结果的产物引用），"
-            "结果**只回给你**；缺输入时它会返回 needs，你决定先补哪一步。\n"
+            "- delegate_agent(stage=structure|material|edit|animation|audio|quality, "
+            "inputs={…}, brief=…)：派一个**子 agent**做真正干活的那一步；`inputs` 由你显式提供"
+            "（上一份结果的产物引用），结果**只回给你**；缺输入时它会返回 needs，你决定先补哪一步。\n"
             "- 一次创作通常覆盖 structure→material→edit→animation→audio→quality，但顺序由你判断"
             "（依赖写在能力清单里；需要时可跳过、重派或换人）。\n"
-            "- spawn_subagent(role, system_prompt, tools)：只派**只读**调研员（核实文件是否存在、"
+            "- research_agent(role, brief, tools)：只派**只读**调研员（核实文件是否存在、"
             "检索资料），不要用它做阶段工作；它不能再派子代理。\n"
-            "- get_stage/list_stages：查已派阶段的状态与产物。\n"
+            "- get_agent_run/list_agent_runs：查已派 run 的状态与产物。\n"
             "- 阶段失败时看 failure.category：input_insufficient=缺上游（先派缺的那一步）、"
-            "timeout/model_incapable=可重试或换模型、policy_refused=不要重试直接报告。\n\n"
+            "timeout/model_incapable=可重试或换模型、policy_refused=不要重试直接报告。\n"
+            "（旧名 delegate / spawn_subagent / get_stage / list_stages 仍是可用的兼容别名，"
+            "新计划请用带 _agent 的名字。）\n\n"
             "请给出 1-6 步的执行计划。只输出 JSON，不要解释。"
         )
         try:
@@ -532,7 +534,14 @@ class AgentKernel:
             return task
         loaded = self._load_checkpoint(task_id)
         if loaded is not None:
+            # 反查路径（surface 的 agent 工具按 pipeline_id 回查任务）会反复 load，
+            # 这里也要淘汰，否则 `_TASKS` 只增不减（旧实现只有 create() 做 LRU）。
             _TASKS[task_id] = loaded
+            while len(_TASKS) > _MAX_TASKS:
+                oldest = next(iter(_TASKS))
+                if oldest == task_id:
+                    break
+                _TASKS.pop(oldest, None)
         return loaded
 
     def pause(self, task_id: str) -> Task:

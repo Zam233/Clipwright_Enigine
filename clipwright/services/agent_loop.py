@@ -27,7 +27,13 @@ RESEARCH_TOOL = "research_agent"
 
 
 class LoopAborted(RuntimeError):
-    """工具循环被外部闸中止（取消/暂停/预算/墙钟）——由 Kernel 解释成任务终态。"""
+    """工具循环被外部闸中止（取消/暂停/预算/墙钟）——由 Kernel 解释成任务终态。
+
+    `__control_flow__ = True` 是给 `LLMService._do_tool_call` 看的：它必须把这个
+    异常**透传**出去，而不是当成工具失败回填给模型（否则闸变成"告诉模型出错了"）。
+    """
+
+    __control_flow__ = True
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -54,7 +60,9 @@ def tool_loop_available() -> tuple[bool, str]:
 
     1. `kernel_mode` 是 `tool_loop` / `shadow`；
     2. provider 声明 `tool_calls` 能力（协议层支持原生工具回填）；
-    3. 有可用的模型凭据（没有 key 的 tool loop 只会得到一个 401 的失败轨迹）。
+    3. 有可用的模型凭据——**必须连 role binding 一起看**：真实调用走
+       `_resolve_role_binding("main")`，role-bound 部署里 `settings.llm_api_key`
+       可以是空的。只看全局 key 会把"能跑"误判成"不能跑"，静默退回 plan。
 
     第 3 条同时保证：单元测试环境（注入 fake planner、不配 key）走 plan adapter，
     不会因为默认 `tool_loop` 而对真实 provider 发起网络请求。
@@ -62,8 +70,6 @@ def tool_loop_available() -> tuple[bool, str]:
     mode = str(getattr(settings, "kernel_mode", "plan"))
     if mode not in ("tool_loop", "shadow"):
         return False, f"kernel_mode={mode}"
-    if not str(getattr(settings, "llm_api_key", "") or "").strip():
-        return False, "no_llm_credential"
     try:
         from clipwright.providers.base import llm_capabilities
         from clipwright.services.llm import _resolve_llm_provider
@@ -75,7 +81,27 @@ def tool_loop_available() -> tuple[bool, str]:
             return False, f"provider={settings.llm_provider} tool_calls=false"
     except Exception as exc:  # noqa: BLE001 — 能力自省失败按不可用处理
         return False, f"capability_probe_failed:{type(exc).__name__}"
+    if not _has_credential():
+        return False, "no_llm_credential"
     return True, "ok"
+
+
+def _has_credential() -> bool:
+    """凭据判定：全局 key / role binding key / 本地免 key provider 三者任一。"""
+    if str(getattr(settings, "llm_api_key", "") or "").strip():
+        return True
+    if str(getattr(settings, "llm_provider", "") or "").lower() in ("ollama",):
+        return True
+    try:
+        from clipwright.services.llm import _resolve_role_binding
+
+        for role in ("main", ""):
+            bound = _resolve_role_binding(role) or {}
+            if str(bound.get("api_key") or "").strip():
+                return True
+    except Exception:  # noqa: BLE001 — 探不到绑定就当没有
+        return False
+    return False
 
 
 def build_tools() -> list[dict[str, Any]]:

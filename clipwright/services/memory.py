@@ -97,6 +97,7 @@ def reset() -> None:
     _WORKING.clear()
     _EPISODIC.clear()
     _SEMANTIC.clear()
+    _DUMPED.clear()
 
 
 def _new(layer: str, task_id: str, text: str, *, kind: str = "",
@@ -147,6 +148,29 @@ def remember(text: str, *, task_id: str = "", layer: str = "working",
         raise ValueError("记忆内容不能为空")
     return _new(layer, task_id, text, kind=kind, provenance=provenance, tags=tags,
                 pinned=pinned, ttl_sec=ttl_sec).to_public()
+
+
+def entries(*, task_id: str = "", layer: str = "", k: int = 20,
+            include_expired: bool = False) -> list[dict[str, Any]]:
+    """按层列出条目（最新在前）。
+
+    与 `recall` 的区别：`recall` 需要**查询词**，空查询按定义返回空——
+    于是"把最近的情景记忆打进 replay 包"这种需求用 recall 会永远拿到 `[]`
+    （旧 `evaluation.replay_bundle` 就踩了这个坑）。列条目是另一种操作，别混。
+    """
+    pool: list[MemoryEntry] = []
+    if layer in ("", "working"):
+        pool.extend(_WORKING.get(task_id, []) if task_id else
+                    [e for b in _WORKING.values() for e in b])
+    if layer in ("", "episodic"):
+        pool.extend(_EPISODIC.get(task_id, []) if task_id else
+                    [e for b in _EPISODIC.values() for e in b])
+    if layer in ("", "semantic"):
+        pool.extend(_SEMANTIC)
+    if not include_expired:
+        pool = [e for e in pool if e.alive()]
+    pool.sort(key=lambda e: -e.created_at)
+    return [e.to_public() for e in pool[:k]]
 
 
 def recall(query: str, *, task_id: str = "", layers: Iterable[str] = ("working", "episodic",
@@ -258,17 +282,28 @@ def describe(task_id: str = "") -> dict[str, Any]:
 # ── 落盘（episodic append-only / semantic 快照）──────────────
 
 
+#: 已落盘的 episodic 条数（每任务一个游标）——避免同一批条目被重复追加
+_DUMPED: dict[str, int] = {}
+
+
 def dump_episodic(task_id: str, root: str | Path) -> Optional[str]:
-    """把某任务的 episodic 追加落盘（append-only，便于事后 replay）。"""
+    """把某任务**新增**的 episodic 追加落盘（append-only，便于事后 replay）。
+
+    游标 `_DUMPED[task_id]` 记住已经写过多少条：旧实现每次把整表再追加一遍，
+    调用两次就出现两份同样的证据，replay 时会当成"发生过两次"。
+    """
     items = _EPISODIC.get(task_id, [])
-    if not items:
+    start = _DUMPED.get(task_id, 0)
+    fresh = items[start:]
+    if not fresh:
         return None
     try:
         path = Path(root) / "memory" / "episodic.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
-            for entry in items:
+            for entry in fresh:
                 fh.write(json.dumps(entry.to_public(), ensure_ascii=False) + "\n")
+        _DUMPED[task_id] = len(items)
         return str(path)
     except Exception as exc:  # noqa: BLE001 — 落盘失败不能带崩主循环
         logger.warning("episodic 落盘失败 %s: %s", task_id, exc)
@@ -290,5 +325,50 @@ def dump_semantic(root: str | Path) -> Optional[str]:
         return None
 
 
+def load_semantic(root: str | Path) -> int:
+    """从 `<root>/memory/semantic.json` 恢复语义记忆（进程重启后仍有效）。
+
+    只写不读等于把"长期记忆"做成了单次会话缓存——语义记忆必须能跨重启，
+    否则 TTL / 撤回这些规则都只是在内存里成立。
+    """
+    path = Path(root) / "memory" / "semantic.json"
+    if not path.exists():
+        return 0
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 — 坏文件要报出来，但不能阻断启动
+        logger.warning("semantic 恢复失败 %s: %s", path, exc)
+        return 0
+    if not isinstance(raw, list):
+        return 0
+    known = {e.id for e in _SEMANTIC}
+    added = 0
+    for item in raw:
+        if not isinstance(item, dict) or item.get("id") in known:
+            continue
+        try:
+            entry = MemoryEntry(
+                id=str(item.get("id") or f"mem_{uuid.uuid4().hex[:10]}"),
+                layer="semantic",
+                task_id=str(item.get("task_id") or ""),
+                text=str(item.get("text") or ""),
+                kind=str(item.get("kind") or ""),
+                provenance=dict(item.get("provenance") or {}),
+                tags=[str(t) for t in (item.get("tags") or [])],
+                pinned=bool(item.get("pinned")),
+                created_at=float(item.get("created_at") or _now()),
+                expires_at=item.get("expires_at"),
+                retracted=bool(item.get("retracted")),
+            )
+        except Exception:  # noqa: BLE001 — 单条坏数据跳过
+            continue
+        if not entry.text:
+            continue
+        _SEMANTIC.append(entry)
+        added += 1
+    return added
+
+
 __all__ = ["DEFAULT_TTL_SEC", "MemoryEntry", "compact", "describe", "dump_episodic",
-           "dump_semantic", "forget", "pin", "recall", "remember", "reset"]
+           "dump_semantic", "entries", "forget", "load_semantic", "pin", "recall",
+           "remember", "reset"]

@@ -967,3 +967,56 @@ python -m clipwright.services.replay --bundle <bundle.json> --dry-run
 - `get_agent_run` 补 `waited` / `converged`（旧 `wait_for_stage` 语义）；
 - 回归用例：`tests/test_agent_run.py::test_legacy_query_names_still_work_after_alias_migration`
   （断言"不存在的 id 要报没找到，而不是报缺参数"）。
+
+---
+
+## 11. 独立代码审查与整改（2026-10-27，审查者：独立子 agent）
+
+> 审查对象 `d07af1d`，审查者未参与实现、只读审查、单独上下文。下面保留**它给出的
+> 判定与证据**，以及本批的整改结果——包括"它说我不成立、我确实不成立"的项。
+
+### 11.1 审查结论的一句话
+
+主循环在 `tool_loop` 路径上**是真的原生 tool-use loop**（每轮带 tools、provider 原生
+回填、不把模型输出转 list 执行、Plan 只当初始假设）；但 §10.1 里两条"已落地"是**假的**：
+闸在真实 provider 路径被吞掉、子 agent 取消契约断裂。
+
+### 11.2 已整改（本批提交）
+
+| 编号 | 审查给的判定 | 事实（审查证据） | 整改 |
+|---|---|---|---|
+| P0-1 | 「闸在工具执行前生效」**不成立** | `agent_loop` 抛 `LoopAborted` → `llm._do_tool_call` 的 `except Exception` 把它收成 `{"error":…}` 回填给模型；`agent_loop` 的 `except LoopAborted` 与 `_run_tool_loop` 的 `aborted` 分支都是死代码 | `LoopAborted.__control_flow__ = True`；`_do_tool_call` 对控制流异常**透传**（仍放行 `CancelledError`），业务异常照旧转结果。回归：`test_control_flow_exception_survives_do_tool_call`、`test_guard_aborts_through_real_with_tools`（走真实 `with_tools`→`_do_tool_call`，断言中止后不再发起下一轮模型请求） |
+| P0-2 | 「查询/取消同契约」**不成立** | `agent_run.cancel` 用 run_id 查按 `subagent_id` 建键的 supervisor tracker；阶段 run 从不注册进 tracker | `agent_run` 自建 `_LIVE` 句柄表 + 别名索引，`run()` 把执行放进 `asyncio.Task` 登记，`cancel()` 三级查找（句柄 → 别名 → tracker）；`reset()` 收掉活句柄。回归：`test_cancel_works_for_stage_run`、`test_cancel_unknown_run_reports_honestly`、`test_reset_cancels_live_runs` |
+| P1-3 | replay bundle 的情景证据**恒空** | `evaluation.replay_bundle` 用 `memory.recall("")`，空查询按定义返回 `[]` | 新增 `memory.entries()`（按层列条目，无查询词），replay 包改用 `entries`；`test_entries_lists_without_query` |
+| P1-2 | 记忆"只在内存里假装有记忆" | `dump_semantic/dump_episodic` 只写不读，重启即失 | 新增 `memory.load_semantic(root)`（启动可恢复，坏条目跳过）；`test_semantic_survives_restart` |
+| P2-4 | `dump_episodic` 重复追加 | 每次整表追加 | 加 `_DUMPED` 游标只写新增，`reset()` 一并清空；`test_episodic_dump_does_not_duplicate` |
+| P1-6 | 凭据门误判导致静默跑 plan | 只查 `settings.llm_api_key`，role-bound 凭据被无视 | `_has_credential()` 同时看全局 key / `_resolve_role_binding("main")` / 免 key 的 ollama；`test_credential_probe_counts_role_binding` |
+| P2-1 | 反查路径让 `_TASKS` 无界膨胀 | `get()` 加载检查点不做淘汰 | `get()` 补 LRU 淘汰 |
+| P1-4 | 计划提示词还在教旧能力名 | plan prompt 写 `delegate/spawn_subagent/get_stage/list_stages` | 改为 `delegate_agent/research_agent/get_agent_run/list_agent_runs`，旧名降为"兼容别名"一行注记 |
+
+### 11.3 仍未整改（如实留档）
+
+| 编号 | 审查判定 | 现状 | 为什么不在这批做 |
+|---|---|---|---|
+| P1-1 | 契约未真正统一：阶段 run 的 `tokens` 恒 0、`tool_calls` 恒空；`AgentResult` 缺 `task_id/trace_id/span_id/attempt/usage`；状态枚举与 PRD §3.5 不对齐 | 部分成立 | 阶段子 agent 走 `agents/*` 内部工具循环，其 token/工具轨迹没有回传通道；补齐要么改 `StageResult` 与 7 个 agent 的产出契约，要么在 `stage_subagent` 内挂钩 provider usage。属独立一批 |
+| P1-5 | `success_rate` 是子 run 口径，不是任务口径（CompletionGate） | 成立 | 需要把 Kernel 任务终态也入账；与 P1-1 的 `task_id/attempt` 字段一起改才自洽 |
+| P1-7 | `RunEvent` 是死代码；`task_events` 仍是旧信封，无 trace/span/causation | 成立 | 事件信封升级要同步前端 `useTaskEvents` 投影与 SSE 兼容层，属前端+后端联合批次 |
+| P1-4 余项 | `META_CAPABILITIES` 仍列旧能力名；`_TOOL_ALIAS` 本质仍是"名字→名字"映射 | 成立 | 前者牵动 `/api/capabilities` 目录、前端能力面板与若干断言；后者是旧检查点的兼容层，等旧检查点全部过期后随 M3 一起删 |
+| §4.3 | 机械 grep 仍命中：`run_pipeline|pipeline_capability`=41、`if step.capability`=8、`stage_capability|_DISPATCH_CAPS|_QUERY_CAPS`=8 | 成立，且 §10.2 之前漏报 | 见 §10.2 与本节 P1-4 余项；这是 M3 剩余主体，不是"收尾小事" |
+
+### 11.4 审查给出的测试缺口与本批补上的部分
+
+| 缺口 | 状态 |
+|---|---|
+| 真实 `with_tools._do_tool_call` 路径下的闸中止 | 已补 |
+| `_run_tool_loop` 的 aborted 分支 | 已补（经 `run_loop` 的 aborted 结果 + Kernel 侧 paused 语义） |
+| `cancel_agent_run` 对真实 stage run 的正向取消 | 已补 |
+| `memory` 落盘去重与重启恢复 | 已补 |
+| `replay_bundle` 记忆恒空 | 已补 |
+| `surface.execute(task=None)` 反查分支的泄漏 | 已补（`get()` LRU） |
+| `RunEvent` / trace 信封、`success_rate` 任务口径、stage token 归因 | **未补**（对应 §11.3 未整改项） |
+| 审查指出的"同义反复断言"：`inspect.getsource` 断言无 if/elif | 保留但降级为辅助断言；语义由 `test_legacy_query_names_still_work_after_alias_migration` 与真实取消用例承担 |
+
+### 11.5 本批后的基线
+
+后端 **4505 passed / 4 skipped / 1 xfailed**（整改前 4495，新增 10 条缺陷回归用例）。

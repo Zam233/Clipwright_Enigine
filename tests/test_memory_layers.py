@@ -98,6 +98,40 @@ def test_episodic_is_append_only_and_dumped(tmp_path):
     assert len(lines) == 2
 
 
+def test_episodic_dump_does_not_duplicate(tmp_path):
+    """同一批条目落盘两次不许出现两份——否则 replay 会把一次失败读成两次。"""
+    memory.remember("决策 A", task_id="t1", layer="episodic")
+    assert memory.dump_episodic("t1", tmp_path)
+    assert memory.dump_episodic("t1", tmp_path) is None, "没有新增就不该再写一遍"
+    memory.remember("决策 B", task_id="t1", layer="episodic")
+    memory.dump_episodic("t1", tmp_path)
+    lines = (tmp_path / "memory" / "episodic.jsonl").read_text(
+        encoding="utf-8").strip().splitlines()
+    assert len(lines) == 2
+
+
+def test_semantic_survives_restart(tmp_path):
+    """语义记忆必须能跨重启；只写不读等于把长期记忆做成单次会话缓存。"""
+    memory.remember("用户偏好快节奏", task_id="t1", layer="semantic",
+                    provenance={"source": "user_chat"})
+    assert memory.dump_semantic(tmp_path)
+    memory.reset()
+    assert memory.describe("t1")["semantic"]["total"] == 0
+    added = memory.load_semantic(tmp_path)
+    assert added == 1
+    hits = memory.recall("快节奏", task_id="t2")
+    assert hits and hits[0]["provenance"]["source"] == "user_chat"
+
+
+def test_entries_lists_without_query():
+    """`recall("")` 恒空是设计，但"列最近条目"是另一种操作，必须能用。"""
+    memory.remember("决策 X", task_id="t1", layer="episodic")
+    memory.remember("决策 Y", task_id="t1", layer="episodic")
+    assert memory.recall("", task_id="t1") == []
+    rows = memory.entries(task_id="t1", layer="episodic", k=5)
+    assert len(rows) == 2 and rows[0]["text"] == "决策 Y"
+
+
 def test_empty_text_is_rejected():
     with pytest.raises(ValueError):
         memory.remember("   ", task_id="t1")

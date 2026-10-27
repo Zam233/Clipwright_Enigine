@@ -193,7 +193,10 @@ def replay_bundle(task_id: str, *, root: str | Path | None = None) -> dict[str, 
     try:
         bundle["memory"] = {
             "describe": memory.describe(task_id),
-            "episodic": memory.recall("", task_id=task_id, layers=("episodic",), k=20),
+            # 用 `entries` 而不是 `recall("")`：空查询按定义返回空，
+            # 旧实现因此让 replay 包里的情景证据永远为空（"没证据"被误读成"没问题"）。
+            "episodic": memory.entries(task_id=task_id, layer="episodic", k=20),
+            "working": memory.entries(task_id=task_id, layer="working", k=10),
         }
     except Exception as exc:  # noqa: BLE001
         bundle["memory_error"] = f"{type(exc).__name__}: {exc}"

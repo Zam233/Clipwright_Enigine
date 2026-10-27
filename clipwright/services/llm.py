@@ -787,12 +787,22 @@ class LLMService:
     async def _do_tool_call(
         executor: Any, is_coro: bool, name: str, inp: dict[str, Any]
     ) -> Any:
-        """执行一次工具调用，同步/异步兼容。"""
+        """执行一次工具调用，同步/异步兼容。
+
+        **控制流异常必须透传**（modern-agent PRD §5.2 验收「取消/预算闸在模型请求
+        中间也能生效」）：工具执行器用异常表达"停下"（取消/暂停/预算/墙钟），
+        若在这里被 `except Exception` 收成 `{"error": ...}` 回填给模型，闸就变成了
+        "告诉模型出错了、继续下一轮"——闸形同不存在。业务异常仍然如实转成结果。
+        """
         try:
             if is_coro:
                 return await executor(name, inp)
             return executor(name, inp)
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            raise
         except Exception as e:
+            if getattr(e, "__control_flow__", False):
+                raise
             logger.error("LLM _do_tool_call failed: name=%s, error=%s", name, e)
             return {"error": str(e)}
 

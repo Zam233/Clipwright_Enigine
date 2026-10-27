@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from typing import Any
@@ -24,6 +25,29 @@ _MAX_RUNS = 400
 #: 幂等缓存：同一 idem_key 不重复干活（阶段/调研共用，不再各存一份）
 _IDEM: dict[str, AgentResult] = {}
 _MAX_IDEM = 200
+#: **运行中的 run → 取消句柄**（这是取消契约的唯一事实来源）
+#:
+#: 为什么不用 supervisor tracker：tracker 按 `subagent_id` 建键，阶段子 agent 根本
+#: 不注册进去（它直接跑 `stage_subagent.run_stage`）。用 run_id 去查那个表只会永远
+#: 返回"不可取消"——取消契约看着有、实际是空的。
+_LIVE: dict[str, dict[str, Any]] = {}
+#: 别名索引：subagent_id / idem_key / stage 名 → run_id（让旧调用方也能取消）
+_ALIAS: dict[str, str] = {}
+_MAX_ALIAS = 800
+
+
+def _bind_alias(alias: str, run_id: str) -> None:
+    alias = (alias or "").strip()
+    if not alias or alias == run_id:
+        return
+    if len(_ALIAS) >= _MAX_ALIAS:
+        _ALIAS.pop(next(iter(_ALIAS)))
+    _ALIAS[alias] = run_id
+
+
+def _resolve_run_id(run_id: str) -> str:
+    key = (run_id or "").strip()
+    return _ALIAS.get(key, key)
 
 
 def _record(result: AgentResult) -> None:
@@ -68,21 +92,54 @@ def inspect(*, run_id: str = "", task_id: str = "", stage: str = "") -> dict[str
 
 
 def cancel(run_id: str) -> tuple[bool, dict[str, Any]]:
-    """取消一个还在跑的子 agent（阶段/调研共用）。"""
-    if not run_id:
+    """取消一个还在跑的子 agent（阶段/调研共用）。
+
+    三级查找：本服务的 `_LIVE` 句柄表 → 别名索引（subagent_id / idem_key）→
+    supervisor tracker（历史 worker）。前两级是**唯一可靠**的路径：阶段 run 不在
+    tracker 里，调研 run 的 id 也与 tracker 的键不同。
+    """
+    key = (run_id or "").strip()
+    if not key:
         return False, {"error": "需要 run_id"}
+    resolved = _resolve_run_id(key)
+
+    live = _LIVE.get(resolved) or _LIVE.get(key)
+    if live is not None:
+        handle = live.get("task")
+        try:
+            if handle is not None and not handle.done():
+                handle.cancel()
+        except Exception as exc:  # noqa: BLE001 — 取消失败要如实报
+            return False, {"error": f"{type(exc).__name__}: {exc}"}
+        live["cancelled"] = True
+        return True, {"run_id": resolved, "status": "cancelled",
+                      "kind": live.get("kind", "")}
+
     try:
         from clipwright.supervisor.tracker import get_tracker
 
-        tracker = get_tracker("")
-        if tracker.cancel(run_id):
-            return True, {"run_id": run_id, "status": "cancelled"}
-    except Exception as exc:  # noqa: BLE001 — 取消失败要如实报
-        return False, {"error": f"{type(exc).__name__}: {exc}"}
-    return False, {"error": f"子 agent 不可取消或已结束: {run_id}"}
+        if get_tracker("").cancel(key) or get_tracker("").cancel(resolved):
+            return True, {"run_id": resolved, "status": "cancelled", "via": "tracker"}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("tracker 取消失败 %s: %s", key, exc)
+
+    done = _RUNS.get(resolved)
+    if done is not None:
+        return False, {"error": f"run 已结束（{done.status}），不可取消",
+                       "run_id": resolved}
+    return False, {"error": f"子 agent 不可取消或不存在: {key}"}
 
 
 def reset() -> None:
+    for live in list(_LIVE.values()):
+        task = live.get("task")
+        try:
+            if task is not None and not task.done():
+                task.cancel()
+        except Exception:  # noqa: BLE001
+            pass
+    _LIVE.clear()
+    _ALIAS.clear()
     _RUNS.clear()
     _IDEM.clear()
 
@@ -111,10 +168,27 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
         return result
 
     try:
-        if spec.kind == "stage":
-            result = await _run_stage(spec, task, run_id, trace_id)
-        else:
-            result = await _run_research(spec, task, run_id, trace_id)
+        # 把真正的执行放进 asyncio.Task 并登记句柄：取消要有东西可取消。
+        # 旧实现只把 run_id 交给 supervisor tracker，而阶段 run 不在那张表里
+        # ——"取消契约"于是写着有、实际永远返回不可取消。
+        handle = asyncio.ensure_future(_dispatch(spec, task, run_id, trace_id))
+        _LIVE[run_id] = {"task": handle, "kind": spec.kind,
+                         "stage": spec.stage, "role": spec.role}
+        _bind_alias(spec.idem_key, run_id)
+        try:
+            result = await handle
+        except asyncio.CancelledError:
+            result = AgentResult(
+                run_id=run_id, kind=spec.kind, stage=spec.stage, role=spec.role,
+                status="cancelled", error="子 agent 已被取消",
+                failure={"category": "cancelled", "retryable": "permanent",
+                         "blocking_point": "人工取消", "evidence": []},
+            )
+        finally:
+            _LIVE.pop(run_id, None)
+        # 上游真实 subagent_id 也登记成别名，旧的 cancel_subagent(subagent_id=…) 才能取消
+        if result.outputs.get("subagent_id"):
+            _bind_alias(str(result.outputs["subagent_id"]), run_id)
     except Exception as exc:  # noqa: BLE001 — 派发异常也要结构化返回
         logger.warning("agent_run 失败 %s/%s: %s", spec.kind, spec.stage, exc)
         result = AgentResult(
@@ -131,6 +205,13 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
             _IDEM.pop(next(iter(_IDEM)))
         _IDEM[spec.idem_key] = result.model_copy(deep=True)
     return result
+
+
+async def _dispatch(spec: RunSpec, task: Any, run_id: str,
+                    trace_id: str) -> AgentResult:
+    if spec.kind == "stage":
+        return await _run_stage(spec, task, run_id, trace_id)
+    return await _run_research(spec, task, run_id, trace_id)
 
 
 def _after_run(result: AgentResult, spec: RunSpec, task: Any) -> None:

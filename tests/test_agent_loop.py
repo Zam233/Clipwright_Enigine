@@ -173,7 +173,7 @@ def test_shadow_mode_runs_no_side_effects(monkeypatch):
 
 def test_tool_loop_unavailable_without_credential(monkeypatch):
     monkeypatch.setattr(agent_loop.settings, "kernel_mode", "tool_loop")
-    monkeypatch.setattr(agent_loop.settings, "llm_api_key", "")
+    monkeypatch.setattr(agent_loop, "_has_credential", lambda: False)
     ok, why = agent_loop.tool_loop_available()
     assert ok is False and why == "no_llm_credential"
 
@@ -207,6 +207,74 @@ def test_prompt_does_not_require_step_array(monkeypatch):
     assert "初始假设" in prompt
     assert "不是必须执行的步骤表" in prompt
     assert json.dumps("steps", ensure_ascii=False) not in prompt
+
+
+# ── 真实 provider 路径上的闸（P0-1 回归）────────────────
+
+
+def test_control_flow_exception_survives_do_tool_call():
+    """`_do_tool_call` 不许吞中止异常（否则闸变成"告诉模型出错了、继续下一轮"）。"""
+    from clipwright.services.llm import LLMService
+
+    def boom(name, args):  # noqa: ANN001, ARG001
+        raise agent_loop.LoopAborted("预算耗尽")
+
+    with pytest.raises(agent_loop.LoopAborted):
+        asyncio.run(LLMService._do_tool_call(boom, False, "x", {}))
+
+
+def test_business_error_is_still_converted():
+    """业务异常仍要如实转成工具结果——不能把两类混在一起。"""
+    from clipwright.services.llm import LLMService
+
+    def boom(name, args):  # noqa: ANN001, ARG001
+        raise ValueError("参数不对")
+
+    out = asyncio.run(LLMService._do_tool_call(boom, False, "x", {}))
+    assert "参数不对" in str(out.get("error"))
+
+
+def test_guard_aborts_through_real_with_tools(monkeypatch):
+    """走真实 `with_tools` → `_do_tool_call` 链路，验证中止真的能停住循环。"""
+    from types import SimpleNamespace
+
+    from clipwright.services import llm as llm_mod
+    from clipwright.services.llm import LLMResponse, LLMService
+
+    rounds = {"n": 0}
+
+    async def fake_generate(self, messages=None, **kwargs):  # noqa: ANN001, ARG001
+        rounds["n"] += 1
+        return LLMResponse(
+            content="", success=True, status_code=200,
+            tool_calls=[SimpleNamespace(id=f"c{rounds['n']}", name="local_probe",
+                                        arguments="{}")],
+        )
+
+    async def fake_execute(name, args=None, **kwargs):  # noqa: ANN001, ARG001
+        return {"status": "ok"}
+
+    monkeypatch.setattr(LLMService, "generate", fake_generate)
+    monkeypatch.setattr(sf, "execute", fake_execute)
+    monkeypatch.setattr(llm_mod, "_resolve_llm_provider", lambda *a, **k: None)
+
+    def guard() -> str:
+        return "预算耗尽"
+
+    out = asyncio.run(agent_loop.run_loop(_task(), guard=guard))
+    assert out["status"] == "aborted", "闸必须在模型请求中间真的停住"
+    assert out["stopped_reason"] == "预算耗尽"
+    assert rounds["n"] == 1, "中止后不许再发起下一轮模型请求"
+
+
+def test_credential_probe_counts_role_binding(monkeypatch):
+    """role-bound 凭据也算有凭据——否则生产会静默跑 plan 却以为在跑 tool_loop。"""
+    monkeypatch.setattr(agent_loop.settings, "kernel_mode", "tool_loop")
+    monkeypatch.setattr(agent_loop.settings, "llm_api_key", "")
+    monkeypatch.setattr(agent_loop.settings, "llm_provider", "anthropic")
+    monkeypatch.setattr(agent_loop, "_has_credential", lambda: True)
+    ok, why = agent_loop.tool_loop_available()
+    assert ok is True, why
 
 
 if __name__ == "__main__":  # pragma: no cover

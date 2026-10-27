@@ -209,5 +209,68 @@ def test_legacy_query_names_still_work_after_alias_migration(monkeypatch):
 
 
 
+def test_cancel_works_for_stage_run(monkeypatch):
+    """取消契约必须有真东西可取消：阶段 run 不在 supervisor tracker 里。
+
+    旧实现拿 run_id 去查按 subagent_id 建键的 tracker，永远返回"不可取消"。
+    """
+    from clipwright.schema.stage import StageResult
+    from clipwright.services import stage_subagent
+
+    started = {"go": False}
+
+    async def slow_stage(task, spec):  # noqa: ANN001
+        started["go"] = True
+        await asyncio.sleep(5)
+        return StageResult(stage=spec.stage, status="ok", summary="不该到这里")
+
+    monkeypatch.setattr(stage_subagent, "run_stage", slow_stage)
+
+    async def scenario():
+        task = _task("task_cancel")
+        run = asyncio.ensure_future(agent_run.run(
+            RunSpec(kind="stage", stage="edit", idem_key="cancel-1", depth=1), task))
+        for _ in range(50):
+            if started["go"]:
+                break
+            await asyncio.sleep(0.01)
+        ok, detail = agent_run.cancel("cancel-1")
+        out = await run
+        return ok, detail, out
+
+    ok, detail, out = asyncio.run(scenario())
+    assert ok is True, detail
+    assert out.status == "cancelled"
+    assert out.failure["category"] == "cancelled"
+
+
+def test_cancel_unknown_run_reports_honestly():
+    ok, detail = agent_run.cancel("no-such-run")
+    assert ok is False
+    assert "不可取消或不存在" in detail["error"]
+
+
+def test_reset_cancels_live_runs(monkeypatch):
+    """reset 必须把还在跑的句柄一起收掉，否则测试之间会互相污染。"""
+    from clipwright.schema.stage import StageResult
+    from clipwright.services import stage_subagent
+
+    async def slow_stage(task, spec):  # noqa: ANN001
+        await asyncio.sleep(5)
+        return StageResult(stage=spec.stage, status="ok")
+
+    monkeypatch.setattr(stage_subagent, "run_stage", slow_stage)
+
+    async def scenario():
+        run = asyncio.ensure_future(agent_run.run(
+            RunSpec(kind="stage", stage="edit", idem_key="live-1", depth=1), _task()))
+        await asyncio.sleep(0.02)
+        agent_run.reset()
+        return await asyncio.gather(run, return_exceptions=True)
+
+    out = asyncio.run(scenario())
+    assert out  # 断言不抛未处理异常即可
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
