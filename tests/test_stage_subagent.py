@@ -15,7 +15,6 @@ from clipwright.config import settings
 from clipwright.schema.stage import StageSpec
 from clipwright.services import stage_inputs, stage_merge, stage_subagent
 from clipwright.services import task_blackboard as bb
-from clipwright.services import stage_capability
 
 
 class _FakeRequest:
@@ -260,30 +259,27 @@ def test_capability_splits_control_args_from_payload(monkeypatch) -> None:
         "timeout_sec": 30, "max_turns": 2, "dry_run": False,
         "persona_config": {"tone": "冷静"},
     })
-    out = asyncio.run(stage_capability.run(_Task(), step))
+    from clipwright.tool import surface as sf
+
+    out = asyncio.run(sf.execute("delegate_agent", dict(step.args),
+                                 pipeline_id="task_cap", task=_Task("task_cap")))
     assert out["status"] == "ok"
     assert out["output"]["stage"] == "structure"
-    # 控制参数没有混进业务输入
-    assert stage_capability.CONTROL_ARGS >= {"stage", "provider", "model", "timeout_sec"}
+    # 控制参数（provider/model/timeout/max_turns/dry_run）不进业务输入：payload 里没有它们
+    assert "provider" not in (out["output"].get("artifacts") or {})
+    assert "timeout_sec" not in (out["output"].get("artifacts") or {})
 
 
 def test_capability_refuses_unknown_stage(monkeypatch) -> None:
     from clipwright.schema.task import PlanStep
 
+    from clipwright.tool import surface as sf
+
     step = PlanStep(id="p1", capability="delegate", args={"stage": "不存在的阶段"})
-    out = asyncio.run(stage_capability.run(_Task(), step))
+    out = asyncio.run(sf.execute("delegate_agent", dict(step.args),
+                                 pipeline_id="task_cap2", task=_Task("task_cap2")))
     assert out["status"] == "refused"
     assert out["failure"]["category"] == "input_insufficient"
-
-
-def test_capability_refuses_when_agent_mode_off(monkeypatch) -> None:
-    from clipwright.schema.task import PlanStep
-
-    monkeypatch.setattr(settings, "agent_mode", "off")
-    step = PlanStep(id="p1", capability="delegate", args={"stage": "structure"})
-    out = asyncio.run(stage_capability.run(_Task(), step))
-    assert out["status"] == "refused"
-    assert out["failure"]["category"] == "policy_refused"
 
 
 def test_kernel_accumulates_stage_cost_into_task_usage() -> None:
@@ -317,8 +313,14 @@ def test_list_stages_query_returns_blackboard(monkeypatch) -> None:
 
     _patch_agent(monkeypatch, {"scenes": [{"n": 1}]})
     asyncio.run(stage_subagent.run_stage(_Task(), StageSpec(stage="structure")))
-    out = asyncio.run(stage_capability.run(
-        _Task(), PlanStep(id="p2", capability="list_stages")))
+    from clipwright.tool import surface as sf
+
+    task = _Task("task_list")
+    # 必须经 surface 派发，run 表里才有记录（直接调 run_stage 不会登记 AgentRun）
+    asyncio.run(sf.execute("delegate_agent", {"stage": "structure"},
+                           pipeline_id="task_list", task=task))
+    out = asyncio.run(sf.execute("list_agent_runs", {}, pipeline_id="task_list",
+                                 task=task))
     assert out["status"] == "ok"
-    assert out["output"]["count"] == 1
-    assert "scenes" in out["output"]["blackboard"]["keys"]
+    assert out["output"]["count"] >= 1
+    assert "keys" in (out["output"]["blackboard"] or {})

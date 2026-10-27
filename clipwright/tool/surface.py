@@ -542,7 +542,8 @@ async def _execute_agent(name: str, payload: dict[str, Any], *,
     if name == CANCEL_AGENT_RUN:
         # 兼容旧参数名：历史检查点里存的是 subagent_id
         run_id = str(payload.get("run_id") or payload.get("subagent_id") or "")
-        ok, detail = agent_run.cancel(run_id)
+        ok, detail = agent_run.cancel(
+            run_id, task_id=str(getattr(task, "id", "") or pipeline_id))
         out = {"status": "ok" if ok else "error",
                "output": detail, "error": None if ok else detail.get("error")}
         out["record"] = _audit(name, entry, pipeline_id, idem_key, payload,
@@ -603,11 +604,19 @@ async def _execute_agent(name: str, payload: dict[str, Any], *,
         trace_id=pipeline_id,
     )
     result = await agent_run.run(spec, task)
-    status = "ok" if result.status in ("ok", "degraded", "needs") else "error"
+    # 语义要分清：ok/degraded/needs 是"跑完了"，refused 是"不许跑"，其余才是 error
+    if result.status in ("ok", "degraded", "needs"):
+        status = "ok"
+    elif result.status == "refused":
+        status = "refused"
+    else:
+        status = "error"
     out = {
         "status": status,
         "output": result.to_tool_payload(),
         "error": result.error or None,
+        # 失败/拒绝要把结构化原因透出来（Kernel 与模型都靠它决定下一步）
+        "failure": result.failure,
         "cost_usd": result.cost_usd,
         "cost_unknown": bool(result.cost_unknown),
         "replayed": False,

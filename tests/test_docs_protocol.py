@@ -306,16 +306,23 @@ def test_docs_api_returns_brief_and_plan(tmp_path) -> None:
 # ── 能力名：delegate 新名 + run_stage 旧名兼容 ─────────────
 
 
-def test_legacy_run_stage_name_still_dispatches(tmp_path, monkeypatch) -> None:
-    """老检查点里存的是 run_stage；加载时映射为 delegate，能力层也仍认它。"""
-    from clipwright.schema.task import PlanStep
-    from clipwright.services import stage_capability
+def test_stage_dispatch_goes_through_agent_run(tmp_path, monkeypatch) -> None:
+    """阶段派发的唯一入口是 `agent_run`（旧能力名适配层已在 closeout B11 退役）。
+
+    这条用例以前测"run_stage 旧名会被映射"，现在测**真实链路**：
+    `surface.execute("delegate_agent")` → `agent_run.run` → `stage_subagent.run_stage`。
+    """
+    from clipwright.services import agent_run
+    from clipwright.tool import surface as sf
 
     ws = _ws(tmp_path, "proj_legacy_name")
     task = _Task("task_legacy", ws.dirs().root)
     monkeypatch.setattr(stage_subagent, "agent_for",
                         lambda stage: _FakeAgent({"scenes": [{"title": "s"}]}))
-    out = asyncio.run(stage_capability.run(
-        task, PlanStep(id="p1", capability="run_stage", args={"stage": "structure"})))
+    out = asyncio.run(sf.execute("delegate_agent", {"stage": "structure"},
+                                 pipeline_id="task_legacy", task=task))
     assert out["status"] == "ok"
     assert out["output"]["stage"] == "structure"
+    assert agent_run.get_run(out["output"]["run_id"]) is not None
+
+

@@ -15,7 +15,7 @@ import pytest
 from clipwright.config import settings
 from clipwright.schema.task import Plan, PlanStep, TaskRequest
 from clipwright.services import agent_kernel as ak
-from clipwright.services import subagent_capability as sub
+from clipwright.services import agent_run as arun
 from clipwright.services import task_events as te
 
 
@@ -158,35 +158,27 @@ def _kernel_result():
     return Task(id="task_c5", request=TaskRequest(topic="县域经济"))
 
 
-def test_subagent_capability_refuses_when_mode_off(monkeypatch):
-    monkeypatch.setattr(settings, "agent_mode", "off", raising=False)
-    task = _kernel_result()
-    out = asyncio.run(sub.run(task, PlanStep(id="s1", capability="spawn_subagent",
-                                            args={"role": "核查员"})))
-    assert out["status"] == "refused"
+def _research(**kw):
+    from clipwright.schema.run import RunSpec
+
+    return asyncio.run(arun.run(RunSpec(kind="research", depth=1, **kw), _kernel_result()))
 
 
-def test_subagent_capability_refuses_exec_tools():
-    """最重要的一条：Kernel 不能自己给子代理开 shell 权限。"""
-    task = _kernel_result()
-    out = asyncio.run(sub.run(task, PlanStep(
-        id="s1", capability="spawn_subagent",
-        args={"role": "运维", "tools": ["run_shell"]},
-    )))
-    assert out["status"] == "refused"
-    assert "执行权限" in out["error"]
-    assert "两级" in out["error"] or "审核" in out["error"]
+def test_research_refuses_exec_tools():
+    """最重要的一条：运行时不能自己给子 agent 开 shell 权限。"""
+    out = _research(role="运维", brief="查一下", tools=["run_shell"])
+    assert out.status == "refused"
+    assert "执行权限" in out.error
+    assert "审核" in out.error or "两级" in out.error
 
 
-def test_subagent_capability_requires_role():
-    task = _kernel_result()
-    out = asyncio.run(sub.run(task, PlanStep(id="s1", capability="spawn_subagent",
-                                            args={"tools": ["read_file"]})))
-    assert out["status"] == "refused"
-    assert "role" in out["error"]
+def test_research_requires_readonly_subset():
+    out = _research(role="核查员", brief="查一下", tools=["write_file"])
+    assert out.status == "refused"
+    assert "只读子集" in out.error
 
 
-def test_subagent_capability_spawns_readonly_worker(monkeypatch):
+def test_research_spawns_readonly_worker(monkeypatch):
     from clipwright.supervisor import spawn as sp
 
     captured: dict = {}
@@ -197,17 +189,13 @@ def test_subagent_capability_spawns_readonly_worker(monkeypatch):
                 "output": "第 3 段是占位图", "cost_usd": 0.02, "duration_ms": 1200}
 
     monkeypatch.setattr(sp, "spawn_subagent", fake_spawn)
-    task = _kernel_result()
-    out = asyncio.run(sub.run(task, PlanStep(
-        id="s1", capability="spawn_subagent",
-        args={"role": "素材可用性核查员", "system_prompt": "查占位图",
-              "tools": ["read_file", "list_dir"]},
-    )))
-    assert out["status"] == "ok"
-    assert out["output"]["subagent_id"] == "sa_1"
-    assert out["output"]["cost_usd"] == 0.02
+    out = _research(role="素材可用性核查员", brief="查占位图",
+                    tools=["read_file", "list_dir"])
+    assert out.status == "ok"
+    assert out.outputs["subagent_id"] == "sa_1"
+    assert out.cost_usd == 0.02
     assert set(captured["tools"]) == {"list_dir", "read_file"}
-    assert not set(captured["tools"]) & sub.EXEC_TOOLS
+    assert not set(captured["tools"]) & arun.EXEC_TOOLS
 
 
 def test_spawn_capability_no_longer_routed_by_executor(monkeypatch, tmp_path):

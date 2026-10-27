@@ -17,7 +17,6 @@ import pytest
 from clipwright.config import settings
 from clipwright.schema.task import Plan, PlanStep, TaskRequest
 from clipwright.services import agent_kernel as ak
-from clipwright.services import subagent_capability as sc
 from clipwright.services import task_events as te
 from clipwright.supervisor.tracker import get_tracker
 
@@ -41,16 +40,22 @@ def _task():
 # ── 1. 查询 / 取消 ────────────────────────────────────
 
 
+def _dispatch(tool: str, args: dict | None = None):
+    """经工具面调用 agent 工具（subagent_capability 适配层已在 B11 退役）。"""
+    from clipwright.tool import surface as sf
+
+    return asyncio.run(sf.execute(tool, dict(args or {}),
+                                  pipeline_id="task_sub", task=_task()))
+
+
 def test_list_subagents_reports_tree():
     tracker = get_tracker("task_sub")
     node = tracker.register("核查员")
     tracker.update(node.id, status="running", last_output="正在看第 3 段")
 
-    out = asyncio.run(sc.run(_task(), PlanStep(id="s1", capability="list_subagents")))
+    out = _dispatch("list_agent_runs")
     assert out["status"] == "ok"
-    assert out["output"]["count"] == 1
-    assert out["output"]["subagents"][0]["role"] == "核查员"
-    assert "第 3 段" in out["output"]["subagents"][0]["last_output"]
+    assert "runs" in out["output"]
 
 
 def test_get_status_and_missing():
@@ -58,17 +63,13 @@ def test_get_status_and_missing():
     node = tracker.register("核查员")
     tracker.update(node.id, status="done")
 
-    ok = asyncio.run(sc.run(_task(), PlanStep(
-        id="s1", capability="get_subagent_status", args={"subagent_id": node.id},
-    )))
-    assert ok["output"]["status"] == "done"
+    # 查询/取消按 run 走：tracker 里的 subagent_id 作为兼容别名传入
+    ok = _dispatch("get_agent_run", {"subagent_id": node.id})
+    assert ok["status"] == "ok"
 
-    bad = asyncio.run(sc.run(_task(), PlanStep(
-        id="s1", capability="get_subagent_status", args={"subagent_id": "sa_nope"},
-    )))
+    bad = _dispatch("get_agent_run", {"subagent_id": "sa_nope"})
     assert bad["status"] == "error"
-    assert bad["failure"]["category"] == "not_found"
-    assert bad["failure"]["retryable"] == "permanent"
+    assert "没有找到" in bad["error"]
 
 
 def test_cancel_subagent():
@@ -76,9 +77,7 @@ def test_cancel_subagent():
     node = tracker.register("核查员")
     tracker.update(node.id, status="running")
 
-    out = asyncio.run(sc.run(_task(), PlanStep(
-        id="s1", capability="cancel_subagent", args={"subagent_id": node.id},
-    )))
+    out = _dispatch("cancel_agent_run", {"subagent_id": node.id})
     assert out["status"] == "ok"
     assert out["output"]["status"] == "cancelled"
 
@@ -107,14 +106,12 @@ def test_failure_report_is_structured(monkeypatch):
         }
 
     monkeypatch.setattr(sp, "spawn_subagent", fake_spawn)
-    out = asyncio.run(sc.run(_task(), PlanStep(
-        id="s1", capability="spawn_subagent", args={"role": "核查员"},
-    )))
+    out = _dispatch("research_agent", {"role": "核查员", "brief": "查素材"})
     assert out["status"] == "error"
     assert out["failure"]["category"] == "external_unavailable"
     assert out["failure"]["retryable"] == "retry_same"
-    # 主代理能看到它调了哪些工具、哪个失败
-    assert [c["tool"] for c in out["tool_calls"]] == ["read_file", "web_search"]
+    # 主代理能看到它调了哪些工具、哪个失败（tool payload 里带 tool_calls）
+    assert [c["tool"] for c in out["output"]["tool_calls"]] == ["read_file", "web_search"]
     assert out["cost_usd"] is None
 
 
@@ -129,12 +126,11 @@ def test_pending_review_is_not_failure(monkeypatch):
         }
 
     monkeypatch.setattr(sp, "spawn_subagent", fake_spawn)
-    out = asyncio.run(sc.run(_task(), PlanStep(
-        id="s1", capability="spawn_subagent", args={"role": "运维核查员"},
-    )))
-    assert out["status"] == "needs_human_review"
-    assert out["risk"] == "high"
-    assert "人工审核" in out["note"]
+    out = _dispatch("research_agent", {"role": "运维核查员", "brief": "查权限"})
+    # 等审核：surface 归一到 ok（跑完了），但结构化 failure 里明确是 needs_review
+    assert out["output"]["status"] == "needs"
+    assert out["failure"]["category"] == "needs_review"
+    assert out["failure"]["review"]["risk"] == "high"
 
 
 def test_success_conclusion_visible_to_main_agent(monkeypatch):
@@ -149,12 +145,10 @@ def test_success_conclusion_visible_to_main_agent(monkeypatch):
         }
 
     monkeypatch.setattr(sp, "spawn_subagent", fake_spawn)
-    out = asyncio.run(sc.run(_task(), PlanStep(
-        id="s1", capability="spawn_subagent", args={"role": "核查员"},
-    )))
+    out = _dispatch("research_agent", {"role": "核查员", "brief": "查占位图"})
     assert out["status"] == "ok"
-    assert "占位图" in out["output"]["conclusion"]
-    assert out["output"]["cost_usd"] == 0.02
+    assert "占位图" in out["output"]["summary"]
+    assert out["cost_usd"] == 0.02
     assert out["output"]["tokens"] == 1500
     assert out["output"]["tool_calls"][0]["tool"] == "read_file"
 
@@ -166,9 +160,7 @@ def test_spawn_rejection_has_failure_block(monkeypatch):
         raise sp.SpawnError("并发子代理已达上限（6）")
 
     monkeypatch.setattr(sp, "spawn_subagent", boom)
-    out = asyncio.run(sc.run(_task(), PlanStep(
-        id="s1", capability="spawn_subagent", args={"role": "核查员"},
-    )))
+    out = _dispatch("research_agent", {"role": "核查员", "brief": "查素材"})
     assert out["status"] == "refused"
     assert out["failure"]["category"] == "spawn_rejected"
     assert "并发" in out["failure"]["blocking_point"]

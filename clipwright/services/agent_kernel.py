@@ -734,6 +734,14 @@ class AgentKernel:
             )
             task.status = ("done" if gate_reason in ("tool_loop_completed",
                                                     "dry_run_preview") else "failed")
+            # 结果快照（含质检摘要）落一份：前端任务详情/质检页读它，而不是读老管线的结果字典
+            try:
+                from clipwright.services import task_blackboard as _bb2
+                from clipwright.services import task_results
+
+                task_results.remember_from_board(task.id, _bb2.get(task.id))
+            except Exception as exc:  # noqa: BLE001 — 快照失败不影响收尾
+                logger.warning("结果快照写入失败 %s: %s", task.id, exc)
             task.touch()
             emit(task.id, "task_end", task.finish.conclusion,
                  {"reason": task.finish.reason, "usage": task.usage.model_dump(),

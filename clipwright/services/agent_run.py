@@ -6,7 +6,7 @@
 - `research` → `supervisor.spawn.spawn_subagent`（只读调研员，带并发/审核门）
 
 这样主 agent 只有一个工具（`delegate_agent` / `research_agent`）两种 spec，
-不再需要"能力名解释器"（stage_capability 那种 if/elif）。
+不再需要"能力名解释器"（那种 if/elif 已随 closeout B11 退役）。
 """
 
 from __future__ import annotations
@@ -18,6 +18,44 @@ from typing import Any
 
 from clipwright.config import logger
 from clipwright.schema.run import AgentResult, RunSpec
+
+#: Kernel 可直接授予子 agent 的只读/低危工具（与 supervisor.SUPERVISOR_TOOLS 的交集）。
+#: 这条策略原来在 `subagent_capability` 里；适配层退役后它必须留在**运行时**——
+#: 否则"子 agent 能不能开 shell"就没人管了。
+READONLY_TOOLS: frozenset[str] = frozenset({
+    # PRD §17.5.2：子 agent 不得写文件（报告由 runtime 落盘）
+    "read_file", "list_dir", "list_subagents", "get_subagent_status",
+    "web_search", "web_fetch",
+})
+EXEC_TOOLS: frozenset[str] = frozenset({"run_shell", "run_python"})
+
+
+class RunRefused(Exception):
+    """派发前的策略拒绝（调用方转成 AgentResult(status="refused")）。"""
+
+    def __init__(self, message: str, *, category: str = "policy_refused") -> None:
+        super().__init__(message)
+        self.category = category
+
+
+def enforce_tool_policy(spec: RunSpec) -> list[str]:
+    """调研 worker 的工具策略：只读子集，禁止 shell/python。
+
+    阶段子 agent 用自身能力集，不走这条（它们有自己的工具白名单）。
+    """
+    requested = {str(t) for t in (spec.tools or ["read_file", "list_dir"])}
+    forbidden = requested & EXEC_TOOLS
+    if forbidden:
+        raise RunRefused(
+            f"子 agent 不能由 Kernel 直接授予执行权限（{sorted(forbidden)}）："
+            "带 shell/python 的子 agent 必须经 supervisor 派发，"
+            "由独立风险判定 + 人工审核把关"
+        )
+    allowed = sorted(requested & READONLY_TOOLS)
+    if not allowed:
+        raise RunRefused("子 agent 工具集必须是非空的只读子集")
+    return allowed
+
 
 #: 进程内 run 表（统一视图：阶段 + 调研）
 _RUNS: dict[str, AgentResult] = {}
@@ -67,8 +105,32 @@ def get_run(run_id: str) -> dict[str, Any] | None:
 
 
 def list_runs(task_id: str = "") -> list[dict[str, Any]]:
-    items = [r for r in _RUNS.values() if not task_id or r.run_id.startswith(task_id)]
+    """按任务列 run。
+
+    早期版本用 `run_id.startswith(task_id)` 过滤——但 run_id 是随机/幂等键，
+    带前缀只是巧合。`AgentResult.task_id` 才是真字段。
+    """
+    key = str(task_id or "")
+    items = [r for r in _RUNS.values()
+             if not key or r.task_id == key or r.run_id.startswith(key)]
     return [r.model_dump(mode="json") for r in items]
+
+
+def _tracker_node(task_id: str, node_id: str) -> dict[str, Any] | None:
+    """回落到 supervisor worker 表查一次（历史 worker 与它的 tracker 是另一套存储）。"""
+    try:
+        from clipwright.supervisor.tracker import get_tracker
+
+        for pid in [task_id, ""]:
+            node = get_tracker(pid).get(str(node_id))
+            if node is not None:
+                return {"run_id": node.id, "kind": "research", "role": node.role,
+                        "status": node.status, "summary": (node.last_output or "")[:500],
+                        "cost_usd": node.cost_usd, "duration_ms": node.duration_ms,
+                        "source": "tracker"}
+    except Exception:  # noqa: BLE001 — tracker 不可用就当没查到
+        return None
+    return None
 
 
 def inspect(*, run_id: str = "", task_id: str = "", stage: str = "") -> dict[str, Any] | None:
@@ -77,6 +139,9 @@ def inspect(*, run_id: str = "", task_id: str = "", stage: str = "") -> dict[str
         hit = _RUNS.get(run_id)
         if hit is not None:
             return hit.model_dump(mode="json")
+        found = _tracker_node(task_id, run_id)
+        if found is not None:
+            return found
     if task_id and stage:
         from clipwright.services import stage_subagent
 
@@ -91,7 +156,7 @@ def inspect(*, run_id: str = "", task_id: str = "", stage: str = "") -> dict[str
     return None
 
 
-def cancel(run_id: str) -> tuple[bool, dict[str, Any]]:
+def cancel(run_id: str, *, task_id: str = "") -> tuple[bool, dict[str, Any]]:
     """取消一个还在跑的子 agent（阶段/调研共用）。
 
     三级查找：本服务的 `_LIVE` 句柄表 → 别名索引（subagent_id / idem_key）→
@@ -118,8 +183,12 @@ def cancel(run_id: str) -> tuple[bool, dict[str, Any]]:
     try:
         from clipwright.supervisor.tracker import get_tracker
 
-        if get_tracker("").cancel(key) or get_tracker("").cancel(resolved):
-            return True, {"run_id": resolved, "status": "cancelled", "via": "tracker"}
+        # worker tracker 是按 pipeline/task 分实例的：先查本任务的那张，再兜底全局
+        for pid in ([str(task_id)] if task_id else []) + [""]:
+            tracker = get_tracker(pid)
+            if tracker.cancel(key) or tracker.cancel(resolved):
+                return True, {"run_id": resolved, "status": "cancelled",
+                              "via": "tracker", "task_id": pid}
     except Exception as exc:  # noqa: BLE001
         logger.warning("tracker 取消失败 %s: %s", key, exc)
 
@@ -302,8 +371,26 @@ def _after_run(result: AgentResult, spec: RunSpec, task: Any) -> None:
 
 
 async def _run_stage(spec: RunSpec, task: Any, run_id: str, trace_id: str) -> AgentResult:
-    from clipwright.schema.stage import StageSpec
+    from clipwright.schema.stage import STAGE_NAMES, StageSpec
     from clipwright.services import stage_subagent
+
+    # 阶段名校验：这是**运行时**的输入契约（旧适配层退役后必须留在这里）
+    if not spec.stage:
+        return AgentResult(
+            run_id=run_id, kind="stage", task_id=str(getattr(task, "id", "") or ""),
+            trace_id=trace_id, status="refused",
+            error="派阶段必须给 stage（structure/material/edit/animation/audio/quality）",
+            failure={"category": "input_insufficient", "retryable": "needs_human",
+                     "blocking_point": "缺少 stage 参数", "evidence": []},
+        )
+    if str(spec.stage) not in STAGE_NAMES:
+        return AgentResult(
+            run_id=run_id, kind="stage", task_id=str(getattr(task, "id", "") or ""),
+            trace_id=trace_id, stage=str(spec.stage), status="refused",
+            error=f"未知阶段 {spec.stage}（可选：{'/'.join(STAGE_NAMES)}）",
+            failure={"category": "input_insufficient", "retryable": "needs_human",
+                     "blocking_point": f"stage={spec.stage}", "evidence": []},
+        )
 
     stage_spec = StageSpec(
         stage=spec.stage,  # type: ignore[arg-type]
@@ -340,13 +427,23 @@ async def _run_research(spec: RunSpec, task: Any, run_id: str, trace_id: str) ->
 
     from clipwright.supervisor.spawn import SpawnError, spawn_subagent
 
+    try:
+        allowed_tools = enforce_tool_policy(spec)
+    except RunRefused as exc:
+        return AgentResult(
+            run_id=run_id, kind="research", role=spec.role, status="refused",
+            error=str(exc),
+            failure={"category": exc.category, "retryable": "needs_human",
+                     "blocking_point": str(exc)[:200], "evidence": []},
+        )
+
     ctx = SimpleNamespace(pipeline_id=trace_id or getattr(task, "id", ""), extra_params={})
     try:
         res = await spawn_subagent(
             ctx,
             role=spec.role or "调研员",
             system_prompt=spec.brief,
-            tools=list(spec.tools or ["read_file", "list_dir"]),
+            tools=allowed_tools,
             provider=spec.provider,
             model=spec.model,
             timeout_sec=float(spec.timeout_sec or 60.0),
@@ -404,4 +501,6 @@ def _map_status(stage_status: str) -> Any:
     }.get(str(stage_status), "failed")
 
 
-__all__ = ["cancel", "get_run", "inspect", "list_runs", "replay", "reset", "run"]
+__all__ = ["EXEC_TOOLS", "READONLY_TOOLS", "RunRefused", "cancel",
+           "enforce_tool_policy", "get_run", "inspect", "list_runs", "replay",
+           "reset", "run"]

@@ -75,3 +75,36 @@ def test_agent_capabilities_are_first_class_in_matrix():
     names = {m["name"] for m in META_CAPABILITIES}
     assert "delegate_agent" in names or "delegate" in names
     assert "run_pipeline" not in names
+
+def test_capability_adapters_are_gone():
+    """B11：两处薄适配层已退役，能力名解析只剩工具面一处真值。"""
+    import importlib
+
+    for mod in ("clipwright.services.stage_capability",
+                "clipwright.services.subagent_capability"):
+        try:
+            importlib.import_module(mod)
+        except ModuleNotFoundError:
+            continue
+        raise AssertionError(f"{mod} 应已删除")
+
+    # 工具面仍是唯一入口
+    from clipwright.tool import surface as sf
+
+    names = {e.name for e in sf.build_surface()}
+    assert {"delegate_agent", "research_agent", "get_agent_run",
+            "list_agent_runs", "cancel_agent_run"} <= names
+
+
+def test_subagent_tool_policy_lives_in_runtime():
+    """只读工具策略必须留在运行时（不能随适配层一起消失）。"""
+    from clipwright.services import agent_run
+
+    assert agent_run.EXEC_TOOLS and agent_run.READONLY_TOOLS
+    with pytest.raises(agent_run.RunRefused):
+        agent_run.enforce_tool_policy(
+            agent_run.RunSpec(kind="research", tools=["run_shell"]))
+    ok = agent_run.enforce_tool_policy(
+        agent_run.RunSpec(kind="research", tools=["read_file", "web_search"]))
+    assert ok == ["read_file", "web_search"]
+

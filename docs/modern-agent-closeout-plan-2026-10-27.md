@@ -279,3 +279,38 @@
 - B2（dry-run）建议顺带把 `pipeline_req.dry_run` 这个已失效字段一并处理，避免留下"看起来能设、实际没用"的第二处死开关。
 - B10 的 replay CLI 建议复用 `evaluation.replay_bundle()` 已有产物形状，别另起一套 bundle 格式（当前 bundle 含 events / runs / memory / metrics 四段）。
 
+---
+
+## 9. 执行记录（2026-10-27，实施方）
+
+> 纪律：每批只写"做了什么 + 怎么验收"，未做的项在 §9.2 明确列出，不用"剩余与本批无关"结案。
+
+### 9.1 已完成批次
+
+| 批次 | 状态 | 关键改动 | 新增/改写的验收 |
+|---|---|---|---|
+| B1 supervisor 派工退役 | ✅ | `_try_retry` 改为"只登记不执行"；`dispatch` 返回 `execution_status="retired"` + `alternative`；`retry_with_model`/`redo_stage` 不再执行 | `tests/test_supervisor_retry_wiring.py` 重写为退役契约（6 条） |
+| B2 dry-run 贯通 Task | ✅ | `_proceed_as_task` 把 dry-run 写进 `Task.extra`；`agent_loop.run_loop(dry_run=)` 让原子工具走 `surface.execute(dry_run=True)` 预检、派发类工具直接拒绝；kernel 收尾记 `dry_run_preview` | `tests/test_dry_run_task.py`（4 条，含"预览不计入成功率"） |
+| B3 aborted 指标闭环 | ✅ | abort 拆三类：pause 保持 paused（不记）/ cancel→cancelled（记）/ 触闸→failed+`gate:*`（记）；`record_run` 默认 kind 由 `task` 改 `run` | `tests/test_task_metrics.py`（6 条） |
+| B4 trace 因果信封 | ✅ | `tool_result.causation_id` 指向对应 `tool_call.seq`；幂等复用与等审核发 `agent_run_update`；删除死代码 `RunEvent` | `tests/test_trace_envelope.py`（5 条） |
+| B5 记忆跨重启 | ✅（按审校注记用文件介质） | 新增 `memory.load_episodic` / `memory.load`；kernel 首次进 loop 恢复、所有终态收尾写任务情景记忆并落盘 | `tests/test_memory_persistence.py`（5 条） |
+| B6 死开关与 deps | ✅（deps 只降级） | `agent_mode` / `pipeline_enabled` 标注失效并改准说明；`agents.registry.deps` 标废弃、不删 | 设置/注册表回归 357 passed |
+| B7 覆盖回补 | ✅ | `stage_inputs` 的音频/人格/质量/override 优先级断言；`PipelineModel` 落库形状 + `get_run_records` 映射 | `tests/test_legacy_coverage_backfill.py`（8 条） |
+| B8 Task 质检摘要 | ✅（后端部分） | 新增 `task_results.quality_summary` / `remember_from_board`，kernel 收尾写含质检的结果快照；删除老管线两个死 helper | `tests/test_task_quality_summary.py`（5 条） |
+| B11 适配层退役 | ✅ | 只读工具策略迁入 `agent_run`（`enforce_tool_policy`）、阶段名校验迁入 `agent_run._run_stage`、`list_runs` 按 `task_id` 过滤、`surface` 保留 `refused` 语义并透出 `failure`；删除 `stage_capability.py` / `subagent_capability.py` | `tests/test_m3_removals.py` +2 条删除证明；相关用例改走 `surface`/`agent_run` |
+
+### 9.2 本批**未完成**（如实列出）
+
+| 批次 | 状态 | 原因与建议 |
+|---|---|---|
+| B9 前端 Task SSE 运行观测 | ❌ 未开始 | 属前端仓库（`J:\Clipweight-Client`）一批：`RunningSubagents` 改 SSE、`CopilotTaskRunTab` 补 model-turn/tool-call/approval 卡片、`PipelineAdminPage` 数据源换 Task。改动面在 UI，需单独一轮并跑 `tsc` + vitest |
+| B10 M4 评估闭环 | ❌ 未开始 | replay CLI、golden 三次对比、prompt candidate registry、≥30 步事实保持测试是独立一批（约 2 人日），依赖 B9 的可视化面板才有观察面 |
+| B2 的 `pipeline_req.dry_run` 字段清理 | ⚠️ 部分 | dry-run 已贯通 Task（行为已正确）；`PipelineRequest.dry_run` 字段本身仍留着，删它会动 `schema/pipeline.py` 与若干构造点，建议与 B9 一起做（前端也在传这个字段） |
+| B8 的管理列表迁移 | ⚠️ 后端就绪 | 结果快照已带质检；"管理页列表"是前端的事，归 B9 |
+
+### 9.3 本批后的基线
+
+- 后端：**4420 passed / 4 skipped / 1 xfailed**（本批起点 4407，新增 13 条 + 改写若干）
+- 前端：未改动，仍 983 passed
+- 机械检查：`stage_capability|subagent_capability` → 仅 2 处历史注释；`pipeline_v2` 仍 0 import。
+

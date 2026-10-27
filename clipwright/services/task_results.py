@@ -57,4 +57,53 @@ def clear_results() -> None:
     _LAST_RESULT.clear()
 
 
-__all__ = ["clear_results", "last_result", "remember"]
+__all__ = ["clear_results", "last_result", "quality_summary",
+           "remember", "remember_from_board"]
+
+def quality_summary(board: dict[str, Any] | None = None) -> dict[str, Any]:
+    """把黑板里的质检 issues 压成可展示的摘要（Task 路径的质检口径）。
+
+    为什么放在这里：老管线在结果字典里塞 `quality_issues`，Task 路径没有等价物，
+    前端质检 Tab 于是永远空。这里读**黑板**（`issues` / `redo_agent`）而不是
+    "某次 run 的返回值"——质检是任务级事实，不是某一步的副产品。
+    """
+    board = dict(board or {})
+    issues = [i for i in (board.get("issues") or []) if isinstance(i, dict)]
+    redo = str(board.get("redo_agent") or "")
+    if not issues and not redo:
+        return {}
+
+    def _severity(item: dict[str, Any]) -> str:
+        return str(item.get("severity") or item.get("level") or "warn")
+
+    by_sev: dict[str, int] = {}
+    for item in issues:
+        by_sev[_severity(item)] = by_sev.get(_severity(item), 0) + 1
+    return {
+        "count": len(issues),
+        "by_severity": by_sev,
+        "redo_agent": redo,
+        "items": [
+            {"kind": str(i.get("kind") or i.get("type") or ""),
+             "severity": _severity(i),
+             "detail": str(i.get("detail") or i.get("message") or "")[:200],
+             "clip_id": str(i.get("clip_id") or "")}
+            for i in issues[:20]
+        ],
+    }
+
+
+def remember_from_board(task_id: str, board: dict[str, Any] | None = None) -> None:
+    """任务收尾时用黑板写一份结果快照（含质检摘要）。"""
+    board = dict(board or {})
+    timeline = board.get("final_timeline") or board.get("timeline")
+    snapshot: dict[str, Any] = {"task_id": str(task_id), "source": "blackboard"}
+    if timeline:
+        snapshot["timeline"] = timeline
+        snapshot["status"] = "completed"
+    quality = quality_summary(board)
+    if quality:
+        snapshot["quality_issues"] = quality
+    if snapshot.get("timeline") or quality:
+        remember(str(task_id), snapshot)
+

@@ -185,60 +185,6 @@ def pipeline_timeout_sec(audio_dur: float, scene_count: int) -> int:
     return int(max(1800, float(audio_dur or 0) * 6, int(scene_count or 0) * 360))
 
 
-def _extract_quality_summary(result_dict: dict) -> dict | None:
-    """C7: 从 steps 提取质检结果摘要——issues 此前只存在于 step.result 内部，
-    前端（/result 与 SSE done 事件）完全看不到质检发现了什么。"""
-    for s in reversed(result_dict.get("steps") or []):
-        if isinstance(s, dict) and s.get("agent_name") == "quality":
-            r = s.get("result") or {}
-            issues = r.get("issues") or []
-            if not isinstance(issues, list):
-                return None
-            items = []
-            for i in issues:
-                if isinstance(i, dict):
-                    items.append({
-                        "severity": i.get("severity", ""),
-                        "category": i.get("category", ""),
-                        "message": str(i.get("message", ""))[:200],
-                        "location": str(i.get("location", "") or "")[:80],
-                    })
-            errors = sum(1 for x in items if x["severity"] == "error")
-            warnings = sum(1 for x in items if x["severity"] == "warning")
-            return {
-                "passed": r.get("passed", True),
-                "error_count": errors,
-                "warning_count": warnings,
-                "issues": items[:20],
-                "fix_suggestions": [str(x)[:200] for x in (r.get("fix_suggestions") or [])][:10],
-                "redo_agent": r.get("redo_agent", ""),
-            }
-    return None
-
-
-def _aggregate_agent_notes(result_dict: dict) -> dict:
-    """C9: 聚合各 Agent 的 notes/warnings 到 /result 顶层（只写字段一次性暴露）。"""
-    notes: dict[str, list[str]] = {}
-    for s in result_dict.get("steps") or []:
-        if not isinstance(s, dict):
-            continue
-        name = s.get("agent_name") or ""
-        r = s.get("result") or {}
-        if not isinstance(r, dict):
-            continue
-        out: list[str] = []
-        for key in ("edit_notes", "audio_notes", "material_notes"):
-            v = r.get(key)
-            if isinstance(v, list):
-                out.extend(str(x) for x in v)
-        sk = r.get("script_skeleton")
-        if isinstance(sk, dict) and isinstance(sk.get("_warnings"), list):
-            out.extend(str(x) for x in sk["_warnings"])
-        if out:
-            notes[name] = out[:20]
-    return notes
-
-
 @router.get("/runs")
 async def list_pipeline_runs(request: Request, limit: int = 50) -> list[dict]:
     """获取管线运行记录（真实执行历史，供 PipelineAdminPage 展示）。
