@@ -317,3 +317,135 @@ def test_success_resets_failure_streak(monkeypatch):
 
     out = asyncio.run(agent_loop.run_loop(_task()))
     assert out["status"] == "ok", out.get("stopped_reason")
+
+
+# ── B2：主 agent「说话再行动」────────────────────────────
+
+
+def _real_path_env(monkeypatch, script):
+    """走真实 `with_tools` + `generate` 打桩，返回 (events, rounds 计数)。"""
+    from types import SimpleNamespace
+
+    from clipwright.services import llm as llm_mod
+    from clipwright.services.llm import LLMResponse, LLMService
+
+    rounds = {"n": 0}
+    scripted = list(script)
+
+    async def fake_generate(self, messages=None, **kwargs):  # noqa: ANN001, ARG001
+        rounds["n"] += 1
+        item = scripted.pop(0) if scripted else (None, [])
+        content, names = item
+        return LLMResponse(
+            content=content or "", success=True, status_code=200,
+            tool_calls=[
+                SimpleNamespace(id=f"c{rounds['n']}_{i}", name=n, arguments="{}")
+                for i, n in enumerate(names)
+            ],
+        )
+
+    async def fake_execute(name, args=None, **kwargs):  # noqa: ANN001, ARG001
+        return {"status": "ok"}
+
+    monkeypatch.setattr(LLMService, "generate", fake_generate)
+    monkeypatch.setattr(sf, "execute", fake_execute)
+    monkeypatch.setattr(llm_mod, "_resolve_llm_provider", lambda *a, **k: None)
+
+    events: list[dict[str, Any]] = []
+    monkeypatch.setattr(agent_loop, "emit",
+                        lambda tid, t, m, d=None, **kw: events.append(
+                            {"type": t, "message": m, "detail": d}))
+    return events, rounds
+
+
+def test_preamble_narration_precedes_tool_call(monkeypatch):
+    """模型动手前说的话要**先进事件流**，顺序严格是 narration → tool_call → tool_result。"""
+    events, rounds = _real_path_env(monkeypatch, [
+        ("我先派 structure 阶段把大纲落出来，因为时间线要靠它。", ["local_probe"]),
+        ("", []),
+    ])
+
+    out = asyncio.run(agent_loop.run_loop(_task()))
+    assert out["status"] == "ok", out.get("stopped_reason")
+    assert rounds["n"] >= 2
+
+    preambles = [e for e in events if (e["detail"] or {}).get("kind") == "preamble"]
+    assert len(preambles) == 1, "一轮只有一条 preamble"
+    assert preambles[0]["type"] == "narration"
+    assert "structure" in preambles[0]["message"]
+    assert preambles[0]["detail"]["round"] == 1
+    assert preambles[0]["detail"]["before_tool"] == ["local_probe"]
+
+    # 顺序：preamble 一定在第一条 tool_call / tool_result 之前
+    seq = [e["type"] for e in events]
+    i_pre = events.index(preambles[0])
+    i_call = seq.index("tool_call")
+    i_res = seq.index("tool_result")
+    assert i_pre < i_call < i_res
+
+
+def test_no_preamble_emitted_when_content_empty(monkeypatch):
+    """模型没说话就动手 → 不发 preamble 叙述（不能编一段"它说过"）。"""
+    events, _ = _real_path_env(monkeypatch, [("", ["local_probe"]), ("", [])])
+
+    asyncio.run(agent_loop.run_loop(_task()))
+    preambles = [e for e in events if (e["detail"] or {}).get("kind") == "preamble"]
+    assert preambles == []
+    assert "tool_call" in [e["type"] for e in events]
+
+
+def test_multiple_tool_calls_emit_single_preamble(monkeypatch):
+    """同轮多个 tool_call 只发一条叙述（不是每个工具重复一遍）。"""
+    events, _ = _real_path_env(monkeypatch, [
+        ("先看一眼素材和报告，再决定派谁。", ["local_probe", "local_probe"]),
+        ("", []),
+    ])
+
+    out = asyncio.run(agent_loop.run_loop(_task()))
+    assert out["status"] == "ok", out.get("stopped_reason")
+    preambles = [e for e in events if (e["detail"] or {}).get("kind") == "preamble"]
+    assert len(preambles) == 1
+    assert preambles[0]["detail"]["tool_count"] == 2
+    assert preambles[0]["detail"]["before_tool"] == ["local_probe", "local_probe"]
+
+
+def test_preamble_callback_failure_does_not_block_tools(monkeypatch):
+    """叙述回调炸了也不能挡住工具执行（B2 实施步骤 4）。"""
+    import clipwright.services.llm as llm_mod
+    from clipwright.services.llm import LLMService
+
+    monkeypatch.setattr(llm_mod, "_resolve_llm_provider", lambda *a, **k: None)
+    raw = LLMService()
+
+    calls: list[str] = []
+
+    async def executor(name, args):  # noqa: ANN001
+        calls.append(name)
+        return {"status": "ok"}
+
+    from types import SimpleNamespace
+    from clipwright.services.llm import LLMResponse
+
+    state = {"n": 0}
+
+    async def fake_generate(self, messages=None, **kwargs):  # noqa: ANN001, ARG001
+        state["n"] += 1
+        if state["n"] == 1:
+            return LLMResponse(
+                content="我要动手了", success=True, status_code=200,
+                tool_calls=[SimpleNamespace(id="c1", name="local_probe", arguments="{}")],
+            )
+        return LLMResponse(content="", success=True, status_code=200)
+
+    monkeypatch.setattr(LLMService, "generate", fake_generate)
+
+    def boom(content, round_no, tool_calls):  # noqa: ANN001, ARG001
+        raise RuntimeError("回调炸了")
+
+    resp = asyncio.run(raw.with_tools(
+        system_prompt="s", user_prompt="u", tool_executor=executor,
+        tools=[{"type": "function", "function": {"name": "local_probe"}}],
+        max_tool_rounds=3, on_preamble=boom,
+    ))
+    assert resp.success is True
+    assert calls == ["local_probe"], "回调异常后工具仍然要执行"

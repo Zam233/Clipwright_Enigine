@@ -120,7 +120,9 @@ async def upload_asset(request: Request, file: UploadFile, project_id: str = Que
         if info.error:
             raise HTTPException(status_code=400, detail=info.error)
         # Preserve original filename (temp file is named "upload{ext}")
-        info.filename = file.filename
+        # 复用既有素材时保留库内文件名（响应与索引保持一致）
+        if not info.deduplicated:
+            info.filename = file.filename
         return info.to_dict()
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -338,7 +340,7 @@ async def governance_summary(request: Request, project_id: str = Query("")) -> d
     manager = _get_manager(project_id or None)
     assets = await manager.list_assets()
     total = len(assets)
-    deduped = sum(1 for a in assets if a.error == "deduplicated")
+    deduped = sum(1 for a in assets if a.deduplicated or a.error == "deduplicated")
     used = sum(1 for a in assets if a.used_count > 0)
     total_uses = sum(a.used_count for a in assets)
     missing = sum(1 for a in assets if a.status == "missing")

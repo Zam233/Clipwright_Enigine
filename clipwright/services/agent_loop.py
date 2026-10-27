@@ -126,6 +126,8 @@ def _system_prompt(task: Any) -> str:
         "你是视频创作系统的主 agent。你直接调用工具来推进任务：可以读取工作区文件/报告/产物，"
         "也可以派子 agent 去做具体阶段。每次只做当前最必要的一步；做完就停下来汇报。\n"
         "规则：\n"
+        "- **动手前先说话**：每次调用工具之前，用一两句话说明你打算做什么、为什么这么做"
+        "（这段话会直接展示给用户，让人看得懂你在推进什么）；然后立刻调用工具，不要只说不做；\n"
         "- **创作任务的完成标准是产出可渲染时间线**：光读文件、列目录、看报告**不算完成**。"
         "要出片就必须用 delegate_agent 依次派阶段（structure→material→edit→animation→audio），"
         "让 audio 阶段落出 final_timeline；\n"
@@ -271,6 +273,24 @@ async def run_loop(task: Any, *, context_text: str = "",
              causation_id=f"seq:{_seq_of(call_event)}")
         return result
 
+    def _on_preamble(content: str, round_no: int, tool_calls: list[Any]) -> None:
+        """B2：模型的"要动手之前说的话"。先入事件流，再执行工具。
+
+        `before_tool` 里带上本轮要调的工具名：前端据此把这段叙述挂在正确的工具
+        调用之前，而不是当成又一条普通日志。
+        """
+        names: list[str] = []
+        for tc in tool_calls:
+            name = getattr(tc, "name", None)
+            if not name and isinstance(tc, dict):
+                name = tc.get("name") or ((tc.get("function") or {}).get("name"))
+            if name:
+                names.append(str(name))
+        emit(task_id, "narration", content,
+             {"kind": "preamble", "round": round_no,
+              "before_tool": names[:5], "tool_count": len(tool_calls),
+              "shadow": shadow})
+
     try:
         resp = await LLMService().with_tools(
             system_prompt=_system_prompt(task),
@@ -278,6 +298,7 @@ async def run_loop(task: Any, *, context_text: str = "",
             tool_executor=_executor,
             tools=tools,
             max_tool_rounds=max(1, min(max_rounds, 12)),
+            on_preamble=_on_preamble,
             pipeline_id=task_id,
         )
     except LoopAborted as exc:

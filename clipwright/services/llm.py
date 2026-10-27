@@ -645,6 +645,7 @@ class LLMService:
         tool_executor: Callable[[str, dict[str, Any]], ToolExecResult | dict[str, Any]],
         tools: list[dict[str, Any]],
         max_tool_rounds: int = 10,
+        on_preamble: Optional[Callable[[str, int, list[Any]], Any]] = None,
         **kwargs: Any,
     ) -> LLMResponse:
         """执行带工具调用循环的 LLM 请求。
@@ -662,6 +663,10 @@ class LLMService:
             tool_executor: 执行工具的回调函数 fn(tool_name, tool_input) → dict
             tools: Anthropic/OpenAI 格式的工具定义列表
             max_tool_rounds: 最大工具调用轮数（防止无限循环）
+            on_preamble: 可选回调 `fn(content, round, tool_calls)`。模型在**调用工具前**
+                说出的那段话（"我打算先派 structure 阶段，因为…"）确认后**同步**回调一次，
+                让上层把 narration 事件排在 tool_call 之前（2026-10-28 PRD B2）。
+                同轮多个 tool_call 只回调一次；无 content 不回调；回调异常只记日志。
             **kwargs: 透传给 LLMService.generate() 的额外参数
 
         Returns:
@@ -724,6 +729,16 @@ class LLMService:
             if not resp.tool_calls:
                 logger.debug("LLM with_tools 第%d轮完成: 无工具调用", _round + 1)
                 return resp
+
+            # B2：把"要动手之前说的那段话"先交出去。顺序很关键——narration 必须
+            # 早于 tool_call 事件，前端才能渲染成「先说再做」。回调同步执行且异常
+            # 只记日志：叙述漏发不能挡住真正的工具调用。
+            preamble = (resp.content or "").strip()
+            if preamble and on_preamble is not None:
+                try:
+                    on_preamble(preamble, _round + 1, list(resp.tool_calls))
+                except Exception as exc:  # noqa: BLE001 — 叙述失败不影响工具
+                    logger.warning("with_tools on_preamble 回调失败: %s", exc)
 
             if self.provider == "anthropic":
                 # Anthropic: tool_use 块嵌入在 content 数组

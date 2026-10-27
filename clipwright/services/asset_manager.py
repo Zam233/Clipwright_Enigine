@@ -47,7 +47,8 @@ class AssetInfo:
         error: str = "",
         sha256: str = "",
         used_count: int = 0,
-        status: str = "ok",  # ok / missing / violated
+        status: str = "ok",  # ok / missing / violated / reused
+        deduplicated: bool = False,
     ):
         self.asset_id = asset_id
         self.filename = filename
@@ -63,6 +64,9 @@ class AssetInfo:
         self.sha256 = sha256
         self.used_count = used_count
         self.status = status
+        # 复用标记：同内容（sha256）重传命中既有素材。这不是错误，导入调用方应按
+        # 200 成功处理（前端提示「已存在，已复用」）。
+        self.deduplicated = deduplicated
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +83,7 @@ class AssetInfo:
             "sha256": self.sha256,
             "used_count": self.used_count,
             "status": self.status,
+            "deduplicated": self.deduplicated,
         }
 
 
@@ -132,8 +137,10 @@ class AssetManager:
         if not src.exists():
             return AssetInfo(asset_id="", filename="", file_path="", media_type="", error=f"文件不存在: {file_path}")
 
-        # 内容哈希去重（sha256）— 已存在同内容素材 → 复用（返回 deduplicated 标记）
-        import hashlib
+        # 内容哈希去重（sha256）— 已存在同内容素材 → 复用既有资产并置
+        # deduplicated=True / status="reused"。复用是幂等成功，**不写 error**
+        # （2026-10-28 PRD B9：此前 error="deduplicated" 让 API 抛 400，
+        # 前端把 detail 原样显示成 "deduplicated"）。
         sha256 = _sha256_of(src)
         for existing in self._assets.values():
             if existing.sha256 and existing.sha256 == sha256 and Path(existing.file_path).exists():
@@ -151,8 +158,8 @@ class AssetManager:
                     thumbnail_path=existing.thumbnail_path,
                     sha256=existing.sha256,
                     used_count=existing.used_count,
-                    status=existing.status,
-                    error="deduplicated",
+                    status="reused",
+                    deduplicated=True,
                 )
 
         asset_id = f"asset_{uuid.uuid4().hex[:12]}"
