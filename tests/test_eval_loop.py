@@ -193,3 +193,17 @@ def test_long_task_key_facts_survive_compaction():
 
     ctx = context_loader.load(task)
     assert ctx["text"]
+
+def test_replay_cli_survives_non_utf8_console(tmp_path):
+    """Windows 控制台是 GBK 时，报告不能因为符号编码而崩（刚才真崩过）。"""
+    import os
+    import subprocess
+    import sys
+
+    good = tmp_path / "good.json"
+    good.write_text(json.dumps(_bundle()), encoding="utf-8")
+    env = dict(os.environ, PYTHONIOENCODING="gbk")
+    r = subprocess.run([sys.executable, "-m", "clipwright.services.replay",
+                        "--bundle", str(good)],
+                       capture_output=True, text=True, cwd=str(Path.cwd()), env=env)
+    assert r.returncode == 0, r.stdout + r.stderr

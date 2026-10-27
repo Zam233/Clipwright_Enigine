@@ -148,7 +148,7 @@ def replay(bundle: dict[str, Any]) -> dict[str, Any]:
 
 
 def _format(result: dict[str, Any]) -> str:
-    head = "✅ bundle 自洽" if result["ok"] else "❌ bundle 有缺口"
+    head = "[OK] bundle 自洽" if result["ok"] else "[FAIL] bundle 有缺口"
     lines = [head, f"  task: {result['summary']['task_id']}",
              f"  事件 {result['stats']['events']} 条 / 子 run {result['stats']['runs']} 个 / "
              f"工具 {result['stats']['tool_calls']} 次",
@@ -157,6 +157,17 @@ def _format(result: dict[str, Any]) -> str:
         lines.append("  问题：")
         lines.extend(f"   - {i}" for i in result["issues"])
     return "\n".join(lines)
+
+
+def _safe_print(text: str, *, err: bool = False) -> None:
+    """控制台编码不支持的字符替换掉，别让"报告没打出来"变成"工具坏了"。"""
+    stream = sys.stderr if err else sys.stdout
+    try:
+        print(text, file=stream)
+    except UnicodeEncodeError:
+        enc = getattr(stream, "encoding", "") or "utf-8"
+        print(text.encode(enc, errors="replace").decode(enc, errors="replace"),
+              file=stream)
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -171,14 +182,14 @@ def main(argv: Iterable[str] | None = None) -> int:
     try:
         bundle = load_bundle(args.bundle)
     except BundleError as exc:
-        print(f"❌ {exc}", file=sys.stderr)
+        _safe_print(f"[FAIL] {exc}", err=True)
         return 1
 
     result = replay(bundle)
     if args.json:
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        _safe_print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
-        print(_format(result))
+        _safe_print(_format(result))
     return 0 if result["ok"] else 1
 
 
