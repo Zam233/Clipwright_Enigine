@@ -127,7 +127,7 @@ class _ApprovalDriver:
         self.state = state
         self.calls: list[str] = []
 
-    async def __call__(self, task, *, context_text="", shadow=False,  # noqa: ANN001
+    async def __call__(self, task, *, context_text="", shadow=False, dry_run=False,  # noqa: ANN001
                        guard=None, on_tool_call=None):
         if guard is not None:
             hit = guard()

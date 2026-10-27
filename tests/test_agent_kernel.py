@@ -38,7 +38,7 @@ class ScriptedDriver:
         self.executed: list[tuple[str, dict[str, Any]]] = []
         self.guard_hit: str = ""
 
-    async def __call__(self, task, *, context_text="", shadow=False,  # noqa: ANN001
+    async def __call__(self, task, *, context_text="", shadow=False, dry_run=False,  # noqa: ANN001
                        guard=None, on_tool_call=None) -> dict[str, Any]:
         for name, args in self.calls:
             if guard is not None:
@@ -160,8 +160,12 @@ def test_digest_keeps_structured_numbers(tmp_path):
 # ── 四道闸（A1）─────────────────────────────────────
 
 
-def test_tool_call_gate_aborts_mid_loop(tmp_path):
-    """工具调用闸在**循环中途**生效：到顶就不再执行后续工具。"""
+def test_tool_call_gate_aborts_and_finishes(tmp_path):
+    """工具调用闸在**循环中途**生效：到顶就不再执行后续工具。
+
+    B3：触闸是**收尾**（PRD A1），不是"一直挂着 paused"——挂着就永远不进
+    任务成功率分母，指标会系统性偏高。
+    """
     driver = ScriptedDriver([("media_probe", {"i": 1}), ("media_probe", {"i": 2}),
                              ("media_probe", {"i": 3})])
     k = _kernel(tmp_path, driver=driver)
@@ -170,8 +174,10 @@ def test_tool_call_gate_aborts_mid_loop(tmp_path):
     task = asyncio.run(k.run(task))
     assert len(driver.executed) == 1, "到顶后不许继续执行"
     assert driver.guard_hit.startswith("工具调用数达到上限")
-    assert task.status == "paused"
+    assert task.status == "failed"
+    assert task.finish is not None and task.finish.reason.startswith("gate:")
     assert any(e.type == "gate_hit" for e in te.events(task.id))
+    assert any(e.type == "task_end" for e in te.events(task.id))
 
 
 def test_turn_gate_reported_by_gate_hit(tmp_path):
@@ -213,19 +219,26 @@ def test_driver_failure_finishes_with_reason(tmp_path):
 
 
 def test_pause_then_resume_reruns_loop_and_keeps_checkpoint(tmp_path):
-    """暂停后可从检查点续跑；续跑就是重进 loop（没有"已完成步骤"可跳）。"""
+    """人工暂停 → 可 resume；续跑就是重进 loop（没有"已完成步骤"可跳）。
+
+    B3 之后 **触闸** 会直接收尾，所以这里用 `pause()` 造"暂停"，
+    才是在测暂停语义（以前拿触闸冒充暂停）。
+    """
     driver = ScriptedDriver()
     k = _kernel(tmp_path, driver=driver)
     task = k.create(TaskRequest(topic="x", plan_only=False))
-    task.usage.turns = task.limits.max_turns          # 第一次直接触闸 → paused
-    task = asyncio.run(k.run(task))
-    assert task.status == "paused"
-    assert task.usage.turns >= 1
 
-    task.usage.turns = 0                              # 用户点"继续"
+    task.usage.turns = task.limits.max_turns          # 触闸 → 收尾（不是 paused）
+    gate_task = asyncio.run(k.run(task))
+    assert gate_task.status == "failed"
+    assert gate_task.finish is not None and gate_task.finish.reason.startswith("gate:")
+
+    task = k.create(TaskRequest(topic="y", plan_only=False))
+    k.pause(task.id)
+    assert task.status == "paused"
+    assert (tmp_path / "tasks" / f"{task.id}.json").exists()
     task = asyncio.run(k.resume(task.id))
     assert task.status in ("done", "failed")
-    assert (tmp_path / "tasks" / f"{task.id}.json").exists()
 
 
 def test_cancel_marks_task_cancelled(tmp_path):

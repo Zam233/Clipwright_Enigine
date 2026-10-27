@@ -47,6 +47,12 @@ def agent_tool_schemas() -> list[dict[str, Any]]:
     return [e.schema for e in build_surface() if e.name in AGENT_TOOLS]
 
 
+def _seq_of(event: Any) -> str:
+    """把上一条事件变成 `causation_id`（`seq:N`）；拿不到就空——不编造。"""
+    seq = getattr(event, "seq", None)
+    return str(seq) if seq is not None else ""
+
+
 def is_agent_tool(name: str) -> bool:
     from clipwright.tool.surface import AGENT_TOOLS
 
@@ -142,7 +148,8 @@ def _user_prompt(task: Any, context_text: str) -> str:
 async def run_loop(task: Any, *, context_text: str = "",
                    shadow: bool = False,
                    guard: Any = None,
-                   on_tool_call: Any = None) -> dict[str, Any]:
+                   on_tool_call: Any = None,
+                   dry_run: bool = False) -> dict[str, Any]:
     """跑完一次 tool-use loop，返回 `{status, finish, tool_calls, cost, stopped_reason}`。
 
     - `shadow=True`（PRD §5.2）：照常让模型选工具、照常记录调用序列与成本，但**不执行**
@@ -150,6 +157,10 @@ async def run_loop(task: Any, *, context_text: str = "",
     - `guard`：无参可调用，返回非空字符串即中止（取消/暂停/预算/墙钟）。
       模型请求**进行中**也能停：检查点落在每次工具执行前，中止后 Kernel 从检查点恢复。
     - `on_tool_call`：每次真实工具调用后回调（Kernel 用它累计 usage.tool_calls / cost）。
+    - `dry_run=True`（预览模式）：原子工具走 `surface.execute(dry_run=True)` 的**结构预检**
+      （参数/路径可验证，不产生副作用），派发类工具**直接拒绝**（预览不派子 agent、
+      不写产物、不花钱）。这是用户勾了"只预览"时唯一正确的行为——
+      旧实现让 dry-run 停在失效字段上，预览变真跑。
     """
     from clipwright.services.llm import LLMService
 
@@ -169,6 +180,8 @@ async def run_loop(task: Any, *, context_text: str = "",
 
     async def _executor(name: str, args: dict[str, Any]) -> dict[str, Any]:
         nonlocal calls
+        # 提前占位：下面几个"拒绝"分支也要引用它（否则第一支就 NameError）
+        call_event: Any = None
         # 闸在**每次工具执行前**检查：模型请求进行中也能停（PRD §5.2 验收「取消在
         # 模型请求中间也能恢复」）——旧实现的闸只在 plan-step 边界跑，900s 阶段停不住。
         if guard is not None:
@@ -180,17 +193,29 @@ async def run_loop(task: Any, *, context_text: str = "",
             calls.append({"tool": name, "ok": False, "status": "refused",
                           "duration_ms": 0})
             emit(task_id, "tool_result", f"{name} → refused（调用次数到顶）",
-                 {"tool": name, "status": "refused", "limit": max_calls})
+                 {"tool": name, "status": "refused", "limit": max_calls},
+                 causation_id=f"seq:{_seq_of(call_event)}")
             return {"status": "refused",
                     "error": f"工具调用次数已达上限（{max_calls}）"}
-        emit(task_id, "tool_call", f"{name}", {"tool": name, "args": args,
-                                               "shadow": shadow})
+        call_event = emit(task_id, "tool_call", f"{name}",
+                          {"tool": name, "args": args, "shadow": shadow})
         if shadow:
             # 影子：不执行副作用，只记录"模型想调什么"
             calls.append({"tool": name, "ok": True, "status": "shadowed",
                           "duration_ms": 0})
             return {"status": "ok", "shadow": True,
                     "note": "shadow 模式未执行；调用序列已记录用于对比"}
+        if dry_run and is_agent_tool(name):
+            result = {"status": "refused",
+                      "error": f"dry-run 预览模式不派发子 agent（{name}）",
+                      "note": "预览只做结构预检；要看真实产出请关掉 dry_run"}
+            calls.append({"tool": name, "ok": False, "status": "refused",
+                          "duration_ms": 0})
+            emit(task_id, "tool_result", f"{name} → refused（dry-run）",
+                 {"tool": name, "status": "refused", "dry_run": True},
+                 causation_id=f"seq:{_seq_of(call_event)}")
+            return result
+
         t0 = time.monotonic()
         try:
             from clipwright.tool.surface import execute as surface_execute
@@ -200,6 +225,7 @@ async def run_loop(task: Any, *, context_text: str = "",
             result = await surface_execute(
                 name, args, pipeline_id=task_id,
                 idem_key=f"{task_id}:{name}:{len(calls)}", task=task,
+                dry_run=dry_run,
             )
         except LoopAborted:
             raise
@@ -220,7 +246,8 @@ async def run_loop(task: Any, *, context_text: str = "",
         emit(task_id, "tool_result", f"{name} → {result.get('status')}",
              {"tool": name, "status": result.get("status"),
               "error": result.get("error"), "duration_ms": elapsed,
-              "brief": _brief_of(result)})
+              "brief": _brief_of(result)},
+             causation_id=f"seq:{_seq_of(call_event)}")
         return result
 
     try:
@@ -266,6 +293,7 @@ async def run_loop(task: Any, *, context_text: str = "",
         # 模型往返次数（≈ 每次工具调用前一轮 + 最后一轮）：Kernel 用它在**多轮之间**
         # 判回合闸；单轮内的闸由 tool_calls 计数负责。
         "rounds": len(calls) + 1,
+        "dry_run": bool(dry_run),
         "stopped_reason": "model_final",
         "duration_ms": int((time.monotonic() - started) * 1000),
     }

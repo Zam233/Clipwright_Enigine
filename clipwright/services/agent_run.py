@@ -154,6 +154,11 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
     if spec.idem_key:
         cached = replay(spec.idem_key)
         if cached is not None:
+            _emit_run(task, "agent_run_update",
+                      f"{spec.kind}/{spec.stage or spec.role} → 复用上次结果",
+                      detail={"run_id": cached.run_id, "status": cached.status,
+                              "replayed": True, "idem_key": spec.idem_key},
+                      run_id=cached.run_id, span="agent", trace_id=trace_id)
             return cached
 
     _emit_run(task, "agent_run_start", f"派出 {spec.kind}/{spec.stage or spec.role}",
@@ -205,6 +210,15 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
         )
     result.duration_ms = result.duration_ms or int((time.monotonic() - started) * 1000)
     _record(result)
+    if result.status == "needs":
+        # 等人工审核：既不是成功也不是失败，用 update 事件让前端显示"卡在哪"
+        review = (result.failure or {}).get("review") or {}
+        _emit_run(task, "agent_run_update",
+                  f"{spec.kind}/{result.stage or result.role} → 等待人工审核",
+                  detail={"run_id": result.run_id, "status": "needs_review",
+                          "risk": review.get("risk"),
+                          "reasons": review.get("reasons") or []},
+                  run_id=result.run_id, span="agent", trace_id=trace_id)
     _after_run(result, spec, task)
     _emit_run(task, "agent_run_end",
               f"{spec.kind}/{result.stage or result.role} → {result.status}",

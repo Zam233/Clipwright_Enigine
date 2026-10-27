@@ -223,11 +223,11 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
     ("supervisor_attribution_timeout_sec", "pipeline", "归因兜底超时(秒)", False, True,
      "规则不命中时的 LLM 兜底超时；失败回退规则结论"),
     # ── 路线 C：全 agent 化（PRD F12 / C2–C3）──
-    ("agent_mode", "pipeline", "主 Agent 模式", False, True,
-     "off = 老管线（默认）；shadow = 只规划不执行；on = Kernel 执行（run_pipeline 可用）"),
-    ("pipeline_enabled", "pipeline", "允许老管线执行", False, True,
-     "false（默认）= 创作只走主 Agent，run_pipeline 与 /api/pipeline/run 被拒绝；"
-     "true 仅用于灰度对比与回滚"),
+    ("agent_mode", "pipeline", "主 Agent 模式（已废弃）", False, True,
+     "已失去作用：创作恒走主 Agent（Task）。保留字段只为兼容旧配置文件解析，不要再用"),
+    ("pipeline_enabled", "pipeline", "允许老管线执行（已失效）", False, True,
+     "该开关已不再被任何代码读取：/api/pipeline/run-async 与 retry 一律 410。"
+     "保留字段只为兼容旧配置解析"),
     ("agent_decide_policy", "pipeline", "主 Agent 决策策略", False, True,
      "off=只走规则；auto=失败必判、成功轻量步走规则；always（默认）=每步都调 LLM 决策"),
     ("agent_decide_stream", "pipeline", "决策走流式", False, True,

@@ -325,6 +325,79 @@ def dump_semantic(root: str | Path) -> Optional[str]:
         return None
 
 
+def load_episodic(root: str | Path, task_id: str) -> int:
+    """从 `<root>/memory/episodic.jsonl` 恢复**该任务**的情景记忆。
+
+    与 semantic 不同，episodic 是追加日志：按 count 逐行读，恢复后把游标
+    `_DUMPED[task_id]` 对齐到已读条数，避免下���次 dump 把同一批再写一遍。
+    """
+    path = Path(root) / "memory" / "episodic.jsonl"
+    if not path.exists():
+        return 0
+    known = {e.id for e in _EPISODIC.get(task_id, [])}
+    added = 0
+    total = 0
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception as exc:  # noqa: BLE001 — 坏文件要报出来，但不阻断启动
+        logger.warning("episodic 恢复失败 %s: %s", path, exc)
+        return 0
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except Exception:  # noqa: BLE001 — 单行坏数据跳过
+            continue
+        if not isinstance(item, dict) or str(item.get("task_id") or "") != task_id:
+            continue
+        total += 1
+        if str(item.get("id") or "") in known:
+            continue
+        try:
+            entry = MemoryEntry(
+                id=str(item.get("id") or f"mem_{uuid.uuid4().hex[:10]}"),
+                layer="episodic",
+                task_id=task_id,
+                text=str(item.get("text") or ""),
+                kind=str(item.get("kind") or ""),
+                provenance=dict(item.get("provenance") or {}),
+                tags=[str(t) for t in (item.get("tags") or [])],
+                pinned=bool(item.get("pinned")),
+                created_at=float(item.get("created_at") or _now()),
+                expires_at=item.get("expires_at"),
+                retracted=bool(item.get("retracted")),
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        if not entry.text:
+            continue
+        _EPISODIC.setdefault(task_id, []).append(entry)
+        added += 1
+    _DUMPED[task_id] = total
+    return added
+
+
+def load(root: str | Path, *, task_id: str = "") -> dict[str, int]:
+    """启动时恢复记忆（**唯一入口**，别在各处零散调）。
+
+    语义层全量恢复；情景层按任务恢复（给了 task_id 才恢复）。
+    返回值给日志/诊断用：`{"semantic": n, "episodic": m}`。
+    """
+    stats = {"semantic": 0, "episodic": 0}
+    try:
+        stats["semantic"] = load_semantic(root)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("semantic 恢复异常: %s", exc)
+    if task_id:
+        try:
+            stats["episodic"] = load_episodic(root, task_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("episodic 恢复异常: %s", exc)
+    return stats
+
+
 def load_semantic(root: str | Path) -> int:
     """从 `<root>/memory/semantic.json` 恢复语义记忆（进程重启后仍有效）。
 
@@ -370,5 +443,5 @@ def load_semantic(root: str | Path) -> int:
 
 
 __all__ = ["DEFAULT_TTL_SEC", "MemoryEntry", "compact", "describe", "dump_episodic",
-           "dump_semantic", "entries", "forget", "load_semantic", "pin", "recall",
-           "remember", "reset"]
+           "dump_semantic", "entries", "forget", "load", "load_episodic",
+           "load_semantic", "pin", "recall", "remember", "reset"]

@@ -407,6 +407,14 @@ async def _proceed_as_task(*, session: dict, req: "ProceedRequest", request: Req
     except Exception as _doc_err:  # noqa: BLE001 — 文档写失败不阻断开工，但要在日志里可见
         logger.warning("需求文档落盘失败（继续）: %s", _doc_err)
 
+    # dry-run 预览（PRD closeout B2）：用户勾了"只预览"就必须只预览。
+    # 之前它只落在 `pipeline_req.dry_run` 这个随老管线一起失效的字段上，
+    # Task 路径完全看不到 → 勾了预览照样真跑真扣钱。
+    _dry_run = bool(
+        getattr(pipeline_req, "dry_run", False)
+        or (pipeline_req.extra_params or {}).get("dry_run")
+        or (getattr(req, "extra_params", None) or {}).get("dry_run")
+    )
     extra = dict(pipeline_req.extra_params)
     extra.update({
         "workspace_root": str(ws.dirs().root),
@@ -415,6 +423,8 @@ async def _proceed_as_task(*, session: dict, req: "ProceedRequest", request: Req
         "production_plan": plan_data,
         "creative_brief": session.get("creative_brief"),
         "docs": _docs,
+        # Task 执行侧唯一读的口径（见 agent_kernel._run_tool_loop）
+        "dry_run": _dry_run,
     })
     task_req = TaskRequest(
         topic=str(pipeline_req.topic or req.session_id),

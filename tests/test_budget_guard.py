@@ -149,7 +149,9 @@ def test_dispatch_records_order_and_requires_retry():
     assert resp.status_code == 200
     body = resp.json()
     assert body["accepted"] is True
-    assert body["requires_retry"] is True
+    # B1：派工不再触发执行（retired），所以不"需要重试"，但要如实告知替代做法
+    assert body["requires_retry"] is False
+    assert body["execution_status"] == "retired"
     assert body["order"]["target_stage"] == "edit"
     assert pipeline_api._pipeline_results["pl_b"]["shared_data"]["manual_orders"][0]["reason"]
 

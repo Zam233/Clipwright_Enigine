@@ -28,7 +28,7 @@ class RecordingDriver:
         self.calls = calls or CALLS
         self.served = 0
 
-    async def __call__(self, task, *, context_text="", shadow=False,  # noqa: ANN001
+    async def __call__(self, task, *, context_text="", shadow=False, dry_run=False,  # noqa: ANN001
                        guard=None, on_tool_call=None):
         for name, args in self.calls:
             if guard is not None and guard():
@@ -53,7 +53,7 @@ class ReplayDriver:
     def __init__(self, replayer: rec.Replayer) -> None:
         self.replayer = replayer
 
-    async def __call__(self, task, *, context_text="", shadow=False,  # noqa: ANN001
+    async def __call__(self, task, *, context_text="", shadow=False, dry_run=False,  # noqa: ANN001
                        guard=None, on_tool_call=None):
         for name, args in CALLS:
             result = self.replayer.result_of("tool", name, args)  # 缺了会抛 RecordingMiss

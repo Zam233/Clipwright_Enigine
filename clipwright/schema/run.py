@@ -106,20 +106,6 @@ class AgentResult(BaseModel):
         }
 
 
-class RunEvent(BaseModel):
-    """带因果链的 run 事件（PRD §3.1）：前端按 trace_id 串起一次决策。"""
-
-    event_id: str = Field(default_factory=lambda: f"ev_{uuid.uuid4().hex[:10]}")
-    ts: float = Field(default_factory=time.time)
-    run_id: str = ""
-    trace_id: str = ""
-    parent_run_id: str = ""
-    span: str = ""          # kernel / tool / agent / model
-    type: str = ""          # tool_call / tool_result / report / thinking / context_loaded ...
-    message: str = ""
-    detail: dict[str, Any] = Field(default_factory=dict)
-
-
 def _preview(value: Any) -> Any:
     if isinstance(value, dict):
         if value.get("artifact") or value.get("path"):
@@ -131,4 +117,4 @@ def _preview(value: Any) -> Any:
     return str(value)[:200]
 
 
-__all__ = ["AgentResult", "RunEvent", "RunKind", "RunSpec", "RunStatus"]
+__all__ = ["AgentResult", "RunKind", "RunSpec", "RunStatus"]

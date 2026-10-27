@@ -41,6 +41,8 @@ _CONTROL: dict[str, str] = {}   # task_id -> "pause" | "cancel"
 #: 正在跑的 asyncio.Task 句柄（真取消用）：kernel 自己持有，不再只靠 api 层
 _TASK_HANDLES: dict[str, Any] = {}
 _INJECT: dict[str, list[str]] = {}
+#: 已在本次进程里恢复过记忆的任务（避免每次 run 都读盘）
+_MEMORY_LOADED: set[str] = set()
 
 
 class KernelError(RuntimeError):
@@ -572,6 +574,29 @@ class AgentKernel:
         task.touch()
         _TASK_HANDLES[task.id] = asyncio.current_task()  # type: ignore[assignment]
 
+        # 记忆跨重启（closeout B5）：进 loop 前把该任务的情景记忆与全局语义记忆恢复回来。
+        # 只在**首次**进 loop 时做（同一进程内重复 run 不重复读盘）。
+        if task.id not in _MEMORY_LOADED:
+            _MEMORY_LOADED.add(task.id)
+            try:
+                from clipwright.services import memory as _mem
+                from clipwright.services.workspace import Workspace
+
+                _root = None
+                try:
+                    _ws = Workspace(str(task.id))
+                    if _ws.exists:
+                        _root = _ws.dirs().root
+                except Exception:  # noqa: BLE001 — 没有工作区就不恢复
+                    _root = None
+                if _root is not None:
+                    stats = _mem.load(_root, task_id=task.id)
+                    if stats.get("semantic") or stats.get("episodic"):
+                        emit(task.id, "context_loaded", "记忆已恢复",
+                             {"memory": stats, "root": str(_root)}, span="memory")
+            except Exception as exc:  # noqa: BLE001 — 记忆恢复失败不阻断开工
+                logger.warning("记忆恢复失败 %s: %s", task.id, exc)
+
         # 上下文装配（PRD §2.5 / §17.11）：按预算裁剪并记 context_loaded
         context_text = ""
         try:
@@ -615,12 +640,17 @@ class AgentKernel:
                 _CONTROL[task.id] = "pause"
                 task.status = "paused"
 
+        # dry-run 预览（closeout B2）：用户在 proceed 勾了"只预览"时，Task 侧
+        # 唯一的口径就是 `request.extra["dry_run"]`。透传给 tool loop，
+        # 由它把原子工具降级成结构预检、拒绝派发子 agent。
+        dry_run = bool((getattr(task.request, "extra", None) or {}).get("dry_run"))
+
         task.usage.turns += 1
         driver = self.deps.driver or agent_loop.run_loop
         try:
             outcome = await driver(
                 task, context_text=context_text, shadow=shadow,
-                guard=_guard, on_tool_call=_on_tool_call,
+                guard=_guard, on_tool_call=_on_tool_call, dry_run=dry_run,
             )
         except asyncio.CancelledError:
             raise
@@ -645,14 +675,41 @@ class AgentKernel:
         status = str(outcome.get("status") or "error")
         reason = str(outcome.get("stopped_reason") or "")
         if status == "aborted":
-            # 取消/暂停/触闸：保留终态与检查点，可 resume。
+            # 取消/暂停/触闸要分清，不能一律 paused：
+            # - 人工**暂停**不是结局 → 保持 paused、不写终态、不记指标（resume 后还会继续）；
+            # - **取消**是终态 → cancelled；
+            # - **触闸**（回合/工具调用/墙钟/预算）是收尾（PRD A1：结论+已完成+未完成），
+            #   一直挂着 paused 会让它永远不进任务成功率分母。
             # 事件由 **Kernel** 发（不依赖驱动器实现）：谁拥有闸，谁负责留痕。
             emit(task.id, "gate_hit", f"触闸：{reason or outcome.get('error') or '已中止'}",
                  {"reason": reason or outcome.get("error"),
                   "tool_calls": task.usage.tool_calls,
                   "usage": task.usage.model_dump()}, span="kernel")
-            if task.status not in ("cancelled", "paused"):
+            text = str(reason or outcome.get("error") or "")
+            if task.status in ("cancelled", "paused") or text == "cancel":
+                task.status = "cancelled" if text == "cancel" else task.status
+                if task.status == "cancelled":
+                    task.finish = TaskFinish(
+                        conclusion="任务被取消", completed=[],
+                        unfinished=["cancel"], reason="cancelled")
+                    self._record_task_metrics(task, "cancelled")
+                self._checkpoint(task)
+                return task
+            if text == "pause":
                 task.status = "paused"
+                self._checkpoint(task)
+                return task
+            # 触闸 → 收尾（不是失败也不是成功：如实写原因）
+            gate_reason = f"gate:{text}"
+            task.finish = TaskFinish(
+                conclusion=f"触闸收尾：{text}",
+                completed=[], unfinished=[text], reason=gate_reason)
+            task.status = "failed"
+            task.touch()
+            emit(task.id, "task_end", task.finish.conclusion,
+                 {"reason": gate_reason, "usage": task.usage.model_dump()},
+                 span="kernel")
+            self._record_task_metrics(task, gate_reason)
             self._checkpoint(task)
             return task
 
@@ -660,8 +717,8 @@ class AgentKernel:
         if status == "ok":
             conclusion = str(finish.get("conclusion") or "")
             # 收尾守门（§18.10.4）：声称完成但黑板里没有可渲染时间线 → 如实标失败
-            gate_reason = "tool_loop_completed"
-            if not shadow:
+            gate_reason = "dry_run_preview" if dry_run else "tool_loop_completed"
+            if not shadow and not dry_run:
                 try:
                     from clipwright.services import task_blackboard as _bb
 
@@ -675,7 +732,8 @@ class AgentKernel:
                 completed=[], unfinished=[],
                 reason=gate_reason,
             )
-            task.status = "done" if gate_reason == "tool_loop_completed" else "failed"
+            task.status = ("done" if gate_reason in ("tool_loop_completed",
+                                                    "dry_run_preview") else "failed")
             task.touch()
             emit(task.id, "task_end", task.finish.conclusion,
                  {"reason": task.finish.reason, "usage": task.usage.model_dump(),
@@ -786,8 +844,40 @@ class AgentKernel:
         self._record_task_metrics(task, reason)
         self._checkpoint(task)
 
+    def _persist_memory(self, task: Task, reason: str) -> None:
+        """收尾把记忆落盘：任务结局写一条情景记忆 → 追加落盘 + 语义快照。"""
+        try:
+            from clipwright.services import memory as _mem
+            from clipwright.services.workspace import Workspace
+
+            ok = str(task.status) in ("done",)
+            conclusion = (task.finish.conclusion if task.finish else "") or reason
+            try:
+                _mem.remember(
+                    f"任务 {task.status}：{conclusion}",
+                    task_id=task.id, layer="episodic",
+                    kind="outcome" if ok else "failure",
+                    provenance={"source": "kernel", "reason": reason},
+                    pinned=not ok,
+                )
+            except Exception as exc:  # noqa: BLE001 — 记忆写入失败不阻断收尾
+                logger.warning("任务情景记忆写入失败 %s: %s", task.id, exc)
+
+            _ws = Workspace(str(task.id))
+            if not _ws.exists:
+                return
+            root = _ws.dirs().root
+            _mem.dump_episodic(task.id, root)
+            _mem.dump_semantic(root)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("记忆落盘失败 %s: %s", task.id, exc)
+
     def _record_task_metrics(self, task: Task, reason: str) -> None:
-        """任务级指标（PRD §2.6.1）：CompletionGate 通过率的分母就在这里。"""
+        """任务级指标（PRD §2.6.1）：CompletionGate 通过率的分母就在这里。
+
+        顺带落盘记忆：所有终态路径都会走到这里，是唯一不会漏的挂点。
+        """
+        self._persist_memory(task, reason)
         try:
             from clipwright.services import evaluation
 
@@ -1005,6 +1095,7 @@ def _emit_report(task: Task, step: PlanStep, outcome: dict[str, Any]) -> None:
 
 
 def reset_kernel_state() -> None:
+    _MEMORY_LOADED.clear()
     """测试用：清内存任务与控制标记（不删检查点文件）。"""
     _TASKS.clear()
     _CONTROL.clear()

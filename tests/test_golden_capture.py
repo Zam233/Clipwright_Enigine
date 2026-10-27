@@ -36,7 +36,7 @@ class _TimelineDriver:
         self.timeline = timeline if timeline is not None else TIMELINE
         self.fail = fail
 
-    async def __call__(self, task, *, context_text="", shadow=False,  # noqa: ANN001
+    async def __call__(self, task, *, context_text="", shadow=False, dry_run=False,  # noqa: ANN001
                        guard=None, on_tool_call=None):  # noqa: ANN001
         if self.fail:
             result = {"status": "error", "error": "阶段失败",

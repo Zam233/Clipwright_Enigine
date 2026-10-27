@@ -29,6 +29,8 @@ class RegisteredAgent:
     agent: Any
     name: str
     plugin_id: str
+    #: **已废弃（closeout B6）**：老编排器的执行 DAG 已删除，现在没有任何消费者读它。
+    #: 保留字段是为了兼容已发布的插件 manifest；新插件不要再依赖它。
     deps: list[str] = field(default_factory=list)
     description: str = ""
 

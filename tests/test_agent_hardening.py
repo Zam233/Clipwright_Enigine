@@ -39,7 +39,7 @@ def _clean(monkeypatch, tmp_path):
     # M3：Kernel 只接受"驱动器"注入（没有 planner/executor 了）。
     # 归属校验这类用例根本不跑主循环，用一个不产生任何工具调用的驱动器即可。
     class _NoopDriver:
-        async def __call__(self, task, *, context_text="", shadow=False,  # noqa: ANN001
+        async def __call__(self, task, *, context_text="", shadow=False, dry_run=False,  # noqa: ANN001
                            guard=None, on_tool_call=None):
             return {"status": "ok", "finish": {"conclusion": "noop"},
                     "tool_calls": [], "rounds": 1, "stopped_reason": "model_final"}
@@ -259,7 +259,7 @@ def test_kernel_counts_unknown_cost_calls(monkeypatch):
     调用一次 costly 工具并回填"成本未知"。
     """
     class _UnknownCostDriver:
-        async def __call__(self, task, *, context_text="", shadow=False,  # noqa: ANN001
+        async def __call__(self, task, *, context_text="", shadow=False, dry_run=False,  # noqa: ANN001
                            guard=None, on_tool_call=None):
             result = {"status": "ok", "cost_usd": None, "cost_unknown": True}
             if on_tool_call is not None:

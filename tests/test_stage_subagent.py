@@ -296,7 +296,7 @@ def test_kernel_accumulates_stage_cost_into_task_usage() -> None:
     from clipwright.services.agent_kernel import AgentKernel, KernelDeps
 
     class _CostDriver:
-        async def __call__(self, task, *, context_text="", shadow=False,  # noqa: ANN001
+        async def __call__(self, task, *, context_text="", shadow=False, dry_run=False,  # noqa: ANN001
                            guard=None, on_tool_call=None):  # noqa: ANN001
             if on_tool_call is not None:
                 on_tool_call("delegate_agent",

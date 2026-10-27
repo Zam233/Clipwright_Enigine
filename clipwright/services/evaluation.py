@@ -65,12 +65,16 @@ class Metric:
         }
 
 
-def record_run(*, task_id: str, run_id: str = "", kind: str = "task",
+def record_run(*, task_id: str, run_id: str = "", kind: str = "run",
                status: str = "ok", turns: int = 0, tool_calls: int = 0,
                child_runs: int = 0, replans: int = 0, duration_ms: int = 0,
                cost_usd: Any = None, provider: str = "", model: str = "",
                extra: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """记一条指标（成本缺失时如实记 unknown）。"""
+    """记一条指标（成本缺失时如实记 unknown）。
+
+    `kind` 默认 `"run"`（子 run 口径）。只有 `record_task()` 才写 `kind="task"`——
+    两者混用会让 `task_summary()` 把子 run 也算进任务成功率（历史 bug）。
+    """
     cost, unknown = _cost_of(cost_usd)
     metric = Metric(
         task_id=str(task_id), run_id=str(run_id) or f"m_{uuid.uuid4().hex[:8]}",

@@ -29,7 +29,7 @@ class ScriptedDriver:
         self.conclusion = conclusion
         self.executed: list[tuple[str, dict[str, Any]]] = []
 
-    async def __call__(self, task, *, context_text="", shadow=False,  # noqa: ANN001, ARG002
+    async def __call__(self, task, *, context_text="", shadow=False, dry_run=False,  # noqa: ANN001, ARG002
                        guard: Optional[Callable[[], str]] = None,
                        on_tool_call: Optional[Callable[..., None]] = None) -> dict[str, Any]:
         for name, args in self.calls:
@@ -56,7 +56,7 @@ class ResultDriver:
         self.tool = tool
         self.executed: list[dict[str, Any]] = []
 
-    async def __call__(self, task, *, context_text="", shadow=False,  # noqa: ANN001, ARG002
+    async def __call__(self, task, *, context_text="", shadow=False, dry_run=False,  # noqa: ANN001, ARG002
                        guard: Optional[Callable[[], str]] = None,
                        on_tool_call: Optional[Callable[..., None]] = None) -> dict[str, Any]:
         for result in self.results:
@@ -88,7 +88,7 @@ class ResultDriver:
 class NoopDriver:
     """不调用任何工具（归属校验等用例只需要 Kernel 能跑起来）。"""
 
-    async def __call__(self, task, *, context_text="", shadow=False,  # noqa: ANN001, ARG002
+    async def __call__(self, task, *, context_text="", shadow=False, dry_run=False,  # noqa: ANN001, ARG002
                        guard=None, on_tool_call=None) -> dict[str, Any]:  # noqa: ANN001
         return {"status": "ok", "finish": {"conclusion": "noop"},
                 "tool_calls": [], "rounds": 1, "stopped_reason": "model_final"}

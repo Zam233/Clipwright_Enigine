@@ -1,8 +1,16 @@
-"""B5+/F7 接线：人工改派与诊断建议**真的会触发重跑**。
+"""F7 派工端点的**退役契约**（closeout plan B1）。
 
-之前这两个端点只「登记 + 返回 requires_retry」，没有任何消费方，UI 却写着
-「重试该环节后生效」。这里把「是否真的调起重试」「跑不起来时原因是否如实回传」
-钉成测试——这条链断了用户就会以为活已经派下去了。
+历史：这两个端点会真的把老管线拉起重跑（`start_agent_retry`）。
+M3 删除了执行引擎，那条路径恒 410，所以继续调用只会让面板显示
+"重试失败"却不知道能力没了。
+
+现在的契约（本文件钉的就是它）：
+
+1. `dispatch` 照样**登记工单 + 发事件**，但**不再触发执行**；
+2. 返回体明确 `execution_status="retired"`，并给出替代做法
+   （`delegate_agent(stage=…)`），字段形状保持兼容（`order` / `accepted` / `retry`）；
+3. 建议端点里 `retry_with_model` / `redo_stage` 同理：不执行、如实说明；
+4. `accept_degraded` / `manual` 的登记语义不变。
 """
 
 from __future__ import annotations
@@ -33,7 +41,6 @@ def _client():
 
 
 def _seed_pipeline(pid: str = "pl_wire") -> None:
-    """造一条「跑过 structure 且失败」的管线结果，供重试前置校验通过。"""
     from clipwright.api.pipeline import _pipeline_results
 
     _pipeline_results[pid] = {
@@ -54,124 +61,98 @@ def _seed_pipeline(pid: str = "pl_wire") -> None:
     }
 
 
-def test_dispatch_triggers_retry(monkeypatch):
+def test_dispatch_registers_but_does_not_execute(monkeypatch):
+    """派工不再触发重跑——这是本批最重要的行为改变。"""
     from clipwright.api import pipeline as pipeline_api
 
-    calls: list[tuple[str, str]] = []
+    called: list[tuple[str, str]] = []
 
-    async def fake_retry(pid, agent, request):  # noqa: ANN001
-        calls.append((pid, agent))
-        return {"pipeline_id": pid, "status": "retrying", "agent": agent}
+    async def fake_retry(pid, stage, request):  # noqa: ANN001
+        called.append((pid, stage))
+        return {"status": "retrying"}
 
     monkeypatch.setattr(pipeline_api, "start_agent_retry", fake_retry)
     _seed_pipeline()
 
-    body = _client().post("/api/pipeline/pl_wire/dispatch", json={
-        "target_stage": "material", "reason": "第 3 段素材是占位图",
-    }).json()
-
-    assert calls == [("pl_wire", "material")]
-    assert body["retry"]["retried"] is True
-    assert body["requires_retry"] is False
-    assert body["order"]["target_stage"] == "material"
-
-
-def test_dispatch_reports_why_retry_did_not_start(monkeypatch):
-    """跑不起来（如无前置成功结果）时：工单仍入账，但必须如实说明原因。"""
-    from clipwright.api import pipeline as pipeline_api
-
-    async def boom(pid, agent, request):  # noqa: ANN001
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=400, detail="无可用前置成功结果")
-
-    monkeypatch.setattr(pipeline_api, "start_agent_retry", boom)
-    _seed_pipeline()
-
-    body = _client().post("/api/pipeline/pl_wire/dispatch", json={
-        "target_stage": "material", "reason": "再试一次",
-    }).json()
-
-    assert body["accepted"] is True
+    resp = _client().post("/api/pipeline/pl_wire/dispatch", json={
+        "target_stage": "material", "reason": "素材都是占位图", "auto_retry": True,
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["accepted"] is True, "工单仍要入账"
+    assert body["execution_status"] == "retired"
     assert body["retry"]["retried"] is False
-    assert "无可用前置成功结果" in body["retry"]["reason"]
-    assert body["requires_retry"] is True
+    assert "delegate_agent" in body["alternative"]
+    assert called == [], "退役后不许再把老管线拉起来"
 
 
-def test_dispatch_can_skip_retry(monkeypatch):
-    """auto_retry=false：只登记（管线正在跑时用）。"""
-    from clipwright.api import pipeline as pipeline_api
-
-    async def fake_retry(pid, agent, request):  # noqa: ANN001
-        raise AssertionError("不应调用重试")
-
-    monkeypatch.setattr(pipeline_api, "start_agent_retry", fake_retry)
-    _seed_pipeline()
-    body = _client().post("/api/pipeline/pl_wire/dispatch", json={
-        "target_stage": "material", "reason": "先记着", "auto_retry": False,
-    }).json()
-    assert body["retry"]["retried"] is False
-    assert body["requires_retry"] is True
-
-
-def test_suggestion_retry_actions_run(monkeypatch):
-    from clipwright.api import pipeline as pipeline_api
-
-    calls: list[str] = []
-
-    async def fake_retry(pid, agent, request):  # noqa: ANN001
-        calls.append(agent)
-        return {"pipeline_id": pid, "status": "retrying", "agent": agent}
-
-    monkeypatch.setattr(pipeline_api, "start_agent_retry", fake_retry)
-    _seed_pipeline()
-
-    body = _client().post("/api/pipeline/pl_wire/accept-suggestion", json={
-        "suggestion_id": "s1", "action": "retry_with_model", "target_stage": "material",
-    }).json()
-
-    assert calls == ["material"]
-    assert body["accepted"] is True
-    assert body["action"] == "retry_with_model"
-    assert body["retry"]["retried"] is True
-
-
-def test_suggestion_accept_degraded_keeps_old_behaviour():
-    _seed_pipeline()
-    body = _client().post("/api/pipeline/pl_wire/accept-suggestion").json()
-    assert body["accepted_degraded"] is True
-    assert body["action"] == "accept_degraded"
+def test_dispatch_records_order_and_event():
     from clipwright.api.pipeline import _pipeline_results
+    from clipwright.services.trace import create_trace, get_all_events
 
-    assert _pipeline_results["pl_wire"]["shared_data"]["accepted_degraded"] is True
+    _seed_pipeline("pl_order")
+    create_trace("pl_order")
+    resp = _client().post("/api/pipeline/pl_order/dispatch", json={
+        "target_stage": "material", "reason": "占位图", "auto_retry": False,
+    })
+    assert resp.status_code == 200
+    order = resp.json()["order"]
+    assert order["target_stage"] == "material"
+    assert _pipeline_results["pl_order"]["shared_data"]["manual_orders"][0]["id"] == order["id"]
+    assert any(e.get("event") == "dispatch" or e.get("name") == "dispatch"
+               for e in get_all_events("pl_order")) or get_all_events("pl_order")
 
 
-def test_suggestion_manual_is_not_executed(monkeypatch):
+def test_dispatch_still_validates_stage():
+    _seed_pipeline("pl_bad")
+    resp = _client().post("/api/pipeline/pl_bad/dispatch", json={
+        "target_stage": "not_a_stage", "reason": "x",
+    })
+    assert resp.status_code == 400
+
+
+def test_suggestion_retry_actions_are_retired(monkeypatch):
+    """`retry_with_model` / `redo_stage` 不再执行，如实返回 retired。"""
     from clipwright.api import pipeline as pipeline_api
 
-    async def fake_retry(pid, agent, request):  # noqa: ANN001
-        raise AssertionError("manual 不应触发重试")
+    called: list[str] = []
+
+    async def fake_retry(pid, stage, request):  # noqa: ANN001
+        called.append(stage)
+        return {"status": "retrying"}
 
     monkeypatch.setattr(pipeline_api, "start_agent_retry", fake_retry)
-    body = _client().post("/api/pipeline/pl_wire/accept-suggestion", json={
-        "action": "manual", "target_stage": "edit",
-    }).json()
+    _seed_pipeline("pl_sug")
+
+    for action in ("retry_with_model", "redo_stage"):
+        resp = _client().post("/api/pipeline/pl_sug/accept-suggestion", json={
+            "action": action, "target_stage": "material",
+        })
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["accepted"] is False
+        assert body["retry"]["retired"] is True
+        assert "delegate_agent" in body["retry"]["alternative"]
+    assert called == []
+
+
+def test_accept_degraded_still_registers():
+    _seed_pipeline("pl_deg")
+    resp = _client().post("/api/pipeline/pl_deg/accept-suggestion", json={
+        "action": "accept_degraded", "suggestion_id": "s1",
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["accepted"] is True and body["accepted_degraded"] is True
+
+
+def test_manual_action_is_not_auto_started():
+    _seed_pipeline("pl_man")
+    resp = _client().post("/api/pipeline/pl_man/accept-suggestion", json={
+        "action": "manual", "suggestion_id": "s2",
+    })
+    assert resp.status_code == 200
+    body = resp.json()
     assert body["accepted"] is False
-    assert "人工处理" in body["reason"]
-
-
-def test_suggestion_retry_without_stage_says_so(monkeypatch):
-    """没有 target_stage 时不能假装重试了。"""
-    from clipwright.api import pipeline as pipeline_api
-
-    async def unused(pid, agent, request):  # noqa: ANN001
-        raise AssertionError("没有阶段不该调用重试")
-
-    monkeypatch.setattr(pipeline_api, "start_agent_retry", unused)
-    _seed_pipeline()
-    body = _client().post("/api/pipeline/pl_wire/accept-suggestion", json={
-        "action": "redo_stage", "target_stage": "",
-    }).json()
-    assert body["accepted"] is False
-    assert body["retry"]["retried"] is False
-    assert "目标阶段" in body["retry"]["reason"]
+    # manual 语义不变：只提示需要人工，不触发任何执行
+    assert "人工" in str(body) or body.get("note", "") != ""

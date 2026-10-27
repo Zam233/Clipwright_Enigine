@@ -212,28 +212,25 @@ class DispatchOrderBody(BaseModel):
     )
 
 
-async def _try_retry(pipeline_id: str, stage: str, request: Request) -> dict[str, Any]:
-    """按工单/建议真跑一次重试；失败**不抛**，把原因如实交回前端。
+#: 派工执行语义已退役（M3 删除老管线执行引擎，见 closeout plan B1）。
+#: 保留这个返回形状是给旧前端的：字段都在，值一律"没重试 + 原因"。
+RETIRED_REASON = (
+    "老管线派工执行已下线：请用主 Agent 的 delegate_agent 重派该阶段"
+    "（replan_closure 会算出需要连带重做的下游）"
+)
 
-    刻意不复用 `/retry` 端点的 HTTP 语义：调度面板要能显示「已登记但没能重跑，
-    因为 xxx」，而不是把 400/404 变成一句「请求失败」。
+
+async def _try_retry(pipeline_id: str, stage: str, request: Request) -> dict[str, Any]:
+    """派工不再触发重跑：**只登记、不执行**。
+
+    历史上这里会调 `/retry` 同一条路径真的把编排器拉起来。M3 之后那条路径恒 410，
+    继续调用只会让面板显示"重试失败"却不知道是能力没了。所以这里直接返回
+    结构化的"已退役"，并把替代做法写进 reason。
     """
     if not stage:
-        return {"retried": False, "reason": "没有指定目标阶段"}
-    try:
-        from clipwright.api.pipeline import start_agent_retry
-
-        res = await start_agent_retry(pipeline_id, stage, request)
-        return {
-            "retried": True,
-            "status": str(res.get("status", "")),
-            "message": str(res.get("message", "")),
-        }
-    except HTTPException as e:
-        return {"retried": False, "reason": str(e.detail)}
-    except Exception as e:  # noqa: BLE001 — 重试失败不得影响工单登记
-        logger.warning("调度重试启动失败 %s/%s: %s", pipeline_id, stage, e)
-        return {"retried": False, "reason": f"{type(e).__name__}: {e}"}
+        return {"retried": False, "reason": "没有指定目标阶段", "retired": True}
+    return {"retried": False, "reason": RETIRED_REASON, "retired": True,
+            "alternative": f"delegate_agent(stage={stage})"}
 
 
 @router.post("/{pipeline_id}/dispatch")
@@ -285,9 +282,11 @@ async def post_pipeline_dispatch(
     return {
         "pipeline_id": pipeline_id,
         "order": order,
-        "accepted": True,
-        "requires_retry": not retry_info.get("retried", False),
+        "accepted": True,                     # 工单被接受（登记成功）
+        "execution_status": "retired",        # 但不再触发执行
+        "requires_retry": False,
         "retry": retry_info,
+        "alternative": f"delegate_agent(stage={payload.target_stage})",
     }
 
 
@@ -320,6 +319,7 @@ async def post_accept_suggestion(
 
     if action in ("retry_with_model", "redo_stage"):
         retry_info = await _try_retry(pipeline_id, body.target_stage, request)
+        # 退役后这两个动作不再是"执行"，不再声称 accepted=true（否则用户以为改了模型真重跑）
         add_event(
             pipeline_id, "supervisor", "warning",
             f"按诊断建议重做 {body.target_stage}（{action}）"

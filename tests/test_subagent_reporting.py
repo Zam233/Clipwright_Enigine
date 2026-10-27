@@ -184,7 +184,7 @@ class _ResultDriver:
         self.results = results
         self.executed: list[dict] = []
 
-    async def __call__(self, task, *, context_text="", shadow=False,  # noqa: ANN001
+    async def __call__(self, task, *, context_text="", shadow=False, dry_run=False,  # noqa: ANN001
                        guard=None, on_tool_call=None):  # noqa: ANN001
         for result in self.results:
             if guard is not None:
