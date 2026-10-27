@@ -280,3 +280,40 @@ def test_credential_probe_counts_role_binding(monkeypatch):
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+def test_repeated_identical_failure_aborts_loop(monkeypatch):
+    """同一调用连续失败 3 次就中止——环境缺东西不该被当成"再想想能解决"。
+
+    实测背景：没有工作区时，模型把 10 次调用全花在 list_dir/list_reports 的 error 上，
+    最后交不出时间线还烧满回合（评估报告里能看到）。
+    """
+    async def always_fail(name, args=None, **kw):  # noqa: ANN001, ARG001
+        return {"status": "error", "error": "未找到工作区"}
+
+    monkeypatch.setattr(sf, "execute", always_fail)
+    fake = _FakeLLM([("list_dir", {"path": "x"})] * 5)
+    _patch_llm(monkeypatch, fake)
+
+    out = asyncio.run(agent_loop.run_loop(_task()))
+    assert out["status"] == "aborted"
+    assert "连续失败 3 次" in out["stopped_reason"]
+    # 中止得早：没有跑满 5 次
+    assert len(out["tool_calls"]) == 3
+
+
+def test_success_resets_failure_streak(monkeypatch):
+    """中间成功一次就重置计数（不能把偶发失败累计成熔断）。"""
+    state = {"n": 0}
+
+    async def flaky(name, args=None, **kw):  # noqa: ANN001, ARG001
+        state["n"] += 1
+        if state["n"] % 2 == 1:
+            return {"status": "error", "error": "偶发"}
+        return {"status": "ok", "output": {}}
+
+    monkeypatch.setattr(sf, "execute", flaky)
+    fake = _FakeLLM([("list_dir", {"path": "x"})] * 4)
+    _patch_llm(monkeypatch, fake)
+
+    out = asyncio.run(agent_loop.run_loop(_task()))
+    assert out["status"] == "ok", out.get("stopped_reason")

@@ -243,6 +243,8 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
      "超出按优先级裁剪，并记 context_loaded.trimmed"),
     ("report_max_chars", "pipeline", "工作区报告上限(字符)", False, True,
      "单份 reports/*.md 的上限；超出截断并标记"),
+    ("eval_report_dir", "pipeline", "评估报告目录", False, True,
+     "golden_eval 写、/api/eval 读；留空 = `_cache/eval`"),
     ("workspace_roots", "pipeline", "工作区父目录白名单", False, True,
      "JSON 数组；留空=只用 workspace_dir。填了之后前端可在这些目录下新建工作区"),
     ("agent_max_turns", "pipeline", "Agent 回合上限", False, True,

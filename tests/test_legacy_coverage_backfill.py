@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from types import SimpleNamespace
 
 import pytest
@@ -153,3 +155,57 @@ def test_run_history_maps_mongo_doc_shape():
     assert rec["duration_ms"] == 5000
     assert rec["agents"][0]["agent"] == "edit"
     assert rec["agents"][0]["status"] == "ok"
+
+# ── 3. 工作区上下文注入（真跑评估发现的 bug） ─────────
+
+
+def test_tool_surface_injects_workspace_context_from_task(tmp_path, monkeypatch):
+    """Task 的工作区信息只在 `request.extra`，工具面必须在**入口**补齐。
+
+    真跑证据（golden_eval，workspace 未注入前）：模型的 10 次调用全是
+    "未找到工作区 / 路径不在允许目录"，最后交不出时间线。注入后同样的读工具全部成功。
+    """
+    from types import SimpleNamespace
+
+    from clipwright.tool import surface as sf
+    from clipwright.tool.registry import ToolRegistry
+
+    seen: dict = {}
+
+    async def fake_execute(cls, name, **kwargs):  # noqa: ANN001
+        seen.update(kwargs)
+        return SimpleNamespace(status="success", output={}, error=None)
+
+    monkeypatch.setattr(ToolRegistry, "execute", classmethod(fake_execute))
+
+    root = str(tmp_path / "ws")
+    task = SimpleNamespace(
+        id="task_ws",
+        request=SimpleNamespace(extra={"workspace_root": root,
+                                       "workspace_project_id": "proj_x"}),
+    )
+    out = asyncio.run(sf.execute("list_artifacts", {}, pipeline_id="task_ws", task=task))
+    assert out["status"] == "ok"
+    assert seen.get("workspace_root") == root, "工作区根必须被注入"
+    assert seen.get("project_id") == "proj_x"
+
+
+def test_explicit_arg_beats_injection(monkeypatch):
+    """调用方显式给了 workspace_root 就尊重它（注入只补空缺）。"""
+    from types import SimpleNamespace
+
+    from clipwright.tool import surface as sf
+    from clipwright.tool.registry import ToolRegistry
+
+    seen: dict = {}
+
+    async def fake_execute(cls, name, **kwargs):  # noqa: ANN001
+        seen.update(kwargs)
+        return SimpleNamespace(status="success", output={}, error=None)
+
+    monkeypatch.setattr(ToolRegistry, "execute", classmethod(fake_execute))
+    task = SimpleNamespace(id="t", request=SimpleNamespace(
+        extra={"workspace_root": "/injected", "workspace_project_id": "p"}))
+    asyncio.run(sf.execute("list_artifacts", {"workspace_root": "/explicit"},
+                           pipeline_id="t", task=task))
+    assert seen["workspace_root"] == "/explicit"

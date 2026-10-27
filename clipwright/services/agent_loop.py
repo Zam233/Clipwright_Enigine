@@ -126,9 +126,15 @@ def _system_prompt(task: Any) -> str:
         "你是视频创作系统的主 agent。你直接调用工具来推进任务：可以读取工作区文件/报告/产物，"
         "也可以派子 agent 去做具体阶段。每次只做当前最必要的一步；做完就停下来汇报。\n"
         "规则：\n"
-        "- 不要假装完成：没有可渲染时间线/产物时，如实说明缺什么；\n"
+        "- **创作任务的完成标准是产出可渲染时间线**：光读文件、列目录、看报告**不算完成**。"
+        "要出片就必须用 delegate_agent 依次派阶段（structure→material→edit→animation→audio），"
+        "让 audio 阶段落出 final_timeline；\n"
+        "- 不要在没有 timeline 的情况下说\"完成\"——收尾守门会把它判成失败；\n"
         "- 缺输入时先补上游（派对应阶段/调研），不要凭空编造；\n"
         "- 派子 agent 时用 inputs 显式传参（artifact 引用或内联值）；\n"
+        "- 只读探查最多用于开局摸清现状，别把回合全花在 read_file/list_dir 上；\n"
+        "- 工具报「未找到工作区 / 路径不在白名单」属于环境问题：不要反复重试同一个调用，"
+        "如实说明缺什么并结束；\n"
         "- 任务受限：回合、工具调用次数、墙钟、预算都会强制中止。"
     )
 
@@ -171,6 +177,8 @@ async def run_loop(task: Any, *, context_text: str = "",
          {"mode": "shadow" if shadow else "tool_loop", "tools": len(tools)})
 
     calls: list[dict[str, Any]] = []
+    #: (工具名, 参数指纹) → 连续失败次数；用来阻断"同一个错反复撞"的空转
+    fail_streak: dict[str, int] = {}
     started = time.monotonic()
     limits = getattr(task, "limits", None)
     max_rounds = int(getattr(settings, "agent_loop_max_turns", 0)
@@ -234,6 +242,19 @@ async def run_loop(task: Any, *, context_text: str = "",
         elapsed = int((time.monotonic() - t0) * 1000)
         calls.append({"tool": name, "ok": result.get("status") == "ok",
                       "status": result.get("status"), "duration_ms": elapsed})
+
+        # 同一调用反复失败 = 环境缺东西（比如没有工作区），不是模型"再想想"能解决的。
+        # 实测：没有工作区时模型会把 10 次调用全花在 list_dir/list_reports 的 error 上，
+        # 最后交不出时间线还烧满回合。这里直接中止，让 Kernel 如实收尾。
+        fingerprint = f"{name}:{json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)[:200]}"
+        if result.get("status") in ("ok", "dry_run"):
+            fail_streak.pop(fingerprint, None)
+        else:
+            fail_streak[fingerprint] = fail_streak.get(fingerprint, 0) + 1
+            if fail_streak[fingerprint] >= 3:
+                raise LoopAborted(
+                    f"同一工具连续失败 3 次（{name}）：{str(result.get('error') or '')[:120]}"
+                )
         if on_tool_call is not None:
             try:
                 # 把**真实调用参数**一并回调：录制/回放与 digest 都按参数建键，

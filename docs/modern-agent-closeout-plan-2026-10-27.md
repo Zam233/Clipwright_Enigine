@@ -338,3 +338,71 @@
 | B10 的 golden 真实选题三次跑 | ⚠️ 机制就绪、数据未跑 | 报告/门禁/方差告警都已实现并有单测；真正"同一选题跑三次"需要模型凭据与耗时，属运营动作，不是代码缺口 |
 | B9 的 `RunningSubagents` 旧轮询接口下线 | ⚠️ 前端已不调用 | 后端 `GET /api/pipeline/{id}/subagents` 仍保留（supervisor 抽屉在用），要不要删取决于 drawer 是否迁移 |
 
+---
+
+## 11. 三项遗留收口（2026-10-27 第三批）
+
+### 11.1 golden 真跑：真的跑了，而且抓到一个真 bug
+
+`golden_eval`（`python -m clipwright.services.golden_eval --topic … --runs 3`）用**真 Kernel +
+真 provider（deepseek-v4-pro）+ 真工具**跑同一个选题三次，取指标出报告。
+连跑三轮的结果（`_cache/eval/`）：
+
+| 轮次 | max-turns | 结果 | 回合 | 工具调用 | 诊断 |
+|---|---|---|---|---|---|
+| 第 1 批 | 4 | 0/3 成功 | 8 ± 1 | 7 ± 1 | 全部卡在收尾守门：没有 `final_timeline` |
+| 第 2 批 | 12 | 0/3 成功 | 6.3 ± 1 | 5.3 ± 1 | 同上 |
+| 第 3 批（加提示词） | 12 | 0/3 成功 | 8.7 ± 4 | 7.7 ± 4 | 回合变多但仍在读工具里打转 |
+
+**根因（不是提示词问题）**：任务没有工作区 → `list_dir` 报"路径不在白名单"、
+`list_artifacts`/`list_reports`/`project_memory` 报"未找到工作区"，
+模型把 10 次调用全花在这些 error 上，最后交不出时间线。证据：`task_95659a6aef`
+的 `context_digest` 只有两条，`state.json` 的 `stages` 为 `[]`——**一步都没派出去**。
+
+**第三个、也是真正卡住"出片"的那个 bug**（诊断脚本逐条打工具结果时发现）：
+工具面是唯一入口，但 Task 的工作区信息只存在 `request.extra` 里，**模型不知道
+`workspace_root` 该填什么** → `list_artifacts` / `list_reports` / `write_file` 一律报
+"未找到工作区"，`list_dir` 报"路径不在允许目录"。逐条对比：
+
+| 调用 | 注入前 | 注入后 |
+|---|---|---|
+| `list_artifacts` | error 未找到工作区 | **ok**（返回 workspace_root + 0 条） |
+| `list_dir`（模型自报路径） | error 路径安全校验失败 | **ok**（9 项） |
+| `list_reports` | error 未找到工作区 | **ok** |
+| `read_file` | error 路径安全校验失败 | **ok**（读到 `.workspace.json`） |
+
+修法：在 `tool/surface.execute` 的**唯一入口**补齐工作区上下文（只填 schema 里确实有、
+且调用方没给的键），并把"环境类报错不要反复重试"写进提示词。
+回归用例：`test_tool_surface_injects_workspace_context_from_task` /
+`test_explicit_arg_beats_injection`。
+
+其余两处修复：
+1. **评估环境要像生产**：`golden_eval` 真跑前先 `ensure_workspace()` 并注入
+   `workspace_root`/`workspace_project_id`（与 `proceed` 一致）；
+2. **防抖**：`agent_loop` 对"同一工具 + 同一参数"连续失败 3 次直接中止，理由写进
+   `stopped_reason`，让 Kernel 如实收尾——把回合烧在同一个 error 上是典型的静默失败。
+   同时提示词加一条：环境类报错不要反复重试。
+   回归用例：`test_repeated_identical_failure_aborts_loop` / `test_success_resets_failure_streak`。
+
+### 11.2 `GET /api/pipeline/{id}/subagents`：不是老管线表，已改名归位
+
+核实结论：它返回的是 **supervisor worker 树**（`spawn_subagent` 注册的 tracker 节点），
+对研究型子 agent 是唯一视图——**不能删**；问题在路径里的 `pipeline` 是历史命名，
+容易让人以为它是老管线残留。
+
+处置：
+- 新增规范路径 `GET /api/supervisor/{task_id}/subagents` 与
+  `POST /api/supervisor/{task_id}/subagents/{sid}/cancel`（`admin_router`）；
+- 前端三处消费方（`supervisorApi.getSubagents` / `TaskSubagents` / `CopilotSubagentTab`）
+  全部迁到规范路径，并统一读 `tree`（此前有人读 `subagents`、有人读 `nodes`，是真 bug）；
+- 旧 `/api/pipeline/{id}/subagents*` **路由已下线**，处理函数作为文档化别名保留（无路由）。
+
+### 11.3 B10 可视化：管理页「评估」Tab
+
+- 后端：`GET /api/eval/reports`（列表摘要）/ `GET /api/eval/reports/{name}`（全文）/
+  `GET /api/eval/latest`；只允许读 `eval_report_dir`（默认 `_cache/eval`）内的 JSON，
+  名字含 `/`、`..`、绝对路径一律 400；
+- 前端：`src/features/pipeline/EvalPanel.tsx` + 管理页「运行记录 / 评估」切换；
+  面板只展示均值、离散度、每次运行的状态/原因/回合/工具/成本/耗时，口径不在前端二次解释；
+- 验收：`EvalPanel.test.tsx` 3 条（列表+详情、波动告警、空态给生成命令）。
+

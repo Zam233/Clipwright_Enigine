@@ -24,7 +24,9 @@ def _client():
     from clipwright.api import supervisor as supervisor_api
 
     app = FastAPI()
+    # subagents 端点已迁到规范前缀 /api/supervisor（admin_router）
     app.include_router(supervisor_api.router)
+    app.include_router(supervisor_api.admin_router)
     return TestClient(app)
 
 
@@ -115,7 +117,7 @@ def test_cancel_rejects_non_cancellable_and_finished():
 
 
 def test_subagents_endpoint_empty_is_not_404():
-    body = _client().get("/api/pipeline/pl_none/subagents").json()
+    body = _client().get("/api/supervisor/pl_none/subagents").json()
     assert body["count"] == 0
     assert body["tree"] == []
     assert body["nodes"] == []
@@ -126,7 +128,7 @@ def test_subagents_endpoint_returns_tree():
     node = t.register("核查员", provider="p", model="m")
     t.update(node.id, status="running")
 
-    body = _client().get("/api/pipeline/pl_api/subagents").json()
+    body = _client().get("/api/supervisor/pl_api/subagents").json()
     assert body["count"] == 1
     assert body["tree"][0]["role"] == "核查员"
     assert body["by_status"] == {"running": 1}
@@ -137,14 +139,14 @@ def test_cancel_endpoint_ok_404_409():
     node = t.register("可取消")
     client = _client()
 
-    ok = client.post(f"/api/pipeline/pl_api2/subagents/{node.id}/cancel")
+    ok = client.post(f"/api/supervisor/pl_api2/subagents/{node.id}/cancel")
     assert ok.status_code == 200
     assert ok.json()["cancelled"] is True
 
-    missing = client.post("/api/pipeline/pl_api2/subagents/sa_missing/cancel")
+    missing = client.post("/api/supervisor/pl_api2/subagents/sa_missing/cancel")
     assert missing.status_code == 404
 
-    again = client.post(f"/api/pipeline/pl_api2/subagents/{node.id}/cancel")
+    again = client.post(f"/api/supervisor/pl_api2/subagents/{node.id}/cancel")
     assert again.status_code == 409
 
 

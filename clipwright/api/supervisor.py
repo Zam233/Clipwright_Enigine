@@ -373,17 +373,39 @@ async def post_accept_suggestion(
 # ── B7：子代理观测与控制 ─────────────────────────────────────
 
 
-@router.get("/{pipeline_id}/subagents")
 async def get_pipeline_subagents(pipeline_id: str, request: Request) -> dict:
-    """子代理树（PRD F12）。无子代理时返回空结构而非 404。"""
+    """历史别名（**已无路由**）：实现已迁到 `GET /api/supervisor/{task_id}/subagents`。
+
+    背景：路径里的 `pipeline` 是历史命名，会让人误以为这是"老管线的子代理表"
+    （老管线已删除）。它返回的其实是 **supervisor worker 树**
+    （`spawn_subagent` 注册的 tracker 节点），对研究型子 agent 仍是唯一视图——
+    所以不是"删掉"，而是"改名归位"。前端三处消费方已迁完，旧路由已下线。
+    """
+    return await get_task_subagents(pipeline_id, request)
+
+
+@admin_router.get("/{task_id}/subagents")
+async def get_task_subagents(task_id: str, request: Request) -> dict:
+    """子代理树（supervisor worker）：无子代理时返回空结构而非 404。
+
+    形状固定为 `{pipeline_id, count, by_status, nodes, tree}`（tracker.snapshot()）。
+    消费方**只读 `tree` / `count`**——历史上有人读 `subagents`，那是老管线时代的键。
+    """
     from clipwright.api.pipeline import _enforce_pipeline_owner
     from clipwright.supervisor.tracker import get_tracker
 
-    _enforce_pipeline_owner(request, pipeline_id)
-    return get_tracker(pipeline_id).snapshot()
+    _enforce_pipeline_owner(request, task_id)
+    return get_tracker(task_id).snapshot()
 
 
-@router.post("/{pipeline_id}/subagents/{subagent_id}/cancel")
+@admin_router.post("/{task_id}/subagents/{subagent_id}/cancel")
+async def post_cancel_task_subagent(
+    task_id: str, subagent_id: str, request: Request,
+) -> dict:
+    """取消单个 supervisor worker（不可取消/已结束 → 409）。"""
+    return await post_cancel_subagent(task_id, subagent_id, request)
+
+
 async def post_cancel_subagent(
     pipeline_id: str, subagent_id: str, request: Request,
 ) -> dict:

@@ -77,7 +77,7 @@ _local_backup_*/
 backend-out.log
 *.log
 
-# 测试产生的版本快照目录
+# 锟斤拷锟皆诧拷锟斤拷锟侥版本锟斤拷锟斤拷目录
 versions/
 
 # F3: 寮�鍙戜骇鐗╀笉鍏ュ簱
@@ -104,3 +104,6 @@ settings.json.bad
 # supervisor run_python temp scripts (machine-local, not for VCS)
 .supervisor/
 out/
+
+# 璇勪及/璇婃柇璺戝嚭鏉ョ殑涓存椂宸ヤ綔鍖猴紙golden_eval銆佽瘖鏂剼鏈級
+workspaces/

@@ -126,6 +126,8 @@ class Settings(BaseSettings):
     report_max_chars: int = 20000
     # 允许创建工作区的父目录列表（§17.8）；空 = 只用 workspace_dir
     workspace_roots: list[Path] = []
+    # 评估报告目录（closeout B10）：golden_eval 写到这里，/api/eval 读这里
+    eval_report_dir: str = ""
     # Kernel 四道闸（PRD F5 / Q1 已裁定；数值可调，不可置空）
     agent_max_turns: int = 30
     agent_max_tool_calls: int = 80

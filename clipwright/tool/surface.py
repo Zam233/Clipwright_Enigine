@@ -648,6 +648,26 @@ async def execute(
     from clipwright.tool.registry import ToolRegistry
 
     payload = dict(args or {})
+    # 工作区上下文注入（closeout B11 发现的真 bug）：
+    # 工具面是唯一入口，但 Task 的工作区信息只存在 `request.extra` 里，
+    # 模型并不知道 `workspace_root`/`project_id` 该填什么 → list_artifacts /
+    # list_reports / write_file 全部报"未找到工作区"，模型只能把回合烧在 error 上。
+    # 这里在**入口**补齐（只填 schema 里确实有、且调用方没给的键），不改变工具语义。
+    if task is not None:
+        extra_ctx = dict(getattr(getattr(task, "request", None), "extra", None) or {})
+        provided = {
+            "workspace_root": extra_ctx.get("workspace_root"),
+            "project_id": extra_ctx.get("workspace_project_id") or extra_ctx.get("project_id"),
+        }
+        try:
+            entry0 = next((e for e in build_surface() if e.name == name), None)
+            props = ((entry0.schema.get("function", {}) if entry0 else {})
+                     .get("parameters", {}) or {}).get("properties", {}) or {}
+        except Exception:  # noqa: BLE001 — schema 拿不到就不注入
+            props = {}
+        for key, value in provided.items():
+            if value and key in props and not str(payload.get(key) or ""):
+                payload[key] = value
     if name in AGENT_TOOLS:
         return await _execute_agent(name, payload, pipeline_id=pipeline_id,
                                    idem_key=idem_key, task=task)
