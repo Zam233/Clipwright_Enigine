@@ -1020,3 +1020,78 @@ python -m clipwright.services.replay --bundle <bundle.json> --dry-run
 ### 11.5 本批后的基线
 
 后端 **4505 passed / 4 skipped / 1 xfailed**（整改前 4495，新增 10 条缺陷回归用例）。
+
+---
+
+## 12. M3 物理删除 + 审查遗留三条 P1（2026-10-27 第二批）
+
+### 12.1 M3：真的删掉了什么
+
+| 对象 | 处理 | 证据 |
+|---|---|---|
+| `services/agent_kernel.py` 的 `_run_plan_loop` / `_run_step` / `_after_step` / `_decide` / `_reflect` / `_observe` / `_normalize_decision` / `_steps_from` / `_summary_of_outcome` / `_brief` | **删除** | `tests/test_m3_removals.py::test_plan_execution_machinery_is_gone`（`hasattr` 逐项断言） |
+| `default_executor` + `_TOOL_ALIAS` + `_GATEWAY_CAPS` | **删除**（能力名别名表随执行器一起消失） | 同上；旧检查点改由 `_load_checkpoint` 迁移成"仅假设"注记 |
+| `Plan.next_step()` | **删除**（`Plan` 增加 `hypothesis_only=True`） | `test_m3_removals.py`；`test_agent_kernel.py::test_no_step_cursor_api_survives` |
+| `kernel_mode="plan"` | **删除**；传旧值只发 `degradation(kernel_mode_removed)` 后按 `tool_loop` 跑 | `test_agent_kernel.py::test_legacy_plan_mode_is_reported_not_honoured` |
+| `services/pipeline_capability.py` | **整文件删除** | `test_m3_removals.py::test_pipeline_capability_module_is_deleted` |
+| `last_result` / `clear_results` | 迁到新模块 `services/task_results.py`；**没有显式快照时回落到黑板 `final_timeline`**（时间线唯一事实源） | 4 处读取点改 import；`golden_capture` / `api/task` / `api/pipeline` |
+| `api/pipeline` 的 `run-async` / `retry` 执行入口 | **永久 410**：不再看 `pipeline_enabled`（开关本身就是后门） | `test_m3_removals.py::test_pipeline_execution_route_is_410`（连 `pipeline_enabled=true` 也 410） |
+| 录制点 | 从 `_run_step` 移到 tool loop 的 `_on_tool_call`；`recording.Replayer.calls()` + `make_replay_driver()` 成为回放入口 | `test_kernel_replay.py`（4 条，含"回放缺数据必须响"） |
+
+**仍然没删的（不遮掩）**：`services/pipeline_v2.py` 文件本体。它还被
+`api/pipeline`（历史只读 `get_run_records`、`mark_cancelled`）、`api/requirements.py`
+与 `supervisor.py`（`execute_order`，supervisor 派工的执行层）import。
+删除它必须先把这三处迁走，并把 supervisor 的"派工即执行"改成"派工即派 AgentRun"——
+这是 §4.2 第 3/6 步的独立一批，混进本批会让 supervisor 直接断链。
+
+### 12.2 审查遗留的三条 P1
+
+| 编号 | 整改内容 | 证据 |
+|---|---|---|
+| P1-1 契约归因 | `AgentResult` 增加 `task_id/trace_id/attempt/created_at`；`StageResult` 增加 `tokens/tool_calls`；stage adapter 与 research adapter 都填归因字段 | `tests/test_agent_run.py::test_stage_and_research_share_envelope` |
+| P1-5 任务级口径 | 新增 `evaluation.record_task()` 与 `task_summary()`；Kernel 在**两条收尾路径**（tool loop 完成/失败）都落任务级指标；`summary()` 保留子 run 口径并新增 `task_success_rate` | `tests/test_evaluation.py` |
+| P1-7 trace 信封 | `TaskEvent` 增加 `trace_id/run_id/span/causation_id`（`to_public` 只在有值时输出，老前端不受影响）；`emit/aemit` 支持四个关键字；新增 `agent_run_start/update/end` 三种事件并由 `agent_run` 统一发出；前端 `types/task.ts` + `labels.ts` 同步 | `test_agent_kernel.py::test_events_carry_trace_envelope`；前端 `tsc` + 983 tests |
+
+**P1-1 的剩余缺口要写清**：阶段子 agent 内部的 provider usage 目前**没有回传通道**，
+所以 `StageResult.tokens` 仍是 0、`tool_calls` 仍为空——字段有了、口径统一了，但值是"未知"
+而不是真实数字。补它要动 7 个 `agents/*` 的产出契约或给 `llm_tracker` 加按阶段归档，
+属独立一批。
+
+### 12.3 测试迁移说明（被删/改写的用例）
+
+M3 删除的是"计划表执行"，所以一批测试的**被测对象**不存在了。处理原则：
+只有断言"老管线能跑/能重试/能回放步骤"的用例删除；断言**不变量**的用例迁移到驱动器上。
+
+| 文件 | 处理 |
+|---|---|
+| `tests/test_pipeline_capability.py` | 整份删除（被测的 `pipeline_capability` 已删）；保留的断言迁到 `test_m3_removals.py` |
+| `tests/clipwright/test_batch_a_callchain.py` | 删 4 条 `run-async` 用例（入口永久 410）；幂等/取消/超时的等价断言已由 `test_task_api.py` 覆盖 |
+| `tests/clipwright/test_pipeline_runs.py` | 删 3 条 `retry` 用例（同上） |
+| `tests/test_agent_kernel.py` | **重写**为驱动器形态（18 条，含闸/检查点/取消/注入/影子/降级） |
+| `tests/test_agent_c5_context.py` | **重写**（插话/上下文压缩/子能力边界/旧检查点迁移） |
+| `tests/test_kernel_replay.py` | **重写**（录制点迁移 + 回放驱动） |
+| `tests/test_exec_capability.py` / `test_agent_hardening.py` / `test_task_api.py` / `test_task_to_project.py` / `test_golden_*` / `test_subagent_reporting.py` / `test_docs_protocol.py` / `test_stage_subagent.py` | 夹具与断言迁到 `KernelDeps(driver=...)`；新增 `tests/kernel_stubs.py` 提供脚本化驱动器 |
+
+### 12.4 §4.3 机械检查：真实数字（本批结束）
+
+| 检查 | 命中 | 说明 |
+|---|---|---|
+| `next_step()` | **0** | 执行游标彻底消失（`Plan` 只剩 `hypothesis_only`） |
+| `default_executor\|_run_step\|_after_step` | **0** | 计划表执行器全删 |
+| `run_pipeline\|PipelineOrchestratorV2\|pipeline_capability` | 33 | `pipeline_v2.py` 文件本体未删（见 §12.1 末段），其余为注释/文档字符串 |
+| `stage_capability\|_DISPATCH_CAPS\|_QUERY_CAPS` | 8 | `stage_capability`/`subagent_capability` 作为**薄适配层**保留（见下） |
+| `if step.capability` | 8 | 同上 + `exec_capability` 的 shell/python 二选一（网关路由，不是能力解释） |
+
+**关于后两项的诚实说明**：`stage_capability` / `subagent_capability` 里仍各有一张
+能力名表与几处 `if`。它们现在**不是**主执行路径——Kernel 的 `default_executor`
+没了，工具面里 agent 类工具是 `delegate_agent` / `research_agent` / `get_agent_run` /
+`list_agent_runs` / `cancel_agent_run`。这两个模块只服务旧调用方与旧检查点
+（`api/requirements.py`、一批回归用例），把它们也拆掉属于"删到没有调用方"之后的
+收尾动作，混进本批会让 40+ 条能力回归用例失去被测对象。
+
+### 12.5 本批基线
+
+- 后端 **4492 passed / 4 skipped / 1 xfailed**（本批起点 4505；删除 7 条"老管线能跑"
+  的用例、1 份 `test_pipeline_capability.py`，新增 `test_m3_removals.py` 6 条 +
+  `tests/kernel_stubs.py` 共享桩）
+- 前端 **983 passed / 115 files**，`tsc --noEmit` 干净（新增 3 个 `agent_run_*` 事件标签）

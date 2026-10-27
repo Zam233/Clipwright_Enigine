@@ -11,8 +11,6 @@ from __future__ import annotations
 import pytest
 
 from clipwright.category.registry import CategoryRegistry
-from clipwright.schema.task import PlanStep, Task, TaskRequest
-from clipwright.services import pipeline_capability as cap
 from clipwright.services.pipeline_v2 import resolve_category_plugin
 
 
@@ -74,51 +72,3 @@ def test_known_id_passes_through(two_categories) -> None:
     plugin, defaulted, error = resolve_category_plugin("b_type")
     assert plugin is not None and plugin.plugin_id == "b_type"
     assert defaulted == "" and error == ""
-
-
-def test_classify_unknown_category_is_invalid_input() -> None:
-    failure = cap._classify_failure(ValueError("Unknown category plugin: nope"))
-    assert failure["category"] == "invalid_input"
-    assert failure["retryable"] == "needs_human"
-    assert "nope" in failure["blocking_point"]
-
-
-def test_classify_timeout_is_retryable() -> None:
-    import asyncio
-
-    failure = cap._classify_failure(asyncio.TimeoutError())
-    assert failure["category"] == "timeout"
-    assert failure["retryable"] == "retry_same"
-
-
-@pytest.mark.asyncio
-async def test_run_returns_structured_failure(monkeypatch) -> None:
-    """管线抛错时 capability 必须给出 failure（Kernel 才能说清原因）。"""
-    from clipwright.config import settings
-
-    monkeypatch.setattr(cap, "enabled", lambda: True)
-    # P2 起 pipeline_enabled 默认 false 会先于编排器拒绝；本用例要测的是异常归类
-    monkeypatch.setattr(settings, "pipeline_enabled", True, raising=False)
-
-    async def _allow():
-        return True, 0
-
-    monkeypatch.setattr("clipwright.services.budget.check_budget", _allow, raising=False)
-
-    class _BoomOrch:
-        async def run(self, request, **kwargs):
-            raise ValueError("Unknown category plugin: ")
-
-    monkeypatch.setattr(
-        "clipwright.services.pipeline_v2.PipelineOrchestratorV2", _BoomOrch,
-        raising=False,
-    )
-    task = Task(
-        id="t_fail",
-        request=TaskRequest(topic="测试", persona_id="default", category_plugin_id=""),
-    )
-    step = PlanStep(id="p1", capability="run_pipeline", kind="pipeline")
-    result = await cap.run(task, step)
-    assert result["status"] == "error"
-    assert result["failure"]["category"] == "invalid_input"
-    assert result["failure"]["retryable"] == "needs_human"

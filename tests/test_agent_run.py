@@ -160,18 +160,16 @@ def test_research_agent_requires_context():
     assert "任务上下文" in out["error"]
 
 
-def test_legacy_capability_names_are_aliases_not_branches():
-    """旧名只是别名表：Kernel 执行器里没有任何 `if capability == ...` 分支。"""
-    import inspect
+def test_legacy_capability_names_have_no_executor():
+    """M3：能力名别名表随执行器一起删除——旧名不再被翻译后执行。
 
+    旧检查点会被迁移成"仅假设"（见 test_agent_c5_context），不会再有人替它执行。
+    """
     from clipwright.services import agent_kernel as ak
 
-    src = inspect.getsource(ak.default_executor)
-    assert "if step.capability" not in src
-    assert "elif" not in src
-    assert ak._TOOL_ALIAS["run_stage"] == "delegate_agent"
-    assert ak._TOOL_ALIAS["spawn_subagent"] == "research_agent"
-    assert ak._TOOL_ALIAS["get_stage"] == "get_agent_run"
+    assert not hasattr(ak, "_TOOL_ALIAS")
+    assert not hasattr(ak, "default_executor")
+    assert not hasattr(ak, "_run_step")
 
 
 def test_legacy_query_names_still_work_after_alias_migration(monkeypatch):

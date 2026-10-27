@@ -34,6 +34,11 @@ def emit(
     event_type: str,
     message: str = "",
     detail: Optional[dict[str, Any]] = None,
+    *,
+    trace_id: str = "",
+    run_id: str = "",
+    span: str = "",
+    causation_id: str = "",
 ) -> TaskEvent:
     """追加一条事件（同步；调用方不需要 await）。"""
     if event_type not in EVENT_TYPES:
@@ -46,6 +51,10 @@ def emit(
         type=event_type,
         message=message,
         detail=dict(detail or {}),
+        trace_id=trace_id or task_id,
+        run_id=run_id,
+        span=span,
+        causation_id=causation_id,
     )
     stream.append(event)
     if len(stream) > _MAX_EVENTS_PER_TASK:
@@ -64,23 +73,37 @@ async def aemit(
     event_type: str,
     message: str = "",
     detail: Optional[dict[str, Any]] = None,
+    *,
+    trace_id: str = "",
+    run_id: str = "",
+    span: str = "",
+    causation_id: str = "",
 ) -> TaskEvent:
     """事件循环内的写法（Mongo 写入放线程池，不阻塞）。"""
     if _mongo_ready():
-        event = _build(task_id, event_type, message, detail)
+        event = _build(task_id, event_type, message, detail,
+                       trace_id=trace_id, run_id=run_id, span=span,
+                       causation_id=causation_id)
         await asyncio.to_thread(_persist, task_id, event)
         return event
-    return emit(task_id, event_type, message, detail)
+    return emit(task_id, event_type, message, detail, trace_id=trace_id,
+                run_id=run_id, span=span, causation_id=causation_id)
 
 
 def _build(task_id: str, event_type: str, message: str,
-           detail: Optional[dict[str, Any]]) -> TaskEvent:
+           detail: Optional[dict[str, Any]], *, trace_id: str = "",
+           run_id: str = "", span: str = "",
+           causation_id: str = "") -> TaskEvent:
     stream = _STREAMS[task_id]
     event = TaskEvent(
         seq=(stream[-1].seq + 1) if stream else 1,
         type=event_type,
         message=message,
         detail=dict(detail or {}),
+        trace_id=trace_id or task_id,
+        run_id=run_id,
+        span=span,
+        causation_id=causation_id,
     )
     stream.append(event)
     if len(stream) > _MAX_EVENTS_PER_TASK:

@@ -32,6 +32,8 @@ from clipwright.schema.task import (
 )
 
 _MAX_TASKS = 200
+#: 工作记忆（context_digest）上限：有界，否则长任务会把每次工具结果都攒在内存里
+_MAX_DIGEST = 24
 _DEFAULT_CHECKPOINT_DIR = Path("_cache") / "tasks"
 
 _TASKS: dict[str, Task] = {}
@@ -51,68 +53,32 @@ class KernelError(RuntimeError):
 class Planner(Protocol):
     async def plan(self, task: Task) -> Plan: ...
 
-    async def reflect(self, task: Task, step: PlanStep, outcome: dict[str, Any]) -> dict[str, Any]:
-        """返回 {action: continue|replan|finish, steps?: [...], conclusion?: str}"""
-
 
 Executor = Callable[[Task, PlanStep], Any]
 
 
 @dataclass
 class KernelDeps:
-    planner: Optional[Planner] = None
-    executor: Optional[Executor] = None
+    """Kernel 的注入点（modern-agent PRD §2.2 / §5.2）。
+
+    只剩两项真依赖：**驱动器**（真实 tool loop 或离线假驱动器）与检查点目录。
+    旧的 `planner` / `executor` 已随计划表执行一起删除——它们代表的正是
+    "代码按预生成 steps[] 逐步执行"那条路。
+    """
+
     checkpoint_dir: Path = _DEFAULT_CHECKPOINT_DIR
     #: 主循环形态覆盖（modern-agent PRD §5.2 的 `kernel_mode`）；
     #: None = 跟 `settings.kernel_mode`，显式给值优先。
     kernel_mode: Optional[str] = None
-    #: tool loop 驱动器（离线测试注入假驱动器；None = 真实 `agent_loop.run_loop`）
+    #: tool loop 驱动器：签名 `(task, *, context_text, shadow, guard, on_tool_call)`
+    #: → `{status, finish, tool_calls, stopped_reason, ...}`。None = 真实 agent_loop。
     driver: Optional[Any] = None
+    #: **只用于产出"初始假设"文本**（`Plan`），不参与执行——执行路径里没有任何代码
+    #: 读它。留在注入点上是为了离线测试不必打真实模型，以及让前端能显示"当初的打算"。
+    planner: Optional[Any] = None
 
 
-# ── 默认执行器：走工具面（唯一副作用入口）────────────────────────
-
-#: 旧能力名 → 工具面工具名（兼容历史检查点用的**别名表**，不是能力解释器）。
-#: 新实现只认工具面里的名字：原子工具 + `delegate_agent` / `research_agent`。
-_TOOL_ALIAS: dict[str, str] = {
-    "delegate": "delegate_agent",
-    "run_stage": "delegate_agent",
-    "spawn_stage": "delegate_agent",
-    "spawn_subagent": "research_agent",
-    # 查询/取消类旧名统一收敛到 agent run 工具（不再有另一套能力名解释层）
-    "get_stage": "get_agent_run",
-    "wait_for_stage": "get_agent_run",
-    "get_subagent_status": "get_agent_run",
-    "list_stages": "list_agent_runs",
-    "list_subagents": "list_agent_runs",
-    "cancel_subagent": "cancel_agent_run",
-}
-
-#: 必须经执行网关（判定 → 授权 → 沙盒 → 审计）的危险档，不进工具面
-_GATEWAY_CAPS: frozenset[str] = frozenset({"run_shell", "run_python"})
-
-
-async def default_executor(task: Task, step: PlanStep) -> dict[str, Any]:
-    """plan adapter 的执行器：**不做能力字符串分支**，一律走工具面。
-
-    历史上这里是一串按能力名逐项判断的条件分支，那正是"编排管线穿着 agent 外衣"
-    的标本：模型说一句话，代码再翻译成另一个名字。现在只剩两条路——
-    危险档走执行网关，其余走 `surface.execute`（派发类工具也在里面）。
-    """
-    from clipwright.tool.surface import execute as surface_execute
-
-    name = _TOOL_ALIAS.get(step.capability, step.capability)
-    if name in _GATEWAY_CAPS:
-        from clipwright.services import exec_capability
-
-        return await exec_capability.run(task, step)
-    return await surface_execute(
-        name, step.args, pipeline_id=task.id,
-        idem_key=f"{task.id}:{step.id}:{step.attempt}", task=task,
-    )
-
-
-# ── 默认规划器：LLM + 退化 ────────────────────────────────────
+# ── 默认规划器：只产出"初始假设" ───────────────────────────────
 
 
 _PLAN_SCHEMA: dict[str, Any] = {
@@ -182,8 +148,31 @@ _DECIDE_SCHEMA: dict[str, Any] = {
 }
 
 
+async def _hypothesis_steps(data: Optional[dict[str, Any]], *,
+                            prefix: str = "p") -> list[PlanStep]:
+    """把模型的"计划建议"转成 PlanStep —— **只是假设**，不是要按序执行的步骤表。"""
+    out: list[PlanStep] = []
+    for i, raw in enumerate((data or {}).get("steps") or [], 1):
+        if not isinstance(raw, dict):
+            continue
+        cap = str(raw.get("capability") or "").strip()
+        if not cap:
+            continue
+        out.append(PlanStep(
+            id=str(raw.get("id") or f"{prefix}{i}"),
+            title=str(raw.get("title") or "")[:120],
+            capability=cap,
+            args=dict(raw.get("args") or {}),
+            why=str(raw.get("why") or "")[:300],
+        ))
+    return out
+
+
 class LLMPlanner:
-    """用真实模型做规划（测试里注入 fake planner 即可，不需要网络）。"""
+    """产出**初始假设**（modern-agent PRD §2.2）：供提示词参照，不驱动执行。
+
+    测试里注入 fake planner 也可以；Kernel 主循环根本不读它。
+    """
 
     def __init__(self, *, timeout_sec: float = 30.0) -> None:
         self.timeout_sec = timeout_sec
@@ -253,7 +242,7 @@ class LLMPlanner:
                 ),
                 timeout=self.timeout_sec,
             )
-            steps = _steps_from(data, prefix="p")
+            steps = await _hypothesis_steps(data, prefix="p")
             if steps:
                 return Plan(
                     steps=steps,
@@ -288,110 +277,40 @@ class LLMPlanner:
             rationale="退化计划（主 Agent 规划失败 → 按阶段依赖序执行）",
         )
 
-    async def decide(self, task: Task, step: PlanStep, outcome: dict[str, Any],
-                     context_text: str) -> dict[str, Any]:
-        """一次 LLM 决策（PRD §16.10.1）：成功路径也判，不只失败。
+def _record_digest(task: Task, name: str, result: dict[str, Any]) -> None:
+    """把工具结果里的**结构化事实**（数值/短路径）写进 context_digest。
 
-        返回 `{action: continue|replan|finish, say, steps?, rationale?}`。
-        规则护栏由调用方先跑（policy_refused/permanent/needs 命中时不花模型）。
-        """
-        import asyncio
-
-        from clipwright.services.llm import LLMService
-
-        catalog = _capability_catalog()
-        brief = _brief(outcome)
-        failure = outcome.get("failure") or {}
-        failure_txt = ""
-        if isinstance(failure, dict) and failure:
-            failure_txt = (
-                f"\n失败：category={failure.get('category')} "
-                f"retryable={failure.get('retryable')} "
-                f"blocking={str(failure.get('blocking_point') or '')[:200]}"
-            )
-        prompt = (
-            f"## 上下文\n{context_text}\n\n"
-            f"## 刚完成的一步\n- capability: {step.capability}\n- 状态: {step.status}\n"
-            f"- 结论: {brief}{failure_txt}\n\n"
-            f"## 可用能力（只能从这里选）\n{catalog}\n\n"
-            "请决定下一步：\n"
-            "- continue：继续执行计划里的下一步（默认）\n"
-            "- replan：改计划（给出 steps；例如补派上游、换 agent）\n"
-            "- finish：收尾（给出 conclusion 一句结论）\n"
-            "必须用 `say` 说明你为什么这么决定（一句人话，给用户看）。只输出 JSON。"
-        )
-        # 真流式（PRD §19.4 / 用户裁定）：思考逐块 emit；provider 不支持流式时回退非流式
-        if bool(getattr(settings, "agent_decide_stream", True)):
-            from clipwright.services.task_events import emit as _emit
-
-            def _on_reasoning(delta: str) -> None:
-                _emit(task.id, "thinking", delta[:120],
-                      {"delta": delta, "done": False, "step_id": step.id})
-
-            try:
-                data = await asyncio.wait_for(
-                    LLMService().structured_output_stream(
-                        system_prompt="你是视频创作任务的主 agent，正在根据上一步结果决定下一步。",
-                        user_prompt=prompt,
-                        output_schema=_DECIDE_SCHEMA,
-                        use_flash=True,
-                        on_reasoning=_on_reasoning,
-                    ),
-                    timeout=min(self.timeout_sec, 25.0),
-                )
-                _emit(task.id, "thinking", "", {"delta": "", "done": True,
-                                                "step_id": step.id})
-                return _normalize_decision(data)
-            except Exception as exc:  # noqa: BLE001 — 流式失败退回非流式
-                logger.info("流式决策失败，回退非流式: %s", exc)
-
-        data = await asyncio.wait_for(
-            LLMService().structured_output(
-                system_prompt="你是视频创作任务的主 agent，正在根据上一步结果决定下一步。",
-                user_prompt=prompt,
-                output_schema=_DECIDE_SCHEMA,
-                use_flash=True,
-                pipeline_id=task.id,
-            ),
-            timeout=min(self.timeout_sec, 25.0),
-        )
-        return _normalize_decision(data)
-
-    async def reflect(self, task: Task, step: PlanStep, outcome: dict[str, Any]
-                      ) -> dict[str, Any]:
-        """根据结果决定下一步。
-
-        关键点：**失败要让主代理有机会再判断一次**，而不是一律收尾。
-        规则（不额外花模型调用）：
-        - 成功 → continue；
-        - 失败且 `failure.retryable == "retry_same"` 且这是第 1 次尝试 → retry（重跑同一步）；
-        - 其它失败（needs_human / permanent / 未知）→ finish，并把类别与证据写进结论。
-        """
-        if outcome.get("status") == "ok":
-            return {"action": "continue"}
-
-        failure = outcome.get("failure") or {}
-        retryable = str(failure.get("retryable") or "")
-        category = str(failure.get("category") or "unknown")
-
-        if retryable == "retry_same" and step.attempt < 2:
-            return {
-                "action": "retry",
-                "why": f"{category} 可重试（第 {step.attempt} 次失败）",
-            }
-
-        evidence = failure.get("evidence") or []
-        tail = ""
-        if evidence:
-            first = evidence[0]
-            tail = f"（{first.get('kind')}: {str(first.get('text'))[:120]}）"
-        return {
-            "action": "finish",
-            "conclusion": (
-                f"{step.capability} 未成功：{category}"
-                f"（retryable={retryable or 'unknown'}）{tail}"
-            ),
-        }
+    这是 A11「上下文压缩后关键数值不丢」的执行侧保证：`_observe` 随计划表一起删掉了，
+    但"数值与路径必须留痕"这条不变量还在，改由 tool loop 的每次调用落一次。
+    """
+    output = result.get("output")
+    facts: dict[str, Any] = {}
+    if isinstance(output, dict):
+        for key, value in output.items():
+            if isinstance(value, (int, float, bool)):
+                facts[str(key)] = value
+            elif isinstance(value, str) and len(value) <= 120:
+                facts[str(key)] = value
+            if len(facts) >= 8:
+                break
+    # 失败信息也要进 digest：模型下一轮必须看得到"上一枪为什么没打中"
+    # （旧实现在 `_observe` 里做，随计划表一起删掉后要在这里补回来）
+    failure = result.get("failure") or {}
+    if isinstance(failure, dict) and failure:
+        facts["failure_category"] = str(failure.get("category") or "")
+        facts["failure_retryable"] = str(failure.get("retryable") or "")
+        if "tool_calls" in failure:
+            facts["failure_tool_calls"] = failure.get("tool_calls")
+    if not facts:
+        return
+    task.context_digest.append({
+        "step_id": name,
+        "status": str(result.get("status") or ""),
+        "facts": facts,
+    })
+    if len(task.context_digest) > _MAX_DIGEST:
+        del task.context_digest[: len(task.context_digest) - _MAX_DIGEST]
+    task.touch()
 
 
 def context_bundle(task: Task, *, max_chars: int = 1200) -> str:
@@ -403,13 +322,11 @@ def context_bundle(task: Task, *, max_chars: int = 1200) -> str:
     """
     lines: list[str] = []
     plan = task.plan
-    if plan:
-        for step in plan.steps:
-            if step.status == 'pending':
-                continue
-            brief = f"（{step.result_brief}）" if step.result_brief else ''
-            err = f" 失败：{step.error}" if step.error else ''
-            lines.append(f"- [{step.status}] {step.title or step.capability}{brief}{err}")
+    if plan is not None and plan.steps:
+        # 初始假设（非执行记录）：只列"当初打算做什么"，不谎称已执行
+        lines.append("初始假设（仅供参照）：")
+        for step in plan.steps[:8]:
+            lines.append(f"- {step.title or step.capability}")
     # 结构化事实：从 digest 里把数值/路径类字段原样保留
     facts: list[str] = []
     for entry in task.context_digest:
@@ -458,26 +375,6 @@ def _capability_catalog() -> str:
     return "\n".join(rows) if rows else "（能力目录不可用）"
 
 
-def _steps_from(data: Optional[dict[str, Any]], *, prefix: str) -> list[PlanStep]:
-    out: list[PlanStep] = []
-    for idx, raw in enumerate((data or {}).get("steps") or [], 1):
-        if not isinstance(raw, dict) or not raw.get("capability"):
-            continue
-        out.append(
-            PlanStep(
-                id=f"{prefix}{idx}",
-                title=str(raw.get("title") or raw.get("capability"))[:80],
-                capability=str(raw["capability"]),
-                args=dict(raw.get("args") or {}),
-                why=str(raw.get("why") or "")[:200],
-            )
-        )
-    return out
-
-
-# ── Kernel ──────────────────────────────────────────────
-
-
 def limits_from_settings() -> TaskLimits:
     """从设置读四道闸；金额闸未配置=无上限（Q1 裁定）。"""
     limits = TaskLimits(
@@ -493,19 +390,14 @@ def limits_from_settings() -> TaskLimits:
 class AgentKernel:
     def __init__(self, deps: Optional[KernelDeps] = None, *,
                  kernel_mode: Optional[str] = None) -> None:
-        deps = deps or KernelDeps()
-        # 注入决定"决策源归属"：调用方塞了 planner/executor（离线测试、回放、
-        # 自定义规划器）就等于声明"大脑由我提供"，不再叠加真实模型 tool loop。
-        # 生产路径 `AgentKernel()` 不注入任何东西 → 走 settings.kernel_mode。
-        self._injected = deps.planner is not None or deps.executor is not None
-        self.deps = deps
-        self.deps.planner = self.deps.planner or LLMPlanner()
-        self.deps.executor = self.deps.executor or default_executor
-        self.kernel_mode = (
-            kernel_mode
-            or deps.kernel_mode
-            or ("plan" if self._injected else str(getattr(settings, "kernel_mode", "plan")))
-        )
+        self.deps = deps or KernelDeps()
+        # M3 之后只有两种形态：tool_loop（默认）与 shadow（跑 loop 不落副作用）。
+        # 旧的 "plan" 已随计划表执行一起删除；传它只会得到一条降级告警，然后照常跑 loop。
+        mode = kernel_mode or self.deps.kernel_mode or str(
+            getattr(settings, "kernel_mode", "tool_loop"))
+        self._mode_was_rejected = mode not in ("tool_loop", "shadow")
+        self._requested_mode = mode
+        self.kernel_mode = mode if not self._mode_was_rejected else "tool_loop"
 
     # ── 生命周期 ─────────────────────────────────
 
@@ -593,13 +485,19 @@ class AgentKernel:
     # ── 规划 ─────────────────────────────────────
 
     async def plan(self, task: Task) -> Plan:
+        """产出**初始假设**（modern-agent PRD §2.2）。
+
+        它不是执行计划：tool loop 每轮自己决定调什么，这份 `Plan` 只作为提示词里的
+        参考，以及前端"它当初打算怎么做"的记录。
+        """
         from clipwright.services.task_events import emit
 
         task.status = "planning"
         hints_used = list(task.hints)
-        plan = await self.deps.planner.plan(task)  # type: ignore[union-attr]
+        planner = self.deps.driver and None  # noqa: F841 — 驱动器不负责规划
+        plan = await (self.deps.planner or LLMPlanner()).plan(task)
         task.plan = plan
-        # 插话被这一版计划消费掉（否则会一直挂着，让用户以为没被听到）
+        # 插话被这一版假设消费掉（否则会一直挂着，让用户以为没被听到）
         if hints_used:
             task.hints = [h for h in task.hints if h not in hints_used]
         task.status = "pending"
@@ -607,9 +505,9 @@ class AgentKernel:
         from clipwright.services.recording import maybe_record
 
         maybe_record("llm", "plan", {"topic": task.request.topic}, plan.model_dump(mode="json"))
-        emit(task.id, "plan", f"计划 {len(plan.steps)} 步",
+        emit(task.id, "plan", f"初始假设 {len(plan.steps)} 步（供参照，非执行表）",
              {"steps": [s.model_dump(mode="json") for s in plan.steps],
-              "rationale": plan.rationale})
+              "rationale": plan.rationale, "hypothesis_only": True})
         self._checkpoint(task)
         return plan
 
@@ -628,28 +526,41 @@ class AgentKernel:
             _TASK_HANDLES.pop(task.id, None)
 
     async def _run_loop(self, task: Task, *, started: float) -> Task:
-        """主循环入口：按 `kernel_mode` 分派（modern-agent PRD §2.2 / §5.2）。
+        """主循环入口：只有 tool-use loop 一条路（modern-agent PRD §2.2 / M3）。
 
-        - `tool_loop`（默认）/ `shadow`：模型拿工具 schema 自主调用 → `agent_loop.run_loop`
-        - `plan`：旧的计划表 adapter（`_run_plan_loop`），仅回滚与测试可达
-        - 条件不具备（无凭据 / provider 不支持工具）→ 明确记 `degradation` 后回退 plan
+        `kernel_mode` 只剩 `tool_loop`（默认）与 `shadow`（跑 loop 不落副作用）。
+        旧 `plan` 的**计划表执行已物理删除**——没有计划表适配器可回退，
+        传入旧值只会得到一条降级告警。
+
+        条件不具备（无凭据 / provider 不支持 native tool calls）时**如实失败**，
+        不再偷偷换一条"按 steps[] 执行"的路：那条路正是本次要拆掉的东西。
         """
         from clipwright.services import agent_loop
         from clipwright.services.task_events import emit
 
         mode = str(self.kernel_mode)
-        if mode in ("tool_loop", "shadow"):
-            available, why = agent_loop.tool_loop_available()
-            if available:
-                return await self._run_tool_loop(task, started=started,
-                                                 shadow=(mode == "shadow"))
+        if self._mode_was_rejected:
             emit(task.id, "degradation",
-                 f"tool loop 不可用（{why}），回退 plan adapter",
-                 {"kind": "kernel_mode_fallback", "reason": why, "mode": mode})
-        elif mode != "plan":
-            emit(task.id, "degradation", f"未知 kernel_mode={mode}，回退 plan adapter",
-                 {"kind": "kernel_mode_invalid", "mode": mode})
-        return await self._run_plan_loop(task, started=started)
+                 f"kernel_mode={self._requested_mode} 已随计划表执行一起下线，"
+                 "按 tool_loop 运行",
+                 {"kind": "kernel_mode_removed", "requested": self._requested_mode})
+        available, why = agent_loop.tool_loop_available()
+        if not available:
+            emit(task.id, "degradation", f"tool loop 不可用：{why}",
+                 {"kind": "kernel_tool_loop_unavailable", "reason": why})
+            task.status = "failed"
+            task.finish = TaskFinish(
+                conclusion=f"无法执行：模型侧不满足 tool-use loop 条件（{why}）",
+                completed=[], unfinished=[f"tool_loop:{why}"],
+                reason=f"tool_loop_unavailable:{why}",
+            )
+            task.touch()
+            emit(task.id, "task_end", task.finish.conclusion,
+                 {"reason": task.finish.reason})
+            self._checkpoint(task)
+            return task
+        return await self._run_tool_loop(task, started=started,
+                                        shadow=(mode == "shadow"))
 
     async def _run_tool_loop(self, task: Task, *, started: float,
                              shadow: bool = False) -> Task:
@@ -678,24 +589,68 @@ class AgentKernel:
                 return hit
             return self._gate_hit(task, started)
 
-        def _on_tool_call(name: str, result: dict[str, Any]) -> None:
+        def _on_tool_call(name: str, result: dict[str, Any],
+                          args: Optional[dict[str, Any]] = None) -> None:
             task.usage.tool_calls += 1
             cost = result.get("cost_usd")
             if isinstance(cost, (int, float)):
                 task.usage.cost_usd = round(task.usage.cost_usd + float(cost), 6)
+            elif result.get("cost_unknown"):
+                # 成本未知要计数：金额闸对它是盲的，不能当成 0 悄悄过
+                task.usage.unknown_cost_calls += 1
+            _record_digest(task, name, result)
+            # 录制（A2 回放的数据来源）：M3 之后没有步骤级执行，录制点在这里
+            from clipwright.services.recording import maybe_record
+
+            maybe_record("tool", name, dict(args or result.get("args") or {}), result,
+                         error=result.get("error"))
+            status = str(result.get("status") or "")
+            if status in ("pending_approval", "needs_human_review"):
+                # 等授权/等人审 ≠ 失败：任务暂停，处理完 resume 继续（PRD A1 / §18.10.4）
+                emit(task.id, "approval_request",
+                     f"工具 {name} 等待授权",
+                     {"tool": name, "approval_id": result.get("approval_id"),
+                      "risk": result.get("risk"), "note": result.get("note")},
+                     span="tool")
+                _CONTROL[task.id] = "pause"
+                task.status = "paused"
 
         task.usage.turns += 1
         driver = self.deps.driver or agent_loop.run_loop
-        outcome = await driver(
-            task, context_text=context_text, shadow=shadow,
-            guard=_guard, on_tool_call=_on_tool_call,
-        )
+        try:
+            outcome = await driver(
+                task, context_text=context_text, shadow=shadow,
+                guard=_guard, on_tool_call=_on_tool_call,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 驱动器异常要如实收尾，不许无声结束
+            # 注意：`RecordingMiss` 这类"回放缺数据"必须原样出现在原因里，
+            # 否则会退化成"任务莫名结束"（A2 的红线）。
+            logger.warning("tool loop 驱动器异常 %s: %s", task.id, exc)
+            outcome = {
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "stopped_reason": type(exc).__name__,
+                "failure": {"category": "internal_defect", "retryable": "needs_human",
+                            "blocking_point": f"{type(exc).__name__}: {exc}"[:200],
+                            "evidence": []},
+            }
+        # 模型轮次计入 turns（tool loop 自己知道跑了几轮），回合闸才有意义
+        extra_rounds = int(outcome.get("rounds") or 0)
+        if extra_rounds > 1:
+            task.usage.turns += extra_rounds - 1
         task.usage.wall_sec = round(time.monotonic() - started, 2)
 
         status = str(outcome.get("status") or "error")
         reason = str(outcome.get("stopped_reason") or "")
         if status == "aborted":
-            # 取消/暂停/触闸：保留终态与检查点，可 resume
+            # 取消/暂停/触闸：保留终态与检查点，可 resume。
+            # 事件由 **Kernel** 发（不依赖驱动器实现）：谁拥有闸，谁负责留痕。
+            emit(task.id, "gate_hit", f"触闸：{reason or outcome.get('error') or '已中止'}",
+                 {"reason": reason or outcome.get("error"),
+                  "tool_calls": task.usage.tool_calls,
+                  "usage": task.usage.model_dump()}, span="kernel")
             if task.status not in ("cancelled", "paused"):
                 task.status = "paused"
             self._checkpoint(task)
@@ -724,13 +679,19 @@ class AgentKernel:
             task.touch()
             emit(task.id, "task_end", task.finish.conclusion,
                  {"reason": task.finish.reason, "usage": task.usage.model_dump(),
-                  "tool_calls": len(outcome.get("tool_calls") or [])})
+                  "tool_calls": len(outcome.get("tool_calls") or [])},
+                 run_id=str(finish.get("run_id") or ""), span="kernel")
+            self._record_task_metrics(task, gate_reason)
             self._checkpoint(task)
             return task
 
         failure = outcome.get("failure") or {}
+        category = str(failure.get("category") or "")
         task.finish = TaskFinish(
-            conclusion=f"工具循环失败：{outcome.get('error') or reason}",
+            conclusion=(f"工具循环失败：{outcome.get('error') or reason}"
+                        + (f"（category={category}，"
+                           f"retryable={failure.get('retryable') or 'unknown'}）"
+                           if category else "")),
             completed=[], unfinished=[f"tool_loop:{reason}"],
             reason=f"tool_loop_error:{reason}",
         )
@@ -738,54 +699,18 @@ class AgentKernel:
         task.touch()
         emit(task.id, "task_end", task.finish.conclusion,
              {"reason": task.finish.reason, "failure": failure,
-              "usage": task.usage.model_dump()})
-        self._checkpoint(task)
-        return task
-
-    async def _run_plan_loop(self, task: Task, *, started: float) -> Task:
-        from clipwright.services.task_events import emit
-
-        if task.plan is None:
-            try:
-                await self.plan(task)
-            except Exception as e:  # noqa: BLE001 — 规划崩溃要收尾，不能让协程无声结束
-                logger.warning("规划失败 %s: %s", task.id, e)
-                self._finish(task, reason=f"plan_error:{type(e).__name__}: {e}")
-                return task
-        task.status = "running"
-        task.touch()
-
-        while True:
-            pause_or_cancel = self._control_hit(task)
-            if pause_or_cancel:
-                break
-            gate = self._gate_hit(task, started)
-            if gate:
-                emit(task.id, "gate_hit", f"触闸：{gate}", {"reason": gate,
-                                                           "usage": task.usage.model_dump()})
-                self._finish(task, reason=gate)
-                break
-
-            step = task.plan.next_step()
-            if step is None:
-                self._finish(task, reason="plan_completed")
-                break
-
-            task.usage.turns += 1
-            outcome = await self._run_step(task, step)
-            if task.status == "paused":
-                # 等授权：不 reflect、不推进计划，落检查点后退出主循环
-                self._checkpoint(task)
-                return task
-            await self._after_step(task, step, outcome)
-            if task.terminal:
-                break
-
+              "usage": task.usage.model_dump()}, span="kernel")
+        self._record_task_metrics(task, task.finish.reason)
         self._checkpoint(task)
         return task
 
     async def resume(self, task_id: str) -> Task:
-        """从检查点续跑（已完成的 Step 不重跑）。"""
+        """从检查点续跑。
+
+        M3 之后没有"已完成 Step 不重跑"这回事（没有 Step 了）：续跑就是**重新进
+        tool loop**——模型看着已有产物与报告继续干。幂等由工具面的 `idem_key`
+        与 `agent_run` 的 run 缓存兜住，而不是靠"步骤已完成"标记。
+        """
         task = self.get(task_id)
         if task is None:
             raise KernelError(f"任务不存在: {task_id}")
@@ -795,297 +720,9 @@ class AgentKernel:
         from clipwright.services.task_events import emit
 
         emit(task_id, "task_start", "从检查点续跑",
-             {"last_status": task.status,
-              "done_steps": [s.id for s in (task.plan.steps if task.plan else []) if s.terminal]})
-        if task.plan is None:
-            return await self.run(task)
+             {"last_status": task.status, "usage": task.usage.model_dump()})
         task.status = "running"
         return await self.run(task)
-
-    async def _run_step(self, task: Task, step: PlanStep) -> dict[str, Any]:
-        from clipwright.services.task_events import emit
-
-        step.status = "running"
-        step.attempt += 1
-        emit(task.id, "step_start", f"开始：{step.title or step.capability}",
-             {"step_id": step.id, "capability": step.capability, "attempt": step.attempt,
-              "why": step.why})
-        # 先说话再动手（PRD §16.3）：文本优先用规划器给的 `say`，其次 `why`，最后模板句。
-        _intent_text = _intent_of(step)
-        if _intent_text:
-            emit(task.id, "intent", _intent_text,
-                 {"text": _intent_text, "step_id": step.id, "agent": step.capability})
-        emit(task.id, "tool_call", f"{step.capability}",
-             {"step_id": step.id, "args": step.args, "tier_hint": step.kind})
-
-        started = time.monotonic()
-        try:
-            outcome = await self.deps.executor(task, step)  # type: ignore[misc]
-        except Exception as e:  # noqa: BLE001 — 执行异常不能带崩 Kernel
-            outcome = {"status": "error", "error": f"{type(e).__name__}: {e}"}
-        step.duration_ms = round((time.monotonic() - started) * 1000, 2)
-
-        # 录制放在 Kernel 而不是执行器里：这样任何执行器（真实/回放/测试）都能被录
-        from clipwright.services.recording import maybe_record
-
-        maybe_record(
-            "tool", step.capability, {"step_id": step.id, "args": step.args},
-            outcome, error=outcome.get("error"),
-        )
-
-        status = str(outcome.get("status") or "error")
-        if status in ("pending_approval", "needs_human_review"):
-            # 等授权 / 等人审 ≠ 失败：Step 保持未完成、任务暂停，处理完 resume 继续
-            from clipwright.services.task_events import emit as _emit
-
-            step.status = "pending"
-            step.result_brief = (
-                f"等待授权（{outcome.get('risk')}）"
-                if status == "pending_approval"
-                else "等待人工审核"
-            )
-            emit(task.id, "approval_request",
-                 (f"需要授权：{outcome.get('command') or ''}" if status == "pending_approval"
-                  else f"需要人工审核子代理：{outcome.get('role') or ''}")[:120],
-                 {"step_id": step.id, "approval_id": outcome.get("approval_id"),
-                  "risk": outcome.get("risk"), "reasons": outcome.get("reasons"),
-                  "kind": status})
-            _CONTROL[task.id] = "pause"
-            task.status = "paused"
-            emit(task.id, "step_end", f"暂停等待处理：{step.title or step.capability}",
-                 {"step_id": step.id, "status": "pending"})
-            return outcome
-        step.status = "done" if status in ("ok", "dry_run") else "failed"
-        step.error = outcome.get("error")
-        step.result_brief = _brief(outcome)
-        task.usage.tool_calls += 1
-        # 子代理的失败细节要进观察摘要，主代理才能在下一轮reflect里用上
-        if isinstance(outcome.get("failure"), dict):
-            step.error = str(outcome["failure"].get("blocking_point") or step.error or "")[:300]
-        if isinstance(outcome.get("record"), dict):
-            cost = outcome["record"].get("cost_usd")
-            if isinstance(cost, (int, float)):
-                task.usage.cost_usd += float(cost)
-        # 阶段/子代理能力把成本放在顶层 `cost_usd`（没有 surface record）；
-        # 不认这一份的话，主 Agent 任务的用量里永远看不到阶段开销（A7 就成空话）。
-        _top_cost = outcome.get("cost_usd")
-        if not isinstance(outcome.get("record"), dict) and isinstance(_top_cost, (int, float)):
-            task.usage.cost_usd += float(_top_cost)
-        # 成本未知的 costly 调用要计数：金额闸对"未知成本"是盲的，这件事必须可见
-        if outcome.get("cost_unknown"):
-            task.usage.unknown_cost_calls += 1
-
-        emit(task.id, "tool_result", f"{step.capability} → {status}",
-             {"step_id": step.id, "status": status, "brief": step.result_brief,
-              "error": step.error, "duration_ms": step.duration_ms,
-              "failure": outcome.get("failure")})
-        emit(task.id, "step_end", f"结束：{step.title or step.capability}（{step.status}）",
-             {"step_id": step.id, "status": step.status,
-              "stage": step.args.get("stage") if isinstance(step.args, dict) else None,
-              "summary": _summary_of_outcome(outcome),
-              "cost_usd": outcome.get("cost_usd"),
-              "duration_ms": step.duration_ms})
-        # 阶段性汇报卡（PRD §16.4）：一步一张，紧跟上 step_end
-        _emit_report(task, step, outcome)
-        # 思考内容（PRD §19.4）：本步的模型推理（provider 给了才有），取走即清
-        _emit_thinking(task, step)
-        return outcome
-
-    def _observe(self, task: Task, step: PlanStep, outcome: dict[str, Any]) -> None:
-        """把观察压成**结构化摘要**（A11：关键数值不许丢）。
-
-        修正（PRD §16.10.2 / 审计 P0）：旧实现只留标量与 ≤120 字串，
-        `StageResult.summary`（≤500 字）与 `artifacts` / `failure.evidence` 全被丢掉，
-        于是主 agent 的决策上下文里只剩"阶段名 + status"。这里把它们单独保留、不截断。
-        """
-        facts: dict[str, Any] = {}
-        output = outcome.get("output")
-        if isinstance(output, dict):
-            for key, value in list(output.items())[:12]:
-                if isinstance(value, (int, float, bool)):
-                    facts[key] = value
-                elif isinstance(value, str) and len(value) <= 120:
-                    facts[key] = value
-        # 失败结构也进摘要（主代理据此判断"换人/重试/收尾"）
-        failure = outcome.get("failure")
-        if isinstance(failure, dict):
-            facts["failure_category"] = str(failure.get("category") or "")
-            facts["failure_retryable"] = str(failure.get("retryable") or "")
-            facts["failure_tool_calls"] = int(failure.get("tool_calls") or 0)
-        if isinstance(failure, dict):
-            facts["failure_blocking_point"] = str(failure.get("blocking_point") or "")[:300]
-            facts["failure_needs"] = [
-                f"{n.get('field')}@{n.get('from_stage') or n.get('from')}"
-                for n in (failure.get("needs") or [])[:5] if isinstance(n, dict)
-            ]
-            facts["failure_evidence"] = [
-                str(e.get("text"))[:200] for e in (failure.get("evidence") or [])[:3]
-                if isinstance(e, dict)
-            ]
-        entry = {
-            "step_id": step.id,
-            "capability": step.capability,
-            "status": step.status,
-            "brief": step.result_brief,
-            "facts": facts,
-        }
-        # ← 新增：不截断的"人话"摘要与产物预览（决策真正要读的东西）
-        if isinstance(output, dict):
-            entry["summary"] = str(output.get("summary") or "")[:600]
-            writes = output.get("writes")
-            if isinstance(writes, list):
-                entry["writes"] = [str(w)[:40] for w in writes[:12]]
-            report_path = str(output.get("report_path") or "")
-            if report_path:
-                entry["report_path"] = report_path
-            arts = output.get("artifacts")
-            if isinstance(arts, dict):
-                entry["artifacts"] = {
-                    str(k): _preview_of(v) for k, v in list(arts.items())[:8]
-                }
-        task.context_digest.append(entry)
-        # 工作记忆有界：只保留最近 12 条观察的明细，更早的压成计数（不是丢弃语义）
-        if len(task.context_digest) > 24:
-            head = task.context_digest[: len(task.context_digest) - 12]
-            task.context_digest = (
-                [{"summary": f"更早 {len(head)} 步已压缩", "steps": len(head)}]
-                + task.context_digest[-12:]
-            )
-
-    async def _decide(self, task: Task, step: PlanStep,
-                      outcome: dict[str, Any]) -> dict[str, Any]:
-        """每步一次的决策（PRD §16.10.1）：护栏先行，其余交 LLM。
-
-        - `agent_decide_policy=off` → 只用规则（旧行为，回归基线）；
-        - `always`（**默认**，用户裁定"每步决策都走 llm"）→ 每步都调 LLM 决策；
-        - `auto` → 失败必判；成功的"只读/查询类"步骤按规则 continue（省一轮 token，需显式配置）。
-        """
-        from clipwright.config import settings
-
-        policy = str(getattr(settings, "agent_decide_policy", "always") or "always").lower()
-        ok = str(outcome.get("status") or "") == "ok"
-        failure = outcome.get("failure") or {}
-        retryable = str(failure.get("retryable") or "") if isinstance(failure, dict) else ""
-        category = str(failure.get("category") or "") if isinstance(failure, dict) else ""
-
-        if policy == "off":
-            return await self._reflect(task, step, outcome)
-
-        # 注入的 planner 只实现 plan/reflect（测试替身、回放器）：尊重它的脚本，
-        # 不插规则、不打网络——否则"脚本说 finish、规则说 continue"会互相打架。
-        decide_fn = getattr(self.deps.planner, "decide", None)
-        if decide_fn is None:
-            return await self._reflect(task, step, outcome)
-
-        # 规则护栏（不花模型）
-        if category in ("policy_refused",) or retryable == "permanent":
-            return {"action": "finish",
-                    "say": f"{category or '不可重试'}：不再重试，直接收尾",
-                    "conclusion": f"{step.capability} 未成功：{category}"
-                                  f"｜{str(failure.get('blocking_point') or '')[:160]}｜建议：报告用户"}
-        needs = failure.get("needs") if isinstance(failure, dict) else None
-        if isinstance(needs, list) and needs:
-            from_stages = {str(n.get("from_stage") or n.get("from") or "")
-                           for n in needs if isinstance(n, dict)}
-            remaining = {s.args.get("stage") for s in (task.plan.steps if task.plan else [])
-                         if s.status == "pending"}
-            missing = [s for s in from_stages if s and s not in remaining]
-            if missing:
-                # 缺上游：直接补派，而不是原地重试同一输入（D4）
-                steps = [{"capability": "delegate", "title": f"补派 {s}",
-                          "args": {"stage": s}, "why": f"{step.capability} 需要它产出"}
-                         for s in missing]
-                return {"action": "replan", "steps": steps,
-                        "say": f"{step.capability} 缺输入，先补派 {'、'.join(missing)}",
-                        "why": "needs 指定了缺的上游阶段"}
-
-        if category and retryable == "retry_same" and step.attempt < 2 and policy != "always":
-            return await self._reflect(task, step, outcome)
-
-        if policy != "always" and ok:
-            # 成功的轻量步骤（查询/读取）不必花一轮模型
-            if str(step.kind) in ("tool", "skill") or step.capability.startswith(
-                    ("get_", "list_", "read_", "search_", "media_probe")):
-                return {"action": "continue"}
-
-        # 真决策：装载上下文 → LLM（失败/异常退回规则）
-        try:
-            from clipwright.services import context_loader
-
-            loaded = context_loader.load(
-                task,
-                failure=failure if isinstance(failure, dict) and failure else None,
-                budget_note=(f"回合 {task.usage.turns}/{task.limits.max_turns}，"
-                             f"花费 {task.usage.cost_usd:.3f} USD"),
-            )
-            from clipwright.services.task_events import emit
-
-            emit(task.id, "context_loaded", "决策上下文已装载",
-                 {"sources": loaded["sources"], "trimmed": loaded["trimmed"],
-                  "bytes": loaded["bytes"], "phase": "decide", "step_id": step.id})
-            decision = await self.deps.planner.decide(  # type: ignore[union-attr]
-                task, step, outcome, loaded["text"])
-            _emit_thinking(task, step)   # 决策过程里的推理也进事件流
-            return decision
-        except Exception as exc:  # noqa: BLE001 — 决策失败要退化为规则，而不是卡死
-            from clipwright.services.task_events import emit
-
-            emit(task.id, "degradation", f"LLM 决策失败，退回规则: {type(exc).__name__}",
-                 {"error": str(exc)[:200], "step_id": step.id})
-            return await self._reflect(task, step, outcome)
-
-    async def _reflect(self, task: Task, step: PlanStep,
-                       outcome: dict[str, Any]) -> dict[str, Any]:
-        """调用规划器做 reflect；异常必须被收住（否则任务协程会静默死掉）。"""
-        from clipwright.services.recording import maybe_record
-        from clipwright.services.task_events import emit
-
-        try:
-            decision = await self.deps.planner.reflect(task, step, outcome)  # type: ignore[union-attr]
-        except Exception as e:  # noqa: BLE001 — 回放缺失/规划器崩溃都要可见且可收尾
-            emit(task.id, "degradation", f"reflect 失败: {type(e).__name__}",
-                 {"error": str(e)[:300]})
-            return {"action": "finish",
-                    "conclusion": f"reflect_error:{type(e).__name__}: {e}"}
-        maybe_record("llm", "reflect", {"step_id": step.id, "status": step.status}, decision)
-        return decision
-
-    async def _after_step(self, task: Task, step: PlanStep, outcome: dict[str, Any]) -> None:
-        from clipwright.services.task_events import emit
-
-        # 观察必须用**真实结果**（含 output），否则结构化摘要会变成空壳
-        self._observe(task, step, outcome)
-
-        decision = await self._decide(task, step, outcome)
-        action = str(decision.get("action") or "continue")
-        _say = str(decision.get("say") or "").strip()
-        if _say:
-            # 叙述（PRD §16.3）：让用户看到"为什么这么决定"，而不只是结果
-            emit(task.id, "narration", _say[:200],
-                 {"text": _say[:200], "after_step": step.id, "action": action})
-        if action == "retry":
-            # 主代理判断「这次失败值得再试一次」→ 同一步回到 pending，下一轮重跑
-            step.status = "pending"
-            step.error = None
-            emit(task.id, "replan", f"重试：{step.title or step.capability}",
-                 {"why": str(decision.get("why") or "")[:200], "retry_step": step.id,
-                  "attempt": step.attempt})
-        elif action == "replan":
-            steps = _steps_from(decision, prefix=f"r{len(task.plan.steps) + 1}_")
-            if steps:
-                task.plan.steps.extend(steps)
-                task.plan.version += 1
-                emit(task.id, "replan", f"改计划：新增 {len(steps)} 步",
-                     {"why": str(decision.get("why") or "")[:200],
-                      "steps": [s.model_dump(mode="json") for s in steps]})
-        elif action == "finish":
-            self._finish(task, reason=str(decision.get("conclusion") or "planner_finish"))
-        elif step.status == "failed":
-            # 默认策略：失败即收尾（C2 不做自动重试，避免用户账单不可控）
-            self._finish(task, reason=f"step_failed:{step.capability}")
-        self._checkpoint(task)
-
-    # ── 闸与收尾 ─────────────────────────────────
 
     def _control_hit(self, task: Task) -> Optional[str]:
         command = _CONTROL.get(task.id)
@@ -1111,46 +748,57 @@ class AgentKernel:
         return None
 
     def _finish(self, task: Task, *, reason: str) -> None:
+        """收尾（M3 后不再按 steps 汇总：没有步骤表，只有一次 tool loop 的结果）。
+
+        仍保留"没有可渲染时间线就不许宣称完成"的守门（§4.4 领域不变量）：
+        只要这次任务碰过阶段派发，就必须有 `final_timeline`。
+        """
         from clipwright.services.task_events import emit
 
-        steps = task.plan.steps if task.plan else []
-        # 收尾守门（PRD §18.10.4）：走过阶段派发的任务，没有可渲染时间线就不许宣称完成。
-        # 只对"创作流程"生效（plan 里出现过 run_stage/delegate），避免影响查询类任务。
-        if reason == "plan_completed" and any(
-            s.capability in ("run_stage", "delegate") for s in steps
-        ):
+        completed: list[str] = []
+        unfinished: list[str] = []
+        if reason in ("tool_loop_completed", "plan_completed"):
             try:
                 from clipwright.services import task_blackboard as _bb
 
                 board = _bb.get(task.id)
                 timeline = board.get("final_timeline") or board.get("timeline")
-                if not timeline:
-                    reason = "缺少可渲染时间线（final_timeline 为空）：阶段未产出时间线或未合并"
+                if timeline:
+                    completed.append("final_timeline")
+                else:
+                    reason = "缺少可渲染时间线（final_timeline 为空）"
+                    unfinished.append("final_timeline")
             except Exception:  # noqa: BLE001 — 守门本身失败不阻断收尾
                 pass
-        completed = [s.title or s.capability for s in steps if s.status == "done"]
-        unfinished = [
-            f"{s.title or s.capability}（{s.status}"
-            + (f"：{s.error}" if s.error else "") + "）"
-            for s in steps if s.status not in ("done", "skipped")
-        ]
         task.finish = TaskFinish(
-            conclusion=(
-                f"已完成 {len(completed)} 步"
-                + (f"，未完成 {len(unfinished)} 步" if unfinished else "")
-                + f"；结束原因：{reason}"
-            ),
+            conclusion=f"结束原因：{reason}",
             completed=completed,
             unfinished=unfinished,
             reason=reason,
         )
         if task.status not in ("cancelled", "paused"):
-            task.status = "done" if reason == "plan_completed" else "failed"
+            task.status = "done" if reason in ("tool_loop_completed",
+                                               "plan_completed") else "failed"
         task.touch()
         emit(task.id, "task_end", task.finish.conclusion,
              {"reason": reason, "usage": task.usage.model_dump(),
               "completed": completed, "unfinished": unfinished})
+        self._record_task_metrics(task, reason)
         self._checkpoint(task)
+
+    def _record_task_metrics(self, task: Task, reason: str) -> None:
+        """任务级指标（PRD §2.6.1）：CompletionGate 通过率的分母就在这里。"""
+        try:
+            from clipwright.services import evaluation
+
+            evaluation.record_task(
+                task_id=task.id, status=task.status, reason=reason,
+                turns=task.usage.turns, tool_calls=task.usage.tool_calls,
+                duration_ms=int(float(task.usage.wall_sec or 0) * 1000),
+                cost_usd=task.usage.cost_usd or None,
+            )
+        except Exception as exc:  # noqa: BLE001 — 记账失败不影响收尾
+            logger.warning("任务指标记账失败 %s: %s", task.id, exc)
 
     # ── 检查点 ───────────────────────────────────
 
@@ -1227,9 +875,11 @@ class AgentKernel:
             logger.warning("状态 sidecar 恢复失败 %s: %s", task_id, e)
 
     def _load_checkpoint(self, task_id: str) -> Optional[Task]:
-        """读检查点并做**旧能力名映射**（S0-2）：`run_stage` → `delegate`。
+        """读检查点，并把**旧的计划表痕迹**转成迁移注记（M3）。
 
-        不改的话，改名当天所有在飞任务续跑都会落进 unknown capability。
+        旧检查点里有 `plan.steps` 与 `run_stage`/`spawn_stage` 这类能力名。M3 之后
+        没有任何代码会按 steps 执行，所以它们必须降级成"当初的打算"，而不是留在
+        `pending` 里假装还能续跑——那会让人以为任务有进度，实际一步也没走。
         """
         path = self._checkpoint_path(task_id)
         if not path.exists():
@@ -1237,14 +887,28 @@ class AgentKernel:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             plan = data.get("plan") or {}
-            mapped = 0
-            for step in plan.get("steps") or []:
-                if str(step.get("capability") or "") in ("run_stage", "spawn_stage"):
-                    step["capability"] = "delegate"
-                    mapped += 1
+            steps = plan.get("steps") or []
+            legacy = [s for s in steps
+                      if str(s.get("capability") or "") in ("run_stage", "spawn_stage",
+                                                            "delegate", "spawn_subagent")]
+            if steps:
+                # 保留标题供前端展示"当初打算怎么做"，但打上"仅假设"的标记
+                note = (
+                    f"检查点来自计划表执行时代（{len(steps)} 步）；M3 之后不再按步骤执行，"
+                    "这些只是当初的假设。续跑会重新进入 tool loop。"
+                )
+                data.setdefault("context_digest", []).append(
+                    {"step_id": "migration", "status": "noted",
+                     "facts": {"migrated_steps": len(steps),
+                               "legacy_capabilities": len(legacy),
+                               "note": note}})
+                plan["hypothesis_only"] = True
+                for step in steps:
+                    if str(step.get("status") or "pending") == "pending":
+                        step["status"] = "skipped"
+                data["plan"] = plan
+                logger.info("检查点迁移 %s：%d 步降级为假设", task_id, len(steps))
             task = Task.model_validate(data)
-            if mapped:
-                logger.info("检查点能力名映射：%s 里 %d 步 run_stage → delegate", task_id, mapped)
             # 顺带把黑板/阶段表恢复回来（重启续跑不丢上下文）
             self._restore_state_sidecar(task_id)
             return task
@@ -1257,49 +921,6 @@ class AgentKernel:
         if task is None:
             raise KernelError(f"任务不存在: {task_id}")
         return task
-
-
-def _normalize_decision(data: dict[str, Any] | None) -> dict[str, Any]:
-    """把 LLM 的决策 JSON 归一化（动作、say、steps、conclusion）。"""
-    action = str((data or {}).get("action") or "continue")
-    if action not in ("continue", "replan", "finish"):
-        action = "continue"
-    out: dict[str, Any] = {"action": action, "say": str((data or {}).get("say") or "")[:200]}
-    if action == "replan":
-        out["steps"] = list((data or {}).get("steps") or [])
-        out["why"] = out["say"]
-    if action == "finish":
-        out["conclusion"] = str((data or {}).get("conclusion") or out["say"] or "planner_finish")
-    return out
-
-
-def _summary_of_outcome(outcome: dict[str, Any]) -> str:
-    """能力返回里的"人话摘要"（阶段子代理会带 summary；没有就空）。"""
-    output = outcome.get("output")
-    if isinstance(output, dict):
-        return str(output.get("summary") or "")[:500]
-    return ""
-
-
-def _brief(outcome: dict[str, Any]) -> str:
-    """一步的简短结论。
-
-    **优先用人话摘要**（`StageResult.summary`），而不是键名——旧实现对着 dict 只回
-    "输出字段：stage, status, artifacts…"，主 agent 于是永远看不到"候选素材 0 条"这种
-    关键结论（审计 P0 / PRD §16.10.2）。
-    """
-    if outcome.get("error"):
-        return str(outcome["error"])[:200]
-    summary = _summary_of_outcome(outcome)
-    if summary:
-        return summary[:200]
-    output = outcome.get("output")
-    if isinstance(output, dict):
-        keys = ", ".join(list(output)[:6])
-        return f"输出字段：{keys}" if keys else "无输出字段"
-    if output is None:
-        return "无输出"
-    return str(output)[:200]
 
 
 def _intent_of(step: PlanStep) -> str:

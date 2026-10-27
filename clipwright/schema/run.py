@@ -55,6 +55,10 @@ class AgentResult(BaseModel):
 
     run_id: str
     kind: RunKind
+    # ── 归因字段（PRD §2.4.2）：没有它们，"谁花的钱、谁失败的"只能靠猜 ──
+    task_id: str = ""
+    trace_id: str = ""
+    attempt: int = 1
     stage: str = ""
     role: str = ""
     status: RunStatus
@@ -76,6 +80,7 @@ class AgentResult(BaseModel):
     duration_ms: int = 0
     provider: str = ""
     model: str = ""
+    created_at: float = Field(default_factory=time.time)
     failure: Optional[dict[str, Any]] = None
     error: str = ""
 

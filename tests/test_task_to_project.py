@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from clipwright.schema.task import Plan, PlanStep
 from clipwright.services import agent_kernel as ak
-from clipwright.services import pipeline_capability as pc
+from clipwright.services import task_results as pc
 from clipwright.services import task_events as te
 
 TIMELINE = {
@@ -44,8 +44,11 @@ def _clean(monkeypatch, tmp_path):
     pc.clear_results()
     from clipwright.api import task as api
 
+    from kernel_stubs import ScriptedDriver
+
     monkeypatch.setattr(api, "_kernel", lambda: ak.AgentKernel(ak.KernelDeps(
-        planner=_Planner(), executor=_ok, checkpoint_dir=tmp_path / "tasks")))
+        driver=ScriptedDriver(), planner=_Planner(),
+        checkpoint_dir=tmp_path / "tasks")))
     api.clear_owners()
     # 不落真实项目文件
     from clipwright.api import project as project_api

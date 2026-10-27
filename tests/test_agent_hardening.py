@@ -27,19 +27,6 @@ from clipwright.tool import surface as sf
 # ── 1. 任务端点鉴权 ────────────────────────────────────
 
 
-class _FixedPlanner:
-    async def plan(self, task):  # noqa: ANN001, ANN201
-        return Plan(steps=[PlanStep(id="s1", capability="media_probe",
-                                    args={"input_path": "a.mp4"})])
-
-    async def reflect(self, task, step, outcome):  # noqa: ANN001, ANN201
-        return {"action": "continue"}
-
-
-async def _ok_executor(task, step):  # noqa: ANN001, ANN201
-    return {"status": "ok", "output": {"duration_sec": 1.0}}
-
-
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch, tmp_path):
     ak.reset_kernel_state()
@@ -49,8 +36,16 @@ def _clean(monkeypatch, tmp_path):
 
     from clipwright.api import task as api
 
+    # M3：Kernel 只接受"驱动器"注入（没有 planner/executor 了）。
+    # 归属校验这类用例根本不跑主循环，用一个不产生任何工具调用的驱动器即可。
+    class _NoopDriver:
+        async def __call__(self, task, *, context_text="", shadow=False,  # noqa: ANN001
+                           guard=None, on_tool_call=None):
+            return {"status": "ok", "finish": {"conclusion": "noop"},
+                    "tool_calls": [], "rounds": 1, "stopped_reason": "model_final"}
+
     monkeypatch.setattr(api, "_kernel", lambda: ak.AgentKernel(ak.KernelDeps(
-        planner=_FixedPlanner(), executor=_ok_executor, checkpoint_dir=tmp_path / "tasks",
+        driver=_NoopDriver(), checkpoint_dir=tmp_path / "tasks",
     )))
     api.clear_owners()
     yield
@@ -258,16 +253,22 @@ def test_read_tool_without_cost_is_not_flagged(monkeypatch):
 
 
 def test_kernel_counts_unknown_cost_calls(monkeypatch):
-    class P(_FixedPlanner):
-        async def plan(self, task):  # noqa: ANN001, ANN201
-            return Plan(steps=[PlanStep(id="s1", capability="vision_llm",
-                                        args={"input_path": "a.mp4"})])
+    """成本未知要计数（金额闸对它无效），不许当成 0 悄悄过。
 
-    async def fake_exec(task, step):  # noqa: ANN001
-        return {"status": "ok", "cost_usd": None, "cost_unknown": True,
-                "record": {"cost_usd": None}}
+    M3：注入点从 planner/executor 换成驱动器——脚本化驱动器按模型的行为
+    调用一次 costly 工具并回填"成本未知"。
+    """
+    class _UnknownCostDriver:
+        async def __call__(self, task, *, context_text="", shadow=False,  # noqa: ANN001
+                           guard=None, on_tool_call=None):
+            result = {"status": "ok", "cost_usd": None, "cost_unknown": True}
+            if on_tool_call is not None:
+                on_tool_call("vision_llm", result)
+            return {"status": "ok", "finish": {"conclusion": "ok"},
+                    "tool_calls": [{"tool": "vision_llm"}], "rounds": 2,
+                    "stopped_reason": "model_final"}
 
-    k = ak.AgentKernel(ak.KernelDeps(planner=P(), executor=fake_exec,
+    k = ak.AgentKernel(ak.KernelDeps(driver=_UnknownCostDriver(),
                                      checkpoint_dir=__import__("tempfile").mkdtemp()))
     task = k.create(TaskRequest(topic="x", plan_only=False))
     task = asyncio.run(k.run(task))

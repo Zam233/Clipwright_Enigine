@@ -35,9 +35,11 @@ def _clean(monkeypatch, tmp_path):
     ak.reset_kernel_state()
     te.clear()
 
-    def factory():  # 确定性 Kernel：假规划器 + 假执行器 + 临时检查点目录
+    def factory():  # M3：Kernel 只接受驱动器注入（没有 planner/executor 了）
+        from kernel_stubs import ScriptedDriver
+
         return ak.AgentKernel(ak.KernelDeps(
-            planner=FixedPlanner(), executor=ok_executor,
+            driver=ScriptedDriver(), planner=FixedPlanner(),
             checkpoint_dir=tmp_path / "tasks",
         ))
 

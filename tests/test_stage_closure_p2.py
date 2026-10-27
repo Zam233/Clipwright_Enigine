@@ -95,19 +95,6 @@ def _task():
     return _T()
 
 
-def test_run_pipeline_capability_refuses_when_disabled(monkeypatch) -> None:
-    from clipwright.services import pipeline_capability
-    from clipwright.schema.task import PlanStep
-
-    monkeypatch.setattr(settings, "agent_mode", "on")
-    monkeypatch.setattr(settings, "pipeline_enabled", False)
-    out = asyncio.run(pipeline_capability.run(
-        _task(), PlanStep(id="p1", capability="run_pipeline", args={})))
-    assert out["status"] == "refused"
-    assert "run_stage" in out["error"]
-    assert out["failure"]["category"] == "policy_refused"
-
-
 def test_run_async_endpoint_returns_410_when_pipeline_disabled(monkeypatch) -> None:
     from clipwright.api import pipeline as pipeline_api
 

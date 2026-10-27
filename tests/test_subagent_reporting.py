@@ -177,97 +177,108 @@ def test_spawn_rejection_has_failure_block(monkeypatch):
 # ── 3. 主代理据失败再做判断（retry vs finish）────────────────
 
 
-class _RecordingPlanner:
-    """记下 reflect 收到的 outcome，用来证明失败信息真的到了主代理手里。"""
+class _ResultDriver:
+    """按给定结果序列"调用一次 delegate_agent"，用来观察 Kernel 侧语义。"""
 
-    def __init__(self, steps):  # noqa: ANN001
-        self.steps = steps
-        self.outcomes: list[dict] = []
+    def __init__(self, results: list[dict]) -> None:
+        self.results = results
+        self.executed: list[dict] = []
 
-    async def plan(self, task):  # noqa: ANN001, ANN201
-        return Plan(steps=[s.model_copy(deep=True) for s in self.steps])
+    async def __call__(self, task, *, context_text="", shadow=False,  # noqa: ANN001
+                       guard=None, on_tool_call=None):  # noqa: ANN001
+        for result in self.results:
+            if guard is not None:
+                hit = guard()
+                if hit:
+                    return {"status": "aborted", "stopped_reason": str(hit),
+                            "tool_calls": [{"tool": "delegate_agent"}]}
+            self.executed.append(result)
+            if on_tool_call is not None:
+                on_tool_call("delegate_agent", result, {"stage": "material"})
+            if str(result.get("status") or "") in ("pending_approval",
+                                                   "needs_human_review"):
+                return {"status": "aborted", "stopped_reason": "pause",
+                        "tool_calls": [{"tool": "delegate_agent"}]}
+        last = self.results[-1] if self.results else {}
+        if str(last.get("status") or "ok") not in ("ok", ""):
+            return {"status": "error", "error": str(last.get("error") or "工具失败"),
+                    "stopped_reason": "tool_failed",
+                    "failure": last.get("failure") or {"category": "tool_failed",
+                                                       "retryable": "permanent",
+                                                       "blocking_point": "",
+                                                       "evidence": []},
+                    "tool_calls": [{"tool": "delegate_agent"}]}
+        return {"status": "ok", "finish": {"conclusion": "完成"},
+                "tool_calls": [{"tool": "delegate_agent"}], "rounds": 2,
+                "stopped_reason": "model_final"}
 
-    async def reflect(self, task, step, outcome):  # noqa: ANN001, ANN201
-        self.outcomes.append(dict(outcome))
-        return await ak.LLMPlanner().reflect(task, step, outcome)
 
-
-def _kernel(tmp_path, planner, executor):
-    return ak.AgentKernel(ak.KernelDeps(planner=planner, executor=executor,
+def _kernel(tmp_path, driver):
+    return ak.AgentKernel(ak.KernelDeps(driver=driver,
                                         checkpoint_dir=tmp_path / "tasks"))
 
 
-def test_retryable_failure_is_retried_once(tmp_path):
-    """可重试的失败 → 主代理自动再试一次，第二次成功则任务完成。"""
-    attempts = {"n": 0}
+def test_retryable_failure_is_surfaced_for_model_to_retry(tmp_path):
+    """可重试失败：Kernel **不**自己重试（M3 起由模型决定换参数/换人重来），
 
-    async def flaky(task, step):  # noqa: ANN001, ANN201
-        attempts["n"] += 1
-        if attempts["n"] == 1:
-            return {"status": "error", "error": "429 限流",
-                    "failure": {"category": "external_unavailable",
-                                "retryable": "retry_same",
-                                "evidence": [{"kind": "error", "text": "429"}]}}
-        return {"status": "ok", "output": {"conclusion": "看到了"}}
-
-    planner = _RecordingPlanner([PlanStep(id="s1", capability="spawn_subagent")])
-    k = _kernel(tmp_path, planner, flaky)
+    但必须把 `retryable=retry_same` 与分类如实交到下一轮上下文里，
+    否则模型只能瞎猜。
+    """
+    driver = _ResultDriver([{
+        "status": "error", "error": "429 限流",
+        "failure": {"category": "external_unavailable", "retryable": "retry_same",
+                    "blocking_point": "429", "evidence": [{"kind": "error", "text": "429"}]},
+    }])
+    k = _kernel(tmp_path, driver)
     task = k.create(TaskRequest(topic="x", plan_only=False))
     task = asyncio.run(k.run(task))
 
-    assert attempts["n"] == 2, "第一次失败应触发重试"
-    assert task.status == "done"
-    assert task.plan.steps[0].attempt == 2
-    assert any(e.type == "replan" for e in te.events(task.id))
+    facts = task.context_digest[-1]["facts"]
+    assert facts.get("failure_category") == "external_unavailable"
+    assert facts.get("failure_retryable") == "retry_same"
+    assert task.status == "failed"
 
 
 def test_permanent_failure_finishes_with_category(tmp_path):
-    async def broken(task, step):  # noqa: ANN001, ANN201
-        return {"status": "error", "error": "权限不足",
-                "failure": {"category": "input_insufficient", "retryable": "needs_human",
-                            "evidence": [{"kind": "error", "text": "401 未授权"}]}}
-
-    planner = _RecordingPlanner([PlanStep(id="s1", capability="spawn_subagent")])
-    k = _kernel(tmp_path, planner, broken)
+    driver = _ResultDriver([{
+        "status": "error", "error": "权限不足",
+        "failure": {"category": "input_insufficient", "retryable": "needs_human",
+                    "blocking_point": "401 未授权",
+                    "evidence": [{"kind": "error", "text": "401 未授权"}]},
+    }])
+    k = _kernel(tmp_path, driver)
     task = k.create(TaskRequest(topic="x", plan_only=False))
     task = asyncio.run(k.run(task))
 
     assert task.status == "failed"
-    assert "input_insufficient" in task.finish.reason
-    assert "401" in task.finish.reason
+    assert "input_insufficient" in task.finish.conclusion
+    assert "needs_human" in task.finish.conclusion
 
 
 def test_needs_human_review_pauses_task(tmp_path):
-    async def waiting(task, step):  # noqa: ANN001, ANN201
-        return {"status": "needs_human_review", "approval_id": "w_9",
-                "risk": "high", "reasons": ["会删除目录"], "role": "运维核查员"}
-
-    planner = _RecordingPlanner([
-        PlanStep(id="s1", capability="spawn_subagent", args={"role": "运维核查员"}),
-        PlanStep(id="s2", capability="media_probe", args={"input_path": "a.mp4"}),
-    ])
-    k = _kernel(tmp_path, planner, waiting)
+    driver = _ResultDriver([{
+        "status": "needs_human_review", "approval_id": "w_9", "risk": "high",
+        "reasons": ["会删除目录"], "role": "运维核查员",
+    }])
+    k = _kernel(tmp_path, driver)
     task = k.create(TaskRequest(topic="x", plan_only=False))
     task = asyncio.run(k.run(task))
 
     assert task.status == "paused"
-    assert task.plan.steps[0].status == "pending", "等审核不算完成"
-    assert task.plan.steps[1].status == "pending", "暂停后不推进下一步"
     assert any(e.type == "approval_request" for e in te.events(task.id))
-    assert task.finish is None
+    assert task.finish is None, "等审核不是失败，不许写终态"
 
 
 def test_failure_evidence_reaches_digest(tmp_path):
-    async def broken(task, step):  # noqa: ANN001, ANN201
-        return {"status": "error", "error": "工具失败",
-                "failure": {"category": "tool_failed", "retryable": "permanent",
-                            "evidence": [], "tool_calls": 3}}
-
-    planner = _RecordingPlanner([PlanStep(id="s1", capability="spawn_subagent")])
-    k = _kernel(tmp_path, planner, broken)
+    driver = _ResultDriver([{
+        "status": "error", "error": "工具失败",
+        "failure": {"category": "tool_failed", "retryable": "permanent",
+                    "evidence": [], "tool_calls": 3},
+    }])
+    k = _kernel(tmp_path, driver)
     task = k.create(TaskRequest(topic="x", plan_only=False))
     task = asyncio.run(k.run(task))
 
-    facts = task.context_digest[0]["facts"]
+    facts = task.context_digest[-1]["facts"]
     assert facts.get("failure_category") == "tool_failed"
     assert facts.get("failure_tool_calls") == 3

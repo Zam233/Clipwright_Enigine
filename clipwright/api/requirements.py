@@ -406,7 +406,7 @@ async def _proceed_as_task(*, session: dict, req: "ProceedRequest", request: Req
 
     - 先确保工作区存在（后面的 material 步骤直接从工作区索引检索）；
     - Task 的 extra 带上 workspace_root / session_id / production_plan，执行器
-      （default_executor → run_pipeline）就能拿到完整上下文；
+      （执行器 → 老管线）就能拿到完整上下文；
     - 返回体保留 ``pipeline_id``（值 = task id），前端老代码不会立刻炸。
     """
     from clipwright.api.task import _register_owner, _schedule

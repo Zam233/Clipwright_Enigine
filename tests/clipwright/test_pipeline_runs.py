@@ -187,59 +187,6 @@ def _retry_request() -> dict:
     }
 
 
-def test_retry_unknown_pipeline_404() -> None:
-    resp = client.post("/api/pipeline/retry/pl_ghost/material")
-    assert resp.status_code == 404
-
-
-def test_retry_agent_not_found_400() -> None:
-    from clipwright.api.pipeline import _pipeline_results, add_event, create_trace
-    create_trace("pl_retry_nf")
-    add_event("pl_retry_nf", "system", "info", "started")
-    _pipeline_results["pl_retry_nf"] = {
-        "pipeline_id": "pl_retry_nf",
-        "request": _retry_request(),
-        "steps": [
-            {
-                "agent_name": "structure",
-                "status": "completed",
-                "result": {"scenes": [{"title": "s"}]},
-                "error": None,
-            },
-        ],
-    }
-    try:
-        resp = client.post("/api/pipeline/retry/pl_retry_nf/nonexistent")
-        assert resp.status_code == 400
-    finally:
-        _pipeline_results.pop("pl_retry_nf", None)
-        from clipwright.services.trace import clear as _clear_trace
-        _clear_trace("pl_retry_nf")
-
-
-def test_retry_no_preceding_result_400() -> None:
-    """目标 agent 之前无成功结果 → 明确 400（而非全量重跑）。"""
-    from clipwright.api.pipeline import _pipeline_results, add_event, create_trace
-    create_trace("pl_retry_nopre")
-    add_event("pl_retry_nopre", "system", "info", "started")
-    _pipeline_results["pl_retry_nopre"] = {
-        "pipeline_id": "pl_retry_nopre",
-        "request": _retry_request(),
-        "steps": [
-            {"agent_name": "edit", "status": "failed", "result": None, "error": "boom"},
-        ],
-    }
-    try:
-        resp = client.post("/api/pipeline/retry/pl_retry_nopre/edit")
-        assert resp.status_code == 400
-    finally:
-        _pipeline_results.pop("pl_retry_nopre", None)
-        from clipwright.services.trace import clear as _clear_trace
-        _clear_trace("pl_retry_nopre")
-
-
-# ── B4: regenerate-scene 端点已移除 ──
-
 def test_regenerate_scene_endpoint_removed() -> None:
     """B4 处置：regenerate-scene 端点移除（原按索引替换、前端零调用），请求应 404。"""
     resp = client.post("/api/pipeline/regenerate-scene/pl_any/0")

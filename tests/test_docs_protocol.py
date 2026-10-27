@@ -220,25 +220,28 @@ def test_context_loader_trims_when_budget_tiny(tmp_path, monkeypatch) -> None:
 # ── Kernel 的观察/意图（§16.10.2）────────────────────────
 
 
-def test_brief_prefers_summary_and_observe_keeps_it() -> None:
-    from clipwright.schema.task import PlanStep, Task
-    from clipwright.services.agent_kernel import AgentKernel, _brief
+def test_brief_prefers_summary_and_digest_keeps_facts() -> None:
+    """摘要优先的口径从 Kernel 搬到了 tool loop（`_brief_of`），不变量不变：
+
+    工具结果里有 `summary` 时就用它，而不是把整个 output dump 给模型；
+    结构化事实（数值/短路径）必须进 context_digest，压缩后仍在。
+    """
+    from clipwright.schema.task import Task
+    from clipwright.services.agent_loop import _brief_of
+    from clipwright.services.agent_kernel import _record_digest
 
     outcome = {"status": "ok",
-               "output": {"summary": "候选素材 0 条", "writes": ["candidate_clips"],
-                          "artifacts": {"candidate_clips": {"artifact": "art_1", "preview": "0 条"}}},
+               "output": {"summary": "候选素材 20 条", "frames": 300,
+                          "writes": ["candidate_clips"]},
                "cost_usd": 0.01}
-    assert _brief(outcome) == "候选素材 0 条"
+    assert _brief_of(outcome) == "候选素材 20 条"
 
     task = Task(id="t_obs", request=TaskRequest(topic="x", plan_only=False))
-    step = PlanStep(id="p1", capability="delegate", args={"stage": "material"})
-    step.status = "done"
-    kernel = AgentKernel()
-    kernel._observe(task, step, outcome)  # noqa: SLF001 — 直接验证观察保留 summary/artifacts
+    _record_digest(task, "delegate_agent", outcome)
     entry = task.context_digest[-1]
-    assert entry["summary"] == "候选素材 0 条"
-    assert entry["artifacts"]["candidate_clips"] == "0 条"
-    assert entry["writes"] == ["candidate_clips"]
+    assert entry["step_id"] == "delegate_agent"
+    assert entry["facts"]["frames"] == 300
+    assert entry["facts"]["summary"] == "候选素材 20 条"
 
 
 def test_intent_text_prefers_say() -> None:

@@ -156,6 +156,12 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
         if cached is not None:
             return cached
 
+    _emit_run(task, "agent_run_start", f"派出 {spec.kind}/{spec.stage or spec.role}",
+              detail={"run_id": run_id, "kind": spec.kind, "stage": spec.stage,
+                      "role": spec.role, "brief": spec.brief[:200],
+                      "inputs": list((spec.inputs or {}).keys())},
+              run_id=run_id, span="agent", trace_id=trace_id)
+
     # 拓扑：星型，深度固定 1（子 agent 不得再派）
     if int(spec.depth or 1) > 1:
         result = AgentResult(
@@ -200,6 +206,13 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
     result.duration_ms = result.duration_ms or int((time.monotonic() - started) * 1000)
     _record(result)
     _after_run(result, spec, task)
+    _emit_run(task, "agent_run_end",
+              f"{spec.kind}/{result.stage or result.role} → {result.status}",
+              detail={"run_id": result.run_id, "status": result.status,
+                      "summary": result.summary[:300], "cost_usd": result.cost_usd,
+                      "report_path": result.report_path,
+                      "failure": (result.failure or {}).get("category")},
+              run_id=result.run_id, span="agent", trace_id=trace_id)
     if spec.idem_key and result.status in ("ok", "degraded"):
         if len(_IDEM) >= _MAX_IDEM:
             _IDEM.pop(next(iter(_IDEM)))
@@ -212,6 +225,18 @@ async def _dispatch(spec: RunSpec, task: Any, run_id: str,
     if spec.kind == "stage":
         return await _run_stage(spec, task, run_id, trace_id)
     return await _run_research(spec, task, run_id, trace_id)
+
+
+def _emit_run(task: Any, event_type: str, message: str, *, detail: dict[str, Any],
+              run_id: str, span: str, trace_id: str) -> None:
+    """统一的 run 事件（阶段与调研同一组 `agent_run_*`，前端只需认这一种）。"""
+    try:
+        from clipwright.services.task_events import emit
+
+        emit(str(getattr(task, "id", "") or trace_id), event_type, message, detail,
+             trace_id=trace_id, run_id=run_id, span=span)
+    except Exception as exc:  # noqa: BLE001 — 事件写失败不能带崩派发
+        logger.warning("agent_run 事件写入失败 %s: %s", event_type, exc)
 
 
 def _after_run(result: AgentResult, spec: RunSpec, task: Any) -> None:
@@ -269,11 +294,17 @@ async def _run_stage(spec: RunSpec, task: Any, run_id: str, trace_id: str) -> Ag
     sr = await stage_subagent.run_stage(task, stage_spec)
     failure = sr.failure.model_dump(mode="json") if sr.failure else None
     return AgentResult(
-        run_id=run_id, kind="stage", stage=sr.stage, role=spec.role or sr.stage,
+        run_id=run_id, kind="stage",
+        task_id=str(getattr(task, "id", "") or ""), trace_id=trace_id,
+        stage=sr.stage, role=spec.role or sr.stage,
         status=_map_status(sr.status),
         summary=sr.summary, outputs=dict(sr.artifacts or {}), writes=list(sr.writes or []),
         report_path=sr.report_path, report_seq=sr.report_seq,
         issues=list(sr.issues or []),
+        # 归因（PRD §2.4.2）：阶段侧的 token 与工具轨迹由 StageResult 带上来；
+        # 拿不到就保持 0/空 + cost_unknown，不伪造数字。
+        tokens=int(getattr(sr, "tokens", 0) or 0),
+        tool_calls=list(getattr(sr, "tool_calls", None) or []),
         cost_usd=sr.cost_usd, cost_unknown=sr.cost_unknown,
         duration_ms=sr.duration_ms, provider=sr.provider, model=sr.model,
         failure=failure, error=sr.error,
@@ -308,7 +339,9 @@ async def _run_research(spec: RunSpec, task: Any, run_id: str, trace_id: str) ->
     review = dict(res.get("review") or {})
     if raw == "pending_review":
         return AgentResult(
-            run_id=run_id, kind="research", role=spec.role, status="needs",
+            run_id=run_id, kind="research",
+            task_id=str(getattr(task, "id", "") or ""), trace_id=trace_id,
+            role=spec.role, status="needs",
             summary="等待人工审核（带执行权限的子代理必须先过审核门）",
             outputs={"review": review, "worker_id": res.get("worker_id")},
             tokens=int(res.get("tokens") or 0),
@@ -321,7 +354,9 @@ async def _run_research(spec: RunSpec, task: Any, run_id: str, trace_id: str) ->
         )
     status = {"done": "ok", "failed": "failed"}.get(raw, "failed")
     return AgentResult(
-        run_id=run_id, kind="research", role=spec.role, status=status,  # type: ignore[arg-type]
+        run_id=run_id, kind="research",
+        task_id=str(getattr(task, "id", "") or ""), trace_id=trace_id,
+        role=spec.role, status=status,  # type: ignore[arg-type]
         summary=str(res.get("output") or "")[:800],
         outputs={"conclusion": str(res.get("output") or "")[:2000],
                  "subagent_id": str(res.get("subagent_id") or "")},

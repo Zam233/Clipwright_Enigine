@@ -1,14 +1,14 @@
-"""C5：记忆与上下文（插话生效 / 压缩不丢数值 / 子代理能力）。
+"""C5：主 agent 的上下文与插话（M3 后的形态）。
 
-三条对应 PRD：
-- Q5：摘要优先，但**关键数值必须结构化保留**；
-- US2/A12：agent 能派只读子代理去看现场，但**不能自己开执行权限**；
-- 用户插话必须进规划上下文（否则"插了等于没插"）。
+M3 删掉了计划表执行，所以这里改成**驱动器**注入：脚本化驱动器复现"模型调了哪些工具"。
+覆盖的不变量不变：插话必须能进上下文并被消费、上下文压缩要有界且关键数值不丢、
+子代理能力的安全边界不许放宽。
 """
 
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import pytest
 
@@ -19,23 +19,33 @@ from clipwright.services import subagent_capability as sub
 from clipwright.services import task_events as te
 
 
+class ScriptedDriver:
+    def __init__(self, calls: list[tuple[str, dict[str, Any]]] | None = None) -> None:
+        self.calls = calls or [("media_probe", {"input_path": "a.mp4"})]
+        self.executed: list[tuple[str, dict[str, Any]]] = []
+
+    async def __call__(self, task, *, context_text="", shadow=False,  # noqa: ANN001
+                       guard=None, on_tool_call=None) -> dict[str, Any]:
+        for name, args in self.calls:
+            result = {"status": "ok",
+                      "output": {"duration_sec": 12.5, "frames": 300}}
+            self.executed.append((name, args))
+            if on_tool_call is not None:
+                on_tool_call(name, result)
+        return {"status": "ok", "finish": {"conclusion": "ok"},
+                "tool_calls": [{"tool": c[0]} for c in self.executed],
+                "rounds": len(self.executed) + 1, "stopped_reason": "model_final"}
+
+
 class RecordingPlanner:
-    """记录每次规划时看到的 hints（用来证明插话真的进了上下文）。"""
+    """替代旧的 fake planner：只记录"这一版假设看到了哪些插话"。"""
 
     def __init__(self) -> None:
         self.seen_hints: list[list[str]] = []
 
-    async def plan(self, task):  # noqa: ANN001, ANN201
+    async def __call__(self, self_planner, task):  # noqa: ANN001, ANN002
         self.seen_hints.append(list(task.hints))
-        return Plan(steps=[PlanStep(id="s1", capability="media_probe",
-                                    args={"input_path": "a.mp4"})])
-
-    async def reflect(self, task, step, outcome):  # noqa: ANN001, ANN201
-        return {"action": "continue"}
-
-
-async def ok_executor(task, step):  # noqa: ANN001, ANN201
-    return {"status": "ok", "output": {"duration_sec": 12.5, "frames": 300}}
+        return Plan(steps=[PlanStep(id="p1", capability="media_probe")])
 
 
 @pytest.fixture(autouse=True)
@@ -48,40 +58,47 @@ def _clean(monkeypatch):
     te.clear()
 
 
-def _kernel(tmp_path, planner=None):
+def _kernel(tmp_path, driver=None) -> ak.AgentKernel:
     return ak.AgentKernel(ak.KernelDeps(
-        planner=planner or RecordingPlanner(),
-        executor=ok_executor,
+        driver=driver or ScriptedDriver(),
         checkpoint_dir=tmp_path / "tasks",
     ))
 
 
-# ── 插话进上下文 ────────────────────────────────────────
+# ── 插话进上下文 ────────────────────────────────
 
 
-def test_inject_reaches_planner_and_is_consumed(tmp_path):
-    planner = RecordingPlanner()
-    k = _kernel(tmp_path, planner)
+def test_inject_reaches_hypothesis_and_is_consumed(tmp_path, monkeypatch):
+    recorder = RecordingPlanner()
+    seen: list[list[str]] = []
+
+    async def fake_plan(self, task):  # noqa: ANN001, ARG001
+        seen.append(list(task.hints))
+        return Plan(steps=[PlanStep(id="p1", capability="media_probe")])
+
+    monkeypatch.setattr(ak.LLMPlanner, "plan", fake_plan)
+    k = _kernel(tmp_path)
     task = k.create(TaskRequest(topic="县域经济"))
 
     k.inject(task.id, "第 3 段换成实拍")
     assert task.hints == ["第 3 段换成实拍"]
 
     asyncio.run(k.plan(task))
-    assert planner.seen_hints[0] == ["第 3 段换成实拍"], "插话必须进规划上下文"
+    assert seen[0] == ["第 3 段换成实拍"], "插话必须进上下文"
     # 消费后清空：否则会一直挂着，让用户以为没被听到
     assert task.hints == []
+    assert recorder.seen_hints == []
 
 
 def test_inject_persists_through_checkpoint(tmp_path):
     k = _kernel(tmp_path)
     task = k.create(TaskRequest(topic="x"))
-    k.inject(task.id, "别用配音，改用字幕")
+    k.inject(task.id, "别用配音，改字幕")
 
     ak.reset_kernel_state()
     reloaded = _kernel(tmp_path).get(task.id)
     assert reloaded is not None
-    assert reloaded.hints == ["别用配音，改用字幕"], "插话要能跨重启存活"
+    assert reloaded.hints == ["别用配音，改字幕"], "插话要能跨重启存活"
 
 
 def test_inject_event_counts_pending(tmp_path):
@@ -94,17 +111,14 @@ def test_inject_event_counts_pending(tmp_path):
     assert inject_events[-1].detail["pending_hints"] == 2
 
 
-# ── 上下文压缩（Q5）───────────────────────────────────
+# ── 上下文压缩（Q5）───────────────────────────────
 
 
-def test_context_bundle_keeps_numbers_and_skips_pending(tmp_path):
+def test_context_bundle_keeps_numbers(tmp_path):
     k = _kernel(tmp_path)
     task = k.create(TaskRequest(topic="x", plan_only=False))
     asyncio.run(k.run(task))
     bundle = ak.context_bundle(task)
-    # 已完成步骤进摘要
-    assert "media_probe" in bundle
-    # 关键数值结构化保留
     assert "duration_sec=12.5" in bundle
     assert "frames=300" in bundle
 
@@ -119,31 +133,29 @@ def test_context_bundle_is_bounded_for_long_tasks(tmp_path):
     ]
     bundle = ak.context_bundle(task, max_chars=1200)
     assert len(bundle) <= 1200, "上下文必须有上界，否则长任务会因超限失败"
-    # 但最近的数值仍在（不能压成一句"更早若干步"就完事）
-    assert "duration_sec=199" in bundle
+    assert "duration_sec=199" in bundle, "但最近的数值仍要在"
 
 
-def test_digest_compression_keeps_recent_facts(tmp_path):
-    """跑满 24 步后 digest 会被压缩，但最近的数值仍在。"""
-    steps = [PlanStep(id=f"s{i}", capability="media_probe",
-                      args={"input_path": f"{i}.mp4"}) for i in range(30)]
-    planner = RecordingPlanner()
-
-    async def plan(task):  # noqa: ANN001, ANN202
-        return Plan(steps=[s.model_copy(deep=True) for s in steps])
-
-    planner.plan = plan  # type: ignore[method-assign]
-    k = _kernel(tmp_path, planner)
+def test_digest_is_bounded(tmp_path):
+    """跑满 30 次工具调用后 digest 会被截断，但最近的数值仍在。"""
+    calls = [("media_probe", {"input_path": f"{i}.mp4"}) for i in range(30)]
+    k = _kernel(tmp_path, driver=ScriptedDriver(calls))
     task = k.create(TaskRequest(topic="x", plan_only=False))
-    task.limits.max_turns = 30
     task = asyncio.run(k.run(task))
 
-    assert len(task.context_digest) <= 25, "工作记忆必须有界"
+    assert len(task.context_digest) <= ak._MAX_DIGEST + 1, "工作记忆必须有界"
     last = task.context_digest[-1]
     assert last["facts"].get("frames") == 300
 
 
-# ── 子代理能力（A12）────────────────────────────────────
+# ── 子代理能力（A12）───────────────────────────────
+
+
+def _kernel_result():
+    """一个最小 Task（供能力单测用，不走 Kernel 主循环）。"""
+    from clipwright.schema.task import Task
+
+    return Task(id="task_c5", request=TaskRequest(topic="县域经济"))
 
 
 def test_subagent_capability_refuses_when_mode_off(monkeypatch):
@@ -154,7 +166,7 @@ def test_subagent_capability_refuses_when_mode_off(monkeypatch):
     assert out["status"] == "refused"
 
 
-def test_subagent_capability_refuses_exec_tools(monkeypatch):
+def test_subagent_capability_refuses_exec_tools():
     """最重要的一条：Kernel 不能自己给子代理开 shell 权限。"""
     task = _kernel_result()
     out = asyncio.run(sub.run(task, PlanStep(
@@ -166,7 +178,7 @@ def test_subagent_capability_refuses_exec_tools(monkeypatch):
     assert "两级" in out["error"] or "审核" in out["error"]
 
 
-def test_subagent_capability_requires_role(monkeypatch):
+def test_subagent_capability_requires_role():
     task = _kernel_result()
     out = asyncio.run(sub.run(task, PlanStep(id="s1", capability="spawn_subagent",
                                             args={"tools": ["read_file"]})))
@@ -198,39 +210,34 @@ def test_subagent_capability_spawns_readonly_worker(monkeypatch):
     assert not set(captured["tools"]) & sub.EXEC_TOOLS
 
 
-def test_default_executor_routes_spawn_capability(monkeypatch, tmp_path):
-    """M2：`spawn_subagent` 现在按别名走 `research_agent`（统一 AgentRun），
+def test_spawn_capability_no_longer_routed_by_executor(monkeypatch, tmp_path):
+    """M3：能力名别名表随执行器一起删除了——旧名不再被"翻译"后执行。
 
-    不再直接调用 `subagent_capability.run`——两层适配已被一条路取代。
+    旧检查点会被迁移成假设注记（见下一条用例），不会再有人替它执行。
     """
-    from clipwright.schema.run import AgentResult
-    from clipwright.services import agent_run
-
-    seen: list[str] = []
-
-    async def fake_agent_run(spec, task):  # noqa: ANN001
-        seen.append(f"{spec.kind}:{spec.role}")
-        return AgentResult(run_id="run_c5", kind="research", role=spec.role,
-                           status="ok", summary="核查完成",
-                           outputs={"subagent_id": "sa_9"})
-
-    monkeypatch.setattr(agent_run, "run", fake_agent_run)
-
-    class P(RecordingPlanner):
-        async def plan(self, task):  # noqa: ANN001, ANN201
-            return Plan(steps=[PlanStep(id="s1", capability="spawn_subagent",
-                                        kind="subagent", args={"role": "核查员"})])
-
-    k = ak.AgentKernel(ak.KernelDeps(planner=P(), executor=ak.default_executor,
-                                     checkpoint_dir=tmp_path / "tasks"))
-    task = k.create(TaskRequest(topic="x", plan_only=False))
-    task = asyncio.run(k.run(task))
-    assert seen == ["research:核查员"]
-    assert task.status == "done"
+    assert not hasattr(ak, "_TOOL_ALIAS")
+    assert not hasattr(ak, "default_executor")
 
 
-def _kernel_result():
-    """一个最小 Task（供能力单测用，不走 Kernel 主循环）。"""
+def test_legacy_checkpoint_steps_become_hypothesis_only(tmp_path):
+    """旧检查点（计划表时代）读回来必须标成"仅假设"，不能假装还有进度。"""
+    import json
+
     from clipwright.schema.task import Task
 
-    return Task(id="task_c5", request=TaskRequest(topic="县域经济"))
+    k = _kernel(tmp_path)
+    task = Task(id="task_old", request=TaskRequest(topic="x"),
+                plan=Plan(steps=[
+                    PlanStep(id="p1", capability="run_stage", args={"stage": "edit"}),
+                    PlanStep(id="p2", capability="delegate"),
+                ]))
+    path = tmp_path / "tasks" / "task_old.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(task.model_dump(mode="json"), ensure_ascii=False),
+                    encoding="utf-8")
+
+    loaded = k.get("task_old")
+    assert loaded is not None
+    assert loaded.plan is not None and loaded.plan.hypothesis_only is True
+    assert all(s.status == "skipped" for s in loaded.plan.steps)
+    assert any(e["step_id"] == "migration" for e in loaded.context_digest)

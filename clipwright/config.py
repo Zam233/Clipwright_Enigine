@@ -116,7 +116,7 @@ class Settings(BaseSettings):
     # 主循环形态（modern-agent PRD §2.2 / §5.2 M1，PRD 原名 kernel_mode）：
     #   tool_loop = 原生 tool-use loop（模型拿 surface.schemas() 自主调用工具，默认）
     #   shadow    = 跑 tool_loop 但只记录不产生副作用，用于与 plan 对比（§5.2）
-    #   plan      = 旧的计划表执行（`_run_step` adapter，仅回滚用；M3 之后仅测试可达）
+    #   （旧的 plan 形态已在 M3 删除：传它只发降级告警，然后按 tool_loop 运行）
     kernel_mode: Literal["plan", "tool_loop", "shadow"] = "tool_loop"
     # tool loop 的模型回合 / 工具调用上限（0 = 沿用 TaskLimits）
     agent_loop_max_turns: int = 12

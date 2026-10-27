@@ -210,6 +210,10 @@ async def run_loop(task: Any, *, context_text: str = "",
                       "status": result.get("status"), "duration_ms": elapsed})
         if on_tool_call is not None:
             try:
+                # 把**真实调用参数**一并回调：录制/回放与 digest 都按参数建键，
+                # 只给结果会让"录了却回放不到"（键对不上）。
+                on_tool_call(name, result, args)
+            except TypeError:
                 on_tool_call(name, result)
             except Exception:  # noqa: BLE001 — 记账失败不影响执行
                 pass
@@ -253,12 +257,15 @@ async def run_loop(task: Any, *, context_text: str = "",
     text = str(getattr(resp, "content", "") or "").strip()
     emit(task_id, "report", "主 agent 本轮结论",
          {"stage": "kernel", "status": "ok", "bullets": [text[:300]] if text else [],
-          "tool_calls": len(calls)})
+          "tool_calls": len(calls)}, span="kernel")
     return {
         "status": "ok",
         "finish": {"conclusion": text[:800], "completed": [], "unfinished": [],
                    "reason": "tool_loop_finished"},
         "tool_calls": calls,
+        # 模型往返次数（≈ 每次工具调用前一轮 + 最后一轮）：Kernel 用它在**多轮之间**
+        # 判回合闸；单轮内的闸由 tool_calls 计数负责。
+        "rounds": len(calls) + 1,
         "stopped_reason": "model_final",
         "duration_ms": int((time.monotonic() - started) * 1000),
     }

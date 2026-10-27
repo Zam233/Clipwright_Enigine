@@ -120,9 +120,11 @@ async def run_topic(topic: gr.GoldenTopic, baseline: gr.GoldenBaseline,
         return run
 
     replayer = rec.Replayer(recording_path)
+    # M3：回放注入点是 tool loop 的**驱动器**——工具结果全部来自录制，
+    # 缺录制就抛 RecordingMiss（响亮失败，不许顺手真跑）。
     kernel = AgentKernel(KernelDeps(
+        driver=rec.make_replay_driver(replayer),
         planner=rec.make_replay_planner(replayer),
-        executor=rec.make_replay_executor(replayer),
         checkpoint_dir=checkpoint_dir,
     ))
     task = kernel.create(TaskRequest(topic=topic.topic, duration_sec=topic.duration_sec,

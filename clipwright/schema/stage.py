@@ -68,6 +68,10 @@ class StageResult(BaseModel):
     #: None = 未知（不许伪造成 0，金额闸对未知成本是盲的）
     cost_usd: Optional[float] = None
     cost_unknown: bool = False
+    #: 归因（modern-agent PRD §2.4.2）：阶段内部模型调用用了多少 token、调了哪些工具。
+    #: 拿不到就留 0/空——不伪造数字，让上层把这次记成"未知"。
+    tokens: int = 0
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     duration_ms: int = 0
     #: 工作区报告（markdown）的真路径与序号：子 agent 的文字汇报由 runtime 落盘，
     #: 主 agent 通过 read_report 读取；写盘失败时为空字符串（不是 None）。

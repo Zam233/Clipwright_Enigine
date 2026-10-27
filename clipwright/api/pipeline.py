@@ -355,15 +355,15 @@ async def run_pipeline_async(request: PipelineRequest, req: Request) -> dict:
     if str(getattr(settings, "agent_mode", "off")).lower() == "on":
         return await _start_as_task(request, req, uid=current_user_id(req))
 
-    # P2（PRD master-agent-prd §4.1）：老管线默认下线，返回 410 并给出替代路径。
-    # 想灰度对比/回滚时把 pipeline_enabled 设为 true。
-    if not bool(getattr(settings, "pipeline_enabled", False)):
+    # M3（modern-agent PRD §4.1）：老管线执行入口**永久**下线——不再看
+    # `pipeline_enabled` 这个开关。留着开关等于留一条"物理上还在"的编排路径，
+    # 谁把它翻成 true 谁就把管线带回来了。历史只读查询（/runs、/status、/result）保留。
+    if True:
         raise HTTPException(
             status_code=410,
             detail=(
                 "老 6 阶段管线已下线：创作请走主 Agent —— "
-                "POST /api/requirements/proceed（agent_mode=on 时转 Task）或 POST /api/task；"
-                "灰度对比请把 pipeline_enabled 设为 true"
+                "POST /api/requirements/proceed（agent_mode=on 时转 Task）或 POST /api/task"
             ),
         )
 
@@ -781,7 +781,7 @@ async def get_pipeline_result(pipeline_id: str, request: Request) -> dict:
     # 双轨兼容：agent 任务的结果（有管线产物就返回管线结果，没有就返回任务快照）
     agent_task = _task_of(pipeline_id)
     if agent_task is not None:
-        from clipwright.services.pipeline_capability import last_result
+        from clipwright.services.task_results import last_result
 
         pipeline_out = last_result(pipeline_id)
         if pipeline_out is not None:
@@ -840,7 +840,7 @@ async def get_pipeline_status(pipeline_id: str, request: Request) -> dict:
     # 双轨兼容：agent 模式下 id 是 task id（必须在 Mongo 回退之前判断）
     agent_task = _task_of(pipeline_id)
     if agent_task is not None:
-        from clipwright.services.pipeline_capability import last_result
+        from clipwright.services.task_results import last_result
 
         return {
             "pipeline_id": pipeline_id,
@@ -952,12 +952,13 @@ async def start_agent_retry(pipeline_id: str, agent_name: str, request: Request)
 
     # P2 闸口（审计 P2-7）：老管线已下线时，retry 也不许偷偷把编排器拉起来——
     # 否则只要有切换前的残留结果，就还能从这条后门重跑老管线。
-    if not bool(getattr(settings, "pipeline_enabled", False)):
+    # M3：retry 同样永久下线（老管线执行入口已删，不留后门）。
+    if True:
         raise HTTPException(
             status_code=410,
             detail=(
                 "老 6 阶段管线已下线，retry 不再可用：请用主 Agent 的 run_stage 重派该阶段"
-                "（replan_closure 会算出需要连带重做的下游）。灰度回滚请把 pipeline_enabled 设为 true"
+                "（replan_closure 会算出需要连带重做的下游）"
             ),
         )
 

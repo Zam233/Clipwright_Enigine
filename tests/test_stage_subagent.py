@@ -287,19 +287,28 @@ def test_capability_refuses_when_agent_mode_off(monkeypatch) -> None:
 
 
 def test_kernel_accumulates_stage_cost_into_task_usage() -> None:
-    """阶段能力把 cost_usd 放在顶层（无 surface record）；Kernel 必须认这一份。"""
-    from clipwright.schema.task import PlanStep, Task, TaskRequest
-    from clipwright.services.agent_kernel import AgentKernel
+    """阶段能力的 cost_usd 必须在任务 usage 里累计（成本条不能永远是 0）。
 
-    task = Task(id="task_cost", request=TaskRequest(topic="x", plan_only=False))
-    step = PlanStep(id="p1", capability="delegate", args={"stage": "structure"})
-    kernel = AgentKernel()
+    M3：记账点从 `_run_step` 移到 tool loop 的 `_on_tool_call`——注入一个
+    "调一次 delegate_agent 且结果带 cost"的驱动器即可验证同一条不变量。
+    """
+    from clipwright.schema.task import TaskRequest
+    from clipwright.services.agent_kernel import AgentKernel, KernelDeps
 
-    async def _executor(_task, _step):
-        return {"status": "ok", "output": {}, "cost_usd": 0.25}
+    class _CostDriver:
+        async def __call__(self, task, *, context_text="", shadow=False,  # noqa: ANN001
+                           guard=None, on_tool_call=None):  # noqa: ANN001
+            if on_tool_call is not None:
+                on_tool_call("delegate_agent",
+                             {"status": "ok", "output": {}, "cost_usd": 0.25},
+                             {"stage": "structure"})
+            return {"status": "ok", "finish": {"conclusion": "ok"},
+                    "tool_calls": [{"tool": "delegate_agent"}], "rounds": 2,
+                    "stopped_reason": "model_final"}
 
-    kernel.deps.executor = _executor  # type: ignore[assignment]
-    asyncio.run(kernel._run_step(task, step))  # noqa: SLF001 — 直接验证记账分支
+    kernel = AgentKernel(KernelDeps(driver=_CostDriver()))
+    task = kernel.create(TaskRequest(topic="x", plan_only=False))
+    task = asyncio.run(kernel.run(task))
     assert task.usage.cost_usd == pytest.approx(0.25)
 
 

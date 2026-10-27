@@ -109,7 +109,8 @@ def test_tool_call_is_executed_and_narrated(monkeypatch):
 
     events: list[dict[str, Any]] = []
     monkeypatch.setattr(agent_loop, "emit",
-                        lambda tid, t, m, d=None: events.append({"type": t, "detail": d}))
+                        lambda tid, t, m, d=None, **kw: events.append(
+                            {"type": t, "detail": d}))
 
     out = asyncio.run(agent_loop.run_loop(_task()))
     assert calls == [("local_probe", {"n": 2})]

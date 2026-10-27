@@ -65,12 +65,12 @@ async def capture_topic(
     baselines_file: str | Path = "tests/golden/baselines.json",
     checkpoint_dir: str | Path = "_cache/golden_capture",
     overwrite: bool = False,
+    driver: Any = None,
     planner: Any = None,
-    executor: Any = None,
 ) -> CaptureResult:
-    """真跑一条选题并落录制 + 基线。`planner/executor` 可注入（测试用）。"""
+    """真跑一条选题并落录制 + 基线。`driver` 可注入（测试用；M3 后 Kernel 唯一注入点）。"""
     from clipwright.schema.task import TaskRequest
-    from clipwright.services.agent_kernel import AgentKernel, KernelDeps, default_executor
+    from clipwright.services.agent_kernel import AgentKernel, KernelDeps
 
     recordings = Path(recordings_dir)
     recordings.mkdir(parents=True, exist_ok=True)
@@ -91,9 +91,10 @@ async def capture_topic(
     os.close(fd)
     tmp_path = Path(tmp_name)
 
+    # M3：Kernel 没有 planner/executor 了——注入点是 tool loop 的**驱动器**。
     kernel = AgentKernel(KernelDeps(
-        planner=planner,
-        executor=executor or default_executor,
+        driver=driver,
+        planner=planner,          # 只用于产出一份"初始假设"，不驱动执行
         checkpoint_dir=Path(checkpoint_dir),
     ))
     task = kernel.create(TaskRequest(
@@ -110,7 +111,7 @@ async def capture_topic(
         raise CaptureError(f"录制为空（任务状态={task.status}）：拒绝写半成品录制")
 
     from clipwright.services import golden_harness as gh
-    from clipwright.services.pipeline_capability import last_result
+    from clipwright.services.task_results import last_result
 
     # 指标优先从**录制**里算：那是回放时的唯一事实来源，两边算法必须同源
     # 注意用 tmp_path（录制还没改名到 target，读 target 会得到空结果）

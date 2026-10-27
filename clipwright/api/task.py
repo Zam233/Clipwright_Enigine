@@ -258,7 +258,7 @@ async def task_to_project(task_id: str, request: Request,
     from clipwright.api.pipeline import _enforce_pipeline_owner  # noqa: F401 — 保持同一套鉴权语义
     from clipwright.api.project import _manager
     from clipwright.authz import current_user_id
-    from clipwright.services.pipeline_capability import last_result
+    from clipwright.services.task_results import last_result
 
     _enforce_task_owner(request, task_id)
 
@@ -291,7 +291,7 @@ async def task_to_project(task_id: str, request: Request,
 @router.get("/{task_id}/result")
 async def task_result(task_id: str, request: Request) -> dict:
     """任务产物快照（timeline 概览 + 是否有可编辑时间线）。"""
-    from clipwright.services.pipeline_capability import last_result
+    from clipwright.services.task_results import last_result
 
     _enforce_task_owner(request, task_id)
     result = last_result(task_id)

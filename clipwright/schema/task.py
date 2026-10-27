@@ -48,6 +48,10 @@ EVENT_TYPES: tuple[str, ...] = (
     "report",          # 阶段完成后的汇报卡（headline + bullets + artifacts + cost）
     "doc_write",       # 工作区文档写入（docs/*.md、reports/*.md）
     "context_loaded",  # 每跳决策装载了哪些上下文（sources/trimmed/bytes）
+    # ── 统一 AgentRun 事件（modern-agent PRD §5.3）：阶段与调研 worker 同一组事件 ──
+    "agent_run_start",   # 派出去（spec 摘要）
+    "agent_run_update",  # 进度/降级/等审核
+    "agent_run_end",     # 收敛（AgentResult 摘要 + 成本）
 )
 
 
@@ -75,17 +79,19 @@ class PlanStep(BaseModel):
 
 
 class Plan(BaseModel):
+    """**初始假设**（modern-agent PRD §2.2 / M3）。
+
+    M3 之后它不再是执行游标：Kernel 不会按这份数组逐步执行。
+    留着它是为了让前端能显示"当初打算怎么做"，以及给模型当提示词里的参照。
+    """
+
     steps: list[PlanStep] = Field(default_factory=list)
     version: int = 1
     rationale: str = ""
     est_total_cost_usd: Optional[float] = None
     created_at: datetime = Field(default_factory=_utcnow)
-
-    def next_step(self) -> Optional[PlanStep]:
-        for step in self.steps:
-            if step.status == "pending":
-                return step
-        return None
+    #: 恒为 True：提醒任何读这份数据的人"这是假设，不是执行记录"
+    hypothesis_only: bool = True
 
 
 class TaskEvent(BaseModel):
@@ -94,15 +100,28 @@ class TaskEvent(BaseModel):
     ts: datetime = Field(default_factory=_utcnow)
     message: str = ""
     detail: dict[str, Any] = Field(default_factory=dict)
+    # ── trace 信封（modern-agent PRD §3.1 / §2.7）──
+    # 为什么加在信封层而不是埋进 detail：前端与回放器要能**按 trace 串起一次决策**
+    # （模型轮 → 工具调用 → 子 run → 结论），混在 detail 里就只能靠字符串猜。
+    trace_id: str = ""
+    run_id: str = ""
+    span: str = ""              # kernel / model / tool / agent / memory
+    causation_id: str = ""      # 触发本条事件的上一跳（run_id 或 event seq）
 
     def to_public(self) -> dict[str, Any]:
-        return {
+        payload = {
             "seq": self.seq,
             "type": self.type,
             "ts": self.ts.isoformat(),
             "message": self.message,
             "detail": self.detail,
         }
+        # 只有真带了才输出：老前端不认识这些键也不会被打扰
+        for key in ("trace_id", "run_id", "span", "causation_id"):
+            value = getattr(self, key)
+            if value:
+                payload[key] = value
+        return payload
 
 
 class TaskLimits(BaseModel):

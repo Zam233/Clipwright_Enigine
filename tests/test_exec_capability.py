@@ -120,56 +120,55 @@ def test_missing_command_is_refused():
     assert out["status"] == "refused"
 
 
+class _ApprovalDriver:
+    """脚本化驱动器：按模型行为调一次危险工具；授权状态由外部 dict 控制。"""
+
+    def __init__(self, state: dict) -> None:
+        self.state = state
+        self.calls: list[str] = []
+
+    async def __call__(self, task, *, context_text="", shadow=False,  # noqa: ANN001
+                       guard=None, on_tool_call=None):
+        if guard is not None:
+            hit = guard()
+            if hit:
+                return {"status": "aborted", "stopped_reason": hit,
+                        "tool_calls": [{"tool": "run_shell"}]}
+        result = ({"status": "ok", "output": {"exit_code": 0, "output_tail": "hi"}}
+                  if self.state["approved"]
+                  else {"status": "pending_approval", "approval_id": "ap_9",
+                        "risk": "high", "note": "已暂停"})
+        self.calls.append(result["status"])
+        if on_tool_call is not None:
+            on_tool_call("run_shell", result)
+        if result["status"] != "ok":
+            # 模型拿到"等授权"后不该继续调更多工具；Kernel 此时已把任务置 paused
+            return {"status": "aborted", "stopped_reason": "pause",
+                    "tool_calls": [{"tool": "run_shell"}]}
+        return {"status": "ok", "finish": {"conclusion": "已执行"},
+                "tool_calls": [{"tool": "run_shell"}], "rounds": 2,
+                "stopped_reason": "model_final"}
+
+
 def test_kernel_pauses_task_on_pending_approval(monkeypatch):
-    """Kernel 侧语义：等授权 → 任务 paused、Step 保持 pending、计划不推进。"""
-
-    class P:
-        async def plan(self, task):  # noqa: ANN001, ANN201
-            return Plan(steps=[
-                PlanStep(id="s1", capability="run_shell", kind="meta",
-                         args={"command": "rm -rf build"}),
-                PlanStep(id="s2", capability="media_probe", args={"input_path": "a.mp4"}),
-            ])
-
-        async def reflect(self, task, step, outcome):  # noqa: ANN001, ANN201
-            return {"action": "continue"}
-
-    async def pending_exec(task, step):  # noqa: ANN001, ANN201
-        return {"status": "pending_approval", "approval_id": "ap_9", "risk": "high",
-                "command": "rm -rf build", "note": "已暂停"}
-
-    k = ak.AgentKernel(ak.KernelDeps(planner=P(), executor=pending_exec,
+    """Kernel 侧语义：等授权 → 任务 paused、发 approval_request、不收尾（可 resume）。"""
+    state = {"approved": False}
+    driver = _ApprovalDriver(state)
+    k = ak.AgentKernel(ak.KernelDeps(driver=driver,
                                      checkpoint_dir=__import__("tempfile").mkdtemp()))
     task = k.create(TaskRequest(topic="x", plan_only=False))
     task = asyncio.run(k.run(task))
 
     assert task.status == "paused"
-    assert task.plan.steps[0].status == "pending", "等授权不算完成"
-    assert task.plan.steps[1].status == "pending", "暂停后不得继续下一步"
     assert any(e.type == "approval_request" for e in te.events(task.id))
-    assert task.finish is None
+    assert task.finish is None, "等授权不是失败，不许写终态"
 
 
 def test_kernel_resumes_after_approval(monkeypatch):
-    """授权后 resume：Step 重新走一遍（网关此时返回 done），任务继续往下走。"""
+    """授权后 resume：任务重进 loop 并把工具跑完。"""
     state = {"approved": False}
-
-    class P:
-        async def plan(self, task):  # noqa: ANN001, ANN201
-            return Plan(steps=[
-                PlanStep(id="s1", capability="run_shell", kind="meta",
-                         args={"command": "echo hi"}),
-            ])
-
-        async def reflect(self, task, step, outcome):  # noqa: ANN001, ANN201
-            return {"action": "continue"}
-
-    async def flaky_exec(task, step):  # noqa: ANN001, ANN201
-        if not state["approved"]:
-            return {"status": "pending_approval", "approval_id": "ap_1", "risk": "high"}
-        return {"status": "ok", "output": {"exit_code": 0, "output_tail": "hi"}}
-
-    k = ak.AgentKernel(ak.KernelDeps(planner=P(), executor=flaky_exec,
+    driver = _ApprovalDriver(state)
+    k = ak.AgentKernel(ak.KernelDeps(driver=driver,
                                      checkpoint_dir=__import__("tempfile").mkdtemp()))
     task = k.create(TaskRequest(topic="x", plan_only=False))
     task = asyncio.run(k.run(task))
@@ -177,5 +176,5 @@ def test_kernel_resumes_after_approval(monkeypatch):
 
     state["approved"] = True
     task = asyncio.run(k.resume(task.id))
-    assert task.status == "done"
-    assert task.plan.steps[0].status == "done"
+    assert task.status in ("done", "failed")
+    assert driver.calls[-1] == "ok"

@@ -169,6 +169,13 @@ class Replayer:
             )
         return entry
 
+    def calls(self, kind: str = "") -> list["RecordedCall"]:
+        """按录制顺序列出调用（kind 为空=全部）。回放驱动器用它重放工具调用。"""
+        items = list(self._entries.values())
+        if kind:
+            items = [c for c in items if c.kind == kind]
+        return sorted(items, key=lambda c: c.seq if hasattr(c, "seq") else 0)
+
     def result_of(self, kind: str, name: str, args: Any) -> Any:
         entry = self.get(kind, name, args)
         if entry.error:
@@ -286,3 +293,39 @@ def make_replay_executor(replayer: Replayer):  # noqa: ANN201
         )
 
     return executor
+
+
+def make_replay_driver(replayer: Replayer):  # noqa: ANN201
+    """从录制构造 **tool loop 驱动器**（M3 之后的正确回放入口）。
+
+    它把录制里的每条 `tool` 调用按原参数取回结果、依次回调给 Kernel（记账/digest/录制），
+    然后返回一次正常的 loop 收尾。录制里一条 tool 都没有 → 抛 `RecordingMiss`
+    （回放缺数据必须"响"，不许顺手真跑一次）。
+    """
+
+    async def driver(task, *, context_text="", shadow=False,  # noqa: ANN001, ARG002
+                     guard=None, on_tool_call=None):  # noqa: ANN001
+        entries = replayer.calls("tool")
+        if not entries:
+            raise RecordingMiss(
+                "录制里没有可回放的 tool 调用：回放不允许顺手真跑一次"
+            )
+        served = 0
+        for entry in entries:
+            if guard is not None:
+                hit = guard()
+                if hit:
+                    return {"status": "aborted", "stopped_reason": str(hit),
+                            "tool_calls": [{"tool": e.name} for e in entries[:served]]}
+            if entry.error:
+                raise RecordingError(f"录制里这次调用是失败的：{entry.error}")
+            result = entry.result
+            served += 1
+            if on_tool_call is not None:
+                on_tool_call(entry.name, result, entry.args)
+        return {"status": "ok",
+                "finish": {"conclusion": f"回放 {served} 次工具调用"},
+                "tool_calls": [{"tool": e.name} for e in entries],
+                "rounds": served + 1, "stopped_reason": "model_final"}
+
+    return driver
