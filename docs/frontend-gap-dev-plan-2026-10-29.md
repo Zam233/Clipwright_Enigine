@@ -473,7 +473,7 @@ npm run build
 
 | 批次 | 状态 | 提交 | 验收结果 | 偏离 |
 |---|---|---|---|---|
-| B1 | 待开始 |  |  |  |
+| B1 | ✅ 已完成 | frontend `d9860a8` | `Get-ChildItem src -Recurse -Include *.ts,*.tsx \| Select-String 'pipelineApi\.retry'` → 0 命中；`npx vitest run src/pages/admin/PipelineAdminPage.test.tsx` → **7 passed**；`tsc` 0；`npm run test` **1032 passed / 119 files**；`lint` 0 error；`build` ✅ | 1) 后端 `pipeline.py` 的 410 分支未动（兼容层保留）；2) `ReviewPanel.tsx:127` 只有注释提到旧路径，无调用，未改；3) `pipelineApi.runAsync/retry` 保留签名并加 `@deprecated` 说明 | 未发生回滚 |
 | B2 | 待开始 |  |  |  |
 | B3 | 待开始 |  |  |  |
 | B4 | 待开始 |  |  |  |
