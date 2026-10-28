@@ -267,6 +267,17 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         self._llm = LLMService()
         self._quality_hint = ""  # C6: 自愈质检提示（_llm_decide_edit_profile 时填充）
 
+    @staticmethod
+    def _is_narration_anchored(context: AgentContext) -> bool:
+        """时间线是否锚定在配音上（上传配音，或 voiceover 模式）。
+
+        锚定时**不能用交叉转场**：clip 首尾相接放置，xfade 每处吃掉
+        `transition_duration`，而配音/字幕按绝对时间铺 → 画面整体前移、
+        末尾少一段画面（实测 42 个 dissolve × 0.4s = 16.8s 漂移）。
+        """
+        extra = context.extra_params or {}
+        return bool(extra.get("audio_path")) or str(extra.get("video_mode") or "") == "voiceover"
+
     async def execute(
         self, input_data: EditInput, context: AgentContext
     ) -> EditOutput:
@@ -712,6 +723,15 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             # beat-sync 场景起点吸附函数（BPM → 拍间隔）
             beat_interval = 60.0 / max(beat_bpm, 30.0) if cut_on_beat else None
 
+            # 配音锚定（E2E 2026-10-28）：上传配音 / voiceover 模式下，场景时长来自
+            # 口播分段，画面必须与语音逐段对齐。此时**任何交叉转场都会让画面整体
+            # 前移 0.4s/次**（42 个切点 = 16.8s 漂移）：配音和字幕按绝对时间铺，
+            # 视频却缩短，渲出来音画不同步、末尾还少 17 秒画面。所以锚定配音时
+            # 一律硬切（知识区本来就是"硬切为主"的风格）。
+            _narration_anchored = self._is_narration_anchored(context)
+            if _narration_anchored:
+                notes.append("配音锚定：切点一律硬切（避免转场侵蚀造成音画漂移）")
+
             prev_kw: set[str] = set()  # 轮 85：上一场景关键词（转场逐切点用）
             for i, units in enumerate(scene_results):
                 scene_obj = scenes[i] if i < len(scenes) else {}
@@ -746,7 +766,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                     # 轮 85：转场逐切点选择——LLM 档案存在时沿用其全局偏好；
                     # 规则路径按相邻场景关键词重叠判断话题连续性（延续 → 硬切，
                     # 话题切换 → 叠化），替代旧"要么全局一个转场、要么全硬切"。
-                    if ui == 0 and i > 0:
+                    if ui == 0 and i > 0 and not _narration_anchored:
                         if llm_profile is not None:
                             cut_transition = pref_transition
                         elif topic_shift:

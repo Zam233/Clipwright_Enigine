@@ -135,6 +135,15 @@ def _transport_fingerprint(
     return f"t={timeout_sec};p={proxy};h={hdr}"
 
 
+#: 生成类调用的输出预算：**不设人为上限**。
+#:
+#: 说明：OpenAI 兼容协议没有无限选项——不传 max_tokens 就是 provider 默认
+#: （deepseek 系 4096，正是 MG/规划书被截断的元凶）。这里的做法是给一个远大于
+#: 任何模型能力的值，由 provider 按自身上限夹取：既不用我们猜模型能力，
+#: 也不会有我设小了把产物截断的坑。
+MAX_OUTPUT_TOKENS = 65536
+
+
 class LLMService:
     """基于 IsoBase 的 LLM 服务，支持文本生成和工具调用。"""
 
@@ -199,7 +208,7 @@ class LLMService:
                 base_url=creds.get("base_url"),
                 model=route.model or creds.get("model") or settings.llm_model,
                 instructions=settings.llm_instructions,
-                max_tokens=8192,
+                max_tokens=MAX_OUTPUT_TOKENS,
                 flash=False,
                 timeout_sec=float(creds.get("timeout_sec") or 0.0),
                 proxy=str(creds.get("proxy") or ""),
@@ -425,7 +434,11 @@ class LLMService:
         messages: list[dict[str, str]],
         model: Optional[str] = None,
         tools: Optional[list[dict[str, Any]]] = None,
-        timeout: int = 120,
+        # 默认 120s 太短：deepseek 系推理模型在这类长 prompt 上单次常见 120-200s。
+        # 被 HTTP 超时掐断时 provider 仍会回 **200 + 空正文**，日志看起来像"模型
+        # 没输出"，实际是传输层已经断开（E2E 2026-10-28 实测：120s 边界上必空，
+        # 放宽后同一 prompt 122s 正常返回 7.4k 字正文）。
+        timeout: int = 900,
         use_flash: bool = False,
         max_retries: int = 2,
         on_reasoning: Optional[Callable[[str], Any]] = None,
@@ -577,7 +590,7 @@ class LLMService:
         if temperature is None:
             temperature = float(eff.get("temperature", 0.7))
         if max_tokens is None:
-            max_tokens = int(eff.get("max_tokens", 4096))
+            max_tokens = int(eff.get("max_tokens", MAX_OUTPUT_TOKENS))
         logger.debug("LLM chat 请求: flash=%s, messages=%.500s, temperature=%s",
                      use_flash, json.dumps(messages, ensure_ascii=False)[:500], temperature)
         resp = await self.generate(
@@ -716,7 +729,7 @@ class LLMService:
         self,
         messages: list[dict[str, str]],
         model: Optional[str] = None,
-        timeout: int = 120,
+        timeout: int = 900,
         use_flash: bool = False,
         **kwargs: Any,
     ) -> AsyncIterator[LLMResponse]:
@@ -986,7 +999,7 @@ class LLMService:
             headers = dict(bound.get("headers") or {}) or None
         return LLMService._construct_client(
             p, api_key=k, base_url=u, model=m,
-            instructions=settings.llm_instructions, max_tokens=8192, flash=False,
+            instructions=settings.llm_instructions, max_tokens=MAX_OUTPUT_TOKENS, flash=False,
             timeout_sec=timeout_sec, proxy=proxy, headers=headers,
         )
 

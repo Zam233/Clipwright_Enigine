@@ -46,7 +46,7 @@ _IDEM: dict[str, StageResult] = {}
 _MAX_IDEM = 256
 
 #: `run_inline`（预览/局部修补）的默认墙钟：比完整阶段短，卡住要尽快报错
-DEFAULT_STAGE_TIMEOUT_LOCAL = 300.0
+DEFAULT_STAGE_TIMEOUT_LOCAL = 1800.0
 
 
 def agent_for(stage: str) -> Any:
@@ -274,9 +274,11 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     """真跑一个阶段，返回结构化结果（并合并进黑板）。"""
     task_id = str(getattr(task, "id", "") or "")
     stage = str(spec.stage)
-    # 显式 inputs 时**不读黑板**（PRD §16.2 / S2：数据必须过主 agent 的手）
+    # 显式 inputs 时**不读黑板来"补齐必需键"**（PRD §16.2 / S2：数据必须过主 agent 的手），
+    # 但空值回退需要黑板（见 stage_inputs.assemble 的 _flow_keys）——二者不冲突：
+    # 校验只认显式键，取值时空值才回退。
     explicit = dict(spec.inputs or {})
-    board = {} if explicit else bb.get(task_id)
+    board = bb.get(task_id)
     started = time.monotonic()
 
     emit(task_id, "step_start", f"阶段子代理：{stage}",
@@ -288,7 +290,9 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     # 1) 装配输入
     try:
         if explicit:
-            _needs = stage_inputs.validate(stage, explicit)
+            # board 一起传：黑板已有的键也算满足（否则模型会把大对象内联进
+            # tool_call 参数，参数被截断就整条任务 failed）
+            _needs = stage_inputs.validate(stage, explicit, board)
             if _needs:
                 raise stage_inputs.StageInputMissing(
                     stage, [str(n["field"]) for n in _needs],
@@ -367,7 +371,7 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
         agent = agent_for(stage)
         with degradation_scope(degradations), use_route(route):
             output = await asyncio.wait_for(
-                agent.execute(input_obj, context), timeout=float(spec.timeout_sec or 900.0),
+                agent.execute(input_obj, context), timeout=float(spec.timeout_sec or 3600.0),
             )
         payload = stage_merge.payload_of(output)
         if degradations and hasattr(output, "degradations"):

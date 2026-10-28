@@ -118,16 +118,49 @@ def test_explicit_inputs_bypass_blackboard(monkeypatch) -> None:
     assert getattr(seen["input"], "script_skeleton")["scenes"][0]["title"] == "主 agent 指定的"
 
 
-def test_explicit_inputs_missing_returns_needs() -> None:
+def test_explicit_inputs_missing_returns_needs(monkeypatch) -> None:
+    """显式 inputs 与黑板都没有 → 必须报 needs（input_insufficient）。
+
+    契约变更（E2E 2026-10-28）：黑板里**已有**的键也算满足（`validate` 接 board），
+    因为强制"必须显式内联 43 个场景"会让模型把大对象塞进 tool_call 参数，
+    参数被 provider 截断 → `JSONDecodeError: Unterminated string` → 整条任务失败。
+    下面保留"两边都缺"的硬失败语义。
+    """
+    async def _fake_agent_for(stage: str):  # noqa: ANN202
+        raise AssertionError("缺输入时不该真正去实例化 agent")
+
+    monkeypatch.setattr(stage_subagent, "agent_for", _fake_agent_for)
     task = _task("t_inputs2")
-    bb.put(task.id, "script_skeleton", {"scenes": [{"title": "x"}]}, by="structure")
-    # 显式给了 candidate_clips 但没给 script_skeleton → 必须报 needs，而不是回头读黑板
+    # 黑板里故意什么都不放
     result = asyncio.run(stage_subagent.run_stage(
         task, StageSpec(stage="edit", inputs={"candidate_clips": []})))
     assert result.status == "failed"
     assert result.failure is not None
     assert result.failure.category == "input_insufficient"
     assert any(n["field"] == "script_skeleton" for n in result.failure.needs)
+
+
+def test_explicit_inputs_missing_but_board_has_it_is_satisfied(monkeypatch) -> None:
+    """黑板有 script_skeleton、显式只给 candidate_clips → 放行并从黑板补齐。"""
+    seen: dict = {}
+
+    def _fake_agent_for(stage):  # noqa: ANN001, ANN202
+        class _Spy:
+            async def execute(self, input_obj, context):  # noqa: ANN001, ANN201
+                seen["input"] = input_obj
+                return {"decision": "pass"}
+
+        return _Spy()
+
+    monkeypatch.setattr(stage_subagent, "agent_for", _fake_agent_for)
+    task = _task("t_inputs3")
+    bb.put(task.id, "script_skeleton", {"scenes": [{"title": "黑板场景"}]}, by="structure")
+    result = asyncio.run(stage_subagent.run_stage(
+        task, StageSpec(stage="edit", inputs={"candidate_clips": []})))
+
+    assert result.status != "failed", f"不该因为没显式内联 script_skeleton 而失败: {result.error}"
+    assert getattr(seen["input"], "script_skeleton")["scenes"][0]["title"] == "黑板场景"
+
 
 
 def test_validate_reports_missing_fields() -> None:

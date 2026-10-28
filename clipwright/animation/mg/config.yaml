@@ -3,8 +3,11 @@
 llm:
   model: ""
   temperature: 0.4
-  max_tokens: 8192
-  timeout: 120
+  # MG 输出是 10k 量级 HTML+JSON。max_tokens: 0 = **不设人为上限**
+  # （代码会改用 llm.MAX_OUTPUT_TOKENS，由 provider 按自身上限夹取）。
+  # 给死小值会截断产物 → 解析失败 → 退化成 method=fallback。
+  max_tokens: 0
+  timeout: 900
 
 generation:
   max_retries: 2

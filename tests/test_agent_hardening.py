@@ -264,6 +264,11 @@ def test_kernel_counts_unknown_cost_calls(monkeypatch):
             result = {"status": "ok", "cost_usd": None, "cost_unknown": True}
             if on_tool_call is not None:
                 on_tool_call("vision_llm", result)
+            # 有 final_timeline → 收尾守门不再"推一把"，这次任务里
+            # vision_llm 只被记账一次（下面的 ==1 才有意义）
+            from clipwright.services import task_blackboard as _bb
+
+            _bb.put(task.id, "final_timeline", {"tracks": []}, by="audio")
             return {"status": "ok", "finish": {"conclusion": "ok"},
                     "tool_calls": [{"tool": "vision_llm"}], "rounds": 2,
                     "stopped_reason": "model_final"}

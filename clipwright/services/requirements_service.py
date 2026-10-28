@@ -31,7 +31,7 @@ from clipwright.schema.requirements import (
     RequirementsMessage,
     SessionStatus,
 )
-from clipwright.services.llm import LLMService
+from clipwright.services.llm import LLMService, MAX_OUTPUT_TOKENS
 from clipwright.services.trace import add_event
 from clipwright.schema.timeline import Timeline, Track
 
@@ -41,17 +41,25 @@ MAX_HISTORY_ROUNDS = 20          # 超过 20 轮对话后压缩
 MAX_MESSAGE_LENGTH = 50000       # 单条消息最大字符
 LLM_RETRY_MAX = 3                # LLM 最大重试次数
 LLM_RETRY_BASE_DELAY = 2.0      # 重试基础延迟（秒）
-BRIEF_GENERATE_TIMEOUT = 180     # 简报生成单次调用超时（秒）
+BRIEF_GENERATE_TIMEOUT = 900     # 简报生成单次调用超时（秒）
 # E2E 2026-10-28 实测：规划书翻译**必须显式给 max_tokens**。不给时下发的是
 # provider 默认（deepseek 系 4096），推理型模型把预算全用在 reasoning 上，
 # HTTP 200 但正文为空（llm.py:692 那条告警），三次重试全空 → 规划书退化成
 # 「LLM 翻译超时，使用基础版本」的兜底表。8192 让 6 场景的规划书一次过。
-PLAN_TRANSLATE_MAX_TOKENS = 16384
+PLAN_TRANSLATE_MAX_TOKENS = MAX_OUTPUT_TOKENS
 # 场景改写（把修改意见落到 raw_scenes 本体）的输出是完整 JSON 数组，
 # 同样要显式给预算，否则正文必然为空。
-PLAN_SCENE_REVISE_MAX_TOKENS = 8192
-# 超时必须容得下「一次真实调用 + 一次重试」，否则重试还没跑完就整段放弃
-PLAN_TRANSLATE_TIMEOUT = 420     # 规划书翻译超时（秒，覆盖重试）
+PLAN_SCENE_REVISE_MAX_TOKENS = MAX_OUTPUT_TOKENS
+# 超时必须容得下真实生成：实测带 8000 字原文 + 43 段场景的翻译，推理型模型
+# 单次就要 6-8 分钟，"420s 超时"其实是把还在正常生成的请求掐断了（日志只写
+# 「翻译超时」，看起来像模型没输出）。宁可等，也不要制造假的空结果。
+PLAN_TRANSLATE_TIMEOUT = 1800    # 规划书翻译超时（秒）——按"上限"给足
+# 精简 prompt 的重试超时：输入已缩小，但仍有 43 段场景，别再按 5 分钟掐
+PLAN_TRANSLATE_RETRY_TIMEOUT = 1800
+# 需求侧跑 structure 阶段（生成规划书用的 raw_scenes）的墙钟上限。
+# 旧实现沿用 run_inline 默认 300s = StructureAgent 自身的 LLM 超时，
+# 外层先掐断 → TimeoutError(str 为空) → 只留一句"规划书生成失败:"。
+PLAN_STRUCTURE_TIMEOUT = 3600
 SESSION_TTL_HOURS = 48           # 会话过期时间
 SESSION_CLEANUP_INTERVAL = 3600  # 清理检查间隔（秒）
 
@@ -143,6 +151,10 @@ def _fallback_response(method: str, prompt: str, error: str) -> dict:
         "markdown_content": f"# 规划书\n\n> 生成时遇到问题: {error}\n\n请稍后重试。",
         "total_duration_sec": 0,
         "scene_count": 0,
+        # 显式降级标记：调用方（_translate_plan）据此判断"这次并没有拿到正文"，
+        # 从而触发降规模重试，而不是把兜底文案当成成功结果（旧实现靠
+        # markdown_content 是否为空判断，兜底文案非空 → 永远不重试）。
+        "degraded": True,
     }
 
 
@@ -840,7 +852,7 @@ class RequirementsService:
             )
             user_prompt = (
                 "当前场景列表：\n"
-                + json.dumps(scenes, ensure_ascii=False)[:8000]
+                + json.dumps(scenes, ensure_ascii=False)
                 + "\n\n用户修改意见："
                 + feedback[:1000]
             )
@@ -1923,6 +1935,10 @@ class RequirementsService:
                     creative_brief=brief_data,
                 ),
                 context,
+                # 必须比 StructureAgent.timeout_sec 更宽松：外层先掐断会把
+                # 内层"LLM 超时 → 兜底分镜"的降级路径整条跳过，
+                # 结果只有一句空消息的「规划书生成失败」。
+                timeout_sec=PLAN_STRUCTURE_TIMEOUT,
             )
             # StructureAgent 的 LLM 用量（requirements 会话级，非 pipeline）
             agent_usage = getattr(result, "_llm_usage", None)
@@ -1950,51 +1966,117 @@ class RequirementsService:
             )
 
         except Exception as e:
-            logger.exception("规划书生成失败: %s", e)
+            # TimeoutError 的 str() 是空串——只打 %s 会留下一句「规划书生成失败: 」，
+            # 看不出是超时还是别的。类型名与 timeout 都要进日志。
+            logger.exception(
+                "规划书生成失败（%s）: %s", type(e).__name__, str(e) or "（无消息）",
+            )
             return None
 
     async def _translate_plan(
         self, scenes: list[dict], brief_data: dict | None, script_text: str = "",
         feedback: str = "", web_context: str = "",
     ) -> dict:
-        """翻译场景为规划书。"""
+        """翻译场景为规划书。
+
+        E2E 2026-10-28：这份 prompt 里塞了 8000 字原文 + 简报 + 联网参考，
+        推理型模型（deepseek-v4-pro）在这么大的输入上频繁"只产出 reasoning、
+        正文为空"（HTTP 200 + content=""），三次重试全空 → 规划书退化成兜底表。
+        现在的策略是：**先给足预算的完整 prompt，失败再降规模重试一次**
+        （原文砍到 2500 字、去掉联网参考），最后才回落到确定性 Markdown。
+        """
         scenes_json = json.dumps(scenes, ensure_ascii=False, indent=2)
+        # 送给 LLM 的版本要**瘦**：口播原话已经在场景里且不该被改写，
+        # 40+ 段原话塞进 prompt 只会把 reasoning 预算吃光、正文返回空。
+        slim_scenes = json.dumps(
+            [
+                {
+                    "index": i,
+                    "title": s.get("title", ""),
+                    "duration_sec": s.get("duration_sec", 0),
+                    "keywords": s.get("keywords", []),
+                    "description": str(s.get("description", ""))[:80],
+                }
+                for i, s in enumerate(scenes)
+            ],
+            ensure_ascii=False,
+        )
         brief_json = json.dumps(brief_data, ensure_ascii=False) if brief_data else "{}"
 
-        system_prompt = PLAN_TRANSLATE_SYSTEM
-        if feedback:
-            system_prompt += (
-                f"\n\n## 用户修改意见（规划书必须体现这些修订）\n{feedback[:2000]}"
-            )
-        if script_text:
-            system_prompt += f"\n\n## 原始文稿（规划书必须忠实反映此内容）\n{script_text[:8000]}"
-        system_prompt += f"\n\n参考方案:\n{brief_json}"
-        if web_context:
-            system_prompt += f"\n\n## 联网搜索参考\n{web_context}"
+        def _system_prompt(*, compact: bool) -> str:
+            text = PLAN_TRANSLATE_SYSTEM
+            if feedback:
+                text += f"\n\n## 用户修改意见（规划书必须体现这些修订）\n{feedback[:2000]}"
+            if script_text:
+                # **必须灌注原文**：规划书要贴着作者原意写，砍掉原文会让翻译
+                # 只剩场景标题级别的信息，质量显著下降。compact 只用来丢联网参考
+                # 之类的附加块，原文一律给足。
+                text += f"\n\n## 原始文稿（规划书必须忠实反映此内容）\n{script_text}"
+            text += f"\n\n参考方案:\n{brief_json}"
+            if web_context and not compact:
+                text += f"\n\n## 联网搜索参考\n{web_context[:800]}"
+            return text
 
-        try:
-            result = await asyncio.wait_for(
+        async def _call(*, compact: bool, budget: int, timeout: float) -> dict:
+            return await asyncio.wait_for(
                 llm_call_with_retry(self._llm, "plan_translate", pipeline_id="", **{
-                    "system_prompt": system_prompt,
-                    "user_prompt": f"结构 Agent 输出:\n{scenes_json}",
-                    "max_tokens": PLAN_TRANSLATE_MAX_TOKENS,
+                    "system_prompt": _system_prompt(compact=compact),
+                    "user_prompt": f"结构 Agent 输出（场景清单）:\n{slim_scenes}",
+                    "max_tokens": budget,
                 }),
+                timeout=timeout,
+            )
+
+        result: dict = {}
+        try:
+            result = await _call(
+                compact=False, budget=PLAN_TRANSLATE_MAX_TOKENS,
                 timeout=PLAN_TRANSLATE_TIMEOUT,
             )
             await self._record_llm_usage("requirements.plan_translate")
         except asyncio.TimeoutError:
-            # LLM 翻译超时 → 使用基础规划书，绝不挂起
-            logger.warning("规划书翻译超时（>%ds），使用基础规划书", PLAN_TRANSLATE_TIMEOUT)
-            result = {
-                "summary": "规划书已生成（LLM 翻译超时，使用基础版本）。",
-                "sections": [],
-                "markdown_content": self._default_markdown(scenes),
-                "total_duration_sec": sum(s.get("duration_sec", 0) for s in scenes),
-                "scene_count": len(scenes),
-            }
+            logger.warning("规划书翻译超时（>%ds）", PLAN_TRANSLATE_TIMEOUT)
 
-        if not result.get("markdown_content"):
+        def _has_real_body(plan: dict | None) -> bool:
+            if not isinstance(plan, dict) or plan.get("degraded"):
+                return False
+            return bool(str(plan.get("markdown_content") or "").strip())
+
+        if not _has_real_body(result):
+            # 降规模重试：输入变小，reasoning 才有余量给正文
+            logger.warning("规划书翻译未产出正文，改用精简 prompt 重试一次")
+            try:
+                retry = await _call(
+                    compact=True, budget=PLAN_TRANSLATE_MAX_TOKENS,
+                    timeout=PLAN_TRANSLATE_RETRY_TIMEOUT,
+                )
+                if _has_real_body(retry):
+                    result = retry
+                    await self._record_llm_usage("requirements.plan_translate")
+                else:
+                    logger.warning("精简 prompt 仍未产出正文，使用基础规划书")
+            except asyncio.TimeoutError:
+                logger.warning("精简 prompt 重试超时（>%ds）", PLAN_TRANSLATE_RETRY_TIMEOUT)
+            except Exception as exc:  # noqa: BLE001 — 重试失败不影响兜底
+                logger.warning("精简 prompt 重试异常: %s", exc)
+
+        if not _has_real_body(result):
+            # 两次都没正文 → 用确定性表格兜底（比一句"生成时遇到问题"可读得多），
+            # summary 保留降级说明，不谎称成功。
+            result = {
+                **result,
+                "summary": result.get("summary")
+                or "规划书已生成（LLM 未返回正文，使用基础版本）。",
+                "markdown_content": self._default_markdown(scenes),
+            }
+        elif not str(result.get("markdown_content") or "").strip():
             result["markdown_content"] = self._default_markdown(scenes)
+        # 无论 LLM 写了什么，**完整镜头表都是权威内容**（口播原话不能被改写），
+        # 统一追加在文末：这样规划书里既有 LLM 的制作说明，也有逐镜头的真值表。
+        table = self._default_markdown(scenes)
+        body = str(result.get("markdown_content") or "")
+        if table.strip() and table.strip() not in body:
+            result["markdown_content"] = f"{body.rstrip()}\n\n---\n\n{table}"
         if not result.get("total_duration_sec"):
             result["total_duration_sec"] = sum(s.get("duration_sec", 0) for s in scenes)
         if not result.get("scene_count"):

@@ -44,6 +44,25 @@ _INJECT: dict[str, list[str]] = {}
 #: 已在本次进程里恢复过记忆的任务（避免每次 run 都读盘）
 _MEMORY_LOADED: set[str] = set()
 
+#: 收尾守门"声称完成但没有 final_timeline"时，最多再推几轮。
+#:
+#: E2E 2026-10-28 实测：模型把 material 跑完就自己收尾（"我读一下确认内容，然后派
+#: edit 阶段"然后就结束了），守门照实判失败——但用户要的是成片。这类"提前收尾"
+#: 属于模型行为，不该直接判死刑：带着明确指令再推它一把，仍然出不来才判失败。
+_MAX_TIMELINE_CONTINUATIONS = 2
+_TIMELINE_CONTINUATIONS: dict[str, int] = {}
+_TIMELINE_CONTINUE_HINT = (
+    "\n\n## 收尾守门（必须遵守）\n"
+    "上一轮结束时黑板里**还没有 `final_timeline`**，所以任务不算完成。请立刻继续推进：\n"
+    "1. 若还没有 timeline → `delegate_agent(stage=\"edit\")`"
+    "（script_skeleton / scenes / candidate_clips 都在黑板上，显式输入可以不传或传空，会自动回退）；\n"
+    "2. 再派 `animation`；\n"
+    "3. **必须再派 `audio`** —— 只有 audio 阶段会落下 `final_timeline`，"
+    "并把上传配音铺进音频轨、把字幕对齐到配音；跳过 audio = 成片没有声音；\n"
+    "4. 只有在黑板里出现 `final_timeline` 之后，才能收尾汇报。\n"
+    "不要再说\"接下来我准备…\"这类话，直接调用工具。"
+)
+
 
 class KernelError(RuntimeError):
     """Kernel 使用方式错误（不是业务失败）。"""
@@ -565,7 +584,7 @@ class AgentKernel:
                                         shadow=(mode == "shadow"))
 
     async def _run_tool_loop(self, task: Task, *, started: float,
-                             shadow: bool = False) -> Task:
+                             shadow: bool = False, extra_hint: str = "") -> Task:
         """原生 tool-use loop：不预生成步骤表，模型每轮自主决定调哪个工具。"""
         from clipwright.services import agent_loop, context_loader
         from clipwright.services.task_events import emit
@@ -610,6 +629,8 @@ class AgentKernel:
                   "budget": loaded.get("budget", 0), "phase": "run"})
         except Exception as exc:  # noqa: BLE001 — 上下文失败不能阻断主循环
             logger.warning("上下文装载失败 %s: %s", task.id, exc)
+        if extra_hint:
+            context_text = f"{context_text}{extra_hint}"
 
         def _guard() -> Optional[str]:
             hit = self._control_hit(task)
@@ -726,8 +747,29 @@ class AgentKernel:
                     from clipwright.services import task_blackboard as _bb
 
                     board = _bb.get(task.id)
-                    if not (board.get("final_timeline") or board.get("timeline")):
+                    # E2E 2026-10-28：`timeline` 只是 edit 的中间产物——audio 阶段才
+                    # 产出 `final_timeline`（并把配音/字幕对齐定稿）。旧判据用
+                    # `timeline or final_timeline`，于是模型派完 edit 就收尾也算
+                    # "完成"：成片渲出来**没有声音**（音频轨 43 个 clip 全是空
+                    # asset_id）。守门必须只认 final_timeline。
+                    if not board.get("final_timeline"):
+                        # 模型提前收尾（有产物但没时间线）→ 带指令再推它一把，
+                        # 出不来才判失败。见 _MAX_TIMELINE_CONTINUATIONS 的注释。
+                        done = int(_TIMELINE_CONTINUATIONS.get(task.id, 0))
+                        if done < _MAX_TIMELINE_CONTINUATIONS:
+                            _TIMELINE_CONTINUATIONS[task.id] = done + 1
+                            emit(task.id, "narration",
+                                 f"收尾守门：黑板里还没有 final_timeline，继续推进"
+                                 f"（第 {done + 1}/{_MAX_TIMELINE_CONTINUATIONS} 次）",
+                                 {"kind": "timeline_gate_continue",
+                                  "attempt": done + 1}, span="kernel")
+                            return await self._run_tool_loop(
+                                task, started=started, shadow=shadow,
+                                extra_hint=_TIMELINE_CONTINUE_HINT,
+                            )
                         gate_reason = "缺少可渲染时间线（final_timeline 为空）"
+                    else:
+                        _TIMELINE_CONTINUATIONS.pop(task.id, None)
                 except Exception:  # noqa: BLE001 — 守门失败不阻断收尾
                     pass
             task.finish = TaskFinish(

@@ -26,7 +26,7 @@ STAGE_NAMES: tuple[str, ...] = (
 TIMELINE_STAGES: frozenset[str] = frozenset({"edit", "animation", "audio"})
 
 #: 默认墙钟：阶段是真干活（跑 ffmpeg/LLM/ffprobe），不是问答，不能按 60s 卡
-DEFAULT_STAGE_TIMEOUT = 900.0
+DEFAULT_STAGE_TIMEOUT = 3600.0
 
 
 class StageSpec(BaseModel):

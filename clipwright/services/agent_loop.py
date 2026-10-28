@@ -323,6 +323,8 @@ async def run_loop(task: Any, *, context_text: str = "",
         _effort = ""
     reasoning_kwargs: dict[str, Any] = {"reasoning_effort": _effort} if _effort else {}
     try:
+        from clipwright.services.llm import MAX_OUTPUT_TOKENS
+
         resp = await LLMService().with_tools(
             system_prompt=_system_prompt(task),
             user_prompt=_user_prompt(task, context_text),
@@ -332,6 +334,11 @@ async def run_loop(task: Any, *, context_text: str = "",
             on_preamble=_on_preamble,
             on_reasoning=_reasoning_cb,
             pipeline_id=task_id,
+            # 主 agent 的 tool_call arguments 可能是大对象（例如把 43 个场景内联
+            # 进 delegate_agent）。不给预算时会被 provider 默认截断 → 半个 JSON →
+            # `JSONDecodeError: Unterminated string` → 整个任务 failed
+            # （E2E 2026-10-28 实测 char 3337 处断掉）。
+            max_tokens=MAX_OUTPUT_TOKENS,
             **reasoning_kwargs,
         )
     except LoopAborted as exc:

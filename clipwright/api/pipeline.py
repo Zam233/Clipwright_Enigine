@@ -811,7 +811,7 @@ class TopicSuggestRequest(BaseModel):
 @router.post("/script-tools")
 async def script_tools(body: ScriptToolRequest) -> dict:
     """P8: 脚本续写/改写/扩写 — LLM 工具化三种模式。"""
-    from clipwright.services.llm import LLMService
+    from clipwright.services.llm import LLMService, MAX_OUTPUT_TOKENS
 
     mode_map = {
         "rewrite": "改写",
@@ -828,13 +828,13 @@ async def script_tools(body: ScriptToolRequest) -> dict:
         f"你是中文视频文案编辑。请对下面的文稿进行「{mode}」处理。\n"
         f"{style_hint}{length_hint}\n"
         f"只输出处理后的文稿正文，不要解释、不要 Markdown 标题。\n\n"
-        f"原文稿：\n{body.script_text[:40000]}"
+        f"原文稿：\n{body.script_text}"
     )
     try:
         resp = await LLMService().generate(
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=6000,
-            timeout=180,
+            max_tokens=MAX_OUTPUT_TOKENS,
+            timeout=900,
         )
         text = getattr(resp, "content", None) or ""
         out = str(text).strip()

@@ -257,7 +257,7 @@ async def _llm_search_queries_batch(
 
     llm = LLMService()
     try:
-        resp = await asyncio.wait_for(llm.ask(prompt, use_flash=True), timeout=45)
+        resp = await asyncio.wait_for(llm.ask(prompt, use_flash=True), timeout=900)
         if not (resp.success and resp.content):
             return None
         result: list[list[str]] = [[] for _ in scenes]
@@ -321,7 +321,7 @@ async def _llm_search_queries(
     try:
         import asyncio
         # 搜索词生成是简单任务 → 使用 flash 轻量模型
-        resp = await asyncio.wait_for(llm.ask(prompt, use_flash=True), timeout=30)
+        resp = await asyncio.wait_for(llm.ask(prompt, use_flash=True), timeout=900)
         if resp.success and resp.content:
             queries = [q.strip() for q in resp.content.strip().split("\n") if q.strip()][:5]
             if pipeline_id:

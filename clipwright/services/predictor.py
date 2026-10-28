@@ -43,9 +43,9 @@ class ScriptAnalyzer:
             resp = await _llm.generate(
                 messages=[
                     {"role": "system", "content": _SCRIPT_SYSTEM},
-                    {"role": "user", "content": script_text[:4000]},  # 截断避免超长
+                    {"role": "user", "content": script_text},  # 不截断：截断会让长文稿判断失真
                 ],
-                timeout=30,
+                timeout=900,
             )
             if resp.success and resp.content:
                 data = _parse_json(resp.content)
@@ -106,7 +106,7 @@ class MaterialAnalyzer:
                         {"role": "system", "content": _MATERIAL_SYSTEM},
                         {"role": "user", "content": prompt},
                     ],
-                    timeout=20,
+                    timeout=900,
                 )
                 if resp.success and resp.content:
                     data = _parse_json(resp.content)

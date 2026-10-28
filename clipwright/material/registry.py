@@ -66,7 +66,7 @@ class MaterialRegistry:
             sources = list(cls._sources.values())
 
         all_results: list[MaterialSearchResult] = []
-        per_source_timeout = 20.0  # P2-30: 单源超时——慢源不再拖死整体检索
+        per_source_timeout = 60.0  # P2-30: 单源超时——慢源不再拖死整体检索
         for src in sources:
             try:
                 # 透传 media_type——源的类型过滤参数此前是死参数。

@@ -140,7 +140,7 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
         if creative_avoid:
             user_context += "用户明确不要的: " + "；".join(creative_avoid) + "\n"
         if script:
-            user_context += f"文稿预览: {script[:500]}\n"
+            user_context += f"文稿全文:\n{script}\n"
         if references:
             user_context += f"参考素材: {len(references)} 个文件\n"
 

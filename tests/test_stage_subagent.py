@@ -343,6 +343,11 @@ def test_kernel_accumulates_stage_cost_into_task_usage() -> None:
                 on_tool_call("delegate_agent",
                              {"status": "ok", "output": {}, "cost_usd": 0.25},
                              {"stage": "structure"})
+            # 放一条 final_timeline：否则收尾守门会"再推一把"，
+            # 同一次任务里 delegate 被记账 3 次，成本断言就没意义了。
+            from clipwright.services import task_blackboard as _bb
+
+            _bb.put(task.id, "final_timeline", {"tracks": []}, by="audio")
             return {"status": "ok", "finish": {"conclusion": "ok"},
                     "tool_calls": [{"tool": "delegate_agent"}], "rounds": 2,
                     "stopped_reason": "model_final"}

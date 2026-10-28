@@ -147,7 +147,7 @@ async def edit_timeline(req: EditRequest, request: Request) -> dict:
 
     整体用 wait_for 兜底：即使底层 Agent/LLM 意外卡死，也保证在时限内返回可重试错误。
     """
-    EDIT_HARD_TIMEOUT = 660
+    EDIT_HARD_TIMEOUT = 3600
     try:
         result = await asyncio.wait_for(
             _service.edit_timeline(
@@ -200,7 +200,7 @@ async def preview_intent(session_id: str, req: IntentRequest, request: Request) 
                 project_id=req.project_id or None,
                 llm=getattr(_service, "_llm", None),
             ),
-            timeout=120,
+            timeout=1800,
         )
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="意图解析超时，请简化指令后重试")
@@ -244,7 +244,7 @@ async def apply_intent(session_id: str, req: IntentApplyRequest, request: Reques
                 answers=req.answers, intent_raw=req.intent_raw or None,
                 llm=getattr(_service, "_llm", None), apply=req.apply,
             ),
-            timeout=120,
+            timeout=1800,
         )
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="意图执行超时，请简化指令后重试")
@@ -262,7 +262,9 @@ async def chat_message(req: ChatRequest, request: Request) -> dict:
     整体用 wait_for 兜底：即使底层 LLM/线程意外卡死（asyncio.to_thread 的线程
     无法被取消），也保证在时限内返回一个可重试的错误响应，而不是让请求永久挂起。
     """
-    CHAT_HARD_TIMEOUT = 660  # 秒：简报 180s + 规划书 240s + 翻译/重试余量
+    # 秒：长文稿（40+ 段）逐段标注（≈6min）+ 规划书翻译（带原文，最长约 15min）
+    # 都需要余量；旧值 660 会被长文稿打满 → 504。这里留 40 分钟。
+    CHAT_HARD_TIMEOUT = 7200
     try:
         result = await asyncio.wait_for(
             _service.chat(req.session_id, req.message),

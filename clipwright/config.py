@@ -129,9 +129,11 @@ class Settings(BaseSettings):
     # 评估报告目录（closeout B10）：golden_eval 写到这里，/api/eval 读这里
     eval_report_dir: str = ""
     # Kernel 四道闸（PRD F5 / Q1 已裁定；数值可调，不可置空）
-    agent_max_turns: int = 30
-    agent_max_tool_calls: int = 80
-    agent_max_wall_sec: float = 3600.0
+    # 回合数 30 → 40：长文稿（43 段）要跑 structure/material/edit/animation/audio
+    # 五阶段 + 探查产物，实测 30 轮不够（E2E 2026-10-28 触闸收尾）。
+    agent_max_turns: int = 80
+    agent_max_tool_calls: int = 400
+    agent_max_wall_sec: float = 14400.0
 
     # --- 模型路由（PRD F8 / 开发计划 B4）---
     # 按阶段配置候选模型：[{"provider","model","tier","price_in","price_out"}]；

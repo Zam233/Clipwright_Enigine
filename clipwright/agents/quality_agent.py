@@ -635,7 +635,7 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                     use_flash=True,
                     pipeline_id=context.pipeline_id,
                 ),
-                retries=1, timeout=30,
+                retries=1, timeout=900,
             )
         except Exception as e:
             # LLM 失败/超时 → 静默跳过（零行为变化）

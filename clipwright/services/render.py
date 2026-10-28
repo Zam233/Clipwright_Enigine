@@ -1224,7 +1224,7 @@ class RenderService:
                          "-map", "0:v:0", "-map", "0:a?", "-map", "1:0",
                          "-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text",
                          "-movflags", "+faststart", str(output)],
-                        capture_output=True, text=False, timeout=600)
+                        capture_output=True, text=False, timeout=3600)
                     _srt_ok = _is_valid_video(output)
                 except Exception as e:
                     logger.warning("D4 软字幕封装失败，回退无字幕轨: %s", e)
@@ -1814,7 +1814,7 @@ class RenderService:
                            "-stream_loop", "-1", "-i", src, "-t", str(dur), "-vf", vf, "-r", str(fps),
                            *_encoder_stage_args(encoder, preset),
                            "-b:v", bitrate, "-an", out_tmp]
-                r = self._run_ff(cmd, capture_output=True, text=False, timeout=600)
+                r = self._run_ff(cmd, capture_output=True, text=False, timeout=3600)
                 if r.returncode == 0 and _is_valid_video(out_tmp):
                     # 原子落位；并发同键时可能已被别的线程落位 → 视为成功
                     import os as _os
@@ -2077,7 +2077,7 @@ class RenderService:
         out = str(self._work_dir / f"fallback_{idx}.{_current_ext()}")
         try:
             # 超时按时长缩放：长片段（如 113s）色块编码超过固定 30s 会被误杀
-            timeout = 30 + int(dur) * 2
+            timeout = 60 + int(dur) * 6
             self._run_ff(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
                            f"color=c=0x1a1a2e:s={width}x{height}:d={dur}",
                            "-c:v", _current_encoder(), "-pix_fmt", _current_pix_fmt(), "-r", str(fps), out],
@@ -2229,7 +2229,7 @@ class RenderService:
                        "-filter_complex", "[0:v]setsar=1[a];[1:v]setsar=1[b];[a][b]concat=n=2:v=1:a=0[v]",
                        "-map", "[v]", *_encoder_stage_args(encoder, preset),
                        "-b:v", bitrate, "-r", str(fps), str(out)],
-                      capture_output=True, text=False, timeout=600)
+                      capture_output=True, text=False, timeout=3600)
         if _is_valid_video(out, require_streams=True):
             return str(out)
         self._final_ffmpeg_log.append(f"concat({Path(a).name}+{Path(b).name}): 输出无效，丢弃 {Path(b).name}")
@@ -2252,7 +2252,7 @@ class RenderService:
                        f"[0:v]setsar=1[a];[1:v]setsar=1[b];[a][b]xfade=transition={tt}:duration={td}:offset={off}[v]",
                        "-map", "[v]", *_encoder_stage_args(encoder, preset),
                        "-b:v", bitrate, "-r", str(fps), out],
-                      capture_output=True, text=False, timeout=600)
+                      capture_output=True, text=False, timeout=3600)
         if _is_valid_video(out, require_streams=True):
             return out
         self._final_ffmpeg_log.append(f"xfade({Path(left).name}×{Path(right).name}): 输出无效，降级硬切拼接")
@@ -3295,7 +3295,7 @@ class RenderService:
                                   "-b:v",bitrate,*_delivery_extra_args(encoder)]),
                                "-c:a","aac","-b:a",ab,"-map","0:v:0","-map","1:a:0",
                                "-movflags","+faststart",output_path],
-                              capture_output=True, text=False, timeout=600)
+                              capture_output=True, text=False, timeout=3600)
                 if _is_valid_video(output_path): return
                 logger.warning("_mix_audio: 配音混合输出无效: %s", output_path)
             except Exception as e:

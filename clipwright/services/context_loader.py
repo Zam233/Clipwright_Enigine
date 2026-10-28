@@ -19,7 +19,7 @@ from typing import Any
 
 from clipwright.config import logger, settings
 
-DEFAULT_BUDGET_CHARS = 6000
+DEFAULT_BUDGET_CHARS = 60000
 #: 各段默认上限（字符）
 LIMITS = {"brief": 400, "plan": 1400, "artifacts": 600, "reports": 1800,
           "failure": 900, "script": 2000}

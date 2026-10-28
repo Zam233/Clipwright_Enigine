@@ -66,14 +66,20 @@ def missing_keys(stage: str, board: dict[str, Any], override: dict[str, Any] | N
     return [k for k in REQUIRED_KEYS.get(stage, ()) if k not in available]
 
 
-def validate(stage: str, inputs: dict[str, Any]) -> list[dict[str, Any]]:
+def validate(stage: str, inputs: dict[str, Any],
+             board: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """校验主 agent 显式给的 inputs；返回 `needs[]`（空列表 = 齐了）。
 
-    与 `assemble` 的区别：**只校验、不填值**。缺什么就报什么，由主 agent 决定补什么
-    （PRD §16.2：数据必须过主 agent 的手，禁止自己从黑板/环境里捞）。
+    与 `assemble` 的区别：**只校验、不填值**。缺什么就报什么，由主 agent 决定补什么。
+
+    `board` 传入时，**黑板里已有的键也算满足**：这些是大对象（分镜/候选素材/
+    时间线），由上游阶段产出、`assemble` 会从黑板补齐。E2E 2026-10-28 实测反例：
+    严格只认显式键时，模型为了通过校验会把 43 个场景**内联进 tool_call 参数**，
+    参数被截断 → `JSONDecodeError: Unterminated string` → 整个任务 failed。
     """
     given = dict(inputs or {})
-    missing = [k for k in REQUIRED_KEYS.get(stage, ()) if k not in given]
+    have = set(given) | {k for k, v in (board or {}).items() if v not in (None, "", [], {})}
+    missing = [k for k in REQUIRED_KEYS.get(stage, ()) if k not in have]
     needs: list[dict[str, Any]] = []
     for key in missing:
         needs.append({
@@ -99,6 +105,15 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
     """按阶段构造 `XInput`；构造规则与老编排器 `_dispatch` 逐条对应。"""
     ctx = context or build_context(task)
     data: dict[str, Any] = {**(board or {}), **(override or {})}
+    # 显式传参里"给了键但是空值"（`scenes: []` / `script_skeleton: {}`）等于没给：
+    # 大对象（分镜、候选素材、时间线）本来就该由上游阶段产出、从黑板流下来，
+    # 让主 agent 内联 43 个场景既不现实也容易传空。实测（E2E 2026-10-28）：
+    # 主 agent 传了空 script_skeleton → `EditAgent: 0 个场景, 0 候选素材`
+    # → edit 产出空时间线 → 收尾守门判失败。空值一律回退到黑板。
+    _flow_keys = ("script_skeleton", "candidate_clips", "scenes", "timeline")
+    for key in _flow_keys:
+        if not data.get(key) and (board or {}).get(key):
+            data[key] = board[key]
     extra = ctx.extra_params
     # override 也要能覆盖 brief/plan：它们平时来自 request.extra，
     # 但主 Agent 需要能在某一阶段临时改写（例如把用户新要求塞进 constraints/brief）
@@ -130,6 +145,16 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
             creative_brief=brief,
             production_plan=plan,
         )
+
+    if stage in ("material", "edit"):
+        # 兜底：material/edit 只读 `script_skeleton["scenes"]`，而黑板里 scenes 是
+        # **独立的 key**（stage_merge 白名单）。老 StructureOutput 的 script_skeleton
+        # 里没有 scenes 时，下游拿到的是 scenes=[] → 「候选素材 0 条」。
+        # 这里把黑板上的 scenes 补进去（有则补、无则零变化）。
+        skeleton = dict(data.get("script_skeleton", {}) or {})
+        if not skeleton.get("scenes") and isinstance(data.get("scenes"), list):
+            skeleton["scenes"] = data["scenes"]
+        data["script_skeleton"] = skeleton
 
     if stage == "material":
         from clipwright.schema.agent import MaterialInput
