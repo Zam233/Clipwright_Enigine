@@ -42,7 +42,16 @@ MAX_MESSAGE_LENGTH = 50000       # 单条消息最大字符
 LLM_RETRY_MAX = 3                # LLM 最大重试次数
 LLM_RETRY_BASE_DELAY = 2.0      # 重试基础延迟（秒）
 BRIEF_GENERATE_TIMEOUT = 180     # 简报生成单次调用超时（秒）
-PLAN_TRANSLATE_TIMEOUT = 240     # 规划书翻译单次调用超时（秒）
+# E2E 2026-10-28 实测：规划书翻译**必须显式给 max_tokens**。不给时下发的是
+# provider 默认（deepseek 系 4096），推理型模型把预算全用在 reasoning 上，
+# HTTP 200 但正文为空（llm.py:692 那条告警），三次重试全空 → 规划书退化成
+# 「LLM 翻译超时，使用基础版本」的兜底表。8192 让 6 场景的规划书一次过。
+PLAN_TRANSLATE_MAX_TOKENS = 16384
+# 场景改写（把修改意见落到 raw_scenes 本体）的输出是完整 JSON 数组，
+# 同样要显式给预算，否则正文必然为空。
+PLAN_SCENE_REVISE_MAX_TOKENS = 8192
+# 超时必须容得下「一次真实调用 + 一次重试」，否则重试还没跑完就整段放弃
+PLAN_TRANSLATE_TIMEOUT = 420     # 规划书翻译超时（秒，覆盖重试）
 SESSION_TTL_HOURS = 48           # 会话过期时间
 SESSION_CLEANUP_INTERVAL = 3600  # 清理检查间隔（秒）
 
@@ -674,12 +683,52 @@ class RequirementsService:
                             "metadata": {},
                         })
             else:
-                status = "gathering"
+                # E2E 2026-10-29 发现：这里原本直接把状态打回 `gathering`，只回一句
+                # 「好的，请告诉我需要如何调整？」。后果很严重——
+                # ① 用户在 brief_ready 下问一句/提一句「直接给我规划书」，brief 已经
+                #    生成却被判成"还没聊够"，会话退回 gathering；
+                # ② 那条消息本身没被用于修订方案（白说一遍）；
+                # ③ 之后再说「确认」也落不到确认分支（状态已不是 brief_ready），
+                #    得先说两次才生效。
+                # 现在：**保留 brief_ready**，把这条消息当成"修订意见"重新走一次
+                # gathering 合并出新方案；新方案出来就再给确认提示，出不来就明说。
+                revised = await self._handle_gathering(
+                    messages, brief_data, "gathering", user_inputs, session_id,
+                    on_delta=on_delta, on_reasoning=on_reasoning,
+                )
+                new_brief = revised.get("brief_draft")
+                updated = isinstance(new_brief, dict) and bool(new_brief)
+                if updated:
+                    brief_data = new_brief
                 messages.append({
-                    "role": "assistant", "content": "好的，请告诉我需要如何调整？",
+                    "role": "assistant",
+                    "content": str(revised.get("reply") or "已记下你的修改意见。"),
                     "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
-                    "metadata": {},
+                    "metadata": {"revision": True},
                 })
+                # 无论修订是否成功，状态都停在 brief_ready：方案还在，用户可以继续
+                # 提意见，也可以直接回「确认」推进到规划书。
+                status = "brief_ready"
+                if updated and isinstance(brief_data, dict) and brief_data:
+                    messages.append({
+                        "role": "assistant",
+                        "content": (
+                            "\n\n---\n\n### ✅ 方案已按你的意见更新\n\n"
+                            f"**标题**: {brief_data.get('title', '待定')}\n"
+                            f"**概述**: {brief_data.get('overview', '')}\n"
+                            f"**风格**: {brief_data.get('style_direction', '')}\n\n"
+                            "回「确认」生成制作规划书，或继续提修改意见。"
+                        ),
+                        "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                        "metadata": {},
+                    })
+                else:
+                    messages.append({
+                        "role": "assistant",
+                        "content": "方案没有变动。回「确认」生成制作规划书，或再说清要改哪一处。",
+                        "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                        "metadata": {},
+                    })
 
         elif status in ("brief_confirmed", "plan_confirmed"):
             # P1-20: 确认中间态此前没有路由分支——用户确认后再发任何消息都
@@ -796,9 +845,15 @@ class RequirementsService:
                 + feedback[:1000]
             )
             resp = await self._llm.generate(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
                 temperature=0.3,
+                # 场景本体是有内容的 JSON 数组，不给预算时推理型模型会把默认
+                # 4096 全用在 reasoning 上、正文返回空（实测 max_tokens=16 那条
+                # 告警就是这里漏参数的直接后果），修订因此永远失败。
+                max_tokens=PLAN_SCENE_REVISE_MAX_TOKENS,
             )
             content = (resp.content or "").strip()
             if content.startswith("```"):
@@ -1922,6 +1977,7 @@ class RequirementsService:
                 llm_call_with_retry(self._llm, "plan_translate", pipeline_id="", **{
                     "system_prompt": system_prompt,
                     "user_prompt": f"结构 Agent 输出:\n{scenes_json}",
+                    "max_tokens": PLAN_TRANSLATE_MAX_TOKENS,
                 }),
                 timeout=PLAN_TRANSLATE_TIMEOUT,
             )

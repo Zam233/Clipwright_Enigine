@@ -191,6 +191,55 @@ def _pick_better_scenes(
     return b if _score(b) > _score(a) else a
 
 
+def _align_scene_durations(
+    scenes: list[dict],
+    audio_duration_sec: float = 0.0,
+    dub_segments: list | None = None,
+) -> tuple[list[dict], str]:
+    """把场景时长对齐到配音时间轴（等比缩放），返回 (scenes, warning)。
+
+    E2E 2026-10-28 实测缺口：**只有"复用已确认规划书"分支**做过这件事，
+    全新生成的分支完全不管 `audio_duration_sec`——LLM 常把 6 个场景各写 6s，
+    面对 702s 的配音，时间线只覆盖 36s（5%），画面还没进入论证就结束了。
+    缩放规则与复用分支一致；dub_segments 有真实分段时以它的末段为准。
+    """
+    warning = ""
+    if not scenes:
+        return scenes, warning
+    target = 0.0
+    if isinstance(dub_segments, list) and dub_segments:
+        try:
+            target = max(
+                float(s.get("end_sec", 0) or 0)
+                for s in dub_segments if isinstance(s, dict)
+            )
+        except Exception:  # noqa: BLE001 — 分段脏数据不阻断
+            target = 0.0
+    if target <= 0:
+        target = float(audio_duration_sec or 0)
+    total = sum(float(s.get("duration_sec", 0) or 0) for s in scenes)
+    if target <= 0 or total <= 0:
+        return scenes, warning
+    scale = target / total
+    if abs(scale - 1.0) <= 0.02:
+        return scenes, warning
+    # 权重优先用口播字数：同一段配音里，长段落的镜头就该更长。
+    # 口播全空时退回原 duration_sec 比例（纯等比缩放）。
+    weights = [len(str(s.get("voiceover_script") or "").strip()) for s in scenes]
+    if sum(weights) <= 0:
+        weights = [float(s.get("duration_sec", 0) or 0) for s in scenes]
+    weight_sum = sum(weights)
+    if weight_sum <= 0:
+        return scenes, warning
+    for s, w in zip(scenes, weights):
+        s["duration_sec"] = round(target * w / weight_sum, 3)
+    logger.info(
+        "StructureAgent: 场景时长按配音时间轴等比缩放 ×%.2f（%.1fs → %.1fs，%d 个场景）",
+        scale, total, target, len(scenes),
+    )
+    return scenes, f"场景时长已按配音时间轴缩放 ×{scale:.2f}"
+
+
 def _validate_scenes(scenes: list[dict]) -> tuple[list[dict], list[str]]:
     """验证场景列表的完整性，过滤无效场景。
 
@@ -293,23 +342,16 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                             "special_requirements",
                         ) if brief.get(k)
                     }
-                    # dub_segments 时间轴对齐——确认了配音分段时，场景时长按
-                    # 配音总长等比缩放（旧实现复用分支不消费该参数）
-                    dub_segments = context.extra_params.get("dub_segments") or []
-                    if dub_segments:
-                        try:
-                            dub_end = max(float(s.get("end_sec", 0) or 0) for s in dub_segments
-                                          if isinstance(s, dict))
-                            scene_total = sum(float(s.get("duration_sec", 0) or 0) for s in reused)
-                            if dub_end > 0 and scene_total > 0:
-                                scale = dub_end / scene_total
-                                if abs(scale - 1.0) > 0.02:
-                                    for s in reused:
-                                        s["duration_sec"] = round(
-                                            float(s.get("duration_sec", 0) or 0) * scale, 3)
-                                    reuse_warnings.append(f"场景时长已按配音时间轴缩放 ×{scale:.2f}")
-                        except Exception:
-                            logger.debug("dub_segments 对齐失败，保持原场景时长")
+                    # 配音时间轴对齐——dub_segments 有真实分段时以分段末段为准，
+                    # 否则退回上传配音的总时长（旧实现只认 dub_segments，
+                    # 直接上传整段配音的会话在这里完全不对齐）。
+                    reused, align_warning = _align_scene_durations(
+                        reused,
+                        float(context.extra_params.get("audio_duration_sec", 0) or 0),
+                        context.extra_params.get("dub_segments") or [],
+                    )
+                    if align_warning:
+                        reuse_warnings.append(align_warning)
                     # 为缺少动画标记的场景调用 LLM 补充动画标记（不硬编码），
                     # 使 AnimationAgent 能创建动画（含 LLM 动态 MG 动画）。
                     reused = await self._enrich_scene_animations(reused, context)
@@ -573,6 +615,16 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             scenes = self._strip_opening_animation_markers(
                 scenes, context.category_plugin_id
             )
+            # 配音时间轴对齐（voiceover 模式）：LLM 给的 duration_sec 常常与真实
+            # 配音长度差一个数量级（实测 36s 覆盖 702s 文稿），此处等比拉到配音长度。
+            if video_mode == "voiceover":
+                scenes, _align_warning = _align_scene_durations(
+                    scenes,
+                    float(audio_duration or 0),
+                    context.extra_params.get("dub_segments") or [],
+                )
+                if _align_warning:
+                    warnings = list(warnings) + [_align_warning]
 
             # A-17：执行偏离规划 → plan_drift 留痕（JSONL + trace 事件；无 plan 时零变化）
             if plan is not None:
@@ -792,7 +844,12 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                         },
                     },
                     "required": ["markers"],
-                }, pipeline_id=context.pipeline_id), fallback=None, retries=2)
+                },
+                # 推理型模型的 reasoning 会吃掉预算：不给 max_tokens 时实测
+                # HTTP 200 但正文为空（"LLM 补充了 0 个动画标记"），动画全链路
+                # 因此少标记。给足预算才拿得到 markers 数组。
+                max_tokens=4096,
+                pipeline_id=context.pipeline_id), fallback=None, retries=2)
             markers = result.get("markers", []) if isinstance(result, dict) else []
             enriched = 0
             for m in markers:

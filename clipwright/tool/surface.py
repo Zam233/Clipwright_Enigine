@@ -203,6 +203,39 @@ def _describe(entry_name: str, tier: str, base: str) -> str:
     return f"{text}［{tier}：{hint}］" if hint else text
 
 
+def _coerce_function_schema(name: str, schema: Any) -> dict[str, Any] | None:
+    """把工具自报的 schema 归一化成 OpenAI function 形态；畸形则返回 None。
+
+    E2E 2026-10-28 实测：插件工具的 `to_llm_tool()` 有的返回**扁平**形态
+    `{name, description, parameters}`（没有 `function` 包一层），旧实现里
+    `schema["function"]["description"]` 直接 KeyError('function')，
+    主 agent 工具面构建失败 → 任务第 1 轮就 `task_end=failed`（tools=0）。
+    契约：function.name 一律用注册表名（工具就是按注册表名调用的）。
+    """
+    if not isinstance(schema, dict) or not schema:
+        return None
+    fn = schema.get("function")
+    if isinstance(fn, dict):
+        if not isinstance(fn.get("parameters"), dict):
+            fn["parameters"] = {"type": "object", "properties": {}}
+        fn.setdefault("name", name)
+        schema["type"] = schema.get("type") or "function"
+        return schema
+    if schema.get("name") or schema.get("parameters") or schema.get("description"):
+        params = schema.get("parameters")
+        logger.info("工具 %s 的 schema 是扁平形态（无 function 包装），已归一化", name)
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": str(schema.get("description") or ""),
+                "parameters": params if isinstance(params, dict)
+                else {"type": "object", "properties": {}},
+            },
+        }
+    return None
+
+
 def build_surface(*, tiers: Iterable[str] = SURFACE_TIERS) -> list[SurfaceEntry]:
     """构建 Kernel 可直调的工具面（按档位过滤，dangerous 永不入内）。"""
     from clipwright.services.capability_matrix import (  # 延迟导入避免环
@@ -229,9 +262,14 @@ def build_surface(*, tiers: Iterable[str] = SURFACE_TIERS) -> list[SurfaceEntry]
             continue
         try:
             schema = tool.to_llm_tool("openai")
-        except Exception as e:  # noqa: BLE001 — schema 推断失败不该炸整个面
-            raise SurfaceError(f"工具 {name} 的 schema 推断失败: {e}") from e
-        base_desc = str((schema.get("function") or {}).get("description") or "")
+        except Exception as e:  # noqa: BLE001 — 单个工具坏掉不该炸整个面
+            logger.warning("工具 %s 的 schema 推断失败，已从工具面跳过: %s", name, e)
+            continue
+        schema = _coerce_function_schema(name, schema)
+        if schema is None:
+            logger.warning("工具 %s 的 schema 形态不可用（既非 function 包装也非扁平），已跳过", name)
+            continue
+        base_desc = str(schema["function"].get("description") or "")
         schema["function"]["description"] = _describe(name, entry.tier, base_desc)
         out.append(
             SurfaceEntry(

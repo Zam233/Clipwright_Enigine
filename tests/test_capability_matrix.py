@@ -17,10 +17,47 @@ def test_registry_coverage_is_exhaustive():
     tools = [e for e in matrix if e.kind == "tool"]
     assert tools, "工具矩阵不能为空（注册表没初始化？）"
     assert all(e.tier in cm.TIERS for e in tools)
-    # 数量与注册表一致（说明没有未裁档位的工具被静默跳过）
+    # 数量与注册表一致（说明没有未裁档位的**内置**工具被静默跳过）。
+    # 例外：插件贡献但没登记档位的工具会被降级跳过（见
+    # test_plugin_tool_without_tier_degrades_instead_of_killing_the_surface）。
     from clipwright.tool.registry import ToolRegistry
 
-    assert len(tools) == len(ToolRegistry.list())
+    registered = ToolRegistry.list()
+    skipped = [
+        str(i.name) for i in registered
+        if cm.TIER_MAP.get(str(i.name)) is None
+        and getattr(ToolRegistry.get(str(i.name)), "_plugin_id", "")
+    ]
+    assert len(tools) == len(registered) - len(skipped)
+
+
+def test_plugin_tool_without_tier_degrades_instead_of_killing_the_surface(monkeypatch):
+    """插件工具漏档位 → 移出工具面 + 告警，**不能**让整个矩阵构建失败。
+
+    E2E 2026-10-28 实测：`plugins/text_animations` 等内置插件注册了 35 个工具，
+    一条都没在 TIER_MAP 里；旧实现直接抛 CapabilityMatrixError，主 agent 工具面
+    构建失败，一镜到底任务第 1 轮就 `task_end=failed`（tools=0, cost=0）。
+    """
+    from clipwright.tool.base import BaseTool
+    from clipwright.tool.registry import ToolRegistry
+    from clipwright.schema.tool import ToolExecResult, ToolStatus
+
+    class _ProbeTool(BaseTool):
+        name = "__probe_plugin_tool__"
+        description = "probe"
+
+        async def execute(self, **kwargs):  # noqa: ANN003, ANN201
+            return ToolExecResult(status=ToolStatus.SUCCESS, tool_name=self.name)
+
+    ToolRegistry.register(_ProbeTool(), plugin_id="probe_plugin")
+    try:
+        matrix = cm.build_matrix()
+        names = {e.name for e in matrix if e.kind == "tool"}
+        assert "__probe_plugin_tool__" not in names, "漏档位的插件工具不得进 agent 工具面"
+        assert names, "其他能力照常可用"
+    finally:
+        ToolRegistry.unregister_by_plugin("probe_plugin")
+        cm._WARNED_UNCLASSIFIED.discard("__probe_plugin_tool__")
 
 
 def test_stale_tier_entries_are_rejected():

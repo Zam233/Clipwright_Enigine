@@ -29,6 +29,8 @@ import sys
 from dataclasses import asdict, dataclass
 from typing import Any, Iterable, Literal, Optional
 
+from clipwright.config import logger
+
 TIERS: tuple[str, ...] = ("read", "write_local", "costly", "dangerous")
 
 PermissionTier = Literal["read", "write_local", "costly", "dangerous"]
@@ -37,6 +39,10 @@ CapabilityKind = Literal["tool", "skill", "pipeline", "subagent", "meta"]
 
 class CapabilityMatrixError(RuntimeError):
     """矩阵构建失败（通常是新增能力未裁档位）。"""
+
+
+#: 已经就"插件工具漏档位"告过警的名字（避免每次构建工具面都刷屏）
+_WARNED_UNCLASSIFIED: set[str] = set()
 
 
 # ── 权限档裁定表（以实际注册表逐条核对；新增工具必须在此登记）───────────────
@@ -124,6 +130,46 @@ TIER_MAP: dict[str, PermissionTier] = {
     "pv_engine_render": "costly",
     "pv_engine_beats": "costly",
     "pv_engine_align": "costly",
+    # —— 内置插件贡献的工具（plugins/ 下随插件加载才注册；见 OPTIONAL_PLUGIN_TOOLS）——
+    # E2E 2026-10-28 发现：这些名字此前**一条都没登记**，只要插件被加载，
+    # `build_matrix()` 立刻抛 CapabilityMatrixError，主 Agent 工具面构建失败，
+    # 一镜到底任务在第 1 轮就 task_end=failed（tools=0, cost=0）。定档而不是放宽校验。
+    "ai_image_generate": "costly",      # 付费图像生成
+    "ai_music_generate": "costly",      # 付费音乐生成
+    "ai_video_generate": "costly",      # 付费视频生成
+    "extended_tts": "costly",           # 第三方 TTS（ElevenLabs/Azure，按字符计费）
+    "whisper_transcribe_local": "costly",  # 本地转写：长耗时
+    "subtitle_translate": "costly",     # 外部翻译（LLM/DeepL）
+    "caption_segment": "read",          # 字幕切分：纯计算，不写盘
+    "example_echo": "read",             # 示例插件回显
+    "sandbox_echo": "read",             # 沙箱示例回显
+    "sandbox_write_probe": "write_local",  # 写盘探针：只写工作区
+    # 文字动画渲染（plugins/text_animations）：本地 ffmpeg 写 mp4 产物
+    "text_blur_in": "write_local",
+    "text_custom_json": "write_local",
+    "text_elastic": "write_local",
+    "text_fade_in": "write_local",
+    "text_flip_in": "write_local",
+    "text_glow": "write_local",
+    "text_gradient": "write_local",
+    "text_letter_reveal": "write_local",
+    "text_morph": "write_local",
+    "text_neon": "write_local",
+    "text_perspective": "write_local",
+    "text_pulse": "write_local",
+    "text_rainbow": "write_local",
+    "text_rotate_in": "write_local",
+    "text_scale_bounce": "write_local",
+    "text_shake": "write_local",
+    "text_slide_down": "write_local",
+    "text_slide_left": "write_local",
+    "text_slide_right": "write_local",
+    "text_slide_up": "write_local",
+    "text_typewriter": "write_local",
+    "text_typing_cursor": "write_local",
+    "text_wave": "write_local",
+    "text_zoom_in": "write_local",
+    "text_zoom_out": "write_local",
 }
 
 #: 由**插件**贡献、只在插件加载后才存在的工具。
@@ -141,6 +187,42 @@ OPTIONAL_PLUGIN_TOOLS: frozenset[str] = frozenset({
     "pv_engine_render",
     "pv_engine_beats",
     "pv_engine_align",
+    # plugins/ 下的示例/扩展插件（默认目录里存在，但可被卸载）
+    "ai_image_generate",
+    "ai_music_generate",
+    "ai_video_generate",
+    "extended_tts",
+    "whisper_transcribe_local",
+    "subtitle_translate",
+    "caption_segment",
+    "example_echo",
+    "sandbox_echo",
+    "sandbox_write_probe",
+    "text_blur_in",
+    "text_custom_json",
+    "text_elastic",
+    "text_fade_in",
+    "text_flip_in",
+    "text_glow",
+    "text_gradient",
+    "text_letter_reveal",
+    "text_morph",
+    "text_neon",
+    "text_perspective",
+    "text_pulse",
+    "text_rainbow",
+    "text_rotate_in",
+    "text_scale_bounce",
+    "text_shake",
+    "text_slide_down",
+    "text_slide_left",
+    "text_slide_right",
+    "text_slide_up",
+    "text_typewriter",
+    "text_typing_cursor",
+    "text_wave",
+    "text_zoom_in",
+    "text_zoom_out",
 })
 
 #: 编排层能力（不属于 ToolRegistry，但 agent 同样可以"调用"）
@@ -282,6 +364,23 @@ def _tool_entries() -> list[CapabilityEntry]:
         name = str(info.name)
         tier = TIER_MAP.get(name)
         if tier is None:
+            tool = ToolRegistry.get(name)
+            owner = str(getattr(tool, "_plugin_id", "") or "")
+            if owner:
+                # **插件**贡献的工具漏档位：降级处理，不让它把整条任务打死。
+                # 旧实现一律抛错 → 只要装了一个没登记档位的插件，agent 工具面
+                # 就构建失败，所有任务的第一次工具调用直接 task_end=failed
+                # （E2E 2026-10-28 实测：plugins/text_animations 等 35 个工具触发）。
+                # 现在：不进 agent 工具面（模型看不到也调不到），降级留痕，
+                # 内置工具漏档位依旧硬失败。
+                if name not in _WARNED_UNCLASSIFIED:
+                    _WARNED_UNCLASSIFIED.add(name)
+                    logger.warning(
+                        "插件 %s 的工具 %s 未在 capability_matrix.TIER_MAP 裁档位，"
+                        "已从 agent 工具面移除（不影响其他能力）",
+                        owner, name,
+                    )
+                continue
             unknown.append(name)
             continue
         tool = ToolRegistry.get(name)
