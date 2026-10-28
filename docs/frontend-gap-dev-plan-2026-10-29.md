@@ -7,6 +7,12 @@
   1. `src/pages/admin/ToolsPage.tsx` **已存在**（旧 `/api/tool/*` 的执行页），B3 改为**扩展它**（新增「Agent 工具面」页签），不新建页面。
   2. `eventsUrl()` 是死方法（全仓 0 调用），`/api/workspace/{id}/events` 是**设计好的 JSON 端点**；B2 的目标是"让前端真正消费工作区进度（SSE + JSON 回填）"，不是改后端协议。
   3. 工作区**没有**"单项重试"后端端点（只有整批 `POST /workspace/{id}/scan` 与 `POST /workspace/{id}/materials` 上传）；B10 把"单项重试"降级为"失败项明细 + 一键重扫"，单项重试列入 §8 停止条件。
+- **复审记录（2026-10-29，独立模型复审后修订）**：修正 5 处 ——
+  ① B1 的状态变量名应为 `retryErr`（不是 `retryError`）；
+  ② 所有 `Select-String -Path src\**\*.ts` 改为 `Get-ChildItem -Recurse | Select-String`（PS5.1 不递归）；
+  ③ B12 的 `-Pattern '225|236'` 会误命中 `frontend-backend-parity.md:260` 的 `SettingsPage.tsx:236-244`，改为 `'225 条|236 条|路由 \*\*236'`；
+  ④ §2 总表 B4 依赖补成「B1」（与 §3 一致）；
+  ⑤ B11 的事实澄清：`TaskToolbar` 现状**已**拦 `done/failed/cancelled`，本批核心缺口是**后端 `api/task.py` 缺终态守卫**，前端只需补 `unknown_terminal`、409 回显与「查看结果」。
 
 ---
 
@@ -16,8 +22,8 @@
 |---|---|
 | 批次 | 13 批（B1–B13），与 PRD 一一对应，无新增无遗漏 |
 | 总人日 | **22**（= PRD §6 各批人日之和：1.5+1.5+2.0+2.0+3.0+1.5+1.5+2.5+1.5+1.0+2.0+1.0+1.0） |
-| 关键路径 | B5（事件契约）→ B6（Plan 双轨）→ B11（任务状态机）→ B13（回归门禁） |
-| P0 批次 | **B1、B5、B11**（对应 G1/G2、G10、G8+G2 的连带）；PRD 里 G3 已降级为 P1，故 B2 不在 P0 |
+| 关键路径 | B5（事件契约，最长链）→ B6 / B7 / B11 三批**在 B5 完成后可并行**（它们各自只依赖 B5，不互相依赖）；B13 收尾 |
+| P0 批次 | **B1、B5、B11**（G1/G2、G10、G8）。注：PRD 里 G8 标注为 P1，本计划把它抬到 P0 —— 因为后端缺终态守卫会让已结束任务被重新调度（真副作用），不只是文案问题 |
 | 建议从哪开始 | **B1**：改动只在前端 2 个文件 + 1 个测试，能立刻消除"点了报 410"的假入口，且不依赖任何后端改动 |
 | 提交节奏 | 一批一提交（后端+前端的同批拆两次提交，见 §6）；每批合入前必须重跑该批验收命令 + 该仓库全量门禁 |
 | 可并行 | B3 ∥ B4（互不碰文件）；B7 ∥ B8（前者只动画配置页与运行页，后者新增页面）；其余均串行 |
@@ -48,6 +54,9 @@
 
 > 全量后端回归**不要**设 `PYTHONIOENCODING=utf-8`：会让 `tests/test_eval_loop.py::test_replay_missing_file_is_loud` 假红（子进程 stdout 用 cp936 解码）。
 
+> **PowerShell 5.1 提示**：`Select-String -Path 'src\**\*.ts'` 里的 `**` **不递归**。本计划所有验收命令统一写成
+> `Get-ChildItem <dir> -Recurse -Include *.ts,*.tsx | Select-String -Pattern '...'`；对单文件用 `Select-String -Path <file>`。
+
 ### 1.2 每批合入前必跑（不得省略）
 
 ```powershell
@@ -74,7 +83,7 @@ cd J:\Clipwright; python -m pytest tests -q; python -m ruff check clipwright --s
 | **B1** `[P0]` | G1、G2 | 清掉退役 pipeline 前端动作，历史页只读并指向 Task 入口 | — | 1.5 | 低 | 文件级回滚（2 文件+1 测试） |
 | B2 | G3 | 工作区进度真正被消费（SSE + JSON 回填 + 失败明细） | — | 1.5 | 中（SSE 生命周期） | 文件级，后端零改动 |
 | B3 | G5、G12 | 「Agent 工具面」页签：工具目录/schema/records 可发现 | — | 2.0 | 中（易被误当执行入口） | 页签级回滚 |
-| B4 | G14 | 批量任务/脚本工具/选题建议客户端 + 最小入口 | — | 2.0 | 中（旧 pipeline 边界） | 入口可隐藏 |
+| B4 | G14 | 批量任务/脚本工具/选题建议客户端 + 最小入口 | B1（同文件 `pipeline.ts`，先收口退役方法） | 2.0 | 中（旧 pipeline 边界） | 入口可隐藏 |
 | **B5** `[P0]` | G10、G9 | 事件 discriminated union + parser + checkpoint 折叠 + 终态 reason 不再伪装 failed | B1 | 3.0 | 高（跨仓契约） | 保留 `legacy` adapter 可回退 |
 | B6 | G7 | Plan（假设）与真实 Run 双轨视觉分离 | B5 | 1.5 | 中 | 组件级回滚 |
 | B7 | G11、G17 | 未知成本、降级、生效值可解释 | B5 | 1.5 | 中 | 卡片级回滚 |
@@ -100,7 +109,7 @@ cd J:\Clipwright; python -m pytest tests -q; python -m ruff check clipwright --s
 
 | 文件 | 改什么 |
 |---|---|
-| `src/pages/admin/PipelineAdminPage.tsx` | 删除「重试」按钮与其 handler（现第 125 行 `await pipelineApi.retry(...)`）；页头加「历史只读」徽章；新增一块「新任务请走」指引（`/api/requirements/proceed` → Task，链接到「新建制作」）；`retryError` 状态与相关 JSX 一并删除 |
+| `src/pages/admin/PipelineAdminPage.tsx` | 删除「重试」按钮与其 handler（现第 120–131 行 `retryRun` 内的 `await pipelineApi.retry(...)`，错误态变量名是 **`retryErr`**（118 行），不是 `retryError`）；页头加「历史只读」徽章；新增一块「新任务请走」指引（`/api/requirements/proceed` → Task，链接到「新建制作」）；`retryErr`/`retryingId`/`retryTimersRef` 及其 JSX 一并删除 |
 | `src/services/api/pipeline.ts` | `runAsync`（第 26 行）与 `retry`（第 77 行）改为 `/** @deprecated 已退役：后端返回 410 */`，方法体保留但**只允许 legacy 只读页/测试引用**；新增注释指向 `/api/task` 与 `/api/requirements/proceed` |
 | `src/pages/admin/PipelineAdminPage.test.tsx` | 新增 2 例：① 页面不再渲染「重试」；② 渲染「历史只读」与替代入口文案 |
 | `src/services/api/pipeline.test.ts`（新建） | 断言 `runAsync`/`retry` 的 URL 仍指向旧路径（**只用于证明它们是 legacy，不被新流程调用**）——若仓库无此文件则新建 |
@@ -116,9 +125,9 @@ cd J:\Clipwright; python -m pytest tests -q; python -m ruff check clipwright --s
 
 ```powershell
 cd J:\Clipweight-Client
-Select-String -Path src\**\*.ts,src\**\*.tsx -Pattern 'pipelineApi\.retry'          # 期望 0 命中
-Select-String -Path src -Pattern "run-async"                                        # 期望仅 src/services/api/pipeline.ts 的 legacy 定义/注释
-npx vitest run src/pages/admin/PipelineAdminPage.test.tsx                           # 期望含用例名「不再渲染重试按钮」「显示历史只读与替代入口」
+Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern 'pipelineApi\.retry'   # 期望 0 命中（PS5.1 的 src\**\*.ts 不递归，勿用）
+Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern 'run-async'           # 期望仅 src/services/api/pipeline.ts 的 legacy 定义/注释
+npx vitest run src/pages/admin/PipelineAdminPage.test.tsx                                     # 期望含用例名「不再渲染重试按钮」「显示历史只读与替代入口」
 npx tsc --noEmit; npm run build
 ```
 
@@ -193,7 +202,7 @@ npx tsc --noEmit; npm run build
 |---|---|
 | `src/services/api/toolSurface.ts`（新建） | `listCatalog()` → `GET /api/tools`；`getSchema()` → `GET /api/tools/schema`；`listRecords(limit)` → `GET /api/tools/records` |
 | `src/types/toolSurface.ts`（新建） | `ToolSurfaceEntry {name, kind, tier, available, description, danger?, cost_hint?}`、`ToolSurfaceRecord` |
-| `src/pages/admin/ToolsPage.tsx` | 顶部页签从 `'tool' | 'skill'` 扩成 `'tool' | 'skill' | 'surface'`；新页签渲染：分组（agent/domain/其余）、`data-tier` 字段、`available=false` 灰显并给原因、`danger` 行**不提供执行按钮**（只读）；底部可折叠「最近调用记录」 |
+| `src/pages/admin/ToolsPage.tsx` | 顶部页签从 `'tool' | 'skill'` 扩成 `'tool' | 'skill' | 'surface'`；**新页签必须完全只读，且不复用现有 `selected`/`params`/`executing`/`toolApi.execute` 那套执行状态**（该页已有执行器，混用会把目录变成任意执行入口）；新页签渲染：分组（agent/domain/其余）、`data-tier` 字段、`available=false` 灰显并给原因、`danger` 行不渲染任何按钮；底部可折叠「最近调用记录」 |
 | `src/pages/admin/ToolsPage.surface.test.tsx`（新建） | 4 例：① 渲染 5 个 agent 工具名（`delegate_agent`/`research_agent`/`get_agent_run`/`list_agent_runs`/`cancel_agent_run`）；② 渲染 `replan_closure`/`validate_stage_plan`；③ `danger` 行无「执行」按钮；④ 接口失败显示可读错误 |
 
 **任务分解**
@@ -539,16 +548,16 @@ npx tsc --noEmit; npm run build
 | 后端 | `clipwright/api/task.py` | `resume_task`（179–186）加终态守卫：`task.terminal` → `HTTPException(409, detail="任务已结束，无法继续")`，返回体含 `status:"refused"`、`reason:"task_terminal"`；`pause_task` 已有 `KernelError` 路径保持 |
 | 后端 | `tests/test_task_api.py` | +2 例：① done 任务 resume → 409 且 `reason=task_terminal`；② paused 任务 resume → 200 且 `resumed=true` |
 | 前端 | `src/services/api/task.ts` | `resume` 返回类型改 `{status:string; resumed?:boolean; refused?:boolean; reason?:string}` |
-| 前端 | `src/features/task/TaskToolbar.tsx` | 终态（done/failed/cancelled/unknown_terminal）不渲染「继续」；`paused` 显示「继续」，`pending` 显示「开始」，`running/planning` 显示暂停/取消；失败态加「查看结果」 |
+| 前端 | `src/features/task/TaskToolbar.tsx` | **现状已拦**：只有 `paused/pending` 显示「继续/开始」（26–48 行），`done/failed/cancelled` 本来就没有按钮。本批真正要做的是：① 加 `unknown_terminal` 也按终态处理（不显示继续）；② 失败/取消态加「查看结果」；③ 把 5 态文案收敛到一处常量表 `STATUS_ACTIONS`，避免以后再漂移 |
 | 前端 | `src/stores/taskStore.ts` | `resume` 捕获 409 → `error` 文案「任务已结束，无法继续（已结束任务不能续跑）」并在 `task` 上保留终态 |
 | 前端 | `src/features/task/task-ui.test.tsx` | +2 例：终态不显示继续；resume 409 显示拒绝文案 |
 | 前端 | `src/features/copilot/CopilotTaskRunTab.tsx` | 顶部状态行按 5 种状态给不同徽章文案（`paused/needs_review/needs/failed/cancelled`） |
 
 **任务分解**
 
-1. 后端先写 2 个 API 用例（红）→ 加守卫（绿）→ 跑 `tests/test_task_api.py`。
-2. 前端改 `task.ts` 类型 + `taskStore.resume` 错误处理。
-3. `TaskToolbar` 状态分支重写（按 5 态矩阵）。
+1. 后端先写 2 个 API 用例（红）→ 加守卫（绿）→ 跑 `tests/test_task_api.py`。**这是本批的核心缺口**（前端按钮已有拦截，后端没有）。
+2. 前端改 `task.ts` 类型 + `taskStore.resume` 错误处理（409 → 可读文案）。
+3. `TaskToolbar` 收敛 `STATUS_ACTIONS` 常量表，补 `unknown_terminal` 与「查看结果」。
 4. 运行页状态徽章。
 5. 双仓全量门禁。
 
@@ -600,7 +609,7 @@ npx tsc --noEmit; npm run build
 cd J:\Clipwright
 python scripts/route_inventory.py --out docs/route_inventory.txt
 Select-String -Path docs\api_reference.md -Pattern '唯一入口'          # 期望仅出现在「已退役」语境（人工确认 1 处并标注）
-Select-String -Path docs\frontend-backend-parity.md -Pattern '225|236' # 期望 0 命中（改为脚本生成口径）
+Select-String -Path docs\frontend-backend-parity.md -Pattern '225 条|236 条|路由 \*\*236'   # 期望 0 命中；勿用裸 '225|236'（会命中 SettingsPage.tsx:236-244 之类无关行号）
 python -m pytest tests -q | Select-Object -Last 3
 ```
 
