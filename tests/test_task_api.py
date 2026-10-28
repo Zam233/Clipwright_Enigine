@@ -99,6 +99,43 @@ def test_replan_rejected_after_terminal():
     assert client.post(f"/api/task/{tid}/plan").status_code == 409
 
 
+def test_resume_rejected_after_terminal(monkeypatch):
+    """PRD B11（G8）：终态任务不能 resume——旧实现会重新调度并返回 running。"""
+    from clipwright.api import task as api
+
+    scheduled: list[str] = []
+    monkeypatch.setattr(api, "_schedule", lambda tid: scheduled.append(tid))
+
+    client = _client()
+    tid = client.post("/api/task", json={"topic": "x"}).json()["task"]["id"]
+    client.post(f"/api/task/{tid}/cancel")
+
+    resp = client.post(f"/api/task/{tid}/resume")
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["reason"] == "task_terminal"
+    assert detail["status"] == "cancelled"
+    assert "无法继续" in detail["message"]
+    assert scheduled == [], "终态任务绝不能被重新调度（会重复烧预算/重复写事件）"
+
+
+def test_resume_paused_task_schedules(monkeypatch):
+    """对照：暂停中的任务 resume 仍然正常工作（不能因为加守卫把正路封死）。"""
+    from clipwright.api import task as api
+
+    scheduled: list[str] = []
+    monkeypatch.setattr(api, "_schedule", lambda tid: scheduled.append(tid))
+
+    client = _client()
+    tid = client.post("/api/task", json={"topic": "x"}).json()["task"]["id"]
+    assert client.post(f"/api/task/{tid}/pause").json()["status"] == "paused"
+
+    body = client.post(f"/api/task/{tid}/resume").json()
+    assert body["status"] == "running"
+    assert body["resumed"] is True
+    assert scheduled == [tid]
+
+
 def test_list_tasks_shape():
     client = _client()
     client.post("/api/task", json={"topic": "a"})

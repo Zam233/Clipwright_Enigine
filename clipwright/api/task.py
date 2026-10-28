@@ -177,11 +177,27 @@ async def stream_task_events(task_id: str, request: Request) -> StreamingRespons
 
 @router.post("/{task_id}/resume")
 async def resume_task(task_id: str, request: Request) -> dict:
+    """继续一个暂停中的任务。
+
+    PRD B11（2026-10-29 / G8）：**终态任务不允许 resume**。旧实现没有这个守卫，
+    对已 done/failed/cancelled 的任务照样 `_schedule` 并返回 `status=running`——
+    任务会被重新调度（重复花预算、重复写事件），而调用方只看到"已继续"。
+    现在返回 409 + 结构化原因，前端据此禁用按钮并给出可读说明。
+    """
     _enforce_task_owner(request, task_id)
     kernel = _kernel()
     task = kernel.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
+    if task.terminal:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "task_terminal",
+                "status": task.status,
+                "message": f"任务已结束（{task.status}），无法继续；如需重做请新建任务",
+            },
+        )
     _schedule(task_id)
     return {"task_id": task_id, "status": "running", "resumed": True}
 
