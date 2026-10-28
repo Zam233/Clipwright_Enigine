@@ -115,13 +115,13 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 
 | 端点 | 说明 |
 |------|------|
-| `POST /api/pipeline/run-async` | 异步启动管线（唯一入口；动态路由 + 并行执行 + 自愈循环），通过 SSE 实时追踪 |
+| `POST /api/pipeline/run-async` | **已退役**：执行引擎已在 M3 物理删除。`agent_mode=on` 时转成主 Agent 任务（返回体仍带 `pipeline_id`），其余情况返回 **410**。新任务请用 `POST /api/requirements/proceed` 或 `POST /api/task` |
 | `GET /api/pipeline/runs?limit=50` | 列出最近的管线运行记录（按时间倒序） |
 | `GET /api/pipeline/status/{pipeline_id}` | 查询管线状态 |
 | `GET /api/pipeline/result/{pipeline_id}` | 获取异步执行结果（含时间线 JSON） |
 | `GET /api/pipeline/trace/{pipeline_id}` | 获取管线事件轨迹 |
 | `GET /api/pipeline/trace/stream/{pipeline_id}` | SSE 流：实时追踪管线执行事件 |
-| `POST /api/pipeline/retry/{pipeline_id}/{agent_name}` | 从失败的 Agent 重试（B3：重放前置成功结果，仅重跑目标 + 下游） |
+| `POST /api/pipeline/retry/{pipeline_id}/{agent_name}` | **已退役**：返回 **410**（执行引擎已删除；失败恢复请走主 Agent 的 `POST /api/task/{id}/resume`，或让主 agent 重新 `delegate_agent` 该阶段） |
 | `POST /api/pipeline/predict-script` | 分析文稿并推荐配置（请求体：`PredictScriptRequest`）。返回字数、句数、估算时长、推荐 Persona、推荐类型插件、情绪基调、关键主题 |
 | `POST /api/pipeline/predict-material` | 分析素材文件并推荐使用方式（请求体：`PredictMaterialRequest`）。返回时长、分辨率、方向、是否有视频/音频、用途建议 |
 
@@ -137,7 +137,7 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 | `GET /api/pipeline/{pid}/diagnosis` | 诊断书（模板化，无 LLM）：结论/问题/证据/已尝试/建议/成本 |
 | `GET /api/pipeline/{pid}/decisions` | 调度决策序列 + `accepted_degraded` |
 | `GET /api/pipeline/{pid}/budget` | 预算快照（未配置预算 → `level=unlimited`、`ratio=null`，**不阻断**） |
-| `POST /api/pipeline/{pid}/dispatch` | 人工改派：`{target_stage, reason, issues?, auto_retry?}` → 登记 + **真跑一次重跑**；返回 `retry:{retried, reason}` |
+| `POST /api/pipeline/{pid}/dispatch` | 人工改派：`{target_stage, reason, issues?, auto_retry?}` → **只登记工单**（执行语义已随 M3 退役，返回 `execution_status=retired`）；真重跑请由主 agent 重新 `delegate_agent` 该阶段 |
 | `POST /api/pipeline/{pid}/accept-suggestion` | 执行诊断建议：`{suggestion_id?, action, target_stage?}`。`accept_degraded` 只登记；`retry_with_model`/`redo_stage` 触发重跑；`manual` 不执行 |
 | `GET /api/pipeline/{pid}/subagents` | 子代理树（含状态/模型/耗时/成本）；空树不是 404 |
 | `POST /api/pipeline/{pid}/subagents` | 派生临时 worker（带 `run_shell`/`run_python` 时返回 `pending_review`，未审核不实例化） |

@@ -182,16 +182,18 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
 修改代码后，运行（**下面每一行都是 CI 门禁，缺一行就可能在 CI 红灯**）：
 ```bash
 # 后端全量回归（工作目录 J:\Clipwright）
-python -m pytest tests -q        # 期望 4436 passed / 4 skipped / 1 xfailed（2026-10-27 实测）
+python -m pytest tests -q        # 期望 4499 passed / 4 skipped / 1 xfailed（2026-10-29 实测）
+python -m pytest tests/test_event_contract.py -q   # 事件契约：EVENT_TYPES ↔ 前端 parser 键集合
 python -c "import clipwright.main"
 # CI 同款硬门禁：只跑 pytest 会漏掉"未定义名 / 坏语法"，CI 立刻 F821 红灯
 python -m ruff check clipwright --select E9,F63,F7,F82,F823 --output-format=concise
 python scripts/verify_timebase.py   # 整数时间基座核对（VERIFY PASS）
 python scripts/e2e_smoke.py         # 全管线冒烟（SMOKE PASS）
+python scripts/route_inventory.py --out docs/route_inventory.txt  # 路由清单（文档引用生成物）
 
 # 前端回归（工作目录 J:\Clipweight-Client）
 npm run typecheck                # = tsc --noEmit
-npm run test                     # 期望 990 passed（116 files）
+npm run test                     # 期望 1085 passed（127 files，2026-10-29 实测）
 npm run lint                     # 允许 warning，不允许 error
 npm run build                    # tsc 过不代表 build 过（vite 另有一套解析）
 ```

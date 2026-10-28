@@ -9,7 +9,9 @@
 
 ## 0. 结论摘要（TL;DR）
 
-- 后端真实路由 **236 条**（轮 80 对账：含 settings 3 条；实际以 `clipwright/api/*.py` 路由装饰器为准），分布 34 个 APIRouter（`J:\Clipwright\clipwright\api\*.py`）。
+- 后端真实路由**以生成物为准**：`docs/route_inventory.txt`（由 `python scripts/route_inventory.py --out docs/route_inventory.txt` 从 `app.routes` 导出）。
+  - 2026-10-29 实测：**335 条** `METHOD PATH`（含 `admin_router` 的 `/api/supervisor/*`）。
+  - 旧版本这里写的是手抄快照（225 / 236 条），代码一改就漂移——已废弃该口径（见 PRD G15）。
 - 前端 API 客户端 **20 个模块 + 180+ 个函数**（`src/services/api/*.ts`，排除 `client.ts`/`index.ts`/测试文件）。
 - 三类差距（无客户端 / 死坏调用 / 形状漂移）**已全部修复**，并补齐 4 个新管理页 + 7 处现有页面接线。
 - `/metrics`、独立 worker 服务、`/ws` WebSocket 为**明确范围外**：`WsClient.ts` 已删除，实时链路为 SSE-only。
@@ -19,9 +21,10 @@
 
 ## 1. 后端路由全量清单（① 真实路由 inventory）
 
-> 数据来源：`Select-String -Path "J:\Clipwright\clipwright\api\*.py" -Pattern "@router\.(get|post|put|delete|patch)"` → **225 条**。
-> 前缀来源：每个文件 `router = APIRouter(prefix=...)`。
-> 排除：`errors.py`（无路由）、`__init__.py`（聚合）。`/health` 在 `main.py`（非 `api/*.py`），由 `healthApi.check()` 消费。
+> **数据来源已改为生成物**：`docs/route_inventory.txt`（`python scripts/route_inventory.py --out docs/route_inventory.txt`）。
+> 旧口径 `Select-String ... -Pattern "@router\.(get|post|put|delete|patch)"` 只数装饰器、且会把
+> `admin_router`（`/api/supervisor/*`）漏掉，已停用。
+> 下表是按前缀的人工分组（便于读），**数量以生成物为准**；两者不一致时以下表之外的生成物为准。
 
 | 前缀 | 文件 | 数量 | 路由 |
 |---|---|---|---|
@@ -59,7 +62,7 @@
 | `/api/voice` | voice.py | 6 | POST `/upload` · POST `/clone` · GET `/list` · DELETE `/{db_id}` · POST `/synthesize` · POST `/dub` |
 | `/api/waveform` | waveform.py | 1 | POST `/generate` |
 | `/api/webhook` | webhook.py | 8 | GET `/events` · GET `/list` · POST `/register` · DELETE `/{webhook_id}` · PUT `/{webhook_id}/toggle` · POST `/{webhook_id}/test` · POST `/notify` · GET `/deliveries` |
-| **合计** | **33 个 router** | **225** | |
+| **合计** | **按文件分组（人工维护）** | 见 `docs/route_inventory.txt` | 生成物为准：`python scripts/route_inventory.py --out docs/route_inventory.txt` |
 
 ### 1.1 调度中枢路由（`api/supervisor.py`，v1.4 新增）
 
