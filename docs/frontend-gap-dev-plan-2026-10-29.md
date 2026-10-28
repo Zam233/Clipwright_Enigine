@@ -475,7 +475,7 @@ npm run build
 |---|---|---|---|---|
 | B1 | ✅ 已完成 | frontend `d9860a8` | `Get-ChildItem src -Recurse -Include *.ts,*.tsx \| Select-String 'pipelineApi\.retry'` → 0 命中；`npx vitest run src/pages/admin/PipelineAdminPage.test.tsx` → **7 passed**；`tsc` 0；`npm run test` **1032 passed / 119 files**；`lint` 0 error；`build` ✅ | 1) 后端 `pipeline.py` 的 410 分支未动（兼容层保留）；2) `ReviewPanel.tsx:127` 只有注释提到旧路径，无调用，未改；3) `pipelineApi.runAsync/retry` 保留签名并加 `@deprecated` 说明 | 未发生回滚 |
 | B2 | ✅ 已完成 | frontend `a8c67c6` | `Select-String src\services\api\workspace.ts -Pattern 'events/stream'` → 1 命中；`Select-String src -Pattern 'eventsUrl'` → 0 命中；`npx vitest run src/features/workspace` → **11 passed**（新 8 + 旧 3）；`tsc` 0；`npm run test` **1040 passed / 120 files**；`lint` 0 error；`build` ✅ | 1) 后端 `/events`（JSON）与 `/events/stream`（SSE）都未改，只补前端消费；2) 「单项重试」未实现——后端无单文件重试端点，UI 明说需整批重扫（与计划 §3-B10 可行性边界一致）；3) 旧 `WorkspaceMaterialsPanel.test.tsx` 同步补 events/sseStream mock，用例数 3 不变 | 未发生回滚 |
-| B3 | 待开始 |  |  |  |
+| B3 | ✅ 已完成 | frontend `0446803` | `Select-String src\services\api\toolSurface.ts -Pattern '/api/tools'` → 3 命中；`npx vitest run src/pages/admin/ToolsPage.surface.test.tsx` → **4 passed**；`tsc` 0；`npm run test` **1044 passed / 121 files**；`lint` 0 error；`build` ✅ | 1) `ToolsPage.tsx` 已存在执行器 → **扩展页签**而非新建页面（与计划 §3-B3 的"扩展"一致）；2) 新页签复用 0 个执行状态、无执行按钮（测试有断言）；3) `getSchema()` 已实现但页面暂未展示 schema 全文（避免大 payload 卡顿），仅目录 + 记录 | 未发生回滚 |
 | B4 | 待开始 |  |  |  |
 | B5 | 待开始 |  |  |  |
 | B6 | 待开始 |  |  |  |
