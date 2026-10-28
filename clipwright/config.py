@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import timezone, timedelta
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -35,6 +35,18 @@ class Settings(BaseSettings):
     plugin_dir: Path = Path("plugins")
     plugin_data_dir: Path = Path("PluginData")
     project_dir: Path = Path("projects")
+
+    # --- 工作区（PRD docs/workspace-prd-2026-10-24.md）---
+    # 项目唯一产物根：工程文件 / 素材 / 下载 / 成片 / 缓存都在同一目录，可整体备份。
+    workspace_dir: Path = Path("workspaces")
+    # 轮询 materials/ 发现新素材（用户手动投放的入口）
+    workspace_scan_enabled: bool = True
+    workspace_scan_interval_sec: int = 20
+    # 视觉解读：默认本地 CLIP（零 API 费用）；provider=llm 才按次计费
+    workspace_vision_enabled: bool = True
+    workspace_vision_daily_budget_usd: float = 1.0
+    # cache/ 上限（超出按最旧删除），0 = 不限制
+    workspace_cache_max_gb: float = 2.0
 
     # --- 插件治理（M1/M2/M8/M15）---
     # manifest 签名密钥；空则从 account_jwt_secret 派生；再为空则不启用签名强制
@@ -78,6 +90,86 @@ class Settings(BaseSettings):
     llm_flash_provider: Optional[str] = None
     llm_flash_api_key: Optional[str] = None
     llm_flash_base_url: Optional[str] = None
+
+    # --- 调度中枢（PRD v1.4 / 开发计划 B2 起）---
+    # off    = 关闭（默认）：行为与改造前完全一致
+    # shadow = 影子：只记录归因与诊断书，不改执行（B2 的验收状态）
+    # on     = 启用：后续批次（B3+）才允许真正派工/执行
+    supervisor_mode: Literal["off", "shadow", "on"] = "off"
+    # 归因/诊断的兜底 LLM 调用超时（秒）；规则命中时不调用 LLM
+    supervisor_attribution_timeout_sec: float = 15.0
+
+    # --- 路线 C 双轨开关（PRD F12）---
+    # off    = 老 6 阶段管线是唯一入口（行为与今天完全一致，A13 的对照基线）
+    # shadow = Kernel 只规划、不执行（零副作用，用来看计划质量与预估成本）
+    # on     = Kernel 执行（创作唯一入口；老 6 阶段管线已删除）
+    agent_mode: Literal["off", "shadow", "on"] = "off"
+    # 老 6 阶段管线执行开关——**已失效**（M3 删除执行引擎后，/run-async 与 retry
+    # 永久 410，与此开关无关）。保留字段只为兼容旧配置文件的解析，不要再用它。
+    pipeline_enabled: bool = False
+    # 主 agent 每步决策策略（PRD §16.10.1）：off=只走规则；auto=失败必判/成功轻量步走规则；
+    # always（默认）=**每步都调 LLM 决策**（用户裁定：每步决策都走 llm）。
+    agent_decide_policy: Literal["off", "auto", "always"] = "always"
+    # 决策是否走流式（思考逐块到达前端）；provider 不支持时自动回退非流式
+    agent_decide_stream: bool = True
+    # 主循环形态（modern-agent PRD §2.2 / §5.2 M1，PRD 原名 kernel_mode）：
+    #   tool_loop = 原生 tool-use loop（模型拿 surface.schemas() 自主调用工具，默认）
+    #   shadow    = 跑 tool_loop 但只记录不产生副作用，用于与 plan 对比（§5.2）
+    #   （旧的 plan 形态已在 M3 删除：传它只发降级告警，然后按 tool_loop 运行）
+    kernel_mode: Literal["plan", "tool_loop", "shadow"] = "tool_loop"
+    # tool loop 的模型回合 / 工具调用上限（0 = 沿用 TaskLimits）
+    agent_loop_max_turns: int = 12
+    agent_loop_max_tool_calls: int = 60
+    # 决策上下文预算（字符）：超出按优先级裁剪，并记 context_loaded.trimmed（§17.11）
+    context_budget_chars: int = 6000
+    # 单份工作区报告上限（字符）；超出截断并标记（§17.3）
+    report_max_chars: int = 20000
+    # 允许创建工作区的父目录列表（§17.8）；空 = 只用 workspace_dir
+    workspace_roots: list[Path] = []
+    # 评估报告目录（closeout B10）：golden_eval 写到这里，/api/eval 读这里
+    eval_report_dir: str = ""
+    # Kernel 四道闸（PRD F5 / Q1 已裁定；数值可调，不可置空）
+    # 回合数 30 → 40：长文稿（43 段）要跑 structure/material/edit/animation/audio
+    # 五阶段 + 探查产物，实测 30 轮不够（E2E 2026-10-28 触闸收尾）。
+    agent_max_turns: int = 80
+    agent_max_tool_calls: int = 400
+    agent_max_wall_sec: float = 14400.0
+
+    # --- 模型路由（PRD F8 / 开发计划 B4）---
+    # 按阶段配置候选模型：[{"provider","model","tier","price_in","price_out"}]；
+    # 留空 = 不路由，所有阶段沿用主/闪模型（与改造前完全一致）。
+    model_routes: dict[str, list[dict[str, Any]]] = {}
+    # 精确白名单（"provider/model" 或裸 model）；留空 = 允许所有已配置 provider。
+    model_whitelist: list[str] = []
+    # 命令风险判定所用模型（B9）；必须命中白名单，留空 = 最便宜的 cheap 档。
+    risk_judge_model: str = ""
+
+    # --- 类型同一性 LLM 裁判（PRD F12 L2/L3 / V17）---
+    # D7 决定：**默认关**（关时 genre-check 写 judge="skipped"，绝不假装判过）。
+    # 单次请求可用 payload.enable_genre_judge 覆盖；本项用于真机取证/服务级开启。
+    genre_judge_enabled: bool = False
+    # 裁判用闪模型（省 token）；False 用主模型
+    genre_judge_use_flash: bool = True
+
+    # --- 子代理与执行（PRD F10/F11）---
+    # 同一管线同时存活的子代理上限（PRD §12 已定⑤：在设置中配置）
+    max_concurrent_subagents: int = 6
+    # 自动派生：归因置信度 low 时，由编排层派一个**只读**核查员去看现场。
+    # 仅在 supervisor_mode="on" 时生效（shadow/off 一律不派生，保证 off 等价性）。
+    supervisor_auto_spawn: bool = True
+    # 执行网关是否允许联网（默认禁网；打开后可用于诊断）
+    exec_allow_network: bool = False
+    exec_timeout_sec: float = 60.0
+    # 硬底线（读凭据 / 不可逆破坏）是否仍然「不可授权」。
+    # 默认 False = 按用户决策交由独立 LLM 判定 + 两级人工确认（授权窗口 + 再次确认）。
+    # 改成 True 即回到「确定性规则直接拒绝、任何模式都不放行」的旧语义，无需改代码。
+    exec_hard_floor_never_authorizable: bool = False
+
+    # --- 预算（PRD F6 / 开发计划 B5）---
+    # **留空 = 无上限**：只记账、不阻断、不降级（这是用户显式选择的取舍）。
+    pipeline_budget_usd: Optional[float] = None
+    # 单价表：{"provider/model" 或 "model": {"in": 0.003, "out": 0.015}}（每 1k token）
+    model_prices: dict[str, dict[str, float]] = {}
 
     # --- 服务 ---
     host: str = "0.0.0.0"
@@ -127,6 +219,9 @@ class Settings(BaseSettings):
     content_index_clip_enabled: bool = True
     # CLIP 权重名（HF）；首次使用会下载（约 600MB）。
     content_index_clip_model: str = "openai/clip-vit-base-patch32"
+    # CLIP 权重的**本地目录**（离线/内网环境用）：填了就只从本地加载，绝不联网。
+    # 空 = 按 HF 缓存加载（缓存缺失时会尝试下载，内网下会超时）。
+    content_index_clip_model_path: str = ""
     # 零样本标签词表（JSON：{"中文标签": "english prompt"}）；留空用内置默认词表。
     content_index_clip_vocab: str = ""
     # 镜头标注并发（CPU 推理，过高反而拖慢整机）。

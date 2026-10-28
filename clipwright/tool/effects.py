@@ -13,7 +13,7 @@ from typing import Any, Optional
 from clipwright.config import logger
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
-from clipwright.tool.video import resolve_ffmpeg, ENCODE_VIDEO_ARGS
+from clipwright.tool.video import _CLIPWRIGHT_TEMP, resolve_ffmpeg, ENCODE_VIDEO_ARGS
 
 
 

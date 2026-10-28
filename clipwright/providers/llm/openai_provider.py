@@ -15,6 +15,9 @@ class OpenAIProvider:
         return ProviderCapabilities(
             streaming=True, tool_calls=True, json_mode=True, vision=True,
             max_context_tokens=128_000, max_concurrency=4,
+            # OpenAI 兼容网关不维护固定模型清单：来源没配清单时也接受任意 model id
+            arbitrary_models=True,
+            reasoning_effort=True,  # o 系列 / gpt-5 系列接受 reasoning_effort
         )
 
     def default_model(self) -> str:
@@ -56,4 +59,6 @@ class OllamaProvider(OpenAIProvider):
         return ProviderCapabilities(
             streaming=True, tool_calls=True, json_mode=False, vision=False,
             max_context_tokens=32_768, max_concurrency=1,
+            arbitrary_models=True,  # 本地拉什么模型都可能，没有清单可对
+            reasoning_effort=False,
         )

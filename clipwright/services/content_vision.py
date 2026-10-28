@@ -72,6 +72,26 @@ _DETECT_MAX_SIDE = 640
 _HOG_WIN = (64, 128)
 
 
+def imread_unicode(path: str | Path) -> Any:
+    """读图（**支持中文/空格路径**）。
+
+    为什么需要：`cv2.imread` 在 Windows 上按本地代码页解析路径，中文名一律返回 None
+    （日志里是 `can't open/read file`），于是"视觉解读"对中文素材静默失效——
+    实测过工作区 `封面图.png` 就是这么被跳过的。`np.fromfile + imdecode` 绕开路径编码。
+    """
+    try:
+        import cv2
+        import numpy as np
+
+        raw = np.fromfile(str(path), dtype=np.uint8)
+        if raw.size == 0:
+            return None
+        return cv2.imdecode(raw, cv2.IMREAD_COLOR)
+    except Exception as exc:  # noqa: BLE001 — 读图失败由上层降级
+        logger.debug("读图失败 %s: %s", path, exc)
+        return None
+
+
 def classify_shot_size(area_ratio: float) -> str:
     """主体占比 → 景别（纯函数，便于单测与后续替换为模型输出）。"""
     for threshold, label in SHOT_SIZE_THRESHOLDS:
@@ -129,7 +149,7 @@ class _Detectors:
         try:
             import cv2
 
-            img = cv2.imread(image_path)
+            img = imread_unicode(image_path)
             if img is None:
                 return {}
             h, w = img.shape[:2]
@@ -183,9 +203,14 @@ def _load_clip() -> Optional[tuple[Any, Any]]:
         import torch
         from transformers import CLIPModel, CLIPProcessor
 
-        model_name = settings.content_index_clip_model
-        model = CLIPModel.from_pretrained(model_name)
-        proc = CLIPProcessor.from_pretrained(model_name)
+        # 离线优先：配了本地目录就只读本地（内网/无网环境必须可用）；
+        # 没配则按 HF 缓存加载（`HF_HUB_OFFLINE=1` 时也不会联网）。
+        model_name = str(getattr(settings, "content_index_clip_model_path", "") or "").strip() \
+            or settings.content_index_clip_model
+        model = CLIPModel.from_pretrained(model_name, local_files_only=bool(
+            getattr(settings, "content_index_clip_model_path", "")))
+        proc = CLIPProcessor.from_pretrained(model_name, local_files_only=bool(
+            getattr(settings, "content_index_clip_model_path", "")))
         model.eval()
         _clip_cache["model"] = (model, proc)
         _clip_cache["torch"] = torch
@@ -263,6 +288,7 @@ async def label_shot(
     *,
     use_clip: bool = True,
     use_llm: bool = False,
+    want_description: bool = False,
     clip_top_k: int = 5,
     clip_min_score: float = 0.15,
     clip_scores: dict[str, float] | None = None,
@@ -273,7 +299,10 @@ async def label_shot(
     - 只对**首帧**做语义标注（多帧语义几乎相同，成本翻倍收益极小；运动由 stats 覆盖）；
     - 分类标签与 CLIP 标签**都保留并标出来源**，不互相覆盖；
     - `clip_scores` 可由批处理预先算好传入（见 `label_shots`），避免逐张重复前向；
-    - 云端 LLM 仅在 `use_llm=True` 时调用，失败静默降级（索引不能因为云挂了而失败）。
+    - `want_description=True` 时，即使 CLIP/分类器已经给了标签，也额外向多模态模型要
+      一句画面描述（工作区面板与检索需要"话"，CLIP 只给词）；批量抽帧默认关闭以省成本；
+    - 云端 LLM 失败静默降级（索引不能因为云挂了而失败），但**绝不把降级报成成功**：
+      只有 `source=="llm"` 才算真看过图。
     """
     frames = [p for p in (frame_paths or []) if p and Path(p).exists()]
     if not frames:
@@ -288,6 +317,7 @@ async def label_shot(
     labels: list[str] = []
     description = ""
     scene_type = ""
+    source = ""
     if use_clip:
         scores = clip_scores if clip_scores is not None else dict(
             clip_zero_shot(first, top_k=clip_top_k))
@@ -301,6 +331,40 @@ async def label_shot(
             confidence[f"clip.{name}"] = round(float(score), 4)
         if tags:
             evidence["visual.tags"] = "clip_zero_shot"
+            source = "clip"
+    # 只有 clip/classifier 命中时也去要一句"画面描述"——工作区面板和检索都靠描述，
+    # 而 CLIP 只给标签不给话。`want_description` 由调用方决定（索引路径要，批量抽帧不要）。
+    if (not tags or want_description) and use_llm and settings.content_index_visual_llm:
+        try:
+            from clipwright.services.vision import VisionService
+
+            res = await VisionService().analyze_image(first, provider="llm")
+            # **只认"真看过图"的结果**：LLM 失败时 vision.py 会内部回退成
+            # `_fallback_analyze`（source=filename，model=filename，
+            # description="文件: x.png (WxH)"）。旧实现只判 description 非空，
+            # 于是把文件名兜底当成模型看懂了，上层随之报 status=ok —— A11 的假阳性。
+            # source 缺失时按 model 推断（老调用方/替身不带 source）。
+            _src = str(res.get("source") or "").strip()
+            _model = str(res.get("model") or "")
+            if not _src:
+                _src = "filename" if _model.startswith("filename") else "llm"
+            if _src == "llm" and res.get("description"):
+                description = str(res["description"])
+                # vision.py 的 model 可能是 "llm/<name>"，也可能只是 "llm"；统一前缀
+                _model_name = _model or "vision"
+                if _model_name.startswith("llm/"):
+                    _model_name = _model_name[len("llm/"):]
+                evidence["visual.description"] = f"llm/{_model_name}"
+                confidence["visual.description"] = 0.6
+                source = "llm"
+                for t in (res.get("tags") or []):
+                    if t and t not in tags:
+                        tags.append(str(t))
+                if res.get("scene_type") and not scene_type:
+                    scene_type = str(res["scene_type"])
+        except Exception as exc:
+            logger.info("云端多模态描述失败（已降级）: %s", exc)
+
     if not tags:
         # 本地分类器（离线保底；ImageNet 标签较粗，仅给低置信度粗标签）
         try:
@@ -309,30 +373,16 @@ async def label_shot(
             res = await VisionService().analyze_image(first, provider="transformers")
             tags = [t for t in (res.get("tags") or []) if t]
             labels = list(res.get("labels") or [])
-            description = str(res.get("description") or "")
-            scene_type = str(res.get("scene_type") or "")
+            if not description:
+                description = str(res.get("description") or "")
+            if not scene_type:
+                scene_type = str(res.get("scene_type") or "")
+            source = source or str(res.get("source") or "")
             if tags:
                 evidence["visual.tags"] = f"classifier/{res.get('model') or 'transformers'}"
                 confidence["visual.tags"] = 0.3  # ImageNet 粗标签：低置信度，如实标注
         except Exception as exc:
             logger.debug("镜头分类标签失败: %s", exc)
-
-    if use_llm and settings.content_index_visual_llm:
-        try:
-            from clipwright.services.vision import VisionService
-
-            res = await VisionService().analyze_image(first, provider="llm")
-            if res.get("description"):
-                description = str(res["description"])
-                evidence["visual.description"] = f"llm/{res.get('model') or 'vision'}"
-                confidence["visual.description"] = 0.6
-            for t in (res.get("tags") or []):
-                if t and t not in tags:
-                    tags.append(str(t))
-            if res.get("scene_type") and not scene_type:
-                scene_type = str(res["scene_type"])
-        except Exception as exc:
-            logger.info("云端多模态描述失败（已降级）: %s", exc)
 
     if tags:
         visual["tags"] = tags[:8]
@@ -342,6 +392,13 @@ async def label_shot(
         visual["labels"] = labels[:8]
     if scene_type:
         visual["scene_type"] = scene_type
+    # 来源要显式透出去：上层据此区分"真看了"（llm/clip/classifier）与"只看了文件名"
+    if source:
+        visual["source"] = source
+    else:
+        visual["source"] = "filename"
+    if evidence:
+        visual["evidence"] = dict(evidence)
 
     # ── L1-c：镜头语言（人脸/人体占比 → 景别）──
     det = _detectors.detect(first)

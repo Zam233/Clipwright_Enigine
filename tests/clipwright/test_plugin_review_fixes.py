@@ -205,8 +205,11 @@ class TestA3SyncClose:
 
         assert close_source_sync(Boom()) is False  # 不抛给调用方
 
-    def test_material_plugins_do_not_leak_on_unload(self, loader, recwarn):
-        for pid in ("coverr_material", "gif_sticker", "pexels_material"):
+    def test_material_plugins_do_not_leak_on_unload(self, loader, recwarn, monkeypatch):
+        # Coverr 已删除（其 API 只给缩略图、拿不到可下载视频，见 docs/material_system.md）；
+        # 这里用 Pixabay（配好 key 才贡献素材源）覆盖同一生命周期路径
+        monkeypatch.setenv("PIXABAY_API_KEY", "test-key")
+        for pid in ("pixabay_material", "gif_sticker", "pexels_material"):
             loader.load(pid)
             loader.unload(pid)
         leaked = [str(w.message) for w in recwarn.list if "never awaited" in str(w.message)]
@@ -225,13 +228,14 @@ class TestA4OwnedRecycling:
             "A4: 卸载后动画定义必须回收（否则禁用插件仍有能力）"
         )
 
-    def test_material_source_removed_on_unload(self, loader):
+    def test_material_source_removed_on_unload(self, loader, monkeypatch):
         from clipwright.material.registry import MaterialRegistry
 
-        loader.load("coverr_material")
-        assert "coverr" in MaterialRegistry._sources
-        loader.unload("coverr_material")
-        assert "coverr" not in MaterialRegistry._sources, "A4: 卸载后素材源必须回收"
+        monkeypatch.setenv("PIXABAY_API_KEY", "test-key")
+        loader.load("pixabay_material")
+        assert "pixabay" in MaterialRegistry._sources
+        loader.unload("pixabay_material")
+        assert "pixabay" not in MaterialRegistry._sources, "A4: 卸载后素材源必须回收"
 
     def test_style_interpreter_removed_on_unload(self, loader):
         from clipwright.services.style_interpreter import StyleInterpreter

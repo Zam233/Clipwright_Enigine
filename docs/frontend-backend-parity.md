@@ -9,7 +9,9 @@
 
 ## 0. 结论摘要（TL;DR）
 
-- 后端真实路由 **236 条**（轮 80 对账：含 settings 3 条；实际以 `clipwright/api/*.py` 路由装饰器为准），分布 34 个 APIRouter（`J:\Clipwright\clipwright\api\*.py`）。
+- 后端真实路由**以生成物为准**：`docs/route_inventory.txt`（由 `python scripts/route_inventory.py --out docs/route_inventory.txt` 从 `app.routes` 导出）。
+  - 2026-10-29 实测：**335 条** `METHOD PATH`（含 `admin_router` 的 `/api/supervisor/*`）。
+  - 旧版本这里写的是手抄快照（225 / 236 条），代码一改就漂移——已废弃该口径（见 PRD G15）。
 - 前端 API 客户端 **20 个模块 + 180+ 个函数**（`src/services/api/*.ts`，排除 `client.ts`/`index.ts`/测试文件）。
 - 三类差距（无客户端 / 死坏调用 / 形状漂移）**已全部修复**，并补齐 4 个新管理页 + 7 处现有页面接线。
 - `/metrics`、独立 worker 服务、`/ws` WebSocket 为**明确范围外**：`WsClient.ts` 已删除，实时链路为 SSE-only。
@@ -19,9 +21,10 @@
 
 ## 1. 后端路由全量清单（① 真实路由 inventory）
 
-> 数据来源：`Select-String -Path "J:\Clipwright\clipwright\api\*.py" -Pattern "@router\.(get|post|put|delete|patch)"` → **225 条**。
-> 前缀来源：每个文件 `router = APIRouter(prefix=...)`。
-> 排除：`errors.py`（无路由）、`__init__.py`（聚合）。`/health` 在 `main.py`（非 `api/*.py`），由 `healthApi.check()` 消费。
+> **数据来源已改为生成物**：`docs/route_inventory.txt`（`python scripts/route_inventory.py --out docs/route_inventory.txt`）。
+> 旧口径 `Select-String ... -Pattern "@router\.(get|post|put|delete|patch)"` 只数装饰器、且会把
+> `admin_router`（`/api/supervisor/*`）漏掉，已停用。
+> 下表是按前缀的人工分组（便于读），**数量以生成物为准**；两者不一致时以下表之外的生成物为准。
 
 | 前缀 | 文件 | 数量 | 路由 |
 |---|---|---|---|
@@ -59,7 +62,17 @@
 | `/api/voice` | voice.py | 6 | POST `/upload` · POST `/clone` · GET `/list` · DELETE `/{db_id}` · POST `/synthesize` · POST `/dub` |
 | `/api/waveform` | waveform.py | 1 | POST `/generate` |
 | `/api/webhook` | webhook.py | 8 | GET `/events` · GET `/list` · POST `/register` · DELETE `/{webhook_id}` · PUT `/{webhook_id}/toggle` · POST `/{webhook_id}/test` · POST `/notify` · GET `/deliveries` |
-| **合计** | **33 个 router** | **225** | |
+| **合计** | **按文件分组（人工维护）** | 见 `docs/route_inventory.txt` | 生成物为准：`python scripts/route_inventory.py --out docs/route_inventory.txt` |
+
+### 1.1 调度中枢路由（`api/supervisor.py`，v1.4 新增）
+
+| 前缀 | 路由数 | 端点 | 客户端 |
+|---|---|---|---|
+| `/api/pipeline`（supervisor 部分） | 13 | GET `/{pid}/ledger` · GET `/{pid}/attribution` · GET `/{pid}/diagnosis` · GET `/{pid}/decisions` · GET `/{pid}/budget` · POST `/{pid}/dispatch` · POST `/{pid}/accept-suggestion` · GET `/{pid}/subagents` · POST `/{pid}/subagents` · POST `/{pid}/subagents/{sid}/cancel` · POST `/{pid}/exec` · GET `/{pid}/exec` · GET `/{pid}/exec/pending-approvals` + POST `/exec/{aid}/approve|reject` + GET/PUT `/exec/auto-mode` | `supervisorApi` |
+| `/api/supervisor`（admin） | 5 | GET `/workers/pending-review` · POST `/workers/{wid}/review` · GET `/tools` · GET/PUT `/routes` · GET/PUT `/mode` | `supervisorApi` |
+
+> 这两组端点与 `pipeline.py` 共用 `/api/pipeline` 前缀，但**归属不同文件**：`api/supervisor.py` 注册的 `router` 与 `admin_router`。
+> 「改派 / 建议」不是只登记：`POST /dispatch` 与 `POST /accept-suggestion` 会走 `api/pipeline.start_agent_retry` 真跑一次重跑，跑不起来时返回 `retry.retried=false` + 原因。
 
 ---
 
@@ -93,6 +106,7 @@
 | `vision.ts` | `visionApi` | 2 | `/api/vision`（2/2） |
 | `market.ts` | `marketApi` | 8 | `/api/market`（插件/Persona 市场安装） |
 | `client.ts` | `getApiClient` / `resetApiClient` | — | Axios 工厂（baseURL 同源/8080，SSE 见 sse.ts） |
+| `supervisor.ts` | `supervisorApi` | 22 | `/api/pipeline`（调度中枢：账本/归因/诊断书/决策/预算/改派/子代理/执行/授权）+ `/api/supervisor`（审核队列/工具/路由表/模式） |
 | `index.ts` | 聚合桶 | — | 导出全部业务模块 |
 
 ### 2.1 聚合桶导出（index.ts）
@@ -325,3 +339,22 @@ P6/P7 阶段新增/变更的路由与客户端（均已完成接线与回归）�
 1. `/api/test/*` 无专属客户端模块（ModelsPage 内联），如后续统一 API 管理可抽取 `modelTestApi`。
 2. `SettingsPage.tsx:51`「WebSocket 地址」为 WsClient 移除后的遗留字段，属 UI 清理项，不影响对账结论。
 3. 本报告基于 2026-08-04 工作区快照；路由新增/变更后需重跑 §6 命令并更新本报告。
+## 7. 工作区（2026-10-24 增量）
+
+| 后端路由 | 前端客户端 | 状态 |
+|---|---|---|
+| `POST/GET /api/workspace`、`/enable`、`/scan`、`/materials`、`/events` | `src/services/api/workspace.ts`（`workspaceApi`） | ✅ 已接：首页 04 步（开关+路径）、`/task/{id}` 工作区面板（计数/扫描/上传/素材表） |
+| `POST /api/requirements/proceed` | `AgentPanel.confirmPlan` / `ReviewPanel.confirm` → `features/agent/proceedResult.ts` | ✅ 单轨：`agent_mode=on` 返回 `task_id` → 跳 `/task/{id}` 订阅 Task 事件 |
+
+说明：`/api/workspace/{id}/events` 已改成 **JSON**（`/events/stream` 才是 SSE），面板仍用"操作后 reload"，
+未挂常驻订阅——避免首页/任务页各开一条长连接；需要实时进度时改挂 `/events/stream`。
+
+## 8. 主 Actor 化（2026-10-26 增量）
+
+| 变化 | 影响面 | 状态 |
+|---|---|---|
+| `POST /api/pipeline/run-async` 在 `pipeline_enabled=false` 时返回 **410** | 老前端若有入口会拿到明确错误而非"管线卡住" | ✅ 新入口只走 `/api/requirements/proceed` → Task |
+| `GET /api/pipeline/trace/{id}`、`/trace/stream/{id}` 接受 `task_*` | `AgentPanel`/管理页复用同一订阅面板（事件映射为 trace 形状，含 `source:"task"`） | ✅ 无需为两条链路写两套订阅 |
+| 新增能力 `run_stage/spawn_stage/get_stage/list_stages/replan_closure/validate_stage_plan` | 主 Agent 内部通道（暂未做独立 UI；任务页已有阶段事件卡片） | ⚠️ 无独立 UI（不需要：阶段结果经 `step_end` 事件展示） |
+| `POST /api/render/*` 新增 `workspace_root` | 成片落 `workspace/renders/`（留空 = 全局 `renders/`） | ✅ 后端就绪；前端渲染调用暂未传（保持旧落点） |
+

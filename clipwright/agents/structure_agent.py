@@ -16,10 +16,45 @@ from clipwright.schema.agent import (
 )
 from clipwright.schema.tool import ToolExecResult
 from clipwright.schema.skill import SkillExecResult
-from clipwright.services.llm import LLMService
+from clipwright.services.llm import LLMService, MAX_OUTPUT_TOKENS
+from clipwright.services.degradation import note_degradation
 from clipwright.tool.base import AgentToolkit
 from clipwright.tool.registry import ToolRegistry
 from clipwright.config import logger
+
+
+async def write_back_plan_drift_if_session(
+    context: Any,
+    drifts: list[dict[str, Any]],
+) -> int:
+    """V58 写回：有 ``session_id`` 就把偏离并入会话里的规划书；没有则跳过。
+
+    **必须 offload 到线程**：会话模型的 Mongo 访问在事件循环线程里会返回协程
+    （仓库既有的 `_io()` 陷阱，`_persist` 也是这么绕开的）；直接在协程里同步调用
+    会静默失败——本轮真机就踩到过"返回 0、写入没发生"。
+    """
+    session_id = str((getattr(context, "extra_params", None) or {}).get("session_id") or "")
+    if not session_id or not drifts:
+        return 0
+    try:
+        from clipwright.services.requirements_service import write_back_plan_drift
+
+        return await asyncio.to_thread(write_back_plan_drift, session_id, drifts)
+    except Exception as exc:  # noqa: BLE001 - 写回失败不得影响出片
+        logger.warning("规划偏离写回失败（已跳过）: %s", exc)
+        return 0
+
+
+def compose_structure_prompt(base: str, category_id: str) -> str:
+    """结构阶段的类型注入（身份 + structure 槽位，固定序）。
+
+    抽成模块级函数是为了能单测：结构阶段的 ``execute()`` 牵动 LLM + 工具链，
+    在单测里捕获 system prompt 成本太高，容易变成"测试跑不动、接线悄悄丢掉"。
+    """
+    from clipwright.services.type_prompts import compose
+
+    return compose(base, category_id, "structure")
+
 
 SYSTEM_PROMPT_TPL = """你是一个{tone}风格的视频脚本创作者。
 
@@ -69,12 +104,13 @@ mg_dynamic payload 结构（JSON）：
 }}
 
 要求：
-1. 4-6 个场景
+{scene_rule}
 2. 每个场景的 duration_sec 加起来不超过 {max_duration}s
 3. 遵循 {tone} 的语调风格
 4. 禁止使用 forbidden_patterns
 5. **每个场景必须有 title(非空)、duration_sec(>0)、description(非空)、keywords(数组)**
 6. **每个场景 description 中必须包含动画标记，优先使用 mg_dynamic**
+{coverage_rule}
 """
 
 
@@ -156,6 +192,147 @@ def _pick_better_scenes(
     return b if _score(b) > _score(a) else a
 
 
+def _align_scene_durations(
+    scenes: list[dict],
+    audio_duration_sec: float = 0.0,
+    dub_segments: list | None = None,
+) -> tuple[list[dict], str]:
+    """把场景时长对齐到配音时间轴（等比缩放），返回 (scenes, warning)。
+
+    E2E 2026-10-28 实测缺口：**只有"复用已确认规划书"分支**做过这件事，
+    全新生成的分支完全不管 `audio_duration_sec`——LLM 常把 6 个场景各写 6s，
+    面对 702s 的配音，时间线只覆盖 36s（5%），画面还没进入论证就结束了。
+    缩放规则与复用分支一致；dub_segments 有真实分段时以它的末段为准。
+    """
+    warning = ""
+    if not scenes:
+        return scenes, warning
+    target = 0.0
+    if isinstance(dub_segments, list) and dub_segments:
+        try:
+            target = max(
+                float(s.get("end_sec", 0) or 0)
+                for s in dub_segments if isinstance(s, dict)
+            )
+        except Exception:  # noqa: BLE001 — 分段脏数据不阻断
+            target = 0.0
+    if target <= 0:
+        target = float(audio_duration_sec or 0)
+    total = sum(float(s.get("duration_sec", 0) or 0) for s in scenes)
+    if target <= 0 or total <= 0:
+        return scenes, warning
+    scale = target / total
+    if abs(scale - 1.0) <= 0.02:
+        return scenes, warning
+    # 权重优先用口播字数：同一段配音里，长段落的镜头就该更长。
+    # 口播全空时退回原 duration_sec 比例（纯等比缩放）。
+    weights = [len(str(s.get("voiceover_script") or "").strip()) for s in scenes]
+    if sum(weights) <= 0:
+        weights = [float(s.get("duration_sec", 0) or 0) for s in scenes]
+    weight_sum = sum(weights)
+    if weight_sum <= 0:
+        return scenes, warning
+    for s, w in zip(scenes, weights):
+        s["duration_sec"] = round(target * w / weight_sum, 3)
+    logger.info(
+        "StructureAgent: 场景时长按配音时间轴等比缩放 ×%.2f（%.1fs → %.1fs，%d 个场景）",
+        scale, total, target, len(scenes),
+    )
+    return scenes, f"场景时长已按配音时间轴缩放 ×{scale:.2f}"
+
+
+def _extract_first_json_object(text: str) -> dict | None:
+    """从混杂文本里捞出第一个完整 JSON 对象（忽略围栏与前后说明）。"""
+    if not text:
+        return None
+    start = text.find("{")
+    if start == -1:
+        return None
+    try:
+        parsed, _ = json.JSONDecoder().raw_decode(text[start:])
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+#: 触发「逐段标注」路径的最少段落数（短稿仍走一次性生成）
+_SEGMENT_ANNOTATE_MIN = 4
+
+
+def _script_coverage(scenes: list | None, script_text: str) -> float:
+    """场景口播覆盖文稿的比例（0-1）。没有文稿时返回 1.0（不做判断）。"""
+    script = (script_text or "").strip()
+    if not script:
+        return 1.0
+    if not isinstance(scenes, list):
+        return 0.0
+    covered = 0
+    for s in scenes:
+        if not isinstance(s, dict):
+            continue
+        covered += len(str(s.get("voiceover_script") or "").strip())
+    return min(1.0, covered / max(1, len(script)))
+
+
+#: 复用已确认场景表的最低覆盖度；低于此值说明规划书的分镜缺了正文
+_MIN_REUSE_COVERAGE = 0.5
+#: 重新生成后仍低于此覆盖度 → 用确定性分段兜底（保证不出"半截片"）
+_MIN_ACCEPT_COVERAGE = 0.6
+#: 单场景口播的字数上限（超过就按标点再切一刀）
+_SCENE_CHARS_SOFT_MAX = 240
+
+
+def _split_script_paragraphs(script_text: str) -> list[str]:
+    """按段落 + 标点把文稿切成"每段一句一场景"的确定性分段。"""
+    text = (script_text or "").replace("\r\n", "\n").strip()
+    if not text:
+        return []
+    paras = [p.strip() for p in re.split(r"\n{1,}", text) if p.strip()]
+    chunks: list[str] = []
+    for para in paras:
+        if len(para) <= _SCENE_CHARS_SOFT_MAX:
+            chunks.append(para)
+            continue
+        # 长段落按句末标点切，再贪心合并到软上限
+        sentences = [s.strip() for s in re.split(r"(?<=[。！？!?；;])", para) if s.strip()]
+        buf = ""
+        for sent in sentences:
+            if buf and len(buf) + len(sent) > _SCENE_CHARS_SOFT_MAX:
+                chunks.append(buf)
+                buf = sent
+            else:
+                buf += sent
+        if buf:
+            chunks.append(buf)
+    return [c for c in chunks if c]
+
+
+def _scenes_from_script(script_text: str, audio_duration_sec: float = 0.0) -> list[dict]:
+    """按文稿确定性生成逐段分镜（覆盖全文；不依赖 LLM）。
+
+    只在 LLM 分镜明显"漏正文"时作为兜底：宁可场景机械一点，
+    也不能让 702s 的配音只配上 36s 的画面。
+    """
+    chunks = _split_script_paragraphs(script_text)
+    if not chunks:
+        return []
+    total_chars = sum(len(c) for c in chunks) or 1
+    target = float(audio_duration_sec or 0) or float(total_chars) / 4.5
+    scenes: list[dict] = []
+    for i, chunk in enumerate(chunks):
+        title = chunk[:24].replace("\n", " ")
+        keywords = [w for w in re.split(r"[^\w\u4e00-\u9fff]+", chunk) if len(w) > 1][:4]
+        scenes.append({
+            "title": title or f"场景 {i + 1}",
+            "description": f"口播段落 {i + 1}：{chunk[:60]}",
+            "duration_sec": round(target * len(chunk) / total_chars, 3),
+            "keywords": keywords or [f"段落{i + 1}"],
+            "voiceover_script": chunk,
+            "visual_description": "",
+        })
+    return scenes
+
+
 def _validate_scenes(scenes: list[dict]) -> tuple[list[dict], list[str]]:
     """验证场景列表的完整性，过滤无效场景。
 
@@ -198,6 +375,10 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
     """结构 Agent：根据选题和 Persona 生成脚本骨架。"""
 
     agent_name = "structure_agent"
+    #: 结构阶段是最重的 LLM 调用（长文稿 → 40+ 场景 JSON，还要先跑
+    #: describe_llm_mg / list_animations 两轮工具）。默认 300s 实测不够：
+    #: 702s 配音的长文稿在 300s 被整个掐断，规划书直接生成失败。
+    timeout_sec = 1800
 
     def __init__(self) -> None:
         super().__init__()
@@ -206,11 +387,16 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
     @staticmethod
     def _build_system_prompt(
         identity: dict, language: dict, rhythm: dict, constraints: dict,
+        *, paragraph_count: int = 0, target_sec: float = 0.0,
     ) -> str:
         """构建结构生成 system prompt。
 
         轮71：identity.positioning / class_perspective 此前从未进入提示词
         （Persona 治理面板可编辑，但结构 Agent 永远读不到）。
+
+        E2E 2026-10-28：这里原本硬写「4-6 个场景」。面对 702s 配音、4203 字
+        （40+ 段）的长文稿，模型老实按 4-6 个场景产出——每个场景背 100s 口播、
+        正文只覆盖开头几段。场景数必须**由文稿长度决定**，不是常量。
         """
         tone = identity.get("tone") or "neutral"
         extra_lines = []
@@ -218,6 +404,25 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             extra_lines.append(f"- 账号定位: {identity['positioning']}")
         if identity.get("class_perspective"):
             extra_lines.append(f"- 阶层视角: {identity['class_perspective']}")
+        if paragraph_count and paragraph_count >= 4:
+            scene_rule = (
+                f"1. **覆盖全文**：用户文稿共 {paragraph_count} 段，请**一段一个场景**"
+                f"（保留段落边界，不得合并、不得漏段、不得只写开头），"
+                f"总场景数约 {paragraph_count} 个（±20% 以内）"
+            )
+        else:
+            scene_rule = "1. 4-6 个场景"
+        coverage_rule = ""
+        if paragraph_count and paragraph_count >= 4:
+            coverage_rule = (
+                "7. **voiceover_script 必须是该段文稿的原话**（逐字照抄，不得概括、"
+                "改写或省略）；所有场景的 voiceover_script 连起来要覆盖全文"
+            )
+            if target_sec:
+                coverage_rule += (
+                    f"\n8. 各场景 duration_sec 之和应接近 {target_sec:.0f}s，"
+                    "按该段口播字数比例分配（长段落镜头更长）"
+                )
         return SYSTEM_PROMPT_TPL.format(
             tone=tone,
             academic_density=language.get("academic_density", 0.1),
@@ -225,6 +430,8 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             cut_profile=rhythm.get("cut_profile", "even_flow"),
             max_duration=constraints.get("max_duration_sec", 900),
             persona_identity="\n".join(extra_lines),
+            scene_rule=scene_rule,
+            coverage_rule=coverage_rule,
         )
 
     async def execute(
@@ -241,9 +448,30 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
             # 复用人在回路已确认的场景结构（production_plan.raw_scenes），
             # 避免管线重新生成导致与用户确认的规划书发生漂移（绕过审阅）。
+            # **但复用要看覆盖度**：E2E 2026-10-28 实测，规划书里的 6 个场景只覆盖
+            # 4203 字文稿的开头一段（后 2/3 全丢），而复用是无条件的——主 agent
+            # 反复要求"忽略残次场景表、逐段重排"都被复用分支吞掉，任务彻底卡死。
             confirmed_scenes = []
             if isinstance(input_data.production_plan, dict):
                 confirmed_scenes = input_data.production_plan.get("raw_scenes") or []
+            coverage = _script_coverage(
+                confirmed_scenes, str(context.extra_params.get("script_text", "") or ""),
+            )
+            _has_script = bool(str(context.extra_params.get("script_text", "") or "").strip())
+            if confirmed_scenes and _has_script and coverage < _MIN_REUSE_COVERAGE:
+                logger.warning(
+                    "StructureAgent: 已确认规划书的场景只覆盖文稿 %.0f%%（%d 个场景），"
+                    "跳过复用改为重新生成",
+                    coverage * 100, len(confirmed_scenes),
+                )
+                note_degradation(
+                    "confirmed_plan_incomplete",
+                    detail=(f"已确认规划书的 {len(confirmed_scenes)} 个场景只覆盖文稿 "
+                            f"{coverage * 100:.0f}%，已改为重新生成分镜"),
+                    scope="scenes",
+                    impact="场景表与已确认规划书不一致（覆盖度优先）",
+                )
+                confirmed_scenes = []
             if confirmed_scenes and isinstance(confirmed_scenes, list):
                 reused, reuse_warnings = _validate_scenes(confirmed_scenes)
                 if reused:
@@ -258,23 +486,16 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                             "special_requirements",
                         ) if brief.get(k)
                     }
-                    # dub_segments 时间轴对齐——确认了配音分段时，场景时长按
-                    # 配音总长等比缩放（旧实现复用分支不消费该参数）
-                    dub_segments = context.extra_params.get("dub_segments") or []
-                    if dub_segments:
-                        try:
-                            dub_end = max(float(s.get("end_sec", 0) or 0) for s in dub_segments
-                                          if isinstance(s, dict))
-                            scene_total = sum(float(s.get("duration_sec", 0) or 0) for s in reused)
-                            if dub_end > 0 and scene_total > 0:
-                                scale = dub_end / scene_total
-                                if abs(scale - 1.0) > 0.02:
-                                    for s in reused:
-                                        s["duration_sec"] = round(
-                                            float(s.get("duration_sec", 0) or 0) * scale, 3)
-                                    reuse_warnings.append(f"场景时长已按配音时间轴缩放 ×{scale:.2f}")
-                        except Exception:
-                            logger.debug("dub_segments 对齐失败，保持原场景时长")
+                    # 配音时间轴对齐——dub_segments 有真实分段时以分段末段为准，
+                    # 否则退回上传配音的总时长（旧实现只认 dub_segments，
+                    # 直接上传整段配音的会话在这里完全不对齐）。
+                    reused, align_warning = _align_scene_durations(
+                        reused,
+                        float(context.extra_params.get("audio_duration_sec", 0) or 0),
+                        context.extra_params.get("dub_segments") or [],
+                    )
+                    if align_warning:
+                        reuse_warnings.append(align_warning)
                     # 为缺少动画标记的场景调用 LLM 补充动画标记（不硬编码），
                     # 使 AnimationAgent 能创建动画（含 LLM 动态 MG 动画）。
                     reused = await self._enrich_scene_animations(reused, context)
@@ -303,10 +524,58 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                     if grounded:
                         output.scenes = grounded
                         output.script_skeleton["_warnings"] = gnotes
+                    # E2E 2026-10-28：素材/剪辑阶段读的是
+                    # `script_skeleton["scenes"]`（material_agent:719、
+                    # edit_agent:276），而 StructureOutput 的 scenes 是**平级字段**，
+                    # 黑板里也只是另一个 key。结果：material 永远拿到 scenes=[]
+                    # → 「候选素材 0 条」→ 整条任务在第 2 步就失败。
+                    output.script_skeleton["scenes"] = output.scenes
                     return output
 
-            system_prompt = self._build_system_prompt(identity, language, rhythm, constraints)
+            _script_for_rule = str(context.extra_params.get("script_text", "") or "")
+            system_prompt = self._build_system_prompt(
+                identity, language, rhythm, constraints,
+                paragraph_count=len(_split_script_paragraphs(_script_for_rule)),
+                target_sec=float(context.extra_params.get("audio_duration_sec", 0) or 0),
+            )
+            # V1/V15：类型身份 + 结构阶段规范固定序注入（无槽位时零变化）
+            system_prompt = compose_structure_prompt(
+                system_prompt, context.category_plugin_id or ""
+            )
             system_prompt += TOOL_PROMPT
+
+            # A-16（plan-first）：先取规划；开了 plan_first 却没有规划 → 明确失败，
+            # 不许悄悄退回"自由生成"（验收 V55）。
+            from clipwright.services.plan_first import (
+                PlanMissing,
+                plan_prompt_block,
+                require_plan,
+            )
+
+            try:
+                plan = require_plan(context.extra_params)
+            except PlanMissing as exc:
+                logger.error("StructureAgent: plan-first 缺少规划，明确失败: %s", exc)
+                return StructureOutput(
+                    decision=AgentDecision.FAIL,
+                    script_skeleton={
+                        "topic": context.topic,
+                        "_warnings": [str(exc)],
+                        "failure_reason": "plan_missing",
+                    },
+                    scenes=[],
+                )
+            if plan is not None:
+                block = plan_prompt_block(plan)
+                if block:
+                    system_prompt += "\n\n" + block
+
+            # F-04 落点：用户创作提示词（L1，优先于类型默认风格）
+            from clipwright.services.creative_prompt import creative_prompt_block
+
+            user_prompt_block = creative_prompt_block(context.extra_params)
+            if user_prompt_block:
+                system_prompt += "\n\n" + user_prompt_block
 
             if input_data.persona_prompt:
                 system_prompt += f"\n\n## Persona Prompt\n{input_data.persona_prompt}\n"
@@ -401,22 +670,41 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             from clipwright.config import settings
             has_api_key = bool(settings.llm_api_key)
             logger.info("StructureAgent: 选题=%s, tone=%s, has_api_key=%s", context.topic, tone, has_api_key)
+            logger.info(
+                "StructureAgent: mode=%s, 文稿=%d 字, 配音=%ss",
+                video_mode, len(script_text), audio_duration,
+            )
 
-            if has_api_key:
+            # ── 长文稿逐段标注路径（voiceover）──────────────────────────
+            # 逐段分镜的 JSON 有 40+ 条、每条都带 200 字口播原话 —— 一次性让
+            # 模型输出会被 max_tokens/reasoning 截断（实测 16384 仍只吐出散文，
+            # 解析出 0 个场景）。改成分工：**分段由代码定（段落边界）**，
+            # 模型只给每段写 title/description/keywords/动画标记。
+            # 这样输出小一个数量级，且文稿覆盖 100%（不靠兜底）。
+            _segments = (
+                _split_script_paragraphs(script_text)
+                if (video_mode == "voiceover" and script_text.strip()) else []
+            )
+            if has_api_key and len(_segments) >= _SEGMENT_ANNOTATE_MIN:
+                annotated = await self._annotate_segments(
+                    _segments, system_prompt, context, float(audio_duration or 0),
+                )
+                if annotated:
+                    scenes = annotated
+                    warnings = list(warnings) + [f"分镜按文稿逐段生成（{len(scenes)} 段）"]
+
+            if has_api_key and not scenes:
                 # 动态收集所有声明 agent_callable 且可用的工具
                 # （内置 list_animations/describe_llm_mg + 插件注册工具），
                 # 不再硬编码工具列表，插件工具可被 LLM 主动调用。
                 available_tools: dict[str, Any] = {}
                 for tool in ToolRegistry.list_agent_callable():
                     available_tools[tool.name] = tool
-                if "list_animations" not in available_tools:
-                    list_tool = ToolRegistry.get("list_animations")
-                    if list_tool and list_tool.is_available():
-                        available_tools["list_animations"] = list_tool
-                if "describe_llm_mg" not in available_tools:
-                    mg_tool = ToolRegistry.get("describe_llm_mg")
-                    if mg_tool and mg_tool.is_available():
-                        available_tools["describe_llm_mg"] = mg_tool
+                # 两个"必备"能力的兜底：同样走能力解析（插件可接管，缺了也不硬塞）
+                for _cap in ("list_animations", "describe_mg"):
+                    _tool = self.resolve_tool(_cap)
+                    if _tool is not None:
+                        available_tools.setdefault(_tool.name, _tool)
                 tool_schemas = [
                     {
                         "type": "function",
@@ -446,6 +734,17 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                     """单次结构生成（统一收口：超时+重试；失败回退 fallback）。"""
                     try:
                         up = user_prompt + variant_hint
+                        # 工具轮里模型"先说话再动手"的那段 content（with_tools 的
+                        # preamble）默认会被丢掉。实测（E2E 2026-10-28）：模型在带
+                        # tool_calls 的那一轮就把 JSON 场景表写进 content，最后一轮
+                        # 返回空 content → `LLM 响应长度=0` → 0 个场景 → 退化成模板。
+                        # 这里把每轮 preamble 收起来，最终正文为空时用它兜住。
+                        collected: list[str] = []
+
+                        def _collect(text: str, _round: int = 0, _calls: Any = None) -> None:
+                            if text and text.strip():
+                                collected.append(text.strip())
+
                         result = await self.llm_call_with_retry(
                             lambda: self._llm.with_tools(
                                 system_prompt=system_prompt,
@@ -453,17 +752,34 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                                 tool_executor=self._tool_executor_for_llm,
                                 tools=tool_schemas,
                                 pipeline_id=context.pipeline_id,
+                                on_preamble=_collect,
+                                # 输出预算不设人为上限（provider 自夹）
+                                max_tokens=MAX_OUTPUT_TOKENS,
                             ),
                             retries=1, timeout=self.timeout_sec,
                         )
-                        logger.info("StructureAgent: LLM 响应长度=%d, 内容预览=%.200s", len(result.content or ""), result.content or "")
-                        raw_scenes = self._parse_scenes(result.content)
+                        content = (result.content or "").strip()
+                        if not content and collected:
+                            content = "\n".join(collected).strip()
+                            logger.info(
+                                "StructureAgent: 最终轮无正文，改用工具轮 preamble 累计（%d 段, %d 字）",
+                                len(collected), len(content),
+                            )
+                        logger.info("StructureAgent: LLM 响应长度=%d, 内容预览=%.200s", len(content), content)
+                        raw_scenes = self._parse_scenes(content)
                         logger.info("StructureAgent: 解析出 %d 个原始场景", len(raw_scenes))
                         sc, wa = _validate_scenes(raw_scenes)
                         logger.info("StructureAgent: 验证后 %d 个有效场景, 警告=%s", len(sc), wa)
                         return sc, wa
                     except asyncio.TimeoutError:
                         logger.warning("StructureAgent: LLM 超时（>%ss），使用 fallback", self.timeout_sec)
+                        # F9：超时回退到模板化分镜属于「完成了但打了折扣」，必须留痕
+                        note_degradation(
+                            "llm_timeout_fallback",
+                            detail=f"StructureAgent: 分镜生成 LLM 超时（>{self.timeout_sec}s）",
+                            scope="scenes",
+                            impact="改用模板化分镜，结构与文案质量下降",
+                        )
                         return self._fallback_scenes(context.topic, tone, script_text), [f"LLM 超时（>{self.timeout_sec}s）"]
 
                 scenes, warnings = await _generate_scenes()
@@ -481,6 +797,13 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
             if not scenes:
                 logger.info("StructureAgent: 无有效场景，使用 fallback")
+                # F9：LLM 正常返回但没解析出可用场景 → 同样是降级
+                note_degradation(
+                    "scenes_fallback",
+                    detail="StructureAgent: LLM 未产出可用的有效场景，改用模板化分镜",
+                    scope="scenes",
+                    impact="改用模板化分镜，结构与文案质量下降",
+                )
                 scenes = self._fallback_scenes(context.topic, tone, script_text)
 
             # 为缺少动画标记的场景调用 LLM 补充动画标记（不硬编码），供 AnimationAgent 创建动画
@@ -490,6 +813,62 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             scenes = self._strip_opening_animation_markers(
                 scenes, context.category_plugin_id
             )
+            # 配音时间轴对齐（voiceover 模式）：LLM 给的 duration_sec 常常与真实
+            # 配音长度差一个数量级（实测 36s 覆盖 702s 文稿），此处等比拉到配音长度。
+            if video_mode == "voiceover":
+                scenes, _align_warning = _align_scene_durations(
+                    scenes,
+                    float(audio_duration or 0),
+                    context.extra_params.get("dub_segments") or [],
+                )
+                if _align_warning:
+                    warnings = list(warnings) + [_align_warning]
+                # 覆盖度兜底：LLM 分镜只覆盖文稿一小部分时，按标点重新逐段切分。
+                # 宁可画面机械，也不能拿 6 个场景去配 702s 的配音（实测只剩 5% 覆盖）。
+                _cov = _script_coverage(scenes, script_text)
+                if script_text.strip() and _cov < _MIN_ACCEPT_COVERAGE:
+                    from_script = _scenes_from_script(script_text, float(audio_duration or 0))
+                    if from_script:
+                        logger.warning(
+                            "StructureAgent: LLM 分镜只覆盖文稿 %.0f%%（%d 个场景），"
+                            "改用按标点逐段切分的 %d 个场景（确定性兜底）",
+                            _cov * 100, len(scenes), len(from_script),
+                        )
+                        note_degradation(
+                            "scenes_coverage_fallback",
+                            detail=(f"LLM 分镜覆盖文稿仅 {_cov * 100:.0f}%，"
+                                    f"已改用逐段切分（{len(from_script)} 个场景）"),
+                            scope="scenes",
+                            impact="分镜由确定性切分给出，画面描述较模板化",
+                        )
+                        warnings = list(warnings) + [
+                            f"分镜覆盖不足（{_cov * 100:.0f}%），已改用逐段切分"
+                        ]
+                        scenes = from_script
+
+            # A-17：执行偏离规划 → plan_drift 留痕（JSONL + trace 事件；无 plan 时零变化）
+            if plan is not None:
+                try:
+                    from clipwright.services.plan_first import (
+                        append_drift,
+                        detect_drift,
+                        emit_drift_events,
+                    )
+
+                    drifts = detect_drift(plan, scenes)
+                    if drifts:
+                        drift_path = (context.extra_params or {}).get("plan_drift_path")
+                        if drift_path:
+                            append_drift(drift_path, drifts)
+                        # V58：同一批偏离同时进 trace，前端运行详情可查
+                        emit_drift_events(context.pipeline_id, drifts)
+                        # V58：会话里的规划书同步写回（有 session_id 才写）
+                        await write_back_plan_drift_if_session(context, drifts)
+                        warnings = list(warnings) + [
+                            f"plan_drift: {item.get('code')}" for item in drifts
+                        ]
+                except Exception as exc:  # noqa: BLE001 - 留痕失败不得影响出片
+                    logger.warning("plan_drift 记录失败（已跳过）: %s", exc)
             # R8：给每个场景钉上真实素材镜头引用（`material_refs`），
             # 让规划书从"一段文字描述"变成"指名道姓用哪些镜头"，下游不再各剪各的。
             scenes, warnings = self._ground_scenes(scenes, context, warnings)
@@ -500,6 +879,8 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                     "topic": context.topic,
                     "tone": tone,
                     "scene_count": len(scenes),
+                    # 同复用分支：下游 material/edit 只读 script_skeleton["scenes"]
+                    "scenes": scenes,
                     "_warnings": warnings,
                 },
                 scenes=scenes,
@@ -609,6 +990,135 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
         return "\n".join(parts)
 
+    async def _annotate_segments(
+        self, segments: list[str], system_prompt: str, context: AgentContext,
+        audio_duration_sec: float,
+    ) -> list[dict]:
+        """逐段生成分镜：段落边界由代码定，模型只写 title/description/keywords/动画。
+
+        为什么这么拆（E2E 2026-10-28 实测）：
+        - 让模型「一次性输出 43 个场景（每条带 200 字口播原话）」的 JSON，
+          16384 预算下它只吐出散文前言就被截断，`解析出 0 个原始场景`；
+        - 而段落边界本来就是确定性的（文稿换行/句末标点），根本不需要模型判断。
+
+        分工后：输出量降一个数量级（每段 40-80 字），文稿覆盖 100%，
+        口播与时长由代码按字数分配（长段更长），不依赖任何兜底分支。
+        """
+        indexed = "\n".join(
+            f"{i}. {seg[:120]}{'…' if len(seg) > 120 else ''}"
+            for i, seg in enumerate(segments)
+        )
+        user_prompt = (
+            f"下面是文稿逐段切分后的 {len(segments)} 段（已编号）。"
+            "请为**每一段**产出分镜标注，不要遗漏、不要合并、不要新增段号。\n"
+            "返回 JSON 对象：{\"scenes\": [{\"index\": 0, \"title\": \"8-16 字标题\", "
+            "\"description\": \"画面描述，必须包含一个动画标记\", \"keywords\": [\"可检索关键词2-4个\"]}]}\n\n"
+            f"## 文稿分段\n{indexed}"
+        )
+        # 用**精简** system prompt：完整结构 prompt（动画指南 + 工具说明 + 类型规范）
+        # 太长，推理型模型会把预算全花在 reasoning 上、正文返回空
+        # （实测 result_keys=[]，原文预览为空串）。这里只留必要规范。
+        try:
+            anim_guide = self._build_anim_guide()
+        except Exception:  # noqa: BLE001 — 指南拿不到不影响标注
+            anim_guide = ""
+        compact_system = (
+            "你是视频分镜标注助手。用户给你按段落切分好的文稿，你为每段写分镜标注：\n"
+            "- title：8-16 字，概括该段论证任务\n"
+            "- description：1-3 句画面描述，**必须包含一个动画标记**"
+            "（[文字动画]名称：文字 或 [逻辑动画]mg_dynamic:{\"description\": \"...\", \"text\": \"A|B\"}）\n"
+            "- keywords：2-4 个可检索的画面关键词\n"
+            "只输出 JSON 对象 {\"scenes\": [...]}，不要输出任何解释文字。\n"
+        )
+        if anim_guide:
+            compact_system += "\n## 可用动画（节选）\n" + anim_guide[:1500]
+        try:
+            result = await self.llm_call_with_retry(
+                lambda: self._llm.structured_output(
+                    system_prompt=compact_system,
+                    user_prompt=user_prompt,
+                    output_schema={
+                        "type": "object",
+                        "properties": {
+                            "scenes": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "index": {"type": "integer"},
+                                        "title": {"type": "string"},
+                                        "description": {"type": "string"},
+                                        "keywords": {"type": "array", "items": {"type": "string"}},
+                                    },
+                                    "required": ["index", "title", "description"],
+                                },
+                            },
+                        },
+                        "required": ["scenes"],
+                    },
+                    pipeline_id=context.pipeline_id,
+                    max_tokens=MAX_OUTPUT_TOKENS,
+                ),
+                retries=1, timeout=self.timeout_sec,
+            )
+        except Exception as exc:  # noqa: BLE001 — 失败交由上层走原生成路径
+            logger.warning("StructureAgent: 逐段标注失败（回退一次性生成）: %s", exc)
+            return []
+
+        items = result.get("scenes") if isinstance(result, dict) else None
+        if not isinstance(items, list) or not items:
+            # structured_output 在 JSON 解析失败时会返回 {"content": "<原始文本>"}。
+            # 实测模型常常输出「说明 + JSON」，这里从原文里捞出第一个 JSON 对象。
+            raw = ""
+            if isinstance(result, dict):
+                raw = str(result.get("content") or result.get("text") or "")
+            recovered = _extract_first_json_object(raw)
+            if isinstance(recovered, dict) and isinstance(recovered.get("scenes"), list):
+                items = recovered["scenes"]
+            else:
+                logger.warning(
+                    "StructureAgent: 逐段标注未产出可用 scenes（result_keys=%s, 原文预览=%s）",
+                    list(result.keys()) if isinstance(result, dict) else type(result).__name__,
+                    raw[:300].replace("\n", " "),
+                )
+                return []
+        if not items:
+            return []
+        by_index: dict[int, dict] = {}
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            raw_index = item.get("index", idx)
+            try:
+                key = int(raw_index)
+            except (TypeError, ValueError):
+                key = idx
+            by_index[key] = item
+
+        total_chars = sum(len(s) for s in segments) or 1
+        target = float(audio_duration_sec or 0) or total_chars / 4.5
+        scenes: list[dict] = []
+        for i, seg in enumerate(segments):
+            item = by_index.get(i) or {}
+            title = str(item.get("title") or "").strip() or seg[:24]
+            description = str(item.get("description") or "").strip() or f"口播段落 {i + 1}：{seg[:40]}"
+            keywords = item.get("keywords")
+            if not isinstance(keywords, list) or not keywords:
+                keywords = [w for w in re.split(r"[^\w\u4e00-\u9fff]+", seg) if len(w) > 1][:4]
+            scenes.append({
+                "title": title,
+                "description": description,
+                "duration_sec": round(target * len(seg) / total_chars, 3),
+                "keywords": keywords or [f"段落{i + 1}"],
+                "voiceover_script": seg,
+                "visual_description": "",
+            })
+        logger.info(
+            "StructureAgent: 逐段标注完成 %d/%d 段（模型给了 %d 条），总时长 %.1fs",
+            len(scenes), len(segments), len(items), target,
+        )
+        return scenes
+
     async def _enrich_scene_animations(self, scenes: list[dict], context: AgentContext) -> list[dict]:
         """为缺少动画标记的场景调用 LLM 补充动画标记（文字动画/逻辑动画/mg_dynamic）。
 
@@ -685,7 +1195,12 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                         },
                     },
                     "required": ["markers"],
-                }, pipeline_id=context.pipeline_id), fallback=None, retries=2)
+                },
+                # 推理型模型的 reasoning 会吃掉预算：不给 max_tokens 时实测
+                # HTTP 200 但正文为空（"LLM 补充了 0 个动画标记"），动画全链路
+                # 因此少标记。给足预算才拿得到 markers 数组。
+                max_tokens=MAX_OUTPUT_TOKENS,
+                pipeline_id=context.pipeline_id), fallback=None, retries=2)
             markers = result.get("markers", []) if isinstance(result, dict) else []
             enriched = 0
             for m in markers:
@@ -761,7 +1276,14 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
         返回注入的场景序号（-1 = 已有覆盖/不适用，未注入）。
         """
-        if category_plugin_id not in cls._DATA_CHART_CATEGORIES or len(scenes) < 2:
+        # A-08：类型可声明 required_animation_markers: [data_chart]；
+        # 未声明时回落到旧集合（D4：本期迁出，一周期后删）。
+        from clipwright.services.type_spec_runtime import required_markers
+
+        wants_chart = "data_chart" in required_markers(category_plugin_id) or (
+            category_plugin_id in cls._DATA_CHART_CATEGORIES
+        )
+        if not wants_chart or len(scenes) < 2:
             return -1
         if any(
             cls._DATA_CHART_MARKER_RE.search(s.get("description", "") or "")
@@ -806,7 +1328,14 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         仅对 _OUTRO_ANIMATION_CATEGORIES 生效；已有标记则不动。
         返回注入的场景序号（-1 = 未注入）。
         """
-        if category_plugin_id not in cls._OUTRO_ANIMATION_CATEGORIES or not scenes:
+        # A-08：declares.outro_animation 优先，未声明回落旧集合。
+        from clipwright.services.type_spec_runtime import declare_flag
+
+        if not declare_flag(
+            category_plugin_id,
+            "outro_animation",
+            category_plugin_id in cls._OUTRO_ANIMATION_CATEGORIES,
+        ) or not scenes:
             return -1
         last = scenes[-1]
         desc = (last.get("description") or "").strip()
@@ -835,7 +1364,15 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
           开场允许动画标记（原样保留），符合其高能开场特性；
         - 知识类及其余类型（knowledge_longform 等，含未指定类型）：维持原有剥离行为。
         """
-        if category_plugin_id in _OPENING_ANIMATION_ALLOWED_PLUGIN_IDS:
+        # A-08：declares.opening_animation=True 表示"开场允许动画标记"；
+        # 未声明时回落旧集合（快速类型允许，其余剥离）。
+        from clipwright.services.type_spec_runtime import declare_flag
+
+        if declare_flag(
+            category_plugin_id,
+            "opening_animation",
+            category_plugin_id in _OPENING_ANIMATION_ALLOWED_PLUGIN_IDS,
+        ):
             return scenes
         import re
         if not scenes:
@@ -855,7 +1392,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
     def _build_user_prompt(self, mode: str, script: str, audio_dur: float, base: str, anim_guide: str) -> str:
         if mode == "visual" and script:
-            truncated = script[:8000] + ("..." if len(script) > 8000 else "")
+            truncated = script  # 不截断：截断会让长文稿后段完全没进入分镜
             lines = [l.strip() for l in truncated.split('\n') if l.strip()]
             return base + (
                 f"\n\n## 场景列表\n{truncated}\n\n## 要求\n"
@@ -867,7 +1404,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                 f"6. keywords 具体可搜索\n\n{anim_guide}"
             )
         elif script:
-            truncated = script[:8000] + ("..." if len(script) > 8000 else "")
+            truncated = script  # 不截断：截断会让长文稿后段完全没进入分镜
             return base + (
                 f"\n\n## 完整文稿\n{truncated}\n\n## 要求\n"
                 f"1. 总时长约 {audio_dur:.0f}s\n"
@@ -921,7 +1458,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         if isinstance(plan, dict) and plan:
             markdown = plan.get("markdown_content") or plan.get("markdown") or ""
             if markdown:
-                parts.append(f"\n\n## 用户已确认的制作规划书（分镜须与之保持一致）\n{str(markdown)[:3000]}")
+                parts.append(f"\n\n## 用户已确认的制作规划书（分镜须与之保持一致）\n{str(markdown)}")
         if not parts:
             return ""
         return "".join(parts) + "\n\n请确保生成的分镜场景与上述已确认的简报、规划书在核心信息、风格方向、结构上保持一致，同时忠实反映用户提供的原始文稿内容。"

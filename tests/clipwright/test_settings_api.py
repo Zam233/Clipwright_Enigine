@@ -211,3 +211,46 @@ class TestReset:
     def test_reset_unknown_key_400(self, client: TestClient) -> None:
         resp = client.post("/api/settings/reset", json={"keys": ["bogus"]})
         assert resp.status_code == 400
+
+
+class TestObjectFields:
+    """对象型配置（模型单价表 / 路由表）必须能在设置页真的填进去。
+
+    旧实现把它们推导成 `string` → 前端渲染单行文本框，粘 JSON 必然 422，
+    于是"单价表从设置里配置"这句话其实做不到。
+    """
+
+    def test_kind_is_dict_so_ui_renders_json_editor(self) -> None:
+        assert FIELD_META["model_prices"].kind == "dict"
+        assert FIELD_META["model_routes"].kind == "dict"
+
+    def test_put_model_prices_accepts_object(self, client: TestClient) -> None:
+        prices = {"openai/gpt-4o": {"in": 0.005, "out": 0.015}}
+        resp = client.put("/api/settings", json={"values": {"model_prices": prices}})
+        assert resp.status_code == 200
+        assert settings.model_prices == prices
+        assert settings_store.load()["model_prices"] == prices
+
+    def test_put_model_prices_accepts_json_string(self, client: TestClient) -> None:
+        """前端文本域可能把 JSON 当字符串提交（宽容处理）。"""
+        prices = {"deepseek-chat": {"in": 0.001, "out": 0.002}}
+        resp = client.put(
+            "/api/settings", json={"values": {"model_prices": json.dumps(prices)}}
+        )
+        assert resp.status_code == 200
+        assert settings.model_prices == prices
+
+    def test_put_invalid_json_string_is_422(self, client: TestClient) -> None:
+        resp = client.put("/api/settings", json={"values": {"model_prices": "{not json"}})
+        assert resp.status_code == 422
+
+    def test_put_auto_spawn_and_hard_floor_switches(self, client: TestClient) -> None:
+        """本轮新增的两个开关必须能在设置页改（否则等于写死）。"""
+        resp = client.put("/api/settings", json={"values": {
+            "supervisor_auto_spawn": False,
+            "exec_hard_floor_never_authorizable": True,
+        }})
+        assert resp.status_code == 200
+        assert settings.supervisor_auto_spawn is False
+        assert settings.exec_hard_floor_never_authorizable is True
+

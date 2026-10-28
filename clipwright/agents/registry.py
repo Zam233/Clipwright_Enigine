@@ -1,7 +1,7 @@
 """AgentRegistry — 插件自定义 Agent 注册表（SA-2）。
 
-插件在 initialize() 中注册自定义 Agent（BaseAgent 子类实例）；主管线
-PipelineOrchestratorV2 运行时动态读取合并进执行 DAG；按 plugin_id 归属，
+插件在 initialize() 中注册自定义 Agent（BaseAgent 子类实例）；主 Agent 通过
+`delegate_agent` / 阶段派发调用它们；按 plugin_id 归属，
 卸载/禁用时精确注销（对齐 HookRegistry 语义）。
 
 约束：Agent 名匹配 ^[a-z][a-z0-9_]{0,31}$ 且不得与核心六 Agent 冲突；
@@ -29,6 +29,8 @@ class RegisteredAgent:
     agent: Any
     name: str
     plugin_id: str
+    #: **已废弃（closeout B6）**：老编排器的执行 DAG 已删除，现在没有任何消费者读它。
+    #: 保留字段是为了兼容已发布的插件 manifest；新插件不要再依赖它。
     deps: list[str] = field(default_factory=list)
     description: str = ""
 

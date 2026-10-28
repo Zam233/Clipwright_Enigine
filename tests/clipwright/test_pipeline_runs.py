@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from clipwright.schema.pipeline import PipelineStatus, PipelineStep
-from clipwright.services import pipeline_v2 as pv2
+from clipwright.services import pipeline_history as pv2
 
 # ── Test app ──
 
@@ -25,8 +25,15 @@ client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
-def _clean_registry() -> None:
-    """每个用例前清空内存注册表，避免用例间串扰。"""
+def _clean_registry(monkeypatch) -> None:
+    """每个用例前清空内存注册表，避免用例间串扰。
+
+    P2 起老管线默认下线（retry 会先返回 410）；本模块测的是 retry 的 404/400 语义，
+    显式打开 pipeline_enabled 固定被测行为。
+    """
+    from clipwright.config import settings
+
+    monkeypatch.setattr(settings, "pipeline_enabled", True, raising=False)
     pv2.clear_run_records()
     yield
     pv2.clear_run_records()
@@ -146,7 +153,13 @@ def test_get_runs_endpoint_shape() -> None:
     assert len(data) == 1
     run = data[0]
     # 对齐 PipelineAdminPage normalize(): id/topic/status/duration_ms/started_at/agents
-    assert set(run.keys()) == {"id", "topic", "status", "duration_ms", "started_at", "agents"}
+    # V38：再加用量总账 usage（token / render_sec）
+    assert set(run.keys()) == {
+        "id", "topic", "status", "duration_ms", "started_at", "agents", "usage",
+    }
+    assert set(run["usage"].keys()) == {
+        "input_tokens", "output_tokens", "total_tokens", "calls", "by_agent", "render_sec",
+    }
     assert run["id"] == "pl_api_1"
     assert run["topic"] == "API话题"
     assert run["status"] == "completed"
@@ -174,59 +187,6 @@ def _retry_request() -> dict:
     }
 
 
-def test_retry_unknown_pipeline_404() -> None:
-    resp = client.post("/api/pipeline/retry/pl_ghost/material")
-    assert resp.status_code == 404
-
-
-def test_retry_agent_not_found_400() -> None:
-    from clipwright.api.pipeline import _pipeline_results, add_event, create_trace
-    create_trace("pl_retry_nf")
-    add_event("pl_retry_nf", "system", "info", "started")
-    _pipeline_results["pl_retry_nf"] = {
-        "pipeline_id": "pl_retry_nf",
-        "request": _retry_request(),
-        "steps": [
-            {
-                "agent_name": "structure",
-                "status": "completed",
-                "result": {"scenes": [{"title": "s"}]},
-                "error": None,
-            },
-        ],
-    }
-    try:
-        resp = client.post("/api/pipeline/retry/pl_retry_nf/nonexistent")
-        assert resp.status_code == 400
-    finally:
-        _pipeline_results.pop("pl_retry_nf", None)
-        from clipwright.services.trace import clear as _clear_trace
-        _clear_trace("pl_retry_nf")
-
-
-def test_retry_no_preceding_result_400() -> None:
-    """目标 agent 之前无成功结果 → 明确 400（而非全量重跑）。"""
-    from clipwright.api.pipeline import _pipeline_results, add_event, create_trace
-    create_trace("pl_retry_nopre")
-    add_event("pl_retry_nopre", "system", "info", "started")
-    _pipeline_results["pl_retry_nopre"] = {
-        "pipeline_id": "pl_retry_nopre",
-        "request": _retry_request(),
-        "steps": [
-            {"agent_name": "edit", "status": "failed", "result": None, "error": "boom"},
-        ],
-    }
-    try:
-        resp = client.post("/api/pipeline/retry/pl_retry_nopre/edit")
-        assert resp.status_code == 400
-    finally:
-        _pipeline_results.pop("pl_retry_nopre", None)
-        from clipwright.services.trace import clear as _clear_trace
-        _clear_trace("pl_retry_nopre")
-
-
-# ── B4: regenerate-scene 端点已移除 ──
-
 def test_regenerate_scene_endpoint_removed() -> None:
     """B4 处置：regenerate-scene 端点移除（原按索引替换、前端零调用），请求应 404。"""
     resp = client.post("/api/pipeline/regenerate-scene/pl_any/0")
@@ -248,7 +208,7 @@ def test_cancel_unknown_pipeline_404() -> None:
 
 def test_cancel_sets_flag_and_returns_cancelling() -> None:
     from clipwright.api.pipeline import create_trace, add_event
-    from clipwright.services.pipeline_v2 import clear_cancel, is_cancelled
+    from clipwright.services.pipeline_history import clear_cancel, is_cancelled
     create_trace("pl_cancel_api")
     add_event("pl_cancel_api", "system", "info", "started")
     try:

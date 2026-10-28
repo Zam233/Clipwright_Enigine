@@ -1224,7 +1224,7 @@ class RenderService:
                          "-map", "0:v:0", "-map", "0:a?", "-map", "1:0",
                          "-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text",
                          "-movflags", "+faststart", str(output)],
-                        capture_output=True, text=False, timeout=600)
+                        capture_output=True, text=False, timeout=3600)
                     _srt_ok = _is_valid_video(output)
                 except Exception as e:
                     logger.warning("D4 软字幕封装失败，回退无字幕轨: %s", e)
@@ -1566,7 +1566,7 @@ class RenderService:
             # 文件后缀推断 muxer，`x.mp4.part` 会直接失败
             # （"Error initializing the muxer" / "Error opening output files"）→
             # 每个片段静默降级为 fallback 板。见 _atomic_temp_path。
-            out_tmp = self._atomic_temp_path(out)
+            out_tmp = self._atomic_temp_path(out, unique=uuid.uuid4().hex[:8])
             try:
                 # 关键帧变速——有 speed 关键帧时走分段恒速近似（trim+concat），
                 # 全局 setpts 前缀跳过；无关键帧保持 D1 单段 setpts 路径
@@ -1695,7 +1695,7 @@ class RenderService:
                     _lut_s = str(_lut)
                     if (
                         _lut_s.lower().endswith(".cube")
-                        and not _re.search(r"['\":,;]", _lut_s)
+                        and not re.search(r"['\":,;]", _lut_s)
                         and Path(_lut_s).is_file()
                     ):
                         try:
@@ -1814,11 +1814,16 @@ class RenderService:
                            "-stream_loop", "-1", "-i", src, "-t", str(dur), "-vf", vf, "-r", str(fps),
                            *_encoder_stage_args(encoder, preset),
                            "-b:v", bitrate, "-an", out_tmp]
-                r = self._run_ff(cmd, capture_output=True, text=False, timeout=600)
+                r = self._run_ff(cmd, capture_output=True, text=False, timeout=3600)
                 if r.returncode == 0 and _is_valid_video(out_tmp):
-                    # 原子落位
+                    # 原子落位；并发同键时可能已被别的线程落位 → 视为成功
                     import os as _os
-                    _os.replace(out_tmp, out)
+                    try:
+                        _os.replace(out_tmp, out)
+                    except OSError as exc:
+                        if not (Path(out).exists() and _is_valid_video(out)):
+                            raise exc
+                        Path(out_tmp).unlink(missing_ok=True)
                     with _trim_cache_lock:
                         _trim_cache_put_locked(cache_key, out)
                     return out
@@ -2032,16 +2037,24 @@ class RenderService:
         return diff if diff > tol else None
 
     @staticmethod
-    def _atomic_temp_path(final_path: str) -> str:
+    def _atomic_temp_path(final_path: str, unique: str = "") -> str:
         """原子替换用的临时路径：把媒体扩展名保留在**末尾**。
 
         ffmpeg 只按输出文件名的后缀推断 muxer（除非显式 `-f`）。因此
         `trim_x.mp4.part` 会失败（"Error initializing the muxer"），而
         `trim_x.part.mp4` 正常——2026-09-05 的原子替换改造踩过这个坑，
         导致所有 trim 失败并静默降级为 fallback 板。
+
+        ``unique``：**并发同键裁剪必须各写各的临时文件**。两段素材完全相同
+        （同源、同起点、同时长）时会算出同一个 cache_key，两个线程写同一个
+        `.part` 文件 → Windows 上第二个 `os.replace` 撞"文件被占用"，
+        整条渲染失败（第 32 轮 V32 实测踩到）。
         """
         p = Path(str(final_path))
-        return str(p.with_name(f"{p.stem}.part{p.suffix}")) if p.suffix else f"{p}.part"
+        token = f".{unique}" if unique else ""
+        if p.suffix:
+            return str(p.with_name(f"{p.stem}{token}.part{p.suffix}"))
+        return f"{p}{token}.part"
 
     def _source_valid(self, src: str) -> bool:
         """检查源视频文件是否可解码（有视频流且时长可读）。"""
@@ -2064,7 +2077,7 @@ class RenderService:
         out = str(self._work_dir / f"fallback_{idx}.{_current_ext()}")
         try:
             # 超时按时长缩放：长片段（如 113s）色块编码超过固定 30s 会被误杀
-            timeout = 30 + int(dur) * 2
+            timeout = 60 + int(dur) * 6
             self._run_ff(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
                            f"color=c=0x1a1a2e:s={width}x{height}:d={dur}",
                            "-c:v", _current_encoder(), "-pix_fmt", _current_pix_fmt(), "-r", str(fps), out],
@@ -2216,7 +2229,7 @@ class RenderService:
                        "-filter_complex", "[0:v]setsar=1[a];[1:v]setsar=1[b];[a][b]concat=n=2:v=1:a=0[v]",
                        "-map", "[v]", *_encoder_stage_args(encoder, preset),
                        "-b:v", bitrate, "-r", str(fps), str(out)],
-                      capture_output=True, text=False, timeout=600)
+                      capture_output=True, text=False, timeout=3600)
         if _is_valid_video(out, require_streams=True):
             return str(out)
         self._final_ffmpeg_log.append(f"concat({Path(a).name}+{Path(b).name}): 输出无效，丢弃 {Path(b).name}")
@@ -2239,7 +2252,7 @@ class RenderService:
                        f"[0:v]setsar=1[a];[1:v]setsar=1[b];[a][b]xfade=transition={tt}:duration={td}:offset={off}[v]",
                        "-map", "[v]", *_encoder_stage_args(encoder, preset),
                        "-b:v", bitrate, "-r", str(fps), out],
-                      capture_output=True, text=False, timeout=600)
+                      capture_output=True, text=False, timeout=3600)
         if _is_valid_video(out, require_streams=True):
             return out
         self._final_ffmpeg_log.append(f"xfade({Path(left).name}×{Path(right).name}): 输出无效，降级硬切拼接")
@@ -3282,7 +3295,7 @@ class RenderService:
                                   "-b:v",bitrate,*_delivery_extra_args(encoder)]),
                                "-c:a","aac","-b:a",ab,"-map","0:v:0","-map","1:a:0",
                                "-movflags","+faststart",output_path],
-                              capture_output=True, text=False, timeout=600)
+                              capture_output=True, text=False, timeout=3600)
                 if _is_valid_video(output_path): return
                 logger.warning("_mix_audio: 配音混合输出无效: %s", output_path)
             except Exception as e:

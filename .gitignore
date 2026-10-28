@@ -77,7 +77,7 @@ _local_backup_*/
 backend-out.log
 *.log
 
-# ���Բ����İ汾����Ŀ¼
+# ���Բ����İ汾����Ŀ¼
 versions/
 
 # F3: 开发产物不入库
@@ -101,3 +101,12 @@ provider_sources.json
 settings.json
 provider_sources.json.bad
 settings.json.bad
+# supervisor run_python temp scripts (machine-local, not for VCS)
+.supervisor/
+out/
+
+# 评估/诊断跑出来的临时工作区（golden_eval、诊断脚本）
+workspaces/
+
+# 本地数据还原点（清理前的快照，不进版本库）
+_backup/

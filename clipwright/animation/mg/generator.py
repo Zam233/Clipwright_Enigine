@@ -16,7 +16,7 @@ import yaml
 from clipwright.animation.mg.fallback import FallbackEngine
 from clipwright.animation.mg.validator import repair_mg_json, validate_mg_json
 from clipwright.config import logger
-from clipwright.services.llm import LLMService
+from clipwright.services.llm import LLMService, MAX_OUTPUT_TOKENS
 from clipwright.agents.base import unified_llm_call
 
 # 残留占位符检测：{word} 形式的字面量在最终 HTML 中出现即视为未填充
@@ -506,8 +506,9 @@ class MGGenerator:
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=llm_config.get("temperature", 0.2),
-                timeout=llm_config.get("timeout", 120),
-            ), retries=1, timeout=llm_config.get("timeout", 120))
+                max_tokens=int(llm_config.get("max_tokens", 0) or MAX_OUTPUT_TOKENS),
+                timeout=llm_config.get("timeout", 900),
+            ), retries=1, timeout=llm_config.get("timeout", 900))
             content = response.content if hasattr(response, "content") else str(response)
             repaired = self._parse_llm_response(content)
             if repaired:
@@ -820,8 +821,8 @@ class MGGenerator:
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=critique_config.get("temperature", 0.1),
-                timeout=llm_config.get("timeout", 120),
-            ), retries=1, timeout=llm_config.get("timeout", 120))
+                timeout=llm_config.get("timeout", 900),
+            ), retries=1, timeout=llm_config.get("timeout", 900))
             content = response.content if hasattr(response, "content") else str(response)
             return self._parse_critique(content)
         except Exception as e:
@@ -885,8 +886,9 @@ class MGGenerator:
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=llm_config.get("temperature", 0.2),
-                timeout=llm_config.get("timeout", 120),
-            ), retries=1, timeout=llm_config.get("timeout", 120))
+                max_tokens=int(llm_config.get("max_tokens", 0) or MAX_OUTPUT_TOKENS),
+                timeout=llm_config.get("timeout", 900),
+            ), retries=1, timeout=llm_config.get("timeout", 900))
             content = response.content if hasattr(response, "content") else str(response)
             repaired = self._parse_llm_response(content)
             if repaired:
@@ -1001,8 +1003,12 @@ class MGGenerator:
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=llm_config.get("temperature", 0.4),
-                timeout=llm_config.get("timeout", 120),
-            ), retries=1, timeout=llm_config.get("timeout", 120))
+                # config 里的 max_tokens 此前**从未下发**：MG 输出是 10k 量级
+                # 的 HTML+JSON，落到 provider 默认 4096 会被截断，
+                # 解析失败就退化成 method=fallback（模板匹配）。
+                max_tokens=int(llm_config.get("max_tokens", 0) or MAX_OUTPUT_TOKENS),
+                timeout=llm_config.get("timeout", 900),
+            ), retries=1, timeout=llm_config.get("timeout", 900))
             content = response.content if hasattr(response, "content") else str(response)
             return self._parse_llm_response(content)
         except Exception as e:
@@ -1068,6 +1074,19 @@ class MGGenerator:
         guidance = category_context.get("mg_style_guidance")
         if guidance:
             cat_parts.append(f"- 动画风格指引: {guidance}")
+        # V1：类型插件声明的 animation 阶段规范（10 槽位之一），逐行进提示词
+        stage_prompt = category_context.get("stage_prompt")
+        if stage_prompt:
+            stage_lines = [
+                f"  · {line.strip()}"
+                for line in str(stage_prompt).splitlines()
+                if line.strip()
+            ]
+            if stage_lines:
+                cat_parts.append(
+                    "- 本阶段类型规范（类型插件声明，优先于默认动效偏好）:\n"
+                    + "\n".join(stage_lines)
+                )
         brief_style = category_context.get("brief_animation_style")
         if isinstance(brief_style, dict) and brief_style:
             style_items = []

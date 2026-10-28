@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
+from clipwright.config import logger
 from clipwright.plugins import PluginLoadError
 from clipwright.schema.plugin import PluginMetadata
 

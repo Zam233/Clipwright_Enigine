@@ -98,6 +98,8 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
      "零样本开放词表标签，能回答「找有咖啡杯的镜头」这类问题"),
     ("content_index_clip_model", "content_index", "CLIP 模型", False, True,
      "HF 权重名；首次使用会下载（约 600MB）"),
+    ("content_index_clip_model_path", "content_index", "CLIP 本地目录", False, True,
+     "填了只从本地加载、绝不联网（离线/内网环境用）；留空按 HF 缓存"),
     ("content_index_clip_vocab", "content_index", "CLIP 词表（JSON）", False, True,
      '形如 {"咖啡杯": "a coffee cup"}；留空用内置默认词表'),
     ("content_index_label_concurrency", "content_index", "标注并发", False, True,
@@ -198,6 +200,16 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
     ("plugin_dir", "storage", "插件目录", False, False, "加载器启动时构造，需重启"),
     ("plugin_data_dir", "storage", "插件数据目录", False, False, "需重启"),
     ("project_dir", "storage", "项目目录", False, False, "管理器导入时固化，需重启"),
+    # ── 工作区（PRD workspace-prd-2026-10-24）──
+    ("workspace_dir", "storage", "工作区根目录", False, False, "项目全部产物（工程/素材/下载/成片）的根；需重启"),
+    ("workspace_scan_enabled", "pipeline", "自动扫描工作区素材", False, True,
+     "轮询 materials/ 发现新素材（用户手动投放的入口）"),
+    ("workspace_scan_interval_sec", "pipeline", "扫描间隔（秒）", False, True, "默认 20s；越小越及时，越大越省 IO"),
+    ("workspace_vision_enabled", "pipeline", "素材视觉解读", False, True,
+     "对未索引素材做标签/描述（默认本地 CLIP，选 llm 才计费）"),
+    ("workspace_vision_daily_budget_usd", "pipeline", "视觉日预算（USD）", False, True,
+     "超出后剩余文件标 deferred，索引本身仍完成"),
+    ("workspace_cache_max_gb", "storage", "工作区缓存上限（GB）", False, True, "超出按最旧删除；0=不限制"),
     # ── 服务与预算 ──
     ("host", "service", "监听地址", False, False, "uvicorn 启动参数，需重启"),
     ("port", "service", "监听端口", False, False, "uvicorn 启动参数，需重启"),
@@ -205,6 +217,71 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
     ("mongo_uri", "service", "MongoDB URI", True, False, "可能含凭据；连接在启动时建立，需重启"),
     ("mongo_db_name", "service", "MongoDB 库名", False, False, "需重启"),
     ("llm_monthly_token_budget", "service", "LLM 月度预算", False, True, "全局 token 预算；0 = 不限"),
+    # ── 调度中枢（PRD v1.4 / B2）──
+    ("supervisor_mode", "pipeline", "调度中枢模式", False, True,
+     "off = 关闭（默认）；shadow = 只记录归因与诊断书不改执行；on = 启用派工（B3+）"),
+    ("supervisor_attribution_timeout_sec", "pipeline", "归因兜底超时(秒)", False, True,
+     "规则不命中时的 LLM 兜底超时；失败回退规则结论"),
+    # ── 路线 C：全 agent 化（PRD F12 / C2–C3）──
+    ("agent_mode", "pipeline", "主 Agent 模式（已废弃）", False, True,
+     "已失去作用：创作恒走主 Agent（Task）。保留字段只为兼容旧配置文件解析，不要再用"),
+    ("pipeline_enabled", "pipeline", "允许老管线执行（已失效）", False, True,
+     "该开关已不再被任何代码读取：/api/pipeline/run-async 与 retry 一律 410。"
+     "保留字段只为兼容旧配置解析"),
+    ("agent_decide_policy", "pipeline", "主 Agent 决策策略", False, True,
+     "off=只走规则；auto=失败必判、成功轻量步走规则；always（默认）=每步都调 LLM 决策"),
+    ("agent_decide_stream", "pipeline", "决策走流式", False, True,
+     "true（默认）=决策时思考逐块到前端；provider 不支持时自动回退非流式"),
+    ("kernel_mode", "pipeline", "Kernel 主循环形态", False, True,
+     "tool_loop（默认）=模型拿工具 schema 自主调用（原生 tool-use loop）；"
+     "shadow=跑 loop 只记录不落副作用；plan=旧计划表 adapter，仅回滚/测试用"),
+    ("agent_loop_max_turns", "pipeline", "tool loop 模型回合上限", False, True,
+     "单次 tool-use loop 最多几轮模型往返（默认 12，不可置空）"),
+    ("agent_loop_max_tool_calls", "pipeline", "tool loop 工具调用上限", False, True,
+     "单次 tool-use loop 最多几次工具调用（默认 60，含派发子 agent）"),
+    ("context_budget_chars", "pipeline", "决策上下文预算(字符)", False, True,
+     "超出按优先级裁剪，并记 context_loaded.trimmed"),
+    ("report_max_chars", "pipeline", "工作区报告上限(字符)", False, True,
+     "单份 reports/*.md 的上限；超出截断并标记"),
+    ("eval_report_dir", "pipeline", "评估报告目录", False, True,
+     "golden_eval 写、/api/eval 读；留空 = `_cache/eval`"),
+    ("workspace_roots", "pipeline", "工作区父目录白名单", False, True,
+     "JSON 数组；留空=只用 workspace_dir。填了之后前端可在这些目录下新建工作区"),
+    ("agent_max_turns", "pipeline", "Agent 回合上限", False, True,
+     "单个任务最多几个 plan-step 回合（默认 30，不可置空）"),
+    ("agent_max_tool_calls", "pipeline", "Agent 工具调用上限", False, True,
+     "单个任务最多几次工具调用（默认 80，不可置空）"),
+    ("agent_max_wall_sec", "pipeline", "Agent 墙钟上限(秒)", False, True,
+     "单个任务最长运行时间（默认 3600，不可置空）"),
+    # ── 模型路由（PRD F8 / B4）──
+    ("model_routes", "llm", "模型路由表", False, True,
+     "按阶段配置候选模型（JSON）；留空 = 全部沿用主/闪模型"),
+    ("model_whitelist", "llm", "模型白名单", False, True,
+     "provider/model 或裸 model 精确白名单；留空 = 允许所有已配置 provider"),
+    ("risk_judge_model", "llm", "风险判定模型", False, True,
+     "命令风险判定用模型；必须命中白名单，留空 = 最便宜的 cheap 档"),
+    # ── 类型同一性 LLM 裁判（PRD F12 L2/L3 / V17）──
+    ("genre_judge_enabled", "llm", "类型裁判整体开关", False, True,
+     "默认关（D7）：关时 genre-check 写 judge=skipped；开则真调 LLM 做同一性复核"),
+    ("genre_judge_use_flash", "llm", "类型裁判用闪模型", False, True,
+     "开（默认）= 闪模型省 token；关 = 主模型（判据更细但更贵）"),
+    # ── 预算（PRD F6 / B5）──
+    ("pipeline_budget_usd", "service", "管线预算(USD)", False, True,
+     "留空 = 无上限（只记账不阻断）；填写后达 70% 降级、100% 停止派工"),
+    ("model_prices", "llm", "模型单价表", False, True,
+     '{"provider/model": {"in": 0.003, "out": 0.015}}（每 1k token）；未配置的模型按 0 计'),
+    # ── 子代理与执行（PRD F10/F11）──
+    ("max_concurrent_subagents", "pipeline", "子代理并发上限", False, True,
+     "同一管线同时存活的子代理数（默认 6）"),
+    ("supervisor_auto_spawn", "pipeline", "自动派生只读核查员", False, True,
+     "归因置信度 low 时由编排层派一个只读子代理查看现场；仅 supervisor_mode=on 生效"),
+    ("exec_allow_network", "pipeline", "允许执行联网", False, True,
+     "默认禁网；打开后执行网关的子进程可联网（诊断用）"),
+    ("exec_timeout_sec", "pipeline", "执行超时(秒)", False, True,
+     "单条命令/脚本的墙钟上限（默认 60）"),
+    ("exec_hard_floor_never_authorizable", "pipeline", "硬底线永不授权", False, True,
+     "默认 False：硬底线（读凭据/不可逆破坏）交 LLM 判定 + 两级人工确认；"
+     "改 True 回到「规则直接拒绝、不可授权」的旧语义"),
 ]
 
 
@@ -221,6 +298,10 @@ def _derive_kind(annotation: Any) -> tuple[str, tuple[str, ...]]:
         return "float", ()
     if annotation is list or origin is list:
         return "list", ()
+    # 对象型配置（model_prices / model_routes）必须报 "dict"：前端据此渲染 JSON 文本域。
+    # 旧实现在这里落到 "string"，于是单价表在设置页只能以单行文本编辑，填进去就 422。
+    if annotation is dict or origin is dict:
+        return "dict", ()
     args = get_args(annotation)
     if args:  # Optional[...] / Union[...]：取非 None 的那个
         non_none = [a for a in args if a is not type(None)]

@@ -103,6 +103,30 @@ def _mask_secret_fields(config: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _inject_plugin_config(obj: Any, config: dict[str, Any]) -> None:
+    """把插件配置注入它贡献的工具/技能实例（P1-7b）。
+
+    插件作者有两条取配置的路：
+    - ``self.config``（与插件实例同名字段，最直观）；
+    - ``on_plugin_config(config)`` 钩子（需要做二次解析时用）。
+    两条都尽力而为：注入失败不影响注册，只记 debug。
+    """
+    try:
+        obj.config = dict(config)
+    except Exception as exc:  # noqa: BLE001 — 只读属性等极端情况
+        from clipwright.config import logger as _logger
+
+        _logger.debug("插件配置注入失败 %s: %s", getattr(obj, "name", obj), exc)
+    hook = getattr(obj, "on_plugin_config", None)
+    if callable(hook):
+        try:
+            hook(dict(config))
+        except Exception as exc:  # noqa: BLE001
+            from clipwright.config import logger as _logger
+
+            _logger.debug("on_plugin_config 失败 %s: %s", getattr(obj, "name", obj), exc)
+
+
 def _decrypt_flat(config: dict[str, Any]) -> dict[str, Any]:
     """P1-7: 扁平化时解密 secret 字段（供插件运行时读取真实值）。"""
     fields = config.get("fields")
@@ -296,6 +320,16 @@ class PluginLoader:
             ToolRegistry._tools[name]._plugin_id = plugin_id  # type: ignore[attr-defined]
         for name in set(SkillRegistry._skills.keys()) - _skills_before:
             SkillRegistry._skills[name]._plugin_id = plugin_id  # type: ignore[attr-defined]
+        # P1-7b（二期修复）：把插件配置注入它贡献的工具/技能实例。
+        # v1 只把 config 挂到**插件实例**上；插件 contributions() 里 new 出来的
+        # Tool 永远没有 config 属性 —— "配置页填了 engine_dir 却不生效"正是此因
+        # （写入成功，但工具侧 getattr(self, "config", None) 恒为 None）。
+        _injected = dict(getattr(plugin, "config", {}) or {})
+        if _injected:
+            for name in set(ToolRegistry._tools.keys()) - _tools_before:
+                _inject_plugin_config(ToolRegistry._tools[name], _injected)
+            for name in set(SkillRegistry._skills.keys()) - _skills_before:
+                _inject_plugin_config(SkillRegistry._skills[name], _injected)
         # 轮 87：新注册的类型归属本插件（禁用/卸载时可整体注销）
         for cid in set(CategoryRegistry._plugins.keys()) - _categories_before:
             CategoryRegistry.set_owner(cid, plugin_id)
@@ -644,6 +678,21 @@ class PluginLoader:
         if plugin_id in self._plugins:
             merged = self._get_merged_config(plugin_id)
             self._plugins[plugin_id].config = _decrypt_flat(merged)
+            # 同步到该插件贡献的工具/技能：否则改配置后必须重启进程才生效
+            fresh = dict(getattr(self._plugins[plugin_id], "config", {}) or {})
+            if fresh:
+                from clipwright.skill.registry import SkillRegistry
+                from clipwright.tool.registry import ToolRegistry
+
+                for name in ToolRegistry.list_by_plugin(plugin_id):
+                    tool = ToolRegistry.get(name)
+                    if tool is not None:
+                        _inject_plugin_config(tool, fresh)
+                for name in SkillRegistry.list_by_plugin(plugin_id):
+                    skill_name = getattr(name, "name", str(name))
+                    skill = SkillRegistry.get(skill_name)
+                    if skill is not None:
+                        _inject_plugin_config(skill, fresh)
 
         logger.info("Plugin config saved: %s", plugin_id)
 

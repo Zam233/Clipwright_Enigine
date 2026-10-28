@@ -2951,3 +2951,31 @@ R1–R10 的验收全在合成素材上，"真实素材"一直是最大的未验
   一个总览、一个制作器。若觉得左栏过长，可把总览收进制作器页内的一个 tab——本轮按
   用户"类型页面仅可以展现全部类型"的字面要求保留为独立页。
 
+---
+
+### 执行轮次（主 agent 化 v1.4：后端 B0–B9 + 前端 F1–F9）
+
+> 详细交付表见 [`docs/supervisor-dev-plan-2026-10-17.md`](supervisor-dev-plan-2026-10-17.md) §10/§11
+> 与前端仓库 `docs/supervisor-frontend-dev-plan-2026-10-17.md` §14。
+> 分支 `feat/master-agent`（两仓），PR #3。
+
+- ✅ **B0** 失败回报契约（`Degradation` / `FailureReport` / `AgentOutputBase`，两种 FAIL 语义分离）
+- ✅ **B1** 账本 `services/episode_ledger.py`（单点埋设 + Mongo 旁路）
+- ✅ **B2** 归因（规则 R1–R4，LLM 仅兜底）/ 诊断书（模板化，无 LLM）/ 影子模式
+- ✅ **B3** 策略阶梯 S1→S2→S5→S6 + 派工（`services/supervisor.py`）
+- ✅ **B4** 模型路由：provider 白名单、跨 provider 记账、`risk_judge` 共用白名单
+- ✅ **B5** 预算（未配置=无上限，只记账不阻断）+ 人工改派
+- ✅ **B6** `off` 模式等价性（8 条等价性测试）
+- ✅ **B7** 子代理观测（tracker + `subagent_start/progress/end` 事件 + 取消）
+- ✅ **B8** 动态子代理：工具子集、星型拓扑、两级审核门、并发上限、**工具真实可用（tool-call 循环）**
+- ✅ **B9** 执行网关：硬底线 → 棘轮 → 独立判定 → 授权 → 沙盒 → 审计；`POST /exec`；`run_python`
+- ✅ **接线补齐**（本轮）：改派/建议**真触发重跑**（`start_agent_retry` 共用路径）、子代理开销入账、全局待审徽标、后台待授权命令进队列
+- ✅ **CI 修复**：错误类 ruff（E9/F63/F7/F82/F823）归零（修掉 29 处真实 NameError，如 `Path` 未导入、
+  `logger` 未导入、`_srt_time` 签名误用、`_CLIPWRIGHT_TEMP` 未导入）；Linux 上 11 项失败用例
+  按性质分别处理（缺 CJK 字体 → CI 装 `fonts-noto-cjk`；Windows 字体断言 → 平台化；
+  缺 cv2 → 软跳过；`file:///C:/...` 白名单跨平台漏洞 → 修真）；workflow 拆成
+  「错误类必须为 0」+「风格类只报告」
+- 回归：后端 **3361 passed, 3 skipped, 1 xfailed** · 前端 **853 passed** + `tsc` 0 错 + `eslint` 0 error + `build` 通过
+- 待人工验收：A10（off 模式 timeline 逐字节一致）、A5（A/B 各 20 条管线 token 账单）、A8（5 人可用性）
+
+

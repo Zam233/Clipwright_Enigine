@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from clipwright.config import logger
+from clipwright.config import logger, settings
 from clipwright.services.requirements_service import RequirementsService
 
 router = APIRouter(prefix="/api/requirements", tags=["requirements"])
@@ -28,10 +28,25 @@ from clipwright.services import idempotency as _idem
 
 
 def _proceed_idem_hit(key: str, running: dict, tasks: dict) -> Optional[str]:
-    """轮70（D10）：proceed 幂等命中——目标管线仍在运行/排队则返回既有 id。"""
+    """轮70（D10）：proceed 幂等命中——目标仍在运行/排队则返回既有 id。
+
+    `agent_mode=on` 时目标可能是**任务**（`task_*`）而不是管线：任务只登记在
+    `api.task._RUNNING` 里，不进 `_running_pipelines`/`_pipeline_tasks`。旧实现只查后两张表，
+    于是双击 proceed 会各建一个 Task、双倍扣费（审计 P1-1）。这里补查任务表。
+    """
     pid = _idem.lookup(key)
-    if pid and (pid in running or pid in tasks):
+    if not pid:
+        return None
+    if pid in running or pid in tasks:
         return pid
+    if pid.startswith("task_"):
+        try:
+            from clipwright.api.task import _RUNNING as _TASK_RUNNING
+
+            if pid in _TASK_RUNNING:
+                return pid
+        except Exception:  # noqa: BLE001 — 任务表不可用不影响老路径
+            return None
     return None
 
 
@@ -132,7 +147,7 @@ async def edit_timeline(req: EditRequest, request: Request) -> dict:
 
     整体用 wait_for 兜底：即使底层 Agent/LLM 意外卡死，也保证在时限内返回可重试错误。
     """
-    EDIT_HARD_TIMEOUT = 660
+    EDIT_HARD_TIMEOUT = 3600
     try:
         result = await asyncio.wait_for(
             _service.edit_timeline(
@@ -185,7 +200,7 @@ async def preview_intent(session_id: str, req: IntentRequest, request: Request) 
                 project_id=req.project_id or None,
                 llm=getattr(_service, "_llm", None),
             ),
-            timeout=120,
+            timeout=1800,
         )
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="意图解析超时，请简化指令后重试")
@@ -229,7 +244,7 @@ async def apply_intent(session_id: str, req: IntentApplyRequest, request: Reques
                 answers=req.answers, intent_raw=req.intent_raw or None,
                 llm=getattr(_service, "_llm", None), apply=req.apply,
             ),
-            timeout=120,
+            timeout=1800,
         )
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="意图执行超时，请简化指令后重试")
@@ -247,7 +262,9 @@ async def chat_message(req: ChatRequest, request: Request) -> dict:
     整体用 wait_for 兜底：即使底层 LLM/线程意外卡死（asyncio.to_thread 的线程
     无法被取消），也保证在时限内返回一个可重试的错误响应，而不是让请求永久挂起。
     """
-    CHAT_HARD_TIMEOUT = 660  # 秒：简报 180s + 规划书 240s + 翻译/重试余量
+    # 秒：长文稿（40+ 段）逐段标注（≈6min）+ 规划书翻译（带原文，最长约 15min）
+    # 都需要余量；旧值 660 会被长文稿打满 → 504。这里留 40 分钟。
+    CHAT_HARD_TIMEOUT = 7200
     try:
         result = await asyncio.wait_for(
             _service.chat(req.session_id, req.message),
@@ -350,6 +367,128 @@ async def get_plan(session_id: str, request: Request) -> dict:
     return plan
 
 
+def _opt_bool(value) -> bool | None:
+    """user_inputs 里的开关可能是 bool / "true" / "1"，统一归一化（None 表示沿用工作区现值）。"""
+    if value is None or isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    return text in {"1", "true", "yes", "on", "是", "开"}
+
+
+async def _proceed_as_task(*, session: dict, req: "ProceedRequest", request: Request,
+                           user_inputs: dict, plan_data: dict | None,
+                           pipeline_req, pipeline_id: str) -> dict:
+    """agent_mode=on 的分支：需求确认 → 主 Agent 任务（PRD §6.1）。
+
+    - 先确保工作区存在（后面的 material 步骤直接从工作区索引检索）；
+    - Task 的 extra 带上 workspace_root / session_id / production_plan，执行器
+      （执行器 → 老管线）就能拿到完整上下文；
+    - 返回体保留 ``pipeline_id``（值 = task id），前端老代码不会立刻炸。
+    """
+    from clipwright.api.task import _register_owner, _schedule
+    from clipwright.schema.task import TaskRequest
+    from clipwright.services.agent_kernel import AgentKernel
+    from clipwright.services.workspace import ensure_workspace
+
+    ws_project_id = str(getattr(req, "project_id", "") or req.session_id)
+    ws_name = str(user_inputs.get("workspace_name") or ws_project_id)
+    ws, _ws_meta = ensure_workspace(
+        ws_project_id,
+        name=ws_name,
+        auto_index=_opt_bool(user_inputs.get("workspace_auto_index")),
+        vision=_opt_bool(user_inputs.get("workspace_vision")),
+    )
+
+    # 需求文档落盘（PRD §17.4 / §18.3）：brief.md + plan.md 是主 agent 每一步都要读的东西。
+    # 这是**唯一**触发点（requirements 不是 delegate 阶段）——放在这里而不是阶段里。
+    _docs: dict[str, str] = {}
+    try:
+        _docs = ws.write_docs(session.get("creative_brief"), plan_data)
+    except Exception as _doc_err:  # noqa: BLE001 — 文档写失败不阻断开工，但要在日志里可见
+        logger.warning("需求文档落盘失败（继续）: %s", _doc_err)
+
+    # B8（2026-10-28 PRD）：文案 artifact 化。全文落 docs/script.md，
+    # 上下文里只放「路径 + 全长 + sha256 + 前 N 字」，子 agent 需要全文时按
+    # input_refs 取原文件并校验 hash（旧实现只把文案塞进 extra，超预算就被裁掉）。
+    _script_meta: dict[str, str] = {}
+    _script_text = str(
+        user_inputs.get("script_text")
+        or (pipeline_req.extra_params or {}).get("script_text")
+        or ""
+    )
+    if _script_text.strip():
+        try:
+            _script_meta = ws.write_script(_script_text)
+        except Exception as _script_err:  # noqa: BLE001 — 落盘失败不阻断开工
+            logger.warning("文案落盘失败（继续，仅有内联文案）: %s", _script_err)
+
+    # dry-run 预览（PRD closeout B2）：用户勾了"只预览"就必须只预览。
+    # 之前它只落在 `pipeline_req.dry_run` 这个随老管线一起失效的字段上，
+    # Task 路径完全看不到 → 勾了预览照样真跑真扣钱。
+    _dry_run = bool(
+        getattr(pipeline_req, "dry_run", False)
+        or (pipeline_req.extra_params or {}).get("dry_run")
+        or (getattr(req, "extra_params", None) or {}).get("dry_run")
+    )
+    extra = dict(pipeline_req.extra_params)
+    extra.update({
+        "workspace_root": str(ws.dirs().root),
+        "workspace_project_id": ws.project_id,
+        "session_id": req.session_id,
+        "production_plan": plan_data,
+        "creative_brief": session.get("creative_brief"),
+        "docs": _docs,
+        # B8：文案 artifact（全文路径 / 字数 / sha256），供 context_loader 与 input_refs 使用
+        **({"script_path": _script_meta["script"],
+            "script_chars": int(_script_meta["script_chars"]),
+            "script_sha256": _script_meta["script_sha256"]} if _script_meta else {}),
+        # Task 执行侧唯一读的口径（见 agent_kernel._run_tool_loop）
+        "dry_run": _dry_run,
+    })
+    task_req = TaskRequest(
+        topic=str(pipeline_req.topic or req.session_id),
+        persona_id=pipeline_req.persona_id,
+        category_plugin_id=pipeline_req.category_plugin_id,
+        duration_sec=float(user_inputs.get("audio_duration_sec") or 0),
+        plan_only=False,
+        extra=extra,
+    )
+    kernel = AgentKernel()
+    task = kernel.create(task_req)
+    _register_owner(task.id, request)
+    await kernel.plan(task)
+    _schedule(task.id)
+    await asyncio.to_thread(
+        _service._persist,
+        req.session_id, "pipeline_running",
+        session.get("messages", []),
+        session.get("creative_brief"),
+        session.get("production_plan"),
+        session.get("user_inputs", {}),
+    )
+    logger.info("proceed 双轨：session=%s → task=%s（workspace=%s）",
+                req.session_id, task.id, ws.dirs().root)
+    # 幂等键重新绑定到 **task.id**：进入本函数前绑的是 `pl_xxx`，但 task 路径返回
+    # `task_yyy`——不重绑的话双击 proceed 会各建一个 Task、双倍扣费（审计 P1-1）。
+    try:
+        _idem_key = request.headers.get("Idempotency-Key", "") or f"sess:{req.session_id}"
+        _idem.bind(_idem_key, task.id)
+    except Exception as _idem_err:  # noqa: BLE001 — 幂等登记失败不影响本次创建
+        logger.warning("proceed 幂等键重绑失败（task=%s）: %s", task.id, _idem_err)
+    return {
+        "session_id": req.session_id,
+        # 兼容字段：老前端读 pipeline_id
+        "pipeline_id": task.id,
+        "task_id": task.id,
+        "status": "pipeline_started",
+        "mode": "task",
+        "workspace_root": str(ws.dirs().root),
+        "plan": task.plan.model_dump(mode="json") if task.plan else None,
+    }
+
+
 @router.post("/proceed")
 async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
     _require_session_owner(request, req.session_id)
@@ -363,16 +502,11 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
         raise HTTPException(status_code=400, detail="Plan not ready")
 
     import uuid
-    from clipwright import audit
     from clipwright.authz import current_user_id
-    from clipwright.services.pipeline_v2 import PipelineOrchestratorV2
     from clipwright.schema.pipeline import PipelineRequest
-    from clipwright.services.trace import create_trace, add_event, get_all_events
-    from clipwright.services.async_util import spawn_background
+    from clipwright.services.trace import create_trace
     from clipwright.api.pipeline import (
-        _pipeline_results, _running_pipelines, _pipeline_owners,
-        _pipeline_tasks, _user_cancel_requested, _persist_pipeline_runtime,
-        pipeline_timeout_sec, _extract_quality_summary, _aggregate_agent_notes,
+        _pipeline_tasks, _running_pipelines, pipeline_timeout_sec,
     )
 
     # proceed 与 /run-async 同权——预算熔断检查（原路径完全绕过预算）
@@ -441,6 +575,8 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
             "animation_intents": animation_intents,
             "creative_brief": session.get("creative_brief"),
             "production_plan": session.get("production_plan"),
+            # V58：管线带上会话 id，结构阶段的规划偏离才能写回本会话的规划书
+            "session_id": req.session_id,
             "pipeline_timeout_sec": _pipeline_timeout,
             # beat-sync 透传（用户 extra_params 显式值优先）
             **({"cut_on_beat": True, "bpm": float(req.beat_bpm)}
@@ -451,162 +587,14 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
         dry_run=bool(req.extra_params.get("dry_run", False)),
         use_v2=True,
     )
-    add_event(pipeline_id, "system", "info",
-              f"由需求确认启动管线: {pipeline_req.persona_id} / {pipeline_req.category_plugin_id}")
-    # proceed 即置 running（旧实现会话停在 plan_ready，运行中消息会走
-    # 规划修订分支与运行中的管线互踩）
-    await asyncio.to_thread(
-        _service._persist,
-        req.session_id, "pipeline_running",
-        session.get("messages", []),
-        session.get("creative_brief"),
-        session.get("production_plan"),
-        session.get("user_inputs", {}),
+    # ── 单轨（PRD master-agent-prd-2026-10-26 §4.1 P2）──
+    # 创作只有一条路：主 Agent（Task）。老 6 阶段管线的执行引擎已在 M3 删除。
+    # M3（modern-agent PRD §4.1/§5.4）：创作只有一条路——主 Agent（Task）。
+    # 老 6 阶段管线的执行引擎已物理删除，所以这里既没有"agent_mode=off 就走老管线"的
+    # 分支，也不会因为 agent_mode 忘记配而给出一个"当前没有可用创作通道"的 409：
+    # Task 恒可用，缺的只是模型凭据（那条会在 Kernel 里如实失败，而不是在这里假装）。
+    return await _proceed_as_task(
+        session=session, req=req, request=request,
+        user_inputs=user_inputs, plan_data=plan_data,
+        pipeline_req=pipeline_req, pipeline_id=pipeline_id,
     )
-
-    # 归属注册 + 运行态持久化 + 审计（与 run-async 对齐；此前 jwt 模式下
-    # proceed 发起的管线无 owner，本人 /status /cancel /diagnostics 全部 403）
-    _pipeline_owners[pipeline_id] = uid or ""
-    _persist_pipeline_runtime(pipeline_id, owner_id=uid or "")
-    audit.record("pipeline_run", uid, {
-        "pipeline_id": pipeline_id,
-        "session_id": req.session_id,
-        "persona_id": pipeline_req.persona_id,
-        "category_plugin_id": pipeline_req.category_plugin_id,
-        "source": "requirements_proceed",
-    })
-
-    async def _run(task_id: str = ""):
-        try:
-            # 走 TaskQueue 执行（并发上限 + 任务级超时与管线超时公式对齐）
-            from clipwright.services.task_queue import get_task_queue
-
-            async def _queue_handler(inner_task_id: str = "") -> None:
-                # 对齐: 注册运行中任务，使 /cancel 能即时中断
-                _running_pipelines[pipeline_id] = asyncio.current_task()
-                try:
-                    orch = PipelineOrchestratorV2()
-                    state = await orch.run(pipeline_req, pipeline_id=pipeline_id,
-                                           task_id=inner_task_id or task_id)
-                    state.shared_data["execution_trace"] = get_all_events(pipeline_id)
-                    # /C9: 质检摘要 + Agent 备注（与 run-async 对齐）
-                    _rd = state.model_dump(mode="json")
-                    _q = _extract_quality_summary(_rd)
-                    if _q:
-                        _rd["quality_issues"] = _q
-                    _notes = _aggregate_agent_notes(_rd)
-                    if _notes:
-                        _rd["agent_notes"] = _notes
-                    _pipeline_results[pipeline_id] = _rd
-                    add_event(pipeline_id, "system", "done", f"管线完成: {state.status}", _q)
-                    # 修复：管线完成后把 final_timeline 保存到关联项目（若有），
-                    # 避免内存结果 60s 清理后 timeline 丢失（API 直连场景）。
-                    try:
-                        final_tl = state.shared_data.get("final_timeline")
-                        if final_tl:
-                            from clipwright.services.project_manager import ProjectManager
-                            pm = ProjectManager()
-                            project_id = req.project_id
-                            if not project_id:
-                                # 未关联项目时自动创建——旧实现 60s 内存清理后
-                                # 成品时间线永久丢失
-                                created = pm.create(
-                                    name=str(user_inputs.get("topic", "") or "需求会话成片")[:80],
-                                    timeline=final_tl,
-                                    persona_id=pipeline_req.persona_id,
-                                    plugin_id=pipeline_req.category_plugin_id,
-                                )
-                                project_id = created.get("id", "")
-                                _pipeline_results[pipeline_id]["project_id"] = project_id
-                                logger.info("成品时间线已自动落项目: %s", project_id)
-                            else:
-                                pm.save(project_id, {"timeline": final_tl})
-                                logger.info("管线时间线已保存到项目: %s", project_id)
-                    except Exception as e:
-                        logger.warning("管线时间线保存失败: %s", e)
-                    # 更新会话状态（批2：用当前消息列表——旧实现写回 proceed 时
-                    # 的过期快照，覆盖运行期间用户交换的消息）
-                    _fresh = await asyncio.to_thread(_service.get_session, req.session_id) or {}
-                    await asyncio.to_thread(
-                        _service._persist,
-                        req.session_id, "pipeline_done",
-                        _fresh.get("messages", session.get("messages", [])),
-                        _fresh.get("creative_brief", session.get("creative_brief")),
-                        _fresh.get("production_plan", session.get("production_plan")),
-                        _fresh.get("user_inputs", session.get("user_inputs", {})),
-                    )
-                    logger.info("管线完成: pipeline_id=%s, status=%s", pipeline_id, state.status)
-                except asyncio.CancelledError:
-                    # 对齐: 用户取消写 cancelled 终态（原实现无 CancelledError
-                    # 处理，取消后 /result 回落到 Mongo 的 running 快照）
-                    if pipeline_id in _user_cancel_requested:
-                        _user_cancel_requested.discard(pipeline_id)
-                        _pipeline_results[pipeline_id] = {
-                            "status": "cancelled", "pipeline_id": pipeline_id,
-                            "error": "管线已取消（任务中断）",
-                        }
-                        add_event(pipeline_id, "system", "cancelled", "管线已取消（任务中断）")
-                    else:
-                        _pipeline_results[pipeline_id] = {
-                            "status": "timeout", "pipeline_id": pipeline_id,
-                            "error": f"管线执行超时（>{_pipeline_timeout}s），可重试",
-                        }
-                        add_event(pipeline_id, "system", "timeout",
-                                  f"管线执行超时（>{_pipeline_timeout}s）")
-                    # 轮70（D13）：向上传播——否则 TaskQueue 把已取消/超时的任务记为 COMPLETED
-                    raise
-                except Exception as e:
-                    logger.exception("Pipeline failed: %s", e)
-                    add_event(pipeline_id, "system", "error", f"管线失败: {e}")
-                    _pipeline_results[pipeline_id] = {"status": "failed", "error": str(e), "pipeline_id": pipeline_id}
-                finally:
-                    # 批A(R3)：失败/取消/超时 → 会话回 plan_ready（旧实现停留
-                    # pipeline_running，聊天永远回复"正在运行中"）；成功态
-                    # （pipeline_done）不回滚
-                    _result_status = (_pipeline_results.get(pipeline_id) or {}).get("status", "")
-                    if _result_status in ("failed", "cancelled", "timeout"):
-                        try:
-                            _fresh = await asyncio.to_thread(_service.get_session, req.session_id) or {}
-                            await asyncio.to_thread(
-                                _service._persist,
-                                req.session_id, "plan_ready",
-                                _fresh.get("messages", session.get("messages", [])),
-                                _fresh.get("creative_brief", session.get("creative_brief")),
-                                _fresh.get("production_plan", session.get("production_plan")),
-                                _fresh.get("user_inputs", session.get("user_inputs", {})),
-                            )
-                        except Exception:
-                            logger.warning("会话状态回滚失败: %s", req.session_id)
-                    if _running_pipelines.get(pipeline_id) is asyncio.current_task():
-                        _running_pipelines.pop(pipeline_id, None)
-                    async def _cleanup():
-                        import asyncio as _a
-                        await _a.sleep(60)
-                        _pipeline_results.pop(pipeline_id, None)
-                        _running_pipelines.pop(pipeline_id, None)
-                        _pipeline_owners.pop(pipeline_id, None)
-                        _pipeline_tasks.pop(pipeline_id, None)
-                        _user_cancel_requested.discard(pipeline_id)
-                        from clipwright.services.trace import clear
-                        clear(pipeline_id)
-                    spawn_background(_cleanup(), name=f"pipeline-cleanup-{pipeline_id}")
-
-            _submit_timeout = float(_pipeline_timeout) + 120.0
-            tq_task_id = await get_task_queue().submit(
-                "pipeline", _queue_handler, timeout_sec=_submit_timeout,
-            )
-            _pipeline_tasks[pipeline_id] = tq_task_id
-            _persist_pipeline_runtime(pipeline_id, task_id=tq_task_id)
-        except Exception as e:
-            # 队列提交失败：写失败终态（不静默吞掉，前端可感知并重试）
-            logger.exception("TaskQueue 提交失败: %s", e)
-            _pipeline_results[pipeline_id] = {
-                "status": "failed", "error": f"管线任务提交失败: {e}",
-                "pipeline_id": pipeline_id,
-            }
-            add_event(pipeline_id, "system", "error", f"管线任务提交失败: {e}")
-
-    _running_pipelines[pipeline_id] = spawn_background(
-        _run(), name=f"requirements-pipeline-{req.session_id}",
-    )
-    return {"session_id": req.session_id, "pipeline_id": pipeline_id, "status": "pipeline_started"}

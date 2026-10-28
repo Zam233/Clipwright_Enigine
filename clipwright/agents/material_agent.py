@@ -41,6 +41,44 @@ def _llm_configured() -> bool:
     )
 
 
+def annotate_mv_placement(
+    scenes: list[dict[str, Any]],
+    candidate_clips: list[dict[str, Any]],
+    *,
+    bits_per_second: float | None = None,
+) -> dict[str, Any] | None:
+    """把"每段落到哪个镜头"写回场景（S 轨接线；纯逻辑，便于单测）。
+
+    ``candidate_clips`` 是 MaterialAgent 的中间产物（每个场景一条，含
+    ``suggested_assets``）；这里把它们摊平成候选池，交给 ``mv_material`` 打分落位。
+    返回 ``placement_report``；没有任何候选时返回 ``None``（不产生空噪音）。
+    """
+    from clipwright.services.mv_cues import build_grid
+    from clipwright.services.mv_material import annotate_scenes_with_placement
+
+    pool: list[dict[str, Any]] = []
+    for clip in candidate_clips or []:
+        for asset in clip.get("suggested_assets") or []:
+            if not isinstance(asset, dict):
+                continue
+            asset_id = asset.get("asset_id") or asset.get("id") or ""
+            if not asset_id:
+                continue  # 没有 id 的候选落不了位，直接跳过（不产生空引用）
+            pool.append(
+                {
+                    "asset_id": asset_id,
+                    "description": asset.get("description") or asset.get("title") or "",
+                    "duration_sec": asset.get("duration_sec") or asset.get("duration") or 0.0,
+                    "tags": asset.get("tags") or (),
+                    "license_ok": bool(asset.get("license_ok", True)),
+                }
+            )
+    if not pool:
+        return None
+    grid = build_grid(bits_per_second) if bits_per_second and bits_per_second > 0 else None
+    return annotate_scenes_with_placement(scenes, pool, grid=grid)
+
+
 # 文本相关性兜底：纯本地分词，零网络。拉丁词整词 + 单个 CJK 字符。
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _LATIN_RE = re.compile(r"[a-zA-Z0-9]+")
@@ -154,7 +192,30 @@ _CATEGORY_SEARCH_HINTS: dict[str, str] = {
 
 
 def _category_search_hint(category_plugin_id: str) -> str:
-    return _CATEGORY_SEARCH_HINTS.get(category_plugin_id or "", "")
+    """选片规范：优先类型声明（declares.search_hint），其次 material 阶段槽位，最后旧字典。
+
+    V1：material 是 10 槽位里唯一**没有 LLM 消费者**的阶段（选片走检索），所以它的
+    自然语言规范在这里落到检索式上——否则该槽位就是"写了没人读"的死配置。
+    """
+    from clipwright.services.type_spec_runtime import search_hint
+    from clipwright.services.type_prompts import first_line
+
+    legacy = _CATEGORY_SEARCH_HINTS.get(category_plugin_id or "", "")
+    declared = search_hint(category_plugin_id, legacy)
+    if declared:
+        return declared
+    return first_line(category_plugin_id or "", "material") or legacy
+
+
+#: 需要"按句落位"的类型（MV/PV）；也可用 ``extra_params.mv_placement`` 显式开启。
+_MV_PLACEMENT_CATEGORIES = frozenset({"lyric_mv", "mv", "pv", "music_video"})
+
+
+def _placement_enabled(context: Any) -> bool:
+    extra = getattr(context, "extra_params", {}) or {}
+    if extra.get("mv_placement"):
+        return True
+    return str(getattr(context, "category_plugin_id", "") or "") in _MV_PLACEMENT_CATEGORIES
 
 
 async def _llm_search_queries_batch(
@@ -196,7 +257,7 @@ async def _llm_search_queries_batch(
 
     llm = LLMService()
     try:
-        resp = await asyncio.wait_for(llm.ask(prompt, use_flash=True), timeout=45)
+        resp = await asyncio.wait_for(llm.ask(prompt, use_flash=True), timeout=900)
         if not (resp.success and resp.content):
             return None
         result: list[list[str]] = [[] for _ in scenes]
@@ -260,7 +321,7 @@ async def _llm_search_queries(
     try:
         import asyncio
         # 搜索词生成是简单任务 → 使用 flash 轻量模型
-        resp = await asyncio.wait_for(llm.ask(prompt, use_flash=True), timeout=30)
+        resp = await asyncio.wait_for(llm.ask(prompt, use_flash=True), timeout=900)
         if resp.success and resp.content:
             queries = [q.strip() for q in resp.content.strip().split("\n") if q.strip()][:5]
             if pipeline_id:
@@ -306,9 +367,11 @@ async def _validate_video_frame(r: Any, expected_text: str) -> float:
 async def _validate_video_frame_inner(
     r: Any, video_url: str, title: str, tags: list, expected_text: str,
 ) -> float:
-    from clipwright.tool.registry import ToolRegistry
+    # 能力动态解析：任何声明 capability="frame_check" 的工具（含插件）都可接管，
+    # 没有插件时落到内置 frame_validator；两者都没有才走启发式。
+    from clipwright.tool.capabilities import resolve as _resolve_capability
     try:
-        tool = ToolRegistry.get("frame_validator")
+        tool = _resolve_capability("frame_check")
         if tool is None:
             if isinstance(r, str):
                 return 0.5
@@ -611,9 +674,16 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
         if url and url in _VISION_SCORE_CACHE:
             return _VISION_SCORE_CACHE[url]
         try:
-            from clipwright.tool.registry import ToolRegistry
-            result = await ToolRegistry.execute(
-                "vision_llm",
+            # 能力动态解析：插件可用 capability="vision_score" 接管视觉打分，
+            # 缺实现时返回 NOT_FOUND，下面的 output 兜底保持旧行为。
+            from clipwright.tool.capabilities import resolve as _resolve_capability
+            from clipwright.tool.registry import ToolRegistry as _ToolRegistry
+
+            _vision_tool = _resolve_capability("vision_score")
+            if _vision_tool is None:
+                return 0.5
+            result = await _ToolRegistry.execute(
+                _vision_tool.name,
                 asset=asset,
                 scene_context={
                     "title": scene_title,
@@ -669,16 +739,38 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                 pass
 
             if not scenes:
+                # D7（PRD §19.5）：scenes 为空是**上游没给**，不是"素材阶段完成"。
+                # 旧实现返回 PASS + 空候选，于是 editor 成为第一个失败点且归因 unknown。
+                from clipwright.schema.agent import FailureReport
+
+                _reason = "分镜场景为空：structure 没有产出可用 scenes"
                 return MaterialOutput(
-                    decision=AgentDecision.PASS,
+                    decision=AgentDecision.FAIL,
+                    error=_reason,
+                    failure=FailureReport(
+                        category="input_insufficient",
+                        blocking_point=_reason[:200],
+                        retryable="needs_upstream",
+                        needs=[{"from_stage": "structure", "field": "scenes",
+                                "why": "素材匹配需要场景（title/description/时长）"}],
+                        evidence=[{"kind": "empty_scenes", "text": "scenes=[]"}],
+                    ),
                     candidate_clips=[],
-                    material_notes=["无场景，跳过素材匹配"],
+                    material_notes=["无场景，无法匹配素材"],
                 )
 
             if not has_sources:
                 logger.warning("MaterialAgent: 无注册素材源，将使用文字占位")
                 return MaterialOutput(
                     decision=AgentDecision.PASS,
+                    # 无素材源仍然是"完成"（文字占位是合法产物），
+                    # 但必须**显式登记降级**，让上层能区分"素材为空"与"素材正常"。
+                    degradations=[{
+                        "kind": "material_placeholder",
+                        "detail": "无注册素材源，所有场景使用文字占位",
+                        "scope": "global",
+                        "impact": "成片以文字/纯色占位，画面质量显著下降",
+                    }],
                     candidate_clips=[{
                         "scene_index": i,
                         "scene_title": scene.get("title", ""),
@@ -757,6 +849,24 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
             notes: list[str] = []
             if use_vision_llm:
                 notes.append(f"视觉LLM分析已启用 (每候选 {vision_frame_count} 帧)")
+
+            # S 轨接线：MV 类型（或显式开启）时，把"每句落到哪个镜头"写回场景并留痕
+            placement_stats = None
+            if _placement_enabled(context):
+                try:
+                    placement_stats = annotate_mv_placement(
+                        scenes,
+                        candidate_clips,
+                        bits_per_second=float((context.extra_params or {}).get("bpm") or 0) or None,
+                    )
+                except Exception as exc:  # noqa: BLE001 - 落位失败不得阻断选材
+                    logger.warning("MaterialAgent: 素材落位失败（已跳过）: %s", exc)
+                    placement_stats = None
+            if placement_stats is not None:
+                notes.append(
+                    f"素材落位：{placement_stats['covered']}/{placement_stats['total']} 段有依据，"
+                    f"缺口 {len(placement_stats['gaps'])}、授权不明 {len(placement_stats['rejected'])}"
+                )
 
             # 场景级 note（如 C4c 重选结果）上浮到全局 material_notes
             for r in candidate_clips:

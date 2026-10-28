@@ -24,7 +24,7 @@ def build_http_client(proxy: str = "") -> Any | None:
         logger.warning("代理不可用（httpx 缺失）: %s", e)
         return None
     try:
-        return httpx.Client(proxy=proxy, timeout=120.0)
+        return httpx.Client(proxy=proxy, timeout=900.0)
     except Exception as e:  # noqa: BLE001 — 代理串非法时不阻断
         logger.warning("代理配置无效，已忽略: %s", e)
         return None

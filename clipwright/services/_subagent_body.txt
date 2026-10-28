@@ -189,7 +189,7 @@ async def run_sub_agent(parent, agent_name, payload=None, *,
                         timeout_sec=_SUBAGENT_TIMEOUT_SEC):
     """以子代理形态运行一个已注册的插件 Agent，返回展平后的结果字典。"""
     from clipwright.agents.registry import AgentRegistry
-    from clipwright.services.pipeline_v2 import is_cancelled
+    from clipwright.services.pipeline_history import is_cancelled
     from clipwright.services.trace import add_event
 
     pid = parent.pipeline_id

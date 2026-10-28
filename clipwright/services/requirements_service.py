@@ -19,7 +19,7 @@ import json
 import time
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from clipwright.config import TIME_ZONE, logger
 from clipwright.context import mongo
@@ -31,7 +31,7 @@ from clipwright.schema.requirements import (
     RequirementsMessage,
     SessionStatus,
 )
-from clipwright.services.llm import LLMService
+from clipwright.services.llm import LLMService, MAX_OUTPUT_TOKENS
 from clipwright.services.trace import add_event
 from clipwright.schema.timeline import Timeline, Track
 
@@ -41,8 +41,25 @@ MAX_HISTORY_ROUNDS = 20          # 超过 20 轮对话后压缩
 MAX_MESSAGE_LENGTH = 50000       # 单条消息最大字符
 LLM_RETRY_MAX = 3                # LLM 最大重试次数
 LLM_RETRY_BASE_DELAY = 2.0      # 重试基础延迟（秒）
-BRIEF_GENERATE_TIMEOUT = 180     # 简报生成单次调用超时（秒）
-PLAN_TRANSLATE_TIMEOUT = 240     # 规划书翻译单次调用超时（秒）
+BRIEF_GENERATE_TIMEOUT = 900     # 简报生成单次调用超时（秒）
+# E2E 2026-10-28 实测：规划书翻译**必须显式给 max_tokens**。不给时下发的是
+# provider 默认（deepseek 系 4096），推理型模型把预算全用在 reasoning 上，
+# HTTP 200 但正文为空（llm.py:692 那条告警），三次重试全空 → 规划书退化成
+# 「LLM 翻译超时，使用基础版本」的兜底表。8192 让 6 场景的规划书一次过。
+PLAN_TRANSLATE_MAX_TOKENS = MAX_OUTPUT_TOKENS
+# 场景改写（把修改意见落到 raw_scenes 本体）的输出是完整 JSON 数组，
+# 同样要显式给预算，否则正文必然为空。
+PLAN_SCENE_REVISE_MAX_TOKENS = MAX_OUTPUT_TOKENS
+# 超时必须容得下真实生成：实测带 8000 字原文 + 43 段场景的翻译，推理型模型
+# 单次就要 6-8 分钟，"420s 超时"其实是把还在正常生成的请求掐断了（日志只写
+# 「翻译超时」，看起来像模型没输出）。宁可等，也不要制造假的空结果。
+PLAN_TRANSLATE_TIMEOUT = 1800    # 规划书翻译超时（秒）——按"上限"给足
+# 精简 prompt 的重试超时：输入已缩小，但仍有 43 段场景，别再按 5 分钟掐
+PLAN_TRANSLATE_RETRY_TIMEOUT = 1800
+# 需求侧跑 structure 阶段（生成规划书用的 raw_scenes）的墙钟上限。
+# 旧实现沿用 run_inline 默认 300s = StructureAgent 自身的 LLM 超时，
+# 外层先掐断 → TimeoutError(str 为空) → 只留一句"规划书生成失败:"。
+PLAN_STRUCTURE_TIMEOUT = 3600
 SESSION_TTL_HOURS = 48           # 会话过期时间
 SESSION_CLEANUP_INTERVAL = 3600  # 清理检查间隔（秒）
 
@@ -134,6 +151,10 @@ def _fallback_response(method: str, prompt: str, error: str) -> dict:
         "markdown_content": f"# 规划书\n\n> 生成时遇到问题: {error}\n\n请稍后重试。",
         "total_duration_sec": 0,
         "scene_count": 0,
+        # 显式降级标记：调用方（_translate_plan）据此判断"这次并没有拿到正文"，
+        # 从而触发降规模重试，而不是把兜底文案当成成功结果（旧实现靠
+        # markdown_content 是否为空判断，兜底文案非空 → 永远不重试）。
+        "degraded": True,
     }
 
 
@@ -362,6 +383,71 @@ def start_cleanup_task():
 
 # ── 主服务类 ──────────────────────────────────
 
+def apply_plan_drift(
+    plan: dict | None,
+    drifts: Iterable[dict[str, Any]],
+    *,
+    max_entries: int = 20,
+) -> dict:
+    """V58：把执行偏离**并入规划书对象**（写回的那一半，纯函数，可单测）。
+
+    规则：
+    - 规划书原样保留（段落/卡点/缺口一律不动），只在 ``_drift`` 下追加偏离；
+    - 幂等：同 ``(code, index)`` 只留最后一条——重跑同一条管线不会把记录刷成一堆；
+    - 最多保留 ``max_entries`` 条（超了丢最旧的），避免规划书被日志撑爆。
+    """
+    merged: dict[str, Any] = dict(plan or {})
+    existing = list(merged.get("_drift") or [])
+    for item in drifts or []:
+        if not isinstance(item, dict):
+            continue
+        record = dict(item)
+        key = (record.get("code"), record.get("index"))
+        existing = [
+            old for old in existing
+            if (old.get("code"), old.get("index")) != key
+        ]
+        existing.append(record)
+    if existing:
+        merged["_drift"] = existing[-max_entries:]
+    return merged
+
+
+def write_back_plan_drift(session_id: str, drifts: Iterable[dict[str, Any]]) -> int:
+    """把偏离写回会话里的规划书（内存缓存 + Mongo）。返回本次并入的条数。
+
+    失败只记日志——写回是留痕，不允许影响出片。
+    """
+    items = [dict(d) for d in (drifts or []) if isinstance(d, dict)]
+    if not session_id or not items:
+        return 0
+    try:
+        session = _memory_sessions.get(session_id)
+        model = None
+        if _mongo_ok():
+            model = RequirementsSessionModel.find_by_id(session_id)
+        plan = (session or {}).get("production_plan")
+        if plan is None and model is not None:
+            plan = getattr(model, "production_plan", None)
+            if plan is None and hasattr(model, "to_dict"):
+                plan = (model.to_dict() or {}).get("production_plan")
+        merged = apply_plan_drift(plan if isinstance(plan, dict) else None, items)
+        wrote = False
+        if session is not None:
+            session["production_plan"] = merged
+            wrote = True
+        if model is not None:
+            model.production_plan = merged
+            model.updated_time = datetime.now(tz=TIME_ZONE)
+            model.update()
+            wrote = True
+        # 没有任何落点（会话不存在）→ 如实返回 0，不假装写回成功
+        return len(items) if wrote else 0
+    except Exception as e:  # noqa: BLE001 - 写回失败不得影响出片
+        logger.warning("规划偏离写回失败（已跳过）: %s", e)
+        return 0
+
+
 class RequirementsService:
     """需求服务 — 对话 + 持久化 + 规划书生成。"""
 
@@ -503,9 +589,12 @@ class RequirementsService:
         session_id: str,
         user_message: str,
         on_delta: "Callable[[str], Any] | None" = None,
+        on_reasoning: "Callable[[str], Any] | None" = None,
     ) -> dict:
         """处理需求对话。on_delta 非空时 gathering 态通过流式回调增量推送
-        reply 文本片段（token 级真流式），由 stream_chat 的 SSE 生成器消费。"""
+        reply 文本片段（token 级真流式），由 stream_chat 的 SSE 生成器消费。
+
+        `on_reasoning` 收到模型思考内容的**逐块增量**（provider 支持时）。"""
         """处理用户消息，更新 MongoDB，返回最新状态。"""
         await self._ensure_cleanup()
         session_data = await asyncio.to_thread(self.get_session, session_id)
@@ -531,7 +620,8 @@ class RequirementsService:
 
         # 状态路由
         if status in ("gathering", "init"):
-            result = await self._handle_gathering(messages, brief_data, status, user_inputs, session_id, on_delta=on_delta)
+            result = await self._handle_gathering(messages, brief_data, status, user_inputs, session_id,
+                                              on_delta=on_delta, on_reasoning=on_reasoning)
             _new_brief = result.get("brief_draft")
             # P2-34: LLM 解析失败会返回 brief_draft={}——空结果不覆盖已有方案
             if isinstance(_new_brief, dict) and _new_brief:
@@ -581,23 +671,76 @@ class RequirementsService:
                     plan_data = plan_result
                     status = "plan_ready"
                 else:
-                    # 规划书生成失败 → 明确回退（旧实现卡死 brief_confirmed，
-                    # 后续任何消息都落不进任何分支，永远返回过期回复）
-                    status = "brief_ready"
+                    # A-18 兼容：老会话/翻译失败但有 scenes 时，由 scenes 反向生成
+                    # legacy plan（标 legacy=true），仍可确认与执行——不再卡在 brief_ready
+                    legacy = self._legacy_plan_from_scenes(plan_data, session_id)
+                    if legacy is not None:
+                        plan_data = legacy
+                        status = "plan_ready"
+                        messages.append({
+                            "role": "assistant",
+                            "content": "规划书已按现有场景生成（legacy 模式），可确认执行或要求重做。",
+                            "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                            "metadata": {"legacy_plan": True},
+                        })
+                    else:
+                        # 规划书生成失败 → 明确回退（旧实现卡死 brief_confirmed，
+                        # 后续任何消息都落不进任何分支，永远返回过期回复）
+                        status = "brief_ready"
+                        messages.append({
+                            "role": "assistant",
+                            "content": ("规划书生成遇到技术问题，已回退到方案确认态。"
+                                        "回复「确认」重试，或直接提出修改意见。"),
+                            "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                            "metadata": {},
+                        })
+            else:
+                # E2E 2026-10-29 发现：这里原本直接把状态打回 `gathering`，只回一句
+                # 「好的，请告诉我需要如何调整？」。后果很严重——
+                # ① 用户在 brief_ready 下问一句/提一句「直接给我规划书」，brief 已经
+                #    生成却被判成"还没聊够"，会话退回 gathering；
+                # ② 那条消息本身没被用于修订方案（白说一遍）；
+                # ③ 之后再说「确认」也落不到确认分支（状态已不是 brief_ready），
+                #    得先说两次才生效。
+                # 现在：**保留 brief_ready**，把这条消息当成"修订意见"重新走一次
+                # gathering 合并出新方案；新方案出来就再给确认提示，出不来就明说。
+                revised = await self._handle_gathering(
+                    messages, brief_data, "gathering", user_inputs, session_id,
+                    on_delta=on_delta, on_reasoning=on_reasoning,
+                )
+                new_brief = revised.get("brief_draft")
+                updated = isinstance(new_brief, dict) and bool(new_brief)
+                if updated:
+                    brief_data = new_brief
+                messages.append({
+                    "role": "assistant",
+                    "content": str(revised.get("reply") or "已记下你的修改意见。"),
+                    "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                    "metadata": {"revision": True},
+                })
+                # 无论修订是否成功，状态都停在 brief_ready：方案还在，用户可以继续
+                # 提意见，也可以直接回「确认」推进到规划书。
+                status = "brief_ready"
+                if updated and isinstance(brief_data, dict) and brief_data:
                     messages.append({
                         "role": "assistant",
-                        "content": ("规划书生成遇到技术问题，已回退到方案确认态。"
-                                    "回复「确认」重试，或直接提出修改意见。"),
+                        "content": (
+                            "\n\n---\n\n### ✅ 方案已按你的意见更新\n\n"
+                            f"**标题**: {brief_data.get('title', '待定')}\n"
+                            f"**概述**: {brief_data.get('overview', '')}\n"
+                            f"**风格**: {brief_data.get('style_direction', '')}\n\n"
+                            "回「确认」生成制作规划书，或继续提修改意见。"
+                        ),
                         "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
                         "metadata": {},
                     })
-            else:
-                status = "gathering"
-                messages.append({
-                    "role": "assistant", "content": "好的，请告诉我需要如何调整？",
-                    "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
-                    "metadata": {},
-                })
+                else:
+                    messages.append({
+                        "role": "assistant",
+                        "content": "方案没有变动。回「确认」生成制作规划书，或再说清要改哪一处。",
+                        "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                        "metadata": {},
+                    })
 
         elif status in ("brief_confirmed", "plan_confirmed"):
             # P1-20: 确认中间态此前没有路由分支——用户确认后再发任何消息都
@@ -709,14 +852,20 @@ class RequirementsService:
             )
             user_prompt = (
                 "当前场景列表：\n"
-                + json.dumps(scenes, ensure_ascii=False)[:8000]
+                + json.dumps(scenes, ensure_ascii=False)
                 + "\n\n用户修改意见："
                 + feedback[:1000]
             )
             resp = await self._llm.generate(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
                 temperature=0.3,
+                # 场景本体是有内容的 JSON 数组，不给预算时推理型模型会把默认
+                # 4096 全用在 reasoning 上、正文返回空（实测 max_tokens=16 那条
+                # 告警就是这里漏参数的直接后果），修订因此永远失败。
+                max_tokens=PLAN_SCENE_REVISE_MAX_TOKENS,
             )
             content = (resp.content or "").strip()
             if content.startswith("```"):
@@ -925,7 +1074,6 @@ class RequirementsService:
         user_inputs: dict[str, Any],
     ) -> tuple[Timeline, list[str]]:
         """替换素材：对每个选中 clip 构建 1-场景骨架 → MaterialAgent → 取最优建议素材替换。"""
-        from clipwright.agents.material_agent import MaterialAgent
         from clipwright.schema.agent import AgentContext, MaterialInput
         from clipwright.persona.loader import load_persona_by_id, resolve_inheritance
 
@@ -958,7 +1106,12 @@ class RequirementsService:
                 "description": clip.metadata.get("description") or clip_text or "",
             }
             try:
-                out = await MaterialAgent().execute(
+                # P3：局部修补也走统一阶段执行通道（不再各自 new Agent 实例，
+                # 否则"管线里能跑、预览里跑不通"的两套行为会一直漂移）
+                from clipwright.services import stage_subagent
+
+                out = await stage_subagent.run_inline(
+                    "material",
                     MaterialInput(
                         context=context,
                         script_skeleton={"scenes": [scene]},
@@ -1008,7 +1161,6 @@ class RequirementsService:
         user_inputs: dict[str, Any],
     ) -> tuple[Timeline, list[str]]:
         """重做动画：构建只含选中 clip 的子集时间线 → AnimationAgent → 按 id 合并回当前时间线。"""
-        from clipwright.agents.animation_agent import AnimationAgent
         from clipwright.schema.agent import AgentContext, AnimationInput
 
         persona_id = user_inputs.get("persona_id", "default")
@@ -1042,7 +1194,10 @@ class RequirementsService:
                 visual_config = anim_style
         try:
             from clipwright.plugins.generated_source import generated_image_entries
-            out = await AnimationAgent().execute(
+            from clipwright.services import stage_subagent
+
+            out = await stage_subagent.run_inline(
+                "animation",
                 AnimationInput(
                     context=context, timeline=subset, visual_config=visual_config,
                     # AI 生成图片历史 → 语义索引（无历史时为 []，零变化）
@@ -1321,7 +1476,8 @@ class RequirementsService:
                 i += 1
         return n
 
-    async def _stream_gathering_llm(self, llm_kwargs: dict, on_delta: Callable) -> dict:
+    async def _stream_gathering_llm(self, llm_kwargs: dict, on_delta: Callable,
+                                    on_reasoning: Callable | None = None) -> dict:
         """轮68/69：流式 gathering LLM 调用——stream_generate 增量 yield，
         on_delta 回调推送 reply 字段的已解码文本增量。
 
@@ -1336,6 +1492,13 @@ class RequirementsService:
         sent = 0
 
         async for chunk in self._llm.stream_generate(messages, system_prompt=system):
+            # 思考内容逐块转发（PRD §19.4：thinking 真流式；provider 不给就什么都不发）
+            _reason = getattr(chunk, "reasoning_content", "") or ""
+            if _reason and on_reasoning is not None:
+                try:
+                    on_reasoning(_reason)
+                except Exception:  # noqa: BLE001 — 回调失败不影响生成
+                    pass
             delta = getattr(chunk, "content", "") or ""
             if not delta:
                 continue
@@ -1405,6 +1568,7 @@ class RequirementsService:
         self, messages: list[dict], brief_data: dict | None, status: str,
         user_inputs: dict | None = None, session_id: str = "",
         on_delta: "Callable[[str], Any] | None" = None,
+        on_reasoning: "Callable[[str], Any] | None" = None,
     ) -> dict:
         """调用 LLM 收集需求（注入 Persona 上下文）。"""
         context = ""
@@ -1467,7 +1631,7 @@ class RequirementsService:
             try:
                 import asyncio as _aio
                 result = await asyncio.wait_for(
-                    self._stream_gathering_llm(llm_kwargs, on_delta),
+                    self._stream_gathering_llm(llm_kwargs, on_delta, on_reasoning),
                     timeout=BRIEF_GENERATE_TIMEOUT,
                 )
                 await self._record_llm_usage("requirements.gathering", session_id)
@@ -1608,6 +1772,44 @@ class RequirementsService:
 
     # ── 规划书生成 ──────────────────────────
 
+    def _legacy_plan_from_scenes(self, plan_data: dict | None, session_id: str) -> dict | None:
+        """A-18：老会话/翻译失败但有 scenes 时，反向生成 legacy plan（标 legacy）。
+
+        - 没有 ``raw_scenes`` → 返回 ``None``（真没料，不硬造）；
+        - 生成后仍走 ``PlanDocument`` 校验（段落连续、时长不漂），校验不过则放弃；
+        - 输出的 ``markdown_content`` 由确定性渲染器生成，保证可复核。
+        """
+        scenes = []
+        if isinstance(plan_data, dict):
+            scenes = plan_data.get("raw_scenes") or []
+        if not scenes:
+            return None
+        try:
+            from clipwright.services.plan_renderer import render_plan_markdown
+            from clipwright.services.plan_validator import plan_from_scenes, validate_plan
+
+            plan = plan_from_scenes(scenes)
+            result = validate_plan(plan)
+            if not result.ok:
+                logger.info(
+                    "RequirementsService: legacy plan 校验未过（%s），放弃反向生成",
+                    [i.code for i in result.errors],
+                )
+                return None
+            payload = dict(plan_data or {})
+            payload["plan"] = plan.model_dump()
+            payload["raw_scenes"] = scenes
+            payload["scene_count"] = len(plan.sections)
+            payload["total_duration_sec"] = plan.target_duration_sec
+            payload["legacy"] = True
+            payload["markdown_content"] = render_plan_markdown(plan)
+            payload["summary"] = "按现有场景生成的 legacy 规划（非 plan-first 产物）"
+            logger.info("RequirementsService: 会话 %s 使用 legacy plan（%d 段）", session_id[:12], len(plan.sections))
+            return payload
+        except Exception as exc:  # noqa: BLE001 - 兜底失败不应影响主流程
+            logger.warning("RequirementsService: legacy plan 生成失败: %s", exc)
+            return None
+
     async def _generate_plan(
         self, brief_data: dict | None, user_inputs: dict, session_id: str,
         feedback: str = "", existing_raw_scenes: list | None = None,
@@ -1618,7 +1820,6 @@ class RequirementsService:
         跳过 StructureAgent 重新生成，仅带反馈重新 _translate_plan，避免重复完整 LLM 生成。
         """
         try:
-            from clipwright.agents.structure_agent import StructureAgent
             from clipwright.schema.agent import AgentContext, StructureInput
             from clipwright.persona.loader import load_persona_by_id, resolve_inheritance
             from clipwright.persona.validator import validate_manifest
@@ -1679,7 +1880,8 @@ class RequirementsService:
                     web_context=web_context,
                 )
 
-            agent = StructureAgent()
+            # 说明：早期这里 `agent = StructureAgent()` 后直接 execute；
+            # 现在统一走 `stage_subagent.run_inline("structure", …)`（单一实例化通道）。
             context = AgentContext(
                 pipeline_id=session_id,
                 persona_id=persona_id,
@@ -1721,7 +1923,10 @@ class RequirementsService:
                 else:
                     rag_context = f"## AI 生成能力\n{gen_overview}"
 
-            result = await agent.execute(
+            from clipwright.services import stage_subagent
+
+            result = await stage_subagent.run_inline(
+                "structure",
                 StructureInput(
                     context=context,
                     persona_config=persona_config,
@@ -1730,6 +1935,10 @@ class RequirementsService:
                     creative_brief=brief_data,
                 ),
                 context,
+                # 必须比 StructureAgent.timeout_sec 更宽松：外层先掐断会把
+                # 内层"LLM 超时 → 兜底分镜"的降级路径整条跳过，
+                # 结果只有一句空消息的「规划书生成失败」。
+                timeout_sec=PLAN_STRUCTURE_TIMEOUT,
             )
             # StructureAgent 的 LLM 用量（requirements 会话级，非 pipeline）
             agent_usage = getattr(result, "_llm_usage", None)
@@ -1757,50 +1966,117 @@ class RequirementsService:
             )
 
         except Exception as e:
-            logger.exception("规划书生成失败: %s", e)
+            # TimeoutError 的 str() 是空串——只打 %s 会留下一句「规划书生成失败: 」，
+            # 看不出是超时还是别的。类型名与 timeout 都要进日志。
+            logger.exception(
+                "规划书生成失败（%s）: %s", type(e).__name__, str(e) or "（无消息）",
+            )
             return None
 
     async def _translate_plan(
         self, scenes: list[dict], brief_data: dict | None, script_text: str = "",
         feedback: str = "", web_context: str = "",
     ) -> dict:
-        """翻译场景为规划书。"""
+        """翻译场景为规划书。
+
+        E2E 2026-10-28：这份 prompt 里塞了 8000 字原文 + 简报 + 联网参考，
+        推理型模型（deepseek-v4-pro）在这么大的输入上频繁"只产出 reasoning、
+        正文为空"（HTTP 200 + content=""），三次重试全空 → 规划书退化成兜底表。
+        现在的策略是：**先给足预算的完整 prompt，失败再降规模重试一次**
+        （原文砍到 2500 字、去掉联网参考），最后才回落到确定性 Markdown。
+        """
         scenes_json = json.dumps(scenes, ensure_ascii=False, indent=2)
+        # 送给 LLM 的版本要**瘦**：口播原话已经在场景里且不该被改写，
+        # 40+ 段原话塞进 prompt 只会把 reasoning 预算吃光、正文返回空。
+        slim_scenes = json.dumps(
+            [
+                {
+                    "index": i,
+                    "title": s.get("title", ""),
+                    "duration_sec": s.get("duration_sec", 0),
+                    "keywords": s.get("keywords", []),
+                    "description": str(s.get("description", ""))[:80],
+                }
+                for i, s in enumerate(scenes)
+            ],
+            ensure_ascii=False,
+        )
         brief_json = json.dumps(brief_data, ensure_ascii=False) if brief_data else "{}"
 
-        system_prompt = PLAN_TRANSLATE_SYSTEM
-        if feedback:
-            system_prompt += (
-                f"\n\n## 用户修改意见（规划书必须体现这些修订）\n{feedback[:2000]}"
-            )
-        if script_text:
-            system_prompt += f"\n\n## 原始文稿（规划书必须忠实反映此内容）\n{script_text[:8000]}"
-        system_prompt += f"\n\n参考方案:\n{brief_json}"
-        if web_context:
-            system_prompt += f"\n\n## 联网搜索参考\n{web_context}"
+        def _system_prompt(*, compact: bool) -> str:
+            text = PLAN_TRANSLATE_SYSTEM
+            if feedback:
+                text += f"\n\n## 用户修改意见（规划书必须体现这些修订）\n{feedback[:2000]}"
+            if script_text:
+                # **必须灌注原文**：规划书要贴着作者原意写，砍掉原文会让翻译
+                # 只剩场景标题级别的信息，质量显著下降。compact 只用来丢联网参考
+                # 之类的附加块，原文一律给足。
+                text += f"\n\n## 原始文稿（规划书必须忠实反映此内容）\n{script_text}"
+            text += f"\n\n参考方案:\n{brief_json}"
+            if web_context and not compact:
+                text += f"\n\n## 联网搜索参考\n{web_context[:800]}"
+            return text
 
-        try:
-            result = await asyncio.wait_for(
+        async def _call(*, compact: bool, budget: int, timeout: float) -> dict:
+            return await asyncio.wait_for(
                 llm_call_with_retry(self._llm, "plan_translate", pipeline_id="", **{
-                    "system_prompt": system_prompt,
-                    "user_prompt": f"结构 Agent 输出:\n{scenes_json}",
+                    "system_prompt": _system_prompt(compact=compact),
+                    "user_prompt": f"结构 Agent 输出（场景清单）:\n{slim_scenes}",
+                    "max_tokens": budget,
                 }),
+                timeout=timeout,
+            )
+
+        result: dict = {}
+        try:
+            result = await _call(
+                compact=False, budget=PLAN_TRANSLATE_MAX_TOKENS,
                 timeout=PLAN_TRANSLATE_TIMEOUT,
             )
             await self._record_llm_usage("requirements.plan_translate")
         except asyncio.TimeoutError:
-            # LLM 翻译超时 → 使用基础规划书，绝不挂起
-            logger.warning("规划书翻译超时（>%ds），使用基础规划书", PLAN_TRANSLATE_TIMEOUT)
-            result = {
-                "summary": "规划书已生成（LLM 翻译超时，使用基础版本）。",
-                "sections": [],
-                "markdown_content": self._default_markdown(scenes),
-                "total_duration_sec": sum(s.get("duration_sec", 0) for s in scenes),
-                "scene_count": len(scenes),
-            }
+            logger.warning("规划书翻译超时（>%ds）", PLAN_TRANSLATE_TIMEOUT)
 
-        if not result.get("markdown_content"):
+        def _has_real_body(plan: dict | None) -> bool:
+            if not isinstance(plan, dict) or plan.get("degraded"):
+                return False
+            return bool(str(plan.get("markdown_content") or "").strip())
+
+        if not _has_real_body(result):
+            # 降规模重试：输入变小，reasoning 才有余量给正文
+            logger.warning("规划书翻译未产出正文，改用精简 prompt 重试一次")
+            try:
+                retry = await _call(
+                    compact=True, budget=PLAN_TRANSLATE_MAX_TOKENS,
+                    timeout=PLAN_TRANSLATE_RETRY_TIMEOUT,
+                )
+                if _has_real_body(retry):
+                    result = retry
+                    await self._record_llm_usage("requirements.plan_translate")
+                else:
+                    logger.warning("精简 prompt 仍未产出正文，使用基础规划书")
+            except asyncio.TimeoutError:
+                logger.warning("精简 prompt 重试超时（>%ds）", PLAN_TRANSLATE_RETRY_TIMEOUT)
+            except Exception as exc:  # noqa: BLE001 — 重试失败不影响兜底
+                logger.warning("精简 prompt 重试异常: %s", exc)
+
+        if not _has_real_body(result):
+            # 两次都没正文 → 用确定性表格兜底（比一句"生成时遇到问题"可读得多），
+            # summary 保留降级说明，不谎称成功。
+            result = {
+                **result,
+                "summary": result.get("summary")
+                or "规划书已生成（LLM 未返回正文，使用基础版本）。",
+                "markdown_content": self._default_markdown(scenes),
+            }
+        elif not str(result.get("markdown_content") or "").strip():
             result["markdown_content"] = self._default_markdown(scenes)
+        # 无论 LLM 写了什么，**完整镜头表都是权威内容**（口播原话不能被改写），
+        # 统一追加在文末：这样规划书里既有 LLM 的制作说明，也有逐镜头的真值表。
+        table = self._default_markdown(scenes)
+        body = str(result.get("markdown_content") or "")
+        if table.strip() and table.strip() not in body:
+            result["markdown_content"] = f"{body.rstrip()}\n\n---\n\n{table}"
         if not result.get("total_duration_sec"):
             result["total_duration_sec"] = sum(s.get("duration_sec", 0) for s in scenes)
         if not result.get("scene_count"):
@@ -2004,9 +2280,14 @@ class RequirementsService:
             def _on_delta(text: str) -> None:
                 queue.put_nowait({"type": "delta", "data": text})
 
+            def _on_reasoning(text: str) -> None:
+                # 思考增量（前端"正在思考 ▾"展开后追加）
+                queue.put_nowait({"type": "reasoning", "data": text})
+
             async def _run() -> None:
                 try:
-                    result = await self.chat(session_id, user_message, on_delta=_on_delta)
+                    result = await self.chat(session_id, user_message, on_delta=_on_delta,
+                                             on_reasoning=_on_reasoning)
                     queue.put_nowait({"type": "result", "data": result})
                 except asyncio.CancelledError:
                     raise

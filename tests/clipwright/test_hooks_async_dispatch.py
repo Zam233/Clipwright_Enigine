@@ -90,8 +90,8 @@ class TestPipelineCallSitesUseAsyncPath:
         from pathlib import Path
 
         root = Path(__file__).resolve().parents[2]
-        for rel in ("clipwright/api/render.py", "clipwright/api/pipeline.py",
-                    "clipwright/services/pipeline_v2.py"):
+        # M3：老管线（services/pipeline_v2.py）已删除，调用点只剩渲染与管线 API
+        for rel in ("clipwright/api/render.py", "clipwright/api/pipeline.py"):
             text = (root / rel).read_text(encoding="utf-8")
             assert "execute_async" in text, rel
             assert "HookRegistry.execute(" not in text, f"{rel} 仍有同步调用点"

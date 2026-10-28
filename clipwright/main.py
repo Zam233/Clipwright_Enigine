@@ -57,6 +57,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from clipwright.api import pipeline as pipeline_api
+from clipwright.api import eval as eval_api
+from clipwright.api import supervisor as supervisor_api
 from clipwright.api import persona as persona_api
 from clipwright.api import persona_forge as persona_forge_api
 from clipwright.api import chat_forge as chat_forge_api
@@ -66,6 +68,8 @@ from clipwright.api import providers as providers_api
 from clipwright.api import rag as rag_api
 from clipwright.api import render as render_api
 from clipwright.api import tool as tool_api
+from clipwright.api import tool_surface as tool_surface_api
+from clipwright.api import task as task_api
 from clipwright.api import plugin as plugin_api
 from clipwright.api import animation as animation_api
 from clipwright.api import material as material_api
@@ -91,11 +95,13 @@ from clipwright.api import font as font_api
 from clipwright.api import requirements as requirements_api
 from clipwright.api import versions as versions_api
 from clipwright.api import scheduler as scheduler_api
+from clipwright.api import workspace as workspace_api
 from clipwright.category import (
     CategoryRegistry,
     DigitalReviewPlugin,
     KichikuFastcutPlugin,
     KnowledgeLongformPlugin,
+    LyricMvPlugin,
     VlogDailyPlugin,
 )
 from clipwright.plugins import PluginLoader
@@ -318,9 +324,21 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("定时调度器启动失败: %s", e)
 
+    # 工作区素材轮询（PRD workspace-prd-2026-10-24 §5.1）：发现 materials/ 新素材并索引
+    try:
+        from clipwright.services import workspace_watcher as _ws_watcher
+        _ws_watcher.start()
+    except Exception as e:
+        logger.warning("工作区扫描器启动失败: %s", e)
+
     yield
 
     # 清理
+    try:
+        from clipwright.services import workspace_watcher as _ws_watcher
+        _ws_watcher.stop()
+    except Exception:
+        pass
     try:
         from clipwright.services import scheduler as _sched
         _sched.stop()
@@ -347,6 +365,8 @@ def _register_builtin_plugins() -> None:
     CategoryRegistry.register(KichikuFastcutPlugin())
     CategoryRegistry.register(DigitalReviewPlugin())
     CategoryRegistry.register(VlogDailyPlugin())
+    # MV/PV 线的主类型；plan/PRD 一直在用它，但此前没有注册（V35 因此无从判起）
+    CategoryRegistry.register(LyricMvPlugin())
 
 
 app = FastAPI(
@@ -681,8 +701,18 @@ tts_output_path = Path(settings.tts_output_dir)
 tts_output_path.mkdir(parents=True, exist_ok=True)
 app.mount("/voice_audio", StaticFiles(directory=str(tts_output_path)), name="voice_audio")
 
+# 挂载 PV 引擎产物目录（抽帧预览 / 成片）：pv_engine 插件按
+# PluginData/pv_engine/<job_id>/... 落盘，这里给出可直接访问的 URL
+# （否则 Agent 只能回绝对路径，前端无法显示）。
+_pv_engine_path = _anchor_path(settings.plugin_data_dir) / "pv_engine"
+_pv_engine_path.mkdir(parents=True, exist_ok=True)
+app.mount("/pv-engine", StaticFiles(directory=str(_pv_engine_path)), name="pv-engine")
+
 # 注册路由
 app.include_router(pipeline_api.router)
+app.include_router(supervisor_api.router)
+app.include_router(supervisor_api.admin_router)
+app.include_router(eval_api.router)
 app.include_router(persona_api.router)
 app.include_router(persona_forge_api.router)
 app.include_router(chat_forge_api.router)
@@ -692,6 +722,8 @@ app.include_router(settings_api.router)
 app.include_router(providers_api.router)
 app.include_router(render_api.router)
 app.include_router(tool_api.router)
+app.include_router(tool_surface_api.router)
+app.include_router(task_api.router)
 app.include_router(plugin_api.router)
 app.include_router(skill_api.router)
 app.include_router(material_api.router)
@@ -717,6 +749,7 @@ app.include_router(stats_api.router)
 app.include_router(requirements_api.router)
 app.include_router(versions_api.router)
 app.include_router(scheduler_api.router)
+app.include_router(workspace_api.router)
 
 
 @app.get("/health")

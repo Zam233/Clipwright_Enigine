@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from functools import partial
 from typing import Any, AsyncIterator, Callable, Optional
 
@@ -85,6 +86,30 @@ def llm_usage_snapshot() -> dict[str, int]:
         return dict(_usage_totals)
 
 
+# ── 思考内容（PRD §19.4：thinking 事件的数据来源）─────────────────
+# LLMService.generate 拿到 `reasoning_content` 时记一份；主 agent 每步结束后
+# `take_last_reasoning()` 取走并发成 thinking 事件（取走即清，避免重复推送）。
+_LAST_REASONING: dict[str, Any] = {"text": "", "ts": 0.0}
+
+
+def _remember_reasoning(text: str) -> None:
+    if not text:
+        return
+    _LAST_REASONING["text"] = str(text)[:4000]
+    _LAST_REASONING["ts"] = time.time()
+
+
+def take_last_reasoning(max_age_sec: float = 180.0) -> str:
+    """取走最近一次思考内容（过期或不存在返回空串）。"""
+    text = str(_LAST_REASONING.get("text") or "")
+    ts = float(_LAST_REASONING.get("ts") or 0.0)
+    _LAST_REASONING["text"] = ""
+    _LAST_REASONING["ts"] = 0.0
+    if not text or (time.time() - ts) > max_age_sec:
+        return ""
+    return text
+
+
 def _record_global_usage(input_tokens: int, output_tokens: int) -> None:
     with _usage_lock:
         _usage_totals["input_tokens"] += max(0, int(input_tokens or 0))
@@ -108,6 +133,15 @@ def _transport_fingerprint(
         return ""
     hdr = "|".join(f"{k}={v}" for k, v in sorted((headers or {}).items()))
     return f"t={timeout_sec};p={proxy};h={hdr}"
+
+
+#: 生成类调用的输出预算：**不设人为上限**。
+#:
+#: 说明：OpenAI 兼容协议没有无限选项——不传 max_tokens 就是 provider 默认
+#: （deepseek 系 4096，正是 MG/规划书被截断的元凶）。这里的做法是给一个远大于
+#: 任何模型能力的值，由 provider 按自身上限夹取：既不用我们猜模型能力，
+#: 也不会有我设小了把产物截断的坑。
+MAX_OUTPUT_TOKENS = 65536
 
 
 class LLMService:
@@ -135,6 +169,55 @@ class LLMService:
         if self._flash_client is None:
             self._flash_client = self._build_client(flash=True)
         return self._flash_client
+
+    def _routed_client_and_model(self, use_flash: bool = False):
+        """B4：若当前上下文有模型路由，返回 (client, model) 覆盖默认模型。
+
+        - 无路由（`model_routes` 留空 / off 模式）→ 返回默认 client 与 None，
+          行为与改造前完全一致；
+        - 同 provider → 复用现有 client，只换 model；
+        - 跨 provider → 用该 provider 的凭据构建（共享客户端缓存），凭据缺失时
+          记 warning 并回退默认，绝不静默串用别的 provider 的 key。
+        """
+        try:
+            from clipwright.services.model_router import active_route, resolve_provider_credentials
+
+            route = active_route()
+        except Exception:  # noqa: BLE001
+            route = None
+        if route is None:
+            return (self.flash_client if use_flash else self.client), None
+
+        default_provider = (
+            settings.llm_flash_provider or self.provider
+        ) if use_flash else self.provider
+        if not route.provider or route.provider == default_provider:
+            return (self.flash_client if use_flash else self.client), (route.model or None)
+
+        creds = resolve_provider_credentials(route.provider)
+        if not creds:
+            logger.warning(
+                "模型路由目标 provider 无可用凭据，沿用默认模型: %s", route.key,
+            )
+            return (self.flash_client if use_flash else self.client), (route.model or None)
+
+        try:
+            client = self._construct_client(
+                route.provider,
+                api_key=creds.get("api_key"),
+                base_url=creds.get("base_url"),
+                model=route.model or creds.get("model") or settings.llm_model,
+                instructions=settings.llm_instructions,
+                max_tokens=MAX_OUTPUT_TOKENS,
+                flash=False,
+                timeout_sec=float(creds.get("timeout_sec") or 0.0),
+                proxy=str(creds.get("proxy") or ""),
+                headers=dict(creds.get("headers") or {}) or None,
+            )
+        except Exception as e:  # noqa: BLE001 — 跨 provider 构造失败回退默认
+            logger.warning("跨 provider 客户端构建失败（回退默认）: %s", e)
+            return (self.flash_client if use_flash else self.client), (route.model or None)
+        return client, (route.model or None)
 
     def _build_client(self, flash: bool = False) -> AnthropicMessages | OpenAIChat:
         """根据配置构建对应的 IsoBase LLM 客户端（委托唯一构造点）。
@@ -244,14 +327,121 @@ class LLMService:
 
     # ── 基础接口 ──
 
+    def _effective_generation_kwargs(
+        self,
+        model: Optional[str] | None,
+        use_flash: bool,
+        kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """解析并合并逐模型生成参数（2026-10-28 PRD B4）。
+
+        优先级（后者覆盖前者）：来源里的模型项 `generation` → 活动 route 的
+        `generation` → 调用方显式 kwargs。随后按 provider capability 过滤：
+        不支持的参数**不下发**，登记 `unsupported_parameter` 降级（不假装生效）。
+
+        `generate`/`stream_generate` 都走这里，因此工具循环每一轮拿到的参数一致。
+        """
+        try:
+            from clipwright.providers.base import llm_capabilities
+            from clipwright.services.degradation import note_degradation
+            from clipwright.services.model_router import active_route
+            from clipwright.services.provider_sources import (
+                GENERATION_LIMITS,
+                generation_for,
+            )
+        except Exception:  # noqa: BLE001 — 依赖不可用时不做任何改写
+            return kwargs
+
+        keys = tuple(GENERATION_LIMITS)
+        try:
+            route = active_route()
+        except Exception:  # noqa: BLE001
+            route = None
+        provider = str(getattr(route, "provider", "") or "") or (
+            (settings.llm_flash_provider or self.provider) if use_flash else self.provider
+        )
+        target_model = (
+            model or str(getattr(route, "model", "") or "")
+            or (settings.llm_flash_model if use_flash else settings.llm_model)
+        )
+
+        resolved: dict[str, Any] = {}
+        try:
+            resolved.update(generation_for(provider, target_model) or {})
+        except Exception as e:  # noqa: BLE001
+            logger.debug("读取逐模型生成参数失败（%s/%s）: %s", provider, target_model, e)
+        route_gen = getattr(route, "generation", None) if route is not None else None
+        if isinstance(route_gen, dict):
+            resolved.update({k: v for k, v in route_gen.items() if v is not None})
+        for key in keys:
+            if key in kwargs and kwargs[key] is not None:
+                resolved[key] = kwargs[key]
+
+        impl = _resolve_llm_provider(provider)
+        caps = llm_capabilities(impl, str(target_model)) if impl is not None else None
+        allowed = set(getattr(caps, "generation_params", keys) if caps else keys)
+
+        merged = dict(kwargs)
+        for key in keys:
+            if key not in resolved:
+                continue
+            value = resolved[key]
+            if key in allowed:
+                merged[key] = value
+                continue
+            merged.pop(key, None)
+            if key in kwargs and kwargs[key] is not None:
+                # 只有调用方**显式**要求过才值得报降级；模型配置里的值静默忽略即可
+                # （那是配置与 provider 能力不匹配，日志足够）
+                note_degradation(
+                    kind="unsupported_parameter",
+                    detail=f"{provider}/{target_model} 不支持 {key}={value}，已忽略",
+                    scope="llm",
+                    impact="使用 provider 默认值",
+                )
+
+        # B5：reasoning_effort 单独处理——不支持的 provider 不但不下发，还要
+        # 报「请求值与生效值分离」的降级（用户看到的是"已忽略"，不是"已生效"）。
+        requested = kwargs.get("reasoning_effort")
+        if requested is None:
+            requested = getattr(route, "reasoning_effort", None) if route is not None else None
+        if requested is None:
+            try:
+                from clipwright.services.provider_sources import reasoning_effort_for
+
+                requested = reasoning_effort_for(provider, str(target_model)) or None
+            except Exception:  # noqa: BLE001
+                requested = None
+        if requested:
+            requested = str(requested).lower()
+            if bool(getattr(caps, "reasoning_effort", False)):
+                merged["reasoning_effort"] = requested
+            else:
+                merged.pop("reasoning_effort", None)
+                note_degradation(
+                    kind="unsupported_parameter",
+                    detail=(f"模型 {provider}/{target_model} 不支持 reasoning_effort，"
+                            f"已忽略 {requested}。"),
+                    scope="reasoning_effort",
+                    impact="使用 provider 默认推理强度",
+                )
+        else:
+            merged.pop("reasoning_effort", None)
+        return merged
+
     async def generate(
         self,
         messages: list[dict[str, str]],
         model: Optional[str] = None,
         tools: Optional[list[dict[str, Any]]] = None,
-        timeout: int = 120,
+        # 默认 120s 太短：deepseek 系推理模型在这类长 prompt 上单次常见 120-200s。
+        # 被 HTTP 超时掐断时 provider 仍会回 **200 + 空正文**，日志看起来像"模型
+        # 没输出"，实际是传输层已经断开（E2E 2026-10-28 实测：120s 边界上必空，
+        # 放宽后同一 prompt 122s 正常返回 7.4k 字正文）。
+        timeout: int = 900,
         use_flash: bool = False,
         max_retries: int = 2,
+        on_reasoning: Optional[Callable[[str], Any]] = None,
         **kwargs: Any,
     ) -> LLMResponse:
         """发送非流式生成请求。
@@ -276,7 +466,12 @@ class LLMService:
             kwargs["timeout"] = timeout
         # 过滤仅用于日志/追踪的元数据参数，不透传给 API
         kwargs.pop("pipeline_id", None)
-        client = self.flash_client if use_flash else self.client
+        # B4：路由覆盖（无路由时返回默认 client 与 None）
+        client, _routed_model = self._routed_client_and_model(use_flash)
+        if _routed_model and not model:
+            model = _routed_model
+        # B4：逐模型生成参数（模型配置 / route / 显式 kwargs 合并后按能力过滤）
+        kwargs = self._effective_generation_kwargs(model, use_flash, kwargs)
         logger.debug("LLM generate 请求: flash=%s, model=%s, timeout=%ds, messages=%s, tools=%s",
                      use_flash, model or settings.llm_model, timeout,
                      json.dumps(messages, ensure_ascii=False)[:500],
@@ -326,6 +521,14 @@ class LLMService:
             display_text = (reasoning[:200] if reasoning else resp.content[:200]) if resp.content else ""
             if reasoning:
                 _push_llm("🤔 LLM 推理", {"推理": reasoning[:500]})
+                _remember_reasoning(reasoning)
+                # B5（2026-10-28 PRD）：把本轮 reasoning 交给调用方（agent_loop 据此
+                # emit `thinking`）。回调异常只记日志，不阻断生成本身。
+                if on_reasoning is not None:
+                    try:
+                        on_reasoning(reasoning)
+                    except Exception as cb_exc:  # noqa: BLE001
+                        logger.warning("on_reasoning 回调失败（不阻断生成）: %s", cb_exc)
             if resp.content:
                 _push_llm("💬 LLM 响应", {"响应": resp.content[:500]})
         except Exception:
@@ -354,7 +557,9 @@ class LLMService:
         ask_kwargs = {**kwargs, "stream": False}
         if tools is not None:
             ask_kwargs["tools"] = tools
-        client = self.flash_client if use_flash else self.client
+        client, _routed_model = self._routed_client_and_model(use_flash)
+        if _routed_model and not ask_kwargs.get("model"):
+            ask_kwargs["model"] = _routed_model
         resp = await asyncio.to_thread(
             partial(client.ask, prompt=prompt, **ask_kwargs),
         )
@@ -371,12 +576,21 @@ class LLMService:
     async def chat(
         self,
         messages: list[dict[str, str]],
-        temperature: float = 0.7,
-        max_tokens: int = 4096,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
         use_flash: bool = False,
         **kwargs: Any,
     ) -> str:
-        """发送聊天请求，返回纯文本内容。"""
+        """发送聊天请求，返回纯文本内容。
+
+        B4：`temperature/max_tokens` 默认 None = 交给逐模型配置；只有调用方显式
+        传值时才覆盖配置。两者最终都未解析出值时，退回旧默认（0.7 / 4096）。
+        """
+        eff = self._effective_generation_kwargs(None, use_flash, {})
+        if temperature is None:
+            temperature = float(eff.get("temperature", 0.7))
+        if max_tokens is None:
+            max_tokens = int(eff.get("max_tokens", MAX_OUTPUT_TOKENS))
         logger.debug("LLM chat 请求: flash=%s, messages=%.500s, temperature=%s",
                      use_flash, json.dumps(messages, ensure_ascii=False)[:500], temperature)
         resp = await self.generate(
@@ -394,6 +608,48 @@ class LLMService:
         logger.debug("LLM chat 响应: content=%.500s", resp.content)
         return resp.content
 
+    async def structured_output_stream(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        output_schema: Optional[dict[str, Any]] = None,
+        use_flash: bool = False,
+        on_reasoning: Optional[Callable[[str], Any]] = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """**流式**结构化输出：边收边把 reasoning 增量转发出去，最后解析 JSON。
+
+        与 `structured_output` 的区别：走 `stream_generate`，因此 provider 返回
+        `reasoning_content` 时可以让主 agent 的思考**逐块**到达前端（PRD §19.4）。
+        解析失败会抛异常，调用方负责回退到非流式 `structured_output`。
+        """
+        messages = [{"role": "user", "content": user_prompt}]
+        chunks: list[str] = []
+        async for chunk in self.stream_generate(
+            messages, system_prompt=system_prompt, use_flash=use_flash, **kwargs
+        ):
+            reasoning = getattr(chunk, "reasoning_content", "") or ""
+            if reasoning and on_reasoning is not None:
+                try:
+                    on_reasoning(reasoning)
+                except Exception:  # noqa: BLE001 — 回调失败不影响生成
+                    pass
+            content = getattr(chunk, "content", "") or ""
+            if content:
+                chunks.append(content)
+
+        text = "".join(chunks).strip()
+        if not text:
+            raise ValueError("流式结构化输出为空")
+        if text.startswith("```"):
+            text = "\n".join(
+                line for line in text.splitlines() if not line.startswith("```")
+            ).strip()
+        start, end = text.find("{"), text.rfind("}")
+        if start >= 0 and end > start:
+            text = text[start:end + 1]
+        return json.loads(text)
+
     async def structured_output(
         self,
         system_prompt: str,
@@ -406,8 +662,18 @@ class LLMService:
         logger.debug("LLM structured_output 请求: flash=%s, system=%.300s, user=%.300s, schema=%s",
                      use_flash, system_prompt[:300], user_prompt[:300],
                      json.dumps(output_schema, ensure_ascii=False)[:200] if output_schema else "none")
-        # 选择与目标客户端一致的 provider 来构造消息格式
-        provider = (settings.llm_flash_provider or self.provider) if use_flash else self.provider
+        # 选择与目标客户端一致的 provider 来构造消息格式（B4：路由优先）
+        _route_provider = ""
+        try:
+            from clipwright.services.model_router import active_route
+
+            _route = active_route()
+            _route_provider = str(getattr(_route, "provider", "") or "") if _route else ""
+        except Exception:  # noqa: BLE001
+            _route_provider = ""
+        provider = _route_provider or (
+            (settings.llm_flash_provider or self.provider) if use_flash else self.provider
+        )
         # B-1：消息格式规范由 provider 协议提供（legacy 分支兜底）
         # B2/B3：缺方法或能力未声明时由访问器给最小可用语义 + 可读告警
         impl = _resolve_llm_provider(provider)
@@ -463,7 +729,7 @@ class LLMService:
         self,
         messages: list[dict[str, str]],
         model: Optional[str] = None,
-        timeout: int = 120,
+        timeout: int = 900,
         use_flash: bool = False,
         **kwargs: Any,
     ) -> AsyncIterator[LLMResponse]:
@@ -477,6 +743,8 @@ class LLMService:
         if timeout:
             kwargs["timeout"] = timeout
         kwargs.pop("pipeline_id", None)
+        # B4：流式路径同样使用逐模型生成参数（首轮/后续轮一致）
+        kwargs = self._effective_generation_kwargs(mdl, use_flash, kwargs)
 
         queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()
         loop = asyncio.get_running_loop()
@@ -513,6 +781,8 @@ class LLMService:
         tool_executor: Callable[[str, dict[str, Any]], ToolExecResult | dict[str, Any]],
         tools: list[dict[str, Any]],
         max_tool_rounds: int = 10,
+        on_preamble: Optional[Callable[[str, int, list[Any]], Any]] = None,
+        on_reasoning: Optional[Callable[[str], Any]] = None,
         **kwargs: Any,
     ) -> LLMResponse:
         """执行带工具调用循环的 LLM 请求。
@@ -530,6 +800,13 @@ class LLMService:
             tool_executor: 执行工具的回调函数 fn(tool_name, tool_input) → dict
             tools: Anthropic/OpenAI 格式的工具定义列表
             max_tool_rounds: 最大工具调用轮数（防止无限循环）
+            on_preamble: 可选回调 `fn(content, round, tool_calls)`。模型在**调用工具前**
+                说出的那段话（"我打算先派 structure 阶段，因为…"）确认后**同步**回调一次，
+                让上层把 narration 事件排在 tool_call 之前（2026-10-28 PRD B2）。
+                同轮多个 tool_call 只回调一次；无 content 不回调；回调异常只记日志。
+            on_reasoning: 可选回调 `fn(delta)`。provider 返回 reasoning 时**每轮**转发一次
+                （2026-10-28 PRD B5）：agent_loop 据此 emit `thinking`，顺序在
+                narration/tool_call 之前。回调异常只记日志，绝不吞掉生成本身。
             **kwargs: 透传给 LLMService.generate() 的额外参数
 
         Returns:
@@ -581,7 +858,15 @@ class LLMService:
             # 顺序先调 describe_llm_mg 后，第二轮再无任何工具可调
             kw = {**base_kwargs, "tools": tools}
 
-            resp = await self.generate(messages=messages, **kw)
+            # B5：reasoning 回调带上「第几轮」，上层据此给 thinking 事件标注 round
+            round_cb: Any = None
+            if on_reasoning is not None:
+                def round_cb(delta: str, _rnd: int = _round + 1) -> None:  # noqa: ANN001
+                    try:
+                        on_reasoning(delta, _rnd)
+                    except TypeError:
+                        on_reasoning(delta)
+            resp = await self.generate(messages=messages, on_reasoning=round_cb, **kw)
             logger.debug("LLM with_tools 第%d轮: success=%s, tool_calls=%d, content=%.200s",
                          _round + 1, resp.success, len(resp.tool_calls or []), resp.content or "")
 
@@ -592,6 +877,16 @@ class LLMService:
             if not resp.tool_calls:
                 logger.debug("LLM with_tools 第%d轮完成: 无工具调用", _round + 1)
                 return resp
+
+            # B2：把"要动手之前说的那段话"先交出去。顺序很关键——narration 必须
+            # 早于 tool_call 事件，前端才能渲染成「先说再做」。回调同步执行且异常
+            # 只记日志：叙述漏发不能挡住真正的工具调用。
+            preamble = (resp.content or "").strip()
+            if preamble and on_preamble is not None:
+                try:
+                    on_preamble(preamble, _round + 1, list(resp.tool_calls))
+                except Exception as exc:  # noqa: BLE001 — 叙述失败不影响工具
+                    logger.warning("with_tools on_preamble 回调失败: %s", exc)
 
             if self.provider == "anthropic":
                 # Anthropic: tool_use 块嵌入在 content 数组
@@ -655,12 +950,22 @@ class LLMService:
     async def _do_tool_call(
         executor: Any, is_coro: bool, name: str, inp: dict[str, Any]
     ) -> Any:
-        """执行一次工具调用，同步/异步兼容。"""
+        """执行一次工具调用，同步/异步兼容。
+
+        **控制流异常必须透传**（modern-agent PRD §5.2 验收「取消/预算闸在模型请求
+        中间也能生效」）：工具执行器用异常表达"停下"（取消/暂停/预算/墙钟），
+        若在这里被 `except Exception` 收成 `{"error": ...}` 回填给模型，闸就变成了
+        "告诉模型出错了、继续下一轮"——闸形同不存在。业务异常仍然如实转成结果。
+        """
         try:
             if is_coro:
                 return await executor(name, inp)
             return executor(name, inp)
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            raise
         except Exception as e:
+            if getattr(e, "__control_flow__", False):
+                raise
             logger.error("LLM _do_tool_call failed: name=%s, error=%s", name, e)
             return {"error": str(e)}
 
@@ -694,7 +999,7 @@ class LLMService:
             headers = dict(bound.get("headers") or {}) or None
         return LLMService._construct_client(
             p, api_key=k, base_url=u, model=m,
-            instructions=settings.llm_instructions, max_tokens=8192, flash=False,
+            instructions=settings.llm_instructions, max_tokens=MAX_OUTPUT_TOKENS, flash=False,
             timeout_sec=timeout_sec, proxy=proxy, headers=headers,
         )
 

@@ -42,10 +42,15 @@ def validate_id(value: str, name: str = "id") -> str:
     return value
 
 
-def is_within(base: Path, target: Path) -> bool:
-    """判断 target 解析后是否位于 base 内。"""
-    base_resolved = base.resolve()
-    target_resolved = target.resolve()
+def is_within(base: Path, target: Path | str) -> bool:
+    """判断 target 解析后是否位于 base 内。
+
+    容忍 `str`：`ToolRegistry.execute` 的路径参数天然是字符串，旧实现只收 Path，
+    于是任何走注册表的字符串路径都会在 `.resolve()` 上抛 AttributeError
+    （这类"类型收窄"的坑不会在单元测试里自然暴露，只有在真实调用链上才炸）。
+    """
+    base_resolved = Path(base).resolve()
+    target_resolved = Path(target).resolve()
     return target_resolved == base_resolved or base_resolved in target_resolved.parents
 
 
@@ -66,6 +71,10 @@ def allowed_media_roots() -> list[Path]:
     return [
         anchor(settings.render_output_dir),  # 默认 = _base/renders；可配置
         _base / "renders",  # 保留：历史数据可能仍在默认目录
+        anchor(settings.workspace_dir),  # 工作区（素材/成片/工程文件都在里面）
+        # 用户自选的工作区父目录（PRD §17.8）：不跟着放开的话，
+        # 在新目录下建的工作区里的文件会被文件 API / 渲染落点拒绝
+        *(anchor(p) for p in (getattr(settings, "workspace_roots", None) or [])),
         _base / "library",
         _base / "editor_projects",
         _base / "projects",
@@ -76,11 +85,12 @@ def allowed_media_roots() -> list[Path]:
     ]
 
 
-def assert_allowed_path(path: Path) -> Path:
+def assert_allowed_path(path: Path | str) -> Path:
     """校验路径落在白名单目录之一内，否则抛 SecurityViolation（API 层返回 400）。"""
-    if not any(is_within(root, path) for root in allowed_media_roots()):
+    p = Path(path)
+    if not any(is_within(root, p) for root in allowed_media_roots()):
         raise SecurityViolation("路径不在允许的目录内")
-    return path
+    return p
 
 
 def assert_public_url(url: str) -> None:

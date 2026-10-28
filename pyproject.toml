@@ -11,6 +11,10 @@ license = { text = "MPL-2.0" }
 
 dependencies = [
     "fastapi>=0.115.0",
+    # FastAPI 的 multipart/form-data 端点（上传素材/项目归档/模板等）在导入期即
+    # 需要它；此前只躺在 requirements.lock 里，CI 走 pip install -e ".[dev]"
+    # 装不到 → 20+ 个测试模块在收集期报「Form data requires python-multipart」。
+    "python-multipart>=0.0.9",
     "uvicorn[standard]>=0.30.0",
     "langgraph>=0.2.0",
     "pydantic>=2.10.0",

@@ -13,7 +13,7 @@ client = TestClient(app)
 def test_cancel_calls_task_cancel_on_running_pipeline() -> None:
     """运行中的管线任务存在 → cancel 端点调用 task.cancel()（即时取消）。"""
     from clipwright.api import pipeline as pipeline_api
-    from clipwright.services.pipeline_v2 import clear_cancel
+    from clipwright.services.pipeline_history import clear_cancel
     from clipwright.api.pipeline import create_trace, add_event
 
     pid = "pl_c9_test"
@@ -37,7 +37,7 @@ def test_cancel_calls_task_cancel_on_running_pipeline() -> None:
 def test_cancel_no_task_still_marks_cooperative() -> None:
     """任务不在运行（例如已结束）→ 不抛错，仍写协作式取消标志，返回 cancelling。"""
     from clipwright.api.pipeline import create_trace, add_event
-    from clipwright.services.pipeline_v2 import clear_cancel, is_cancelled
+    from clipwright.services.pipeline_history import clear_cancel, is_cancelled
     pid = "pl_c9_coop"
     create_trace(pid)
     add_event(pid, "system", "info", "started")
@@ -55,7 +55,7 @@ def test_cancel_no_task_still_marks_cooperative() -> None:
 def test_cancel_finished_task_marks_cooperative() -> None:
     """任务已 done → 不调用 cancel（避免对已完成任务二次取消），仅标记协作式。"""
     from clipwright.api import pipeline as pipeline_api
-    from clipwright.services.pipeline_v2 import clear_cancel, is_cancelled
+    from clipwright.services.pipeline_history import clear_cancel, is_cancelled
     from clipwright.api.pipeline import create_trace, add_event
 
     pid = "pl_c9_done"

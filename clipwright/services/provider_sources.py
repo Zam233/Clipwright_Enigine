@@ -244,9 +244,96 @@ def delete_source(source_id: str) -> dict[str, Any]:
 
 # ── 模型清单 ────────────────────────────────────────────
 
+#: reasoning_effort 的合法取值（2026-10-28 PRD B5）
+REASONING_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
+
+
+def normalize_reasoning_effort(raw: Any) -> str:
+    """校验 reasoning_effort；非法值返回空串（= 不设置）。"""
+    value = str(raw or "").strip().lower()
+    return value if value in REASONING_EFFORTS else ""
+
+
+def reasoning_effort_for(provider: str, model: str) -> str:
+    """取某 (provider, model) 配置的 reasoning_effort（无则空串）。"""
+    target_provider = str(provider or "").strip()
+    target_model = str(model or "").strip()
+    if not target_provider:
+        return ""
+    try:
+        sources = [s for s in list_sources(kind="llm", public=True)
+                   if str(s.get("provider") or "") == target_provider]
+    except Exception:  # noqa: BLE001
+        return ""
+    for src in sources:
+        for m in _normalize_models(src.get("models")):
+            if target_model and m["id"] == target_model:
+                return normalize_reasoning_effort(m.get("reasoning_effort"))
+    return ""
+
+
+#: 逐模型 generation 参数（2026-10-28 PRD B4）：键 → (下限, 上限, 是否整数)
+GENERATION_LIMITS: dict[str, tuple[float, float, bool]] = {
+    "temperature": (0.0, 2.0, False),
+    "top_p": (0.0, 1.0, False),
+    "max_tokens": (1.0, 200_000.0, True),
+}
+
+
+def normalize_generation(raw: Any) -> dict[str, Any]:
+    """校验并归一化逐模型生成参数；非法键/越界值直接丢弃（不写脏配置）。
+
+    只保留 ``temperature`` / ``top_p`` / ``max_tokens``；`None`/空串视为未设置。
+    返回的字典可直接回写进 source 的 model 项。
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key, (lo, hi, is_int) in GENERATION_LIMITS.items():
+        if key not in raw:
+            continue
+        value = raw.get(key)
+        if value is None or value == "":
+            continue
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            continue
+        if num != num or num < lo:  # NaN / 低于下限
+            continue
+        num = min(num, hi)
+        out[key] = int(round(num)) if is_int else round(num, 4)
+    return out
+
+
+def generation_for(provider: str, model: str) -> dict[str, Any]:
+    """取某 (provider, model) 配置的生成参数（无则空字典）。
+
+    多个源同时配了同 provider 时按「模型命中优先」合并：先找到显式包含该模型
+    的源就用它，否则取第一个同 provider 源的模型级配置。
+    """
+    target_provider = str(provider or "").strip()
+    target_model = str(model or "").strip()
+    if not target_provider:
+        return {}
+    try:
+        sources = [s for s in list_sources(kind="llm", public=True)
+                   if str(s.get("provider") or "") == target_provider]
+    except Exception:  # noqa: BLE001 — 源存储不可用 → 视为未配置
+        return {}
+    for src in sources:
+        for m in _normalize_models(src.get("models")):
+            if target_model and m["id"] == target_model:
+                gen = normalize_generation(m.get("generation"))
+                if gen:
+                    return gen
+    return {}
+
+
 def _normalize_models(raw: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for m in raw or []:
+        generation: dict[str, Any] = {}
         if isinstance(m, str):
             mid, name = m, m
             enabled = True
@@ -254,11 +341,18 @@ def _normalize_models(raw: Any) -> list[dict[str, Any]]:
             mid = str(m.get("id") or "").strip()
             name = str(m.get("name") or mid)
             enabled = bool(m.get("enabled", True))
+            generation = normalize_generation(m.get("generation"))
         else:
             continue
         if not mid:
             continue
-        out.append({"id": mid, "name": name, "enabled": enabled})
+        item: dict[str, Any] = {"id": mid, "name": name, "enabled": enabled}
+        if generation:
+            item["generation"] = generation
+        effort = normalize_reasoning_effort(m.get("reasoning_effort")) if isinstance(m, dict) else ""
+        if effort:
+            item["reasoning_effort"] = effort
+        out.append(item)
     # 去重（保留首个）
     seen: set[str] = set()
     uniq: list[dict[str, Any]] = []

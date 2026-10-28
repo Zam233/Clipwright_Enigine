@@ -115,15 +115,45 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 
 | 端点 | 说明 |
 |------|------|
-| `POST /api/pipeline/run-async` | 异步启动管线（唯一入口；动态路由 + 并行执行 + 自愈循环），通过 SSE 实时追踪 |
+| `POST /api/pipeline/run-async` | **已退役**：执行引擎已在 M3 物理删除。`agent_mode=on` 时转成主 Agent 任务（返回体仍带 `pipeline_id`），其余情况返回 **410**。新任务请用 `POST /api/requirements/proceed` 或 `POST /api/task` |
 | `GET /api/pipeline/runs?limit=50` | 列出最近的管线运行记录（按时间倒序） |
 | `GET /api/pipeline/status/{pipeline_id}` | 查询管线状态 |
 | `GET /api/pipeline/result/{pipeline_id}` | 获取异步执行结果（含时间线 JSON） |
 | `GET /api/pipeline/trace/{pipeline_id}` | 获取管线事件轨迹 |
 | `GET /api/pipeline/trace/stream/{pipeline_id}` | SSE 流：实时追踪管线执行事件 |
-| `POST /api/pipeline/retry/{pipeline_id}/{agent_name}` | 从失败的 Agent 重试（B3：重放前置成功结果，仅重跑目标 + 下游） |
+| `POST /api/pipeline/retry/{pipeline_id}/{agent_name}` | **已退役**：返回 **410**（执行引擎已删除；失败恢复请走主 Agent 的 `POST /api/task/{id}/resume`，或让主 agent 重新 `delegate_agent` 该阶段） |
 | `POST /api/pipeline/predict-script` | 分析文稿并推荐配置（请求体：`PredictScriptRequest`）。返回字数、句数、估算时长、推荐 Persona、推荐类型插件、情绪基调、关键主题 |
 | `POST /api/pipeline/predict-material` | 分析素材文件并推荐使用方式（请求体：`PredictMaterialRequest`）。返回时长、分辨率、方向、是否有视频/音频、用途建议 |
+
+## 调度中枢（Supervisor，v1.4）
+
+> 实现：`clipwright/api/supervisor.py`（`router` + `admin_router`）。
+> `/api/pipeline` 前缀下的这些端点**不属于** `pipeline.py`，注意别在那边找。
+
+| 端点 | 说明 |
+|------|------|
+| `GET /api/pipeline/{pid}/ledger?stage=` | 账本（每条阶段尝试的判定/失败类别/降级/用量/耗时）；未知管线返回 `found=false` |
+| `GET /api/pipeline/{pid}/attribution?llm=` | 归因（规则 R1–R4 优先，`llm=true` 才允许规则不命中时走兜底判定） |
+| `GET /api/pipeline/{pid}/diagnosis` | 诊断书（模板化，无 LLM）：结论/问题/证据/已尝试/建议/成本 |
+| `GET /api/pipeline/{pid}/decisions` | 调度决策序列 + `accepted_degraded` |
+| `GET /api/pipeline/{pid}/budget` | 预算快照（未配置预算 → `level=unlimited`、`ratio=null`，**不阻断**） |
+| `POST /api/pipeline/{pid}/dispatch` | 人工改派：`{target_stage, reason, issues?, auto_retry?}` → **只登记工单**（执行语义已随 M3 退役，返回 `execution_status=retired`）；真重跑请由主 agent 重新 `delegate_agent` 该阶段 |
+| `POST /api/pipeline/{pid}/accept-suggestion` | 执行诊断建议：`{suggestion_id?, action, target_stage?}`。`accept_degraded` 只登记；`retry_with_model`/`redo_stage` 触发重跑；`manual` 不执行 |
+| `GET /api/pipeline/{pid}/subagents` | 子代理树（含状态/模型/耗时/成本）；空树不是 404 |
+| `POST /api/pipeline/{pid}/subagents` | 派生临时 worker（带 `run_shell`/`run_python` 时返回 `pending_review`，未审核不实例化） |
+| `POST /api/pipeline/{pid}/subagents/{sid}/cancel` | 取消子代理（不存在 404 / 已结束或不可取消 409） |
+| `POST /api/pipeline/{pid}/exec` | 请求执行：`{kind: shell\|python, command\|code, cwd?, timeout_sec?}` → `done/failed/pending_approval/rejected` |
+| `GET /api/pipeline/{pid}/exec` | 执行日志（命令/风险等级/理由/退出码/耗时/输出尾部） |
+| `GET /api/pipeline/{pid}/exec/pending-approvals` | 待授权命令队列 |
+| `POST /api/pipeline/{pid}/exec/{aid}/approve\|reject` | 授权 / 拒绝（high、critical 需 `confirm_high_risk=true`） |
+| `GET\|PUT /api/pipeline/{pid}/exec/auto-mode` | 自动模式开关（只减免 `med`，`high`/`critical` 仍弹） |
+| `GET /api/supervisor/workers/pending-review` | 带执行权限的待审 worker（含独立 LLM 风险结论） |
+| `POST /api/supervisor/workers/{wid}/review` | 人工审核 `{approve, confirm_high_risk}` |
+| `GET /api/supervisor/tools` | 主代理可授予的工具全集、需审核的工具、`executable`（哪些真有执行通道） |
+| `GET\|PUT /api/supervisor/routes` | 模型路由表 + provider 白名单 |
+| `GET\|PUT /api/supervisor/mode` | 调度中枢模式 `off\|shadow\|on`（默认 off） |
+
+执行网关的三条不可协商规则：硬底线（读凭据 / 不可逆破坏）**任何模式都拒绝且不可授权**；风险等级由确定性规则与**独立 LLM 判定**取 `max()`（规则只升不降，判定失败一律升 `high`）；每条执行（含被拒/超时）都写 `ExecRecord` 并入 trace。
 
 ### `GET /api/pipeline/runs`
 
@@ -838,3 +868,29 @@ off/token 模式放行）。`requires_restart=true` 的字段（CORS/Mongo/端�
 | `generate_captions` | 字幕生成 |
 | `analyze_audio_rhythm` | 音频节奏分析 |
 | `dub_script` | 文案切分 + 逐段配音 |
+## 工作区 (/api/workspace)
+
+> 实现依据：[workspace-prd-2026-10-24.md](workspace-prd-2026-10-24.md)。
+> 一个项目 = 一个工作区目录（工程文件 / 素材 / 下载 / 成片 / 缓存同根，可整体备份）。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/workspace` | 创建或取回（幂等）。body：`{project_id, name?, root?, auto_index?, vision?}`；`root` 必须位于 `settings.workspace_dir` 内 |
+| GET | `/api/workspace/{project_id}` | 状态：`counts{total,video,image,audio,indexed,pending}` / `index{vision,provider,spent_today_usd}` / `scan{auto,last_scan_at}` / `health` |
+| POST | `/api/workspace/{project_id}/enable` | 只改开关：`{auto_index?, vision?}` |
+| POST | `/api/workspace/{project_id}/scan` | 扫描 `materials/` 并索引新增；`dry_run=true` 只列 `would_index` |
+| GET | `/api/workspace/{project_id}/materials?kind=` | 已索引素材（sha256/路径/状态/标签/视觉摘要） |
+| POST | `/api/workspace/{project_id}/materials` | 上传到 `materials/<kind>/`，落盘后同步索引一次；不支持扩展名 → 400 |
+| DELETE | `/api/workspace/{project_id}/materials/{sha256}?purge=` | 默认只删索引记录；`purge=true` 才删磁盘文件 |
+| GET | `/api/workspace/{project_id}/events?since=` | **JSON**：扫描/索引进度事件（`{events[], last_seq}`，立即返回；旧实现是 SSE，普通 GET 会挂到超时） |
+| GET | `/api/workspace/{project_id}/events/stream?since=` | SSE：同一份事件的长连接版本（`seq` 游标 + `data:` 帧） |
+
+**目录约定**：`materials/` 是唯一用户写入区（系统下载也落这里），新文件由轮询
+（`settings.workspace_scan_interval_sec`，默认 20s）发现；`assets/` 是
+`AssetManager` 视图（files/thumbnails/index.json），`renders/`/`cache/`/`logs/` 由系统写。
+
+**索引流水线**：`MediaIndexer.extract_metadata/classify` → `AssetManager.import_file`
+（sha256 去重 + 缩略图）→ `content_vision.label_shot`（CLIP 本地 / LLM 描述，按
+`settings.vision_provider`）。视觉预算：`workspace_vision_daily_budget_usd`，超限标
+`deferred` 但索引仍完成。
+

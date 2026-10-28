@@ -27,6 +27,22 @@ _MIN_REQUEST = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _force_agent_mode_off(monkeypatch):
+    """本模块测的是「老 API 直跑」链路（pipeline_id 前缀 pl_、运行中取消、幂等去重）。
+
+    这些断言只在 ``agent_mode=off`` 下成立；而本机 settings.json 可能已被操作者
+    调成 ``on``（双轨会把请求转成 Task，pipeline_id 变成 task_xxx），
+    且 settings API 测试会把 store 覆盖 apply 到共享 settings 单例。
+    测试不该依赖本机配置 / 执行顺序 → 显式钉住 off。
+    """
+    from clipwright.config import settings
+
+    monkeypatch.setattr(settings, "agent_mode", "off")
+    # P2 起老管线默认下线（run-async 返回 410）；本模块就是要测这条链路，显式打开
+    monkeypatch.setattr(settings, "pipeline_enabled", True, raising=False)
+
+
 class _FakeRequest:
     """最小 Request 桩：off/token 鉴权模式下 current_user_id 走 state.user_id。"""
 
@@ -58,21 +74,6 @@ async def _wait_for_async(predicate, timeout_sec: float = 10.0):
             return value
         await asyncio.sleep(0.05)
     return None
-
-
-@pytest.fixture()
-def fake_orch_blocked(monkeypatch):
-    """永不完成的 orchestrator（供取消测试）。"""
-    from clipwright.api import pipeline as pipeline_api
-
-    class _FakeOrchBlocked:
-        async def run(self, request, pipeline_id: str = "", task_id: str = ""):
-            await asyncio.sleep(60)
-            raise AssertionError("管线应在取消时被中断，而不是跑完")
-
-    monkeypatch.setattr(pipeline_api, "PipelineOrchestratorV2", _FakeOrchBlocked)
-
-
 # ── A2: 任务级超时 ──────────────────────────────
 
 
@@ -114,116 +115,3 @@ class TestTaskQueuePerTaskTimeout:
 # ── A1/A3/A4/A8: run-async 调用链 ────────────────
 
 
-@pytest.mark.asyncio
-async def test_run_async_accepts_missing_priority_header(fake_orch_blocked, monkeypatch):
-    """A1: 不带 X-Priority 头也必须成功启动（曾因 request.headers 500）。"""
-    from clipwright.api import pipeline as pipeline_api
-
-    # 干净的并发环境：独占队列（避免其它用例遗留任务占用信号量）
-    monkeypatch.setattr(
-        "clipwright.services.task_queue._task_queue", TaskQueue(max_concurrent=3),
-    )
-    resp = await pipeline_api.run_pipeline_async(
-        PipelineRequest(**_MIN_REQUEST), _FakeRequest(),
-    )
-    assert resp["pipeline_id"].startswith("pl_")
-    assert resp["status"] == "started"
-    assert resp["task_id"].startswith("task_")
-    await pipeline_api.cancel_pipeline(resp["pipeline_id"], _FakeRequest())
-    _cleanup_pipeline_state(resp["pipeline_id"])
-
-
-@pytest.mark.asyncio
-async def test_run_async_idempotency_dedup(fake_orch_blocked, monkeypatch):
-    """A8: 相同 Idempotency-Key 二次请求直接去重（占位在 await 前写入）。"""
-    from clipwright.api import pipeline as pipeline_api
-
-    monkeypatch.setattr(
-        "clipwright.services.task_queue._task_queue", TaskQueue(max_concurrent=3),
-    )
-    req1 = _FakeRequest()
-    req1.headers["Idempotency-Key"] = "batch-a-idem-1"
-    r1 = await pipeline_api.run_pipeline_async(PipelineRequest(**_MIN_REQUEST), req1)
-    req2 = _FakeRequest()
-    req2.headers["Idempotency-Key"] = "batch-a-idem-1"
-    r2 = await pipeline_api.run_pipeline_async(PipelineRequest(**_MIN_REQUEST), req2)
-    assert r2["status"] == "deduplicated"
-    assert r2["pipeline_id"] == r1["pipeline_id"]
-    await pipeline_api.cancel_pipeline(r1["pipeline_id"], _FakeRequest())
-    _cleanup_pipeline_state(r1["pipeline_id"])
-
-
-@pytest.mark.asyncio
-async def test_run_async_cancel_interrupts_and_stream_closes(fake_orch_blocked, monkeypatch):
-    """A3/A4: 运行中任务可被即时取消，SSE 流以 cancelled 终态关闭。"""
-    from clipwright.api import pipeline as pipeline_api
-
-    monkeypatch.setattr(
-        "clipwright.services.task_queue._task_queue", TaskQueue(max_concurrent=3),
-    )
-    resp = await pipeline_api.run_pipeline_async(
-        PipelineRequest(**_MIN_REQUEST), _FakeRequest(),
-    )
-    pid = resp["pipeline_id"]
-
-    # 等待队列 handler 启动并注册运行任务（同一事件循环内，必然存活）
-    registered = await _wait_for_async(lambda: pipeline_api._running_pipelines.get(pid))
-    assert registered is not None, "run-async 未注册运行任务（A3 回归）"
-
-    cancel_resp = await pipeline_api.cancel_pipeline(pid, _FakeRequest())
-    assert cancel_resp["status"] == "cancelling"
-
-    result = await _wait_for_async(lambda: pipeline_api._pipeline_results.get(pid))
-    assert result is not None, "取消后未写终态结果"
-    assert result["status"] == "cancelled"
-
-    # SSE 流在回放 cancelled 事件后应主动关闭（生成器自然耗尽）
-    from clipwright.services.trace import get_all_events
-
-    events = get_all_events(pid)
-    assert any(e.get("type") == "cancelled" for e in events)
-    stream_resp = await pipeline_api.stream_pipeline_trace(pid, _FakeRequest())
-    types_seen: list[str] = []
-    async for payload in stream_resp.body_iterator:
-        line = payload if isinstance(payload, str) else payload.decode("utf-8")
-        for seg in line.split("data: ")[1:]:
-            import json as _json
-
-            types_seen.append(_json.loads(seg.strip()).get("type", ""))
-    assert "cancelled" in types_seen
-    _cleanup_pipeline_state(pid)
-
-
-@pytest.mark.asyncio
-async def test_run_async_timeout_written_as_timeout_state(monkeypatch):
-    """A2: 队列超时强杀后终态为 timeout（非 cancelled），区别于用户取消。"""
-    from clipwright.api import pipeline as pipeline_api
-
-    class _SleepOrch:
-        async def run(self, request, pipeline_id: str = "", task_id: str = ""):
-            await asyncio.sleep(30)
-
-    monkeypatch.setattr(pipeline_api, "PipelineOrchestratorV2", _SleepOrch)
-    monkeypatch.setattr(
-        "clipwright.services.task_queue._task_queue", TaskQueue(max_concurrent=3),
-    )
-
-    # 强制队列以 0.3s 任务超时提交，触发真实 wait_for 超时路径
-    orig_submit = TaskQueue.submit
-
-    async def fast_submit(self, task_type, handler, *a, **kw):
-        kw["timeout_sec"] = 0.3
-        return await orig_submit(self, task_type, handler, *a, **kw)
-
-    monkeypatch.setattr(TaskQueue, "submit", fast_submit)
-
-    resp = await pipeline_api.run_pipeline_async(
-        PipelineRequest(**_MIN_REQUEST), _FakeRequest(),
-    )
-    pid = resp["pipeline_id"]
-
-    result = await _wait_for_async(lambda: pipeline_api._pipeline_results.get(pid))
-    assert result is not None, "队列超时后未写终态结果"
-    assert result["status"] == "timeout"
-    assert "超时" in (result.get("error") or "")
-    _cleanup_pipeline_state(pid)

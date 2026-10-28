@@ -34,7 +34,17 @@ class WebSearchTool(BaseTool):
     )
 
     def is_available(self) -> bool:
-        """仅当搜索服务已配置时可用（依赖配置而非外部命令）。"""
+        """工具本体始终可用；**配置缺失在 execute 里如实回报**。
+
+        旧语义把它当"不可用"，后果是 Kernel 的工具面里根本没有 web_search，
+        主 agent 永远不知道自己能联网——连"我想搜一下"都无从决策。
+        `is_available()` 的语义应当是"依赖的二进制在不在"，不是"配置填没填"。
+        阶段 Agent 的可见性由 `ToolRegistry.list_agent_callable()` 用 `is_configured()` 把关。
+        """
+        return True
+
+    def is_configured(self) -> bool:
+        """搜索服务是否已配置（阶段 Agent 用它决定是否暴露该工具）。"""
         return WebSearchService().is_configured()
 
     async def execute(
@@ -98,7 +108,11 @@ class WebFetchTool(BaseTool):
     )
 
     def is_available(self) -> bool:
-        """与搜索同一配置开关：联网能力整体可用时才暴露抓取。"""
+        """同 web_search：本体可用，缺配置由 execute 如实报 DEPENDENCY_MISSING。"""
+        return True
+
+    def is_configured(self) -> bool:
+        """联网是否已配置（阶段 Agent 用它决定是否暴露抓取工具）。"""
         return WebSearchService().is_configured()
 
     async def execute(

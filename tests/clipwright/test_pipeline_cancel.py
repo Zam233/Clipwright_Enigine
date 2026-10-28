@@ -1,15 +1,21 @@
-"""G2: 协作式取消管线 — cancel 标记后下一个 agent 边界生效，终态 CANCELLED。"""
+"""G2：协作式取消——**标记层**（modern-agent PRD §4.1 / M3）。
+
+老编排器的"取消在 agent 边界生效"那几条用例随执行引擎一起删除（被测对象不存在了）。
+仍然有效、也必须保住的断言是：
+
+- 取消标记本身可置可清（`mark_cancelled` / `is_cancelled` / `clear_cancel`）；
+- 取消端点对**任务**（主 Agent）有效：任务被置为 cancelled 并落终态事件。
+
+新执行路径的取消在 Kernel 侧由 `_CONTROL` + `agent_run._LIVE` 实现，
+相关用例见 `tests/test_agent_kernel.py::test_cancel_marks_task_cancelled` 与
+`tests/test_agent_run.py::test_cancel_works_for_stage_run`。
+"""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
-from clipwright.schema.agent import AgentDecision
-from clipwright.schema.pipeline import PipelineRequest, PipelineState, PipelineStatus
-from clipwright.services.pipeline_v2 import (
-    PipelineOrchestratorV2,
+from clipwright.services.pipeline_history import (
     clear_cancel,
     is_cancelled,
     mark_cancelled,
@@ -23,99 +29,46 @@ def _clean_cancel():
     clear_cancel()
 
 
-class TestCancelFlag:
-    def test_mark_and_check(self) -> None:
-        assert is_cancelled("pl_x") is False
-        mark_cancelled("pl_x")
-        assert is_cancelled("pl_x") is True
-        clear_cancel()
-        assert is_cancelled("pl_x") is False
+def test_mark_and_check() -> None:
+    assert is_cancelled("pl_x") is False
+    mark_cancelled("pl_x")
+    assert is_cancelled("pl_x") is True
+    clear_cancel()
+    assert is_cancelled("pl_x") is False
 
 
-def _build_orch(run_log: list[str]) -> PipelineOrchestratorV2:
-    orch = PipelineOrchestratorV2.__new__(PipelineOrchestratorV2)
-    orch._agents = {}
-
-    async def fake_init(request, pid, state, bus):
-        manifest = SimpleNamespace(parameter=None, prompt="")
-        plugin = SimpleNamespace(config={})
-        return manifest, plugin, {}, {}, SimpleNamespace(extra_params={})
-
-    async def fake_dispatch(name, data, ctx):
-        run_log.append(name)
-        return SimpleNamespace(
-            decision=AgentDecision.PASS,
-            model_dump=lambda mode="json": {"note": "ok"},
-        )
-
-    orch._init = fake_init
-    orch._dispatch = fake_dispatch
-    orch._persona_prompt = ""
-    orch._vision_prompt = ""
-    orch._rag_context = ""
-    return orch
+def test_clear_single_cancel_flag() -> None:
+    mark_cancelled("pl_a")
+    mark_cancelled("pl_b")
+    clear_cancel("pl_a")
+    assert is_cancelled("pl_a") is False
+    assert is_cancelled("pl_b") is True
 
 
-@pytest.mark.asyncio
-async def test_cancelled_agent_returns_skip() -> None:
-    """取消标记后，_run_agent 在 dispatch 前返回 SKIP 且不执行真实 agent。"""
-    run_log: list[str] = []
-    orch = _build_orch(run_log)
-    req = PipelineRequest(
-        persona_id="default", category_plugin_id="knowledge_longform", topic="t",
-    )
-    state = PipelineState(pipeline_id="pl_cancel_1", request=req)
-    from clipwright.services.agent_bus import AgentBus
-    bus = AgentBus("pl_cancel_1")
-    ctx = SimpleNamespace(extra_params={}, pipeline_id="pl_cancel_1")
+def test_cancel_endpoint_marks_agent_task_cancelled() -> None:
+    """取消端点对主 Agent 任务生效（老管线分支已删，只剩这条真路径）。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
 
-    # 未取消 → 正常执行
-    mark_cancelled("pl_cancel_1")
-    step = await orch._run_agent(state, "structure", {"persona_config": {}}, ctx, bus)
-    assert step.status == PipelineStatus.CANCELLED
-    assert run_log == []  # 未进入 dispatch
+    from clipwright.api import pipeline as pipeline_api
+    from clipwright.schema.task import TaskRequest
+    from clipwright.services import task_events as te
+    from clipwright.services.agent_kernel import AgentKernel, KernelDeps
 
+    class _NoopDriver:
+        async def __call__(self, task, *, context_text="", shadow=False, dry_run=False,  # noqa: ANN001
+                           guard=None, on_tool_call=None):  # noqa: ANN001, ARG002
+            return {"status": "ok", "finish": {"conclusion": "noop"},
+                    "tool_calls": [], "rounds": 1, "stopped_reason": "model_final"}
 
-@pytest.mark.asyncio
-async def test_cancel_marks_pipeline_cancelled_status() -> None:
-    """run() 完成后若被取消 → state.status=CANCELLED + result 写 cancelled。"""
-    orch = PipelineOrchestratorV2.__new__(PipelineOrchestratorV2)
-    orch._agents = {}
+    kernel = AgentKernel(KernelDeps(driver=_NoopDriver()))
+    task = kernel.create(TaskRequest(topic="x", plan_only=False))
+    app = FastAPI()
+    app.include_router(pipeline_api.router)
+    client = TestClient(app)
 
-    async def fake_run_inner(request, pid, state, bus, tracer, task_id):
-        state.status = PipelineStatus.COMPLETED
-        return state
-
-    orch._run_inner = fake_run_inner  # type: ignore[method-assign]
-    from clipwright.services.agent_bus import AgentBus
-
-    req = PipelineRequest(
-        persona_id="default", category_plugin_id="knowledge_longform", topic="t",
-    )
-    mark_cancelled("pl_cancel_2")
-    try:
-        state = await orch.run(req, pipeline_id="pl_cancel_2")
-    finally:
-        clear_cancel()
-
-    assert state.status == PipelineStatus.CANCELLED
-
-
-@pytest.mark.asyncio
-async def test_not_cancelled_normal_completion() -> None:
-    """未取消 → 正常完成。"""
-    orch = PipelineOrchestratorV2.__new__(PipelineOrchestratorV2)
-    orch._agents = {}
-
-    async def fake_run_inner(request, pid, state, bus, tracer, task_id):
-        state.status = PipelineStatus.COMPLETED
-        return state
-
-    orch._run_inner = fake_run_inner  # type: ignore[method-assign]
-    from clipwright.services.agent_bus import AgentBus
-
-    req = PipelineRequest(
-        persona_id="default", category_plugin_id="knowledge_longform", topic="t",
-    )
-    state = await orch.run(req, pipeline_id="pl_cancel_3")
-    assert state.status == PipelineStatus.COMPLETED
+    resp = client.post(f"/api/pipeline/cancel/{task.id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "cancelled"
+    assert te.events(task.id)

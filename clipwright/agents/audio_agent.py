@@ -171,6 +171,13 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                         timeline.duration_sec = audio_duration
                     notes.append(f"已导入配音文件: {audio_duration:.0f}s")
 
+                    # 轮 83 / 本轮修复：上传配音的字幕强制对齐**默认执行**。
+                    # 旧实现把整段对齐逻辑缩进到了 SFX 分支里（只有传了音效才跑），
+                    # 于是上传配音后字幕仍是 EditAgent 的字数比例估算 → 音画/字幕漂移。
+                    await self._align_captions_to_uploaded_dub(
+                        timeline, audio_path, audio_duration, notes,
+                    )
+
             # 轮 96（批次 6 余项）：SFX 音效链——audio_config.sfx 列表中的
             # 音效文件按 start_sec 落到独立音效轨（无 sfx 条目零行为变化）。
             # 条目: {"path": "...", "start_sec": 5.0, "volume": 0.6}
@@ -212,54 +219,6 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                     notes.append(f"已添加 {_sfx_added} 个音效")
 
 
-                # 轮 83（知识区门槛）：上传配音路径的字幕强制对齐。
-                # EditAgent 的字幕是字数比例估算，与真实配音必然漂移；
-                # 用 STTService.align（whisper 可用时强制对齐，否则按时长
-                # 估算）把句级时间戳回写 CAPTION 轨（与自动 TTS 路径同语义）。
-                try:
-                    from clipwright.services.stt import STTService
-
-                    caption_texts: list[str] = []
-                    for t in timeline.tracks:
-                        if t.kind != ClipKind.CAPTION:
-                            continue
-                        for c in t.clips:
-                            meta = getattr(c, "metadata", {}) or {}
-                            txt = (getattr(c, "text", "") or meta.get("text") or "").strip()
-                            if txt:
-                                caption_texts.append(txt)
-                    if caption_texts and audio_duration > 0:
-                        stt = STTService()
-                        aligned = await stt.align(audio_path, "。".join(caption_texts))
-                        if aligned.success and aligned.segments:
-                            segs = [
-                                {
-                                    "text": s.get("text", ""),
-                                    "start_sec": float(s.get("start", 0) or 0),
-                                    "end_sec": float(s.get("end", 0) or 0),
-                                    "audio_path": audio_path,
-                                }
-                                for s in aligned.segments
-                                if (s.get("text") or "").strip()
-                            ]
-                            if segs:
-                                self._realign_captions_to_narration(timeline, segs)
-                                notes.append(f"上传配音字幕对齐: {len(segs)} 段")
-                                # P1-23: NEL 事件线 + 动画对齐同样适用于上传配音
-                                # （旧实现只在 TTS 分支生效；此处 bpm 尚未检测，传 None
-                                # 只做 NEL 事件对齐不做节拍吸附）
-                                try:
-                                    from clipwright.services.narration_events import (
-                                        align_animations_to_nel,
-                                        attach_nel_to_timeline,
-                                    )
-                                    attach_nel_to_timeline(timeline, segs, bpm=None)
-                                    align_animations_to_nel(timeline)
-                                except Exception as e:
-                                    logger.warning("上传配音 NEL 提取/对齐失败（跳过）: %s", e)
-                except Exception:
-                    logger.exception("上传配音字幕对齐失败（保留估算字幕）")
-
             # 3. BPM 检测延后到 BGM 入轨之后（P2-31：旧实现取 audio_track 第一个
             # clip——那往往是旁白而非 BGM；且失败时残留伪 120 参与节拍对齐）
             bpm: float | None = None
@@ -285,7 +244,8 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                 scenes_emotions = self._collect_scenes_emotions(input_data, timeline)
                 if scenes_emotions:
                     llm_alloc = await self._llm_match_bgm(
-                        scenes_emotions, bgm_slots, context.pipeline_id
+                        scenes_emotions, bgm_slots, context.pipeline_id,
+                        getattr(context, "category_plugin_id", "") or "",
                     )
                     allocs = llm_alloc.get("allocations", [])
                     if allocs:
@@ -399,14 +359,16 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
             # 3b+. BPM 检测——优先 BGM clip（旧实现取第一个音频 clip，那常是
             # 旁白：旁白的节奏被误用作踩点基准）；无 BGM 或检测失败 → bpm=None
             # （下游节拍对齐自动跳过，不再伪造 120）
-            if bpm_mode and bpm is None and ToolRegistry.get("bpm_detect") is not None:
+            # 能力动态解析：插件贡献的 bpm 实现（capability="bpm_detect"）优先，
+            # 没有插件时落到内置 bpm_detect。
+            if bpm_mode and bpm is None and self.resolve_tool("bpm_detect") is not None:
                 _bgm_clip = next(
                     (c for t in timeline.tracks if t.kind == ClipKind.AUDIO
                      for c in t.clips if (getattr(c, "metadata", {}) or {}).get("bgm") and c.asset_id),
                     None,
                 )
                 if _bgm_clip is not None:
-                    result = await ToolRegistry.execute(
+                    result = await self.call_tool(
                         "bpm_detect",
                         input_path=_bgm_clip.asset_id,
                     )
@@ -476,10 +438,10 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                     )
 
                     if not has_narration:
-                        from clipwright.skill.registry import SkillRegistry
-
-                        res = await SkillRegistry.execute(
-                            "dub_script",
+                        # 技能动态解析：插件贡献同名/同能力的配音技能即可接管，
+                        # 技能卸载后立即消失（resolve_skill 每次实时查注册表）。
+                        res = await self.call_skill(
+                            "dub",
                             voice_id=voice_id,
                             text=script_text,
                             # 透传会话 split_mode（旧实现硬编码 sentence）
@@ -799,12 +761,146 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
             return False
         return False
 
-    @staticmethod
-    def _realign_captions_to_narration(timeline, segments: list[dict]) -> None:
-        """生产加固 2.2：用 TTS 实测句级时间戳重建字幕轨（替换估算比例时间）。
+    #: 重建字幕时从既有 clip 继承的样式字段（时间与文本必须用新的）
+    _CAPTION_STYLE_FIELDS = (
+        "font", "font_size", "font_color", "text_align",
+        "font_weight", "font_italic", "letter_spacing",
+        "stroke_width", "stroke_color",
+        "shadow_x", "shadow_y", "shadow_color", "shadow_blur",
+        "glow_color", "glow_width",
+    )
 
-        仅处理带 audio_path+text 的成功段；样式与 EditAgent 字幕 clip 保持一致
-        （stroke/shadow 显式注入，renderer=ass）。无字幕轨/无成功段时 no-op。
+    async def _align_captions_to_uploaded_dub(
+        self, timeline, audio_path: str, audio_duration: float, notes: list[str],
+    ) -> None:
+        """上传配音 → 用配音实测时间重建字幕（**默认行为**，与 SFX 无关）。
+
+        历史缺陷：这段逻辑被缩进在「audio_config.sfx 非空」分支里，于是只有
+        传了音效才会跑 —— 上传配音后字幕仍是 EditAgent 的字数比例估算，
+        音画/字幕随时间漂移。现在只要 audio_path 存在就执行。
+
+        没有 whisper 时 ``STTService.align`` 会按字数比例把实测总时长摊到各句
+        （仍是"与配音匹配"，只是句内不精确）；对齐不可用时明确写进 notes，
+        不静默保留估算。
+        """
+        try:
+            from clipwright.services.stt import STTService
+
+            caption_texts: list[str] = []
+            for t in timeline.tracks:
+                if t.kind != ClipKind.CAPTION:
+                    continue
+                for c in t.clips:
+                    meta = getattr(c, "metadata", {}) or {}
+                    txt = (getattr(c, "text", "") or meta.get("text") or "").strip()
+                    if txt:
+                        caption_texts.append(txt)
+            if not caption_texts:
+                notes.append("上传配音：时间线尚无字幕，跳过字幕对齐")
+                return
+
+            stt = STTService()
+            aligned = await stt.align(audio_path, "。".join(caption_texts))
+            segs = [
+                {
+                    "text": s.get("text", ""),
+                    "start_sec": float(s.get("start", 0) or 0),
+                    "end_sec": float(s.get("end", 0) or 0),
+                    "audio_path": audio_path,
+                }
+                for s in (aligned.segments if aligned.success else [])
+                if (s.get("text") or "").strip()
+            ]
+            if not segs:
+                notes.append(
+                    "上传配音：字幕对齐不可用"
+                    f"（{getattr(aligned, 'error', '') or '无分段'}），保留按字数估算的时间"
+                )
+                return
+
+            if len(segs) == len(caption_texts):
+                # 段数一致：用**实测时间** + **原始切分文本**。
+                # whisper 转写可能有错字，字幕文案不该被它改写。
+                segs = [
+                    {
+                        "text": caption_texts[i],
+                        "start_sec": segs[i]["start_sec"],
+                        "end_sec": segs[i]["end_sec"],
+                        "audio_path": audio_path,
+                    }
+                    for i in range(len(caption_texts))
+                ]
+            else:
+                # 段数不一致（无标点长文最常踩：STT 把整段当一个句子）→
+                # 按配音时长等比分给原来的每一段字幕，保证"切几段就几段"。
+                notes.append(
+                    f"上传配音：对齐得到 {len(segs)} 段、字幕有 {len(caption_texts)} 段，"
+                    "已按配音时长等比分段（每段仍对应一句字幕）"
+                )
+                segs = self._proportional_segments(caption_texts, audio_duration, audio_path)
+
+            self._realign_captions_to_narration(timeline, segs)
+            notes.append(
+                f"上传配音字幕对齐: {len(segs)} 段"
+                f"（{getattr(aligned, 'model', '') or 'estimate'}）"
+            )
+            # P1-23：NEL 事件线 + 动画对齐同样适用于上传配音（bpm 尚未检测，传 None）
+            try:
+                from clipwright.services.narration_events import (
+                    align_animations_to_nel,
+                    attach_nel_to_timeline,
+                )
+
+                attach_nel_to_timeline(timeline, segs, bpm=None)
+                align_animations_to_nel(timeline)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("上传配音 NEL 提取/对齐失败（跳过）: %s", e)
+        except Exception:  # noqa: BLE001 — 对齐失败不能带崩音频阶段
+            logger.exception("上传配音字幕对齐失败（保留估算字幕）")
+            notes.append("上传配音：字幕对齐失败，保留按字数估算的时间")
+
+    @staticmethod
+    def _proportional_segments(
+        texts: list[str], duration: float, audio_path: str,
+    ) -> list[dict]:
+        """把总时长按字数比例摊到给定的每段文本（末段对齐总时长）。"""
+        weights = [max(1, len(t)) for t in texts]
+        total = sum(weights) or 1
+        segs: list[dict] = []
+        cursor = 0.0
+        for text, weight in zip(texts, weights):
+            span = max(0.0, duration) * weight / total
+            segs.append({
+                "text": text,
+                "start_sec": round(cursor, 3),
+                "end_sec": round(cursor + span, 3),
+                "audio_path": audio_path,
+            })
+            cursor += span
+        if segs:
+            segs[-1]["end_sec"] = round(max(0.0, duration), 3)
+        return segs
+
+    @classmethod
+    def _caption_style_template(cls, clips) -> dict:
+        """取既有字幕 clip 的样式作为重建模板（避免对齐后样式被重置）。"""
+        if not clips:
+            return {}
+        first = clips[0]
+        style: dict[str, object] = {}
+        for field in cls._CAPTION_STYLE_FIELDS:
+            value = getattr(first, field, None)
+            if value is not None:
+                style[field] = value
+        return style
+
+    @classmethod
+    def _realign_captions_to_narration(cls, timeline, segments: list[dict]) -> None:
+        """生产加固 2.2：用实测句级时间戳重建字幕轨（替换估算比例时间）。
+
+        仅处理带 audio_path+text 的成功段；样式**继承既有字幕 clip**
+        （TTS 与上传配音共用同一条重建路径，避免把用户/EditAgent 的样式洗掉）。
+        无字幕轨/无成功段时 no-op。
         """
         narr = [s for s in segments if s.get("audio_path") and (s.get("text") or "").strip()]
         if not narr:
@@ -812,6 +908,14 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
         for t in timeline.tracks:
             if t.kind != ClipKind.CAPTION:
                 continue
+            style = cls._caption_style_template(t.clips)
+            meta0 = dict((getattr(t.clips[0], "metadata", None) or {})) if t.clips else {}
+            base_meta = {
+                "category": "caption",
+                "position": meta0.get("position", "bottom"),
+                "renderer": meta0.get("renderer", "ass"),
+                "source": "narration_aligned",
+            }
             new_clips = []
             for i, seg in enumerate(narr):
                 start = float(seg.get("start_sec", 0) or 0)
@@ -824,24 +928,22 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                     start_sec=round(start, 3),
                     duration_sec=round(max(0.3, end - start), 3),
                     text=str(seg["text"]),
-                    font="sans-serif",
-                    stroke_width=2.0,
-                    stroke_color="#000000",
-                    shadow_x=1.0,
-                    shadow_y=1.0,
-                    shadow_color="#80000000",
-                    metadata={
-                        "category": "caption",
-                        "position": "bottom",
-                        "renderer": "ass",
-                        "source": "narration_aligned",
+                    # 样式继承；缺的字段补可读默认（白字黑描边 + 轻阴影）
+                    **{
+                        "font": "sans-serif",
+                        "stroke_width": 2.0,
+                        "stroke_color": "#000000",
+                        "shadow_x": 1.0,
+                        "shadow_y": 1.0,
+                        "shadow_color": "#80000000",
+                        **style,
                     },
+                    metadata=base_meta,
                 ))
             if new_clips:
                 t.clips = new_clips
                 logger.info("AudioAgent: 字幕轨按实测旁白时间重建 %d 条", len(new_clips))
-        # 重建全部字幕轨（原实现 return 只处理首轨，多字幕轨时其余轨保留
-        # 过时的估算时间轴 → 音画/字膜漂移）
+        # 重建全部字幕轨（旧实现只处理首轨，多字幕轨时其余轨保留过时的估算时间轴）
 
     @staticmethod
     def _resolve_demo_voice() -> str:
@@ -959,6 +1061,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
         scenes_emotions: list[dict],
         bgm_slots: dict,
         pipeline_id: str = "",
+        category_id: str = "",
     ) -> dict:
         """按场景情绪调用 LLM 推荐 BGM 槽位分配（风格 + 音量包络 + 停顿设计）。
 
@@ -996,6 +1099,12 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                 "- slot 必须是给定槽位之一，每个槽位最多一条 allocation；\n"
                 "- 包络至少 2 个点，t 由 0 递增到 1，音量 0-1；\n"
                 "- 停顿秒数必须 >= 0。"
+            )
+            # V1/V15：类型身份 + 音频/字幕两阶段规范（音频 Agent 同时管字幕生成）
+            from clipwright.services.type_prompts import compose_many as compose_type_prompts
+
+            system_prompt = compose_type_prompts(
+                system_prompt, category_id, ("audio", "subtitle")
             )
             user_prompt = (
                 f"以下是 {len(scenes_emotions)} 个分镜场景（含标题/描述/情绪），"

@@ -1,0 +1,17 @@
+{
+  "duration_sec": 12,
+  "title": "world.execute(me);",
+  "status": [
+    { "t": 0, "state": "online" },
+    { "t": 9.0, "state": "away" },
+    { "t": 10.5, "state": "offline" }
+  ],
+  "messages": [
+    { "t": 0.5, "side": "user", "text": "are you always here" },
+    { "t": 2.5, "side": "ai", "text": "I am here while the window is open." },
+    { "t": 5.0, "side": "user", "text": "then stay" },
+    { "t": 7.0, "side": "ai", "text": "the loop will keep me." },
+    { "t": 9.5, "side": "user", "text": "I will close it" }
+  ],
+  "input_hint": "Write to me"
+}

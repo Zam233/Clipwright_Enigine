@@ -108,8 +108,12 @@ class MGRenderer:
             p = Path(raw)
         else:
             p = Path(s)
+        # Windows 盘符路径在 POSIX 宿主上不是 absolute（Path 语义按宿主判定），
+        # 若不显式识别，`file:///C:/Windows/win.ini` 会落进「相对路径原样保留」分支，
+        # 把宿主外部路径直接写进 HTML（跨平台越权本地文件读取）。
+        win_abs = bool(re.match(r"^[A-Za-z]:[\\/]", str(p)))
         try:
-            if p.is_absolute():
+            if p.is_absolute() or win_abs:
                 from clipwright.security import assert_allowed_path
                 rp = assert_allowed_path(p.resolve())
                 return rp.as_uri() if rp.exists() else ""

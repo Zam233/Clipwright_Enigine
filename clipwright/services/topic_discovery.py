@@ -37,7 +37,7 @@ async def suggest_topics(
             logger.info("选题发现 web 检索失败（非致命）: %s", e)
 
     try:
-        from clipwright.services.llm import LLMService
+        from clipwright.services.llm import LLMService, MAX_OUTPUT_TOKENS
         ctx = "\n".join(f"- {k}" for k in web_keywords[:8]) if web_keywords else "（无外部数据）"
         prompt = (
             "你是短视频选题策划。请根据以下信息推荐 {count} 个选题，"
@@ -48,8 +48,8 @@ async def suggest_topics(
         ).format(count=count)
         resp = await LLMService().generate(
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=800,
-            timeout=60,
+            max_tokens=MAX_OUTPUT_TOKENS,
+            timeout=900,
             use_flash=True,
         )
         text = str(getattr(resp, "content", "") or "").strip()
