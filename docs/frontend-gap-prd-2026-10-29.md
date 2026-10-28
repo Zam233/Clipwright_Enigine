@@ -127,11 +127,12 @@ Select-String -Path 'J:\Clipwright\docs\modern-agent-frontend-llm-config-prd-202
 | G16 | 素材扫描失败后只有一条 note，无法按文件重试/查看错误详情；视觉降级原因也只在素材表内部。 | 工作区扫描返回 `failed/deferred/items`，`clipwright/api/workspace.py:152-165`；素材状态结构在 `clipwright/services/workspace.py:411-440`。 | `WorkspaceMaterialsPanel.tsx:50-75,115-125` 只汇总计数/字符串 note，没有事件流消费、失败项操作或详情展开。 | 属实 | P1 |
 | G17 | 模型列表能力已配置，但“自定义模型是否允许、参数是否实际生效”在 UI 中没有结果态。 | `provider_sources` 对 generation/reasoning 归一化，`clipwright/services/provider_sources.py:247-305,333-344`；Provider fetch 状态在 `clipwright/api/providers.py:162-201`。 | `ProvidersPage.tsx:159-185,235-268` 只展示保存/获取 note；`providers.ts:231-251` 返回 status/errorCode，但没有 effective capability/degradation 字段。 | 部分 | P1 |
 
-> 本表共 17 条，其中 **P0=3**（G1、G2、G10）、**P1=12**、**P2=2**（G13、G17 之外的 P2 见 §5）。
+> 本表共 17 条，其中 **P0=3**（G1、G2、G10）、**P1=13**（G3–G9、G11、G12、G14–G17）、**P2=1**（G13）。
 > 每条均有代码行号；「未核实」项不纳入缺口计数。
 > **审稿修订（2026-10-29 复核）**：G3 原判 P0 + “SSE 协议错配”经复核为误读——`/events` 是设计好的 JSON 端点，
 > 且 `eventsUrl()` 全仓零调用；真实缺口是“工作区进度完全未消费”，故降为 P1 并改写证据。
-> 另：`EVENT_TYPES` 实际 **24** 项（`schema/task.py:28-55`），初稿里 27/29 的说法已更正。
+> 另：`EVENT_TYPES` 实际 **24** 项（`schema/task.py:28-55`），初稿里 27/29 的说法已更正；
+> 严重度计数初稿写「P1=12 / P2=2」，按本表逐行统计实为 **P1=13 / P2=1**，已更正。
 
 ---
 
