@@ -5,6 +5,9 @@
 - 前端：`J:\Clipweight-Client`，React 19 + TypeScript + Vite + TanStack Router + zustand，`feat/master-agent`
 - 本文只记录本次证据核查结果与后续 PRD，不修改任何代码。
 - 证据原则：代码与运行路由优先于旧文档；每条结论均给出文件:行号或明确的可复现“无匹配”命令。
+- **职责边界（2026-10-29 二次整理）**：本文件只保留「缺口是什么、证据在哪、验收契约是什么」。
+  批次拆分、文件级改动清单、任务分解、可证伪验收命令、回滚/风险/DoD、进度看板、停止条件**已全部迁出**到
+  `docs/frontend-gap-dev-plan-2026-10-29.md`；原 §6 分批计划、§6.1 依赖顺序、§8.1 自动化门禁、§10 执行记录表均已删除，改为指针。
 
 ---
 
@@ -232,29 +235,15 @@ Select-String -Path 'J:\Clipwright\docs\modern-agent-frontend-llm-config-prd-202
 
 ---
 
-## 6. 分批计划
+## 6. 开发计划（已迁移）
 
-> 不重复 2026-10-28 PRD 的 B1–B12；本轮批次从 B1 重新编号，目标只覆盖本文件新发现或旧修复后的残留。
+本 PRD 只回答三件事：**缺什么（G1–G17）、证据在哪（文件:行号）、验收标准是什么（§8）**。
 
-| 批次 | 目标 | 改动面（具体文件） | 可证伪验收（命令 + 断言） | 回滚 | 风险 | 人日 |
-|---|---|---|---|---|---|---:|
-| B1 | 退役 pipeline 前端动作，统一 Task 入口 | `src/services/api/pipeline.ts`、`PipelineAdminPage.tsx`、`ReviewPanel.tsx`、相关 router/测试；必要时 `docs/api_reference.md` | `Select-String src -Pattern 'run-async|pipeline/retry'` 只允许兼容测试；前端测试断言新建制作调用 `/api/requirements/proceed`/`/api/task`，历史页无 retry 按钮；后端 `python -m pytest tests -q` | 恢复旧 UI 文件，不恢复已退役后端执行语义 | 旧外部调用者依赖兼容方法；保留只读提示与 410 文案 | 1.5 |
-| B2 | 修正 workspace SSE、补扫描进度与恢复 | `src/services/api/workspace.ts`、`WorkspaceMaterialsPanel.tsx`、workspace feature tests；必要时 `src/types` | `Select-String src -Pattern 'events/stream'` 命中 client；测试断言 URL 含 `/events/stream`、seq 去重、断线从 last seq 恢复；后端 `pytest` 工作区测试 | 回退为 JSON reload；保留后端 stream | SSE 生命周期、重复连接、组件卸载竞态 | 1.5 |
-| B3 | 工具面/AgentRun/审批统一目录与发现入口 | 新增 `src/services/api/toolSurface.ts`；`src/pages/admin/ToolsPage.tsx` 或 `SupervisorAdminPage.tsx`；`src/types/toolSurface.ts`；共享 run selector | GET `/api/tools`、`/schema`、`/records` mock 测试；断言 5 个 AGENT_TOOLS、2 个 DOMAIN_TOOLS 可见，dangerous 不显示为直调；`npx tsc --noEmit`、`npm run test` | 页面可隐藏，客户端只读方法保留 | 目录是快照，不得误做 HTTP 执行入口 | 2.0 |
-| B4 | 补齐批量任务/脚本/建议客户端与入口 | `src/services/api/pipeline.ts`、`src/pages/HomePage.tsx` 或新 `TaskBatchPage.tsx`、测试 | grep 断言 `/run-batch`、`/script-tools`、`/topic-suggest` 只有 typed client；mock 断言 400/410 可读分流；不改变旧 Task 主路径 | 新入口 feature flag/路由隐藏 | 能力属于旧 pipeline 与 Task 的混合边界，先做只读预测/批量提交 | 2.0 |
-| B5 | 事件 discriminated union 与终态/审批语义收口 | `src/types/task.ts`、`src/stores/taskStore.ts`、`EventFeed.tsx`、`CopilotTaskRunTab.tsx`、后端 `schema/task.py`/事件写入点、测试 | 生成/维护事件 fixture；断言每个 EVENT_TYPES 有 parser；checkpoint 可展开；未知 reason 显示“后端终态：…”而非 failed；`python -m pytest tests -q` + `npx tsc --noEmit` | 保留 Record 兼容 adapter，回退 parser 不回退事件 | 后端旧事件 detail 形状多，需 legacy parser | 3.0 |
-| B6 | Plan 与真实 Run 双轨视觉分离 | `taskStore.ts`、`PlanPanel.tsx`、`CopilotTaskRunTab.tsx`、task tests | 断言 `hypothesis_only=true` 不更新“进度”徽章；真实进度只来自 tool/agent/run 事件；`npm run test -- task-ui` | 恢复旧 PlanPanel 展示但不改变后端 | 用户习惯旧步骤视图；需保留历史任务兼容 | 1.5 |
-| B7 | 成本、degradation、effective route 可解释 | `src/types/task.ts`、`src/types/api.ts`、`ProvidersPage.tsx`、`CopilotTaskRunTab.tsx`、providers tests | fixture 含 `unknown_cost_calls`、`requested/effective/degradation`；UI 明确显示未知成本与忽略参数；`npm run test`、`npx tsc --noEmit` | 隐藏新增列/卡片，保留后端字段 | provider 返回旧字段、不同 provider capability 差异 | 1.5 |
-| B8 | 调度与运维入口 | 新增 `src/services/api/scheduler.ts`；`src/pages/admin/SchedulerPage.tsx`；扩展 render client 与 `SupervisorAdminPage.tsx`；路由/测试 | API mock 覆盖 schedule CRUD/toggle/tick、render backends/artifacts；页面有 loading/empty/error/retry；`npm run lint && npm run build` | 路由和导航独立回滚 | 破坏性清理必须二次确认；调度 tick 不能误触发 | 2.5 |
-| B9 | 评估报告 latest、报告/Artifact/Doc 回链 | `src/services/api/eval.ts`、`EvalPanel.tsx`、`CopilotDocsTab.tsx`、`TaskArtifacts.tsx`、workspace types/tests | 404 latest 显示“尚无报告”；report path 能按 project/run 跳转；fixture 断言 hash/path/preview；`npm run test` | 保留列表/详情旧路径 | 报告路径跨 workspace，需只允许后端返回 ref | 1.5 |
-| B10 | 素材扫描失败项恢复与 B9 独立测试 | `AssetPanel.tsx`、`WorkspaceMaterialsPanel.tsx`、对应 tests、`src/types/api.ts` | 重复上传断言 200、`status=reused`、同 asset_id/file_path、used_count +1；扫描失败项可单项重试；`npm run test -- AssetPanel` | 仅回滚 UI 重试控件，不恢复错误 toast | 大文件/视觉索引异步状态竞态 | 1.0 |
-| B11 | 任务结果恢复路径与状态机 | `task.ts` client、`TaskToolbar.tsx`、`TaskListSection.tsx`、`CopilotTaskRunTab.tsx`、后端 `api/task.py` 测试 | 终态 resume 返回 409 或结构化 refused；paused/approval/needs/failed 各有按钮与文案；API/前端状态机测试 | 先只在前端禁用终态按钮，后端保持兼容字段 | 历史任务状态缺失，需 legacy 映射 | 2.0 |
-| B12 | 文档与真实路由清单重建 | 只改 `docs/api_reference.md`、`docs/frontend-backend-parity.md`、前端 docs 副本（实现阶段才改） | 用 §1 路由命令生成清单；断言文档不再称 run-async 唯一入口、不再称 dispatch 真跑；全文 `Select-String` 只保留当前语义 | 文档单独回滚，不影响代码 | 文档快照/分支差异造成再次漂移 | 1.0 |
-| B13 | 跨仓库回归与 P0 门禁 | 不新增生产代码；测试文件与 CI 配置按需 | 执行 §8 全部命令；每个 G1/G3/G10/G11 P0 有对应测试；前端 build/lint 全绿 | 只回滚测试/门禁变更 | 长任务 SSE 与 provider 测试耗时 | 1.0 |
+批次拆分、文件级改动清单、任务分解、可证伪验收命令、回滚方式、风险与 DoD、进度看板、停止/升级条件，全部在：
 
-### 6.1 依赖顺序
+> **`docs/frontend-gap-dev-plan-2026-10-29.md`**（13 批 / 22 人日，G1–G17 全覆盖，含 G→批次索引）
 
-`B1 → B5 → B6/B7/B11`；`B2 → B5/B9/B10`；`B3 → B7/B8`；`B4` 可与 B3 并行；`B12` 在 B1–B11 后执行；`B13` 最后执行。P0 顺序为 B1、B2、B5、B11。
+执行与验收以该计划为准；本文件不再重复，避免两份文档漂移。
 
 ---
 
@@ -273,19 +262,11 @@ Select-String -Path 'J:\Clipwright\docs\modern-agent-frontend-llm-config-prd-202
 
 ---
 
-## 8. DoD
+## 8. DoD（验收契约）
 
-### 8.1 自动化门禁
+> 自动化门禁命令（pytest / ruff / tsc / test / lint / build）与当前基线数字见开发计划 §1；本文件只约定契约与体验层面的验收条件。
 
-- [ ] 后端 `python -m pytest tests -q` 全绿；任何计数变化附测试增删解释。
-- [ ] 后端 `ruff check clipwright --select E9,F63,F7,F82,F823` 返回 0。
-- [ ] 前端 `npx tsc --noEmit` 返回 0。
-- [ ] 前端 `npm run test` 全绿。
-- [ ] 前端 `npm run lint` 无 error。
-- [ ] 前端 `npm run build` 全绿。
-- [ ] 每个 P0 缺口都有对应用例：G1、G2、G10 各有后端/前端可证伪断言；G3（工作区进度）按 P1 要求补 SSE 用例。
-
-### 8.2 契约与 UX 门禁
+### 8.1 契约与 UX 门禁
 
 - [ ] 路由清单由 §1 命令重新生成；真实 prefix 已拼接，未把 admin router 混成普通 router。
 - [ ] 前端不再把 `run-async`/旧 retry 作为新任务或恢复任务按钮；历史只读页明确标注退役。
@@ -346,20 +327,6 @@ npm run build
 
 ---
 
-## 10. 执行记录（留给后续填）
+## 10. 执行记录（已迁移）
 
-| 批次 | 日期 | 实施提交/变更范围 | 验收命令与结果 | 未完成项/偏离 | 回滚结果 | 负责人 |
-|---|---|---|---|---|---|---|
-| B1 |  |  |  |  |  |  |
-| B2 |  |  |  |  |  |  |
-| B3 |  |  |  |  |  |  |
-| B4 |  |  |  |  |  |  |
-| B5 |  |  |  |  |  |  |
-| B6 |  |  |  |  |  |  |
-| B7 |  |  |  |  |  |  |
-| B8 |  |  |  |  |  |  |
-| B9 |  |  |  |  |  |  |
-| B10 |  |  |  |  |  |  |
-| B11 |  |  |  |  |  |  |
-| B12 |  |  |  |  |  |  |
-| B13 |  |  |  |  |  |  |
+逐批执行记录（批次 / 状态 / 提交 / 验收结果 / 偏离）在 `docs/frontend-gap-dev-plan-2026-10-29.md` §7 进度看板维护，本文件不再保留空表。

@@ -319,7 +319,7 @@ PRD 与参照记录的当前实测基线：后端 `python -m pytest tests -q`：
 
 **前置依赖**：B2 事件订阅和扫描 item 类型；后端当前 `failed/deferred/items` 响应。配音素材复用现行响应必须先从 API fixture 核实，不改后端契约。
 
-> **可行性边界（务必先确认再动工）**：后端目前**没有**"单文件重试"端点（只有整批 `POST /workspace/{id}/scan` 与 `POST /workspace/{id}/materials` 上传）。若核实后仍无，本批范围收敛为：**失败项明细（sha256/path/reason）+ 一键重扫**，"单项重试"降为不实现（与 PRD §8.4 一致），并按 §8 升级条件告知决策者；不得在前端伪造单文件重试。
+> **可行性边界（务必先确认再动工）**：后端目前**没有**"单文件重试"端点（只有整批 `POST /workspace/{id}/scan` 与 `POST /workspace/{id}/materials` 上传）。若核实后仍无，本批范围收敛为：**失败项明细（sha256/path/reason）+ 一键重扫**，"单项重试"降为不实现（与 PRD §3.1「工作区与素材」行判定一致），并按本计划 §8 升级条件告知决策者；不得在前端伪造单文件重试。
 
 **文件级改动清单**：
 - 修改 `src/features/workspace/WorkspaceMaterialsPanel.tsx` → failed item detail/retry 与视觉降级详情。
