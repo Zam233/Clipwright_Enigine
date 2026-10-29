@@ -949,3 +949,60 @@ class TestLayerCache:
         finally:
             fp._paint_element = original
         assert calls["n"] > 1, "尺寸关键帧变化时图层必须重建"
+
+class TestStaticShadowInKeyframes:
+    """LLM 常把 text_shadow 写进每个关键帧（值相同）。旧实现一律回退 Chrome，
+    使得所有带投影的动画都失去快路径。现在静态值被提升为元素级属性，
+    真正会变化的阴影仍回退 Chrome。"""
+
+    def test_same_value_in_all_keyframes_is_eligible(self) -> None:
+        mg = _mg([{
+            "type": "text", "content": "投影", "font_size": 40,
+            "font_color": "#ffffff", "x": "center", "y": "center",
+            "keyframes": _kf(
+                (0, {"opacity": 1, "text_shadow": "0 6px 16px rgba(255,0,0,0.9)"}),
+                (3, {"opacity": 1, "text_shadow": "0 6px 16px rgba(255,0,0,0.9)"}),
+            ),
+        }])
+        ok, reason = fastpath_eligible(mg)
+        assert ok, reason
+        spec = _build_specs(mg, {})[0]
+        assert spec.shadows, "静态阴影应被提升为元素级 shadows"
+        assert "text_shadow" not in spec.tracks, "提升后的属性不应再作为数值轨迹"
+
+    def test_animated_shadow_is_supported_via_shadow_tracks(self) -> None:
+        """阴影值在关键帧间变化（发光/脉冲）现在也支持：
+        解析成 shadow_tracks 后逐帧插值，不再回退 Chrome。"""
+        mg = _mg([{
+            "type": "text", "content": "投影", "font_size": 40, "font_color": "#ffffff",
+            "x": "center", "y": "center",
+            "keyframes": _kf(
+                (0, {"opacity": 1, "text_shadow": "0 2px 4px rgba(255,0,0,0.2)"}),
+                (3, {"opacity": 1, "text_shadow": "0 2px 28px rgba(255,0,0,1.0)"}),
+            ),
+        }])
+        ok, reason = fastpath_eligible(mg)
+        assert ok, reason
+        spec = _build_specs(mg, {})[0]
+        assert spec.shadow_tracks, "应解析出阴影轨道"
+        assert sorted(spec.shadow_tracks[0]) == ["alpha", "blur", "dx", "dy"]
+
+        specs = layout_specs(specs_of := _build_specs(mg, {}), 400, 200)
+        def glow(t):
+            img = composite_frame(specs, (400, 200), t, 3.0)
+            return sum(c for v, c in enumerate(img.getchannel("A").histogram()) if 10 < v < 200)
+        assert glow(3.0) > glow(0.0), "阴影应随帧增强"
+
+    def test_promoted_shadow_actually_paints(self) -> None:
+        def alpha_count(**extra):
+            mg = _mg([{
+                "type": "text", "content": "帧艺", "font_size": 40,
+                "font_color": "#ffffff", "x": "center", "y": "center",
+                "keyframes": _kf((0, {"opacity": 1, **extra})),
+            }])
+            img = _frame(mg, 0.0, size=(200, 100))
+            return sum(c for v, c in enumerate(img.getchannel("A").histogram()) if v > 40)
+
+        with_shadow = alpha_count(text_shadow="0 0 12px #ff0000")
+        without = alpha_count()
+        assert with_shadow > without, "关键帧里的静态阴影也要真的画出半透明像素"

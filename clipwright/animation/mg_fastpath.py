@@ -71,6 +71,8 @@ _SHAPE_KEYS = _COMMON_KEYS | {
     "shape", "color", "background", "width", "height",
     "border_radius", "stroke_width", "stroke_color",
     "border_width", "border_color", "box_shadow", "transform_origin",
+    # 元素级静态旋转（关键帧 rotate 早已支持，整段恒定角度只是它的退化情形）
+    "rotate",
 }
 _BG_KEYS = {"type", "keyframes", "background", "color"}
 
@@ -177,6 +179,8 @@ class ElementSpec:
     border_color: tuple[int, int, int, int] | None = None
     shape: str = "rect"
     shadows: list[Shadow] = field(default_factory=list)
+    #: 阴影动画轨道：每个阴影槽位一套 {dx/dy/blur/alpha: [(t, value)]}
+    shadow_tracks: list[dict[str, list[tuple[float, float]]]] = field(default_factory=list)
     # 动画
     tracks: dict[str, list[tuple[float, float]]] = field(default_factory=dict)
     easings: dict[float, str] = field(default_factory=dict)
@@ -650,20 +654,47 @@ def _build_specs(mg_def: dict[str, Any], params: dict[str, Any]) -> list[Element
         kfs = elem.get("keyframes") or []
         if not isinstance(kfs, list) or not kfs:
             raise FastPathIneligible(f"元素 #{i} 无关键帧")
+        # 关键帧里的「静态外观属性」：LLM 常把 text_shadow / letter_spacing 逐帧写一遍
+        # 以求全程生效。值不变时提升为元素级属性（PIL 可忠实复现）；
+        # 值真的在变（阴影动画）仍回退 Chrome。
+        promoted: dict[str, set[str]] = {}
         for kf in kfs:
             if not isinstance(kf, dict):
                 raise FastPathIneligible(f"元素 #{i} 关键帧结构异常")
-            for key in kf:
+            for key, value in kf.items():
                 if key == "time":
                     continue
                 if key == "easing":
-                    if not _easing_supported(kf[key]):
-                        raise FastPathIneligible(f"元素 #{i} 用了未支持缓动: {str(kf[key])[:30]}")
+                    if not _easing_supported(value):
+                        raise FastPathIneligible(f"元素 #{i} 用了未支持缓动: {str(value)[:30]}")
+                    continue
+                if key == "text_shadow" and kind == "text":
+                    # 动画阴影：由 _build_one 解析成 shadow_tracks，不走数值轨迹
+                    continue
+                if key == "letter_spacing" and kind == "text":
+                    promoted.setdefault(key, set()).add(str(value))
                     continue
                 if key not in FAST_KEYFRAME_PROPS:
                     raise FastPathIneligible(f"元素 #{i} 关键帧属性 {key!r} 需 Chrome")
                 if kind == "text" and key in ("width", "height"):
                     raise FastPathIneligible(f"元素 #{i} 文本尺寸关键帧需 Chrome")
+
+        for key, values in promoted.items():
+            if len(values) > 1:
+                raise FastPathIneligible(
+                    f"元素 #{i} 关键帧 {key} 在片段内变化（{len(values)} 种取值），需 Chrome")
+            value = next(iter(values))
+            if not elem.get(key):
+                elem = {**elem, key: value}  # 提升为元素级静态属性（不改原 dict）
+        if kind == "text":
+            kf_shadows = [
+                (float(kf.get("time") or 0), str(kf["text_shadow"]))
+                for kf in kfs if isinstance(kf, dict) and kf.get("text_shadow")
+            ]
+            if kf_shadows:
+                if not elem.get("text_shadow"):
+                    elem = {**elem, "text_shadow": kf_shadows[0][1]}
+                elem = {**elem, "_kf_shadows": kf_shadows}
 
         spec = _build_one(kind, elem, fill, i, dur)
         # bg 是 `inset:0` 的全幅底层：只有 opacity 是"安全的"关键帧属性。
@@ -742,6 +773,9 @@ def _build_one(kind: str, elem: dict, fill, idx: int, dur: float) -> ElementSpec
             easings[t] = kf["easing"]
         for key, val in kf.items():
             if key in ("time", "easing"):
+                continue
+            # 静态外观属性（已在 _build_specs 提升为元素级）：不作为数值轨迹
+            if key in ("text_shadow", "letter_spacing") and elem.get("type", "text") == "text":
                 continue
             raw_tracks.setdefault(key, []).append((t, fill(val)))
 
@@ -824,6 +858,20 @@ def _build_one(kind: str, elem: dict, fill, idx: int, dur: float) -> ElementSpec
         if shadows is None:
             raise FastPathIneligible(f"元素 #{idx} text_shadow 无法解析")
         spec.shadows = shadows
+        # 关键帧里的 text_shadow 序列 → 阴影轨道（动画发光/脉冲）
+        kf_shadows = elem.get("_kf_shadows") or []
+        if kf_shadows:
+            tracks: list[dict[str, list[tuple[float, float]]]] = []
+            for slot in range(max(len(parse_shadow(v) or []) for _t, v in kf_shadows)):
+                tracks.append({"dx": [], "dy": [], "blur": [], "alpha": []})
+            for t, raw in kf_shadows:
+                parsed = parse_shadow(raw) or []
+                for slot, sh in enumerate(parsed[:len(tracks)]):
+                    tracks[slot]["dx"].append((t, float(sh.dx)))
+                    tracks[slot]["dy"].append((t, float(sh.dy)))
+                    tracks[slot]["blur"].append((t, float(sh.blur)))
+                    tracks[slot]["alpha"].append((t, float(sh.color[3]) / 255.0))
+            spec.shadow_tracks = [tr for tr in tracks if tr["dx"]]
         # 文本盒尺寸在 layout 阶段按字体测量
         spec.width = math.nan
         spec.height = spec.line_height
@@ -886,6 +934,10 @@ def _build_one(kind: str, elem: dict, fill, idx: int, dur: float) -> ElementSpec
     underlying: dict[str, float] = dict(_UNDERLYING)
     underlying["width"] = float(width)
     underlying["height"] = float(height)
+    # 元素级静态旋转：关键帧没有 rotate 时作为恒定角度（与 CSS transform 一致）
+    static_rotate = elem.get("rotate")
+    if isinstance(static_rotate, (int, float)) and not isinstance(static_rotate, bool):
+        underlying["rotate"] = float(static_rotate)
     for prop, pts in raw_tracks.items():
         if prop in ("width", "height"):
             vals: list[tuple[float, float]] = []
@@ -1407,6 +1459,29 @@ def _apply_opacity(img, opacity: float):
     return out
 
 
+def _shadows_at(spec: ElementSpec, t: float, dur: float) -> list["Shadow"] | None:
+    """按时间插值出当前阴影列表；无轨道时返回 None（用静态 shadows）。"""
+    if not spec.shadow_tracks:
+        return None
+    out: list[Shadow] = []
+    for slot, tracks in enumerate(spec.shadow_tracks):
+        base = spec.shadows[slot] if slot < len(spec.shadows) else Shadow(0.0, 0.0, 0.0, (0, 0, 0, 0))
+        dx = track_value(tracks.get("dx", []), t, spec.easings, dur, base.dx)
+        dy = track_value(tracks.get("dy", []), t, spec.easings, dur, base.dy)
+        blur = track_value(tracks.get("blur", []), t, spec.easings, dur, base.blur)
+        alpha = track_value(tracks.get("alpha", []), t, spec.easings, dur, base.color[3] / 255.0)
+        r, g, b, _a = base.color
+        out.append(Shadow(dx=dx, dy=dy, blur=max(0.0, blur),
+                          color=(r, g, b, int(max(0.0, min(1.0, alpha)) * 255))))
+    return out
+
+
+def _with_shadows(spec: ElementSpec, shadows: list["Shadow"]) -> ElementSpec:
+    """浅拷贝 spec 并替换 shadows（保持 dataclass 其它字段不变）。"""
+    import dataclasses
+
+    return dataclasses.replace(spec, shadows=shadows, shadow_tracks=[])
+
 def composite_frame(specs: list[ElementSpec], frame_size: tuple[int, int], t: float, dur: float,
                     cache: dict | None = None):
     """合成单帧（返回 RGBA 图）。`specs` 已 layout；`cache` 跨帧复用图层。"""
@@ -1437,7 +1512,15 @@ def composite_frame(specs: list[ElementSpec], frame_size: tuple[int, int], t: fl
                                                under.get("height", spec.height)))
         if spec.width <= 0.01 or spec.height <= 0.01 or scale <= 0.0:
             continue
-        layer, pad = _element_layer(spec, cache)
+        if spec.shadow_tracks:
+            # 动画阴影：每帧插值，且**不进图层缓存**（否则整段只会用第一帧的阴影）
+            current = _shadows_at(spec, t, dur)
+            if current is not None:
+                layer, pad = _paint_element(_with_shadows(spec, current), cache)
+            else:
+                layer, pad = _element_layer(spec, cache)
+        else:
+            layer, pad = _element_layer(spec, cache)
         _transform_paste(frame, layer, pad, spec, scale, angle, tx, ty, opacity)
     return frame
 
