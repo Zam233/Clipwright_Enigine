@@ -165,6 +165,11 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
     # ── 管线与素材 ──
     ("pipeline_concurrency", "pipeline", "动画生成并发", False, True, "MG 逐片段 LLM 并发路数"),
     ("material_concurrency", "pipeline", "素材检索并发", False, True, "场景级并行路数"),
+    # ── 动画 LLM 化（M3）──
+    ("animation_llm_generation", "pipeline", "动画按类型 LLM 生成", False, True,
+     "开：逻辑动画按「类型提示词 + 视频类型 + persona」由 LLM 生成；关闭退回内置模板/图解 SVG"),
+    ("animation_llm_concurrency", "pipeline", "动画生成并发", False, True,
+     "类型化 LLM 生成的并发上限（等待型，默认与管线并发一致）"),
     ("enable_visual_llm", "pipeline", "视觉 LLM 素材校验", False, True, "开启后产生视觉 API 成本"),
     ("render_review", "render", "渲染后复核", False, True, "切点复核图 + 全片总览图；多一次抽帧，开启视觉时另计费"),
     ("render_review_min_score", "render", "复核视觉评分门槛", False, True, "0=不启用；低于门槛只置 review_failed，不改渲染成败"),

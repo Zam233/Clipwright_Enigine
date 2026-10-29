@@ -402,6 +402,16 @@ class MGGenerator:
                 continue
         return 0.0
 
+    async def generate_for_type(self, **kwargs: Any) -> Any:
+        """按动画类型规格生成（M2）——转发到 `mg.type_generation.generate_for_type`。
+
+        保留为薄方法：Agent 侧只依赖 `MGGenerator`，不需要知道类型装配细节。
+        复用本类的缓存/校验/批判/修复/模板回退，因此这里不做任何重复实现。
+        """
+        from clipwright.animation.mg.type_generation import generate_for_type
+
+        return await generate_for_type(self, **kwargs)
+
     async def generate_best(self, *, variants: int | None = None, **kwargs: Any) -> dict[str, Any]:
         """多方案生成 + 择优：并行生成 N 个候选，按评分取最优。
 
@@ -1492,6 +1502,89 @@ class MGGenerator:
         return html or html2
 
     @staticmethod
+    def _dedupe_duplicate_text(mg_def: dict[str, Any], params: dict | None = None) -> dict[str, Any]:
+        """去重守卫：同一时间窗口内把同一段文本画两遍 = 成片重影。
+
+        质检发现 E2E 的 MG 动画里 ``{label}`` 与 ``{q1}`` 被 LLM 赋了同一个默认值，
+        于是「小字 kicker」和「大字标题」两个元素在画面上叠出同一句中文（300s 附近
+        肉眼可见的重影）。这里按"解析后文本 + 时间窗口"分组，同组只保留字号最大的
+        一个元素；保留至少一个元素，绝不把动画清空。
+        """
+        if not isinstance(mg_def, dict):
+            return mg_def
+        elements = mg_def.get("elements")
+        if not isinstance(elements, list) or len(elements) < 2:
+            return mg_def
+
+        import re as _re
+
+        p = params if isinstance(params, dict) else {}
+        total = float(mg_def.get("duration_sec", 3.0) or 3.0)
+
+        def _resolved(elem: dict) -> str:
+            raw = elem.get("content")
+            if not isinstance(raw, str):
+                return ""
+            m = _re.fullmatch(r"\s*\{([a-zA-Z_][a-zA-Z0-9_]*)\}\s*", raw)
+            if m:
+                return str(p.get(m.group(1), "") or "").strip()
+            return _re.sub(
+                r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}",
+                lambda mm: str(p.get(mm.group(1), "") or ""),
+                raw,
+            ).strip()
+
+        def _win(elem: dict) -> tuple[float, float]:
+            try:
+                start = float(elem.get("start", 0) or 0)
+            except (TypeError, ValueError):
+                start = 0.0
+            try:
+                dur = float(elem.get("duration", total) or total)
+            except (TypeError, ValueError):
+                dur = total
+            return round(start, 2), round(start + dur, 2)
+
+        best: dict[tuple, int] = {}
+        for i, e in enumerate(elements):
+            if not isinstance(e, dict) or e.get("type") != "text":
+                continue
+            text = _resolved(e)
+            if not text:
+                continue
+            key = (text, *_win(e))
+            try:
+                size = float(e.get("font_size", 48) or 48)
+            except (TypeError, ValueError):
+                size = 48.0
+            cur = best.get(key)
+            if cur is None:
+                best[key] = i
+                continue
+            cur_size = float(elements[cur].get("font_size", 48) or 48)
+            if size > cur_size:
+                best[key] = i
+
+        keep = set(best.values())
+        drop_idx = {
+            i for i, e in enumerate(elements)
+            if isinstance(e, dict) and e.get("type") == "text"
+            and _resolved(e) and i not in keep
+        }
+        if not drop_idx:
+            return mg_def
+        kept_elements = [e for i, e in enumerate(elements) if i not in drop_idx]
+        # 防御：宁可有重影也不能把动画掏空
+        if not any(isinstance(e, dict) for e in kept_elements):
+            return mg_def
+        logger.warning(
+            "MGGenerator: 去掉 %d 个重复文本元素（同窗口同文案，保留字号最大者）",
+            len(drop_idx),
+        )
+        mg_def = {**mg_def, "elements": kept_elements}
+        return mg_def
+
+    @staticmethod
     def _ensure_label_separation(mg_def: dict[str, Any]) -> dict[str, Any]:
         """标签分离守卫：LLM 生成的对比模板可能把 left/right 标签放在同一坐标。
 
@@ -1546,6 +1639,8 @@ class MGGenerator:
         mg_def = self._ensure_no_background(mg_def, vision_prompt)
         # 标签分离守卫：left/right 标签同坐标 → 按语义分列左右（质检发现的重叠 bug）
         mg_def = self._ensure_label_separation(mg_def)
+        # 重复文本守卫：同窗口同文案的两个元素 → 只留字号最大的（成片重影）
+        mg_def = self._dedupe_duplicate_text(mg_def, params)
         # 字体令牌：Persona 字体落进成片（此前恒 sans-serif，见 _apply_persona_font）
         mg_def = self._apply_persona_font(mg_def, persona_style)
 

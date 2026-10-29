@@ -307,9 +307,13 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
                     prev_clip = clip
 
-            # 并发执行逻辑动画作业（有界并发，默认 3；clips 写入后按 start_sec 排序保证 z-order）
+            # 并发执行逻辑动画作业（有界并发；clips 写入后按 start_sec 排序保证 z-order）
+            # 类型化 LLM 生成是等待型：优先用 animation_llm_concurrency，
+            # 未配置则回落到 pipeline_concurrency（保持旧行为）。
             if logic_jobs:
-                sem = asyncio.Semaphore(max(1, int(getattr(settings, "pipeline_concurrency", 3))))
+                _conc = (getattr(settings, "animation_llm_concurrency", None)
+                         or getattr(settings, "pipeline_concurrency", 3))
+                sem = asyncio.Semaphore(max(1, int(_conc)))
 
                 async def _run_logic(job):
                     async with sem:
@@ -495,7 +499,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             text_content = "逻辑关系"
         duration = min(vid_clip.duration_sec, 6.0)
 
-        # ── LLM 动态 MG 动画路由 ──
+        # ── mg_dynamic：自由形式 LLM MG（结构 Agent 直接给描述/文本），保持既有路径。
+        # 它没有固定类型提示词，属于"按需描述生成"，与 38 个类型化路径并存。
         if anim_id == "mg_dynamic":
             await self._handle_llm_mg(
                 anim_track, vid_clip, anim_id, anim_name,
@@ -503,7 +508,17 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             )
             return
 
-        # ── MG 动画路由 ──
+        # ── 主路径（用户 2026-10-29）：所有逻辑动画按「类型提示词 + 视频类型 + persona」
+        # 由 LLM 生成 mg_def（不再是静态 SVG 贴图，也不是统一塞给 mg_dynamic）。
+        if self._typed_generation_enabled():
+            typed_ok = await self._handle_typed_animation(
+                anim_track, vid_clip, anim_id, anim_name, text_content, duration,
+                marker, persona_style,
+            )
+            if typed_ok:
+                return
+
+        # ── 回退 1：mg_* 内置模板（仍是动态 HTML/CSS，只是非 LLM 定制）
         if anim_id.startswith("mg_"):
             await self._handle_mg_animation(
                 anim_track, vid_clip, anim_id, anim_name,
@@ -511,9 +526,259 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             )
             return
 
-        diagram_params = self._build_diagram_params(
-            anim_id, text_content, duration
+        # ── 回退 2：图解 SVG（现已补真实关键帧，见 diagram_svg；仍是动的）
+        await self._handle_svg_fallback(
+            anim_track, vid_clip, anim_id, anim_name, text_content, duration, persona_style,
         )
+
+    # ── 类型化 LLM 生成（主路径） ─────────────────────────
+
+    def _typed_generation_enabled(self) -> bool:
+        """类型化生成开关（settings.animation_llm_generation，默认开）。"""
+        try:
+            from clipwright.config import settings
+
+            enabled = bool(getattr(settings, "animation_llm_generation", True))
+        except Exception:  # noqa: BLE001
+            enabled = True
+        if enabled and not getattr(self, "_type_registry_checked", False):
+            # 首次启用时做一次注册表自检：缺提示词/fallback 不合法只告警不阻断，
+            # 免得一个漏写的 md 让整部片子没有动画。
+            self._type_registry_checked = True
+            try:
+                from clipwright.animation.type_specs import validate_registry
+
+                problems = validate_registry()
+                if problems:
+                    logger.warning("AnimationAgent: 动画类型注册表自检: %s", "；".join(problems))
+            except Exception:  # noqa: BLE001
+                logger.warning("AnimationAgent: 动画类型注册表自检失败", exc_info=True)
+        return enabled
+
+    def _category_anim_context(self):
+        """从 category 插件上下文提取动画白名单字段（不把整份配置塞进提示词）。"""
+        from clipwright.animation.type_specs import CategoryAnimationContext
+
+        ctx = getattr(self, "_mg_category_context", {}) or {}
+        notes: list[str] = []
+        for key in ("mg_style_guidance", "stage_prompt"):
+            val = ctx.get(key)
+            if isinstance(val, str) and val.strip():
+                notes.append(val.strip()[:400])
+        brief_style = ctx.get("brief_animation_style")
+        if isinstance(brief_style, dict) and brief_style:
+            notes.append("简报动画风格：" + json.dumps(brief_style, ensure_ascii=False)[:300])
+        return CategoryAnimationContext(
+            plugin_id=str(ctx.get("plugin_id") or ""),
+            tone=str(ctx.get("tone") or ""),
+            density=str(ctx.get("pacing") or ""),
+            audience=str(ctx.get("display_name") or ""),
+            notes=tuple(notes),
+        )
+
+    def _persona_anim_context(self, persona_style: dict[str, Any] | None):
+        """从 persona 风格 + persona prompt 提取动画白名单字段。"""
+        from clipwright.animation.type_specs import PersonaAnimationContext
+
+        style = persona_style or {}
+        palette = tuple(
+            str(style[k]) for k in ("primary_color", "secondary_color", "accent_color", "font_color")
+            if style.get(k)
+        )
+        guide = str(getattr(self, "_persona_prompt", "") or "")
+        desc = " ".join(x for x in (str(style.get("style_description") or ""), guide[:400]) if x)
+        return PersonaAnimationContext(
+            persona_id=str(style.get("persona_id") or style.get("name") or ""),
+            palette=palette,
+            font=str(style.get("font") or ""),
+            motion_speed=str(style.get("motion_speed") or ""),
+            style_description=desc,
+        )
+
+    async def _handle_typed_animation(
+        self,
+        anim_track: Track,
+        vid_clip: Clip,
+        anim_id: str,
+        anim_name: str,
+        text_content: str,
+        duration: float,
+        marker: dict[str, Any],
+        persona_style: dict[str, Any] | None = None,
+    ) -> bool:
+        """按类型生成动画；返回 True 表示已创建 clip（调用方不再回退）。"""
+        from clipwright.animation.mg.type_generation import fingerprint_of
+
+        if not await self._hyperframes_available():
+            logger.warning("AnimationAgent: Hyperframes 不可用，类型化动画 [%s] 回退", anim_name)
+            return False
+
+        spec = self._resolve_type_spec(anim_id)
+        if spec is None:
+            logger.warning("AnimationAgent: 未注册的动画类型 %s，回退", anim_id)
+            return False
+
+        # 同片去重：同类型同内容只播一次（用户要求「同片不重复播」）。
+        # 逻辑动画是并发执行的，check-and-set 必须串行化，否则同内容会被并发生成两次。
+        fp = fingerprint_of(spec.id, text_content)
+        seen = getattr(self, "_anim_fingerprints", None)
+        if seen is None:
+            seen = {}
+            self._anim_fingerprints = seen
+        lock = getattr(self, "_anim_fp_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._anim_fp_lock = lock
+        async with lock:
+            if fp in seen:
+                prev = seen[fp]
+                logger.info(
+                    "AnimationAgent: 同片重复动画跳过 %s（内容已出现过 @ %.1fs，本次 %.1fs）",
+                    anim_name, prev.get("start", 0.0), vid_clip.start_sec,
+                )
+                self._add_trace_warning(
+                    f"动画内容重复已跳过：{anim_name}（此前出现在 {prev.get('start', 0.0):.1f}s）"
+                )
+                return True  # 视为已处理（跳过重复也是有意的结果）
+            seen[fp] = {"start": float(vid_clip.start_sec), "type": spec.id}
+
+        try:
+            from clipwright.animation.mg.generator import MGGenerator
+
+            mg_gen = MGGenerator()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("AnimationAgent: 类型化生成器初始化失败: %s", e)
+            return False
+
+        payload = marker.get("payload") if isinstance(marker, dict) else None
+        web_context = ""
+        if re.search(_DATA_FACT_RE, text_content):
+            try:
+                search_svc = WebSearchService()
+                if search_svc.is_configured():
+                    results = await search_svc.search(text_content[:120])
+                    web_context = "\n".join(
+                        f"标题: {r.get('title', '')}\n摘要: {r.get('snippet', '')}" for r in (results or [])[:3]
+                    )
+            except Exception:  # noqa: BLE001 — 搜索失败不影响生成
+                web_context = ""
+
+        scene_meta = vid_clip.metadata or {}
+        prior = [
+            f"{info.get('type')}@ {info.get('start', 0.0):.0f}s" for info in seen.values()
+            if info.get("start") != vid_clip.start_sec
+        ]
+        try:
+            result = await mg_gen.generate_for_type(
+                spec=spec,
+                content=text_content,
+                duration_s=duration,
+                category=self._category_anim_context(),
+                persona=self._persona_anim_context(persona_style),
+                persona_style=persona_style or {},
+                scene_context={
+                    "title": scene_meta.get("title", ""),
+                    "keywords": scene_meta.get("keywords", []),
+                    "description": scene_meta.get("description", ""),
+                },
+                category_context=getattr(self, "_mg_category_context", {}) or {},
+                vision_prompt=getattr(self, "_vision_prompt", "") or "",
+                web_context=web_context,
+                prior_fingerprints=prior,
+                width=self._tl_width,
+                height=self._tl_height,
+                fps=self._tl_fps,
+                pipeline_id=getattr(self, "_pid", None),
+            )
+        except Exception as e:  # noqa: BLE001 — 任何异常都必须能回退
+            logger.exception("AnimationAgent: 类型化生成异常 %s: %s", anim_name, e)
+            return False
+
+        if not result.ok or not result.html:
+            logger.warning(
+                "AnimationAgent: 类型化生成未通过门禁 %s（type=%s）：%s",
+                anim_name, spec.id, "；".join(result.issues[:3]) or result.method,
+            )
+            self._add_trace_warning(
+                f"类型化生成未通过，回退：{anim_name}（{spec.id}）" +
+                (f" — {result.issues[0]}" if result.issues else "")
+            )
+            return False
+
+        clip_dur = min(float(result.mg_def.get("duration_sec") or duration), vid_clip.duration_sec)
+        anim_clip = Clip(
+            id=_uid("tmg"),
+            kind=ClipKind.ANIMATION,
+            asset_id="",
+            track_id=anim_track.id,
+            start_sec=vid_clip.start_sec,
+            duration_sec=clip_dur,
+            text=text_content,
+            metadata={
+                "anim_type": spec.id,
+                "anim_name": spec.name or anim_name,
+                "category": "mg_dynamic",       # 渲染链路按 renderer 判断；此值保持兼容
+                "logic_category": "logic",       # 语义来源：逻辑动画
+                "renderer": "mg_hyperframes",
+                "mg_html": result.html,
+                "mg_def": result.mg_def,
+                "mg_params": (result.raw or {}).get("params") or {},
+                "mg_method": result.method,
+                "type_prompt_version": result.prompt_version,
+                "motion": result.motion,
+                "type_issues": result.issues[:6],
+                "position": "center",
+            },
+        )
+        if self._find_overlapping_clip(anim_track, anim_clip) is not None:
+            logger.info("AnimationAgent: 动画窗口冲突，跳过 %s（同窗口已有动画）", anim_name)
+            return True
+        anim_track.clips.append(anim_clip)
+        anim_track.clips.sort(key=lambda c: c.start_sec)
+        logger.info(
+            "AnimationAgent: [类型化LLM]%s → type=%s, method=%s, html=%d chars, moving=%s",
+            anim_name, spec.id, result.method, len(result.html),
+            result.motion.get("moving_count"),
+        )
+        return True
+
+    def _resolve_type_spec(self, anim_id: str):
+        """解析动画类型规格；未知类型用通用 spec 兜底（不阻塞生成）。"""
+        from clipwright.animation.type_specs import AnimationTypeSpec, get_spec
+
+        spec = get_spec(anim_id)
+        if spec is not None:
+            return spec
+        try:
+            from clipwright.animation.catalog import AnimationCatalog
+
+            for item in AnimationCatalog.get_logic_animations():
+                if str(item.get("id")) == anim_id:
+                    return AnimationTypeSpec(
+                        id=anim_id,
+                        name=str(item.get("name") or anim_id),
+                        intent=str(item.get("desc") or anim_id),
+                    )
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    async def _handle_svg_fallback(
+        self,
+        anim_track: Track,
+        vid_clip: Clip,
+        anim_id: str,
+        anim_name: str,
+        text_content: str,
+        duration: float,
+        persona_style: dict[str, Any] | None = None,
+    ) -> None:
+        """回退 2：图解 SVG（`diagram_svg.py`）。
+
+        改造后 SVG 自带真实 CSS 关键帧（入场 + 持续动作 + 退场），不再是静态贴图。
+        仅在类型化 LLM 生成失败 / 开关关闭 / Hyperframes 不可用时走到这里。
+        """
+        diagram_params = self._build_diagram_params(anim_id, text_content, duration)
 
         diagram_style = {}
         if persona_style:

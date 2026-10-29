@@ -133,7 +133,7 @@ class Settings(BaseSettings):
     # 五阶段 + 探查产物，实测 30 轮不够（E2E 2026-10-28 触闸收尾）。
     agent_max_turns: int = 80
     agent_max_tool_calls: int = 400
-    agent_max_wall_sec: float = 14400.0
+    agent_max_wall_sec: float = 0.0  # 0 = 不设上限
 
     # --- 模型路由（PRD F8 / 开发计划 B4）---
     # 按阶段配置候选模型：[{"provider","model","tier","price_in","price_out"}]；
@@ -187,6 +187,11 @@ class Settings(BaseSettings):
     pipeline_concurrency: int = 6
     # 素材阶段场景级并行路数；默认 6。设置 1 即回到逐场景串行。
     material_concurrency: int = 6
+    # 逻辑动画主路径：按「动画类型提示词 + 视频类型 + persona」由 LLM 生成（M2/M3）。
+    # 关闭后退回旧路径（mg_* 内置模板 / diagram_svg 图解），用于灰度与回滚。
+    animation_llm_generation: bool = True
+    # 类型化生成的并发上限（LLM 等待型，默认与 pipeline 并发一致）
+    animation_llm_concurrency: int = 6
     # 素材帧验证是否启用视觉 LLM；默认 False（只做 ffmpeg 抽帧 is_blank + 本地启发式标题匹配）。
     # 打开后 frame_validator 工具调用 ImageAnalyzer 产出 match_score（视觉 API 成本）。
     enable_visual_llm: bool = False

@@ -463,6 +463,11 @@ class TestAnimationAgentAsyncProbe:
         import asyncio
 
         from clipwright.animation.hyperframes_renderer import HyperframesRenderer
+        from clipwright.config import settings
+
+        # 本条测的是「图解 SVG 回退路径」的旧契约：显式关闭类型化 LLM 生成。
+        # 默认开启时主路径产出 renderer=mg_hyperframes（见 test_animation_llm_typing）。
+        monkeypatch.setattr(settings, "animation_llm_generation", False)
 
         async def _fake_true(timeout=120.0):
             return True

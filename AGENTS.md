@@ -149,6 +149,16 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
    `POST_AGENT`（只读观测 decision/result/error）
 4. 参考：`clipwright/PLUGIN_AGENT_INTEGRATION.md`、`plugins/subagent_demo/`
 
+### 新增一个动画类型（LLM 化后）
+
+1. 在 `clipwright/animation/catalog.py` 注册 id / name / desc（逻辑动画清单唯一事实来源）
+2. 需要更具体的构图/动效约束时，在 `clipwright/animation/type_specs.py` 的 `_OVERRIDES` 增加条目
+3. 写类型专属提示词：`clipwright/animation/prompts/types/<id>.md`，分段固定为
+   `Intent` / `Semantic constraints` / `Composition` / `Motion` / `Anti-patterns` / `Example`
+4. 需要确定性回退图形时，在 `clipwright/animation/diagram_svg.py` 加 preset 并同步
+   `type_specs._KNOWN_PRESETS`（回退 SVG 必须带真实关键帧，见 `_inject_motion`）
+5. 校验：`python -c "from clipwright.animation.type_specs import validate_registry; print(validate_registry())"` 必须为空
+
 ### 新增一个 Service
 
 1. 在 `clipwright/services/` 下创建服务文件

@@ -130,7 +130,11 @@ class TestLogicAnimationHyperframesPath:
 
     def test_hyperframes_available_creates_animation_clip(self, monkeypatch) -> None:
         """diagram_params 必须存在且 renderer=hyperframes，而非 drawtext TEXT clip。"""
+        from clipwright.config import settings
+
         _force_hyperframes(monkeypatch, available=True)
+        # 关闭类型化 LLM 生成，验证 SVG 回退路径仍产出 diagram_params + hyperframes
+        monkeypatch.setattr(settings, "animation_llm_generation", False)
         agent = AnimationAgent()
         track = _mk_anim_track()
         vid = _mk_video_clip()
