@@ -132,8 +132,14 @@ def build_type_description(
         "## 输出硬性要求\n"
         f"- 元素数量 {MIN_ELEMENTS}–{MAX_ELEMENTS}；文本类元素单行不超过 {MAX_TEXT_CHARS} 个字符。\n"
         "- 至少两个非装饰元素在片段内发生可观测变化（位置/尺寸/透明度），"
-        "关键帧覆盖 ≥ 60% 时长，入场延迟 < 1.2s。\n"
-        "- 禁止不透明全幅背景（叠加在实拍素材上）；配色遵守 persona。\n"
+        "关键帧覆盖 ≥ 60% 时长，入场延迟 < 1.2s；主运动的位移幅度必须 ≥ 画布宽度的 4%，"
+        "不得只做 1–2% 的微动（人眼会判定为静止）。\n"
+        "- 可读性（强制）：动画叠加在实拍画面上，文字必须自带 	ext_shadow 或 "
+        "	ext_stroke，或位于半透明底板内；底板的 background 只允许 rgba(...,0.25–0.55) "
+        "这类半透明值，高度不超过画面 45%。\n"
+        "- 禁止不透明全幅背景（会遮住实拍）；但**鼓励**用半透明底板把文字与背景隔开。\n"
+        "- 配色遵守 persona 的 palette 描述与色板；没有结构化色板时按 palette 文字推导，"
+        "不要默认蓝紫科技渐变。\n"
         "- 只输出 MGDef JSON，不要 HTML/JS。"
     )
     return "\n\n".join(parts)
@@ -225,6 +231,25 @@ def validate_for_type(
     if not motion["ok"]:
         issues.append(
             f"动画近乎静止：仅 {motion['moving_count']} 个元素有可观测变化（要求 ≥2）"
+        )
+
+    # 可读性启发式（PRD §17 D7）：文字压画面且无描边/投影/底板 → 浅背景上会看不见。
+    # 只记 issue（不阻断生成），由 metadata.trace 暴露给评审与后续修复。
+    has_scrim = any(
+        str(e.get("type")) == "bg" and "rgba" in str(e.get("background") or "")
+        for e in elements
+    )
+    bare_texts = 0
+    for elem in elements:
+        if str(elem.get("type")) != "text":
+            continue
+        shadow = elem.get("text_shadow") or elem.get("shadow_blur") or elem.get("shadow_color")
+        stroke = elem.get("text_stroke") or elem.get("stroke_width")
+        if not (shadow or stroke or has_scrim):
+            bare_texts += 1
+    if bare_texts:
+        issues.append(
+            f"可读性风险：{bare_texts} 个文本元素无描边/投影/底板（浅背景上会看不清）"
         )
     return issues
 

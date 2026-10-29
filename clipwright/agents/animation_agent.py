@@ -136,6 +136,36 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         self._persona_prompt = getattr(input_data, "persona_prompt", None) or ""
         self._vision_prompt = getattr(input_data, "vision_prompt", None) or ""
 
+        # PRD §16 R1/R3 双保险：即使 stage_inputs 没装配（老路径 / 直接调用 execute），
+        # Agent 自己也按 persona_id 走一遍 board→extra→persona_store 兜底，
+        # 并把 style_hint / fingerprint 带进 persona_style（R6 供模板与插件路径使用）。
+        try:
+            from clipwright.services.visual_context import load as _load_visual_context
+
+            self._visual_ctx = _load_visual_context(
+                str(getattr(context, "persona_id", "") or ""),
+                board={
+                    "persona_prompt": getattr(input_data, "persona_prompt", None),
+                    "visual_config": getattr(input_data, "visual_config", None),
+                    "vision_prompt": getattr(input_data, "vision_prompt", None),
+                },
+                extra=getattr(context, "extra_params", {}) or {},
+            )
+            if not self._persona_prompt:
+                self._persona_prompt = self._visual_ctx.persona_prompt
+            if not self._vision_prompt:
+                self._vision_prompt = self._visual_ctx.vision_prompt
+            add_event(
+                context.pipeline_id, "animation", "visual_context",
+                f"视觉上下文 source={self._visual_ctx.source} "
+                f"prompt={len(self._visual_ctx.persona_prompt)}字 "
+                f"palette={bool(self._visual_ctx.visual_config.get('palette'))}",
+                self._visual_ctx.to_trace(),
+            )
+        except Exception:  # noqa: BLE001 — 装配失败不阻断动画阶段
+            logger.warning("AnimationAgent: 视觉上下文装配失败", exc_info=True)
+            self._visual_ctx = None
+
         try:
             timeline = input_data.timeline
             if timeline is None or not timeline.tracks:
@@ -152,6 +182,15 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             persona_style = await self._resolve_style(
                 input_data.visual_config, context.extra_params,
             )
+            # R6：把 persona 摘要/指纹/来源挂到样式上——模板与插件路径靠它拿到风格，
+            # 生成缓存也用它区分不同 persona（避免跨人格复用动画）。
+            if isinstance(self._visual_ctx, object) and self._visual_ctx is not None:
+                persona_style = dict(persona_style or {})
+                persona_style.setdefault("style_hint", self._visual_ctx.animation_style_hint())
+                persona_style.setdefault("persona_fingerprint", self._visual_ctx.fingerprint)
+                persona_style.setdefault("persona_source", self._visual_ctx.source)
+                if self._visual_ctx.visual_config.get("palette"):
+                    persona_style.setdefault("palette", self._visual_ctx.visual_config["palette"])
 
             # /D5: 图片语义索引 — 显式 image_assets（AI 生成图）∪ 素材库主动检索图片。
             # 对合并结果逐个调用视觉分析器（VisionService.analyze_image）构建
@@ -586,7 +625,14 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             if style.get(k)
         )
         guide = str(getattr(self, "_persona_prompt", "") or "")
-        desc = " ".join(x for x in (str(style.get("style_description") or ""), guide[:400]) if x)
+        # PRD §16 R5：统一上限（旧实现 400/600/1500/2000 四处不同截断）
+        from clipwright.services.visual_context import DEFAULT_PERSONA_PROMPT_MAX
+        try:
+            from clipwright.config import settings as _settings
+            _limit = int(getattr(_settings, "persona_prompt_max_chars", DEFAULT_PERSONA_PROMPT_MAX))
+        except Exception:  # noqa: BLE001
+            _limit = DEFAULT_PERSONA_PROMPT_MAX
+        desc = " ".join(x for x in (str(style.get("style_description") or ""), guide[:_limit]) if x)
         return PersonaAnimationContext(
             persona_id=str(style.get("persona_id") or style.get("name") or ""),
             palette=palette,
@@ -910,6 +956,12 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         if "primary_color" in style and "accent" in mg_params:
             # Persona 主色覆盖默认 accent
             mg_params["accent"] = style["primary_color"]
+        # PRD §16 R6：模板/插件路径也要能看到 persona（此前只拿到一个 accent 颜色）。
+        # style_hint 是给人读的一行摘要：配色/palette/动画风格/节奏；模板若声明
+        # {style_hint} 占位符即可直接渲染，未声明时仅进入 metadata 与 trace。
+        style_hint = str(style.get("style_hint") or "").strip()
+        if style_hint:
+            mg_params.setdefault("style_hint", style_hint)
 
         mg_dur = mg_def.get("duration_sec", duration)
         # P1-03: 场景窗口短于 MG 自身时长时跳过——旧行为把 clip 钳到窗口但 HTML
@@ -1529,16 +1581,21 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                     style_desc_parts.append(_v.strip())
             if style_desc_parts and not config.get("style_description"):
                 config["style_description"] = "；".join(style_desc_parts)
-        # 主修复：原始层注入兜底色板（黑白红）。
-        # persona 参数层 primary/secondary/accent 为 null 时（如 Zam），注入非空结构化字段，
-        # 使 _apply_structured_overrides 无论走 LLM/tone-fallback/快路径都把结果盖回黑白红——
-        # 注入是正确性保证（不依赖 LLM 恰好生成对色板）。
-        if not config.get("primary_color"):
-            config["primary_color"] = "#000000"
-        if not config.get("secondary_color"):
-            config["secondary_color"] = "#FFFFFF"
-        if not config.get("accent_color"):
-            config["accent_color"] = "#FF0000"
+        # ── 结构化色板（PRD §16 R4）──
+        # 旧实现无条件注入黑白红作为兜底，并把「以 Persona 注入值为最终准绳」写进
+        # LLM 上下文 —— 结果任何 persona 的动画都被强制成 Zam 的配色。
+        # 现在只做两件事：
+        #   1) persona 真的提供了结构化色板才使用；
+        #   2) 没提供时**不编造**，交给 palette 文字描述（`_build_context_section`
+        #      的「配色描述」字段）+ DiagramStyle 默认值，并标注来源 fallback。
+        has_structured_palette = any(
+            config.get(k) for k in ("primary_color", "secondary_color", "accent_color")
+        )
+        config["palette_source"] = "persona" if has_structured_palette else "fallback"
+        if not has_structured_palette and config.get("palette"):
+            logger.info(
+                "AnimationAgent: persona 无结构化色板，使用 palette 描述生成（source=fallback）"
+            )
         # 成本优化（可选）：局部剥离 palette 传给 StyleInterpreter——剥离后 `not palette` 为真，
         # has_exact 快路径触发（有精确 primary_color 即跳过 LLM 调用）。仅影响传给 interpret 的
         # 副本，persona_config / yaml 原样保留（material_agent 的 palette 消费点不受影响）。
@@ -1552,6 +1609,11 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         # 供下游（LLM MG prompt / 文字动画消费点）使用——StyleInterpreter 只返回结构化字段。
         if config.get("style_description") and isinstance(result, dict):
             result.setdefault("style_description", config["style_description"])
+        if isinstance(result, dict):
+            # PRD §16 R4：把色板来源带出去（persona / fallback），供 prompt 与 trace 标注
+            result.setdefault("palette_source", config.get("palette_source", "fallback"))
+            if config.get("palette") and not result.get("palette"):
+                result["palette"] = config["palette"]
         return result
 
     @staticmethod

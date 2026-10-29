@@ -62,27 +62,32 @@ class TestZamYamlUntouched:
 
 class TestResolveStyleInjection:
     @pytest.mark.asyncio
-    async def test_zam_style_description_injected_and_colors_overridden(self, monkeypatch) -> None:
-        """Zam：animation_styles → style_description 注入（走 LLM 解析，细节不丢），
-        颜色仍被结构化注入 override 为黑白红（非蓝）。"""
+    async def test_zam_style_description_injected_without_hardcoded_colors(self, monkeypatch) -> None:
+        """Zam：animation_styles → style_description 注入（细节不丢）。
+
+        PRD §16 R4 契约变更：**不再**把 #000000/#FFFFFF/#FF0000 冒充 persona 色板注入。
+        Zam 的 persona 里 primary/accent 都是 null，只有 palette 文字描述——
+        结构化色板保持缺失，由 palette 文本让 LLM 推导；并标注 palette_source=fallback。
+        """
         state = _LLMCallState()
         _install_fake_llm(monkeypatch, state, {"primary_color": "#3b82f6"})
         agent = AnimationAgent()
         style = await agent._resolve_style(_zam_visual(), {})
-        assert style["primary_color"] == "#000000"
-        assert style["secondary_color"] == "#FFFFFF"
-        assert style["accent_color"] == "#FF0000"
-        # 有 animation_styles → style_description 走 LLM 解析（风格细节不丢）；颜色仍被 override
+        assert style.get("palette_source") == "fallback", "无结构化色板时应标注来源，而不是编造颜色"
+        assert style.get("primary_color") != "#000000" or not style.get("primary_color")
+        # 有 animation_styles → style_description 走 LLM 解析（风格细节不丢）
         assert style.get("style_description")
         assert "具象化数字标注" in style["style_description"]
         assert "逐字出现或硬切闪现" in style["style_description"]
-        # 剥离 palette 且无 style_description 的纯色板场景仍走快路径——此处 LLM 被调用
-        # （风格描述存在 → 需要 LLM 理解），但 override 保证非蓝
         assert state.calls  # LLM 被调用（有风格描述要解析）
 
     @pytest.mark.asyncio
-    async def test_injection_reaches_interpret_when_no_explicit_colors(self, monkeypatch) -> None:
-        """兜底注入：空 visual_config → interpret 收到 #000000/#FFFFFF/#FF0000。"""
+    async def test_no_hardcoded_colors_when_visual_config_empty(self, monkeypatch) -> None:
+        """空 visual_config → 不再注入黑白红（PRD §16 R4）。
+
+        修复前这里会强行得到 #000000/#FFFFFF/#FF0000，导致所有 persona 的动画
+        都被染成 Zam 的兜底配色。修复后：interpret 收到什么就是什么，并标注来源。
+        """
         captured: dict = {}
 
         async def fake_interpret(config, persona_context):
@@ -91,9 +96,10 @@ class TestResolveStyleInjection:
         monkeypatch.setattr(StyleInterpreter, "interpret", fake_interpret)
         agent = AnimationAgent()
         result = await agent._resolve_style({}, {})
-        assert result.get("primary_color") == "#000000"
-        assert result.get("secondary_color") == "#FFFFFF"
-        assert result.get("accent_color") == "#FF0000"
+        assert result.get("palette_source") == "fallback"
+        for key in ("primary_color", "secondary_color", "accent_color"):
+            assert not result.get(key), f"{key} 不得被硬编码兜底填充"
+        assert "primary_color" not in captured["config"], "传入 interpret 的配置也不应含编造颜色"
 
     @pytest.mark.asyncio
     async def test_llm_path_override_forces_non_blue(self, monkeypatch) -> None:

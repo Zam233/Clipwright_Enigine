@@ -218,10 +218,15 @@ def run() -> dict[str, Any]:
                 explicit.get(key)
                 or "getattr(" in expr
                 or "_as_timeline" in expr
+                or "visual_ctx." in expr          # PRD §16 R3：统一装配层已兜底
+                or "_cfg(" in expr                 # 黑板 → extra 配置兜底
                 or (expr.startswith(("brief", "plan", "ctx", "skeleton", "subset")))
             )
             if not expr:
                 verdict = "NOT_ASSEMBLED"
+            elif "visual_ctx." in expr or "_cfg(" in expr:
+                # 统一装配层（visual_context）或配置兜底已保证有值
+                verdict = "OK"
             elif reads_board and name not in board and not has_extra and not explicit.get(key):
                 # 从黑板取一个"没有任何阶段会写"的键 —— 就是 persona 断链那一类
                 verdict = "BOARD_KEY_WITHOUT_WRITER"
@@ -244,7 +249,10 @@ def run() -> dict[str, Any]:
     persona_keys = ("persona_prompt", "persona_config", "visual_config", "vision_prompt")
     persona_channels = {
         key: {
-            "assemble_reads_board": any(key in (sources.get(c, {}) or {}) for c in INPUT_CLASSES),
+            "assembled_via_visual_context": any(
+                "visual_ctx" in (sources.get(c, {}) or {}).get(key, "")
+                for c in INPUT_CLASSES
+            ),
             "in_board_whitelist": key in board,
             "explicit_sites": explicit.get(f"AnimationInput.{key}", [])
                              + explicit.get(f"StructureInput.{key}", []),
@@ -280,7 +288,8 @@ def main() -> int:
 
     persona = report["persona_channels"]
     unwired_persona = [k for k, v in persona.items()
-                       if not v["in_board_whitelist"] and not v["explicit_sites"]]
+                       if not v["in_board_whitelist"] and not v["explicit_sites"]
+                       and not v["assembled_via_visual_context"]]
     if args.strict and (report["dead_entries"] or unwired_persona):
         print(f"\n[strict] 死入口 {len(report['dead_entries'])} 个，未接线 persona 通道: {unwired_persona}",
               flush=True)

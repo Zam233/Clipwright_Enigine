@@ -192,6 +192,14 @@ class Settings(BaseSettings):
     animation_llm_generation: bool = True
     # 类型化生成的并发上限（LLM 等待型，默认与 pipeline 并发一致）
     animation_llm_concurrency: int = 6
+    # persona 提示词统一上限（PRD §16 R5）：旧实现 400/600/1500/2000 四处不同截断，
+    # 同一个人格在不同路径拿到不同长度。统一到这里，超长时写 trace。
+    persona_prompt_max_chars: int = 2000
+    # 动画允许半透明底板（PRD §17 D7）：旧实现只要 vision_prompt 为空就强制
+    # 背景透明，导致文字直接压在实拍画面上（浅背景不可读）。开启后半透明
+    # 底板（alpha ≤ scrim_max_alpha）会被保留。
+    animation_allow_scrim: bool = True
+    animation_scrim_max_alpha: float = 0.6
     # 素材帧验证是否启用视觉 LLM；默认 False（只做 ffmpeg 抽帧 is_blank + 本地启发式标题匹配）。
     # 打开后 frame_validator 工具调用 ImageAnalyzer 产出 match_score（视觉 API 成本）。
     enable_visual_llm: bool = False

@@ -73,8 +73,10 @@ _STRICT_JSON_OUTPUT = (
 # 背景约束：MG 动画叠加在实拍素材上，默认禁止不透明全幅背景层。
 # 仅当创作者在 vision_prompt 中明确要求背景时才允许 bg 元素。
 _NO_BACKGROUND_CONSTRAINT = (
-    "禁止背景层：除非 vision_prompt 明确要求背景，动画不得包含 bg 元素或任何"
-    "不透明全幅背景（background 必须为 transparent）；动画叠加在实拍素材上。"
+    "背景规则（PRD §17 D7）：动画叠加在实拍素材上，禁止**不透明全幅**底色与整屏遮挡；"
+    "但允许并鼓励用半透明底板把文字与背景隔开——bg 元素的 background 只接受 "
+    "rgba(0,0,0,0.25–0.55) 这类半透明值，高度不超过画面 45%。"
+    "文字必须自带 text_shadow 或 text_stroke，或位于该底板内。"
 )
 
 # 编排约束（外部调研准则：TapVid/601MEDIA/Descript 动画制作技巧）：
@@ -338,26 +340,73 @@ class MGGenerator:
         )
 
     @staticmethod
-    def _ensure_no_background(mg_def: dict[str, Any], vision_prompt: str = "") -> dict[str, Any]:
-        """背景守卫：vision_prompt 为空时，强制 bg 元素背景透明。
+    def _ensure_no_background(
+        mg_def: dict[str, Any], vision_prompt: str = "", *, allow_scrim: bool | None = None,
+    ) -> dict[str, Any]:
+        """背景守卫：禁止**不透明全幅**背景，但允许半透明底板（PRD §17 D7）。
 
-        MG 动画叠加在实拍素材上，默认不允许不透明全幅背景；
-        仅当创作者在 vision_prompt 中明确要求背景时保留 bg 元素原样。
+        旧行为：ision_prompt 为空就把所有 bg 清成 transparent——而 ision_prompt
+        在真实 pipeline 里从来没有生产者，于是所有动画都没有底板，文字直接压在实拍
+        画面上（浅背景不可读）。现在：
+        - llow_scrim（默认取 settings.animation_allow_scrim）为真时，**保留**
+          alpha ≤ nimation_scrim_max_alpha 的半透明底板；完全不透明仍被清掉；
+        - 仍清除 style.background 的不透明填充，避免整屏遮挡。
         """
         if not isinstance(mg_def, dict):
             return mg_def
         if vision_prompt and str(vision_prompt).strip():
             return mg_def
-        # 同时清除 style.background（否则 LLM 设纯色背景仍遮实拍）
+        if allow_scrim is None:
+            try:
+                from clipwright.config import settings
+
+                allow_scrim = bool(getattr(settings, "animation_allow_scrim", True))
+            except Exception:  # noqa: BLE001
+                allow_scrim = True
+        try:
+            from clipwright.config import settings as _s
+
+            max_alpha = float(getattr(_s, "animation_scrim_max_alpha", 0.6))
+        except Exception:  # noqa: BLE001
+            max_alpha = 0.6
+
+        def _scrim_allowed(value: Any) -> bool:
+            """判定一个 background 值是否是「可接受的半透明底板」。"""
+            if not allow_scrim:
+                return False
+            if value in (None, "", "transparent", "none"):
+                return False
+            text = str(value).strip().lower()
+            if text.startswith("rgba("):
+                try:
+                    alpha = float(text.rsplit(",", 1)[1].rstrip(")").strip())
+                except (ValueError, IndexError):
+                    return False
+                return 0.05 <= alpha <= max_alpha
+            if text.startswith("#") and len(text) in (5, 9):  # #RGBA / #RRGGBBAA
+                try:
+                    alpha = int(text[-2:], 16) / 255 if len(text) == 9 else int(text[-1] * 2, 16) / 255
+                except ValueError:
+                    return False
+                return 0.05 <= alpha <= max_alpha
+            return False
+
+        # style.background：只允许透明或半透明底板
         style = mg_def.get("style")
-        if isinstance(style, dict) and style.get("background", "transparent") != "transparent":
-            style["background"] = "transparent"
+        if isinstance(style, dict):
+            bg = style.get("background")
+            if bg not in (None, "transparent") and not _scrim_allowed(bg):
+                style["background"] = "transparent"
         elements = mg_def.get("elements")
         if isinstance(elements, list):
             for elem in elements:
-                if isinstance(elem, dict) and elem.get("type") == "bg":
-                    if elem.get("background") not in (None, "transparent"):
-                        elem["background"] = "transparent"
+                if not isinstance(elem, dict) or elem.get("type") != "bg":
+                    continue
+                bg = elem.get("background")
+                if bg in (None, "transparent"):
+                    continue
+                if not _scrim_allowed(bg):
+                    elem["background"] = "transparent"
         return mg_def
 
     @staticmethod
@@ -1156,8 +1205,19 @@ class MGGenerator:
                 "\n禁止默认蓝紫科技渐变、发光粒子、彩虹渐变。"
             )
         else:
-            # 无注入色板时仍需输出背景约束（默认禁止不透明背景层）
-            parts.append("## 最终约束\n" + _NO_BACKGROUND_CONSTRAINT)
+            # 无结构化色板时仍需输出背景约束；并用 palette 文本顶替"以 Persona 色板为准"
+            # （PRD §16 R4：删掉硬编码兜底后，必须由 palette 描述承担配色约束，
+            #  否则 LLM 会自由发挥——实测一次生成出蓝/粉双色底板）。
+            palette_text = str(persona_style.get("palette") or "").strip()
+            extra_line = ""
+            if palette_text:
+                extra_line = (
+                    "\n\n## 最终约束（配色）\n"
+                    "本次没有结构化色板，配色以 Persona 的 palette 描述为最终准绳："
+                    + palette_text +
+                    "\n禁止偏离该描述的默认蓝紫科技渐变、发光粒子、彩虹渐变。"
+                )
+            parts.append("## 最终约束\n" + _NO_BACKGROUND_CONSTRAINT + extra_line)
 
         # ── 事实参考（web_context，来自联网搜索；数据/数值以搜索结果为据）──
         # 置于最末：明确数据是准绳，LLM 不得臆造数值。

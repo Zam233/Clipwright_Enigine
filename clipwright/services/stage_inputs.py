@@ -120,6 +120,27 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
     brief = data.get("creative_brief", extra.get("creative_brief"))
     plan = data.get("production_plan", extra.get("production_plan"))
 
+    # ── 视觉/Persona 上下文统一装配（PRD §16 R1/R3）──
+    # 旧实现：persona_prompt / persona_config / visual_config / vision_prompt 只从黑板取，
+    # 而 MERGE_KEYS 从不写这些键 → 真实 pipeline 里四个字段恒空。这里统一走
+    # board → extra → persona_store 三级兜底，并且每个阶段共享同一份结果。
+    from clipwright.services.visual_context import apply_rhythm_defaults, load as load_visual_context
+
+    visual_ctx = load_visual_context(
+        str(getattr(ctx, "persona_id", "") or ""), board=data, extra=extra,
+    )
+    # persona rhythm（cut_profile / cut_density_tier）此前有读取点但无写入者：
+    # 用装配结果补齐 extra 里的空缺键，不改调用方已有的显式值。
+    extra = apply_rhythm_defaults(extra, visual_ctx)
+    vm = visual_ctx.visual_config
+
+    def _cfg(key: str) -> dict[str, Any]:
+        """配置类字段：黑板 → extra（配置通常由 API 透传，不进黑板）。"""
+        value = data.get(key)
+        if not value:
+            value = extra.get(key)
+        return dict(value or {}) if isinstance(value, dict) else {}
+
     miss = [k for k in REQUIRED_KEYS.get(stage, ()) if k not in data]
     if miss:
         raise StageInputMissing(stage, miss, suggestions_for(miss))
@@ -138,10 +159,10 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
 
         return StructureInput(
             context=ctx,
-            persona_config=data.get("persona_config", {}) or {},
-            persona_prompt=data.get("persona_prompt"),
-            vision_prompt=data.get("vision_prompt"),
-            rag_context=data.get("rag_context", "") or "",
+            persona_config=visual_ctx.persona_config or data.get("persona_config", {}) or {},
+            persona_prompt=visual_ctx.persona_prompt or data.get("persona_prompt"),
+            vision_prompt=visual_ctx.vision_prompt or data.get("vision_prompt"),
+            rag_context=data.get("rag_context", "") or extra.get("rag_context", "") or "",
             creative_brief=brief,
             production_plan=plan,
         )
@@ -163,7 +184,7 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
             context=ctx,
             script_skeleton=data.get("script_skeleton", {}) or {},
             persona_config=data.get("persona_config", {}) or {},
-            material_plugin_config=data.get("material_plugin_config", {}) or {},
+            material_plugin_config=_cfg("material_plugin_config"),
             creative_brief=brief,
             production_plan=plan,
         )
@@ -187,9 +208,9 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
         return AnimationInput(
             context=ctx,
             timeline=_as_timeline(data.get("timeline")),
-            visual_config=data.get("visual_config", {}) or {},
-            persona_prompt=data.get("persona_prompt"),
-            vision_prompt=data.get("vision_prompt"),
+            visual_config=vm or data.get("visual_config", {}) or {},
+            persona_prompt=visual_ctx.persona_prompt or data.get("persona_prompt"),
+            vision_prompt=visual_ctx.vision_prompt or data.get("vision_prompt"),
             image_assets=data.get("image_assets") or generated_image_entries(),
             creative_brief=brief,
             production_plan=plan,
@@ -201,7 +222,7 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
         return AudioInput(
             context=ctx,
             timeline=_as_timeline(data.get("timeline")),
-            audio_config=data.get("audio_config", {}) or {},
+            audio_config=_cfg("audio_config"),
             creative_brief=brief,
             production_plan=plan,
         )
@@ -212,7 +233,8 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
         return QualityInput(
             context=ctx,
             timeline=_as_timeline(data.get("timeline")),
-            constraints=data.get("constraints", {}) or {},
+            constraints=(_cfg("constraints")
+                         or dict((visual_ctx.persona_config or {}).get("constraints") or {})),
             creative_brief=brief,
             production_plan=plan,
         )

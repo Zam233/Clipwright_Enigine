@@ -692,3 +692,57 @@ python scripts/audit_stage_plumbing.py --strict
 - **D4 与 §5 的 persona 相关阈值互相影响**：色板若恒为黑白红，任何"风格一致性"验收都失去意义。
 - **D12 与 §8 的 Beat Plan 有关**：Beat Plan 依赖"元素语义键"，位置填充会让 beat 映射错位。
 
+---
+
+## 18. 实施记录：§16/§17 修复落地与验证（2026-10-29）
+
+本节记录本轮实际改动、验证数据，以及仍未闭环的部分（供下一轮直接接着做）。
+
+### 18.1 改动清单（全部已提交）
+
+| 编号 | 内容 | 位置 |
+|---|---|---|
+| R1 | 统一视觉上下文装配层：board → extra → persona_store 三级兜底，含 prompt 截断、指纹、rhythm 补齐、trace | `clipwright/services/visual_context.py`（新增） |
+| R3 | 四个 persona 字段改由装配层注入（structure/animation 共用）；material/audio/quality 的配置键补 extra 兜底 | `services/stage_inputs.py` |
+| R3b | Agent 侧双保险：`execute` 里再按 `context.persona_id` 装配一次，老路径/直接调用也能拿到 persona | `agents/animation_agent.py` |
+| R4 | 删除 `_resolve_style` 无条件注入的 `#000000/#FFFFFF/#FF0000`；改标注 `palette_source=persona\|fallback` | `agents/animation_agent.py` |
+| R4b | 无结构化色板时，用 palette 文本顶替硬约束（"配色以 palette 描述为最终准绳"） | `animation/mg/generator.py::_build_context_section` |
+| R5 | persona 提示词统一上限 `settings.persona_prompt_max_chars`（默认 2000），去掉 400/600 二次截断 | `config.py`、`agents/animation_agent.py` |
+| R6 | 模板/插件路径注入 `mg_params["style_hint"]`（配色/palette/动效风格/节奏摘要）+ `persona_fingerprint` | `agents/animation_agent.py` |
+| D7 | 背景守卫改为「禁不透明全幅、允许半透明底板」：`_ensure_no_background(..., allow_scrim=)` + `settings.animation_allow_scrim / animation_scrim_max_alpha` | `animation/mg/generator.py`、`config.py` |
+| D7b | 提示词侧放行并鼓励半透明底板（rgba 0.25–0.55、高度 ≤45%），并要求文字自带 `text_shadow`/`text_stroke` | `animation/mg/type_generation.py`、`animation/mg/generator.py` |
+| D7c | 可读性启发式：文本无描边/投影且无底板 → 记 `可读性风险` issue（不阻断，进 metadata/trace） | `animation/mg/type_generation.py::validate_for_type` |
+| D8/D9/D10 | `material_plugin_config` / `audio_config` / `QualityInput.constraints` 接线（黑板 → extra → persona constraints） | `services/stage_inputs.py` |
+| D12 | `_build_llm_params` 改「语义别名优先 + 未占用位置兜底」，避免 `{label}`/`{q1}` 同文 | `animation/mg/generator.py` |
+| 工具 | 接线审计脚本（AST，`--strict` 可进 CI） | `scripts/audit_stage_plumbing.py`（新增） |
+| 测试 | 视觉上下文/装配/背景守卫/参数映射/可读性 14 条；更新 3 条旧契约测试 | `tests/clipwright/test_visual_context_plumbing.py`、`test_mg_persona_style.py`、`test_animation_llm_typing.py` |
+
+### 18.2 验证结果
+
+**审计**：`python scripts/audit_stage_plumbing.py --strict` → 退出码 0（修复前 6 个死入口 + 1 个未接线 persona 通道）。
+
+**单片段重跑**（只给 `persona_id=Zam`，`extra_params={}`、`visual_config={}`，刻意不传任何 persona 内容）：
+
+```
+persona_ctx: source=persona_store, prompt_chars=1713, palette="冷色调+高对比度，黑白为主色调…",
+             fingerprint=68fd838c7332
+clip: comparison / mg_hyperframes / method=llm / issues=[]
+motion: moving_count=15 / 15, max_shift=1920px（整屏级）
+MOV 逐帧验收: 24/24 distinct frames → ratio 1.0（修复前同类批次 3/115 = 0.026）
+可读性: 6 个文本元素带 text_shadow；抽帧可见灰色半透明卡片 + 白字投影，配色为黑白+蓝/红点缀
+```
+
+结论：**persona 从"完全没传"变成"按 persona_id 自动装配并进入提示词"**；动效与可读性同时改善。
+
+**回归**：后端 `pytest tests -q` = **4636 passed / 4 skipped / 1 xfailed**。
+
+### 18.3 仍未闭环（下一轮）
+
+| 项 | 现状 | 建议 |
+|---|---|---|
+| 底板/描边仍是"提示词要求"而非硬门禁 | 本次靠 `text_shadow` 通过可读性启发式，`has_scrim=false` | 把 §7 的「背景采样 + 自动底板」做成渲染期兜底；生成期把"无描边且无底板"升级为阻断（配一次自动修复） |
+| 动效强度不均 | 本次 max_shift 1920px，但历史片段中位数仅 1.56% | 按 §5 的 motion energy 阈值进 critique；`motion_report` 增加 `coverage`（关键帧覆盖时长比） |
+| 插件 `accepts_persona` 声明 | 只做了 `style_hint` 注入，插件尚无声明位 | 在 `plugin.yaml` 增加 `accepts_persona: true`，`_handle_mg_animation` 据此传 `persona` 字典 |
+| `extra_params` 其余 10 个无写入键 | `cut_profile`/`cut_density_tier` 已由 persona rhythm 兜底 | 其余（`orientation`/`glossary`/`shot_params`/`enable_color_match` 等）逐个确认：接线或删读取点 |
+| 视觉上下文指纹进生成缓存 | 已产出 `persona_fingerprint` 并按 description 影响缓存，但未直接拼进 `_mg_cache_key` | 下一轮把 fingerprint 显式加入缓存键，避免不同 persona 命中同一缓存 |
+

@@ -83,6 +83,9 @@ def _moving_def(duration: float = 6.0) -> dict:
     return {
         "duration_sec": duration,
         "elements": [
+            # 半透明底板：满足新增的可读性检查（PRD §17 D7）
+            {"type": "bg", "background": "rgba(0,0,0,0.4)", "keyframes": [
+                {"time": 0, "opacity": 0.4}, {"time": duration, "opacity": 0.4}]},
             {"type": "text", "content": "{left}", "keyframes": [
                 {"time": 0, "opacity": 0, "translate_x": -24},
                 {"time": duration, "opacity": 1, "translate_x": 0},
