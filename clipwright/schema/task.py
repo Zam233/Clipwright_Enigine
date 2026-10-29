@@ -136,7 +136,6 @@ class TaskLimits(BaseModel):
         for field, value in (
             ("max_turns", self.max_turns),
             ("max_tool_calls", self.max_tool_calls),
-            ("max_wall_sec", self.max_wall_sec),
         ):
             if value is None or float(value) <= 0:
                 raise ValueError(

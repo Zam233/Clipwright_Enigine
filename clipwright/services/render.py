@@ -349,6 +349,43 @@ _PFMT_OVERRIDE: contextvars.ContextVar[str] = contextvars.ContextVar("clipwright
 _EXT_OVERRIDE: contextvars.ContextVar[str] = contextvars.ContextVar("clipwright_ext_override", default="mp4")
 
 
+#: 恒定质量模式的字形：cq26 / crf23 / CQ26 都认
+_QUALITY_RE = re.compile(r"^(?:cq|crf)[:\s]?(\d{1,2})$", re.IGNORECASE)
+#: 默认质量（用户 2026-10-28 裁定）：1080p30 图文/慢镜头内容 CQ26 肉眼无损
+DEFAULT_QUALITY = "cq26"
+
+
+def parse_quality(value: str) -> int | None:
+    """`"cq26"` / `"crf23"` → 26 / 23；不是质量语法则返回 None（按 ABR 处理）。"""
+    m = _QUALITY_RE.match(str(value or "").strip())
+    if not m:
+        return None
+    try:
+        q = int(m.group(1))
+    except ValueError:
+        return None
+    return q if 0 <= q <= 63 else None
+
+
+def video_rate_args(encoder: str, bitrate: str) -> list[str]:
+    """把 `bitrate` 翻译成 ffmpeg 码率/质量参数。
+
+    - `cq26` / `crf26`：恒定质量（推荐，体积最小且画质稳定）
+    - `5M` / `3000k`：传统 ABR（平台要求固定码率时用）
+    """
+    q = parse_quality(bitrate)
+    if q is None:
+        return ["-b:v", str(bitrate or "5M")]
+    if encoder == "h264_nvenc":
+        # NVENC 的恒定质量：VBR + CQ，b:v 必须给 0（否则退回 ABR）
+        return ["-rc", "vbr", "-cq", str(q), "-b:v", "0"]
+    if encoder in ("libx264", "libx265"):
+        return ["-crf", str(q)]
+    if encoder.startswith("prores"):
+        return []  # ProRes 是帧内固定码率，无质量参数
+    return ["-b:v", "5M"]
+
+
 def _current_encoder() -> str:
     ov = _ENC_OVERRIDE.get()
     return ov or _get_encoder()
@@ -986,6 +1023,76 @@ class RenderResult:
                 "review_failed": self.review_failed}
 
 
+def _split_overlay_clusters(
+    overlays: list[dict], *, gap_sec: float = 1.0,
+) -> list[tuple[float, float, list[dict]]]:
+    """把动画 overlay 按时间聚成簇：`[(簇起点, 簇跨度, 成员)]`。
+
+    为什么需要：整片级的透明 MOV（702s）在 hyperframes 走磁盘抓帧，
+    702×30 帧 PNG 需要上百 GB 临时空间，直接拒渲。按簇渲染后每个 MOV
+    只有几秒，帧数降到几十~几百。
+    """
+    items = sorted(
+        [o for o in overlays if float(o.get("duration_sec", 0) or 0) > 0],
+        key=lambda o: float(o.get("start_sec", 0) or 0),
+    )
+    clusters: list[tuple[float, float, list[dict]]] = []
+    cur: list[dict] = []
+    cur_start = 0.0
+    cur_end = 0.0
+    for ov in items:
+        start = float(ov.get("start_sec", 0) or 0)
+        end = start + float(ov.get("duration_sec", 0) or 0)
+        if cur and start <= cur_end + gap_sec:
+            cur.append(ov)
+            cur_end = max(cur_end, end)
+            continue
+        if cur:
+            clusters.append((cur_start, max(cur_end - cur_start, 0.1), cur))
+        cur = [ov]
+        cur_start = start
+        cur_end = end
+    if cur:
+        clusters.append((cur_start, max(cur_end - cur_start, 0.1), cur))
+    return clusters
+
+
+def _batch_overlays(
+    overlays: list[dict], *, max_items: int = 8, max_span: float = 45.0,
+) -> list[tuple[float, float, list[dict]]]:
+    """把动画 overlay 打包成渲染批次：`[(批起点, 批跨度, 成员)]`。
+
+    为什么要批：每次 `hyperframes render` 都要拉起一个浏览器实例（还有 GPU 探针），
+    逐个渲染 45 个动画 = 45 次窗口弹出 + 45 次冷启动。
+    约束：单批 ≤ max_items 个、跨度 ≤ max_span 秒（控制磁盘抓帧与渲染时长）。
+    """
+    items = sorted(
+        [o for o in overlays if float(o.get("duration_sec", 0) or 0) > 0],
+        key=lambda o: float(o.get("start_sec", 0) or 0),
+    )
+    out: list[tuple[float, float, list[dict]]] = []
+    cur: list[dict] = []
+    cur_start = 0.0
+    cur_end = 0.0
+    for ov in items:
+        start = float(ov.get("start_sec", 0) or 0)
+        end = start + float(ov.get("duration_sec", 0) or 0)
+        too_many = len(cur) >= max_items
+        too_wide = cur and (max(cur_end, end) - cur_start) > max_span
+        if cur and not too_many and not too_wide:
+            cur.append(ov)
+            cur_end = max(cur_end, end)
+            continue
+        if cur:
+            out.append((cur_start, max(cur_end - cur_start, 0.1), cur))
+        cur = [ov]
+        cur_start = start
+        cur_end = end
+    if cur:
+        out.append((cur_start, max(cur_end - cur_start, 0.1), cur))
+    return out
+
+
 class RenderService:
     """将 Timeline 渲染为 MP4 视频。"""
 
@@ -1440,7 +1547,12 @@ class RenderService:
         # 合并判据：metadata.category == "caption" 或 Clip.kind == caption
         category = meta.get("category", "") or (
             "caption" if str(getattr(clip, "kind", "")) == "caption" else "")
-        pos = meta.get("position", style.get("position", {1: "bottom", 2: "top", 3: "center"}.get(track_idx, "bottom")))
+        # 用户反馈（2026-10-28）：两句字幕短暂时重叠时会出现"一句在上、一句在下"。
+        # 根因是这里的兜底把 track_idx 当成了"轨道层号"（1→bottom / 2→top / 3→center），
+        # 而字幕轨道号只是轨道顺序，与画面位置无关。字幕位置**只认字幕轨的设置**。
+        _default_pos = ("bottom" if category == "caption"
+                        else {1: "bottom", 2: "top", 3: "center"}.get(track_idx, "bottom"))
+        pos = meta.get("position", style.get("position", _default_pos))
         # 字幕（caption，合并双方语义）：offset_y 恒 0（Bug1：同轨字幕不逐条上移）；
         # 管线产出的 caption（携带 metadata）且无显式 style 时注入默认描边
         # （borderw=2，白字可读性）；完全无 metadata 的 legacy ASS 字幕保持原样。
@@ -1807,13 +1919,13 @@ class RenderService:
                            "-stream_loop", "-1", "-i", src, "-t", str(dur),
                            "-filter_complex", fc, "-map", "[vout]", "-r", str(fps),
                            *_encoder_stage_args(encoder, preset),
-                           "-b:v", bitrate, "-an", out_tmp]
+                           *video_rate_args(encoder, bitrate), "-an", out_tmp]
                 else:
                     cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)),
                            "-ss", str(seg.get("source_offset", 0)),
                            "-stream_loop", "-1", "-i", src, "-t", str(dur), "-vf", vf, "-r", str(fps),
                            *_encoder_stage_args(encoder, preset),
-                           "-b:v", bitrate, "-an", out_tmp]
+                           *video_rate_args(encoder, bitrate), "-an", out_tmp]
                 r = self._run_ff(cmd, capture_output=True, text=False, timeout=3600)
                 if r.returncode == 0 and _is_valid_video(out_tmp):
                     # 原子落位；并发同键时可能已被别的线程落位 → 视为成功
@@ -2228,7 +2340,7 @@ class RenderService:
         self._run_ff(["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", a, "-i", b,
                        "-filter_complex", "[0:v]setsar=1[a];[1:v]setsar=1[b];[a][b]concat=n=2:v=1:a=0[v]",
                        "-map", "[v]", *_encoder_stage_args(encoder, preset),
-                       "-b:v", bitrate, "-r", str(fps), str(out)],
+                       *video_rate_args(encoder, bitrate), "-r", str(fps), str(out)],
                       capture_output=True, text=False, timeout=3600)
         if _is_valid_video(out, require_streams=True):
             return str(out)
@@ -2251,7 +2363,7 @@ class RenderService:
                        "-filter_complex",
                        f"[0:v]setsar=1[a];[1:v]setsar=1[b];[a][b]xfade=transition={tt}:duration={td}:offset={off}[v]",
                        "-map", "[v]", *_encoder_stage_args(encoder, preset),
-                       "-b:v", bitrate, "-r", str(fps), out],
+                       *video_rate_args(encoder, bitrate), "-r", str(fps), out],
                       capture_output=True, text=False, timeout=3600)
         if _is_valid_video(out, require_streams=True):
             return out
@@ -2345,7 +2457,7 @@ class RenderService:
         self._run_ff(["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), *inputs,
                        "-filter_complex", flt, "-map", "[v]",
                        *_encoder_stage_args(encoder, preset),
-                       "-b:v", bitrate, "-r", str(fps), str(out)],
+                       *video_rate_args(encoder, bitrate), "-r", str(fps), str(out)],
                       capture_output=True, text=False, timeout=timeout)
         if _is_valid_video(out, require_streams=True):
             return str(out)
@@ -2637,13 +2749,63 @@ class RenderService:
         if overlays:
             if progress_callback:
                 await progress_callback("mg", 93, "合成图解动画叠加层")
-            mov = str(self._work_dir / "overlay.mov")
-            ok = await HyperframesRenderer.render_overlays(overlays, mov, width, height, fps)
-            if ok and _is_valid_video(mov):
-                out_v = str(self._work_dir / f"with_hf.{_current_ext()}")
-                ok2 = HyperframesRenderer.render_overlay_on_video(mov, video, out_v)
-                if ok2 and _is_valid_video(out_v):
-                    video = out_v
+            # E2E 2026-10-28 修复：旧实现把全部 overlay 编成**一整张覆盖全片**的透明
+            # MOV（702s×30fps=21060 帧 PNG ≈ 164GB 临时盘），hyperframes 直接拒渲
+            # → 45~52 个图解动画整批丢失，而成片仍报 success。
+            # 现在按时间簇分块：每簇只渲自己的时长（几秒），再按簇起点叠回去。
+            # 用户 2026-10-28：**每个动画独立渲染**，再统一合并。
+            # 每个 MOV 只有 2-6 秒（几十~一百多帧），彻底避开 hyperframes 的
+            # "磁盘抓帧需要 164GB" 上限；合并仍走一次性链式 overlay。
+            items = sorted(
+                [o for o in overlays if float(o.get("duration_sec", 0) or 0) > 0],
+                key=lambda o: float(o.get("start_sec", 0) or 0),
+            )
+            # 用户 2026-10-28：每次 `hyperframes render` 都会拉起浏览器——
+            # 45 个动画 = 45 次弹窗。按「数量 ≤8 + 跨度 ≤45s」打包，次数降到个位数。
+            batches = _batch_overlays(items, max_items=8, max_span=45.0)
+            logger.info(
+                "Render: 图解动画 %d 个 → %d 个批次渲染后合并（每批独立浏览器）",
+                len(items), len(batches),
+            )
+            failed_frames = 0
+            cluster_pairs: list[tuple[str, float, float]] = []
+            for ci, (b_start, b_span, group) in enumerate(batches):
+                if progress_callback:
+                    await progress_callback(
+                        "mg", 93, f"图解动画 {ci + 1}/{len(batches)}（{len(group)} 个）")
+                batch_mov = str(self._work_dir / f"anim_{ci}.mov")
+                shifted = [
+                    {**ov,
+                     "start_sec": max(0.0, float(ov.get("start_sec", 0) or 0) - b_start),
+                     "duration_sec": float(ov.get("duration_sec", 3) or 3)}
+                    for ov in group
+                ]
+                ok = await HyperframesRenderer.render_overlays(
+                    shifted, batch_mov, width, height, fps)
+                if not (ok and _is_valid_video(batch_mov)):
+                    failed_frames += len(group)
+                    continue
+                cluster_pairs.append((batch_mov, b_start, b_span))
+            if cluster_pairs:
+                # 一次性链式叠加（N 个簇只做 1 次全片重编），避免逐簇重编 N 次。
+                merged = await self._apply_mg_overlay_chained(
+                    video, sorted(cluster_pairs, key=lambda x: x[1]),
+                    width, height, fps, progress_callback=progress_callback,
+                )
+                if merged and merged != video:
+                    video = merged
+                else:
+                    logger.warning("Render: 图解动画链式叠加失败，回退逐簇叠加")
+                    for mov_p, s0, span in cluster_pairs:
+                        video = await self._apply_mg_overlay(
+                            video, mov_p, width, height, fps,
+                            start_sec=s0, duration_sec=span,
+                        )
+            if failed_frames:
+                logger.error(
+                    "Render: %d 个图解动画 overlay 渲染失败（不会出现在成片里）", failed_frames,
+                )
+                self._overlay_failures = getattr(self, "_overlay_failures", 0) + failed_frames
         return video
 
     async def _render_mg_mov(self, mg_ov: dict, width: int, height: int, fps: float) -> str | None:
@@ -3251,7 +3413,7 @@ class RenderService:
                     "-map", "0:v:0", "-map", "[aout]",
                     *(["-c:v", "copy"] if video_cached else
                       [*_encoder_stage_args(encoder, preset),
-                       "-b:v", bitrate, *_delivery_extra_args(encoder)]),
+                       *video_rate_args(encoder, bitrate), *_delivery_extra_args(encoder)]),
                     "-c:a", "aac", "-b:a", ab, "-movflags", "+faststart", output_path,
                 ], capture_output=True, text=False, timeout=1800)
                 if _is_valid_video(output_path):
@@ -3292,7 +3454,7 @@ class RenderService:
                                "-af", ",".join(afilters),
                                *(["-c:v","copy"] if video_cached else
                                  ["-c:v",encoder,"-preset",preset,"-pix_fmt",_current_pix_fmt(),
-                                  "-b:v",bitrate,*_delivery_extra_args(encoder)]),
+                                  *video_rate_args(encoder,bitrate),*_delivery_extra_args(encoder)]),
                                "-c:a","aac","-b:a",ab,"-map","0:v:0","-map","1:a:0",
                                "-movflags","+faststart",output_path],
                               capture_output=True, text=False, timeout=3600)

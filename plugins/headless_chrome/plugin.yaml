@@ -1,0 +1,15 @@
+id: "headless_chrome"
+name: "Chrome Headless Shell（无头动画渲染）"
+version: "1.0.0"
+kind: "capability"
+description: "安装并使用 chrome-headless-shell 渲染动画/MG（不再弹有头浏览器窗口，走 CPU 软件渲染）"
+author: "Clipwright Team"
+entry_point: "headless_chrome.main"
+
+# P1 迁移：新契约声明（声明即授权）
+api_version: "2"
+contributions:
+  # 渲染后端：动画/MG 走专用无头二进制
+  - { kind: renderer_backend, id: chrome_headless_shell }
+  # 前端全局浮层：缺二进制时弹框引导安装（声明式，前端 AppOverlayHost 通用渲染）
+  - { kind: ui_slot, id: headless_chrome_install_prompt, meta: { slot: app.overlay } }

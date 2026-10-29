@@ -250,7 +250,11 @@ async def _llm_search_queries_batch(
         "- 每个关键词必须是**具体的视觉画面**（如'城市夜景''键盘打字'），不能是抽象概念\n"
         "- 优先推荐实拍风格画面\n"
         f"{category_hint}"
-        "- 按场景编号输出，每行格式：\"场景N: 关键词1/关键词2/关键词3\"\n"
+        # E2E 2026-10-28 实测：中文关键词在 Pexels/Unsplash/Pixabay 命中率为 **0**
+        # （图库索引是英文）。43 个场景全部返回空候选 → 剪辑退化成"背景+文字"。
+        "- **关键词一律用英文**（图库索引是英文，中文查询命中为 0）；"
+        "确有必要可附中文对照，格式：english1/english2/中文对照\n"
+        "- 按场景编号输出，每行格式：\"场景N: keyword1/keyword2/keyword3\"\n"
         "- 只输出关键词行，不要额外说明"
         f"{style_hint}{brief_hint_text}"
     )
@@ -337,6 +341,40 @@ async def _llm_search_queries(
     fallback = [scene_title] + keywords[:2]
     logger.info("MaterialAgent: 降级搜索词=%s", fallback)
     return fallback
+
+
+def _has_cjk(text: str) -> bool:
+    """是否含中日韩字符（判断查询是否需要翻译成英文）。"""
+    return any("\u4e00" <= ch <= "\u9fff" for ch in str(text or ""))
+
+
+async def _to_english_queries(queries: list[str], *, pipeline_id: str = "") -> list[str]:
+    """把中文检索词翻成英文（图库是英文索引，中文命中为 0）。
+
+    有界：单次 flash LLM 调用；失败返回 []（调用方保持原行为）。
+    """
+    import re as _re
+
+    text = " / ".join(str(q) for q in queries if str(q).strip())[:1200]
+    if not text:
+        return []
+    prompt = (
+        "把下面用于视频素材库（Pexels）检索的中文关键词翻成**英文检索词**。\n"
+        "要求：只输出英文关键词，用 / 分隔，保持顺序与个数一致，不要解释。\n\n" + text
+    )
+    try:
+        resp = await asyncio.wait_for(LLMService().ask(prompt, use_flash=True), timeout=120)
+        raw = str(getattr(resp, "content", "") or "").strip()
+        if not raw:
+            return []
+        parts = [p.strip() for p in _re.split(r"[/\n、]", raw) if p.strip()]
+        out = [p for p in parts if not _has_cjk(p)][:10]
+        if pipeline_id:
+            add_event(pipeline_id, "material", "llm_result", f"英文检索词: {out}")
+        return out
+    except Exception as exc:  # noqa: BLE001 — 翻译失败不阻断选材
+        logger.warning("MaterialAgent: 检索词英译失败（保持原查询）: %s", exc)
+        return []
 
 
 async def _validate_video_frame(r: Any, expected_text: str) -> float:
@@ -918,17 +956,33 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
 
         all_results = []
         seen_ids = set()
-        for query in search_queries:
-            results = await _search_with_cache(
-                query, top_k=5, source_ids=source_ids if isinstance(source_ids, list) else None,
-            )
-            for r in results:
-                rid = r.asset.id if hasattr(r, 'asset') else r.get("asset_id", "")
-                if rid and rid not in seen_ids:
-                    seen_ids.add(rid)
-                    all_results.append(r)
-            if len(all_results) >= 15:
-                break
+
+        async def _run_queries(queries: list[str]) -> None:
+            for query in queries:
+                results = await _search_with_cache(
+                    query, top_k=5, source_ids=source_ids if isinstance(source_ids, list) else None,
+                )
+                for r in results:
+                    rid = r.asset.id if hasattr(r, 'asset') else r.get("asset_id", "")
+                    if rid and rid not in seen_ids:
+                        seen_ids.add(rid)
+                        all_results.append(r)
+                if len(all_results) >= 15:
+                    break
+
+        await _run_queries(search_queries)
+
+        # 中文查询兜底（E2E 2026-10-28）：Pexels/Unsplash/Pixabay 是英文索引，
+        # 中文关键词命中率为 0 —— 43 个场景全空，剪辑只能退化成"背景+文字"。
+        # 一条都没搜到时，把查询翻成英文再搜一轮（有界：每个场景最多一次）。
+        if not all_results and any(_has_cjk(q) for q in search_queries):
+            translated = await _to_english_queries(search_queries, pipeline_id=pipeline_id)
+            if translated:
+                logger.info(
+                    "MaterialAgent: 场景[%d] 中文查询零命中，改用英文重搜: %s",
+                    i, translated[:5],
+                )
+                await _run_queries(translated)
 
         logger.info("MaterialAgent: 场景[%d] 去重后 %d 条候选", i, len(all_results))
 
@@ -966,7 +1020,10 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                     )
                 return (r, score)
 
-        top_candidates = all_results[:8]
+        # E2E 2026-10-28：视觉 LLM 打分是**每候选一次多模态调用**。43 场景 × 8 候选
+        # × （首轮 + 重选）会把 material 阶段顶到 15 分钟超时（实测超时后主 agent
+        # 重试一次，白烧 30 分钟）。有视觉打分时只看前 2 个，够排序用。
+        top_candidates = all_results[:2] if use_vision_llm else all_results[:8]
         if top_candidates:
             scores = await asyncio.gather(*(_validate(r) for r in top_candidates))
             for s in scores:
@@ -1063,6 +1120,9 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
         scene_notes: list[str] = []
         plugin_config = input_data.material_plugin_config or {}
         threshold = float(plugin_config.get("reselect_threshold", _RESELECT_THRESHOLD))
+        # 注意：**不要**因为"首轮全是 0 分"就跳过重选——重选用的是另一条由旁白
+        # 推导的查询（C4c），不同查询的命中率并不相关（实测首轮 0 分的场景，
+        # 重选仍能拿到可用素材）。
         if best_score < threshold and validated:
             reselect_query = _derive_reselect_query(narration_text, material_intent, scene_keywords)
             reselect_meta["triggered"] = True

@@ -222,12 +222,43 @@ def test_run_stage_dry_run_does_not_execute_or_merge(monkeypatch) -> None:
 
 
 def test_run_stage_timeout_is_categorized(monkeypatch) -> None:
+    # 阶段墙钟有下限（MIN_STAGE_TIMEOUT_SEC，防止主 agent 自己填个注定超时的值），
+    # 这里把下限压小来验证"超时被正确分类"这条语义本身。
+    monkeypatch.setattr(stage_subagent, "MIN_STAGE_TIMEOUT_SEC", 0.05)
     _patch_agent(monkeypatch, {"scenes": []}, delay=0.5)
     result = asyncio.run(stage_subagent.run_stage(
         _Task(), StageSpec(stage="structure", timeout_sec=0.05)))
     assert result.status == "failed"
     assert result.failure.category == "timeout"
     assert result.failure.retryable == "retry_same"
+
+
+def test_stage_timeout_has_floor(monkeypatch) -> None:
+    """主 agent 传 900s 也不能把阶段墙钟压到下限以下（E2E 2026-10-28 实测）。"""
+    seen: dict = {}
+
+    async def _fake_execute(input_obj, context):  # noqa: ANN001, ANN201
+        seen["timeout"] = captured.get("timeout")
+        return {"scenes": []}
+
+    class _Spy:
+        async def execute(self, input_obj, context):  # noqa: ANN001, ANN201
+            return await _fake_execute(input_obj, context)
+
+    monkeypatch.setattr(stage_subagent, "agent_for", lambda stage: _Spy())
+
+    captured: dict = {}
+    real_wait_for = asyncio.wait_for
+
+    async def _spy_wait_for(coro, timeout=None):  # noqa: ANN001, ANN201
+        captured["timeout"] = timeout
+        return await real_wait_for(coro, timeout=timeout)
+
+    monkeypatch.setattr(stage_subagent.asyncio, "wait_for", _spy_wait_for)
+    asyncio.run(stage_subagent.run_stage(
+        _Task(), StageSpec(stage="structure", timeout_sec=900)))
+
+    assert captured["timeout"] >= stage_subagent.MIN_STAGE_TIMEOUT_SEC
 
 
 def test_run_stage_rejects_unconfigured_provider(monkeypatch) -> None:

@@ -47,6 +47,10 @@ _MAX_IDEM = 256
 
 #: `run_inline`（预览/局部修补）的默认墙钟：比完整阶段短，卡住要尽快报错
 DEFAULT_STAGE_TIMEOUT_LOCAL = 1800.0
+#: 阶段墙钟下限：主 agent 可以传更小的 timeout_sec，但不允许低于这个值
+#: （它曾把 animation 设成 900s，43 段 MG 渲染必然超时 → 重试 → 再超时）。
+MIN_STAGE_TIMEOUT_SEC = 0.0  # 0 = 不设上限
+
 
 
 def agent_for(stage: str) -> Any:
@@ -369,10 +373,14 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     payload: dict[str, Any] = {}
     try:
         agent = agent_for(stage)
+        # 阶段墙钟下限（E2E 2026-10-28）：`timeout_sec` 是主 agent 可以自己填的参数，
+        # 实测它填了 900s → animation（43 段 MG 逐个渲染）必然超时，然后自己重试、
+        # 再超时，白烧半小时。模型不该有权把阶段超时设到"注定失败"的量级。
+        timeout_eff = max(float(spec.timeout_sec or 0.0), MIN_STAGE_TIMEOUT_SEC)
         with degradation_scope(degradations), use_route(route):
-            output = await asyncio.wait_for(
-                agent.execute(input_obj, context), timeout=float(spec.timeout_sec or 3600.0),
-            )
+            from clipwright.services.timeouts import wait_or_run
+
+            output = await wait_or_run(agent.execute(input_obj, context), timeout_eff)
         payload = stage_merge.payload_of(output)
         if degradations and hasattr(output, "degradations"):
             try:

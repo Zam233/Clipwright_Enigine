@@ -438,7 +438,7 @@ class LLMService:
         # 被 HTTP 超时掐断时 provider 仍会回 **200 + 空正文**，日志看起来像"模型
         # 没输出"，实际是传输层已经断开（E2E 2026-10-28 实测：120s 边界上必空，
         # 放宽后同一 prompt 122s 正常返回 7.4k 字正文）。
-        timeout: int = 900,
+        timeout: int | None = None,
         use_flash: bool = False,
         max_retries: int = 2,
         on_reasoning: Optional[Callable[[str], Any]] = None,
@@ -729,7 +729,7 @@ class LLMService:
         self,
         messages: list[dict[str, str]],
         model: Optional[str] = None,
-        timeout: int = 900,
+        timeout: int | None = None,
         use_flash: bool = False,
         **kwargs: Any,
     ) -> AsyncIterator[LLMResponse]:

@@ -1032,9 +1032,17 @@ _EXPORT_PRESETS = {
     "youtube": {"width": 1920, "height": 1080, "fps": 30, "bitrate": "8M", "audio_bitrate": "192k", "note": "YouTube 推荐"},
     "tiktok": {"width": 1080, "height": 1920, "fps": 30, "bitrate": "4M", "audio_bitrate": "192k", "note": "抖音/快手 竖屏"},
     "weibo": {"width": 720, "height": 1280, "fps": 24, "bitrate": "3M", "audio_bitrate": "192k", "note": "微博 竖屏"},
-    "1080p": {"width": 1920, "height": 1080, "fps": 30, "bitrate": "5M", "audio_bitrate": "192k", "note": "标准 1080p"},
+    # 用户 2026-10-28：标准 1080p 改恒定质量（原来固定 5M，702s 要 299MB）
+    "1080p": {"width": 1920, "height": 1080, "fps": 30, "bitrate": "cq26", "audio_bitrate": "128k", "note": "标准 1080p（恒定质量 CQ26）"},
     "720p": {"width": 1280, "height": 720, "fps": 30, "bitrate": "3M", "audio_bitrate": "192k", "note": "标准 720p"},
     "480p": {"width": 854, "height": 480, "fps": 24, "bitrate": "1.5M", "audio_bitrate": "128k", "note": "标准 480p"},
+    # 质量档（前端下拉用）：母版留高画质，交付走小体积
+    "master_cq18": {"width": 1920, "height": 1080, "fps": 30, "bitrate": "cq18", "audio_bitrate": "192k",
+                    "note": "高质量母版（CQ18，供二次剪辑）"},
+    "web_cq26": {"width": 1920, "height": 1080, "fps": 30, "bitrate": "cq26", "audio_bitrate": "128k",
+                 "note": "网页/社媒交付（CQ26，体积最小）"},
+    "web_cq30": {"width": 1920, "height": 1080, "fps": 30, "bitrate": "cq30", "audio_bitrate": "96k",
+                 "note": "极限压缩（CQ30，预览/审片用）"},
     # Phase 3.3: 交付级封装（广播/母带场景）
     "prores422hq": {"width": 1920, "height": 1080, "fps": 30, "encoder": "prores_ks", "pix_fmt": "yuv422p10le",
                     "container_ext": "mov",  # D8: ProRes 容器是 MOV（原输出仍命名 .mp4）
@@ -1052,8 +1060,9 @@ class RenderSettings(BaseModel):
     width: int = Field(default=1920, ge=64, le=7680, description="输出宽度 (px)")
     height: int = Field(default=1080, ge=64, le=4320, description="输出高度 (px)")
     fps: float = Field(default=30.0, gt=0, le=120, description="输出帧率")
-    bitrate: str = "5M"
-    audio_bitrate: str = "192k"
+    #: 码率或质量："5M" / "3000k" 走 ABR；"cq26" / "crf23" 走恒定质量（默认）
+    bitrate: str = "cq26"
+    audio_bitrate: str = "128k"
     preset: str = ""  # 预设名称，如 "bilibili"、"tiktok"，会覆盖其他参数
     # Phase 3.3: 编码器/像素格式覆盖（交付级；空 = 自动探测/默认）
     encoder: str = Field(default="", description="编码器覆盖（libx264/h264_nvenc/prores_ks/libx265；空=自动）")
@@ -1080,6 +1089,37 @@ class RenderRequest(BaseModel):
         default=0.0, ge=0, le=15.0,
         description="负时间片头秒数（0 = 无片头；画面先起、音乐后进）",
     )
+
+
+@router.get("/browser")
+async def render_browser_status() -> dict:
+    """当前动画渲染用哪个浏览器 + chrome-headless-shell 是否已安装。
+
+    两档策略（用户 2026-10-28）：
+    1. 没有 chrome-headless-shell → 系统 Chrome **无头 + 软件 GPU（CPU）**；
+    2. 装了（插件 `headless_chrome`）→ 动画渲染走 chrome-headless-shell。
+    """
+    from clipwright.services import headless_browser
+
+    st = headless_browser.status()
+    shell = st["headless_shell"]
+    if shell.get("path"):
+        shell["version"] = headless_browser.probe_version(shell["path"])
+    return st
+
+
+@router.post("/browser/install")
+async def render_browser_install() -> dict:
+    """安装 chrome-headless-shell（前端“下载并安装”按钮 / 插件加载时也会调）。"""
+    import asyncio as _aio
+
+    from clipwright.services import headless_browser
+
+    if headless_browser.find_shell():
+        return {"ok": True, "message": "已安装", "path": headless_browser.find_shell()}
+    # 后台跑，接口立刻返回，前端轮询 /api/render/browser 看进度
+    _aio.get_running_loop().create_task(headless_browser.install_shell())
+    return {"ok": None, "message": "开始安装，请稍候（约 100-200MB）", "installing": True}
 
 
 @router.get("/presets")
@@ -1156,8 +1196,10 @@ def _resolve_settings(s: RenderSettings | None) -> dict:
         "width": base.get("width", 1920),
         "height": base.get("height", 1080),
         "fps": base.get("fps", 30.0),
-        "bitrate": base.get("bitrate", "5M"),
-        "audio_bitrate": base.get("audio_bitrate", "192k"),
+        # 用户 2026-10-28 裁定：默认恒定质量 CQ26（图文/慢镜头内容肉眼无损，
+        # 体积约为固定 5M 的一半）。前端可显式传 "5M"/"3M" 走 ABR。
+        "bitrate": base.get("bitrate", "cq26"),
+        "audio_bitrate": base.get("audio_bitrate", "128k"),
         "encoder": base.get("encoder", ""),
         "pix_fmt": base.get("pix_fmt", ""),
         "soft_subtitle": bool(base.get("soft_subtitle", False)),

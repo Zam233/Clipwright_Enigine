@@ -808,23 +808,35 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
 
                     # 画中画：场景描述含 PiP 标记或 LLM 档案指定时，主视频 clip 后追加 PiP clip
                     if pip_track and unit["is_pip"]:
-                        pip_clip = self._make_clip(
-                            kind=ClipKind.VIDEO,
-                            track_id=pip_track.id,
-                            start_sec=current_time,
-                            duration_sec=seg_dur,
-                            asset=unit["asset"],
-                            clip_label=f"pip_{i}",
-                            processed_path=unit["processed_path"],
+                        # E2E 2026-10-28 修复：旧实现直接把**主画面那段素材**再放一遍
+                        # （实测 5/5 段与主画面 asset_id 完全相同），右下角小窗里就是
+                        # 主画面的缩小复制品，零信息量；而且当时只写了一句
+                        # "建议更换素材或移除画中画" 的备注，照样 append。
+                        # 现在：必须拿到**与主画面不同**的素材才建 PiP，拿不到就不建。
+                        main_asset_id = vid_track.clips[-1].asset_id if vid_track.clips else None
+                        pip_alt = self._pick_pip_alt_asset(
+                            candidate_clips, i, exclude={main_asset_id} if main_asset_id else set(),
                         )
-                        # 6：PiP 与主画面同源时提示（同帧自叠无信息量）
-                        if pip_clip.asset_id == (vid_track.clips[-1].asset_id
-                                                 if vid_track.clips else None):
+                        pip_clip = None
+                        if pip_alt is not None:
+                            pip_clip = await self._make_pip_clip(
+                                pip_alt, pip_track.id, current_time, seg_dur, f"pip_{i}",
+                                context.pipeline_id,
+                            )
+                        if pip_clip is None:
                             notes.append(
-                                f"场景{i+1}: 画中画与主画面同源，建议更换素材或移除画中画")
-                        # 设置 PiP 位置（右下角，占画面 30%）
-                        pip_clip.image_rect = {"x": 0.65, "y": 0.55, "w": 0.3, "h": 0.3}
-                        pip_track.clips.append(pip_clip)
+                                f"场景{i+1}: 没有与主画面不同的备选素材，已跳过画中画"
+                            )
+                            if pipeline_id_for_degradation := context.pipeline_id:
+                                add_event(
+                                    pipeline_id_for_degradation, "edit", "info",
+                                    f"跳过画中画：场景{i+1} 无备用素材",
+                                )
+                        else:
+                            # 位置：优先场景配置（scene.pip_rect / metadata），否则右下角 30%
+                            rect = self._pip_rect_for(scene_obj)
+                            pip_clip.image_rect = rect
+                            pip_track.clips.append(pip_clip)
 
                     # 文字 clip（由 AnimationAgent 管理，EditAgent 不预填充）
                     pass
@@ -1286,6 +1298,106 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 logger.warning("EditAgent: 场景 %d 上限补齐失败: %s", i, e)
 
         return units
+
+    # ── 画中画（PiP）：必须用与主画面不同的素材 ──────────────────
+
+    @staticmethod
+    def _scene_alts(
+        candidate_clips: list[dict[str, Any]], scene_index: int,
+    ) -> list[dict[str, Any]]:
+        """该场景的全部候选素材（按 score 降序，已摊平 suggested_assets）。"""
+        out: list[dict[str, Any]] = []
+        for c in candidate_clips or []:
+            if int(c.get("scene_index", -1)) != int(scene_index):
+                continue
+            for a in c.get("suggested_assets") or []:
+                path = str(a.get("local_path") or a.get("url") or "")
+                if path:
+                    out.append(a)
+        out.sort(key=lambda a: a.get("score", 0) if isinstance(a.get("score"), (int, float)) else 0,
+                 reverse=True)
+        return out
+
+    def _pick_pip_alt_asset(
+        self,
+        candidate_clips: list[dict[str, Any]],
+        scene_index: int,
+        *,
+        exclude: set[str],
+    ) -> dict[str, Any] | None:
+        """挑一段**与主画面不同**的素材做画中画；没有就返回 None（宁可不放）。
+
+        E2E 2026-10-28：旧实现把主画面素材再放一遍，右下角是主画面的缩小复制品。
+        """
+        for a in self._scene_alts(candidate_clips, scene_index):
+            path = str(a.get("local_path") or a.get("url") or "")
+            if path and path not in exclude:
+                return a
+        return None
+
+    async def _make_pip_clip(
+        self,
+        alt: dict[str, Any],
+        track_id: str,
+        start_sec: float,
+        duration_sec: float,
+        label: str,
+        pipeline_id: str,
+    ):
+        """把备选素材裁成 PiP 片段（走 video_trim；失败返回 None，不硬塞）。"""
+        source_path = str(alt.get("local_path") or alt.get("url") or "")
+        if not source_path:
+            return None
+        dur = float(duration_sec or 0) or 0.0
+        if dur <= 0:
+            return None
+        cached = _trim_cache_get(source_path, 0.0, dur)
+        processed = cached or ""
+        if not processed:
+            try:
+                trim = await asyncio.wait_for(
+                    self.call_tool(
+                        "video_trim", input_path=source_path, start_sec=0.0, duration_sec=dur,
+                    ),
+                    timeout=_TRIM_TOOL_TIMEOUT_SEC,
+                )
+            except Exception as exc:  # noqa: BLE001 — 裁剪失败即放弃本场画中画
+                logger.warning("EditAgent: 画中画素材裁剪失败（跳过）: %s", exc)
+                return None
+            if getattr(trim, "status", "") != "success" or not getattr(trim, "output_path", ""):
+                logger.warning("EditAgent: 画中画素材不可用（跳过）: %s", source_path[-40:])
+                return None
+            processed = trim.output_path
+            _trim_cache_set(source_path, 0.0, dur, processed)
+        if pipeline_id:
+            add_event(pipeline_id, "edit", "tool",
+                      f"pip_trim({source_path.split('/')[-1][:24]}, {dur:.1f}s)")
+        clip = self._make_clip(
+            kind=ClipKind.VIDEO, track_id=track_id, start_sec=start_sec,
+            duration_sec=dur, asset=alt, clip_label=label, processed_path=processed,
+        )
+        return clip
+
+    @staticmethod
+    def _pip_rect_for(scene: dict[str, Any]) -> dict[str, float]:
+        """画中画位置：场景配置优先（pip_rect / visual_description.pip_rect），否则右下 30%。"""
+        raw = scene.get("pip_rect") if isinstance(scene, dict) else None
+        if not isinstance(raw, dict):
+            vd = (scene.get("visual_description") if isinstance(scene, dict) else None) or {}
+            raw = vd.get("pip_rect") if isinstance(vd, dict) else None
+        default = {"x": 0.65, "y": 0.55, "w": 0.3, "h": 0.3}
+        if not isinstance(raw, dict):
+            return default
+        try:
+            rect = {k: float(raw.get(k, default[k])) for k in ("x", "y", "w", "h")}
+        except (TypeError, ValueError):
+            return default
+        # 边界钳制：宽高至少 10%，且不出画布
+        rect["w"] = max(0.1, min(1.0, rect["w"]))
+        rect["h"] = max(0.1, min(1.0, rect["h"]))
+        rect["x"] = max(0.0, min(1.0 - rect["w"], rect["x"]))
+        rect["y"] = max(0.0, min(1.0 - rect["h"], rect["y"]))
+        return rect
 
     def _pick_best(
         self,

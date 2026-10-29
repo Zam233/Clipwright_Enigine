@@ -85,12 +85,25 @@ async def _fake_tool_execute(name: str, **kwargs: Any) -> _FakeToolResult:
     return _FakeToolResult()
 
 
-def _input(context: AgentContext, scenes: list[dict]) -> EditInput:
+def _input(context: AgentContext, scenes: list[dict],
+           candidate_clips: list[dict] | None = None) -> EditInput:
     return EditInput(
         context=context,
         script_skeleton={"scenes": scenes},
-        candidate_clips=[],
+        candidate_clips=candidate_clips or [],
     )
+
+
+def _candidates_with_alt() -> list[dict]:
+    """场景 1 有两段**不同**素材：主画面用 main，画中画可以拿 alt。"""
+    return [{
+        "scene_index": 1,
+        "score": 0.9,
+        "suggested_assets": [
+            {"asset_id": "main.mp4", "local_path": r"C:\tmp\main.mp4", "score": 0.9},
+            {"asset_id": "alt.mp4", "local_path": r"C:\tmp\alt.mp4", "score": 0.7},
+        ],
+    }]
 
 
 def _vid_track(tl) -> Any:
@@ -283,7 +296,7 @@ async def test_profile_injects_into_edit_plan(monkeypatch) -> None:
     monkeypatch.setattr(ToolRegistry, "execute", _fake_tool_execute)
 
     ctx = _context()
-    inp = _input(ctx, _scenes(with_duration=False))
+    inp = _input(ctx, _scenes(with_duration=False), _candidates_with_alt())
     out = await agent.execute(inp, ctx)
 
     assert out.decision == AgentDecision.PASS

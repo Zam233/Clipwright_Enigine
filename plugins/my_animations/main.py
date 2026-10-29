@@ -6,6 +6,8 @@ via AnimationRegistry.
 
 from __future__ import annotations
 
+from typing import Any
+
 from clipwright.animation import AnimationRegistry
 from clipwright.plugins import CapabilityPlugin
 from clipwright.plugins.contribution import Contribution, ContributionKind

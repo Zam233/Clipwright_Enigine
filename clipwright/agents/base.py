@@ -44,7 +44,9 @@ async def unified_llm_call(
     last_exc: Exception | None = None
     for attempt in range(max(0, retries) + 1):
         try:
-            return await asyncio.wait_for(coro_factory(), timeout=timeout)
+            from clipwright.services.timeouts import wait_or_run
+
+            return await wait_or_run(coro_factory(), timeout)
         except asyncio.TimeoutError:
             raise
         except Exception as e:  # noqa: BLE001 — 按错误特征判定是否瞬时
@@ -68,7 +70,8 @@ class BaseAgent(ABC, Generic[I, O]):
     """Agent 基类。"""
 
     agent_name: str = ""
-    timeout_sec: int = 300  # LLM 调用默认超时（秒）——大 prompt + 多工具调用时 120s 不足
+    #: LLM 调用默认**不设超时**（0 = 无限；需要保护的边由调用方显式给值）
+    timeout_sec: int = 0
 
     def __init__(self) -> None:
         self._strategy_registry: dict[str, Any] = {}
@@ -335,7 +338,11 @@ class BaseAgent(ABC, Generic[I, O]):
 
         超时默认取 ``self.timeout_sec``（各 Agent 可覆盖）。
         """
-        return await asyncio.wait_for(coro_factory(), timeout=timeout or self.timeout_sec)
+        from clipwright.services.timeouts import wait_or_run
+
+        return await wait_or_run(
+            coro_factory(), self.timeout_sec if timeout is None else timeout
+        )
 
     async def llm_call_with_retry(
         self,
@@ -347,7 +354,7 @@ class BaseAgent(ABC, Generic[I, O]):
         """生产加固 1.4：统一 LLM 调用收口（委托模块级 unified_llm_call）。"""
         return await unified_llm_call(
             self.agent_name, coro_factory,
-            retries=retries, timeout=timeout or self.timeout_sec,
+            retries=retries, timeout=self.timeout_sec if timeout is None else timeout,
             retry_delay_sec=retry_delay_sec,
         )
 

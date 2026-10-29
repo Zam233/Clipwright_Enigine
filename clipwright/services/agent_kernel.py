@@ -401,7 +401,7 @@ def limits_from_settings() -> TaskLimits:
     limits = TaskLimits(
         max_turns=int(getattr(settings, "agent_max_turns", 30) or 30),
         max_tool_calls=int(getattr(settings, "agent_max_tool_calls", 80) or 80),
-        max_wall_sec=float(getattr(settings, "agent_max_wall_sec", 3600.0) or 3600.0),
+        max_wall_sec=float(getattr(settings, "agent_max_wall_sec", 0.0) or 0.0),
         budget_usd=getattr(settings, "pipeline_budget_usd", None),
     )
     limits.validate_or_raise()
@@ -852,7 +852,7 @@ class AgentKernel:
             return f"回合数达到上限 {limits.max_turns}"
         if task.usage.tool_calls >= limits.max_tool_calls:
             return f"工具调用数达到上限 {limits.max_tool_calls}"
-        if task.usage.wall_sec >= limits.max_wall_sec:
+        if limits.max_wall_sec and task.usage.wall_sec >= limits.max_wall_sec:
             return f"墙钟达到上限 {limits.max_wall_sec}s"
         if limits.budget_usd is not None and task.usage.cost_usd >= limits.budget_usd:
             return f"预算耗尽（{task.usage.cost_usd:.4f} ≥ {limits.budget_usd}）"

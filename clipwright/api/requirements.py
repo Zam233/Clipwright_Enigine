@@ -147,7 +147,7 @@ async def edit_timeline(req: EditRequest, request: Request) -> dict:
 
     整体用 wait_for 兜底：即使底层 Agent/LLM 意外卡死，也保证在时限内返回可重试错误。
     """
-    EDIT_HARD_TIMEOUT = 3600
+    EDIT_HARD_TIMEOUT = 0  # 0 = 不设超时
     try:
         result = await asyncio.wait_for(
             _service.edit_timeline(
@@ -264,7 +264,7 @@ async def chat_message(req: ChatRequest, request: Request) -> dict:
     """
     # 秒：长文稿（40+ 段）逐段标注（≈6min）+ 规划书翻译（带原文，最长约 15min）
     # 都需要余量；旧值 660 会被长文稿打满 → 504。这里留 40 分钟。
-    CHAT_HARD_TIMEOUT = 7200
+    CHAT_HARD_TIMEOUT = 0  # 0 = 不设超时
     try:
         result = await asyncio.wait_for(
             _service.chat(req.session_id, req.message),
