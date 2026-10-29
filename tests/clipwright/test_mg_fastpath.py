@@ -1006,3 +1006,51 @@ class TestStaticShadowInKeyframes:
         with_shadow = alpha_count(text_shadow="0 0 12px #ff0000")
         without = alpha_count()
         assert with_shadow > without, "关键帧里的静态阴影也要真的画出半透明像素"
+
+class TestAnimatedLetterSpacing:
+    """字距动画：旧实现整段回退 Chrome；现在逐帧重建文字图层与宽度。"""
+
+    def test_animated_letter_spacing_is_eligible(self) -> None:
+        mg = _mg([{
+            "type": "text", "content": "逐字间距", "font_size": 40, "font_color": "#ffffff",
+            "x": "center", "y": "center",
+            "keyframes": _kf((0, {"opacity": 1, "letter_spacing": 0}),
+                             (3, {"opacity": 1, "letter_spacing": 12})),
+        }])
+        ok, reason = fastpath_eligible(mg)
+        assert ok, reason
+        spec = _build_specs(mg, {})[0]
+        assert spec.letter_spacing_tracks == [(0.0, 0.0), (3.0, 12.0)]
+
+    def test_animated_letter_spacing_changes_width_and_pixels(self) -> None:
+        mg = _mg([{
+            "type": "text", "content": "AAAA", "font_size": 32, "font_color": "#ffffff",
+            "x": "left", "y": "top",
+            "keyframes": _kf((0, {"opacity": 1, "letter_spacing": 0}),
+                             (3, {"opacity": 1, "letter_spacing": 10})),
+        }])
+        specs = layout_specs(_build_specs(mg, {}), 400, 100)
+        frame0 = composite_frame(specs, (400, 100), 0.0, 3.0)
+        frame3 = composite_frame(specs, (400, 100), 2.9, 3.0)
+        assert frame0.tobytes() != frame3.tobytes(), "字距应随帧变化"
+        # 末帧文字更宽（字距 10px × 3 个间隔）
+        def bbox(img):
+            return img.getchannel("A").getbbox()
+        w0 = bbox(frame0)[2] - bbox(frame0)[0]
+        w3 = bbox(frame3)[2] - bbox(frame3)[0]
+        assert w3 > w0 + 20, (w0, w3)
+
+
+class TestElementPlaceholderFill:
+    def test_background_placeholder_is_filled_before_parse(self) -> None:
+        mg = _mg([{
+            "type": "shape", "shape": "rect", "x": "center", "y": "center",
+            "width": 120, "height": 40, "background": "{accent}",
+            "keyframes": _kf((0, {"opacity": 1})),
+        }])
+        ok_wo, why_wo = fastpath_eligible(mg, {})
+        assert not ok_wo and "accent" in why_wo, "缺参数时应判不可用（占位符残留）"
+        ok, why = fastpath_eligible(mg, {"accent": "#FF0000"})
+        assert ok, why
+        spec = _build_specs(mg, {"accent": "#FF0000"})[0]
+        assert spec.fill is not None

@@ -181,6 +181,8 @@ class ElementSpec:
     shadows: list[Shadow] = field(default_factory=list)
     #: 阴影动画轨道：每个阴影槽位一套 {dx/dy/blur/alpha: [(t, value)]}
     shadow_tracks: list[dict[str, list[tuple[float, float]]]] = field(default_factory=list)
+    #: 字距动画轨道 [(t, letter_spacing)]：宽度随字距变化，需每帧重建图层
+    letter_spacing_tracks: list[tuple[float, float]] = field(default_factory=list)
     # 动画
     tracks: dict[str, list[tuple[float, float]]] = field(default_factory=dict)
     easings: dict[float, str] = field(default_factory=dict)
@@ -658,6 +660,7 @@ def _build_specs(mg_def: dict[str, Any], params: dict[str, Any]) -> list[Element
         # 以求全程生效。值不变时提升为元素级属性（PIL 可忠实复现）；
         # 值真的在变（阴影动画）仍回退 Chrome。
         promoted: dict[str, set[str]] = {}
+        kf_ls: list[tuple[float, str]] = []
         for kf in kfs:
             if not isinstance(kf, dict):
                 raise FastPathIneligible(f"元素 #{i} 关键帧结构异常")
@@ -672,7 +675,8 @@ def _build_specs(mg_def: dict[str, Any], params: dict[str, Any]) -> list[Element
                     # 动画阴影：由 _build_one 解析成 shadow_tracks，不走数值轨迹
                     continue
                 if key == "letter_spacing" and kind == "text":
-                    promoted.setdefault(key, set()).add(str(value))
+                    # 字距动画：由 _build_one 解析成 letter_spacing_tracks
+                    kf_ls.append((float(kf.get("time") or 0), str(value)))
                     continue
                 if key not in FAST_KEYFRAME_PROPS:
                     raise FastPathIneligible(f"元素 #{i} 关键帧属性 {key!r} 需 Chrome")
@@ -686,6 +690,10 @@ def _build_specs(mg_def: dict[str, Any], params: dict[str, Any]) -> list[Element
             value = next(iter(values))
             if not elem.get(key):
                 elem = {**elem, key: value}  # 提升为元素级静态属性（不改原 dict）
+        if kind == "text" and kf_ls:
+            if not elem.get("letter_spacing"):
+                elem = {**elem, "letter_spacing": kf_ls[0][1]}
+            elem = {**elem, "_kf_letter_spacing": kf_ls}
         if kind == "text":
             kf_shadows = [
                 (float(kf.get("time") or 0), str(kf["text_shadow"]))
@@ -748,6 +756,11 @@ def _parse_background(value: Any, idx: int):
 
 def _build_one(kind: str, elem: dict, fill, idx: int, dur: float) -> ElementSpec:
     """解析单个元素（尺寸/位置/外观/动画轨迹）。"""
+    # 元素级字符串字段也要填占位符：旧实现只对关键帧值与 content 做 fill，
+    # ackground: "{accent}" 会原样残留 → _parse_background 直接判「需 Chrome」。
+    # 实测 32 段真实动画里 13 段因此回退（快路径覆盖率只有 40%）。
+    if any(isinstance(v, str) and "{" in v for v in elem.values()):
+        elem = {k: (fill(v) if isinstance(v, str) else v) for k, v in elem.items()}
     x = elem.get("x", "center")
     y = elem.get("y", "center")
     x_off = parse_length(elem.get("x_offset"), 0.0)
@@ -774,7 +787,7 @@ def _build_one(kind: str, elem: dict, fill, idx: int, dur: float) -> ElementSpec
         for key, val in kf.items():
             if key in ("time", "easing"):
                 continue
-            # 静态外观属性（已在 _build_specs 提升为元素级）：不作为数值轨迹
+            # 外观/排版属性（属性轨道另存）：不作为通用数值轨迹
             if key in ("text_shadow", "letter_spacing") and elem.get("type", "text") == "text":
                 continue
             raw_tracks.setdefault(key, []).append((t, fill(val)))
@@ -858,6 +871,14 @@ def _build_one(kind: str, elem: dict, fill, idx: int, dur: float) -> ElementSpec
         if shadows is None:
             raise FastPathIneligible(f"元素 #{idx} text_shadow 无法解析")
         spec.shadows = shadows
+        # 关键帧里的 letter_spacing 序列 → 字距轨道（逐帧重建图层）
+        kf_ls = elem.get("_kf_letter_spacing") or []
+        if kf_ls:
+            tracks: list[tuple[float, float]] = []
+            for t, raw in kf_ls:
+                parsed = parse_length(raw, spec.letter_spacing)
+                tracks.append((float(t), float(parsed if parsed is not None else spec.letter_spacing)))
+            spec.letter_spacing_tracks = tracks
         # 关键帧里的 text_shadow 序列 → 阴影轨道（动画发光/脉冲）
         kf_shadows = elem.get("_kf_shadows") or []
         if kf_shadows:
@@ -1482,6 +1503,13 @@ def _with_shadows(spec: ElementSpec, shadows: list["Shadow"]) -> ElementSpec:
 
     return dataclasses.replace(spec, shadows=shadows, shadow_tracks=[])
 
+def _with_letter_spacing(spec: ElementSpec, letter_spacing: float) -> ElementSpec:
+    """浅拷贝 spec 并替换字距（保留其它字段与轨道状态）。"""
+    import dataclasses
+
+    return dataclasses.replace(spec, letter_spacing=float(letter_spacing),
+                               letter_spacing_tracks=[])
+
 def composite_frame(specs: list[ElementSpec], frame_size: tuple[int, int], t: float, dur: float,
                     cache: dict | None = None):
     """合成单帧（返回 RGBA 图）。`specs` 已 layout；`cache` 跨帧复用图层。"""
@@ -1511,6 +1539,15 @@ def composite_frame(specs: list[ElementSpec], frame_size: tuple[int, int], t: fl
             spec.height = max(0.0, track_value(spec.tracks["height"], t, spec.easings, dur,
                                                under.get("height", spec.height)))
         if spec.width <= 0.01 or spec.height <= 0.01 or scale <= 0.0:
+            continue
+        if spec.letter_spacing_tracks:
+            # 字距动画：宽度随字距变化 → 重新测量/布局并单独绘制（不进图层缓存）
+            ls = track_value(spec.letter_spacing_tracks, t, spec.easings, dur,
+                             spec.letter_spacing)
+            tmp = _with_letter_spacing(spec, ls)
+            layout_specs([tmp], frame_size[0], frame_size[1])
+            layer, pad = _paint_element(tmp, cache)
+            _transform_paste(frame, layer, pad, tmp, scale, angle, tx, ty, opacity)
             continue
         if spec.shadow_tracks:
             # 动画阴影：每帧插值，且**不进图层缓存**（否则整段只会用第一帧的阴影）

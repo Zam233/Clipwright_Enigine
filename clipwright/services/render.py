@@ -1108,6 +1108,9 @@ class RenderService:
         self._review_failed = False
         # 蒙版相关警告（star/heart 后端不支持等），渲染结束时并入 warnings
         self._mask_warnings: list[str] = []
+        # 渲染后自检（动画动效多样性等）产生的警告，结束时并入 RenderResult.warnings
+        self.warnings: list[str] = []
+        self._motion_check: dict | None = None
 
     def _run_ff(self, cmd, **kw) -> subprocess.CompletedProcess:
         """同步执行 ffmpeg/外部命令（供已在线程池里的 sync 代码直接调用）。"""
@@ -1355,6 +1358,10 @@ class RenderService:
             for _mw in self._mask_warnings:
                 if _mw not in warnings:
                     warnings.append(_mw)
+            # 渲染后自检（动画动效多样性）产生的警告
+            for _sw in self.warnings:
+                if _sw not in warnings:
+                    warnings.append(_sw)
             # V4/V7：渲染后切点复核 + 全片总览（默认关闭，best-effort）；
             # 返回派工列表（每条带 redo_agent），随结果一起交给上层
             await self._post_render_review(str(output), video_segments, warnings, fps=fps,
@@ -2678,6 +2685,29 @@ class RenderService:
 
     # ── S2: 单次 Hyperframes 批量 ──────────────────
 
+    async def _check_animation_motion(self, pairs):
+        """渲染后自检：动画 MOV 的动效多样性（PRD §5 像素级验收）。
+
+        只写 warning / 计数，不阻断渲染：动画已经生成，这里的目标是让
+        「看起来静止」的片段在日志与 RenderResult.warnings 里可见。
+        """
+        try:
+            from clipwright.services import anim_motion_check
+
+            rep = await asyncio.to_thread(anim_motion_check.check_overlays, pairs)
+        except Exception:  # noqa: BLE001
+            logger.warning("Render: 动画动效自检失败（忽略）", exc_info=True)
+            return None
+        self._motion_check = rep
+        if rep and rep.get("failed"):
+            for item in rep.get("failed_items") or []:
+                self.warnings.append(
+                    f"动画动效不足：@{item.get('start_sec')}s "
+                    f"distinct={item.get('distinct_frames')}/{item.get('sampled_frames')}"
+                    f"（ratio={item.get('distinct_ratio')}）"
+                )
+        return rep
+
     async def _bake_scrims(self, video, pairs, progress_callback=None):
         """给浅背景上的动画片段烘焙半透明底板（PRD §7.4 渲染期兜底）。
 
@@ -2763,6 +2793,7 @@ class RenderService:
                      for mg, mov in zip(hf_ov_local, movs)
                      if not isinstance(mov, BaseException) and mov and _is_valid_video(mov)]
             pairs = await self._bake_scrims(video, pairs, progress_callback)
+            await self._check_animation_motion(pairs)
             if pairs:
                 if progress_callback:
                     await progress_callback("mg", 90, "链式叠加 MG 动画")

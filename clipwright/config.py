@@ -211,6 +211,12 @@ class Settings(BaseSettings):
     # 低于阈值时 critique 会强制走一次定向修复（见 generator._finalize_with_critique）。
     animation_motion_min_shift_ratio: float = 0.04
     animation_motion_min_coverage: float = 0.45
+    # 渲染后像素级动效自检（PRD §5）：解码动画 MOV 抽帧算多样性，
+    # 不合格只写 warning/metadata，不阻断渲染（动画已经生成，属于质量提示）。
+    animation_motion_check: bool = True
+    animation_motion_check_fps: int = 4
+    animation_motion_check_min_frames: int = 8
+    animation_motion_check_min_ratio: float = 0.25
     # 素材帧验证是否启用视觉 LLM；默认 False（只做 ffmpeg 抽帧 is_blank + 本地启发式标题匹配）。
     # 打开后 frame_validator 工具调用 ImageAnalyzer 产出 match_score（视觉 API 成本）。
     enable_visual_llm: bool = False
