@@ -2678,6 +2678,42 @@ class RenderService:
 
     # ── S2: 单次 Hyperframes 批量 ──────────────────
 
+    async def _bake_scrims(self, video, pairs, progress_callback=None):
+        """给浅背景上的动画片段烘焙半透明底板（PRD §7.4 渲染期兜底）。
+
+        判定：抽一帧算背景平均亮度，超过 `animation_scrim_light_threshold` 才做；
+        做法：把底板烧进动画 MOV（Python 逐帧合成，不改 ffmpeg 滤镜图）。
+        任何失败都退回原 MOV——底板是体验优化，不能拖垮渲染。
+        """
+        from clipwright.services import anim_scrim
+
+        cfg = anim_scrim.settings_of()
+        if not cfg.get("enabled") or not pairs:
+            return pairs
+        out: list[tuple[str, float, float]] = []
+        baked_count = 0
+        for mov, start, dur in pairs:
+            try:
+                need = await asyncio.to_thread(
+                    anim_scrim.should_scrim, video, float(start), float(cfg["light_threshold"]))
+            except Exception:  # noqa: BLE001
+                need = False
+            if need:
+                target = str(Path(mov).with_name(f"{Path(mov).stem}_scrim.mov"))
+                baked = await asyncio.to_thread(
+                    anim_scrim.bake_scrim_into_mov, mov, target,
+                    cfg["alpha"], cfg["grow"], cfg["blur"],
+                )
+                if baked:
+                    mov = baked
+                    baked_count += 1
+            out.append((mov, start, dur))
+        if baked_count:
+            logger.info("Render: %d/%d 个动画片段烘焙了底板（背景偏亮）", baked_count, len(pairs))
+            if progress_callback:
+                await progress_callback("mg", 96, f"底板兜底 {baked_count}/{len(pairs)}")
+        return out
+
     async def _apply_all_hyperframes(self, video, text_overlays, hf_ov_local, width, height, fps,
                                      progress_callback=None):
         """将图解动画 + MG 动画合并到单次 Hyperframes 调用。
@@ -2726,6 +2762,7 @@ class RenderService:
                       float(mg.get("duration_sec", 0) or 0))
                      for mg, mov in zip(hf_ov_local, movs)
                      if not isinstance(mov, BaseException) and mov and _is_valid_video(mov)]
+            pairs = await self._bake_scrims(video, pairs, progress_callback)
             if pairs:
                 if progress_callback:
                     await progress_callback("mg", 90, "链式叠加 MG 动画")
@@ -2787,6 +2824,9 @@ class RenderService:
                     continue
                 cluster_pairs.append((batch_mov, b_start, b_span))
             if cluster_pairs:
+                # 图解批次同样做底板兜底（浅背景时才烘焙）
+                cluster_pairs = await self._bake_scrims(
+                    video, cluster_pairs, progress_callback)
                 # 一次性链式叠加（N 个簇只做 1 次全片重编），避免逐簇重编 N 次。
                 merged = await self._apply_mg_overlay_chained(
                     video, sorted(cluster_pairs, key=lambda x: x[1]),

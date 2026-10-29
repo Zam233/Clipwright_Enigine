@@ -200,6 +200,13 @@ class Settings(BaseSettings):
     # 底板（alpha ≤ scrim_max_alpha）会被保留。
     animation_allow_scrim: bool = True
     animation_scrim_max_alpha: float = 0.6
+    # 渲染期底板兜底（PRD §7.4）：对动画窗口的**背景采样亮度**，偏亮时把半透明
+    # 底板烧进动画 MOV（文字条/卡片），解决「白字压在浅背景上看不清」。
+    animation_render_scrim: bool = True
+    animation_scrim_alpha: float = 0.75
+    animation_scrim_grow: int = 8
+    animation_scrim_blur: float = 6.0
+    animation_scrim_light_threshold: float = 140.0
     # 素材帧验证是否启用视觉 LLM；默认 False（只做 ffmpeg 抽帧 is_blank + 本地启发式标题匹配）。
     # 打开后 frame_validator 工具调用 ImageAnalyzer 产出 match_score（视觉 API 成本）。
     enable_visual_llm: bool = False
