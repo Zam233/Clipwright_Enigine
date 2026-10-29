@@ -493,3 +493,202 @@ python -c "import clipwright.main"
 - `clipwright/tool/capabilities.py` 与 `docs/pluginization-plan-2026-09-10.md`：语义能力解析与插件扩展约束。
 
 本 PRD 不引入外部学术文献；所有技术阈值属于可验证的工程初值，不以文献引用替代项目 fixture 验收。
+
+---
+
+## 16. persona 与视觉上下文断链：完整修复方案（P0，2026-10-29 新增）
+
+> 本节解释了一个比"动效弱"更根本的问题：**动画从来没有按 creator 的 persona 生成过**。
+> 上一轮把 32 段动画改成 LLM 生成后，只有手工脚本 `_cache/reanimation.py` 传了 persona；
+> 真实 pipeline 里 `persona_prompt` 恒为空串、`visual_config` 恒为空 dict。
+
+### 16.1 事实认定（代码 + 运行态双向核实）
+
+**拓扑上到处都是入口，链路上没有生产者。**
+
+| 环节 | 位置 | 现状 |
+|---|---|---|
+| 输入字段 | `schema/agent.py`（`StructureInput` / `AnimationInput`） | `persona_prompt` / `persona_config` / `visual_config` / `vision_prompt` 四个字段都在 |
+| 装配读取 | `services/stage_inputs.py:142,190-192` | 全部 `data.get(...)`（只从**黑板**取） |
+| 黑板写入 | `services/stage_merge.py:24-31` | `MERGE_KEYS` 只有 `script_skeleton/scenes/candidate_clips/edit_notes/animation_plan/generated_mg_count/audio_notes/issues/redo_agent` —— **四个 persona 键都不在** |
+| 请求透传 | `api/requirements.py:561` | `PipelineRequest.extra_params` 只有 script/audio/video_mode/split_mode/subtitle/voice/dub_segments/material_source_ids/animation_intents |
+| Agent 兜底 | `animation_agent.py:1511-1513` | `ctx.pop("_persona_config")` / `ctx.pop("_identity")`，**全仓没有写入这两个键的代码**（死兜底） |
+
+运行态证据（本轮 E2E `task_ed4f577aa8.state.json`）：
+
+```
+blackboard keys = [animation_plan, audio_notes, candidate_clips, edit_notes,
+                   final_timeline, generated_mg_count, scenes, script_skeleton, timeline]
+animation 阶段 inputs = {}
+```
+
+即主链路（`delegate_agent → run_stage → stage_inputs.assemble`）拿到的 `persona_prompt = ""`、
+`visual_config = {}`。只有两条**旁路**有值：
+`requirements_service.py:1930`（内联 structure 显式传 persona_prompt/persona_config）、
+`requirements_service.py:1201`（「重做动画」接口显式传 visual_config）。
+
+### 16.2 断点清单
+
+| 编号 | 位置 | 现象 | 影响 |
+|---|---|---|---|
+| D1 | `stage_merge.MERGE_KEYS` | 四个 persona 键没有白名单 | 黑板永远不含它们，下游一切读取都空 |
+| D2 | `api/requirements.py:561` | `PipelineRequest.extra_params` 不含 persona | 即使想从 `ctx.extra_params` 兜底也没有源头 |
+| D3 | `stage_inputs.assemble` | 只读 `data`，不读 `ctx.extra_params`（`brief`/`plan` 却有 extra 兜底） | 双轨不一致：创意简报能兜底，persona 不能 |
+| D4 | `animation_agent.py:1536-1541` | 无条件注入 `#000000 / #FFFFFF / #FF0000`，并与"以 Persona 注入值为最终准绳"一起写进 LLM 上下文 | **任何 persona 的动画配色都会变成黑白红**，且以 persona 的名义强制 |
+| D5 | `animation_agent.py:1511-1513` | `_persona_config` / `_identity` 兜底无生产者 | 死代码，给人"已经兜底"的错觉 |
+| D6 | `animation_agent.py:589`、`type_specs.py:138`、`animation_agent.py:1056` | persona 提示词被 400 / 600 / 2000 字三重截断 | 同一份 persona，在 mg_dynamic 与类型化两条路径拿到的长度不同，风格不一致 |
+
+### 16.3 修复设计（六步，互不依赖，可分批合入）
+
+**R1 新增统一装配层** `clipwright/services/visual_context.py`：
+
+```python
+@dataclass(frozen=True)
+class VisualContext:
+    persona_id: str
+    persona_prompt: str          # persona prompt.md 全文（截断到 PERSONA_PROMPT_MAX）
+    persona_config: dict         # manifest.parameter（identity/constraints…）
+    visual_config: dict          # visual/palette（含 animation_styles）
+    vision_prompt: str
+    source: str                  # "board" | "extra" | "persona_store" | "fallback"
+    fingerprint: str             # 进生成缓存键
+
+def load(persona_id: str, *, board: dict, extra: dict) -> VisualContext: ...
+```
+
+优先级固定为 **board → extra → persona 仓库（按 id 读 prompt.md + parameter.visual）→ 空**，
+并把 `source` 写进 trace，便于"为什么这次没风格"一眼定位。
+
+**R2 透传**：`api/requirements.py` 只在 `extra_params` 里加 `persona_id`（已有）与
+`vision_prompt`（若前端提供）；**不要把整份 prompt 塞进 request**——由 R1 按 id 读盘，避免请求体膨胀与陈旧副本。
+
+**R3 装配改造**：`stage_inputs.assemble` 里四个字段改为单一入口：
+
+```python
+vc = visual_context.load(ctx.persona_id, board=data, extra=ctx.extra_params)
+# structure / animation 共用
+persona_prompt=vc.persona_prompt,
+persona_config=vc.persona_config,
+visual_config=vc.visual_config,
+vision_prompt=vc.vision_prompt,
+```
+
+**R4 删掉硬编码兜底**（D4）：`_resolve_style` 的 `#000000/#FFFFFF/#FF0000` 改为
+"`VisualContext.visual_config` 有则用；没有则用 `DiagramStyle()` 默认（#4f8cff 系）"，
+且 `_build_context_section` 的「最终约束」段显式标注来源：
+`色板来源：persona(Zam) | fallback(default)`。**禁止**把 fallback 色标成 persona 色。
+
+**R5 截断统一**：`settings.persona_prompt_max_chars`（默认 2000），类型化与 mg_dynamic 共用；
+`type_generation` 侧不再二次截到 600。若 prompt 超长，截断处写一条 trace（说明损失）。
+
+**R6 插件契约**：`_handle_mg_animation` 把 `style_hint`（`PersonaAnimationContext.to_prompt()` 的 1200 字摘要）
+放进 `mg_params`；插件在 `plugin.yaml` 声明 `accepts_persona: true` 才注入，未声明者行为不变（向后兼容）。
+`mg_animations` / `logic_animations` / `diagram_style` 三个内置插件先接。
+
+### 16.4 验收
+
+```powershell
+# 1) 契约：装配后字段必须非空且来源可解释
+python -m pytest tests/clipwright/test_visual_context_plumbing.py -q
+#    断言：persona_id=Zam 时 persona_prompt 长度 ≥ 200 且 source ∈ {board, extra, persona_store}
+#    断言：visual_config.palette 非空；vision_prompt 与 persona 配置一致（未配置则为空且 source=fallback）
+
+# 2) 运行态：重排一次动画阶段，检查 metadata 与 trace
+python _cache/reanimation.py --timeline <artifact> --out-artifact <new>
+#    每段动画 metadata 应含 persona_fingerprint / persona_source / persona_prompt_chars
+#    trace 里应出现 "persona=Zam source=persona_store chars=NNNN"
+```
+
+**通过标准**：32 段动画中 `persona_source=persona_store` ≥ 90%；`persona_prompt_chars` 的
+中位数 ≥ 800；不再出现 `#000000/#FFFFFF/#FF0000` 三条兜底同时生效且标注为 persona 的情况。
+
+### 16.5 回滚
+
+R4/R5 各自有开关（`settings.persona_fallback_palette`、`settings.persona_prompt_max_chars`）；
+R1/R3 是纯装配层，回滚只需把 `stage_inputs` 的四处赋值改回 `data.get(...)`（保留 `visual_context` 模块不影响运行）。
+
+---
+
+## 17. 同源缺陷审计（P1–P2，2026-10-29 新增）
+
+persona 断链不是孤例，它的模式是：**字段/参数声明了，读取点也在，但没有写入者；或者被一个硬编码兜底覆盖**。
+本轮把这种模式写成脚本扫了一遍。
+
+### 17.1 方法与工具
+
+`scripts/audit_stage_plumbing.py`（已随仓库提交，AST 实现、不执行业务代码）：
+
+1. `*Input` 每个字段 → `stage_inputs.assemble` 的取值表达式（含一层局部变量回溯）；
+2. 该字段是否有显式构造传入点（全仓 `XInput(...)` 的关键字）；
+3. 字段名是否在 `stage_merge.MERGE_KEYS`；
+4. `extra_params` 的读取键 vs 写入点；
+5. prompt 装配里的截断，以及 persona 路径上的硬编码颜色。
+
+```powershell
+python scripts/audit_stage_plumbing.py --json _cache/plumbing_report.json --strict
+# --strict：存在「死入口 / 未接线 persona 通道」时退出码 1，可直接进 CI
+```
+
+当前实测输出（`fields_total = 36`）：
+
+```
+[strict] 死入口 6 个，未接线 persona 通道: ['vision_prompt']
+```
+
+### 17.2 已确认缺陷清单
+
+| 编号 | 字段 | 位置 | 现象 | 影响与修复 |
+|---|---|---|---|---|
+| D7 | `StructureInput.vision_prompt` / `AnimationInput.vision_prompt` | `stage_inputs.py:143,192` | 从黑板取，无任何写入者，也无显式传入点 | **`vision_prompt` 永远为空** → `MGGenerator._ensure_no_background` 永远认为"创作者没要求背景"，把所有动画背景清成透明；同时 `_build_context_section` 的「视觉需求（优先级最高）」段永不出现。**这直接解释了"文字平铺、没有底板、背景一变就看不清"**。修复：走 R1 的 `vision_prompt` 通道；`_ensure_no_background` 增加"允许半透明底板"的独立开关（`allow_scrim`），不再与 vision_prompt 绑定 |
+| D8 | `MaterialInput.material_plugin_config` | `stage_inputs.py:166` | 黑板无写入者 | 素材插件配置（源权重/过滤/语言）恒空 → 永远用全部源与默认参数。修复：并入 R1 的同款装配 + `MERGE_KEYS` 增加该键（由 requirements 阶段写一次） |
+| D9 | `AudioInput.audio_config` | `stage_inputs.py:204` | 黑板无写入者 | BGM 槽位/音量/ducking 配置恒空（与本轮 E2E 里"BGM 槽位为空"互相印证）。修复：同 D8 |
+| D10 | `QualityInput.constraints` | `stage_inputs.py`（未赋值） | `quality_agent.py:68` 读 `input_data.constraints`，但 assemble 里没有 `constraints=` 这一行 | 质检自定义约束恒 `{}`。修复：补装配 + 单测（新增字段必须配契约测试，见 17.5） |
+| D11 | 模板/插件路径 | `animation_agent._handle_mg_animation` | 只把 `persona_style["primary_color"]` 覆盖成 `mg_params["accent"]` | 插件生成动画时拿不到 persona prompt / 字体 / 节奏 / 留白偏好。修复：R6 的 `accepts_persona` + `style_hint` |
+| D12 | `_build_llm_params` | `mg/generator.py:1249-1297` | 按 `param_keys` 位置顺序填 `parts[i]`，与语义键无关 | 曾导致 `{label}` 与 `{q1}` 拿到同一句话（300s 处重影）。已加 `_dedupe_duplicate_text` 守卫，但根因（位置填充）仍在。修复：改为"按语义键名映射 + 位置兜底"，并在 validator 里拒绝"多个文本元素解析后同文" |
+
+### 17.3 `extra_params` 通道：读取但主链路无写入（P2，待逐个确认）
+
+以下键在 Agent 里有读取点，但 `clipwright/` 内找不到写入点（可能由前端 `request.extra` 透传，需逐个确认；
+确认后要么接线，要么删除读取点）：
+
+```
+cut_profile / transition_weights / enable_color_match / lut_path / enable_pv_llm_tools /
+orientation / glossary / visual_config / dry_run / task_id / shot_params
+```
+
+其中 `cut_profile`（`edit_agent.py:380`）与 `transition_weights`（`edit_agent.py:381`）最值得优先查：
+它们本该由"视频类型"驱动剪辑节奏，若恒空则所有类型都用同一套切点策略。
+
+### 17.4 截断与硬编码（P2）
+
+| 类型 | 位置 | 值 | 处理 |
+|---|---|---|---|
+| 截断 | `animation_agent.py:589`（类型化 persona） | `guide[:400]` | 并入 `settings.persona_prompt_max_chars`（R5） |
+| 截断 | `type_specs.py:138` | `style_description[:600]` | 同上，去掉二次截断 |
+| 截断 | `animation_agent.py:1056`（mg_dynamic） | `persona_guide[:2000]` | 统一到同一常量 |
+| 截断 | `structure_agent.py:1034` / `style_interpreter.py:179` | `guide/prompt[:1500]` | 统一常量；超长写 trace |
+| 硬编码 | `animation_agent.py:1537,1539,1541` | `#000000 / #FFFFFF / #FF0000` | R4 删除 |
+
+### 17.5 防复发：契约测试 + CI
+
+新增 `tests/clipwright/test_stage_input_contract.py`：
+
+1. 复用 `scripts/audit_stage_plumbing.py` 的 AST 结果，断言 `dead_entries == []`；
+2. 断言四个 persona 通道在 `persona_id` 非空时装配后非空（`test_visual_context_plumbing.py`）；
+3. 新增 `*Input` 字段时，若既不在黑板白名单、也没有显式构造点与 extra 兜底，
+   必须在 `ALLOW_UNWIRED` 里写明理由，否则测试失败。
+
+CI 命令：
+
+```powershell
+python -m pytest tests/clipwright/test_stage_input_contract.py tests/clipwright/test_visual_context_plumbing.py -q
+python scripts/audit_stage_plumbing.py --strict
+```
+
+### 17.6 与本文档其它章节的关系
+
+- **D7 是 §6/§7 的前提**：层级与可读性方案要落地，必须先有 `vision_prompt` / `allow_scrim` 通道，
+  否则"加底板"会被 `_ensure_no_background` 一律清掉。
+- **D4 与 §5 的 persona 相关阈值互相影响**：色板若恒为黑白红，任何"风格一致性"验收都失去意义。
+- **D12 与 §8 的 Beat Plan 有关**：Beat Plan 依赖"元素语义键"，位置填充会让 beat 映射错位。
+
