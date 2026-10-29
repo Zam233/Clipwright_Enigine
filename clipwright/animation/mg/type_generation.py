@@ -304,6 +304,87 @@ def validate_for_type(
     return issues
 
 
+#: 客观动效阈值（PRD §5.2 首轮建议值；settings 可覆盖同名项）
+MOTION_MIN_COVERAGE = 0.45        # 主运动至少要覆盖片段 45% 的时长
+MOTION_MIN_SHIFT_RATIO = 0.04     # 主运动位移 ≥ 画布宽 4%（1920 宽 ≈ 77px）
+MOTION_MIN_MOVING_ELEMENTS = 2
+
+#: 指标不达标时给 critique 的分数上界（强制走一次修复）
+MOTION_FAIL_SCORE = 45
+
+
+def objective_motion_findings(
+    mg_def: dict[str, Any],
+    duration_s: float,
+    *,
+    width: int = 1920,
+    min_coverage: float | None = None,
+    min_shift_ratio: float | None = None,
+) -> dict[str, Any]:
+    """用客观指标给 mg_def 打分（替代 LLM 自评的"看起来还行"）。
+
+    返回 ``{"ok", "score", "issues", "suggestions", "motion"}``：
+    - ok=False 时 ``score`` 会被压到 ``MOTION_FAIL_SCORE``，促使 critique 走一次修复；
+    - issues/suggestions 是**可执行**的中文指令，直接进修复 prompt。
+    """
+    try:
+        from clipwright.config import settings
+
+        if min_coverage is None:
+            min_coverage = float(getattr(settings, "animation_motion_min_coverage",
+                                         MOTION_MIN_COVERAGE))
+        if min_shift_ratio is None:
+            min_shift_ratio = float(getattr(settings, "animation_motion_min_shift_ratio",
+                                            MOTION_MIN_SHIFT_RATIO))
+    except Exception:  # noqa: BLE001
+        min_coverage = MOTION_MIN_COVERAGE if min_coverage is None else min_coverage
+        min_shift_ratio = MOTION_MIN_SHIFT_RATIO if min_shift_ratio is None else min_shift_ratio
+
+    motion = motion_report(mg_def, duration_s)
+    issues: list[str] = []
+    suggestions: list[str] = []
+
+    shift_ratio = float(motion.get("max_shift") or 0.0) / max(1.0, float(width))
+    coverage = float(motion.get("coverage") or 0.0)
+
+    if int(motion.get("moving_count") or 0) < MOTION_MIN_MOVING_ELEMENTS:
+        issues.append(
+            f"动效元素不足：只有 {motion.get('moving_count')} 个元素有可观测变化"
+        )
+        suggestions.append("至少让 2 个非装饰元素在片段内改变位置/尺寸/透明度")
+
+    if shift_ratio < float(min_shift_ratio):
+        issues.append(
+            f"主运动位移过小：最大位移 {motion.get('max_shift')}px"
+            f"（画布 {width}px 的 {shift_ratio:.1%}，要求 ≥{float(min_shift_ratio):.0%}）"
+        )
+        suggestions.append(
+            f"把主运动的位移/缩放幅度提高到画布宽 {float(min_shift_ratio):.0%} 以上"
+            f"（{width}px 宽时约 {int(width * float(min_shift_ratio))}px），"
+            "不要让元素只做 1-2% 的微动"
+        )
+
+    if coverage < float(min_coverage):
+        issues.append(
+            f"动效只发生在入场阶段：关键帧覆盖 {coverage:.0%} 时长"
+            f"（要求 ≥{float(min_coverage):.0%}）"
+        )
+        suggestions.append(
+            f"把主运动的关键帧铺到片段 ≥{float(min_coverage):.0%} 时长："
+            "可在入场后用缓慢位移/缩放持续到末段，末段保留 0.5-0.8s 静止供阅读"
+        )
+
+    ok = not issues
+    return {
+        "ok": ok,
+        "score": 100 if ok else MOTION_FAIL_SCORE,
+        "issues": issues,
+        "suggestions": suggestions,
+        "motion": motion,
+        "shift_ratio": round(shift_ratio, 4),
+    }
+
+
 def normalize_duration(mg_def: dict[str, Any], duration_s: float) -> dict[str, Any]:
     """把 mg_def 的时长与关键帧时间点对齐到片段时长（就地修正，避免整段弃用）。"""
     if not isinstance(mg_def, dict):
@@ -351,6 +432,12 @@ async def generate_for_type(
         spec, content, duration_s, category, persona, prior_fingerprints)
     prompt_version = prompt_version_of(spec.id)
 
+    # 类型化路径才启用客观动效门禁（PRD §5）：不影响 generate() 的既有语义与成本。
+    prev_gate = getattr(generator, "_motion_gate_enabled", False)
+    try:
+        generator._motion_gate_enabled = True
+    except Exception:  # noqa: BLE001
+        pass
     try:
         raw = await generator.generate(
             description=description,
@@ -366,11 +453,20 @@ async def generate_for_type(
             pipeline_id=pipeline_id,
         )
     except Exception as e:  # noqa: BLE001 — 生成失败必须可回退，不能拖垮整片
+        try:
+            generator._motion_gate_enabled = prev_gate
+        except Exception:  # noqa: BLE001
+            pass
         logger.warning("generate_for_type(%s) 异常: %s", spec.id, e)
         return TypeGenerationResult(
             ok=False, type_id=spec.id, prompt_version=prompt_version,
             issues=[f"生成异常: {e}"],
         )
+
+    try:
+        generator._motion_gate_enabled = prev_gate
+    except Exception:  # noqa: BLE001
+        pass
 
     html = str(raw.get("html") or "")
     mg_def = raw.get("mg_def") if isinstance(raw.get("mg_def"), dict) else {}
@@ -445,7 +541,12 @@ __all__ = [
     "build_type_description",
     "fingerprint_of",
     "generate_for_type",
+    "MOTION_FAIL_SCORE",
+    "MOTION_MIN_COVERAGE",
+    "MOTION_MIN_MOVING_ELEMENTS",
+    "MOTION_MIN_SHIFT_RATIO",
     "motion_report",
+    "objective_motion_findings",
     "normalize_duration",
     "persona_fingerprint",
     "validate_for_type",

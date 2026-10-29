@@ -207,6 +207,10 @@ class Settings(BaseSettings):
     animation_scrim_grow: int = 8
     animation_scrim_blur: float = 6.0
     animation_scrim_light_threshold: float = 140.0
+    # 动效客观门禁（PRD §5）：主运动位移占画布宽比例 / 关键帧覆盖时长比例。
+    # 低于阈值时 critique 会强制走一次定向修复（见 generator._finalize_with_critique）。
+    animation_motion_min_shift_ratio: float = 0.04
+    animation_motion_min_coverage: float = 0.45
     # 素材帧验证是否启用视觉 LLM；默认 False（只做 ffmpeg 抽帧 is_blank + 本地启发式标题匹配）。
     # 打开后 frame_validator 工具调用 ImageAnalyzer 产出 match_score（视觉 API 成本）。
     enable_visual_llm: bool = False

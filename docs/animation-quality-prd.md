@@ -777,3 +777,32 @@ MOV:     24/24 distinct frames, ratio=1.0
 1. **渲染期背景采样兜底**（PRD §7.4 的自动底板）：需要先有"动画层与视频层的像素合成采样"基础设施，属于独立里程碑。
 2. **动效强度进 critique 闭环**（把 coverage / max_shift 作为 critique 输入再修一次）：当前只做"检测 + 记录"，不做二次 LLM 重生成（成本考虑）。
 3. **`mg_fastpath` 与新字段**：`text_shadow` 会让部分片段回退 Chrome 渲染（快路径白名单不含该属性）——功能正确但更慢，后续可把 `text_shadow` 纳入 PIL 快路径。
+
+
+### 18.5 三项工程落地汇总（2026-10-29 第三轮）
+
+| 工程 | 结果 | 提交 |
+|---|---|---|
+| ① mg_fastpath 支持 text_shadow | 静态阴影提升为元素级；**动画阴影**解析成 shadow_tracks 逐帧插值；元素级 rotate 一并支持。真实片段：4 个含阴影的动画里 3 个从「需 Chrome」变快路径命中，单片段 4.5–5.1s（Chrome 30–90s） | `35eed23` |
+| ② 渲染期底板兜底 | `services/anim_scrim.py`：背景亮度采样 + 卡片式底板（bbox 圆角 + 模糊 + alpha）逐帧烘焙进动画 MOV；`render.py::_bake_scrims` 接线。真实对比：浅背景白字 **1.09:1 → 2.30:1**（背景亮度 0.888 → 0.386），深背景亮度门控不误加 | `ed2ae83` |
+| ③ 动效指标进 critique | `type_generation.objective_motion_findings()`：主运动位移占画布比、关键帧覆盖时长、在动元素数三指标；`generator._finalize_with_critique` 把它们**合并进 critique**（不达标时把分数压到 45），即使 critique 关闭也会强制一次定向修复 | 本次提交 |
+
+#### ③ 的验证数据
+
+- 单测 7 条：弱动效被判不达标并给出可执行建议；强动效不触发修复（避免成本）；**critique 关闭时客观门禁仍生效**；阈值可通过 `settings.animation_motion_min_shift_ratio / animation_motion_min_coverage` 调整。
+- 真实片段 A（正常生成）：`motion 6/6、max_shift 130px(6.8%)、coverage 0.98`，LLM 自评触发一次 `critique_repair` 后通过（客观门禁**未误伤**）。
+- 真实片段 B（把真实 mg_def 削弱成"只在入场动"）：削弱后 `coverage=0.17、score=45`；经真实 LLM 修复后 `coverage=0.98、moving 12/12、score=100、issues=[]`，method=`critique_repair`。
+
+#### 阈值与开关
+
+| 项 | 值 | 说明 |
+|---|---|---|
+| `animation_motion_min_shift_ratio` | 0.04 | 主运动位移 ≥ 画布宽 4%（1920 宽 ≈ 77px） |
+| `animation_motion_min_coverage` | 0.45 | 关键帧覆盖 ≥ 片段 45% 时长 |
+| `MOTION_MIN_MOVING_ELEMENTS` | 2 | 至少 2 个非装饰元素在动 |
+| `MOTION_FAIL_SCORE` | 45 | 不达标时压到的分数（必然低于 `critique.min_score=60`） |
+
+#### 仍未做
+
+- **渲染后像素级动效验收集成到流水线**：目前 `verify_animation_motion.py` 是独立脚本，未进 `quality` 阶段自动跑（成本：每段要解码抽帧）。
+- **`letter_spacing` 动画**仍走 Chrome（快路径边界，已在 ① 中记录）。

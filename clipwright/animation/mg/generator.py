@@ -345,7 +345,9 @@ class MGGenerator:
     ) -> dict[str, Any]:
         """背景守卫：禁止**不透明全幅**背景，但允许半透明底板（PRD §17 D7）。
 
-        旧行为：ision_prompt 为空就把所有 bg 清成 transparent——而 ision_prompt
+        旧行为：
+ision_prompt 为空就把所有 bg 清成 transparent——而 
+ision_prompt
         在真实 pipeline 里从来没有生产者，于是所有动画都没有底板，文字直接压在实拍
         画面上（浅背景不可读）。现在：
         - llow_scrim（默认取 settings.animation_allow_scrim）为真时，**保留**
@@ -583,6 +585,17 @@ class MGGenerator:
             )
         return None
 
+    def _objective_motion_gate(self, mg_def: dict[str, Any], width: int | None = None):
+        """计算客观动效指标（失败返回 None，绝不影响主流程）。"""
+        try:
+            from clipwright.animation.mg.type_generation import objective_motion_findings
+
+            dur = float(mg_def.get("duration_sec") or 0) or 1.0
+            return objective_motion_findings(mg_def, dur, width=int(width or 1920))
+        except Exception:  # noqa: BLE001
+            logger.debug("MGGenerator: 客观动效门禁计算失败", exc_info=True)
+            return None
+
     async def _finalize_with_critique(
         self,
         mg_def: dict[str, Any],
@@ -597,10 +610,15 @@ class MGGenerator:
         width: int | None = None,
         height: int | None = None,
         fps: float = 30.0,
+        motion_gate: bool | None = None,
     ) -> dict[str, Any] | None:
         """校验通过后的质量出口：LLM 自批判 + 必要时一次修复重试。
 
-        返回成功响应；批判修复失败时返回 None（调用方进入降级）。
+        ``motion_gate``：是否启用**客观动效门禁**（PRD §5）。缺省取实例标志
+        ``_motion_gate_enabled``，再缺省 False——保持 `generate()` 既有契约不变；
+        只有类型化生成（`generate_for_type`）会显式打开。
+
+        返回成功响应；批判修复失败时返回 None（调用方进入降级）；
         批判 LLM 调用失败/禁用时静默跳过批判，直接接受当前输出（不降级）。
         """
         # web_context 非空才传参：空（默认）与旧行为逐字节一致，
@@ -612,15 +630,48 @@ class MGGenerator:
             mg_def, description, persona_style, category_context, vision_prompt,
             **critique_kwargs,
         )
+
+        # 客观动效门禁（PRD §5 / §8）：LLM 自评容易"看着还行"，这里用可计算的
+        # 指标（主运动位移占画布比例、关键帧覆盖时长、在动元素数）兜底。
+        # 即使 critique 被禁用/失败，这条门禁仍然生效。
+        gate_on = (getattr(self, "_motion_gate_enabled", False)
+                   if motion_gate is None else bool(motion_gate))
+        objective = self._objective_motion_gate(mg_def, width=width) if gate_on else None
+        objective_ok = objective is None or bool(objective.get("ok"))
+        # 修复动机：只看 LLM 自评（原语义）还是被客观门禁拉起。
+        # 后者修复失败时**接受原输出**——客观指标是质量优化，不该把整段动画
+        # 拖进 fallback（会改变 method 契约，也让弱动效片段变成模板）。
+        llm_score = None if critique is None else int(critique.get("score", 100) or 100)
+        objective_driven = (not objective_ok) and (llm_score is None or llm_score >= 60)
+
         params = self._build_llm_params(mg_def, text_content, persona_style)
-        if critique is None:
-            # LLM 评估失败（或 critique 禁用）→ 静默跳过，不降级
+        if critique is None and (objective is None or objective.get("ok")):
+            # LLM 评估失败（或 critique 禁用）且客观指标通过 → 直接接受
             return await self._build_success(mg_def, method, params=params,
                                        width=width, height=height, fps=fps,
                                        description=description,
                                        text_content=text_content,
                                        persona_style=persona_style,
                                        vision_prompt=vision_prompt)
+        if critique is None:
+            critique = {
+                "score": int(objective.get("score", 0)),
+                "issues": list(objective.get("issues") or []),
+                "suggestions": list(objective.get("suggestions") or []),
+            }
+        elif objective is not None and not objective.get("ok"):
+            merged = dict(critique)
+            merged["score"] = min(int(critique.get("score", 100) or 100),
+                                  int(objective.get("score", 0)))
+            merged["issues"] = list(critique.get("issues") or []) + list(objective.get("issues") or [])
+            merged["suggestions"] = (list(critique.get("suggestions") or [])
+                                     + list(objective.get("suggestions") or []))
+            critique = merged
+            self._trace_event(
+                None, "motion_gate",
+                "客观动效指标未达标 → 强制一次定向修复",
+                {"motion": objective.get("motion"), "issues": objective.get("issues")},
+            )
 
         score = critique.get("score", 100)
         issues = critique.get("issues", [])
@@ -712,6 +763,26 @@ class MGGenerator:
                 vision_prompt=vision_prompt,
                 critique_score=score,
             )
+
+        if objective_driven:
+            # 客观门禁拉起、但修复没产出 → 接受原输出（记录指标，供质量报告追溯）
+            logger.warning(
+                "MGGenerator: 客观动效门禁修复无产出，接受原输出（motion=%s）",
+                (objective or {}).get("issues"),
+            )
+            self._trace_event(
+                None, "motion_gate",
+                "客观动效指标未达标且修复无产出，接受原输出",
+                {"motion": (objective or {}).get("motion"),
+                 "issues": (objective or {}).get("issues")},
+            )
+            return await self._build_success(mg_def, method, params=params,
+                                       width=width, height=height, fps=fps,
+                                       description=description,
+                                       text_content=text_content,
+                                       persona_style=persona_style,
+                                       vision_prompt=vision_prompt,
+                                       critique_score=score)
 
         logger.warning("MGGenerator: 批判修复失败(score=%d)，进入降级", score)
         return None
