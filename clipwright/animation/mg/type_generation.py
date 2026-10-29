@@ -50,6 +50,8 @@ class TypeGenerationResult:
     prompt_version: str = ""
     issues: list[str] = field(default_factory=list)
     motion: dict[str, Any] = field(default_factory=dict)
+    #: 可读性自动修复记录（补了哪些 text_shadow），进 metadata 便于审计
+    readability_fix: list[str] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -62,6 +64,7 @@ class TypeGenerationResult:
             "prompt_version": self.prompt_version,
             "issues": list(self.issues),
             "motion": dict(self.motion),
+            "readability_fix": list(self.readability_fix),
             "raw": self.raw,
         }
 
@@ -164,6 +167,7 @@ def motion_report(mg_def: dict[str, Any], duration_s: float) -> dict[str, Any]:
                     "translate_x", "translate_y", "rotate")
     moving: list[str] = []
     max_shift = 0.0
+    last_move_at = 0.0
     for idx, elem in enumerate(_iter_elements(mg_def)):
         etype = str(elem.get("type") or "")
         if etype in ("bg",):
@@ -173,13 +177,23 @@ def motion_report(mg_def: dict[str, Any], duration_s: float) -> dict[str, Any]:
             continue
         shifted = False
         for key in numeric_keys:
-            vals = [float(k.get(key)) for k in kfs
-                    if isinstance(k.get(key), (int, float)) and not isinstance(k.get(key), bool)]
-            if len(vals) >= 2:
+            series = [
+                (float(k.get("time") or 0), float(k.get(key)))
+                for k in kfs
+                if isinstance(k.get(key), (int, float)) and not isinstance(k.get(key), bool)
+            ]
+            if len(series) >= 2:
+                vals = [v for _t, v in series]
                 span = max(vals) - min(vals)
                 max_shift = max(max_shift, span)
-                if span >= (0.05 if key == "opacity" else MOTION_EPS):
+                threshold = 0.05 if key == "opacity" else MOTION_EPS
+                if span >= threshold:
                     shifted = True
+                # 最后一次「相邻关键帧之间的可观测变化」的时间点（不是末帧时间：
+                # 末帧常常只是保持，用它会把 coverage 高估成 1.0）
+                for (t0, v0), (t1, v1) in zip(series, series[1:]):
+                    if abs(v1 - v0) >= threshold:
+                        last_move_at = max(last_move_at, t1)
         # 非数值属性（如 x='center' → x='left'）变化也算动
         for key in ("x", "y", "easing", "content", "text"):
             vals = [k.get(key) for k in kfs if isinstance(k.get(key), str)]
@@ -189,13 +203,44 @@ def motion_report(mg_def: dict[str, Any], duration_s: float) -> dict[str, Any]:
             moving.append(str(elem.get("id") or f"{etype}#{idx}"))
 
     total = max(1, len(list(_iter_elements(mg_def))))
+    dur = max(0.1, float(duration_s or 0.1))
+    # coverage：最后一次可观测运动发生在片段的百分之几（1.0 = 动到最后）
+    coverage = round(min(1.0, last_move_at / dur), 2) if last_move_at else 0.0
     return {
         "moving_elements": moving,
         "moving_count": len(moving),
         "total_elements": total,
         "max_shift": round(max_shift, 3),
+        "coverage": coverage,
         "ok": len(moving) >= 2,
     }
+
+
+#: 自动修复用的默认文字投影（不改内容、不改布局，只加可读性）
+_DEFAULT_TEXT_SHADOW = "0 3px 10px rgba(0,0,0,0.9)"
+
+
+def ensure_readability(mg_def: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    '''可读性硬门禁的确定性修复：给裸露文本补投影。
+
+    为什么不用「再调一次 LLM 修复」：投影是纯机械补丁，零成本零幻觉；
+    重跑 LLM 既慢又可能改坏内容。渲染期的采样式底板兜底另见 PRD §7。
+
+    返回 ``(mg_def, fixes)``；fixes 记录补了哪些元素（进 metadata 便于审计）。
+    '''
+    if not isinstance(mg_def, dict):
+        return mg_def, []
+    fixes: list[str] = []
+    for idx, elem in enumerate(_iter_elements(mg_def)):
+        if str(elem.get("type")) != "text":
+            continue
+        shadow = elem.get("text_shadow") or elem.get("shadow_blur") or elem.get("shadow_color")
+        stroke = elem.get("text_stroke") or elem.get("stroke_width")
+        if shadow or stroke:
+            continue
+        elem["text_shadow"] = _DEFAULT_TEXT_SHADOW
+        fixes.append(str(elem.get("id") or f"text#{idx}"))
+    return mg_def, fixes
 
 
 def validate_for_type(
@@ -250,6 +295,11 @@ def validate_for_type(
     if bare_texts:
         issues.append(
             f"可读性风险：{bare_texts} 个文本元素无描边/投影/底板（浅背景上会看不清）"
+        )
+    coverage = float(motion.get("coverage") or 0.0)
+    if coverage and coverage < 0.45:
+        issues.append(
+            f"动效集中在入场阶段（关键帧只覆盖 {coverage:.0%} 时长，建议 ≥45%）"
         )
     return issues
 
@@ -334,6 +384,18 @@ async def generate_for_type(
 
     mg_def = normalize_duration(mg_def, duration_s)
     issues = validate_for_type(mg_def, spec, duration_s)
+
+    # 可读性硬门禁（PRD §17 D7）：确定性补投影，不靠再调一次 LLM。
+    readability_fix: list[str] = []
+    if any("可读性风险" in i for i in issues):
+        mg_def, readability_fix = ensure_readability(mg_def)
+        if readability_fix:
+            logger.info(
+                "generate_for_type(%s): 自动补 text_shadow %d 处（可读性硬门禁）",
+                spec.id, len(readability_fix),
+            )
+            issues = validate_for_type(mg_def, spec, duration_s)
+
     motion = motion_report(mg_def, duration_s)
     blocking = [i for i in issues if i.startswith("动画近乎静止") or i.startswith("元素数量")]
     ok = not blocking
@@ -362,6 +424,7 @@ async def generate_for_type(
         prompt_version=prompt_version,
         issues=issues,
         motion=motion,
+        readability_fix=readability_fix,
         raw=raw,
     )
 

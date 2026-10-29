@@ -51,9 +51,10 @@ def _mg_def_with_bg() -> dict:
 class TestContextSectionForbidsBackground:
     def test_context_section_forbids_background(self) -> None:
         section = MGGenerator._build_context_section({}, {}, "")
-        assert "禁止背景" in section
-        # 约束必须指向透明背景，而非鼓励生成背景层
-        assert "transparent" in section
+        # PRD §17 D7 契约变更：不再"禁止背景"，而是"禁止不透明全幅、允许半透明底板"。
+        assert "禁止**不透明全幅**底色" in section or "不透明全幅" in section
+        assert "rgba(" in section, "应给出可用的半透明底板取值指引"
+        assert "text_shadow" in section or "text_stroke" in section, "应要求文字自带投影/描边"
 
     def test_context_section_forbids_background_with_palette(self) -> None:
         persona_style = {
@@ -62,7 +63,7 @@ class TestContextSectionForbidsBackground:
             "accent_color": "#FF0000",
         }
         section = MGGenerator._build_context_section(persona_style, {}, "")
-        assert "禁止背景" in section
+        assert "不透明全幅" in section
         # 回归：最终约束块仍以蓝紫禁令收尾（persona 色板测试依赖）
         assert section.rstrip().endswith("禁止默认蓝紫科技渐变、发光粒子、彩虹渐变。")
 

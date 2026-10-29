@@ -773,6 +773,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "type_prompt_version": result.prompt_version,
                 "motion": result.motion,
                 "type_issues": result.issues[:6],
+                # 可读性硬门禁的自动修复记录（补了哪些 text_shadow）
+                "readability_fix": getattr(result, "readability_fix", []) or [],
+                "persona_fingerprint": (persona_style or {}).get("persona_fingerprint"),
+                "persona_source": (persona_style or {}).get("persona_source"),
                 "position": "center",
             },
         )

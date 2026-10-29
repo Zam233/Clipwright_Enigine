@@ -746,3 +746,34 @@ MOV 逐帧验收: 24/24 distinct frames → ratio 1.0（修复前同类批次 3/
 | `extra_params` 其余 10 个无写入键 | `cut_profile`/`cut_density_tier` 已由 persona rhythm 兜底 | 其余（`orientation`/`glossary`/`shot_params`/`enable_color_match` 等）逐个确认：接线或删读取点 |
 | 视觉上下文指纹进生成缓存 | 已产出 `persona_fingerprint` 并按 description 影响缓存，但未直接拼进 `_mg_cache_key` | 下一轮把 fingerprint 显式加入缓存键，避免不同 persona 命中同一缓存 |
 
+
+### 18.4 遗留项闭环（2026-10-29 第二轮）
+
+| 遗留项 | 处理结果 | 落点 |
+|---|---|---|
+| 底板/描边只是提示词要求 | **已升级为确定性硬门禁**：`ensure_readability()` 给裸文本补 `text_shadow`（零成本、不改内容/布局），`generate_for_type` 检测到「可读性风险」即自动修复并重校验；修复记录写 `metadata.readability_fix` | `animation/mg/type_generation.py`、`agents/animation_agent.py` |
+| 动效强度不均 | `motion_report` 新增 `coverage`（**最后一次相邻关键帧实际变化**的时间占比，不用末帧时间，避免高估成 1.0）；`validate_for_type` 在 coverage < 45% 时报「动效集中在入场阶段」 | `animation/mg/type_generation.py` |
+| 插件 `accepts_persona` 声明位 | 暂不新增 manifest 字段（pydantic 严格模式，改 schema 影响面大）；改为**约定式**：模板可用 `{style_hint}` / `{persona}` 占位符消费 persona，`_handle_mg_animation` 已注入 `mg_params["style_hint"]` 与 `persona_fingerprint` | `agents/animation_agent.py` |
+| `persona_fingerprint` 进缓存键 | **已确认生效**：`_mg_cache_key` 对整个 `persona_style` 做 JSON 哈希，而 execute 已把 `persona_fingerprint` 写进 persona_style；补了回归测试断言「不同 fingerprint → 不同缓存键」 | `mg/generator.py::_mg_cache_key`、测试 |
+| 其余 `extra_params` 无写入键 | 已接线 `shot_params`（来源=category 插件的 `get_shot_params()`）与 rhythm 三键（`cut_profile`/`cut_density_tier`/`base_shot_duration_ms`），并把补齐结果**回写 `ctx.extra_params`** 让非 assemble 读取点也生效；`orientation`/`glossary`/`lace` 类仍为预留（前端无入口） | `services/stage_inputs.py` |
+
+#### 验证（单片段，仍只给 `persona_id=Zam`）
+
+```
+persona: source=persona_store, prompt_chars=1713, fingerprint=68fd838c7332
+clip:    comparison / mg_hyperframes / method=critique_repair / issues=[]
+motion:  moving 7/7, max_shift=230px(≈12% 画布), coverage=0.98（动到片尾）
+readability: 4 个文本自带 text_shadow（LLM 直接满足，自动补丁未触发——符合"仅在裸文本时补"的语义）
+MOV:     24/24 distinct frames, ratio=1.0
+```
+
+#### 回归
+
+- 后端 `pytest tests -q`：见本轮提交说明（新增 6 条闭环测试，累计 4646 条）。
+- 审计：`python scripts/audit_stage_plumbing.py --strict` → 退出码 0。
+
+#### 仍未做（明确边界）
+
+1. **渲染期背景采样兜底**（PRD §7.4 的自动底板）：需要先有"动画层与视频层的像素合成采样"基础设施，属于独立里程碑。
+2. **动效强度进 critique 闭环**（把 coverage / max_shift 作为 critique 输入再修一次）：当前只做"检测 + 记录"，不做二次 LLM 重生成（成本考虑）。
+3. **`mg_fastpath` 与新字段**：`text_shadow` 会让部分片段回退 Chrome 渲染（快路径白名单不含该属性）——功能正确但更慢，后续可把 `text_shadow` 纳入 PIL 快路径。

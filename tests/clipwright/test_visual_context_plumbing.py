@@ -186,3 +186,72 @@ def test_readability_issue_flags_bare_text_without_shadow_or_scrim():
     mg_def["elements"].append({"type": "bg", "background": "rgba(0,0,0,0.4)"})
     issues2 = TG.validate_for_type(mg_def, spec, 6.0)
     assert not any("可读性风险" in i for i in issues2)
+
+# ── 闭环项：可读性硬门禁 / coverage / 缓存键 / shot_params ──
+
+def test_ensure_readability_adds_shadow_only_to_bare_text():
+    mg = {"duration_sec": 6.0, "elements": [
+        {"type": "text", "content": "{a}", "keyframes": [
+            {"time": 0, "opacity": 0}, {"time": 1, "opacity": 1}]},
+        {"type": "text", "content": "{b}", "text_shadow": "0 2px 4px #000", "keyframes": [
+            {"time": 0, "translate_y": 10}, {"time": 1, "translate_y": 0}]},
+    ]}
+    out, fixes = TG.ensure_readability(mg)
+    assert fixes == ["text#0"]
+    assert out["elements"][0]["text_shadow"]
+    assert out["elements"][1]["text_shadow"] == "0 2px 4px #000"
+
+
+def test_motion_coverage_measures_last_actual_change():
+    mg = {"duration_sec": 6.0, "elements": [
+        {"type": "text", "content": "{a}", "keyframes": [
+            {"time": 0, "translate_x": -40}, {"time": 1.2, "translate_x": 0},
+            {"time": 6, "translate_x": 0}]},
+        {"type": "text", "content": "{b}", "keyframes": [
+            {"time": 0, "translate_y": 20}, {"time": 1.0, "translate_y": 0},
+            {"time": 6, "translate_y": 0}]},
+    ]}
+    report = TG.motion_report(mg, 6.0)
+    assert 0.15 <= report["coverage"] <= 0.25, "coverage 应按最后一次实际变化计算，而不是末帧时间"
+
+
+def test_validate_flags_motion_limited_to_entrance():
+    spec = get_spec("comparison")
+    mg = {"duration_sec": 6.0, "elements": [
+        {"type": "text", "content": "{a}", "text_shadow": "0 2px 4px #000", "keyframes": [
+            {"time": 0, "opacity": 0}, {"time": 0.8, "opacity": 1}, {"time": 6, "opacity": 1}]},
+        {"type": "text", "content": "{b}", "text_shadow": "0 2px 4px #000", "keyframes": [
+            {"time": 0, "opacity": 0}, {"time": 0.9, "opacity": 1}, {"time": 6, "opacity": 1}]},
+    ]}
+    issues = TG.validate_for_type(mg, spec, 6.0)
+    assert any("动效集中在入场阶段" in i for i in issues)
+
+
+def test_cache_key_differs_by_persona_fingerprint():
+    from clipwright.animation.mg.generator import _mg_cache_key
+
+    a = _mg_cache_key("desc", "text", {"persona_fingerprint": "aaa"})
+    b = _mg_cache_key("desc", "text", {"persona_fingerprint": "bbb"})
+    assert a != b, "不同 persona 不得命中同一条生成缓存"
+
+
+def test_shot_params_filled_from_category_plugin(monkeypatch):
+    # 真实运行里 category 插件由 load-all 注册；单测用假插件验证接线逻辑本身
+    class _FakeCategory:
+        def get_shot_params(self, _payload):
+            return {"shot_len_sec": 4.5, "cut_density": "中高"}
+
+    from clipwright.category.registry import CategoryRegistry
+
+    monkeypatch.setattr(CategoryRegistry, "get", classmethod(lambda cls, _pid: _FakeCategory()))
+    ctx = AgentContext(pipeline_id="p", persona_id="Zam",
+                       category_plugin_id="knowledge_longform", topic="t", extra_params={})
+    stage_inputs.assemble("animation", task=_fake_task(), board={"timeline": _timeline()}, context=ctx)
+    assert ctx.extra_params.get("shot_params") == {"shot_len_sec": 4.5, "cut_density": "中高"}
+
+
+def test_rhythm_defaults_written_back_to_context():
+    ctx = AgentContext(pipeline_id="p", persona_id="Zam",
+                       category_plugin_id="knowledge_longform", topic="t", extra_params={})
+    stage_inputs.assemble("animation", task=_fake_task(), board={"timeline": _timeline()}, context=ctx)
+    assert ctx.extra_params.get("cut_profile"), "persona rhythm 应回写到 ctx.extra_params"

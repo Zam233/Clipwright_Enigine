@@ -132,6 +132,14 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
     # persona rhythm（cut_profile / cut_density_tier）此前有读取点但无写入者：
     # 用装配结果补齐 extra 里的空缺键，不改调用方已有的显式值。
     extra = apply_rhythm_defaults(extra, visual_ctx)
+    # 把补齐结果写回 context，让下游非 assemble 读取点（type_spec_runtime 的
+    # shot_params / cut_profile 等）也拿得到——否则兜底只在本次 Input 构造里有效。
+    try:
+        context_params = getattr(ctx, "extra_params", None)
+        if isinstance(context_params, dict):
+            context_params.update({k: v for k, v in extra.items() if k not in context_params})
+    except Exception:  # noqa: BLE001
+        pass
     vm = visual_ctx.visual_config
 
     def _cfg(key: str) -> dict[str, Any]:
@@ -140,6 +148,20 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
         if not value:
             value = extra.get(key)
         return dict(value or {}) if isinstance(value, dict) else {}
+
+    # shot_params 此前只有读取点（type_spec_runtime），没有写入者；category 插件
+    # 本身提供 get_shot_params()，是明确来源。缺失时补一次，不覆盖显式值。
+    if not extra.get("shot_params") and getattr(ctx, "category_plugin_id", None):
+        try:
+            from clipwright.category.registry import CategoryRegistry
+
+            cat = CategoryRegistry.get(str(ctx.category_plugin_id))
+            if cat is not None and hasattr(cat, "get_shot_params"):
+                extra["shot_params"] = cat.get_shot_params({}) or {}
+                if isinstance(getattr(ctx, "extra_params", None), dict):
+                    ctx.extra_params.setdefault("shot_params", extra["shot_params"])
+        except Exception:  # noqa: BLE001
+            pass
 
     miss = [k for k in REQUIRED_KEYS.get(stage, ()) if k not in data]
     if miss:
