@@ -378,7 +378,13 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                     + "；".join(_type_resolution.deformation.get("reasons") or [])
                 )
             cut_profile = context.extra_params.get("cut_profile", "even_flow")
-            transition_weights = context.extra_params.get("transition_weights", {})
+            # transition_weights 此前只有读取点（无写入者）。合理来源是「视频类型」
+            # 的镜头参数：类型插件若声明了转场权重就用它，否则空字典（保持现状）。
+            transition_weights = (
+                context.extra_params.get("transition_weights")
+                or (shot_params or {}).get("transition_weights")
+                or {}
+            )
             # 节拍对齐剪辑 beat-sync — cut_on_beat + BPM（来自类型配置/音频检测）
             cut_on_beat = bool(context.extra_params.get("cut_on_beat", False))
             beat_bpm = float(context.extra_params.get("bpm", 120) or 120)
@@ -916,7 +922,16 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             # 轮 83（知识区门槛）：跨镜头色彩统一——按时间线平均亮度把每个
             # 视频片段的 fx_brightness 钳制到 [0.8, 1.25]，消除多源素材拼接
             # 的明暗跳变。enable_color_match 可开关（默认关，零行为变化）。
-            if bool(context.extra_params.get("enable_color_match")):
+            _color_match_on = bool(context.extra_params.get("enable_color_match"))
+            if not _color_match_on:
+                try:
+                    from clipwright.config import settings as _settings
+
+                    # 死键兜底：请求没传时读全局开关（默认关，行为不变）
+                    _color_match_on = bool(getattr(_settings, "edit_enable_color_match", False))
+                except Exception:  # noqa: BLE001
+                    _color_match_on = False
+            if _color_match_on:
                 try:
                     matched = await self._match_clip_luma(timeline)
                     if matched:
@@ -926,7 +941,11 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
 
             # 轮 84（数码评测专项）：全局 LUT——extra_params.lut_path（.cube，
             # 白名单内）写入所有视频片段 metadata，渲染端 lut3d 消费
-            _lut_path = str(context.extra_params.get("lut_path") or "").strip()
+            _lut_path = str(
+                context.extra_params.get("lut_path")
+                or (input_data.creative_brief or {}).get("lut_path")
+                or ""
+            ).strip()
             if _lut_path and Path(_lut_path).is_file() and _lut_path.lower().endswith(".cube"):
                 for t in timeline.tracks:
                     if t.kind != ClipKind.VIDEO:
@@ -944,7 +963,15 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
 
             # 可选：让 LLM 用实时工具面（白名单）做一轮受控自检/修复建议。
             # 默认关闭（额外 LLM 成本），需要时 extra_params.enable_pv_llm_tools=true。
-            if _pv_project and bool(context.extra_params.get("enable_pv_llm_tools")):
+            _pv_llm_on = bool(context.extra_params.get("enable_pv_llm_tools"))
+            if not _pv_llm_on:
+                try:
+                    from clipwright.config import settings as _settings
+
+                    _pv_llm_on = bool(getattr(_settings, "edit_enable_pv_llm_tools", False))
+                except Exception:  # noqa: BLE001
+                    _pv_llm_on = False
+            if _pv_project and _pv_llm_on:
                 _loop = await self.run_tool_loop(
                     system_prompt=("你是 PV 引擎编排助手。只使用给定工具检查项目，"
                                    "发现问题给出可执行的修复建议，不要编造文件路径。"),

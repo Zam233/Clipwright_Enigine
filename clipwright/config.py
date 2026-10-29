@@ -217,6 +217,10 @@ class Settings(BaseSettings):
     animation_motion_check_fps: int = 4
     animation_motion_check_min_frames: int = 8
     animation_motion_check_min_ratio: float = 0.25
+    # 编辑期开关（此前 extra_params 里只有读取点、没有写入者）：
+    # 请求显式传值时优先，否则用这里的全局默认（都默认关，行为不变）。
+    edit_enable_color_match: bool = False
+    edit_enable_pv_llm_tools: bool = False
     # 素材帧验证是否启用视觉 LLM；默认 False（只做 ffmpeg 抽帧 is_blank + 本地启发式标题匹配）。
     # 打开后 frame_validator 工具调用 ImageAnalyzer 产出 match_score（视觉 API 成本）。
     enable_visual_llm: bool = False

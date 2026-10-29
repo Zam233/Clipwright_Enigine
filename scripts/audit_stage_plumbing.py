@@ -36,6 +36,25 @@ INPUT_CLASSES = {
     "AudioInput", "QualityInput",
 }
 
+#: 由**外部请求**或**统一装配层**写入的 extra_params 键：静态扫描看不到写入点
+#: （HTTP 请求体 / persona rhythm / category 插件 / settings 兜底），但运行时确有来源。
+#: 新增条目必须写清来源，否则就是死键。
+EXTERNAL_EXTRA_KEYS: dict[str, str] = {
+    "dry_run": "客户端请求体（req.extra_params）",
+    "task_id": "Task.id 兜底（stage_inputs.context_of）",
+    "cut_profile": "persona rhythm（visual_context.apply_rhythm_defaults）",
+    "cut_density_tier": "persona rhythm（同上）",
+    "base_shot_duration_ms": "persona rhythm（同上）",
+    "shot_params": "category 插件 get_shot_params（stage_inputs 注入 ctx）",
+    "glossary": "brief.glossary 兜底（quality_agent）",
+    "orientation": "brief.asset_ratio 推导（material_agent）",
+    "lut_path": "brief.lut_path 兜底（edit_agent）",
+    "enable_color_match": "settings.edit_enable_color_match 兜底",
+    "enable_pv_llm_tools": "settings.edit_enable_pv_llm_tools 兜底",
+    "transition_weights": "category shot_params 兜底",
+    "visual_config": "visual_context 统一装配（不再从 extra 读）",
+}
+
 #: 已确认「故意不接线」的字段（每条必须有理由，否则就是缺陷）
 ALLOW_UNWIRED: dict[str, str] = {
     "StructureInput.context": "由 assemble 参数 ctx 直接注入，不走 data",
@@ -266,7 +285,12 @@ def run() -> dict[str, Any]:
         "dead_entries": dead,
         "persona_channels": persona_channels,
         "extra_params_read_without_writer": {
-            k: v for k, v in reads.items() if k not in writes
+            k: v for k, v in reads.items()
+            if k not in writes and k not in EXTERNAL_EXTRA_KEYS
+        },
+        "extra_params_external_channels": {
+            k: {"sites": reads[k], "source": EXTERNAL_EXTRA_KEYS[k]}
+            for k in reads if k in EXTERNAL_EXTRA_KEYS
         },
         "prompt_truncations": truncations(),
         "hardcoded_persona_colors": hardcoded_persona_colors(),

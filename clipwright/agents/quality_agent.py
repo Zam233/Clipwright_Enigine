@@ -50,6 +50,14 @@ _SEMANTIC_QA_DEFAULT_ON = {"digital_review", "knowledge_longform"}
 _GLOSSARY_MAX_ISSUES = 10  # 词表校验最多报的问题数，防长文本刷屏
 
 
+def select_glossary(brief: dict | None, extra_params: dict | None = None) -> list:
+    """术语表：请求 extra 优先，其次 brief.glossary；都没有则空列表。"""
+    for source in ((extra_params or {}).get("glossary"), (brief or {}).get("glossary")):
+        if isinstance(source, list) and source:
+            return [str(x) for x in source if str(x).strip()]
+    return []
+
+
 class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
     """质检 Agent：校验时间线是否符合 Persona 规范和硬约束。"""
 
@@ -341,7 +349,7 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         # ── 11. 术语词表校验（轮 84 数码评测专项；glossary 非空才执行）──
         # 型号/参数/品牌词拼写是评测类发布的硬约束；纯确定性检查（编辑距离
         # ≤2 的近似词 → error），零 LLM 开销。
-        glossary = context.extra_params.get("glossary") or []
+        glossary = select_glossary(input_data.creative_brief, context.extra_params)
         if isinstance(glossary, list) and glossary:
             issues.extend(self._check_glossary(timeline, [str(t) for t in glossary if str(t).strip()]))
 

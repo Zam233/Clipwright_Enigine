@@ -638,6 +638,17 @@ def clear_material_vision_cache() -> None:
 
 
 
+def orientation_from_brief(
+    brief: dict | None, extra_params: dict | None = None,
+) -> str:
+    """素材方向：显式 extra 优先，其次按 brief.asset_ratio 推导（竖屏比例→portrait）。"""
+    explicit = str((extra_params or {}).get("orientation") or "").strip()
+    if explicit in ("portrait", "landscape"):
+        return explicit
+    ratio = str((brief or {}).get("asset_ratio") or "").replace(" ", "")
+    return "portrait" if ratio in ("9:16", "3:4", "4:5") else "landscape"
+
+
 class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
     """素材 Agent：根据脚本骨架语义检索匹配素材。"""
 
@@ -823,7 +834,10 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
             if isinstance(source_ids, list) and len(source_ids) == 0:
                 source_ids = None
 
-            pref_orientation = context.extra_params.get("orientation", "landscape")
+            # orientation 此前只有读取点。来源：显式 extra → brief.asset_ratio（9:16 竖屏）
+            pref_orientation = orientation_from_brief(
+                input_data.creative_brief, context.extra_params
+            )
 
             # ── 视觉 LLM 分析开关 ──
             # 显式插件配置优先；未显式配置时，LLM 已配置（含 Ollama base_url）则默认开启

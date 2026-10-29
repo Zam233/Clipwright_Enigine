@@ -806,3 +806,35 @@ MOV:     24/24 distinct frames, ratio=1.0
 
 - **渲染后像素级动效验收集成到流水线**：目前 `verify_animation_motion.py` 是独立脚本，未进 `quality` 阶段自动跑（成本：每段要解码抽帧）。
 - **`letter_spacing` 动画**仍走 Chrome（快路径边界，已在 ① 中记录）。
+
+
+### 18.6 遗留③：extra_params 死键清理（2026-10-29 第四轮）
+
+PRD §17.3 列出的「有读取点、扫描不到写入点」的键，逐个确认后分三类处理：
+
+| 键 | 处理 | 来源/落点 |
+|---|---|---|
+| `transition_weights` | **接线** | 优先请求 extra，其次 `shot_params["transition_weights"]`（category 插件） |
+| `enable_color_match` | **接线** | 请求 extra 优先，否则 `settings.edit_enable_color_match`（默认关，行为不变） |
+| `enable_pv_llm_tools` | **接线** | 同上，`settings.edit_enable_pv_llm_tools` |
+| `lut_path` | **接线** | 请求 extra 优先，其次 `creative_brief.lut_path` |
+| `orientation` | **接线** | 请求 extra 优先，其次 `brief.asset_ratio` 推导（9:16 / 3:4 / 4:5 → portrait），默认 landscape |
+| `glossary` | **接线** | 请求 extra 优先，其次 `brief.glossary`，都没有则空（不触发术语校验） |
+| `visual_config`（`catalog.resolve_text_style`） | **删读取点** | 该键已由 `visual_context` 统一装配；旧的二次兜底等于第二套来源，容易与 persona 装配结果冲突 |
+| `dry_run` / `task_id` | **确认为外部输入** | 前者来自客户端请求体，后者是 `Task.id` 的兜底；不写代码，登记到审计白名单 |
+| `cut_profile` / `cut_density_tier` / `base_shot_duration_ms` / `shot_params` | **确认为装配层注入** | persona rhythm（`visual_context.apply_rhythm_defaults`）与 category 插件（`stage_inputs`）写入 `ctx.extra_params`，静态扫描看不到 |
+
+#### 防复发
+
+- `scripts/audit_stage_plumbing.py` 新增 `EXTERNAL_EXTRA_KEYS`：外部/装配层来源必须在这里**写明出处**，报告里单列 `extra_params_external_channels`；未登记的「读取但无写入」键会让 `extra_params_read_without_writer` 非空。
+- 新增 `tests/clipwright/test_dead_extra_keys.py`（11 条）：`orientation_from_brief` / `select_glossary` 的优先级与默认值；edit 三处兜底的源码契约（防兜底被删）；`edit_enable_color_match` / `edit_enable_pv_llm_tools` 字段存在；**审计 strict 结果为 0**。
+
+#### 验证
+
+```
+python scripts/audit_stage_plumbing.py --strict        # 退出码 0；dead_entries=[]；read_without_writer={}
+python -m pytest tests/clipwright/test_dead_extra_keys.py -q   # 11 passed
+```
+
+真实输入默认路径：当前 e2e workspace 没有 brief.glossary / lut_path / asset_ratio → `orientation=landscape`、`glossary=[]`、`lut_path` 不写入，与前一轮成片行为一致（零回归）。
+
