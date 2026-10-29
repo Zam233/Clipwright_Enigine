@@ -147,15 +147,17 @@ async def edit_timeline(req: EditRequest, request: Request) -> dict:
 
     整体用 wait_for 兜底：即使底层 Agent/LLM 意外卡死，也保证在时限内返回可重试错误。
     """
-    EDIT_HARD_TIMEOUT = 0  # 0 = 不设超时
+    EDIT_HARD_TIMEOUT = 0  # 0 = 不设超时（必须走 timeouts.wait_or_run，不能直接给 wait_for）
     try:
-        result = await asyncio.wait_for(
+        from clipwright.services.timeouts import wait_or_run
+
+        result = await wait_or_run(
             _service.edit_timeline(
                 req.session_id, req.message, req.timeline, req.selected_clip_ids,
                 region_start_sec=req.region_start_sec,
                 region_end_sec=req.region_end_sec,
             ),
-            timeout=EDIT_HARD_TIMEOUT,
+            EDIT_HARD_TIMEOUT,
         )
         if "error" in result:
             raise HTTPException(status_code=404, detail=result["error"])
@@ -264,11 +266,13 @@ async def chat_message(req: ChatRequest, request: Request) -> dict:
     """
     # 秒：长文稿（40+ 段）逐段标注（≈6min）+ 规划书翻译（带原文，最长约 15min）
     # 都需要余量；旧值 660 会被长文稿打满 → 504。这里留 40 分钟。
-    CHAT_HARD_TIMEOUT = 0  # 0 = 不设超时
+    CHAT_HARD_TIMEOUT = 0  # 0 = 不设超时（必须走 timeouts.wait_or_run，不能直接给 wait_for）
     try:
-        result = await asyncio.wait_for(
+        from clipwright.services.timeouts import wait_or_run
+
+        result = await wait_or_run(
             _service.chat(req.session_id, req.message),
-            timeout=CHAT_HARD_TIMEOUT,
+            CHAT_HARD_TIMEOUT,
         )
         if "error" in result:
             raise HTTPException(status_code=404, detail=result["error"])
