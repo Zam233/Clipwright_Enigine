@@ -161,13 +161,57 @@ async def get_task(task_id: str, request: Request) -> dict:
 
 
 @router.get("/{task_id}/events")
-async def get_task_events(task_id: str, request: Request,
-                          since_seq: int = Query(default=0, ge=0)) -> dict:
-    from clipwright.services.task_events import events_since
+async def get_task_events(
+    task_id: str,
+    request: Request,
+    since_seq: int = Query(default=0, ge=0, description="只返回 seq 大于它的事件（续传）"),
+    before_seq: int = Query(default=0, ge=0,
+                            description="只返回 seq 小于它的事件（向前翻历史）"),
+    limit: int = Query(default=0, ge=0, le=5000,
+                       description="最多返回条数；0 = 不限（默认沿用旧行为）"),
+) -> dict:
+    """任务事件（支持续传 + 向前分页）。
+
+    三种用法：
+    - `since_seq=N`：拿 N 之后的新事件（SSE 断线补拉）；
+    - `before_seq=N&limit=200`：拿 N 之前的历史（前端"往上翻"）；
+    - 都不传：全量（旧行为，兼容既有调用方）。
+
+    `has_more` / `oldest_available_seq` / `latest_seq` 是**恢复元数据**：
+    前端据此知道"还能不能往上翻""我这份是不是全部"，缺口也能显式提示，
+    而不是把"没有更多"和"服务端丢了"混为一谈。
+    """
+    from clipwright.services.task_events import events, events_since, spilled_max_seq
 
     _enforce_task_owner(request, task_id)
-    items = [e.to_public() for e in events_since(task_id, since_seq)]
-    return {"task_id": task_id, "since_seq": since_seq, "count": len(items), "items": items}
+    if since_seq > 0:
+        merged = events_since(task_id, since_seq)
+    else:
+        merged = events(task_id, include_spilled=True)
+    if before_seq > 0:
+        merged = [e for e in merged if e.seq < before_seq]
+    total_after_filter = len(merged)
+    has_more = False
+    if limit > 0 and total_after_filter > limit:
+        # `since_seq` 是"往后追"，取最早的 limit 条（保证不丢中间段）；
+        # `before_seq` 是"往前翻"，取最晚的 limit 条（紧邻当前窗口）。
+        merged = merged[:limit] if before_seq <= 0 else merged[-limit:]
+        has_more = True
+    items = [e.to_public() for e in merged]
+    seqs = [e.seq for e in merged]
+    latest = seqs[-1] if seqs else int(spilled_max_seq(task_id) or 0)
+    return {
+        "task_id": task_id,
+        "since_seq": since_seq,
+        "before_seq": before_seq,
+        "limit": limit,
+        "count": len(items),
+        "items": items,
+        "has_more": has_more or (total_after_filter > len(merged)),
+        "oldest_available_seq": seqs[0] if seqs else 0,
+        "latest_seq": latest,
+        "spilled_max_seq": int(spilled_max_seq(task_id) or 0),
+    }
 
 
 @router.get("/{task_id}/events/stream")
