@@ -731,18 +731,33 @@ class LLMService:
         model: Optional[str] = None,
         timeout: int | None = None,
         use_flash: bool = False,
+        system_prompt: str | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[LLMResponse]:
         """流式生成——同步迭代器经线程→Queue 桥接为异步增量 yield。
 
         每个 yield 是上游 LLMResponse 增量块（content 为本次新增文本片段）；
         最后一个块聚合完整 usage 与 tool_calls（content 为空）。异常时抛出。
+
+        `system_prompt`：**显式参数**，拼成 `messages[0]` 的 system 消息。
+        旧实现没有这个参数，调用方传的 `system_prompt=...` 会掉进 `**kwargs`
+        再透传给 OpenAI SDK → `Completions.create() got an unexpected keyword
+        argument 'system_prompt'` → 需求对话的真流式被 except 静默吞掉、回退缓冲，
+        于是 `delta`/`reasoning` 帧一个都发不出去（"正在思考…"点了没反应的根因）。
         """
         client = self.flash_client if use_flash else self.client
         mdl = model or (settings.llm_flash_model if use_flash else settings.llm_model)
         if timeout:
             kwargs["timeout"] = timeout
         kwargs.pop("pipeline_id", None)
+        # 防呆：本方法自己的元参数一个都不能漏进 provider 的 **kwargs，
+        # 否则就是上面那种 TypeError——只有 OpenAI 认识的参数才允许往下走。
+        for _meta in ("system_prompt", "messages", "output_schema", "schema",
+                      "on_delta", "on_reasoning", "on_preamble"):
+            kwargs.pop(_meta, None)
+        messages = list(messages)
+        if system_prompt:
+            messages = [{"role": "system", "content": system_prompt}, *messages]
         # B4：流式路径同样使用逐模型生成参数（首轮/后续轮一致）
         kwargs = self._effective_generation_kwargs(mdl, use_flash, kwargs)
 
