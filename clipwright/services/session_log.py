@@ -244,7 +244,9 @@ class SessionLog:
     def _ensure_loaded(self) -> None:
         if self._loaded:
             return
-        self._ensure_dirs()
+        # 注意：**不在这里建目录**。读路径（GET /timeline）对一个从没写过条目的会话
+        # 会顺手 mkdir，运维上就会看到一堆"存在但空"的会话目录，无法判断到底有没有记录
+        # （2026-10-31 实测踩到）。目录只在真正要写盘时创建。
         if self.index_path.exists():
             try:
                 raw = json.loads(self.index_path.read_text(encoding="utf-8"))
@@ -323,6 +325,7 @@ class SessionLog:
     # ── 持久化 ───────────────────────────────
 
     def _write_json(self, path: Path, payload: Any) -> None:
+        self._ensure_dirs()
         tmp = path.with_name(path.name + ".tmp")
         data = json.dumps(payload, ensure_ascii=False)
         tmp.write_text(data, encoding="utf-8")
@@ -330,6 +333,7 @@ class SessionLog:
 
     def _append_journal(self, record: dict[str, Any]) -> None:
         try:
+            self._ensure_dirs()
             with self.journal_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(record, ensure_ascii=False) + "\n")
         except Exception as exc:  # noqa: BLE001 — 日志写失败不能让对话中断
@@ -523,6 +527,7 @@ class SessionLog:
         state: str,
         meta: Optional[dict[str, Any]],
         time_text: Optional[str],
+        flush: bool = True,
     ) -> Item:
         if type not in ITEM_TYPES:
             raise ValueError(f"未知时间线条目类型: {type}（可选 {ITEM_TYPES}）")
@@ -556,10 +561,108 @@ class SessionLog:
                 self._finished.add(seq)
                 self._append_journal({"op": "finish", "seq": seq, "state": state})
             self._dirty = True
-            self._flush_locked(force=True)
+            if flush:
+                self._flush_locked(force=True)
             payload = item.to_dict()
+        # 批量回填时按调用方要求延后广播（一次回填 = 一帧 snapshot 更划算）
         self._publish({"op": "append", "item": payload})
         return item
+
+    # ── 存量会话回填（T1，PRD agent-timeline-adaptation §4）──────
+
+    def is_empty(self) -> bool:
+        """一条条目都没有（回填的唯一触发条件）。"""
+        with self._lock:
+            self._ensure_loaded()
+            return not self._items
+
+    def backfill_messages(
+        self,
+        messages: Any,
+        *,
+        brief: Any = None,
+        plan: Any = None,
+        brief_hash_fn: Any = None,
+    ) -> int:
+        """把需求会话既有的 `messages` 回填成时间线条目（**只做一次**）。
+
+        背景（2026-10-31 实测）：条目只在「新建会话 / 发生一轮对话」时写。升级前建的
+        会话磁盘上没有条目，前端打开就是空的——用户看到「还没有可显示的内容」。
+        这里把会话里**还留着**的消息补成条目，让老会话能正常显示。
+
+        诚实的边界：
+        - `compress_history` 会丢掉 20 轮以前的历史，所以回填只保证"当前会话里还在的
+          消息"；每条的 `meta.backfilled=True`，`meta.backfill_limited=True` 供前端注明；
+        - **不**回填历史 `thinking`：旧事件流只有 `turn_ts`，没有精确位置，塞进去等于
+          重新造一次"客户端推断位置"的老毛病。
+        """
+        with self._lock:
+            self._ensure_loaded()
+            if self._items:
+                return 0
+            rows = [m for m in (messages or []) if isinstance(m, dict)]
+            turn = 0
+            written = 0
+            for idx, msg in enumerate(rows):
+                role = str(msg.get("role") or "assistant")
+                text = msg.get("content")
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                if role == "user":
+                    turn += 1
+                meta = {
+                    "role": role if role in ("user", "assistant", "system") else "assistant",
+                    "backfilled": True,
+                    "backfill_limited": True,
+                    "legacy_index": idx,
+                }
+                ts = msg.get("timestamp")
+                self._create(
+                    type="content", content=text, source="requirements",
+                    turn=turn, ref=f"legacy:msg:{msg.get('id') or idx}",
+                    state="done", meta=meta,
+                    time_text=(ts if isinstance(ts, str) and ts else None),
+                    flush=False,
+                )
+                written += 1
+            hash_of = brief_hash_fn or (lambda _b: "")
+            turn_for_cards = max(1, turn)
+            if isinstance(brief, dict) and brief:
+                bh = str(hash_of(brief) or "")
+                self._create(
+                    type="report", content=brief, source="requirements",
+                    turn=turn_for_cards, ref=f"legacy:report:{bh or 'brief'}",
+                    state="done",
+                    meta={"role": "assistant", "backfilled": True,
+                          "title": str(brief.get("title") or ""), "brief_hash": bh,
+                          "kind": "production_plan_brief"},
+                    time_text=None, flush=False,
+                )
+                written += 1
+            if isinstance(plan, dict) and plan:
+                bh = str(hash_of(brief) or "") if isinstance(brief, dict) else ""
+                scenes = plan.get("raw_scenes") or plan.get("scenes") or []
+                self._create(
+                    type="plan", content=plan, source="requirements",
+                    turn=turn_for_cards, ref=f"legacy:plan:{bh or 'plan'}",
+                    state="done",
+                    meta={"role": "assistant", "backfilled": True,
+                          "title": str(plan.get("title") or ""), "brief_hash": bh,
+                          "scene_count": len(scenes) if isinstance(scenes, list) else 0,
+                          "kind": "production_plan"},
+                    time_text=None, flush=False,
+                )
+                written += 1
+            if not written:
+                return 0
+            self._dirty = True
+            self._flush_locked(force=True)
+        # 回填完整体广播一次，别让前端逐条追加（顺序已在 seq 里定好）
+        self._publish({"op": "snapshot", **self.list_items(since_seq=0, limit=MAX_PAGE,
+                                                           resolve_content=True)})
+        logger.info("会话 %s 回填 %d 条时间线条目（来源 session.messages）",
+                    self.session_id, written)
+        return written
 
     def chunk(self, seq: int, delta: str) -> None:
         """追加流式增量（只进内存缓冲，按节流窗落盘；SSE 立刻推送）。"""
@@ -712,16 +815,28 @@ class SessionLog:
 
     def list_items(
         self, *, since_seq: int = 0, limit: int = 200,
-        resolve_content: bool = True, until_seq: int = 0,
+        resolve_content: bool = True, until_seq: int = 0, before_seq: int = 0,
     ) -> dict[str, Any]:
-        """按 seq 升序取一段（刷新/分页用）。"""
+        """按 seq 升序取一段（刷新/分页用）。
+
+        - `since_seq` / `until_seq`：向后翻（`since < seq <= until`）；
+        - `before_seq`：**向前翻**（`seq < before`，取最后 `limit` 条）——聊天窗口
+          "加载更早"只需要这条路径，不能让前端自己算偏移量。
+        """
         lim = max(1, min(int(limit or 200), MAX_PAGE))
         with self._lock:
             self._ensure_loaded()
             seqs = [s for s in sorted(self._items) if s > int(since_seq)]
             if until_seq:
                 seqs = [s for s in seqs if s <= int(until_seq)]
-            page = seqs[:lim]
+            has_more = False
+            if before_seq:
+                older = [s for s in seqs if s < int(before_seq)]
+                has_more = len(older) > lim
+                page = older[-lim:]
+            else:
+                has_more = len(seqs) > lim
+                page = seqs[:lim]
             items = []
             for seq in page:
                 item = self._items[seq]
@@ -731,7 +846,7 @@ class SessionLog:
             latest = max(self._items) if self._items else 0
             return {
                 "items": items,
-                "has_more": len(seqs) > len(page),
+                "has_more": has_more,
                 "latest_seq": latest,
                 "next_seq": self._next_seq - 1,
                 "archived_until_seq": self._archived_until,

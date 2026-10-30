@@ -471,24 +471,31 @@ async def session_events(session_id: str, request: Request,
 @router.get("/{session_id}/timeline")
 async def session_timeline(session_id: str, request: Request,
                            since_seq: int = 0, until_seq: int = 0,
-                           limit: int = 200) -> dict:
+                           before_seq: int = 0, limit: int = 200,
+                           resolve: int = 1) -> dict:
     """会话时间线（唯一有序流，PRD agent-session-timeline §5.1）。
 
     前端刷新/重连**只读这一个接口**：条目已按 `seq` 升序，不需要任何本地排序。
-    `content` 已解析（大 payload 从 `items/<seq>.json` 读回），`content_ref` 保留引用。
+    `resolve=1`（默认）时 `content` 已解析（大 payload 从 `items/<seq>.json` 读回）；
+    `resolve=0` 只给索引（轨迹/调试用，避免一次 500 次文件读）。
+    `before_seq` 是"加载更早"（`seq < before_seq` 的最后 `limit` 条）。
     """
     _require_session_owner(request, session_id)
     from clipwright.services import session_log as _session_log
     from clipwright.services import session_projection as _projection
+    from clipwright.services.requirements_service import ensure_timeline_backfilled
 
+    # 存量会话回填（T1）：老会话磁盘上零条目，直接读会显示"没有内容"
+    backfilled = await asyncio.to_thread(ensure_timeline_backfilled, session_id, None)
     log = _session_log.get_log(session_id)
-    # 先做一次同步投影：刷新/重连时任务事件必须已经在流里（PRD §5.3）
+    # 再同步投影一次：刷新/重连时任务事件必须已经在流里（PRD §5.3）
     await asyncio.to_thread(_projection.project, session_id)
     page = await asyncio.to_thread(
         log.list_items, since_seq=max(0, int(since_seq or 0)),
-        until_seq=max(0, int(until_seq or 0)), limit=limit,
+        until_seq=max(0, int(until_seq or 0)), before_seq=max(0, int(before_seq or 0)),
+        limit=limit, resolve_content=bool(resolve),
     )
-    return {"session_id": session_id, **page}
+    return {"session_id": session_id, "backfilled": backfilled, **page}
 
 
 @router.get("/{session_id}/timeline/stream")

@@ -107,6 +107,49 @@ def _timeline_turn(session_id: str):
     except Exception as exc:  # noqa: BLE001
         logger.warning("会话时间线不可用 %s: %s", session_id, exc)
         return None, None
+
+
+_BACKFILL_SERVICE: Any = None
+
+
+def _backfill_service() -> Any:
+    """回填用的服务实例（懒建；只读 get_session，不碰 LLM 调用）。"""
+    global _BACKFILL_SERVICE
+    if _BACKFILL_SERVICE is None:
+        _BACKFILL_SERVICE = RequirementsService()
+    return _BACKFILL_SERVICE
+
+
+def ensure_timeline_backfilled(session_id: str, session: dict | None = None) -> int:
+    """存量会话回填（T1，PRD agent-timeline-adaptation §4）。
+
+    升级前建的会话磁盘上没有条目，前端打开就是空的（用户看到「还没有可显示的内容」）。
+    这里把会话里**还留着**的 `messages` 补成条目；简报/规划书各补一条卡片条目，
+    否则老会话点开只剩文字、卡片消失。
+
+    幂等：日志里已有任何条目就直接返回 0（不会重复回填）；写失败不影响打开会话。
+    """
+    if not session_id:
+        return 0
+    try:
+        from clipwright.services import session_log
+
+        log = session_log.get_log(session_id)
+        if not log.is_empty():
+            return 0
+        data = session
+        if data is None:
+            data = _backfill_service().get_session(session_id) or {}
+        return log.backfill_messages(
+            data.get("messages") or [],
+            brief=data.get("creative_brief"),
+            plan=data.get("production_plan"),
+            brief_hash_fn=_brief_hash,
+        )
+    except Exception as exc:  # noqa: BLE001 — 回填失败不阻断查看会话
+        logger.warning("会话 %s 时间线回填失败: %s", session_id, exc)
+        return 0
+
 LLM_RETRY_MAX = 3                # LLM 最大重试次数
 LLM_RETRY_BASE_DELAY = 2.0      # 重试基础延迟（秒）
 BRIEF_GENERATE_TIMEOUT = 900     # 简报生成单次调用超时（秒）
@@ -755,6 +798,24 @@ class RequirementsService:
 
         # 用答案作为用户消息让对话继续（agent 拿到拍板结果后接着干）
         answer_text = self._answer_as_message(rec, ans)
+        # 时间线：先落一条 `answer`（用户拍板结果），顺序保证 question → answer → 后续思考/正文。
+        # 注意 `chat()` 随后还会写一条 `content(role=user)`——那是**喂给模型的文本**，
+        # 与"用户拍板了什么"语义不同，两条并存不算重复（PRD agent-timeline-adaptation T3.4）。
+        try:
+            _log = _timeline(session_id)
+            _log.append(
+                type="answer", content=answer_text, source="requirements",
+                turn=_log.user_turns() + 1, ref=f"q:{question_id}",
+                meta={
+                    "question_id": question_id,
+                    "option_id": option_id,
+                    "text": text,
+                    "question": str(rec.get("question") or ""),
+                    "answer_source": (ans or {}).get("source") if isinstance(ans, dict) else None,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — 时间线写失败不阻断作答
+            logger.warning("时间线写 answer 失败 %s: %s", session_id, exc)
         result = await self.chat(session_id, answer_text)
         return {"answer": ans, **result}
 
@@ -899,6 +960,49 @@ class RequirementsService:
             _log_delta = on_delta
             _log_reasoning = on_reasoning
 
+        # 规划书生成阶段帧也要进时间线：确认简报之后到规划书之间不能是一片空白
+        # （用户 2026-10-31：生成规划书的过程中不该一帧都不发）。stage 条目按阶段
+        # 名 upsert：running 开一条、ok/failed 收尾，位置就是发生时刻。
+        _stage_seqs: dict[str, int] = {}
+        _on_plan_event = on_event
+
+        if on_event is not None and live is not None:
+            def _plan_event_sink(chunk: dict) -> None:  # type: ignore[misc]
+                if on_event is not None:
+                    on_event(chunk)
+                if not isinstance(chunk, dict) or chunk.get("type") != "stage":
+                    return
+                data = chunk.get("data")
+                if not isinstance(data, dict):
+                    return
+                stage = str(data.get("stage") or "")
+                status = str(data.get("status") or "")
+                meta = {
+                    "stage": stage, "status": status, "role": "system",
+                    "phase": str(data.get("phase") or "plan"),
+                    "summary": str(data.get("summary") or ""),
+                }
+                try:
+                    seq = _stage_seqs.get(stage)
+                    if seq is None:
+                        item = live.log.append(
+                            type="stage", content=str(data.get("action") or stage),
+                            source="requirements", turn=live.turn, meta=meta,
+                            state="streaming",
+                        )
+                        _stage_seqs[stage] = item.seq
+                    else:
+                        live.log.patch(
+                            seq,
+                            state=("failed" if status == "failed"
+                                   else "streaming" if status == "running" else "done"),
+                            meta=meta,
+                        )
+                except Exception as exc:  # noqa: BLE001 — 阶段条目写失败不影响生成
+                    logger.warning("时间线写阶段条目失败 %s: %s", stage, exc)
+
+            _on_plan_event = _plan_event_sink
+
         # PRD §15.5：会话在等回答时用户直接打字（没用问题卡）→ 当作自由文本回答，
         # 然后把状态放回 gathering 让 agent 继续。不能让 waiting_user 变成死胡同。
         if status == "waiting_user":
@@ -984,7 +1088,7 @@ class RequirementsService:
                 })
                 # 异步生成规划书
                 plan_result = await self._generate_plan(
-                    brief_data, user_inputs, session_id, on_event=on_event,
+                    brief_data, user_inputs, session_id, on_event=_on_plan_event,
                 )
                 if plan_result:
                     plan_data = plan_result
@@ -1079,7 +1183,7 @@ class RequirementsService:
                     "metadata": {},
                 })
                 plan_result = await self._generate_plan(
-                    brief_data, user_inputs, session_id, on_event=on_event,
+                    brief_data, user_inputs, session_id, on_event=_on_plan_event,
                 )
                 if plan_result:
                     plan_data = plan_result
@@ -2720,6 +2824,9 @@ class RequirementsService:
         try:
             from clipwright.services import session_projection as _projection
 
+            # 存量会话先回填（老会话磁盘上零条目 → 界面空白，用户 2026-10-31 实测）
+            ensure_timeline_backfilled(session_id,
+                                       await asyncio.to_thread(self.get_session, session_id))
             _projection.ensure_poller(session_id)
             await asyncio.to_thread(_projection.project, session_id)
         except Exception as exc:  # noqa: BLE001 — 投影失败不影响对话

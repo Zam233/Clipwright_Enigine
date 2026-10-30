@@ -25,8 +25,10 @@ from clipwright.services import session_log as _session_log
 #: 有内容价值的落到 `content`（meta.kind 保留原始类型），纯机制的丢弃。
 TYPE_MAP: dict[str, str] = {
     "task_start": "stage",
-    "plan": "plan",
-    "replan": "plan",
+    # 内核的 plan/replan 是**执行计划**，不是用户看到的"制作规划书"（那一份由需求侧写
+    # `plan` 条目）。两者撞同一个类型会让前端无法区分、轨迹也乱（PRD adaptation C2）。
+    "plan": "stage",
+    "replan": "stage",
     "step_start": "stage",
     "step_end": "stage",
     "tool_call": "tool",
@@ -111,6 +113,10 @@ def _meta_for(event: Any) -> dict[str, Any]:
     role = _ROLE.get(event.type)
     if role:
         meta.setdefault("role", role)
+    # 执行计划类事件落到 stage，用 meta.kind 保留语义（前端按 kind 区分展示，
+    # `plan` 类型从此只表示"制作规划书"）
+    if event.type in ("plan", "replan"):
+        meta.setdefault("kind", "execution_plan")
     return meta
 
 
