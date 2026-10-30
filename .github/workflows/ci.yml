@@ -18,6 +18,10 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Pytest
         run: python -m pytest -q
+      # PRD §16.6：提示词 lint 单独一步（strict）——提示词写坏了不必等生成 E2E 才发现。
+      # 已迁移的六类文字 + 四类 MG 必须零 error；未迁移的老 MG 类型只记 warning。
+      - name: Prompt lint (strict)
+        run: python -m clipwright.animation.prompts.lint_prompts --strict
       # 门禁分两层：错误类必须为 0；风格类只报告不阻断（历史债见 docs/development.md）。
       - name: Ruff (错误类，必须为 0)
         run: python -m ruff check clipwright --select E9,F63,F7,F82,F823 --output-format=concise

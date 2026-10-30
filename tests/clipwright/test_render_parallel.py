@@ -164,7 +164,10 @@ class TestMgHyperframesParallel:
 
         out, dt = _run_apply_all(svc, _mk_mgs(4))
 
-        assert dt < 2.5, f"失败不应悬挂 gather，实际 {dt:.2f}s"
+        assert dt < _MOV_SLEEP * 4 * 0.8, (
+            f"失败不应悬挂/串行化 gather，实际 {dt:.2f}s"
+            "（串行基线 = 4 × _MOV_SLEEP；阈值留 20% 余量给 Windows 上的调度抖动，"
+            "旧值 2.5s 本地连跑三次就随机红）")
         assert ff_count["n"] == 5, "4 个渲染都被尝试 + 1 次链式合成"
         assert len(overlay_calls) == 0, "链式路径不逐个调用 render_overlay_on_video"
         assert out != "base.mp4"
