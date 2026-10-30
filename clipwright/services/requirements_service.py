@@ -2574,12 +2574,42 @@ class RequirementsService:
                     task.cancel()
             return
 
-        # 3. 其他状态 → 缓冲路径（与旧行为一致）：没有思考流，且必须说清原因
+        # 3. 其他状态 → 缓冲路径：没有思考流，但**必须周期性发心跳**。
+        # 规划书生成常 30–90s，旧实现整段不发帧，代理/浏览器会先把连接判死
+        # （实测报「SSE 连接中断，3s 后重连」→ 前端看起来"点了没后续"）。
         yield {"type": "reasoning_status", "data": {
             **cap, "available": False, "reason": "phase_not_streaming", "phase": status,
         }}
-        result = await self.chat(session_id, user_message)
-        yield {"type": "result", "data": result}
+
+        queue_b: asyncio.Queue = asyncio.Queue()
+        _DONE_B = object()
+
+        async def _run_buffered() -> None:
+            try:
+                res = await self.chat(session_id, user_message)
+                queue_b.put_nowait({"type": "result", "data": res})
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("缓冲对话失败: %s", exc)
+                queue_b.put_nowait({"type": "error", "data": "对话处理失败，请稍后重试"})
+            finally:
+                queue_b.put_nowait(_DONE_B)
+
+        task_b = asyncio.create_task(_run_buffered())
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue_b.get(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    yield {"type": "heartbeat", "data": int(time.time())}
+                    continue
+                if item is _DONE_B:
+                    break
+                yield item
+        finally:
+            if not task_b.done():
+                task_b.cancel()
 
     def _reasoning_capability(self) -> dict[str, Any]:
         """当前 provider/model 是否会回吐思考内容（不猜、不假）。"""
