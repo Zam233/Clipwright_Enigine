@@ -519,6 +519,10 @@ data: {"type":"error","detail":"流式生成中断: ...","partial":"已产出的
 | `POST /api/requirements/proceed` | 确认规划书并启动管线 |
 | `POST /api/requirements/{session_id}/intent` | **意图落位预览（R6，只读）**。请求：`{message, timeline, selected_clip_ids?, region_start_sec?, region_end_sec?, project_id?}`；响应：`{intent, resolution:{preview[], affected_clip_ids[], questions[]}, problems[]}`，`blocked=true` 表示含硬错误不可执行。**不写任何状态**——供前端"意图确认卡"在执行前展示"将改动什么 + 需要用户拍板的问题"。非法时间线 400、超时 504 |
 | `POST /api/requirements/{session_id}/intent/apply` | **意图 → 补丁 → dry-run（可选执行）（R7）**。请求在上述字段外加 `{apply?: bool=false, answers?: {问题码: 选项值}, intent_raw?: 意图JSON}`；响应：`{patch, report, applied, blocked, problems[]}`，`applied=true` 时另有 `timeline`（新时间线）。语义：`apply=false` 纯只读；`apply=true` 时只有 dry-run **无硬错误**才真正执行，否则 `blocked` 且**一条都不改**。传 `intent_raw`（`/intent` 已解析的那份）保证"执行的就是用户确认过的那份意图"。非法时间线 400、超时 504 |
+| `GET /api/requirements/{session_id}/messages` | 需求消息历史分页（`before_id` + `limit`）：向上翻不重复、不丢 |
+| `GET /api/requirements/{session_id}/events` | 会话事件（`question`/`answer`/`thinking` 等）：刷新/重连按 `since_seq` 补齐 |
+| `GET /api/requirements/{session_id}/timeline` | **会话时间线（唯一有序流，session-timeline PRD §5.1）**。参数 `since_seq`/`until_seq`（向后翻）、`before_seq`（向前翻，取 `seq < before_seq` 的最后 `limit` 条）、`limit≤500`。响应 `{items[], has_more, latest_seq, next_seq, archived_until_seq, counters}`；条目按 `seq` 升序且**已解析内容**（大 payload 从 `items/<seq>.json` 读回）。类型：`thinking`/`content`/`tool`/`skill`/`subagent`/`report`/`plan` + 扩展 `question`/`answer`/`approval`/`degradation`/`stage`/`artifact` |
+| `GET /api/requirements/{session_id}/timeline/stream` | **时间线实时流（SSE）**。`since_seq=-1`（默认）只推订阅之后的新帧；传 `since_seq` 先补一帧 `snapshot`。帧 `op`：`snapshot`/`append`/`chunk`（只带 `seq+delta`，前端按 seq 找到条目追加 = 流式渲染）/`patch`/`finish`/`ping`（10s）/`error` |
 
 ---
 

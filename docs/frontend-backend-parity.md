@@ -358,3 +358,13 @@ P6/P7 阶段新增/变更的路由与客户端（均已完成接线与回归）�
 | 新增能力 `run_stage/spawn_stage/get_stage/list_stages/replan_closure/validate_stage_plan` | 主 Agent 内部通道（暂未做独立 UI；任务页已有阶段事件卡片） | ⚠️ 无独立 UI（不需要：阶段结果经 `step_end` 事件展示） |
 | `POST /api/render/*` 新增 `workspace_root` | 成片落 `workspace/renders/`（留空 = 全局 `renders/`） | ✅ 后端就绪；前端渲染调用暂未传（保持旧落点） |
 
+## 9. 会话时间线单一真相（2026-10-31 增量）
+
+| 后端 | 前端 | 状态 |
+|---|---|---|
+| `GET /api/requirements/{sid}/timeline`（`since_seq`/`until_seq`/`before_seq`/`limit`） | `requirementsApi.timeline` → `stores/sessionTimelineStore.hydrate` | ✅ 刷新/翻页的唯一数据源 |
+| `GET /api/requirements/{sid}/timeline/stream`（SSE：`snapshot`/`append`/`chunk`/`patch`/`finish`/`ping`） | `requirementsApi.timelineStreamUrl` + `features/sessionTimeline/useSessionTimeline` | ✅ `chunk` 按 seq 追加 = 流式渲染 |
+| `services/session_log.py` | `src/features/sessionTimeline/*`、`src/stores/sessionTimelineStore.ts` | ✅ 前端不再合并第二数据源（旧 `unifiedTimelineStore` 已删除） |
+| `services/session_projection.py`（task 事件投影，`proceed` 时 `bind`） | 「轨迹」面板仍直连任务事件流（那是投影条目的原始 ref） | ✅ 需求面板不再订阅任务 SSE，避免重复应用 |
+| `GET /{sid}/messages`、`/{sid}/events`、`chat/stream` 的 `delta/reasoning/stage` 帧 | 旧视图（`?unifiedTimeline=0`）仍用 | ⚠️ 保留为兼容读；单流视图已不依赖 |
+
