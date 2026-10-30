@@ -419,9 +419,21 @@ async def answer_question(session_id: str, body: AnswerBody, request: Request) -
     return result
 
 
+@router.get("/{session_id}/messages")
+async def list_messages(session_id: str, request: Request,
+                        before_id: str = "", limit: int = 50) -> dict:
+    """需求消息历史分页（unified-stream PRD §M4）：向上翻不重复、不丢。
+
+    `before_id` = 上一页最早那条的 id；`has_more=false` 表示到头了。
+    """
+    _require_session_owner(request, session_id)
+    return _service.list_messages(session_id, before_id=before_id, limit=limit)
+
+
 @router.get("/{session_id}/events")
 async def session_events(session_id: str, request: Request,
-                         since_seq: int = 0, limit: int = 200) -> dict:
+                         since_seq: int = 0, before_seq: int = 0,
+                         limit: int = 200) -> dict:
     """会话事件（`question`/`answer` 等）：刷新/重连时按 seq 补齐。
 
     需求会话的事件流与任务事件共用同一套事件模型，但键是
@@ -435,6 +447,16 @@ async def session_events(session_id: str, request: Request,
     limit = max(1, min(int(limit or 200), 1000))
     events = _events.events_since(stream_id, max(0, int(since_seq or 0)),
                                   include_spilled=True)
+    if before_seq:
+        # 往前翻：只给 seq < before_seq 的那一段（最新的 limit 条）
+        events = [e for e in events if e.seq < int(before_seq)]
+        page = events[-limit:]
+        return {
+            "session_id": session_id,
+            "items": [e.model_dump() for e in page],
+            "has_more": len(events) > len(page),
+            "latest_seq": page[-1].seq if page else 0,
+        }
     page = events[:limit]
     latest = events[-1].seq if events else _events.last_seq(stream_id)
     return {

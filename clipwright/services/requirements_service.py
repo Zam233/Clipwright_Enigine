@@ -589,6 +589,32 @@ class RequirementsService:
                 logger.warning("MongoDB 会话查询失败: %s", e)
         return None
 
+    def list_messages(
+        self, session_id: str, *, before_id: str = "", limit: int = 50,
+    ) -> dict[str, Any]:
+        """需求消息历史分页（unified-stream PRD §M4）。
+
+        `before_id` = 上一页最早消息的 id（不含）；不传则取最新一页。
+        返回 `{items, has_more, oldest_id}`；id 由 `_ensure_message_ids` 保证稳定。
+        """
+        session = self.get_session(session_id) or {}
+        msgs = self._ensure_message_ids(list(session.get("messages") or []))
+        lim = max(1, min(int(limit or 50), 200))
+        end = len(msgs)
+        if before_id:
+            for i, m in enumerate(msgs):
+                if str(m.get("id")) == before_id:
+                    end = i
+                    break
+        start = max(0, end - lim)
+        page = msgs[start:end]
+        return {
+            "items": page,
+            "has_more": start > 0,
+            "oldest_id": page[0]["id"] if page else "",
+            "total": len(msgs),
+        }
+
     def delete_session(self, session_id: str) -> None:
         _memory_sessions.pop(session_id, None)
         if _mongo_ok():
@@ -2283,11 +2309,29 @@ class RequirementsService:
 
     # ── 持久化 ──────────────────────────────
 
+    @staticmethod
+    def _ensure_message_ids(messages: list[dict]) -> list[dict]:
+        """给没有 id 的消息补稳定 id（unified-stream PRD §M4）。
+
+        分页游标（`before_id`）与前端去重都依赖 id：老会话里消息只有
+        role/content/timestamp，前端每次刷新都得重新 uid 一遍，翻页就会重复。
+        这里补齐并原样返回（append-only，只补不改）。
+        """
+        out: list[dict] = []
+        for i, m in enumerate(messages or []):
+            if not isinstance(m, dict):
+                continue
+            if not m.get("id"):
+                m = {**m, "id": f"msg_{i:05d}"}
+            out.append(m)
+        return out
+
     def _persist(
         self, session_id: str, status: str, messages: list[dict],
         brief: dict | None, plan: dict | None, user_inputs: dict,
     ) -> None:
         """持久化会话状态到 MongoDB。"""
+        messages = self._ensure_message_ids(messages)
         try:
             model = RequirementsSessionModel.find_by_id(session_id)
             if model:
