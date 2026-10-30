@@ -429,6 +429,50 @@ class LLMService:
             merged.pop("reasoning_effort", None)
         return merged
 
+    def reasoning_capability(self, use_flash: bool = False) -> dict[str, Any]:
+        """当前 provider/model 是否会回吐思考内容（unified-stream PRD §5.1）。
+
+        与 `reasoning_effort`（能不能配强度）分开表达：能配强度 ≠ 能看见思考。
+        返回 `{supported, streaming, provider, model, reason}`；探测失败一律按
+        "不支持"处理并给 reason——宁可说"没有"，也不给一个点了没反应的按钮。
+        """
+        provider = ""
+        model = ""
+        try:
+            from clipwright.services.model_router import active_route
+
+            route = active_route()
+            provider = str(getattr(route, "provider", "") or "")
+            model = str(getattr(route, "model", "") or "")
+        except Exception:  # noqa: BLE001 — 无路由时用默认配置
+            pass
+        provider = provider or (
+            settings.llm_flash_provider if use_flash else settings.llm_provider
+        ) or ""
+        model = model or (
+            settings.llm_flash_model if use_flash else settings.llm_model
+        ) or ""
+        base = {"provider": provider, "model": model}
+        try:
+            from clipwright.providers.base import llm_capabilities
+
+            impl = _resolve_llm_provider(provider)
+            if impl is None:
+                return {**base, "supported": False, "streaming": False,
+                        "reason": "provider_unavailable"}
+            caps = llm_capabilities(impl, model)
+            supported = bool(getattr(caps, "reasoning_content", False))
+            return {
+                **base,
+                "supported": supported,
+                "streaming": bool(getattr(caps, "reasoning_streaming", False)) and supported,
+                "reason": None if supported else "provider_not_exposed",
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("reasoning 能力探测失败: %s", exc)
+            return {**base, "supported": False, "streaming": False,
+                    "reason": "capability_probe_failed"}
+
     async def generate(
         self,
         messages: list[dict[str, str]],

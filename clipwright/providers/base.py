@@ -28,6 +28,12 @@ class ProviderCapabilities:
     arbitrary_models: bool = False
     #: 是否支持 `reasoning_effort` 参数（2026-10-28 PRD B5）；False = 忽略并报降级。
     reasoning_effort: bool = False
+    #: 是否会回吐思考内容（`reasoning_content`）。与 `reasoning_effort` 分开：
+    #: 能配强度 ≠ 能看见思考。False = 前端必须显示「该模型不提供思考内容」，
+    #: 而不是给一个点了没反应的假按钮（unified-stream PRD §5.1）。
+    reasoning_content: bool = False
+    #: 思考内容是否逐块到达（True = 可做增量渲染；False = 只在结束时一次性给）。
+    reasoning_streaming: bool = False
     #: 支持的生成参数（temperature/top_p/max_tokens…）。逐模型配置按此过滤，
     #: 不支持的参数**不下发**并登记 degradation（2026-10-28 PRD B4）。
     generation_params: tuple[str, ...] = ("temperature", "top_p", "max_tokens")

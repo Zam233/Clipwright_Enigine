@@ -22,6 +22,8 @@ class AnthropicProvider:
             arbitrary_models=False,
             # 支持 extended thinking，但预算映射由 adapter 语义决定（B5 单独处理）
             reasoning_effort=True,
+            # thinking block 以「思考块」形式返回（非逐 token），故 streaming=False
+            reasoning_content=True,
         )
 
     def default_model(self) -> str:

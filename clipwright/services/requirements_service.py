@@ -42,6 +42,32 @@ MAX_MESSAGE_LENGTH = 50000       # 单条消息最大字符
 
 #: ask_user 的 owner 类型（PRD §15.5）：需求会话问题归属会话，不归属任务
 REQUIREMENTS_OWNER = "requirements"
+
+#: 本轮流式被回退的会话（session_id -> 原因）。unified-stream PRD §5.1.3：
+#: 回退必须让前端看得见，不能只写 warning 就静默降级。
+_STREAM_FALLBACK: dict[str, str] = {}
+
+
+def _emit_session_thinking(session_id: str, text: str, *, phase: str = "requirements") -> None:
+    """把本轮思考落进需求会话事件流（按轮一条，刷新/重连可回放）。
+
+    复用既有 `thinking` 事件类型（契约仍是 29 种），`detail.phase="requirements"`
+    让前端能区分"需求对话的思考"与"任务的思考"。写入失败不影响对话本身。
+    """
+    body = (text or "").strip()
+    if not body or not session_id:
+        return
+    try:
+        from clipwright.services import ask_user as _ask_user
+        from clipwright.services.task_events import emit
+
+        emit(_ask_user.session_stream_id(session_id), "thinking",
+             f"思考 {len(body)} 字",
+             {"phase": phase, "delta": body[:200_000], "done": True,
+              "chars": len(body)},
+             span="requirements")
+    except Exception as exc:  # noqa: BLE001 — 落盘失败不阻断对话
+        logger.warning("需求会话思考落盘失败 %s: %s", session_id, exc)
 LLM_RETRY_MAX = 3                # LLM 最大重试次数
 LLM_RETRY_BASE_DELAY = 2.0      # 重试基础延迟（秒）
 BRIEF_GENERATE_TIMEOUT = 900     # 简报生成单次调用超时（秒）
@@ -1792,7 +1818,13 @@ class RequirementsService:
                     "is_ready": False,
                 }
             except Exception as e:
+                # 不再"只写 warning 就静默回退"（unified-stream PRD §1.1）：
+                # 回退事实要传到 SSE（reasoning_status.stream_fallback）与 result.diagnostics，
+                # 否则前端只能显示一个没有内容的"正在思考"，用户以为按钮坏了。
                 logger.warning("流式 brief 失败，回退缓冲路径: %s", e)
+                # 记一条 per-session 标记，由 stream_chat 转成
+                # reasoning_status(stream_fallback) + result.diagnostics（不静默丢事实）
+                _STREAM_FALLBACK[str(session_id)] = f"{type(e).__name__}: {e}"[:300]
                 # 流式失败 → 回退缓冲路径（下面的 W1 with_tools / llm_call_with_retry）
 
         # 联网搜索工具门控接入（Bocha/百度）——配置开启时 LLM 可自主搜索；
@@ -2410,9 +2442,12 @@ class RequirementsService:
     ):
         """SSE 流式推送对话结果。
 
-        轮68：gathering/init 态走 stream_generate 真流式——reply 文本以
-        delta 块渐进推送（前端实时打字效果），流结束后发完整 result。
-        其余状态（brief_ready 等）保持缓冲推送（回复为模板文本，无流式收益）。
+        gathering/init 态走 `stream_generate` 真流式——reply 与思考都以增量帧推送；
+        其余状态保持缓冲推送（回复为模板文本，无流式收益）。
+
+        **思考能力必须自报**（unified-stream PRD §5.1）：首帧发 `reasoning_status`，
+        明确告知 supported / streaming / available，前端据此三态显示，
+        不再用"有没有收到帧"反推能力——否则 provider 不回吐思考时 UI 只能假装思考。
         """
         # 1. 先返回用户消息确认 + typing 指示
         yield {"type": "status", "data": "typing"}
@@ -2420,16 +2455,27 @@ class RequirementsService:
         session = await asyncio.to_thread(self.get_session, session_id) or {}
         status = session.get("status", "init")
 
+        cap = self._reasoning_capability()
+
         # 2. gathering/init 态 → 真流式（on_delta 回调 → 队列 → 逐块 yield）
         if status in ("gathering", "init"):
+            yield {"type": "reasoning_status", "data": {
+                **cap,
+                # 首帧时"是否真的来了内容"还未知：给 None，前端据此显示 pending 而不是 available
+                "available": False if not cap.get("supported") else None,
+                "phase": status,
+            }}
+
             queue: asyncio.Queue = asyncio.Queue()
             _DONE = object()
+            thought: list[str] = []
 
             def _on_delta(text: str) -> None:
                 queue.put_nowait({"type": "delta", "data": text})
 
             def _on_reasoning(text: str) -> None:
-                # 思考增量（前端"正在思考 ▾"展开后追加）
+                # 思考增量（前端展开后追加）；同时攒起来，本轮结束后落一条事件
+                thought.append(text)
                 queue.put_nowait({"type": "reasoning", "data": text})
 
             async def _run() -> None:
@@ -2441,6 +2487,26 @@ class RequirementsService:
                     _q = result.get("question") if isinstance(result, dict) else None
                     if isinstance(_q, dict) and _q.get("question_id"):
                         queue.put_nowait({"type": "question", "data": _q})
+
+                    # 思考落盘（unified-stream PRD §5.1.4）：按轮**一条**事件，
+                    # 刷新/重连可从 `GET /{sid}/events?since_seq=` 回放
+                    if thought:
+                        _emit_session_thinking(session_id, "".join(thought))
+                    else:
+                        # 支持但一块都没来 → 如实说"本轮没有思考内容"，不当成可用
+                        queue.put_nowait({"type": "reasoning_status", "data": {
+                            **cap, "available": False, "reason": "no_reasoning_this_turn",
+                            "phase": status,
+                        }})
+
+                    # 流式被静默回退过 → 明说"思考不可用 + 为什么"，并在 result 里留诊断
+                    _fb = _STREAM_FALLBACK.pop(str(session_id), "")
+                    if _fb and isinstance(result, dict):
+                        queue.put_nowait({"type": "reasoning_status", "data": {
+                            **cap, "available": False, "reason": "stream_fallback",
+                            "detail": _fb, "phase": status,
+                        }})
+                        result.setdefault("diagnostics", {})["stream_fallback"] = _fb
                     queue.put_nowait({"type": "result", "data": result})
                 except asyncio.CancelledError:
                     raise
@@ -2464,6 +2530,19 @@ class RequirementsService:
                     task.cancel()
             return
 
-        # 3. 其他状态 → 缓冲路径（与旧行为一致）
+        # 3. 其他状态 → 缓冲路径（与旧行为一致）：没有思考流，且必须说清原因
+        yield {"type": "reasoning_status", "data": {
+            **cap, "available": False, "reason": "phase_not_streaming", "phase": status,
+        }}
         result = await self.chat(session_id, user_message)
         yield {"type": "result", "data": result}
+
+    def _reasoning_capability(self) -> dict[str, Any]:
+        """当前 provider/model 是否会回吐思考内容（不猜、不假）。"""
+        probe = getattr(self._llm, "reasoning_capability", None)
+        if callable(probe):
+            try:
+                return dict(probe())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("reasoning 能力探测失败: %s", exc)
+        return {"supported": False, "streaming": False, "reason": "capability_unknown"}

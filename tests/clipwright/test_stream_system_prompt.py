@@ -135,3 +135,103 @@ async def _no_kb(*a, **k):  # noqa: ANN002, ANN003
 
 async def _noop(*a, **k):  # noqa: ANN002, ANN003
     return None
+
+
+class _CapLLM(_FakeStreamLLM):
+    """带能力探测的假 LLM。"""
+
+    def __init__(self, *, supported: bool = True, reply: str = "好的") -> None:
+        super().__init__(reply)
+        self._supported = supported
+
+    def reasoning_capability(self, use_flash: bool = False) -> dict:
+        return {"provider": "fake", "model": "m", "supported": self._supported,
+                "streaming": self._supported,
+                "reason": None if self._supported else "provider_not_exposed"}
+
+
+def _svc_requirements(llm, *, status: str = "gathering"):
+    svc = RequirementsService.__new__(RequirementsService)
+    svc._llm = llm                    # type: ignore[attr-defined]
+    svc._cleanup_started = True       # type: ignore[attr-defined]
+    state = {"status": status, "messages": [], "user_inputs": {}}
+    svc.get_session = lambda sid: dict(state)  # type: ignore[method-assign]
+    svc._persist = lambda *a, **k: state.update(status=a[1], messages=list(a[2]))  # type: ignore[method-assign]
+    svc._retrieve_knowledge = _no_kb          # type: ignore[method-assign]
+    svc._record_llm_usage = _noop             # type: ignore[method-assign]
+    svc._build_full_persona_context = lambda inputs: {}  # type: ignore[method-assign]
+    return svc
+
+
+class TestReasoningStatus:
+    async def test_first_frame_declares_capability(self) -> None:
+        svc = _svc_requirements(_CapLLM(supported=True))
+        frames = [f async for f in svc.stream_chat("sess_cap", "做一期科普短片")]
+        assert frames[0]["type"] == "status"
+        status = next(f for f in frames if f["type"] == "reasoning_status")
+        assert status["data"]["supported"] is True
+        assert status["data"]["streaming"] is True
+        assert status["data"]["available"] is None      # 首帧还不知道有没有内容
+        assert status["data"]["phase"] == "gathering"
+
+    async def test_unsupported_provider_says_so(self) -> None:
+        svc = _svc_requirements(_CapLLM(supported=False))
+        frames = [f async for f in svc.stream_chat("sess_nocap", "做一期科普短片")]
+        status = next(f for f in frames if f["type"] == "reasoning_status")
+        assert status["data"]["supported"] is False
+        assert status["data"]["available"] is False
+        assert status["data"]["reason"] == "provider_not_exposed"
+
+    async def test_buffered_phase_explains_no_stream(self) -> None:
+        svc = _svc_requirements(_CapLLM(supported=True), status="brief_ready")
+        svc.chat = lambda *a, **k: _coro({"reply": "已记下"})  # type: ignore[method-assign]
+        frames = [f async for f in svc.stream_chat("sess_buf", "改一点")]
+        status = next(f for f in frames if f["type"] == "reasoning_status")
+        assert status["data"]["available"] is False
+        assert status["data"]["reason"] == "phase_not_streaming"
+        assert status["data"]["phase"] == "brief_ready"
+
+    async def test_stream_failure_is_reported_not_swallowed(self) -> None:
+        """流式抛错 → 必须有 reasoning_status(stream_fallback) 且 result 带 diagnostics。"""
+        svc = _svc_requirements(_CapLLM(supported=True))
+
+        async def boom(*a, **k):  # noqa: ANN002, ANN003
+            raise RuntimeError("Completions.create() got an unexpected keyword argument")
+
+        svc._stream_gathering_llm = boom  # type: ignore[method-assign]
+
+        async def chat_fallback(session_id, message, on_delta=None, on_reasoning=None):
+            return {"reply": "回退后的回复", "brief_draft": {}, "is_ready": False}
+
+        svc.chat = chat_fallback  # type: ignore[method-assign]
+        # 走真实 _handle_gathering 路径太慢：直接验证标记消费逻辑
+        from clipwright.services import requirements_service as RS
+
+        RS._STREAM_FALLBACK["sess_fb"] = "RuntimeError: TypeError"
+        frames = [f async for f in svc.stream_chat("sess_fb", "继续")]
+        statuses = [f["data"] for f in frames if f["type"] == "reasoning_status"]
+        fb = [x for x in statuses if x.get("reason") == "stream_fallback"]
+        assert fb, statuses
+        assert "TypeError" in (fb[0].get("detail") or "")
+        result = next(f for f in frames if f["type"] == "result")["data"]
+        assert result["diagnostics"]["stream_fallback"]
+
+    async def test_thinking_persisted_once_per_turn(self) -> None:
+        """思考按轮落一条 thinking 事件（phase=requirements），刷新可回放。"""
+        svc = _svc_requirements(_CapLLM(supported=True))
+        frames = [f async for f in svc.stream_chat("sess_think", "做一期科普短片")]
+        assert any(f["type"] == "reasoning" for f in frames)
+
+        from clipwright.services import ask_user
+        from clipwright.services.task_events import events
+
+        evs = events(ask_user.session_stream_id("sess_think"))
+        thinking = [e for e in evs if e.type == "thinking"]
+        assert len(thinking) == 1, [e.type for e in evs]
+        assert thinking[0].detail["phase"] == "requirements"
+        assert thinking[0].detail["done"] is True
+        assert "先确认选题边界" in thinking[0].detail["delta"]
+
+
+async def _coro(value):  # noqa: ANN001, ANN202
+    return value
