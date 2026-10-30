@@ -871,6 +871,9 @@ class SessionLog:
                 "next_seq": self._next_seq - 1,
                 "archived_until_seq": self._archived_until,
                 "counters": dict(self._counters),
+                # 绑定到本会话的任务（按绑定顺序）。前端用它把「轨迹」固定标签接上
+                # 当前任务——刷新后不需要再从内存里猜。
+                "task_ids": list(self._task_ids),
             }
 
     def tail(self, limit: int = 200) -> dict[str, Any]:
