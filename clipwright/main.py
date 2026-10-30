@@ -217,11 +217,21 @@ async def lifespan(app: FastAPI):
     mongo_ctx.connect()
 
     # 4.78 生产加固 1.2: 管线运行态启动恢复（遗留 running 标 interrupted + 重建映射）
+    # 注意：这里在 lifespan（async）里调用，而 MongoDbModel 的 find_many/update 走
+    # `_io` → 在事件循环里返回 coroutine。同步调用会直接抛
+    # "'coroutine' object is not iterable"，恢复从未真正执行过（僵尸 running 永残留）。
     try:
         from clipwright.api.pipeline import recover_pipeline_runtime
-        recover_pipeline_runtime()
+        await asyncio.to_thread(recover_pipeline_runtime)
     except Exception as e:
         logger.warning("管线运行态启动恢复跳过: %s", e)
+    # 渲染队列启动恢复：上个进程遗留的 queued/rendering 永远没有 worker，
+    # 标记成「进程重启中断」，否则前端队列里永久挂着「恢复的任务 / Task not found」。
+    try:
+        from clipwright.api.render import mark_interrupted_render_tasks
+        await asyncio.to_thread(mark_interrupted_render_tasks)
+    except Exception as e:
+        logger.warning("渲染队列启动恢复跳过: %s", e)
 
     # 4.85 确保 PluginData 目录结构存在
     from clipwright.config import settings as _cfg

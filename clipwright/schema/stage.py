@@ -72,6 +72,10 @@ class StageResult(BaseModel):
     #: 拿不到就留 0/空——不伪造数字，让上层把这次记成"未知"。
     tokens: int = 0
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    #: 工具轨迹**全量**落盘路径（`reports/tool_calls/<stage>-<attempt>.json`）。
+    #: 内存里只保留最近 200 条（性能），主 agent 需要完整 transcript 时按此路径读
+    #: （PRD modern-agent-review M1：工具轨迹无损）。
+    tool_calls_path: str = ""
     duration_ms: int = 0
     #: 工作区报告（markdown）的真路径与序号：子 agent 的文字汇报由 runtime 落盘，
     #: 主 agent 通过 read_report 读取；写盘失败时为空字符串（不是 None）。

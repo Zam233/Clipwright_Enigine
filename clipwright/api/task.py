@@ -102,6 +102,15 @@ async def _run_background(task_id: str) -> None:
         logger.exception("任务执行异常 %s", task_id)
         emit(task_id, "task_end", f"任务异常: {type(e).__name__}", {"error": str(e)[:500]})
     finally:
+        # 成片时间线回写发起项目（E2E 2026-10-29）：proceed 带了 project_id，
+        # 但旧实现只把它当工作区 id 用——任务跑完黑板里有 final_timeline，项目里仍是
+        # 0 轨，导出页按钮恒禁用。这一步失败只记日志，不改任务结论。
+        try:
+            from clipwright.services.task_project_sync import sync_timeline_to_project
+
+            sync_timeline_to_project(task_id, kernel.get(task_id) or task)
+        except Exception:  # noqa: BLE001
+            pass
         _RUNNING.pop(task_id, None)
 
 
@@ -302,6 +311,207 @@ async def task_to_project(task_id: str, request: Request,
     audit.record("project_create_from_task", current_user_id(request),
                  {"project_id": data["id"], "task_id": task_id})
     return {"task_id": task_id, "project_id": data["id"], "name": data.get("name", name)}
+
+
+@router.get("/{task_id}/tool-calls")
+async def task_tool_calls(
+    task_id: str,
+    request: Request,
+    stage: str = Query(default="", description="阶段名（edit/animation/...）；留空取最近一个"),
+    attempt: int = Query(default=0, ge=0, description="第几次尝试；0 = 最新"),
+    limit: int = Query(default=2000, ge=1, le=20000),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    """读回某阶段的**全量**工具轨迹（PRD modern-agent-review M3）。
+
+    `AgentResult.tool_calls` 只带 12 条采样 + `tool_calls_path`；真正的完整
+    transcript 落在 `<workspace>/reports/tool_calls/<stage>-<n>.json`。前端 run 详情
+    需要"点开看全部"，所以这里提供一个带分页的读接口（路径永远来自任务工作区，
+    不接受客户端传路径）。
+    """
+    _enforce_task_owner(request, task_id)
+    from clipwright.services.workspace import Workspace
+
+    def _empty(stage_name: str, names: list[str]) -> dict:
+        # 结构恒定：前端不用为"没有轨迹"写两套取值。
+        return {"task_id": task_id, "stage": stage_name, "attempt": 0, "path": "",
+                "total": 0, "offset": offset, "limit": limit, "count": 0,
+                "internal": 0, "failed": 0, "items": [], "available": names}
+
+    def _root_of() -> Any:
+        """解析阶段写轨迹时用的那个工作区根。
+
+        阶段侧 `_workspace_root_of` 是：`request.extra.workspace_root` 优先，其次任务工作区。
+        从项目 `/proceed` 起来的任务，轨迹落在**项目**工作区（`reports/tool_calls/`），
+        只查任务工作区会读成"没有轨迹"（E2E 2026-10-30 实测）。
+        """
+        extra: dict[str, Any] = {}
+        try:
+            task = _kernel().get(task_id)
+            extra = dict(getattr(getattr(task, "request", None), "extra", None) or {})
+        except Exception:  # noqa: BLE001 — kernel 不可用就按下面的兜底走
+            extra = {}
+        root = str(extra.get("workspace_root") or "")
+        if root and (root_path := __import__("pathlib").Path(root)).is_dir():
+            return root_path
+        project_id = str(extra.get("proceed_project_id") or "")
+        if project_id:
+            candidate = Workspace(project_id).dirs().root
+            if (candidate / "reports" / "tool_calls").is_dir():
+                return candidate
+        # 工作区目录本来就是 `<workspace_dir>/<slug>-<尾6>`；目录不在时 is_dir() 挡掉
+        return Workspace(str(task_id)).dirs().root
+
+    base = _root_of() / "reports" / "tool_calls"
+    if not base.is_dir():
+        return _empty(stage, [])
+
+    available = sorted(p.stem for p in base.glob("*.json"))
+    # stage 只参与文件名前缀匹配：剥掉路径分隔符与 ".."，避免穿越到别处。
+    stage = (stage or "").replace("\\", "/").split("/")[-1].strip()
+    if stage in (".", ".."):
+        return _empty("", available)
+    if stage:
+        candidates = sorted(
+            (p for p in base.glob(f"{stage}-*.json") if p.is_file()),
+            key=lambda p: int("".join(ch for ch in p.stem.split("-")[-1] if ch.isdigit()) or 0),
+        )
+        if not candidates:
+            return _empty(stage, available)
+        path = candidates[-1] if attempt <= 0 else next(
+            (p for p in candidates if p.stem.endswith(f"-{attempt}")), candidates[-1])
+    else:
+        latest = sorted((p for p in base.glob("*.json") if p.is_file()),
+                        key=lambda p: p.stat().st_mtime)
+        if not latest:
+            return _empty("", available)
+        path = latest[-1]
+
+    try:
+        import json as _json
+
+        data = _json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 — 读失败如实回报
+        raise HTTPException(status_code=500, detail=f"读取轨迹失败: {exc}") from exc
+
+    calls = data.get("calls") or []
+    window = calls[offset: offset + limit]
+    return {
+        "task_id": task_id,
+        "stage": str(data.get("stage") or stage),
+        "attempt": int(data.get("attempt") or 0),
+        "path": str(path),
+        "total": len(calls),
+        "offset": offset,
+        "limit": limit,
+        "count": len(window),
+        "internal": sum(1 for c in calls if isinstance(c, dict) and c.get("source") == "internal"),
+        "failed": sum(1 for c in calls if isinstance(c, dict)
+                      and str(c.get("status") or "").lower() not in ("success", "ok", "")),
+        "items": window,
+        "available": available,
+    }
+
+
+@router.get("/{task_id}/runs")
+async def task_runs(task_id: str, request: Request) -> dict:
+    """列出该任务派过的全部子 agent run（PRD modern-agent-review M2）。
+
+    前端 run 详情靠它做"可寻址子会话"：每个 run 都有 run_id，可以继续
+    `GET /runs/{run_id}` 看全量、`POST /runs/{run_id}/message` 追问、
+    `POST /runs/{run_id}/replay` 重放。
+    """
+    from clipwright.services import agent_run
+
+    _enforce_task_owner(request, task_id)
+    items = []
+    for run in agent_run.list_runs(task_id):
+        items.append({
+            "run_id": run.get("run_id", ""),
+            "kind": run.get("kind", ""),
+            "stage": run.get("stage", ""),
+            "role": run.get("role", ""),
+            "status": run.get("status", ""),
+            "attempt": run.get("attempt", 1),
+            "duration_ms": run.get("duration_ms", 0),
+            "cost_usd": run.get("cost_usd"),
+            "degradations": len(run.get("degradations") or []),
+            "tool_calls": len(run.get("tool_calls") or []),
+            "tool_calls_path": run.get("tool_calls_path", ""),
+            "report_path": (run.get("outputs") or {}).get("report_path", ""),
+            "summary": str(run.get("summary") or "")[:400],
+            "replayed": bool(run.get("replayed")),
+        })
+    items.sort(key=lambda r: (r["stage"], r["attempt"], r["run_id"]))
+    return {"task_id": task_id, "count": len(items), "items": items}
+
+
+@router.get("/{task_id}/runs/{run_id}")
+async def task_run_detail(task_id: str, run_id: str, request: Request) -> dict:
+    """单个 run 的全量结果（含降级、工具轨迹、失败原因）。"""
+    from clipwright.services import agent_run
+
+    _enforce_task_owner(request, task_id)
+    run = agent_run.get_run(run_id) or agent_run.inspect(run_id=run_id, task_id=task_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"run 不存在: {run_id}")
+    return {"task_id": task_id, "run": run}
+
+
+class RunMessageBody(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/{task_id}/runs/{run_id}/message")
+async def task_run_message(task_id: str, run_id: str, body: RunMessageBody,
+                           request: Request) -> dict:
+    """给某个 run 所在的阶段子会话留一条补充要求（下一次派发时并入 brief）。
+
+    为什么要按 run 记而不是直接改任务：用户是对着"那一次子 agent 的产出"提要求，
+    语义上属于该阶段的子会话；下一次派发同一阶段时它会被消费并上报事件。
+    """
+    from clipwright.services import agent_run
+
+    _enforce_task_owner(request, task_id)
+    run = agent_run.get_run(run_id) or agent_run.inspect(run_id=run_id, task_id=task_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"run 不存在: {run_id}")
+    stage = str(run.get("stage") or run.get("role") or "")
+    if not stage:
+        raise HTTPException(status_code=400, detail="该 run 没有阶段名，无法投递补充要求")
+    pending = agent_run.add_pending_note(task_id, stage, body.text)
+    from clipwright.services.task_events import emit
+
+    emit(task_id, "inject", f"追加要求 → {stage}（排队第 {pending} 条）",
+         {"stage": stage, "run_id": run_id, "text": body.text[:500]}, span="subagent")
+    return {"task_id": task_id, "run_id": run_id, "stage": stage, "pending": pending}
+
+
+@router.post("/{task_id}/runs/{run_id}/replay")
+async def task_run_replay(task_id: str, run_id: str, request: Request) -> dict:
+    """重放一个 run：用同样的阶段与 brief **真重跑**（跳过幂等回放）。"""
+    from clipwright.services import agent_run
+    from clipwright.tool import surface
+
+    _enforce_task_owner(request, task_id)
+    run = agent_run.get_run(run_id) or agent_run.inspect(run_id=run_id, task_id=task_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"run 不存在: {run_id}")
+    stage = str(run.get("stage") or "")
+    if not stage:
+        raise HTTPException(status_code=400, detail="该 run 没有阶段名，无法重放")
+    task = _kernel().get(task_id)
+    if task is None:
+        raise HTTPException(status_code=409,
+                            detail="任务不在运行态内存里（已结束或服务重启），无法重放该 run")
+    result = await surface.execute(
+        "delegate_agent",
+        {"stage": stage, "brief": str(run.get("brief") or ""), "refresh": True},
+        pipeline_id=task_id, task=task,
+    )
+    return {"task_id": task_id, "stage": stage, "status": result.get("status"),
+            "replayed": bool(result.get("replayed")),
+            "run": (result.get("output") or {}) if isinstance(result.get("output"), dict) else {}}
 
 
 @router.get("/{task_id}/result")

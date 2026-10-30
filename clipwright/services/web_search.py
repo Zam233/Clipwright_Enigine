@@ -54,46 +54,72 @@ class WebSearchService:
         pass
 
     def is_configured(self) -> bool:
-        """搜索是否已配置（总开关 + API key 非空）。绝不抛异常。"""
-        try:
-            enabled = getattr(settings, "enable_web_search", False)
-            api_key = getattr(settings, "web_search_api_key", "") or ""
-            return bool(enabled) and bool(api_key)
-        except Exception:
-            return False
+        """是否有任何可用 provider（付费 key **或** 允许的本地抓取）。绝不抛异常。
 
-    async def search(self, query: str, max_results: int | None = None) -> list[dict[str, Any]]:
+        2026-10-30 变更（PRD `web-search-fetch-prd-2026-10-30.md` M1）：
+        旧语义要求"总开关 + API key"，于是没配 key 的机器上 animation/主 agent
+        连"能不能联网"都无从判断，工具面也看不到 `web_search`。
+        现在只要有一条可用链路（含无需密钥的本地抓取）就算已配置。
+        """
+        try:
+            from clipwright.services import web_providers as wp
+
+            return bool(wp.provider_chain())
+        except Exception:
+            try:
+                enabled = getattr(settings, "enable_web_search", False)
+                api_key = getattr(settings, "web_search_api_key", "") or ""
+                return bool(enabled) and bool(api_key)
+            except Exception:
+                return False
+
+    async def search(self, query: str, max_results: int | None = None,
+                     *, client_factory: Any = None) -> list[dict[str, Any]]:
         """执行联网搜索，返回归一化结果列表 [{title, url, snippet, score}]。绝不抛异常。
 
-        Args:
-            query: 搜索关键词
-            max_results: 期望返回条数；None 时用 settings.web_search_max_results（默认 5）
+        走 `services.web_providers` 的 provider 链（主 provider → 其余付费 → 本地抓取）；
+        全部失败时登记 `web_search_unavailable` 降级，让主 agent 知道"这次没搜到"
+        而不是以为"搜过了、就是没有"。
         """
-        if not self.is_configured():
-            return []
-
-        provider = getattr(settings, "web_search_provider", "bocha") or "bocha"
-        primary = provider if provider in ("bocha", "baidu") else "bocha"
-        fallback = "baidu" if primary == "bocha" else "bocha"
         try:
             n = max_results or getattr(settings, "web_search_max_results", 5) or 5
             n = max(1, min(int(n), 50))  # 夹在 1..50，防异常配置值
         except (TypeError, ValueError):
             n = 5
 
-        last_error = "无结果"
-        for p in (primary, fallback):
-            try:
-                results = await self._search_provider(p, query, n)
-                if results:
-                    return results
-                last_error = f"{p} 返回空结果"
-            except Exception as e:  # 搜索绝不上抛：记日志后回退另一 provider
-                last_error = f"{p}: {e}"
-                logger.warning("Web search provider %s 失败（回退 %s）: %s", p, fallback, e)
-        logger.warning("Web search 全部 provider 失败/无结果（%s），返回空列表: query=%.100s",
-                       last_error, query)
+        from clipwright.services import web_providers as wp
+
+        if not wp.provider_chain():
+            self._note_search_degradation(
+                "no_provider",
+                "没有任何可用的 web 搜索 provider（未配 API key 且本地抓取被关闭）",
+            )
+            return []
+
+        outcome = await wp.search(query, n, client_factory=client_factory)
+        if outcome.results:
+            logger.info("web search 命中 provider=%s（attempts=%s）: query=%.80s",
+                        outcome.provider, ",".join(outcome.attempts), query)
+            return outcome.results
+
+        self._note_search_degradation(
+            "all_providers_failed",
+            f"全部 provider 无结果（尝试：{','.join(outcome.attempts) or '无'}）；"
+            "该段动画只能依靠现有素材与常识",
+        )
         return []
+
+    @staticmethod
+    def _note_search_degradation(kind: str, detail: str) -> None:
+        """搜索失败如实登记（主 agent 可见），不再是"静默返回空列表"。"""
+        try:
+            from clipwright.services.degradation import note_degradation
+
+            note_degradation("web_search_unavailable", detail=f"{kind}: {detail}"[:300],
+                             scope="web_search",
+                             impact="事实/数据类动画失去外部依据，可能只能凭文案推断")
+        except Exception:  # noqa: BLE001 — 登记失败不影响调用方
+            pass
 
     async def _search_provider(self, provider: str, query: str, count: int) -> list[dict[str, Any]]:
         if provider == "baidu":

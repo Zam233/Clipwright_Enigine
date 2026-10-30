@@ -249,10 +249,12 @@ def _memory_digest(task: Any) -> tuple[str, list[dict[str, Any]]]:
 
 def _artifacts_preview(task: Any, root: Path | None) -> str:
     lines: list[str] = []
+    board_names: list[str] = []
     try:
         from clipwright.services import task_blackboard as bb
 
         board = bb.get(str(getattr(task, "id", "") or ""))
+        board_names = list(board)
         for name, value in list(board.items())[:12]:
             if isinstance(value, dict):
                 preview = {k: value[k] for k in list(value)[:3]}
@@ -261,13 +263,77 @@ def _artifacts_preview(task: Any, root: Path | None) -> str:
             else:
                 preview = str(value)[:80]
             lines.append(f"- {name}: {str(preview)[:160]}")
+        # 时间线里可能是 **远程 URL 资产**（Pexels 等图库直链）：渲染期由 ffmpeg
+        # 按 URL 取流，不出现在 materials/ 里。不说明白模型会以为"整条片子的素材
+        # 根本不存在"，然后把回合全花在反复下载/校验上（E2E 2026-10-30 实测
+        # 160 回合耗尽）。所以这里显式给出"远程/本地"分布。
+        _tl = board.get("final_timeline") or board.get("timeline")
+        if isinstance(_tl, dict):
+            remote = local = 0
+            for track in _tl.get("tracks") or []:
+                for clip in track.get("clips") or []:
+                    asset = str(clip.get("asset_id") or "")
+                    if not asset:
+                        continue
+                    if asset.startswith(("http://", "https://")):
+                        remote += 1
+                    else:
+                        local += 1
+            if remote or local:
+                note = (f"- 时间线资产：本地 {local} 条"
+                        + (f"、远程 {remote} 条（http(s) 直链，渲染时自动取流，"
+                           f"**不算素材缺失**，不要再重复下载）" if remote else ""))
+                lines.append(note)
     except Exception:  # noqa: BLE001
         pass
+    # 黑板为空时**不能**拿磁盘文件冒充黑板内容（E2E 2026-10-30 真实事故）：
+    # 模型看到 workspace 里有 art_*.json 就以为产物可用，直接派 edit/material，
+    # 结果 48 次调用全部"缺输入"并耗尽回合闸。必须把"黑板空"和"磁盘有文件"
+    # 这两件事分开说，并给出可执行动作。
     if not lines and root is not None:
         art_dir = root / "artifacts"
+        disk: list[str] = []
         if art_dir.is_dir():
             for p in sorted(art_dir.glob("*"))[:12]:
-                lines.append(f"- {p.name}（{p.stat().st_size} 字节）")
+                disk.append(f"- {p.name}（{p.stat().st_size} 字节，仅磁盘文件）")
+        if disk:
+            lines.append("黑板当前为空：以下文件只在磁盘上，**不在黑板**，阶段子 agent 读不到：")
+            lines.extend(disk)
+            lines.append(
+                "正确做法：要么先用 read_artifact 读入并用 `inputs` 显式传（形如 "
+                "{\"timeline\": {\"artifact\": \"art_xxx\", \"path\": \"...\"}}），"
+                "要么先派 `structure` 产出 script_skeleton/scenes 再往下走。"
+                "直接派 edit/material 一定会因缺输入失败。"
+            )
+        else:
+            lines.append("黑板当前为空（无产物、无磁盘 artifact）：先派 structure。")
+    # 状态快照（2026-10-30）：把"磁盘上有什么产物 / 派过哪些子 agent"直接摆出来。
+    # 现场：模型每轮都重新 list_dir/read_artifact 摸底（一次任务 121/161 次），
+    # 回合全花在"确认现状"上。已知的现状就写在上下文里，别让它去问。
+    try:
+        from clipwright.services import agent_run as _agent_run
+
+        runs = _agent_run.list_runs(str(getattr(task, "id", "") or ""))
+    except Exception:  # noqa: BLE001 — run 表不可用就跳过
+        runs = []
+    if runs:
+        brief_runs = []
+        for r in runs[-8:]:
+            brief_runs.append(
+                f"{r.get('stage') or r.get('role')}#{r.get('attempt')}"
+                f" {r.get('status')}"
+                + (f"(降级{len(r.get('degradations') or [])})"
+                   if r.get("degradations") else ""))
+        lines.append("- 已派发的子 agent：" + " / ".join(brief_runs))
+    if root is not None:
+        art_dir = root / "artifacts"
+        names: list[str] = []
+        if art_dir.is_dir():
+            for p2 in sorted(art_dir.glob("*.json"))[:8]:
+                names.append(f"{p2.stem}({max(1, p2.stat().st_size // 1024)}KB)")
+        if names:
+            lines.append("- 磁盘产物：" + " / ".join(names)
+                         + "（已在上面列出，不用再 list_artifacts 摸底）")
     return "\n".join(lines)
 
 

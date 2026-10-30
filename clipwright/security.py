@@ -33,6 +33,27 @@ def is_safe_download_name(value: str) -> bool:
     return not any(ch in _FORBIDDEN_FILENAME_CHARS for ch in value)
 
 
+def output_basename(value: str, *, label: str = "输出文件名") -> str:
+    """把客户端传来的输出路径收敛成**安全 basename**（非法抛 SecurityViolation）。
+
+    为什么需要它：客户端（导出页 `submitRender`、旧渲染入口）一直传 `renders/xxx.mp4`
+    这种带目录的路径。对整串跑 `is_safe_download_name` 会因路径分隔符把合法请求判死
+    （E2E 2026-10-29：前端导出页 100% 提交失败，报「非法输出文件名」）；而直接
+    `Path(name).name` 又会放行 `../../etc/passwd` 这类穿越输入。
+    折中口径：允许普通目录段，任何一段是 `..` 一律拒绝，最终只取最后一段做文件名。
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    segments = [s for s in raw.replace("\\", "/").split("/") if s not in ("", ".")]
+    if any(s == ".." for s in segments):
+        raise SecurityViolation(f"非法{label}: 含上级目录引用")
+    name = segments[-1] if segments else ""
+    if not is_safe_download_name(name):
+        raise SecurityViolation(f"非法{label}")
+    return name
+
+
 def validate_id(value: str, name: str = "id") -> str:
     """校验 ID，非法时抛 SecurityViolation。"""
     if not is_safe_id(value):

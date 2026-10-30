@@ -22,6 +22,38 @@ from clipwright.agents.base import unified_llm_call
 # 残留占位符检测：{word} 形式的字面量在最终 HTML 中出现即视为未填充
 _RESIDUAL_PLACEHOLDER_RE = re.compile(r"\{[a-zA-Z_][a-zA-Z0-9_]*\}")
 
+
+def _note(kind: str, detail: str = "", *, scope: str = "", impact: str = "") -> None:
+    """登记一次降级（走 F9 的 degradation_scope）。
+
+    E2E 2026-10-29 用户裁定：截断与回退不能被主 Agent 默许——阶段内部一旦退而求其次，
+    必须登记成 degradation，由 `run_stage` 汇总进 StageResult → AgentResult → 工具结果，
+    主 Agent 才看得见并要求当轮决策。无活跃作用域时 `note_degradation` 只打 warning，
+    不会静默丢弃（便于发现漏接线的调用点）。
+    """
+    try:
+        from clipwright.services.degradation import note_degradation
+
+        note_degradation(kind, detail[:300], scope=scope, impact=impact[:200])
+    except Exception:  # noqa: BLE001 — 登记失败绝不能影响生成
+        pass
+
+
+def _finish_reason_of(raw: Any) -> str:
+    """从 provider 原始响应里取 finish_reason（判断"被长度截断"的唯一可信信号）。"""
+    try:
+        choices = getattr(raw, "choices", None)
+        if choices is None and isinstance(raw, dict):
+            choices = raw.get("choices")
+        if choices:
+            first = choices[0]
+            value = (first.get("finish_reason") if isinstance(first, dict)
+                     else getattr(first, "finish_reason", ""))
+            return str(value or "")
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
 # MG 生成结果内存缓存——同输入自愈/重试零 LLM 成本
 # key = sha256(description+text+persona_style)，TTL 30 分钟
 import hashlib as _hl
@@ -460,8 +492,14 @@ ision_prompt
         复用本类的缓存/校验/批判/修复/模板回退，因此这里不做任何重复实现。
         """
         from clipwright.animation.mg.type_generation import generate_for_type
+        from clipwright.services import agent_context as _ctx
 
-        return await generate_for_type(self, **kwargs)
+        # 暗区补齐（PRD modern-agent-review M2）：MG 生成不走 call_tool，
+        # 以前只留 logger。这里记成一次内部操作（含耗时/失败），
+        # run_stage 收尾会并入工具轨迹与落盘文件。
+        with _ctx.operation(f"mg_generate:{kwargs.get('type_id') or '?'}",
+                            source="internal"):
+            return await generate_for_type(self, **kwargs)
 
     async def generate_best(self, *, variants: int | None = None, **kwargs: Any) -> dict[str, Any]:
         """多方案生成 + 择优：并行生成 N 个候选，按评分取最优。
@@ -571,7 +609,8 @@ ision_prompt
                 timeout=llm_config.get("timeout", 900),
             ), retries=1, timeout=llm_config.get("timeout", 900))
             content = response.content if hasattr(response, "content") else str(response)
-            repaired = self._parse_llm_response(content)
+            repaired = self._parse_llm_response(
+                content, finish_reason=_finish_reason_of(getattr(response, "raw_response", None)))
             if repaired:
                 ok, _ = validate_mg_json(repaired)
                 if ok:
@@ -630,6 +669,14 @@ ision_prompt
             mg_def, description, persona_style, category_context, vision_prompt,
             **critique_kwargs,
         )
+        # 自批判没生效 = 这段产物少了一道质量校验（旧实现静默跳过，主 Agent 完全不知情）
+        if critique is None and (self._config.get("critique", {}) or {}).get("enabled", True):
+            _note(
+                "mg_critique_skipped",
+                "自批判未产出（LLM 返回不可解析 / 调用异常），该段产物未经质量自评",
+                scope=str((scene_context or {}).get("title") or ""),
+                impact="仅靠客观动效指标兜底；若指标也通过则该段无质量信号",
+            )
 
         # 客观动效门禁（PRD §5 / §8）：LLM 自评容易"看着还行"，这里用可计算的
         # 指标（主运动位移占画布比例、关键帧覆盖时长、在动元素数）兜底。
@@ -637,6 +684,22 @@ ision_prompt
         gate_on = (getattr(self, "_motion_gate_enabled", False)
                    if motion_gate is None else bool(motion_gate))
         objective = self._objective_motion_gate(mg_def, width=width) if gate_on else None
+        # mg_dynamic 路径（gate 关闭）也要如实上报"动效偏弱"（E2E 2026-10-30）：
+        # 实测修复 overlay 后，入场 0.4s 有 23.8% 像素变化，但 34.2–38.0s 只剩 3–4%
+        # ——动画"只是展示画面"的根因是**关键帧集中在前段**，后段完全静止。
+        # 不擅自重派（会改变 method 契约），但必须登记，主 agent 才能决定重做。
+        if not gate_on:
+            try:
+                _weak = self._objective_motion_gate(mg_def, width=width)
+                if _weak is not None and not _weak.get("ok"):
+                    _note(
+                        "mg_motion_weak",
+                        f"客观动效未达标：{(_weak.get('issues') or [])[:2]}",
+                        scope=str((scene_context or {}).get("title") or ""),
+                        impact="该段动画观感接近静态展示（关键帧集中在前段、后段静止）",
+                    )
+            except Exception:  # noqa: BLE001 — 指标计算失败不影响出片
+                pass
         objective_ok = objective is None or bool(objective.get("ok"))
         # 修复动机：只看 LLM 自评（原语义）还是被客观门禁拉起。
         # 后者修复失败时**接受原输出**——客观指标是质量优化，不该把整段动画
@@ -769,6 +832,11 @@ ision_prompt
             logger.warning(
                 "MGGenerator: 客观动效门禁修复无产出，接受原输出（motion=%s）",
                 (objective or {}).get("issues"),
+            )
+            _note(
+                "mg_motion_gate_accepted",
+                f"客观动效指标未达标且定向修复无产出：{(objective or {}).get('issues')}",
+                impact="该段动效偏弱（位移/覆盖度不足），已按原稿交付，不是修复后的版本",
             )
             self._trace_event(
                 None, "motion_gate",
@@ -1020,7 +1088,8 @@ ision_prompt
                 timeout=llm_config.get("timeout", 900),
             ), retries=1, timeout=llm_config.get("timeout", 900))
             content = response.content if hasattr(response, "content") else str(response)
-            repaired = self._parse_llm_response(content)
+            repaired = self._parse_llm_response(
+                content, finish_reason=_finish_reason_of(getattr(response, "raw_response", None)))
             if repaired:
                 ok, _ = validate_mg_json(repaired)
                 if ok:
@@ -1140,7 +1209,8 @@ ision_prompt
                 timeout=llm_config.get("timeout", 900),
             ), retries=1, timeout=llm_config.get("timeout", 900))
             content = response.content if hasattr(response, "content") else str(response)
-            return self._parse_llm_response(content)
+            return self._parse_llm_response(
+                content, finish_reason=_finish_reason_of(getattr(response, "raw_response", None)))
         except Exception as e:
             logger.warning("MGGenerator LLM call failed: %s", e)
             self._trace_event(
@@ -1300,9 +1370,10 @@ ision_prompt
 
         return "\n\n".join(parts)
 
-    def _parse_llm_response(self, content: str) -> dict[str, Any] | None:
+    def _parse_llm_response(self, content: str, *, finish_reason: str = "") -> dict[str, Any] | None:
         """从 LLM 响应中提取 JSON。"""
         if not content:
+            _note("llm_json_empty", "LLM 返回空正文", impact="该段动画只能走模板兜底")
             return None
 
         try:
@@ -1325,7 +1396,21 @@ ision_prompt
             except json.JSONDecodeError:
                 pass
 
-        logger.warning("MGGenerator: could not parse JSON from LLM response: %.200s", content)
+        # 三种提取都失败：把"到底怎么坏的"讲清楚（旧实现只打前 200 字符，
+        # 长度截断与格式坏在日志里长得一模一样，且主 Agent 完全看不到）。
+        truncated = finish_reason in ("length", "max_tokens")
+        kind = "llm_json_truncated" if truncated else "llm_json_invalid"
+        logger.warning(
+            "MGGenerator: could not parse JSON from LLM response "
+            "(finish_reason=%s, chars=%d, head=%.120s | tail=%.120s)",
+            finish_reason or "?", len(content), content, content,
+        )
+        _note(
+            kind,
+            f"finish_reason={finish_reason or '?'} chars={len(content)} "
+            f"tail=…{content[-120:]}",
+            impact="本轮产物不可用，若重试/修复都失败则该段动画退化为内置模板",
+        )
         return None
 
     async def _fallback_generate(
@@ -1340,6 +1425,13 @@ ision_prompt
         pipeline_id: str | None = None,
     ) -> dict[str, Any]:
         """降级生成 — 匹配已有模板。"""
+        # 走到这里就是"LLM 路线整体失败、用内置模板顶上"——必须让主 Agent 知道，
+        # 否则它会把模板动画当成 LLM 定制产物交付（E2E 2026-10-29 用户裁定）。
+        _note(
+            "mg_template_fallback",
+            f"LLM MG 多次尝试与修复均失败，改用内置模板匹配：{str(description)[:80]}",
+            impact="该段动画是模板而非按场景定制，构图与文案贴合度下降",
+        )
         templates = self._get_templates()
         best = FallbackEngine.find_best_template(description, templates)
 

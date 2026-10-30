@@ -51,6 +51,57 @@ _MEMORY_LOADED: set[str] = set()
 #: 属于模型行为，不该直接判死刑：带着明确指令再推它一把，仍然出不来才判失败。
 _MAX_TIMELINE_CONTINUATIONS = 2
 _TIMELINE_CONTINUATIONS: dict[str, int] = {}
+
+# ── 降级决策守门（E2E 2026-10-29 用户裁定）──────────────────────────────
+# 「截断与回退不能被主 Agent 默认接受」：阶段内部一旦 note_degradation（LLM JSON
+# 截断/格式坏、自批判被跳过、模板兜底、motion gate 退让、类型化回退 SVG…），
+# Kernel 必须把这件事摆到模型面前**并要求当轮决策**（重派 / 换策略 / 明确接受并写影响），
+# 而不是让它继续照常往下走。这里只强推一次：够它做决定，又不会把简单场景拖成死循环。
+_MAX_DEGRADATION_CONTINUATIONS = 1
+#: 模型提前收尾且"再推一把"也用完时，Kernel 自己补派缺失阶段的次数上限。
+#: 为什么要 Kernel 兜底：模型是概率的，收尾时机不稳；而"缺 final_timeline"是
+#: **确定性**事实——提示词推两轮还不做，就该由运行时按同一套工具面自己补
+#: （记录为一次真实工具调用，不是偷偷绕过）。
+_MAX_KERNEL_RECOVERY = 2
+_KERNEL_RECOVERY: dict[str, int] = {}
+#: "最后一次收据"机会：守门即将判失败时，再给模型**一次**只做收据的机会。
+#: 为什么要单独一个预算：收据不是"再干一轮活"，而是一次明确的决策动作；
+#: 和它共用续跑预算会出现"预算被前面用掉 → 到收尾时连写收据的机会都没有"。
+_MAX_FINAL_RECEIPT = 1
+_FINAL_RECEIPT: dict[str, int] = {}
+_FINAL_RECEIPT_HINT_HEAD = (
+    "\n\n## 最后一步：写降级收据（只做这件事）\n"
+    "以下降级还没有收据，任务会在你收尾时判失败：\n"
+)
+_FINAL_RECEIPT_HINT_TAIL = (
+    "\n\n现在**只允许**做一件事：调用 `acknowledge_degradation`，"
+    "kinds 填上面列出的 kind，reason 写清楚「为什么可以接受」（≥10 字，写真实理由），"
+    "impact 写「观众会看到什么」。写完立刻 finish，不要再调用任何其他工具。\n"
+    "如果你认为某项必须修，就改为派该阶段重做（delegate_agent 带 refresh=true），"
+    "但不要两者都不做就收尾。"
+)
+#: 允许 Kernel 补派的阶段（时间线生产者 + 素材/动画：它们最常上报可修降级）
+_TIMELINE_STAGE_FOR_RECOVERY = ("edit", "animation", "audio", "material")
+_DEGRADATION_CONTINUATIONS: dict[str, int] = {}
+#: 未处置降级：task_id → [degradation dict]
+_PENDING_DEGRADATIONS: dict[str, list[dict[str, Any]]] = {}
+_DEGRADATION_DECISION_HINT_HEAD = (
+    "\n\n## 降级必须处置（必须遵守）\n"
+    "上一步**完成了但打了折扣**，不是干净的 ok。以下是阶段上报的降级事实：\n"
+)
+_DEGRADATION_DECISION_HINT_TAIL = (
+    "\n你必须**当轮做出决定**，并在下一步立即执行，不允许直接收尾或忽略：\n"
+    "1. `material_placeholder`（占位画面/纯色卡/文字卡）属于**必须修**的降级："
+    "重派 `material`，换更泛的英文关键词、放宽匹配阈值或换素材源，把占位换成真实画面；"
+    "确实搜不到时，才允许保留占位并在结论里逐场说明原因；\n"
+    "2. `degraded` 属于偶发/可救（LLM JSON 截断、自批判被跳过）→ 用同样的 inputs "
+    "**重派同一阶段**（必要时缩小范围或换更小的负载）；\n"
+    "3. 属于结构性短板（类型化生成失败、模板兜底、motion gate 退让）→ **换策略**"
+    "（换阶段/改提示词/降低该段复杂度），并在后面说明为什么这样选；\n"
+    "4. 确实可以接受 → 调用 `acknowledge_degradation(kinds=[...], reason=..., impact=...)` "
+    "写收据（reason ≥10 字）；只在文字里说\"接受\"不算处置，任务会判 `degradation_unresolved`。\n"
+    "禁止用一句\"动画已编排完成\"或\"素材已就绪\"把降级带过去。"
+)
 _TIMELINE_CONTINUE_HINT = (
     "\n\n## 收尾守门（必须遵守）\n"
     "上一轮结束时黑板里**还没有 `final_timeline`**，所以任务不算完成。请立刻继续推进：\n"
@@ -334,6 +385,126 @@ def _record_digest(task: Task, name: str, result: dict[str, Any]) -> None:
     task.touch()
 
 
+def _collect_degradations(task: Task, name: str, result: dict[str, Any]) -> None:
+    """把一次工具结果里的降级登记成"待处置"，并让事件流与模型都看得见。
+
+    为什么要在 Kernel 侧收集而不是只靠阶段自己报：降级是**编排层必须决策**的事实。
+    收集点放在唯一入口（`_on_tool_call`），任何工具/阶段只要按 F9 登记了
+    degradation 都会自动上浮，不需要每个 Agent 各自接线。
+    """
+    items: list[dict[str, Any]] = []
+    for bucket in (result.get("output"), result):
+        if not isinstance(bucket, dict):
+            continue
+        raw = bucket.get("degradations")
+        if isinstance(raw, list):
+            items.extend([d for d in raw if isinstance(d, dict)])
+    if not items:
+        return
+    # 写进台账（PRD modern-agent-review P0）：降级处置需要**收据**，
+    # 不能只靠"再推一轮 + 模型口头接受"。`register` 负责 (kind, scope) 去重。
+    try:
+        from clipwright.services import degradation_ledger
+
+        fresh = degradation_ledger.register(task.id, items)
+    except Exception:  # noqa: BLE001 — 台账不可用时退回内存去重
+        pending = _PENDING_DEGRADATIONS.setdefault(task.id, [])
+        known = {(str(d.get("kind")), str(d.get("scope"))) for d in pending}
+        fresh = [d for d in items if (str(d.get("kind")), str(d.get("scope"))) not in known]
+        pending.extend(fresh)
+    if not fresh:
+        return
+    # 新降级 = 新事实 → 重置"要求决策"的续跑预算。
+    # 否则前期一次 gate 续跑会把预算用光，后期完全不同的降级就没机会被响应
+    # （E2E 2026-10-30 实测：animation 反复降级用掉预算，最后 audio 定稿后 4 项降级
+    #  直接判失败，即使成片其实已经产出了）。
+    try:
+        _DEGRADATION_CONTINUATIONS[task.id] = 0
+    except Exception:  # noqa: BLE001
+        pass
+    # 内存镜像（兼容既有观察者/测试）：台账是收据来源，内存 dict 仍保留一份
+    # 便于 debug 与「当前待处置清单」的快速读取。
+    _PENDING_DEGRADATIONS.setdefault(task.id, []).extend(fresh)
+    try:
+        from clipwright.services.task_events import emit
+
+        emit(task.id, "degradation",
+             f"{name} 上报 {len(fresh)} 项降级："
+             + "、".join(sorted({str(d.get("kind")) for d in fresh}))[:120],
+             {"tool": name, "count": len(fresh), "items": fresh[:8]}, span="kernel")
+    except Exception:  # noqa: BLE001 — 事件通道不可用不影响执行
+        pass
+
+
+def _mark_stage_remediated(task_id: str, stage: str) -> None:
+    """重派某阶段并成功后，把该阶段的降级记为 `remediated` 收据。"""
+    if not stage:
+        return
+    try:
+        from clipwright.services import degradation_ledger
+
+        n = degradation_ledger.mark_remediated(task_id, stage)
+        if n:
+            from clipwright.services.task_events import emit
+
+            emit(task_id, "degradation",
+                 f"{stage} 阶段重派成功，{n} 项降级已修复（remediated 收据）",
+                 {"stage": stage, "resolved": n, "mode": "remediated"}, span="kernel")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def _kernel_recover_stage(task: Any, stage: str, reason: str) -> dict[str, Any]:
+    """Kernel 自己补派一个阶段（确定性补救）。
+
+    与模型派发走**同一个入口**（`tool.surface.execute`），因此同样计入 usage、
+    同样进事件流、同样有幂等键与审计——区别只是发起者是运行时而不是模型。
+    成功且未回放 → 给该阶段的降级写 `remediated` 收据（真修复）。
+    """
+    from clipwright.services.task_events import emit
+    from clipwright.tool import surface as _surface
+
+    if not bool(getattr(settings, "agent_kernel_recovery", True)):
+        emit(task.id, "narration", f"Kernel 补派已关闭，跳过 {stage}（{reason}）",
+             {"kind": "kernel_recovery_disabled", "stage": stage}, span="kernel")
+        return {"status": "skipped", "error": "agent_kernel_recovery=false"}
+    emit(task.id, "narration", f"Kernel 补派 {stage}（{reason}）",
+         {"kind": "kernel_recovery", "stage": stage, "reason": reason}, span="kernel")
+    try:
+        result = await _surface.execute("delegate_agent", {"stage": stage},
+                                        pipeline_id=task.id, task=task)
+    except Exception as exc:  # noqa: BLE001 — 补救失败如实上报，不吞
+        emit(task.id, "degradation", f"Kernel 补派 {stage} 失败：{type(exc).__name__}",
+             {"kind": "kernel_recovery_failed", "stage": stage,
+              "error": str(exc)[:200]}, span="kernel")
+        return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+    task.usage.tool_calls += 1
+    _collect_degradations(task, "delegate_agent", result)
+    if str(result.get("status") or "") == "ok" and not result.get("replayed"):
+        _mark_stage_remediated(task.id, stage)
+    emit(task.id, "tool_result",
+         f"delegate_agent({stage}) → {result.get('status')}",
+         {"tool": "delegate_agent", "stage": stage, "status": result.get("status"),
+          "replayed": bool(result.get("replayed")), "source": "kernel"},
+         span="tool")
+    return result
+
+
+def _pending_degradation_hint(task_id: str) -> str:
+    """把待处置降级压成给模型看的短清单（守门提示词用）。"""
+    items = _PENDING_DEGRADATIONS.get(task_id) or []
+    if not items:
+        return ""
+    lines = [
+        f"- [{d.get('kind')}] {str(d.get('detail') or '')[:200]}"
+        + (f"（scope={d.get('scope')}）" if d.get("scope") else "")
+        for d in items[:8]
+    ]
+    more = f"\n（另有 {len(items) - 8} 项同类降级）" if len(items) > 8 else ""
+    return (_DEGRADATION_DECISION_HINT_HEAD + "\n".join(lines) + more
+            + _DEGRADATION_DECISION_HINT_TAIL)
+
+
 def context_bundle(task: Task, *, max_chars: int = 1200) -> str:
     """把任务上下文压成给模型的短文本（Q5：摘要优先 + 关键数值结构化保留）。
 
@@ -422,12 +593,15 @@ class AgentKernel:
 
     # ── 生命周期 ─────────────────────────────────
 
-    def create(self, request: TaskRequest, *, mode: str = "on") -> Task:
+    def create(self, request: TaskRequest, *, mode: str = "on",
+               limits: Any = None) -> Task:
+        """建任务。`limits` 可覆盖四道闸（入口来自 `/proceed` 这类"知道片子多大"的调用方）。"""
+        _limits = limits if limits is not None else limits_from_settings()
         task = Task(
             id=f"task_{uuid.uuid4().hex[:10]}",
             request=request,
             mode=mode,
-            limits=limits_from_settings(),
+            limits=_limits,
         )
         _TASKS[task.id] = task
         if len(_TASKS) > _MAX_TASKS:
@@ -648,6 +822,24 @@ class AgentKernel:
                 # 成本未知要计数：金额闸对它是盲的，不能当成 0 悄悄过
                 task.usage.unknown_cost_calls += 1
             _record_digest(task, name, result)
+            # 降级信号收集（E2E 2026-10-29）：delegate_agent 的 output 里带
+            # degradations 时记成"待处置"，收尾守门会据此强推一轮决策。
+            _collect_degradations(task, name, result)
+            # 重派同阶段并成功 → 给该阶段降级写 `remediated` 收据（PRD P0）。
+            # 但**回放不算修复**：幂等命中只是把旧结果再递一次，字节都没变
+            # （E2E 2026-10-30 实测：重派"成功"但 sha256 与降级那次完全相同）。
+            if name == "delegate_agent" and str(result.get("status") or "") == "ok":
+                try:
+                    _stage = str((dict(args or {}).get("stage") or "")).strip()
+                except Exception:  # noqa: BLE001
+                    _stage = ""
+                if result.get("replayed"):
+                    emit(task.id, "degradation",
+                         f"{_stage or '阶段'} 的重派命中了幂等回放，不算修复",
+                         {"stage": _stage, "mode": "replayed_not_fixed"},
+                         span="kernel")
+                else:
+                    _mark_stage_remediated(task.id, _stage)
             # 录制（A2 回放的数据来源）：M3 之后没有步骤级执行，录制点在这里
             from clipwright.services.recording import maybe_record
 
@@ -767,14 +959,126 @@ class AgentKernel:
                                 task, started=started, shadow=shadow,
                                 extra_hint=_TIMELINE_CONTINUE_HINT,
                             )
+                        # 提示词推不动 → Kernel 自己补派（缺什么派什么），再跑一轮。
+                        recovered = int(_KERNEL_RECOVERY.get(task.id, 0))
+                        if recovered < _MAX_KERNEL_RECOVERY:
+                            _KERNEL_RECOVERY[task.id] = recovered + 1
+                            _stage = "audio" if board.get("timeline") else "edit"
+                            _rec = await _kernel_recover_stage(
+                                task, _stage,
+                                f"final_timeline 缺失（第 {recovered + 1} 次补派）")
+                            if str(_rec.get("status") or "") in ("ok", "dry_run"):
+                                return await self._run_tool_loop(
+                                    task, started=started, shadow=shadow,
+                                    extra_hint=_TIMELINE_CONTINUE_HINT,
+                                )
+                            # 补派没成（关闭/失败）→ 不再无谓重跑，直接如实收尾
+                            gate_reason = (f"缺少可渲染时间线（补派 {_stage} 未成功："
+                                           f"{_rec.get('error') or _rec.get('status')}）")
+                        else:
+                            gate_reason = "缺少可渲染时间线（final_timeline 为空）"
                         gate_reason = "缺少可渲染时间线（final_timeline 为空）"
                     else:
                         _TIMELINE_CONTINUATIONS.pop(task.id, None)
+                        # 注意：不要在这里清 `_KERNEL_RECOVERY`——循环会反复进这段
+                        # （有 final_timeline 就走 else），清了等于把补派预算无限续，
+                        # 造成 gate→补派→gate 的无限递归（实测 RecursionError）。
+                        # 它只在任务真正收尾时清。
                 except Exception:  # noqa: BLE001 — 守门失败不阻断收尾
                     pass
+
+            # 降级处置收据（PRD modern-agent-review P0）：待处置降级必须留有收据——
+            # `remediated`（重派同阶段成功）或 `accepted`（显式调用
+            # acknowledge_degradation）。守门只推一次；推完仍无收据 → 按策略判失败，
+            # 不再"模型口头说一句接受就 done"。
+            unresolved: list[dict[str, Any]] = []
+            if not shadow and not dry_run:
+                try:
+                    from clipwright.services import degradation_ledger
+
+                    # 台账是收据来源；内存镜像是它的子集（debug/测试直写）。
+                    # 两者取并集并按 (kind, scope) 去重，避免"只写内存"的路径绕过守门。
+                    unresolved = list(degradation_ledger.outstanding(task.id))
+                    known = {(str(d.get("kind")), str(d.get("scope"))) for d in unresolved}
+                    for item in _PENDING_DEGRADATIONS.get(task.id) or []:
+                        key = (str(item.get("kind")), str(item.get("scope")))
+                        if key not in known and degradation_ledger.needs_receipt(item):
+                            unresolved.append(item)
+                            known.add(key)
+                except Exception:  # noqa: BLE001 — 台账不可用时退回内存
+                    unresolved = list(_PENDING_DEGRADATIONS.get(task.id) or [])
+                if unresolved:
+                    done = int(_DEGRADATION_CONTINUATIONS.get(task.id, 0))
+                    if done < _MAX_DEGRADATION_CONTINUATIONS:
+                        _DEGRADATION_CONTINUATIONS[task.id] = done + 1
+                        emit(task.id, "narration",
+                             "降级决策守门：本轮有未处置降级，要求主 Agent 当轮决策"
+                             f"（第 {done + 1}/{_MAX_DEGRADATION_CONTINUATIONS} 次）",
+                             {"kind": "degradation_gate_continue",
+                              "count": len(unresolved),
+                              "kinds": sorted({str(d.get("kind")) for d in unresolved})},
+                             span="kernel")
+                        return await self._run_tool_loop(
+                            task, started=started, shadow=shadow,
+                            extra_hint=_pending_degradation_hint(task.id),
+                        )
+                    # 推完仍无收据：再给 Kernel 一次**真重派**的机会——重跑才是修复，
+                    # 模型写不写收据不该决定"画面是否被修好"。
+                    recoverable = next(
+                        (str(d.get("scope") or "") for d in unresolved
+                         if str(d.get("scope") or "") in _TIMELINE_STAGE_FOR_RECOVERY), "")
+                    recovered = int(_KERNEL_RECOVERY.get(task.id, 0))
+                    if recoverable and recovered < _MAX_KERNEL_RECOVERY:
+                        _KERNEL_RECOVERY[task.id] = recovered + 1
+                        _rec2 = await _kernel_recover_stage(
+                            task, recoverable,
+                            f"降级待修（第 {recovered + 1} 次补派）")
+                        if str(_rec2.get("status") or "") in ("ok", "dry_run"):
+                            return await self._run_tool_loop(
+                                task, started=started, shadow=shadow,
+                                extra_hint=_pending_degradation_hint(task.id),
+                            )
+                    # 最后通牒：给一次**只写收据**的机会（预算独立于续跑）
+                    final_done = int(_FINAL_RECEIPT.get(task.id, 0))
+                    if final_done < _MAX_FINAL_RECEIPT and not shadow and not dry_run:
+                        _FINAL_RECEIPT[task.id] = final_done + 1
+                        _kinds = sorted({str(d.get("kind")) for d in unresolved})
+                        emit(task.id, "narration",
+                             "降级守门最后一步：要求主 Agent 写收据"
+                             f"（{len(unresolved)} 项：{','.join(_kinds)[:120]}）",
+                             {"kind": "final_receipt_attempt", "kinds": _kinds},
+                             span="kernel")
+                        _hint = (_FINAL_RECEIPT_HINT_HEAD
+                                 + "\n".join(f"- kind={d.get('kind')} "
+                                              f"scope={d.get('scope') or '-'}"
+                                              f"（{str(d.get('detail') or '')[:80]}）"
+                                              for d in unresolved[:8])
+                                 + _FINAL_RECEIPT_HINT_TAIL)
+                        return await self._run_tool_loop(
+                            task, started=started, shadow=shadow, extra_hint=_hint,
+                        )
+                    # 推完仍无收据：strict 策略下不允许悄悄 done
+                    policy = str(getattr(settings, "agent_degradation_policy",
+                                         "require_receipt") or "require_receipt")
+                    if policy == "require_receipt":
+                        gate_reason = "degradation_unresolved"
+                        emit(task.id, "degradation",
+                             f"降级未处置（无 remediated/accepted 收据）："
+                             f"{len(unresolved)} 项 → 任务判失败",
+                             {"kind": "degradation_unresolved", "policy": policy,
+                              "items": unresolved[:8]}, span="kernel")
+            if not unresolved:
+                _DEGRADATION_CONTINUATIONS.pop(task.id, None)
+                _FINAL_RECEIPT.pop(task.id, None)
+                _KERNEL_RECOVERY.pop(task.id, None)
             task.finish = TaskFinish(
                 conclusion=conclusion or f"工具循环结束：{len(outcome.get('tool_calls') or [])} 次调用",
-                completed=[], unfinished=[],
+                completed=[],
+                unfinished=([
+                    "degraded:" + ",".join(sorted({
+                        str(d.get("kind")) for d in unresolved
+                    }))[:200]
+                ] if unresolved else []),
                 reason=gate_reason,
             )
             task.status = ("done" if gate_reason in ("tool_loop_completed",

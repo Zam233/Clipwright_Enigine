@@ -47,6 +47,21 @@ def agent_tool_schemas() -> list[dict[str, Any]]:
     return [e.schema for e in build_surface() if e.name in AGENT_TOOLS]
 
 
+#: 可"同参数直接复用"的工具（纯只读查询：摸底/看目录/读报告/查 run）。
+#: 写操作与派发**不进**这张表——它们必须真的执行。
+_REPEATABLE_TOOLS = frozenset({
+    "list_dir", "list_artifacts", "list_reports", "read_report", "read_artifact",
+    "list_agent_runs", "get_agent_run", "media_probe", "describe_llm_mg",
+    "list_files", "read_file", "inspect",
+})
+#: (task_id, idem_key) → 上次结果；有界（model 摸底次数远小于此）
+_TOOL_SEEN: dict[tuple[str, str], dict[str, Any]] = {}
+
+
+def _is_repeatable(name: str) -> bool:
+    return str(name) in _REPEATABLE_TOOLS
+
+
 def _seq_of(event: Any) -> str:
     """把上一条事件变成 `causation_id`（`seq:N`）；拿不到就空——不编造。"""
     seq = getattr(event, "seq", None)
@@ -133,12 +148,57 @@ def _system_prompt(task: Any) -> str:
         "让 audio 阶段落出 final_timeline；\n"
         "- 不要在没有 timeline 的情况下说\"完成\"——收尾守门会把它判成失败；\n"
         "- 缺输入时先补上游（派对应阶段/调研），不要凭空编造；\n"
+        # 降级不可默许（E2E 2026-10-29 用户裁定）：delegate_agent 的返回里
+        # `degraded=true / degradations[]` 就是"完成了但打折扣"，模型必须当轮决策。
+        "- **降级的阶段结果不算干净成功**：`delegate_agent` 返回里出现 `degraded=true` 或"
+        "非空 `degradations[]`（LLM JSON 截断、自批判被跳过、模板兜底、类型化回退…）时，"
+        "你必须在同一轮做出决定并立刻执行——重派该阶段 / 换策略 / 明确写清「接受哪一条、"
+        "对成片有什么影响」；不许用一句「已完成」把降级带过去，收尾守门会把你推回来重做；\n"
+        "- **大对象一律用引用，不要内联**：`delegate_agent` 的 `inputs` 只放小值或"
+        " `{\"artifact\": \"art_xxx\", \"path\": \"...\"}` 引用。报告全文、场景数组、候选片段"
+        "（几十 KB）**必须**走 `artifact` / `input_refs`——把它们写进 `inputs` 会让本轮工具"
+        "参数超出模型输出预算、JSON 断裂，整条任务直接失败（E2E 2026-10-29 真实事故）；\n"
+        "- **降级必须留收据**：重派同一阶段并跑成功会自动记 `remediated`；"
+        "如果确实要接受，调用 `acknowledge_degradation(kinds=[...], reason=..., impact=...)` "
+        "写一条 `accepted` 收据（reason ≥10 字，写真实理由）。既没重派也没收据 → "
+        "任务会以 `degradation_unresolved` 失败收尾；\n"
+        "- **占位画面必须修，不许当成功**：`material` 返回 `material_placeholder` 降级"
+        "（场景无匹配素材 → 文字/纯色卡）时，你要重派 `material` 换更泛的英文关键词/换源/放宽"
+        "阈值，把占位换成真实画面；只有确实搜不到时才保留，并在结论里逐场写明原因。"
+        "成片里成片的纯色卡=用户眼里的\"偷懒回退\"（E2E 2026-10-30 现场 07:10）；\n"
         "- 派子 agent 时用 inputs 显式传参（artifact 引用或内联值）；\n"
         "- 只读探查最多用于开局摸清现状，别把回合全花在 read_file/list_dir 上；\n"
         "- 工具报「未找到工作区 / 路径不在白名单」属于环境问题：不要反复重试同一个调用，"
         "如实说明缺什么并结束；\n"
         "- 任务受限：回合、工具调用次数、墙钟、预算都会强制中止。"
     )
+
+
+def _budget_note(task: Any) -> str:
+    """回合预算提示（E2E 2026-10-30 实测：模型不知道自己在烧回合）。
+
+    一次任务里 121/161 次调用都是"再确认一下现状"，最后撞 160 回合上限失败，
+    而 final_timeline 早在第 16 回合就有了。把剩余回合明确写进提示词，
+    并给出"剩余多少就该收尾"的具体阈值。
+    """
+    try:
+        limits = getattr(task, "limits", None)
+        usage = getattr(task, "usage", None)
+        max_turns = int(getattr(limits, "max_turns", 0) or 0)
+        used = int(getattr(usage, "turns", 0) or 0)
+    except Exception:  # noqa: BLE001
+        return ""
+    if max_turns <= 0:
+        return ""
+    remaining = max(0, max_turns - used)
+    head = f"\n\n## 回合预算\n剩余 {remaining}/{max_turns} 回合（已用 {used}）。"
+    if remaining > 40:
+        return head + "按需推进，不要重复摸底。"
+    if remaining > 12:
+        return head + ("收尾优先级升高：产物齐了就先收尾；"
+                       "只做实修，不要再 list/read 摸底。")
+    return head + ("**必须立即收尾**：先用 acknowledge_degradation 写收据"
+                   "（或说明为何无需），然后直接 finish；不要再调任何查询类工具。")
 
 
 def _user_prompt(task: Any, context_text: str) -> str:
@@ -150,7 +210,8 @@ def _user_prompt(task: Any, context_text: str) -> str:
         hypothesis = "\n\n## 初始假设（仅供参照，不是必须执行的步骤表）\n" + "\n".join(
             f"- {getattr(s, 'title', '') or getattr(s, 'capability', '')}" for s in plan.steps[:8]
         )
-    return f"## 用户需求\n{topic}\n\n## 当前上下文\n{context_text}{hypothesis}"
+    return (f"## 用户需求\n{topic}\n\n## 当前上下文\n{context_text}"
+            f"{hypothesis}{_budget_note(task)}")
 
 
 async def run_loop(task: Any, *, context_text: str = "",
@@ -170,6 +231,7 @@ async def run_loop(task: Any, *, context_text: str = "",
       不写产物、不花钱）。这是用户勾了"只预览"时唯一正确的行为——
       旧实现让 dry-run 停在失效字段上，预览变真跑。
     """
+    from clipwright.config import settings
     from clipwright.services.llm import LLMService
 
     task_id = str(getattr(task, "id", "") or "")
@@ -231,14 +293,66 @@ async def run_loop(task: Any, *, context_text: str = "",
         t0 = time.monotonic()
         try:
             from clipwright.tool.surface import execute as surface_execute
+            from clipwright.tool.surface import idem_key_for as _idem_key
+
+            _key = _idem_key(task_id, name, args)
+            # 重复查询护栏（E2E 2026-10-30）：模型会在每轮重新"摸底"，
+            # 一次任务里 list_dir 58 次、read_artifact 38 次，把 160 个回合烧光。
+            # 只读工具的同参数调用**直接返回上次结果**并标注 deduped；要真重跑就带
+            # refresh=true（会走不同幂等键）。写操作/派发不受影响。
+            # 回合见底就禁止再"摸底"：查询类工具直接拒，并把收尾指引回给模型。
+            # 这是**确定性**约束——否则模型会把最后几个回合也花在 list_dir 上，
+            # 然后撞上限失败（E2E 2026-10-30：final_timeline 早就有，仍烧满 160 回合）。
+            try:
+                _limits = getattr(task, "limits", None)
+                _used = int(getattr(getattr(task, "usage", None), "turns", 0) or 0)
+                _max = int(getattr(_limits, "max_turns", 0) or 0)
+                _remaining = (_max - _used) if _max > 0 else 999
+            except Exception:  # noqa: BLE001
+                _remaining = 999
+            if _remaining <= 5 and _is_repeatable(name):
+                _refused = {
+                    "status": "refused",
+                    "error": (f"剩余回合只剩 {_remaining}：不再执行查询类工具（{name}）。"
+                              "请立刻用已有信息收尾：需要留收据就调 acknowledge_degradation，"
+                              "然后直接 finish。"),
+                }
+                calls.append({"tool": name, "ok": False, "status": "refused",
+                              "duration_ms": 0})
+                emit(task_id, "tool_result", f"{name} → refused（回合预算见底）",
+                     {"tool": name, "status": "refused", "remaining_turns": _remaining},
+                     causation_id=f"seq:{_seq_of(call_event)}")
+                return _refused
+
+            _dedupe = bool(getattr(settings, "agent_tool_dedupe", True))
+            if _dedupe and not dry_run and _is_repeatable(name):
+                _cached = _TOOL_SEEN.get((task_id, _key))
+                if _cached is not None:
+                    result = dict(_cached)
+                    result["deduped"] = True
+                    result["note"] = (
+                        "同参数已查过，直接返回上次结果（见上下文/上文）。"
+                        "不要重复摸底；要重跑请带 refresh=true。")
+                    calls.append({"tool": name, "ok": True, "deduped": True,
+                                  "status": result.get("status"), "duration_ms": 0})
+                    emit(task_id, "tool_result",
+                         f"{name} → 复用上次结果（重复查询已拦截）",
+                         {"tool": name, "deduped": True, "status": result.get("status")},
+                         causation_id=f"seq:{_seq_of(call_event)}")
+                    return result
 
             # 原子工具与派发类工具走**同一个入口**（surface.execute）：
             # 同一份档位裁定、同一份幂等键、同一份审计记录。
             result = await surface_execute(
                 name, args, pipeline_id=task_id,
-                idem_key=f"{task_id}:{name}:{len(calls)}", task=task,
+                idem_key=_key, task=task,
                 dry_run=dry_run,
             )
+            if _dedupe and not dry_run and _is_repeatable(name) \
+                    and result.get("status") in ("ok", "dry_run"):
+                if len(_TOOL_SEEN) > 400:
+                    _TOOL_SEEN.clear()
+                _TOOL_SEEN[(task_id, _key)] = dict(result)
         except LoopAborted:
             raise
         except Exception as exc:  # noqa: BLE001 — 工具异常不能让循环崩
@@ -352,16 +466,63 @@ async def run_loop(task: Any, *, context_text: str = "",
             "duration_ms": int((time.monotonic() - started) * 1000),
         }
     except Exception as exc:  # noqa: BLE001 — provider 不支持工具/网络问题
-        logger.warning("tool-use loop 失败: %s", exc)
-        return {
-            "status": "error",
-            "error": f"{type(exc).__name__}: {exc}",
-            "tool_calls": calls,
-            "stopped_reason": "loop_error",
-            "duration_ms": int((time.monotonic() - started) * 1000),
-            "failure": {"category": "external_unavailable", "retryable": "retry_same",
-                        "blocking_point": str(exc)[:200], "evidence": []},
-        }
+        # 工具参数 JSON 断裂（模型把大对象内联进 delegate_agent 时最常发生）不该
+        # 直接判任务死刑：给模型**一次**纠错机会，明确要求改用 artifact/input_refs。
+        # 现代 harness（Claude Code / opencode）都是"回报格式错误让模型重试"，
+        # 而不是把一次格式失误升级成整任务失败（E2E 2026-10-29 真实事故）。
+        import json as _json
+
+        recoverable = isinstance(exc, _json.JSONDecodeError)
+        if recoverable and not locals().get("_json_retry_used"):
+            emit(task_id, "narration",
+                 "工具调用参数不是合法 JSON（多为大对象内联被截断），已要求主 agent 重发",
+                 {"kind": "tool_args_json_retry", "error": str(exc)[:200]}, span="kernel")
+            logger.warning("tool-use loop 参数 JSON 断裂，带纠错提示重试一次: %s", exc)
+            _json_retry_used = True
+            retry_hint = (
+                "\n\n## 上一轮失败（必须修正）\n"
+                f"你上一次工具调用的参数不是合法 JSON：`{str(exc)[:160]}`。\n"
+                "原因几乎总是**把大对象内联进了 `inputs`**（报告全文/场景数组/候选片段）。\n"
+                "请重新发起同一次调用，并且：\n"
+                "1. `inputs` 只放小值或 `{\"artifact\": \"art_xxx\", \"path\": \"...\"}` 引用；\n"
+                "2. 报告/数组/长文案一律用 `input_refs`（工作区相对路径）传，不要复制正文；\n"
+                "3. 参数必须是单个合法 JSON 对象，不要省略引号或括号。"
+            )
+            try:
+                resp = await LLMService().with_tools(
+                    system_prompt=_system_prompt(task),
+                    user_prompt=_user_prompt(task, context_text + retry_hint),
+                    tool_executor=_executor,
+                    tools=tools,
+                    max_tool_rounds=max(1, min(max_rounds, 12)),
+                    on_preamble=_on_preamble,
+                    on_reasoning=_reasoning_cb,
+                    pipeline_id=task_id,
+                    max_tokens=MAX_OUTPUT_TOKENS,
+                    **reasoning_kwargs,
+                )
+            except Exception as exc2:  # noqa: BLE001 — 重试仍失败才判失败
+                logger.warning("tool-use loop 重试后仍失败: %s", exc2)
+                return {
+                    "status": "error",
+                    "error": f"{type(exc2).__name__}: {exc2}",
+                    "tool_calls": calls,
+                    "stopped_reason": "loop_error",
+                    "duration_ms": int((time.monotonic() - started) * 1000),
+                    "failure": {"category": "external_unavailable", "retryable": "retry_same",
+                                "blocking_point": str(exc2)[:200], "evidence": []},
+                }
+        else:
+            logger.warning("tool-use loop 失败: %s", exc)
+            return {
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "tool_calls": calls,
+                "stopped_reason": "loop_error",
+                "duration_ms": int((time.monotonic() - started) * 1000),
+                "failure": {"category": "external_unavailable", "retryable": "retry_same",
+                            "blocking_point": str(exc)[:200], "evidence": []},
+            }
 
     text = str(getattr(resp, "content", "") or "").strip()
     # B5：思考收尾（有 thinking 才发 done，避免前端凭空显示"思考结束"）

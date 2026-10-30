@@ -99,6 +99,29 @@ def replay(idem_key: str) -> AgentResult | None:
     return cached.model_copy(deep=True) if cached else None
 
 
+#: 给某任务某阶段的「追问/注入」便条：下一次派发该阶段时并入 brief 并逐条上报。
+_PENDING_NOTES: dict[tuple[str, str], list[str]] = {}
+
+
+def add_pending_note(task_id: str, stage: str, text: str) -> int:
+    """记一条给阶段子 agent 的补充要求（下一次派发时消费）。"""
+    body = str(text or "").strip()
+    if not task_id or not stage or not body:
+        return 0
+    bucket = _PENDING_NOTES.setdefault((str(task_id), str(stage)), [])
+    bucket.append(body[:2000])
+    return len(bucket)
+
+
+def take_pending_notes(task_id: str, stage: str) -> list[str]:
+    """取走并清空该阶段积压的补充要求（派发时调用，只消费一次）。"""
+    return list(_PENDING_NOTES.pop((str(task_id), str(stage)), []) or [])
+
+
+def peek_pending_notes(task_id: str, stage: str) -> list[str]:
+    return list(_PENDING_NOTES.get((str(task_id), str(stage)), []) or [])
+
+
 def get_run(run_id: str) -> dict[str, Any] | None:
     r = _RUNS.get(run_id)
     return r.model_dump(mode="json") if r else None
@@ -216,13 +239,28 @@ def reset() -> None:
 async def run(spec: RunSpec, task: Any) -> AgentResult:
     """执行一次子 agent（唯一入口）。"""
     run_id = spec.idem_key or f"run_{uuid.uuid4().hex[:10]}"
+    if spec.refresh:
+        # 显式重跑要留下**新的** run 记录，否则 run 详情里看不到"这次重放"
+        run_id = f"{run_id}#r{uuid.uuid4().hex[:6]}"
     started = time.monotonic()
     trace_id = spec.trace_id or str(getattr(task, "id", "") or "")
 
     # 幂等：同一 idem_key 直接复用上次结果（阶段/调研同一条规则，不再各写一份）
-    if spec.idem_key:
+    #
+    # 例外（E2E 2026-10-30 实测踩到）：上次结果是 **degraded** 时不回放。主 agent 重派
+    # 同一阶段的**唯一目的**就是修降级，回放旧字节会造出"重派成功"的假象
+    # （同一份 sha256、弱动效依旧）。宁可多跑一次，也不能给假收据。
+    if spec.idem_key and not spec.refresh:
         cached = replay(spec.idem_key)
-        if cached is not None:
+        if cached is not None and cached.degradations:
+            _emit_run(task, "agent_run_update",
+                      f"{spec.kind}/{spec.stage or spec.role} → 上次有降级，重跑而不是回放",
+                      detail={"run_id": cached.run_id, "status": cached.status,
+                              "replayed": False, "idem_key": spec.idem_key,
+                              "degradations": len(cached.degradations)},
+                      run_id=cached.run_id, span="agent", trace_id=trace_id)
+        elif cached is not None:
+            cached.replayed = True
             _emit_run(task, "agent_run_update",
                       f"{spec.kind}/{spec.stage or spec.role} → 复用上次结果",
                       detail={"run_id": cached.run_id, "status": cached.status,
@@ -296,6 +334,8 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
                       "report_path": result.report_path,
                       "failure": (result.failure or {}).get("category")},
               run_id=result.run_id, span="agent", trace_id=trace_id)
+    if not result.brief and spec.brief:
+        result.brief = spec.brief
     if spec.idem_key and result.status in ("ok", "degraded"):
         if len(_IDEM) >= _MAX_IDEM:
             _IDEM.pop(next(iter(_IDEM)))
@@ -412,10 +452,16 @@ async def _run_stage(spec: RunSpec, task: Any, run_id: str, trace_id: str) -> Ag
         summary=sr.summary, outputs=dict(sr.artifacts or {}), writes=list(sr.writes or []),
         report_path=sr.report_path, report_seq=sr.report_seq,
         issues=list(sr.issues or []),
+        # 降级信号上浮（E2E 2026-10-29）：StageResult.degradations 此前在这里被整段丢弃，
+        # 于是动画阶段的 LLM JSON 截断、自批判跳过、模板兜底只有 logger 知道，主 Agent
+        # 看到的永远是 "轨道 6 条 / 片段 502 个" —— 截断与回退被默认接受。
+        degradations=[d.model_dump(mode="json") if hasattr(d, "model_dump") else dict(d)
+                      for d in (sr.degradations or [])],
         # 归因（PRD §2.4.2）：阶段侧的 token 与工具轨迹由 StageResult 带上来；
         # 拿不到就保持 0/空 + cost_unknown，不伪造数字。
         tokens=int(getattr(sr, "tokens", 0) or 0),
         tool_calls=list(getattr(sr, "tool_calls", None) or []),
+        tool_calls_path=str(getattr(sr, "tool_calls_path", "") or ""),
         cost_usd=sr.cost_usd, cost_unknown=sr.cost_unknown,
         duration_ms=sr.duration_ms, provider=sr.provider, model=sr.model,
         failure=failure, error=sr.error,

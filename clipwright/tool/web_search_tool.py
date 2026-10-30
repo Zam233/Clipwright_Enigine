@@ -14,12 +14,22 @@ from typing import Any
 
 from clipwright.config import logger
 from clipwright.schema.tool import ToolExecResult, ToolStatus
-from clipwright.services.web_search import (
-    WebSearchService,
-    get_web_fetch_service,
-    get_web_search_service,
-)
+# 惰性引用（2026-10-30）：直接 `from ... import get_web_search_service` 会在 import 时绑定符号，
+# 只能靠"patch 本模块符号"注入桩。这里同时保留**本模块的包装函数**（旧测试/部署可继续
+# patch `web_search_tool.get_web_search_service`）与模块属性访问（可 patch 服务模块）。
+from clipwright.services import web_search as _web_search_module
 from clipwright.tool.base import BaseTool
+
+WebSearchService = _web_search_module.WebSearchService
+
+
+def get_web_search_service():
+    """薄包装：本模块符号可被替换（测试/部署注入），内部读服务模块的当前实现。"""
+    return _web_search_module.get_web_search_service()
+
+
+def get_web_fetch_service():
+    return get_web_fetch_service()
 
 
 class WebSearchTool(BaseTool):
@@ -112,33 +122,57 @@ class WebFetchTool(BaseTool):
         return True
 
     def is_configured(self) -> bool:
-        """联网是否已配置（阶段 Agent 用它决定是否暴露抓取工具）。"""
-        return WebSearchService().is_configured()
+        """抓取本身不需要搜索 API key（2026-10-30 修正）。
+
+        旧实现复用了 `WebSearchService().is_configured()` —— 于是"搜索没配 key"
+        连"抓一个指定 URL"都被判成不可用，`resolve("web_fetch")` 解析不到，
+        所有 Agent 都拿不到这个能力。抓取是本地 HTTP + 正文抽取，不依赖第三方鉴权；
+        真失败（网络/域名受限）由 `execute` 如实回报。
+        """
+        return True
 
     async def execute(
         self,
         url: str,
         max_chars: int = 4000,
+        save_to_materials: bool = False,
+        workspace_root: str = "",
+        title: str = "",
         **kwargs: Any,
     ) -> ToolExecResult:
-        """抓取 URL 网页正文并提取纯文本。
+        """抓取 URL 网页正文；可选**落盘为素材**（图片/视频/正文）。
 
         Args:
             url: 要抓取的网页地址
             max_chars: 返回正文的最大字符数（默认 4000）
+            save_to_materials: True 时把内容按类型存进 `<workspace>/materials/web/`
+                （图片/视频存二进制，其余存 markdown），并写 `.meta.json` 记录
+                来源、许可、sha256、抓取时间（PRD web-search-fetch M2）
+            workspace_root: 工作区根（save_to_materials 必填；由工具面自动注入）
+            title: 素材标题（用于文件名与 meta）
         """
         try:
             content = await get_web_fetch_service().fetch(url, max_chars=max_chars)
+            output: dict[str, Any] = {"content": content}
+            status = ToolStatus.SUCCESS if content else ToolStatus.DEPENDENCY_MISSING
             if not content:
-                return ToolExecResult(
-                    status=ToolStatus.DEPENDENCY_MISSING,
-                    tool_name=self.name,
-                    output={"content": ""},
-                )
+                output["content"] = ""
+            if save_to_materials:
+                if not workspace_root:
+                    output["saved"] = {"ok": False, "error": "缺少 workspace_root，无法落盘"}
+                else:
+                    from clipwright.services import web_assets
+
+                    saved = await web_assets.fetch_and_store(
+                        url, root=workspace_root, title=title,
+                    )
+                    output["saved"] = saved.to_public()
+                    if saved.ok:
+                        status = ToolStatus.SUCCESS
             return ToolExecResult(
-                status=ToolStatus.SUCCESS,
+                status=status,
                 tool_name=self.name,
-                output={"content": content},
+                output=output,
             )
         except Exception as e:
             logger.warning("web_fetch 执行异常: %s", e)
@@ -147,3 +181,5 @@ class WebFetchTool(BaseTool):
                 tool_name=self.name,
                 output={"content": ""},
             )
+
+

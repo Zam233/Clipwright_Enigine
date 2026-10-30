@@ -130,7 +130,7 @@ def test_proceed_passes_dry_run_into_task_extra(monkeypatch):
     captured: dict[str, Any] = {}
 
     class _FakeKernel:
-        def create(self, task_req):  # noqa: ANN001
+        def create(self, task_req, **kwargs):  # noqa: ANN001, ANN003
             captured["extra"] = dict(task_req.extra)
             from types import SimpleNamespace
 

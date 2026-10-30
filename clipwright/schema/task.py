@@ -52,6 +52,9 @@ EVENT_TYPES: tuple[str, ...] = (
     "agent_run_start",   # 派出去（spec 摘要）
     "agent_run_update",  # 进度/降级/等审核
     "agent_run_end",     # 收敛（AgentResult 摘要 + 成本）
+    # ── 子 agent 透明化（2026-10-29 用户裁定：主 agent 必须看见子 agent 的一切）──
+    "subagent_tool",      # 子 agent 的一次工具调用（tool/status/duration/args 摘要）
+    "subagent_progress",  # 长阶段的分段进度（动画 3/29、素材 12/43…）
 )
 
 

@@ -392,7 +392,7 @@ async def _proceed_as_task(*, session: dict, req: "ProceedRequest", request: Req
     - 返回体保留 ``pipeline_id``（值 = task id），前端老代码不会立刻炸。
     """
     from clipwright.api.task import _register_owner, _schedule
-    from clipwright.schema.task import TaskRequest
+    from clipwright.schema.task import TaskLimits, TaskRequest
     from clipwright.services.agent_kernel import AgentKernel
     from clipwright.services.workspace import ensure_workspace
 
@@ -440,6 +440,10 @@ async def _proceed_as_task(*, session: dict, req: "ProceedRequest", request: Req
     extra.update({
         "workspace_root": str(ws.dirs().root),
         "workspace_project_id": ws.project_id,
+        # 发起项目的 id：任务收尾要把成片时间线写回它（services/task_project_sync.py）。
+        # 旧实现只把 project_id 当工作区 id 用，于是任务跑完项目里仍是 0 轨。
+        **({"proceed_project_id": str(req.project_id).strip()}
+           if str(getattr(req, "project_id", "") or "").strip() else {}),
         "session_id": req.session_id,
         "production_plan": plan_data,
         "creative_brief": session.get("creative_brief"),
@@ -459,8 +463,12 @@ async def _proceed_as_task(*, session: dict, req: "ProceedRequest", request: Req
         plan_only=False,
         extra=extra,
     )
+    # 预算（E2E 2026-10-30 实测）：一条 60 秒 6 场景的片子，主 agent 要结构/素材/
+    # 粗剪/动画/音频各跑一遍，再按降级返工 1-2 轮，加上 Kernel 补派——80 轮会被
+    # "返工到一半"截断，结果是有时间线却报 failed。`TaskRequest` 没有 limits 字段
+    # （传进去会被静默忽略），必须显式交给 `create`。
     kernel = AgentKernel()
-    task = kernel.create(task_req)
+    task = kernel.create(task_req, limits=TaskLimits(max_turns=160, max_tool_calls=800))
     _register_owner(task.id, request)
     await kernel.plan(task)
     _schedule(task.id)

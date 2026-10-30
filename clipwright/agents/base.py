@@ -7,6 +7,7 @@ Agent 本身不写死逻辑，它只是"调度器"——根据 Persona 和视频
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from abc import ABC, abstractmethod
 from typing import Any, Generic, TypeVar
@@ -172,6 +173,10 @@ class BaseAgent(ABC, Generic[I, O]):
         调用方仍按 ``result.status == "success"`` 判定（与旧写法一致），
         因此把硬编码调用换成 ``await self.call_tool("video_trim", ...)``
         不会改变控制流，只是多了一条"能力不可用"的降级记录。
+
+        可观测性（现代 agent 化）：每次调用都记进 ``self.last_tool_calls`` 并发一条
+        `subagent_tool` 事件——子 agent 干活必须让主 agent 与前端实时看见，
+        而不是只留一行 logger（旧实现里 material 的几十次检索/视觉调用主 agent 完全不知情）。
         """
         from clipwright.schema.tool import ToolExecResult, ToolStatus
         from clipwright.tool.capabilities import resolve
@@ -188,28 +193,130 @@ class BaseAgent(ABC, Generic[I, O]):
 
             alt = fallback_name(capability)
             if alt:
-                return await ToolRegistry.execute(alt, **kwargs)
-            return ToolExecResult(
+                started = time.monotonic()
+                result = await ToolRegistry.execute(alt, **kwargs)
+                self._note_tool_call(capability, alt, result, started, kwargs)
+                return result
+            missing = ToolExecResult(
                 status=ToolStatus.NOT_FOUND,
                 tool_name=capability,
                 error=f"能力 '{capability}' 当前无可用实现（未注册 / 依赖缺失 / 未配置）",
             )
-        return await ToolRegistry.execute(tool.name, **kwargs)
+            self._note_tool_call(capability, capability, missing, time.monotonic(), kwargs)
+            return missing
+        started = time.monotonic()
+        result = await ToolRegistry.execute(tool.name, **kwargs)
+        self._note_tool_call(capability, tool.name, result, started, kwargs)
+        return result
+
+    def _note_tool_call(
+        self,
+        capability: str,
+        tool_name: str,
+        result: Any,
+        started: float,
+        args: dict[str, Any] | None = None,
+    ) -> None:
+        """记录一次工具调用（轨迹 + 实时事件）。
+
+        轨迹进 `last_tool_calls` → `StageResult.tool_calls` → `AgentResult` → 主 agent
+        的工具结果；事件走 `subagent_tool`，让 15 分钟的长阶段在事件流里**看得见进度**。
+        无活跃 task_scope（单测/脚本直调）时只记账不发事件。
+        """
+        try:
+            status = str(getattr(result, "status", "") or "")
+            status = status.rsplit(".", 1)[-1].lower()
+            duration_ms = int((time.monotonic() - started) * 1000)
+            entry = {
+                "tool": tool_name,
+                "capability": capability,
+                "status": status,
+                "duration_ms": duration_ms,
+                "args_brief": self._brief_args(args or {}),
+                "output_brief": self._brief_output(getattr(result, "output", None)),
+                "error": str(getattr(result, "error", "") or "")[:200],
+            }
+            calls = getattr(self, "last_tool_calls", None)
+            if not isinstance(calls, list):
+                calls = []
+                self.last_tool_calls = calls
+            calls.append(entry)
+            # 有界：长阶段的轨迹不需要无限增长（主 agent 也读不完）
+            if len(calls) > 200:
+                del calls[: len(calls) - 200]
+
+            from clipwright.services import agent_context
+
+            task_id = agent_context.current_task_id()
+            if not task_id or not agent_context.take_event_budget():
+                return
+            from clipwright.services.task_events import emit
+
+            ok = status in ("success", "ok")
+            emit(task_id, "subagent_tool",
+                 f"{self.agent_name} · {tool_name} → {'ok' if ok else status}"
+                 f"（{duration_ms}ms）",
+                 {"agent": self.agent_name, "stage": agent_context.current_stage(),
+                  "tool": tool_name, "capability": capability, "status": status,
+                  "duration_ms": duration_ms, "args_brief": entry["args_brief"],
+                  "error": entry["error"]},
+                 span="subagent")
+        except Exception:  # noqa: BLE001 — 记账失败绝不能影响业务调用
+            pass
+
+    @staticmethod
+    def _brief_args(args: dict[str, Any]) -> str:
+        """参数摘要（只取短标量，够主 agent 判断"它在拿什么做什么"）。"""
+        bits: list[str] = []
+        for key, value in list(args.items())[:8]:
+            if isinstance(value, (int, float, bool)):
+                bits.append(f"{key}={value}")
+            elif isinstance(value, str) and value and len(value) <= 60:
+                bits.append(f"{key}={value}")
+            elif isinstance(value, (list, tuple)):
+                bits.append(f"{key}[{len(value)}]")
+            if len(bits) >= 4:
+                break
+        return "; ".join(bits)[:160]
+
+    @staticmethod
+    def _brief_output(output: Any) -> str:
+        if isinstance(output, str):
+            return output[:120]
+        if isinstance(output, dict):
+            keys = [k for k in list(output)[:4]]
+            return ("keys=" + ",".join(keys))[:120]
+        if isinstance(output, (list, tuple)):
+            return f"{len(output)} 项"
+        if output is None:
+            return ""
+        return str(output)[:120]
 
     async def call_skill(self, capability: str, **kwargs: Any):
-        """按能力名调用技能；缺失时返回结构化 NOT_FOUND。"""
+        """按能力名调用技能；缺失时返回结构化 NOT_FOUND。
+
+        与 ``call_tool`` 同样记账：技能内部往往还有多次工具调用，主 agent 看不到的话
+        技能就成了第二个"黑区"（PRD modern-agent-review §黑区：插件/技能调用）。
+        轨迹里用 ``skill:<名>`` 前缀区分工具调用与技能调用。
+        """
         from clipwright.schema.skill import SkillExecResult, SkillStatus
         from clipwright.skill.registry import SkillRegistry
 
         skill = self.resolve_skill(capability)
         if skill is None:
             self._note_missing_capability(f"skill:{capability}")
-            return SkillExecResult(
+            missing = SkillExecResult(
                 status=SkillStatus.NOT_FOUND,
                 skill_name=capability,
                 error=f"技能 '{capability}' 当前不可用",
             )
-        return await SkillRegistry.execute(skill.name, **kwargs)
+            self._note_tool_call(capability, f"skill:{capability}", missing,
+                                 time.monotonic(), kwargs)
+            return missing
+        started = time.monotonic()
+        result = await SkillRegistry.execute(skill.name, **kwargs)
+        self._note_tool_call(capability, f"skill:{skill.name}", result, started, kwargs)
+        return result
 
     @staticmethod
     def _note_missing_capability(capability: str) -> None:

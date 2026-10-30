@@ -222,9 +222,9 @@ def test_run_stage_dry_run_does_not_execute_or_merge(monkeypatch) -> None:
 
 
 def test_run_stage_timeout_is_categorized(monkeypatch) -> None:
-    # 阶段墙钟有下限（MIN_STAGE_TIMEOUT_SEC，防止主 agent 自己填个注定超时的值），
-    # 这里把下限压小来验证"超时被正确分类"这条语义本身。
-    monkeypatch.setattr(stage_subagent, "MIN_STAGE_TIMEOUT_SEC", 0.05)
+    # 阶段墙钟有下限（settings.agent_stage_min_timeout_sec，防止主 agent 自己填个注定
+    # 超时的值），这里把下限压小来验证"超时被正确分类"这条语义本身。
+    monkeypatch.setattr(settings, "agent_stage_min_timeout_sec", 0.05, raising=False)
     _patch_agent(monkeypatch, {"scenes": []}, delay=0.5)
     result = asyncio.run(stage_subagent.run_stage(
         _Task(), StageSpec(stage="structure", timeout_sec=0.05)))
@@ -234,16 +234,13 @@ def test_run_stage_timeout_is_categorized(monkeypatch) -> None:
 
 
 def test_stage_timeout_has_floor(monkeypatch) -> None:
-    """主 agent 传 900s 也不能把阶段墙钟压到下限以下（E2E 2026-10-28 实测）。"""
-    seen: dict = {}
-
-    async def _fake_execute(input_obj, context):  # noqa: ANN001, ANN201
-        seen["timeout"] = captured.get("timeout")
-        return {"scenes": []}
+    """主 agent 传 900s 也不能把阶段墙钟压到下限以下（E2E 2026-10-29 实测：
+    43 场 material 连超三次 900s，edit 因缺 candidate_clips 直接失败）。"""
+    monkeypatch.setattr(settings, "agent_stage_min_timeout_sec", 3600.0, raising=False)
 
     class _Spy:
         async def execute(self, input_obj, context):  # noqa: ANN001, ANN201
-            return await _fake_execute(input_obj, context)
+            return {"scenes": []}
 
     monkeypatch.setattr(stage_subagent, "agent_for", lambda stage: _Spy())
 
@@ -258,7 +255,43 @@ def test_stage_timeout_has_floor(monkeypatch) -> None:
     asyncio.run(stage_subagent.run_stage(
         _Task(), StageSpec(stage="structure", timeout_sec=900)))
 
-    assert captured["timeout"] >= stage_subagent.MIN_STAGE_TIMEOUT_SEC
+    assert captured["timeout"] == 3600.0
+
+
+def test_stage_timeout_zero_means_unlimited(monkeypatch) -> None:
+    """`timeout_sec<=0` = 不设上限：不走 asyncio.wait_for 限时（用户 2026-10-28 裁定）。"""
+    monkeypatch.setattr(settings, "agent_stage_min_timeout_sec", 3600.0, raising=False)
+
+    class _Spy:
+        async def execute(self, input_obj, context):  # noqa: ANN001, ANN201
+            return {"scenes": []}
+
+    monkeypatch.setattr(stage_subagent, "agent_for", lambda stage: _Spy())
+
+    calls: list = []
+    real_wait_for = asyncio.wait_for
+
+    async def _spy_wait_for(coro, timeout=None):  # noqa: ANN001, ANN201
+        calls.append(timeout)
+        return await real_wait_for(coro, timeout=timeout)
+
+    monkeypatch.setattr(stage_subagent.asyncio, "wait_for", _spy_wait_for)
+    spec = StageSpec(stage="structure")
+    spec.timeout_sec = 0.0
+    asyncio.run(stage_subagent.run_stage(_Task(), spec))
+
+    assert calls == []
+
+
+def test_effective_stage_timeout_matrix(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "agent_stage_min_timeout_sec", 3600.0, raising=False)
+    assert stage_subagent.effective_stage_timeout(900) == 3600.0
+    assert stage_subagent.effective_stage_timeout(7200) == 7200.0
+    assert stage_subagent.effective_stage_timeout(0) == 0.0
+    assert stage_subagent.effective_stage_timeout(None) == 0.0
+    # 下限设 0 = 完全信任主 agent 传入值
+    monkeypatch.setattr(settings, "agent_stage_min_timeout_sec", 0.0, raising=False)
+    assert stage_subagent.effective_stage_timeout(900) == 900.0
 
 
 def test_run_stage_rejects_unconfigured_provider(monkeypatch) -> None:

@@ -839,7 +839,48 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                 )
                 segs = self._proportional_segments(caption_texts, audio_duration, audio_path)
 
+            # 语音边界吸附（E2E 2026-10-30）：即使 STT 给了句级时间，也会因为
+            # "字幕句子 ≠ 语音停顿时"而出现 ±1s 级抖动（实测 200–260s 窗口
+            # 偏差 -1.64s~+1.13s）。用 silencedetect 的**真实语音区间**把每句
+            # 起点/终点吸附过去，并把改动量如实写进 notes。
+            try:
+                from clipwright.services.speech_alignment import (
+                    detect_speech_bounds, snap_segments_to_speech,
+                )
+
+                bounds = detect_speech_bounds(
+                    audio_path, duration=float(audio_duration or 0) or None,
+                )
+                if bounds.speech:
+                    before = [(float(s["start_sec"]), float(s["end_sec"])) for s in segs]
+                    segs, snap_stats = snap_segments_to_speech(segs, bounds)
+                    moved = sum(
+                        1 for (bs, _), s in zip(before, segs)
+                        if abs(float(s["start_sec"]) - bs) > 0.05
+                    )
+                    notes.append(
+                        f"上传配音：按语音停顿吸附字幕 {snap_stats.get('shifted', 0)} 段"
+                        f"（平均位移 {snap_stats.get('avg_shift', 0)}s，"
+                        f"实际移动 {moved} 段，语音单元 {snap_stats.get('speech_units', 0)}）"
+                    )
+                else:
+                    notes.append("上传配音：语音停顿探测不可用，字幕沿用估算时间")
+            except Exception as exc:  # noqa: BLE001 — 吸附失败保留原时间
+                logger.warning("字幕语音吸附失败（保留原时间）: %s", exc)
+
             self._realign_captions_to_narration(timeline, segs)
+            # 字幕落地后才能真正去重（E2E 2026-10-30：底部两行字）：
+            # animation 阶段不知道字幕文本，等这里字幕定稿后，把"与字幕同文的
+            # 文字动画"删掉（字幕已经说了），其余文字动画上移到 center 避开字幕区。
+            try:
+                dedupe = self._dedupe_text_vs_captions(timeline)
+                if dedupe.get("removed") or dedupe.get("moved"):
+                    notes.append(
+                        f"文字层去重：删除与字幕同文的文字动画 {dedupe.get('removed', 0)} 条、"
+                        f"上移避让 {dedupe.get('moved', 0)} 条"
+                    )
+            except Exception as exc:  # noqa: BLE001 — 去重失败不影响出片
+                logger.warning("文字层去重失败（跳过）: %s", exc)
             notes.append(
                 f"上传配音字幕对齐: {len(segs)} 段"
                 f"（{getattr(aligned, 'model', '') or 'estimate'}）"
@@ -880,6 +921,60 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
         if segs:
             segs[-1]["end_sec"] = round(max(0.0, duration), 3)
         return segs
+
+    @staticmethod
+    def _dedupe_text_vs_captions(timeline) -> dict:
+        """字幕定稿后清理文字层（E2E 2026-10-30：成片底部出现两行字）。
+
+        - 文字动画与同时间窗字幕**同文** → 删除（字幕已经说了，留着就是重复）；
+        - 其余 position=bottom 的文字动画 → 上移到 center，避开字幕区；
+        - 字幕本身不动（字幕是"说出来的每一句"的唯一载体）。
+        """
+        caps: list[tuple[float, float, str]] = []
+        for t in timeline.tracks:
+            if t.kind != ClipKind.CAPTION:
+                continue
+            for c in t.clips:
+                caps.append((float(c.start_sec or 0),
+                             float(c.start_sec or 0) + float(c.duration_sec or 0),
+                             (getattr(c, "text", "") or "").strip()))
+
+        def _norm(s: str) -> str:
+            return "".join(ch for ch in str(s) if ch.strip("，。！？、,.!?；;：:\"'“”‘’（）()"))
+
+        removed = moved = 0
+        for t in timeline.tracks:
+            if t.kind != ClipKind.TEXT:
+                continue
+            keep = []
+            for c in t.clips:
+                start = float(c.start_sec or 0)
+                end = start + float(c.duration_sec or 0)
+                mine = _norm(getattr(c, "text", "") or "")
+                same = ""
+                for cs, ce, txt in caps:
+                    if ce <= start or cs >= end:
+                        continue
+                    other = _norm(txt)
+                    if not other or not mine:
+                        continue
+                    if mine == other or (len(mine) > 10 and (mine in other or other in mine)):
+                        same = txt
+                        break
+                if same:
+                    removed += 1
+                    continue
+                meta = getattr(c, "metadata", None) or {}
+                if str(meta.get("position") or "bottom") == "bottom":
+                    meta["position"] = "center"
+                    meta["dedupe"] = "moved_from_bottom"
+                    c.metadata = meta
+                    moved += 1
+                keep.append(c)
+            t.clips = keep
+        if removed or moved:
+            logger.info("AudioAgent: 文字层去重 删除 %d 条 / 上移 %d 条", removed, moved)
+        return {"removed": removed, "moved": moved}
 
     @classmethod
     def _caption_style_template(cls, clips) -> dict:

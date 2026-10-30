@@ -1574,6 +1574,24 @@ class RenderService:
             v = getattr(clip, f, None)
             if v is not None:
                 style[f] = v
+        # 位置/字号必须**写进 style**：ASS 路径以 style 为准，只写在外层 dict 的话
+        # `position=center` 会被 `TextStyle.from_dict({})` 的默认 bottom 顶掉 →
+        # 文字动画全被画到字幕带里（E2E 2026-10-30 实测：中心文字看不见，与底部字幕叠住）。
+        # drawtext 路径读外层字段，两条路都要拿到同一份结论。
+        style["position"] = pos
+        style["offset_y"] = offset_y
+        # 字号/颜色用 setdefault：用户/persona 在 metadata.style 里显式配过的值优先，
+        # Clip 字段只补空位（Clip 的默认值会把 meta.style 顶掉——实测 font_size=40 变 48）。
+        if clip.font_size:
+            style.setdefault("font_size", clip.font_size)
+        else:
+            style.setdefault("font_size", 48)
+        if clip.font_color:
+            style.setdefault("font_color", clip.font_color)
+        else:
+            style.setdefault("font_color", "#ffffff")
+        if getattr(clip, "text_align", None):
+            style["text_align"] = clip.text_align
         return dict(start_sec=clip.start_sec, duration_sec=clip.duration_sec,
                     text=clip.text or "", font_size=clip.font_size or 48,
                     font_color=clip.font_color or "#ffffff", font=clip.font or "",
@@ -2730,9 +2748,16 @@ class RenderService:
                 need = False
             if need:
                 target = str(Path(mov).with_name(f"{Path(mov).stem}_scrim.mov"))
+                # 关键字传参：bake_scrim_into_mov 的 alpha/grow/blur 是 **keyword-only**
+                # （`def bake_scrim_into_mov(src, out, *, alpha=..., grow=..., blur=...)`）。
+                # 旧实现位置传参 → TypeError: takes 2 positional arguments but 5 were given，
+                # 而这一层异常被外层吞掉，表现成「渲染 90% 后失败」且日志里没有任何原因
+                # （E2E 2026-10-29 实测：整片渲染 100% 失败）。
                 baked = await asyncio.to_thread(
                     anim_scrim.bake_scrim_into_mov, mov, target,
-                    cfg["alpha"], cfg["grow"], cfg["blur"],
+                    alpha=float(cfg["alpha"]),
+                    grow=int(cfg["grow"]),
+                    blur=float(cfg["blur"]),
                 )
                 if baked:
                     mov = baked
@@ -3055,13 +3080,20 @@ class RenderService:
             end = start + float(duration_sec or 0)
             parts.append(
                 f"[{i}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1[mg{i}]"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,"
+                # ★ 必须把 MG 的时间戳平移到它在主时间线上的起点（E2E 2026-10-30）：
+                # 旧实现只做 scale/pad，MG 输入从 t=0 开始被 overlay 消费，而 `enable`
+                # 只是"何时显示"。动画 MOV 只有 5–6 秒，等主视频走到 start_sec=33.6s
+                # 时 MG 早已播完 → 画面被冻结在**末帧**，成片里"动画不动、只是展示画面"。
+                # 单路 overlay（render_overlay_on_video）一直是 `PTS-STARTPTS+start/TB`，
+                # 链式路径是后来为省 re-encode 引入的，漏了这一步。
+                f"setpts=PTS-STARTPTS+{_fmt_sec(start)}/TB[mg{i}]"
             )
             parts.append(
                 # 实渲修复: overlay 的 format 选项是枚举（yuv420/yuv420p10/rgb/gbrp/auto），
                 # `rgba` 非法会导致整条链式合成失败（rc=EINVAL）、MG 静默丢失。
                 # 用 format=auto —— 与非链式路径 render_overlay_on_video 一致，alpha 由输入像素格式保留。
-                f"[{prev}][mg{i}]overlay=format=auto:"
+                f"[{prev}][mg{i}]overlay=format=auto:eof_action=pass:"
                 f"enable='between(t,{_fmt_sec(start)},{_fmt_sec(end)})'[v{i}]"
             )
             prev = f"v{i}"

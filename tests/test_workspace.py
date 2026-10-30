@@ -246,7 +246,7 @@ async def test_proceed_as_task_creates_task_and_workspace(tmp_path, monkeypatch)
     created: dict[str, object] = {}
 
     class _FakeKernel:
-        def create(self, request):
+        def create(self, request, **kwargs):  # noqa: ANN003
             created["request"] = request
             return SimpleNamespace(id="task_abcdef", plan=None)
 

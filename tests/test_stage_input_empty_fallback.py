@@ -67,3 +67,33 @@ def test_empty_timeline_falls_back_to_board():
 
     assert inp.timeline is not None
     assert getattr(inp.timeline, "duration_sec", None) == 12.0
+
+def test_board_timeline_wins_over_stale_override():
+    """主 agent 带旧 `inputs.timeline` 引用时，必须以黑板现值为准。
+
+    现场（E2E 2026-10-30）：audio 被带了一个指向 edit 产物的 timeline 引用，
+    于是动画阶段加的 10 条文字动画在成片里全没了（final 4 轨 0 text）。
+    黑板写入是有序的（edit → animation → audio），它才是当前真值。
+    """
+    animated = {"duration_sec": 59, "tracks": [
+        {"id": "t_text", "kind": "text", "index": 0, "clips": [{
+            "id": "c1", "kind": "text", "track_id": "t_text", "asset_id": "",
+            "start_sec": 1.0, "duration_sec": 2.0, "text": "标题"}]}]}
+    stale_edit = {"duration_sec": 59, "tracks": [{"id": "t_v", "kind": "video", "index": 0, "clips": []}]}
+    board = {"timeline": animated}
+    override = {"timeline": stale_edit}
+
+    data = stage_inputs.assemble("audio", task=_task(), board=board, override=override)
+    timeline = getattr(data, "timeline", None)
+    assert timeline is not None
+    assert [str(getattr(t.kind, "value", t.kind)) for t in timeline.tracks] == ["text"], (
+        "override 里的旧时间线不能顶掉黑板现值（否则文字动画会在成片里消失）")
+
+
+def test_board_timeline_used_when_override_missing():
+    animated = {"tracks": [{"id": "t_text", "kind": "text", "index": 0, "clips": []}]}
+    data = stage_inputs.assemble("audio", task=_task(), board={"timeline": animated},
+                                 override={})
+    timeline = getattr(data, "timeline", None)
+    assert timeline is not None and len(timeline.tracks) == 1
+    assert str(getattr(timeline.tracks[0].kind, "value", timeline.tracks[0].kind)) == "text"

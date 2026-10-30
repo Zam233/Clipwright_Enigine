@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from clipwright.config import logger
 from clipwright.schema.agent import AgentContext
 
 #: 各阶段的**必需**黑板键（缺则 input_insufficient）
@@ -112,8 +113,23 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
     # → edit 产出空时间线 → 收尾守门判失败。空值一律回退到黑板。
     _flow_keys = ("script_skeleton", "candidate_clips", "scenes", "timeline")
     for key in _flow_keys:
-        if not data.get(key) and (board or {}).get(key):
-            data[key] = board[key]
+        board_value = (board or {}).get(key)
+        if key == "timeline":
+            # 时间线以**黑板为准**，override 只能补空、不能顶掉黑板现值。
+            # 现场（E2E 2026-10-30）：主 agent 派 audio 时带了一个指向 edit 产物的
+            # `inputs.timeline` 引用 → audio 拿旧时间线定稿 → 动画阶段加的 10 条文字
+            # 动画在成片里全没了（final 4 轨 0 text）。黑板写入本身是有序的
+            # （edit → animation → audio），它才是当前真值。
+            if board_value and data.get(key) is not board_value:
+                if data.get(key):
+                    logger.info("阶段输入：%s 的 override.timeline 被黑板现值覆盖"
+                                "（避免下游用回退版本定稿）", stage)
+                data[key] = board_value
+            continue
+        # 其余大对象：显式给了非空值就算给了（主 agent 可能有意收窄候选素材/分镜），
+        # 只有空值才回退黑板。
+        if not data.get(key) and board_value:
+            data[key] = board_value
     extra = ctx.extra_params
     # override 也要能覆盖 brief/plan：它们平时来自 request.extra，
     # 但主 Agent 需要能在某一阶段临时改写（例如把用户新要求塞进 constraints/brief）

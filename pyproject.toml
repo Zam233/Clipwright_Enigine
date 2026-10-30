@@ -49,6 +49,9 @@ extras = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "enable_kernel_recovery: 允许 Kernel 确定性补派（默认关闭，避免单测触发真实派发）",
+]
 
 [tool.ruff]
 line-length = 100

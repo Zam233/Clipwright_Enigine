@@ -47,9 +47,39 @@ _MAX_IDEM = 256
 
 #: `run_inline`（预览/局部修补）的默认墙钟：比完整阶段短，卡住要尽快报错
 DEFAULT_STAGE_TIMEOUT_LOCAL = 1800.0
-#: 阶段墙钟下限：主 agent 可以传更小的 timeout_sec，但不允许低于这个值
-#: （它曾把 animation 设成 900s，43 段 MG 渲染必然超时 → 重试 → 再超时）。
-MIN_STAGE_TIMEOUT_SEC = 0.0  # 0 = 不设上限
+#: 阶段墙钟下限兜底值：`settings.agent_stage_min_timeout_sec` 读不到时用它
+#: （它曾把 animation 设成 900s、material 设成 900s，43 场逐场搜素材必然超时 →
+#: 重试 → 再超时，半小时白烧，edit 还因缺 candidate_clips 直接失败）。
+MIN_STAGE_TIMEOUT_SEC = 3600.0
+
+#: 阶段工具失败率门槛（E2E 2026-10-30 用户裁定）：样本够、失败率超限 → degraded。
+#: 现场：edit 133 次调用失败 60 次（45%）却报 ok，主 agent 看到"工具 133 次（失败 60）"
+#: 仍然推进 animation + audio，从来不返工——因为失败率只活在 summary 文案里，
+#: 不是**降级事实**。现在进降级语义，Kernel 的降级决策守门会把主 agent 推回来。
+TOOL_FAILURE_RATIO_LIMIT = 0.30
+#: 判定失败率所需最小样本（少量调用偶发失败不算）
+TOOL_FAILURE_MIN_SAMPLES = 8
+
+
+def stage_timeout_floor() -> float:
+    """阶段墙钟下限（秒）。<= 0 表示不设下限（完全信任主 agent 传入值）。"""
+    try:
+        val = float(getattr(settings, "agent_stage_min_timeout_sec", MIN_STAGE_TIMEOUT_SEC))
+    except (TypeError, ValueError):
+        val = MIN_STAGE_TIMEOUT_SEC
+    return val if val > 0 else 0.0
+
+
+def effective_stage_timeout(requested: float | None) -> float:
+    """把主 agent 自填的 `timeout_sec` 抬到下限之上；<= 0 一律按不设上限（0.0）返回。"""
+    try:
+        req = float(requested or 0.0)
+    except (TypeError, ValueError):
+        req = 0.0
+    if req <= 0:
+        return 0.0
+    floor = stage_timeout_floor()
+    return max(req, floor) if floor > 0 else req
 
 
 
@@ -139,8 +169,53 @@ def _cost_from_usage(before: dict[str, int], after: dict[str, int],
         return None, True
 
 
-def _summary_of(stage: str, payload: dict[str, Any]) -> str:
-    """给主 Agent 的一句话结论（关键数值不许丢）。"""
+def tool_failure_degradation(
+    stage: str, tool_calls: list[dict[str, Any]] | None,
+) -> tuple[bool, dict[str, Any] | None]:
+    """工具失败率是否构成**降级事实**（E2E 2026-10-30 用户裁定）。
+
+    现场：edit 阶段 133 次工具调用失败 60 次（45%），阶段仍报 `ok`，主 agent
+    看到 summary 里的「工具 133 次（失败 60）」照样推进 animation + audio，
+    从来不返工——因为失败率只活在文案里，不在降级语义里。
+
+    口径：样本 ≥ `TOOL_FAILURE_MIN_SAMPLES` 且失败率 ≥ `TOOL_FAILURE_RATIO_LIMIT`
+    → 返回 (True, 降级条目)。降级条目进 StageResult → AgentResult → 工具结果，
+    Kernel 的降级决策守门会把主 agent 推回来，要求重派该阶段。
+    """
+    calls = [c for c in (tool_calls or []) if isinstance(c, dict)]
+    total = len(calls)
+    if total < TOOL_FAILURE_MIN_SAMPLES:
+        return False, None
+    failed = [
+        c for c in calls
+        if str(c.get("status") or "").lower() not in ("success", "ok", "")
+    ]
+    ratio = len(failed) / total
+    if ratio < TOOL_FAILURE_RATIO_LIMIT:
+        return False, None
+    by_tool: dict[str, int] = {}
+    for c in failed:
+        key = str(c.get("tool") or c.get("capability") or "?")
+        by_tool[key] = by_tool.get(key, 0) + 1
+    top = sorted(by_tool.items(), key=lambda kv: -kv[1])[:3]
+    return True, {
+        "kind": "stage_tool_failures",
+        "detail": (f"{stage} 阶段工具失败 {len(failed)}/{total}"
+                   f"（{ratio:.0%}，阈值 {TOOL_FAILURE_RATIO_LIMIT:.0%}）；"
+                   f"失败最多：{', '.join(f'{k}×{v}' for k, v in top)}"),
+        "scope": stage,
+        "impact": "本阶段产物可能缺件（该切的没切/该裁的没裁），下游会把它当成功继续用",
+    }
+
+
+def _summary_of(stage: str, payload: dict[str, Any],
+                tool_calls: list[dict[str, Any]] | None = None) -> str:
+    """给主 Agent 的一句话结论（关键数值与**异常信号**都不许丢）。
+
+    现代 agent 化（用户 2026-10-29）：主 agent 不该只看到"轨道 6 条 / 片段 502 个"
+    这种 happy-path 数字。工具调用次数、失败次数、降级条数、耗时同样是一句话的
+    组成部分——它们决定主 agent 下一步是继续、重派还是换策略。
+    """
     bits: list[str] = []
     if stage == "structure":
         scenes = payload.get("scenes") or []
@@ -166,6 +241,18 @@ def _summary_of(stage: str, payload: dict[str, Any]) -> str:
         bits.append(f"问题 {len(issues)} 条（error {len(errors)}）")
         if payload.get("redo_agent"):
             bits.append(f"建议重做 {payload.get('redo_agent')}")
+    # ── 异常信号（必须进一句话，别让主 agent 只看到 happy path）──
+    degradations = payload.get("degradations") or []
+    if degradations:
+        kinds = sorted({str(getattr(d, "kind", None) or (d or {}).get("kind") or "")
+                        for d in degradations} - {""})
+        bits.append(f"降级 {len(degradations)} 项" + (f"（{'/'.join(kinds[:3])}）" if kinds else ""))
+    tool_calls = tool_calls if tool_calls is not None else (
+        payload.get("tool_calls") or payload.get("_tool_calls") or [])
+    if isinstance(tool_calls, list) and tool_calls:
+        failed = [c for c in tool_calls
+                  if str((c or {}).get("status") or "").lower() not in ("success", "ok", "")]
+        bits.append(f"工具 {len(tool_calls)} 次" + (f"（失败 {len(failed)}）" if failed else ""))
     if not bits:
         bits.append(f"{stage} 完成")
     return "；".join(bits)[:500]
@@ -291,6 +378,22 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
           "inputs_source": "explicit" if explicit else "blackboard",
           "blackboard_keys": sorted(board.keys())})
 
+    # 人工「追问/注入」（PRD modern-agent-review M2）：往这个阶段的子会话里塞的要求，
+    # 下一次派发时并入 brief 并逐条上报——不然"我让某个子 agent 改"这件事只有我知道。
+    try:
+        from clipwright.services import agent_run as _agent_run
+
+        _notes = _agent_run.take_pending_notes(task_id, stage)
+    except Exception:  # noqa: BLE001 — 便条不可用不影响跑阶段
+        _notes = []
+    if _notes:
+        _joined = "\n".join(f"- {n}" for n in _notes)
+        spec = spec.model_copy(update={
+            "brief": (str(spec.brief or "").strip() + "\n\n[人工补充要求]\n" + _joined).strip()
+        }) if hasattr(spec, "model_copy") else spec
+        emit(task_id, "inject", f"{stage} 收到 {len(_notes)} 条人工补充要求",
+             {"stage": stage, "notes": _notes[:5]}, span="subagent")
+
     # 1) 装配输入
     try:
         if explicit:
@@ -371,13 +474,19 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     usage_before = llm_usage_snapshot()
     degradations: list[Any] = []
     payload: dict[str, Any] = {}
+    # 阶段墙钟下限（E2E 2026-10-29）：`timeout_sec` 是主 agent 可以自己填的参数，
+    # 实测它填了 900s → material（43 场逐场搜素材 + 视觉 LLM）与 animation（43 段 MG
+    # 逐个渲染）必然超时，然后自己重试、再超时，白烧半小时。模型不该有权把阶段超时
+    # 设到"注定失败"的量级；<= 0 视为不设上限（见 clipwright/services/timeouts.py）。
+    timeout_eff = effective_stage_timeout(spec.timeout_sec)
     try:
         agent = agent_for(stage)
-        # 阶段墙钟下限（E2E 2026-10-28）：`timeout_sec` 是主 agent 可以自己填的参数，
-        # 实测它填了 900s → animation（43 段 MG 逐个渲染）必然超时，然后自己重试、
-        # 再超时，白烧半小时。模型不该有权把阶段超时设到"注定失败"的量级。
-        timeout_eff = max(float(spec.timeout_sec or 0.0), MIN_STAGE_TIMEOUT_SEC)
-        with degradation_scope(degradations), use_route(route):
+        # 子 agent 运行上下文（现代 agent 化）：阶段内部的每次 call_tool 都会归到本任务
+        # 并发 `subagent_tool` 事件——长阶段（material 15 分钟 / animation 逐段渲染）
+        # 在事件流里看得见进度，而不是等它跑完只给一句 summary。
+        from clipwright.services.agent_context import task_scope
+
+        with task_scope(task_id, stage=stage), degradation_scope(degradations), use_route(route):
             from clipwright.services.timeouts import wait_or_run
 
             output = await wait_or_run(agent.execute(input_obj, context), timeout_eff)
@@ -396,8 +505,8 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     except asyncio.TimeoutError:
         result = StageResult(
             stage=stage, status="failed",
-            error=f"阶段超时（>{spec.timeout_sec}s）",
-            failure=_timeout_failure(stage, spec.timeout_sec),
+            error=f"阶段超时（>{timeout_eff}s）",
+            failure=_timeout_failure(stage, timeout_eff),
             duration_ms=int((time.monotonic() - started) * 1000),
         )
         _record(task_id, result)
@@ -432,6 +541,17 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
                  - (int(usage_before.get("input_tokens", 0))
                     + int(usage_before.get("output_tokens", 0))))
     stage_tool_calls = list(getattr(agent, "last_tool_calls", None) or [])
+    # 暗区补齐（PRD M2）：素材源检索 / MG 生成 / 插件与 skill 调用不走 call_tool，
+    # 但同样属于"子 agent 干了什么"。`operation()` 记下的条目在这里并入轨迹
+    # （source=internal），随 tool_calls 一起进 AgentResult 与落盘文件。
+    try:
+        from clipwright.services import agent_context as _agent_ctx
+
+        _internal_ops = _agent_ctx.take_operations()
+        if _internal_ops:
+            stage_tool_calls = stage_tool_calls + _internal_ops
+    except Exception:  # noqa: BLE001 — 操作表不可用不影响阶段
+        pass
 
     # 4) 合并
     writes: list[str] = []
@@ -444,12 +564,17 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
             merge_errors = [f"merge: {exc}"]
 
     failure = _failure_from_output(payload, stage=stage)
+    # 工具失败率门禁（E2E 2026-10-30 用户裁定）：见 tool_failure_degradation()。
+    _tool_gate_hit, _tool_failure_deg = tool_failure_degradation(stage, stage_tool_calls)
+
     status = "ok"
     if failure is not None:
         status = "failed"
     elif merge_errors:
         # 合并失败（例如时间线没能落黑板）必须降级为 degraded：
         # 旧实现只打 warning，阶段报 ok 但下游拿不到 timeline，故障在下游才炸。
+        status = "degraded"
+    elif _tool_gate_hit:
         status = "degraded"
     elif payload.get("degradations") or (payload.get("decision") == "pass" and writes == []
                                         and stage in TIMELINE_STAGES):
@@ -458,6 +583,8 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     _degradations = [d if isinstance(d, dict) else
                      getattr(d, "model_dump", lambda **_: {})()
                      for d in (payload.get("degradations") or [])][:20]
+    if _tool_failure_deg is not None:
+        _degradations.append(_tool_failure_deg)
     _degradations += [{"kind": "blackboard_merge_failed", "detail": e,
                        "scope": stage, "impact": "下游阶段可能拿不到该产物"}
                       for e in merge_errors[:5]]
@@ -467,7 +594,7 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
         status=status,
         artifacts={k: payload[k] for k in ("timeline", "script_skeleton",
                                            "candidate_clips", "issues") if payload.get(k)},
-        summary=_summary_of(stage, payload),
+        summary=_summary_of(stage, payload, tool_calls=stage_tool_calls),
         writes=writes,
         degradations=_degradations,
         issues=list(payload.get("issues") or [])[:20],
@@ -513,6 +640,15 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
         except Exception as exc:  # noqa: BLE001 — 写报告失败降级，不阻断阶段
             logger.warning("写报告异常 %s/%s: %s", root, stage, exc)
         result.report_path, result.report_seq = path, seq
+        # 工具轨迹全量落盘（PRD modern-agent-review M1）：内存里 `last_tool_calls` 只留
+        # 最近 200 条（性能），完整 transcript 落 `reports/tool_calls/<stage>-<n>.json`，
+        # 主 agent 按 `tool_calls_path` 回查——"可见"不能只是"最近 20 条采样"。
+        try:
+            result.tool_calls_path = _dump_tool_calls(
+                root, stage=stage, attempt=attempt_no, calls=stage_tool_calls,
+            )
+        except Exception as exc:  # noqa: BLE001 — 落盘失败不阻断阶段
+            logger.warning("工具轨迹落盘失败 %s/%s: %s", task_id, stage, exc)
         if not path:
             # 报告没写成 = 主 agent 读不到文字汇报 → 降级 + 事件（M29：不能只改 status）
             result.status = "degraded"
@@ -534,6 +670,32 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
           "summary": result.summary, "report_path": result.report_path,
           "report_seq": result.report_seq})
     return result
+
+
+def _dump_tool_calls(root: str, *, stage: str, attempt: int,
+                     calls: list[dict[str, Any]]) -> str:
+    """把阶段全量工具轨迹写成 JSON（`reports/tool_calls/<stage>-<attempt>.json`）。
+
+    为什么单独落盘：`BaseAgent.last_tool_calls` 与 `AgentResult.tool_payload` 都有条数上限
+    （200 / 12 条采样），而 edit 这类阶段可能有 100+ 次调用。主 agent 要复盘子 agent
+    到底干了什么（PRD modern-agent-review P0），就必须有**无损**的那一份。
+    """
+    if not root or not calls:
+        return ""
+    import json
+    from pathlib import Path
+
+    target_dir = Path(root) / "reports" / "tool_calls"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = target_dir / f"{stage}-{max(1, int(attempt))}.json"
+    payload = {
+        "stage": stage,
+        "attempt": int(attempt),
+        "count": len(calls),
+        "calls": calls,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    return str(path)
 
 
 def _workspace_root_of(task: Any) -> str:
@@ -688,3 +850,4 @@ __all__ = [
     "run",
     "run_stage",
 ]
+

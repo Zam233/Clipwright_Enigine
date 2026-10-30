@@ -110,6 +110,12 @@ def build_type_description(
     if example:
         parts.append(f"## 参考做法\n{example}")
 
+    # 风格参考（2026-10-30）：从公开代码动画风格库（341 种）按语义映射过来的
+    # 视觉语言——只借构图/配色/节奏/入场方式，内容仍必须来自本片旁白。
+    style_ref = sections.get("Style reference", "")
+    if style_ref:
+        parts.append(f"## 风格参考（视觉语言，内容仍须来自本片旁白）\n{style_ref.rstrip()}")
+
     if category is not None and not category.is_empty():
         parts.append("## 视频类型（决定信息节奏与受众，优先级高于 persona）\n" + category.to_prompt())
 

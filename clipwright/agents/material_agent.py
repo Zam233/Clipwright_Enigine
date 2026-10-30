@@ -466,11 +466,18 @@ async def _search_with_cache(
             return [_CachedResult(d) for d in data]
         _search_cache.pop(key, None)  # TTL 过期
 
-    results = await MaterialRegistry.search(
-        query=query,
-        top_k_per_source=top_k,
-        source_ids=source_ids,
-    )
+    # 暗区补齐（PRD modern-agent-review M2）：素材源检索不走 call_tool，
+    # 以前只有缓存与 logger。记成内部操作（含耗时/结果数），随阶段轨迹上报。
+    from clipwright.services import agent_context as _ctx
+
+    with _ctx.operation(f"material_search:{','.join(source_ids or ['all'])[:40]}",
+                        source="internal") as _op:
+        results = await MaterialRegistry.search(
+            query=query,
+            top_k_per_source=top_k,
+            source_ids=source_ids,
+        )
+        _op["detail"] = f"{len(results)} 条结果（query={query[:40]}）"
     # 场景候选排除音频——BGM 由 AudioAgent 独立链路检索；音频混入
     # 视频场景候选会被 video_trim 拒绝，烧掉候选位并把场景挤成占位
     results = [
@@ -731,8 +738,12 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
             _vision_tool = _resolve_capability("vision_score")
             if _vision_tool is None:
                 return 0.5
-            result = await _ToolRegistry.execute(
-                _vision_tool.name,
+            # 走 BaseAgent.call_tool 而不是直连注册表：视觉打分是 material 阶段最贵、
+            # 最容易超时的调用，必须进轨迹与事件流（主 agent 要能看见"这一场打了多久、
+            # 失败几次"），否则又变成子 agent 偷偷干活（E2E 2026-10-29 裁定）。
+            result = await self.call_tool(
+                "vision_score",
+                prefer=(_vision_tool.name,),
                 asset=asset,
                 scene_context={
                     "title": scene_title,
@@ -881,6 +892,16 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                 *(_process_scene(i, s) for i, s in enumerate(scenes)),
                 return_exceptions=True,
             )
+            # 进度可见（现代 agent 化）：材料阶段是最长的一段（43 场逐场检索 + 视觉 LLM），
+            # 主 agent 不该在 15 分钟里什么都看不到——场景级完成度实时进事件流。
+            from clipwright.services.agent_context import emit_progress as _emit_progress
+
+            _ok_scenes = sum(1 for r in results if not isinstance(r, Exception) and r is not None)
+            _emit_progress(
+                f"素材检索完成：{_ok_scenes}/{len(scenes)} 场有候选"
+                f"（异常 {sum(1 for r in results if isinstance(r, Exception))} 场）",
+                {"stage": "material", "scenes": len(scenes), "ok": _ok_scenes},
+            )
             # 单场景异常降级为空候选占位，不让整 Agent 失败
             candidate_clips = []
             for i, r in enumerate(results):
@@ -923,6 +944,39 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
             # 场景级 note（如 C4c 重选结果）上浮到全局 material_notes
             for r in candidate_clips:
                 notes.extend(r.pop("material_notes", []))
+
+            # 占位如实上报（E2E 2026-10-30 用户裁定）：没有匹配到任何素材的场景，
+            # 下游 edit 只能落文字/纯色卡——这是"回退画面"，必须登记成降级，
+            # 而不是把 `suggested_assets=[]` 当正常产物交上去（主 agent 只有看见它，
+            # 才可能重派 material 把占位换成真实画面）。
+            placeholders = [
+                (int(r.get("scene_index", i)), str(r.get("scene_title") or ""))
+                for i, r in enumerate(candidate_clips)
+                if not (r.get("suggested_assets") or [])
+            ]
+            if placeholders:
+                scope_preview = "、".join(f"场景[{idx}]" for idx, _ in placeholders[:6])
+                more = f" 等 {len(placeholders)} 场" if len(placeholders) > 6 else ""
+                placeholder_degradations = [{
+                    "kind": "material_placeholder",
+                    "detail": f"{scope_preview}{more}无匹配素材，下游只能用文字/纯色占位",
+                    "scope": f"scene:{idx}",
+                    "impact": f"「{title[:30]}」该段画面是占位卡，不是实拍素材",
+                } for idx, title in placeholders[:12]]
+                notes.append(
+                    f"占位场景 {len(placeholders)}/{len(candidate_clips)} 个"
+                    f"（{'、'.join(str(i) for i, _ in placeholders[:8])}）"
+                )
+                logger.warning(
+                    "MaterialAgent: %d/%d 个场景无匹配素材 → 文字/纯色占位（已登记降级）",
+                    len(placeholders), len(candidate_clips),
+                )
+                return MaterialOutput(
+                    decision=AgentDecision.PASS,
+                    degradations=placeholder_degradations,
+                    candidate_clips=candidate_clips,
+                    material_notes=notes,
+                )
 
             return MaterialOutput(
                 decision=AgentDecision.PASS,

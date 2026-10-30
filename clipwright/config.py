@@ -190,6 +190,9 @@ class Settings(BaseSettings):
     # 逻辑动画主路径：按「动画类型提示词 + 视频类型 + persona」由 LLM 生成（M2/M3）。
     # 关闭后退回旧路径（mg_* 内置模板 / diagram_svg 图解），用于灰度与回滚。
     animation_llm_generation: bool = True
+    # 文字动画 LLM 化（PRD text-animation-llm-2026-10-30）：True = prompt+LLM 生成；
+    # False = 回退 AnimationCatalog 固定关键帧表（回滚开关）。
+    text_animation_llm: bool = True
     # 类型化生成的并发上限（LLM 等待型，默认与 pipeline 并发一致）
     animation_llm_concurrency: int = 6
     # persona 提示词统一上限（PRD §16 R5）：旧实现 400/600/1500/2000 四处不同截断，
@@ -221,6 +224,30 @@ class Settings(BaseSettings):
     # 请求显式传值时优先，否则用这里的全局默认（都默认关，行为不变）。
     edit_enable_color_match: bool = False
     edit_enable_pv_llm_tools: bool = False
+    # 阶段墙钟下限（2026-10-29 E2E）：主 Agent 通过 delegate_agent 的 timeout_sec 自填值，
+    # 实测它填 900s → 43 场 material（逐场搜素材 + 视觉 LLM）必然超时，重试三次仍是 900s，
+    # 半小时白烧且 edit 因缺 candidate_clips 直接失败。0 = 不设下限（完全信任传入值）。
+    agent_stage_min_timeout_sec: float = 3600.0
+    # 降级处置策略（PRD modern-agent-review P0）：require_receipt = 无收据就判失败；
+    # warn = 只记录不判失败（老行为，便于灰度）。
+    # Kernel 确定性补派（2026-10-30）：模型提前收尾且提示词推不动时，由运行时
+    # 用同一套工具面自己补派缺失阶段（计 usage、进事件流）。单测默认关闭。
+    # 重复只读查询护栏（2026-10-30）：同参数 list_dir/read_report 直接返回上次结果。
+    # 现场：一次任务里 list_dir 58 次、read_artifact 38 次，把回合烧光。
+    agent_tool_dedupe: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("AGENT_TOOL_DEDUPE", "CLIPWRIGHT_AGENT_TOOL_DEDUPE"),
+    )
+    agent_kernel_recovery: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("AGENT_KERNEL_RECOVERY",
+                                      "CLIPWRIGHT_AGENT_KERNEL_RECOVERY"),
+    )
+    agent_degradation_policy: Literal["require_receipt", "warn"] = Field(
+        default="require_receipt",
+        validation_alias=AliasChoices("AGENT_DEGRADATION_POLICY",
+                                      "CLIPWRIGHT_AGENT_DEGRADATION_POLICY"),
+    )
     # 素材帧验证是否启用视觉 LLM；默认 False（只做 ffmpeg 抽帧 is_blank + 本地启发式标题匹配）。
     # 打开后 frame_validator 工具调用 ImageAnalyzer 产出 match_score（视觉 API 成本）。
     enable_visual_llm: bool = False
@@ -357,13 +384,66 @@ class Settings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("ENABLE_WEB_SEARCH", "CLIPWRIGHT_ENABLE_WEB_SEARCH"),
     )
-    web_search_provider: Literal["bocha", "baidu"] = Field(
+    web_search_provider: Literal["bocha", "baidu", "tavily", "serper", "bing", "local"] = Field(
         default="bocha",
         validation_alias=AliasChoices("WEB_SEARCH_PROVIDER", "CLIPWRIGHT_WEB_SEARCH_PROVIDER"),
     )
     web_search_api_key: str = Field(
         default="",
         validation_alias=AliasChoices("WEB_SEARCH_API_KEY", "CLIPWRIGHT_WEB_SEARCH_API_KEY"),
+    )
+    # 各 provider 专属 key（缺省回落到 web_search_api_key）
+    web_search_tavily_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("WEB_SEARCH_TAVILY_API_KEY",
+                                      "CLIPWRIGHT_WEB_SEARCH_TAVILY_API_KEY"),
+    )
+    web_search_serper_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("WEB_SEARCH_SERPER_API_KEY",
+                                      "CLIPWRIGHT_WEB_SEARCH_SERPER_API_KEY"),
+    )
+    web_search_bing_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("WEB_SEARCH_BING_API_KEY",
+                                      "CLIPWRIGHT_WEB_SEARCH_BING_API_KEY"),
+    )
+    # 本地抓取 provider（DuckDuckGo / Bing HTML）：不需要任何 key。
+    # 关掉它就回到"必须配付费 key 才能联网"的旧行为。
+    web_search_allow_local: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("WEB_SEARCH_ALLOW_LOCAL",
+                                      "CLIPWRIGHT_WEB_SEARCH_ALLOW_LOCAL"),
+    )
+    # 联网素材化（PRD web-search-fetch M2）：动画/素材阶段把 web 搜索到的
+    # 图片/视频落进 materials/web/ 并写来源许可旁车；关掉只保留文字事实参考。
+    web_assets_ingest: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("WEB_ASSETS_INGEST", "CLIPWRIGHT_WEB_ASSETS_INGEST"),
+    )
+    # 域名治理（PRD web-search-fetch M3）：白名单非空 = 只放行其中域名；
+    # 黑名单永远优先。逗号/分号/空白分隔，子域按后缀匹配。
+    web_assets_allowed_domains: str = Field(
+        default="",
+        validation_alias=AliasChoices("WEB_ASSETS_ALLOWED_DOMAINS",
+                                      "CLIPWRIGHT_WEB_ASSETS_ALLOWED_DOMAINS"),
+    )
+    web_assets_denied_domains: str = Field(
+        default="",
+        validation_alias=AliasChoices("WEB_ASSETS_DENIED_DOMAINS",
+                                      "CLIPWRIGHT_WEB_ASSETS_DENIED_DOMAINS"),
+    )
+    # robots.txt 治理：默认遵守（拒绝时如实回报原因，不静默跳过）
+    web_assets_respect_robots: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("WEB_ASSETS_RESPECT_ROBOTS",
+                                      "CLIPWRIGHT_WEB_ASSETS_RESPECT_ROBOTS"),
+    )
+    # 缓存 TTL：同一 URL 在 TTL 内复用已落盘文件，不重复下载；0 = 关闭缓存
+    web_assets_cache_ttl_hours: float = Field(
+        default=168.0,
+        validation_alias=AliasChoices("WEB_ASSETS_CACHE_TTL_HOURS",
+                                      "CLIPWRIGHT_WEB_ASSETS_CACHE_TTL_HOURS"),
     )
     web_search_base_url: Optional[str] = Field(
         default=None,

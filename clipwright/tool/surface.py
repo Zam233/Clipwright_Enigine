@@ -19,6 +19,7 @@ C0 量出的事实：57 项能力里只有 12 项（21%）当前能被 LLM 看�
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -37,8 +38,10 @@ RESEARCH_AGENT = "research_agent"
 GET_AGENT_RUN = "get_agent_run"
 LIST_AGENT_RUNS = "list_agent_runs"
 CANCEL_AGENT_RUN = "cancel_agent_run"
+ACKNOWLEDGE_DEGRADATION = "acknowledge_degradation"
 AGENT_TOOLS: tuple[str, ...] = (DELEGATE_AGENT, RESEARCH_AGENT,
-                                GET_AGENT_RUN, LIST_AGENT_RUNS, CANCEL_AGENT_RUN)
+                                GET_AGENT_RUN, LIST_AGENT_RUNS, CANCEL_AGENT_RUN,
+                                ACKNOWLEDGE_DEGRADATION)
 
 _AGENT_TOOL_SPECS: dict[str, dict[str, Any]] = {
     DELEGATE_AGENT: {
@@ -66,8 +69,33 @@ _AGENT_TOOL_SPECS: dict[str, dict[str, Any]] = {
                 },
                 "expect": {"type": "object",
                            "description": "期望产出字段 → schema 名（用于结果校验）"},
+                "refresh": {
+                    "type": "boolean",
+                    "description": (
+                        "true = 跳过幂等回放，真的重跑这次派发（用于修降级/用户要求重做）。"
+                        "false/缺省 = 同参数重复派发可复用上次结果"
+                    ),
+                },
             },
             "required": ["stage"],
+        },
+    },
+    ACKNOWLEDGE_DEGRADATION: {
+        "description": (
+            "显式接受阶段上报的降级（PRD modern-agent-review P0）。降级必须留下**收据**："
+            "要么重派同一阶段并跑成功（remediated，自动记录），要么调用本工具写 accepted 收据。"
+            "reason 必须写清「为什么可以接受」，impact 写清「对成片的影响」；"
+            "不调用它、也没有重派 → 任务会以 degradation_unresolved 失败收尾。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kinds": {"type": "array", "items": {"type": "string"},
+                          "description": "要接受的降级 kind 列表（如 llm_json_truncated / mg_critique_skipped）"},
+                "reason": {"type": "string", "description": "为什么可以接受（≥10 字，写真实理由）"},
+                "impact": {"type": "string", "description": "对成片的影响（观众会看到什么）"},
+            },
+            "required": ["kinds", "reason"],
         },
     },
     RESEARCH_AGENT: {
@@ -120,6 +148,8 @@ _AGENT_TOOL_TIER: dict[str, str] = {
     GET_AGENT_RUN: "read",
     LIST_AGENT_RUNS: "read",
     CANCEL_AGENT_RUN: "write_local",
+    # 写一条降级接受收据：只写任务状态，不调外部、不花钱
+    ACKNOWLEDGE_DEGRADATION: "write_local",
 }
 
 #: 确定性领域工具（PRD §4.4 必须保留）：闭包重算与阶段计划校验。
@@ -505,6 +535,23 @@ def _preflight(entry: SurfaceEntry, payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def idem_key_for(task_id: str, name: str, args: dict[str, Any] | None) -> str:
+    """按「任务 + 工具名 + 参数」派生幂等键。
+
+    为什么要带参数（E2E 2026-10-30 实测）：旧实现是 `f"{task_id}:{name}:{len(calls)}"`
+    ——`calls` 是**本轮** loop 的调用列表，续跑一轮就从 0 重新数，于是"本轮第 3 次
+    delegate_agent"会命中上一轮第 3 次的缓存，**参数完全不同也照样回放**
+    （实测：派 structure 拿回了 edit 的历史结果，主 agent 以为子 agent 在骗它）。
+    带上参数哈希后：同参数才幂等，换参数必然重跑。
+    """
+    try:
+        blob = json.dumps(args or {}, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:  # noqa: BLE001 — 参数不可序列化时退回 str()
+        blob = str(args or {})
+    digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+    return f"{task_id}:{name}:{digest}"
+
+
 def _cost_of(result: Any) -> Optional[float]:
     """工具自报成本（美元）；没报就是 None，**不要伪造 0**。
 
@@ -586,6 +633,32 @@ async def _execute_agent(name: str, payload: dict[str, Any], *,
         except Exception as exc:  # noqa: BLE001 — 反查失败按缺少上下文处理
             logger.warning("agent 工具反查任务失败 %s: %s", pipeline_id, exc)
     entry = next(e for e in build_surface() if e.name == name)
+
+    if name == ACKNOWLEDGE_DEGRADATION:
+        kinds = [str(k) for k in (payload.get("kinds") or []) if str(k).strip()]
+        reason = str(payload.get("reason") or "").strip()
+        impact = str(payload.get("impact") or "").strip()
+        if not kinds:
+            out = {"status": "refused", "error": "kinds 不能为空"}
+        elif len(reason) < 10:
+            out = {"status": "refused",
+                   "error": "reason 太短：必须写清为什么可以接受（≥10 字）"}
+        else:
+            from clipwright.services import degradation_ledger
+            from clipwright.services.task_events import emit
+
+            task_id = str(getattr(task, "id", "") or pipeline_id)
+            n = degradation_ledger.accept(task_id, kinds, reason=reason, impact=impact)
+            emit(task_id, "degradation",
+                 f"降级接受收据：{n} 项（{','.join(kinds)[:80]}）",
+                 {"mode": "accepted", "kinds": kinds, "reason": reason[:200],
+                  "impact": impact[:200], "resolved": n}, span="kernel")
+            out = {"status": "ok",
+                   "output": {"accepted": n, "kinds": kinds,
+                              "outstanding": len(degradation_ledger.outstanding(task_id))}}
+        out["record"] = _audit(name, entry, pipeline_id, idem_key, payload,
+                              out["status"], 0.0, out.get("error"))
+        return out
 
     if name == CANCEL_AGENT_RUN:
         # 兼容旧参数名：历史检查点里存的是 subagent_id
@@ -670,6 +743,7 @@ async def _execute_agent(name: str, payload: dict[str, Any], *,
         depth=1,
         idem_key=idem_key[:120],
         trace_id=pipeline_id,
+        refresh=bool(payload.get("refresh")),
     )
     result = await agent_run.run(spec, task)
     # 语义要分清：ok/degraded/needs 是"跑完了"，refused 是"不许跑"，其余才是 error
@@ -681,13 +755,19 @@ async def _execute_agent(name: str, payload: dict[str, Any], *,
         status = "error"
     out = {
         "status": status,
+        # status 仍是 ok（"跑完了"），但 degraded 事实必须独立成字段：
+        # 阶段内部退而求其次（LLM 截断重试、自批判跳过、模板兜底）不是失败，
+        # 也不是干净的 ok——Kernel 与模型都要据此当轮决策（E2E 2026-10-29 裁定）。
+        "degraded": bool(result.degradations),
+        "degradation_count": len(result.degradations),
         "output": result.to_tool_payload(),
         "error": result.error or None,
         # 失败/拒绝要把结构化原因透出来（Kernel 与模型都靠它决定下一步）
         "failure": result.failure,
         "cost_usd": result.cost_usd,
         "cost_unknown": bool(result.cost_unknown),
-        "replayed": False,
+        # 回放（幂等命中）必须如实上报：主 agent 靠它区分"重派真的重跑"与"拿到旧结果"
+        "replayed": bool(getattr(result, "replayed", False)),
     }
     out["record"] = _audit(name, entry, pipeline_id, idem_key, payload, status,
                            float(result.duration_ms),

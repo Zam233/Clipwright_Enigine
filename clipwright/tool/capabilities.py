@@ -59,6 +59,11 @@ CAPABILITY_ALIASES: dict[str, tuple[str, ...]] = {
     "pv_audit": ("pv_engine_audit",),
     "pv_preview": ("pv_engine_stills",),
     "pv_render": ("pv_engine_render",),
+    # 联网能力（2026-10-30）：工具一直注册着（`web_search` / `web_fetch`），但**没有能力别名**
+    # → `BaseAgent.call_tool("web_search")` 解析不到、Agent 只能绕过工具面直调 Service
+    # （于是既没有轨迹、也没有 subagent_tool 事件、未配置时还静默跳过）。
+    "web_search": ("web_search",),
+    "web_fetch": ("web_fetch",),
 }
 
 #: 技能名本身就是稳定的（内置 4 个 + 插件技能），这里只声明"能力 → 技能名候选"。

@@ -165,9 +165,36 @@ def repair_mg_json(mg_def: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
         repaired["animation_id"] = f"mg_generated_{uuid.uuid4().hex[:8]}"
         fixes.append("Added missing animation_id")
 
-    if "duration_sec" not in repaired or not isinstance(repaired.get("duration_sec"), (int, float)):
-        repaired["duration_sec"] = 3.0
-        fixes.append("Set default duration_sec=3.0")
+    # duration_sec 与关键帧时间必须对齐（E2E 2026-10-29 实测真现场）：
+    # 模型按 5–6 秒设计关键帧却漏写 duration_sec → 旧实现硬补 3.0 → 所有
+    # keyframe time 越界 → 校验仍失败 → 整段动画退化成模板（日志里
+    # "修复重试仍失败，进入降级" 就是这么来的）。
+    # 口径：缺失时按关键帧最大时间推断（不小于 1s）；已给 duration 但关键帧越界时夹进范围。
+    _kf_times = [
+        float(kf.get("time"))
+        for elem in (repaired.get("elements") or [])
+        for kf in (elem.get("keyframes") or [])
+        if isinstance(kf, dict) and isinstance(kf.get("time"), (int, float))
+        and kf.get("time") >= 0
+    ]
+    _dur = repaired.get("duration_sec")
+    if not isinstance(_dur, (int, float)) or _dur <= 0:
+        inferred = round(max(_kf_times) + 0.05, 2) if _kf_times else 3.0
+        repaired["duration_sec"] = max(1.0, inferred)
+        fixes.append(f"Inferred duration_sec={repaired['duration_sec']} from keyframes")
+    else:
+        _dur = float(_dur)
+        _clamped = 0
+        for elem in (repaired.get("elements") or []):
+            for kf in (elem.get("keyframes") or []):
+                if not isinstance(kf, dict):
+                    continue
+                t = kf.get("time")
+                if isinstance(t, (int, float)) and t > _dur:
+                    kf["time"] = _dur
+                    _clamped += 1
+        if _clamped:
+            fixes.append(f"Clamped {_clamped} keyframe time(s) to duration_sec={_dur}")
 
     for dim, default in (("width", 1920), ("height", 1080)):
         if dim not in repaired or not isinstance(repaired.get(dim), (int, float)):

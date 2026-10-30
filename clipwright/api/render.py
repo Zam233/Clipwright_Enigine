@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException, Request
 from clipwright.config import TIME_ZONE, logger, settings
 from clipwright.paths import anchor
 from clipwright.schema.timeline import Timeline
-from clipwright.security import is_safe_download_name
+from clipwright.security import SecurityViolation, is_safe_download_name, output_basename
 from clipwright.services.async_util import spawn_background
 from clipwright.services.remote_render import RemoteRenderService
 from clipwright.services.render import RenderService
@@ -54,15 +54,58 @@ def _drop_render_task(task_id: str) -> None:
         pass
 
 
-def _load_recovered_render_tasks() -> list[dict]:
-    """重启恢复：Mongo 中 queued/rendering 且内存已无的任务。"""
+def mark_interrupted_render_tasks() -> int:
+    """启动恢复：把上个进程遗留的 queued/rendering 渲染任务标成 failed。
+
+    这些记录永远不会再有 worker 处理（进程已死），旧实现让它们以 queued 永久挂在
+    队列里，前端看到一片「恢复的任务 / Task not found」。返回被标记的条数。
+    """
     try:
+        from datetime import datetime
+
+        from clipwright.context import mongo
+        if not mongo.is_connected:
+            return 0
+        res = mongo.db["render_tasks"].update_many(
+            {"status": {"$in": ["queued", "rendering"]}},
+            {"$set": {
+                "status": "failed",
+                "detail": "进程重启中断（渲染未完成）",
+                "result": {"error": "进程重启中断（渲染未完成）"},
+                "updated_at": datetime.now(tz=TIME_ZONE),
+            }},
+        )
+        n = int(getattr(res, "modified_count", 0) or 0)
+        if n:
+            logger.warning("启动恢复：%d 个渲染任务标记为中断（进程重启）", n)
+        return n
+    except Exception as exc:  # noqa: BLE001 — 恢复失败不能阻断启动
+        logger.warning("启动恢复：标记中断渲染任务失败: %s", exc)
+        return 0
+
+
+def _load_recovered_render_tasks() -> list[dict]:
+    """重启恢复：Mongo 中 queued/rendering、以及**刚完成**的渲染任务（内存已无）。
+
+    为什么要带 completed/failed：终态队列记录 60s 后会被清理（`_drop_render_task`），
+    于是「渲染完 → 刷新页面」就再也拿不到成片入口——只能看到一堆
+    「恢复的任务 / Task not found」（E2E 2026-10-29 实测）。最近 30 分钟内的终态任务
+    一并返回，前端队列行才能显示「下载」。过期记录仍由清理逻辑淘汰。
+    """
+    try:
+        from datetime import datetime, timedelta
+
         from clipwright.context import mongo
         if not mongo.is_connected:
             return []
-        docs = list(mongo.db["render_tasks"].find(
-            {"status": {"$in": ["queued", "rendering"]}}
-        ))
+        recent = datetime.now(tz=TIME_ZONE) - timedelta(minutes=30)
+        docs = list(mongo.db["render_tasks"].find({
+            "$or": [
+                {"status": {"$in": ["queued", "rendering"]}},
+                {"status": {"$in": ["completed", "failed", "cancelled"]},
+                 "updated_at": {"$gte": recent}},
+            ]
+        }).sort("updated_at", -1).limit(50))
         for d in docs:
             d.pop("_id", None)
         return docs
@@ -398,9 +441,10 @@ async def enqueue_auto_render(
             pass
 
         async def _cleanup():
+            # 同上（/queue）：只清内存条目，Mongo 记录留给 30 分钟恢复窗口，
+            # 刷新页面后仍能点「下载」。
             await asyncio.sleep(60)
             _render_queue.pop(task_id, None)
-            _drop_render_task(task_id)
         spawn_background(_cleanup(), name=f"render-auto-cleanup-{task_id}")
 
     spawn_background(_run(), name=f"render-auto-{task_id}")
@@ -474,12 +518,16 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
             _preroll_plan["audio_delayed"] = False
         _render_queue[task_id]["preroll"] = _preroll_plan
     # 使用请求 output_path 的 basename（防御：仅取 basename 拼到 renders/，白名单校验）。
-    # 先对原始串做 is_safe_download_name 校验（拒绝路径分隔符 / \\、.. 与 Windows 非法字符），
-    # 再取 basename 拼接到 renders/ 目录，杜绝路径穿越。
+    # 客户端一直传 `renders/xxx.mp4`（ExportPage submitRender / 旧渲染入口），
+    # 对整串校验会因路径分隔符把合法请求判成「非法输出文件名」——实测前端导出页
+    # 100% 提交失败（E2E 2026-10-29）。`output_basename` 允许普通目录段、拒绝 `..`，
+    # 穿越仍然进不来（最终 out 一定拼在 renders/ 之下）。
     raw_output = body.output_path or ""
-    if raw_output and not is_safe_download_name(raw_output):
-        raise HTTPException(status_code=400, detail="非法输出文件名")
-    requested_name = Path(raw_output).name if raw_output else ""
+    try:
+        requested_name = output_basename(raw_output)
+    except SecurityViolation as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    requested_name = requested_name or ""
     # 预设携带容器扩展名（prores→mov）；用户显式指定文件名时尊重用户
     _ext = str(params.get("container_ext") or "mp4")
     _fname = requested_name or f"{task_id}.{_ext}"
@@ -631,6 +679,12 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                 logger.warning("render webhook dispatch failed: %s", we)
         except Exception as e:
             from clipwright.services.render import RenderCancelledError
+            # 失败必须留日志：终态队列记录 60s 后会被清理，此前失败原因只存在队列里，
+            # 用户和开发者都拿不到（E2E 2026-10-29：整片渲染 100% 失败，日志里查不到原因）。
+            if not isinstance(e, RenderCancelledError):
+                logger.exception("渲染失败 %s（progress=%s, phase=%s）",
+                                 task_id, _render_queue[task_id].get("progress"),
+                                 _render_queue[task_id].get("phase"))
             if isinstance(e, RenderCancelledError):
                 # 审计 P0 修复：用户取消 → 独立终态 cancelled
                 _render_queue[task_id]["status"] = "cancelled"
@@ -661,11 +715,11 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                 })
             except Exception:
                 pass
-            # 60s 后清理
+            # 60s 后清理内存条目（Mongo 记录保留 30 分钟：刷新页面/重开 URL 还能拿到
+            # 「下载」入口——旧实现连记录一起删，渲染完成的成片在刷新后彻底失联）。
             async def _cleanup():
                 await asyncio.sleep(60)
                 _render_queue.pop(task_id, None)
-                _drop_render_task(task_id)  # P5-B4: 终态已同步，清理落库记录
                 for k, v in list(_idempotency_render.items()):
                     if v == task_id:
                         _idempotency_render.pop(k, None)
@@ -831,18 +885,25 @@ async def list_queue(request: Request) -> dict:
     for tid, info in _render_queue.items():
         tasks.append({"task_id": tid, "status": info["status"],
                       "progress": info.get("progress", 0), "owner_id": info.get("owner_id", ""),
-                      "priority": info.get("priority", 3)})
+                      "priority": info.get("priority", 3),
+                      # 成片路径/文件名：前端队列行的「下载」按钮靠它（刷新后仍要能下载）
+                      "output_path": info.get("output_path", ""),
+                      "filename": Path(str(info.get("output_path") or "")).name})
     memory_ids = {t["task_id"] for t in tasks}
-    # 重启恢复：Mongo 中 queued/rendering 且内存已无 → 标记 recovered（前端可提示中断重试）
+    # 重启恢复：Mongo 中 queued/rendering 且内存已无 → 标记 recovered（前端可提示中断重试）；
+    # 刚完成的终态任务同样带回来（output_path 一并返回，刷新后「下载」按钮才在）
     recovered = await asyncio.to_thread(_load_recovered_render_tasks)
     for d in recovered:
         if d.get("task_id") not in memory_ids:
+            _op = str(d.get("output_path") or "")
             tasks.append({
                 "task_id": d["task_id"],
                 "status": d.get("status", "queued"),
                 "progress": d.get("progress", 0),
                 "owner_id": d.get("owner_id", ""),
                 "recovered": True,
+                "output_path": _op,
+                "filename": Path(_op).name if _op else "",
             })
     tasks = filter_by_owner(request, tasks)
     tasks.sort(key=lambda t: (-t.get("priority", 3), t["task_id"]), reverse=True)
@@ -1012,7 +1073,7 @@ async def download_render(filename: str, request: Request):
     """
     from urllib.parse import quote
 
-    from clipwright.security import is_safe_download_name
+    from clipwright.security import SecurityViolation, is_safe_download_name, output_basename
     if not is_safe_download_name(filename):
         raise HTTPException(status_code=400, detail="非法文件名")
     _enforce_render_file_owner(request, filename)
@@ -1218,15 +1279,17 @@ async def start_render(
     # 入参白名单（timeline 媒体路径 + 音频/BGM）
     _validate_render_inputs(tl, body.audio_file_path or "", body.bgm_file_path or "")
     # 输出文件名校验 + 强制落入 renders/（safe 名称，杜绝 renders/../../ 穿越）
+    # 同 /queue：走 output_basename（允许 `renders/x.mp4`，拒绝 `..` 段）。
     raw_output = body.output_path or ""
-    if raw_output and not is_safe_download_name(raw_output):
-        raise HTTPException(status_code=400, detail="非法输出文件名")
+    try:
+        requested_name = output_basename(raw_output)
+    except SecurityViolation as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     s = body.settings
     try:
         params = _resolve_settings(s)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    requested_name = Path(raw_output).name if raw_output else ""
     _ext = str(params.get("container_ext") or "mp4")
     if requested_name:
         stem = Path(requested_name).stem
@@ -1347,3 +1410,4 @@ async def get_video_thumbnail(path: str, time_sec: float = 0.5, request: Request
         shutil.rmtree(thumb.parent, ignore_errors=True)
         logger.error("缩略图异常: %s", e)
         raise HTTPException(status_code=500, detail="缩略图生成失败")
+

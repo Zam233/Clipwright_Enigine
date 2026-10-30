@@ -22,3 +22,18 @@ sys.path.insert(0, str(Path(__file__).parent))
 @pytest.fixture
 def sample_persona_dir() -> Path:
     return Path("personas/zam_knowledge_critical")
+
+
+@pytest.fixture(autouse=True)
+def _disable_kernel_recovery(monkeypatch, request):
+    """单测默认关闭 Kernel 确定性补派。
+
+    它会真的调 `surface.execute("delegate_agent")`（生产语义）；在单测里那是
+    真实派发/联网，会把用例拖成超时。要测补派的用例用
+    `@pytest.mark.enable_kernel_recovery` 显式打开。
+    """
+    from clipwright.config import settings
+
+    enabled = bool(request.node.get_closest_marker("enable_kernel_recovery"))
+    monkeypatch.setattr(settings, "agent_kernel_recovery", enabled, raising=False)
+    yield

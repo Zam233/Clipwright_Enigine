@@ -391,3 +391,44 @@ class TestRepairMGJson:
         elem = repaired["elements"][0]
         assert elem["type"] == "ring"
         assert len(elem["keyframes"]) == 2
+
+class TestDurationKeyframeAlignment:
+    """E2E 2026-10-29：duration_sec 与关键帧时间必须对齐，否则合法设计被判坏 → 模板兜底。"""
+
+    def test_infers_duration_from_keyframes(self) -> None:
+        mg = {
+            "animation_id": "mg_x",
+            "elements": [{
+                "type": "text", "content": "四格加码",
+                "keyframes": [{"time": 0, "opacity": 0}, {"time": 6.0, "opacity": 1}],
+            }],
+        }
+        fixed, fixes = repair_mg_json(dict(mg))
+        assert fixed["duration_sec"] >= 6.0
+        assert any("Inferred duration_sec" in f for f in fixes)
+        ok, errors = validate_mg_json(fixed)
+        assert ok, errors
+
+    def test_clamps_out_of_range_keyframes(self) -> None:
+        mg = {
+            "animation_id": "mg_y", "duration_sec": 3.0,
+            "elements": [{
+                "type": "text", "content": "b",
+                "keyframes": [{"time": 0, "opacity": 0}, {"time": 5.0, "opacity": 1}],
+            }],
+        }
+        fixed, fixes = repair_mg_json(dict(mg))
+        assert [k["time"] for k in fixed["elements"][0]["keyframes"]] == [0, 3.0]
+        assert any("Clamped" in f for f in fixes)
+        ok, errors = validate_mg_json(fixed)
+        assert ok, errors
+
+    def test_zero_duration_uses_keyframe_span(self) -> None:
+        mg = {
+            "animation_id": "mg_z", "duration_sec": 0,
+            "elements": [{
+                "type": "line", "keyframes": [{"time": 0, "width": 0}, {"time": 4.5, "width": 400}],
+            }],
+        }
+        fixed, _ = repair_mg_json(dict(mg))
+        assert fixed["duration_sec"] >= 4.5

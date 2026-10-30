@@ -61,13 +61,18 @@ async def test_search_is_configured_when_configured(monkeypatch) -> None:
     assert tool.is_configured() is True
 
 
-async def test_fetch_configured_flag_follows_search_config(monkeypatch) -> None:
-    """WebFetchTool 的 is_configured 与搜索同开关；本体始终可用。"""
+async def test_fetch_is_configured_without_search_key(monkeypatch) -> None:
+    """抓取不依赖搜索 API key（2026-10-30 修正）。
+
+    旧契约是"fetch 跟随搜索开关"，后果：没配 key 时 `resolve("web_fetch")` 解析不到，
+    所有 Agent 都拿不到"抓一个指定 URL"的能力。抓取是本地 HTTP + 正文抽取，
+    真失败由 execute 如实回报。
+    """
     monkeypatch.setattr(settings, "enable_web_search", False)
     monkeypatch.setattr(settings, "web_search_api_key", "")
     tool = WebFetchTool()
     assert tool.is_available() is True
-    assert tool.is_configured() is False
+    assert tool.is_configured() is True
 
     monkeypatch.setattr(settings, "enable_web_search", True)
     monkeypatch.setattr(settings, "web_search_api_key", "k")
