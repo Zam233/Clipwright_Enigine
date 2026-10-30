@@ -136,7 +136,10 @@ def test_kernel_collects_degradations_and_emits_event(monkeypatch) -> None:
         "output": {"degradations": [{"kind": "llm_json_truncated", "detail": "x"}]},
     })
     assert agent_kernel._PENDING_DEGRADATIONS["task_deg_1"]  # noqa: SLF001
-    assert emitted and emitted[0][1] == "degradation"
+    # 2026-10-30 起首次降级还会先发一条 progress（PRD §14），所以按类型找而不是取首条
+    kinds = [e[1] for e in emitted]
+    assert "degradation" in kinds, kinds
+    assert "progress" in kinds, "首次降级必须同时播报进度"
     # 同一降级重复上报不重复计数
     agent_kernel._collect_degradations(task, "delegate_agent", {  # noqa: SLF001
         "output": {"degradations": [{"kind": "llm_json_truncated", "detail": "x"}]},

@@ -369,6 +369,22 @@ async def run_loop(task: Any, *, context_text: str = "",
             fail_streak.pop(fingerprint, None)
         else:
             fail_streak[fingerprint] = fail_streak.get(fingerprint, 0) + 1
+            # 进度播报（PRD §14）：同一工具/参数连续失败 2 次 → 让用户看见卡在哪
+            if fail_streak[fingerprint] == 2:
+                try:
+                    from clipwright.services import progress as _progress
+
+                    _progress.emit_progress(
+                        task_id, trigger="tool_failure_streak",
+                        action=f"{name} 连续失败 2 次",
+                        conclusion=str(result.get("error") or "")[:160],
+                        next_action="换实现或换参数，不再重复同一调用",
+                        failure_streak={"tool": name, "fingerprint": fingerprint[:80],
+                                        "count": 2,
+                                        "error_summary": str(result.get("error") or "")[:160]},
+                        once_key=f"fail_streak:{fingerprint[:60]}")
+                except Exception:  # noqa: BLE001 — 播报失败不影响循环
+                    pass
             if fail_streak[fingerprint] >= 3:
                 raise LoopAborted(
                     f"同一工具连续失败 3 次（{name}）：{str(result.get('error') or '')[:120]}"

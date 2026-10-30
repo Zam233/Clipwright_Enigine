@@ -361,6 +361,24 @@ async def run(task: Any, spec: StageSpec) -> dict[str, Any]:
     }
 
 
+def _stage_progress_counts(task_id: str) -> tuple[int, int]:
+    """(已完成阶段数, 计划阶段数)。拿不到就给 (n, 0) —— 让播报写"总数未定"。"""
+    try:
+        from clipwright.services.workspace import Workspace
+        from clipwright.services import stage_report
+
+        root = Workspace(str(task_id)).dirs().root
+        done = len({m["stage"] for m in stage_report.list_reports(root, limit=200)})
+        return done, len(PLAN_STAGES)
+    except Exception:  # noqa: BLE001 — 统计失败按"总数未定"处理
+        return 0, 0
+
+
+#: 计划里的六个阶段（进度分母；主 agent 临时加派不改变分母，播报里会写"计划已调整"）
+PLAN_STAGES: tuple[str, ...] = ("structure", "material", "edit", "animation",
+                                "audio", "quality")
+
+
 async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     """真跑一个阶段，返回结构化结果（并合并进黑板）。"""
     task_id = str(getattr(task, "id", "") or "")
@@ -377,6 +395,21 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
           "inputs_keys": sorted(explicit.keys()),
           "inputs_source": "explicit" if explicit else "blackboard",
           "blackboard_keys": sorted(board.keys())})
+
+    # 进度播报（PRD §14）：阶段开始。`completed/total` 取「已落报告数 / 六阶段」，
+    # 拿不到就写"总数未定"，绝不编百分比。
+    try:
+        from clipwright.services import progress as _progress
+
+        _done, _total = _stage_progress_counts(task_id)
+        _progress.emit_progress(
+            task_id, trigger="stage_start", stage=stage,
+            completed=_done, total=_total,
+            action=f"派发 {stage}",
+            next_action="等该阶段返回，再看是否需要返工",
+            once_key=f"stage_start:{stage}")
+    except Exception as exc:  # noqa: BLE001 — 播报失败不影响跑阶段
+        logger.warning("进度播报（阶段开始）失败 %s/%s: %s", task_id, stage, exc)
 
     # 人工「追问/注入」（PRD modern-agent-review M2）：往这个阶段的子会话里塞的要求，
     # 下一次派发时并入 brief 并逐条上报——不然"我让某个子 agent 改"这件事只有我知道。
@@ -588,6 +621,22 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     _degradations += [{"kind": "blackboard_merge_failed", "detail": e,
                        "scope": stage, "impact": "下游阶段可能拿不到该产物"}
                       for e in merge_errors[:5]]
+
+    # 进度播报（PRD §14）：阶段结束（写清状态/降级/下一步）
+    try:
+        from clipwright.services import progress as _progress
+
+        _done2, _total2 = _stage_progress_counts(task_id)
+        _progress.emit_progress(
+            task_id, trigger="stage_end", stage=stage,
+            completed=_done2, total=_total2,
+            action=f"{stage} 返回 {status}",
+            conclusion=("有降级：" + ",".join(sorted({str(d.get('kind')) for d in _degradations})[:4])
+                         if _degradations else "没有降级"),
+            next_action="主 agent 判断是否返工" if status != "ok" else "继续下一阶段",
+            once_key=f"stage_end:{stage}:{attempt_no}")
+    except Exception as exc:  # noqa: BLE001 — 播报失败不影响阶段结果
+        logger.warning("进度播报（阶段结束）失败 %s/%s: %s", task_id, stage, exc)
 
     result = StageResult(
         stage=stage,

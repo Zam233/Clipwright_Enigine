@@ -414,6 +414,21 @@ def _collect_degradations(task: Task, name: str, result: dict[str, Any]) -> None
         pending.extend(fresh)
     if not fresh:
         return
+    # 进度播报（PRD §14）：首次降级——每类 kind 只播一次，写清影响与下一步。
+    try:
+        from clipwright.services import progress as _progress
+
+        for _item in fresh[:5]:
+            _kind = str(_item.get("kind") or "")
+            _progress.emit_progress(
+                task.id, trigger="degradation_first",
+                stage=str(_item.get("scope") or ""),
+                action=f"降级：{_kind}",
+                conclusion=str(_item.get("detail") or "")[:160],
+                next_action=str(_item.get("impact") or "需要主 agent 处置")[:160],
+                once_key=f"deg:{_kind}:{_item.get('scope') or ''}")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("进度播报（首次降级）失败 %s: %s", task.id, exc)
     # 新降级 = 新事实 → 重置"要求决策"的续跑预算。
     # 否则前期一次 gate 续跑会把预算用光，后期完全不同的降级就没机会被响应
     # （E2E 2026-10-30 实测：animation 反复降级用掉预算，最后 audio 定稿后 4 项降级
@@ -723,6 +738,18 @@ class AgentKernel:
         # 真取消（PRD §18.10.4 / S5）：kernel 自己持有执行句柄，
         # 旧实现句柄留在 api 层，取消只置标记 → 执行中的 900s 阶段停不住。
         _TASK_HANDLES[task.id] = asyncio.current_task()  # type: ignore[assignment]
+        # 进度播报（PRD §14）：开工。分母用报告里出现过的阶段数 / 六阶段计划；
+        # 拿不到就写"总数未定"，不编百分比。
+        try:
+            from clipwright.services import progress as _progress
+
+            _progress.emit_progress(
+                task.id, trigger="start", action=f"开工：{task.request.topic[:60]}",
+                conclusion="开始执行", next_action="先摸清现状再动手",
+                budget=_progress.budget_ratio(task, "turns")[1],
+                once_key="start")
+        except Exception as exc:  # noqa: BLE001 — 播报失败不影响执行
+            logger.warning("进度播报（开工）失败 %s: %s", task.id, exc)
         try:
             return await self._run_loop(task, started=started)
         finally:
@@ -830,6 +857,13 @@ class AgentKernel:
                 # 成本未知要计数：金额闸对它是盲的，不能当成 0 悄悄过
                 task.usage.unknown_cost_calls += 1
             _record_digest(task, name, result)
+            # 进度播报（PRD §14）：任一预算维度首次过半 → 提醒收紧收尾
+            try:
+                from clipwright.services import progress as _progress
+
+                _progress.on_budget_half(task)
+            except Exception:  # noqa: BLE001 — 播报失败不影响工具循环
+                pass
             # 降级信号收集（E2E 2026-10-29）：delegate_agent 的 output 里带
             # degradations 时记成"待处置"，收尾守门会据此强推一轮决策。
             _collect_degradations(task, name, result)
@@ -1079,6 +1113,26 @@ class AgentKernel:
                 _DEGRADATION_CONTINUATIONS.pop(task.id, None)
                 _FINAL_RECEIPT.pop(task.id, None)
                 _KERNEL_RECOVERY.pop(task.id, None)
+            # 进度播报（PRD §14）：收尾前——先讲清已完成/未完成，再落终态。
+            try:
+                from clipwright.services import progress as _progress
+
+                _done, _total = 0, 0
+                try:
+                    from clipwright.services import stage_subagent as _ss
+
+                    _done, _total = _ss._stage_progress_counts(task.id)  # noqa: SLF001
+                except Exception:  # noqa: BLE001
+                    pass
+                _progress.emit_progress(
+                    task.id, trigger="wrapup", completed=_done, total=_total,
+                    action="进入收尾校验",
+                    conclusion=f"未完成项 {len(unresolved)} 条" if unresolved else "没有待处置项",
+                    next_action="落终态并写检查点",
+                    decision_required=bool(unresolved),
+                    once_key="wrapup")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("进度播报（收尾前）失败 %s: %s", task.id, exc)
             task.finish = TaskFinish(
                 conclusion=conclusion or f"工具循环结束：{len(outcome.get('tool_calls') or [])} 次调用",
                 completed=[],

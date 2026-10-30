@@ -293,6 +293,20 @@ def create(owner_type: str, owner_id: str, *, question: str,
     _QUESTIONS[q.question_id] = q
     _persist(owner_type, owner_id)
     _emit(owner_type, owner_id, q)
+    # 进度播报（PRD §14）：需要用户决策
+    try:
+        from clipwright.services import progress as _progress
+
+        _progress.emit_progress(
+            owner_id if owner_type == "task" else "",
+            trigger="decision_required",
+            action=f"提问：{q.question[:80]}",
+            conclusion="等你决定",
+            next_action="收到回答后继续执行",
+            decision_required=True, decision_options=opts,
+            once_key=f"ask:{q.question_id}")
+    except Exception:  # noqa: BLE001 — 播报失败不影响提问
+        pass
     return q.to_public()
 
 
