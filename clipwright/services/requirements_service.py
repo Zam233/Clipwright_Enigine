@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -80,6 +81,14 @@ def _emit_session_thinking(session_id: str, text: str, *, phase: str = "requirem
 
 #: 派发中的规划书任务（PRD plan-dispatch D1 幂等键 = `session_id:brief_hash`）
 _PLAN_DISPATCH: dict[str, dict[str, Any]] = {}
+
+#: 正式生成规划书是否走主 agent 派发（PRD plan-dispatch D4）。
+#:
+#: 关掉只为**应急回退**（`CLIPWRIGHT_PLAN_DISPATCH=0`）：那时才会用到
+#: `_generate_plan` 里的 `stage_subagent.run_inline("structure")`。
+#: 纪律：`run_inline("structure")` 只允许出现在"预览/局部修补/应急回退"路径，
+#: 正式生成必须由 kernel 派 structure 并落 `reports/plan.json`。
+PLAN_DISPATCH_ENABLED = os.environ.get("CLIPWRIGHT_PLAN_DISPATCH", "1") != "0"
 
 
 def _timeline(session_id: str):
@@ -1090,7 +1099,18 @@ class RequirementsService:
                     "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
                     "metadata": {},
                 })
-                # 异步生成规划书
+                # D4（PRD plan-dispatch）：正式生成规划书**只**走主 agent 派发。
+                # 旧客户端仍可能用「确认」这条消息触发，这里直接转成派发，
+                # 不再内联跑 run_inline("structure")（那条路没有思考/派发轨迹/run 可查）。
+                _disp = await self._dispatch_or_none(session_id, brief_data)
+                if _disp is not None:
+                    _close_kwargs = {"brief": brief_data}
+                    self._close_turn(live, messages, _turn_start, **_close_kwargs)
+                    session = (await asyncio.to_thread(self.get_session, session_id)) or {}
+                    return {**session, "status": "planning",
+                            "reply": "已确认创意简报，主 agent 正在生成制作规划书…",
+                            "plan_dispatch": _disp}
+                # 异步生成规划书（**应急回退**：CLIPWRIGHT_PLAN_DISPATCH=0 时才走到）
                 plan_result = await self._generate_plan(
                     brief_data, user_inputs, session_id, on_event=_on_plan_event,
                 )
@@ -2327,7 +2347,25 @@ class RequirementsService:
 
         B6/E2：规划书修订路径——当已有 raw_scenes（简报未变、本会话已生成过场景）时
         跳过 StructureAgent 重新生成，仅带反馈重新 _translate_plan，避免重复完整 LLM 生成。
+
+        **D4 纪律（PRD plan-dispatch）**：正式生成规划书必须走 `dispatch_plan()`（主 agent
+        派 structure + 落 `reports/plan.json`）。本函数只剩两种合法调用场景：
+        ① 应急回退（`CLIPWRIGHT_PLAN_DISPATCH=0`）；② 修订路径（复用已有 raw_scenes，
+        不跑 structure）。若在派发开启时还有人拿它当正式通道，这里会写一条**可见**的
+        `degradation` 条目——不允许"偷偷又开第二条正式通道"藏在日志里。
         """
+        if PLAN_DISPATCH_ENABLED and not (isinstance(existing_raw_scenes, list)
+                                          and existing_raw_scenes):
+            logger.warning("规划书走了内联通道（应为派发）：session=%s", session_id)
+            try:
+                _timeline(session_id).append(
+                    type="degradation",
+                    content="规划书经由内联通道生成（正常应走主 agent 派发）",
+                    source="requirements",
+                    meta={"kind": "plan_inline_fallback", "role": "system"},
+                )
+            except Exception:  # noqa: BLE001 — 记录失败不影响生成
+                pass
         try:
             from clipwright.schema.agent import AgentContext, StructureInput
             from clipwright.persona.loader import load_persona_by_id, resolve_inheritance
@@ -2980,6 +3018,23 @@ class RequirementsService:
     # 「轨迹」里也查不到这一步（PRD plan-dispatch §1）。
     # 新路径：建一个 `plan_only` 任务，由主 agent 派 structure → 内核收尾写
     # `reports/plan.json` → 需求侧读产物回填 production_plan。**唯一执行通道**。
+
+    async def _dispatch_or_none(self, session_id: str,
+                                brief: Any = None) -> dict[str, Any] | None:
+        """D4：正式生成规划书统一走派发；返回 None 表示"走应急内联回退"。"""
+        if not PLAN_DISPATCH_ENABLED:
+            return None
+        if not isinstance(brief, dict) or not brief:
+            return None                      # 没简报：交给原分支给出明确提示
+        try:
+            result = await self.dispatch_plan(session_id)
+        except Exception as exc:  # noqa: BLE001 — 派发失败要如实回退，不静默
+            logger.warning("派发规划书失败（回退内联）%s: %s", session_id, exc)
+            return None
+        if result.get("error"):
+            logger.warning("派发规划书被拒绝 %s: %s", session_id, result.get("error"))
+            return None
+        return result
 
     async def dispatch_plan(self, session_id: str, *, retry: bool = False) -> dict[str, Any]:
         """派发"生成制作规划书"任务（幂等；同 brief 在跑就复用）。"""
