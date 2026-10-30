@@ -480,6 +480,26 @@ class SessionLog:
             except Exception:  # noqa: BLE001
                 pass
 
+    def _frame_item(self, item: Item) -> dict[str, Any]:
+        """发布帧里的条目：**必须带已解析的 content**。
+
+        踩过的坑（2026-10-31 E2E 实测）：`report`/`plan` 这类大内容走外置，
+        `to_dict()` 里只有 `content_ref`、`content_inline=None`。如果帧里不带 content，
+        前端实时收到一条"没有内容的简报条目"→ 卡片根本不渲染，只有刷新后才出现。
+        所以这里把解析结果一并带上；超大内容（>64KB）才省略，让前端按需回 REST 取。
+        """
+        payload = item.to_dict()
+        if item.content_ref:
+            try:
+                content = self.resolve(item)
+            except Exception:  # noqa: BLE001 — 读不到就退回内联（可能为 None）
+                content = item.content_inline
+        else:
+            content = item.content_inline
+        if content is not None and _payload_size(content) <= 64 * 1024:
+            payload["content"] = content
+        return payload
+
     # ── 写入口（唯一）────────────────────────
 
     def append(
@@ -565,7 +585,7 @@ class SessionLog:
                 self._flush_locked(force=True)
             payload = item.to_dict()
         # 批量回填时按调用方要求延后广播（一次回填 = 一帧 snapshot 更划算）
-        self._publish({"op": "append", "item": payload})
+        self._publish({"op": "append", "item": self._frame_item(item)})
         return item
 
     # ── 存量会话回填（T1，PRD agent-timeline-adaptation §4）──────
@@ -715,7 +735,7 @@ class SessionLog:
             self._dirty = True
             self._flush_locked(force=True)
             payload = item.to_dict()
-        self._publish({"op": "finish", "seq": int(seq), "item": payload})
+        self._publish({"op": "finish", "seq": int(seq), "item": self._frame_item(item)})
         return item
 
     def patch(self, seq: int, **fields: Any) -> Optional[Item]:
@@ -751,7 +771,7 @@ class SessionLog:
             self._dirty = True
             self._flush_locked(force=True)
             updated = item.to_dict()
-        self._publish({"op": "patch", "seq": int(seq), "item": updated})
+        self._publish({"op": "patch", "seq": int(seq), "item": self._frame_item(item)})
         return item
 
     def set_project(self, project_id: str) -> None:

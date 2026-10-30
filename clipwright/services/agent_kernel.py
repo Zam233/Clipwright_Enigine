@@ -1137,8 +1137,14 @@ class AgentKernel:
             # `remediated`（重派同阶段成功）或 `accepted`（显式调用
             # acknowledge_degradation）。守门只推一次；推完仍无收据 → 按策略判失败，
             # 不再"模型口头说一句接受就 done"。
+            #
+            # plan_only 例外（PRD plan-dispatch D2）：规划书任务的完成标准是**产物**——
+            # `reports/plan.json` 已落盘就说明用户拿到了规划书。分镜走了模板兜底属于
+            # "内容打了折扣"，这件事已经作为 degradation 条目出现在时间线上（用户看得见），
+            # 不该再让"没有收据"把一份可用的规划书判死（E2E 2026-10-31 实测：
+            # 产物已生成却被 degradation_unresolved 回退成 brief_ready）。
             unresolved: list[dict[str, Any]] = []
-            if not shadow and not dry_run:
+            if not shadow and not dry_run and not (plan_only and gate_reason == "plan_only_completed"):
                 try:
                     from clipwright.services import degradation_ledger
 
