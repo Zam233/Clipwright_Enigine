@@ -371,6 +371,80 @@ async def get_plan(session_id: str, request: Request) -> dict:
     return plan
 
 
+# ── ask_user（PRD §15.5 / M5c）：需求会话自己的问答与事件，
+#    前端不得用任务 API（/api/task/{id}/...）承载需求会话 ──────────
+
+
+class AnswerBody(BaseModel):
+    """需求会话回答：只给 option_id 或 text（二选一或并存）。"""
+
+    question_id: str = ""
+    option_id: Optional[str] = None
+    text: Optional[str] = None
+
+
+@router.get("/{session_id}/questions")
+async def list_questions(session_id: str, request: Request, status: str = "all") -> dict:
+    """该会话的问题列表。`status=pending` 只要待答，`all` 给全部（含已答/已失效）。"""
+    _require_session_owner(request, session_id)
+    if status == "pending":
+        items = await asyncio.to_thread(_service.pending_questions, session_id)
+    else:
+        items = await asyncio.to_thread(_service.questions, session_id)
+    return {"session_id": session_id, "items": items, "status": status}
+
+
+@router.post("/{session_id}/answer")
+async def answer_question(session_id: str, body: AnswerBody, request: Request) -> dict:
+    """回答问题并让 agent 继续。
+
+    错误码与任务侧一致：404 会话/问题不存在（含跨会话答别人的问题）、
+    409 已答过/已取消、410 已失效（超时或服务重启）、400 参数不合法。
+    """
+    _require_session_owner(request, session_id)
+    from clipwright.services.ask_user import AskUserError
+
+    result = await _service.answer_question(
+        session_id, question_id=body.question_id,
+        option_id=body.option_id, text=body.text,
+    )
+    # 错误判定只看 `error`：成功响应里也可能有 `answer` 字段，
+    # 而 `already_answered` 的 detail 会带上上一次的 answer——旧条件会把它当成功。
+    if "error" in result:
+        code = result.get("error")
+        http_status = int(result.get("http_status") or 400)
+        detail = {k: v for k, v in result.items() if k not in ("error", "http_status")}
+        detail.setdefault("reason", code)
+        raise HTTPException(status_code=http_status, detail=detail)
+    return result
+
+
+@router.get("/{session_id}/events")
+async def session_events(session_id: str, request: Request,
+                         since_seq: int = 0, limit: int = 200) -> dict:
+    """会话事件（`question`/`answer` 等）：刷新/重连时按 seq 补齐。
+
+    需求会话的事件流与任务事件共用同一套事件模型，但键是
+    `requirements:<session_id>`——所以这里**不**访问任务事件 API。
+    """
+    _require_session_owner(request, session_id)
+    from clipwright.services import ask_user as _ask_user
+    from clipwright.services import task_events as _events
+
+    stream_id = _ask_user.session_stream_id(session_id)
+    limit = max(1, min(int(limit or 200), 1000))
+    events = _events.events_since(stream_id, max(0, int(since_seq or 0)),
+                                  include_spilled=True)
+    page = events[:limit]
+    latest = events[-1].seq if events else _events.last_seq(stream_id)
+    return {
+        "session_id": session_id,
+        "items": [e.model_dump() for e in page],
+        "has_more": len(events) > len(page),
+        "latest_seq": latest,
+    }
+
+
 def _opt_bool(value) -> bool | None:
     """user_inputs 里的开关可能是 bool / "true" / "1"，统一归一化（None 表示沿用工作区现值）。"""
     if value is None or isinstance(value, bool):

@@ -87,10 +87,13 @@ def test_plumbing_audit_passes_strict():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2]
+    # 子进程显式 `-X utf8`（审计报告含中文 source 说明），父进程必须按 UTF-8 解码：
+    # 旧写法用 `text=True` 走 locale（Windows 中文机 = cp936），一遇中文就
+    # UnicodeDecodeError → stdout 为 None → json.loads(None) 报 TypeError。
     r = subprocess.run([sys.executable, "-X", "utf8", "scripts/audit_stage_plumbing.py"],
-                       capture_output=True, text=True, cwd=str(root))
-    assert r.returncode == 0, r.stderr[-500:]
-    rep = json.loads(r.stdout)
+                       capture_output=True, cwd=str(root))
+    assert r.returncode == 0, r.stderr.decode("utf-8", "replace")[-500:]
+    rep = json.loads(r.stdout.decode("utf-8"))
     assert rep["dead_entries"] == []
     assert rep["extra_params_read_without_writer"] == {}, (
         f"仍有未接线读取键: {rep['extra_params_read_without_writer']}")

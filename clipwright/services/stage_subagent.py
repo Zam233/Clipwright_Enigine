@@ -514,6 +514,12 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     timeout_eff = effective_stage_timeout(spec.timeout_sec)
     try:
         agent = agent_for(stage)
+        # 让 `subagent_tool` 事件带上 run_id（PRD §13.3）：与 `agent_run` 用同一个幂等键，
+        # 前端才能把"这次工具调用"归到具体哪一次派发上（全部可见时靠它分组）。
+        try:
+            agent._current_run_id = str(getattr(spec, "idem_key", "") or "")  # noqa: SLF001
+        except Exception:  # noqa: BLE001 — 设置失败只影响事件里的一个字段
+            pass
         # 子 agent 运行上下文（现代 agent 化）：阶段内部的每次 call_tool 都会归到本任务
         # 并发 `subagent_tool` 事件——长阶段（material 15 分钟 / animation 逐段渲染）
         # 在事件流里看得见进度，而不是等它跑完只给一句 summary。

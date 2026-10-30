@@ -472,3 +472,39 @@ Provider adapter 负责鉴权、请求格式、原始响应解析和 provider-sp
   `subagent_tool` 事件）；`web_fetch` 恒可用（不依赖搜索 key）。
 - **接线测试**：7 个 stage agent 在联网开启时全部能解析 `web_search`/`web_fetch`；
   未配置时 `web_search` 按设计不出现在阶段 Agent 的工具面里。
+
+## 执行记录（2026-10-30 · 第 9 轮 · M4 前端可见性 + M5c 需求会话问答 + 导出重试快照）
+
+- **思考流与工具全部可见（§13 / M4 前端）**
+  - `AgentPanel` 现在真的消费 SSE `reasoning` 帧（旧实现声明了 `liveReasoning` 却从不赋值，
+    折叠条永远是空的）：逐块累积、每轮提问清空、正文已在流式时仍然可见（上限 20 万字）。
+  - `ThinkingDisclosure` 改增量累积（旧实现每帧把全部片段重新 join 一遍，长任务 O(n²) 拖住主线程），
+    首帧指纹变化或 seq 后退时整体重建（不会把上一轮思考挂到新任务上），到 40 万字上限如实说明停止追加。
+  - `ToolCallRows` 三路合并（`tool_call`/`tool_result` 按 causation 配对 + `subagent_tool` + Skill），
+    并**删除 `slice(-8)`**：主 agent / 子 agent / 技能各有来源筛选与计数；`source=kernel`（运行时补派）、
+    `deduped`（复用上次结果）、`remaining_turns` 逐行标注；窗口化 60 行 + 「加载更早的」逐段翻到底，
+    既不截断也不把上千行一次塞进 DOM。`ModelTurnRows` 同样取消 `slice(-6)`。
+  - 后端 `subagent_tool` 补 `kind` / `run_id` / `seq_in_run`，前端 schema 同步（`ToolDetail.seq_in_run`）。
+- **需求会话 ask_user（§15.5 / M5c）**——需求对话没有工具轮，因此复用同一个 `ask_user` 服务与同一套
+  `question`/`answer` 事件语义，只把调用点放在 service：
+  - LLM 结构化输出带 `ask_user` 指令 → `RequirementsService._ask_from_llm` 建问题
+    （owner=`requirements`，事件流键 `requirements:<session_id>`，与任务事件按前缀隔离）→ 会话进
+    `waiting_user`，本轮不再推进（不猜、不替用户选）；
+  - `POST /api/requirements/{sid}/answer` 回答问题 → 答案还原成一句人话喂回对话 → agent 继续；
+    `GET /{sid}/questions?status=pending|all`、`GET /{sid}/events?since_seq=` 供刷新/重连重建；
+  - `waiting_user` 下用户直接打字 = 自由文本回答（自动应答后回到 gathering），不留死胡同；
+  - 错误码对齐任务侧：404（跨会话答别人的问题）/ 409（已答、已取消）/ 410（超时或服务重启）/ 400；
+  - 前端 `AgentPanel` 挂 `TaskQuestionCard`（`askerLabel="需求 agent"`），SSE `question` 帧到达即出卡，
+    回答后回显 agent 续跑结果并刷新待答列表。需求会话**不访问任务事件 API**。
+- **导出重试拆分（§20 M3 尾巴）**：提交时冻结时间线快照 + FNV-1a 指纹；失败卡片只给「重试本次提交」
+  （跑快照），时间线改过才额外给「用当前时间线重新提交」，并把两侧指纹显示出来。旧实现永远跑
+  "当前时间线"却叫重试，改完时间线再点重试会让人以为在重试、其实跑的是新内容。
+- **回归**：后端 `pytest` **4924 passed / 4 skipped / 1 xfailed**（新增
+  `test_requirements_ask_user.py` 9 例、`test_requirements_ask_user_api.py` 7 例）；
+  前端 `tsc` 干净、`vitest` **136 文件 / 1171 例**（新增 `CopilotToolTransparency` 8 例、
+  `exportSnapshot` 7 例、`AgentPanel` +5 例）；`stage_tool_failures` 失败率门禁仍绿。
+- **顺手修的环境脆弱点**：`test_dead_extra_keys.py::test_plumbing_audit_passes_strict` 用 `text=True`
+  按 locale（Windows 中文机 cp936）解码子进程的 UTF-8 输出，报告里一有中文就 `UnicodeDecodeError`
+  → `stdout=None` → `json.loads(None)`；改为父进程显式按 UTF-8 解码。
+- **未完成**：M6（动画提示词 v2：九段式模板、S1–S12 风格模块、lint、逐类改写）尚未开始；
+  `TaskToolTrace` 已有后端 `limit/offset` 分页，本轮未再加虚拟滚动。

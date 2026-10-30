@@ -39,6 +39,9 @@ from clipwright.schema.timeline import Timeline, Track
 
 MAX_HISTORY_ROUNDS = 20          # 超过 20 轮对话后压缩
 MAX_MESSAGE_LENGTH = 50000       # 单条消息最大字符
+
+#: ask_user 的 owner 类型（PRD §15.5）：需求会话问题归属会话，不归属任务
+REQUIREMENTS_OWNER = "requirements"
 LLM_RETRY_MAX = 3                # LLM 最大重试次数
 LLM_RETRY_BASE_DELAY = 2.0      # 重试基础延迟（秒）
 BRIEF_GENERATE_TIMEOUT = 900     # 简报生成单次调用超时（秒）
@@ -584,6 +587,120 @@ class RequirementsService:
 
     # ── 对话 ──────────────────────────────────
 
+    # ── ask_user（PRD §15.5 / M5c）──────────────────────────
+    #
+    # 需求对话没有工具轮（一次 LLM structured 生成就出方案），因此这里复用
+    # 同一个 `ask_user` 服务与同一套 `question`/`answer` 事件语义，只把调用点
+    # 放在 service：LLM 在结构化输出里给出 `ask_user` 指令 → 建问题（归属
+    # `requirements:<session_id>` 的事件流）→ 会话进 `waiting_user`；
+    # 用户回答走需求会话自己的 answer 路由 → agent 带着答案继续 gather。
+
+    def questions(self, session_id: str) -> list[dict[str, Any]]:
+        """该会话的全部问题（含已回答/已失效，按创建时间升序）。"""
+        from clipwright.services import ask_user
+
+        if not session_id:
+            return []
+        return ask_user.list_for_owner(REQUIREMENTS_OWNER, session_id)
+
+    def pending_questions(self, session_id: str) -> list[dict[str, Any]]:
+        from clipwright.services import ask_user
+
+        if not session_id:
+            return []
+        return ask_user.pending(REQUIREMENTS_OWNER, session_id)
+
+    def ask_user_question(
+        self, session_id: str, *, question: str,
+        options: Any = (), allow_free_text: bool = False,
+        default_option_id: str | None = None, timeout_sec: int | None = None,
+        context_refs: Any = None,
+    ) -> dict[str, Any]:
+        """建一个需求会话问题（不阻塞）。参数非法时抛 `ask_user.AskUserError`。"""
+        from clipwright.services import ask_user
+
+        return ask_user.create(
+            REQUIREMENTS_OWNER, session_id,
+            question=question, options=options or (),
+            allow_free_text=bool(allow_free_text),
+            default_option_id=default_option_id,
+            timeout_sec=int(timeout_sec or ask_user.DEFAULT_TIMEOUT_SEC),
+            context_refs=context_refs or [],
+        )
+
+    async def answer_question(
+        self, session_id: str, *, question_id: str,
+        option_id: str | None = None, text: str | None = None,
+    ) -> dict[str, Any]:
+        """回答问题并让 agent 继续。
+
+        返回 `{"answer": {...}, "reply": ..., "status": ...}`；错误以
+        `{"error": code, "http_status": n}` 形式如实返回（不假装已收到答案）。
+        """
+        from clipwright.services import ask_user
+
+        sess = await asyncio.to_thread(self.get_session, session_id)
+        if not sess:
+            return {"error": "Session not found", "http_status": 404}
+        rec = ask_user.get(question_id)
+        if not rec:
+            return {"error": "question_not_found", "http_status": 410}
+        # 归属校验：不能拿别的会话/任务的问题 id 来答
+        if rec.get("owner_type") != REQUIREMENTS_OWNER or rec.get("owner_id") != session_id:
+            return {"error": "question_not_found", "http_status": 404}
+        try:
+            ans = ask_user.answer(question_id, option_id=option_id, text=text)
+        except ask_user.AskUserError as exc:
+            return {"error": exc.code, "http_status": exc.http_status, **exc.detail}
+
+        # 用答案作为用户消息让对话继续（agent 拿到拍板结果后接着干）
+        answer_text = self._answer_as_message(rec, ans)
+        result = await self.chat(session_id, answer_text)
+        return {"answer": ans, **result}
+
+    @staticmethod
+    def _answer_as_message(rec: dict[str, Any], ans: dict[str, Any]) -> str:
+        """把答案还原成一句人话喂回对话（LLM 只认 user 消息）。"""
+        options = {str(o.get("id")): str(o.get("label") or o.get("id"))
+                   for o in (rec.get("options") or []) if isinstance(o, dict)}
+        opt = str(ans.get("option_id") or "")
+        label = options.get(opt)
+        if label:
+            return f"关于「{rec.get('question', '')}」，我选：{label}"
+        return f"关于「{rec.get('question', '')}」，我的回答：{ans.get('text') or opt}"
+
+    async def _ask_from_llm(self, result: dict[str, Any], session_id: str) -> dict[str, Any] | None:
+        """LLM 结构化输出里的 `ask_user` 指令 → 建问题。
+
+        结构（宽容解析，字段缺失就给安全默认）：
+        `{"ask_user": {"question": str, "message": str?, "options": [{"id","label","detail"}],
+                       "allow_free_text": bool, "default_option_id": str?, "timeout_sec": int?}}`
+
+        参数非法（无问题文本 / 选项不合法 / 同类问题已挂满）→ **不建问题**，
+        返回 None 让本轮按普通回复继续，同时在日志里留证据（不静默吞掉退出）。
+        """
+        spec = result.get("ask_user") if isinstance(result, dict) else None
+        if not isinstance(spec, dict):
+            return None
+        question = str(spec.get("question") or "").strip()
+        if not question:
+            logger.warning("需求会话 ask_user 指令缺少 question，忽略")
+            return None
+        try:
+            q = self.ask_user_question(
+                session_id, question=question,
+                options=spec.get("options") or (),
+                allow_free_text=bool(spec.get("allow_free_text")),
+                default_option_id=spec.get("default_option_id"),
+                timeout_sec=spec.get("timeout_sec"),
+                context_refs=spec.get("context_refs"),
+            )
+        except Exception as exc:  # noqa: BLE001 — 提问失败不能让整轮对话炸掉
+            logger.warning("需求会话 ask_user 建问题失败: %s", exc)
+            return None
+        message = str(spec.get("message") or "").strip()
+        return {**q, "message": message or question}
+
     async def chat(
         self,
         session_id: str,
@@ -618,10 +735,41 @@ class RequirementsService:
         # 压缩超长历史
         messages = compress_history(messages)
 
+        # PRD §15.5：会话在等回答时用户直接打字（没用问题卡）→ 当作自由文本回答，
+        # 然后把状态放回 gathering 让 agent 继续。不能让 waiting_user 变成死胡同。
+        if status == "waiting_user":
+            _pending = self.pending_questions(session_id)
+            if _pending:
+                try:
+                    from clipwright.services import ask_user as _ask_user
+                    _ask_user.answer(_pending[0]["question_id"],
+                                     text=user_message, source="user_text")
+                except Exception as exc:  # noqa: BLE001 — 答不上就继续按普通消息处理
+                    logger.warning("需求会话 pending 问题自动应答失败: %s", exc)
+            status = "gathering"
+
         # 状态路由
         if status in ("gathering", "init"):
             result = await self._handle_gathering(messages, brief_data, status, user_inputs, session_id,
                                               on_delta=on_delta, on_reasoning=on_reasoning)
+            # PRD §15.5：LLM 需要用户拍板时给 `ask_user` 指令 → 建问题、等回答，
+            # 本轮不再往下推进（不猜、不替用户选）。
+            _asked = await self._ask_from_llm(result, session_id)
+            if _asked is not None:
+                messages.append({
+                    "role": "assistant",
+                    "content": _asked.get("message") or _asked.get("question", ""),
+                    "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                    "metadata": {"ask_user": {"question_id": _asked.get("question_id")}},
+                })
+                await asyncio.to_thread(
+                    self._persist, session_id, "waiting_user", messages, brief_data,
+                    plan_data, user_inputs,
+                )
+                session = (await asyncio.to_thread(self.get_session, session_id)) or {}
+                return {**session, "status": "waiting_user",
+                        "reply": _asked.get("message") or _asked.get("question", ""),
+                        "question": _asked}
             _new_brief = result.get("brief_draft")
             # P2-34: LLM 解析失败会返回 brief_draft={}——空结果不覆盖已有方案
             if isinstance(_new_brief, dict) and _new_brief:
@@ -2288,6 +2436,11 @@ class RequirementsService:
                 try:
                     result = await self.chat(session_id, user_message, on_delta=_on_delta,
                                              on_reasoning=_on_reasoning)
+                    # PRD §15.5：agent 提问 → 单独的 question 帧（前端据此立刻出问题卡），
+                    # 再补 result 帧（含同一 question，刷新后从事件流也能重建）
+                    _q = result.get("question") if isinstance(result, dict) else None
+                    if isinstance(_q, dict) and _q.get("question_id"):
+                        queue.put_nowait({"type": "question", "data": _q})
                     queue.put_nowait({"type": "result", "data": result})
                 except asyncio.CancelledError:
                     raise

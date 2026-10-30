@@ -227,9 +227,12 @@ class BaseAgent(ABC, Generic[I, O]):
             status = str(getattr(result, "status", "") or "")
             status = status.rsplit(".", 1)[-1].lower()
             duration_ms = int((time.monotonic() - started) * 1000)
+            # `kind`：Skill 与普通工具**必须分开**（PRD §13.2）。
+            # 旧实现只靠 `skill:` 前缀猜，前端要么显示成普通工具、要么显示成怪名字。
             entry = {
                 "tool": tool_name,
                 "capability": capability,
+                "kind": "skill" if str(tool_name).startswith("skill:") else "tool",
                 "status": status,
                 "duration_ms": duration_ms,
                 "args_brief": self._brief_args(args or {}),
@@ -240,8 +243,11 @@ class BaseAgent(ABC, Generic[I, O]):
             if not isinstance(calls, list):
                 calls = []
                 self.last_tool_calls = calls
+            # 轨迹内的序号：前端"全部可见"时用它稳定排序（不靠时间戳）
+            entry["seq_in_run"] = len(calls) + 1
             calls.append(entry)
-            # 有界：长阶段的轨迹不需要无限增长（主 agent 也读不完）
+            # 有界：实时事件不需要无限增长；**全量**轨迹另有落盘文件
+            # （stage_subagent._dump_tool_calls → reports/tool_calls/<stage>-<n>.json）
             if len(calls) > 200:
                 del calls[: len(calls) - 200]
 
@@ -258,8 +264,10 @@ class BaseAgent(ABC, Generic[I, O]):
                  f"（{duration_ms}ms）",
                  {"agent": self.agent_name, "stage": agent_context.current_stage(),
                   "tool": tool_name, "capability": capability, "status": status,
-                  "duration_ms": duration_ms, "args_brief": entry["args_brief"],
-                  "error": entry["error"]},
+                  "kind": entry["kind"], "duration_ms": duration_ms,
+                  "args_brief": entry["args_brief"], "error": entry["error"],
+                  "run_id": str(getattr(self, "_current_run_id", "") or ""),
+                  "seq_in_run": entry["seq_in_run"]},
                  span="subagent")
         except Exception:  # noqa: BLE001 — 记账失败绝不能影响业务调用
             pass

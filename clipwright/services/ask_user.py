@@ -221,13 +221,17 @@ def _load(owner_type: str, owner_id: str) -> None:
 # ── 事件 ──────────────────────────────────────────────────────
 
 
+#: 需求会话的事件流键：与任务 id 分开，避免会话 id 和任务 id 撞车时互相污染
+def session_stream_id(session_id: str) -> str:
+    return f"requirements:{session_id}"
+
+
 def _emit(owner_type: str, owner_id: str, q: _Question) -> None:
-    if owner_type != "task":
-        return  # 需求会话有自己的流，接入见 §15.5（M5c）
     try:
         from clipwright.services.task_events import emit
 
-        emit(owner_id, "question", f"待回答：{q.question[:80]}",
+        stream_id = owner_id if owner_type == "task" else session_stream_id(owner_id)
+        emit(stream_id, "question", f"待回答：{q.question[:80]}",
              {"question_id": q.question_id, "owner_type": q.owner_type,
               "owner_id": q.owner_id, "question": q.question,
               "options": q.options, "allow_free_text": q.allow_free_text,
@@ -240,12 +244,11 @@ def _emit(owner_type: str, owner_id: str, q: _Question) -> None:
 
 
 def _emit_answer(owner_type: str, owner_id: str, q: _Question, ans: dict[str, Any]) -> None:
-    if owner_type != "task":
-        return
     try:
         from clipwright.services.task_events import emit
 
-        emit(owner_id, "answer",
+        stream_id = owner_id if owner_type == "task" else session_stream_id(owner_id)
+        emit(stream_id, "answer",
              f"已回答：{str(ans.get('option_id') or ans.get('text') or '')[:60]}",
              {"question_id": q.question_id, "option_id": ans.get("option_id"),
               "text": ans.get("text"), "source": ans.get("source"),
