@@ -204,7 +204,9 @@ def list_reports(workspace_root: Path | str, limit: int = 10) -> list[dict[str, 
         return []
     items: list[dict[str, Any]] = []
     for path in sorted(reports.glob("*.md"), reverse=True):
-        if path.name == "INDEX.md":
+        # INDEX.md 是目录本身；progress.md 是 Kernel 进度时间线（PRD §14），
+        # 两者都不是阶段报告——混进来会让"报告数"虚高、也会被当成可 read_report 的输入。
+        if path.name in ("INDEX.md", "progress.md"):
             continue
         try:
             text = path.read_text(encoding="utf-8")
@@ -249,6 +251,10 @@ def update_index(reports_dir: Path) -> str:
 
     并发安全：写完回读一次文件数，若与索引行数不一致则重建一次——
     避免"两个 writer 各自快照，后写的把前一条挤掉"。
+
+    另外重写时**带上「进度时间线」小节**（PRD §14）：内容来自 `reports/progress.md`
+    （Kernel 确定性播报写的），不是报告索引的一部分，但用户只打开 INDEX.md 时也要能
+    看到阶段走到哪了。两份文件各自维护，这里只做合并展示，谁也不覆盖谁。
     """
     path = reports_dir / "INDEX.md"
     for _attempt in range(3):
@@ -263,11 +269,26 @@ def update_index(reports_dir: Path) -> str:
                 f"| {m['seq']} | {m['stage']} | {m['status']} | {m['attempt']} | "
                 f"{m['headline']} | {cost} | `{Path(m['path']).name}` |"
             )
+
+        try:
+            from clipwright.services.progress import timeline_lines
+
+            timeline = timeline_lines(reports_dir, limit=40)
+        except Exception:  # noqa: BLE001 — 进度模块不可用不影响索引本身
+            timeline = []
+        if timeline:
+            lines += ["", "## 进度时间线", "",
+                      "> 由 Kernel 确定性播报（PRD §14）；最新在下，完整记录见 `progress.md` / `progress.jsonl`。",
+                      ""]
+            lines += timeline
+
         text = "\n".join(lines) + "\n"
         tmp = path.with_suffix(f".{hashlib.sha256(text.encode()).hexdigest()[:6]}.tmp")
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, path)
-        on_disk = len([p for p in reports_dir.glob("*.md") if p.name != "INDEX.md"])
+        # progress.md 不是报告，别把它算进"磁盘上还有几份报告"
+        on_disk = len([p for p in reports_dir.glob("*.md")
+                       if p.name not in ("INDEX.md", "progress.md")])
         if on_disk <= len(items):
             break
     return str(path)

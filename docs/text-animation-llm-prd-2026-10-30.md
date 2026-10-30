@@ -206,3 +206,24 @@ AnimationAgent._handle_text_animation
   （4×1.0×0.8=3.2s），仍能抓"串行化 / gather 悬挂"。
 - **回归**：后端 `pytest` **4966 passed / 4 skipped / 1 xfailed**（+41：lint 29、指标 12）；
   提示词 lint strict 0 error；前端 `tsc` 干净、`vitest` 136 文件 / 1171 例。
+
+## 执行记录（2026-10-30 · 第 11 轮 · 收口：progress 落 INDEX + 全链路 E2E）
+
+- **`progress` 补上「进度时间线」落 INDEX.md（§14）**：旧实现只在 `progress.md` 里写时间线，
+  而 `stage_report.update_index()` 是**整文件重写**——用户刚在 INDEX.md 看到的进度会被下一次
+  报告写入抹掉（"看得见但会消失"的假功能）。现在：
+  - `progress.timeline_lines()` 从 `progress.md` 读回最近 N 条；
+  - `update_index()` 重写时合并出 `## 进度时间线` 小节（两份文件各自维护，谁也不覆盖谁）；
+  - `list_reports()` 不再把 `progress.md` 当成阶段报告（否则报告数虚高、还能被当输入读）。
+  新增 `tests/clipwright/test_progress_index.py`（4 例）钉住"反复重写也不丢时间线"。
+- **完整前端 E2E（通过）**：`npx playwright test e2e/final-flow.spec.ts`，19.8 分钟一次跑完：
+  首页新建制作 → 创意简报 → 「确认简报」→ 规划书 → 「确认实施」→ `/api/requirements/proceed`
+  返回 `task_28fd9249b4` → 事件流 31 条（`subagent_tool` 2 条）→ `/tool-calls` 61 条轨迹
+  → 任务 `done`（模型自己核了 audio 是否真落盘）→ 时间线回写项目（5 轨 / 43 片段 / 60s）
+  → 导出「加入渲染队列」→ 渲染完成 → 「下载成片」4.2 MB →
+  `ffprobe`：h264 1920x1080 30fps **58.0s**，页面零未捕获异常。
+  （第一次跑在 18:34 后端 socket 不再 accept 而挂死：进程活着、日志停在 `vision_llm`，
+  重启后端后同一脚本一次通过；挂死现象与代码改动无对应关系，已在日志里留痕。）
+- **回归**：后端 `pytest` 全绿（含新增 progress/INDEX 4 例、prompt lint 29 例、指标 12 例）；
+  前端 `tsc` 干净、`vitest` 136 文件 / 1171 例；`stage_tool_failures` 门禁绿；
+  事件契约 29 种前后端同序（跨仓测试 `tests/test_event_contract.py` ↔ `eventSchema.test.ts`）。

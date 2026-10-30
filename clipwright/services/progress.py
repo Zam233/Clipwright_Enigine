@@ -77,6 +77,23 @@ def _append_files(task_id: str, record: dict[str, Any]) -> None:
         logger.warning("progress.md 写入失败 %s: %s", task_id, exc)
 
 
+def timeline_lines(reports_dir: Path | str, *, limit: int = 40) -> list[str]:
+    """把 `progress.md` 的时间线条目读回来（给 `INDEX.md` 合并展示用）。
+
+    只搬 markdown 的 `- ` 条目，不含标题与说明；按写入顺序保留最后 `limit` 条。
+    """
+    path = Path(reports_dir) / MD_NAME
+    if not path.is_file():
+        return []
+    try:
+        lines = [ln for ln in path.read_text(encoding="utf-8").splitlines()
+                 if ln.startswith("- `")]
+    except Exception as exc:  # noqa: BLE001 — 读不到就当没有时间线
+        logger.warning("progress.md 读取失败 %s: %s", reports_dir, exc)
+        return []
+    return lines[-max(1, int(limit)):]
+
+
 def _progress_text(completed: int, total: int) -> str:
     if total > 0:
         return f"{completed}/{total}"
@@ -176,4 +193,5 @@ def reset() -> None:
     _EMITTED.clear()
 
 
-__all__ = ["JSONL_NAME", "MD_NAME", "budget_ratio", "emit_progress", "on_budget_half", "reset"]
+__all__ = ["JSONL_NAME", "MD_NAME", "budget_ratio", "emit_progress", "on_budget_half",
+           "reset", "timeline_lines"]
