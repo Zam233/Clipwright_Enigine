@@ -48,7 +48,8 @@ REQUIREMENTS_OWNER = "requirements"
 _STREAM_FALLBACK: dict[str, str] = {}
 
 
-def _emit_session_thinking(session_id: str, text: str, *, phase: str = "requirements") -> None:
+def _emit_session_thinking(session_id: str, text: str, *, phase: str = "requirements",
+                           turn_ts: int | None = None) -> None:
     """把本轮思考落进需求会话事件流（按轮一条，刷新/重连可回放）。
 
     复用既有 `thinking` 事件类型（契约仍是 29 种），`detail.phase="requirements"`
@@ -64,7 +65,10 @@ def _emit_session_thinking(session_id: str, text: str, *, phase: str = "requirem
         emit(_ask_user.session_stream_id(session_id), "thinking",
              f"思考 {len(body)} 字",
              {"phase": phase, "delta": body[:200_000], "done": True,
-              "chars": len(body)},
+              "chars": len(body),
+              # 本轮**开始**时刻（ms）。前端用它排序：晚到的事件也不能改变位置
+              # ——否则思考会被排到整段对话末尾（用户 2026-10-31 实测）。
+              "turn_ts": int(turn_ts if turn_ts is not None else time.time() * 1000)},
              span="requirements")
     except Exception as exc:  # noqa: BLE001 — 落盘失败不阻断对话
         logger.warning("需求会话思考落盘失败 %s: %s", session_id, exc)
@@ -2544,6 +2548,7 @@ class RequirementsService:
             queue: asyncio.Queue = asyncio.Queue()
             _DONE = object()
             thought: list[str] = []
+            _turn_ts = int(time.time() * 1000)
 
             def _on_delta(text: str) -> None:
                 queue.put_nowait({"type": "delta", "data": text})
@@ -2566,7 +2571,7 @@ class RequirementsService:
                     # 思考落盘（unified-stream PRD §5.1.4）：按轮**一条**事件，
                     # 刷新/重连可从 `GET /{sid}/events?since_seq=` 回放
                     if thought:
-                        _emit_session_thinking(session_id, "".join(thought))
+                        _emit_session_thinking(session_id, "".join(thought), turn_ts=_turn_ts)
                     else:
                         # 支持但一块都没来 → 如实说"本轮没有思考内容"，不当成可用
                         queue.put_nowait({"type": "reasoning_status", "data": {
