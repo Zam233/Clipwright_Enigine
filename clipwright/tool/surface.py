@@ -39,9 +39,10 @@ GET_AGENT_RUN = "get_agent_run"
 LIST_AGENT_RUNS = "list_agent_runs"
 CANCEL_AGENT_RUN = "cancel_agent_run"
 ACKNOWLEDGE_DEGRADATION = "acknowledge_degradation"
+ASK_USER = "ask_user"
 AGENT_TOOLS: tuple[str, ...] = (DELEGATE_AGENT, RESEARCH_AGENT,
                                 GET_AGENT_RUN, LIST_AGENT_RUNS, CANCEL_AGENT_RUN,
-                                ACKNOWLEDGE_DEGRADATION)
+                                ACKNOWLEDGE_DEGRADATION, ASK_USER)
 
 _AGENT_TOOL_SPECS: dict[str, dict[str, Any]] = {
     DELEGATE_AGENT: {
@@ -78,6 +79,45 @@ _AGENT_TOOL_SPECS: dict[str, dict[str, Any]] = {
                 },
             },
             "required": ["stage"],
+        },
+    },
+    ASK_USER: {
+        "description": (
+            "向用户提一个具体问题并**等待回答**（任务会进入 waiting_user）。"
+            "拿不准的产品/内容取舍、需求含糊、降级处置选择时用它，而不是自己替用户决定。"
+            "必须给 ≥2 个选项或 allow_free_text=true；超时会用 default_option_id（若给）。"
+            "高风险操作授权不要用它——那是 approval 流程。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "minLength": 1, "maxLength": 2000,
+                             "description": "面向用户的单个明确问题"},
+                "options": {
+                    "type": "array", "maxItems": 8,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string", "minLength": 1, "maxLength": 80},
+                            "label": {"type": "string", "minLength": 1, "maxLength": 120},
+                            "detail": {"type": "string", "maxLength": 500},
+                        },
+                        "required": ["id", "label"],
+                        "additionalProperties": False,
+                    },
+                    "description": "候选方案；每项写清代价或影响",
+                },
+                "allow_free_text": {"type": "boolean", "default": False},
+                "default_option_id": {"type": ["string", "null"],
+                                      "description": "超时默认项，必须来自 options"},
+                "timeout_sec": {"type": "integer", "minimum": 30, "maximum": 86400,
+                                "default": 1800},
+                "context_refs": {"type": "array", "maxItems": 20,
+                                 "items": {"type": "string", "maxLength": 200},
+                                 "description": "相关产物/事件引用，便于用户判断"},
+            },
+            "required": ["question", "allow_free_text", "timeout_sec"],
+            "additionalProperties": False,
         },
     },
     ACKNOWLEDGE_DEGRADATION: {
@@ -150,6 +190,8 @@ _AGENT_TOOL_TIER: dict[str, str] = {
     CANCEL_AGENT_RUN: "write_local",
     # 写一条降级接受收据：只写任务状态，不调外部、不花钱
     ACKNOWLEDGE_DEGRADATION: "write_local",
+    # 提问并阻塞等待回答：只写本地问答状态 + 挂起当前轮，不调外部、不花钱
+    ASK_USER: "write_local",
 }
 
 #: 确定性领域工具（PRD §4.4 必须保留）：闭包重算与阶段计划校验。
@@ -633,6 +675,32 @@ async def _execute_agent(name: str, payload: dict[str, Any], *,
         except Exception as exc:  # noqa: BLE001 — 反查失败按缺少上下文处理
             logger.warning("agent 工具反查任务失败 %s: %s", pipeline_id, exc)
     entry = next(e for e in build_surface() if e.name == name)
+
+    if name == ASK_USER:
+        from clipwright.services import ask_user as _ask_user
+
+        task_id = str(getattr(task, "id", "") or pipeline_id)
+        owner_type = str(payload.get("owner_type") or ("task" if task_id else ""))
+        owner_id = str(payload.get("owner_id") or task_id)
+        try:
+            res = await _ask_user.ask(
+                owner_type=owner_type or "task", owner_id=owner_id,
+                question=str(payload.get("question") or ""),
+                options=payload.get("options") or [],
+                allow_free_text=bool(payload.get("allow_free_text")),
+                default_option_id=(str(payload["default_option_id"])
+                                   if payload.get("default_option_id") else None),
+                timeout_sec=int(payload.get("timeout_sec") or _ask_user.DEFAULT_TIMEOUT_SEC),
+                context_refs=payload.get("context_refs") or [],
+                task=task,
+            )
+            out = {"status": "ok", "output": res}
+        except _ask_user.AskUserError as exc:
+            out = {"status": "refused" if exc.http_status < 500 else "error",
+                   "error": exc.message, "code": exc.code, **exc.detail}
+        out["record"] = _audit(name, entry, pipeline_id, idem_key, payload,
+                               out["status"], 0.0, out.get("error"))
+        return out
 
     if name == ACKNOWLEDGE_DEGRADATION:
         kinds = [str(k) for k in (payload.get("kinds") or []) if str(k).strip()]

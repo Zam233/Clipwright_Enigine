@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -70,6 +70,14 @@ class CreateTaskBody(BaseModel):
     duration_sec: float = 0.0
     plan_only: bool = True
     extra: dict[str, Any] = Field(default_factory=dict)
+
+
+class AnswerBody(BaseModel):
+    """SP15.5：回答 ask_user 的问题。option_id 与 text 至少给一个。"""
+
+    question_id: str = Field(min_length=1, max_length=120)
+    option_id: Optional[str] = Field(default=None, max_length=80)
+    text: Optional[str] = Field(default=None, max_length=2000)
 
 
 class InjectBody(BaseModel):
@@ -207,6 +215,28 @@ async def resume_task(task_id: str, request: Request) -> dict:
                 "message": f"任务已结束（{task.status}），无法继续；如需重做请新建任务",
             },
         )
+    if task.status == "waiting_user":
+        from clipwright.services import ask_user
+
+        pend = ask_user.pending("task", task_id)
+        if pend:
+            raise HTTPException(
+                status_code=409,
+                detail={"reason": "waiting_answer",
+                        "question_id": pend[0]["question_id"],
+                        "message": "任务正在等待回答，请先回答上面的问题或取消任务"},
+            )
+        # 服务重启后：旧协程已不在，问题已判 expired → 回落到 paused 再放行
+        task.status = "paused"
+        try:
+            from clipwright.services.task_events import emit
+
+            emit(task_id, "narration", "原问题已失效，任务继续",
+                 {"kind": "question_expired_on_restart"}, span="kernel")
+        except Exception:  # noqa: BLE001 — 事件不可用不影响续跑
+            pass
+        if hasattr(task, "touch"):
+            task.touch()
     _schedule(task_id)
     return {"task_id": task_id, "status": "running", "resumed": True}
 
@@ -245,6 +275,53 @@ async def inject_task(task_id: str, payload: InjectBody, request: Request) -> di
     except KernelError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"task_id": task_id, "injected": True}
+
+
+@router.post("/{task_id}/answer")
+async def answer_task_question(task_id: str, payload: AnswerBody,
+                               request: Request) -> dict:
+    """回答主 agent 提出的问题（PRD §15.5）。
+
+    错误语义：404 问题不存在 / 409 已回答或任务已取消 / 410 已超时或服务重启失效 /
+    400 选项非法或拒绝自由文本。前端据此禁用按钮并给出可读提示。
+    """
+    from clipwright.services import ask_user
+
+    _enforce_task_owner(request, task_id)
+    q = ask_user.get(payload.question_id)
+    if q is not None and q.get("owner_type") == "task" and q.get("owner_id") != task_id:
+        raise HTTPException(status_code=404,
+                            detail=f"问题不属于该任务: {payload.question_id}")
+    try:
+        ans = ask_user.answer(payload.question_id, option_id=payload.option_id,
+                             text=payload.text)
+    except ask_user.AskUserError as exc:
+        raise HTTPException(status_code=exc.http_status,
+                            detail={"reason": exc.code, "message": exc.message,
+                                    **exc.detail}) from exc
+    task = _kernel().get(task_id)
+    return {"task_id": task_id, "question_id": ans["question_id"],
+            "status": "accepted",
+            "task_status": getattr(task, "status", "") or "",
+            "option_id": ans.get("option_id"), "source": ans.get("source")}
+
+
+@router.get("/{task_id}/questions")
+async def list_task_questions(task_id: str, request: Request,
+                              status: str = Query(default="pending")) -> dict:
+    """列出该任务的问题（默认只看待答）：刷新后恢复问题卡用（PRD §15.5）。"""
+    from clipwright.services import ask_user
+
+    _enforce_task_owner(request, task_id)
+    if status == "pending":
+        items = ask_user.pending("task", task_id)
+    elif status == "all":
+        items = ask_user.list_for_owner("task", task_id)
+    else:
+        items = [q for q in ask_user.list_for_owner("task", task_id)
+                 if q.get("status") == status]
+    return {"task_id": task_id, "status": status, "count": len(items),
+            "items": items}
 
 
 @router.post("/{task_id}/plan")

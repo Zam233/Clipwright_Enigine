@@ -657,6 +657,14 @@ class AgentKernel:
 
         task.status = "cancelled"
         task.touch()
+        # SP15.3：取消任务时作废待答问题（answer 之后返回 409），
+        # 并把仍在等待的协程唤醒为取消，避免工具轮永久挂住。
+        try:
+            from clipwright.services import ask_user as _ask_user
+
+            _ask_user.cancel_owner("task", task_id, reason="cancelled")
+        except Exception as exc:  # noqa: BLE001 — 清理失败不影响取消
+            logger.warning("取消任务时清理待答问题失败 %s: %s", task_id, exc)
         emit(task_id, "task_end", "任务被取消", {"reason": "cancelled"})
         self._checkpoint(task)
         return task

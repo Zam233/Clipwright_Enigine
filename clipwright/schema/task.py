@@ -17,7 +17,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-TaskStatus = Literal["pending", "planning", "running", "paused", "done", "failed", "cancelled"]
+TaskStatus = Literal["pending", "planning", "running", "paused", "waiting_user",
+                      "done", "failed", "cancelled"]
 StepStatus = Literal["pending", "running", "done", "failed", "skipped"]
 CapabilityKind = Literal["tool", "skill", "pipeline", "subagent", "meta"]
 
@@ -55,6 +56,10 @@ EVENT_TYPES: tuple[str, ...] = (
     # ── 子 agent 透明化（2026-10-29 用户裁定：主 agent 必须看见子 agent 的一切）──
     "subagent_tool",      # 子 agent 的一次工具调用（tool/status/duration/args 摘要）
     "subagent_progress",  # 长阶段的分段进度（动画 3/29、素材 12/43…）
+    # ── 反思流 / 主动询问 / 进度播报（PRD §13/§14/§15，2026-10-30）──
+    "question",        # agent 主动向用户提问（等回答，任务转 waiting_user）
+    "answer",          # 用户/超时默认项回答问题
+    "progress",        # Kernel 确定性进度播报（8 类触发点，同时落 reports/progress.jsonl）
 )
 
 

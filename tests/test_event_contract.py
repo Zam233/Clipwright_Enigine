@@ -35,7 +35,7 @@ def test_frontend_schema_exists() -> None:
 
 
 def test_event_types_match_frontend_parser() -> None:
-    """后端 26 类事件必须与前端 parser 键集合完全相等（多一个少一个都算漂移）。"""
+    """后端 29 类事件必须与前端 parser 键集合完全相等（多一个少一个都算漂移）。"""
     if not FRONTEND_SCHEMA.exists():
         pytest.skip("前端仓库不在本机（CI 单仓场景）")
     backend = list(EVENT_TYPES)
@@ -58,7 +58,7 @@ def test_event_types_are_unique_and_non_empty() -> None:
     assert len(EVENT_TYPES) == len(set(EVENT_TYPES))
     assert all(EVENT_TYPES)
     # 新增事件类型必须同步前端（本测试就是那个闸）
-    assert len(EVENT_TYPES) == 26, (
+    assert len(EVENT_TYPES) == 29, (
         f"EVENT_TYPES 数量变化（{len(EVENT_TYPES)}）——请同步更新前端 "
         "src/features/task/eventSchema.ts 的 EVENT_TYPE_KEYS 与本断言"
     )
