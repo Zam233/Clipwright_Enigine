@@ -747,6 +747,88 @@ class AgentKernel:
 
     # ── 执行主循环 ────────────────────────────────
 
+    # ── plan_only：主 agent 派发"生成制作规划书"的收尾（PRD plan-dispatch D1/D2）──
+
+    async def _finish_plan_only(self, task: Task) -> str:
+        """plan_only 任务的守门：确保有分镜场景，并把 `reports/plan.json` 落盘。
+
+        返回 `gate_reason`：`plan_only_completed` / `plan_only_scenes_missing` /
+        `plan_only_artifact_missing`。**不**要求 final_timeline——出片是用户点
+        「确认实施」之后的事，拿出片标准要求规划书任务会把它一路推到素材/剪辑阶段。
+        """
+        from clipwright.services import task_blackboard as _bb
+        from clipwright.services.task_events import emit
+
+        board = _bb.get(task.id) or {}
+        scenes = board.get("scenes")
+        if not isinstance(scenes, list) or not scenes:
+            # 模型没派结构阶段 → 内核确定性补派一次（与模型派发同一入口，
+            # 同样计 usage / 同样进事件流），不让"模型没照做"变成静默失败。
+            recovered = int(_KERNEL_RECOVERY.get(task.id, 0))
+            if recovered < _MAX_KERNEL_RECOVERY:
+                _KERNEL_RECOVERY[task.id] = recovered + 1
+                rec = await _kernel_recover_stage(task, "structure",
+                                                  "plan_only：缺少分镜场景")
+                if str(rec.get("status") or "") in ("ok", "dry_run"):
+                    board = _bb.get(task.id) or {}
+                    scenes = board.get("scenes")
+            if not isinstance(scenes, list) or not scenes:
+                emit(task.id, "degradation",
+                     "plan_only 没有产出分镜场景，规划书无法生成",
+                     {"kind": "plan_only_scenes_missing"}, span="kernel")
+                return "plan_only_scenes_missing"
+        try:
+            payload = self._write_plan_artifact(task, scenes)
+        except Exception as exc:  # noqa: BLE001 — 落盘失败如实上报，不假装成功
+            emit(task.id, "degradation",
+                 f"reports/plan.json 写入失败：{type(exc).__name__}",
+                 {"kind": "plan_only_artifact_failed", "error": str(exc)[:200]}, span="kernel")
+            return "plan_only_artifact_missing"
+        emit(task.id, "artifact",
+             f"规划书已落盘：{payload.get('path')}",
+             {"kind": "plan", "path": payload.get("path"),
+              "scene_count": payload.get("scene_count"),
+              "session_id": payload.get("session_id"),
+              "brief_hash": payload.get("brief_hash")},
+             span="kernel")
+        return "plan_only_completed"
+
+    def _write_plan_artifact(self, task: Task, scenes: list[Any]) -> dict[str, Any]:
+        """把规划书产物写到工作区 `reports/plan.json`（原子替换）。
+
+        契约见 PRD plan-dispatch §4.3：`brief_hash` 必须与需求侧同源，
+        否则"这份规划书对不对应当前简报"无法判定。
+        """
+        import json as _json
+        import os
+        from pathlib import Path
+
+        extra = dict(getattr(task.request, "extra", None) or {})
+        root = str(extra.get("workspace_root") or "").strip()
+        if not root:
+            from clipwright.services.workspace import Workspace
+
+            ws = Workspace(str(task.id))
+            root = str(ws.dirs().root)
+        reports = Path(root) / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "session_id": str(extra.get("session_id") or ""),
+            "brief_hash": str(extra.get("brief_hash") or ""),
+            "scenes": scenes,
+            "scene_count": len(scenes),
+            "summary": f"{len(scenes)} 个场景",
+            "generated_by": "kernel",
+            "run_id": str(extra.get("run_id") or task.id),
+            "task_id": str(task.id),
+        }
+        path = reports / "plan.json"
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+        payload["path"] = str(path)
+        return payload
+
     async def run(self, task: Task) -> Task:
         from clipwright.services.task_events import emit
 
@@ -988,11 +1070,17 @@ class AgentKernel:
             return task
 
         finish = outcome.get("finish") or {}
+        plan_only = bool(getattr(getattr(task, "request", None), "plan_only", False))
         if status == "ok":
             conclusion = str(finish.get("conclusion") or "")
             # 收尾守门（§18.10.4）：声称完成但黑板里没有可渲染时间线 → 如实标失败
             gate_reason = "dry_run_preview" if dry_run else "tool_loop_completed"
-            if not shadow and not dry_run:
+            # plan_only（主 agent 派发规划书，PRD plan-dispatch D1/D2）：守门换成
+            # "有没有分镜场景 + reports/plan.json 落盘"，**不要求 final_timeline**——
+            # 出片是用户点「确认实施」之后的事。
+            if plan_only and not shadow and not dry_run:
+                gate_reason = await self._finish_plan_only(task)
+            if not shadow and not dry_run and not plan_only:
                 try:
                     from clipwright.services import task_blackboard as _bb
 
@@ -1160,7 +1248,8 @@ class AgentKernel:
                 reason=gate_reason,
             )
             task.status = ("done" if gate_reason in ("tool_loop_completed",
-                                                    "dry_run_preview") else "failed")
+                                                    "dry_run_preview",
+                                                    "plan_only_completed") else "failed")
             # 结果快照（含质检摘要）落一份：前端任务详情/质检页读它，而不是读老管线的结果字典
             try:
                 from clipwright.services import task_blackboard as _bb2

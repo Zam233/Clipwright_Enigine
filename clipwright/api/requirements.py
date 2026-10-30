@@ -548,6 +548,38 @@ async def session_timeline_stream(session_id: str, request: Request,
     )
 
 
+class PlanDispatchBody(BaseModel):
+    """PRD plan-dispatch §4.1：`retry=true` 按同一 brief 重新建任务。"""
+
+    retry: bool = False
+
+
+@router.post("/{session_id}/plan/dispatch")
+async def dispatch_plan(session_id: str, request: Request,
+                        body: Optional[PlanDispatchBody] = None) -> dict:
+    """**主 agent 派发"生成制作规划书"**（D1，幂等）。
+
+    旧实现里"确认简报 → 生成规划书"是需求服务内联跑 `stage_subagent.run_inline`，
+    主 agent 全程不参与：没有思考、没有派发轨迹、`run_id` 无处可查。这里改成建一个
+    `plan_only` 任务由 kernel 派 `structure`，产物落 `reports/plan.json`，
+    需求侧读产物回填 `session.production_plan`。
+
+    幂等键 `session_id:brief_hash`：同 brief 且任务还在跑 → 返回既有 `task_id`
+    （`reused=true`）。`retry=true` 强制重建（失败重试用）。
+    """
+    _require_session_owner(request, session_id)
+    result = await _service.dispatch_plan(
+        session_id, retry=bool(body.retry) if body else False,
+    )
+    if "error" in result:
+        code = result.get("error")
+        http_status = int(result.get("http_status") or 400)
+        detail = {k: v for k, v in result.items() if k not in ("error", "http_status")}
+        detail.setdefault("reason", code)
+        raise HTTPException(status_code=http_status, detail=detail)
+    return result
+
+
 def _opt_bool(value) -> bool | None:
     """user_inputs 里的开关可能是 bool / "true" / "1"，统一归一化（None 表示沿用工作区现值）。"""
     if value is None or isinstance(value, bool):

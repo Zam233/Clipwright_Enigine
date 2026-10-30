@@ -136,7 +136,35 @@ def build_tools() -> list[dict[str, Any]]:
         return agent_tool_schemas()
 
 
+#: plan_only 任务（主 agent 派发"生成制作规划书"）的系统提示词。
+#:
+#: 与创作任务的差别只有一条：**不要去做出片**。旧实现没有这个分支，于是一个
+#: `plan_only=true` 的任务会照着"完成标准是 final_timeline"一路跑到 material/edit，
+#: 既烧钱又和需求侧的规划书流程打架（PRD plan-dispatch D2）。
+_PLAN_ONLY_SYSTEM = (
+    "你是视频创作系统的主 agent。**本次任务是生成「制作规划书」，不是做出片**。\n"
+    "规则：\n"
+    "- **动手前先说话**：每次调用工具之前，用一两句话说明你打算做什么、为什么"
+    "（这段话会直接展示给用户）；\n"
+    "- 你只有一件事要做：调用 `delegate_agent(stage=\"structure\")` 派结构阶段把选题拆成分镜场景；\n"
+    "- **不要**派 material / edit / animation / audio / quality；**不要**追求 final_timeline；"
+    "出片是用户在下一步点「确认实施」之后的事；\n"
+    "- structure 返回后**立刻收尾**并汇报：分成几段、每段在讲什么、时长怎么分配。"
+    "规划书正文由系统根据你产出的场景生成，你不需要自己写长篇 markdown；\n"
+    "- 若 structure 返回里出现 `degraded=true` 或非空 `degradations[]`，同一轮内重派一次；"
+    "仍不干净就如实写明哪一条被接受、对规划书有什么影响；\n"
+    "- 工具报「未找到工作区 / 路径不在白名单」属于环境问题：不要反复重试，如实说明并结束。"
+)
+
+
+def _is_plan_only(task: Any) -> bool:
+    request = getattr(task, "request", task)
+    return bool(getattr(request, "plan_only", False))
+
+
 def _system_prompt(task: Any) -> str:
+    if _is_plan_only(task):
+        return _PLAN_ONLY_SYSTEM
     return (
         "你是视频创作系统的主 agent。你直接调用工具来推进任务：可以读取工作区文件/报告/产物，"
         "也可以派子 agent 去做具体阶段。每次只做当前最必要的一步；做完就停下来汇报。\n"
@@ -210,8 +238,15 @@ def _user_prompt(task: Any, context_text: str) -> str:
         hypothesis = "\n\n## 初始假设（仅供参照，不是必须执行的步骤表）\n" + "\n".join(
             f"- {getattr(s, 'title', '') or getattr(s, 'capability', '')}" for s in plan.steps[:8]
         )
+    plan_only_note = ""
+    if _is_plan_only(task):
+        plan_only_note = (
+            "\n\n## 本次目标（plan_only）\n"
+            "只产出**制作规划书所需的分镜场景**：派一次 `delegate_agent(stage=\"structure\")`，"
+            "拿到场景后立刻收尾汇报。不要进入素材/剪辑/动画/音频阶段。"
+        )
     return (f"## 用户需求\n{topic}\n\n## 当前上下文\n{context_text}"
-            f"{hypothesis}{_budget_note(task)}")
+            f"{plan_only_note}{hypothesis}{_budget_note(task)}")
 
 
 async def run_loop(task: Any, *, context_text: str = "",

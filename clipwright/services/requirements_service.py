@@ -78,6 +78,10 @@ def _emit_session_thinking(session_id: str, text: str, *, phase: str = "requirem
 # ── 时间线（session-log 单一真相，PRD docs/agent-session-timeline-prd-2026-10-31.md）──
 
 
+#: 派发中的规划书任务（PRD plan-dispatch D1 幂等键 = `session_id:brief_hash`）
+_PLAN_DISPATCH: dict[str, dict[str, Any]] = {}
+
+
 def _timeline(session_id: str):
     """取会话时间线日志（唯一有序流）。"""
     from clipwright.services import session_log
@@ -2968,3 +2972,206 @@ class RequirementsService:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("reasoning 能力探测失败: %s", exc)
         return {"supported": False, "streaming": False, "reason": "capability_unknown"}
+
+    # ── 规划书派发（PRD plan-dispatch D1/D2/D3）────────────────
+    #
+    # 旧实现：`_generate_plan` 在需求进程里 `stage_subagent.run_inline("structure")`，
+    # 主 agent（kernel）全程不参与——没有 thinking / delegate / run 可寻址，
+    # 「轨迹」里也查不到这一步（PRD plan-dispatch §1）。
+    # 新路径：建一个 `plan_only` 任务，由主 agent 派 structure → 内核收尾写
+    # `reports/plan.json` → 需求侧读产物回填 production_plan。**唯一执行通道**。
+
+    async def dispatch_plan(self, session_id: str, *, retry: bool = False) -> dict[str, Any]:
+        """派发"生成制作规划书"任务（幂等；同 brief 在跑就复用）。"""
+        sess = await asyncio.to_thread(self.get_session, session_id)
+        if not sess:
+            return {"error": "Session not found", "http_status": 404}
+        brief = sess.get("creative_brief")
+        if not isinstance(brief, dict) or not brief:
+            return {"error": "no_brief", "http_status": 400,
+                    "detail": "会话还没有创意简报：先出简报再确认生成规划书"}
+        brief_hash = _brief_hash(brief)
+        key = f"{session_id}:{brief_hash}"
+        from clipwright.api.task import _register_owner, _schedule
+        from clipwright.schema.task import TaskLimits, TaskRequest
+        from clipwright.services import session_projection
+        from clipwright.services.agent_kernel import AgentKernel
+        from clipwright.services.workspace import ensure_workspace
+
+        kernel = AgentKernel()
+        prev = _PLAN_DISPATCH.get(key)
+        if prev and not retry:
+            task = kernel.get(prev.get("task_id") or "")
+            if task is not None and not task.terminal:
+                return {"task_id": task.id, "run_id": prev.get("run_id", ""),
+                        "status": "planning", "reused": True}
+        user_inputs = sess.get("user_inputs") or {}
+        ws_project_id = str(user_inputs.get("workspace_name") or session_id)
+        ws_root = ""
+        try:
+            ws, _meta = await asyncio.to_thread(
+                ensure_workspace, ws_project_id, name=ws_project_id,
+            )
+            ws_root = str(ws.dirs().root)
+        except Exception as exc:  # noqa: BLE001 — 没有工作区就让它落 Workspace(task.id)
+            logger.warning("派发规划书：工作区准备失败（继续）%s: %s", session_id, exc)
+        extra = {
+            "session_id": session_id,
+            "brief_hash": brief_hash,
+            "creative_brief": brief,
+            "plan_dispatch": True,
+            "script_text": str(user_inputs.get("script_text") or ""),
+            **({"workspace_root": ws_root} if ws_root else {}),
+            "persona_id": str(user_inputs.get("persona_id") or ""),
+            "category_plugin_id": str(user_inputs.get("category_plugin_id") or ""),
+        }
+        task_req = TaskRequest(
+            topic=str(brief.get("title") or user_inputs.get("topic") or session_id),
+            persona_id=str(user_inputs.get("persona_id") or ""),
+            category_plugin_id=str(user_inputs.get("category_plugin_id") or ""),
+            duration_sec=float(user_inputs.get("audio_duration_sec") or 0),
+            plan_only=True,
+            extra=extra,
+        )
+        task = kernel.create(task_req, limits=TaskLimits(max_turns=40, max_tool_calls=80))
+        _PLAN_DISPATCH[key] = {"task_id": task.id, "run_id": task.id,
+                               "session_id": session_id, "brief_hash": brief_hash}
+        # C3：任务归到会话 → 事件由服务端投影进时间线（前端**不**再自己订阅）
+        try:
+            session_projection.bind(session_id, task.id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("派发规划书：绑定时间线失败 %s: %s", session_id, exc)
+        await kernel.plan(task)
+        _schedule(task.id)
+        await asyncio.to_thread(
+            self._persist, session_id, "planning",
+            sess.get("messages") or [], brief, sess.get("production_plan"),
+            user_inputs,
+        )
+        # 终态回填（C4：状态**只**由任务终态驱动，前端不推断）
+        from clipwright.services.async_util import spawn_background
+
+        spawn_background(self._watch_plan_task(session_id, task.id, brief_hash),
+                         name=f"plan-watch-{task.id}")
+        logger.info("派发规划书：session=%s → task=%s（workspace=%s）",
+                    session_id, task.id, ws_root or "<task>")
+        return {"task_id": task.id, "run_id": task.id,
+                "status": "planning", "reused": False}
+
+    async def _watch_plan_task(self, session_id: str, task_id: str,
+                               brief_hash: str) -> None:
+        """等任务终态 → 读 `reports/plan.json` → 回填 production_plan。"""
+        from clipwright.services.agent_kernel import AgentKernel
+
+        kernel = AgentKernel()
+        for _ in range(3600):            # 最长 1 小时（超时不再挂在这里）
+            await asyncio.sleep(1.0)
+            task = kernel.get(task_id)
+            if task is None:
+                _PLAN_DISPATCH.pop(f"{session_id}:{brief_hash}", None)
+                return
+            if not task.terminal:
+                continue
+            try:
+                await self._finalize_dispatched_plan(session_id, task, brief_hash)
+            except Exception as exc:  # noqa: BLE001 — 回填失败要留痕，不吞
+                logger.warning("规划书回填失败 %s/%s: %s", session_id, task_id, exc)
+            _PLAN_DISPATCH.pop(f"{session_id}:{brief_hash}", None)
+            return
+        logger.warning("规划书任务等待超时：session=%s task=%s", session_id, task_id)
+
+    async def _finalize_dispatched_plan(self, session_id: str, task: Any,
+                                        brief_hash: str) -> None:
+        sess = await asyncio.to_thread(self.get_session, session_id) or {}
+        messages = list(sess.get("messages") or [])
+        brief = sess.get("creative_brief")
+        user_inputs = sess.get("user_inputs") or {}
+        log = _timeline(session_id)
+        turn_no = log.user_turns() or 1
+
+        def _note(text: str, meta: dict[str, Any] | None = None) -> None:
+            messages.append({
+                "role": "assistant", "content": text,
+                "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                "metadata": meta or {},
+            })
+
+        status = str(getattr(task, "status", "") or "")
+        finish = getattr(task, "finish", None)
+        reason = str(getattr(finish, "reason", "") or "")
+        if status != "done":
+            _note(
+                f"规划书生成失败（{reason or status}），已回到方案确认态。"
+                "回复「确认」重试，或先调整方案。",
+                {"plan_dispatch_failed": reason or status},
+            )
+            await asyncio.to_thread(self._persist, session_id, "brief_ready", messages,
+                                    brief, sess.get("production_plan"), user_inputs)
+            try:
+                log.append(type="content", content=messages[-1]["content"],
+                           source="requirements", turn=turn_no,
+                           meta={"role": "assistant", "plan_dispatch_failed": reason})
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
+        extra = dict(getattr(getattr(task, "request", None), "extra", None) or {})
+        root = str(extra.get("workspace_root") or "")
+        scenes: list[Any] = []
+        artifact_hash = ""
+        if root:
+            try:
+                import json as _json
+                from pathlib import Path
+
+                payload = _json.loads(
+                    (Path(root) / "reports" / "plan.json").read_text(encoding="utf-8"))
+                scenes = list(payload.get("scenes") or [])
+                artifact_hash = str(payload.get("brief_hash") or "")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("规划书产物读取失败 %s: %s", session_id, exc)
+        if not scenes:
+            _note("规划书任务结束但产物为空，已回到方案确认态。回复「确认」可重试。",
+                  {"plan_dispatch_failed": "plan_artifact_empty"})
+            await asyncio.to_thread(self._persist, session_id, "brief_ready", messages,
+                                    brief, sess.get("production_plan"), user_inputs)
+            return
+        # brief 在生成期间被改过 → 不覆盖（PRD §4.3）
+        current_hash = _brief_hash(brief if isinstance(brief, dict) else None)
+        if artifact_hash and current_hash and artifact_hash != current_hash:
+            _note("简报在生成期间发生过变化，这份规划书不再对应当前方案，已作废。"
+                  "请确认最新方案后重新生成。", {"plan_dispatch_failed": "brief_changed"})
+            await asyncio.to_thread(self._persist, session_id, "brief_ready", messages,
+                                    brief, sess.get("production_plan"), user_inputs)
+            return
+        plan = await self._translate_plan(
+            scenes, brief if isinstance(brief, dict) else None,
+            str(user_inputs.get("script_text") or ""),
+        )
+        if not isinstance(plan, dict) or not plan:
+            plan = {"raw_scenes": scenes,
+                    "markdown_content": self._default_markdown(scenes),
+                    "legacy": True}
+        _note("规划书已生成（主 agent 派发结构阶段产出），请确认实施或提出修改。",
+              {"plan_ready": True, "generated_by": "kernel"})
+        await asyncio.to_thread(self._persist, session_id, "plan_ready", messages,
+                                brief, plan, user_inputs)
+        try:
+            log.append(type="content", content=messages[-1]["content"],
+                       source="requirements", turn=turn_no,
+                       meta={"role": "assistant", "plan_ready": True})
+            plan_scenes = plan.get("raw_scenes") or plan.get("scenes") or []
+            log.append(
+                type="plan", content=plan, source="requirements", turn=turn_no,
+                meta={"role": "assistant", "kind": "production_plan",
+                      "title": str(plan.get("title") or ""),
+                      "brief_hash": current_hash,
+                      "scene_count": len(plan_scenes) if isinstance(plan_scenes, list) else 0,
+                      "generated_by": "kernel", "task_id": str(getattr(task, "id", "")),
+                      "legacy": bool(plan.get("legacy"))},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("规划书时间线条目写入失败 %s: %s", session_id, exc)
+        logger.info("规划书回填完成：session=%s task=%s scenes=%d",
+                    session_id, getattr(task, "id", ""), len(scenes))
+
