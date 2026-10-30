@@ -508,3 +508,41 @@ Provider adapter 负责鉴权、请求格式、原始响应解析和 provider-sp
   → `stdout=None` → `json.loads(None)`；改为父进程显式按 UTF-8 解码。
 - **未完成**：M6（动画提示词 v2：九段式模板、S1–S12 风格模块、lint、逐类改写）尚未开始；
   `TaskToolTrace` 已有后端 `limit/offset` 分页，本轮未再加虚拟滚动。
+
+## 执行记录（2026-10-30 · 第 10 轮 · M6 动画提示词 v2）
+
+- **九段式模板**：`prompts/text/_base.md`、`prompts/types/_base.md`（角色与交付物 / 硬约束 /
+  常量表 / 分段关键帧公式与 easing 词典 / 风格模块引用 / 不要清单 / 自检清单 / 输出格式 /
+  失败回退）。类型提示词保留七段旧标题（`text_specs.load_text_prompt` 与
+  `validate_text_registry` 按这七段切分），另补 Constants / Output / Self-check / Fallback 四段。
+- **风格模块 S1–S12**：`prompts/style_catalog.json`（id/name/series/keywords_zh/keywords_en/
+  palette_hex/motion_tags/composition_tags/suitable_types/avoid_types/forbidden/
+  renderer_paths/reference_source/prompt_version/status）+ `prompts/styles/S1–S12.md` 正文
+  （视觉语言 / 关键参数倾向 / 适用与回避 / 禁止项 / 使用纪律）。
+  `scripts/styles.py` 提供 `search` / `show` / `match`：默认只给 ≤3 条摘要、排序确定
+  （分数→编号）、`avoid_types` 过滤、`show` 才读正文——不把 12 份模块正文一次拼进 prompt。
+- **逐类改写（10 份）**：六类文字（emphasis_keyword / reveal_line / quote_block /
+  label_callout / number_punch / title_stack）+ 四类 MG（bar_chart / line_chart /
+  comparison / flow_chart）。要点：
+  - drawtext 提示词只写 `keyframes_expr.EASING_EXPR` 的 21 个名字；`back-out`/`bounce`/
+    `elastic-out` 明确标注为「MG 名字，drawtext 不认」，且只出现在反例行里；
+  - 粒子 / 模糊 / 遮罩 / 扫光 / 独立卡片层一律标注「MG HTML 路径」或「本期不落」，
+    并在 `docs/animation_system.md` 新增「渲染侧需求登记」表逐条列出所需能力；
+  - Example 换成**可渲染 JSON**：扁平关键帧（不再用 `properties` 包裹，`repair_mg_json`
+    会把它当未知 props 删掉）、每帧声明完整动画属性、带 `time=0` 起始帧；
+  - 每份提示词声明 `style_modules: [S…]`，并给了"收束"阶段让动画覆盖率 ≥45% 且末段静止 ≥0.6s。
+- **lint 进 CI**：`python -m clipwright.animation.prompts.lint_prompts --strict`
+  （`.github/workflows/ci.yml` 新增一步）。检查段落齐全、反例行豁免（"不要写 X"不算违规）、
+  占位符残留、duration/元素/字数上限、按渲染路径的 easing 白名单、drawtext 不支持能力词
+  必须标注、Example 必须过 `validate_mg_json`、风格模块引用必须存在。
+  现状 **0 error / 136 warning**：未迁移的老 MG 类型只报 warning，迁移后自动升级为 error
+  （`MIGRATED_TYPES`）。
+- **指标回归** `tests/clipwright/test_prompt_metrics.py`：把每份提示词自己的 Example 喂真实
+  校验链路——motion coverage ≥45%、末段静止 ≥0.6s、`position` 不落字幕带（底边 ≤920px）、
+  单行 ≤14 字、元素 ≤3、关键帧升序且在片段内、同输入两次结果一致、
+  `repair_mg_json` 不得改动结构（修复率 = 0）。
+- **顺手修不稳定测试**：`test_render_parallel::test_failed_mov_does_not_abort_others` 的
+  2.5s 绝对阈值在 Windows 上连跑三次就随机红（实测 2.76s），改成相对串行基线的 80%
+  （4×1.0×0.8=3.2s），仍能抓"串行化 / gather 悬挂"。
+- **回归**：后端 `pytest` **4966 passed / 4 skipped / 1 xfailed**（+41：lint 29、指标 12）；
+  提示词 lint strict 0 error；前端 `tsc` 干净、`vitest` 136 文件 / 1171 例。
