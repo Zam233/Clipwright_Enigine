@@ -15,6 +15,7 @@ Phase 2 增强（对账注记 2026-08：以下两项均未实现，保留为规�
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 import uuid
@@ -72,6 +73,40 @@ def _emit_session_thinking(session_id: str, text: str, *, phase: str = "requirem
              span="requirements")
     except Exception as exc:  # noqa: BLE001 — 落盘失败不阻断对话
         logger.warning("需求会话思考落盘失败 %s: %s", session_id, exc)
+
+
+# ── 时间线（session-log 单一真相，PRD docs/agent-session-timeline-prd-2026-10-31.md）──
+
+
+def _timeline(session_id: str):
+    """取会话时间线日志（唯一有序流）。"""
+    from clipwright.services import session_log
+
+    return session_log.get_log(session_id)
+
+
+def _brief_hash(brief: dict | None) -> str:
+    """简报指纹：让"这份规划书对应哪版 brief"可判定（PRD §3.2）。"""
+    if not isinstance(brief, dict) or not brief:
+        return ""
+    try:
+        raw = json.dumps(brief, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:  # noqa: BLE001
+        return ""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _timeline_turn(session_id: str):
+    """开一轮时间线（返回 `(log, Turn)`）；日志不可用时不阻断对话。"""
+    try:
+        from clipwright.services import session_log
+
+        log = session_log.get_log(session_id)
+        turn_no = log.user_turns() + 1
+        return log, session_log.Turn(log, turn=turn_no)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("会话时间线不可用 %s: %s", session_id, exc)
+        return None, None
 LLM_RETRY_MAX = 3                # LLM 最大重试次数
 LLM_RETRY_BASE_DELAY = 2.0      # 重试基础延迟（秒）
 BRIEF_GENERATE_TIMEOUT = 900     # 简报生成单次调用超时（秒）
@@ -564,6 +599,15 @@ class RequirementsService:
             except Exception as e:
                 logger.warning("MongoDB 会话创建失败，使用内存: %s", e)
         _memory_sessions[session_id] = session_dict
+        # 时间线：开场白也是流里的一条（type=content, role=assistant, turn=0），
+        # 否则刷新后"欢迎语"没有位置（PRD §3.2）
+        try:
+            _timeline(session_id).append(
+                type="content", content=welcome, source="requirements",
+                turn=0, meta={"role": "assistant", "kind": "welcome"},
+            )
+        except Exception as exc:  # noqa: BLE001 — 时间线失败不阻断建会话
+            logger.warning("时间线写开场白失败 %s: %s", session_id, exc)
         logger.info("需求会话已创建: %s (mongo=%s)", session_id, _mongo_ok())
         return session_dict
 
@@ -768,8 +812,46 @@ class RequirementsService:
         """处理需求对话。on_delta 非空时 gathering 态通过流式回调增量推送
         reply 文本片段（token 级真流式），由 stream_chat 的 SSE 生成器消费。
 
-        `on_reasoning` 收到模型思考内容的**逐块增量**（provider 支持时）。"""
-        """处理用户消息，更新 MongoDB，返回最新状态。"""
+        `on_reasoning` 收到模型思考内容的**逐块增量**（provider 支持时）。
+
+        时间线接线（PRD agent-session-timeline §4.1）：用户消息与模型输出都写进
+        会话唯一有序流（`session.log`），流式部分走 `Turn` 的懒开占位 + 增量填充。
+        写时间线失败不能阻断对话——外面包一层，异常只落 warning。
+        """
+        log, live = _timeline_turn(session_id)
+        if log is not None and live is not None:
+            try:
+                log.append(
+                    type="content", content=truncate_message(user_message),
+                    source="requirements", turn=live.turn,
+                    meta={"role": "user"},
+                )
+            except Exception as exc:  # noqa: BLE001 — 时间线写入失败不阻断对话
+                logger.warning("时间线写用户消息失败 %s: %s", session_id, exc)
+        try:
+            return await self._chat_router(
+                session_id, user_message,
+                on_delta=on_delta, on_reasoning=on_reasoning, on_event=on_event,
+                live=live,
+            )
+        except Exception:
+            if live is not None:
+                try:
+                    live.close(state="failed")
+                except Exception:  # noqa: BLE001
+                    pass
+            raise
+
+    async def _chat_router(
+        self,
+        session_id: str,
+        user_message: str,
+        on_delta: "Callable[[str], Any] | None" = None,
+        on_reasoning: "Callable[[str], Any] | None" = None,
+        on_event: "Callable[[dict], Any] | None" = None,
+        live: Any = None,
+    ) -> dict:
+        """状态路由本体（写库/生成方案/规划书）；时间线由 `chat` 与 `_close_turn` 负责。"""
         await self._ensure_cleanup()
         session_data = await asyncio.to_thread(self.get_session, session_id)
         if not session_data:
@@ -792,6 +874,31 @@ class RequirementsService:
         # 压缩超长历史
         messages = compress_history(messages)
 
+        # 本轮新增消息的起点：`messages[_turn_start:]` 就是本轮模型说的话
+        _turn_start = len(messages)
+        # 本轮是否产生了新方案/新规划书（决定要不要落 report/plan 条目）
+        _brief_event: dict | None = None
+        _plan_event: dict | None = None
+        _question_event: dict | None = None
+
+        # 流式回调包一层：既喂调用方（SSE），也喂时间线（懒开占位 + 增量填充）。
+        # 注意必须保留"None 就是不开流式"的语义——`_handle_gathering` 靠它选路径。
+        _log_delta: "Callable[[str], Any] | None" = None
+        _log_reasoning: "Callable[[str], Any] | None" = None
+        if on_delta is not None and live is not None:
+            def _log_delta(text: str) -> None:  # type: ignore[misc]
+                live.stream("content", text)
+                if on_delta is not None:
+                    on_delta(text)
+
+            def _log_reasoning(text: str) -> None:  # type: ignore[misc]
+                live.stream("thinking", text)
+                if on_reasoning is not None:
+                    on_reasoning(text)
+        else:
+            _log_delta = on_delta
+            _log_reasoning = on_reasoning
+
         # PRD §15.5：会话在等回答时用户直接打字（没用问题卡）→ 当作自由文本回答，
         # 然后把状态放回 gathering 让 agent 继续。不能让 waiting_user 变成死胡同。
         if status == "waiting_user":
@@ -808,11 +915,12 @@ class RequirementsService:
         # 状态路由
         if status in ("gathering", "init"):
             result = await self._handle_gathering(messages, brief_data, status, user_inputs, session_id,
-                                              on_delta=on_delta, on_reasoning=on_reasoning)
+                                              on_delta=_log_delta, on_reasoning=_log_reasoning)
             # PRD §15.5：LLM 需要用户拍板时给 `ask_user` 指令 → 建问题、等回答，
             # 本轮不再往下推进（不猜、不替用户选）。
             _asked = await self._ask_from_llm(result, session_id)
             if _asked is not None:
+                _question_event = _asked
                 messages.append({
                     "role": "assistant",
                     "content": _asked.get("message") or _asked.get("question", ""),
@@ -824,6 +932,9 @@ class RequirementsService:
                     plan_data, user_inputs,
                 )
                 session = (await asyncio.to_thread(self.get_session, session_id)) or {}
+                self._close_turn(live, messages, _turn_start,
+                                 brief=_brief_event, plan=_plan_event,
+                                 question=_question_event)
                 return {**session, "status": "waiting_user",
                         "reply": _asked.get("message") or _asked.get("question", ""),
                         "question": _asked}
@@ -831,6 +942,7 @@ class RequirementsService:
             # P2-34: LLM 解析失败会返回 brief_draft={}——空结果不覆盖已有方案
             if isinstance(_new_brief, dict) and _new_brief:
                 brief_data = _new_brief
+                _brief_event = _new_brief
             is_ready = result.get("is_ready", False)
             # 只要生成了完整方案草稿就进入待确认状态。不完全依赖 LLM 的 is_ready 标志——
             # 否则前端已展示方案（brief_ready）而后端仍停留 gathering，用户确认后会被
@@ -876,6 +988,7 @@ class RequirementsService:
                 )
                 if plan_result:
                     plan_data = plan_result
+                    _plan_event = plan_result
                     status = "plan_ready"
                 else:
                     # A-18 兼容：老会话/翻译失败但有 scenes 时，由 scenes 反向生成
@@ -883,6 +996,7 @@ class RequirementsService:
                     legacy = self._legacy_plan_from_scenes(plan_data, session_id)
                     if legacy is not None:
                         plan_data = legacy
+                        _plan_event = legacy
                         status = "plan_ready"
                         messages.append({
                             "role": "assistant",
@@ -913,12 +1027,13 @@ class RequirementsService:
                 # gathering 合并出新方案；新方案出来就再给确认提示，出不来就明说。
                 revised = await self._handle_gathering(
                     messages, brief_data, "gathering", user_inputs, session_id,
-                    on_delta=on_delta, on_reasoning=on_reasoning,
+                    on_delta=_log_delta, on_reasoning=_log_reasoning,
                 )
                 new_brief = revised.get("brief_draft")
                 updated = isinstance(new_brief, dict) and bool(new_brief)
                 if updated:
                     brief_data = new_brief
+                    _brief_event = new_brief
                 messages.append({
                     "role": "assistant",
                     "content": str(revised.get("reply") or "已记下你的修改意见。"),
@@ -968,6 +1083,7 @@ class RequirementsService:
                 )
                 if plan_result:
                     plan_data = plan_result
+                    _plan_event = plan_result
                     status = "plan_ready"
                 else:
                     messages.append({
@@ -1024,12 +1140,17 @@ class RequirementsService:
                 )
                 if revised:
                     plan_data = revised
+                    _plan_event = revised
 
         # 持久化到 MongoDB（offload 到线程：_persist 内的 find_by_id 走 _io()，
         # 在事件循环线程会返回未 await 的协程导致写入静默失败；线程内无事件循环则同步执行）
         await asyncio.to_thread(
             self._persist, session_id, status, messages, brief_data, plan_data, user_inputs,
         )
+        # 时间线收口：thinking → content（本轮全部模型发言）→ report → plan → question
+        self._close_turn(live, messages, _turn_start,
+                         brief=_brief_event, plan=_plan_event,
+                         question=_question_event)
         session = (await asyncio.to_thread(self.get_session, session_id)) or {}
         msgs = session.get("messages", [])
         last_assistant = next(
@@ -1037,6 +1158,70 @@ class RequirementsService:
             "",
         )
         return {**session, "reply": last_assistant}
+
+    @staticmethod
+    def _close_turn(
+        live: Any, messages: list[dict], turn_start: int, *,
+        brief: dict | None = None, plan: dict | None = None,
+        question: dict | None = None,
+    ) -> None:
+        """把一轮的条目按**发生顺序**写进时间线（PRD §3.2）。
+
+        顺序就是阅读顺序：思考 → 正文（本轮所有模型发言）→ 简报 → 规划书 → 提问。
+        流式正文用权威全文完成占位条目，避免"丢块拼接"出残缺文本。
+        """
+        if live is None:
+            return
+        try:
+            replies = [
+                str(m.get("content") or "")
+                for m in messages[turn_start:]
+                if isinstance(m, dict) and m.get("role") == "assistant" and m.get("content")
+            ]
+            live.finish("thinking")
+            if replies:
+                live.finish("content", content=replies[0], meta={"role": "assistant"})
+                for extra in replies[1:]:
+                    live.append("content", extra, meta={"role": "assistant"})
+            else:
+                live.finish("content")
+            if isinstance(brief, dict) and brief:
+                live.append(
+                    "report", brief,
+                    meta={
+                        "role": "assistant",
+                        "title": str(brief.get("title") or ""),
+                        "brief_hash": _brief_hash(brief),
+                    },
+                )
+            if isinstance(plan, dict) and plan:
+                scenes = plan.get("raw_scenes") or plan.get("scenes") or []
+                live.append(
+                    "plan", plan,
+                    meta={
+                        "role": "assistant",
+                        "title": str(plan.get("title") or ""),
+                        "brief_hash": _brief_hash(brief),
+                        "scene_count": len(scenes) if isinstance(scenes, list) else 0,
+                        "duration_sec": (
+                            plan.get("total_duration_sec")
+                            or plan.get("duration_sec")
+                            or plan.get("total_duration")
+                            or 0
+                        ),
+                        "legacy": bool(plan.get("legacy")),
+                    },
+                )
+            if isinstance(question, dict) and question:
+                qid = str(question.get("question_id") or "")
+                live.append(
+                    "question", question,
+                    meta={"question_id": qid,
+                          "question": str(question.get("question") or "")},
+                    ref=f"q:{qid}" if qid else None,
+                )
+        except Exception as exc:  # noqa: BLE001 — 时间线写失败不影响对话结果
+            logger.warning("时间线收口失败: %s", exc)
 
     async def _revise_raw_scenes(
         self, scenes: list[dict], feedback: str,
@@ -2531,6 +2716,15 @@ class RequirementsService:
         # 1. 先返回用户消息确认 + typing 指示
         yield {"type": "status", "data": "typing"}
 
+        # 时间线：进程重启后轮询会丢，这里补上（幂等）；同时把已发生的任务事件补投影
+        try:
+            from clipwright.services import session_projection as _projection
+
+            _projection.ensure_poller(session_id)
+            await asyncio.to_thread(_projection.project, session_id)
+        except Exception as exc:  # noqa: BLE001 — 投影失败不影响对话
+            logger.warning("会话时间线投影失败 %s: %s", session_id, exc)
+
         session = await asyncio.to_thread(self.get_session, session_id) or {}
         status = session.get("status", "init")
 
@@ -2557,7 +2751,6 @@ class RequirementsService:
                 # 思考增量（前端展开后追加）；同时攒起来，本轮结束后落一条事件
                 thought.append(text)
                 queue.put_nowait({"type": "reasoning", "data": text})
-
             async def _run() -> None:
                 try:
                     result = await self.chat(session_id, user_message, on_delta=_on_delta,
@@ -2592,6 +2785,11 @@ class RequirementsService:
                     raise
                 except Exception as exc:  # noqa: BLE001 — 转成 SSE error 块，避免流中断无提示
                     logger.exception("流式对话失败: %s", exc)
+                    # 异常中断：把开着的流式条目收成 failed，别让界面永远"正在思考"
+                    try:
+                        _timeline(session_id).close_open("failed")
+                    except Exception:  # noqa: BLE001
+                        pass
                     queue.put_nowait(
                         {"type": "error", "data": "对话处理失败，请稍后重试"}
                     )
@@ -2631,6 +2829,10 @@ class RequirementsService:
                 raise
             except Exception as exc:  # noqa: BLE001
                 logger.exception("缓冲对话失败: %s", exc)
+                try:
+                    _timeline(session_id).close_open("failed")
+                except Exception:  # noqa: BLE001
+                    pass
                 queue_b.put_nowait({"type": "error", "data": "对话处理失败，请稍后重试"})
             finally:
                 queue_b.put_nowait(_DONE_B)

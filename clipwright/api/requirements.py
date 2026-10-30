@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
@@ -467,6 +468,79 @@ async def session_events(session_id: str, request: Request,
     }
 
 
+@router.get("/{session_id}/timeline")
+async def session_timeline(session_id: str, request: Request,
+                           since_seq: int = 0, until_seq: int = 0,
+                           limit: int = 200) -> dict:
+    """会话时间线（唯一有序流，PRD agent-session-timeline §5.1）。
+
+    前端刷新/重连**只读这一个接口**：条目已按 `seq` 升序，不需要任何本地排序。
+    `content` 已解析（大 payload 从 `items/<seq>.json` 读回），`content_ref` 保留引用。
+    """
+    _require_session_owner(request, session_id)
+    from clipwright.services import session_log as _session_log
+    from clipwright.services import session_projection as _projection
+
+    log = _session_log.get_log(session_id)
+    # 先做一次同步投影：刷新/重连时任务事件必须已经在流里（PRD §5.3）
+    await asyncio.to_thread(_projection.project, session_id)
+    page = await asyncio.to_thread(
+        log.list_items, since_seq=max(0, int(since_seq or 0)),
+        until_seq=max(0, int(until_seq or 0)), limit=limit,
+    )
+    return {"session_id": session_id, **page}
+
+
+@router.get("/{session_id}/timeline/stream")
+async def session_timeline_stream(session_id: str, request: Request,
+                                  since_seq: int = -1):
+    """会话时间线实时流（PRD §5.2）。
+
+    帧协议：`snapshot`（补齐断线窗口）→ `append` / `chunk` / `patch` / `finish`，
+    空转每 10s 一帧 `ping`。`chunk` 只带 `seq + delta`——这就是流式渲染本身。
+    `since_seq=-1`（默认）只推订阅之后的新帧。
+    """
+    _require_session_owner(request, session_id)
+
+    async def event_stream():
+        from clipwright.services import session_log as _session_log
+
+        log = _session_log.get_log(session_id)
+        # 先订阅再拉历史：中间产生的帧进队列，靠 seq 去重，不会漏
+        queue, _loop = log.subscribe()
+        try:
+            start = log.latest_seq() if since_seq < 0 else max(0, int(since_seq))
+            if since_seq >= 0:
+                page = await asyncio.to_thread(
+                    log.list_items, since_seq=start, limit=_session_log.MAX_PAGE)
+                frame = {"op": "snapshot", **page}
+                yield f"data: {json.dumps(frame, ensure_ascii=False)}\n\n"
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    yield f"data: {json.dumps({'op': 'ping', 't': int(time.time())})}\n\n"
+                    continue
+                yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 流断要能自愈，重连按 since_seq 补齐
+            logger.exception("会话时间线流失败: %s", exc)
+            yield f"data: {json.dumps({'op': 'error', 'detail': '时间线流中断'}, ensure_ascii=False)}\n\n"
+        finally:
+            log.unsubscribe(queue)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 def _opt_bool(value) -> bool | None:
     """user_inputs 里的开关可能是 bool / "true" / "1"，统一归一化（None 表示沿用工作区现值）。"""
     if value is None or isinstance(value, bool):
@@ -566,6 +640,13 @@ async def _proceed_as_task(*, session: dict, req: "ProceedRequest", request: Req
     kernel = AgentKernel()
     task = kernel.create(task_req, limits=TaskLimits(max_turns=160, max_tool_calls=800))
     _register_owner(task.id, request)
+    # 时间线：任务归到这个会话，之后 tool/skill/subagent/report 事件自动投影进同一份流
+    try:
+        from clipwright.services import session_projection as _projection
+
+        _projection.bind(req.session_id, task.id)
+    except Exception as _bind_err:  # noqa: BLE001 — 绑定失败不阻断开工
+        logger.warning("任务绑定会话时间线失败（继续）: %s", _bind_err)
     await kernel.plan(task)
     _schedule(task.id)
     await asyncio.to_thread(
