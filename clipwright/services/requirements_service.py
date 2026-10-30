@@ -759,6 +759,7 @@ class RequirementsService:
         user_message: str,
         on_delta: "Callable[[str], Any] | None" = None,
         on_reasoning: "Callable[[str], Any] | None" = None,
+        on_event: "Callable[[dict], Any] | None" = None,
     ) -> dict:
         """处理需求对话。on_delta 非空时 gathering 态通过流式回调增量推送
         reply 文本片段（token 级真流式），由 stream_chat 的 SSE 生成器消费。
@@ -866,7 +867,9 @@ class RequirementsService:
                     "metadata": {},
                 })
                 # 异步生成规划书
-                plan_result = await self._generate_plan(brief_data, user_inputs, session_id)
+                plan_result = await self._generate_plan(
+                    brief_data, user_inputs, session_id, on_event=on_event,
+                )
                 if plan_result:
                     plan_data = plan_result
                     status = "plan_ready"
@@ -956,7 +959,9 @@ class RequirementsService:
                     "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
                     "metadata": {},
                 })
-                plan_result = await self._generate_plan(brief_data, user_inputs, session_id)
+                plan_result = await self._generate_plan(
+                    brief_data, user_inputs, session_id, on_event=on_event,
+                )
                 if plan_result:
                     plan_data = plan_result
                     status = "plan_ready"
@@ -2019,6 +2024,7 @@ class RequirementsService:
     async def _generate_plan(
         self, brief_data: dict | None, user_inputs: dict, session_id: str,
         feedback: str = "", existing_raw_scenes: list | None = None,
+        on_event: "Callable[[dict], Any] | None" = None,
     ) -> dict | None:
         """调用 StructureAgent（注入 Persona）并翻译为规划书。
 
@@ -2131,6 +2137,13 @@ class RequirementsService:
 
             from clipwright.services import stage_subagent
 
+            if on_event:
+                # 用户 2026-10-31：不要让"确认简报"之后整段静默——
+                # 派发结构阶段本身就是一个可见的阶段事实。
+                on_event({"type": "stage", "data": {
+                    "stage": "structure", "status": "running",
+                    "action": "派发结构阶段：生成分镜", "phase": "plan",
+                }})
             result = await stage_subagent.run_inline(
                 "structure",
                 StructureInput(
@@ -2163,13 +2176,31 @@ class RequirementsService:
                 except Exception as e:
                     logger.warning("StructureAgent 用量记录失败: %s", e)
             scenes = result.scenes or []
+            if on_event:
+                on_event({"type": "stage", "data": {
+                    "stage": "structure", "status": "ok" if scenes else "empty",
+                    "action": "结构阶段完成", "phase": "plan",
+                    "summary": f"{len(scenes)} 个场景" if scenes else "没有产出场景",
+                }})
             if not scenes:
                 logger.warning("StructureAgent 返回空场景")
                 return None
 
-            return await self._translate_plan(
+            if on_event:
+                on_event({"type": "stage", "data": {
+                    "stage": "translate", "status": "running",
+                    "action": "翻译规划书（中文可读版）", "phase": "plan",
+                }})
+            plan = await self._translate_plan(
                 scenes, brief_data, script, feedback=feedback, web_context=web_context,
             )
+            if on_event:
+                on_event({"type": "stage", "data": {
+                    "stage": "translate", "status": "ok" if plan else "failed",
+                    "action": "规划书翻译完成" if plan else "规划书翻译失败",
+                    "phase": "plan",
+                }})
+            return plan
 
         except Exception as e:
             # TimeoutError 的 str() 是空串——只打 %s 会留下一句「规划书生成失败: 」，
@@ -2585,8 +2616,11 @@ class RequirementsService:
         _DONE_B = object()
 
         async def _run_buffered() -> None:
+            def _on_event(chunk: dict) -> None:
+                queue_b.put_nowait(chunk)
+
             try:
-                res = await self.chat(session_id, user_message)
+                res = await self.chat(session_id, user_message, on_event=_on_event)
                 queue_b.put_nowait({"type": "result", "data": res})
             except asyncio.CancelledError:
                 raise
