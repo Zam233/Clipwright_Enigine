@@ -210,7 +210,10 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
     # ── 联网搜索 ──
     ("enable_web_search", "search", "启用联网搜索", False, True, "兼容无前缀 ENABLE_WEB_SEARCH"),
     ("web_search_provider", "search", "搜索 Provider", False, True,
-     "bocha / baidu / tavily / serper / bing / local（本地抓取，无需密钥）"),
+     "deepseek（官方 Search/Fetch，默认）/ bocha / baidu / tavily / serper / bing / local（本地抓取，无需密钥）"),
+    ("web_search_deepseek_api_key", "search", "DeepSeek 搜索/Fetch Key", True, True,
+     "留空则复用主 LLM 的 DeepSeek key（llm_base_url 指向 api.deepseek.com 时）；"
+     "环境变量别名：DEEPSEEK_API_KEY / WEB_SEARCH_DEEPSEEK_API_KEY"),
     ("web_search_api_key", "search", "搜索 API Key", True, True, "主 provider 的 key；专属 key 缺失时回落到它"),
     ("web_search_tavily_api_key", "search", "Tavily API Key", True, True, ""),
     ("web_search_serper_api_key", "search", "Serper API Key", True, True, ""),
