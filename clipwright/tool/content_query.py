@@ -27,6 +27,8 @@ class ContentQueryTool(BaseTool):
     """素材内容查询（摘要 / 检索 / 结构化筛选 / 时间定位）。"""
 
     name = "content_query"
+
+    permission_tier = "read"
     description = (
         "查询素材内容索引：summary 列出已索引素材的构成，search 用自然语言检索镜头"
         "（自动把“黑场/有人脸/特写/掌声/静止/最长/最亮”这类说法路由成结构化条件或排序，"

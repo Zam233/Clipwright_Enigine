@@ -14,6 +14,7 @@ from clipwright.tool.video import _ensure_output_path
 class ColorCorrectTool(BaseTool):
     """色彩校正工具（亮度/对比度/饱和度/色相）。"""
     name = "color_correct"
+    permission_tier = "write_local"
     description = "调整视频色彩：亮度(brightness)、对比度(contrast)、饱和度(saturation)、色相(hue)"
     dependencies = ["ffmpeg"]
 
@@ -71,6 +72,7 @@ class ColorCorrectTool(BaseTool):
 class LutApplyTool(BaseTool):
     """LUT 应用工具（加载 .cube 文件）。"""
     name = "lut_apply"
+    permission_tier = "write_local"
     description = "应用 LUT (.cube) 文件到视频"
     dependencies = ["ffmpeg"]
 
@@ -110,6 +112,7 @@ class ColorMatchTool(BaseTool):
     计算 eq brightness/gamma 偏移并应用到目标片段，使两者观感接近。
     """
     name = "color_match"
+    permission_tier = "write_local"
     description = "跨片段色彩匹配：以参考片段为基准自动匹配目标片段的亮度/对比度"
     dependencies = ["ffmpeg"]
 

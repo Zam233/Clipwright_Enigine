@@ -15,6 +15,7 @@ from clipwright.tool.video import _ensure_output_path, _ffmpeg
 class AudioExtractTool(BaseTool):
     """音频提取工具。"""
     name = "audio_extract"
+    permission_tier = "write_local"
     description = "从视频中提取音频为独立文件"
     dependencies = ["ffmpeg"]
 
@@ -113,6 +114,7 @@ def _estimate_bpm_from_rms_stderr(ffmpeg_stderr: str) -> Optional[float]:
 class BPMDetectTool(BaseTool):
     """BPM 检测工具（ffmpeg RMS 能量包络 + 自相关节拍周期估计）。"""
     name = "bpm_detect"
+    permission_tier = "read"
     description = "检测音频文件的 BPM（基于能量包络自相关分析）"
     dependencies = ["ffmpeg"]
 
@@ -162,6 +164,7 @@ class BPMDetectTool(BaseTool):
 class AudioReplaceTool(BaseTool):
     """音频替换/混音工具。"""
     name = "audio_replace"
+    permission_tier = "write_local"
     description = "替换或混入音频（mix=True 混音，mix=False 替换）"
     dependencies = ["ffmpeg"]
 
@@ -217,6 +220,7 @@ class AudioReplaceTool(BaseTool):
 class AudioNormalizeTool(BaseTool):
     """音频归一化工具 — LUFS/峰值归一化。"""
     name = "audio_normalize"
+    permission_tier = "write_local"
     description = "音频音量归一化：loudnorm(LUFS目标)/peak(峰值)/rms(RMS)"
     dependencies = ["ffmpeg"]
 
@@ -274,6 +278,7 @@ class AudioNormalizeTool(BaseTool):
 class AudioMixTool(BaseTool):
     """音频混音工具 — 多音轨混音。"""
     name = "audio_mix"
+    permission_tier = "write_local"
     description = "将多段音频/视频的音频轨道混合为单轨输出"
     dependencies = ["ffmpeg"]
 

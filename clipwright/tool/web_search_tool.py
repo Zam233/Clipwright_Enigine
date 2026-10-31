@@ -44,6 +44,8 @@ class WebSearchTool(BaseTool):
     """关键词联网搜索工具。"""
 
     name = "web_search"
+
+    permission_tier = "costly"
     agent_callable = True
     #: 语义能力名 + 权限档位**自声明**（外网读取：costly；引擎 TIER_MAP 不再需要登记）
     capability = "web_search"

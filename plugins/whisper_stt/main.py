@@ -24,6 +24,8 @@ class WhisperTranscribeTool(BaseTool):
     """语音转文字 Tool — 调用 STTService 完成转录。"""
 
     name = "whisper_transcribe_local"  # 批7：不再覆盖内置同名工具
+    #: 权限档位自声明（本地推理，不联网但吃算力）——引擎 TIER_MAP 已清空
+    permission_tier = "costly"
 
     def is_available(self) -> bool:
         """本地 whisper 引擎可用性（旧实现恒 True → 未装引擎时暴露必败工具）。"""

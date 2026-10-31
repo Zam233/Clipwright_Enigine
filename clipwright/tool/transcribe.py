@@ -16,6 +16,7 @@ from clipwright.tool.base import BaseTool
 class WhisperTranscribeTool(BaseTool):
     """语音转文字 — 使用 Whisper 或 API 进行语音识别。"""
     name = "whisper_transcribe"
+    permission_tier = "costly"
     description = "将音频文件转为文字字幕（SRT/JSON/VTT），支持多语种"
     dependencies = []
 

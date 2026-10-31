@@ -20,6 +20,8 @@ class GetTypeSpecTool(BaseTool):
     """返回一个视频类型的完整规范（提示词/规则/指标/声明）。"""
 
     name = "get_type_spec"
+
+    permission_tier = "read"
     agent_callable = True
     dependencies: list[str] = []
     description = (

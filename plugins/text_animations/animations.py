@@ -132,6 +132,7 @@ class BaseTextAnimTool(BaseTool):
 
 class FadeInTextTool(BaseTextAnimTool):
     name = "text_fade_in"
+    permission_tier = "write_local"
     description = "文字淡入出现"
     def _build_vf(self, dt, en, start, dur, **kw):
         return f"{dt}:alpha=if(lt(t,{start+0.5}),(t-{start})/0.5,1):{en}"
@@ -139,6 +140,7 @@ class FadeInTextTool(BaseTextAnimTool):
 
 class SlideUpTextTool(BaseTextAnimTool):
     name = "text_slide_up"
+    permission_tier = "write_local"
     description = "文字从下方滑入"
     def _build_vf(self, dt, en, start, dur, **kw):
         return f"{dt}:y=h-(h-(h-text_h)/2)*(1-({start}+0.5-t)/0.5):{en}"
@@ -146,6 +148,7 @@ class SlideUpTextTool(BaseTextAnimTool):
 
 class SlideDownTextTool(BaseTextAnimTool):
     name = "text_slide_down"
+    permission_tier = "write_local"
     description = "文字从上方滑入"
     def _build_vf(self, dt, en, start, dur, **kw):
         return f"{dt}:y=-(h-text_h)/2+((h+text_h)/2)*(t-{start})/0.5:{en}"
@@ -153,6 +156,7 @@ class SlideDownTextTool(BaseTextAnimTool):
 
 class SlideLeftTextTool(BaseTextAnimTool):
     name = "text_slide_left"
+    permission_tier = "write_local"
     description = "文字从右侧滑入"
     def _build_vf(self, dt, en, start, dur, **kw):
         return f"{dt}:x=w-(w-(w-text_w)/2)*(1-({start}+0.5-t)/0.5):{en}"
@@ -160,6 +164,7 @@ class SlideLeftTextTool(BaseTextAnimTool):
 
 class SlideRightTextTool(BaseTextAnimTool):
     name = "text_slide_right"
+    permission_tier = "write_local"
     description = "文字从左侧滑入"
     def _build_vf(self, dt, en, start, dur, **kw):
         return f"{dt}:x=-(w-text_w)/2+((w+text_w)/2)*(t-{start})/0.5:{en}"
@@ -167,6 +172,7 @@ class SlideRightTextTool(BaseTextAnimTool):
 
 class ZoomInTextTool(BaseTextAnimTool):
     name = "text_zoom_in"
+    permission_tier = "write_local"
     description = "文字从中心放大出现"
     def _build_vf(self, dt, en, start, dur, **kw):
         return f"drawtext=text='{_safe(kw.get('text',''))}':fontsize=10:fontcolor={kw.get('font_color','#ffffff')}:x=(w-text_w)/2:y=(h-text_h)/2{_font_spec()}:alpha=if(lt(t,{start+0.5}),(t-{start})/0.5,1):{en}"
@@ -174,6 +180,7 @@ class ZoomInTextTool(BaseTextAnimTool):
 
 class ZoomOutTextTool(BaseTextAnimTool):
     name = "text_zoom_out"
+    permission_tier = "write_local"
     description = "文字从大缩小出现"
     def _build_vf(self, dt, en, start, dur, **kw):
         fs_max = kw.get("font_size", 48) * 3
@@ -182,6 +189,7 @@ class ZoomOutTextTool(BaseTextAnimTool):
 
 class TypewriterTextTool(BaseTextAnimTool):
     name = "text_typewriter"
+    permission_tier = "write_local"
     description = "打字机效果逐字出现"
     def _build_vf(self, dt, en, start, dur, **kw):
         text = kw.get("text", "")
@@ -191,6 +199,7 @@ class TypewriterTextTool(BaseTextAnimTool):
 
 class ScaleBounceTextTool(BaseTextAnimTool):
     name = "text_scale_bounce"
+    permission_tier = "write_local"
     description = "文字弹性缩放出现（弹跳效果）"
     def _build_vf(self, dt, en, start, dur, **kw):
         return f"{dt}:fontsize={kw.get('font_size',48)}-{kw.get('font_size',20)}*abs(sin((t-{start})*10))*exp(-3*(t-{start})):{en}"
@@ -198,6 +207,7 @@ class ScaleBounceTextTool(BaseTextAnimTool):
 
 class RotateInTextTool(BaseTextAnimTool):
     name = "text_rotate_in"
+    permission_tier = "write_local"
     description = "文字旋转进入"
     def _build_vf(self, dt, en, start, dur, **kw):
         return f"drawtext=text='{_safe(kw.get('text',''))}':fontsize={kw.get('font_size',48)}:fontcolor={kw.get('font_color','#ffffff')}:x=(w-text_w)/2:y=(h-text_h)/2{_font_spec()}:rotation=90*(1-(t-{start})/0.5):alpha=if(lt(t,{start+0.5}),(t-{start})/0.5,1):{en}"
@@ -205,6 +215,7 @@ class RotateInTextTool(BaseTextAnimTool):
 
 class BlurInTextTool(BaseTextAnimTool):
     name = "text_blur_in"
+    permission_tier = "write_local"
     description = "文字从模糊到清晰"
     def _build_vf(self, dt, en, start, dur, **kw):
         return f"{dt}:{en}"
@@ -212,6 +223,7 @@ class BlurInTextTool(BaseTextAnimTool):
 
 class WaveTextTool(BaseTextAnimTool):
     name = "text_wave"
+    permission_tier = "write_local"
     description = "文字波浪浮动效果"
     def _build_vf(self, dt, en, start, dur, **kw):
         return f"{dt}:y=(h-text_h)/2+10*sin(2*PI*2*(t-{start})):{en}"
@@ -219,6 +231,7 @@ class WaveTextTool(BaseTextAnimTool):
 
 class ShakeTextTool(BaseTextAnimTool):
     name = "text_shake"
+    permission_tier = "write_local"
     description = "文字震动效果"
     def _build_vf(self, dt, en, start, dur, **kw):
         return f"{dt}:x=(w-text_w)/2+5*sin(2*PI*15*(t-{start})):y=(h-text_h)/2+5*cos(2*PI*12*(t-{start})):{en}"
@@ -226,6 +239,7 @@ class ShakeTextTool(BaseTextAnimTool):
 
 class GlowTextTool(BaseTextAnimTool):
     name = "text_glow"
+    permission_tier = "write_local"
     description = "文字发光效果（多层叠加）"
     def _build_vf(self, dt, en, start, dur, **kw):
         glow = f"drawtext=text='{_safe(kw.get('text',''))}':fontsize={kw.get('font_size',48)}:fontcolor=white@{kw.get('glow_opacity',0.3)}:x=(w-text_w)/2+2:y=(h-text_h)/2+2{_font_spec()}:{en}"
@@ -234,6 +248,7 @@ class GlowTextTool(BaseTextAnimTool):
 
 class RainbowTextTool(BaseTextAnimTool):
     name = "text_rainbow"
+    permission_tier = "write_local"
     description = "文字渐变变色效果（彩虹色循环）"
     def _build_vf(self, dt, en, start, dur, **kw):
         hue_start = kw.get("hue_start", 0)
@@ -242,6 +257,7 @@ class RainbowTextTool(BaseTextAnimTool):
 
 class NeonTextTool(BaseTextAnimTool):
     name = "text_neon"
+    permission_tier = "write_local"
     description = "霓虹灯文字（发光+闪烁）"
     def _build_vf(self, dt, en, start, dur, **kw):
         glow = f"drawtext=text='{_safe(kw.get('text',''))}':fontsize={kw.get('font_size',48)}:fontcolor=white@{kw.get('glow_opacity',0.2)}:x=(w-text_w)/2+2:y=(h-text_h)/2+2{_font_spec()}:{en}"
@@ -251,6 +267,7 @@ class NeonTextTool(BaseTextAnimTool):
 
 class TypingCursorTool(BaseTextAnimTool):
     name = "text_typing_cursor"
+    permission_tier = "write_local"
     description = "打字机效果 + 闪烁光标"
     def _build_vf(self, dt, en, start, dur, **kw):
         cursor = f"drawtext=text='|':fontsize={kw.get('font_size',48)}:fontcolor={kw.get('font_color','#ffffff')}:x=(w+text_w)/2+5:y=(h-text_h)/2{_font_spec()}:alpha=0.5+0.5*sin(2*PI*3*t):{en}"
@@ -259,6 +276,7 @@ class TypingCursorTool(BaseTextAnimTool):
 
 class LetterRevealTool(BaseTextAnimTool):
     name = "text_letter_reveal"
+    permission_tier = "write_local"
     description = "逐字母揭示动画"
     def _build_vf(self, dt, en, start, dur, **kw):
         text = kw.get("text", "")
@@ -274,6 +292,7 @@ class LetterRevealTool(BaseTextAnimTool):
 
 class PerspectiveTextTool(BaseTextAnimTool):
     name = "text_perspective"
+    permission_tier = "write_local"
     description = "文字透视/3D 旋转进入"
     def _build_vf(self, dt, en, start, dur, **kw):
         return f"drawtext=text='{_safe(kw.get('text',''))}':fontsize={kw.get('font_size',48)}:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2{_font_spec()}:rotation=30*(1-(t-{start})/0.5):alpha=if(lt(t,{start+0.5}),(t-{start})/0.5,1):{en}"
@@ -281,6 +300,7 @@ class PerspectiveTextTool(BaseTextAnimTool):
 
 class FlipInTextTool(BaseTextAnimTool):
     name = "text_flip_in"
+    permission_tier = "write_local"
     description = "文字翻转进入"
     def _build_vf(self, dt, en, start, dur, **kw):
         angle = 180
@@ -289,6 +309,7 @@ class FlipInTextTool(BaseTextAnimTool):
 
 class ElasticTextTool(BaseTextAnimTool):
     name = "text_elastic"
+    permission_tier = "write_local"
     description = "文字弹性拉伸效果"
     def _build_vf(self, dt, en, start, dur, **kw):
         return f"drawtext=text='{_safe(kw.get('text',''))}':fontsize={kw.get('font_size',48)}:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2{_font_spec()}:fontsize_expr={kw.get('font_size',48)}+20*abs(sin((t-{start})*8))*exp(-2*(t-{start})):{en}"
@@ -296,6 +317,7 @@ class ElasticTextTool(BaseTextAnimTool):
 
 class MorphTextTool(BaseTextAnimTool):
     name = "text_morph"
+    permission_tier = "write_local"
     description = "文字变形过渡"
     def _build_vf(self, dt, en, start, dur, **kw):
         text_a = _safe(kw.get("text_a", ""))
@@ -311,6 +333,7 @@ class MorphTextTool(BaseTextAnimTool):
 
 class PulseTextTool(BaseTextAnimTool):
     name = "text_pulse"
+    permission_tier = "write_local"
     description = "文字呼吸脉冲（放大缩小循环）"
     def _build_vf(self, dt, en, start, dur, **kw):
         return f"{dt}:fontsize={kw.get('font_size',48)}+{kw.get('pulse_amp',10)}*sin(2*PI*2*(t-{start})):{en}"
@@ -318,6 +341,7 @@ class PulseTextTool(BaseTextAnimTool):
 
 class GradientTextTool(BaseTextAnimTool):
     name = "text_gradient"
+    permission_tier = "write_local"
     description = "文字渐变颜色过渡"
     def _build_vf(self, dt, en, start, dur, **kw):
         hue_start = kw.get("hue_start", 0)
@@ -397,6 +421,7 @@ class AnimationJSONValidator:
 class CustomJsonAnimationTool(BaseTool):
     """自定义动画工具 — LLM 生成 JSON 定义文字动画，校验后执行。"""
     name = "text_custom_json"
+    permission_tier = "write_local"
     description = "通过 JSON 自定义文字动画，支持 drawtext/move/scale/rotate/fade/color_shift/path 类型"
     dependencies = ["ffmpeg"]
 

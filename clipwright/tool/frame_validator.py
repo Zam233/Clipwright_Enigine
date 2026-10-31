@@ -188,6 +188,7 @@ def _failure_output(error: str) -> dict[str, Any]:
 class FrameValidatorTool(BaseTool):
     """帧验证工具 — 检测黑帧/过曝/全白帧，过滤不合格素材。"""
     name = "frame_validator"
+    permission_tier = "read"
     description = "帧验证：检测黑帧/过曝/全白帧，过滤不合格素材（FFmpeg signalstats + blackdetect）"
     dependencies = ["ffmpeg", "ffprobe"]  # 合并: 帧校验亦使用 ffprobe 探测时长
 

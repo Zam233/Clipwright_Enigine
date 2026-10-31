@@ -20,6 +20,7 @@ from clipwright.config import logger
 
 class ExtendedTTSTool(BaseTool):
     name = "extended_tts"
+    permission_tier = "costly"
     agent_callable = True
     description = "使用扩展 TTS 提供商合成语音"
     parameters_schema = {

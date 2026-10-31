@@ -52,6 +52,8 @@ class ListReportsTool(BaseTool):
     """列出工作区里的子 agent 报告（新→旧）。"""
 
     name = "list_reports"
+
+    permission_tier = "read"
     agent_callable = True
     dependencies: list[str] = []
     description = (
@@ -87,6 +89,8 @@ class ReadReportTool(BaseTool):
     """读一份报告的正文（受 max_chars 限制）。"""
 
     name = "read_report"
+
+    permission_tier = "read"
     agent_callable = True
     dependencies: list[str] = []
     description = (
@@ -153,6 +157,8 @@ class EditFileTool(BaseTool):
     """行级替换（`old_string` 必须唯一），只允许改 `docs/*.md`。"""
 
     name = "edit_file"
+
+    permission_tier = "write_local"
     agent_callable = True
     dependencies: list[str] = []
     description = (

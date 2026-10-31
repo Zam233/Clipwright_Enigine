@@ -111,6 +111,7 @@ def _check_ffmpeg() -> Optional[str]:
 class VideoTrimTool(BaseTool):
     """视频裁剪工具。"""
     name = "video_trim"
+    permission_tier = "write_local"
     description = "裁剪视频片段（支持 start+duration 或 start+end；输入可为本地文件或 http(s) URL）"
     dependencies = ["ffmpeg"]
 
@@ -381,6 +382,7 @@ class VideoTrimTool(BaseTool):
 class VideoDownloadTool(BaseTool):
     """视频下载工具 — 从 URL 下载素材到本地缓存。"""
     name = "video_download"
+    permission_tier = "dangerous"
     description = "从 HTTP/HTTPS URL 下载视频到本地缓存目录，返回本地路径"
     dependencies = ["ffmpeg"]
 
@@ -439,6 +441,7 @@ class VideoDownloadTool(BaseTool):
 class MediaProbeTool(BaseTool):
     """媒体探测工具 — 用 ffprobe 获取文件的流信息、时长、编码、分辨率等。"""
     name = "media_probe"
+    permission_tier = "read"
     description = "探测媒体文件信息：时长、分辨率、编码、帧率、流详情"
     dependencies = ["ffprobe"]
 
@@ -497,6 +500,7 @@ class MediaProbeTool(BaseTool):
 class VideoCropTool(BaseTool):
     """视频裁切工具 — 将视频裁切为指定宽高比。"""
     name = "video_crop"
+    permission_tier = "write_local"
     description = "裁切视频画面比例，如 16:9 转 9:16, 1:1 等"
     dependencies = ["ffmpeg"]
 
@@ -552,6 +556,7 @@ class VideoCropTool(BaseTool):
 class VideoThumbnailTool(BaseTool):
     """视频缩略图生成 — 提取视频最佳帧 + 叠加标题文字。"""
     name = "video_thumbnail"
+    permission_tier = "write_local"
     description = "从视频提取关键帧生成封面缩略图，可选叠加标题文字"
     dependencies = ["ffmpeg"]
 
@@ -590,6 +595,7 @@ class VideoThumbnailTool(BaseTool):
 class VideoConcatTool(BaseTool):
     """视频拼接工具。"""
     name = "video_concat"
+    permission_tier = "write_local"
     description = "拼接多个视频片段（要求同编码/同分辨率）"
     dependencies = ["ffmpeg"]
 
@@ -639,6 +645,7 @@ class VideoConcatTool(BaseTool):
 class VideoOverlayTool(BaseTool):
     """视频叠加工具（画中画、图片叠加）。"""
     name = "video_overlay"
+    permission_tier = "write_local"
     description = "在视频上叠加另一个视频或图像"
     dependencies = ["ffmpeg"]
 

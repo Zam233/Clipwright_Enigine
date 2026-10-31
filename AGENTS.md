@@ -79,9 +79,10 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
         dry_run_capable = False          # 是否支持 dry-run 结构预检
     ```
 
-    `capability_matrix` 优先采用自声明的 `permission_tier`，`TIER_MAP` 仅作**历史覆盖表**（老内置工具兼容）；
-    新增工具不再需要回来改 `CAPABILITY_ALIASES` / `TIER_MAP`。漏声明的内置工具仍硬失败（fail-closed），
-    插件工具则降级为"不进 agent 工具面"并留痕。`TIER_MAP` 里残留未注册工具只告警、不再让工具面构建失败。
+    `capability_matrix` **只认**工具自声明的 `permission_tier`。`TIER_MAP` 已于 2026-10-31
+    **全部迁移完毕并清空**（保留空 dict 仅为兼容 `explain()` 与外部读取），内置工具与插件工具
+    （`plugins/*/`，含 `text_animations` 的 25 个文字动画、`pv_engine` 的 9 个引擎工具）都改为
+    类上自声明。漏声明的内置工具仍硬失败（fail-closed），插件工具则降级为"不进 agent 工具面"并留痕。
 
 ## 鉴权三模式
 

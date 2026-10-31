@@ -207,6 +207,8 @@ class PvEngineProbeTool(BaseTool):
     """只读：镜头数据体检（数量、时间覆盖、空隙）。"""
 
     name = "pv_engine_probe"
+
+    permission_tier = "read"
     capability = "pv_probe"
     agent_callable = True
     description = "体检 PV 引擎的 shots 数据：镜头数、时间覆盖、间隙（只读，可离线）"
@@ -235,6 +237,8 @@ class PvEngineAuditTool(BaseTool):
     """只读：跑引擎的硬规则审计（退出码 0 = 全过），并解析成结构化规则。"""
 
     name = "pv_engine_audit"
+
+    permission_tier = "read"
     capability = "pv_audit"
     agent_callable = True
     description = "跑引擎规则审计（engine 布局 R01–R11；上游 build 布局规则更多），退出码即结论"
@@ -294,6 +298,8 @@ class PvEngineStillsTool(BaseTool):
     """写工作区：抽静帧供构图复核（产物落 PluginData/pv_engine/<job>/）。"""
 
     name = "pv_engine_stills"
+
+    permission_tier = "write_local"
     capability = "pv_preview"
     agent_callable = True
     description = "用 PV 引擎抽静帧（需要引擎 assets；缺素材会如实报错）"
@@ -340,6 +346,8 @@ class PvEngineDoctorTool(BaseTool):
     """
 
     name = "pv_engine_doctor"
+
+    permission_tier = "read"
     capability = "pv_doctor"
     agent_callable = True
     description = "反射 PV 引擎能力契约（layouts/kinds/相机/调色板/审计规则/CLI），并体检目录"
@@ -370,6 +378,8 @@ class PvEngineInitTool(BaseTool):
     """写工作区：脚手架一个引擎项目。"""
 
     name = "pv_engine_init"
+
+    permission_tier = "write_local"
     capability = "pv_authoring"
     agent_callable = True
     description = "用 PV 引擎脚手架生成 project.json（preset: lyric/slides/overlay）"
@@ -420,6 +430,8 @@ class PvEngineRenderTool(BaseTool):
     """整片渲染（costly，带帧数/墙钟预算闸）。"""
 
     name = "pv_engine_render"
+
+    permission_tier = "costly"
     capability = "pv_render"
     agent_callable = True
     description = "渲染整片 mp4（costly；有帧数与时长预算，超限直接拒绝）"
@@ -493,6 +505,8 @@ class PvEngineBeatsTool(BaseTool):
     """拍点网格（costly：解码整段音频）。"""
 
     name = "pv_engine_beats"
+
+    permission_tier = "costly"
     capability = "pv_beats"
     agent_callable = True
     description = "从音频估计拍点网格（bpm/period/beats），costly"
@@ -535,6 +549,8 @@ class PvEngineAlignTool(BaseTool):
     """逐字对齐（costly：whisper）。"""
 
     name = "pv_engine_align"
+
+    permission_tier = "costly"
     capability = "pv_align"
     agent_callable = True
     description = "把已有文案与音频逐字对齐（需要 whisper，缺依赖如实报错）"
@@ -581,6 +597,8 @@ class PvEngineTimelineToProjectTool(BaseTool):
     """Timeline → project.json（单向桥；引擎侧逐帧渲染的入口）。"""
 
     name = "pv_engine_timeline_to_project"
+
+    permission_tier = "write_local"
     capability = "pv_timeline"
     agent_callable = True
     description = "把 Clipwright Timeline（caption/text clip）转成 PV 引擎 project.json"

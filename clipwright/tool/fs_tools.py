@@ -45,6 +45,8 @@ class ReadFileTool(BaseTool):
     """读取一个文本文件（只读，最多 100KB）。"""
 
     name = "read_file"
+
+    permission_tier = "read"
     agent_callable = True
     dependencies: list[str] = []
     description = "读取一个文本文件的内容（默认前 4000 字符，最多 100KB）。只读，不修改任何东西。"
@@ -93,6 +95,8 @@ class ListDirTool(BaseTool):
     """列出一个目录的条目（只读，最多 200 项）。"""
 
     name = "list_dir"
+
+    permission_tier = "read"
     agent_callable = True
     dependencies: list[str] = []
     description = "列出一个目录下的文件名与子目录（只读，最多 200 项）。用于先看清有什么再做决定。"
@@ -129,6 +133,8 @@ class WriteFileTool(BaseTool):
     """写一个文本文件（只允许写在白名单目录内，最多 200KB）。"""
 
     name = "write_file"
+
+    permission_tier = "write_local"
     agent_callable = True
     dependencies: list[str] = []
     description = (

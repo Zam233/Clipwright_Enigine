@@ -26,6 +26,8 @@ class ProjectMemoryTool(BaseTool):
     """读写项目四段式决策记忆（Strategy / Decisions / Reasoning / Outstanding）。"""
 
     name = "project_memory"
+
+    permission_tier = "read"
     description = (
         "读写项目决策记忆 memory.md（四段式：Strategy 策略 / Decisions 决策 / "
         "Reasoning 理由 / Outstanding 待办）。action=read 读回记忆与摘要；"

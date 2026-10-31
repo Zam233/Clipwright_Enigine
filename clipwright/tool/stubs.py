@@ -26,6 +26,7 @@ logger = logging.getLogger("clipwright.tool.stubs")
 class VisionLLMTool(BaseTool):
     """视觉 LLM 分析工具 — 用多模态 LLM 分析视频帧内容。"""
     name = "vision_llm"
+    permission_tier = "costly"
     description = "视觉 LLM 分析：用多模态大模型分析视频帧内容、描述、标签"
 
     async def execute(self, **kwargs: Any) -> ToolExecResult:

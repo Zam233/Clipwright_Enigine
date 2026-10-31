@@ -39,6 +39,7 @@ def _poll_task_path(task_id: str) -> str:
 
 class AIVideoGenTool(BaseTool):
     name = "ai_video_generate"
+    permission_tier = "costly"
     agent_callable = True
     description = "从文字提示生成短视频（5-10 秒，支持首帧图生视频），异步执行"
     parameters_schema = {

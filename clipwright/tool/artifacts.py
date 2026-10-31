@@ -48,6 +48,8 @@ class ListArtifactsTool(BaseTool):
     """列出工作区 artifacts/ 下的产物（引用 + preview）。"""
 
     name = "list_artifacts"
+
+    permission_tier = "read"
     agent_callable = True
     dependencies: list[str] = []
     description = (
@@ -97,6 +99,8 @@ class ReadArtifactTool(BaseTool):
     """读一个产物（默认返回前 200KB；可用 json_path 取子树）。"""
 
     name = "read_artifact"
+
+    permission_tier = "read"
     agent_callable = True
     dependencies: list[str] = []
     description = (
