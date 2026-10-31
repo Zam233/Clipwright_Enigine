@@ -276,16 +276,22 @@ async def fetch_and_store(
     title: str = "",
     client_factory: Callable[..., Any] | None = None,
     max_bytes: int = MAX_BYTES,
+    skip_robots: bool = False,
 ) -> IngestResult:
-    """抓取一个 URL 并按类型落盘（图片/视频二进制，其余当正文存 markdown）。"""
+    """抓取一个 URL 并按类型落盘（图片/视频二进制，其余当正文存 markdown）。
+
+    `skip_robots=True` 只用于**素材源 API 直接返回的媒体文件 URL**（那是接口给的
+    下载地址，不是爬站页面）：省掉 robots.txt 的网络往返，路径治理/SSRF 检查照旧。
+    """
     if not is_public_url(url):
         return IngestResult(ok=False, url=url, error="URL 不被允许（协议/私网/环回）")
     ok_host, host_why = host_allowed(url)
     if not ok_host:
         return IngestResult(ok=False, url=url, error=host_why)
-    ok_robots, robots_why = robots_allows(url)
-    if not ok_robots:
-        return IngestResult(ok=False, url=url, error=robots_why)
+    if not skip_robots:
+        ok_robots, robots_why = robots_allows(url)
+        if not ok_robots:
+            return IngestResult(ok=False, url=url, error=robots_why)
     reused = cached_copy(root, url)
     if reused is not None:
         # 缓存命中：不重复下载，但仍返回来源与许可（旁车里的原始记录）

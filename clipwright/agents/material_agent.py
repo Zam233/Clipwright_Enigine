@@ -923,6 +923,30 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
             if use_vision_llm:
                 notes.append(f"视觉LLM分析已启用 (每候选 {vision_frame_count} 帧)")
 
+            # ── 候选素材**真下载**到工作区（material → edit 的缺口，2026-10-31 用户实测）──
+            #
+            # 症状：material 交了 43 场 / 187 条候选，`url` 全有、`local_path` 全空，
+            # `materials/` 目录是空的；下游 edit 拿着 pexels 远程 URL 去 trim，
+            # 于是 41 次空剪、最后按墙钟触闸收尾。
+            #
+            # 根因：素材源（Pexels/JSON）只给 URL，**没有任何地方把这些 URL 下载下来**，
+            # 而 edit 阶段不应该做网络 I/O。所以下载落在 material：选完人就下，
+            # 回填 `local_path`；下不动就如实登记降级（含真实原因），别让下游猜。
+            download_stats = await self._download_candidates(candidate_clips, context)
+            if download_stats.get("attempted"):
+                ok_n = int(download_stats.get("ok") or 0)
+                tried = int(download_stats.get("attempted") or 0)
+                reason = str(download_stats.get("reason") or "")
+                notes.append(
+                    f"素材下载：成功 {ok_n}/{tried}"
+                    + (f"；失败原因：{reason[:120]}" if ok_n < tried else "")
+                )
+                if ok_n < tried:
+                    logger.warning(
+                        "MaterialAgent: 素材下载失败 %d/%d（原因：%s）",
+                        tried - ok_n, tried, reason[:200],
+                    )
+
             # S 轨接线：MV 类型（或显式开启）时，把"每句落到哪个镜头"写回场景并留痕
             placement_stats = None
             if _placement_enabled(context):
@@ -963,6 +987,17 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                     "scope": f"scene:{idx}",
                     "impact": f"「{title[:30]}」该段画面是占位卡，不是实拍素材",
                 } for idx, title in placeholders[:12]]
+                # 下载失败也要登记：只有 URL 没有本地文件 = edit 拿不到东西剪，
+                # 这是与"没有候选"不同的失败，主 agent 需要看见真实原因才能改策略。
+                if int(download_stats.get("attempted") or 0) > int(download_stats.get("ok") or 0):
+                    placeholder_degradations.append({
+                        "kind": "material_download_failed",
+                        "detail": (f"素材下载失败 {download_stats.get('attempted')}/"
+                                   f"{download_stats.get('ok')}："
+                                   f"{str(download_stats.get('reason') or '')[:120]}"),
+                        "scope": "stage:material",
+                        "impact": "候选只有远程 URL、没有本地文件，edit 无法裁剪真实素材",
+                    })
                 notes.append(
                     f"占位场景 {len(placeholders)}/{len(candidate_clips)} 个"
                     f"（{'、'.join(str(i) for i, _ in placeholders[:8])}）"
@@ -978,8 +1013,21 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                     material_notes=notes,
                 )
 
+            # 没有占位场景、但下载失败同样要报：候选全是远程 URL + 本地无文件时，
+            # edit 阶段只会产出空剪（2026-10-31 实测 41 次），主 agent 必须看见真原因。
+            download_degradations: list[dict[str, Any]] = []
+            if int(download_stats.get("attempted") or 0) > int(download_stats.get("ok") or 0):
+                download_degradations.append({
+                    "kind": "material_download_failed",
+                    "detail": (f"素材下载失败：尝试 {download_stats.get('attempted')}、"
+                               f"成功 {download_stats.get('ok')}；"
+                               f"{str(download_stats.get('reason') or '')[:120]}"),
+                    "scope": "stage:material",
+                    "impact": "候选只有远程 URL、没有本地文件，edit 无法裁剪真实素材",
+                })
             return MaterialOutput(
                 decision=AgentDecision.PASS,
+                degradations=download_degradations,
                 candidate_clips=candidate_clips,
                 material_notes=notes,
             )
@@ -987,6 +1035,119 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
         except Exception as e:
             logger.exception("MaterialAgent 失败: %s", e)
             return self.build_error_output(str(e), MaterialOutput)
+
+    async def _download_candidates(
+        self, candidate_clips: list[dict[str, Any]], context: AgentContext,
+    ) -> dict[str, Any]:
+        """把每个场景的**首选**候选真下载到工作区，回填 `local_path`。
+
+        三条纪律：
+        1. **从 material 下载，不让 edit 做网络 I/O**（edit 的职责是剪，不是抓）；
+        2. **有预算**：每阶段最多 `_FETCH_MAX` 个、并发 `_FETCH_CONCURRENCY`，
+           不做"43 场 × 每条候选 5 条"的全量下载；
+        3. **连续失败就停**：离线环境里每个 URL 都要等超时，连续 `_FETCH_BREAKER`
+           个失败说明网络不通——立刻停手并记录真实原因，别把阶段时间烧在等超时上。
+        """
+        import os
+
+        root = str((getattr(context, "extra_params", None) or {}).get("workspace_root") or "")
+        if not root:
+            # 没有工作区就不下载（落点无处可去），如实说明
+            return {"attempted": 0, "ok": 0, "reason": "no workspace_root"}
+        try:
+            from clipwright.services import web_assets
+        except Exception as exc:  # noqa: BLE001 — 下载器不可用不阻断选材
+            logger.warning("MaterialAgent: 素材下载器不可用（跳过下载）: %s", exc)
+            return {"attempted": 0, "ok": 0, "reason": f"downloader unavailable: {exc}"}
+
+        max_items = int(os.environ.get("CLIPWRIGHT_MATERIAL_FETCH_MAX", "48"))
+        concurrency = int(os.environ.get("CLIPWRIGHT_MATERIAL_FETCH_CONCURRENCY", "3"))
+        breaker_after = int(os.environ.get("CLIPWRIGHT_MATERIAL_FETCH_BREAKER", "5"))
+        # 单文件上限：素材站的"原始尺寸"直链常见 20–40MB，20MB 的默认上限会把它们全挡掉
+        max_bytes = int(os.environ.get("CLIPWRIGHT_MATERIAL_FETCH_MAX_BYTES", str(60 * 1024 * 1024)))
+
+        targets: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        skipped_images = 0
+        _VIDEO_EXT = (".mp4", ".webm", ".mov", ".m4v")
+        for clip in candidate_clips:
+            for asset in (clip.get("suggested_assets") or [])[:1]:
+                if not isinstance(asset, dict):
+                    continue
+                if str(asset.get("local_path") or "").strip():
+                    continue
+                url = str(asset.get("url") or "")
+                if not url.startswith(("http://", "https://")):
+                    continue
+                # 只下**视频**：编辑阶段只会 trim 视频（图片目前没有"静帧成片"的工具能力），
+                # 把图片也下下来只会占盘 + 让 edit 白试一次。图片候选保留 URL 供人工/后续使用。
+                kind = str(asset.get("type") or "")
+                is_video = kind == "video" or url.split("?")[0].lower().endswith(_VIDEO_EXT)
+                if not is_video:
+                    skipped_images += 1
+                    continue
+                targets.append((clip, asset))
+        if not targets:
+            return {"attempted": 0, "ok": 0, "reason": "", "skipped_images": skipped_images}
+        targets = targets[:max_items]
+
+        stats: dict[str, Any] = {"attempted": 0, "ok": 0, "reason": "", "skipped_images": skipped_images}
+        stop = {"value": False}
+        consecutive_fail = {"n": 0}
+        lock = asyncio.Lock()
+        sem = asyncio.Semaphore(max(1, concurrency))
+
+        async def _one(clip: dict[str, Any], asset: dict[str, Any]) -> None:
+            async with sem:
+                async with lock:
+                    if stop["value"]:
+                        return
+                    stats["attempted"] += 1
+                res = None
+                err = ""
+                # 单条最多试 2 次：CDN 抖动很常见（实测同一批 4 成功、3 个 ConnectError），
+                # 一次连不上就判该素材不可用太浪费；但也绝不多试，离线时不能等超时。
+                for attempt in range(2):
+                    try:
+                        res = await web_assets.fetch_and_store(
+                            str(asset.get("url") or ""),
+                            root=root,
+                            title=str(asset.get("title") or ""),
+                            # 这是素材源 API 直接给的媒体文件地址，不是爬站页面：
+                            # 跳过 robots.txt 往返（SSRF/域名治理仍在 fetch_and_store 里）
+                            skip_robots=True,
+                            max_bytes=max_bytes,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — 单条失败如实计
+                        res = None
+                        err = f"{type(exc).__name__}: {exc}"[:200]
+                    else:
+                        err = "" if getattr(res, "ok", False) else str(getattr(res, "error", "") or "")
+                    if res is not None and getattr(res, "ok", False):
+                        break
+                    if attempt == 0:
+                        await asyncio.sleep(0.8)
+                async with lock:
+                    if res is not None and getattr(res, "ok", False):
+                        asset["local_path"] = str(getattr(res, "local_path", "") or "")
+                        asset["local_bytes"] = int(getattr(res, "bytes", 0) or 0)
+                        asset["local_sha256"] = str(getattr(res, "sha256", "") or "")
+                        stats["ok"] += 1
+                        consecutive_fail["n"] = 0
+                        return
+                    consecutive_fail["n"] += 1
+                    if not stats["reason"] and err:
+                        stats["reason"] = err
+                    if consecutive_fail["n"] >= breaker_after:
+                        stop["value"] = True
+
+        await asyncio.gather(*(_one(c, a) for c, a in targets), return_exceptions=True)
+        if stop["value"]:
+            stats["reason"] = (stats["reason"] or "连续下载失败") + "（连续失败即停）"
+        logger.info(
+            "MaterialAgent: 素材下载 %d/%d 成功（预算 %d，并发 %d）",
+            stats["ok"], stats["attempted"], max_items, concurrency,
+        )
+        return stats
 
     async def _process_scene(
         self,
