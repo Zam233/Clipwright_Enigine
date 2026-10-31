@@ -384,13 +384,24 @@ class Settings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("ENABLE_WEB_SEARCH", "CLIPWRIGHT_ENABLE_WEB_SEARCH"),
     )
-    web_search_provider: Literal["bocha", "baidu", "tavily", "serper", "bing", "local"] = Field(
-        default="bocha",
+    web_search_provider: Literal[
+        "deepseek", "bocha", "baidu", "tavily", "serper", "bing", "local",
+    ] = Field(
+        default="deepseek",
         validation_alias=AliasChoices("WEB_SEARCH_PROVIDER", "CLIPWRIGHT_WEB_SEARCH_PROVIDER"),
     )
     web_search_api_key: str = Field(
         default="",
         validation_alias=AliasChoices("WEB_SEARCH_API_KEY", "CLIPWRIGHT_WEB_SEARCH_API_KEY"),
+    )
+    # DeepSeek 自研搜索/抓取（2026-10-31 用户指定）：
+    #   POST https://api.deepseek.com/v1/tools/search  {query, count, need_content}
+    #   POST https://api.deepseek.com/v1/tools/fetch   {url} → {title, content(markdown)}
+    # key 缺省复用主 LLM 的 DeepSeek key（同一平台账号即可用）。
+    web_search_deepseek_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("DEEPSEEK_API_KEY", "WEB_SEARCH_DEEPSEEK_API_KEY",
+                                      "CLIPWRIGHT_WEB_SEARCH_DEEPSEEK_API_KEY"),
     )
     # 各 provider 专属 key（缺省回落到 web_search_api_key）
     web_search_tavily_api_key: str = Field(

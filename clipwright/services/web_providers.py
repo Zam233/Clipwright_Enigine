@@ -30,12 +30,16 @@ _DEFAULT_HEADERS = {"User-Agent": DEFAULT_USER_AGENT}
 
 #: 付费 provider 的端点（可用 `web_search_base_url` 覆盖主 provider）
 ENDPOINTS = {
+    # DeepSeek 自研搜索引擎（2026-10-31 用户指定；与平台 API 同一 Bearer 鉴权）
+    "deepseek": "https://api.deepseek.com/v1/tools/search",
     "bocha": "https://api.bochaai.com/v1/web-search",
     "baidu": "https://qianfan.baidubce.com/v2/ai_search/web_search",
     "tavily": "https://api.tavily.com/search",
     "serper": "https://google.serper.dev/search",
     "bing": "https://api.bing.microsoft.com/v7.0/search",
 }
+#: DeepSeek 网页抓取（返回 Markdown 正文）——比本地正则抽正文干净得多
+DEEPSEEK_FETCH_ENDPOINT = "https://api.deepseek.com/v1/tools/fetch"
 #: 本地抓取入口（按顺序尝试）
 _LOCAL_ENDPOINTS = (
     "https://html.duckduckgo.com/html/?q={q}",
@@ -44,7 +48,7 @@ _LOCAL_ENDPOINTS = (
 _BAIDU_AUTH_PREFIX = "bce-v3/ALTAK-"
 
 #: provider 兜底顺序（不含 primary；local 恒最后，单独判断）
-_FALLBACK_ORDER = ("bocha", "baidu", "tavily", "serper", "bing", "local")
+_FALLBACK_ORDER = ("deepseek", "bocha", "baidu", "tavily", "serper", "bing", "local")
 
 #: 结果链接/标题的解析（DuckDuckGo HTML / Bing HTML 通用形态）
 _HTML_ITEM_RES = (
@@ -68,6 +72,7 @@ class ProviderSpec:
 
 
 PROVIDERS: dict[str, ProviderSpec] = {
+    "deepseek": ProviderSpec("deepseek", "DeepSeek 搜索", True, "web_search_deepseek_api_key"),
     "bocha": ProviderSpec("bocha", "Bocha", True),
     "baidu": ProviderSpec("baidu", "百度千帆", True),
     "tavily": ProviderSpec("tavily", "Tavily", True, "web_search_tavily_api_key"),
@@ -86,6 +91,17 @@ _LEGACY_GLOBAL_KEY_PROVIDERS = ("bocha", "baidu")
 def provider_key(spec: ProviderSpec) -> str:
     """该 provider 的 API key（专属优先；只有 bocha/baidu 回落到全局 key）。"""
     if not spec.requires_key:
+        return ""
+    if spec.id == "deepseek":
+        own = str(getattr(settings, spec.key_attr, "") or "").strip()
+        if own:
+            return own
+        # DeepSeek 搜索与平台 API 同一账号：主 LLM 就是 DeepSeek 时直接复用它的 key
+        # （否则用户得为"搜索"再配一遍同一个 key，配置体验说不通）。
+        base = f"{getattr(settings, 'llm_base_url', '') or ''} " \
+               f"{getattr(settings, 'llm_provider', '') or ''}".lower()
+        if "deepseek" in base:
+            return str(getattr(settings, "llm_api_key", "") or "").strip()
         return ""
     if spec.key_attr:
         own = str(getattr(settings, spec.key_attr, "") or "").strip()
@@ -194,6 +210,76 @@ def _find_list(node: Any) -> list[Any] | None:
 
 def _clean_html_text(raw: str) -> str:
     return re.sub(r"\s+", " ", _TAG_RE.sub("", raw or "")).strip()
+
+
+async def _search_deepseek(query: str, count: int,
+                           client_factory: Callable[..., Any]) -> list[dict]:
+    """DeepSeek 自研搜索（`POST /v1/tools/search`，2026-10-31 用户指定）。
+
+    响应字段比别家丰富（`rerank_score`/`summary`/`content`/`authority`/`date`），
+    这里**保留**它们：`content` 是 `need_content=true` 时返回的正文，能给 agent 直接用；
+    `summary`（600–800 字）比 `snippet` 更适合喂模型。
+    """
+    key = provider_key(PROVIDERS["deepseek"])
+    if not key:
+        raise RuntimeError("DeepSeek 搜索缺少 API key（DEEPSEEK_API_KEY 或 web_search_deepseek_api_key）")
+    payload = {
+        "query": str(query)[:128],
+        "count": max(1, min(int(count or 5), 50)),
+        "need_content": True,
+    }
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    async with client_factory(timeout=_timeout()) as client:
+        resp = await client.post(_endpoint("deepseek"), json=payload, headers=headers)
+        if resp.status_code >= 400:
+            raise RuntimeError(_deepseek_error(resp))
+        data = resp.json()
+    items = data.get("results") if isinstance(data, dict) else None
+    out: list[dict] = []
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        url = str(it.get("url") or "").strip()
+        if not url:
+            continue
+        try:
+            score = float(it.get("rerank_score") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        out.append({
+            "title": str(it.get("title") or ""),
+            "url": url,
+            "snippet": str(it.get("snippet") or "")[:2000],
+            "summary": str(it.get("summary") or "")[:2000],
+            "content": str(it.get("content") or "")[:20000],
+            "score": score,
+            "authority": it.get("authority"),
+            "date": it.get("date"),
+            "site_name": it.get("site_name"),
+        })
+    return out
+
+
+def _deepseek_error(resp: Any) -> str:
+    """把 DeepSeek 的 OpenAI 风格错误翻成人话（401/402/429 是运维最常撞的三种）。"""
+    detail = ""
+    try:
+        body = resp.json()
+        detail = str(((body or {}).get("error") or {}).get("message") or "")[:200]
+    except Exception:  # noqa: BLE001
+        detail = str(getattr(resp, "text", "") or "")[:200]
+    hints = {
+        400: "请求不合法",
+        401: "API Key 缺失或无效",
+        402: "账号余额不足",
+        403: "安全策略拒绝",
+        404: "没有可抓取的内容",
+        429: "超过 QPS 限制",
+        500: "服务端错误",
+        504: "下游超时",
+    }
+    hint = hints.get(int(getattr(resp, "status_code", 0) or 0), "调用失败")
+    return f"HTTP {getattr(resp, 'status_code', '?')} {hint}：{detail}"
 
 
 async def _search_bocha(query: str, count: int, client_factory: Callable[..., Any]) -> list[dict]:
@@ -320,6 +406,7 @@ async def _search_local(query: str, count: int, client_factory: Callable[..., An
 
 
 _SEARCHERS: dict[str, Callable[..., Any]] = {
+    "deepseek": _search_deepseek,
     "bocha": _search_bocha,
     "baidu": _search_baidu,
     "tavily": _search_tavily,
