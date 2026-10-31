@@ -985,6 +985,15 @@ class AgentKernel:
 
             maybe_record("tool", name, dict(args or result.get("args") or {}), result,
                          error=result.get("error"))
+            # 时间轴实时同步（用户 2026-10-31）：每派完一个阶段就把当前时间线增量写回项目，
+            # 编辑器轮询到即时刷新。旧实现只在任务收尾写一次，用户跑片半小时看到的是空时间线。
+            if name == "delegate_agent" and str(result.get("status") or "") in ("ok", "dry_run"):
+                try:
+                    from clipwright.services import task_project_sync as _sync
+
+                    _sync.sync_timeline_to_project(task.id, task, incremental=True)
+                except Exception as exc:  # noqa: BLE001 — 同步失败不影响执行
+                    logger.warning("阶段后增量回写时间线失败 %s: %s", task.id, exc)
             status = str(result.get("status") or "")
             if status in ("pending_approval", "needs_human_review"):
                 # 等授权/等人审 ≠ 失败：任务暂停，处理完 resume 继续（PRD A1 / §18.10.4）

@@ -3019,6 +3019,76 @@ class RequirementsService:
     # 新路径：建一个 `plan_only` 任务，由主 agent 派 structure → 内核收尾写
     # `reports/plan.json` → 需求侧读产物回填 production_plan。**唯一执行通道**。
 
+    async def watch_task_session(self, session_id: str, task_id: str) -> None:
+        """盯任务终态，把会话从 `pipeline_running` 拉回**可对话**状态（用户 2026-10-31）。
+
+        旧行为：`proceed` 把会话置成 `pipeline_running` 之后再没人改回来。任务一旦失败/
+        被取消，前端按状态隐藏输入框 → 用户既不能跟主 agent 说话，也不能重开一轮，
+        只能刷新页面赌运气。这里做两件事：
+        - 任务 `done` → `pipeline_done`（可以继续聊"再改一版"）
+        - 其它终态（failed/cancelled/超时）→ 回 `plan_ready`，并在消息流里写明原因，
+          让用户能直接说"重试"或调整方案；
+        同时把还开着的流式条目收尾，避免界面上永远转圈。
+        """
+        from clipwright.services.agent_kernel import AgentKernel
+
+        kernel = AgentKernel()
+        for _ in range(3600):
+            await asyncio.sleep(2.0)
+            task = kernel.get(task_id)
+            if task is None:
+                continue
+            if not task.terminal:
+                continue
+            try:
+                await self._release_session_after_task(session_id, task)
+            except Exception as exc:  # noqa: BLE001 — 收尾失败要留痕，不吞
+                logger.warning("任务终态释放会话失败 %s/%s: %s", session_id, task_id, exc)
+            return
+        logger.warning("会话终态监听超时：session=%s task=%s（1 小时）", session_id, task_id)
+
+    async def _release_session_after_task(self, session_id: str, task: Any) -> None:
+        sess = await asyncio.to_thread(self.get_session, session_id) or {}
+        messages = list(sess.get("messages") or [])
+        status_now = str(sess.get("status") or "")
+        task_status = str(getattr(task, "status", "") or "")
+        finish = getattr(task, "finish", None)
+        reason = str(getattr(finish, "reason", "") or "")
+        ok = task_status == "done"
+        if ok:
+            new_status = "pipeline_done"
+            note = ("这一轮任务已经结束（成片时间线已写回项目）。"
+                    "要继续调整就直接说，我会重新规划。")
+        else:
+            new_status = "plan_ready"
+            note = (f"任务没跑完（{reason or task_status}），规划书还在，可以直接说"
+                    "「重试」或告诉我要改哪里。")
+        # 已经是终态且不是"运行中"就不重复写（幂等）
+        if status_now == new_status and messages and messages[-1].get("content") == note:
+            return
+        messages.append({
+            "role": "assistant", "content": note,
+            "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+            "metadata": {"task_released": task_status, "reason": reason},
+        })
+        await asyncio.to_thread(
+            self._persist, session_id, new_status, messages,
+            sess.get("creative_brief"), sess.get("production_plan"),
+            sess.get("user_inputs") or {},
+        )
+        try:
+            log = _timeline(session_id)
+            log.close_open("interrupted")
+            log.append(
+                type="content", content=note, source="requirements",
+                turn=log.user_turns() or 1,
+                meta={"role": "assistant", "task_released": task_status, "reason": reason},
+            )
+        except Exception as exc:  # noqa: BLE001 — 时间线写失败不影响释放
+            logger.warning("释放会话时写时间线失败 %s: %s", session_id, exc)
+        logger.info("会话 %s 已释放（task=%s status=%s → %s）",
+                    session_id, getattr(task, "id", ""), task_status, new_status)
+
     async def _dispatch_or_none(self, session_id: str,
                                 brief: Any = None) -> dict[str, Any] | None:
         """D4：正式生成规划书统一走派发；返回 None 表示"走应急内联回退"。"""

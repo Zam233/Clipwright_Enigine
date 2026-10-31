@@ -29,7 +29,15 @@ def get_web_search_service():
 
 
 def get_web_fetch_service():
-    return get_web_fetch_service()
+    """薄包装：本模块符号可被替换（测试/部署注入），内部读服务模块的当前实现。
+
+    **这里是 self-recursion 的老坑（2026-10-31 实测）**：旧实现写成
+    `return get_web_fetch_service()` —— 函数自己调自己，每次 `web_fetch` 都以
+    `RecursionError: maximum recursion depth exceeded` 收场；而 `execute` 把任何异常
+    都翻译成 `DEPENDENCY_MISSING + 空 content`，于是主 agent 那边看到的是
+    「web_fetch 直接失败」，整整一条联网深读能力等于不存在。
+    """
+    return _web_search_module.get_web_fetch_service()
 
 
 class WebSearchTool(BaseTool):
@@ -153,10 +161,17 @@ class WebFetchTool(BaseTool):
         """
         try:
             content = await get_web_fetch_service().fetch(url, max_chars=max_chars)
-            output: dict[str, Any] = {"content": content}
-            status = ToolStatus.SUCCESS if content else ToolStatus.DEPENDENCY_MISSING
+            output: dict[str, Any] = {"content": content, "fetched": bool(content)}
             if not content:
-                output["content"] = ""
+                # 空正文有三种可能：不是 HTML（图片/视频/PDF）、网络/域名限制、页面确实没内容。
+                # 旧实现把它们统一报成 DEPENDENCY_MISSING + 空内容，模型只能猜"工具坏了"。
+                # 现在如实标注 fetched=false 并给可执行提示。
+                output["reason"] = "non_html_or_unreachable"
+                output["hint"] = (
+                    "正文为空：可能不是 HTML（图片/视频/PDF）或抓取被拒。"
+                    "要落盘媒体请用 save_to_materials=true + workspace_root；"
+                    "要正文请换 web_search 里另一条结果。")
+            status = ToolStatus.SUCCESS
             if save_to_materials:
                 if not workspace_root:
                     output["saved"] = {"ok": False, "error": "缺少 workspace_root，无法落盘"}
@@ -175,11 +190,14 @@ class WebFetchTool(BaseTool):
                 output=output,
             )
         except Exception as e:
-            logger.warning("web_fetch 执行异常: %s", e)
+            # 异常**必须带原因**（旧实现只留一句空 output，外界只能看到"web_fetch 直接失败"；
+            # 实际根因是这条链路自己递归爆栈，删掉日志等于把线索一起删掉）。
+            logger.warning("web_fetch 执行异常: %s: %s", type(e).__name__, e)
             return ToolExecResult(
                 status=ToolStatus.DEPENDENCY_MISSING,
                 tool_name=self.name,
-                output={"content": ""},
+                output={"content": "", "fetched": False,
+                        "error": f"{type(e).__name__}: {str(e)[:200]}"},
             )
 
 

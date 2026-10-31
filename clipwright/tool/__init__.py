@@ -65,6 +65,7 @@ from clipwright.tool.video import (
     VideoThumbnailTool,
     VideoTrimTool,
 )
+from clipwright.tool.image import ImageToClipTool
 from clipwright.tool.vision import SceneDetectTool, SemanticMatchTool
 
 
@@ -73,6 +74,7 @@ def register_builtin_tools() -> None:
     tools: list[BaseTool] = [
         # ── 视频 ──
         VideoTrimTool(),
+        ImageToClipTool(),
         VideoConcatTool(),
         VideoOverlayTool(),
         VideoDownloadTool(),

@@ -1069,6 +1069,7 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
         targets: list[tuple[dict[str, Any], dict[str, Any]]] = []
         skipped_images = 0
         _VIDEO_EXT = (".mp4", ".webm", ".mov", ".m4v")
+        _IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif")
         for clip in candidate_clips:
             for asset in (clip.get("suggested_assets") or [])[:1]:
                 if not isinstance(asset, dict):

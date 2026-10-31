@@ -225,6 +225,23 @@ def _append_caption_sentences(
     caption_track.clips.sort(key=lambda c: c.start_sec)
 
 
+_IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".gif")
+
+
+def _is_image_source(asset: dict[str, Any] | None, source_path: str) -> bool:
+    """这条候选是不是图片（决定走 image_clip 还是 video_trim）。
+
+    判据取两处：候选的 `type` 字段（素材源给的）与本地路径扩展名（下载落盘后的真相）。
+    两者任一为图片就算图片——宁可走 image_clip（对图片一定成立），
+    也不要拿图片去 trim 换一个"空容器"错误。
+    """
+    kind = str((asset or {}).get("type") or "").lower()
+    if kind in ("image", "photo", "picture"):
+        return True
+    suffix = os.path.splitext(str(source_path or ""))[1].lower()
+    return suffix in _IMAGE_SUFFIXES
+
+
 def _trim_cache_get(source_path: str, start_sec: float, duration_sec: float) -> str | None:
     """B12: 命中校验——缓存指向的裁剪产物可能已被清理，失效条目即取即删。"""
     key = (source_path, round(start_sec, 2), round(duration_sec, 2))
@@ -1235,8 +1252,40 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                     source_use_count[source_path] = cycle + 1
                 # 命中裁剪缓存则复用，避免对同一网络素材重复下载/裁剪
                 cached = _trim_cache_get(source_path, start_offset, seg_dur)
+                # 图片素材走 image_clip（静帧/Ken Burns）——拿图片去 video_trim 只会
+                # 得到空容器（2026-10-31 实测 41 次失败就是这条路）。
+                _is_image = _is_image_source(asset, source_path)
                 if cached:
                     processed_path = cached
+                elif _is_image:
+                    add_event(context.pipeline_id, "edit", "tool",
+                              f"image_clip({source_path.split('/')[-1][:30]}, dur={seg_dur:.1f}s)")
+                    try:
+                        clip_result = await asyncio.wait_for(
+                            self.call_tool(
+                                "image_clip",
+                                input_path=source_path,
+                                duration_sec=seg_dur,
+                                width=width,
+                                height=height,
+                                mode=str((asset or {}).get("image_mode") or "ken_burns"),
+                            ),
+                            timeout=_TRIM_TOOL_TIMEOUT_SEC,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("EditAgent: image_clip 超时(>%ss) %s, 尝试下一个",
+                                       _TRIM_TOOL_TIMEOUT_SEC, source_path.split('/')[-1][:30])
+                        failed_assets.add(source_path)
+                        continue
+                    if clip_result.status == "success" and clip_result.output_path:
+                        processed_path = clip_result.output_path
+                        _trim_cache_set(source_path, start_offset, seg_dur, processed_path)
+                    else:
+                        logger.warning("EditAgent: 图片转片段失败 %s: %s",
+                                       source_path.split('/')[-1][:30],
+                                       str(clip_result.error or "")[:160])
+                        failed_assets.add(source_path)
+                        continue
                 else:
                     add_event(context.pipeline_id, "edit", "tool",
                               f"video_trim({source_path.split('/')[-1][:30]}, start={start_offset:.1f}s, dur={seg_dur:.1f}s)")

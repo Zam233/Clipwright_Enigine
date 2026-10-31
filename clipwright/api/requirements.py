@@ -696,6 +696,18 @@ async def _proceed_as_task(*, session: dict, req: "ProceedRequest", request: Req
         session.get("production_plan"),
         session.get("user_inputs", {}),
     )
+    # 用户 2026-10-31：任务失败/结束时主 agent 必须**把会话窗口放开**，
+    # 否则 status 永远停在 pipeline_running → 输入框隐藏 → 用户既不能给主 agent
+    # 说话，也不能重新发起。这里挂一个终态监听，按任务结论把会话拉回可对话状态。
+    try:
+        from clipwright.services.async_util import spawn_background
+
+        spawn_background(
+            _service.watch_task_session(req.session_id, task.id),
+            name=f"req-session-watch-{task.id}",
+        )
+    except Exception as _watch_err:  # noqa: BLE001 — 监听挂不上不影响开工
+        logger.warning("会话终态监听挂载失败（继续）: %s", _watch_err)
     logger.info("proceed 双轨：session=%s → task=%s（workspace=%s）",
                 req.session_id, task.id, ws.dirs().root)
     # 幂等键重新绑定到 **task.id**：进入本函数前绑的是 `pl_xxx`，但 task 路径返回

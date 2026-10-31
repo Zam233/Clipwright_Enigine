@@ -34,6 +34,8 @@ CAPABILITY_ALIASES: dict[str, tuple[str, ...]] = {
     "media_probe": ("media_probe",),
     # 剪辑
     "video_trim": ("video_trim",),
+    # 图片 → 片段（静帧/Ken Burns）：素材是图片时编辑阶段必须走它，不能拿图片去 trim
+    "image_clip": ("image_to_clip",),
     "video_concat": ("video_concat",),
     "video_speed": ("video_speed",),
     "text_placeholder": ("generate_text_video",),

@@ -77,8 +77,13 @@ def _timeline_from_results(task_id: str) -> Optional[dict[str, Any]]:
     return resolve_timeline(result.get("timeline"))
 
 
-def sync_timeline_to_project(task_id: str, task: Any) -> str:
-    """回写成片时间线。返回写入的项目 id（没写则空串）。"""
+def sync_timeline_to_project(task_id: str, task: Any, *, incremental: bool = False) -> str:
+    """回写成片时间线。返回写入的项目 id（没写则空串）。
+
+    `incremental=True`（2026-10-31，时间轴实时同步）用于**任务进行中**的中间回写：
+    每派完一个阶段就把黑板里的当前时间线写进项目，编辑器那边轮询到就会即时刷新——
+    旧实现只在任务收尾写一次，用户在跑片子的半小时里看到的始终是空时间线。
+    """
     pid = project_id_of(task)
     if not pid:
         return ""
@@ -89,6 +94,17 @@ def sync_timeline_to_project(task_id: str, task: Any) -> str:
     try:
         from clipwright.api.project import _manager
 
+        # 中间回写不能覆盖"用户已保存的编辑"：只有空项目或本任务写过才更新。
+        if incremental:
+            try:
+                existing = _manager.load(pid) or {}
+                cur = existing.get("timeline") or {}
+                if (cur.get("tracks") or []) and str(
+                        (cur.get("metadata") or {}).get("source") or "") != f"task:{task_id}":
+                    logger.info("跳过中间回写：项目 %s 已有用户时间线", pid)
+                    return ""
+            except FileNotFoundError:
+                pass
         _manager.save(pid, {"timeline": timeline})
     except FileNotFoundError:
         logger.warning("回写时间线失败：项目不存在 %s（task=%s）", pid, task_id)
@@ -97,12 +113,20 @@ def sync_timeline_to_project(task_id: str, task: Any) -> str:
         logger.warning("回写时间线失败 %s ← %s: %s", pid, task_id, exc)
         return ""
     tracks = len(timeline.get("tracks") or [])
-    logger.info("任务 %s 的成片时间线已写回项目 %s（%d 轨）", task_id, pid, tracks)
+    clips = sum(len(t.get("clips") or []) for t in (timeline.get("tracks") or []))
+    logger.info("任务 %s 的时间线已写回项目 %s（%d 轨 / %d 片段%s）",
+                task_id, pid, tracks, clips, "，增量" if incremental else "")
     try:
         from clipwright.services.task_events import emit
 
-        emit(task_id, "project_sync",
-             f"时间线已写回项目 {pid}（{tracks} 轨）", {"project_id": pid, "tracks": tracks})
+        # 用**已有的** `artifact` 事件，不新增事件类型（契约仍是 29 种）；
+        # 前端据 kind=timeline 触发时间线刷新。旧实现发的是不存在的 `project_sync`，
+        # emit 直接抛错并被吞掉 —— 事件从来没出现过（所以"实时同步"根本收不到信号）。
+        emit(task_id, "artifact",
+             f"时间线已写回项目 {pid}（{tracks} 轨 / {clips} 片段）",
+             {"kind": "timeline", "project_id": pid, "tracks": tracks, "clips": clips,
+              "incremental": incremental},
+             span="kernel")
     except Exception:  # noqa: BLE001 — 事件通道不可用不影响结果
         pass
     return pid
