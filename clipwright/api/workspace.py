@@ -348,4 +348,114 @@ async def workspace_events_stream(project_id: str,
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+def _check_file_allowed(raw: str) -> Path:
+    """产物路径校验：必须存在，且落在允许的工作区根之内（不接受任意绝对路径）。"""
+    if not str(raw or "").strip():
+        raise HTTPException(status_code=400, detail="path 不能为空")
+    try:
+        p = Path(str(raw)).expanduser().resolve()
+    except OSError:
+        raise HTTPException(status_code=400, detail=f"路径非法: {raw}")
+    for allowed in workspace_roots():
+        try:
+            p.relative_to(allowed)
+            break
+        except ValueError:
+            continue
+    else:
+        allowed_txt = "、".join(str(r) for r in workspace_roots()) or "（无可用根）"
+        raise HTTPException(
+            status_code=403,
+            detail=f"path 必须位于工作区内（{allowed_txt}），收到 {p}",
+        )
+    if not p.exists():
+        raise HTTPException(status_code=404, detail=f"文件不存在: {p}")
+    return p
+
+
+_TEXT_SUFFIXES = {
+    ".md", ".txt", ".json", ".jsonl", ".log", ".csv", ".yaml", ".yml",
+    ".py", ".ts", ".tsx", ".js", ".html", ".css", ".srt", ".vtt", ".edl",
+}
+_MEDIA_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".webp": "image/webp", ".gif": "image/gif",
+    ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4",
+}
+
+
+@router.get("/artifact/file")
+async def read_workspace_file(path: str = Query(...),
+                             max_chars: int = Query(default=400000)) -> dict[str, Any]:
+    """读取工作区内的**文本**产物（产物预览页用：报告 / 规划书 / 日志 / 时间线 json）。
+
+    二进制（图片/音视频）不在这里返回：前端直接用 `/file/raw` 交给 <img>/<video>。
+    """
+    p = _check_file_allowed(path)
+    suffix = p.suffix.lower()
+    if suffix not in _TEXT_SUFFIXES:
+        raise HTTPException(
+            status_code=415,
+            detail=f"不是文本文件（{suffix or '无扩展名'}）：用 /api/workspace/artifact/raw 或系统打开",
+        )
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"读取失败: {exc}")
+    truncated = len(text) > max_chars
+    return {
+        "path": str(p),
+        "name": p.name,
+        "size": p.stat().st_size,
+        "suffix": suffix,
+        "text": text[:max_chars],
+        "truncated": truncated,
+        "chars": len(text),
+    }
+
+
+@router.get("/artifact/raw")
+async def raw_workspace_file(path: str = Query(...)):
+    """原样返回工作区内的文件字节（图片/音视频预览用）。"""
+    from fastapi.responses import FileResponse
+
+    p = _check_file_allowed(path)
+    suffix = p.suffix.lower()
+    media_type = _MEDIA_TYPES.get(suffix, "application/octet-stream")
+    return FileResponse(str(p), media_type=media_type, filename=p.name)
+
+
+@router.post("/reveal")
+async def reveal_workspace_path(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """用**系统默认方式**打开一个工作区文件（前端 Ctrl/⌘ + 点击产物走这条）。
+
+    为什么需要后端：浏览器只能下载或在自身里渲染，无法让 Windows 用默认程序打开
+    `J:\...` 这种本地路径。这里做的是"交给操作系统"，因此必须严格校验路径在
+    工作区内，并且只在有桌面会话时生效（失败如实返回，不假装已打开）。
+    """
+    p = _check_file_allowed(str(payload.get("path") or ""))
+    import os
+    import subprocess
+    import sys
+
+    def _open() -> None:
+        if hasattr(os, "startfile"):
+            os.startfile(str(p))          # type: ignore[attr-defined] — 仅 Windows
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(p)])
+        else:
+            subprocess.Popen(["xdg-open", str(p)])
+
+    try:
+        await asyncio.to_thread(_open)
+    except Exception as exc:  # noqa: BLE001 — 打不开要如实说
+        logger.warning("系统打开失败 %s: %s", p, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"系统打开失败：{type(exc).__name__}: {exc}（后端可能没有桌面会话）",
+        )
+    return {"opened": True, "path": str(p)}
+
+
 __all__ = ["router"]

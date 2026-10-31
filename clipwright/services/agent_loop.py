@@ -57,6 +57,14 @@ _REPEATABLE_TOOLS = frozenset({
 #: (task_id, idem_key) → 上次结果；有界（model 摸底次数远小于此）
 _TOOL_SEEN: dict[tuple[str, str], dict[str, Any]] = {}
 
+#: 同一工具在同任务里**连续失败**的次数（与参数无关）与最后一条错误。
+#: 为什么需要：同参数 3 次的护栏抓不到"换着参数撞同一个坑"——edit 阶段对空素材
+#: 目录裁了 41 次 video_trim（每次 start_sec 不同），墙钟直接烧到上限。
+_TOOL_FAILS_BY_NAME: dict[tuple[str, str], int] = {}
+_TOOL_LAST_ERROR: dict[tuple[str, str], str] = {}
+#: 连续失败到这个次数就不再执行该工具（把"重试"换成"换方案"）
+_TOOL_FAIL_LIMIT = 5
+
 
 def _is_repeatable(name: str) -> bool:
     return str(name) in _REPEATABLE_TOOLS
@@ -376,6 +384,31 @@ async def run_loop(task: Any, *, context_text: str = "",
                          causation_id=f"seq:{_seq_of(call_event)}")
                     return result
 
+            # 同一工具在当前任务里连续失败太多次 = 这个能力在这个环境里就是不可用
+            # （E2E 2026-10-31 实测：edit 阶段对着空素材目录裁 41 次 video_trim，
+            # 每次报错都带不同的 start_sec，所以"同参数 3 次"的护栏一个都没命中，
+            # 最后把墙钟烧到 3600s 上限）。这里按**工具**计数，与参数无关。
+            _name_key = (task_id, name)
+            _name_fails = _TOOL_FAILS_BY_NAME.get(_name_key, 0)
+            if _name_fails >= _TOOL_FAIL_LIMIT and not dry_run:
+                _last_err = str(_TOOL_LAST_ERROR.get(_name_key) or "")[:200]
+                _refused = {
+                    "status": "refused",
+                    "error": (f"{name} 在本任务已连续失败 {_name_fails} 次"
+                              f"（最后一次：{_last_err}）。这个能力在当前环境不可用——"
+                              "换方案（换素材/换工具/改用占位卡），或如实说明做不到；"
+                              "不要再用同一工具重试。"),
+                    "blocked_tool": name,
+                    "failure_count": _name_fails,
+                }
+                calls.append({"tool": name, "ok": False, "status": "refused",
+                              "duration_ms": 0})
+                emit(task_id, "tool_result", f"{name} → refused（该工具已连续失败 {_name_fails} 次）",
+                     {"tool": name, "status": "refused", "blocked_tool": name,
+                      "failure_count": _name_fails},
+                     causation_id=f"seq:{_seq_of(call_event)}")
+                return _refused
+
             # 原子工具与派发类工具走**同一个入口**（surface.execute）：
             # 同一份档位裁定、同一份幂等键、同一份审计记录。
             result = await surface_execute(
@@ -383,6 +416,15 @@ async def run_loop(task: Any, *, context_text: str = "",
                 idem_key=_key, task=task,
                 dry_run=dry_run,
             )
+            if result.get("status") in ("ok", "dry_run"):
+                _TOOL_FAILS_BY_NAME.pop(_name_key, None)
+                _TOOL_LAST_ERROR.pop(_name_key, None)
+            else:
+                if len(_TOOL_FAILS_BY_NAME) > 400:
+                    _TOOL_FAILS_BY_NAME.clear()
+                    _TOOL_LAST_ERROR.clear()
+                _TOOL_FAILS_BY_NAME[_name_key] = _TOOL_FAILS_BY_NAME.get(_name_key, 0) + 1
+                _TOOL_LAST_ERROR[_name_key] = str(result.get("error") or "")[:300]
             if _dedupe and not dry_run and _is_repeatable(name) \
                     and result.get("status") in ("ok", "dry_run"):
                 if len(_TOOL_SEEN) > 400:
