@@ -67,7 +67,21 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
 10. **实时链路为 SSE-only**：pipeline trace / requirements chat / render queue 流；WebSocket 已移除
 11. **Agent 不写死工具名**：业务 Agent 通过**语义能力名**（`frame_check` / `video_trim` / `pv_audit` …）经
     `clipwright/tool/capabilities.py` 在调用时刻解析到具体工具；插件给工具声明 `capability` 即可接管，
-    装卸/配置变化下一次调用立即生效。新增能力先加 `CAPABILITY_ALIASES` 与 `TIER_MAP`。
+    装卸/配置变化下一次调用立即生效。
+12. **能力与工具可插拔，不在引擎里写死**（2026-10-31 用户裁定）：新增/迁移一个工具，**只改它自己的文件**——
+    在工具类上声明三行即可：
+
+    ```python
+    class MyTool(BaseTool):
+        name = "my_tool"
+        capability = "image_clip"        # 语义能力名（可接管内置能力，优先级用 capability_priority）
+        permission_tier = "write_local"  # read / write_local / costly / dangerous
+        dry_run_capable = False          # 是否支持 dry-run 结构预检
+    ```
+
+    `capability_matrix` 优先采用自声明的 `permission_tier`，`TIER_MAP` 仅作**历史覆盖表**（老内置工具兼容）；
+    新增工具不再需要回来改 `CAPABILITY_ALIASES` / `TIER_MAP`。漏声明的内置工具仍硬失败（fail-closed），
+    插件工具则降级为"不进 agent 工具面"并留痕。`TIER_MAP` 里残留未注册工具只告警、不再让工具面构建失败。
 
 ## 鉴权三模式
 

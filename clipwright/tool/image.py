@@ -33,6 +33,10 @@ class ImageToClipTool(BaseTool):
     """把一张图片变成一段视频片段（静帧或缓慢推近）。"""
 
     name = "image_to_clip"
+    #: 语义能力名：编辑/动画按能力解析到它，不认工具名（插件可接管 image_clip）
+    capability = "image_clip"
+    #: 权限档位**自声明**（只写工作区产物，可重做）——引擎的 TIER_MAP 不再需要登记
+    permission_tier = "write_local"
     description = (
         "把图片转成视频片段（静帧或 Ken Burns 推近），支持指定时长/尺寸/帧率；"
         "输入为本地图片路径，输出 mp4。用于素材是图片（jpg/png/webp…）的场景。"
@@ -171,3 +175,4 @@ class ImageToClipTool(BaseTool):
 
 
 __all__ = ["ImageToClipTool"]
+

@@ -43,6 +43,8 @@ class CapabilityMatrixError(RuntimeError):
 
 #: 已经就"插件工具漏档位"告过警的名字（避免每次构建工具面都刷屏）
 _WARNED_UNCLASSIFIED: set[str] = set()
+#: 已提示过的 "TIER_MAP 残留条目" 组合（避免每轮刷同一条 info）
+_WARNED_STALE: set[tuple[str, ...]] = set()
 
 
 # ── 权限档裁定表（以实际注册表逐条核对；新增工具必须在此登记）───────────────
@@ -55,10 +57,9 @@ _WARNED_UNCLASSIFIED: set[str] = set()
 TIER_MAP: dict[str, PermissionTier] = {
     # —— 视频加工（写工作区产物）——
     "video_trim": "write_local",
-    # 图片 → 片段（静帧/Ken Burns）：只写工作区产物，与 video_trim 同档。
-    # 2026-10-31 补登记：新工具有注册表条目就必须在这里裁档位，否则 build_matrix()
-    # 直接抛 CapabilityMatrixError（权限矩阵构建失败 → 相关端点/裁定全挂）。
-    "image_to_clip": "write_local",
+    # 注：`image_to_clip` 不再登记在这里——它自己在工具类上写了
+    # `permission_tier = "write_local"`。**新增工具请照此自声明，不要回来改这张表**
+    # （2026-10-31 用户裁定：能力/工具必须可插拔，引擎不写死）。
     "video_concat": "write_local",
     "video_overlay": "write_local",
     "video_crop": "write_local",
@@ -107,7 +108,7 @@ TIER_MAP: dict[str, PermissionTier] = {
     "voice_clone": "costly",
     "event_spot": "costly",        # 热点检索：外部搜索
     "web_search": "costly",
-    "web_fetch": "costly",         # 外网读取：不计费但可能触碰外网配额
+    # `web_fetch` 改为工具自声明（tool/web_search_tool.py: permission_tier = "costly"）
     "video_download": "dangerous",  # 下载外部资源到本地：来源不可控
     "describe_llm_mg": "costly",
     # —— 文件读写（主 Agent / 子代理基础能力）——
@@ -354,6 +355,23 @@ class CapabilityEntry:
         return asdict(self)
 
 
+def _declared_tier(tool: Any) -> str:
+    """工具**自声明**的权限档位（`BaseTool.permission_tier`），非法值当场报错。
+
+    可插拔的关键一步（2026-10-31 用户裁定）：档位跟着工具走，不再要求新增工具回来改
+    引擎里的 `TIER_MAP`。插件只要在自己类上写一行 `permission_tier = "write_local"`，
+    权限矩阵、工具面、dry-run 判定就全都认。
+    """
+    raw = str(getattr(tool, "permission_tier", "") or "").strip().lower()
+    if not raw:
+        return ""
+    if raw not in TIERS:
+        raise CapabilityMatrixError(
+            f"工具 {getattr(tool, 'name', '?')} 声明的权限档位非法：{raw!r}（可选 {TIERS}）"
+        )
+    return raw
+
+
 def _tool_entries() -> list[CapabilityEntry]:
     from clipwright.tool import register_builtin_tools
     from clipwright.tool.registry import ToolRegistry
@@ -366,9 +384,13 @@ def _tool_entries() -> list[CapabilityEntry]:
     unknown: list[str] = []
     for info in ToolRegistry.list():
         name = str(info.name)
-        tier = TIER_MAP.get(name)
+        tool = ToolRegistry.get(name)
+        # ① 工具自声明（插件/新内置工具都走这条，引擎不需要认识它）
+        tier: PermissionTier | None = _declared_tier(tool) or None
+        # ② 回落到引擎内的历史覆盖表（老内置工具迁移期兼容）
         if tier is None:
-            tool = ToolRegistry.get(name)
+            tier = TIER_MAP.get(name)
+        if tier is None:
             owner = str(getattr(tool, "_plugin_id", "") or "")
             if owner:
                 # **插件**贡献的工具漏档位：降级处理，不让它把整条任务打死。
@@ -380,14 +402,14 @@ def _tool_entries() -> list[CapabilityEntry]:
                 if name not in _WARNED_UNCLASSIFIED:
                     _WARNED_UNCLASSIFIED.add(name)
                     logger.warning(
-                        "插件 %s 的工具 %s 未在 capability_matrix.TIER_MAP 裁档位，"
-                        "已从 agent 工具面移除（不影响其他能力）",
+                        "插件 %s 的工具 %s 未声明 permission_tier（也没在 TIER_MAP 里），"
+                        "已从 agent 工具面移除（不影响其他能力）——"
+                        "修复：在工具类上写一行 permission_tier = \"read|write_local|costly|dangerous\"",
                         owner, name,
                     )
                 continue
             unknown.append(name)
             continue
-        tool = ToolRegistry.get(name)
         out.append(
             CapabilityEntry(
                 name=name,
@@ -396,25 +418,35 @@ def _tool_entries() -> list[CapabilityEntry]:
                 available=bool(info.available),
                 agent_callable=bool(getattr(tool, "agent_callable", False)),
                 idempotent=tier == _READ_TIER,
-                dry_run=name in DRY_RUN_CAPABLE,
+                dry_run=bool(getattr(tool, "dry_run_capable", False)) or name in DRY_RUN_CAPABLE,
                 notes="",
             )
         )
     if unknown:
         raise CapabilityMatrixError(
-            "以下工具未在 capability_matrix.TIER_MAP 里裁权限档："
-            f"{sorted(unknown)}（新增能力必须显式定档，不能静默漏掉）"
+            "以下内置工具既没有 permission_tier 自声明、也不在 capability_matrix.TIER_MAP 里："
+            f"{sorted(unknown)}（在工具类上写一行 permission_tier 即可，不必改引擎）"
         )
     # 插件贡献的工具只在插件加载后存在（例如 pv_engine 的引擎工具）；
-    # 未加载时不能因为"档位有、工具没有"就判为 stale
+    # 未加载时不能因为"档位有、工具没有"就判为 stale。
+    #
+    # 2026-10-31：stale 从**硬失败**降为**可见告警**。理由：档位自声明后，TIER_MAP 变成
+    # "历史覆盖表"，表里残留一个已删除/未加载工具的条目是正常状态；让它把整条工具面
+    # 构建打死（`surface.schemas()` / `build_tools()` / `surface.execute()` 全抛）代价太大
+    # ——实测摘掉 web_fetch 会让**所有**工具调用一起不可用。仍然留痕，便于清理。
     stale = sorted(
         set(TIER_MAP)
         - {str(i.name) for i in ToolRegistry.list()}
         - OPTIONAL_PLUGIN_TOOLS
     )
-    if stale:
-        raise CapabilityMatrixError(
-            f"TIER_MAP 里有已不存在的工具：{stale}（删工具时同步删档位）"
+    if stale and tuple(stale) not in _WARNED_STALE:
+        _WARNED_STALE.add(tuple(stale))
+        # 只打前几个 + 总数：某些进程（先注册插件工具、后没注册内置）会把整张表都算成
+        # "未注册"，把几十个名字一次性刷进日志等于噪音。
+        head = ", ".join(stale[:8]) + (f" …共 {len(stale)} 个" if len(stale) > 8 else "")
+        logger.info(
+            "TIER_MAP 里有当前未注册的工具（%s）；多为插件工具未加载或工具已下线。"
+            "权限矩阵按现有注册表构建，不影响其他能力。", head,
         )
     return out
 

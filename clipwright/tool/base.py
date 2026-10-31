@@ -47,6 +47,17 @@ class BaseTool(ABC):
     capability: str = ""
     #: 同能力的候选优先级（大的优先；同档按注册顺序）。
     capability_priority: int = 0
+    #: **权限档位自声明**（2026-10-31 用户裁定：能力/工具必须可插拔，不能写死在 engine）。
+    #:
+    #: 取值：``read`` / ``write_local`` / ``costly`` / ``dangerous``（PRD F2 四级）。
+    #: 声明后 `capability_matrix` 直接采用它，**不需要**再去引擎里的
+    #: `capability_matrix.TIER_MAP` 手工裁档位——旧实现里"新增工具忘了改 TIER_MAP"
+    #: 会让整个主 agent 工具面构建失败（`CapabilityMatrixError`），那正是写死的代价。
+    #: 空串 = 回落到 `TIER_MAP`（内置工具的历史覆盖表）；两者都没有按原策略处理
+    #: （内置漏档位仍硬失败、插件工具降级不出现在工具面）。
+    permission_tier: str = ""
+    #: 该工具支持 `dry_run` 结构预检（预览模式下降级为只读校验）。
+    dry_run_capable: bool = False
 
     @abstractmethod
     async def execute(self, **kwargs: Any) -> Any:

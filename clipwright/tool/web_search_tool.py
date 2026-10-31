@@ -45,6 +45,9 @@ class WebSearchTool(BaseTool):
 
     name = "web_search"
     agent_callable = True
+    #: 语义能力名 + 权限档位**自声明**（外网读取：costly；引擎 TIER_MAP 不再需要登记）
+    capability = "web_search"
+    permission_tier = "costly"
     description = (
         "联网搜索网络获取最新/事实信息，返回相关网页结果列表（标题、URL、摘要）。"
         "当需要查询实时新闻、百科事实、资料引用或任何超出模型知识范围的信息时调用。"
@@ -126,6 +129,9 @@ class WebFetchTool(BaseTool):
 
     name = "web_fetch"
     agent_callable = True
+    #: 语义能力名 + 权限档位**自声明**（外网读取：costly；引擎 TIER_MAP 不再需要登记）
+    capability = "web_fetch"
+    permission_tier = "costly"
     description = (
         "抓取任意 URL：网页 → 正文纯文本（去导航/脚本/样式）；JSON → 原文 + 解析结果；"
         "图片/视频/音频 → 自动落进工作区 materials/web/ 并返回 local_path、字节数、许可。"
