@@ -55,6 +55,10 @@ _WARNED_UNCLASSIFIED: set[str] = set()
 TIER_MAP: dict[str, PermissionTier] = {
     # —— 视频加工（写工作区产物）——
     "video_trim": "write_local",
+    # 图片 → 片段（静帧/Ken Burns）：只写工作区产物，与 video_trim 同档。
+    # 2026-10-31 补登记：新工具有注册表条目就必须在这里裁档位，否则 build_matrix()
+    # 直接抛 CapabilityMatrixError（权限矩阵构建失败 → 相关端点/裁定全挂）。
+    "image_to_clip": "write_local",
     "video_concat": "write_local",
     "video_overlay": "write_local",
     "video_crop": "write_local",
