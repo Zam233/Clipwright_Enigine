@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import httpx
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -105,15 +106,112 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             return str(getattr(defs[0], "animation_id", "text_fade_in"))
         return "text_fade_in"
 
-    async def _ingest_web_media(self, context: Any, *, topic: str) -> int:
-        """用 web 搜索把**真实图片/视频**落进 `materials/web/` 并入图片语义索引。
+    async def _fetch_url(self, url: str, *, title: str = "",
+                         max_chars: int = 1500) -> dict[str, Any] | None:
+        """用 `web_fetch` 抓一个 URL（统一入口）：网页出正文、图片/视频落盘给 local_path。
 
-        PRD web-search-fetch M2：旧实现只把 3 条摘要塞进 prompt，搜索结果里的
-        图片/视频从不落盘，"动画自己找素材"不成立。这里：
-        1. 只在 web 搜索可用（有 provider）且有工作区时执行；
-        2. 取前 `limit` 条**媒体**结果，经 `web_assets` 做 SSRF 校验 + sha256 去重
-           + 旁车 meta（来源/许可/抓取时间）；
-        3. 成功的条目并入 `self._image_index`，MG 生成阶段可以按语义选图引用。
+        为什么动画阶段需要它（2026-10-31 用户问"动画能不能联网拿实时信息/图片"）：
+        旧实现只 `WebSearchService.search()` 取 3 条摘要——**不抓正文、不落素材**，
+        而且 `_ingest_web_media` 还是靠"搜索结果的 URL 以 .jpg/.mp4 结尾"来筛图；
+        DeepSeek/bocha 返回的都是网页链接，这个后缀过滤恒为空 → 动画阶段永远拿不到图。
+
+        返回 `web_fetch` 的 output dict（`kind`/`content`/`local_path`/`license`…），
+        任何失败返回 None（不阻断动画生成）。
+        """
+        try:
+            res = await self.call_tool(
+                "web_fetch",
+                url=url,
+                max_chars=max_chars,
+                workspace_root=str(getattr(self, "_ws_root", "") or ""),
+                title=title,
+            )
+        except Exception as exc:  # noqa: BLE001 — 工具面不可用时退回服务本体
+            logger.info("AnimationAgent: web_fetch 不可用（%s），退回服务本体", exc)
+            try:
+                from clipwright.services.web_search import WebFetchService
+
+                probe = await WebFetchService().probe(url, max_chars=max_chars)
+                return probe if probe.get("ok") else None
+            except Exception:  # noqa: BLE001
+                return None
+        status = str(getattr(res, "status", "") or "")
+        payload = getattr(res, "output", None) or {}
+        if status not in ("success", "ok") or not isinstance(payload, dict):
+            return None
+        return payload
+
+    @staticmethod
+    def _extract_image_urls(markdown_or_html: str, *, base: str = "") -> list[str]:
+        """从正文（Markdown / 少量 HTML）里抽出图片地址（供"抓页面再抓图"用）。
+
+        DeepSeek Fetch 返回 Markdown，图片是 `![alt](url)`；本地抽正文会丢标签，所以两种形态都认。
+        实际站点常见坑（实测 zol/百度云/smzdm 六个页面抽不出图）：
+        - 相对路径（`/upload/x.jpg`）——要用页面 URL 拼绝对地址；
+        - 懒加载（`data-src` / `srcset`）——`src` 里是占位图；
+        - `data:` 内联——不是可下载的 URL。
+        """
+        from urllib.parse import urljoin
+
+        text = markdown_or_html or ""
+        found: list[str] = []
+        patterns = (
+            r"!\[[^\]]*\]\((https?://[^)\s]+)\)",                      # Markdown 远程图
+            r"!\[[^\]]*\]\((/[^)\s]+)\)",                              # Markdown 站内相对图
+            r'<img[^>]+(?:data-src|data-original)=["\']([^"\']+)["\']',  # 懒加载
+            r'<img[^>]+src=["\']([^"\']+)["\']',                       # 普通 img
+            r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+        )
+        for pattern in patterns:
+            for m in re.finditer(pattern, text, re.IGNORECASE):
+                raw = (m.group(1) or "").strip()
+                if not raw or raw.startswith("data:") or raw.startswith("javascript:"):
+                    continue
+                url = urljoin(base or "", raw) if base else raw
+                if not url.startswith(("http://", "https://")):
+                    continue
+                lower = url.lower().split("?")[0]
+                if not lower.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp")):
+                    continue
+                if url not in found:
+                    found.append(url)
+        return found[:4]
+
+    async def _raw_html(self, url: str, *, max_bytes: int = 1_500_000) -> str:
+        """直接抓原始 HTML（用于从网页里抽 `<img>` / og:image）。
+
+        为什么不能只靠 `web_fetch`：DeepSeek Fetch 返回的是**已清洗的 Markdown**，
+        实测 zol / 百度云 / 什么值得买 这些站点清洗后几乎不留图；要图片必须看原 HTML
+        （懒加载用 `data-src`、首图在 og:image）。所以这里做一次受限的原始抓取：
+        浏览器 UA、20s 超时、1.5MB 上限，失败返回空串。
+        """
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+                resp = await client.get(url, headers={
+                    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                   "Chrome/124.0 Safari/537.36"),
+                    "Accept": "text/html,application/xhtml+xml",
+                })
+                if resp.status_code >= 400:
+                    return ""
+                return resp.text[:max_bytes]
+        except Exception as exc:  # noqa: BLE001 — 抽取失败就当没拿到图
+            logger.info("AnimationAgent: 原始 HTML 抓取失败（跳过抽图）%s: %s", url, exc)
+            return ""
+
+    async def _ingest_web_media(self, context: Any, *, topic: str) -> int:
+        """把**真实图片/视频**落进 `materials/web/` 并进图片语义索引（2026-10-31 重写）。
+
+        两条来源按顺序试，先便宜后昂贵：
+        1. **素材源**（Pexels/本地库等 MaterialRegistry）：直接给媒体直链，秒级落盘；
+        2. **联网兜底**（web_search → web_fetch）：搜索结果通常是**网页**而不是图片，
+           所以抓正文后用 `![..](..)` / `<img>` / og:image 抽图，再抓一次落盘。
+
+        预算与并发都收紧（实测 DeepSeek Fetch 单页 15–25s，六页串行要两分钟）：
+        网页最多 2 条、并发抓取，整体失败不阻断动画生成。
         """
         try:
             from clipwright.config import settings
@@ -125,43 +223,121 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         root = str(extra.get("workspace_root") or "")
         if not root or not topic.strip():
             return 0
+        self._ws_root = root
+        added = 0
+        budget = 3
+
+        async def _take(asset_url: str, title: str) -> bool:
+            """抓一次；落盘成功就进图片索引。"""
+            payload = await self._fetch_url(asset_url, title=title, max_chars=2000)
+            if not payload:
+                return False
+            local = str(payload.get("local_path") or "")
+            kind = str(payload.get("kind") or "")
+            if not local or kind not in ("image", "video"):
+                return False
+            # 太小的图是 logo/图标/1x1 占位，进动画只会糊成一块：实测抽到的 2.9KB 就是站标
+            if kind == "image" and int(payload.get("bytes") or 0) < 8000:
+                logger.info("AnimationAgent: 跳过过小的联网图片 %s（%sB）",
+                            os.path.basename(local), payload.get("bytes"))
+                return False
+            self._image_index.append({
+                "path": local,
+                "tags": [topic[:60]],
+                "description": title or "联网素材",
+                "source": asset_url,
+                "license": str(payload.get("license") or ""),
+            })
+            return True
+
         try:
-            # 走工具面（能力解析 → web_search）：每次检索都进 `last_tool_calls` 与
-            # `subagent_tool` 事件，主 agent 才看得见"动画阶段自己联网找了图"。
+            # ① 素材源优先：直链媒体，省掉"抓网页再抽图"
+            try:
+                from clipwright.material import MaterialRegistry
+
+                hits = await MaterialRegistry.search(
+                    topic[:80], top_k_per_source=6, media_type="image")
+                for hit in (hits or [])[:8]:
+                    if added >= budget:
+                        break
+                    asset = getattr(hit, "asset", None)
+                    if asset is None:
+                        continue
+                    url = str(getattr(asset, "url", "") or getattr(asset, "local_path", ""))
+                    if url.startswith("http") and await _take(url, str(getattr(asset, "title", ""))):
+                        added += 1
+            except Exception as exc:  # noqa: BLE001 — 素材源不可用就走联网
+                logger.info("AnimationAgent: 素材源检索不可用（%s），改走联网", exc)
+
+            if added >= budget:
+                logger.info("AnimationAgent: 联网素材入库 %d 项（素材源直链）", added)
+                return added
+
+            # ② 联网兜底：搜索 → 抓正文 → 抽图 → 抓图
             found = await self.call_tool("web_search", query=topic[:120], max_results=6)
             payload = getattr(found, "output", None) or {}
             results = list(payload.get("results") or []) if isinstance(payload, dict) else []
-            if not results and "not_found" in str(getattr(found, "status", "")).lower():
-                # 工具面没注册（脚本/单测直调 Agent）：回落到服务本体，行为与旧实现一致
+            if not results:
                 from clipwright.services.web_search import WebSearchService
 
                 svc = WebSearchService()
                 if svc.is_configured():
-                    results = await svc.search(topic[:120], max_results=6)
+                    results = await svc.search(topic[:120], max_results=6) or []
             if not results:
-                return 0
-            media: list[dict[str, Any]] = []
-            for item in results:
+                logger.info("AnimationAgent: 联网素材化跳过（搜索无结果）")
+                return added
+
+            media_urls: list[tuple[str, str]] = []
+            page_urls: list[tuple[str, str]] = []
+            for item in results[:6]:
                 url = str(item.get("url") or "")
-                lower = url.lower().split("?")[0]
-                if lower.endswith((".jpg", ".jpeg", ".png", ".webp", ".mp4", ".webm")):
-                    media.append(item)
-            if not media:
-                return 0
-            from clipwright.services import web_assets
-            out = await web_assets.ingest_results(media, root=root, limit=2)
-            added = 0
-            for res in out:
-                if not (res.ok and res.kind in ("images", "videos")):
+                title = str(item.get("title") or "")
+                if not url.startswith(("http://", "https://")):
                     continue
-                self._image_index.append({
-                    "path": res.local_path,
-                    "tags": [topic[:60]],
-                    "description": res.title or "联网素材",
-                    "source": res.url,
-                    "license": res.license,
-                })
-                added += 1
+                if url.lower().split("?")[0].endswith(
+                        (".jpg", ".jpeg", ".png", ".webp", ".mp4", ".webm")):
+                    media_urls.append((url, title))
+                else:
+                    page_urls.append((url, title))
+
+            for url, title in media_urls:
+                if added >= budget:
+                    break
+                if await _take(url, title):
+                    added += 1
+
+            # 网页只取前 2 条、并发抓（DeepSeek Fetch 单页 15–25s，串行不可接受）
+            pages = page_urls[:2]
+            if pages and added < budget:
+                fetched = await asyncio.gather(
+                    *(self._fetch_url(u, title=t, max_chars=20000) for u, t in pages),
+                    return_exceptions=True,
+                )
+                for (url, title), page in zip(pages, fetched):
+                    if added >= budget:
+                        break
+                    if isinstance(page, Exception) or not page:
+                        continue
+                    img_urls = self._extract_image_urls(
+                        str(page.get("content") or ""), base=str(page.get("final_url") or url))
+                    if not img_urls:
+                        # Markdown 里没图 → 看原始 HTML（og:image / 懒加载 data-src）
+                        html_text = await self._raw_html(url)
+                        if html_text:
+                            img_urls = self._extract_image_urls(html_text, base=url)
+                    for img_url in img_urls:
+                        if added >= budget:
+                            break
+                        if await _take(img_url, f"{title}-图"):
+                            added += 1
+
+            logger.info("AnimationAgent: 联网素材入库 %d 项（候选媒体 %d / 网页 %d）",
+                        added, len(media_urls), len(pages))
+            return added
+        except Exception as exc:  # noqa: BLE001 — 联网素材化失败不影响动画
+            logger.warning("AnimationAgent: _ingest_web_media 失败: %s", exc)
+            return added
+
             if added:
                 logger.info("AnimationAgent: 联网素材入库 %d 项（materials/web/）", added)
             return added
@@ -1502,20 +1678,48 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         if getattr(self, "_image_index", None):
             gen_description = description + self._format_image_index_prompt(self._image_index)
 
-        # 数据/事实型 mg_dynamic → 联网搜索，注入事实上下文
-        # （门控：描述命中数据/事实关键词 AND WebSearchService 已配置才搜索；
-        #  任何异常/空结果一律静默回退 web_context=""，行为与未配置时完全一致）
+        # 数据/事实型 mg_dynamic → 联网搜索 + **抓正文**，注入事实上下文
+        # （门控：描述命中数据/事实关键词 AND 搜索可用才执行；任何异常回退空串）
+        #
+        # 2026-10-31 增强（用户问"动画能不能拿实时信息"）：旧实现只拼 3 条摘要，
+        # 模型拿不到具体数字/日期就只能编。现在：搜索走工具面（进事件流），
+        # 命中后对前 2 条结果用 web_fetch 抓正文摘录一起注入。
         web_context = ""
         if re.search(_DATA_FACT_RE, gen_description):
             try:
-                search_svc = WebSearchService()
-                if search_svc.is_configured():
-                    results = await search_svc.search(gen_description[:120])
-                    web_context = "\n".join(
-                        f"标题: {r.get('title', '')}\n摘要: {r.get('snippet', '')}\n"
+                results: list[dict[str, Any]] = []
+                try:
+                    found = await self.call_tool(
+                        "web_search", query=gen_description[:120], max_results=5)
+                    payload = getattr(found, "output", None) or {}
+                    if isinstance(payload, dict):
+                        results = list(payload.get("results") or [])
+                except Exception:  # noqa: BLE001 — 工具面不可用退回服务本体
+                    results = []
+                if not results:
+                    search_svc = WebSearchService()
+                    if search_svc.is_configured():
+                        results = await search_svc.search(gen_description[:120]) or []
+                blocks: list[str] = []
+                for r in results[:3]:
+                    blocks.append(
+                        f"标题: {r.get('title', '')}\n摘要: {r.get('summary') or r.get('snippet', '')}\n"
                         f"来源: {r.get('url', '')}"
-                        for r in (results or [])[:3]
                     )
+                # 正文摘录：给模型可引用的具体事实（数字/日期/名词），最多 2 条
+                for r in results[:2]:
+                    url = str(r.get("url") or "")
+                    if not url.startswith(("http://", "https://")):
+                        continue
+                    page = await self._fetch_url(url, title=str(r.get("title") or ""),
+                                                 max_chars=1200)
+                    if not page:
+                        continue
+                    text = str(page.get("content") or "").strip()
+                    if len(text) < 80:
+                        continue
+                    blocks.append(f"正文摘录（{url}）:\n{text[:1200]}")
+                web_context = "\n\n".join(blocks)
             except Exception:
                 logger.warning("AnimationAgent: 联网搜索失败，跳过 web_context", exc_info=True)
                 web_context = ""
