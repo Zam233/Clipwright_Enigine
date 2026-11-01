@@ -355,3 +355,42 @@ Copilot 子 agent tab 由当前状态卡扩展为 run transcript：顶部显示 
 - **回归**：后端 `pytest` 全绿（含新增 progress/INDEX 4 例、prompt lint 29 例、指标 12 例）；
   前端 `tsc` 干净、`vitest` 136 文件 / 1171 例；`stage_tool_failures` 门禁绿；
   事件契约 29 种前后端同序（跨仓测试 `tests/test_event_contract.py` ↔ `eventSchema.test.ts`）。
+
+## 执行记录（2026-11-01 · 第 12 轮 · run 寻址、身份与事件契约收口）
+
+**触发**：主/子 Agent 审查发现，run_id 来自别的任务时，任务 owner 校验挡不住
+详情/追问/重放；重放与降级重跑共用旧 run_id，工具事件会挂错记录或覆盖历史。
+
+### 后端修法
+
+1. **归属**
+   - 新增 `agent_run.get_run_for_task()`；`api/task.py` 用 `_run_for_task()` 统一收口
+     详情、追问、重放；`inspect()` 的 stage 回退候选按 `task_id` 过滤。
+   - 跨任务访问返回 404（不暴露“这个 run 存在但不属于你”）。
+2. **身份**
+   - `idem_key` 与 `run_id` 分离：显式重放、降级重跑、同键再次执行生成 `#r…` 新 run_id；
+     `attempt` 按任务+阶段递增；`_LIVE` 记录 `task_id/attempt`。
+   - `StageSpec.run_id` 贯通到阶段内 `subagent_tool.run_id`；记录不再被覆盖。
+3. **事件契约**
+   - `agent_run_end.detail` 发完整 `failure` 对象 + `needs` + `duration_ms` + `attempt` +
+     `report_path` + `degradations`；`FailureReport.needs` 上浮到 `AgentResult.needs`。
+   - 所有 `task_end.detail` 补 `completed` / `unfinished`。
+   - `/runs` 的 `report_path` 改读顶层；列表合并 `_LIVE` 运行中记录（`live=true`）。
+4. **生命周期**
+   - `/events/stream` 接受 `since_seq`；终态且游标追平直接结束，避免“回放→EOF→重连”。
+   - 终态任务 replay 返回 409。
+   - `/proceed` 幂等命中若目标是 `task_*`，同时返回 `task_id` / `mode=task`。
+
+### 验证
+
+- 新增 `tests/clipwright/test_run_addressing_api.py`：跨任务详情/追问 404、运行中 run 列表。
+- 新增 `tests/clipwright/test_agent_run_replay.py`：refresh 新 run_id + attempt 递增、
+  `agent_run_end` 完整字段。
+- `test_task_api.py` + `test_event_contract.py` + `test_run_addressing_api.py` +
+  `test_agent_run_replay.py`：26 passed；Agent/Kernel/Loop/Stage 等 11 文件：139 passed。
+
+### 已知残留
+
+- 进程重启后事件历史与统一 AgentRun 的恢复链不完整：Mongo 只有写路径，
+  `task_events` 普通任务不全量落 JSONL，`/runs` 无法重建重启前阶段结果。
+  需要补“从 Mongo/全量 JSONL 读取恢复”，或持久化统一 AgentResult。

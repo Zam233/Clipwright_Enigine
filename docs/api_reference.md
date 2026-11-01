@@ -125,6 +125,39 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 | `POST /api/pipeline/predict-script` | 分析文稿并推荐配置（请求体：`PredictScriptRequest`）。返回字数、句数、估算时长、推荐 Persona、推荐类型插件、情绪基调、关键主题 |
 | `POST /api/pipeline/predict-material` | 分析素材文件并推荐使用方式（请求体：`PredictMaterialRequest`）。返回时长、分辨率、方向、是否有视频/音频、用途建议 |
 
+## 任务与子 Agent（/api/task）
+
+> 实现：`clipwright/api/task.py`、`services/agent_run.py`、`services/task_events.py`。
+> 任务事件是唯一事实来源；`task.status` 只是缓存。
+
+| 端点 | 说明 |
+|------|------|
+| `POST /api/task` | 创建任务；`plan_only=true`（默认）只规划不执行 |
+| `GET /api/task/{task_id}` | 任务快照 + 事件条数 |
+| `GET /api/task/{task_id}/events?since_seq=&before_seq=&limit=` | 事件分页；返回 `has_more` / `oldest_available_seq` / `latest_seq` / `spilled_max_seq` |
+| `GET /api/task/{task_id}/events/stream?since_seq=` | SSE；先 REST 水合再接流。发送 `task_end` 后关闭；终态且游标已追平时直接 EOF |
+| `POST /api/task/{task_id}/resume` | 续跑；终态 409，等待回答时 409（需要先 answer 或 cancel） |
+| `POST /api/task/{task_id}/pause` / `cancel` | 暂停 / 取消 |
+| `POST /api/task/{task_id}/inject` | 给运行中的主 Agent 插话 |
+| `POST /api/task/{task_id}/plan` | 重新规划 |
+| `GET /api/task/{task_id}/questions?status=` + `POST .../answer` | 待答问题与作答（404/409/410 分别表示不存在/已回答或取消/超时失效） |
+| `GET /api/task/{task_id}/result` + `POST .../to-project` | 任务产物快照 / 落成可继续编辑的项目 |
+| `GET /api/task/{task_id}/runs` | 子 Agent run 列表；**含运行中占位记录**（`live=true`），`report_path` 取顶层字段 |
+| `GET /api/task/{task_id}/runs/{run_id}` | run 全量结果；run 不属于该任务时 404（不泄露存在性） |
+| `POST /api/task/{task_id}/runs/{run_id}/message` | 给该阶段子会话排队补充要求（下次派发生效） |
+| `POST /api/task/{task_id}/runs/{run_id}/replay` | 真重跑；`refresh=true`，生成 `#r…` 新 `run_id`；终态任务 409 |
+| `GET /api/task/{task_id}/tool-calls?stage=&attempt=&limit=&offset=` | 读盘上的全量工具 transcript |
+
+事件契约（前端按此渲染，不得只发分类字符串）：
+
+- `agent_run_start.detail`：`run_id`、`kind`、`stage`、`role`、`brief`、`inputs`、`attempt`
+- `agent_run_end.detail`：`run_id`、`status`、`attempt`、`summary`、`cost_usd`、`duration_ms`、
+  `report_path`、`tool_calls_path`、`degradations`、`failure`（完整对象）、`needs`
+- `task_end.detail`：`reason`、`usage`、`completed`、`unfinished`、`tool_calls`
+
+身份规则：`idem_key` 只用于幂等复用；`run_id` 标识每一次真实执行。显式重放、降级重跑、同键再次执行
+都必须生成新的 `run_id`，否则工具事件会挂到旧 run 或覆盖历史记录。
+
 ## 调度中枢（Supervisor，v1.4）
 
 > 实现：`clipwright/api/supervisor.py`（`router` + `admin_router`）。

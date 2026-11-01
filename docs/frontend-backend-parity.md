@@ -344,7 +344,7 @@ P6/P7 阶段新增/变更的路由与客户端（均已完成接线与回归）�
 | 后端路由 | 前端客户端 | 状态 |
 |---|---|---|
 | `POST/GET /api/workspace`、`/enable`、`/scan`、`/materials`、`/events` | `src/services/api/workspace.ts`（`workspaceApi`） | ✅ 已接：首页 04 步（开关+路径）、`/task/{id}` 工作区面板（计数/扫描/上传/素材表） |
-| `POST /api/requirements/proceed` | `AgentPanel.confirmPlan` / `ReviewPanel.confirm` → `features/agent/proceedResult.ts` | ✅ 单轨：`agent_mode=on` 返回 `task_id` → 跳 `/task/{id}` 订阅 Task 事件 |
+| `POST /api/requirements/proceed` | `AgentPanel.confirmPlan` / `ReviewPanel.confirm` → `features/agent/proceedResult.ts` | ✅ 单轨：恒返回 `task_id` + `mode=task`（幂等命中同样同形）→ 前端 `taskStore.load(task_id)` 并订阅 Task 事件 |
 
 说明：`/api/workspace/{id}/events` 已改成 **JSON**（`/events/stream` 才是 SSE），面板仍用"操作后 reload"，
 未挂常驻订阅——避免首页/任务页各开一条长连接；需要实时进度时改挂 `/events/stream`。
@@ -367,4 +367,22 @@ P6/P7 阶段新增/变更的路由与客户端（均已完成接线与回归）�
 | `services/session_log.py` | `src/features/sessionTimeline/*`、`src/stores/sessionTimelineStore.ts` | ✅ 前端不再合并第二数据源（旧 `unifiedTimelineStore` 已删除） |
 | `services/session_projection.py`（task 事件投影，`proceed` 时 `bind`） | 「轨迹」面板仍直连任务事件流（那是投影条目的原始 ref） | ✅ 需求面板不再订阅任务 SSE，避免重复应用 |
 | `GET /{sid}/messages`、`/{sid}/events`、`chat/stream` 的 `delta/reasoning/stage` 帧 | 旧视图（`?unifiedTimeline=0`）仍用 | ⚠️ 保留为兼容读；单流视图已不依赖 |
+
+## 10. 子 Agent run 与任务事件契约（2026-11-01 增量）
+
+| 后端 | 前端 | 状态 / 契约 |
+|---|---|---|
+| `GET /api/task/{id}/runs` | `TaskRuns` | ✅ 完成记录 + `_LIVE` 运行中占位（`live=true`）；`report_path` 取 `AgentResult.report_path` 顶层 |
+| `GET /api/task/{id}/runs/{run_id}` | 子 Agent 详情 | ✅ 统一 `_run_for_task()` 校验归属；跨任务 404，不泄露存在性 |
+| `POST .../runs/{run_id}/message` | `TaskRuns` | ✅ 归属校验后按 `task_id + stage` 排队，下次派发生效 |
+| `POST .../runs/{run_id}/replay` | `TaskRuns` | ✅ `refresh=true`；终态任务 409；新执行生成 `#r…` run_id |
+| `services/agent_run.py` | `foldRunChips` / `foldRunDetail` | ✅ `agent_run_end.detail` 发完整 failure、needs、duration_ms、attempt、report_path |
+| `StageSpec.run_id` → `subagent_tool.run_id` | 子 Agent 工具透明化 | ✅ 重放/降级重跑的工具事件挂到本次执行，不再归旧 run |
+| `GET /api/task/{id}/events/stream?since_seq=` | `features/task/useTaskEvents` | ✅ 共享单流；终态不建流、`task_end` 主动 close；先水合再带 since_seq 续传 |
+| `task_end.detail.completed/unfinished` | `taskStore.applyEvent` | ✅ 字段缺省时保留已有 `task.finish`，不被空数组覆盖 |
+| `POST /api/requirements/proceed` 幂等命中 | `proceedResult` | ✅ 目标为 `task_*` 时同形返回 `task_id` + `mode=task` |
+
+未完成：进程重启后完整事件历史与统一 AgentRun 的恢复链仍不完整——Mongo 只有写路径，
+普通任务事件不会全量落 JSONL，`/runs` 也无法重建重启前的阶段结果。UI 暂以“重启后历史可能不可用”
+处理，后续需补读取恢复或全量持久化。
 
