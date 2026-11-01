@@ -69,6 +69,52 @@ def test_clean_result_is_replayed_and_marked(monkeypatch):
     assert out.replayed is True
 
 
+def test_refresh_gets_new_execution_id_and_attempt(monkeypatch):
+    """重放是新的执行：run_id 必须变化，attempt 必须递增。"""
+    seen: dict = {}
+
+    async def _dispatch(spec, task, run_id, trace_id):
+        seen["run_id"] = run_id
+        return _result(run_id=run_id)
+
+    monkeypatch.setattr(agent_run, "_dispatch", _dispatch)
+    previous = _result(run_id="animation:9")
+    previous.task_id = _Task.id
+    agent_run._RUNS["animation:9"] = previous
+
+    spec = RunSpec(kind="stage", stage="animation", idem_key="animation:9", refresh=True)
+    out = asyncio.run(agent_run.run(spec, _Task()))
+    assert seen["run_id"].startswith("animation:9#r")
+    assert out.run_id == seen["run_id"]
+    assert out.attempt == 2, "同一任务同一阶段的第二次执行应记为 attempt=2"
+
+
+def test_agent_run_end_carries_full_contract(monkeypatch):
+    """端事件必须带完整 failure/needs/duration_ms，不能只发一个分类字符串。"""
+    from clipwright.services import task_events
+
+    task_events.clear(_Task.id, drop_spill=False)
+
+    async def _dispatch(spec, task, run_id, trace_id):
+        result = _result(run_id=run_id)
+        result.duration_ms = 1234
+        result.failure = {"category": "input_insufficient",
+                          "retryable": "needs_upstream",
+                          "blocking_point": "缺时间线", "evidence": []}
+        result.needs = [{"field": "timeline", "from_stage": "edit"}]
+        return result
+
+    monkeypatch.setattr(agent_run, "_dispatch", _dispatch)
+    spec = RunSpec(kind="stage", stage="animation", idem_key="animation:contract")
+    asyncio.run(agent_run.run(spec, _Task()))
+
+    end = [e for e in task_events.events(_Task.id)
+           if e.type == "agent_run_end"][-1]
+    assert end.detail["failure"]["category"] == "input_insufficient"
+    assert end.detail["needs"][0]["field"] == "timeline"
+    assert end.detail["duration_ms"] == 1234
+
+
 def test_surface_reports_replayed_flag(monkeypatch):
     """工具结果里必须有 replayed，主 agent 才分得清"重跑"与"旧结果"。"""
     from clipwright.tool import surface

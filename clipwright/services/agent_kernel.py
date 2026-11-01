@@ -696,7 +696,8 @@ class AgentKernel:
             _ask_user.cancel_owner("task", task_id, reason="cancelled")
         except Exception as exc:  # noqa: BLE001 — 清理失败不影响取消
             logger.warning("取消任务时清理待答问题失败 %s: %s", task_id, exc)
-        emit(task_id, "task_end", "任务被取消", {"reason": "cancelled"})
+        emit(task_id, "task_end", "任务被取消",
+             {"reason": "cancelled", "completed": [], "unfinished": ["用户取消"]})
         self._checkpoint(task)
         return task
 
@@ -884,7 +885,8 @@ class AgentKernel:
             )
             task.touch()
             emit(task.id, "task_end", task.finish.conclusion,
-                 {"reason": task.finish.reason})
+                 {"reason": task.finish.reason,
+                  "completed": [], "unfinished": list(task.finish.unfinished or [])})
             self._checkpoint(task)
             return task
         return await self._run_tool_loop(task, started=started,
@@ -1072,7 +1074,8 @@ class AgentKernel:
             task.status = "failed"
             task.touch()
             emit(task.id, "task_end", task.finish.conclusion,
-                 {"reason": gate_reason, "usage": task.usage.model_dump()},
+                 {"reason": gate_reason, "usage": task.usage.model_dump(),
+                  "completed": [], "unfinished": list(task.finish.unfinished or [])},
                  span="kernel")
             self._record_task_metrics(task, gate_reason)
             self._checkpoint(task)
@@ -1276,6 +1279,10 @@ class AgentKernel:
             task.touch()
             emit(task.id, "task_end", task.finish.conclusion,
                  {"reason": task.finish.reason, "usage": task.usage.model_dump(),
+                  # 收尾字段必须随终态一起发：前端没有第二条路能拿到它们，
+                  # 缺了就只能用空数组覆盖后端刚写好的任务状态。
+                  "completed": list(task.finish.completed or []),
+                  "unfinished": list(task.finish.unfinished or []),
                   "tool_calls": len(outcome.get("tool_calls") or [])},
                  run_id=str(finish.get("run_id") or ""), span="kernel")
             self._record_task_metrics(task, gate_reason)
@@ -1296,6 +1303,7 @@ class AgentKernel:
         task.touch()
         emit(task.id, "task_end", task.finish.conclusion,
              {"reason": task.finish.reason, "failure": failure,
+              "completed": [], "unfinished": list(task.finish.unfinished or []),
               "usage": task.usage.model_dump()}, span="kernel")
         self._record_task_metrics(task, task.finish.reason)
         self._checkpoint(task)

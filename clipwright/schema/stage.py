@@ -50,6 +50,9 @@ class StageSpec(BaseModel):
     dry_run: bool = Field(default=False, description="只装配输入并回报，不真跑")
     merge: bool = Field(default=True, description="跑完是否自动合并进黑板")
     idem_key: str = Field(default="", description="幂等键：同键重派复用上次结果")
+    #: 本次**真实执行**的 run_id（重放时与 idem_key 不同）。阶段内工具事件必须挂它，
+    #: 否则重放产生的轨迹会被归到上一次 run 上。
+    run_id: str = Field(default="", description="本次执行的 run_id（留空回落 idem_key）")
 
 
 class StageResult(BaseModel):

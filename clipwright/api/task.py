@@ -215,22 +215,42 @@ async def get_task_events(
 
 
 @router.get("/{task_id}/events/stream")
-async def stream_task_events(task_id: str, request: Request) -> StreamingResponse:
-    """SSE：与 trace 流同构（seq 游标 + data 帧）。"""
-    from clipwright.services.task_events import events_since
+async def stream_task_events(
+    task_id: str, request: Request,
+    since_seq: int = Query(default=0, ge=0,
+                          description="只推送 seq 大于它的事件；已水合过就不必全量回放"),
+) -> StreamingResponse:
+    """SSE：与 trace 流同构（seq 游标 + data 帧）。
+
+    `since_seq` 是恢复语义的一部分：前端先 REST 水合，再从这里接着收。
+    终态任务如果游标已经追平，直接结束流——否则 EventSource 重连会永远收到空流，
+    前端也就永远触发重连（实测会形成“回放→EOF→重连”的死循环）。
+    """
+    from clipwright.services.task_events import events_since, last_seq
 
     _enforce_task_owner(request, task_id)
+    # 直接调用路由函数（测试/内部）时拿到的是 Query 默认对象而不是 int；
+    # 只在 FastAPI 注入路径上它才是数字。这里归一化，避免 `>` 直接 TypeError。
+    start_seq = since_seq if isinstance(since_seq, int) else 0
+    terminal = _kernel().get(task_id)
+    if start_seq > 0 and terminal is not None and terminal.terminal \
+            and last_seq(task_id) <= start_seq:
+        return StreamingResponse(iter(()), media_type="text/event-stream")
 
     async def generator():
-        last_seq = 0
+        last = start_seq
         while True:
             if await request.is_disconnected():
                 return
-            for event in events_since(task_id, last_seq):
-                last_seq = event.seq
+            pending = events_since(task_id, last)
+            for event in pending:
+                last = event.seq
                 yield f"data: {json.dumps(event.to_public(), ensure_ascii=False)}\n\n"
                 if event.type == "task_end":
                     return
+            task = _kernel().get(task_id)
+            if not pending and task is not None and task.terminal:
+                return
             await asyncio.sleep(0.5)
 
     return StreamingResponse(generator(), media_type="text/event-stream")
@@ -534,6 +554,18 @@ async def task_tool_calls(
     }
 
 
+def _run_for_task(task_id: str, run_id: str) -> dict | None:
+    """取 run，并强制校验它属于 URL 里的任务。
+
+    任务 owner 校验只证明“你能看这个任务”，不能证明 run_id 属于它。
+    详情/追问/重放/取消都必须共用这一处，否则 A 任务的 URL 就能操作 B 的子会话。
+    """
+    from clipwright.services import agent_run
+
+    return (agent_run.get_run_for_task(task_id, run_id)
+            or agent_run.inspect(run_id=run_id, task_id=task_id))
+
+
 @router.get("/{task_id}/runs")
 async def task_runs(task_id: str, request: Request) -> dict:
     """列出该任务派过的全部子 agent run（PRD modern-agent-review M2）。
@@ -559,9 +591,12 @@ async def task_runs(task_id: str, request: Request) -> dict:
             "degradations": len(run.get("degradations") or []),
             "tool_calls": len(run.get("tool_calls") or []),
             "tool_calls_path": run.get("tool_calls_path", ""),
-            "report_path": (run.get("outputs") or {}).get("report_path", ""),
+            # 真实阶段结果把报告路径写在顶层（AgentResult.report_path），
+            # outputs 里通常没有这个键——旧实现让列表永远拿不到报告入口。
+            "report_path": run.get("report_path", ""),
             "summary": str(run.get("summary") or "")[:400],
             "replayed": bool(run.get("replayed")),
+            "live": bool(run.get("live")),
         })
     items.sort(key=lambda r: (r["stage"], r["attempt"], r["run_id"]))
     return {"task_id": task_id, "count": len(items), "items": items}
@@ -573,7 +608,7 @@ async def task_run_detail(task_id: str, run_id: str, request: Request) -> dict:
     from clipwright.services import agent_run
 
     _enforce_task_owner(request, task_id)
-    run = agent_run.get_run(run_id) or agent_run.inspect(run_id=run_id, task_id=task_id)
+    run = _run_for_task(task_id, run_id)
     if not run:
         raise HTTPException(status_code=404, detail=f"run 不存在: {run_id}")
     return {"task_id": task_id, "run": run}
@@ -594,7 +629,7 @@ async def task_run_message(task_id: str, run_id: str, body: RunMessageBody,
     from clipwright.services import agent_run
 
     _enforce_task_owner(request, task_id)
-    run = agent_run.get_run(run_id) or agent_run.inspect(run_id=run_id, task_id=task_id)
+    run = _run_for_task(task_id, run_id)
     if not run:
         raise HTTPException(status_code=404, detail=f"run 不存在: {run_id}")
     stage = str(run.get("stage") or run.get("role") or "")
@@ -615,7 +650,7 @@ async def task_run_replay(task_id: str, run_id: str, request: Request) -> dict:
     from clipwright.tool import surface
 
     _enforce_task_owner(request, task_id)
-    run = agent_run.get_run(run_id) or agent_run.inspect(run_id=run_id, task_id=task_id)
+    run = _run_for_task(task_id, run_id)
     if not run:
         raise HTTPException(status_code=404, detail=f"run 不存在: {run_id}")
     stage = str(run.get("stage") or "")
@@ -625,6 +660,11 @@ async def task_run_replay(task_id: str, run_id: str, request: Request) -> dict:
     if task is None:
         raise HTTPException(status_code=409,
                             detail="任务不在运行态内存里（已结束或服务重启），无法重放该 run")
+    if getattr(task, "terminal", False):
+        # 终态之后重放会继续写 agent_run_*，破坏 task_end 的“事件已经收敛”语义，
+        # 也会产生用户看不见的新成本；要重做请新建任务。
+        raise HTTPException(status_code=409,
+                            detail="任务已结束，不能再重放子 agent；如需重做请新建任务")
     result = await surface.execute(
         "delegate_agent",
         {"stage": stage, "brief": str(run.get("brief") or ""), "refresh": True},

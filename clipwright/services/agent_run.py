@@ -127,16 +127,58 @@ def get_run(run_id: str) -> dict[str, Any] | None:
     return r.model_dump(mode="json") if r else None
 
 
+def get_run_for_task(task_id: str, run_id: str) -> dict[str, Any] | None:
+    """只返回**确属该任务**的 run。
+
+    为什么不能只在 API 层校验 task 的 owner：run_id 可能来自另一个任务，
+    任务归属正确不代表这个 run 属于它。详情、追问、重放都必须过这一层，
+    否则拿 A 的 URL 就能读/改 B 的子会话。
+    """
+    key_task = str(task_id or "")
+    r = _RUNS.get(str(run_id or ""))
+    if r is None or not key_task or r.task_id != key_task:
+        return None
+    return r.model_dump(mode="json")
+
+
 def list_runs(task_id: str = "") -> list[dict[str, Any]]:
-    """按任务列 run。
+    """按任务列 run（含运行中的占位记录）。
 
     早期版本用 `run_id.startswith(task_id)` 过滤——但 run_id 是随机/幂等键，
     带前缀只是巧合。`AgentResult.task_id` 才是真字段。
+
+    运行中的 run 只在 `_LIVE`，没有 AgentResult；列表页必须也能看见它，
+    否则"子会话正在跑"这件事在整个列表里不存在。
     """
     key = str(task_id or "")
-    items = [r for r in _RUNS.values()
-             if not key or r.task_id == key or r.run_id.startswith(key)]
-    return [r.model_dump(mode="json") for r in items]
+    done = {
+        r.run_id: r.model_dump(mode="json")
+        for r in _RUNS.values()
+        if not key or r.task_id == key
+    }
+    if key:
+        for run_id, live in _LIVE.items():
+            if run_id in done or str(live.get("task_id") or "") != key:
+                continue
+            done[run_id] = {
+                "run_id": run_id,
+                "kind": str(live.get("kind") or "stage"),
+                "task_id": key,
+                "stage": str(live.get("stage") or ""),
+                "role": str(live.get("role") or ""),
+                "status": "running",
+                "attempt": int(live.get("attempt") or 1),
+                "summary": "",
+                "duration_ms": 0,
+                "cost_usd": None,
+                "degradations": [],
+                "tool_calls": [],
+                "tool_calls_path": "",
+                "report_path": "",
+                "replayed": False,
+                "live": True,
+            }
+    return list(done.values())
 
 
 def _tracker_node(task_id: str, node_id: str) -> dict[str, Any] | None:
@@ -161,7 +203,9 @@ def inspect(*, run_id: str = "", task_id: str = "", stage: str = "") -> dict[str
     if run_id:
         hit = _RUNS.get(run_id)
         if hit is not None:
-            return hit.model_dump(mode="json")
+            # 归属不符就是"不存在"，不能退到别的索引继续找（那会串任务）。
+            return (hit.model_dump(mode="json")
+                    if not task_id or hit.task_id == task_id else None)
         found = _tracker_node(task_id, run_id)
         if found is not None:
             return found
@@ -171,9 +215,9 @@ def inspect(*, run_id: str = "", task_id: str = "", stage: str = "") -> dict[str
         legacy = stage_subagent.get_stage(task_id, stage)
         if legacy is not None:
             return legacy
-    if task_id:
         cands = [r for r in _RUNS.values()
-                 if r.stage == stage and r.status in ("ok", "degraded", "needs", "failed")]
+                 if r.task_id == task_id and r.stage == stage
+                 and r.status in ("ok", "degraded", "needs", "failed")]
         if cands:
             return cands[-1].model_dump(mode="json")
     return None
@@ -236,30 +280,55 @@ def reset() -> None:
     _IDEM.clear()
 
 
+def _next_attempt(task: Any, spec: RunSpec) -> int:
+    """该任务该阶段的第几次执行（1 起）。"""
+    task_id = str(getattr(task, "id", "") or "")
+    stage = str(spec.stage or "")
+    if not task_id or not stage:
+        return 1
+    nums = [int(r.attempt or 1) for r in _RUNS.values()
+            if r.task_id == task_id and r.stage == stage]
+    nums += [int(v.get("attempt") or 1) for v in _LIVE.values()
+             if str(v.get("task_id") or "") == task_id
+             and str(v.get("stage") or "") == stage]
+    return max(nums, default=0) + 1
+
+
 async def run(spec: RunSpec, task: Any) -> AgentResult:
-    """执行一次子 agent（唯一入口）。"""
-    run_id = spec.idem_key or f"run_{uuid.uuid4().hex[:10]}"
-    if spec.refresh:
-        # 显式重跑要留下**新的** run 记录，否则 run 详情里看不到"这次重放"
-        run_id = f"{run_id}#r{uuid.uuid4().hex[:6]}"
+    """执行一次子 agent（唯一入口）。
+
+    身份分两层：
+    - `idem_key`：同一输入复用结果的幂等键（可重复）；
+    - `run_id`：**每一次真实执行**的唯一记录 id。显式重放、降级重跑都必须拿新 id，
+      否则新轨迹会挂在旧 run 上，或直接覆盖上一份失败记录。
+    """
+    base_id = spec.idem_key or f"run_{uuid.uuid4().hex[:10]}"
+    cached = replay(spec.idem_key) if (spec.idem_key and not spec.refresh) else None
+    must_rerun = bool(
+        spec.refresh
+        or (cached is not None and cached.degradations)
+        # 幂等键已有一条真实执行记录：再次执行必须追加，不能覆盖。
+        or (spec.idem_key and spec.idem_key in _RUNS)
+    )
+    run_id = f"{base_id}#r{uuid.uuid4().hex[:6]}" if must_rerun else base_id
     started = time.monotonic()
     trace_id = spec.trace_id or str(getattr(task, "id", "") or "")
+    attempt = _next_attempt(task, spec)
 
     # 幂等：同一 idem_key 直接复用上次结果（阶段/调研同一条规则，不再各写一份）
     #
     # 例外（E2E 2026-10-30 实测踩到）：上次结果是 **degraded** 时不回放。主 agent 重派
     # 同一阶段的**唯一目的**就是修降级，回放旧字节会造出"重派成功"的假象
     # （同一份 sha256、弱动效依旧）。宁可多跑一次，也不能给假收据。
-    if spec.idem_key and not spec.refresh:
-        cached = replay(spec.idem_key)
-        if cached is not None and cached.degradations:
+    if spec.idem_key and not spec.refresh and cached is not None:
+        if cached.degradations:
             _emit_run(task, "agent_run_update",
                       f"{spec.kind}/{spec.stage or spec.role} → 上次有降级，重跑而不是回放",
-                      detail={"run_id": cached.run_id, "status": cached.status,
+                      detail={"run_id": run_id, "status": cached.status,
                               "replayed": False, "idem_key": spec.idem_key,
                               "degradations": len(cached.degradations)},
-                      run_id=cached.run_id, span="agent", trace_id=trace_id)
-        elif cached is not None:
+                      run_id=run_id, span="agent", trace_id=trace_id)
+        else:
             cached.replayed = True
             _emit_run(task, "agent_run_update",
                       f"{spec.kind}/{spec.stage or spec.role} → 复用上次结果",
@@ -271,6 +340,7 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
     _emit_run(task, "agent_run_start", f"派出 {spec.kind}/{spec.stage or spec.role}",
               detail={"run_id": run_id, "kind": spec.kind, "stage": spec.stage,
                       "role": spec.role, "brief": spec.brief[:200],
+                      "attempt": attempt,
                       "inputs": list((spec.inputs or {}).keys())},
               run_id=run_id, span="agent", trace_id=trace_id)
 
@@ -278,7 +348,8 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
     if int(spec.depth or 1) > 1:
         result = AgentResult(
             run_id=run_id, kind=spec.kind, stage=spec.stage, role=spec.role,
-            status="refused", error="子 agent 不得再派子 agent（星型拓扑，深度固定 1）",
+            status="refused", attempt=attempt,
+            error="子 agent 不得再派子 agent（星型拓扑，深度固定 1）",
             failure={"category": "policy_refused", "retryable": "permanent",
                      "blocking_point": "depth>1", "evidence": []},
         )
@@ -291,7 +362,9 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
         # ——"取消契约"于是写着有、实际永远返回不可取消。
         handle = asyncio.ensure_future(_dispatch(spec, task, run_id, trace_id))
         _LIVE[run_id] = {"task": handle, "kind": spec.kind,
-                         "stage": spec.stage, "role": spec.role}
+                         "task_id": str(getattr(task, "id", "") or ""),
+                         "stage": spec.stage, "role": spec.role,
+                         "attempt": attempt}
         _bind_alias(spec.idem_key, run_id)
         try:
             result = await handle
@@ -316,6 +389,9 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
                      "blocking_point": str(exc)[:200], "evidence": []},
         )
     result.duration_ms = result.duration_ms or int((time.monotonic() - started) * 1000)
+    # 这里是真实执行的收敛点：attempt 由运行时统一编号，
+    # 各 adapter 的默认值（恒为 1）不能覆盖它。
+    result.attempt = int(attempt)
     _record(result)
     if result.status == "needs":
         # 等人工审核：既不是成功也不是失败，用 update 事件让前端显示"卡在哪"
@@ -327,12 +403,19 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
                           "reasons": review.get("reasons") or []},
                   run_id=result.run_id, span="agent", trace_id=trace_id)
     _after_run(result, spec, task)
+    # 结束事件是前端详情/筹码的**唯一**数据源：字段必须与 AgentResult 同形，
+    # 不能只发 failure.category（那会让前端看到空白的“失败原因”和永远为空的缺输入）。
     _emit_run(task, "agent_run_end",
               f"{spec.kind}/{result.stage or result.role} → {result.status}",
               detail={"run_id": result.run_id, "status": result.status,
+                      "attempt": result.attempt,
                       "summary": result.summary[:300], "cost_usd": result.cost_usd,
+                      "duration_ms": result.duration_ms,
                       "report_path": result.report_path,
-                      "failure": (result.failure or {}).get("category")},
+                      "tool_calls_path": result.tool_calls_path,
+                      "degradations": len(result.degradations or []),
+                      "failure": result.failure,
+                      "needs": result.needs or []},
               run_id=result.run_id, span="agent", trace_id=trace_id)
     if not result.brief and spec.brief:
         result.brief = spec.brief
@@ -441,15 +524,21 @@ async def _run_stage(spec: RunSpec, task: Any, run_id: str, trace_id: str) -> Ag
         timeout_sec=float(spec.timeout_sec or 900.0),
         max_turns=int(spec.max_turns or 8),
         idem_key=spec.idem_key,
+        run_id=run_id,
     )
     sr = await stage_subagent.run_stage(task, stage_spec)
     failure = sr.failure.model_dump(mode="json") if sr.failure else None
+    # 缺输入清单在 FailureReport.needs 里；AgentResult 也有顶层 needs，前端读的是顶层。
+    # 只转 failure 不转 needs，界面就永远显示“还缺什么：无”。
+    needs = [dict(n) for n in (getattr(sr.failure, "needs", None) or [])
+             if isinstance(n, dict)] if sr.failure else []
     return AgentResult(
         run_id=run_id, kind="stage",
         task_id=str(getattr(task, "id", "") or ""), trace_id=trace_id,
         stage=sr.stage, role=spec.role or sr.stage,
         status=_map_status(sr.status),
         summary=sr.summary, outputs=dict(sr.artifacts or {}), writes=list(sr.writes or []),
+        needs=needs,
         report_path=sr.report_path, report_seq=sr.report_seq,
         issues=list(sr.issues or []),
         # 降级信号上浮（E2E 2026-10-29）：StageResult.degradations 此前在这里被整段丢弃，

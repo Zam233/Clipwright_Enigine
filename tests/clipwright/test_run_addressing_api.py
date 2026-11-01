@@ -77,6 +77,44 @@ def test_run_detail_returns_full_result():
     assert body["run"]["degradations"][0]["kind"] == "text_motion_weak"
 
 
+def test_run_detail_rejects_cross_task_access():
+    """A 任务的 URL 不能读 B 任务的 run（run_id 不是访问凭证）。"""
+    from fastapi import HTTPException
+
+    from clipwright.api.task import task_run_detail
+
+    _seed("task_runs_1")
+    with pytest.raises(HTTPException) as ei:
+        _call(task_run_detail("task_other", "run_a", _FakeRequest()))
+    assert ei.value.status_code == 404
+
+
+def test_run_message_and_replay_reject_cross_task():
+    from fastapi import HTTPException
+
+    from clipwright.api.task import RunMessageBody, task_run_message
+
+    _seed("task_runs_1")
+    with pytest.raises(HTTPException) as ei:
+        _call(task_run_message("task_other", "run_a",
+                               RunMessageBody(text="改一下"), _FakeRequest()))
+    assert ei.value.status_code == 404
+    assert agent_run.peek_pending_notes("task_runs_1", "animation") == []
+
+
+def test_runs_list_includes_live_run():
+    from clipwright.api.task import task_runs
+
+    _seed("task_runs_1")
+    agent_run._LIVE["run_live"] = {  # noqa: SLF001
+        "task": None, "kind": "stage", "task_id": "task_runs_1",
+        "stage": "edit", "role": "edit", "attempt": 1,
+    }
+    body = _call(task_runs("task_runs_1", _FakeRequest()))
+    live = next(x for x in body["items"] if x["run_id"] == "run_live")
+    assert live["status"] == "running" and live["live"] is True
+
+
 def test_run_detail_404_for_unknown_run():
     from fastapi import HTTPException
 

@@ -772,8 +772,13 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
     _existing = _proceed_idem_hit(_idem_key, _running_pipelines, _pipeline_tasks)
     if _existing:
         logger.info("proceed 幂等命中: %s → %s", _idem_key, _existing)
+        # 幂等命中的目标可能是 Task（task_*）。只回 pipeline_id 会让前端把它当成
+        # 已下线的老管线（不切换任务、不挂 Task 事件流）；两条轨道的字段必须同形。
+        is_task = str(_existing).startswith("task_")
         return {
-            "session_id": req.session_id, "pipeline_id": _existing,
+            "session_id": req.session_id,
+            "pipeline_id": _existing,
+            **({"task_id": _existing, "mode": "task"} if is_task else {"mode": "pipeline"}),
             "status": "pipeline_started", "idempotent": True,
         }
 
