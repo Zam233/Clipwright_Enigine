@@ -24,13 +24,13 @@
 
 > 核心文档：[架构设计](docs/structure.md) · [Persona 系统](docs/Persona.md) · [Agent 工作流](docs/workflow.md)
 
-纯后端引擎，负责 AI 驱动的视频内容编排。包含五层架构——原子能力层、Agent 编排层、类型层、Persona 配置层、用户接口层——以及完整的 Agent 管线（结构/素材/剪辑/动画/音效/质检）。对外暴露 REST API，不依赖任何前端，可独立运行。
+纯后端引擎，负责 AI 驱动的视频内容编排。包含五层架构——原子能力层、Agent 编排层、类型层、Persona 配置层、用户接口层——以**主 Agent 任务**为唯一创作通道，按需派发阶段子 Agent（结构/素材/剪辑/动画/音效/质检）。对外暴露 REST API + 任务事件 SSE，不依赖任何前端，可独立运行。
 
 ### 帧艺 ClipWright AI 辅助视频创作系统（全栈）
 
 > 项目总览（本文档）
 
-前后端分离的 AI 辅助视频创作系统 = 内容视频编排引擎（后端）+ Web 视频编辑器（前端）。前端基于 React 19 + TypeScript + Canvas 自研时间轴，对标 PR 的多轨编辑器。后端引擎以 Agent 管线驱动，Persona 系统实现风格化自动剪辑。
+前后端分离的 AI 辅助视频创作系统 = 内容视频编排引擎（后端）+ Web 视频编辑器（前端）。前端基于 React 19 + TypeScript + Canvas 自研时间轴，对标 PR 的多轨编辑器。后端以主 Agent 任务驱动、按需派发阶段子 Agent，Persona 系统实现风格化自动剪辑。
 
 ## 项目定位
 
@@ -102,17 +102,18 @@
 │  └─────────────────────┘  └──────────────────────┘   │
 │                                                      │
 └──────────────────────┬───────────────────────────────┘
-                       │ REST API
-                       │ POST /api/pipeline/run
+                       │ REST API + SSE
+                       │ POST /api/requirements/proceed
+                       │ POST /api/task
+                       │ GET  /api/task/{id}/events/stream
                        │ POST /api/tool/execute
                        │ POST /api/skill/execute
                        │ POST /api/material/search
                        │ POST /api/animation/list
                        │ POST /api/stt/transcribe
-                       │ POST /api/plugin/load-all
 ┌──────────────────────┴───────────────────────────────┐
 │                    后端 (clipwright)                   │
-│                  Python · FastAPI · LangGraph          │
+│                Python · FastAPI · Agent Kernel         │
 │                                                      │
 │  ┌────────────────────────────────────────────────┐  │
 │  │             Persona 引擎                        │  │
@@ -120,13 +121,14 @@
 │  └────────────────────────────────────────────────┘  │
 │                                                      │
 │  ┌────────────────────────────────────────────────┐  │
-│  │             Agent 编排层 (LangGraph)            │  │
+│  │        Agent Kernel（tool loop） + 阶段子 Agent │  │
 │  │                                                │  │
-│  │  RequirementsAgent → StructureAgent →          │  │
-│  │  MaterialAgent → EditAgent → AnimationAgent     │  │
-│  │  → AudioAgent → QualityAgent                   │  │
+│  │  主 Agent 按计划/上下文派发：                    │  │
+│  │  structure → material → edit → animation →     │  │
+│  │  audio → quality（Requirements 负责简报/规划）  │  │
 │  │                                                │  │
-│  │  支持: 全流程执行 / 单Agent执行 / 局部重执行   │  │
+│  │  支持: 任务事件流 / 子 Agent 追问与重放         │  │
+│  │        局部返工 / 降级补救 / 中止续跑           │  │
 │  └────────────────────────────────────────────────┘  │
 │                                                      │
 │  ┌────────────────────────────────────────────────┐  │
@@ -288,13 +290,29 @@ npm run dev            # http://localhost:5173
 ### API 设计（核心端点）
 
 ```plaintext
-# Pipeline 执行
-POST   /api/pipeline/run              # 全流程执行，返回时间线JSON
-POST   /api/pipeline/run-async        # 异步启动管线（SSE 追踪）
-POST   /api/pipeline/step/{agent}     # 单Agent执行
-GET    /api/pipeline/runs             # 最近管线运行记录
-GET    /api/pipeline/status/{id}      # 管线状态
-GET    /api/pipeline/trace/stream/{id} # SSE 管线事件流
+# 主 Agent 任务（唯一创作通道）
+POST   /api/task                      # 建任务；plan_only=true 只规划
+GET    /api/task/{id}                 # 任务快照
+GET    /api/task/{id}/events          # 事件分页（since_seq / before_seq / limit）
+GET    /api/task/{id}/events/stream   # SSE：task_end 即关闭，支持 since_seq 续传
+POST   /api/task/{id}/resume          # 续跑（终态 409）
+POST   /api/task/{id}/pause|cancel    # 暂停 / 取消
+POST   /api/task/{id}/inject          # 给主 Agent 插话
+GET    /api/task/{id}/questions       # 待答问题；POST /answer 作答
+GET    /api/task/{id}/result          # 产物快照
+POST   /api/task/{id}/to-project      # 落成可继续编辑的项目
+
+# 子 Agent run（可寻址子会话）
+GET    /api/task/{id}/runs            # 完成 + 运行中（live=true）记录
+GET    /api/task/{id}/runs/{run_id}   # run 详情；跨任务 404
+POST   /api/task/{id}/runs/{run_id}/message  # 追问（下次派发生效）
+POST   /api/task/{id}/runs/{run_id}/replay   # 真重跑（新 run_id；终态 409）
+GET    /api/task/{id}/tool-calls      # 全量工具轨迹（stage/attempt/分页）
+
+# 老管线（执行引擎已删除，仅保留兼容读）
+POST   /api/pipeline/run-async        # run-async：转 Task 或 410
+GET    /api/pipeline/runs             # 历史运行记录
+GET    /api/pipeline/trace/stream/{id} # 兼容 trace 流（新任务请看 /api/task）
 
 # 原子能力工具
 GET    /api/tool/list                 # 列出所有工具
@@ -356,7 +374,7 @@ GET    /api/render/download/{name}    # 下载渲染结果
 POST   /api/requirements/init         # 初始化需求会话
 POST   /api/requirements/chat         # 发送需求消息（SSE 流式见 chat/stream）
 GET    /api/requirements/plan/{id}    # 获取制作规划书
-POST   /api/requirements/proceed      # 确认并启动管线
+POST   /api/requirements/proceed      # 确认实施 → 建主 Agent Task（返回 task_id + mode=task）
 POST   /api/requirements/edit         # 对选中片段下达自然语言编辑指令
 POST   /api/requirements/{sid}/intent # 一句话 → 结构化剪辑意图（含歧义反问）
 POST   /api/requirements/{sid}/intent/apply # dry-run / 执行补丁（硬错误零执行）
@@ -542,6 +560,7 @@ Level 2 ─── LoRA微调 ────── 上传50+历史视频，微调Ag
 | 阶段六 | 账号管理 / 插件与 Persona 市场 / 商业交付加固（P0–P10） | ✅ 完成 |
 | 阶段七 | **素材内容理解**（R1–R10）：镜头级索引 + 内容查询 + 自然语言剪辑意图落位 + 量化评测门禁 | ✅ 完成 |
 | 阶段八 | 真实画面理解（云端多模态开启后的评测）、跨素材一致性、成片级自动复核 | 🔄 进行中 |
+| 阶段九 | **主 Agent 运行态收口**：任务事件唯一事实源、run 归属/重放身份、子 Agent 可寻址、SSE 终态收敛 | ✅ 完成（2026-11-01） |
 
 ------
 
@@ -561,11 +580,11 @@ Level 2 ─── LoRA微调 ────── 上传50+历史视频，微调Ag
 
 | 检查 | 命令 | 当前基线 |
 | --- | --- | --- |
-| 后端全量回归 | `python -m pytest tests -q`（工作目录 `J:\Clipwright`） | **3190 passed / 0 failed**（3 skipped、1 xfailed） |
+| 后端全量回归 | `python -m pytest tests -q`（工作目录 `J:\Clipwright`） | 完整套件待跑通（本机 53% 附近长时间无进展）；本轮相关 **139 passed** |
 | 后端可导入 | `python -c "import clipwright.main"` | OK |
 | 内容理解指标门禁 | `python scripts/verify_all_metrics.py` | **9/9 PASS**（完整跑约 4.6 分钟） |
 | PowerShell 脚本可解析 | `python scripts/fix_ps1_bom.py --check` | 3/3（`.ps1` 必须带 UTF-8 BOM） |
-| 前端单测 | `npm run test`（工作目录 `J:\Clipweight-Client`） | **771 passed / 90 files** |
+| 前端单测 | `npm run test`（工作目录 `J:\Clipweight-Client`） | **1125 passed / 5 skipped / 0 failed（134 files）** |
 | 前端类型与构建 | `npx tsc --noEmit` · `npm run build` | 均无错误 |
 
 > 数字是**实测基线**而非配额：改动让它们下降时，先确认是预期变化还是回归。指标脚本输出的"验证边界"段落必须和数字一起读——它写着每个数字是在什么素材、什么条件下测出来的。
