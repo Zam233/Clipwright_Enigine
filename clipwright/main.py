@@ -96,6 +96,7 @@ from clipwright.api import requirements as requirements_api
 from clipwright.api import versions as versions_api
 from clipwright.api import scheduler as scheduler_api
 from clipwright.api import workspace as workspace_api
+from clipwright.api import diagnostics as diagnostics_api
 from clipwright.category import (
     CategoryRegistry,
     DigitalReviewPlugin,
@@ -760,6 +761,7 @@ app.include_router(requirements_api.router)
 app.include_router(versions_api.router)
 app.include_router(scheduler_api.router)
 app.include_router(workspace_api.router)
+app.include_router(diagnostics_api.router)
 
 
 @app.get("/health")

@@ -110,3 +110,6 @@ workspaces/
 
 # 本地数据还原点（清理前的快照，不进版本库）
 _backup/
+
+# 运行时日志与前端崩溃上报（logs/client-errors.jsonl 由 /api/diagnostics 写入）
+logs/

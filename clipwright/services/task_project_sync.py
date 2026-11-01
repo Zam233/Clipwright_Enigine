@@ -20,11 +20,32 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Optional
 
 from clipwright.config import logger
+
+
+def _signature(timeline: Any) -> str:
+    """时间线内容指纹（只算 tracks，键序稳定）。
+
+    为什么要指纹而不是"来源标记"：中间回写必须区分两种情况——
+    ① 项目里这份时间线**就是我们写的**（可以继续覆盖，越写越完整）；
+    ② 用户在编辑器里**自己改过**（绝不能覆盖）。
+    旧实现用 `metadata.source == f"task:{id}"` 判断，但**从来没有人写过这个标记**，
+    于是项目一旦有轨道（第一次回写之后）就永远跳过 → 时间轴只在第一次更新，
+    之后直到任务结束都不再动（"实时同步"实际是坏的）。
+    指纹写在 `metadata.agent_sig`，任何任务都能比对：与当前内容一致 = 没人动过。
+    """
+    tracks = (timeline or {}).get("tracks") if isinstance(timeline, dict) else None
+    try:
+        body = json.dumps(tracks or [], ensure_ascii=False, sort_keys=True,
+                          separators=(",", ":"))
+    except Exception:  # noqa: BLE001 — 序列化失败就当"不可比较"
+        return ""
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
 def resolve_timeline(value: Any) -> Optional[dict[str, Any]]:
@@ -94,18 +115,40 @@ def sync_timeline_to_project(task_id: str, task: Any, *, incremental: bool = Fal
     try:
         from clipwright.api.project import _manager
 
-        # 中间回写不能覆盖"用户已保存的编辑"：只有空项目或本任务写过才更新。
+        # 中间回写不能覆盖"用户已保存的编辑"：判据是内容指纹——
+        # 项目里这份时间线的 `metadata.agent_sig` 与它自己的 tracks 一致，
+        # 说明"最后动它的是 agent"，可以继续覆盖；不一致说明用户改过，跳过。
         if incremental:
             try:
                 existing = _manager.load(pid) or {}
                 cur = existing.get("timeline") or {}
-                if (cur.get("tracks") or []) and str(
-                        (cur.get("metadata") or {}).get("source") or "") != f"task:{task_id}":
-                    logger.info("跳过中间回写：项目 %s 已有用户时间线", pid)
-                    return ""
+                if (cur.get("tracks") or []):
+                    prev_sig = str((cur.get("metadata") or {}).get("agent_sig") or "")
+                    if prev_sig != _signature(cur):
+                        logger.info("跳过中间回写：项目 %s 的时间线被用户改过（指纹不一致）", pid)
+                        return ""
             except FileNotFoundError:
                 pass
+        # 打标：来源 + 内容指纹，供下一次回写与"是否被用户改过"判断
+        timeline = dict(timeline)
+        meta = dict(timeline.get("metadata") or {})
+        meta["source"] = f"task:{task_id}"
+        meta["agent_sig"] = _signature(timeline)
+        timeline["metadata"] = meta
         _manager.save(pid, {"timeline": timeline})
+        # `save` 会走一次 schema 归一化（补默认值），指纹要以**落盘后的内容**为准，
+        # 否则下一次比对必然不一致 → 又变成"只写一次"。
+        try:
+            saved = (_manager.load(pid) or {}).get("timeline") or {}
+            sig = _signature(saved)
+            if sig and str((saved.get("metadata") or {}).get("agent_sig") or "") != sig:
+                saved_meta = dict(saved.get("metadata") or {})
+                saved_meta["agent_sig"] = sig
+                saved_meta["source"] = f"task:{task_id}"
+                saved["metadata"] = saved_meta
+                _manager.save(pid, {"timeline": saved})
+        except Exception as exc:  # noqa: BLE001 — 补指纹失败只影响下一次能否覆盖
+            logger.warning("回写时间线后补指纹失败 %s: %s", pid, exc)
     except FileNotFoundError:
         logger.warning("回写时间线失败：项目不存在 %s（task=%s）", pid, task_id)
         return ""

@@ -74,6 +74,9 @@ class InitRequest(BaseModel):
 class ChatRequest(BaseModel):
     session_id: str
     message: str
+    # 发起对话所在的编辑器项目（可为空）。续跑主 agent 时用它定位工作区，
+    # 否则会退回用 session_id 建一个**新的**工作区，docs/ 与成片都对不上。
+    project_id: str = ""
 
 
 class EditRequest(BaseModel):
@@ -272,7 +275,8 @@ async def chat_message(req: ChatRequest, request: Request) -> dict:
         from clipwright.services.timeouts import wait_or_run
 
         result = await wait_or_run(
-            _service.chat(req.session_id, req.message),
+            _service.chat(req.session_id, req.message, request=request,
+                        project_id=req.project_id),
             CHAT_HARD_TIMEOUT,
         )
         if "error" in result:
@@ -289,12 +293,14 @@ async def chat_message(req: ChatRequest, request: Request) -> dict:
 
 
 @router.post("/chat/stream/{session_id}")
-async def chat_stream(session_id: str, message: str = Form(...), request: Request = None):
+async def chat_stream(session_id: str, message: str = Form(...),
+                      project_id: str = Form(""), request: Request = None):
     _require_session_owner(request, session_id)
     """SSE 流式对话 — 逐块推送状态和结果。"""
     async def event_stream():
         try:
-            async for chunk in _service.stream_chat(session_id, message):
+            async for chunk in _service.stream_chat(session_id, message, request=request,
+                                                 project_id=project_id):
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
         except Exception as e:
             logger.exception("SSE stream error: %s", e)

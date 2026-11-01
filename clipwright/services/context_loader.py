@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +87,27 @@ def load(task: Any, *, failure: dict[str, Any] | None = None,
                         "missing": not brief_txt})
         sources.append({"name": "docs/plan.md", "bytes": len(plan_txt),
                         "missing": not plan_txt})
+
+    # ①0 本轮用户指令（续跑场景最高优先级：用户刚说的这句必须排在最前面）
+    instr_txt = _instruction_digest(task)
+    if instr_txt:
+        parts.append(("instruction", "## 本轮用户指令（最高优先级）\n" + instr_txt, 0))
+        sources.append({"name": "user_instruction", "bytes": len(instr_txt),
+                        "missing": False})
+
+    # ①0b 会话对话 + 上一轮执行轨迹（工具 / 技能 / 子 agent）
+    conv_txt, run_txt, sess_sources = _session_digest(task)
+    for entry in sess_sources:
+        sources.append(entry)
+    if conv_txt:
+        parts.append(("conversation", "## 会话对话（最近，越靠后越新）\n" + conv_txt, 1))
+    if run_txt:
+        parts.append((
+            "prev_run",
+            "## 上一轮执行轨迹（派过哪些子 agent、调过哪些工具/技能、降级与汇报）\n"
+            + run_txt,
+            3,
+        ))
     if brief_txt:
         parts.append(("brief", "## 需求简报\n" + brief_txt, 1))
     if plan_txt:
@@ -364,6 +386,171 @@ def _failure_text(failure: dict[str, Any], limit: int) -> str:
         if isinstance(ev, dict):
             lines.append(f"- 证据[{ev.get('kind')}]：{str(ev.get('text'))[:200]}")
     return "\n".join(lines)[:limit]
+
+
+# ── 会话 / 上一轮执行轨迹（2026-10-31 用户要求）─────────────────────────
+#
+# 补的是主 agent 的「我记得刚才发生了什么」：
+#   ① 会话对话（用户说了什么、自己承诺了什么）；
+#   ② 上一轮执行轨迹（派过哪些子 agent、调过哪些工具/技能、哪一步降级/失败）。
+#
+# 为什么必须补：任务被中止后用户再说一句，主 agent 起的是**新任务**——`context_digest`
+# 是空的，而 `load()` 以前只装 docs / 产物 / 记忆 / 报告，于是它对"上一轮干了什么、
+# 用户刚提了什么要求"一无所知，只能从零摸索。数据源用**会话时间线**（session_log）：
+# 它是服务端唯一有序流，任务事件已由 session_projection 投影进去，落盘、可读、跨进程存活。
+
+SESSION_LIMITS = {"instruction": 1200, "conversation": 1500, "prev_run": 1800}
+
+
+def _session_id_of(task: Any) -> str:
+    try:
+        request = getattr(task, "request", task)
+        extra = dict(getattr(request, "extra", {}) or {})
+        return str(extra.get("session_id") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _text_of(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, dict):
+        for key in ("delta", "text", "content", "markdown", "summary", "reply"):
+            inner = value.get(key)
+            if isinstance(inner, str) and inner.strip():
+                return inner
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:  # noqa: BLE001
+            return str(value)
+    if isinstance(value, list):
+        return "、".join(_text_of(v) for v in value[:8])
+    return "" if value is None else str(value)
+
+
+def _short(text: Any, limit: int) -> str:
+    body = " ".join(_text_of(text).split())
+    return body[:limit] + ("…" if len(body) > limit else "")
+
+
+def _plain_text(value: Any) -> str:
+    """只认**真正的文本**：dict 一律当噪声（会话流里 `content` 也可能是事件 detail，
+    例如 `{"kind": "preamble", "round": 12}` —— 那些不是"对话内容"，塞进上下文
+    只会把模型的注意力从用户诉求上带走）。"""
+    if isinstance(value, str):
+        return " ".join(value.split())
+    if isinstance(value, dict):
+        for key in ("delta", "text", "content", "markdown", "summary", "reply"):
+            inner = value.get(key)
+            if isinstance(inner, str) and inner.strip():
+                return " ".join(inner.split())
+    return ""
+
+
+def _instruction_digest(task: Any) -> str:
+    """本轮用户指令（续跑时由 requirements 写进 `extra["user_instruction"]`）。"""
+    try:
+        request = getattr(task, "request", task)
+        extra = dict(getattr(request, "extra", {}) or {})
+        text = str(extra.get("user_instruction") or "").strip()
+        prev_task = str(extra.get("previous_task_id") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+    if not text:
+        return ""
+    suffix = (f"\n（上一轮任务 {prev_task} 已结束；这是同一会话的**续跑**，"
+              "不是新项目：接着做完没做完的事，不要从头重做）") if prev_task else ""
+    return text[:SESSION_LIMITS["instruction"]] + suffix
+
+
+def _session_digest(task: Any) -> tuple[str, str, list[dict[str, Any]]]:
+    """从会话时间线取 `(对话摘要, 上一轮轨迹摘要, sources)`。"""
+    sid = _session_id_of(task)
+    if not sid:
+        return "", "", []
+    try:
+        from clipwright.services.session_log import get_log
+
+        items = (get_log(sid).tail(260) or {}).get("items") or []
+    except Exception as exc:  # noqa: BLE001 — 时间线不可用不能阻断装载
+        logger.warning("会话上下文不可用 %s: %s", sid, exc)
+        return "", "", []
+    if not items:
+        return "", "", []
+
+    conv: list[str] = []
+    trace: list[str] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        kind = str(it.get("type") or "")
+        meta = it.get("meta") or {}
+        content = it.get("content")
+        state = str(it.get("state") or "")
+        if kind == "content":
+            role = str(meta.get("role") or "")
+            raw = _plain_text(content)
+            if not raw:
+                continue                      # 事件 detail 不是对话（见 _plain_text）
+            text = raw[:160] + ("…" if len(raw) > 160 else "")
+            if role == "user":
+                conv.append(f"- 用户：{text}")
+            elif role == "assistant":
+                conv.append(f"- 主 agent：{text}")
+            continue
+        if kind in ("tool", "skill", "subagent"):
+            name = (meta.get("tool") or meta.get("skill") or meta.get("agent")
+                    or _plain_text(content) or str(meta.get("message") or "")[:60])
+            status = meta.get("status") or state
+            owner = str(meta.get("agent") or "")
+            owner_tag = f"@{owner}" if owner and owner not in (name, "") else ""
+            line = f"- [{kind}{owner_tag}] {name} {status}".strip()
+            err = meta.get("error")
+            if err:
+                line += f"（{_short(err, 90)}）"
+            trace.append(line)
+        elif kind == "stage":
+            trace.append(f"- [阶段] {meta.get('stage') or _short(content, 40)} "
+                         f"{meta.get('status') or state}".strip())
+        elif kind == "degradation":
+            facts = _plain_text(content)
+            if not facts:
+                stage = str(meta.get("stage") or "")
+                knd = str(meta.get("kind") or "")
+                facts = " ".join(x for x in (stage, knd) if x) or str(
+                    meta.get("message") or ""
+                )[:140]
+            trace.append(f"- [降级] {_short(facts, 140)}")
+        elif kind == "report":
+            bullets = meta.get("bullets")
+            head = ""
+            if isinstance(bullets, list) and bullets:
+                head = _short(bullets[0], 160)
+            if not head:
+                head = _short(content, 160)
+            if head:
+                trace.append(f"- [汇报] {head}")
+
+    conv_txt = "\n".join(conv[-12:])[:SESSION_LIMITS["conversation"]]
+    # 轨迹去重（连续重复的同一行没有信息量，只会白占预算）
+    dense: list[str] = []
+    for line in trace:
+        if dense and dense[-1] == line:
+            continue
+        dense.append(line)
+    run_txt = "\n".join(dense[-26:])[:SESSION_LIMITS["prev_run"]]
+    sources = [{
+        "name": "session_timeline",
+        "bytes": len(conv_txt) + len(run_txt),
+        "missing": not (conv_txt or run_txt),
+        "items": len(items),
+        "tools": sum(1 for t in trace if t.startswith("- [tool")),
+        "subagents": sum(1 for t in trace if t.startswith("- [subagent")),
+        "stages": sum(1 for t in trace if t.startswith("- [阶段")),
+    }]
+    return conv_txt, run_txt, sources
 
 
 __all__ = ["DEFAULT_BUDGET_CHARS", "LIMITS", "load"]

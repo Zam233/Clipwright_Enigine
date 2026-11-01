@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import defaultdict
 from typing import Any, Optional
 
@@ -105,6 +106,25 @@ class EventError(RuntimeError):
     """事件写入失败（类型不合法等）。"""
 
 
+def _as_message(value: Any) -> str:
+    """`message` 必须是字符串。
+
+    2026-10-31 用户实测：前端整页崩在 `Objects are not valid as a React child
+    (found: object with keys {name})`。链路另一头是**事件 message 里塞了 dict**
+    （调用方把结构化 detail 顺手当 message 传了）。Pydantic 会直接拒收 → 事件丢，
+    比这更糟的是万一模型/字段允许，前端就炸。所以在这里一次性收口：非字符串转 JSON
+    文本，结构不丢，前端永远拿到 string。
+    """
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:  # noqa: BLE001 - 序列化失败也不能让事件写不进去
+        return str(value)
+
+
 def emit(
     task_id: str,
     event_type: str,
@@ -121,6 +141,7 @@ def emit(
         raise EventError(
             f"未知事件类型: {event_type}（可选 {EVENT_TYPES}）——新增类型必须同步前端与回放器"
         )
+    message = _as_message(message)
     stream = _STREAMS[task_id]
     event = TaskEvent(
         seq=(stream[-1].seq + 1) if stream else 1,
@@ -176,7 +197,7 @@ def _build(task_id: str, event_type: str, message: str,
     event = TaskEvent(
         seq=(stream[-1].seq + 1) if stream else 1,
         type=event_type,
-        message=message,
+        message=_as_message(message),
         detail=dict(detail or {}),
         trace_id=trace_id or task_id,
         run_id=run_id,

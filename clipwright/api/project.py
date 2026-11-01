@@ -113,6 +113,50 @@ class MemoryAppendRequest(BaseModel):
 
 # ── Routes ──
 
+def _as_label(value: Any) -> str:
+    """项目名/文件夹名必须是字符串。
+
+    2026-10-31 实测：库里存在 `"name": {"name": "guard-smoke"}` 这种记录（早期脚本
+    直接写盘留下的），前端 `{proj.name}` 把它当子节点渲染 → 整页崩在
+    `Objects are not valid as a React child (found: object with keys {name})`。
+    脏数据已经落盘了，读出来的时候必须在 API 边界收口：宁可显示 JSON 文本，也不让
+    非字符串流到渲染层。
+    """
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        for key in ("name", "title", "label", "text"):
+            inner = value.get(key)
+            if isinstance(inner, str) and inner:
+                return inner
+    if isinstance(value, (list, tuple)) and value:
+        return _as_label(value[0])
+    try:
+        import json as _json
+        return _json.dumps(value, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        return str(value)
+
+
+def _normalize_project_row(row: dict[str, Any]) -> dict[str, Any]:
+    """把项目摘要里的展示字段收成字符串/字符串数组（只改出站，不改盘上数据）。"""
+    if not isinstance(row, dict):
+        return row
+    out = dict(row)
+    out["name"] = _as_label(row.get("name"))
+    out["folder"] = _as_label(row.get("folder"))
+    tags = row.get("tags")
+    if isinstance(tags, list):
+        out["tags"] = [_as_label(t) for t in tags if _as_label(t)]
+    elif tags in (None, ""):
+        out["tags"] = []
+    else:
+        out["tags"] = [_as_label(tags)]
+    return out
+
+
 @router.post("")
 async def create_project(req: ProjectCreateRequest, request: Request) -> dict[str, Any]:
     """Create a new project (backend assigns id; P3-3B: 记录 owner_id)。
@@ -145,10 +189,8 @@ async def list_projects(
     trash: bool = Query(False, description="A2: 列出回收站项目（仅软删除的）"),
 ) -> list[dict[str, Any]]:
     """List all projects, optionally filtered by folder/tag（P3-3B: 按 owner 过滤；A2: trash=1 仅列出回收站）。"""
-    return filter_by_owner(
-        request,
-        _manager.list_projects(folder=folder, tag=tag, only_deleted=trash),
-    )
+    rows = _manager.list_projects(folder=folder, tag=tag, only_deleted=trash)
+    return [_normalize_project_row(r) for r in filter_by_owner(request, rows)]
 
 
 @router.post("/folders/rename")
@@ -168,7 +210,7 @@ async def delete_folder(req: FolderDeleteRequest) -> dict[str, Any]:
 @router.get("/{project_id}")
 async def get_project(project_id: str, request: Request) -> dict[str, Any]:
     """Load a project by id（P3-3B: 校验所有权）。"""
-    return _load_owned(request, project_id)
+    return _normalize_project_row(_load_owned(request, project_id))
 
 
 @router.put("/{project_id}")
