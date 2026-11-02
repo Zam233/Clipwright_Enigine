@@ -304,14 +304,11 @@ def _budget_note(task: Any) -> str:
     if max_turns <= 0:
         return ""
     remaining = max(0, max_turns - used)
-    head = f"\n\n## 回合预算\n剩余 {remaining}/{max_turns} 回合（已用 {used}）。"
-    if remaining > 40:
-        return head + "按需推进，不要重复摸底。"
-    if remaining > 12:
-        return head + ("收尾优先级升高：产物齐了就先收尾；"
-                       "只做实修，不要再 list/read 摸底。")
-    return head + ("**必须立即收尾**：先用 acknowledge_degradation 写收据"
-                   "（或说明为何无需），然后直接 finish；不要再调任何查询类工具。")
+    # PRD W4.4：文案搬到 clipwright/prompts.py（build_budget_note），
+    # 这里只负责算数——改文案不再需要动这段逻辑。
+    from clipwright.prompts import build_budget_note
+
+    return build_budget_note(remaining=remaining, max_turns=max_turns, used=used)
 
 
 def _user_prompt(task: Any, context_text: str) -> str:

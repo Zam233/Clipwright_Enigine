@@ -84,9 +84,20 @@ class EditRequest(BaseModel):
     message: str
     timeline: dict[str, Any] = {}
     selected_clip_ids: list[str] = []
+    # PRD W3：与 /intent 同源的选区快照；/edit 是降级路径，同样应带上它，
+    # 否则降级后模型看不到"用户在改哪几个片段"
+    selection_summary: str = ""
+    selection_truncated: bool = False
     # 区域级返工 — 编辑范围（秒）；提供时仅返回/改写该时间窗内的片段
     region_start_sec: float | None = None
     region_end_sec: float | None = None
+
+
+#: 选区上限（PRD W3.1）：超过这个数的"选中"多半是误操作（全选/Ctrl+A），
+#: 逐条喂给模型既贵又没有意义；前端也会先截断，后端这里是**权威上限**。
+MAX_SELECTED_CLIPS = 20
+#: 选区摘要字符上限（PRD W3.1）：按行组织的 clip 摘要，超了截断并标记 truncated。
+MAX_SELECTION_SUMMARY_CHARS = 8000
 
 
 class IntentRequest(BaseModel):
@@ -94,6 +105,10 @@ class IntentRequest(BaseModel):
     message: str
     timeline: dict[str, Any] = {}
     selected_clip_ids: list[str] = []
+    # PRD W3：选区快照。前端在"发送那一刻"冻结，服务端用它做子集校验 +
+    # 作为模型可见的确定性上下文（不再依赖自然语言标签）。
+    selection_summary: str = ""
+    selection_truncated: bool = False
     region_start_sec: float | None = None
     region_end_sec: float | None = None
     project_id: str = ""
@@ -152,6 +167,9 @@ async def edit_timeline(req: EditRequest, request: Request) -> dict:
     整体用 wait_for 兜底：即使底层 Agent/LLM 意外卡死，也保证在时限内返回可重试错误。
     """
     EDIT_HARD_TIMEOUT = 0  # 0 = 不设超时（必须走 timeouts.wait_or_run，不能直接给 wait_for）
+    # PRD W3.2：降级路径也要过同一套选区校验（上限 20 / 必须是本时间线里的片段）。
+    # `/edit` 的 timeline 是宽松 dict，这里只抽 clip id 集合做校验，不做模型校验。
+    _validate_selection(req, _ids_of_timeline_dict(req.timeline))
     try:
         from clipwright.services.timeouts import wait_or_run
 
@@ -178,6 +196,51 @@ async def edit_timeline(req: EditRequest, request: Request) -> dict:
         raise HTTPException(status_code=500, detail="时间线编辑失败，请稍后重试")
 
 
+class _ClipIds:
+    """只携带 clip id 集合的轻量时间线视图（给 `/edit` 的宽松 dict 用）。"""
+    def __init__(self, ids: list[str]) -> None:
+        self.tracks = [type("_T", (), {"clips": [type("_C", (), {"id": i})() for i in ids]})()]
+
+
+def _ids_of_timeline_dict(timeline: Any) -> _ClipIds:
+    ids: list[str] = []
+    for track in ((timeline or {}).get("tracks") or []):
+        if not isinstance(track, dict):
+            continue
+        for clip in (track.get("clips") or []):
+            if isinstance(clip, dict) and clip.get("id"):
+                ids.append(str(clip["id"]))
+    return _ClipIds(ids)
+
+def _validate_selection(req: Any, timeline: Any) -> None:
+    """选区快照的服务端校验（PRD W3.2）。
+
+    为什么必须在这里校验而不是信前端：
+    - **跨项目**：前端可能带着上一个项目/上一个版本的 clip id，模型照着改会改到不存在的片段；
+    - **超过上限**：全选把几十个片段塞进提示词，既贵又让模型抓不到重点。
+    子集校验的判据是"这些 id 必须在本次提交的 timeline 里真实存在"——客户端时间线就是
+    用户眼前那份，对不上说明快照过期，应当让用户重选而不是猜。
+    """
+    ids = list(getattr(req, "selected_clip_ids", []) or [])
+    if len(ids) > MAX_SELECTED_CLIPS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"一次最多选择 {MAX_SELECTED_CLIPS} 个片段（当前 {len(ids)} 个），请缩小选区")
+    if not ids:
+        return
+    known: set[str] = set()
+    for track in getattr(timeline, "tracks", []) or []:
+        for clip in getattr(track, "clips", []) or []:
+            cid = str(getattr(clip, "id", "") or "")
+            if cid:
+                known.add(cid)
+    missing = [cid for cid in ids if cid not in known]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=("选区里有 {} 个片段不在当前时间线中（可能已删除或来自其它项目）：{}"
+                    .format(len(missing), ", ".join(missing[:5]))))
+
 @router.post("/{session_id}/intent")
 async def preview_intent(session_id: str, req: IntentRequest, request: Request) -> dict:
     """R6：把一句自然语言指令解析成**剪辑意图**并落位到具体片段（预览，不修改时间线）。
@@ -196,6 +259,7 @@ async def preview_intent(session_id: str, req: IntentRequest, request: Request) 
         timeline = Timeline.model_validate(req.timeline) if req.timeline else Timeline(id="empty")
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"时间线数据非法: {str(exc)[:120]}")
+    _validate_selection(req, timeline)
     region = ((req.region_start_sec, req.region_end_sec)
               if req.region_start_sec is not None and req.region_end_sec is not None else None)
     try:
@@ -239,6 +303,8 @@ async def apply_intent(session_id: str, req: IntentApplyRequest, request: Reques
         timeline = Timeline.model_validate(req.timeline) if req.timeline else Timeline(id="empty")
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"时间线数据非法: {str(exc)[:120]}")
+    # 与 /intent 同一套校验：确认执行的这次请求也必须过子集/上限检查
+    _validate_selection(req, timeline)
     region = ((req.region_start_sec, req.region_end_sec)
               if req.region_start_sec is not None and req.region_end_sec is not None else None)
     try:
@@ -883,3 +949,7 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
         user_inputs=user_inputs, plan_data=plan_data,
         pipeline_req=pipeline_req, pipeline_id=pipeline_id,
     )
+
+
+
+

@@ -570,6 +570,7 @@ data: {"type":"error","detail":"流式生成中断: ...","partial":"已产出的
 | `GET /api/requirements/plan/{session_id}` | 获取制作规划书 |
 | `POST /api/requirements/proceed` | 确认规划书并启动管线 |
 | `POST /api/requirements/{session_id}/intent` | **意图落位预览（R6，只读）**。请求：`{message, timeline, selected_clip_ids?, region_start_sec?, region_end_sec?, project_id?}`；响应：`{intent, resolution:{preview[], affected_clip_ids[], questions[]}, problems[]}`，`blocked=true` 表示含硬错误不可执行。**不写任何状态**——供前端"意图确认卡"在执行前展示"将改动什么 + 需要用户拍板的问题"。非法时间线 400、超时 504 |
+| `POST /api/requirements/{session_id}/intent` 新增选区快照字段 | devplan/PRD W3.2：`selected_clip_ids` 现在是**冻结快照**（发送时生成），并新增 `selection_summary`（按行组织的可见摘要，≤8000 字符）与 `selection_truncated`。服务端校验：**超过 20 个** → 400；**含不在本次 timeline 里的 id**（已删除/来自其它项目）→ 400 |
 | `POST /api/requirements/{session_id}/intent/apply` | **意图 → 补丁 → dry-run（可选执行）（R7）**。请求在上述字段外加 `{apply?: bool=false, answers?: {问题码: 选项值}, intent_raw?: 意图JSON}`；响应：`{patch, report, applied, blocked, problems[]}`，`applied=true` 时另有 `timeline`（新时间线）。语义：`apply=false` 纯只读；`apply=true` 时只有 dry-run **无硬错误**才真正执行，否则 `blocked` 且**一条都不改**。传 `intent_raw`（`/intent` 已解析的那份）保证"执行的就是用户确认过的那份意图"。非法时间线 400、超时 504 |
 | `GET /api/requirements/{session_id}/messages` | 需求消息历史分页（`before_id` + `limit`）：向上翻不重复、不丢 |
 | `GET /api/requirements/{session_id}/events` | 会话事件（`question`/`answer`/`thinking` 等）：刷新/重连按 `since_seq` 补齐 |
@@ -938,7 +939,10 @@ off/token 模式放行）。`requires_restart=true` 的字段（CORS/Mongo/端�
 | POST | `/api/workspace/{project_id}/enable` | 只改开关：`{auto_index?, vision?}` |
 | POST | `/api/workspace/{project_id}/scan` | 扫描 `materials/` 并索引新增；`dry_run=true` 只列 `would_index` |
 | GET | `/api/workspace/{project_id}/materials?kind=` | 已索引素材（sha256/路径/状态/标签/视觉摘要） |
-| POST | `/api/workspace/{project_id}/materials` | 上传到 `materials/<kind>/`，落盘后同步索引一次；不支持扩展名 → 400 |
+| POST | `/api/workspace/{project_id}/materials?overwrite=false` | 上传到 `materials/<kind>/`（devplan T3.1）：**1 MiB 流式分块写 `.part` → `os.replace` 原子替换**；超 2 GiB → 413 并清 `.part`；同名默认 **409**（覆盖需 `overwrite=true`）；不支持扩展名 → 400；返回 `{saved,kind,bytes,overwritten,scan}` |
+| GET | `/api/workspace/{project_id}/legacy-assets` | **旧素材库只读清单**（devplan T3.3）：`{count, assets:[{asset_id,filename,kind,sha256,path,exists,in_workspace}], legacy_dir}`；`in_workspace=true` 表示工作区已有同内容文件 |
+| POST | `/api/workspace/{project_id}/legacy-import?dry_run=true` | **把旧素材复制进工作区**（devplan T3.3）：只复制不移动、SHA256 去重、默认 dry_run；`{planned[],migrated,reused,missing,failed,scan}` |
+| GET | `/api/workspace/{project_id}/media-tree?limit=2000` | 按**目录结构**列出工作区全部媒体（实时磁盘真相，不是索引注册表）；系统目录跳过 |
 | DELETE | `/api/workspace/{project_id}/materials/{sha256}?purge=` | 默认只删索引记录；`purge=true` 才删磁盘文件 |
 | GET | `/api/workspace/{project_id}/events?since=` | **JSON**：扫描/索引进度事件（`{events[], last_seq}`，立即返回；旧实现是 SSE，普通 GET 会挂到超时） |
 | GET | `/api/workspace/{project_id}/events/stream?since=` | SSE：同一份事件的长连接版本（`seq` 游标 + `data:` 帧） |
@@ -951,4 +955,7 @@ off/token 模式放行）。`requires_restart=true` 的字段（CORS/Mongo/端�
 （sha256 去重 + 缩略图）→ `content_vision.label_shot`（CLIP 本地 / LLM 描述，按
 `settings.vision_provider`）。视觉预算：`workspace_vision_daily_budget_usd`，超限标
 `deferred` 但索引仍完成。
+
+
+
 

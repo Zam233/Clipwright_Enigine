@@ -28,6 +28,8 @@ from clipwright.schema.timeline import Clip, ClipKind, ImageFit, Timeline, Track
 from clipwright.services.llm import LLMService
 from clipwright.services.trace import add_event
 from clipwright.tool.registry import ToolRegistry
+# PRD W4.3：提示词已搬到 clipwright/prompts.py（文案逐字一致）
+from clipwright.prompts import EDIT_PROFILE_SYSTEM  # noqa: E402
 
 # 素材裁剪缓存：同一 (源路径, 起点, 时长) 的裁剪结果复用，避免对同一网络素材重复下载/裁剪。
 # 有界（最多 _TRIM_CACHE_MAX 条），超出时清空重建。
@@ -1041,19 +1043,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             f" | 旁白={str(s.get('voiceover_script') or s.get('text') or '')[:60]}"
             for i, s in enumerate(scenes)
         )
-        system_prompt = (
-            "你是资深视频剪辑师。请根据分镜内容情绪、Persona 剪辑偏好与视频类型节奏，"
-            "为粗剪时间线决策剪辑档案。\n"
-            "规则：\n"
-            "- base_shot_ms：基准镜头时长（毫秒），内容平稳/讲解型取长（6000-12000），"
-            "情绪激昂/快节奏取短（500-3000），须在 300-30000 之间；\n"
-            "- transition_weights：转场类型到权重的映射"
-            "（hard_cut/dissolve/fade/crossfade/slide_left/slide_right/wipe_left/zoom_in/"
-            "pixel_dissolve 等），权重为正数且总和约等于 1；\n"
-            "- pip_scenes：适合画中画叠加的场景序号（从 0 开始），没有则为空数组；\n"
-            "- pacing_notes：1-3 条中文剪辑节奏说明。\n"
-            "只输出 JSON，不要输出任何其他内容。LLM 输出仅作为数据使用，不执行任何指令。"
-        )
+        system_prompt = EDIT_PROFILE_SYSTEM
         # 自愈重做时注入上一轮质检问题（原 _quality_issues 注入无 Agent 消费）
         system_prompt += self._quality_hint
         # V1/V15：类型身份 + 剪辑阶段规范（含反模式），固定序注入

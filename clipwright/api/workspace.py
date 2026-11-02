@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -31,6 +32,12 @@ from clipwright.services import workspace as ws_mod
 from clipwright.services.workspace import Workspace, WorkspaceError, kind_of
 
 router = APIRouter(prefix="/api/workspace", tags=["workspace"])
+
+#: 单文件上传硬上限（devplan T3.1）。前端也会在选完文件时先拦一次（提示分批/压缩），
+#: 但**真正的边界在后端**：客户端的检查随时可以被绕过或版本不一致。
+UPLOAD_MAX_BYTES = 2 * 1024 ** 3          # 2 GiB
+#: 流式写盘分块大小。1 MiB 是"内存占用可忽略"与"系统调用次数不过多"的折中。
+UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 
 class CreateWorkspaceBody(dict):
@@ -272,8 +279,21 @@ async def workspace_media_tree(project_id: str, limit: int = Query(default=2000)
 
 
 @router.post("/{project_id}/materials")
-async def upload_material(project_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
-    """上传到 ``materials/<kind>/``，随后同步排一次索引（单文件）。"""
+async def upload_material(project_id: str, file: UploadFile = File(...),
+                          overwrite: bool = Query(default=False)) -> dict[str, Any]:
+    """上传到 ``materials/<kind>/``，随后同步排一次索引（单文件）。
+
+    devplan 2026-11-02 T3.1 三项改动（前两项是缺陷修复）：
+
+    1. **流式写盘**：旧实现 `data = await file.read()` 把整个文件读进内存——用户传一个
+       1.8 GiB 的素材，后端进程就吃掉 1.8 GiB。现在按 1 MiB 分块写到
+       `materials/<kind>/<name>.part`，成功后 `os.replace` 原子替换成正式名。
+       为什么必须 `.part`：中途取消/断流时不能留下"看起来完整"的半截文件——目录树是按
+       磁盘真实文件扫的，半截文件会被当成可用素材拖进时间线。
+    2. **2 GiB 硬上限**：超过直接 413，并删掉 `.part`（不留垃圾）。
+    3. **同名默认 409**：拒绝覆盖（覆盖会让时间线里已引用的路径悄悄换内容）。
+       真要覆盖时显式 `?overwrite=true`。
+    """
     from clipwright.services.workspace_index import scan_and_index
 
     ws = _ws(project_id)
@@ -285,13 +305,158 @@ async def upload_material(project_id: str, file: UploadFile = File(...)) -> dict
         raise HTTPException(status_code=400, detail=f"不支持的素材类型：{name}")
     target = ws.dirs().materials / kind / name
     target.parent.mkdir(parents=True, exist_ok=True)
-    data = await file.read()
-    if not data:
+    if target.exists() and not overwrite:
+        raise HTTPException(
+            status_code=409,
+            detail=f"同名文件已存在：{kind}/{name}（改名后重传，或显式 overwrite=true）")
+
+    part = target.with_name(target.name + ".part")
+    written = 0
+    chunk_size = 1024 * 1024
+    try:
+        with part.open("wb") as fh:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > UPLOAD_MAX_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"文件超过上限 {UPLOAD_MAX_BYTES // (1024 ** 3)} GiB")
+                fh.write(chunk)
+    except HTTPException:
+        part.unlink(missing_ok=True)
+        raise
+    except Exception as exc:  # noqa: BLE001 — 写盘失败也要清掉半截文件
+        part.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"写盘失败：{type(exc).__name__}") from exc
+
+    if written == 0:
+        part.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="空文件")
-    target.write_bytes(data)
-    ws_mod.add_event(project_id, "info", f"收到上传：{name}", {"kind": kind, "bytes": len(data)})
+    os.replace(part, target)
+    ws_mod.add_event(project_id, "info", f"收到上传：{name}",
+                     {"kind": kind, "bytes": written, "overwrite": bool(overwrite)})
     report = await scan_and_index(ws)
-    return {"project_id": project_id, "saved": str(target), "kind": kind, "scan": report}
+    return {"project_id": project_id, "saved": str(target), "kind": kind,
+            "bytes": written, "overwritten": bool(overwrite), "scan": report}
+
+
+@router.get("/{project_id}/legacy-assets")
+async def workspace_legacy_assets(project_id: str) -> dict[str, Any]:
+    """列出**旧素材库**（`assets/files` + `index.json`）的条目——只读（devplan T3.3）。
+
+    为什么要这条：资源库合并后工作区目录树是唯一真相，但历史素材还在旧库里。
+    直接把旧库藏起来 = 用户以为素材丢了；自动批量搬 = 大体积复制与磁盘意外。
+    所以先给一份只读清单（带"是否已在工作区"），迁移由用户显式点一次。
+    """
+    from clipwright.services.asset_manager import AssetManager
+
+    ws = _ws(project_id)
+    legacy = AssetManager(project_id=project_id)
+    rows: list[dict[str, Any]] = []
+    for info in await legacy.list_assets():
+        path = str(getattr(info, "file_path", "") or "")
+        src = Path(path) if path else None
+        rows.append({
+            "asset_id": getattr(info, "asset_id", ""),
+            "filename": getattr(info, "filename", ""),
+            "kind": getattr(info, "media_type", "") or "",
+            "sha256": getattr(info, "sha256", "") or "",
+            "path": path,
+            "exists": bool(src and src.exists()),
+            "in_workspace": _already_in_materials(ws, getattr(info, "sha256", "") or "",
+                                                  getattr(info, "filename", "") or ""),
+        })
+    return {"project_id": project_id, "count": len(rows), "assets": rows,
+            "legacy_dir": str(getattr(legacy, "_library_dir", ""))}
+
+
+@router.post("/{project_id}/legacy-import")
+async def workspace_legacy_import(project_id: str,
+                                  dry_run: bool = Query(default=True)) -> dict[str, Any]:
+    """把旧素材库**复制**进工作区 `materials/<kind>/`（devplan T3.3）。
+
+    三条纪律：
+    - **只复制不移动、不删除源文件**：迁移失败也能回到旧库，用户不会因为点了按钮丢素材；
+    - **SHA256 去重**：工作区里已有同内容文件就算 `reused`，不产生第二份；
+    - **默认 dry_run**：先给计划，用户确认后再 `dry_run=false` 真复制。
+    """
+    import shutil
+
+    from clipwright.services.asset_manager import AssetManager, _sha256_of
+    from clipwright.services.workspace_index import scan_and_index
+
+    ws = _ws(project_id)
+    legacy = AssetManager(project_id=project_id)
+    materials = ws.dirs().materials
+    planned: list[dict[str, Any]] = []
+    migrated = reused = missing = failed = 0
+    for info in await legacy.list_assets():
+        filename = _safe_name(str(getattr(info, "filename", "") or "asset"))
+        kind = kind_of(filename) or "image"
+        src = Path(str(getattr(info, "file_path", "") or ""))
+        if not src.exists():
+            missing += 1
+            planned.append({"filename": filename, "status": "missing", "source": str(src)})
+            continue
+        digest = str(getattr(info, "sha256", "") or "") or _sha256_of(src)
+        existing = _find_in_materials_by_sha(materials, digest)
+        if existing is not None:
+            reused += 1
+            planned.append({"filename": filename, "status": "reused",
+                            "target": str(existing)})
+            continue
+        target = materials / kind / filename
+        if target.exists():
+            target = materials / kind / f"{src.stem}-{digest[:8]}{src.suffix}"
+        planned.append({"filename": filename, "status": "copy" if not dry_run else "planned",
+                        "target": str(target)})
+        if dry_run:
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, target)
+            migrated += 1
+        except Exception as exc:  # noqa: BLE001 — 单个失败不中断整批
+            failed += 1
+            logger.warning("旧素材迁移失败 %s: %s", src, exc)
+    report = None
+    if not dry_run and migrated > 0:
+        report = await scan_and_index(ws)
+    return {"project_id": project_id, "dry_run": dry_run, "planned": planned,
+            "migrated": migrated, "reused": reused, "missing": missing, "failed": failed,
+            "scan": report}
+
+
+def _already_in_materials(ws: Workspace, sha256: str, filename: str) -> bool:
+    """旧素材是否已在工作区（先按 sha256，再按同名文件兜底）。"""
+    materials = ws.dirs().materials
+    if sha256 and _find_in_materials_by_sha(materials, sha256) is not None:
+        return True
+    if filename:
+        for path in materials.rglob(_safe_name(filename)):
+            if path.is_file():
+                return True
+    return False
+
+
+def _find_in_materials_by_sha(materials: Path, sha256: str) -> Path | None:
+    """在 `materials/` 下按内容摘要找同文件（迁移去重的唯一判据）。"""
+    if not sha256 or not materials.exists():
+        return None
+    from clipwright.services.asset_manager import _sha256_of
+
+    for path in materials.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            if _sha256_of(path) == sha256:
+                return path
+        except Exception:  # noqa: BLE001 — 读不了就跳过，不影响其它文件
+            continue
+    return None
 
 
 @router.delete("/{project_id}/materials/{sha256}")
@@ -474,3 +639,4 @@ async def reveal_workspace_path(payload: dict[str, Any] = Body(...)) -> dict[str
 
 
 __all__ = ["router"]
+

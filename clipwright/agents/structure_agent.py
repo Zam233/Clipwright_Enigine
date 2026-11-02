@@ -22,6 +22,10 @@ from clipwright.tool.base import AgentToolkit
 from clipwright.tool.registry import ToolRegistry
 from clipwright.config import logger
 
+# PRD W4（2026-11-02）：提示词统一在 clipwright/prompts.py 维护；这里保留同名别名，
+# 调用点一行都不用改。文案与原实现逐字一致（见 prompts.py 的迁移对照表）。
+from clipwright.prompts import STRUCTURE_SYSTEM_PROMPT_TPL as SYSTEM_PROMPT_TPL, STRUCTURE_TOOL_PROMPT as TOOL_PROMPT, STRUCTURE_MG_DYNAMIC_GUIDE as MG_DYNAMIC_GUIDE, build_anim_marker_system, build_anim_marker_user  # noqa: E402
+
 
 async def write_back_plan_drift_if_session(
     context: Any,
@@ -56,118 +60,12 @@ def compose_structure_prompt(base: str, category_id: str) -> str:
     return compose(base, category_id, "structure")
 
 
-SYSTEM_PROMPT_TPL = """你是一个{tone}风格的视频脚本创作者。
-
-## Persona 特征
-- 语调: {tone}
-- 学术密度: {academic_density}
-- 最长句长: {max_sentence_len} 字
-- 剪辑节奏: {cut_profile}
-{persona_identity}
-
-## 动画标记规则
-每个场景 description 必须包含一个动画标记。优先使用 mg_dynamic（动态 LLM 生成），其次选用预置动画。
-在生成场景前**必须先调用 describe_llm_mg 工具**了解动态 MG 能力。
-
-标记选择规则：
-1. 数据/数字/统计/百分比、对比/A vs B、流程/步骤、逻辑关系/因果 等场景 → 使用 mg_dynamic
-2. 只有纯文字强调/关键句/标语 → 使用 [文字动画]
-3. 长文本口播内容 → 走字幕，不做动画标记
-4. 每部视频鼓励 1-2 个 mg_dynamic 场景，不要把每个场景都做成 MG
-
-mg_dynamic payload 结构（JSON）：
-  {{"description": "动画描述", "text": "A|B|C", "style": "tech_dark",
-   "data": [{{"label": "A", "value": 100}}]}}
-  - description: 必填，动画内容描述
-  - text: 必填，用 | 分隔的数据/文字
-  - style: 可选，视觉风格（如 tech_dark）
-  - data: 可选，图表数据数组
-
-示例：
-  [逻辑动画]mg_dynamic:{{"description": "近三年营收增长柱状图",
-  "text": "2023|2024|2025", "style": "tech_dark"}}
-
-## 输出格式
-返回 JSON 数组，每个元素是一个分镜场景：
-{{
-    "title": "场景标题",
-    "description": "场景描述",
-    "keywords": ["关键词1", "关键词2"],
-    "duration_sec": 30,
-    "voiceover_script": "该场景的口播旁白文案",
-    "visual_description": {{
-        "material_library": "素材来源/库名",
-        "material_content": "画面具体内容描述",
-        "material_preference": "素材偏好(色调/构图等)",
-        "animation_desc": "动画描述(如有)"
-    }}
-}}
-
-要求：
-{scene_rule}
-2. 每个场景的 duration_sec 加起来不超过 {max_duration}s
-3. 遵循 {tone} 的语调风格
-4. 禁止使用 forbidden_patterns
-5. **每个场景必须有 title(非空)、duration_sec(>0)、description(非空)、keywords(数组)**
-6. **每个场景 description 中必须包含动画标记，优先使用 mg_dynamic**
-{coverage_rule}
-"""
 
 
-TOOL_PROMPT = """
-## 可用工具
-你**必须**在生成场景脚本前调用工具获取能力信息（工具列表见下方 function schemas）：
-1. **describe_llm_mg**：了解内置 LLM 动效生成引擎 (llm_mg) 的动态 MG 动画能力
-2. **list_animations**：获取所有预置动画类型（文字/逻辑/过渡）
-3. 其他插件工具：根据需要查询（如 AI 生成图片/视频/音乐等）
-
-调用顺序：先 describe_llm_mg，再 list_animations，最后根据返回的能力信息为每个场景选择合适的动画标记。
-
-## AI 生成策略（何时调用生成工具）
-注意：下方 function schemas 只包含**当前已配置可用**的工具——没有出现的生成工具即未配置，不要尝试调用。
-
-当某个场景的画面素材库大概率无法命中时（具象角色/特定品牌/罕见场景/概念视觉，
-普通图库关键词难以描述），可用 AI 生成工具定向补料：
-- **ai_image_generate**：为场景生成关键帧图片/概念图（成本较低，可多用）
-- **ai_video_generate**：为关键场景生成短视频镜头（成本高、耗时数分钟，整条管线**最多调用 2 次**，只给最重要的画面）
-- 生成时 prompt 用具体、可视化的中文描述（主体+环境+风格+光线）
-
-生成产物会自动登记进素材库（按 prompt 语义可检索），后续素材阶段将自动按场景
-关键词检索并编入时间线——因此生成后请在场景描述中使用与生成 prompt 一致的
-关键词，便于素材阶段命中。
-"""
 
 
 # mg_dynamic 标记引导 — 供 _build_anim_guide 与 _enrich_scene_animations 共用，
 # 保证两处引导一致：payload 结构化（description/text/style/data）+ 选择规则。
-MG_DYNAMIC_GUIDE = """### LLM 动态 MG 动画（mg_dynamic）— 先调用 describe_llm_mg 工具
-对于数据图表、对比、流程、逻辑关系等需要动态图形的场景，优先使用 mg_dynamic 标记。
-**必须**先调用 describe_llm_mg 工具获取最新的标记格式、可用模板和生成能力，不要凭记忆使用。
-
-标记 payload 结构（JSON，紧跟 mg_dynamic: 之后）：
-  {"description": "动画描述", "text": "A|B|C", "style": "tech_dark",
-   "data": [{"label": "A", "value": 100}]}
-  - description: 必填，动画内容自然语言描述（如"三阶段增长柱状图"）
-  - text: 必填，用 | 分隔的数据或文字（柱状图条目、对比项、流程步骤、金句等）
-  - style: 可选，视觉风格（tech_dark / gradient / clean 等，默认 tech_dark）
-  - data: 可选，图表数据数组（图表类用），每项含 label/value 等字段
-
-标记示例：
-  [逻辑动画]mg_dynamic:{"description":"近三年营收增长柱状图",
-  "text":"2023|2024|2025","style":"tech_dark",
-  "data":[{"label":"2023","value":100},{"label":"2024","value":180},{"label":"2025","value":300}]}
-
-选择规则：
-1. 场景涉及数据/数字/统计/百分比 → mg_dynamic（数据可视化）
-2. 场景涉及对比/A vs B/优劣分析 → mg_dynamic（对比图）
-3. 场景涉及流程/步骤/进度 → mg_dynamic（进度条或流程图）
-4. 场景涉及逻辑关系/因果/分类/层级 → mg_dynamic（关系图）
-5. 场景涉及标题揭示/重要声明（非开场）→ 可使用 mg_dynamic；**开场/引言场景（第一个场景）禁止使用任何逻辑动画标记**——知识讲解类视频开场是口播引入，动画用于中段论证
-6. 只有纯文字强调/关键句/标语 → 才使用 [文字动画]
-7. 长文本口播内容 → 走字幕，不要用动画标记承载大段文字
-8. 同一场景至多一个 mg_dynamic 标记；每部视频鼓励 1-2 个 MG 场景
-
-全局约束：第一个场景（开场）不得使用 [逻辑动画] 或 [文字动画] 标记；动画只用于内容展开后的论证/数据/对比场景。"""
 # 开场允许保留动画标记的快节奏视频类型（插件 id 集合）。
 # 快节奏类型（如鬼畜快剪 kichiku_fastcut）开场即为高能引入，应允许开场动画标记；
 # 其余类型（knowledge_longform 知识长片等）维持开场禁动画 —— 开场口播引入，
@@ -1158,23 +1056,9 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             f"场景{i}: 标题={s.get('title', '')} | 描述={s.get('description', '')}"
             for i, s in enumerate(scenes)
         )
-        system_prompt = (
-            "你是视频动画标记专家。为每个分镜场景的 description 补充一个合适的动画标记，"
-            "供后续 AnimationAgent 创建动画。请根据场景内容从可用动画中选择最合适的，不要硬编码。\n\n"
-            "## 动画选择规则\n"
-            + MG_DYNAMIC_GUIDE
-            + "\n\n"
-            + anim_guide
-            + mg_info
-        )
-        user_prompt = (
-            f"以下是 {len(scenes)} 个分镜场景。请为缺少动画标记的场景补充合适的动画标记。\n\n"
-            "分析每个场景的内容（标题、描述），判断属于上述哪种类型：\n"
-            "- 若有数据/对比/流程/逻辑关系 → 用 mg_dynamic\n"
-            "- 若是纯文字强调 → 用 [文字动画]\n\n"
-            "返回 JSON：{\"markers\": [{\"index\": 场景序号(从0开始), \"animation_marker\": \"动画标记字符串\"}]}。\n\n"
-            f"{scenes_text}"
-        )
+        # PRD W4.4：提示词在 clipwright/prompts.py（build_anim_marker_*），此处只传运行时数据
+        system_prompt = build_anim_marker_system(anim_guide, mg_info)
+        user_prompt = build_anim_marker_user(len(scenes), scenes_text)
         try:
             result = await self.llm_or_fallback(lambda: self._llm.structured_output(
                 system_prompt=system_prompt,

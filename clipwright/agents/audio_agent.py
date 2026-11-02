@@ -23,6 +23,8 @@ from clipwright.schema.agent import (
 from clipwright.schema.timeline import Clip, ClipKind, Timeline, Track
 from clipwright.services.llm import LLMService
 from clipwright.tool.registry import ToolRegistry
+# PRD W4.4：BGM 匹配提示已搬到 clipwright/prompts.py（文案逐字一致）
+from clipwright.prompts import build_bgm_match_system  # noqa: E402
 
 
 async def _search_bgm_from_library(bgm_slots: dict, top_k: int = 3,
@@ -1179,22 +1181,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                 + (f" | 情绪={s.get('emotion')}" if s.get("emotion") else "")
                 for i, s in enumerate(scenes_emotions)
             )
-            system_prompt = (
-                "你是视频 BGM 情绪匹配专家。根据分镜场景的情绪基调，为每个 BGM 槽位"
-                "推荐音乐风格，并设计音量包络与停顿。\n\n"
-                "## BGM 槽位（按时间进度划分）\n"
-                f"可用槽位: {'、'.join(slot_keys)}\n"
-                "槽位含义参考：intro/opening/hook=开场铺垫；backing/background="
-                "平稳推进；climax/build/intensity=高潮；outro/resolution=收尾。\n\n"
-                "## 输出要求\n"
-                '返回 JSON: {"allocations": [{"slot": "槽位key", '
-                '"style": "音乐风格描述(如 warm ambient piano / tense electronic)", '
-                '"volume_envelope": [{"t": 0-1(相对时长), "v": 0-1(音量)}], '
-                '"pause_design": {"pause_before_sec": 秒, "pause_after_sec": 秒}}]}\n'
-                "- slot 必须是给定槽位之一，每个槽位最多一条 allocation；\n"
-                "- 包络至少 2 个点，t 由 0 递增到 1，音量 0-1；\n"
-                "- 停顿秒数必须 >= 0。"
-            )
+            system_prompt = build_bgm_match_system(slot_keys)
             # V1/V15：类型身份 + 音频/字幕两阶段规范（音频 Agent 同时管字幕生成）
             from clipwright.services.type_prompts import compose_many as compose_type_prompts
 

@@ -21,6 +21,10 @@ from clipwright.schema.requirements import (
 from clipwright.services.llm import LLMService
 from clipwright.config import logger
 
+# PRD W4（2026-11-02）：提示词统一在 clipwright/prompts.py 维护；这里保留同名别名，
+# 调用点一行都不用改。文案与原实现逐字一致（见 prompts.py 的迁移对照表）。
+from clipwright.prompts import CREATIVE_BRIEF_SYSTEM as CREATIVE_BRIEF_SYSTEM, PLAN_TRANSLATE_SYSTEM as PLAN_TRANSLATE_SYSTEM, build_plan_translate_system  # noqa: E402
+
 
 def _brief_default(name: str) -> Any:
     """取模型字段的默认值（缺省键补齐用，避免下游到处 ``.get(key, "")``）。"""
@@ -36,44 +40,6 @@ def _brief_default(name: str) -> Any:
     return field.default
 
 
-CREATIVE_BRIEF_SYSTEM = """你是一位专业的视频创作顾问。你的任务是与用户对话，收集创作需求，逐步完善创作方案。
-
-## 对话策略
-- 每次回复都要推进对话：回复用户 + 追问关键缺失信息
-- 当收集到足够信息时，设置 is_ready=true
-- 信息不足的标准：至少需要了解 主题/目标受众/风格方向
-
-## 动画需求识别
-如果用户的创作需求中提到了视觉效果、数据展示、对比、流程、图表等信息呈现需求，
-在 brief_draft 中设置 animation_intents 数组，每个元素描述一个场景的动画需求。
-
-animation_intents 格式:
-[
-  {
-    "scene_index": null,
-    "type": "mg",
-    "description": "自然语言描述该动画应呈现的效果",
-    "text_content": "动画中要显示的文字内容，多段内容用 | 分隔",
-    "style_hint": "样式提示: tech_dark / minimal_clean / bold_vibrant / retro",
-    "suggested_template": "最接近的现有模板 ID，不确定则留空"
-  }
-]
-
-类型说明:
-- type="mg": 动态图形动画（数据图表、标题揭示、进度条、对比图等）
-- type="text": 文字入场动画（打字机、淡入、弹跳等）
-- type="logic": 逻辑关系图解（箭头、流程图、因果关系等）
-
-只在用户明确需要视觉信息呈现（图表/对比/数据可视化/标题动画）时填写 animation_intents。
-
-## brief_draft 字段与输出格式（纯 JSON）
-
-字段表与 JSON 骨架由 `CreativeBrief` 模型自动生成（改模型即改提示词，结构上不可能漂移）：
-
-{{BRIEF_TEMPLATE}}
-
-当 is_ready=true 时，brief_draft 必须按上表**完整**填写（列表字段给数组，文本字段给字符串）。
-"""
 
 #: A-01：字段表从模型生成，杜绝"提示词 10 字段 / 模型 7 字段"的漂移。
 CREATIVE_BRIEF_SYSTEM = CREATIVE_BRIEF_SYSTEM.replace(
@@ -81,19 +47,6 @@ CREATIVE_BRIEF_SYSTEM = CREATIVE_BRIEF_SYSTEM.replace(
 )
 
 
-PLAN_TRANSLATE_SYSTEM = """你是一位专业的视频创作顾问。请将结构 Agent 生成的场景规划翻译为用户友好的 Markdown 规划书。
-
-## 输出格式（纯 JSON）
-{
-  "summary": "规划书总体摘要",
-  "sections": [
-    {"title": "段落标题", "description": "段落描述", "scenes": [1, 2, 3]}
-  ],
-  "markdown_content": "完整的 Markdown 格式规划书\n- 包含场景表格\n- 每个场景的详细描述\n- 总时长统计",
-  "total_duration_sec": 300,
-  "scene_count": 5
-}
-"""
 
 
 class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
@@ -229,7 +182,7 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
         brief_json = json.dumps(brief, ensure_ascii=False) if brief else "{}"
 
         try:
-            system_prompt = f"{PLAN_TRANSLATE_SYSTEM}\n\n参考方案:\n{brief_json}"
+            system_prompt = build_plan_translate_system(brief_json)
             from clipwright.plugins.prompt_registry import PluginPromptRegistry
             plugin_prompts = PluginPromptRegistry.get_for_agent("requirements")
             if plugin_prompts:

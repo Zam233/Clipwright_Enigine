@@ -19,6 +19,8 @@ from clipwright.schema.agent import (
 )
 from clipwright.services.llm import LLMService
 from clipwright.services.trace import add_event
+# PRD W4.4：关键词提示词已搬到 clipwright/prompts.py（文案逐字一致）
+from clipwright.prompts import (build_material_queries_batch_prompt, build_material_queries_prompt, build_material_english_prompt)  # noqa: E402
 
 # 搜索缓存: query_hash → list[result]
 # TTL + LRU 淘汰（原 dict 满后静默拒绝写入，缓存悄悄退化）
@@ -242,21 +244,9 @@ async def _llm_search_queries_batch(
         desc = (scene.get("description", "") or "")[:120]
         scene_lines.append(f"[{i + 1}] 标题: {title} | 关键词: {keywords} | 描述: {desc}")
 
-    prompt = (
-        "你是一个视频素材搜索关键词生成器。为以下每个场景分别生成 3-5 个具体、"
-        "可搜索的视觉关键词，用于在视频素材库搜索 B-roll 画面。\n\n"
-        + "\n".join(scene_lines) +
-        "\n\n要求：\n"
-        "- 每个关键词必须是**具体的视觉画面**（如'城市夜景''键盘打字'），不能是抽象概念\n"
-        "- 优先推荐实拍风格画面\n"
-        f"{category_hint}"
-        # E2E 2026-10-28 实测：中文关键词在 Pexels/Unsplash/Pixabay 命中率为 **0**
-        # （图库索引是英文）。43 个场景全部返回空候选 → 剪辑退化成"背景+文字"。
-        "- **关键词一律用英文**（图库索引是英文，中文查询命中为 0）；"
-        "确有必要可附中文对照，格式：english1/english2/中文对照\n"
-        "- 按场景编号输出，每行格式：\"场景N: keyword1/keyword2/keyword3\"\n"
-        "- 只输出关键词行，不要额外说明"
-        f"{style_hint}{brief_hint_text}"
+    prompt = build_material_queries_batch_prompt(
+        scene_lines, category_hint=category_hint,
+        persona_style=persona_style, brief_hint=brief_hint,
     )
 
     llm = LLMService()
@@ -300,18 +290,9 @@ async def _llm_search_queries(
     style_hint = f"\n- 优先匹配风格: {persona_style}" if persona_style else ""
     brief_hint_text = f"\n- 简报素材要求: {brief_hint}" if brief_hint else ""
 
-    prompt = (
-        f"你是一个视频素材搜索关键词生成器。根据以下场景信息，生成 3-5 个具体、可搜索的视觉关键词，"
-        f"用于在视频素材库中搜索合适的 B-roll 画面。\n\n"
-        f"场景标题: {scene_title}\n"
-        f"关键词: {', '.join(keywords)}\n"
-        f"场景描述: {description}\n\n"
-        f"要求：\n"
-        f"- 每个关键词必须是**具体的视觉画面**（如'城市夜景''键盘打字''街头涂鸦'），"
-        f"不能是抽象概念（如'社会矛盾''心理防御'）\n"
-        f"- 优先推荐实拍风格的画面\n"
-        f"- 用中文输出，每行一个关键词\n"
-        f"- 只输出关键词，不要序号和说明{style_hint}{brief_hint_text}"
+    prompt = build_material_queries_prompt(
+        scene_title, keywords, description,
+        persona_style=persona_style, brief_hint=brief_hint,
     )
     if pipeline_id:
         add_event(pipeline_id, "material", "llm", f"LLM 搜索词生成: {scene_title}")
@@ -358,10 +339,7 @@ async def _to_english_queries(queries: list[str], *, pipeline_id: str = "") -> l
     text = " / ".join(str(q) for q in queries if str(q).strip())[:1200]
     if not text:
         return []
-    prompt = (
-        "把下面用于视频素材库（Pexels）检索的中文关键词翻成**英文检索词**。\n"
-        "要求：只输出英文关键词，用 / 分隔，保持顺序与个数一致，不要解释。\n\n" + text
-    )
+    prompt = build_material_english_prompt(text)
     try:
         resp = await asyncio.wait_for(LLMService().ask(prompt, use_flash=True), timeout=120)
         raw = str(getattr(resp, "content", "") or "").strip()

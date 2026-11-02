@@ -37,6 +37,8 @@ from clipwright.schema.agent import (
 )
 from clipwright.schema.timeline import Clip, ClipKind, Timeline, Track
 from clipwright.tool.registry import ToolRegistry
+# PRD W4.3：提示词已搬到 clipwright/prompts.py（文案逐字一致）
+from clipwright.prompts import QUALITY_SEMANTIC_QA_SYSTEM  # noqa: E402
 
 # 空镜头检测有界抽样参数（Bounded sampling）
 _MAX_FRAME_CHECK_CLIPS = 30  # 单次质检最多校验的 video/image clip 数，超限跳过并 note
@@ -610,10 +612,7 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         brief_text = "\n".join(brief_lines) or "（无简报内容）"
 
         clips_text = "\n".join(f"[{cid}] {text}" for cid, text in clip_copy)
-        system_prompt = (
-            "你是一名视频质检编辑。检查给定视频文案与创意简报的一致性、"
-            "错别字与风格问题。只输出 JSON。"
-        )
+        system_prompt = QUALITY_SEMANTIC_QA_SYSTEM
         # V1/V15：类型身份 + 质检阶段规范（该类型特有的检查点/反模式）
         from clipwright.services.type_prompts import compose as compose_type_prompt
 
