@@ -345,6 +345,10 @@ P6/P7 阶段新增/变更的路由与客户端（均已完成接线与回归）�
 |---|---|---|
 | `POST/GET /api/workspace`、`/enable`、`/scan`、`/materials`、`/events` | `src/services/api/workspace.ts`（`workspaceApi`） | ✅ 已接：首页 04 步（开关+路径）、`/task/{id}` 工作区面板（计数/扫描/上传/素材表） |
 | `POST /api/requirements/proceed` | `AgentPanel.confirmPlan` / `ReviewPanel.confirm` → `features/agent/proceedResult.ts` | ✅ 单轨：恒返回 `task_id` + `mode=task`（幂等命中同样同形）→ 前端 `taskStore.load(task_id)` 并订阅 Task 事件 |
+| `POST /api/requirements/{session_id}/stop` | `requirementsApi.stop` → `AgentPanel.stopRunningTask`（运行条停止按钮） | ✅ 真中止任务 + 会话回 `plan_ready` + 留 `user_stopped` 记录（见 [docs/agent-stop-control-2026-11-02.md](agent-stop-control-2026-11-02.md)） |
+| `GET /api/workspace/{id}/media-tree` | `workspaceApi.mediaTree` → `features/assets/WorkspaceMediaTree.tsx` | ✅ 左侧资源库「工作区」标签按目录树呈现全部媒体 |
+| `GET`/`PATCH /api/project/{id}/termination` | 项目级终止策略（devplan 2026-11-02）：软着陆轮次 / 收口窗口 / 质量预算预留 | ✅ 后端已落（`services/agent_policy.py`），前端端点待页面接入；策略在任务创建时快照，改后只影响新任务 |
+| `GET /api/task/{id}` 新增 `terminal_reason` / `goal` / `closeout` / `escrow` | `types/task.ts` 同名字段 → `TaskFinishSummary`（终态/收口/预算三行）+ `taskStore.terminalStatusOf`（`capped → 'capped'`） | ✅ 新旧并行：旧 `finish.reason` 继续产出，前端未知值回退 `unknown_terminal` |
 
 说明：`/api/workspace/{id}/events` 已改成 **JSON**（`/events/stream` 才是 SSE），面板仍用"操作后 reload"，
 未挂常驻订阅——避免首页/任务页各开一条长连接；需要实时进度时改挂 `/events/stream`。
@@ -385,4 +389,6 @@ P6/P7 阶段新增/变更的路由与客户端（均已完成接线与回归）�
 未完成：进程重启后完整事件历史与统一 AgentRun 的恢复链仍不完整——Mongo 只有写路径，
 普通任务事件不会全量落 JSONL，`/runs` 也无法重建重启前的阶段结果。UI 暂以“重启后历史可能不可用”
 处理，后续需补读取恢复或全量持久化。
+
+
 

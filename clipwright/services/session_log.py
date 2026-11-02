@@ -782,6 +782,18 @@ class SessionLog:
                 self._dirty = True
                 self._flush_locked(force=True)
 
+    @property
+    def project_id(self) -> str:
+        """本会话归属的项目 id（空 = 未绑定）。
+
+        2026-11-02：`task_project_sync.project_id_of()` 要用它做**兜底归属**——
+        任务 extra 里没带项目 id 时，靠会话反查，否则那一轮产出的时间线
+        （含「动画轨」）写不回项目。旧实现只有私有 `_project_id`，外部拿不到。
+        """
+        with self._lock:
+            self._ensure_loaded()
+            return str(self._project_id or "")
+
     def bind_task(self, task_id: str) -> None:
         """登记"这个任务属于本会话"（task 事件投影的入口，PRD §5.3）。"""
         tid = str(task_id or "").strip()

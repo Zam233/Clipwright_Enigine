@@ -438,6 +438,73 @@ class Workspace:
                     return out
         return out
 
+    #: 媒体树里**跳过**的系统目录（不是用户资产，列出来只会淹没素材）
+    MEDIA_TREE_SKIP: tuple[str, ...] = (
+        "assets", "cache", "logs", "artifacts", "reports", "docs", "db", "index",
+        "tmp", "thumbs",
+    )
+
+    def media_tree(self, *, limit: int = MAX_SCAN_FILES) -> dict[str, Any]:
+        """按**目录结构**列出工作区里的全部媒体文件（视频 / 图片 / 音频）。
+
+        2026-11-02 用户要求：左侧资源库不该只看 `materials.json` 注册表——
+        工作区里用户自己建的目录（`materials/实拍/`、`materials/参考/`…）也要按
+        目录样式呈现，而且**不依赖"是否已被索引"**（没索引的文件同样要能看见）。
+
+        返回 `{root, count, kinds, dirs:[{dir, count, files:[{path, rel, name, kind,
+        size, mtime}]}]}`；`dir` 是相对工作区根的 POSIX 路径（根目录 = ""）。
+        系统目录（`assets/cache/logs/artifacts/reports/docs/db/...`）跳过。
+        """
+        dirs = self.dirs()
+        root = dirs.root
+        if not root.is_dir():
+            return {"root": str(root), "count": 0, "kinds": {}, "dirs": []}
+        buckets: dict[str, list[dict[str, Any]]] = {}
+        kinds: dict[str, int] = {}
+        total = 0
+        for current, subdirs, names in os.walk(root):
+            # 就地剪枝：系统目录整棵跳过，别让它们出现在素材树里
+            subdirs[:] = sorted(d for d in subdirs if d.lower() not in self.MEDIA_TREE_SKIP)
+            cur = Path(current)
+            try:
+                rel_dir = cur.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if rel_dir == ".":
+                rel_dir = ""
+            for name in sorted(names):
+                path = cur / name
+                kind = kind_of(path)
+                if not kind:
+                    continue
+                try:
+                    st = path.stat()
+                except OSError:
+                    continue
+                rel = f"{rel_dir}/{name}" if rel_dir else name
+                buckets.setdefault(rel_dir, []).append({
+                    "path": str(path),
+                    "rel": rel,
+                    "name": name,
+                    "kind": kind,
+                    "size": int(st.st_size),
+                    "mtime": round(st.st_mtime, 3),
+                })
+                kinds[kind] = kinds.get(kind, 0) + 1
+                total += 1
+                if total >= limit:
+                    logger.warning("工作区 %s 媒体文件达到上限 %d，其余未列出",
+                                   self.project_id, limit)
+                    subdirs[:] = []
+                    break
+            if total >= limit:
+                break
+        ordered = [
+            {"dir": d, "count": len(buckets[d]), "files": buckets[d]}
+            for d in sorted(buckets, key=lambda x: (x != "materials", x))
+        ]
+        return {"root": str(root), "count": total, "kinds": kinds, "dirs": ordered}
+
     # ------------------------------------------------------------------ 注册表
     def load_registry(self) -> dict[str, Any]:
         path = self.dirs().registry

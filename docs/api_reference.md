@@ -139,6 +139,23 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 | `POST /api/task/{task_id}/resume` | 续跑；终态 409，等待回答时 409（需要先 answer 或 cancel） |
 | `POST /api/task/{task_id}/pause` / `cancel` | 暂停 / 取消 |
 | `POST /api/task/{task_id}/inject` | 给运行中的主 Agent 插话 |
+
+### 终止机制字段（devplan 2026-11-02，`schema/task.py`）
+
+`Task.to_public()` 与 `task_end.detail` 都带下面这些**新增**字段（旧字段全部保留）：
+
+| 字段 | 含义 |
+|---|---|
+| `terminal_reason` | 终态**唯一机器原因**：`achieved` / `plan_only_completed` / `capped` / `blocked` / `user_cancelled` / `externally_interrupted` / `model_error` / `invalid_completion` / `dry_run_completed`。旧 `finish.reason` 字符串继续并行产出（暂不停用） |
+| `blocker_code` | blocked 的根因码：`no_progress` / `repeat_fail` / `degradation_unresolved` / `budget_exhausted` / `model_error` / `invalid_completion` / `missing_artifact` |
+| `goal` | 完成约束：`{id,title,completion_criteria,max_rounds,rounds_used,status,blocked_reason,blocker_fingerprint,blocker_streak,blocked_after_consecutive_rounds,closeout_required}`；`status ∈ active/achieved/capped/blocked/paused` |
+| `closeout` | 收口状态：`{mode:normal\|soft_landing, trigger, trigger_round, max_rounds, max_tool_calls, max_wall_sec, rounds_used, tool_calls_used, deliverable_status, report_path}`；收尾报告落在 `reports/agent-closeout.json` |
+| `escrow` | 质量预算托管：`{state,reserve_usd,main_budget_usd,main_spent_usd,quality_spent_usd,released_usd,ratio,floor_usd,cap_usd,quality_remaining_usd}`；`state=disabled` 表示未配置金额上限（不冻结） |
+
+`TaskStatus` 新增 `capped`：**既不算 done 也不算 failed**，不计入成功率（`evaluation` 单列
+`capped_count`），会话映射 `plan_ready`（只有 `done` 才 `pipeline_done`）。
+
+新增事件：`goal_update`（Goal 状态迁移）、`soft_landing`（进入收口模式，一次性）。
 | `POST /api/task/{task_id}/plan` | 重新规划 |
 | `GET /api/task/{task_id}/questions?status=` + `POST .../answer` | 待答问题与作答（404/409/410 分别表示不存在/已回答或取消/超时失效） |
 | `GET /api/task/{task_id}/result` + `POST .../to-project` | 任务产物快照 / 落成可继续编辑的项目 |
@@ -295,6 +312,8 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 | `POST /api/project/folders/delete` | 删除文件夹 |
 | `GET /api/project/{project_id}` | 获取项目 |
 | `PUT /api/project/{project_id}` | 更新项目 |
+| `GET /api/project/{project_id}/termination` | **读项目级终止策略**（devplan 2026-11-02）：返回 `{policy, resolved, overridable}`；`policy` = 项目里显式写过的键（空 = 跟随全局），`resolved` = 「项目 > 全局 > 默认」解析后的快照（含 `source`），`overridable` = 允许覆盖的键名 |
+| `PATCH /api/project/{project_id}/termination` | **写项目级终止策略**：只改 `project.json` 的 `agent_state.termination`（保留 `agent_state` 其它键）；body `{policy:{...}}`，值为 `null`/`""` 表示清除回退全局；未知键 400。可覆盖 `soft_landing_round` / `soft_landing_enabled` / `closeout_rounds` / `closeout_tool_calls` / `closeout_max_wall_sec` / `reserve_ratio` / `reserve_floor_usd` / `reserve_cap_usd`（**只对之后创建的任务生效**，任务创建时快照） |
 | `DELETE /api/project/{project_id}` | 删除项目 |
 | `POST /api/project/{project_id}/duplicate` | 复制项目 |
 | `PATCH /api/project/{project_id}/rename` | 重命名项目 |
@@ -557,6 +576,7 @@ data: {"type":"error","detail":"流式生成中断: ...","partial":"已产出的
 | `GET /api/requirements/{session_id}/timeline` | **会话时间线（唯一有序流，session-timeline PRD §5.1）**。参数 `since_seq`/`until_seq`（向后翻）、`before_seq`（向前翻，取 `seq < before_seq` 的最后 `limit` 条）、`limit≤500`、`resolve=0|1`（0 = 只给索引不读 `items/*.json`，轨迹/调试用）。响应 `{items[], has_more, latest_seq, next_seq, archived_until_seq, counters, backfilled}`；`backfilled` = 本次请求里从 `session.messages` 回填了几条（存量会话迁移，幂等）。条目按 `seq` 升序且**已解析内容**。类型：`thinking`/`content`/`tool`/`skill`/`subagent`/`report`/`plan` + 扩展 `question`/`answer`/`approval`/`degradation`/`stage`/`artifact` |
 | `GET /api/requirements/{session_id}/timeline/stream` | **时间线实时流（SSE）**。`since_seq=-1`（默认）只推订阅之后的新帧；传 `since_seq` 先补一帧 `snapshot`。帧 `op`：`snapshot`/`append`/`chunk`（只带 `seq+delta`，前端按 seq 找到条目追加 = 流式渲染）/`patch`/`finish`/`ping`（10s）/`error`。`append/patch/finish` 帧的 `item` **带已解析的 `content`**（>64KB 才省略）——否则外置的 `report`/`plan` 在实时侧没有内容、卡片不渲染 |
 | `POST /api/requirements/{session_id}/plan/dispatch` | **主 agent 派发「生成制作规划书」（plan-dispatch PRD D1，幂等）**。body `{retry?: bool=false}`；响应 `{task_id, run_id, status:"planning", reused}`。幂等键 `session_id:brief_hash`：同 brief 且任务在跑 → 返回既有 task_id（`reused=true`）；`retry=true` 强制重建。错误：404 会话不存在 / 400 `no_brief`（先出简报）。任务侧：`plan_only=true`，kernel 派 `delegate_agent(structure)` → 收尾写工作区 `reports/plan.json`（`{session_id, brief_hash, scenes, scene_count, summary, generated_by:"kernel", run_id}`）→ 需求侧轮询终态读产物回填 `session.production_plan`（`brief_hash` 不一致则作废回 `brief_ready`），状态由任务终态驱动 |
+| `POST /api/requirements/{session_id}/stop` | **用户点「停止」（中止续跑 §停止）**。无 body；响应 `{stopped, task_id, status:"plan_ready", note}`。语义：`kernel.cancel()` 真打断协程 → 会话状态回 `plan_ready`（前端输入区/附件/发送恢复）→ 消息流与时间线各写一条 `metadata.user_stopped=true` 的说明（续跑的主 agent 由此知道是**用户主动喊停**，不是异常终止）。没有活任务时 `stopped=false` 且**不伪造**说明。详见 [docs/agent-stop-control-2026-11-02.md](agent-stop-control-2026-11-02.md) |
 
 ---
 

@@ -26,18 +26,49 @@ _READ_MAX_BYTES = 100_000
 _WRITE_MAX_BYTES = 200_000
 
 
-def _guarded(path: str) -> tuple[Optional[Path], Optional[str]]:
-    """校验路径并返回 (Path, 错误原因)。"""
+def _workspace_base(workspace_root: str = "", project_id: str = "") -> Optional[Path]:
+    """定位工作区根（与 `tool/artifacts._resolve_root` 同一口径）。"""
+    root = str(workspace_root or "").strip()
+    if root:
+        p = Path(root).expanduser()
+        if p.is_dir():
+            return p
+    pid = str(project_id or "").strip()
+    if pid:
+        try:
+            from clipwright.services.workspace import Workspace
+
+            ws = Workspace(pid)
+            if ws.exists:
+                return ws.dirs().root
+        except Exception as exc:  # noqa: BLE001 — 定位失败就当没有工作区
+            logger.debug("工作区定位失败 %s: %s", pid, exc)
+    return None
+
+
+def _guarded(path: str, base: Optional[Path] = None) -> tuple[Optional[Path], Optional[str]]:
+    """校验路径并返回 (Path, 错误原因)。
+
+    **相对路径按工作区根解析**（用户 2026-11-01 实机）：模型天然会写
+    `artifacts/art_x.json` / `.`；旧实现直接拿它去 `assert_allowed_path`，
+    相对路径被按服务器 CWD 解析 → 一律"路径不在允许的目录内"，主 agent
+    于是完全读不到产物，最后盲派 edit 得到"缺输入 script_skeleton"。
+    """
     raw = str(path or "").strip()
     if not raw:
         return None, "路径为空"
     from clipwright.security import SecurityViolation, assert_allowed_path
 
     p = Path(raw).expanduser()
+    if not p.is_absolute() and base is not None:
+        p = (base / p).resolve()
     try:
         assert_allowed_path(p)
     except SecurityViolation as e:
-        return None, f"路径不在允许的目录内: {e}"
+        hint = "" if p.is_absolute() else (
+            f"（相对路径需要 workspace_root，当前解析为 {p}）"
+        )
+        return None, f"路径不在允许的目录内: {e}{hint}"
     return p, None
 
 
@@ -55,9 +86,11 @@ class ReadFileTool(BaseTool):
         self,
         path: str,
         max_chars: int = _READ_DEFAULT_CHARS,
+        workspace_root: str = "",
+        project_id: str = "",
         **kwargs: Any,
     ) -> ToolExecResult:
-        p, err = _guarded(path)
+        p, err = _guarded(path, _workspace_base(workspace_root, project_id))
         if err:
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error=err)
         if not p.is_file():
@@ -101,8 +134,10 @@ class ListDirTool(BaseTool):
     dependencies: list[str] = []
     description = "列出一个目录下的文件名与子目录（只读，最多 200 项）。用于先看清有什么再做决定。"
 
-    async def execute(self, path: str, **kwargs: Any) -> ToolExecResult:
-        p, err = _guarded(path)
+    async def execute(
+        self, path: str, workspace_root: str = "", project_id: str = "", **kwargs: Any,
+    ) -> ToolExecResult:
+        p, err = _guarded(path, _workspace_base(workspace_root, project_id))
         if err:
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error=err)
         if not p.is_dir():
@@ -146,10 +181,12 @@ class WriteFileTool(BaseTool):
         self,
         path: str,
         content: str = "",
+        workspace_root: str = "",
+        project_id: str = "",
         append: bool = False,
         **kwargs: Any,
     ) -> ToolExecResult:
-        p, err = _guarded(path)
+        p, err = _guarded(path, _workspace_base(workspace_root, project_id))
         if err:
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error=err)
         text = str(content or "")

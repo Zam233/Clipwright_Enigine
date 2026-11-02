@@ -118,8 +118,9 @@ class Settings(BaseSettings):
     #   （旧的 plan 形态已在 M3 删除：传它只发降级告警，然后按 tool_loop 运行）
     kernel_mode: Literal["plan", "tool_loop", "shadow"] = "tool_loop"
     # tool loop 的模型回合 / 工具调用上限（0 = 沿用 TaskLimits）
-    agent_loop_max_turns: int = 12
-    agent_loop_max_tool_calls: int = 60
+    #: 单次 tool loop 的软上限；0 = 不设软上限（仍有结构性护栏 STRUCTURAL_*）
+    agent_loop_max_turns: int = 0
+    agent_loop_max_tool_calls: int = 0
     # 决策上下文预算（字符）：超出按优先级裁剪，并记 context_loaded.trimmed（§17.11）
     context_budget_chars: int = 6000
     # 单份工作区报告上限（字符）；超出截断并标记（§17.3）
@@ -134,6 +135,33 @@ class Settings(BaseSettings):
     agent_max_turns: int = 80
     agent_max_tool_calls: int = 400
     agent_max_wall_sec: float = 0.0  # 0 = 不设上限
+
+    # --- 终止机制收口（docs/agent-termination-devplan-2026-11-02.md §3/§6/§7）---
+    # 2026-11-02 用户裁定 1：软着陆轮次 600（原来 PRD 的 360/400 作废），
+    # 且**项目级可覆盖**——解析顺序 项目配置(project.json agent_state.termination)
+    # > 这里的全局值 > 代码默认。任务创建时快照，运行中改配置不影响在跑任务。
+    agent_soft_landing_round: int = 600
+    #: 总开关：关掉即回到"撞上限直接收尾"的旧行为（新字段照写，便于对比与回滚）
+    agent_soft_landing_enabled: bool = True
+    # 收口窗口（独立于 soft_landing_round，收口期间不消耗普通轮次）
+    agent_closeout_rounds: int = 8
+    agent_closeout_tool_calls: int = 128
+    agent_closeout_max_wall_sec: float = 600.0
+    # 2026-11-02 用户裁定 2：为质量 agent 预留预算（escrow）。
+    # 只在 budget_usd 非空时冻结；比例 + 最低额 + 上限三条一起用，避免小预算把
+    # 质量 agent 饿死、大预算又预留过多。轮次/工具调用**不**预留（0=不限语义）。
+    agent_quality_budget_reserve_ratio: float = 0.2
+    agent_quality_budget_reserve_floor_usd: float = 0.05
+    agent_quality_budget_reserve_cap_usd: float = 2.0
+    # 2026-11-02 用户裁定 4：两个开关均启用。
+    #: 终态原因枚举写盘（关掉只写旧 reason 字符串，用于极速回滚）
+    agent_terminal_reason_v1: bool = True
+    #: capped 作为独立 TaskStatus（关掉则 capped 仍按 done 上报，兼容旧前端）
+    agent_capped_status_v1: bool = True
+    #: Goal 语义（blocker 连续轮数门槛、goal_update 事件）
+    agent_goal_v1: bool = True
+    #: 同一 blocker 连续多少轮才允许宣告 blocked（照抄 DSH 的 3）
+    agent_goal_blocked_after_rounds: int = 3
 
     # --- 模型路由（PRD F8 / 开发计划 B4）---
     # 按阶段配置候选模型：[{"provider","model","tier","price_in","price_out"}]；
@@ -431,6 +459,13 @@ class Settings(BaseSettings):
     web_assets_ingest: bool = Field(
         default=True,
         validation_alias=AliasChoices("WEB_ASSETS_INGEST", "CLIPWRIGHT_WEB_ASSETS_INGEST"),
+    )
+    # 「哪些场景需要外部事实数据」由谁判断（2026-11-02，用户指出硬编码正则不合适）：
+    # llm=模型判断（一次批量调用）｜heuristic=旧正则（离线回退）｜off=一律不联网取事实
+    animation_fact_judge: str = Field(
+        default="llm",
+        validation_alias=AliasChoices(
+            "ANIMATION_FACT_JUDGE", "CLIPWRIGHT_ANIMATION_FACT_JUDGE"),
     )
     # 域名治理（PRD web-search-fetch M3）：白名单非空 = 只放行其中域名；
     # 黑名单永远优先。逗号/分号/空白分隔，子域按后缀匹配。

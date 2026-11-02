@@ -54,6 +54,13 @@ _REPEATABLE_TOOLS = frozenset({
     "list_agent_runs", "get_agent_run", "media_probe", "describe_llm_mg",
     "list_files", "read_file", "inspect",
 })
+#: 结构性护栏（**不是**预算闸）：单次 tool loop 最多这么多次模型往返 / 工具调用，
+#: 以及一次 LLM 调用内部最多这么多个工具往返。0 配置下靠它们兜住"死循环打 provider"。
+#: 真正的终止条件在 `agent_kernel._gate_hit`（无进展 / 重复动作 / 降级 / 完成标准 / 取消）。
+STRUCTURAL_MAX_ROUNDS = 600
+STRUCTURAL_MAX_CALLS = 4000
+STRUCTURAL_TOOL_ROUNDS = 24
+
 #: (task_id, idem_key) → 上次结果；有界（model 摸底次数远小于此）
 _TOOL_SEEN: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -133,12 +140,19 @@ def _has_credential() -> bool:
     return False
 
 
-def build_tools() -> list[dict[str, Any]]:
-    """本轮可用的工具集 = 工具面（已含 `delegate_agent` / `research_agent`）。"""
+def build_tools(closeout: bool = False,
+                closeout_extra: Any = ()) -> list[dict[str, Any]]:
+    """本轮可用的工具集 = 工具面（已含 `delegate_agent` / `research_agent`）。
+
+    `closeout=True`（软着陆收口模式）：只给只读档位工具。收口期"不许再扩展任务范围"
+    这件事必须由**工具面**保证——写在提示词里只是建议，模型可以不理。
+    `closeout_extra`：收口期仍放行的少数工具（质量阶段派发，预算已由 escrow 冻结）。
+    """
     from clipwright.tool.surface import schemas as surface_schemas
 
     try:
-        return list(surface_schemas())
+        return list(surface_schemas(closeout=closeout,
+                                    closeout_extra=tuple(closeout_extra or ())))
     except Exception as exc:  # noqa: BLE001 — 工具面构建失败要响，但循环仍可退化
         logger.warning("工具面构建失败: %s", exc)
         return agent_tool_schemas()
@@ -170,9 +184,58 @@ def _is_plan_only(task: Any) -> bool:
     return bool(getattr(request, "plan_only", False))
 
 
+#: 软着陆收口模式的权威规则（devplan 2026-11-02 §6 提示词原文）。
+#:
+#: 为什么必须换提示词而不是"少给点工具就行"：只收工具面的话，模型会反复尝试
+#: 用剩下的只读工具"再找找办法"，把收口窗口耗在探查上。这里把三件事说死：
+#: ① 到上限**不是**停止交付的理由；② 不许声称没验证的事已完成；③ 必须在窗口内
+#: 交出「做了什么 / 还剩什么 / 缺什么证据」，否则连 capped 都拿不到。
+_CLOSEOUT_BLOCK = (
+    "\n\n---\n"
+    "## 收口模式（soft landing）——本段覆盖上面所有与之冲突的指令\n"
+    "普通执行预算已到达收口阈值。**这不是停止交付的理由**：你必须在本模式内完成最终交付。\n"
+    "规则：\n"
+    "1. 先核验已有产物与质量阶段结果（只读），再写结论、已完成项、未完成项及其可核对原因；\n"
+    "2. **不得声称未验证的工作已完成**。没跑 quality 就写 `quality_not_run`，缺产物就写缺哪个键；\n"
+    "3. 工具面已经关闭生成、付费、写时间线主体、派发子 Agent、重跑阶段等一切会扩展任务范围的能力；"
+    "不要尝试绕过限制，也不要要求用户恢复工具；\n"
+    "4. 允许的动作只有：读取已有报告/产物、核验 final_timeline 或规划书是否存在、输出最终文本。"
+    "收尾报告由系统根据你的结论落盘，你不需要自己写文件；\n"
+    "5. 即使原完成标准没有达成，也**必须**交付这份收尾报告；写完后立即结束，不得继续探索。\n"
+)
+
+
+def _closeout_extra_tools(task: Any) -> tuple[str, ...]:
+    """收口期额外放行的工具名（质量阶段派发通道）。
+
+    条件：escrow 还留有余额（或金额本来就不限）且质量阶段确实没跑过。
+    名字写在**工具面这一层**是有意的：`delegate_agent` 的档位是 costly，
+    收口期要不要放它是"工具面策略"，不是业务 agent 的判断。
+    """
+    from clipwright.tool.surface import DELEGATE_AGENT
+
+    escrow = getattr(task, "escrow", None)
+    state = str(getattr(escrow, "state", "disabled"))
+    remaining = float(getattr(escrow, "quality_remaining_usd", 0.0) or 0.0)
+    unbounded = state == "disabled"
+    if not unbounded and remaining <= 0:
+        return ()
+    return (DELEGATE_AGENT,)
+
+
+def _is_closeout(task: Any) -> bool:
+    closeout = getattr(task, "closeout", None)
+    return str(getattr(closeout, "mode", "normal") or "normal") == "soft_landing"
+
+
 def _system_prompt(task: Any) -> str:
-    if _is_plan_only(task):
-        return _PLAN_ONLY_SYSTEM
+    base = _PLAN_ONLY_SYSTEM if _is_plan_only(task) else _NORMAL_SYSTEM
+    if _is_closeout(task):
+        return base + _CLOSEOUT_BLOCK
+    return base
+
+
+def _normal_system_prompt() -> str:
     return (
         "你是视频创作系统的主 agent。你直接调用工具来推进任务：可以读取工作区文件/报告/产物，"
         "也可以派子 agent 去做具体阶段。每次只做当前最必要的一步；做完就停下来汇报。\n"
@@ -182,6 +245,13 @@ def _system_prompt(task: Any) -> str:
         "- **创作任务的完成标准是产出可渲染时间线**：光读文件、列目录、看报告**不算完成**。"
         "要出片就必须用 delegate_agent 依次派阶段（structure→material→edit→animation→audio），"
         "让 audio 阶段落出 final_timeline；\n"
+        "- **阶段顺序是硬约束**：黑板只允许下游覆盖上游（edit→animation→audio）。"
+        "animation 排在 audio 之后重跑时，它的时间线写不回黑板（会被守卫拒绝，白烧时间）。"
+        "要重跑 animation，就必须在那个时间线基础上**再重派 audio**；顺序错了宁可接受现状也不要盲派；\n"
+        "- **文字动画的 easing 必须是白名单里的值**：linear / ease / ease-in / ease-out / "
+        "ease-in-out / back-out / elastic-out / bounce（或 [x1,y1,x2,y2]）。写 `ease-out-back`、"
+        "`spring` 这类别名虽已做归一化，但校验失败会让整段文字动画**回退成模板**"
+        "（用户看到的就是「深色底板 + 原文引述文字」）；真正要图形动画时用 mg_dynamic；\n"
         "- 不要在没有 timeline 的情况下说\"完成\"——收尾守门会把它判成失败；\n"
         "- 缺输入时先补上游（派对应阶段/调研），不要凭空编造；\n"
         # 降级不可默许（E2E 2026-10-29 用户裁定）：delegate_agent 的返回里
@@ -204,10 +274,17 @@ def _system_prompt(task: Any) -> str:
         "成片里成片的纯色卡=用户眼里的\"偷懒回退\"（E2E 2026-10-30 现场 07:10）；\n"
         "- 派子 agent 时用 inputs 显式传参（artifact 引用或内联值）；\n"
         "- 只读探查最多用于开局摸清现状，别把回合全花在 read_file/list_dir 上；\n"
-        "- 工具报「未找到工作区 / 路径不在白名单」属于环境问题：不要反复重试同一个调用，"
-        "如实说明缺什么并结束；\n"
+        "- **工作区文件用相对路径就行**：`artifacts/art_xxx.json`、`reports/03-material-1.md`、"
+        "`.` 都会按当前任务的工作区解析（绝对路径也可用）。一次路径失败不等于没有产物，"
+        "换个路径重试即可——**不要因此放弃读产物、凭猜派阶段**（那正是「阶段 edit 缺输入："
+        "script_skeleton、candidate_clips」的现场成因）；\n"
+        "- 工具报「未找到工作区」时说明本任务没绑定工作区，别反复重试同一个调用；\n"
         "- 任务受限：回合、工具调用次数、墙钟、预算都会强制中止。"
     )
+
+
+#: 正常创作任务的系统提示词（收口模式时在前面拼 `_CLOSEOUT_BLOCK`）。
+_NORMAL_SYSTEM = _normal_system_prompt()
 
 
 def _budget_note(task: Any) -> str:
@@ -261,7 +338,8 @@ async def run_loop(task: Any, *, context_text: str = "",
                    shadow: bool = False,
                    guard: Any = None,
                    on_tool_call: Any = None,
-                   dry_run: bool = False) -> dict[str, Any]:
+                   dry_run: bool = False,
+                   closeout: Any = None) -> dict[str, Any]:
     """跑完一次 tool-use loop，返回 `{status, finish, tool_calls, cost, stopped_reason}`。
 
     - `shadow=True`（PRD §5.2）：照常让模型选工具、照常记录调用序列与成本，但**不执行**
@@ -280,7 +358,14 @@ async def run_loop(task: Any, *, context_text: str = "",
     task_id = str(getattr(task, "id", "") or "")
     # 每次 run_loop 都是新的思考缓冲（同一任务续跑时不该继承上一次的残留）
     _THINKING.pop(task_id, None)
-    tools = build_tools()
+    # 收口模式（devplan 2026-11-02 §6）：工具面只留只读档位。参数可以由 Kernel 显式传，
+    # 也可以从 task.closeout 自己判断——两处都不依赖调用方记得传。
+    _closeout = bool(closeout) or (closeout is None and _is_closeout(task))
+    # 质量阶段派发在收口期仍要放行：它的预算已被 escrow 提前冻结（用户裁定 2：
+    # 总额耗尽也不许影响质量 agent）。是否真的还有余额由 Kernel 决定，见
+    # `closeout_extra_tools()`；执行器还会二次校验只允许 quality 这一个阶段。
+    _closeout_extra = _closeout_extra_tools(task) if _closeout else ()
+    tools = build_tools(closeout=_closeout, closeout_extra=_closeout_extra)
     emit(task_id, "narration",
          "主 agent 开始行动（工具循环·影子）" if shadow else "主 agent 开始行动（工具循环）",
          {"mode": "shadow" if shadow else "tool_loop", "tools": len(tools)})
@@ -290,10 +375,21 @@ async def run_loop(task: Any, *, context_text: str = "",
     fail_streak: dict[str, int] = {}
     started = time.monotonic()
     limits = getattr(task, "limits", None)
+    # 2026-11-02 用户裁定：回合/工具调用**不再是预算闸**（0 = 不限）。
+    # 这里剩下的两个数是**结构性护栏**（防单次 LLM 调用里无限打转把 provider 打爆），
+    # 不是"到点就收尾"的中止条件——真正的终止条件在 `agent_kernel._gate_hit`
+    # （无进展 N=6 / 跨阶段重复动作熔断 / 降级未处置 / 完成标准 / 用户取消）。
     max_rounds = int(getattr(settings, "agent_loop_max_turns", 0)
-                     or getattr(limits, "max_turns", 30) or 30)
+                     or getattr(limits, "max_turns", 0) or STRUCTURAL_MAX_ROUNDS)
     max_calls = int(getattr(settings, "agent_loop_max_tool_calls", 0)
-                    or getattr(limits, "max_tool_calls", 80) or 80)
+                    or getattr(limits, "max_tool_calls", 0) or STRUCTURAL_MAX_CALLS)
+
+    # 收口窗口独立于普通轮次（devplan §6）：进收口后按 closeout.max_rounds 而不是
+    # 普通 max_rounds 计轮，否则"600 轮后的 8 轮收口"根本跑不起来。
+    _rounds_cap = max_rounds
+    if _closeout:
+        _co = getattr(task, "closeout", None)
+        _rounds_cap = int(getattr(_co, "max_rounds", 8) or 8)
 
     async def _executor(name: str, args: dict[str, Any]) -> dict[str, Any]:
         nonlocal calls
@@ -305,6 +401,22 @@ async def run_loop(task: Any, *, context_text: str = "",
             reason = guard()
             if reason:
                 raise LoopAborted(str(reason))
+        # 收口期只允许派**质量阶段**（它的预算已被 escrow 冻结）。其它阶段的派发一律
+        # 拒绝并留痕：工具面放行 delegate_agent 是为了这条通道，不是为了重开执行范围。
+        if _closeout and name in _closeout_extra:
+            from clipwright.tool.surface import DELEGATE_AGENT as _DA
+
+            if name == _DA:
+                _stage = str((args or {}).get("stage") or "").strip()
+                if _stage != "quality":
+                    calls.append({"tool": name, "ok": False, "status": "refused",
+                                  "duration_ms": 0})
+                    emit(task_id, "tool_result",
+                         f"{name}({_stage}) → refused（收口期只允许派质量阶段）",
+                         {"tool": name, "stage": _stage, "status": "refused",
+                          "reason": "closeout_scope"})
+                    return {"status": "refused",
+                            "error": "收口期只允许派质量阶段（quality）；其它阶段不再开启"}
         if len(calls) >= max_calls:
             # 上限也要留痕：静默丢弃会让"为什么没做完"变成谜
             calls.append({"tool": name, "ok": False, "status": "refused",
@@ -537,7 +649,7 @@ async def run_loop(task: Any, *, context_text: str = "",
             user_prompt=_user_prompt(task, context_text),
             tool_executor=_executor,
             tools=tools,
-            max_tool_rounds=max(1, min(max_rounds, 12)),
+            max_tool_rounds=max(1, min(_rounds_cap, STRUCTURAL_TOOL_ROUNDS)),
             on_preamble=_on_preamble,
             on_reasoning=_reasoning_cb,
             pipeline_id=task_id,
@@ -587,7 +699,7 @@ async def run_loop(task: Any, *, context_text: str = "",
                     user_prompt=_user_prompt(task, context_text + retry_hint),
                     tool_executor=_executor,
                     tools=tools,
-                    max_tool_rounds=max(1, min(max_rounds, 12)),
+                    max_tool_rounds=max(1, min(_rounds_cap, STRUCTURAL_TOOL_ROUNDS)),
                     on_preamble=_on_preamble,
                     on_reasoning=_reasoning_cb,
                     pipeline_id=task_id,
@@ -692,3 +804,4 @@ def take_thinking(task_id: str) -> str:
 __all__ = ["DELEGATE_TOOL", "RESEARCH_TOOL", "LoopAborted", "agent_tool_schemas",
            "build_tools", "is_agent_tool", "run_loop", "take_thinking",
            "tool_loop_available"]
+

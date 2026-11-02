@@ -121,11 +121,23 @@ class ReadArtifactTool(BaseTool):
         root = _resolve_root(project_id, workspace_root)
         target: Path | None = None
         if path:
-            target = Path(str(path))
+            target = Path(str(path)).expanduser()
+            # 相对路径按工作区根解析（模型天然写 `artifacts/art_x.json`）。
+            # 旧实现直接拿相对路径去 assert_allowed_path → 按服务器 CWD 解析 →
+            # 一律"路径不在允许的目录内"，主 agent 读不到任何产物。
+            if not target.is_absolute() and root is not None:
+                target = (root / target).resolve()
         elif artifact and root is not None:
             candidate = root / "artifacts" / f"{Path(str(artifact)).stem}.json"
             if candidate.is_file():
                 target = candidate
+        # 只给了 `artifact` id 但没给 root：退回工作区探测（别让模型只能干瞪眼）
+        if target is None and artifact:
+            cand = Path("artifacts") / f"{Path(str(artifact)).stem}.json"
+            if root is not None:
+                cand = root / cand
+            if cand.is_file():
+                target = cand.resolve()
         if target is None or not target.is_file():
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
                                   error="找不到产物（给 artifact id 或 path）")

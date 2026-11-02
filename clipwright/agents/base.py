@@ -185,18 +185,12 @@ class BaseAgent(ABC, Generic[I, O]):
         names = tuple(prefer) if prefer is not None else self.capability_prefer.get(capability, ())
         tool = resolve(capability, prefer=names)
         if tool is None:
+            # **能力解析是唯一入口**（用户 2026-11-02 裁定）。
+            # 旧实现在解析失败时还会 `fallback_name()` 按历史工具名再试一次——于是出现
+            # "能力解析说不可用（例如 `enable_web_search` 关着、`is_configured()` 为假），
+            # 但按名字调用照样执行成功"的两套口径。现在：解析不到就是 NOT_FOUND，
+            # 不再绕过配置/插件状态执行。
             self._note_missing_capability(capability)
-            # 兼容路径：能力有内置别名时仍按名字发起调用——注册表没这个工具会返回
-            # NOT_FOUND；测试/延迟注册环境（execute 被替换）则照旧生效。
-            # 这样"改成能力解析"不会改变既有的失败语义。
-            from clipwright.tool.capabilities import fallback_name
-
-            alt = fallback_name(capability)
-            if alt:
-                started = time.monotonic()
-                result = await ToolRegistry.execute(alt, **kwargs)
-                self._note_tool_call(capability, alt, result, started, kwargs)
-                return result
             missing = ToolExecResult(
                 status=ToolStatus.NOT_FOUND,
                 tool_name=capability,

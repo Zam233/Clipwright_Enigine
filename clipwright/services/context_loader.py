@@ -456,12 +456,31 @@ def _instruction_digest(task: Any) -> str:
         extra = dict(getattr(request, "extra", {}) or {})
         text = str(extra.get("user_instruction") or "").strip()
         prev_task = str(extra.get("previous_task_id") or "")
+        prev_terminal = str(extra.get("previous_terminal_reason") or "")
+        prev_blocker = str(extra.get("previous_blocker_code") or "")
+        prev_closeout = str(extra.get("previous_closeout_status") or "")
     except Exception:  # noqa: BLE001
         return ""
     if not text:
         return ""
-    suffix = (f"\n（上一轮任务 {prev_task} 已结束；这是同一会话的**续跑**，"
-              "不是新项目：接着做完没做完的事，不要从头重做）") if prev_task else ""
+    suffix = ""
+    if prev_task:
+        suffix = (f"\n（上一轮任务 {prev_task} 已结束；这是同一会话的**续跑**，"
+                  "不是新项目：接着做完没做完的事，不要从头重做）")
+        # devplan T3.4：把"上一轮为什么结束"说给新任务听。
+        # capped 尤其要说清楚——它意味着**有交付但没做完**，最容易让模型误判成
+        # "上一轮已经完成了"，于是重新规划一遍并覆盖已有产物。
+        if prev_terminal == "capped":
+            suffix += (f"\n（上一轮因运行上限进入收口：收尾报告 "
+                       f"{prev_closeout or 'unknown'}，**不等于任务已完成**；"
+                       "先读 reports/agent-closeout.json 看还缺什么，再接着做）")
+        elif prev_terminal == "blocked":
+            suffix += (f"\n（上一轮因阻塞结束{('：' + prev_blocker) if prev_blocker else ''}；"
+                       "先确认那个阻塞是否还在，再决定换策略还是继续）")
+        elif prev_terminal == "user_cancelled":
+            suffix += "\n（上一轮是**用户主动喊停**的，不是异常退出；按新指令接着做即可）"
+        elif prev_terminal:
+            suffix += f"\n（上一轮终态：{prev_terminal}）"
     return text[:SESSION_LIMITS["instruction"]] + suffix
 
 

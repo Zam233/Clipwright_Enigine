@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
 from clipwright.config import logger
@@ -230,7 +231,14 @@ class ToolRegistry:
         )
         for key in ("input_path", "video_path", "audio_path", "file_path", "path"):
             val = kwargs.get(key)
-            if val and isinstance(val, str) and not val.startswith(("http://", "https://")):
+            # 只校验**绝对路径**：模型给的工作区相对路径（`artifacts/art_x.json`、`.`）
+            # 会被按服务器 CWD 解析成白名单之外的目录而一律拒绝——实测后果是主 agent
+            # 完全读不到产物（read_artifact / list_dir 全 error），最后盲派 edit →
+            # `阶段 edit 缺输入：script_skeleton、candidate_clips`。
+            # 相对路径交给工具自己按 `workspace_root` 解析，解析后再 assert（工具内已校验）。
+            if (val and isinstance(val, str)
+                    and not val.startswith(("http://", "https://"))
+                    and os.path.isabs(val)):
                 try:
                     assert_allowed_path(val)
                 except SecurityViolation as e:

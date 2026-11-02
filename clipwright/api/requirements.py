@@ -292,6 +292,19 @@ async def chat_message(req: ChatRequest, request: Request) -> dict:
         raise HTTPException(status_code=500, detail="会话处理失败，请稍后重试")
 
 
+@router.post("/{session_id}/stop")
+async def stop_session_task(session_id: str, request: Request) -> dict:
+    """用户点「停止」：中止该会话正在跑的任务，恢复可对话状态，并留一条显式记录。
+
+    前端在任务运行期间显示「停止任务」按钮；点击后调用这里。返回体带 `note`，
+    前端可直接把它当一条消息上屏（后端同时已写进会话消息与时间线，
+    续跑的主 agent 因此知道"是用户主动喊停"，不会误判成异常终止）。
+    """
+    _require_session_owner(request, session_id)
+    result = await _service.stop_task(session_id)
+    return {"session_id": session_id, **result}
+
+
 @router.post("/chat/stream/{session_id}")
 async def chat_stream(session_id: str, message: str = Form(...),
                       project_id: str = Form(""), request: Request = None):
@@ -496,9 +509,19 @@ async def session_timeline(session_id: str, request: Request,
     log = _session_log.get_log(session_id)
     # 再同步投影一次：刷新/重连时任务事件必须已经在流里（PRD §5.3）
     await asyncio.to_thread(_projection.project, session_id)
+    # 首次进入（三个游标都没给）必须给**最新**一页，而不是最老一页。
+    # 旧实现 since_seq=0 → `list_items` 按 seq 升序取前 limit 条：会话攒到 1591 条后，
+    # 刷新只能看到 seq 1..500（开局的需求问答），主 agent 后面的动画/web_search 全"消失"
+    # ——用户 2026-11-02 实测就是这么丢的。`before_seq = latest+1` 取尾部，
+    # 并且 `has_more` 正好表示"还有更早的"，与前端「加载更早」语义一致。
+    _since = max(0, int(since_seq or 0))
+    _until = max(0, int(until_seq or 0))
+    _before = max(0, int(before_seq or 0))
+    if not _since and not _until and not _before:
+        _before = int(await asyncio.to_thread(log.latest_seq) or 0) + 1
     page = await asyncio.to_thread(
-        log.list_items, since_seq=max(0, int(since_seq or 0)),
-        until_seq=max(0, int(until_seq or 0)), before_seq=max(0, int(before_seq or 0)),
+        log.list_items, since_seq=_since,
+        until_seq=_until, before_seq=_before,
         limit=limit, resolve_content=bool(resolve),
     )
     return {"session_id": session_id, "backfilled": backfilled, **page}
@@ -685,6 +708,17 @@ async def _proceed_as_task(*, session: dict, req: "ProceedRequest", request: Req
     kernel = AgentKernel()
     task = kernel.create(task_req, limits=TaskLimits(max_turns=160, max_tool_calls=800))
     _register_owner(task.id, request)
+    # 会话↔项目绑定：任务结束要把成片时间线写回**这个项目**。旧实现从不写这条绑定，
+    # 于是 `task_project_sync.project_id_of()` 在续跑/派发任务上恒拿不到项目 id →
+    # 那一轮跑出的（含「动画轨」的）时间线根本不落项目（用户 2026-11-02 实测）。
+    try:
+        from clipwright.services.session_log import get_log as _get_log
+
+        _pid = str(getattr(req, "project_id", "") or "").strip()
+        if _pid:
+            _get_log(req.session_id, project_id=_pid)
+    except Exception as _bindp_err:  # noqa: BLE001 — 绑定失败不阻断开工
+        logger.warning("会话绑定项目失败（继续）%s: %s", req.session_id, _bindp_err)
     # 时间线：任务归到这个会话，之后 tool/skill/subagent/report 事件自动投影进同一份流
     try:
         from clipwright.services import session_projection as _projection

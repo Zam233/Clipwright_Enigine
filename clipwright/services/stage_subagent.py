@@ -849,13 +849,26 @@ def persist_artifacts(root: str | Path, seq: int, artifacts: dict[str, Any],
 def _missing_failure(stage: str, exc: stage_inputs.StageInputMissing) -> Any:
     from clipwright.schema.agent import FailureReport
 
+    # 每个缺失键一条 needs（旧实现按"建议上游阶段"聚合、并把字段用「、」拼成一个
+    # 字符串，主 Agent 看到 field='script_skeleton、candidate_clips' 无法逐项补齐）。
+    _fallback_stage = (exc.suggestion or ["structure"])[0]
+    needs = [
+        {
+            "from_stage": stage_inputs.KEY_PRODUCER.get(str(field), _fallback_stage),
+            "field": str(field),
+            "why": f"{stage} 阶段的必需输入",
+        }
+        for field in (exc.missing or [])
+    ] or [
+        {"from_stage": s, "field": "、".join(exc.missing), "why": f"{stage} 阶段的必需输入"}
+        for s in (exc.suggestion or ["structure"])
+    ]
     return FailureReport(
         category="input_insufficient",
         blocking_point=str(exc)[:200],
         retryable="needs_upstream",
         # needs 是契约里的"请求上游补什么"，主 Agent 据此先派缺的那一步
-        needs=[{"from_stage": s, "field": "、".join(exc.missing), "why": f"{stage} 阶段的必需输入"}
-               for s in (exc.suggestion or ["structure"])],
+        needs=needs,
         evidence=[{"kind": "missing_keys", "text": "、".join(exc.missing)}],
     )
 

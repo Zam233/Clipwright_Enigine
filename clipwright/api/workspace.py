@@ -256,6 +256,21 @@ async def list_materials(project_id: str, kind: str = Query(default="")) -> dict
     }
 
 
+@router.get("/{project_id}/media-tree")
+async def workspace_media_tree(project_id: str, limit: int = Query(default=2000)) -> dict[str, Any]:
+    """按**目录结构**列出工作区全部媒体（视频/图片/音频），给左侧资源库用。
+
+    与 `/materials` 的区别（2026-11-02 用户要求）：
+    - `/materials` 读的是**索引注册表**，未索引的文件看不到、目录样式也丢了；
+    - 这里是**实时目录树**：用户自己建的 `materials/实拍/`、`materials/参考/` 都按原样成组，
+      未索引的媒体文件同样出现。系统目录（assets/cache/logs/artifacts/reports/docs…）跳过。
+    """
+    ws = _ws(project_id)
+    if not ws.exists:
+        raise HTTPException(status_code=404, detail="工作区不存在")
+    return {"project_id": project_id, **ws.media_tree(limit=max(1, min(int(limit or 2000), 5000)))}
+
+
 @router.post("/{project_id}/materials")
 async def upload_material(project_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
     """上传到 ``materials/<kind>/``，随后同步排一次索引（单文件）。"""

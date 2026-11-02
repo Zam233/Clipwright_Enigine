@@ -213,6 +213,54 @@ async def get_project(project_id: str, request: Request) -> dict[str, Any]:
     return _normalize_project_row(_load_owned(request, project_id))
 
 
+@router.get("/{project_id}/termination")
+async def get_project_termination(project_id: str, request: Request) -> dict[str, Any]:
+    """读项目级终止策略（devplan 2026-11-02 §6/§7）。
+
+    返回 `{policy, resolved, overridable}`：
+    - `policy`    = 项目里显式写过的键（空 dict = 跟随全局）；
+    - `resolved`  = 「项目 > 全局 > 默认」解析后的最终快照，前端可以直接展示"这一条
+      片子实际按多少轮收口"；
+    - `overridable` = 允许项目级覆盖的键名（前端据此渲染表单，不硬编码）。
+    """
+    _load_owned(request, project_id)  # P3-3B
+    from clipwright.services import agent_policy as _policy
+
+    resolved = _policy.resolve(project_id)
+    return {
+        "project_id": project_id,
+        "policy": _policy.project_policy(project_id),
+        "resolved": resolved.model_dump(),
+        "overridable": list(_policy._OVERRIDABLE),
+    }
+
+
+@router.patch("/{project_id}/termination")
+async def set_project_termination(project_id: str, request: Request) -> dict[str, Any]:
+    """写项目级终止策略（只改 `agent_state.termination`，保留 agent_state 其它键）。
+
+    body 里值为 `null` / `""` 表示**清除该键**（回退全局）。只接受白名单内的键，
+    未知键直接 400 —— 项目配置不是任意配置的入口。
+    """
+    _load_owned(request, project_id)  # P3-3B
+    from clipwright.services import agent_policy as _policy
+
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="请求体必须是 JSON 对象")
+    patch = body.get("policy") if isinstance(body.get("policy"), dict) else body
+    try:
+        _policy.set_project_policy(project_id, dict(patch))
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return await get_project_termination(project_id, request)
+
+
 @router.put("/{project_id}")
 async def update_project(project_id: str, req: ProjectUpdateRequest, request: Request) -> dict[str, Any]:
     """Update an existing project.
@@ -223,6 +271,41 @@ async def update_project(project_id: str, req: ProjectUpdateRequest, request: Re
     """
     _load_owned(request, project_id)  # P3-3B
     update_data = req.model_dump(exclude_unset=True)
+    # ── 时间线「谁最后写的」语义（2026-11-02 用户要求）────────────────────────
+    # 编辑器保存时必须显式打上 `last_writer = "editor:<user>"`，否则 agent 的中间回写
+    # 分辨不出"这份内容是它自己写的，还是用户手工改的"，只能靠片段数猜测（旧实现）。
+    # 两种保存要分开处理：
+    #   ① 内容与磁盘一致（只是自动保存/切换标签）→ 打 editor 标记但**保留** agent_sig，
+    #      agent 后续还能继续增量回写（否则用户一开编辑器，时间轴就再也不更新了）；
+    #   ② 内容真的变了（用户改过）→ 清掉 agent_sig，agent 中间回写就此停手，只等收尾全量。
+    try:
+        _incoming = update_data.get("timeline")
+        if isinstance(_incoming, dict):
+            from clipwright.authz import current_user_id
+            from clipwright.services.task_project_sync import (
+                LAST_WRITER_EDITOR, _signature, stamp_writer,
+            )
+
+            _cur = (_manager.load(project_id) or {}).get("timeline") or {}
+            _same = _signature(_incoming) == _signature(_cur)
+            _uid = current_user_id(request) or ""
+            _writer = f"{LAST_WRITER_EDITOR}:{_uid}" if _uid else LAST_WRITER_EDITOR
+            _stamped = stamp_writer(_incoming, _writer, sig=False)
+            if _same:
+                # 内容没变：指纹沿用磁盘上那份，agent 可以继续写
+                _keep_sig = str((_cur.get("metadata") or {}).get("agent_sig") or "")
+                if _keep_sig:
+                    _stamped.setdefault("metadata", {})["agent_sig"] = _keep_sig
+            else:
+                _n_new = sum(len(t.get("clips") or []) for t in (_incoming.get("tracks") or []))
+                _n_cur = sum(len(t.get("clips") or []) for t in (_cur.get("tracks") or []))
+                logger.info(
+                    "项目 %s 时间线由编辑器改写（last_writer=%s）：%d → %d 片段；"
+                    "agent 的中间回写将从这里停手", project_id, _writer, _n_cur, _n_new,
+                )
+            update_data["timeline"] = _stamped
+    except Exception as _cmp_err:  # noqa: BLE001 — 打标失败不影响保存
+        logger.debug("时间线写入者打标失败 %s: %s", project_id, _cmp_err)
     try:
         data = _manager.save(project_id, update_data)
     except FileNotFoundError:

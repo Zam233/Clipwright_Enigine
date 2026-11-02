@@ -34,14 +34,7 @@ from clipwright.services.subtitle import DEFAULT_CAPTION_STYLE, DEFAULT_TEXT_STY
 from clipwright.services.degradation import note_degradation as _note
 from clipwright.services.agent_context import emit_progress as _emit_progress
 from clipwright.services.trace import add_event
-from clipwright.services.web_search import WebSearchService
 
-# 数据/事实型 mg_dynamic 检测 — 命中则触发联网搜索，注入事实上下文
-# （中文 + 英文，大小写不敏感；图表/数据/百分比/年份/引语/增长率/GDP/报告等）
-_DATA_FACT_RE = re.compile(
-    r"图表|数据|统计|对比|百分比|%|年份 20\d\d|引语|quote|citation|增长率|GDP|报告|survey",
-    re.IGNORECASE,
-)
 
 
 def _merge_style_defaults(
@@ -118,6 +111,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         返回 `web_fetch` 的 output dict（`kind`/`content`/`local_path`/`license`…），
         任何失败返回 None（不阻断动画生成）。
         """
+        # 只走能力面：`web_fetch` 由工具/插件提供；缺能力时如实返回 None 并留日志。
+        # 旧实现在异常时直接调 `WebFetchService().probe()` —— 那等于绕开插件层把服务
+        # 当后门用，插件被卸载/替换时行为不一致（用户 2026-11-02 指出）。
         try:
             res = await self.call_tool(
                 "web_fetch",
@@ -126,92 +122,29 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 workspace_root=str(getattr(self, "_ws_root", "") or ""),
                 title=title,
             )
-        except Exception as exc:  # noqa: BLE001 — 工具面不可用时退回服务本体
-            logger.info("AnimationAgent: web_fetch 不可用（%s），退回服务本体", exc)
-            try:
-                from clipwright.services.web_search import WebFetchService
-
-                probe = await WebFetchService().probe(url, max_chars=max_chars)
-                return probe if probe.get("ok") else None
-            except Exception:  # noqa: BLE001
-                return None
+        except Exception as exc:  # noqa: BLE001 — 能力缺失/工具面不可用
+            logger.info("AnimationAgent: web_fetch 能力不可用（%s），跳过该 URL", exc)
+            return None
         status = str(getattr(res, "status", "") or "")
         payload = getattr(res, "output", None) or {}
         if status not in ("success", "ok") or not isinstance(payload, dict):
             return None
         return payload
 
-    @staticmethod
-    def _extract_image_urls(markdown_or_html: str, *, base: str = "") -> list[str]:
-        """从正文（Markdown / 少量 HTML）里抽出图片地址（供"抓页面再抓图"用）。
-
-        DeepSeek Fetch 返回 Markdown，图片是 `![alt](url)`；本地抽正文会丢标签，所以两种形态都认。
-        实际站点常见坑（实测 zol/百度云/smzdm 六个页面抽不出图）：
-        - 相对路径（`/upload/x.jpg`）——要用页面 URL 拼绝对地址；
-        - 懒加载（`data-src` / `srcset`）——`src` 里是占位图；
-        - `data:` 内联——不是可下载的 URL。
-        """
-        from urllib.parse import urljoin
-
-        text = markdown_or_html or ""
-        found: list[str] = []
-        patterns = (
-            r"!\[[^\]]*\]\((https?://[^)\s]+)\)",                      # Markdown 远程图
-            r"!\[[^\]]*\]\((/[^)\s]+)\)",                              # Markdown 站内相对图
-            r'<img[^>]+(?:data-src|data-original)=["\']([^"\']+)["\']',  # 懒加载
-            r'<img[^>]+src=["\']([^"\']+)["\']',                       # 普通 img
-            r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
-        )
-        for pattern in patterns:
-            for m in re.finditer(pattern, text, re.IGNORECASE):
-                raw = (m.group(1) or "").strip()
-                if not raw or raw.startswith("data:") or raw.startswith("javascript:"):
-                    continue
-                url = urljoin(base or "", raw) if base else raw
-                if not url.startswith(("http://", "https://")):
-                    continue
-                lower = url.lower().split("?")[0]
-                if not lower.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp")):
-                    continue
-                if url not in found:
-                    found.append(url)
-        return found[:4]
-
-    async def _raw_html(self, url: str, *, max_bytes: int = 1_500_000) -> str:
-        """直接抓原始 HTML（用于从网页里抽 `<img>` / og:image）。
-
-        为什么不能只靠 `web_fetch`：DeepSeek Fetch 返回的是**已清洗的 Markdown**，
-        实测 zol / 百度云 / 什么值得买 这些站点清洗后几乎不留图；要图片必须看原 HTML
-        （懒加载用 `data-src`、首图在 og:image）。所以这里做一次受限的原始抓取：
-        浏览器 UA、20s 超时、1.5MB 上限，失败返回空串。
-        """
-        try:
-            import httpx
-
-            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-                resp = await client.get(url, headers={
-                    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                   "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                   "Chrome/124.0 Safari/537.36"),
-                    "Accept": "text/html,application/xhtml+xml",
-                })
-                if resp.status_code >= 400:
-                    return ""
-                return resp.text[:max_bytes]
-        except Exception as exc:  # noqa: BLE001 — 抽取失败就当没拿到图
-            logger.info("AnimationAgent: 原始 HTML 抓取失败（跳过抽图）%s: %s", url, exc)
-            return ""
-
     async def _ingest_web_media(self, context: Any, *, topic: str) -> int:
-        """把**真实图片/视频**落进 `materials/web/` 并进图片语义索引（2026-10-31 重写）。
+        """把**真实图片/视频**落进 `materials/web/` 并进图片语义索引。
 
-        两条来源按顺序试，先便宜后昂贵：
-        1. **素材源**（Pexels/本地库等 MaterialRegistry）：直接给媒体直链，秒级落盘；
-        2. **联网兜底**（web_search → web_fetch）：搜索结果通常是**网页**而不是图片，
-           所以抓正文后用 `![..](..)` / `<img>` / og:image 抽图，再抓一次落盘。
+        2026-11-02 架构收口（用户指出）：这里只做**编排与记账**，
+        具体能力全部来自工具/插件层——
+        - 抓页面抽图（HTML 解析 / 懒加载 / og:image / 落盘）→ 能力 `web_images`；
+        - 单条 URL 抓取与落盘（robots/SSRF/大小限制）→ 能力 `web_fetch`；
+        - 检索 → 能力 `web_search`。
+        旧实现在 agent 里自带 `_raw_html` / `_extract_image_urls` / `_take` 三件套，
+        并在工具缺失时直接调 `WebFetchService` / `WebSearchService` 当后门——
+        等于把能力钉死在 agent 里，插件装卸都不生效。
 
-        预算与并发都收紧（实测 DeepSeek Fetch 单页 15–25s，六页串行要两分钟）：
-        网页最多 2 条、并发抓取，整体失败不阻断动画生成。
+        两条来源按顺序试，先便宜后昂贵：素材源直链 → 联网（搜索→`web_images` 落盘）。
+        预算 3 项；任何一步失败都不阻断动画生成。
         """
         try:
             from clipwright.config import settings
@@ -227,8 +160,18 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         added = 0
         budget = 3
 
+        def _record(path: str, asset_url: str, title: str, license_hint: str = "") -> None:
+            """只记账（素材已经由能力层落盘）。"""
+            self._image_index.append({
+                "path": path,
+                "tags": [topic[:60]],
+                "description": title or "联网素材",
+                "source": asset_url,
+                "license": license_hint or "",
+            })
+
         async def _take(asset_url: str, title: str) -> bool:
-            """抓一次；落盘成功就进图片索引。"""
+            """单个媒体 URL → 让 `web_fetch` 负责抓取与落盘，这里只记索引。"""
             payload = await self._fetch_url(asset_url, title=title, max_chars=2000)
             if not payload:
                 return False
@@ -236,18 +179,12 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             kind = str(payload.get("kind") or "")
             if not local or kind not in ("image", "video"):
                 return False
-            # 太小的图是 logo/图标/1x1 占位，进动画只会糊成一块：实测抽到的 2.9KB 就是站标
+            # 太小的图是 logo/图标/1x1 占位，进动画只会糊成一块（实测 2.9KB 就是站标）
             if kind == "image" and int(payload.get("bytes") or 0) < 8000:
                 logger.info("AnimationAgent: 跳过过小的联网图片 %s（%sB）",
                             os.path.basename(local), payload.get("bytes"))
                 return False
-            self._image_index.append({
-                "path": local,
-                "tags": [topic[:60]],
-                "description": title or "联网素材",
-                "source": asset_url,
-                "license": str(payload.get("license") or ""),
-            })
+            _record(local, asset_url, title, str(payload.get("license") or ""))
             return True
 
         try:
@@ -273,18 +210,17 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 logger.info("AnimationAgent: 联网素材入库 %d 项（素材源直链）", added)
                 return added
 
-            # ② 联网兜底：搜索 → 抓正文 → 抽图 → 抓图
-            found = await self.call_tool("web_search", query=topic[:120], max_results=6)
-            payload = getattr(found, "output", None) or {}
-            results = list(payload.get("results") or []) if isinstance(payload, dict) else []
+            # ② 联网兜底：搜索 → 网页 → 交给 `web_images`（抽图 + 落盘）
+            results: list[dict[str, Any]] = []
+            try:
+                found = await self.call_tool("web_search", query=topic[:120], max_results=6)
+                payload = getattr(found, "output", None) or {}
+                if isinstance(payload, dict):
+                    results = list(payload.get("results") or [])
+            except Exception as exc:  # noqa: BLE001 — 能力缺失就是没有素材源
+                logger.info("AnimationAgent: web_search 能力不可用（%s）", exc)
             if not results:
-                from clipwright.services.web_search import WebSearchService
-
-                svc = WebSearchService()
-                if svc.is_configured():
-                    results = await svc.search(topic[:120], max_results=6) or []
-            if not results:
-                logger.info("AnimationAgent: 联网素材化跳过（搜索无结果）")
+                logger.info("AnimationAgent: 联网素材化跳过（搜索无结果/能力不可用）")
                 return added
 
             media_urls: list[tuple[str, str]] = []
@@ -306,30 +242,35 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 if await _take(url, title):
                     added += 1
 
-            # 网页只取前 2 条、并发抓（DeepSeek Fetch 单页 15–25s，串行不可接受）
             pages = page_urls[:2]
-            if pages and added < budget:
-                fetched = await asyncio.gather(
-                    *(self._fetch_url(u, title=t, max_chars=20000) for u, t in pages),
-                    return_exceptions=True,
-                )
-                for (url, title), page in zip(pages, fetched):
+            for url, title in pages:
+                if added >= budget:
+                    break
+                try:
+                    res = await self.call_tool(
+                        "web_images",
+                        url=url,
+                        max_images=max(1, budget - added),
+                        download=True,
+                        title=f"{title}-图" if title else "联网图片",
+                        workspace_root=root,
+                    )
+                except Exception as exc:  # noqa: BLE001 — 能力缺失/单页失败跳过
+                    logger.info("AnimationAgent: web_images 能力不可用（%s），跳过 %s", exc, url)
+                    continue
+                out = getattr(res, "output", None) or {}
+                if str(getattr(res, "status", "") or "") not in ("success", "ok") \
+                        or not isinstance(out, dict):
+                    continue
+                for item in (out.get("saved") or []):
                     if added >= budget:
                         break
-                    if isinstance(page, Exception) or not page:
+                    local = str(item.get("path") or "")
+                    if not local:
                         continue
-                    img_urls = self._extract_image_urls(
-                        str(page.get("content") or ""), base=str(page.get("final_url") or url))
-                    if not img_urls:
-                        # Markdown 里没图 → 看原始 HTML（og:image / 懒加载 data-src）
-                        html_text = await self._raw_html(url)
-                        if html_text:
-                            img_urls = self._extract_image_urls(html_text, base=url)
-                    for img_url in img_urls:
-                        if added >= budget:
-                            break
-                        if await _take(img_url, f"{title}-图"):
-                            added += 1
+                    _record(local, str(item.get("url") or ""),
+                            f"{title}-图", str(item.get("license") or ""))
+                    added += 1
 
             logger.info("AnimationAgent: 联网素材入库 %d 项（候选媒体 %d / 网页 %d）",
                         added, len(media_urls), len(pages))
@@ -337,13 +278,6 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         except Exception as exc:  # noqa: BLE001 — 联网素材化失败不影响动画
             logger.warning("AnimationAgent: _ingest_web_media 失败: %s", exc)
             return added
-
-            if added:
-                logger.info("AnimationAgent: 联网素材入库 %d 项（materials/web/）", added)
-            return added
-        except Exception as exc:  # noqa: BLE001 — 联网素材化失败不影响动画产出
-            logger.warning("AnimationAgent: _ingest_web_media 失败: %s", exc)
-            return 0
 
     def _is_typewriter_like(self, anim_id: str) -> bool:
         """是否逐字出现：按关键帧属性 ``char_progress`` 判定，不再写死 id 白名单。"""
@@ -475,6 +409,44 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             except Exception:
                 logger.exception("AnimationAgent: 图片语义索引构建失败，忽略图片素材库")
                 self._image_index = []
+
+            # 哪些场景需要外部事实数据 —— **走能力 `fact_need`**（插件 `web_media` 提供）：
+            # 模型判断、一次批量调用。agent 不再持有任何事实判定正则，也不直接 import
+            # 某个服务实现——插件换实现（模型/规则/内部核查服务）时这里一个字都不用改。
+            self._fact_clip_ids = set()
+            try:
+                _scenes: list[dict[str, Any]] = []
+                for _track in (timeline.tracks or []):
+                    for _clip in (_track.clips or []):
+                        _meta = dict(getattr(_clip, "metadata", None) or {})
+                        _text = str(
+                            _meta.get("text") or _meta.get("narration")
+                            or _meta.get("content") or "").strip()
+                        _scenes.append({
+                            "id": str(getattr(_clip, "id", "") or ""),
+                            "title": str(_meta.get("title") or getattr(_clip, "name", "") or ""),
+                            "description": str(_meta.get("description") or ""),
+                            "text": _text,
+                            "keywords": _meta.get("keywords") or [],
+                        })
+                if _scenes:
+                    _res = await self.call_tool("fact_need", scenes=_scenes)
+                    _out = getattr(_res, "output", None) or {}
+                    if str(getattr(_res, "status", "") or "") in ("success", "ok") \
+                            and isinstance(_out, dict):
+                        self._fact_clip_ids = {
+                            str(x) for x in (_out.get("needed_ids") or []) if str(x)
+                        }
+                        logger.info("AnimationAgent: 事实型场景 %d/%d（fact_need 能力，模式=%s）",
+                                    len(self._fact_clip_ids), len(_scenes),
+                                    _out.get("mode") or "?")
+                        add_event(context.pipeline_id, "animation", "fact_judge",
+                                  f"{len(self._fact_clip_ids)} 个场景需要外部事实"
+                                  f"（fact_need 能力 / {_out.get('mode') or '?'}）")
+            except Exception:  # noqa: BLE001 — 判断失败不影响动画产出
+                logger.warning("AnimationAgent: fact_need 能力调用失败（按“不需要”处理）",
+                               exc_info=True)
+                self._fact_clip_ids = set()
 
             # 解析视频类型（category）特征，注入 LLM MG 生成器
             # （由引擎结合 Persona + 类型数据自行决定动画设计）
@@ -1294,15 +1266,20 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
         payload = marker.get("payload") if isinstance(marker, dict) else None
         web_context = ""
-        if re.search(_DATA_FACT_RE, text_content):
+        if str(getattr(vid_clip, "id", "") or "") in getattr(self, "_fact_clip_ids", set()):
+            # 只走能力面（web_search 由工具/插件提供）；缺能力就是"没有事实参考"，
+            # 不再直连 WebSearchService —— 那等于绕开插件层（用户 2026-11-02 指出）。
             try:
-                search_svc = WebSearchService()
-                if search_svc.is_configured():
-                    results = await search_svc.search(text_content[:120])
-                    web_context = "\n".join(
-                        f"标题: {r.get('title', '')}\n摘要: {r.get('snippet', '')}" for r in (results or [])[:3]
-                    )
-            except Exception:  # noqa: BLE001 — 搜索失败不影响生成
+                found = await self.call_tool(
+                    "web_search", query=str(text_content or "")[:120], max_results=3)
+                out = getattr(found, "output", None) or {}
+                rows = list(out.get("results") or []) if isinstance(out, dict) else []
+                web_context = "\n".join(
+                    f"标题: {r.get('title', '')}\n摘要: {r.get('summary') or r.get('snippet', '')}"
+                    for r in rows[:3]
+                )
+            except Exception as exc:  # noqa: BLE001 — 能力不可用/搜索失败不影响生成
+                logger.info("AnimationAgent: web_search 能力不可用（%s），本轮无事实参考", exc)
                 web_context = ""
 
         scene_meta = vid_clip.metadata or {}
@@ -1685,7 +1662,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         # 模型拿不到具体数字/日期就只能编。现在：搜索走工具面（进事件流），
         # 命中后对前 2 条结果用 web_fetch 抓正文摘录一起注入。
         web_context = ""
-        if re.search(_DATA_FACT_RE, gen_description):
+        if str(getattr(vid_clip, "id", "") or "") in getattr(self, "_fact_clip_ids", set()):
             try:
                 results: list[dict[str, Any]] = []
                 try:
@@ -1694,12 +1671,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                     payload = getattr(found, "output", None) or {}
                     if isinstance(payload, dict):
                         results = list(payload.get("results") or [])
-                except Exception:  # noqa: BLE001 — 工具面不可用退回服务本体
+                except Exception as exc:  # noqa: BLE001 — 能力不可用就没有事实参考
+                    logger.info("AnimationAgent: web_search 能力不可用（%s）", exc)
                     results = []
-                if not results:
-                    search_svc = WebSearchService()
-                    if search_svc.is_configured():
-                        results = await search_svc.search(gen_description[:120]) or []
                 blocks: list[str] = []
                 for r in results[:3]:
                     blocks.append(

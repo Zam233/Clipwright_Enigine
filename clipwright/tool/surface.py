@@ -470,14 +470,30 @@ def _skill_surface_entries(allowed: tuple[str, ...]) -> list[SurfaceEntry]:
     return entries
 
 
-def schemas(*, tiers: Iterable[str] = SURFACE_TIERS, available_only: bool = True
-            ) -> list[dict[str, Any]]:
-    """给 LLM 的 tools 参数（openai 格式）。"""
-    return [
-        e.schema
-        for e in build_surface(tiers=tiers)
-        if e.available or not available_only
-    ]
+def schemas(*, tiers: Iterable[str] = SURFACE_TIERS, available_only: bool = True,
+            closeout: bool = False, closeout_extra: Iterable[str] = ()) -> list[dict[str, Any]]:
+    """给 LLM 的 tools 参数（openai 格式）。
+
+    `closeout=True`（软着陆收口模式，devplan 2026-11-02 §6）：只暴露**只读档位**的
+    工具。收口期不许派发阶段、不许跑生成/付费/破坏性工具——这件事必须靠**工具面**
+    落地而不是靠提示词嘱咐，否则模型一旦"忘了"就会继续扩展任务范围。
+    按 `permission_tier` 过滤而不是按工具名白名单：能力由工具自声明，
+    在引擎里写死名字违反不变量 #19（`delegate_agent` 本来就是 costly 档，自动出局）。
+
+    `closeout_extra`：收口期仍要放行的少数工具（目前只有"质量阶段派发"这一条通道，
+    因为它的预算已由 `BudgetEscrow` 提前冻结——用户裁定 2：总额耗尽也不许影响质量
+    agent）。放行范围由调用方（Kernel）按预留余额决定，这里只负责把 schema 放进去；
+    具体只允许派哪个阶段由执行器二次校验。
+    """
+    extra = {str(x) for x in (closeout_extra or ())}
+    out: list[dict[str, Any]] = []
+    for entry in build_surface(tiers=tiers):
+        if not (entry.available or not available_only):
+            continue
+        if closeout and entry.tier != "read" and entry.name not in extra:
+            continue
+        out.append(entry.schema)
+    return out
 
 
 def surface_stats(*, tiers: Iterable[str] = SURFACE_TIERS) -> dict[str, Any]:

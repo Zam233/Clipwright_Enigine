@@ -22,6 +22,45 @@ VALID_EASINGS = {
     "back-out", "elastic-out", "bounce",
 }
 
+#: 常见"近义词"→ 规范名（**不是**放宽校验，而是把模型常用的 CSS/GSAP 写法归一化）。
+#: 现场（用户 2026-11-01 实机）：模型写了 `ease-out-back`，validator 直接判非法 →
+#: 整批文字动画校验失败 → 回退 `text_llm_fallback_template` → 成片里全是
+#: "深色底板 + 原文引述文字"的模板卡，场景里的图形动画一个都没做出来。
+EASING_ALIASES: dict[str, str] = {
+    # back / overshoot
+    "back": "back-out", "backout": "back-out", "easeoutback": "back-out",
+    "ease-in-back": "back-out", "easeinback": "back-out",
+    "ease-in-out-back": "back-out", "easeinoutback": "back-out",
+    # elastic / spring
+    "elastic": "elastic-out", "elasticout": "elastic-out", "spring": "elastic-out",
+    "spring-out": "elastic-out", "elastic-in": "elastic-out",
+    "elastic-in-out": "elastic-out", "easeoutelastic": "elastic-out",
+    # bounce
+    "bounceout": "bounce", "bounce-out": "bounce", "bouncein": "bounce",
+    "easeoutbounce": "bounce",
+    # 基础缓动的 camelCase / 下划线写法
+    "easein": "ease-in", "easeout": "ease-out", "easeinout": "ease-in-out",
+    "smooth": "ease-in-out", "smoothstep": "ease-in-out", "sine": "ease-in-out",
+    "cubic": "ease", "quad": "ease", "default": "ease", "none": "linear",
+    "normal": "ease", "auto": "ease",
+}
+
+
+def normalize_easing(value: Any) -> Any:
+    """把常见的非法写法归一到 `VALID_EASINGS`（其它原样返回）。"""
+    if not isinstance(value, str):
+        return value
+    raw = value.strip()
+    if not raw:
+        return raw
+    low = raw.lower().replace(" ", "").replace("_", "-")
+    if low in VALID_EASINGS:
+        return low
+    if low.startswith("cubic-bezier("):
+        return low
+    return EASING_ALIASES.get(low) or EASING_ALIASES.get(low.replace("-", "")) or raw
+
+
 
 def validate_mg_json(mg_def: dict[str, Any]) -> tuple[bool, list[str]]:
     """验证 MG JSON 定义是否符合规范。"""
@@ -136,9 +175,14 @@ def _validate_keyframe(kf: dict, index: int, total_dur: float, parent_prefix: st
 
 
 def _validate_easing(value: Any, pfx: str) -> list[str]:
-    """校验 easing 取值：命名曲线或 cubic-bezier 数组。"""
+    """校验 easing 取值：命名曲线、已知别名或 cubic-bezier 数组。
+
+    别名（`ease-out-back` / `spring` / `easeOut` …）**不算错**：`repair_mg_json`
+    会把它们归一成规范名。旧实现把别名当非法 → 一次命名不合规就让整批动画
+    回退成文字模板（用户 2026-11-01 看到的"深色底板 + 原文引述"就是这个）。
+    """
     if isinstance(value, str):
-        if value in VALID_EASINGS:
+        if normalize_easing(value) in VALID_EASINGS:
             return []
         # 允许带 cubic-bezier(...) 包装的命名曲线透传
         if value.startswith("cubic-bezier(") and value.endswith(")"):
@@ -244,6 +288,15 @@ def repair_mg_json(mg_def: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
                 for pk, pv in kf["properties"].items():
                     if pk not in kf:
                         kf[pk] = pv
+
+            # easing 归一化（ease-out-back → back-out 等）：不归一化就会因为一个
+            # 近义词让整批动画校验失败、退化成文字模板。
+            if "easing" in kf:
+                fixed_easing = normalize_easing(kf.get("easing"))
+                if fixed_easing != kf.get("easing"):
+                    fixes.append(
+                        f"elements[{i}]: easing {kf.get('easing')!r} → {fixed_easing!r}")
+                    kf["easing"] = fixed_easing
 
             # 清理未知动画属性（LLM 偶发的多余字段），避免整个生成降级
             unknown = [k for k in kf if k != "time" and k not in ANIMATABLE_PROPS]

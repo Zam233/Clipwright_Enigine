@@ -3234,6 +3234,25 @@ class RequirementsService:
         user_inputs = session.get("user_inputs") or {}
         plan = session.get("production_plan") or {}
         brief = session.get("creative_brief")
+        # 项目归属：显式 project_id → 会话已绑定的项目。拿到的这个 id 既用来定位
+        # 工作区，也写进 extra.proceed_project_id（任务结束把成片时间线写回它）。
+        # 旧实现在这里只认 project_id；前端没带时任务就不归属任何项目，
+        # 那一轮跑出的（含「动画轨」的）时间线**根本不落项目**（用户 2026-11-02 实测）。
+        if not project_id:
+            try:
+                from clipwright.services.session_log import get_log as _get_log
+
+                project_id = str(getattr(_get_log(session_id), "project_id", "") or "")
+            except Exception as exc:  # noqa: BLE001 — 拿不到就当没有项目
+                logger.warning("续跑：读取会话项目归属失败 %s: %s", session_id, exc)
+                project_id = ""
+        if project_id:
+            try:
+                from clipwright.services.session_log import get_log as _get_log2
+
+                _get_log2(session_id, project_id=str(project_id))
+            except Exception as exc:  # noqa: BLE001 — 绑定失败不阻断开工
+                logger.warning("续跑：绑定会话项目失败（继续）%s: %s", session_id, exc)
         ws_project_id = str(project_id or user_inputs.get("workspace_name") or session_id)
         ws_root = ""
         docs: dict[str, str] = {}
@@ -3250,6 +3269,26 @@ class RequirementsService:
             logger.warning("续跑：工作区准备失败（继续）%s: %s", session_id, exc)
 
         prev_tasks = self._bound_tasks(session_id)
+        # devplan T3.4：把"上一轮为什么结束"带进新任务的上下文。
+        # 为什么必须显式带：新任务只看得到黑板产物，看不到上一轮是被 capped 截断的、
+        # 还是因为质量阶段没跑——少了这条，模型会以为"上一轮已经好好做完了"，
+        # 于是从零重来一遍（既烧钱又把已有产物覆盖掉）。
+        prev_task_id = prev_tasks[-1] if prev_tasks else ""
+        prev_terminal = ""
+        prev_closeout = ""
+        prev_blocker = ""
+        if prev_task_id:
+            try:
+                _prev = AgentKernel().get(prev_task_id)
+                if _prev is not None:
+                    _tr = getattr(_prev, "terminal_reason_of", None)
+                    prev_terminal = _tr.value if _tr is not None else ""
+                    prev_blocker = str(getattr(_prev, "blocker_code", "") or "")
+                    _co = getattr(_prev, "closeout", None)
+                    if str(getattr(_co, "mode", "") or "") == "soft_landing":
+                        prev_closeout = str(getattr(_co, "deliverable_status", "") or "") or "unknown"
+            except Exception as exc:  # noqa: BLE001 — 取不到就退化成不携带
+                logger.warning("续跑：读取上一轮终态失败 %s: %s", prev_task_id, exc)
         extra: dict[str, Any] = {
             "session_id": session_id,
             "production_plan": plan,
@@ -3258,7 +3297,11 @@ class RequirementsService:
             # ★ 本轮用户指令 + 上一轮任务 id：context_loader 用它们拼
             #   `## 本轮用户指令` 与 `## 上一轮执行轨迹`，让新任务"接得上"。
             "user_instruction": instruction,
-            "previous_task_id": (prev_tasks[-1] if prev_tasks else ""),
+            "previous_task_id": prev_task_id,
+            # 上一轮的终态口径（capped / blocked / achieved / user_cancelled …）
+            "previous_terminal_reason": prev_terminal,
+            "previous_blocker_code": prev_blocker,
+            "previous_closeout_status": prev_closeout,
             "continuation": True,
             "script_text": str(user_inputs.get("script_text") or ""),
             "persona_id": str(user_inputs.get("persona_id") or ""),
@@ -3297,6 +3340,22 @@ class RequirementsService:
             session_projection.bind(session_id, task.id)
         except Exception as exc:  # noqa: BLE001 — 绑定失败不阻断开工
             logger.warning("续跑：绑定时间线失败（继续）%s: %s", session_id, exc)
+        # ★ 继承上一轮的黑板（script_skeleton / candidate_clips / timeline …）：
+        # 新任务黑板天然是空的，不继承的话主 agent 只会看到"黑板空了"，然后把
+        # edit 直接派出去 → `阶段 edit 缺输入：script_skeleton、candidate_clips`。
+        try:
+            prev_id = str((prev_tasks[-1] if prev_tasks else "") or "")
+            if prev_id:
+                seeded = kernel.seed_blackboard(prev_id, task.id)
+                if seeded:
+                    from clipwright.services.task_events import emit as _emit
+
+                    _emit(task.id, "context_loaded",
+                          f"已继承上一轮任务 {prev_id} 的黑板（{seeded} 个键）",
+                          {"seeded_keys": seeded, "from_task": prev_id, "phase": "continuation"},
+                          span="kernel")
+        except Exception as exc:  # noqa: BLE001 — 继承失败不阻断开工
+            logger.warning("续跑：继承黑板失败（继续）%s: %s", session_id, exc)
         try:
             await kernel.plan(task)
             from clipwright.api.task import _schedule
@@ -3324,6 +3383,80 @@ class RequirementsService:
         logger.info("续跑主 agent：session=%s → task=%s（%s）",
                     session_id, task.id, instruction[:60])
         return {"task_id": task.id, "note": note}
+
+    async def stop_task(self, session_id: str) -> dict[str, Any]:
+        """用户点「停止」：中止会话上正在跑的任务，并把会话拉回可对话状态。
+
+        为什么要有这条（用户 2026-11-02）：任务跑起来以后输入区是隐藏的，用户除了
+        「等」没有别的动作；而**中止不是静默操作**——它必须在会话里留下一条记录，
+        否则续跑的主 agent 会以为自己是被「异常终止」的，看不出是用户主动喊停。
+        所以这里三件事一起做：
+        1. `kernel.cancel()` 真中止（打断正在跑的协程，而不只是改状态）；
+        2. 往会话消息里写一条**显式**说明（`metadata.user_stopped=True`），
+           `context_loader` 的会话片段会把这句话带进下一个任务的上下文；
+        3. 状态回 `plan_ready`（输入区恢复），时间线里也落同一条说明。
+        """
+        from clipwright.services.agent_kernel import AgentKernel
+
+        kernel = AgentKernel()
+        live = self._live_task_id(session_id)
+        task_status = ""
+        terminal_reason = ""
+        goal_status = ""
+        if live:
+            try:
+                task = kernel.cancel(live)
+                task_status = str(getattr(task, "status", "") or "")
+                # devplan §8：会话侧也带上机器可读原因（旧前端只读 note/status 仍可用）
+                reason_obj = getattr(task, "terminal_reason_of", None)
+                terminal_reason = (reason_obj.value if reason_obj is not None else "")
+                goal = getattr(task, "goal", None)
+                goal_status = goal.status.value if goal is not None else ""
+            except Exception as exc:  # noqa: BLE001 — 取消失败也要把会话放开
+                logger.warning("用户停止任务失败 %s/%s: %s", session_id, live, exc)
+        sess = await asyncio.to_thread(self.get_session, session_id) or {}
+        messages = list(sess.get("messages") or [])
+        if live:
+            note = (f"已按你的要求停止任务（你点了「停止」，任务 {live} 被中止）。"
+                    "要继续就直接说——我会接着做，不会从头再来。")
+            messages.append({
+                "role": "assistant", "content": note,
+                "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                "metadata": {"user_stopped": True, "task_id": live,
+                             "task_status": task_status or "cancelled",
+                             "terminal_reason": terminal_reason or "user_cancelled",
+                             "goal_status": goal_status},
+            })
+            await asyncio.to_thread(
+                self._persist, session_id, "plan_ready", messages,
+                sess.get("creative_brief"), sess.get("production_plan"),
+                sess.get("user_inputs") or {},
+            )
+            try:
+                log = _timeline(session_id)
+                log.close_open("interrupted")
+                log.append(
+                    type="content", content=note, source="requirements",
+                    turn=log.user_turns() or 1,
+                    meta={"role": "assistant", "user_stopped": True, "task_id": live},
+                )
+            except Exception as exc:  # noqa: BLE001 — 时间线写失败不影响中止
+                logger.warning("停止任务时写时间线失败 %s: %s", session_id, exc)
+            logger.info("用户停止任务：session=%s task=%s → plan_ready", session_id, live)
+            return {"stopped": True, "task_id": live, "status": "plan_ready", "note": note,
+                    # devplan T1.4：与 GET task / 事件流同一份真相（旧前端忽略即可）
+                    "terminal_reason": terminal_reason or "user_cancelled",
+                    "task_status": task_status or "cancelled",
+                    "goal_status": goal_status}
+        # 没有活着的任务（可能刚好自己跑完）→ 只把会话状态放正，不伪造一条中止说明
+        status_now = str(sess.get("status") or "")
+        if status_now in ("pipeline_running", "planning"):
+            await asyncio.to_thread(
+                self._persist, session_id, "plan_ready", messages,
+                sess.get("creative_brief"), sess.get("production_plan"),
+                sess.get("user_inputs") or {},
+            )
+        return {"stopped": False, "task_id": "", "status": "plan_ready", "note": ""}
 
     async def watch_task_session(self, session_id: str, task_id: str) -> None:
         """盯任务终态，把会话从 `pipeline_running` 拉回**可对话**状态（用户 2026-10-31）。
@@ -3402,11 +3535,27 @@ class RequirementsService:
         task_status = str(getattr(task, "status", "") or "")
         finish = getattr(task, "finish", None)
         reason = str(getattr(finish, "reason", "") or "")
+        # devplan T3.1（用户裁定 3）：只有 done 才是"跑完了"；capped 虽然有交付，
+        # 但不等于完成——会话必须回 plan_ready（可以继续对话），绝不能进 pipeline_done。
+        terminal_reason = ""
+        try:
+            _tr = getattr(task, "terminal_reason_of", None)
+            terminal_reason = _tr.value if _tr is not None else ""
+        except Exception:  # noqa: BLE001 — 旧任务没有该字段
+            terminal_reason = ""
         ok = task_status == "done"
         if ok:
             new_status = "pipeline_done"
             note = ("这一轮任务已经结束（成片时间线已写回项目）。"
                     "要继续调整就直接说，我会重新规划。")
+        elif task_status == "capped":
+            new_status = "plan_ready"
+            _co = getattr(task, "closeout", None)
+            _deliv = str(getattr(_co, "deliverable_status", "") or "")
+            _dd = "完整" if _deliv == "delivered" else "部分"
+            note = ("这一轮跑满了运行上限，已经交付收尾报告"
+                    f"（{_dd}）——这不等于全部完成。要继续做就直接说一句，"
+                    "我会接着上一轮的产物往下推。")
         else:
             new_status = "plan_ready"
             note = (f"任务没跑完（{reason or task_status}），规划书还在，可以直接说"
@@ -3417,7 +3566,8 @@ class RequirementsService:
         messages.append({
             "role": "assistant", "content": note,
             "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
-            "metadata": {"task_released": task_status, "reason": reason},
+            "metadata": {"task_released": task_status, "reason": reason,
+                         "terminal_reason": terminal_reason},
         })
         await asyncio.to_thread(
             self._persist, session_id, new_status, messages,
@@ -3430,7 +3580,8 @@ class RequirementsService:
             log.append(
                 type="content", content=note, source="requirements",
                 turn=log.user_turns() or 1,
-                meta={"role": "assistant", "task_released": task_status, "reason": reason},
+                meta={"role": "assistant", "task_released": task_status,
+                      "reason": reason, "terminal_reason": terminal_reason},
             )
         except Exception as exc:  # noqa: BLE001 — 时间线写失败不影响释放
             logger.warning("释放会话时写时间线失败 %s: %s", session_id, exc)

@@ -1,0 +1,12 @@
+id: "web_media"
+name: "网页媒体与事实判断"
+version: "1.0.0"
+kind: "capability"
+description: "从网页抽取真实图片并落盘（web_images）+ 判断哪些场景需要外部事实（fact_need，模型判断、一次批量）"
+author: "Clipwright Team"
+entry_point: "web_media.main"
+
+api_version: "2"
+contributions:
+  - { kind: tool, id: web_images }
+  - { kind: tool, id: fact_need }

@@ -100,6 +100,69 @@ def suggestions_for(missing: Iterable[str]) -> list[str]:
     return out
 
 
+#: 引用形状的键（主 agent 按系统提示用 `{"artifact": …, "path": …}` 传大对象）
+_REF_KEYS = ("artifact", "artifact_id", "artifact_path", "path", "sha256", "bytes")
+
+
+def _looks_like_ref(value: Any) -> bool:
+    return (isinstance(value, dict) and bool(value)
+            and set(value) <= set(_REF_KEYS)
+            and any(k in value for k in ("artifact", "artifact_id", "artifact_path", "path")))
+
+
+def _load_json_under(root: Any, rel: str) -> Any:
+    """按工作区根读一个 JSON 文件（找不到返回 None）。"""
+    if not root or not rel:
+        return None
+    try:
+        from pathlib import Path
+
+        p = Path(str(rel)).expanduser()
+        base = Path(str(root))
+        if not p.is_absolute():
+            p = base / p
+        if not p.is_file():
+            alt = base / "artifacts" / f"{p.stem}.json"
+            if alt.is_file():
+                p = alt
+            else:
+                return None
+        import json as _json
+
+        return _json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — 解析失败就当没给，交给缺键校验报错
+        return None
+
+
+def resolve_refs(value: Any, root: Any, *, depth: int = 0) -> Any:
+    """把 `{"artifact": …, "path": …}` 引用**解析成真实 JSON**（只读工作区）。
+
+    为什么必须在装配阶段做（用户 2026-11-01 实机）：系统提示要求大对象用
+    `inputs` 里的 artifact 引用传，但 `EditInput.candidate_clips: list` 收到
+    `{"artifact": "art_x", "path": "artifacts/art_x.json"}` 会直接抛
+    `ValidationError: Input should be a valid list` —— edit 阶段永远起不来。
+    这里在构造 Input 之前把引用换成内容，两边约定才对得上。
+    """
+    if depth > 4:
+        return value
+    if isinstance(value, list):
+        return [resolve_refs(v, root, depth=depth + 1) for v in value]
+    if not isinstance(value, dict):
+        return value
+    if _looks_like_ref(value):
+        loaded = _load_json_under(
+            root, str(value.get("path") or value.get("artifact_path") or ""),
+        )
+        if loaded is None:
+            art = str(value.get("artifact") or value.get("artifact_id") or "")
+            if art:
+                loaded = _load_json_under(root, f"artifacts/{art}.json")
+        if loaded is not None:
+            return loaded
+        return value
+    return {k: resolve_refs(v, root, depth=depth + 1) for k, v in value.items()}
+
+
 def assemble(stage: str, *, task: Any, board: dict[str, Any],
              context: AgentContext | None = None,
              override: dict[str, Any] | None = None) -> Any:
@@ -111,6 +174,16 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
     # 让主 agent 内联 43 个场景既不现实也容易传空。实测（E2E 2026-10-28）：
     # 主 agent 传了空 script_skeleton → `EditAgent: 0 个场景, 0 候选素材`
     # → edit 产出空时间线 → 收尾守门判失败。空值一律回退到黑板。
+    # 主 agent 传的大对象常常是**引用**（`{"artifact": …, "path": …}`）而不是内容：
+    # 先按工作区把引用换成真实 JSON，否则 `EditInput.candidate_clips: list` 收到 dict
+    # 会抛 ValidationError，edit 起不来（用户 2026-11-01 实机）。解析失败的引用保持原样，
+    # 由下面的必需键校验给出可读的 `input_insufficient`。
+    _ws_root = ctx.extra_params.get("workspace_root") if ctx is not None else None
+    if _ws_root:
+        try:
+            data = resolve_refs(data, _ws_root)
+        except Exception as exc:  # noqa: BLE001 — 解析失败不阻断，交给校验
+            logger.warning("阶段输入：引用解析失败 %s: %s", stage, exc)
     _flow_keys = ("script_skeleton", "candidate_clips", "scenes", "timeline")
     for key in _flow_keys:
         board_value = (board or {}).get(key)

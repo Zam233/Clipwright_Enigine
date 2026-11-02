@@ -99,11 +99,24 @@ def reset() -> None:
     _RECORDS.clear()
 
 
+#: 不计入成功率分母的终态（devplan 2026-11-02 / 用户裁定 3）。
+#: capped = 撞上限但已完成收口交付：既不算成功也不算失败，所以**从分母里拿掉**，
+#: 但仍单独计数（`capped_count`）——从统计里悄悄消失等于骗人。
+_EXCLUDED_FROM_RATE: frozenset[str] = frozenset({"capped"})
+
+
+def _capped(record: dict[str, Any]) -> bool:
+    if str(record.get("status") or "") in _EXCLUDED_FROM_RATE:
+        return True
+    extra = record.get("extra") or {}
+    return str(extra.get("terminal_reason") or "") in _EXCLUDED_FROM_RATE
+
+
 def record_task(*, task_id: str, status: str, reason: str = "",
                 turns: int = 0, tool_calls: int = 0, child_runs: int = 0,
                 duration_ms: int = 0, cost_usd: Any = None,
                 gate_passed: Optional[bool] = None, provider: str = "",
-                model: str = "") -> dict[str, Any]:
+                model: str = "", terminal_reason: str = "") -> dict[str, Any]:
     """记一条**任务级**指标（PRD §2.6.1）。
 
     与 `record_run`（子 run）分开：任务成功率必须是"CompletionGate 通过的任务数 /
@@ -119,7 +132,8 @@ def record_task(*, task_id: str, status: str, reason: str = "",
         turns=int(turns), tool_calls=int(tool_calls), child_runs=int(child_runs),
         duration_ms=int(duration_ms), cost_usd=cost, cost_unknown=unknown,
         provider=provider, model=model,
-        extra={"reason": reason, "gate_passed": passed},
+        extra={"reason": reason, "gate_passed": passed,
+               "terminal_reason": terminal_reason},
     )
     _RECORDS.append(metric.to_public())
     if len(_RECORDS) > _MAX_RECORDS:
@@ -128,16 +142,24 @@ def record_task(*, task_id: str, status: str, reason: str = "",
 
 
 def task_summary(items: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
-    """任务口径聚合：CompletionGate 通过率 + 任务成本/步数。"""
-    data = [r for r in (items if items is not None else _RECORDS) if r.get("kind") == "task"]
+    """任务口径聚合：CompletionGate 通过率 + 任务成本/步数。
+
+    capped 任务**不进分子也不进分母**（用户裁定 3：不算 done、不计成功率），
+    但通过 `capped_count` 单独报出来，避免"跑了一堆封顶任务，统计里像没发生过"。
+    """
+    all_rows = [r for r in (items if items is not None else _RECORDS) if r.get("kind") == "task"]
+    capped_rows = [r for r in all_rows if _capped(r)]
+    data = [r for r in all_rows if not _capped(r)]
     if not data:
-        return {"count": 0, "task_success_rate": None}
+        return {"count": 0, "task_success_rate": None, "capped_count": len(capped_rows)}
     passed = sum(1 for r in data if (r.get("extra") or {}).get("gate_passed"))
-    costs = [r["cost_usd"] for r in data if isinstance(r.get("cost_usd"), (int, float))]
+    costs = [r["cost_usd"] for r in all_rows if isinstance(r.get("cost_usd"), (int, float))]
     return {
         "count": len(data),
         "task_success_rate": round(passed / len(data), 4),
         "gate_passed": passed,
+        # capped（撞上限但已交付）：单列计数，绝不隐藏
+        "capped_count": len(capped_rows),
         "avg_turns": round(statistics.fmean([r.get("turns", 0) for r in data]), 2),
         "avg_child_runs": round(statistics.fmean([r.get("child_runs", 0) for r in data]), 2),
         "cost_total_usd": round(sum(costs), 6) if costs else None,
@@ -153,9 +175,13 @@ def summary(items: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
     costs = [r["cost_usd"] for r in data if isinstance(r.get("cost_usd"), (int, float))]
     unknown = sum(1 for r in data if r.get("cost_unknown"))
     ok = sum(1 for r in data if r.get("status") in ("ok", "done", "degraded"))
-    tasks = [r for r in data if r.get("kind") == "task"]
+    tasks_all = [r for r in data if r.get("kind") == "task"]
+    capped_tasks = [r for r in tasks_all if _capped(r)]
+    tasks = [r for r in tasks_all if not _capped(r)]
     return {
         "count": len(data),
+        # capped 单列（不进成功率分子/分母，但不能消失）
+        "capped_count": len(capped_tasks),
         # 子 run 口径（保留旧键，前端/看板仍在读）
         "success_rate": round(ok / len(data), 4),
         # 任务口径（PRD §2.6.1）：有任务记录才算得出来，没有就是 None，不冒充
@@ -272,3 +298,4 @@ def replay_bundle(task_id: str, *, root: str | Path | None = None) -> dict[str, 
 
 __all__ = ["Metric", "append_golden", "compare", "load_golden", "record_run",
            "record_task", "records", "replay_bundle", "reset", "summary", "task_summary"]
+
