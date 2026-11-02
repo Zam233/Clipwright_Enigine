@@ -24,11 +24,18 @@ def _clean(tmp_path, monkeypatch):
 # ── 1. 事件契约 ───────────────────────────────────────────────
 
 
-def test_event_contract_is_29_with_question_answer_progress():
+def test_event_contract_covers_question_answer_progress_and_termination():
+    """事件契约：原有 29 类 + 终止机制 2 类（goal_update / soft_landing）。
+
+    2026-11-02 终止机制收口新增了两个事件；这里同时锁住"数量"与"关键成员"，
+    并且要求没有重复项——只锁数量会在删一个加一个时静默通过。
+    """
     from clipwright.schema.task import EVENT_TYPES
 
-    assert len(EVENT_TYPES) == 29
+    assert len(EVENT_TYPES) == 31
+    assert len(set(EVENT_TYPES)) == len(EVENT_TYPES), "事件类型不许重复"
     assert {"question", "answer", "progress"} <= set(EVENT_TYPES)
+    assert {"goal_update", "soft_landing"} <= set(EVENT_TYPES)
 
 
 def test_task_status_has_waiting_user():

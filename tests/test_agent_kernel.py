@@ -81,6 +81,18 @@ def _clean():
     te.clear()
 
 
+def _legacy_gate_mode(monkeypatch) -> None:
+    """把「撞上限 → 直接判失败」的旧闸门语义打开（关掉软着陆）。
+
+    为什么需要：2026-11-02 起软着陆是默认行为——撞回合/工具/墙钟/金额上限会先
+    `_enter_closeout()` 进收口模式（返回 None，不判失败），收口窗口耗尽才落 capped。
+    下面这组闸门测试验的是**回滚路径**（`agent_soft_landing_enabled=False`）下的原始
+    语义，所以显式关掉；默认语义另见
+    `test_soft_landing_enters_closeout_instead_of_failing`。
+    """
+    monkeypatch.setattr(ak.settings, "agent_soft_landing_enabled", False)
+
+
 # ── 基本循环与事件流 ────────────────────────────────
 
 
@@ -176,12 +188,13 @@ def test_digest_keeps_structured_numbers(tmp_path):
 # ── 四道闸（A1）─────────────────────────────────────
 
 
-def test_tool_call_gate_aborts_and_finishes(tmp_path):
+def test_tool_call_gate_aborts_and_finishes(tmp_path, monkeypatch):
     """工具调用闸在**循环中途**生效：到顶就不再执行后续工具。
 
     B3：触闸是**收尾**（PRD A1），不是"一直挂着 paused"——挂着就永远不进
-    任务成功率分母，指标会系统性偏高。
+    任务成功率分母，指标会系统性偏高。软着陆关闭时才是这个语义。
     """
+    _legacy_gate_mode(monkeypatch)
     driver = ScriptedDriver([("media_probe", {"i": 1}), ("media_probe", {"i": 2}),
                              ("media_probe", {"i": 3})])
     k = _kernel(tmp_path, driver=driver)
@@ -196,7 +209,8 @@ def test_tool_call_gate_aborts_and_finishes(tmp_path):
     assert any(e.type == "task_end" for e in te.events(task.id))
 
 
-def test_turn_gate_reported_by_gate_hit(tmp_path):
+def test_turn_gate_reported_by_gate_hit(tmp_path, monkeypatch):
+    _legacy_gate_mode(monkeypatch)
     k = _kernel(tmp_path)
     task = k.create(TaskRequest(topic="x", plan_only=False))
     task.usage.turns = task.limits.max_turns
@@ -205,6 +219,7 @@ def test_turn_gate_reported_by_gate_hit(tmp_path):
 
 
 def test_wall_gate_reported_by_gate_hit(tmp_path, monkeypatch):
+    _legacy_gate_mode(monkeypatch)
     k = _kernel(tmp_path)
     task = k.create(TaskRequest(topic="x", plan_only=False))
     task.limits.max_wall_sec = 1.0
@@ -214,6 +229,7 @@ def test_wall_gate_reported_by_gate_hit(tmp_path, monkeypatch):
 
 
 def test_budget_gate_only_when_configured(tmp_path, monkeypatch):
+    _legacy_gate_mode(monkeypatch)
     k = _kernel(tmp_path)
     task = k.create(TaskRequest(topic="x", plan_only=False))
     task.limits.max_wall_sec = 3600.0
@@ -222,6 +238,24 @@ def test_budget_gate_only_when_configured(tmp_path, monkeypatch):
     assert k._gate_hit(task, 100.0) is None, "没配预算就不该有金额闸"
     task.limits.budget_usd = 1.0
     assert "预算耗尽" in str(k._gate_hit(task, 100.0))
+
+
+def test_soft_landing_enters_closeout_instead_of_failing(tmp_path, monkeypatch):
+    """默认语义（软着陆开）：撞结构上限进收口模式，`_gate_hit` 返回 None，不判失败。
+
+    2026-11-02 用户裁定「撞上限 ≠ 收尾」。上面四个 `_legacy_gate_mode` 测试验的是
+    回滚路径，这条验的是**默认路径**——两侧都要有，否则改默认值时测试全绿但行为已变。
+    """
+    monkeypatch.setattr(ak.settings, "agent_soft_landing_enabled", True)
+    k = _kernel(tmp_path)
+    task = k.create(TaskRequest(topic="x", plan_only=False))
+    task.usage.turns = task.goal.max_rounds          # 达到软着陆阈值
+    assert k._gate_hit(task, 0.0) is None, "撞上限应先软着陆，不能直接返回终止原因"
+    assert task.closeout.mode == "soft_landing"
+    assert task.closeout.trigger == "round_threshold"
+    # 收口窗口耗尽才真的结束
+    task.usage.turns = task.closeout.trigger_round + task.closeout.max_rounds
+    assert "收口窗口用尽" in str(k._gate_hit(task, 0.0))
 
 
 def test_driver_failure_finishes_with_reason(tmp_path):
@@ -234,12 +268,13 @@ def test_driver_failure_finishes_with_reason(tmp_path):
     assert task.finish.reason.startswith("tool_loop_error")
 
 
-def test_pause_then_resume_reruns_loop_and_keeps_checkpoint(tmp_path):
+def test_pause_then_resume_reruns_loop_and_keeps_checkpoint(tmp_path, monkeypatch):
     """人工暂停 → 可 resume；续跑就是重进 loop（没有"已完成步骤"可跳）。
 
     B3 之后 **触闸** 会直接收尾，所以这里用 `pause()` 造"暂停"，
-    才是在测暂停语义（以前拿触闸冒充暂停）。
+    才是在测暂停语义（以前拿触闸冒充暂停）。软着陆关闭时"触闸=收尾"才成立。
     """
+    _legacy_gate_mode(monkeypatch)
     driver = ScriptedDriver()
     k = _kernel(tmp_path, driver=driver)
     task = k.create(TaskRequest(topic="x", plan_only=False))

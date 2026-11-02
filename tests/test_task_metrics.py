@@ -54,6 +54,15 @@ def _clean():
     evaluation.reset()
 
 
+def _legacy_gate_mode(monkeypatch) -> None:
+    """关掉软着陆，回到「撞上限 → 直接判失败」的旧语义。
+
+    2026-11-02 起默认是软着陆（撞上限先进收口模式、不判失败），本文件测的是
+    **终态指标必须覆盖 gate 路径**，所以显式走回滚语义。
+    """
+    monkeypatch.setattr(ak.settings, "agent_soft_landing_enabled", False)
+
+
 def _kernel(tmp_path, driver=None) -> ak.AgentKernel:
     return ak.AgentKernel(ak.KernelDeps(
         driver=driver or _Driver(), checkpoint_dir=tmp_path / "tasks"))
@@ -81,8 +90,9 @@ def test_failed_task_recorded(tmp_path):
     assert _task_row(task.id)["extra"]["gate_passed"] is False
 
 
-def test_cancelled_task_recorded(tmp_path):
+def test_cancelled_task_recorded(tmp_path, monkeypatch):
     """取消是终态，必须计入分母（旧实现什么都不记）。"""
+    _legacy_gate_mode(monkeypatch)
     k = _kernel(tmp_path)
     task = k.create(TaskRequest(topic="x", plan_only=False))
     task.usage.turns = task.limits.max_turns + 1   # 让它在第一次 guard 就中止
@@ -91,10 +101,13 @@ def test_cancelled_task_recorded(tmp_path):
     _task_row(task.id)   # 至少有一条任务级记录
 
 
-def test_gate_hit_recorded_with_gate_reason(tmp_path):
+def test_gate_hit_recorded_with_gate_reason(tmp_path, monkeypatch):
+    _legacy_gate_mode(monkeypatch)
     k = _kernel(tmp_path)
     task = k.create(TaskRequest(topic="x", plan_only=False))
-    task.limits.max_tool_calls = 0     # 第一次工具调用就触闸
+    # 注意：`max_tool_calls=0` 自 2026-11-02 起表示"不限"，不再等于"一次都不许"；
+    # 这里用 1 让它在第一次工具调用后触闸。
+    task.limits.max_tool_calls = 1
     task = asyncio.run(k.run(task))
     assert task.finish is not None and task.finish.reason.startswith("gate:")
     row = _task_row(task.id)
