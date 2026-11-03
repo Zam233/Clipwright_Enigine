@@ -252,8 +252,8 @@ class TTSProvider(Protocol):
 | Provider manifest | `kind: ContributionKind`；无默认值 | 复用既有贡献种类 |
 | Provider manifest | `config_schema: object`；`{}` | **已落地（B1-T2）**：`ContributionDecl.config_schema` 一级字段（`schema/plugin.py`）。`{字段名: {type, label, default, required, options, secret}}`；`secret=true` 由服务端加密 + 掩码回显。校验器 `plugins/provider_decl.py:validate_declaration()` 只做结构校验，不猜业务语义 |
 | Provider manifest | `capabilities: object`；按协议声明 | **已落地（B1-T2）**：`ContributionDecl.capabilities` 一级字段。已知键 `models/stream/tools/reasoning/usage/needs_uploader`（`PROVIDER_CAPABILITY_KEYS`）；**未知键不拒绝**，记录在 `unknown_capability_keys` 里以便后续收敛 |
-| Provider source | `provider_id: string`；旧记录迁移填旧 key | 将配置源与实现解耦；存储模型待核实 |
-| Provider source | `plugin_id: string|null`；`null` 表示 builtin | 来源可见性与审计；字段待核实 |
+| Provider source | `provider_id: string`；旧记录迁移填旧 key | **已定（不新增）**：`ContributionDecl.id` 即唯一键（provider 解析/冲突判定/声明白名单都用它）；另加 `provider_id` 会产生两份真相。若产品要求独立命名需整体改名评审，而非加字段 |
+| Provider source | `plugin_id: string|null`；`null` 表示 builtin | **已实现（H-036）**：`_public_source()` 每次读取从门面 `owner_of(kind, provider)` **实时推导**（空串=内置，**不落盘**，避免与真实归属漂移）；前端源列表显示「插件：xxx / 内置实现」 |
 | Provider source | `config: object`；旧字段迁移 | 敏感值走 Fernet；具体 schema 待核实 |
 | TTS UI descriptor | `schema_version: integer`；`1` | 控件 DSL 版本；需契约评审/实现验证 |
 | TTS UI descriptor | `controls: array<object>`；`[]` | 功能插件控件列表；字段待核实 |
@@ -836,6 +836,7 @@ API 增量原则：优先扩展 `/api/providers` 现有 list/create/available/ro
 
 > **宿主与插件均已落地（2026-11-02）**：`slots.ts` 名单 14 → 15；`HomePage` 渲染 `<Slot name="create.dub" optionSources={voices} onValuesChange={setPluginDub} />`；`plugins/tts_feature` 已贡献 `ui_slot: create_dub_entry`（音色 select 用 `optionsFrom: voices`、自动配音 checkbox）。内置配音控件在**有贡献时整块让位**；插件值回填 `voicePick`/`autoDub`（引擎侧字段不变），`stepDone.dub` 有插件值时以插件为准。**剩余**：01 上传配音入口仍在内置块里（插件当前只覆盖音色 + 自动配音），要彻底删除内置块需再给插件补上传控件。
 > slot 契约本身的字段（`slot` / `id` / `title` / `order` / `icon` / `visibleWhen` / `layout`）**沿用现有 `SlotContribution` 定义，不新增字段**；`layout.widgets` 复用现有 plugin UI 控件集（`string` / `select` / `checkbox` / `slider`），未知控件类型必须拒绝并给可读错误（不变量 #13）。
+
 
 
 

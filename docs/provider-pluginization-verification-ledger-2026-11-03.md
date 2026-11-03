@@ -347,11 +347,11 @@
 | H-029 | 已被裁定取代 | 原「只比占位符集合」已被 PRD §15.2.2 加强为四关（签名形状 / 占位符 / 双 dry-render / 静态纯度） |
 | H-030 | 已闭环 | 来源元数据：`prompt_overrides` 每条覆盖带 `plugin_id/kind/source`，`GET /api/plugin/prompt-symbols` 可查 |
 | H-031 | 已被裁定取代 | 「所有字段均为方案草案」已被实现取代：§8 主要字段已落地（见 H-032…H-042） |
-| H-032 | 仍开 | manifest 无 `provider_id` 字段：现在用 `ContributionDecl.id` 充当唯一键（等价，但名字不同）；是否新增 `provider_id` 待定 |
+| H-032 | **已定（不新增）** | **技术判定：不新增 `manifest.provider_id`**。理由：`ContributionDecl.id` 已经承担「同 kind 内唯一键」角色，provider 解析、冲突判定、声明白名单全用它；再加一个 `provider_id` 会出现两份真相（哪个为准？同 id 不同 provider_id 时算不算冲突？），且所有既有实现与测试都要改。若产品坚持独立命名，需要一次完整契约评审（改名而非加字段）。**待产品确认可推翻** |
 | H-033 | 已闭环 | `config_schema` 已落地为一级字段（B1-T2） |
 | H-034 | 已闭环 | `capabilities` 已落地为一级字段，已知键 `models/stream/tools/reasoning/usage/needs_uploader` |
 | H-035 | 已闭环 | source 侧用 `provider` 字段存实现名（`provider_sources.create_source`），与「provider_id」语义等价；未改名 |
-| H-036 | 仍开 | source **没有** `plugin_id` 字段：`_public_source` 只回 `provider`。要显示「这条源由哪个插件提供」需新增字段（未做） |
+| H-036 | **已闭环** | provider source 现在带 `plugin_id`：`provider_sources._public_source()` 每次读取时从门面 `ContributionRegistry.owner_of(kind, provider)` **实时推导**（空串=内置）。**不落盘**——落盘会与真实归属漂移（插件装卸后旧值还在）。实测：现有 `default` 源（provider=openai）读出 `plugin_id=llm_openai_compatible`；前端源列表显示「插件：xxx / 内置实现」 |
 | H-037 | 已闭环 | source `config` 已落地：`_encrypt_config`/`_mask_config`（Fernet + `****` 保留旧值 + 无密钥 fail-closed） |
 | H-038 | 已闭环 | TTS 控件由插件 `ui_slot` 贡献（`create.dub`），`layout.widgets` 即控件列表 |
 | H-039 | 已被裁定取代 | `target: agent:<id> | symbol:<name>` 未采用；改为 `meta.mode=append|replace` + `meta.symbol`（更显式） |
@@ -389,6 +389,7 @@
 | H-071 | 非条目（提取误命中） | 这是 PRD §15.7「仍未核实」的条目，已在本节逐条处理 |
 
 **net 结论**：Batch 0 的实质性核实已完成；剩下的 9 条都卡在两类外部条件上——需要人跑测试（H-065、H-057）、或产品尚未定（H-044 STT tab、H-068 诊断 UI 落点、H-023 彻底拆 client、H-032/H-036 字段命名、H-028 TTS 错误分类、H-066 reasoning UI）。
+
 
 
 

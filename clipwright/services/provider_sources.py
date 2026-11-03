@@ -111,7 +111,36 @@ def _public_source(src: dict[str, Any]) -> dict[str, Any]:
     out["has_keys"] = bool(keys)
     # B1-T4：插件声明为 secret 的 config 字段同样只回显掩码
     out["config"] = _mask_config(src)
+    # H-036：这条源「由谁提供实现」——**运行期从门面推导**，不落盘。
+    # 落盘会与真实归属漂移（插件装卸后旧值还在），推导永远准；空串 = 内置实现。
+    out["plugin_id"] = _owner_of_provider(str(src.get("kind") or ""), str(src.get("provider") or ""))
     return out
+
+
+def _owner_of_provider(kind: str, provider: str) -> str:
+    """该 (源类型, provider) 的实现归属：插件 id；内置或未安装时返回空串。
+
+    注意两套 kind 命名：源用短名（`tts`），门面用全名（`tts_provider`）。
+    查不到也返回空串——UI 据此显示「（未安装）」，而不是假装成内置。
+    """
+    if not provider:
+        return ""
+    try:
+        from clipwright.plugins.contribution import (
+            BUILTIN_OWNER,
+            ContributionKind,
+            ContributionRegistry,
+        )
+
+        decl_kind = kind if kind.endswith("_provider") else f"{kind}_provider"
+        try:
+            kind_enum = ContributionKind(decl_kind)
+        except ValueError:
+            return ""
+        owner = ContributionRegistry.owner_of(kind_enum, provider)
+        return "" if owner in ("", BUILTIN_OWNER) else owner
+    except Exception:  # noqa: BLE001 — 归属查询失败不影响源本身
+        return ""
 
 
 def _secret_config_fields(kind: str, provider: str) -> set[str]:
