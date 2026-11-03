@@ -123,10 +123,11 @@
 | B1-T1 定稿贡献种类与 kind 映射 | 已完成 | 不改枚举（17 类足够）；修掉 `schema/plugin.py:33` 的「14 类」文档漂移 → 17 类 + 名单冻结提示 |
 | B1-T3 冲突/优先级/内置让位 | 已完成（代码收敛） | 新增 `clipwright/providers/builtin_registry.py`：`needs_builtin_registration()` + `register_builtin_once()`；`llm`/`embedding`/`rerank`/`stt`/`tts` 五处内置注册全部改调它，删掉各自复制的「先查再注册」。让位顺序从此只有一种写法 |
 | B1-T5 能力网关契约 + 动态映射 | 已完成（契约落地） | 新增 `clipwright/api/capability.py`：`POST /api/capability/{name}`，`{params}` → `ToolExecResult`；状态码 404/422/503/200 按 PRD §15.1.5；`_validate_tool_params()` 加 `status_code` 参数以支持网关的 422（工具端点仍 400）。已挂进 `main.py` |
-| B1-T2 manifest Provider 字段 | 待定 | 需决定 `config_schema`/`capabilities` 是升一级字段还是继续走 `ContributionDecl.meta` |
-| B1-T4 密钥声明/脱敏 | 待办 | 复用现有 Fernet + `_mask_key`，需补 manifest 侧 secret 声明校验 |
-| B1-T6 前端 schema 驱动表单 | 待办 | 前端仓：把 `ProvidersPage` 写死的 `baseUrl`/`keys` 换成 schema 渲染 |
+| B1-T2 manifest Provider 字段 | **已完成** | 定为**升一级字段**：`ContributionDecl.config_schema` + `capabilities`（`schema/plugin.py`），`meta` 继续承载 kind 专属零散键。校验器新增 `clipwright/plugins/provider_decl.py`（`validate_declaration` / `register_declaration` / `schemas_for_kind` / `forget_plugin`）；加载时校验，不合法声明从「已声明」集合剔除并写错误通道，不连累同插件其它贡献。实测：真实插件 `headless_chrome` 的 `renderer_backend:chrome_headless_shell` 被正确捕获 |
+| B1-T4 密钥声明/脱敏 | **已完成（声明侧）** | `config_schema` 字段级 `secret: bool` 即声明，非 bool 直接拒绝（实测报错「secret 必须是 bool」）。落盘仍走既有 Fernet（`settings_store` fail-closed）与 `provider_sources._mask_key`，未新增第二条加密通道 |
+| B1-T6 前端 schema 驱动表单 | 待办（后端已就绪） | 后端 `GET /api/providers/schemas[?kind=]` 已上线（实测 200，返回 `renderer_backend: chrome_headless_shell`）；前端下一步把 `ProvidersPage` 写死的 `baseUrl`/`keys` 换成按 schema 渲染 |
 
 **已跑过的验证（不含 pytest/vitest）**：`py_compile` 全绿；导入 + 幂等烟测确认五个家族各注册一次、
 `needs_builtin_registration` 语义正确；`TestClient` 打到 `/api/capability/list_animations` → 200
 `status=success`、未知能力名 → 404 带可读原因。
+

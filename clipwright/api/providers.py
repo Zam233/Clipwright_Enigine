@@ -12,6 +12,7 @@
 - POST   /api/providers/{id}/models/upsert  自定义模型（新增/覆盖）
 - DELETE /api/providers/{id}/models/{model_id} 删除模型（解绑引用它的角色）
 - POST   /api/providers/{id}/models/fetch     获取模型列表（调用 provider 实现，失败静默返回 []）
+- GET    /api/providers/schemas            插件声明的 provider 配置 schema（B1-T5，schema 驱动表单）
 """
 from __future__ import annotations
 
@@ -75,6 +76,25 @@ async def available_providers(request: Request = None) -> dict[str, Any]:
     # tts_provider 的别名（历史 id → 规范 id）也要给前端做兼容显示
     out["tts_aliases"] = {"qwen_tts": "qwen-tts"}
     return out
+
+
+@router.get("/schemas")
+async def provider_schemas(kind: str = "", request: Request = None) -> dict[str, Any]:
+    """插件声明的 provider 配置 schema（**schema 驱动表单**的唯一数据源）。
+
+    PRD §8 / B1-T5：前端不得按厂商写死字段。这里下发插件在 manifest 里声明的
+    `config_schema` 与 `capabilities`，前端按 schema 渲染（`secret: true` 的字段
+    走掩码/加密显示）。内置 provider 的字段仍由既有 source 结构描述，不在此列。
+
+    返回 ``{"schemas": {kind: [{id, plugin_id, config_schema, capabilities,
+    unknown_capability_keys}]}}``；`kind` 给出时只返回该类型。
+    """
+    _require_admin(request)
+    from clipwright.plugins.provider_decl import all_schemas, schemas_for_kind
+
+    if kind:
+        return {"schemas": {kind: schemas_for_kind(kind)}}
+    return {"schemas": all_schemas()}
 
 
 @router.get("/roles")

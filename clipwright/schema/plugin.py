@@ -35,6 +35,21 @@ class ContributionDecl(BaseModel):
     )
     id: str = Field(pattern=r"^[a-z][a-z0-9_]{1,63}$", description="贡献 id（同 kind 内唯一）")
     meta: dict[str, Any] = Field(default_factory=dict, description="kind 专属元数据")
+    # ── PRD §8 / B1-T2：provider 类贡献的结构化声明（非 provider 类留空）──
+    config_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "配置表单 schema（provider 类用）：{字段名: {type, label, default, "
+            "required, options, secret, ...}}；secret=true 的字段由服务端加密并按掩码返回"
+        ),
+    )
+    capabilities: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "协议能力声明（provider 类用）：models / stream / tools / reasoning / "
+            "usage / needs_uploader；未声明即视为不支持，不得在运行时假装支持"
+        ),
+    )
 
 
 class PluginManifest(BaseModel):

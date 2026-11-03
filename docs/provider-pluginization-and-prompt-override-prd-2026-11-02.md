@@ -246,8 +246,8 @@ class TTSProvider(Protocol):
 |---|---|---|
 | Provider manifest | `provider_id: string`；无默认值 | 注册唯一键；现有 manifest 是否支持待核实 |
 | Provider manifest | `kind: ContributionKind`；无默认值 | 复用既有贡献种类 |
-| Provider manifest | `config_schema: object`；`{}` | schema 驱动配置表单；版本字段待核实 |
-| Provider manifest | `capabilities: object`；按协议声明 | models/stream/tools/reasoning/usage；结构待核实 |
+| Provider manifest | `config_schema: object`；`{}` | **已落地（B1-T2）**：`ContributionDecl.config_schema` 一级字段（`schema/plugin.py`）。`{字段名: {type, label, default, required, options, secret}}`；`secret=true` 由服务端加密 + 掩码回显。校验器 `plugins/provider_decl.py:validate_declaration()` 只做结构校验，不猜业务语义 |
+| Provider manifest | `capabilities: object`；按协议声明 | **已落地（B1-T2）**：`ContributionDecl.capabilities` 一级字段。已知键 `models/stream/tools/reasoning/usage/needs_uploader`（`PROVIDER_CAPABILITY_KEYS`）；**未知键不拒绝**，记录在 `unknown_capability_keys` 里以便后续收敛 |
 | Provider source | `provider_id: string`；旧记录迁移填旧 key | 将配置源与实现解耦；存储模型待核实 |
 | Provider source | `plugin_id: string|null`；`null` 表示 builtin | 来源可见性与审计；字段待核实 |
 | Provider source | `config: object`；旧字段迁移 | 敏感值走 Fernet；具体 schema 待核实 |
@@ -263,7 +263,7 @@ class TTSProvider(Protocol):
 | TTS capability | 能力名 **`dub`**（既有，`SKILL_CAPABILITY_ALIASES["dub"]=("dub_script",)`）；由功能插件贡献同名技能 | 解析不到时 agent 如实标注「未配音」，不是异常；**不新造** `tts_dub` / `tts_synthesize`（见 §15.1.3） |
 | UI slot contribution（裁定 3 新增，**第六轮定名**） | `slot: "create.dub"`（名单 14 → 15）；沿用既有 `SlotContribution` 字段：`id` / `title` / `order`(默认 100) / `icon`(白名单) / `visibleWhen` / `layout.widgets` | 「开始创作」向导 `03 配音与字幕` 步骤的内容由功能插件贡献；host 已在 `usePluginSlots.ts`，本次只加 slot 名与 HomePage 挂载点（落地清单见 §15.9）；**不新增贡献种类、不新增 slot 字段** |
 
-API 增量原则：优先扩展 `/api/providers` 现有 list/create/available/roles/source CRUD，不新建平行 provider API。拟新增 schema 查询端点 `GET /api/providers/schemas`、prompt 符号清单/来源诊断端点、以及裁定 3 的通用能力网关 `POST /api/capability/{name}`；只有既有端点不能表达时才新增。端点权限、响应结构与版本兼容待核实。
+API 增量原则：优先扩展 `/api/providers` 现有 list/create/available/roles/source CRUD，不新建平行 provider API。**已新增** `GET /api/providers/schemas[?kind=]`（B1-T5，下发插件声明的 `config_schema`/`capabilities`，是 schema 驱动表单的唯一数据源；内置 provider 不在此列）。**已新增** `POST /api/capability/{name}`（裁定 3 路线 B，见 §15.1.5）。拟新增 schema 查询端点 `GET /api/providers/schemas`、prompt 符号清单/来源诊断端点、以及裁定 3 的通用能力网关 `POST /api/capability/{name}`；只有既有端点不能表达时才新增。端点权限、响应结构与版本兼容待核实。
 
 前端 `ProviderKind` 扩展 STT 的必要性待核实：现有供应商页事实清单只有 llm/embedding/rerank/tts 四 Tab；STT 是否加入 Tab 由产品确认。store 增加 `providerSchemas`、source metadata；组件 props 传 `schema`、`values`、`onChange`、`secretConfigured`。这些具体名称是方案字段，不代表当前代码已有实现；store 文件与组件落点待核实。
 
@@ -829,4 +829,5 @@ API 增量原则：优先扩展 `/api/providers` 现有 list/create/available/ro
 | 8 | 契约评审 | 新增 slot 必须经 SlotRegistry 评审（名单冻结纪律），评审记录留档 | 下次任何人新增 slot 都会绕过流程 |
 
 > slot 契约本身的字段（`slot` / `id` / `title` / `order` / `icon` / `visibleWhen` / `layout`）**沿用现有 `SlotContribution` 定义，不新增字段**；`layout.widgets` 复用现有 plugin UI 控件集（`string` / `select` / `checkbox` / `slider`），未知控件类型必须拒绝并给可读错误（不变量 #13）。
+
 
