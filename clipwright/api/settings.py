@@ -78,8 +78,8 @@ def _dynamic_choices(key: str) -> list[str]:
             from clipwright.providers.llm import ensure_llm_providers_registered
             ensure_llm_providers_registered()
         elif kind is ContributionKind.TTS_PROVIDER:
-            from clipwright.providers.tts import ensure_tts_providers_registered
-            ensure_tts_providers_registered()
+            # 裁定 3 / B3-T6：不再懒注册内置 TTS provider，列表完全由插件贡献决定
+            pass
         elif kind is ContributionKind.EMBEDDING_PROVIDER:
             from clipwright.providers.embedding import ensure_embedding_providers_registered
             ensure_embedding_providers_registered()

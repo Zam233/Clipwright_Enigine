@@ -948,7 +948,7 @@ off/token 模式放行）。`requires_restart=true` 的字段（CORS/Mongo/端�
 | `analyze_video_structure` | 视频结构分析 |
 | `generate_captions` | 字幕生成 |
 | `analyze_audio_rhythm` | 音频节奏分析 |
-| `dub_script` | 文案切分 + 逐段配音 |
+| `dub_script` | 文案切分 + 逐段配音（**由 `plugins/tts_feature` 提供**，2026-11-03 起不在 engine；插件不在 → 能力缺失 → `/api/voice/dub` 503） |
 ## 工作区 (/api/workspace)
 
 > 实现依据：[workspace-prd-2026-10-24.md](workspace-prd-2026-10-24.md)。

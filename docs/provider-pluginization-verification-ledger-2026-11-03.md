@@ -182,7 +182,7 @@
 | B3-T2 CosyVoice 协议插件 | 已完成 | `plugins/tts_cosyvoice/`：声明 `tts_provider:cosyvoice`（`config_schema`: api_key(secret)/workspace_id/default_model，`capabilities`: stream/needs_uploader）。实测归属 `cosyvoice → tts_cosyvoice`，`qwen-tts`/`minimax` 仍内置（逐 id 让位正确） |
 | B3-T4 功能层插件 + 编排下沉 | 已完成 | `plugins/tts_feature/`：`dub.py` 里的 `DubScriptOrchestrator` 接管切句、逐段合成、确定性 seed、句级/词级时间轴；engine 只保留 `VoiceService.synthesize()` 协议调度基座 |
 | B3-T3 名称解析与指纹缓存 | 未改动（守住） | `_get_provider` 的身份仍来自 `contribution.id`，缓存键仍含凭据指纹；本轮没有碰它 |
-| B3-T6 摘 engine 编排与内置注册 | **前置条件 ①已解决，等人工测试；删除演练已完成** | 已产出执行前核对清单：[`provider-pluginization-b3t6-removal-checklist.md`](provider-pluginization-b3t6-removal-checklist.md)——列出 ① 要删的 4 处（`dub_script` 方法、`skill/dub.py`、`skill/builtin.py` 注册、`ensure_tts_providers_registered` 及其 4 个调用点）；② 要搬的 `split_text`（切句策略归功能插件）；③ 保留不动的基座（`register_builtin_once`、协议类、上传器）；④ 删除后的 6 条验收断言；⑤ **必须先拍板的一点**：删内置会让 `qwen-tts`/`minimax` 从下拉消失（已由 Batch 3 补的两个插件解决）。<br>**2026-11-03 演练**：临时 worktree 里按清单全删（含 `split_text` 搬进插件）→ `py_compile` 全过、`import clipwright.main` 正常、六条断言（按删除后语义改写）全过；但当场抓到清单漏掉的**连带改动**：自检 3 项会红（`dub_capability_boundary` / `skill_shadow_restore` / `all_families_fallback`）、3 个测试模块 import 就挂、2 个测试模块运行期会挂、3 处文档口径要改。已写入清单 §6（含实证与改法），删除提交必须与这批改动**同一个 commit** |
+| B3-T6 摘 engine 编排与内置注册 | **✅ 已完成（2026-11-03 执行）** | 执行前：核对清单 + 两次临时 worktree 演练（见清单 §6）。执行内容：删 `VoiceService.dub_script()`、删 `clipwright/skill/dub.py`、`skill/builtin.py` 去掉该技能注册、删 `ensure_tts_providers_registered()` 与 `main.py`/`api/providers.py`/`api/settings.py` 三处调用点、`split_text` 整体搬进 `plugins/tts_feature/split_text.py`（`dub.py` 改本地导入）。连带：5 个测试文件按删除后语义改写（`test_voice_data` 改导入、`test_voice_skill` → 新的 `test_tts_feature_dub`、`test_voice_service` 删 3 个 dub 用例、`test_tts_provider_registry` 改成"插件提供 + 内置函数已不存在"、`test_voice_api` 打桩技能；另修 `test_capability_matrix` skill≥3、`test_provider_available` 用真实 app、`test_provider_role_binding_rag` 装插件、`test_voiceover_e2e` 打桩能力解析），新增 `scripts/verify_tts_teardown.py`。**验证**：teardown 脚本通过、自检 13/13、全量 pytest 失败集合与删除前完全相同（44 个既存失败） |
 | B3-T5 `create.dub` slot 迁 03 步骤 | **已完成** | 宿主：`slots.ts` 名单 14→15；`HomePage` 渲染 `<Slot name="create.dub" optionSources={voices} onValuesChange={setPluginDub} />`；内置配音控件在有贡献时整块让位。**契约补齐**：`UISelect.optionsFrom`（宿主白名单数据源，目前 `voices`）+ `PluginLayoutRenderer.onChange`/`Slot.onValuesChange`（插件控件值回传宿主，用 ref 避免内联箭头函数导致死循环）+ `Slot.optionSources`。插件：`plugins/tts_feature` 新增 `ui_slot: create_dub_entry`（select voice_id optionsFrom=voices + checkbox auto_dub），manifest 已声明（声明即授权）。宿主把插件值回填 `voicePick`/`autoDub`（引擎侧字段不变），`stepDone.dub` 有插件值时以插件为准。实测 `/api/plugin/contributions?slot=create.dub` 返回 1 条含 `optionsFrom`。<br>**2026-11-02 追加**：`create.dub` 补 **`file` 控件**（`UIFile`，值=`File` 对象）覆盖上传配音入口，上传执行/回执仍归宿主（`pickAudio`），插件不碰上传 API/路径/凭据；内置上传入口只在**无贡献**时回落。实测 `/api/plugin/contributions?slot=create.dub` 的 widgets 变成 `select voice_id` / `checkbox auto_dub` / `file upload_voice(accept=.wav,.mp3,.m4a,.mp4)` / `text` 说明 |
 | B3-T7 能力发现与缺失一等状态 | 已完成 | `dub` 能力名由插件技能提供；`AudioAgent` 在 `call_skill("dub")` 返回 `not_found` 时写**可读降级说明**「未配音：当前没有可用的配音能力（TTS 功能插件未安装或被禁用）」，与普通失败（`自动配音失败: …`）分开；**没有**直连 `VoiceService` 兜底 |
 | B3-T8 通用能力网关 + `/api/voice/*` 薄转发 | 已完成 | 网关在 Batch 1 落地；本轮把 `/api/voice/dub` 改成薄转发：`skill_resolve("dub")` → `SkillRegistry.execute`，端点不再调 `VoiceService.dub_script()` 编排；解析不到直接 `503` + 可读原因。实测：正常走插件技能；把插件与内置两次 unregister 后 → 503 |
@@ -502,13 +502,27 @@ cd J:\Clipwright; py -3.14 -m pytest tests -q
 
 > 报告口径：**「pytest 全绿」不成立**（44 个既存失败）；**「本次改造没有新增失败」成立**（差集为空，有基线工作树可比）。
 
-### 3. 对 B3-T6 前置条件的影响
+### 3. 对 B3-T6 前置条件的影响（**已按口径 A 执行，2026-11-03 完成**）
 
-删除清单 §0 原本写的是「`pytest` 通过」。现在事实是：**全量不可能立刻绿**（44 个既存失败与
-本改造无关，修它们属于另一件事）。所以删除前置需要你裁定取哪一种口径：
+删除清单 §0 原本写的是「`pytest` 通过」。事实是**全量不可能立刻绿**（44 个既存失败与本改造
+无关，修它们属于另一件事），所以按口径 **A** 执行：以「13 个相关模块全绿 + 自检 13/13 +
+删除演练已验证」为准。
 
-- **A（推荐）**：以「13 个相关模块全绿 + 自检 13/13 + 删除演练已验证」为准，执行删除；
-- **B**：先把 44 个既存失败清掉再删（这不是本 PRD 的范围，工作量另算）。
+**删除后的复跑**（同一命令，删除完成后）：
+
+```powershell
+py -3.14 -m pytest tests -q
+# 44 failed, 4948 passed, 7 skipped, 1 xfailed  （630.19s）
+```
+
+- 失败数仍是 **44**，且模块分布与删除前**完全一致**（kernel / degradation / golden / web* /
+  event_contract / capability_matrix 等既存区域），**没有一个落在 TTS / voice / provider /
+  voiceover / plugin-contribution 上**；
+- 通过数从 4946 涨到 4948：删掉旧用例、补上插件侧等价覆盖（`test_tts_feature_dub.py` 7 个）
+  与两个新反向断言（裸 app 无插件时 TTS 下拉为空、内置注册函数不得回来）；
+- 另外两条命令也复跑过：`scripts/verify_provider_pluginization.py` **13/13**、
+  `scripts/verify_tts_teardown.py` 通过（插件在 → 三 id + 技能齐全；摘掉 → 列表空、
+  `resolve` 为 None、`/api/voice/dub` → 503 + 可读原因；切句行为不变）。
 
 
 

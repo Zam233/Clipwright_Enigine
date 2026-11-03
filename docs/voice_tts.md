@@ -12,11 +12,14 @@
 | CosyVoice（`cosyvoice`） | 阿里云 CosyVoice | `dashscope`, 需 Workspace ID | `plugins/tts_cosyvoice/` |
 | MiniMax（`minimax`） | MiniMax 语音服务 | `dashscope`, 需公网上传器 | `plugins/tts_minimax/` |
 
-> **engine 不带 TTS 能力（裁定 3）**：provider 注册、来源声明（`config_schema`）与能力
-> （`capabilities`）全部由插件贡献；`VoiceService` 只保留「统一协议调度」基座（凭据加密、
-> 公网上传器、音频落盘）。配音编排（切句 / 逐段合成 / 句级·词级时间轴）已下沉到
-> `plugins/tts_feature/` 的 `dub_script` 技能。删除内置注册的核对清单见
-> [provider-pluginization-b3t6-removal-checklist.md](provider-pluginization-b3t6-removal-checklist.md)。
+> **engine 不带 TTS 能力（裁定 3，2026-11-03 已执行 B3-T6）**：provider 注册、来源声明
+> （`config_schema`）与能力（`capabilities`）全部由插件贡献；`VoiceService` 只保留
+> 「统一协议调度」基座（凭据加密、公网上传器、音频落盘）。配音编排（切句 / 逐段合成 /
+> 句级·词级时间轴）已下沉到 `plugins/tts_feature/`（`dub_script` 技能 +
+> `plugins/tts_feature/split_text.py`），engine 侧 `dub_script()`、`skill/dub.py` 与
+> `ensure_tts_providers_registered()` **已删除**：没有插件时配音能力整体不可用
+> （`/api/voice/dub` → 503 + 可读原因）。行为边界用
+> `py -3.14 scripts/verify_tts_teardown.py` 一条命令自证。
 
 ## 配置
 

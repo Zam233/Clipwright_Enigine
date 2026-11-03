@@ -13,6 +13,22 @@ def _isolate(tmp_path):
     ps.reset_for_tests(None)
 
 
+@pytest.fixture(autouse=True)
+def _plugin_providers_loaded():
+    """让插件贡献的 provider 注册进门面。
+
+    B3-T6（2026-11-03）之后 engine 不再懒注册内置 TTS provider：`qwen-tts` 这些 id
+    由 `plugins/tts_*` 提供，没启动 app（= 没 load_all）就**一个都解析不到**。
+    本文件测的是"角色绑定后 provider 拿到源里的凭据"，所以必须先把插件装上。
+    """
+    from fastapi.testclient import TestClient
+
+    from clipwright.main import app
+
+    with TestClient(app, raise_server_exceptions=False):
+        yield
+
+
 def _bind(role: str, kind: str, provider: str, model: str, **extra) -> str:
     payload = {
         "name": f"src-{role}", "kind": kind, "provider": provider,

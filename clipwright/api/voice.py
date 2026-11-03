@@ -168,10 +168,10 @@ async def synthesize_voice(req: SynthesizeRequest) -> dict[str, Any]:
 async def dub_script(req: DubRequest) -> dict[str, Any]:
     """文案切分 + 逐段配音（**薄转发**：编排已归 TTS 功能插件）。
 
-    PRD §15.1.5 / B3-T8：本端点只做「按能力名转发」，不再直接调
-    `VoiceService.dub_script()` 的编排：
+    PRD §15.1.5 / B3-T8：本端点只做「按能力名转发」。B3-T6（2026-11-03）之后
+    engine 的 `VoiceService.dub_script()` 已删除，编排**只**存在于插件里：
     - 能力名 `dub` → `skill_resolve('dub')`（别名指向 `dub_script` 技能）；
-    - 现在这个技能由 `plugins/tts_feature/` 提供，插件禁用时解析不到 → 503；
+    - 这个技能由 `plugins/tts_feature/` 提供，插件禁用时解析不到 → 503；
     - 端点本身不承载切句/时间轴逻辑，也不做「服务层直连」兜底。
     """
     from clipwright.tool.capabilities import skill_resolve

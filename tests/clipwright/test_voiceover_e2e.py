@@ -101,7 +101,17 @@ async def test_voiceover_chain_e2e(tmp_path, dub_segments, monkeypatch):
     3. 旁白轨 metadata.nel 非空，且包含 number 事件（300%）；
     4. 动画 mg1（原 2.0s）吸附到窗口内 NEL 事件（number 在 0~1.8s 区间 → 应吸到该事件）。
     """
+    from types import SimpleNamespace
+
     from clipwright.skill.registry import SkillRegistry
+
+    # B3-T6（2026-11-03）之后 `dub_script` 只由 `plugins/tts_feature` 提供，engine 里
+    # 没有内置实现、也不再懒注册内置 provider。本用例只关心 AudioAgent 拿到分段结果
+    # 之后的编排（旁白轨/字幕/NEL），所以把"能力解析"与"技能执行"一起打桩。
+    monkeypatch.setattr(
+        "clipwright.tool.capabilities.skill_resolve",
+        lambda capability, prefer=(): SimpleNamespace(name="dub_script"),
+    )
 
     async def _fake_dub(*args, **kw):
         return _SkillResult({"segments": dub_segments, "total": len(dub_segments),

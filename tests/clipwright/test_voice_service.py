@@ -249,68 +249,6 @@ class TestVoiceServiceSynthesize:
 
 
 # ──────────────────────────────────────────────
-# dub_script tests
-# ──────────────────────────────────────────────
-
-
-class TestVoiceServiceDubScript:
-    def _seed_voice(self, svc: VoiceService) -> str:
-        rec = {
-            "id": "dub123",
-            "provider": "qwen-tts",
-            "voice_id": "fake-voice-id",
-            "voice_name": "dub_voice",
-            "target_model": "qwen3-tts-vc-2026-01-22",
-            "created_at": "2026-07-21T10:00:00+00:00",
-        }
-        svc._storage.add(rec)
-        return rec["id"]
-
-    @pytest.mark.asyncio
-    async def test_dub_script_segments(self, tmp_path: Path):
-        fake = FakeProvider()
-        svc = _make_service(tmp_path, fake)
-        db_id = self._seed_voice(svc)
-        result = await svc.dub_script(
-            voice_id=db_id, text="句一。句二！"
-        )
-        assert result.success is True
-        segments = result.data["segments"]
-        assert len(segments) == 2
-        assert segments[0]["index"] == 0
-        assert segments[1]["index"] == 1
-        assert "seed" in segments[0]
-        assert result.data["total"] == 2
-        assert result.data["total_duration_sec"] >= 0
-        assert fake.synth_count == 2
-
-    @pytest.mark.asyncio
-    async def test_dub_script_empty_text(self, tmp_path: Path):
-        svc = _make_service(tmp_path, FakeProvider())
-        db_id = self._seed_voice(svc)
-        result = await svc.dub_script(voice_id=db_id, text="")
-        assert result.success is False
-
-    @pytest.mark.asyncio
-    async def test_dub_script_partial_failure(self, tmp_path: Path):
-        fake = FakeProvider()
-        fake.fail_synth_on_text = "句二"
-        svc = _make_service(tmp_path, fake)
-        db_id = self._seed_voice(svc)
-        result = await svc.dub_script(
-            voice_id=db_id, text="句一。句二！"
-        )
-        # Overall success (partial results are acceptable)
-        assert result.success is True
-        segments = result.data["segments"]
-        assert len(segments) == 2
-        # First segment should have audio
-        assert "audio_path" in segments[0]
-        # Second segment should have error
-        assert "error" in segments[1]
-
-
-# ──────────────────────────────────────────────
 # CRUD tests
 # ──────────────────────────────────────────────
 

@@ -210,7 +210,7 @@ class MySkill(BaseSkill):
 # 在 skill/builtin.py 的 register_builtin_skills() 中添加
 ```
 
-**已注册的 Skill**：`analyze_video_structure` `generate_captions` `analyze_audio_rhythm` `auto_caption` `broll_matcher` `script_analysis` `material_downloader` `voiceover_sync` `auto_transition` `background_music` `silence_cut` `dub_script`
+**已注册的 Skill**：`analyze_video_structure` `generate_captions` `analyze_audio_rhythm` `auto_caption` `broll_matcher` `script_analysis` `material_downloader` `voiceover_sync` `auto_transition` `background_music` `silence_cut` `dub_script`（`dub_script` 由 `plugins/tts_feature` 提供，自 2026-11-03 起 engine 不再内置）
 
 ## 新增一个 Agent
 

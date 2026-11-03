@@ -118,7 +118,10 @@ def test_meta_capabilities_present():
     assert "run_pipeline" not in names          # 已下线，不再广告（能力代码留作回滚）
     stat = cm.coverage()
     assert stat["by_kind"].get("pipeline", 0) == 0   # 管线能力清零（键不存在也算 0）
-    assert stat["by_kind"]["skill"] >= 4
+    # B3-T6（2026-11-03）：`dub_script` 已从 engine 迁到 `plugins/tts_feature`，
+    # engine 侧 skill 由 4 变 3（analyze_video_structure / generate_captions /
+    # analyze_audio_rhythm）。这是裁定 3 的预期结果，不是能力丢失。
+    assert stat["by_kind"]["skill"] >= 3
 
 
 def test_coverage_report_shape_and_current_reality():

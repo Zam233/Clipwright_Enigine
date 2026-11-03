@@ -55,7 +55,8 @@ class DubScriptOrchestrator(BaseSkill):
         instructions: str = "",
         **params: Any,
     ) -> SkillExecResult:
-        from clipwright.services.voice import get_voice_service, split_text
+        from clipwright.services.voice import get_voice_service
+        from plugins.tts_feature.split_text import split_text
 
         if not text.strip():
             return self._fail("文本为空，无可配音内容", voice_id)

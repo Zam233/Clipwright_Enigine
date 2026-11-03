@@ -54,11 +54,10 @@ async def available_providers(request: Request = None) -> dict[str, Any]:
     from clipwright.providers.embedding import embedding_provider_names
     from clipwright.providers.llm import ensure_llm_providers_registered
     from clipwright.providers.rerank import rerank_provider_names
-    from clipwright.providers.tts import ensure_tts_providers_registered, tts_provider_names
+    from clipwright.providers.tts import tts_provider_names
     from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
 
     ensure_llm_providers_registered()
-    ensure_tts_providers_registered()
     out: dict[str, list[str]] = {}
     for kind, names in (
         (ContributionKind.LLM_PROVIDER, None),

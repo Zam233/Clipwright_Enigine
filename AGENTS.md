@@ -57,7 +57,9 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
 
 1. **7 核心 Agent + 插件 Agent**：RequirementsAgent → StructureAgent → MaterialAgent → EditAgent → AnimationAgent → AudioAgent → QualityAgent；第三方插件可经 AgentRegistry（`orchestrate` 权限）注册自定义 Agent 并入主管线 DAG 或作为子代理被调用（SA-2/3/4）
 2. **44+ 个 Tool**：原子能力层，通过 ToolRegistry 注册
-3. **4 个 Skill**：可组合的高级能力，通过 SkillRegistry 注册
+3. **3 个内置 Skill**：可组合的高级能力，通过 SkillRegistry 注册（`analyze_video_structure` /
+   `generate_captions` / `analyze_audio_rhythm`）。`dub_script` 自 2026-11-03（B3-T6）起**由插件提供**
+   （`plugins/tts_feature`），没有该插件时配音能力整体不可用——这是裁定 3 的预期，不是缺失兜底
 4. **33 个 API 路由组**：每个路由文件对应一组端点（225 条路由）
 5. **30+ 个 Service**：业务逻辑层
 6. **11+ 个 Schema**：Pydantic v2 数据模型
@@ -91,9 +93,13 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
       **禁止**写成「先注册内置、插件后注册」：`_validate` 对已存在内置默认 REJECT
       （`plugins/contribution.py:189-193`），那样写会让同名插件被直接拒掉，而报错只显示
       「不得覆盖内置贡献」，根因极难查。六处复制粘贴的旧写法已全部收敛到该函数。
-    - **TTS 三个 provider id 已全部插件化**（2026-11-02）：`plugins/tts_cosyvoice`（cosyvoice）、
-      `plugins/tts_qwen`（qwen-tts）、`plugins/tts_minimax`（minimax）。因此 B3-T6 删除内置 TTS
-      注册时**不会再让任何 provider 消失**；删之前只剩「人工跑测试」这一个前置。
+    - **TTS 三个 provider id 已全部插件化，engine 的内置注册与配音编排已删除**（2026-11-03 执行
+      B3-T6）：`plugins/tts_cosyvoice`（cosyvoice）、`plugins/tts_qwen`（qwen-tts）、
+      `plugins/tts_minimax`（minimax）负责 provider；`plugins/tts_feature` 负责 `dub_script` 技能
+      与切句（`plugins/tts_feature/split_text.py`）。engine 侧 `VoiceService.dub_script()`、
+      `clipwright/skill/dub.py`、`ensure_tts_providers_registered()` 均已删除——**没有 TTS 插件时
+      配音能力整体不可用**（`/api/voice/dub` → 503 + 可读原因），这是裁定 3 的预期，
+      不许再补"内置兜底"。行为边界用 `py -3.14 scripts/verify_tts_teardown.py` 一条命令自证。
     - 「让位」与「退场」是两件事：让位 = 插件在就让；退场 = 谁都不在也不注册。裁定 3
       要求 TTS **退场**（TTS 功能插件验收通过后 `ensure_tts_providers_registered()` 不再默认
       调用），**不是**改让位逻辑。

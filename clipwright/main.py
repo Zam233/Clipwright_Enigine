@@ -163,12 +163,9 @@ async def lifespan(app: FastAPI):
     except Exception as _prov_err:
         logger.warning("LLM provider 注册失败（不影响启动）: %s", _prov_err)
 
-    # 4.3 B-2：内置 TTS provider 注册（qwen-tts/cosyvoice/minimax；幂等）
-    try:
-        from clipwright.providers.tts import ensure_tts_providers_registered
-        ensure_tts_providers_registered()
-    except Exception as _tts_err:
-        logger.warning("TTS provider 注册失败（不影响启动）: %s", _tts_err)
+    # 4.3 裁定 3（PRD §15.1.6）/ B3-T6：**启动不再注册内置 TTS provider**。
+    # TTS 协议插件（tts_cosyvoice / tts_qwen / tts_minimax）在 `_plugin_loader.load_all()`
+    # 里注册；没有插件时 engine 不带任何 TTS 能力（能力缺失是一等状态，不是异常）。
 
     # 4.4 B-2：内置 STT provider 注册（whisper/faster-whisper；幂等）
     try:

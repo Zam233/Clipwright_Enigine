@@ -1,4 +1,8 @@
-"""T3: voice data layer tests — VoiceRecord / VoiceResult / VoiceStorage / split_text."""
+"""T3: voice data layer tests — VoiceRecord / VoiceResult / VoiceStorage / split_text.
+
+注意 `split_text` 自 2026-11-03（B3-T6 / 裁定 3）起属于 TTS 功能插件
+（`plugins/tts_feature/split_text.py`）：切句策略随编排一起离开 engine。
+"""
 
 import json
 import pytest
@@ -7,9 +11,9 @@ from clipwright.services.voice import (
     VoiceRecord,
     VoiceResult,
     VoiceStorage,
-    split_text,
     _guess_mime,
 )
+from plugins.tts_feature.split_text import split_text
 
 
 # ──────────────────────────────────────────────

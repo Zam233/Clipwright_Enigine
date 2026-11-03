@@ -7,14 +7,16 @@
 
 ## 1. 结论
 
-PRD 的五个批次（Batch 1–5）与 Batch 0 核实，**代码侧全部落地**，剩 3 项**必须由人输入**才能推进
-（详见 §4）。当前可在一条命令下自证：`py -3.14 scripts/verify_provider_pluginization.py` → **13/13 通过**。
+PRD 的五个批次（Batch 1–5）与 Batch 0 核实，**代码侧全部落地**，**B3-T6（摘 engine 的 TTS 编排与内置注册）已于 2026-11-03 执行完毕**。
+当前可两条命令自证：`py -3.14 scripts/verify_provider_pluginization.py` → **13/13**；
+`py -3.14 scripts/verify_tts_teardown.py` → 「没有插件就没有 TTS 能力」+ 切句行为不变。
 
 **没有做、也不打算隐瞒的**：
 
-- `python -m pytest tests -q` **未执行**（项目约定：测试由人跑）。因此「既有 1000+ 用例是否全绿」
-  仍是未知，自检脚本只覆盖本次改造引入的运行期契约。
-- `vitest` 未执行；前端只做了 `npx tsc --noEmit`。
+- `python -m pytest tests -q` 已在用户授权下由 agent 跑过：**4946 passed / 44 failed**。44 个失败
+  **全是既存失败**（用改造前基线 worktree 同环境对照，失败集合完全相同），与本次改造无关；
+  本次改造引入的 13 个陈旧用例已修（见 §3.2 与台账「pytest 实跑」）。
+- `vitest` **未执行**；前端只做了 `npx tsc --noEmit`（退出码 0）。
 - 协议适配类（OpenAI/Anthropic/CosyVoice/Qwen/MiniMax）**仍在 engine**，插件目前接管的是
   「注册 + 声明」；搬类属 W2/W3 收尾项（原因见 §5.1）。
 
@@ -25,7 +27,7 @@ PRD 的五个批次（Batch 1–5）与 Batch 0 核实，**代码侧全部落地
 | **B0 核实** | 台账 71 条逐条闭环（53 闭环 / 5 被裁定取代 / 4 误命中 / 2 仍开需人测 / 1 产品决策） | `e59b510` `741651c` `b00a3d6` |
 | **B1 契约与注册表** | 内置让位收敛到 `providers/builtin_registry.py`；Provider 声明升一级字段（`config_schema`/`capabilities`）+ 校验器 `plugins/provider_decl.py`；`GET /api/providers/schemas`；`POST /api/capability/{name}` 通用能力网关；前端 schema 驱动表单 | `f3de7bd` `82a7e55` `30ea8f8` |
 | **B2 LLM 插件** | `plugins/llm_openai_compatible/`（openai/ollama）、`plugins/llm_anthropic/`（anthropic）；`override_builtin` 接管 + 逐 id 让位 | `1d8f039` |
-| **B3 TTS 双插件** | `plugins/tts_cosyvoice`、`plugins/tts_qwen`、`plugins/tts_minimax`（协议层）；`plugins/tts_feature`（`dub_script` 技能 + `create.dub` 界面）；`/api/voice/dub` 薄转发；`create.dub` slot（名单 14→15）+ 动态选项 `optionsFrom` + 控件值回传 + **`file` 上传配音控件** | `5f27973` `54c78a1` `56017c8` `08166da` |
+| **B3 TTS 双插件** | `plugins/tts_cosyvoice`、`plugins/tts_qwen`、`plugins/tts_minimax`（协议层）；`plugins/tts_feature`（`dub_script` 技能 + `create.dub` 界面 + `split_text`）；`/api/voice/dub` 薄转发；`create.dub` slot（名单 14→15）+ 动态选项 `optionsFrom` + 控件值回传 + **`file` 上传配音控件**；**B3-T6：engine 的 `dub_script()` / `skill/dub.py` / `ensure_tts_providers_registered()` 已删除** | `5f27973` `54c78a1` `56017c8` `08166da` `+ B3-T6 提交` |
 | **B4 其他 provider** | `plugins/embedding_providers`、`plugins/rerank_providers`、`plugins/stt_providers`；`ContributionDecl.id` 放宽允许连字符 | `3abdf8d` |
 | **B5 提示词覆盖** | `plugins/prompt_overrides.py`（符号自省 + 四关 + 双 dry-render + 静态纯度 + `safe_builder` 回落）；**26 常量 + 8 builder 全部接线**（`resolve_constant` / `prompts._c` / `_mg_constraint` / `_p` / `_hdr`）；`GET /api/plugin/prompt-symbols` + 插件管理页面板 | `2343737` `316d177` `54669a4` `60018ac` `2f08c2b` |
 
@@ -81,13 +83,14 @@ cd J:\Clipwright; py -3.14 -m pytest tests -q
 - 插件管理页 →「提示词符号」：26 常量 + 8 builder 的 `wired` 与覆盖来源；被拒覆盖的原因。
 - 新建制作 → 03 配音与字幕：配音入口由插件贡献（音色 + 自动配音 + 上传配音）。
 
-## 4. 剩下 3 项（都需要人，不是我偷懒）
+## 4. 剩下 2 项 + 1 个遗留（都不阻塞本 PRD 的代码交付）
 
 | # | 事项 | 前置条件 | 谁 |
 |---|---|---|---|
-| 1 | **B3-T6 删除 engine 的 TTS 编排与内置注册** | `pytest` 通过（删除后插件未加载的环境会**真的没有**配音能力，这是裁定 3 的预期） | 人跑测试 → 我执行删除（清单已备好：[removal-checklist](provider-pluginization-b3t6-removal-checklist.md)；**删除演练已做**，见其 §6：删除本身没问题，但要连带改 3 项自检 + 5 个测试文件 + 3 处文档，这批会合并在同一个 commit） |
-| 2 | 台账 H-065（真实 LLM 路径 prompt 快照）、H-057（TTS 取消/降级端到端） | 同上，需真实路径跑一遍 | 人跑 → 我补记录 |
-| 3 | 前端是否新增 STT Tab | 纯产品决策（PRD §14 第 3 条） | 产品 |
+| 1 | ~~B3-T6 删除 engine 的 TTS 编排与内置注册~~ | **已于 2026-11-03 执行**（`pytest` 由 agent 跑过；用户授权） | ✅ 完成，见 [removal-checklist](provider-pluginization-b3t6-removal-checklist.md) |
+| 2 | 台账 H-057（TTS 取消的真机端到端） | 需要真机点一次停止（错误结构侧已由脚本覆盖） | 人 |
+| 3 | 前端是否新增 STT Tab（H-044） | 纯产品决策（PRD §14 第 3 条） | 产品 |
+| 遗留 | 44 个**既存** pytest 失败（kernel ~19 / 子 agent·管线 ~11 / web* ~9 与 `.env` 的 DeepSeek key 相关 / 其余零散） | 与本改造无关（改造前后失败集合完全相同）；修它们属另一件事 | 待你定要不要安排 |
 
 ## 5. 已知偏差与解释
 
@@ -126,11 +129,12 @@ cd J:\Clipwright; py -3.14 -m pytest tests -q
 
 ## 7. 交付完整性自评
 
-- **代码**：五批次 + 核实全部落地，13 项运行期契约自检全绿。
+- **代码**：五批次 + 核实全部落地，B3-T6 已执行；13 项运行期契约自检全绿。
 - **文档**：PRD / 编码计划 / 核实台账 / 删除清单 / 本汇总；`api_reference`、`frontend-backend-parity`、
-  `voice_tts`、`route_inventory`、`frontend-backend-parity §11`、`plugin_authoring §3.2` 已同步；
-  `AGENTS.md` 新增不变量（后端 #24 让位与网关、#25 控件值回传/执行归宿主；前端 #24 schema 表单、#25 `create.dub`）。
-- **不敢声称的**：既有测试全绿（未跑）、前端 UI 实际观感（未点）、TTS 真实合成（无凭据）。
+  `voice_tts`、`route_inventory`、`frontend-backend-parity §11`、`plugin_authoring §3.2`、`structure`、
+  `development` 已同步；`AGENTS.md` 新增不变量（后端 #24 让位与网关、#25 控件值回传/执行归宿主；
+  前端 #24 schema 表单、#25 `create.dub`），并同步「engine 已无 TTS 编排/内置注册」。
+- **不敢声称的**：`vitest` 全绿（未跑）、前端 UI 实际观感（未点）、TTS 真实合成（无凭据）。
 
 ## 8. 收尾状态（2026-11-03）
 
@@ -138,19 +142,18 @@ cd J:\Clipwright; py -3.14 -m pytest tests -q
 
 | 证据 | 命令 | 结果 |
 |---|---|---|
-| 运行期契约 13 项 | `py -3.14 scripts/verify_provider_pluginization.py` | **13/13 通过**（含 `-k prompt` 4/4、`--trace` 无栈） |
+| 运行期契约 13 项 | `py -3.14 scripts/verify_provider_pluginization.py` | **13/13 通过**（删除后再跑一次仍 13/13） |
+| B3-T6 行为边界 | `py -3.14 scripts/verify_tts_teardown.py` | 通过：插件在 → 三 id + 技能齐全；摘掉 → 列表空 / `resolve` None / `/api/voice/dub` → 503 + 可读原因；切句不变 |
+| 全量 pytest（删除后） | `py -3.14 -m pytest tests -q` | **44 failed / 4948 passed / 7 skipped / 1 xfailed**；44 个与删除前**同一批既存失败**，无一落在本次改造面 |
 | 前端类型 | `cd J:\Clipweight-Client; npx tsc --noEmit` | 退出码 0 |
 | 后端可导入 | `py -3.14 -c "import clipwright.main"` | 正常 |
-| B3-T6 删除可行性 | 两个临时 worktree 演练（删除前/后各跑一次自检） | **13/13 × 2**；应用能起、六条断言全过 |
 | 提示词搬运 | 26 常量 + 8 builder 值 vs 搬运前 sha256 | 差异 0 |
 
-**只剩三件必须由人输入**（详见 [人工验收剧本](provider-pluginization-manual-verification-2026-11-03.md)）：
+**只剩两件必须由人输入**：
 
-1. `pytest` / `vitest` / `npm run build` 全绿（项目约定测试由人执行）；
-2. B3-T6 三项人工确认（插件在时 dub 走插件、禁用后 503 + 可读降级、三个 TTS id 仍在）→ 回一句
-   「可以删」，我按 [删除清单 §6.3](provider-pluginization-b3t6-removal-checklist.md) 一次性提交；
-3. H-057 的真机取消验证（脚本已覆盖错误结构，取消只能人工点）。
+1. H-057 的真机取消验证（错误结构侧脚本已覆盖，取消只能人工点一次停止）；
+2. H-044：前端是否新增 STT Tab（纯产品决策）。
 
-另有两条**有意保留**的开项：H-044（是否新增前端 STT Tab，纯产品决策）、H-072（`requirements_service`
-里的第二处模块级提示词，无覆盖需求，记录不迁）。
+另有两条**有意保留**：H-072（`requirements_service` 里的第二处模块级提示词，无覆盖需求，
+记录不迁）、以及 44 个与本改造无关的**既存** pytest 失败（要不要清属另一件事）。
 
