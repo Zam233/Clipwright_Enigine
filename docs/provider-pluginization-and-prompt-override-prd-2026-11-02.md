@@ -784,7 +784,7 @@ API 增量原则：优先扩展 `/api/providers` 现有 list/create/available/ro
 
 1. `ensure_tts_providers_registered()` 与 `settings_store.apply_all()` 的启动时序（15.1.7 第 3 条）。
 2. `plugins/` 下各 demo/example 插件是否被测试或发行脚本引用（未做全仓引用扫描；已裁定保留，故不阻塞）。
-3. 70 条原始待核实（§2–§13）中与 OpenAI/Anthropic/isobase/embedding/rerank/STT 相关的部分**本轮未逐条复核**，仍按原台账待 Batch 0 处理。
+3. ~~70 条原始待核实（§2–§13）未逐条复核~~ → **已逐条审阅**（台账「Batch 0-T12」一节）：53 条已闭环、5 条被裁定取代、4 条为提取误命中、**9 条仍开**（需人跑测试：H-065/H-057；产品待定：H-044 STT tab、H-068 诊断 UI、H-023 拆 client、H-032/H-036 字段命名、H-028 TTS 错误分类、H-066 reasoning UI）。
 
 > 已闭环、不再列在此处：builder 长度上限与纯度检查方式（→ 15.2.7 静态检查，第五轮裁定）。
 
@@ -836,6 +836,7 @@ API 增量原则：优先扩展 `/api/providers` 现有 list/create/available/ro
 
 > **宿主已落地（2026-11-02）**：`slots.ts` 名单 14 → 15；`HomePage` 在 03 步骤渲染 `<Slot name="create.dub">`；内置配音控件（音色 / 自动配音 / 上传）在**有贡献时整块让位**、**无贡献时回落**——这是过渡期写法，PRD 最终态是「无插件即无入口」，等第 9 项契约补齐、插件 UI 上线后删除内置块。
 > slot 契约本身的字段（`slot` / `id` / `title` / `order` / `icon` / `visibleWhen` / `layout`）**沿用现有 `SlotContribution` 定义，不新增字段**；`layout.widgets` 复用现有 plugin UI 控件集（`string` / `select` / `checkbox` / `slider`），未知控件类型必须拒绝并给可读错误（不变量 #13）。
+
 
 
 

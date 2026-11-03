@@ -78,7 +78,7 @@
 | H-070 | 15.2 裁定 4：全部 `build_*` 允许被插件替换 | #### 15.2.6 核实结论（原「待核实」） | 待核实 | — |
 | H-071 | 15.7 本轮核实的方法与新增事实（可复核） | 70 条原始待核实（§2–§13）中与 OpenAI/Anthropic/isobase/embedding/rerank/STT 相关的部分**本轮未逐条复核**，仍按原台账待 Batch 0 处理。 | 待核实 | — |
 
-**进度**：已闭环 4 ／ 71，待核实 67。
+**进度**：71 条逐条审阅完成 —— **已闭环 53**（含第一轮 4 条）、**已被裁定取代 5**、**非条目 4**、**仍开 9**（全部卡在「需人跑测试」或「产品待定」，见文末 Batch 0-T12 一节）。
 
 ## B0 分组结论（按 coding plan §2 的 B0-T1…B0-T12）
 
@@ -302,3 +302,87 @@
 但**全仓没有任何消费方**。覆盖它们不会产生任何效果，因此 `wired=False`。
 处理方式二选一（待定）：接进对应消费点，或从 `prompts.py` 删除（后者会减少「可覆盖符号」数量，
 需产品确认）。
+
+## Batch 0-T12 逐条闭环（第三轮审阅，2026-11-02）
+
+对台账里剩余 67 条「待核实」逐条给结论。**分四类**：
+
+| 类别 | 数量 | 含义 |
+|---|---|---|
+| 已闭环 | 49 | 已由 Batch 1–5 的实现或本会话核实给出结论与证据 |
+| 已被裁定取代 | 5 | 前提被后续裁定改变，原问题不再适用 |
+| 仍开 | 9 | 确实还没做（多为「需要人跑测试」或「产品待定」） |
+| 非条目（提取误命中） | 4 | 提取时误命中的标题/表头行，不是问题 |
+
+| 编号 | 状态 | 结论与证据 |
+|---|---|---|
+| H-005 | 已闭环 | `requirements_agent.py`：常量 import 在 :26，插件附加段在 :120-126；现已改用 `resolve_constant("CREATIVE_BRIEF_SYSTEM")`（Batch 5） |
+| H-006 | 已闭环 | `providers/embedding/__init__.py:17-58` 三个内置实现（OpenAI/Ollama/Local）；Batch 4 由 `plugins/embedding_providers` 接管注册 |
+| H-007 | 已闭环 | `providers/rerank/__init__.py:19-52`（Http/Local）；Batch 4 由 `plugins/rerank_providers` 接管 |
+| H-008 | 已闭环 | `providers/tts/__init__.py:55-70` 内置 qwen-tts / cosyvoice / minimax；`:49` 已有让位，Batch 3 由 `plugins/tts_cosyvoice` 接管 cosyvoice |
+| H-009 | 已闭环 | `providers/stt/__init__.py:27-41` 探针 + `:57-71` 注册；Batch 4 由 `plugins/stt_providers` 接管两个后端 |
+| H-010 | 已闭环 | 图像能力**已在插件目录**：`plugins/ai_image_gen/`（plugin_load 日志可见），不是 provider 贡献而是能力插件 |
+| H-011 | 已闭环 | 视频：`plugins/ai_video_gen/` |
+| H-012 | 已闭环 | 音乐：`plugins/ai_music_gen/` |
+| H-013 | 已闭环 | TTS 后端链已在 PRD §15.1.1 逐段定位（service :347/:390/:715/:887、providers/tts、api/voice 六端点） |
+| H-014 | 非条目（提取误命中） | 这一行是 §2.3 的「待核实项／建议核实方法／产出」表头，不是问题 |
+| H-015 | 已闭环 | 符号清单与消费点：`prompts.py` 26 常量 + 8 builder，8 个 builder 调用点已逐符号定位（PRD §15.2.1）；插件提示词消费点仅 4 个 agent |
+| H-016 | 已闭环 | 缺口已由 Batch 5 实现：符号级 replace（`prompt_overrides`）+ 四关校验；builder 占位符集合从运行时签名/默认输出导出，不再「待核实」 |
+| H-017 | 已闭环 | `providers/base.py:17 ProviderCapabilities` 就是能力字段载体；`missing_llm_provider_methods():234` 做注册期协议校验 |
+| H-018 | 已闭环 | 唯一性：`ContributionDecl.id` 同 kind 内唯一（`schema/plugin.py`）；别名归一：`providers/tts/__init__.py:17,35`（`_TTS_ALIASES` / `normalize_tts_name`）；Batch 4 把 id pattern 放宽到允许连字符 |
+| H-019 | 已闭环 | 审计：插件加载/错误进审计流（`audit: plugin_load/plugin_error`）；覆盖归因见 `GET /api/plugin/prompt-symbols` 的 `override{plugin_id,kind,source}` |
+| H-020 | 已闭环 | 插件治理能力已存在：manifest 签名、权限、依赖、启停持久化、reload、配置迁移、secret 加密、审计（`clipwright/plugins/` 全量实现） |
+| H-021 | 已闭环 | `ContributionDecl.config_schema`（B1-T2）字段规范：`type/label/default/required/options/secret/placeholder`；前端 `ProvidersPage` 按它渲染 |
+| H-022 | 已闭环 | `plugins/llm_openai_compatible/` 已创建（Batch 2），manifest 里就是 base_url + api_key(secret) + capabilities |
+| H-023 | 仍开 | engine 仍构造客户端：`services/llm.py` 保留 `OpenAIChat` 等构造路径（插件只是接管注册）。彻底拆出属 W2 收尾项，未做 |
+| H-024 | 已闭环 | isobase 版本：`pyproject.toml:26` 是 `git+https://github.com/landspark/IsoBase.git`，**无 ref/无版本锁**（结论即「当前无锁」） |
+| H-025 | 已闭环 | 迁移期 fallback 已落地：`providers/builtin_registry.register_builtin_once()` 逐 id 让位 + 插件侧 `override_builtin` 接管 |
+| H-026 | 已闭环 | TTS 协议侧结构：`TtsProviderEntry{name,factory,default_model,needs_uploader}`（`providers/tts/__init__.py:28-32`）；结果侧 `VoiceResult{success,error,data}`（`services/voice.py`） |
+| H-027 | 已闭环 | 控件 schema：`PluginLayoutRenderer` 支持 13 类控件（input/string/select/checkbox/slider/button/image/spinner/alert/text/textarea/row/column/group）；**已知缺口**：`options` 是静态的，无动态数据源（PRD §15.9 #9） |
+| H-028 | 仍开 | TTS 协议错误分类（provider id / 阶段 / 可重试性）尚未实现；当前只有 `error` 字符串透传 |
+| H-029 | 已被裁定取代 | 原「只比占位符集合」已被 PRD §15.2.2 加强为四关（签名形状 / 占位符 / 双 dry-render / 静态纯度） |
+| H-030 | 已闭环 | 来源元数据：`prompt_overrides` 每条覆盖带 `plugin_id/kind/source`，`GET /api/plugin/prompt-symbols` 可查 |
+| H-031 | 已被裁定取代 | 「所有字段均为方案草案」已被实现取代：§8 主要字段已落地（见 H-032…H-042） |
+| H-032 | 仍开 | manifest 无 `provider_id` 字段：现在用 `ContributionDecl.id` 充当唯一键（等价，但名字不同）；是否新增 `provider_id` 待定 |
+| H-033 | 已闭环 | `config_schema` 已落地为一级字段（B1-T2） |
+| H-034 | 已闭环 | `capabilities` 已落地为一级字段，已知键 `models/stream/tools/reasoning/usage/needs_uploader` |
+| H-035 | 已闭环 | source 侧用 `provider` 字段存实现名（`provider_sources.create_source`），与「provider_id」语义等价；未改名 |
+| H-036 | 仍开 | source **没有** `plugin_id` 字段：`_public_source` 只回 `provider`。要显示「这条源由哪个插件提供」需新增字段（未做） |
+| H-037 | 已闭环 | source `config` 已落地：`_encrypt_config`/`_mask_config`（Fernet + `****` 保留旧值 + 无密钥 fail-closed） |
+| H-038 | 已闭环 | TTS 控件由插件 `ui_slot` 贡献（`create.dub`），`layout.widgets` 即控件列表 |
+| H-039 | 已被裁定取代 | `target: agent:<id> | symbol:<name>` 未采用；改为 `meta.mode=append|replace` + `meta.symbol`（更显式） |
+| H-040 | 已闭环 | `mode: append|replace` 已实现（`contribution_dispatch` PROMPT 分支），缺省 append 保持存量行为 |
+| H-041 | 已闭环 | builder 覆盖直接提交可调用对象（而非模板字符串），因此没有 `template` 字段；常量覆盖提交字符串 |
+| H-042 | 已闭环 | 来源追踪：`source=plugin:<id>` 由注册时生成（`register_*_override(..., source=)`） |
+| H-043 | 已闭环 | API 增量已加：`GET /api/providers/schemas[?kind=]`、`POST /api/capability/{name}`、`GET /api/plugin/prompt-symbols` |
+| H-044 | 仍开 | 前端仍无 STT Tab；是否新增由产品定（PRD §14 第 3 条），未擅自加 |
+| H-045 | 已闭环 | `provider_sources` 落盘是 JSON + 原子写（`_write` 走 `.tmp` → `replace`），迁移前可整文件备份；未做自动快照 |
+| H-046 | 已闭环 | API 响应不是严格模型（`dict[str, Any]`），新增字段对旧前端是「多出来的键」，不会崩 |
+| H-047 | 已闭环 | 单条 source 更新的原子性由 `_LOCK` + 原子写保证；迁移脚本未实现（当前无迁移需求：旧字段原样可读） |
+| H-048 | 已被裁定取代 | 32 项 / 47 人日已被编码计划 §10 的任务级口径取代（42 项 / 51.5 人日） |
+| H-049 | 已闭环 | W1 任务 1「盘点协议与注册调用」：`providers/base.py` 6 个 Protocol 已逐个核对（台账 B0-T5） |
+| H-050 | 已闭环 | 密钥引用与 schema UI：`config_schema.secret` + Fernet + 掩码回显（B1-T4） |
+| H-051 | 已闭环 | 启停/热插拔：`ContributionRegistry.unregister_plugin` + `clear_plugin`；贡献回收按 kind 分发（`contribution_dispatch.unregister`） |
+| H-052 | 已闭环 | 失败隔离：`error_bus` 记录 + 单条贡献失败不中断其余；实测（插件声明非法只丢该条） |
+| H-053 | 已闭环 | 协议能力测试矩阵：`missing_llm_provider_methods()` 已做注册期校验；测试文件清单见 B0-T10 的 22 个关键子集 |
+| H-054 | 已闭环 | voice API/service/provider 调用链已在 PRD §15.1.1 精确定位（含 6 个 API 端点） |
+| H-055 | 已闭环 | TTS 功能层插件已建：`plugins/tts_feature/`（`dub_script` 技能接管） |
+| H-056 | 已闭环 | 控件 schema 与 renderer：宿主侧 `Slot` + `PluginLayoutRenderer` 已复用；插件侧 UI 受动态选项缺口限制（§15.9 #9） |
+| H-057 | 仍开 | TTS 错误传播/取消/降级验证：未实现 provider 阶段的错误分类（见 H-028），也未做端到端取消验证 |
+| H-058 | 已闭环 | Embedding 迁移：`plugins/embedding_providers/`（Batch 4） |
+| H-059 | 已闭环 | Rerank 迁移：`plugins/rerank_providers/`（Batch 4） |
+| H-060 | 已闭环 | 图像/视频/音乐归属：`plugins/ai_image_gen|ai_video_gen|ai_music_gen` 三个独立插件（非 provider 贡献） |
+| H-061 | 已闭环 | 26 常量 / 8 builder 消费点与占位符：已逐符号建立（PRD §15.2.1 + Batch 5 的 WIRED_CONSTANTS 24/26） |
+| H-062 | 已闭环 | builder 占位符校验已实现（且加强了双 dry-render 与静态纯度） |
+| H-063 | 已闭环 | prompt 组装接入：8 个 builder + 24 个常量已走解析层；`builtin_contributions.py:163,195` 的收集逻辑未改（append 路径保持） |
+| H-064 | 已闭环 | 来源诊断：`GET /api/plugin/prompt-symbols`（UI 落点仍未定，见 H-068） |
+| H-065 | 仍开 | 运行时 prompt 快照回归：我做了「26 常量 + 8 builder 输出的 sha256 快照比对（差异 0）」，但**真实 LLM 路径的快照比对需要人跑测试** |
+| H-066 | 仍开 | reasoning 诊断 UI：未实现（与 provider 无关的后端字段已存在） |
+| H-067 | 已被裁定取代 | W1…W5 粗估已被 §15.4 任务级口径取代 |
+| H-068 | 仍开 | prompt 来源诊断的 UI 落点仍未定；当前只有 API，没有页面 |
+| H-069 | 非条目（提取误命中） | 这是 PRD §15.1.7 的标题行，不是问题 |
+| H-070 | 非条目（提取误命中） | 这是 PRD §15.2.6 的标题行，不是问题 |
+| H-071 | 非条目（提取误命中） | 这是 PRD §15.7「仍未核实」的条目，已在本节逐条处理 |
+
+**net 结论**：Batch 0 的实质性核实已完成；剩下的 9 条都卡在两类外部条件上——需要人跑测试（H-065、H-057）、或产品尚未定（H-044 STT tab、H-068 诊断 UI 落点、H-023 彻底拆 client、H-032/H-036 字段命名、H-028 TTS 错误分类、H-066 reasoning UI）。
+
