@@ -117,7 +117,29 @@ cd J:\Clipweight-Client; npx tsc --noEmit; npm run test
 
 - **代码**：五批次 + 核实全部落地，13 项运行期契约自检全绿。
 - **文档**：PRD / 编码计划 / 核实台账 / 删除清单 / 本汇总；`api_reference`、`frontend-backend-parity`、
-  `voice_tts`、`route_inventory` 已同步；`AGENTS.md` 新增 3 条不变量（#24 让位与网关、#25 `create.dub`、
-  以及 #23 下补的 builder 四关）。
+  `voice_tts`、`route_inventory`、`frontend-backend-parity §11`、`plugin_authoring §3.2` 已同步；
+  `AGENTS.md` 新增不变量（后端 #24 让位与网关、#25 控件值回传/执行归宿主；前端 #24 schema 表单、#25 `create.dub`）。
 - **不敢声称的**：既有测试全绿（未跑）、前端 UI 实际观感（未点）、TTS 真实合成（无凭据）。
+
+## 8. 收尾状态（2026-11-03）
+
+**能自证的部分已全部自证**：
+
+| 证据 | 命令 | 结果 |
+|---|---|---|
+| 运行期契约 13 项 | `py -3.14 scripts/verify_provider_pluginization.py` | **13/13 通过**（含 `-k prompt` 4/4、`--trace` 无栈） |
+| 前端类型 | `cd J:\Clipweight-Client; npx tsc --noEmit` | 退出码 0 |
+| 后端可导入 | `py -3.14 -c "import clipwright.main"` | 正常 |
+| B3-T6 删除可行性 | 两个临时 worktree 演练（删除前/后各跑一次自检） | **13/13 × 2**；应用能起、六条断言全过 |
+| 提示词搬运 | 26 常量 + 8 builder 值 vs 搬运前 sha256 | 差异 0 |
+
+**只剩三件必须由人输入**（详见 [人工验收剧本](provider-pluginization-manual-verification-2026-11-03.md)）：
+
+1. `pytest` / `vitest` / `npm run build` 全绿（项目约定测试由人执行）；
+2. B3-T6 三项人工确认（插件在时 dub 走插件、禁用后 503 + 可读降级、三个 TTS id 仍在）→ 回一句
+   「可以删」，我按 [删除清单 §6.3](provider-pluginization-b3t6-removal-checklist.md) 一次性提交；
+3. H-057 的真机取消验证（脚本已覆盖错误结构，取消只能人工点）。
+
+另有两条**有意保留**的开项：H-044（是否新增前端 STT Tab，纯产品决策）、H-072（`requirements_service`
+里的第二处模块级提示词，无覆盖需求，记录不迁）。
 
