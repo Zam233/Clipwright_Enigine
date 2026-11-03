@@ -241,6 +241,7 @@ Batch 2 必须等 Batch 1：插件 manifest、kind、冲突与密钥规则是可
 - Batch 3：按 **PRD §15.3 的 9 条**逐项验收。要点：空环境启动后注册表里**没有任何 TTS provider**、builtin `dub_script` 技能已移除；主 agent 请求配音时 `call_skill("dub")` 解析不到、如实告知「无配音能力」且继续其余交付；**「开始创作」页 `03 配音与字幕` 步骤**——无插件时**没有插件控件、也看不到旧硬编码表单**（空态或整块不渲染），装插件后控件出现在**原位**、未知控件类型给可读错误；`stepDone.dub` 归插件驱动、旧 `localStorage` 偏好能读回；只装功能插件不装协议插件时无「半可用」状态；`needs_uploader` 上传器注入正常；名称由 contribution id 解析；换凭据后缓存实例更新；**通用能力网关四类状态码**（404 未装 / 422 参数或路径不合规 / 503 凭据或上传器缺失 / 200 成功）逐条跑到；`/api/voice/*` 薄转发不承载编排。
 - Batch 4：在 embedding、rerank、TTS 及现有 STT 对应 Tab 检查 available、role、增删改和动态 schema；缺插件时现有回退/缺失提示不变。
 - Batch 5：按 **PRD §15.4 的 16 条**逐项验收。要点：无 prompt 插件时 26 常量+8 builder 快照零差异，并 stub `LLMService.ask` 比较真实 prompt；**8 个 builder 逐个**覆盖成功；五类**行为**负例（签名不匹配 / 占位符残留 / 参数不用 / 抛异常 / 非 str）各自被拒绝或回落；四类**静态**负例（`import` / `getattr`·`open`·`eval` 等黑名单调用 / AST 超复杂度 / 输出超长）各自被拒绝，且合规的纯字符串拼接写法**不被误杀**；同符号两插件冲突明确；禁用后回落 `prompts.py`；**`plugins/` 无新增 demo 目录**；现有 4 个 PROMPT 贡献者（kinetic_typography / logic_animations / lottie_animations / sandbox_demo）在 append 模式下行为不变。
+- **一键自检（非 pytest）**：`py -3.14 scripts/verify_provider_pluginization.py`（可 `-k prompt` 过滤）。脚本固化本次改造的运行期契约 9 项：五类 provider 全部插件归属、`available`/`schemas`/`capabilities` 形状、能力网关 404/200、提示词 26+8 全 `wired`、覆盖→解析→回滚闭环、builder 四关负例、配音能力缺失时 503、`TIER_MAP` 必须为空。退出码 0=全过。**它是补充，不替代** `pytest`。
 - 收尾：人工在 Python 3.12 CI 执行 `python -m pytest -q`；编码期记录 `python -m py_compile` 与 `npx tsc --noEmit` 结果，不执行 pytest/vitest。
 
 ## 10. 总量与关键路径
@@ -269,3 +270,4 @@ Batch 2 必须等 Batch 1：插件 manifest、kind、冲突与密钥规则是可
 
 > 产品侧的「入口挂哪个 slot」「纯静态还是沙箱」「走哪条 HTTP 路线」「demo 插件留不留」「何时删内置」已全部裁定，不再列在上表。
 4. `ensure_tts_providers_registered()` 与 `settings_store.apply_all()` 的启动时序（影响 B3-T6 的落地方式）。
+

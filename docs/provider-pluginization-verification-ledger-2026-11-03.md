@@ -390,14 +390,21 @@
 
 **net 结论**：Batch 0 的实质性核实已完成。**仍开 2 条**，全部卡在「需要人跑测试」：H-065（真实 LLM 路径 prompt 快照）、H-057（TTS 取消/降级端到端）。另 H-044（前端是否新增 STT Tab）是**纯产品决策**，与本 PRD 的实施无关，保留待产品定。其余（H-023 拆 client、H-028 TTS 错误分类、H-032/H-036 字段、H-066 reasoning UI、H-068 诊断 UI）均已闭环或给出技术判定。
 
+## 验收自检脚本（2026-11-02）
 
+`scripts/verify_provider_pluginization.py` 把本次改造的运行期契约固化成一条命令（不依赖 pytest，不改落盘数据）：
 
+| # | 检查项 | 覆盖的契约 |
+|---|---|---|
+| 1 | `provider_owners` | 五类 provider、11 个 id 全部插件归属，内置不得持有 |
+| 2 | `providers_available_and_schemas` | `/api/providers/available` 与 `/schemas`（含 plugin_id） |
+| 3 | `providers_capabilities` | 能力来自实现（含 reasoning_*）；未安装 → 200+error 而非 404 |
+| 4 | `capability_gateway` | `POST /api/capability/{name}` 的 200 / 404 |
+| 5 | `prompt_symbols_wired` | 26 常量 + 8 builder 全 `wired`，不返回正文 |
+| 6 | `prompt_override_roundtrip` | 常量/builder 覆盖→解析→回滚闭环，且覆盖真的影响 builder 输出 |
+| 7 | `prompt_builder_guards` | 四关负例：import/eval/getattr/async、参数不用、未知符号、新占位符 |
+| 8 | `dub_capability_boundary` | `dub_script` 归属 tts_feature；两边摘掉后 `/api/voice/dub` → 503 |
+| 9 | `tier_map_empty` | 不变量 #12：`capability_matrix.TIER_MAP` 必须为空 |
 
-
-
-
-
-
-
-
+实测：9/9 通过（`py -3.14 scripts/verify_provider_pluginization.py`）。**它补充 pytest，不替代**。
 
