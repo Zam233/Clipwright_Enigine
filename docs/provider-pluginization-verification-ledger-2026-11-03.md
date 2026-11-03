@@ -486,19 +486,29 @@ cd J:\Clipwright; py -3.14 -m pytest tests -q
 
 修完复跑三个模块：**41 passed**；全量复跑：**44 failed, 4946 passed**。
 
-### 2. 剩下 44 个是**既存失败**，与本改造无关（已用基线证明）
+### 2. 剩下的是**既存失败**，与本改造无关（已用基线证明），并已分批清理
 
 把基线工作树的 44 个失败 id 拿到当前代码上重跑：**44 failed（一个不差地同样失败）**，
-而当前全量也是 44 个 → 两边失败集合**相等**，即本次改造引入的新失败为 **0**。
+而当时全量也是 44 个 → 两边失败集合**相等**，即本次改造引入的新失败为 **0**。
 
-它们的分布（供后续单独安排，不在本 PRD 范围）：
+**2026-11-03 追补：这 44 个已清掉 15 个**（`a806765` / `051c42d` + 前端 `42d2090`），
+其中包含**一处真的跨仓漂移**（后端新增 `goal_update` / `soft_landing` 事件，前端
+`EVENT_TYPE_KEYS` 还停在 29 项 → 事件会落进 `unknown` 分支）。修完全量：
+**29 failed, 4965 passed, 7 skipped, 1 xfailed**（619s）。
 
-| 区域 | 数量 | 备注 |
+> ⚠️ **一处口径更正**：本节早先按 pytest 的 `lastfailed` 缓存分桶写过「kernel ~19 /
+> 子 agent·管线 ~11」，那是**错的**——缓存里含着更早几轮已修好或没在这次跑到的 id。
+> 以干净全量跑的 `-rf` 输出为准，当前 29 个的真实分布如下表。
+
+当前 29 个的分布（都不在本 PRD 范围）：
+
+| 模块 | 数量 | 备注 |
 |---|---|---|
-| `test_agent_kernel*` / `test_agent_c5_context` / `test_budget_guard` / `test_exec_gateway` | ~19 | 主 agent kernel 侧（更早一次改造的遗留） |
-| `test_pipeline_capability` / `test_stage_subagent` / `test_supervisor_retry_wiring` / `test_subagent_*` | ~11 | 子 agent / 管线能力侧 |
-| `test_web_*` / `test_animation_web_*` | ~9 | **环境相关**：`.env` 里 `CLIPWRIGHT_LLM_BASE_URL=https://api.deepseek.com` + 有 `LLM_API_KEY`，使 `provider_key("deepseek")` 回落到平台 key → `configured_providers()` 多出 `deepseek`，而用例断言「只有 local」 |
-| `test_golden_*` / `test_kernel_replay` / `test_task_api` / `test_event_contract` / `test_capability_matrix` / 其余 | ~5 | 各自独立，需逐个看栈 |
+| `test_degradation_receipts` / `test_degradation_to_master_agent` / `test_final_receipt_attempt` | 4+1+2 | 降级收据 / 最终收据（终止机制那一轮的遗留） |
+| `test_golden_harness` / `test_golden_capture` | 3+1 | golden 回归夹具（`driver()` 少了 `dry_run` 参数一类的桩过期） |
+| `test_requirements_stream_chat` / `test_requirements_brief_ready_state` / `test_legacy_plan_session` | 3+1+2 | 需求侧流式/会话状态 |
+| `test_plugin_review_fixes` | 2 | 内置插件「不自定义 initialize / manifest 声明贡献」的规范检查 |
+| `test_animation_agent_persona` / `test_edit_agent_llm` / `test_stream_system_prompt` / `test_progress_report` / `test_dead_extra_keys` / `test_video_trim_validation` / `test_task_project_sync` / `test_pv_engine_plugin` / `test_kernel_replay` / `test_task_api` / `test_tool_surface` | 各 1 | 零散，需逐个看栈 |
 
 > 报告口径：**「pytest 全绿」不成立**（44 个既存失败）；**「本次改造没有新增失败」成立**（差集为空，有基线工作树可比）。
 

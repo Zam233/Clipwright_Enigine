@@ -90,7 +90,7 @@ cd J:\Clipwright; py -3.14 -m pytest tests -q
 | 1 | ~~B3-T6 删除 engine 的 TTS 编排与内置注册~~ | **已于 2026-11-03 执行**（`pytest` 由 agent 跑过；用户授权） | ✅ 完成，见 [removal-checklist](provider-pluginization-b3t6-removal-checklist.md) |
 | 2 | 台账 H-057（TTS 取消的真机端到端） | 需要真机点一次停止（错误结构侧已由脚本覆盖） | 人 |
 | 3 | 前端是否新增 STT Tab（H-044） | 纯产品决策（PRD §14 第 3 条） | 产品 |
-| 遗留 | 44 个**既存** pytest 失败（kernel ~19 / 子 agent·管线 ~11 / web* ~9 与 `.env` 的 DeepSeek key 相关 / 其余零散） | 与本改造无关（改造前后失败集合完全相同）；修它们属另一件事 | 待你定要不要安排 |
+| 遗留 | **29 个**既存 pytest 失败（已从 44 个清掉 15 个：web* 11 + capability_matrix 2 + event_contract 2，其中事件契约那 2 个是**真的跨仓漂移**——后端新增 `goal_update`/`soft_landing`，前端 `EVENT_TYPE_KEYS` 还停在 29 项）。当前全量：**29 failed / 4965 passed** | 余下模块见台账「pytest 实跑」§2 表；都不属于本 PRD | 待你定要不要继续清 |
 
 ## 5. 已知偏差与解释
 
