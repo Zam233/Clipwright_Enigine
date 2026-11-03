@@ -36,50 +36,14 @@ def normalize_tts_name(name: str) -> str:
     return _TTS_ALIASES.get(str(name or ""), str(name or ""))
 
 
-def ensure_tts_providers_registered() -> None:
-    """登记三个内置 TTS provider（幂等）。"""
-    from clipwright.config import settings
-    from clipwright.plugins.contribution import (
-        BUILTIN_OWNER,
-        Contribution,
-        ContributionKind,
-        ContributionRegistry,
-    )
-
-    if ContributionRegistry.resolve(ContributionKind.TTS_PROVIDER, "qwen-tts") is not None:
-        return
-
-    def _make(name: str) -> TtsProviderEntry:
-        from clipwright.services import voice as _voice
-
-        if name == "qwen-tts":
-            return TtsProviderEntry(
-                name=name, factory=lambda uploader, creds=None: _voice.QwenTTSProvider(creds),
-                default_model=lambda: settings.tts_qwen_model,
-            )
-        if name == "cosyvoice":
-            return TtsProviderEntry(
-                name=name, factory=lambda uploader, creds=None: _voice.CosyVoiceProvider(uploader, creds),
-                default_model=lambda: settings.tts_cosyvoice_model,
-                needs_uploader=True,
-            )
-        return TtsProviderEntry(
-            name=name, factory=lambda uploader, creds=None: _voice.MiniMaxProvider(uploader, creds),
-            default_model=lambda: settings.tts_minimax_model,
-            needs_uploader=True,
-        )
-
-    ContributionRegistry.register(BUILTIN_OWNER, [
-        Contribution(ContributionKind.TTS_PROVIDER, n, _make(n))
-        for n in ("qwen-tts", "cosyvoice", "minimax")
-    ], dispatch=False)
-
-
 def resolve_tts_entry(name: str) -> Optional[TtsProviderEntry]:
-    """解析 TTS provider 条目（含别名归一 + 懒注册）；未知 → None。"""
+    """解析 TTS provider 条目（含别名归一）；未知 → None。
+
+    注意：**不再懒注册内置**（B3-T6）。解析不到就是"没装协议插件"，
+    调用方按能力缺失处理（`/api/voice/*` 给 503 + 可读原因）。
+    """
     from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
 
-    ensure_tts_providers_registered()
     impl = ContributionRegistry.resolve(
         ContributionKind.TTS_PROVIDER, normalize_tts_name(name),
     )
@@ -87,8 +51,7 @@ def resolve_tts_entry(name: str) -> Optional[TtsProviderEntry]:
 
 
 def tts_provider_names() -> list[str]:
-    """已注册的 TTS provider 名列表（错误信息与前端选项共用）。"""
+    """已注册的 TTS provider 名列表（错误信息与前端选项共用；全由插件贡献决定）。"""
     from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
 
-    ensure_tts_providers_registered()
     return [c.id for _, c in ContributionRegistry.list(ContributionKind.TTS_PROVIDER)]

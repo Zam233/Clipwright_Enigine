@@ -15,6 +15,7 @@ from clipwright.tool.video import resolve_ffmpeg, resolve_ffprobe
 class ChromaKeyTool(BaseTool):
     """Chroma Key 抠像工具（绿幕/蓝幕）。"""
     name = "chroma_key"
+    permission_tier = "write_local"
     description = "绿幕/蓝幕抠像：color=0x00FF00 绿色, similarity=0.1-0.5, blend=0.0-0.1"
     dependencies = ["ffmpeg"]
 

@@ -17,6 +17,7 @@ from clipwright.tool.video import resolve_ffmpeg, resolve_ffprobe
 class BlackFrameDetectTool(BaseTool):
     """黑帧/全白帧检测 — 检查视频中是否有过暗或过亮的帧。"""
     name = "black_frame_detect"
+    permission_tier = "read"
     description = "检测视频中的黑帧/全白帧，返回异常帧的时间位置"
     dependencies = [resolve_ffmpeg(), "ffprobe"]
 
@@ -75,6 +76,7 @@ class BlackFrameDetectTool(BaseTool):
 class AudioSilenceDetectTool(BaseTool):
     """静音检测 — 检查音频中是否有过长的静音段。"""
     name = "audio_silence_detect"
+    permission_tier = "read"
     description = "检测音频中的静音/爆音段"
     dependencies = ["ffmpeg"]
 
@@ -117,6 +119,7 @@ class AudioSilenceDetectTool(BaseTool):
 class SubtitleOverflowCheckTool(BaseTool):
     """字幕溢出检查 — 检查字幕文本是否超出画面宽度。"""
     name = "subtitle_overflow"
+    permission_tier = "read"
     description = "检查字幕文本是否超出视频画面宽度"
     dependencies = []
 

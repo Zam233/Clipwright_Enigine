@@ -13,6 +13,7 @@ import asyncio
 import json
 import math
 import uuid
+from pathlib import Path
 from typing import Any
 
 from clipwright.agents.base import BaseAgent
@@ -27,6 +28,8 @@ from clipwright.schema.timeline import Clip, ClipKind, ImageFit, Timeline, Track
 from clipwright.services.llm import LLMService
 from clipwright.services.trace import add_event
 from clipwright.tool.registry import ToolRegistry
+# PRD W4.3：提示词已搬到 clipwright/prompts.py（文案逐字一致）
+from clipwright.prompts import EDIT_PROFILE_SYSTEM  # noqa: E402
 
 # 素材裁剪缓存：同一 (源路径, 起点, 时长) 的裁剪结果复用，避免对同一网络素材重复下载/裁剪。
 # 有界（最多 _TRIM_CACHE_MAX 条），超出时清空重建。
@@ -66,6 +69,38 @@ def _weighted_transition_pick(
     return next(iter(clean))
 
 
+def _prefer_material_refs(
+    scene: dict[str, Any], assets: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """把场景 ``material_refs`` 指定的素材提到最前（S 轨落位 → 剪辑取用的闭环）。
+
+    - 没有 ``material_refs`` → 原样返回（零行为变化）；
+    - refs 里缺的 id 忽略（素材可能未通过校验）；
+    - 其余素材保持原相对顺序，确定性（不用 set 迭代顺序）。
+    """
+    refs = [str(r) for r in (scene.get("material_refs") or []) if r]
+    if not refs or not assets:
+        return assets
+    wanted = set(refs)
+    preferred: list[dict[str, Any]] = []
+    rest: list[dict[str, Any]] = []
+    for asset in assets:
+        asset_id = str(asset.get("asset_id") or asset.get("id") or "")
+        if asset_id in wanted:
+            preferred.append(asset)
+        else:
+            rest.append(asset)
+    if not preferred:
+        return assets
+    # 按 refs 顺序稳定排序（同 id 多候选时保持各自原顺序）
+    ordered: list[dict[str, Any]] = []
+    for ref in refs:
+        ordered.extend(
+            a for a in preferred if str(a.get("asset_id") or a.get("id") or "") == ref
+        )
+    return ordered + rest
+
+
 def _scene_is_pip(
     scene_desc: str, scene_index: int, llm_pip_scenes: set[int] | None = None,
 ) -> bool:
@@ -80,20 +115,28 @@ def _scene_is_pip(
     )
 
 
-def _split_sentences(text: str) -> list[str]:
+def _split_sentences(text: str, mode: str = "punctuation") -> list[str]:
     """按中文标点切分口播文案为句子（字幕粒度）。
 
-    边界：'，。；：' 作为边界**消费**（不进入字幕）；'！？' 保留在前句末尾。
-    结果去空。长句（>40 字）二次按逗号切分，逗号同样消费。
+    ``mode`` 与前端「切分方式」一致（``extra_params.split_mode``）：
+
+    - ``period``：只在 ``。！？!?`` 断句（长句保留，靠 ASS 自动折行）；
+    - ``punctuation``（默认，保持既有行为）：``，。；：`` 也作为边界并**消费**，
+      ``！？`` 保留在前句末尾；超 40 字的长句再按逗号二次切分。
+
+    结果去空。前端预览用的是同一套规则，因此"预览几段 = 成片几段"。
     """
     t = (text or "").strip()
     if not t:
         return []
+    period_mode = str(mode or "").lower() == "period"
+    bounds = "。！？!?" if period_mode else "，。！；？：!?"
+    keep = "！？!?" if period_mode else "！？"
     parts: list[str] = []
     buf = ""
     for ch in t:
-        if ch in "，。！；？：":
-            if ch in "！？":
+        if ch in bounds:
+            if ch in keep:
                 parts.append((buf + ch).strip())
             elif buf.strip():
                 parts.append(buf.strip())
@@ -106,7 +149,7 @@ def _split_sentences(text: str) -> list[str]:
     for p in parts:
         if not p:
             continue
-        if len(p) > 40:
+        if not period_mode and len(p) > 40:
             # 长句按逗号二次切分，逗号作为边界消费（不留段尾）
             sub = ""
             for ch in p:
@@ -184,6 +227,23 @@ def _append_caption_sentences(
     caption_track.clips.sort(key=lambda c: c.start_sec)
 
 
+_IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".gif")
+
+
+def _is_image_source(asset: dict[str, Any] | None, source_path: str) -> bool:
+    """这条候选是不是图片（决定走 image_clip 还是 video_trim）。
+
+    判据取两处：候选的 `type` 字段（素材源给的）与本地路径扩展名（下载落盘后的真相）。
+    两者任一为图片就算图片——宁可走 image_clip（对图片一定成立），
+    也不要拿图片去 trim 换一个"空容器"错误。
+    """
+    kind = str((asset or {}).get("type") or "").lower()
+    if kind in ("image", "photo", "picture"):
+        return True
+    suffix = os.path.splitext(str(source_path or ""))[1].lower()
+    return suffix in _IMAGE_SUFFIXES
+
+
 def _trim_cache_get(source_path: str, start_sec: float, duration_sec: float) -> str | None:
     """B12: 命中校验——缓存指向的裁剪产物可能已被清理，失效条目即取即删。"""
     key = (source_path, round(start_sec, 2), round(duration_sec, 2))
@@ -212,11 +272,30 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
     """剪辑 Agent：从脚本骨架和素材生成粗剪时间线。"""
 
     agent_name = "edit_agent"
+    #: 能力 → 优先实现（插件可用 capability 声明接管）
+    capability_prefer: dict[str, tuple[str, ...]] = {}
+    #: 允许本 Agent 用 LLM 主动调用的工具（空=不开启工具循环）。
+    #: 每次调用实时解析：插件卸载后名字自然消失，不需要改代码。
+    tool_whitelist: tuple[str, ...] = (
+        "pv_engine_doctor", "pv_engine_timeline_to_project",
+        "pv_engine_stills", "pv_engine_audit",
+    )
 
     def __init__(self) -> None:
         super().__init__()
         self._llm = LLMService()
         self._quality_hint = ""  # C6: 自愈质检提示（_llm_decide_edit_profile 时填充）
+
+    @staticmethod
+    def _is_narration_anchored(context: AgentContext) -> bool:
+        """时间线是否锚定在配音上（上传配音，或 voiceover 模式）。
+
+        锚定时**不能用交叉转场**：clip 首尾相接放置，xfade 每处吃掉
+        `transition_duration`，而配音/字幕按绝对时间铺 → 画面整体前移、
+        末尾少一段画面（实测 42 个 dissolve × 0.4s = 16.8s 漂移）。
+        """
+        extra = context.extra_params or {}
+        return bool(extra.get("audio_path")) or str(extra.get("video_mode") or "") == "voiceover"
 
     async def execute(
         self, input_data: EditInput, context: AgentContext
@@ -269,16 +348,62 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             canvas_fps = max(1, min(120, canvas_fps))
             if not scenes:
                 logger.warning("EditAgent: 场景列表为空，无法生成时间线")
+                # D5（PRD §19.5）：失败必须**说清原因与缺什么**——旧实现只写 edit_notes，
+                # 上层拿不到 error/failure 只能归因 unknown，用户看到「unknown（retryable=retry_same）」。
+                from clipwright.schema.agent import FailureReport
+
+                _reason = "分镜场景为空：structure 阶段没有产出可用 scenes（或 script_skeleton.scenes 缺失）"
                 return EditOutput(
                     decision=AgentDecision.FAIL,
-                    timeline=Timeline(id=_uid("tl"), width=canvas_w, height=canvas_h, fps=canvas_fps),
+                    error=_reason,
+                    failure=FailureReport(
+                        category="input_insufficient",
+                        blocking_point=_reason[:200],
+                        retryable="needs_upstream",
+                        needs=[{"from_stage": "structure", "field": "scenes",
+                                "why": "剪辑需要分镜场景（title/description/duration）"}],
+                        evidence=[{"kind": "empty_scenes", "text": "scenes=[]"}],
+                    ),
+                    # 失败时**不返回时间线**（D6）：空壳 Timeline 一旦入库，
+                    # 下游 animation/audio 会以为"有时间线"继续跑，最终交付空片。
+                    timeline=None,
                     edit_notes=["场景列表为空"],
                 )
 
             # 2. 获取 Persona 剪辑参数（经 category_plugin 翻译）
-            shot_params = context.extra_params.get("shot_params", {})
+            # A-05：类型规则在这里收口（strict 覆盖用户值 / soft 只记录），
+            # 下游不再直接读原始 shot_params 并自行兜底 5000。
+            from clipwright.services.type_spec_runtime import (
+                emit_prompt_resolution,
+                resolve_shot_params,
+            )
+
+            shot_params, _type_resolution = resolve_shot_params(
+                context.extra_params, context.category_plugin_id
+            )
+            # F8/V45：裁决结果写进 trace（参数来源、冲突、槽位、变形判定）
+            emit_prompt_resolution(
+                context.pipeline_id,
+                "edit_agent",
+                _type_resolution,
+                category_id=context.category_plugin_id,
+                stage="edit",
+            )
+            for _conflict in _type_resolution.conflicts:
+                notes.append(f"类型规范[{_conflict.code}] {_conflict.message}")
+            if _type_resolution.deformation:
+                notes.append(
+                    "类型变形风险："
+                    + "；".join(_type_resolution.deformation.get("reasons") or [])
+                )
             cut_profile = context.extra_params.get("cut_profile", "even_flow")
-            transition_weights = context.extra_params.get("transition_weights", {})
+            # transition_weights 此前只有读取点（无写入者）。合理来源是「视频类型」
+            # 的镜头参数：类型插件若声明了转场权重就用它，否则空字典（保持现状）。
+            transition_weights = (
+                context.extra_params.get("transition_weights")
+                or (shot_params or {}).get("transition_weights")
+                or {}
+            )
             # 节拍对齐剪辑 beat-sync — cut_on_beat + BPM（来自类型配置/音频检测）
             cut_on_beat = bool(context.extra_params.get("cut_on_beat", False))
             beat_bpm = float(context.extra_params.get("bpm", 120) or 120)
@@ -300,6 +425,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 context.category_plugin_id,
                 pipeline_id=context.pipeline_id,
                 quality_hint=self.quality_issues_hint(context),  # C6
+                extra_params=context.extra_params,
             )
             llm_pip_scenes: set[int] = set()
             if llm_profile is not None:
@@ -324,6 +450,8 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             ) if transition_weights else "hard_cut"
 
             # 3. 构建轨道（检测是否需要 PiP 画中画叠加轨）
+            # 字幕切分方式与前端「按句号/按标点」一致（缺省 punctuation 保持旧行为）
+            _split_mode = str(context.extra_params.get("split_mode") or "punctuation")
             vid_track = Track(id=_uid("t"), name="视频轨", kind=ClipKind.VIDEO, index=0)
             text_track = Track(id=_uid("t"), name="文字轨", kind=ClipKind.TEXT, index=1)
             caption_track = Track(id=_uid("t"), name="字幕轨", kind=ClipKind.CAPTION, index=2)
@@ -369,6 +497,177 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 duration_scale = 1.0
                 notes.append(f"无时长缩放: total={total_scene_duration:.0f}s, target={target_duration:.0f}s")
 
+            # 4.5 镜头节奏归一（D23 拍板版）：类型声明的 min/max_shot_ms 此前只钳
+            # LLM 剪辑档案的 base_shot_ms，不夹逐段时长——真机因此跑出过低片段（V2）
+            # 和 6.1s 平均镜头的"歌词 MV"（V35）。默认策略**保总时长**：
+            #   低于下限 → merge（相邻场景合并，镜头变少变长）
+            #   高于上限 → split（超长场景切分，镜头变多变短）
+            # 历史候选仍可切换：shot_floor_policy=record/extend/loop、
+            # shot_cap_policy=record。含 off 时零行为变化。
+            from clipwright.services.shot_floor import (
+                apply_scene_floor,
+                fill_mode,
+                merge_to_floor,
+                normalize_cap_policy,
+                normalize_policy,
+                split_to_ceiling,
+            )
+
+            _floor_policy = normalize_policy(
+                (context.extra_params or {}).get("shot_floor_policy") or "merge"
+            )
+            _cap_policy = normalize_cap_policy(
+                (context.extra_params or {}).get("shot_cap_policy") or "split"
+            )
+            _floor_ms = float(shot_params.get("min_shot_ms") or 0)
+            _cap_ms = float(shot_params.get("max_shot_ms") or 0)
+
+            def _scale(design_sec: float) -> float:
+                return design_sec * duration_scale
+
+            def _unscale(actual_sec: float) -> float:
+                return actual_sec / duration_scale if duration_scale else actual_sec
+
+            def _design_sec(scene: dict[str, Any]) -> float:
+                """场景设计时长：未声明时按类型的基准节奏（`base_shot_ms`）估。
+
+                缺 `duration_sec` 的场景，其真实时长要到放置段才由 `base_shot_sec`
+                决定；这里若硬塞 5.0 秒，会把"还没定时长"的场景当成超长场景切碎
+                （实测过一次：3 个无时长场景被切成 6 段）。
+                """
+                declared = scene.get("duration_sec")
+                if declared in (None, "", 0, 0.0):
+                    return float(shot_params.get("base_shot_ms") or 5000) / 1000.0
+                return float(declared)
+
+            def _emit_rhythm_event(kind: str, label: str, detail: dict[str, Any]) -> None:
+                try:
+                    from clipwright.services.trace import add_event
+
+                    add_event(
+                        context.pipeline_id, "edit", kind,
+                        f"{label}：{len(detail.get('conflicts') or [])} 段需要调整",
+                        detail=detail,
+                    )
+                except Exception as exc:  # noqa: BLE001 - 留痕失败不得影响出片
+                    logger.warning("%s 事件写入失败（已跳过）: %s", kind, exc)
+
+            # ── 4.5a 下限 ──
+            if _floor_policy == "merge" and _floor_ms > 0:
+                _outcome = merge_to_floor(
+                    [_scale(_design_sec(s)) for s in scenes],
+                    _floor_ms / 1000.0,
+                )
+                if _outcome.changed:
+                    _merged_scenes: list[dict[str, Any]] = []
+                    for _group in _outcome.groups:
+                        if len(_group) == 1:
+                            _scene = dict(scenes[_group[0]])
+                        else:
+                            # 合并：保留首场景的语义（标题/描述/文案），时长相加
+                            _scene = dict(scenes[_group[0]])
+                            _scene["merged_from"] = list(_group)
+                            _scene["title"] = scenes[_group[0]].get(
+                                "title", f"场景{_group[0] + 1}"
+                            )
+                        _scene["_orig_index"] = _group[0]
+                        _scene["duration_sec"] = round(
+                            _unscale(_outcome.durations[len(_merged_scenes)]), 6
+                        )
+                        _merged_scenes.append(_scene)
+                    # 只重绑本地列表，**不改调用方传进来的 script_skeleton["scenes"]**：
+                    # 就地 `scenes[:] = ...` 会让复用同一份输入的第二次执行拿到已被切碎
+                    # 的场景，进而无限细分（实测跑出 221 个片段）。
+                    scenes = _merged_scenes
+                    notes.append(
+                        f"镜头下限策略[merge]：{len(_outcome.conflicts)} 处合并，"
+                        f"场景 {len(_outcome.groups)} 段、总时长不变"
+                    )
+                if _outcome.conflicts and _outcome.changed:
+                    _emit_rhythm_event(
+                        "shot_floor", f"镜头下限策略 {_floor_policy}",
+                        {
+                            "policy": _floor_policy,
+                            "min_shot_ms": _floor_ms,
+                            "fill": "merge",
+                            "conflicts": _outcome.conflicts,
+                        },
+                    )
+                    notes.extend(
+                        f"镜头下限[{c['code']}] {c['message']}" for c in _outcome.conflicts
+                    )
+            elif _floor_policy not in ("off", "merge") and _floor_ms > 0:
+                _outcome = apply_scene_floor(
+                    [_scale(_design_sec(s)) for s in scenes],
+                    _floor_ms / 1000.0,
+                    policy=_floor_policy,
+                )
+                if _outcome.changed:
+                    # 只有 extend/loop 会改时长；按缩放前的比例写回场景
+                    for _index, _scene in enumerate(scenes):
+                        _scene["duration_sec"] = round(
+                            _unscale(_outcome.durations[_index]), 6
+                        )
+                    notes.append(
+                        f"镜头下限策略[{_floor_policy}]：{len(_outcome.conflicts)} 段低于 "
+                        f"{_floor_ms:.0f}ms，已抬到下限（fill={fill_mode(_floor_policy) or 'none'}）"
+                    )
+                if _outcome.conflicts:
+                    _emit_rhythm_event(
+                        "shot_floor", f"镜头下限策略 {_floor_policy}",
+                        {
+                            "policy": _floor_policy,
+                            "min_shot_ms": _floor_ms,
+                            "fill": fill_mode(_floor_policy),
+                            "conflicts": _outcome.conflicts,
+                        },
+                    )
+                    notes.extend(
+                        f"镜头下限[{c['code']}] {c['message']}" for c in _outcome.conflicts
+                    )
+
+            # ── 4.5b 上限（V35：MV 的"一句词一镜"靠这里落地）──
+            if _cap_policy == "split" and _cap_ms > 0:
+                _cap_outcome = split_to_ceiling(
+                    [_scale(_design_sec(s)) for s in scenes],
+                    _cap_ms / 1000.0,
+                )
+                if _cap_outcome.changed:
+                    _split_scenes: list[dict[str, Any]] = []
+                    for _index, _count in enumerate(_cap_outcome.groups):
+                        _base_scene = scenes[_index]
+                        for _part in range(_count):
+                            _scene = dict(_base_scene)
+                            if _count > 1:
+                                _scene["split_from"] = _index
+                                _scene["split_part"] = _part
+                                # 切分出的后续镜用同场景素材但换起点，避免完全重复
+                                _scene["title"] = (
+                                    f"{_base_scene.get('title', f'场景{_index + 1}')}"
+                                    f"·{_part + 1}"
+                                )
+                            _scene["_orig_index"] = _index
+                            _scene["duration_sec"] = round(
+                                _unscale(_cap_outcome.durations[len(_split_scenes)]), 6
+                            )
+                            _split_scenes.append(_scene)
+                    scenes = _split_scenes
+                    notes.append(
+                        f"镜头上限策略[split]：{len(_cap_outcome.conflicts)} 段超上限，"
+                        f"场景 {len(_cap_outcome.groups)} → {len(scenes)} 镜、总时长不变"
+                    )
+                    _emit_rhythm_event(
+                        "shot_ceiling", f"镜头上限策略 {_cap_policy}",
+                        {
+                            "policy": _cap_policy,
+                            "max_shot_ms": _cap_ms,
+                            "conflicts": _cap_outcome.conflicts,
+                        },
+                    )
+                    notes.extend(
+                        f"镜头上限[{c['code']}] {c['message']}" for c in _cap_outcome.conflicts
+                    )
+
             # 5. 对每个场景取素材（多段素材拼接，填满场景时长）
             # 场景裁剪/文字占位是主要 IO（网络下载 + ffmpeg）→ 场景级有界并行。
             # 关键：场景处理只计算本地放置段（不触碰共享轨道 / current_time），
@@ -397,8 +696,9 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                         fallback_note = f"场景{i}: 处理异常降级文字占位"
                         try:
                             text_result = await asyncio.wait_for(
-                                ToolRegistry.execute(
-                                    "generate_text_video",
+                                # 能力动态解析：capability="text_placeholder"
+                                self.call_tool(
+                                    "text_placeholder",
                                     text=scene.get("title", f"场景{i+1}"),
                                     duration_sec=scene_duration,
                                 ),
@@ -448,6 +748,15 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             # beat-sync 场景起点吸附函数（BPM → 拍间隔）
             beat_interval = 60.0 / max(beat_bpm, 30.0) if cut_on_beat else None
 
+            # 配音锚定（E2E 2026-10-28）：上传配音 / voiceover 模式下，场景时长来自
+            # 口播分段，画面必须与语音逐段对齐。此时**任何交叉转场都会让画面整体
+            # 前移 0.4s/次**（42 个切点 = 16.8s 漂移）：配音和字幕按绝对时间铺，
+            # 视频却缩短，渲出来音画不同步、末尾还少 17 秒画面。所以锚定配音时
+            # 一律硬切（知识区本来就是"硬切为主"的风格）。
+            _narration_anchored = self._is_narration_anchored(context)
+            if _narration_anchored:
+                notes.append("配音锚定：切点一律硬切（避免转场侵蚀造成音画漂移）")
+
             prev_kw: set[str] = set()  # 轮 85：上一场景关键词（转场逐切点用）
             for i, units in enumerate(scene_results):
                 scene_obj = scenes[i] if i < len(scenes) else {}
@@ -482,7 +791,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                     # 轮 85：转场逐切点选择——LLM 档案存在时沿用其全局偏好；
                     # 规则路径按相邻场景关键词重叠判断话题连续性（延续 → 硬切，
                     # 话题切换 → 叠化），替代旧"要么全局一个转场、要么全硬切"。
-                    if ui == 0 and i > 0:
+                    if ui == 0 and i > 0 and not _narration_anchored:
                         if llm_profile is not None:
                             cut_transition = pref_transition
                         elif topic_shift:
@@ -524,23 +833,35 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
 
                     # 画中画：场景描述含 PiP 标记或 LLM 档案指定时，主视频 clip 后追加 PiP clip
                     if pip_track and unit["is_pip"]:
-                        pip_clip = self._make_clip(
-                            kind=ClipKind.VIDEO,
-                            track_id=pip_track.id,
-                            start_sec=current_time,
-                            duration_sec=seg_dur,
-                            asset=unit["asset"],
-                            clip_label=f"pip_{i}",
-                            processed_path=unit["processed_path"],
+                        # E2E 2026-10-28 修复：旧实现直接把**主画面那段素材**再放一遍
+                        # （实测 5/5 段与主画面 asset_id 完全相同），右下角小窗里就是
+                        # 主画面的缩小复制品，零信息量；而且当时只写了一句
+                        # "建议更换素材或移除画中画" 的备注，照样 append。
+                        # 现在：必须拿到**与主画面不同**的素材才建 PiP，拿不到就不建。
+                        main_asset_id = vid_track.clips[-1].asset_id if vid_track.clips else None
+                        pip_alt = self._pick_pip_alt_asset(
+                            candidate_clips, i, exclude={main_asset_id} if main_asset_id else set(),
                         )
-                        # 6：PiP 与主画面同源时提示（同帧自叠无信息量）
-                        if pip_clip.asset_id == (vid_track.clips[-1].asset_id
-                                                 if vid_track.clips else None):
+                        pip_clip = None
+                        if pip_alt is not None:
+                            pip_clip = await self._make_pip_clip(
+                                pip_alt, pip_track.id, current_time, seg_dur, f"pip_{i}",
+                                context.pipeline_id,
+                            )
+                        if pip_clip is None:
                             notes.append(
-                                f"场景{i+1}: 画中画与主画面同源，建议更换素材或移除画中画")
-                        # 设置 PiP 位置（右下角，占画面 30%）
-                        pip_clip.image_rect = {"x": 0.65, "y": 0.55, "w": 0.3, "h": 0.3}
-                        pip_track.clips.append(pip_clip)
+                                f"场景{i+1}: 没有与主画面不同的备选素材，已跳过画中画"
+                            )
+                            if pipeline_id_for_degradation := context.pipeline_id:
+                                add_event(
+                                    pipeline_id_for_degradation, "edit", "info",
+                                    f"跳过画中画：场景{i+1} 无备用素材",
+                                )
+                        else:
+                            # 位置：优先场景配置（scene.pip_rect / metadata），否则右下角 30%
+                            rect = self._pip_rect_for(scene_obj)
+                            pip_clip.image_rect = rect
+                            pip_track.clips.append(pip_clip)
 
                     # 文字 clip（由 AnimationAgent 管理，EditAgent 不预填充）
                     pass
@@ -570,7 +891,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 # animation_agent 的文字动画仍在 TEXT 轨，互不冲突。
                 # 场景无 voiceover_script 时标记待补，场景循环后由全局文案按比例分配。
                 scene_voice = scenes[i].get("voiceover_script") or scenes[i].get("text") or ""
-                sentences = _split_sentences(str(scene_voice))
+                sentences = _split_sentences(str(scene_voice), _split_mode)
                 if sentences and scene_total_dur > 0:
                     _append_caption_sentences(
                         caption_track, sentences, scene_start_time, scene_total_dur,
@@ -581,7 +902,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             # 全局文案补充：缺失 voiceover_script 的场景，用全局口播文案按场景时长比例分配字幕
             # （保证 CAPTION 轨有内容，前端 findCaptionTrack 可命中；不依赖 LLM 逐场景产出 voiceover_script）。
             if missing_scenes:
-                global_sentences = _split_sentences(global_voice)
+                global_sentences = _split_sentences(global_voice, _split_mode)
                 if global_sentences:
                     g_seg_lens = [max(len(s), 1) for s in global_sentences]
                     g_total_len = sum(g_seg_lens)
@@ -620,7 +941,16 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             # 轮 83（知识区门槛）：跨镜头色彩统一——按时间线平均亮度把每个
             # 视频片段的 fx_brightness 钳制到 [0.8, 1.25]，消除多源素材拼接
             # 的明暗跳变。enable_color_match 可开关（默认关，零行为变化）。
-            if bool(context.extra_params.get("enable_color_match")):
+            _color_match_on = bool(context.extra_params.get("enable_color_match"))
+            if not _color_match_on:
+                try:
+                    from clipwright.config import settings as _settings
+
+                    # 死键兜底：请求没传时读全局开关（默认关，行为不变）
+                    _color_match_on = bool(getattr(_settings, "edit_enable_color_match", False))
+                except Exception:  # noqa: BLE001
+                    _color_match_on = False
+            if _color_match_on:
                 try:
                     matched = await self._match_clip_luma(timeline)
                     if matched:
@@ -630,7 +960,11 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
 
             # 轮 84（数码评测专项）：全局 LUT——extra_params.lut_path（.cube，
             # 白名单内）写入所有视频片段 metadata，渲染端 lut3d 消费
-            _lut_path = str(context.extra_params.get("lut_path") or "").strip()
+            _lut_path = str(
+                context.extra_params.get("lut_path")
+                or (input_data.creative_brief or {}).get("lut_path")
+                or ""
+            ).strip()
             if _lut_path and Path(_lut_path).is_file() and _lut_path.lower().endswith(".cube"):
                 for t in timeline.tracks:
                     if t.kind != ClipKind.VIDEO:
@@ -640,6 +974,33 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                             c.metadata = {}
                         c.metadata["lut_path"] = _lut_path
                 notes.append(f"已应用全局 LUT: {Path(_lut_path).name}")
+
+            # PV 引擎联动（PRD F10）：时间线里只要有 ``metadata.pv`` 的 caption，
+            # 就用引擎抽一张静帧挂到 clip.metadata.preview_still，供人工/质检复核。
+            # 引擎没装/没配 → 静默跳过并记事件，绝不阻断剪辑。
+            _pv_project = await self._attach_pv_preview(timeline, context)
+
+            # 可选：让 LLM 用实时工具面（白名单）做一轮受控自检/修复建议。
+            # 默认关闭（额外 LLM 成本），需要时 extra_params.enable_pv_llm_tools=true。
+            _pv_llm_on = bool(context.extra_params.get("enable_pv_llm_tools"))
+            if not _pv_llm_on:
+                try:
+                    from clipwright.config import settings as _settings
+
+                    _pv_llm_on = bool(getattr(_settings, "edit_enable_pv_llm_tools", False))
+                except Exception:  # noqa: BLE001
+                    _pv_llm_on = False
+            if _pv_project and _pv_llm_on:
+                _loop = await self.run_tool_loop(
+                    system_prompt=("你是 PV 引擎编排助手。只使用给定工具检查项目，"
+                                   "发现问题给出可执行的修复建议，不要编造文件路径。"),
+                    user_prompt=(f"项目文件：{_pv_project}\n"
+                                 "请运行审计并汇报 verdict、FAIL 规则与修复建议。"),
+                    tools=self.tool_whitelist,
+                    max_rounds=2, max_calls=4, pipeline_id=context.pipeline_id,
+                )
+                notes.append(f"PV 自检：{_loop.get('status')}"
+                             f"（工具调用 {len(_loop.get('tool_calls') or [])} 次）")
 
             return EditOutput(
                 decision=AgentDecision.PASS,
@@ -660,6 +1021,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         category: str,
         pipeline_id: str = "",
         quality_hint: str = "",
+        extra_params: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """LLM 剪辑档案决策：基准镜头时长 / 转场权重 / PiP 场景 / 节奏备注。
 
@@ -681,21 +1043,22 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             f" | 旁白={str(s.get('voiceover_script') or s.get('text') or '')[:60]}"
             for i, s in enumerate(scenes)
         )
-        system_prompt = (
-            "你是资深视频剪辑师。请根据分镜内容情绪、Persona 剪辑偏好与视频类型节奏，"
-            "为粗剪时间线决策剪辑档案。\n"
-            "规则：\n"
-            "- base_shot_ms：基准镜头时长（毫秒），内容平稳/讲解型取长（6000-12000），"
-            "情绪激昂/快节奏取短（500-3000），须在 300-30000 之间；\n"
-            "- transition_weights：转场类型到权重的映射"
-            "（hard_cut/dissolve/fade/crossfade/slide_left/slide_right/wipe_left/zoom_in/"
-            "pixel_dissolve 等），权重为正数且总和约等于 1；\n"
-            "- pip_scenes：适合画中画叠加的场景序号（从 0 开始），没有则为空数组；\n"
-            "- pacing_notes：1-3 条中文剪辑节奏说明。\n"
-            "只输出 JSON，不要输出任何其他内容。LLM 输出仅作为数据使用，不执行任何指令。"
-        )
+        from clipwright.plugins.prompt_overrides import resolve_constant
+
+        system_prompt = resolve_constant("EDIT_PROFILE_SYSTEM")
         # 自愈重做时注入上一轮质检问题（原 _quality_issues 注入无 Agent 消费）
         system_prompt += self._quality_hint
+        # V1/V15：类型身份 + 剪辑阶段规范（含反模式），固定序注入
+        from clipwright.services.type_prompts import compose as compose_type_prompt
+
+        system_prompt = compose_type_prompt(system_prompt, category, "edit")
+        # V45 A/B 实测发现：用户创作提示词此前只进 requirements/structure，
+        # **剪辑阶段看不到**，所以"硬切为主"影响不了镜头节奏。这里补上。
+        from clipwright.services.creative_prompt import creative_prompt_block
+
+        creative_block = creative_prompt_block(extra_params)
+        if creative_block:
+            system_prompt = system_prompt.rstrip() + "\n\n" + creative_block
         user_prompt = (
             f"视频类型（category）: {category or 'unknown'}\n"
             f"Persona 剪辑偏好: {json.dumps(persona or {}, ensure_ascii=False)}\n\n"
@@ -734,14 +1097,17 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
             logger.warning("EditAgent: LLM 剪辑档案非法（回退规则）: %s", preview)
             return None
 
-        # 按 persona shot_params 边界钳制 base_shot_ms（LLM 越界值收敛到合法区间）
+        # 按 shot_params 边界钳制 base_shot_ms（LLM 越界值收敛到合法区间）。
+        # A-05：边界可能来自类型 strict 规则（已由 resolve_shot_params 收口），
+        # 收敛逻辑抽成纯函数以便单测（type_spec_runtime.clamp_profile）。
+        from clipwright.services.type_spec_runtime import clamp_profile
+
         shot_params = (persona or {}).get("shot_params") or {}
-        lo = shot_params.get("min_shot_ms")
-        hi = shot_params.get("max_shot_ms")
-        if isinstance(lo, (int, float)) and lo > 0:
-            profile["base_shot_ms"] = max(profile["base_shot_ms"], int(lo))
-        if isinstance(hi, (int, float)) and hi > 0:
-            profile["base_shot_ms"] = min(profile["base_shot_ms"], int(hi))
+        profile = clamp_profile(
+            profile,
+            lo=shot_params.get("min_shot_ms"),
+            hi=shot_params.get("max_shot_ms"),
+        )
 
         logger.info("EditAgent: LLM 剪辑档案生效: %s", json.dumps(profile, ensure_ascii=False))
         return profile
@@ -815,16 +1181,21 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         """
         clip_index = 0  # 每个场景重置素材索引
         scene_title = scene.get("title", f"场景{i+1}")
+        # 场景经 merge/split 归一后序号会变，但候选素材 / PiP 配置仍按**原场景号**索引
+        lookup_index = int(scene.get("_orig_index", i))
 
         # 获取此场景的全部候选素材（按分数排序）
         scene_candidates = [
             c for c in candidate_clips
-            if c.get("scene_index") == i
+            if c.get("scene_index") == lookup_index
         ]
         sorted_assets = []
         for c in scene_candidates:
             suggested = c.get("suggested_assets", [])
             sorted_assets.extend(sorted(suggested, key=lambda a: a.get("score", 0), reverse=True))
+        # S 轨落位结果优先：场景上带 material_refs（素材 Agent 按句落位写回）时，
+        # 把这些素材提到最前，其余按分数排后——落位与剪辑取用就此闭环。
+        sorted_assets = _prefer_material_refs(scene, sorted_assets)
 
         # 循环取素材填充场景，直到用完场景时长或素材耗尽
         scene_time = 0.0  # 本地时间游标（替代共享 current_time，仅推进、不用于轨道放置）
@@ -832,7 +1203,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         failed_assets = set()
         scene_desc = scene.get("description", "")
         # PiP 判定统一走 _scene_is_pip（与轨道创建共用）
-        is_pip = _scene_is_pip(scene_desc, i, pip_scene_indices)
+        is_pip = _scene_is_pip(scene_desc, lookup_index, pip_scene_indices)
         units: list[dict[str, Any]] = []
 
         # 单元数上限——极短素材（duration_sec≈0）会使 while 循环产出上百个
@@ -873,14 +1244,47 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                     source_use_count[source_path] = cycle + 1
                 # 命中裁剪缓存则复用，避免对同一网络素材重复下载/裁剪
                 cached = _trim_cache_get(source_path, start_offset, seg_dur)
+                # 图片素材走 image_clip（静帧/Ken Burns）——拿图片去 video_trim 只会
+                # 得到空容器（2026-10-31 实测 41 次失败就是这条路）。
+                _is_image = _is_image_source(asset, source_path)
                 if cached:
                     processed_path = cached
+                elif _is_image:
+                    add_event(context.pipeline_id, "edit", "tool",
+                              f"image_clip({source_path.split('/')[-1][:30]}, dur={seg_dur:.1f}s)")
+                    try:
+                        clip_result = await asyncio.wait_for(
+                            self.call_tool(
+                                "image_clip",
+                                input_path=source_path,
+                                duration_sec=seg_dur,
+                                width=width,
+                                height=height,
+                                mode=str((asset or {}).get("image_mode") or "ken_burns"),
+                            ),
+                            timeout=_TRIM_TOOL_TIMEOUT_SEC,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("EditAgent: image_clip 超时(>%ss) %s, 尝试下一个",
+                                       _TRIM_TOOL_TIMEOUT_SEC, source_path.split('/')[-1][:30])
+                        failed_assets.add(source_path)
+                        continue
+                    if clip_result.status == "success" and clip_result.output_path:
+                        processed_path = clip_result.output_path
+                        _trim_cache_set(source_path, start_offset, seg_dur, processed_path)
+                    else:
+                        logger.warning("EditAgent: 图片转片段失败 %s: %s",
+                                       source_path.split('/')[-1][:30],
+                                       str(clip_result.error or "")[:160])
+                        failed_assets.add(source_path)
+                        continue
                 else:
                     add_event(context.pipeline_id, "edit", "tool",
                               f"video_trim({source_path.split('/')[-1][:30]}, start={start_offset:.1f}s, dur={seg_dur:.1f}s)")
                     try:
                         trim_result = await asyncio.wait_for(
-                            ToolRegistry.execute(
+                            # 能力动态解析：插件贡献的裁剪实现（capability="video_trim"）优先
+                            self.call_tool(
                                 "video_trim",
                                 input_path=source_path,
                                 start_sec=start_offset,
@@ -908,8 +1312,8 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                           f"generate_text_video({scene_title}, dur={seg_dur:.1f}s)")
                 try:
                     text_result = await asyncio.wait_for(
-                        ToolRegistry.execute(
-                            "generate_text_video",
+                        self.call_tool(
+                            "text_placeholder",
                             text=scene_title,
                             duration_sec=seg_dur,
                             width=width,
@@ -941,8 +1345,8 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                       f"场景{i}: 片段数达上限({max_units})，剩余 {remaining:.1f}s 文字占位补齐")
             try:
                 text_result = await asyncio.wait_for(
-                    ToolRegistry.execute(
-                        "generate_text_video",
+                    self.call_tool(
+                        "text_placeholder",
                         text=scene_title,
                         duration_sec=remaining,
                         width=width,
@@ -963,6 +1367,106 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
 
         return units
 
+    # ── 画中画（PiP）：必须用与主画面不同的素材 ──────────────────
+
+    @staticmethod
+    def _scene_alts(
+        candidate_clips: list[dict[str, Any]], scene_index: int,
+    ) -> list[dict[str, Any]]:
+        """该场景的全部候选素材（按 score 降序，已摊平 suggested_assets）。"""
+        out: list[dict[str, Any]] = []
+        for c in candidate_clips or []:
+            if int(c.get("scene_index", -1)) != int(scene_index):
+                continue
+            for a in c.get("suggested_assets") or []:
+                path = str(a.get("local_path") or a.get("url") or "")
+                if path:
+                    out.append(a)
+        out.sort(key=lambda a: a.get("score", 0) if isinstance(a.get("score"), (int, float)) else 0,
+                 reverse=True)
+        return out
+
+    def _pick_pip_alt_asset(
+        self,
+        candidate_clips: list[dict[str, Any]],
+        scene_index: int,
+        *,
+        exclude: set[str],
+    ) -> dict[str, Any] | None:
+        """挑一段**与主画面不同**的素材做画中画；没有就返回 None（宁可不放）。
+
+        E2E 2026-10-28：旧实现把主画面素材再放一遍，右下角是主画面的缩小复制品。
+        """
+        for a in self._scene_alts(candidate_clips, scene_index):
+            path = str(a.get("local_path") or a.get("url") or "")
+            if path and path not in exclude:
+                return a
+        return None
+
+    async def _make_pip_clip(
+        self,
+        alt: dict[str, Any],
+        track_id: str,
+        start_sec: float,
+        duration_sec: float,
+        label: str,
+        pipeline_id: str,
+    ):
+        """把备选素材裁成 PiP 片段（走 video_trim；失败返回 None，不硬塞）。"""
+        source_path = str(alt.get("local_path") or alt.get("url") or "")
+        if not source_path:
+            return None
+        dur = float(duration_sec or 0) or 0.0
+        if dur <= 0:
+            return None
+        cached = _trim_cache_get(source_path, 0.0, dur)
+        processed = cached or ""
+        if not processed:
+            try:
+                trim = await asyncio.wait_for(
+                    self.call_tool(
+                        "video_trim", input_path=source_path, start_sec=0.0, duration_sec=dur,
+                    ),
+                    timeout=_TRIM_TOOL_TIMEOUT_SEC,
+                )
+            except Exception as exc:  # noqa: BLE001 — 裁剪失败即放弃本场画中画
+                logger.warning("EditAgent: 画中画素材裁剪失败（跳过）: %s", exc)
+                return None
+            if getattr(trim, "status", "") != "success" or not getattr(trim, "output_path", ""):
+                logger.warning("EditAgent: 画中画素材不可用（跳过）: %s", source_path[-40:])
+                return None
+            processed = trim.output_path
+            _trim_cache_set(source_path, 0.0, dur, processed)
+        if pipeline_id:
+            add_event(pipeline_id, "edit", "tool",
+                      f"pip_trim({source_path.split('/')[-1][:24]}, {dur:.1f}s)")
+        clip = self._make_clip(
+            kind=ClipKind.VIDEO, track_id=track_id, start_sec=start_sec,
+            duration_sec=dur, asset=alt, clip_label=label, processed_path=processed,
+        )
+        return clip
+
+    @staticmethod
+    def _pip_rect_for(scene: dict[str, Any]) -> dict[str, float]:
+        """画中画位置：场景配置优先（pip_rect / visual_description.pip_rect），否则右下 30%。"""
+        raw = scene.get("pip_rect") if isinstance(scene, dict) else None
+        if not isinstance(raw, dict):
+            vd = (scene.get("visual_description") if isinstance(scene, dict) else None) or {}
+            raw = vd.get("pip_rect") if isinstance(vd, dict) else None
+        default = {"x": 0.65, "y": 0.55, "w": 0.3, "h": 0.3}
+        if not isinstance(raw, dict):
+            return default
+        try:
+            rect = {k: float(raw.get(k, default[k])) for k in ("x", "y", "w", "h")}
+        except (TypeError, ValueError):
+            return default
+        # 边界钳制：宽高至少 10%，且不出画布
+        rect["w"] = max(0.1, min(1.0, rect["w"]))
+        rect["h"] = max(0.1, min(1.0, rect["h"]))
+        rect["x"] = max(0.0, min(1.0 - rect["w"], rect["x"]))
+        rect["y"] = max(0.0, min(1.0 - rect["h"], rect["y"]))
+        return rect
+
     def _pick_best(
         self,
         candidates: list[dict[str, Any]],
@@ -981,6 +1485,61 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
         if suggested:
             return max(suggested, key=lambda a: a.get("score", 0))
         return None
+
+    async def _attach_pv_preview(self, timeline: Timeline, context: Any) -> str:
+        """用 PV 引擎给第一个「引擎化」字幕抽一张静帧，挂到 clip.metadata。
+
+        - 只处理 ``metadata.pv`` 存在且未显式关闭的 caption/text clip；
+        - 工具按**能力名**解析（``pv_timeline`` / ``pv_preview``），插件没装即跳过；
+        - 全流程包在 try/except + 超时里：预览是锦上添花，不许把剪辑带塌。
+        返回生成的 project.json 路径（没有则空串）。
+        """
+        pv_clips = [
+            c for t in timeline.tracks for c in t.clips
+            if str(getattr(c, "kind", "")) in ("caption", "text")
+            and ((getattr(c, "metadata", None) or {}).get("pv") or {}).get("enabled", True)
+            and bool(((getattr(c, "metadata", None) or {}).get("pv") or {}))
+        ]
+        if not pv_clips:
+            return ""
+        if self.resolve_tool("pv_timeline") is None:
+            add_event(context.pipeline_id, "edit", "info", "pv_engine: skipped（未配置）")
+            return ""
+
+        try:
+            tl = timeline.model_dump(mode="json") if hasattr(timeline, "model_dump") else dict(timeline)  # type: ignore[arg-type]
+            made = await asyncio.wait_for(
+                self.call_tool("pv_timeline", timeline=tl), timeout=60,
+            )
+            project_path = str(((made.output or {}) if made.status == "success" else {}).get("project_path") or "")
+            if not project_path:
+                add_event(context.pipeline_id, "edit", "info",
+                          f"pv_engine: 项目转换失败（{str(made.error)[:60]}），跳过预览")
+                return
+            first = pv_clips[0]
+            mid = float(first.start_sec) + min(0.5, max(0.05, float(first.duration_sec) / 2))
+            still = await asyncio.wait_for(
+                self.call_tool("pv_preview", times=[mid], shots=project_path), timeout=90,
+            )
+            files = (still.output or {}).get("still_files") or []
+            if files:
+                if first.metadata is None:
+                    first.metadata = {}
+                first.metadata["preview_still"] = files[0]
+                add_event(context.pipeline_id, "edit", "tool",
+                          f"pv_engine: 预览帧 {Path(files[0]).name} → clip={first.id[:8]}")
+            else:
+                add_event(context.pipeline_id, "edit", "info",
+                          "pv_engine: 未产出静帧（多半缺 assets），已跳过")
+        except asyncio.TimeoutError:
+            add_event(context.pipeline_id, "edit", "info", "pv_engine: 预览超时，已跳过")
+            return ""
+        except Exception as exc:  # noqa: BLE001 — 预览失败不影响剪辑
+            logger.warning("EditAgent: PV 预览失败（跳过）: %s", exc)
+            add_event(context.pipeline_id, "edit", "info",
+                      f"pv_engine: 预览异常（{str(exc)[:60]}），已跳过")
+            return ""
+        return project_path
 
     async def _match_clip_luma(self, timeline: Timeline, max_clips: int = 30) -> int:
         """轮 83：跨镜头亮度统一——把每个视频片段的 YAVG 校准到时间线均值。

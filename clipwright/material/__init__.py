@@ -10,6 +10,7 @@
 
 from clipwright.material.base import MaterialSource
 from clipwright.material.json_source import JsonCatalogSource
+from clipwright.material.local_source import LocalFolderSource, source_from_env
 from clipwright.material.rag_source import RagKnowledgeSource
 from clipwright.material.registry import MaterialRegistry
 from clipwright.material.url_source import UrlMaterialSource
@@ -18,6 +19,8 @@ __all__ = [
     "MaterialSource",
     "MaterialRegistry",
     "JsonCatalogSource",
+    "LocalFolderSource",
     "UrlMaterialSource",
     "RagKnowledgeSource",
+    "source_from_env",
 ]

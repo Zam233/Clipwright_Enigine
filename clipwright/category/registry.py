@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from clipwright.category.base import BaseCategoryPlugin
 
@@ -70,3 +70,36 @@ class CategoryRegistry:
     def clear(cls) -> None:
         cls._plugins.clear()
         cls._owner_plugin.clear()
+
+
+def resolve_category_plugin(category_plugin_id: str) -> tuple[Any, str, str]:
+    """按类型 id 取插件；空 id 落默认类型，未知 id 带可用列表报错。
+
+    返回 ``(plugin, defaulted_id, error)``，三者互斥：
+
+    - 正常命中：``(plugin, "", "")``
+    - 空 id（未指定类型）：``(plugin, "<默认 id>", "")``——与 Persona 的
+      ``load_persona_or_default`` 对齐；调用方应把 defaulted_id 写回请求，
+      否则后续 AgentContext / trace 里仍是空串。
+    - 取不到：``(None, "", "<人话原因>")``，原因里列出可用类型。
+
+    为什么放在注册表旁边：这是"按 id 查表"的语义，不是编排逻辑。历史上它长在
+    `pipeline_v2` 里，于是"取类型插件"这件小事必须 import 整个编排器。
+    """
+    plugin = CategoryRegistry.get(str(category_plugin_id or ""))
+    if plugin is not None:
+        return plugin, "", ""
+
+    available = CategoryRegistry.list()
+    if not str(category_plugin_id or "").strip():
+        if not available:
+            return None, "", "没有已注册的视频类型插件（CategoryRegistry 为空），无法启动管线"
+        default_id = str(available[0]["id"])
+        plugin = CategoryRegistry.get(default_id)
+        if plugin is None:  # 列表与注册表不一致（竞态/卸载）
+            return None, "", f"默认类型插件 {default_id} 未注册（注册表不一致）"
+        return plugin, default_id, ""
+
+    names = "、".join(str(c["id"]) for c in available) or "无"
+    return None, "", f"Unknown category plugin: {category_plugin_id}（可用类型：{names}）"
+

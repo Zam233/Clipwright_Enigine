@@ -57,6 +57,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from clipwright.api import pipeline as pipeline_api
+from clipwright.api import eval as eval_api
+from clipwright.api import supervisor as supervisor_api
 from clipwright.api import persona as persona_api
 from clipwright.api import persona_forge as persona_forge_api
 from clipwright.api import chat_forge as chat_forge_api
@@ -65,7 +67,10 @@ from clipwright.api import settings as settings_api
 from clipwright.api import providers as providers_api
 from clipwright.api import rag as rag_api
 from clipwright.api import render as render_api
+from clipwright.api import capability as capability_api
 from clipwright.api import tool as tool_api
+from clipwright.api import tool_surface as tool_surface_api
+from clipwright.api import task as task_api
 from clipwright.api import plugin as plugin_api
 from clipwright.api import animation as animation_api
 from clipwright.api import material as material_api
@@ -91,11 +96,14 @@ from clipwright.api import font as font_api
 from clipwright.api import requirements as requirements_api
 from clipwright.api import versions as versions_api
 from clipwright.api import scheduler as scheduler_api
+from clipwright.api import workspace as workspace_api
+from clipwright.api import diagnostics as diagnostics_api
 from clipwright.category import (
     CategoryRegistry,
     DigitalReviewPlugin,
     KichikuFastcutPlugin,
     KnowledgeLongformPlugin,
+    LyricMvPlugin,
     VlogDailyPlugin,
 )
 from clipwright.plugins import PluginLoader
@@ -155,12 +163,9 @@ async def lifespan(app: FastAPI):
     except Exception as _prov_err:
         logger.warning("LLM provider 注册失败（不影响启动）: %s", _prov_err)
 
-    # 4.3 B-2：内置 TTS provider 注册（qwen-tts/cosyvoice/minimax；幂等）
-    try:
-        from clipwright.providers.tts import ensure_tts_providers_registered
-        ensure_tts_providers_registered()
-    except Exception as _tts_err:
-        logger.warning("TTS provider 注册失败（不影响启动）: %s", _tts_err)
+    # 4.3 裁定 3（PRD §15.1.6）/ B3-T6：**启动不再注册内置 TTS provider**。
+    # TTS 协议插件（tts_cosyvoice / tts_qwen / tts_minimax）在 `_plugin_loader.load_all()`
+    # 里注册；没有插件时 engine 不带任何 TTS 能力（能力缺失是一等状态，不是异常）。
 
     # 4.4 B-2：内置 STT provider 注册（whisper/faster-whisper；幂等）
     try:
@@ -211,11 +216,21 @@ async def lifespan(app: FastAPI):
     mongo_ctx.connect()
 
     # 4.78 生产加固 1.2: 管线运行态启动恢复（遗留 running 标 interrupted + 重建映射）
+    # 注意：这里在 lifespan（async）里调用，而 MongoDbModel 的 find_many/update 走
+    # `_io` → 在事件循环里返回 coroutine。同步调用会直接抛
+    # "'coroutine' object is not iterable"，恢复从未真正执行过（僵尸 running 永残留）。
     try:
         from clipwright.api.pipeline import recover_pipeline_runtime
-        recover_pipeline_runtime()
+        await asyncio.to_thread(recover_pipeline_runtime)
     except Exception as e:
         logger.warning("管线运行态启动恢复跳过: %s", e)
+    # 渲染队列启动恢复：上个进程遗留的 queued/rendering 永远没有 worker，
+    # 标记成「进程重启中断」，否则前端队列里永久挂着「恢复的任务 / Task not found」。
+    try:
+        from clipwright.api.render import mark_interrupted_render_tasks
+        await asyncio.to_thread(mark_interrupted_render_tasks)
+    except Exception as e:
+        logger.warning("渲染队列启动恢复跳过: %s", e)
 
     # 4.85 确保 PluginData 目录结构存在
     from clipwright.config import settings as _cfg
@@ -318,9 +333,21 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("定时调度器启动失败: %s", e)
 
+    # 工作区素材轮询（PRD workspace-prd-2026-10-24 §5.1）：发现 materials/ 新素材并索引
+    try:
+        from clipwright.services import workspace_watcher as _ws_watcher
+        _ws_watcher.start()
+    except Exception as e:
+        logger.warning("工作区扫描器启动失败: %s", e)
+
     yield
 
     # 清理
+    try:
+        from clipwright.services import workspace_watcher as _ws_watcher
+        _ws_watcher.stop()
+    except Exception:
+        pass
     try:
         from clipwright.services import scheduler as _sched
         _sched.stop()
@@ -347,6 +374,8 @@ def _register_builtin_plugins() -> None:
     CategoryRegistry.register(KichikuFastcutPlugin())
     CategoryRegistry.register(DigitalReviewPlugin())
     CategoryRegistry.register(VlogDailyPlugin())
+    # MV/PV 线的主类型；plan/PRD 一直在用它，但此前没有注册（V35 因此无从判起）
+    CategoryRegistry.register(LyricMvPlugin())
 
 
 app = FastAPI(
@@ -681,8 +710,18 @@ tts_output_path = Path(settings.tts_output_dir)
 tts_output_path.mkdir(parents=True, exist_ok=True)
 app.mount("/voice_audio", StaticFiles(directory=str(tts_output_path)), name="voice_audio")
 
+# 挂载 PV 引擎产物目录（抽帧预览 / 成片）：pv_engine 插件按
+# PluginData/pv_engine/<job_id>/... 落盘，这里给出可直接访问的 URL
+# （否则 Agent 只能回绝对路径，前端无法显示）。
+_pv_engine_path = _anchor_path(settings.plugin_data_dir) / "pv_engine"
+_pv_engine_path.mkdir(parents=True, exist_ok=True)
+app.mount("/pv-engine", StaticFiles(directory=str(_pv_engine_path)), name="pv-engine")
+
 # 注册路由
 app.include_router(pipeline_api.router)
+app.include_router(supervisor_api.router)
+app.include_router(supervisor_api.admin_router)
+app.include_router(eval_api.router)
 app.include_router(persona_api.router)
 app.include_router(persona_forge_api.router)
 app.include_router(chat_forge_api.router)
@@ -691,7 +730,10 @@ app.include_router(model_probe_api.router)
 app.include_router(settings_api.router)
 app.include_router(providers_api.router)
 app.include_router(render_api.router)
+app.include_router(capability_api.router)
 app.include_router(tool_api.router)
+app.include_router(tool_surface_api.router)
+app.include_router(task_api.router)
 app.include_router(plugin_api.router)
 app.include_router(skill_api.router)
 app.include_router(material_api.router)
@@ -717,6 +759,8 @@ app.include_router(stats_api.router)
 app.include_router(requirements_api.router)
 app.include_router(versions_api.router)
 app.include_router(scheduler_api.router)
+app.include_router(workspace_api.router)
+app.include_router(diagnostics_api.router)
 
 
 @app.get("/health")

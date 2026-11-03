@@ -78,8 +78,8 @@ def _dynamic_choices(key: str) -> list[str]:
             from clipwright.providers.llm import ensure_llm_providers_registered
             ensure_llm_providers_registered()
         elif kind is ContributionKind.TTS_PROVIDER:
-            from clipwright.providers.tts import ensure_tts_providers_registered
-            ensure_tts_providers_registered()
+            # 裁定 3 / B3-T6：不再懒注册内置 TTS provider，列表完全由插件贡献决定
+            pass
         elif kind is ContributionKind.EMBEDDING_PROVIDER:
             from clipwright.providers.embedding import ensure_embedding_providers_registered
             ensure_embedding_providers_registered()
@@ -177,6 +177,14 @@ def _maybe_coerce(key: str, value: Any) -> Any:
         return value  # 保留原值，由 _validate_value 统一报 422
     if meta.kind == "bool" and isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes", "on")
+    # 对象型字段（单价表/路由表）：前端文本域可能把 JSON 当字符串发上来
+    if meta.kind in ("dict", "json") and isinstance(value, str):
+        try:
+            import json
+
+            return json.loads(value)
+        except Exception:  # noqa: BLE001 — 留给 _validate_value 统一报 422
+            return value
     return value
 
 

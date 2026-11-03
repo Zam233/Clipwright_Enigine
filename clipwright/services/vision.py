@@ -211,6 +211,8 @@ class VisionService:
             "labels": parsed.get("labels", []),
             "scene_type": parsed.get("scene_type", ""),
             "model": f"llm/{model_name}",
+            # source 是"这次到底有没有真的看图"的判据：llm=真看了；filename=没看
+            "source": "llm",
         }
 
     # ── Transformers 分类 ──
@@ -243,6 +245,7 @@ class VisionService:
             "labels": labels[:3],
             "scores": scores[:3],
             "model": self._classifier_name,
+            "source": "classifier",
         }
 
     # ── 保底分析 ──
@@ -269,6 +272,8 @@ class VisionService:
             "model": "filename",
             "width": w,
             "height": h,
+            # 明确标"没看图"：上层据此把 status 打成 degraded，而不是骗成 ok
+            "source": "filename",
         }
 
     # ── 辅助 ──

@@ -14,8 +14,12 @@ from clipwright.tool import ToolRegistry
 router = APIRouter(prefix="/api/tool", tags=["tool"])
 
 
-def _validate_tool_params(params: dict[str, Any]) -> None:
-    """P0-4: 对 path / *_path 类字符串参数做白名单校验（URL 与不存在路径跳过）。"""
+def _validate_tool_params(params: dict[str, Any], *, status_code: int = 400) -> None:
+    """P0-4: 对 path / *_path 类字符串参数做白名单校验（URL 与不存在路径跳过）。
+
+    ``status_code`` 让调用方决定不合规时的状态码：工具端点沿用历史 400，
+    通用能力网关（`api/capability.py`）按 PRD §15.1.5 的契约给 422。
+    """
     from pathlib import Path as _Path
 
     from clipwright.security import SecurityViolation, assert_allowed_path
@@ -33,7 +37,7 @@ def _validate_tool_params(params: dict[str, Any]) -> None:
         try:
             assert_allowed_path(p)
         except SecurityViolation as e:
-            raise HTTPException(status_code=400, detail=f"参数 {key} 不在白名单目录: {e}") from e
+            raise HTTPException(status_code=status_code, detail=f"参数 {key} 不在白名单目录: {e}") from e
 
 
 @router.get("/list", response_model=list[ToolInfo])

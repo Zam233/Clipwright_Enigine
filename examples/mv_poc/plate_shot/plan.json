@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "type": "lyric_mv",
+  "target_duration_sec": 6,
+  "sections": [
+    {
+      "id": "A",
+      "name": "套印",
+      "t0": 0,
+      "t1": 2.5,
+      "purpose": "建立版画纸底与三墨胸像",
+      "screen_kinds": ["plate"],
+      "key_events": [{ "t": 1.267, "what": "关键词 LOVE 出现" }]
+    },
+    {
+      "id": "B",
+      "name": "腐坏",
+      "t0": 2.5,
+      "t1": 6,
+      "purpose": "错版切入，露出红版",
+      "screen_kinds": ["plate"],
+      "key_events": [{ "t": 2.5, "what": "错版切换" }]
+    }
+  ],
+  "screen_kinds": ["plate"],
+  "beats": { "bpm": 130, "beat_zero_sec": 0.344, "policy": "切点落拍或半拍；关键词与图齐到" },
+  "material_strategy": {
+    "sources": ["procedural"],
+    "grounding": "版画由代码绘制，无外部素材",
+    "gaps": ["手写体中文衬线字体（当前用 Noto Serif TC 替代）"],
+    "license_policy": "仅使用 OFL 字体"
+  },
+  "risks": [{ "risk": "字符版画纹理过密", "mitigation": "gamma 与 cols 可调" }],
+  "acceptance": [
+    { "metric": "flash_violations", "target": 0 },
+    { "metric": "deterministic", "target": true }
+  ],
+  "custom_sections": [],
+  "legacy": false
+}

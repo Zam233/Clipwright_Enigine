@@ -59,10 +59,31 @@ def run_contributions(plugin: Any) -> bool:
     )
 
     manifest = getattr(plugin, "manifest", None)
-    declared = {
-        f"{d.kind}:{d.id}"
-        for d in list(getattr(manifest, "contributions", []) or [])
-    }
+    declarations = list(getattr(manifest, "contributions", []) or [])
+
+    # B1-T2/B1-T4：provider 类声明先过结构化校验（config_schema / capabilities）。
+    # 不合法的声明从「已声明」集合里剔除 → 运行时注册会被门面以「未在 manifest 声明」
+    # 拒绝；不连累同插件其它贡献，错误仍进错误通道。
+    try:
+        from clipwright.plugins.provider_decl import register_declaration
+
+        for decl in declarations:
+            problems = register_declaration(plugin_id, decl)
+            if not problems:
+                continue
+            declarations = [d for d in declarations if d is not decl]
+            try:
+                from clipwright.plugins.error_bus import get_error_bus
+                for reason in problems:
+                    get_error_bus().record(
+                        plugin_id, "manifest", f"provider 声明被拒: {reason}",
+                    )
+            except Exception:  # noqa: BLE001 — 错误通道不可用不影响主流程
+                pass
+    except Exception as e:  # noqa: BLE001 — 校验器自身异常不得阻断加载
+        _clipwright_logger.warning("插件 %s 的 provider 声明校验失败: %s", plugin_id, e)
+
+    declared = {f"{d.kind}:{d.id}" for d in declarations}
     api_version = str(getattr(manifest, "api_version", "1") or "1")
     if api_version == "2" or declared:
         ContributionRegistry.declared_scope(plugin_id, declared)

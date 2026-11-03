@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
 from clipwright.config import logger
@@ -141,14 +142,55 @@ class ToolRegistry:
     def list_agent_callable(cls) -> list[BaseTool]:
         """列出所有声明可被 Agent LLM tool-use 调用且当前可用的工具。
 
-        工具需同时满足：
-        - agent_callable = True（插件/内置工具显式声明）
-        - is_available() = True（依赖满足）
+        条件：
+        - `agent_callable = True`（内置/插件工具显式声明）
+        - `is_available() = True`（外部依赖，如 ffmpeg）
+        - **契约新增**：若工具声明了 `is_configured()` 且返回 False，则排除——
+          这条服务对象是**阶段 Agent**（未配置联网时不该把 web 工具塞给
+          StructureAgent 白烧 token）。主 Agent 的 Kernel 工具面走
+          `tool/surface.py`，仍能看见这些工具，调用时如实得到「未配置」结果。
         """
-        return [
-            t for t in cls._tools.values()
-            if getattr(t, "agent_callable", False) and t.is_available()
-        ]
+        out: list[BaseTool] = []
+        for tool in cls._tools.values():
+            if not getattr(tool, "agent_callable", False):
+                continue
+            if not tool.is_available():
+                continue
+            checker = getattr(tool, "is_configured", None)
+            if callable(checker):
+                try:
+                    if not checker():
+                        continue
+                except Exception:  # noqa: BLE001 — 配置检查失败按未配置处理
+                    continue
+            out.append(tool)
+        return out
+
+    @classmethod
+    def list_by_capability(cls, capability: str, *, usable_only: bool = True) -> list[BaseTool]:
+        """列出声明了某语义能力的工具（实时）。
+
+        Agent 不再写死工具名，而是按能力取实现——插件声明
+        ``capability = "frame_check"`` 即可接管该能力（见 ``tool.capabilities``）。
+        """
+        from clipwright.tool.capabilities import is_usable
+
+        out: list[BaseTool] = []
+        for tool in cls._tools.values():
+            if str(getattr(tool, "capability", "") or "") != capability:
+                continue
+            if usable_only and not is_usable(tool):
+                continue
+            out.append(tool)
+        out.sort(key=lambda t: -int(getattr(t, "capability_priority", 0) or 0))
+        return out
+
+    @classmethod
+    def resolve_capability(cls, capability: str, *, prefer: list[str] | None = None) -> Optional[BaseTool]:
+        """按能力名解析到当前可用工具（None = 该能力当前没有实现）。"""
+        from clipwright.tool.capabilities import resolve
+
+        return resolve(capability, prefer=prefer or ())
 
     # 工具回退链：主工具失败时尝试的替代工具
     _FALLBACK_CHAINS: dict[str, list[str]] = {
@@ -189,7 +231,14 @@ class ToolRegistry:
         )
         for key in ("input_path", "video_path", "audio_path", "file_path", "path"):
             val = kwargs.get(key)
-            if val and isinstance(val, str) and not val.startswith(("http://", "https://")):
+            # 只校验**绝对路径**：模型给的工作区相对路径（`artifacts/art_x.json`、`.`）
+            # 会被按服务器 CWD 解析成白名单之外的目录而一律拒绝——实测后果是主 agent
+            # 完全读不到产物（read_artifact / list_dir 全 error），最后盲派 edit →
+            # `阶段 edit 缺输入：script_skeleton、candidate_clips`。
+            # 相对路径交给工具自己按 `workspace_root` 解析，解析后再 assert（工具内已校验）。
+            if (val and isinstance(val, str)
+                    and not val.startswith(("http://", "https://"))
+                    and os.path.isabs(val)):
                 try:
                     assert_allowed_path(val)
                 except SecurityViolation as e:

@@ -29,6 +29,7 @@ from clipwright.tool.video import resolve_ffmpeg
 class SubtitleBurnTool(BaseTool):
     """字幕烧录工具 — 将字幕文本以硬字幕形式叠加到视频。"""
     name = "subtitle_burn"
+    permission_tier = "write_local"
     description = "将字幕/文本烧录到视频（硬字幕），支持中文"
     dependencies = [resolve_ffmpeg()]
 

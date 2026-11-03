@@ -1,0 +1,18 @@
+id: stt_providers
+name: STT Provider 包
+version: 1.0.0
+kind: capability
+api_version: "2"
+description: 提供 whisper / faster-whisper 两个转写后端；插件存在时内置同名实现自动让位
+entry_point: "stt_providers.main"
+permissions: []
+override_builtin: true
+contributions:
+  - kind: stt_provider
+    id: whisper
+    capabilities:
+      models: true
+  - kind: stt_provider
+    id: faster-whisper
+    capabilities:
+      models: true

@@ -34,6 +34,8 @@ from typing import Any, Callable, Iterable, Optional
 
 from pydantic import BaseModel, Field
 
+from clipwright.services.llm import MAX_OUTPUT_TOKENS
+
 #: 平台约束的合法值
 PLATFORMS: tuple[str, ...] = ("landscape", "vertical", "square", "portrait", "横屏", "竖屏", "方形")
 #: 重排依据
@@ -780,7 +782,7 @@ async def parse_intent_llm(message: str, *, llm: Any, context_hint: str = "",
                         + f"用户指令：{message}",
             output_schema=intent_json_schema(),
             temperature=0,
-            max_tokens=1024,
+            max_tokens=MAX_OUTPUT_TOKENS,
             pipeline_id=pipeline_id,
             use_flash=True,
         )

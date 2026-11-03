@@ -39,7 +39,7 @@ class TestTrueStreaming:
         svc = _make_service("gathering")
         gate = asyncio.Event()
 
-        async def fake_chat(session_id, user_message, on_delta=None):
+        async def fake_chat(session_id, user_message, on_delta=None, on_reasoning=None):
             if on_delta:
                 on_delta("你好")
             await asyncio.wait_for(gate.wait(), timeout=1.5)
@@ -51,6 +51,10 @@ class TestTrueStreaming:
         gen = svc.stream_chat("s1", "hi")
 
         assert await gen.__anext__() == {"type": "status", "data": "typing"}
+        # unified-stream PRD §5.1：typing 之后紧跟一条 reasoning_status（能力自报），
+        # 再才是正文/思考增量
+        cap = await asyncio.wait_for(gen.__anext__(), timeout=1.0)
+        assert cap["type"] == "reasoning_status"
         first = await asyncio.wait_for(gen.__anext__(), timeout=1.0)
         assert first == {"type": "delta", "data": "你好"}
 
@@ -58,9 +62,13 @@ class TestTrueStreaming:
         gate.set()
         rest = await _drain(gen)
         types = [c["type"] for c in rest]
-        assert types == ["delta", "result"]
-        assert rest[0]["data"] == "世界"
-        assert rest[1]["data"]["reply"] == "你好世界"
+        # 思考按轮落盘后可能补一条 reasoning_status（no_reasoning_this_turn 时才有），
+        # 这里只钉"正文增量先于 result、且 reply 是权威值"
+        assert types[-1] == "result"
+        assert "delta" in types
+        deltas = [c["data"] for c in rest if c["type"] == "delta"]
+        assert deltas == ["世界"]
+        assert rest[-1]["data"]["reply"] == "你好世界"
 
     async def test_chat_error_becomes_error_block(self) -> None:
         svc = _make_service("init")
@@ -71,18 +79,21 @@ class TestTrueStreaming:
         svc.chat = boom  # type: ignore[method-assign]
         chunks = await _drain(svc.stream_chat("s1", "hi"))
         assert chunks[0] == {"type": "status", "data": "typing"}
-        assert chunks[1]["type"] == "error"
+        assert chunks[1]["type"] == "reasoning_status"
+        assert chunks[2]["type"] == "error"
 
     async def test_non_gathering_state_has_no_delta(self) -> None:
         svc = _make_service("brief_ready")
 
-        async def fake_chat(session_id, user_message, on_delta=None):
+        async def fake_chat(session_id, user_message, on_delta=None, on_reasoning=None):
             assert on_delta is None  # 非 gathering 态不传回调
             return {"reply": "请确认", "is_ready": True}
 
         svc.chat = fake_chat  # type: ignore[method-assign]
         chunks = await _drain(svc.stream_chat("s1", "确认"))
-        assert [c["type"] for c in chunks] == ["status", "result"]
+        # 缓冲态也必须自报"本阶段没有思考流"，所以多一条 reasoning_status
+        assert [c["type"] for c in chunks] == ["status", "reasoning_status", "result"]
+        assert chunks[1]["data"]["reason"] == "phase_not_streaming"
 
     async def test_consumer_disconnect_cancels_task(self) -> None:
         """客户端断开 → 消费任务被取消 → 内部 chat 任务同样被取消，不泄漏。"""
@@ -90,7 +101,7 @@ class TestTrueStreaming:
         started = asyncio.Event()
         cancelled = asyncio.Event()
 
-        async def slow_chat(session_id, user_message, on_delta=None):
+        async def slow_chat(session_id, user_message, on_delta=None, on_reasoning=None):
             started.set()
             try:
                 await asyncio.sleep(30)

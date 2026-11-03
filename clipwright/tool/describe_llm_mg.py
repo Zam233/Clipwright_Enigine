@@ -68,6 +68,8 @@ class DescribeLLMMGTool(BaseTool):
     """描述内置 llm_mg 引擎的动态 MG 动画生成能力。"""
 
     name = "describe_llm_mg"
+
+    permission_tier = "costly"
     agent_callable = True
     description = (
         "了解 LLM 动效生成 (llm_mg) 引擎的能力，包括动态 MG 动画生成、"

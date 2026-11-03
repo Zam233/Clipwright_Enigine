@@ -17,6 +17,7 @@ from clipwright.tool.video import resolve_ffmpeg, resolve_ffprobe
 class VideoStabilizeTool(BaseTool):
     """视频稳定工具（防抖）。"""
     name = "video_stabilize"
+    permission_tier = "write_local"
     description = "视频防抖稳定（基于 FFmpeg vidstab）"
     dependencies = ["ffmpeg"]
 

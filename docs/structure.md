@@ -76,7 +76,7 @@
 | `auto_transition` | 自动转场推荐 |
 | `background_music` | BGM 匹配 |
 | `silence_cut` | 静音切除 |
-| `dub_script` | 文案切分 + 逐段配音（委托 VoiceService） |
+| `dub_script` | 文案切分 + 逐段配音（**由 `plugins/tts_feature` 提供**；engine 自 2026-11-03 起不再内置） |
 
 ### 3.2 Agent 编排层
 

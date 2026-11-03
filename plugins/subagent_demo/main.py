@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from clipwright.agents.base import BaseAgent
 from clipwright.plugins.base import BasePlugin
 from clipwright.plugins.contribution import Contribution, ContributionKind

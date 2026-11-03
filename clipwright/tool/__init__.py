@@ -50,6 +50,10 @@ from clipwright.tool.timeline_view import TimelineViewTool
 from clipwright.tool.transcribe import WhisperTranscribeTool
 from clipwright.tool.voice import TextToSpeechTool, VoiceCloneTool
 from clipwright.tool.web_search_tool import WebFetchTool, WebSearchTool
+from clipwright.tool.fs_tools import ListDirTool, ReadFileTool, WriteFileTool
+from clipwright.tool.artifacts import ListArtifactsTool, ReadArtifactTool
+from clipwright.tool.reports import EditFileTool, ListReportsTool, ReadReportTool
+from clipwright.tool.type_spec_tool import GetTypeSpecTool
 from clipwright.tool.subtitle import SubtitleBurnTool
 from clipwright.tool.text_video import GenerateTextVideoTool
 from clipwright.tool.video import (
@@ -61,6 +65,7 @@ from clipwright.tool.video import (
     VideoThumbnailTool,
     VideoTrimTool,
 )
+from clipwright.tool.image import ImageToClipTool
 from clipwright.tool.vision import SceneDetectTool, SemanticMatchTool
 
 
@@ -69,6 +74,7 @@ def register_builtin_tools() -> None:
     tools: list[BaseTool] = [
         # ── 视频 ──
         VideoTrimTool(),
+        ImageToClipTool(),
         VideoConcatTool(),
         VideoOverlayTool(),
         VideoDownloadTool(),
@@ -124,6 +130,19 @@ def register_builtin_tools() -> None:
         DescribeLLMMGTool(),
         WebSearchTool(),
         WebFetchTool(),
+        # ── 文件读写（主 Agent / 子代理的基础能力）──
+        ReadFileTool(),
+        ListDirTool(),
+        WriteFileTool(),
+        # —— 工作区文档协议（PRD §17.5）：列报告 / 读报告 / 改文档 ——
+        ListReportsTool(),
+        ReadReportTool(),
+        EditFileTool(),
+        # —— 产物读取（PRD §17.5）：list_artifacts / read_artifact ——
+        ListArtifactsTool(),
+        ReadArtifactTool(),
+        # —— 类型规范查询（只读；主 agent 判断"能不能豁免"用）——
+        GetTypeSpecTool(),
     ]
     for tool in tools:
         ToolRegistry.register(tool)
@@ -189,4 +208,12 @@ __all__ = [
     "DescribeLLMMGTool",
     "WebSearchTool",
     "WebFetchTool",
+    "ReadFileTool",
+    "ListDirTool",
+    "WriteFileTool",
+    "ListReportsTool",
+    "ReadReportTool",
+    "EditFileTool",
+    "ListArtifactsTool",
+    "ReadArtifactTool",
 ]

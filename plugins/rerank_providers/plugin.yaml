@@ -1,0 +1,27 @@
+id: rerank_providers
+name: Rerank Provider 包
+version: 1.0.0
+kind: capability
+api_version: "2"
+description: 提供 http / local 两个重排序 provider；插件存在时内置同名实现自动让位
+entry_point: "rerank_providers.main"
+permissions: []
+override_builtin: true
+contributions:
+  - kind: rerank_provider
+    id: http
+    config_schema:
+      base_url:
+        type: string
+        label: Rerank 服务地址
+        placeholder: https://api.example.com/rerank
+      api_key:
+        type: string
+        label: API Key
+        secret: true
+    capabilities:
+      models: true
+  - kind: rerank_provider
+    id: local
+    capabilities:
+      models: true

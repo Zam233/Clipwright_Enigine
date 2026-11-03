@@ -137,7 +137,8 @@ async def test_tools_exclude_web_when_not_configured(monkeypatch) -> None:
     assert fake.tool_names, "with_tools 应被调用（llm_api_key 已配置）"
     names = fake.tool_names[-1]
     assert "web_search" not in names
-    assert "web_fetch" not in names
+    # 抓取不依赖搜索 key（2026-10-30 修正）：未配置时仍应暴露给阶段 Agent
+    assert "web_fetch" in names
     # 走 with_tools 分支且场景解析正常
     assert out.decision == AgentDecision.PASS
     assert out.scenes
@@ -187,7 +188,8 @@ def test_registry_gates_web_tools_by_config(monkeypatch) -> None:
     monkeypatch.setattr(settings, "web_search_api_key", "")
     names_off = [t.name for t in ToolRegistry.list_agent_callable()]
     assert "web_search" not in names_off
-    assert "web_fetch" not in names_off
+    # 抓取不需要搜索 key（2026-10-30 修正）：未配置时也应对 Agent 可见
+    assert "web_fetch" in names_off
 
     monkeypatch.setattr(settings, "enable_web_search", True)
     monkeypatch.setattr(settings, "web_search_api_key", "k")

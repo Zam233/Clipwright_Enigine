@@ -7,7 +7,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from clipwright.category.base import BaseCategoryPlugin
+from clipwright.category.base import BaseCategoryPlugin, with_slots
+from clipwright.schema.category_spec import (
+    ParamRule,
+    PromptBundle,
+    PromptSlot,
+    SignatureTrait,
+)
 from clipwright.schema.persona import ParameterLayer
 
 
@@ -63,6 +69,87 @@ class VlogDailyPlugin(BaseCategoryPlugin):
     def get_annotation_templates(self) -> list[str]:
         """轮 87：节奏/标注模板（原 translate_persona 死键，现在结构 prompt 消费）。"""
         return ["hook", "reaction_shot", "climax_silence"]
+
+    # ── 新契约（Part I）──────────────────────────────────────────────
+
+    def get_prompt_bundle(self) -> PromptBundle:
+        return with_slots(
+            super().get_prompt_bundle(),
+            genre=PromptSlot(
+                text=(
+                    "整片是一支自然旁观的日常 Vlog：记录真实发生的时刻，"
+                    "保留呼吸与停顿，不刻意设计每一个镜头。"
+                ),
+                priority=90,
+            ),
+            anti_patterns=PromptSlot(
+                text=(
+                    "禁止广告腔与过度设计；禁止机械式平均切镜；"
+                    "禁止为了节奏把生活片段剪成卡点拼贴。"
+                ),
+                priority=85,
+            ),
+            lexicon=PromptSlot(
+                text=(
+                    "可用：今天、刚好、顺手、过了一会儿、回来的路上。"
+                    "避免：首先、其次、综上、数据显示。"
+                ),
+                priority=60,
+            ),
+            structure=PromptSlot(
+                text=(
+                    "场景骨架：开场问候 → 过程记录 → 高光时刻 → 感悟收尾。"
+                    "过程段允许闲聊与空镜，不必每段都推进信息。"
+                ),
+                priority=80,
+            ),
+            edit=PromptSlot(
+                text=(
+                    "跟随事件自然分段，长镜与空镜交替；"
+                    "切点落在动作完成或话题转折处，不强求踩拍。"
+                ),
+                priority=80,
+            ),
+            animation=PromptSlot(
+                text=(
+                    "只用手绘感标注、地点与时间标签；"
+                    "动效柔和，避免工业感与冷硬科技风。"
+                ),
+                priority=70,
+            ),
+            quality=PromptSlot(
+                text=(
+                    "质检点：是否像真实记录而不是摆拍、"
+                    "字幕语气是否自然、有没有过度设计。"
+                ),
+                priority=70,
+            ),
+        )
+
+    def get_param_rules(self) -> list[ParamRule]:
+        return [
+            ParamRule(
+                key="base_shot_ms", mode="floor", value=3000, enforce="soft",
+                reason="日常片段需要呼吸，切得太快会变成快剪",
+            ),
+            ParamRule(
+                key="transition_weights.hard_cut", mode="floor", value=0.3, enforce="soft",
+                reason="以硬切为主，过渡转场只用于时间跳跃",
+            ),
+        ]
+
+    def get_signature_traits(self) -> list[SignatureTrait]:
+        return [
+            SignatureTrait(
+                name="avg_shot_ms", mode="require_ge", value=2000, enforce="soft",
+                reason="Vlog 的镜头普遍比娱乐向内容长",
+            ),
+            SignatureTrait(
+                name="text_overlay_ratio", mode="require_le", value=0.6, enforce="soft",
+                reason="文字是点缀，不该盖满全片",
+            ),
+        ]
+
     def get_mg_style_guidance(self) -> str:
         return (
             "Vlog 日常的 MG 动画风格：温暖、轻快、生活化。"

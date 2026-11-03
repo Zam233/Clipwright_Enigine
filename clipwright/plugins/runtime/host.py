@@ -38,9 +38,9 @@ from clipwright.plugins.runtime.protocol import (
 )
 
 #: 单次调用默认超时（秒）；hook/工具共用，可由 manifest.runtime_config 覆盖
-DEFAULT_CALL_TIMEOUT = 30.0
+DEFAULT_CALL_TIMEOUT = 120.0
 #: 启动与 describe 的握手超时
-BOOT_TIMEOUT = 20.0
+BOOT_TIMEOUT = 60.0
 
 
 class PluginHost:

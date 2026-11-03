@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import httpx
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -30,15 +31,10 @@ from clipwright.schema.agent import (
 )
 from clipwright.schema.timeline import Clip, ClipKind, Track
 from clipwright.services.subtitle import DEFAULT_CAPTION_STYLE, DEFAULT_TEXT_STYLE
+from clipwright.services.degradation import note_degradation as _note
+from clipwright.services.agent_context import emit_progress as _emit_progress
 from clipwright.services.trace import add_event
-from clipwright.services.web_search import WebSearchService
 
-# 数据/事实型 mg_dynamic 检测 — 命中则触发联网搜索，注入事实上下文
-# （中文 + 英文，大小写不敏感；图表/数据/百分比/年份/引语/增长率/GDP/报告等）
-_DATA_FACT_RE = re.compile(
-    r"图表|数据|统计|对比|百分比|%|年份 20\d\d|引语|quote|citation|增长率|GDP|报告|survey",
-    re.IGNORECASE,
-)
 
 
 def _merge_style_defaults(
@@ -66,6 +62,227 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
     agent_name = "animation_agent"
 
+    #: 能力 → 优先工具（插件可用 capability 声明接管；白名单随注册表实时变化）
+    capability_prefer: dict[str, tuple[str, ...]] = {}
+    tool_whitelist: tuple[str, ...] = (
+        "list_animations", "describe_llm_mg",
+        "pv_engine_doctor", "pv_engine_stills",
+    )
+
+    def _text_anim_defs(self) -> list[Any]:
+        """当前已注册的文字动画（实时；插件增删立即生效）。"""
+        try:
+            from clipwright.animation.registry import AnimationRegistry, AnimationType
+
+            return list(AnimationRegistry.list(AnimationType.TEXT))
+        except Exception:  # noqa: BLE001 — 注册表不可用时退回 catalog
+            return []
+
+    def _anim_properties(self, anim_id: str) -> set[str]:
+        """该动画全部关键帧里出现过的属性名（判断"是不是逐字/淡入"的语义依据）。"""
+        for anim in self._text_anim_defs():
+            if str(getattr(anim, "animation_id", "")) != anim_id:
+                continue
+            props: set[str] = set()
+            for kf in getattr(anim, "keyframes", []) or []:
+                props |= set(getattr(kf, "properties", {}) or {})
+            return props
+        return set()
+
+    def _default_text_anim_id(self) -> str:
+        """默认文字动画：取"有 opacity 曲线"的第一个，再退第一个，最后才用历史默认值。"""
+        defs = self._text_anim_defs()
+        for anim in defs:
+            if "opacity" in self._anim_properties(str(getattr(anim, "animation_id", ""))):
+                return str(anim.animation_id)
+        if defs:
+            return str(getattr(defs[0], "animation_id", "text_fade_in"))
+        return "text_fade_in"
+
+    async def _fetch_url(self, url: str, *, title: str = "",
+                         max_chars: int = 1500) -> dict[str, Any] | None:
+        """用 `web_fetch` 抓一个 URL（统一入口）：网页出正文、图片/视频落盘给 local_path。
+
+        为什么动画阶段需要它（2026-10-31 用户问"动画能不能联网拿实时信息/图片"）：
+        旧实现只 `WebSearchService.search()` 取 3 条摘要——**不抓正文、不落素材**，
+        而且 `_ingest_web_media` 还是靠"搜索结果的 URL 以 .jpg/.mp4 结尾"来筛图；
+        DeepSeek/bocha 返回的都是网页链接，这个后缀过滤恒为空 → 动画阶段永远拿不到图。
+
+        返回 `web_fetch` 的 output dict（`kind`/`content`/`local_path`/`license`…），
+        任何失败返回 None（不阻断动画生成）。
+        """
+        # 只走能力面：`web_fetch` 由工具/插件提供；缺能力时如实返回 None 并留日志。
+        # 旧实现在异常时直接调 `WebFetchService().probe()` —— 那等于绕开插件层把服务
+        # 当后门用，插件被卸载/替换时行为不一致（用户 2026-11-02 指出）。
+        try:
+            res = await self.call_tool(
+                "web_fetch",
+                url=url,
+                max_chars=max_chars,
+                workspace_root=str(getattr(self, "_ws_root", "") or ""),
+                title=title,
+            )
+        except Exception as exc:  # noqa: BLE001 — 能力缺失/工具面不可用
+            logger.info("AnimationAgent: web_fetch 能力不可用（%s），跳过该 URL", exc)
+            return None
+        status = str(getattr(res, "status", "") or "")
+        payload = getattr(res, "output", None) or {}
+        if status not in ("success", "ok") or not isinstance(payload, dict):
+            return None
+        return payload
+
+    async def _ingest_web_media(self, context: Any, *, topic: str) -> int:
+        """把**真实图片/视频**落进 `materials/web/` 并进图片语义索引。
+
+        2026-11-02 架构收口（用户指出）：这里只做**编排与记账**，
+        具体能力全部来自工具/插件层——
+        - 抓页面抽图（HTML 解析 / 懒加载 / og:image / 落盘）→ 能力 `web_images`；
+        - 单条 URL 抓取与落盘（robots/SSRF/大小限制）→ 能力 `web_fetch`；
+        - 检索 → 能力 `web_search`。
+        旧实现在 agent 里自带 `_raw_html` / `_extract_image_urls` / `_take` 三件套，
+        并在工具缺失时直接调 `WebFetchService` / `WebSearchService` 当后门——
+        等于把能力钉死在 agent 里，插件装卸都不生效。
+
+        两条来源按顺序试，先便宜后昂贵：素材源直链 → 联网（搜索→`web_images` 落盘）。
+        预算 3 项；任何一步失败都不阻断动画生成。
+        """
+        try:
+            from clipwright.config import settings
+            if not bool(getattr(settings, "web_assets_ingest", True)):
+                return 0
+        except Exception:  # noqa: BLE001
+            pass
+        extra = dict(getattr(context, "extra_params", None) or {})
+        root = str(extra.get("workspace_root") or "")
+        if not root or not topic.strip():
+            return 0
+        self._ws_root = root
+        added = 0
+        budget = 3
+
+        def _record(path: str, asset_url: str, title: str, license_hint: str = "") -> None:
+            """只记账（素材已经由能力层落盘）。"""
+            self._image_index.append({
+                "path": path,
+                "tags": [topic[:60]],
+                "description": title or "联网素材",
+                "source": asset_url,
+                "license": license_hint or "",
+            })
+
+        async def _take(asset_url: str, title: str) -> bool:
+            """单个媒体 URL → 让 `web_fetch` 负责抓取与落盘，这里只记索引。"""
+            payload = await self._fetch_url(asset_url, title=title, max_chars=2000)
+            if not payload:
+                return False
+            local = str(payload.get("local_path") or "")
+            kind = str(payload.get("kind") or "")
+            if not local or kind not in ("image", "video"):
+                return False
+            # 太小的图是 logo/图标/1x1 占位，进动画只会糊成一块（实测 2.9KB 就是站标）
+            if kind == "image" and int(payload.get("bytes") or 0) < 8000:
+                logger.info("AnimationAgent: 跳过过小的联网图片 %s（%sB）",
+                            os.path.basename(local), payload.get("bytes"))
+                return False
+            _record(local, asset_url, title, str(payload.get("license") or ""))
+            return True
+
+        try:
+            # ① 素材源优先：直链媒体，省掉"抓网页再抽图"
+            try:
+                from clipwright.material import MaterialRegistry
+
+                hits = await MaterialRegistry.search(
+                    topic[:80], top_k_per_source=6, media_type="image")
+                for hit in (hits or [])[:8]:
+                    if added >= budget:
+                        break
+                    asset = getattr(hit, "asset", None)
+                    if asset is None:
+                        continue
+                    url = str(getattr(asset, "url", "") or getattr(asset, "local_path", ""))
+                    if url.startswith("http") and await _take(url, str(getattr(asset, "title", ""))):
+                        added += 1
+            except Exception as exc:  # noqa: BLE001 — 素材源不可用就走联网
+                logger.info("AnimationAgent: 素材源检索不可用（%s），改走联网", exc)
+
+            if added >= budget:
+                logger.info("AnimationAgent: 联网素材入库 %d 项（素材源直链）", added)
+                return added
+
+            # ② 联网兜底：搜索 → 网页 → 交给 `web_images`（抽图 + 落盘）
+            results: list[dict[str, Any]] = []
+            try:
+                found = await self.call_tool("web_search", query=topic[:120], max_results=6)
+                payload = getattr(found, "output", None) or {}
+                if isinstance(payload, dict):
+                    results = list(payload.get("results") or [])
+            except Exception as exc:  # noqa: BLE001 — 能力缺失就是没有素材源
+                logger.info("AnimationAgent: web_search 能力不可用（%s）", exc)
+            if not results:
+                logger.info("AnimationAgent: 联网素材化跳过（搜索无结果/能力不可用）")
+                return added
+
+            media_urls: list[tuple[str, str]] = []
+            page_urls: list[tuple[str, str]] = []
+            for item in results[:6]:
+                url = str(item.get("url") or "")
+                title = str(item.get("title") or "")
+                if not url.startswith(("http://", "https://")):
+                    continue
+                if url.lower().split("?")[0].endswith(
+                        (".jpg", ".jpeg", ".png", ".webp", ".mp4", ".webm")):
+                    media_urls.append((url, title))
+                else:
+                    page_urls.append((url, title))
+
+            for url, title in media_urls:
+                if added >= budget:
+                    break
+                if await _take(url, title):
+                    added += 1
+
+            pages = page_urls[:2]
+            for url, title in pages:
+                if added >= budget:
+                    break
+                try:
+                    res = await self.call_tool(
+                        "web_images",
+                        url=url,
+                        max_images=max(1, budget - added),
+                        download=True,
+                        title=f"{title}-图" if title else "联网图片",
+                        workspace_root=root,
+                    )
+                except Exception as exc:  # noqa: BLE001 — 能力缺失/单页失败跳过
+                    logger.info("AnimationAgent: web_images 能力不可用（%s），跳过 %s", exc, url)
+                    continue
+                out = getattr(res, "output", None) or {}
+                if str(getattr(res, "status", "") or "") not in ("success", "ok") \
+                        or not isinstance(out, dict):
+                    continue
+                for item in (out.get("saved") or []):
+                    if added >= budget:
+                        break
+                    local = str(item.get("path") or "")
+                    if not local:
+                        continue
+                    _record(local, str(item.get("url") or ""),
+                            f"{title}-图", str(item.get("license") or ""))
+                    added += 1
+
+            logger.info("AnimationAgent: 联网素材入库 %d 项（候选媒体 %d / 网页 %d）",
+                        added, len(media_urls), len(pages))
+            return added
+        except Exception as exc:  # noqa: BLE001 — 联网素材化失败不影响动画
+            logger.warning("AnimationAgent: _ingest_web_media 失败: %s", exc)
+            return added
+
+    def _is_typewriter_like(self, anim_id: str) -> bool:
+        """是否逐字出现：按关键帧属性 ``char_progress`` 判定，不再写死 id 白名单。"""
+        return "char_progress" in self._anim_properties(anim_id)
+
     def __init__(self) -> None:
         super().__init__()
         self._catalog = AnimationCatalog()
@@ -85,10 +302,45 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         self._pid = context.pipeline_id
         add_event(context.pipeline_id, "animation", "agent_start",
                   "AnimationAgent 开始（文字动画/逻辑动画分流）")
+        # 工具/技能列表实时可见（插件增删立即生效）——写进 trace 便于排障
+        _live_tools = [s["function"]["name"] for s in self.tool_schemas()]
+        _live_skills = [s.name for s in self.list_skills()]
+        add_event(context.pipeline_id, "animation", "capabilities",
+                  f"实时工具: {', '.join(_live_tools) or '无'}｜实时技能: {', '.join(_live_skills) or '无'}")
 
         # 捕获 Persona 的 prompt / 视觉需求 prompt，供 MG 处理器与风格解析使用
         self._persona_prompt = getattr(input_data, "persona_prompt", None) or ""
         self._vision_prompt = getattr(input_data, "vision_prompt", None) or ""
+
+        # PRD §16 R1/R3 双保险：即使 stage_inputs 没装配（老路径 / 直接调用 execute），
+        # Agent 自己也按 persona_id 走一遍 board→extra→persona_store 兜底，
+        # 并把 style_hint / fingerprint 带进 persona_style（R6 供模板与插件路径使用）。
+        try:
+            from clipwright.services.visual_context import load as _load_visual_context
+
+            self._visual_ctx = _load_visual_context(
+                str(getattr(context, "persona_id", "") or ""),
+                board={
+                    "persona_prompt": getattr(input_data, "persona_prompt", None),
+                    "visual_config": getattr(input_data, "visual_config", None),
+                    "vision_prompt": getattr(input_data, "vision_prompt", None),
+                },
+                extra=getattr(context, "extra_params", {}) or {},
+            )
+            if not self._persona_prompt:
+                self._persona_prompt = self._visual_ctx.persona_prompt
+            if not self._vision_prompt:
+                self._vision_prompt = self._visual_ctx.vision_prompt
+            add_event(
+                context.pipeline_id, "animation", "visual_context",
+                f"视觉上下文 source={self._visual_ctx.source} "
+                f"prompt={len(self._visual_ctx.persona_prompt)}字 "
+                f"palette={bool(self._visual_ctx.visual_config.get('palette'))}",
+                self._visual_ctx.to_trace(),
+            )
+        except Exception:  # noqa: BLE001 — 装配失败不阻断动画阶段
+            logger.warning("AnimationAgent: 视觉上下文装配失败", exc_info=True)
+            self._visual_ctx = None
 
         try:
             timeline = input_data.timeline
@@ -106,6 +358,15 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             persona_style = await self._resolve_style(
                 input_data.visual_config, context.extra_params,
             )
+            # R6：把 persona 摘要/指纹/来源挂到样式上——模板与插件路径靠它拿到风格，
+            # 生成缓存也用它区分不同 persona（避免跨人格复用动画）。
+            if isinstance(self._visual_ctx, object) and self._visual_ctx is not None:
+                persona_style = dict(persona_style or {})
+                persona_style.setdefault("style_hint", self._visual_ctx.animation_style_hint())
+                persona_style.setdefault("persona_fingerprint", self._visual_ctx.fingerprint)
+                persona_style.setdefault("persona_source", self._visual_ctx.source)
+                if self._visual_ctx.visual_config.get("palette"):
+                    persona_style.setdefault("palette", self._visual_ctx.visual_config["palette"])
 
             # /D5: 图片语义索引 — 显式 image_assets（AI 生成图）∪ 素材库主动检索图片。
             # 对合并结果逐个调用视觉分析器（VisionService.analyze_image）构建
@@ -132,9 +393,60 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                         )
                         add_event(context.pipeline_id, "animation", "image_index",
                                   f"图片语义索引 {len(self._image_index)} 项（LLM 选图入动画）")
+
+                # 联网素材化（PRD web-search-fetch M2）：素材库没有可用图时，
+                # 用 web 搜索找到**真实**图片/视频落进 materials/web/ 并并入语义索引，
+                # 让 MG 生成可以引用它们（旧行为：搜索结果只当文字事实参考）。
+                try:
+                    added = await self._ingest_web_media(
+                        context, topic=str(context.topic or ""),
+                    )
+                    if added:
+                        add_event(context.pipeline_id, "animation", "web_assets",
+                                  f"联网素材入库 {added} 项（已并入图片语义索引）")
+                except Exception as exc:  # noqa: BLE001 — 联网素材化失败不影响动画
+                    logger.warning("AnimationAgent: 联网素材入库失败（跳过）: %s", exc)
             except Exception:
                 logger.exception("AnimationAgent: 图片语义索引构建失败，忽略图片素材库")
                 self._image_index = []
+
+            # 哪些场景需要外部事实数据 —— **走能力 `fact_need`**（插件 `web_media` 提供）：
+            # 模型判断、一次批量调用。agent 不再持有任何事实判定正则，也不直接 import
+            # 某个服务实现——插件换实现（模型/规则/内部核查服务）时这里一个字都不用改。
+            self._fact_clip_ids = set()
+            try:
+                _scenes: list[dict[str, Any]] = []
+                for _track in (timeline.tracks or []):
+                    for _clip in (_track.clips or []):
+                        _meta = dict(getattr(_clip, "metadata", None) or {})
+                        _text = str(
+                            _meta.get("text") or _meta.get("narration")
+                            or _meta.get("content") or "").strip()
+                        _scenes.append({
+                            "id": str(getattr(_clip, "id", "") or ""),
+                            "title": str(_meta.get("title") or getattr(_clip, "name", "") or ""),
+                            "description": str(_meta.get("description") or ""),
+                            "text": _text,
+                            "keywords": _meta.get("keywords") or [],
+                        })
+                if _scenes:
+                    _res = await self.call_tool("fact_need", scenes=_scenes)
+                    _out = getattr(_res, "output", None) or {}
+                    if str(getattr(_res, "status", "") or "") in ("success", "ok") \
+                            and isinstance(_out, dict):
+                        self._fact_clip_ids = {
+                            str(x) for x in (_out.get("needed_ids") or []) if str(x)
+                        }
+                        logger.info("AnimationAgent: 事实型场景 %d/%d（fact_need 能力，模式=%s）",
+                                    len(self._fact_clip_ids), len(_scenes),
+                                    _out.get("mode") or "?")
+                        add_event(context.pipeline_id, "animation", "fact_judge",
+                                  f"{len(self._fact_clip_ids)} 个场景需要外部事实"
+                                  f"（fact_need 能力 / {_out.get('mode') or '?'}）")
+            except Exception:  # noqa: BLE001 — 判断失败不影响动画产出
+                logger.warning("AnimationAgent: fact_need 能力调用失败（按“不需要”处理）",
+                               exc_info=True)
+                self._fact_clip_ids = set()
 
             # 解析视频类型（category）特征，注入 LLM MG 生成器
             # （由引擎结合 Persona + 类型数据自行决定动画设计）
@@ -165,6 +477,17 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                                 self._mg_category_context["mg_style_guidance"] = guidance
                             except Exception:
                                 pass
+                        # V1：动画阶段的类型规范（10 槽位里的 animation）进 MG 提示词
+                        try:
+                            from clipwright.services.type_spec_runtime import stage_text
+
+                            anim_stage = stage_text(
+                                getattr(context, "category_plugin_id", "") or "", "animation"
+                            )
+                            if anim_stage:
+                                self._mg_category_context["stage_prompt"] = anim_stage
+                        except Exception:
+                            pass
             except Exception:
                 self._mg_category_context = {}
 
@@ -213,11 +536,11 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                     # 其余动画意图静默丢失）
                     for marker in markers:
                         marker_type = marker.get("type", "text")
-                        anim_id = marker.get("anim_id", "text_fade_in")
+                        anim_id = marker.get("anim_id") or self._default_text_anim_id()
                         anim_name = marker.get("name", "淡入")
 
                         if marker_type == "text":
-                            self._handle_text_animation(
+                            await self._handle_text_animation_async(
                                 text_track, clip, anim_id, anim_name,
                                 marker, persona_style,
                             )
@@ -250,13 +573,25 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
                     prev_clip = clip
 
-            # 并发执行逻辑动画作业（有界并发，默认 3；clips 写入后按 start_sec 排序保证 z-order）
+            # 并发执行逻辑动画作业（有界并发；clips 写入后按 start_sec 排序保证 z-order）
+            # 类型化 LLM 生成是等待型：优先用 animation_llm_concurrency，
+            # 未配置则回落到 pipeline_concurrency（保持旧行为）。
             if logic_jobs:
-                sem = asyncio.Semaphore(max(1, int(getattr(settings, "pipeline_concurrency", 3))))
+                _conc = (getattr(settings, "animation_llm_concurrency", None)
+                         or getattr(settings, "pipeline_concurrency", 3))
+                sem = asyncio.Semaphore(max(1, int(_conc)))
+                _total_jobs = len(logic_jobs)
+                _done_jobs = {"n": 0}
 
                 async def _run_logic(job):
                     async with sem:
                         track, c, aid, aname, m, style = job
+                        # 段落进度进**任务事件流**（主 agent 能看见 29 段逐段推进；
+                        # pipeline trace 是另一条通道，前端任务详情读的是 task events）
+                        _emit_progress(
+                            f"动画 {_done_jobs['n'] + 1}/{_total_jobs} 开始：{aname}",
+                            {"anim_id": aid, "clip_id": c.id, "total": _total_jobs},
+                        )
                         add_event(
                             context.pipeline_id, "animation", "mg_start",
                             f"动画生成开始: {aname} → {c.id[:8]}",
@@ -266,6 +601,12 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                             await self._handle_logic_animation(
                                 track, c, aid, aname, m, style,
                             )
+                            _done_jobs["n"] += 1
+                            _emit_progress(
+                                f"动画 {_done_jobs['n']}/{_total_jobs} 完成：{aname}",
+                                {"anim_id": aid, "clip_id": c.id, "total": _total_jobs,
+                                 "done": _done_jobs["n"]},
+                            )
                             add_event(
                                 context.pipeline_id, "animation", "mg_end",
                                 f"动画生成完成: {aname} → {c.id[:8]}",
@@ -273,6 +614,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                             )
                         except Exception as e:
                             logger.exception("AnimationAgent: 逻辑动画 %s 异常: %s", aname, e)
+                            _emit_progress(
+                                f"动画失败：{aname}（{type(e).__name__}）",
+                                {"anim_id": aid, "clip_id": c.id, "error": str(e)[:200]},
+                            )
                             add_event(
                                 context.pipeline_id, "animation", "mg_end",
                                 f"动画生成失败: {aname} → {c.id[:8]}",
@@ -305,7 +650,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
     # ── 文字动画处理 ──────────────────────────────────────
 
-    def _handle_text_animation(
+    async def _handle_text_animation_async(
         self,
         text_track: Track,
         vid_clip: Clip,
@@ -316,9 +661,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
     ) -> None:
         """为文字轨创建 text clip。
 
-        文字动画统一走 FFmpeg drawtext（快、无依赖），
-        因为所有文字动画类型（fade/slide/typewriter/scale等）
-        drawtext 都有实现方案（scale→fontsize 表达式）。
+        2026-10-30（PRD text-animation-llm）：**主路线改为 prompt + LLM 生成**
+        （`animation/text_generation.py`：6 类文字动效 + 字幕带避让），
+        `AnimationCatalog` 的固定关键帧表降级为 fallback（LLM 失败/开关关闭时），
+        并如实登记 `text_llm_failed` / `text_llm_fallback_template` 降级。
         """
         # 时长钳制——原 max(dur, 1.0) 让 0.2s 片段挂 1s 文字覆盖侵入下一
         # 场景；改为不越出宿主片段，下限 0.2s
@@ -333,22 +679,70 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         # 仅当文本来自真实旁白（marker/metadata）时才允许进入字幕轨；
         # description 正则兜底提取的是场景描述（「混剪」/「镜头」-style），
         # 禁止路由到字幕轨避免污染，降级为普通 TEXT clip（保留入场动画）。
-        is_long_text = len(text_content) > 50
-        is_typewriter = anim_id in ("typewriter", "char_by_char")
-        can_caption = text_source in ("marker", "metadata")
-        if is_long_text and is_typewriter and can_caption:
+        # 长真实旁白 → 字幕轨（文字动画只做短语）。
+        # 2026-10-30：不再依赖 `_is_typewriter_like`（它按关键帧属性判定，对裸 id
+        # "typewriter" 会返回 False，导致长旁白被做成文字动画压在字幕上）。
+        is_typewriter = self._is_typewriter_like(anim_id)
+        if len(text_content) > 50 and text_source in ("marker", "metadata"):
             self._handle_caption(
                 text_track, vid_clip, text_content, persona_style,
             )
             return
 
         # 生成 FFmpeg keyframes 供 drawtext 渲染
+        # ── LLM 文字动画（2026-10-30 主路线）────────────────────────────
+        # 与 38 个类型化 MG 同构：prompt 定义类型语义 + LLM 产出 MGDef，
+        # 这里把它转成 drawtext 可消费的 keyframes。失败才回退模板表。
+        if self._text_llm_enabled():
+            llm_clip = await self._build_text_clip_llm(
+                vid_clip, text_content, clip_duration, persona_style,
+                anim_id=anim_id, anim_name=anim_name,
+            )
+            if llm_clip is not None:
+                overlap = self._find_overlapping_clip(text_track, llm_clip)
+                if overlap is not None:
+                    logger.info("AnimationAgent: 跳过重叠文字动画 %s（与 %s 时间重叠）",
+                                llm_clip.id[:8], overlap.id[:8])
+                    return
+                llm_clip.track_id = text_track.id
+                text_track.clips.append(llm_clip)
+                text_track.clips.sort(key=lambda c: c.start_sec)
+                return
+            _note(
+                "text_llm_fallback_template",
+                f"文字动画 LLM 生成失败，回退 AnimationCatalog 模板（anim_id={anim_id}）",
+                scope=str((vid_clip.metadata or {}).get("scene_title") or ""),
+                impact="该段文字动效是固定模板关键帧，不是按语义定制",
+            )
+            # 回退到同步模板入口（既有测试/调用方的稳定路径）
+            self._handle_text_animation(
+                text_track, vid_clip, anim_id, anim_name, marker, persona_style)
+            return
+
         full_kfs = AnimationCatalog.build_full_keyframes(
             anim_id, vid_clip.start_sec, clip_duration
         )
 
         # 完整文字样式字段（统一默认 + persona_style 覆盖，任务 32）
         style = _merge_style_defaults(DEFAULT_TEXT_STYLE, persona_style)
+
+        # 底部叠字修复（E2E 2026-10-30）：文字动画的正文往往就是旁白整句，
+        # 而 audio 阶段的字幕也来自同一份旁白 → 成片底部出现两行字
+        # （一行文字动画、一行字幕）。字幕负责"说出来的每一句"，文字动画只做
+        # 短语/关键词强调。判据：内容等于所在片段的旁白且足够长（>10 字）→ 交给字幕。
+        _narration = ""
+        try:
+            _narration = str(getattr(vid_clip, "text", "") or
+                             (vid_clip.metadata or {}).get("narration_text") or "").strip()
+        except Exception:  # noqa: BLE001 — 取不到旁白就按普通文字动画处理
+            _narration = ""
+        if _narration and len(text_content.strip()) > 10 and \
+                text_content.strip() == _narration:
+            logger.info(
+                "AnimationAgent: 文字动画与旁白整句重复，交给字幕渲染（避免底部叠字）: %s",
+                text_content[:30],
+            )
+            return
 
         text_clip = Clip(
             id=_uid("tc"),
@@ -365,12 +759,107 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "anim_type": anim_id,
                 "anim_name": anim_name,
                 "renderer": "drawtext",
-                "position": persona_style.get("position", "bottom"),
+                # 位置避让（同上）：字幕固定在 bottom，文字动画默认落在 center，
+                # 只有 persona 显式声明了 text_anim_position 时才跟随。
+                "position": (
+                    persona_style.get("text_anim_position")
+                    or ("center" if str(persona_style.get("position") or "bottom") == "bottom"
+                        else persona_style.get("position"))
+                ),
                 "stroke_width": persona_style.get("stroke_width", 0),
                 "stroke_color": persona_style.get("stroke_color", "#000000"),
             },
         )
-        if anim_id in ("typewriter", "char_by_char"):
+        if is_typewriter:
+            text_clip.metadata["typewriter"] = True
+
+        # 启用重叠去重（_find_overlapping_clip 此前定义未调用）——
+        # 同轨道文字片段时间重叠会叠字渲染
+        overlap = self._find_overlapping_clip(text_track, text_clip)
+        if overlap is not None:
+            logger.info("AnimationAgent: 跳过重叠文字动画 %s（与 %s 时间重叠）",
+                        text_clip.id[:8], overlap.id[:8])
+            return
+
+        text_track.clips.append(text_clip)
+        text_track.clips.sort(key=lambda c: c.start_sec)
+
+    def _handle_text_animation(
+        self,
+        text_track: Track,
+        vid_clip: Clip,
+        anim_id: str,
+        anim_name: str,
+        marker: dict[str, Any],
+        persona_style: dict[str, Any],
+    ) -> None:
+        """模板路径（同步）：AnimationCatalog 固定关键帧 → drawtext clip。
+
+        生产路径请用 `_handle_text_animation_async`（LLM 优先，失败回退到这里）；
+        保留同步入口是为了既有调用方与测试的稳定契约。
+        """
+        clip_duration = max(0.2, float(vid_clip.duration_sec or 0.2))
+        text_content, text_source = self._extract_text_with_source(vid_clip, marker)
+        if not text_content:
+            text_content = marker.get("text", "")
+            if text_content:
+                text_source = "marker"
+        is_typewriter = self._is_typewriter_like(anim_id)
+        if len(text_content) > 50 and text_source in ("marker", "metadata"):
+            self._handle_caption(text_track, vid_clip, text_content, persona_style)
+            return
+        full_kfs = AnimationCatalog.build_full_keyframes(
+            anim_id, vid_clip.start_sec, clip_duration
+        )
+
+        # 完整文字样式字段（统一默认 + persona_style 覆盖，任务 32）
+        style = _merge_style_defaults(DEFAULT_TEXT_STYLE, persona_style)
+
+        # 底部叠字修复（E2E 2026-10-30）：文字动画的正文往往就是旁白整句，
+        # 而 audio 阶段的字幕也来自同一份旁白 → 成片底部出现两行字
+        # （一行文字动画、一行字幕）。字幕负责"说出来的每一句"，文字动画只做
+        # 短语/关键词强调。判据：内容等于所在片段的旁白且足够长（>10 字）→ 交给字幕。
+        _narration = ""
+        try:
+            _narration = str(getattr(vid_clip, "text", "") or
+                             (vid_clip.metadata or {}).get("narration_text") or "").strip()
+        except Exception:  # noqa: BLE001 — 取不到旁白就按普通文字动画处理
+            _narration = ""
+        if _narration and len(text_content.strip()) > 10 and \
+                text_content.strip() == _narration:
+            logger.info(
+                "AnimationAgent: 文字动画与旁白整句重复，交给字幕渲染（避免底部叠字）: %s",
+                text_content[:30],
+            )
+            return
+
+        text_clip = Clip(
+            id=_uid("tc"),
+            kind=ClipKind.TEXT,
+            asset_id="",
+            track_id=text_track.id,
+            start_sec=vid_clip.start_sec,
+            duration_sec=clip_duration,
+            text=text_content or marker.get("text", ""),
+            font="sans-serif",
+            **style,
+            keyframes=full_kfs,
+            metadata={
+                "anim_type": anim_id,
+                "anim_name": anim_name,
+                "renderer": "drawtext",
+                # 位置避让（同上）：字幕固定在 bottom，文字动画默认落在 center，
+                # 只有 persona 显式声明了 text_anim_position 时才跟随。
+                "position": (
+                    persona_style.get("text_anim_position")
+                    or ("center" if str(persona_style.get("position") or "bottom") == "bottom"
+                        else persona_style.get("position"))
+                ),
+                "stroke_width": persona_style.get("stroke_width", 0),
+                "stroke_color": persona_style.get("stroke_color", "#000000"),
+            },
+        )
+        if is_typewriter:
             text_clip.metadata["typewriter"] = True
 
         # 启用重叠去重（_find_overlapping_clip 此前定义未调用）——
@@ -385,6 +874,177 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         text_track.clips.sort(key=lambda c: c.start_sec)
 
     # ── 长文本字幕处理 ─────────────────────────────────────
+
+    # ── 文字动画 LLM 路线（PRD text-animation-llm M2）────────────
+
+    @staticmethod
+    def _text_llm_enabled() -> bool:
+        """文字动画是否走 LLM（`settings.text_animation_llm`，默认开）。"""
+        try:
+            from clipwright.config import settings
+
+            return bool(getattr(settings, "text_animation_llm", True))
+        except Exception:  # noqa: BLE001
+            return True
+
+    @staticmethod
+    def _pick_text_type(text: str) -> str:
+        """按文本语义挑文字动效类型（6 类里最贴的一个）。
+
+        规则简单可解释（不额外花一次 LLM 调用）：
+        - 含引号/「引」→ quote_block
+        - 含数字（含中文数字量词）→ number_punch
+        - 很短（≤8 字）→ emphasis_keyword
+        - 很长（>14 字）→ title_stack（主副标题拆分）
+        - 其余 → reveal_line
+        """
+        raw = str(text or "").strip()
+        if any(mark in raw for mark in ("「", "」", "“", "”", '"', "『", "』")):
+            return "quote_block"
+        # 阿拉伯数字只在短句里当"冲屏数字"（长句里的数字不是主角）
+        if re.search(r"\d", raw) and len(raw) <= 12:
+            return "number_punch"
+        if re.search(r"[一二三四五六七八九十百千]+\s*(分钟|小时|天|年|个|次)", raw) and len(raw) <= 8:
+            return "number_punch"
+        if 0 < len(raw) <= 6:
+            return "emphasis_keyword"
+        if len(raw) > 14:
+            return "title_stack"
+        return "reveal_line"
+
+    @staticmethod
+    def _mgdef_to_drawtext_keyframes(
+        mg_def: dict[str, Any], *, clip_start: float,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """MGDef 元素 → drawtext keyframes（`{time, properties}`，绝对时间）+ 主元素样式。"""
+        elements = [e for e in (mg_def.get("elements") or []) if isinstance(e, dict)]
+        if not elements:
+            return [], {}
+        # 主元素：字号最大者（没有 font_size 时取第一个）
+        def _size(elem: dict[str, Any]) -> float:
+            try:
+                return float(elem.get("font_size") or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        main = max(elements, key=_size)
+        out: list[dict[str, Any]] = []
+        for kf in (main.get("keyframes") or []):
+            if not isinstance(kf, dict):
+                continue
+            try:
+                t = float(kf.get("time") or 0)
+            except (TypeError, ValueError):
+                continue
+            props: dict[str, Any] = {}
+            for key in ("opacity", "scale", "translate_x", "translate_y",
+                        "font_size", "color", "letter_spacing", "rotate", "easing"):
+                if key in kf and kf[key] is not None:
+                    props[key] = kf[key]
+            if not props:
+                continue
+            out.append({"time": round(clip_start + t, 3), "properties": props})
+        out.sort(key=lambda item: item["time"])
+        style: dict[str, Any] = {}
+        for key in ("font_size", "color", "letter_spacing", "text_shadow"):
+            if main.get(key) is not None:
+                style[key] = main[key]
+        style["text"] = str(main.get("content") or main.get("text") or "")
+        return out, style
+
+    async def _build_text_clip_llm(
+        self,
+        vid_clip: Clip,
+        text_content: str,
+        clip_duration: float,
+        persona_style: dict[str, Any],
+        *,
+        anim_id: str,
+        anim_name: str,
+    ) -> Clip | None:
+        """LLM 生成文字动画 clip；失败返回 None（调用方回退模板并登记降级）。"""
+        from clipwright.animation import text_generation as tg
+
+        type_id = self._pick_text_type(text_content)
+        try:
+            result = await tg.generate_for_type(
+                type_id,
+                text=text_content or "",
+                duration_s=clip_duration,
+                persona=persona_style,
+                caption_band=True,
+            )
+        except Exception as exc:  # noqa: BLE001 — 生成失败走模板
+            _note("text_llm_failed", f"{type(exc).__name__}: {exc}",
+                  scope=str((vid_clip.metadata or {}).get("scene_title") or ""),
+                  impact="该段文字动效回退模板关键帧")
+            return None
+        if not result.ok:
+            _note("text_llm_failed", result.error or "生成失败",
+                  scope=str((vid_clip.metadata or {}).get("scene_title") or ""),
+                  impact="该段文字动效回退模板关键帧")
+            return None
+
+        keyframes, main_style = self._mgdef_to_drawtext_keyframes(
+            result.mg_def, clip_start=vid_clip.start_sec,
+        )
+        if not keyframes:
+            _note("text_llm_failed", "LLM 产物没有可用关键帧",
+                  impact="该段文字动效回退模板关键帧")
+            return None
+
+        # 动效覆盖度：最后一个关键帧相对片段的占比（<45% 记 text_motion_weak）
+        span = max(1e-3, float(clip_duration))
+        last_rel = max(0.0, keyframes[-1]["time"] - vid_clip.start_sec)
+        coverage = min(1.0, last_rel / span)
+        if coverage < 0.45:
+            _note(
+                "text_motion_weak",
+                f"文字动效关键帧覆盖 {coverage:.0%}（<45%），后段接近静止",
+                scope=str((vid_clip.metadata or {}).get("scene_title") or ""),
+                impact="观众会觉得这行字只是静态贴图",
+            )
+
+        style = _merge_style_defaults(DEFAULT_TEXT_STYLE, persona_style)
+        if main_style.get("font_size") is not None:
+            style["font_size"] = main_style["font_size"]
+        # 文字动画是"画面主体"，字号有下限：LLM 偶尔给 28 这种字幕级字号，
+        # 1080p 成片里几乎看不见（E2E 2026-10-30 实测）。字幕有自己的一套样式，
+        # 这里只保证文字层在 1080p 基准下可读（1440/720 按比例另有缩放）。
+        try:
+            _min_size = 56.0 * (float(self._tl_width or 1920) / 1920.0)
+            style["font_size"] = max(float(style.get("font_size") or 0), _min_size)
+        except (TypeError, ValueError):
+            style["font_size"] = max(float(style.get("font_size") or 0), 56.0)
+        if main_style.get("color"):
+            style["font_color"] = main_style["color"]
+        if main_style.get("letter_spacing") is not None:
+            style["letter_spacing"] = main_style["letter_spacing"]
+
+        return Clip(
+            id=_uid("tc"),
+            kind=ClipKind.TEXT,
+            asset_id="",
+            track_id="",  # 由调用方 append 到 text_track，track_id 在构造后补
+            start_sec=vid_clip.start_sec,
+            duration_sec=clip_duration,
+            text=main_style.get("text") or text_content,
+            font="sans-serif",
+            **style,
+            keyframes=keyframes,
+            metadata={
+                "anim_type": anim_id,
+                "anim_name": anim_name,
+                "renderer": "drawtext",
+                "position": "center",  # 字幕带避让（caption 固定 bottom）
+                "text_anim_type": type_id,
+                "text_llm_method": result.method,
+                "text_prompt_version": result.prompt_version,
+                "avoid_caption_band_px": tg.CAPTION_BAND_PX,
+                "stroke_width": persona_style.get("stroke_width", 0),
+                "stroke_color": persona_style.get("stroke_color", "#000000"),
+            },
+        )
 
     @staticmethod
     def _handle_caption(
@@ -438,7 +1098,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             text_content = "逻辑关系"
         duration = min(vid_clip.duration_sec, 6.0)
 
-        # ── LLM 动态 MG 动画路由 ──
+        # ── mg_dynamic：自由形式 LLM MG（结构 Agent 直接给描述/文本），保持既有路径。
+        # 它没有固定类型提示词，属于"按需描述生成"，与 38 个类型化路径并存。
         if anim_id == "mg_dynamic":
             await self._handle_llm_mg(
                 anim_track, vid_clip, anim_id, anim_name,
@@ -446,17 +1107,301 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             )
             return
 
-        # ── MG 动画路由 ──
+        # ── 主路径（用户 2026-10-29）：所有逻辑动画按「类型提示词 + 视频类型 + persona」
+        # 由 LLM 生成 mg_def（不再是静态 SVG 贴图，也不是统一塞给 mg_dynamic）。
+        if self._typed_generation_enabled():
+            typed_ok = await self._handle_typed_animation(
+                anim_track, vid_clip, anim_id, anim_name, text_content, duration,
+                marker, persona_style,
+            )
+            if typed_ok:
+                return
+
+        # ── 回退 1：mg_* 内置模板（仍是动态 HTML/CSS，只是非 LLM 定制）
         if anim_id.startswith("mg_"):
+            _note("animation_typed_fallback",
+                  f"类型化 LLM 生成未生效，{anim_id} 回退内置模板 mg_*",
+                  scope=str(marker.get("scene_title") or anim_id),
+                  impact="该段动画非按类型提示词定制，构图与文案贴合度下降")
             await self._handle_mg_animation(
                 anim_track, vid_clip, anim_id, anim_name,
                 text_content, duration, marker, persona_style,
             )
             return
 
-        diagram_params = self._build_diagram_params(
-            anim_id, text_content, duration
+        # ── 回退 2：图解 SVG（现已补真实关键帧，见 diagram_svg；仍是动的）
+        _note("animation_svg_fallback",
+              f"{anim_id} 无可用类型化路径，回退图解 SVG",
+              scope=str(marker.get("scene_title") or anim_id),
+              impact="该段只有矢量图解 + 关键帧，缺少 MG 级动效设计")
+        await self._handle_svg_fallback(
+            anim_track, vid_clip, anim_id, anim_name, text_content, duration, persona_style,
         )
+
+    # ── 类型化 LLM 生成（主路径） ─────────────────────────
+
+    def _typed_generation_enabled(self) -> bool:
+        """类型化生成开关（settings.animation_llm_generation，默认开）。"""
+        try:
+            from clipwright.config import settings
+
+            enabled = bool(getattr(settings, "animation_llm_generation", True))
+        except Exception:  # noqa: BLE001
+            enabled = True
+        if enabled and not getattr(self, "_type_registry_checked", False):
+            # 首次启用时做一次注册表自检：缺提示词/fallback 不合法只告警不阻断，
+            # 免得一个漏写的 md 让整部片子没有动画。
+            self._type_registry_checked = True
+            try:
+                from clipwright.animation.type_specs import validate_registry
+
+                problems = validate_registry()
+                if problems:
+                    logger.warning("AnimationAgent: 动画类型注册表自检: %s", "；".join(problems))
+            except Exception:  # noqa: BLE001
+                logger.warning("AnimationAgent: 动画类型注册表自检失败", exc_info=True)
+        return enabled
+
+    def _category_anim_context(self):
+        """从 category 插件上下文提取动画白名单字段（不把整份配置塞进提示词）。"""
+        from clipwright.animation.type_specs import CategoryAnimationContext
+
+        ctx = getattr(self, "_mg_category_context", {}) or {}
+        notes: list[str] = []
+        for key in ("mg_style_guidance", "stage_prompt"):
+            val = ctx.get(key)
+            if isinstance(val, str) and val.strip():
+                notes.append(val.strip()[:400])
+        brief_style = ctx.get("brief_animation_style")
+        if isinstance(brief_style, dict) and brief_style:
+            notes.append("简报动画风格：" + json.dumps(brief_style, ensure_ascii=False)[:300])
+        return CategoryAnimationContext(
+            plugin_id=str(ctx.get("plugin_id") or ""),
+            tone=str(ctx.get("tone") or ""),
+            density=str(ctx.get("pacing") or ""),
+            audience=str(ctx.get("display_name") or ""),
+            notes=tuple(notes),
+        )
+
+    def _persona_anim_context(self, persona_style: dict[str, Any] | None):
+        """从 persona 风格 + persona prompt 提取动画白名单字段。"""
+        from clipwright.animation.type_specs import PersonaAnimationContext
+
+        style = persona_style or {}
+        palette = tuple(
+            str(style[k]) for k in ("primary_color", "secondary_color", "accent_color", "font_color")
+            if style.get(k)
+        )
+        guide = str(getattr(self, "_persona_prompt", "") or "")
+        # PRD §16 R5：统一上限（旧实现 400/600/1500/2000 四处不同截断）
+        from clipwright.services.visual_context import DEFAULT_PERSONA_PROMPT_MAX
+        try:
+            from clipwright.config import settings as _settings
+            _limit = int(getattr(_settings, "persona_prompt_max_chars", DEFAULT_PERSONA_PROMPT_MAX))
+        except Exception:  # noqa: BLE001
+            _limit = DEFAULT_PERSONA_PROMPT_MAX
+        desc = " ".join(x for x in (str(style.get("style_description") or ""), guide[:_limit]) if x)
+        return PersonaAnimationContext(
+            persona_id=str(style.get("persona_id") or style.get("name") or ""),
+            palette=palette,
+            font=str(style.get("font") or ""),
+            motion_speed=str(style.get("motion_speed") or ""),
+            style_description=desc,
+        )
+
+    async def _handle_typed_animation(
+        self,
+        anim_track: Track,
+        vid_clip: Clip,
+        anim_id: str,
+        anim_name: str,
+        text_content: str,
+        duration: float,
+        marker: dict[str, Any],
+        persona_style: dict[str, Any] | None = None,
+    ) -> bool:
+        """按类型生成动画；返回 True 表示已创建 clip（调用方不再回退）。"""
+        from clipwright.animation.mg.type_generation import fingerprint_of
+
+        if not await self._hyperframes_available():
+            logger.warning("AnimationAgent: Hyperframes 不可用，类型化动画 [%s] 回退", anim_name)
+            return False
+
+        spec = self._resolve_type_spec(anim_id)
+        if spec is None:
+            logger.warning("AnimationAgent: 未注册的动画类型 %s，回退", anim_id)
+            return False
+
+        # 同片去重：同类型同内容只播一次（用户要求「同片不重复播」）。
+        # 逻辑动画是并发执行的，check-and-set 必须串行化，否则同内容会被并发生成两次。
+        fp = fingerprint_of(spec.id, text_content)
+        seen = getattr(self, "_anim_fingerprints", None)
+        if seen is None:
+            seen = {}
+            self._anim_fingerprints = seen
+        lock = getattr(self, "_anim_fp_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._anim_fp_lock = lock
+        async with lock:
+            if fp in seen:
+                prev = seen[fp]
+                logger.info(
+                    "AnimationAgent: 同片重复动画跳过 %s（内容已出现过 @ %.1fs，本次 %.1fs）",
+                    anim_name, prev.get("start", 0.0), vid_clip.start_sec,
+                )
+                self._add_trace_warning(
+                    f"动画内容重复已跳过：{anim_name}（此前出现在 {prev.get('start', 0.0):.1f}s）"
+                )
+                return True  # 视为已处理（跳过重复也是有意的结果）
+            seen[fp] = {"start": float(vid_clip.start_sec), "type": spec.id}
+
+        try:
+            from clipwright.animation.mg.generator import MGGenerator
+
+            mg_gen = MGGenerator()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("AnimationAgent: 类型化生成器初始化失败: %s", e)
+            return False
+
+        payload = marker.get("payload") if isinstance(marker, dict) else None
+        web_context = ""
+        if str(getattr(vid_clip, "id", "") or "") in getattr(self, "_fact_clip_ids", set()):
+            # 只走能力面（web_search 由工具/插件提供）；缺能力就是"没有事实参考"，
+            # 不再直连 WebSearchService —— 那等于绕开插件层（用户 2026-11-02 指出）。
+            try:
+                found = await self.call_tool(
+                    "web_search", query=str(text_content or "")[:120], max_results=3)
+                out = getattr(found, "output", None) or {}
+                rows = list(out.get("results") or []) if isinstance(out, dict) else []
+                web_context = "\n".join(
+                    f"标题: {r.get('title', '')}\n摘要: {r.get('summary') or r.get('snippet', '')}"
+                    for r in rows[:3]
+                )
+            except Exception as exc:  # noqa: BLE001 — 能力不可用/搜索失败不影响生成
+                logger.info("AnimationAgent: web_search 能力不可用（%s），本轮无事实参考", exc)
+                web_context = ""
+
+        scene_meta = vid_clip.metadata or {}
+        prior = [
+            f"{info.get('type')}@ {info.get('start', 0.0):.0f}s" for info in seen.values()
+            if info.get("start") != vid_clip.start_sec
+        ]
+        try:
+            result = await mg_gen.generate_for_type(
+                spec=spec,
+                content=text_content,
+                duration_s=duration,
+                category=self._category_anim_context(),
+                persona=self._persona_anim_context(persona_style),
+                persona_style=persona_style or {},
+                scene_context={
+                    "title": scene_meta.get("title", ""),
+                    "keywords": scene_meta.get("keywords", []),
+                    "description": scene_meta.get("description", ""),
+                },
+                category_context=getattr(self, "_mg_category_context", {}) or {},
+                vision_prompt=getattr(self, "_vision_prompt", "") or "",
+                web_context=web_context,
+                prior_fingerprints=prior,
+                width=self._tl_width,
+                height=self._tl_height,
+                fps=self._tl_fps,
+                pipeline_id=getattr(self, "_pid", None),
+            )
+        except Exception as e:  # noqa: BLE001 — 任何异常都必须能回退
+            logger.exception("AnimationAgent: 类型化生成异常 %s: %s", anim_name, e)
+            return False
+
+        if not result.ok or not result.html:
+            logger.warning(
+                "AnimationAgent: 类型化生成未通过门禁 %s（type=%s）：%s",
+                anim_name, spec.id, "；".join(result.issues[:3]) or result.method,
+            )
+            self._add_trace_warning(
+                f"类型化生成未通过，回退：{anim_name}（{spec.id}）" +
+                (f" — {result.issues[0]}" if result.issues else "")
+            )
+            return False
+
+        clip_dur = min(float(result.mg_def.get("duration_sec") or duration), vid_clip.duration_sec)
+        anim_clip = Clip(
+            id=_uid("tmg"),
+            kind=ClipKind.ANIMATION,
+            asset_id="",
+            track_id=anim_track.id,
+            start_sec=vid_clip.start_sec,
+            duration_sec=clip_dur,
+            text=text_content,
+            metadata={
+                "anim_type": spec.id,
+                "anim_name": spec.name or anim_name,
+                "category": "mg_dynamic",       # 渲染链路按 renderer 判断；此值保持兼容
+                "logic_category": "logic",       # 语义来源：逻辑动画
+                "renderer": "mg_hyperframes",
+                "mg_html": result.html,
+                "mg_def": result.mg_def,
+                "mg_params": (result.raw or {}).get("params") or {},
+                "mg_method": result.method,
+                "type_prompt_version": result.prompt_version,
+                "motion": result.motion,
+                "type_issues": result.issues[:6],
+                # 可读性硬门禁的自动修复记录（补了哪些 text_shadow）
+                "readability_fix": getattr(result, "readability_fix", []) or [],
+                "persona_fingerprint": (persona_style or {}).get("persona_fingerprint"),
+                "persona_source": (persona_style or {}).get("persona_source"),
+                "position": "center",
+            },
+        )
+        if self._find_overlapping_clip(anim_track, anim_clip) is not None:
+            logger.info("AnimationAgent: 动画窗口冲突，跳过 %s（同窗口已有动画）", anim_name)
+            return True
+        anim_track.clips.append(anim_clip)
+        anim_track.clips.sort(key=lambda c: c.start_sec)
+        logger.info(
+            "AnimationAgent: [类型化LLM]%s → type=%s, method=%s, html=%d chars, moving=%s",
+            anim_name, spec.id, result.method, len(result.html),
+            result.motion.get("moving_count"),
+        )
+        return True
+
+    def _resolve_type_spec(self, anim_id: str):
+        """解析动画类型规格；未知类型用通用 spec 兜底（不阻塞生成）。"""
+        from clipwright.animation.type_specs import AnimationTypeSpec, get_spec
+
+        spec = get_spec(anim_id)
+        if spec is not None:
+            return spec
+        try:
+            from clipwright.animation.catalog import AnimationCatalog
+
+            for item in AnimationCatalog.get_logic_animations():
+                if str(item.get("id")) == anim_id:
+                    return AnimationTypeSpec(
+                        id=anim_id,
+                        name=str(item.get("name") or anim_id),
+                        intent=str(item.get("desc") or anim_id),
+                    )
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    async def _handle_svg_fallback(
+        self,
+        anim_track: Track,
+        vid_clip: Clip,
+        anim_id: str,
+        anim_name: str,
+        text_content: str,
+        duration: float,
+        persona_style: dict[str, Any] | None = None,
+    ) -> None:
+        """回退 2：图解 SVG（`diagram_svg.py`）。
+
+        改造后 SVG 自带真实 CSS 关键帧（入场 + 持续动作 + 退场），不再是静态贴图。
+        仅在类型化 LLM 生成失败 / 开关关闭 / Hyperframes 不可用时走到这里。
+        """
+        diagram_params = self._build_diagram_params(anim_id, text_content, duration)
 
         diagram_style = {}
         if persona_style:
@@ -588,6 +1533,12 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         if "primary_color" in style and "accent" in mg_params:
             # Persona 主色覆盖默认 accent
             mg_params["accent"] = style["primary_color"]
+        # PRD §16 R6：模板/插件路径也要能看到 persona（此前只拿到一个 accent 颜色）。
+        # style_hint 是给人读的一行摘要：配色/palette/动画风格/节奏；模板若声明
+        # {style_hint} 占位符即可直接渲染，未声明时仅进入 metadata 与 trace。
+        style_hint = str(style.get("style_hint") or "").strip()
+        if style_hint:
+            mg_params.setdefault("style_hint", style_hint)
 
         mg_dur = mg_def.get("duration_sec", duration)
         # P1-03: 场景窗口短于 MG 自身时长时跳过——旧行为把 clip 钳到窗口但 HTML
@@ -704,20 +1655,45 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         if getattr(self, "_image_index", None):
             gen_description = description + self._format_image_index_prompt(self._image_index)
 
-        # 数据/事实型 mg_dynamic → 联网搜索，注入事实上下文
-        # （门控：描述命中数据/事实关键词 AND WebSearchService 已配置才搜索；
-        #  任何异常/空结果一律静默回退 web_context=""，行为与未配置时完全一致）
+        # 数据/事实型 mg_dynamic → 联网搜索 + **抓正文**，注入事实上下文
+        # （门控：描述命中数据/事实关键词 AND 搜索可用才执行；任何异常回退空串）
+        #
+        # 2026-10-31 增强（用户问"动画能不能拿实时信息"）：旧实现只拼 3 条摘要，
+        # 模型拿不到具体数字/日期就只能编。现在：搜索走工具面（进事件流），
+        # 命中后对前 2 条结果用 web_fetch 抓正文摘录一起注入。
         web_context = ""
-        if re.search(_DATA_FACT_RE, gen_description):
+        if str(getattr(vid_clip, "id", "") or "") in getattr(self, "_fact_clip_ids", set()):
             try:
-                search_svc = WebSearchService()
-                if search_svc.is_configured():
-                    results = await search_svc.search(gen_description[:120])
-                    web_context = "\n".join(
-                        f"标题: {r.get('title', '')}\n摘要: {r.get('snippet', '')}\n"
+                results: list[dict[str, Any]] = []
+                try:
+                    found = await self.call_tool(
+                        "web_search", query=gen_description[:120], max_results=5)
+                    payload = getattr(found, "output", None) or {}
+                    if isinstance(payload, dict):
+                        results = list(payload.get("results") or [])
+                except Exception as exc:  # noqa: BLE001 — 能力不可用就没有事实参考
+                    logger.info("AnimationAgent: web_search 能力不可用（%s）", exc)
+                    results = []
+                blocks: list[str] = []
+                for r in results[:3]:
+                    blocks.append(
+                        f"标题: {r.get('title', '')}\n摘要: {r.get('summary') or r.get('snippet', '')}\n"
                         f"来源: {r.get('url', '')}"
-                        for r in (results or [])[:3]
                     )
+                # 正文摘录：给模型可引用的具体事实（数字/日期/名词），最多 2 条
+                for r in results[:2]:
+                    url = str(r.get("url") or "")
+                    if not url.startswith(("http://", "https://")):
+                        continue
+                    page = await self._fetch_url(url, title=str(r.get("title") or ""),
+                                                 max_chars=1200)
+                    if not page:
+                        continue
+                    text = str(page.get("content") or "").strip()
+                    if len(text) < 80:
+                        continue
+                    blocks.append(f"正文摘录（{url}）:\n{text[:1200]}")
+                web_context = "\n\n".join(blocks)
             except Exception:
                 logger.warning("AnimationAgent: 联网搜索失败，跳过 web_context", exc_info=True)
                 web_context = ""
@@ -1207,16 +2183,21 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                     style_desc_parts.append(_v.strip())
             if style_desc_parts and not config.get("style_description"):
                 config["style_description"] = "；".join(style_desc_parts)
-        # 主修复：原始层注入兜底色板（黑白红）。
-        # persona 参数层 primary/secondary/accent 为 null 时（如 Zam），注入非空结构化字段，
-        # 使 _apply_structured_overrides 无论走 LLM/tone-fallback/快路径都把结果盖回黑白红——
-        # 注入是正确性保证（不依赖 LLM 恰好生成对色板）。
-        if not config.get("primary_color"):
-            config["primary_color"] = "#000000"
-        if not config.get("secondary_color"):
-            config["secondary_color"] = "#FFFFFF"
-        if not config.get("accent_color"):
-            config["accent_color"] = "#FF0000"
+        # ── 结构化色板（PRD §16 R4）──
+        # 旧实现无条件注入黑白红作为兜底，并把「以 Persona 注入值为最终准绳」写进
+        # LLM 上下文 —— 结果任何 persona 的动画都被强制成 Zam 的配色。
+        # 现在只做两件事：
+        #   1) persona 真的提供了结构化色板才使用；
+        #   2) 没提供时**不编造**，交给 palette 文字描述（`_build_context_section`
+        #      的「配色描述」字段）+ DiagramStyle 默认值，并标注来源 fallback。
+        has_structured_palette = any(
+            config.get(k) for k in ("primary_color", "secondary_color", "accent_color")
+        )
+        config["palette_source"] = "persona" if has_structured_palette else "fallback"
+        if not has_structured_palette and config.get("palette"):
+            logger.info(
+                "AnimationAgent: persona 无结构化色板，使用 palette 描述生成（source=fallback）"
+            )
         # 成本优化（可选）：局部剥离 palette 传给 StyleInterpreter——剥离后 `not palette` 为真，
         # has_exact 快路径触发（有精确 primary_color 即跳过 LLM 调用）。仅影响传给 interpret 的
         # 副本，persona_config / yaml 原样保留（material_agent 的 palette 消费点不受影响）。
@@ -1230,6 +2211,11 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         # 供下游（LLM MG prompt / 文字动画消费点）使用——StyleInterpreter 只返回结构化字段。
         if config.get("style_description") and isinstance(result, dict):
             result.setdefault("style_description", config["style_description"])
+        if isinstance(result, dict):
+            # PRD §16 R4：把色板来源带出去（persona / fallback），供 prompt 与 trace 标注
+            result.setdefault("palette_source", config.get("palette_source", "fallback"))
+            if config.get("palette") and not result.get("palette"):
+                result["palette"] = config["palette"]
         return result
 
     @staticmethod
@@ -1397,3 +2383,4 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             base["items"] = [text[:20]]
 
         return base
+

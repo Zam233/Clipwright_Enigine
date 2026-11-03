@@ -73,7 +73,12 @@ class TestCaptionStroke:
         """caption 有显式 style → 不覆盖用户配置。"""
         ov = RenderService._extract_text_overlay(
             _mk_clip(metadata={"category": "caption", "style": {"font_size": 40}}), 2, [])
-        assert ov["style"] == {"font_size": 40}
+        # 契约变化（2026-10-30）：位置/字号/颜色现在**必须**进 style dict——
+        # ASS 路径只认 style，写在外层会被默认 bottom 顶掉（文字动画会掉进字幕带）。
+        # 这里断言"用户显式值不被覆盖"，不再要求 style 只有那一个键。
+        assert ov["style"]["font_size"] == 40
+        assert ov["style"]["position"] == "bottom"
+        assert ov["style"]["offset_y"] == 0
 
     def test_build_drawtext_filter_contains_borderw(self, tmp_path) -> None:
         """默认描边流入 drawtext filter：真实字符串包含 borderw=2。"""

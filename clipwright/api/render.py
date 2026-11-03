@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 import tempfile
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -16,7 +17,7 @@ from fastapi import APIRouter, HTTPException, Request
 from clipwright.config import TIME_ZONE, logger, settings
 from clipwright.paths import anchor
 from clipwright.schema.timeline import Timeline
-from clipwright.security import is_safe_download_name
+from clipwright.security import SecurityViolation, is_safe_download_name, output_basename
 from clipwright.services.async_util import spawn_background
 from clipwright.services.remote_render import RemoteRenderService
 from clipwright.services.render import RenderService
@@ -53,15 +54,58 @@ def _drop_render_task(task_id: str) -> None:
         pass
 
 
-def _load_recovered_render_tasks() -> list[dict]:
-    """重启恢复：Mongo 中 queued/rendering 且内存已无的任务。"""
+def mark_interrupted_render_tasks() -> int:
+    """启动恢复：把上个进程遗留的 queued/rendering 渲染任务标成 failed。
+
+    这些记录永远不会再有 worker 处理（进程已死），旧实现让它们以 queued 永久挂在
+    队列里，前端看到一片「恢复的任务 / Task not found」。返回被标记的条数。
+    """
     try:
+        from datetime import datetime
+
+        from clipwright.context import mongo
+        if not mongo.is_connected:
+            return 0
+        res = mongo.db["render_tasks"].update_many(
+            {"status": {"$in": ["queued", "rendering"]}},
+            {"$set": {
+                "status": "failed",
+                "detail": "进程重启中断（渲染未完成）",
+                "result": {"error": "进程重启中断（渲染未完成）"},
+                "updated_at": datetime.now(tz=TIME_ZONE),
+            }},
+        )
+        n = int(getattr(res, "modified_count", 0) or 0)
+        if n:
+            logger.warning("启动恢复：%d 个渲染任务标记为中断（进程重启）", n)
+        return n
+    except Exception as exc:  # noqa: BLE001 — 恢复失败不能阻断启动
+        logger.warning("启动恢复：标记中断渲染任务失败: %s", exc)
+        return 0
+
+
+def _load_recovered_render_tasks() -> list[dict]:
+    """重启恢复：Mongo 中 queued/rendering、以及**刚完成**的渲染任务（内存已无）。
+
+    为什么要带 completed/failed：终态队列记录 60s 后会被清理（`_drop_render_task`），
+    于是「渲染完 → 刷新页面」就再也拿不到成片入口——只能看到一堆
+    「恢复的任务 / Task not found」（E2E 2026-10-29 实测）。最近 30 分钟内的终态任务
+    一并返回，前端队列行才能显示「下载」。过期记录仍由清理逻辑淘汰。
+    """
+    try:
+        from datetime import datetime, timedelta
+
         from clipwright.context import mongo
         if not mongo.is_connected:
             return []
-        docs = list(mongo.db["render_tasks"].find(
-            {"status": {"$in": ["queued", "rendering"]}}
-        ))
+        recent = datetime.now(tz=TIME_ZONE) - timedelta(minutes=30)
+        docs = list(mongo.db["render_tasks"].find({
+            "$or": [
+                {"status": {"$in": ["queued", "rendering"]}},
+                {"status": {"$in": ["completed", "failed", "cancelled"]},
+                 "updated_at": {"$gte": recent}},
+            ]
+        }).sort("updated_at", -1).limit(50))
         for d in docs:
             d.pop("_id", None)
         return docs
@@ -244,6 +288,28 @@ def _ensure_disk_space(min_free_gb: float = 1.0) -> None:
         pass
 
 
+def _render_out_path(filename: str, *, workspace_root: str | None = None) -> str:
+    """成片输出路径：工作区内 → ``<ws>/renders/<filename>``，否则全局 ``renders/<filename>``。
+
+    安全：只接受 ``settings.workspace_dir`` 之内的 root（防任意目录写盘）；文件名已由
+    调用方做过 ``is_safe_download_name`` 校验。
+    """
+    name = Path(filename).name
+    if workspace_root:
+        try:
+            from clipwright.services.workspace import workspace_root as _ws_root
+
+            base = Path(workspace_root).resolve()
+            if base.is_relative_to(_ws_root().resolve()):
+                out_dir = base / "renders"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                return str(out_dir / name)
+            logger.warning("忽略非法 workspace_root（不在工作区根内）: %s", workspace_root)
+        except Exception as exc:  # noqa: BLE001 — 落点解析失败回退全局目录
+            logger.warning("工作区渲染落点解析失败（回退全局 renders）: %s", exc)
+    return f"renders/{name}"
+
+
 async def enqueue_auto_render(
     pipeline_id: str,
     timeline,
@@ -295,6 +361,7 @@ async def enqueue_auto_render(
 
     async def _run():
         attempt = 0
+        _render_started = time.perf_counter()
         while True:
             _render_queue[task_id]["status"] = "rendering"
             _render_queue[task_id]["progress"] = 0
@@ -320,6 +387,11 @@ async def enqueue_auto_render(
                 if not result.success:
                     raise RuntimeError(result.error or "render failed")
                 _render_queue[task_id]["result"] = result.to_dict()
+                # V38：渲染**耗时**入账。注意 result.duration_sec 是成片时长，
+                # 不是这台机器实际跑了多久——两者同名极易混淆，故单独记 render_seconds。
+                _render_queue[task_id]["render_seconds"] = round(
+                    time.perf_counter() - _render_started, 2
+                )
                 _render_queue[task_id]["status"] = "completed"
                 _render_queue[task_id]["progress"] = 100
                 _render_queue[task_id]["output_path"] = str(out)
@@ -369,9 +441,10 @@ async def enqueue_auto_render(
             pass
 
         async def _cleanup():
+            # 同上（/queue）：只清内存条目，Mongo 记录留给 30 分钟恢复窗口，
+            # 刷新页面后仍能点「下载」。
             await asyncio.sleep(60)
             _render_queue.pop(task_id, None)
-            _drop_render_task(task_id)
         spawn_background(_cleanup(), name=f"render-auto-cleanup-{task_id}")
 
     spawn_background(_run(), name=f"render-auto-{task_id}")
@@ -418,16 +491,48 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
     tl = body.timeline
     # 入参白名单（timeline 媒体路径 + 音频/BGM）
     _validate_render_inputs(tl, body.audio_file_path or "", body.bgm_file_path or "")
+
+    # V32：负时间片头——画面整体后移 + 音频延后同样时长，否则音画会整体漂
+    _audio_path = body.audio_file_path or ""
+    _preroll_plan: dict = {}
+    if body.preroll_sec and body.preroll_sec > 0:
+        from clipwright.services.preroll import apply_preroll, delay_audio, plan as preroll_plan
+
+        _plan = preroll_plan(tl, body.preroll_sec)
+        _preroll_plan = _plan.as_dict()
+        tl = apply_preroll(tl, body.preroll_sec)
+        if _audio_path:
+            try:
+                _delayed = delay_audio(
+                    _audio_path,
+                    body.preroll_sec,
+                    Path(tempfile.gettempdir()) / f"{task_id}_preroll.wav",
+                )
+                _audio_path = str(_delayed)
+                _preroll_plan["audio_delayed"] = True
+            except Exception as exc:  # noqa: BLE001 - 延迟失败必须显式标记，不能静默漂移
+                logger.warning("片头音频延迟失败（成片将音画不同步）: %s", exc)
+                _preroll_plan["audio_delayed"] = False
+                _preroll_plan["audio_delay_error"] = str(exc)[:200]
+        else:
+            _preroll_plan["audio_delayed"] = False
+        _render_queue[task_id]["preroll"] = _preroll_plan
     # 使用请求 output_path 的 basename（防御：仅取 basename 拼到 renders/，白名单校验）。
-    # 先对原始串做 is_safe_download_name 校验（拒绝路径分隔符 / \\、.. 与 Windows 非法字符），
-    # 再取 basename 拼接到 renders/ 目录，杜绝路径穿越。
+    # 客户端一直传 `renders/xxx.mp4`（ExportPage submitRender / 旧渲染入口），
+    # 对整串校验会因路径分隔符把合法请求判成「非法输出文件名」——实测前端导出页
+    # 100% 提交失败（E2E 2026-10-29）。`output_basename` 允许普通目录段、拒绝 `..`，
+    # 穿越仍然进不来（最终 out 一定拼在 renders/ 之下）。
     raw_output = body.output_path or ""
-    if raw_output and not is_safe_download_name(raw_output):
-        raise HTTPException(status_code=400, detail="非法输出文件名")
-    requested_name = Path(raw_output).name if raw_output else ""
+    try:
+        requested_name = output_basename(raw_output)
+    except SecurityViolation as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    requested_name = requested_name or ""
     # 预设携带容器扩展名（prores→mov）；用户显式指定文件名时尊重用户
     _ext = str(params.get("container_ext") or "mp4")
-    out = f"renders/{requested_name}" if requested_name else f"renders/{task_id}.{_ext}"
+    _fname = requested_name or f"{task_id}.{_ext}"
+    # B10：带 workspace_root 时成片落工作区 renders/（PRD「项目一切都在工作区」）
+    out = _render_out_path(_fname, workspace_root=body.workspace_root)
 
     # 软字幕——从时间线字幕轨生成 SRT sidecar（供 render 封装 mov_text 轨）
     _srt_path = ""
@@ -510,7 +615,7 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                 width=params["width"], height=params["height"],
                 fps=params["fps"], bitrate=params["bitrate"],
                 audio_bitrate=params["audio_bitrate"],
-                audio_file_path=body.audio_file_path or "",
+                audio_file_path=_audio_path,
                 bgm_file_path=body.bgm_file_path or "",
                 progress_callback=on_progress,
                 cancel_id=task_id,
@@ -526,6 +631,10 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                 except Exception:
                     pass
             _render_queue[task_id]["result"] = result.to_dict()
+            # V38：渲染**耗时**（wall-clock）入账；注意 result.duration_sec 是成片时长
+            _render_queue[task_id]["render_seconds"] = round(
+                _time.perf_counter() - _wait_started, 2
+            )
             _render_queue[task_id]["status"] = "completed" if result.success else "failed"
             _render_queue[task_id]["progress"] = 100
             _render_queue[task_id]["output_path"] = str(out)
@@ -570,6 +679,12 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                 logger.warning("render webhook dispatch failed: %s", we)
         except Exception as e:
             from clipwright.services.render import RenderCancelledError
+            # 失败必须留日志：终态队列记录 60s 后会被清理，此前失败原因只存在队列里，
+            # 用户和开发者都拿不到（E2E 2026-10-29：整片渲染 100% 失败，日志里查不到原因）。
+            if not isinstance(e, RenderCancelledError):
+                logger.exception("渲染失败 %s（progress=%s, phase=%s）",
+                                 task_id, _render_queue[task_id].get("progress"),
+                                 _render_queue[task_id].get("phase"))
             if isinstance(e, RenderCancelledError):
                 # 审计 P0 修复：用户取消 → 独立终态 cancelled
                 _render_queue[task_id]["status"] = "cancelled"
@@ -593,17 +708,18 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                     "status": _render_queue[task_id]["status"],
                     "progress": _render_queue[task_id].get("progress", 0),
                     "result": _render_queue[task_id].get("result"),
+                    "render_seconds": _render_queue[task_id].get("render_seconds"),
                     "output_path": _render_queue[task_id].get("output_path", ""),
                     "owner_id": _render_queue[task_id].get("owner_id", ""),
                     "updated_at": datetime.now(tz=TIME_ZONE),
                 })
             except Exception:
                 pass
-            # 60s 后清理
+            # 60s 后清理内存条目（Mongo 记录保留 30 分钟：刷新页面/重开 URL 还能拿到
+            # 「下载」入口——旧实现连记录一起删，渲染完成的成片在刷新后彻底失联）。
             async def _cleanup():
                 await asyncio.sleep(60)
                 _render_queue.pop(task_id, None)
-                _drop_render_task(task_id)  # P5-B4: 终态已同步，清理落库记录
                 for k, v in list(_idempotency_render.items()):
                     if v == task_id:
                         _idempotency_render.pop(k, None)
@@ -769,18 +885,25 @@ async def list_queue(request: Request) -> dict:
     for tid, info in _render_queue.items():
         tasks.append({"task_id": tid, "status": info["status"],
                       "progress": info.get("progress", 0), "owner_id": info.get("owner_id", ""),
-                      "priority": info.get("priority", 3)})
+                      "priority": info.get("priority", 3),
+                      # 成片路径/文件名：前端队列行的「下载」按钮靠它（刷新后仍要能下载）
+                      "output_path": info.get("output_path", ""),
+                      "filename": Path(str(info.get("output_path") or "")).name})
     memory_ids = {t["task_id"] for t in tasks}
-    # 重启恢复：Mongo 中 queued/rendering 且内存已无 → 标记 recovered（前端可提示中断重试）
+    # 重启恢复：Mongo 中 queued/rendering 且内存已无 → 标记 recovered（前端可提示中断重试）；
+    # 刚完成的终态任务同样带回来（output_path 一并返回，刷新后「下载」按钮才在）
     recovered = await asyncio.to_thread(_load_recovered_render_tasks)
     for d in recovered:
         if d.get("task_id") not in memory_ids:
+            _op = str(d.get("output_path") or "")
             tasks.append({
                 "task_id": d["task_id"],
                 "status": d.get("status", "queued"),
                 "progress": d.get("progress", 0),
                 "owner_id": d.get("owner_id", ""),
                 "recovered": True,
+                "output_path": _op,
+                "filename": Path(_op).name if _op else "",
             })
     tasks = filter_by_owner(request, tasks)
     tasks.sort(key=lambda t: (-t.get("priority", 3), t["task_id"]), reverse=True)
@@ -950,7 +1073,7 @@ async def download_render(filename: str, request: Request):
     """
     from urllib.parse import quote
 
-    from clipwright.security import is_safe_download_name
+    from clipwright.security import SecurityViolation, is_safe_download_name, output_basename
     if not is_safe_download_name(filename):
         raise HTTPException(status_code=400, detail="非法文件名")
     _enforce_render_file_owner(request, filename)
@@ -970,9 +1093,17 @@ _EXPORT_PRESETS = {
     "youtube": {"width": 1920, "height": 1080, "fps": 30, "bitrate": "8M", "audio_bitrate": "192k", "note": "YouTube 推荐"},
     "tiktok": {"width": 1080, "height": 1920, "fps": 30, "bitrate": "4M", "audio_bitrate": "192k", "note": "抖音/快手 竖屏"},
     "weibo": {"width": 720, "height": 1280, "fps": 24, "bitrate": "3M", "audio_bitrate": "192k", "note": "微博 竖屏"},
-    "1080p": {"width": 1920, "height": 1080, "fps": 30, "bitrate": "5M", "audio_bitrate": "192k", "note": "标准 1080p"},
+    # 用户 2026-10-28：标准 1080p 改恒定质量（原来固定 5M，702s 要 299MB）
+    "1080p": {"width": 1920, "height": 1080, "fps": 30, "bitrate": "cq26", "audio_bitrate": "128k", "note": "标准 1080p（恒定质量 CQ26）"},
     "720p": {"width": 1280, "height": 720, "fps": 30, "bitrate": "3M", "audio_bitrate": "192k", "note": "标准 720p"},
     "480p": {"width": 854, "height": 480, "fps": 24, "bitrate": "1.5M", "audio_bitrate": "128k", "note": "标准 480p"},
+    # 质量档（前端下拉用）：母版留高画质，交付走小体积
+    "master_cq18": {"width": 1920, "height": 1080, "fps": 30, "bitrate": "cq18", "audio_bitrate": "192k",
+                    "note": "高质量母版（CQ18，供二次剪辑）"},
+    "web_cq26": {"width": 1920, "height": 1080, "fps": 30, "bitrate": "cq26", "audio_bitrate": "128k",
+                 "note": "网页/社媒交付（CQ26，体积最小）"},
+    "web_cq30": {"width": 1920, "height": 1080, "fps": 30, "bitrate": "cq30", "audio_bitrate": "96k",
+                 "note": "极限压缩（CQ30，预览/审片用）"},
     # Phase 3.3: 交付级封装（广播/母带场景）
     "prores422hq": {"width": 1920, "height": 1080, "fps": 30, "encoder": "prores_ks", "pix_fmt": "yuv422p10le",
                     "container_ext": "mov",  # D8: ProRes 容器是 MOV（原输出仍命名 .mp4）
@@ -990,8 +1121,9 @@ class RenderSettings(BaseModel):
     width: int = Field(default=1920, ge=64, le=7680, description="输出宽度 (px)")
     height: int = Field(default=1080, ge=64, le=4320, description="输出高度 (px)")
     fps: float = Field(default=30.0, gt=0, le=120, description="输出帧率")
-    bitrate: str = "5M"
-    audio_bitrate: str = "192k"
+    #: 码率或质量："5M" / "3000k" 走 ABR；"cq26" / "crf23" 走恒定质量（默认）
+    bitrate: str = "cq26"
+    audio_bitrate: str = "128k"
     preset: str = ""  # 预设名称，如 "bilibili"、"tiktok"，会覆盖其他参数
     # Phase 3.3: 编码器/像素格式覆盖（交付级；空 = 自动探测/默认）
     encoder: str = Field(default="", description="编码器覆盖（libx264/h264_nvenc/prores_ks/libx265；空=自动）")
@@ -1009,6 +1141,46 @@ class RenderRequest(BaseModel):
     settings: Optional[RenderSettings] = None
     audio_file_path: Optional[str] = None  # 用户上传的配音文件路径
     bgm_file_path: Optional[str] = None  # 背景音乐文件路径
+    # B10：成片落工作区 `<workspace>/renders/`（PRD「项目一切都在工作区」）。
+    # 只接受 settings.workspace_dir 之内的路径；不传则沿用全局 renders/。
+    workspace_root: Optional[str] = Field(
+        default=None, description="工作区根目录（留空 = 全局 renders/）")
+    # V32 负时间片头：画面整体后移 N 秒、音频延后同秒数（成片总长 = 原时长 + N）
+    preroll_sec: float = Field(
+        default=0.0, ge=0, le=15.0,
+        description="负时间片头秒数（0 = 无片头；画面先起、音乐后进）",
+    )
+
+
+@router.get("/browser")
+async def render_browser_status() -> dict:
+    """当前动画渲染用哪个浏览器 + chrome-headless-shell 是否已安装。
+
+    两档策略（用户 2026-10-28）：
+    1. 没有 chrome-headless-shell → 系统 Chrome **无头 + 软件 GPU（CPU）**；
+    2. 装了（插件 `headless_chrome`）→ 动画渲染走 chrome-headless-shell。
+    """
+    from clipwright.services import headless_browser
+
+    st = headless_browser.status()
+    shell = st["headless_shell"]
+    if shell.get("path"):
+        shell["version"] = headless_browser.probe_version(shell["path"])
+    return st
+
+
+@router.post("/browser/install")
+async def render_browser_install() -> dict:
+    """安装 chrome-headless-shell（前端“下载并安装”按钮 / 插件加载时也会调）。"""
+    import asyncio as _aio
+
+    from clipwright.services import headless_browser
+
+    if headless_browser.find_shell():
+        return {"ok": True, "message": "已安装", "path": headless_browser.find_shell()}
+    # 后台跑，接口立刻返回，前端轮询 /api/render/browser 看进度
+    _aio.get_running_loop().create_task(headless_browser.install_shell())
+    return {"ok": None, "message": "开始安装，请稍候（约 100-200MB）", "installing": True}
 
 
 @router.get("/presets")
@@ -1085,8 +1257,10 @@ def _resolve_settings(s: RenderSettings | None) -> dict:
         "width": base.get("width", 1920),
         "height": base.get("height", 1080),
         "fps": base.get("fps", 30.0),
-        "bitrate": base.get("bitrate", "5M"),
-        "audio_bitrate": base.get("audio_bitrate", "192k"),
+        # 用户 2026-10-28 裁定：默认恒定质量 CQ26（图文/慢镜头内容肉眼无损，
+        # 体积约为固定 5M 的一半）。前端可显式传 "5M"/"3M" 走 ABR。
+        "bitrate": base.get("bitrate", "cq26"),
+        "audio_bitrate": base.get("audio_bitrate", "128k"),
         "encoder": base.get("encoder", ""),
         "pix_fmt": base.get("pix_fmt", ""),
         "soft_subtitle": bool(base.get("soft_subtitle", False)),
@@ -1105,15 +1279,17 @@ async def start_render(
     # 入参白名单（timeline 媒体路径 + 音频/BGM）
     _validate_render_inputs(tl, body.audio_file_path or "", body.bgm_file_path or "")
     # 输出文件名校验 + 强制落入 renders/（safe 名称，杜绝 renders/../../ 穿越）
+    # 同 /queue：走 output_basename（允许 `renders/x.mp4`，拒绝 `..` 段）。
     raw_output = body.output_path or ""
-    if raw_output and not is_safe_download_name(raw_output):
-        raise HTTPException(status_code=400, detail="非法输出文件名")
+    try:
+        requested_name = output_basename(raw_output)
+    except SecurityViolation as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     s = body.settings
     try:
         params = _resolve_settings(s)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    requested_name = Path(raw_output).name if raw_output else ""
     _ext = str(params.get("container_ext") or "mp4")
     if requested_name:
         stem = Path(requested_name).stem
@@ -1234,3 +1410,4 @@ async def get_video_thumbnail(path: str, time_sec: float = 0.5, request: Request
         shutil.rmtree(thumb.parent, ignore_errors=True)
         logger.error("缩略图异常: %s", e)
         raise HTTPException(status_code=500, detail="缩略图生成失败")
+

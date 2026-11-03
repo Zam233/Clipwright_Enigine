@@ -304,7 +304,7 @@ class ContributionDecl(BaseModel):
 `plugin.yaml` 示例（迁移后的形态）：
 
 ```yaml
-id: my_material_lib
+id: local_material
 name: 我的素材库
 version: 1.2.0
 kind: material
@@ -545,6 +545,8 @@ export type SlotName =
   | 'props.section'        // 属性面板分区（按 clip kind 过滤）
   | 'export.preset'        // 导出预设
   | 'settings.section'     // 设置页分区
+  | 'create.dub'           // 「开始创作」向导 03 配音与字幕（2026-11-02 裁定 C 新增，名单 14→15）
+  | 'app.overlay'          // 全屏浮层（AppOverlayHost 承载）
   | 'shortcut';            // 快捷键
 
 export interface SlotContribution {
@@ -609,7 +611,7 @@ export interface SlotContribution {
 - `src/features/plugins/Slot.tsx` —— `<Slot name="editor.right-panel" context={...} />`
 - `src/features/plugins/slotRenderers/*.tsx` —— 每个 slot 一个渲染器（导航项/页面/面板/工具/菜单项/预设/快捷键）。
 
-复用现有资产：`PluginLayoutRenderer.tsx`（已有 13 种控件 + `UIAction` 执行）**直接用作面板类 slot 的渲染器**，不重写。
+复用现有资产：`PluginLayoutRenderer.tsx`（**14 种**控件 + `UIAction` 执行，2026-11-02 增补 `file`）**直接用作面板类 slot 的渲染器**，不重写。
 
 变更管理：`usePluginSlots(slot)` hook —— 拉取 `/api/plugin/contributions`，做 30s 缓存，插件启停后失效（与 `PluginsPage` 的开关联动）。
 

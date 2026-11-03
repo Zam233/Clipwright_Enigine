@@ -11,10 +11,34 @@
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from clipwright.config import logger
+
+
+def text_em_width(text: str) -> float:
+    """估算文本宽度（单位 em）。
+
+    全角/CJK 字符按 1.0 em，半角按 0.56 em——与常见无衬线字体在浏览器里的
+    实际占位误差 < 8%，足以用于「盒子要不要加宽 / 字号要不要缩」的判定。
+    """
+    w = 0.0
+    for ch in str(text or ""):
+        w += 1.0 if unicodedata.east_asian_width(ch) in ("W", "F") else 0.56
+    return w
+
+
+def fit_font_size(
+    texts: list[str], budget_px: float, preferred: int, minimum: int = 16,
+) -> int:
+    """把字号收缩到让最长文本落到 ``budget_px`` 以内（不低于 ``minimum``）。"""
+    widest = max((text_em_width(t) for t in texts), default=0.0)
+    if widest <= 0:
+        return max(minimum, int(preferred))
+    fitted = int(float(budget_px) / widest)
+    return max(int(minimum), min(int(preferred), fitted))
 
 
 @dataclass
@@ -37,6 +61,26 @@ class DiagramStyle:
     @classmethod
     def _known_fields(cls) -> set[str]:
         return set(cls.__dataclass_fields__.keys())
+
+    @staticmethod
+    def _safe_color(value: float | str | None, fallback: str, *, field: str = "") -> str:
+        """颜色字段消毒：占位符 / 非法值一律回退默认色。
+
+        E2E 2026-10-28：`diagram_style` 里残留模板占位符（如 `{accent}`）时，
+        它会被原样写进 SVG 的 fill/stroke → hyperframes 编译失败（code=1）→
+        **45 个图解动画整批渲不出来**，而成片照样报 success。
+        """
+        text = str(value or "").strip()
+        if not text:
+            return fallback
+        if text.startswith("{") and text.endswith("}"):
+            logger.warning("DiagramStyle: 颜色字段 %s 残留占位符 %s，已回退默认色", field, text)
+            return fallback
+        if text.startswith("#") or text.startswith("rgb") or text.startswith("hsl") \
+                or text.isalpha():
+            return text
+        logger.warning("DiagramStyle: 颜色字段 %s 非法值 %s，已回退默认色", field, text[:24])
+        return fallback
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "DiagramStyle":
@@ -94,11 +138,14 @@ class DiagramStyle:
         if preset_name and preset_name in plugin_presets:
             base = cls.from_dict(plugin_presets[preset_name])
 
+        def _c(key: str, fallback: str) -> str:
+            return cls._safe_color(persona_style.get(key), fallback, field=key)
+
         return cls(
-            primary_color=persona_style.get("primary_color", base.primary_color),
-            secondary_color=persona_style.get("secondary_color", base.secondary_color),
-            accent_color=persona_style.get("accent_color", base.accent_color),
-            text_color=persona_style.get("font_color", base.text_color),
+            primary_color=_c("primary_color", base.primary_color),
+            secondary_color=_c("secondary_color", base.secondary_color),
+            accent_color=_c("accent_color", base.accent_color),
+            text_color=_c("font_color", base.text_color),
             font_size=persona_style.get("font_size", base.font_size),
             title_font_size=persona_style.get("title_font_size", base.title_font_size),
             stagger_delay=persona_style.get("stagger_delay", base.stagger_delay),
@@ -156,7 +203,7 @@ class DiagramRenderer:
 
         fn = renderer_map.get(preset)
         if fn is not None:
-            return fn(items, text, style, width, height)
+            return cls._inject_motion(fn(items, text, style, width, height))
 
         # 未找到 → 尝试从 Hook 加载插件渲染器
         try:
@@ -166,12 +213,73 @@ class DiagramRenderer:
                 if isinstance(r, dict) and r.get("id") == preset and "renderer" in r:
                     cls._custom_renderers[preset] = r["renderer"]
                     fn = r["renderer"]
-                    return fn(items, text, style, width, height)
+                    return cls._inject_motion(fn(items, text, style, width, height))
         except Exception:
             pass
 
         logger.warning("DiagramRenderer: 未知 preset=%s，回退到箭头", preset)
-        return cls._arrow(items, text, style, width, height)
+        return cls._inject_motion(cls._arrow(items, text, style, width, height))
+
+    #: 图解回退用的动效关键帧（内联在 SVG 里，Hyperframes 的 hf_timeline 会
+    #: 通过 document.getAnimations() 逐帧 seek，所以这里是**真实可 seek 的动效**）。
+    _MOTION_CSS = (
+        "<style>"
+        "@keyframes ds-rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}"
+        "@keyframes ds-pop{0%{opacity:0;transform:scale(.92)}60%{opacity:1;transform:scale(1.03)}"
+        "100%{opacity:1;transform:scale(1)}}"
+        "@keyframes ds-draw{from{stroke-dashoffset:900}to{stroke-dashoffset:0}}"
+        # 持续微动：入场结束后不能定格成贴图（逐帧验收要求整段都有可观测变化）
+        "@keyframes ds-breathe{0%{opacity:.9;transform:translateY(0)}50%{opacity:1;"
+        "transform:translateY(-1.5px)}100%{opacity:.9;transform:translateY(0)}}"
+        "</style>"
+    )
+
+    @classmethod
+    def _inject_motion(cls, svg: str) -> str:
+        """给图解 SVG 注入真实入场动效（回退路径也必须是"动"的）。
+
+        背景：改造前每个元素只有 `animation-delay`、没有 `animation-name`，
+        该属性单独存在等于无效——成片里 6s 片段只有 2 个不同帧（一帧空白 +
+        一帧静止）。
+        现在每个元素叠加两段动画：
+        1. 入场（rise / pop，按 delay 错峰）；
+        2. 持续微动（breathe，周期 3.2s 无限循环）——保证入场结束后整段仍有
+           可观测变化，逐帧验收（distinct ratio）不会退化成静态贴图。
+        """
+        if not svg or "<g" not in svg:
+            return svg
+        import re as _re
+
+        counter = {"i": 0}
+
+        def _g(m: "_re.Match[str]") -> str:
+            delay = m.group(1)
+            cls_name = "ds-pop" if counter["i"] % 3 == 1 else "ds-rise"
+            counter["i"] += 1
+            dur = "0.55s" if cls_name == "ds-pop" else "0.45s"
+            beat_delay = f"{float(delay) + 0.4:.2f}"
+            return (
+                f'<g style="animation:{cls_name} {dur} cubic-bezier(.22,1,.36,1) both,'
+                f'ds-breathe 3.2s ease-in-out infinite;'
+                f'animation-delay:{delay}s,{beat_delay}s"'
+            )
+
+        svg = _re.sub(r'<g style="animation-delay:([0-9.]+)s"', _g, svg)
+
+        # 2) 连线：描线动画（marker 箭头不受影响）
+        def _line(m: "_re.Match[str]") -> str:
+            head = m.group(1)
+            if "animation" in head:
+                return m.group(0)
+            return head + ' stroke-dasharray="900" style="animation:ds-draw .7s ease-out both">'
+
+        svg = _re.sub(r"(<line\b[^>]*?)>", _line, svg, count=32)
+
+        # 3) 关键帧样式表插到根节点之后（SVG 内联 <style> 合法且能被 getAnimations 拾取）
+        idx = svg.find(">")
+        if idx > 0 and "<style>" not in svg:
+            svg = svg[: idx + 1] + cls._MOTION_CSS + svg[idx + 1:]
+        return svg
 
     @classmethod
     def get_supported_presets(cls) -> list[dict[str, str]]:
@@ -324,50 +432,74 @@ class DiagramRenderer:
     @classmethod
     def _arrow(cls, items: list[str], title: str, s: DiagramStyle,
                w: int, h: int) -> str:
-        """A → B → C 箭头图解，带逐元素入场。"""
+        """A → B → C 箭头图解，带逐元素入场。
+
+        盒子宽度按文本自适应（此前恒 170px）：中文标签 5~9 字在 28~48px 字号下
+        宽 140~430px，固定 170px 会让相邻盒子的文字互相压字（成片里表现为
+        「重影/糊成一团」）。这里先按可用宽度求字号，再按字号求每个盒子的宽度，
+        横向放不下时继续缩字号，保证任意标签都不重叠。
+        """
         n = min(len(items), 6)
         if n == 0:
             return ""
         cx, cy = w // 2, h // 2
-        spacing = min(260, (w - 200) // max(n, 1))
-        total_w = (n - 1) * spacing + 180
+        labels = [str(items[i])[:16] for i in range(n)]
+        avail = max(320, w - 160)
+        pad_x = 36
+        gap = 70  # 相邻盒子之间留给箭头的空隙
+        min_box = 140
+
+        font = int(s.font_size)
+        widths: list[int] = []
+        for _ in range(16):
+            font = fit_font_size(labels, 300, font)
+            widths = [max(min_box, int(round(text_em_width(t) * font)) + pad_x) for t in labels]
+            total = sum(widths) + gap * (n - 1)
+            if total <= avail or font <= 16:
+                break
+            font -= 2
+
+        total_w = sum(widths) + gap * (n - 1)
         sx = cx - total_w // 2
         delays = cls._staggered(range(n), 0, s.stagger_delay)
 
         parts = [cls._svg_frame(w, h)]
 
-        # 标题
+        # 标题（过长时按可用宽度缩字号，避免首尾溢出画面）
         if title:
+            title_font = fit_font_size([title], w - 160, s.title_font_size, minimum=20)
             parts.append(
-                f'<text x="{cx}" y="{cy - 80}" font-size="{s.title_font_size}"'
+                f'<text x="{cx}" y="{cy - 80}" font-size="{title_font}"'
                 f' fill="{s.text_color}" text-anchor="middle" font-weight="bold">'
                 f'{cls._html_esc(title[:60])}</text>'
             )
 
         # 箭头组 + 节点组（逐元素出现）
+        x = sx
         for i in range(n):
-            x = sx + i * spacing
+            box_w = widths[i]
             # 节点矩形（带阴影）
             shadow = 'filter="url(#ds)"' if s.stagger_delay > 0 else ""
             parts.append(
                 f'<g style="animation-delay:{delays[i]}s">'
-                f'<rect x="{x}" y="{cy - 30}" width="170" height="60" rx="{s.border_radius}"'
+                f'<rect x="{x}" y="{cy - 30}" width="{box_w}" height="60" rx="{s.border_radius}"'
                 f' fill="{s.item_bg}" stroke="{s.primary_color}" stroke-width="1" {shadow}/>'
-                f'<text x="{x + 85}" y="{cy + 6}" font-size="{s.font_size}"'
+                f'<text x="{x + box_w // 2}" y="{cy + 6}" font-size="{font}"'
                 f' fill="{s.text_color}" text-anchor="middle">'
-                f'{cls._html_esc(items[i][:16])}</text></g>'
+                f'{cls._html_esc(labels[i])}</text></g>'
             )
             # 箭头（两个节点之间）
             if i < n - 1:
-                ax = x + 170
+                ax = x + box_w
                 ay = cy
                 parts.append(
                     f'<g style="animation-delay:{delays[i] + s.stagger_delay * 0.5}s">'
-                    f'<line x1="{ax}" y1="{ay}" x2="{ax + spacing - 170}" y2="{ay}"'
+                    f'<line x1="{ax}" y1="{ay}" x2="{ax + gap - 6}" y2="{ay}"'
                     f' stroke="{s.arrow_color}" stroke-width="3" marker-end="url(#a)"/>'
-                    f'<text x="{ax + (spacing - 170) // 2}" y="{ay - 10}" font-size="20"'
+                    f'<text x="{ax + gap // 2}" y="{ay - 10}" font-size="20"'
                     f' fill="{s.arrow_color}" text-anchor="middle">→</text></g>'
                 )
+            x += box_w + gap
 
         # 箭头 marker 定义
         marker = ('<defs>'
@@ -386,11 +518,25 @@ class DiagramRenderer:
     @classmethod
     def _comparison(cls, items: list[str], title: str, s: DiagramStyle,
                     w: int, h: int) -> str:
-        """左右对比图解。"""
+        """左右对比图解。
+
+        盒子宽度与字号按标签自适应（此前恒 240px + 固定字号）：中文长标签
+        （10+ 字）会在 240px 盒子里溢出到隔壁，成片里表现为两侧文字互相压字。
+        """
         left = items[0] if len(items) > 0 else ""
         right = items[1] if len(items) > 1 else ""
         cx, cy = w // 2, h // 2
         delays = cls._staggered([0, 1, 2], 0, s.stagger_delay)
+
+        # 中间 VS 占 120px，两侧各留 (w-240)/2 的预算
+        side_budget = max(240, (w - 240) // 2)
+        pad_x = 44
+        labels = [t[:20] for t in (left, right) if t]
+        font = fit_font_size(labels, side_budget - pad_x, s.font_size, minimum=18)
+        box_l = max(240, int(round(text_em_width(left[:20]) * font)) + pad_x) if left else 240
+        box_r = max(240, int(round(text_em_width(right[:20]) * font)) + pad_x) if right else 240
+        box_l = min(box_l, side_budget)
+        box_r = min(box_r, side_budget)
 
         parts = [
             cls._svg_frame(w, h),
@@ -408,8 +554,9 @@ class DiagramRenderer:
         ]
 
         if title:
+            title_font = fit_font_size([title], w - 160, s.title_font_size, minimum=20)
             parts.append(
-                f'<text x="{cx}" y="{cy - 100}" font-size="{s.title_font_size}"'
+                f'<text x="{cx}" y="{cy - 100}" font-size="{title_font}"'
                 f' fill="{s.text_color}" text-anchor="middle" font-weight="bold">'
                 f'{cls._html_esc(title[:60])}</text>'
             )
@@ -418,9 +565,9 @@ class DiagramRenderer:
         if left:
             parts.append(
                 f'<g style="animation-delay:{delays[0]}s">'
-                f'<rect x="{cx - 280}" y="{cy - 40}" width="240" height="80" rx="{s.border_radius}"'
-                f' fill="url(#gradL)" filter="url(#ds2)"/>'
-                f'<text x="{cx - 160}" y="{cy + 6}" font-size="{s.font_size}"'
+                f'<rect x="{cx - 60 - box_l}" y="{cy - 40}" width="{box_l}" height="80"'
+                f' rx="{s.border_radius}" fill="url(#gradL)" filter="url(#ds2)"/>'
+                f'<text x="{cx - 60 - box_l // 2}" y="{cy + 6}" font-size="{font}"'
                 f' fill="{s.text_color}" text-anchor="middle">'
                 f'{cls._html_esc(left[:20])}</text></g>'
             )
@@ -434,9 +581,9 @@ class DiagramRenderer:
         if right:
             parts.append(
                 f'<g style="animation-delay:{delays[2]}s">'
-                f'<rect x="{cx + 40}" y="{cy - 40}" width="240" height="80" rx="{s.border_radius}"'
-                f' fill="url(#gradR)" filter="url(#ds2)"/>'
-                f'<text x="{cx + 160}" y="{cy + 6}" font-size="{s.font_size}"'
+                f'<rect x="{cx + 60}" y="{cy - 40}" width="{box_r}" height="80"'
+                f' rx="{s.border_radius}" fill="url(#gradR)" filter="url(#ds2)"/>'
+                f'<text x="{cx + 60 + box_r // 2}" y="{cy + 6}" font-size="{font}"'
                 f' fill="{s.text_color}" text-anchor="middle">'
                 f'{cls._html_esc(right[:20])}</text></g>'
             )
@@ -454,6 +601,10 @@ class DiagramRenderer:
         top_y = h // 2 - 80
         delays = cls._staggered(range(len(items)), 0, s.stagger_delay)
         parts = [cls._svg_frame(w, h)]
+        # 文本从 cx-90 起排到画面右侧，预算 = 右半边可用宽度（留 60px 边距）
+        row_budget = max(240, w - (cx - 90) - 60)
+        row_font = fit_font_size([str(t)[:40] for t in items[:8]], row_budget,
+                                 s.font_size, minimum=18)
 
         if title:
             parts.append(
@@ -470,7 +621,7 @@ class DiagramRenderer:
                 f'<circle cx="{cx - 120}" cy="{yy}" r="14" fill="{s.primary_color}"/>'
                 f'<text x="{cx - 120}" y="{yy + 5}" font-size="14" fill="#fff"'
                 f' text-anchor="middle" font-weight="bold">{i + 1}</text>'
-                f'<text x="{cx - 90}" y="{yy + 5}" font-size="{s.font_size}"'
+                f'<text x="{cx - 90}" y="{yy + 5}" font-size="{row_font}"'
                 f' fill="{s.text_color}">{cls._html_esc(item[:40])}</text></g>'
             )
 
@@ -1762,7 +1913,7 @@ class DiagramRenderer:
         n_leaves = count_leaves(root)
         leaf_w = min(200, (w - 200) / max(n_leaves, 1))
         counter = [0]
-        flat: list[Node] = []
+        flat: list[node_t] = []
 
         def layout(nd: node_t, depth: int) -> float:
             nd["y"] = 190 + depth * 150

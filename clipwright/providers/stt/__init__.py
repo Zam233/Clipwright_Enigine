@@ -41,16 +41,9 @@ def _probe_faster_whisper() -> bool:
 
 
 def ensure_stt_providers_registered() -> None:
-    """登记两个内置 STT 后端（幂等）。"""
-    from clipwright.plugins.contribution import (
-        BUILTIN_OWNER,
-        Contribution,
-        ContributionKind,
-        ContributionRegistry,
-    )
-
-    if ContributionRegistry.resolve(ContributionKind.STT_PROVIDER, "whisper") is not None:
-        return
+    """登记两个内置 STT 后端（幂等；插件在则让位）。"""
+    from clipwright.plugins.contribution import Contribution, ContributionKind
+    from clipwright.providers.builtin_registry import register_builtin_once
 
     def _call_whisper(service: Any, audio_file: str, language: str,
                       model_size: str, word_timestamps: bool) -> Any:
@@ -61,14 +54,18 @@ def ensure_stt_providers_registered() -> None:
         return service._transcribe_faster_whisper(
             audio_file, language, model_size, word_timestamps)
 
-    ContributionRegistry.register(BUILTIN_OWNER, [
-        Contribution(ContributionKind.STT_PROVIDER, "whisper", SttBackendEntry(
-            name="whisper", is_available=_probe_whisper, call=_call_whisper,
-        )),
-        Contribution(ContributionKind.STT_PROVIDER, "faster-whisper", SttBackendEntry(
-            name="faster-whisper", is_available=_probe_faster_whisper, call=_call_faster,
-        )),
-    ], dispatch=False)
+    register_builtin_once(
+        ContributionKind.STT_PROVIDER,
+        "whisper",
+        [
+            Contribution(ContributionKind.STT_PROVIDER, "whisper", SttBackendEntry(
+                name="whisper", is_available=_probe_whisper, call=_call_whisper,
+            )),
+            Contribution(ContributionKind.STT_PROVIDER, "faster-whisper", SttBackendEntry(
+                name="faster-whisper", is_available=_probe_faster_whisper, call=_call_faster,
+            )),
+        ],
+    )
 
 
 #: 内置后端的尝试顺序（与旧硬编码一致；插件后端排在其后）

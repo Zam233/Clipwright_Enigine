@@ -1,9 +1,10 @@
 """声音克隆与语音合成（TTS 推理）服务。
 
 能力（仿 STTService 范式，分三段构建）：
-1. 数据层：VoiceRecord / VoiceResult / VoiceStorage(JSON) / split_text / 音频转码助手
+1. 数据层：VoiceRecord / VoiceResult / VoiceStorage(JSON) / 音频转码助手
 2. Provider 层：Qwen-TTS / CosyVoice / MiniMax 三模型抽象 + 可配置公网上传
-3. 编排层：VoiceService —— clone / synthesize / dub_script（切分文案逐段配音）
+3. 协议调度：VoiceService —— clone / synthesize
+   （切句与逐段配音编排已按裁定 3 迁至 `plugins/tts_feature/`，engine 不再有 `dub_script`）
 
 所有云调用走阿里云百炼（DashScope）；CosyVoice 合成走 dashscope SDK WebSocket。
 克隆音色元数据存 JSON 文件（默认 PluginData/voices/voices.json）。
@@ -120,28 +121,8 @@ class VoiceStorage:
 
 
 # ──────────────────────────────────────────────
-# 数据层：文本切分 / 音频助手
+# 数据层：音频助手
 # ──────────────────────────────────────────────
-
-
-def split_text(text: str, mode: str = "sentence") -> list[str]:
-    """按句末标点或段落切分文案（逐字对齐参考工程 _split_text）。
-
-    sentence: 去除直/弯双引号、压平换行，按 。！？ 切分并保留标点。
-    paragraph: 按空行（段落）切分。
-    """
-    text = text.strip()
-    # 去除直双引号与弯双引号
-    text = re.sub(r'["\u201c\u201d]', "", text)
-
-    if mode == "paragraph":
-        raw = re.split(r"\n\s*\n+", text)
-        return [s.strip() for s in raw if s.strip()]
-
-    text = re.sub(r"\n", "", text)  # 压平换行
-    parts = re.split(r"(?<=[。！？])", text)
-    segments = [s.strip() for s in parts if s.strip()]
-    return segments if segments else [text]
 
 
 def _guess_mime(suffix: str) -> str:
@@ -841,12 +822,39 @@ class VoiceService:
         """用已克隆音色合成语音。"""
         record = self._storage.get(voice_id)
         if not record:
-            return VoiceResult(success=False, error=f"Voice '{voice_id}' not found")
+            from clipwright.services.voice_errors import VoiceErrorCode, VoiceErrorStage
+
+            return VoiceResult(
+                success=False,
+                error=f"音色不存在：{voice_id}（请先在「语音克隆」页创建）",
+                data={"error": {
+                    "error_code": VoiceErrorCode.VOICE_NOT_FOUND,
+                    "stage": VoiceErrorStage.CONFIG,
+                    "provider_id": "",
+                    "retryable": False,
+                    "message": f"音色不存在：{voice_id}",
+                }},
+            )
 
         prov_name = provider or record.get("provider", settings.tts_default_provider)
         model = target_model or record.get("target_model", "")
         voice_api_id = record.get("voice_id", "")
-        prov = self._get_provider(prov_name)
+        try:
+            prov = self._get_provider(prov_name)
+        except Exception as e:  # noqa: BLE001 — provider 解析失败也是配置错误（PRD §6.3）
+            from clipwright.services.voice_errors import VoiceErrorCode, VoiceErrorStage
+
+            return VoiceResult(
+                success=False,
+                error=f"provider 不可用：{prov_name}（{str(e)[:80]}）",
+                data={"error": {
+                    "error_code": VoiceErrorCode.PROVIDER_NOT_FOUND,
+                    "stage": VoiceErrorStage.CONFIG,
+                    "provider_id": prov_name,
+                    "retryable": False,
+                    "message": f"provider 不可用：{prov_name}",
+                }},
+            )
 
         try:
             audio_bytes = await prov.synthesize(
@@ -856,8 +864,16 @@ class VoiceService:
                 instructions=instructions or None,
                 **params,
             )
-        except Exception as e:
-            return VoiceResult(success=False, error=str(e)[:500])
+        except Exception as e:  # noqa: BLE001 — provider 异常统一在调度层分类（PRD §6.3）
+            from clipwright.services.voice_errors import classify_error
+
+            info = classify_error(e, provider_id=prov_name)
+            logger.warning(
+                "TTS 合成失败 provider=%s code=%s stage=%s retryable=%s: %s",
+                prov_name, info["error_code"], info["stage"], info["retryable"], info["message"],
+            )
+            # 结构化错误随 VoiceResult 上抛：调用方（agent / API / 前端）不必再猜字符串
+            return VoiceResult(success=False, error=info["message"], data={"error": info})
 
         # 写文件（output_path 必须落在 TTS 输出目录内，防任意路径写入）
         if output_path:
@@ -881,88 +897,6 @@ class VoiceService:
             "provider": prov_name,
             "text": text,
         })
-
-    # ── dub_script ──
-
-    async def dub_script(
-        self,
-        *,
-        voice_id: str,
-        text: str,
-        split_mode: str = "sentence",
-        provider: str = "",
-        target_model: str = "",
-        instructions: str = "",
-        **params: Any,
-    ) -> VoiceResult:
-        """切分文案并逐段配音。"""
-        if not text.strip():
-            return VoiceResult(success=False, error="文本为空，无可配音内容")
-        segments_text = split_text(text, split_mode)
-        if not segments_text or all(not s.strip() for s in segments_text):
-            return VoiceResult(success=False, error="文本为空，无可配音内容")
-
-        results: list[dict[str, Any]] = []
-        total_duration = 0.0
-
-        # 生产加固 2.1: 实测句级时间戳 — 每段合成后用 ffprobe 实测时长累加，
-        # 段内词级时间按字符比例近似（供 NEL/字幕/动画对齐消费）。
-        cursor = 0.0
-        for idx, seg in enumerate(segments_text):
-            # 轮 82（可复现）：Python 内置 hash() 对 str 带进程级随机盐
-            # （PYTHONHASHSEED），同一文案跨进程得到不同 seed → 合成结果不可复现。
-            # 改用 hashlib 确定性散列（含 voice_id/provider，同音色同文案必同 seed）。
-            seed = int(hashlib.sha256(f"{provider}:{voice_id}:{seg}".encode("utf-8")).hexdigest()[:8], 16)
-            try:
-                synth_params: dict[str, Any] = {**params, "seed": seed}
-                sr = await self.synthesize(
-                    voice_id=voice_id,
-                    text=seg,
-                    provider=provider,
-                    target_model=target_model,
-                    instructions=instructions,
-                    **synth_params,
-                )
-                if sr.success:
-                    d = sr.data
-                    d["index"] = idx
-                    d["seed"] = seed
-                    seg_dur = float(d.get("duration_sec", 0) or 0)
-                    d["start_sec"] = round(cursor, 3)
-                    d["end_sec"] = round(cursor + seg_dur, 3)
-                    # Phase 2.1 词级时间戳接入
-                    word_timestamps = d.get("word_timestamps", [])
-                    if word_timestamps:
-                        d["words"] = [{"word": w.get("word", ""), "t": round(cursor + float(w.get("time", 0)) / 1000.0, 3)} for w in word_timestamps]
-                        d["char_timings"] = [w["t"] for w in d["words"]]
-                    else:
-                        chars = [c for c in seg if not c.isspace()]
-                        if chars and seg_dur > 0:
-                            d["char_timings"] = [
-                                round(cursor + seg_dur * (i + 0.5) / len(chars), 3)
-                                for i in range(len(chars))
-                            ]
-                    cursor += seg_dur
-                    total_duration += seg_dur
-                    results.append(d)
-                else:
-                    results.append({"index": idx, "text": seg, "error": sr.error})
-            except Exception as e:
-                results.append({"index": idx, "text": seg, "error": str(e)[:200]})
-
-        # P1-24: 全段失败（voice 被删/合成全错）时如实置 success=False——
-        # 旧实现恒默认成功，调用方拿到 200 + 全 error segments 误以为成功
-        all_failed = bool(results) and all("error" in r for r in results)
-        first_err = next((r["error"] for r in results if "error" in r), None)
-        return VoiceResult(
-            success=not all_failed,
-            error=str(first_err or "语音合成全部失败") if all_failed else "",
-            data={
-                "segments": results,
-                "total": len(results),
-                "total_duration_sec": round(total_duration, 2),
-            },
-        )
 
     # ── CRUD 委托 ──
 
@@ -989,3 +923,4 @@ def get_voice_service() -> VoiceService:
             if _voice_service is None:
                 _voice_service = VoiceService()
     return _voice_service
+

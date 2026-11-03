@@ -21,11 +21,27 @@ def client():
 
 
 class TestAvailableProviders:
-    def test_builtins_listed_per_kind(self, client):
-        body = client.get("/api/providers/available").json()
+    def test_builtins_listed_per_kind(self):
+        """各类型都有可选 provider——**用真实 app**（要 load_all 才会装上插件）。
+
+        B3-T6（2026-11-03）把 TTS 三个 id 的注册从 engine 挪进协议插件：只挂 router、
+        不跑 lifespan 的裸 app 里 `tts_provider` 现在（正确地）是空的，所以这条断言
+        不能再沿用裸 client，否则测的就不是"用户看到的下拉"。
+        """
+        from clipwright.main import app as real_app
+
+        with TestClient(real_app, raise_server_exceptions=False) as rc:
+            body = rc.get("/api/providers/available").json()
         assert set(body["llm_provider"]) >= {"anthropic", "openai", "ollama"}
         assert set(body["tts_provider"]) >= {"qwen-tts", "cosyvoice", "minimax"}
         assert set(body["embedding_provider"]) >= {"openai", "ollama", "local"}
+        assert set(body["rerank_provider"]) >= {"http", "local"}
+
+    def test_tts_ids_absent_without_plugins(self, client):
+        """反向断言：裸 app（没有插件）里 TTS 下拉**为空**——engine 不再补位内置。"""
+        body = client.get("/api/providers/available").json()
+        assert body["tts_provider"] == [], body["tts_provider"]
+        # 其它家族的「让位 + 懒补位」不受影响（它们仍由 engine 注册）
         assert set(body["rerank_provider"]) >= {"http", "local"}
 
     def test_role_kinds_mapping(self, client):

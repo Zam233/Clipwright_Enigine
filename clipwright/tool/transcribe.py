@@ -16,6 +16,7 @@ from clipwright.tool.base import BaseTool
 class WhisperTranscribeTool(BaseTool):
     """语音转文字 — 使用 Whisper 或 API 进行语音识别。"""
     name = "whisper_transcribe"
+    permission_tier = "costly"
     description = "将音频文件转为文字字幕（SRT/JSON/VTT），支持多语种"
     dependencies = []
 
@@ -63,10 +64,12 @@ class WhisperTranscribeTool(BaseTool):
                 logger.warning("转写短语打包失败（忽略）: %s", exc)
 
             if output_format == "srt":
+                from clipwright.services.subtitle import _to_srt_time
+
                 lines = []
                 for i, seg in enumerate(segments, 1):
-                    start = _srt_time(seg["start"])
-                    end = _srt_time(seg["end"])
+                    start = _to_srt_time(float(seg["start"]))
+                    end = _to_srt_time(float(seg["end"]))
                     lines.append(f"{i}\n{start} --> {end}\n{seg['text']}\n")
                 output["srt"] = "\n".join(lines)
 

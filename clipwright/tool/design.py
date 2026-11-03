@@ -82,7 +82,26 @@ def ass_alignment(position: str | None) -> int:
 # 轮 83（知识区门槛）：安全区与中文断行常量
 # 避头尾：这些标点不应出现在行首（中文排版规范）
 _CJK_NO_LINE_START = set("，。、；：？！）】》\"''…—%·.,;:?!)]}")
-_MAX_CJK_LINE_CHARS = 16  # 每行最大字数（可读性上限，超出折行）
+_MAX_CJK_LINE_CHARS = 16  # 兜底默认（拿不到画幅/字号时才用）
+#: 字幕安全区占画面宽的比列（两侧留白）
+_SUBTITLE_WIDTH_RATIO = 0.92
+
+
+def chars_per_line(font_size: int, frame_w: int = 1920,
+                   ratio: float = _SUBTITLE_WIDTH_RATIO) -> int:
+    """按画面宽度和字号算「一行能放几个汉字」。
+
+    用户反馈（2026-10-28）：同一句话被无谓折成多行。旧实现写死每行 ≤16 字，
+    而 1920 宽 + 48px 字号实际能放 ~36 字——等于只用了半幅画面。
+    汉字按近全宽（≈font_size px）估算，保守取值。
+    """
+    try:
+        fs = max(8, int(font_size or 48))
+        fw = max(320, int(frame_w or 1920))
+    except (TypeError, ValueError):
+        return _MAX_CJK_LINE_CHARS
+    usable = fw * max(0.3, min(1.0, ratio))
+    return max(_MAX_CJK_LINE_CHARS, int(usable // fs))
 
 
 def ass_safe_margins(width: int, height: int) -> tuple[int, int, int]:
@@ -299,7 +318,7 @@ class TextStyle:
         # 否则 \an2\i1... 会作为字面文本渲染进画面。
         # 轮 83（知识区门槛）：中文断行——每行 ≤16 字 + 标点避头尾，
         # 用 ASS \N 折行（长句不再整段铺满/溢出画面）
-        esc = wrap_cjk_lines(esc)
+        esc = wrap_cjk_lines(esc, chars_per_line(self.font_size))
         tags_block = "{" + "".join(tags) + "}" if tags else ""
         # offset_y 修复：样式段 Margin 硬编码 10/10/10，行级不传 Margin 时
         # 多段同屏文字全部锚定同一位置互相重叠；行级 MarginV 承载 offset_y

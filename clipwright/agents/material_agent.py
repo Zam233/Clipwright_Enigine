@@ -19,6 +19,9 @@ from clipwright.schema.agent import (
 )
 from clipwright.services.llm import LLMService
 from clipwright.services.trace import add_event
+# PRD W4.4：关键词提示词已搬到 clipwright/prompts.py（文案逐字一致）
+from clipwright.prompts import (build_material_queries_batch_prompt, build_material_queries_prompt, build_material_english_prompt)  # noqa: E402
+from clipwright.plugins.prompt_overrides import safe_builder
 
 # 搜索缓存: query_hash → list[result]
 # TTL + LRU 淘汰（原 dict 满后静默拒绝写入，缓存悄悄退化）
@@ -39,6 +42,44 @@ def _llm_configured() -> bool:
         or settings.llm_base_url
         or settings.vision_llm_base_url
     )
+
+
+def annotate_mv_placement(
+    scenes: list[dict[str, Any]],
+    candidate_clips: list[dict[str, Any]],
+    *,
+    bits_per_second: float | None = None,
+) -> dict[str, Any] | None:
+    """把"每段落到哪个镜头"写回场景（S 轨接线；纯逻辑，便于单测）。
+
+    ``candidate_clips`` 是 MaterialAgent 的中间产物（每个场景一条，含
+    ``suggested_assets``）；这里把它们摊平成候选池，交给 ``mv_material`` 打分落位。
+    返回 ``placement_report``；没有任何候选时返回 ``None``（不产生空噪音）。
+    """
+    from clipwright.services.mv_cues import build_grid
+    from clipwright.services.mv_material import annotate_scenes_with_placement
+
+    pool: list[dict[str, Any]] = []
+    for clip in candidate_clips or []:
+        for asset in clip.get("suggested_assets") or []:
+            if not isinstance(asset, dict):
+                continue
+            asset_id = asset.get("asset_id") or asset.get("id") or ""
+            if not asset_id:
+                continue  # 没有 id 的候选落不了位，直接跳过（不产生空引用）
+            pool.append(
+                {
+                    "asset_id": asset_id,
+                    "description": asset.get("description") or asset.get("title") or "",
+                    "duration_sec": asset.get("duration_sec") or asset.get("duration") or 0.0,
+                    "tags": asset.get("tags") or (),
+                    "license_ok": bool(asset.get("license_ok", True)),
+                }
+            )
+    if not pool:
+        return None
+    grid = build_grid(bits_per_second) if bits_per_second and bits_per_second > 0 else None
+    return annotate_scenes_with_placement(scenes, pool, grid=grid)
 
 
 # 文本相关性兜底：纯本地分词，零网络。拉丁词整词 + 单个 CJK 字符。
@@ -154,7 +195,30 @@ _CATEGORY_SEARCH_HINTS: dict[str, str] = {
 
 
 def _category_search_hint(category_plugin_id: str) -> str:
-    return _CATEGORY_SEARCH_HINTS.get(category_plugin_id or "", "")
+    """选片规范：优先类型声明（declares.search_hint），其次 material 阶段槽位，最后旧字典。
+
+    V1：material 是 10 槽位里唯一**没有 LLM 消费者**的阶段（选片走检索），所以它的
+    自然语言规范在这里落到检索式上——否则该槽位就是"写了没人读"的死配置。
+    """
+    from clipwright.services.type_spec_runtime import search_hint
+    from clipwright.services.type_prompts import first_line
+
+    legacy = _CATEGORY_SEARCH_HINTS.get(category_plugin_id or "", "")
+    declared = search_hint(category_plugin_id, legacy)
+    if declared:
+        return declared
+    return first_line(category_plugin_id or "", "material") or legacy
+
+
+#: 需要"按句落位"的类型（MV/PV）；也可用 ``extra_params.mv_placement`` 显式开启。
+_MV_PLACEMENT_CATEGORIES = frozenset({"lyric_mv", "mv", "pv", "music_video"})
+
+
+def _placement_enabled(context: Any) -> bool:
+    extra = getattr(context, "extra_params", {}) or {}
+    if extra.get("mv_placement"):
+        return True
+    return str(getattr(context, "category_plugin_id", "") or "") in _MV_PLACEMENT_CATEGORIES
 
 
 async def _llm_search_queries_batch(
@@ -181,22 +245,14 @@ async def _llm_search_queries_batch(
         desc = (scene.get("description", "") or "")[:120]
         scene_lines.append(f"[{i + 1}] 标题: {title} | 关键词: {keywords} | 描述: {desc}")
 
-    prompt = (
-        "你是一个视频素材搜索关键词生成器。为以下每个场景分别生成 3-5 个具体、"
-        "可搜索的视觉关键词，用于在视频素材库搜索 B-roll 画面。\n\n"
-        + "\n".join(scene_lines) +
-        "\n\n要求：\n"
-        "- 每个关键词必须是**具体的视觉画面**（如'城市夜景''键盘打字'），不能是抽象概念\n"
-        "- 优先推荐实拍风格画面\n"
-        f"{category_hint}"
-        "- 按场景编号输出，每行格式：\"场景N: 关键词1/关键词2/关键词3\"\n"
-        "- 只输出关键词行，不要额外说明"
-        f"{style_hint}{brief_hint_text}"
+    prompt = safe_builder("build_material_queries_batch_prompt")(
+        scene_lines, category_hint=category_hint,
+        persona_style=persona_style, brief_hint=brief_hint,
     )
 
     llm = LLMService()
     try:
-        resp = await asyncio.wait_for(llm.ask(prompt, use_flash=True), timeout=45)
+        resp = await asyncio.wait_for(llm.ask(prompt, use_flash=True), timeout=900)
         if not (resp.success and resp.content):
             return None
         result: list[list[str]] = [[] for _ in scenes]
@@ -235,18 +291,9 @@ async def _llm_search_queries(
     style_hint = f"\n- 优先匹配风格: {persona_style}" if persona_style else ""
     brief_hint_text = f"\n- 简报素材要求: {brief_hint}" if brief_hint else ""
 
-    prompt = (
-        f"你是一个视频素材搜索关键词生成器。根据以下场景信息，生成 3-5 个具体、可搜索的视觉关键词，"
-        f"用于在视频素材库中搜索合适的 B-roll 画面。\n\n"
-        f"场景标题: {scene_title}\n"
-        f"关键词: {', '.join(keywords)}\n"
-        f"场景描述: {description}\n\n"
-        f"要求：\n"
-        f"- 每个关键词必须是**具体的视觉画面**（如'城市夜景''键盘打字''街头涂鸦'），"
-        f"不能是抽象概念（如'社会矛盾''心理防御'）\n"
-        f"- 优先推荐实拍风格的画面\n"
-        f"- 用中文输出，每行一个关键词\n"
-        f"- 只输出关键词，不要序号和说明{style_hint}{brief_hint_text}"
+    prompt = safe_builder("build_material_queries_prompt")(
+        scene_title, keywords, description,
+        persona_style=persona_style, brief_hint=brief_hint,
     )
     if pipeline_id:
         add_event(pipeline_id, "material", "llm", f"LLM 搜索词生成: {scene_title}")
@@ -254,13 +301,13 @@ async def _llm_search_queries(
     from clipwright.plugins.prompt_registry import PluginPromptRegistry
     plugin_prompts = PluginPromptRegistry.get_for_agent("material")
     if plugin_prompts:
-        prompt += "\n\n## 插件能力扩展\n" + "\n\n".join(plugin_prompts)
+        prompt += _hdr("PROMPT_PLUGIN_EXT_HEADER") + "\n\n".join(plugin_prompts)
 
     llm = LLMService()
     try:
         import asyncio
         # 搜索词生成是简单任务 → 使用 flash 轻量模型
-        resp = await asyncio.wait_for(llm.ask(prompt, use_flash=True), timeout=30)
+        resp = await asyncio.wait_for(llm.ask(prompt, use_flash=True), timeout=900)
         if resp.success and resp.content:
             queries = [q.strip() for q in resp.content.strip().split("\n") if q.strip()][:5]
             if pipeline_id:
@@ -276,6 +323,37 @@ async def _llm_search_queries(
     fallback = [scene_title] + keywords[:2]
     logger.info("MaterialAgent: 降级搜索词=%s", fallback)
     return fallback
+
+
+def _has_cjk(text: str) -> bool:
+    """是否含中日韩字符（判断查询是否需要翻译成英文）。"""
+    return any("\u4e00" <= ch <= "\u9fff" for ch in str(text or ""))
+
+
+async def _to_english_queries(queries: list[str], *, pipeline_id: str = "") -> list[str]:
+    """把中文检索词翻成英文（图库是英文索引，中文命中为 0）。
+
+    有界：单次 flash LLM 调用；失败返回 []（调用方保持原行为）。
+    """
+    import re as _re
+
+    text = " / ".join(str(q) for q in queries if str(q).strip())[:1200]
+    if not text:
+        return []
+    prompt = safe_builder("build_material_english_prompt")(text)
+    try:
+        resp = await asyncio.wait_for(LLMService().ask(prompt, use_flash=True), timeout=120)
+        raw = str(getattr(resp, "content", "") or "").strip()
+        if not raw:
+            return []
+        parts = [p.strip() for p in _re.split(r"[/\n、]", raw) if p.strip()]
+        out = [p for p in parts if not _has_cjk(p)][:10]
+        if pipeline_id:
+            add_event(pipeline_id, "material", "llm_result", f"英文检索词: {out}")
+        return out
+    except Exception as exc:  # noqa: BLE001 — 翻译失败不阻断选材
+        logger.warning("MaterialAgent: 检索词英译失败（保持原查询）: %s", exc)
+        return []
 
 
 async def _validate_video_frame(r: Any, expected_text: str) -> float:
@@ -306,9 +384,11 @@ async def _validate_video_frame(r: Any, expected_text: str) -> float:
 async def _validate_video_frame_inner(
     r: Any, video_url: str, title: str, tags: list, expected_text: str,
 ) -> float:
-    from clipwright.tool.registry import ToolRegistry
+    # 能力动态解析：任何声明 capability="frame_check" 的工具（含插件）都可接管，
+    # 没有插件时落到内置 frame_validator；两者都没有才走启发式。
+    from clipwright.tool.capabilities import resolve as _resolve_capability
     try:
-        tool = ToolRegistry.get("frame_validator")
+        tool = _resolve_capability("frame_check")
         if tool is None:
             if isinstance(r, str):
                 return 0.5
@@ -365,11 +445,18 @@ async def _search_with_cache(
             return [_CachedResult(d) for d in data]
         _search_cache.pop(key, None)  # TTL 过期
 
-    results = await MaterialRegistry.search(
-        query=query,
-        top_k_per_source=top_k,
-        source_ids=source_ids,
-    )
+    # 暗区补齐（PRD modern-agent-review M2）：素材源检索不走 call_tool，
+    # 以前只有缓存与 logger。记成内部操作（含耗时/结果数），随阶段轨迹上报。
+    from clipwright.services import agent_context as _ctx
+
+    with _ctx.operation(f"material_search:{','.join(source_ids or ['all'])[:40]}",
+                        source="internal") as _op:
+        results = await MaterialRegistry.search(
+            query=query,
+            top_k_per_source=top_k,
+            source_ids=source_ids,
+        )
+        _op["detail"] = f"{len(results)} 条结果（query={query[:40]}）"
     # 场景候选排除音频——BGM 由 AudioAgent 独立链路检索；音频混入
     # 视频场景候选会被 video_trim 拒绝，烧掉候选位并把场景挤成占位
     results = [
@@ -537,6 +624,17 @@ def clear_material_vision_cache() -> None:
 
 
 
+def orientation_from_brief(
+    brief: dict | None, extra_params: dict | None = None,
+) -> str:
+    """素材方向：显式 extra 优先，其次按 brief.asset_ratio 推导（竖屏比例→portrait）。"""
+    explicit = str((extra_params or {}).get("orientation") or "").strip()
+    if explicit in ("portrait", "landscape"):
+        return explicit
+    ratio = str((brief or {}).get("asset_ratio") or "").replace(" ", "")
+    return "portrait" if ratio in ("9:16", "3:4", "4:5") else "landscape"
+
+
 class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
     """素材 Agent：根据脚本骨架语义检索匹配素材。"""
 
@@ -611,9 +709,20 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
         if url and url in _VISION_SCORE_CACHE:
             return _VISION_SCORE_CACHE[url]
         try:
-            from clipwright.tool.registry import ToolRegistry
-            result = await ToolRegistry.execute(
-                "vision_llm",
+            # 能力动态解析：插件可用 capability="vision_score" 接管视觉打分，
+            # 缺实现时返回 NOT_FOUND，下面的 output 兜底保持旧行为。
+            from clipwright.tool.capabilities import resolve as _resolve_capability
+            from clipwright.tool.registry import ToolRegistry as _ToolRegistry
+
+            _vision_tool = _resolve_capability("vision_score")
+            if _vision_tool is None:
+                return 0.5
+            # 走 BaseAgent.call_tool 而不是直连注册表：视觉打分是 material 阶段最贵、
+            # 最容易超时的调用，必须进轨迹与事件流（主 agent 要能看见"这一场打了多久、
+            # 失败几次"），否则又变成子 agent 偷偷干活（E2E 2026-10-29 裁定）。
+            result = await self.call_tool(
+                "vision_score",
+                prefer=(_vision_tool.name,),
                 asset=asset,
                 scene_context={
                     "title": scene_title,
@@ -669,16 +778,38 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                 pass
 
             if not scenes:
+                # D7（PRD §19.5）：scenes 为空是**上游没给**，不是"素材阶段完成"。
+                # 旧实现返回 PASS + 空候选，于是 editor 成为第一个失败点且归因 unknown。
+                from clipwright.schema.agent import FailureReport
+
+                _reason = "分镜场景为空：structure 没有产出可用 scenes"
                 return MaterialOutput(
-                    decision=AgentDecision.PASS,
+                    decision=AgentDecision.FAIL,
+                    error=_reason,
+                    failure=FailureReport(
+                        category="input_insufficient",
+                        blocking_point=_reason[:200],
+                        retryable="needs_upstream",
+                        needs=[{"from_stage": "structure", "field": "scenes",
+                                "why": "素材匹配需要场景（title/description/时长）"}],
+                        evidence=[{"kind": "empty_scenes", "text": "scenes=[]"}],
+                    ),
                     candidate_clips=[],
-                    material_notes=["无场景，跳过素材匹配"],
+                    material_notes=["无场景，无法匹配素材"],
                 )
 
             if not has_sources:
                 logger.warning("MaterialAgent: 无注册素材源，将使用文字占位")
                 return MaterialOutput(
                     decision=AgentDecision.PASS,
+                    # 无素材源仍然是"完成"（文字占位是合法产物），
+                    # 但必须**显式登记降级**，让上层能区分"素材为空"与"素材正常"。
+                    degradations=[{
+                        "kind": "material_placeholder",
+                        "detail": "无注册素材源，所有场景使用文字占位",
+                        "scope": "global",
+                        "impact": "成片以文字/纯色占位，画面质量显著下降",
+                    }],
                     candidate_clips=[{
                         "scene_index": i,
                         "scene_title": scene.get("title", ""),
@@ -693,7 +824,10 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
             if isinstance(source_ids, list) and len(source_ids) == 0:
                 source_ids = None
 
-            pref_orientation = context.extra_params.get("orientation", "landscape")
+            # orientation 此前只有读取点。来源：显式 extra → brief.asset_ratio（9:16 竖屏）
+            pref_orientation = orientation_from_brief(
+                input_data.creative_brief, context.extra_params
+            )
 
             # ── 视觉 LLM 分析开关 ──
             # 显式插件配置优先；未显式配置时，LLM 已配置（含 Ollama base_url）则默认开启
@@ -737,6 +871,16 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                 *(_process_scene(i, s) for i, s in enumerate(scenes)),
                 return_exceptions=True,
             )
+            # 进度可见（现代 agent 化）：材料阶段是最长的一段（43 场逐场检索 + 视觉 LLM），
+            # 主 agent 不该在 15 分钟里什么都看不到——场景级完成度实时进事件流。
+            from clipwright.services.agent_context import emit_progress as _emit_progress
+
+            _ok_scenes = sum(1 for r in results if not isinstance(r, Exception) and r is not None)
+            _emit_progress(
+                f"素材检索完成：{_ok_scenes}/{len(scenes)} 场有候选"
+                f"（异常 {sum(1 for r in results if isinstance(r, Exception))} 场）",
+                {"stage": "material", "scenes": len(scenes), "ok": _ok_scenes},
+            )
             # 单场景异常降级为空候选占位，不让整 Agent 失败
             candidate_clips = []
             for i, r in enumerate(results):
@@ -758,12 +902,111 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
             if use_vision_llm:
                 notes.append(f"视觉LLM分析已启用 (每候选 {vision_frame_count} 帧)")
 
+            # ── 候选素材**真下载**到工作区（material → edit 的缺口，2026-10-31 用户实测）──
+            #
+            # 症状：material 交了 43 场 / 187 条候选，`url` 全有、`local_path` 全空，
+            # `materials/` 目录是空的；下游 edit 拿着 pexels 远程 URL 去 trim，
+            # 于是 41 次空剪、最后按墙钟触闸收尾。
+            #
+            # 根因：素材源（Pexels/JSON）只给 URL，**没有任何地方把这些 URL 下载下来**，
+            # 而 edit 阶段不应该做网络 I/O。所以下载落在 material：选完人就下，
+            # 回填 `local_path`；下不动就如实登记降级（含真实原因），别让下游猜。
+            download_stats = await self._download_candidates(candidate_clips, context)
+            if download_stats.get("attempted"):
+                ok_n = int(download_stats.get("ok") or 0)
+                tried = int(download_stats.get("attempted") or 0)
+                reason = str(download_stats.get("reason") or "")
+                notes.append(
+                    f"素材下载：成功 {ok_n}/{tried}"
+                    + (f"；失败原因：{reason[:120]}" if ok_n < tried else "")
+                )
+                if ok_n < tried:
+                    logger.warning(
+                        "MaterialAgent: 素材下载失败 %d/%d（原因：%s）",
+                        tried - ok_n, tried, reason[:200],
+                    )
+
+            # S 轨接线：MV 类型（或显式开启）时，把"每句落到哪个镜头"写回场景并留痕
+            placement_stats = None
+            if _placement_enabled(context):
+                try:
+                    placement_stats = annotate_mv_placement(
+                        scenes,
+                        candidate_clips,
+                        bits_per_second=float((context.extra_params or {}).get("bpm") or 0) or None,
+                    )
+                except Exception as exc:  # noqa: BLE001 - 落位失败不得阻断选材
+                    logger.warning("MaterialAgent: 素材落位失败（已跳过）: %s", exc)
+                    placement_stats = None
+            if placement_stats is not None:
+                notes.append(
+                    f"素材落位：{placement_stats['covered']}/{placement_stats['total']} 段有依据，"
+                    f"缺口 {len(placement_stats['gaps'])}、授权不明 {len(placement_stats['rejected'])}"
+                )
+
             # 场景级 note（如 C4c 重选结果）上浮到全局 material_notes
             for r in candidate_clips:
                 notes.extend(r.pop("material_notes", []))
 
+            # 占位如实上报（E2E 2026-10-30 用户裁定）：没有匹配到任何素材的场景，
+            # 下游 edit 只能落文字/纯色卡——这是"回退画面"，必须登记成降级，
+            # 而不是把 `suggested_assets=[]` 当正常产物交上去（主 agent 只有看见它，
+            # 才可能重派 material 把占位换成真实画面）。
+            placeholders = [
+                (int(r.get("scene_index", i)), str(r.get("scene_title") or ""))
+                for i, r in enumerate(candidate_clips)
+                if not (r.get("suggested_assets") or [])
+            ]
+            if placeholders:
+                scope_preview = "、".join(f"场景[{idx}]" for idx, _ in placeholders[:6])
+                more = f" 等 {len(placeholders)} 场" if len(placeholders) > 6 else ""
+                placeholder_degradations = [{
+                    "kind": "material_placeholder",
+                    "detail": f"{scope_preview}{more}无匹配素材，下游只能用文字/纯色占位",
+                    "scope": f"scene:{idx}",
+                    "impact": f"「{title[:30]}」该段画面是占位卡，不是实拍素材",
+                } for idx, title in placeholders[:12]]
+                # 下载失败也要登记：只有 URL 没有本地文件 = edit 拿不到东西剪，
+                # 这是与"没有候选"不同的失败，主 agent 需要看见真实原因才能改策略。
+                if int(download_stats.get("attempted") or 0) > int(download_stats.get("ok") or 0):
+                    placeholder_degradations.append({
+                        "kind": "material_download_failed",
+                        "detail": (f"素材下载失败 {download_stats.get('attempted')}/"
+                                   f"{download_stats.get('ok')}："
+                                   f"{str(download_stats.get('reason') or '')[:120]}"),
+                        "scope": "stage:material",
+                        "impact": "候选只有远程 URL、没有本地文件，edit 无法裁剪真实素材",
+                    })
+                notes.append(
+                    f"占位场景 {len(placeholders)}/{len(candidate_clips)} 个"
+                    f"（{'、'.join(str(i) for i, _ in placeholders[:8])}）"
+                )
+                logger.warning(
+                    "MaterialAgent: %d/%d 个场景无匹配素材 → 文字/纯色占位（已登记降级）",
+                    len(placeholders), len(candidate_clips),
+                )
+                return MaterialOutput(
+                    decision=AgentDecision.PASS,
+                    degradations=placeholder_degradations,
+                    candidate_clips=candidate_clips,
+                    material_notes=notes,
+                )
+
+            # 没有占位场景、但下载失败同样要报：候选全是远程 URL + 本地无文件时，
+            # edit 阶段只会产出空剪（2026-10-31 实测 41 次），主 agent 必须看见真原因。
+            download_degradations: list[dict[str, Any]] = []
+            if int(download_stats.get("attempted") or 0) > int(download_stats.get("ok") or 0):
+                download_degradations.append({
+                    "kind": "material_download_failed",
+                    "detail": (f"素材下载失败：尝试 {download_stats.get('attempted')}、"
+                               f"成功 {download_stats.get('ok')}；"
+                               f"{str(download_stats.get('reason') or '')[:120]}"),
+                    "scope": "stage:material",
+                    "impact": "候选只有远程 URL、没有本地文件，edit 无法裁剪真实素材",
+                })
             return MaterialOutput(
                 decision=AgentDecision.PASS,
+                degradations=download_degradations,
                 candidate_clips=candidate_clips,
                 material_notes=notes,
             )
@@ -771,6 +1014,120 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
         except Exception as e:
             logger.exception("MaterialAgent 失败: %s", e)
             return self.build_error_output(str(e), MaterialOutput)
+
+    async def _download_candidates(
+        self, candidate_clips: list[dict[str, Any]], context: AgentContext,
+    ) -> dict[str, Any]:
+        """把每个场景的**首选**候选真下载到工作区，回填 `local_path`。
+
+        三条纪律：
+        1. **从 material 下载，不让 edit 做网络 I/O**（edit 的职责是剪，不是抓）；
+        2. **有预算**：每阶段最多 `_FETCH_MAX` 个、并发 `_FETCH_CONCURRENCY`，
+           不做"43 场 × 每条候选 5 条"的全量下载；
+        3. **连续失败就停**：离线环境里每个 URL 都要等超时，连续 `_FETCH_BREAKER`
+           个失败说明网络不通——立刻停手并记录真实原因，别把阶段时间烧在等超时上。
+        """
+        import os
+
+        root = str((getattr(context, "extra_params", None) or {}).get("workspace_root") or "")
+        if not root:
+            # 没有工作区就不下载（落点无处可去），如实说明
+            return {"attempted": 0, "ok": 0, "reason": "no workspace_root"}
+        try:
+            from clipwright.services import web_assets
+        except Exception as exc:  # noqa: BLE001 — 下载器不可用不阻断选材
+            logger.warning("MaterialAgent: 素材下载器不可用（跳过下载）: %s", exc)
+            return {"attempted": 0, "ok": 0, "reason": f"downloader unavailable: {exc}"}
+
+        max_items = int(os.environ.get("CLIPWRIGHT_MATERIAL_FETCH_MAX", "48"))
+        concurrency = int(os.environ.get("CLIPWRIGHT_MATERIAL_FETCH_CONCURRENCY", "3"))
+        breaker_after = int(os.environ.get("CLIPWRIGHT_MATERIAL_FETCH_BREAKER", "5"))
+        # 单文件上限：素材站的"原始尺寸"直链常见 20–40MB，20MB 的默认上限会把它们全挡掉
+        max_bytes = int(os.environ.get("CLIPWRIGHT_MATERIAL_FETCH_MAX_BYTES", str(60 * 1024 * 1024)))
+
+        targets: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        skipped_images = 0
+        _VIDEO_EXT = (".mp4", ".webm", ".mov", ".m4v")
+        _IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif")
+        for clip in candidate_clips:
+            for asset in (clip.get("suggested_assets") or [])[:1]:
+                if not isinstance(asset, dict):
+                    continue
+                if str(asset.get("local_path") or "").strip():
+                    continue
+                url = str(asset.get("url") or "")
+                if not url.startswith(("http://", "https://")):
+                    continue
+                # 只下**视频**：编辑阶段只会 trim 视频（图片目前没有"静帧成片"的工具能力），
+                # 把图片也下下来只会占盘 + 让 edit 白试一次。图片候选保留 URL 供人工/后续使用。
+                kind = str(asset.get("type") or "")
+                is_video = kind == "video" or url.split("?")[0].lower().endswith(_VIDEO_EXT)
+                if not is_video:
+                    skipped_images += 1
+                    continue
+                targets.append((clip, asset))
+        if not targets:
+            return {"attempted": 0, "ok": 0, "reason": "", "skipped_images": skipped_images}
+        targets = targets[:max_items]
+
+        stats: dict[str, Any] = {"attempted": 0, "ok": 0, "reason": "", "skipped_images": skipped_images}
+        stop = {"value": False}
+        consecutive_fail = {"n": 0}
+        lock = asyncio.Lock()
+        sem = asyncio.Semaphore(max(1, concurrency))
+
+        async def _one(clip: dict[str, Any], asset: dict[str, Any]) -> None:
+            async with sem:
+                async with lock:
+                    if stop["value"]:
+                        return
+                    stats["attempted"] += 1
+                res = None
+                err = ""
+                # 单条最多试 2 次：CDN 抖动很常见（实测同一批 4 成功、3 个 ConnectError），
+                # 一次连不上就判该素材不可用太浪费；但也绝不多试，离线时不能等超时。
+                for attempt in range(2):
+                    try:
+                        res = await web_assets.fetch_and_store(
+                            str(asset.get("url") or ""),
+                            root=root,
+                            title=str(asset.get("title") or ""),
+                            # 这是素材源 API 直接给的媒体文件地址，不是爬站页面：
+                            # 跳过 robots.txt 往返（SSRF/域名治理仍在 fetch_and_store 里）
+                            skip_robots=True,
+                            max_bytes=max_bytes,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — 单条失败如实计
+                        res = None
+                        err = f"{type(exc).__name__}: {exc}"[:200]
+                    else:
+                        err = "" if getattr(res, "ok", False) else str(getattr(res, "error", "") or "")
+                    if res is not None and getattr(res, "ok", False):
+                        break
+                    if attempt == 0:
+                        await asyncio.sleep(0.8)
+                async with lock:
+                    if res is not None and getattr(res, "ok", False):
+                        asset["local_path"] = str(getattr(res, "local_path", "") or "")
+                        asset["local_bytes"] = int(getattr(res, "bytes", 0) or 0)
+                        asset["local_sha256"] = str(getattr(res, "sha256", "") or "")
+                        stats["ok"] += 1
+                        consecutive_fail["n"] = 0
+                        return
+                    consecutive_fail["n"] += 1
+                    if not stats["reason"] and err:
+                        stats["reason"] = err
+                    if consecutive_fail["n"] >= breaker_after:
+                        stop["value"] = True
+
+        await asyncio.gather(*(_one(c, a) for c, a in targets), return_exceptions=True)
+        if stop["value"]:
+            stats["reason"] = (stats["reason"] or "连续下载失败") + "（连续失败即停）"
+        logger.info(
+            "MaterialAgent: 素材下载 %d/%d 成功（预算 %d，并发 %d）",
+            stats["ok"], stats["attempted"], max_items, concurrency,
+        )
+        return stats
 
     async def _process_scene(
         self,
@@ -808,17 +1165,33 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
 
         all_results = []
         seen_ids = set()
-        for query in search_queries:
-            results = await _search_with_cache(
-                query, top_k=5, source_ids=source_ids if isinstance(source_ids, list) else None,
-            )
-            for r in results:
-                rid = r.asset.id if hasattr(r, 'asset') else r.get("asset_id", "")
-                if rid and rid not in seen_ids:
-                    seen_ids.add(rid)
-                    all_results.append(r)
-            if len(all_results) >= 15:
-                break
+
+        async def _run_queries(queries: list[str]) -> None:
+            for query in queries:
+                results = await _search_with_cache(
+                    query, top_k=5, source_ids=source_ids if isinstance(source_ids, list) else None,
+                )
+                for r in results:
+                    rid = r.asset.id if hasattr(r, 'asset') else r.get("asset_id", "")
+                    if rid and rid not in seen_ids:
+                        seen_ids.add(rid)
+                        all_results.append(r)
+                if len(all_results) >= 15:
+                    break
+
+        await _run_queries(search_queries)
+
+        # 中文查询兜底（E2E 2026-10-28）：Pexels/Unsplash/Pixabay 是英文索引，
+        # 中文关键词命中率为 0 —— 43 个场景全空，剪辑只能退化成"背景+文字"。
+        # 一条都没搜到时，把查询翻成英文再搜一轮（有界：每个场景最多一次）。
+        if not all_results and any(_has_cjk(q) for q in search_queries):
+            translated = await _to_english_queries(search_queries, pipeline_id=pipeline_id)
+            if translated:
+                logger.info(
+                    "MaterialAgent: 场景[%d] 中文查询零命中，改用英文重搜: %s",
+                    i, translated[:5],
+                )
+                await _run_queries(translated)
 
         logger.info("MaterialAgent: 场景[%d] 去重后 %d 条候选", i, len(all_results))
 
@@ -856,7 +1229,10 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
                     )
                 return (r, score)
 
-        top_candidates = all_results[:8]
+        # E2E 2026-10-28：视觉 LLM 打分是**每候选一次多模态调用**。43 场景 × 8 候选
+        # × （首轮 + 重选）会把 material 阶段顶到 15 分钟超时（实测超时后主 agent
+        # 重试一次，白烧 30 分钟）。有视觉打分时只看前 2 个，够排序用。
+        top_candidates = all_results[:2] if use_vision_llm else all_results[:8]
         if top_candidates:
             scores = await asyncio.gather(*(_validate(r) for r in top_candidates))
             for s in scores:
@@ -953,6 +1329,9 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
         scene_notes: list[str] = []
         plugin_config = input_data.material_plugin_config or {}
         threshold = float(plugin_config.get("reselect_threshold", _RESELECT_THRESHOLD))
+        # 注意：**不要**因为"首轮全是 0 分"就跳过重选——重选用的是另一条由旁白
+        # 推导的查询（C4c），不同查询的命中率并不相关（实测首轮 0 分的场景，
+        # 重选仍能拿到可用素材）。
         if best_score < threshold and validated:
             reselect_query = _derive_reselect_query(narration_text, material_intent, scene_keywords)
             reselect_meta["triggered"] = True
@@ -1013,3 +1392,10 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
             "reselect": reselect_meta,
             "material_notes": scene_notes,
         }
+
+
+def _hdr(name: str) -> str:
+    """小标题类提示词（B5 常量覆盖）：插件可替换，未覆盖时即 prompts.py 默认值。"""
+    from clipwright.plugins.prompt_overrides import resolve_constant
+
+    return resolve_constant(name)

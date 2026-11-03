@@ -24,7 +24,7 @@
 |------|-------------------|------|
 | Pipeline | V2 DAG 编排、自愈循环、熔断器、检查点落 Mongo、cancel、dry-run、幂等键、优先级、TaskQueue | `services/pipeline_v2.py`、`api/pipeline.py:588` cancel 端点 |
 | 需求/结构 Agent | 创意简报→脚本骨架→场景分镜，LLM 超时兜底 + JSON 容错 + 规则降级 | `agents/requirements_agent.py`、`structure_agent.py` |
-| 素材 Agent | 多源 MaterialSource 插件架构（Pexels/Pixabay/Unsplash/Coverr 已内置）、语义索引、sha256 去重、巡检 | `material/registry.py`、`plugins/*_material` |
+| 素材 Agent | 多源 MaterialSource 插件架构（Pexels/Pixabay/Unsplash 已内置（Coverr 因拿不到可下载视频已删除））、语义索引、sha256 去重、巡检 | `material/registry.py`、`plugins/*_material` |
 | 剪辑 Agent | 配音驱动字幕、beat-sync 剪辑点吸附（BPM）、转场白名单、竖屏适配 | `agents/edit_agent.py:201,316` |
 | 动画 Agent | 37+ 编目、8 专业模板、LLM 生成→校验→修复→自批判→模板降级五层防线、图像语义索引、Hyperframes 不可用降级 drawtext | `agents/animation_agent.py`、`animation/mg/*` |
 | 音频 Agent | BGM 槽位规则 + LLM 情绪匹配、素材库 BGM 检索、BPM 检测、音量包络 | `agents/audio_agent.py:142-183` |

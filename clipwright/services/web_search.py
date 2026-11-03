@@ -15,7 +15,9 @@ from __future__ import annotations
 import html
 import re
 import uuid
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -54,46 +56,72 @@ class WebSearchService:
         pass
 
     def is_configured(self) -> bool:
-        """搜索是否已配置（总开关 + API key 非空）。绝不抛异常。"""
-        try:
-            enabled = getattr(settings, "enable_web_search", False)
-            api_key = getattr(settings, "web_search_api_key", "") or ""
-            return bool(enabled) and bool(api_key)
-        except Exception:
-            return False
+        """是否有任何可用 provider（付费 key **或** 允许的本地抓取）。绝不抛异常。
 
-    async def search(self, query: str, max_results: int | None = None) -> list[dict[str, Any]]:
+        2026-10-30 变更（PRD `web-search-fetch-prd-2026-10-30.md` M1）：
+        旧语义要求"总开关 + API key"，于是没配 key 的机器上 animation/主 agent
+        连"能不能联网"都无从判断，工具面也看不到 `web_search`。
+        现在只要有一条可用链路（含无需密钥的本地抓取）就算已配置。
+        """
+        try:
+            from clipwright.services import web_providers as wp
+
+            return bool(wp.provider_chain())
+        except Exception:
+            try:
+                enabled = getattr(settings, "enable_web_search", False)
+                api_key = getattr(settings, "web_search_api_key", "") or ""
+                return bool(enabled) and bool(api_key)
+            except Exception:
+                return False
+
+    async def search(self, query: str, max_results: int | None = None,
+                     *, client_factory: Any = None) -> list[dict[str, Any]]:
         """执行联网搜索，返回归一化结果列表 [{title, url, snippet, score}]。绝不抛异常。
 
-        Args:
-            query: 搜索关键词
-            max_results: 期望返回条数；None 时用 settings.web_search_max_results（默认 5）
+        走 `services.web_providers` 的 provider 链（主 provider → 其余付费 → 本地抓取）；
+        全部失败时登记 `web_search_unavailable` 降级，让主 agent 知道"这次没搜到"
+        而不是以为"搜过了、就是没有"。
         """
-        if not self.is_configured():
-            return []
-
-        provider = getattr(settings, "web_search_provider", "bocha") or "bocha"
-        primary = provider if provider in ("bocha", "baidu") else "bocha"
-        fallback = "baidu" if primary == "bocha" else "bocha"
         try:
             n = max_results or getattr(settings, "web_search_max_results", 5) or 5
             n = max(1, min(int(n), 50))  # 夹在 1..50，防异常配置值
         except (TypeError, ValueError):
             n = 5
 
-        last_error = "无结果"
-        for p in (primary, fallback):
-            try:
-                results = await self._search_provider(p, query, n)
-                if results:
-                    return results
-                last_error = f"{p} 返回空结果"
-            except Exception as e:  # 搜索绝不上抛：记日志后回退另一 provider
-                last_error = f"{p}: {e}"
-                logger.warning("Web search provider %s 失败（回退 %s）: %s", p, fallback, e)
-        logger.warning("Web search 全部 provider 失败/无结果（%s），返回空列表: query=%.100s",
-                       last_error, query)
+        from clipwright.services import web_providers as wp
+
+        if not wp.provider_chain():
+            self._note_search_degradation(
+                "no_provider",
+                "没有任何可用的 web 搜索 provider（未配 API key 且本地抓取被关闭）",
+            )
+            return []
+
+        outcome = await wp.search(query, n, client_factory=client_factory)
+        if outcome.results:
+            logger.info("web search 命中 provider=%s（attempts=%s）: query=%.80s",
+                        outcome.provider, ",".join(outcome.attempts), query)
+            return outcome.results
+
+        self._note_search_degradation(
+            "all_providers_failed",
+            f"全部 provider 无结果（尝试：{','.join(outcome.attempts) or '无'}）；"
+            "该段动画只能依靠现有素材与常识",
+        )
         return []
+
+    @staticmethod
+    def _note_search_degradation(kind: str, detail: str) -> None:
+        """搜索失败如实登记（主 agent 可见），不再是"静默返回空列表"。"""
+        try:
+            from clipwright.services.degradation import note_degradation
+
+            note_degradation("web_search_unavailable", detail=f"{kind}: {detail}"[:300],
+                             scope="web_search",
+                             impact="事实/数据类动画失去外部依据，可能只能凭文案推断")
+        except Exception:  # noqa: BLE001 — 登记失败不影响调用方
+            pass
 
     async def _search_provider(self, provider: str, query: str, count: int) -> list[dict[str, Any]]:
         if provider == "baidu":
@@ -256,24 +284,149 @@ class WebFetchService:
     """
 
     async def fetch(self, url: str, max_chars: int = 4000) -> str:
-        """抓取并提取 URL 正文文本；失败或非 HTML 时返回空字符串。"""
-        content_type = ""
+        """抓取并提取 URL 正文文本；失败或非文本时返回空字符串。"""
+        rich = await self.probe(url, max_chars=max_chars, want_body=True)
+        return str(rich.get("content") or "")
+
+    #: 内容类型 → 语义类别（"抓回来的到底是什么"）
+    @staticmethod
+    def classify(content_type: str, url: str = "") -> str:
+        ct = (content_type or "").split(";")[0].strip().lower()
+        if ct in ("text/html", "application/xhtml+xml"):
+            return "html"
+        if ct in ("text/plain", "text/markdown"):
+            return "text"
+        if ct in ("application/json", "application/ld+json") or ct.endswith("+json"):
+            return "json"
+        if ct.startswith("image/"):
+            return "image"
+        if ct.startswith("video/"):
+            return "video"
+        if ct.startswith("audio/"):
+            return "audio"
+        if ct in ("application/pdf", "application/octet-stream", "application/zip"):
+            return "file"
+        # content-type 缺失/含糊时按扩展名兜底
+        suffix = Path(urlparse(url).path).suffix.lower()
+        if suffix in (".mp4", ".webm", ".mov", ".m4v"):
+            return "video"
+        if suffix in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"):
+            return "image"
+        if suffix in (".mp3", ".wav", ".m4a", ".aac", ".flac"):
+            return "audio"
+        if suffix in (".json", ".jsonl"):
+            return "json"
+        if suffix in (".md", ".txt", ".csv", ".srt", ".vtt"):
+            return "text"
+        return "file"
+
+    async def probe(self, url: str, *, max_chars: int = 4000,
+                    want_body: bool = True) -> dict[str, Any]:
+        """探测一个 URL **到底是什么**，并按类别取回可用的东西（2026-10-31）。
+
+        这是 `web_fetch` 的统一入口：网页要正文、图片/视频要落盘、JSON 要原文。
+        两类请求分开做，避免"抓媒体时把几十 MB 读进内存再丢掉"：
+        - 先 HEAD（拿不到就 Range GET 两字节）确定 content-type / 大小；
+        - 只有文本类才真正 GET 正文。
+
+        返回（永不抛异常）：
+        `{ok, kind, content_type, bytes, content, final_url, error}`
+        `kind` ∈ html/text/json/image/video/audio/file。
+        """
+        out: dict[str, Any] = {
+            "ok": False, "kind": "", "content_type": "", "bytes": 0,
+            "content": "", "final_url": url, "error": "",
+        }
+        ct = ""
+        size = 0
         try:
             async with httpx.AsyncClient(timeout=self._timeout(), follow_redirects=True) as client:
-                resp = await client.get(url, headers=_DEFAULT_HEADERS)
-                resp.raise_for_status()
-                ct = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
-                content_type = ct
-                raw = resp.text
-        except Exception as e:
-            logger.debug("Web fetch 失败: url=%s, error=%s", url, e)
-            return ""
-        # 非 HTML / 纯文本（如图片、PDF、JSON）→ 不抓取
-        if content_type and content_type not in ("text/html", "text/plain"):
-            logger.debug("Web fetch 跳过非 HTML: url=%s, content-type=%s",
-                         url, content_type or "(空)")
-            return ""
-        return self._html_to_text(raw, max_chars)
+                # 1) 先探类型（HEAD；不支持 HEAD 的站点退化为 2 字节 Range GET）
+                try:
+                    head = await client.head(url, headers=_DEFAULT_HEADERS)
+                    if head.status_code < 400:
+                        ct = (head.headers.get("content-type") or "").split(";")[0].strip().lower()
+                        size = int(head.headers.get("content-length") or 0)
+                        out["final_url"] = str(head.url)
+                    else:
+                        head = None
+                except Exception:  # noqa: BLE001 — HEAD 不被支持很常见
+                    head = None
+                if not ct:
+                    probe = await client.get(
+                        url, headers={**_DEFAULT_HEADERS, "Range": "bytes=0-1"})
+                    ct = (probe.headers.get("content-type") or "").split(";")[0].strip().lower()
+                    size = int(probe.headers.get("content-length") or 0)
+                    out["final_url"] = str(probe.url)
+                    if probe.status_code >= 400:
+                        out["error"] = f"HTTP {probe.status_code}"
+                        return out
+                kind = self.classify(ct, url)
+                out["kind"] = kind
+                out["content_type"] = ct
+                out["bytes"] = size
+                # 2) 只有文本类才取正文（媒体交给 web_assets.fetch_and_store 落盘）
+                if want_body and kind in ("html", "text", "json"):
+                    # 网页优先走 DeepSeek 官方 Fetch（返回 Markdown 正文，比本地正则剥标签干净）；
+                    # 没配 key / 失败再回落本地 httpx + 正则。
+                    if kind == "html":
+                        rich = await self._deepseek_fetch(url, max_chars=max_chars)
+                        if rich:
+                            out.update(rich)
+                            out["ok"] = True
+                            return out
+                    resp = await client.get(url, headers=_DEFAULT_HEADERS)
+                    resp.raise_for_status()
+                    raw = resp.text
+                    out["ok"] = True
+                    out["bytes"] = len(raw.encode("utf-8", errors="ignore")) or size
+                    out["content"] = (self._html_to_text(raw, max_chars)
+                                      if kind == "html" else raw[:max_chars])
+                    out["via"] = "local"
+                    return out
+                out["ok"] = True
+                return out
+        except Exception as exc:  # noqa: BLE001 — 抓取失败如实回报
+            out["error"] = f"{type(exc).__name__}: {str(exc)[:180]}"
+            return out
+
+    async def _deepseek_fetch(self, url: str, *, max_chars: int = 4000) -> dict[str, Any] | None:
+        """用 DeepSeek 官方 Fetch（`POST /v1/tools/fetch`）取网页 Markdown 正文。
+
+        返回 `{kind, content, title, via}`；没 key / 任何失败返回 None，
+        由调用方回落本地抽正文——**不把"没配 key"当抓取失败**。
+        """
+        try:
+            from clipwright.services import web_providers as wp
+
+            key = wp.provider_key(wp.PROVIDERS["deepseek"])
+            if not key:
+                return None
+            async with httpx.AsyncClient(timeout=self._timeout()) as client:
+                resp = await client.post(
+                    wp.DEEPSEEK_FETCH_ENDPOINT,
+                    json={"url": url},
+                    headers={"Authorization": f"Bearer {key}",
+                             "Content-Type": "application/json"},
+                )
+                if resp.status_code >= 400:
+                    logger.info("DeepSeek fetch 失败（回落本地抽取）%s: %s",
+                                resp.status_code, wp._deepseek_error(resp))
+                    return None
+                data = resp.json()
+            content = str((data or {}).get("content") or "")
+            if not content.strip():
+                return None
+            return {
+                "kind": "html",
+                "content": content[:max_chars],
+                "title": str((data or {}).get("title") or ""),
+                "via": "deepseek_fetch",
+                "bytes": len(content.encode("utf-8", errors="ignore")),
+            }
+        except Exception as exc:  # noqa: BLE001 — 官方 fetch 不可用就回落
+            logger.info("DeepSeek fetch 异常（回落本地抽取）: %s: %s", type(exc).__name__, exc)
+            return None
 
     @staticmethod
     def _html_to_text(raw: str, max_chars: int) -> str:

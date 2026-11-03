@@ -14,18 +14,16 @@ __all__ = ["AnthropicProvider", "OpenAIProvider", "OllamaProvider",
 
 
 def ensure_llm_providers_registered() -> None:
-    """把三个内置 LLM provider 登记进门面（幂等）。"""
-    from clipwright.plugins.contribution import (
-        BUILTIN_OWNER,
-        Contribution,
-        ContributionKind,
-        ContributionRegistry,
-    )
+    """把三个内置 LLM provider 登记进门面（幂等；插件在则让位）。"""
+    from clipwright.providers.builtin_registry import register_builtin_once
+    from clipwright.plugins.contribution import Contribution, ContributionKind
 
-    if ContributionRegistry.resolve(ContributionKind.LLM_PROVIDER, "anthropic") is not None:
-        return
-    ContributionRegistry.register(BUILTIN_OWNER, [
-        Contribution(ContributionKind.LLM_PROVIDER, "anthropic", AnthropicProvider()),
-        Contribution(ContributionKind.LLM_PROVIDER, "openai", OpenAIProvider()),
-        Contribution(ContributionKind.LLM_PROVIDER, "ollama", OllamaProvider()),
-    ], dispatch=False)
+    register_builtin_once(
+        ContributionKind.LLM_PROVIDER,
+        "anthropic",
+        [
+            Contribution(ContributionKind.LLM_PROVIDER, "anthropic", AnthropicProvider()),
+            Contribution(ContributionKind.LLM_PROVIDER, "openai", OpenAIProvider()),
+            Contribution(ContributionKind.LLM_PROVIDER, "ollama", OllamaProvider()),
+        ],
+    )

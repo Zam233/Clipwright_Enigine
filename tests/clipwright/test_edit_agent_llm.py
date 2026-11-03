@@ -23,7 +23,13 @@ from clipwright.tool.registry import ToolRegistry
 
 
 def _context() -> AgentContext:
-    """快速节奏类型 + persona cut_profile 的默认上下文（规则 base_shot_ms=2000）。"""
+    """快速节奏类型 + persona cut_profile 的默认上下文（规则 base_shot_ms=2000）。
+
+    `shot_cap_policy="off"`：本文件断言的是**剪辑档案注入**与**时长缩放**语义，
+    与 D23 的节奏归一正交。默认 `split` 会把 6–8s 场景按 `max_shot_ms=3000` 切成
+    多镜（节奏层自己有一套专门的测试：`test_edit_agent_shot_rhythm.py`），那会让
+    这里的"clip = 场景时长 × scale"断言失去意义，故显式关闭。
+    """
     return AgentContext(
         pipeline_id="a1-test",
         persona_id="p_fast",
@@ -35,6 +41,7 @@ def _context() -> AgentContext:
                 "min_shot_ms": 300,
                 "max_shot_ms": 3000,
             },
+            "shot_cap_policy": "off",
             "cut_profile": "rapid_fire",
             "transition_weights": {"hard_cut": 0.8, "dissolve": 0.2},
         },
@@ -78,12 +85,25 @@ async def _fake_tool_execute(name: str, **kwargs: Any) -> _FakeToolResult:
     return _FakeToolResult()
 
 
-def _input(context: AgentContext, scenes: list[dict]) -> EditInput:
+def _input(context: AgentContext, scenes: list[dict],
+           candidate_clips: list[dict] | None = None) -> EditInput:
     return EditInput(
         context=context,
         script_skeleton={"scenes": scenes},
-        candidate_clips=[],
+        candidate_clips=candidate_clips or [],
     )
+
+
+def _candidates_with_alt() -> list[dict]:
+    """场景 1 有两段**不同**素材：主画面用 main，画中画可以拿 alt。"""
+    return [{
+        "scene_index": 1,
+        "score": 0.9,
+        "suggested_assets": [
+            {"asset_id": "main.mp4", "local_path": r"C:\tmp\main.mp4", "score": 0.9},
+            {"asset_id": "alt.mp4", "local_path": r"C:\tmp\alt.mp4", "score": 0.7},
+        ],
+    }]
 
 
 def _vid_track(tl) -> Any:
@@ -276,7 +296,7 @@ async def test_profile_injects_into_edit_plan(monkeypatch) -> None:
     monkeypatch.setattr(ToolRegistry, "execute", _fake_tool_execute)
 
     ctx = _context()
-    inp = _input(ctx, _scenes(with_duration=False))
+    inp = _input(ctx, _scenes(with_duration=False), _candidates_with_alt())
     out = await agent.execute(inp, ctx)
 
     assert out.decision == AgentDecision.PASS
