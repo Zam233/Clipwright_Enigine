@@ -126,21 +126,19 @@ _KNOWN_EMBED_DIMS = {
 
 
 def ensure_embedding_providers_registered() -> None:
-    """把三个内置嵌入 provider 登记进门面（幂等）。"""
-    from clipwright.plugins.contribution import (
-        BUILTIN_OWNER,
-        Contribution,
-        ContributionKind,
-        ContributionRegistry,
-    )
+    """把三个内置嵌入 provider 登记进门面（幂等；插件在则让位）。"""
+    from clipwright.plugins.contribution import Contribution, ContributionKind
+    from clipwright.providers.builtin_registry import register_builtin_once
 
-    if ContributionRegistry.resolve(ContributionKind.EMBEDDING_PROVIDER, "openai") is not None:
-        return
-    ContributionRegistry.register(BUILTIN_OWNER, [
-        Contribution(ContributionKind.EMBEDDING_PROVIDER, "openai", OpenAIEmbeddingProvider()),
-        Contribution(ContributionKind.EMBEDDING_PROVIDER, "ollama", OllamaEmbeddingProvider()),
-        Contribution(ContributionKind.EMBEDDING_PROVIDER, "local", LocalEmbeddingProvider()),
-    ], dispatch=False)
+    register_builtin_once(
+        ContributionKind.EMBEDDING_PROVIDER,
+        "openai",
+        [
+            Contribution(ContributionKind.EMBEDDING_PROVIDER, "openai", OpenAIEmbeddingProvider()),
+            Contribution(ContributionKind.EMBEDDING_PROVIDER, "ollama", OllamaEmbeddingProvider()),
+            Contribution(ContributionKind.EMBEDDING_PROVIDER, "local", LocalEmbeddingProvider()),
+        ],
+    )
 
 
 def resolve_embedding_provider(name: str) -> Any | None:

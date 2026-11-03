@@ -30,7 +30,9 @@ class ContributionDecl(BaseModel):
     运行时注册未在此声明的 (kind, id) 将被门面拒绝——这是进程内 Python
     插件唯一可执行的权限模型（无沙箱前提下的 Gate G-2 收口）。
     """
-    kind: str = Field(description="贡献类型（见 ContributionKind 的 14 类）")
+    kind: str = Field(
+        description="贡献类型（见 ContributionKind 的 17 类；名单冻结，新增须契约评审）"
+    )
     id: str = Field(pattern=r"^[a-z][a-z0-9_]{1,63}$", description="贡献 id（同 kind 内唯一）")
     meta: dict[str, Any] = Field(default_factory=dict, description="kind 专属元数据")
 

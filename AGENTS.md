@@ -84,6 +84,23 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
     （`plugins/*/`，含 `text_animations` 的 25 个文字动画、`pv_engine` 的 9 个引擎工具）都改为
     类上自声明。漏声明的内置工具仍硬失败（fail-closed），插件工具则降级为"不进 agent 工具面"并留痕。
 
+24. **内置 Provider 让位必须发生在注册之前；插件对外 HTTP 只走通用能力网关**（PRD §15，2026-11-02）：
+    - 每个 provider 家族（`llm` / `embedding` / `rerank` / `stt` / `tts`）的内置注册
+      **只能**调 `clipwright/providers/builtin_registry.py` 的 `register_builtin_once()`——
+      它先 `ContributionRegistry.resolve(kind, 探针 id)`，查到就让位、查不到才登记内置。
+      **禁止**写成「先注册内置、插件后注册」：`_validate` 对已存在内置默认 REJECT
+      （`plugins/contribution.py:189-193`），那样写会让同名插件被直接拒掉，而报错只显示
+      「不得覆盖内置贡献」，根因极难查。六处复制粘贴的旧写法已全部收敛到该函数。
+    - 「让位」与「退场」是两件事：让位 = 插件在就让；退场 = 谁都不在也不注册。裁定 3
+      要求 TTS **退场**（TTS 功能插件验收通过后 `ensure_tts_providers_registered()` 不再默认
+      调用），**不是**改让位逻辑。
+    - 插件对外暴露的 HTTP 入口**只有** `POST /api/capability/{name}`（`api/capability.py`，
+      契约见 PRD §15.1.5）。它按**能力名**解析（`capabilities.resolve_name`，能力名优先、
+      工具名兜底），状态码语义固定：`404` 解析不到（插件未装/被禁用）、`422` 参数或路径
+      不合规、`503` 已解析但依赖缺失、`200` 成功。**网关内禁止任何具体 provider / 能力名
+      分支**；插件不得自挂 router，也不新增 `API_ROUTE` 贡献种类（已否决）。`/api/voice/*`
+      过渡期只做薄转发，不承载编排。
+
 ## 鉴权三模式
 
 `CLIPWRIGHT_ACCOUNT_VERIFY_MODE = off | token | jwt`（默认 off）。jwt 模式本地验签共享密钥，中间件写 `request.state.user_id/user_role`；前端 access token 仅内存 + refresh 走 Server httpOnly cookie（`cw_refresh`）。

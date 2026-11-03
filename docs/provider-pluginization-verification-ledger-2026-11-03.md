@@ -114,3 +114,19 @@
 **更正 4：前端 provider 表单是「选项动态 + 字段写死」**。`ProvidersPage.tsx` 的 provider 选项来自 `available`，但 `baseUrl` / `keys` / model 编辑区都是写死的表单字段，所以 B1-T6 的工作量集中在**把写死字段换成 schema 渲染**，不是重写页面。
 
 **另一处文档漂移（待批量修）**：`schema/plugin.py:33` 的 docstring 写「见 ContributionKind 的 14 类」，实际是 17 类。
+
+## Batch 1 进度（进行中）
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| B0-T12 逐条审阅 | 进行中 | 71 条台账剩 63 条未逐条标注（多数为 §8/§10 的行号类，不阻塞 Batch 1 实施） |
+| B1-T1 定稿贡献种类与 kind 映射 | 已完成 | 不改枚举（17 类足够）；修掉 `schema/plugin.py:33` 的「14 类」文档漂移 → 17 类 + 名单冻结提示 |
+| B1-T3 冲突/优先级/内置让位 | 已完成（代码收敛） | 新增 `clipwright/providers/builtin_registry.py`：`needs_builtin_registration()` + `register_builtin_once()`；`llm`/`embedding`/`rerank`/`stt`/`tts` 五处内置注册全部改调它，删掉各自复制的「先查再注册」。让位顺序从此只有一种写法 |
+| B1-T5 能力网关契约 + 动态映射 | 已完成（契约落地） | 新增 `clipwright/api/capability.py`：`POST /api/capability/{name}`，`{params}` → `ToolExecResult`；状态码 404/422/503/200 按 PRD §15.1.5；`_validate_tool_params()` 加 `status_code` 参数以支持网关的 422（工具端点仍 400）。已挂进 `main.py` |
+| B1-T2 manifest Provider 字段 | 待定 | 需决定 `config_schema`/`capabilities` 是升一级字段还是继续走 `ContributionDecl.meta` |
+| B1-T4 密钥声明/脱敏 | 待办 | 复用现有 Fernet + `_mask_key`，需补 manifest 侧 secret 声明校验 |
+| B1-T6 前端 schema 驱动表单 | 待办 | 前端仓：把 `ProvidersPage` 写死的 `baseUrl`/`keys` 换成 schema 渲染 |
+
+**已跑过的验证（不含 pytest/vitest）**：`py_compile` 全绿；导入 + 幂等烟测确认五个家族各注册一次、
+`needs_builtin_registration` 语义正确；`TestClient` 打到 `/api/capability/list_animations` → 200
+`status=success`、未知能力名 → 404 带可读原因。

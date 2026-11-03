@@ -37,17 +37,15 @@ def normalize_tts_name(name: str) -> str:
 
 
 def ensure_tts_providers_registered() -> None:
-    """登记三个内置 TTS provider（幂等）。"""
-    from clipwright.config import settings
-    from clipwright.plugins.contribution import (
-        BUILTIN_OWNER,
-        Contribution,
-        ContributionKind,
-        ContributionRegistry,
-    )
+    """登记三个内置 TTS provider（幂等；插件在则让位）。
 
-    if ContributionRegistry.resolve(ContributionKind.TTS_PROVIDER, "qwen-tts") is not None:
-        return
+    ⚠️ 裁定 3（PRD §15.1.6）：等 TTS 功能插件落地并通过验收后，本函数默认不再被
+    调用——**没有插件时不注册内置**，engine 因此不带任何 TTS 能力。保留本函数只为
+    过渡期显式开启与回滚。
+    """
+    from clipwright.config import settings
+    from clipwright.plugins.contribution import Contribution, ContributionKind
+    from clipwright.providers.builtin_registry import register_builtin_once
 
     def _make(name: str) -> TtsProviderEntry:
         from clipwright.services import voice as _voice
@@ -69,10 +67,14 @@ def ensure_tts_providers_registered() -> None:
             needs_uploader=True,
         )
 
-    ContributionRegistry.register(BUILTIN_OWNER, [
-        Contribution(ContributionKind.TTS_PROVIDER, n, _make(n))
-        for n in ("qwen-tts", "cosyvoice", "minimax")
-    ], dispatch=False)
+    register_builtin_once(
+        ContributionKind.TTS_PROVIDER,
+        "qwen-tts",
+        [
+            Contribution(ContributionKind.TTS_PROVIDER, n, _make(n))
+            for n in ("qwen-tts", "cosyvoice", "minimax")
+        ],
+    )
 
 
 def resolve_tts_entry(name: str) -> Optional[TtsProviderEntry]:
