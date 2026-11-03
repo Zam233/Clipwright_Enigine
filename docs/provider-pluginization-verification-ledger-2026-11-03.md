@@ -405,6 +405,19 @@
 | 7 | `prompt_builder_guards` | 四关负例：import/eval/getattr/async、参数不用、未知符号、新占位符 |
 | 8 | `dub_capability_boundary` | `dub_script` 归属 tts_feature；两边摘掉后 `/api/voice/dub` → 503 |
 | 9 | `tier_map_empty` | 不变量 #12：`capability_matrix.TIER_MAP` 必须为空 |
+| 10 | `provider_plugin_fallback` | 卸载插件后内置**补位**（`unregister_plugin` → `_resolve_llm_provider` 仍能解析，归属回到 `__builtin__`） |
+| 11 | `skill_shadow_restore` | 插件技能被回收后内置同名技能**恢复**，归属回到内置 |
 
-实测：9/9 通过（`py -3.14 scripts/verify_provider_pluginization.py`）。**它补充 pytest，不替代**。
+实测：**11/11 通过**（`py -3.14 scripts/verify_provider_pluginization.py`），逐项单独跑也无顺序依赖。**它补充 pytest，不替代**。
+
+### 写这个脚本时发现并修掉的真 bug
+
+`SkillRegistry.register` 在「同一 owner 重复注册」（插件 reload / 幂等重注册）时会把
+`_shadowed[name]` 覆盖成**插件自己的旧实例** → 之后卸载插件，恢复出来仍是插件实现，
+**内置实现永远回不来**。复现三步：启动插件接管（影子=内置）→ reload 再注册（影子被覆盖成插件）
+→ 卸载（恢复出插件实例，内置缺失）。
+
+修法：只在实现来源发生变化（`old_src != new_src`）时压栈；同 owner 重注册不动影子。
+这正是「写脚本顺带查出产品缺陷」的例子——不写这个检查，reload 场景的退化不会被任何人发现。
+
 
