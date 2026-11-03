@@ -82,17 +82,21 @@ FORBIDDEN_NAMES = frozenset({
 #: - 3 个 MG 约束：`animation/mg/generator.py::_mg_constraint(...)`（原先模块级别名=导入期
 #:   快照，插件覆盖不生效，本轮改掉）。
 #:
-#: **刻意不列入的 5 个**（覆盖了也不会生效，宁可显示未接线）：
-#: - `LOOP_NORMAL_SYSTEM` / `LOOP_PLAN_ONLY_SYSTEM` / `LOOP_CLOSEOUT_BLOCK`：
-#:   `services/agent_loop.py` 里仍有一份**内联副本**，且文本已与常量不同（W4 搬运漏接），
-#:   覆盖常量不会影响实际发给模型的提示词。修法是让 agent_loop 改读常量（属行为变更，
-#:   需人工比对，见台账 Batch 5「已知缺陷」）；
-#: - `PROMPT_PLUGIN_EXT_HEADER` / `PROMPT_WEB_CONTEXT_HEADER`：全仓无消费方（死导出）。
+#: 2026-11-02 第三批：3 个 `LOOP_*` 也已接线 —— `services/agent_loop.py` 的内联副本
+#: 与 `prompts.py` 常量**逐字节相同**（sha256 一致，先前的「已漂移」是比对方法错误：
+#: 拿常量去比源文件窗口，窗口里混进了周边代码）。现在 agent_loop 的
+#: `_system_prompt()` 走 `_p("LOOP_...")` 实时读常量，覆盖立即生效。
+#:
+#: **仍刻意不列入的 2 个**：`PROMPT_PLUGIN_EXT_HEADER` / `PROMPT_WEB_CONTEXT_HEADER`
+#: ——全仓无消费方（死导出），覆盖它们不会有任何效果。
 WIRED_CONSTANTS = frozenset({
     "ANIM_MARKER_SYSTEM_HEADER",
     "CREATIVE_BRIEF_SYSTEM",
     "EDIT_PROFILE_SYSTEM",
     "LOOP_BUDGET_CRITICAL",
+    "LOOP_CLOSEOUT_BLOCK",
+    "LOOP_NORMAL_SYSTEM",
+    "LOOP_PLAN_ONLY_SYSTEM",
     "LOOP_BUDGET_HEADER",
     "LOOP_BUDGET_PLENTY",
     "LOOP_BUDGET_TIGHT",
@@ -474,6 +478,7 @@ def clear_plugin(plugin_id: str) -> list[str]:
     for symbol in removed:
         _OVERRIDES.pop(symbol, None)
     return sorted(removed)
+
 
 
 

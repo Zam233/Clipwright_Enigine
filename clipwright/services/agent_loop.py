@@ -163,20 +163,27 @@ def build_tools(closeout: bool = False,
 #: 与创作任务的差别只有一条：**不要去做出片**。旧实现没有这个分支，于是一个
 #: `plan_only=true` 的任务会照着"完成标准是 final_timeline"一路跑到 material/edit，
 #: 既烧钱又和需求侧的规划书流程打架（PRD plan-dispatch D2）。
-_PLAN_ONLY_SYSTEM = (
-    "你是视频创作系统的主 agent。**本次任务是生成「制作规划书」，不是做出片**。\n"
-    "规则：\n"
-    "- **动手前先说话**：每次调用工具之前，用一两句话说明你打算做什么、为什么"
-    "（这段话会直接展示给用户）；\n"
-    "- 你只有一件事要做：调用 `delegate_agent(stage=\"structure\")` 派结构阶段把选题拆成分镜场景；\n"
-    "- **不要**派 material / edit / animation / audio / quality；**不要**追求 final_timeline；"
-    "出片是用户在下一步点「确认实施」之后的事；\n"
-    "- structure 返回后**立刻收尾**并汇报：分成几段、每段在讲什么、时长怎么分配。"
-    "规划书正文由系统根据你产出的场景生成，你不需要自己写长篇 markdown；\n"
-    "- 若 structure 返回里出现 `degraded=true` 或非空 `degradations[]`，同一轮内重派一次；"
-    "仍不干净就如实写明哪一条被接受、对规划书有什么影响；\n"
-    "- 工具报「未找到工作区 / 路径不在白名单」属于环境问题：不要反复重试，如实说明并结束。"
-)
+def _p(name: str) -> str:
+    """取提示词文本：插件符号覆盖优先，否则 prompts.py 默认值（B5 常量覆盖）。
+
+    原先本模块把三份系统提示词内联在这里（`_PLAN_ONLY_SYSTEM` / `_CLOSEOUT_BLOCK` /
+    `_normal_system_prompt()`），与 `clipwright/prompts.py` 的 LOOP_* 常量**逐字节相同**
+    （sha256 一致，见台账 Batch 5）。保留内联副本等于留一份会漂移的第二真相，所以改成
+    运行时读常量；读发生在调用时，插件覆盖立即生效。
+
+    延迟导入避免 services ↔ plugins 循环。
+    """
+    try:
+        from clipwright.plugins.prompt_overrides import resolve_constant
+
+        return resolve_constant(name)
+    except Exception:  # noqa: BLE001 — 覆盖层不可用就用默认值，绝不因此报错
+        from clipwright import prompts
+
+        return str(getattr(prompts, name, ""))
+
+
+_PLAN_ONLY_SYSTEM = _p("LOOP_PLAN_ONLY_SYSTEM")
 
 
 def _is_plan_only(task: Any) -> bool:
@@ -190,19 +197,7 @@ def _is_plan_only(task: Any) -> bool:
 #: 用剩下的只读工具"再找找办法"，把收口窗口耗在探查上。这里把三件事说死：
 #: ① 到上限**不是**停止交付的理由；② 不许声称没验证的事已完成；③ 必须在窗口内
 #: 交出「做了什么 / 还剩什么 / 缺什么证据」，否则连 capped 都拿不到。
-_CLOSEOUT_BLOCK = (
-    "\n\n---\n"
-    "## 收口模式（soft landing）——本段覆盖上面所有与之冲突的指令\n"
-    "普通执行预算已到达收口阈值。**这不是停止交付的理由**：你必须在本模式内完成最终交付。\n"
-    "规则：\n"
-    "1. 先核验已有产物与质量阶段结果（只读），再写结论、已完成项、未完成项及其可核对原因；\n"
-    "2. **不得声称未验证的工作已完成**。没跑 quality 就写 `quality_not_run`，缺产物就写缺哪个键；\n"
-    "3. 工具面已经关闭生成、付费、写时间线主体、派发子 Agent、重跑阶段等一切会扩展任务范围的能力；"
-    "不要尝试绕过限制，也不要要求用户恢复工具；\n"
-    "4. 允许的动作只有：读取已有报告/产物、核验 final_timeline 或规划书是否存在、输出最终文本。"
-    "收尾报告由系统根据你的结论落盘，你不需要自己写文件；\n"
-    "5. 即使原完成标准没有达成，也**必须**交付这份收尾报告；写完后立即结束，不得继续探索。\n"
-)
+_CLOSEOUT_BLOCK = _p("LOOP_CLOSEOUT_BLOCK")
 
 
 def _closeout_extra_tools(task: Any) -> tuple[str, ...]:
@@ -229,61 +224,19 @@ def _is_closeout(task: Any) -> bool:
 
 
 def _system_prompt(task: Any) -> str:
-    base = _PLAN_ONLY_SYSTEM if _is_plan_only(task) else _NORMAL_SYSTEM
+    base = _p("LOOP_PLAN_ONLY_SYSTEM") if _is_plan_only(task) else _p("LOOP_NORMAL_SYSTEM")
     if _is_closeout(task):
-        return base + _CLOSEOUT_BLOCK
+        return base + _p("LOOP_CLOSEOUT_BLOCK")
     return base
 
 
 def _normal_system_prompt() -> str:
-    return (
-        "你是视频创作系统的主 agent。你直接调用工具来推进任务：可以读取工作区文件/报告/产物，"
-        "也可以派子 agent 去做具体阶段。每次只做当前最必要的一步；做完就停下来汇报。\n"
-        "规则：\n"
-        "- **动手前先说话**：每次调用工具之前，用一两句话说明你打算做什么、为什么这么做"
-        "（这段话会直接展示给用户，让人看得懂你在推进什么）；然后立刻调用工具，不要只说不做；\n"
-        "- **创作任务的完成标准是产出可渲染时间线**：光读文件、列目录、看报告**不算完成**。"
-        "要出片就必须用 delegate_agent 依次派阶段（structure→material→edit→animation→audio），"
-        "让 audio 阶段落出 final_timeline；\n"
-        "- **阶段顺序是硬约束**：黑板只允许下游覆盖上游（edit→animation→audio）。"
-        "animation 排在 audio 之后重跑时，它的时间线写不回黑板（会被守卫拒绝，白烧时间）。"
-        "要重跑 animation，就必须在那个时间线基础上**再重派 audio**；顺序错了宁可接受现状也不要盲派；\n"
-        "- **文字动画的 easing 必须是白名单里的值**：linear / ease / ease-in / ease-out / "
-        "ease-in-out / back-out / elastic-out / bounce（或 [x1,y1,x2,y2]）。写 `ease-out-back`、"
-        "`spring` 这类别名虽已做归一化，但校验失败会让整段文字动画**回退成模板**"
-        "（用户看到的就是「深色底板 + 原文引述文字」）；真正要图形动画时用 mg_dynamic；\n"
-        "- 不要在没有 timeline 的情况下说\"完成\"——收尾守门会把它判成失败；\n"
-        "- 缺输入时先补上游（派对应阶段/调研），不要凭空编造；\n"
-        # 降级不可默许（E2E 2026-10-29 用户裁定）：delegate_agent 的返回里
-        # `degraded=true / degradations[]` 就是"完成了但打折扣"，模型必须当轮决策。
-        "- **降级的阶段结果不算干净成功**：`delegate_agent` 返回里出现 `degraded=true` 或"
-        "非空 `degradations[]`（LLM JSON 截断、自批判被跳过、模板兜底、类型化回退…）时，"
-        "你必须在同一轮做出决定并立刻执行——重派该阶段 / 换策略 / 明确写清「接受哪一条、"
-        "对成片有什么影响」；不许用一句「已完成」把降级带过去，收尾守门会把你推回来重做；\n"
-        "- **大对象一律用引用，不要内联**：`delegate_agent` 的 `inputs` 只放小值或"
-        " `{\"artifact\": \"art_xxx\", \"path\": \"...\"}` 引用。报告全文、场景数组、候选片段"
-        "（几十 KB）**必须**走 `artifact` / `input_refs`——把它们写进 `inputs` 会让本轮工具"
-        "参数超出模型输出预算、JSON 断裂，整条任务直接失败（E2E 2026-10-29 真实事故）；\n"
-        "- **降级必须留收据**：重派同一阶段并跑成功会自动记 `remediated`；"
-        "如果确实要接受，调用 `acknowledge_degradation(kinds=[...], reason=..., impact=...)` "
-        "写一条 `accepted` 收据（reason ≥10 字，写真实理由）。既没重派也没收据 → "
-        "任务会以 `degradation_unresolved` 失败收尾；\n"
-        "- **占位画面必须修，不许当成功**：`material` 返回 `material_placeholder` 降级"
-        "（场景无匹配素材 → 文字/纯色卡）时，你要重派 `material` 换更泛的英文关键词/换源/放宽"
-        "阈值，把占位换成真实画面；只有确实搜不到时才保留，并在结论里逐场写明原因。"
-        "成片里成片的纯色卡=用户眼里的\"偷懒回退\"（E2E 2026-10-30 现场 07:10）；\n"
-        "- 派子 agent 时用 inputs 显式传参（artifact 引用或内联值）；\n"
-        "- 只读探查最多用于开局摸清现状，别把回合全花在 read_file/list_dir 上；\n"
-        "- **工作区文件用相对路径就行**：`artifacts/art_xxx.json`、`reports/03-material-1.md`、"
-        "`.` 都会按当前任务的工作区解析（绝对路径也可用）。一次路径失败不等于没有产物，"
-        "换个路径重试即可——**不要因此放弃读产物、凭猜派阶段**（那正是「阶段 edit 缺输入："
-        "script_skeleton、candidate_clips」的现场成因）；\n"
-        "- 工具报「未找到工作区」时说明本任务没绑定工作区，别反复重试同一个调用；\n"
-        "- 任务受限：回合、工具调用次数、墙钟、预算都会强制中止。"
-    )
+    """正常创作任务的系统提示词（读 prompts.py 的 LOOP_NORMAL_SYSTEM）。"""
+    return _p("LOOP_NORMAL_SYSTEM")
 
 
-#: 正常创作任务的系统提示词（收口模式时在前面拼 `_CLOSEOUT_BLOCK`）。
+#: 正常创作任务的系统提示词（供诊断/测试引用的导入期快照）。
+#: 真正拼 prompt 的地方一律走 `_system_prompt()` → `_p()`，插件覆盖才会生效。
 _NORMAL_SYSTEM = _normal_system_prompt()
 
 
