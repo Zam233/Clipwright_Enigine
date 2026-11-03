@@ -60,13 +60,19 @@ def test_plugin_tool_without_tier_degrades_instead_of_killing_the_surface(monkey
         cm._WARNED_UNCLASSIFIED.discard("__probe_plugin_tool__")
 
 
-def test_stale_tier_entries_are_rejected():
-    """TIER_MAP 里留了已删除的工具 → 也要报错（防止档位表腐烂）。"""
+def test_tier_map_must_stay_empty_and_unused():
+    """不变量 #12：权限档位 100% 由工具**自声明**，`TIER_MAP` 已清空且必须保持为空。
+
+    旧契约是「TIER_MAP 里留着已删除的工具 → build_matrix 要报『已不存在』」。随着 2026-10-31
+    的全量迁移（`TIER_MAP` 清空、`permission_tier` 改为工具类上自声明），那张表不再参与
+    构建，腐烂守卫也就没有对象了——现在该守的是「表必须为空」。
+    """
+    assert dict(cm.TIER_MAP) == {}, f"TIER_MAP 必须为空，实际 {dict(cm.TIER_MAP)}"
     original = dict(cm.TIER_MAP)
     try:
         cm.TIER_MAP["__ghost_tool__"] = "read"
-        with pytest.raises(cm.CapabilityMatrixError, match="已不存在"):
-            cm.build_matrix()
+        # 不再读 TIER_MAP → 不报错（这正是"迁移完成"的表现，不是回归）
+        cm.build_matrix()
     finally:
         cm.TIER_MAP.clear()
         cm.TIER_MAP.update(original)
@@ -87,7 +93,7 @@ def test_unknown_tool_is_rejected(monkeypatch):
     monkeypatch.setattr(
         ToolRegistry, "list", classmethod(lambda cls: [*real, _FakeInfo()])
     )
-    with pytest.raises(cm.CapabilityMatrixError, match="裁权限档"):
+    with pytest.raises(cm.CapabilityMatrixError, match="permission_tier"):
         cm.build_matrix()
 
 
