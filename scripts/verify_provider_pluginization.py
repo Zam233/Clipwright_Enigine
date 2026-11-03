@@ -285,6 +285,77 @@ def check_skill_shadow_restore() -> None:
         assert type(restored).__name__ == "DubScriptSkill", f"恢复的不是内置实现：{type(restored).__name__}"
         assert SkillRegistry.owner("dub_script") == "", "恢复后归属应为内置（空串）"
 
+def _reregister_plugin(plugin_id: str, module_path: str, class_name: str) -> None:
+    """按 loader 的方式把某个插件的贡献重新注册回门面（用于检查后恢复状态）。"""
+    import importlib
+
+    from clipwright.plugins.contribution import ConflictPolicy, ContributionRegistry as R
+
+    module = importlib.import_module(module_path)
+    plugin = getattr(module, class_name)()
+    items = list(plugin.contributions() or [])
+    declared = {f"{it.kind.value}:{it.id}" for it in items}
+    R.declared_scope(plugin_id, declared)
+    report = R.register(plugin_id, items, ConflictPolicy.OVERRIDE)
+    assert not report.rejected, f"恢复插件 {plugin_id} 失败: {[r[1] for r in report.rejected]}"
+
+
+@check("all_families_fallback")
+def check_all_families_fallback() -> None:
+    """每一类 provider 在插件卸载后都必须能由内置补位（五类逐个验证）。
+
+    只测 llm 是不够的：embedding / rerank / stt / tts 各自有独立的 `ensure_*`，
+    某个家族漏了「懒补位」就会表现为「禁用插件 = 永久失去该类 provider」。
+    检查结束会把插件重新注册回去（否则后续检查看到的是 builtin 归属）。
+    """
+    from fastapi.testclient import TestClient
+
+    from clipwright.main import app
+    from clipwright.plugins.contribution import ContributionKind as K
+    from clipwright.plugins.contribution import ContributionRegistry as R
+
+    families = [
+        (K.LLM_PROVIDER, "clipwright.providers.llm", "ensure_llm_providers_registered",
+         "llm_openai_compatible", "plugins.llm_openai_compatible.main", "OpenACompatibleProviderPlugin",
+         {"openai", "ollama"}),
+        (K.TTS_PROVIDER, "clipwright.providers.tts", "ensure_tts_providers_registered",
+         "tts_qwen", "plugins.tts_qwen.main", "QwenTtsProviderPlugin", {"qwen-tts"}),
+        (K.EMBEDDING_PROVIDER, "clipwright.providers.embedding", "ensure_embedding_providers_registered",
+         "embedding_providers", "plugins.embedding_providers.main", "EmbeddingProvidersPlugin",
+         {"openai", "ollama", "local"}),
+        (K.RERANK_PROVIDER, "clipwright.providers.rerank", "ensure_rerank_providers_registered",
+         "rerank_providers", "plugins.rerank_providers.main", "RerankProvidersPlugin",
+         {"http", "local"}),
+        (K.STT_PROVIDER, "clipwright.providers.stt", "ensure_stt_providers_registered",
+         "stt_providers", "plugins.stt_providers.main", "SttProvidersPlugin",
+         {"whisper", "faster-whisper"}),
+    ]
+
+    with TestClient(app, raise_server_exceptions=False):
+        for kind, mod, fn_name, plugin_id, mod_path, cls, ids in families:
+            # 只卸载该家族里属于这个插件的 id（不整插件卸载，避免连带影响别的家族）
+            R.unregister_keys(plugin_id, [(kind, i) for i in ids])
+            gone = ids & {c.id for _, c in R.list(kind)}
+            assert not gone, f"{kind.value}: 卸载 {plugin_id} 后仍存在 {sorted(gone)}"
+
+            # 走真实补位路径
+            module = __import__(mod, fromlist=[fn_name])
+            getattr(module, fn_name)()
+
+            back = ids & {c.id for _, c in R.list(kind)}
+            assert back == ids, f"{kind.value}: 内置没有补位（缺 {sorted(ids - back)}）"
+            for cid in ids:
+                owner = R.owner_of(kind, cid)
+                assert owner == "__builtin__", (
+                    f"{kind.value}:{cid} 补位后归属应为 __builtin__，实际 {owner!r}"
+                )
+
+            # 恢复插件归属，避免污染后续检查
+            _reregister_plugin(plugin_id, mod_path, cls)
+            for cid in ids:
+                owner = R.owner_of(kind, cid)
+                assert owner == plugin_id, f"恢复失败: {kind.value}:{cid} 归属 {owner!r}"
+
 @check("tier_map_empty")
 def check_tier_map() -> None:
     """不变量 #12：`capability_matrix.TIER_MAP` 必须为空（有值即写死的旧接线）。"""
@@ -333,6 +404,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
 
 
