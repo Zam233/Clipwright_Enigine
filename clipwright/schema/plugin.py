@@ -33,7 +33,14 @@ class ContributionDecl(BaseModel):
     kind: str = Field(
         description="贡献类型（见 ContributionKind 的 17 类；名单冻结，新增须契约评审）"
     )
-    id: str = Field(pattern=r"^[a-z][a-z0-9_]{1,63}$", description="贡献 id（同 kind 内唯一）")
+    id: str = Field(
+        # Batch 4 放宽：允许连字符。仓库里既有 provider id 就带连字符
+        # （`faster-whisper`、`qwen-tts`），原 `^[a-z][a-z0-9_]{1,63}$` 会让插件
+        # 无法声明这类 id —— 表现为「manifest 校验失败」，而内置注册不校验所以
+        # 一直没暴露。id 只做门面键使用，不参与文件路径，放开连字符是安全的。
+        pattern=r"^[a-z][a-z0-9_-]{1,63}$",
+        description="贡献 id（同 kind 内唯一；允许小写字母/数字/下划线/连字符）",
+    )
     meta: dict[str, Any] = Field(default_factory=dict, description="kind 专属元数据")
     # ── PRD §8 / B1-T2：provider 类贡献的结构化声明（非 provider 类留空）──
     config_schema: dict[str, Any] = Field(

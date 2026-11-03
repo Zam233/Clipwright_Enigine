@@ -208,3 +208,25 @@
 
 
 
+
+## Batch 4 进度（embedding / rerank / STT）
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| B4-T1 Embedding Provider 插件 | 已完成 | `plugins/embedding_providers/`：声明 `openai` / `ollama` / `local`，带 `config_schema`（openai: api_key(secret)+base_url；ollama: base_url）与 `capabilities.models`。实测归属全部切到插件 |
+| B4-T2 Rerank Provider 插件 | 已完成 | `plugins/rerank_providers/`：`http`（base_url + api_key(secret)）/ `local`。实测归属切到插件 |
+| B4-T3 STT Provider 插件 | 已完成 | `plugins/stt_providers/`：`whisper` / `faster-whisper`；`SttBackendEntry.call` 由插件提供、`service` 由调用方注入，行为与 engine 内置的两份 `_call_*` 一致 |
+| B4-T4 前后端一致性 | 部分完成 | 后端 `/api/providers/available` 与 `/api/providers/schemas` 已覆盖三类；**前端仍无 STT tab**（PRD §14 开放问题第 3 条：STT 是否进 Tab 由产品定），未擅自加 |
+
+### 关键发现：`ContributionDecl.id` 的 pattern 挡住了真实 provider id
+
+`faster-whisper` 声明失败：`schema/plugin.py` 的 id pattern 是 `^[a-z][a-z0-9_]{1,63}$`，
+**不允许连字符**。而仓库里既有 provider id 本来就带连字符（`faster-whisper`、`qwen-tts`）——
+内置注册走 `ContributionKind.STT_PROVIDER, "faster-whisper"` 时不经过 manifest 校验，所以这个问题
+一直没暴露；一旦要「插件声明同名 id」就必然撞上。
+
+处理：把 pattern 放宽为 `^[a-z][a-z0-9_-]{1,63}$`。id 只做门面键（`kind:id`）与冲突判定，
+不参与文件路径，放开连字符安全；已在 `schema/plugin.py` 注释里写明原因与暴露路径。
+
+> 遗留：`tts_provider` 家族还有 `qwen-tts` / `minimax` 两个内置未被插件接管（本轮只声明了
+> `cosyvoice`）。现在能声明了，等 W3 收尾一起搬，或按需再补一个 tts 协议插件。

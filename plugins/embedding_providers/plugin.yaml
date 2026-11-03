@@ -1,0 +1,37 @@
+id: embedding_providers
+name: Embedding Provider 包
+version: 1.0.0
+kind: capability
+api_version: "2"
+description: 提供 openai / ollama / local 三个嵌入 provider；插件存在时内置同名实现自动让位
+entry_point: "embedding_providers.main"
+permissions: []
+# 内置先注册（main.py lifespan 4.6），故需显式声明接管
+override_builtin: true
+contributions:
+  - kind: embedding_provider
+    id: openai
+    config_schema:
+      api_key:
+        type: string
+        label: OpenAI API Key
+        secret: true
+      base_url:
+        type: string
+        label: API Base URL
+        placeholder: https://api.openai.com/v1
+    capabilities:
+      models: true
+  - kind: embedding_provider
+    id: ollama
+    config_schema:
+      base_url:
+        type: string
+        label: Ollama 地址
+        placeholder: http://127.0.0.1:11434
+    capabilities:
+      models: true
+  - kind: embedding_provider
+    id: local
+    capabilities:
+      models: true
