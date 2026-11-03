@@ -207,7 +207,11 @@ def check_builder_guards() -> None:
 
 @check("dub_capability_boundary")
 def check_dub_boundary() -> None:
-    """配音能力：由插件提供；两边都摘掉后必须 503（薄转发不得兜底）。"""
+    """配音能力：由插件提供；两边都摘掉后必须 503（薄转发不得兜底）。
+
+    收尾会把内置实现重新登记回去——**检查之间共享进程状态**，不恢复会让后面的检查
+    看到「dub_script 不存在」而误报（本轮踩过）。
+    """
     from fastapi.testclient import TestClient
 
     from clipwright.main import app
@@ -224,6 +228,62 @@ def check_dub_boundary() -> None:
         r = c.post("/api/voice/dub", json={"voice_id": "x", "text": "y"})
         assert r.status_code == 503, f"无配音能力时应 503，实际 {r.status_code}"
 
+    # 收尾：把内置实现登记回来，避免污染后续检查
+    from clipwright.skill.dub import DubScriptSkill
+
+    SkillRegistry.register(DubScriptSkill())
+    assert SkillRegistry.get("dub_script") is not None, "收尾恢复内置失败"
+
+
+@check("provider_plugin_fallback")
+def check_provider_fallback() -> None:
+    """插件被卸载后，内置必须能补位（否则禁用插件的用户会直接失去 provider）。
+
+    这是「让位语义」的逆过程：让位发生在注册前（`register_builtin_once` 逐 id 过滤），
+    补位发生在下一次 `ensure_*` 调用（启动或解析时懒注册）。
+    """
+    from clipwright.plugins.contribution import ContributionKind as K
+    from clipwright.plugins.contribution import ContributionRegistry as R
+
+    # 卸载 openai 兼容插件后，两个 id 应从门面消失
+    R.unregister_plugin("llm_openai_compatible")
+    remaining = {c.id for _, c in R.list(K.LLM_PROVIDER)}
+    assert "openai" not in remaining, "卸载后 openai 仍在门面"
+    assert "ollama" not in remaining, "卸载后 ollama 仍在门面"
+
+    # 走真实解析路径：services.llm 的 resolver 会先 ensure 再查
+    from clipwright.services.llm import _resolve_llm_provider
+
+    impl = _resolve_llm_provider("openai")
+    assert impl is not None, "卸载插件后 openai 无法解析（内置没有补位）"
+    owner = R.owner_of(K.LLM_PROVIDER, "openai")
+    assert owner == "__builtin__", f"补位后归属应为 builtin，实际 {owner!r}"
+
+
+@check("skill_shadow_restore")
+def check_skill_shadow_restore() -> None:
+    """插件技能被回收后，内置同名技能必须恢复（`_shadowed`），不能直接消失。
+
+    **自带前置**：检查之间共享进程状态，这里自己把插件技能注册进去再回收，
+    不依赖别的检查留下的状态（否则顺序一变就误报）。
+    """
+    from fastapi.testclient import TestClient
+
+    from clipwright.main import app
+    from clipwright.skill.registry import SkillRegistry
+
+    from plugins.tts_feature.dub import DubScriptOrchestrator
+
+    # 必须在 app 启动后做：插件与内置技能都在 lifespan 里注册（单独跑本检查时尤其重要）
+    with TestClient(app, raise_server_exceptions=False):
+        SkillRegistry.register(DubScriptOrchestrator(), plugin_id="tts_feature", allow_override=True)
+        assert SkillRegistry.owner("dub_script") == "tts_feature", "前置失败：插件技能没注册进去"
+
+        SkillRegistry.unregister("dub_script")
+        restored = SkillRegistry.get("dub_script")
+        assert restored is not None, "回收插件技能后内置没有恢复"
+        assert type(restored).__name__ == "DubScriptSkill", f"恢复的不是内置实现：{type(restored).__name__}"
+        assert SkillRegistry.owner("dub_script") == "", "恢复后归属应为内置（空串）"
 
 @check("tier_map_empty")
 def check_tier_map() -> None:
@@ -239,6 +299,7 @@ def check_tier_map() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Provider 插件化与提示词覆盖自检")
     parser.add_argument("-k", "--filter", default="", help="只跑名字包含该子串的检查")
+    parser.add_argument("--trace", action="store_true", help="失败时打印完整堆栈")
     args = parser.parse_args()
 
     checks = [v for k, v in sorted(globals().items())
@@ -255,7 +316,7 @@ def main() -> int:
             detail = f"{type(e).__name__}: {e}"
             RESULTS.append((name, False, detail))
             print(f"[FAIL] {name}: {detail}")
-            if "--trace" in sys.argv:
+            if args.trace:
                 traceback.print_exc()
 
     total = len(RESULTS)
@@ -272,5 +333,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+
+
 
 

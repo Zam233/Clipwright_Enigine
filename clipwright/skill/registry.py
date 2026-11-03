@@ -52,7 +52,12 @@ class SkillRegistry:
                     new_src, skill.name,
                 )
                 return
-            cls._shadowed[skill.name] = existing
+            # 只在「实现来源发生变化」时压栈。
+            # 同一个 owner 重复注册（插件 reload / 幂等重注册）**不能**覆盖影子条目——
+            # 否则影子会变成插件自己的旧实例，卸载插件时恢复出来仍是插件实现，
+            # 内置实现永远回不来（2026-11-02 写验收脚本时发现）。
+            if old_src != new_src:
+                cls._shadowed[skill.name] = existing
         cls._skills[skill.name] = skill
         # 轮 87：归属记录在 skill 对象上（与 loader 的 _plugin_id 补丁同模式，
         # 旧实现把 plugin_id 参数直接丢弃）
@@ -168,3 +173,4 @@ class SkillRegistry:
             parameters=params,
             plugin_id=str(getattr(skill, "_plugin_id", "")),
         )
+
