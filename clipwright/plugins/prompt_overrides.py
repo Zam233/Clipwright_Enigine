@@ -45,6 +45,7 @@ __all__ = [
     "MAX_NESTING",
     "MAX_RETURNS",
     "MAX_OUTPUT_CHARS",
+    "WIRED_CONSTANTS",
     "MIN_OUTPUT_CHARS",
 ]
 
@@ -71,6 +72,18 @@ FORBIDDEN_NAMES = frozenset({
     "tempfile", "random", "time", "datetime", "uuid", "asyncio", "importlib",
 })
 
+#: 已接到 `resolve_constant()` 的常量（消费方已改为运行时解析）。
+#: 其余常量是 `prompts.py` **内部组合用的构件**（被 builder 在导入期拼好），
+#: 目前仍只走默认值 —— 诊断接口对它们标 `wired=False`，不假装已生效。
+WIRED_CONSTANTS = frozenset({
+    "CREATIVE_BRIEF_SYSTEM",
+    "EDIT_PROFILE_SYSTEM",
+    "QUALITY_SEMANTIC_QA_SYSTEM",
+    "STRUCTURE_MG_DYNAMIC_GUIDE",
+    "STRUCTURE_SYSTEM_PROMPT_TPL",
+    "STRUCTURE_TOOL_PROMPT",
+    "PLAN_TRANSLATE_SYSTEM",
+})
 #: 覆盖登记：symbol → {"plugin_id", "kind", "value"/"impl", "source"}
 _OVERRIDES: dict[str, dict[str, Any]] = {}
 
@@ -117,7 +130,7 @@ def all_symbols() -> dict[str, Any]:
         out["constants"].append({
             "name": name,
             "chars": len(getattr(mod, name)),
-            "wired": False,
+            "wired": name in WIRED_CONSTANTS,
             "override": _describe(name),
         })
     for name in _builder_names():
@@ -426,4 +439,5 @@ def clear_plugin(plugin_id: str) -> list[str]:
     for symbol in removed:
         _OVERRIDES.pop(symbol, None)
     return sorted(removed)
+
 

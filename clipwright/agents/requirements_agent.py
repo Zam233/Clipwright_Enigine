@@ -117,7 +117,12 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
                 + content_context
             )
 
-        system_prompt = CREATIVE_BRIEF_SYSTEM
+        from clipwright.plugins.prompt_overrides import resolve_constant
+        system_prompt = resolve_constant("CREATIVE_BRIEF_SYSTEM")
+        # 默认模板里有 `{{BRIEF_TEMPLATE}}` 占位（字段表由模型生成，见模块顶部那次 replace）。
+        # 插件覆盖若已自带字段表则不含该占位，保持原样；默认值仍要在这里替换，否则字段表丢失。
+        if "{{BRIEF_TEMPLATE}}" in system_prompt:
+            system_prompt = system_prompt.replace("{{BRIEF_TEMPLATE}}", brief_prompt_template())
         from clipwright.plugins.prompt_registry import PluginPromptRegistry
         plugin_prompts = PluginPromptRegistry.get_for_agent("requirements")
         if plugin_prompts:
@@ -250,4 +255,5 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
                 lines.append(f"- **素材缺口**: {s['material_gap']}")
             lines.append("")
         return "\n".join(lines)
+
 

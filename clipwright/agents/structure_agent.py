@@ -322,7 +322,8 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                     f"\n8. 各场景 duration_sec 之和应接近 {target_sec:.0f}s，"
                     "按该段口播字数比例分配（长段落镜头更长）"
                 )
-        return SYSTEM_PROMPT_TPL.format(
+        from clipwright.plugins.prompt_overrides import resolve_constant
+        return resolve_constant("STRUCTURE_SYSTEM_PROMPT_TPL").format(
             tone=tone,
             academic_density=language.get("academic_density", 0.1),
             max_sentence_len=language.get("max_sentence_len", 30),
@@ -441,7 +442,8 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             system_prompt = compose_structure_prompt(
                 system_prompt, context.category_plugin_id or ""
             )
-            system_prompt += TOOL_PROMPT
+            from clipwright.plugins.prompt_overrides import resolve_constant
+            system_prompt += resolve_constant("STRUCTURE_TOOL_PROMPT")
 
             # A-16（plan-first）：先取规划；开了 plan_first 却没有规划 → 明确失败，
             # 不许悄悄退回"自由生成"（验收 V55）。
@@ -876,7 +878,8 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             parts.append("")
 
         # 动态 MG 动画 — **必须**先调用 describe_llm_mg 工具了解能力再使用
-        parts.append(MG_DYNAMIC_GUIDE)
+        from clipwright.plugins.prompt_overrides import resolve_constant
+        parts.append(resolve_constant("STRUCTURE_MG_DYNAMIC_GUIDE"))
         parts.append("")
 
         total = len(text_anims) + len(logic_anims) + len(trans_anims)
@@ -1464,4 +1467,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             {"title": "深化", "description": "多角度深入分析", "keywords": ["深度", "视角"], "duration_sec": 90, "voiceover_script": "", "visual_description": {}},
             {"title": "收束", "description": "总结与观点输出", "keywords": ["总结", "观点"], "duration_sec": 60, "voiceover_script": "", "visual_description": {}},
         ]
+
+
+
 

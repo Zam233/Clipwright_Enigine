@@ -612,7 +612,8 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         brief_text = "\n".join(brief_lines) or "（无简报内容）"
 
         clips_text = "\n".join(f"[{cid}] {text}" for cid, text in clip_copy)
-        system_prompt = QUALITY_SEMANTIC_QA_SYSTEM
+        from clipwright.plugins.prompt_overrides import resolve_constant
+        system_prompt = resolve_constant("QUALITY_SEMANTIC_QA_SYSTEM")
         # V1/V15：类型身份 + 质检阶段规范（该类型特有的检查点/反模式）
         from clipwright.services.type_prompts import compose as compose_type_prompt
 
@@ -1000,3 +1001,4 @@ async def _check_type_conformance(timeline, context) -> list[QualityIssue]:
             QualityIssue(severity="error", category="type_conformance", message=message)
         )
     return out
+

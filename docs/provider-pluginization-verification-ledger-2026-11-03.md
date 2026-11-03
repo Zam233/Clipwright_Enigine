@@ -238,7 +238,7 @@
 | B5-T1 符号清单（26 常量 + 8 builder + 签名） | 已完成 | `plugins/prompt_overrides.py::all_symbols()` 运行时从 `prompts.py` 自省生成；builder 带 `inspect.signature`。**不硬编码清单**，`prompts.py` 加符号会自动出现 |
 | B5-T2 常量/符号 replace + append 显式区分 | 已完成 | PROMPT 贡献支持 `meta.mode = append|replace`（缺省 append 保持存量 4 个贡献者行为）；replace 时 `meta.symbol` 指向符号，object 为字符串（常量）或可调用对象（builder） |
 | B5-T3 builder 硬契约（签名/占位符/双 dry-render/静态纯度） | 已完成 | 见下「四关落地」 |
-| B5-T4 8 个消费点接入解析层 | 已完成（builder 部分） | 8 处调用改为 `safe_builder("build_x")(...)`：`agent_loop` / `requirements_agent` / `audio_agent` / `structure_agent`（2 处）/ `material_agent`（3 处）。**无覆盖时 `safe_builder(n) is getattr(prompts, n)`** —— 行为与改造前完全等同（实测断言通过）。**26 个常量尚未接线**（消费方仍是直接 import），诊断接口对它们如实标 `wired=false` |
+| B5-T4 8 个消费点接入解析层 | 已完成（builder + 7 常量） | **builder 8 处**全部 `safe_builder("build_x")`（无覆盖时 `is` 原函数，行为等同）。**常量 7 处**改 `resolve_constant(...)`：`EDIT_PROFILE_SYSTEM`、`QUALITY_SEMANTIC_QA_SYSTEM`、`CREATIVE_BRIEF_SYSTEM`、`STRUCTURE_SYSTEM_PROMPT_TPL`、`STRUCTURE_TOOL_PROMPT`、`STRUCTURE_MG_DYNAMIC_GUIDE`、`PLAN_TRANSLATE_SYSTEM`。**其余 19 个常量未接线**（它们是 `prompts.py` 内部组合构件，被 builder 在导入期拼好），诊断接口对它们标 `wired=False`（`WIRED_CONSTANTS` 白名单驱动），不假装已生效 |
 | B5-T5 快照零差异 + 失败隔离 | 部分完成 | 默认等价性已断言；`safe_builder` 在插件实现运行期抛异常时回落默认并记录 `OVERRIDE_ERRORS`；完整快照比对需人工跑 |
 | B5-T7 来源标识与诊断接口 | 已完成 | `GET /api/plugin/prompt-symbols`（admin 门禁）返回 constants/builders/errors；每条含 `wired` 与 `override{plugin_id, kind, source}`；**不返回提示词正文**，只给长度 |
 | B5-T8 不建 demo 插件 | 已遵守 | 本轮没有产出任何 `plugins/prompt_*` 目录；负例用进程内对象完成 |
@@ -266,7 +266,8 @@
 
 ### 待办
 
-- **26 个常量接线**：消费方目前是 `from clipwright.prompts import X` 的直接导入，要改成
+- **19 个内部常量接线**：它们由 prompts.py 内部组合（如 MATERIAL_QUERY_BATCH_HEAD + … + TAIL），要在插件层覆盖需把组合从「导入期拼好」改成「运行时解析」，属独立一批改造；WIRED_CONSTANTS 已如实标注现状。
   `resolve_constant("X")` 才能让覆盖真正生效。数量多、分散在 7 个 agent + kernel/loop，
   需要一批机械改造（可按「先接被插件最可能覆盖的那几个」分批）。
 - B5-T5 的完整快照比对（`prompts.py` 26+8 默认输出零差异）由人工跑。
+
