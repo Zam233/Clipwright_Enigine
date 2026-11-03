@@ -4,6 +4,10 @@
 
 提取口径：`docs/provider-pluginization-and-prompt-override-prd-2026-11-02.md` 中含「待核实」字样的实质问题行，共 **71** 条（原文自称「70 处」，实际扫到 71；裁定 3/4 新增的 9 条已在 PRD §15.7 闭环，不在本表）。
 
+> ⚠️ **本表的状态列是首轮提取时的快照**（只有第一轮 4 条被标为已闭环）。**最新结论以文末
+> 「Batch 0-T12 逐条闭环」一节为准**——那里 71 条全部给了状态与证据（53 闭环 / 5 被取代 /
+> 4 误命中 / 9 仍开）。本表保留原始提取文本，便于核对「问题原文」没有被改写。
+
 | 编号 | PRD 节 | 问题（原文截断） | 状态 | 结论 / 证据 |
 |---|---|---|---|---|
 | H-001 | 1. 术语 | `needs_uploader`  ／  TTS provider 的能力标记，表示该 provider 需要上传器；实际消费者、端到端行为待核实  ／  | 已闭环 | 消费者 = providers/tts/__init__.py:60-64（cosyvoice needs_uploader=True）→ services/voice.py:479/:576 形参 → :692 实例化；全仓无其它调用方（PRD §15.1.7） |
@@ -339,7 +343,7 @@
 | H-025 | 已闭环 | 迁移期 fallback 已落地：`providers/builtin_registry.register_builtin_once()` 逐 id 让位 + 插件侧 `override_builtin` 接管 |
 | H-026 | 已闭环 | TTS 协议侧结构：`TtsProviderEntry{name,factory,default_model,needs_uploader}`（`providers/tts/__init__.py:28-32`）；结果侧 `VoiceResult{success,error,data}`（`services/voice.py`） |
 | H-027 | 已闭环 | 控件 schema：`PluginLayoutRenderer` 支持 13 类控件（input/string/select/checkbox/slider/button/image/spinner/alert/text/textarea/row/column/group）；**已知缺口**：`options` 是静态的，无动态数据源（PRD §15.9 #9） |
-| H-028 | 仍开 | TTS 协议错误分类（provider id / 阶段 / 可重试性）尚未实现；当前只有 `error` 字符串透传 |
+| H-028 | **已闭环** | TTS 协议错误分类已实现：`services/voice_errors.py::classify_error()` 输出 `{error_code, stage, provider_id, retryable, message}`；三处统一使用（`VoiceService.synthesize` 的 except、音色不存在、provider 解析失败）；`/api/voice/synthesize` 失败时 `detail` 返回该结构（不再是单一人话字符串）；错误文本剥掉 `sk-…` / `Bearer …` / `api_key=…`。实测：401→`auth_failed/auth/false`、429→`rate_limited/request/true`、超时→`provider_timeout`、余额→`quota_exceeded`、断连→`stream_broken`、上传器缺失→`uploader_missing`、音色不存在→`voice_not_found`、provider 解析失败→`provider_not_found` |
 | H-029 | 已被裁定取代 | 原「只比占位符集合」已被 PRD §15.2.2 加强为四关（签名形状 / 占位符 / 双 dry-render / 静态纯度） |
 | H-030 | 已闭环 | 来源元数据：`prompt_overrides` 每条覆盖带 `plugin_id/kind/source`，`GET /api/plugin/prompt-symbols` 可查 |
 | H-031 | 已被裁定取代 | 「所有字段均为方案草案」已被实现取代：§8 主要字段已落地（见 H-032…H-042） |
@@ -368,7 +372,7 @@
 | H-054 | 已闭环 | voice API/service/provider 调用链已在 PRD §15.1.1 精确定位（含 6 个 API 端点） |
 | H-055 | 已闭环 | TTS 功能层插件已建：`plugins/tts_feature/`（`dub_script` 技能接管） |
 | H-056 | 已闭环 | 控件 schema 与 renderer：宿主侧 `Slot` + `PluginLayoutRenderer` 已复用；插件侧 UI 受动态选项缺口限制（§15.9 #9） |
-| H-057 | 仍开 | TTS 错误传播/取消/降级验证：未实现 provider 阶段的错误分类（见 H-028），也未做端到端取消验证 |
+| H-057 | 部分闭环 | 错误传播侧已做（见 H-028：provider id / 阶段 / 可重试 / 可读码，API 一并返回）；**取消与降级仍待端到端验证**（需人跑） |
 | H-058 | 已闭环 | Embedding 迁移：`plugins/embedding_providers/`（Batch 4） |
 | H-059 | 已闭环 | Rerank 迁移：`plugins/rerank_providers/`（Batch 4） |
 | H-060 | 已闭环 | 图像/视频/音乐归属：`plugins/ai_image_gen|ai_video_gen|ai_music_gen` 三个独立插件（非 provider 贡献） |
@@ -385,5 +389,7 @@
 | H-071 | 非条目（提取误命中） | 这是 PRD §15.7「仍未核实」的条目，已在本节逐条处理 |
 
 **net 结论**：Batch 0 的实质性核实已完成；剩下的 9 条都卡在两类外部条件上——需要人跑测试（H-065、H-057）、或产品尚未定（H-044 STT tab、H-068 诊断 UI 落点、H-023 彻底拆 client、H-032/H-036 字段命名、H-028 TTS 错误分类、H-066 reasoning UI）。
+
+
 
 

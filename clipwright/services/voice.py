@@ -841,12 +841,39 @@ class VoiceService:
         """用已克隆音色合成语音。"""
         record = self._storage.get(voice_id)
         if not record:
-            return VoiceResult(success=False, error=f"Voice '{voice_id}' not found")
+            from clipwright.services.voice_errors import VoiceErrorCode, VoiceErrorStage
+
+            return VoiceResult(
+                success=False,
+                error=f"音色不存在：{voice_id}（请先在「语音克隆」页创建）",
+                data={"error": {
+                    "error_code": VoiceErrorCode.VOICE_NOT_FOUND,
+                    "stage": VoiceErrorStage.CONFIG,
+                    "provider_id": "",
+                    "retryable": False,
+                    "message": f"音色不存在：{voice_id}",
+                }},
+            )
 
         prov_name = provider or record.get("provider", settings.tts_default_provider)
         model = target_model or record.get("target_model", "")
         voice_api_id = record.get("voice_id", "")
-        prov = self._get_provider(prov_name)
+        try:
+            prov = self._get_provider(prov_name)
+        except Exception as e:  # noqa: BLE001 — provider 解析失败也是配置错误（PRD §6.3）
+            from clipwright.services.voice_errors import VoiceErrorCode, VoiceErrorStage
+
+            return VoiceResult(
+                success=False,
+                error=f"provider 不可用：{prov_name}（{str(e)[:80]}）",
+                data={"error": {
+                    "error_code": VoiceErrorCode.PROVIDER_NOT_FOUND,
+                    "stage": VoiceErrorStage.CONFIG,
+                    "provider_id": prov_name,
+                    "retryable": False,
+                    "message": f"provider 不可用：{prov_name}",
+                }},
+            )
 
         try:
             audio_bytes = await prov.synthesize(
@@ -856,8 +883,16 @@ class VoiceService:
                 instructions=instructions or None,
                 **params,
             )
-        except Exception as e:
-            return VoiceResult(success=False, error=str(e)[:500])
+        except Exception as e:  # noqa: BLE001 — provider 异常统一在调度层分类（PRD §6.3）
+            from clipwright.services.voice_errors import classify_error
+
+            info = classify_error(e, provider_id=prov_name)
+            logger.warning(
+                "TTS 合成失败 provider=%s code=%s stage=%s retryable=%s: %s",
+                prov_name, info["error_code"], info["stage"], info["retryable"], info["message"],
+            )
+            # 结构化错误随 VoiceResult 上抛：调用方（agent / API / 前端）不必再猜字符串
+            return VoiceResult(success=False, error=info["message"], data={"error": info})
 
         # 写文件（output_path 必须落在 TTS 输出目录内，防任意路径写入）
         if output_path:
@@ -989,3 +1024,4 @@ def get_voice_service() -> VoiceService:
             if _voice_service is None:
                 _voice_service = VoiceService()
     return _voice_service
+

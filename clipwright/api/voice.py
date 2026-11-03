@@ -142,8 +142,24 @@ async def synthesize_voice(req: SynthesizeRequest) -> dict[str, Any]:
         output_path=req.output_path,
     )
     if not result.success:
-        logger.warning("Voice synthesize failed: %s (voice_id=%s)", result.error, req.voice_id)
-        raise HTTPException(status_code=400, detail=result.error)
+        # PRD §6.3：失败也必须把结构化原因（error_code / stage / provider_id / retryable）
+        # 带给调用方，而不是只回一句人话——前端据此决定「去配凭据」还是「重试」。
+        info = (result.data or {}).get("error") or {}
+        logger.warning(
+            "Voice synthesize failed: code=%s stage=%s provider=%s retryable=%s (voice_id=%s)",
+            info.get("error_code", "unknown"), info.get("stage", "unknown"),
+            info.get("provider_id", ""), info.get("retryable", False), req.voice_id,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": result.error,
+                "error_code": info.get("error_code", "unknown"),
+                "stage": info.get("stage", "unknown"),
+                "provider_id": info.get("provider_id", ""),
+                "retryable": bool(info.get("retryable", False)),
+            },
+        )
     logger.info("Voice synthesized: voice_id=%s text=%d chars dur=%.1fs", req.voice_id, len(req.text), result.data.get("duration_sec", 0))
     return result.data
 
