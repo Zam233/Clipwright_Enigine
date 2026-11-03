@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from clipwright.api.voice import router
 from clipwright.services.voice import VoiceRecord, VoiceResult
+from clipwright.skill.registry import SkillRegistry
 
 # ── Test app ──
 
@@ -114,23 +115,61 @@ def test_synthesize_service_error(mock_get: MagicMock) -> None:
     assert resp.status_code == 400
 
 
-@patch("clipwright.api.voice.get_voice_service")
-def test_dub_200(mock_get: MagicMock) -> None:
-    mock_get.return_value = _mock_service()
-    resp = client.post("/api/voice/dub", json={"voice_id": "v1", "text": "甲。乙。"})
+def _patch_dub_skill(output: dict[str, Any] | None = None, *, status: str = "success",
+                     error: str = "", present: bool = True):
+    """把 `/api/voice/dub` 需要的「技能解析 + 执行」打桩。
+
+    B3-T8 之后这个端点是**薄转发**：按能力名 `dub` 解析到技能再执行，端点自己不碰
+    `VoiceService`。所以打桩点从 `svc.dub_script` 改成了 `skill_resolve` + `SkillRegistry.execute`。
+    """
+    from contextlib import ExitStack
+    from types import SimpleNamespace
+
+    from clipwright.schema.skill import SkillExecResult, SkillStatus
+
+    stack = ExitStack()
+    stack.enter_context(patch(
+        "clipwright.tool.capabilities.skill_resolve",
+        return_value=SimpleNamespace(name="dub_script") if present else None,
+    ))
+    if present:
+        result = SkillExecResult(
+            status=SkillStatus(status), skill_name="dub_script",
+            output=output or {}, error=error,
+        )
+        stack.enter_context(patch.object(
+            SkillRegistry, "execute", AsyncMock(return_value=result),
+        ))
+    return stack
+
+
+def test_dub_200() -> None:
+    output = {
+        "segments": [{"index": 0, "text": "甲"}, {"index": 1, "text": "乙"}],
+        "total": 2,
+        "total_duration_sec": 4.0,
+    }
+    with _patch_dub_skill(output):
+        resp = client.post("/api/voice/dub", json={"voice_id": "v1", "text": "甲。乙。"})
     assert resp.status_code == 200
     data = resp.json()
     assert data["total"] == 2
     assert len(data["segments"]) == 2
 
 
-@patch("clipwright.api.voice.get_voice_service")
-def test_dub_service_error(mock_get: MagicMock) -> None:
-    svc = _mock_service()
-    svc.dub_script = AsyncMock(return_value=VoiceResult(success=False, error="empty"))
-    mock_get.return_value = svc
-    resp = client.post("/api/voice/dub", json={"voice_id": "v1", "text": ""})
+def test_dub_skill_error_returns_400() -> None:
+    with _patch_dub_skill(status="error", error="empty"):
+        resp = client.post("/api/voice/dub", json={"voice_id": "v1", "text": ""})
     assert resp.status_code == 400
+    assert resp.json()["detail"] == "empty"
+
+
+def test_dub_without_skill_returns_503() -> None:
+    """能力缺失是一等状态：没有插件（或插件禁用）时解析不到技能 → 503 + 可读原因。"""
+    with _patch_dub_skill(present=False):
+        resp = client.post("/api/voice/dub", json={"voice_id": "v1", "text": "甲。"})
+    assert resp.status_code == 503
+    assert "配音能力" in resp.json()["detail"]
 
 
 def test_route_registered() -> None:

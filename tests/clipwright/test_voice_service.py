@@ -205,7 +205,11 @@ class TestVoiceServiceSynthesize:
         svc = _make_service(tmp_path, FakeProvider())
         result = await svc.synthesize(voice_id="nonexistent", text="test")
         assert result.success is False
-        assert "not found" in result.error.lower()
+        # H-028（2026-11-02）：错误不再是一句散装英文，而是可读中文 + 结构化原因
+        # （error_code / stage / retryable 进 data["error"]，前端据此给动作提示）。
+        assert "音色不存在" in result.error
+        code = (result.data.get("error") or {}).get("error_code")
+        assert code == "voice_not_found", result.data
 
     @pytest.mark.asyncio
     async def test_synthesize_custom_output_path(self, tmp_path: Path):

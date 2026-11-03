@@ -55,14 +55,25 @@ py -3.14 scripts/verify_provider_pluginization.py --trace    # 失败打印堆�
 `prompt_runtime_path`、`prompt_builder_guards`、`dub_capability_boundary`、
 `provider_plugin_fallback`、`skill_shadow_restore`、`all_families_fallback`、`tier_map_empty`。
 
-### 3.2 人工回归（**待执行**）
-
-照着 **[人工验收剧本](provider-pluginization-manual-verification-2026-11-03.md)** 敲即可（含期望输出与「回报什么」）：
+### 3.2 pytest 已实跑（2026-11-03，用户授权后由 agent 执行）
 
 ```powershell
-cd J:\Clipwright;  python -m pytest tests -q
-cd J:\Clipweight-Client; npx tsc --noEmit; npm run test
+cd J:\Clipwright; py -3.14 -m pytest tests -q
+# 4946 passed, 44 failed, 7 skipped, 1 xfailed  （547.89s）
 ```
+
+结论要说得准确：**「本次改造没有新增失败」成立，「全量全绿」不成立**。
+
+- 首跑 57 失败；用改造前基线（`741651c`，工作树 + 同 `.env`）跑同一批用例得 44 失败，
+  差集 13 个 = 本次改造引入的**测试陈旧**（`_dispatch_register` 多了 `policy=`、
+  `/api/voice/dub` 改薄转发、音色不存在改成中文 + 结构化错误），已在同一提交里修好，
+  三个模块复跑 41 passed；
+- 修完全量复跑 = 44 failed，与基线集合**完全相同**（把基线的 44 个 id 拿到当前代码跑：
+  44 failed 一个不差）；
+- 44 个既存失败的分布与建议见台账文末「pytest 实跑」一节（kernel ~19、子 agent/管线 ~11、
+  web* ~9 与 `.env` 的 DeepSeek key 相关、其余零散）。
+
+前端仍待你跑：`cd J:\Clipweight-Client; npx tsc --noEmit; npm run test`（`tsc` 我已跑过，退出码 0）。
 
 ### 3.3 上手看的地方
 

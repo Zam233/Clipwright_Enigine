@@ -380,7 +380,7 @@
 | H-062 | 已闭环 | builder 占位符校验已实现（且加强了双 dry-render 与静态纯度） |
 | H-063 | 已闭环 | prompt 组装接入：8 个 builder + 24 个常量已走解析层；`builtin_contributions.py:163,195` 的收集逻辑未改（append 路径保持） |
 | H-064 | 已闭环 | 来源诊断：`GET /api/plugin/prompt-symbols`（UI 落点仍未定，见 H-068） |
-| H-065 | 仍开 | 运行时 prompt 快照回归：我做了「26 常量 + 8 builder 输出的 sha256 快照比对（差异 0）」，但**真实 LLM 路径的快照比对需要人跑测试** |
+| H-065 | **已闭环（2026-11-03 实跑 pytest）** | 运行时 prompt 侧三重证据：①26 常量 + 8 builder 值与搬运前 sha256 全等（差异 0）；②自检第 13 项 `prompt_runtime_path` 证明运行时装配点读解析层；③**用户授权后我从第 30 轮起实跑 `py -3.14 -m pytest tests -q`**：4946 passed / 44 failed / 7 skipped / 1 xfailed，44 个失败全部是**与提示词无关的既存失败**（在同环境的改造前基线 `741651c` 上一个不差地同样失败，见下方「pytest 实跑」一节），提示词相关用例全绿 |
 | H-066 | **已闭环** | 能力协商有了诊断入口：`GET /api/providers/capabilities?kind=&provider=&model=`（admin 门禁）按**实现真实返回** `capabilities()`（含 `reasoning_effort` / `reasoning_content` / `reasoning_streaming` / `generation_params` 等），解析不到时返回 `capabilities=null + error`（不抛 404，诊断要能显示「没装」）。前端 `ProvidersPage` 的「源设置」里新增能力徽标行（流式 / 工具调用 / 视觉 / JSON 模式 / 思考强度 / 思考内容）+ 提供方插件 id。实测：openai/anthropic 都报 `reasoning_effort=True, reasoning_content=True`；tts provider 无这些字段；未知 provider 返回「未安装或不可用」 |
 | H-067 | 已被裁定取代 | W1…W5 粗估已被 §15.4 任务级口径取代 |
 | H-068 | **已闭环** | 诊断 UI 落点定为**插件管理页**（`PluginsPage` → `PluginsPanel`）新增「提示词符号」按钮 + 模态框：显示 26 常量 / 8 builder、已接线数、被覆盖数、逐符号状态（绿点=已接线、灰点=未接线、标签=覆盖它的 plugin id）、以及最近被拒绝的覆盖原因。数据源 `GET /api/plugin/prompt-symbols`（admin 门禁，不返回提示词正文） |
@@ -389,7 +389,7 @@
 | H-071 | 非条目（提取误命中） | 这是 PRD §15.7「仍未核实」的条目，已在本节逐条处理 |
 | H-072 | **仍开（记录为已知缺口，非缺陷）** | 「提示词只有一处」还有**第二处模块级常量**没搬：`services/requirements_service.py:396` 的 `CREATIVE_BRIEF_SYSTEM`（:2254 作为 `system_prompt` 用，属「直接出草案」路径）。它与 `prompts.py` 的同名符号是**两份不同提示词**（前者一次给出完整草案、字段表是旧 13 项；后者多轮对话 + 由 `CreativeBrief` 模型生成字段表），**不是漂移、也不该合并**。为什么仍开：它是「模块级提示词常量还在 `prompts.py` 之外」的唯一一处。迁移代价不小——它会成为第 27 个符号，需同步 `WIRED_CONSTANTS`、自检断言（26→27）、PRD §15.2.1 与本台账/汇总/api_reference/AGENTS.md 的「26 常量」口径。当前**没有任何插件需要覆盖它**，故记录不迁移；将来要迁就走同一套四关（签名/占位符/双 dry-render/静态纯度） |
 
-**net 结论**：Batch 0 的实质性核实已完成。**仍开 2 条**，全部卡在「需要人跑测试」：H-065（真实 LLM 路径 prompt 快照）、H-057（TTS 取消/降级端到端）。另 H-044（前端是否新增 STT Tab）是**纯产品决策**，与本 PRD 的实施无关，保留待产品定；H-072（`requirements_service` 的第二处模块级提示词）是**已知缺口、有意不迁**（无覆盖需求，迁移会牵动「26 常量」全口径）。其余（H-023 拆 client、H-028 TTS 错误分类、H-032/H-036 字段、H-066 reasoning UI、H-068 诊断 UI）均已闭环或给出技术判定。
+**net 结论**：Batch 0 的实质性核实已完成。**仍开 1 条**（H-057：TTS 取消的真机端到端，错误结构侧已由脚本覆盖）；H-065 已闭环（pytest 于 2026-11-03 实跑，提示词相关全绿、44 个既存失败与本改造无关，见文末「pytest 实跑」）。另 H-044（前端是否新增 STT Tab）是**纯产品决策**；H-072（`requirements_service` 的第二处模块级提示词）是**已知缺口、有意不迁**（无覆盖需求，迁移会牵动「26 常量」全口径）。其余（H-023 拆 client、H-028 TTS 错误分类、H-032/H-036 字段、H-066 reasoning UI、H-068 诊断 UI）均已闭环或给出技术判定。
 
 > **H-065 的进展（2026-11-02 追补）**：静态侧（26 常量 + 8 builder 值与搬运前 sha256 全等）已完成；本轮又把「运行时装配点」固化进自检脚本第 13 项 `prompt_runtime_path`——`agent_loop._system_prompt()` 三态（plan_only / 正常 / 收口）必须等于 `prompts.py` 的符号，注册覆盖后必须立即改变，导入期快照不得被改写。**剩下真正需要人的只有「既有 pytest 用例全绿」这一件事**（脚本里没有任何测试引用提示词符号，所以那部分只能靠人跑全套）。
 
@@ -460,6 +460,55 @@
 修完自检：四个二级标题各 1 次、`# Clipwright` 只出现 1 次、非空行 230。
 教训与不变量 #13 同源：**改文档也要 diff 自检**，`git diff --stat` 出现「删 94 增 19」
 这种手笔就该回头看是不是误删/误插。
+
+## pytest 实跑（2026-11-03，用户授权后由 agent 执行）
+
+用户在第 30 轮明确授权「由我来跑 pytest」，于是把项目约定里那一步补上。命令与结果：
+
+```powershell
+cd J:\Clipwright; py -3.14 -m pytest tests -q
+# 4946 passed, 44 failed, 7 skipped, 1 xfailed, 10832 warnings in 547.89s
+```
+
+### 1. 首跑 57 个失败 → 其中 13 个是**本次改造引入的测试陈旧**，已修
+
+首跑是 `57 failed, 4932 passed`。为了不把"环境差异"误判成"回归"，用
+`git worktree add --detach J:\Clipwright-baseline 'f3de7bd^'`（本次改造起点前一个提交
+`741651c`）建基线工作树，**把主仓 `.env` 复制了进去**（否则 LLM/搜索相关用例会因为缺
+`CLIPWRIGHT_LLM_*` 而"假通过"，我第一遍就是这么被骗的：无 `.env` 时基线只有 38 失败），
+再跑同一批用例：`44 failed, 13 passed`。差集即真回归 = **13 个**，全部集中在三处：
+
+| 失败 | 根因 | 处理 |
+|---|---|---|
+| `tests/clipwright/test_plugin_contribution.py`（11 个） | 测试里 `_isolate_dispatch` 把 `_dispatch_register` 换成 `lambda owner, item: None`，而 B1 起该函数带 `policy=`（声明即授权 → 覆盖策略的通道）→ `TypeError` | 假实现补 `policy=None`，并在 docstring 说明这是契约演进而非产品回归 |
+| `tests/clipwright/test_voice_api.py::test_dub_200` | 测的是 B3-T8 之前的契约（打桩 `svc.dub_script`）；端点已改薄转发 | 改成打桩 `skill_resolve` + `SkillRegistry.execute`；顺带把 `test_dub_service_error` 也改造确定化，并**新增 503 用例**（无插件时能力缺失 → 503 + 可读原因） |
+| `tests/clipwright/test_voice_service.py::test_synthesize_unknown_voice` | 断言英文 `not found`；H-028 改成中文可读文案 + 结构化原因 | 改为断言「音色不存在」且 `data["error"]["error_code"] == "voice_not_found"` |
+
+修完复跑三个模块：**41 passed**；全量复跑：**44 failed, 4946 passed**。
+
+### 2. 剩下 44 个是**既存失败**，与本改造无关（已用基线证明）
+
+把基线工作树的 44 个失败 id 拿到当前代码上重跑：**44 failed（一个不差地同样失败）**，
+而当前全量也是 44 个 → 两边失败集合**相等**，即本次改造引入的新失败为 **0**。
+
+它们的分布（供后续单独安排，不在本 PRD 范围）：
+
+| 区域 | 数量 | 备注 |
+|---|---|---|
+| `test_agent_kernel*` / `test_agent_c5_context` / `test_budget_guard` / `test_exec_gateway` | ~19 | 主 agent kernel 侧（更早一次改造的遗留） |
+| `test_pipeline_capability` / `test_stage_subagent` / `test_supervisor_retry_wiring` / `test_subagent_*` | ~11 | 子 agent / 管线能力侧 |
+| `test_web_*` / `test_animation_web_*` | ~9 | **环境相关**：`.env` 里 `CLIPWRIGHT_LLM_BASE_URL=https://api.deepseek.com` + 有 `LLM_API_KEY`，使 `provider_key("deepseek")` 回落到平台 key → `configured_providers()` 多出 `deepseek`，而用例断言「只有 local」 |
+| `test_golden_*` / `test_kernel_replay` / `test_task_api` / `test_event_contract` / `test_capability_matrix` / 其余 | ~5 | 各自独立，需逐个看栈 |
+
+> 报告口径：**「pytest 全绿」不成立**（44 个既存失败）；**「本次改造没有新增失败」成立**（差集为空，有基线工作树可比）。
+
+### 3. 对 B3-T6 前置条件的影响
+
+删除清单 §0 原本写的是「`pytest` 通过」。现在事实是：**全量不可能立刻绿**（44 个既存失败与
+本改造无关，修它们属于另一件事）。所以删除前置需要你裁定取哪一种口径：
+
+- **A（推荐）**：以「13 个相关模块全绿 + 自检 13/13 + 删除演练已验证」为准，执行删除；
+- **B**：先把 44 个既存失败清掉再删（这不是本 PRD 的范围，工作量另算）。
 
 
 
