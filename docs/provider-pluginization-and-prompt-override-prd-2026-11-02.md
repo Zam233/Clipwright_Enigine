@@ -183,6 +183,7 @@ class ProviderManifest(Protocol):
 
 engine 保留注册表查询、统一协议调度、角色绑定、回退、请求生命周期、超时/取消与结果归一化；`services/llm.py` 不再构造或持有特定协议客户端。`_resolve_llm_provider` 作为注册表解析入口保留，具体函数边界与调用方待核实。
 
+> **已核实（2026-11-02）**：`services/llm.py` **已经不再构造客户端**——`_construct_client()` 只做「解析 provider → 过滤传输参数 → 调 `impl.build_client()` → 共享缓存」，全仓没有 `OpenAIChat(` / `AnthropicMessages(` 的调用点；真正的构造在 `providers/llm/*_provider.py`，而这些 provider 现在由 `plugins/llm_openai_compatible` / `plugins/llm_anthropic` 注册。**唯一保留的例外**：`services/llm.py:19` 仍 import isobase 两个类，provider 里用 `getattr(_llm_mod, "OpenAIChat")` 取值——这是既有测试的打桩接缝（`test_llm_provider_protocol.py:38`），搬走属独立重构，不在本 PRD 范围。也就是说本节「engine 不再构造或持有特定协议客户端」的目标**已达成**（除了这处接缝）。
 `isobase` 处理策略：W1 检查依赖版本、可注入性及现有测试；W2 优先由插件继续使用 `isobase`，engine 抽象只依赖 `LLMProvider` 协议。若 `isobase` 对插件构建或依赖隔离不兼容，则插件内增加适配层并评估依赖迁移；不得在未验证前承诺删除或升级。兼容性与版本锁定待核实。
 
 ### 5.3 内置 fallback 与迁移
@@ -836,6 +837,7 @@ API 增量原则：优先扩展 `/api/providers` 现有 list/create/available/ro
 
 > **宿主与插件均已落地（2026-11-02）**：`slots.ts` 名单 14 → 15；`HomePage` 渲染 `<Slot name="create.dub" optionSources={voices} onValuesChange={setPluginDub} />`；`plugins/tts_feature` 已贡献 `ui_slot: create_dub_entry`（音色 select 用 `optionsFrom: voices`、自动配音 checkbox）。内置配音控件在**有贡献时整块让位**；插件值回填 `voicePick`/`autoDub`（引擎侧字段不变），`stepDone.dub` 有插件值时以插件为准。**剩余**：01 上传配音入口仍在内置块里（插件当前只覆盖音色 + 自动配音），要彻底删除内置块需再给插件补上传控件。
 > slot 契约本身的字段（`slot` / `id` / `title` / `order` / `icon` / `visibleWhen` / `layout`）**沿用现有 `SlotContribution` 定义，不新增字段**；`layout.widgets` 复用现有 plugin UI 控件集（`string` / `select` / `checkbox` / `slider`），未知控件类型必须拒绝并给可读错误（不变量 #13）。
+
 
 
 

@@ -338,7 +338,7 @@
 | H-020 | 已闭环 | 插件治理能力已存在：manifest 签名、权限、依赖、启停持久化、reload、配置迁移、secret 加密、审计（`clipwright/plugins/` 全量实现） |
 | H-021 | 已闭环 | `ContributionDecl.config_schema`（B1-T2）字段规范：`type/label/default/required/options/secret/placeholder`；前端 `ProvidersPage` 按它渲染 |
 | H-022 | 已闭环 | `plugins/llm_openai_compatible/` 已创建（Batch 2），manifest 里就是 base_url + api_key(secret) + capabilities |
-| H-023 | 仍开 | engine 仍构造客户端：`services/llm.py` 保留 `OpenAIChat` 等构造路径（插件只是接管注册）。彻底拆出属 W2 收尾项，未做 |
+| H-023 | **已闭环（契约已满足，含一处刻意的例外）** | 核实结论：`services/llm.py` **不再构造客户端**——`_construct_client()` 只做「解析 provider → 过滤传输参数 → 调 `impl.build_client()` → 缓存」，全仓搜不到 `OpenAIChat(` / `AnthropicMessages(` 的调用点，真正的构造发生在 `providers/llm/{openai,anthropic}_provider.py`（现由插件注册）。**刻意保留的例外**：`services/llm.py:19` 仍 import isobase 的两个类，provider 里用 `getattr(_llm_mod, "OpenAIChat")` 取值——这是**测试打桩接缝**（`tests/clipwright/test_llm_provider_protocol.py:38` monkeypatch 它）。把 import 搬进插件会打断既有测试，属独立重构，不在本 PRD 范围 |
 | H-024 | 已闭环 | isobase 版本：`pyproject.toml:26` 是 `git+https://github.com/landspark/IsoBase.git`，**无 ref/无版本锁**（结论即「当前无锁」） |
 | H-025 | 已闭环 | 迁移期 fallback 已落地：`providers/builtin_registry.register_builtin_once()` 逐 id 让位 + 插件侧 `override_builtin` 接管 |
 | H-026 | 已闭环 | TTS 协议侧结构：`TtsProviderEntry{name,factory,default_model,needs_uploader}`（`providers/tts/__init__.py:28-32`）；结果侧 `VoiceResult{success,error,data}`（`services/voice.py`） |
@@ -388,7 +388,9 @@
 | H-070 | 非条目（提取误命中） | 这是 PRD §15.2.6 的标题行，不是问题 |
 | H-071 | 非条目（提取误命中） | 这是 PRD §15.7「仍未核实」的条目，已在本节逐条处理 |
 
-**net 结论**：Batch 0 的实质性核实已完成；剩下的 9 条都卡在两类外部条件上——需要人跑测试（H-065、H-057）、或产品尚未定（H-044 STT tab、H-068 诊断 UI 落点、H-023 彻底拆 client、H-032/H-036 字段命名、H-028 TTS 错误分类、H-066 reasoning UI）。
+**net 结论**：Batch 0 的实质性核实已完成。**仍开 2 条**，全部卡在「需要人跑测试」：H-065（真实 LLM 路径 prompt 快照）、H-057（TTS 取消/降级端到端）。另 H-044（前端是否新增 STT Tab）是**纯产品决策**，与本 PRD 的实施无关，保留待产品定。其余（H-023 拆 client、H-028 TTS 错误分类、H-032/H-036 字段、H-066 reasoning UI、H-068 诊断 UI）均已闭环或给出技术判定。
+
+
 
 
 
