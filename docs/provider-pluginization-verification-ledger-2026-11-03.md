@@ -169,3 +169,40 @@
 
 `plugins/example_full/plugin.yaml` 的 `entry_point` 是 `_example_full.main`，而目录名是 `example_full`
 → 启动时同样报「模块加载失败」。属于既有问题，本轮不动它（避免与 PRD 范围混在一起）。
+
+## Batch 3 进度（TTS 双插件）
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| B3-T1 协议插件接入边界 | 已完成 | 边界：插件负责 `tts_provider` 的注册与声明（鉴权/请求/音频解析/`needs_uploader`），**不**拥有配音工作流；协议类暂留 engine（与 Batch 2 同策略，W3 收尾再搬） |
+| B3-T2 CosyVoice 协议插件 | 已完成 | `plugins/tts_cosyvoice/`：声明 `tts_provider:cosyvoice`（`config_schema`: api_key(secret)/workspace_id/default_model，`capabilities`: stream/needs_uploader）。实测归属 `cosyvoice → tts_cosyvoice`，`qwen-tts`/`minimax` 仍内置（逐 id 让位正确） |
+| B3-T4 功能层插件 + 编排下沉 | 已完成 | `plugins/tts_feature/`：`dub.py` 里的 `DubScriptOrchestrator` 接管切句、逐段合成、确定性 seed、句级/词级时间轴；engine 只保留 `VoiceService.synthesize()` 协议调度基座 |
+| B3-T3 名称解析与指纹缓存 | 未改动（守住） | `_get_provider` 的身份仍来自 `contribution.id`，缓存键仍含凭据指纹；本轮没有碰它 |
+| B3-T6 摘 engine 编排与内置注册 | **待人工验证后执行** | 按 PRD §15.1.6 第 2 条：插件完成并通过 §15.3 验收后立即删除。**删除前必须由人跑一次** `python -m pytest tests -q`，否则内置被摘掉而插件在某环境没加载时会直接失去配音能力 |
+| B3-T5 `create.dub` slot 迁 03 步骤 | 待办 | 前端仓：`slots.ts` 名单 14 → 15、HomePage 挂 host、删旧硬编码、偏好迁移、空态 |
+| B3-T7 能力发现与缺失一等状态 | 部分完成 | `dub` 能力名已由插件技能提供（`skill_resolve('dub') → DubScriptOrchestrator`）；`is_available()` 返回 False 时的降级话术仍未接进 AudioAgent 的 notes |
+| B3-T8 通用能力网关 | 已在 Batch 1 完成 | `POST /api/capability/{name}`；TTS 侧尚未把 `/api/voice/*` 改成薄转发（属 T8 收尾） |
+
+### 为接管内置技能新增的显式出口（契约变更，需知悉）
+
+`SkillRegistry` 原本是「内置优先、插件不得覆盖」（P1-13）。裁定 3 要求 `dub_script`
+从 engine 搬进插件，而它必然先撞上这条规则。做法是给**已声明 `override_builtin` 的插件**
+开一个显式出口，而不是削弱默认规则：
+
+1. `SkillRegistry.register(..., allow_override=False)`：仅当为 True 时才允许覆盖内置，
+   覆盖前的实例进 `_shadowed`，插件禁用时自动恢复；
+2. 冲突策略从 manifest 一路传到注册表：`plugins/base.py` 算 `policy` →
+   `ContributionRegistry.register(..., policy)` → `_dispatch_register(..., policy=policy)`
+   → `contribution_dispatch.register(..., policy=)` → SKILL 分支
+   `allow_override=(policy is ConflictPolicy.OVERRIDE)`；
+3. 未声明 `override_builtin` 的插件仍然被拒，日志已带提示「如需接管请声明 override_builtin」。
+
+### 本轮踩的两个坑
+
+1. **`policy` 没传到底**：`_dispatch_register` 里调 `_dispatch.register(owner, item)` 时漏了
+   `policy=policy`，于是插件虽然声明了 `override_builtin`，技能注册仍被当默认策略拒绝。
+   表现是「日志说内置优先」，与 manifest 声明相反——差点去改 SkillRegistry。
+2. **`is_available` 必须是同步方法**：写成 `async def` 会把 coroutine 塞进
+   `SkillInfo.available: bool`，启动时 `ValidationError` 直接崩（`SkillRegistry.list()` 在
+   lifespan 里就被调用）。
+

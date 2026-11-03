@@ -1,0 +1,13 @@
+id: tts_feature
+name: TTS 功能支持插件
+version: 1.0.0
+kind: capability
+api_version: "2"
+description: 配音工作流（切句、逐段合成、句级/词级时间轴）与「开始创作」页配音入口；不含任何 CosyVoice 协议细节
+entry_point: "tts_feature.main"
+permissions: []
+# 接管内置 dub_script 技能（内置先注册；SkillRegistry 默认拒绝插件覆盖内置，需显式声明）
+override_builtin: true
+contributions:
+  - kind: skill
+    id: dub_script

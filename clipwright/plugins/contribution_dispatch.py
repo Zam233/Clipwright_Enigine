@@ -52,7 +52,7 @@ _PROVIDER_KINDS = {
 }
 
 
-def register(owner: str, item: Contribution) -> Optional[str]:
+def register(owner: str, item: Contribution, *, policy=None) -> Optional[str]:
     """把单个贡献转调到目标注册表。返回 None=成功，字符串=失败原因。
 
     B/D 新增的 kind（llm_provider / ui_slot 等）**没有后端注册表**——门面
@@ -85,7 +85,9 @@ def register(owner: str, item: Contribution) -> Optional[str]:
 
         elif item.kind is ContributionKind.SKILL:
             from clipwright.skill.registry import SkillRegistry
-            SkillRegistry.register(item.object, plugin_id=owner)
+            from clipwright.plugins.contribution import ConflictPolicy as _CP
+            SkillRegistry.register(item.object, plugin_id=owner,
+                                   allow_override=(policy is _CP.OVERRIDE))
             applied = SkillRegistry.get(item.id)
             if applied is None or str(getattr(applied, "_plugin_id", "")) != owner:
                 return f"skill:{item.id} 注册未被注册表接受（疑似与内置冲突）"
@@ -211,3 +213,4 @@ def unregister(owner: str, keys: list[str]) -> list[str]:
         except Exception as e:  # noqa: BLE001
             logger.warning("贡献回收失败 %s (owner=%s): %s", kind_value, owner, e)
     return recycled
+
