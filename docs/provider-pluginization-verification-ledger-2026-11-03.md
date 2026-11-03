@@ -407,8 +407,9 @@
 | 9 | `tier_map_empty` | 不变量 #12：`capability_matrix.TIER_MAP` 必须为空 |
 | 10 | `provider_plugin_fallback` | 卸载插件后内置**补位**（`unregister_plugin` → `_resolve_llm_provider` 仍能解析，归属回到 `__builtin__`） |
 | 11 | `skill_shadow_restore` | 插件技能被回收后内置同名技能**恢复**，归属回到内置 |
+| 12 | `all_families_fallback` | **五类** provider 逐个：卸载插件 → id 消失 → `ensure_*` 后内置补位（归属回 `__builtin__`）→ 恢复插件归属；只测 llm 会漏掉其它家族漏补位的情况 |
 
-实测：**11/11 通过**（`py -3.14 scripts/verify_provider_pluginization.py`），逐项单独跑也无顺序依赖。**它补充 pytest，不替代**。
+实测：**12/12 通过**（`py -3.14 scripts/verify_provider_pluginization.py`），逐项单独跑也无顺序依赖。**它补充 pytest，不替代**。
 
 ### 写这个脚本时发现并修掉的真 bug
 
@@ -419,5 +420,6 @@
 
 修法：只在实现来源发生变化（`old_src != new_src`）时压栈；同 owner 重注册不动影子。
 这正是「写脚本顺带查出产品缺陷」的例子——不写这个检查，reload 场景的退化不会被任何人发现。
+
 
 
