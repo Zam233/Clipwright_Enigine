@@ -245,9 +245,21 @@ def check_builder_guards() -> None:
     O.clear_plugin("_verify")
 
 
+def _builtin_dub_skill() -> Any | None:
+    """内置 `dub_script` 技能类；B3-T6 删掉 `skill/dub.py` 之后返回 None。"""
+    try:
+        from clipwright.skill.dub import DubScriptSkill
+    except Exception:  # noqa: BLE001 — 删除后 ImportError 是预期状态，不是缺陷
+        return None
+    return DubScriptSkill
+
+
 @check("dub_capability_boundary")
 def check_dub_boundary() -> None:
     """配音能力：由插件提供；两边都摘掉后必须 503（薄转发不得兜底）。
+
+    **B3-T6 兼容**：删内置之前，回收插件技能会从影子栈里**恢复内置**，得再摘一次才真空；
+    删除之后一次到底。两种状态都必须过，这个脚本才能跨"删除"这一步继续当门禁用。
 
     收尾会把内置实现重新登记回去——**检查之间共享进程状态**，不恢复会让后面的检查
     看到「dub_script 不存在」而误报（本轮踩过）。
@@ -257,22 +269,24 @@ def check_dub_boundary() -> None:
     from clipwright.main import app
     from clipwright.skill.registry import SkillRegistry
 
+    builtin_cls = _builtin_dub_skill()
+
     with TestClient(app, raise_server_exceptions=False) as c:
         owner = SkillRegistry.owner("dub_script")
         assert owner == "tts_feature", f"dub_script 归属应为 tts_feature，实际 {owner!r}"
 
-        # 摘两次：第一次会恢复被 shadow 的内置实现，第二次才真的没有
         SkillRegistry.unregister("dub_script")
-        SkillRegistry.unregister("dub_script")
-        assert SkillRegistry.get("dub_script") is None
+        if builtin_cls is not None:
+            assert SkillRegistry.get("dub_script") is not None, "回收插件技能后内置应恢复（B3-T6 之前）"
+            SkillRegistry.unregister("dub_script")
+        assert SkillRegistry.get("dub_script") is None, "两次回收后不应还有 dub_script"
         r = c.post("/api/voice/dub", json={"voice_id": "x", "text": "y"})
         assert r.status_code == 503, f"无配音能力时应 503，实际 {r.status_code}"
 
-    # 收尾：把内置实现登记回来，避免污染后续检查
-    from clipwright.skill.dub import DubScriptSkill
-
-    SkillRegistry.register(DubScriptSkill())
-    assert SkillRegistry.get("dub_script") is not None, "收尾恢复内置失败"
+    # 收尾：内置还在就登记回来（删除后没有可恢复的实现，属预期）
+    if builtin_cls is not None:
+        SkillRegistry.register(builtin_cls())
+        assert SkillRegistry.get("dub_script") is not None, "收尾恢复内置失败"
 
 
 @check("provider_plugin_fallback")
@@ -304,26 +318,38 @@ def check_provider_fallback() -> None:
 def check_skill_shadow_restore() -> None:
     """插件技能被回收后，内置同名技能必须恢复（`_shadowed`），不能直接消失。
 
-    **自带前置**：检查之间共享进程状态，这里自己把插件技能注册进去再回收，
+    **用 `analyze_video_structure` 而不是 `dub_script`**：后者正是 B3-T6 要删掉内置的那个，
+    拿它当铁证会让脚本在删除后必然变红（而删除是**预期行为**）。影子栈机制与具体技能无关，
+    换成一个确定会长期存在的内置技能，这条检查就能跨"删除"继续有效。
+
+    **自带前置**：检查之间共享进程状态，这里自己把"插件覆盖"造出来再回收，
     不依赖别的检查留下的状态（否则顺序一变就误报）。
     """
     from fastapi.testclient import TestClient
 
     from clipwright.main import app
+    from clipwright.skill.builtin import AnalyzeVideoStructureSkill
     from clipwright.skill.registry import SkillRegistry
 
-    from plugins.tts_feature.dub import DubScriptOrchestrator
+    name = AnalyzeVideoStructureSkill.name
 
     # 必须在 app 启动后做：插件与内置技能都在 lifespan 里注册（单独跑本检查时尤其重要）
     with TestClient(app, raise_server_exceptions=False):
-        SkillRegistry.register(DubScriptOrchestrator(), plugin_id="tts_feature", allow_override=True)
-        assert SkillRegistry.owner("dub_script") == "tts_feature", "前置失败：插件技能没注册进去"
+        assert SkillRegistry.get(name) is not None, f"前置：内置 {name} 应已注册"
+        assert SkillRegistry.owner(name) == "", (
+            f"前置：{name} 归属应为内置，实际 {SkillRegistry.owner(name)!r}"
+        )
 
-        SkillRegistry.unregister("dub_script")
-        restored = SkillRegistry.get("dub_script")
+        SkillRegistry.register(AnalyzeVideoStructureSkill(), plugin_id="verify_shadow", allow_override=True)
+        assert SkillRegistry.owner(name) == "verify_shadow", "前置失败：覆盖没生效"
+
+        SkillRegistry.unregister(name)
+        restored = SkillRegistry.get(name)
         assert restored is not None, "回收插件技能后内置没有恢复"
-        assert type(restored).__name__ == "DubScriptSkill", f"恢复的不是内置实现：{type(restored).__name__}"
-        assert SkillRegistry.owner("dub_script") == "", "恢复后归属应为内置（空串）"
+        assert type(restored).__name__ == "AnalyzeVideoStructureSkill", (
+            f"恢复的不是内置实现：{type(restored).__name__}"
+        )
+        assert SkillRegistry.owner(name) == "", "恢复后归属应为内置（空串）"
 
 def _reregister_plugin(plugin_id: str, module_path: str, class_name: str) -> None:
     """按 loader 的方式把某个插件的贡献重新注册回门面（用于检查后恢复状态）。"""
@@ -346,6 +372,12 @@ def check_all_families_fallback() -> None:
 
     只测 llm 是不够的：embedding / rerank / stt / tts 各自有独立的 `ensure_*`，
     某个家族漏了「懒补位」就会表现为「禁用插件 = 永久失去该类 provider」。
+
+    **B3-T6 例外（TTS 退场）**：删掉 `ensure_tts_providers_registered()` 之后，TTS 不再是
+    「让位」家族而是「退场」家族——卸载插件就该**没有** TTS provider。本检查按"模块里还
+    有没有那个 ensure 函数"自动切换期望，所以删除前后都成立（删除是预期行为，不该把它
+    变成红灯）。
+
     检查结束会把插件重新注册回去（否则后续检查看到的是 builtin 归属）。
     """
     from fastapi.testclient import TestClient
@@ -378,9 +410,24 @@ def check_all_families_fallback() -> None:
             gone = ids & {c.id for _, c in R.list(kind)}
             assert not gone, f"{kind.value}: 卸载 {plugin_id} 后仍存在 {sorted(gone)}"
 
-            # 走真实补位路径
             module = __import__(mod, fromlist=[fn_name])
-            getattr(module, fn_name)()
+            ensure = getattr(module, fn_name, None)
+
+            if ensure is None:
+                # 退场家族（B3-T6 之后的 TTS）：engine 不再注册，卸载后必须保持为空
+                still = ids & {c.id for _, c in R.list(kind)}
+                assert not still, (
+                    f"{kind.value}: {mod} 已无 {fn_name}，卸载后 id 却还在 {sorted(still)}"
+                    "（说明还有别处在偷偷注册内置）"
+                )
+                _reregister_plugin(plugin_id, mod_path, cls)
+                for cid in ids:
+                    owner = R.owner_of(kind, cid)
+                    assert owner == plugin_id, f"恢复失败: {kind.value}:{cid} 归属 {owner!r}"
+                continue
+
+            # 走真实补位路径
+            ensure()
 
             back = ids & {c.id for _, c in R.list(kind)}
             assert back == ids, f"{kind.value}: 内置没有补位（缺 {sorted(ids - back)}）"

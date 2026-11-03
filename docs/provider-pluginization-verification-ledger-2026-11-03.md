@@ -406,11 +406,11 @@
 | 5 | `prompt_symbols_wired` | 26 常量 + 8 builder 全 `wired`，不返回正文 |
 | 6 | `prompt_override_roundtrip` | 常量/builder 覆盖→解析→回滚闭环，且覆盖真的影响 builder 输出 |
 | 7 | `prompt_builder_guards` | 四关负例：import/eval/getattr/async、参数不用、未知符号、新占位符 |
-| 8 | `dub_capability_boundary` | `dub_script` 归属 tts_feature；两边摘掉后 `/api/voice/dub` → 503 |
+| 8 | `dub_capability_boundary` | `dub_script` 归属 tts_feature；全部摘掉后 `/api/voice/dub` → 503。**删除无关**：内置还在时第一次回收会恢复内置（再摘一次），`skill/dub.py` 删除后一次到底——两种状态都过 |
 | 9 | `tier_map_empty` | 不变量 #12：`capability_matrix.TIER_MAP` 必须为空 |
 | 10 | `provider_plugin_fallback` | 卸载插件后内置**补位**（`unregister_plugin` → `_resolve_llm_provider` 仍能解析，归属回到 `__builtin__`） |
-| 11 | `skill_shadow_restore` | 插件技能被回收后内置同名技能**恢复**，归属回到内置 |
-| 12 | `all_families_fallback` | **五类** provider 逐个：卸载插件 → id 消失 → `ensure_*` 后内置补位（归属回 `__builtin__`）→ 恢复插件归属；只测 llm 会漏掉其它家族漏补位的情况 |
+| 11 | `skill_shadow_restore` | 插件技能被回收后内置同名技能**恢复**，归属回到内置。**改用 `analyze_video_structure`**（不再拿 B3-T6 要删的 `dub_script` 当铁证，否则删除后必红） |
+| 12 | `all_families_fallback` | **五类** provider 逐个：卸载插件 → id 消失 → `ensure_*` 后内置补位（归属回 `__builtin__`）→ 恢复插件归属；只测 llm 会漏掉其它家族漏补位。**TTS 例外**：`ensure_tts_providers_registered` 被删后（B3-T6）自动切换成「退场」期望（卸载即空、不许有暗桩），删除前后都成立 |
 | 13 | `prompt_runtime_path` | **运行时装配点**真的读解析层：用假 task 直接调 `agent_loop._system_prompt()`（plan_only / 正常 / 收口三态），并验证注册覆盖后装配点立即改变、导入期快照 `_NORMAL_SYSTEM` 不被改写、回滚后恢复默认。前两项（`prompt_symbols_wired` / `prompt_override_roundtrip`）只证明符号登记与解析层本身，**证明不了真正拼 prompt 的函数走了覆盖层**——有人把 `_p(...)` 换回模块级常量时，那两项照样全绿 |
 
 实测：**13/13 通过**（`py -3.14 scripts/verify_provider_pluginization.py`），逐项单独跑也无顺序依赖。**它补充 pytest，不替代**。
