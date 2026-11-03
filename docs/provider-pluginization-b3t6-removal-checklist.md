@@ -59,16 +59,22 @@ engine 侧删除。注意：`services/voice.py` 的模块 docstring 第 4 行也
 
 ## 4. 需要先拍板的一点
 
-删除内置注册会让 `qwen-tts` / `minimax` 从下拉里消失（现在只有 `cosyvoice` 有插件）。
-两条路：
+~~删除内置注册会让 `qwen-tts` / `minimax` 从下拉里消失（现在只有 `cosyvoice` 有插件）。~~
 
-1. **先补插件**：再建一个 `plugins/tts_qwen/`（或把 tts_cosyvoice 扩成多 id）接管 `qwen-tts`、
-   `minimax`，然后再删内置 —— 用户无感，工作量约半天；
-2. **直接删**：接受少两个 provider，等以后有需求再补插件 —— 工作量 0，但属**功能回退**。
+**已解决（2026-11-02）**：补了两个协议插件
 
-我的建议是 **1**（先补再删），除非你确认这两个 provider 已不再使用。
+| 插件 | 接管的 id | capabilities |
+|---|---|---|
+| `plugins/tts_qwen/` | `qwen-tts` | `stream=false`、`needs_uploader=false` |
+| `plugins/tts_minimax/` | `minimax` | `stream=false`、`needs_uploader=true` |
+| `plugins/tts_cosyvoice/`（已有） | `cosyvoice` | `stream=true`、`needs_uploader=true` |
+
+实测 `ContributionRegistry` 归属：`{cosyvoice: tts_cosyvoice, minimax: tts_minimax, qwen-tts: tts_qwen}`
+——**三个 id 全部由插件接管**，所以删除内置注册**不会再让任何 provider 消失**，
+B3-T6 现在只差「人工跑测试」这一个前置条件。
 
 ## 5. 回滚方式
 
 按 PRD §15.1.6 第 3 条：**不保留运行时开关**。要回到旧行为就回滚对应提交（`git revert`），
 这也意味着删除动作要和插件提交**分开**（删除单独一个 commit，便于精确 revert）。
+

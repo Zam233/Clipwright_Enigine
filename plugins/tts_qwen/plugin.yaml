@@ -1,0 +1,25 @@
+id: tts_qwen
+name: Qwen-TTS 协议插件
+version: 1.0.0
+kind: capability
+api_version: "2"
+description: 提供 qwen-tts 协议层 provider（DashScope HTTP 合成、base64 音色克隆）；不含配音工作流
+entry_point: "tts_qwen.main"
+permissions: []
+# 接管内置同名 provider（内置先注册，需显式声明覆盖；见 PRD §5.1 顺序陷阱）
+override_builtin: true
+contributions:
+  - kind: tts_provider
+    id: qwen-tts
+    config_schema:
+      api_key:
+        type: string
+        label: DashScope API Key
+        secret: true
+      default_model:
+        type: string
+        label: 默认模型
+        default: qwen3-tts-vc-2026-01-22
+    capabilities:
+      stream: false
+      needs_uploader: false

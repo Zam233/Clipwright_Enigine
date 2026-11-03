@@ -182,7 +182,7 @@
 | B3-T2 CosyVoice 协议插件 | 已完成 | `plugins/tts_cosyvoice/`：声明 `tts_provider:cosyvoice`（`config_schema`: api_key(secret)/workspace_id/default_model，`capabilities`: stream/needs_uploader）。实测归属 `cosyvoice → tts_cosyvoice`，`qwen-tts`/`minimax` 仍内置（逐 id 让位正确） |
 | B3-T4 功能层插件 + 编排下沉 | 已完成 | `plugins/tts_feature/`：`dub.py` 里的 `DubScriptOrchestrator` 接管切句、逐段合成、确定性 seed、句级/词级时间轴；engine 只保留 `VoiceService.synthesize()` 协议调度基座 |
 | B3-T3 名称解析与指纹缓存 | 未改动（守住） | `_get_provider` 的身份仍来自 `contribution.id`，缓存键仍含凭据指纹；本轮没有碰它 |
-| B3-T6 摘 engine 编排与内置注册 | **准备完成，等人工测试后执行** | 已产出执行前核对清单：[`provider-pluginization-b3t6-removal-checklist.md`](provider-pluginization-b3t6-removal-checklist.md)——列出 ① 要删的 4 处（`dub_script` 方法、`skill/dub.py`、`skill/builtin.py` 注册、`ensure_tts_providers_registered` 及其 4 个调用点）；② 要搬的 `split_text`（切句策略归功能插件）；③ 保留不动的基座（`register_builtin_once`、协议类、上传器）；④ 删除后的 6 条验收断言；⑤ **必须先拍板的一点**：删内置会让 `qwen-tts`/`minimax` 从下拉消失（目前只有 cosyvoice 有插件），建议先补插件再删 |
+| B3-T6 摘 engine 编排与内置注册 | **前置条件 ①已解决，等人工测试** | 已产出执行前核对清单：[`provider-pluginization-b3t6-removal-checklist.md`](provider-pluginization-b3t6-removal-checklist.md)——列出 ① 要删的 4 处（`dub_script` 方法、`skill/dub.py`、`skill/builtin.py` 注册、`ensure_tts_providers_registered` 及其 4 个调用点）；② 要搬的 `split_text`（切句策略归功能插件）；③ 保留不动的基座（`register_builtin_once`、协议类、上传器）；④ 删除后的 6 条验收断言；⑤ **必须先拍板的一点**：删内置会让 `qwen-tts`/`minimax` 从下拉消失（目前只有 cosyvoice 有插件），建议先补插件再删 |
 | B3-T5 `create.dub` slot 迁 03 步骤 | **已完成** | 宿主：`slots.ts` 名单 14→15；`HomePage` 渲染 `<Slot name="create.dub" optionSources={voices} onValuesChange={setPluginDub} />`；内置配音控件在有贡献时整块让位。**契约补齐**：`UISelect.optionsFrom`（宿主白名单数据源，目前 `voices`）+ `PluginLayoutRenderer.onChange`/`Slot.onValuesChange`（插件控件值回传宿主，用 ref 避免内联箭头函数导致死循环）+ `Slot.optionSources`。插件：`plugins/tts_feature` 新增 `ui_slot: create_dub_entry`（select voice_id optionsFrom=voices + checkbox auto_dub），manifest 已声明（声明即授权）。宿主把插件值回填 `voicePick`/`autoDub`（引擎侧字段不变），`stepDone.dub` 有插件值时以插件为准。实测 `/api/plugin/contributions?slot=create.dub` 返回 1 条含 `optionsFrom` |
 | B3-T7 能力发现与缺失一等状态 | 已完成 | `dub` 能力名由插件技能提供；`AudioAgent` 在 `call_skill("dub")` 返回 `not_found` 时写**可读降级说明**「未配音：当前没有可用的配音能力（TTS 功能插件未安装或被禁用）」，与普通失败（`自动配音失败: …`）分开；**没有**直连 `VoiceService` 兜底 |
 | B3-T8 通用能力网关 + `/api/voice/*` 薄转发 | 已完成 | 网关在 Batch 1 落地；本轮把 `/api/voice/dub` 改成薄转发：`skill_resolve("dub")` → `SkillRegistry.execute`，端点不再调 `VoiceService.dub_script()` 编排；解析不到直接 `503` + 可读原因。实测：正常走插件技能；把插件与内置两次 unregister 后 → 503 |
@@ -389,6 +389,7 @@
 | H-071 | 非条目（提取误命中） | 这是 PRD §15.7「仍未核实」的条目，已在本节逐条处理 |
 
 **net 结论**：Batch 0 的实质性核实已完成。**仍开 2 条**，全部卡在「需要人跑测试」：H-065（真实 LLM 路径 prompt 快照）、H-057（TTS 取消/降级端到端）。另 H-044（前端是否新增 STT Tab）是**纯产品决策**，与本 PRD 的实施无关，保留待产品定。其余（H-023 拆 client、H-028 TTS 错误分类、H-032/H-036 字段、H-066 reasoning UI、H-068 诊断 UI）均已闭环或给出技术判定。
+
 
 
 

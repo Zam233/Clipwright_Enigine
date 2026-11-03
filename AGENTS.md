@@ -91,7 +91,9 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
       **禁止**写成「先注册内置、插件后注册」：`_validate` 对已存在内置默认 REJECT
       （`plugins/contribution.py:189-193`），那样写会让同名插件被直接拒掉，而报错只显示
       「不得覆盖内置贡献」，根因极难查。六处复制粘贴的旧写法已全部收敛到该函数。
-    - 「让位」与「退场」是两件事：让位 = 插件在就让；退场 = 谁都不在也不注册。裁定 3
+    - **TTS 三个 provider id 已全部插件化**（2026-11-02）：`plugins/tts_cosyvoice`（cosyvoice）、
+      `plugins/tts_qwen`（qwen-tts）、`plugins/tts_minimax`（minimax）。因此 B3-T6 删除内置 TTS
+      注册时**不会再让任何 provider 消失**；删之前只剩「人工跑测试」这一个前置。    - 「让位」与「退场」是两件事：让位 = 插件在就让；退场 = 谁都不在也不注册。裁定 3
       要求 TTS **退场**（TTS 功能插件验收通过后 `ensure_tts_providers_registered()` 不再默认
       调用），**不是**改让位逻辑。
     - 插件对外暴露的 HTTP 入口**只有** `POST /api/capability/{name}`（`api/capability.py`，
@@ -346,4 +348,5 @@ npm run build                    # tsc 过不代表 build 过（vite 另有一�
 | [服务概览](docs/services_overview.md) | services/ 全部服务 |
 | [整数时间基座](docs/timebase.md) | utils/timebase.py, schema/timeline.py 的时间派生属性, services/render.py 漂移校正, services/timeline_view.py |
 | [需求分析 Agent](docs/requirements_agent.md) | agents/requirements_agent.py, services/requirements_service.py |
+
 
