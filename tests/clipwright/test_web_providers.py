@@ -77,6 +77,13 @@ def _clean_settings(monkeypatch):
     monkeypatch.setattr(settings, "web_search_serper_api_key", "", raising=False)
     monkeypatch.setattr(settings, "web_search_bing_api_key", "", raising=False)
     monkeypatch.setattr(settings, "web_search_base_url", None, raising=False)
+    # `provider_key("deepseek")` 在主 LLM 就是 DeepSeek（base_url 含 deepseek）时会**复用
+    # 平台 key**——这是产品行为（同一账号不用配两遍）。本文件断言的是"没配任何搜索 key
+    # 时只剩 local"，所以在测试里必须把这条复用路径也清掉，否则结果取决于本机 `.env`
+    # （`CLIPWRIGHT_LLM_BASE_URL=https://api.deepseek.com` + 有 key → 多出 deepseek）。
+    monkeypatch.setattr(settings, "llm_provider", "anthropic", raising=False)
+    monkeypatch.setattr(settings, "llm_base_url", None, raising=False)
+    monkeypatch.setattr(settings, "llm_api_key", "", raising=False)
     yield
 
 
