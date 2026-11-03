@@ -74,7 +74,7 @@ cd J:\Clipweight-Client; npx tsc --noEmit; npm run test
 
 | # | 事项 | 前置条件 | 谁 |
 |---|---|---|---|
-| 1 | **B3-T6 删除 engine 的 TTS 编排与内置注册** | `pytest` 通过（删除后插件未加载的环境会**真的没有**配音能力，这是裁定 3 的预期） | 人跑测试 → 我执行删除（清单已备好：[removal-checklist](provider-pluginization-b3t6-removal-checklist.md)） |
+| 1 | **B3-T6 删除 engine 的 TTS 编排与内置注册** | `pytest` 通过（删除后插件未加载的环境会**真的没有**配音能力，这是裁定 3 的预期） | 人跑测试 → 我执行删除（清单已备好：[removal-checklist](provider-pluginization-b3t6-removal-checklist.md)；**删除演练已做**，见其 §6：删除本身没问题，但要连带改 3 项自检 + 5 个测试文件 + 3 处文档，这批会合并在同一个 commit） |
 | 2 | 台账 H-065（真实 LLM 路径 prompt 快照）、H-057（TTS 取消/降级端到端） | 同上，需真实路径跑一遍 | 人跑 → 我补记录 |
 | 3 | 前端是否新增 STT Tab | 纯产品决策（PRD §14 第 3 条） | 产品 |
 
