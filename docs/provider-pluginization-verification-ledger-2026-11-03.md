@@ -238,7 +238,7 @@
 | B5-T1 符号清单（26 常量 + 8 builder + 签名） | 已完成 | `plugins/prompt_overrides.py::all_symbols()` 运行时从 `prompts.py` 自省生成；builder 带 `inspect.signature`。**不硬编码清单**，`prompts.py` 加符号会自动出现 |
 | B5-T2 常量/符号 replace + append 显式区分 | 已完成 | PROMPT 贡献支持 `meta.mode = append|replace`（缺省 append 保持存量 4 个贡献者行为）；replace 时 `meta.symbol` 指向符号，object 为字符串（常量）或可调用对象（builder） |
 | B5-T3 builder 硬契约（签名/占位符/双 dry-render/静态纯度） | 已完成 | 见下「四关落地」 |
-| B5-T4 8 个消费点接入解析层 | 已完成（builder + 7 常量） | **builder 8 处**全部 `safe_builder("build_x")`（无覆盖时 `is` 原函数，行为等同）。**常量 7 处**改 `resolve_constant(...)`：`EDIT_PROFILE_SYSTEM`、`QUALITY_SEMANTIC_QA_SYSTEM`、`CREATIVE_BRIEF_SYSTEM`、`STRUCTURE_SYSTEM_PROMPT_TPL`、`STRUCTURE_TOOL_PROMPT`、`STRUCTURE_MG_DYNAMIC_GUIDE`、`PLAN_TRANSLATE_SYSTEM`。**其余 19 个常量未接线**（它们是 `prompts.py` 内部组合构件，被 builder 在导入期拼好），诊断接口对它们标 `wired=False`（`WIRED_CONSTANTS` 白名单驱动），不假装已生效 |
+| B5-T4 8 个消费点接入解析层 | 已完成（builder 8 + 常量 21/26） | **builder** 8 处 `safe_builder`。**常量 21 个**已接线：7 个整段提示词由 agent `resolve_constant`；11 个内部组合常量由 `prompts.py::_c` 在 builder 体内读取（逐符号覆盖 → builder 输出变化的断言全过）；3 个 MG 约束由 `animation/mg/generator.py::_mg_constraint`（原模块级别名=导入期快照，覆盖不生效，本轮改掉）。**5 个刻意不接线**：`LOOP_NORMAL_SYSTEM`/`LOOP_PLAN_ONLY_SYSTEM`/`LOOP_CLOSEOUT_BLOCK`（agent_loop 仍内联副本，见下「已知缺陷」）、`PROMPT_PLUGIN_EXT_HEADER`/`PROMPT_WEB_CONTEXT_HEADER`（全仓无消费方）。诊断接口按 `WIRED_CONSTANTS` 给 21 wired / 5 unwired |
 | B5-T5 快照零差异 + 失败隔离 | 部分完成 | 默认等价性已断言；`safe_builder` 在插件实现运行期抛异常时回落默认并记录 `OVERRIDE_ERRORS`；完整快照比对需人工跑 |
 | B5-T7 来源标识与诊断接口 | 已完成 | `GET /api/plugin/prompt-symbols`（admin 门禁）返回 constants/builders/errors；每条含 `wired` 与 `override{plugin_id, kind, source}`；**不返回提示词正文**，只给长度 |
 | B5-T8 不建 demo 插件 | 已遵守 | 本轮没有产出任何 `plugins/prompt_*` 目录；负例用进程内对象完成 |
@@ -271,3 +271,23 @@
   需要一批机械改造（可按「先接被插件最可能覆盖的那几个」分批）。
 - B5-T5 的完整快照比对（`prompts.py` 26+8 默认输出零差异）由人工跑。
 
+
+### 已知缺陷：3 个 LOOP 常量在 agent_loop 里仍有一份内联副本
+
+`agents/agent_loop` 的历史实现把三份系统提示词**内联写在文件里**（`_CLOSEOUT_BLOCK`、
+以及 normal / plan_only 两份），`prompts.py` 里的 `LOOP_CLOSEOUT_BLOCK` /
+`LOOP_NORMAL_SYSTEM` / `LOOP_PLAN_ONLY_SYSTEM` **没有被任何消费方读取**，而且两处文本
+**已经不同**（用 `difflib` 粗比相似度 0.71~0.82，说明不是简单格式差异）：
+
+| 常量 | 实际使用的文本 | 差异 |
+|---|---|---|
+| `LOOP_NORMAL_SYSTEM` | `services/agent_loop.py` 内联 | 已漂移（相似度约 0.82） |
+| `LOOP_PLAN_ONLY_SYSTEM` | `services/agent_loop.py` 内联 | 已漂移（相似度约 0.71） |
+| `LOOP_CLOSEOUT_BLOCK` | `services/agent_loop.py::_CLOSEOUT_BLOCK` 内联 | 结构相同、措辞不同 |
+
+**为什么本轮不修**：把内联文本换成常量文本等于**改模型实际收到的提示词**，属于行为变更，
+必须人工逐字比对后再动（不能靠「看着差不多」）。已在本轮把这三个常量标为 `wired=False`，
+**覆盖它们不会生效**——诊断接口如实显示，避免有人以为改了就能生效。
+
+修法（下批）：以 `prompts.py` 为唯一真相，把 `agent_loop` 的三处内联替换成
+`_c("LOOP_...")`，并在替换前把两份文本 diff 出来由人确认采纳哪一份。

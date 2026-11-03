@@ -75,14 +75,41 @@ FORBIDDEN_NAMES = frozenset({
 #: 已接到 `resolve_constant()` 的常量（消费方已改为运行时解析）。
 #: 其余常量是 `prompts.py` **内部组合用的构件**（被 builder 在导入期拼好），
 #: 目前仍只走默认值 —— 诊断接口对它们标 `wired=False`，不假装已生效。
+#: **真正被消费方运行时解析**的常量（26 个里的 21 个）。
+#:
+#: - 7 个整段提示词：agent 直接 `resolve_constant(...)`；
+#: - 11 个 builder 内部组合常量：`prompts.py::_c(...)` 在 builder 体内读取；
+#: - 3 个 MG 约束：`animation/mg/generator.py::_mg_constraint(...)`（原先模块级别名=导入期
+#:   快照，插件覆盖不生效，本轮改掉）。
+#:
+#: **刻意不列入的 5 个**（覆盖了也不会生效，宁可显示未接线）：
+#: - `LOOP_NORMAL_SYSTEM` / `LOOP_PLAN_ONLY_SYSTEM` / `LOOP_CLOSEOUT_BLOCK`：
+#:   `services/agent_loop.py` 里仍有一份**内联副本**，且文本已与常量不同（W4 搬运漏接），
+#:   覆盖常量不会影响实际发给模型的提示词。修法是让 agent_loop 改读常量（属行为变更，
+#:   需人工比对，见台账 Batch 5「已知缺陷」）；
+#: - `PROMPT_PLUGIN_EXT_HEADER` / `PROMPT_WEB_CONTEXT_HEADER`：全仓无消费方（死导出）。
 WIRED_CONSTANTS = frozenset({
+    "ANIM_MARKER_SYSTEM_HEADER",
     "CREATIVE_BRIEF_SYSTEM",
     "EDIT_PROFILE_SYSTEM",
+    "LOOP_BUDGET_CRITICAL",
+    "LOOP_BUDGET_HEADER",
+    "LOOP_BUDGET_PLENTY",
+    "LOOP_BUDGET_TIGHT",
+    "MATERIAL_ENGLISH_HEAD",
+    "MATERIAL_QUERY_BATCH_EN",
+    "MATERIAL_QUERY_BATCH_HEAD",
+    "MATERIAL_QUERY_BATCH_TAIL",
+    "MATERIAL_QUERY_SINGLE_HEAD",
+    "MG_NO_BACKGROUND_CONSTRAINT",
+    "MG_ORCHESTRATION_CONSTRAINTS",
+    "MG_STRICT_JSON_OUTPUT",
+    "PLAN_TRANSLATE_HEADER",
+    "PLAN_TRANSLATE_SYSTEM",
     "QUALITY_SEMANTIC_QA_SYSTEM",
     "STRUCTURE_MG_DYNAMIC_GUIDE",
     "STRUCTURE_SYSTEM_PROMPT_TPL",
     "STRUCTURE_TOOL_PROMPT",
-    "PLAN_TRANSLATE_SYSTEM",
 })
 #: 覆盖登记：symbol → {"plugin_id", "kind", "value"/"impl", "source"}
 _OVERRIDES: dict[str, dict[str, Any]] = {}
@@ -176,9 +203,15 @@ def inspect_constant_override(symbol: str, text: str) -> list[str]:
     if not text.strip():
         problems.append(f"{symbol}: 覆盖内容不能为空")
         return problems
-    if _PLACEHOLDER.search(text):
+    # 注意：部分常量**本身就是带占位符的模板**（如 `LOOP_BUDGET_HEADER` 含 `{remaining}`，
+    # 由 builder 用 .format() 填充）。所以不能「见占位符就拒」，只能拒**默认值里没有的**
+    # 新占位符 —— 否则所有模板型常量都无法覆盖。
+    default_text = getattr(_prompts_module(), symbol)
+    allowed = set(_PLACEHOLDER.findall(default_text))
+    introduced = set(_PLACEHOLDER.findall(text)) - allowed
+    if introduced:
         problems.append(
-            f"{symbol}: 输出残留未替换占位符 {_PLACEHOLDER.search(text).group(0)}"
+            f"{symbol}: 引入了默认值中不存在的占位符 {sorted(introduced)}"
         )
     limit = max(MAX_OUTPUT_CHARS, OUTPUT_MULTIPLIER * len(getattr(_prompts_module(), symbol)))
     if len(text) > limit:
@@ -352,9 +385,11 @@ def register_builder_override(plugin_id: str, symbol: str, impl: Callable[..., A
         if not isinstance(out, str):
             problems.append(f"{symbol}: dry-render 返回 {type(out).__name__}，要求 str")
             break
-        if _PLACEHOLDER.search(out):
+        allowed_ph = set(_PLACEHOLDER.findall(str(default(*args, **kwargs))))
+        introduced_ph = set(_PLACEHOLDER.findall(out)) - allowed_ph
+        if introduced_ph:
             problems.append(
-                f"{symbol}: dry-render 输出残留占位符 {_PLACEHOLDER.search(out).group(0)}"
+                f"{symbol}: dry-render 输出引入了默认输出中不存在的占位符 {sorted(introduced_ph)}"
             )
         renders.append(out)
 
@@ -439,5 +474,8 @@ def clear_plugin(plugin_id: str) -> list[str]:
     for symbol in removed:
         _OVERRIDES.pop(symbol, None)
     return sorted(removed)
+
+
+
 
 

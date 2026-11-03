@@ -91,14 +91,32 @@ LOOP_BUDGET_CRITICAL = ("**必须立即收尾**：先用 acknowledge_degradation
                         "（或说明为何无需），然后直接 finish；不要再调任何查询类工具。")
 
 
+def _c(name: str) -> str:
+    """取常量文本：插件符号覆盖优先，否则本模块默认值（B5 常量覆盖）。
+
+    为什么需要它：19 个「内部组合常量」（`LOOP_BUDGET_HEADER`、`MATERIAL_QUERY_BATCH_HEAD`…）
+    是在 builder 体内被拼接的。改成运行时读 `_c(...)`，插件覆盖同名符号才能生效；无覆盖时
+    返回的就是本模块默认字符串，输出逐字节不变。
+
+    延迟导入避免 `prompts` ↔ `plugins.prompt_overrides` 循环导入（后者要用
+    `getattr(prompts, name)` 取默认值）。
+    """
+    try:
+        from clipwright.plugins.prompt_overrides import resolve_constant
+
+        return resolve_constant(name)
+    except Exception:  # noqa: BLE001 — 覆盖层不可用时用默认值，绝不因此报错
+        return str(globals().get(name, ""))
+
+
 def build_budget_note(remaining: int, max_turns: int, used: int) -> str:
     """按剩余回合选档，拼出预算提示（文案见上面的常量）。"""
-    head = LOOP_BUDGET_HEADER.format(remaining=remaining, max_turns=max_turns, used=used)
+    head = _c("LOOP_BUDGET_HEADER").format(remaining=remaining, max_turns=max_turns, used=used)
     if remaining > 40:
-        return head + LOOP_BUDGET_PLENTY
+        return head + _c("LOOP_BUDGET_PLENTY")
     if remaining > 12:
-        return head + LOOP_BUDGET_TIGHT
-    return head + LOOP_BUDGET_CRITICAL
+        return head + _c("LOOP_BUDGET_TIGHT")
+    return head + _c("LOOP_BUDGET_CRITICAL")
 
 
 # ── 模块内提示词（PRD W4.3 第二批，2026-11-02）─────────────────────────────
@@ -123,7 +141,7 @@ PROMPT_WEB_CONTEXT_HEADER = "\n\n## 联网搜索参考\n"
 
 def build_plan_translate_system(brief_json: str) -> str:
     """把参考方案 JSON 拼进规划书翻译提示（原 f-string 逐字等价）。"""
-    return PLAN_TRANSLATE_SYSTEM + PLAN_TRANSLATE_HEADER.format(brief_json=brief_json)
+    return _c("PLAN_TRANSLATE_SYSTEM") + _c("PLAN_TRANSLATE_HEADER").format(brief_json=brief_json)
 
 
 # ── 带插值的模块提示词（PRD W4.4 收尾批）─────────────────────────────────
@@ -164,7 +182,7 @@ def build_anim_marker_system(anim_guide: str, mg_info: str) -> str:
     `MG_DYNAMIC_GUIDE` 固定在 prompts.py 里，`anim_guide` / `mg_info` 由调用方
     按当前动画目录与 MG 能力动态拼好传入。
     """
-    return ANIM_MARKER_SYSTEM_HEADER + STRUCTURE_MG_DYNAMIC_GUIDE + "\n\n" + anim_guide + mg_info
+    return _c("ANIM_MARKER_SYSTEM_HEADER") + _c("STRUCTURE_MG_DYNAMIC_GUIDE") + "\n\n" + anim_guide + mg_info
 
 
 def build_anim_marker_user(scenes_count: int, scenes_text: str) -> str:
@@ -243,11 +261,11 @@ def build_material_queries_batch_prompt(
 ) -> str:
     """批量关键词提示（逐字等价于旧 f-string 拼接）。"""
     return (
-        MATERIAL_QUERY_BATCH_HEAD
+        _c("MATERIAL_QUERY_BATCH_HEAD")
         + "\n".join(scene_lines)
-        + MATERIAL_QUERY_BATCH_TAIL
+        + _c("MATERIAL_QUERY_BATCH_TAIL")
         + category_hint
-        + MATERIAL_QUERY_BATCH_EN
+        + _c("MATERIAL_QUERY_BATCH_EN")
         + material_style_hint(persona_style)
         + material_brief_hint(brief_hint)
     )
@@ -259,7 +277,7 @@ def build_material_queries_prompt(
 ) -> str:
     """单场景关键词提示（逐字等价）。"""
     return (
-        MATERIAL_QUERY_SINGLE_HEAD.format(
+        _c("MATERIAL_QUERY_SINGLE_HEAD").format(
             scene_title=scene_title,
             keywords=", ".join(keywords),
             description=description,
@@ -271,4 +289,5 @@ def build_material_queries_prompt(
 
 def build_material_english_prompt(text: str) -> str:
     """中文关键词英译提示（逐字等价）。"""
-    return MATERIAL_ENGLISH_HEAD + text
+    return _c("MATERIAL_ENGLISH_HEAD") + text
+
