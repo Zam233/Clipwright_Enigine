@@ -6,11 +6,17 @@
 
 ## 支持的 Provider
 
-| Provider | 说明 | 依赖 |
-|----------|------|------|
-| Qwen-TTS | 通义千问语音合成 | `dashscope>=1.22.0` |
-| CosyVoice | 阿里云 CosyVoice | `dashscope`, 需 Workspace ID |
-| MiniMax | MiniMax 语音服务 | `dashscope` |
+| Provider（id） | 说明 | 依赖 | 由谁提供（2026-11-02 起） |
+|----------|------|------|------|
+| Qwen-TTS（`qwen-tts`） | 通义千问语音合成 | `dashscope>=1.22.0` | `plugins/tts_qwen/` |
+| CosyVoice（`cosyvoice`） | 阿里云 CosyVoice | `dashscope`, 需 Workspace ID | `plugins/tts_cosyvoice/` |
+| MiniMax（`minimax`） | MiniMax 语音服务 | `dashscope`, 需公网上传器 | `plugins/tts_minimax/` |
+
+> **engine 不带 TTS 能力（裁定 3）**：provider 注册、来源声明（`config_schema`）与能力
+> （`capabilities`）全部由插件贡献；`VoiceService` 只保留「统一协议调度」基座（凭据加密、
+> 公网上传器、音频落盘）。配音编排（切句 / 逐段合成 / 句级·词级时间轴）已下沉到
+> `plugins/tts_feature/` 的 `dub_script` 技能。删除内置注册的核对清单见
+> [provider-pluginization-b3t6-removal-checklist.md](provider-pluginization-b3t6-removal-checklist.md)。
 
 ## 配置
 
@@ -59,7 +65,15 @@ CLIPWRIGHT_TTS_PUBLIC_UPLOAD_SERVICES=uguu,catbox
 
 ## Dub Script Skill
 
-`dub_script` skill 提供文案切分与逐段配音能力，委托 VoiceService 执行。可用于自动化配音流程。
+`dub_script` skill 提供文案切分与逐段配音能力。**归属已下沉到插件**（2026-11-02）：
+由 `plugins/tts_feature/` 贡献同名技能，`agent.call_skill("dub")` 解析到它；插件禁用后
+能力解析不到，`call_skill` 返回 `not_found`、AudioAgent 写「未配音：当前没有可用的配音能力
+（TTS 功能插件未安装或被禁用）」，`/api/voice/dub` 返回 **503**（薄转发，不再承载编排）。
+
+**失败响应是结构化的**（`services/voice_errors.py`）：`error_code`（如 `auth_failed` /
+`rate_limited` / `provider_timeout` / `voice_not_found`）、`stage`（config/auth/request/
+stream/decode）、`provider_id`、`retryable`。**未知错误一律 `retryable=false`**——避免把
+编程错误当网络抖动无限重试。错误文本会剥掉 `sk-…` / `Bearer …` 片段。
 
 ## 前端集成
 
@@ -132,3 +146,4 @@ CLIPWRIGHT_TTS_PUBLIC_UPLOAD_SERVICES=uguu,catbox
 - [API 参考](api_reference.md) — 完整 API 端点说明
 - [快速开始](quickstart.md) — TTS 配置步骤
 - [开发指南](development.md) — 新增 Provider
+

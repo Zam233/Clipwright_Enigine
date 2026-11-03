@@ -523,6 +523,7 @@ data: {"type":"error","detail":"流式生成中断: ...","partial":"已产出的
 | `GET /api/tool/list` | 列出所有 Tool |
 | `POST /api/tool/execute` | 执行 Tool |
 | `POST /api/tool/batch` | 批量执行 |
+| `POST /api/capability/{name}` | **通用能力网关**（插件对外 HTTP 入口的唯一通道）：按**能力名**解析（`capabilities.resolve_name`，能力名优先、工具名兜底）再执行，body `{params}`，返回 `ToolExecResult`。状态码语义：`404` 解析不到（插件未装/被禁用）、`422` 参数或路径不合规、`503` 已解析但依赖缺失、`200` 成功；`costly`/`dangerous` 档记审计。**网关内没有任何具体 provider/能力名分支** |
 | `GET /api/skill/list` | 列出所有 Skill |
 | `POST /api/skill/execute` | 执行 Skill |
 
@@ -671,6 +672,24 @@ curl -X POST http://localhost:8080/api/voice/dub \
 {"segments": [{"audio_path": "...", "duration_sec": 2.0, "text": "第一段文案。"}], "total": 2, "total_duration_sec": 4.0}
 ```
 
+### 失败响应（结构化错误）
+
+`/api/voice/synthesize` 与 `/api/voice/dub` 的失败响应不是一句人话，而是带分类的对象
+（`services/voice_errors.py`），前端据此决定「去配凭据」还是「重试」：
+
+```json
+{"detail": {"message": "provider 鉴权失败（请检查 API Key / 权限）：401 …",
+            "error_code": "auth_failed", "stage": "auth",
+            "provider_id": "cosyvoice", "retryable": false}}
+```
+
+| 字段 | 取值 |
+|---|---|
+| `error_code` | `auth_failed` / `rate_limited` / `provider_timeout` / `provider_not_found` / `voice_not_found` / `uploader_missing` / `quota_exceeded` / `invalid_request` / `stream_broken` / `decode_failed` / `unknown` |
+| `stage` | `config` / `auth` / `request` / `stream` / `decode` / `unknown` |
+| `retryable` | 超时、限流、流断连为 `true`；鉴权、额度、参数、未知错误为 `false`（**未知不重试**，避免编程错误把预算烧光） |
+
+错误文本会剥掉 `sk-…` / `Bearer …` / `api_key=…` 片段，密钥不进日志与响应。
 ### 静态音频文件
 
 合成的音频文件通过 `/voice_audio/{filename}` 静态挂载访问。
@@ -758,6 +777,8 @@ curl -X POST http://localhost:8080/api/voice/dub \
 | `DELETE /api/plugin/{plugin_id}/config` | 删除插件配置 |
 | `GET /api/plugin/{plugin_id}/ui` | 获取插件 UI 定义 |
 | `GET /api/plugin/health` | 插件健康聚合（ok/degraded/error 分类 + Hook/Agent 计数） |
+| `GET /api/plugin/contributions?kind=&slot=&owner=` | 已注册贡献清单（kind:id → owner）。前端按 slot 拉取插件 UI 贡献，**唯一的贡献数据源** |
+| `GET /api/plugin/prompt-symbols` | **提示词符号清单与来源**：26 常量 + 8 builder、签名、是否被插件覆盖、覆盖它的 plugin id、`wired`（false = 还没有消费方在运行时解析，**覆盖了也不生效**）、最近被拒绝的覆盖原因。不返回提示词正文，只给长度 |
 
 **插件 Agent（SA-2/3/4）**：插件 manifest 声明 `kind: agent` + `permissions: [orchestrate]` 后，可在 `initialize()` 经 `AgentRegistry.register(agent, name, plugin_id, deps)` 注册自定义 Agent——按 deps 并入主管线 DAG（输入 `PluginAgentInput`、输出 `PluginAgentOutput`），或经 `services.subagent.run_sub_agent(ctx, name, payload)` 作为子代理被宿主 Agent 调用（嵌套深度上限 2、宿主取消感知、用量以「宿主:子代理」复合名归因、熔断 3 次/60s、默认 120s 超时）。Agent 边界 Hook `PRE_AGENT`（改写 input/skip）与 `POST_AGENT`（只读观测）已在管线接线。
 
@@ -786,7 +807,8 @@ curl -X POST http://localhost:8080/api/voice/dub \
 | `DELETE /api/providers/{id}/models/{model_id}` | 删除模型（解绑引用它的角色） |
 | `POST /api/providers/{id}/models/fetch` | 「获取模型列表」（调用 provider 的 models 端点；不支持自动拉取的 provider 会明确说明，可改用自定义模型） |
 | `POST /api/providers/{id}/test` | 源级连通性探测（**不改动角色绑定**）：`llm`/`embedding` 走模型列表端点、`rerank` 发一次最小请求、`tts` 明确返回不支持；返回 `{ok, latency_ms, detail}` |
-
+| `GET /api/providers/schemas?kind=` | **插件声明的 provider 配置 schema**（`config_schema` + `capabilities`）。前端按它渲染表单，不写死厂商字段；`secret: true` 的字段服务端加密、读回掩码、回传掩码=保留旧值 |
+| `GET /api/providers/capabilities?kind=&provider=&model=` | **能力协商结果**（直接问实现 `impl.capabilities(model)`）：`streaming/tool_calls/vision/json_mode/reasoning_effort/reasoning_content/…`。解析不到返回 `capabilities=null` + `error`，不抛 404（诊断接口要能显示「没装」） |
 **绑定规则（重要）**：
 
 - 角色必须绑定**对应类型**的源（`main`/`flash`/`vision` ← `llm`，`embed` ← `embedding`，
@@ -955,6 +977,9 @@ off/token 模式放行）。`requires_restart=true` 的字段（CORS/Mongo/端�
 （sha256 去重 + 缩略图）→ `content_vision.label_shot`（CLIP 本地 / LLM 描述，按
 `settings.vision_provider`）。视觉预算：`workspace_vision_daily_budget_usd`，超限标
 `deferred` 但索引仍完成。
+
+
+
 
 
 

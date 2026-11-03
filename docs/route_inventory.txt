@@ -1,4 +1,4 @@
-# 自动生成：python scripts/route_inventory.py（共 335 条）
+# 自动生成：python scripts/route_inventory.py（共 366 条）
 DELETE /api/asset/{asset_id}
 DELETE /api/learning/datasets/{dataset_id}
 DELETE /api/learning/jobs/{job_id}
@@ -41,6 +41,7 @@ GET /api/asset/list
 GET /api/asset/{asset_id}
 GET /api/asset/{asset_id}/file
 GET /api/asset/{asset_id}/thumbnail
+GET /api/diagnostics/client-errors
 GET /api/eval/latest
 GET /api/eval/reports
 GET /api/eval/reports/{name}
@@ -95,6 +96,7 @@ GET /api/plugin/errors
 GET /api/plugin/health
 GET /api/plugin/list
 GET /api/plugin/permissions
+GET /api/plugin/prompt-symbols
 GET /api/plugin/{plugin_id}/bundle
 GET /api/plugin/{plugin_id}/config
 GET /api/plugin/{plugin_id}/ui
@@ -107,13 +109,17 @@ GET /api/project/{project_id}
 GET /api/project/{project_id}/archive
 GET /api/project/{project_id}/memory
 GET /api/project/{project_id}/memory/summary
+GET /api/project/{project_id}/termination
 GET /api/project/{project_id}/thumbnail
 GET /api/project/{project_id}/versions
 GET /api/providers
 GET /api/providers/available
+GET /api/providers/capabilities
 GET /api/providers/roles
+GET /api/providers/schemas
 GET /api/providers/{source_id}
 GET /api/render/backends
+GET /api/render/browser
 GET /api/render/download/{filename}
 GET /api/render/presets
 GET /api/render/queue
@@ -124,6 +130,11 @@ GET /api/render/thumbnail
 GET /api/render/video
 GET /api/requirements/plan/{session_id}
 GET /api/requirements/session/{session_id}
+GET /api/requirements/{session_id}/events
+GET /api/requirements/{session_id}/messages
+GET /api/requirements/{session_id}/questions
+GET /api/requirements/{session_id}/timeline
+GET /api/requirements/{session_id}/timeline/stream
 GET /api/scheduler/schedules
 GET /api/settings
 GET /api/skill/list
@@ -137,7 +148,11 @@ GET /api/task
 GET /api/task/{task_id}
 GET /api/task/{task_id}/events
 GET /api/task/{task_id}/events/stream
+GET /api/task/{task_id}/questions
 GET /api/task/{task_id}/result
+GET /api/task/{task_id}/runs
+GET /api/task/{task_id}/runs/{run_id}
+GET /api/task/{task_id}/tool-calls
 GET /api/template/list
 GET /api/template/{template_id}
 GET /api/test/config
@@ -154,12 +169,16 @@ GET /api/voice/list
 GET /api/webhook/deliveries
 GET /api/webhook/events
 GET /api/webhook/list
+GET /api/workspace/artifact/file
+GET /api/workspace/artifact/raw
 GET /api/workspace/roots
 GET /api/workspace/{project_id}
 GET /api/workspace/{project_id}/docs
 GET /api/workspace/{project_id}/events
 GET /api/workspace/{project_id}/events/stream
+GET /api/workspace/{project_id}/legacy-assets
 GET /api/workspace/{project_id}/materials
+GET /api/workspace/{project_id}/media-tree
 GET /api/workspace/{project_id}/reports
 GET /api/workspace/{project_id}/reports/{seq}
 GET /docs
@@ -170,6 +189,7 @@ GET /openapi.json
 GET /redoc
 PATCH /api/project/{project_id}/folder
 PATCH /api/project/{project_id}/rename
+PATCH /api/project/{project_id}/termination
 POST /api/animation/mg/html
 POST /api/animation/preview
 POST /api/asset/governance/patrol
@@ -178,6 +198,8 @@ POST /api/asset/import-path
 POST /api/asset/import-url
 POST /api/asset/upload
 POST /api/auth/sse-token
+POST /api/capability/{name}
+POST /api/diagnostics/client-error
 POST /api/edl/export/edl
 POST /api/edl/export/fcpxml
 POST /api/edl/import/edl
@@ -250,6 +272,7 @@ POST /api/providers/{source_id}/models/upsert
 POST /api/providers/{source_id}/test
 POST /api/proxy/generate
 POST /api/proxy/switch
+POST /api/render/browser/install
 POST /api/render/queue
 POST /api/render/start
 POST /api/requirements/chat
@@ -258,8 +281,11 @@ POST /api/requirements/edit
 POST /api/requirements/init
 POST /api/requirements/proceed
 POST /api/requirements/upload/{session_id}
+POST /api/requirements/{session_id}/answer
 POST /api/requirements/{session_id}/intent
 POST /api/requirements/{session_id}/intent/apply
+POST /api/requirements/{session_id}/plan/dispatch
+POST /api/requirements/{session_id}/stop
 POST /api/scheduler/schedules
 POST /api/scheduler/schedules/{schedule_id}/toggle
 POST /api/scheduler/tick
@@ -274,11 +300,14 @@ POST /api/subtitle/transcribe
 POST /api/supervisor/workers/{worker_id}/review
 POST /api/supervisor/{task_id}/subagents/{subagent_id}/cancel
 POST /api/task
+POST /api/task/{task_id}/answer
 POST /api/task/{task_id}/cancel
 POST /api/task/{task_id}/inject
 POST /api/task/{task_id}/pause
 POST /api/task/{task_id}/plan
 POST /api/task/{task_id}/resume
+POST /api/task/{task_id}/runs/{run_id}/message
+POST /api/task/{task_id}/runs/{run_id}/replay
 POST /api/task/{task_id}/to-project
 POST /api/template/create
 POST /api/template/{template_id}/apply
@@ -313,7 +342,9 @@ POST /api/webhook/notify
 POST /api/webhook/register
 POST /api/webhook/{webhook_id}/test
 POST /api/workspace
+POST /api/workspace/reveal
 POST /api/workspace/{project_id}/enable
+POST /api/workspace/{project_id}/legacy-import
 POST /api/workspace/{project_id}/materials
 POST /api/workspace/{project_id}/scan
 PUT /api/persona/forge/chat/knowledge/{session_id}/{kb_id}

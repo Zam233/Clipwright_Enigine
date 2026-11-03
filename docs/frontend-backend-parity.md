@@ -41,7 +41,7 @@
 | `/api/persona` | persona.py | 20 | GET `/list` · GET `/{persona_id}` · POST `/create` · PUT `/{persona_id}` · POST `/{persona_id}/reference-style` · DELETE `/{persona_id}` · POST `/{persona_id}/duplicate` · POST `/derive` · GET `/{persona_id}/export` · POST `/import` · GET `/{persona_id}/prompt` · PUT `/{persona_id}/prompt` · GET `/{persona_id}/vision-prompt` · PUT `/{persona_id}/vision-prompt` · GET `/{persona_id}/knowledge` · POST `/{persona_id}/knowledge` · PUT `/{persona_id}/knowledge/{doc_id}` · DELETE `/{persona_id}/knowledge/{doc_id}` · POST `/{persona_id}/learn` · GET `/{persona_id}/learn/stats` |
 | `/api/persona/forge` | persona_forge.py | 5 | POST `/from-prompt` · POST `/from-script` · POST `/refine` · POST `/dialogue/generate-questions` · POST `/dialogue/build` |
 | `/api/pipeline` | pipeline.py | 21 | GET `/runs` · POST `/run-v2` · POST `/run` · POST `/run-async` · GET `/trace/{pipeline_id}` · GET `/trace/stream/{pipeline_id}` · GET `/result/{pipeline_id}` · GET `/status/{pipeline_id}` · GET `/diagnostics/{pipeline_id}` · POST `/retry/{pipeline_id}/{agent_name}` · GET `/templates` · POST `/templates` · GET `/templates/{name}` · DELETE `/templates/{name}` · POST `/cancel/{pipeline_id}` · GET `/breaker-status` · POST `/script-tools` · POST `/predict-script` · POST `/predict-material` · POST `/step/{agent_name}` · POST `/topic-suggest` |
-| `/api/plugin` | plugin.py | 16 | GET `/list` · GET `/discover` · POST `/load/{plugin_id}` · POST `/unload/{plugin_id}` · POST `/{plugin_id}/enable` · POST `/{plugin_id}/disable` · GET `/permissions` · GET `/errors` · DELETE `/errors` · DELETE `/{plugin_id}` · GET `/{plugin_id}/config` · PUT `/{plugin_id}/config` · DELETE `/{plugin_id}/config` · POST `/load-all` · GET `/capabilities` · GET `/{plugin_id}/ui` |
+| `/api/plugin` | plugin.py | 18 | GET `/list` · GET `/discover` · POST `/load/{plugin_id}` · POST `/unload/{plugin_id}` · POST `/{plugin_id}/enable` · POST `/{plugin_id}/disable` · GET `/permissions` · GET `/errors` · DELETE `/errors` · DELETE `/{plugin_id}` · GET `/{plugin_id}/config` · PUT `/{plugin_id}/config` · DELETE `/{plugin_id}/config` · POST `/load-all` · GET `/capabilities` · GET `/{plugin_id}/ui` · GET `/contributions` · GET `/prompt-symbols` |
 | `/api/preprocess` | preprocess.py | 7 | GET `/operations` · GET `/queue` · POST `/submit` · POST `/batch-submit` · GET `/task/{task_id}` · DELETE `/task/{task_id}` · GET `/task/{task_id}/results` |
 | `/api/project` | project.py | 15 | POST `/folders/rename` · POST `/folders/delete` · GET `/{project_id}` · PUT `/{project_id}` · DELETE `/{project_id}` · POST `/{project_id}/trash` · POST `/{project_id}/restore` · DELETE `/{project_id}/trash` · GET `/{project_id}/archive` · POST `/{project_id}/duplicate` · PATCH `/{project_id}/rename` · PATCH `/{project_id}/folder` · POST `/{project_id}/tags` · DELETE `/{project_id}/tags/{tag}` · GET `/{project_id}/thumbnail` |
 | `/api/proxy` | proxy.py | 2 | POST `/generate` · POST `/switch` |
@@ -55,6 +55,8 @@
 | `/api/subtitle` | subtitle.py | 4 | POST `/import` · POST `/export` · POST `/transcribe` · POST `/align` |
 | `/api/template` | template.py | 7 | GET `/list` · GET `/{template_id}` · POST `/create` · PUT `/{template_id}` · DELETE `/{template_id}` · POST `/{template_id}/apply` · POST `/{template_id}/batch-apply` |
 | `/api/tool` | tool.py | 3 | GET `/list` · POST `/execute` · POST `/batch` |
+| `/api/capability` | capability.py | 1 | POST `/{name}`（**通用能力网关**：按能力名解析→执行，404/422/503/200；插件对外 HTTP 的唯一通道） |
+| `/api/providers` | providers.py | 14 | GET `` · POST `` · GET `/available` · GET `/roles` · PUT `/roles` · GET `/schemas` · GET `/capabilities` · GET `/{id}` · PUT `/{id}` · DELETE `/{id}` · POST `/{id}/models` · POST `/{id}/models/upsert` · POST `/{id}/models/fetch` · POST `/{id}/test` |
 | `/api/type-maker` | type_maker.py | 6 | GET `/list` · GET `/{type_id}` · POST `/create` · PUT `/{type_id}` · DELETE `/{type_id}` · POST `/preview` |
 | `/api/project`（版本） | versions.py | 4 | GET `/{project_id}/versions` · POST `/{project_id}/versions` · POST `/{project_id}/versions/{position}/restore` · DELETE `/{project_id}/versions` |
 | `/api/video-editor` | video_editor.py | 13 | GET `/status` · GET `/projects` · POST `/projects/create` · GET `/projects/{project_id}` · PUT `/projects/{project_id}` · DELETE `/projects/{project_id}` · POST `/projects/{project_id}/undo` · POST `/projects/{project_id}/redo` · POST `/projects/{project_id}/clips/add` · POST `/projects/{project_id}/clips/remove` · POST `/projects/{project_id}/clips/move` · POST `/projects/{project_id}/clips/split` · POST `/projects/{project_id}/export` |
@@ -78,7 +80,7 @@
 
 ## 2. 前端客户端清单（② 客户端 inventory）
 
-> 数据来源：`src/services/api/*.ts` 共 **24 个业务模块、202 个 async 函数**（含 `client.ts` 工厂与 `index.ts` 聚合桶）。
+> 数据来源：`src/services/api/*.ts` 共 **36 个业务模块、332 个 async 函数**（含 `client.ts` 工厂与 `index.ts` 聚合桶；口径见下）。
 > 计数命令：遍历 `src/services/api/*.ts`（排除 `client.ts`/`index.ts`/`*.test.ts`）匹配 `async xxx(...)` 顶层方法。
 
 | 模块文件 | 导出 | 函数数 | 覆盖后端 |
@@ -87,6 +89,7 @@
 | `pipeline.ts` | `pipelineApi` | 9 | `/api/pipeline`（核心 9 项 + 诊断/模板经 client 扩展） |
 | `persona.ts` | `personaApi` | 33 | `/api/persona` + RAG + forge + forge/chat + learn（33） |
 | `project.ts` | `projectApi` / `healthApi` / `pluginApi` / `animationApi` / `skillApi` | 42 | `/api/project` + `/health` + `/api/plugin`（16 项）+ `/api/animation` + `/api/skill` + `/api/stats` |
+| `providers.ts` | `providersApi` + `schemaFor` / `buildSourcePayload` / `validateGeneration`（纯函数） | 13 | `/api/providers`（13/14：list/available/capabilities/schemas/create/update/remove/setRole/setModels/upsertModel/deleteModel/fetchModels/testSource；**未覆盖** `PUT /roles` 的批量语义，角色绑定走 `setRole` 逐条） |
 | `asset.ts` | `assetApi`（含 material 素材 + governance） | 9 | `/api/asset` + `/api/material` + `/api/asset/governance` |
 | `render.ts` | `renderApi` | 7 | `/api/render`（7/10，SSE 流经 sse.ts） |
 | `requirements.ts` | `requirementsApi` | 8 | `/api/requirements`（8/8，含 /edit + streamChat） |
@@ -392,6 +395,8 @@ P6/P7 阶段新增/变更的路由与客户端（均已完成接线与回归）�
 未完成：进程重启后完整事件历史与统一 AgentRun 的恢复链仍不完整——Mongo 只有写路径，
 普通任务事件不会全量落 JSONL，`/runs` 也无法重建重启前的阶段结果。UI 暂以“重启后历史可能不可用”
 处理，后续需补读取恢复或全量持久化。
+
+
 
 
 
