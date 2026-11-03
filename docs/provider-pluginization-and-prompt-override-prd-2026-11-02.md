@@ -630,7 +630,7 @@ API 增量原则：优先扩展 `/api/providers` 现有 list/create/available/ro
 
 需求方明确不写 demo 插件。因此本轮交付物是**能力入口**，不是示例实现：
 
-1. **符号清单接口**：列出 26+8 个可覆盖符号、签名、是否有插件覆盖、当前生效来源。
+1. **符号清单接口（已交付）**：`GET /api/plugin/prompt-symbols` + 插件管理页的「提示词符号」面板（26 常量 / 8 builder、签名、是否被覆盖、覆盖它的 plugin id、以及 `wired` 标记——未接线的符号覆盖了也不会生效）。接口不返回提示词正文，只给长度。
 2. **契约文档**：把 15.2.2 那张表落成可查文档。
 3. **校验器**：注册期 + 启用期执行签名/残留/双 dry-render/纯度检查，产出可读诊断。
 4. **负例**（人工验收用例，**不落成插件目录**）：签名不匹配 / 占位符残留 / 参数不用 / 抛异常 / 非 `str` 五种，必须各自被拒绝或被回落。
@@ -836,6 +836,7 @@ API 增量原则：优先扩展 `/api/providers` 现有 list/create/available/ro
 
 > **宿主与插件均已落地（2026-11-02）**：`slots.ts` 名单 14 → 15；`HomePage` 渲染 `<Slot name="create.dub" optionSources={voices} onValuesChange={setPluginDub} />`；`plugins/tts_feature` 已贡献 `ui_slot: create_dub_entry`（音色 select 用 `optionsFrom: voices`、自动配音 checkbox）。内置配音控件在**有贡献时整块让位**；插件值回填 `voicePick`/`autoDub`（引擎侧字段不变），`stepDone.dub` 有插件值时以插件为准。**剩余**：01 上传配音入口仍在内置块里（插件当前只覆盖音色 + 自动配音），要彻底删除内置块需再给插件补上传控件。
 > slot 契约本身的字段（`slot` / `id` / `title` / `order` / `icon` / `visibleWhen` / `layout`）**沿用现有 `SlotContribution` 定义，不新增字段**；`layout.widgets` 复用现有 plugin UI 控件集（`string` / `select` / `checkbox` / `slider`），未知控件类型必须拒绝并给可读错误（不变量 #13）。
+
 
 
 
