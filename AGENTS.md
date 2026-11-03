@@ -93,7 +93,8 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
       「不得覆盖内置贡献」，根因极难查。六处复制粘贴的旧写法已全部收敛到该函数。
     - **TTS 三个 provider id 已全部插件化**（2026-11-02）：`plugins/tts_cosyvoice`（cosyvoice）、
       `plugins/tts_qwen`（qwen-tts）、`plugins/tts_minimax`（minimax）。因此 B3-T6 删除内置 TTS
-      注册时**不会再让任何 provider 消失**；删之前只剩「人工跑测试」这一个前置。    - 「让位」与「退场」是两件事：让位 = 插件在就让；退场 = 谁都不在也不注册。裁定 3
+      注册时**不会再让任何 provider 消失**；删之前只剩「人工跑测试」这一个前置。
+    - 「让位」与「退场」是两件事：让位 = 插件在就让；退场 = 谁都不在也不注册。裁定 3
       要求 TTS **退场**（TTS 功能插件验收通过后 `ensure_tts_providers_registered()` 不再默认
       调用），**不是**改让位逻辑。
     - 插件对外暴露的 HTTP 入口**只有** `POST /api/capability/{name}`（`api/capability.py`，
@@ -102,97 +103,23 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
       不合规、`503` 已解析但依赖缺失、`200` 成功。**网关内禁止任何具体 provider / 能力名
       分支**；插件不得自挂 router，也不新增 `API_ROUTE` 贡献种类（已否决）。`/api/voice/*`
       过渡期只做薄转发，不承载编排。
+    - **贡献 id 允许连字符**（2026-11-02，Batch 4 放宽）：`schema/plugin.py` 的
+      `ContributionDecl.id` pattern 放宽到 `^[a-z][a-z0-9_-]{1,63}$`。仓库里既有 provider id
+      本来就带连字符（`faster-whisper` / `qwen-tts`），原 pattern 不含 `-` 会让插件**无法声明**
+      这些 id（表现是 manifest 校验失败，而内置注册不校验所以不报错）。id 只做门面键，
+      不参与文件路径。
 
-    - **贡献 id 允许连字符**（2026-11-02，Batch 4 放宽）：`schema/plugin.py` 的 `ContributionDecl.id`
-      pattern 是 `^[a-z][a-z0-9_-]{1,63}# Clipwright / 帧艺 — AI Agent 项目地图
-
-## 快速入口
-
-| 用途 | 文件 |
-|------|------|
-| 项目总览 | [README.md](README.md) |
-| 架构设计 | [docs/structure.md](docs/structure.md) |
-| Agent 工作流 | [docs/workflow.md](docs/workflow.md) |
-| API 参考 | [docs/api_reference.md](docs/api_reference.md) |
-| 开发指南 | [docs/development.md](docs/development.md) |
-| 修复与功能补全计划 | [docs/fix-and-feature-plan.md](docs/fix-and-feature-plan.md)（§10 执行进度） |
-| 素材内容理解与 NL 落位计划 | [docs/content-understanding-plan-2026-09-14.md](docs/content-understanding-plan-2026-09-14.md)（内容索引→检索→NL 意图→落位校验，10 轮） |
-| **主 Actor 化 PRD（下期主线）** | [docs/master-agent-prd-2026-10-26.md](docs/master-agent-prd-2026-10-26.md)（移除 6 阶段管线 → 主 Agent 派发阶段子代理 + 黑板书 + 上轮实测 bug 清单） |
-| 工作区 PRD（已落地） | [docs/workspace-prd-2026-10-24.md](docs/workspace-prd-2026-10-24.md)（一个项目一个工作区：materials/assets/renders/cache） |
-| 前后端对账 | [docs/frontend-backend-parity.md](docs/frontend-backend-parity.md) |
-| 项目上下文 | [CLAUDE.md](CLAUDE.md) |
-
-## 一键启动
-
-```powershell
-scripts\start.ps1        # 检查依赖 → 启动 MongoDB → 后端(8080) → 前端(5173)
-scripts\stop.ps1         # 停止全部
-```
-
-- 后端：`uvicorn clipwright.main:app --port 8080`（`CLIPWRIGHT_PORT=8080`，见 `.env.example`）
-- 前端：**独立仓库** `J:\Clipweight-Client`（`npm run dev`，vite 5173；`/api` 代理 → 8080，`/srv` 代理 → 账号服务 8090）
-- 账号/市场服务：`K:\Clipwright Server` 独立仓库，端口 8090 —— `scripts\start.ps1` 会自动拉起（首次自动生成 `.env` 与随机 JWT secret；目录可用 `$env:CLIPWRIGHT_SERVER_DIR` 覆盖，端口用 `$env:CLIPWRIGHT_SERVER_PORT`）
-
-## 项目结构（后端 monorepo + 前端独立仓库）
-
-```
-J:\Clipwright                    # 后端（Python FastAPI）
-├── clipwright/       # 后端源码
-│   ├── agents/       # 7 个 Agent（需求→结构→素材→剪辑→动画→音频→质检）
-│   ├── api/          # 33 个 API 路由文件
-│   ├── services/     # 30+ 后端服务
-│   ├── tool/         # 44+ 原子能力工具
-│   ├── skill/        # 4 个可组合技能
-│   ├── animation/    # 动画系统（37+ 动画编目）
-│   ├── category/     # 4 个内置类型插件
-│   ├── plugins/      # 第三方插件系统（签名/权限/依赖/启停/错误通道/配置迁移）
-│   ├── schema/       # 11+ 数据模型
-│   ├── rag/          # RAG 知识库
-│   └── persona/      # Persona 配置系统
-├── plugins/          # 内置第三方插件目录（diagram_style 等）
-├── docs/             # 20+ 文档
-└── scripts/          # start/stop/check_env 一键启动脚本
-
-J:\Clipweight-Client              # 前端（React 19 + TS 5.5 + Vite，独立 git 仓库）
-└── src/              # 前端源码（见其 AGENTS.md）
-
-K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓库，8090）
-```
-
-## 核心不变量
-
-1. **7 核心 Agent + 插件 Agent**：RequirementsAgent → StructureAgent → MaterialAgent → EditAgent → AnimationAgent → AudioAgent → QualityAgent；第三方插件可经 AgentRegistry（`orchestrate` 权限）注册自定义 Agent 并入主管线 DAG 或作为子代理被调用（SA-2/3/4）
-2. **44+ 个 Tool**：原子能力层，通过 ToolRegistry 注册
-3. **4 个 Skill**：可组合的高级能力，通过 SkillRegistry 注册
-4. **33 个 API 路由组**：每个路由文件对应一组端点（225 条路由）
-5. **30+ 个 Service**：业务逻辑层
-6. **11+ 个 Schema**：Pydantic v2 数据模型
-7. **4 个内置 Category Plugin**：知识区长片、鬼畜快剪、数码评测、Vlog 日常
-8. **五层架构**：原子能力层 → Agent 编排层 → 类型插件层 → Persona 配置层 → 用户接口层
-9. **Persona 配置不直接调用原子能力**：必须经过类型插件层翻译
-10. **实时链路为 SSE-only**：pipeline trace / requirements chat / render queue 流；WebSocket 已移除
-11. **Agent 不写死工具名**：业务 Agent 通过**语义能力名**（`frame_check` / `video_trim` / `pv_audit` …）经
-    `clipwright/tool/capabilities.py` 在调用时刻解析到具体工具；插件给工具声明 `capability` 即可接管，
-    装卸/配置变化下一次调用立即生效。
-12. **能力与工具可插拔，不在引擎里写死**（2026-10-31 用户裁定）：新增/迁移一个工具，**只改它自己的文件**——
-    在工具类上声明三行即可：
-
-    ```python
-    class MyTool(BaseTool):
-        name = "my_tool"
-        capability = "image_clip"        # 语义能力名（可接管内置能力，优先级用 capability_priority）
-        permission_tier = "write_local"  # read / write_local / costly / dangerous
-        dry_run_capable = False          # 是否支持 dry-run 结构预检
-    ```
-
-    `capability_matrix` **只认**工具自声明的 `permission_tier`。`TIER_MAP` 已于 2026-10-31
-    **全部迁移完毕并清空**（保留空 dict 仅为兼容 `explain()` 与外部读取），内置工具与插件工具
-    （`plugins/*/`，含 `text_animations` 的 25 个文字动画、`pv_engine` 的 9 个引擎工具）都改为
-    类上自声明。漏声明的内置工具仍硬失败（fail-closed），插件工具则降级为"不进 agent 工具面"并留痕。
-
-。仓库里既有 provider id 本来就带连字符
-      （`faster-whisper` / `qwen-tts`），原 pattern 不含 `-` 会让插件**无法声明**这些 id
-      （表现是 manifest 校验失败，而内置注册不校验所以不报错）。id 只做门面键，不参与文件路径。
+25. **插件 UI 控件的值一律回传宿主，执行（上传/落盘/请求）也在宿主**（PRD §15.9，2026-11-02）：
+    - `plugins/*/` 的 `ui_slot` 贡献只声明 `layout.widgets`（声明式 JSON）；前端
+      `PluginLayoutRenderer` 渲染、`Slot.onValuesChange` 把控件值交回宿主页面。
+      **插件拿不到上传 API、工作区路径、凭据**，所以 `file` 控件（`UIFile`）**没有**
+      `action` / `endpoint` 字段——上传由宿主执行（`HomePage.pickAudio`：
+      客户端时长探测 → `assetApi.upload` → 去重提示），宿主按「同一 `File` 对象」去重。
+    - `select` 的动态选项走**宿主白名单**：`optionsFrom` 只能引用宿主已解析的数据源
+      （当前 `voices`），插件拿不到任意数据；未知数据源名渲染「暂无可用选项」并给提示。
+    - 未知控件类型**不许静默丢弃**：渲染器走 `default` 分支给可见占位（不变量 #13 的同一条纪律）。
+    - 内置配音块现在只在 `usePluginSlots('create.dub')` 为空时回落；整块删除属 B3-T6，
+      等人跑完测试后与删除清单一起执行。
 
 ## 鉴权三模式
 
@@ -348,5 +275,3 @@ npm run build                    # tsc 过不代表 build 过（vite 另有一�
 | [服务概览](docs/services_overview.md) | services/ 全部服务 |
 | [整数时间基座](docs/timebase.md) | utils/timebase.py, schema/timeline.py 的时间派生属性, services/render.py 漂移校正, services/timeline_view.py |
 | [需求分析 Agent](docs/requirements_agent.md) | agents/requirements_agent.py, services/requirements_service.py |
-
-

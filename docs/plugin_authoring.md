@@ -112,9 +112,12 @@ class MyProducerBackend:
 
 ## 3.1 UI 槽位与前端约定
 
-- **slot 名单冻结**：`nav.primary` / `nav.settings` / `page` / `editor.left-panel` /
+- **slot 名单冻结（15 个）**：`nav.primary` / `nav.settings` / `page` / `editor.left-panel` /
   `editor.right-panel` / `editor.bottom-panel` / `editor.toolbar` / `timeline.tool` /
-  `timeline.context-menu` / `props.section` / `export.preset` / `settings.section` / `shortcut`。
+  `timeline.context-menu` / `props.section` / `export.preset` / `settings.section` /
+  `create.dub` / `app.overlay` / `shortcut`（权威名单见前端
+  `src/features/plugins/slots.ts` 的 `SLOT_NAMES`）。**新增 slot 必须走 SlotRegistry 评审**，
+  在插件里写个新名字不会被渲染。
 - **`visibleWhen`** 是受限表达式（`context.xxx` 真值或 `===`/`!==`/`==`/`!=` 比较），
   **不执行任意 JS**；解析失败一律视为不可见。
   上下文键：`hasSelection` / `clipKind` / `trackKind` / `playing` / `hasTimeline` / `isAdmin`。
@@ -133,6 +136,29 @@ class MyProducerBackend:
 - **受信任 bundle**：`meta.payload.bundle = true` 时由 `<iframe sandbox="allow-scripts">`
   承载，需后端开启 `plugin_allow_ui_bundle` **且** manifest 带签名；
   与宿主只通过 `postMessage({type:'resize'|'call'|'result'})` 通信，插件拿不到凭据。
+
+## 3.2 面板控件集（`meta.layout.widgets`，14 类）
+
+声明式 JSON，不写 React。**值一律经 `onChange` → `Slot.onValuesChange` 交回宿主**；
+未知 `type` 不会静默丢弃，渲染器会给可见占位（方便发现「前端还没实现这个控件」）。
+
+| type | 值 / 关键字段 | 说明 |
+|---|---|---|
+| `string` / `input` | 字符串（`key` / `label` / `placeholder` / `defaultValue`） | 单行文本 |
+| `textarea` | 字符串（`rows`） | 多行文本 |
+| `select` | 字符串（`options` 或 `optionsFrom`） | `optionsFrom` 只能引用**宿主白名单数据源**（当前 `voices`），插件拿不到任意数据；给不出选项时显示「暂无可用选项」 |
+| `checkbox` | 布尔 | |
+| `slider` | 数字（`min` / `max` / `step`） | |
+| `file` | `File` 对象（`accept` / `placeholder`） | **上传执行归宿主**：控件只把选中的文件交回宿主页面，插件不发起上传、拿不到上传 API/路径/凭据，因此没有 `action`/`endpoint` 字段 |
+| `button` | —（`action: {endpoint, method, body?, resultMap?}`） | 只能发 JSON 请求（多部分表单上传请用 `file` 交给宿主） |
+| `image` | —（`sourceField` 指向状态里的 URL） | 无 URL 时不渲染 |
+| `spinner` | —（`label`） | 加载态 |
+| `alert` | —（`severity` + `textField`） | 文本为空时不渲染 |
+| `text` | —（`content` 或 `contentField`） | 说明文案 |
+| `row` / `column` / `group` | —（`children` / `gap` / `title`） | 布局容器 |
+
+见 `plugins/tts_feature` 的 `create_dub_entry`：`select voice_id`（`optionsFrom: voices`）+
+`checkbox auto_dub` + `file upload_voice` + 说明文案，就是创作页「03 配音与字幕」的全部入口。
 
 ## 4. Provider 源的写法（模型 / 嵌入 / 重排序 / 语音）
 

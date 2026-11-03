@@ -835,8 +835,10 @@ API 增量原则：优先扩展 `/api/providers` 现有 list/create/available/ro
 
 | 9 | 插件侧 UI 的动态选项数据源 | **已补（2026-11-02）**：`UISelect` 增加 `optionsFrom`（宿主**白名单**数据源名，当前支持 `voices`），宿主解析后传给渲染器，插件拿不到任意数据；同时 `PluginLayoutRenderer` 增加 `onChange`、`Slot` 增加 `optionSources` / `onValuesChange`，把控件值回传给宿主。两者的安全边界：插件只声明「要哪个白名单数据源」，不参与取值 | 缺省无 `optionsFrom` 时行为不变；未知数据源名渲染为「暂无可用选项」并给可读提示，不静默丢弃 |
 
-> **宿主与插件均已落地（2026-11-02）**：`slots.ts` 名单 14 → 15；`HomePage` 渲染 `<Slot name="create.dub" optionSources={voices} onValuesChange={setPluginDub} />`；`plugins/tts_feature` 已贡献 `ui_slot: create_dub_entry`（音色 select 用 `optionsFrom: voices`、自动配音 checkbox）。内置配音控件在**有贡献时整块让位**；插件值回填 `voicePick`/`autoDub`（引擎侧字段不变），`stepDone.dub` 有插件值时以插件为准。**剩余**：01 上传配音入口仍在内置块里（插件当前只覆盖音色 + 自动配音），要彻底删除内置块需再给插件补上传控件。
-> slot 契约本身的字段（`slot` / `id` / `title` / `order` / `icon` / `visibleWhen` / `layout`）**沿用现有 `SlotContribution` 定义，不新增字段**；`layout.widgets` 复用现有 plugin UI 控件集（`string` / `select` / `checkbox` / `slider`），未知控件类型必须拒绝并给可读错误（不变量 #13）。
+> **宿主与插件均已落地（2026-11-02）**：`slots.ts` 名单 14 → 15；`HomePage` 渲染 `<Slot name="create.dub" optionSources={voices} onValuesChange={setPluginDub} />`；`plugins/tts_feature` 已贡献 `ui_slot: create_dub_entry`（音色 select 用 `optionsFrom: voices`、自动配音 checkbox）。内置配音控件在**有贡献时整块让位**；插件值回填 `voicePick`/`autoDub`（引擎侧字段不变），`stepDone.dub` 有插件值时以插件为准。**上传配音入口已补（第 10 项）**：插件用 `file` 控件提供入口、宿主执行上传；内置块现在只在**无插件贡献**时回落，整块删除仍等 B3-T6 的人工验证。
+> slot 契约本身的字段（`slot` / `id` / `title` / `order` / `icon` / `visibleWhen` / `layout`）**沿用现有 `SlotContribution` 定义，不新增字段**；`layout.widgets` 复用现有 plugin UI 控件集（`string` / `select` / `checkbox` / `slider` / `file`），未知控件类型必须拒绝并给可读错误（不变量 #13）。
+
+| 10 | 插件侧的上传配音入口 | **已补（2026-11-02）**：widget 契约新增 `type: 'file'`（`UIFile`：`key` / `label` / `accept` / `placeholder`）。控件值以 `File` 对象经 `onChange` → `Slot.onValuesChange` 回传；**上传执行与回执归宿主**（`HomePage.pickAudio`：客户端时长探测 → `assetApi.upload` → 去重提示），插件不碰上传 API / 工作区路径 / 凭据，所以 `UIFile` **没有** `action` / `endpoint` 字段。`plugins/tts_feature` 的 `create_dub_entry` 已加 `{"type": "file", "key": "upload_voice"}` + 说明文案 | 宿主只认「控件值里出现 `File` 对象」，不耦合插件私有 key（换 key 也不用改宿主）；未知控件类型仍由 `default` 分支给可见占位，不静默丢弃 |
 
 
 

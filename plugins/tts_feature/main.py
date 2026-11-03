@@ -53,6 +53,14 @@ class TtsFeaturePlugin(BasePlugin):
                              "optionsFrom": "voices"},
                             {"type": "checkbox", "key": "auto_dub", "label": "自动配音",
                              "defaultValue": True},
+                            # 上传配音入口（PRD §15.9 第 10 项）：`file` 控件把 `File`
+                            # 回传宿主，**上传执行与回执归宿主**——插件不碰上传 API、
+                            # 工作区路径与凭据，也不参与重试/去重/时长探测。
+                            {"type": "file", "key": "upload_voice", "label": "上传配音",
+                             "accept": ".wav,.mp3,.m4a,.mp4",
+                             "placeholder": "选择配音文件（wav / mp3 / m4a）"},
+                            {"type": "text", "size": "caption",
+                             "content": "上传配音后按实测时长对齐字幕；不上传则用自动配音（需先选音色）。"},
                         ],
                     },
                 },

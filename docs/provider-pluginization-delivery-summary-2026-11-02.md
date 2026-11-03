@@ -25,7 +25,7 @@ PRD 的五个批次（Batch 1–5）与 Batch 0 核实，**代码侧全部落地
 | **B0 核实** | 台账 71 条逐条闭环（53 闭环 / 5 被裁定取代 / 4 误命中 / 2 仍开需人测 / 1 产品决策） | `e59b510` `741651c` `b00a3d6` |
 | **B1 契约与注册表** | 内置让位收敛到 `providers/builtin_registry.py`；Provider 声明升一级字段（`config_schema`/`capabilities`）+ 校验器 `plugins/provider_decl.py`；`GET /api/providers/schemas`；`POST /api/capability/{name}` 通用能力网关；前端 schema 驱动表单 | `f3de7bd` `82a7e55` `30ea8f8` |
 | **B2 LLM 插件** | `plugins/llm_openai_compatible/`（openai/ollama）、`plugins/llm_anthropic/`（anthropic）；`override_builtin` 接管 + 逐 id 让位 | `1d8f039` |
-| **B3 TTS 双插件** | `plugins/tts_cosyvoice`、`plugins/tts_qwen`、`plugins/tts_minimax`（协议层）；`plugins/tts_feature`（`dub_script` 技能 + `create.dub` 界面）；`/api/voice/dub` 薄转发；`create.dub` slot（名单 14→15）+ 动态选项 `optionsFrom` + 控件值回传 | `5f27973` `54c78a1` `56017c8` `08166da` |
+| **B3 TTS 双插件** | `plugins/tts_cosyvoice`、`plugins/tts_qwen`、`plugins/tts_minimax`（协议层）；`plugins/tts_feature`（`dub_script` 技能 + `create.dub` 界面）；`/api/voice/dub` 薄转发；`create.dub` slot（名单 14→15）+ 动态选项 `optionsFrom` + 控件值回传 + **`file` 上传配音控件** | `5f27973` `54c78a1` `56017c8` `08166da` |
 | **B4 其他 provider** | `plugins/embedding_providers`、`plugins/rerank_providers`、`plugins/stt_providers`；`ContributionDecl.id` 放宽允许连字符 | `3abdf8d` |
 | **B5 提示词覆盖** | `plugins/prompt_overrides.py`（符号自省 + 四关 + 双 dry-render + 静态纯度 + `safe_builder` 回落）；**26 常量 + 8 builder 全部接线**（`resolve_constant` / `prompts._c` / `_mg_constraint` / `_p` / `_hdr`）；`GET /api/plugin/prompt-symbols` + 插件管理页面板 | `2343737` `316d177` `54669a4` `60018ac` `2f08c2b` |
 
@@ -86,11 +86,18 @@ cd J:\Clipweight-Client; npx tsc --noEmit; npm run test
 打桩接缝（`tests/clipwright/test_llm_provider_protocol.py:38` monkeypatch
 `clipwright.services.llm.OpenAIChat`）。属独立重构（PRD §5.2 的「迁移过渡期」）。
 
-### 5.2 上传配音入口仍在内置块
+### 5.2 上传配音入口已归插件（2026-11-02 补）
 
-`create.dub` 插件贡献了「音色 + 自动配音」，但**上传配音**还在 HomePage 的内置块里
-（插件当前没有文件类控件）。要做到「无插件即无入口」，需再给 widget 契约加 `file` 类型
-（PRD §15.9 #3 已注明）。
+`create.dub` 现在覆盖「音色 + 自动配音 + 上传配音」三项。上传走新增的 `file` 控件
+（`UIFile`）：控件值 = `File` 对象，**上传执行与回执归宿主**（`HomePage.pickAudio`：
+客户端时长探测 → `assetApi.upload` → 去重提示），插件拿不到上传 API / 工作区路径 /
+凭据，所以 `UIFile` **没有** `action` / `endpoint` 字段。宿主只认「值里出现 `File`
+对象」，不耦合插件私有 key。
+
+内置块（隐藏的 `<input type=file>` + 上传按钮）现在只在 `usePluginSlots('create.dub')`
+**为空**时回落——这是过渡期写法，最终态是「无插件即无入口」，整块删除与 B3-T6 同批
+（等人工跑测试）。上传中/失败/已上传的回执仍留在宿主侧（两种模式都显示），因为那是
+宿主执行的回执，不是插件控件。
 
 ### 5.3 `role/source` 的插件归属是推导值
 

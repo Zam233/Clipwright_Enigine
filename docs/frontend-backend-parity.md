@@ -396,6 +396,26 @@ P6/P7 阶段新增/变更的路由与客户端（均已完成接线与回归）�
 普通任务事件不会全量落 JSONL，`/runs` 也无法重建重启前的阶段结果。UI 暂以“重启后历史可能不可用”
 处理，后续需补读取恢复或全量持久化。
 
+## 11. Provider 插件化与 `create.dub`（2026-11-02 增量）
+
+PRD：[`provider-pluginization-and-prompt-override-prd-2026-11-02.md`](provider-pluginization-and-prompt-override-prd-2026-11-02.md)。
+本节补齐该 PRD §15.9 第 7 项（`create.dub` 的贡献形状 + 客户端渲染入口）。
+
+| 后端 | 前端 | 状态 / 契约 |
+|---|---|---|
+| `GET /api/plugin/contributions?slot=create.dub` | `usePluginSlots('create.dub')` → `<Slot>` → `PluginLayoutRenderer` | ✅ 贡献形状沿用 `SlotContribution`（`slot/id/title/order/icon/visibleWhen/layout`），**未新增字段** |
+| `plugins/tts_feature` 的 `ui_slot: create_dub_entry` | `HomePage` → 03 配音与字幕 | ✅ `layout.widgets` = `select voice_id`（`optionsFrom: voices`）+ `checkbox auto_dub` + `file upload_voice`（`accept: .wav,.mp3,.m4a,.mp4`）+ `text` 说明 |
+| `UISelect.optionsFrom: 'voices'` | `Slot.optionSources`（`HomePage` 由音色列表解析） | ✅ 宿主**白名单**数据源；未知源名渲染「暂无可用选项」，不静默丢弃 |
+| `UIFile`（`type: 'file'`） | `PluginLayoutRenderer` → `Slot.onValuesChange` → `HomePage.pickAudio` | ✅ 控件值 = `File` 对象；**上传执行/回执归宿主**（插件拿不到上传 API、工作区路径、凭据），宿主按「同一 File 对象」去重，不重复上传 |
+| `GET /api/providers/schemas[?kind=]` | `providersApi.schemas()` → `ProvidersPage` | ✅ 表单字段由插件 `config_schema` 驱动；未知控件给可读错误，未知能力键只列出（`unknown_capability_keys`） |
+| `GET /api/providers/capabilities?kind=&provider=&model=` | `ProvidersPage` 能力徽标 | ✅ 按实现真实返回；解析不到时 `capabilities=null + error`（不 404，诊断要能显示「没装」） |
+| `POST /api/capability/{name}` | 能力调用方（主 agent / 工具编排） | ✅ 404 未解析 / 422 参数或路径 / 503 依赖缺失 / 200 `ToolExecResult`；无 provider 专属分支 |
+| `GET /api/plugin/prompt-symbols` | `PluginsPanel`「提示词符号」模态框 | ✅ 只回 26 常量 + 8 builder 的 `wired` 与覆盖来源，**不回提示词正文** |
+
+未完成（与 PRD §15.9 同源）：内置配音块仍以 `dubSlotContribs.length === 0` 作为**无插件回落**，
+最终态要等 B3-T6 的人工验证通过后整块删除（清单：
+[`provider-pluginization-b3t6-removal-checklist.md`](provider-pluginization-b3t6-removal-checklist.md)）。
+
 
 
 

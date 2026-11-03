@@ -183,7 +183,7 @@
 | B3-T4 功能层插件 + 编排下沉 | 已完成 | `plugins/tts_feature/`：`dub.py` 里的 `DubScriptOrchestrator` 接管切句、逐段合成、确定性 seed、句级/词级时间轴；engine 只保留 `VoiceService.synthesize()` 协议调度基座 |
 | B3-T3 名称解析与指纹缓存 | 未改动（守住） | `_get_provider` 的身份仍来自 `contribution.id`，缓存键仍含凭据指纹；本轮没有碰它 |
 | B3-T6 摘 engine 编排与内置注册 | **前置条件 ①已解决，等人工测试** | 已产出执行前核对清单：[`provider-pluginization-b3t6-removal-checklist.md`](provider-pluginization-b3t6-removal-checklist.md)——列出 ① 要删的 4 处（`dub_script` 方法、`skill/dub.py`、`skill/builtin.py` 注册、`ensure_tts_providers_registered` 及其 4 个调用点）；② 要搬的 `split_text`（切句策略归功能插件）；③ 保留不动的基座（`register_builtin_once`、协议类、上传器）；④ 删除后的 6 条验收断言；⑤ **必须先拍板的一点**：删内置会让 `qwen-tts`/`minimax` 从下拉消失（目前只有 cosyvoice 有插件），建议先补插件再删 |
-| B3-T5 `create.dub` slot 迁 03 步骤 | **已完成** | 宿主：`slots.ts` 名单 14→15；`HomePage` 渲染 `<Slot name="create.dub" optionSources={voices} onValuesChange={setPluginDub} />`；内置配音控件在有贡献时整块让位。**契约补齐**：`UISelect.optionsFrom`（宿主白名单数据源，目前 `voices`）+ `PluginLayoutRenderer.onChange`/`Slot.onValuesChange`（插件控件值回传宿主，用 ref 避免内联箭头函数导致死循环）+ `Slot.optionSources`。插件：`plugins/tts_feature` 新增 `ui_slot: create_dub_entry`（select voice_id optionsFrom=voices + checkbox auto_dub），manifest 已声明（声明即授权）。宿主把插件值回填 `voicePick`/`autoDub`（引擎侧字段不变），`stepDone.dub` 有插件值时以插件为准。实测 `/api/plugin/contributions?slot=create.dub` 返回 1 条含 `optionsFrom` |
+| B3-T5 `create.dub` slot 迁 03 步骤 | **已完成** | 宿主：`slots.ts` 名单 14→15；`HomePage` 渲染 `<Slot name="create.dub" optionSources={voices} onValuesChange={setPluginDub} />`；内置配音控件在有贡献时整块让位。**契约补齐**：`UISelect.optionsFrom`（宿主白名单数据源，目前 `voices`）+ `PluginLayoutRenderer.onChange`/`Slot.onValuesChange`（插件控件值回传宿主，用 ref 避免内联箭头函数导致死循环）+ `Slot.optionSources`。插件：`plugins/tts_feature` 新增 `ui_slot: create_dub_entry`（select voice_id optionsFrom=voices + checkbox auto_dub），manifest 已声明（声明即授权）。宿主把插件值回填 `voicePick`/`autoDub`（引擎侧字段不变），`stepDone.dub` 有插件值时以插件为准。实测 `/api/plugin/contributions?slot=create.dub` 返回 1 条含 `optionsFrom`。<br>**2026-11-02 追加**：`create.dub` 补 **`file` 控件**（`UIFile`，值=`File` 对象）覆盖上传配音入口，上传执行/回执仍归宿主（`pickAudio`），插件不碰上传 API/路径/凭据；内置上传入口只在**无贡献**时回落。实测 `/api/plugin/contributions?slot=create.dub` 的 widgets 变成 `select voice_id` / `checkbox auto_dub` / `file upload_voice(accept=.wav,.mp3,.m4a,.mp4)` / `text` 说明 |
 | B3-T7 能力发现与缺失一等状态 | 已完成 | `dub` 能力名由插件技能提供；`AudioAgent` 在 `call_skill("dub")` 返回 `not_found` 时写**可读降级说明**「未配音：当前没有可用的配音能力（TTS 功能插件未安装或被禁用）」，与普通失败（`自动配音失败: …`）分开；**没有**直连 `VoiceService` 兜底 |
 | B3-T8 通用能力网关 + `/api/voice/*` 薄转发 | 已完成 | 网关在 Batch 1 落地；本轮把 `/api/voice/dub` 改成薄转发：`skill_resolve("dub")` → `SkillRegistry.execute`，端点不再调 `VoiceService.dub_script()` 编排；解析不到直接 `503` + 可读原因。实测：正常走插件技能；把插件与内置两次 unregister 后 → 503 |
 
@@ -342,7 +342,7 @@
 | H-024 | 已闭环 | isobase 版本：`pyproject.toml:26` 是 `git+https://github.com/landspark/IsoBase.git`，**无 ref/无版本锁**（结论即「当前无锁」） |
 | H-025 | 已闭环 | 迁移期 fallback 已落地：`providers/builtin_registry.register_builtin_once()` 逐 id 让位 + 插件侧 `override_builtin` 接管 |
 | H-026 | 已闭环 | TTS 协议侧结构：`TtsProviderEntry{name,factory,default_model,needs_uploader}`（`providers/tts/__init__.py:28-32`）；结果侧 `VoiceResult{success,error,data}`（`services/voice.py`） |
-| H-027 | 已闭环 | 控件 schema：`PluginLayoutRenderer` 支持 13 类控件（input/string/select/checkbox/slider/button/image/spinner/alert/text/textarea/row/column/group）；**已知缺口**：`options` 是静态的，无动态数据源（PRD §15.9 #9） |
+| H-027 | 已闭环 | 控件 schema：`PluginLayoutRenderer` 支持 **14 类**控件（input/string/select/checkbox/slider/button/image/spinner/alert/text/textarea/row/column/group/**file**）；`select` 的 `optionsFrom` 已接宿主白名单数据源（目前 `voices`）；`file`（2026-11-02 补）把 `File` 经 `onChange` 回传宿主，**上传执行与回执归宿主**，插件不接触上传 API/路径/凭据 |
 | H-028 | **已闭环** | TTS 协议错误分类已实现：`services/voice_errors.py::classify_error()` 输出 `{error_code, stage, provider_id, retryable, message}`；三处统一使用（`VoiceService.synthesize` 的 except、音色不存在、provider 解析失败）；`/api/voice/synthesize` 失败时 `detail` 返回该结构（不再是单一人话字符串）；错误文本剥掉 `sk-…` / `Bearer …` / `api_key=…`。实测：401→`auth_failed/auth/false`、429→`rate_limited/request/true`、超时→`provider_timeout`、余额→`quota_exceeded`、断连→`stream_broken`、上传器缺失→`uploader_missing`、音色不存在→`voice_not_found`、provider 解析失败→`provider_not_found` |
 | H-029 | 已被裁定取代 | 原「只比占位符集合」已被 PRD §15.2.2 加强为四关（签名形状 / 占位符 / 双 dry-render / 静态纯度） |
 | H-030 | 已闭环 | 来源元数据：`prompt_overrides` 每条覆盖带 `plugin_id/kind/source`，`GET /api/plugin/prompt-symbols` 可查 |
@@ -420,6 +420,37 @@
 
 修法：只在实现来源发生变化（`old_src != new_src`）时压栈；同 owner 重注册不动影子。
 这正是「写脚本顺带查出产品缺陷」的例子——不写这个检查，reload 场景的退化不会被任何人发现。
+
+## 2026-11-02 追补：`create.dub` 的 `file` 控件 + 一处文档损坏修复
+
+### 1. 上传配音入口迁进插件（PRD §15.9 第 10 项）
+
+之前 `create.dub` 只覆盖「音色 + 自动配音」，上传配音还在 `HomePage` 的内置块里。本轮补完：
+
+| 落点 | 内容 |
+|---|---|
+| 前端控件契约 | `types.ts` 新增 `UIFile`（`type: 'file'`，字段 `key` / `label` / `accept` / `placeholder`）；**没有** `action` / `endpoint` |
+| 渲染器 | `PluginLayoutRenderer` 新增 `case 'file'`（共 14 类控件）：值 = `File` 对象、显示已选文件名、可清除；同一个文件可再次选择 |
+| 宿主 | `HomePage` 在插件值里发现 `File` 就交给既有 `pickAudio`（时长探测 → 上传 → 去重提示），并用 `pluginPickedFileRef` 保证同一对象只上传一次；**不耦合插件私有 key** |
+| 插件 | `plugins/tts_feature` 的 `create_dub_entry` 加 `file: upload_voice`（`accept=.wav,.mp3,.m4a,.mp4`）+ 说明文案 |
+| 回落 | 内置上传入口现在只在 `usePluginSlots('create.dub')` 为空时渲染；上传中/失败/已上传的**回执**移到宿主侧、两种模式都显示 |
+
+**边界（写进 AGENTS.md #25）**：控件的**值**回传宿主，**执行**（上传/落盘/请求）也在宿主；
+插件拿不到上传 API、工作区路径与凭据。实测 `GET /api/plugin/contributions?slot=create.dub`
+返回 4 个 widget：`select voice_id(optionsFrom=voices)` / `checkbox auto_dub` /
+`file upload_voice(accept=.wav,.mp3,.m4a,.mp4)` / `text`。
+
+### 2. `AGENTS.md` 被上一次编辑写坏了（真缺陷，已修）
+
+`3abdf8d`（Batch 4 提交）对 `AGENTS.md` 的编辑把「贡献 id 允许连字符」那条 bullet
+**截断成半行**，并把文档的**前半部分（标题 → 核心不变量 1–12）整块复制进了这一行**，
+表现为：`## 快速入口` / `## 一键启动` / `## 项目结构` / `## 核心不变量` 各出现两次，
+中间夹着一行 `pattern 是 \`^[a-z][a-z0-9_-]{1,63}# Clipwright / 帧艺 — AI Agent 项目地图`。
+`08166da` 又在同一区域把两条 bullet 粘成了一行。修法：以 `3abdf8d^` 的干净版本为基线
+重写这一段（`git restore --source=3abdf8d^`），再按原意补齐两处内容 + 新增 #25；
+修完自检：四个二级标题各 1 次、`# Clipwright` 只出现 1 次、非空行 230。
+教训与不变量 #13 同源：**改文档也要 diff 自检**，`git diff --stat` 出现「删 94 增 19」
+这种手笔就该回头看是不是误删/误插。
 
 
 
