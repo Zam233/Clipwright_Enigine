@@ -97,6 +97,58 @@ async def provider_schemas(kind: str = "", request: Request = None) -> dict[str,
     return {"schemas": all_schemas()}
 
 
+@router.get("/capabilities")
+async def provider_capabilities(
+    provider: str = "",
+    kind: str = "llm",
+    model: str = "",
+    request: Request = None,
+) -> dict[str, Any]:
+    """某个 provider 的**能力协商结果**（H-066 诊断入口）。
+
+    为什么需要：能配 reasoning 强度 ≠ 能看见思考内容。前端如果按 provider 名字猜能力，
+    就会给出「点了没反应的按钮」。这里直接问实现：`impl.capabilities(model)`。
+
+    返回 ``{provider, kind, plugin_id, model, capabilities: {...}}``；
+    解析不到实现时 ``capabilities=None`` + ``error``（不抛 404：诊断接口要能显示「没装」）。
+    """
+    _require_admin(request)
+    from dataclasses import asdict, is_dataclass
+
+    from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+
+    decl_kind = kind if kind.endswith("_provider") else f"{kind}_provider"
+    try:
+        kind_enum = ContributionKind(decl_kind)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"未知的 provider 类型: {kind}")
+
+    impl = ContributionRegistry.resolve(kind_enum, provider) if provider else None
+    if impl is None:
+        return {"provider": provider, "kind": kind, "plugin_id": "", "model": model,
+                "capabilities": None, "error": "未安装或不可用"}
+
+    owner = ContributionRegistry.owner_of(kind_enum, provider)
+    caps = None
+    error = ""
+    try:
+        getter = getattr(impl.object, "capabilities", None)
+        if callable(getter):
+            value = getter(model or str(getattr(impl.object, "default_model", lambda: "")()))
+            caps = asdict(value) if is_dataclass(value) else dict(value or {})
+    except Exception as e:  # noqa: BLE001 — 诊断接口不因实现异常而失败
+        error = f"capabilities() 调用失败: {type(e).__name__}: {e}"
+
+    return {
+        "provider": provider,
+        "kind": kind,
+        "plugin_id": "" if owner == "__builtin__" else owner,
+        "model": model,
+        "capabilities": caps,
+        "error": error,
+    }
+
+
 @router.get("/roles")
 async def get_roles(request: Request = None) -> dict[str, Any]:
     _require_admin(request)
@@ -282,3 +334,4 @@ async def test_source(source_id: str, request: Request = None) -> dict[str, Any]
 
     return {"ok": False, "latency_ms": _ms(),
             "detail": f"{kind} 类型暂不支持探测（语音合成无统一握手协议）"}
+

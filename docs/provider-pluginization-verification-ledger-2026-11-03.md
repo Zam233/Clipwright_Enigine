@@ -182,7 +182,7 @@
 | B3-T2 CosyVoice 协议插件 | 已完成 | `plugins/tts_cosyvoice/`：声明 `tts_provider:cosyvoice`（`config_schema`: api_key(secret)/workspace_id/default_model，`capabilities`: stream/needs_uploader）。实测归属 `cosyvoice → tts_cosyvoice`，`qwen-tts`/`minimax` 仍内置（逐 id 让位正确） |
 | B3-T4 功能层插件 + 编排下沉 | 已完成 | `plugins/tts_feature/`：`dub.py` 里的 `DubScriptOrchestrator` 接管切句、逐段合成、确定性 seed、句级/词级时间轴；engine 只保留 `VoiceService.synthesize()` 协议调度基座 |
 | B3-T3 名称解析与指纹缓存 | 未改动（守住） | `_get_provider` 的身份仍来自 `contribution.id`，缓存键仍含凭据指纹；本轮没有碰它 |
-| B3-T6 摘 engine 编排与内置注册 | **待人工验证后执行** | 按 PRD §15.1.6 第 2 条：插件完成并通过 §15.3 验收后立即删除。**删除前必须由人跑一次** `python -m pytest tests -q`，否则内置被摘掉而插件在某环境没加载时会直接失去配音能力 |
+| B3-T6 摘 engine 编排与内置注册 | **准备完成，等人工测试后执行** | 已产出执行前核对清单：[`provider-pluginization-b3t6-removal-checklist.md`](provider-pluginization-b3t6-removal-checklist.md)——列出 ① 要删的 4 处（`dub_script` 方法、`skill/dub.py`、`skill/builtin.py` 注册、`ensure_tts_providers_registered` 及其 4 个调用点）；② 要搬的 `split_text`（切句策略归功能插件）；③ 保留不动的基座（`register_builtin_once`、协议类、上传器）；④ 删除后的 6 条验收断言；⑤ **必须先拍板的一点**：删内置会让 `qwen-tts`/`minimax` 从下拉消失（目前只有 cosyvoice 有插件），建议先补插件再删 |
 | B3-T5 `create.dub` slot 迁 03 步骤 | **已完成** | 宿主：`slots.ts` 名单 14→15；`HomePage` 渲染 `<Slot name="create.dub" optionSources={voices} onValuesChange={setPluginDub} />`；内置配音控件在有贡献时整块让位。**契约补齐**：`UISelect.optionsFrom`（宿主白名单数据源，目前 `voices`）+ `PluginLayoutRenderer.onChange`/`Slot.onValuesChange`（插件控件值回传宿主，用 ref 避免内联箭头函数导致死循环）+ `Slot.optionSources`。插件：`plugins/tts_feature` 新增 `ui_slot: create_dub_entry`（select voice_id optionsFrom=voices + checkbox auto_dub），manifest 已声明（声明即授权）。宿主把插件值回填 `voicePick`/`autoDub`（引擎侧字段不变），`stepDone.dub` 有插件值时以插件为准。实测 `/api/plugin/contributions?slot=create.dub` 返回 1 条含 `optionsFrom` |
 | B3-T7 能力发现与缺失一等状态 | 已完成 | `dub` 能力名由插件技能提供；`AudioAgent` 在 `call_skill("dub")` 返回 `not_found` 时写**可读降级说明**「未配音：当前没有可用的配音能力（TTS 功能插件未安装或被禁用）」，与普通失败（`自动配音失败: …`）分开；**没有**直连 `VoiceService` 兜底 |
 | B3-T8 通用能力网关 + `/api/voice/*` 薄转发 | 已完成 | 网关在 Batch 1 落地；本轮把 `/api/voice/dub` 改成薄转发：`skill_resolve("dub")` → `SkillRegistry.execute`，端点不再调 `VoiceService.dub_script()` 编排；解析不到直接 `503` + 可读原因。实测：正常走插件技能；把插件与内置两次 unregister 后 → 503 |
@@ -381,7 +381,7 @@
 | H-063 | 已闭环 | prompt 组装接入：8 个 builder + 24 个常量已走解析层；`builtin_contributions.py:163,195` 的收集逻辑未改（append 路径保持） |
 | H-064 | 已闭环 | 来源诊断：`GET /api/plugin/prompt-symbols`（UI 落点仍未定，见 H-068） |
 | H-065 | 仍开 | 运行时 prompt 快照回归：我做了「26 常量 + 8 builder 输出的 sha256 快照比对（差异 0）」，但**真实 LLM 路径的快照比对需要人跑测试** |
-| H-066 | 仍开 | reasoning 诊断 UI：未实现（与 provider 无关的后端字段已存在） |
+| H-066 | **已闭环** | 能力协商有了诊断入口：`GET /api/providers/capabilities?kind=&provider=&model=`（admin 门禁）按**实现真实返回** `capabilities()`（含 `reasoning_effort` / `reasoning_content` / `reasoning_streaming` / `generation_params` 等），解析不到时返回 `capabilities=null + error`（不抛 404，诊断要能显示「没装」）。前端 `ProvidersPage` 的「源设置」里新增能力徽标行（流式 / 工具调用 / 视觉 / JSON 模式 / 思考强度 / 思考内容）+ 提供方插件 id。实测：openai/anthropic 都报 `reasoning_effort=True, reasoning_content=True`；tts provider 无这些字段；未知 provider 返回「未安装或不可用」 |
 | H-067 | 已被裁定取代 | W1…W5 粗估已被 §15.4 任务级口径取代 |
 | H-068 | **已闭环** | 诊断 UI 落点定为**插件管理页**（`PluginsPage` → `PluginsPanel`）新增「提示词符号」按钮 + 模态框：显示 26 常量 / 8 builder、已接线数、被覆盖数、逐符号状态（绿点=已接线、灰点=未接线、标签=覆盖它的 plugin id）、以及最近被拒绝的覆盖原因。数据源 `GET /api/plugin/prompt-symbols`（admin 门禁，不返回提示词正文） |
 | H-069 | 非条目（提取误命中） | 这是 PRD §15.1.7 的标题行，不是问题 |
@@ -389,6 +389,8 @@
 | H-071 | 非条目（提取误命中） | 这是 PRD §15.7「仍未核实」的条目，已在本节逐条处理 |
 
 **net 结论**：Batch 0 的实质性核实已完成；剩下的 9 条都卡在两类外部条件上——需要人跑测试（H-065、H-057）、或产品尚未定（H-044 STT tab、H-068 诊断 UI 落点、H-023 彻底拆 client、H-032/H-036 字段命名、H-028 TTS 错误分类、H-066 reasoning UI）。
+
+
 
 
 
