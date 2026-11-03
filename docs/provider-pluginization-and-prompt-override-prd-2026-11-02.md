@@ -832,10 +832,11 @@ API 增量原则：优先扩展 `/api/providers` 现有 list/create/available/ro
 | 7 | `docs/frontend-backend-parity.md` | 记录 `create.dub` 的贡献形状与客户端渲染入口 | 前后端对账表失真 |
 | 8 | 契约评审 | 新增 slot 必须经 SlotRegistry 评审（名单冻结纪律），评审记录留档 | 下次任何人新增 slot 都会绕过流程 |
 
-| 9 | 插件侧 UI 贡献的**前置契约** | 现有 widget schema 只有静态 `options`（`PluginLayoutRenderer` 支持 input/string/select/checkbox/slider/button/image/text 等 13 种），**拿不到动态数据源**。而 03 步骤的音色下拉来自 `GET /api/voice/list` —— 插件若只能用 `input` 让用户手填音色 ID，体验比现状倒退。**必须先在 SlotRegistry 评审里加「动态选项数据源」**（例如 `select` 增加 `optionsFrom: "voices"`，或统一的 `data_source: {capability: "<能力名>"}`），才能把配音入口真正交给插件 | 否则 B3-T5 只能做到「宿主就位 + 内置控件让位」，插件贡献一旦上线反而更差 |
+| 9 | 插件侧 UI 的动态选项数据源 | **已补（2026-11-02）**：`UISelect` 增加 `optionsFrom`（宿主**白名单**数据源名，当前支持 `voices`），宿主解析后传给渲染器，插件拿不到任意数据；同时 `PluginLayoutRenderer` 增加 `onChange`、`Slot` 增加 `optionSources` / `onValuesChange`，把控件值回传给宿主。两者的安全边界：插件只声明「要哪个白名单数据源」，不参与取值 | 缺省无 `optionsFrom` 时行为不变；未知数据源名渲染为「暂无可用选项」并给可读提示，不静默丢弃 |
 
-> **宿主已落地（2026-11-02）**：`slots.ts` 名单 14 → 15；`HomePage` 在 03 步骤渲染 `<Slot name="create.dub">`；内置配音控件（音色 / 自动配音 / 上传）在**有贡献时整块让位**、**无贡献时回落**——这是过渡期写法，PRD 最终态是「无插件即无入口」，等第 9 项契约补齐、插件 UI 上线后删除内置块。
+> **宿主与插件均已落地（2026-11-02）**：`slots.ts` 名单 14 → 15；`HomePage` 渲染 `<Slot name="create.dub" optionSources={voices} onValuesChange={setPluginDub} />`；`plugins/tts_feature` 已贡献 `ui_slot: create_dub_entry`（音色 select 用 `optionsFrom: voices`、自动配音 checkbox）。内置配音控件在**有贡献时整块让位**；插件值回填 `voicePick`/`autoDub`（引擎侧字段不变），`stepDone.dub` 有插件值时以插件为准。**剩余**：01 上传配音入口仍在内置块里（插件当前只覆盖音色 + 自动配音），要彻底删除内置块需再给插件补上传控件。
 > slot 契约本身的字段（`slot` / `id` / `title` / `order` / `icon` / `visibleWhen` / `layout`）**沿用现有 `SlotContribution` 定义，不新增字段**；`layout.widgets` 复用现有 plugin UI 控件集（`string` / `select` / `checkbox` / `slider`），未知控件类型必须拒绝并给可读错误（不变量 #13）。
+
 
 
 

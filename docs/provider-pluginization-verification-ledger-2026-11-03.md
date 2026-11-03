@@ -179,7 +179,7 @@
 | B3-T4 功能层插件 + 编排下沉 | 已完成 | `plugins/tts_feature/`：`dub.py` 里的 `DubScriptOrchestrator` 接管切句、逐段合成、确定性 seed、句级/词级时间轴；engine 只保留 `VoiceService.synthesize()` 协议调度基座 |
 | B3-T3 名称解析与指纹缓存 | 未改动（守住） | `_get_provider` 的身份仍来自 `contribution.id`，缓存键仍含凭据指纹；本轮没有碰它 |
 | B3-T6 摘 engine 编排与内置注册 | **待人工验证后执行** | 按 PRD §15.1.6 第 2 条：插件完成并通过 §15.3 验收后立即删除。**删除前必须由人跑一次** `python -m pytest tests -q`，否则内置被摘掉而插件在某环境没加载时会直接失去配音能力 |
-| B3-T5 `create.dub` slot 迁 03 步骤 | 部分完成（宿主已就位，插件 UI 待契约补齐） | 前端：`slots.ts` 名单 14→15（`create.dub`）、HomePage 在 03 步骤挂 `<Slot name="create.dub">`、内置配音控件（音色/自动配音/上传）在「有贡献时」整块让位、「无贡献时」回落（过渡期）。**插件侧 UI 未落地**：现有 widget schema 只有静态 `options`，拿不到音色列表（音色来自 `GET /api/voice/list`），插件版入口只能填音色 ID → 体验倒退，故本轮不发贡献。需要 SlotRegistry 评审加「动态选项数据源」（如 `optionsFrom: "voices"` 或 `data_source: {capability: ...}`）后才能做。 |
+| B3-T5 `create.dub` slot 迁 03 步骤 | **已完成** | 宿主：`slots.ts` 名单 14→15；`HomePage` 渲染 `<Slot name="create.dub" optionSources={voices} onValuesChange={setPluginDub} />`；内置配音控件在有贡献时整块让位。**契约补齐**：`UISelect.optionsFrom`（宿主白名单数据源，目前 `voices`）+ `PluginLayoutRenderer.onChange`/`Slot.onValuesChange`（插件控件值回传宿主，用 ref 避免内联箭头函数导致死循环）+ `Slot.optionSources`。插件：`plugins/tts_feature` 新增 `ui_slot: create_dub_entry`（select voice_id optionsFrom=voices + checkbox auto_dub），manifest 已声明（声明即授权）。宿主把插件值回填 `voicePick`/`autoDub`（引擎侧字段不变），`stepDone.dub` 有插件值时以插件为准。实测 `/api/plugin/contributions?slot=create.dub` 返回 1 条含 `optionsFrom` |
 | B3-T7 能力发现与缺失一等状态 | 已完成 | `dub` 能力名由插件技能提供；`AudioAgent` 在 `call_skill("dub")` 返回 `not_found` 时写**可读降级说明**「未配音：当前没有可用的配音能力（TTS 功能插件未安装或被禁用）」，与普通失败（`自动配音失败: …`）分开；**没有**直连 `VoiceService` 兜底 |
 | B3-T8 通用能力网关 + `/api/voice/*` 薄转发 | 已完成 | 网关在 Batch 1 落地；本轮把 `/api/voice/dub` 改成薄转发：`skill_resolve("dub")` → `SkillRegistry.execute`，端点不再调 `VoiceService.dub_script()` 编排；解析不到直接 `503` + 可读原因。实测：正常走插件技能；把插件与内置两次 unregister 后 → 503 |
 
@@ -385,4 +385,5 @@
 | H-071 | 非条目（提取误命中） | 这是 PRD §15.7「仍未核实」的条目，已在本节逐条处理 |
 
 **net 结论**：Batch 0 的实质性核实已完成；剩下的 9 条都卡在两类外部条件上——需要人跑测试（H-065、H-057）、或产品尚未定（H-044 STT tab、H-068 诊断 UI 落点、H-023 彻底拆 client、H-032/H-036 字段命名、H-028 TTS 错误分类、H-066 reasoning UI）。
+
 

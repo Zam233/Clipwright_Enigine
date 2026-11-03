@@ -37,4 +37,25 @@ class TtsFeaturePlugin(BasePlugin):
                 ContributionKind.SKILL, "dub_script", DubScriptOrchestrator(),
                 meta={"name": "dub_script", "capability": "dub"},
             ),
+            # 裁定 C（2026-11-02）：创作页「03 配音与字幕」步骤的内容由本插件贡献。
+            # 控件走声明式 layout（宿主 PluginLayoutRenderer 渲染）；`optionsFrom: voices`
+            # 表示选项来自宿主白名单数据源（音色列表），插件拿不到任意数据。
+            Contribution(
+                ContributionKind.UI_SLOT, "create_dub_entry", None,
+                meta={
+                    "slot": "create.dub",
+                    "title": "配音来源",
+                    "order": 100,
+                    "layout": {
+                        "title": "配音来源",
+                        "widgets": [
+                            {"type": "select", "key": "voice_id", "label": "音色",
+                             "optionsFrom": "voices"},
+                            {"type": "checkbox", "key": "auto_dub", "label": "自动配音",
+                             "defaultValue": True},
+                        ],
+                    },
+                },
+            ),
         ]
+

@@ -11,3 +11,5 @@ override_builtin: true
 contributions:
   - kind: skill
     id: dub_script
+  - kind: ui_slot
+    id: create_dub_entry
