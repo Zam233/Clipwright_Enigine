@@ -136,8 +136,24 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
 
         result = await self.llm_or_fallback(lambda: self._llm.structured_output(system_prompt=system_prompt, user_prompt=user_context, pipeline_id=context.pipeline_id), fallback={}, retries=2)
         if isinstance(result, dict) and "brief_draft" in result:
-            return self._normalize_brief(result["brief_draft"])
+            return self._ensure_brief_genui(self._normalize_brief(result["brief_draft"]))
         return {}
+
+    @staticmethod
+    def _ensure_brief_genui(brief: dict[str, Any]) -> dict[str, Any]:
+        """保证简报带一份**可信**的 GenUI 展示 spec。
+
+        模型给了就用（先过 `sanitize_spec`：未知组件降级、危险键剔除、超限截断）；
+        没给/给坏了就用 `build_brief_genui()` 从权威字段确定性地补一份。
+        spec 只影响展示——它丢了或坏了，简报字段与确认流程照常。
+        """
+        from clipwright.schema.genui import build_brief_genui, sanitize_spec
+
+        spec, problems = sanitize_spec(brief.get("genui"), source="brief")
+        if problems:
+            logger.info("创意简报的 genui_spec 已降级（前 3 条）：%s", problems[:3])
+        brief["genui"] = spec or (build_brief_genui(brief) or {})
+        return brief
 
     @staticmethod
     def _normalize_brief(draft: Any) -> dict[str, Any]:
@@ -209,11 +225,12 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
                 grounded = self._material_summary(scenes)
                 if grounded:
                     result["material_summary"] = grounded
+                result["genui"] = self._plan_genui(result, scenes)
                 return result
         except Exception as e:
             logger.warning("规划书翻译失败: %s，使用降级", e)
 
-        return {
+        fallback = {
             "summary": "基础规划书（自动生成）",
             "markdown_content": self._default_markdown(scenes),
             "total_duration_sec": sum(s.get("duration_sec", 0) for s in scenes),
@@ -221,6 +238,22 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
             "raw_scenes": scenes,
             "material_summary": self._material_summary(scenes),
         }
+        fallback["genui"] = self._plan_genui(fallback, scenes)
+        return fallback
+
+    @staticmethod
+    def _plan_genui(plan: dict[str, Any], scenes: list[dict]) -> dict[str, Any]:
+        """规划书的 GenUI 展示 spec（模型给了就洗一遍，没给就从场景确定性生成）。
+
+        规划书的**权威**是 `markdown_content` 与 `raw_scenes`（用户确认的对象）；
+        spec 只是让人更快看懂"几段、多长、用哪些镜头"。
+        """
+        from clipwright.schema.genui import build_plan_genui, sanitize_spec
+
+        spec, problems = sanitize_spec(plan.get("genui"), source="plan")
+        if problems:
+            logger.info("规划书的 genui_spec 已降级（前 3 条）：%s", problems[:3])
+        return spec or (build_plan_genui(plan, scenes) or {})
 
     @staticmethod
     def _material_summary(scenes: list[dict]) -> str:

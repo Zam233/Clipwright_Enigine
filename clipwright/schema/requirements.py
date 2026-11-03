@@ -15,7 +15,9 @@ import json
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from clipwright.schema.genui import sanitize_spec
 
 
 class MessageRole(str, Enum):
@@ -68,6 +70,17 @@ class CreativeBrief(BaseModel):
     animation_intents: list[dict[str, Any]] = Field(
         default_factory=list, description="动画需求意图（结构同 AnimationIntent）"
     )
+    #: GenUI 展示 spec（可选）：**只用于展示**，权威数据仍是上面这些字段。
+    #: 契约与清洗见 `clipwright/schema/genui.py`；模型编的东西一律先过 sanitize。
+    genui: dict[str, Any] = Field(
+        default_factory=dict, description="GenUI 展示 spec（可选，仅展示，权威数据在其它字段）"
+    )
+
+    @field_validator("genui", mode="before")
+    @classmethod
+    def _sanitize_genui(cls, value: Any) -> dict[str, Any]:
+        spec, _problems = sanitize_spec(value, source="brief")
+        return spec or {}
 
 
 class ProductionPlan(BaseModel):
@@ -84,6 +97,14 @@ class ProductionPlan(BaseModel):
     transition_style: str = ""
     #: v1.2：结构化规划（存在时优先于 scenes 的即席结构）
     plan: Optional[dict[str, Any]] = None
+    #: GenUI 展示 spec（可选）：只做展示，确认与执行仍以 plan / markdown 为准
+    genui: dict[str, Any] = Field(default_factory=dict, description="GenUI 展示 spec（可选）")
+
+    @field_validator("genui", mode="before")
+    @classmethod
+    def _sanitize_genui(cls, value: Any) -> dict[str, Any]:
+        spec, _problems = sanitize_spec(value, source="plan")
+        return spec or {}
 
 
 # ── 提示词模板（由模型生成，杜绝字段漂移）────────────────────────────────────

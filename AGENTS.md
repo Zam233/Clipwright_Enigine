@@ -127,6 +127,26 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
     - 内置配音块现在只在 `usePluginSlots('create.dub')` 为空时回落；整块删除属 B3-T6，
       等人跑完测试后与删除清单一起执行。
 
+26. **GenUI 是「只读展示层」，不拥有权威数据、不接受模型指定的 endpoint**（2026-11-03）：
+    - 创意简报 / 规划书的 `genui` 字段是 `version: 1` 的受控 JSON（白名单 **13 类**组件：
+      `text/list/callout/badge/stat/progress/table/steps/divider/row/col/card/accordion`），
+      契约与清洗在 `clipwright/schema/genui.py`。**权威数据永远是** `CreativeBrief` 字段与
+      规划书 `markdown_content`/`raw_scenes`——spec 丢了、坏了、插件被禁用，业务照常。
+    - **不信任模型输出**：模型给的 spec 一律先过 `sanitize_spec()`（未知组件降级为占位文本、
+      危险键 `__proto__/constructor/prototype` 剔除、非法动作丢弃、文本/表格/节点/深度/字节上限、
+      版本不符则整块丢弃），前端 `src/features/genui/validate.ts` 再洗一遍（防旧缓存/历史
+      session/被改过的响应）。**两道闸的规则必须同步**（`tests/clipwright/test_genui_spec.py`
+      与 `src/features/genui/genui.test.tsx` 各守一侧）。
+    - **动作只有三种** `ask/select/confirm`，且必须绑定**宿主回调**（当前 `ask` → 发回当前需求
+      会话）。**禁止** spec 携带 endpoint / URL / HTTP method / 任意能力名——那等于把"往哪发请求"
+      交给模型。宿主没有对应回调时按钮**渲染为禁用态**，不假装可点。
+    - **不碰 HTML/脚本/外链**：渲染器没有 `dangerouslySetInnerHTML`，文本一律走 `asText`，
+      首版不开放 `mermaid/echart/plot/scene3d/svg/image`（要开必须单独安全评审）。
+    - 规范由插件 `plugins/genui/` 以 `PROMPT` 贡献教给模型（`agent: requirements`）；
+      插件只说"能写什么"，校验权在后端纯函数、渲染权在宿主——插件被禁用时简报/规划书原样工作
+      （宿主用 `build_brief_genui()` / `build_plan_genui()` 确定性补一份）。
+    - 详见 [docs/genui-plugin-prd-2026-11-03.md](docs/genui-plugin-prd-2026-11-03.md)。
+
 ## 鉴权三模式
 
 `CLIPWRIGHT_ACCOUNT_VERIFY_MODE = off | token | jwt`（默认 off）。jwt 模式本地验签共享密钥，中间件写 `request.state.user_id/user_role`；前端 access token 仅内存 + refresh 走 Server httpOnly cookie（`cw_refresh`）。

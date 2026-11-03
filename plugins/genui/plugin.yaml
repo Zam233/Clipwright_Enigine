@@ -1,0 +1,13 @@
+id: genui
+name: GenUI 结构化展示插件
+version: 1.0.0
+kind: capability
+api_version: "2"
+description: 创意简报 / 规划书 / 右侧副驾驶的 GenUI 展示规范（组件白名单、上限与只读纪律）；不含任何渲染实现
+entry_point: "genui.main"
+author: Clipwright Team
+permissions: []
+# 只做提示词扩展：不覆盖任何内置贡献，也不注册 UI slot（GenUI 走宿主自带的 renderer）
+override_builtin: false
+contributions:
+  - { kind: prompt, id: genui_requirements_prompt }

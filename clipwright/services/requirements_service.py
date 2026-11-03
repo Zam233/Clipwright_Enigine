@@ -2440,6 +2440,10 @@ class RequirementsService:
             payload["legacy"] = True
             payload["markdown_content"] = render_plan_markdown(plan)
             payload["summary"] = "按现有场景生成的 legacy 规划（非 plan-first 产物）"
+            # GenUI 展示 spec：legacy 路径也要有（用户看到的卡片与新路径一致）
+            from clipwright.schema.genui import build_plan_genui
+
+            payload["genui"] = build_plan_genui(payload, scenes) or {}
             logger.info("RequirementsService: 会话 %s 使用 legacy plan（%d 段）", session_id[:12], len(plan.sections))
             return payload
         except Exception as exc:  # noqa: BLE001 - 兜底失败不应影响主流程
