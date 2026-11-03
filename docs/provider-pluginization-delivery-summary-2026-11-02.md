@@ -8,7 +8,7 @@
 ## 1. 结论
 
 PRD 的五个批次（Batch 1–5）与 Batch 0 核实，**代码侧全部落地**，剩 3 项**必须由人输入**才能推进
-（详见 §4）。当前可在一条命令下自证：`py -3.14 scripts/verify_provider_pluginization.py` → **12/12 通过**。
+（详见 §4）。当前可在一条命令下自证：`py -3.14 scripts/verify_provider_pluginization.py` → **13/13 通过**。
 
 **没有做、也不打算隐瞒的**：
 
@@ -29,7 +29,7 @@ PRD 的五个批次（Batch 1–5）与 Batch 0 核实，**代码侧全部落地
 | **B4 其他 provider** | `plugins/embedding_providers`、`plugins/rerank_providers`、`plugins/stt_providers`；`ContributionDecl.id` 放宽允许连字符 | `3abdf8d` |
 | **B5 提示词覆盖** | `plugins/prompt_overrides.py`（符号自省 + 四关 + 双 dry-render + 静态纯度 + `safe_builder` 回落）；**26 常量 + 8 builder 全部接线**（`resolve_constant` / `prompts._c` / `_mg_constraint` / `_p` / `_hdr`）；`GET /api/plugin/prompt-symbols` + 插件管理页面板 | `2343737` `316d177` `54669a4` `60018ac` `2f08c2b` |
 
-**当前 provider 归属（12 项自检实测）**
+**当前 provider 归属（13 项自检实测）**
 
 | 家族 | id → 归属 |
 |---|---|
@@ -45,17 +45,19 @@ PRD 的五个批次（Batch 1–5）与 Batch 0 核实，**代码侧全部落地
 ### 3.1 一条命令（不需要 pytest）
 
 ```powershell
-py -3.14 scripts/verify_provider_pluginization.py            # 全部 12 项
+py -3.14 scripts/verify_provider_pluginization.py            # 全部 13 项
 py -3.14 scripts/verify_provider_pluginization.py -k prompt  # 过滤
 py -3.14 scripts/verify_provider_pluginization.py --trace    # 失败打印堆栈
 ```
 
-12 项：`provider_owners`、`providers_available_and_schemas`、`providers_capabilities`、
+13 项：`provider_owners`、`providers_available_and_schemas`、`providers_capabilities`、
 `capability_gateway`、`prompt_symbols_wired`、`prompt_override_roundtrip`、
-`prompt_builder_guards`、`dub_capability_boundary`、`provider_plugin_fallback`、
-`skill_shadow_restore`、`all_families_fallback`、`tier_map_empty`。
+`prompt_runtime_path`、`prompt_builder_guards`、`dub_capability_boundary`、
+`provider_plugin_fallback`、`skill_shadow_restore`、`all_families_fallback`、`tier_map_empty`。
 
 ### 3.2 人工回归（**待执行**）
+
+照着 **[人工验收剧本](provider-pluginization-manual-verification-2026-11-03.md)** 敲即可（含期望输出与「回报什么」）：
 
 ```powershell
 cd J:\Clipwright;  python -m pytest tests -q
@@ -66,7 +68,7 @@ cd J:\Clipweight-Client; npx tsc --noEmit; npm run test
 
 - 模型提供商页：源列表显示「插件：xxx / 内置实现」；源设置里有能力徽标（含「思考强度 / 思考内容」）。
 - 插件管理页 →「提示词符号」：26 常量 + 8 builder 的 `wired` 与覆盖来源；被拒覆盖的原因。
-- 新建制作 → 03 配音与字幕：配音入口由插件贡献（音色 + 自动配音）。
+- 新建制作 → 03 配音与字幕：配音入口由插件贡献（音色 + 自动配音 + 上传配音）。
 
 ## 4. 剩下 3 项（都需要人，不是我偷懒）
 
@@ -107,13 +109,13 @@ cd J:\Clipweight-Client; npx tsc --noEmit; npm run test
 
 | 想退什么 | 怎么做 |
 |---|---|
-| 某个 provider 插件 | 禁用/删除该插件目录 → 下次 `ensure_*` 时**内置自动补位**（12 项自检已验证五类都成立） |
+| 某个 provider 插件 | 禁用/删除该插件目录 → 下次 `ensure_*` 时**内置自动补位**（13 项自检已验证五类都成立） |
 | 提示词覆盖 | 禁用覆盖插件 → `clear_plugin` 立即生效，回落到 `prompts.py` 默认值；默认值有 sha256 快照可对 |
 | 整个改造 | 按 §2 的提交逐段 `git revert`（每个批次独立提交，删除动作会单独成一次提交以便精确回退） |
 
 ## 7. 交付完整性自评
 
-- **代码**：五批次 + 核实全部落地，12 项运行期契约自检全绿。
+- **代码**：五批次 + 核实全部落地，13 项运行期契约自检全绿。
 - **文档**：PRD / 编码计划 / 核实台账 / 删除清单 / 本汇总；`api_reference`、`frontend-backend-parity`、
   `voice_tts`、`route_inventory` 已同步；`AGENTS.md` 新增 3 条不变量（#24 让位与网关、#25 `create.dub`、
   以及 #23 下补的 builder 四关）。

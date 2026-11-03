@@ -387,8 +387,11 @@
 | H-069 | 非条目（提取误命中） | 这是 PRD §15.1.7 的标题行，不是问题 |
 | H-070 | 非条目（提取误命中） | 这是 PRD §15.2.6 的标题行，不是问题 |
 | H-071 | 非条目（提取误命中） | 这是 PRD §15.7「仍未核实」的条目，已在本节逐条处理 |
+| H-072 | **仍开（记录为已知缺口，非缺陷）** | 「提示词只有一处」还有**第二处模块级常量**没搬：`services/requirements_service.py:396` 的 `CREATIVE_BRIEF_SYSTEM`（:2254 作为 `system_prompt` 用，属「直接出草案」路径）。它与 `prompts.py` 的同名符号是**两份不同提示词**（前者一次给出完整草案、字段表是旧 13 项；后者多轮对话 + 由 `CreativeBrief` 模型生成字段表），**不是漂移、也不该合并**。为什么仍开：它是「模块级提示词常量还在 `prompts.py` 之外」的唯一一处。迁移代价不小——它会成为第 27 个符号，需同步 `WIRED_CONSTANTS`、自检断言（26→27）、PRD §15.2.1 与本台账/汇总/api_reference/AGENTS.md 的「26 常量」口径。当前**没有任何插件需要覆盖它**，故记录不迁移；将来要迁就走同一套四关（签名/占位符/双 dry-render/静态纯度） |
 
-**net 结论**：Batch 0 的实质性核实已完成。**仍开 2 条**，全部卡在「需要人跑测试」：H-065（真实 LLM 路径 prompt 快照）、H-057（TTS 取消/降级端到端）。另 H-044（前端是否新增 STT Tab）是**纯产品决策**，与本 PRD 的实施无关，保留待产品定。其余（H-023 拆 client、H-028 TTS 错误分类、H-032/H-036 字段、H-066 reasoning UI、H-068 诊断 UI）均已闭环或给出技术判定。
+**net 结论**：Batch 0 的实质性核实已完成。**仍开 2 条**，全部卡在「需要人跑测试」：H-065（真实 LLM 路径 prompt 快照）、H-057（TTS 取消/降级端到端）。另 H-044（前端是否新增 STT Tab）是**纯产品决策**，与本 PRD 的实施无关，保留待产品定；H-072（`requirements_service` 的第二处模块级提示词）是**已知缺口、有意不迁**（无覆盖需求，迁移会牵动「26 常量」全口径）。其余（H-023 拆 client、H-028 TTS 错误分类、H-032/H-036 字段、H-066 reasoning UI、H-068 诊断 UI）均已闭环或给出技术判定。
+
+> **H-065 的进展（2026-11-02 追补）**：静态侧（26 常量 + 8 builder 值与搬运前 sha256 全等）已完成；本轮又把「运行时装配点」固化进自检脚本第 13 项 `prompt_runtime_path`——`agent_loop._system_prompt()` 三态（plan_only / 正常 / 收口）必须等于 `prompts.py` 的符号，注册覆盖后必须立即改变，导入期快照不得被改写。**剩下真正需要人的只有「既有 pytest 用例全绿」这一件事**（脚本里没有任何测试引用提示词符号，所以那部分只能靠人跑全套）。
 
 ## 验收自检脚本（2026-11-02）
 
@@ -408,8 +411,9 @@
 | 10 | `provider_plugin_fallback` | 卸载插件后内置**补位**（`unregister_plugin` → `_resolve_llm_provider` 仍能解析，归属回到 `__builtin__`） |
 | 11 | `skill_shadow_restore` | 插件技能被回收后内置同名技能**恢复**，归属回到内置 |
 | 12 | `all_families_fallback` | **五类** provider 逐个：卸载插件 → id 消失 → `ensure_*` 后内置补位（归属回 `__builtin__`）→ 恢复插件归属；只测 llm 会漏掉其它家族漏补位的情况 |
+| 13 | `prompt_runtime_path` | **运行时装配点**真的读解析层：用假 task 直接调 `agent_loop._system_prompt()`（plan_only / 正常 / 收口三态），并验证注册覆盖后装配点立即改变、导入期快照 `_NORMAL_SYSTEM` 不被改写、回滚后恢复默认。前两项（`prompt_symbols_wired` / `prompt_override_roundtrip`）只证明符号登记与解析层本身，**证明不了真正拼 prompt 的函数走了覆盖层**——有人把 `_p(...)` 换回模块级常量时，那两项照样全绿 |
 
-实测：**12/12 通过**（`py -3.14 scripts/verify_provider_pluginization.py`），逐项单独跑也无顺序依赖。**它补充 pytest，不替代**。
+实测：**13/13 通过**（`py -3.14 scripts/verify_provider_pluginization.py`），逐项单独跑也无顺序依赖。**它补充 pytest，不替代**。
 
 ### 写这个脚本时发现并修掉的真 bug
 
@@ -422,6 +426,11 @@
 这正是「写脚本顺带查出产品缺陷」的例子——不写这个检查，reload 场景的退化不会被任何人发现。
 
 ## 2026-11-02 追补：`create.dub` 的 `file` 控件 + 一处文档损坏修复
+
+> **人工动作已集中到一处**：所有「需要人」的门槛（pytest / vitest / build、B3-T6 三项确认、
+> H-057 取消端到端、前端观感）整理成可直接照着敲的一页 →
+> [`provider-pluginization-manual-verification-2026-11-03.md`](provider-pluginization-manual-verification-2026-11-03.md)，
+> 含期望输出与「回报什么」清单。
 
 ### 1. 上传配音入口迁进插件（PRD §15.9 第 10 项）
 

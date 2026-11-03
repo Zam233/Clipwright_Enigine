@@ -175,6 +175,46 @@ def check_override_roundtrip() -> None:
     assert O.safe_builder("build_budget_note") is P.build_budget_note, "builder 回滚失败"
 
 
+@check("prompt_runtime_path")
+def check_prompt_runtime_path() -> None:
+    """提示词**运行时装配点**真的读解析层（而不是导入期快照）。
+
+    为什么单列一项：`prompt_symbols_wired` 只证明符号登记过、`prompt_override_roundtrip`
+    只直接调 `resolve_constant`/`safe_builder`。两者都不断言「真正拼 prompt 的那个函数」
+    走了覆盖层——只要有人把 `_p(...)` 换回模块级常量，前两项照样全绿，插件覆盖却永久失效。
+    这里用假 task 直接调 `agent_loop._system_prompt()`（主 agent 每一步都用它），
+    并验证导入期快照 `_NORMAL_SYSTEM` 保持默认值（那是给诊断/测试引用用的，不该被覆盖改写）。
+    """
+    from types import SimpleNamespace
+
+    from clipwright import prompts as P
+    from clipwright.plugins import prompt_overrides as O
+    from clipwright.services import agent_loop as L
+
+    def task(plan_only: bool, closeout: str = "normal") -> SimpleNamespace:
+        return SimpleNamespace(
+            request=SimpleNamespace(plan_only=plan_only),
+            closeout=SimpleNamespace(mode=closeout),
+        )
+
+    assert L._system_prompt(task(True)) == P.LOOP_PLAN_ONLY_SYSTEM, "plan_only 分支没读 prompts"
+    assert L._system_prompt(task(False)) == P.LOOP_NORMAL_SYSTEM, "正常分支没读 prompts"
+    assert L._system_prompt(task(False, "soft_landing")) == (
+        P.LOOP_NORMAL_SYSTEM + P.LOOP_CLOSEOUT_BLOCK
+    ), "收口分支没拼上 LOOP_CLOSEOUT_BLOCK"
+
+    # 覆盖要能在**运行时装配点**生效（导入期快照不动）
+    assert not O.register_constant_override(
+        "_verify", "LOOP_NORMAL_SYSTEM", "【自检】运行时装配点"
+    ), "覆盖应被接受"
+    try:
+        assert L._system_prompt(task(False)) == "【自检】运行时装配点", "运行时装配点没走覆盖层"
+        assert L._NORMAL_SYSTEM == P.LOOP_NORMAL_SYSTEM, "导入期快照被覆盖改写了"
+    finally:
+        O.clear_plugin("_verify")
+    assert L._system_prompt(task(False)) == P.LOOP_NORMAL_SYSTEM, "覆盖回滚后未恢复默认"
+
+
 @check("prompt_builder_guards")
 def check_builder_guards() -> None:
     from clipwright.plugins import prompt_overrides as O
