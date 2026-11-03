@@ -142,6 +142,32 @@ def register(owner: str, item: Contribution, *, policy=None) -> Optional[str]:
 
         elif item.kind is ContributionKind.PROMPT:
             from clipwright.plugins.prompt_registry import PluginPromptRegistry
+
+            # B5-T2：两种模式必须显式区分，不能把附加误作替换（PRD §7.1 第 1 条）
+            mode = str(item.meta.get("mode") or "append").strip().lower()
+            if mode not in ("append", "replace"):
+                return f"prompt 贡献的 meta.mode 只能是 append/replace: {item.id}"
+
+            if mode == "replace":
+                from clipwright.plugins import prompt_overrides
+
+                symbol = str(item.meta.get("symbol") or item.id)
+                source = f"plugin:{owner}"
+                if callable(item.object):
+                    problems = prompt_overrides.register_builder_override(
+                        owner, symbol, item.object, source=source,
+                    )
+                elif isinstance(item.object, str):
+                    problems = prompt_overrides.register_constant_override(
+                        owner, symbol, item.object, source=source,
+                    )
+                else:
+                    return (f"prompt:replace {item.id} 的 object 必须是可调用对象（builder）"
+                            "或字符串（常量）")
+                if problems:
+                    return "；".join(problems)
+                return None
+
             agent_name = str(item.meta.get("agent") or item.meta.get("agent_name") or "")
             prompt_text = str(item.meta.get("prompt") or "")
             if not agent_name or not prompt_text:
@@ -204,8 +230,12 @@ def unregister(owner: str, keys: list[str]) -> list[str]:
                 from clipwright.plugins.hooks import HookRegistry
                 HookRegistry.unregister_plugin(owner)
             elif kind_value == ContributionKind.PROMPT.value:
+                from clipwright.plugins import prompt_overrides
                 from clipwright.plugins.prompt_registry import PluginPromptRegistry
+
                 PluginPromptRegistry.unregister(owner)
+                # B5-T3：插件禁用/卸载时符号覆盖必须立刻消失，回落 prompts.py 默认值
+                prompt_overrides.clear_plugin(owner)
             else:
                 # 未接线的 kind 只从门面移除（本期无注册表绑定）
                 pass

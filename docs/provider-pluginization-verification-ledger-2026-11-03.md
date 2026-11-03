@@ -230,3 +230,43 @@
 
 > 遗留：`tts_provider` 家族还有 `qwen-tts` / `minimax` 两个内置未被插件接管（本轮只声明了
 > `cosyvoice`）。现在能声明了，等 W3 收尾一起搬，或按需再补一个 tts 协议插件。
+
+## Batch 5 进度（提示词符号覆盖）
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| B5-T1 符号清单（26 常量 + 8 builder + 签名） | 已完成 | `plugins/prompt_overrides.py::all_symbols()` 运行时从 `prompts.py` 自省生成；builder 带 `inspect.signature`。**不硬编码清单**，`prompts.py` 加符号会自动出现 |
+| B5-T2 常量/符号 replace + append 显式区分 | 已完成 | PROMPT 贡献支持 `meta.mode = append|replace`（缺省 append 保持存量 4 个贡献者行为）；replace 时 `meta.symbol` 指向符号，object 为字符串（常量）或可调用对象（builder） |
+| B5-T3 builder 硬契约（签名/占位符/双 dry-render/静态纯度） | 已完成 | 见下「四关落地」 |
+| B5-T4 8 个消费点接入解析层 | 已完成（builder 部分） | 8 处调用改为 `safe_builder("build_x")(...)`：`agent_loop` / `requirements_agent` / `audio_agent` / `structure_agent`（2 处）/ `material_agent`（3 处）。**无覆盖时 `safe_builder(n) is getattr(prompts, n)`** —— 行为与改造前完全等同（实测断言通过）。**26 个常量尚未接线**（消费方仍是直接 import），诊断接口对它们如实标 `wired=false` |
+| B5-T5 快照零差异 + 失败隔离 | 部分完成 | 默认等价性已断言；`safe_builder` 在插件实现运行期抛异常时回落默认并记录 `OVERRIDE_ERRORS`；完整快照比对需人工跑 |
+| B5-T7 来源标识与诊断接口 | 已完成 | `GET /api/plugin/prompt-symbols`（admin 门禁）返回 constants/builders/errors；每条含 `wired` 与 `override{plugin_id, kind, source}`；**不返回提示词正文**，只给长度 |
+| B5-T8 不建 demo 插件 | 已遵守 | 本轮没有产出任何 `plugins/prompt_*` 目录；负例用进程内对象完成 |
+
+### 四关落地（PRD §15.2.2 / §15.2.7）
+
+1. **签名**：比 `(参数名, 种类, 默认值)` 形状，**不比注解** —— `prompts.py` 用
+   `from __future__ import annotations`，注解是字符串 `'int'`，插件里写的是类型对象 `int`，
+   直接比 `inspect.signature` 会把所有合规覆盖误杀（本轮实测踩到）。
+2. **占位符**：输出不得残留 `{xxx}`。
+3. **双 dry-render**：按默认 builder 签名生成两组不同样例参数，输出必须不同 —— 专门拦
+   「参数声明了却不用」（把运行时数字写死）。实测：返回固定字符串的实现被拒。
+4. **静态纯度**：`ast` 白名单 + 黑名单。禁 import（除 `from __future__ import annotations`）、
+   禁 `eval/exec/compile/__import__/open/input/globals/locals/vars/setattr/delattr/getattr`、
+   源码出现 `os/sys/subprocess/socket/requests/httpx/pathlib/shutil/tempfile/random/time/
+   datetime/uuid/asyncio` 即拒、禁 `async/await/yield/装饰器/global`、AST 节点 ≤ 600、
+   嵌套 ≤ 8、`return` ≤ 8、源码 ≤ 32 KB、输出 ≤ `max(3× 默认, 6000)` 字符。
+
+### 本轮踩的两个坑
+
+1. **签名比较把注解也算进去了**：见上第 1 条。表现是「所有合规覆盖都被拒，理由写着签名不一致，
+   但两边看起来一模一样」。
+2. **`inspect.getsource` 对嵌套/局部函数保留缩进**，直接 `ast.parse` 报
+   `unexpected indent`。修法：`textwrap.dedent()` 后再解析（插件把 builder 写在工厂函数里很常见）。
+
+### 待办
+
+- **26 个常量接线**：消费方目前是 `from clipwright.prompts import X` 的直接导入，要改成
+  `resolve_constant("X")` 才能让覆盖真正生效。数量多、分散在 7 个 agent + kernel/loop，
+  需要一批机械改造（可按「先接被插件最可能覆盖的那几个」分批）。
+- B5-T5 的完整快照比对（`prompts.py` 26+8 默认输出零差异）由人工跑。

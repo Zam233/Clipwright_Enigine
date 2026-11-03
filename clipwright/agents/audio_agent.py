@@ -25,6 +25,7 @@ from clipwright.services.llm import LLMService
 from clipwright.tool.registry import ToolRegistry
 # PRD W4.4：BGM 匹配提示已搬到 clipwright/prompts.py（文案逐字一致）
 from clipwright.prompts import build_bgm_match_system  # noqa: E402
+from clipwright.plugins.prompt_overrides import safe_builder
 
 
 async def _search_bgm_from_library(bgm_slots: dict, top_k: int = 3,
@@ -1190,7 +1191,7 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                 + (f" | 情绪={s.get('emotion')}" if s.get("emotion") else "")
                 for i, s in enumerate(scenes_emotions)
             )
-            system_prompt = build_bgm_match_system(slot_keys)
+            system_prompt = safe_builder("build_bgm_match_system")(slot_keys)
             # V1/V15：类型身份 + 音频/字幕两阶段规范（音频 Agent 同时管字幕生成）
             from clipwright.services.type_prompts import compose_many as compose_type_prompts
 
@@ -1318,3 +1319,4 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
             if isinstance(a, dict) and a.get("slot") == slot:
                 return a
         return None
+

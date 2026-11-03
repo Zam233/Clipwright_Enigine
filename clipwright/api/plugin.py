@@ -308,6 +308,25 @@ async def get_plugin_bundle(plugin_id: str, request: Request = None):
     )
 
 
+@router.get("/prompt-symbols")
+async def list_prompt_symbols(request: Request = None) -> dict[str, object]:
+    """B5-T7：提示词符号清单与当前来源（诊断接口）。
+
+    返回 `{constants: [...], builders: [...], errors: [...]}`；每条含
+    `name` / `wired` / `override`（插件 id、来源）。**不展示提示词正文**——只给长度，
+    避免把敏感上下文通过诊断接口泄漏出去。
+
+    `wired=false` 的常量尚未接到 `resolve_constant()`（消费方仍是直接 import），
+    如实标注，免得「能注册却没人用」被误认为已生效。
+    """
+    _require_admin(request)
+    from clipwright.plugins import prompt_overrides
+
+    payload = prompt_overrides.all_symbols()
+    payload["errors"] = list(prompt_overrides.OVERRIDE_ERRORS[-20:])
+    return payload
+
+
 @router.get("/contributions")
 async def list_contributions(
     kind: str = "",

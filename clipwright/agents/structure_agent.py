@@ -25,6 +25,7 @@ from clipwright.config import logger
 # PRD W4（2026-11-02）：提示词统一在 clipwright/prompts.py 维护；这里保留同名别名，
 # 调用点一行都不用改。文案与原实现逐字一致（见 prompts.py 的迁移对照表）。
 from clipwright.prompts import STRUCTURE_SYSTEM_PROMPT_TPL as SYSTEM_PROMPT_TPL, STRUCTURE_TOOL_PROMPT as TOOL_PROMPT, STRUCTURE_MG_DYNAMIC_GUIDE as MG_DYNAMIC_GUIDE, build_anim_marker_system, build_anim_marker_user  # noqa: E402
+from clipwright.plugins.prompt_overrides import safe_builder
 
 
 async def write_back_plan_drift_if_session(
@@ -1057,8 +1058,8 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             for i, s in enumerate(scenes)
         )
         # PRD W4.4：提示词在 clipwright/prompts.py（build_anim_marker_*），此处只传运行时数据
-        system_prompt = build_anim_marker_system(anim_guide, mg_info)
-        user_prompt = build_anim_marker_user(len(scenes), scenes_text)
+        system_prompt = safe_builder("build_anim_marker_system")(anim_guide, mg_info)
+        user_prompt = safe_builder("build_anim_marker_user")(len(scenes), scenes_text)
         try:
             result = await self.llm_or_fallback(lambda: self._llm.structured_output(
                 system_prompt=system_prompt,
@@ -1463,3 +1464,4 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             {"title": "深化", "description": "多角度深入分析", "keywords": ["深度", "视角"], "duration_sec": 90, "voiceover_script": "", "visual_description": {}},
             {"title": "收束", "description": "总结与观点输出", "keywords": ["总结", "观点"], "duration_sec": 60, "voiceover_script": "", "visual_description": {}},
         ]
+

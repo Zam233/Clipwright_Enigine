@@ -306,9 +306,10 @@ def _budget_note(task: Any) -> str:
     remaining = max(0, max_turns - used)
     # PRD W4.4：文案搬到 clipwright/prompts.py（build_budget_note），
     # 这里只负责算数——改文案不再需要动这段逻辑。
-    from clipwright.prompts import build_budget_note
+    # B5-T4：改走覆盖层解析 —— 插件可替换 build_budget_note（失败自动回落默认实现）。
+    from clipwright.plugins.prompt_overrides import safe_builder
 
-    return build_budget_note(remaining=remaining, max_turns=max_turns, used=used)
+    return safe_builder("build_budget_note")(remaining=remaining, max_turns=max_turns, used=used)
 
 
 def _user_prompt(task: Any, context_text: str) -> str:
@@ -801,4 +802,5 @@ def take_thinking(task_id: str) -> str:
 __all__ = ["DELEGATE_TOOL", "RESEARCH_TOOL", "LoopAborted", "agent_tool_schemas",
            "build_tools", "is_agent_tool", "run_loop", "take_thinking",
            "tool_loop_available"]
+
 

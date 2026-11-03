@@ -182,7 +182,8 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
         brief_json = json.dumps(brief, ensure_ascii=False) if brief else "{}"
 
         try:
-            system_prompt = build_plan_translate_system(brief_json)
+            from clipwright.plugins.prompt_overrides import safe_builder
+            system_prompt = safe_builder("build_plan_translate_system")(brief_json)
             from clipwright.plugins.prompt_registry import PluginPromptRegistry
             plugin_prompts = PluginPromptRegistry.get_for_agent("requirements")
             if plugin_prompts:
@@ -249,3 +250,4 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
                 lines.append(f"- **素材缺口**: {s['material_gap']}")
             lines.append("")
         return "\n".join(lines)
+

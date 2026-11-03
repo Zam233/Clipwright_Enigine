@@ -21,6 +21,7 @@ from clipwright.services.llm import LLMService
 from clipwright.services.trace import add_event
 # PRD W4.4：关键词提示词已搬到 clipwright/prompts.py（文案逐字一致）
 from clipwright.prompts import (build_material_queries_batch_prompt, build_material_queries_prompt, build_material_english_prompt)  # noqa: E402
+from clipwright.plugins.prompt_overrides import safe_builder
 
 # 搜索缓存: query_hash → list[result]
 # TTL + LRU 淘汰（原 dict 满后静默拒绝写入，缓存悄悄退化）
@@ -244,7 +245,7 @@ async def _llm_search_queries_batch(
         desc = (scene.get("description", "") or "")[:120]
         scene_lines.append(f"[{i + 1}] 标题: {title} | 关键词: {keywords} | 描述: {desc}")
 
-    prompt = build_material_queries_batch_prompt(
+    prompt = safe_builder("build_material_queries_batch_prompt")(
         scene_lines, category_hint=category_hint,
         persona_style=persona_style, brief_hint=brief_hint,
     )
@@ -290,7 +291,7 @@ async def _llm_search_queries(
     style_hint = f"\n- 优先匹配风格: {persona_style}" if persona_style else ""
     brief_hint_text = f"\n- 简报素材要求: {brief_hint}" if brief_hint else ""
 
-    prompt = build_material_queries_prompt(
+    prompt = safe_builder("build_material_queries_prompt")(
         scene_title, keywords, description,
         persona_style=persona_style, brief_hint=brief_hint,
     )
@@ -339,7 +340,7 @@ async def _to_english_queries(queries: list[str], *, pipeline_id: str = "") -> l
     text = " / ".join(str(q) for q in queries if str(q).strip())[:1200]
     if not text:
         return []
-    prompt = build_material_english_prompt(text)
+    prompt = safe_builder("build_material_english_prompt")(text)
     try:
         resp = await asyncio.wait_for(LLMService().ask(prompt, use_flash=True), timeout=120)
         raw = str(getattr(resp, "content", "") or "").strip()
@@ -1391,3 +1392,4 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
             "reselect": reselect_meta,
             "material_notes": scene_notes,
         }
+
