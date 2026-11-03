@@ -242,7 +242,7 @@
 | B5-T1 符号清单（26 常量 + 8 builder + 签名） | 已完成 | `plugins/prompt_overrides.py::all_symbols()` 运行时从 `prompts.py` 自省生成；builder 带 `inspect.signature`。**不硬编码清单**，`prompts.py` 加符号会自动出现 |
 | B5-T2 常量/符号 replace + append 显式区分 | 已完成 | PROMPT 贡献支持 `meta.mode = append|replace`（缺省 append 保持存量 4 个贡献者行为）；replace 时 `meta.symbol` 指向符号，object 为字符串（常量）或可调用对象（builder） |
 | B5-T3 builder 硬契约（签名/占位符/双 dry-render/静态纯度） | 已完成 | 见下「四关落地」 |
-| B5-T4 消费点接入解析层 | 已完成（builder 8 + 常量 24/26） | **builder** 8 处 `safe_builder`。**常量 24 个**已接线：7 个整段提示词由 agent `resolve_constant`；11 个内部组合常量由 `prompts.py::_c` 在 builder 体内读取；3 个 MG 约束由 `generator.py::_mg_constraint`；3 个 `LOOP_*` 由 `services/agent_loop.py::_p` 实时读取（原先内联副本已删）。**仅 2 个未接线**：`PROMPT_PLUGIN_EXT_HEADER` / `PROMPT_WEB_CONTEXT_HEADER`（全仓无消费方）。诊断接口按 `WIRED_CONSTANTS` 给 24 wired / 2 unwired |
+| B5-T4 消费点接入解析层 | **已完成（builder 8/8 + 常量 26/26）** | builder 8 处 `safe_builder`；常量全部接线：7 个整段提示词由 agent `resolve_constant`、11 个 builder 内部常量由 `prompts.py::_c`、3 个 MG 约束由 `generator.py::_mg_constraint`、3 个 `LOOP_*` 由 `agent_loop.py::_p`、**最后 2 个 `PROMPT_*_HEADER` 由 4 个文件里的 `_hdr(name)`**（原来它们是内联副本，不是死导出）。诊断接口：**26 wired / 0 unwired** |
 | B5-T5 快照零差异 + 失败隔离 | 部分完成 | 默认等价性已断言；`safe_builder` 在插件实现运行期抛异常时回落默认并记录 `OVERRIDE_ERRORS`；完整快照比对需人工跑 |
 | B5-T7 来源标识与诊断接口 | 已完成 | `GET /api/plugin/prompt-symbols`（admin 门禁）返回 constants/builders/errors；每条含 `wired` 与 `override{plugin_id, kind, source}`；**不返回提示词正文**，只给长度 |
 | B5-T8 不建 demo 插件 | 已遵守 | 本轮没有产出任何 `plugins/prompt_*` 目录；负例用进程内对象完成 |
@@ -389,6 +389,7 @@
 | H-071 | 非条目（提取误命中） | 这是 PRD §15.7「仍未核实」的条目，已在本节逐条处理 |
 
 **net 结论**：Batch 0 的实质性核实已完成。**仍开 2 条**，全部卡在「需要人跑测试」：H-065（真实 LLM 路径 prompt 快照）、H-057（TTS 取消/降级端到端）。另 H-044（前端是否新增 STT Tab）是**纯产品决策**，与本 PRD 的实施无关，保留待产品定。其余（H-023 拆 client、H-028 TTS 错误分类、H-032/H-036 字段、H-066 reasoning UI、H-068 诊断 UI）均已闭环或给出技术判定。
+
 
 
 

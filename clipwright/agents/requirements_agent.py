@@ -126,7 +126,7 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
         from clipwright.plugins.prompt_registry import PluginPromptRegistry
         plugin_prompts = PluginPromptRegistry.get_for_agent("requirements")
         if plugin_prompts:
-            system_prompt += "\n\n## 插件能力扩展\n" + "\n\n".join(plugin_prompts)
+            system_prompt += _hdr("PROMPT_PLUGIN_EXT_HEADER") + "\n\n".join(plugin_prompts)
         # V15：需求阶段先吃"这是什么片子"（身份层），再谈字段；无槽位时零变化
         from clipwright.services.type_prompts import compose as compose_type_prompt
 
@@ -192,9 +192,9 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
             from clipwright.plugins.prompt_registry import PluginPromptRegistry
             plugin_prompts = PluginPromptRegistry.get_for_agent("requirements")
             if plugin_prompts:
-                system_prompt += "\n\n## 插件能力扩展\n" + "\n\n".join(plugin_prompts)
+                system_prompt += _hdr("PROMPT_PLUGIN_EXT_HEADER") + "\n\n".join(plugin_prompts)
             if web_context:
-                system_prompt += f"\n\n## 联网搜索参考\n{web_context}"
+                system_prompt += _hdr("PROMPT_WEB_CONTEXT_HEADER") + f"{web_context}"
 
             result = await self.llm_or_fallback(lambda: self._llm.structured_output(system_prompt=system_prompt, user_prompt=f"结构 Agent 输出:\n{scenes_json}", pipeline_id=pipeline_id), fallback={}, retries=2)
             if isinstance(result, dict):
@@ -257,3 +257,8 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
         return "\n".join(lines)
 
 
+def _hdr(name: str) -> str:
+    """小标题类提示词（B5 常量覆盖）：插件可替换，未覆盖时即 prompts.py 默认值。"""
+    from clipwright.plugins.prompt_overrides import resolve_constant
+
+    return resolve_constant(name)

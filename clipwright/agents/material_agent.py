@@ -301,7 +301,7 @@ async def _llm_search_queries(
     from clipwright.plugins.prompt_registry import PluginPromptRegistry
     plugin_prompts = PluginPromptRegistry.get_for_agent("material")
     if plugin_prompts:
-        prompt += "\n\n## 插件能力扩展\n" + "\n\n".join(plugin_prompts)
+        prompt += _hdr("PROMPT_PLUGIN_EXT_HEADER") + "\n\n".join(plugin_prompts)
 
     llm = LLMService()
     try:
@@ -1393,3 +1393,9 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
             "material_notes": scene_notes,
         }
 
+
+def _hdr(name: str) -> str:
+    """小标题类提示词（B5 常量覆盖）：插件可替换，未覆盖时即 prompts.py 默认值。"""
+    from clipwright.plugins.prompt_overrides import resolve_constant
+
+    return resolve_constant(name)

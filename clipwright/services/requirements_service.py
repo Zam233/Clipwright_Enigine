@@ -2558,9 +2558,9 @@ class RequirementsService:
             web_context = await _build_web_context(f"{topic} {script}"[:300])
             if web_context:
                 if rag_context:
-                    rag_context += f"\n\n## 联网搜索参考\n{web_context}"
+                    rag_context += _hdr("PROMPT_WEB_CONTEXT_HEADER") + f"{web_context}"
                 else:
-                    rag_context = f"## 联网搜索参考\n{web_context}"
+                    rag_context = _hdr("PROMPT_WEB_CONTEXT_HEADER").lstrip("\n") + f"{web_context}"
 
             # 注入素材库概览（空素材库 → 无额外段落，零变化）
             overview = _material_library_overview()
@@ -2694,7 +2694,7 @@ class RequirementsService:
                 text += f"\n\n## 原始文稿（规划书必须忠实反映此内容）\n{script_text}"
             text += f"\n\n参考方案:\n{brief_json}"
             if web_context and not compact:
-                text += f"\n\n## 联网搜索参考\n{web_context[:800]}"
+                text += _hdr("PROMPT_WEB_CONTEXT_HEADER") + f"{web_context[:800]}"
             return text
 
         async def _call(*, compact: bool, budget: int, timeout: float) -> dict:
@@ -3799,3 +3799,9 @@ class RequirementsService:
         logger.info("规划书回填完成：session=%s task=%s scenes=%d",
                     session_id, getattr(task, "id", ""), len(scenes))
 
+
+def _hdr(name: str) -> str:
+    """小标题类提示词（B5 常量覆盖）：插件可替换，未覆盖时即 prompts.py 默认值。"""
+    from clipwright.plugins.prompt_overrides import resolve_constant
+
+    return resolve_constant(name)

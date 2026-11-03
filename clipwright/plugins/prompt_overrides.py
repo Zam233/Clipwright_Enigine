@@ -87,8 +87,10 @@ FORBIDDEN_NAMES = frozenset({
 #: 拿常量去比源文件窗口，窗口里混进了周边代码）。现在 agent_loop 的
 #: `_system_prompt()` 走 `_p("LOOP_...")` 实时读常量，覆盖立即生效。
 #:
-#: **仍刻意不列入的 2 个**：`PROMPT_PLUGIN_EXT_HEADER` / `PROMPT_WEB_CONTEXT_HEADER`
-#: ——全仓无消费方（死导出），覆盖它们不会有任何效果。
+#: 2026-11-02 第四批：最后两个 `PROMPT_*_HEADER` 也接线了。它们不是死导出 —— 之前是
+#: **内联副本**（4 个文件里硬编码同样的两行小标题：material_agent / requirements_agent /
+#: style_interpreter / requirements_service）。已把内联文本换成 `_hdr(name)` 解析调用，
+#: 默认值逐字节不变（等价性已断言）。至此 **26/26 常量 + 8/8 builder 全部接线**。
 WIRED_CONSTANTS = frozenset({
     "ANIM_MARKER_SYSTEM_HEADER",
     "CREATIVE_BRIEF_SYSTEM",
@@ -109,6 +111,8 @@ WIRED_CONSTANTS = frozenset({
     "MG_ORCHESTRATION_CONSTRAINTS",
     "MG_STRICT_JSON_OUTPUT",
     "PLAN_TRANSLATE_HEADER",
+    "PROMPT_PLUGIN_EXT_HEADER",
+    "PROMPT_WEB_CONTEXT_HEADER",
     "PLAN_TRANSLATE_SYSTEM",
     "QUALITY_SEMANTIC_QA_SYSTEM",
     "STRUCTURE_MG_DYNAMIC_GUIDE",
@@ -478,6 +482,7 @@ def clear_plugin(plugin_id: str) -> list[str]:
     for symbol in removed:
         _OVERRIDES.pop(symbol, None)
     return sorted(removed)
+
 
 
 
