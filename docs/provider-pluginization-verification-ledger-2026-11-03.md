@@ -1,0 +1,100 @@
+# Provider 插件化 · Batch 0 核实台账
+
+由 PRD 自动提取 + 本会话已核事实生成。**状态**：`已闭环`（有结论与证据）／`待核实`（未查）。
+
+提取口径：`docs/provider-pluginization-and-prompt-override-prd-2026-11-02.md` 中含「待核实」字样的实质问题行，共 **71** 条（原文自称「70 处」，实际扫到 71；裁定 3/4 新增的 9 条已在 PRD §15.7 闭环，不在本表）。
+
+| 编号 | PRD 节 | 问题（原文截断） | 状态 | 结论 / 证据 |
+|---|---|---|---|---|
+| H-001 | 1. 术语 | `needs_uploader`  ／  TTS provider 的能力标记，表示该 provider 需要上传器；实际消费者、端到端行为待核实  ／  | 已闭环 | 消费者 = providers/tts/__init__.py:60-64（cosyvoice needs_uploader=True）→ services/voice.py:479/:576 形参 → :692 实例化；全仓无其它调用方（PRD §15.1.7） |
+| H-002 | 2.1 engine 里与 provider 耦合的点清单 | `clipwright/services/voice.py`（约 40KB；精确行号待核实）  ／  TTS/语音服务实现；CosyVoice 出现于事实包给出的行 5、8、45、160  ／  | 已闭环 | 行号已定位：:228 PublicUploadManager、:347/:368/:379 BaseVoiceProvider、:390 QwenTTSProvider、:715 _get_provider、:887 dub_script（PRD §15.1.1） |
+| H-003 | 2.1 engine 里与 provider 耦合的点清单 | `clipwright/api/voice.py`（约 5.9KB；精确行号待核实）  ／  语音 API；具体端点与协议耦合点待核实  ／  | 已闭环 | 端点 :56 upload ／ :95 clone ／ :115 list ／ :122 delete ／ :132 synthesize ／ :151 dub（PRD §15.1.1） |
+| H-004 | 2.1 engine 里与 provider 耦合的点清单 | `clipwright/prompts.py`（26 常量、8 builder；精确符号行号待核实）  ／  集中保存提示词默认值，是唯一提示词文案源  ／  | 已闭环 | 8 个 builder 定义行与调用点已逐符号定位（PRD §15.2.1） |
+| H-005 | 2.1 engine 里与 provider 耦合的点清单 | `agents/requirements_agent.py`（精确行号待核实）  ／  将插件提示词作为“插件能力扩展”附加到 system prompt，未替换 `prompts.py` 符号  ／  | 待核实 | — |
+| H-006 | 2.2 Provider 类型 × 当前实现位置 × 是否已插件化 | Embedding  ／  `clipwright/providers/base.py:72` 定义协议  ／  待核实  ／  事实包未提供内置实现位置或插件目录实现清单  ／  | 待核实 | — |
+| H-007 | 2.2 Provider 类型 × 当前实现位置 × 是否已插件化 | Rerank  ／  `clipwright/providers/base.py:90` 定义协议  ／  待核实  ／  事实包未提供内置实现位置或插件目录实现清单  ／  | 待核实 | — |
+| H-008 | 2.2 Provider 类型 × 当前实现位置 × 是否已插件化 | TTS  ／  `clipwright/providers/tts/__init__.py` 内置 qwen-tts、cosyvoice、minimax；`services/voice.py`  ／  部分：provid… | 待核实 | — |
+| H-009 | 2.2 Provider 类型 × 当前实现位置 × 是否已插件化 | STT  ／  `clipwright/providers/stt/__init__.py:52-68` 内置 whisper、faster-whisper  ／  待核实  ／  有 `STT_PROVIDER` 分发… | 待核实 | — |
+| H-010 | 2.2 Provider 类型 × 当前实现位置 × 是否已插件化 | 图像  ／  `plugins/ai_*` 目录与实现  ／  待核实是否已在插件目录  ／  事实包仅要求列入核查，不给具体目录名或实现事实  ／  | 待核实 | — |
+| H-011 | 2.2 Provider 类型 × 当前实现位置 × 是否已插件化 | 视频  ／  `plugins/ai_*` 目录与实现  ／  待核实是否已在插件目录  ／  同上  ／  | 待核实 | — |
+| H-012 | 2.2 Provider 类型 × 当前实现位置 × 是否已插件化 | 音乐  ／  `plugins/ai_*` 目录与实现  ／  待核实是否已在插件目录  ／  同上  ／  | 待核实 | — |
+| H-013 | 2.3 TTS：后端链 + 前端控件 | 已知后端链**：`TTS_PROVIDER` 已有分发；内置 provider 注册含 qwen-tts、cosyvoice、minimax；CosyVoice `needs_uploader=True`；`servic… | 待核实 | — |
+| H-014 | 2.3 TTS：后端链 + 前端控件 | 待核实项  ／  建议核实方法  ／  产出  ／  | 待核实 | — |
+| H-015 | 2.4 提示词：默认值消费与插件能力 | `clipwright/prompts.py` 集中保存 26 个常量与 8 个 `build_*` 参数化函数；符号消费点清单及每个 agent 的导入路径待核实。全局约束是不搬移、不复制，所有默认值由该模块提供。 | 待核实 | — |
+| H-016 | 2.4 提示词：默认值消费与插件能力 | 缺口分两类：符号覆盖（常量键、目标 agent、来源）与参数化模板覆盖（模板键、参数 schema、占位符一致性、渲染后验证）。实际 builder 占位符集合待核实，W5 必须从运行时/AST 提取作为契约测试基线。 | 待核实 | — |
+| H-017 | 4.2 Provider 能力接口 | 契约能力字段至少覆盖：模型清单获取（静态或动态、失败行为）、参数 schema、流式支持、工具调用、reasoning 映射、计费/usage 上报。字段是否必填、模型发现 API、计费单位与 token 口径均待核实；… | 待核实 | — |
+| H-018 | 4.3 同名冲突规则 | provider key 在同一 `ContributionKind` 下唯一；大小写与别名归一规则待核实。 | 待核实 | — |
+| H-019 | 4.3 同名冲突规则 | 覆盖内置 provider 的插件必须在 UI/日志暴露 provider id、插件 id 与版本；具体审计字段待核实。 | 待核实 | — |
+| H-020 | 4.4 启停、热插拔、隔离与审计 | 沿用现有插件治理能力（启停持久化、错误通道、reload 回滚、配置迁移、secret 加密与审计日志；具体 API/字段待核实）。provider 启停后新请求使用新注册表快照；进行中的请求不强制切换实例。热插拔对进行… | 待核实 | — |
+| H-021 | 4.5 密钥与 schema 驱动 | 插件声明字段 schema：类型、标签、默认值、必填、敏感标记、验证规则及可见条件。字段规范需 W1 定稿；前端按 schema 渲染，不能按 provider 名称写死字段。敏感字段提交至 `settings_stor… | 待核实 | — |
+| H-022 | 5.1 OpenAI 兼容与 Anthropic 插件 | 创建 `plugins/llm_openai_compatible/`，配置 schema 至少表达 base URL、鉴权引用、模型/请求参数与 reasoning 映射；具体字段名、缺省值、是否允许无鉴权由 W1 核… | 待核实 | — |
+| H-023 | 5.2 Engine 职责与 isobase | engine 保留注册表查询、统一协议调度、角色绑定、回退、请求生命周期、超时/取消与结果归一化；`services/llm.py` 不再构造或持有特定协议客户端。`_resolve_llm_provider` 作为注册… | 待核实 | — |
+| H-024 | 5.2 Engine 职责与 isobase | `isobase` 处理策略：W1 检查依赖版本、可注入性及现有测试；W2 优先由插件继续使用 `isobase`，engine 抽象只依赖 `LLMProvider` 协议。若 `isobase` 对插件构建或依赖隔离… | 待核实 | — |
+| H-025 | 5.3 内置 fallback 与迁移 | 迁移阶段保留内置实现作为插件未安装/禁用时的 fallback，保持 provider key 与角色绑定可解析；当同名插件安装时按 4.3 规则覆盖内置。完成回归、配置迁移与发布观察期后，是否删除内置实现由产品与维护者… | 待核实 | — |
+| H-026 | 6.1 边界与接口 | `TTSRequest/Result` 当前字段与流协议待核实；功能层向前端输出 schema 化控件描述，后端接收规范化请求并解析 provider 结果。功能层如何注册 UI Slot、前端插件渲染权限与控件 DSL… | 待核实 | — |
+| H-027 | 6.2 前端控件描述 | 控件描述采用版本化 schema：`id`、`type`、`label`、`default`、`required`、`options`/`constraints`、`visibleWhen`、`providerScope… | 待核实 | — |
+| H-028 | 6.3 错误传播与降级 | 协议插件错误必须保留 provider id、阶段（鉴权/请求/流式/解码）、可重试性和用户可读错误码；敏感响应/密钥不进入日志。功能层区分 provider unavailable、配置缺失、上传器缺失、合成失败与取消… | 待核实 | — |
+| H-029 | 7.2 校验、优先级与冲突 | builder 覆盖时比较占位符集合及参数类型；缺失、多余或类型不匹配一律拒绝该覆盖，并返回符号名、期望集合与实际集合。格式化语法与嵌套占位符规则待核实。 | 待核实 | — |
+| H-030 | 7.3 来源、禁用与回滚 | 最终 prompt 组装结果保留每段来源元数据（默认模块、Category、Persona、Skill、plugin id/version、符号名、覆盖/附加模式）；可在诊断 UI 或结构化日志查看，不展示敏感上下文。U… | 待核实 | — |
+| H-031 | 8. 数据与接口契约增量 | 所有字段均为方案草案；事实包未确认的类型、默认值标「待核实」，W1/W2 定稿前不得视为现存实现。 | 待核实 | — |
+| H-032 | 8. 数据与接口契约增量 | Provider manifest  ／  `provider_id: string`；无默认值  ／  注册唯一键；现有 manifest 是否支持待核实  ／  | 待核实 | — |
+| H-033 | 8. 数据与接口契约增量 | Provider manifest  ／  `config_schema: object`；`{}`  ／  schema 驱动配置表单；版本字段待核实  ／  | 待核实 | — |
+| H-034 | 8. 数据与接口契约增量 | Provider manifest  ／  `capabilities: object`；按协议声明  ／  models/stream/tools/reasoning/usage；结构待核实  ／  | 待核实 | — |
+| H-035 | 8. 数据与接口契约增量 | Provider source  ／  `provider_id: string`；旧记录迁移填旧 key  ／  将配置源与实现解耦；存储模型待核实  ／  | 待核实 | — |
+| H-036 | 8. 数据与接口契约增量 | Provider source  ／  `plugin_id: string ／ null`；`null` 表示 builtin  ／  来源可见性与审计；字段待核实  ／  | 待核实 | — |
+| H-037 | 8. 数据与接口契约增量 | Provider source  ／  `config: object`；旧字段迁移  ／  敏感值走 Fernet；具体 schema 待核实  ／  | 待核实 | — |
+| H-038 | 8. 数据与接口契约增量 | TTS UI descriptor  ／  `controls: array<object>`；`[]`  ／  功能插件控件列表；字段待核实  ／  | 待核实 | — |
+| H-039 | 8. 数据与接口契约增量 | Prompt contribution  ／  `target: string`；必填  ／  `agent:<id>` 或 `symbol:<name>`；编码格式待核实  ／  | 待核实 | — |
+| H-040 | 8. 数据与接口契约增量 | Prompt contribution  ／  `mode: enum(append ／ replace)`；`append`  ／  区分 agent 附加与符号替换；现有贡献字段待核实  ／  | 待核实 | — |
+| H-041 | 8. 数据与接口契约增量 | Prompt contribution  ／  `template: string`；无默认值  ／  文本或 builder 模板；占位符约束待核实  ／  | 待核实 | — |
+| H-042 | 8. 数据与接口契约增量 | Prompt contribution  ／  `source_plugin: string`；注册时生成  ／  来源追踪；现有审计字段待核实  ／  | 待核实 | — |
+| H-043 | 8. 数据与接口契约增量 | API 增量原则：优先扩展 `/api/providers` 现有 list/create/available/roles/source CRUD，不新建平行 provider API。拟新增 schema 查询端点 `… | 待核实 | — |
+| H-044 | 8. 数据与接口契约增量 | 前端 `ProviderKind` 扩展 STT 的必要性待核实：现有供应商页事实清单只有 llm/embedding/rerank/tts 四 Tab；STT 是否加入 Tab 由产品确认。store 增加 `prov… | 待核实 | — |
+| H-045 | 9. 迁移与兼容 | 迁移前导出 `provider_sources` 的 `sources` 与 `roles` 快照；现有字段结构、备份机制待核实。 | 待核实 | — |
+| H-046 | 9. 迁移与兼容 | 旧前端只收到兼容字段；新增字段可选，旧客户端忽略未知字段不崩。现有 API 是否使用严格响应模型待核实。 | 待核实 | — |
+| H-047 | 9. 迁移与兼容 | 迁移失败按单 source 原子回滚；不允许部分写入后覆盖原配置。事务/存储原子能力待核实。 | 待核实 | — |
+| H-048 | 10. WBS | 规模/人日为规划估算，不是事实包数据；按单工程师有效工作日估算，含实现与针对性验证，不含等待评审。总计 32 项任务、约 47 人日。具体依赖真实代码结构，待核实项在任务启动时确认。 | 待核实 | — |
+| H-049 | W1 契约与注册表（7 项，约 10 人日） | 1  ／  盘点现有 provider 协议与注册调用  ／  `providers/base.py:16-17,43,72,90,108,126,139`；注册调用点待核实  ／  无  ／  各类型均有协议、能力与 … | 待核实 | — |
+| H-050 | W1 契约与注册表（7 项，约 10 人日） | 4  ／  定义密钥引用与 schema 驱动 UI 契约  ／  `provider_sources.py:86`；`api/providers.py:30-123`；settings encryption 落点待核实… | 待核实 | — |
+| H-051 | W1 契约与注册表（7 项，约 10 人日） | 5  ／  定义启停、热插拔与请求生命周期  ／  `contribution_dispatch.py:41-50`；插件治理函数待核实  ／  任务 3  ／  禁用后新请求不再选中插件；在途请求行为有明确可观察结果 … | 待核实 | — |
+| H-052 | W1 契约与注册表（7 项，约 10 人日） | 6  ／  建立插件失败隔离与审计事件契约  ／  插件错误通道/审计落点待核实；`base.py:74`  ／  任务 2  ／  一个坏插件失败后应用与其他 provider 仍可用，审计能定位插件  ／  M  ／… | 待核实 | — |
+| H-053 | W1 契约与注册表（7 项，约 10 人日） | 7  ／  固定协议能力测试矩阵  ／  `providers/base.py:186,203,221`；测试文件待核实  ／  任务 1-6  ／  流式、工具调用、reasoning、usage 不支持时明确显示，不… | 待核实 | — |
+| H-054 | W3 TTS 双插件（原 6 项，约 10 人日；**已被 §15 修订为 8 项 / 14 人日**） | 1  ／  梳理 voice API/service/provider 调用链与控件  ／  `services/voice.py`、`api/voice.py`、`DubView.tsx`、`VoicePage.tsx… | 待核实 | — |
+| H-055 | W3 TTS 双插件（原 6 项，约 10 人日；**已被 §15 修订为 8 项 / 14 人日**） | 2  ／  抽离 TTS 工作流功能层插件  ／  `TTS_PROVIDER` dispatch `contribution_dispatch.py:46`；插件 UI 接入点待核实  ／  W1 完成  ／  TTS… | 待核实 | — |
+| H-056 | W3 TTS 双插件（原 6 项，约 10 人日；**已被 §15 修订为 8 项 / 14 人日**） | 3  ／  定稿控件 schema 与前端 renderer  ／  `ProvidersPage.tsx:15-19`；DubView/VoicePage 控件待核实  ／  任务 1、W1 完成  ／  插件控件配置… | 待核实 | — |
+| H-057 | W3 TTS 双插件（原 6 项，约 10 人日；**已被 §15 修订为 8 项 / 14 人日**） | 6  ／  验证错误传播、取消与 provider 降级  ／  `api/voice.py`、`services/voice.py`；精确函数待核实  ／  任务 2-5  ／  CosyVoice 失败后只有配置了兼… | 待核实 | — |
+| H-058 | W4 其他 provider 类型（6 项，约 8 人日） | 3  ／  迁移 Embedding provider  ／  `providers/base.py:72`；实现文件待核实  ／  任务 1  ／  embedding 角色能解析插件，原索引流程可用  ／  L  ／… | 待核实 | — |
+| H-059 | W4 其他 provider 类型（6 项，约 8 人日） | 4  ／  迁移 Rerank provider  ／  `providers/base.py:90`；实现文件待核实  ／  任务 1  ／  rerank 角色可选择插件，缺失时不静默伪装成功  ／  M  ／  中… | 待核实 | — |
+| H-060 | W4 其他 provider 类型（6 项，约 8 人日） | 5  ／  核实图像/视频/音乐 `plugins/ai_*` 归属  ／  `plugins/ai_*` 路径与实现待核实  ／  任务 1  ／  三类清单明确哪些已插件化，哪些不在本期  ／  S  ／  低  ／… | 待核实 | — |
+| H-061 | W5 提示词覆盖插件（原 7 项，约 10 人日；**已被 §15 修订为 8 项 / 12 人日**） | 1  ／  盘点 26 常量、8 builder 的消费点与占位符  ／  `clipwright/prompts.py`、各 agent 消费点待核实  ／  可独立；依赖提示词基线  ／  每个符号能定位消费处与默认… | 待核实 | — |
+| H-062 | W5 提示词覆盖插件（原 7 项，约 10 人日；**已被 §15 修订为 8 项 / 12 人日**） | 3  ／  实现 builder 占位符校验  ／  `prompts.py` builder；具体语法待核实  ／  任务 1、2  ／  少一个或多一个占位符时注册失败并报告差异  ／  M  ／  高  ／  | 待核实 | — |
+| H-063 | W5 提示词覆盖插件（原 7 项，约 10 人日；**已被 §15 修订为 8 项 / 12 人日**） | 4  ／  接入最终 prompt 组装与既有顺序  ／  RequirementsAgent 获取逻辑行号待核实；`builtin_contributions.py:163,195`  ／  任务 2、3  ／  五层… | 待核实 | — |
+| H-064 | W5 提示词覆盖插件（原 7 项，约 10 人日；**已被 §15 修订为 8 项 / 12 人日**） | 5  ／  实现来源诊断与冲突报告  ／  `prompt_registry.py:99`；UI/日志落点待核实  ／  任务 2  ／  用户能看到生效符号、来源插件与版本  ／  M  ／  中  ／  | 待核实 | — |
+| H-065 | W5 提示词覆盖插件（原 7 项，约 10 人日；**已被 §15 修订为 8 项 / 12 人日**） | 7  ／  运行时 prompt 快照回归  ／  `prompts.py` 26 常量 + 8 builder；测试路径待核实  ／  任务 4、6  ／  无覆盖时动态发出的 prompt 与基线完全一致  ／  M… | 待核实 | — |
+| H-066 | W2 OpenAI/Anthropic | 请求 reasoning 并查看诊断信息  ／  reasoning 映射可见且与普通正文分离；确切 UI 形式待核实  ／  | 待核实 | — |
+| H-067 | 13. 分期与依赖 | 关键路径估算**：W1（10 人日）→ W2（9 人日）与 W3（10 人日）并行 → W4（8 人日）；W5（10 人日）可与 W2/W3 并行。总工作量约 47 人日；关键路径按 W1 + max(W2,W3) + … | 待核实 | — |
+| H-068 | 14. 开放问题 | 产品确认 prompt 来源诊断入口放在 Provider/插件管理 UI、Agent 调试日志还是两处都做；具体 UI 落点待核实。 | 待核实 | — |
+| H-069 | 15.1 裁定 3：engine 默认不带任何 TTS 能力 | #### 15.1.7 核实结论（原「待核实」，2026-11-02 晚已全部闭环） | 待核实 | — |
+| H-070 | 15.2 裁定 4：全部 `build_*` 允许被插件替换 | #### 15.2.6 核实结论（原「待核实」） | 待核实 | — |
+| H-071 | 15.7 本轮核实的方法与新增事实（可复核） | 70 条原始待核实（§2–§13）中与 OpenAI/Anthropic/isobase/embedding/rerank/STT 相关的部分**本轮未逐条复核**，仍按原台账待 Batch 0 处理。 | 待核实 | — |
+
+**进度**：已闭环 4 ／ 71，待核实 67。
+
+## B0 分组结论（按 coding plan §2 的 B0-T1…B0-T12）
+
+| 组 | 任务 | 状态 | 结论与证据 |
+|---|---|---|---|
+| B0-T1 | 71 条待核实落在哪些事实域 | 已闭环 | 分布：§2.1 行号类 15、§8 契约类 16、§10 WBS 18、§4 契约 5、§5 Provider 4、§6 TTS 3、§9 迁移 3、§7 提示词 2、其余 5。行号类已被 §15.7 逐条消解 |
+| B0-T2 | `ContributionKind` 名单/数量/新增限制 | 已闭环 | **17 类**（`plugins/contribution.py:22-44`）：tool／skill／agent／material_source／category／style_interpreter／hook／prompt／**llm_provider／tts_provider／stt_provider**／renderer_backend／animation／**embedding_provider／rerank_provider**／**ui_slot**／export_preset。**无 HTTP 路由类** → 网关路线 B 成立。`ConflictPolicy` = `reject`／`override`（`:47-50`）。注：`schema/plugin.py:33` 的 docstring 写「14 类」是**文档漂移**，实际 17 |
+| B0-T3 | manifest 实际 schema | 已闭环 | `schema/plugin.py:38-99`：`id/name/version/kind/description/author/entry_point` + `api_version`（默认 "1"，"2" 起支持 contributions）+ **`contributions: list[ContributionDecl]`**（「声明即授权」）+ `override_builtin` + `permissions` + `dependencies` + `signature`(HMAC) + `config_schema_version` + `runtime`(inprocess／subprocess) + `runtime_config`。`ContributionDecl` = `{kind, id(pattern ^[a-z][a-z0-9_]{1,63}$), meta}`。**Provider 专属字段（config_schema/capabilities）当前只能塞 `meta`，B1-T2 需要定是否升字段** |
+| B0-T4 | 冲突、优先级、reload/回滚 | 待核实 | 已确认 `ConflictPolicy` 语义与 `contribution_dispatch.register()` 的 facade-only／_WIRED_KINDS 分流（`:55-79`）；**reload 与回滚行为、以及 tests 里的冲突断言尚未逐条读**——命令：`rg -n "ContributionRegistry|reload|conflict|override_builtin" tests` |
+| B0-T5 | LLM provider 协议 / isobase | 待核实 | 已知 `providers/llm/__init__.py:25-31` 内置让位；isobase 版本与 reasoning 透传未查——命令：锁文件内 `isobase` + `providers/base.py` |
+| B0-T6 | TTS 凭据/上传器/别名/缓存/异常/`dub` 边界 | 已闭环 | 见 PRD §15.1.1 与 §15.1.7（:715 身份 + 指纹缓存、:228 上传器无外部调用方、`providers/tts/__init__.py:17/35/39/52/55-67`、`api/voice.py` 六端点、编排 `:887`） |
+| B0-T7 | embedding／rerank／STT 现状 | 待核实 | 命令：`providers/{embedding,rerank,stt}/` 实现与 `api/providers.py`、`api/settings.py:57,62` |
+| B0-T8 | 提示词 26 常量 + 8 builder + 消费点 | 已闭环 | 见 PRD §15.2.1/§15.2.5/§15.7：8 个 builder 签名与调用点、`PluginPrompt` 无 symbol/mode（`:31-35,99`）、插件提示词消费点仅 4 个 agent |
+| B0-T9 | 管理页 schema／密钥表单／前后端字段 | 待核实 | 已知 `ProvidersPage.tsx:15-19` 四 Tab、`api/providers.py` 端点；字段映射与密钥掩码链路未逐条读 |
+| B0-T10 | 测试清单与兼容基线 | 已闭环（清单级） | `tests` 中命中 provider/tts/prompt 等关键字的文件 **135 个**；**行为断言关键子集 22 个**：`test_tts_provider_registry`、`test_voice_providers`、`test_voice_service`、`test_voice_api`、`test_voice_audio_agent`、`test_voiceover_e2e`、`test_stt_provider_registry`、`test_llm_provider_protocol`、`test_provider_acceptance`、`test_provider_available`、`test_provider_sources`、`test_provider_role_binding_rag`、`test_provider_transport`、`test_resolution_determinism`、`test_model_listing_contract`、`test_prompt_authority`、`test_prompt_resolution_event`、`test_stage_prompt_wiring`、`test_type_prompts`、`test_plugin_contribution`、`test_plugin_dispatch`、`test_builtin_contributions`。**改契约前必须逐条阅读这 22 个**（测试由人跑，但阅读是我的责任） |
+| B0-T11 | 文档同步点／配置开关／回滚边界 | 待核实 | 命令：`rg -n "settings_store|apply_all|enable_" clipwright/services clipwright/api` |
+| B0-T12 | 逐条闭环审阅 | 待核实 | 依赖上面各组完成 |
+
+**下一步（本 goal 后续轮次）**：先补 B0-T4／T5／T7／T9／T11 五组，再逐条把 71 条里剩下的 67 条从「待核实」推成「已闭环」；完成后才动 Batch 1。
