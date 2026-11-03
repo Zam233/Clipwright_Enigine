@@ -125,9 +125,10 @@
 | B1-T5 能力网关契约 + 动态映射 | 已完成（契约落地） | 新增 `clipwright/api/capability.py`：`POST /api/capability/{name}`，`{params}` → `ToolExecResult`；状态码 404/422/503/200 按 PRD §15.1.5；`_validate_tool_params()` 加 `status_code` 参数以支持网关的 422（工具端点仍 400）。已挂进 `main.py` |
 | B1-T2 manifest Provider 字段 | **已完成** | 定为**升一级字段**：`ContributionDecl.config_schema` + `capabilities`（`schema/plugin.py`），`meta` 继续承载 kind 专属零散键。校验器新增 `clipwright/plugins/provider_decl.py`（`validate_declaration` / `register_declaration` / `schemas_for_kind` / `forget_plugin`）；加载时校验，不合法声明从「已声明」集合剔除并写错误通道，不连累同插件其它贡献。实测：真实插件 `headless_chrome` 的 `renderer_backend:chrome_headless_shell` 被正确捕获 |
 | B1-T4 密钥声明/脱敏 | **已完成（声明侧）** | `config_schema` 字段级 `secret: bool` 即声明，非 bool 直接拒绝（实测报错「secret 必须是 bool」）。落盘仍走既有 Fernet（`settings_store` fail-closed）与 `provider_sources._mask_key`，未新增第二条加密通道 |
-| B1-T6 前端 schema 驱动表单 | 待办（后端已就绪） | 后端 `GET /api/providers/schemas[?kind=]` 已上线（实测 200，返回 `renderer_backend: chrome_headless_shell`）；前端下一步把 `ProvidersPage` 写死的 `baseUrl`/`keys` 换成按 schema 渲染 |
+| B1-T6 前端 schema 驱动表单 | **已完成** | 链路打通：`GET /api/providers/schemas` → `providersApi.schemas()` → `schemaFor(schemas, kind, provider)` → `ProvidersPage` 新增「插件配置」区块（按 `config_schema` 渲染 input / select，`secret` 走 password，未知能力键在下方列出）。后端同时补 `config` 落盘与掩码：`provider_sources._encrypt_config/_mask_config/_secret_config_fields`（secret 字段 Fernet 加密，`****` 回传=保留旧值，无密钥 fail-closed）；`create_source/update_source` 接受 `config`，`_public_source` 输出掩码形态。实测：public 读到 `sk-p****`、落盘为密文、掩码回传保留旧密文、非 secret 字段原样、内置 provider（无声明）不受影响 |
 
 **已跑过的验证（不含 pytest/vitest）**：`py_compile` 全绿；导入 + 幂等烟测确认五个家族各注册一次、
 `needs_builtin_registration` 语义正确；`TestClient` 打到 `/api/capability/list_animations` → 200
 `status=success`、未知能力名 → 404 带可读原因。
+
 
