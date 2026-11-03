@@ -132,3 +132,40 @@
 `status=success`、未知能力名 → 404 带可读原因。
 
 
+
+## Batch 2 进度（Provider 插件落地）
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| B2-T1 定义 OpenAI 兼容 Provider 插件边界 | 已完成 | 边界定为「插件接管**注册与声明**，协议适配类暂留 engine」：`providers/llm/openai_provider.py` 只有 68 行、只依赖 `providers.base` 与传输层；一次性搬类会打断既有测试对 `clipwright.services.llm.OpenAIChat` 的打桩链（`test_llm_provider_protocol.py:37` 等）。W2 收尾再搬，见 PRD §5.3 迁移过渡期 |
+| B2-T2 OpenAI 兼容插件 | 已完成 | `plugins/llm_openai_compatible/`（`plugin.yaml` + `main.py` + `__init__.py`）：声明 `openai`/`ollama` 两个 `llm_provider`，带 `config_schema`（`api_key: secret`、`base_url`）与 `capabilities` |
+| B2-T3 Anthropic 插件并接管同名内置 | 已完成 | `plugins/llm_anthropic/`：实测加载后 `anthropic` 归属 `llm_anthropic`，`openai`/`ollama` 归属 `llm_openai_compatible`，三个 id 都不再由 `__builtin__` 提供；`/api/providers/available` 仍是三个名字（无回归） |
+| B2-T4 接通 role/source 解析与脱敏 | 已完成（复用既有链路） | provider 解析仍走 `ContributionRegistry.resolve`，只是实现来源换成插件；脱敏未改（`api_keys` 掩码 + B1-T4 的 `config` 掩码） |
+
+### 关键发现：内置先注册会让插件接管失败（已解决）
+
+实测第一次加载失败，原因不是插件写错，而是**顺序**：
+
+1. `main.py` lifespan 在 4.2~4.7（第 161-199 行）先注册全部内置 provider；
+2. 第 249 行才 `_plugin_loader.load_all()` 加载插件；
+3. 于是插件注册 `llm_provider:openai` 时撞上「已存在内置」→ 默认 REJECT，报错只说「不得覆盖内置贡献」。
+
+两条修法同时落地（互不替代）：
+
+- **`override_builtin: true`**（两个插件都声明）：`plugins/base.py:92` 据此把冲突策略切成
+  `ConflictPolicy.OVERRIDE`，允许接管内置。这条路对「运行时启用插件」（启动后才加载）是**唯一**可行的。
+- **逐 id 让位**（`providers/builtin_registry.py::register_builtin_once`）：从「整族一刀切」改成按 id 过滤，
+  插件先注册时内置只补没人接管的那些。整族一刀切会造成两种坏情况：内置把 `anthropic` 也注册了 →
+  插件那条被拒；或内置整族不注册 → `anthropic` 直接消失。
+
+### 另一处踩坑：`entry_point` 必须写包路径
+
+`entry_point: main.py` 会被当成模块名 `main.py` 去导入 → `模块加载失败`。仓库里其余插件都写
+`"<目录>.main"`（`ai_image_gen.main` 等），只有 `sandbox_demo` 写 `main.py`（`runtime: subprocess`
+走的是另一条装载路径，不受影响）。两个新插件已改为 `"llm_anthropic.main"` / `"llm_openai_compatible.main"`
+并补 `__init__.py`。
+
+### 预存缺陷（不是本轮引入，记录待修）
+
+`plugins/example_full/plugin.yaml` 的 `entry_point` 是 `_example_full.main`，而目录名是 `example_full`
+→ 启动时同样报「模块加载失败」。属于既有问题，本轮不动它（避免与 PRD 范围混在一起）。

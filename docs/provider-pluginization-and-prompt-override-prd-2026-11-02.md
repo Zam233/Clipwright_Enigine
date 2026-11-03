@@ -169,6 +169,10 @@ class ProviderManifest(Protocol):
 
 ### 5.1 OpenAI 兼容与 Anthropic 插件
 
+**落地进度（2026-11-02，Batch 2）**：`plugins/llm_openai_compatible/` 与 `plugins/llm_anthropic/` 已建立并接管注册与声明（`config_schema` / `capabilities`），实测三个 id 的归属都从 `__builtin__` 切到插件；`/api/providers/available` 无回归。**协议适配类暂留 engine**（`providers/llm/*.py`，仅 68/55 行且只依赖 `providers.base` + 传输层）：一次性搬类会打断既有测试对 `clipwright.services.llm.OpenAIChat` 的打桩链，按 §5.3「迁移阶段保留内置实现作为 fallback」分两步走 —— 搬类属于 W2 收尾项，不是遗漏。
+
+**顺序陷阱（实测）**：lifespan 先注册内置（`main.py:161-199`）再加载插件（`:249`），所以插件接管必须依赖 `override_builtin: true`（由 `plugins/base.py:92` 切成 `ConflictPolicy.OVERRIDE`）；反向顺序则由 `providers/builtin_registry.py` 的**逐 id 让位**兜住。两条机制缺一不可，详见台账 Batch 2 一节。
+
 创建 `plugins/llm_openai_compatible/`，配置 schema 至少表达 base URL、鉴权引用、模型/请求参数与 reasoning 映射；具体字段名、缺省值、是否允许无鉴权由 W1 核实后确定。插件对接既有 LLMProvider 协议，处理 OpenAI Chat 请求/响应，并把流式、工具调用与 reasoning 映射为统一结果。reasoning 格式差异、供应商扩展头与错误码映射待核实。
 
 创建 `plugins/llm_anthropic/`，映射 Anthropic Messages 协议与统一 LLMProvider；system 参数、工具调用、流式事件与 reasoning 映射沿用协议测试，不在 engine 留协议分支。
@@ -829,5 +833,6 @@ API 增量原则：优先扩展 `/api/providers` 现有 list/create/available/ro
 | 8 | 契约评审 | 新增 slot 必须经 SlotRegistry 评审（名单冻结纪律），评审记录留档 | 下次任何人新增 slot 都会绕过流程 |
 
 > slot 契约本身的字段（`slot` / `id` / `title` / `order` / `icon` / `visibleWhen` / `layout`）**沿用现有 `SlotContribution` 定义，不新增字段**；`layout.widgets` 复用现有 plugin UI 控件集（`string` / `select` / `checkbox` / `slider`），未知控件类型必须拒绝并给可读错误（不变量 #13）。
+
 
 

@@ -1,0 +1,43 @@
+id: llm_openai_compatible
+name: OpenAI 兼容 LLM Provider
+version: 1.0.0
+kind: capability
+api_version: "2"
+description: 提供 openai 与 ollama 两个 OpenAI 兼容 LLM provider；插件存在时内置同名实现自动让位
+entry_point: "llm_openai_compatible.main"
+permissions: []
+# 声明接管内置同名 provider：插件晚于内置注册（运行时启用插件）时靠它把归属切过来；
+# 插件先注册时则由 providers/builtin_registry.py 的逐 id 让位自动跳过内置。
+override_builtin: true
+contributions:
+  - kind: llm_provider
+    id: openai
+    config_schema:
+      base_url:
+        type: string
+        label: API Base URL
+        placeholder: https://api.openai.com/v1
+      api_key:
+        type: string
+        label: API Key
+        secret: true
+    capabilities:
+      stream: true
+      tools: true
+      reasoning: true
+      usage: true
+      models: true
+  - kind: llm_provider
+    id: ollama
+    config_schema:
+      base_url:
+        type: string
+        label: Ollama 地址
+        placeholder: http://127.0.0.1:11434/v1
+    capabilities:
+      stream: true
+      tools: true
+      usage: true
+      models: true
+
+

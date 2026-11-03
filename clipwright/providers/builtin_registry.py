@@ -57,12 +57,23 @@ def register_builtin_once(
     probe_id: str,
     items: Iterable[Contribution],
 ) -> bool:
-    """先查后注册；返回 True=已登记内置，False=让位给已存在的实现。
+    """先查后注册；返回 True=登记了至少一条内置，False=全部让位。
+
+    **按 id 逐条让位**（不是整族一刀切）：插件可能只接管同族的一部分 id（例如
+    `llm_openai_compatible` 接管 `openai`+`ollama`，但 `anthropic` 仍由内置提供）。
+    整族一刀切会造成两种坏情况：要么内置把 `anthropic` 也注册了 → 插件那条被
+    REJECT；要么内置整族不注册 → `anthropic` 消失。逐条过滤两者都不会发生。
+
+    `probe_id` 只用于 `needs_builtin_registration()` 的快速判断与日志，不参与过滤。
 
     ``dispatch=False``：内置实现已由各自构造路径落地，门面只做归属与冲突基准，
     转调会二次注册（见 `ContributionRegistry.register` 的 docstring）。
     """
-    if not needs_builtin_registration(kind, probe_id):
+    pending = [
+        item for item in list(items)
+        if ContributionRegistry.resolve(kind, item.id) is None
+    ]
+    if not pending:
         return False
-    ContributionRegistry.register(BUILTIN_OWNER, list(items), dispatch=False)
+    ContributionRegistry.register(BUILTIN_OWNER, pending, dispatch=False)
     return True
