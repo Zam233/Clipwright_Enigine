@@ -87,14 +87,30 @@
 | B0-T1 | 71 条待核实落在哪些事实域 | 已闭环 | 分布：§2.1 行号类 15、§8 契约类 16、§10 WBS 18、§4 契约 5、§5 Provider 4、§6 TTS 3、§9 迁移 3、§7 提示词 2、其余 5。行号类已被 §15.7 逐条消解 |
 | B0-T2 | `ContributionKind` 名单/数量/新增限制 | 已闭环 | **17 类**（`plugins/contribution.py:22-44`）：tool／skill／agent／material_source／category／style_interpreter／hook／prompt／**llm_provider／tts_provider／stt_provider**／renderer_backend／animation／**embedding_provider／rerank_provider**／**ui_slot**／export_preset。**无 HTTP 路由类** → 网关路线 B 成立。`ConflictPolicy` = `reject`／`override`（`:47-50`）。注：`schema/plugin.py:33` 的 docstring 写「14 类」是**文档漂移**，实际 17 |
 | B0-T3 | manifest 实际 schema | 已闭环 | `schema/plugin.py:38-99`：`id/name/version/kind/description/author/entry_point` + `api_version`（默认 "1"，"2" 起支持 contributions）+ **`contributions: list[ContributionDecl]`**（「声明即授权」）+ `override_builtin` + `permissions` + `dependencies` + `signature`(HMAC) + `config_schema_version` + `runtime`(inprocess／subprocess) + `runtime_config`。`ContributionDecl` = `{kind, id(pattern ^[a-z][a-z0-9_]{1,63}$), meta}`。**Provider 专属字段（config_schema/capabilities）当前只能塞 `meta`，B1-T2 需要定是否升字段** |
-| B0-T4 | 冲突、优先级、reload/回滚 | 待核实 | 已确认 `ConflictPolicy` 语义与 `contribution_dispatch.register()` 的 facade-only／_WIRED_KINDS 分流（`:55-79`）；**reload 与回滚行为、以及 tests 里的冲突断言尚未逐条读**——命令：`rg -n "ContributionRegistry|reload|conflict|override_builtin" tests` |
-| B0-T5 | LLM provider 协议 / isobase | 待核实 | 已知 `providers/llm/__init__.py:25-31` 内置让位；isobase 版本与 reasoning 透传未查——命令：锁文件内 `isobase` + `providers/base.py` |
+| B0-T4 | 冲突、优先级、reload/回滚 | 已闭环 | `ContributionRegistry._validate`（`plugins/contribution.py:175-194`）：未在 manifest 声明 → 拒绝（声明即授权）；与内置冲突 → **默认拒绝**，只有 `ConflictPolicy.OVERRIDE` 才放行；与其它插件冲突 → 拒绝；**同 owner 重复 = 幂等覆盖**（这就是 reload 路径）。`register(dispatch=False)` 供内置镜像入库避免二次注册；`unregister_plugin(owner)` 回收并 `clear_declared`，`loader.py:606-607` 额外清 prompt 注册表。⚠️ 与 PRD §4.3 的关系见事实更正 1 |
+| B0-T5 | LLM provider 协议 / isobase | 部分闭环 | `providers/base.py` 已定义 6 个 Protocol：`LLMProvider`(:43, capabilities/build_client/default_model)、`EmbeddingProvider`(:72)、`RerankProvider`(:90)、`TTSProvider`(:108, clone/synthesize)、`STTProvider`(:126)、`RendererBackend`(:139)；`missing_llm_provider_methods()`(:234) 已是注册期协议校验入口。**isobase 是 git 依赖且无 ref**（`pyproject.toml:26`），PRD 说的「锁定版本」当前不存在。reasoning 透传细节未读 |
 | B0-T6 | TTS 凭据/上传器/别名/缓存/异常/`dub` 边界 | 已闭环 | 见 PRD §15.1.1 与 §15.1.7（:715 身份 + 指纹缓存、:228 上传器无外部调用方、`providers/tts/__init__.py:17/35/39/52/55-67`、`api/voice.py` 六端点、编排 `:887`） |
-| B0-T7 | embedding／rerank／STT 现状 | 待核实 | 命令：`providers/{embedding,rerank,stt}/` 实现与 `api/providers.py`、`api/settings.py:57,62` |
+| B0-T7 | embedding／rerank／STT 现状 | 已闭环 | 三者**都已用内置让位模式**：`embedding/__init__.py:137-142`（openai/ollama/local）、`rerank/__init__.py:181-185`（http/local）、`stt/__init__.py:52,64-68`（whisper/faster-whisper）——都是「先 resolve(kind, 首 id) 非空就 return，否则注册内置」。注册入口被 `api/providers.py:60`、`api/settings.py:81-85` 调用；`api/settings.py:57-83` 的 `_DYNAMIC_CHOICE_KINDS` 按 kind 动态给下拉项 |
 | B0-T8 | 提示词 26 常量 + 8 builder + 消费点 | 已闭环 | 见 PRD §15.2.1/§15.2.5/§15.7：8 个 builder 签名与调用点、`PluginPrompt` 无 symbol/mode（`:31-35,99`）、插件提示词消费点仅 4 个 agent |
-| B0-T9 | 管理页 schema／密钥表单／前后端字段 | 待核实 | 已知 `ProvidersPage.tsx:15-19` 四 Tab、`api/providers.py` 端点；字段映射与密钥掩码链路未逐条读 |
+| B0-T9 | 管理页 schema／密钥表单／前后端字段 | 已闭环 | 前端 `ProvidersPage.tsx`：`TABS`(:15) 四类，`baseUrl`/`keys` 是写死的厂商字段（`:46,51`），而 provider 选项由 `providersForKind()`(:102) 动态给 → **字段写死、选项动态**，正是要改的点。后端端点比 PRD 列的多：`/{id}/models`(:132)、`/{id}/models/{mid}`(:154)、`/{id}/fetch-models`(:163)、`/{id}/test`(:205)。密钥走 `api_keys_masked`（前端 `:51`、后端 `provider_sources.py:86 _mask_key`），PUT 传掩码=保留旧值 |
 | B0-T10 | 测试清单与兼容基线 | 已闭环（清单级） | `tests` 中命中 provider/tts/prompt 等关键字的文件 **135 个**；**行为断言关键子集 22 个**：`test_tts_provider_registry`、`test_voice_providers`、`test_voice_service`、`test_voice_api`、`test_voice_audio_agent`、`test_voiceover_e2e`、`test_stt_provider_registry`、`test_llm_provider_protocol`、`test_provider_acceptance`、`test_provider_available`、`test_provider_sources`、`test_provider_role_binding_rag`、`test_provider_transport`、`test_resolution_determinism`、`test_model_listing_contract`、`test_prompt_authority`、`test_prompt_resolution_event`、`test_stage_prompt_wiring`、`test_type_prompts`、`test_plugin_contribution`、`test_plugin_dispatch`、`test_builtin_contributions`。**改契约前必须逐条阅读这 22 个**（测试由人跑，但阅读是我的责任） |
-| B0-T11 | 文档同步点／配置开关／回滚边界 | 待核实 | 命令：`rg -n "settings_store|apply_all|enable_" clipwright/services clipwright/api` |
+| B0-T11 | 文档同步点／配置开关／回滚边界 | 部分闭环 | `services/settings_store.py`：`anchor("settings.json")` 原子写；secret `{"__enc__":True,"v":<Fernet>}`，**无密钥 fail-closed 拒绝保存**（`:116-124`）；`_ENV_KEYS` 是模块导入时快照（`:33`），故 `apply_all` 必须在 resolve 之前。**独立的 provider 插件开关不存在** → 回滚只能禁用 manifest 或回滚提交（与计划 §7 一致） |
 | B0-T12 | 逐条闭环审阅 | 待核实 | 依赖上面各组完成 |
 
 **下一步（本 goal 后续轮次）**：先补 B0-T4／T5／T7／T9／T11 五组，再逐条把 71 条里剩下的 67 条从「待核实」推成「已闭环」；完成后才动 Batch 1。
+
+
+## 事实更正（本轮核实推翻了文档里的 4 条主张）
+
+**更正 1：内置让位语义已经是现状，不是待实现项。**
+`providers/tts/__init__.py:49-50` 已有 `if ContributionRegistry.resolve(ContributionKind.TTS_PROVIDER, "qwen-tts") is not None: return`——插件先注册同名 provider 时，内置**根本不注册**。embedding(`:137`)、rerank(`:181`)、STT(`:52`) 三者同样如此。
+⇒ 裁定 3 要改的**不是**「改成有插件才注册」（已经是），而是「**没有插件时也不要注册内置**」。B3-T6 的描述已按此改写。
+另外这也解释了为什么 `providers/llm/__init__.py:25-31` 的让位能与 `ConflictPolicy` 默认 REJECT 共存：**让位发生在注册前**，冲突判定根本不会触发；如果将来改成「先注册内置、插件后注册」，就必然被 REJECT 挡下——这是 B1-T3 必须守住的顺序。
+
+**更正 2：isobase 没有版本锁。** `pyproject.toml:26` 是 `isobase @ git+https://github.com/landspark/IsoBase.git`，无 `@<ref>`。PRD §5.2 与 §12 讲的「锁定现有版本」目前**不存在**，要在 W1 补 pin（或明确接受跟随 HEAD）。
+
+**更正 3：`api/providers.py` 的端点比 PRD §8 列的多 4 个**：`/{id}/models`(POST,:132)、`/{id}/models/{mid}`(DELETE,:154)、`/{id}/fetch-models`(:163)、`/{id}/test`(:205)。schema 驱动表单要覆盖的是这些端点背后的字段，不只是 CRUD。
+
+**更正 4：前端 provider 表单是「选项动态 + 字段写死」**。`ProvidersPage.tsx` 的 provider 选项来自 `available`，但 `baseUrl` / `keys` / model 编辑区都是写死的表单字段，所以 B1-T6 的工作量集中在**把写死字段换成 schema 渲染**，不是重写页面。
+
+**另一处文档漂移（待批量修）**：`schema/plugin.py:33` 的 docstring 写「见 ContributionKind 的 14 类」，实际是 17 类。

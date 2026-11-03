@@ -454,7 +454,7 @@ API 增量原则：优先扩展 `/api/providers` 现有 list/create/available/ro
 | 整篇配音编排 `dub_script` | `services/voice.py:887` | **engine 拥有编排**，这是裁定 3 要拆掉的核心 |
 | 切句 `split_text`；凭据 `TtsCredentials`（`merge_headers` / `client_kwargs`） | `services/voice.py:127,322,335,340` | 编排所需零件全在 engine |
 | 公网文件上传 `PublicUploadManager` | `services/voice.py:228` | provider 声明 `needs_uploader` 时注入 |
-| 内置 provider 别名与注册 `_TTS_ALIASES` / `normalize_tts_name` / `ensure_tts_providers_registered` / `_make` | `providers/tts/__init__.py:17,35,39,52` | 内置 `qwen-tts` / `cosyvoice`（`:60`，`:64 needs_uploader=True`）/ `minimax`（`:67`）在 engine 里**默认就绪** |
+| 内置 provider 别名与注册 `_TTS_ALIASES` / `normalize_tts_name` / `ensure_tts_providers_registered` / `_make` | `providers/tts/__init__.py:17,35,39,49,52` | 内置 `qwen-tts` / `cosyvoice`（`:60`，`:64 needs_uploader=True`）/ `minimax`（`:67`）在 engine 里**默认就绪**；`:49-50` **已有让位**（插件先注册同名则内置不注册），但**没有插件时仍会注册**——这正是裁定 3 要拆的 |
 | 唯一身份解析 `_get_provider` | `services/voice.py:715` | provider 名 = `contribution.id`；缓存键含凭据指纹 |
 | HTTP 入口：上传/克隆/列表/删除/合成/整篇 dub | `api/voice.py:56,95,115,122,132,151` | 业务编排挂在 engine 的 5 个端点上 |
 
@@ -474,7 +474,7 @@ API 增量原则：优先扩展 `/api/providers` 现有 list/create/available/ro
 
 1. `dub_script` 编排（`services/voice.py:887`）→ 移入 TTS 功能插件。
 2. 切句策略与字幕对齐策略（现 `split_text` `:127` 及 `/dub` 内部逻辑）→ 移入功能插件。
-3. `ensure_tts_providers_registered()`（`providers/tts/__init__.py:39`）的「默认就绪」语义 → 改为「有插件才注册」，与 `providers/llm/__init__.py:25-31` 的让位语义同构：内置实现只在**无同名插件且被显式启用**时存在，且默认可整体关闭。
+3. `ensure_tts_providers_registered()`（`providers/tts/__init__.py:39`）的**内置注册本身**：注意 `:49-50` **已经有让位语义**（`if ContributionRegistry.resolve(TTS_PROVIDER, "qwen-tts") is not None: return`，embedding `:137`／rerank `:181`／STT `:52` 同构），所以裁定 3 要做的**不是**「改成有插件才注册」（已经是），而是「**没有插件时也不注册**」——删除内置注册，或改成必须显式开启的 fallback。
 4. `/api/voice/*` 上的业务编排 → 见 15.1.5 的入口归属。
 5. **内置 `dub_script` 技能**（`skill/dub.py:14` 的 `DubScriptSkill`，在 `skill/builtin.py:193,199` 无条件注册）→ 移入功能插件，改由插件贡献同名技能。**这一项是本轮核实新发现的必经点**，见 15.7。
 
