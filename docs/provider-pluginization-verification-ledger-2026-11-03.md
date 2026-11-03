@@ -180,8 +180,8 @@
 | B3-T3 名称解析与指纹缓存 | 未改动（守住） | `_get_provider` 的身份仍来自 `contribution.id`，缓存键仍含凭据指纹；本轮没有碰它 |
 | B3-T6 摘 engine 编排与内置注册 | **待人工验证后执行** | 按 PRD §15.1.6 第 2 条：插件完成并通过 §15.3 验收后立即删除。**删除前必须由人跑一次** `python -m pytest tests -q`，否则内置被摘掉而插件在某环境没加载时会直接失去配音能力 |
 | B3-T5 `create.dub` slot 迁 03 步骤 | 部分完成（宿主已就位，插件 UI 待契约补齐） | 前端：`slots.ts` 名单 14→15（`create.dub`）、HomePage 在 03 步骤挂 `<Slot name="create.dub">`、内置配音控件（音色/自动配音/上传）在「有贡献时」整块让位、「无贡献时」回落（过渡期）。**插件侧 UI 未落地**：现有 widget schema 只有静态 `options`，拿不到音色列表（音色来自 `GET /api/voice/list`），插件版入口只能填音色 ID → 体验倒退，故本轮不发贡献。需要 SlotRegistry 评审加「动态选项数据源」（如 `optionsFrom: "voices"` 或 `data_source: {capability: ...}`）后才能做。 |
-| B3-T7 能力发现与缺失一等状态 | 部分完成 | `dub` 能力名已由插件技能提供（`skill_resolve('dub') → DubScriptOrchestrator`）；`is_available()` 返回 False 时的降级话术仍未接进 AudioAgent 的 notes |
-| B3-T8 通用能力网关 | 已在 Batch 1 完成 | `POST /api/capability/{name}`；TTS 侧尚未把 `/api/voice/*` 改成薄转发（属 T8 收尾） |
+| B3-T7 能力发现与缺失一等状态 | 已完成 | `dub` 能力名由插件技能提供；`AudioAgent` 在 `call_skill("dub")` 返回 `not_found` 时写**可读降级说明**「未配音：当前没有可用的配音能力（TTS 功能插件未安装或被禁用）」，与普通失败（`自动配音失败: …`）分开；**没有**直连 `VoiceService` 兜底 |
+| B3-T8 通用能力网关 + `/api/voice/*` 薄转发 | 已完成 | 网关在 Batch 1 落地；本轮把 `/api/voice/dub` 改成薄转发：`skill_resolve("dub")` → `SkillRegistry.execute`，端点不再调 `VoiceService.dub_script()` 编排；解析不到直接 `503` + 可读原因。实测：正常走插件技能；把插件与内置两次 unregister 后 → 503 |
 
 ### 为接管内置技能新增的显式出口（契约变更，需知悉）
 
@@ -205,5 +205,6 @@
 2. **`is_available` 必须是同步方法**：写成 `async def` 会把 coroutine 塞进
    `SkillInfo.available: bool`，启动时 `ValidationError` 直接崩（`SkillRegistry.list()` 在
    lifespan 里就被调用）。
+
 
 

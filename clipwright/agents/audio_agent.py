@@ -598,9 +598,18 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                                         text_track.clips.sort(key=lambda c: c.start_sec)
                                         notes.append(f"字幕: {len(caption_clips)} 条")
                         else:
-                            notes.append(
-                                f"自动配音失败: {getattr(res, 'error', 'unknown')}"
-                            )
+                            # 裁定 3（PRD §15.1.3）：能力缺失是一等状态——如实说明「没有
+                            # 可用配音能力」并继续交付其余内容，不静默跳过、也不假装已配音；
+                            # 更不能在这里直连 VoiceService 兜底（不变量 #19 禁止后门）。
+                            if str(getattr(res, "status", "")) == "not_found":
+                                notes.append(
+                                    "未配音：当前没有可用的配音能力"
+                                    "（TTS 功能插件未安装或被禁用）"
+                                )
+                            else:
+                                notes.append(
+                                    f"自动配音失败: {getattr(res, 'error', 'unknown')}"
+                                )
             except Exception as dub_err:
                 notes.append(f"自动配音失败: {str(dub_err)[:200]}")
 
