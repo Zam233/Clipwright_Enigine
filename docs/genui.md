@@ -48,12 +48,25 @@
 | `MAX_ARRAY_ITEMS` | 100 | 列表/表格行 |
 | `MAX_TABLE_COLS` | 12 | 表格列 |
 | `MAX_ACTION_PAYLOAD_CHARS` | 2000 | 动作载荷 |
+| `MAX_SELECT_OPTIONS` | 6 | `select` 的选项个数上限（超出截断） |
+| `MAX_OPTION_CHARS` | 40 | 单个选项文案（**纯截断**，不加"已截断"标记——按钮文案不该有它） |
 
-### 2.3 动作（白名单 ≠ 可点）
+### 2.3 动作（三种都实现了，但各有各的闸）
 
-只允许 `ask` / `select` / `confirm`。**是否可点由宿主传的 `supportedActions` 决定**：
-当前宿主只支持 `ask`（点击把 `payload.prompt` 发回**当前需求会话**）；`select`/`confirm`
-渲染为禁用态。spec **禁止**携带 endpoint / URL / HTTP method / 任意能力名。
+只允许 `ask` / `select` / `confirm`，spec **禁止**携带 endpoint / URL / HTTP method / 任意能力名。
+是否可点由宿主传的 `supportedActions` 决定（当前两处卡片都传 `['ask','select','confirm']`）：
+
+| 动作 | 渲染 | 点击后（宿主固定通道） |
+|---|---|---|
+| `ask` | 单个按钮 | `sendChat(当前需求会话, payload.prompt)` |
+| `select` | 选项按钮组（`payload.options`） | `sendChat(当前需求会话, "选择：" + payload.value)`——**文案由宿主模板拼**，模型只能决定"有哪些选项" |
+| `confirm` | 单个按钮 | 调当前卡片的确认回调（`confirmBrief` / `confirmPlan`，靠事件里的 `scope` 区分），**先过 `window.confirm` 二次确认**，且 `busy` 时不响应 |
+
+`select` 的载荷校验（两仓同规则）：只收非空字符串、去重保序、逐项截断、总数封顶；
+**没有可用选项的 `select` 整个动作丢弃**（节点保留）——点了什么也不会发生的按钮比没有更糟。
+
+`confirm` 的底线：这是"模型写的按钮推进状态机"，所以必须有二次确认；且宿主拿不到 `scope`
+时**不猜**（直接忽略）。审阅覆盖层用 `hideActions` 连按钮都不渲染（见 §3）。
 
 ## 3. 产出路径（2026-11-07 接线完成）
 
@@ -64,6 +77,7 @@
 | 规划书（两条主路径） | `requirements_service._translate_plan` 返回前 → `ensure_plan_spec` | **只**用确定性构造器（看 `raw_scenes`，**不看**模型给的 genui） |
 | 规划书（legacy） | `_legacy_plan_from_scenes` | 同一函数 |
 | 读取老会话 | `get_session` → `_with_genui_specs` | **浅拷贝 + 只补不存**，不回写 Mongo / 内存会话 |
+| 审阅覆盖层（`ReviewPanel`） | `brief.genui` 与 `planGenui`（`EditorLayout` 传入 `productionPlan.genui`） | **只读**：`hideActions` 不渲染任何动作按钮——确认前最后一屏只能有一个确认按钮，不在卡片上开第二个入口 |
 | 提示词 | `requirements_service._brief_system_prompt()`（生产）<br>`requirements_agent._brief_system_prompt()`（Agent，当前无生产调用点） | base 提示词 + `PluginPromptRegistry.get_for_agent("requirements")`；`prompts.py` 的简报常量含 `{{BRIEF_TEMPLATE}}` 占位，运行时展开 |
 
 ## 4. 插件与"禁用后照常"
@@ -98,12 +112,12 @@
 
 | 缺口 | 状态 |
 |---|---|
-| 表格本地排序/筛选（计划 T5.1） | **已做（测试未跑）**：表格 ≥8 行时出现筛选框与可点表头（数字列按数值排序、跨列子串筛选、显示 `N/M 行`）；纯函数 `sortTableRows` / `filterTableRows` 导出；`useGenUILocalState` 占位导出已删 |
-| 真实模型回归（T6.2） | **待人工**：3 类选题实测，确认模型产出 vs 兜底、是否有未知组件降级 |
+| 表格本地排序/筛选（计划 T5.1） | **已做（测试已跑）**：表格 ≥8 行时出现筛选框与可点表头（数字列按数值排序、跨列子串筛选、显示 `N/M 行`）；纯函数 `sortTableRows` / `filterTableRows` 导出 |
+| 真实模型回归（T6.2） | **待人工**：3 类选题实测，确认模型产出 vs 兜底、是否有未知组件降级（**兜底**那半已自动锁进 `TestFallbackAcrossGenres`） |
 | 性能/窄屏/深色主题实测（T6.4） | **待人工**：贴 64KB 的 spec 首屏耗时、100 行表格、375px 下横向滚动、深色对比度 |
 | `requirements_service.py:396` 第三份 `CREATIVE_BRIEF_SYSTEM` | **既有违规未动**：字段集比 `CreativeBrief` 宽（前端 `BriefCard` 依赖），与 `prompts.py` 那份合并属独立清理 |
-| `select` / `confirm` 实现（T4.2 可选） | **未做（默认不建议）**：`confirm` 若做必须带二次确认，不能让模型写的按钮单击推进状态机 |
-| 审阅覆盖层（`src/features/agent/ReviewPanel.tsx`）未接 GenUI | **有意不做（本轮）**：本轮覆盖的是**卡片**（消息气泡 + 时间线的 `BriefCard`/`PlanCard`）；审阅覆盖层是独立的审阅/确认入口，仍只显示字段与 markdown。要接需先定一件事——审阅态是否允许出现结构化视图（它是确认前的最后一屏，加展示层会改变用户的判断依据） |
+| `select` / `confirm`（T4.2） | **已实现（用户裁定）**：`select` 渲染选项组、文案由宿主拼；`confirm` 走卡片确认回调 + `window.confirm` 二次确认 + `busy` 闸；`select` 无选项时整条动作丢弃 |
+| 审阅覆盖层（`src/features/agent/ReviewPanel.tsx`） | **已接（只读）**：`brief.genui` 与 `planGenui` 都渲染，但用 `hideActions` 不出现任何动作按钮——确认前最后一屏只保留一个确认按钮 |
 
 ## 7. 自检命令
 

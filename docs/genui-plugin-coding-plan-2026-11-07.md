@@ -840,3 +840,13 @@ cd J:\Clipwright; py -3.14 -m pytest tests -q -rf
 
 > 口径：**「pytest 全绿」仍不成立**（29 个既存失败）；**「本改造新增失败 = 0」成立**（唯一新增已修）。
 > 修后按构造应为 **29 failed / 5018 passed**。
+
+### P4.2 / 审阅覆盖层（2026-11-07 用户裁定：「select/confirm 要实现，confirm 必须带二次确认，审阅覆盖接 GENUI」）
+
+| 项 | 落地 | 证据 |
+|---|---|---|
+| `select` 后端校验 | `_clean_select_options`：只收非空字符串、去重保序、**纯截断**（40 字，不加"已截断"标记）、总数封顶 6；无可用选项 → 整个动作丢弃（节点保留） | `TestSelectAction` 4 例 |
+| `select` 前端 | `validate.ts` 同规则；渲染器产出**选项按钮组**，点击回传 `{value}` | vitest `select 渲染选项组…`（genui 30 passed） |
+| `confirm` | 宿主按事件 `scope`（`brief`/`plan`）路由到 `confirmBrief`/`confirmPlan`，**先 `window.confirm` 二次确认**，`busy` 不响应，`scope` 缺失不猜 | `confirm 可点并把 scope 一起回传` |
+| 契约 | `MAX_SELECT_OPTIONS=6`、`MAX_OPTION_CHARS=40` 进 `genui_contract.json` 两仓副本 + 双端断言 | `ContractSingleSource` + 自检 `genui_contract_sync` |
+| 审阅覆盖层 | `ReviewPanel` 渲染 `brief.genui` 与 `planGenui`（`EditorLayout` 传 `productionPlan.genui`），新增 `hideActions` **不渲染任何动作** | vitest `hideActions…` |

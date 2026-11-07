@@ -26,6 +26,8 @@
     "max_spec_bytes": 65536,
     "max_array_items": 100,
     "max_table_cols": 12,
-    "max_action_payload_chars": 2000
+    "max_action_payload_chars": 2000,
+    "max_select_options": 6,
+    "max_option_chars": 40
   }
 }

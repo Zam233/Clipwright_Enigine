@@ -569,6 +569,8 @@ class TestContractSingleSource:
         assert limits["max_array_items"] == g.MAX_ARRAY_ITEMS
         assert limits["max_table_cols"] == g.MAX_TABLE_COLS
         assert limits["max_action_payload_chars"] == g.MAX_ACTION_PAYLOAD_CHARS
+        assert limits["max_select_options"] == g.MAX_SELECT_OPTIONS
+        assert limits["max_option_chars"] == g.MAX_OPTION_CHARS
 
 
 class TestFallbackAcrossGenres:
@@ -633,3 +635,44 @@ class TestFallbackAcrossGenres:
 
         cleaned, problems = sanitize_spec(spec, source="test")
         assert cleaned is not None and not problems, f"{genre}: 兜底产出被清洗器拒绝：{problems}"
+
+
+class TestSelectAction:
+    """T4.2：`select` 的载荷必须是非空字符串选项组；否则整个动作丢弃。"""
+
+    def _clean(self, action):
+        from clipwright.schema.genui import sanitize_spec
+
+        spec, problems = sanitize_spec({"version": 1, "items": [
+            {"type": "text", "content": "选一个", "action": action},
+        ]})
+        return spec, problems
+
+    def test_keeps_options_and_dedups(self):
+        spec, _ = self._clean({"type": "select", "payload": {"options": ["A", "B", "A", " ", 3]}})
+        assert spec["items"][0]["action"] == {"type": "select", "payload": {"options": ["A", "B"]}}
+
+    def test_caps_options_and_clips_each(self):
+        from clipwright.schema.genui import MAX_OPTION_CHARS, MAX_SELECT_OPTIONS
+
+        long = "x" * (MAX_OPTION_CHARS + 50)
+        # 长选项放**最前**：否则总数封顶会先截断，压根走不到"单选项截断"分支
+        options = [long] + [f"opt{i}" for i in range(MAX_SELECT_OPTIONS + 4)]
+        spec, _ = self._clean({"type": "select", "payload": {"options": options}})
+        cleaned = spec["items"][0]["action"]["payload"]["options"]
+        assert len(cleaned) == MAX_SELECT_OPTIONS
+        assert all(len(o) <= MAX_OPTION_CHARS for o in cleaned)
+
+    def test_dropped_without_options(self):
+        for payload in (None, {}, {"options": []}, {"options": ["", "  "]}, {"options": "A"}):
+            action = {"type": "select"} if payload is None else {"type": "select", "payload": payload}
+            spec, problems = self._clean(action)
+            assert spec is not None, "节点本身应保留"
+            assert "action" not in spec["items"][0], f"{payload}: select 无可用选项时应丢弃动作"
+            assert any("select" in p for p in problems), problems
+
+    def test_ask_and_confirm_unaffected(self):
+        for kind in ("ask", "confirm"):
+            spec, _ = self._clean({"type": kind, "label": "确认", "payload": {"prompt": "x"}})
+            assert spec["items"][0]["action"]["type"] == kind
+            assert spec["items"][0]["action"]["payload"] == {"prompt": "x"}

@@ -50,6 +50,10 @@ MAX_SPEC_BYTES = 64 * 1024
 MAX_ARRAY_ITEMS = 100
 MAX_TABLE_COLS = 12
 MAX_ACTION_PAYLOAD_CHARS = 2000
+#: `select` 动作的选项上限（与前端 / genui_contract.json 同值）：太多选项在卡片里读不过来。
+MAX_SELECT_OPTIONS = 6
+#: 单个选项文案上限。
+MAX_OPTION_CHARS = 40
 
 #: 原型污染类危险键：递归剔除，不作为任何语义字段。
 FORBIDDEN_KEYS = frozenset({"__proto__", "constructor", "prototype"})
@@ -106,10 +110,38 @@ def _clean_action(raw: Any, problems: list[str]) -> dict[str, Any] | None:
     payload = _clean_payload(raw.get("payload"))
     if isinstance(payload, dict) and payload:
         action["payload"] = payload
+    if kind == "select":
+        # `select` 的载荷必须是**非空字符串选项组**：宿主据此渲染选项按钮，
+        # 发送文案由宿主模板拼（`选择：X`），模型不能自定义发出的话。
+        options = _clean_select_options(payload, problems)
+        if not options:
+            problems.append("select 没有可用的 payload.options，动作已丢弃")
+            return None
+        action["payload"] = {"options": options}
     if len(json.dumps(action, ensure_ascii=False)) > MAX_ACTION_PAYLOAD_CHARS:
         problems.append("动作载荷超长，已丢弃")
         return {"type": kind}
     return action
+
+
+def _clean_select_options(payload: Any, problems: list[str]) -> list[str]:
+    """`select` 的选项：只收非空字符串，去重保序，逐项截断、总数封顶。"""
+    if not isinstance(payload, dict):
+        return []
+    raw = payload.get("options")
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw[: MAX_SELECT_OPTIONS * 2]:
+        if not isinstance(item, str):
+            continue
+        # 选项是按钮文案：**纯截断**，不加「…（已截断）」标记（按钮里出现标记是噪音）
+        text = item.strip()[:MAX_OPTION_CHARS]
+        if text and text not in out:
+            out.append(text)
+        if len(out) >= MAX_SELECT_OPTIONS:
+            break
+    return out
 
 
 def _clean_string_list(raw: Any, problems: list[str], field: str) -> list[str]:

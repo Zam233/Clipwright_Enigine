@@ -137,12 +137,17 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
       版本不符则整块丢弃），前端 `src/features/genui/validate.ts` 再洗一遍（防旧缓存/历史
       session/被改过的响应）。**两道闸的规则必须同步**（`tests/clipwright/test_genui_spec.py`
       与 `src/features/genui/genui.test.tsx` 各守一侧）。
-    - **动作只有三种** `ask/select/confirm`，且必须绑定**宿主回调**（当前 `ask` → 发回当前需求
-      会话）。**禁止** spec 携带 endpoint / URL / HTTP method / 任意能力名——那等于把"往哪发请求"
-      交给模型。宿主没有对应回调时按钮**渲染为禁用态**，不假装可点。
+    - **动作只有三种** `ask/select/confirm`，三种都已实现（2026-11-07 用户裁定）：
+      `ask` → 发回当前需求会话的 `payload.prompt`；`select` → 渲染 `payload.options` 选项组，
+      点击发 `"选择：" + value`（**文案由宿主模板拼**，模型只能决定"有哪些选项"）；
+      `confirm` → 卡片确认回调（按事件 `scope` 区分简报/规划书）+ **`window.confirm` 二次确认**，
+      `busy` 时不响应、`scope` 缺失时不猜。`select` 无可用选项时整条动作丢弃。
+      **禁止** spec 携带 endpoint / URL / HTTP method / 任意能力名——那等于把"往哪发请求"交给模型。
+      宿主没有对应回调时按钮**渲染为禁用态**，不假装可点。
     - **动作白名单是「词法」契约，不是「可点」契约**：`GENUI_ACTION_KINDS` 只保证老 spec 写
-      `select/confirm` 不被判非法；**是否可点**由宿主传的 `supportedActions` 决定，当前只实现
-      `ask`。`confirm` 若将来要接，必须带二次确认（不能让模型写的按钮单击推进状态机，违反 C10）。
+      `select/confirm` 不被判非法；**是否可点**由宿主传的 `supportedActions` 决定。
+      审阅覆盖层（`ReviewPanel`）用 `hideActions` 连按钮都不渲染——确认前最后一屏只保留
+      一个确认按钮（C10：展示层不得影响业务判定）。
     - **不碰 HTML/脚本/外链**：渲染器没有 `dangerouslySetInnerHTML`，文本一律走 `asText`，
       首版不开放 `mermaid/echart/plot/scene3d/svg/image`（要开必须单独安全评审）。
     - 规范由插件 `plugins/genui/` 以 `PROMPT` 贡献教给模型（`agent: requirements`）；
