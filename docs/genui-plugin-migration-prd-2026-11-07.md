@@ -457,13 +457,13 @@ payload = {k: v for k, v in brief.items() if k not in _DISPLAY_SPEC_KEYS}
 
 | ID | 未核实项 | 怎么核实 |
 |---|---|---|
-| U1 | 生产环境是否存在**非默认** `CLIPWRIGHT_PLUGIN_ALLOWED_PERMISSIONS` / `plugin_require_signature=true` 的部署，会影响插件加载 | `grep -rn "PLUGIN_ALLOWED_PERMISSIONS\|PLUGIN_REQUIRE_SIGNATURE" .env* scripts/ docs/`；问运维 |
+| U1 | 生产环境是否存在**非默认** `CLIPWRIGHT_PLUGIN_ALLOWED_PERMISSIONS` / `plugin_require_signature=true` 的部署，会影响插件加载 | `grep -rn "PLUGIN_ALLOWED_PERMISSIONS" .env* scripts/ docs/`；再 grep `PLUGIN_REQUIRE_SIGNATURE`（两条分开跑，避免表内管道符）；问运维 |
 | U2 | `plugins/genui` 在各部署里是否都处于启用态（`PluginData/plugins/genui/.enabled`） | `Get-ChildItem PluginData/plugins -Recurse -Filter .enabled`；本地实测 |
 | U3 | 子进程档（`runtime: subprocess`）下 `display_spec` 声明能否走通（`_DECLARATIVE_KINDS` 加入后） | 写一个 `runtime: subprocess` 的最小插件跑 `py -3.14 -m pytest tests/test_plugin_contributions.py -q`（文件名实施前核对） |
 | U4 | 新增 `display_spec` kind 后，`/api/plugin/contributions` 的 `usePluginSlots` 全量缓存是否会被大契约拖慢 | 实测：契约 ~3KB × 1 个插件，可忽略；若多插件再评估 |
 | U5 | `tests/clipwright/test_genui_spec.py` 里 `TestPlanTranslateWiring` / `TestPromptPlaceholderAndInjection` 在去掉 `schema/genui.py` 后的具体改写量 | 实施前 `grep -n "from clipwright.schema.genui" tests/clipwright/test_genui_spec.py` 逐条列出 |
 | U6 | 前端 `src/features/genui` 目录是否要改名 | 本 PRD 决定**不改名**（改名会动 `AgentPanel`/`ReviewPanel`/`EditorLayout` 与 5 个文件，收益为零）。若后续统一命名再单独做 |
-| U7 | `requirements_agent.py` 是否真的零生产调用点（迁移时可以直接删转发） | 已在前序计划 §0.3-③ 核实为死代码；迁移时用 `grep -rn "translate_scenes\|_ensure_brief_genui" clipwright/` 再确认一次 |
+| U7 | `requirements_agent.py` 是否真的零生产调用点（迁移时可以直接删转发） | 已在前序计划 §0.3-③ 核实为死代码；迁移时用 `grep -rn "translate_scenes" clipwright/` 与 `grep -rn "_ensure_brief_genui" clipwright/` 各确认一次 |
 
 ---
 
@@ -535,6 +535,7 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 | 日期 | 变更 |
 |---|---|
 | 2026-11-07 | 首版。裁定 A1–A8；不可行清单 6 条；不变量 C1–C14；风险 R1–R8；未核实 U1–U7 |
+| 2026-11-07 | 追加 §12「同类问题排查：插件外壳化审计」（44 个插件全量判定：26 真 / 13 半壳 / 5 空壳 / 0 未核实）。裁定 R1–R3：B0–B6 **不扩面**，外壳化整改另立 B7/B8；§1–§11 原有裁定不变 |
 
 ---
 
@@ -560,3 +561,72 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 
 1. `clipwright/schema/genui_contract.json` 漏了 `badge_tones`（而 `genui.py:42` 有 `GENUI_BADGE_TONES`）——不补，插件无法表达 badge 的 `accent`；
 2. 前端 `src/features/genui/contract.json` **只被测试引用**（`genui.test.tsx:169`），运行期校验是 `validate.ts` 的硬编码常量——"契约单一真相"目前只是构建期对账，B4 改为端点下发。
+
+---
+
+## 12. 同类问题排查：插件外壳化审计（2026-11-07 追加）
+
+> 触发：用户原话「同时检查现有插件，哪些本应该由插件实现，engine 只提供接口的插件，变成了主要功能由
+> engine 提供，插件只是个外壳。整合到 PRD 和 coding plan 中。」
+> 全量证据（44 行清单、逐插件 file:line、整改方案与人日）在
+> [`plugin-shell-audit-2026-11-07.md`](plugin-shell-audit-2026-11-07.md)，本节只压缩成**裁定**。
+
+### 12.1 一句话结论与统计
+
+genui 不是孤例，而是**同一类病的最大样本**。44 个插件中：
+
+| 判定 | 数量 | 代表 |
+|---|---|---|
+| 真插件（能力主体在插件） | **26** | `web_media`、`pv_engine`、`tts_feature`、`ai_*`、素材源类、category 类 |
+| 半壳（插件登记、实现类在 engine） | **13** | `tts_cosyvoice`/`tts_qwen`/`tts_minimax`、`llm_anthropic`/`llm_openai_compatible`、`embedding_providers`/`rerank_providers`、`headless_chrome`、`logic_animations`、`mg_animations`、`kinetic_typography`、`local_material`、`whisper_stt` |
+| 空壳（登记了但主体在 engine / 根本无人消费） | **5** | `genui`、`platform_export`、`cloud_render`、`lottie_animations`、`stt_providers` |
+| 未核实 | **0** | — |
+
+三条结构性病因（比单个插件更重要）：
+
+1. **2026-11-02 的 provider 插件化只搬了注册与声明**：交付汇总自己写明「协议适配类仍在 engine」
+   （`provider-pluginization-delivery-summary-2026-11-02.md:20-21`、`:97-103`），于是 8 个 provider
+   插件全是「插件提供工厂、类在 `clipwright/`」。
+2. **engine 里仍有 15 处 vendor 字面量 / 9 处 vendor 分支**（`services/llm.py:727,897,950`、
+   `services/voice.py:729-734,771`、`config.py:75,511,535` 等）——只要 engine 还按 provider 名分支，
+   搬类只是换位置，违反 #24。
+3. **钩子没有契约**：`api/render.py:603` 的 PRE_RENDER 只传 `{"task_id"}`，而 `cloud_render` /
+   `platform_export` / `shortform_category` 都在读 `context["settings"]`/`["platform"]` —— 三个插件
+   的贡献**自注册之日起从未生效**。
+
+### 12.2 三条裁定（哪些本次修 / 另立 / 不修）
+
+| 编号 | 裁定 | 内容与理由 |
+|---|---|---|
+| **R1** | **B0–B6 不扩面** | 本文 §1–§11 的裁定、A1–A8、C1–C14、U1–U7 **一律不变**。外壳化整改与 `display_spec` 无文件交集（B0–B6 只碰 `schema/genui.py`、`requirements_service.py`、`display_spec/`、前端 `features/genui/`；B7/B8 碰 `services/llm.py`、`services/voice.py`、`providers/*`、`animation/*`、`api/render.py`），**强行合批只会让 B3 的字段泛化与 provider 搬家互相干扰回滚**。唯一"本次一起做"的是一句文档裁定：B6 跑 §4 的 D1–D3 判据时，`_DISPLAY_SPEC_KEYS = {"genui","display_specs"}` 必须保留（它是老数据兼容，不因 B7 清理 vendor 字面量而被顺手删）。 |
+| **R2** | **另立 B7 / B8 两个批次** | B7「协议类归位」（**10.0 人日 / 6 任务**）：TTS 三件套 + LLM 两件套 + embedding/rerank + STT 后端搬进插件，同时清掉 §12.1-② 的 vendor 分支与 `Literal` 枚举、补"no_vendor_branches"门禁。B8「失效钩子与渲染器归位」（**10.0 人日 / 7 任务**）：`headless_chrome`、`logic_animations`、`kinetic_typography`、`lottie_animations`、`platform_export`、`cloud_render`、`mg_animations`、`local_material`、`voice_ext`、`whisper_stt`，以及 hook 逐 point 契约表。两批合计 **20.0 人日 / 13 任务**，全计划由 **30 任务 / 17.0 人日 → 43 任务 / 37.0 人日**。批次详情见 coding plan §1/§3/§7。 |
+| **R3** | **明确不修（并写清理由）** | ① `web_media` 的落盘/SSRF 边界：`plugins/web_media/html_images.py:15-17` 已声明「落盘复用 `services/web_assets.fetch_and_store`（robots/SSRF/去重/大小限制属于平台能力）」，与本 PRD §3.3 的信任边界同构，**不搬**；② `example_*`/`sandbox_demo`/`subagent_demo` 是契约样本，不按"业务插件"要求；③ `web_search`/`web_fetch` **不是插件**（engine 内置工具 `tool/web_search_tool.py:46,132`），不属"外壳化"，属 #19 的另一笔欠账，**另立目标（≥4.0 人日）**；④ `cloud_render` 的 B 档（把 `services/remote_render.py` 23KB 搬成 `renderer_backend` 插件）**暂不做**，先按审计 §3.9 的 A 档删除死插件。 |
+
+### 12.3 与本文既有判据的对应关系
+
+| 本文判据 | 泛化后的判据（审计 §1.2） | 本轮落点 |
+|---|---|---|
+| D1 无专属实现文件 | **S1** engine 有专属实现类/模块 | B7 逐类搬移；B8-T8.1 渲染器 |
+| D2 无专属导入 | **S2** 插件 import engine 实现 | B7 全部任务 |
+| D3 字面量收口（≤5 处老键） | **S4** vendor 字面量/分支（15 处 → 0） | B7-T7.5 |
+| D4 无专属常量 | **S3** 双实现/双注册（6 处 → 0） | B7-T7.1–T7.4；B8-T8.6 |
+| —（新） | **S5** engine 反向知道插件目录/ID（3 处） | B8-T8.1（headless）/ T8.7（mg） |
+| —（新） | **S6** 贡献无人消费（钩子键名不匹配） | B8-T8.4 / T8.5 / T8.6 |
+| C9（插件只声明，不渲染不校验） | 不变 | 整改**不**让插件提供清洗器/渲染器，见审计 §3 每项"搬不动" |
+| C14（契约单一真相在插件） | 同理：**能力的实现也应在插件** | B7/B8 的目标 |
+
+### 12.4 对 B0–B6 的影响评估
+
+- **文件级**：零交集（清单见 R1）。B7-T7.5 会改 `config.py` / `services/llm.py` / `services/voice.py`，
+  B0–B6 一行都不碰这三份。
+- **文档级**：B5-T5.4 改 `AGENTS.md` #26；B8-T8.7 追加 #26 的"插件提示词不得替 engine 宣称能力"一句
+  与 #19 的欠账说明。**两者必须串行**（同一份文件），建议 B5-T5.4 先合、B8 后补。
+- **验收级**：B6 的 §4 判据（`Test-Path clipwright/schema/genui.py` 等）在 B7/B8 之后**必须重跑**，
+  因为 B7 会删除 `services/voice.py` 的类、B8 会删除 `services/headless_browser.py` 的实现体，
+  两份"删除清单"不能被误判成"genui 回退"。该注意点已写进 coding plan §8。
+- **排期级**：B7/B8 可与 B1 之后并行；单人串行时排在 B6 之后（coding plan §7）。
+
+### 12.5 需要在开工前拍板的问题
+
+见审计 §7（3 条，各带默认建议）：**Q1 平台预设禁用后是否保留** / **Q2 logic_animations 搬还是认** /
+**Q3 cloud_render 删除还是搬**。三条都不阻塞 B7 的第一批任务（T7.1–T7.4），但阻塞 B8-T8.4/T8.5。

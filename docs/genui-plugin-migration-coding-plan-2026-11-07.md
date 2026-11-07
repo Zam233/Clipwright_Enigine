@@ -59,10 +59,21 @@ Select-String -Path clipwright\schema\genui.py -Pattern "^def |^GENUI_|^MAX_"
 | **B4** | 前端契约下发 + 挂载迁移 | 前端 | 5 | 3.0 | B2（契约形状冻结） | ✅（与 B3 并行） |
 | **B5** | 禁用验收 + 门禁 + 文档 | 两仓 | 4 | 2.5 | B3 + B4 | ✅ |
 | **B6** | 清理收尾 + 判据执行 | 后端 | 3 | 1.5 | B5 | ✅ |
-| | | | **30** | **17.0** | | |
+| **B7** | 插件外壳化整改（一）：协议类与双注册归位 | 后端 + 插件 | 6 | 10.0 | B0（文档）；可与 B1–B6 并行 | ✅（见 §7） |
+| **B8** | 插件外壳化整改（二）：失效钩子 / 渲染器 / 死插件 | 后端 + 插件 + 文档 | 7 | 10.0 | B7（共享 provider 门面与 AGENTS）；B5-T5.4 之后 | ✅（见 §7） |
+| | | | **43** | **37.0** | | |
 
-**关键路径**（单人串行）：B0 → B1 → B2 → B3 → B5 → B6 = **14.0 人日**；B4（3.0）在 B2 之后与 B3 并行，不增加墙钟。
-**双人并行**（后端 / 前端）：B0+B1+B2（5.5）→ max(B3 4.5, B4 3.0)=4.5 → B5 2.5 → B6 1.5 = **14.0 人日** 墙钟；单人串行 = **17.0 人日**。
+**关键路径**（单人串行）：B0 → B1 → B2 → B3 → B5 → B6 = **14.0 人日**；再串 B7（10.0）+ B8（10.0）
+= **34.0 人日**；B4（3.0）在 B2 之后与 B3 并行，不增加墙钟。
+**双人并行**（后端 / 前端）：B0+B1+B2（5.5）→ max(B3 4.5, B4 3.0)=4.5 → B5 2.5 → B6 1.5 = **14.0 人日**
+墙钟；B7/B8 是后端活，同一后端串行则墙钟 **34.0 人日**，总人日仍 **37.0**（B4 前端并行）。
+**三名后端**（一人专做 B7/B8）：墙钟 = max(14.0, 10.0+10.0) = **20.0 人日**，总人日 **37.0**。
+
+> B7/B8 的来源与判定证据见 [`plugin-shell-audit-2026-11-07.md`](plugin-shell-audit-2026-11-07.md)；
+> 裁定见 [PRD §12](genui-plugin-migration-prd-2026-11-07.md#12-同类问题排查插件外壳化审计2026-11-07-追加)。
+> **B7/B8 与 B1–B6 无文件级交集**（B0–B6 不碰 `services/llm.py` / `services/voice.py` / `providers/` /
+> `animation/` / `api/render.py`），因此可以与 B1 之后任意时点并行；**唯有 `AGENTS.md` 必须串行**
+> （B5-T5.4 先合，B7-T7.6 / B8-T8.7 后补）。
 
 ---
 
@@ -496,6 +507,220 @@ Select-String -Path clipwright\schema\genui.py -Pattern "^def |^GENUI_|^MAX_"
 
 ---
 
+### B7 · 插件外壳化整改（一）：协议类与双注册归位（10.0 人日 · 归属：后端 + 插件）
+
+> **来源**：[`plugin-shell-audit-2026-11-07.md`](plugin-shell-audit-2026-11-07.md) §3.2–§3.5、§4.1、§4.3；
+> 裁定见 [PRD §12](genui-plugin-migration-prd-2026-11-07.md#12-同类问题排查插件外壳化审计2026-11-07-追加) R2。
+> **本批不改 genui 任何文件**；也不改 B1–B6 的任何交付物（唯一交集是 `AGENTS.md`，见 T7.6 的依赖）。
+> **批内顺序**：T7.1–T7.4 可并行（不同 provider 家族），T7.5 **必须最后**（要等所有实现搬完才能删分支），
+> T7.6 跟在 T7.5 之后。
+
+#### T7.1 TTS 三协议类搬进插件（3.0 人日）
+- **要改的插件文件**：`plugins/tts_qwen/provider.py`（新建）、`plugins/tts_cosyvoice/provider.py`（新建）、
+  `plugins/tts_minimax/provider.py`（新建）、三者 `main.py`（factory 改为本模块类）。
+- **要改的 engine 文件**：`clipwright/services/voice.py`（删 `QwenTTSProvider:371-454` /
+  `CosyVoiceProvider:455-551` / `MiniMaxProvider:552-656`，**保留** `BaseVoiceProvider:328`、
+  `VoiceStorage:70`、`PublicUploadManager:209`、`TtsCredentials:303`、`VoiceService`）、
+  `clipwright/providers/tts/__init__.py`（`TtsProviderEntry` 增 `default_model` 已存在，不再改动）。
+- **动作**：
+  1. 三个类逐行搬进各自插件（**不改行为**，只改模块路径）；插件内 `from clipwright.services.voice import BaseVoiceProvider, TtsCredentials`；
+  2. `voice.py._model_for():729-734` 删除 → 调用点改 `entry.default_model()`（`_get_provider` 已拿到 entry）；
+  3. `voice.py:771` 的 `if provider_name == "qwen-tts"` 改为能力位：`BaseVoiceProvider.build_audio_ref(path) -> str`
+     （默认返回本地绝对路径；qwen 覆盖为 base64 data URI）；
+  4. 三个插件的 `_default_model()` 保持不变（读 settings 仍是宿主配置，**允许**）。
+- **验收**：
+  ```powershell
+  py -3.14 -c "import clipwright.services.voice as v; print([n for n in ('QwenTTSProvider','CosyVoiceProvider','MiniMaxProvider') if hasattr(v,n)])"   # 期望 []
+  Get-ChildItem clipwright -Recurse -Include *.py | Select-String -Pattern 'qwen-tts|cosyvoice|minimax' | Where-Object { $_.Path -notmatch 'config' }
+  # 期望：只剩错误文案/别名兼容，0 处 import、0 处 `if provider ==`
+  py -3.14 scripts/verify_provider_pluginization.py            # 期望 13/13
+  py -3.14 -m pytest tests/clipwright/test_voice_service.py tests/clipwright/test_tts_providers.py -q   # 文件名实施前核对；打桩点改到插件模块
+  ```
+- **依赖**：无（可与 B1 并行）　**关键路径**：B7 内是
+
+#### T7.2 LLM 两协议类搬进插件（2.0 人日）
+- **要改的插件文件**：`plugins/llm_anthropic/provider.py`（新建）、`plugins/llm_openai_compatible/provider.py`（新建）、两者 `main.py`。
+- **要改的 engine 文件**：`clipwright/providers/llm/`（删 `anthropic_provider.py` / `openai_provider.py`，
+  保留 `providers/base.py` 协议与访问器）、`providers/llm/__init__.py`（删 `ensure_llm_providers_registered()` 的内置注册，
+  该函数改为 `no-op` 或删除并同步 `api/providers.py:55,60`、`api/settings.py:77-79` 的调用）。
+- **动作**：类搬到插件；`services/llm.py:727`、`:897`、`:950` 的 `elif provider == "anthropic"` 删除
+  （`providers/base.py` 的 `llm_normalize_messages` / `llm_tool_result_message` / `llm_tool_schemas`
+  已提供最小语义，缺方法时访问器给可读告警）；`config.py:75` 的 `Literal[...]` 改 `str`。
+- **验收**：
+  ```powershell
+  Select-String -Path clipwright\services\llm.py -Pattern 'provider == \"anthropic\"'   # 期望 0
+  py -3.14 -c "import clipwright.providers.llm"                                          # 0（或只剩协议 re-export）
+  py -3.14 scripts/verify_provider_pluginization.py -k provider_owners                   # owners 仍为两插件
+  py -3.14 -m pytest tests/clipwright/test_llm_provider_protocol.py -q
+  ```
+- **依赖**：无　**关键路径**：B7 内是
+
+#### T7.3 embedding / rerank 实现搬进插件（1.5 人日）
+- **要改的插件文件**：`plugins/embedding_providers/providers.py`（新建）、`plugins/rerank_providers/providers.py`（新建）、两者 `main.py`。
+- **要改的 engine 文件**：`clipwright/providers/embedding/__init__.py`、`providers/rerank/__init__.py`
+  （类搬走；`ensure_*_registered()` 与 `resolve_*` 里的懒注册删除）；`api/providers.py:65-66` 与
+  `api/settings.py:83-85` 只读注册表，不再 `ensure_*`。
+- **动作**：`RemoteEmbedder` / `SentenceTransformerEmbedder` 的调用封装搬进插件；engine 保留
+  `build_http_client`（`providers/transport.py`）与 `parse_rerank_response`（属平台解析）。
+- **验收**：
+  ```powershell
+  py -3.14 -c "from clipwright.providers.embedding import embedding_provider_names as n; print(n())"  # 未启用插件时 []
+  py -3.14 -c "from clipwright.providers.rerank import rerank_provider_names as n; print(n())"        # 同上
+  py -3.14 -m pytest tests -q -k "provider or embedding or rerank"                                    # 无新增红
+  ```
+- **依赖**：无　**关键路径**：否（但同批交付）
+
+#### T7.4 STT 后端归位 + `whisper_stt` 收窄（2.0 人日）
+- **要改的插件文件**：`plugins/stt_providers/main.py`（成为唯一 owner：探测 + `_call_*`）、
+  `plugins/whisper_stt/main.py`（删 `whisper_transcribe_local` 工具，只留 `transcribe_and_align` 技能）。
+- **要改的 engine 文件**：`clipwright/providers/stt/__init__.py`（删 `ensure_stt_providers_registered()`
+  与两份 `_call_*`）、`services/stt.py`（`:214-283` 的 `_transcribe_whisper/_transcribe_faster_whisper`
+  搬进 `stt_providers`；`STTService.align()` 与 `_ensure_audio` 保留）、`tool/transcribe.py`（内置
+  `whisper_transcribe` 保留——它是另一条"文件→SRT"的工具面，与 provider 不冲突）。
+- **动作**：`resolve_stt_backends()` 只读注册表，禁用插件时返回空 → 调用方按"能力缺失"处理
+  （与 PRD §3.6 口径 A 一致）；`stt_providers` 不得再 import engine 的探测函数。
+- **验收**：
+  ```powershell
+  py -3.14 -c "import clipwright.providers.stt as s; print(s.resolve_stt_backends(object()))"  # 未启用插件 []
+  py -3.14 -c "from clipwright.tool.registry import ToolRegistry; print(ToolRegistry.get('whisper_transcribe_local'))"  # None
+  py -3.14 -m pytest tests -q -k "stt or transcribe"                                           # 无新增红
+  ```
+- **依赖**：无　**关键路径**：否
+
+#### T7.5 清 engine vendor 分支与枚举（1.0 人日，**必须最后**）
+- **要改的 engine 文件**：`services/llm.py`（T7.2 已删）、`services/voice.py`（T7.1 已删）、
+  `config.py:75/511/535`、`api/providers.py:76`（别名表搬到 `providers/tts` 或插件）、
+  `rag/embedder.py:176,180`、`services/vision.py:163`、`animation/mg/visual_eval.py:165`、`services/agent_loop.py:129`。
+- **动作**：把按 id 的分支改为按**能力位/协议方法**；`Literal` 枚举改 `str` + 启动期注册表校验
+  （未知值 → `""` + 一条 info 日志，不抛）；别名兼容集中到能力方（插件或 `providers/*` 门面）。
+- **验收**：
+  ```powershell
+  Get-ChildItem clipwright -Recurse -Include *.py |
+    Select-String -Pattern '"anthropic"|"ollama"|"cosyvoice"|"minimax"|"qwen-tts"' |
+    Where-Object { $_.Path -notmatch 'providers\\' -and $_.Path -notmatch '__pycache__' }
+  # 期望 ≤3 处，且全部是错误文案/兼容注释（0 处分支条件、0 处 Literal）
+  py -3.14 -c "import clipwright.main"     # 0
+  py -3.14 scripts/verify_provider_pluginization.py   # 13/13
+  ```
+- **依赖**：T7.1–T7.4　**关键路径**：是（B7 的收口）
+
+#### T7.6 门禁与声明文档（0.5 人日）
+- **要改的文件**：`scripts/verify_provider_pluginization.py`（新增
+  `@check("no_vendor_branches")`：上述 grep 作为 CI 断言）、`AGENTS.md`（#24 补一句"protocol impl lives in
+  plugin"）、`docs/pluginization-plan-2026-09-10.md` §12.3（provider 行标注 owner=插件）。
+- **动作**：先合 B5-T5.4（它重写 #26），再改本项，避免同文件冲突。
+- **验收**：`py -3.14 scripts/verify_provider_pluginization.py -k no_vendor_branches` → 0；
+  `Select-String -Path AGENTS.md -Pattern "协议实现"` ≥1。
+- **依赖**：T7.5、B5-T5.4　**关键路径**：否（但同批交付）
+
+---
+
+### B8 · 插件外壳化整改（二）：失效钩子 / 渲染器 / 死插件（10.0 人日 · 归属：后端 + 插件 + 文档）
+
+> **来源**：审计 §3.7–§3.15、§4.2、§4.4、§4.5、§3.10。
+> **批内顺序**：T8.1/T8.2 可并行；T8.5 依赖 T8.4（同改 `api/render.py`）；T8.6 依赖 T8.5（hook 契约）。
+> **开工前需拍板**：审计 §7 的 Q1（平台预设禁用后是否保留）、Q3（cloud_render 删还是搬）。
+> Q1 未定则 T8.4 只做"engine 两份表合一 + 补 hook 入参"，不动"禁用后是否保留"。
+
+#### T8.1 `headless_chrome` 实现搬进插件（2.0 人日）
+- **要改的插件文件**：`plugins/headless_chrome/shell.py`（新建，承接 `find_shell/install_shell/
+  install_by_download/probe_version/apply_env`）、`main.py`（`renderer_backend` 的 object 改为本模块实现）。
+- **要改的 engine 文件**：`clipwright/services/headless_browser.py`（缩为 facade：读贡献 → 调方法；
+  删 `HEADLESS_SHELL_ID:30`；`_system_chrome_path` 保留）、`api/render.py:1155-1183`（端点改调 facade，
+  URL 不变）。
+- **动作**：`renderer_backend` 合同扩展为 `{resolve(), install(), apply_env(env), probe_version()}`；
+  `find_shell()` 遍历注册表而不是认死 id。
+- **验收**：
+  ```powershell
+  Get-ChildItem clipwright -Recurse -Include *.py | Select-String 'chrome_headless_shell'    # 期望 0
+  py -3.14 -c "from clipwright.services import headless_browser as h; print(len(open(h.__file__,encoding='utf-8').readlines()))"  # 期望 < 120（facade）
+  # 运行期：禁用插件后 GET /api/render/browser 的 mode == system-chrome-headless-cpu
+  ```
+- **依赖**：无　**关键路径**：否
+
+#### T8.2 `logic_animations` 渲染器归位（2.0 人日）
+- **要改的插件文件**：`plugins/logic_animations/diagrams/`（从 engine 搬 11 个渲染函数：
+  `_radar/_gantt/_venn3/_heatmap/_sankey/_concept/_codeblock/_datatable/_quote/_compcard/_orgchart`）、
+  `main.py`（`_DESCRIPTIONS` 与 prompt 恢复 12 种；manifest 描述同步）。
+- **要改的 engine 文件**：`clipwright/animation/diagram_svg.py`（删 11 个渲染函数与
+  `renderer_map` 里的对应项；`:301-305` 的 presets 列表改由注册表动态合并；保留 `_inject_motion`
+  与 `render()` 分派）。
+- **动作**：搬移按**逐函数对照**做，行为等价（旧测试可作快照）；搬完 engine 侧 `renderer_map`
+  只剩 13 个"真正内置"类型（diagram/comparison/sequence/timeline/tree/venn/bar/pie/line/
+  sequence_diagram/flow_chart 等）。
+- **验收**：
+  ```powershell
+  Select-String -Path clipwright\animation\diagram_svg.py -Pattern 'def _radar|def _gantt|def _sankey|def _heatmap'   # 0
+  py -3.14 -c "from clipwright.animation.diagram_svg import DiagramRenderer as R; print(len(R.get_supported_presets()))"  # 插件禁用时减少 12
+  py -3.14 -m pytest tests -q -k "diagram"     # 无新增红
+  ```
+- **依赖**：无　**关键路径**：否
+
+#### T8.3 `kinetic_typography` 失效修复（1.0 人日）
+- **要改的插件文件**：`plugins/kinetic_typography/main.py`（删 `ctx["catalog"]` 死钩子与 CSS 字符串；
+  6 个动画改写成带 keyframes 的 `AnimationDef`，`gradient_fill` / `perspective_3d` 按审计 §3.11 下线并在
+  manifest 说明）。
+- **要改的 engine 文件**：无（`animation/renderer.py:70-75` 的通用渲染已够用）。
+- **验收**：`Select-String -Path plugins\kinetic_typography\main.py -Pattern 'catalog'` → 0；
+  `py -3.14 -c "from clipwright.animation.registry import AnimationRegistry as A; print([(d.animation_id, len(d.keyframes)) for d in A.list_by_plugin('kinetic_typography')])"` → 每个非空。
+- **依赖**：无　**关键路径**：否
+
+#### T8.4 `lottie_animations` 降级（0.3 人日）
+- **要改的插件文件**：`plugins/lottie_animations/main.py`（删两个形状错误的 hook 与外链 CDN 模板；
+  只保留 prompt + 本地目录说明；manifest description 改为"本地 Lottie 素材目录（渲染未接入）"）。
+- **要改的 engine 文件**：无。
+- **验收**：`Select-String -Path plugins\lottie_animations\main.py -Pattern 'cdnjs|renderers'` → 0；
+  `GET /api/plugin/contributions` 中该插件只剩 `prompt`。
+- **依赖**：无　**关键路径**：否
+
+#### T8.5 `platform_export` 真接线 + hook 契约表（1.5 人日）
+- **要改的插件文件**：`plugins/platform_export/main.py`（6 个预设改以 `export_preset` kind 贡献，
+  meta 带 `width/height/fps/bitrate/thumbnail_count/vertical`；PRE/POST hook 改读新入参）。
+- **要改的 engine 文件**：`api/render.py`（`:603` PRE_RENDER 入参补 `{"task_id","settings","preset"}`；
+  `:645-648` POST_RENDER 补 `preset`；`list_presets`/`_resolve_settings` 合并"内置 + `export_preset` 贡献"；
+  删 `:973-976 _PLATFORM_EXPORT_COUNTS` 的平台项）。`docs/pluginization-plan` §12.3 补
+  `export_preset` 的消费者（现在这张表里该 kind **零消费方**）。
+- **动作**：Q1 若定"禁用即无平台预设"，则 `_EXPORT_PRESETS:1091` 只留 `default/draft` 等非平台项；
+  若定"保留基础 3 个"，则保留并标注为内置 fallback。
+- **验收**：
+  ```powershell
+  Select-String -Path clipwright\api\render.py -Pattern '_PLATFORM_EXPORT_COUNTS'   # 0
+  # 运行期：GET /api/render/presets 的 keys == 内置 ∪ 插件；禁用插件后按 Q1 结果变化
+  ```
+- **依赖**：T8.4 无关；依赖 Q1 拍板　**关键路径**：否（但用户可见性最高）
+
+#### T8.6 `cloud_render` 清理 + 双注册收口（1.2 人日）
+- **要改的插件文件**：删除 `plugins/cloud_render/`（Q3 选 A）。
+- **要改的 engine 文件**：无（`services/remote_render.py` 保留，`api/render.py:225-227` 保留——
+  远程渲染仍由 `remote_render_url` 驱动）；`docs/pluginization-plan` §12.3 标注"远程渲染暂为宿主能力"。
+- **动作**：顺带把 T7.3/T7.4 遗留的"双注册"断言固化：`verify` 脚本新增
+  `@check("no_duplicate_builtin_registration")`（扫描 `ensure_*_registered` 是否仍在注册同一批 id）。
+- **验收**：`Test-Path plugins/cloud_render` → False；
+  `Select-String -Path clipwright -Recurse -Include *.py -Pattern 'cloud_render'` → 0；
+  `py -3.14 scripts/verify_provider_pluginization.py -k no_duplicate` → 0。
+- **依赖**：B7-T7.3 / T7.4　**关键路径**：否
+
+#### T8.7 `mg_animations` / `local_material` / `voice_ext`（2.0 人日）
+- **要改的插件文件**：`plugins/mg_animations/main.py`（`AnimationDef.properties_meta["mg_json"]` 携带 JSON 全文）、
+  `plugins/local_material/local_folder.py`（新建，承接 `LocalFolderSource`）、
+  `plugins/voice_ext/main.py`（新增 `tts_provider` 贡献：ElevenLabs/Azure 改 `BaseVoiceProvider` 子类，
+  `extended_tts` 工具保留为兼容别名）。
+- **要改的 engine 文件**：`animation/mg_renderer.py:591-647`（删三条 `plugins/...` 路径，改从
+  `AnimationRegistry` 读 `mg_json`）、`material/local_source.py`（删类与 `source_from_env`；
+  `material/__init__.py:13` 去导出）、`services/voice.py`（无需改，provider 面已通用）。
+- **验收**：
+  ```powershell
+  Select-String -Path clipwright\animation\mg_renderer.py -Pattern 'plugins'          # 0
+  py -3.14 -c "import clipwright.material as m; print(hasattr(m,'LocalFolderSource'))"  # False
+  # 运行期：GET /api/providers 的 tts 列表含 elevenlabs/azure
+  ```
+- **依赖**：B7（provider 面）　**关键路径**：否
+- **同任务内顺带收尾（0.2 已含在 2.0 里）**：`AGENTS.md` #26 增一句「插件 prompt 不得替 engine 宣称能力
+  （`logic_animations`/`kinetic_typography`/`lottie_animations` 曾犯）」；#19 增一句「`web_search`/`web_fetch`
+  仍是内置工具，插件化另立目标」。验收：`Select-String -Path AGENTS.md -Pattern "不得替 engine 宣称"` ≥1。
+
+---
+
 ## 4. 迁移完成的判据（怎么证明"engine 里已经没有 genui 专属链路"）
 
 ```powershell
@@ -576,6 +801,8 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 | **B4** | 只回滚前端 | 前端仍读 `genui`，看不到 `display_specs` → 卡片消失（但字段还在） | 中：必须与 B3 的"双读"配合，或用 B4 的 `resolveDisplaySpecs` 兼容层（该层同时读两键，回滚到 B3 状态仍能渲染） |
 | **B5** | 文档与测试；**不要**回滚 `verify` 脚本的 check（否则门禁失效） | 文档与代码不一致 | 低 |
 | **B6** | 无（只删死代码） | 回到 B5 状态 | 无 |
+| **B7** | 单任务回滚（T7.1–T7.4 各自独立）：插件文件 + 被删的 engine 类**必须同一次提交**；T7.5 最后合 | 协议类回到 engine、插件回到"只有注册"的半壳态；功能不断（engine 类还在） | 低（无数据面变更） |
+| **B8** | 按任务回滚；T8.5 涉及 `api/render.py` 与 3 个插件，必须同提 | 回到 B7 状态：钩子继续空转、渲染器回 engine | 中：T8.2 的渲染器搬家若只回滚一半，`preset` 会两边都找不到 → 先回滚 engine 侧再回滚插件侧 |
 
 **回滚铁律**：
 1. 每个批次一个提交，提交内**不跨批次**（B2 例外：契约文件 + 插件声明 + verify 脚本必须在同一提交，否则 CI 中间态必红）。
@@ -595,14 +822,32 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 | B4 | 3.0 | ✅ | B3 |
 | B5 | 2.5 | ✅ | — |
 | B6 | 1.5 | ✅ | — |
-| **合计** | **17.0** | | |
+| B7 | 10.0 | ✅（B6 之后；或与 B1+ 并行） | 与 B1–B6 无文件交集 |
+| B8 | 10.0 | ✅（B7 之后） | 与 B1–B6 无文件交集；T8.1–T8.4 可并行 |
+| **合计** | **37.0**（43 任务） | | |
 
-- **单人串行墙钟**：17.0 人日（关键路径 14.0 + B4 未并行时的 3.0）。
-- **双人（后端 / 前端）墙钟**：B0+B1+B2 = 5.5 → max(4.5, 3.0) = 4.5 → B5 2.5 → B6 1.5 = **14.0 人日**。
-- **风险缓冲**：建议 +15%（≈ 2.5 人日），主要给 R1（插件加载时序）与 R2（解释器边界用例）。**报价按 19.5 人日**。
+- **单人串行墙钟**：**37.0 人日**（原 17.0 + B7 10.0 + B8 10.0；其中 B4 的 3.0 可与 B3 并行，故关键路径 34.0）。
+- **双人（后端 / 前端）墙钟**：原 B0–B6 = 14.0；B7/B8 是后端活，同一后端串行 → **34.0 人日** 墙钟；
+  总人日仍 **37.0**（B4 与 B3 并行不增墙钟）。
+- **三名后端**（一人专做 B7/B8）：墙钟 = max(14.0, 10.0+10.0) = **20.0 人日**，总人日 **37.0**。
+- **风险缓冲**：建议 +15%（≈ 5.5 人日），主要给 R1（插件加载时序）、R2（解释器边界用例）、
+  B7 的协议类搬移（打桩点迁移）与 B8-T8.5（hook 入参契约变动影响 3 个插件）。
+  **报价按 42.5 人日**（原 19.5 + 23.0）。
+
+> 与 §1 的口径一致：**任务数 30 → 43，人日 17.0 → 37.0，单人墙钟 17.0 → 37.0，双人墙钟 14.0 → 34.0**。
+> 只做 genui 迁移（B0–B6）的报价仍是 **19.5 人日**；B7/B8 另立合同/里程碑更清楚，不要混进首付款。
 
 ---
 
 ## 8. 执行顺序速查（给下一个 agent 的第一句话）
 
 > 先做 B0 评审（不改代码）；再从 B1 开始——B1 只加扩展点、**不加任何调用点**，`pytest tests/clipwright/test_display_spec_plugin.py -q` 必须绿。B2 把契约搬进 `plugins/genui/contract.json`（**记得补 `badge_tones`**，现有契约漏了它）并把清洗器改成契约驱动，`verify_provider_pluginization.py -k display_spec` 必须绿。B3 的第一件事是 `_brief_hash` 排除 `{"genui","display_specs"}`（**先于**任何写入 `display_specs` 的改动），然后才是 recipe 解释器与字段泛化。B4 可与 B3 并行，但必须先等 B2 的契约字段冻结。B5 的 `check_display_spec_off_degradation` 是"禁用即无 spec"的唯一证据，别写成"禁用仍有兜底"。B6 跑 §4 判据并把输出贴进 `docs/genui.md`。
+>
+> **B7 与 B1–B6 的关系**：B7/B8 是**另立批次**，与 B0–B6 **没有文件级交集**（B0–B6 不碰
+> `services/llm.py` / `services/voice.py` / `providers/` / `animation/` / `api/render.py`），
+> 所以 B7 可以在 B1 合入后的任意时点开工；但**唯一必须串行的是 `AGENTS.md`**——B5-T5.4 先合，
+> B7-T7.6 与 B8-T8.7 后补，否则同文件冲突。若单人串行，建议 B6 → B7 → B8（B8 至少两处依赖 B7：
+> provider 门面与 `verify` 脚本）。**B6 的 §4 判据在 B7/B8 之后要重跑**：B7 会删
+> `services/voice.py` 的 provider 类、B8 会删 `services/headless_browser.py` 的实现体，
+> 这两份删除**不能**被误判成"genui 回退"。B7/B8 的判定证据与整改理由见
+> [`plugin-shell-audit-2026-11-07.md`](plugin-shell-audit-2026-11-07.md)。
