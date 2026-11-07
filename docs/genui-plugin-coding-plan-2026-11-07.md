@@ -805,3 +805,16 @@ py -3.14 -c "import clipwright.main; print('ok')"                # ok
 | **T3.1** 契约单一真相 | ✅ 已完成 | 新增后端 `clipwright/schema/genui_contract.json`（权威）+ 前端 `src/features/genui/contract.json`（**逐字节副本**）；`schema/genui.py::load_contract()` 供测试/脚本读取（运行期不依赖 I/O）；后端 `TestContractSingleSource` 逐项断言常量 == JSON；前端 `ContractSingleSource` 同样断言（含 7 个上限） | `pytest tests/clipwright/test_genui_spec.py` → 53 passed；`tsc --noEmit` 0 |
 | **T3.2** 前端补 `MAX_SPEC_BYTES` | ✅ 已完成 | `validate.ts` 增 `MAX_SPEC_BYTES = 64*1024`，并在**清洗后**量 `JSON.stringify(spec).length`（与后端 `len(json.dumps(spec))` 同口径，注释写清是字符数近似）；超限 → `spec=null` | 前端 `MAX_SPEC_BYTES` 2 例（40×4000 字 → null；未超限通过） |
 | **T3.3** 插件启停退化 + 自检扩展 | ✅ 已完成 | `verify_provider_pluginization.py` 新增 3 项：`genui_contract_sync`（两仓 JSON 逐字节相等）、`genui_plugin_contract`（manifest ↔ contributions 对齐、组件与 schema 一致、不覆盖提示词符号）、`genui_off_degradation`（清空提示词注册表后：base prompt 仍在且无 GenUI 段、`ensure_brief_spec` 仍产出 spec） | `py -3.14 scripts/verify_provider_pluginization.py` → **16/16 通过**；`-k genui` → 3/3 |
+
+### Batch 4 / 5.2 / 6.1 / 6.3 / 6.4 进度
+
+| 任务 | 状态 | 落地内容 | 证据 |
+|---|---|---|---|
+| **T4.1** 动作语义文档化 | ✅ 已完成 | 渲染器 `ACTION_LABEL` 上方写明"白名单 ≠ 宿主支持；当前只实现 ask；confirm 必须二次确认"；`AgentPanel.onGenUIAction` 同步；插件 PROMPT 增加"加一个点不动的按钮比不加更差"；两仓 `AGENTS.md` #26 各加一条 | `tsc --noEmit` 0；PROMPT `词法白名单` 命中 |
+| **T4.2** 实现 select/confirm | ⏭️ 跳过（默认建议：不做） | 需产品拍板（§7-Q2）；`confirm` 若做必须带二次确认 | — |
+| **T5.1** 表格本地排序/筛选 | ⏸ 未做 | 需前端交互代码 + vitest 验证（本 goal 未授权 vitest）；保留在缺口表 | 记入 `docs/genui.md` §6 |
+| **T5.2** 组件扩充评估 | ✅ 已完成（文档） | `docs/genui.md` §5.1：keyvalue/image/tabs 不扩理由；chart/echart 首版不扩（体积须实测、option 直通需受控子集 schema）；mermaid/svg/scene3d/plot 已排除 | 无代码 diff（符合任务要求） |
+| **T6.1** `PlanReviewPanel` 处置 | ✅ 已完成（不接入不删除） | 顶部加注释：**无挂载点**、规划书确认现役入口是 `PlanCard`、接入会产生第二个确认入口、复活前须回答两个问题 | `tsc --noEmit` 0 |
+| **T6.2** 真实模型 3 类选题实测 | ⏳ 待人工 | 需真实 LLM + 浏览器观察（日志看"已降级/兜底"） | 见 `docs/genui.md` §6 |
+| **T6.3** 文档同步 | ✅ 已完成 | 新增 `docs/genui.md`（契约/上限/动作/产出路径/加组件 6 条/缺口/自检）；`api_reference.md` 增「GenUI 展示字段」；`frontend-backend-parity.md` 增 §12；两仓 AGENTS #26 同步；客户端 docs 镜像 | `grep genui` 四份文档均命中 |
+| **T6.4** 性能/窄屏/深色 | ⏳ 待人工 | 需浏览器实测（贴 64KB spec、100 行表格、375px、深色对比度） | 见 `docs/genui.md` §6 |

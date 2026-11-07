@@ -422,3 +422,14 @@ PRD：[`provider-pluginization-and-prompt-override-prd-2026-11-02.md`](provider-
 
 
 
+
+## 12. GenUI 展示 spec（2026-11-07 增量）
+
+| 后端 | 前端 | 状态 / 契约 |
+|---|---|---|
+| `clipwright/schema/genui.py::sanitize_spec`（写入侧清洗：白名单 / 上限 / 危险键 / 动作） | `src/features/genui/validate.ts::validateGenUISpec`（渲染前再洗一遍） | ✅ 两道闸，规则同源 |
+| `clipwright/schema/genui_contract.json`（权威） | `src/features/genui/contract.json`（逐字节副本） | ✅ 自检 `genui_contract_sync` 比对；两侧测试各自断言常量==JSON |
+| `CreativeBrief.genui` / `ProductionPlan.genui`（`ensure_brief_spec` / `ensure_plan_spec`） | `AgentPanel` 的 `BriefCard` / `PlanCard` → `GenUISpecRenderer` | ✅ 简报：模型产出可洗、缺省确定性兜底；规划书：**只**确定性生成 |
+| `requirements_service._with_genui_specs`（读路径补 spec） | `validateGenUISpec` 对老会话/空 spec 返回 `null` → 整块不渲染 | ✅ 只补不存，不回写 Mongo |
+| `plugins/genui` 的 `PROMPT` 贡献（`agent: requirements`） | — | ✅ 只教"能写什么"；禁用后确定性兜底照常（自检 `genui_off_degradation`） |
+| 动作：`ask`（其余禁用） | `onGenUIAction` → `sendChat(当前需求会话, prompt)` | ✅ spec 不携带 endpoint/URL；`select`/`confirm` 白名单内但宿主不支持 → 禁用态 |

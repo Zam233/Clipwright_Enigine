@@ -43,6 +43,9 @@ PROMPT = f"""## GenUI 展示规范（来自 genui 插件）
 - 容器型（`row` / `col` / `card` / `accordion`）用 `items` 放子节点；其余组件不接受子节点。
 - 节点数 ≤ 100，嵌套 ≤ 6 层；单个文本字段 ≤ 4000 字；表格 ≤ 12 列 / 100 行。
 - **不要**写 HTML / 脚本 / CSS / 外链图片 / URL / HTTP 方法；不需要 `action` 就不要写。
+- 动作只允许 `ask` / `select` / `confirm`，且**只是词法白名单**：宿主当前只实现 `ask`
+  （点击会把 `payload.prompt` 发回当前需求会话），`select` / `confirm` 会渲染成禁用态。
+  所以**不要为了"看起来可交互"加动作**——加一个点不动的按钮比不加更差。
 - 示例：
 
 ```json

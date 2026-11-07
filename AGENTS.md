@@ -140,6 +140,9 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
     - **动作只有三种** `ask/select/confirm`，且必须绑定**宿主回调**（当前 `ask` → 发回当前需求
       会话）。**禁止** spec 携带 endpoint / URL / HTTP method / 任意能力名——那等于把"往哪发请求"
       交给模型。宿主没有对应回调时按钮**渲染为禁用态**，不假装可点。
+    - **动作白名单是「词法」契约，不是「可点」契约**：`GENUI_ACTION_KINDS` 只保证老 spec 写
+      `select/confirm` 不被判非法；**是否可点**由宿主传的 `supportedActions` 决定，当前只实现
+      `ask`。`confirm` 若将来要接，必须带二次确认（不能让模型写的按钮单击推进状态机，违反 C10）。
     - **不碰 HTML/脚本/外链**：渲染器没有 `dangerouslySetInnerHTML`，文本一律走 `asText`，
       首版不开放 `mermaid/echart/plot/scene3d/svg/image`（要开必须单独安全评审）。
     - 规范由插件 `plugins/genui/` 以 `PROMPT` 贡献教给模型（`agent: requirements`）；
@@ -271,6 +274,7 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
 | [动画系统](docs/animation_system.md) | 动画编目、渲染管线与 MG 动画 |
 | [服务概览](docs/services_overview.md) | 全部后端服务层模块说明 |
 | [需求分析 Agent](docs/requirements_agent.md) | Requirements Agent 设计与职责 |
+| [GenUI 展示](docs/genui.md) | schema/genui.py、plugins/genui、src/features/genui/*（契约/产出路径/加组件条件） |
 | [整数时间基座](docs/timebase.md) | `utils/timebase.py`：整数 tick + 有理数帧率（O1），换算纪律、时间码、漂移校正接线点 |
 
 ## 验证清单

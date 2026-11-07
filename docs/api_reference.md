@@ -984,3 +984,18 @@ off/token 模式放行）。`requires_restart=true` 的字段（CORS/Mongo/端�
 
 
 
+
+## GenUI 展示字段（`CreativeBrief.genui` / `ProductionPlan.genui`）
+
+> 详细契约与加组件条件见 [docs/genui.md](genui.md)。一句话：**只读展示层，权威数据在上层字段**。
+
+| 字段 | 形状 | 说明 |
+|---|---|---|
+| `CreativeBrief.genui` | `{"version":1,"items":[...]}` 或 `{}` | 创意简报卡的结构化视图；模型产出走 `sanitize_spec`，缺省时由 `build_brief_genui` 从字段确定性生成 |
+| `ProductionPlan.genui` | 同上 | 规划书卡的结构化概览；**只由 `raw_scenes` 确定性生成**，不看模型给的 spec |
+
+- 读取：`GET /api/requirements/session/{session_id}` 返回的 `creative_brief` / `production_plan` 里带该字段；
+  2026-11-03 之前落库的老会话由 `get_session` **读时补**（浅拷贝，不回写 Mongo，`_with_genui_specs`）。
+- 校验：写入侧 `clipwright/schema/genui.py::sanitize_spec`；渲染侧前端 `src/features/genui/validate.ts`；
+  两侧共享 `genui_contract.json`（组件白名单 / 上限 / 动作 / 色调）。
+- **不影响业务判定**：`genui` 已从 `_brief_hash` 排除；确认、幂等、规划书作废判定都不读它。
