@@ -794,7 +794,10 @@ plugins/my_llm/
 └── ui.json              # { api_version:"2", slots:[...] }
 ```
 
-### 12.3 14 类贡献点一览
+### 12.3 18 类贡献点一览
+
+> 2026-11-07 补：本节原表停在 14 行（漏登 `animation` / `embedding_provider` / `rerank_provider`），
+> 已按 `clipwright/plugins/contribution.py` 的实际枚举补全到 17 行，并新增第 18 类 `display_spec`。
 
 | kind | 归属工作流 | 现有/新增 | 消费方 |
 |---|---|---|---|
@@ -810,8 +813,12 @@ plugins/my_llm/
 | tts_provider | B | 新增 | `services/voice.py` |
 | stt_provider | B | 新增 | `services/stt.py` |
 | renderer_backend | B | 新增 | 渲染入口 |
+| animation | B | 现有 | `plugins/builtin_contributions.py:99`（动画编目） |
+| embedding_provider | B | 现有 | `api/providers.py:65`、`api/settings.py:83` |
+| rerank_provider | B | 现有 | `api/providers.py:66` |
 | ui_slot | D | 新增 | 前端 Slot 渲染器 |
 | export_preset | D | 新增 | 导出页预设合并 |
+| **display_spec** | **D** | **新增（2026-11-07）** | **`services/display_spec`（后端通用清洗器/装配器）+ 前端宿主渲染器；纯数据，`object` 恒为 `None`，见 [genui-plugin-migration-prd-2026-11-07.md](genui-plugin-migration-prd-2026-11-07.md)** |
 
 ### 12.4 与审计文档的接口
 

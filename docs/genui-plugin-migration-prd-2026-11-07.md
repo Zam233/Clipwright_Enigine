@@ -535,3 +535,28 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 | 日期 | 变更 |
 |---|---|
 | 2026-11-07 | 首版。裁定 A1–A8；不可行清单 6 条；不变量 C1–C14；风险 R1–R8；未核实 U1–U7 |
+
+---
+
+## 11. 契约评审决议（B0-T0.1，2026-11-07）
+
+评审对象：新增第 18 类 `ContributionKind.DISPLAY_SPEC`。逐条结论（不是"待定"）：
+
+| 编号 | 决议 | 落点 / 反对意见 |
+|---|---|---|
+| **N1** `object` 必须为 `None`、`meta` 必须可 `json.dumps` | **通过** | `contribution_dispatch._validate_data_only`（B1-T1.2）在注册期强制；子进程档直通先例是 `loader.py` 的 `_DECLARATIVE_KINDS`。反对意见：有人会想"顺手带个 callable 方便"，已由 PRD §3.3 明确拒绝——engine 不执行插件对象 |
+| **N2** 同 `spec_id` 单 owner，禁止 `override_builtin` | **通过** | 复用 `contribution.py` 的 REJECT，并在 dispatch 里对 `DISPLAY_SPEC` 显式拒绝 OVERRIDE（B1-T1.2 第 3 步）。理由：展示契约被第三方替换 = 悄悄改变信任边界 |
+| **N3** 注册期零 I/O | **通过** | 契约由插件自己在 `contributions()` 里读文件后放进 `meta`，engine 不读插件目录（`services/display_spec/contract.py` 不做任何文件 I/O） |
+| **N4** meta 形状固定，缺键/类型错注册期拒绝 + 走错误通道 | **通过** | 必填键 `{version, components, containers, actions, tones, badge_tones, text_sizes, limits, source, trust, order, spec_id}`；`trust ∈ {sanitize, recipe_only}`；`limits` 9 个键且为正整数 |
+| **N5** 不进 `_WIRED_KINDS`，但 dispatch 必须显式校验（不得靠"未知 kind 默认放行"） | **通过** | 新增 `_DATA_ONLY_KINDS` 分支，先于 provider 分支判断；否则形状错的契约会静默生效到渲染期才炸 |
+| **N6** 契约 `components`/`actions` ⊆ 宿主已实现集合，由跨仓 CI 断言 | **通过（有条件）** | `scripts/verify_provider_pluginization.py` 新增断言（B5）；反例：前端原语是编译期闭包，插件声明 `mermaid` 只会被降级成占位文本——这是**有意的硬边界**，不是缺陷 |
+| **N7** 不需要 SlotRegistry 式评审 | **通过** | `display_spec` 不是宿主 UI 的物理挂载点：新 `spec_id` 不改前端代码。但必须登记进 `docs/pluginization-plan-2026-09-10.md` §12.3 的 kind 表（已补：14 → 18 行）与两仓 `AGENTS.md` |
+
+**冻结结论**：`DISPLAY_SPEC = "display_spec"` 作为**纯数据扩展点**成立；engine 侧只保留通用
+「契约读取 + 清洗 + 装配 + 渲染」机制，GenUI 的白名单/上限/配方/教模型规范全部在 `plugins/genui`。
+任何后续对 kind 形态的变更，必须先改 coding plan §2 并在本文 §10 记一条变更。
+
+**同期确认的两处既有缺陷**（迁移必须一并修掉，已写进 coding plan §2.2）：
+
+1. `clipwright/schema/genui_contract.json` 漏了 `badge_tones`（而 `genui.py:42` 有 `GENUI_BADGE_TONES`）——不补，插件无法表达 badge 的 `accent`；
+2. 前端 `src/features/genui/contract.json` **只被测试引用**（`genui.test.tsx:169`），运行期校验是 `validate.ts` 的硬编码常量——"契约单一真相"目前只是构建期对账，B4 改为端点下发。
