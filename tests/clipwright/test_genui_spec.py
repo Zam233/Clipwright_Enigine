@@ -569,3 +569,67 @@ class TestContractSingleSource:
         assert limits["max_array_items"] == g.MAX_ARRAY_ITEMS
         assert limits["max_table_cols"] == g.MAX_TABLE_COLS
         assert limits["max_action_payload_chars"] == g.MAX_ACTION_PAYLOAD_CHARS
+
+
+class TestFallbackAcrossGenres:
+    """T6.2 的**确定性部分**：3 类选题哪怕模型不给 spec，兜底也要出可用结构。
+
+    真模型产出质量仍需人看（计划 §4.3）；这里锁的是"兜底不出空洞/不出占位"。
+    """
+
+    BRIEFS = {
+        "知识区长片": {
+            "title": "科技史：从蒸汽机到大模型",
+            "overview": "用三次工业革命串起技术演进",
+            "target_audience": "对科技史感兴趣的泛知识用户",
+            "core_message": "每一次效率跃迁都重塑了人的工作",
+            "style_direction": "冷静克制的纪录片质感",
+            "structure_suggestion": "三幕：蒸汽—电力—智能",
+            "duration_estimate": "8 分钟",
+            "key_elements": ["蒸汽机剖面", "大模型推理示意"],
+            "special_requirements": ["不出现未公开数据"],
+        },
+        "Vlog": {
+            "title": "一个人去北海道看雪的七天",
+            "overview": "独行视角的冬日小城记录",
+            "target_audience": "喜欢慢节奏旅行内容的年轻人",
+            "core_message": "安静也是一种陪伴",
+            "style_direction": "低饱和、自然光",
+            "structure_suggestion": "按天推进，结尾回到出发地",
+            "duration_estimate": "6 分钟",
+            "key_elements": ["雪夜街道", "便利店关东煮"],
+            "special_requirements": ["不要配热血 BGM"],
+        },
+        "数码评测": {
+            "title": "三款降噪耳机横评，谁最能隔绝地铁噪音",
+            "overview": "地铁实测 + 参数对照",
+            "target_audience": "通勤党、准备换耳机的人",
+            "core_message": "降噪看的是低频段而不是参数表",
+            "style_direction": "干净利落的数据风",
+            "structure_suggestion": "结论前置，再逐项拆解",
+            "duration_estimate": "5 分钟",
+            "key_elements": ["地铁车厢实拍", "降噪曲线"],
+            "special_requirements": ["必须标注价格与测试环境"],
+        },
+    }
+
+    @pytest.mark.parametrize("genre", list(BRIEFS))
+    def test_fallback_is_usable_for_every_genre(self, genre: str):
+        from clipwright.schema.genui import build_brief_genui
+
+        brief = dict(self.BRIEFS[genre])
+        spec = build_brief_genui(brief)
+        assert spec, f"{genre}: 兜底不应为空"
+        types = [n["type"] for n in spec["items"]]
+        assert "text" in types, f"{genre}: 至少一段文本"
+        assert ("table" in types) or ("list" in types), f"{genre}: 至少一个 table 或 list"
+        dumped = json.dumps(spec, ensure_ascii=False)
+        assert "暂不支持" not in dumped and "渲染失败" not in dumped
+        # 权威字段必须能在 spec 里找到（否则卡片与字段自相矛盾）
+        assert str(brief["title"]) in dumped
+        assert str(brief["duration_estimate"]) in dumped
+        # 兜底 spec 自己也得过后端清洗器（否则写入即降级）
+        from clipwright.schema.genui import sanitize_spec
+
+        cleaned, problems = sanitize_spec(spec, source="test")
+        assert cleaned is not None and not problems, f"{genre}: 兜底产出被清洗器拒绝：{problems}"

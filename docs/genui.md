@@ -116,3 +116,28 @@ py -3.14 scripts/verify_provider_pluginization.py -k genui
 # 前端：类型 + 渲染器/校验器用例（vitest 按项目约定由人执行）
 cd J:\Clipweight-Client; npx tsc --noEmit; npx vitest run src/features/genui
 ```
+
+## 8. 兜底产出样本（3 类选题，确定性、**非模型**）
+
+> 这是 `build_brief_genui()` 在真实字段输入下的输出形状——用来证明"模型不给 spec 时卡片也不空"。
+> **不代替 T6.2 的真实模型实测**：模型路径的质量（是否自己产出、产出是否合规）仍需人跑一遍。
+
+| 选题 | 顶层节点 | 体积 | 结构 |
+|---|---:|---:|---|
+| 知识区长片《科技史：从蒸汽机到大模型》 | 6 | 528 字符 | text(12 字) + text(13 字) + **table(5 行 × 2 列)** + text(9 字) + list(2 项) + callout |
+| Vlog《一个人去北海道看雪的七天》 | 6 | 516 字符 | text(12 字) + text(11 字) + **table(5 行 × 2 列)** + text(9 字) + list(2 项) + callout |
+| 数码评测《三款降噪耳机横评…》 | 6 | 527 字符 | text(18 字) + text(11 字) + **table(5 行 × 2 列)** + text(9 字) + list(2 项) + callout |
+
+共同形状（三类选题一致，因为构造器只看字段、不看题材）：
+
+1. 标题段 + 一句话概述（`text`）；
+2. **关键指标表**（`table`，5 行 × 2 列：类型/受众/核心信息/风格/时长）；
+3. 必须出现的关键元素（`list`）；
+4. 特殊要求（`callout`，有内容才出）。
+
+三条已锁进测试（`tests/clipwright/test_genui_spec.py::TestFallbackAcrossGenres`）的断言：
+
+- spec 非空、至少一个 `table` 或 `list`、至少一段 `text`；
+- 不出现「暂不支持」「渲染失败」这类占位文本；
+- 权威字段（`title` / `duration_estimate`）必须出现在 spec 里——**卡片与字段不得自相矛盾**；
+- **兜底产出自己必须通过 `sanitize_spec` 且零 problems**（否则就是"写进去就被降级"的假兜底）。
