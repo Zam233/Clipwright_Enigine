@@ -174,3 +174,23 @@ ContributionKind / slot / task event。
   **108 passed / 3 failed**，3 个失败是**既存**的 `test_requirements_stream_chat`（与本改动无关）；
 - 前端 `npx tsc --noEmit` → 退出码 0；`npx vitest run src/features/genui` → **14 passed**；
   `npx vitest run src/features/agent src/features/sessionTimeline` → **81 passed / 5 skipped**（既有用例未回归）。
+
+## 10. 勘误（2026-11-07，依据 coding plan §0.5 与实测复核）
+
+coding plan 复核时发现 §9 有几处判断**与代码不符**，逐条更正（§9 原文保留以便对照）：
+
+1. **§9「加字段会自动出现在提示词字段表与 JSON 骨架里」→ 撤回**。`prompts.py` 的
+   `CREATIVE_BRIEF_SYSTEM` 是已展开常量（1801 字符），**不含** `{{BRIEF_TEMPLATE}}`，因此
+   `requirements_agent.py` 的两处 replace 都是空操作——**加 `genui` 字段不会自动改提示词**。
+2. **§9「一处接线覆盖三个目标面」→ 收窄**为「**渲染**接线覆盖三个面（简报卡/规划书卡都在
+   `RequirementsPane` 里），**数据产出未覆盖**」：生产路径（`requirements_service.py`）不写 `genui`。
+3. **§9「规划书只走确定性构造器」→ 意图保留**，但要说明：已落地的 `requirements_agent` 里仍有一处
+   "模型给了就洗一遍"的分支（死代码），接线时应删除，避免与声明矛盾。
+4. **§5 任务拆分与估算失效**：真实接线点在 `services/requirements_service.py`（`_handle_gathering` /
+   `_translate_plan`），不在 `agents/requirements_agent.py`；以 coding plan §3 取代。
+5. **§4.2「`RequirementsAgent._generate_brief` 可新增可选 genui」→ 该函数生产不可达**
+   （`stage_subagent` 的 6 个阶段里没有 `requirements`），真实落点是 `_handle_gathering`。
+
+**另加一条本期新增的不变量**（已写进两仓 `AGENTS.md` #26 的配套约束 C10）：**展示层不得影响业务判定**
+—— `genui` 必须从 `_brief_hash`（简报指纹，用于幂等键与"规划书是否作废"）里排除。
+详见 [coding plan](genui-plugin-coding-plan-2026-11-07.md) §0.3-⑧ §3 T1.1。
