@@ -519,3 +519,53 @@ class TestOldSessionBackfill:
 
         out = _with_genui_specs({"id": "x", "production_plan": {"markdown_content": "# m"}})
         assert out["production_plan"]["genui"] == {}
+
+
+class TestContractSingleSource:
+    """T3.1：`genui_contract.json` 是单一真相，本模块常量必须逐项与之相等。
+
+    为什么需要它：组件白名单/上限原来靠"两仓手抄"，改一边忘另一边就是半渲染或
+    前后端判断不一致。JSON 本身不含逻辑，只做**对账基准**。
+    """
+
+    def test_version(self):
+        from clipwright.schema.genui import GENUI_VERSION, load_contract
+
+        assert load_contract()["version"] == GENUI_VERSION
+
+    def test_component_and_container_sets(self):
+        from clipwright.schema.genui import (
+            GENUI_COMPONENT_TYPES,
+            GENUI_CONTAINER_TYPES,
+            load_contract,
+        )
+
+        contract = load_contract()
+        assert set(contract["components"]) == set(GENUI_COMPONENT_TYPES)
+        assert len(contract["components"]) == len(GENUI_COMPONENT_TYPES), "白名单不得有重复项"
+        assert set(contract["containers"]) == set(GENUI_CONTAINER_TYPES)
+
+    def test_actions_tones_text_sizes(self):
+        from clipwright.schema.genui import (
+            GENUI_ACTION_KINDS,
+            GENUI_TEXT_SIZES,
+            GENUI_TONES,
+            load_contract,
+        )
+
+        contract = load_contract()
+        assert set(contract["actions"]) == set(GENUI_ACTION_KINDS)
+        assert set(contract["tones"]) == set(GENUI_TONES)
+        assert set(contract["text_sizes"]) == set(GENUI_TEXT_SIZES)
+
+    def test_limits(self):
+        from clipwright.schema import genui as g
+
+        limits = g.load_contract()["limits"]
+        assert limits["max_nodes"] == g.MAX_NODES
+        assert limits["max_depth"] == g.MAX_DEPTH
+        assert limits["max_text_chars"] == g.MAX_TEXT_CHARS
+        assert limits["max_spec_bytes"] == g.MAX_SPEC_BYTES
+        assert limits["max_array_items"] == g.MAX_ARRAY_ITEMS
+        assert limits["max_table_cols"] == g.MAX_TABLE_COLS
+        assert limits["max_action_payload_chars"] == g.MAX_ACTION_PAYLOAD_CHARS

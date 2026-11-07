@@ -797,3 +797,11 @@ py -3.14 -c "import clipwright.main; print('ok')"                # ok
 |---|---|---|---|
 | **T2.1** 老会话读时补 spec | ✅ 已完成 | 新增 `requirements_service._with_genui_specs(session)`：**浅拷贝 + 只补不存**（绝不原地改 `_memory_sessions` / 不回写 Mongo）；`get_session` 两条返回路径（内存 / Mongo）都过它；简报走 `ensure_brief_spec`，规划书走 `ensure_plan_spec`（只看 `raw_scenes`/`scenes`） | `TestOldSessionBackfill`（4 例）：入参 deepcopy 相等、身份不同、模型 genui 被忽略、空字段安全 |
 | **T2.2** 前端"无 spec 整块不渲染" | 🟡 已写未跑 | `genui.test.tsx` 增 `it.each` 三形态（`undefined` / `{}` / `{version:1,items:[]}`）：`hasGenUI=false` 且渲染器返回 `null` | `npx tsc --noEmit` 0；**vitest 未跑**（本 goal 约定：未经授权不跑 vitest） |
+
+### Batch 3 进度
+
+| 任务 | 状态 | 落地内容 | 证据 |
+|---|---|---|---|
+| **T3.1** 契约单一真相 | ✅ 已完成 | 新增后端 `clipwright/schema/genui_contract.json`（权威）+ 前端 `src/features/genui/contract.json`（**逐字节副本**）；`schema/genui.py::load_contract()` 供测试/脚本读取（运行期不依赖 I/O）；后端 `TestContractSingleSource` 逐项断言常量 == JSON；前端 `ContractSingleSource` 同样断言（含 7 个上限） | `pytest tests/clipwright/test_genui_spec.py` → 53 passed；`tsc --noEmit` 0 |
+| **T3.2** 前端补 `MAX_SPEC_BYTES` | ✅ 已完成 | `validate.ts` 增 `MAX_SPEC_BYTES = 64*1024`，并在**清洗后**量 `JSON.stringify(spec).length`（与后端 `len(json.dumps(spec))` 同口径，注释写清是字符数近似）；超限 → `spec=null` | 前端 `MAX_SPEC_BYTES` 2 例（40×4000 字 → null；未超限通过） |
+| **T3.3** 插件启停退化 + 自检扩展 | ✅ 已完成 | `verify_provider_pluginization.py` 新增 3 项：`genui_contract_sync`（两仓 JSON 逐字节相等）、`genui_plugin_contract`（manifest ↔ contributions 对齐、组件与 schema 一致、不覆盖提示词符号）、`genui_off_degradation`（清空提示词注册表后：base prompt 仍在且无 GenUI 段、`ensure_brief_spec` 仍产出 spec） | `py -3.14 scripts/verify_provider_pluginization.py` → **16/16 通过**；`-k genui` → 3/3 |

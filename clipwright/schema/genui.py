@@ -448,6 +448,19 @@ def build_plan_genui(plan: dict[str, Any], scenes: list[dict[str, Any]] | None =
     return spec
 
 
+def load_contract() -> dict[str, Any]:
+    """读取**单一真相文件** `genui_contract.json`（本模块常量 / 前端副本 / 自检脚本都对齐它）。
+
+    本模块**不**用它在运行期拼白名单（保持导入期零 I/O）；它只服务两类消费者：
+    ① `tests/clipwright/test_genui_spec.py::TestContractSingleSource` 断言常量没漂；
+    ② `scripts/verify_provider_pluginization.py` 比对两仓 JSON 是否逐字节一致。
+    """
+    from pathlib import Path
+
+    path = Path(__file__).with_name("genui_contract.json")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 # ── 接线用公共函数（服务层与 Agent 共用，避免两套实现漂移）──────────────
 
 

@@ -215,6 +215,82 @@ def check_prompt_runtime_path() -> None:
     assert L._system_prompt(task(False)) == P.LOOP_NORMAL_SYSTEM, "覆盖回滚后未恢复默认"
 
 
+@check("genui_contract_sync")
+def check_genui_contract_sync() -> None:
+    """前后端 GenUI 契约 JSON 必须**逐字节**一致（单一真相，计划 T3.1/§1.3）。
+
+    组件白名单与上限原来靠两仓手抄；改一边忘另一边 → 半渲染 / 前后端判断不一致。
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    backend = root / "clipwright/schema/genui_contract.json"
+    frontend = Path(r"J:\Clipweight-Client\src\features\genui\contract.json")
+    assert backend.exists(), f"缺少后端契约文件：{backend}"
+    if not frontend.exists():
+        print("  （前端仓库不在本机：跳过跨仓字节比对）")
+        return
+    assert backend.read_bytes() == frontend.read_bytes(), (
+        "前后端 genui_contract.json 不一致——改一边必须同步另一边"
+    )
+
+
+@check("genui_plugin_contract")
+def check_genui_plugin_contract() -> None:
+    """GenUI 插件：manifest ↔ contributions() 对齐；组件白名单与 schema 一致；不覆盖内置提示词。"""
+    from pathlib import Path
+
+    import yaml
+
+    from clipwright.plugins import prompt_overrides as O
+    from clipwright.schema import genui as G
+    from plugins.genui import main as M
+
+    root = Path(__file__).resolve().parents[1]
+    manifest = yaml.safe_load(
+        (root / "plugins/genui/plugin.yaml").read_text(encoding="utf-8")
+    ) or {}
+    declared = {(str(i.get("kind")), str(i.get("id"))) for i in (manifest.get("contributions") or [])}
+    plugin = M.GenUIPlugin()
+    items = list(plugin.contributions() or [])
+    actual = {(it.kind.value, it.id) for it in items}
+    assert declared == actual, f"manifest 与 contributions() 不一致：declared={declared} actual={actual}"
+    assert len(items) == 1, f"只应声明一条 PROMPT 贡献，实际 {len(items)}"
+    item = items[0]
+    assert item.meta.get("agent") == "requirements", item.meta
+    assert str(item.meta.get("prompt") or "").strip(), "PROMPT 贡献不能为空"
+    assert set(M.COMPONENTS) == set(G.GENUI_COMPONENT_TYPES), (
+        "插件教给模型的组件与 schema 白名单不一致——等于教错"
+    )
+    symbols = {str(x["name"]) for x in (O.all_symbols().get("constants") or [])}
+    assert not any("genui" in name.lower() for name in symbols), (
+        f"插件不应注册提示词符号覆盖：{sorted(symbols)}"
+    )
+
+
+@check("genui_off_degradation")
+def check_genui_off_degradation() -> None:
+    """插件被禁用（提示词注册表为空）时：生产简报 prompt 仍可用；确定性兜底仍产出 spec。
+
+    这是"插件启停不改变业务行为"的关键证据（计划 T3.3 / C9 / Q8）：
+    只失去"模型知道怎么写 spec"，不失去"卡片有 spec"。
+    """
+    from clipwright.plugins.prompt_registry import PluginPromptRegistry
+    from clipwright.schema.genui import ensure_brief_spec
+    from clipwright.services.requirements_service import _brief_system_prompt
+
+    saved = dict(PluginPromptRegistry._prompts)
+    try:
+        PluginPromptRegistry._prompts = {}
+        prompt = _brief_system_prompt("")
+        assert prompt.strip(), "禁用插件后 base 提示词必须还在"
+        assert "GenUI 展示规范" not in prompt, "禁用插件后不应再出现 GenUI 规范段"
+        out = ensure_brief_spec({"title": "T", "overview": "O"})
+        assert out["genui"]["items"], "禁用插件不得影响确定性兜底（展示层不依赖插件在线）"
+    finally:
+        PluginPromptRegistry._prompts = saved
+
+
 @check("prompt_builder_guards")
 def check_builder_guards() -> None:
     from clipwright.plugins import prompt_overrides as O
