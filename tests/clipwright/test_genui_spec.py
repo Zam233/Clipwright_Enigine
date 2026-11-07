@@ -290,3 +290,178 @@ class TestPluginContract:
         assert item.kind is ContributionKind.PROMPT
         assert item.meta["agent"] == "requirements"
         assert item.meta["prompt"] == item.object
+
+# ── Batch 1 接线（计划 T1.1 / T1.2 / T1.3 / T1.4）─────────────────────────
+
+
+class TestBriefHash:
+    """T1.1：`genui` 不得进简报指纹（C10 展示层不得影响业务判定）。"""
+
+    def test_genui_is_excluded(self):
+        from clipwright.services.requirements_service import _brief_hash
+
+        assert _brief_hash({"title": "T"}) == _brief_hash(
+            {"title": "T", "genui": {"version": 1, "items": [{"type": "text", "content": "x"}]}}
+        )
+
+    def test_real_field_change_still_changes_hash(self):
+        from clipwright.services.requirements_service import _brief_hash
+
+        assert _brief_hash({"title": "T"}) != _brief_hash({"title": "T2"})
+
+    def test_empty_inputs(self):
+        from clipwright.services.requirements_service import _brief_hash
+
+        assert _brief_hash({}) == ""
+        assert _brief_hash(None) == ""
+        assert _brief_hash({"genui": {"version": 1, "items": []}}) == ""
+
+    def test_nested_genui_only_also_empty(self):
+        """整个 brief 只有展示层 → 指纹为空（没有业务字段可比）。"""
+        from clipwright.services.requirements_service import _brief_hash
+
+        assert _brief_hash({"genui": {"items": [{"type": "text", "content": "x"}]}}) == ""
+
+
+class TestEnsureSpecWiring:
+    """T1.2 / T1.3：服务层与 Agent 共用的两个公共函数。"""
+
+    def test_ensure_brief_spec_fills_and_keeps_fields(self):
+        from clipwright.schema.genui import ensure_brief_spec
+
+        brief = {"title": "T", "overview": "O", "key_elements": ["a"]}
+        out = ensure_brief_spec(brief)
+        assert out is brief
+        assert out["genui"]["items"], "没给 spec 时应确定性补一份"
+        assert out["title"] == "T" and out["overview"] == "O"
+
+    def test_ensure_brief_spec_sanitizes_model_spec(self):
+        from clipwright.schema.genui import ensure_brief_spec
+
+        brief = {"title": "T", "genui": {"version": 1, "items": [{"type": "hero"}]}}
+        out = ensure_brief_spec(brief)
+        assert out["genui"]["items"][0]["type"] == "text"  # 未知组件降级
+
+    def test_ensure_brief_spec_replaces_hopeless_spec(self):
+        from clipwright.schema.genui import ensure_brief_spec
+
+        brief = {"title": "T", "genui": {"version": 99, "items": []}}
+        out = ensure_brief_spec(brief)
+        assert out["genui"]["version"] == 1 and out["genui"]["items"]
+
+    def test_ensure_plan_spec_ignores_model_spec(self):
+        """规划书**只**用确定性构造器：模型给的 genui 一律不看。"""
+        from clipwright.schema.genui import ensure_plan_spec
+
+        plan = {
+            "markdown_content": "# m",
+            "total_duration_sec": 6,
+            "genui": {"version": 1, "items": [{"type": "text", "content": "模型编的"}]},
+        }
+        spec = ensure_plan_spec(plan, [{"title": "开场", "duration_sec": 6}])
+        assert spec is plan["genui"]
+        dumped = json.dumps(spec, ensure_ascii=False)
+        assert "模型编的" not in dumped
+        assert any(n["type"] == "table" for n in spec["items"])
+
+    def test_ensure_plan_spec_without_scenes(self):
+        from clipwright.schema.genui import ensure_plan_spec
+
+        plan = {"markdown_content": "# m"}
+        assert ensure_plan_spec(plan, []) == {}
+        assert plan["genui"] == {}
+
+
+class TestPromptPlaceholderAndInjection:
+    """T1.4：占位符回来了，且生产简报路径真的消费插件提示词。"""
+
+    def test_prompts_constant_has_placeholder(self):
+        from clipwright import prompts
+
+        assert "{{BRIEF_TEMPLATE}}" in prompts.CREATIVE_BRIEF_SYSTEM
+
+    def test_agent_renders_placeholder_at_runtime(self):
+        from clipwright.agents.requirements_agent import _brief_system_prompt
+
+        rendered = _brief_system_prompt()
+        assert "{{BRIEF_TEMPLATE}}" not in rendered
+        assert "| 字段 | 类型 | 说明 |" in rendered
+        assert "genui" in rendered, "字段表应包含新的 genui 字段"
+
+    def test_service_prompt_consumes_plugin_registry(self, monkeypatch):
+        from clipwright.plugins.prompt_registry import PluginPromptRegistry
+        from clipwright.services import requirements_service as rs
+
+        monkeypatch.setattr(
+            PluginPromptRegistry, "get_for_agent",
+            classmethod(lambda cls, agent: ["FAKE_GENUI_RULES"]),
+        )
+        prompt = rs._brief_system_prompt("CTX")
+        assert "FAKE_GENUI_RULES" in prompt
+        # 顺序：base + context + 插件段（插件段追加在最后，不插进正文中间）
+        assert "CTX" in prompt
+        assert prompt.rstrip().endswith("FAKE_GENUI_RULES")
+        assert "字段" in prompt
+
+    def test_service_prompt_without_plugins(self, monkeypatch):
+        from clipwright.plugins.prompt_registry import PluginPromptRegistry
+        from clipwright.services import requirements_service as rs
+
+        monkeypatch.setattr(
+            PluginPromptRegistry, "get_for_agent",
+            classmethod(lambda cls, agent: []),
+        )
+        prompt = rs._brief_system_prompt("")
+        assert "FAKE_GENUI_RULES" not in prompt
+
+
+class TestPlanTranslateWiring:
+    """T1.3：`_translate_plan` 末尾补 genui，两条主路径共用。"""
+
+    def _service(self, monkeypatch, llm_result):
+        from clipwright.services import requirements_service as rs
+
+        svc = rs.RequirementsService.__new__(rs.RequirementsService)
+        svc._llm = object()
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(rs.RequirementsService, "_record_llm_usage", _noop)
+
+        async def _fake_llm(*args, **kwargs):
+            return dict(llm_result)
+
+        monkeypatch.setattr(rs, "llm_call_with_retry", _fake_llm)
+        return svc
+
+    async def test_attaches_genui_without_touching_markdown(self, monkeypatch):
+        svc = self._service(monkeypatch, {
+            "summary": "ok", "markdown_content": "# 规划书\n\n正文保留",
+        })
+        scenes = [
+            {"title": "开场", "duration_sec": 4, "keywords": ["a"]},
+            {"title": "正文", "duration_sec": 8, "keywords": ["b"]},
+        ]
+        result = await svc._translate_plan(scenes, {"title": "T"}, script_text="")
+        assert result["markdown_content"].startswith("# 规划书")
+        assert "正文保留" in result["markdown_content"]
+        assert result["genui"]["items"], "规划书必须带确定性 spec"
+        assert result["raw_scenes"] == scenes
+
+    async def test_model_genui_is_ignored(self, monkeypatch):
+        svc = self._service(monkeypatch, {
+            "summary": "ok", "markdown_content": "# 规划书\n\n正文",
+            "genui": {"version": 1, "items": [{"type": "text", "content": "模型编的展示"}]},
+        })
+        result = await svc._translate_plan(
+            [{"title": "开场", "duration_sec": 4}], {"title": "T"},
+        )
+        assert "模型编的展示" not in json.dumps(result["genui"], ensure_ascii=False)
+
+    async def test_fallback_path_also_has_genui(self, monkeypatch):
+        """LLM 两次都没正文 → 确定性兜底，但 spec 仍然要有。"""
+        svc = self._service(monkeypatch, {})
+        result = await svc._translate_plan([{"title": "开场", "duration_sec": 4}], {})
+        assert result["markdown_content"]
+        assert result["genui"]["items"]

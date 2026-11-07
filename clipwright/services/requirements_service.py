@@ -99,11 +99,19 @@ def _timeline(session_id: str):
 
 
 def _brief_hash(brief: dict | None) -> str:
-    """简报指纹：让"这份规划书对应哪版 brief"可判定（PRD §3.2）。"""
+    """简报指纹：让"这份规划书对应哪版 brief"可判定（PRD §3.2）。
+
+    ⚠️ **`genui` 必须排除**（C10 展示层不得影响业务判定）：这是展示层派生字段，
+    读/写路径随时可能补它。若算进指纹，同一份简报"补过"与"没补过"会算出不同值 →
+    派发拿 A 指纹、回填拿 B 指纹 → 误报 `brief_changed` 把刚生成的规划书作废。
+    """
     if not isinstance(brief, dict) or not brief:
         return ""
+    payload = {k: v for k, v in brief.items() if k != "genui"}
+    if not payload:
+        return ""
     try:
-        raw = json.dumps(brief, ensure_ascii=False, sort_keys=True, default=str)
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
     except Exception:  # noqa: BLE001
         return ""
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
@@ -1166,8 +1174,12 @@ class RequirementsService:
             _new_brief = result.get("brief_draft")
             # P2-34: LLM 解析失败会返回 brief_draft={}——空结果不覆盖已有方案
             if isinstance(_new_brief, dict) and _new_brief:
-                brief_data = _new_brief
-                _brief_event = _new_brief
+                # GenUI（计划 T1.2）：模型给了 spec 就洗、没给就确定性补——只影响展示，
+                # 不改 brief 的其它字段，也不进 `_brief_hash`（C10）。
+                from clipwright.schema.genui import ensure_brief_spec
+
+                brief_data = ensure_brief_spec(_new_brief)
+                _brief_event = brief_data
             is_ready = result.get("is_ready", False)
             # 只要生成了完整方案草稿就进入待确认状态。不完全依赖 LLM 的 is_ready 标志——
             # 否则前端已展示方案（brief_ready）而后端仍停留 gathering，用户确认后会被
@@ -1268,8 +1280,11 @@ class RequirementsService:
                 new_brief = revised.get("brief_draft")
                 updated = isinstance(new_brief, dict) and bool(new_brief)
                 if updated:
-                    brief_data = new_brief
-                    _brief_event = new_brief
+                    # GenUI（计划 T1.2）：修订路径同样过一遍（只补展示层）
+                    from clipwright.schema.genui import ensure_brief_spec
+
+                    brief_data = ensure_brief_spec(new_brief)
+                    _brief_event = brief_data
                 messages.append({
                     "role": "assistant",
                     "content": str(revised.get("reply") or "已记下你的修改意见。"),
@@ -2251,7 +2266,7 @@ class RequirementsService:
                 f"## 用户最新输入\n{user_prompt}"
             )
         llm_kwargs = {
-            "system_prompt": CREATIVE_BRIEF_SYSTEM + context,
+            "system_prompt": _brief_system_prompt(context),
             "user_prompt": user_prompt,
         }
         # 轮68：真流式路径——on_delta 非空时用 stream_generate 替代
@@ -2440,10 +2455,10 @@ class RequirementsService:
             payload["legacy"] = True
             payload["markdown_content"] = render_plan_markdown(plan)
             payload["summary"] = "按现有场景生成的 legacy 规划（非 plan-first 产物）"
-            # GenUI 展示 spec：legacy 路径也要有（用户看到的卡片与新路径一致）
-            from clipwright.schema.genui import build_plan_genui
+            # GenUI 展示 spec：legacy 路径也走同一个确定性构造器（与新路径口径一致）
+            from clipwright.schema.genui import ensure_plan_spec
 
-            payload["genui"] = build_plan_genui(payload, scenes) or {}
+            ensure_plan_spec(payload, scenes)
             logger.info("RequirementsService: 会话 %s 使用 legacy plan（%d 段）", session_id[:12], len(plan.sections))
             return payload
         except Exception as exc:  # noqa: BLE001 - 兜底失败不应影响主流程
@@ -2766,6 +2781,12 @@ class RequirementsService:
         if not result.get("scene_count"):
             result["scene_count"] = len(scenes)
         result["raw_scenes"] = scenes
+        # GenUI（计划 T1.3）：规划书 spec **只**用确定性构造器，不看模型给的 genui。
+        # 挂在这里可以一次覆盖两条主路径：内联 `_generate_plan` 与派发回填
+        # `_finalize_dispatched_plan`（二者都调本函数）。
+        from clipwright.schema.genui import ensure_plan_spec
+
+        ensure_plan_spec(result, scenes)
         return result
 
     @staticmethod
@@ -3809,3 +3830,30 @@ def _hdr(name: str) -> str:
     from clipwright.plugins.prompt_overrides import resolve_constant
 
     return resolve_constant(name)
+
+
+def _brief_system_prompt(context: str = "") -> str:
+    """生产简报路径的 system prompt = 本文件的 base 提示词 + 插件扩展（计划 T1.4）。
+
+    为什么 base 用**本文件**这份而不是 `prompts.py` 的：
+    - 这份（`:396`）是生产在用的，字段集更宽（`production_plan` / `reference_style` /
+      `bgm_requirement` / `era_background` / `material_requirements` / `animation_style` /
+      `asset_ratio`），前端 `BriefCard` 直接渲染这些键；换成 model 派生版会**静默丢字段**。
+    - `prompts.py` 那份带 `{{BRIEF_TEMPLATE}}` 占位，是给 `requirements_agent`（当前无生产调用点）
+      用的。两份合并属独立清理（不变量 #23 的遗留），本任务不做。
+
+    插件扩展走与 agent 侧同一机制（`PluginPromptRegistry.get_for_agent("requirements")`）：
+    `plugins/genui` 就是靠这条把「可以写 genui spec」教给模型的。**插件没装/被禁用时这里
+    只是少一段说明**，简报字段与确认流程不受影响（C9 / Q8）。
+    """
+    prompt = CREATIVE_BRIEF_SYSTEM + context
+    try:
+        from clipwright.plugins.prompt_registry import PluginPromptRegistry
+
+        plugin_prompts = PluginPromptRegistry.get_for_agent("requirements")
+    except Exception as exc:  # noqa: BLE001 — 插件层不可用不得阻断需求对话
+        logger.info("RequirementsService: 插件提示词不可用（%s），只用 base 提示词", exc)
+        plugin_prompts = []
+    if plugin_prompts:
+        prompt += _hdr("PROMPT_PLUGIN_EXT_HEADER") + "\n\n".join(plugin_prompts)
+    return prompt

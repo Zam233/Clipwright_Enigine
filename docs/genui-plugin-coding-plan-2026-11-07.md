@@ -760,3 +760,33 @@
 `tests/clipwright/test_genui_spec.py` 29 例与前端 `src/features/genui/genui.test.tsx` 14 例全绿**——
 它们测的是契约与渲染器本身，**测不到"生产上有没有 spec"**（正是 0.3-① 说的"绿测试盖着死代码"）。
 所以 T6.2 的实测必须走真实 LLM + 真实简报路径，不能用这两组单测代替。
+
+---
+
+## 实施进度（滚动更新）
+
+> 只记"哪条任务真的落地了 + 证据"，细节仍看 §3。每条都有 code 证据与自检命令。
+
+| 任务 | 状态 | 落地内容 | 证据（自检） |
+|---|---|---|---|
+| **T1.1** `_brief_hash` 排除 `genui` | ✅ 已完成 | `requirements_service.py:_brief_hash` 序列化前 `{k: v for k, v in brief.items() if k != "genui"}`；只剩展示层时返回 `""` | `tests/clipwright/test_genui_spec.py::TestBriefHash`（4 例） |
+| **T1.2** 简报产出接线 | ✅ 已完成 | 新增 `schema/genui.py::ensure_brief_spec`（服务层与 Agent 共用）；接到 `_handle_gathering` 主路径（`brief_draft` 落库前）与修订路径；Agent 的 `_ensure_brief_genui` 改为转发 | `TestEnsureSpecWiring`（4 例）+ 生产冒烟（见下） |
+| **T1.3** 规划书产出接线 | ✅ 已完成 | 新增 `ensure_plan_spec`（**只**用确定性构造器，不看模型 genui）；`_translate_plan` 在 `return` 前统一补 → 内联与派发回填两条路径一次覆盖；legacy 路径改用同一函数；删掉 Agent 里"模型给了就用"的分支 | `TestPlanTranslateWiring`（3 例）+ `TestEnsureSpecWiring::test_ensure_plan_spec_ignores_model_spec` |
+| **T1.4** 提示词真的含 `genui` | ✅ 已完成 | `prompts.py::CREATIVE_BRIEF_SYSTEM` 恢复 `{{BRIEF_TEMPLATE}}` 占位（改动前后逐字比对：只有字段表那一段换成模板，其余零差异）；`requirements_agent` 改为运行时展开（`_brief_system_prompt()`）；**生产简报路径**新增 `requirements_service._brief_system_prompt()`，追加 `PluginPromptRegistry.get_for_agent("requirements")` | `TestPromptPlaceholderAndInjection`（4 例）+ 生产冒烟：`_brief_system_prompt('')` 长度 2452、含 `GenUI 展示规范` |
+| **T1.5** 死路径处置（选项 A） | ✅ 已完成 | `requirements_agent.py` 模块 docstring 顶部写明「本 Agent 当前无生产调用点（`stage_subagent` 无 `requirements`），勿在其上新增生产逻辑」；genui 两个方法改为转发公共函数 | `grep translate_scenes` 仅剩定义；`py_compile` 0 |
+
+**Batch 1 收尾自检（本机实跑）**
+
+```powershell
+py -3.14 -m py_compile clipwright/prompts.py clipwright/schema/genui.py clipwright/schema/requirements.py `
+    clipwright/agents/requirements_agent.py clipwright/services/requirements_service.py   # 0
+py -3.14 -m pytest tests/clipwright/test_genui_spec.py -q        # 45 passed
+py -3.14 -m pytest <tests/test_requirements_plan_*.py + tests/clipwright/test_requirements_*.py> -q
+# 100 passed / 3 failed —— 3 个失败是既存 test_requirements_stream_chat（与本批无关）
+py -3.14 -c "import clipwright.main; print('ok')"                # ok
+```
+
+**仍未解决（留给 Batch 2+）**：老会话读时补 spec（T2.1）；前后端契约同源与插件启停退化验收（Batch 3）；
+`select`/`confirm` 语义（Batch 4）；表格本地排序/筛选（Batch 5）；实测回归与文档（Batch 6）；
+以及本批刻意**没动**的既有违规——`requirements_service.py:396` 的第三份 `CREATIVE_BRIEF_SYSTEM`
+（字段集比 `CreativeBrief` 宽，前端依赖，合并属独立清理）。

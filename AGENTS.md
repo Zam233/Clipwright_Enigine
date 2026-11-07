@@ -145,7 +145,15 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
     - 规范由插件 `plugins/genui/` 以 `PROMPT` 贡献教给模型（`agent: requirements`）；
       插件只说"能写什么"，校验权在后端纯函数、渲染权在宿主——插件被禁用时简报/规划书原样工作
       （宿主用 `build_brief_genui()` / `build_plan_genui()` 确定性补一份）。
-    - 详见 [docs/genui-plugin-prd-2026-11-03.md](docs/genui-plugin-prd-2026-11-03.md)。
+    - **生产接线在服务层，不在 `agents/requirements_agent.py`**（2026-11-07 接线完成）：
+      `requirements_service._handle_gathering` 落库前过 `ensure_brief_spec`，
+      `_translate_plan` 返回前过 `ensure_plan_spec`（后者**只看 `raw_scenes`，不看模型给的 genui**）；
+      生产简报提示词由 `requirements_service._brief_system_prompt()` 拼（本文件那份 base +
+      `PluginPromptRegistry.get_for_agent("requirements")`）。`requirements_agent` 当前无生产调用点。
+    - **展示层不得影响业务判定（C10）**：`genui` 必须从 `_brief_hash`（幂等键与"规划书是否作废"
+      的判定）里排除——否则同一份简报"补过/没补过"会算出不同指纹，把刚生成的规划书误作废。
+    - 详见 [docs/genui-plugin-prd-2026-11-03.md](docs/genui-plugin-prd-2026-11-03.md)
+      与 [docs/genui-plugin-coding-plan-2026-11-07.md](docs/genui-plugin-coding-plan-2026-11-07.md)。
 
 ## 鉴权三模式
 

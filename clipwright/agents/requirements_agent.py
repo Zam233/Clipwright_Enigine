@@ -1,5 +1,17 @@
 """需求 Agent（RequirementsAgent）— 创作方案对话 + 规划书翻译。
 
+⚠️ **本 Agent 当前没有生产调用点**（计划 T1.5 / 选项 A）：
+
+- 生产的需求对话与规划书生成由 `clipwright/services/requirements_service.py` 承担
+  （`_handle_gathering` / `_translate_plan`）；
+- `clipwright/services/stage_subagent.py` 的 `_STAGE_DEPENDENCIES` 只有
+  `structure/material/edit/animation/audio/quality`，**没有 `requirements`**，派发阶段
+  明确抛错（"requirements 由需求服务处理"）。
+
+所以这个类目前只在测试/脚本里被直接实例化。**不要在这里新增生产逻辑**：需要改简报/规划书
+行为时改服务层；本模块与 `schema/genui.py` 共用同一批公共函数（`ensure_brief_spec` /
+`ensure_plan_spec`），保持两边不漂移即可。
+
 在 StructureAgent 之前执行，负责：
 1. 与用户对话收集创作需求，逐步完善创作方案
 2. 用户确认后调用 StructureAgent 生成场景规划
@@ -42,9 +54,22 @@ def _brief_default(name: str) -> Any:
 
 
 #: A-01：字段表从模型生成，杜绝"提示词 10 字段 / 模型 7 字段"的漂移。
-CREATIVE_BRIEF_SYSTEM = CREATIVE_BRIEF_SYSTEM.replace(
-    "{{BRIEF_TEMPLATE}}", brief_prompt_template()
-)
+#:
+#: 2026-11-07（计划 T1.4）：`prompts.py` 的常量已恢复 `{{BRIEF_TEMPLATE}}` 占位，
+#: **这里不再在导入期展开**——导入期展开会把字段表冻成"导入那一刻"的样子（加模型字段
+#: 也不会变）。展开只在 `_brief_system_prompt()` 里运行时做。
+def _brief_system_prompt() -> str:
+    """运行时拼简报 system prompt：占位符展开为**当前**模型的字段表 + JSON 骨架。
+
+    走 `resolve_constant`：插件可以覆盖 ``CREATIVE_BRIEF_SYSTEM``（覆盖版若自带字段表、
+    不含占位符，则原样使用）。
+    """
+    from clipwright.plugins.prompt_overrides import resolve_constant
+
+    prompt = resolve_constant("CREATIVE_BRIEF_SYSTEM")
+    if "{{BRIEF_TEMPLATE}}" in prompt:
+        prompt = prompt.replace("{{BRIEF_TEMPLATE}}", brief_prompt_template())
+    return prompt
 
 
 
@@ -117,12 +142,8 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
                 + content_context
             )
 
-        from clipwright.plugins.prompt_overrides import resolve_constant
-        system_prompt = resolve_constant("CREATIVE_BRIEF_SYSTEM")
-        # 默认模板里有 `{{BRIEF_TEMPLATE}}` 占位（字段表由模型生成，见模块顶部那次 replace）。
-        # 插件覆盖若已自带字段表则不含该占位，保持原样；默认值仍要在这里替换，否则字段表丢失。
-        if "{{BRIEF_TEMPLATE}}" in system_prompt:
-            system_prompt = system_prompt.replace("{{BRIEF_TEMPLATE}}", brief_prompt_template())
+        # 字段表在**运行时**从模型展开（T1.4：导入期不再展开，否则加模型字段也不会变）
+        system_prompt = _brief_system_prompt()
         from clipwright.plugins.prompt_registry import PluginPromptRegistry
         plugin_prompts = PluginPromptRegistry.get_for_agent("requirements")
         if plugin_prompts:
@@ -141,19 +162,15 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
 
     @staticmethod
     def _ensure_brief_genui(brief: dict[str, Any]) -> dict[str, Any]:
-        """保证简报带一份**可信**的 GenUI 展示 spec。
+        """保证简报带一份**可信**的 GenUI 展示 spec（转发到公共实现）。
 
-        模型给了就用（先过 `sanitize_spec`：未知组件降级、危险键剔除、超限截断）；
-        没给/给坏了就用 `build_brief_genui()` 从权威字段确定性地补一份。
-        spec 只影响展示——它丢了或坏了，简报字段与确认流程照常。
+        实现在 `clipwright/schema/genui.py::ensure_brief_spec`——服务层
+        （`requirements_service._handle_gathering`，生产路径）与本 Agent 共用同一份，
+        避免"两套实现各自漂移"（计划 T1.2 / T1.5）。
         """
-        from clipwright.schema.genui import build_brief_genui, sanitize_spec
+        from clipwright.schema.genui import ensure_brief_spec
 
-        spec, problems = sanitize_spec(brief.get("genui"), source="brief")
-        if problems:
-            logger.info("创意简报的 genui_spec 已降级（前 3 条）：%s", problems[:3])
-        brief["genui"] = spec or (build_brief_genui(brief) or {})
-        return brief
+        return ensure_brief_spec(brief)
 
     @staticmethod
     def _normalize_brief(draft: Any) -> dict[str, Any]:
@@ -243,17 +260,15 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
 
     @staticmethod
     def _plan_genui(plan: dict[str, Any], scenes: list[dict]) -> dict[str, Any]:
-        """规划书的 GenUI 展示 spec（模型给了就洗一遍，没给就从场景确定性生成）。
+        """规划书的 GenUI 展示 spec —— **只**用确定性构造器（转发到公共实现）。
 
-        规划书的**权威**是 `markdown_content` 与 `raw_scenes`（用户确认的对象）；
-        spec 只是让人更快看懂"几段、多长、用哪些镜头"。
+        刻意**不看**模型给的 `plan["genui"]`：规划书是用户确认的对象，展示层若能被模型
+        编造，用户可能"看着漂亮卡片确认了一份 markdown 里没有的方案"（PRD §9 / 计划 0.5-③）。
+        实现在 `clipwright/schema/genui.py::ensure_plan_spec`，服务层生产路径共用。
         """
-        from clipwright.schema.genui import build_plan_genui, sanitize_spec
+        from clipwright.schema.genui import ensure_plan_spec
 
-        spec, problems = sanitize_spec(plan.get("genui"), source="plan")
-        if problems:
-            logger.info("规划书的 genui_spec 已降级（前 3 条）：%s", problems[:3])
-        return spec or (build_plan_genui(plan, scenes) or {})
+        return ensure_plan_spec(plan, list(scenes))
 
     @staticmethod
     def _material_summary(scenes: list[dict]) -> str:

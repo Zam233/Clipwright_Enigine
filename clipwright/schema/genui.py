@@ -448,6 +448,49 @@ def build_plan_genui(plan: dict[str, Any], scenes: list[dict[str, Any]] | None =
     return spec
 
 
+# ── 接线用公共函数（服务层与 Agent 共用，避免两套实现漂移）──────────────
+
+
+def _log_problems(kind: str, problems: list[str]) -> None:
+    """降级原因写日志（本地导入 logger，保持本模块导入期无副作用）。"""
+    if not problems:
+        return
+    try:
+        from clipwright.config import logger
+
+        logger.info("%s 的 genui_spec 已降级（前 3 条）：%s", kind, problems[:3])
+    except Exception:  # noqa: BLE001 — 日志不可用不影响展示
+        pass
+
+
+def ensure_brief_spec(brief: dict[str, Any]) -> dict[str, Any]:
+    """保证简报带一份**可信**的展示 spec；绝不改其它字段。
+
+    模型给了就洗（`sanitize_spec`：未知组件降级、危险键剔除、超限截断）；
+    没给/给坏了就用 `build_brief_genui()` 从权威字段确定性补一份。
+    spec 只影响展示——它丢了或坏了，简报字段、确认流程、规划书指纹都不受影响（C10）。
+    """
+    if not isinstance(brief, dict):
+        return brief
+    spec, problems = sanitize_spec(brief.get("genui"), source="brief")
+    _log_problems("创意简报", problems)
+    brief["genui"] = spec or (build_brief_genui(brief) or {})
+    return brief
+
+
+def ensure_plan_spec(plan: dict[str, Any], scenes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """规划书 spec **只**用确定性构造器，**不看**模型给的 `genui`。
+
+    规划书是用户确认的对象：展示层若能被模型编造，用户可能"看着漂亮的卡片确认了一份
+    markdown 里没有的方案"（PRD §9 / coding plan 0.5-③）。返回写回 `plan["genui"]` 的 spec。
+    """
+    if not isinstance(plan, dict):
+        return {}
+    spec = build_plan_genui(plan, list(scenes or [])) or {}
+    plan["genui"] = spec
+    return spec
+
+
 def spec_debug_summary(spec: dict[str, Any] | None) -> dict[str, Any]:
     """给日志/自检用的一行摘要（不回给前端）。"""
     if not isinstance(spec, dict):
