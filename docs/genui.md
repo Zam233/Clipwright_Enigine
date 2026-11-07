@@ -122,7 +122,7 @@
 ## 7. 自检命令
 
 ```powershell
-# 后端：清洗器/构造器/接线/契约同源/插件一致性（45+ 例）
+# 后端：清洗器/构造器/接线/契约同源/插件一致性/动作（60 例）
 cd J:\Clipwright; py -3.14 -m pytest tests/clipwright/test_genui_spec.py -q
 
 # 后端：插件化 + GenUI 自检（含 genui_contract_sync / genui_plugin_contract / genui_off_degradation）
