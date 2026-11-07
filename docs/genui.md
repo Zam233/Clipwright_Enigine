@@ -103,6 +103,7 @@
 | 性能/窄屏/深色主题实测（T6.4） | **待人工**：贴 64KB 的 spec 首屏耗时、100 行表格、375px 下横向滚动、深色对比度 |
 | `requirements_service.py:396` 第三份 `CREATIVE_BRIEF_SYSTEM` | **既有违规未动**：字段集比 `CreativeBrief` 宽（前端 `BriefCard` 依赖），与 `prompts.py` 那份合并属独立清理 |
 | `select` / `confirm` 实现（T4.2 可选） | **未做（默认不建议）**：`confirm` 若做必须带二次确认，不能让模型写的按钮单击推进状态机 |
+| 审阅覆盖层（`src/features/agent/ReviewPanel.tsx`）未接 GenUI | **有意不做（本轮）**：本轮覆盖的是**卡片**（消息气泡 + 时间线的 `BriefCard`/`PlanCard`）；审阅覆盖层是独立的审阅/确认入口，仍只显示字段与 markdown。要接需先定一件事——审阅态是否允许出现结构化视图（它是确认前的最后一屏，加展示层会改变用户的判断依据） |
 
 ## 7. 自检命令
 
