@@ -49,8 +49,14 @@ class TestFieldDrift:
         assert listed == model_fields
 
     def test_prompt_contains_every_field(self) -> None:
+        # 2026-11-07（GenUI 计划 T1.4）：`prompts.py` 的简报常量恢复了 `{{BRIEF_TEMPLATE}}`
+        # 占位（字段表由模型生成、运行时展开），所以这里要先渲染再断言——测的仍是
+        # "实际发给模型的提示词不缺字段"，而不是"常量里硬写了字段表"。
+        from clipwright.agents.requirements_agent import _brief_system_prompt
+
+        rendered = _brief_system_prompt()
         for name in brief_field_names():
-            assert name in CREATIVE_BRIEF_SYSTEM, f"提示词缺少字段 {name}"
+            assert name in rendered, f"提示词缺少字段 {name}"
 
     def test_legacy_missing_fields_are_present(self) -> None:
         # 旧实现里这 4 个字段被静默丢弃，key_points/references 永远为空

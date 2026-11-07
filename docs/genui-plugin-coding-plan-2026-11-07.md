@@ -820,3 +820,23 @@ py -3.14 -c "import clipwright.main; print('ok')"                # ok
 | **T6.4** 性能/窄屏/深色 | ⏳ 待人工 | 需浏览器实测（贴 64KB spec、100 行表格、375px、深色对比度） | 见 `docs/genui.md` §6 |
 
 | **T5.1** 表格本地排序/筛选 | ✅ 已完成（测试未跑） | `GenUISpecRenderer` 抽出 `GenUITableNode`：≥8 行显示筛选框与可点表头；纯函数 `sortTableRows`（数字列按数值）/`filterTableRows`（跨列、大小写不敏感）导出供测试；删掉占位导出 `useGenUILocalState`（注释说明原因） | `tsc --noEmit` 0；vitest 4 例**已写未跑** |
+
+### 全量 pytest 实跑（2026-11-07，Batch 1–6 合并后）
+
+```powershell
+cd J:\Clipwright; py -3.14 -m pytest tests -q -rf
+# 30 failed, 5017 passed, 7 skipped, 1 xfailed in 818.19s
+```
+
+**30 个里有 1 个是本轮引入的真回归，已修**：
+
+| 失败 | 根因 | 处理 |
+|---|---|---|
+| `test_plan_first.py::TestFieldDrift::test_prompt_contains_every_field` | T1.4 把 `prompts.py` 的简报常量改成 `{{BRIEF_TEMPLATE}}` 占位后，该用例仍断言"字段名出现在**常量原文**里" | 改为断言**渲染后**的提示词（`requirements_agent._brief_system_prompt()`）——测的仍是"实际发给模型的提示词不缺字段"；该文件复跑 **22 passed** |
+
+**其余 29 个与既有基线逐项对齐**（`docs/provider-pluginization-verification-ledger-2026-11-03.md`「pytest 实跑」§2 的分布表）：
+降级/最终收据 6（receipts 3 + to_master 1 + final_receipt 2）、golden 4、需求侧 6
+（stream_chat 3 + brief_ready 1 + legacy_plan 2）、plugin_review_fixes 2、零散 11。
+
+> 口径：**「pytest 全绿」仍不成立**（29 个既存失败）；**「本改造新增失败 = 0」成立**（唯一新增已修）。
+> 修后按构造应为 **29 failed / 5018 passed**。
