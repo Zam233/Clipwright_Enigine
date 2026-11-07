@@ -98,7 +98,7 @@
 
 | 缺口 | 状态 |
 |---|---|
-| 表格本地排序/筛选（计划 T5.1） | **未做**：长表格（≤100 行）只能看不能筛；渲染器里有 `useGenUILocalState` 占位导出但未使用 |
+| 表格本地排序/筛选（计划 T5.1） | **已做（测试未跑）**：表格 ≥8 行时出现筛选框与可点表头（数字列按数值排序、跨列子串筛选、显示 `N/M 行`）；纯函数 `sortTableRows` / `filterTableRows` 导出；`useGenUILocalState` 占位导出已删 |
 | 真实模型回归（T6.2） | **待人工**：3 类选题实测，确认模型产出 vs 兜底、是否有未知组件降级 |
 | 性能/窄屏/深色主题实测（T6.4） | **待人工**：贴 64KB 的 spec 首屏耗时、100 行表格、375px 下横向滚动、深色对比度 |
 | `requirements_service.py:396` 第三份 `CREATIVE_BRIEF_SYSTEM` | **既有违规未动**：字段集比 `CreativeBrief` 宽（前端 `BriefCard` 依赖），与 `prompts.py` 那份合并属独立清理 |

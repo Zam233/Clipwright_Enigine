@@ -818,3 +818,5 @@ py -3.14 -c "import clipwright.main; print('ok')"                # ok
 | **T6.2** 真实模型 3 类选题实测 | ⏳ 待人工 | 需真实 LLM + 浏览器观察（日志看"已降级/兜底"） | 见 `docs/genui.md` §6 |
 | **T6.3** 文档同步 | ✅ 已完成 | 新增 `docs/genui.md`（契约/上限/动作/产出路径/加组件 6 条/缺口/自检）；`api_reference.md` 增「GenUI 展示字段」；`frontend-backend-parity.md` 增 §12；两仓 AGENTS #26 同步；客户端 docs 镜像 | `grep genui` 四份文档均命中 |
 | **T6.4** 性能/窄屏/深色 | ⏳ 待人工 | 需浏览器实测（贴 64KB spec、100 行表格、375px、深色对比度） | 见 `docs/genui.md` §6 |
+
+| **T5.1** 表格本地排序/筛选 | ✅ 已完成（测试未跑） | `GenUISpecRenderer` 抽出 `GenUITableNode`：≥8 行显示筛选框与可点表头；纯函数 `sortTableRows`（数字列按数值）/`filterTableRows`（跨列、大小写不敏感）导出供测试；删掉占位导出 `useGenUILocalState`（注释说明原因） | `tsc --noEmit` 0；vitest 4 例**已写未跑** |
