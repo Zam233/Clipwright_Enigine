@@ -765,15 +765,21 @@ class RequirementsService:
         return self.create_session(user_inputs)
 
     def get_session(self, session_id: str) -> dict | None:
-        """从 MongoDB 加载会话。"""
+        """从 MongoDB 加载会话。
+
+        读路径会补一份 **GenUI 展示 spec**（计划 T2.1）：2026-11-03 之前落库的会话没有
+        `genui` 字段，不补的话同一功能在新老会话上表现不同。补法是**浅拷贝 + 只补不存**——
+        绝不原地改 `_memory_sessions` 里的对象（`_persist` 会把它写回内存会话），也不回写
+        Mongo（读操作不产生写；新数据在写入路径已自带 spec）。
+        """
         mem = _memory_sessions.get(session_id)
         if mem:
-            return mem
+            return _with_genui_specs(mem)
         if _mongo_ok():
             try:
                 model = RequirementsSessionModel.find_by_id(session_id)
                 if model:
-                    return model.to_dict()
+                    return _with_genui_specs(model.to_dict())
             except Exception as e:
                 logger.warning("MongoDB 会话查询失败: %s", e)
         return None
@@ -3830,6 +3836,35 @@ def _hdr(name: str) -> str:
     from clipwright.plugins.prompt_overrides import resolve_constant
 
     return resolve_constant(name)
+
+
+def _with_genui_specs(session: dict) -> dict:
+    """读路径补 GenUI 展示 spec（计划 T2.1 / C10：只补不存、不改入参）。
+
+    - 返回 **浅拷贝**：`creative_brief` / `production_plan` 各自再拷一层，原对象零改动；
+    - 简报：模型给过就用（洗一遍），没有就从字段确定性生成；
+    - 规划书：**只看 `raw_scenes`/`scenes`**，确定性生成（不看模型给的 genui，与 T1.3 同口径）；
+    - 任何异常都只记日志并返回原对象——展示层补丁不得阻断会话读取。
+    """
+    if not isinstance(session, dict):
+        return session
+    try:
+        from clipwright.schema.genui import ensure_brief_spec, ensure_plan_spec
+
+        out = dict(session)
+        brief = out.get("creative_brief")
+        if isinstance(brief, dict) and brief:
+            out["creative_brief"] = ensure_brief_spec(dict(brief))
+        plan = out.get("production_plan")
+        if isinstance(plan, dict) and plan:
+            plan_copy = dict(plan)
+            scenes = plan_copy.get("raw_scenes") or plan_copy.get("scenes") or []
+            ensure_plan_spec(plan_copy, scenes if isinstance(scenes, list) else [])
+            out["production_plan"] = plan_copy
+        return out
+    except Exception as exc:  # noqa: BLE001 — 展示层补丁不得阻断会话读取
+        logger.info("会话读取时补 genui 失败（返回原对象）: %s", exc)
+        return session
 
 
 def _brief_system_prompt(context: str = "") -> str:

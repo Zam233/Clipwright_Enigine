@@ -790,3 +790,10 @@ py -3.14 -c "import clipwright.main; print('ok')"                # ok
 `select`/`confirm` 语义（Batch 4）；表格本地排序/筛选（Batch 5）；实测回归与文档（Batch 6）；
 以及本批刻意**没动**的既有违规——`requirements_service.py:396` 的第三份 `CREATIVE_BRIEF_SYSTEM`
 （字段集比 `CreativeBrief` 宽，前端依赖，合并属独立清理）。
+
+### Batch 2 进度
+
+| 任务 | 状态 | 落地内容 | 证据 |
+|---|---|---|---|
+| **T2.1** 老会话读时补 spec | ✅ 已完成 | 新增 `requirements_service._with_genui_specs(session)`：**浅拷贝 + 只补不存**（绝不原地改 `_memory_sessions` / 不回写 Mongo）；`get_session` 两条返回路径（内存 / Mongo）都过它；简报走 `ensure_brief_spec`，规划书走 `ensure_plan_spec`（只看 `raw_scenes`/`scenes`） | `TestOldSessionBackfill`（4 例）：入参 deepcopy 相等、身份不同、模型 genui 被忽略、空字段安全 |
+| **T2.2** 前端"无 spec 整块不渲染" | 🟡 已写未跑 | `genui.test.tsx` 增 `it.each` 三形态（`undefined` / `{}` / `{version:1,items:[]}`）：`hasGenUI=false` 且渲染器返回 `null` | `npx tsc --noEmit` 0；**vitest 未跑**（本 goal 约定：未经授权不跑 vitest） |

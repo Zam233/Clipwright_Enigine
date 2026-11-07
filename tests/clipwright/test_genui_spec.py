@@ -465,3 +465,57 @@ class TestPlanTranslateWiring:
         result = await svc._translate_plan([{"title": "开场", "duration_sec": 4}], {})
         assert result["markdown_content"]
         assert result["genui"]["items"]
+
+
+class TestOldSessionBackfill:
+    """T2.1：读路径补 spec——只补不存，入参零改动。"""
+
+    @staticmethod
+    def _session() -> dict:
+        return {
+            "id": "s_old",
+            "creative_brief": {"title": "T", "overview": "O"},
+            "production_plan": {
+                "markdown_content": "# 规划书",
+                "raw_scenes": [{"title": "开场", "duration_sec": 6}],
+            },
+        }
+
+    def test_fills_both_specs_without_mutating_input(self):
+        import copy
+
+        from clipwright.services.requirements_service import _with_genui_specs
+
+        session = self._session()
+        snapshot = copy.deepcopy(session)
+        out = _with_genui_specs(session)
+        assert out["creative_brief"]["genui"]["items"]
+        assert out["production_plan"]["genui"]["items"]
+        assert session == snapshot, "读路径不得原地修改会话对象"
+        assert out is not session
+        assert out["creative_brief"] is not session["creative_brief"]
+        assert out["production_plan"] is not session["production_plan"]
+
+    def test_plan_backfill_ignores_model_genui(self):
+        from clipwright.services.requirements_service import _with_genui_specs
+
+        session = self._session()
+        session["production_plan"]["genui"] = {
+            "version": 1, "items": [{"type": "text", "content": "模型编的"}],
+        }
+        out = _with_genui_specs(session)
+        assert "模型编的" not in json.dumps(out["production_plan"]["genui"], ensure_ascii=False)
+
+    def test_missing_or_empty_fields_are_safe(self):
+        from clipwright.services.requirements_service import _with_genui_specs
+
+        assert _with_genui_specs({"id": "x"}) == {"id": "x"}
+        assert _with_genui_specs(None) is None
+        out = _with_genui_specs({"id": "x", "creative_brief": None, "production_plan": None})
+        assert out == {"id": "x", "creative_brief": None, "production_plan": None}
+
+    def test_plan_without_scenes_yields_empty_spec(self):
+        from clipwright.services.requirements_service import _with_genui_specs
+
+        out = _with_genui_specs({"id": "x", "production_plan": {"markdown_content": "# m"}})
+        assert out["production_plan"]["genui"] == {}
