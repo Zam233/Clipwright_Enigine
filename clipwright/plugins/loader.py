@@ -525,6 +525,8 @@ class PluginLoader:
 
         _DECLARATIVE_KINDS = {
             ContributionKind.UI_SLOT, ContributionKind.EXPORT_PRESET,
+            # 2026-11-07：display_spec 是纯数据（object 恒 None），子进程档无需代理对象
+            ContributionKind.DISPLAY_SPEC,
         }
         items: list[Any] = []
         for decl in declarations:

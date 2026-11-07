@@ -20,10 +20,11 @@
 """
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Optional
 
 from clipwright.config import logger
-from clipwright.plugins.contribution import Contribution, ContributionKind
+from clipwright.plugins.contribution import ConflictPolicy, Contribution, ContributionKind
 
 if TYPE_CHECKING:  # pragma: no cover
     pass
@@ -51,6 +52,92 @@ _PROVIDER_KINDS = {
     ContributionKind.RENDERER_BACKEND,
 }
 
+#: **纯数据** kind（2026-11-07 第 18 类 display_spec）：`object` 恒为 `None`，
+#: 全部信息在 `meta`。engine 从不 `callable()` 插件的任何对象（PRD §3.3 零信任）。
+_DATA_ONLY_KINDS = {ContributionKind.DISPLAY_SPEC}
+
+#: display_spec 的 meta 必填键（与 `services/display_spec/contract.py` 共用同一份真相）。
+DISPLAY_SPEC_REQUIRED_KEYS = (
+    "spec_id", "version", "source", "components", "containers", "actions",
+    "tones", "badge_tones", "text_sizes", "limits", "order", "trust",
+)
+#: limits 必须齐全的 9 个键（正整数）。
+DISPLAY_SPEC_LIMIT_KEYS = (
+    "max_nodes", "max_depth", "max_text_chars", "max_spec_bytes",
+    "max_array_items", "max_table_cols", "max_action_payload_chars",
+    "max_select_options", "max_option_chars",
+)
+DISPLAY_SPEC_TRUST_VALUES = ("sanitize", "recipe_only")
+#: engine 侧的装配器只有这两个（新增装配器要改 `services/display_spec/assemble.py`）。
+DISPLAY_SPEC_SOURCES = ("brief", "plan")
+
+
+def _validate_data_only(item: Contribution) -> Optional[str]:
+    """校验纯数据贡献的形状；返回 None=接受，字符串=可读中文原因。
+
+    为什么必须在注册期校验：形状错的契约如果放行，会一路静默到渲染期才炸
+    （或更糟——静默生效到用户看到空卡片）。因此**不能**靠「未知 kind 默认放行」。
+    """
+    if item.object is not None:
+        return f"display_spec:{item.id} 的 object 必须为 None（纯数据扩展点）"
+    meta = item.meta if isinstance(item.meta, dict) else None
+    if meta is None:
+        return f"display_spec:{item.id} 的 meta 必须是对象"
+    try:
+        json.dumps(meta, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        return f"display_spec:{item.id} 的 meta 不可 JSON 序列化: {exc}"
+
+    missing = [k for k in DISPLAY_SPEC_REQUIRED_KEYS if k not in meta]
+    if missing:
+        return f"display_spec:{item.id} 缺少必填键: {', '.join(missing)}"
+    spec_id = str(meta.get("spec_id") or "")
+    if not spec_id or spec_id != item.id:
+        return (f"display_spec:{item.id} 的 meta.spec_id 必须与贡献 id 相同"
+                f"（实际 {spec_id or '空'}）")
+
+    trust = str(meta.get("trust") or "")
+    if trust not in DISPLAY_SPEC_TRUST_VALUES:
+        return (f"display_spec:{item.id} 的 trust 非法: {trust or '空'}"
+                f"（允许 {'/'.join(DISPLAY_SPEC_TRUST_VALUES)}）")
+    source = str(meta.get("source") or "")
+    if source not in DISPLAY_SPEC_SOURCES:
+        return (f"display_spec:{item.id} 的 source 非法: {source or '空'}"
+                f"（允许 {'/'.join(DISPLAY_SPEC_SOURCES)}）")
+
+    for key in ("version", "order"):
+        value = meta.get(key)
+        if not isinstance(value, int) or isinstance(value, bool):
+            return f"display_spec:{item.id} 的 {key} 必须是整数"
+    for key in ("components", "containers", "actions", "tones", "badge_tones", "text_sizes"):
+        value = meta.get(key)
+        if not isinstance(value, list) or not value:
+            return f"display_spec:{item.id} 的 {key} 必须是非空数组"
+        if any(not isinstance(x, str) or not x.strip() for x in value):
+            return f"display_spec:{item.id} 的 {key} 只能是非空字符串"
+    unknown_containers = [c for c in meta["containers"] if c not in meta["components"]]
+    if unknown_containers:
+        return (f"display_spec:{item.id} 的 containers 不在 components 里: "
+                f"{', '.join(unknown_containers)}")
+
+    limits = meta.get("limits")
+    if not isinstance(limits, dict):
+        return f"display_spec:{item.id} 的 limits 必须是对象"
+    missing_limits = [k for k in DISPLAY_SPEC_LIMIT_KEYS if k not in limits]
+    if missing_limits:
+        return f"display_spec:{item.id} 的 limits 缺少: {', '.join(missing_limits)}"
+    for key in DISPLAY_SPEC_LIMIT_KEYS:
+        value = limits[key]
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            return f"display_spec:{item.id} 的 limits.{key} 必须是正整数"
+
+    recipe = meta.get("recipe")
+    if trust == "recipe_only" and not (isinstance(recipe, dict) and recipe.get("nodes")):
+        return f"display_spec:{item.id} 在 trust=recipe_only 下必须提供 recipe.nodes"
+    if recipe is not None and not isinstance(recipe, dict):
+        return f"display_spec:{item.id} 的 recipe 必须是对象"
+    return None
+
 
 def register(owner: str, item: Contribution, *, policy=None) -> Optional[str]:
     """把单个贡献转调到目标注册表。返回 None=成功，字符串=失败原因。
@@ -61,6 +148,13 @@ def register(owner: str, item: Contribution, *, policy=None) -> Optional[str]:
     校验，坏 provider 在注册时就被拒绝并给出可读原因（而不是运行期
     AttributeError）。
     """
+    if item.kind in _DATA_ONLY_KINDS:
+        # 纯数据扩展点：先拒 override（展示契约被替换 = 悄悄改变信任边界，PRD §3.1 N2），
+        # 再做形状校验（不得靠「未知 kind 默认放行」，PRD §3.1 N5）。
+        if policy is ConflictPolicy.OVERRIDE:
+            return f"display_spec:{item.id} 不允许 override（展示契约不得被替换）"
+        return _validate_data_only(item)
+
     if item.kind in _PROVIDER_KINDS:
         if item.kind is ContributionKind.LLM_PROVIDER:
             from clipwright.providers.base import missing_llm_provider_methods

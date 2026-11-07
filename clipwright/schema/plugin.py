@@ -25,13 +25,13 @@ class PluginKind(str, Enum):
 
 
 class ContributionDecl(BaseModel):
-    """A-3：manifest 预声明的贡献面（「声明即授权」的最小单元）。
+    """A-3：manifest 预声明的贡献面（「声明即授权」的最小单元）；2026-11-07 起 18 类（新增 display_spec）。
 
     运行时注册未在此声明的 (kind, id) 将被门面拒绝——这是进程内 Python
     插件唯一可执行的权限模型（无沙箱前提下的 Gate G-2 收口）。
     """
     kind: str = Field(
-        description="贡献类型（见 ContributionKind 的 17 类；名单冻结，新增须契约评审）"
+        description="贡献类型（见 ContributionKind 的 18 类；名单冻结，新增须契约评审）"
     )
     id: str = Field(
         # Batch 4 放宽：允许连字符。仓库里既有 provider id 就带连字符

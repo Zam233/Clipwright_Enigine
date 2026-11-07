@@ -851,3 +851,20 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 > `services/voice.py` 的 provider 类、B8 会删 `services/headless_browser.py` 的实现体，
 > 这两份删除**不能**被误判成"genui 回退"。B7/B8 的判定证据与整改理由见
 > [`plugin-shell-audit-2026-11-07.md`](plugin-shell-audit-2026-11-07.md)。
+
+---
+
+## 9. 实施进度（滚动更新）
+
+> 只记"哪条任务真的落地了 + 证据"，细节仍看 §3。目标态：PRD §8 的 D1–D4 全部可跑通。
+
+| 批次/任务 | 状态 | 落地内容 | 证据 |
+|---|---|---|---|
+| **B0** T0.1 / T0.2 | ✅ 已完成 | PRD §11 契约评审决议（N1–N7 全通过、无待定）；`docs/pluginization-plan` §12.3 kind 表 14 → 18 行（顺便补回漏登的 animation/embedding/rerank） | `Select-String docs\pluginization-plan-2026-09-10.md -Pattern display_spec` → 2 行命中 |
+| **B1** T1.1 | ✅ 已完成 | `ContributionKind.DISPLAY_SPEC = "display_spec"`（第 18 类，注释写明 object 恒 None、engine 不执行插件对象） | `py -3.14 -c "from clipwright.plugins.contribution import ContributionKind as K; print(K('display_spec').value)"` → `display_spec` |
+| **B1** T1.2 | ✅ 已完成 | `contribution_dispatch._DATA_ONLY_KINDS` + `_validate_data_only()`（11 类形状校验：object None / meta 可序列化 / spec_id==id / trust / source / version·order 整数 / 六组枚举非空字符串 / containers ⊆ components / limits 9 键正整数 / recipe_only 必须有 recipe），并**先于** provider 分支执行、显式拒绝 override | `_WIRED_KINDS` 不含 DISPLAY_SPEC（测试断言）；`_DATA_ONLY_KINDS == {display_spec}` |
+| **B1** T1.3 | ✅ 已完成 | `loader._DECLARATIVE_KINDS` 加 `DISPLAY_SPEC`（子进程档直通，纯数据无需代理对象） | `Select-String loader.py -Pattern DISPLAY_SPEC` → 2 行命中；`py_compile` 0 |
+| **B1** T1.4 | ✅ 已完成 | 新模块 `clipwright/services/display_spec/{__init__,contract}.py`：`Contract` 冻结 dataclass + `normalize_contract()` + `get_contract()` / `list_contracts()`（读 `ContributionRegistry`，**不缓存、不读文件、不 import 插件**）；必填键常量从 dispatch 共享，避免第二份真相 | `list_contracts()` → `[]`（此时还没有插件声明） |
+| **B1** T1.5 | ✅ 已完成 | `schema/plugin.py` 文档 17→18 类；新建 `tests/clipwright/test_display_spec_plugin.py`（**15 例**：读取/卸载隐藏、8 类形状拒绝、冲突与 override 拒绝、wired 不变量、归一纯函数性） | `py -3.14 -m pytest tests/clipwright/test_display_spec_plugin.py -q` → **15 passed**；插件相关 8 个文件合计 **166 passed / 2 failed**（2 个是既存 `test_plugin_review_fixes`）；自检 **16/16**；`import clipwright.main` ok |
+
+**本批不改变任何生产行为**（没有任何调用点），与计划 §3 B1 的声明一致。
