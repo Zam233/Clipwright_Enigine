@@ -89,7 +89,6 @@ from clipwright.api import template as template_api
 from clipwright.api import webhook as webhook_api
 from clipwright.api import video_editor as video_editor_api
 from clipwright.api import learning as learning_api
-from clipwright.api import market as market_api
 from clipwright.api import stats as stats_api
 from clipwright.api import preprocess as preprocess_api
 from clipwright.api import font as font_api
@@ -497,38 +496,16 @@ def _consume_sse_token(tok: str) -> bool:
 async def issue_sse_token(request: Request) -> dict:
     """P0-9: 签发 EventSource 使用的短期一次性 token（需先通过 Bearer 鉴权）。
 
-    开放模式返回空 token——前端可直接建 EventSource；jwt 模式要求有效 JWT 或运维令牌。
+    开放模式返回空 token——前端可直接建 EventSource；配置 api_token 时要求运维令牌。
+    账号系统已剥离：不再接受 ClipWright Server 签发的 JWT。
     """
     auth_header = request.headers.get("Authorization", "") or ""
-    if settings.account_verify_mode == "jwt":
-        if settings.account_jwt_secret and _verify_access_jwt(auth_header[7:] if auth_header.startswith("Bearer ") else ""):
-            return {"token": _issue_sse_token(), "expires_in": int(_sse_ttl)}
-        if settings.api_token and hmac.compare_digest(auth_header, f"Bearer {settings.api_token}"):
-            return {"token": _issue_sse_token(), "expires_in": int(_sse_ttl)}
-        return JSONResponse(status_code=401, content={"detail": "未授权"})
     if not settings.api_token:
         return {"token": "", "expires_in": 0}
     expected = f"Bearer {settings.api_token}"
     if not hmac.compare_digest(auth_header, expected):
         return JSONResponse(status_code=401, content={"detail": "未授权"})
     return {"token": _issue_sse_token(), "expires_in": int(_sse_ttl)}
-
-
-def _verify_access_jwt(token: str) -> dict | None:
-    """P3-3B: 用共享密钥本地校验 Server 签发的 access JWT。"""
-    import jwt as _pyjwt
-
-    if not settings.account_jwt_secret or not token:
-        return None
-    try:
-        payload = _pyjwt.decode(
-            token, settings.account_jwt_secret, algorithms=[settings.account_jwt_algorithm]
-        )
-    except _pyjwt.PyJWTError:
-        return None
-    if payload.get("type") != "access":
-        return None
-    return payload
 
 
 @app.middleware("http")
@@ -559,7 +536,7 @@ async def api_token_auth(request: Request, call_next):
     if not (is_api or is_media or is_admin):
         return await call_next(request)
 
-    mode = settings.account_verify_mode
+    # 账号系统已剥离：仅保留本地运维令牌（api_token）语义
     auth_header = request.headers.get("Authorization", "") or ""
     bearer = auth_header[7:] if auth_header.startswith("Bearer ") else ""
     # <video>/<img> 无法携带 Authorization 头——媒体代理端点允许 query token
@@ -569,34 +546,9 @@ async def api_token_auth(request: Request, call_next):
         or (path.startswith("/api/asset/") and path.endswith("/file"))
     )
 
-    if mode == "jwt":
-        # 运维令牌（可选）或 Server JWT 本地验签
-        ok = False
-        if settings.api_token and hmac.compare_digest(bearer, settings.api_token):
-            ok = True
-        else:
-            payload = _verify_access_jwt(bearer)
-            if payload:
-                request.state.user_id = payload.get("sub")
-                request.state.user_role = payload.get("role")
-                ok = True
-        if not ok and is_media:
-            ok = bool(settings.api_token) and hmac.compare_digest(qtok, settings.api_token)
-        if not ok and is_by_path_media:
-            ok = (bool(settings.api_token) and hmac.compare_digest(qtok, settings.api_token)) or bool(_verify_access_jwt(qtok))
-        if not ok and "/stream" in path:
-            ok = _consume_sse_token(qtok)
-        if not ok:
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "未授权：缺少或错误的访问令牌"},
-            )
-        return await call_next(request)
-
-    # off / token 模式：沿用 api_token 语义（未设置 token 时开放）
+    # 未设置令牌时开放（启动期已有安全红线警告）
     if not settings.api_token:
         return await call_next(request)
-    expected = f"Bearer {settings.api_token}"
     ok = hmac.compare_digest(bearer, settings.api_token)
     if not ok and is_media:
         # <video>/<audio> 标签无法携带 Authorization 头，允许 query token 校验
@@ -742,7 +694,6 @@ app.include_router(video_editor_api.router)
 app.include_router(preprocess_api.router)
 app.include_router(font_api.router)
 app.include_router(learning_api.router)
-app.include_router(market_api.router)
 app.include_router(stats_api.router)
 app.include_router(requirements_api.router)
 app.include_router(versions_api.router)
@@ -886,19 +837,18 @@ async def metrics() -> str:
 def _enforce_security_gate() -> None:
     """发布红线（fail-closed）：绑定非回环地址且未配置任何鉴权时拒绝启动。
 
-    满足其一即放行：回环地址 / 已配置 api_token 或 account_verify_mode != off /
+    满足其一即放行：回环地址 / 已配置 api_token /
     显式 CLIPWRIGHT_ALLOW_INSECURE=true（自认风险的受控本地/内网环境）。
     """
     host = (settings.host or "").strip().lower()
     loopback = host in ("127.0.0.1", "localhost", "::1", "")
-    authed = bool(settings.api_token) or settings.account_verify_mode in ("token", "jwt")
+    authed = bool(settings.api_token)
     if loopback or authed or settings.allow_insecure:
         return
     raise SystemExit(
         "\n[Clipwright] 拒绝启动：绑定非回环地址 %r 且未配置任何鉴权"
-        "（无 CLIPWRIGHT_API_TOKEN 且 CLIPWRIGHT_ACCOUNT_VERIFY_MODE=off），"
-        "全部 API 将对外裸奔。\n"
-        "  1) 生产：设置 CLIPWRIGHT_API_TOKEN（或 CLIPWRIGHT_ACCOUNT_VERIFY_MODE=token|jwt）\n"
+        "（无 CLIPWRIGHT_API_TOKEN），全部 API 将对外裸奔。\n"
+        "  1) 生产：设置 CLIPWRIGHT_API_TOKEN\n"
         "  2) 受控本地/内网：显式设置 CLIPWRIGHT_ALLOW_INSECURE=true 自认风险\n" % settings.host
     )
 

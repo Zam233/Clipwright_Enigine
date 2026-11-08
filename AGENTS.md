@@ -24,8 +24,9 @@ scripts\stop.ps1         # 停止全部
 ```
 
 - 后端：`uvicorn clipwright.main:app --port 8080`（`CLIPWRIGHT_PORT=8080`，见 `.env.example`）
-- 前端：**独立仓库** `J:\Clipweight-Client`（`npm run dev`，vite 5173；`/api` 代理 → 8080，`/srv` 代理 → 账号服务 8090）
-- 账号/市场服务：`K:\Clipwright Server` 独立仓库，端口 8090 —— `scripts\start.ps1` 会自动拉起（首次自动生成 `.env` 与随机 JWT secret；目录可用 `$env:CLIPWRIGHT_SERVER_DIR` 覆盖，端口用 `$env:CLIPWRIGHT_SERVER_PORT`）
+- 前端：**独立仓库** `J:\Clipweight-Client`（`npm run dev`，vite 5173；`/api` 代理 → 8080）
+- ~~账号/市场服务~~：2026-11-08 已剥离（`feat/zam_remove_account_system`）。无登录/注册/CREADIT/市场，
+  鉴权只剩本地 `CLIPWRIGHT_API_TOKEN`；`K:\Clipwright Server` 不再被启动、也不再被引用
 
 ## 项目结构（后端 monorepo + 前端独立仓库）
 
@@ -191,9 +192,12 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
 - 分支从当前基线（`main` / `master` 或目标集成分支）切出，PR 的 base 与切出点一致。
 - 存量长生命周期分支（如 `feat/master-agent`）是规则之前的历史，保留原名即可，新建分支一律按本约定。
 
-## 鉴权三模式
+## 鉴权（2026-11-08 剥离账号系统后）
 
-`CLIPWRIGHT_ACCOUNT_VERIFY_MODE = off | token | jwt`（默认 off）。jwt 模式本地验签共享密钥，中间件写 `request.state.user_id/user_role`；前端 access token 仅内存 + refresh 走 Server httpOnly cookie（`cw_refresh`）。
+只剩本地令牌一种方式：`CLIPWRIGHT_API_TOKEN`（前端在「设置 → 后端连接」填同一个值）。
+`CLIPWRIGHT_ACCOUNT_VERIFY_MODE` / `account_url` / JWT 校验已随账号系统删除；
+`owner_id` 字段与 `authz.py` 保留为兼容层（`user_id` 恒为 `None`）。
+插件签名与 Webhook 加密改用 `CLIPWRIGHT_LOCAL_SECRET`（兼容旧名 `CLIPWRIGHT_ACCOUNT_JWT_SECRET`）。
 
 ## 本期改进（P8–P10 摘要）
 
@@ -223,7 +227,7 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
 - **资产治理**：sha256 去重、used_count、素材巡检/违规检测（`/api/asset/governance/*`）。
 - **Persona 治理**：复制/派生/导出/导入、知识库文档管理（删/改）、RAG 异步化、ChatForge 会话落盘、PersonaLearner 编辑事件接线（`/{persona_id}/learn`）。
 - **插件治理**：manifest 签名（HMAC）+ 权限白名单、依赖解析、启停持久化、配置迁移、错误通道、reload 回滚、secret 加密、审计日志；前端 UI 控件集扩充（input/select/checkbox/slider）+ UI 预览 + 未加载插件预配置。
-- **前端**：BGM 素材源、水印/特效工具接线、项目归档 zip、导出预设、dry-run 开关、账号会话（`/srv` 代理）。
+- **前端**：BGM 素材源、水印/特效工具接线、项目归档 zip、导出预设、dry-run 开关（账号会话已于 2026-11-08 剥离）。
 
 ### 历史改进（早期批次）
 

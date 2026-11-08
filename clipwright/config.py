@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     workspace_cache_max_gb: float = 2.0
 
     # --- 插件治理（M1/M2/M8/M15）---
-    # manifest 签名密钥；空则从 account_jwt_secret 派生；再为空则不启用签名强制
+    # manifest 签名密钥；空则从 local_secret 派生；再为空则不启用签名强制
     plugin_signature_key: str = ""
     # True 时未签名插件拒绝加载（市场开放前最低安全线）
     plugin_require_signature: bool = False
@@ -207,7 +207,7 @@ class Settings(BaseSettings):
 
     # --- 安全红线 ---
     # 显式承认「无鉴权对外开放」才允许绑定非回环地址启动（fail-closed）。
-    # 仅用于受控本地/内网环境；生产部署应设置 api_token 或 account_verify_mode。
+    # 仅用于受控本地/内网环境；生产部署应设置 api_token。
     allow_insecure: bool = False
 
     # --- Pipeline 并行度（稳妥有界并发）---
@@ -345,17 +345,16 @@ class Settings(BaseSettings):
     # CORS 允许的来源（逗号分隔）；api_token 设置后生效，"*" 表示允许全部
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
-    # --- 账号体系（P3-3B，对接 K:\Clipwright Server）---
-    # off  = 现状（api_token 或无鉴权，本地/内网部署）
-    # token= 本地 api_token 强制（过渡模式）
-    # jwt  = 校验 Server 签发的 JWT（与 CLIPWRIGHT_SERVER_JWT_SECRET 共享密钥本地验签）
-    account_verify_mode: Literal["off", "token", "jwt"] = "off"
-    account_url: str = ""          # ClipWright Server 地址（前端市场 API / 未来 token 模式 /verify）
-    account_jwt_secret: str = ""   # 共享 JWT 密钥（jwt 模式必填，与 Server 一致）
-    account_jwt_algorithm: str = "HS256"
+    # --- 本地密钥（2026-11-08 剥离账号系统：不再对接 ClipWright Server）---
+    # 仅作本机用途：插件 manifest 签名密钥与 Webhook secret 加密的兜底派生来源。
+    # 环境变量：CLIPWRIGHT_LOCAL_SECRET（兼容旧名 CLIPWRIGHT_ACCOUNT_JWT_SECRET）。
+    local_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices("CLIPWRIGHT_LOCAL_SECRET", "CLIPWRIGHT_ACCOUNT_JWT_SECRET"),
+    )
 
-    # --- Webhook（P8: secret 落盘加密密钥；缺省时从 account_jwt_secret 派生）---
-    webhook_secret_key: str = ""   # Fernet key (base64 urlsafe, 32 bytes)；空则用 jwt secret 派生
+    # --- Webhook（P8: secret 落盘加密密钥；缺省时从 local_secret 派生）---
+    webhook_secret_key: str = ""   # Fernet key (base64 urlsafe, 32 bytes)；空则用 local_secret 派生
 
     # --- 速率限制（P5-B2，内存滑动窗口；默认关闭）---
     rate_limit_enabled: bool = False

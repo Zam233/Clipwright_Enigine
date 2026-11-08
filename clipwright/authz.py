@@ -1,9 +1,9 @@
-"""鉴权与数据所有权辅助（P3-3B）。
+"""鉴权与数据所有权辅助（P3-3B；2026-11-08 剥离账号系统后保留兼容层）。
 
 语义约定：
 - 中间件在请求进入路由前把身份写入 request.state（user_id / user_role）；
-- off/token 模式下 user_id 恒为 None（None = 管理员/旧行为，不做所有权过滤）；
-- jwt 模式下 user_id 为 Server 账号 ID，路由按 owner_id 过滤与校验。
+- 账号系统已剥离：user_id 恒为 None（None = 管理员/旧行为，不做所有权过滤）；
+- owner_id 字段与过滤函数保留，仅用于兼容历史数据，不再产生隔离效果。
 """
 
 from __future__ import annotations

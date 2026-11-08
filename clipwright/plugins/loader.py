@@ -28,9 +28,9 @@ from clipwright.plugins.error_bus import get_error_bus
 from clipwright.schema.plugin import PluginManifest, PluginMetadata, PluginKind
 
 
-# manifest 签名密钥（配置为空时从 JWT 密钥派生）
+# manifest 签名密钥（配置为空时从本地密钥派生）
 def _signature_key() -> bytes:
-    key = settings.plugin_signature_key or settings.account_jwt_secret
+    key = settings.plugin_signature_key or settings.local_secret
     if not key:
         return b""
     return hashlib.sha256(key.encode("utf-8")).digest()
@@ -42,8 +42,8 @@ def sign_manifest(manifest: PluginManifest, key: Optional[str] = None) -> str:
     签名覆盖除 signature 外的全部字段，按字段名排序保证确定性。
     """
     payload = _canonical_manifest_payload(manifest)
-    k = hashlib.sha256((key or settings.plugin_signature_key or settings.account_jwt_secret).encode("utf-8")).digest() \
-        if (key or settings.plugin_signature_key or settings.account_jwt_secret) else b""
+    k = hashlib.sha256((key or settings.plugin_signature_key or settings.local_secret).encode("utf-8")).digest() \
+        if (key or settings.plugin_signature_key or settings.local_secret) else b""
     return hmac.new(k, payload, hashlib.sha256).hexdigest()
 
 

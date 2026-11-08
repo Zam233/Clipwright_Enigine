@@ -112,8 +112,10 @@ npm ci
 npm run dev
 ```
 
-Open <http://localhost:5173>. The Vite dev server proxies `/api` to the engine (`:8080`) and `/srv` to
-the account service (`:8090`).
+Open <http://localhost:5173>. The Vite dev server proxies `/api` to the engine (`:8080`).
+
+> 2026-11-08：账号/市场服务（ClipWright Server，`:8090`）已从本仓库与前端剥离——没有账号、登录、
+> CREADIT 与市场；需要鉴权时只在「设置 → 后端配置」配置本地 API 令牌。
 
 ## Tech Stack
 

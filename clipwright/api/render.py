@@ -122,15 +122,11 @@ def _renders_dir() -> Path:
 async def purge_render_artifacts(request: Request, days: int = 30) -> dict:
     """批8a：清理过期渲染产物——删除 renders/ 中 mtime 超过 days 天的文件。
 
-    旧实现渲染产物无限堆积。jwt 模式仅管理员可调用；off 模式放行（本地开发）。
+    旧实现渲染产物无限堆积。账号系统已剥离：本地/内网单用户模式一律放行。
     """
-    from clipwright.authz import current_user_id, is_admin
+    from clipwright.authz import current_user_id
 
     uid = current_user_id(request)
-    if uid is not None and not is_admin(request):
-        from clipwright.config import settings as _settings
-        if _settings.account_verify_mode != "off":
-            raise HTTPException(status_code=403, detail="仅管理员可清理渲染产物")
     days = max(1, min(int(days), 365))
     rd = _renders_dir()
     removed = 0

@@ -122,24 +122,10 @@ def install_persona_from_bytes(data: bytes, persona_id: str, expected_sha256: st
 
 
 async def install_plugin(package_id: str, version: str = "") -> dict:
-    """从市场下载并安装插件。"""
-    from clipwright.services import market_client
-
-    data, sha256 = await market_client.download_plugin(package_id, version)
-    path = await _run_in_thread(install_plugin_from_bytes, data, package_id, sha256 or "")
-    return {"status": "ok", "plugin_id": package_id, "path": str(path)}
+    """从市场下载并安装插件（账号/市场已剥离，此入口不再可用）。"""
+    raise RuntimeError("市场服务已剥离：请使用 install_plugin_from_bytes() 从本地包安装")
 
 
 async def install_persona(package_id: str, version: str = "") -> dict:
-    """从市场下载并安装 Persona。"""
-    from clipwright.services import market_client
-
-    data, sha256 = await market_client.download_persona(package_id, version)
-    path = await _run_in_thread(install_persona_from_bytes, data, package_id, sha256 or "")
-    return {"status": "ok", "persona_id": package_id, "path": str(path)}
-
-
-async def _run_in_thread(fn, *args):
-    import asyncio
-
-    return await asyncio.to_thread(fn, *args)
+    """从市场下载并安装 Persona（账号/市场已剥离，此入口不再可用）。"""
+    raise RuntimeError("市场服务已剥离：请使用 install_persona_from_bytes() 从本地包安装")
