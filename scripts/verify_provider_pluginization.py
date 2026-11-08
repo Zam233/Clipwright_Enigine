@@ -801,6 +801,33 @@ def check_logic_animations_honest() -> None:
     assert "引擎内置" in prompt, "prompt 没有说明其余 11 种由引擎内置"
 
 
+@check("cloud_render_removed")
+def check_cloud_render_removed() -> None:
+    """B8-T8.6 / 审计 §3.9 选项 A：`cloud_render` 空壳已删除。
+
+    它只在 PRE_RENDER 里写 `context["cloud_render"]`，全仓无消费方——"装了等于没装"。
+    远程渲染的真实能力在宿主：`services/remote_render.py` + `RemoteRenderBackend`，
+    由 `settings.remote_render_url` 选择。这条门禁同时防止"把空壳加回来"。
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    assert not (root / "plugins/cloud_render").exists(), "cloud_render 插件又出现了（空壳）"
+
+    hits: list[str] = []
+    for sub in ("clipwright", "tests", "scripts"):
+        for f in (root / sub).rglob("*.py"):
+            if f.name == "verify_provider_pluginization.py":  # 本门禁自身会提到它
+                continue
+            if "cloud_render" in f.read_text(encoding="utf-8"):
+                hits.append(str(f.relative_to(root)))
+    assert not hits, f"代码里仍引用 cloud_render：{hits[:5]}"
+
+    # 宿主远程渲染能力必须还在（删除插件不能顺手动到这条产品线）
+    remote = (root / "clipwright/services/remote_render.py")
+    assert remote.exists(), "services/remote_render.py 不见了（宿主远程渲染是保留能力）"
+
+
 @check("prompt_builder_guards")
 def check_builder_guards() -> None:
     from clipwright.plugins import prompt_overrides as O

@@ -596,7 +596,7 @@ Select-String -Path plugins\platform_export\main.py -Pattern 'PLATFORM_PRESETS'
 | §3.2 `tts_{qwen,cosyvoice,minimax}` | 半壳 → 真 | ✅ 实现搬进插件（B7-T7.1），`build_audio_ref` 取代 provider 名分支 | 同上 |
 | §3.3 `embedding_providers` / `rerank_providers` | 半壳 → 真 | ✅ 实现搬进插件（B7-T7.3）；embedder 走严格 A6 | 同上 |
 | §3.4 `stt_providers` | 空壳 → 真 | ✅ 探测/转写实现搬进插件（B7-T7.4）；`whisper_stt` 收窄为技能 | `provider_impls_in_plugins` |
-| §3.9 `cloud_render` | 空壳 | ⏳ 待拍板（删除 vs 搬成 renderer_backend） | — |
+| §3.9 `cloud_render` | 空壳 | ✅ 已删除（选项 A）；远程渲染仍由宿主 `RemoteRenderService` 提供 | `cloud_render_removed` |
 | §3.10 `logic_animations` | 半壳 | 🟡 第一步完成（声明面收窄）；第二步（搬 11 个渲染器）待拍板 | `logic_animations_honest` |
 | §3.11 `kinetic_typography` | 半壳 → 真 | ✅ 补 keyframes、删死钩子与 CSS、下线 3D/渐变（B8-T8.3） | `dead_hooks_removed` |
 | §3.12 `lottie_animations` | 空壳 | ✅ 降级为素材目录（B8-T8.4） | `dead_hooks_removed` |
@@ -608,4 +608,5 @@ Select-String -Path plugins\platform_export\main.py -Pattern 'PLATFORM_PRESETS'
 | §3.x 其余「半壳」名单（`headless_chrome` 等） | — | ✅ `headless_chrome` 实现搬进插件（B8-T8.1） | `headless_impl_in_plugin` |
 
 **结论**：44 个插件中，审计判定的 13 个半壳 + 5 个空壳，已转真 15 个；
-剩余 2 个（`cloud_render` / `logic_animations` 第二步）等产品语义拍板。
+剩余 1 个（`logic_animations` 第二步：11 个渲染器搬插件）等产品语义拍板；
+`cloud_render` 已按审计选项 A 删除（远程渲染作为宿主能力保留）。

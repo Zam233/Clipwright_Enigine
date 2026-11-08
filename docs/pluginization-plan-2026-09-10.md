@@ -826,6 +826,16 @@ plugins/my_llm/
 > rerank_providers,stt_providers}`），engine 只留协议与只读注册表（自检 `provider_impls_in_plugins` 守）。
 > 兼容别名已全部删除；`no_vendor_branches` 与 `provider_impls_in_plugins` 两条门禁守回退。
 
+### 12.3.1 远程渲染归属（2026-11-08 审计整改 T8.6）
+
+`plugins/cloud_render/` 已删除（审计 §3.9 选项 A）：它只在 PRE_RENDER 里写一个
+`context["cloud_render"]`，**全仓没有任何消费方**——装了插件、填了 `server_url`，行为零变化。
+
+真正的远程渲染是**宿主能力**：`services/remote_render.py`（上传/轮询/下载/回退全套）+
+`providers/render` 注册的 `RemoteRenderBackend`，由 `api/render.py` 按 `settings.remote_render_url`
+选择；`/api/render/backends` 也会列出它并做可用性探测。要改成插件贡献，需要先把
+`RemoteRenderService` 拆成 `renderer_backend` 协议的实现（2.5 人日的另立目标）。
+
 ### 12.4 与审计文档的接口
 
 - 本方案的实施会**修掉**审计文档中的：P1-10、P1-11、P1-12、P1-13、P1-14、P1-24、P1-25、P1-19（协议级）。

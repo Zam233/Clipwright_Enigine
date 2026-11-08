@@ -1039,3 +1039,5 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 
 > 两项都不难写，难在**语义归属**：T8.2 决定"图解渲染是谁的能力"，T8.6 决定"云端渲染这条产品线还要不要"。
 > 在答复前，B8 的其余八项已全部落地，且都有对应门禁防回退。
+
+| **T8.6** `cloud_render` 删除（选项 A） | ✅ 已完成 | 删除 `plugins/cloud_render/`（审计 §3.9 A：hook 写的 `context["cloud_render"]` 全仓无消费方，装了等于没装）；在 `docs/pluginization-plan` §12.3.1 明确"远程渲染暂为宿主能力"（`services/remote_render.py` + `RemoteRenderBackend`，按 `settings.remote_render_url` 选择）；审计 §7.5 状态表更新 | 自检 **30/30**（新增 `cloud_render_removed`：插件目录不存在、engine/tests/scripts 零 `cloud_render` 引用、宿主远程渲染入口仍在）；`import clipwright.main` ok |
