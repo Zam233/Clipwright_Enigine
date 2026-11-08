@@ -820,6 +820,11 @@ plugins/my_llm/
 | export_preset | D | 新增 | 导出页预设合并 |
 | **display_spec** | **D** | **新增（2026-11-07）** | **`services/display_spec`（后端通用清洗器/装配器）+ 前端宿主渲染器；纯数据，`object` 恒为 `None`，见 [genui-plugin-migration-prd-2026-11-07.md](genui-plugin-migration-prd-2026-11-07.md)** |
 
+> **provider 家族 owner 现状（2026-11-08 审计整改 B7）**：`embedding_provider` / `rerank_provider` /
+> `stt_provider` 的**实现已搬进插件**（`plugins/{embedding_providers,rerank_providers,stt_providers}`），
+> engine 只留协议与只读注册表（自检 `provider_impls_in_plugins` 守）；
+> `llm_provider` / `tts_provider` 的实现仍在 engine，待 B7-T7.1/T7.2 迁移。
+
 ### 12.4 与审计文档的接口
 
 - 本方案的实施会**修掉**审计文档中的：P1-10、P1-11、P1-12、P1-13、P1-14、P1-24、P1-25、P1-19（协议级）。

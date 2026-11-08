@@ -939,3 +939,5 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 > 相关用例已改为断言新语义，而不是"engine 补位"。
 
 | **T7.4** STT 后端归位 + `whisper_stt` 收窄 | ✅ 已完成 | 探测（probe）与转写实现（`transcribe_whisper` / `transcribe_faster_whisper`）搬进 `plugins/stt_providers/backends.py`（模型缓存随之归插件，`reset_caches()` 供测试）；`services/stt.py` 两个私有方法变成 3 行转发、服务本身无状态；`providers/stt` 只留 `SttBackendEntry` + `resolve_stt_backends()`（只读注册表，按贡献 `meta["order"]` 排序，缺失则空列表）；`whisper_stt` 撤下与后端重复的 `whisper_transcribe_local` 工具，只保留 `transcribe_and_align` 技能 | `resolve_stt_backends(object())` 未装插件 → `[]`；`test_stt.py` 7 passed（缓存断言改到插件模块）；`test_stt_provider_registry.py` 4 passed（显式注册插件贡献）；`pytest -k "stt or transcribe"` → **278 passed**（4 个失败均为既存：pv_engine 1 + stream_chat 3） |
+
+| **T7.6（部分）** 门禁与声明文档 | 🟡 已提前落地（只锁已迁家族） | 自检新增 `provider_impls_in_plugins`：断言 embedding/rerank/stt 的实现类/函数**只存在于插件**、engine 里 `ensure_*_registered` 懒注册补位已消失（llm/tts 完成后追加进清单）；`AGENTS.md` #24 补「协议实现住在插件」并注明 llm/tts 待迁；`docs/pluginization-plan` §12.3 表下注明 provider 家族 owner 现状 | 自检 **20/20**；`-k provider_impls` PASS |

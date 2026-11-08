@@ -167,12 +167,8 @@ async def lifespan(app: FastAPI):
     # TTS 协议插件（tts_cosyvoice / tts_qwen / tts_minimax）在 `_plugin_loader.load_all()`
     # 里注册；没有插件时 engine 不带任何 TTS 能力（能力缺失是一等状态，不是异常）。
 
-    # 4.4 B-2：内置 STT provider 注册（whisper/faster-whisper；幂等）
-    try:
-        from clipwright.providers.stt import ensure_stt_providers_registered
-        ensure_stt_providers_registered()
-    except Exception as _stt_err:
-        logger.warning("STT provider 注册失败（不影响启动）: %s", _stt_err)
+    # 4.4 B-2 / B7-T7.4：**启动不再注册内置 STT provider**。
+    # 探测与转写实现在 `plugins/stt_providers`；没有插件时没有可用后端（口径 A）。
 
     # 4.5 B-3：内置渲染后端注册（local/remote；入口切换在下一批接线）
     try:

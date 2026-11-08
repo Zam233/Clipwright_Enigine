@@ -424,6 +424,61 @@ def check_display_spec_no_engine_path() -> None:
     assert len(hits) <= 5, f"engine 里 \"genui\" 字面量过多（{len(hits)}）：\n" + "\n".join(hits)
 
 
+@check("provider_impls_in_plugins")
+def check_provider_impls_in_plugins() -> None:
+    """协议实现必须住在插件，engine 只留协议/注册表（B7-T7.3/T7.4 已迁的三家族）。
+
+    为什么现在就加：迁移是分批做的，若不加门禁，下一轮很容易"顺手"把某个实现搬回
+    engine（就像当初的懒注册补位）。这里只锁**已完成的家族**，llm/tts 在 T7.1/T7.2
+    完成后会追加进清单。
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    engine = root / "clipwright"
+
+    # 已迁家族：实现类名 → 插件模块（必须既有实现类、又不再出现在 engine 的 class 定义里）
+    moved_classes = {
+        "OpenAIEmbeddingProvider": "plugins/embedding_providers/providers.py",
+        "OllamaEmbeddingProvider": "plugins/embedding_providers/providers.py",
+        "LocalEmbeddingProvider": "plugins/embedding_providers/providers.py",
+        "RemoteEmbedder": "plugins/embedding_providers/providers.py",
+        "HttpRerankProvider": "plugins/rerank_providers/providers.py",
+        "LocalRerankProvider": "plugins/rerank_providers/providers.py",
+        "HttpReranker": "plugins/rerank_providers/providers.py",
+        "LocalCrossEncoder": "plugins/rerank_providers/providers.py",
+        "probe_whisper": "plugins/stt_providers/backends.py",
+        "transcribe_whisper": "plugins/stt_providers/backends.py",
+        "transcribe_faster_whisper": "plugins/stt_providers/backends.py",
+    }
+    for plugin_rel in set(moved_classes.values()):
+        plugin_file = root / plugin_rel
+        assert plugin_file.exists(), f"插件实现文件缺失：{plugin_rel}"
+        body = plugin_file.read_text(encoding="utf-8")
+        for name, target in moved_classes.items():
+            if target != plugin_rel:
+                continue
+            assert re.search(rf"(class|def) {name}\b", body), f"{plugin_rel} 里找不到 {name}"
+
+    engine_text = {
+        f: f.read_text(encoding="utf-8") for f in engine.rglob("*.py")
+    }
+    for name, plugin_rel in moved_classes.items():
+        offenders = [
+            str(f.relative_to(root))
+            for f, body in engine_text.items()
+            if re.search(rf"^class {name}\b", body, re.M)
+            or re.search(rf"^def {name}\b", body, re.M)
+        ]
+        assert not offenders, f"{name} 仍定义在 engine：{offenders}（应在 {plugin_rel}）"
+
+    # 懒注册补位必须消失（它会让"禁用插件"不改变行为）
+    assert "ensure_embedding_providers_registered" not in "".join(engine_text.values())
+    assert "ensure_rerank_providers_registered" not in "".join(engine_text.values())
+    assert "ensure_stt_providers_registered" not in "".join(engine_text.values())
+
+
 @check("prompt_builder_guards")
 def check_builder_guards() -> None:
     from clipwright.plugins import prompt_overrides as O
