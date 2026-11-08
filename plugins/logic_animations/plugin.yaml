@@ -2,7 +2,7 @@ id: "logic_animations"
 name: "高级逻辑图解"
 version: "2.0.0"
 kind: "capability"
-description: "思维导图（mindmap）渲染器；其余 11 种图解由 engine 内置（B8-T8.2 诚实化）"
+description: "12 种图解渲染器（B8-T8.2 第二步：已从 engine 搬入本插件）"
 entry_point: "logic_animations.main"
 
 # P1 迁移：新契约声明

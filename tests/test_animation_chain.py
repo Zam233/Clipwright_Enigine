@@ -2,7 +2,12 @@
 Tests every animation type through the full agent → render path.
 """
 import sys
-sys.path.insert(0, '..')
+from pathlib import Path
+
+# 用脚本自身位置推仓库根（`py tests/test_animation_chain.py` 时 sys.path[0] 是 tests/，
+# 裸 `'..'` 会解析到磁盘根，导致 `import plugins` 失败——B8-T8.2 把图解渲染器搬进插件后
+# 这一行成了必需）。
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from clipwright.animation.catalog import AnimationCatalog
 from clipwright.animation.builtin import register_builtin_animations
@@ -11,6 +16,19 @@ from clipwright.animation.registry import AnimationRegistry
 from clipwright.agents.animation_agent import AnimationAgent
 
 register_builtin_animations()
+
+# B8-T8.2：11 个图解渲染器已从 engine 搬进 logic_animations 插件（radar/gantt/... 由 Hook
+# 注册）。本脚本验证的是"插件已安装"的完整链路，所以这里先把插件贡献装上；
+# 未安装时这些图解按 A6 确实不可用（脚本会显示对应 FAIL，那是真实状态）。
+try:
+    from clipwright.plugins.contribution import ContributionRegistry
+    from plugins.logic_animations.main import LogicAnimationsPlugin
+
+    _items = LogicAnimationsPlugin().contributions()
+    ContributionRegistry.declared_scope("anim_chain_script", [c.key for c in _items])
+    ContributionRegistry.register("anim_chain_script", _items)
+except Exception as _exc:  # noqa: BLE001
+    print(f"  [WARN] logic_animations 插件未注册: {_exc}")
 
 passed, failed = 0, 0
 

@@ -1041,3 +1041,19 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 > 在答复前，B8 的其余八项已全部落地，且都有对应门禁防回退。
 
 | **T8.6** `cloud_render` 删除（选项 A） | ✅ 已完成 | 删除 `plugins/cloud_render/`（审计 §3.9 A：hook 写的 `context["cloud_render"]` 全仓无消费方，装了等于没装）；在 `docs/pluginization-plan` §12.3.1 明确"远程渲染暂为宿主能力"（`services/remote_render.py` + `RemoteRenderBackend`，按 `settings.remote_render_url` 选择）；审计 §7.5 状态表更新 | 自检 **30/30**（新增 `cloud_render_removed`：插件目录不存在、engine/tests/scripts 零 `cloud_render` 引用、宿主远程渲染入口仍在）；`import clipwright.main` ok |
+
+| **T8.2（第二步）** 11 个图解渲染器搬进插件 | ✅ 已完成（选项 A） | `_radar`/`_gantt`/`_venn3`/`_heatmap`/`_sankey`/`_concept`/`_codeblock`/`_datatable`/`_quote`/`_compcard`/`_orgchart`（约 800 行）连同它们共用的 `_bar_chart` 一起搬进 `plugins/logic_animations/diagrams/all.py`；engine `diagram_svg.py` 只保留 13 个基础图解 + `render()` 的 Hook 合并；`type_specs.validate_registry` 改为"手写规格 ⊆ catalog"（插件新增类型走通用兜底，不算漂移） | `Select-String diagram_svg.py -Pattern 'def _radar|def _gantt|def _sankey'` → **0**；插件 `RENDERER_MAP` **12** 项；自检 **30/30**（`logic_animations_honest` 升级为四段断言：插件有 12 项、engine 无 11 个方法、注册后 presets 含 radar、注销后不含）；`-k "animation or diagram or logic"` → **192 passed**（1 既存失败） |
+
+## B8 完成（2026-11-08）
+
+| 任务 | 状态 |
+|---|---|
+| T8.1 `headless_chrome` 实现搬插件 | ✅ |
+| T8.2 `logic_animations` 两步（声明面 + 11 渲染器） | ✅ |
+| T8.3 `kinetic_typography` 补 keyframes / 删死钩子 | ✅ |
+| T8.4 `lottie_animations` 降级为素材目录 | ✅ |
+| T8.5 `platform_export` 预设改 `export_preset` 纯数据 + hook 真接线 | ✅ |
+| T8.6 `cloud_render` 删除（远程渲染归宿主） | ✅ |
+| T8.7 `mg_animations` / `local_material` / `voice_ext` | ✅（三项） |
+
+**审计 18 项结论全部落地**；自检脚本 **30 条**（含 8 条本次新增的防回退门禁）。

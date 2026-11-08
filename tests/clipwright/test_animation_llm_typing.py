@@ -21,10 +21,41 @@ from clipwright.schema.timeline import Clip, ClipKind, Timeline, Track
 
 # ── M1：类型规格与提示词 ─────────────────────────────────────
 
+@pytest.fixture(autouse=True)
+def _logic_animations_plugin():
+    """B8-T8.2：11 个图解渲染器已搬进 logic_animations 插件。
+
+    `AnimationCatalog` 的图解类型来自 `DiagramRenderer.get_supported_presets()`
+    （内置 + 插件 Hook）。测试要验证"注册表覆盖 catalog"，就得在"插件已装"的
+    真实部署状态下跑；否则 11 个类型缺席，会误报注册表多出类型。
+    """
+    from clipwright.plugins.contribution import ContributionRegistry
+    from plugins.logic_animations.main import LogicAnimationsPlugin
+
+    owner = "anim_typing_test"
+    from clipwright.plugins.contribution import ContributionKind
+
+    # 幂等：其它用例（如 test_animation_chain 脚本）可能已经装过同一个插件。
+    already = ContributionRegistry.resolve(ContributionKind.HOOK, "logic_animations_renderer")
+    if already is not None:
+        yield
+        return
+    items = LogicAnimationsPlugin().contributions()
+    ContributionRegistry.declared_scope(owner, [c.key for c in items])
+    report = ContributionRegistry.register(owner, items)
+    assert report.ok, report.rejected
+    try:
+        yield
+    finally:
+        ContributionRegistry.unregister_plugin(owner)
+
+
 def test_registry_covers_every_catalog_type():
     catalog_ids = {str(i["id"]) for i in AnimationCatalog.get_logic_animations()}
     assert catalog_ids, "catalog 应返回逻辑动画"
-    assert catalog_ids == set(TS.known_type_ids())
+    # B8-T8.2：插件可新增 catalog 类型（如图解渲染器），它们没有手写 type spec 是正常的
+    # （走通用兜底）；不变量是"手写规格必须都能在 catalog 里找到"。
+    assert set(TS.known_type_ids()) <= catalog_ids
 
 
 def test_every_type_has_prompt_file_and_registry_is_clean():

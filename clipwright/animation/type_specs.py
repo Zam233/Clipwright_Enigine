@@ -384,12 +384,12 @@ def validate_registry(strict: bool = False) -> list[str]:
     problems: list[str] = []
     catalog_ids = {str(i.get("id")) for i in _catalog_types() if i.get("id")}
     if catalog_ids:
-        missing = catalog_ids - set(REGISTRY)
-        extra = set(REGISTRY) - catalog_ids
+        # B8-T8.2：插件可以把新的图解类型注册进 catalog（`DIAGRAM_RENDERER_EXTEND`）。
+        # 这些类型没有手写 type spec 是**正常**的（用通用兜底），不算漂移；
+        # 只有"REGISTRY 里有、catalog 里没有"（手写规格指向已下线类型）才是问题。
+        missing = set(REGISTRY) - catalog_ids
         if missing:
-            problems.append(f"注册表缺少 catalog 类型: {sorted(missing)}")
-        if extra:
-            problems.append(f"注册表多出 catalog 未声明的类型: {sorted(extra)}")
+            problems.append(f"注册表多出 catalog 未声明的类型: {sorted(missing)}")
     no_prompt = missing_prompt_files()
     if no_prompt:
         problems.append(f"缺少类型提示词文件: {sorted(no_prompt)}")

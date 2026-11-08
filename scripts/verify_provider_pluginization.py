@@ -776,10 +776,11 @@ def check_mg_impl_in_plugin() -> None:
 
 @check("logic_animations_honest")
 def check_logic_animations_honest() -> None:
-    """B8-T8.2（第一步）：插件不得再声称拥有 engine 内置的 11 种图解。
+    """B8-T8.2：11 个图解渲染器必须真的在插件里（不是声明面）。
 
-    审计 §3.10：插件 manifest/prompt 写着"12 种"，但 `diagrams/all.py` 只剩 mindmap，
-    其余 11 种由 engine `diagram_svg.py` 渲染——"声明面 > 实现面"。
+    旧状态：manifest/prompt 写"12 种"，但 `diagrams/all.py` 只剩 mindmap，其余 11 种
+    由 engine `diagram_svg.py` 渲染。第二步已把渲染器整体搬进插件——
+    现在门禁要同时验证"插件有实现"与"engine 没有"与"禁用即消失"。
     """
     from pathlib import Path
 
@@ -787,18 +788,33 @@ def check_logic_animations_honest() -> None:
     import importlib
 
     mod = importlib.import_module("plugins.logic_animations.main")
-    assert set(mod._DESCRIPTIONS) == {"mindmap"}, (
-        f"logic_animations 仍在声称渲染 {sorted(mod._DESCRIPTIONS)}"
-    )
-    manifest = (root / "plugins/logic_animations/plugin.yaml").read_text(encoding="utf-8")
-    assert "12 种" not in manifest, "manifest 仍写 12 种"
-    assert "engine" in manifest, "manifest 应说明其余图解归 engine"
+    diagrams = importlib.import_module("plugins.logic_animations.diagrams.all")
 
-    prompt = next(
-        c.object for c in mod.LogicAnimationsPlugin().contributions()
-        if getattr(c.kind, "value", "") == "prompt"
-    )
-    assert "引擎内置" in prompt, "prompt 没有说明其余 11 种由引擎内置"
+    expected = {"mindmap", "radar", "gantt", "venn3", "heatmap", "sankey",
+                "concept", "codeblock", "datatable", "quote", "compcard", "orgchart"}
+    assert set(mod._DESCRIPTIONS) == expected, sorted(mod._DESCRIPTIONS)
+    assert set(diagrams.RENDERER_MAP) == expected, sorted(diagrams.RENDERER_MAP)
+
+    engine = (root / "clipwright/animation/diagram_svg.py").read_text(encoding="utf-8")
+    for fn in ("_radar", "_gantt", "_venn3", "_heatmap", "_sankey", "_concept",
+               "_codeblock", "_datatable", "_quote", "_compcard", "_orgchart"):
+        assert f"def {fn}(" not in engine, f"engine 仍有 {fn}（应只在插件里）"
+
+    from clipwright.animation.diagram_svg import DiagramRenderer
+    from clipwright.plugins.contribution import ContributionRegistry
+
+    owner = "verify_logic_animations"
+    items = mod.LogicAnimationsPlugin().contributions()
+    ContributionRegistry.declared_scope(owner, [c.key for c in items])
+    report = ContributionRegistry.register(owner, items)
+    assert report.ok, report.rejected
+    try:
+        ids = {p["id"] for p in DiagramRenderer.get_supported_presets()}
+        assert {"radar", "gantt", "sankey"} <= ids, "插件注册后 engine presets 仍没有它们"
+    finally:
+        ContributionRegistry.unregister_plugin(owner)
+    ids_after = {p["id"] for p in DiagramRenderer.get_supported_presets()}
+    assert not ({"radar", "gantt", "sankey"} & ids_after), "注销后 presets 仍有插件渲染器"
 
 
 @check("cloud_render_removed")
