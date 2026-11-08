@@ -97,6 +97,10 @@ def test_method_mismatch_is_reported(tmp_path) -> None:
     assert code == 0  # --layer method 只跑该方法层，返回值不覆盖 ok（由 all 决定）
     front = module.frontend_calls(root)
     back = module.backend_routes()
+    assert "/api/pipeline/run-async" in back, (
+        f"后端路由表缺少 /api/pipeline/run-async（共 {len(back)} 条；"
+        f"pipeline 相关={[p for p in sorted(back) if 'pipeline' in p][:8]}）"
+    )
     allowed = back["/api/pipeline/run-async"]
     assert "get" not in allowed and "post" in allowed
     assert front["/api/pipeline/run-async"]["methods"] == {"GET"}

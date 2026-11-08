@@ -172,7 +172,8 @@ def test_stream_generate_uses_model_generation(monkeypatch):
             pass
 
     asyncio.run(_drain())
-    assert seen and seen[0]["temperature"] == 0.9
+    assert seen, "流式客户端没被调用"
+    assert seen[0].get("temperature") == 0.9, f"首块 kwargs 未带模型 generation：{seen[0]}"
 
 
 def test_unsupported_parameter_is_dropped_with_degradation(monkeypatch):

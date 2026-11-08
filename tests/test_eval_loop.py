@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import os
+
 import json
 import subprocess
 import sys
@@ -194,6 +196,7 @@ def test_long_task_key_facts_survive_compaction():
     ctx = context_loader.load(task)
     assert ctx["text"]
 
+@pytest.mark.skipif(os.name != "nt", reason="GBK 控制台只在 Windows 上存在；Linux CI 无此语义")
 def test_replay_cli_survives_non_utf8_console(tmp_path):
     """Windows 控制台是 GBK 时，报告不能因为符号编码而崩（刚才真崩过）。"""
     import os

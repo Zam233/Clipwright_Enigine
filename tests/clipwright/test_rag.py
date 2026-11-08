@@ -52,6 +52,25 @@ def _force_local_embedder(monkeypatch: pytest.MonkeyPatch):
         ContributionRegistry.unregister_plugin(owner)
 
 
+_MODEL_READY: bool | None = None
+
+
+@pytest.fixture(scope="module")
+def _needs_local_embedding_model():
+    """CI 没有 HuggingFace 缓存：模型类用例明确 skip，而不是 60s 联网失败。"""
+    global _MODEL_READY
+    if _MODEL_READY is None:
+        try:
+            from sentence_transformers import SentenceTransformer
+
+            SentenceTransformer("BAAI/bge-small-zh-v1.5", local_files_only=True, device="cpu")
+            _MODEL_READY = True
+        except Exception:  # noqa: BLE001 — 任何加载失败都视为本机无模型
+            _MODEL_READY = False
+    if not _MODEL_READY:
+        pytest.skip("本地无 BAAI/bge-small-zh-v1.5 缓存（离线 CI），跳过嵌入模型用例")
+
+
 # ── Chunker ──
 
 class TestChunker:
@@ -78,6 +97,7 @@ class TestChunker:
 
 # ── Embedder ──
 
+@pytest.mark.usefixtures("_needs_local_embedding_model")
 class TestEmbedder:
     def test_sentence_transformer(self) -> None:
         reset_embedder()
@@ -98,6 +118,7 @@ class TestEmbedder:
 
 # ── VectorStore ──
 
+@pytest.mark.usefixtures("_needs_local_embedding_model")
 class TestVectorStore:
     def test_index_and_search(self) -> None:
         store, td = _make_store()
@@ -153,6 +174,7 @@ class TestReranker:
 
 # ── Retriever ──
 
+@pytest.mark.usefixtures("_needs_local_embedding_model")
 class TestRetriever:
     def test_index_and_retrieve(self) -> None:
         store, td = _make_store()

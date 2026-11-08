@@ -42,6 +42,19 @@ def _llm_providers_available():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _llm_credentials(monkeypatch):
+    """单测默认"已配置模型凭据"（CI 没有 .env，否则内核判定 no_llm_credential）。
+
+    只补空值：需要验证"无凭据降级"的用例自己 monkeypatch 成 "" 即可覆盖。
+    """
+    from clipwright.config import settings
+
+    if not str(getattr(settings, "llm_api_key", "") or "").strip():
+        monkeypatch.setattr(settings, "llm_api_key", "test-key", raising=False)
+    yield
+
+
 # `tests/` 自身也进 sys.path：测试内的共享桩（如 kernel_stubs）按裸模块名导入，
 # 不依赖包相对导入（`tests` 是包，直接 import tests.kernel_stubs 会和 -k 选择冲突）。
 sys.path.insert(0, str(Path(__file__).parent))
