@@ -367,291 +367,39 @@ class BaseVoiceProvider(abc.ABC):
     ) -> tuple[bytes, list[dict]]:
         """合成语音，返回音频字节流。"""
 
+    async def build_audio_ref(self, path: Path) -> str:
+        """把本地参考音频转成 provider 能用的引用（**能力位**，取代按 provider 名分支）。
 
-class QwenTTSProvider(BaseVoiceProvider):
-    """Qwen-TTS：clone 支持 base64 data URI（无需公网 URL），synth 走 HTTP。"""
-
-    async def clone(
-        self,
-        *,
-        audio_ref: str,
-        voice_name: str,
-        target_model: str = "",
-        audition_text: str = "",
-    ) -> tuple[str, str]:
-        payload = {
-            "model": "qwen-voice-enrollment",
-            "input": {
-                "action": "create",
-                "target_model": target_model or "qwen3-tts-vc-2026-01-22",
-                "preferred_name": _sanitize_name(voice_name, f"voice_{uuid.uuid4().hex[:6]}"),
-                "audio": {"data": audio_ref},
-            },
-        }
-        url = "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization"
-        logger.info("Qwen-TTS clone -> POST %s", url)
-        headers = {
-            "Authorization": f"Bearer {self._api_key(settings.tts_dashscope_api_key)}",
-            "Content-Type": "application/json",
-        }
-        headers = self._headers(headers)
-        async with self._http() as client:
-            resp = await client.post(url, json=payload, headers=headers)
-
-        if resp.status_code != 200:
-            detail = resp.text[:500]
-            raise RuntimeError(f"Qwen-TTS clone failed [{resp.status_code}]: {detail}")
-        body = resp.json()
-        voice_id = body.get("output", {}).get("voice", "")
-        if not voice_id:
-            raise RuntimeError(f"Qwen-TTS returned no voice_id: {body}")
-        return voice_id, payload["input"]["preferred_name"]
-
-    async def synthesize(
-        self,
-        *,
-        voice_api_id: str,
-        model: str,
-        text: str,
-        **kwargs: Any,
-    ) -> tuple[bytes, list[dict]]:
-        if "realtime" in model.lower():
-            raise ValueError(
-                f"音色绑定的是实时模型 '{model}'，不支持 HTTP 合成。"
-                "请用 qwen3-tts-vc-2026-01-22 重新克隆音色。"
+        默认实现：需要公网 URL → 走注入的上传器（`PublicUploadManager`）。
+        Qwen 覆盖为 base64 data URI（无需公网 URL）。
+        """
+        uploader = getattr(self, "_uploader", None)
+        if uploader is None:
+            raise RuntimeError(
+                "该 TTS provider 需要公网 URL，但未注入上传器（PublicUploadManager）"
             )
-        url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
-        inp: dict = {"text": text, "voice": voice_api_id}
-        instructions = kwargs.get("instructions")
-        if instructions:
-            inp["instructions"] = instructions
-        payload = {"model": model, "input": inp, "parameters": {"word_timestamp_enabled": True}}
-        headers = {
-            "Authorization": f"Bearer {self._api_key(settings.tts_dashscope_api_key)}",
-            "Content-Type": "application/json",
-        }
-        headers = self._headers(headers)
-        async with self._http() as client:
-            resp = await client.post(url, json=payload, headers=headers)
-
-        if resp.status_code != 200:
-            raise RuntimeError(f"Qwen-TTS 合成失败 [{resp.status_code}]: {resp.text[:500]}")
-        body = resp.json()
-        audio_info = body.get("output", {}).get("audio", {})
-        audio_bytes = b""
-        if audio_info.get("data"):
-            audio_bytes = base64.b64decode(audio_info["data"])
-        elif audio_info.get("url"):
-            async with self._http() as client:
-                r = await client.get(audio_info["url"])
-            if r.status_code == 200:
-                audio_bytes = r.content
-        if not audio_bytes:
-            raise RuntimeError(f"Qwen-TTS 响应中没有音频: {str(body)[:300]}")
-        word_timestamps = body.get("output", {}).get("word_timestamps", [])
-        return audio_bytes, word_timestamps
+        return await uploader.upload(path)
 
 
-class CosyVoiceProvider(BaseVoiceProvider):
-    """CosyVoice：clone 需公网 URL（PublicUpload），synth 走 dashscope SDK WebSocket。"""
-
-    def __init__(
-        self,
-        uploader: Optional[PublicUploadManager] = None,
-        creds: Optional[TtsCredentials] = None,
-    ) -> None:
-        super().__init__(creds)
-        self._uploader = uploader
-
-    async def clone(
-        self,
-        *,
-        audio_ref: str,
-        voice_name: str,
-        target_model: str = "",
-        audition_text: str = "",
-    ) -> tuple[str, str]:
-        # CosyVoice needs a public URL; auto-upload local URLs
-        url = audio_ref
-        if _is_local_url(url) and self._uploader:
-            url = await self._uploader.maybe_upload(url)
-
-        payload = {
-            "model": "voice-enrollment",
-            "input": {
-                "action": "create_voice",
-                "target_model": target_model or "cosyvoice-v3.5-plus",
-                "prefix": _sanitize_name(voice_name, f"myvoice{uuid.uuid4().hex[:6]}", allow_extra=""),
-                "url": url,
-                "enable_preprocess": True,
-                "max_prompt_audio_length": 30.0,
-            },
-        }
-        api_url = "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization"
-        logger.info("CosyVoice clone -> POST %s", api_url)
-        headers = {
-            "Authorization": f"Bearer {self._api_key(settings.tts_dashscope_api_key)}",
-            "Content-Type": "application/json",
-        }
-        headers = self._headers(headers)
-        async with self._http() as client:
-            resp = await client.post(api_url, json=payload, headers=headers)
-
-        if resp.status_code != 200:
-            detail = resp.text[:500]
-            if "detect audio failed" in detail or "Audio.DecoderError" in detail:
-                raise RuntimeError(
-                    "CosyVoice 未能从音频中检测到有效人声。请确保音频：\n"
-                    "1. 纯人声，无背景音乐/噪音\n"
-                    "2. 至少 5 秒连续说话\n"
-                    "3. 单人，正常语速\n"
-                    "4. 时长 10-60 秒，文件 ≤ 10MB"
-                )
-            raise RuntimeError(f"CosyVoice clone failed [{resp.status_code}]: {detail}")
-
-        body = resp.json()
-        voice_id = body.get("voice_id") or body.get("output", {}).get("voice_id", "")
-        if not voice_id:
-            raise RuntimeError(f"CosyVoice returned no voice_id: {body}")
-        return voice_id, payload["input"]["prefix"]
-
-    async def synthesize(
-        self,
-        *,
-        voice_api_id: str,
-        model: str,
-        text: str,
-        **kwargs: Any,
-    ) -> tuple[bytes, list[dict]]:
-        import dashscope
-        from dashscope.audio.tts_v2 import SpeechSynthesizer
-
-        dashscope.base_websocket_api_url = (
-            f"wss://{settings.tts_workspace_id}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference"
-        )
-        # SDK 仅支持全局 api_key：用锁串行化「改 key → 合成 → 还原」，避免并发请求相互覆盖凭据
-        with _DASHSCOPE_KEY_LOCK:
-            old_key = dashscope.api_key
-            dashscope.api_key = self._api_key(settings.tts_dashscope_api_key)
-            try:
-                synth_kwargs: dict = dict(model=model, voice=voice_api_id)
-                for key in ("instructions", "volume", "speech_rate", "pitch_rate", "seed"):
-                    val = kwargs.get(key)
-                    if val is not None:
-                        synth_kwargs[key] = val
-                synthesizer = SpeechSynthesizer(**synth_kwargs)
-                audio = synthesizer.call(text)
-                if audio is None:
-                    raise RuntimeError("CosyVoice synthesis returned None")
-                audio_bytes = audio if isinstance(audio, bytes) else audio.encode()
-                return audio_bytes, []
-            finally:
-                dashscope.api_key = old_key
+# ── 兼容别名（B7-T7.1）────────────────────────────────────────────
+# 三个 Provider 的实现已搬进插件；这里用**惰性 __getattr__** 保留同名访问，只为不打断
+# 既有导入与测试的打桩路径（`from clipwright.services.voice import QwenTTSProvider`、
+# `patch("clipwright.services.voice.CosyVoiceProvider.synthesize")`）。
+# **新代码不要依赖它**；T7.5 收尾时会连同别名一起删掉。
+_LEGACY_PROVIDER_ALIASES = {
+    "QwenTTSProvider": "plugins.tts_qwen.provider",
+    "CosyVoiceProvider": "plugins.tts_cosyvoice.provider",
+    "MiniMaxProvider": "plugins.tts_minimax.provider",
+}
 
 
-class MiniMaxProvider(BaseVoiceProvider):
-    """MiniMax：clone 需公网 URL + audition text，synth 走 HTTP（hex/base64/url 响应）。"""
+def __getattr__(name: str) -> Any:
+    target = _LEGACY_PROVIDER_ALIASES.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
 
-    def __init__(
-        self,
-        uploader: Optional[PublicUploadManager] = None,
-        creds: Optional[TtsCredentials] = None,
-    ) -> None:
-        super().__init__(creds)
-        self._uploader = uploader
-
-    async def clone(
-        self,
-        *,
-        audio_ref: str,
-        voice_name: str,
-        target_model: str = "",
-        audition_text: str = "",
-    ) -> tuple[str, str]:
-        url = audio_ref
-        if _is_local_url(url) and self._uploader:
-            url = await self._uploader.maybe_upload(url)
-
-        voice_id_str = voice_name or f"mini_{uuid.uuid4().hex[:8]}"
-        payload = {
-            "model": target_model or "MiniMax/speech-2.8-turbo",
-            "input": {
-                "action": "voice_clone",
-                "voice_id": voice_id_str,
-                "audio_url": url,
-                "text": audition_text or "你好，欢迎使用音色克隆。",
-            },
-        }
-        api_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
-        logger.info("MiniMax clone -> POST %s", api_url)
-        headers = {
-            "Authorization": f"Bearer {self._api_key(settings.tts_dashscope_api_key)}",
-            "Content-Type": "application/json",
-        }
-        headers = self._headers(headers)
-        async with self._http() as client:
-            resp = await client.post(api_url, json=payload, headers=headers)
-
-        if resp.status_code != 200:
-            raise RuntimeError(f"MiniMax clone failed [{resp.status_code}]: {resp.text[:500]}")
-        return voice_id_str, voice_id_str
-
-    async def synthesize(
-        self,
-        *,
-        voice_api_id: str,
-        model: str,
-        text: str,
-        **kwargs: Any,
-    ) -> tuple[bytes, list[dict]]:
-        url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
-        vs = {"voice_id": voice_api_id, "speed": 1, "vol": 1, "pitch": 0}
-        emotion = kwargs.get("emotion")
-        if emotion:
-            vs["emotion"] = emotion
-        inp: dict = {
-            "text": text,
-            "voice_setting": vs,
-            "audio_setting": {"sample_rate": 32000, "bitrate": 128000, "format": "mp3", "channel": 1},
-        }
-        payload = {"model": model or "MiniMax/speech-2.8-turbo", "input": inp}
-        headers = {
-            "Authorization": f"Bearer {self._api_key(settings.tts_dashscope_api_key)}",
-            "Content-Type": "application/json",
-        }
-        headers = self._headers(headers)
-        logger.info("MiniMax synthesize -> POST %s", url)
-        async with self._http() as client:
-            resp = await client.post(url, json=payload, headers=headers)
-
-        if resp.status_code != 200:
-            raise RuntimeError(f"MiniMax synthesis failed [{resp.status_code}]: {resp.text[:500]}")
-        body = resp.json()
-        audio_data = body.get("output", {}).get("data", {})
-        audio_bytes = b""
-        if audio_data.get("audio"):
-            audio_bytes = bytes.fromhex(audio_data["audio"])
-        else:
-            audio_info = body.get("output", {}).get("audio", {})
-            if audio_info.get("data"):
-                audio_bytes = base64.b64decode(audio_info["data"])
-            elif audio_info.get("url"):
-                async with self._http() as client:
-                    r = await client.get(audio_info["url"])
-                if r.status_code == 200:
-                    audio_bytes = r.content
-            else:
-                ct = resp.headers.get("content-type", "")
-                if "audio" in ct or "octet" in ct:
-                    audio_bytes = resp.content
-        if not audio_bytes:
-            raise RuntimeError(f"MiniMax 响应中没有音频: {str(body)[:300]}")
-        return audio_bytes, []
-
-
-# ──────────────────────────────────────────────
-# 编排层：VoiceService
-# ──────────────────────────────────────────────
+    return getattr(importlib.import_module(target), name)
 
 
 class VoiceService:
@@ -727,11 +475,11 @@ class VoiceService:
         return self._providers[cache_key]
 
     def _model_for(self, provider_name: str) -> str:
-        return {
-            "qwen-tts": settings.tts_qwen_model,
-            "cosyvoice": settings.tts_cosyvoice_model,
-            "minimax": settings.tts_minimax_model,
-        }.get(provider_name, "")
+        """默认模型由**插件条目**声明（`entry.default_model()`），engine 不再硬编码映射。"""
+        from clipwright.providers.tts import resolve_tts_entry
+
+        entry = resolve_tts_entry(provider_name)
+        return entry.default_model() if entry is not None else ""
 
     # ── clone ──
 
@@ -768,17 +516,11 @@ class VoiceService:
                 assert_allowed_path(p)
             except SecurityViolation as e:
                 return VoiceResult(success=False, error=str(e))
-            if provider_name == "qwen-tts":
-                raw = p.read_bytes()
-                mime = _guess_mime(p.suffix)
-                b64 = base64.b64encode(raw).decode()
-                audio_ref = f"data:{mime};base64,{b64}"
-            else:
-                # CosyVoice / MiniMax 需要公网 URL
-                try:
-                    audio_ref = await self._uploader.upload(p)
-                except Exception as e:
-                    return VoiceResult(success=False, error=f"公网上传失败: {e}")
+            # B7-T7.1：引用形态由 provider 声明（`build_audio_ref`），不再按 provider 名分支
+            try:
+                audio_ref = await prov.build_audio_ref(p)
+            except Exception as e:
+                return VoiceResult(success=False, error=f"参考音频处理失败: {e}")
         elif audio_url:
             audio_ref = audio_url
         else:

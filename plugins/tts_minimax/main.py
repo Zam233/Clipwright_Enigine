@@ -1,6 +1,6 @@
 """MiniMax TTS 协议插件（Batch 3 补：把 `minimax` 从内置注册搬进插件）。
 
-与 `tts_qwen` / `tts_cosyvoice` 同策略：插件接管注册与声明，协议类暂留 engine。
+实现位置：就在本目录（`provider.py`，B7-T7.1 迁移完成）。
 `needs_uploader=True`——该 provider 需要公网 URL 才能工作（音色参考音频上传），
 上传器本身是 engine 基座（`PublicUploadManager`），不属于插件。
 """
@@ -17,11 +17,11 @@ class MiniMaxProviderPlugin(BasePlugin):
 
     def contributions(self) -> list[Any]:
         from clipwright.providers.tts import TtsProviderEntry
-        from clipwright.services import voice as _voice
+        from plugins.tts_minimax.provider import MiniMaxProvider
 
         entry = TtsProviderEntry(
             name="minimax",
-            factory=lambda uploader, creds=None: _voice.MiniMaxProvider(uploader, creds),
+            factory=lambda uploader, creds=None: MiniMaxProvider(uploader, creds),
             default_model=_default_model,
             needs_uploader=True,
         )

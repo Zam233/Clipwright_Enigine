@@ -947,3 +947,10 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 > **口径修正**：自检 `provider_plugin_fallback` 原断言"卸载插件后内置补位、归属 `__builtin__`"——
 > 这是旧「让位 + 懒注册」语义。B7 之后改成断言"卸载后解析为 None"（能力缺失是一等状态），
 > 并在 `finally` 里恢复插件贡献以免污染后续检查。
+
+| **T7.1** TTS 三协议类搬进插件 | ✅ 已完成 | `QwenTTSProvider` / `CosyVoiceProvider` / `MiniMaxProvider` → `plugins/tts_{qwen,cosyvoice,minimax}/provider.py`；engine 只留 `BaseVoiceProvider` 抽象、凭据/存储/上传基座与 `VoiceService` 编排；**新增能力位** `BaseVoiceProvider.build_audio_ref()`（默认走上传器，Qwen 覆盖为 base64 data URI），`clone` 不再按 `provider_name == "qwen-tts"` 分支；`_model_for` 改为读插件条目的 `default_model()`；三个插件工厂 import 本地类 | `pytest tests/clipwright/test_voice_*.py tests/clipwright/test_tts_provider_registry.py` → **64 passed**；自检 **20/20**（`provider_impls_in_plugins` 已扩到 tts 三件套）；`import clipwright.main` ok |
+
+> **过渡期妥协（已登记，T7.5 清理）**：`services/voice.py` 用模块 `__getattr__` 暴露三个 TTS 类的
+> **兼容别名**，只为不打断既有 `from ...voice import CosyVoiceProvider` 与
+> `patch("clipwright.services.voice.CosyVoiceProvider.synthesize")` 打桩路径。别名不是实现，
+> 但仍然是 engine 里的“名字残留”，必须在 T7.5 与测试改造一起删掉。

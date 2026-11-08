@@ -103,14 +103,17 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
     - 「让位」与「退场」是两件事：让位 = 插件在就让；退场 = 谁都不在也不注册。裁定 3
       要求 TTS **退场**（TTS 功能插件验收通过后 `ensure_tts_providers_registered()` 不再默认
       调用），**不是**改让位逻辑。
-    - **协议实现住在插件，engine 只留协议与只读注册表**（2026-11-08 审计整改 B7-T7.2/T7.3/T7.4）：
-      `llm` / `embedding` / `rerank` / `stt` 的实现类与探测函数已搬进
-      `plugins/{llm_anthropic,llm_openai_compatible,embedding_providers,rerank_providers,stt_providers}/`；
+    - **协议实现住在插件，engine 只留协议与只读注册表**（2026-11-08 审计整改 B7，五个家族全部迁完）：
+      `llm` / `tts` / `embedding` / `rerank` / `stt` 的实现类与探测函数都已搬进
+      `plugins/{llm_anthropic,llm_openai_compatible,tts_qwen,tts_cosyvoice,tts_minimax,
+      embedding_providers,rerank_providers,stt_providers}/`；
       engine 的 `providers/*` 只保留协议（`providers/base.py`）与 `resolve_*` / `*_names`（**只读注册表**），
-      且 `ensure_*_providers_registered` 这类**懒注册补位已全部删除**——它会让"禁用插件"不改变行为，
+      `ensure_*_providers_registered` 这类**懒注册补位已全部删除**——它会让"禁用插件"不改变行为，
       是外壳化的根因。自检 `provider_impls_in_plugins` 守住这条（新增实现回 engine 会红）。
-      LLM 的工具结果消息风格由 provider 的 `tool_result_style()` 声明（不再按 provider 名分支）。
-      **tts 家族待迁**（B7-T7.1），在迁移完成前不要声称"全部归位"。
+      两处**能力位**取代了按 provider 名的分支：LLM 的 `tool_result_style()`（工具结果消息风格）、
+      TTS 的 `BaseVoiceProvider.build_audio_ref()`（参考音频 → base64 data URI 还是公网 URL）。
+      暂时保留：`services/voice.py` 用 `__getattr__` 暴露三个 TTS 类的**兼容别名**（只为不打断既有
+      导入与打桩路径），T7.5 收尾时删除；**新代码不要依赖别名**。
     - 插件对外暴露的 HTTP 入口**只有** `POST /api/capability/{name}`（`api/capability.py`，
       契约见 PRD §15.1.5）。它按**能力名**解析（`capabilities.resolve_name`，能力名优先、
       工具名兜底），状态码语义固定：`404` 解析不到（插件未装/被禁用）、`422` 参数或路径

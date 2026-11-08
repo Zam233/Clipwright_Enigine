@@ -4,7 +4,7 @@
 `qwen-tts` 是历史最久的音色来源之一，先补插件再删内置，删除就不会造成功能回退
 （见 docs/provider-pluginization-b3t6-removal-checklist.md §4）。
 
-实现位置：与 `tts_cosyvoice` 同策略——协议类暂留 `services/voice.py`，插件接管注册与声明。
+实现位置：就在本目录（`provider.py`，B7-T7.1 迁移完成）；engine 只留抽象基类与宿主基座。
 """
 from __future__ import annotations
 
@@ -19,11 +19,11 @@ class QwenTtsProviderPlugin(BasePlugin):
 
     def contributions(self) -> list[Any]:
         from clipwright.providers.tts import TtsProviderEntry
-        from clipwright.services import voice as _voice
+        from plugins.tts_qwen.provider import QwenTTSProvider
 
         entry = TtsProviderEntry(
             name="qwen-tts",
-            factory=lambda uploader, creds=None: _voice.QwenTTSProvider(creds),
+            factory=lambda uploader, creds=None: QwenTTSProvider(creds),
             default_model=_default_model,
             needs_uploader=False,
         )

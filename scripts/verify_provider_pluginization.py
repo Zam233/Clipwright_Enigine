@@ -438,8 +438,8 @@ def check_provider_impls_in_plugins() -> None:
     root = Path(__file__).resolve().parents[1]
     engine = root / "clipwright"
 
-    # 已迁家族（embedding / rerank / stt / llm）：实现类名 → 插件模块
-    # （必须既有实现、又不再出现在 engine 的 class 定义里）。tts 待 T7.1 迁移后加入。
+    # 已迁家族（embedding / rerank / stt / llm / tts）：实现类名 → 插件模块
+    # （必须既有实现、又不再出现在 engine 的 class 定义里）。
     moved_classes = {
         "OpenAIEmbeddingProvider": "plugins/embedding_providers/providers.py",
         "OllamaEmbeddingProvider": "plugins/embedding_providers/providers.py",
@@ -455,6 +455,9 @@ def check_provider_impls_in_plugins() -> None:
         "AnthropicProvider": "plugins/llm_anthropic/provider.py",
         "OpenAIProvider": "plugins/llm_openai_compatible/provider.py",
         "OllamaProvider": "plugins/llm_openai_compatible/provider.py",
+        "QwenTTSProvider": "plugins/tts_qwen/provider.py",
+        "CosyVoiceProvider": "plugins/tts_cosyvoice/provider.py",
+        "MiniMaxProvider": "plugins/tts_minimax/provider.py",
     }
     for plugin_rel in set(moved_classes.values()):
         plugin_file = root / plugin_rel
