@@ -161,12 +161,14 @@ def test_stream_generate_uses_model_generation(monkeypatch):
             seen.append({**kwargs, "model": model})
             yield LLMResponse(content="x", success=True, status_code=200)
 
-    svc = LLMService()
     # 全局 route（可能来自其它用例/持久化配置）会覆盖 target_model；本用例只验
     # "按 settings 的模型读取 generation"，显式隔离掉路由层。
     monkeypatch.setattr("clipwright.services.model_router.active_route", lambda: None)
     monkeypatch.setattr(settings, "llm_provider", "openai", raising=False)
     monkeypatch.setattr(settings, "llm_model", "m1", raising=False)
+    # LLMService 在 __init__ 里快照 settings.llm_provider；必须先 patch 再构造，
+    # 否则 CI 默认 provider（无 .env）与用例假设不一致。
+    svc = LLMService()
     monkeypatch.setattr(LLMService, "client", _StreamClient(), raising=False)
     monkeypatch.setattr(LLMService, "flash_client", _StreamClient(), raising=False)
 

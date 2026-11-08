@@ -212,11 +212,23 @@ def backend_routes() -> dict[str, set[str]]:
     """{路径模板: {允许的方法}}（来自 FastAPI 路由表）。"""
     from clipwright.main import app
 
-    # FastAPI 0.162 起 `app.routes` 不再等价于「全部已注册路由」（实测 CI 只剩 1 条）；
-    # 路由表的稳定来源是 `app.router.routes`。老版本两者相同。
-    routes = getattr(getattr(app, "router", None), "routes", None) or getattr(app, "routes", [])
+    # FastAPI 0.162 起 `include_router` 的结果被包成 `_IncludedRouter`（真实路由在
+    # `.original_router.routes`），`app.routes` 只剩少数真实 APIRoute。递归展开兼容两版。
+    def _flatten(routes: object):
+        for route in routes or []:  # type: ignore[union-attr]
+            inner = getattr(route, "original_router", None)
+            if inner is not None and getattr(inner, "routes", None):
+                yield from _flatten(inner.routes)
+                continue
+            sub = getattr(route, "routes", None) or getattr(
+                getattr(route, "router", None), "routes", None)
+            if sub:
+                yield from _flatten(sub)
+                continue
+            yield route
+
     out: dict[str, set[str]] = {}
-    for route in routes:
+    for route in _flatten(getattr(app, "routes", [])):
         path = getattr(route, "path", "")
         if not path.startswith("/api/"):
             continue
