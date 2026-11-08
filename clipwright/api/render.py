@@ -579,6 +579,7 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
         logger.warning("渲染任务持久化失败（降级内存）: %s", e)
 
     async def _run():
+        nonlocal params  # hook 可能改写；声明后 615 行前的读取不会变成"局部先引用"
         # 优先级生效——低优先级任务在高优任务排队时让位（原实现 spawn 全
         # 并发，priority 仅用于列表排序）。等待有界（30 分钟）防饥饿。
         import time as _time

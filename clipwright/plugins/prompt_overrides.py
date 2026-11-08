@@ -46,7 +46,6 @@ __all__ = [
     "MAX_RETURNS",
     "MAX_OUTPUT_CHARS",
     "WIRED_CONSTANTS",
-    "MIN_OUTPUT_CHARS",
 ]
 
 # ── 阈值（PRD §15.2.7 初值；可按真实 builder 基线校准，方法不变）──

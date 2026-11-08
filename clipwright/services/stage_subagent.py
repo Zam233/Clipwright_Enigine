@@ -631,6 +631,9 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
                        "scope": stage, "impact": "下游阶段可能拿不到该产物"}
                       for e in merge_errors[:5]]
 
+    # attempt = 该阶段在本任务里跑过几次（含本次）：进度去重键与报告文件名都用它
+    attempt_no = sum(1 for r in _RUNS.get(task_id, []) if r.stage == stage) + 1
+
     # 进度播报（PRD §14）：阶段结束（写清状态/降级/下一步）
     try:
         from clipwright.services import progress as _progress
@@ -673,8 +676,6 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     if root:
         from clipwright.services import stage_report
 
-        # attempt = 该阶段在本任务里跑过几次（含本次），用于报告文件名 03-edit-2.md
-        attempt_no = sum(1 for r in _RUNS.get(task_id, []) if r.stage == stage) + 1
         # 产物先落盘再写报告：引用里只带 preview，大对象留给 read_artifact 按需读
         try:
             result.artifacts = persist_artifacts(root, attempt_no, result.artifacts, stage=stage)
