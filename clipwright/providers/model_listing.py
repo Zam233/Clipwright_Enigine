@@ -17,8 +17,8 @@ from typing import Any
 
 from clipwright.config import logger
 
-#: 支持自动拉取模型列表的 provider（其余类型返回 unsupported + 提示手动添加）
-SUPPORTED_LISTING_PROVIDERS: tuple[str, ...] = ("", "anthropic", "openai", "ollama")
+#: 模型清单端点/鉴权由 provider 的 `model_listing_spec()` 声明（B7-T7.5）；
+#: 没有声明 = 不支持自动拉取（本地/自建端点常见）。
 
 LISTING_STATUSES: tuple[str, ...] = ("ok", "empty", "unsupported", "error")
 LISTING_ERROR_CODES: tuple[str, ...] = (
@@ -46,12 +46,6 @@ class ModelListingResult:
         return out
 
 
-def _endpoint(provider: str, base: str) -> str:
-    name = provider
-    if name in ("", "anthropic"):
-        return f"{base or 'https://api.anthropic.com'}/v1/models"
-    default_base = "http://localhost:11434/v1" if name == "ollama" else "https://api.openai.com/v1"
-    return f"{base or default_base}/models"
 
 
 def _parse_items(data: Any) -> list[str]:
@@ -75,26 +69,34 @@ def _parse_items(data: Any) -> list[str]:
 async def list_models_result(provider: str, resolved: dict[str, Any]) -> ModelListingResult:
     """拉取某 provider 的模型清单，返回带状态/错误码的结果（B6）。"""
     name = (provider or "").strip().lower()
-    if name not in SUPPORTED_LISTING_PROVIDERS:
-        logger.info("provider %s 无内置模型列表实现", name)
+    from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+    from clipwright.providers.base import llm_model_listing_spec
+
+    # 直接读注册表（不 import services.llm：providers 层不该依赖调用层，
+    # 也避免测试期 patch httpx 后导入 isobase 造成的连带失败）
+    _item = ContributionRegistry.resolve(ContributionKind.LLM_PROVIDER, name) if name else None
+    impl = _item.object if _item is not None else None
+    spec = llm_model_listing_spec(impl) if impl is not None else None
+    if spec is None:
+        logger.info("provider %s 未声明模型列表端点（插件未装/被禁用或不支持）", name)
         return ModelListingResult(
             status="unsupported", error_code="provider_unsupported",
             note=(f"provider「{name}」不支持自动获取模型列表（本地/自建端点常见），"
                   "请用「自定义模型」手动添加"),
         )
 
-    base = str(resolved.get("base_url") or "").rstrip("/")
+    base = str(resolved.get("base_url") or spec.get("base") or "").rstrip("/")
     key = resolved.get("api_key") or ""
-    headers = {"Accept": "application/json", **dict(resolved.get("headers") or {})}
+    headers = {"Accept": "application/json", **dict(spec.get("extra_headers") or {}),
+               **dict(resolved.get("headers") or {})}
     timeout = float(resolved.get("timeout_sec") or 120)
     if key:
-        if name in ("", "anthropic"):
+        if str(spec.get("auth") or "") == "x-api-key":
             headers["x-api-key"] = str(key)
-            headers["anthropic-version"] = "2023-06-01"
         else:
             headers["Authorization"] = f"Bearer {key}"
 
-    url = _endpoint(name, base)
+    url = f"{base}{spec['path']}"
     try:
         import httpx
 

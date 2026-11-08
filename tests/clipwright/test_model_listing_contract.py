@@ -24,6 +24,30 @@ from clipwright.providers.model_listing import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _llm_plugins_registered():
+    """B7-T7.5：模型清单端点由 provider 声明；测试进程显式注册两个 LLM 插件。"""
+    from clipwright.plugins.contribution import ContributionRegistry
+    from plugins.llm_anthropic.main import AnthropicProviderPlugin
+    from plugins.llm_openai_compatible.main import OpenACompatibleProviderPlugin
+
+    owners = []
+    for owner, plugin in (
+        ("listing_anthropic", AnthropicProviderPlugin()),
+        ("listing_openai", OpenACompatibleProviderPlugin()),
+    ):
+        items = plugin.contributions()
+        ContributionRegistry.declared_scope(owner, [c.key for c in items])
+        report = ContributionRegistry.register(owner, items)
+        assert report.ok, report.rejected
+        owners.append(owner)
+    try:
+        yield
+    finally:
+        for owner in owners:
+            ContributionRegistry.unregister_plugin(owner)
+
+
 class _Resp:
     def __init__(self, status_code: int = 200, payload: Any = None, *, text: str = "") -> None:
         self.status_code = status_code

@@ -980,3 +980,8 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 > **T7.5 仍剩**：`providers/model_listing.py`（需 provider 声明 `default_base_url()` + 鉴权头风格）、
 > `rag/embedder.py:176-180`（走 `resolve_embedding_provider()` 会改变"插件缺失时兜底"语义，需与 A6 一起裁定）、
 > `api/render.py` 的 `"local"`（需定义默认渲染后端能力位）。
+
+| **T7.5（续 4）** model_listing 端点/鉴权改能力位 | ✅ 已完成本轮 | `providers/model_listing.py` 删掉 `SUPPORTED_LISTING_PROVIDERS` 与 `_endpoint()`（`("", "anthropic")` / `"ollama"` 两处按名分支）；端点与鉴权头由 provider 的 `model_listing_spec()` 声明（Anthropic：`/v1/models` + `x-api-key` + `anthropic-version`；OpenAI 兼容：`/models` + `Bearer`，Ollama 默认本地端点）；解析 provider 直接查注册表（不 import `services.llm`——providers 层不该依赖调用层，也避免测试期 patch `httpx` 后导入 `isobase` 的连带失败）；无声明 → `unsupported + provider_unsupported`（口径 A） | `test_model_listing_contract.py` **14 passed**（补 LLM 插件注册 fixture）；`test_provider_available.py` **12 passed**；自检 **21/21**（门禁已扩到 model_listing）；`import clipwright.main` ok |
+
+> **T7.5 仍剩两项**：`rag/embedder.py:176-180`（走 `resolve_embedding_provider()` 会改变"插件缺失时兜底"语义，需与 A6 一起裁定）、
+> `api/render.py` 的 `"local"`（需定义默认渲染后端能力位）。

@@ -47,6 +47,15 @@ class AnthropicProvider:
         """Anthropic：image 用 {type: image, source: {base64...}} 块。"""
         return "anthropic"
 
+    def model_listing_spec(self) -> dict[str, Any]:
+        """Anthropic：/v1/models + x-api-key 头 + anthropic-version。"""
+        return {
+            "base": "https://api.anthropic.com",
+            "path": "/v1/models",
+            "auth": "x-api-key",
+            "extra_headers": {"anthropic-version": "2023-06-01"},
+        }
+
     def tool_result_style(self) -> str:
         """工具结果消息风格：Anthropic 用 content 数组里的 tool_use / tool_result 块。"""
         return "anthropic"

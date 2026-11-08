@@ -269,6 +269,24 @@ def llm_vision_message_format(impl: Any) -> str:
         return "openai"
 
 
+def llm_model_listing_spec(impl: Any) -> dict[str, Any] | None:
+    """模型清单端点/鉴权声明（provider 能力位；缺方法 → None = 不支持自动拉取）。
+
+    形状：``{"base": 默认主机, "path": "/v1/models", "auth": "x-api-key"|"bearer",
+    "extra_headers": {...}}``。端点风格与鉴权头是**厂商知识**，不该写在 engine 里。
+    """
+    fn = getattr(impl, "model_listing_spec", None)
+    if not callable(fn):
+        return None
+    try:
+        spec = fn()
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(spec, dict) or not str(spec.get("path") or ""):
+        return None
+    return spec
+
+
 def missing_llm_provider_methods(impl: Any) -> list[str]:
     """列出缺失的协议方法（注册时校验用；空列表 = 符合协议）。"""
     required = ("build_client", "capabilities", "normalize_messages",

@@ -514,6 +514,11 @@ def check_provider_name_branches_removed() -> None:
         "clipwright/services/vision.py": ('vision_prov == "anthropic"',),
         "clipwright/services/agent_loop.py": ('("ollama",)',),
         "clipwright/animation/mg/visual_eval.py": ('provider == "anthropic"',),
+        "clipwright/providers/model_listing.py": (
+            "SUPPORTED_LISTING_PROVIDERS",
+            '"anthropic"',
+            '"ollama"',
+        ),
     }
     for rel, needles in forbidden.items():
         body = (root / rel).read_text(encoding="utf-8")

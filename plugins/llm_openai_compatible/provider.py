@@ -44,6 +44,16 @@ class OpenAIProvider:
         """OpenAI 兼容：image 用 {type: image_url, image_url: {url: data URI}}。"""
         return "openai"
 
+    def model_listing_spec(self) -> dict[str, Any]:
+        """OpenAI 兼容：{base}/models + Bearer；ollama 默认本地端点。"""
+        from clipwright.config import settings
+
+        if self.name == "ollama":
+            base = "http://localhost:11434/v1"
+        else:
+            base = str(getattr(settings, "llm_base_url", "") or "") or "https://api.openai.com/v1"
+        return {"base": base, "path": "/models", "auth": "bearer"}
+
     def tool_result_style(self) -> str:
         """工具结果消息风格：OpenAI 用 assistant.tool_calls + role=tool 消息。"""
         return "openai"
