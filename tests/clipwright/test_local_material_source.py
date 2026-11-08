@@ -10,11 +10,10 @@ from __future__ import annotations
 
 import pytest
 
-from clipwright.material.local_source import (
+from plugins.local_material.local_folder import (
     IMAGE_EXTS,
     VIDEO_EXTS,
     LocalFolderSource,
-    source_from_env,
 )
 
 
@@ -112,18 +111,31 @@ class TestSearch:
 
 
 class TestEnvFactory:
-    def test_unset_env_returns_none(self, monkeypatch) -> None:
-        monkeypatch.delenv("CLIPWRIGHT_LOCAL_MATERIAL_DIR", raising=False)
-        assert source_from_env() is None
+    """B8-T8.7：`source_from_env` 已从 engine 删除；读环境变量是插件自己的配置来源。
 
-    def test_missing_dir_returns_none(self, monkeypatch, tmp_path) -> None:
+    这里不再测"engine 的工厂函数"，而是测**插件在未配置/目录缺失时的行为**——
+    这才是用户实际会遇到的路径（未配置 = 零贡献，而不是返回一个空源）。
+    """
+
+    def _plugin(self):
+        from plugins.local_material.main import LocalMaterialPlugin
+
+        return LocalMaterialPlugin()
+
+    def test_unset_env_returns_no_contribution(self, monkeypatch) -> None:
+        monkeypatch.delenv("CLIPWRIGHT_LOCAL_MATERIAL_DIR", raising=False)
+        assert self._plugin().contributions() == []
+
+    def test_missing_dir_returns_no_contribution(self, monkeypatch, tmp_path) -> None:
         monkeypatch.setenv("CLIPWRIGHT_LOCAL_MATERIAL_DIR", str(tmp_path / "nope"))
-        assert source_from_env() is None
+        assert self._plugin().contributions() == []
 
     def test_valid_dir_builds_source(self, monkeypatch, tmp_path) -> None:
+        (tmp_path / "a.mp4").write_bytes(b"\x00" * 32)
         monkeypatch.setenv("CLIPWRIGHT_LOCAL_MATERIAL_DIR", str(tmp_path))
-        source = source_from_env()
-        assert isinstance(source, LocalFolderSource)
+        contributions = self._plugin().contributions()
+        assert len(contributions) == 1
+        assert isinstance(contributions[0].object, LocalFolderSource)
 
 
 class TestPluginContribution:

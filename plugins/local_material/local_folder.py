@@ -1,17 +1,14 @@
-"""本地文件夹素材源：把用户自己的素材目录接进多源检索（真实、可离线）。
+"""本地素材文件夹源（**能力方**：插件拥有实现，engine 只留 `MaterialSource` 协议）。
 
-为什么需要它：文档里一直写着"本地文件素材源 / 扫描指定目录"，但代码里只有
-JSON 目录、URL 列表与 RAG 三种——**文档承诺了不存在的源**。这个模块把承诺补上。
+2026-11-08 审计整改（B8-T8.7）：`LocalFolderSource` 原先在 `clipwright/material/local_source.py`
+（123 行扫描/索引/搜索实现），插件只做"读配置 + 实例化 + 注册"——典型的半壳。
+现在实现搬到这里，engine 侧只留协议基类与注册表。
 
-设计取舍：
-
-- **只索引、不搬文件**：素材留在原地，索引只记路径与轻量元数据；
-- **不猜时长/分辨率**：能拿到就填（PIL/ffprobe 可选），拿不到留空，
-  不用编造值污染后续排序；
-- **按需重建**：目录 mtime 变了才重新扫描，避免每次搜索都遍历磁盘。
+`source_from_env()` 已删除：读环境变量是插件自己的配置来源（`plugins/local_material/main.py`），
+不该在 engine 里留一个没人调用的入口。
 """
-
 from __future__ import annotations
+
 
 import os
 import re
@@ -176,23 +173,3 @@ class LocalFolderSource(MaterialSource):
 
     async def close(self) -> None:
         self._index = []
-
-
-def source_from_env(env_var: str = "CLIPWRIGHT_LOCAL_MATERIAL_DIR") -> LocalFolderSource | None:
-    """按环境变量建源；未配置或目录不存在返回 None（零贡献 + 可查原因）。"""
-    raw = os.environ.get(env_var, "").strip()
-    if not raw:
-        return None
-    root = Path(raw)
-    if not root.is_dir():
-        logger.info("[LocalFolder] %s 指向的目录不存在：%s（不贡献素材）", env_var, raw)
-        return None
-    return LocalFolderSource(root)
-
-
-__all__ = [
-    "IMAGE_EXTS",
-    "LocalFolderSource",
-    "VIDEO_EXTS",
-    "source_from_env",
-]

@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--top-k", type=int, default=5)
     args = parser.parse_args(argv)
 
-    from clipwright.material.local_source import LocalFolderSource
+    from plugins.local_material.local_folder import LocalFolderSource
 
     root = Path(args.dir)
     inventory = _inventory(root)

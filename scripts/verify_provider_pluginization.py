@@ -680,6 +680,33 @@ def check_export_preset_wiring() -> None:
     assert "douyin" not in _preset_map(), "插件注销后 douyin 仍在预设表（有内置兜底？）"
 
 
+@check("material_impl_in_plugin")
+def check_material_impl_in_plugin() -> None:
+    """B8-T8.7：`LocalFolderSource`（扫描/索引/搜索）必须只在 local_material 插件里。
+
+    旧布局是 engine 持实现、插件只"读配置 + 实例化 + 注册"（S1+S2 半壳）：
+    插件禁用后 engine 仍留着一个完整可用源，看起来能力还在。
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    plugin = root / "plugins/local_material/local_folder.py"
+    assert plugin.exists(), "缺少 plugins/local_material/local_folder.py"
+    body = plugin.read_text(encoding="utf-8")
+    for needle in ("class LocalFolderSource", "def refresh", "class _IndexedFile"):
+        assert needle in body, f"插件实现缺少 {needle}"
+
+    engine = root / "clipwright/material"
+    assert not (engine / "local_source.py").exists(), "engine 仍有 material/local_source.py"
+    joined = "".join(f.read_text(encoding="utf-8") for f in engine.rglob("*.py"))
+    for needle in ("LocalFolderSource", "source_from_env"):
+        assert needle not in joined, f"engine material 仍引用 {needle}"
+
+    import clipwright.material as material
+
+    assert not hasattr(material, "LocalFolderSource"), "material 包仍导出 LocalFolderSource"
+
+
 @check("prompt_builder_guards")
 def check_builder_guards() -> None:
     from clipwright.plugins import prompt_overrides as O

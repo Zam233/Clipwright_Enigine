@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 from clipwright.config import logger
-from clipwright.material.local_source import LocalFolderSource
+from plugins.local_material.local_folder import LocalFolderSource
 from clipwright.plugins import CapabilityPlugin
 from clipwright.plugins.contribution import Contribution, ContributionKind
 from clipwright.schema.plugin import PluginManifest, PluginKind
