@@ -77,7 +77,9 @@ def test_get_task_and_events():
     assert got["events"] >= 1
     events = client.get(f"/api/task/{tid}/events").json()
     assert events["count"] >= 1
-    assert events["items"][0]["type"] in ("task_start", "plan")
+    # B5：任务创建即写 goal_update（目标建立），随后才是 task_start/plan。
+    first_types = [e["type"] for e in events["items"][:3]]
+    assert "task_start" in first_types or "plan" in first_types, first_types
 
 
 def test_unknown_task_404():

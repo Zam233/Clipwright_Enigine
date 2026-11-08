@@ -78,7 +78,8 @@ def test_progress_event_type_is_registered():
     from clipwright.schema.task import EVENT_TYPES
 
     assert "progress" in EVENT_TYPES
-    assert len(EVENT_TYPES) == 29
+    # 计数漂移守卫：新增事件类型时同步这里（goal_update / soft_landing 为终止机制引入）
+    assert len(EVENT_TYPES) == 31
 
 
 def test_emit_never_raises_when_event_channel_broken(monkeypatch, tmp_path):

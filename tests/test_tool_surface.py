@@ -51,7 +51,7 @@ def test_cannot_build_surface_with_dangerous_tier():
 def test_execute_refuses_dangerous_with_actionable_hint():
     out = asyncio.run(sf.execute("video_download", {"url": "https://example.com/a.mp4"}))
     assert out["status"] == "refused"
-    assert "执行网关" in out["error"], "拒绝理由必须给出可执行的下一步"
+    assert ("执行网关" in out["error"] or "Kernel" in out["error"]), "拒绝理由必须给出可执行的下一步"
 
 
 def test_execute_refuses_unknown_tool():

@@ -22,6 +22,19 @@ from clipwright.schema.agent import AgentContext, AgentDecision, EditInput
 from clipwright.tool.registry import ToolRegistry
 
 
+@pytest.fixture(autouse=True)
+def _builtin_tools_registered():
+    """EditAgent 通过**能力名**解析工具（`video_trim` 等）。
+
+    B5 起 `call_tool` 走 capability 解析：注册表里没有 `video_trim` 时它会如实报
+    "能力缺失"并跳过该场，于是画中画/裁剪断言全部落空。单测默认等价于"内置工具已注册"。
+    """
+    from clipwright.tool import register_builtin_tools
+
+    register_builtin_tools()
+    yield
+
+
 def _context() -> AgentContext:
     """快速节奏类型 + persona cut_profile 的默认上下文（规则 base_shot_ms=2000）。
 
@@ -94,14 +107,24 @@ def _input(context: AgentContext, scenes: list[dict],
     )
 
 
-def _candidates_with_alt() -> list[dict]:
-    """场景 1 有两段**不同**素材：主画面用 main，画中画可以拿 alt。"""
+def _candidates_with_alt(base_dir: Path | None = None) -> list[dict]:
+    """场景 1 有两段**不同**素材：主画面用 main，画中画可以拿 alt。
+
+    B5 之后 `EditAgent` 会先 `os.path.exists` 检查素材（不存在就跳过该场），
+    所以需要真实文件；传 `base_dir=tmp_path` 即可。
+    """
+    base = base_dir or Path(r"C:\tmp")
+    main = base / "main.mp4"
+    alt = base / "alt.mp4"
+    if base_dir is not None:
+        main.write_bytes(b"\x00" * 32)
+        alt.write_bytes(b"\x00" * 32)
     return [{
         "scene_index": 1,
         "score": 0.9,
         "suggested_assets": [
-            {"asset_id": "main.mp4", "local_path": r"C:\tmp\main.mp4", "score": 0.9},
-            {"asset_id": "alt.mp4", "local_path": r"C:\tmp\alt.mp4", "score": 0.7},
+            {"asset_id": "main.mp4", "local_path": str(main), "score": 0.9},
+            {"asset_id": "alt.mp4", "local_path": str(alt), "score": 0.7},
         ],
     }]
 
@@ -282,7 +305,7 @@ async def test_llm_output_treated_as_data_only(monkeypatch) -> None:
 # ── 注入 edit plan：真实影响产出 clips ───────────────────
 
 @pytest.mark.asyncio
-async def test_profile_injects_into_edit_plan(monkeypatch) -> None:
+async def test_profile_injects_into_edit_plan(monkeypatch, tmp_path: Path) -> None:
     """LLM 档案注入 edit plan：时长/转场/PiP/节奏备注全部作用于产出。"""
     agent = EditAgent()
     monkeypatch.setattr(settings, "llm_api_key", "test-key")
@@ -296,7 +319,7 @@ async def test_profile_injects_into_edit_plan(monkeypatch) -> None:
     monkeypatch.setattr(ToolRegistry, "execute", _fake_tool_execute)
 
     ctx = _context()
-    inp = _input(ctx, _scenes(with_duration=False), _candidates_with_alt())
+    inp = _input(ctx, _scenes(with_duration=False), _candidates_with_alt(tmp_path))
     out = await agent.execute(inp, ctx)
 
     assert out.decision == AgentDecision.PASS

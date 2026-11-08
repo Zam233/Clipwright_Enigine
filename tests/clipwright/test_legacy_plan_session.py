@@ -37,6 +37,9 @@ def _seed(session_id: str, plan: dict | None) -> None:
 @pytest.fixture(autouse=True)
 def _no_mongo(monkeypatch):
     monkeypatch.setattr(rs, "_mongo_ok", lambda: False)
+    # 2026-11 起默认走任务派发（确认 → planning + Task）；本文件测的是**应急回退**分支
+    # （同步生成 / legacy plan），所以关掉派发开关。
+    monkeypatch.setattr(rs, "PLAN_DISPATCH_ENABLED", False)
     yield
 
 

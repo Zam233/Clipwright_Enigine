@@ -652,6 +652,56 @@ def limits_from_settings() -> TaskLimits:
     return limits
 
 
+def _escrow_of(task: Any) -> Any:
+    """取任务的预算托管；没有则 None（测试桩常见）。"""
+    try:
+        return getattr(task, "escrow", None)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _goal_of(task: Any) -> Any:
+    """取任务目标；缺失时即时创建并尽力挂回（同 `_closeout_of` 的理由）。"""
+    goal = getattr(task, "goal", None)
+    if goal is not None:
+        return goal
+    from clipwright.schema.task import Goal
+
+    plan_only = bool(getattr(getattr(task, "request", None), "plan_only", False))
+    goal = Goal(
+        id=f"goal_{getattr(task, 'id', 'task')}",
+        title=("在收口规范内完成规划并交付规划书" if plan_only
+               else "在收口规范内完成创作并交付收尾报告"),
+    )
+    try:
+        task.goal = goal  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        pass
+    return goal
+
+
+def _closeout_of(task: Any) -> Any:
+    """取任务的收口状态；**不假设** `task.closeout` 一定存在。
+
+    为什么需要它：`Closeout` 是 2026-11-02 引入的字段，而大量单测用
+    `types.SimpleNamespace` / 轻量 dataclass 构造 Task 桩（历史遗留）。在此之前
+    Kernel 直接 `task.closeout`，于是这些桩一跑就 `AttributeError`——测试红在
+    "桩缺字段"而不是被测逻辑上。真实 `Task` 永远有该字段（default_factory），
+    所以这里只是容错：缺失时即时创建一个并尽力挂回任务对象。
+    """
+    closeout = getattr(task, "closeout", None)
+    if closeout is not None:
+        return closeout
+    from clipwright.schema.task import Closeout
+
+    closeout = Closeout()
+    try:
+        task.closeout = closeout  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 — frozen/slots 桩挂不回去也无妨
+        pass
+    return closeout
+
+
 class AgentKernel:
     def __init__(self, deps: Optional[KernelDeps] = None, *,
                  kernel_mode: Optional[str] = None) -> None:
@@ -709,37 +759,31 @@ class AgentKernel:
 
         policy = _policy.resolve_for_task(task)
         limit = task.limits
-        if task.goal is None:
-            task.goal = Goal(
-                id=f"goal_{task.id}",
-                title=("在收口规范内完成规划并交付规划书" if task.request.plan_only
-                       else "在收口规范内完成创作并交付收尾报告"),
-                completion_criteria=(
-                    ["reports/plan.json 存在且可读"] if task.request.plan_only
-                    else ["final_timeline 存在", "降级收据已处置"]
-                ),
-            )
-        task.goal.max_rounds = int(policy.soft_landing_round)
-        task.goal.blocked_after_consecutive_rounds = int(
+        goal = _goal_of(task)
+        goal.max_rounds = int(policy.soft_landing_round)
+        goal.blocked_after_consecutive_rounds = int(
             getattr(settings, "agent_goal_blocked_after_rounds", 3) or 3)
-        task.closeout.max_rounds = int(policy.closeout_rounds)
-        task.closeout.max_tool_calls = int(policy.closeout_tool_calls)
-        task.closeout.max_wall_sec = float(policy.closeout_max_wall_sec)
+        _closeout_of(task).max_rounds = int(policy.closeout_rounds)
+        _closeout_of(task).max_tool_calls = int(policy.closeout_tool_calls)
+        _closeout_of(task).max_wall_sec = float(policy.closeout_max_wall_sec)
         # 质量预留只在金额预算非空时冻结（不凭空的限制）
-        task.escrow = _policy.build_escrow(limit.budget_usd, policy)
+        try:
+            task.escrow = _policy.build_escrow(limit.budget_usd, policy)
+        except AttributeError:  # 冻结/slots 的测试桩
+            pass
         logger.info(
             "任务 %s 终止策略快照: source=%s soft_landing_round=%s budget=%s reserve=%s",
-            task.id, policy.source, task.goal.max_rounds, limit.budget_usd,
-            task.escrow.reserve_usd if task.escrow else 0.0,
+            task.id, policy.source, _goal_of(task).max_rounds, limit.budget_usd,
+            _escrow_of(task).reserve_usd if _escrow_of(task) else 0.0,
         )
         from clipwright.services.task_events import emit
 
-        emit(task.id, "goal_update", f"目标已建立：{task.goal.title}",
-             {"goal_id": task.goal.id, "status": _goal_status_value(task),
-              "rounds_used": task.goal.rounds_used, "max_rounds": task.goal.max_rounds,
+        emit(task.id, "goal_update", f"目标已建立：{_goal_of(task).title}",
+             {"goal_id": _goal_of(task).id, "status": _goal_status_value(task),
+              "rounds_used": _goal_of(task).rounds_used, "max_rounds": _goal_of(task).max_rounds,
               "blocker_streak": 0, "blocked_reason": "", "terminal_reason": None,
               "policy_source": policy.source,
-              "reserve_usd": task.escrow.reserve_usd if task.escrow else 0.0},
+              "reserve_usd": _escrow_of(task).reserve_usd if _escrow_of(task) else 0.0},
              span="kernel")
 
     def get(self, task_id: str) -> Optional[Task]:
@@ -810,9 +854,9 @@ class AgentKernel:
               # devplan §4：新字段与旧 field 并行；旧前端只读 reason 不受影响
               "terminal_reason": "user_cancelled",
               "goal_status": _goal_status_value(task) or None,
-              "goal_id": task.goal.id if task.goal else "",
-              "closeout_mode": task.closeout.mode,
-              "escrow": task.escrow.model_dump_public() if task.escrow else None})
+              "goal_id": _goal_of(task).id if _goal_of(task) else "",
+              "closeout_mode": _closeout_of(task).mode,
+              "escrow": _escrow_of(task).model_dump_public() if _escrow_of(task) else None})
         self._checkpoint(task)
         return task
 
@@ -1156,7 +1200,7 @@ class AgentKernel:
 
         task.usage.turns += 1
         driver = self.deps.driver or agent_loop.run_loop
-        _closeout_flag = str(task.closeout.mode) == "soft_landing"
+        _closeout_flag = str(_closeout_of(task).mode) == "soft_landing"
         try:
             outcome = await driver(
                 task, context_text=context_text, shadow=shadow,
@@ -1227,16 +1271,16 @@ class AgentKernel:
                 unfinished = list(payload.get("unfinished") or [])
                 conclusion = ("已跑满运行上限，进入收口并交付了收尾报告"
                               "（这不等于任务全部完成）")
-                if task.goal is not None:
-                    task.goal.status = GoalStatus.capped
+                if getattr(task, 'goal', None) is not None:
+                    _goal_of(task).status = GoalStatus.capped
             else:
                 completed = []
                 unfinished = [text]
                 conclusion = f"触闸收尾：{text}"
-                if task.goal is not None and _treason == "blocked":
-                    task.goal.status = GoalStatus.blocked
-                    task.goal.blocked_reason = str(text)[:500]
-                    task.goal.blocker_streak += 1
+                if _goal_of(task) is not None and _treason == "blocked":
+                    _goal_of(task).status = GoalStatus.blocked
+                    _goal_of(task).blocked_reason = str(text)[:500]
+                    _goal_of(task).blocker_streak += 1
             task.finish = TaskFinish(
                 conclusion=conclusion,
                 completed=completed,
@@ -1256,11 +1300,11 @@ class AgentKernel:
                   # ── 终止机制（devplan §4：新字段与旧 reason 并行）──
                   "terminal_reason": _treason,
                   "blocker_code": _blocker,
-                  "goal_id": task.goal.id if task.goal else "",
+                  "goal_id": _goal_of(task).id if _goal_of(task) else "",
                   "goal_status": _goal_status_value(task) or None,
-                  "closeout_mode": task.closeout.mode,
-                  "closeout": task.closeout.model_dump(mode="json"),
-                  "escrow": task.escrow.model_dump_public() if task.escrow else None},
+                  "closeout_mode": _closeout_of(task).mode,
+                  "closeout": _closeout_of(task).model_dump(mode="json"),
+                  "escrow": _escrow_of(task).model_dump_public() if _escrow_of(task) else None},
                  span="kernel")
             self._emit_goal_update(task, task.finish.conclusion)
             self._record_task_metrics(task, gate_reason)
@@ -1447,14 +1491,14 @@ class AgentKernel:
             if bool(getattr(settings, "agent_terminal_reason_v1", True)):
                 task.terminal_reason = _treason
             task.blocker_code = _blocker
-            if task.goal is not None:
+            if getattr(task, 'goal', None) is not None:
                 if _treason in (TerminalReason.achieved, TerminalReason.plan_only_completed,
                                 TerminalReason.dry_run_completed):
-                    task.goal.status = GoalStatus.achieved
+                    _goal_of(task).status = GoalStatus.achieved
                 elif _treason is TerminalReason.capped:
-                    task.goal.status = GoalStatus.capped
+                    _goal_of(task).status = GoalStatus.capped
                 elif _treason is TerminalReason.blocked:
-                    task.goal.status = GoalStatus.blocked
+                    _goal_of(task).status = GoalStatus.blocked
             task.finish = TaskFinish(
                 conclusion=conclusion or f"工具循环结束：{len(outcome.get('tool_calls') or [])} 次调用",
                 completed=[],
@@ -1487,10 +1531,10 @@ class AgentKernel:
                   # ── 终止机制（devplan §4）──
                   "terminal_reason": _treason.value,
                   "blocker_code": _blocker,
-                  "goal_id": task.goal.id if task.goal else "",
+                  "goal_id": _goal_of(task).id if _goal_of(task) else "",
                   "goal_status": _goal_status_value(task) or None,
-                  "closeout_mode": task.closeout.mode,
-                  "escrow": task.escrow.model_dump_public() if task.escrow else None,
+                  "closeout_mode": _closeout_of(task).mode,
+                  "escrow": _escrow_of(task).model_dump_public() if _escrow_of(task) else None,
                   "tool_calls": len(outcome.get("tool_calls") or [])},
                  run_id=str(finish.get("run_id") or ""), span="kernel")
             self._emit_goal_update(task, task.finish.conclusion)
@@ -1502,8 +1546,8 @@ class AgentKernel:
         category = str(failure.get("category") or "")
         task.terminal_reason = TerminalReason.model_error
         task.blocker_code = category or "model_error"
-        if task.goal is not None and _goal_status_value(task) == "active":
-            task.goal.status = GoalStatus.paused
+        if _goal_of(task) is not None and _goal_status_value(task) == "active":
+            _goal_of(task).status = GoalStatus.paused
         task.finish = TaskFinish(
             conclusion=(f"工具循环失败：{outcome.get('error') or reason}"
                         + (f"（category={category}，"
@@ -1520,10 +1564,10 @@ class AgentKernel:
               "completed": [], "unfinished": list(task.finish.unfinished or []),
               "terminal_reason": "model_error",
               "blocker_code": task.blocker_code,
-              "goal_id": task.goal.id if task.goal else "",
+              "goal_id": _goal_of(task).id if _goal_of(task) else "",
               "goal_status": _goal_status_value(task) or None,
-              "closeout_mode": task.closeout.mode,
-              "escrow": task.escrow.model_dump_public() if task.escrow else None,
+              "closeout_mode": _closeout_of(task).mode,
+              "escrow": _escrow_of(task).model_dump_public() if _escrow_of(task) else None,
               "usage": task.usage.model_dump()}, span="kernel")
         self._emit_goal_update(task, task.finish.conclusion)
         self._record_task_metrics(task, task.finish.reason)
@@ -1572,14 +1616,14 @@ class AgentKernel:
         冻结**的，主 agent 一旦能花到全额，质量阶段就可能永远跑不起来——而那正是
         "预算耗尽就不许影响质量 agent"要防的事。
         """
-        escrow = task.escrow
+        escrow = _escrow_of(task)
         if escrow is not None and escrow.state.value != "disabled":
             return escrow.main_budget_usd
         return task.limits.budget_usd
 
     def _sync_escrow(self, task: Task) -> None:
         """把 usage 拆到 escrow 的两侧（主 agent / 质量），只做记账不新造限制。"""
-        escrow = task.escrow
+        escrow = _escrow_of(task)
         if escrow is None:
             return
         quality = float(escrow.quality_spent_usd or 0.0)
@@ -1594,7 +1638,7 @@ class AgentKernel:
         """
         from clipwright.services.task_events import emit
 
-        closeout = task.closeout
+        closeout = _closeout_of(task)
         if str(closeout.mode) == "soft_landing":
             return False
         closeout.mode = "soft_landing"
@@ -1607,17 +1651,17 @@ class AgentKernel:
         task.touch()
         # 收口期要按自己的基线重新数无进展，否则普通阶段攒下的 streak 会立刻触发终止
         _PROGRESS.pop(task.id, None)
-        if task.goal is not None:
-            task.goal.rounds_used = int(task.usage.turns or 0)
+        if getattr(task, 'goal', None) is not None:
+            _goal_of(task).rounds_used = int(task.usage.turns or 0)
         emit(task.id, "soft_landing", f"进入收口模式（{trigger}）",
              {"trigger": trigger, "detail": detail[:200],
               "rounds_used": closeout.trigger_round,
-              "max_rounds": task.goal.max_rounds if task.goal else 0,
+              "max_rounds": _goal_of(task).max_rounds if _goal_of(task) else 0,
               "tools_policy": "closeout_only",
               "closeout_window": {"rounds": closeout.max_rounds,
                                   "tool_calls": closeout.max_tool_calls,
                                   "wall_sec": closeout.max_wall_sec},
-              "goal_id": task.goal.id if task.goal else ""},
+              "goal_id": _goal_of(task).id if _goal_of(task) else ""},
              span="kernel")
         self._emit_goal_update(task, "进入收口模式，必须在窗口内交付收尾报告")
         logger.info("任务 %s 进入收口模式: trigger=%s rounds=%s", task.id, trigger,
@@ -1626,7 +1670,7 @@ class AgentKernel:
 
     def _closeout_hit(self, task: Task, started: float) -> Optional[str]:
         """收口窗口的闸：只算**进收口之后**的增量，撞到就如实结束。"""
-        closeout = task.closeout
+        closeout = _closeout_of(task)
         rounds = max(0, int(task.usage.turns or 0) - int(closeout.trigger_round or 0))
         calls = max(0, int(task.usage.tool_calls or 0) - int(closeout.tool_calls_at_trigger or 0))
         closeout.rounds_used = rounds
@@ -1714,16 +1758,16 @@ class AgentKernel:
         completed, unfinished = self._closeout_evidence(task)
         payload = {
             "task_id": task.id,
-            "goal_id": task.goal.id if task.goal else "",
+            "goal_id": _goal_of(task).id if _goal_of(task) else "",
             "terminal_reason": "capped",
             "why": str(why or "")[:500],
             "completed": completed,
             "unfinished": unfinished,
             "blocker_code": task.blocker_code,
             "usage": task.usage.model_dump(),
-            "closeout": task.closeout.model_dump(mode="json"),
-            "goal": task.goal.model_dump(mode="json") if task.goal else None,
-            "escrow": task.escrow.model_dump_public() if task.escrow else None,
+            "closeout": _closeout_of(task).model_dump(mode="json"),
+            "goal": _goal_of(task).model_dump(mode="json") if _goal_of(task) else None,
+            "escrow": _escrow_of(task).model_dump_public() if _escrow_of(task) else None,
             "generated_at": _utcnow().isoformat(),
             "generated_by": "kernel",
         }
@@ -1734,27 +1778,27 @@ class AgentKernel:
             tmp.write_text(_json.dumps(payload, ensure_ascii=False, indent=2),
                            encoding="utf-8")
             os.replace(tmp, path)
-            task.closeout.report_path = str(path)
-            task.closeout.deliverable_status = "delivered"
+            _closeout_of(task).report_path = str(path)
+            _closeout_of(task).deliverable_status = "delivered"
             payload["path"] = str(path)
         except Exception as exc:  # noqa: BLE001 — 落盘失败仍要把清单放进 finish
             logger.warning("收尾报告写入失败 %s: %s", task.id, exc)
-            task.closeout.deliverable_status = "partial"
+            _closeout_of(task).deliverable_status = "partial"
         return payload
 
     def _emit_goal_update(self, task: Task, note: str = "") -> None:
         """Goal 状态迁移的统一出口（幂等由调用点保证）。"""
-        if task.goal is None:
+        if _goal_of(task) is None:
             return
         from clipwright.services.task_events import emit
 
         try:
             emit(task.id, "goal_update", note or f"目标状态：{_goal_status_value(task)}",
-                 {"goal_id": task.goal.id, "status": _goal_status_value(task),
-                  "rounds_used": task.goal.rounds_used,
-                  "max_rounds": task.goal.max_rounds,
-                  "blocker_streak": task.goal.blocker_streak,
-                  "blocked_reason": task.goal.blocked_reason,
+                 {"goal_id": _goal_of(task).id, "status": _goal_status_value(task),
+                  "rounds_used": _goal_of(task).rounds_used,
+                  "max_rounds": _goal_of(task).max_rounds,
+                  "blocker_streak": _goal_of(task).blocker_streak,
+                  "blocked_reason": _goal_of(task).blocked_reason,
                   "terminal_reason": (task.terminal_reason.value
                                       if task.terminal_reason else None)},
                  span="kernel")
@@ -1768,7 +1812,7 @@ class AgentKernel:
         同一个字符串在不同阶段含义不同：<收口窗口用尽> 是 capped（已交付），
         <重复动作熔断> 是 blocked（没做成）。
         """
-        in_closeout = str(task.closeout.mode) == "soft_landing"
+        in_closeout = str(_closeout_of(task).mode) == "soft_landing"
         text = str(text or "")
         if "重复动作熔断" in text:
             return ("failed", "blocked", "repeat_fail")
@@ -1794,7 +1838,7 @@ class AgentKernel:
         3. 结算后 `released_usd` = 预留 − 实花，**不回流主 agent**（回流等于事后
            扩大主 agent 预算，与"提前预留"的初衷相反）。
         """
-        escrow = task.escrow
+        escrow = _escrow_of(task)
         if escrow is None or escrow.state.value == "disabled":
             return
         stage = ""
@@ -1826,11 +1870,11 @@ class AgentKernel:
         limits = task.limits
         self._sync_escrow(task)
         # ① 已经在收口：只算收口窗口（普通预算/无进展都已"用尽"过一遍，不重复判）
-        if str(task.closeout.mode) == "soft_landing":
+        if str(_closeout_of(task).mode) == "soft_landing":
             return self._closeout_hit(task, started)
         # ② 软着陆触发：撞结构上限（600 轮 / 4000 次调用）→ 进收口，而不是判失败
         if self._closeout_enabled():
-            goal = task.goal
+            goal = _goal_of(task)
             round_cap = int(getattr(goal, "max_rounds", 0) or 0) or int(
                 getattr(settings, "agent_soft_landing_round", 600) or 600)
             if int(task.usage.turns or 0) >= round_cap:
@@ -1870,7 +1914,7 @@ class AgentKernel:
                     task, trigger="budget",
                     detail=(f"主 agent 可用额度用尽（已花 {task.usage.cost_usd:.4f} ≥ "
                             f"{main_budget:.4f}；质量预留 "
-                            f"{getattr(task.escrow, 'reserve_usd', 0.0):.4f} 不动）"))
+                            f"{getattr(_escrow_of(task), 'reserve_usd', 0.0):.4f} 不动）"))
                 return None
             return f"预算耗尽（{task.usage.cost_usd:.4f} ≥ {main_budget}）"
         # ③ 跨阶段重复动作熔断（用户选择"扩展"）：同一 (工具+参数指纹) 在整个任务里
@@ -1920,7 +1964,7 @@ class AgentKernel:
             return TerminalReason.dry_run_completed, ""
         if gate_reason == "tool_loop_completed":
             return TerminalReason.achieved, ""
-        if str(task.closeout.mode) == "soft_landing":
+        if str(_closeout_of(task).mode) == "soft_landing":
             return TerminalReason.capped, "budget_exhausted"
         if gate_reason.startswith("缺少可渲染时间线"):
             return TerminalReason.invalid_completion, "missing_artifact"

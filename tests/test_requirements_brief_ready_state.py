@@ -75,7 +75,7 @@ class _FakeSvc(RequirementsService):
         return {"brief_draft": self._revised_brief, "reply": "已按你的意见更新方案。",
                 "is_ready": bool(self._revised_brief)}
 
-    async def _generate_plan(self, brief_data, user_inputs, session_id):  # noqa: ANN001
+    async def _generate_plan(self, brief_data, user_inputs, session_id, **kwargs):  # noqa: ANN001
         return {"scenes": [{"id": "s1"}], "scene_count": 1}
 
     async def _record_llm_usage(self, *a, **k):  # noqa: ANN002, ANN003
@@ -128,8 +128,17 @@ async def test_unchanged_revision_says_so():
 @pytest.mark.asyncio
 async def test_confirm_still_generates_plan():
     """对照组：确认路径不受影响（直接进 plan_ready）。"""
-    svc = _make(revised_brief=BRIEF, confirm=True)
-    out = await svc.chat("s1", "确认")
+    import clipwright.services.requirements_service as rs
+
+    # 2026-11 起默认走任务派发（确认 → planning + Task）；这条对照用例测的是
+    # **同步应急回退**分支，所以关掉派发开关。
+    original = rs.PLAN_DISPATCH_ENABLED
+    rs.PLAN_DISPATCH_ENABLED = False
+    try:
+        svc = _make(revised_brief=BRIEF, confirm=True)
+        out = await svc.chat("s1", "确认")
+    finally:
+        rs.PLAN_DISPATCH_ENABLED = original
 
     assert out["status"] == "plan_ready"
     assert out["production_plan"], "确认后必须产生产规划书"

@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from clipwright.tool.registry import ToolRegistry
 from plugins.pv_engine import adapter
 from plugins.pv_engine import main as pv_main
 from plugins.pv_engine.main import (
@@ -284,17 +285,39 @@ class TestPluginAndSkill:
 
 class TestTiers:
     def test_tiers_registered(self) -> None:
+        # 2026-10-31 迁移后档位由**工具自声明**（不变量 #12：TIER_MAP 必须为空）。
         from clipwright.services.capability_matrix import TIER_MAP
 
-        assert TIER_MAP["pv_engine_probe"] == "read"
-        assert TIER_MAP["pv_engine_audit"] == "read"
-        assert TIER_MAP["pv_engine_stills"] == "write_local"
-        # 二期：内省只读、脚手架/转换写工作区、渲染与音频分析 costly
-        assert TIER_MAP["pv_engine_doctor"] == "read"
-        assert TIER_MAP["pv_engine_init"] == "write_local"
-        assert TIER_MAP["pv_engine_timeline_to_project"] == "write_local"
-        for name in ("pv_engine_render", "pv_engine_beats", "pv_engine_align"):
-            assert TIER_MAP[name] == "costly"
+        assert TIER_MAP == {}, "TIER_MAP 必须保持为空（档位归工具自声明）"
+        expect = {
+            "pv_engine_probe": "read",
+            "pv_engine_audit": "read",
+            "pv_engine_stills": "write_local",
+            "pv_engine_doctor": "read",
+            "pv_engine_init": "write_local",
+            "pv_engine_timeline_to_project": "write_local",
+            "pv_engine_render": "costly",
+            "pv_engine_beats": "costly",
+            "pv_engine_align": "costly",
+        }
+        from clipwright.plugins.contribution import ContributionRegistry
+
+        owner = "pv_tiers_test"
+        items = pv_main.PvEnginePlugin().contributions()
+        ContributionRegistry.declared_scope(owner, [c.key for c in items])
+        report = ContributionRegistry.register(owner, items)
+        assert report.ok, report.rejected
+        try:
+            missing = []
+            for name, tier in expect.items():
+                tool = ToolRegistry.get(name)
+                if tool is None:
+                    missing.append(name)
+                    continue
+                assert getattr(tool, "permission_tier", "") == tier, name
+            assert not missing, f"插件未注册这些工具：{missing}"
+        finally:
+            ContributionRegistry.unregister_plugin(owner)
 
 
 class TestAgentCallable:

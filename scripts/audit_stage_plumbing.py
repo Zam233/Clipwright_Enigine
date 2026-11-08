@@ -53,6 +53,7 @@ EXTERNAL_EXTRA_KEYS: dict[str, str] = {
     "enable_pv_llm_tools": "settings.edit_enable_pv_llm_tools 兜底",
     "transition_weights": "category shot_params 兜底",
     "visual_config": "visual_context 统一装配（不再从 extra 读）",
+    "workspace_root": "任务工作区根（宿主/请求注入，stage_inputs 解析 artifact 引用用）",
 }
 
 #: 已确认「故意不接线」的字段（每条必须有理由，否则就是缺陷）

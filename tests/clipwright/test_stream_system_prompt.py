@@ -200,7 +200,7 @@ class TestReasoningStatus:
 
         svc._stream_gathering_llm = boom  # type: ignore[method-assign]
 
-        async def chat_fallback(session_id, message, on_delta=None, on_reasoning=None):
+        async def chat_fallback(session_id, message, on_delta=None, on_reasoning=None, **kwargs):
             return {"reply": "回退后的回复", "brief_draft": {}, "is_ready": False}
 
         svc.chat = chat_fallback  # type: ignore[method-assign]

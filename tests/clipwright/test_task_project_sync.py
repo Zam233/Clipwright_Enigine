@@ -80,7 +80,11 @@ def test_sync_writes_timeline_from_board(monkeypatch) -> None:
     assert pid == "proj_1"
     assert len(fake.saves) == 1
     assert fake.saves[0][0] == "proj_1"
-    assert fake.saves[0][1]["timeline"] == timeline
+    saved = fake.saves[0][1]["timeline"]
+    # B5 后黑板写入会附 provenance metadata（agent_sig/last_writer/source/written_at），
+    # 这里比较业务字段本身，忽略写入元数据。
+    assert saved["tracks"] == timeline["tracks"]
+    assert saved.get("duration") == timeline.get("duration")
 
 
 def test_sync_skips_when_no_timeline(monkeypatch) -> None:

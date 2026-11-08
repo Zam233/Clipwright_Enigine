@@ -5,7 +5,7 @@ kind: "capability"
 description: "方案 A/D 验收用示例：tool + 面板 + 预设 + 快捷键 + 页面 + 设置分区 + 导航项；演示「声明即授权」与生命周期回收"
 author: "Clipwright Team"
 api_version: "2"
-entry_point: "_example_full.main"
+entry_point: "example_full.main"
 permissions: ["noop"]
 contributions:
   - { kind: tool, id: example_echo }
