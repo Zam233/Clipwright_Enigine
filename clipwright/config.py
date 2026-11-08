@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import timezone, timedelta
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -36,6 +36,18 @@ class Settings(BaseSettings):
     plugin_data_dir: Path = Path("PluginData")
     project_dir: Path = Path("projects")
 
+    # --- 工作区（PRD docs/workspace-prd-2026-10-24.md）---
+    # 项目唯一产物根：工程文件 / 素材 / 下载 / 成片 / 缓存都在同一目录，可整体备份。
+    workspace_dir: Path = Path("workspaces")
+    # 轮询 materials/ 发现新素材（用户手动投放的入口）
+    workspace_scan_enabled: bool = True
+    workspace_scan_interval_sec: int = 20
+    # 视觉解读：默认本地 CLIP（零 API 费用）；provider=llm 才按次计费
+    workspace_vision_enabled: bool = True
+    workspace_vision_daily_budget_usd: float = 1.0
+    # cache/ 上限（超出按最旧删除），0 = 不限制
+    workspace_cache_max_gb: float = 2.0
+
     # --- 插件治理（M1/M2/M8/M15）---
     # manifest 签名密钥；空则从 account_jwt_secret 派生；再为空则不启用签名强制
     plugin_signature_key: str = ""
@@ -60,7 +72,8 @@ class Settings(BaseSettings):
     )
 
     # --- IsoBase / LLM ---
-    llm_provider: Literal["openai", "anthropic", "ollama"] = "anthropic"
+    # B7-T7.5：provider id 由插件声明，engine 不再用 Literal 白名单限制
+    llm_provider: str = "anthropic"
     llm_api_key: str = ""
     # 模型名直接透传给 IsoBase → SDK：
     #   anthropic → Anthropic Messages API 模型名 (claude-sonnet-4-6, claude-opus-4-6, ...)
@@ -79,6 +92,114 @@ class Settings(BaseSettings):
     llm_flash_api_key: Optional[str] = None
     llm_flash_base_url: Optional[str] = None
 
+    # --- 调度中枢（PRD v1.4 / 开发计划 B2 起）---
+    # off    = 关闭（默认）：行为与改造前完全一致
+    # shadow = 影子：只记录归因与诊断书，不改执行（B2 的验收状态）
+    # on     = 启用：后续批次（B3+）才允许真正派工/执行
+    supervisor_mode: Literal["off", "shadow", "on"] = "off"
+    # 归因/诊断的兜底 LLM 调用超时（秒）；规则命中时不调用 LLM
+    supervisor_attribution_timeout_sec: float = 15.0
+
+    # --- 路线 C 双轨开关（PRD F12）---
+    # off    = 老 6 阶段管线是唯一入口（行为与今天完全一致，A13 的对照基线）
+    # shadow = Kernel 只规划、不执行（零副作用，用来看计划质量与预估成本）
+    # on     = Kernel 执行（创作唯一入口；老 6 阶段管线已删除）
+    agent_mode: Literal["off", "shadow", "on"] = "off"
+    # 老 6 阶段管线执行开关——**已失效**（M3 删除执行引擎后，/run-async 与 retry
+    # 永久 410，与此开关无关）。保留字段只为兼容旧配置文件的解析，不要再用它。
+    pipeline_enabled: bool = False
+    # 主 agent 每步决策策略（PRD §16.10.1）：off=只走规则；auto=失败必判/成功轻量步走规则；
+    # always（默认）=**每步都调 LLM 决策**（用户裁定：每步决策都走 llm）。
+    agent_decide_policy: Literal["off", "auto", "always"] = "always"
+    # 决策是否走流式（思考逐块到达前端）；provider 不支持时自动回退非流式
+    agent_decide_stream: bool = True
+    # 主循环形态（modern-agent PRD §2.2 / §5.2 M1，PRD 原名 kernel_mode）：
+    #   tool_loop = 原生 tool-use loop（模型拿 surface.schemas() 自主调用工具，默认）
+    #   shadow    = 跑 tool_loop 但只记录不产生副作用，用于与 plan 对比（§5.2）
+    #   （旧的 plan 形态已在 M3 删除：传它只发降级告警，然后按 tool_loop 运行）
+    kernel_mode: Literal["plan", "tool_loop", "shadow"] = "tool_loop"
+    # tool loop 的模型回合 / 工具调用上限（0 = 沿用 TaskLimits）
+    #: 单次 tool loop 的软上限；0 = 不设软上限（仍有结构性护栏 STRUCTURAL_*）
+    agent_loop_max_turns: int = 0
+    agent_loop_max_tool_calls: int = 0
+    # 决策上下文预算（字符）：超出按优先级裁剪，并记 context_loaded.trimmed（§17.11）
+    context_budget_chars: int = 6000
+    # 单份工作区报告上限（字符）；超出截断并标记（§17.3）
+    report_max_chars: int = 20000
+    # 允许创建工作区的父目录列表（§17.8）；空 = 只用 workspace_dir
+    workspace_roots: list[Path] = []
+    # 评估报告目录（closeout B10）：golden_eval 写到这里，/api/eval 读这里
+    eval_report_dir: str = ""
+    # Kernel 四道闸（PRD F5 / Q1 已裁定；数值可调，不可置空）
+    # 回合数 30 → 40：长文稿（43 段）要跑 structure/material/edit/animation/audio
+    # 五阶段 + 探查产物，实测 30 轮不够（E2E 2026-10-28 触闸收尾）。
+    agent_max_turns: int = 80
+    agent_max_tool_calls: int = 400
+    agent_max_wall_sec: float = 0.0  # 0 = 不设上限
+
+    # --- 终止机制收口（docs/agent-termination-devplan-2026-11-02.md §3/§6/§7）---
+    # 2026-11-02 用户裁定 1：软着陆轮次 600（原来 PRD 的 360/400 作废），
+    # 且**项目级可覆盖**——解析顺序 项目配置(project.json agent_state.termination)
+    # > 这里的全局值 > 代码默认。任务创建时快照，运行中改配置不影响在跑任务。
+    agent_soft_landing_round: int = 600
+    #: 总开关：关掉即回到"撞上限直接收尾"的旧行为（新字段照写，便于对比与回滚）
+    agent_soft_landing_enabled: bool = True
+    # 收口窗口（独立于 soft_landing_round，收口期间不消耗普通轮次）
+    agent_closeout_rounds: int = 8
+    agent_closeout_tool_calls: int = 128
+    agent_closeout_max_wall_sec: float = 600.0
+    # 2026-11-02 用户裁定 2：为质量 agent 预留预算（escrow）。
+    # 只在 budget_usd 非空时冻结；比例 + 最低额 + 上限三条一起用，避免小预算把
+    # 质量 agent 饿死、大预算又预留过多。轮次/工具调用**不**预留（0=不限语义）。
+    agent_quality_budget_reserve_ratio: float = 0.2
+    agent_quality_budget_reserve_floor_usd: float = 0.05
+    agent_quality_budget_reserve_cap_usd: float = 2.0
+    # 2026-11-02 用户裁定 4：两个开关均启用。
+    #: 终态原因枚举写盘（关掉只写旧 reason 字符串，用于极速回滚）
+    agent_terminal_reason_v1: bool = True
+    #: capped 作为独立 TaskStatus（关掉则 capped 仍按 done 上报，兼容旧前端）
+    agent_capped_status_v1: bool = True
+    #: Goal 语义（blocker 连续轮数门槛、goal_update 事件）
+    agent_goal_v1: bool = True
+    #: 同一 blocker 连续多少轮才允许宣告 blocked（照抄 DSH 的 3）
+    agent_goal_blocked_after_rounds: int = 3
+
+    # --- 模型路由（PRD F8 / 开发计划 B4）---
+    # 按阶段配置候选模型：[{"provider","model","tier","price_in","price_out"}]；
+    # 留空 = 不路由，所有阶段沿用主/闪模型（与改造前完全一致）。
+    model_routes: dict[str, list[dict[str, Any]]] = {}
+    # 精确白名单（"provider/model" 或裸 model）；留空 = 允许所有已配置 provider。
+    model_whitelist: list[str] = []
+    # 命令风险判定所用模型（B9）；必须命中白名单，留空 = 最便宜的 cheap 档。
+    risk_judge_model: str = ""
+
+    # --- 类型同一性 LLM 裁判（PRD F12 L2/L3 / V17）---
+    # D7 决定：**默认关**（关时 genre-check 写 judge="skipped"，绝不假装判过）。
+    # 单次请求可用 payload.enable_genre_judge 覆盖；本项用于真机取证/服务级开启。
+    genre_judge_enabled: bool = False
+    # 裁判用闪模型（省 token）；False 用主模型
+    genre_judge_use_flash: bool = True
+
+    # --- 子代理与执行（PRD F10/F11）---
+    # 同一管线同时存活的子代理上限（PRD §12 已定⑤：在设置中配置）
+    max_concurrent_subagents: int = 6
+    # 自动派生：归因置信度 low 时，由编排层派一个**只读**核查员去看现场。
+    # 仅在 supervisor_mode="on" 时生效（shadow/off 一律不派生，保证 off 等价性）。
+    supervisor_auto_spawn: bool = True
+    # 执行网关是否允许联网（默认禁网；打开后可用于诊断）
+    exec_allow_network: bool = False
+    exec_timeout_sec: float = 60.0
+    # 硬底线（读凭据 / 不可逆破坏）是否仍然「不可授权」。
+    # 默认 False = 按用户决策交由独立 LLM 判定 + 两级人工确认（授权窗口 + 再次确认）。
+    # 改成 True 即回到「确定性规则直接拒绝、任何模式都不放行」的旧语义，无需改代码。
+    exec_hard_floor_never_authorizable: bool = False
+
+    # --- 预算（PRD F6 / 开发计划 B5）---
+    # **留空 = 无上限**：只记账、不阻断、不降级（这是用户显式选择的取舍）。
+    pipeline_budget_usd: Optional[float] = None
+    # 单价表：{"provider/model" 或 "model": {"in": 0.003, "out": 0.015}}（每 1k token）
+    model_prices: dict[str, dict[str, float]] = {}
+
     # --- 服务 ---
     host: str = "0.0.0.0"
     port: int = 8080
@@ -95,6 +216,67 @@ class Settings(BaseSettings):
     pipeline_concurrency: int = 6
     # 素材阶段场景级并行路数；默认 6。设置 1 即回到逐场景串行。
     material_concurrency: int = 6
+    # 逻辑动画主路径：按「动画类型提示词 + 视频类型 + persona」由 LLM 生成（M2/M3）。
+    # 关闭后退回旧路径（mg_* 内置模板 / diagram_svg 图解），用于灰度与回滚。
+    animation_llm_generation: bool = True
+    # 文字动画 LLM 化（PRD text-animation-llm-2026-10-30）：True = prompt+LLM 生成；
+    # False = 回退 AnimationCatalog 固定关键帧表（回滚开关）。
+    text_animation_llm: bool = True
+    # 类型化生成的并发上限（LLM 等待型，默认与 pipeline 并发一致）
+    animation_llm_concurrency: int = 6
+    # persona 提示词统一上限（PRD §16 R5）：旧实现 400/600/1500/2000 四处不同截断，
+    # 同一个人格在不同路径拿到不同长度。统一到这里，超长时写 trace。
+    persona_prompt_max_chars: int = 2000
+    # 动画允许半透明底板（PRD §17 D7）：旧实现只要 vision_prompt 为空就强制
+    # 背景透明，导致文字直接压在实拍画面上（浅背景不可读）。开启后半透明
+    # 底板（alpha ≤ scrim_max_alpha）会被保留。
+    animation_allow_scrim: bool = True
+    animation_scrim_max_alpha: float = 0.6
+    # 渲染期底板兜底（PRD §7.4）：对动画窗口的**背景采样亮度**，偏亮时把半透明
+    # 底板烧进动画 MOV（文字条/卡片），解决「白字压在浅背景上看不清」。
+    animation_render_scrim: bool = True
+    animation_scrim_alpha: float = 0.75
+    animation_scrim_grow: int = 8
+    animation_scrim_blur: float = 6.0
+    animation_scrim_light_threshold: float = 140.0
+    # 动效客观门禁（PRD §5）：主运动位移占画布宽比例 / 关键帧覆盖时长比例。
+    # 低于阈值时 critique 会强制走一次定向修复（见 generator._finalize_with_critique）。
+    animation_motion_min_shift_ratio: float = 0.04
+    animation_motion_min_coverage: float = 0.45
+    # 渲染后像素级动效自检（PRD §5）：解码动画 MOV 抽帧算多样性，
+    # 不合格只写 warning/metadata，不阻断渲染（动画已经生成，属于质量提示）。
+    animation_motion_check: bool = True
+    animation_motion_check_fps: int = 4
+    animation_motion_check_min_frames: int = 8
+    animation_motion_check_min_ratio: float = 0.25
+    # 编辑期开关（此前 extra_params 里只有读取点、没有写入者）：
+    # 请求显式传值时优先，否则用这里的全局默认（都默认关，行为不变）。
+    edit_enable_color_match: bool = False
+    edit_enable_pv_llm_tools: bool = False
+    # 阶段墙钟下限（2026-10-29 E2E）：主 Agent 通过 delegate_agent 的 timeout_sec 自填值，
+    # 实测它填 900s → 43 场 material（逐场搜素材 + 视觉 LLM）必然超时，重试三次仍是 900s，
+    # 半小时白烧且 edit 因缺 candidate_clips 直接失败。0 = 不设下限（完全信任传入值）。
+    agent_stage_min_timeout_sec: float = 3600.0
+    # 降级处置策略（PRD modern-agent-review P0）：require_receipt = 无收据就判失败；
+    # warn = 只记录不判失败（老行为，便于灰度）。
+    # Kernel 确定性补派（2026-10-30）：模型提前收尾且提示词推不动时，由运行时
+    # 用同一套工具面自己补派缺失阶段（计 usage、进事件流）。单测默认关闭。
+    # 重复只读查询护栏（2026-10-30）：同参数 list_dir/read_report 直接返回上次结果。
+    # 现场：一次任务里 list_dir 58 次、read_artifact 38 次，把回合烧光。
+    agent_tool_dedupe: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("AGENT_TOOL_DEDUPE", "CLIPWRIGHT_AGENT_TOOL_DEDUPE"),
+    )
+    agent_kernel_recovery: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("AGENT_KERNEL_RECOVERY",
+                                      "CLIPWRIGHT_AGENT_KERNEL_RECOVERY"),
+    )
+    agent_degradation_policy: Literal["require_receipt", "warn"] = Field(
+        default="require_receipt",
+        validation_alias=AliasChoices("AGENT_DEGRADATION_POLICY",
+                                      "CLIPWRIGHT_AGENT_DEGRADATION_POLICY"),
+    )
     # 素材帧验证是否启用视觉 LLM；默认 False（只做 ffmpeg 抽帧 is_blank + 本地启发式标题匹配）。
     # 打开后 frame_validator 工具调用 ImageAnalyzer 产出 match_score（视觉 API 成本）。
     enable_visual_llm: bool = False
@@ -127,6 +309,9 @@ class Settings(BaseSettings):
     content_index_clip_enabled: bool = True
     # CLIP 权重名（HF）；首次使用会下载（约 600MB）。
     content_index_clip_model: str = "openai/clip-vit-base-patch32"
+    # CLIP 权重的**本地目录**（离线/内网环境用）：填了就只从本地加载，绝不联网。
+    # 空 = 按 HF 缓存加载（缓存缺失时会尝试下载，内网下会超时）。
+    content_index_clip_model_path: str = ""
     # 零样本标签词表（JSON：{"中文标签": "english prompt"}）；留空用内置默认词表。
     content_index_clip_vocab: str = ""
     # 镜头标注并发（CPU 推理，过高反而拖慢整机）。
@@ -228,13 +413,84 @@ class Settings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("ENABLE_WEB_SEARCH", "CLIPWRIGHT_ENABLE_WEB_SEARCH"),
     )
-    web_search_provider: Literal["bocha", "baidu"] = Field(
-        default="bocha",
+    web_search_provider: Literal[
+        "deepseek", "bocha", "baidu", "tavily", "serper", "bing", "local",
+    ] = Field(
+        default="deepseek",
         validation_alias=AliasChoices("WEB_SEARCH_PROVIDER", "CLIPWRIGHT_WEB_SEARCH_PROVIDER"),
     )
     web_search_api_key: str = Field(
         default="",
         validation_alias=AliasChoices("WEB_SEARCH_API_KEY", "CLIPWRIGHT_WEB_SEARCH_API_KEY"),
+    )
+    # DeepSeek 自研搜索/抓取（2026-10-31 用户指定）：
+    #   POST https://api.deepseek.com/v1/tools/search  {query, count, need_content}
+    #   POST https://api.deepseek.com/v1/tools/fetch   {url} → {title, content(markdown)}
+    # key 缺省复用主 LLM 的 DeepSeek key（同一平台账号即可用）。
+    web_search_deepseek_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("DEEPSEEK_API_KEY", "WEB_SEARCH_DEEPSEEK_API_KEY",
+                                      "CLIPWRIGHT_WEB_SEARCH_DEEPSEEK_API_KEY"),
+    )
+    # 各 provider 专属 key（缺省回落到 web_search_api_key）
+    web_search_tavily_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("WEB_SEARCH_TAVILY_API_KEY",
+                                      "CLIPWRIGHT_WEB_SEARCH_TAVILY_API_KEY"),
+    )
+    web_search_serper_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("WEB_SEARCH_SERPER_API_KEY",
+                                      "CLIPWRIGHT_WEB_SEARCH_SERPER_API_KEY"),
+    )
+    web_search_bing_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("WEB_SEARCH_BING_API_KEY",
+                                      "CLIPWRIGHT_WEB_SEARCH_BING_API_KEY"),
+    )
+    # 本地抓取 provider（DuckDuckGo / Bing HTML）：不需要任何 key。
+    # 关掉它就回到"必须配付费 key 才能联网"的旧行为。
+    web_search_allow_local: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("WEB_SEARCH_ALLOW_LOCAL",
+                                      "CLIPWRIGHT_WEB_SEARCH_ALLOW_LOCAL"),
+    )
+    # 联网素材化（PRD web-search-fetch M2）：动画/素材阶段把 web 搜索到的
+    # 图片/视频落进 materials/web/ 并写来源许可旁车；关掉只保留文字事实参考。
+    web_assets_ingest: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("WEB_ASSETS_INGEST", "CLIPWRIGHT_WEB_ASSETS_INGEST"),
+    )
+    # 「哪些场景需要外部事实数据」由谁判断（2026-11-02，用户指出硬编码正则不合适）：
+    # llm=模型判断（一次批量调用）｜heuristic=旧正则（离线回退）｜off=一律不联网取事实
+    animation_fact_judge: str = Field(
+        default="llm",
+        validation_alias=AliasChoices(
+            "ANIMATION_FACT_JUDGE", "CLIPWRIGHT_ANIMATION_FACT_JUDGE"),
+    )
+    # 域名治理（PRD web-search-fetch M3）：白名单非空 = 只放行其中域名；
+    # 黑名单永远优先。逗号/分号/空白分隔，子域按后缀匹配。
+    web_assets_allowed_domains: str = Field(
+        default="",
+        validation_alias=AliasChoices("WEB_ASSETS_ALLOWED_DOMAINS",
+                                      "CLIPWRIGHT_WEB_ASSETS_ALLOWED_DOMAINS"),
+    )
+    web_assets_denied_domains: str = Field(
+        default="",
+        validation_alias=AliasChoices("WEB_ASSETS_DENIED_DOMAINS",
+                                      "CLIPWRIGHT_WEB_ASSETS_DENIED_DOMAINS"),
+    )
+    # robots.txt 治理：默认遵守（拒绝时如实回报原因，不静默跳过）
+    web_assets_respect_robots: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("WEB_ASSETS_RESPECT_ROBOTS",
+                                      "CLIPWRIGHT_WEB_ASSETS_RESPECT_ROBOTS"),
+    )
+    # 缓存 TTL：同一 URL 在 TTL 内复用已落盘文件，不重复下载；0 = 关闭缓存
+    web_assets_cache_ttl_hours: float = Field(
+        default=168.0,
+        validation_alias=AliasChoices("WEB_ASSETS_CACHE_TTL_HOURS",
+                                      "CLIPWRIGHT_WEB_ASSETS_CACHE_TTL_HOURS"),
     )
     web_search_base_url: Optional[str] = Field(
         default=None,
@@ -253,7 +509,8 @@ class Settings(BaseSettings):
     library_dir: Path = Path("library")
 
     # --- RAG / Embedding ---
-    rag_embed_provider: Literal["sentence_transformer", "openai", "ollama"] = "sentence_transformer"
+    # B7-T7.5：同上（历史值 sentence_transformer 与门面 id local 等价，见 provider_settings_guard）
+    rag_embed_provider: str = "sentence_transformer"
     rag_embed_model: str = "BAAI/bge-small-zh-v1.5"
     rag_embed_dim: int = 512
     rag_embed_api_key: Optional[str] = None
@@ -277,7 +534,8 @@ class Settings(BaseSettings):
     tts_dashscope_api_key: str = ""
     tts_workspace_id: str = ""
     # 默认音色模型 provider：qwen-tts | cosyvoice | minimax
-    tts_default_provider: Literal["qwen-tts", "cosyvoice", "minimax"] = "qwen-tts"
+    # B7-T7.5：同上（第三方 TTS 插件可声明任意 id）
+    tts_default_provider: str = "qwen-tts"
     # 各 provider 默认目标模型
     tts_qwen_model: str = "qwen3-tts-vc-2026-01-22"
     tts_cosyvoice_model: str = "cosyvoice-v3.5-plus"

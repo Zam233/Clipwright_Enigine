@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "components": [
+    "text", "list", "callout", "badge", "stat", "progress", "table", "steps",
+    "divider", "row", "col", "card", "accordion"
+  ],
+  "containers": ["row", "col", "card", "accordion"],
+  "actions": ["ask", "select", "confirm"],
+  "tones": ["info", "success", "warning", "error"],
+  "badge_tones": ["success", "warn", "danger", "accent"],
+  "text_sizes": ["display", "h1", "h2", "h3", "body", "muted", "caption"],
+  "limits": {
+    "max_nodes": 100,
+    "max_depth": 6,
+    "max_text_chars": 4000,
+    "max_spec_bytes": 65536,
+    "max_array_items": 100,
+    "max_table_cols": 12,
+    "max_action_payload_chars": 2000,
+    "max_select_options": 6,
+    "max_option_chars": 40
+  },
+  "specs": {
+    "brief": { "spec_id": "brief", "source": "brief", "order": 100, "trust": "sanitize" },
+    "plan": { "spec_id": "plan", "source": "plan", "order": 110, "trust": "recipe_only" }
+  }
+}

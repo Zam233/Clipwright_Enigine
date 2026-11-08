@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -110,6 +111,7 @@ def _check_ffmpeg() -> Optional[str]:
 class VideoTrimTool(BaseTool):
     """视频裁剪工具。"""
     name = "video_trim"
+    permission_tier = "write_local"
     description = "裁剪视频片段（支持 start+duration 或 start+end；输入可为本地文件或 http(s) URL）"
     dependencies = ["ffmpeg"]
 
@@ -174,20 +176,66 @@ class VideoTrimTool(BaseTool):
                 error=f"source missing/corrupt: {input_path}",
             )
         input_path = local
-        # 输入预检：源文件缺失/过小（损坏）直接报错，不调 ffmpeg
+        # 输入预检：**先判存在**，再探测有没有视频流，最后才看大小。
+        # 顺序有讲究：图片素材（100KB 的 png）如果先走"过小"分支，会报成
+        # "source missing/corrupt"——用户/模型都看不出真正原因是"这是张图，不该用 video_trim"。
         try:
-            if not os.path.isfile(input_path) or os.path.getsize(input_path) < 2000:
-                return ToolExecResult(
-                    status=ToolStatus.ERROR,
-                    tool_name=self.name,
-                    error=f"source missing/corrupt: {input_path}",
-                )
+            exists = os.path.isfile(input_path)
+            size = os.path.getsize(input_path) if exists else 0
         except OSError as e:
             return ToolExecResult(
                 status=ToolStatus.ERROR,
                 tool_name=self.name,
                 error=f"source missing/corrupt: {input_path} ({e})",
             )
+        if not exists:
+            return ToolExecResult(
+                status=ToolStatus.ERROR,
+                tool_name=self.name,
+                error=f"source missing: {input_path}",
+            )
+
+        # 源探测（E2E 2026-10-31 实测：edit 阶段对着「静帧/超短文本视频」硬剪，
+        # 41 次失败全报 “trim output invalid (empty/corrupt container)”，把墙钟烧到上限）。
+        # 这里先问清楚：有没有视频流、多长、是不是静帧——然后给出**能改的**错误，
+        # 而不是让模型拿同一组参数反复重试。
+        probe = self._probe_source(input_path)
+        if probe and not probe.get("has_video"):
+            return ToolExecResult(
+                status=ToolStatus.ERROR,
+                tool_name=self.name,
+                error=(f"source has no video stream: {os.path.basename(input_path)}"
+                       "（图片/音频不是视频：图片请用 image_fit + 关键帧做静帧片段，"
+                       "音频请用 audio 相关工具，不要用 video_trim）"),
+            )
+        # ffprobe 会把图片也报成一条 mjpeg/png 视频流，所以"有视频流"不等于"能剪"。
+        # 图片源直接拒，并给替代方案——比让它走到 ffmpeg 再报空容器可读得多。
+        if str(probe.get("codec") or "").lower() in ("mjpeg", "png", "bmp", "gif"):
+            return ToolExecResult(
+                status=ToolStatus.ERROR,
+                tool_name=self.name,
+                error=(f"source is a still image, not video: {os.path.basename(input_path)}"
+                       f"（codec={probe.get('codec')}）→ 图片请用 image_fit + 关键帧做静帧片段；"
+                       "确实要一段静帧视频，请先用 generate_text_video 或 image_fit 生成"),
+            )
+        if size < 2000:
+            return ToolExecResult(
+                status=ToolStatus.ERROR,
+                tool_name=self.name,
+                error=f"source missing/corrupt: {input_path}（{size}B，太小）",
+            )
+        src_dur = float(probe.get("duration_sec") or 0)
+        start = float(start_sec or 0)
+        if src_dur > 0 and start >= src_dur:
+            return ToolExecResult(
+                status=ToolStatus.ERROR,
+                tool_name=self.name,
+                error=(f"trim start beyond source duration: start={start:.2f}s, "
+                       f"source={src_dur:.2f}s（换起点，或改用整段）"),
+            )
+        if probe.get("still_frame") and duration_sec is None and end_sec is None:
+            logger.warning("video_trim: %s 判为静帧，剪出来的时长可能为 0", input_path)
+
         try:
             args = ["-ss", str(start_sec), "-i", input_path]
             if duration_sec is not None:
@@ -204,12 +252,21 @@ class VideoTrimTool(BaseTool):
                 )
             # 输出校验：-c copy 对损坏源可能 exit 0 但产出 ~258B 空容器（无流）
             if not self._validate_trim_output(out):
-                return ToolExecResult(
-                    status=ToolStatus.ERROR,
-                    tool_name=self.name,
-                    error="trim output invalid (empty/corrupt container)",
-                    output_path=out,
+                # 流复制失败（源关键帧分布/时间基问题）→ **退回重编码**再判一次。
+                # 直接报错的代价太大：edit 阶段会拿同一组参数重试几十次（实测 41 次）。
+                fixed = await self._reencode_trim(
+                    input_path, out, start=start,
+                    duration_sec=duration_sec, end_sec=end_sec,
                 )
+                if not fixed:
+                    return ToolExecResult(
+                        status=ToolStatus.ERROR,
+                        tool_name=self.name,
+                        error=("trim output invalid after stream-copy and re-encode："
+                               f"{os.path.basename(input_path)}（源可能是静帧/时长过短，"
+                               "换素材或改用整段引用）"),
+                        output_path=out,
+                    )
             return ToolExecResult(
                 status=ToolStatus.SUCCESS,
                 tool_name=self.name,
@@ -230,6 +287,74 @@ class VideoTrimTool(BaseTool):
                 tool_name=self.name,
                 error="ffmpeg timed out",
             )
+
+    @staticmethod
+    def _probe_source(path: str) -> dict[str, Any]:
+        """探测源：有无视频流、时长、是否静帧（单帧/无时长）。
+
+        失败不抛——返回空 dict，调用方按"未知"处理（宁可让 ffmpeg 去试，
+        也不要因为探测失败把正常输入挡掉）。
+        """
+        try:
+            result = subprocess.run(
+                [resolve_ffprobe(), "-v", "error", "-print_format", "json",
+                 "-show_format", "-show_streams", path],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                return {}
+            data = json.loads(result.stdout or "{}")
+            streams = data.get("streams") or []
+            video = [s for s in streams if s.get("codec_type") == "video"]
+            duration = 0.0
+            try:
+                duration = float(data.get("format", {}).get("duration") or 0)
+            except (TypeError, ValueError):
+                duration = 0.0
+            if duration <= 0 and video:
+                try:
+                    duration = float(video[0].get("duration") or 0)
+                except (TypeError, ValueError):
+                    duration = 0.0
+            frames = 0
+            try:
+                frames = int(video[0].get("nb_frames") or 0) if video else 0
+            except (TypeError, ValueError):
+                frames = 0
+            still = bool(video) and (
+                video[0].get("codec_name") in ("mjpeg", "png", "bmp", "gif")
+                or (0 < frames <= 2)
+            )
+            return {
+                "has_video": bool(video),
+                "duration_sec": duration,
+                "still_frame": still,
+                "codec": (video[0].get("codec_name") if video else ""),
+            }
+        except Exception as exc:  # noqa: BLE001 — 探测失败按未知处理
+            logger.warning("video_trim 源探测失败 %s: %s", path, exc)
+            return {}
+
+    async def _reencode_trim(
+        self, input_path: str, out: str, *, start: float,
+        duration_sec: Optional[float], end_sec: Optional[float],
+    ) -> bool:
+        """`-c copy` 剪不出来时的兜底：重新编码（慢一点，但一定产出有效片段）。"""
+        try:
+            args = ["-ss", str(start), "-i", input_path]
+            if duration_sec is not None:
+                args.extend(["-t", str(duration_sec)])
+            elif end_sec is not None:
+                args.extend(["-to", str(end_sec)])
+            args.extend([
+                "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-movflags", "+faststart", out,
+            ])
+            result = await _ffmpeg(*args)
+            return result.returncode == 0 and self._validate_trim_output(out)
+        except Exception as exc:  # noqa: BLE001 — 兜底失败按失败返回
+            logger.warning("video_trim 重编码兜底失败 %s: %s", out, exc)
+            return False
 
     @staticmethod
     def _validate_trim_output(path: str) -> bool:
@@ -257,6 +382,7 @@ class VideoTrimTool(BaseTool):
 class VideoDownloadTool(BaseTool):
     """视频下载工具 — 从 URL 下载素材到本地缓存。"""
     name = "video_download"
+    permission_tier = "dangerous"
     description = "从 HTTP/HTTPS URL 下载视频到本地缓存目录，返回本地路径"
     dependencies = ["ffmpeg"]
 
@@ -264,10 +390,26 @@ class VideoDownloadTool(BaseTool):
         self,
         url: str,
         output_dir: Optional[str] = None,
+        workspace_root: Optional[str] = None,
         **kwargs: Any,
     ) -> ToolExecResult:
+        """下载视频。
+
+        落点优先级：``output_dir`` > ``<workspace_root>/materials/video`` > 临时目录。
+        **默认进工作区**：PRD 明确"下载的视频保存在工作区下的一个文件夹"，旧实现一律写
+        `tempfile.mkdtemp()`，于是工作区 `materials/` 永远是空的、扫描器无事可做。
+        """
         import tempfile
-        base = Path(output_dir) if output_dir else Path(tempfile.mkdtemp(prefix="dl_"))
+
+        if output_dir:
+            base = Path(output_dir)
+        elif workspace_root:
+            from clipwright.services.workspace import kind_of
+
+            kind = kind_of(url.split("?")[0]) or "video"
+            base = Path(workspace_root) / "materials" / kind
+        else:
+            base = Path(tempfile.mkdtemp(prefix="dl_"))
         base.mkdir(parents=True, exist_ok=True)
         name = url.split("/")[-1].split("?")[0] or f"dl_{hash(url) % 100000}.mp4"
         out = str(base / name)
@@ -299,6 +441,7 @@ class VideoDownloadTool(BaseTool):
 class MediaProbeTool(BaseTool):
     """媒体探测工具 — 用 ffprobe 获取文件的流信息、时长、编码、分辨率等。"""
     name = "media_probe"
+    permission_tier = "read"
     description = "探测媒体文件信息：时长、分辨率、编码、帧率、流详情"
     dependencies = ["ffprobe"]
 
@@ -357,6 +500,7 @@ class MediaProbeTool(BaseTool):
 class VideoCropTool(BaseTool):
     """视频裁切工具 — 将视频裁切为指定宽高比。"""
     name = "video_crop"
+    permission_tier = "write_local"
     description = "裁切视频画面比例，如 16:9 转 9:16, 1:1 等"
     dependencies = ["ffmpeg"]
 
@@ -412,6 +556,7 @@ class VideoCropTool(BaseTool):
 class VideoThumbnailTool(BaseTool):
     """视频缩略图生成 — 提取视频最佳帧 + 叠加标题文字。"""
     name = "video_thumbnail"
+    permission_tier = "write_local"
     description = "从视频提取关键帧生成封面缩略图，可选叠加标题文字"
     dependencies = ["ffmpeg"]
 
@@ -450,6 +595,7 @@ class VideoThumbnailTool(BaseTool):
 class VideoConcatTool(BaseTool):
     """视频拼接工具。"""
     name = "video_concat"
+    permission_tier = "write_local"
     description = "拼接多个视频片段（要求同编码/同分辨率）"
     dependencies = ["ffmpeg"]
 
@@ -499,6 +645,7 @@ class VideoConcatTool(BaseTool):
 class VideoOverlayTool(BaseTool):
     """视频叠加工具（画中画、图片叠加）。"""
     name = "video_overlay"
+    permission_tier = "write_local"
     description = "在视频上叠加另一个视频或图像"
     dependencies = ["ffmpeg"]
 

@@ -14,6 +14,13 @@ import yaml
 from clipwright.category.base import BaseCategoryPlugin
 from clipwright.category.registry import CategoryRegistry
 from clipwright.config import logger
+from clipwright.schema.category_spec import (
+    ParamRule,
+    PromptBundle,
+    PromptSlot,
+    SignatureTrait,
+    TypeDeclares,
+)
 from clipwright.schema.persona import ParameterLayer
 from clipwright.schema.timeline import Timeline
 
@@ -29,6 +36,59 @@ class DynamicCategoryPlugin(BaseCategoryPlugin):
         self._persona_mapping = config.get("persona_mapping", {})
         # transform 规范（post_process_timeline 应用）
         self._transform = config.get("transform", {}) or {}
+        # 类型规范（A-07）：YAML 里的 prompts / param_rules / signature_traits / declares
+        self._raw_prompts = config.get("prompts", {}) or {}
+        self._raw_rules = config.get("param_rules", []) or []
+        self._raw_traits = config.get("signature_traits", []) or []
+        self._raw_declares = config.get("declares", {}) or {}
+
+    # ── 类型规范（A-07）──────────────────────────────────────────────
+
+    def get_prompt_bundle(self) -> PromptBundle:
+        """从 YAML 读提示词；未声明时回落到基类的旧钩子适配器。"""
+        if not self._raw_prompts:
+            return super().get_prompt_bundle()
+        slots: dict[str, PromptSlot] = {}
+        for key, raw in self._raw_prompts.items():
+            if isinstance(raw, str):
+                slots[key] = PromptSlot(text=raw)
+            elif isinstance(raw, dict):
+                try:
+                    slots[key] = PromptSlot(**raw)
+                except Exception:
+                    logger.warning("类型 %s 槽位 %s 非法，已跳过", self.plugin_id, key)
+        return PromptBundle(slots=slots).normalized()
+
+    def get_param_rules(self) -> list[ParamRule]:
+        rules: list[ParamRule] = []
+        for raw in self._raw_rules:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                rules.append(ParamRule(**raw))
+            except Exception:
+                logger.warning("类型 %s 的参数规则非法，已跳过: %s", self.plugin_id, raw)
+        return rules
+
+    def get_signature_traits(self) -> list[SignatureTrait]:
+        traits: list[SignatureTrait] = []
+        for raw in self._raw_traits:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                traits.append(SignatureTrait(**raw))
+            except Exception:
+                logger.warning("类型 %s 的指标非法，已跳过: %s", self.plugin_id, raw)
+        return traits
+
+    def get_declares(self) -> TypeDeclares:
+        if not self._raw_declares:
+            return super().get_declares()
+        try:
+            return TypeDeclares(**self._raw_declares)
+        except Exception:
+            logger.warning("类型 %s 的 declares 非法，回落默认", self.plugin_id)
+            return super().get_declares()
 
     @staticmethod
     def _resolve_path(data: dict[str, Any], path: str) -> Any:

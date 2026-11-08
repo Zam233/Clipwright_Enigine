@@ -1,0 +1,561 @@
+{
+  "version": "v2",
+  "modules": [
+    {
+      "id": "S1",
+      "name": "星光线",
+      "series": "motion-graphics",
+      "keywords_zh": [
+        "星光",
+        "光轨",
+        "暗底",
+        "科技"
+      ],
+      "keywords_en": [
+        "starlight",
+        "light-trail"
+      ],
+      "palette_hex": [
+        "#101820",
+        "#39D5FF",
+        "#F5F7FA"
+      ],
+      "motion_tags": [
+        "方向性平移",
+        "光轨扫过"
+      ],
+      "composition_tags": [
+        "暗底单主体",
+        "细线层次"
+      ],
+      "suitable_types": [
+        "reveal_line",
+        "title_stack",
+        "mg_title_reveal"
+      ],
+      "avoid_types": [
+        "quote_block",
+        "codeblock"
+      ],
+      "forbidden": [
+        "drawtext 不得声称粒子",
+        "光轨不得压正文与字幕带"
+      ],
+      "renderer_paths": [
+        "drawtext",
+        "mg_html"
+      ],
+      "reference_source": "XiaoyeCodes/code-animation-prompts#starlight",
+      "prompt_version": "v2",
+      "status": "active"
+    },
+    {
+      "id": "S2",
+      "name": "粒子聚形",
+      "series": "motion-graphics",
+      "keywords_zh": [
+        "粒子",
+        "聚形",
+        "散到聚",
+        "星光"
+      ],
+      "keywords_en": [
+        "particles",
+        "coalesce"
+      ],
+      "palette_hex": [
+        "#17212B",
+        "#00C2A8",
+        "#FFC857"
+      ],
+      "motion_tags": [
+        "固定种子聚合",
+        "由散到聚"
+      ],
+      "composition_tags": [
+        "中心聚形",
+        "标题轮廓"
+      ],
+      "suitable_types": [
+        "mg_logo_intro",
+        "mg_title_reveal"
+      ],
+      "avoid_types": [
+        "bar_chart",
+        "line_chart"
+      ],
+      "forbidden": [
+        "本期不落 drawtext",
+        "禁每帧随机",
+        "粒子不得遮字"
+      ],
+      "renderer_paths": [
+        "mg_html"
+      ],
+      "reference_source": "XiaoyeCodes/code-animation-prompts#particles",
+      "prompt_version": "v2",
+      "status": "active"
+    },
+    {
+      "id": "S3",
+      "name": "极简几何",
+      "series": "editorial",
+      "keywords_zh": [
+        "极简",
+        "几何",
+        "单一主体",
+        "克制"
+      ],
+      "keywords_en": [
+        "minimal",
+        "geometry"
+      ],
+      "palette_hex": [
+        "#F4F6F8",
+        "#20262E",
+        "#E4572E"
+      ],
+      "motion_tags": [
+        "短促平移",
+        "单次强调"
+      ],
+      "composition_tags": [
+        "单焦点",
+        "大量留白"
+      ],
+      "suitable_types": [
+        "emphasis_keyword",
+        "reveal_line",
+        "comparison",
+        "flow_chart"
+      ],
+      "avoid_types": [
+        "mg_quote_card"
+      ],
+      "forbidden": [
+        "同屏不超过 1 个强调色",
+        "禁厚重阴影"
+      ],
+      "renderer_paths": [
+        "drawtext",
+        "mg_fastpath"
+      ],
+      "reference_source": "XiaoyeCodes/code-animation-prompts#minimal",
+      "prompt_version": "v2",
+      "status": "active"
+    },
+    {
+      "id": "S4",
+      "name": "图表生长",
+      "series": "data",
+      "keywords_zh": [
+        "图表",
+        "柱状",
+        "折线",
+        "数据"
+      ],
+      "keywords_en": [
+        "chart",
+        "growth"
+      ],
+      "palette_hex": [
+        "#15232D",
+        "#3A86FF",
+        "#FFBE0B"
+      ],
+      "motion_tags": [
+        "按阅读顺序生长",
+        "错峰 0.12–0.22s"
+      ],
+      "composition_tags": [
+        "零基线",
+        "轴标签对齐"
+      ],
+      "suitable_types": [
+        "bar_chart",
+        "line_chart",
+        "mg_data_bars"
+      ],
+      "avoid_types": [
+        "quote_block",
+        "mg_logo_intro"
+      ],
+      "forbidden": [
+        "不改数据顺序",
+        "无有效数据不画数值图"
+      ],
+      "renderer_paths": [
+        "mg_fastpath",
+        "mg_html"
+      ],
+      "reference_source": "XiaoyeCodes/code-animation-prompts#data-growth",
+      "prompt_version": "v2",
+      "status": "active"
+    },
+    {
+      "id": "S5",
+      "name": "分屏对照",
+      "series": "editorial",
+      "keywords_zh": [
+        "分屏",
+        "对比",
+        "左右",
+        "并列"
+      ],
+      "keywords_en": [
+        "split",
+        "comparison"
+      ],
+      "palette_hex": [
+        "#1E2933",
+        "#4CC9F0",
+        "#F4A261"
+      ],
+      "motion_tags": [
+        "同构入场差 0.2–0.4s"
+      ],
+      "composition_tags": [
+        "左右同构",
+        "分隔线"
+      ],
+      "suitable_types": [
+        "comparison",
+        "mg_comparison_split"
+      ],
+      "avoid_types": [
+        "bar_chart"
+      ],
+      "forbidden": [
+        "禁跨维度比较",
+        "禁只换颜色不表意"
+      ],
+      "renderer_paths": [
+        "mg_fastpath",
+        "mg_html"
+      ],
+      "reference_source": "XiaoyeCodes/code-animation-prompts#split",
+      "prompt_version": "v2",
+      "status": "active"
+    },
+    {
+      "id": "S6",
+      "name": "技术标注",
+      "series": "technical",
+      "keywords_zh": [
+        "标注",
+        "指示线",
+        "工程",
+        "示意图"
+      ],
+      "keywords_en": [
+        "callout",
+        "annotation"
+      ],
+      "palette_hex": [
+        "#16212B",
+        "#26C6DA",
+        "#DCE3E8"
+      ],
+      "motion_tags": [
+        "细线牵引 8–16px"
+      ],
+      "composition_tags": [
+        "对象-标签一条线",
+        "短标签"
+      ],
+      "suitable_types": [
+        "label_callout",
+        "diagram",
+        "flow_chart"
+      ],
+      "avoid_types": [
+        "quote_block"
+      ],
+      "forbidden": [
+        "禁悬空标签",
+        "禁挡人脸与字幕"
+      ],
+      "renderer_paths": [
+        "drawtext",
+        "mg_fastpath"
+      ],
+      "reference_source": "XiaoyeCodes/code-animation-prompts#callout",
+      "prompt_version": "v2",
+      "status": "active"
+    },
+    {
+      "id": "S7",
+      "name": "编辑部引语",
+      "series": "editorial",
+      "keywords_zh": [
+        "引语",
+        "引号",
+        "出处",
+        "阅读层级"
+      ],
+      "keywords_en": [
+        "quote",
+        "editorial"
+      ],
+      "palette_hex": [
+        "#F5F1E8",
+        "#222222",
+        "#C44536"
+      ],
+      "motion_tags": [
+        "12–20px 浮入"
+      ],
+      "composition_tags": [
+        "引号-正文-出处三层",
+        "稳定行距"
+      ],
+      "suitable_types": [
+        "quote_block",
+        "mg_quote_card"
+      ],
+      "avoid_types": [
+        "bar_chart"
+      ],
+      "forbidden": [
+        "禁伪造引文与来源",
+        "禁不透明大底板"
+      ],
+      "renderer_paths": [
+        "drawtext",
+        "mg_html"
+      ],
+      "reference_source": "XiaoyeCodes/code-animation-prompts#quote-card",
+      "prompt_version": "v2",
+      "status": "active"
+    },
+    {
+      "id": "S8",
+      "name": "发布会数字",
+      "series": "data",
+      "keywords_zh": [
+        "大数字",
+        "计数",
+        "单位",
+        "发布会"
+      ],
+      "keywords_en": [
+        "number",
+        "keynote"
+      ],
+      "palette_hex": [
+        "#101820",
+        "#F8FAFC",
+        "#00A6A6"
+      ],
+      "motion_tags": [
+        "0.6–0.9s 尺度/颜色",
+        "计数（仅可数量化）"
+      ],
+      "composition_tags": [
+        "单一大数字",
+        "单位贴近"
+      ],
+      "suitable_types": [
+        "number_punch",
+        "mg_data_counter"
+      ],
+      "avoid_types": [
+        "quote_block"
+      ],
+      "forbidden": [
+        "日期/版本/编号禁从 0 计数",
+        "禁裸数字"
+      ],
+      "renderer_paths": [
+        "drawtext",
+        "mg_html"
+      ],
+      "reference_source": "XiaoyeCodes/code-animation-prompts#keynote-number",
+      "prompt_version": "v2",
+      "status": "active"
+    },
+    {
+      "id": "S9",
+      "name": "柔光玻璃",
+      "series": "ambient",
+      "keywords_zh": [
+        "柔光",
+        "玻璃",
+        "低对比",
+        "柔和"
+      ],
+      "keywords_en": [
+        "soft-glow",
+        "glass"
+      ],
+      "palette_hex": [
+        "#F7FBFF",
+        "#8ECDF2",
+        "#4F6D7A"
+      ],
+      "motion_tags": [
+        "2–6px 发光",
+        "20–60px/s 位移"
+      ],
+      "composition_tags": [
+        "柔和色面",
+        "主体清楚"
+      ],
+      "suitable_types": [
+        "mg_title_reveal",
+        "mg_quote_card"
+      ],
+      "avoid_types": [
+        "bar_chart"
+      ],
+      "forbidden": [
+        "不得把 blur 说成 drawtext 已支持",
+        "禁低对比正文"
+      ],
+      "renderer_paths": [
+        "mg_html"
+      ],
+      "reference_source": "XiaoyeCodes/code-animation-prompts#soft-glass",
+      "prompt_version": "v2",
+      "status": "active"
+    },
+    {
+      "id": "S10",
+      "name": "水墨留白",
+      "series": "oriental",
+      "keywords_zh": [
+        "水墨",
+        "留白",
+        "黑白",
+        "朱砂"
+      ],
+      "keywords_en": [
+        "ink",
+        "negative-space"
+      ],
+      "palette_hex": [
+        "#111111",
+        "#F2F0E9",
+        "#B23A2F"
+      ],
+      "motion_tags": [
+        "10–40px/s 慢移"
+      ],
+      "composition_tags": [
+        "大留白",
+        "一点朱砂"
+      ],
+      "suitable_types": [
+        "title_stack",
+        "quote_block",
+        "hierarchy"
+      ],
+      "avoid_types": [
+        "codeblock"
+      ],
+      "forbidden": [
+        "墨迹扩散/纸纹需 MG HTML",
+        "禁与像素霓虹混用"
+      ],
+      "renderer_paths": [
+        "mg_html",
+        "drawtext"
+      ],
+      "reference_source": "XiaoyeCodes/code-animation-prompts#ink",
+      "prompt_version": "v2",
+      "status": "active"
+    },
+    {
+      "id": "S11",
+      "name": "像素赛博",
+      "series": "retro",
+      "keywords_zh": [
+        "像素",
+        "赛博",
+        "硬边",
+        "错位"
+      ],
+      "keywords_en": [
+        "pixel",
+        "cyber"
+      ],
+      "palette_hex": [
+        "#0B1020",
+        "#00F5D4",
+        "#F72585",
+        "#EDEDED"
+      ],
+      "motion_tags": [
+        "100–240px/s 短促错位"
+      ],
+      "composition_tags": [
+        "像素网格",
+        "硬边色块"
+      ],
+      "suitable_types": [
+        "codeblock",
+        "diagram",
+        "title_stack"
+      ],
+      "avoid_types": [
+        "quote_block"
+      ],
+      "forbidden": [
+        "禁衬线标题",
+        "本期不做 blur/3D/故障粒子"
+      ],
+      "renderer_paths": [
+        "mg_html",
+        "drawtext"
+      ],
+      "reference_source": "XiaoyeCodes/code-animation-prompts#pixel-cyber",
+      "prompt_version": "v2",
+      "status": "active"
+    },
+    {
+      "id": "S12",
+      "name": "电影字幕标题",
+      "series": "cinematic",
+      "keywords_zh": [
+        "电影",
+        "字幕标题",
+        "克制",
+        "字距"
+      ],
+      "keywords_en": [
+        "cinematic",
+        "title"
+      ],
+      "palette_hex": [
+        "#101010",
+        "#F4F4F4",
+        "#D9A441"
+      ],
+      "motion_tags": [
+        "8–24px 位移"
+      ],
+      "composition_tags": [
+        "字号/字距定层次",
+        "安全区内"
+      ],
+      "suitable_types": [
+        "reveal_line",
+        "quote_block",
+        "title_stack"
+      ],
+      "avoid_types": [
+        "mg_logo_intro"
+      ],
+      "forbidden": [
+        "禁长段重复字幕",
+        "禁厚光晕与全幅底色"
+      ],
+      "renderer_paths": [
+        "drawtext"
+      ],
+      "reference_source": "XiaoyeCodes/code-animation-prompts#cinematic-title",
+      "prompt_version": "v2",
+      "status": "active"
+    }
+  ]
+}

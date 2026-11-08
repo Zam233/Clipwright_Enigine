@@ -745,9 +745,10 @@ class AnimationCatalog:
         Returns:
             {"font_size": int, "font_color": str, "position": str}
         """
+        # 只接受显式传入的 visual_config / extra_params；不再从
+        # extra_params["visual_config"] 二次兜底（该键已由 visual_context 统一装配，
+        # 这里的旧兜底等于第二套来源，容易与 persona 装配结果不一致）。
         config = visual_config or extra_params or {}
-        if extra_params and not config:
-            config = extra_params.get("visual_config", {})
 
         return {
             "font_size": config.get("text_font_size", 48),

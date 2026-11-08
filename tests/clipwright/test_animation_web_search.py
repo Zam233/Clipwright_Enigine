@@ -1,28 +1,37 @@
-"""W5 — 动画 Agent 联网搜索门控测试（mg_dynamic 数据/事实型，见 docs/agent-search-cancel.md）。
+"""W5 — 动画 Agent 联网搜索门控测试（mg_dynamic 数据/事实型）。
+
+**接入方式在 2026-11-02 变过一次**：旧实现直连 `WebSearchService.search()`（agent 里
+`import` 具体服务）；现在按不变量 #19 收口到**能力面**：
+
+- `fact_need`（插件 `web_media` 提供）——模型判断"哪些场景需要外部事实"，一次批量调用；
+- `web_search` / `web_fetch`（工具/插件提供）——真正取资料。
+
+所以本文件的打桩点从 `animation_agent.WebSearchService` 换成了 `AnimationAgent.call_tool`，
+断言语义保持不变：事实型→搜且注入上下文；非事实型→不搜；能力缺失/报错→空上下文但不炸。
 
 覆盖：
-(a) 描述含数据/事实关键词（如 "2025 年市场数据"）+ 搜索已配置 → WebSearchService.search
-    被调用，且 mg_gen.generate 收到 web_context（含搜索结果标题/摘要/来源）
-(b) 描述为纯标题揭示（无数据/事实关键词）→ 搜索不调用，web_context == ""
-(c) 未配置（settings.enable_web_search=False）→ 搜索不调用，generate 照常（行为不变）
-(d) 搜索抛异常 → web_context == ""，异常不传播（绝不 raise）
-
-对抗类：
-- misleading_success_output：断言 generate 收到真实 web_context 文本（含搜索摘要）
-- 未配置/失败分支：断言 web_context == ""（行为与接入前逐字节一致）
-
-注：pyproject 已启用 pytest-asyncio asyncio_mode="auto"，async def test_ 直接执行。
+(a) 事实型场景 + 能力可用 → `web_search` 被调用，`mg_gen` 收到含标题/摘要/来源的 web_context；
+(b) 没有事实型场景 → 不调用搜索，web_context == ""；
+(c) `fact_need` 能力缺失 → 不调用搜索，生成照常（行为与接入前一致）；
+(d) 搜索能力不可用 / 抛异常 → web_context == ""，异常不传播。
 """
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 from clipwright.agents.animation_agent import AnimationAgent
-from clipwright.config import settings
 from clipwright.schema.agent import AgentContext, AgentDecision, AnimationInput
 from clipwright.schema.timeline import Clip, ClipKind, Timeline, Track
-from clipwright.services.web_search import WebSearchService
+from clipwright.schema.tool import ToolExecResult, ToolStatus
+
+_FAKE_RESULTS = [
+    {"title": "2025 市场报告", "url": "https://example.com/market-2025",
+     "snippet": "2025 年市场规模增长 23%"},
+    {"title": "行业统计", "url": "https://example.com/stats",
+     "snippet": "行业统计显示市占率 45%"},
+]
 
 
 def _ctx() -> AgentContext:
@@ -67,95 +76,121 @@ def _timeline_with_mg_dynamic(description: str) -> Timeline:
 
 
 class _FakeMGGenerator:
-    """MGGenerator 桩：记录 generate 调用（含 web_context），返回成功结果。"""
+    """MGGenerator 桩：`generate` / `generate_for_type` 都记录（含 web_context）。"""
+
+    _RESULT = {
+        "success": True,
+        "html": "<div class='mg-anim'>W5</div>",
+        "mg_def": {"animation_id": "mg_web_search", "duration_sec": 3.0},
+        "method": "llm",
+        "fallback_template": None,
+        "generation_id": "gen_w5_test",
+    }
 
     def __init__(self) -> None:
-        self.generate = AsyncMock(
-            return_value={
-                "success": True,
-                "html": "<div class='mg-anim'>W5</div>",
-                "mg_def": {"animation_id": "mg_web_search", "duration_sec": 3.0},
-                "method": "llm",
-                "fallback_template": None,
-                "generation_id": "gen_w5_test",
-            }
-        )
+        self.generate = AsyncMock(return_value=dict(self._RESULT))
+        self.generate_for_type = AsyncMock(return_value=dict(self._RESULT))
 
     def __call__(self) -> "_FakeMGGenerator":
         return self
 
+    def _calls(self) -> list:
+        return list(self.generate.await_args_list) + list(self.generate_for_type.await_args_list)
+
     def last_web_context(self) -> str:
-        calls = self.generate.await_args_list
-        assert calls, "generate 未被调用"
+        calls = self._calls()
+        assert calls, "MG 生成未被调用"
         return calls[-1].kwargs.get("web_context", "")
 
-    def last_description(self) -> str:
-        calls = self.generate.await_args_list
-        assert calls, "generate 未被调用"
-        return calls[-1].kwargs.get("description", "")
 
+class _FakeCapabilities:
+    """能力面桩：`fact_need` / `web_search` / `web_fetch` 三个能力。
 
-class _FakeWebSearch:
-    """WebSearchService 桩：is_configured / search 可配置；记录搜索调用。"""
+    - `fact_need`：按 `needed_ids` 配置返回（空 = 没场景需要事实）；
+      `fact_need_missing=True` 模拟插件未装（返回 NOT_FOUND）。
+    - `web_search`：记录查询；`fail=True` 抛异常；`search_available=False` 返回
+      DEPENDENCY_MISSING（等价于"搜索未配置"）。
+    """
 
-    def __init__(self, configured: bool = True, fail: bool = False,
-                 results: list[dict] | None = None) -> None:
-        self.configured = configured
+    def __init__(
+        self,
+        *,
+        needed_ids: list[str] | None = None,
+        results: list[dict] | None = None,
+        fail: bool = False,
+        fact_need_missing: bool = False,
+        search_available: bool = True,
+    ) -> None:
+        self.needed_ids = list(needed_ids or [])
+        self.results = results if results is not None else list(_FAKE_RESULTS)
         self.fail = fail
-        self.results = results or []
-        self.instances = 0
-        self.search_calls = 0
-        self.search_queries: list[str] = []
+        self.fact_need_missing = fact_need_missing
+        self.search_available = search_available
+        self.search_calls: list[dict[str, Any]] = []
+        self.fetch_calls: list[dict[str, Any]] = []
 
-    def __call__(self) -> "_FakeWebSearch":
-        self.instances += 1
-        return self
+    async def __call__(self, capability: str, **kwargs: Any) -> ToolExecResult:
+        if capability == "fact_need":
+            if self.fact_need_missing:
+                return ToolExecResult(
+                    status=ToolStatus.NOT_FOUND, tool_name="fact_need",
+                    output={}, error="能力缺失",
+                )
+            return ToolExecResult(
+                status=ToolStatus.SUCCESS, tool_name="fact_need",
+                output={"needed_ids": self.needed_ids, "mode": "test"},
+            )
+        if capability == "web_search":
+            self.search_calls.append(dict(kwargs))
+            if self.fail:
+                raise RuntimeError("web search boom")
+            if not self.search_available:
+                return ToolExecResult(
+                    status=ToolStatus.DEPENDENCY_MISSING, tool_name="web_search",
+                    output={"results": []}, error="搜索未配置",
+                )
+            return ToolExecResult(
+                status=ToolStatus.SUCCESS, tool_name="web_search",
+                output={"results": list(self.results)},
+            )
+        if capability == "web_fetch":
+            self.fetch_calls.append(dict(kwargs))
+            return ToolExecResult(
+                status=ToolStatus.SUCCESS, tool_name="web_fetch",
+                output={"content": "", "fetched": True},
+            )
+        return ToolExecResult(
+            status=ToolStatus.NOT_FOUND, tool_name=capability, output={},
+            error="未知能力",
+        )
 
-    def is_configured(self) -> bool:
-        return self.configured
 
-    async def search(self, query: str, max_results: int | None = None) -> list[dict]:
-        self.search_calls += 1
-        self.search_queries.append(query)
-        if self.fail:
-            raise RuntimeError("web search boom")
-        return self.results
-
-
-_FAKE_RESULTS = [
-    {"title": "2025 市场报告", "url": "https://example.com/market-2025",
-     "snippet": "2025 年市场规模增长 23%"},
-    {"title": "行业统计", "url": "https://example.com/stats",
-     "snippet": "行业统计显示市占率 45%"},
-]
-
-
-async def _run_execute(timeline: Timeline, fake_ws: _FakeWebSearch, fake_mg: _FakeMGGenerator):
+async def _run_execute(timeline: Timeline, caps: _FakeCapabilities, fake_mg: _FakeMGGenerator):
     """以标准桩组合运行 AnimationAgent.execute（patch 必须在 await 期间保持生效）。"""
     agent = AnimationAgent()
     ctx = _ctx()
     inp = AnimationInput(context=ctx, timeline=timeline)
     with (
         patch.object(AnimationAgent, "_resolve_style", new=AsyncMock(return_value={})),
-        patch("clipwright.agents.animation_agent.WebSearchService", fake_ws),
+        patch.object(AnimationAgent, "call_tool", new=caps),
         patch("clipwright.animation.mg.MGGenerator", fake_mg),
     ):
         return await agent.execute(inp, ctx)
 
 
 class TestDataFactGatedSearch:
-    """数据/事实型描述 → 搜索 + web_context 注入。"""
+    """事实型场景 → 搜索 + web_context 注入。"""
 
     async def test_data_description_triggers_search_and_web_context(self) -> None:
-        fake_ws = _FakeWebSearch(configured=True, results=_FAKE_RESULTS)
+        caps = _FakeCapabilities(needed_ids=["clip_mg"])
         fake_mg = _FakeMGGenerator()
-        out = await _run_execute(_timeline_with_mg_dynamic("2025 年市场数据展示"), fake_ws, fake_mg)
+        out = await _run_execute(_timeline_with_mg_dynamic("2025 年市场数据展示"), caps, fake_mg)
 
-        # (a) 搜索被调用且查询 = 描述前 120 字符
-        assert fake_ws.search_calls == 1
-        assert fake_ws.search_queries == ["2025 年市场数据展示"]
+        # (a) 搜索被调用，查询 = 描述前 120 字符
+        assert len(caps.search_calls) == 1, caps.search_calls
+        assert caps.search_calls[0]["query"] == "2025 年市场数据展示"
 
-        # generate 收到真实 web_context 文本（含摘要/标题/来源，≤3 条）
+        # 生成侧收到真实 web_context 文本（含摘要/标题/来源）
         web_context = fake_mg.last_web_context()
         assert web_context
         assert "2025 年市场规模增长 23%" in web_context
@@ -164,54 +199,48 @@ class TestDataFactGatedSearch:
         assert "行业统计显示市占率 45%" in web_context
         assert "https://example.com/stats" in web_context
 
-        # 原始描述保留（无回归）
-        assert fake_mg.last_description() == "2025 年市场数据展示"
         assert out.decision == AgentDecision.PASS
         assert out.generated_mg_count == 1
 
-    async def test_no_data_keywords_skips_search(self) -> None:
-        """纯标题揭示（无数据/事实关键词）→ 搜索不调用，web_context == ""。"""
-        fake_ws = _FakeWebSearch(configured=True, results=_FAKE_RESULTS)
+    async def test_no_fact_scene_skips_search(self) -> None:
+        """`fact_need` 判定没有场景需要事实 → 不调用搜索，web_context == ""。"""
+        caps = _FakeCapabilities(needed_ids=[])
         fake_mg = _FakeMGGenerator()
-        out = await _run_execute(_timeline_with_mg_dynamic("标题揭示动画"), fake_ws, fake_mg)
+        out = await _run_execute(_timeline_with_mg_dynamic("标题揭示动画"), caps, fake_mg)
 
-        assert fake_ws.search_calls == 0
+        assert caps.search_calls == []
         assert fake_mg.last_web_context() == ""
-        # 行为不变：generate 照常调用并生成 clip
         assert out.decision == AgentDecision.PASS
         assert out.generated_mg_count == 1
 
-    async def test_not_configured_skips_search(self, monkeypatch) -> None:
-        """未配置（settings.enable_web_search=False）→ 搜索不调用，行为与之前完全一致。"""
-        monkeypatch.setattr(settings, "enable_web_search", False)
-        monkeypatch.setattr(settings, "web_search_api_key", "")
+    async def test_fact_need_capability_missing_falls_back(self) -> None:
+        """`fact_need` 能力缺失（插件未装）→ 不做事实判断、不搜索，生成照常。"""
+        caps = _FakeCapabilities(fact_need_missing=True)
         fake_mg = _FakeMGGenerator()
-        agent = AnimationAgent()
-        ctx = _ctx()
-        inp = AnimationInput(context=ctx, timeline=_timeline_with_mg_dynamic("2025 年市场数据"))
-        with (
-            patch.object(AnimationAgent, "_resolve_style", new=AsyncMock(return_value={})),
-            # 真实 WebSearchService：is_configured 读取被 monkeypatch 的 settings
-            patch.object(WebSearchService, "search", new=AsyncMock()) as mock_search,
-            patch("clipwright.animation.mg.MGGenerator", fake_mg),
-        ):
-            out = await agent.execute(inp, ctx)
+        out = await _run_execute(_timeline_with_mg_dynamic("2025 年市场数据"), caps, fake_mg)
 
-        mock_search.assert_not_called()
+        assert caps.search_calls == []
         assert fake_mg.last_web_context() == ""
-        # 行为不变：generate 照常调用
-        assert fake_mg.generate.await_count == 1
         assert out.decision == AgentDecision.PASS
         assert out.generated_mg_count == 1
+
+    async def test_search_capability_missing_keeps_empty_context(self) -> None:
+        """搜索能力不可用（未配置）→ 空上下文，生成照常（行为与接入前一致）。"""
+        caps = _FakeCapabilities(needed_ids=["clip_mg"], search_available=False)
+        fake_mg = _FakeMGGenerator()
+        out = await _run_execute(_timeline_with_mg_dynamic("2025 年市场数据展示"), caps, fake_mg)
+
+        assert len(caps.search_calls) == 1
+        assert fake_mg.last_web_context() == ""
+        assert out.decision == AgentDecision.PASS
 
     async def test_search_exception_swallowed(self) -> None:
-        """搜索抛异常 → web_context == ""，异常不传播，generate 照常。"""
-        fake_ws = _FakeWebSearch(configured=True, fail=True)
+        """搜索抛异常 → web_context == ""，异常不传播，生成照常。"""
+        caps = _FakeCapabilities(needed_ids=["clip_mg"], fail=True)
         fake_mg = _FakeMGGenerator()
-        out = await _run_execute(_timeline_with_mg_dynamic("2025 年市场数据展示"), fake_ws, fake_mg)
+        out = await _run_execute(_timeline_with_mg_dynamic("2025 年市场数据展示"), caps, fake_mg)
 
-        assert fake_ws.search_calls == 1
+        assert len(caps.search_calls) == 1
         assert fake_mg.last_web_context() == ""
-        assert fake_mg.generate.await_count == 1
         assert out.decision == AgentDecision.PASS
         assert out.generated_mg_count == 1

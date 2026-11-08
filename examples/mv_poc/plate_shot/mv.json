@@ -1,0 +1,16 @@
+{
+  "id": "plate_shot_poc",
+  "type": "lyric_mv",
+  "song": {
+    "bpm": 130,
+    "beat_zero_sec": 0.344,
+    "preroll_sec": 0,
+    "duration_sec": 6
+  },
+  "segments": [
+    { "id": "A", "t0": 0, "t1": 2.5, "kind": "plate", "scene": "plate_clean" },
+    { "id": "B", "t0": 2.5, "t1": 6, "kind": "plate", "scene": "plate_broken" }
+  ],
+  "fonts": { "serif": "Noto Serif TC", "sans": "Noto Sans TC", "mono": "JetBrains Mono" },
+  "gates": { "determinism": true, "beat": true, "flash": true }
+}

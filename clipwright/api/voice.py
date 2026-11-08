@@ -142,17 +142,53 @@ async def synthesize_voice(req: SynthesizeRequest) -> dict[str, Any]:
         output_path=req.output_path,
     )
     if not result.success:
-        logger.warning("Voice synthesize failed: %s (voice_id=%s)", result.error, req.voice_id)
-        raise HTTPException(status_code=400, detail=result.error)
+        # PRD §6.3：失败也必须把结构化原因（error_code / stage / provider_id / retryable）
+        # 带给调用方，而不是只回一句人话——前端据此决定「去配凭据」还是「重试」。
+        info = (result.data or {}).get("error") or {}
+        logger.warning(
+            "Voice synthesize failed: code=%s stage=%s provider=%s retryable=%s (voice_id=%s)",
+            info.get("error_code", "unknown"), info.get("stage", "unknown"),
+            info.get("provider_id", ""), info.get("retryable", False), req.voice_id,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": result.error,
+                "error_code": info.get("error_code", "unknown"),
+                "stage": info.get("stage", "unknown"),
+                "provider_id": info.get("provider_id", ""),
+                "retryable": bool(info.get("retryable", False)),
+            },
+        )
     logger.info("Voice synthesized: voice_id=%s text=%d chars dur=%.1fs", req.voice_id, len(req.text), result.data.get("duration_sec", 0))
     return result.data
 
 
 @router.post("/dub")
 async def dub_script(req: DubRequest) -> dict[str, Any]:
-    """文案切分 + 逐段配音。"""
-    svc = get_voice_service()
-    result = await svc.dub_script(
+    """文案切分 + 逐段配音（**薄转发**：编排已归 TTS 功能插件）。
+
+    PRD §15.1.5 / B3-T8：本端点只做「按能力名转发」。B3-T6（2026-11-03）之后
+    engine 的 `VoiceService.dub_script()` 已删除，编排**只**存在于插件里：
+    - 能力名 `dub` → `skill_resolve('dub')`（别名指向 `dub_script` 技能）；
+    - 这个技能由 `plugins/tts_feature/` 提供，插件禁用时解析不到 → 503；
+    - 端点本身不承载切句/时间轴逻辑，也不做「服务层直连」兜底。
+    """
+    from clipwright.tool.capabilities import skill_resolve
+
+    skill = skill_resolve("dub")
+    if skill is None:
+        logger.warning("Voice dub: 能力 dub 不可用（TTS 功能插件未安装或被禁用）")
+        raise HTTPException(
+            status_code=503,
+            detail="配音能力当前不可用（TTS 功能插件未安装或被禁用）",
+        )
+
+    from clipwright.schema.skill import SkillStatus
+    from clipwright.skill.registry import SkillRegistry
+
+    result = await SkillRegistry.execute(
+        skill.name,
         voice_id=req.voice_id,
         text=req.text,
         split_mode=req.split_mode,
@@ -160,15 +196,19 @@ async def dub_script(req: DubRequest) -> dict[str, Any]:
         target_model=req.target_model,
         instructions=req.instructions,
     )
-    if not result.success:
+    if result.status != SkillStatus.SUCCESS:
         logger.warning("Voice dub failed: %s (voice_id=%s)", result.error, req.voice_id)
-        raise HTTPException(status_code=400, detail=result.error)
-    total = result.data.get("total", 0)
-    logger.info("Voice dub: voice_id=%s text=%d chars → %d segments (%.1fs)", req.voice_id, len(req.text), total, result.data.get("total_duration_sec", 0))
+        raise HTTPException(status_code=400, detail=result.error or "配音失败")
+    out = result.output or {}
+    total = out.get("total", 0)
+    logger.info(
+        "Voice dub: voice_id=%s text=%d chars → %d segments (%.1fs) via skill=%s",
+        req.voice_id, len(req.text), total, out.get("total_duration_sec", 0), skill.name,
+    )
     return {
-        "segments": result.data.get("segments", []),
-        "total": result.data.get("total", 0),
-        "total_duration_sec": result.data.get("total_duration_sec", 0.0),
+        "segments": out.get("segments", []),
+        "total": total,
+        "total_duration_sec": out.get("total_duration_sec", 0.0),
     }
 
 

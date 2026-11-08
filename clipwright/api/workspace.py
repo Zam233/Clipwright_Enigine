@@ -1,0 +1,642 @@
+"""工作区 API（PRD docs/workspace-prd-2026-10-24.md §7.2）。
+
+端点：
+
+- ``POST   /api/workspace``                      创建/取回（幂等）
+- ``GET    /api/workspace/{project_id}``         状态（计数/索引/预算/健康）
+- ``POST   /api/workspace/{project_id}/scan``    触发扫描（dry_run 只列将新增）
+- ``GET    /api/workspace/{project_id}/materials`` 素材列表
+- ``POST   /api/workspace/{project_id}/materials`` 上传（写 materials/ 后排索引）
+- ``DELETE /api/workspace/{project_id}/materials/{sha256}`` 只删索引记录（purge 才删盘）
+- ``GET    /api/workspace/{project_id}/events``  SSE（扫描/索引进度）
+
+安全：``root`` 只能落在 ``settings.workspace_dir`` 内（不接受任意绝对路径写盘）；
+上传文件名做 basename 清洗，不允许 ``../``。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
+
+from clipwright.config import logger, settings
+from clipwright.services import workspace as ws_mod
+from clipwright.services.workspace import Workspace, WorkspaceError, kind_of
+
+router = APIRouter(prefix="/api/workspace", tags=["workspace"])
+
+#: 单文件上传硬上限（devplan T3.1）。前端也会在选完文件时先拦一次（提示分批/压缩），
+#: 但**真正的边界在后端**：客户端的检查随时可以被绕过或版本不一致。
+UPLOAD_MAX_BYTES = 2 * 1024 ** 3          # 2 GiB
+#: 流式写盘分块大小。1 MiB 是"内存占用可忽略"与"系统调用次数不过多"的折中。
+UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+class CreateWorkspaceBody(dict):
+    """（仅为文档可读性；实际用 Body(...) 收 dict）"""
+
+
+def _ws(project_id: str) -> Workspace:
+    try:
+        return Workspace(project_id)
+    except WorkspaceError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+def _safe_name(name: str) -> str:
+    base = Path(str(name or "")).name.replace("\\", "/").split("/")[-1].strip()
+    if not base or base in (".", ".."):
+        raise HTTPException(status_code=400, detail="非法文件名")
+    return base
+
+
+def workspace_roots() -> list[Path]:
+    """可选的工作区父目录集合（PRD §17.8）：`settings.workspace_roots` + 默认 `workspace_dir`。"""
+    roots: list[Path] = []
+    try:
+        roots.append(ws_mod.workspace_root().resolve())
+    except Exception:  # noqa: BLE001 — 默认根不可用不影响其它候选
+        pass
+    for raw in (getattr(settings, "workspace_roots", None) or []):
+        try:
+            p = Path(str(raw)).expanduser().resolve()
+            if p.is_dir() and p not in roots:
+                roots.append(p)
+        except Exception:  # noqa: BLE001
+            continue
+    return roots
+
+
+def _check_root_allowed(root: str) -> Path:
+    """显式 root 必须落在**某个允许的父目录**内（PRD §17.8，白名单从 1 个变成 1..N 个）。"""
+    p = Path(root).expanduser().resolve()
+    for allowed in workspace_roots():
+        try:
+            p.relative_to(allowed)
+            return p
+        except ValueError:
+            continue
+    allowed_txt = "、".join(str(r) for r in workspace_roots()) or "（无可用根）"
+    raise HTTPException(
+        status_code=400,
+        detail=f"root 必须位于允许的父目录之一内（{allowed_txt}），收到 {p}",
+    )
+
+
+@router.get("/roots")
+async def list_workspace_roots() -> dict[str, Any]:
+    """可选的工作区父目录（前端 04 步下拉用，PRD §17.8）。"""
+    items = []
+    for p in workspace_roots():
+        items.append({"path": str(p), "writable": _is_writable(p), "default": p == (
+            Path(str(ws_mod.workspace_root())).resolve())})
+    return {"roots": items}
+
+
+def _is_writable(path: Path) -> bool:
+    """试写探测：真正建/删一个临时文件，而不是看权限位（Windows 上权限位不可靠）。"""
+    probe = path / f".write_probe_{uuid.uuid4().hex[:6]}"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+@router.post("")
+async def create_workspace(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """创建或取回工作区（幂等：已存在只更新开关）。"""
+    project_id = str(payload.get("project_id") or "").strip()
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id 不能为空")
+    root = str(payload.get("root") or "").strip()
+    root_path = _check_root_allowed(root) if root else None
+    ws = _ws(project_id)
+    try:
+        meta = ws.ensure(
+            name=str(payload.get("name") or ""),
+            auto_index=payload.get("auto_index"),
+            vision=payload.get("vision"),
+            # 关键：把 root 真的传下去（审计 P0-3：旧实现只校验、不落地）
+            root=root_path,
+        )
+    except OSError as e:
+        raise HTTPException(status_code=409, detail=f"工作区不可写：{e}") from e
+    return ws.status() | {"meta": meta}
+
+
+@router.get("/{project_id}")
+async def get_workspace(project_id: str) -> dict[str, Any]:
+    ws = _ws(project_id)
+    status = ws.status()
+    if not status.get("exists"):
+        raise HTTPException(status_code=404, detail="工作区不存在（先 POST /api/workspace 创建）")
+    return status
+
+
+@router.post("/{project_id}/enable")
+async def enable_workspace(project_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """开关：自动扫描 / 视觉解读（不重建目录）。"""
+    ws = _ws(project_id)
+    if not ws.exists:
+        raise HTTPException(status_code=404, detail="工作区不存在")
+    try:
+        meta = ws.ensure(auto_index=payload.get("auto_index"), vision=payload.get("vision"))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return ws.status() | {"meta": meta}
+
+
+@router.post("/{project_id}/scan")
+async def scan_workspace(project_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """触发扫描；``dry_run=true`` 只列出将新增的文件，不写注册表。"""
+    from clipwright.services.workspace_index import scan_and_index
+
+    ws = _ws(project_id)
+    if not ws.exists:
+        raise HTTPException(status_code=404, detail="工作区不存在")
+    report = await scan_and_index(
+        ws,
+        dry_run=bool(payload.get("dry_run")),
+        vision=payload.get("vision"),
+    )
+    return report
+
+
+@router.get("/{project_id}/reports")
+async def list_workspace_reports(project_id: str, limit: int = Query(default=50)) -> dict[str, Any]:
+    """列出工作区报告（PRD §19.6 / docs 标签数据源）。
+
+    只返回索引与 preview；正文用 `GET .../reports/{seq}`（`reports/INDEX.md` 只是目录，
+    不是数据通道——子 agent 不得读它，只有主 agent/前端展示用）。
+    """
+    from clipwright.services import stage_report
+
+    ws = _ws(project_id)
+    if not ws.exists:
+        raise HTTPException(status_code=404, detail="工作区不存在")
+    items = stage_report.list_reports(ws.dirs().root, limit=int(limit or 50))
+    return {"project_id": project_id, "root": str(ws.dirs().root),
+            "count": len(items), "reports": items}
+
+
+@router.get("/{project_id}/reports/{seq}")
+async def read_workspace_report(project_id: str, seq: int,
+                                max_chars: int = Query(default=20000)) -> dict[str, Any]:
+    """读一份报告正文（默认 20k 字上限）。"""
+    from clipwright.services import stage_report
+
+    ws = _ws(project_id)
+    if not ws.exists:
+        raise HTTPException(status_code=404, detail="工作区不存在")
+    for item in stage_report.list_reports(ws.dirs().root, limit=500):
+        if int(item.get("seq") or 0) == int(seq):
+            path = Path(str(item["path"]))
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError as e:
+                raise HTTPException(status_code=409, detail=f"读取报告失败：{e}") from e
+            limit = max(200, int(max_chars or 20000))
+            return {
+                "project_id": project_id, "seq": seq, "path": str(path),
+                "truncated": len(text) > limit, "content": text[:limit],
+            }
+    raise HTTPException(status_code=404, detail=f"报告 #{seq} 不存在")
+
+
+@router.get("/{project_id}/docs")
+async def list_workspace_docs(project_id: str, max_chars: int = Query(default=20000)) -> dict[str, Any]:
+    """列出 `docs/*.md`（创意简报 / 制作规划书，PRD §17.4 / §19.6）。
+
+    `doc_write` 事件到达时前端重新拉一次即可；内容只读（编辑权在主 agent 的 `edit_file`）。
+    """
+    ws = _ws(project_id)
+    if not ws.exists:
+        raise HTTPException(status_code=404, detail="工作区不存在")
+    docs_dir = ws.dirs().docs
+    items: list[dict[str, Any]] = []
+    if docs_dir.is_dir():
+        limit = max(200, int(max_chars or 20000))
+        for path in sorted(docs_dir.glob("*.md")):
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            items.append({
+                "name": path.name,
+                "path": str(path),
+                "bytes": len(text.encode("utf-8")),
+                "updated_at": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(path.stat().st_mtime)),
+                "content": text[:limit],
+                "truncated": len(text) > limit,
+            })
+    return {"project_id": project_id, "root": str(ws.dirs().root),
+            "count": len(items), "docs": items}
+
+
+@router.get("/{project_id}/materials")
+async def list_materials(project_id: str, kind: str = Query(default="")) -> dict[str, Any]:
+    ws = _ws(project_id)
+    if not ws.exists:
+        raise HTTPException(status_code=404, detail="工作区不存在")
+    registry = ws.load_registry()
+    items = list((registry.get("materials") or {}).values())
+    if kind:
+        items = [m for m in items if m.get("kind") == kind]
+    items.sort(key=lambda m: str(m.get("indexed_at") or ""), reverse=True)
+    return {
+        "project_id": project_id,
+        "root": str(ws.dirs().root),
+        "count": len(items),
+        "items": items[:500],
+        "pending": ws.status()["counts"]["pending"],
+    }
+
+
+@router.get("/{project_id}/media-tree")
+async def workspace_media_tree(project_id: str, limit: int = Query(default=2000)) -> dict[str, Any]:
+    """按**目录结构**列出工作区全部媒体（视频/图片/音频），给左侧资源库用。
+
+    与 `/materials` 的区别（2026-11-02 用户要求）：
+    - `/materials` 读的是**索引注册表**，未索引的文件看不到、目录样式也丢了；
+    - 这里是**实时目录树**：用户自己建的 `materials/实拍/`、`materials/参考/` 都按原样成组，
+      未索引的媒体文件同样出现。系统目录（assets/cache/logs/artifacts/reports/docs…）跳过。
+    """
+    ws = _ws(project_id)
+    if not ws.exists:
+        raise HTTPException(status_code=404, detail="工作区不存在")
+    return {"project_id": project_id, **ws.media_tree(limit=max(1, min(int(limit or 2000), 5000)))}
+
+
+@router.post("/{project_id}/materials")
+async def upload_material(project_id: str, file: UploadFile = File(...),
+                          overwrite: bool = Query(default=False)) -> dict[str, Any]:
+    """上传到 ``materials/<kind>/``，随后同步排一次索引（单文件）。
+
+    devplan 2026-11-02 T3.1 三项改动（前两项是缺陷修复）：
+
+    1. **流式写盘**：旧实现 `data = await file.read()` 把整个文件读进内存——用户传一个
+       1.8 GiB 的素材，后端进程就吃掉 1.8 GiB。现在按 1 MiB 分块写到
+       `materials/<kind>/<name>.part`，成功后 `os.replace` 原子替换成正式名。
+       为什么必须 `.part`：中途取消/断流时不能留下"看起来完整"的半截文件——目录树是按
+       磁盘真实文件扫的，半截文件会被当成可用素材拖进时间线。
+    2. **2 GiB 硬上限**：超过直接 413，并删掉 `.part`（不留垃圾）。
+    3. **同名默认 409**：拒绝覆盖（覆盖会让时间线里已引用的路径悄悄换内容）。
+       真要覆盖时显式 `?overwrite=true`。
+    """
+    from clipwright.services.workspace_index import scan_and_index
+
+    ws = _ws(project_id)
+    if not ws.exists:
+        raise HTTPException(status_code=404, detail="工作区不存在")
+    name = _safe_name(file.filename or f"upload_{uuid.uuid4().hex[:6]}")
+    kind = kind_of(name)
+    if not kind:
+        raise HTTPException(status_code=400, detail=f"不支持的素材类型：{name}")
+    target = ws.dirs().materials / kind / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() and not overwrite:
+        raise HTTPException(
+            status_code=409,
+            detail=f"同名文件已存在：{kind}/{name}（改名后重传，或显式 overwrite=true）")
+
+    part = target.with_name(target.name + ".part")
+    written = 0
+    chunk_size = 1024 * 1024
+    try:
+        with part.open("wb") as fh:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > UPLOAD_MAX_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"文件超过上限 {UPLOAD_MAX_BYTES // (1024 ** 3)} GiB")
+                fh.write(chunk)
+    except HTTPException:
+        part.unlink(missing_ok=True)
+        raise
+    except Exception as exc:  # noqa: BLE001 — 写盘失败也要清掉半截文件
+        part.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"写盘失败：{type(exc).__name__}") from exc
+
+    if written == 0:
+        part.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="空文件")
+    os.replace(part, target)
+    ws_mod.add_event(project_id, "info", f"收到上传：{name}",
+                     {"kind": kind, "bytes": written, "overwrite": bool(overwrite)})
+    report = await scan_and_index(ws)
+    return {"project_id": project_id, "saved": str(target), "kind": kind,
+            "bytes": written, "overwritten": bool(overwrite), "scan": report}
+
+
+@router.get("/{project_id}/legacy-assets")
+async def workspace_legacy_assets(project_id: str) -> dict[str, Any]:
+    """列出**旧素材库**（`assets/files` + `index.json`）的条目——只读（devplan T3.3）。
+
+    为什么要这条：资源库合并后工作区目录树是唯一真相，但历史素材还在旧库里。
+    直接把旧库藏起来 = 用户以为素材丢了；自动批量搬 = 大体积复制与磁盘意外。
+    所以先给一份只读清单（带"是否已在工作区"），迁移由用户显式点一次。
+    """
+    from clipwright.services.asset_manager import AssetManager
+
+    ws = _ws(project_id)
+    legacy = AssetManager(project_id=project_id)
+    rows: list[dict[str, Any]] = []
+    for info in await legacy.list_assets():
+        path = str(getattr(info, "file_path", "") or "")
+        src = Path(path) if path else None
+        rows.append({
+            "asset_id": getattr(info, "asset_id", ""),
+            "filename": getattr(info, "filename", ""),
+            "kind": getattr(info, "media_type", "") or "",
+            "sha256": getattr(info, "sha256", "") or "",
+            "path": path,
+            "exists": bool(src and src.exists()),
+            "in_workspace": _already_in_materials(ws, getattr(info, "sha256", "") or "",
+                                                  getattr(info, "filename", "") or ""),
+        })
+    return {"project_id": project_id, "count": len(rows), "assets": rows,
+            "legacy_dir": str(getattr(legacy, "_library_dir", ""))}
+
+
+@router.post("/{project_id}/legacy-import")
+async def workspace_legacy_import(project_id: str,
+                                  dry_run: bool = Query(default=True)) -> dict[str, Any]:
+    """把旧素材库**复制**进工作区 `materials/<kind>/`（devplan T3.3）。
+
+    三条纪律：
+    - **只复制不移动、不删除源文件**：迁移失败也能回到旧库，用户不会因为点了按钮丢素材；
+    - **SHA256 去重**：工作区里已有同内容文件就算 `reused`，不产生第二份；
+    - **默认 dry_run**：先给计划，用户确认后再 `dry_run=false` 真复制。
+    """
+    import shutil
+
+    from clipwright.services.asset_manager import AssetManager, _sha256_of
+    from clipwright.services.workspace_index import scan_and_index
+
+    ws = _ws(project_id)
+    legacy = AssetManager(project_id=project_id)
+    materials = ws.dirs().materials
+    planned: list[dict[str, Any]] = []
+    migrated = reused = missing = failed = 0
+    for info in await legacy.list_assets():
+        filename = _safe_name(str(getattr(info, "filename", "") or "asset"))
+        kind = kind_of(filename) or "image"
+        src = Path(str(getattr(info, "file_path", "") or ""))
+        if not src.exists():
+            missing += 1
+            planned.append({"filename": filename, "status": "missing", "source": str(src)})
+            continue
+        digest = str(getattr(info, "sha256", "") or "") or _sha256_of(src)
+        existing = _find_in_materials_by_sha(materials, digest)
+        if existing is not None:
+            reused += 1
+            planned.append({"filename": filename, "status": "reused",
+                            "target": str(existing)})
+            continue
+        target = materials / kind / filename
+        if target.exists():
+            target = materials / kind / f"{src.stem}-{digest[:8]}{src.suffix}"
+        planned.append({"filename": filename, "status": "copy" if not dry_run else "planned",
+                        "target": str(target)})
+        if dry_run:
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, target)
+            migrated += 1
+        except Exception as exc:  # noqa: BLE001 — 单个失败不中断整批
+            failed += 1
+            logger.warning("旧素材迁移失败 %s: %s", src, exc)
+    report = None
+    if not dry_run and migrated > 0:
+        report = await scan_and_index(ws)
+    return {"project_id": project_id, "dry_run": dry_run, "planned": planned,
+            "migrated": migrated, "reused": reused, "missing": missing, "failed": failed,
+            "scan": report}
+
+
+def _already_in_materials(ws: Workspace, sha256: str, filename: str) -> bool:
+    """旧素材是否已在工作区（先按 sha256，再按同名文件兜底）。"""
+    materials = ws.dirs().materials
+    if sha256 and _find_in_materials_by_sha(materials, sha256) is not None:
+        return True
+    if filename:
+        for path in materials.rglob(_safe_name(filename)):
+            if path.is_file():
+                return True
+    return False
+
+
+def _find_in_materials_by_sha(materials: Path, sha256: str) -> Path | None:
+    """在 `materials/` 下按内容摘要找同文件（迁移去重的唯一判据）。"""
+    if not sha256 or not materials.exists():
+        return None
+    from clipwright.services.asset_manager import _sha256_of
+
+    for path in materials.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            if _sha256_of(path) == sha256:
+                return path
+        except Exception:  # noqa: BLE001 — 读不了就跳过，不影响其它文件
+            continue
+    return None
+
+
+@router.delete("/{project_id}/materials/{sha256}")
+async def delete_material(project_id: str, sha256: str,
+                          purge: bool = Query(default=False)) -> dict[str, Any]:
+    """默认**只删索引记录**（磁盘文件保留）；``purge=true`` 才删文件。"""
+    ws = _ws(project_id)
+    registry = ws.load_registry()
+    entry = (registry.get("materials") or {}).get(sha256)
+    if not entry:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    removed_file = ""
+    if purge:
+        path = Path(str(entry.get("path") or ""))
+        try:
+            if path.is_file():
+                path.unlink()
+                removed_file = str(path)
+        except OSError as e:
+            raise HTTPException(status_code=409, detail=f"删除文件失败：{e}") from e
+    (registry.get("materials") or {}).pop(sha256, None)
+    for rel, seen in list((registry.get("paths") or {}).items()):
+        if seen.get("sha256") == sha256:
+            (registry.get("paths") or {}).pop(rel, None)
+    ws.save_registry(registry)
+    ws_mod.add_event(project_id, "info", f"已移除素材记录 {sha256[:8]}",
+                     {"purge": purge, "file": removed_file})
+    return {"ok": True, "sha256": sha256, "purged": bool(purge), "removed_file": removed_file}
+
+
+@router.get("/{project_id}/events")
+async def workspace_events(project_id: str, since: int = Query(default=0)) -> dict[str, Any]:
+    """拉取工作区事件（**JSON，立即返回**）。
+
+    旧实现只有 SSE 版本，普通 GET 会挂到客户端超时（实测 120s 挂死）。
+    这里拆成两个端点：本端点返回数组，`/events/stream` 才是长连接。
+    """
+    _ws(project_id)
+    batch = ws_mod.events(project_id, since=int(since or 0))
+    return {
+        "project_id": project_id,
+        "events": batch,
+        "last_seq": int(batch[-1]["seq"]) if batch else int(since or 0),
+    }
+
+
+@router.get("/{project_id}/events/stream")
+async def workspace_events_stream(project_id: str,
+                                  since: int = Query(default=0)) -> StreamingResponse:
+    """SSE：和 pipeline trace 同构（seq 游标 + data: 帧）。仅在显式订阅时挂起。"""
+    _ws(project_id)
+
+    async def gen():
+        cursor = int(since or 0)
+        idle = 0
+        while True:
+            batch = ws_mod.events(project_id, since=cursor)
+            for ev in batch:
+                cursor = ev["seq"]
+                yield f"id: {cursor}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
+                idle = 0
+            if not batch:
+                idle += 1
+                if idle % 15 == 0:
+                    yield ": keep-alive\n\n"
+            await asyncio.sleep(1)
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def _check_file_allowed(raw: str) -> Path:
+    """产物路径校验：必须存在，且落在允许的工作区根之内（不接受任意绝对路径）。"""
+    if not str(raw or "").strip():
+        raise HTTPException(status_code=400, detail="path 不能为空")
+    try:
+        p = Path(str(raw)).expanduser().resolve()
+    except OSError:
+        raise HTTPException(status_code=400, detail=f"路径非法: {raw}")
+    for allowed in workspace_roots():
+        try:
+            p.relative_to(allowed)
+            break
+        except ValueError:
+            continue
+    else:
+        allowed_txt = "、".join(str(r) for r in workspace_roots()) or "（无可用根）"
+        raise HTTPException(
+            status_code=403,
+            detail=f"path 必须位于工作区内（{allowed_txt}），收到 {p}",
+        )
+    if not p.exists():
+        raise HTTPException(status_code=404, detail=f"文件不存在: {p}")
+    return p
+
+
+_TEXT_SUFFIXES = {
+    ".md", ".txt", ".json", ".jsonl", ".log", ".csv", ".yaml", ".yml",
+    ".py", ".ts", ".tsx", ".js", ".html", ".css", ".srt", ".vtt", ".edl",
+}
+_MEDIA_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".webp": "image/webp", ".gif": "image/gif",
+    ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4",
+}
+
+
+@router.get("/artifact/file")
+async def read_workspace_file(path: str = Query(...),
+                             max_chars: int = Query(default=400000)) -> dict[str, Any]:
+    """读取工作区内的**文本**产物（产物预览页用：报告 / 规划书 / 日志 / 时间线 json）。
+
+    二进制（图片/音视频）不在这里返回：前端直接用 `/file/raw` 交给 <img>/<video>。
+    """
+    p = _check_file_allowed(path)
+    suffix = p.suffix.lower()
+    if suffix not in _TEXT_SUFFIXES:
+        raise HTTPException(
+            status_code=415,
+            detail=f"不是文本文件（{suffix or '无扩展名'}）：用 /api/workspace/artifact/raw 或系统打开",
+        )
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"读取失败: {exc}")
+    truncated = len(text) > max_chars
+    return {
+        "path": str(p),
+        "name": p.name,
+        "size": p.stat().st_size,
+        "suffix": suffix,
+        "text": text[:max_chars],
+        "truncated": truncated,
+        "chars": len(text),
+    }
+
+
+@router.get("/artifact/raw")
+async def raw_workspace_file(path: str = Query(...)):
+    """原样返回工作区内的文件字节（图片/音视频预览用）。"""
+    from fastapi.responses import FileResponse
+
+    p = _check_file_allowed(path)
+    suffix = p.suffix.lower()
+    media_type = _MEDIA_TYPES.get(suffix, "application/octet-stream")
+    return FileResponse(str(p), media_type=media_type, filename=p.name)
+
+
+@router.post("/reveal")
+async def reveal_workspace_path(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """用**系统默认方式**打开一个工作区文件（前端 Ctrl/⌘ + 点击产物走这条）。
+
+    为什么需要后端：浏览器只能下载或在自身里渲染，无法让 Windows 用默认程序打开
+    `J:\...` 这种本地路径。这里做的是"交给操作系统"，因此必须严格校验路径在
+    工作区内，并且只在有桌面会话时生效（失败如实返回，不假装已打开）。
+    """
+    p = _check_file_allowed(str(payload.get("path") or ""))
+    import os
+    import subprocess
+    import sys
+
+    def _open() -> None:
+        if hasattr(os, "startfile"):
+            os.startfile(str(p))          # type: ignore[attr-defined] — 仅 Windows
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(p)])
+        else:
+            subprocess.Popen(["xdg-open", str(p)])
+
+    try:
+        await asyncio.to_thread(_open)
+    except Exception as exc:  # noqa: BLE001 — 打不开要如实说
+        logger.warning("系统打开失败 %s: %s", p, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"系统打开失败：{type(exc).__name__}: {exc}（后端可能没有桌面会话）",
+        )
+    return {"opened": True, "path": str(p)}
+
+
+__all__ = ["router"]
+

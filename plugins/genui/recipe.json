@@ -1,0 +1,84 @@
+{
+  "brief": {
+    "title": "创意简报",
+    "nodes": [
+      { "type": "text", "content": { "field": "title" }, "size": "h2", "skip_if_empty": "content" },
+      { "type": "text", "content": { "field": "overview" }, "size": "body", "skip_if_empty": "content" },
+      {
+        "type": "table",
+        "columns": ["维度", "内容"],
+        "rows": {
+          "pairs": [
+            { "label": "目标受众", "field": "target_audience" },
+            { "label": "核心信息", "field": "core_message" },
+            { "label": "风格方向", "field": "style_direction" },
+            { "label": "结构建议", "field": "structure_suggestion" },
+            { "label": "预估时长", "field": "duration_estimate" }
+          ]
+        },
+        "skip_if_empty": "rows"
+      },
+      {
+        "type": "text",
+        "content": "必须出现的关键元素",
+        "size": "h3",
+        "when": { "field": "key_elements", "non_empty": true }
+      },
+      { "type": "list", "items": { "field": "key_elements", "limit": 20 }, "skip_if_empty": "items" },
+      {
+        "type": "callout",
+        "tone": "warning",
+        "title": "特殊要求与红线",
+        "content": { "join": { "field": "special_requirements", "sep": "；", "limit": 10 } },
+        "skip_if_empty": "content"
+      }
+    ]
+  },
+  "plan": {
+    "title": "制作规划书",
+    "nodes": [
+      {
+        "type": "row",
+        "items": [
+          {
+            "type": "stat",
+            "label": "场景数",
+            "value": { "coalesce": [{ "field": "scene_count" }, { "count": "raw_scenes" }] }
+          },
+          {
+            "type": "stat",
+            "label": "总时长",
+            "value": {
+              "fmt_sec": {
+                "coalesce": [
+                  { "field": "total_duration_sec" },
+                  { "sum_of": { "field": "raw_scenes", "value": "duration_sec" } }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "type": "table",
+        "columns": ["#", "场景", "时长", "关键词"],
+        "rows": {
+          "foreach": { "field": "raw_scenes", "item": "scene", "index": "i" },
+          "row": [
+            { "index_plus_one": "i" },
+            { "item": "scene.title" },
+            { "fmt_sec": { "item": "scene.duration_sec" } },
+            { "join": { "item": "scene.keywords", "sep": "、", "limit": 3 } }
+          ]
+        },
+        "skip_if_empty": "rows"
+      },
+      {
+        "type": "callout",
+        "tone": "info",
+        "content": { "field": "material_summary" },
+        "skip_if_empty": "content"
+      }
+    ]
+  }
+}

@@ -1,13 +1,14 @@
 id: "whisper_stt"
 name: "Whisper 语音转文字"
-version: "1.0.0"
+version: "1.1.0"
 kind: "capability"
-description: "语音转文字工具 — 包装 STTService，提供 Whisper/faster-whisper 转录能力"
+description: "语音转文字技能 — 转录并对齐成字幕后片；转写引擎由 plugins/stt_providers 提供"
 author: "Clipwright Team"
 entry_point: "whisper_stt.main"
 
 # P1 迁移：新契约声明（声明即授权）
+# B7-T7.4 收窄：whisper_transcribe_local 工具已撤下（与 stt_providers 后端贡献重复），
+# 只保留 transcribe_and_align 技能。
 api_version: "2"
 contributions:
-  - { kind: tool, id: whisper_transcribe_local }
   - { kind: skill, id: transcribe_and_align }

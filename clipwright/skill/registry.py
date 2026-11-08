@@ -26,21 +26,38 @@ class SkillRegistry:
     _shadowed: dict[str, BaseSkill] = {}
 
     @classmethod
-    def register(cls, skill: BaseSkill, plugin_id: str = "", **kwargs) -> None:
+    def register(cls, skill: BaseSkill, plugin_id: str = "",
+                 allow_override: bool = False, **kwargs) -> None:
+        """登记技能。
+
+        P1-13 的默认语义仍是「内置优先」：插件不得覆盖内置技能。但有一种**显式**
+        例外——插件 manifest 声明 `override_builtin: true` 时，门面会把冲突策略切成
+        `ConflictPolicy.OVERRIDE` 并传 `allow_override=True` 下来。
+
+        裁定 3 需要这条口子：`dub_script` 技能要从 engine 搬进 TTS 功能插件，而
+        「谁先注册谁赢」的默认规则会让插件版本永远被拒（内置在启动早期就注册了）。
+        显式声明 + 覆旧项可恢复（`_shadowed`）是这里能接受的最小改动。
+        """
         if not skill.name:
             raise ValueError(f"Skill must have a non-empty name: {type(skill).__name__}")
         existing = cls._skills.get(skill.name)
         if existing is not None:
             old_src = str(getattr(existing, "_plugin_id", "") or "builtin")
             new_src = str(plugin_id or "builtin")
-            if old_src == "builtin" and new_src != "builtin":
+            if old_src == "builtin" and new_src != "builtin" and not allow_override:
                 # P1-13: 插件不得覆盖内置技能（与 ToolRegistry 同语义）
                 from clipwright.config import logger as _logger
                 _logger.warning(
-                    "拒绝插件 %s 覆盖内置技能 %s（内置优先）", new_src, skill.name,
+                    "拒绝插件 %s 覆盖内置技能 %s（内置优先；如需接管请声明 override_builtin）",
+                    new_src, skill.name,
                 )
                 return
-            cls._shadowed[skill.name] = existing
+            # 只在「实现来源发生变化」时压栈。
+            # 同一个 owner 重复注册（插件 reload / 幂等重注册）**不能**覆盖影子条目——
+            # 否则影子会变成插件自己的旧实例，卸载插件时恢复出来仍是插件实现，
+            # 内置实现永远回不来（2026-11-02 写验收脚本时发现）。
+            if old_src != new_src:
+                cls._shadowed[skill.name] = existing
         cls._skills[skill.name] = skill
         # 轮 87：归属记录在 skill 对象上（与 loader 的 _plugin_id 补丁同模式，
         # 旧实现把 plugin_id 参数直接丢弃）
@@ -156,3 +173,4 @@ class SkillRegistry:
             parameters=params,
             plugin_id=str(getattr(skill, "_plugin_id", "")),
         )
+

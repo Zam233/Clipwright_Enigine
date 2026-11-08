@@ -57,6 +57,7 @@ def _font_filter_arg() -> str:
 class GenerateTextVideoTool(BaseTool):
     """从文本生成视频（纯色背景 + 文字叠加）。"""
     name = "generate_text_video"
+    permission_tier = "costly"
     description = "从文字生成视频片段：纯色背景上叠加文字，用于无素材时的占位"
     dependencies = [resolve_ffmpeg()]
 

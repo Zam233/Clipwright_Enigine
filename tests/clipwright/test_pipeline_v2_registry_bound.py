@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from clipwright.services.pipeline_v2 import (
+from clipwright.services.pipeline_history import (
     clear_run_records,
     get_run_records,
     record_run_complete,

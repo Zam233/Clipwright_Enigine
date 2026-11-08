@@ -17,6 +17,7 @@ from clipwright.tool.video import resolve_ffmpeg
 class TypewriterAnimationTool(BaseTool):
     """打字机文字动画工具（FFmpeg drawtext 单帧文字叠加）。"""
     name = "typewriter_animation"
+    permission_tier = "write_local"
     description = "在视频上叠加打字机效果的文字动画"
     dependencies = [resolve_ffmpeg()]
 
@@ -74,6 +75,7 @@ class TrackingTextTool(BaseTool):
     Phase 1 占位。真实实现需要 Manim 或 Motion Canvas。
     """
     name = "tracking_text"
+    permission_tier = "write_local"
     description = "生成文字追踪/标题动画（Phase 1 占位）"
 
     async def execute(

@@ -36,11 +36,24 @@ class GiphySource(MaterialSource):
         self._client = httpx.AsyncClient(base_url="https://api.giphy.com/v1", timeout=10)
 
     async def search(self, query: str, top_k: int = 10, media_type: str = "all", **kw: Any) -> list[tuple[MaterialAsset, float]]:
+        # media_type 之前是**死参数**：调用方要 video/audio 时也会拿到 gif。
+        # 这里按能力过滤（本源只提供动图/图片），并把异常留痕——
+        # 旧实现 except 直接 return []，失败与"真没结果"完全无法区分
+        # （和 pexels 的 media_type="" 属于同一类静默失效）。
+        media_type = (str(media_type or "").strip().lower()) or "all"
+        if media_type not in ("all", "image", "photo", "gif"):
+            import logging
+            logging.getLogger("gif_sticker").debug(
+                "GifSticker: media_type=%s 不在本源能力内（只提供动图），跳过", media_type,
+            )
+            return []
         try:
             resp = await self._client.get("/gifs/search", params={"api_key": self._api_key, "q": query, "limit": min(top_k, 25)})
             resp.raise_for_status()
             data = resp.json()
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            import logging
+            logging.getLogger("gif_sticker").warning("Giphy 搜索失败（返回空）: %s", exc)
             return []
         results = []
         for gif in data.get("data", []):

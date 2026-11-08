@@ -15,6 +15,7 @@ from clipwright.tool.video import resolve_ffmpeg, resolve_ffprobe
 class SpeedRampTool(BaseTool):
     """可变速度工具（基于 FFmpeg setpts + atempo）。"""
     name = "speed_ramp"
+    permission_tier = "write_local"
     description = "改变视频播放速度（支持分段变速）"
     dependencies = ["ffmpeg"]
 

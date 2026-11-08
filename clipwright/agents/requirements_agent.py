@@ -1,5 +1,16 @@
 """需求 Agent（RequirementsAgent）— 创作方案对话 + 规划书翻译。
 
+⚠️ **本 Agent 当前没有生产调用点**（计划 T1.5 / 选项 A）：
+
+- 生产的需求对话与规划书生成由 `clipwright/services/requirements_service.py` 承担
+  （`_handle_gathering` / `_translate_plan`）；
+- `clipwright/services/stage_subagent.py` 的 `_STAGE_DEPENDENCIES` 只有
+  `structure/material/edit/animation/audio/quality`，**没有 `requirements`**，派发阶段
+  明确抛错（"requirements 由需求服务处理"）。
+
+所以这个类目前只在测试/脚本里被直接实例化。**不要在这里新增生产逻辑**：需要改简报/规划书
+行为时改服务层（展示 spec 由 `services/display_spec` 的通用机制负责，本模块不参与）。
+
 在 StructureAgent 之前执行，负责：
 1. 与用户对话收集创作需求，逐步完善创作方案
 2. 用户确认后调用 StructureAgent 生成场景规划
@@ -13,76 +24,53 @@ from typing import Any
 
 from clipwright.agents.base import BaseAgent
 from clipwright.schema.agent import AgentContext, AgentDecision, AnimationIntent, RequirementsInput, RequirementsOutput
+from clipwright.schema.requirements import (
+    CreativeBrief,
+    brief_field_names,
+    brief_prompt_template,
+)
 from clipwright.services.llm import LLMService
 from clipwright.config import logger
 
-
-CREATIVE_BRIEF_SYSTEM = """你是一位专业的视频创作顾问。你的任务是与用户对话，收集创作需求，逐步完善创作方案。
-
-## 对话策略
-- 每次回复都要推进对话：回复用户 + 追问关键缺失信息
-- 当收集到足够信息时，设置 is_ready=true
-- 信息不足的标准：至少需要了解 主题/目标受众/风格方向
-
-## 动画需求识别
-如果用户的创作需求中提到了视觉效果、数据展示、对比、流程、图表等信息呈现需求，
-在 brief_draft 中设置 animation_intents 数组，每个元素描述一个场景的动画需求。
-
-animation_intents 格式:
-[
-  {
-    "scene_index": null,
-    "type": "mg",
-    "description": "自然语言描述该动画应呈现的效果",
-    "text_content": "动画中要显示的文字内容，多段内容用 | 分隔",
-    "style_hint": "样式提示: tech_dark / minimal_clean / bold_vibrant / retro",
-    "suggested_template": "最接近的现有模板 ID，不确定则留空"
-  }
-]
-
-类型说明:
-- type="mg": 动态图形动画（数据图表、标题揭示、进度条、对比图等）
-- type="text": 文字入场动画（打字机、淡入、弹跳等）
-- type="logic": 逻辑关系图解（箭头、流程图、因果关系等）
-
-只在用户明确需要视觉信息呈现（图表/对比/数据可视化/标题动画）时填写 animation_intents。
-
-## 输出格式（纯 JSON）
-{
-  "reply": "对用户的自然语言回复",
-  "brief_draft": {
-    "title": "视频标题",
-    "overview": "概述",
-    "target_audience": "目标受众",
-    "core_message": "核心信息",
-    "style_direction": "风格方向",
-    "structure_suggestion": "结构建议",
-    "duration_estimate": "预估时长",
-    "key_elements": ["元素1"],
-    "special_requirements": [],
-    "animation_intents": []
-  },
-  "is_ready": false,
-  "missing_info": ["还未了解的信息"]
-}
-
-当 is_ready=true 时，brief_draft 必须完整填写。
-"""
+# PRD W4（2026-11-02）：提示词统一在 clipwright/prompts.py 维护；这里保留同名别名，
+# 调用点一行都不用改。文案与原实现逐字一致（见 prompts.py 的迁移对照表）。
+from clipwright.prompts import CREATIVE_BRIEF_SYSTEM as CREATIVE_BRIEF_SYSTEM, PLAN_TRANSLATE_SYSTEM as PLAN_TRANSLATE_SYSTEM, build_plan_translate_system  # noqa: E402
 
 
-PLAN_TRANSLATE_SYSTEM = """你是一位专业的视频创作顾问。请将结构 Agent 生成的场景规划翻译为用户友好的 Markdown 规划书。
+def _brief_default(name: str) -> Any:
+    """取模型字段的默认值（缺省键补齐用，避免下游到处 ``.get(key, "")``）。"""
+    field = CreativeBrief.model_fields.get(name)
+    if field is None:
+        return ""
+    factory = getattr(field, "default_factory", None)
+    if factory is not None:
+        try:
+            return factory()  # type: ignore[call-arg]
+        except TypeError:
+            return None
+    return field.default
 
-## 输出格式（纯 JSON）
-{
-  "summary": "规划书总体摘要",
-  "sections": [
-    {"title": "段落标题", "description": "段落描述", "scenes": [1, 2, 3]}
-  ],
-  "markdown_content": "完整的 Markdown 格式规划书\n- 包含场景表格\n- 每个场景的详细描述\n- 总时长统计",
-  "total_duration_sec": 300,
-  "scene_count": 5
-}
-"""
+
+
+#: A-01：字段表从模型生成，杜绝"提示词 10 字段 / 模型 7 字段"的漂移。
+#:
+#: 2026-11-07（计划 T1.4）：`prompts.py` 的常量已恢复 `{{BRIEF_TEMPLATE}}` 占位，
+#: **这里不再在导入期展开**——导入期展开会把字段表冻成"导入那一刻"的样子（加模型字段
+#: 也不会变）。展开只在 `_brief_system_prompt()` 里运行时做。
+def _brief_system_prompt() -> str:
+    """运行时拼简报 system prompt：占位符展开为**当前**模型的字段表 + JSON 骨架。
+
+    走 `resolve_constant`：插件可以覆盖 ``CREATIVE_BRIEF_SYSTEM``（覆盖版若自带字段表、
+    不含占位符，则原样使用）。
+    """
+    from clipwright.plugins.prompt_overrides import resolve_constant
+
+    prompt = resolve_constant("CREATIVE_BRIEF_SYSTEM")
+    if "{{BRIEF_TEMPLATE}}" in prompt:
+        prompt = prompt.replace("{{BRIEF_TEMPLATE}}", brief_prompt_template())
+    return prompt
+
+
 
 
 class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
@@ -119,8 +107,17 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
         references = input_data.reference_materials or []
 
         user_context = f"选题: {topic}\n"
+
+        # F-04 落点：用户创作提示词优先于类型/Persona 默认风格
+        from clipwright.services.creative_prompt import resolve_creative_prompt
+
+        creative_prompt, creative_avoid = resolve_creative_prompt(context.extra_params)
+        if creative_prompt:
+            user_context += f"用户创作提示词（优先遵守）: {creative_prompt}\n"
+        if creative_avoid:
+            user_context += "用户明确不要的: " + "；".join(creative_avoid) + "\n"
         if script:
-            user_context += f"文稿预览: {script[:500]}\n"
+            user_context += f"文稿全文:\n{script}\n"
         if references:
             user_context += f"参考素材: {len(references)} 个文件\n"
 
@@ -144,16 +141,41 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
                 + content_context
             )
 
-        system_prompt = CREATIVE_BRIEF_SYSTEM
+        # 字段表在**运行时**从模型展开（T1.4：导入期不再展开，否则加模型字段也不会变）
+        system_prompt = _brief_system_prompt()
         from clipwright.plugins.prompt_registry import PluginPromptRegistry
         plugin_prompts = PluginPromptRegistry.get_for_agent("requirements")
         if plugin_prompts:
-            system_prompt += "\n\n## 插件能力扩展\n" + "\n\n".join(plugin_prompts)
+            system_prompt += _hdr("PROMPT_PLUGIN_EXT_HEADER") + "\n\n".join(plugin_prompts)
+        # V15：需求阶段先吃"这是什么片子"（身份层），再谈字段；无槽位时零变化
+        from clipwright.services.type_prompts import compose as compose_type_prompt
+
+        system_prompt = compose_type_prompt(
+            system_prompt, getattr(context, "category_plugin_id", "") or "", ""
+        )
 
         result = await self.llm_or_fallback(lambda: self._llm.structured_output(system_prompt=system_prompt, user_prompt=user_context, pipeline_id=context.pipeline_id), fallback={}, retries=2)
         if isinstance(result, dict) and "brief_draft" in result:
-            return result["brief_draft"]
+            return self._normalize_brief(result["brief_draft"])
         return {}
+
+    @staticmethod
+    def _normalize_brief(draft: Any) -> dict[str, Any]:
+        """A-01：按模型字段收口——未知键记 warning 后丢弃，缺省键补空。
+
+        旧实现把模型输出原样透传，``core_message`` 等字段在落库时被静默丢弃，
+        出了事没人知道。这里显式登记"模型多给了什么"。
+        """
+        if not isinstance(draft, dict):
+            return {}
+        known = set(brief_field_names())
+        unknown = [key for key in draft if key not in known]
+        if unknown:
+            logger.warning("CreativeBrief 收到未知字段（已丢弃）: %s", unknown)
+        normalized = {key: value for key, value in draft.items() if key in known}
+        for name in known:
+            normalized.setdefault(name, _brief_default(name))
+        return normalized
 
     @staticmethod
     def _extract_animation_intents(brief: dict[str, Any]) -> list[AnimationIntent]:
@@ -185,13 +207,14 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
         brief_json = json.dumps(brief, ensure_ascii=False) if brief else "{}"
 
         try:
-            system_prompt = f"{PLAN_TRANSLATE_SYSTEM}\n\n参考方案:\n{brief_json}"
+            from clipwright.plugins.prompt_overrides import safe_builder
+            system_prompt = safe_builder("build_plan_translate_system")(brief_json)
             from clipwright.plugins.prompt_registry import PluginPromptRegistry
             plugin_prompts = PluginPromptRegistry.get_for_agent("requirements")
             if plugin_prompts:
-                system_prompt += "\n\n## 插件能力扩展\n" + "\n\n".join(plugin_prompts)
+                system_prompt += _hdr("PROMPT_PLUGIN_EXT_HEADER") + "\n\n".join(plugin_prompts)
             if web_context:
-                system_prompt += f"\n\n## 联网搜索参考\n{web_context}"
+                system_prompt += _hdr("PROMPT_WEB_CONTEXT_HEADER") + f"{web_context}"
 
             result = await self.llm_or_fallback(lambda: self._llm.structured_output(system_prompt=system_prompt, user_prompt=f"结构 Agent 输出:\n{scenes_json}", pipeline_id=pipeline_id), fallback={}, retries=2)
             if isinstance(result, dict):
@@ -210,7 +233,7 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
         except Exception as e:
             logger.warning("规划书翻译失败: %s，使用降级", e)
 
-        return {
+        fallback = {
             "summary": "基础规划书（自动生成）",
             "markdown_content": self._default_markdown(scenes),
             "total_duration_sec": sum(s.get("duration_sec", 0) for s in scenes),
@@ -218,6 +241,7 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
             "raw_scenes": scenes,
             "material_summary": self._material_summary(scenes),
         }
+        return fallback
 
     @staticmethod
     def _material_summary(scenes: list[dict]) -> str:
@@ -252,3 +276,10 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
                 lines.append(f"- **素材缺口**: {s['material_gap']}")
             lines.append("")
         return "\n".join(lines)
+
+
+def _hdr(name: str) -> str:
+    """小标题类提示词（B5 常量覆盖）：插件可替换，未覆盖时即 prompts.py 默认值。"""
+    from clipwright.plugins.prompt_overrides import resolve_constant
+
+    return resolve_constant(name)

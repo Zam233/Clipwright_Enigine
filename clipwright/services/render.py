@@ -349,6 +349,43 @@ _PFMT_OVERRIDE: contextvars.ContextVar[str] = contextvars.ContextVar("clipwright
 _EXT_OVERRIDE: contextvars.ContextVar[str] = contextvars.ContextVar("clipwright_ext_override", default="mp4")
 
 
+#: 恒定质量模式的字形：cq26 / crf23 / CQ26 都认
+_QUALITY_RE = re.compile(r"^(?:cq|crf)[:\s]?(\d{1,2})$", re.IGNORECASE)
+#: 默认质量（用户 2026-10-28 裁定）：1080p30 图文/慢镜头内容 CQ26 肉眼无损
+DEFAULT_QUALITY = "cq26"
+
+
+def parse_quality(value: str) -> int | None:
+    """`"cq26"` / `"crf23"` → 26 / 23；不是质量语法则返回 None（按 ABR 处理）。"""
+    m = _QUALITY_RE.match(str(value or "").strip())
+    if not m:
+        return None
+    try:
+        q = int(m.group(1))
+    except ValueError:
+        return None
+    return q if 0 <= q <= 63 else None
+
+
+def video_rate_args(encoder: str, bitrate: str) -> list[str]:
+    """把 `bitrate` 翻译成 ffmpeg 码率/质量参数。
+
+    - `cq26` / `crf26`：恒定质量（推荐，体积最小且画质稳定）
+    - `5M` / `3000k`：传统 ABR（平台要求固定码率时用）
+    """
+    q = parse_quality(bitrate)
+    if q is None:
+        return ["-b:v", str(bitrate or "5M")]
+    if encoder == "h264_nvenc":
+        # NVENC 的恒定质量：VBR + CQ，b:v 必须给 0（否则退回 ABR）
+        return ["-rc", "vbr", "-cq", str(q), "-b:v", "0"]
+    if encoder in ("libx264", "libx265"):
+        return ["-crf", str(q)]
+    if encoder.startswith("prores"):
+        return []  # ProRes 是帧内固定码率，无质量参数
+    return ["-b:v", "5M"]
+
+
 def _current_encoder() -> str:
     ov = _ENC_OVERRIDE.get()
     return ov or _get_encoder()
@@ -986,6 +1023,76 @@ class RenderResult:
                 "review_failed": self.review_failed}
 
 
+def _split_overlay_clusters(
+    overlays: list[dict], *, gap_sec: float = 1.0,
+) -> list[tuple[float, float, list[dict]]]:
+    """把动画 overlay 按时间聚成簇：`[(簇起点, 簇跨度, 成员)]`。
+
+    为什么需要：整片级的透明 MOV（702s）在 hyperframes 走磁盘抓帧，
+    702×30 帧 PNG 需要上百 GB 临时空间，直接拒渲。按簇渲染后每个 MOV
+    只有几秒，帧数降到几十~几百。
+    """
+    items = sorted(
+        [o for o in overlays if float(o.get("duration_sec", 0) or 0) > 0],
+        key=lambda o: float(o.get("start_sec", 0) or 0),
+    )
+    clusters: list[tuple[float, float, list[dict]]] = []
+    cur: list[dict] = []
+    cur_start = 0.0
+    cur_end = 0.0
+    for ov in items:
+        start = float(ov.get("start_sec", 0) or 0)
+        end = start + float(ov.get("duration_sec", 0) or 0)
+        if cur and start <= cur_end + gap_sec:
+            cur.append(ov)
+            cur_end = max(cur_end, end)
+            continue
+        if cur:
+            clusters.append((cur_start, max(cur_end - cur_start, 0.1), cur))
+        cur = [ov]
+        cur_start = start
+        cur_end = end
+    if cur:
+        clusters.append((cur_start, max(cur_end - cur_start, 0.1), cur))
+    return clusters
+
+
+def _batch_overlays(
+    overlays: list[dict], *, max_items: int = 8, max_span: float = 45.0,
+) -> list[tuple[float, float, list[dict]]]:
+    """把动画 overlay 打包成渲染批次：`[(批起点, 批跨度, 成员)]`。
+
+    为什么要批：每次 `hyperframes render` 都要拉起一个浏览器实例（还有 GPU 探针），
+    逐个渲染 45 个动画 = 45 次窗口弹出 + 45 次冷启动。
+    约束：单批 ≤ max_items 个、跨度 ≤ max_span 秒（控制磁盘抓帧与渲染时长）。
+    """
+    items = sorted(
+        [o for o in overlays if float(o.get("duration_sec", 0) or 0) > 0],
+        key=lambda o: float(o.get("start_sec", 0) or 0),
+    )
+    out: list[tuple[float, float, list[dict]]] = []
+    cur: list[dict] = []
+    cur_start = 0.0
+    cur_end = 0.0
+    for ov in items:
+        start = float(ov.get("start_sec", 0) or 0)
+        end = start + float(ov.get("duration_sec", 0) or 0)
+        too_many = len(cur) >= max_items
+        too_wide = cur and (max(cur_end, end) - cur_start) > max_span
+        if cur and not too_many and not too_wide:
+            cur.append(ov)
+            cur_end = max(cur_end, end)
+            continue
+        if cur:
+            out.append((cur_start, max(cur_end - cur_start, 0.1), cur))
+        cur = [ov]
+        cur_start = start
+        cur_end = end
+    if cur:
+        out.append((cur_start, max(cur_end - cur_start, 0.1), cur))
+    return out
+
+
 class RenderService:
     """将 Timeline 渲染为 MP4 视频。"""
 
@@ -1001,6 +1108,9 @@ class RenderService:
         self._review_failed = False
         # 蒙版相关警告（star/heart 后端不支持等），渲染结束时并入 warnings
         self._mask_warnings: list[str] = []
+        # 渲染后自检（动画动效多样性等）产生的警告，结束时并入 RenderResult.warnings
+        self.warnings: list[str] = []
+        self._motion_check: dict | None = None
 
     def _run_ff(self, cmd, **kw) -> subprocess.CompletedProcess:
         """同步执行 ffmpeg/外部命令（供已在线程池里的 sync 代码直接调用）。"""
@@ -1224,7 +1334,7 @@ class RenderService:
                          "-map", "0:v:0", "-map", "0:a?", "-map", "1:0",
                          "-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text",
                          "-movflags", "+faststart", str(output)],
-                        capture_output=True, text=False, timeout=600)
+                        capture_output=True, text=False, timeout=3600)
                     _srt_ok = _is_valid_video(output)
                 except Exception as e:
                     logger.warning("D4 软字幕封装失败，回退无字幕轨: %s", e)
@@ -1248,6 +1358,10 @@ class RenderService:
             for _mw in self._mask_warnings:
                 if _mw not in warnings:
                     warnings.append(_mw)
+            # 渲染后自检（动画动效多样性）产生的警告
+            for _sw in self.warnings:
+                if _sw not in warnings:
+                    warnings.append(_sw)
             # V4/V7：渲染后切点复核 + 全片总览（默认关闭，best-effort）；
             # 返回派工列表（每条带 redo_agent），随结果一起交给上层
             await self._post_render_review(str(output), video_segments, warnings, fps=fps,
@@ -1440,7 +1554,12 @@ class RenderService:
         # 合并判据：metadata.category == "caption" 或 Clip.kind == caption
         category = meta.get("category", "") or (
             "caption" if str(getattr(clip, "kind", "")) == "caption" else "")
-        pos = meta.get("position", style.get("position", {1: "bottom", 2: "top", 3: "center"}.get(track_idx, "bottom")))
+        # 用户反馈（2026-10-28）：两句字幕短暂时重叠时会出现"一句在上、一句在下"。
+        # 根因是这里的兜底把 track_idx 当成了"轨道层号"（1→bottom / 2→top / 3→center），
+        # 而字幕轨道号只是轨道顺序，与画面位置无关。字幕位置**只认字幕轨的设置**。
+        _default_pos = ("bottom" if category == "caption"
+                        else {1: "bottom", 2: "top", 3: "center"}.get(track_idx, "bottom"))
+        pos = meta.get("position", style.get("position", _default_pos))
         # 字幕（caption，合并双方语义）：offset_y 恒 0（Bug1：同轨字幕不逐条上移）；
         # 管线产出的 caption（携带 metadata）且无显式 style 时注入默认描边
         # （borderw=2，白字可读性）；完全无 metadata 的 legacy ASS 字幕保持原样。
@@ -1455,6 +1574,24 @@ class RenderService:
             v = getattr(clip, f, None)
             if v is not None:
                 style[f] = v
+        # 位置/字号必须**写进 style**：ASS 路径以 style 为准，只写在外层 dict 的话
+        # `position=center` 会被 `TextStyle.from_dict({})` 的默认 bottom 顶掉 →
+        # 文字动画全被画到字幕带里（E2E 2026-10-30 实测：中心文字看不见，与底部字幕叠住）。
+        # drawtext 路径读外层字段，两条路都要拿到同一份结论。
+        style["position"] = pos
+        style["offset_y"] = offset_y
+        # 字号/颜色用 setdefault：用户/persona 在 metadata.style 里显式配过的值优先，
+        # Clip 字段只补空位（Clip 的默认值会把 meta.style 顶掉——实测 font_size=40 变 48）。
+        if clip.font_size:
+            style.setdefault("font_size", clip.font_size)
+        else:
+            style.setdefault("font_size", 48)
+        if clip.font_color:
+            style.setdefault("font_color", clip.font_color)
+        else:
+            style.setdefault("font_color", "#ffffff")
+        if getattr(clip, "text_align", None):
+            style["text_align"] = clip.text_align
         return dict(start_sec=clip.start_sec, duration_sec=clip.duration_sec,
                     text=clip.text or "", font_size=clip.font_size or 48,
                     font_color=clip.font_color or "#ffffff", font=clip.font or "",
@@ -1566,7 +1703,7 @@ class RenderService:
             # 文件后缀推断 muxer，`x.mp4.part` 会直接失败
             # （"Error initializing the muxer" / "Error opening output files"）→
             # 每个片段静默降级为 fallback 板。见 _atomic_temp_path。
-            out_tmp = self._atomic_temp_path(out)
+            out_tmp = self._atomic_temp_path(out, unique=uuid.uuid4().hex[:8])
             try:
                 # 关键帧变速——有 speed 关键帧时走分段恒速近似（trim+concat），
                 # 全局 setpts 前缀跳过；无关键帧保持 D1 单段 setpts 路径
@@ -1695,7 +1832,7 @@ class RenderService:
                     _lut_s = str(_lut)
                     if (
                         _lut_s.lower().endswith(".cube")
-                        and not _re.search(r"['\":,;]", _lut_s)
+                        and not re.search(r"['\":,;]", _lut_s)
                         and Path(_lut_s).is_file()
                     ):
                         try:
@@ -1807,18 +1944,23 @@ class RenderService:
                            "-stream_loop", "-1", "-i", src, "-t", str(dur),
                            "-filter_complex", fc, "-map", "[vout]", "-r", str(fps),
                            *_encoder_stage_args(encoder, preset),
-                           "-b:v", bitrate, "-an", out_tmp]
+                           *video_rate_args(encoder, bitrate), "-an", out_tmp]
                 else:
                     cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)),
                            "-ss", str(seg.get("source_offset", 0)),
                            "-stream_loop", "-1", "-i", src, "-t", str(dur), "-vf", vf, "-r", str(fps),
                            *_encoder_stage_args(encoder, preset),
-                           "-b:v", bitrate, "-an", out_tmp]
-                r = self._run_ff(cmd, capture_output=True, text=False, timeout=600)
+                           *video_rate_args(encoder, bitrate), "-an", out_tmp]
+                r = self._run_ff(cmd, capture_output=True, text=False, timeout=3600)
                 if r.returncode == 0 and _is_valid_video(out_tmp):
-                    # 原子落位
+                    # 原子落位；并发同键时可能已被别的线程落位 → 视为成功
                     import os as _os
-                    _os.replace(out_tmp, out)
+                    try:
+                        _os.replace(out_tmp, out)
+                    except OSError as exc:
+                        if not (Path(out).exists() and _is_valid_video(out)):
+                            raise exc
+                        Path(out_tmp).unlink(missing_ok=True)
                     with _trim_cache_lock:
                         _trim_cache_put_locked(cache_key, out)
                     return out
@@ -2032,16 +2174,24 @@ class RenderService:
         return diff if diff > tol else None
 
     @staticmethod
-    def _atomic_temp_path(final_path: str) -> str:
+    def _atomic_temp_path(final_path: str, unique: str = "") -> str:
         """原子替换用的临时路径：把媒体扩展名保留在**末尾**。
 
         ffmpeg 只按输出文件名的后缀推断 muxer（除非显式 `-f`）。因此
         `trim_x.mp4.part` 会失败（"Error initializing the muxer"），而
         `trim_x.part.mp4` 正常——2026-09-05 的原子替换改造踩过这个坑，
         导致所有 trim 失败并静默降级为 fallback 板。
+
+        ``unique``：**并发同键裁剪必须各写各的临时文件**。两段素材完全相同
+        （同源、同起点、同时长）时会算出同一个 cache_key，两个线程写同一个
+        `.part` 文件 → Windows 上第二个 `os.replace` 撞"文件被占用"，
+        整条渲染失败（第 32 轮 V32 实测踩到）。
         """
         p = Path(str(final_path))
-        return str(p.with_name(f"{p.stem}.part{p.suffix}")) if p.suffix else f"{p}.part"
+        token = f".{unique}" if unique else ""
+        if p.suffix:
+            return str(p.with_name(f"{p.stem}{token}.part{p.suffix}"))
+        return f"{p}{token}.part"
 
     def _source_valid(self, src: str) -> bool:
         """检查源视频文件是否可解码（有视频流且时长可读）。"""
@@ -2064,7 +2214,7 @@ class RenderService:
         out = str(self._work_dir / f"fallback_{idx}.{_current_ext()}")
         try:
             # 超时按时长缩放：长片段（如 113s）色块编码超过固定 30s 会被误杀
-            timeout = 30 + int(dur) * 2
+            timeout = 60 + int(dur) * 6
             self._run_ff(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
                            f"color=c=0x1a1a2e:s={width}x{height}:d={dur}",
                            "-c:v", _current_encoder(), "-pix_fmt", _current_pix_fmt(), "-r", str(fps), out],
@@ -2215,8 +2365,8 @@ class RenderService:
         self._run_ff(["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), "-i", a, "-i", b,
                        "-filter_complex", "[0:v]setsar=1[a];[1:v]setsar=1[b];[a][b]concat=n=2:v=1:a=0[v]",
                        "-map", "[v]", *_encoder_stage_args(encoder, preset),
-                       "-b:v", bitrate, "-r", str(fps), str(out)],
-                      capture_output=True, text=False, timeout=600)
+                       *video_rate_args(encoder, bitrate), "-r", str(fps), str(out)],
+                      capture_output=True, text=False, timeout=3600)
         if _is_valid_video(out, require_streams=True):
             return str(out)
         self._final_ffmpeg_log.append(f"concat({Path(a).name}+{Path(b).name}): 输出无效，丢弃 {Path(b).name}")
@@ -2238,8 +2388,8 @@ class RenderService:
                        "-filter_complex",
                        f"[0:v]setsar=1[a];[1:v]setsar=1[b];[a][b]xfade=transition={tt}:duration={td}:offset={off}[v]",
                        "-map", "[v]", *_encoder_stage_args(encoder, preset),
-                       "-b:v", bitrate, "-r", str(fps), out],
-                      capture_output=True, text=False, timeout=600)
+                       *video_rate_args(encoder, bitrate), "-r", str(fps), out],
+                      capture_output=True, text=False, timeout=3600)
         if _is_valid_video(out, require_streams=True):
             return out
         self._final_ffmpeg_log.append(f"xfade({Path(left).name}×{Path(right).name}): 输出无效，降级硬切拼接")
@@ -2332,7 +2482,7 @@ class RenderService:
         self._run_ff(["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)), *inputs,
                        "-filter_complex", flt, "-map", "[v]",
                        *_encoder_stage_args(encoder, preset),
-                       "-b:v", bitrate, "-r", str(fps), str(out)],
+                       *video_rate_args(encoder, bitrate), "-r", str(fps), str(out)],
                       capture_output=True, text=False, timeout=timeout)
         if _is_valid_video(out, require_streams=True):
             return str(out)
@@ -2553,6 +2703,72 @@ class RenderService:
 
     # ── S2: 单次 Hyperframes 批量 ──────────────────
 
+    async def _check_animation_motion(self, pairs):
+        """渲染后自检：动画 MOV 的动效多样性（PRD §5 像素级验收）。
+
+        只写 warning / 计数，不阻断渲染：动画已经生成，这里的目标是让
+        「看起来静止」的片段在日志与 RenderResult.warnings 里可见。
+        """
+        try:
+            from clipwright.services import anim_motion_check
+
+            rep = await asyncio.to_thread(anim_motion_check.check_overlays, pairs)
+        except Exception:  # noqa: BLE001
+            logger.warning("Render: 动画动效自检失败（忽略）", exc_info=True)
+            return None
+        self._motion_check = rep
+        if rep and rep.get("failed"):
+            for item in rep.get("failed_items") or []:
+                self.warnings.append(
+                    f"动画动效不足：@{item.get('start_sec')}s "
+                    f"distinct={item.get('distinct_frames')}/{item.get('sampled_frames')}"
+                    f"（ratio={item.get('distinct_ratio')}）"
+                )
+        return rep
+
+    async def _bake_scrims(self, video, pairs, progress_callback=None):
+        """给浅背景上的动画片段烘焙半透明底板（PRD §7.4 渲染期兜底）。
+
+        判定：抽一帧算背景平均亮度，超过 `animation_scrim_light_threshold` 才做；
+        做法：把底板烧进动画 MOV（Python 逐帧合成，不改 ffmpeg 滤镜图）。
+        任何失败都退回原 MOV——底板是体验优化，不能拖垮渲染。
+        """
+        from clipwright.services import anim_scrim
+
+        cfg = anim_scrim.settings_of()
+        if not cfg.get("enabled") or not pairs:
+            return pairs
+        out: list[tuple[str, float, float]] = []
+        baked_count = 0
+        for mov, start, dur in pairs:
+            try:
+                need = await asyncio.to_thread(
+                    anim_scrim.should_scrim, video, float(start), float(cfg["light_threshold"]))
+            except Exception:  # noqa: BLE001
+                need = False
+            if need:
+                target = str(Path(mov).with_name(f"{Path(mov).stem}_scrim.mov"))
+                # 关键字传参：bake_scrim_into_mov 的 alpha/grow/blur 是 **keyword-only**
+                # （`def bake_scrim_into_mov(src, out, *, alpha=..., grow=..., blur=...)`）。
+                # 旧实现位置传参 → TypeError: takes 2 positional arguments but 5 were given，
+                # 而这一层异常被外层吞掉，表现成「渲染 90% 后失败」且日志里没有任何原因
+                # （E2E 2026-10-29 实测：整片渲染 100% 失败）。
+                baked = await asyncio.to_thread(
+                    anim_scrim.bake_scrim_into_mov, mov, target,
+                    alpha=float(cfg["alpha"]),
+                    grow=int(cfg["grow"]),
+                    blur=float(cfg["blur"]),
+                )
+                if baked:
+                    mov = baked
+                    baked_count += 1
+            out.append((mov, start, dur))
+        if baked_count:
+            logger.info("Render: %d/%d 个动画片段烘焙了底板（背景偏亮）", baked_count, len(pairs))
+            if progress_callback:
+                await progress_callback("mg", 96, f"底板兜底 {baked_count}/{len(pairs)}")
+        return out
+
     async def _apply_all_hyperframes(self, video, text_overlays, hf_ov_local, width, height, fps,
                                      progress_callback=None):
         """将图解动画 + MG 动画合并到单次 Hyperframes 调用。
@@ -2601,6 +2817,8 @@ class RenderService:
                       float(mg.get("duration_sec", 0) or 0))
                      for mg, mov in zip(hf_ov_local, movs)
                      if not isinstance(mov, BaseException) and mov and _is_valid_video(mov)]
+            pairs = await self._bake_scrims(video, pairs, progress_callback)
+            await self._check_animation_motion(pairs)
             if pairs:
                 if progress_callback:
                     await progress_callback("mg", 90, "链式叠加 MG 动画")
@@ -2624,13 +2842,66 @@ class RenderService:
         if overlays:
             if progress_callback:
                 await progress_callback("mg", 93, "合成图解动画叠加层")
-            mov = str(self._work_dir / "overlay.mov")
-            ok = await HyperframesRenderer.render_overlays(overlays, mov, width, height, fps)
-            if ok and _is_valid_video(mov):
-                out_v = str(self._work_dir / f"with_hf.{_current_ext()}")
-                ok2 = HyperframesRenderer.render_overlay_on_video(mov, video, out_v)
-                if ok2 and _is_valid_video(out_v):
-                    video = out_v
+            # E2E 2026-10-28 修复：旧实现把全部 overlay 编成**一整张覆盖全片**的透明
+            # MOV（702s×30fps=21060 帧 PNG ≈ 164GB 临时盘），hyperframes 直接拒渲
+            # → 45~52 个图解动画整批丢失，而成片仍报 success。
+            # 现在按时间簇分块：每簇只渲自己的时长（几秒），再按簇起点叠回去。
+            # 用户 2026-10-28：**每个动画独立渲染**，再统一合并。
+            # 每个 MOV 只有 2-6 秒（几十~一百多帧），彻底避开 hyperframes 的
+            # "磁盘抓帧需要 164GB" 上限；合并仍走一次性链式 overlay。
+            items = sorted(
+                [o for o in overlays if float(o.get("duration_sec", 0) or 0) > 0],
+                key=lambda o: float(o.get("start_sec", 0) or 0),
+            )
+            # 用户 2026-10-28：每次 `hyperframes render` 都会拉起浏览器——
+            # 45 个动画 = 45 次弹窗。按「数量 ≤8 + 跨度 ≤45s」打包，次数降到个位数。
+            batches = _batch_overlays(items, max_items=8, max_span=45.0)
+            logger.info(
+                "Render: 图解动画 %d 个 → %d 个批次渲染后合并（每批独立浏览器）",
+                len(items), len(batches),
+            )
+            failed_frames = 0
+            cluster_pairs: list[tuple[str, float, float]] = []
+            for ci, (b_start, b_span, group) in enumerate(batches):
+                if progress_callback:
+                    await progress_callback(
+                        "mg", 93, f"图解动画 {ci + 1}/{len(batches)}（{len(group)} 个）")
+                batch_mov = str(self._work_dir / f"anim_{ci}.mov")
+                shifted = [
+                    {**ov,
+                     "start_sec": max(0.0, float(ov.get("start_sec", 0) or 0) - b_start),
+                     "duration_sec": float(ov.get("duration_sec", 3) or 3)}
+                    for ov in group
+                ]
+                ok = await HyperframesRenderer.render_overlays(
+                    shifted, batch_mov, width, height, fps)
+                if not (ok and _is_valid_video(batch_mov)):
+                    failed_frames += len(group)
+                    continue
+                cluster_pairs.append((batch_mov, b_start, b_span))
+            if cluster_pairs:
+                # 图解批次同样做底板兜底（浅背景时才烘焙）
+                cluster_pairs = await self._bake_scrims(
+                    video, cluster_pairs, progress_callback)
+                # 一次性链式叠加（N 个簇只做 1 次全片重编），避免逐簇重编 N 次。
+                merged = await self._apply_mg_overlay_chained(
+                    video, sorted(cluster_pairs, key=lambda x: x[1]),
+                    width, height, fps, progress_callback=progress_callback,
+                )
+                if merged and merged != video:
+                    video = merged
+                else:
+                    logger.warning("Render: 图解动画链式叠加失败，回退逐簇叠加")
+                    for mov_p, s0, span in cluster_pairs:
+                        video = await self._apply_mg_overlay(
+                            video, mov_p, width, height, fps,
+                            start_sec=s0, duration_sec=span,
+                        )
+            if failed_frames:
+                logger.error(
+                    "Render: %d 个图解动画 overlay 渲染失败（不会出现在成片里）", failed_frames,
+                )
+                self._overlay_failures = getattr(self, "_overlay_failures", 0) + failed_frames
         return video
 
     async def _render_mg_mov(self, mg_ov: dict, width: int, height: int, fps: float) -> str | None:
@@ -2809,13 +3080,20 @@ class RenderService:
             end = start + float(duration_sec or 0)
             parts.append(
                 f"[{i}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1[mg{i}]"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,"
+                # ★ 必须把 MG 的时间戳平移到它在主时间线上的起点（E2E 2026-10-30）：
+                # 旧实现只做 scale/pad，MG 输入从 t=0 开始被 overlay 消费，而 `enable`
+                # 只是"何时显示"。动画 MOV 只有 5–6 秒，等主视频走到 start_sec=33.6s
+                # 时 MG 早已播完 → 画面被冻结在**末帧**，成片里"动画不动、只是展示画面"。
+                # 单路 overlay（render_overlay_on_video）一直是 `PTS-STARTPTS+start/TB`，
+                # 链式路径是后来为省 re-encode 引入的，漏了这一步。
+                f"setpts=PTS-STARTPTS+{_fmt_sec(start)}/TB[mg{i}]"
             )
             parts.append(
                 # 实渲修复: overlay 的 format 选项是枚举（yuv420/yuv420p10/rgb/gbrp/auto），
                 # `rgba` 非法会导致整条链式合成失败（rc=EINVAL）、MG 静默丢失。
                 # 用 format=auto —— 与非链式路径 render_overlay_on_video 一致，alpha 由输入像素格式保留。
-                f"[{prev}][mg{i}]overlay=format=auto:"
+                f"[{prev}][mg{i}]overlay=format=auto:eof_action=pass:"
                 f"enable='between(t,{_fmt_sec(start)},{_fmt_sec(end)})'[v{i}]"
             )
             prev = f"v{i}"
@@ -3238,7 +3516,7 @@ class RenderService:
                     "-map", "0:v:0", "-map", "[aout]",
                     *(["-c:v", "copy"] if video_cached else
                       [*_encoder_stage_args(encoder, preset),
-                       "-b:v", bitrate, *_delivery_extra_args(encoder)]),
+                       *video_rate_args(encoder, bitrate), *_delivery_extra_args(encoder)]),
                     "-c:a", "aac", "-b:a", ab, "-movflags", "+faststart", output_path,
                 ], capture_output=True, text=False, timeout=1800)
                 if _is_valid_video(output_path):
@@ -3279,10 +3557,10 @@ class RenderService:
                                "-af", ",".join(afilters),
                                *(["-c:v","copy"] if video_cached else
                                  ["-c:v",encoder,"-preset",preset,"-pix_fmt",_current_pix_fmt(),
-                                  "-b:v",bitrate,*_delivery_extra_args(encoder)]),
+                                  *video_rate_args(encoder,bitrate),*_delivery_extra_args(encoder)]),
                                "-c:a","aac","-b:a",ab,"-map","0:v:0","-map","1:a:0",
                                "-movflags","+faststart",output_path],
-                              capture_output=True, text=False, timeout=600)
+                              capture_output=True, text=False, timeout=3600)
                 if _is_valid_video(output_path): return
                 logger.warning("_mix_audio: 配音混合输出无效: %s", output_path)
             except Exception as e:

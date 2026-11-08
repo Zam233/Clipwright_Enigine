@@ -1,5 +1,7 @@
 """模板系统 — 变量替换 + 批量生成。"""
 
+from __future__ import annotations
+
 import json
 import re
 from pathlib import Path

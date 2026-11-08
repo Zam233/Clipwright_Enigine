@@ -57,6 +57,8 @@
 | 服务文件 | 说明 |
 |---------|------|
 | `requirements_service.py` | 需求分析与创作方案生成 |
+| `session_log.py` | **会话时间线唯一日志（session-timeline PRD）**：一个会话一条有序流，`seq` 由服务端原子分配，前端只渲染不推断。落盘 `sessions/<session_id>/{session.json, session.jsonl, items/<seq>.json, archive/}`；写入口 `append/begin/chunk/finish/patch`（流式 200ms/4KB 节流，`session.json` 原子替换）；崩溃恢复把"起了没结束"的条目标 `interrupted`；超 5000 条归档、单条超 40 万字截断并标 `meta.truncated` |
+| `session_projection.py` | **任务事件 → 会话时间线投影**：task 事件是执行权威源，按 `task_id` 记游标把新事件映射成条目（幂等键 = 事件族主 ref，`tool_result` 归到它 `causation_id` 指向的 `tool_call`）；`thinking` 是 token 级增量，按轮合并走 `begin/chunk` 避免 O(n²) 写盘；`proceed` 建任务后 `bind()` 会话并起 1s 轮询，拉取接口再同步投影一次兜底 |
 | `style_interpreter_service.py` | Persona 视觉参数 → 动画风格映射 |
 | `chat_forge_service.py` | 对话式内容生成 |
 

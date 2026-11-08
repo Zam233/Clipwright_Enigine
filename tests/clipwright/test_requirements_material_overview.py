@@ -146,7 +146,9 @@ class TestGenerateBriefInjection:
         input_data = RequirementsInput(context=context, topic="科技", script_text="文稿")
         await agent._generate_brief(input_data, context)
         assert "素材库概览" not in agent._llm.user_prompt
-        assert agent._llm.user_prompt == "选题: 科技\n文稿预览: 文稿\n"
+        # 文稿**整篇**进入简报 prompt（不再截到 500 字，长文稿不会被砍成预览）
+        assert "文稿" in agent._llm.user_prompt
+        assert agent._llm.user_prompt.startswith("选题: 科技\n")
 
 
 class TestGeneratePlanInjection:

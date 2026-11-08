@@ -75,14 +75,14 @@ def _dynamic_choices(key: str) -> list[str]:
         from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
         kind = ContributionKind(kind_name)
         if kind is ContributionKind.LLM_PROVIDER:
-            from clipwright.providers.llm import ensure_llm_providers_registered
-            ensure_llm_providers_registered()
+            # B7-T7.2：实现已迁进插件，engine 不再懒注册内置补位
+            pass
         elif kind is ContributionKind.TTS_PROVIDER:
-            from clipwright.providers.tts import ensure_tts_providers_registered
-            ensure_tts_providers_registered()
+            # 裁定 3 / B3-T6：不再懒注册内置 TTS provider，列表完全由插件贡献决定
+            pass
         elif kind is ContributionKind.EMBEDDING_PROVIDER:
-            from clipwright.providers.embedding import ensure_embedding_providers_registered
-            ensure_embedding_providers_registered()
+            # B7-T7.3：实现已迁进插件，engine 不再懒注册内置补位
+            pass
         return [c.id for _, c in ContributionRegistry.list(kind)]
     except Exception:  # noqa: BLE001 — 门面不可用不阻断配置读取
         return []
@@ -96,6 +96,11 @@ def _field_payload(key: str) -> dict[str, Any]:
     for extra in _dynamic_choices(key):
         if extra not in choices:
             choices.append(extra)
+    # B7-T7.5：provider 字段的 choices 现在完全来自注册表；当前值必须始终出现，
+    # 否则前端下拉会回退到第一个选项（= 隐式改写用户配置，且历史值
+    # `sentence_transformer` 与门面 id `local` 不等价显示）。
+    if key in _DYNAMIC_CHOICE_KINDS and isinstance(current, str) and current and current not in choices:
+        choices.append(current)
     payload: dict[str, Any] = {
         "key": key,
         "group": meta.group,
@@ -177,6 +182,14 @@ def _maybe_coerce(key: str, value: Any) -> Any:
         return value  # 保留原值，由 _validate_value 统一报 422
     if meta.kind == "bool" and isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes", "on")
+    # 对象型字段（单价表/路由表）：前端文本域可能把 JSON 当字符串发上来
+    if meta.kind in ("dict", "json") and isinstance(value, str):
+        try:
+            import json
+
+            return json.loads(value)
+        except Exception:  # noqa: BLE001 — 留给 _validate_value 统一报 422
+            return value
     return value
 
 

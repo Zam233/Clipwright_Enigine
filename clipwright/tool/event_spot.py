@@ -22,6 +22,8 @@ class EventSpotTool(BaseTool):
     """领域事件定位（文本词表 / 音频能量）。"""
 
     name = "event_spot"
+
+    permission_tier = "costly"
     description = (
         "定位素材里的领域事件：mode=text 用领域词表在文本/转写里找事件（进球/开箱/价格/结论…），"
         "mode=audio 检测音频事件（静音/大响段/起始沿）并按镜头对齐。"

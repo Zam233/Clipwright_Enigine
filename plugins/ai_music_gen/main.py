@@ -102,6 +102,7 @@ def _sign_v4(
 
 class AIMusicGenTool(BaseTool):
     name = "ai_music_generate"
+    permission_tier = "costly"
     agent_callable = True
     description = "从情绪/风格描述生成免版税背景音乐（纯音乐）或人声歌曲"
     parameters_schema = {

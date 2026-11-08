@@ -54,6 +54,8 @@ class PexelsMaterialSource(MaterialSource):
             top_k: 每类返回数量
             media_type: "video" / "photo" / "all"
         """
+        # 空串/None 一律按 "all"：调用方传 "" 时下面两个分支都不会进 → 静默空结果
+        media_type = (str(media_type or "").strip().lower()) or "all"
         if not self._api_key:
             import logging
             logging.getLogger("pexels").warning("Pexels API Key 未配置，跳过搜索")

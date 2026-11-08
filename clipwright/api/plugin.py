@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
+from clipwright.config import logger
 from clipwright.plugins import PluginLoadError
 from clipwright.schema.plugin import PluginMetadata
 
@@ -305,6 +306,25 @@ async def get_plugin_bundle(plugin_id: str, request: Request = None):
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+@router.get("/prompt-symbols")
+async def list_prompt_symbols(request: Request = None) -> dict[str, object]:
+    """B5-T7：提示词符号清单与当前来源（诊断接口）。
+
+    返回 `{constants: [...], builders: [...], errors: [...]}`；每条含
+    `name` / `wired` / `override`（插件 id、来源）。**不展示提示词正文**——只给长度，
+    避免把敏感上下文通过诊断接口泄漏出去。
+
+    `wired=false` 的常量尚未接到 `resolve_constant()`（消费方仍是直接 import），
+    如实标注，免得「能注册却没人用」被误认为已生效。
+    """
+    _require_admin(request)
+    from clipwright.plugins import prompt_overrides
+
+    payload = prompt_overrides.all_symbols()
+    payload["errors"] = list(prompt_overrides.OVERRIDE_ERRORS[-20:])
+    return payload
 
 
 @router.get("/contributions")

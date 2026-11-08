@@ -20,7 +20,7 @@ BUILTIN_OWNER = "__builtin__"
 
 
 class ContributionKind(str, Enum):
-    """17 类可贡献扩展点（名单冻结；新增需走契约评审）。"""
+    """18 类可贡献扩展点（名单冻结；新增需走契约评审）。"""
     # ── 现有（方案 A 收敛）──
     TOOL = "tool"
     SKILL = "skill"
@@ -42,6 +42,11 @@ class ContributionKind(str, Enum):
     # ── 方案 D：前端 Slot 化 ──
     UI_SLOT = "ui_slot"
     EXPORT_PRESET = "export_preset"
+    # ── 方案 E：声明式展示契约（第 18 类，2026-11-07 契约评审 N1–N7 通过）──
+    #: 纯数据扩展点：`object` 必须为 `None`，契约与配方全在 `meta`；
+    #: engine 从不执行插件的任何可调用对象（见
+    #: docs/genui-plugin-migration-prd-2026-11-07.md §3.1/§3.3）。
+    DISPLAY_SPEC = "display_spec"
 
 
 class ConflictPolicy(str, Enum):
@@ -84,7 +89,7 @@ class RegistrationReport:
         return not self.rejected
 
 
-def _dispatch_register(owner: str, item: Contribution) -> Optional[str]:
+def _dispatch_register(owner: str, item: Contribution, *, policy=None) -> Optional[str]:
     """转调到各注册表（A-1 的 `contribution_dispatch`）。
 
     返回 None 表示成功，返回字符串表示拒绝原因。
@@ -95,7 +100,7 @@ def _dispatch_register(owner: str, item: Contribution) -> Optional[str]:
         from clipwright.plugins import contribution_dispatch as _dispatch
     except ImportError:
         return None
-    return _dispatch.register(owner, item)
+    return _dispatch.register(owner, item, policy=policy)
 
 
 def _dispatch_unregister(owner: str, keys: list[str]) -> list[str]:
@@ -162,7 +167,7 @@ class ContributionRegistry:
         for item in items:
             reason = cls._validate(owner, item, policy)
             if reason is None and dispatch:
-                reason = _dispatch_register(owner, item)
+                reason = _dispatch_register(owner, item, policy=policy)
             if reason is not None:
                 report.rejected.append((item, reason))
                 continue
@@ -260,3 +265,5 @@ class ContributionRegistry:
         cls._items.clear()
         cls._owners.clear()
         cls._declared.clear()
+
+

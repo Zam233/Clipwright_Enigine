@@ -108,8 +108,12 @@ class MGRenderer:
             p = Path(raw)
         else:
             p = Path(s)
+        # Windows 盘符路径在 POSIX 宿主上不是 absolute（Path 语义按宿主判定），
+        # 若不显式识别，`file:///C:/Windows/win.ini` 会落进「相对路径原样保留」分支，
+        # 把宿主外部路径直接写进 HTML（跨平台越权本地文件读取）。
+        win_abs = bool(re.match(r"^[A-Za-z]:[\\/]", str(p)))
         try:
-            if p.is_absolute():
+            if p.is_absolute() or win_abs:
                 from clipwright.security import assert_allowed_path
                 rp = assert_allowed_path(p.resolve())
                 return rp.as_uri() if rp.exists() else ""
@@ -585,22 +589,44 @@ const dur=parseFloat(root.dataset.duration);
         )
 
     @staticmethod
+    def _mg_json_from_registry(anim_id: str) -> dict | None:
+        """从 `AnimationRegistry` 取插件贡献的 MG JSON（B8-T8.7）。
+
+        插件在 `AnimationDef.properties_meta["mg_json"]` 里携带 JSON 全文；engine
+        不再知道插件里的物理素材目录（旧实现写死了它，
+        导致插件禁用后仍能读到——"禁用即无能力"不成立）。
+        """
+        try:
+            from clipwright.animation.registry import AnimationRegistry
+
+            defn = AnimationRegistry.get(anim_id)
+        except Exception:  # noqa: BLE001 — 注册表不可用 = 没有插件动画
+            return None
+        if defn is None:
+            return None
+        meta = (defn.properties_meta or {}).get("mg_json")
+        raw = getattr(meta, "default", "") if meta is not None else ""
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+        except Exception:  # noqa: BLE001
+            return None
+        return data if isinstance(data, dict) else None
+
+    @staticmethod
     def load_animation(anim_id: str) -> dict | None:
         """按 animation_id 加载 MG 动画定义。
 
         搜索顺序:
-        1. clipwright/animation/mg/templates/ (内置 llm_mg 引擎模板)
-        2. plugins/llm_mg/templates/ (向后兼容, deprecated)
-        3. plugins/mg_animations/animations/ (向后兼容, deprecated)
+        1. `AnimationRegistry`（插件贡献的 MG JSON，B8-T8.7）
+        2. clipwright/animation/mg/templates/（内置模板）
         """
-        search_paths = [
-            Path(__file__).resolve().parent / "mg" / "templates",
-            Path(__file__).resolve().parent.parent.parent / "plugins" / "llm_mg" / "templates",
-            Path(__file__).resolve().parent.parent.parent / "plugins" / "mg_animations" / "animations",
-        ]
-        for base_dir in search_paths:
-            if not base_dir.exists():
-                continue
+        from_registry = MGRenderer._mg_json_from_registry(anim_id)
+        if from_registry is not None:
+            return from_registry
+        base_dir = Path(__file__).resolve().parent / "mg" / "templates"
+        if base_dir.exists():
             for f in base_dir.iterdir():
                 if f.suffix == ".json":
                     try:
@@ -613,31 +639,58 @@ const dur=parseFloat(root.dataset.duration);
 
     @staticmethod
     def list_animations() -> list[dict]:
-        """列出所有可用的 MG 动画。"""
-        search_paths = [
-            Path(__file__).resolve().parent / "mg" / "templates",
-            Path(__file__).resolve().parent.parent.parent / "plugins" / "llm_mg" / "templates",
-            Path(__file__).resolve().parent.parent.parent / "plugins" / "mg_animations" / "animations",
-        ]
+        """列出所有可用的 MG 动画（注册表贡献 + 内置模板，按 id 去重）。"""
         seen_ids: set[str] = set()
         anims: list[dict] = []
-        for base_dir in search_paths:
-            if not base_dir.exists():
-                continue
+
+        # 1) 插件贡献（`mg_json` 在 AnimationDef 里）
+        try:
+            from clipwright.animation.registry import AnimationRegistry
+
+            for defn in AnimationRegistry.list():
+                meta = (defn.properties_meta or {}).get("mg_json")
+                raw = getattr(meta, "default", "") if meta is not None else ""
+                if not raw:
+                    continue
+                try:
+                    data = json.loads(raw)
+                except Exception:  # noqa: BLE001
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                aid = str(data.get("animation_id", "") or "")
+                if not aid or aid in seen_ids:
+                    continue
+                seen_ids.add(aid)
+                anims.append({
+                    "id": aid,
+                    "name": data.get("name", ""),
+                    "description": data.get("description", ""),
+                    "duration_sec": data.get("duration_sec", 3.0),
+                    "params": list(data.get("params", {}).keys()),
+                })
+        except Exception:  # noqa: BLE001 — 注册表不可用就只看内置模板
+            pass
+
+        # 2) 内置模板
+        base_dir = Path(__file__).resolve().parent / "mg" / "templates"
+        if base_dir.exists():
             for f in sorted(base_dir.iterdir()):
-                if f.suffix == ".json":
-                    try:
-                        data = json.loads(f.read_text(encoding="utf-8"))
-                        aid = data.get("animation_id", "")
-                        if aid and aid not in seen_ids:
-                            seen_ids.add(aid)
-                            anims.append({
-                                "id": aid,
-                                "name": data.get("name", ""),
-                                "description": data.get("description", ""),
-                                "duration_sec": data.get("duration_sec", 3.0),
-                                "params": list(data.get("params", {}).keys()),
-                            })
-                    except Exception:
-                        continue
+                if f.suffix != ".json":
+                    continue
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001
+                    continue
+                aid = data.get("animation_id", "")
+                if not aid or aid in seen_ids:
+                    continue
+                seen_ids.add(aid)
+                anims.append({
+                    "id": aid,
+                    "name": data.get("name", ""),
+                    "description": data.get("description", ""),
+                    "duration_sec": data.get("duration_sec", 3.0),
+                    "params": list(data.get("params", {}).keys()),
+                })
         return anims

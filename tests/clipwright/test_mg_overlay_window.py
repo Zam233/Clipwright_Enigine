@@ -252,3 +252,36 @@ class TestApplyMGChainedOverlay:
         for mov, video, out_v, start_sec, duration_sec in overlay_calls:
             assert float(duration_sec) == 1.0
             assert float(start_sec) in (0.0, 1.0, 2.0)
+
+class TestChainedOverlayTiming:
+    """E2E 2026-10-30：链式 MG overlay 必须把覆盖层时间戳平移到 start_sec。
+
+    真实症状：成片里动画"只是展示画面"——MOV 只有 5–6 秒，主视频走到 33.6s 时
+    overlay 早已消费完 MG 的全部帧，画面被冻结在末帧。链式路径为省 re-encode
+    引入时漏了 `setpts=PTS-STARTPTS+start/TB`（单路 overlay 一直有）。
+    """
+
+    def _cmd(self, movs):
+        from clipwright.services.render import RenderService
+
+        svc = RenderService.__new__(RenderService)
+        return svc._build_mg_chained_cmd("main.mp4", movs, 1920, 1080, "out.mp4")
+
+    def test_each_mg_input_is_shifted_to_its_start(self) -> None:
+        cmd = self._cmd([("/w/a.mov", 33.6, 6.0), ("/w/b.mov", 95.2, 5.0)])
+        fc = cmd[cmd.index("-filter_complex") + 1]
+        assert "setpts=PTS-STARTPTS+33.6/TB[mg1]" in fc
+        assert "setpts=PTS-STARTPTS+95.2/TB[mg2]" in fc
+
+    def test_overlay_passes_through_after_mg_ends(self) -> None:
+        cmd = self._cmd([("/w/a.mov", 10.0, 4.0)])
+        fc = cmd[cmd.index("-filter_complex") + 1]
+        assert "eof_action=pass" in fc
+        assert "enable='between(t,10,14)'" in fc
+
+    def test_zero_start_is_also_shifted(self) -> None:
+        # 0 秒起点的 MG 仍要走同一条形态（便于统一断言与回归）
+        cmd = self._cmd([("/w/a.mov", 0.0, 3.0)])
+        fc = cmd[cmd.index("-filter_complex") + 1]
+        assert "setpts=PTS-STARTPTS+0/TB[mg1]" in fc
+

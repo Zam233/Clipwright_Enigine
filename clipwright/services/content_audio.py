@@ -43,6 +43,10 @@ SILENCE_FLOOR_DB = 6.0
 #: 起始沿判定：短窗内上升 ≥ max(8dB, 10%·动态范围)
 ONSET_RISE_DB = 8.0
 ONSET_WINDOW_SEC = 0.3
+#: 起始沿的**回看**长度（V25）。旧实现把 `ONSET_WINDOW_SEC` 同时当回看与事件长度：
+#: 回看 0.3 秒意味着"上一声之后 0.3 秒内的起音检测不到"——120BPM（0.5s 一击）会漏掉
+#: 紧跟强拍的音，逐词对齐直接失效。回看必须与"事件长度"解耦。
+ONSET_LOOKBACK_SEC = 0.04
 #: 动态范围下界：低于它就认为"没有动态范围"（恒定电平/数字静音）→ 不出任何事件
 MIN_SPAN_DB = 3.0
 
@@ -236,13 +240,22 @@ def detect_audio_events(
         })
 
     # 起始沿：短窗内能量突升（掌声/撞击/口号）
-    rise_frames = max(1, int(ONSET_WINDOW_SEC / hop)) if hop > 0 else 1
+    # 回看长度与事件长度解耦（V25）：回看只用 2–4 帧，否则"前一声之后 0.3 秒内"的
+    # 起音永远检测不到，逐词/逐拍对齐就没有可用的起音表。
+    rise_frames = max(1, int(round(ONSET_LOOKBACK_SEC / hop))) if hop > 0 else 1
     if db.size > rise_frames:
         delta = db[rise_frames:] - db[:-rise_frames]
-        for idx in np.where(delta >= max(onset_rise_db, 0.1 * scale))[0]:
+        threshold = max(onset_rise_db, 0.1 * scale)
+        hits = np.where(delta >= threshold)[0]
+        last_hit_t = -1.0
+        for idx in hits:
             t = round(float(idx + rise_frames) * hop, 3)
-            if events and any(ev["kind"] == "onset" and abs(ev["t0"] - t) < 0.2 for ev in events):
+            # 去重窗口降到 50ms（旧实现 200ms，会把半拍内的连续起音吞掉）
+            if last_hit_t >= 0 and abs(t - last_hit_t) < 0.05:
                 continue
+            if events and any(ev["kind"] == "onset" and abs(ev["t0"] - t) < 0.05 for ev in events):
+                continue
+            last_hit_t = t
             events.append({
                 "kind": "onset",
                 "t0": t,

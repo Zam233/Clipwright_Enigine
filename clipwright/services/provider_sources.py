@@ -109,6 +109,117 @@ def _public_source(src: dict[str, Any]) -> dict[str, Any]:
     out["api_keys_masked"] = [_mask_key(k) for k in keys]
     out["key_count"] = len(keys)
     out["has_keys"] = bool(keys)
+    # B1-T4：插件声明为 secret 的 config 字段同样只回显掩码
+    out["config"] = _mask_config(src)
+    # H-036：这条源「由谁提供实现」——**运行期从门面推导**，不落盘。
+    # 落盘会与真实归属漂移（插件装卸后旧值还在），推导永远准；空串 = 内置实现。
+    out["plugin_id"] = _owner_of_provider(str(src.get("kind") or ""), str(src.get("provider") or ""))
+    return out
+
+
+def _owner_of_provider(kind: str, provider: str) -> str:
+    """该 (源类型, provider) 的实现归属：插件 id；内置或未安装时返回空串。
+
+    注意两套 kind 命名：源用短名（`tts`），门面用全名（`tts_provider`）。
+    查不到也返回空串——UI 据此显示「（未安装）」，而不是假装成内置。
+    """
+    if not provider:
+        return ""
+    try:
+        from clipwright.plugins.contribution import (
+            BUILTIN_OWNER,
+            ContributionKind,
+            ContributionRegistry,
+        )
+
+        decl_kind = kind if kind.endswith("_provider") else f"{kind}_provider"
+        try:
+            kind_enum = ContributionKind(decl_kind)
+        except ValueError:
+            return ""
+        owner = ContributionRegistry.owner_of(kind_enum, provider)
+        return "" if owner in ("", BUILTIN_OWNER) else owner
+    except Exception:  # noqa: BLE001 — 归属查询失败不影响源本身
+        return ""
+
+
+def _secret_config_fields(kind: str, provider: str) -> set[str]:
+    """该源对应的插件声明里，哪些 config 字段是密钥（`secret: true`）。
+
+    注意两套 kind 命名：源用短名（`llm`/`embedding`/`rerank`/`tts`，见
+    `SOURCE_KINDS`），插件贡献用全名（`llm_provider`/…）。这里统一归一到全名再查。
+
+    没有插件声明（内置 provider）→ 空集合：内置源不额外引入 config 语义，
+    仍走既有的 `api_keys` 通道。
+    """
+    try:
+        from clipwright.plugins.provider_decl import schemas_for_kind
+
+        decl_kind = str(kind or "")
+        if decl_kind and not decl_kind.endswith("_provider"):
+            decl_kind = f"{decl_kind}_provider"
+        for entry in schemas_for_kind(decl_kind):
+            if str(entry.get("id") or "") != str(provider or ""):
+                continue
+            schema = entry.get("config_schema") or {}
+            return {
+                name for name, spec in schema.items()
+                if isinstance(spec, dict) and spec.get("secret") is True
+            }
+    except Exception as e:  # noqa: BLE001 — 声明不可用不影响源本身
+        logger.warning("读取 plugin provider schema 失败（kind=%s provider=%s）: %s",
+                       kind, provider, e)
+    return set()
+
+
+def _encrypt_config(kind: str, provider: str, incoming: Any,
+                    existing: dict[str, Any]) -> dict[str, Any]:
+    """config 入参 → 落盘形态：secret 字段走 Fernet，掩码回显保留旧值。
+
+    与 `_encrypt_incoming_keys` 同一套规则（含 `****` 即保留旧值的语义），
+    区别只是这里按字段名判断，而不是按列表位置。
+    """
+    if not isinstance(incoming, dict):
+        return dict(existing or {})
+    secrets = _secret_config_fields(kind, provider)
+    out: dict[str, Any] = {}
+    for name, value in incoming.items():
+        text = "" if value is None else str(value)
+        if name in secrets:
+            if "****" in text:  # 掩码回显 → 保留旧值
+                old = (existing or {}).get(name)
+                if old:
+                    out[name] = old
+                continue
+            if text and has_key():
+                out[name] = encrypt_secret(text)
+            elif text:
+                # 无加密密钥 → fail-closed，不落明文（与 settings_store 一致）
+                raise ValueError(
+                    f"未配置加密密钥（CLIPWRIGHT_WEBHOOK_SECRET_KEY），"
+                    f"拒绝明文保存密钥字段 config.{name}"
+                )
+            continue
+        out[name] = text
+    # 未出现在入参里的旧字段原样保留（局部更新语义）
+    for name, value in (existing or {}).items():
+        out.setdefault(name, value)
+    return out
+
+
+def _mask_config(src: dict[str, Any]) -> dict[str, Any]:
+    """config 对外形态：secret 字段解密后回显掩码，其余原样。"""
+    raw = src.get("config")
+    if not isinstance(raw, dict):
+        return {}
+    secrets = _secret_config_fields(str(src.get("kind") or ""), str(src.get("provider") or ""))
+    out: dict[str, Any] = {}
+    for name, value in raw.items():
+        if name in secrets and isinstance(value, str) and value:
+            plain = decrypt_secret(value) if has_key() else value
+            out[name] = _mask_key(plain)
+            continue
+        out[name] = value
     return out
 
 
@@ -164,16 +275,19 @@ def create_source(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"未知的源类型: {kind}（可选: {', '.join(SOURCE_KINDS)}）")
     with _LOCK:
         data = _read()
+        provider_name = str(payload.get("provider") or "")
         src = {
             "id": str(payload.get("id") or f"src_{uuid.uuid4().hex[:8]}"),
             "name": name,
             "kind": kind,
-            "provider": str(payload.get("provider") or ""),
+            "provider": provider_name,
             "base_url": str(payload.get("base_url") or ""),
             "api_keys": _encrypt_incoming_keys(payload, []),
             "timeout_sec": float(payload.get("timeout_sec") or 120),
             "proxy": str(payload.get("proxy") or ""),
             "headers": dict(payload.get("headers") or {}),
+            # B1-T4：插件声明的 config（secret 字段加密落盘）
+            "config": _encrypt_config(kind, provider_name, payload.get("config"), {}),
             "models": _normalize_models(payload.get("models")),
             "created_at": _now(),
             "updated_at": _now(),
@@ -213,6 +327,11 @@ def update_source(source_id: str, payload: dict[str, Any]) -> dict[str, Any]:
                 src["timeout_sec"] = float(payload["timeout_sec"])
             if "headers" in payload and isinstance(payload["headers"], dict):
                 src["headers"] = dict(payload["headers"])
+            if "config" in payload:
+                src["config"] = _encrypt_config(
+                    str(src.get("kind") or ""), str(src.get("provider") or ""),
+                    payload.get("config"), dict(src.get("config") or {}),
+                )
             src["api_keys"] = _encrypt_incoming_keys(payload, list(src.get("api_keys") or []))
             if "models" in payload:
                 src["models"] = _normalize_models(payload.get("models"))
@@ -244,9 +363,96 @@ def delete_source(source_id: str) -> dict[str, Any]:
 
 # ── 模型清单 ────────────────────────────────────────────
 
+#: reasoning_effort 的合法取值（2026-10-28 PRD B5）
+REASONING_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
+
+
+def normalize_reasoning_effort(raw: Any) -> str:
+    """校验 reasoning_effort；非法值返回空串（= 不设置）。"""
+    value = str(raw or "").strip().lower()
+    return value if value in REASONING_EFFORTS else ""
+
+
+def reasoning_effort_for(provider: str, model: str) -> str:
+    """取某 (provider, model) 配置的 reasoning_effort（无则空串）。"""
+    target_provider = str(provider or "").strip()
+    target_model = str(model or "").strip()
+    if not target_provider:
+        return ""
+    try:
+        sources = [s for s in list_sources(kind="llm", public=True)
+                   if str(s.get("provider") or "") == target_provider]
+    except Exception:  # noqa: BLE001
+        return ""
+    for src in sources:
+        for m in _normalize_models(src.get("models")):
+            if target_model and m["id"] == target_model:
+                return normalize_reasoning_effort(m.get("reasoning_effort"))
+    return ""
+
+
+#: 逐模型 generation 参数（2026-10-28 PRD B4）：键 → (下限, 上限, 是否整数)
+GENERATION_LIMITS: dict[str, tuple[float, float, bool]] = {
+    "temperature": (0.0, 2.0, False),
+    "top_p": (0.0, 1.0, False),
+    "max_tokens": (1.0, 200_000.0, True),
+}
+
+
+def normalize_generation(raw: Any) -> dict[str, Any]:
+    """校验并归一化逐模型生成参数；非法键/越界值直接丢弃（不写脏配置）。
+
+    只保留 ``temperature`` / ``top_p`` / ``max_tokens``；`None`/空串视为未设置。
+    返回的字典可直接回写进 source 的 model 项。
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key, (lo, hi, is_int) in GENERATION_LIMITS.items():
+        if key not in raw:
+            continue
+        value = raw.get(key)
+        if value is None or value == "":
+            continue
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            continue
+        if num != num or num < lo:  # NaN / 低于下限
+            continue
+        num = min(num, hi)
+        out[key] = int(round(num)) if is_int else round(num, 4)
+    return out
+
+
+def generation_for(provider: str, model: str) -> dict[str, Any]:
+    """取某 (provider, model) 配置的生成参数（无则空字典）。
+
+    多个源同时配了同 provider 时按「模型命中优先」合并：先找到显式包含该模型
+    的源就用它，否则取第一个同 provider 源的模型级配置。
+    """
+    target_provider = str(provider or "").strip()
+    target_model = str(model or "").strip()
+    if not target_provider:
+        return {}
+    try:
+        sources = [s for s in list_sources(kind="llm", public=True)
+                   if str(s.get("provider") or "") == target_provider]
+    except Exception:  # noqa: BLE001 — 源存储不可用 → 视为未配置
+        return {}
+    for src in sources:
+        for m in _normalize_models(src.get("models")):
+            if target_model and m["id"] == target_model:
+                gen = normalize_generation(m.get("generation"))
+                if gen:
+                    return gen
+    return {}
+
+
 def _normalize_models(raw: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for m in raw or []:
+        generation: dict[str, Any] = {}
         if isinstance(m, str):
             mid, name = m, m
             enabled = True
@@ -254,11 +460,18 @@ def _normalize_models(raw: Any) -> list[dict[str, Any]]:
             mid = str(m.get("id") or "").strip()
             name = str(m.get("name") or mid)
             enabled = bool(m.get("enabled", True))
+            generation = normalize_generation(m.get("generation"))
         else:
             continue
         if not mid:
             continue
-        out.append({"id": mid, "name": name, "enabled": enabled})
+        item: dict[str, Any] = {"id": mid, "name": name, "enabled": enabled}
+        if generation:
+            item["generation"] = generation
+        effort = normalize_reasoning_effort(m.get("reasoning_effort")) if isinstance(m, dict) else ""
+        if effort:
+            item["reasoning_effort"] = effort
+        out.append(item)
     # 去重（保留首个）
     seen: set[str] = set()
     uniq: list[dict[str, Any]] = []

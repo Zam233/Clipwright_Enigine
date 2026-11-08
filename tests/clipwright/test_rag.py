@@ -26,15 +26,49 @@ def _make_store() -> tuple[VectorStore, str]:
 
 @pytest.fixture(autouse=True)
 def _force_local_embedder(monkeypatch: pytest.MonkeyPatch):
-    """强制使用本地 sentence_transformer，避免测试依赖开发者 .env 中的在线 API 配置。"""
+    """强制使用本地 sentence_transformer，避免测试依赖开发者 .env 中的在线 API 配置。
+
+    B7-T7.5：嵌入 provider 的实现归插件（严格 A6）——测试进程显式注册
+    `plugins.embedding_providers` 的贡献，否则 `get_embedder()` 会按"能力缺失"报错。
+    """
     pytest.importorskip("sentence_transformers", reason="sentence-transformers 未安装，跳过 RAG 测试")
     from clipwright.config import settings
+    from clipwright.plugins.contribution import ContributionRegistry
+    from plugins.embedding_providers.main import EmbeddingProvidersPlugin
+
+    owner = "rag_test_embedding"
+    items = EmbeddingProvidersPlugin().contributions()
+    ContributionRegistry.declared_scope(owner, [c.key for c in items])
+    report = ContributionRegistry.register(owner, items)
+    assert report.ok, report.rejected
 
     monkeypatch.setattr(settings, "rag_embed_provider", "sentence_transformer")
     monkeypatch.setattr(settings, "rag_embed_model", "BAAI/bge-small-zh-v1.5")
     reset_embedder()
-    yield
-    reset_embedder()
+    try:
+        yield
+    finally:
+        reset_embedder()
+        ContributionRegistry.unregister_plugin(owner)
+
+
+_MODEL_READY: bool | None = None
+
+
+@pytest.fixture(scope="module")
+def _needs_local_embedding_model():
+    """CI 没有 HuggingFace 缓存：模型类用例明确 skip，而不是 60s 联网失败。"""
+    global _MODEL_READY
+    if _MODEL_READY is None:
+        try:
+            from sentence_transformers import SentenceTransformer
+
+            SentenceTransformer("BAAI/bge-small-zh-v1.5", local_files_only=True, device="cpu")
+            _MODEL_READY = True
+        except Exception:  # noqa: BLE001 — 任何加载失败都视为本机无模型
+            _MODEL_READY = False
+    if not _MODEL_READY:
+        pytest.skip("本地无 BAAI/bge-small-zh-v1.5 缓存（离线 CI），跳过嵌入模型用例")
 
 
 # ── Chunker ──
@@ -63,6 +97,7 @@ class TestChunker:
 
 # ── Embedder ──
 
+@pytest.mark.usefixtures("_needs_local_embedding_model")
 class TestEmbedder:
     def test_sentence_transformer(self) -> None:
         reset_embedder()
@@ -83,6 +118,7 @@ class TestEmbedder:
 
 # ── VectorStore ──
 
+@pytest.mark.usefixtures("_needs_local_embedding_model")
 class TestVectorStore:
     def test_index_and_search(self) -> None:
         store, td = _make_store()
@@ -138,6 +174,7 @@ class TestReranker:
 
 # ── Retriever ──
 
+@pytest.mark.usefixtures("_needs_local_embedding_model")
 class TestRetriever:
     def test_index_and_retrieve(self) -> None:
         store, td = _make_store()

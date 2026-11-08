@@ -109,9 +109,12 @@ def _build_anim_def(mg_def: dict[str, Any]) -> AnimationDef:
         keyframes=first_kfs,
         description=mg_def.get("description", ""),
         properties_meta={
+            # B8-T8.7：MG JSON 全文塞进 AnimationDef（注册期一次，几 KB），
+            # 渲染器从注册表读——engine 不再把插件物理目录写进搜索路径。
             "mg_json": PropertyDef(
-                type="string", default="",
-                description="MG 动画 JSON 定义（插件加载时自动注入）",
+                type="string",
+                default=json.dumps(mg_def, ensure_ascii=False, separators=(",", ":")),
+                description="MG 动画 JSON 定义（插件加载时注入，渲染器从这里读）",
             ),
         },
     )

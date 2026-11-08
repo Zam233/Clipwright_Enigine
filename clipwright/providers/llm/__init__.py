@@ -1,31 +1,26 @@
-"""providers.llm 包 —— 内置 LLM Provider 注册（方案 B-1）。
+"""LLM Provider **协议**（实现已迁进 `plugins/llm_anthropic` / `plugins/llm_openai_compatible`）。
 
-懒注册设计：`ensure_llm_providers_registered()` 幂等，可由 main.py lifespan
-与 `services/llm.py::_construct_client` 双点调用——测试/脚本环境未跑启动
-流程时也能解析到内置 provider。
+2026-11-08 能力迁移（审计 B7-T7.2）：engine 不再持有 Anthropic / OpenAI / Ollama 的实现，
+也不再"懒注册内置补位"。协议本身在 `clipwright/providers/base.py`（`LLMProvider` Protocol +
+`llm_capabilities` / `llm_normalize_messages` / `llm_uses_system_kwarg` / `llm_tool_result_style`）。
+
+没有 LLM 插件时：`_resolve_llm_provider()` 返回 None，调用方按"能力缺失"处理
+（口径 A：能力缺失是一等状态，不是异常）。
 """
 from __future__ import annotations
 
-from clipwright.providers.llm.anthropic_provider import AnthropicProvider
-from clipwright.providers.llm.openai_provider import OllamaProvider, OpenAIProvider
-
-__all__ = ["AnthropicProvider", "OpenAIProvider", "OllamaProvider",
-           "ensure_llm_providers_registered"]
+__all__: list[str] = []
 
 
-def ensure_llm_providers_registered() -> None:
-    """把三个内置 LLM provider 登记进门面（幂等）。"""
-    from clipwright.plugins.contribution import (
-        BUILTIN_OWNER,
-        Contribution,
-        ContributionKind,
-        ContributionRegistry,
-    )
+def llm_provider_is_local(name: str) -> bool:
+    """该 LLM provider 是否"本地免 key"（由插件在贡献 meta 里声明 ``local: true``）。
 
-    if ContributionRegistry.resolve(ContributionKind.LLM_PROVIDER, "anthropic") is not None:
-        return
-    ContributionRegistry.register(BUILTIN_OWNER, [
-        Contribution(ContributionKind.LLM_PROVIDER, "anthropic", AnthropicProvider()),
-        Contribution(ContributionKind.LLM_PROVIDER, "openai", OpenAIProvider()),
-        Contribution(ContributionKind.LLM_PROVIDER, "ollama", OllamaProvider()),
-    ], dispatch=False)
+    B7-T7.5：engine 不再按名字判 ``== "ollama"``——"要不要 API key"是**能力方**的知识。
+    未安装/被禁用 → False（按需要凭据处理，交给调用方报可读错误）。
+    """
+    from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+
+    item = ContributionRegistry.resolve(ContributionKind.LLM_PROVIDER, str(name or ""))
+    if item is None:
+        return False
+    return bool((item.meta or {}).get("local"))

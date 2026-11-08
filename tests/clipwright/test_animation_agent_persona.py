@@ -82,7 +82,8 @@ class TestPersonaPromptInjectedIntoMg:
         )
 
         # 直接测注入逻辑（mg_dynamic 处理函数的描述构造段）
-        from clipwright.agents.animation_agent import _DATA_FACT_RE
+        # 2026-11-02 能力迁移：事实判断正则已收进 plugins/web_media/fact_need.py，
+        # 不再是 animation_agent 的模块级常量；本用例也不再需要它。
         description = "数据对比：文科理科差异"
         gen_description = description
         persona_style = {"style_description": "具象化数字标注"}

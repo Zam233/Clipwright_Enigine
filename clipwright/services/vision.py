@@ -158,9 +158,14 @@ class VisionService:
                     ".webp": "image/webp"}
         media_type = mime_map.get(ext, "image/jpeg")
 
-        # 按 LLM provider 构建消息
+        # 按 provider 声明的视觉消息格式构建（B7-T7.5：不再按 provider 名分支）
         vision_prov = settings.vision_llm_provider or settings.llm_provider
-        if vision_prov == "anthropic":
+        from clipwright.providers.base import llm_vision_message_format
+        from clipwright.services.llm import _resolve_llm_provider
+
+        _vision_impl = _resolve_llm_provider(vision_prov)
+        _vision_fmt = llm_vision_message_format(_vision_impl) if _vision_impl else "openai"
+        if _vision_fmt == "anthropic":
             import asyncio
             messages = [{
                 "role": "user",
@@ -174,7 +179,7 @@ class VisionService:
                 ],
             }]
         else:
-            # OpenAI / Ollama / 兼容格式
+            # OpenAI / Ollama / 兼容格式（能力位缺省值）
             data_uri = f"data:{media_type};base64,{img_b64}"
             messages = [{
                 "role": "user",
@@ -211,6 +216,8 @@ class VisionService:
             "labels": parsed.get("labels", []),
             "scene_type": parsed.get("scene_type", ""),
             "model": f"llm/{model_name}",
+            # source 是"这次到底有没有真的看图"的判据：llm=真看了；filename=没看
+            "source": "llm",
         }
 
     # ── Transformers 分类 ──
@@ -243,6 +250,7 @@ class VisionService:
             "labels": labels[:3],
             "scores": scores[:3],
             "model": self._classifier_name,
+            "source": "classifier",
         }
 
     # ── 保底分析 ──
@@ -269,6 +277,8 @@ class VisionService:
             "model": "filename",
             "width": w,
             "height": h,
+            # 明确标"没看图"：上层据此把 status 打成 degraded，而不是骗成 ok
+            "source": "filename",
         }
 
     # ── 辅助 ──

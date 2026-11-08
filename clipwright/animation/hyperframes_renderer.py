@@ -175,14 +175,29 @@ class HyperframesRenderer:
 
     @staticmethod
     def _render_env() -> dict | None:
-        """为 hyperframes subprocess 提供带浏览器路径的 env（无浏览器时返回 None）。"""
-        bp = HyperframesRenderer._resolve_browser_path()
-        if not bp:
-            return None
+        """为 hyperframes subprocess 提供环境变量（浏览器路径 + 无头/复用策略）。
+
+        用户 2026-10-28 反馈：渲染时一直弹**有头的 Chrome 窗口**。
+        原因：hyperframes 的 browserGpuMode 检测到独显后选 hardware 模式，
+        而 headless 浏览器拿不到真实 GPU → 它改用**有头浏览器**抓帧；再加上
+        我们曾逐个动画渲染（45 次），于是连续弹窗。
+
+        这里在环境层强制：软件 GPU（SwiftShader，可 headless）+ 复用浏览器池，
+        不再开窗口、也不再每次冷启动。
+        """
+        from clipwright.services import headless_browser
+
         env = dict(os.environ)
+        # 两档策略（用户 2026-10-28）：
+        # ① 有 chrome-headless-shell（插件装好）→ 用它，天然无窗口；
+        # ② 没有 → 系统 Chrome 无头 + 软件 GPU（CPU / SwiftShader）。
+        shell = headless_browser.find_shell()
+        bp = shell or HyperframesRenderer._resolve_browser_path()
+        if not bp:
+            return headless_browser.apply_env(env) if env else None
         env["HYPERFRAMES_BROWSER_PATH"] = bp
         env["PUPPETEER_EXECUTABLE_PATH"] = bp
-        return env
+        return headless_browser.apply_env(env)
 
     @staticmethod
     def is_available() -> bool:
@@ -372,6 +387,8 @@ class HyperframesRenderer:
         cmd = HyperframesRenderer._cli_cmd(
             "render", str(mg_dir), "-o", mov_path, "--format", "mov",
             "-f", str(int(fps)), "--quiet",
+            # 单 worker + 软件 GPU：不再每次渲染探 GPU（会弹有头浏览器）
+            "--workers", "1", "--no-browser-gpu",
         )
         eff_quality = quality or HyperframesRenderer._quality_flag()
         if eff_quality:
@@ -389,7 +406,9 @@ class HyperframesRenderer:
                 cmd += ["--strict-variables"]
         try:
             if run_cmd is not None:
-                r = await run_cmd(cmd)
+                # `timeout` 是签名里声明的墙钟，但此前**整个函数没用过**（死参数）：
+                # 渲染挂住时调用方设的超时完全无效。这里用 wait_for 兜住。
+                r = await asyncio.wait_for(run_cmd(cmd), timeout=float(timeout or 0) or None)
                 returncode = getattr(r, "returncode", 1)
             else:
                 proc = await asyncio.create_subprocess_exec(
@@ -398,8 +417,15 @@ class HyperframesRenderer:
                     stderr=asyncio.subprocess.DEVNULL,
                     env=HyperframesRenderer._render_env(),
                 )
-                returncode = await proc.wait()
-        except Exception:
+                returncode = await asyncio.wait_for(
+                    proc.wait(), timeout=float(timeout or 0) or None)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "HyperframesRenderer: MG 渲染超时（>%ss），放弃本次产物: %s", timeout, mov_path,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001 — 失败返回 None，但必须留痕
+            logger.warning("HyperframesRenderer: MG 渲染异常: %s", exc)
             return None
         if returncode != 0:
             return None
@@ -447,6 +473,9 @@ class HyperframesRenderer:
             cmd = HyperframesRenderer._cli_cmd(
                 "render", str(work_dir), "-o", str(out),
                 "--format", "mov", "-f", str(int(fps)), "--quiet",
+                # 用户 2026-10-28：每次渲染都弹有头浏览器 → 固定单 worker +
+                # 软件 GPU（SwiftShader），不再做 GPU 探针，也不再开窗口。
+                "--workers", "1", "--no-browser-gpu",
             )
             _q = HyperframesRenderer._quality_flag()
             if _q:
@@ -466,8 +495,14 @@ class HyperframesRenderer:
                             output_path, out.stat().st_size / 1024)
                 return str(out)
             else:
-                err = result.stderr.decode("utf-8", errors="replace")[:300] if result.stderr else "unknown"
-                logger.warning("HyperframesRenderer: 渲染失败(code=%d): %s", result.returncode, err)
+                # 头 300 字符全是 INFO（字体加载 / GPU 探测），真正原因在末尾——
+                # 旧实现把尾巴截掉了，日志里只剩"[INFO] [Compiler] Fetched 77 font face(s)"。
+                err_full = (result.stderr.decode("utf-8", errors="replace")
+                            if result.stderr else "unknown")
+                logger.warning(
+                    "HyperframesRenderer: 渲染失败(code=%d) 尾部日志:\n%s",
+                    result.returncode, err_full[-1200:],
+                )
                 return None
         except (subprocess.TimeoutExpired, FileNotFoundError) as e:
             logger.warning("HyperframesRenderer: 异常: %s", e)
@@ -541,7 +576,13 @@ body{{width:{width}px;height:{height}px;overflow:hidden;background:transparent;p
             from clipwright.animation.diagram_svg import DiagramRenderer, DiagramStyle
             diagram_style_params = ov.get("diagram_style", {})
             ds = DiagramStyle.from_persona(diagram_style_params)
-            ds.font_size = font_size
+            # 字号优先级：diagram_style 显式声明 > 片段字号。此前无条件用片段字号
+            # （默认 48px）覆盖风格里的 28px，导致图解盒子的固定宽度装不下 48px 的中文
+            # 标签 → 成片里相邻条目互相压字（E2E 33.6s/300s 处可见的「重影」）。
+            style_font = diagram_style_params.get("font_size") if isinstance(
+                diagram_style_params, dict) else None
+            if not style_font:
+                ds.font_size = int(font_size or ds.font_size)
             ds.text_color = font_color
             svg = DiagramRenderer.render(diagram_params, ds, width, height)
             if svg:

@@ -12,6 +12,7 @@
 - POST   /api/providers/{id}/models/upsert  自定义模型（新增/覆盖）
 - DELETE /api/providers/{id}/models/{model_id} 删除模型（解绑引用它的角色）
 - POST   /api/providers/{id}/models/fetch     获取模型列表（调用 provider 实现，失败静默返回 []）
+- GET    /api/providers/schemas            插件声明的 provider 配置 schema（B1-T5，schema 驱动表单）
 """
 from __future__ import annotations
 
@@ -51,14 +52,16 @@ async def available_providers(request: Request = None) -> dict[str, Any]:
     """
     _require_admin(request)
     from clipwright.providers.embedding import embedding_provider_names
-    from clipwright.providers.llm import ensure_llm_providers_registered
     from clipwright.providers.rerank import rerank_provider_names
-    from clipwright.providers.tts import ensure_tts_providers_registered, tts_provider_names
+    from clipwright.providers.tts import tts_aliases, tts_provider_names
     from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
 
-    ensure_llm_providers_registered()
-    ensure_tts_providers_registered()
+    # B7-T7.2：LLM 实现归插件，engine 不再懒注册内置补位
     out: dict[str, list[str]] = {}
+    # P2：provider 的**展示元数据**（显示名 / 是否需要上传器 / 是否支持克隆）随列表下发。
+    # 前端不得靠厂商硬编码表补 label（插件新增 provider 会以裸 id 出现、提示语也不对）。
+    # 只透传白名单键，避免把插件内部字段泄给 UI。
+    meta_out: dict[str, dict[str, dict[str, object]]] = {}
     for kind, names in (
         (ContributionKind.LLM_PROVIDER, None),
         (ContributionKind.TTS_PROVIDER, None),
@@ -67,14 +70,100 @@ async def available_providers(request: Request = None) -> dict[str, Any]:
     ):
         listed = names() if names else [c.id for _, c in ContributionRegistry.list(kind)]
         out[kind.value] = sorted(set(listed))
+        kind_meta: dict[str, dict[str, object]] = {}
+        for _, item in ContributionRegistry.list(kind):
+            raw = item.meta if isinstance(item.meta, dict) else {}
+            picked = {
+                k: raw[k]
+                for k in ("name", "needs_uploader", "clone_supported", "local", "env_key")
+                if k in raw
+            }
+            if picked:
+                kind_meta[item.id] = picked
+        if kind_meta:
+            meta_out[kind.value] = kind_meta
+    if meta_out:
+        out["provider_meta"] = meta_out  # type: ignore[assignment]
     # 角色 ←→ 期望的 provider 类型（前端把「角色分配」渲染到对应 tab）
     out["role_kinds"] = {
         "main": "llm", "flash": "llm", "vision": "llm",
         "embed": "embedding", "rerank": "rerank", "tts": "tts",
     }
     # tts_provider 的别名（历史 id → 规范 id）也要给前端做兼容显示
-    out["tts_aliases"] = {"qwen_tts": "qwen-tts"}
+    # 别名单一真相在 providers/tts（T7.5：不再在 API 里写死）
+    out["tts_aliases"] = tts_aliases()
     return out
+
+
+@router.get("/schemas")
+async def provider_schemas(kind: str = "", request: Request = None) -> dict[str, Any]:
+    """插件声明的 provider 配置 schema（**schema 驱动表单**的唯一数据源）。
+
+    PRD §8 / B1-T5：前端不得按厂商写死字段。这里下发插件在 manifest 里声明的
+    `config_schema` 与 `capabilities`，前端按 schema 渲染（`secret: true` 的字段
+    走掩码/加密显示）。内置 provider 的字段仍由既有 source 结构描述，不在此列。
+
+    返回 ``{"schemas": {kind: [{id, plugin_id, config_schema, capabilities,
+    unknown_capability_keys}]}}``；`kind` 给出时只返回该类型。
+    """
+    _require_admin(request)
+    from clipwright.plugins.provider_decl import all_schemas, schemas_for_kind
+
+    if kind:
+        return {"schemas": {kind: schemas_for_kind(kind)}}
+    return {"schemas": all_schemas()}
+
+
+@router.get("/capabilities")
+async def provider_capabilities(
+    provider: str = "",
+    kind: str = "llm",
+    model: str = "",
+    request: Request = None,
+) -> dict[str, Any]:
+    """某个 provider 的**能力协商结果**（H-066 诊断入口）。
+
+    为什么需要：能配 reasoning 强度 ≠ 能看见思考内容。前端如果按 provider 名字猜能力，
+    就会给出「点了没反应的按钮」。这里直接问实现：`impl.capabilities(model)`。
+
+    返回 ``{provider, kind, plugin_id, model, capabilities: {...}}``；
+    解析不到实现时 ``capabilities=None`` + ``error``（不抛 404：诊断接口要能显示「没装」）。
+    """
+    _require_admin(request)
+    from dataclasses import asdict, is_dataclass
+
+    from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+
+    decl_kind = kind if kind.endswith("_provider") else f"{kind}_provider"
+    try:
+        kind_enum = ContributionKind(decl_kind)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"未知的 provider 类型: {kind}")
+
+    impl = ContributionRegistry.resolve(kind_enum, provider) if provider else None
+    if impl is None:
+        return {"provider": provider, "kind": kind, "plugin_id": "", "model": model,
+                "capabilities": None, "error": "未安装或不可用"}
+
+    owner = ContributionRegistry.owner_of(kind_enum, provider)
+    caps = None
+    error = ""
+    try:
+        getter = getattr(impl.object, "capabilities", None)
+        if callable(getter):
+            value = getter(model or str(getattr(impl.object, "default_model", lambda: "")()))
+            caps = asdict(value) if is_dataclass(value) else dict(value or {})
+    except Exception as e:  # noqa: BLE001 — 诊断接口不因实现异常而失败
+        error = f"capabilities() 调用失败: {type(e).__name__}: {e}"
+
+    return {
+        "provider": provider,
+        "kind": kind,
+        "plugin_id": "" if owner == "__builtin__" else owner,
+        "model": model,
+        "capabilities": caps,
+        "error": error,
+    }
 
 
 @router.get("/roles")
@@ -161,7 +250,13 @@ async def delete_model(source_id: str, model_id: str, request: Request = None) -
 
 @router.post("/{source_id}/models/fetch")
 async def fetch_models(source_id: str, request: Request = None) -> dict[str, Any]:
-    """「获取模型列表」：调用 provider 实现的 list_models；失败返回空列表 + 原因。"""
+    """「获取模型列表」（2026-10-28 PRD B6 契约）。
+
+    响应：`{status, models, source_id, provider, note, error_code?}`
+    - `status`：`ok` | `empty` | `unsupported` | `error`；失败仍是 HTTP 200（source 不存在 404）；
+    - **只有 `status="ok"` 才覆盖已存模型**，空/失败一律保留旧清单，前端可继续手动添加；
+    - 旧的 `models` / `note` 字段保留（旧前端只读这两个）。
+    """
     _require_admin(request)
     src = ps.get_source(source_id, public=False)
     if src is None:
@@ -169,24 +264,30 @@ async def fetch_models(source_id: str, request: Request = None) -> dict[str, Any
     resolved = ps.resolve_for_source(source_id) if hasattr(ps, "resolve_for_source") else None
     provider = str(src.get("provider") or "")
     try:
-        from clipwright.providers.model_listing import (
-            SUPPORTED_LISTING_PROVIDERS,
-            list_models_for_source,
-        )
-        models = await list_models_for_source(provider, resolved or {})
-        if not models:
-            if provider not in SUPPORTED_LISTING_PROVIDERS:
-                # B5：区分「不支持自动拉取」与「拉取失败」，提示语不再误导
-                return {"models": [], "note": (
-                    f"provider「{provider}」不支持自动获取模型列表（本地/自建端点常见），"
-                    "请用「自定义模型」手动添加"
-                )}
-            return {"models": [], "note": "未获取到模型（检查 API Key / Base URL，或手动添加）"}
-        ps.set_models(source_id, [{"id": m, "name": m, "enabled": True} for m in models])
-        return {"models": ps.get_source(source_id)["models"]}
+        from clipwright.providers.model_listing import list_models_result
+
+        result = await list_models_result(provider, resolved or {})
     except Exception as e:  # noqa: BLE001 — 拉取失败不阻断（前端可自定义）
         logger.warning("获取模型列表失败 (%s): %s", provider, e)
-        return {"models": [], "note": f"获取失败：{e}"}
+        result = None
+        body = {
+            "status": "error", "error_code": "http_error",
+            "models": [], "note": f"获取失败：{e}",
+            "source_id": source_id, "provider": provider,
+        }
+    if result is not None:
+        body = {**result.to_public(), "source_id": source_id, "provider": provider}
+
+    if result is not None and result.status == "ok" and result.models:
+        ps.set_models(
+            source_id,
+            [{"id": m, "name": m, "enabled": True} for m in result.models],
+        )
+        # 回传落库后的形态（含 enabled），前端可直接渲染
+        body["models"] = ps.get_source(source_id)["models"]
+    elif result is not None and result.status == "ok":
+        body["models"] = []
+    return body
 
 
 @router.post("/{source_id}/test")
@@ -250,3 +351,4 @@ async def test_source(source_id: str, request: Request = None) -> dict[str, Any]
 
     return {"ok": False, "latency_ms": _ms(),
             "detail": f"{kind} 类型暂不支持探测（语音合成无统一握手协议）"}
+

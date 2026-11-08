@@ -154,6 +154,12 @@ class MGVisualEvaluator:
             logger.warning("MGVisualEvaluator: 视觉 LLM 不可用: %s", exc)
             return None
 
+        from clipwright.providers.base import llm_vision_message_format
+        from clipwright.services.llm import _resolve_llm_provider
+
+        _impl = _resolve_llm_provider(provider)
+        vision_fmt = llm_vision_message_format(_impl) if _impl is not None else "openai"
+
         context = self._build_context(mg_def, description, persona_style, width, height)
         content: list[dict[str, Any]] = [{"type": "text", "text": _RUBRIC + context}]
         for p in image_paths[:5]:
@@ -162,7 +168,8 @@ class MGVisualEvaluator:
                     b64 = base64.b64encode(fh.read()).decode("utf-8")
             except Exception:
                 continue
-            if provider == "anthropic":
+            # B7-T7.5：格式由 provider 声明（`vision_message_format()`），不按名字分支
+            if vision_fmt == "anthropic":
                 content.append({
                     "type": "image",
                     "source": {"type": "base64", "media_type": "image/png", "data": b64},

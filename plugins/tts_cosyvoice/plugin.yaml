@@ -1,0 +1,29 @@
+id: tts_cosyvoice
+name: CosyVoice TTS 协议插件
+version: 1.0.0
+kind: capability
+api_version: "2"
+description: 提供 cosyvoice 协议层 TTS provider（鉴权、WebSocket/HTTP 请求、音频解析）；不含配音工作流
+entry_point: "tts_cosyvoice.main"
+permissions: []
+# 接管内置同名 provider（内置先注册，故需要显式声明覆盖；见 PRD §5.1 顺序陷阱）
+override_builtin: true
+contributions:
+  - kind: tts_provider
+    id: cosyvoice
+    config_schema:
+      api_key:
+        type: string
+        label: DashScope API Key
+        secret: true
+      workspace_id:
+        type: string
+        label: 业务空间 ID
+        placeholder: llm-xxxxxxxx
+      default_model:
+        type: string
+        label: 默认模型
+        default: cosyvoice-v2
+    capabilities:
+      stream: true
+      needs_uploader: true

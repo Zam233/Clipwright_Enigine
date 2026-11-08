@@ -1,9 +1,10 @@
 """声音克隆与语音合成（TTS 推理）服务。
 
 能力（仿 STTService 范式，分三段构建）：
-1. 数据层：VoiceRecord / VoiceResult / VoiceStorage(JSON) / split_text / 音频转码助手
+1. 数据层：VoiceRecord / VoiceResult / VoiceStorage(JSON) / 音频转码助手
 2. Provider 层：Qwen-TTS / CosyVoice / MiniMax 三模型抽象 + 可配置公网上传
-3. 编排层：VoiceService —— clone / synthesize / dub_script（切分文案逐段配音）
+3. 协议调度：VoiceService —— clone / synthesize
+   （切句与逐段配音编排已按裁定 3 迁至 `plugins/tts_feature/`，engine 不再有 `dub_script`）
 
 所有云调用走阿里云百炼（DashScope）；CosyVoice 合成走 dashscope SDK WebSocket。
 克隆音色元数据存 JSON 文件（默认 PluginData/voices/voices.json）。
@@ -120,28 +121,8 @@ class VoiceStorage:
 
 
 # ──────────────────────────────────────────────
-# 数据层：文本切分 / 音频助手
+# 数据层：音频助手
 # ──────────────────────────────────────────────
-
-
-def split_text(text: str, mode: str = "sentence") -> list[str]:
-    """按句末标点或段落切分文案（逐字对齐参考工程 _split_text）。
-
-    sentence: 去除直/弯双引号、压平换行，按 。！？ 切分并保留标点。
-    paragraph: 按空行（段落）切分。
-    """
-    text = text.strip()
-    # 去除直双引号与弯双引号
-    text = re.sub(r'["\u201c\u201d]', "", text)
-
-    if mode == "paragraph":
-        raw = re.split(r"\n\s*\n+", text)
-        return [s.strip() for s in raw if s.strip()]
-
-    text = re.sub(r"\n", "", text)  # 压平换行
-    parts = re.split(r"(?<=[。！？])", text)
-    segments = [s.strip() for s in parts if s.strip()]
-    return segments if segments else [text]
 
 
 def _guess_mime(suffix: str) -> str:
@@ -386,292 +367,23 @@ class BaseVoiceProvider(abc.ABC):
     ) -> tuple[bytes, list[dict]]:
         """合成语音，返回音频字节流。"""
 
+    async def build_audio_ref(self, path: Path) -> str:
+        """把本地参考音频转成 provider 能用的引用（**能力位**，取代按 provider 名分支）。
 
-class QwenTTSProvider(BaseVoiceProvider):
-    """Qwen-TTS：clone 支持 base64 data URI（无需公网 URL），synth 走 HTTP。"""
-
-    async def clone(
-        self,
-        *,
-        audio_ref: str,
-        voice_name: str,
-        target_model: str = "",
-        audition_text: str = "",
-    ) -> tuple[str, str]:
-        payload = {
-            "model": "qwen-voice-enrollment",
-            "input": {
-                "action": "create",
-                "target_model": target_model or "qwen3-tts-vc-2026-01-22",
-                "preferred_name": _sanitize_name(voice_name, f"voice_{uuid.uuid4().hex[:6]}"),
-                "audio": {"data": audio_ref},
-            },
-        }
-        url = "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization"
-        logger.info("Qwen-TTS clone -> POST %s", url)
-        headers = {
-            "Authorization": f"Bearer {self._api_key(settings.tts_dashscope_api_key)}",
-            "Content-Type": "application/json",
-        }
-        headers = self._headers(headers)
-        async with self._http() as client:
-            resp = await client.post(url, json=payload, headers=headers)
-
-        if resp.status_code != 200:
-            detail = resp.text[:500]
-            raise RuntimeError(f"Qwen-TTS clone failed [{resp.status_code}]: {detail}")
-        body = resp.json()
-        voice_id = body.get("output", {}).get("voice", "")
-        if not voice_id:
-            raise RuntimeError(f"Qwen-TTS returned no voice_id: {body}")
-        return voice_id, payload["input"]["preferred_name"]
-
-    async def synthesize(
-        self,
-        *,
-        voice_api_id: str,
-        model: str,
-        text: str,
-        **kwargs: Any,
-    ) -> tuple[bytes, list[dict]]:
-        if "realtime" in model.lower():
-            raise ValueError(
-                f"音色绑定的是实时模型 '{model}'，不支持 HTTP 合成。"
-                "请用 qwen3-tts-vc-2026-01-22 重新克隆音色。"
+        默认实现：需要公网 URL → 走注入的上传器（`PublicUploadManager`）。
+        Qwen 覆盖为 base64 data URI（无需公网 URL）。
+        """
+        uploader = getattr(self, "_uploader", None)
+        if uploader is None:
+            raise RuntimeError(
+                "该 TTS provider 需要公网 URL，但未注入上传器（PublicUploadManager）"
             )
-        url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
-        inp: dict = {"text": text, "voice": voice_api_id}
-        instructions = kwargs.get("instructions")
-        if instructions:
-            inp["instructions"] = instructions
-        payload = {"model": model, "input": inp, "parameters": {"word_timestamp_enabled": True}}
-        headers = {
-            "Authorization": f"Bearer {self._api_key(settings.tts_dashscope_api_key)}",
-            "Content-Type": "application/json",
-        }
-        headers = self._headers(headers)
-        async with self._http() as client:
-            resp = await client.post(url, json=payload, headers=headers)
-
-        if resp.status_code != 200:
-            raise RuntimeError(f"Qwen-TTS 合成失败 [{resp.status_code}]: {resp.text[:500]}")
-        body = resp.json()
-        audio_info = body.get("output", {}).get("audio", {})
-        audio_bytes = b""
-        if audio_info.get("data"):
-            audio_bytes = base64.b64decode(audio_info["data"])
-        elif audio_info.get("url"):
-            async with self._http() as client:
-                r = await client.get(audio_info["url"])
-            if r.status_code == 200:
-                audio_bytes = r.content
-        if not audio_bytes:
-            raise RuntimeError(f"Qwen-TTS 响应中没有音频: {str(body)[:300]}")
-        word_timestamps = body.get("output", {}).get("word_timestamps", [])
-        return audio_bytes, word_timestamps
+        return await uploader.upload(path)
 
 
-class CosyVoiceProvider(BaseVoiceProvider):
-    """CosyVoice：clone 需公网 URL（PublicUpload），synth 走 dashscope SDK WebSocket。"""
-
-    def __init__(
-        self,
-        uploader: Optional[PublicUploadManager] = None,
-        creds: Optional[TtsCredentials] = None,
-    ) -> None:
-        super().__init__(creds)
-        self._uploader = uploader
-
-    async def clone(
-        self,
-        *,
-        audio_ref: str,
-        voice_name: str,
-        target_model: str = "",
-        audition_text: str = "",
-    ) -> tuple[str, str]:
-        # CosyVoice needs a public URL; auto-upload local URLs
-        url = audio_ref
-        if _is_local_url(url) and self._uploader:
-            url = await self._uploader.maybe_upload(url)
-
-        payload = {
-            "model": "voice-enrollment",
-            "input": {
-                "action": "create_voice",
-                "target_model": target_model or "cosyvoice-v3.5-plus",
-                "prefix": _sanitize_name(voice_name, f"myvoice{uuid.uuid4().hex[:6]}", allow_extra=""),
-                "url": url,
-                "enable_preprocess": True,
-                "max_prompt_audio_length": 30.0,
-            },
-        }
-        api_url = "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization"
-        logger.info("CosyVoice clone -> POST %s", api_url)
-        headers = {
-            "Authorization": f"Bearer {self._api_key(settings.tts_dashscope_api_key)}",
-            "Content-Type": "application/json",
-        }
-        headers = self._headers(headers)
-        async with self._http() as client:
-            resp = await client.post(api_url, json=payload, headers=headers)
-
-        if resp.status_code != 200:
-            detail = resp.text[:500]
-            if "detect audio failed" in detail or "Audio.DecoderError" in detail:
-                raise RuntimeError(
-                    "CosyVoice 未能从音频中检测到有效人声。请确保音频：\n"
-                    "1. 纯人声，无背景音乐/噪音\n"
-                    "2. 至少 5 秒连续说话\n"
-                    "3. 单人，正常语速\n"
-                    "4. 时长 10-60 秒，文件 ≤ 10MB"
-                )
-            raise RuntimeError(f"CosyVoice clone failed [{resp.status_code}]: {detail}")
-
-        body = resp.json()
-        voice_id = body.get("voice_id") or body.get("output", {}).get("voice_id", "")
-        if not voice_id:
-            raise RuntimeError(f"CosyVoice returned no voice_id: {body}")
-        return voice_id, payload["input"]["prefix"]
-
-    async def synthesize(
-        self,
-        *,
-        voice_api_id: str,
-        model: str,
-        text: str,
-        **kwargs: Any,
-    ) -> tuple[bytes, list[dict]]:
-        import dashscope
-        from dashscope.audio.tts_v2 import SpeechSynthesizer
-
-        dashscope.base_websocket_api_url = (
-            f"wss://{settings.tts_workspace_id}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference"
-        )
-        # SDK 仅支持全局 api_key：用锁串行化「改 key → 合成 → 还原」，避免并发请求相互覆盖凭据
-        with _DASHSCOPE_KEY_LOCK:
-            old_key = dashscope.api_key
-            dashscope.api_key = self._api_key(settings.tts_dashscope_api_key)
-            try:
-                synth_kwargs: dict = dict(model=model, voice=voice_api_id)
-                for key in ("instructions", "volume", "speech_rate", "pitch_rate", "seed"):
-                    val = kwargs.get(key)
-                    if val is not None:
-                        synth_kwargs[key] = val
-                synthesizer = SpeechSynthesizer(**synth_kwargs)
-                audio = synthesizer.call(text)
-                if audio is None:
-                    raise RuntimeError("CosyVoice synthesis returned None")
-                audio_bytes = audio if isinstance(audio, bytes) else audio.encode()
-                return audio_bytes, []
-            finally:
-                dashscope.api_key = old_key
-
-
-class MiniMaxProvider(BaseVoiceProvider):
-    """MiniMax：clone 需公网 URL + audition text，synth 走 HTTP（hex/base64/url 响应）。"""
-
-    def __init__(
-        self,
-        uploader: Optional[PublicUploadManager] = None,
-        creds: Optional[TtsCredentials] = None,
-    ) -> None:
-        super().__init__(creds)
-        self._uploader = uploader
-
-    async def clone(
-        self,
-        *,
-        audio_ref: str,
-        voice_name: str,
-        target_model: str = "",
-        audition_text: str = "",
-    ) -> tuple[str, str]:
-        url = audio_ref
-        if _is_local_url(url) and self._uploader:
-            url = await self._uploader.maybe_upload(url)
-
-        voice_id_str = voice_name or f"mini_{uuid.uuid4().hex[:8]}"
-        payload = {
-            "model": target_model or "MiniMax/speech-2.8-turbo",
-            "input": {
-                "action": "voice_clone",
-                "voice_id": voice_id_str,
-                "audio_url": url,
-                "text": audition_text or "你好，欢迎使用音色克隆。",
-            },
-        }
-        api_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
-        logger.info("MiniMax clone -> POST %s", api_url)
-        headers = {
-            "Authorization": f"Bearer {self._api_key(settings.tts_dashscope_api_key)}",
-            "Content-Type": "application/json",
-        }
-        headers = self._headers(headers)
-        async with self._http() as client:
-            resp = await client.post(api_url, json=payload, headers=headers)
-
-        if resp.status_code != 200:
-            raise RuntimeError(f"MiniMax clone failed [{resp.status_code}]: {resp.text[:500]}")
-        return voice_id_str, voice_id_str
-
-    async def synthesize(
-        self,
-        *,
-        voice_api_id: str,
-        model: str,
-        text: str,
-        **kwargs: Any,
-    ) -> tuple[bytes, list[dict]]:
-        url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
-        vs = {"voice_id": voice_api_id, "speed": 1, "vol": 1, "pitch": 0}
-        emotion = kwargs.get("emotion")
-        if emotion:
-            vs["emotion"] = emotion
-        inp: dict = {
-            "text": text,
-            "voice_setting": vs,
-            "audio_setting": {"sample_rate": 32000, "bitrate": 128000, "format": "mp3", "channel": 1},
-        }
-        payload = {"model": model or "MiniMax/speech-2.8-turbo", "input": inp}
-        headers = {
-            "Authorization": f"Bearer {self._api_key(settings.tts_dashscope_api_key)}",
-            "Content-Type": "application/json",
-        }
-        headers = self._headers(headers)
-        logger.info("MiniMax synthesize -> POST %s", url)
-        async with self._http() as client:
-            resp = await client.post(url, json=payload, headers=headers)
-
-        if resp.status_code != 200:
-            raise RuntimeError(f"MiniMax synthesis failed [{resp.status_code}]: {resp.text[:500]}")
-        body = resp.json()
-        audio_data = body.get("output", {}).get("data", {})
-        audio_bytes = b""
-        if audio_data.get("audio"):
-            audio_bytes = bytes.fromhex(audio_data["audio"])
-        else:
-            audio_info = body.get("output", {}).get("audio", {})
-            if audio_info.get("data"):
-                audio_bytes = base64.b64decode(audio_info["data"])
-            elif audio_info.get("url"):
-                async with self._http() as client:
-                    r = await client.get(audio_info["url"])
-                if r.status_code == 200:
-                    audio_bytes = r.content
-            else:
-                ct = resp.headers.get("content-type", "")
-                if "audio" in ct or "octet" in ct:
-                    audio_bytes = resp.content
-        if not audio_bytes:
-            raise RuntimeError(f"MiniMax 响应中没有音频: {str(body)[:300]}")
-        return audio_bytes, []
-
-
-# ──────────────────────────────────────────────
-# 编排层：VoiceService
-# ──────────────────────────────────────────────
-
+# ── 兼容别名已删除（B7-T7.5）──────────────────────────────────────
+# 三个 TTS Provider 的实现与名字都只在 `plugins/tts_*/provider.py`；
+# 既有导入/打桩路径已改到插件模块。engine 里不再有任何 TTS/LLM 实现类名。
 
 class VoiceService:
     """声音克隆 + TTS 编排服务（仿 STTService 单例范式）。"""
@@ -736,9 +448,11 @@ class VoiceService:
         if cache_key not in self._providers:
             entry = resolve_tts_entry(canonical)
             if entry is None:
+                available = tts_provider_names()
                 raise ValueError(
-                    f"Unknown provider '{name}'. Choose from: "
-                    + ", ".join(tts_provider_names() or ["qwen-tts", "cosyvoice", "minimax"])
+                    f"Unknown provider '{name}'. "
+                    + (f"Choose from: {', '.join(available)}" if available
+                       else "未安装任何 TTS provider 插件（能力缺失）")
                 )
             self._providers[cache_key] = entry.factory(self._uploader, creds)
         if name != canonical:  # 别名 → 同一实例
@@ -746,11 +460,11 @@ class VoiceService:
         return self._providers[cache_key]
 
     def _model_for(self, provider_name: str) -> str:
-        return {
-            "qwen-tts": settings.tts_qwen_model,
-            "cosyvoice": settings.tts_cosyvoice_model,
-            "minimax": settings.tts_minimax_model,
-        }.get(provider_name, "")
+        """默认模型由**插件条目**声明（`entry.default_model()`），engine 不再硬编码映射。"""
+        from clipwright.providers.tts import resolve_tts_entry
+
+        entry = resolve_tts_entry(provider_name)
+        return entry.default_model() if entry is not None else ""
 
     # ── clone ──
 
@@ -787,17 +501,11 @@ class VoiceService:
                 assert_allowed_path(p)
             except SecurityViolation as e:
                 return VoiceResult(success=False, error=str(e))
-            if provider_name == "qwen-tts":
-                raw = p.read_bytes()
-                mime = _guess_mime(p.suffix)
-                b64 = base64.b64encode(raw).decode()
-                audio_ref = f"data:{mime};base64,{b64}"
-            else:
-                # CosyVoice / MiniMax 需要公网 URL
-                try:
-                    audio_ref = await self._uploader.upload(p)
-                except Exception as e:
-                    return VoiceResult(success=False, error=f"公网上传失败: {e}")
+            # B7-T7.1：引用形态由 provider 声明（`build_audio_ref`），不再按 provider 名分支
+            try:
+                audio_ref = await prov.build_audio_ref(p)
+            except Exception as e:
+                return VoiceResult(success=False, error=f"参考音频处理失败: {e}")
         elif audio_url:
             audio_ref = audio_url
         else:
@@ -841,12 +549,39 @@ class VoiceService:
         """用已克隆音色合成语音。"""
         record = self._storage.get(voice_id)
         if not record:
-            return VoiceResult(success=False, error=f"Voice '{voice_id}' not found")
+            from clipwright.services.voice_errors import VoiceErrorCode, VoiceErrorStage
+
+            return VoiceResult(
+                success=False,
+                error=f"音色不存在：{voice_id}（请先在「语音克隆」页创建）",
+                data={"error": {
+                    "error_code": VoiceErrorCode.VOICE_NOT_FOUND,
+                    "stage": VoiceErrorStage.CONFIG,
+                    "provider_id": "",
+                    "retryable": False,
+                    "message": f"音色不存在：{voice_id}",
+                }},
+            )
 
         prov_name = provider or record.get("provider", settings.tts_default_provider)
         model = target_model or record.get("target_model", "")
         voice_api_id = record.get("voice_id", "")
-        prov = self._get_provider(prov_name)
+        try:
+            prov = self._get_provider(prov_name)
+        except Exception as e:  # noqa: BLE001 — provider 解析失败也是配置错误（PRD §6.3）
+            from clipwright.services.voice_errors import VoiceErrorCode, VoiceErrorStage
+
+            return VoiceResult(
+                success=False,
+                error=f"provider 不可用：{prov_name}（{str(e)[:80]}）",
+                data={"error": {
+                    "error_code": VoiceErrorCode.PROVIDER_NOT_FOUND,
+                    "stage": VoiceErrorStage.CONFIG,
+                    "provider_id": prov_name,
+                    "retryable": False,
+                    "message": f"provider 不可用：{prov_name}",
+                }},
+            )
 
         try:
             audio_bytes = await prov.synthesize(
@@ -856,8 +591,16 @@ class VoiceService:
                 instructions=instructions or None,
                 **params,
             )
-        except Exception as e:
-            return VoiceResult(success=False, error=str(e)[:500])
+        except Exception as e:  # noqa: BLE001 — provider 异常统一在调度层分类（PRD §6.3）
+            from clipwright.services.voice_errors import classify_error
+
+            info = classify_error(e, provider_id=prov_name)
+            logger.warning(
+                "TTS 合成失败 provider=%s code=%s stage=%s retryable=%s: %s",
+                prov_name, info["error_code"], info["stage"], info["retryable"], info["message"],
+            )
+            # 结构化错误随 VoiceResult 上抛：调用方（agent / API / 前端）不必再猜字符串
+            return VoiceResult(success=False, error=info["message"], data={"error": info})
 
         # 写文件（output_path 必须落在 TTS 输出目录内，防任意路径写入）
         if output_path:
@@ -881,88 +624,6 @@ class VoiceService:
             "provider": prov_name,
             "text": text,
         })
-
-    # ── dub_script ──
-
-    async def dub_script(
-        self,
-        *,
-        voice_id: str,
-        text: str,
-        split_mode: str = "sentence",
-        provider: str = "",
-        target_model: str = "",
-        instructions: str = "",
-        **params: Any,
-    ) -> VoiceResult:
-        """切分文案并逐段配音。"""
-        if not text.strip():
-            return VoiceResult(success=False, error="文本为空，无可配音内容")
-        segments_text = split_text(text, split_mode)
-        if not segments_text or all(not s.strip() for s in segments_text):
-            return VoiceResult(success=False, error="文本为空，无可配音内容")
-
-        results: list[dict[str, Any]] = []
-        total_duration = 0.0
-
-        # 生产加固 2.1: 实测句级时间戳 — 每段合成后用 ffprobe 实测时长累加，
-        # 段内词级时间按字符比例近似（供 NEL/字幕/动画对齐消费）。
-        cursor = 0.0
-        for idx, seg in enumerate(segments_text):
-            # 轮 82（可复现）：Python 内置 hash() 对 str 带进程级随机盐
-            # （PYTHONHASHSEED），同一文案跨进程得到不同 seed → 合成结果不可复现。
-            # 改用 hashlib 确定性散列（含 voice_id/provider，同音色同文案必同 seed）。
-            seed = int(hashlib.sha256(f"{provider}:{voice_id}:{seg}".encode("utf-8")).hexdigest()[:8], 16)
-            try:
-                synth_params: dict[str, Any] = {**params, "seed": seed}
-                sr = await self.synthesize(
-                    voice_id=voice_id,
-                    text=seg,
-                    provider=provider,
-                    target_model=target_model,
-                    instructions=instructions,
-                    **synth_params,
-                )
-                if sr.success:
-                    d = sr.data
-                    d["index"] = idx
-                    d["seed"] = seed
-                    seg_dur = float(d.get("duration_sec", 0) or 0)
-                    d["start_sec"] = round(cursor, 3)
-                    d["end_sec"] = round(cursor + seg_dur, 3)
-                    # Phase 2.1 词级时间戳接入
-                    word_timestamps = d.get("word_timestamps", [])
-                    if word_timestamps:
-                        d["words"] = [{"word": w.get("word", ""), "t": round(cursor + float(w.get("time", 0)) / 1000.0, 3)} for w in word_timestamps]
-                        d["char_timings"] = [w["t"] for w in d["words"]]
-                    else:
-                        chars = [c for c in seg if not c.isspace()]
-                        if chars and seg_dur > 0:
-                            d["char_timings"] = [
-                                round(cursor + seg_dur * (i + 0.5) / len(chars), 3)
-                                for i in range(len(chars))
-                            ]
-                    cursor += seg_dur
-                    total_duration += seg_dur
-                    results.append(d)
-                else:
-                    results.append({"index": idx, "text": seg, "error": sr.error})
-            except Exception as e:
-                results.append({"index": idx, "text": seg, "error": str(e)[:200]})
-
-        # P1-24: 全段失败（voice 被删/合成全错）时如实置 success=False——
-        # 旧实现恒默认成功，调用方拿到 200 + 全 error segments 误以为成功
-        all_failed = bool(results) and all("error" in r for r in results)
-        first_err = next((r["error"] for r in results if "error" in r), None)
-        return VoiceResult(
-            success=not all_failed,
-            error=str(first_err or "语音合成全部失败") if all_failed else "",
-            data={
-                "segments": results,
-                "total": len(results),
-                "total_duration_sec": round(total_duration, 2),
-            },
-        )
 
     # ── CRUD 委托 ──
 
@@ -989,3 +650,4 @@ def get_voice_service() -> VoiceService:
             if _voice_service is None:
                 _voice_service = VoiceService()
     return _voice_service
+

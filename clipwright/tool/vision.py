@@ -19,6 +19,7 @@ from clipwright.tool.video import _ffmpeg
 class SceneDetectTool(BaseTool):
     """场景检测工具（基于 FFmpeg scene detect filter）。"""
     name = "scene_detect"
+    permission_tier = "read"
     description = "检测视频中的场景切换点并返回时间戳列表"
     dependencies = ["ffmpeg"]
 
@@ -85,6 +86,8 @@ class SemanticMatchTool(BaseTool):
     """
 
     name = "semantic_match"
+
+    permission_tier = "read"
     description = "用 CLIP 视觉向量做文本-画面语义匹配（中英文查询均可，中文走提示词改写）"
 
     async def execute(

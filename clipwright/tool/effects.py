@@ -13,13 +13,14 @@ from typing import Any, Optional
 from clipwright.config import logger
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
-from clipwright.tool.video import resolve_ffmpeg, ENCODE_VIDEO_ARGS
+from clipwright.tool.video import _CLIPWRIGHT_TEMP, resolve_ffmpeg, ENCODE_VIDEO_ARGS
 
 
 
 class VideoSpeedTool(BaseTool):
     """变速工具 — 支持帧插值的慢动作/快进。"""
     name = "video_speed"
+    permission_tier = "write_local"
     description = "视频变速：慢动作(0.25x~0.99x)或快进(1.01x~10x)，支持运动插值"
     dependencies = ["ffmpeg"]
 
@@ -82,6 +83,7 @@ class VideoSpeedTool(BaseTool):
 class TransitionApplyTool(BaseTool):
     """转场渲染工具 — 在两个片段之间渲染真实转场效果。"""
     name = "transition_apply"
+    permission_tier = "write_local"
     description = "在两个视频片段之间渲染转场：fade/crossfade/slide/push/glitch/wipe/zoom"
     dependencies = ["ffmpeg"]
 
@@ -163,6 +165,7 @@ class TransitionApplyTool(BaseTool):
 class VideoBlurTool(BaseTool):
     """视频模糊工具 — 高斯/动感/像素化/隐私保护。"""
     name = "video_blur"
+    permission_tier = "write_local"
     description = "应用视频模糊效果：gaussian/motion/pixelize/box"
     dependencies = ["ffmpeg"]
 
@@ -205,6 +208,7 @@ class VideoBlurTool(BaseTool):
 class WatermarkTool(BaseTool):
     """水印工具 — 图片/文字水印叠加。"""
     name = "watermark"
+    permission_tier = "write_local"
     description = "在视频上叠加图片水印或文字水印，支持位置和透明度"
     dependencies = ["ffmpeg"]
 
@@ -272,6 +276,7 @@ class WatermarkTool(BaseTool):
 class EffectVignetteTool(BaseTool):
     """电影效果工具 — 暗角/颗粒/扫描线。"""
     name = "effect_vignette"
+    permission_tier = "write_local"
     description = "应用电影级视觉效果：暗角(vignette)/胶片颗粒(grain)/扫描线(scanline)"
     dependencies = ["ffmpeg"]
 
@@ -319,6 +324,7 @@ class EffectVignetteTool(BaseTool):
 class TextDiagramTool(BaseTool):
     """文本图解工具 — 箭头/高亮/变色/动效文字，用于展示逻辑关系。"""
     name = "text_diagram"
+    permission_tier = "write_local"
     description = "在视频上生成文字图解动画：箭头、高亮、变色、移动文字，用于展示A→B→C逻辑关系"
     dependencies = ["ffmpeg"]
 
@@ -447,6 +453,7 @@ class TextDiagramTool(BaseTool):
 class FaceDetectTool(BaseTool):
     """人脸检测工具 — 检测视频帧中的人脸位置和数量。"""
     name = "face_detect"
+    permission_tier = "read"
     description = "检测视频中的人脸，返回每帧的人脸位置/数量/置信度"
     dependencies = []
 
@@ -511,6 +518,7 @@ class FaceDetectTool(BaseTool):
 class BackgroundRemoveTool(BaseTool):
     """背景去除/替换工具 — 绿幕抠像 + AI 无绿幕抠图。"""
     name = "background_remove"
+    permission_tier = "write_local"
     description = "移除或替换视频背景：chroma_key(绿幕)/ai(无绿幕)/blur(背景模糊)"
     dependencies = ["ffmpeg"]
 

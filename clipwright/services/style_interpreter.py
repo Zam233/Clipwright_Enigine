@@ -196,7 +196,7 @@ class StyleInterpreter:
         try:
             plugin_prompts = persona_context.get("_plugin_prompts", [])
             if plugin_prompts:
-                prompt += "\n\n## 插件能力扩展\n" + "\n\n".join(plugin_prompts)
+                prompt += _hdr("PROMPT_PLUGIN_EXT_HEADER") + "\n\n".join(plugin_prompts)
 
             from clipwright.services.llm import LLMService
             llm = LLMService()
@@ -277,3 +277,10 @@ class StyleInterpreter:
             "font_size": 28, "title_font_size": 36, "stagger_delay": 0.25,
             "font": "sans-serif",
         }
+
+
+def _hdr(name: str) -> str:
+    """小标题类提示词（B5 常量覆盖）：插件可替换，未覆盖时即 prompts.py 默认值。"""
+    from clipwright.plugins.prompt_overrides import resolve_constant
+
+    return resolve_constant(name)

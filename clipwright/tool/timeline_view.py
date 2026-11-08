@@ -27,6 +27,8 @@ class TimelineViewTool(BaseTool):
     """生成切点复核图 / 全片总览图（供质检、自愈循环与编辑器复用）。"""
 
     name = "timeline_view"
+
+    permission_tier = "read"
     description = (
         "为成片生成复核图：cuts=每个切点前后三帧对照，overview=全片均匀抽帧联络表。"
         "返回图片路径列表，供人或视觉模型判断跳变/爆闪/字幕遮挡/节奏问题"

@@ -116,9 +116,18 @@ class TestExplicitDisable:
     """`disabled` 是**有意关闭**，不是配置错误——日志级别必须不同，否则每次启动都告警。"""
 
     @pytest.mark.parametrize("name", ["disabled", "none", "off", "", "  DISABLED  "])
-    def test_disabled_names_skip_quietly(self, name, caplog):
+    def test_disabled_names_skip_quietly(self, name, caplog, monkeypatch):
+        """空名字也视为「显式关闭」。
+
+        注意：`Reranker(model_name="")` 会回落到设置项 `rag_rerank_model`，
+        所以必须先把该设置清空——否则在装了 sentence-transformers 的机器上
+        会用默认模型真跑一次重排（本测试曾因此在 CI 上顺序被打乱）。
+        """
         import logging
 
+        from clipwright.config import settings
+
+        monkeypatch.setattr(settings, "rag_rerank_model", "", raising=False)
         r = Reranker(model_name=name, base_url="", api_key="")
         with caplog.at_level(logging.INFO):
             out = asyncio.run(r.rerank("q", _cands(), top_k=2))

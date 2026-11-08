@@ -15,11 +15,13 @@ Phase 2 增强（对账注记 2026-08：以下两项均未实现，保留为规�
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import os
 import time
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from clipwright.config import TIME_ZONE, logger
 from clipwright.context import mongo
@@ -31,7 +33,7 @@ from clipwright.schema.requirements import (
     RequirementsMessage,
     SessionStatus,
 )
-from clipwright.services.llm import LLMService
+from clipwright.services.llm import LLMService, MAX_OUTPUT_TOKENS
 from clipwright.services.trace import add_event
 from clipwright.schema.timeline import Timeline, Track
 
@@ -39,10 +41,163 @@ from clipwright.schema.timeline import Timeline, Track
 
 MAX_HISTORY_ROUNDS = 20          # 超过 20 轮对话后压缩
 MAX_MESSAGE_LENGTH = 50000       # 单条消息最大字符
+
+#: ask_user 的 owner 类型（PRD §15.5）：需求会话问题归属会话，不归属任务
+REQUIREMENTS_OWNER = "requirements"
+
+#: 本轮流式被回退的会话（session_id -> 原因）。unified-stream PRD §5.1.3：
+#: 回退必须让前端看得见，不能只写 warning 就静默降级。
+_STREAM_FALLBACK: dict[str, str] = {}
+
+
+def _emit_session_thinking(session_id: str, text: str, *, phase: str = "requirements",
+                           turn_ts: int | None = None) -> None:
+    """把本轮思考落进需求会话事件流（按轮一条，刷新/重连可回放）。
+
+    复用既有 `thinking` 事件类型（契约仍是 29 种），`detail.phase="requirements"`
+    让前端能区分"需求对话的思考"与"任务的思考"。写入失败不影响对话本身。
+    """
+    body = (text or "").strip()
+    if not body or not session_id:
+        return
+    try:
+        from clipwright.services import ask_user as _ask_user
+        from clipwright.services.task_events import emit
+
+        emit(_ask_user.session_stream_id(session_id), "thinking",
+             f"思考 {len(body)} 字",
+             {"phase": phase, "delta": body[:200_000], "done": True,
+              "chars": len(body),
+              # 本轮**开始**时刻（ms）。前端用它排序：晚到的事件也不能改变位置
+              # ——否则思考会被排到整段对话末尾（用户 2026-10-31 实测）。
+              "turn_ts": int(turn_ts if turn_ts is not None else time.time() * 1000)},
+             span="requirements")
+    except Exception as exc:  # noqa: BLE001 — 落盘失败不阻断对话
+        logger.warning("需求会话思考落盘失败 %s: %s", session_id, exc)
+
+
+# ── 时间线（session-log 单一真相，PRD docs/agent-session-timeline-prd-2026-10-31.md）──
+
+
+#: 派发中的规划书任务（PRD plan-dispatch D1 幂等键 = `session_id:brief_hash`）
+_PLAN_DISPATCH: dict[str, dict[str, Any]] = {}
+
+#: 正式生成规划书是否走主 agent 派发（PRD plan-dispatch D4）。
+#:
+#: 关掉只为**应急回退**（`CLIPWRIGHT_PLAN_DISPATCH=0`）：那时才会用到
+#: `_generate_plan` 里的 `stage_subagent.run_inline("structure")`。
+#: 纪律：`run_inline("structure")` 只允许出现在"预览/局部修补/应急回退"路径，
+#: 正式生成必须由 kernel 派 structure 并落 `reports/plan.json`。
+PLAN_DISPATCH_ENABLED = os.environ.get("CLIPWRIGHT_PLAN_DISPATCH", "1") != "0"
+
+
+def _timeline(session_id: str):
+    """取会话时间线日志（唯一有序流）。"""
+    from clipwright.services import session_log
+
+    return session_log.get_log(session_id)
+
+
+#: 展示层容器键：`display_specs` 是新形状，`genui` 是 2026-11-03~07 落库的老键（只读归一）。
+#: 两者都**不得**进简报指纹（C10：展示层不得影响业务判定）。
+_DISPLAY_SPEC_KEYS = frozenset({"genui", "display_specs"})
+
+
+def _brief_hash(brief: dict | None) -> str:
+    """简报指纹：让"这份规划书对应哪版 brief"可判定（PRD §3.2）。
+
+    ⚠️ **展示层容器必须整体排除**（C10）：读/写路径随时会补 `display_specs`（老会话还会带
+    `genui`）。若算进指纹，同一份简报"补过"与"没补过"会算出不同值 → 派发拿 A 指纹、
+    回填拿 B 指纹 → 误报 `brief_changed` 把刚生成的规划书作废。
+    用**显式键集合**而不是"值像 spec 就排除"的启发式：可测试、可解释、不会误伤业务字段。
+    """
+    if not isinstance(brief, dict) or not brief:
+        return ""
+    payload = {k: v for k, v in brief.items() if k not in _DISPLAY_SPEC_KEYS}
+    if not payload:
+        return ""
+    try:
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:  # noqa: BLE001
+        return ""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _timeline_turn(session_id: str):
+    """开一轮时间线（返回 `(log, Turn)`）；日志不可用时不阻断对话。"""
+    try:
+        from clipwright.services import session_log
+
+        log = session_log.get_log(session_id)
+        turn_no = log.user_turns() + 1
+        return log, session_log.Turn(log, turn=turn_no)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("会话时间线不可用 %s: %s", session_id, exc)
+        return None, None
+
+
+_BACKFILL_SERVICE: Any = None
+
+
+def _backfill_service() -> Any:
+    """回填用的服务实例（懒建；只读 get_session，不碰 LLM 调用）。"""
+    global _BACKFILL_SERVICE
+    if _BACKFILL_SERVICE is None:
+        _BACKFILL_SERVICE = RequirementsService()
+    return _BACKFILL_SERVICE
+
+
+def ensure_timeline_backfilled(session_id: str, session: dict | None = None) -> int:
+    """存量会话回填（T1，PRD agent-timeline-adaptation §4）。
+
+    升级前建的会话磁盘上没有条目，前端打开就是空的（用户看到「还没有可显示的内容」）。
+    这里把会话里**还留着**的 `messages` 补成条目；简报/规划书各补一条卡片条目，
+    否则老会话点开只剩文字、卡片消失。
+
+    幂等：日志里已有任何条目就直接返回 0（不会重复回填）；写失败不影响打开会话。
+    """
+    if not session_id:
+        return 0
+    try:
+        from clipwright.services import session_log
+
+        log = session_log.get_log(session_id)
+        if not log.is_empty():
+            return 0
+        data = session
+        if data is None:
+            data = _backfill_service().get_session(session_id) or {}
+        return log.backfill_messages(
+            data.get("messages") or [],
+            brief=data.get("creative_brief"),
+            plan=data.get("production_plan"),
+            brief_hash_fn=_brief_hash,
+        )
+    except Exception as exc:  # noqa: BLE001 — 回填失败不阻断查看会话
+        logger.warning("会话 %s 时间线回填失败: %s", session_id, exc)
+        return 0
+
 LLM_RETRY_MAX = 3                # LLM 最大重试次数
 LLM_RETRY_BASE_DELAY = 2.0      # 重试基础延迟（秒）
-BRIEF_GENERATE_TIMEOUT = 180     # 简报生成单次调用超时（秒）
-PLAN_TRANSLATE_TIMEOUT = 240     # 规划书翻译单次调用超时（秒）
+BRIEF_GENERATE_TIMEOUT = 900     # 简报生成单次调用超时（秒）
+# E2E 2026-10-28 实测：规划书翻译**必须显式给 max_tokens**。不给时下发的是
+# provider 默认（deepseek 系 4096），推理型模型把预算全用在 reasoning 上，
+# HTTP 200 但正文为空（llm.py:692 那条告警），三次重试全空 → 规划书退化成
+# 「LLM 翻译超时，使用基础版本」的兜底表。8192 让 6 场景的规划书一次过。
+PLAN_TRANSLATE_MAX_TOKENS = MAX_OUTPUT_TOKENS
+# 场景改写（把修改意见落到 raw_scenes 本体）的输出是完整 JSON 数组，
+# 同样要显式给预算，否则正文必然为空。
+PLAN_SCENE_REVISE_MAX_TOKENS = MAX_OUTPUT_TOKENS
+# 超时必须容得下真实生成：实测带 8000 字原文 + 43 段场景的翻译，推理型模型
+# 单次就要 6-8 分钟，"420s 超时"其实是把还在正常生成的请求掐断了（日志只写
+# 「翻译超时」，看起来像模型没输出）。宁可等，也不要制造假的空结果。
+PLAN_TRANSLATE_TIMEOUT = 1800    # 规划书翻译超时（秒）——按"上限"给足
+# 精简 prompt 的重试超时：输入已缩小，但仍有 43 段场景，别再按 5 分钟掐
+PLAN_TRANSLATE_RETRY_TIMEOUT = 1800
+# 需求侧跑 structure 阶段（生成规划书用的 raw_scenes）的墙钟上限。
+# 旧实现沿用 run_inline 默认 300s = StructureAgent 自身的 LLM 超时，
+# 外层先掐断 → TimeoutError(str 为空) → 只留一句"规划书生成失败:"。
+PLAN_STRUCTURE_TIMEOUT = 3600
 SESSION_TTL_HOURS = 48           # 会话过期时间
 SESSION_CLEANUP_INTERVAL = 3600  # 清理检查间隔（秒）
 
@@ -134,6 +289,10 @@ def _fallback_response(method: str, prompt: str, error: str) -> dict:
         "markdown_content": f"# 规划书\n\n> 生成时遇到问题: {error}\n\n请稍后重试。",
         "total_duration_sec": 0,
         "scene_count": 0,
+        # 显式降级标记：调用方（_translate_plan）据此判断"这次并没有拿到正文"，
+        # 从而触发降规模重试，而不是把兜底文案当成成功结果（旧实现靠
+        # markdown_content 是否为空判断，兜底文案非空 → 永远不重试）。
+        "degraded": True,
     }
 
 
@@ -333,6 +492,15 @@ async def _cleanup_expired_sessions():
     while True:
         try:
             if mongo.is_connected:
+                # 先放开"卡死在运行中"的会话（见 release_stale_pipeline_sessions）：
+                # 进程重启后任务必然不在内存里，可这些会话的状态还停在 pipeline_running，
+                # 前端据此把输入框藏起来——用户唯一能做的就是刷新页面赌运气。
+                try:
+                    released = await asyncio.to_thread(release_stale_pipeline_sessions)
+                    if released:
+                        logger.info("放开卡在 pipeline_running 的会话 %d 个", released)
+                except Exception as rel_err:  # noqa: BLE001 — 放开失败不能拖垮清理
+                    logger.warning("放开陈旧 pipeline_running 会话失败: %s", rel_err)
                 cutoff = datetime.now(tz=TIME_ZONE) - timedelta(hours=SESSION_TTL_HOURS)
                 # 线程内执行（_io 在事件循环线程会返回未 await 的协程导致清理静默失效）
                 deleted = await asyncio.to_thread(
@@ -348,6 +516,74 @@ async def _cleanup_expired_sessions():
         await asyncio.sleep(SESSION_CLEANUP_INTERVAL)
 
 
+def release_stale_pipeline_sessions() -> int:
+    """把「状态还是 pipeline_running，但绑定的任务早已不在/已终态」的会话放开。
+
+    为什么必须有：`watch_task_session` 只在**派发任务的进程内**有效。后端一重启，
+    `_TASKS` 就空了，那些会话的 `pipeline_running` 永无可能被改回来 —— 实测库里
+    **34 个会话**卡在这个状态。后果不是"状态难看"，而是：用户中止任务后再输入提示词，
+    请求落到 `pipeline_running` 分支，只回一句「管线正在运行中，请稍候」，主 agent
+    根本不会启动（用户 2026-10-31 报的就是这个）。
+
+    判据只看**本进程内存**：任务在 `_TASKS` 里且未终态才算在跑。进程重启后没有任何
+    任务在跑，全部放开是正确的。
+    """
+    if not mongo.is_connected:
+        return 0
+    from clipwright.services.agent_kernel import AgentKernel
+    from clipwright.services.session_log import get_log
+
+    kernel = AgentKernel()
+    released = 0
+    try:
+        rows = RequirementsSessionModel.find_many({"status": "pipeline_running"}) or []
+    except Exception as exc:  # noqa: BLE001 — 读不到就跳过这一轮
+        logger.warning("扫描 pipeline_running 会话失败: %s", exc)
+        return 0
+    for row in rows:
+        sid = str(getattr(row, "_id", "") or "")
+        if not sid:
+            continue
+        try:
+            bound = list(get_log(sid).task_ids())
+        except Exception:  # noqa: BLE001
+            bound = []
+        alive = ""
+        for tid in reversed(bound):
+            task = kernel.get(tid)
+            if task is not None and not task.terminal:
+                alive = tid
+                break
+        if alive:
+            continue
+        messages = list(getattr(row, "messages", []) or [])
+        note = ("上一个任务已经结束（可能被中止，或服务重启过），现在可以直接说话继续。"
+                "要我接着做就把要求写清楚，我会重新开工。")
+        messages.append({
+            "role": "assistant", "content": note,
+            "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+            "metadata": {"task_released": "stale_pipeline_running",
+                         "previous_task": (bound[-1] if bound else "")},
+        })
+        try:
+            row.status = "plan_ready"
+            row.messages = messages
+            row.update()
+            released += 1
+        except Exception as exc:  # noqa: BLE001 — 单个失败不影响其它会话
+            logger.warning("放开会话失败 %s: %s", sid, exc)
+        try:
+            log = get_log(sid)
+            log.append(type="content", content=note, source="requirements",
+                       turn=log.user_turns() or 1,
+                       meta={"role": "assistant", "task_released": "stale_pipeline_running"})
+        except Exception:  # noqa: BLE001 — 时间线写失败不影响状态修复
+            pass
+    if released:
+        logger.info("已把 %d 个卡在 pipeline_running 的会话放回 plan_ready", released)
+    return released
+
+
 def start_cleanup_task():
     """启动会话清理后台任务（安全地使用事件循环）。"""
     global _cleanup_task
@@ -361,6 +597,71 @@ def start_cleanup_task():
 
 
 # ── 主服务类 ──────────────────────────────────
+
+def apply_plan_drift(
+    plan: dict | None,
+    drifts: Iterable[dict[str, Any]],
+    *,
+    max_entries: int = 20,
+) -> dict:
+    """V58：把执行偏离**并入规划书对象**（写回的那一半，纯函数，可单测）。
+
+    规则：
+    - 规划书原样保留（段落/卡点/缺口一律不动），只在 ``_drift`` 下追加偏离；
+    - 幂等：同 ``(code, index)`` 只留最后一条——重跑同一条管线不会把记录刷成一堆；
+    - 最多保留 ``max_entries`` 条（超了丢最旧的），避免规划书被日志撑爆。
+    """
+    merged: dict[str, Any] = dict(plan or {})
+    existing = list(merged.get("_drift") or [])
+    for item in drifts or []:
+        if not isinstance(item, dict):
+            continue
+        record = dict(item)
+        key = (record.get("code"), record.get("index"))
+        existing = [
+            old for old in existing
+            if (old.get("code"), old.get("index")) != key
+        ]
+        existing.append(record)
+    if existing:
+        merged["_drift"] = existing[-max_entries:]
+    return merged
+
+
+def write_back_plan_drift(session_id: str, drifts: Iterable[dict[str, Any]]) -> int:
+    """把偏离写回会话里的规划书（内存缓存 + Mongo）。返回本次并入的条数。
+
+    失败只记日志——写回是留痕，不允许影响出片。
+    """
+    items = [dict(d) for d in (drifts or []) if isinstance(d, dict)]
+    if not session_id or not items:
+        return 0
+    try:
+        session = _memory_sessions.get(session_id)
+        model = None
+        if _mongo_ok():
+            model = RequirementsSessionModel.find_by_id(session_id)
+        plan = (session or {}).get("production_plan")
+        if plan is None and model is not None:
+            plan = getattr(model, "production_plan", None)
+            if plan is None and hasattr(model, "to_dict"):
+                plan = (model.to_dict() or {}).get("production_plan")
+        merged = apply_plan_drift(plan if isinstance(plan, dict) else None, items)
+        wrote = False
+        if session is not None:
+            session["production_plan"] = merged
+            wrote = True
+        if model is not None:
+            model.production_plan = merged
+            model.updated_time = datetime.now(tz=TIME_ZONE)
+            model.update()
+            wrote = True
+        # 没有任何落点（会话不存在）→ 如实返回 0，不假装写回成功
+        return len(items) if wrote else 0
+    except Exception as e:  # noqa: BLE001 - 写回失败不得影响出片
+        logger.warning("规划偏离写回失败（已跳过）: %s", e)
+        return 0
+
 
 class RequirementsService:
     """需求服务 — 对话 + 持久化 + 规划书生成。"""
@@ -445,6 +746,15 @@ class RequirementsService:
             except Exception as e:
                 logger.warning("MongoDB 会话创建失败，使用内存: %s", e)
         _memory_sessions[session_id] = session_dict
+        # 时间线：开场白也是流里的一条（type=content, role=assistant, turn=0），
+        # 否则刷新后"欢迎语"没有位置（PRD §3.2）
+        try:
+            _timeline(session_id).append(
+                type="content", content=welcome, source="requirements",
+                turn=0, meta={"role": "assistant", "kind": "welcome"},
+            )
+        except Exception as exc:  # noqa: BLE001 — 时间线失败不阻断建会话
+            logger.warning("时间线写开场白失败 %s: %s", session_id, exc)
         logger.info("需求会话已创建: %s (mongo=%s)", session_id, _mongo_ok())
         return session_dict
 
@@ -461,18 +771,50 @@ class RequirementsService:
         return self.create_session(user_inputs)
 
     def get_session(self, session_id: str) -> dict | None:
-        """从 MongoDB 加载会话。"""
+        """从 MongoDB 加载会话。
+
+        读路径会补一份**展示 spec**：老会话（2026-11-03~07）带 `genui`，新形状是
+        `display_specs`；不归一的话同一功能在新老会话上表现不同。补法是**浅拷贝 + 只补不存**——
+        绝不原地改 `_memory_sessions` 里的对象（`_persist` 会把它写回内存会话），也不回写
+        Mongo（读操作不产生写；新数据在写入路径已自带 spec）。
+        """
         mem = _memory_sessions.get(session_id)
         if mem:
-            return mem
+            return _with_display_specs(mem)
         if _mongo_ok():
             try:
                 model = RequirementsSessionModel.find_by_id(session_id)
                 if model:
-                    return model.to_dict()
+                    return _with_display_specs(model.to_dict())
             except Exception as e:
                 logger.warning("MongoDB 会话查询失败: %s", e)
         return None
+
+    def list_messages(
+        self, session_id: str, *, before_id: str = "", limit: int = 50,
+    ) -> dict[str, Any]:
+        """需求消息历史分页（unified-stream PRD §M4）。
+
+        `before_id` = 上一页最早消息的 id（不含）；不传则取最新一页。
+        返回 `{items, has_more, oldest_id}`；id 由 `_ensure_message_ids` 保证稳定。
+        """
+        session = self.get_session(session_id) or {}
+        msgs = self._ensure_message_ids(list(session.get("messages") or []))
+        lim = max(1, min(int(limit or 50), 200))
+        end = len(msgs)
+        if before_id:
+            for i, m in enumerate(msgs):
+                if str(m.get("id")) == before_id:
+                    end = i
+                    break
+        start = max(0, end - lim)
+        page = msgs[start:end]
+        return {
+            "items": page,
+            "has_more": start > 0,
+            "oldest_id": page[0]["id"] if page else "",
+            "total": len(msgs),
+        }
 
     def delete_session(self, session_id: str) -> None:
         _memory_sessions.pop(session_id, None)
@@ -498,15 +840,193 @@ class RequirementsService:
 
     # ── 对话 ──────────────────────────────────
 
+    # ── ask_user（PRD §15.5 / M5c）──────────────────────────
+    #
+    # 需求对话没有工具轮（一次 LLM structured 生成就出方案），因此这里复用
+    # 同一个 `ask_user` 服务与同一套 `question`/`answer` 事件语义，只把调用点
+    # 放在 service：LLM 在结构化输出里给出 `ask_user` 指令 → 建问题（归属
+    # `requirements:<session_id>` 的事件流）→ 会话进 `waiting_user`；
+    # 用户回答走需求会话自己的 answer 路由 → agent 带着答案继续 gather。
+
+    def questions(self, session_id: str) -> list[dict[str, Any]]:
+        """该会话的全部问题（含已回答/已失效，按创建时间升序）。"""
+        from clipwright.services import ask_user
+
+        if not session_id:
+            return []
+        return ask_user.list_for_owner(REQUIREMENTS_OWNER, session_id)
+
+    def pending_questions(self, session_id: str) -> list[dict[str, Any]]:
+        from clipwright.services import ask_user
+
+        if not session_id:
+            return []
+        return ask_user.pending(REQUIREMENTS_OWNER, session_id)
+
+    def ask_user_question(
+        self, session_id: str, *, question: str,
+        options: Any = (), allow_free_text: bool = False,
+        default_option_id: str | None = None, timeout_sec: int | None = None,
+        context_refs: Any = None,
+    ) -> dict[str, Any]:
+        """建一个需求会话问题（不阻塞）。参数非法时抛 `ask_user.AskUserError`。"""
+        from clipwright.services import ask_user
+
+        return ask_user.create(
+            REQUIREMENTS_OWNER, session_id,
+            question=question, options=options or (),
+            allow_free_text=bool(allow_free_text),
+            default_option_id=default_option_id,
+            timeout_sec=int(timeout_sec or ask_user.DEFAULT_TIMEOUT_SEC),
+            context_refs=context_refs or [],
+        )
+
+    async def answer_question(
+        self, session_id: str, *, question_id: str,
+        option_id: str | None = None, text: str | None = None,
+    ) -> dict[str, Any]:
+        """回答问题并让 agent 继续。
+
+        返回 `{"answer": {...}, "reply": ..., "status": ...}`；错误以
+        `{"error": code, "http_status": n}` 形式如实返回（不假装已收到答案）。
+        """
+        from clipwright.services import ask_user
+
+        sess = await asyncio.to_thread(self.get_session, session_id)
+        if not sess:
+            return {"error": "Session not found", "http_status": 404}
+        rec = ask_user.get(question_id)
+        if not rec:
+            return {"error": "question_not_found", "http_status": 410}
+        # 归属校验：不能拿别的会话/任务的问题 id 来答
+        if rec.get("owner_type") != REQUIREMENTS_OWNER or rec.get("owner_id") != session_id:
+            return {"error": "question_not_found", "http_status": 404}
+        try:
+            ans = ask_user.answer(question_id, option_id=option_id, text=text)
+        except ask_user.AskUserError as exc:
+            return {"error": exc.code, "http_status": exc.http_status, **exc.detail}
+
+        # 用答案作为用户消息让对话继续（agent 拿到拍板结果后接着干）
+        answer_text = self._answer_as_message(rec, ans)
+        # 时间线：先落一条 `answer`（用户拍板结果），顺序保证 question → answer → 后续思考/正文。
+        # 注意 `chat()` 随后还会写一条 `content(role=user)`——那是**喂给模型的文本**，
+        # 与"用户拍板了什么"语义不同，两条并存不算重复（PRD agent-timeline-adaptation T3.4）。
+        try:
+            _log = _timeline(session_id)
+            _log.append(
+                type="answer", content=answer_text, source="requirements",
+                turn=_log.user_turns() + 1, ref=f"q:{question_id}",
+                meta={
+                    "question_id": question_id,
+                    "option_id": option_id,
+                    "text": text,
+                    "question": str(rec.get("question") or ""),
+                    "answer_source": (ans or {}).get("source") if isinstance(ans, dict) else None,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — 时间线写失败不阻断作答
+            logger.warning("时间线写 answer 失败 %s: %s", session_id, exc)
+        result = await self.chat(session_id, answer_text)
+        return {"answer": ans, **result}
+
+    @staticmethod
+    def _answer_as_message(rec: dict[str, Any], ans: dict[str, Any]) -> str:
+        """把答案还原成一句人话喂回对话（LLM 只认 user 消息）。"""
+        options = {str(o.get("id")): str(o.get("label") or o.get("id"))
+                   for o in (rec.get("options") or []) if isinstance(o, dict)}
+        opt = str(ans.get("option_id") or "")
+        label = options.get(opt)
+        if label:
+            return f"关于「{rec.get('question', '')}」，我选：{label}"
+        return f"关于「{rec.get('question', '')}」，我的回答：{ans.get('text') or opt}"
+
+    async def _ask_from_llm(self, result: dict[str, Any], session_id: str) -> dict[str, Any] | None:
+        """LLM 结构化输出里的 `ask_user` 指令 → 建问题。
+
+        结构（宽容解析，字段缺失就给安全默认）：
+        `{"ask_user": {"question": str, "message": str?, "options": [{"id","label","detail"}],
+                       "allow_free_text": bool, "default_option_id": str?, "timeout_sec": int?}}`
+
+        参数非法（无问题文本 / 选项不合法 / 同类问题已挂满）→ **不建问题**，
+        返回 None 让本轮按普通回复继续，同时在日志里留证据（不静默吞掉退出）。
+        """
+        spec = result.get("ask_user") if isinstance(result, dict) else None
+        if not isinstance(spec, dict):
+            return None
+        question = str(spec.get("question") or "").strip()
+        if not question:
+            logger.warning("需求会话 ask_user 指令缺少 question，忽略")
+            return None
+        try:
+            q = self.ask_user_question(
+                session_id, question=question,
+                options=spec.get("options") or (),
+                allow_free_text=bool(spec.get("allow_free_text")),
+                default_option_id=spec.get("default_option_id"),
+                timeout_sec=spec.get("timeout_sec"),
+                context_refs=spec.get("context_refs"),
+            )
+        except Exception as exc:  # noqa: BLE001 — 提问失败不能让整轮对话炸掉
+            logger.warning("需求会话 ask_user 建问题失败: %s", exc)
+            return None
+        message = str(spec.get("message") or "").strip()
+        return {**q, "message": message or question}
+
     async def chat(
         self,
         session_id: str,
         user_message: str,
         on_delta: "Callable[[str], Any] | None" = None,
+        on_reasoning: "Callable[[str], Any] | None" = None,
+        on_event: "Callable[[dict], Any] | None" = None,
+        request: Any = None,
+        project_id: str = "",
     ) -> dict:
         """处理需求对话。on_delta 非空时 gathering 态通过流式回调增量推送
-        reply 文本片段（token 级真流式），由 stream_chat 的 SSE 生成器消费。"""
-        """处理用户消息，更新 MongoDB，返回最新状态。"""
+        reply 文本片段（token 级真流式），由 stream_chat 的 SSE 生成器消费。
+
+        `on_reasoning` 收到模型思考内容的**逐块增量**（provider 支持时）。
+
+        时间线接线（PRD agent-session-timeline §4.1）：用户消息与模型输出都写进
+        会话唯一有序流（`session.log`），流式部分走 `Turn` 的懒开占位 + 增量填充。
+        写时间线失败不能阻断对话——外面包一层，异常只落 warning。
+        """
+        log, live = _timeline_turn(session_id)
+        if log is not None and live is not None:
+            try:
+                log.append(
+                    type="content", content=truncate_message(user_message),
+                    source="requirements", turn=live.turn,
+                    meta={"role": "user"},
+                )
+            except Exception as exc:  # noqa: BLE001 — 时间线写入失败不阻断对话
+                logger.warning("时间线写用户消息失败 %s: %s", session_id, exc)
+        try:
+            return await self._chat_router(
+                session_id, user_message,
+                on_delta=on_delta, on_reasoning=on_reasoning, on_event=on_event,
+                live=live, request=request,
+            )
+        except Exception:
+            if live is not None:
+                try:
+                    live.close(state="failed")
+                except Exception:  # noqa: BLE001
+                    pass
+            raise
+
+    async def _chat_router(
+        self,
+        session_id: str,
+        user_message: str,
+        on_delta: "Callable[[str], Any] | None" = None,
+        on_reasoning: "Callable[[str], Any] | None" = None,
+        on_event: "Callable[[dict], Any] | None" = None,
+        live: Any = None,
+        request: Any = None,
+        project_id: str = "",
+    ) -> dict:
+        """状态路由本体（写库/生成方案/规划书）；时间线由 `chat` 与 `_close_turn` 负责。"""
         await self._ensure_cleanup()
         session_data = await asyncio.to_thread(self.get_session, session_id)
         if not session_data:
@@ -529,13 +1049,149 @@ class RequirementsService:
         # 压缩超长历史
         messages = compress_history(messages)
 
+        # 本轮新增消息的起点：`messages[_turn_start:]` 就是本轮模型说的话
+        _turn_start = len(messages)
+        # 本轮是否产生了新方案/新规划书（决定要不要落 report/plan 条目）
+        _brief_event: dict | None = None
+        _plan_event: dict | None = None
+        _question_event: dict | None = None
+
+        # 流式回调包一层：既喂调用方（SSE），也喂时间线（懒开占位 + 增量填充）。
+        # 注意必须保留"None 就是不开流式"的语义——`_handle_gathering` 靠它选路径。
+        _log_delta: "Callable[[str], Any] | None" = None
+        _log_reasoning: "Callable[[str], Any] | None" = None
+        if on_delta is not None and live is not None:
+            def _log_delta(text: str) -> None:  # type: ignore[misc]
+                live.stream("content", text)
+                if on_delta is not None:
+                    on_delta(text)
+
+            def _log_reasoning(text: str) -> None:  # type: ignore[misc]
+                live.stream("thinking", text)
+                if on_reasoning is not None:
+                    on_reasoning(text)
+        else:
+            _log_delta = on_delta
+            _log_reasoning = on_reasoning
+
+        # 规划书生成阶段帧也要进时间线：确认简报之后到规划书之间不能是一片空白
+        # （用户 2026-10-31：生成规划书的过程中不该一帧都不发）。stage 条目按阶段
+        # 名 upsert：running 开一条、ok/failed 收尾，位置就是发生时刻。
+        _stage_seqs: dict[str, int] = {}
+        _on_plan_event = on_event
+
+        if on_event is not None and live is not None:
+            def _plan_event_sink(chunk: dict) -> None:  # type: ignore[misc]
+                if on_event is not None:
+                    on_event(chunk)
+                if not isinstance(chunk, dict) or chunk.get("type") != "stage":
+                    return
+                data = chunk.get("data")
+                if not isinstance(data, dict):
+                    return
+                stage = str(data.get("stage") or "")
+                status = str(data.get("status") or "")
+                meta = {
+                    "stage": stage, "status": status, "role": "system",
+                    "phase": str(data.get("phase") or "plan"),
+                    "summary": str(data.get("summary") or ""),
+                }
+                try:
+                    seq = _stage_seqs.get(stage)
+                    if seq is None:
+                        item = live.log.append(
+                            type="stage", content=str(data.get("action") or stage),
+                            source="requirements", turn=live.turn, meta=meta,
+                            state="streaming",
+                        )
+                        _stage_seqs[stage] = item.seq
+                    else:
+                        live.log.patch(
+                            seq,
+                            state=("failed" if status == "failed"
+                                   else "streaming" if status == "running" else "done"),
+                            meta=meta,
+                        )
+                except Exception as exc:  # noqa: BLE001 — 阶段条目写失败不影响生成
+                    logger.warning("时间线写阶段条目失败 %s: %s", stage, exc)
+
+            _on_plan_event = _plan_event_sink
+
+        # PRD §15.5：会话在等回答时用户直接打字（没用问题卡）→ 当作自由文本回答，
+        # 然后把状态放回 gathering 让 agent 继续。不能让 waiting_user 变成死胡同。
+        if status == "waiting_user":
+            _pending = self.pending_questions(session_id)
+            if _pending:
+                try:
+                    from clipwright.services import ask_user as _ask_user
+                    _ask_user.answer(_pending[0]["question_id"],
+                                     text=user_message, source="user_text")
+                except Exception as exc:  # noqa: BLE001 — 答不上就继续按普通消息处理
+                    logger.warning("需求会话 pending 问题自动应答失败: %s", exc)
+            status = "gathering"
+
+        # ── 中止 / 失败 / 完成之后的**续跑**（用户 2026-10-31 实测缺口）──────────
+        # 老实现里四种状态各有一条分支，但**没有一条会建任务**：运行中只回"请稍候"、
+        # 完成只回模板、plan_ready 只修订规划书 → 用户中止后再发指令，主 agent 不启动。
+        # 这里先判断这条消息是不是"接着干"，是就当场拉起新任务（带上上一轮上下文）并返回。
+        _cont = await self._maybe_continue_as_task(
+            session_id, session_data, user_message, request=request, status=status,
+            project_id=project_id,
+        )
+        if _cont is not None:
+            note = str(_cont.get("note") or "")
+            if note:
+                messages.append({
+                    "role": "assistant", "content": note,
+                    "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                    "metadata": {"continuation_task": _cont.get("task_id")},
+                })
+            await asyncio.to_thread(
+                self._persist, session_id, "pipeline_running", messages,
+                brief_data, plan_data, user_inputs,
+            )
+            self._close_turn(live, messages, _turn_start,
+                             brief=_brief_event, plan=_plan_event,
+                             question=_question_event)
+            session = (await asyncio.to_thread(self.get_session, session_id)) or {}
+            return {**session, "status": "pipeline_running", "reply": note,
+                    "task_id": _cont.get("task_id"), "continuation": True}
+
         # 状态路由
         if status in ("gathering", "init"):
-            result = await self._handle_gathering(messages, brief_data, status, user_inputs, session_id, on_delta=on_delta)
+            result = await self._handle_gathering(messages, brief_data, status, user_inputs, session_id,
+                                              on_delta=_log_delta, on_reasoning=_log_reasoning)
+            # PRD §15.5：LLM 需要用户拍板时给 `ask_user` 指令 → 建问题、等回答，
+            # 本轮不再往下推进（不猜、不替用户选）。
+            _asked = await self._ask_from_llm(result, session_id)
+            if _asked is not None:
+                _question_event = _asked
+                messages.append({
+                    "role": "assistant",
+                    "content": _asked.get("message") or _asked.get("question", ""),
+                    "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                    "metadata": {"ask_user": {"question_id": _asked.get("question_id")}},
+                })
+                await asyncio.to_thread(
+                    self._persist, session_id, "waiting_user", messages, brief_data,
+                    plan_data, user_inputs,
+                )
+                session = (await asyncio.to_thread(self.get_session, session_id)) or {}
+                self._close_turn(live, messages, _turn_start,
+                                 brief=_brief_event, plan=_plan_event,
+                                 question=_question_event)
+                return {**session, "status": "waiting_user",
+                        "reply": _asked.get("message") or _asked.get("question", ""),
+                        "question": _asked}
             _new_brief = result.get("brief_draft")
             # P2-34: LLM 解析失败会返回 brief_draft={}——空结果不覆盖已有方案
             if isinstance(_new_brief, dict) and _new_brief:
-                brief_data = _new_brief
+                # 展示 spec（通用装配器）：模型给了就洗、洗空用插件配方——只影响展示，
+                # 不改 brief 的其它字段，也不进 `_brief_hash`（C10）。
+                from clipwright.services.display_spec import ensure_display_specs
+
+                brief_data = ensure_display_specs("brief", _new_brief)
+                _brief_event = brief_data
             is_ready = result.get("is_ready", False)
             # 只要生成了完整方案草稿就进入待确认状态。不完全依赖 LLM 的 is_ready 标志——
             # 否则前端已展示方案（brief_ready）而后端仍停留 gathering，用户确认后会被
@@ -575,29 +1231,101 @@ class RequirementsService:
                     "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
                     "metadata": {},
                 })
-                # 异步生成规划书
-                plan_result = await self._generate_plan(brief_data, user_inputs, session_id)
+                # D4（PRD plan-dispatch）：正式生成规划书**只**走主 agent 派发。
+                # 旧客户端仍可能用「确认」这条消息触发，这里直接转成派发，
+                # 不再内联跑 run_inline("structure")（那条路没有思考/派发轨迹/run 可查）。
+                _disp = await self._dispatch_or_none(session_id, brief_data)
+                if _disp is not None:
+                    _close_kwargs = {"brief": brief_data}
+                    self._close_turn(live, messages, _turn_start, **_close_kwargs)
+                    session = (await asyncio.to_thread(self.get_session, session_id)) or {}
+                    return {**session, "status": "planning",
+                            "reply": "已确认创意简报，主 agent 正在生成制作规划书…",
+                            "plan_dispatch": _disp}
+                # 异步生成规划书（**应急回退**：CLIPWRIGHT_PLAN_DISPATCH=0 时才走到）
+                plan_result = await self._generate_plan(
+                    brief_data, user_inputs, session_id, on_event=_on_plan_event,
+                )
                 if plan_result:
                     plan_data = plan_result
+                    _plan_event = plan_result
                     status = "plan_ready"
                 else:
-                    # 规划书生成失败 → 明确回退（旧实现卡死 brief_confirmed，
-                    # 后续任何消息都落不进任何分支，永远返回过期回复）
-                    status = "brief_ready"
+                    # A-18 兼容：老会话/翻译失败但有 scenes 时，由 scenes 反向生成
+                    # legacy plan（标 legacy=true），仍可确认与执行——不再卡在 brief_ready
+                    legacy = self._legacy_plan_from_scenes(plan_data, session_id)
+                    if legacy is not None:
+                        plan_data = legacy
+                        _plan_event = legacy
+                        status = "plan_ready"
+                        messages.append({
+                            "role": "assistant",
+                            "content": "规划书已按现有场景生成（legacy 模式），可确认执行或要求重做。",
+                            "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                            "metadata": {"legacy_plan": True},
+                        })
+                    else:
+                        # 规划书生成失败 → 明确回退（旧实现卡死 brief_confirmed，
+                        # 后续任何消息都落不进任何分支，永远返回过期回复）
+                        status = "brief_ready"
+                        messages.append({
+                            "role": "assistant",
+                            "content": ("规划书生成遇到技术问题，已回退到方案确认态。"
+                                        "回复「确认」重试，或直接提出修改意见。"),
+                            "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                            "metadata": {},
+                        })
+            else:
+                # E2E 2026-10-29 发现：这里原本直接把状态打回 `gathering`，只回一句
+                # 「好的，请告诉我需要如何调整？」。后果很严重——
+                # ① 用户在 brief_ready 下问一句/提一句「直接给我规划书」，brief 已经
+                #    生成却被判成"还没聊够"，会话退回 gathering；
+                # ② 那条消息本身没被用于修订方案（白说一遍）；
+                # ③ 之后再说「确认」也落不到确认分支（状态已不是 brief_ready），
+                #    得先说两次才生效。
+                # 现在：**保留 brief_ready**，把这条消息当成"修订意见"重新走一次
+                # gathering 合并出新方案；新方案出来就再给确认提示，出不来就明说。
+                revised = await self._handle_gathering(
+                    messages, brief_data, "gathering", user_inputs, session_id,
+                    on_delta=_log_delta, on_reasoning=_log_reasoning,
+                )
+                new_brief = revised.get("brief_draft")
+                updated = isinstance(new_brief, dict) and bool(new_brief)
+                if updated:
+                    # 展示 spec：修订路径同样过一遍通用装配器（只补展示层）
+                    from clipwright.services.display_spec import ensure_display_specs
+
+                    brief_data = ensure_display_specs("brief", new_brief)
+                    _brief_event = brief_data
+                messages.append({
+                    "role": "assistant",
+                    "content": str(revised.get("reply") or "已记下你的修改意见。"),
+                    "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                    "metadata": {"revision": True},
+                })
+                # 无论修订是否成功，状态都停在 brief_ready：方案还在，用户可以继续
+                # 提意见，也可以直接回「确认」推进到规划书。
+                status = "brief_ready"
+                if updated and isinstance(brief_data, dict) and brief_data:
                     messages.append({
                         "role": "assistant",
-                        "content": ("规划书生成遇到技术问题，已回退到方案确认态。"
-                                    "回复「确认」重试，或直接提出修改意见。"),
+                        "content": (
+                            "\n\n---\n\n### ✅ 方案已按你的意见更新\n\n"
+                            f"**标题**: {brief_data.get('title', '待定')}\n"
+                            f"**概述**: {brief_data.get('overview', '')}\n"
+                            f"**风格**: {brief_data.get('style_direction', '')}\n\n"
+                            "回「确认」生成制作规划书，或继续提修改意见。"
+                        ),
                         "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
                         "metadata": {},
                     })
-            else:
-                status = "gathering"
-                messages.append({
-                    "role": "assistant", "content": "好的，请告诉我需要如何调整？",
-                    "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
-                    "metadata": {},
-                })
+                else:
+                    messages.append({
+                        "role": "assistant",
+                        "content": "方案没有变动。回「确认」生成制作规划书，或再说清要改哪一处。",
+                        "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                        "metadata": {},
+                    })
 
         elif status in ("brief_confirmed", "plan_confirmed"):
             # P1-20: 确认中间态此前没有路由分支——用户确认后再发任何消息都
@@ -613,9 +1341,12 @@ class RequirementsService:
                     "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
                     "metadata": {},
                 })
-                plan_result = await self._generate_plan(brief_data, user_inputs, session_id)
+                plan_result = await self._generate_plan(
+                    brief_data, user_inputs, session_id, on_event=_on_plan_event,
+                )
                 if plan_result:
                     plan_data = plan_result
+                    _plan_event = plan_result
                     status = "plan_ready"
                 else:
                     messages.append({
@@ -672,12 +1403,17 @@ class RequirementsService:
                 )
                 if revised:
                     plan_data = revised
+                    _plan_event = revised
 
         # 持久化到 MongoDB（offload 到线程：_persist 内的 find_by_id 走 _io()，
         # 在事件循环线程会返回未 await 的协程导致写入静默失败；线程内无事件循环则同步执行）
         await asyncio.to_thread(
             self._persist, session_id, status, messages, brief_data, plan_data, user_inputs,
         )
+        # 时间线收口：thinking → content（本轮全部模型发言）→ report → plan → question
+        self._close_turn(live, messages, _turn_start,
+                         brief=_brief_event, plan=_plan_event,
+                         question=_question_event)
         session = (await asyncio.to_thread(self.get_session, session_id)) or {}
         msgs = session.get("messages", [])
         last_assistant = next(
@@ -685,6 +1421,70 @@ class RequirementsService:
             "",
         )
         return {**session, "reply": last_assistant}
+
+    @staticmethod
+    def _close_turn(
+        live: Any, messages: list[dict], turn_start: int, *,
+        brief: dict | None = None, plan: dict | None = None,
+        question: dict | None = None,
+    ) -> None:
+        """把一轮的条目按**发生顺序**写进时间线（PRD §3.2）。
+
+        顺序就是阅读顺序：思考 → 正文（本轮所有模型发言）→ 简报 → 规划书 → 提问。
+        流式正文用权威全文完成占位条目，避免"丢块拼接"出残缺文本。
+        """
+        if live is None:
+            return
+        try:
+            replies = [
+                str(m.get("content") or "")
+                for m in messages[turn_start:]
+                if isinstance(m, dict) and m.get("role") == "assistant" and m.get("content")
+            ]
+            live.finish("thinking")
+            if replies:
+                live.finish("content", content=replies[0], meta={"role": "assistant"})
+                for extra in replies[1:]:
+                    live.append("content", extra, meta={"role": "assistant"})
+            else:
+                live.finish("content")
+            if isinstance(brief, dict) and brief:
+                live.append(
+                    "report", brief,
+                    meta={
+                        "role": "assistant",
+                        "title": str(brief.get("title") or ""),
+                        "brief_hash": _brief_hash(brief),
+                    },
+                )
+            if isinstance(plan, dict) and plan:
+                scenes = plan.get("raw_scenes") or plan.get("scenes") or []
+                live.append(
+                    "plan", plan,
+                    meta={
+                        "role": "assistant",
+                        "title": str(plan.get("title") or ""),
+                        "brief_hash": _brief_hash(brief),
+                        "scene_count": len(scenes) if isinstance(scenes, list) else 0,
+                        "duration_sec": (
+                            plan.get("total_duration_sec")
+                            or plan.get("duration_sec")
+                            or plan.get("total_duration")
+                            or 0
+                        ),
+                        "legacy": bool(plan.get("legacy")),
+                    },
+                )
+            if isinstance(question, dict) and question:
+                qid = str(question.get("question_id") or "")
+                live.append(
+                    "question", question,
+                    meta={"question_id": qid,
+                          "question": str(question.get("question") or "")},
+                    ref=f"q:{qid}" if qid else None,
+                )
+        except Exception as exc:  # noqa: BLE001 — 时间线写失败不影响对话结果
+            logger.warning("时间线收口失败: %s", exc)
 
     async def _revise_raw_scenes(
         self, scenes: list[dict], feedback: str,
@@ -709,14 +1509,20 @@ class RequirementsService:
             )
             user_prompt = (
                 "当前场景列表：\n"
-                + json.dumps(scenes, ensure_ascii=False)[:8000]
+                + json.dumps(scenes, ensure_ascii=False)
                 + "\n\n用户修改意见："
                 + feedback[:1000]
             )
             resp = await self._llm.generate(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
                 temperature=0.3,
+                # 场景本体是有内容的 JSON 数组，不给预算时推理型模型会把默认
+                # 4096 全用在 reasoning 上、正文返回空（实测 max_tokens=16 那条
+                # 告警就是这里漏参数的直接后果），修订因此永远失败。
+                max_tokens=PLAN_SCENE_REVISE_MAX_TOKENS,
             )
             content = (resp.content or "").strip()
             if content.startswith("```"):
@@ -925,7 +1731,6 @@ class RequirementsService:
         user_inputs: dict[str, Any],
     ) -> tuple[Timeline, list[str]]:
         """替换素材：对每个选中 clip 构建 1-场景骨架 → MaterialAgent → 取最优建议素材替换。"""
-        from clipwright.agents.material_agent import MaterialAgent
         from clipwright.schema.agent import AgentContext, MaterialInput
         from clipwright.persona.loader import load_persona_by_id, resolve_inheritance
 
@@ -958,7 +1763,12 @@ class RequirementsService:
                 "description": clip.metadata.get("description") or clip_text or "",
             }
             try:
-                out = await MaterialAgent().execute(
+                # P3：局部修补也走统一阶段执行通道（不再各自 new Agent 实例，
+                # 否则"管线里能跑、预览里跑不通"的两套行为会一直漂移）
+                from clipwright.services import stage_subagent
+
+                out = await stage_subagent.run_inline(
+                    "material",
                     MaterialInput(
                         context=context,
                         script_skeleton={"scenes": [scene]},
@@ -1008,7 +1818,6 @@ class RequirementsService:
         user_inputs: dict[str, Any],
     ) -> tuple[Timeline, list[str]]:
         """重做动画：构建只含选中 clip 的子集时间线 → AnimationAgent → 按 id 合并回当前时间线。"""
-        from clipwright.agents.animation_agent import AnimationAgent
         from clipwright.schema.agent import AgentContext, AnimationInput
 
         persona_id = user_inputs.get("persona_id", "default")
@@ -1042,7 +1851,10 @@ class RequirementsService:
                 visual_config = anim_style
         try:
             from clipwright.plugins.generated_source import generated_image_entries
-            out = await AnimationAgent().execute(
+            from clipwright.services import stage_subagent
+
+            out = await stage_subagent.run_inline(
+                "animation",
                 AnimationInput(
                     context=context, timeline=subset, visual_config=visual_config,
                     # AI 生成图片历史 → 语义索引（无历史时为 []，零变化）
@@ -1321,7 +2133,8 @@ class RequirementsService:
                 i += 1
         return n
 
-    async def _stream_gathering_llm(self, llm_kwargs: dict, on_delta: Callable) -> dict:
+    async def _stream_gathering_llm(self, llm_kwargs: dict, on_delta: Callable,
+                                    on_reasoning: Callable | None = None) -> dict:
         """轮68/69：流式 gathering LLM 调用——stream_generate 增量 yield，
         on_delta 回调推送 reply 字段的已解码文本增量。
 
@@ -1336,6 +2149,13 @@ class RequirementsService:
         sent = 0
 
         async for chunk in self._llm.stream_generate(messages, system_prompt=system):
+            # 思考内容逐块转发（PRD §19.4：thinking 真流式；provider 不给就什么都不发）
+            _reason = getattr(chunk, "reasoning_content", "") or ""
+            if _reason and on_reasoning is not None:
+                try:
+                    on_reasoning(_reason)
+                except Exception:  # noqa: BLE001 — 回调失败不影响生成
+                    pass
             delta = getattr(chunk, "content", "") or ""
             if not delta:
                 continue
@@ -1405,6 +2225,7 @@ class RequirementsService:
         self, messages: list[dict], brief_data: dict | None, status: str,
         user_inputs: dict | None = None, session_id: str = "",
         on_delta: "Callable[[str], Any] | None" = None,
+        on_reasoning: "Callable[[str], Any] | None" = None,
     ) -> dict:
         """调用 LLM 收集需求（注入 Persona 上下文）。"""
         context = ""
@@ -1457,7 +2278,7 @@ class RequirementsService:
                 f"## 用户最新输入\n{user_prompt}"
             )
         llm_kwargs = {
-            "system_prompt": CREATIVE_BRIEF_SYSTEM + context,
+            "system_prompt": _brief_system_prompt(context),
             "user_prompt": user_prompt,
         }
         # 轮68：真流式路径——on_delta 非空时用 stream_generate 替代
@@ -1467,7 +2288,7 @@ class RequirementsService:
             try:
                 import asyncio as _aio
                 result = await asyncio.wait_for(
-                    self._stream_gathering_llm(llm_kwargs, on_delta),
+                    self._stream_gathering_llm(llm_kwargs, on_delta, on_reasoning),
                     timeout=BRIEF_GENERATE_TIMEOUT,
                 )
                 await self._record_llm_usage("requirements.gathering", session_id)
@@ -1480,7 +2301,13 @@ class RequirementsService:
                     "is_ready": False,
                 }
             except Exception as e:
+                # 不再"只写 warning 就静默回退"（unified-stream PRD §1.1）：
+                # 回退事实要传到 SSE（reasoning_status.stream_fallback）与 result.diagnostics，
+                # 否则前端只能显示一个没有内容的"正在思考"，用户以为按钮坏了。
                 logger.warning("流式 brief 失败，回退缓冲路径: %s", e)
+                # 记一条 per-session 标记，由 stream_chat 转成
+                # reasoning_status(stream_fallback) + result.diagnostics（不静默丢事实）
+                _STREAM_FALLBACK[str(session_id)] = f"{type(e).__name__}: {e}"[:300]
                 # 流式失败 → 回退缓冲路径（下面的 W1 with_tools / llm_call_with_retry）
 
         # 联网搜索工具门控接入（Bocha/百度）——配置开启时 LLM 可自主搜索；
@@ -1608,17 +2435,77 @@ class RequirementsService:
 
     # ── 规划书生成 ──────────────────────────
 
+    def _legacy_plan_from_scenes(self, plan_data: dict | None, session_id: str) -> dict | None:
+        """A-18：老会话/翻译失败但有 scenes 时，反向生成 legacy plan（标 legacy）。
+
+        - 没有 ``raw_scenes`` → 返回 ``None``（真没料，不硬造）；
+        - 生成后仍走 ``PlanDocument`` 校验（段落连续、时长不漂），校验不过则放弃；
+        - 输出的 ``markdown_content`` 由确定性渲染器生成，保证可复核。
+        """
+        scenes = []
+        if isinstance(plan_data, dict):
+            scenes = plan_data.get("raw_scenes") or []
+        if not scenes:
+            return None
+        try:
+            from clipwright.services.plan_renderer import render_plan_markdown
+            from clipwright.services.plan_validator import plan_from_scenes, validate_plan
+
+            plan = plan_from_scenes(scenes)
+            result = validate_plan(plan)
+            if not result.ok:
+                logger.info(
+                    "RequirementsService: legacy plan 校验未过（%s），放弃反向生成",
+                    [i.code for i in result.errors],
+                )
+                return None
+            payload = dict(plan_data or {})
+            payload["plan"] = plan.model_dump()
+            payload["raw_scenes"] = scenes
+            payload["scene_count"] = len(plan.sections)
+            payload["total_duration_sec"] = plan.target_duration_sec
+            payload["legacy"] = True
+            payload["markdown_content"] = render_plan_markdown(plan)
+            payload["summary"] = "按现有场景生成的 legacy 规划（非 plan-first 产物）"
+            # 展示 spec：legacy 路径同样走通用装配器（与新路径口径一致）
+            from clipwright.services.display_spec import ensure_display_specs
+
+            ensure_display_specs("plan", payload, scenes=scenes)
+            logger.info("RequirementsService: 会话 %s 使用 legacy plan（%d 段）", session_id[:12], len(plan.sections))
+            return payload
+        except Exception as exc:  # noqa: BLE001 - 兜底失败不应影响主流程
+            logger.warning("RequirementsService: legacy plan 生成失败: %s", exc)
+            return None
+
     async def _generate_plan(
         self, brief_data: dict | None, user_inputs: dict, session_id: str,
         feedback: str = "", existing_raw_scenes: list | None = None,
+        on_event: "Callable[[dict], Any] | None" = None,
     ) -> dict | None:
         """调用 StructureAgent（注入 Persona）并翻译为规划书。
 
         B6/E2：规划书修订路径——当已有 raw_scenes（简报未变、本会话已生成过场景）时
         跳过 StructureAgent 重新生成，仅带反馈重新 _translate_plan，避免重复完整 LLM 生成。
+
+        **D4 纪律（PRD plan-dispatch）**：正式生成规划书必须走 `dispatch_plan()`（主 agent
+        派 structure + 落 `reports/plan.json`）。本函数只剩两种合法调用场景：
+        ① 应急回退（`CLIPWRIGHT_PLAN_DISPATCH=0`）；② 修订路径（复用已有 raw_scenes，
+        不跑 structure）。若在派发开启时还有人拿它当正式通道，这里会写一条**可见**的
+        `degradation` 条目——不允许"偷偷又开第二条正式通道"藏在日志里。
         """
+        if PLAN_DISPATCH_ENABLED and not (isinstance(existing_raw_scenes, list)
+                                          and existing_raw_scenes):
+            logger.warning("规划书走了内联通道（应为派发）：session=%s", session_id)
+            try:
+                _timeline(session_id).append(
+                    type="degradation",
+                    content="规划书经由内联通道生成（正常应走主 agent 派发）",
+                    source="requirements",
+                    meta={"kind": "plan_inline_fallback", "role": "system"},
+                )
+            except Exception:  # noqa: BLE001 — 记录失败不影响生成
+                pass
         try:
-            from clipwright.agents.structure_agent import StructureAgent
             from clipwright.schema.agent import AgentContext, StructureInput
             from clipwright.persona.loader import load_persona_by_id, resolve_inheritance
             from clipwright.persona.validator import validate_manifest
@@ -1679,7 +2566,8 @@ class RequirementsService:
                     web_context=web_context,
                 )
 
-            agent = StructureAgent()
+            # 说明：早期这里 `agent = StructureAgent()` 后直接 execute；
+            # 现在统一走 `stage_subagent.run_inline("structure", …)`（单一实例化通道）。
             context = AgentContext(
                 pipeline_id=session_id,
                 persona_id=persona_id,
@@ -1701,9 +2589,9 @@ class RequirementsService:
             web_context = await _build_web_context(f"{topic} {script}"[:300])
             if web_context:
                 if rag_context:
-                    rag_context += f"\n\n## 联网搜索参考\n{web_context}"
+                    rag_context += _hdr("PROMPT_WEB_CONTEXT_HEADER") + f"{web_context}"
                 else:
-                    rag_context = f"## 联网搜索参考\n{web_context}"
+                    rag_context = _hdr("PROMPT_WEB_CONTEXT_HEADER").lstrip("\n") + f"{web_context}"
 
             # 注入素材库概览（空素材库 → 无额外段落，零变化）
             overview = _material_library_overview()
@@ -1721,7 +2609,17 @@ class RequirementsService:
                 else:
                     rag_context = f"## AI 生成能力\n{gen_overview}"
 
-            result = await agent.execute(
+            from clipwright.services import stage_subagent
+
+            if on_event:
+                # 用户 2026-10-31：不要让"确认简报"之后整段静默——
+                # 派发结构阶段本身就是一个可见的阶段事实。
+                on_event({"type": "stage", "data": {
+                    "stage": "structure", "status": "running",
+                    "action": "派发结构阶段：生成分镜", "phase": "plan",
+                }})
+            result = await stage_subagent.run_inline(
+                "structure",
                 StructureInput(
                     context=context,
                     persona_config=persona_config,
@@ -1730,6 +2628,10 @@ class RequirementsService:
                     creative_brief=brief_data,
                 ),
                 context,
+                # 必须比 StructureAgent.timeout_sec 更宽松：外层先掐断会把
+                # 内层"LLM 超时 → 兜底分镜"的降级路径整条跳过，
+                # 结果只有一句空消息的「规划书生成失败」。
+                timeout_sec=PLAN_STRUCTURE_TIMEOUT,
             )
             # StructureAgent 的 LLM 用量（requirements 会话级，非 pipeline）
             agent_usage = getattr(result, "_llm_usage", None)
@@ -1748,64 +2650,155 @@ class RequirementsService:
                 except Exception as e:
                     logger.warning("StructureAgent 用量记录失败: %s", e)
             scenes = result.scenes or []
+            if on_event:
+                on_event({"type": "stage", "data": {
+                    "stage": "structure", "status": "ok" if scenes else "empty",
+                    "action": "结构阶段完成", "phase": "plan",
+                    "summary": f"{len(scenes)} 个场景" if scenes else "没有产出场景",
+                }})
             if not scenes:
                 logger.warning("StructureAgent 返回空场景")
                 return None
 
-            return await self._translate_plan(
+            if on_event:
+                on_event({"type": "stage", "data": {
+                    "stage": "translate", "status": "running",
+                    "action": "翻译规划书（中文可读版）", "phase": "plan",
+                }})
+            plan = await self._translate_plan(
                 scenes, brief_data, script, feedback=feedback, web_context=web_context,
             )
+            if on_event:
+                on_event({"type": "stage", "data": {
+                    "stage": "translate", "status": "ok" if plan else "failed",
+                    "action": "规划书翻译完成" if plan else "规划书翻译失败",
+                    "phase": "plan",
+                }})
+            return plan
 
         except Exception as e:
-            logger.exception("规划书生成失败: %s", e)
+            # TimeoutError 的 str() 是空串——只打 %s 会留下一句「规划书生成失败: 」，
+            # 看不出是超时还是别的。类型名与 timeout 都要进日志。
+            logger.exception(
+                "规划书生成失败（%s）: %s", type(e).__name__, str(e) or "（无消息）",
+            )
             return None
 
     async def _translate_plan(
         self, scenes: list[dict], brief_data: dict | None, script_text: str = "",
         feedback: str = "", web_context: str = "",
     ) -> dict:
-        """翻译场景为规划书。"""
+        """翻译场景为规划书。
+
+        E2E 2026-10-28：这份 prompt 里塞了 8000 字原文 + 简报 + 联网参考，
+        推理型模型（deepseek-v4-pro）在这么大的输入上频繁"只产出 reasoning、
+        正文为空"（HTTP 200 + content=""），三次重试全空 → 规划书退化成兜底表。
+        现在的策略是：**先给足预算的完整 prompt，失败再降规模重试一次**
+        （原文砍到 2500 字、去掉联网参考），最后才回落到确定性 Markdown。
+        """
         scenes_json = json.dumps(scenes, ensure_ascii=False, indent=2)
+        # 送给 LLM 的版本要**瘦**：口播原话已经在场景里且不该被改写，
+        # 40+ 段原话塞进 prompt 只会把 reasoning 预算吃光、正文返回空。
+        slim_scenes = json.dumps(
+            [
+                {
+                    "index": i,
+                    "title": s.get("title", ""),
+                    "duration_sec": s.get("duration_sec", 0),
+                    "keywords": s.get("keywords", []),
+                    "description": str(s.get("description", ""))[:80],
+                }
+                for i, s in enumerate(scenes)
+            ],
+            ensure_ascii=False,
+        )
         brief_json = json.dumps(brief_data, ensure_ascii=False) if brief_data else "{}"
 
-        system_prompt = PLAN_TRANSLATE_SYSTEM
-        if feedback:
-            system_prompt += (
-                f"\n\n## 用户修改意见（规划书必须体现这些修订）\n{feedback[:2000]}"
-            )
-        if script_text:
-            system_prompt += f"\n\n## 原始文稿（规划书必须忠实反映此内容）\n{script_text[:8000]}"
-        system_prompt += f"\n\n参考方案:\n{brief_json}"
-        if web_context:
-            system_prompt += f"\n\n## 联网搜索参考\n{web_context}"
+        def _system_prompt(*, compact: bool) -> str:
+            text = PLAN_TRANSLATE_SYSTEM
+            if feedback:
+                text += f"\n\n## 用户修改意见（规划书必须体现这些修订）\n{feedback[:2000]}"
+            if script_text:
+                # **必须灌注原文**：规划书要贴着作者原意写，砍掉原文会让翻译
+                # 只剩场景标题级别的信息，质量显著下降。compact 只用来丢联网参考
+                # 之类的附加块，原文一律给足。
+                text += f"\n\n## 原始文稿（规划书必须忠实反映此内容）\n{script_text}"
+            text += f"\n\n参考方案:\n{brief_json}"
+            if web_context and not compact:
+                text += _hdr("PROMPT_WEB_CONTEXT_HEADER") + f"{web_context[:800]}"
+            return text
 
-        try:
-            result = await asyncio.wait_for(
+        async def _call(*, compact: bool, budget: int, timeout: float) -> dict:
+            return await asyncio.wait_for(
                 llm_call_with_retry(self._llm, "plan_translate", pipeline_id="", **{
-                    "system_prompt": system_prompt,
-                    "user_prompt": f"结构 Agent 输出:\n{scenes_json}",
+                    "system_prompt": _system_prompt(compact=compact),
+                    "user_prompt": f"结构 Agent 输出（场景清单）:\n{slim_scenes}",
+                    "max_tokens": budget,
                 }),
+                timeout=timeout,
+            )
+
+        result: dict = {}
+        try:
+            result = await _call(
+                compact=False, budget=PLAN_TRANSLATE_MAX_TOKENS,
                 timeout=PLAN_TRANSLATE_TIMEOUT,
             )
             await self._record_llm_usage("requirements.plan_translate")
         except asyncio.TimeoutError:
-            # LLM 翻译超时 → 使用基础规划书，绝不挂起
-            logger.warning("规划书翻译超时（>%ds），使用基础规划书", PLAN_TRANSLATE_TIMEOUT)
-            result = {
-                "summary": "规划书已生成（LLM 翻译超时，使用基础版本）。",
-                "sections": [],
-                "markdown_content": self._default_markdown(scenes),
-                "total_duration_sec": sum(s.get("duration_sec", 0) for s in scenes),
-                "scene_count": len(scenes),
-            }
+            logger.warning("规划书翻译超时（>%ds）", PLAN_TRANSLATE_TIMEOUT)
 
-        if not result.get("markdown_content"):
+        def _has_real_body(plan: dict | None) -> bool:
+            if not isinstance(plan, dict) or plan.get("degraded"):
+                return False
+            return bool(str(plan.get("markdown_content") or "").strip())
+
+        if not _has_real_body(result):
+            # 降规模重试：输入变小，reasoning 才有余量给正文
+            logger.warning("规划书翻译未产出正文，改用精简 prompt 重试一次")
+            try:
+                retry = await _call(
+                    compact=True, budget=PLAN_TRANSLATE_MAX_TOKENS,
+                    timeout=PLAN_TRANSLATE_RETRY_TIMEOUT,
+                )
+                if _has_real_body(retry):
+                    result = retry
+                    await self._record_llm_usage("requirements.plan_translate")
+                else:
+                    logger.warning("精简 prompt 仍未产出正文，使用基础规划书")
+            except asyncio.TimeoutError:
+                logger.warning("精简 prompt 重试超时（>%ds）", PLAN_TRANSLATE_RETRY_TIMEOUT)
+            except Exception as exc:  # noqa: BLE001 — 重试失败不影响兜底
+                logger.warning("精简 prompt 重试异常: %s", exc)
+
+        if not _has_real_body(result):
+            # 两次都没正文 → 用确定性表格兜底（比一句"生成时遇到问题"可读得多），
+            # summary 保留降级说明，不谎称成功。
+            result = {
+                **result,
+                "summary": result.get("summary")
+                or "规划书已生成（LLM 未返回正文，使用基础版本）。",
+                "markdown_content": self._default_markdown(scenes),
+            }
+        elif not str(result.get("markdown_content") or "").strip():
             result["markdown_content"] = self._default_markdown(scenes)
+        # 无论 LLM 写了什么，**完整镜头表都是权威内容**（口播原话不能被改写），
+        # 统一追加在文末：这样规划书里既有 LLM 的制作说明，也有逐镜头的真值表。
+        table = self._default_markdown(scenes)
+        body = str(result.get("markdown_content") or "")
+        if table.strip() and table.strip() not in body:
+            result["markdown_content"] = f"{body.rstrip()}\n\n---\n\n{table}"
         if not result.get("total_duration_sec"):
             result["total_duration_sec"] = sum(s.get("duration_sec", 0) for s in scenes)
         if not result.get("scene_count"):
             result["scene_count"] = len(scenes)
         result["raw_scenes"] = scenes
+        # 展示 spec：规划书 trust=recipe_only，**只**用插件配方，模型给的一律不看。
+        # 挂在这里可以一次覆盖两条主路径：内联 `_generate_plan` 与派发回填
+        # `_finalize_dispatched_plan`（二者都调本函数）。
+        from clipwright.services.display_spec import ensure_display_specs
+
+        ensure_display_specs("plan", result, scenes=scenes)
         return result
 
     @staticmethod
@@ -1827,11 +2820,29 @@ class RequirementsService:
 
     # ── 持久化 ──────────────────────────────
 
+    @staticmethod
+    def _ensure_message_ids(messages: list[dict]) -> list[dict]:
+        """给没有 id 的消息补稳定 id（unified-stream PRD §M4）。
+
+        分页游标（`before_id`）与前端去重都依赖 id：老会话里消息只有
+        role/content/timestamp，前端每次刷新都得重新 uid 一遍，翻页就会重复。
+        这里补齐并原样返回（append-only，只补不改）。
+        """
+        out: list[dict] = []
+        for i, m in enumerate(messages or []):
+            if not isinstance(m, dict):
+                continue
+            if not m.get("id"):
+                m = {**m, "id": f"msg_{i:05d}"}
+            out.append(m)
+        return out
+
     def _persist(
         self, session_id: str, status: str, messages: list[dict],
         brief: dict | None, plan: dict | None, user_inputs: dict,
     ) -> None:
         """持久化会话状态到 MongoDB。"""
+        messages = self._ensure_message_ids(messages)
         try:
             model = RequirementsSessionModel.find_by_id(session_id)
             if model:
@@ -1982,36 +2993,99 @@ class RequirementsService:
     # ── SSE 流式推送 ──────────────────────────
 
     async def stream_chat(
-        self, session_id: str, user_message: str,
+        self, session_id: str, user_message: str, request: Any = None,
+        project_id: str = "",
     ):
         """SSE 流式推送对话结果。
 
-        轮68：gathering/init 态走 stream_generate 真流式——reply 文本以
-        delta 块渐进推送（前端实时打字效果），流结束后发完整 result。
-        其余状态（brief_ready 等）保持缓冲推送（回复为模板文本，无流式收益）。
+        gathering/init 态走 `stream_generate` 真流式——reply 与思考都以增量帧推送；
+        其余状态保持缓冲推送（回复为模板文本，无流式收益）。
+
+        **思考能力必须自报**（unified-stream PRD §5.1）：首帧发 `reasoning_status`，
+        明确告知 supported / streaming / available，前端据此三态显示，
+        不再用"有没有收到帧"反推能力——否则 provider 不回吐思考时 UI 只能假装思考。
         """
         # 1. 先返回用户消息确认 + typing 指示
         yield {"type": "status", "data": "typing"}
 
+        # 时间线：进程重启后轮询会丢，这里补上（幂等）；同时把已发生的任务事件补投影
+        try:
+            from clipwright.services import session_projection as _projection
+
+            # 存量会话先回填（老会话磁盘上零条目 → 界面空白，用户 2026-10-31 实测）
+            ensure_timeline_backfilled(session_id,
+                                       await asyncio.to_thread(self.get_session, session_id))
+            _projection.ensure_poller(session_id)
+            await asyncio.to_thread(_projection.project, session_id)
+        except Exception as exc:  # noqa: BLE001 — 投影失败不影响对话
+            logger.warning("会话时间线投影失败 %s: %s", session_id, exc)
+
         session = await asyncio.to_thread(self.get_session, session_id) or {}
         status = session.get("status", "init")
 
+        cap = self._reasoning_capability()
+
         # 2. gathering/init 态 → 真流式（on_delta 回调 → 队列 → 逐块 yield）
         if status in ("gathering", "init"):
+            yield {"type": "reasoning_status", "data": {
+                **cap,
+                # 首帧时"是否真的来了内容"还未知：给 None，前端据此显示 pending 而不是 available
+                "available": False if not cap.get("supported") else None,
+                "phase": status,
+            }}
+
             queue: asyncio.Queue = asyncio.Queue()
             _DONE = object()
+            thought: list[str] = []
+            _turn_ts = int(time.time() * 1000)
 
             def _on_delta(text: str) -> None:
                 queue.put_nowait({"type": "delta", "data": text})
 
+            def _on_reasoning(text: str) -> None:
+                # 思考增量（前端展开后追加）；同时攒起来，本轮结束后落一条事件
+                thought.append(text)
+                queue.put_nowait({"type": "reasoning", "data": text})
             async def _run() -> None:
                 try:
-                    result = await self.chat(session_id, user_message, on_delta=_on_delta)
+                    result = await self.chat(session_id, user_message, on_delta=_on_delta,
+                                             on_reasoning=_on_reasoning,
+                                             request=request)
+                    # PRD §15.5：agent 提问 → 单独的 question 帧（前端据此立刻出问题卡），
+                    # 再补 result 帧（含同一 question，刷新后从事件流也能重建）
+                    _q = result.get("question") if isinstance(result, dict) else None
+                    if isinstance(_q, dict) and _q.get("question_id"):
+                        queue.put_nowait({"type": "question", "data": _q})
+
+                    # 思考落盘（unified-stream PRD §5.1.4）：按轮**一条**事件，
+                    # 刷新/重连可从 `GET /{sid}/events?since_seq=` 回放
+                    if thought:
+                        _emit_session_thinking(session_id, "".join(thought), turn_ts=_turn_ts)
+                    else:
+                        # 支持但一块都没来 → 如实说"本轮没有思考内容"，不当成可用
+                        queue.put_nowait({"type": "reasoning_status", "data": {
+                            **cap, "available": False, "reason": "no_reasoning_this_turn",
+                            "phase": status,
+                        }})
+
+                    # 流式被静默回退过 → 明说"思考不可用 + 为什么"，并在 result 里留诊断
+                    _fb = _STREAM_FALLBACK.pop(str(session_id), "")
+                    if _fb and isinstance(result, dict):
+                        queue.put_nowait({"type": "reasoning_status", "data": {
+                            **cap, "available": False, "reason": "stream_fallback",
+                            "detail": _fb, "phase": status,
+                        }})
+                        result.setdefault("diagnostics", {})["stream_fallback"] = _fb
                     queue.put_nowait({"type": "result", "data": result})
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001 — 转成 SSE error 块，避免流中断无提示
                     logger.exception("流式对话失败: %s", exc)
+                    # 异常中断：把开着的流式条目收成 failed，别让界面永远"正在思考"
+                    try:
+                        _timeline(session_id).close_open("failed")
+                    except Exception:  # noqa: BLE001
+                        pass
                     queue.put_nowait(
                         {"type": "error", "data": "对话处理失败，请稍后重试"}
                     )
@@ -2030,6 +3104,802 @@ class RequirementsService:
                     task.cancel()
             return
 
-        # 3. 其他状态 → 缓冲路径（与旧行为一致）
-        result = await self.chat(session_id, user_message)
-        yield {"type": "result", "data": result}
+        # 3. 其他状态 → 缓冲路径：没有思考流，但**必须周期性发心跳**。
+        # 规划书生成常 30–90s，旧实现整段不发帧，代理/浏览器会先把连接判死
+        # （实测报「SSE 连接中断，3s 后重连」→ 前端看起来"点了没后续"）。
+        yield {"type": "reasoning_status", "data": {
+            **cap, "available": False, "reason": "phase_not_streaming", "phase": status,
+        }}
+
+        queue_b: asyncio.Queue = asyncio.Queue()
+        _DONE_B = object()
+
+        async def _run_buffered() -> None:
+            def _on_event(chunk: dict) -> None:
+                queue_b.put_nowait(chunk)
+
+            try:
+                res = await self.chat(session_id, user_message, on_event=_on_event,
+                                 request=request)
+                queue_b.put_nowait({"type": "result", "data": res})
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("缓冲对话失败: %s", exc)
+                try:
+                    _timeline(session_id).close_open("failed")
+                except Exception:  # noqa: BLE001
+                    pass
+                queue_b.put_nowait({"type": "error", "data": "对话处理失败，请稍后重试"})
+            finally:
+                queue_b.put_nowait(_DONE_B)
+
+        task_b = asyncio.create_task(_run_buffered())
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue_b.get(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    yield {"type": "heartbeat", "data": int(time.time())}
+                    continue
+                if item is _DONE_B:
+                    break
+                yield item
+        finally:
+            if not task_b.done():
+                task_b.cancel()
+
+    def _reasoning_capability(self) -> dict[str, Any]:
+        """当前 provider/model 是否会回吐思考内容（不猜、不假）。"""
+        probe = getattr(self._llm, "reasoning_capability", None)
+        if callable(probe):
+            try:
+                return dict(probe())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("reasoning 能力探测失败: %s", exc)
+        return {"supported": False, "streaming": False, "reason": "capability_unknown"}
+
+    # ── 规划书派发（PRD plan-dispatch D1/D2/D3）────────────────
+    #
+    # 旧实现：`_generate_plan` 在需求进程里 `stage_subagent.run_inline("structure")`，
+    # 主 agent（kernel）全程不参与——没有 thinking / delegate / run 可寻址，
+    # 「轨迹」里也查不到这一步（PRD plan-dispatch §1）。
+    # 新路径：建一个 `plan_only` 任务，由主 agent 派 structure → 内核收尾写
+    # `reports/plan.json` → 需求侧读产物回填 production_plan。**唯一执行通道**。
+
+    # ── 中止/失败/完成后的「续跑」（用户 2026-10-31 实测缺口）──────────────
+    #
+    # 现象：任务被中止后，用户在需求对话里再输一句提示词点发送，主 agent **不会启动**。
+    # 原因不是"消息没发出去"，而是四条老分支里**没有任何一条会建任务**：
+    #   pipeline_running → 只回一句「管线正在运行中，请稍候」（哪怕任务早就被中止了）；
+    #   pipeline_done    → 只回一句模板，回「重新生成」才回到 plan_ready；
+    #   plan_ready       → 只按反馈**修订规划书**（LLM 改文案），从不派任务；
+    #   brief_confirmed  → 只提示"正在生成规划书"。
+    # 于是"中止 → 再说一句 → 继续干"这条最自然的操作整条不存在。
+    #
+    # 这里补上：只要该会话**跑过任务**（消息里有 task_released 标记）且当前没有活着的
+    # 任务，就把用户这句话当成新任务的目标重新拉起主 agent，并把上一轮的
+    # 规划书/简报/会话对话/执行轨迹一起塞进它的上下文（见 context_loader 的
+    # `user_instruction` / `conversation` / `prev_run` 三段）。
+
+    def _released_before(self, session: dict) -> bool:
+        """会话是否已经跑过并释放过任务（`_release_session_after_task` 写的标记）。"""
+        for msg in reversed(list((session.get("messages") or []))[-10:]):
+            if not isinstance(msg, dict):
+                continue
+            meta = msg.get("metadata") or {}
+            if isinstance(meta, dict) and meta.get("task_released"):
+                return True
+        return False
+
+    def _bound_tasks(self, session_id: str) -> list[str]:
+        try:
+            from clipwright.services.session_log import get_log
+
+            return list(get_log(session_id).task_ids())
+        except Exception:  # noqa: BLE001 — 读不到绑定就当没跑过
+            return []
+
+    def _live_task_id(self, session_id: str) -> str:
+        """会话绑定里**还活着**的任务 id（空 = 没有在跑的任务）。"""
+        try:
+            from clipwright.services.agent_kernel import AgentKernel
+
+            kernel = AgentKernel()
+            for tid in reversed(self._bound_tasks(session_id)):
+                task = kernel.get(tid)
+                if task is not None and not task.terminal:
+                    return tid
+        except Exception:  # noqa: BLE001 — kernel 不可用按"没有活任务"处理
+            return ""
+        return ""
+
+    async def _maybe_continue_as_task(
+        self, session_id: str, session: dict, user_message: str, *,
+        request: Any = None, status: str = "", project_id: str = "",
+    ) -> dict[str, Any] | None:
+        """判断这条消息该不该当成"续跑指令"；该就把主 agent 拉起来。"""
+        text = (user_message or "").strip()
+        if not text:
+            return None
+        if text in ("重新生成", "再来一版", "重新生成视频"):
+            return None
+        if self._is_confirm_heuristic(text) and len(text) <= 16:
+            return None                          # 短促的「确认/没问题」不抢原分支
+        if status == "waiting_user":
+            return None                          # 有 pending 问题：先把问题答完
+        released = self._released_before(session)
+        if status in ("pipeline_running", "planning"):
+            # 悬空态：会话仍标着"运行中"，但绑定任务已经终态/不存在（中止、进程重启、
+            # 监听没挂上）。这就是"中止后发消息永远只看到『请稍候』"的现场。
+            if self._live_task_id(session_id):
+                return None
+            status, released = "plan_ready", True
+        if status == "pipeline_done":
+            released = True
+        elif status != "plan_ready":
+            return None
+        if not released:
+            return None                          # 从没跑过任务 → 保留"规划书修订闭环"
+        plan = session.get("production_plan")
+        if not isinstance(plan, dict) or not plan:
+            # 中止发生在「生成规划书」阶段：规划书还没回填，但简报在 → 重派规划任务。
+            brief = session.get("creative_brief")
+            if not isinstance(brief, dict) or not brief:
+                return None
+            try:
+                res = await self.dispatch_plan(session_id, retry=True)
+            except Exception as exc:  # noqa: BLE001 — 重派失败就交给原分支给提示
+                logger.warning("续跑：重派规划书失败 %s: %s", session_id, exc)
+                return None
+            if not res or res.get("error") or not res.get("task_id"):
+                return None
+            return {"task_id": res.get("task_id"),
+                    "note": "收到，已按你的要求重新派发规划书（主 agent 正在生成）。"}
+        return await self._continue_as_task(session_id, session, text,
+                                          request=request, project_id=project_id)
+
+    async def _continue_as_task(
+        self, session_id: str, session: dict, instruction: str, *,
+        request: Any = None, project_id: str = "",
+    ) -> dict[str, Any] | None:
+        """把用户这句新指令当成新任务目标，重新拉起主 agent（带上一轮上下文）。"""
+        from clipwright.schema.task import TaskLimits, TaskRequest
+        from clipwright.services.agent_kernel import AgentKernel
+        from clipwright.services.workspace import ensure_workspace
+
+        user_inputs = session.get("user_inputs") or {}
+        plan = session.get("production_plan") or {}
+        brief = session.get("creative_brief")
+        # 项目归属：显式 project_id → 会话已绑定的项目。拿到的这个 id 既用来定位
+        # 工作区，也写进 extra.proceed_project_id（任务结束把成片时间线写回它）。
+        # 旧实现在这里只认 project_id；前端没带时任务就不归属任何项目，
+        # 那一轮跑出的（含「动画轨」的）时间线**根本不落项目**（用户 2026-11-02 实测）。
+        if not project_id:
+            try:
+                from clipwright.services.session_log import get_log as _get_log
+
+                project_id = str(getattr(_get_log(session_id), "project_id", "") or "")
+            except Exception as exc:  # noqa: BLE001 — 拿不到就当没有项目
+                logger.warning("续跑：读取会话项目归属失败 %s: %s", session_id, exc)
+                project_id = ""
+        if project_id:
+            try:
+                from clipwright.services.session_log import get_log as _get_log2
+
+                _get_log2(session_id, project_id=str(project_id))
+            except Exception as exc:  # noqa: BLE001 — 绑定失败不阻断开工
+                logger.warning("续跑：绑定会话项目失败（继续）%s: %s", session_id, exc)
+        ws_project_id = str(project_id or user_inputs.get("workspace_name") or session_id)
+        ws_root = ""
+        docs: dict[str, str] = {}
+        try:
+            ws, _meta = await asyncio.to_thread(
+                ensure_workspace, ws_project_id, name=ws_project_id,
+            )
+            ws_root = str(ws.dirs().root)
+            try:
+                docs = ws.write_docs(brief, plan) or {}
+            except Exception as doc_err:  # noqa: BLE001 — 文档写失败不阻断开工
+                logger.warning("续跑：需求文档落盘失败（继续）%s: %s", session_id, doc_err)
+        except Exception as exc:  # noqa: BLE001 — 没工作区就让 Kernel 自己落 Workspace
+            logger.warning("续跑：工作区准备失败（继续）%s: %s", session_id, exc)
+
+        prev_tasks = self._bound_tasks(session_id)
+        # devplan T3.4：把"上一轮为什么结束"带进新任务的上下文。
+        # 为什么必须显式带：新任务只看得到黑板产物，看不到上一轮是被 capped 截断的、
+        # 还是因为质量阶段没跑——少了这条，模型会以为"上一轮已经好好做完了"，
+        # 于是从零重来一遍（既烧钱又把已有产物覆盖掉）。
+        prev_task_id = prev_tasks[-1] if prev_tasks else ""
+        prev_terminal = ""
+        prev_closeout = ""
+        prev_blocker = ""
+        if prev_task_id:
+            try:
+                _prev = AgentKernel().get(prev_task_id)
+                if _prev is not None:
+                    _tr = getattr(_prev, "terminal_reason_of", None)
+                    prev_terminal = _tr.value if _tr is not None else ""
+                    prev_blocker = str(getattr(_prev, "blocker_code", "") or "")
+                    _co = getattr(_prev, "closeout", None)
+                    if str(getattr(_co, "mode", "") or "") == "soft_landing":
+                        prev_closeout = str(getattr(_co, "deliverable_status", "") or "") or "unknown"
+            except Exception as exc:  # noqa: BLE001 — 取不到就退化成不携带
+                logger.warning("续跑：读取上一轮终态失败 %s: %s", prev_task_id, exc)
+        extra: dict[str, Any] = {
+            "session_id": session_id,
+            "production_plan": plan,
+            "creative_brief": brief,
+            "docs": docs,
+            # ★ 本轮用户指令 + 上一轮任务 id：context_loader 用它们拼
+            #   `## 本轮用户指令` 与 `## 上一轮执行轨迹`，让新任务"接得上"。
+            "user_instruction": instruction,
+            "previous_task_id": prev_task_id,
+            # 上一轮的终态口径（capped / blocked / achieved / user_cancelled …）
+            "previous_terminal_reason": prev_terminal,
+            "previous_blocker_code": prev_blocker,
+            "previous_closeout_status": prev_closeout,
+            "continuation": True,
+            "script_text": str(user_inputs.get("script_text") or ""),
+            "persona_id": str(user_inputs.get("persona_id") or ""),
+            "category_plugin_id": str(user_inputs.get("category_plugin_id") or ""),
+            "dry_run": False,
+            **({"workspace_root": ws_root} if ws_root else {}),
+            # 收尾要把成片时间线写回**发起这次对话的那个项目**（否则写回工作区 id，
+            # 编辑器里看到的仍是旧时间线）。前端 chat 带上 project_id 时才有值。
+            **({"proceed_project_id": project_id} if project_id else {}),
+        }
+        topic = str(plan.get("title") or user_inputs.get("topic") or "").strip()
+        try:
+            task_req = TaskRequest(
+                topic=topic or session_id,
+                persona_id=str(user_inputs.get("persona_id") or ""),
+                category_plugin_id=str(user_inputs.get("category_plugin_id") or ""),
+                duration_sec=float(user_inputs.get("audio_duration_sec") or 0),
+                plan_only=False,
+                extra=extra,
+            )
+            kernel = AgentKernel()
+            task = kernel.create(task_req, limits=TaskLimits(max_turns=160, max_tool_calls=800))
+        except Exception as exc:  # noqa: BLE001 — 建任务失败要如实告知，不假装在跑
+            logger.warning("续跑：创建任务失败 %s: %s", session_id, exc)
+            return None
+        try:
+            from clipwright.api.task import _register_owner
+
+            if request is not None:
+                _register_owner(task.id, request)
+        except Exception:  # noqa: BLE001 — 无 request（内部调用）时跳过归属登记
+            pass
+        try:
+            from clipwright.services import session_projection
+
+            session_projection.bind(session_id, task.id)
+        except Exception as exc:  # noqa: BLE001 — 绑定失败不阻断开工
+            logger.warning("续跑：绑定时间线失败（继续）%s: %s", session_id, exc)
+        # ★ 继承上一轮的黑板（script_skeleton / candidate_clips / timeline …）：
+        # 新任务黑板天然是空的，不继承的话主 agent 只会看到"黑板空了"，然后把
+        # edit 直接派出去 → `阶段 edit 缺输入：script_skeleton、candidate_clips`。
+        try:
+            prev_id = str((prev_tasks[-1] if prev_tasks else "") or "")
+            if prev_id:
+                seeded = kernel.seed_blackboard(prev_id, task.id)
+                if seeded:
+                    from clipwright.services.task_events import emit as _emit
+
+                    _emit(task.id, "context_loaded",
+                          f"已继承上一轮任务 {prev_id} 的黑板（{seeded} 个键）",
+                          {"seeded_keys": seeded, "from_task": prev_id, "phase": "continuation"},
+                          span="kernel")
+        except Exception as exc:  # noqa: BLE001 — 继承失败不阻断开工
+            logger.warning("续跑：继承黑板失败（继续）%s: %s", session_id, exc)
+        try:
+            await kernel.plan(task)
+            from clipwright.api.task import _schedule
+
+            _schedule(task.id)
+        except Exception as exc:  # noqa: BLE001 — 启动失败要留痕并回退
+            logger.warning("续跑：任务启动失败 %s: %s", task.id, exc)
+            return None
+        try:
+            from clipwright.services.async_util import spawn_background
+
+            spawn_background(self.watch_task_session(session_id, task.id),
+                             name=f"req-session-watch-{task.id}")
+        except Exception as exc:  # noqa: BLE001 — 监听挂不上不影响开工
+            logger.warning("续跑：终态监听挂载失败（继续）: %s", exc)
+        note = (f"收到，主 agent 已按你的要求重新开工（任务 {task.id}）。"
+                "进度看右侧「轨迹」，要改方向直接在这里说。")
+        try:
+            log = _timeline(session_id)
+            log.append(type="content", content=note, source="requirements",
+                       turn=log.user_turns() or 1,
+                       meta={"role": "assistant", "continuation_task": task.id})
+        except Exception as exc:  # noqa: BLE001 — 时间线写失败不影响开工
+            logger.warning("续跑：时间线写失败 %s: %s", session_id, exc)
+        logger.info("续跑主 agent：session=%s → task=%s（%s）",
+                    session_id, task.id, instruction[:60])
+        return {"task_id": task.id, "note": note}
+
+    async def stop_task(self, session_id: str) -> dict[str, Any]:
+        """用户点「停止」：中止会话上正在跑的任务，并把会话拉回可对话状态。
+
+        为什么要有这条（用户 2026-11-02）：任务跑起来以后输入区是隐藏的，用户除了
+        「等」没有别的动作；而**中止不是静默操作**——它必须在会话里留下一条记录，
+        否则续跑的主 agent 会以为自己是被「异常终止」的，看不出是用户主动喊停。
+        所以这里三件事一起做：
+        1. `kernel.cancel()` 真中止（打断正在跑的协程，而不只是改状态）；
+        2. 往会话消息里写一条**显式**说明（`metadata.user_stopped=True`），
+           `context_loader` 的会话片段会把这句话带进下一个任务的上下文；
+        3. 状态回 `plan_ready`（输入区恢复），时间线里也落同一条说明。
+        """
+        from clipwright.services.agent_kernel import AgentKernel
+
+        kernel = AgentKernel()
+        live = self._live_task_id(session_id)
+        task_status = ""
+        terminal_reason = ""
+        goal_status = ""
+        if live:
+            try:
+                task = kernel.cancel(live)
+                task_status = str(getattr(task, "status", "") or "")
+                # devplan §8：会话侧也带上机器可读原因（旧前端只读 note/status 仍可用）
+                reason_obj = getattr(task, "terminal_reason_of", None)
+                terminal_reason = (reason_obj.value if reason_obj is not None else "")
+                goal = getattr(task, "goal", None)
+                goal_status = goal.status.value if goal is not None else ""
+            except Exception as exc:  # noqa: BLE001 — 取消失败也要把会话放开
+                logger.warning("用户停止任务失败 %s/%s: %s", session_id, live, exc)
+        sess = await asyncio.to_thread(self.get_session, session_id) or {}
+        messages = list(sess.get("messages") or [])
+        if live:
+            note = (f"已按你的要求停止任务（你点了「停止」，任务 {live} 被中止）。"
+                    "要继续就直接说——我会接着做，不会从头再来。")
+            messages.append({
+                "role": "assistant", "content": note,
+                "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                "metadata": {"user_stopped": True, "task_id": live,
+                             "task_status": task_status or "cancelled",
+                             "terminal_reason": terminal_reason or "user_cancelled",
+                             "goal_status": goal_status},
+            })
+            await asyncio.to_thread(
+                self._persist, session_id, "plan_ready", messages,
+                sess.get("creative_brief"), sess.get("production_plan"),
+                sess.get("user_inputs") or {},
+            )
+            try:
+                log = _timeline(session_id)
+                log.close_open("interrupted")
+                log.append(
+                    type="content", content=note, source="requirements",
+                    turn=log.user_turns() or 1,
+                    meta={"role": "assistant", "user_stopped": True, "task_id": live},
+                )
+            except Exception as exc:  # noqa: BLE001 — 时间线写失败不影响中止
+                logger.warning("停止任务时写时间线失败 %s: %s", session_id, exc)
+            logger.info("用户停止任务：session=%s task=%s → plan_ready", session_id, live)
+            return {"stopped": True, "task_id": live, "status": "plan_ready", "note": note,
+                    # devplan T1.4：与 GET task / 事件流同一份真相（旧前端忽略即可）
+                    "terminal_reason": terminal_reason or "user_cancelled",
+                    "task_status": task_status or "cancelled",
+                    "goal_status": goal_status}
+        # 没有活着的任务（可能刚好自己跑完）→ 只把会话状态放正，不伪造一条中止说明
+        status_now = str(sess.get("status") or "")
+        if status_now in ("pipeline_running", "planning"):
+            await asyncio.to_thread(
+                self._persist, session_id, "plan_ready", messages,
+                sess.get("creative_brief"), sess.get("production_plan"),
+                sess.get("user_inputs") or {},
+            )
+        return {"stopped": False, "task_id": "", "status": "plan_ready", "note": ""}
+
+    async def watch_task_session(self, session_id: str, task_id: str) -> None:
+        """盯任务终态，把会话从 `pipeline_running` 拉回**可对话**状态（用户 2026-10-31）。
+
+        旧行为：`proceed` 把会话置成 `pipeline_running` 之后再没人改回来。任务一旦失败/
+        被取消，前端按状态隐藏输入框 → 用户既不能跟主 agent 说话，也不能重开一轮，
+        只能刷新页面赌运气。这里做两件事：
+        - 任务 `done` → `pipeline_done`（可以继续聊"再改一版"）
+        - 其它终态（failed/cancelled/超时）→ 回 `plan_ready`，并在消息流里写明原因，
+          让用户能直接说"重试"或调整方案；
+        同时把还开着的流式条目收尾，避免界面上永远转圈。
+        """
+        from clipwright.services.agent_kernel import AgentKernel
+
+        kernel = AgentKernel()
+        missing = 0
+        for _ in range(3600):
+            await asyncio.sleep(2.0)
+            task = kernel.get(task_id)
+            if task is None:
+                # 任务不在内存里（服务重启、被 `_TASKS` 上限淘汰）——旧实现这里
+                # `continue` 到底，监听挂满 1 小时也不会放开会话，于是用户看到的是
+                # "任务没了，但会话永远停在运行中"。连续 5 次找不到就认定丢了。
+                missing += 1
+                if missing >= 5:
+                    logger.warning("任务已不在内存，放开会话：session=%s task=%s",
+                                   session_id, task_id)
+                    try:
+                        await self._release_session_missing_task(session_id, task_id)
+                    except Exception as exc:  # noqa: BLE001 — 失败要留痕
+                        logger.warning("放开丢失任务的会话失败 %s/%s: %s",
+                                       session_id, task_id, exc)
+                    return
+                continue
+            missing = 0
+            if not task.terminal:
+                continue
+            try:
+                await self._release_session_after_task(session_id, task)
+            except Exception as exc:  # noqa: BLE001 — 收尾失败要留痕，不吞
+                logger.warning("任务终态释放会话失败 %s/%s: %s", session_id, task_id, exc)
+            return
+        logger.warning("会话终态监听超时：session=%s task=%s（1 小时）", session_id, task_id)
+
+    async def _release_session_missing_task(self, session_id: str, task_id: str) -> None:
+        """任务已不在内存（重启/淘汰）时放开会话，保证用户能继续说下一句。"""
+        sess = await asyncio.to_thread(self.get_session, session_id) or {}
+        if str(sess.get("status") or "") not in ("pipeline_running", "planning"):
+            return
+        messages = list(sess.get("messages") or [])
+        note = ("上一个任务已经结束（服务重启或被中止），现在可以直接说话继续："
+                "要我接着做就把要求写清楚，我会重新开工。")
+        messages.append({
+            "role": "assistant", "content": note,
+            "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+            "metadata": {"task_released": "task_missing", "previous_task": task_id},
+        })
+        await asyncio.to_thread(
+            self._persist, session_id, "plan_ready", messages,
+            sess.get("creative_brief"), sess.get("production_plan"),
+            sess.get("user_inputs") or {},
+        )
+        try:
+            log = _timeline(session_id)
+            log.close_open("interrupted")
+            log.append(type="content", content=note, source="requirements",
+                       turn=log.user_turns() or 1,
+                       meta={"role": "assistant", "task_released": "task_missing"})
+        except Exception as exc:  # noqa: BLE001 — 时间线写失败不影响释放
+            logger.warning("放开丢失任务时写时间线失败 %s: %s", session_id, exc)
+
+    async def _release_session_after_task(self, session_id: str, task: Any) -> None:
+        sess = await asyncio.to_thread(self.get_session, session_id) or {}
+        messages = list(sess.get("messages") or [])
+        status_now = str(sess.get("status") or "")
+        task_status = str(getattr(task, "status", "") or "")
+        finish = getattr(task, "finish", None)
+        reason = str(getattr(finish, "reason", "") or "")
+        # devplan T3.1（用户裁定 3）：只有 done 才是"跑完了"；capped 虽然有交付，
+        # 但不等于完成——会话必须回 plan_ready（可以继续对话），绝不能进 pipeline_done。
+        terminal_reason = ""
+        try:
+            _tr = getattr(task, "terminal_reason_of", None)
+            terminal_reason = _tr.value if _tr is not None else ""
+        except Exception:  # noqa: BLE001 — 旧任务没有该字段
+            terminal_reason = ""
+        ok = task_status == "done"
+        if ok:
+            new_status = "pipeline_done"
+            note = ("这一轮任务已经结束（成片时间线已写回项目）。"
+                    "要继续调整就直接说，我会重新规划。")
+        elif task_status == "capped":
+            new_status = "plan_ready"
+            _co = getattr(task, "closeout", None)
+            _deliv = str(getattr(_co, "deliverable_status", "") or "")
+            _dd = "完整" if _deliv == "delivered" else "部分"
+            note = ("这一轮跑满了运行上限，已经交付收尾报告"
+                    f"（{_dd}）——这不等于全部完成。要继续做就直接说一句，"
+                    "我会接着上一轮的产物往下推。")
+        else:
+            new_status = "plan_ready"
+            note = (f"任务没跑完（{reason or task_status}），规划书还在，可以直接说"
+                    "「重试」或告诉我要改哪里。")
+        # 已经是终态且不是"运行中"就不重复写（幂等）
+        if status_now == new_status and messages and messages[-1].get("content") == note:
+            return
+        messages.append({
+            "role": "assistant", "content": note,
+            "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+            "metadata": {"task_released": task_status, "reason": reason,
+                         "terminal_reason": terminal_reason},
+        })
+        await asyncio.to_thread(
+            self._persist, session_id, new_status, messages,
+            sess.get("creative_brief"), sess.get("production_plan"),
+            sess.get("user_inputs") or {},
+        )
+        try:
+            log = _timeline(session_id)
+            log.close_open("interrupted")
+            log.append(
+                type="content", content=note, source="requirements",
+                turn=log.user_turns() or 1,
+                meta={"role": "assistant", "task_released": task_status,
+                      "reason": reason, "terminal_reason": terminal_reason},
+            )
+        except Exception as exc:  # noqa: BLE001 — 时间线写失败不影响释放
+            logger.warning("释放会话时写时间线失败 %s: %s", session_id, exc)
+        logger.info("会话 %s 已释放（task=%s status=%s → %s）",
+                    session_id, getattr(task, "id", ""), task_status, new_status)
+
+    async def _dispatch_or_none(self, session_id: str,
+                                brief: Any = None) -> dict[str, Any] | None:
+        """D4：正式生成规划书统一走派发；返回 None 表示"走应急内联回退"。"""
+        if not PLAN_DISPATCH_ENABLED:
+            return None
+        if not isinstance(brief, dict) or not brief:
+            return None                      # 没简报：交给原分支给出明确提示
+        try:
+            result = await self.dispatch_plan(session_id)
+        except Exception as exc:  # noqa: BLE001 — 派发失败要如实回退，不静默
+            logger.warning("派发规划书失败（回退内联）%s: %s", session_id, exc)
+            return None
+        if result.get("error"):
+            logger.warning("派发规划书被拒绝 %s: %s", session_id, result.get("error"))
+            return None
+        return result
+
+    async def dispatch_plan(self, session_id: str, *, retry: bool = False) -> dict[str, Any]:
+        """派发"生成制作规划书"任务（幂等；同 brief 在跑就复用）。"""
+        sess = await asyncio.to_thread(self.get_session, session_id)
+        if not sess:
+            return {"error": "Session not found", "http_status": 404}
+        brief = sess.get("creative_brief")
+        if not isinstance(brief, dict) or not brief:
+            return {"error": "no_brief", "http_status": 400,
+                    "detail": "会话还没有创意简报：先出简报再确认生成规划书"}
+        brief_hash = _brief_hash(brief)
+        key = f"{session_id}:{brief_hash}"
+        from clipwright.api.task import _register_owner, _schedule
+        from clipwright.schema.task import TaskLimits, TaskRequest
+        from clipwright.services import session_projection
+        from clipwright.services.agent_kernel import AgentKernel
+        from clipwright.services.workspace import ensure_workspace
+
+        kernel = AgentKernel()
+        prev = _PLAN_DISPATCH.get(key)
+        if prev and not retry:
+            task = kernel.get(prev.get("task_id") or "")
+            if task is not None and not task.terminal:
+                return {"task_id": task.id, "run_id": prev.get("run_id", ""),
+                        "status": "planning", "reused": True}
+        user_inputs = sess.get("user_inputs") or {}
+        ws_project_id = str(user_inputs.get("workspace_name") or session_id)
+        ws_root = ""
+        try:
+            ws, _meta = await asyncio.to_thread(
+                ensure_workspace, ws_project_id, name=ws_project_id,
+            )
+            ws_root = str(ws.dirs().root)
+        except Exception as exc:  # noqa: BLE001 — 没有工作区就让它落 Workspace(task.id)
+            logger.warning("派发规划书：工作区准备失败（继续）%s: %s", session_id, exc)
+        extra = {
+            "session_id": session_id,
+            "brief_hash": brief_hash,
+            "creative_brief": brief,
+            "plan_dispatch": True,
+            "script_text": str(user_inputs.get("script_text") or ""),
+            **({"workspace_root": ws_root} if ws_root else {}),
+            "persona_id": str(user_inputs.get("persona_id") or ""),
+            "category_plugin_id": str(user_inputs.get("category_plugin_id") or ""),
+        }
+        task_req = TaskRequest(
+            topic=str(brief.get("title") or user_inputs.get("topic") or session_id),
+            persona_id=str(user_inputs.get("persona_id") or ""),
+            category_plugin_id=str(user_inputs.get("category_plugin_id") or ""),
+            duration_sec=float(user_inputs.get("audio_duration_sec") or 0),
+            plan_only=True,
+            extra=extra,
+        )
+        task = kernel.create(task_req, limits=TaskLimits(max_turns=40, max_tool_calls=80))
+        _PLAN_DISPATCH[key] = {"task_id": task.id, "run_id": task.id,
+                               "session_id": session_id, "brief_hash": brief_hash}
+        # C3：任务归到会话 → 事件由服务端投影进时间线（前端**不**再自己订阅）
+        try:
+            session_projection.bind(session_id, task.id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("派发规划书：绑定时间线失败 %s: %s", session_id, exc)
+        await kernel.plan(task)
+        _schedule(task.id)
+        await asyncio.to_thread(
+            self._persist, session_id, "planning",
+            sess.get("messages") or [], brief, sess.get("production_plan"),
+            user_inputs,
+        )
+        # 终态回填（C4：状态**只**由任务终态驱动，前端不推断）
+        from clipwright.services.async_util import spawn_background
+
+        spawn_background(self._watch_plan_task(session_id, task.id, brief_hash),
+                         name=f"plan-watch-{task.id}")
+        logger.info("派发规划书：session=%s → task=%s（workspace=%s）",
+                    session_id, task.id, ws_root or "<task>")
+        return {"task_id": task.id, "run_id": task.id,
+                "status": "planning", "reused": False}
+
+    async def _watch_plan_task(self, session_id: str, task_id: str,
+                               brief_hash: str) -> None:
+        """等任务终态 → 读 `reports/plan.json` → 回填 production_plan。"""
+        from clipwright.services.agent_kernel import AgentKernel
+
+        kernel = AgentKernel()
+        for _ in range(3600):            # 最长 1 小时（超时不再挂在这里）
+            await asyncio.sleep(1.0)
+            task = kernel.get(task_id)
+            if task is None:
+                _PLAN_DISPATCH.pop(f"{session_id}:{brief_hash}", None)
+                return
+            if not task.terminal:
+                continue
+            try:
+                await self._finalize_dispatched_plan(session_id, task, brief_hash)
+            except Exception as exc:  # noqa: BLE001 — 回填失败要留痕，不吞
+                logger.warning("规划书回填失败 %s/%s: %s", session_id, task_id, exc)
+            _PLAN_DISPATCH.pop(f"{session_id}:{brief_hash}", None)
+            return
+        logger.warning("规划书任务等待超时：session=%s task=%s", session_id, task_id)
+
+    async def _finalize_dispatched_plan(self, session_id: str, task: Any,
+                                        brief_hash: str) -> None:
+        sess = await asyncio.to_thread(self.get_session, session_id) or {}
+        messages = list(sess.get("messages") or [])
+        brief = sess.get("creative_brief")
+        user_inputs = sess.get("user_inputs") or {}
+        log = _timeline(session_id)
+        turn_no = log.user_turns() or 1
+
+        def _note(text: str, meta: dict[str, Any] | None = None) -> None:
+            messages.append({
+                "role": "assistant", "content": text,
+                "timestamp": datetime.now(tz=TIME_ZONE).isoformat(),
+                "metadata": meta or {},
+            })
+
+        status = str(getattr(task, "status", "") or "")
+        finish = getattr(task, "finish", None)
+        reason = str(getattr(finish, "reason", "") or "")
+        if status != "done":
+            _note(
+                f"规划书生成失败（{reason or status}），已回到方案确认态。"
+                "回复「确认」重试，或先调整方案。",
+                {"plan_dispatch_failed": reason or status},
+            )
+            await asyncio.to_thread(self._persist, session_id, "brief_ready", messages,
+                                    brief, sess.get("production_plan"), user_inputs)
+            try:
+                log.append(type="content", content=messages[-1]["content"],
+                           source="requirements", turn=turn_no,
+                           meta={"role": "assistant", "plan_dispatch_failed": reason})
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
+        extra = dict(getattr(getattr(task, "request", None), "extra", None) or {})
+        root = str(extra.get("workspace_root") or "")
+        scenes: list[Any] = []
+        artifact_hash = ""
+        if root:
+            try:
+                import json as _json
+                from pathlib import Path
+
+                payload = _json.loads(
+                    (Path(root) / "reports" / "plan.json").read_text(encoding="utf-8"))
+                scenes = list(payload.get("scenes") or [])
+                artifact_hash = str(payload.get("brief_hash") or "")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("规划书产物读取失败 %s: %s", session_id, exc)
+        if not scenes:
+            _note("规划书任务结束但产物为空，已回到方案确认态。回复「确认」可重试。",
+                  {"plan_dispatch_failed": "plan_artifact_empty"})
+            await asyncio.to_thread(self._persist, session_id, "brief_ready", messages,
+                                    brief, sess.get("production_plan"), user_inputs)
+            return
+        # brief 在生成期间被改过 → 不覆盖（PRD §4.3）
+        current_hash = _brief_hash(brief if isinstance(brief, dict) else None)
+        if artifact_hash and current_hash and artifact_hash != current_hash:
+            _note("简报在生成期间发生过变化，这份规划书不再对应当前方案，已作废。"
+                  "请确认最新方案后重新生成。", {"plan_dispatch_failed": "brief_changed"})
+            await asyncio.to_thread(self._persist, session_id, "brief_ready", messages,
+                                    brief, sess.get("production_plan"), user_inputs)
+            return
+        plan = await self._translate_plan(
+            scenes, brief if isinstance(brief, dict) else None,
+            str(user_inputs.get("script_text") or ""),
+        )
+        if not isinstance(plan, dict) or not plan:
+            plan = {"raw_scenes": scenes,
+                    "markdown_content": self._default_markdown(scenes),
+                    "legacy": True}
+        _note("规划书已生成（主 agent 派发结构阶段产出），请确认实施或提出修改。",
+              {"plan_ready": True, "generated_by": "kernel"})
+        await asyncio.to_thread(self._persist, session_id, "plan_ready", messages,
+                                brief, plan, user_inputs)
+        try:
+            log.append(type="content", content=messages[-1]["content"],
+                       source="requirements", turn=turn_no,
+                       meta={"role": "assistant", "plan_ready": True})
+            plan_scenes = plan.get("raw_scenes") or plan.get("scenes") or []
+            log.append(
+                type="plan", content=plan, source="requirements", turn=turn_no,
+                meta={"role": "assistant", "kind": "production_plan",
+                      "title": str(plan.get("title") or ""),
+                      "brief_hash": current_hash,
+                      "scene_count": len(plan_scenes) if isinstance(plan_scenes, list) else 0,
+                      "generated_by": "kernel", "task_id": str(getattr(task, "id", "")),
+                      "legacy": bool(plan.get("legacy"))},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("规划书时间线条目写入失败 %s: %s", session_id, exc)
+        logger.info("规划书回填完成：session=%s task=%s scenes=%d",
+                    session_id, getattr(task, "id", ""), len(scenes))
+
+
+def _hdr(name: str) -> str:
+    """小标题类提示词（B5 常量覆盖）：插件可替换，未覆盖时即 prompts.py 默认值。"""
+    from clipwright.plugins.prompt_overrides import resolve_constant
+
+    return resolve_constant(name)
+
+
+def _with_display_specs(session: dict) -> dict:
+    """读路径补展示 spec（C10：只补不存、不改入参）。
+
+    - 返回 **浅拷贝**：`creative_brief` / `production_plan` 各自再拷一层，原对象零改动；
+    - 老键归一：2026-11-03~07 落库的会话带 `genui`，`legacy.normalize_legacy()` 转成
+      `display_specs`（新形状优先，只读不写回）；
+    - 补 spec：交给**通用装配器**（它按当前插件契约洗/生成）；插件未装时装配器原样返回；
+    - 任何异常都只记日志并返回原对象——展示层补丁不得阻断会话读取。
+    """
+    if not isinstance(session, dict):
+        return session
+    try:
+        from clipwright.services.display_spec import ensure_display_specs
+        from clipwright.services.display_spec.legacy import normalize_legacy
+
+        out = dict(session)
+        brief = out.get("creative_brief")
+        if isinstance(brief, dict) and brief:
+            brief_copy = normalize_legacy(dict(brief), surface="brief")
+            out["creative_brief"] = ensure_display_specs("brief", brief_copy)
+        plan = out.get("production_plan")
+        if isinstance(plan, dict) and plan:
+            plan_copy = normalize_legacy(dict(plan), surface="plan")
+            scenes = plan_copy.get("raw_scenes") or plan_copy.get("scenes") or []
+            ensure_display_specs(
+                "plan", plan_copy, scenes=scenes if isinstance(scenes, list) else []
+            )
+            out["production_plan"] = plan_copy
+        return out
+    except Exception as exc:  # noqa: BLE001 — 展示层补丁不得阻断会话读取
+        logger.info("会话读取时补 display_specs 失败（返回原对象）: %s", exc)
+        return session
+
+
+def _brief_system_prompt(context: str = "") -> str:
+    """生产简报路径的 system prompt = 本文件的 base 提示词 + 插件扩展（计划 T1.4）。
+
+    为什么 base 用**本文件**这份而不是 `prompts.py` 的：
+    - 这份（`:396`）是生产在用的，字段集更宽（`production_plan` / `reference_style` /
+      `bgm_requirement` / `era_background` / `material_requirements` / `animation_style` /
+      `asset_ratio`），前端 `BriefCard` 直接渲染这些键；换成 model 派生版会**静默丢字段**。
+    - `prompts.py` 那份带 `{{BRIEF_TEMPLATE}}` 占位，是给 `requirements_agent`（当前无生产调用点）
+      用的。两份合并属独立清理（不变量 #23 的遗留），本任务不做。
+
+    插件扩展走与 agent 侧同一机制（`PluginPromptRegistry.get_for_agent("requirements")`）：
+    `plugins/genui` 就是靠这条把「可以写 genui spec」教给模型的。**插件没装/被禁用时这里
+    只是少一段说明**，简报字段与确认流程不受影响（C9 / Q8）。
+    """
+    prompt = CREATIVE_BRIEF_SYSTEM + context
+    try:
+        from clipwright.plugins.prompt_registry import PluginPromptRegistry
+
+        plugin_prompts = PluginPromptRegistry.get_for_agent("requirements")
+    except Exception as exc:  # noqa: BLE001 — 插件层不可用不得阻断需求对话
+        logger.info("RequirementsService: 插件提示词不可用（%s），只用 base 提示词", exc)
+        plugin_prompts = []
+    if plugin_prompts:
+        prompt += _hdr("PROMPT_PLUGIN_EXT_HEADER") + "\n\n".join(plugin_prompts)
+    return prompt

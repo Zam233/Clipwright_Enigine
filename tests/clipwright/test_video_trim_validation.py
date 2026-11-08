@@ -62,7 +62,7 @@ def test_trim_rejects_empty_container(tmp_path: Path):
         result = _run(tool.execute(input_path=str(src), start_sec=0, duration_sec=1,
                                    output_path=str(tmp_path / "out.mp4")))
     assert result.status == ToolStatus.ERROR
-    assert "source missing/corrupt" in (result.error or "")
+    assert "source missing" in (result.error or "")
     mock_ffmpeg.assert_not_called()
 
 
@@ -72,7 +72,7 @@ def test_trim_rejects_missing_input(tmp_path: Path):
                                start_sec=0, duration_sec=1,
                                output_path=str(tmp_path / "out.mp4")))
     assert result.status == ToolStatus.ERROR
-    assert "source missing/corrupt" in (result.error or "")
+    assert "source missing" in (result.error or "")
 
 
 def test_trim_rejects_corrupt_output(tmp_path: Path):

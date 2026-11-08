@@ -1,0 +1,15 @@
+id: genui
+name: GenUI 结构化展示插件
+version: 1.1.0
+kind: capability
+api_version: "2"
+description: GenUI 的**能力主体**：组件白名单/上限/卡片配方/教模型规范；engine 只提供通用 display_spec 机制与前端渲染器
+entry_point: "genui.main"
+author: Clipwright Team
+permissions: []
+# 不覆盖任何内置贡献，也不注册 UI slot（渲染走宿主自带的 renderer）
+override_builtin: false
+contributions:
+  - { kind: prompt, id: genui_requirements_prompt }
+  - { kind: display_spec, id: brief }
+  - { kind: display_spec, id: plan }

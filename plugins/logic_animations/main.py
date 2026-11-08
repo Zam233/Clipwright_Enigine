@@ -25,6 +25,9 @@ def register_diagrams(context: dict[str, Any]) -> dict[str, Any]:
 
 
 _DESCRIPTIONS: dict[str, str] = {
+    # B8-T8.2 第二步：11 个渲染器已从 engine 搬进本插件（键名与 RENDERER_MAP 一致），
+    # 所以这里列 12 种是**实现面**而不是口号；禁用插件后 `DiagramRenderer.get_supported_presets()`
+    # 里不再有这些 id。
     "mindmap": "中心节点 → 多级辐射分支，适合知识体系/头脑风暴",
     "radar": "3-8 轴多维度能力对比，支持数值标注",
     "gantt": "项目时间规划，横向条状图 + 依赖关系",
@@ -47,7 +50,7 @@ class LogicAnimationsPlugin(CapabilityPlugin):
         name="高级逻辑图解插件",
         version="2.0.0",
         kind=PluginKind.CAPABILITY,
-        description="12 种系统内建没有的复杂图解：思维导图/雷达图/甘特图/维恩3圆/热力图/桑基图/概念图/代码块/数据表格/引用卡片/对比卡片/组织结构图",
+        description="12 种图解渲染器：思维导图/雷达/甘特/维恩3/热力/桑基/概念/代码块/数据表/引用/对比卡/组织架构",
     )
 
     def contributions(self) -> list[Any]:
@@ -55,7 +58,7 @@ class LogicAnimationsPlugin(CapabilityPlugin):
         desc_list = "\n".join(f"  - {fid} — {desc}" for fid, desc in _DESCRIPTIONS.items())
         prompt = (
             "## 高级图解类型（来自 logic_animations 插件）\n"
-            f"以下高级图解可通过 mg_dynamic 或 [逻辑动画] 调用：\n{desc_list}"
+            f"本插件渲染以下 12 种图解（可通过 mg_dynamic 或 [逻辑动画] 调用）：\n{desc_list}"
         )
         return [
             Contribution(

@@ -304,7 +304,7 @@ class ContributionDecl(BaseModel):
 `plugin.yaml` 示例（迁移后的形态）：
 
 ```yaml
-id: my_material_lib
+id: local_material
 name: 我的素材库
 version: 1.2.0
 kind: material
@@ -545,6 +545,8 @@ export type SlotName =
   | 'props.section'        // 属性面板分区（按 clip kind 过滤）
   | 'export.preset'        // 导出预设
   | 'settings.section'     // 设置页分区
+  | 'create.dub'           // 「开始创作」向导 03 配音与字幕（2026-11-02 裁定 C 新增，名单 14→15）
+  | 'app.overlay'          // 全屏浮层（AppOverlayHost 承载）
   | 'shortcut';            // 快捷键
 
 export interface SlotContribution {
@@ -609,7 +611,7 @@ export interface SlotContribution {
 - `src/features/plugins/Slot.tsx` —— `<Slot name="editor.right-panel" context={...} />`
 - `src/features/plugins/slotRenderers/*.tsx` —— 每个 slot 一个渲染器（导航项/页面/面板/工具/菜单项/预设/快捷键）。
 
-复用现有资产：`PluginLayoutRenderer.tsx`（已有 13 种控件 + `UIAction` 执行）**直接用作面板类 slot 的渲染器**，不重写。
+复用现有资产：`PluginLayoutRenderer.tsx`（**14 种**控件 + `UIAction` 执行，2026-11-02 增补 `file`）**直接用作面板类 slot 的渲染器**，不重写。
 
 变更管理：`usePluginSlots(slot)` hook —— 拉取 `/api/plugin/contributions`，做 30s 缓存，插件启停后失效（与 `PluginsPage` 的开关联动）。
 
@@ -792,7 +794,10 @@ plugins/my_llm/
 └── ui.json              # { api_version:"2", slots:[...] }
 ```
 
-### 12.3 14 类贡献点一览
+### 12.3 18 类贡献点一览
+
+> 2026-11-07 补：本节原表停在 14 行（漏登 `animation` / `embedding_provider` / `rerank_provider`），
+> 已按 `clipwright/plugins/contribution.py` 的实际枚举补全到 17 行，并新增第 18 类 `display_spec`。
 
 | kind | 归属工作流 | 现有/新增 | 消费方 |
 |---|---|---|---|
@@ -808,8 +813,28 @@ plugins/my_llm/
 | tts_provider | B | 新增 | `services/voice.py` |
 | stt_provider | B | 新增 | `services/stt.py` |
 | renderer_backend | B | 新增 | 渲染入口 |
+| animation | B | 现有 | `plugins/builtin_contributions.py:99`（动画编目） |
+| embedding_provider | B | 现有 | `api/providers.py:65`、`api/settings.py:83` |
+| rerank_provider | B | 现有 | `api/providers.py:66` |
 | ui_slot | D | 新增 | 前端 Slot 渲染器 |
 | export_preset | D | 新增 | 导出页预设合并 |
+| **display_spec** | **D** | **新增（2026-11-07）** | **`services/display_spec`（后端通用清洗器/装配器）+ 前端宿主渲染器；纯数据，`object` 恒为 `None`，见 [genui-plugin-migration-prd-2026-11-07.md](genui-plugin-migration-prd-2026-11-07.md)** |
+
+> **provider 家族 owner 现状（2026-11-08 审计整改 B7，五家族全部迁完）**：`llm_provider` / `tts_provider` /
+> `embedding_provider` / `rerank_provider` / `stt_provider` 的**实现都已搬进插件**
+> （`plugins/{llm_anthropic,llm_openai_compatible,tts_qwen,tts_cosyvoice,tts_minimax,embedding_providers,
+> rerank_providers,stt_providers}`），engine 只留协议与只读注册表（自检 `provider_impls_in_plugins` 守）。
+> 兼容别名已全部删除；`no_vendor_branches` 与 `provider_impls_in_plugins` 两条门禁守回退。
+
+### 12.3.1 远程渲染归属（2026-11-08 审计整改 T8.6）
+
+`plugins/cloud_render/` 已删除（审计 §3.9 选项 A）：它只在 PRE_RENDER 里写一个
+`context["cloud_render"]`，**全仓没有任何消费方**——装了插件、填了 `server_url`，行为零变化。
+
+真正的远程渲染是**宿主能力**：`services/remote_render.py`（上传/轮询/下载/回退全套）+
+`providers/render` 注册的 `RemoteRenderBackend`，由 `api/render.py` 按 `settings.remote_render_url`
+选择；`/api/render/backends` 也会列出它并做可用性探测。要改成插件贡献，需要先把
+`RemoteRenderService` 拆成 `renderer_backend` 协议的实现（2.5 人日的另立目标）。
 
 ### 12.4 与审计文档的接口
 

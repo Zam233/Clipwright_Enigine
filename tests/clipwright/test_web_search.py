@@ -55,10 +55,19 @@ def _json_response(payload: dict) -> MagicMock:
 
 
 def _enable_search(monkeypatch) -> None:
-    """打开搜索配置（settings 为模块级单例，monkeypatch 自动恢复）。"""
+    """打开搜索配置（settings 为模块级单例，monkeypatch 自动恢复）。
+
+    同时清掉「主 LLM = DeepSeek 时复用平台 key」这条路径：`provider_key("deepseek")`
+    会读 `llm_base_url/llm_provider/llm_api_key`，否则本机 `.env` 里配了 DeepSeek
+    就会让搜索链多出第三个 provider，断言里的"尝试次数"随环境漂移。
+    """
     monkeypatch.setattr(settings, "enable_web_search", True)
     monkeypatch.setattr(settings, "web_search_api_key", "test-key")
     monkeypatch.setattr(settings, "web_search_timeout", 15)
+    monkeypatch.setattr(settings, "llm_provider", "anthropic", raising=False)
+    monkeypatch.setattr(settings, "llm_base_url", None, raising=False)
+    monkeypatch.setattr(settings, "llm_api_key", "", raising=False)
+    monkeypatch.setattr(settings, "web_search_deepseek_api_key", "", raising=False)
 
 
 # ── WebSearchService ──────────────────────────────────────
@@ -232,28 +241,37 @@ async def test_fetch_timeout_and_http_error_return_empty() -> None:
     assert out == ""
 
 
-async def test_fetch_strips_script_style_and_truncates() -> None:
-    """HTML：去 script/style 块与标签、解实体、压缩空白；max_chars 截断。"""
+async def test_fetch_strips_script_style_and_truncates(monkeypatch) -> None:
+    """HTML → 纯文本（去 script/style 块与标签、解实体、压缩空白），max_chars 截断。
+
+    2026-11-03 起 `WebFetchService.fetch()` 已改成 `probe()` 的统一入口（先 HEAD 判类型、
+    文本才取正文、HTML 优先 DeepSeek Fetch 再回落本地正则），整条链要 mock 的东西与
+    "文本提取"这个意图无关。所以拆成两段测：
+    1. 纯函数 `_html_to_text`——真正干提取与截断的地方；
+    2. `fetch()` 只剩一层委托（把 probe 的 content 取出来），用 stub 断言。
+    """
     html_doc = (
         "<html><head><script>var x = 1;</script>"
         "<style>.cls { color: red }</style></head>"
         "<body><p>Hello   <b>world</b> &amp; more</p>"
         "<p>Second paragraph here.</p></body></html>"
     )
-    resp = MagicMock()
-    resp.raise_for_status = MagicMock()
-    resp.headers = {"content-type": "text/html; charset=utf-8"}
-    resp.text = html_doc
-    client = _mock_client(get_response=resp)
-    with patch("httpx.AsyncClient", return_value=client):
-        out = await WebFetchService().fetch("https://x.com/a")
-        truncated = await WebFetchService().fetch("https://x.com/a", max_chars=10)
-
+    out = WebFetchService._html_to_text(html_doc, 4000)
+    truncated = WebFetchService._html_to_text(html_doc, 10)
     assert "var x" not in out
     assert ".cls" not in out
     assert out == "Hello world & more Second paragraph here."
     assert len(truncated) == 10
     assert truncated == out[:10]
+
+    svc = WebFetchService()
+
+    async def _fake_probe(url: str, *, max_chars: int = 4000, want_body: bool = True):
+        return {"content": out[:max_chars]}
+
+    monkeypatch.setattr(svc, "probe", _fake_probe)
+    assert await svc.fetch("https://x.com/a") == out
+    assert await svc.fetch("https://x.com/a", max_chars=10) == out[:10]
 
 
 # ── 模块级单例 ────────────────────────────────────────────

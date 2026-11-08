@@ -1,0 +1,106 @@
+"""调度中枢（Supervisor）数据模型 — B1 起逐步落地。
+
+本文件按开发计划 `docs/supervisor-dev-plan-2026-10-17.md` 分批增长：
+
+- B1：`LedgerEntry`（账本条目，F1）
+- B2：`Attribution`（归因结论，F2）、`DiagnosisReport`（诊断书，F5）
+- B3：`DispatchOrder`（派工单，F4）
+- B8/B9：`WorkerSpec` / `SubagentNode`（F10/F12）、`ExecRecord`（F11）
+
+约定：**只放数据契约，不放业务逻辑**（逻辑在 `services/` 与 `supervisor/`）。
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from pydantic import BaseModel, Field
+
+from .agent import Degradation, FailureReport
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class LedgerEntry(BaseModel):
+    """一个阶段一次尝试的完整记录（PRD F1）。
+
+    账本是「结构化尝试记录」，不是日志流：它要回答「第几次尝试、什么决策、
+    降了什么级、失败原因是什么、花了多少钱、用的哪个模型」。
+    """
+
+    id: str
+    stage: str
+    attempt: int = Field(description="该阶段第几次尝试（1 起）")
+    decision: str = Field(default="pass", description="pass / fail / cancelled / skipped")
+    input_digest: str = Field(default="", description="输入摘要（不含敏感内容）")
+    failure: Optional[FailureReport] = Field(default=None, description="执行失败的结构化回报（F9）")
+    degradations: list[Degradation] = Field(
+        default_factory=list, description="本次尝试中「完成了但打了折扣」的登记",
+    )
+    warnings: list[str] = Field(default_factory=list)
+    model: str = Field(default="", description="本次尝试使用的 provider/model")
+    usage: dict[str, Any] = Field(default_factory=dict, description="input/output tokens 等")
+    duration_ms: int = Field(default=0)
+    ts: datetime = Field(default_factory=_utcnow)
+
+
+class Attribution(BaseModel):
+    """归因结论（PRD F2）——「这次失败该怪谁」。"""
+
+    primary_stage: str = Field(default="", description="主责任阶段；空 = 未能定位")
+    upstream_chain: list[str] = Field(default_factory=list, description="连带的上游阶段（按执行序）")
+    evidence_refs: list[str] = Field(default_factory=list, description="证据：账本条目 id")
+    confidence: str = Field(default="low", description="high / mid / low")
+    unrepairable: bool = Field(default=False, description="资源确实不存在等，重试无意义")
+    reason: str = Field(default="", description="人话理由（诊断书直接用）")
+    source: str = Field(default="rule", description="rule / llm / fallback")
+
+
+class SubagentNode(BaseModel):
+    """子代理树的一个节点（PRD F12 / B7）。
+
+    字段一律 snake_case，与账本/决策保持一致（前端类型同步）。
+    """
+
+    id: str
+    parent_id: Optional[str] = Field(default=None, description="父节点；None = 秘书直管")
+    role: str = Field(default="", description="角色名，例如「素材可用性核查员」")
+    kind: str = Field(default="ephemeral", description="stage / plugin / ephemeral")
+    status: str = Field(default="pending", description="pending/running/done/failed/cancelled")
+    model: dict[str, str] = Field(default_factory=dict, description="{provider, model}")
+    duration_ms: int = Field(default=0)
+    cost_usd: float = Field(default=0.0)
+    last_output: str = Field(default="")
+    cancellable: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=_utcnow)
+    ts: datetime = Field(default_factory=_utcnow)
+
+
+class SupervisorDecision(BaseModel):
+
+    id: str
+    strategy: str = Field(description="S1_same / S2_model / S3_upstream / S4_accept_degraded / S5_new_path / S6_abort")
+    target_stage: str = Field(default="", description="要重做的阶段；S4/S6 时为空")
+    reason: str = Field(default="", description="为什么选这个策略（人话）")
+    allow_degrade: bool = Field(default=False, description="是否允许接受降级交付")
+    aborted: bool = Field(default=False, description="S6 时置 True")
+    stage_attempts: dict[str, int] = Field(default_factory=dict)
+    previous_strategy: str = Field(default="", description="同阶段上一次用过的策略（防重复）")
+    mode: str = Field(default="shadow", description="生成时的 supervisor_mode")
+    ts: datetime = Field(default_factory=_utcnow)
+
+
+class DiagnosisReport(BaseModel):
+    """诊断书（PRD F5）——给人看的一页结论。"""
+
+    conclusion: str = Field(default="")
+    problems: list[dict[str, Any]] = Field(default_factory=list)
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    attempted: list[dict[str, Any]] = Field(default_factory=list)
+    suggestions: list[dict[str, Any]] = Field(default_factory=list)
+    cost: dict[str, Any] = Field(default_factory=dict)
+    mode: str = Field(default="shadow", description="生成时的调度中枢模式（shadow/on）")
+    pipeline_id: str = Field(default="")

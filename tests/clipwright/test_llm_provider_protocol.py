@@ -10,12 +10,8 @@ from typing import Any
 import pytest
 
 from clipwright.providers.base import LLMProvider, ProviderCapabilities
-from clipwright.providers.llm import (
-    AnthropicProvider,
-    OllamaProvider,
-    OpenAIProvider,
-    ensure_llm_providers_registered,
-)
+from plugins.llm_anthropic.provider import AnthropicProvider
+from plugins.llm_openai_compatible.provider import OllamaProvider, OpenAIProvider
 
 
 class _FakeAnthropic:
@@ -27,6 +23,38 @@ class _FakeAnthropic:
 
 class _FakeOpenAI(_FakeAnthropic):
     pass
+
+
+@pytest.fixture(autouse=True)
+def _llm_plugins_registered():
+    """B7-T7.2：LLM 实现归插件；测试进程显式注册两个插件的贡献（等价于"插件已安装"）。"""
+    from clipwright.plugins.contribution import ContributionRegistry
+    from plugins.llm_anthropic.main import AnthropicProviderPlugin
+    from plugins.llm_openai_compatible.main import OpenACompatibleProviderPlugin
+
+    from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+
+    # 根 conftest 已保证"LLM 插件已装"（B7-T7.2 后单测默认如此）；这里幂等跳过，
+    # 否则同名 provider 会被 dispatch 以"已被注册"拒绝。
+    if ContributionRegistry.resolve(ContributionKind.LLM_PROVIDER, "anthropic") is not None:
+        yield
+        return
+
+    owners = []
+    for owner, plugin in (
+        ("llm_anthropic_test", AnthropicProviderPlugin()),
+        ("llm_openai_test", OpenACompatibleProviderPlugin()),
+    ):
+        items = plugin.contributions()
+        ContributionRegistry.declared_scope(owner, [c.key for c in items])
+        report = ContributionRegistry.register(owner, items)
+        assert report.ok, report.rejected
+        owners.append(owner)
+    try:
+        yield
+    finally:
+        for owner in owners:
+            ContributionRegistry.unregister_plugin(owner)
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +71,6 @@ def _patch_clients(monkeypatch):
 
 class TestProviderConformance:
     def test_builtin_providers_satisfy_protocol(self):
-        ensure_llm_providers_registered()
         for impl in (AnthropicProvider(), OpenAIProvider(), OllamaProvider()):
             assert isinstance(impl, LLMProvider), f"{impl.name} 不满足 LLMProvider 协议"
 
@@ -148,4 +175,3 @@ class TestCapabilityNegotiation:
                 ))
         finally:
             ContributionRegistry.clear_all()
-            ensure_llm_providers_registered()

@@ -82,7 +82,7 @@ class TestB2ProviderConformance:
         assert "capabilities" in reason
 
     def test_complete_provider_accepted(self):
-        from clipwright.providers.llm import OpenAIProvider
+        from plugins.llm_openai_compatible.provider import OpenAIProvider
         from clipwright.plugins import contribution_dispatch
 
         item = Contribution(ContributionKind.LLM_PROVIDER, "good_llm", OpenAIProvider())

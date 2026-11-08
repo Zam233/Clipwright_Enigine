@@ -16,7 +16,7 @@
 | EditAgent 落轨 | 支持 `ClipKind.VIDEO` / `ClipKind.IMAGE` 两类片段 | `agents/edit_agent.py:913` |
 | 素材类型枚举 | `MaterialType` 含 video/audio/image | `schema/material.py:12-17` |
 | AudioAgent BGM 铺轨 | 消费 `local_path or url` | `agents/audio_agent.py:263-264` |
-| **素材检索** | MaterialAgent 唯一来源是 `MaterialRegistry.search()`（`agents/material_agent.py:339`）；三个生成插件**未注册任何 MaterialSource**（注册素材源的只有 bgm_library/gif_sticker/coverr/pexels/pixabay/unsplash） | `plugins/*/main.py` |
+| **素材检索** | MaterialAgent 唯一来源是 `MaterialRegistry.search()`（`agents/material_agent.py:339`）；三个生成插件**未注册任何 MaterialSource**（注册素材源的只有 bgm_library/gif_sticker/pexels/pixabay/unsplash/local_material） | `plugins/*/main.py` |
 | **剪辑消费** | EditAgent 只吃 `input_data.candidate_clips`（按 scene_index 分组、suggested_assets 按分排序），全部来自素材代理 | `agents/edit_agent.py:719-724` |
 | **BGM 检索** | 只搜 MaterialRegistry | `agents/audio_agent.py:27-47,161-162` |
 

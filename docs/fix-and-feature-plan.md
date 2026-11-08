@@ -2951,3 +2951,405 @@ R1–R10 的验收全在合成素材上，"真实素材"一直是最大的未验
   一个总览、一个制作器。若觉得左栏过长，可把总览收进制作器页内的一个 tab——本轮按
   用户"类型页面仅可以展现全部类型"的字面要求保留为独立页。
 
+---
+
+### 执行轮次（主 agent 化 v1.4：后端 B0–B9 + 前端 F1–F9）
+
+> 详细交付表见 [`docs/supervisor-dev-plan-2026-10-17.md`](supervisor-dev-plan-2026-10-17.md) §10/§11
+> 与前端仓库 `docs/supervisor-frontend-dev-plan-2026-10-17.md` §14。
+> 分支 `feat/master-agent`（两仓），PR #3。
+
+- ✅ **B0** 失败回报契约（`Degradation` / `FailureReport` / `AgentOutputBase`，两种 FAIL 语义分离）
+- ✅ **B1** 账本 `services/episode_ledger.py`（单点埋设 + Mongo 旁路）
+- ✅ **B2** 归因（规则 R1–R4，LLM 仅兜底）/ 诊断书（模板化，无 LLM）/ 影子模式
+- ✅ **B3** 策略阶梯 S1→S2→S5→S6 + 派工（`services/supervisor.py`）
+- ✅ **B4** 模型路由：provider 白名单、跨 provider 记账、`risk_judge` 共用白名单
+- ✅ **B5** 预算（未配置=无上限，只记账不阻断）+ 人工改派
+- ✅ **B6** `off` 模式等价性（8 条等价性测试）
+- ✅ **B7** 子代理观测（tracker + `subagent_start/progress/end` 事件 + 取消）
+- ✅ **B8** 动态子代理：工具子集、星型拓扑、两级审核门、并发上限、**工具真实可用（tool-call 循环）**
+- ✅ **B9** 执行网关：硬底线 → 棘轮 → 独立判定 → 授权 → 沙盒 → 审计；`POST /exec`；`run_python`
+- ✅ **接线补齐**（本轮）：改派/建议**真触发重跑**（`start_agent_retry` 共用路径）、子代理开销入账、全局待审徽标、后台待授权命令进队列
+- ✅ **CI 修复**：错误类 ruff（E9/F63/F7/F82/F823）归零（修掉 29 处真实 NameError，如 `Path` 未导入、
+  `logger` 未导入、`_srt_time` 签名误用、`_CLIPWRIGHT_TEMP` 未导入）；Linux 上 11 项失败用例
+  按性质分别处理（缺 CJK 字体 → CI 装 `fonts-noto-cjk`；Windows 字体断言 → 平台化；
+  缺 cv2 → 软跳过；`file:///C:/...` 白名单跨平台漏洞 → 修真）；workflow 拆成
+  「错误类必须为 0」+「风格类只报告」
+- 回归：后端 **3361 passed, 3 skipped, 1 xfailed** · 前端 **853 passed** + `tsc` 0 错 + `eslint` 0 error + `build` 通过
+- 待人工验收：A10（off 模式 timeline 逐字节一致）、A5（A/B 各 20 条管线 token 账单）、A8（5 人可用性）
+
+
+
+### 执行轮次（2026-10-29：前端 E2E 续跑——需求会话持久化 2 处 + 阶段墙钟下限真修）
+
+> 用户裁定：先完成上一轮修复，再**通过前端**做一遍完整 E2E。本轮所有结论都来自真实前端点击与真实后端日志。
+
+**E2E 暴露并修掉的真缺陷**
+
+1. **需求会话不落盘 → 刷新后规划书卡片与「确认并启动管线」消失**
+   - 根因：`doSave()` 会把 `agent_state` 随项目保存，但它只由 `timelineStore` 变化触发；需求阶段根本不动时间线，于是项目里的 `agent_state` 永远是初始空快照（实测 `proj_7e160520ccee` = `requirementsSessionId=null / status=idle / 0 条消息`）。同时 `setRequirementsSession` / `setRequirementsStatus` 不写本地草稿，`sessionId/status` 也丢。
+   - 修复：`stores/agentStore.ts` 两个 setter 同步写草稿；`pages/EditorPage.tsx` 新增需求字段订阅（sessionId/status/消息数/brief/plan，4s 防抖 → `doSave()`），恢复时若无服务端快照则回退读 `loadRequirementsDraft()`。
+   - 验收：注入草稿后刷新 → 规划书卡片 + 「确认并启动管线」均出现，点击 → `POST /api/requirements/proceed` **200**，返回 `task_af326f74aa`（`mode=task`）。前端回归 **127 文件 / 1102 用例通过**、`tsc` 0 错。
+
+2. **阶段墙钟下限形同虚设（`MIN_STAGE_TIMEOUT_SEC = 0.0`）**
+   - 根因：`stage_subagent.run_stage` 用 `max(spec.timeout_sec, MIN_STAGE_TIMEOUT_SEC)`，而下限被设成 0 → 主 Agent 自填的 900s 直接生效。实测 43 场、素材库全空的真实项目：material 连超 **3 次 900s**（每次逐场搜 Pexels + 视觉 LLM，还撞上 Pexels 429），随后 edit 因缺 `candidate_clips` 直接失败，40 分钟白烧。
+   - 修复：新增配置 `agent_stage_min_timeout_sec`（默认 3600，`0` = 不设下限）；`services/stage_subagent.py` 增加 `stage_timeout_floor()` / `effective_stage_timeout()`，`timeout_sec<=0` 一律按不设上限（走 `services/timeouts.wait_or_run`），超时文案回报**生效值**而非模型自填值。
+   - 回归：`tests/test_stage_subagent.py` 24 passed（新增「900→3600」「0=不限时」「下限 0 时信任传入值」三条）。
+
+**遗留（如实记录）**
+
+- Pexels 免费额度在 43 场规模下会触发 429（日志 `Pexels视频搜索失败`），material 阶段的重试策略会放大耗时；缓存/退避尚未统一。
+- 本轮 E2E 的管线本身在旧进程里运行（不含墙钟修复），需重启后端后重新 proceed 才能验证 3600s 下限的真实效果。
+
+**E2E 收尾补记（2026-10-29 22:2x，前端一键 E2E 抓出的 5 个真缺陷，全部实测修好）**
+
+3. **导出页提交 100% 被拒（`非法输出文件名`）** —— `api/render.py` 对**整串** `output_path`
+   做 `is_safe_download_name`，而客户端一直传 `renders/xxx.mp4`（含路径分隔符）→ 400。
+   新增 `security.output_basename()`：允许普通目录段、任何一段是 `..` 一律拒绝、只取最后一段。
+   `/queue` 与 `/start` 两个入口同口径；穿越用例（`../../etc/passwd`、`..\..\secret.mp4`）仍 400。
+
+4. **整片渲染 90% 必失败（`bake_scrim_into_mov() takes 2 positional arguments but 5 were given`）**
+   —— 渲染期底板兜底的调用点用**位置传参**，而 `bake_scrim_into_mov` 的 alpha/grow/blur 是
+   keyword-only；异常又被外层吞掉，表现为「渲染 90% 失败且日志无原因」。改成关键字传参，
+   并在 `except` 分支补 `logger.exception`（终态队列 60s 后清理，不留日志等于永久失联）。
+
+5. **渲染完成即失联** —— 终态 60s 后 `_drop_render_task` 连 Mongo 记录一起删，刷新导出页只剩
+   「恢复的任务 / Task not found」，拿不到「下载」。改为：内存条目仍 60s 清理，Mongo 记录保留
+   30 分钟并作为「最近完成」返回（`list_queue` 同时返回 `output_path`/`filename`），前端恢复
+   队列时也接受 `completed` 行 → 刷新后「下载」按钮在。
+
+6. **启动恢复从未生效（`'coroutine' object is not iterable`）** —— `main.py` 在 lifespan（async）
+   里同步调用 `recover_pipeline_runtime()`，而模型层 `_io` 在事件循环里返回 coroutine，
+   于是遗留 running 管线**永远不被标 interrupted**。改成 `asyncio.to_thread`。同批新增
+   `mark_interrupted_render_tasks()`：重启后 14 个僵尸 queued 渲染任务被标成「进程重启中断」。
+
+7. **前端需求会话/任务完成后的两处断链** —— `setRequirementsSession/Status` 不写本地草稿、
+   `agent_state` 只在时间线变化时落盘（刷新后规划书卡片与「确认并启动管线」消失）；
+   以及任务完成后编辑器不重拉项目时间线。已分别在 `stores/agentStore.ts`、
+   `pages/EditorPage.tsx` 修复，并加了「过期 pipeline_running 自救」（任务列表里没有在跑的
+   任务就降级为 pipeline_done，否则确认按钮永久拒绝启动）。
+
+**前端一键 E2E 实测结果（全部由页面点击驱动）**
+
+- 恢复规划书 → 点「确认并启动管线」→ `POST /api/requirements/proceed` 200 → `task_962cb2b33d`
+- 主 Agent 跑完（quality → animation 改 MG 文案 → audio）→ 成片时间线**自动写回项目**
+  `proj_7e160520ccee`：6 轨 / 504 片段（日志「任务 … 的成片时间线已写回项目」）
+- 导出页选「标准 1080p（CQ26 推荐）」→「加入渲染队列」→ 9 分钟出片
+  `renders/PCL_启动器为什么集体关闭下载功能_1920x1080_20261029140853.mp4`
+- 刷新导出页 → 队列行 100% + 「下载」按钮 → 点击下载成功落盘
+- `ffprobe`：1920×1080 30fps h264 + aac，**702.400s**，90.5MB，~1.03Mbps
+
+**遗留（如实记录）**
+
+- 音频输出为 96kHz aac（源配音 96kHz 直通），部分平台更偏好 48kHz；未做重采样。
+- 本轮 animation 阶段有 3 次 LLM JSON 截断告警（`could not parse JSON from LLM response`），
+  未能完成自批判修复，动画质量门禁仍以覆盖率为主。
+
+### 执行轮次（2026-10-29 深夜：降级不得被主 Agent 默许——信号上浮 + 决策守门）
+
+> 用户裁定原文：「截断和回退后主 agent 应该知道当前情况，主 agent 应该针对情况立刻做出决策，
+> 而不是默许截断和回退。」本轮把「阶段内部的退而求其次」变成主 Agent 必须处置的事实。
+
+**诊断出的三层断链（都在真实代码里，不是猜测）**
+
+1. `animation/mg/generator.py` 的截断/回退**只写 logger**，从不 `note_degradation`：
+   JSON 解析失败、自批判被跳过、`_fallback_generate` 模板兜底、motion gate 退让——
+   F9 的降级登记机制在动画侧完全没接线（其他 Agent 早就接了）。
+2. `services/agent_run.py::_run_stage` 构造 `AgentResult` 时把 `sr.degradations` **整段丢弃**，
+   于是即便阶段登记了，编排层也收不到。
+3. `schema/run.py::AgentResult.to_tool_payload()` 不含降级字段 → 模型看到的是
+   `summary="轨道 6 条 / 片段 502 个"`，自然会认为"干净成功"并直接收尾。
+
+**本轮实现**
+
+- 新增 `generator._note()` / `_finish_reason_of()`：`_parse_llm_response` 失败时按
+  `finish_reason` 区分 `llm_json_truncated`（length/max_tokens）与 `llm_json_invalid`，
+  日志改成「尾部 120 字符 + 字符数」（旧实现只打头部 200 字符，两种故障长得一样）。
+- 降级登记点补齐：`mg_critique_skipped`、`mg_template_fallback`、`mg_motion_gate_accepted`、
+  `animation_typed_fallback`、`animation_svg_fallback`、`llm_json_empty`。
+- `AgentResult` 新增 `degradations` 字段；`to_tool_payload()` 输出
+  `degraded / degradation_count / degradations[]`；`surface._execute_agent` 顶层再带一份。
+- `agent_kernel` 新增降级决策守门：`_collect_degradations()`（唯一入口 `_on_tool_call` 收集，
+  发 `degradation` 事件）+ `_pending_degradation_hint()` + 收尾时若仍有未处置降级，
+  **带清单再推一轮**（`_MAX_DEGRADATION_CONTINUATIONS = 1`），要求模型三选一：
+  重派、换策略、明确接受并写影响；未处置项写进 `finish.unfinished`。
+- `agent_loop._system_prompt` 增加常驻规则「`degraded=true` 的阶段结果不算干净成功」。
+
+**顺带修掉制造降级的真根因（本轮实测命中）**
+
+真实生成一次 MG 时命中：模型按 6 秒设计关键帧却漏写 `duration_sec` →
+`repair_mg_json` 旧实现硬补 3.0 → 所有 `keyframe.time` 越界 → 校验失败 → 修复重试仍失败 →
+`method=fallback`（模板兜底）。改为：缺失时按关键帧最大时间**推断** duration，
+已给 duration 但关键帧越界时**夹进范围**。
+
+实测对比（同一段描述，真实 deepseek-flash）：
+
+| | method | 降级数 |
+|---|---|---|
+| 修之前 | `fallback`（模板） | 1（`mg_template_fallback`） |
+| 修之后 | `critique_repair` | 0 |
+
+**回归**：`tests/clipwright/test_degradation_to_master_agent.py` 新增 10 例全绿；
+`test_llm_mg_validator.py` 38 例全绿；相关 185 例（kernel/loop/stage/surface/degradation）全绿。
+
+### 执行轮次（2026-10-29/30 深夜：主 agent 与子 agent 的关系现代化——子 agent 不再"偷偷摸摸"）
+
+> 用户裁定原文：「既然是主 agent 和子 agent 的结构，那么主 agent 应该知道子 agent 的一切……
+> 解决方案就是现代 agent 化，像 DeepSeek harness、opencode、Claude Code 一样的主 agent 与子 agent 的关系。
+> 检查所有的主 agent 和子 agent，进行修改。」
+
+**审计结论（谁在偷偷干活）**
+
+| 关系 | 改造前主 agent 能看到 | 缺口 |
+|---|---|---|
+| 主 ↔ structure/material/edit/animation/audio/quality | 一句话 `summary` + `writes` + 报告路径 | **工具轨迹几乎全丢**：`BaseAgent.call_tool` 不记账，`last_tool_calls` 只由 `run_tool_loop` 填；material 30+ 次检索/视觉调用、edit 的 trim/concat 全部不可见；15 分钟长阶段期间事件流静默 |
+| 主 ↔ research_agent（spawn_subagent） | 已有 `tool_calls`/`tokens`/`cost` | 基本达标（本轮未改） |
+| 主 ↔ requirements（需求会话） | 不走 delegate，独立会话 | 不属于本次范围 |
+| 主 ↔ 插件/skill | `surface` 已带 `tool_calls` | 达标 |
+
+**本轮实现（4 层）**
+
+1. **工具调用层（`agents/base.py`）**：`call_tool` 每次调用都记进 `last_tool_calls`
+   （tool/capability/status/duration_ms/args_brief/output_brief/error，上限 200），并发一条
+   `subagent_tool` 事件；material 里唯一绕过 `call_tool` 的 `vision_score` 直连注册表也已收口。
+2. **事件层（`schema/task.py` + 前端）**：新增 `subagent_tool` / `subagent_progress` 两类事件
+   （后端 `EVENT_TYPES` 26 类，`tests/test_event_contract.py` 与前端 `EVENT_TYPE_KEYS` 同步）；
+   `services/agent_context.py` 提供 `task_scope`（把工具调用归到发起任务）+ `emit_progress`
+   （带事件预算，防长任务刷屏）。animation 逐段上报「动画 21/29 开始/完成」，material 完成后
+   上报完成度。
+3. **结论层（`services/stage_subagent._summary_of`）**：一句话里加入异常信号——
+   `降级 N 项（kind…）`、`工具 N 次（失败 M）`，主 agent 不再只看到 happy-path 数字。
+4. **轨迹交付层（`schema/run.AgentResult.to_tool_payload`）**：新增 `tool_call_stats`
+   （total/failed/by_status/top_tools/slowest）、失败优先采样 12 条、`tool_calls_total` 与
+   `tool_calls_hint`（全量用 `get_agent_run(stage=…)` 取回）。
+
+**顺带修掉两个真实事故**
+
+- 主 agent 把 84KB 候选片段内联进 `delegate_agent(inputs=…)` → 模型输出被截断 →
+  `JSONDecodeError` → **整个任务 failed**（本轮 E2E 真实复现）。修法：系统提示词加
+  「大对象一律用 artifact/input_refs 引用」硬规则 + `agent_loop` 对参数 JSON 断裂
+  给出**一次纠错重试**（附明确指令），不再让一次格式失误升级为整任务失败。
+- `subagent_tool` 事件首版静默失败：`emit` 的事件类型白名单不含新类型会抛 `EventError`，
+  而记账处 `try/except: pass` 把它吞掉。已补白名单并保留"未注册类型即报错"的闸。
+
+**真实验证（同一任务 task_dc670b2f8d）**
+
+- `subagent_progress` 58 条：「动画 21/29 开始：LLM 动态 MG」…逐段可见；
+- `step_end` 文案变成「阶段 animation → degraded：轨道 6 条 / 片段 503 个；动画已编排；降级 4 项（llm_json_invalid/mg_critique_skipped）」；
+- `degradation` 事件带 4 项明细（含 `chars=1113` 与响应尾部）；
+- 主 agent 的 thinking 明确写出「animation degraded: LLM JSON truncated (8 items)… That's a degradation I should address: redo animation」——**知道并决策**，不再默许。
+
+### 执行轮次（2026-10-30 凌晨：成片三缺陷 + 回退如实上报 + 风格提示词补齐 + 现代 agent review）
+
+> 用户现场反馈四条，全部按「先修好再验证」处理，最后交 gpt-5.6-sol 做架构 review 并出 PRD。
+
+**1. 动画不动，只是展示画面（P0 回归）**
+
+- 根因：链式 MG overlay（`render._build_mg_chained_cmd`）只做 scale/pad，**没有把 MG 时间戳平移到 start_sec**
+  （单路 overlay `render_overlay_on_video` 一直有 `setpts=PTS-STARTPTS+start/TB`；链式是后来为省 re-render 引入的，漏了这一步）。
+  MOV 只有 5–6 秒，主视频走到 33.6s 时 overlay 早已消费完 → 画面冻结在末帧。
+- 修复：链式命令每个 MG 输入加 `setpts=PTS-STARTPTS+{start}/TB` 与 `eof_action=pass`；新增 3 条命令构建测试。
+- 实测（同一段 33.8→34.2s，动画区像素变化）：修复前 3.0% → 修复后 **23.8%**。
+
+**2. 视频下方除字幕还多了其他的字**
+
+- 根因：文字动画默认 `position=bottom`（与字幕同区），且文本常与旁白整句相同 → 底部两行字。
+- 修复：① `_handle_text_animation` 位置默认 `center`，与旁白整句重复（>10 字）时交给字幕不再渲染；
+  ② audio 阶段字幕定稿后 `_dedupe_text_vs_captions()`：同文文字动画删除、其余 bottom 上移（正文里如实写进 notes）。
+
+**3. 字幕与声音对不上**
+
+- 实测（200–260s 窗口，字幕起点 vs `silencedetect` 语音起点）：平均偏差 0.525s、最大 2.158s（按字数比例摊时长的必然结果）。
+- 修复：新增 `services/speech_alignment.py`（`detect_speech_bounds` + `snap_segments_to_speech`），
+  audio 阶段在 realign 前按**真实语音区间**吸附字幕边界（有界位移、单调、最小时长）。
+- 实测：平均偏差 0.525s → **0.223s**（-58%）。
+
+**4. 07:10 仍是回退画面，子 agent 没如实上报、主 agent 没重派**
+
+- 现场帧：深色纯色 + 中央一行字（占位卡）+ 底部字幕。
+- 修复：① material 阶段对"无匹配素材的场景"登记 `material_placeholder` 降级（带 scene scope 与影响），
+  并在 notes 里给出占位场景编号；② 系统提示词与降级守门提示词明确「占位必须重派 material（换关键词/换源/放宽阈值），
+  只有确实搜不到才允许保留并逐场说明」。
+
+**5. 动画风格提示词补齐（code-animation-prompts）**
+
+- 拉取 https://github.com/XiaoyeCodes/code-animation-prompts 的提示词库（341 种风格，sparse clone 只取 md）。
+- 新增 `scripts/import_style_prompts.py`：按语义把 38 个动画类型映射到风格编号（F1 图表生长 / F2 关系图 / F3 分屏对比 /
+  M3 文字建筑 / M20 时间线 / M6 发布会风 / E1 极简几何 / A2 光标打字 / M10 抽象概念 / M37 Logo 拼装 / M7 极简卡点 / H1 版式），
+  抽取「画面 / 关键词 / 参考做法」写成 `## Style reference` 追加到对应类型 md（幂等）。
+- `type_generation.build_type_description` 把该段拼进提示词（实测已进入 `mg_data_bars` 的 prompt）。
+
+**顺带修掉的 agent 事故**
+
+- 主 agent 看到 workspace 有 `art_*.json` 就以为黑板有产物 → 直接派 edit/material，48 次调用全"缺输入"、耗尽回合闸。
+  修：上下文里区分「黑板为空」与「磁盘有文件」，并给出可执行动作（read_artifact + inputs，或先派 structure）。
+
+**架构 review（gpt-5.6-sol）**
+
+- 结论：**部分达标**——已有原生 tool-use loop、统一 AgentResult、降级上浮、工具记账、进度事件；但子 agent 不是
+  "可寻址子会话"（不能追问/注入/单独恢复/回放），run 记录与事件流仅进程内有界，工具轨迹多层截断，
+  素材源/MG 生成/插件内部调用仍有暗区，降级处置没有机器可验证的收据（口头接受即可收尾）。
+- PRD：`docs/modern-agent-review-prd-2026-10-30.md`（12 维评分 + P0–P3 + 契约 + M1/M2/M3 + 验收标准）。
+
+**回归**：后端 **4718 passed / 4 skipped / 1 xfailed**（新增 overlay timing 3 例、material 占位、speech alignment 相关断言）。
+
+### Goal 轮 1（2026-10-30）：Web 搜索 provider 抽象落地（PRD web-search-fetch M1）
+
+**问题（核查结论）**：动画 Agent 只在 `_DATA_FACT_RE` 命中时搜 3 条摘要，不抓正文、不落素材；
+provider 仅 bocha/baidu 且都要付费 key；本机 `web_search_api_key` 为空 → `is_configured()=False`
+→ 静默跳过、工具面里连 `web_search` 都看不到。
+
+**本轮交付**
+1. 新增 `services/web_providers.py`：6 家 provider（bocha / baidu / tavily / serper / bing / **local**），
+   链路 = 主 provider → 其余已配置付费 → local（`web_search_allow_local` 控制），任何失败不上抛。
+2. `services/web_search.py::WebSearchService` 改走 provider 链：
+   `is_configured()` = 有任一可用链路（含无密钥的本地抓取）；全部失败时登记
+   `note_degradation("web_search_unavailable")`（不再是静默空列表）。
+3. 配置：`web_search_provider` 扩到 6 值；新增 `web_search_tavily_api_key` /
+   `web_search_serper_api_key` / `web_search_bing_api_key` / `web_search_allow_local`（默认 True）；
+   `config_schema.py` 同步（设置页可见）。
+4. `tool/capabilities.py` 补 `web_search` / `web_fetch` 能力别名；`WebFetchTool.is_configured()`
+   不再依赖搜索 key（抓 URL 不需要鉴权）。
+5. 测试：`tests/clipwright/test_web_providers.py` 12 例（链路顺序、专属 key 优先、
+   DDG/Bing HTML 解析与回退、tavily/serper/bing 请求形状、两种降级、7 处契约更新）。
+
+**真实验证**
+- 本地抓取（无任何 key）实搜「PCL 启动器 停止下载 Minecraft」→ provider=local，返回 5 条真实结果
+  （3DM / GitHub Meloong-Git/PCL / Bilibili 等）。
+- 重启后端后 `/api/tool/list` 里 `web_search` 与 `web_fetch` 均可见（settings.json 已开 `enable_web_search`）。
+
+**下一步（Round 2）**：文字动画 LLM 化 M1（TextDef schema + 6 类 prompt + text_generation）、
+以及 PRD ① 的工具轨迹无损（200/2000 上限 → 落盘 + 分页）。
+
+### Goal 轮 2（2026-10-30）：文字动画 LLM 化 M1 + 工具轨迹无损落地
+
+**PRD ③（text-animation-llm）M1**
+1. 新增 `animation/text_specs.py`：6 类文字动画语义契约
+   （`emphasis_keyword` / `reveal_line` / `quote_block` / `label_callout` / `number_punch` / `title_stack`），
+   含 intent / motion / constraints / anti-patterns / 默认锚点；提供 `load_text_prompt` /
+   `text_prompt_version` / `validate_text_registry`（六段齐全自检）。
+2. 新增 `animation/prompts/text/*.md` 六份提示词：与 38 个 MG 类型同构的六段 + 风格参考，
+   硬约束写进正文（只做短语、≤14 字/行、不与字幕逐字相同、禁 bottom、半透明底板/阴影）。
+3. 新增 `animation/text_generation.py`：`build_text_prompt`（类型六段 + persona + **字幕带避让**
+   + 输出硬性要求）、`generate_for_type`（容错解析 → 规范化 → 文字专属校验 → repair → 重试）、
+   `validate_text_def`（元素数/行宽/y 落入字幕带/position=bottom）。产出即 MGDef，
+   可直接复用 `validate_mg_json` / `repair_mg_json` / `mg_fastpath` 渲染。
+4. 测试：`tests/clipwright/test_text_animation_llm.py` 9 例（注册表完整性、提示词含避让约束、
+   正常生成、长文本截断、bottom 被拒后重试、不可解析回退、未知类型、校验器）。
+
+**PRD ①（modern-agent-review）M1 第 1 项：工具轨迹无损**
+- `StageResult.tool_calls_path` + `AgentResult.tool_calls_path`：阶段全量工具轨迹落
+  `reports/tool_calls/<stage>-<attempt>.json`（内存仍只留最近 200 条），
+  `to_tool_payload()` 暴露 `tool_calls_path` 与"完整轨迹见…"提示。
+- 测试：`tests/clipwright/test_tool_transcript_durable.py` 3 例（落盘内容/空输入 no-op/payload 暴露）。
+
+**回归**：后端 **4747 passed / 4 skipped / 1 xfailed**；前端 `tsc` 0 错。
+
+**下一步（Round 3）**：PRD ③ M2/M3（`_handle_text_animation` 改走 LLM + 字幕带 bbox 注入 +
+四类降级 + 渲染验证）；PRD ② M2（搜索结果/正文 → `materials/` 落盘 + 来源许可）；
+PRD ① M2（事件流溢出落盘 + 降级处置收据）。
+
+### Goal 轮 3（2026-10-30）：文字动画接进生产路径（PRD text-animation-llm M2/M3）
+
+**接线**
+- `AnimationAgent._handle_text_animation_async()`：**LLM 优先**
+  （按文本语义选 6 类之一：引号→quote_block、数字短句→number_punch、≤6 字→emphasis_keyword、
+  >14 字→title_stack、其余→reveal_line），失败回退 `AnimationCatalog` 模板。
+- 保留同步入口 `_handle_text_animation()` 作为模板路径（既有调用方/测试的稳定契约）。
+- `execute()` 改为 `await _handle_text_animation_async(...)`。
+- 新增开关 `settings.text_animation_llm`（默认 True，关闭即回到模板；`config_schema` 同步）。
+
+**降级与避让（四类）**
+- `text_llm_failed`（生成失败/无可用关键帧）
+- `text_llm_fallback_template`（回退模板）
+- `text_motion_weak`（关键帧覆盖 <45%）
+- `text_overlap_avoided`（clip 位置固定 center，避开 160px 字幕带；越界由 `validate_text_def` 拦）
+
+**真实 LLM 修复（探针发现的两个真问题）**
+1. 模型给 `type: "number"` 等非法元素类型 → 统一收敛到 `text`；
+2. 关键帧时间写到片段时长之外 → 夹进 `[0, duration]`；
+3. 文字放在 `text`/`label` 而非 `content` → 统一收敛（否则校验报 "missing 'content'"）。
+修复后真实探针三类全部通过：`emphasis_keyword` / `number_punch` / `quote_block`
+（method 均为 `text_llm` 或 `text_repair`，anchor=center，keyframes 6–17 个）。
+
+**顺带修的既有脆点**：长真实旁白（>50 字）原先要求 `_is_typewriter_like()` 为真才路由字幕轨，
+而该判定按关键帧属性做、对裸 id `typewriter` 返回 False → 长旁白被做成文字动画压在字幕上。
+现在长旁白（来自 marker/metadata）**直接**进字幕轨。
+
+**测试**：`test_text_animation_wiring.py` 6 例（类型启发式、MGDef→drawtext keyframes、
+LLM 路径产出 center clip、失败回退+双降级、弱动效上报、开关关闭走模板）；
+动画/文字相关 396 例全绿。
+
+### Goal 轮 4（2026-10-30）：联网素材化（PRD web-search-fetch M2）
+
+**新模块 `services/web_assets.py`**
+- SSRF/协议治理：`is_public_url()` 只允许 http/https，拒绝 localhost / 私网 / 环回 /
+  链路本地 / 组播 / 保留地址（含云元数据 169.254.169.254）。
+- 下载即落盘：按内容类型进 `materials/web/{images|videos|pages}`，文件名 `标题_sha256前10`，
+  **同 sha256 去重**；非媒体内容走 `WebFetchService` 抽正文存 `.md`。
+- 旁车 `.meta.json`：url / title / license / retrieved_at / sha256 / bytes / content_type / kind。
+- 许可诚实标注：只对 pexels / wikimedia 等已知图库给许可名，其余 `unknown（需人工确认授权）`。
+- 单文件 20MB 上限；抓取失败如实返回 `error`（不上抛）。
+
+**工具面**：`web_fetch` 新增 `save_to_materials` / `workspace_root` / `title` 三个参数
+（schema 自动包含，`_infer_parameters` 推断），保存成功后返回 `saved`（含本地路径与许可）。
+
+**动画接线**：`AnimationAgent._ingest_web_media()` —— 有工作区且 web 搜索可用时，
+按 topic 搜一次、只取媒体 URL、落盘前 2 个，并**并入 `_image_index`**
+（带 source/license），MG 生成阶段即可按语义选图引用；新增开关 `web_assets_ingest`（默认 True）。
+
+**真实验证**
+- `https://images.pexels.com/photos/1181244/...` → 55,458 B 落 `materials/web/images/`，
+  `license=Pexels License`；
+- `https://example.com` → 577 B 正文落 `materials/web/pages/`，`license=unknown`。
+- `http://127.0.0.1/*`、`file:///etc/passwd`、`169.254.169.254` 全部被 SSRF 拦截且不产生目录。
+
+**测试**：`tests/clipwright/test_web_assets.py` 17 例 + `test_animation_web_ingest.py` 3 例。
+
+### Goal 轮 5（2026-10-30）：降级处置的机器可验证收据（PRD modern-agent-review P0）
+
+**问题**：守门只"再推一轮"，模型口头说一句「接受」就能收尾成 `done` —— 处置无法验证。
+`TaskFinish.unfinished` 虽记了降级类型，任务照样成功。
+
+**本轮交付**
+1. 新增 `services/degradation_ledger.py`：待处置台账 + 两种**合法收据**
+   - `remediated`：重派同一阶段并跑成功（`mark_remediated(task, stage)`）；
+   - `accepted`：显式 `acknowledge_degradation(kinds, reason≥10 字, impact)`
+     （`accept()` 写收据并移出待处置）。
+   `outstanding()` 返回未处置项；`summary()` 给计数与 kind 列表。
+2. Kernel 接线：
+   - `_collect_degradations` 登记进台账（同时保留内存镜像，兼容既有观察者）；
+   - `delegate_agent` 成功且带 `stage` → `_mark_stage_remediated` 自动写 remediated 收据；
+   - 收尾按 `settings.agent_degradation_policy`（默认 `require_receipt`）判定：
+     仍无收据 → `finish.reason = degradation_unresolved`、`status = failed`，
+     并把 kind 列表写进 `unfinished`；`warn` 策略保留老行为（仍如实记录）。
+3. 新 agent 工具 `acknowledge_degradation`（tier=write_local）：
+   `kinds` 必填、`reason` 太短直接 refused；成功返回 `accepted` 数量与剩余待处置。
+4. 提示词：系统提示与降级守门提示都写明「口头接受不算处置，必须调用工具写收据」。
+5. 测试：`tests/clipwright/test_degradation_receipts.py` 9 例
+   （台账去重/remediated/accepted/未知 kind no-op、无收据→失败、有收据→done、
+   warn 策略、ack 工具成功与拒绝短理由）。
+
+**下一步（Round 6）**：事件流 2000 条溢出落盘/分页；素材源/MG 生成/插件调用暗区补齐；
+前端 run 详情展示完整轨迹；随后 M3 与最终 E2E。
+
+### Goal 轮 6（2026-10-30）：事件流溢出落盘 + 暗区补齐（PRD modern-agent-review M2）
+
+**① 事件流无损（原：每任务 2000 条直接 `del`）**
+- `services/task_events.py`：热层仍保留最近 2000 条，**溢出先落盘再丢**——
+  JSONL 追加到 `%TEMP%/clipwright_task_events/<task>.jsonl`（可用
+  `CLIPWRIGHT_TASK_EVENTS_DIR` 覆盖，测试注入 `_SPILL_DIR`）。
+- `events(task_id, include_spilled=False)`；`events_since(seq, include_spilled=True)`
+  默认回读磁盘：seq 早于热层起点时不再"凭空缺一段"。
+- `spilled_max_seq()` 暴露落盘水位；`clear(task_id, drop_spill=True)` 连文件一起清。
+
+**② 暗区补齐（原：素材源检索 / MG 生成 / 插件·skill 调用只留 logger）**
+- `services/agent_context.py` 新增 `operation()`（计时 + 自动记账，异常记 failed 并原样抛出）、
+  `record_operation()`、`take_operations()`；作用域随 `task_scope` 初始化/恢复。
+- `stage_subagent.run_stage`：收尾把内部操作**并入** `stage_tool_calls`（`source=internal`），
+  随 `AgentResult.tool_calls` 与 `reports/tool_calls/<stage>-<n>.json` 一起落盘。
+- 已接线：`mg_generate:<type>`（`MGGenerator.generate_for_type`）、
+  `material_search:<sources>`（`MaterialRegistry.search`）。
+
+**测试**：`test_task_events_spill.py` 4 例（热层有界/全量无损/按 seq 回读含 detail/clear 删文件）、
+`test_agent_operations.py` 4 例（成功计时、失败记 error 并抛出、作用域隔离、取走即清空）。

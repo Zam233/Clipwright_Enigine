@@ -168,9 +168,11 @@ def ensure_render_backends_registered() -> None:
         return
     ContributionRegistry.register(BUILTIN_OWNER, [
         Contribution(ContributionKind.RENDERER_BACKEND, "local",
-                     RenderBackendEntry(name="local", factory=LocalFFmpegBackend)),
+                     RenderBackendEntry(name="local", factory=LocalFFmpegBackend),
+                     meta={"name": "local", "default": True}),
         Contribution(ContributionKind.RENDERER_BACKEND, "remote",
-                     RenderBackendEntry(name="remote", factory=RemoteRenderBackend)),
+                     RenderBackendEntry(name="remote", factory=RemoteRenderBackend),
+                     meta={"name": "remote"}),
     ], dispatch=False)
 
 
@@ -195,12 +197,31 @@ def render_backend_names() -> list[str]:
     return [c.id for _, c in ContributionRegistry.list(ContributionKind.RENDERER_BACKEND)]
 
 
+def default_render_backend_name() -> str:
+    """默认渲染后端名（**由贡献声明**：`meta.default=true` 优先，否则注册表第一项）。
+
+    B7-T7.5：engine 不再把 "local" 写死成缺省——自建/插件后端可以声明自己为默认。
+    """
+    from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+
+    entries = [
+        item for _, item in ContributionRegistry.list(ContributionKind.RENDERER_BACKEND)
+    ]
+    for item in entries:
+        if bool((item.meta or {}).get("default")):
+            return item.id
+    return entries[0].id if entries else ""
+
+
 def resolve_preferred_render_backend() -> Any:
-    """按设置选择后端（`settings.renderer_backend`，缺省 local）。"""
+    """按设置选择后端（`settings.renderer_backend`；未设置 → 贡献声明的默认后端）。"""
     from clipwright.config import settings
 
-    name = str(getattr(settings, "renderer_backend", "") or "local")
-    backend = resolve_render_backend(name)
+    name = str(getattr(settings, "renderer_backend", "") or "").strip().lower()
+    if not name:
+        name = default_render_backend_name()
+    backend = resolve_render_backend(name) if name else None
     if backend is None:
-        backend = resolve_render_backend("local")
+        fallback = default_render_backend_name()
+        backend = resolve_render_backend(fallback) if fallback else None
     return backend

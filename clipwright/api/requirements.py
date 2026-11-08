@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from clipwright.config import logger
+from clipwright.config import logger, settings
 from clipwright.services.requirements_service import RequirementsService
 
 router = APIRouter(prefix="/api/requirements", tags=["requirements"])
@@ -28,10 +29,25 @@ from clipwright.services import idempotency as _idem
 
 
 def _proceed_idem_hit(key: str, running: dict, tasks: dict) -> Optional[str]:
-    """轮70（D10）：proceed 幂等命中——目标管线仍在运行/排队则返回既有 id。"""
+    """轮70（D10）：proceed 幂等命中——目标仍在运行/排队则返回既有 id。
+
+    `agent_mode=on` 时目标可能是**任务**（`task_*`）而不是管线：任务只登记在
+    `api.task._RUNNING` 里，不进 `_running_pipelines`/`_pipeline_tasks`。旧实现只查后两张表，
+    于是双击 proceed 会各建一个 Task、双倍扣费（审计 P1-1）。这里补查任务表。
+    """
     pid = _idem.lookup(key)
-    if pid and (pid in running or pid in tasks):
+    if not pid:
+        return None
+    if pid in running or pid in tasks:
         return pid
+    if pid.startswith("task_"):
+        try:
+            from clipwright.api.task import _RUNNING as _TASK_RUNNING
+
+            if pid in _TASK_RUNNING:
+                return pid
+        except Exception:  # noqa: BLE001 — 任务表不可用不影响老路径
+            return None
     return None
 
 
@@ -58,6 +74,9 @@ class InitRequest(BaseModel):
 class ChatRequest(BaseModel):
     session_id: str
     message: str
+    # 发起对话所在的编辑器项目（可为空）。续跑主 agent 时用它定位工作区，
+    # 否则会退回用 session_id 建一个**新的**工作区，docs/ 与成片都对不上。
+    project_id: str = ""
 
 
 class EditRequest(BaseModel):
@@ -65,9 +84,20 @@ class EditRequest(BaseModel):
     message: str
     timeline: dict[str, Any] = {}
     selected_clip_ids: list[str] = []
+    # PRD W3：与 /intent 同源的选区快照；/edit 是降级路径，同样应带上它，
+    # 否则降级后模型看不到"用户在改哪几个片段"
+    selection_summary: str = ""
+    selection_truncated: bool = False
     # 区域级返工 — 编辑范围（秒）；提供时仅返回/改写该时间窗内的片段
     region_start_sec: float | None = None
     region_end_sec: float | None = None
+
+
+#: 选区上限（PRD W3.1）：超过这个数的"选中"多半是误操作（全选/Ctrl+A），
+#: 逐条喂给模型既贵又没有意义；前端也会先截断，后端这里是**权威上限**。
+MAX_SELECTED_CLIPS = 20
+#: 选区摘要字符上限（PRD W3.1）：按行组织的 clip 摘要，超了截断并标记 truncated。
+MAX_SELECTION_SUMMARY_CHARS = 8000
 
 
 class IntentRequest(BaseModel):
@@ -75,6 +105,10 @@ class IntentRequest(BaseModel):
     message: str
     timeline: dict[str, Any] = {}
     selected_clip_ids: list[str] = []
+    # PRD W3：选区快照。前端在"发送那一刻"冻结，服务端用它做子集校验 +
+    # 作为模型可见的确定性上下文（不再依赖自然语言标签）。
+    selection_summary: str = ""
+    selection_truncated: bool = False
     region_start_sec: float | None = None
     region_end_sec: float | None = None
     project_id: str = ""
@@ -132,15 +166,20 @@ async def edit_timeline(req: EditRequest, request: Request) -> dict:
 
     整体用 wait_for 兜底：即使底层 Agent/LLM 意外卡死，也保证在时限内返回可重试错误。
     """
-    EDIT_HARD_TIMEOUT = 660
+    EDIT_HARD_TIMEOUT = 0  # 0 = 不设超时（必须走 timeouts.wait_or_run，不能直接给 wait_for）
+    # PRD W3.2：降级路径也要过同一套选区校验（上限 20 / 必须是本时间线里的片段）。
+    # `/edit` 的 timeline 是宽松 dict，这里只抽 clip id 集合做校验，不做模型校验。
+    _validate_selection(req, _ids_of_timeline_dict(req.timeline))
     try:
-        result = await asyncio.wait_for(
+        from clipwright.services.timeouts import wait_or_run
+
+        result = await wait_or_run(
             _service.edit_timeline(
                 req.session_id, req.message, req.timeline, req.selected_clip_ids,
                 region_start_sec=req.region_start_sec,
                 region_end_sec=req.region_end_sec,
             ),
-            timeout=EDIT_HARD_TIMEOUT,
+            EDIT_HARD_TIMEOUT,
         )
         if "error" in result:
             raise HTTPException(status_code=404, detail=result["error"])
@@ -156,6 +195,51 @@ async def edit_timeline(req: EditRequest, request: Request) -> dict:
         logger.exception("Timeline edit error: %s", e)
         raise HTTPException(status_code=500, detail="时间线编辑失败，请稍后重试")
 
+
+class _ClipIds:
+    """只携带 clip id 集合的轻量时间线视图（给 `/edit` 的宽松 dict 用）。"""
+    def __init__(self, ids: list[str]) -> None:
+        self.tracks = [type("_T", (), {"clips": [type("_C", (), {"id": i})() for i in ids]})()]
+
+
+def _ids_of_timeline_dict(timeline: Any) -> _ClipIds:
+    ids: list[str] = []
+    for track in ((timeline or {}).get("tracks") or []):
+        if not isinstance(track, dict):
+            continue
+        for clip in (track.get("clips") or []):
+            if isinstance(clip, dict) and clip.get("id"):
+                ids.append(str(clip["id"]))
+    return _ClipIds(ids)
+
+def _validate_selection(req: Any, timeline: Any) -> None:
+    """选区快照的服务端校验（PRD W3.2）。
+
+    为什么必须在这里校验而不是信前端：
+    - **跨项目**：前端可能带着上一个项目/上一个版本的 clip id，模型照着改会改到不存在的片段；
+    - **超过上限**：全选把几十个片段塞进提示词，既贵又让模型抓不到重点。
+    子集校验的判据是"这些 id 必须在本次提交的 timeline 里真实存在"——客户端时间线就是
+    用户眼前那份，对不上说明快照过期，应当让用户重选而不是猜。
+    """
+    ids = list(getattr(req, "selected_clip_ids", []) or [])
+    if len(ids) > MAX_SELECTED_CLIPS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"一次最多选择 {MAX_SELECTED_CLIPS} 个片段（当前 {len(ids)} 个），请缩小选区")
+    if not ids:
+        return
+    known: set[str] = set()
+    for track in getattr(timeline, "tracks", []) or []:
+        for clip in getattr(track, "clips", []) or []:
+            cid = str(getattr(clip, "id", "") or "")
+            if cid:
+                known.add(cid)
+    missing = [cid for cid in ids if cid not in known]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=("选区里有 {} 个片段不在当前时间线中（可能已删除或来自其它项目）：{}"
+                    .format(len(missing), ", ".join(missing[:5]))))
 
 @router.post("/{session_id}/intent")
 async def preview_intent(session_id: str, req: IntentRequest, request: Request) -> dict:
@@ -175,6 +259,7 @@ async def preview_intent(session_id: str, req: IntentRequest, request: Request) 
         timeline = Timeline.model_validate(req.timeline) if req.timeline else Timeline(id="empty")
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"时间线数据非法: {str(exc)[:120]}")
+    _validate_selection(req, timeline)
     region = ((req.region_start_sec, req.region_end_sec)
               if req.region_start_sec is not None and req.region_end_sec is not None else None)
     try:
@@ -185,7 +270,7 @@ async def preview_intent(session_id: str, req: IntentRequest, request: Request) 
                 project_id=req.project_id or None,
                 llm=getattr(_service, "_llm", None),
             ),
-            timeout=120,
+            timeout=1800,
         )
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="意图解析超时，请简化指令后重试")
@@ -218,6 +303,8 @@ async def apply_intent(session_id: str, req: IntentApplyRequest, request: Reques
         timeline = Timeline.model_validate(req.timeline) if req.timeline else Timeline(id="empty")
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"时间线数据非法: {str(exc)[:120]}")
+    # 与 /intent 同一套校验：确认执行的这次请求也必须过子集/上限检查
+    _validate_selection(req, timeline)
     region = ((req.region_start_sec, req.region_end_sec)
               if req.region_start_sec is not None and req.region_end_sec is not None else None)
     try:
@@ -229,7 +316,7 @@ async def apply_intent(session_id: str, req: IntentApplyRequest, request: Reques
                 answers=req.answers, intent_raw=req.intent_raw or None,
                 llm=getattr(_service, "_llm", None), apply=req.apply,
             ),
-            timeout=120,
+            timeout=1800,
         )
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="意图执行超时，请简化指令后重试")
@@ -247,11 +334,16 @@ async def chat_message(req: ChatRequest, request: Request) -> dict:
     整体用 wait_for 兜底：即使底层 LLM/线程意外卡死（asyncio.to_thread 的线程
     无法被取消），也保证在时限内返回一个可重试的错误响应，而不是让请求永久挂起。
     """
-    CHAT_HARD_TIMEOUT = 660  # 秒：简报 180s + 规划书 240s + 翻译/重试余量
+    # 秒：长文稿（40+ 段）逐段标注（≈6min）+ 规划书翻译（带原文，最长约 15min）
+    # 都需要余量；旧值 660 会被长文稿打满 → 504。这里留 40 分钟。
+    CHAT_HARD_TIMEOUT = 0  # 0 = 不设超时（必须走 timeouts.wait_or_run，不能直接给 wait_for）
     try:
-        result = await asyncio.wait_for(
-            _service.chat(req.session_id, req.message),
-            timeout=CHAT_HARD_TIMEOUT,
+        from clipwright.services.timeouts import wait_or_run
+
+        result = await wait_or_run(
+            _service.chat(req.session_id, req.message, request=request,
+                        project_id=req.project_id),
+            CHAT_HARD_TIMEOUT,
         )
         if "error" in result:
             raise HTTPException(status_code=404, detail=result["error"])
@@ -266,13 +358,28 @@ async def chat_message(req: ChatRequest, request: Request) -> dict:
         raise HTTPException(status_code=500, detail="会话处理失败，请稍后重试")
 
 
+@router.post("/{session_id}/stop")
+async def stop_session_task(session_id: str, request: Request) -> dict:
+    """用户点「停止」：中止该会话正在跑的任务，恢复可对话状态，并留一条显式记录。
+
+    前端在任务运行期间显示「停止任务」按钮；点击后调用这里。返回体带 `note`，
+    前端可直接把它当一条消息上屏（后端同时已写进会话消息与时间线，
+    续跑的主 agent 因此知道"是用户主动喊停"，不会误判成异常终止）。
+    """
+    _require_session_owner(request, session_id)
+    result = await _service.stop_task(session_id)
+    return {"session_id": session_id, **result}
+
+
 @router.post("/chat/stream/{session_id}")
-async def chat_stream(session_id: str, message: str = Form(...), request: Request = None):
+async def chat_stream(session_id: str, message: str = Form(...),
+                      project_id: str = Form(""), request: Request = None):
     _require_session_owner(request, session_id)
     """SSE 流式对话 — 逐块推送状态和结果。"""
     async def event_stream():
         try:
-            async for chunk in _service.stream_chat(session_id, message):
+            async for chunk in _service.stream_chat(session_id, message, request=request,
+                                                 project_id=project_id):
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
         except Exception as e:
             logger.exception("SSE stream error: %s", e)
@@ -350,6 +457,384 @@ async def get_plan(session_id: str, request: Request) -> dict:
     return plan
 
 
+# ── ask_user（PRD §15.5 / M5c）：需求会话自己的问答与事件，
+#    前端不得用任务 API（/api/task/{id}/...）承载需求会话 ──────────
+
+
+class AnswerBody(BaseModel):
+    """需求会话回答：只给 option_id 或 text（二选一或并存）。"""
+
+    question_id: str = ""
+    option_id: Optional[str] = None
+    text: Optional[str] = None
+
+
+@router.get("/{session_id}/questions")
+async def list_questions(session_id: str, request: Request, status: str = "all") -> dict:
+    """该会话的问题列表。`status=pending` 只要待答，`all` 给全部（含已答/已失效）。"""
+    _require_session_owner(request, session_id)
+    if status == "pending":
+        items = await asyncio.to_thread(_service.pending_questions, session_id)
+    else:
+        items = await asyncio.to_thread(_service.questions, session_id)
+    return {"session_id": session_id, "items": items, "status": status}
+
+
+@router.post("/{session_id}/answer")
+async def answer_question(session_id: str, body: AnswerBody, request: Request) -> dict:
+    """回答问题并让 agent 继续。
+
+    错误码与任务侧一致：404 会话/问题不存在（含跨会话答别人的问题）、
+    409 已答过/已取消、410 已失效（超时或服务重启）、400 参数不合法。
+    """
+    _require_session_owner(request, session_id)
+    from clipwright.services.ask_user import AskUserError
+
+    result = await _service.answer_question(
+        session_id, question_id=body.question_id,
+        option_id=body.option_id, text=body.text,
+    )
+    # 错误判定只看 `error`：成功响应里也可能有 `answer` 字段，
+    # 而 `already_answered` 的 detail 会带上上一次的 answer——旧条件会把它当成功。
+    if "error" in result:
+        code = result.get("error")
+        http_status = int(result.get("http_status") or 400)
+        detail = {k: v for k, v in result.items() if k not in ("error", "http_status")}
+        detail.setdefault("reason", code)
+        raise HTTPException(status_code=http_status, detail=detail)
+    return result
+
+
+@router.get("/{session_id}/messages")
+async def list_messages(session_id: str, request: Request,
+                        before_id: str = "", limit: int = 50) -> dict:
+    """需求消息历史分页（unified-stream PRD §M4）：向上翻不重复、不丢。
+
+    `before_id` = 上一页最早那条的 id；`has_more=false` 表示到头了。
+    """
+    _require_session_owner(request, session_id)
+    return _service.list_messages(session_id, before_id=before_id, limit=limit)
+
+
+@router.get("/{session_id}/events")
+async def session_events(session_id: str, request: Request,
+                         since_seq: int = 0, before_seq: int = 0,
+                         limit: int = 200) -> dict:
+    """会话事件（`question`/`answer` 等）：刷新/重连时按 seq 补齐。
+
+    需求会话的事件流与任务事件共用同一套事件模型，但键是
+    `requirements:<session_id>`——所以这里**不**访问任务事件 API。
+    """
+    _require_session_owner(request, session_id)
+    from clipwright.services import ask_user as _ask_user
+    from clipwright.services import task_events as _events
+
+    stream_id = _ask_user.session_stream_id(session_id)
+    limit = max(1, min(int(limit or 200), 1000))
+    events = _events.events_since(stream_id, max(0, int(since_seq or 0)),
+                                  include_spilled=True)
+    if before_seq:
+        # 往前翻：只给 seq < before_seq 的那一段（最新的 limit 条）
+        events = [e for e in events if e.seq < int(before_seq)]
+        page = events[-limit:]
+        return {
+            "session_id": session_id,
+            "items": [e.model_dump() for e in page],
+            "has_more": len(events) > len(page),
+            "latest_seq": page[-1].seq if page else 0,
+        }
+    page = events[:limit]
+    latest = events[-1].seq if events else _events.last_seq(stream_id)
+    return {
+        "session_id": session_id,
+        "items": [e.model_dump() for e in page],
+        "has_more": len(events) > len(page),
+        "latest_seq": latest,
+    }
+
+
+@router.get("/{session_id}/timeline")
+async def session_timeline(session_id: str, request: Request,
+                           since_seq: int = 0, until_seq: int = 0,
+                           before_seq: int = 0, limit: int = 200,
+                           resolve: int = 1) -> dict:
+    """会话时间线（唯一有序流，PRD agent-session-timeline §5.1）。
+
+    前端刷新/重连**只读这一个接口**：条目已按 `seq` 升序，不需要任何本地排序。
+    `resolve=1`（默认）时 `content` 已解析（大 payload 从 `items/<seq>.json` 读回）；
+    `resolve=0` 只给索引（轨迹/调试用，避免一次 500 次文件读）。
+    `before_seq` 是"加载更早"（`seq < before_seq` 的最后 `limit` 条）。
+    """
+    _require_session_owner(request, session_id)
+    from clipwright.services import session_log as _session_log
+    from clipwright.services import session_projection as _projection
+    from clipwright.services.requirements_service import ensure_timeline_backfilled
+
+    # 存量会话回填（T1）：老会话磁盘上零条目，直接读会显示"没有内容"
+    backfilled = await asyncio.to_thread(ensure_timeline_backfilled, session_id, None)
+    log = _session_log.get_log(session_id)
+    # 再同步投影一次：刷新/重连时任务事件必须已经在流里（PRD §5.3）
+    await asyncio.to_thread(_projection.project, session_id)
+    # 首次进入（三个游标都没给）必须给**最新**一页，而不是最老一页。
+    # 旧实现 since_seq=0 → `list_items` 按 seq 升序取前 limit 条：会话攒到 1591 条后，
+    # 刷新只能看到 seq 1..500（开局的需求问答），主 agent 后面的动画/web_search 全"消失"
+    # ——用户 2026-11-02 实测就是这么丢的。`before_seq = latest+1` 取尾部，
+    # 并且 `has_more` 正好表示"还有更早的"，与前端「加载更早」语义一致。
+    _since = max(0, int(since_seq or 0))
+    _until = max(0, int(until_seq or 0))
+    _before = max(0, int(before_seq or 0))
+    if not _since and not _until and not _before:
+        _before = int(await asyncio.to_thread(log.latest_seq) or 0) + 1
+    page = await asyncio.to_thread(
+        log.list_items, since_seq=_since,
+        until_seq=_until, before_seq=_before,
+        limit=limit, resolve_content=bool(resolve),
+    )
+    return {"session_id": session_id, "backfilled": backfilled, **page}
+
+
+@router.get("/{session_id}/timeline/stream")
+async def session_timeline_stream(session_id: str, request: Request,
+                                  since_seq: int = -1):
+    """会话时间线实时流（PRD §5.2）。
+
+    帧协议：`snapshot`（补齐断线窗口）→ `append` / `chunk` / `patch` / `finish`，
+    空转每 10s 一帧 `ping`。`chunk` 只带 `seq + delta`——这就是流式渲染本身。
+    `since_seq=-1`（默认）只推订阅之后的新帧。
+    """
+    _require_session_owner(request, session_id)
+
+    async def event_stream():
+        from clipwright.services import session_log as _session_log
+
+        log = _session_log.get_log(session_id)
+        # 先订阅再拉历史：中间产生的帧进队列，靠 seq 去重，不会漏
+        queue, _loop = log.subscribe()
+        try:
+            start = log.latest_seq() if since_seq < 0 else max(0, int(since_seq))
+            if since_seq >= 0:
+                page = await asyncio.to_thread(
+                    log.list_items, since_seq=start, limit=_session_log.MAX_PAGE)
+                frame = {"op": "snapshot", **page}
+                yield f"data: {json.dumps(frame, ensure_ascii=False)}\n\n"
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    yield f"data: {json.dumps({'op': 'ping', 't': int(time.time())})}\n\n"
+                    continue
+                yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 流断要能自愈，重连按 since_seq 补齐
+            logger.exception("会话时间线流失败: %s", exc)
+            yield f"data: {json.dumps({'op': 'error', 'detail': '时间线流中断'}, ensure_ascii=False)}\n\n"
+        finally:
+            log.unsubscribe(queue)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+class PlanDispatchBody(BaseModel):
+    """PRD plan-dispatch §4.1：`retry=true` 按同一 brief 重新建任务。"""
+
+    retry: bool = False
+
+
+@router.post("/{session_id}/plan/dispatch")
+async def dispatch_plan(session_id: str, request: Request,
+                        body: Optional[PlanDispatchBody] = None) -> dict:
+    """**主 agent 派发"生成制作规划书"**（D1，幂等）。
+
+    旧实现里"确认简报 → 生成规划书"是需求服务内联跑 `stage_subagent.run_inline`，
+    主 agent 全程不参与：没有思考、没有派发轨迹、`run_id` 无处可查。这里改成建一个
+    `plan_only` 任务由 kernel 派 `structure`，产物落 `reports/plan.json`，
+    需求侧读产物回填 `session.production_plan`。
+
+    幂等键 `session_id:brief_hash`：同 brief 且任务还在跑 → 返回既有 `task_id`
+    （`reused=true`）。`retry=true` 强制重建（失败重试用）。
+    """
+    _require_session_owner(request, session_id)
+    result = await _service.dispatch_plan(
+        session_id, retry=bool(body.retry) if body else False,
+    )
+    if "error" in result:
+        code = result.get("error")
+        http_status = int(result.get("http_status") or 400)
+        detail = {k: v for k, v in result.items() if k not in ("error", "http_status")}
+        detail.setdefault("reason", code)
+        raise HTTPException(status_code=http_status, detail=detail)
+    return result
+
+
+def _opt_bool(value) -> bool | None:
+    """user_inputs 里的开关可能是 bool / "true" / "1"，统一归一化（None 表示沿用工作区现值）。"""
+    if value is None or isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    return text in {"1", "true", "yes", "on", "是", "开"}
+
+
+async def _proceed_as_task(*, session: dict, req: "ProceedRequest", request: Request,
+                           user_inputs: dict, plan_data: dict | None,
+                           pipeline_req, pipeline_id: str) -> dict:
+    """agent_mode=on 的分支：需求确认 → 主 Agent 任务（PRD §6.1）。
+
+    - 先确保工作区存在（后面的 material 步骤直接从工作区索引检索）；
+    - Task 的 extra 带上 workspace_root / session_id / production_plan，执行器
+      （执行器 → 老管线）就能拿到完整上下文；
+    - 返回体保留 ``pipeline_id``（值 = task id），前端老代码不会立刻炸。
+    """
+    from clipwright.api.task import _register_owner, _schedule
+    from clipwright.schema.task import TaskLimits, TaskRequest
+    from clipwright.services.agent_kernel import AgentKernel
+    from clipwright.services.workspace import ensure_workspace
+
+    ws_project_id = str(getattr(req, "project_id", "") or req.session_id)
+    ws_name = str(user_inputs.get("workspace_name") or ws_project_id)
+    ws, _ws_meta = ensure_workspace(
+        ws_project_id,
+        name=ws_name,
+        auto_index=_opt_bool(user_inputs.get("workspace_auto_index")),
+        vision=_opt_bool(user_inputs.get("workspace_vision")),
+    )
+
+    # 需求文档落盘（PRD §17.4 / §18.3）：brief.md + plan.md 是主 agent 每一步都要读的东西。
+    # 这是**唯一**触发点（requirements 不是 delegate 阶段）——放在这里而不是阶段里。
+    _docs: dict[str, str] = {}
+    try:
+        _docs = ws.write_docs(session.get("creative_brief"), plan_data)
+    except Exception as _doc_err:  # noqa: BLE001 — 文档写失败不阻断开工，但要在日志里可见
+        logger.warning("需求文档落盘失败（继续）: %s", _doc_err)
+
+    # B8（2026-10-28 PRD）：文案 artifact 化。全文落 docs/script.md，
+    # 上下文里只放「路径 + 全长 + sha256 + 前 N 字」，子 agent 需要全文时按
+    # input_refs 取原文件并校验 hash（旧实现只把文案塞进 extra，超预算就被裁掉）。
+    _script_meta: dict[str, str] = {}
+    _script_text = str(
+        user_inputs.get("script_text")
+        or (pipeline_req.extra_params or {}).get("script_text")
+        or ""
+    )
+    if _script_text.strip():
+        try:
+            _script_meta = ws.write_script(_script_text)
+        except Exception as _script_err:  # noqa: BLE001 — 落盘失败不阻断开工
+            logger.warning("文案落盘失败（继续，仅有内联文案）: %s", _script_err)
+
+    # dry-run 预览（PRD closeout B2）：用户勾了"只预览"就必须只预览。
+    # 之前它只落在 `pipeline_req.dry_run` 这个随老管线一起失效的字段上，
+    # Task 路径完全看不到 → 勾了预览照样真跑真扣钱。
+    _dry_run = bool(
+        getattr(pipeline_req, "dry_run", False)
+        or (pipeline_req.extra_params or {}).get("dry_run")
+        or (getattr(req, "extra_params", None) or {}).get("dry_run")
+    )
+    extra = dict(pipeline_req.extra_params)
+    extra.update({
+        "workspace_root": str(ws.dirs().root),
+        "workspace_project_id": ws.project_id,
+        # 发起项目的 id：任务收尾要把成片时间线写回它（services/task_project_sync.py）。
+        # 旧实现只把 project_id 当工作区 id 用，于是任务跑完项目里仍是 0 轨。
+        **({"proceed_project_id": str(req.project_id).strip()}
+           if str(getattr(req, "project_id", "") or "").strip() else {}),
+        "session_id": req.session_id,
+        "production_plan": plan_data,
+        "creative_brief": session.get("creative_brief"),
+        "docs": _docs,
+        # B8：文案 artifact（全文路径 / 字数 / sha256），供 context_loader 与 input_refs 使用
+        **({"script_path": _script_meta["script"],
+            "script_chars": int(_script_meta["script_chars"]),
+            "script_sha256": _script_meta["script_sha256"]} if _script_meta else {}),
+        # Task 执行侧唯一读的口径（见 agent_kernel._run_tool_loop）
+        "dry_run": _dry_run,
+    })
+    task_req = TaskRequest(
+        topic=str(pipeline_req.topic or req.session_id),
+        persona_id=pipeline_req.persona_id,
+        category_plugin_id=pipeline_req.category_plugin_id,
+        duration_sec=float(user_inputs.get("audio_duration_sec") or 0),
+        plan_only=False,
+        extra=extra,
+    )
+    # 预算（E2E 2026-10-30 实测）：一条 60 秒 6 场景的片子，主 agent 要结构/素材/
+    # 粗剪/动画/音频各跑一遍，再按降级返工 1-2 轮，加上 Kernel 补派——80 轮会被
+    # "返工到一半"截断，结果是有时间线却报 failed。`TaskRequest` 没有 limits 字段
+    # （传进去会被静默忽略），必须显式交给 `create`。
+    kernel = AgentKernel()
+    task = kernel.create(task_req, limits=TaskLimits(max_turns=160, max_tool_calls=800))
+    _register_owner(task.id, request)
+    # 会话↔项目绑定：任务结束要把成片时间线写回**这个项目**。旧实现从不写这条绑定，
+    # 于是 `task_project_sync.project_id_of()` 在续跑/派发任务上恒拿不到项目 id →
+    # 那一轮跑出的（含「动画轨」的）时间线根本不落项目（用户 2026-11-02 实测）。
+    try:
+        from clipwright.services.session_log import get_log as _get_log
+
+        _pid = str(getattr(req, "project_id", "") or "").strip()
+        if _pid:
+            _get_log(req.session_id, project_id=_pid)
+    except Exception as _bindp_err:  # noqa: BLE001 — 绑定失败不阻断开工
+        logger.warning("会话绑定项目失败（继续）%s: %s", req.session_id, _bindp_err)
+    # 时间线：任务归到这个会话，之后 tool/skill/subagent/report 事件自动投影进同一份流
+    try:
+        from clipwright.services import session_projection as _projection
+
+        _projection.bind(req.session_id, task.id)
+    except Exception as _bind_err:  # noqa: BLE001 — 绑定失败不阻断开工
+        logger.warning("任务绑定会话时间线失败（继续）: %s", _bind_err)
+    await kernel.plan(task)
+    _schedule(task.id)
+    await asyncio.to_thread(
+        _service._persist,
+        req.session_id, "pipeline_running",
+        session.get("messages", []),
+        session.get("creative_brief"),
+        session.get("production_plan"),
+        session.get("user_inputs", {}),
+    )
+    # 用户 2026-10-31：任务失败/结束时主 agent 必须**把会话窗口放开**，
+    # 否则 status 永远停在 pipeline_running → 输入框隐藏 → 用户既不能给主 agent
+    # 说话，也不能重新发起。这里挂一个终态监听，按任务结论把会话拉回可对话状态。
+    try:
+        from clipwright.services.async_util import spawn_background
+
+        spawn_background(
+            _service.watch_task_session(req.session_id, task.id),
+            name=f"req-session-watch-{task.id}",
+        )
+    except Exception as _watch_err:  # noqa: BLE001 — 监听挂不上不影响开工
+        logger.warning("会话终态监听挂载失败（继续）: %s", _watch_err)
+    logger.info("proceed 双轨：session=%s → task=%s（workspace=%s）",
+                req.session_id, task.id, ws.dirs().root)
+    # 幂等键重新绑定到 **task.id**：进入本函数前绑的是 `pl_xxx`，但 task 路径返回
+    # `task_yyy`——不重绑的话双击 proceed 会各建一个 Task、双倍扣费（审计 P1-1）。
+    try:
+        _idem_key = request.headers.get("Idempotency-Key", "") or f"sess:{req.session_id}"
+        _idem.bind(_idem_key, task.id)
+    except Exception as _idem_err:  # noqa: BLE001 — 幂等登记失败不影响本次创建
+        logger.warning("proceed 幂等键重绑失败（task=%s）: %s", task.id, _idem_err)
+    return {
+        "session_id": req.session_id,
+        # 兼容字段：老前端读 pipeline_id
+        "pipeline_id": task.id,
+        "task_id": task.id,
+        "status": "pipeline_started",
+        "mode": "task",
+        "workspace_root": str(ws.dirs().root),
+        "plan": task.plan.model_dump(mode="json") if task.plan else None,
+    }
+
+
 @router.post("/proceed")
 async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
     _require_session_owner(request, req.session_id)
@@ -363,16 +848,11 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
         raise HTTPException(status_code=400, detail="Plan not ready")
 
     import uuid
-    from clipwright import audit
     from clipwright.authz import current_user_id
-    from clipwright.services.pipeline_v2 import PipelineOrchestratorV2
     from clipwright.schema.pipeline import PipelineRequest
-    from clipwright.services.trace import create_trace, add_event, get_all_events
-    from clipwright.services.async_util import spawn_background
+    from clipwright.services.trace import create_trace
     from clipwright.api.pipeline import (
-        _pipeline_results, _running_pipelines, _pipeline_owners,
-        _pipeline_tasks, _user_cancel_requested, _persist_pipeline_runtime,
-        pipeline_timeout_sec, _extract_quality_summary, _aggregate_agent_notes,
+        _pipeline_tasks, _running_pipelines, pipeline_timeout_sec,
     )
 
     # proceed 与 /run-async 同权——预算熔断检查（原路径完全绕过预算）
@@ -392,8 +872,13 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
     _existing = _proceed_idem_hit(_idem_key, _running_pipelines, _pipeline_tasks)
     if _existing:
         logger.info("proceed 幂等命中: %s → %s", _idem_key, _existing)
+        # 幂等命中的目标可能是 Task（task_*）。只回 pipeline_id 会让前端把它当成
+        # 已下线的老管线（不切换任务、不挂 Task 事件流）；两条轨道的字段必须同形。
+        is_task = str(_existing).startswith("task_")
         return {
-            "session_id": req.session_id, "pipeline_id": _existing,
+            "session_id": req.session_id,
+            "pipeline_id": _existing,
+            **({"task_id": _existing, "mode": "task"} if is_task else {"mode": "pipeline"}),
             "status": "pipeline_started", "idempotent": True,
         }
 
@@ -441,6 +926,8 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
             "animation_intents": animation_intents,
             "creative_brief": session.get("creative_brief"),
             "production_plan": session.get("production_plan"),
+            # V58：管线带上会话 id，结构阶段的规划偏离才能写回本会话的规划书
+            "session_id": req.session_id,
             "pipeline_timeout_sec": _pipeline_timeout,
             # beat-sync 透传（用户 extra_params 显式值优先）
             **({"cut_on_beat": True, "bpm": float(req.beat_bpm)}
@@ -451,162 +938,18 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
         dry_run=bool(req.extra_params.get("dry_run", False)),
         use_v2=True,
     )
-    add_event(pipeline_id, "system", "info",
-              f"由需求确认启动管线: {pipeline_req.persona_id} / {pipeline_req.category_plugin_id}")
-    # proceed 即置 running（旧实现会话停在 plan_ready，运行中消息会走
-    # 规划修订分支与运行中的管线互踩）
-    await asyncio.to_thread(
-        _service._persist,
-        req.session_id, "pipeline_running",
-        session.get("messages", []),
-        session.get("creative_brief"),
-        session.get("production_plan"),
-        session.get("user_inputs", {}),
+    # ── 单轨（PRD master-agent-prd-2026-10-26 §4.1 P2）──
+    # 创作只有一条路：主 Agent（Task）。老 6 阶段管线的执行引擎已在 M3 删除。
+    # M3（modern-agent PRD §4.1/§5.4）：创作只有一条路——主 Agent（Task）。
+    # 老 6 阶段管线的执行引擎已物理删除，所以这里既没有"agent_mode=off 就走老管线"的
+    # 分支，也不会因为 agent_mode 忘记配而给出一个"当前没有可用创作通道"的 409：
+    # Task 恒可用，缺的只是模型凭据（那条会在 Kernel 里如实失败，而不是在这里假装）。
+    return await _proceed_as_task(
+        session=session, req=req, request=request,
+        user_inputs=user_inputs, plan_data=plan_data,
+        pipeline_req=pipeline_req, pipeline_id=pipeline_id,
     )
 
-    # 归属注册 + 运行态持久化 + 审计（与 run-async 对齐；此前 jwt 模式下
-    # proceed 发起的管线无 owner，本人 /status /cancel /diagnostics 全部 403）
-    _pipeline_owners[pipeline_id] = uid or ""
-    _persist_pipeline_runtime(pipeline_id, owner_id=uid or "")
-    audit.record("pipeline_run", uid, {
-        "pipeline_id": pipeline_id,
-        "session_id": req.session_id,
-        "persona_id": pipeline_req.persona_id,
-        "category_plugin_id": pipeline_req.category_plugin_id,
-        "source": "requirements_proceed",
-    })
 
-    async def _run(task_id: str = ""):
-        try:
-            # 走 TaskQueue 执行（并发上限 + 任务级超时与管线超时公式对齐）
-            from clipwright.services.task_queue import get_task_queue
 
-            async def _queue_handler(inner_task_id: str = "") -> None:
-                # 对齐: 注册运行中任务，使 /cancel 能即时中断
-                _running_pipelines[pipeline_id] = asyncio.current_task()
-                try:
-                    orch = PipelineOrchestratorV2()
-                    state = await orch.run(pipeline_req, pipeline_id=pipeline_id,
-                                           task_id=inner_task_id or task_id)
-                    state.shared_data["execution_trace"] = get_all_events(pipeline_id)
-                    # /C9: 质检摘要 + Agent 备注（与 run-async 对齐）
-                    _rd = state.model_dump(mode="json")
-                    _q = _extract_quality_summary(_rd)
-                    if _q:
-                        _rd["quality_issues"] = _q
-                    _notes = _aggregate_agent_notes(_rd)
-                    if _notes:
-                        _rd["agent_notes"] = _notes
-                    _pipeline_results[pipeline_id] = _rd
-                    add_event(pipeline_id, "system", "done", f"管线完成: {state.status}", _q)
-                    # 修复：管线完成后把 final_timeline 保存到关联项目（若有），
-                    # 避免内存结果 60s 清理后 timeline 丢失（API 直连场景）。
-                    try:
-                        final_tl = state.shared_data.get("final_timeline")
-                        if final_tl:
-                            from clipwright.services.project_manager import ProjectManager
-                            pm = ProjectManager()
-                            project_id = req.project_id
-                            if not project_id:
-                                # 未关联项目时自动创建——旧实现 60s 内存清理后
-                                # 成品时间线永久丢失
-                                created = pm.create(
-                                    name=str(user_inputs.get("topic", "") or "需求会话成片")[:80],
-                                    timeline=final_tl,
-                                    persona_id=pipeline_req.persona_id,
-                                    plugin_id=pipeline_req.category_plugin_id,
-                                )
-                                project_id = created.get("id", "")
-                                _pipeline_results[pipeline_id]["project_id"] = project_id
-                                logger.info("成品时间线已自动落项目: %s", project_id)
-                            else:
-                                pm.save(project_id, {"timeline": final_tl})
-                                logger.info("管线时间线已保存到项目: %s", project_id)
-                    except Exception as e:
-                        logger.warning("管线时间线保存失败: %s", e)
-                    # 更新会话状态（批2：用当前消息列表——旧实现写回 proceed 时
-                    # 的过期快照，覆盖运行期间用户交换的消息）
-                    _fresh = await asyncio.to_thread(_service.get_session, req.session_id) or {}
-                    await asyncio.to_thread(
-                        _service._persist,
-                        req.session_id, "pipeline_done",
-                        _fresh.get("messages", session.get("messages", [])),
-                        _fresh.get("creative_brief", session.get("creative_brief")),
-                        _fresh.get("production_plan", session.get("production_plan")),
-                        _fresh.get("user_inputs", session.get("user_inputs", {})),
-                    )
-                    logger.info("管线完成: pipeline_id=%s, status=%s", pipeline_id, state.status)
-                except asyncio.CancelledError:
-                    # 对齐: 用户取消写 cancelled 终态（原实现无 CancelledError
-                    # 处理，取消后 /result 回落到 Mongo 的 running 快照）
-                    if pipeline_id in _user_cancel_requested:
-                        _user_cancel_requested.discard(pipeline_id)
-                        _pipeline_results[pipeline_id] = {
-                            "status": "cancelled", "pipeline_id": pipeline_id,
-                            "error": "管线已取消（任务中断）",
-                        }
-                        add_event(pipeline_id, "system", "cancelled", "管线已取消（任务中断）")
-                    else:
-                        _pipeline_results[pipeline_id] = {
-                            "status": "timeout", "pipeline_id": pipeline_id,
-                            "error": f"管线执行超时（>{_pipeline_timeout}s），可重试",
-                        }
-                        add_event(pipeline_id, "system", "timeout",
-                                  f"管线执行超时（>{_pipeline_timeout}s）")
-                    # 轮70（D13）：向上传播——否则 TaskQueue 把已取消/超时的任务记为 COMPLETED
-                    raise
-                except Exception as e:
-                    logger.exception("Pipeline failed: %s", e)
-                    add_event(pipeline_id, "system", "error", f"管线失败: {e}")
-                    _pipeline_results[pipeline_id] = {"status": "failed", "error": str(e), "pipeline_id": pipeline_id}
-                finally:
-                    # 批A(R3)：失败/取消/超时 → 会话回 plan_ready（旧实现停留
-                    # pipeline_running，聊天永远回复"正在运行中"）；成功态
-                    # （pipeline_done）不回滚
-                    _result_status = (_pipeline_results.get(pipeline_id) or {}).get("status", "")
-                    if _result_status in ("failed", "cancelled", "timeout"):
-                        try:
-                            _fresh = await asyncio.to_thread(_service.get_session, req.session_id) or {}
-                            await asyncio.to_thread(
-                                _service._persist,
-                                req.session_id, "plan_ready",
-                                _fresh.get("messages", session.get("messages", [])),
-                                _fresh.get("creative_brief", session.get("creative_brief")),
-                                _fresh.get("production_plan", session.get("production_plan")),
-                                _fresh.get("user_inputs", session.get("user_inputs", {})),
-                            )
-                        except Exception:
-                            logger.warning("会话状态回滚失败: %s", req.session_id)
-                    if _running_pipelines.get(pipeline_id) is asyncio.current_task():
-                        _running_pipelines.pop(pipeline_id, None)
-                    async def _cleanup():
-                        import asyncio as _a
-                        await _a.sleep(60)
-                        _pipeline_results.pop(pipeline_id, None)
-                        _running_pipelines.pop(pipeline_id, None)
-                        _pipeline_owners.pop(pipeline_id, None)
-                        _pipeline_tasks.pop(pipeline_id, None)
-                        _user_cancel_requested.discard(pipeline_id)
-                        from clipwright.services.trace import clear
-                        clear(pipeline_id)
-                    spawn_background(_cleanup(), name=f"pipeline-cleanup-{pipeline_id}")
 
-            _submit_timeout = float(_pipeline_timeout) + 120.0
-            tq_task_id = await get_task_queue().submit(
-                "pipeline", _queue_handler, timeout_sec=_submit_timeout,
-            )
-            _pipeline_tasks[pipeline_id] = tq_task_id
-            _persist_pipeline_runtime(pipeline_id, task_id=tq_task_id)
-        except Exception as e:
-            # 队列提交失败：写失败终态（不静默吞掉，前端可感知并重试）
-            logger.exception("TaskQueue 提交失败: %s", e)
-            _pipeline_results[pipeline_id] = {
-                "status": "failed", "error": f"管线任务提交失败: {e}",
-                "pipeline_id": pipeline_id,
-            }
-            add_event(pipeline_id, "system", "error", f"管线任务提交失败: {e}")
-
-    _running_pipelines[pipeline_id] = spawn_background(
-        _run(), name=f"requirements-pipeline-{req.session_id}",
-    )
-    return {"session_id": req.session_id, "pipeline_id": pipeline_id, "status": "pipeline_started"}

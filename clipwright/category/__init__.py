@@ -9,6 +9,7 @@ from .knowledge_longform import KnowledgeLongformPlugin
 from .kichiku_fastcut import KichikuFastcutPlugin
 from .digital_review import DigitalReviewPlugin
 from .vlog_daily import VlogDailyPlugin
+from .lyric_mv import LyricMvPlugin
 
 __all__ = [
     "BaseCategoryPlugin",
@@ -17,4 +18,5 @@ __all__ = [
     "KichikuFastcutPlugin",
     "DigitalReviewPlugin",
     "VlogDailyPlugin",
+    "LyricMvPlugin",
 ]

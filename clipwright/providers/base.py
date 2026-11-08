@@ -22,6 +22,21 @@ class ProviderCapabilities:
     vision: bool = False
     max_context_tokens: int = 0
     max_concurrency: int = 0
+    #: 是否允许「来源没有模型清单时也接受任意 model id」（OpenAI 兼容网关/Ollama 这类
+    #: 不维护固定清单的 provider 声明 True）。显式 route 校验据此决定放行还是拒绝
+    #: （2026-10-28 PRD B3）。默认 False = 必须有清单才能确认模型可用。
+    arbitrary_models: bool = False
+    #: 是否支持 `reasoning_effort` 参数（2026-10-28 PRD B5）；False = 忽略并报降级。
+    reasoning_effort: bool = False
+    #: 是否会回吐思考内容（`reasoning_content`）。与 `reasoning_effort` 分开：
+    #: 能配强度 ≠ 能看见思考。False = 前端必须显示「该模型不提供思考内容」，
+    #: 而不是给一个点了没反应的假按钮（unified-stream PRD §5.1）。
+    reasoning_content: bool = False
+    #: 思考内容是否逐块到达（True = 可做增量渲染；False = 只在结束时一次性给）。
+    reasoning_streaming: bool = False
+    #: 支持的生成参数（temperature/top_p/max_tokens…）。逐模型配置按此过滤，
+    #: 不支持的参数**不下发**并登记 degradation（2026-10-28 PRD B4）。
+    generation_params: tuple[str, ...] = ("temperature", "top_p", "max_tokens")
 
 
 @runtime_checkable
@@ -214,6 +229,62 @@ def llm_uses_system_kwarg(impl: Any) -> bool:
     except Exception as e:  # noqa: BLE001
         _warn_once(impl, f"uses_system_kwarg() 调用异常({e})")
         return False
+
+
+def llm_tool_result_style(impl: Any) -> str:
+    """工具结果消息风格：``"anthropic"``（tool_use/tool_result 块）或 ``"openai"``。
+
+    为什么要有这个方法：工具循环里的消息组装原先按 provider 名分支
+    （`if self.provider == "<vendor>"`），那是把**能力方知识写进 engine**。
+    provider 声明自己用哪种风格，engine 只按声明组装；缺方法 → OpenAI 风格 + 一次告警
+    （与 `normalize_messages` 的降级策略一致）。
+    """
+    fn = getattr(impl, "tool_result_style", None)
+    if not callable(fn):
+        _warn_once(impl, "tool_result_style()")
+        return "openai"
+    try:
+        style = str(fn() or "").strip().lower()
+        return style if style in ("anthropic", "openai") else "openai"
+    except Exception as e:  # noqa: BLE001
+        _warn_once(impl, f"tool_result_style() 调用异常({e})")
+        return "openai"
+
+
+def llm_vision_message_format(impl: Any) -> str:
+    """视觉消息格式：``"anthropic"``（image source 块）或 ``"openai"``（image_url）。
+
+    与 `tool_result_style` 同一思路：格式是**能力方的知识**，engine 只按声明组装。
+    缺方法 → OpenAI 兼容格式 + 一次告警。
+    """
+    fn = getattr(impl, "vision_message_format", None)
+    if not callable(fn):
+        _warn_once(impl, "vision_message_format()")
+        return "openai"
+    try:
+        fmt = str(fn() or "").strip().lower()
+        return fmt if fmt in ("anthropic", "openai") else "openai"
+    except Exception as e:  # noqa: BLE001
+        _warn_once(impl, f"vision_message_format() 调用异常({e})")
+        return "openai"
+
+
+def llm_model_listing_spec(impl: Any) -> dict[str, Any] | None:
+    """模型清单端点/鉴权声明（provider 能力位；缺方法 → None = 不支持自动拉取）。
+
+    形状：``{"base": 默认主机, "path": "/v1/models", "auth": "x-api-key"|"bearer",
+    "extra_headers": {...}}``。端点风格与鉴权头是**厂商知识**，不该写在 engine 里。
+    """
+    fn = getattr(impl, "model_listing_spec", None)
+    if not callable(fn):
+        return None
+    try:
+        spec = fn()
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(spec, dict) or not str(spec.get("path") or ""):
+        return None
+    return spec
 
 
 def missing_llm_provider_methods(impl: Any) -> list[str]:

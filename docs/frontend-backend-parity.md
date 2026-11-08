@@ -9,7 +9,9 @@
 
 ## 0. 结论摘要（TL;DR）
 
-- 后端真实路由 **236 条**（轮 80 对账：含 settings 3 条；实际以 `clipwright/api/*.py` 路由装饰器为准），分布 34 个 APIRouter（`J:\Clipwright\clipwright\api\*.py`）。
+- 后端真实路由**以生成物为准**：`docs/route_inventory.txt`（由 `python scripts/route_inventory.py --out docs/route_inventory.txt` 从 `app.routes` 导出）。
+  - 2026-10-29 实测：**335 条** `METHOD PATH`（含 `admin_router` 的 `/api/supervisor/*`）。
+  - 旧版本这里写的是手抄快照（225 / 236 条），代码一改就漂移——已废弃该口径（见 PRD G15）。
 - 前端 API 客户端 **20 个模块 + 180+ 个函数**（`src/services/api/*.ts`，排除 `client.ts`/`index.ts`/测试文件）。
 - 三类差距（无客户端 / 死坏调用 / 形状漂移）**已全部修复**，并补齐 4 个新管理页 + 7 处现有页面接线。
 - `/metrics`、独立 worker 服务、`/ws` WebSocket 为**明确范围外**：`WsClient.ts` 已删除，实时链路为 SSE-only。
@@ -19,9 +21,10 @@
 
 ## 1. 后端路由全量清单（① 真实路由 inventory）
 
-> 数据来源：`Select-String -Path "J:\Clipwright\clipwright\api\*.py" -Pattern "@router\.(get|post|put|delete|patch)"` → **225 条**。
-> 前缀来源：每个文件 `router = APIRouter(prefix=...)`。
-> 排除：`errors.py`（无路由）、`__init__.py`（聚合）。`/health` 在 `main.py`（非 `api/*.py`），由 `healthApi.check()` 消费。
+> **数据来源已改为生成物**：`docs/route_inventory.txt`（`python scripts/route_inventory.py --out docs/route_inventory.txt`）。
+> 旧口径 `Select-String ... -Pattern "@router\.(get|post|put|delete|patch)"` 只数装饰器、且会把
+> `admin_router`（`/api/supervisor/*`）漏掉，已停用。
+> 下表是按前缀的人工分组（便于读），**数量以生成物为准**；两者不一致时以下表之外的生成物为准。
 
 | 前缀 | 文件 | 数量 | 路由 |
 |---|---|---|---|
@@ -38,7 +41,7 @@
 | `/api/persona` | persona.py | 20 | GET `/list` · GET `/{persona_id}` · POST `/create` · PUT `/{persona_id}` · POST `/{persona_id}/reference-style` · DELETE `/{persona_id}` · POST `/{persona_id}/duplicate` · POST `/derive` · GET `/{persona_id}/export` · POST `/import` · GET `/{persona_id}/prompt` · PUT `/{persona_id}/prompt` · GET `/{persona_id}/vision-prompt` · PUT `/{persona_id}/vision-prompt` · GET `/{persona_id}/knowledge` · POST `/{persona_id}/knowledge` · PUT `/{persona_id}/knowledge/{doc_id}` · DELETE `/{persona_id}/knowledge/{doc_id}` · POST `/{persona_id}/learn` · GET `/{persona_id}/learn/stats` |
 | `/api/persona/forge` | persona_forge.py | 5 | POST `/from-prompt` · POST `/from-script` · POST `/refine` · POST `/dialogue/generate-questions` · POST `/dialogue/build` |
 | `/api/pipeline` | pipeline.py | 21 | GET `/runs` · POST `/run-v2` · POST `/run` · POST `/run-async` · GET `/trace/{pipeline_id}` · GET `/trace/stream/{pipeline_id}` · GET `/result/{pipeline_id}` · GET `/status/{pipeline_id}` · GET `/diagnostics/{pipeline_id}` · POST `/retry/{pipeline_id}/{agent_name}` · GET `/templates` · POST `/templates` · GET `/templates/{name}` · DELETE `/templates/{name}` · POST `/cancel/{pipeline_id}` · GET `/breaker-status` · POST `/script-tools` · POST `/predict-script` · POST `/predict-material` · POST `/step/{agent_name}` · POST `/topic-suggest` |
-| `/api/plugin` | plugin.py | 16 | GET `/list` · GET `/discover` · POST `/load/{plugin_id}` · POST `/unload/{plugin_id}` · POST `/{plugin_id}/enable` · POST `/{plugin_id}/disable` · GET `/permissions` · GET `/errors` · DELETE `/errors` · DELETE `/{plugin_id}` · GET `/{plugin_id}/config` · PUT `/{plugin_id}/config` · DELETE `/{plugin_id}/config` · POST `/load-all` · GET `/capabilities` · GET `/{plugin_id}/ui` |
+| `/api/plugin` | plugin.py | 18 | GET `/list` · GET `/discover` · POST `/load/{plugin_id}` · POST `/unload/{plugin_id}` · POST `/{plugin_id}/enable` · POST `/{plugin_id}/disable` · GET `/permissions` · GET `/errors` · DELETE `/errors` · DELETE `/{plugin_id}` · GET `/{plugin_id}/config` · PUT `/{plugin_id}/config` · DELETE `/{plugin_id}/config` · POST `/load-all` · GET `/capabilities` · GET `/{plugin_id}/ui` · GET `/contributions` · GET `/prompt-symbols` |
 | `/api/preprocess` | preprocess.py | 7 | GET `/operations` · GET `/queue` · POST `/submit` · POST `/batch-submit` · GET `/task/{task_id}` · DELETE `/task/{task_id}` · GET `/task/{task_id}/results` |
 | `/api/project` | project.py | 15 | POST `/folders/rename` · POST `/folders/delete` · GET `/{project_id}` · PUT `/{project_id}` · DELETE `/{project_id}` · POST `/{project_id}/trash` · POST `/{project_id}/restore` · DELETE `/{project_id}/trash` · GET `/{project_id}/archive` · POST `/{project_id}/duplicate` · PATCH `/{project_id}/rename` · PATCH `/{project_id}/folder` · POST `/{project_id}/tags` · DELETE `/{project_id}/tags/{tag}` · GET `/{project_id}/thumbnail` |
 | `/api/proxy` | proxy.py | 2 | POST `/generate` · POST `/switch` |
@@ -52,6 +55,8 @@
 | `/api/subtitle` | subtitle.py | 4 | POST `/import` · POST `/export` · POST `/transcribe` · POST `/align` |
 | `/api/template` | template.py | 7 | GET `/list` · GET `/{template_id}` · POST `/create` · PUT `/{template_id}` · DELETE `/{template_id}` · POST `/{template_id}/apply` · POST `/{template_id}/batch-apply` |
 | `/api/tool` | tool.py | 3 | GET `/list` · POST `/execute` · POST `/batch` |
+| `/api/capability` | capability.py | 1 | POST `/{name}`（**通用能力网关**：按能力名解析→执行，404/422/503/200；插件对外 HTTP 的唯一通道） |
+| `/api/providers` | providers.py | 14 | GET `` · POST `` · GET `/available` · GET `/roles` · PUT `/roles` · GET `/schemas` · GET `/capabilities` · GET `/{id}` · PUT `/{id}` · DELETE `/{id}` · POST `/{id}/models` · POST `/{id}/models/upsert` · POST `/{id}/models/fetch` · POST `/{id}/test` |
 | `/api/type-maker` | type_maker.py | 6 | GET `/list` · GET `/{type_id}` · POST `/create` · PUT `/{type_id}` · DELETE `/{type_id}` · POST `/preview` |
 | `/api/project`（版本） | versions.py | 4 | GET `/{project_id}/versions` · POST `/{project_id}/versions` · POST `/{project_id}/versions/{position}/restore` · DELETE `/{project_id}/versions` |
 | `/api/video-editor` | video_editor.py | 13 | GET `/status` · GET `/projects` · POST `/projects/create` · GET `/projects/{project_id}` · PUT `/projects/{project_id}` · DELETE `/projects/{project_id}` · POST `/projects/{project_id}/undo` · POST `/projects/{project_id}/redo` · POST `/projects/{project_id}/clips/add` · POST `/projects/{project_id}/clips/remove` · POST `/projects/{project_id}/clips/move` · POST `/projects/{project_id}/clips/split` · POST `/projects/{project_id}/export` |
@@ -59,13 +64,23 @@
 | `/api/voice` | voice.py | 6 | POST `/upload` · POST `/clone` · GET `/list` · DELETE `/{db_id}` · POST `/synthesize` · POST `/dub` |
 | `/api/waveform` | waveform.py | 1 | POST `/generate` |
 | `/api/webhook` | webhook.py | 8 | GET `/events` · GET `/list` · POST `/register` · DELETE `/{webhook_id}` · PUT `/{webhook_id}/toggle` · POST `/{webhook_id}/test` · POST `/notify` · GET `/deliveries` |
-| **合计** | **33 个 router** | **225** | |
+| **合计** | **按文件分组（人工维护）** | 见 `docs/route_inventory.txt` | 生成物为准：`python scripts/route_inventory.py --out docs/route_inventory.txt` |
+
+### 1.1 调度中枢路由（`api/supervisor.py`，v1.4 新增）
+
+| 前缀 | 路由数 | 端点 | 客户端 |
+|---|---|---|---|
+| `/api/pipeline`（supervisor 部分） | 13 | GET `/{pid}/ledger` · GET `/{pid}/attribution` · GET `/{pid}/diagnosis` · GET `/{pid}/decisions` · GET `/{pid}/budget` · POST `/{pid}/dispatch` · POST `/{pid}/accept-suggestion` · GET `/{pid}/subagents` · POST `/{pid}/subagents` · POST `/{pid}/subagents/{sid}/cancel` · POST `/{pid}/exec` · GET `/{pid}/exec` · GET `/{pid}/exec/pending-approvals` + POST `/exec/{aid}/approve|reject` + GET/PUT `/exec/auto-mode` | `supervisorApi` |
+| `/api/supervisor`（admin） | 5 | GET `/workers/pending-review` · POST `/workers/{wid}/review` · GET `/tools` · GET/PUT `/routes` · GET/PUT `/mode` | `supervisorApi` |
+
+> 这两组端点与 `pipeline.py` 共用 `/api/pipeline` 前缀，但**归属不同文件**：`api/supervisor.py` 注册的 `router` 与 `admin_router`。
+> 「改派 / 建议」不是只登记：`POST /dispatch` 与 `POST /accept-suggestion` 会走 `api/pipeline.start_agent_retry` 真跑一次重跑，跑不起来时返回 `retry.retried=false` + 原因。
 
 ---
 
 ## 2. 前端客户端清单（② 客户端 inventory）
 
-> 数据来源：`src/services/api/*.ts` 共 **24 个业务模块、202 个 async 函数**（含 `client.ts` 工厂与 `index.ts` 聚合桶）。
+> 数据来源：`src/services/api/*.ts` 共 **36 个业务模块、332 个 async 函数**（含 `client.ts` 工厂与 `index.ts` 聚合桶；口径见下）。
 > 计数命令：遍历 `src/services/api/*.ts`（排除 `client.ts`/`index.ts`/`*.test.ts`）匹配 `async xxx(...)` 顶层方法。
 
 | 模块文件 | 导出 | 函数数 | 覆盖后端 |
@@ -74,6 +89,7 @@
 | `pipeline.ts` | `pipelineApi` | 9 | `/api/pipeline`（核心 9 项 + 诊断/模板经 client 扩展） |
 | `persona.ts` | `personaApi` | 33 | `/api/persona` + RAG + forge + forge/chat + learn（33） |
 | `project.ts` | `projectApi` / `healthApi` / `pluginApi` / `animationApi` / `skillApi` | 42 | `/api/project` + `/health` + `/api/plugin`（16 项）+ `/api/animation` + `/api/skill` + `/api/stats` |
+| `providers.ts` | `providersApi` + `schemaFor` / `buildSourcePayload` / `validateGeneration`（纯函数） | 13 | `/api/providers`（13/14：list/available/capabilities/schemas/create/update/remove/setRole/setModels/upsertModel/deleteModel/fetchModels/testSource；**未覆盖** `PUT /roles` 的批量语义，角色绑定走 `setRole` 逐条） |
 | `asset.ts` | `assetApi`（含 material 素材 + governance） | 9 | `/api/asset` + `/api/material` + `/api/asset/governance` |
 | `render.ts` | `renderApi` | 7 | `/api/render`（7/10，SSE 流经 sse.ts） |
 | `requirements.ts` | `requirementsApi` | 8 | `/api/requirements`（8/8，含 /edit + streamChat） |
@@ -93,6 +109,7 @@
 | `vision.ts` | `visionApi` | 2 | `/api/vision`（2/2） |
 | `market.ts` | `marketApi` | 8 | `/api/market`（插件/Persona 市场安装） |
 | `client.ts` | `getApiClient` / `resetApiClient` | — | Axios 工厂（baseURL 同源/8080，SSE 见 sse.ts） |
+| `supervisor.ts` | `supervisorApi` | 22 | `/api/pipeline`（调度中枢：账本/归因/诊断书/决策/预算/改派/子代理/执行/授权）+ `/api/supervisor`（审核队列/工具/路由表/模式） |
 | `index.ts` | 聚合桶 | — | 导出全部业务模块 |
 
 ### 2.1 聚合桶导出（index.ts）
@@ -325,3 +342,95 @@ P6/P7 阶段新增/变更的路由与客户端（均已完成接线与回归）�
 1. `/api/test/*` 无专属客户端模块（ModelsPage 内联），如后续统一 API 管理可抽取 `modelTestApi`。
 2. `SettingsPage.tsx:51`「WebSocket 地址」为 WsClient 移除后的遗留字段，属 UI 清理项，不影响对账结论。
 3. 本报告基于 2026-08-04 工作区快照；路由新增/变更后需重跑 §6 命令并更新本报告。
+## 7. 工作区（2026-10-24 增量）
+
+| 后端路由 | 前端客户端 | 状态 |
+|---|---|---|
+| `POST/GET /api/workspace`、`/enable`、`/scan`、`/materials`、`/events` | `src/services/api/workspace.ts`（`workspaceApi`） | ✅ 已接：首页 04 步（开关+路径）、`/task/{id}` 工作区面板（计数/扫描/上传/素材表） |
+| `POST /api/requirements/proceed` | `AgentPanel.confirmPlan` / `ReviewPanel.confirm` → `features/agent/proceedResult.ts` | ✅ 单轨：恒返回 `task_id` + `mode=task`（幂等命中同样同形）→ 前端 `taskStore.load(task_id)` 并订阅 Task 事件 |
+| `POST /api/requirements/{session_id}/stop` | `requirementsApi.stop` → `AgentPanel.stopRunningTask`（运行条停止按钮） | ✅ 真中止任务 + 会话回 `plan_ready` + 留 `user_stopped` 记录（见 [docs/agent-stop-control-2026-11-02.md](agent-stop-control-2026-11-02.md)） |
+| `GET /api/workspace/{id}/media-tree` | `workspaceApi.mediaTree` → `features/assets/WorkspaceMediaTree.tsx` | ✅ 左侧资源库「工作区」标签按目录树呈现全部媒体 |
+| `POST /api/requirements/{id}/intent` · `/intent/apply` · `/edit` 的选区字段 | `buildSelectionSnapshot`（`src/features/agent/selectionSnapshot.ts`）→ `AgentPanel.sendEdit/applyIntent`；确认卡冻结快照 | ✅ PRD W3：上限 20 / 摘要 8000 字符；服务端子集校验（400）；确认执行用冻结快照而非重读选区 |
+| `POST /api/workspace/{id}/materials?overwrite=false` | `workspaceApi.upload`（`AssetPanel.handleUpload` 已切到这条） | ✅ devplan T3.1：流式写 `.part`、2 GiB 413、同名 409；前端先拦 2 GiB |
+| `GET /api/workspace/{id}/legacy-assets` · `POST /api/workspace/{id}/legacy-import` | `workspaceApi.legacyAssets/legacyImport` → `WorkspaceMediaTree` 的「导入到工作区」横幅 | ✅ devplan T3.3：只读清单 + dry_run 计划 + 复制不移动 + SHA256 去重 |
+| `GET`/`PATCH /api/project/{id}/termination` | 项目级终止策略（devplan 2026-11-02）：软着陆轮次 / 收口窗口 / 质量预算预留 | ✅ 后端已落（`services/agent_policy.py`），前端端点待页面接入；策略在任务创建时快照，改后只影响新任务 |
+| `GET /api/task/{id}` 新增 `terminal_reason` / `goal` / `closeout` / `escrow` | `types/task.ts` 同名字段 → `TaskFinishSummary`（终态/收口/预算三行）+ `taskStore.terminalStatusOf`（`capped → 'capped'`） | ✅ 新旧并行：旧 `finish.reason` 继续产出，前端未知值回退 `unknown_terminal` |
+
+说明：`/api/workspace/{id}/events` 已改成 **JSON**（`/events/stream` 才是 SSE），面板仍用"操作后 reload"，
+未挂常驻订阅——避免首页/任务页各开一条长连接；需要实时进度时改挂 `/events/stream`。
+
+## 8. 主 Actor 化（2026-10-26 增量）
+
+| 变化 | 影响面 | 状态 |
+|---|---|---|
+| `POST /api/pipeline/run-async` 在 `pipeline_enabled=false` 时返回 **410** | 老前端若有入口会拿到明确错误而非"管线卡住" | ✅ 新入口只走 `/api/requirements/proceed` → Task |
+| `GET /api/pipeline/trace/{id}`、`/trace/stream/{id}` 接受 `task_*` | `AgentPanel`/管理页复用同一订阅面板（事件映射为 trace 形状，含 `source:"task"`） | ✅ 无需为两条链路写两套订阅 |
+| 新增能力 `run_stage/spawn_stage/get_stage/list_stages/replan_closure/validate_stage_plan` | 主 Agent 内部通道（暂未做独立 UI；任务页已有阶段事件卡片） | ⚠️ 无独立 UI（不需要：阶段结果经 `step_end` 事件展示） |
+| `POST /api/render/*` 新增 `workspace_root` | 成片落 `workspace/renders/`（留空 = 全局 `renders/`） | ✅ 后端就绪；前端渲染调用暂未传（保持旧落点） |
+
+## 9. 会话时间线单一真相（2026-10-31 增量）
+
+| 后端 | 前端 | 状态 |
+|---|---|---|
+| `GET /api/requirements/{sid}/timeline`（`since_seq`/`until_seq`/`before_seq`/`limit`） | `requirementsApi.timeline` → `stores/sessionTimelineStore.hydrate` | ✅ 刷新/翻页的唯一数据源 |
+| `GET /api/requirements/{sid}/timeline/stream`（SSE：`snapshot`/`append`/`chunk`/`patch`/`finish`/`ping`） | `requirementsApi.timelineStreamUrl` + `features/sessionTimeline/useSessionTimeline` | ✅ `chunk` 按 seq 追加 = 流式渲染 |
+| `services/session_log.py` | `src/features/sessionTimeline/*`、`src/stores/sessionTimelineStore.ts` | ✅ 前端不再合并第二数据源（旧 `unifiedTimelineStore` 已删除） |
+| `services/session_projection.py`（task 事件投影，`proceed` 时 `bind`） | 「轨迹」面板仍直连任务事件流（那是投影条目的原始 ref） | ✅ 需求面板不再订阅任务 SSE，避免重复应用 |
+| `GET /{sid}/messages`、`/{sid}/events`、`chat/stream` 的 `delta/reasoning/stage` 帧 | 旧视图（`?unifiedTimeline=0`）仍用 | ⚠️ 保留为兼容读；单流视图已不依赖 |
+
+## 10. 子 Agent run 与任务事件契约（2026-11-01 增量）
+
+| 后端 | 前端 | 状态 / 契约 |
+|---|---|---|
+| `GET /api/task/{id}/runs` | `TaskRuns` | ✅ 完成记录 + `_LIVE` 运行中占位（`live=true`）；`report_path` 取 `AgentResult.report_path` 顶层 |
+| `GET /api/task/{id}/runs/{run_id}` | 子 Agent 详情 | ✅ 统一 `_run_for_task()` 校验归属；跨任务 404，不泄露存在性 |
+| `POST .../runs/{run_id}/message` | `TaskRuns` | ✅ 归属校验后按 `task_id + stage` 排队，下次派发生效 |
+| `POST .../runs/{run_id}/replay` | `TaskRuns` | ✅ `refresh=true`；终态任务 409；新执行生成 `#r…` run_id |
+| `services/agent_run.py` | `foldRunChips` / `foldRunDetail` | ✅ `agent_run_end.detail` 发完整 failure、needs、duration_ms、attempt、report_path |
+| `StageSpec.run_id` → `subagent_tool.run_id` | 子 Agent 工具透明化 | ✅ 重放/降级重跑的工具事件挂到本次执行，不再归旧 run |
+| `GET /api/task/{id}/events/stream?since_seq=` | `features/task/useTaskEvents` | ✅ 共享单流；终态不建流、`task_end` 主动 close；先水合再带 since_seq 续传 |
+| `task_end.detail.completed/unfinished` | `taskStore.applyEvent` | ✅ 字段缺省时保留已有 `task.finish`，不被空数组覆盖 |
+| `POST /api/requirements/proceed` 幂等命中 | `proceedResult` | ✅ 目标为 `task_*` 时同形返回 `task_id` + `mode=task` |
+
+未完成：进程重启后完整事件历史与统一 AgentRun 的恢复链仍不完整——Mongo 只有写路径，
+普通任务事件不会全量落 JSONL，`/runs` 也无法重建重启前的阶段结果。UI 暂以“重启后历史可能不可用”
+处理，后续需补读取恢复或全量持久化。
+
+## 11. Provider 插件化与 `create.dub`（2026-11-02 增量）
+
+PRD：[`provider-pluginization-and-prompt-override-prd-2026-11-02.md`](provider-pluginization-and-prompt-override-prd-2026-11-02.md)。
+本节补齐该 PRD §15.9 第 7 项（`create.dub` 的贡献形状 + 客户端渲染入口）。
+
+| 后端 | 前端 | 状态 / 契约 |
+|---|---|---|
+| `GET /api/plugin/contributions?slot=create.dub` | `usePluginSlots('create.dub')` → `<Slot>` → `PluginLayoutRenderer` | ✅ 贡献形状沿用 `SlotContribution`（`slot/id/title/order/icon/visibleWhen/layout`），**未新增字段** |
+| `plugins/tts_feature` 的 `ui_slot: create_dub_entry` | `HomePage` → 03 配音与字幕 | ✅ `layout.widgets` = `select voice_id`（`optionsFrom: voices`）+ `checkbox auto_dub` + `file upload_voice`（`accept: .wav,.mp3,.m4a,.mp4`）+ `text` 说明 |
+| `UISelect.optionsFrom: 'voices'` | `Slot.optionSources`（`HomePage` 由音色列表解析） | ✅ 宿主**白名单**数据源；未知源名渲染「暂无可用选项」，不静默丢弃 |
+| `UIFile`（`type: 'file'`） | `PluginLayoutRenderer` → `Slot.onValuesChange` → `HomePage.pickAudio` | ✅ 控件值 = `File` 对象；**上传执行/回执归宿主**（插件拿不到上传 API、工作区路径、凭据），宿主按「同一 File 对象」去重，不重复上传 |
+| `GET /api/providers/schemas[?kind=]` | `providersApi.schemas()` → `ProvidersPage` | ✅ 表单字段由插件 `config_schema` 驱动；未知控件给可读错误，未知能力键只列出（`unknown_capability_keys`） |
+| `GET /api/providers/capabilities?kind=&provider=&model=` | `ProvidersPage` 能力徽标 | ✅ 按实现真实返回；解析不到时 `capabilities=null + error`（不 404，诊断要能显示「没装」） |
+| `POST /api/capability/{name}` | 能力调用方（主 agent / 工具编排） | ✅ 404 未解析 / 422 参数或路径 / 503 依赖缺失 / 200 `ToolExecResult`；无 provider 专属分支 |
+| `GET /api/plugin/prompt-symbols` | `PluginsPanel`「提示词符号」模态框 | ✅ 只回 26 常量 + 8 builder 的 `wired` 与覆盖来源，**不回提示词正文** |
+
+未完成（与 PRD §15.9 同源）：内置配音块仍以 `dubSlotContribs.length === 0` 作为**无插件回落**，
+最终态要等 B3-T6 的人工验证通过后整块删除（清单：
+[`provider-pluginization-b3t6-removal-checklist.md`](provider-pluginization-b3t6-removal-checklist.md)）。
+
+
+
+
+
+
+
+
+## 12. 展示 spec（`display_spec`，2026-11-08 能力迁移后）
+
+| 后端 | 前端 | 状态 / 契约 |
+|---|---|---|
+| `services/display_spec/sanitizer.py::sanitize_display_spec`（契约驱动清洗） | `src/features/genui/validate.ts::validateGenUISpec(raw, contract)` | ✅ 两道闸，规则同源（**都读契约**，都不硬编码） |
+| `GET /api/plugin/contributions?kind=display_spec`（运行期唯一契约源） | `contractSource.ts`（30s 缓存 + 插件启停失效广播） | ✅ 契约在 `plugins/genui/contract.json`；前端副本只做对账（`display_spec_contract_sync`） |
+| `plugins/genui` 的 2 条 `display_spec` + 1 条 `PROMPT` | — | ✅ 能力（白名单/上限/配方/规范）全在插件 |
+| `CreativeBrief.display_specs` / `ProductionPlan.display_specs`（`ensure_display_specs`） | `DisplaySpecsBlock` → `GenUISpecRenderer`（简报卡/规划书卡/审阅覆盖层） | ✅ 简报 `trust=sanitize`、规划书 `trust=recipe_only`；老键 `genui` 读时归一 |
+| `requirements_service._with_display_specs`（读路径补 spec） | `resolveDisplaySpecs`：`display_specs` 优先、老 `genui` 回退 | ✅ 只补不存，不回写 Mongo |
+| 动作 `ask/select/confirm` | `onGenUIAction`（select 文案宿主拼、confirm 二次确认） | ✅ spec 不携带 endpoint/URL |
+| 插件禁用 | 前端拿不到契约 → 整块不渲染 | ✅ A6 口径：禁用即无展示 spec，业务字段与指纹不受影响（G1–G3） |

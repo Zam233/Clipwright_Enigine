@@ -1,19 +1,18 @@
 id: "kinetic_typography"
 name: "动态文字动画"
-version: "1.0.0"
+version: "1.1.0"
 kind: "capability"
-description: "高级动态文字动画 — 逐词强调/弹跳/弹性缩放/3D透视/渐变/描边动画"
+description: "高级动态文字动画 — 逐词强调/弹跳/弹性缩放/描边绘制（keyframes 表达）"
 author: "Clipwright Team"
 entry_point: "kinetic_typography.main"
 
 # P1 迁移：新契约声明
+# B8-T8.3：撤下 animation_catalog_extend 死钩子；perspective_3d / gradient_fill 已下线
+# （keyframes 渲染器没有 3D 透视与渐变填充属性，声明了也渲不出来）。
 api_version: "2"
 contributions:
-  - { kind: hook, id: kinetic_catalog_extend }
   - { kind: prompt, id: kinetic_structure_prompt }
   - { kind: animation, id: word_emphasis }
   - { kind: animation, id: bounce_text }
   - { kind: animation, id: elastic_scale }
-  - { kind: animation, id: perspective_3d }
-  - { kind: animation, id: gradient_fill }
   - { kind: animation, id: stroke_draw }

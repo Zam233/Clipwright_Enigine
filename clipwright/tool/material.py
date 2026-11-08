@@ -23,6 +23,7 @@ def _lavfi_escape(path: str) -> str:
 class MaterialFilterTool(BaseTool):
     """素材筛选工具 — 按方向、分辨率筛选/排序素材。"""
     name = "material_filter"
+    permission_tier = "read"
     description = "按方向(横屏/竖屏)、分辨率筛选和排序素材"
     dependencies = []
 

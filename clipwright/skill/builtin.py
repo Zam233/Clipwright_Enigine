@@ -187,16 +187,18 @@ def _bpm_to_cut_suggestion(bpm: float) -> int:
 
 # 注册辅助函数
 def register_builtin_skills() -> None:
-    """注册所有内置技能到 SkillRegistry。"""
-    from clipwright.skill.registry import SkillRegistry
+    """注册所有内置技能到 SkillRegistry。
 
-    from clipwright.skill.dub import DubScriptSkill
+    `dub_script` 自 2026-11-03（B3-T6 / 裁定 3）起**不再内置**：它由
+    `plugins/tts_feature` 提供。没有该插件时配音能力整体不可用——这是有意的行为，
+    不是缺失兜底（`/api/voice/dub` 会 503 + 可读原因）。
+    """
+    from clipwright.skill.registry import SkillRegistry
 
     skills = [
         AnalyzeVideoStructureSkill(),
         GenerateCaptionSkill(),
         AnalyzeAudioRhythmSkill(),
-        DubScriptSkill(),
     ]
     for skill in skills:
         SkillRegistry.register(skill)

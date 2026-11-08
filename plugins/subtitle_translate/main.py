@@ -25,6 +25,7 @@ from clipwright.config import logger
 
 class SubtitleTranslateTool(BaseTool):
     name = "subtitle_translate"
+    permission_tier = "costly"
     agent_callable = True
     description = "翻译字幕文本到目标语言"
     parameters_schema = {

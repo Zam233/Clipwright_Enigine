@@ -22,6 +22,8 @@ class _Echo:
     """回显工具（execute 用别名绑定，规避静态扫描对 `async def execute` 的误报）。"""
 
     name = "sandbox_echo"
+
+    permission_tier = "read"
     description = "回显输入（子进程沙箱示例）"
 
     async def _forward(self, **kwargs: Any) -> dict[str, Any]:
@@ -34,6 +36,8 @@ class _WriteProbe:
     """写盘探针：无 fs_write 权限时必须失败（验证运行时强制）。"""
 
     name = "sandbox_write_probe"
+
+    permission_tier = "write_local"
     description = "尝试写文件（应被权限钩子拒绝）"
 
     def __init__(self, target: Path) -> None:

@@ -16,6 +16,8 @@ class VoiceCloneTool(BaseTool):
     """声音克隆工具 — 从音频样本克隆音色并入库。"""
 
     name = "voice_clone"
+
+    permission_tier = "costly"
     description = "声音克隆：从音频样本克隆音色并入库"
     dependencies: list[str] = []
 
@@ -58,6 +60,8 @@ class TextToSpeechTool(BaseTool):
     """TTS 文字转语音工具 — 用已克隆音色将文本合成语音文件。"""
 
     name = "text_to_speech"
+
+    permission_tier = "costly"
     description = "TTS 文字转语音：用已克隆音色将文本合成语音文件"
     dependencies: list[str] = []
 

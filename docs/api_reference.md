@@ -115,15 +115,95 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 
 | 端点 | 说明 |
 |------|------|
-| `POST /api/pipeline/run-async` | 异步启动管线（唯一入口；动态路由 + 并行执行 + 自愈循环），通过 SSE 实时追踪 |
+| `POST /api/pipeline/run-async` | **已退役**：执行引擎已在 M3 物理删除。`agent_mode=on` 时转成主 Agent 任务（返回体仍带 `pipeline_id`），其余情况返回 **410**。新任务请用 `POST /api/requirements/proceed` 或 `POST /api/task` |
 | `GET /api/pipeline/runs?limit=50` | 列出最近的管线运行记录（按时间倒序） |
 | `GET /api/pipeline/status/{pipeline_id}` | 查询管线状态 |
 | `GET /api/pipeline/result/{pipeline_id}` | 获取异步执行结果（含时间线 JSON） |
 | `GET /api/pipeline/trace/{pipeline_id}` | 获取管线事件轨迹 |
 | `GET /api/pipeline/trace/stream/{pipeline_id}` | SSE 流：实时追踪管线执行事件 |
-| `POST /api/pipeline/retry/{pipeline_id}/{agent_name}` | 从失败的 Agent 重试（B3：重放前置成功结果，仅重跑目标 + 下游） |
+| `POST /api/pipeline/retry/{pipeline_id}/{agent_name}` | **已退役**：返回 **410**（执行引擎已删除；失败恢复请走主 Agent 的 `POST /api/task/{id}/resume`，或让主 agent 重新 `delegate_agent` 该阶段） |
 | `POST /api/pipeline/predict-script` | 分析文稿并推荐配置（请求体：`PredictScriptRequest`）。返回字数、句数、估算时长、推荐 Persona、推荐类型插件、情绪基调、关键主题 |
 | `POST /api/pipeline/predict-material` | 分析素材文件并推荐使用方式（请求体：`PredictMaterialRequest`）。返回时长、分辨率、方向、是否有视频/音频、用途建议 |
+
+## 任务与子 Agent（/api/task）
+
+> 实现：`clipwright/api/task.py`、`services/agent_run.py`、`services/task_events.py`。
+> 任务事件是唯一事实来源；`task.status` 只是缓存。
+
+| 端点 | 说明 |
+|------|------|
+| `POST /api/task` | 创建任务；`plan_only=true`（默认）只规划不执行 |
+| `GET /api/task/{task_id}` | 任务快照 + 事件条数 |
+| `GET /api/task/{task_id}/events?since_seq=&before_seq=&limit=` | 事件分页；返回 `has_more` / `oldest_available_seq` / `latest_seq` / `spilled_max_seq` |
+| `GET /api/task/{task_id}/events/stream?since_seq=` | SSE；先 REST 水合再接流。发送 `task_end` 后关闭；终态且游标已追平时直接 EOF |
+| `POST /api/task/{task_id}/resume` | 续跑；终态 409，等待回答时 409（需要先 answer 或 cancel） |
+| `POST /api/task/{task_id}/pause` / `cancel` | 暂停 / 取消 |
+| `POST /api/task/{task_id}/inject` | 给运行中的主 Agent 插话 |
+
+### 终止机制字段（devplan 2026-11-02，`schema/task.py`）
+
+`Task.to_public()` 与 `task_end.detail` 都带下面这些**新增**字段（旧字段全部保留）：
+
+| 字段 | 含义 |
+|---|---|
+| `terminal_reason` | 终态**唯一机器原因**：`achieved` / `plan_only_completed` / `capped` / `blocked` / `user_cancelled` / `externally_interrupted` / `model_error` / `invalid_completion` / `dry_run_completed`。旧 `finish.reason` 字符串继续并行产出（暂不停用） |
+| `blocker_code` | blocked 的根因码：`no_progress` / `repeat_fail` / `degradation_unresolved` / `budget_exhausted` / `model_error` / `invalid_completion` / `missing_artifact` |
+| `goal` | 完成约束：`{id,title,completion_criteria,max_rounds,rounds_used,status,blocked_reason,blocker_fingerprint,blocker_streak,blocked_after_consecutive_rounds,closeout_required}`；`status ∈ active/achieved/capped/blocked/paused` |
+| `closeout` | 收口状态：`{mode:normal\|soft_landing, trigger, trigger_round, max_rounds, max_tool_calls, max_wall_sec, rounds_used, tool_calls_used, deliverable_status, report_path}`；收尾报告落在 `reports/agent-closeout.json` |
+| `escrow` | 质量预算托管：`{state,reserve_usd,main_budget_usd,main_spent_usd,quality_spent_usd,released_usd,ratio,floor_usd,cap_usd,quality_remaining_usd}`；`state=disabled` 表示未配置金额上限（不冻结） |
+
+`TaskStatus` 新增 `capped`：**既不算 done 也不算 failed**，不计入成功率（`evaluation` 单列
+`capped_count`），会话映射 `plan_ready`（只有 `done` 才 `pipeline_done`）。
+
+新增事件：`goal_update`（Goal 状态迁移）、`soft_landing`（进入收口模式，一次性）。
+| `POST /api/task/{task_id}/plan` | 重新规划 |
+| `GET /api/task/{task_id}/questions?status=` + `POST .../answer` | 待答问题与作答（404/409/410 分别表示不存在/已回答或取消/超时失效） |
+| `GET /api/task/{task_id}/result` + `POST .../to-project` | 任务产物快照 / 落成可继续编辑的项目 |
+| `GET /api/task/{task_id}/runs` | 子 Agent run 列表；**含运行中占位记录**（`live=true`），`report_path` 取顶层字段 |
+| `GET /api/task/{task_id}/runs/{run_id}` | run 全量结果；run 不属于该任务时 404（不泄露存在性） |
+| `POST /api/task/{task_id}/runs/{run_id}/message` | 给该阶段子会话排队补充要求（下次派发生效） |
+| `POST /api/task/{task_id}/runs/{run_id}/replay` | 真重跑；`refresh=true`，生成 `#r…` 新 `run_id`；终态任务 409 |
+| `GET /api/task/{task_id}/tool-calls?stage=&attempt=&limit=&offset=` | 读盘上的全量工具 transcript |
+
+事件契约（前端按此渲染，不得只发分类字符串）：
+
+- `agent_run_start.detail`：`run_id`、`kind`、`stage`、`role`、`brief`、`inputs`、`attempt`
+- `agent_run_end.detail`：`run_id`、`status`、`attempt`、`summary`、`cost_usd`、`duration_ms`、
+  `report_path`、`tool_calls_path`、`degradations`、`failure`（完整对象）、`needs`
+- `task_end.detail`：`reason`、`usage`、`completed`、`unfinished`、`tool_calls`
+
+身份规则：`idem_key` 只用于幂等复用；`run_id` 标识每一次真实执行。显式重放、降级重跑、同键再次执行
+都必须生成新的 `run_id`，否则工具事件会挂到旧 run 或覆盖历史记录。
+
+## 调度中枢（Supervisor，v1.4）
+
+> 实现：`clipwright/api/supervisor.py`（`router` + `admin_router`）。
+> `/api/pipeline` 前缀下的这些端点**不属于** `pipeline.py`，注意别在那边找。
+
+| 端点 | 说明 |
+|------|------|
+| `GET /api/pipeline/{pid}/ledger?stage=` | 账本（每条阶段尝试的判定/失败类别/降级/用量/耗时）；未知管线返回 `found=false` |
+| `GET /api/pipeline/{pid}/attribution?llm=` | 归因（规则 R1–R4 优先，`llm=true` 才允许规则不命中时走兜底判定） |
+| `GET /api/pipeline/{pid}/diagnosis` | 诊断书（模板化，无 LLM）：结论/问题/证据/已尝试/建议/成本 |
+| `GET /api/pipeline/{pid}/decisions` | 调度决策序列 + `accepted_degraded` |
+| `GET /api/pipeline/{pid}/budget` | 预算快照（未配置预算 → `level=unlimited`、`ratio=null`，**不阻断**） |
+| `POST /api/pipeline/{pid}/dispatch` | 人工改派：`{target_stage, reason, issues?, auto_retry?}` → **只登记工单**（执行语义已随 M3 退役，返回 `execution_status=retired`）；真重跑请由主 agent 重新 `delegate_agent` 该阶段 |
+| `POST /api/pipeline/{pid}/accept-suggestion` | 执行诊断建议：`{suggestion_id?, action, target_stage?}`。`accept_degraded` 只登记；`retry_with_model`/`redo_stage` 触发重跑；`manual` 不执行 |
+| `GET /api/pipeline/{pid}/subagents` | 子代理树（含状态/模型/耗时/成本）；空树不是 404 |
+| `POST /api/pipeline/{pid}/subagents` | 派生临时 worker（带 `run_shell`/`run_python` 时返回 `pending_review`，未审核不实例化） |
+| `POST /api/pipeline/{pid}/subagents/{sid}/cancel` | 取消子代理（不存在 404 / 已结束或不可取消 409） |
+| `POST /api/pipeline/{pid}/exec` | 请求执行：`{kind: shell\|python, command\|code, cwd?, timeout_sec?}` → `done/failed/pending_approval/rejected` |
+| `GET /api/pipeline/{pid}/exec` | 执行日志（命令/风险等级/理由/退出码/耗时/输出尾部） |
+| `GET /api/pipeline/{pid}/exec/pending-approvals` | 待授权命令队列 |
+| `POST /api/pipeline/{pid}/exec/{aid}/approve\|reject` | 授权 / 拒绝（high、critical 需 `confirm_high_risk=true`） |
+| `GET\|PUT /api/pipeline/{pid}/exec/auto-mode` | 自动模式开关（只减免 `med`，`high`/`critical` 仍弹） |
+| `GET /api/supervisor/workers/pending-review` | 带执行权限的待审 worker（含独立 LLM 风险结论） |
+| `POST /api/supervisor/workers/{wid}/review` | 人工审核 `{approve, confirm_high_risk}` |
+| `GET /api/supervisor/tools` | 主代理可授予的工具全集、需审核的工具、`executable`（哪些真有执行通道） |
+| `GET\|PUT /api/supervisor/routes` | 模型路由表 + provider 白名单 |
+| `GET\|PUT /api/supervisor/mode` | 调度中枢模式 `off\|shadow\|on`（默认 off） |
+
+执行网关的三条不可协商规则：硬底线（读凭据 / 不可逆破坏）**任何模式都拒绝且不可授权**；风险等级由确定性规则与**独立 LLM 判定**取 `max()`（规则只升不降，判定失败一律升 `high`）；每条执行（含被拒/超时）都写 `ExecRecord` 并入 trace。
 
 ### `GET /api/pipeline/runs`
 
@@ -232,6 +312,8 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 | `POST /api/project/folders/delete` | 删除文件夹 |
 | `GET /api/project/{project_id}` | 获取项目 |
 | `PUT /api/project/{project_id}` | 更新项目 |
+| `GET /api/project/{project_id}/termination` | **读项目级终止策略**（devplan 2026-11-02）：返回 `{policy, resolved, overridable}`；`policy` = 项目里显式写过的键（空 = 跟随全局），`resolved` = 「项目 > 全局 > 默认」解析后的快照（含 `source`），`overridable` = 允许覆盖的键名 |
+| `PATCH /api/project/{project_id}/termination` | **写项目级终止策略**：只改 `project.json` 的 `agent_state.termination`（保留 `agent_state` 其它键）；body `{policy:{...}}`，值为 `null`/`""` 表示清除回退全局；未知键 400。可覆盖 `soft_landing_round` / `soft_landing_enabled` / `closeout_rounds` / `closeout_tool_calls` / `closeout_max_wall_sec` / `reserve_ratio` / `reserve_floor_usd` / `reserve_cap_usd`（**只对之后创建的任务生效**，任务创建时快照） |
 | `DELETE /api/project/{project_id}` | 删除项目 |
 | `POST /api/project/{project_id}/duplicate` | 复制项目 |
 | `PATCH /api/project/{project_id}/rename` | 重命名项目 |
@@ -441,6 +523,7 @@ data: {"type":"error","detail":"流式生成中断: ...","partial":"已产出的
 | `GET /api/tool/list` | 列出所有 Tool |
 | `POST /api/tool/execute` | 执行 Tool |
 | `POST /api/tool/batch` | 批量执行 |
+| `POST /api/capability/{name}` | **通用能力网关**（插件对外 HTTP 入口的唯一通道）：按**能力名**解析（`capabilities.resolve_name`，能力名优先、工具名兜底）再执行，body `{params}`，返回 `ToolExecResult`。状态码语义：`404` 解析不到（插件未装/被禁用）、`422` 参数或路径不合规、`503` 已解析但依赖缺失、`200` 成功；`costly`/`dangerous` 档记审计。**网关内没有任何具体 provider/能力名分支** |
 | `GET /api/skill/list` | 列出所有 Skill |
 | `POST /api/skill/execute` | 执行 Skill |
 
@@ -488,7 +571,14 @@ data: {"type":"error","detail":"流式生成中断: ...","partial":"已产出的
 | `GET /api/requirements/plan/{session_id}` | 获取制作规划书 |
 | `POST /api/requirements/proceed` | 确认规划书并启动管线 |
 | `POST /api/requirements/{session_id}/intent` | **意图落位预览（R6，只读）**。请求：`{message, timeline, selected_clip_ids?, region_start_sec?, region_end_sec?, project_id?}`；响应：`{intent, resolution:{preview[], affected_clip_ids[], questions[]}, problems[]}`，`blocked=true` 表示含硬错误不可执行。**不写任何状态**——供前端"意图确认卡"在执行前展示"将改动什么 + 需要用户拍板的问题"。非法时间线 400、超时 504 |
+| `POST /api/requirements/{session_id}/intent` 新增选区快照字段 | devplan/PRD W3.2：`selected_clip_ids` 现在是**冻结快照**（发送时生成），并新增 `selection_summary`（按行组织的可见摘要，≤8000 字符）与 `selection_truncated`。服务端校验：**超过 20 个** → 400；**含不在本次 timeline 里的 id**（已删除/来自其它项目）→ 400 |
 | `POST /api/requirements/{session_id}/intent/apply` | **意图 → 补丁 → dry-run（可选执行）（R7）**。请求在上述字段外加 `{apply?: bool=false, answers?: {问题码: 选项值}, intent_raw?: 意图JSON}`；响应：`{patch, report, applied, blocked, problems[]}`，`applied=true` 时另有 `timeline`（新时间线）。语义：`apply=false` 纯只读；`apply=true` 时只有 dry-run **无硬错误**才真正执行，否则 `blocked` 且**一条都不改**。传 `intent_raw`（`/intent` 已解析的那份）保证"执行的就是用户确认过的那份意图"。非法时间线 400、超时 504 |
+| `GET /api/requirements/{session_id}/messages` | 需求消息历史分页（`before_id` + `limit`）：向上翻不重复、不丢 |
+| `GET /api/requirements/{session_id}/events` | 会话事件（`question`/`answer`/`thinking` 等）：刷新/重连按 `since_seq` 补齐 |
+| `GET /api/requirements/{session_id}/timeline` | **会话时间线（唯一有序流，session-timeline PRD §5.1）**。参数 `since_seq`/`until_seq`（向后翻）、`before_seq`（向前翻，取 `seq < before_seq` 的最后 `limit` 条）、`limit≤500`、`resolve=0|1`（0 = 只给索引不读 `items/*.json`，轨迹/调试用）。响应 `{items[], has_more, latest_seq, next_seq, archived_until_seq, counters, backfilled}`；`backfilled` = 本次请求里从 `session.messages` 回填了几条（存量会话迁移，幂等）。条目按 `seq` 升序且**已解析内容**。类型：`thinking`/`content`/`tool`/`skill`/`subagent`/`report`/`plan` + 扩展 `question`/`answer`/`approval`/`degradation`/`stage`/`artifact` |
+| `GET /api/requirements/{session_id}/timeline/stream` | **时间线实时流（SSE）**。`since_seq=-1`（默认）只推订阅之后的新帧；传 `since_seq` 先补一帧 `snapshot`。帧 `op`：`snapshot`/`append`/`chunk`（只带 `seq+delta`，前端按 seq 找到条目追加 = 流式渲染）/`patch`/`finish`/`ping`（10s）/`error`。`append/patch/finish` 帧的 `item` **带已解析的 `content`**（>64KB 才省略）——否则外置的 `report`/`plan` 在实时侧没有内容、卡片不渲染 |
+| `POST /api/requirements/{session_id}/plan/dispatch` | **主 agent 派发「生成制作规划书」（plan-dispatch PRD D1，幂等）**。body `{retry?: bool=false}`；响应 `{task_id, run_id, status:"planning", reused}`。幂等键 `session_id:brief_hash`：同 brief 且任务在跑 → 返回既有 task_id（`reused=true`）；`retry=true` 强制重建。错误：404 会话不存在 / 400 `no_brief`（先出简报）。任务侧：`plan_only=true`，kernel 派 `delegate_agent(structure)` → 收尾写工作区 `reports/plan.json`（`{session_id, brief_hash, scenes, scene_count, summary, generated_by:"kernel", run_id}`）→ 需求侧轮询终态读产物回填 `session.production_plan`（`brief_hash` 不一致则作废回 `brief_ready`），状态由任务终态驱动 |
+| `POST /api/requirements/{session_id}/stop` | **用户点「停止」（中止续跑 §停止）**。无 body；响应 `{stopped, task_id, status:"plan_ready", note}`。语义：`kernel.cancel()` 真打断协程 → 会话状态回 `plan_ready`（前端输入区/附件/发送恢复）→ 消息流与时间线各写一条 `metadata.user_stopped=true` 的说明（续跑的主 agent 由此知道是**用户主动喊停**，不是异常终止）。没有活任务时 `stopped=false` 且**不伪造**说明。详见 [docs/agent-stop-control-2026-11-02.md](agent-stop-control-2026-11-02.md) |
 
 ---
 
@@ -582,6 +672,24 @@ curl -X POST http://localhost:8080/api/voice/dub \
 {"segments": [{"audio_path": "...", "duration_sec": 2.0, "text": "第一段文案。"}], "total": 2, "total_duration_sec": 4.0}
 ```
 
+### 失败响应（结构化错误）
+
+`/api/voice/synthesize` 与 `/api/voice/dub` 的失败响应不是一句人话，而是带分类的对象
+（`services/voice_errors.py`），前端据此决定「去配凭据」还是「重试」：
+
+```json
+{"detail": {"message": "provider 鉴权失败（请检查 API Key / 权限）：401 …",
+            "error_code": "auth_failed", "stage": "auth",
+            "provider_id": "cosyvoice", "retryable": false}}
+```
+
+| 字段 | 取值 |
+|---|---|
+| `error_code` | `auth_failed` / `rate_limited` / `provider_timeout` / `provider_not_found` / `voice_not_found` / `uploader_missing` / `quota_exceeded` / `invalid_request` / `stream_broken` / `decode_failed` / `unknown` |
+| `stage` | `config` / `auth` / `request` / `stream` / `decode` / `unknown` |
+| `retryable` | 超时、限流、流断连为 `true`；鉴权、额度、参数、未知错误为 `false`（**未知不重试**，避免编程错误把预算烧光） |
+
+错误文本会剥掉 `sk-…` / `Bearer …` / `api_key=…` 片段，密钥不进日志与响应。
 ### 静态音频文件
 
 合成的音频文件通过 `/voice_audio/{filename}` 静态挂载访问。
@@ -669,6 +777,8 @@ curl -X POST http://localhost:8080/api/voice/dub \
 | `DELETE /api/plugin/{plugin_id}/config` | 删除插件配置 |
 | `GET /api/plugin/{plugin_id}/ui` | 获取插件 UI 定义 |
 | `GET /api/plugin/health` | 插件健康聚合（ok/degraded/error 分类 + Hook/Agent 计数） |
+| `GET /api/plugin/contributions?kind=&slot=&owner=` | 已注册贡献清单（kind:id → owner）。前端按 slot 拉取插件 UI 贡献，**唯一的贡献数据源** |
+| `GET /api/plugin/prompt-symbols` | **提示词符号清单与来源**：26 常量 + 8 builder、签名、是否被插件覆盖、覆盖它的 plugin id、`wired`（false = 还没有消费方在运行时解析，**覆盖了也不生效**）、最近被拒绝的覆盖原因。不返回提示词正文，只给长度 |
 
 **插件 Agent（SA-2/3/4）**：插件 manifest 声明 `kind: agent` + `permissions: [orchestrate]` 后，可在 `initialize()` 经 `AgentRegistry.register(agent, name, plugin_id, deps)` 注册自定义 Agent——按 deps 并入主管线 DAG（输入 `PluginAgentInput`、输出 `PluginAgentOutput`），或经 `services.subagent.run_sub_agent(ctx, name, payload)` 作为子代理被宿主 Agent 调用（嵌套深度上限 2、宿主取消感知、用量以「宿主:子代理」复合名归因、熔断 3 次/60s、默认 120s 超时）。Agent 边界 Hook `PRE_AGENT`（改写 input/skip）与 `POST_AGENT`（只读观测）已在管线接线。
 
@@ -686,7 +796,8 @@ curl -X POST http://localhost:8080/api/voice/dub \
 |------|------|
 | `GET /api/providers?kind=` | 源列表（脱敏：`api_keys_masked`/`key_count`/`has_keys`）+ 角色绑定总览 |
 | `POST /api/providers` | 新建源 `{name,kind,provider,base_url,timeout_sec,proxy,headers,api_keys[],models[]}` |
-| `GET /api/providers/available` | 各类型可选 provider 名（**门面驱动**，含插件注册的 llm/tts/embedding/rerank provider）+ `role_kinds` 映射 |
+| `GET /api/providers/available` | 各类型可选 provider 名（**门面驱动**，含插件注册的 llm/tts/embedding/rerank provider）+ `role_kinds` 映射 + `provider_meta`（按 kind 的展示元数据：`name` / `needs_uploader` / `clone_supported` / `local` / `env_key`，前端用它渲染 label 与上传提示，**不得按厂商名硬编码**） |
+| `GET /api/plugin/contributions?kind=export_preset` | 插件导出预设（**纯数据**：`object` 恒 `None`）。`meta` 必须带顶层 `width/height/fps/bitrate`（注册期校验）+ `title` 与 `payload{name,width,height,fps,bitrate}`（前端 `ExportPage` 契约；payload 缺失会被整条丢弃） |
 | `GET /api/providers/roles` | 角色绑定（`main/flash/vision/embed/rerank/tts`） |
 | `PUT /api/providers/roles` | 绑定/解绑角色 `{role, source_id, model}`（`source_id=""` 解绑） |
 | `GET /api/providers/{id}` | 源详情（脱敏） |
@@ -697,7 +808,8 @@ curl -X POST http://localhost:8080/api/voice/dub \
 | `DELETE /api/providers/{id}/models/{model_id}` | 删除模型（解绑引用它的角色） |
 | `POST /api/providers/{id}/models/fetch` | 「获取模型列表」（调用 provider 的 models 端点；不支持自动拉取的 provider 会明确说明，可改用自定义模型） |
 | `POST /api/providers/{id}/test` | 源级连通性探测（**不改动角色绑定**）：`llm`/`embedding` 走模型列表端点、`rerank` 发一次最小请求、`tts` 明确返回不支持；返回 `{ok, latency_ms, detail}` |
-
+| `GET /api/providers/schemas?kind=` | **插件声明的 provider 配置 schema**（`config_schema` + `capabilities`）。前端按它渲染表单，不写死厂商字段；`secret: true` 的字段服务端加密、读回掩码、回传掩码=保留旧值 |
+| `GET /api/providers/capabilities?kind=&provider=&model=` | **能力协商结果**（直接问实现 `impl.capabilities(model)`）：`streaming/tool_calls/vision/json_mode/reasoning_effort/reasoning_content/…`。解析不到返回 `capabilities=null` + `error`，不抛 404（诊断接口要能显示「没装」） |
 **绑定规则（重要）**：
 
 - 角色必须绑定**对应类型**的源（`main`/`flash`/`vision` ← `llm`，`embed` ← `embedding`，
@@ -837,4 +949,66 @@ off/token 模式放行）。`requires_restart=true` 的字段（CORS/Mongo/端�
 | `analyze_video_structure` | 视频结构分析 |
 | `generate_captions` | 字幕生成 |
 | `analyze_audio_rhythm` | 音频节奏分析 |
-| `dub_script` | 文案切分 + 逐段配音 |
+| `dub_script` | 文案切分 + 逐段配音（**由 `plugins/tts_feature` 提供**，2026-11-03 起不在 engine；插件不在 → 能力缺失 → `/api/voice/dub` 503） |
+## 工作区 (/api/workspace)
+
+> 实现依据：[workspace-prd-2026-10-24.md](workspace-prd-2026-10-24.md)。
+> 一个项目 = 一个工作区目录（工程文件 / 素材 / 下载 / 成片 / 缓存同根，可整体备份）。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/workspace` | 创建或取回（幂等）。body：`{project_id, name?, root?, auto_index?, vision?}`；`root` 必须位于 `settings.workspace_dir` 内 |
+| GET | `/api/workspace/{project_id}` | 状态：`counts{total,video,image,audio,indexed,pending}` / `index{vision,provider,spent_today_usd}` / `scan{auto,last_scan_at}` / `health` |
+| POST | `/api/workspace/{project_id}/enable` | 只改开关：`{auto_index?, vision?}` |
+| POST | `/api/workspace/{project_id}/scan` | 扫描 `materials/` 并索引新增；`dry_run=true` 只列 `would_index` |
+| GET | `/api/workspace/{project_id}/materials?kind=` | 已索引素材（sha256/路径/状态/标签/视觉摘要） |
+| POST | `/api/workspace/{project_id}/materials?overwrite=false` | 上传到 `materials/<kind>/`（devplan T3.1）：**1 MiB 流式分块写 `.part` → `os.replace` 原子替换**；超 2 GiB → 413 并清 `.part`；同名默认 **409**（覆盖需 `overwrite=true`）；不支持扩展名 → 400；返回 `{saved,kind,bytes,overwritten,scan}` |
+| GET | `/api/workspace/{project_id}/legacy-assets` | **旧素材库只读清单**（devplan T3.3）：`{count, assets:[{asset_id,filename,kind,sha256,path,exists,in_workspace}], legacy_dir}`；`in_workspace=true` 表示工作区已有同内容文件 |
+| POST | `/api/workspace/{project_id}/legacy-import?dry_run=true` | **把旧素材复制进工作区**（devplan T3.3）：只复制不移动、SHA256 去重、默认 dry_run；`{planned[],migrated,reused,missing,failed,scan}` |
+| GET | `/api/workspace/{project_id}/media-tree?limit=2000` | 按**目录结构**列出工作区全部媒体（实时磁盘真相，不是索引注册表）；系统目录跳过 |
+| DELETE | `/api/workspace/{project_id}/materials/{sha256}?purge=` | 默认只删索引记录；`purge=true` 才删磁盘文件 |
+| GET | `/api/workspace/{project_id}/events?since=` | **JSON**：扫描/索引进度事件（`{events[], last_seq}`，立即返回；旧实现是 SSE，普通 GET 会挂到超时） |
+| GET | `/api/workspace/{project_id}/events/stream?since=` | SSE：同一份事件的长连接版本（`seq` 游标 + `data:` 帧） |
+
+**目录约定**：`materials/` 是唯一用户写入区（系统下载也落这里），新文件由轮询
+（`settings.workspace_scan_interval_sec`，默认 20s）发现；`assets/` 是
+`AssetManager` 视图（files/thumbnails/index.json），`renders/`/`cache/`/`logs/` 由系统写。
+
+**索引流水线**：`MediaIndexer.extract_metadata/classify` → `AssetManager.import_file`
+（sha256 去重 + 缩略图）→ `content_vision.label_shot`（CLIP 本地 / LLM 描述，按
+`settings.vision_provider`）。视觉预算：`workspace_vision_daily_budget_usd`，超限标
+`deferred` 但索引仍完成。
+
+
+
+
+
+
+
+
+## 展示 spec 字段（`display_specs`）与契约端点
+
+> 当前形态见 [docs/genui.md](genui.md)。一句话：**能力在插件，展示层只读，权威数据在上层字段**。
+
+### `CreativeBrief.display_specs` / `ProductionPlan.display_specs`
+
+| 字段 | 形状 | 说明 |
+|---|---|---|
+| `display_specs` | `{"<spec_id>": {"version":1,"items":[...]}}`，默认 `{}` | 展示容器（键由插件契约声明，当前是 `brief` / `plan`）；**只读展示**，确认与执行仍用上层字段 / `markdown_content` |
+
+- 写入：服务层装配点 `services/display_spec/assemble.py::ensure_display_specs(source, payload)` 按**插件契约**清洗/生成；
+  插件未安装或被禁用时**原样返回、不创建容器**（A6 口径）。
+- 读取：`GET /api/requirements/session/{session_id}` 返回的 `creative_brief` / `production_plan` 里带该字段；
+  2026-11-03~07 的老会话带 `genui` 键，由 `get_session` **读时归一**（浅拷贝、只补不存）。
+- **不影响业务判定**：`_brief_hash` 排除 `{"genui", "display_specs"}`；确认、幂等、规划书作废判定都不读它们。
+- 老键 `genui`：**只读兼容**，新写入一律 `display_specs`（不双写）。
+
+### `GET /api/plugin/contributions?kind=display_spec`
+
+前端契约的**运行期唯一来源**（插件可启停，构建期快照必然与运行态不一致）。
+
+- 返回：`{"contributions": [{"kind": "display_spec", "id": "brief", "owner": "genui", "meta": {...}}]}`；
+  `meta` 含 `spec_id/version/source/components/containers/actions/tones/badge_tones/text_sizes/limits/order/trust`（`recipe` 不下发前端）。
+- 前端：`src/features/genui/contractSource.ts` 30s TTL 缓存 + 复用 `onPluginSlotsInvalidated` 失效广播；
+  拿不到契约 → 不渲染（不猜白名单）。
+

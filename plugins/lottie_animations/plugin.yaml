@@ -1,14 +1,14 @@
 id: "lottie_animations"
 name: "Lottie 动画"
-version: "1.0.0"
+version: "1.1.0"
 kind: "capability"
-description: "Lottie JSON 动画导入与渲染 — 支持 LottieFiles 搜索和本地 .json 文件"
+description: "本地 Lottie 素材目录（渲染未接入）"
 author: "Clipwright Team"
 entry_point: "lottie_animations.main"
 
 # P1 迁移：新契约声明
+# B8-T8.4 降级：两个形状错误的 hook（catalog / renderer，含外链 CDN 模板）已删除；
+# 渲染未接入，只保留素材目录说明的提示词。
 api_version: "2"
 contributions:
-  - { kind: hook, id: lottie_catalog_extend }
-  - { kind: hook, id: lottie_renderer_extend }
   - { kind: prompt, id: lottie_structure_prompt }

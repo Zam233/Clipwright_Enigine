@@ -17,6 +17,8 @@ class ListAnimationsTool(BaseTool):
     """列出当前可用的动画类型（文字动画 / 逻辑动画 / 过渡动画 / MG 动画）。"""
 
     name = "list_animations"
+
+    permission_tier = "read"
     agent_callable = True
     description = (
         "列出所有可用的动画类型和标记格式。"
@@ -36,7 +38,16 @@ class ListAnimationsTool(BaseTool):
         Args:
             category: 动画类别 — "text" / "logic" / "transition" / "mg" / "all"
             top_k: 每个类别最多返回几个（0 = 全部）
+
+        实测（E2E 2026-10-28）：LLM 传参是**字符串**（`top_k="0"`），直接与 int
+        比较会抛 `'>' not supported between 'str' and 'int'`，整次工具调用失败、
+        白烧一轮。这里统一做一次类型收敛。
         """
+        category = str(category or "all").strip().lower() or "all"
+        try:
+            top_k = int(top_k)
+        except (TypeError, ValueError):
+            top_k = 10
         results: dict[str, list[dict]] = {}
 
         if category in ("all", "text"):

@@ -66,14 +66,19 @@ class MaterialRegistry:
             sources = list(cls._sources.values())
 
         all_results: list[MaterialSearchResult] = []
-        per_source_timeout = 20.0  # P2-30: 单源超时——慢源不再拖死整体检索
+        per_source_timeout = 60.0  # P2-30: 单源超时——慢源不再拖死整体检索
         for src in sources:
             try:
                 # 透传 media_type——源的类型过滤参数此前是死参数。
                 # 未声明该参的源经 **kwargs 吸收（MaterialSource 基类有 **kwargs）
                 # P2-30/P2-55: 单源 wait_for 超时 + 异常降级为空结果（不拖垮整场景）
+                # E2E 2026-10-28：**默认值必须是 "all"**。之前这里透传的是空串
+                # ""，而所有素材源都写 if media_type in ("video", "all") ——
+                # 空串两个分支都不进 → 每个源静默返回 []，43 个场景全空候选，
+                # 剪辑只能退化成"纯背景+文字"。这是本轮最贵的一个字符。
                 results = await asyncio.wait_for(
-                    src.search(query, top_k=top_k_per_source, media_type=media_type),
+                    src.search(query, top_k=top_k_per_source,
+                               media_type=(media_type or "all")),
                     timeout=per_source_timeout,
                 )
                 for asset, score in results:

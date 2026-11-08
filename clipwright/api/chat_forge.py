@@ -18,6 +18,10 @@ _forge = ChatForge()
 
 class ChatStartRequest(BaseModel):
     persona_id: str = ""
+    #: 会话用途：persona（磨人设，默认）| mv_prompt（磨视频提示词，PRD §II.12）
+    scope: str = "persona"
+    #: 开屏上下文（歌曲/类型/已填提示词/素材摘要），随会话保存
+    context: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatAttachment(BaseModel):
@@ -52,6 +56,21 @@ class ChatCommitRequest(BaseModel):
     persona_name: str = ""
 
 
+class PromptMessage(BaseModel):
+    """蒸馏入参的一条消息（前端可直接传本地草稿）。"""
+
+    role: str = "user"
+    content: str = ""
+
+
+class CommitPromptRequest(BaseModel):
+    """把对话蒸馏成视频提示词（F-05 的 /commit-prompt）。"""
+
+    messages: list[PromptMessage] = Field(default_factory=list)
+    session_id: str = ""
+    max_chars: int = 4000
+
+
 def _owner_of(request: Request) -> str:
     """当前用户 id（jwt 模式）；off 模式返回空串。"""
     try:
@@ -64,8 +83,42 @@ def _owner_of(request: Request) -> str:
 
 @router.post("/start")
 async def chat_start(req: ChatStartRequest) -> dict[str, Any]:
-    """开始新的对话会话。"""
-    return await _forge.start(req.persona_id)
+    """开始新的对话会话（``scope=mv_prompt`` 时用于磨视频提示词）。"""
+    result = await _forge.start(req.persona_id)
+    if isinstance(result, dict):
+        result["scope"] = req.scope
+        result["context"] = dict(req.context or {})
+    return result
+
+
+@router.post("/commit-prompt")
+async def chat_commit_prompt(req: CommitPromptRequest) -> dict[str, Any]:
+    """把对话蒸馏成视频提示词：``{prompt, avoid, rationale, degraded}``。
+
+    有 LLM 走结构化蒸馏；失败或未配置时退规则蒸馏并标 ``degraded=True``——
+    不返回空提示词，也不假装成功。
+    """
+    from clipwright.services.prompt_distill import MAX_PROMPT_CHARS, distill_with_llm
+
+    messages = [message.model_dump() for message in req.messages]
+    llm = None
+    try:  # 延迟构造：无 LLM 配置的环境直接走规则蒸馏
+        from clipwright.services.llm import LLMService
+
+        llm = LLMService()
+    except Exception:  # noqa: BLE001
+        llm = None
+
+    draft = await distill_with_llm(messages, llm=llm)
+    limit = max(200, min(int(req.max_chars or MAX_PROMPT_CHARS), MAX_PROMPT_CHARS))
+    return {
+        "prompt": draft.prompt[:limit],
+        "avoid": draft.avoid,
+        "rationale": draft.rationale,
+        "degraded": draft.degraded,
+        "source_messages": draft.source_messages,
+        "session_id": req.session_id,
+    }
 
 
 @router.get("/sessions")

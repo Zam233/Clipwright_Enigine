@@ -1,93 +1,56 @@
-"""Lottie 动画插件 — 导入和渲染 Lottie JSON 动画。
+"""Lottie 动画插件 — **本地 Lottie 素材目录**（渲染未接入，2026-11-08 审计降级）。
 
-功能：
-  - 从 LottieFiles.com 搜索动画（需 LOTTIEFILES_API_KEY）
-  - 从本地 PluginData/lottie/ 目录加载 .json 文件
-  - 通过 ANIMATION_CATALOG_EXTEND hook 注册到动画目录
-  - 通过 DIAGRAM_RENDERER_EXTEND hook 注册渲染器
+B8-T8.4 降级说明：旧实现贡献两个形状错误的钩子——
+1. `animation_catalog_extend`：往 `ctx["catalog"]` 塞 `{name,type,renderer}`，
+   但 engine 既不读这个 context 键，动画目录也只认 `AnimationDef`；
+2. `diagram_renderer_extend`：返回一段带 **外链 CDN** 的 HTML 模板，
+   而渲染链从不消费那个 context 键（且外链脚本违反预览"禁止执行外部 HTML"的边界）。
 
-渲染方式：将 Lottie JSON 转为 Hyperframes 兼容的 lottie-web 组件。
+所以本插件**不再声称能渲染 Lottie**：只保留
+- `setup()` 创建本地素材目录；
+- 一条 structure 提示词，告诉模型"本地有哪些 Lottie 素材、当前不参与成片渲染"。
+
+真正的 Lottie 渲染需要先在 engine 侧定义结构化 spec（类似 MG 的 `mg_def`），
+再由插件实现渲染器——那是一次独立能力建设，不在本次审计整改范围内。
 """
 
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
-import httpx
-
+from clipwright.config import logger
 from clipwright.plugins import CapabilityPlugin
 from clipwright.plugins.contribution import Contribution, ContributionKind
-from clipwright.animation.registry import AnimationRegistry
 from clipwright.schema.plugin import PluginManifest, PluginKind
-from clipwright.config import logger
 
 LOTTIE_DIR = Path("PluginData/lottie")
 
 
 def _load_local_lottie() -> dict[str, dict[str, Any]]:
-    """扫描本地 Lottie JSON 文件。"""
+    """扫描本地 Lottie JSON 文件（只读清单，不含渲染语义）。"""
     animations: dict[str, dict[str, Any]] = {}
     if not LOTTIE_DIR.exists():
         return animations
     for f in LOTTIE_DIR.glob("*.json"):
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
-            anim_id = f"lottie_{f.stem}"
-            animations[anim_id] = {
+            animations[f.stem] = {
                 "name": f.stem.replace("_", " ").title(),
-                "type": "onscreen",
-                "lottie_json": data,
-                "duration_sec": data.get("op", 60) / data.get("fr", 30),
+                "frames": data.get("op", 0),
+                "frame_rate": data.get("fr", 0),
             }
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001 — 单个坏文件不影响其它素材
+            continue
     return animations
-
-
-def _extend_catalog(context: dict[str, Any]) -> dict[str, Any]:
-    """ANIMATION_CATALOG_EXTEND hook: 注册 Lottie 动画。"""
-    catalog = context.get("catalog", {})
-    local = _load_local_lottie()
-    for anim_id, anim_def in local.items():
-        catalog[anim_id] = {
-            "name": anim_def["name"],
-            "type": anim_def["type"],
-            "renderer": "lottie_web",
-        }
-    context["catalog"] = catalog
-    return context
-
-
-def _extend_renderer(context: dict[str, Any]) -> dict[str, Any]:
-    """DIAGRAM_RENDERER_EXTEND hook: 注册 Lottie 渲染器。"""
-    renderers = context.get("renderers", {})
-    renderers["lottie_web"] = {
-        "name": "Lottie Web Renderer",
-        "description": "通过 lottie-web 渲染 Lottie JSON 动画",
-        "template": """
-<div id="lottie-container" style="width:100%;height:100%"></div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js"></script>
-<script>
-lottie.loadAnimation({
-  container: document.getElementById('lottie-container'),
-  renderer: 'svg', loop: true, autoplay: true,
-  animationData: {{LOTTIE_JSON}}
-});
-</script>
-""",
-    }
-    context["renderers"] = renderers
-    return context
 
 
 class LottieAnimationsPlugin(CapabilityPlugin):
     manifest = PluginManifest(
-        id="lottie_animations", name="Lottie Animations", version="1.0.0",
+        id="lottie_animations", name="Lottie Animations", version="1.1.0",
         kind=PluginKind.CAPABILITY,
-        description="Import and render Lottie JSON animations",
+        description="本地 Lottie 素材目录（渲染未接入）",
         author="Clipwright Team",
     )
 
@@ -96,27 +59,18 @@ class LottieAnimationsPlugin(CapabilityPlugin):
         LOTTIE_DIR.mkdir(parents=True, exist_ok=True)
 
     def contributions(self) -> list[Any]:
-        """新契约（P1 迁移）：目录/渲染器扩展钩子 + 给 structure Agent 的提示词。"""
+        """新契约（P1 迁移；B8-T8.4 收窄）：只保留一条提示词。"""
         local = _load_local_lottie()
-        logger.info("[LottieAnimations] %d 个本地 Lottie 动画可用 (目录: %s/)",
+        logger.info("[LottieAnimations] %d 个本地 Lottie 素材 (目录: %s/)",
                     len(local), LOTTIE_DIR)
-        if not local:
-            logger.info("[LottieAnimations] 提示: 将 .json 文件放入 %s/ 以启用", LOTTIE_DIR)
-        names = ", ".join(local.keys()) if local else "无本地动画"
+        names = "、".join(sorted(local)) if local else "无"
         prompt = (
-            "## Lottie 动画（来自 lottie_animations 插件）\n"
-            f"可使用 [逻辑动画]动画名 标记调用 Lottie 动画。当前可用：{names}。\n"
-            "Lottie 动画支持复杂矢量动效，适合图标动画、加载动画、角色动画等。"
+            "## Lottie 素材（来自 lottie_animations 插件）\n"
+            f"本地素材目录 `{LOTTIE_DIR}/` 现有：{names}。\n"
+            "注意：**Lottie 渲染尚未接入成片链路**，不要为它们生成 [逻辑动画] 标记，"
+            "也不要把 Lottie 当作可用动画类型；如需矢量动效用 MG 动画表达。"
         )
         return [
-            Contribution(
-                ContributionKind.HOOK, "lottie_catalog_extend", _extend_catalog,
-                meta={"point": "animation_catalog_extend"},
-            ),
-            Contribution(
-                ContributionKind.HOOK, "lottie_renderer_extend", _extend_renderer,
-                meta={"point": "diagram_renderer_extend"},
-            ),
             Contribution(
                 ContributionKind.PROMPT, "lottie_structure_prompt", prompt,
                 meta={"agent": "structure", "prompt": prompt, "priority": 2},

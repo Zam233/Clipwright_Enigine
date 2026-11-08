@@ -1,0 +1,23 @@
+{
+  "grid": {
+    "bpm": 130.0,
+    "beat_zero_sec": 0.344,
+    "beat_sec": 0.461538
+  },
+  "items": [
+    {
+      "name": "line_0",
+      "t": 1.267077,
+      "source": "init",
+      "snapped": "half",
+      "note": "text(0)"
+    },
+    {
+      "name": "line_1",
+      "t": 4.267077,
+      "source": "init",
+      "snapped": "half",
+      "note": "text(1)"
+    }
+  ]
+}

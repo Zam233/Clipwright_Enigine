@@ -283,6 +283,39 @@ QualityAgent 在动画编排之后对时间线做内容级校验，新增三类�
 
 新增动画类型需在 `catalog.py` 中注册动画定义，并在对应渲染器中实现渲染逻辑。
 
+## 提示词 v2 与渲染侧需求登记（PRD §16）
+
+提示词按九段式骨架写（模板见 `clipwright/animation/prompts/text/_base.md` 与
+`prompts/types/_base.md`），风格模块见 `prompts/style_catalog.json` + `prompts/styles/S1–S12.md`，
+检索入口 `python scripts/styles.py search|show|match`，校验入口
+`python -m clipwright.animation.prompts.lint_prompts --strict`（CI 已接）。
+
+**提示词里写了、但 drawtext 关键帧路径做不到的效果**——统一在这里登记为渲染侧需求；
+提示词只允许在标注「MG HTML 路径」或「本期不落」的前提下提到它们：
+
+| 效果 | 首次出现处 | 当前状态 | 需要的渲染侧能力 |
+|---|---|---|---|
+| 粒子散开/聚形 | S2、emphasis_keyword 反例 | 本期不落 drawtext；MG HTML 有 `mg_logo_intro` | MG HTML 粒子层（固定种子） |
+| 模糊 / 柔光 blur | S9、number_punch 单位层 | 本期不落 | MG HTML filter（`props.filter` 可动画） |
+| 遮罩揭示 / 裁剪入场 | reveal_line、S1 | 本期不落 | MG HTML `clip` 关键帧 |
+| 独立卡片层 / 引号图形 | quote_block、S7 | MG HTML（`mg_quote_card`） | MG HTML 图层合成 |
+| 描边扫光 / 光晕扫过 | label_callout、S6 | 本期不落 | MG HTML 渐变扫光 |
+| 折线面积填充 | line_chart、S4 | 本期不落 | MG HTML 路径填充或 mg_fastpath 扩展 |
+| 逐值跳数 / 单位错峰层 | number_punch、S8 | MG HTML（`mg_data_counter`） | 计数动画分层 |
+
+判断依据：`keyframes_expr.EASING_EXPR`（drawtext 的 21 个名字）与 `mg.validator.VALID_EASINGS`
+（MG 的 8 个名字）不是同一套；属性上 drawtext 只支持文字类属性，
+`filter/clip/粒子` 都不在其中。
+
+## MG 动画：预览真相与渲染器数据源（2026-11-08 插件化后）
+
+- **预览**只读 `clip.metadata.mg_def`（前端 `mgRenderer.ts` / `PropertiesPanel`）；
+- **engine 渲染器**（`MGRenderer.load_animation`）从 `AnimationRegistry` 的
+  `AnimationDef.properties_meta["mg_json"].default` 读 JSON（插件注册期携带）；
+- 两者**语义相同、来源不同**：`mg_json` 是插件贡献的"定义本体"，`mg_def` 是作业时写进
+  clip 的"实例快照"。不要把预览改为只读 `mg_json`（会丢掉每 clip 的参数/覆盖），
+  也不要让渲染器回读 `clip.metadata`（那是时间线层的事）。
+
 ## 相关文档
 
 - [架构总览](structure.md) — AnimationAgent 在管线中的位置

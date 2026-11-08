@@ -25,14 +25,38 @@ class PluginKind(str, Enum):
 
 
 class ContributionDecl(BaseModel):
-    """A-3：manifest 预声明的贡献面（「声明即授权」的最小单元）。
+    """A-3：manifest 预声明的贡献面（「声明即授权」的最小单元）；2026-11-07 起 18 类（新增 display_spec）。
 
     运行时注册未在此声明的 (kind, id) 将被门面拒绝——这是进程内 Python
     插件唯一可执行的权限模型（无沙箱前提下的 Gate G-2 收口）。
     """
-    kind: str = Field(description="贡献类型（见 ContributionKind 的 14 类）")
-    id: str = Field(pattern=r"^[a-z][a-z0-9_]{1,63}$", description="贡献 id（同 kind 内唯一）")
+    kind: str = Field(
+        description="贡献类型（见 ContributionKind 的 18 类；名单冻结，新增须契约评审）"
+    )
+    id: str = Field(
+        # Batch 4 放宽：允许连字符。仓库里既有 provider id 就带连字符
+        # （`faster-whisper`、`qwen-tts`），原 `^[a-z][a-z0-9_]{1,63}$` 会让插件
+        # 无法声明这类 id —— 表现为「manifest 校验失败」，而内置注册不校验所以
+        # 一直没暴露。id 只做门面键使用，不参与文件路径，放开连字符是安全的。
+        pattern=r"^[a-z][a-z0-9_-]{1,63}$",
+        description="贡献 id（同 kind 内唯一；允许小写字母/数字/下划线/连字符）",
+    )
     meta: dict[str, Any] = Field(default_factory=dict, description="kind 专属元数据")
+    # ── PRD §8 / B1-T2：provider 类贡献的结构化声明（非 provider 类留空）──
+    config_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "配置表单 schema（provider 类用）：{字段名: {type, label, default, "
+            "required, options, secret, ...}}；secret=true 的字段由服务端加密并按掩码返回"
+        ),
+    )
+    capabilities: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "协议能力声明（provider 类用）：models / stream / tools / reasoning / "
+            "usage / needs_uploader；未声明即视为不支持，不得在运行时假装支持"
+        ),
+    )
 
 
 class PluginManifest(BaseModel):

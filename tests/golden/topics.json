@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "note": "路线 C 的 10 个代表性选题：覆盖 4 个内置类型插件与 3 个典型时长档。改动到成片质量时必须先过这一组（PRD F9 / A10）。",
+  "topics": [
+    {
+      "id": "g01_knowledge_long",
+      "topic": "糖尿病逆转的 5 个科学共识",
+      "persona_id": "",
+      "category_plugin_id": "knowledge_long",
+      "duration_sec": 300,
+      "notes": "知识区长片：字幕密度高、图文混排、结构最复杂"
+    },
+    {
+      "id": "g02_knowledge_short",
+      "topic": "为什么睡前刷手机会让你更累",
+      "persona_id": "",
+      "category_plugin_id": "knowledge_long",
+      "duration_sec": 70,
+      "notes": "知识区短视频：单场景单论点，验证轻量路径"
+    },
+    {
+      "id": "g03_meme_fast",
+      "topic": "打工人周一上午的精神状态",
+      "persona_id": "",
+      "category_plugin_id": "meme_fast",
+      "duration_sec": 20,
+      "notes": "鬼畜快剪：高切点密度、卡点音频"
+    },
+    {
+      "id": "g04_meme_burst",
+      "topic": "老板说再来一版",
+      "persona_id": "",
+      "category_plugin_id": "meme_fast",
+      "duration_sec": 12,
+      "notes": "极短鬼畜：验证片头/片尾与最小可用结构"
+    },
+    {
+      "id": "g05_gadget_review",
+      "topic": "3000 元档手机横评：续航才是真刚需",
+      "persona_id": "",
+      "category_plugin_id": "gadget_review",
+      "duration_sec": 240,
+      "notes": "数码评测：参数卡、对比分屏、多处字幕标注"
+    },
+    {
+      "id": "g06_gadget_hands_on",
+      "topic": "开箱：一台 2 公斤的静音工作站",
+      "persona_id": "",
+      "category_plugin_id": "gadget_review",
+      "duration_sec": 120,
+      "notes": "开箱：实拍素材为主，验证素材可用性判定"
+    },
+    {
+      "id": "g07_vlog_daily",
+      "topic": "周末在家做一碗葱油拌面",
+      "persona_id": "",
+      "category_plugin_id": "vlog_daily",
+      "duration_sec": 180,
+      "notes": "Vlog：生活流节奏、BGM 铺底、转场自然"
+    },
+    {
+      "id": "g08_vlog_short",
+      "topic": "下班路上的 30 秒天空",
+      "persona_id": "",
+      "category_plugin_id": "vlog_daily",
+      "duration_sec": 30,
+      "notes": "极短 Vlog：单素材多切点，验证重复素材处理"
+    },
+    {
+      "id": "g09_no_material",
+      "topic": "没有实拍素材时怎么讲清一个概念",
+      "persona_id": "",
+      "category_plugin_id": "knowledge_long",
+      "duration_sec": 90,
+      "notes": "故意做素材缺失场景：验证 agent 自己发现并改计划（US2）"
+    },
+    {
+      "id": "g10_long_form",
+      "topic": "中国县域经济为什么能撑起半个制造业",
+      "persona_id": "",
+      "category_plugin_id": "knowledge_long",
+      "duration_sec": 480,
+      "notes": "长时长（8 分钟）：验证上下文压缩与分段生成（F7/A11）"
+    }
+  ]
+}

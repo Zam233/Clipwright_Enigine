@@ -55,6 +55,7 @@ def _snap_size(w: int, h: int) -> str:
 
 class AIImageGenTool(BaseTool):
     name = "ai_image_generate"
+    permission_tier = "costly"
     agent_callable = True
     description = "从文字提示生成图片，产物落地本地并返回路径（支持参考图/尺寸/种子）"
     parameters_schema = {
