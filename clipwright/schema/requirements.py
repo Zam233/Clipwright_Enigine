@@ -17,8 +17,6 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from clipwright.schema.genui import sanitize_spec
-
 
 class MessageRole(str, Enum):
     USER = "user"
@@ -70,17 +68,18 @@ class CreativeBrief(BaseModel):
     animation_intents: list[dict[str, Any]] = Field(
         default_factory=list, description="动画需求意图（结构同 AnimationIntent）"
     )
-    #: GenUI 展示 spec（可选）：**只用于展示**，权威数据仍是上面这些字段。
-    #: 契约与清洗见 `clipwright/schema/genui.py`；模型编的东西一律先过 sanitize。
-    genui: dict[str, Any] = Field(
-        default_factory=dict, description="GenUI 展示 spec（可选，仅展示，权威数据在其它字段）"
+    #: 展示 spec 容器（`spec_id -> spec`）：**只用于展示**，权威数据仍是上面这些字段。
+    #: 契约级清洗在服务层装配点（`services/display_spec/assemble.py`）——那里才拿得到
+    #: 运行时插件注册表；模型层只做**形状收口**，不 import 任何插件知识。
+    display_specs: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description="展示 spec 容器（spec_id -> spec；仅展示，权威数据在其它字段）",
     )
 
-    @field_validator("genui", mode="before")
+    @field_validator("display_specs", mode="before")
     @classmethod
-    def _sanitize_genui(cls, value: Any) -> dict[str, Any]:
-        spec, _problems = sanitize_spec(value, source="brief")
-        return spec or {}
+    def _shape_display_specs(cls, value: Any) -> dict[str, dict[str, Any]]:
+        return _shape_only_specs(value)
 
 
 class ProductionPlan(BaseModel):
@@ -97,14 +96,52 @@ class ProductionPlan(BaseModel):
     transition_style: str = ""
     #: v1.2：结构化规划（存在时优先于 scenes 的即席结构）
     plan: Optional[dict[str, Any]] = None
-    #: GenUI 展示 spec（可选）：只做展示，确认与执行仍以 plan / markdown 为准
-    genui: dict[str, Any] = Field(default_factory=dict, description="GenUI 展示 spec（可选）")
+    #: 展示 spec 容器（只做展示，确认与执行仍以 plan / markdown 为准）
+    display_specs: dict[str, dict[str, Any]] = Field(
+        default_factory=dict, description="展示 spec 容器（spec_id -> spec）"
+    )
 
-    @field_validator("genui", mode="before")
+    @field_validator("display_specs", mode="before")
     @classmethod
-    def _sanitize_genui(cls, value: Any) -> dict[str, Any]:
-        spec, _problems = sanitize_spec(value, source="plan")
-        return spec or {}
+    def _shape_display_specs(cls, value: Any) -> dict[str, dict[str, Any]]:
+        return _shape_only_specs(value)
+
+
+#: 展示容器最多几个 spec（防御性上限；当前能力只有 brief/plan 两个）。
+_MAX_DISPLAY_SPECS = 8
+#: 整个容器的 JSON 字符上限（防把模型输出原样塞进来撑爆落库文档）。
+_MAX_DISPLAY_SPECS_BYTES = 128 * 1024
+
+
+def _shape_only_specs(value: Any) -> dict[str, dict[str, Any]]:
+    """只做**形状收口**（不按契约清洗——契约是运行时插件注册表的东西，模型层拿不到）。
+
+    违规抛 `ValueError`（pydantic 会转成校验错误）；合法则原样保留内容，
+    真正的组件/上限/动作校验在服务层装配点完成。
+    """
+    if value in (None, "", [], {}):
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("display_specs 必须是对象（spec_id -> spec）")
+    if len(value) > _MAX_DISPLAY_SPECS:
+        raise ValueError(f"display_specs 最多 {_MAX_DISPLAY_SPECS} 项")
+    out: dict[str, dict[str, Any]] = {}
+    for key, spec in value.items():
+        name = str(key).strip()
+        if not name:
+            raise ValueError("display_specs 的 spec_id 不能为空")
+        if not isinstance(spec, dict):
+            raise ValueError(f"display_specs[{name}] 必须是对象")
+        out[name] = spec
+    try:
+        import json
+
+        size = len(json.dumps(out, ensure_ascii=False, default=str))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"display_specs 无法序列化：{exc}") from exc
+    if size > _MAX_DISPLAY_SPECS_BYTES:
+        raise ValueError(f"display_specs 超过 {_MAX_DISPLAY_SPECS_BYTES} 字符")
+    return out
 
 
 # ── 提示词模板（由模型生成，杜绝字段漂移）────────────────────────────────────

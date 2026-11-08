@@ -773,19 +773,19 @@ class RequirementsService:
     def get_session(self, session_id: str) -> dict | None:
         """从 MongoDB 加载会话。
 
-        读路径会补一份 **GenUI 展示 spec**（计划 T2.1）：2026-11-03 之前落库的会话没有
-        `genui` 字段，不补的话同一功能在新老会话上表现不同。补法是**浅拷贝 + 只补不存**——
+        读路径会补一份**展示 spec**：老会话（2026-11-03~07）带 `genui`，新形状是
+        `display_specs`；不归一的话同一功能在新老会话上表现不同。补法是**浅拷贝 + 只补不存**——
         绝不原地改 `_memory_sessions` 里的对象（`_persist` 会把它写回内存会话），也不回写
         Mongo（读操作不产生写；新数据在写入路径已自带 spec）。
         """
         mem = _memory_sessions.get(session_id)
         if mem:
-            return _with_genui_specs(mem)
+            return _with_display_specs(mem)
         if _mongo_ok():
             try:
                 model = RequirementsSessionModel.find_by_id(session_id)
                 if model:
-                    return _with_genui_specs(model.to_dict())
+                    return _with_display_specs(model.to_dict())
             except Exception as e:
                 logger.warning("MongoDB 会话查询失败: %s", e)
         return None
@@ -1186,11 +1186,11 @@ class RequirementsService:
             _new_brief = result.get("brief_draft")
             # P2-34: LLM 解析失败会返回 brief_draft={}——空结果不覆盖已有方案
             if isinstance(_new_brief, dict) and _new_brief:
-                # GenUI（计划 T1.2）：模型给了 spec 就洗、没给就确定性补——只影响展示，
+                # 展示 spec（通用装配器）：模型给了就洗、洗空用插件配方——只影响展示，
                 # 不改 brief 的其它字段，也不进 `_brief_hash`（C10）。
-                from clipwright.schema.genui import ensure_brief_spec
+                from clipwright.services.display_spec import ensure_display_specs
 
-                brief_data = ensure_brief_spec(_new_brief)
+                brief_data = ensure_display_specs("brief", _new_brief)
                 _brief_event = brief_data
             is_ready = result.get("is_ready", False)
             # 只要生成了完整方案草稿就进入待确认状态。不完全依赖 LLM 的 is_ready 标志——
@@ -1292,10 +1292,10 @@ class RequirementsService:
                 new_brief = revised.get("brief_draft")
                 updated = isinstance(new_brief, dict) and bool(new_brief)
                 if updated:
-                    # GenUI（计划 T1.2）：修订路径同样过一遍（只补展示层）
-                    from clipwright.schema.genui import ensure_brief_spec
+                    # 展示 spec：修订路径同样过一遍通用装配器（只补展示层）
+                    from clipwright.services.display_spec import ensure_display_specs
 
-                    brief_data = ensure_brief_spec(new_brief)
+                    brief_data = ensure_display_specs("brief", new_brief)
                     _brief_event = brief_data
                 messages.append({
                     "role": "assistant",
@@ -2467,10 +2467,10 @@ class RequirementsService:
             payload["legacy"] = True
             payload["markdown_content"] = render_plan_markdown(plan)
             payload["summary"] = "按现有场景生成的 legacy 规划（非 plan-first 产物）"
-            # GenUI 展示 spec：legacy 路径也走同一个确定性构造器（与新路径口径一致）
-            from clipwright.schema.genui import ensure_plan_spec
+            # 展示 spec：legacy 路径同样走通用装配器（与新路径口径一致）
+            from clipwright.services.display_spec import ensure_display_specs
 
-            ensure_plan_spec(payload, scenes)
+            ensure_display_specs("plan", payload, scenes=scenes)
             logger.info("RequirementsService: 会话 %s 使用 legacy plan（%d 段）", session_id[:12], len(plan.sections))
             return payload
         except Exception as exc:  # noqa: BLE001 - 兜底失败不应影响主流程
@@ -2793,12 +2793,12 @@ class RequirementsService:
         if not result.get("scene_count"):
             result["scene_count"] = len(scenes)
         result["raw_scenes"] = scenes
-        # GenUI（计划 T1.3）：规划书 spec **只**用确定性构造器，不看模型给的 genui。
+        # 展示 spec：规划书 trust=recipe_only，**只**用插件配方，模型给的一律不看。
         # 挂在这里可以一次覆盖两条主路径：内联 `_generate_plan` 与派发回填
         # `_finalize_dispatched_plan`（二者都调本函数）。
-        from clipwright.schema.genui import ensure_plan_spec
+        from clipwright.services.display_spec import ensure_display_specs
 
-        ensure_plan_spec(result, scenes)
+        ensure_display_specs("plan", result, scenes=scenes)
         return result
 
     @staticmethod
@@ -3844,32 +3844,37 @@ def _hdr(name: str) -> str:
     return resolve_constant(name)
 
 
-def _with_genui_specs(session: dict) -> dict:
-    """读路径补 GenUI 展示 spec（计划 T2.1 / C10：只补不存、不改入参）。
+def _with_display_specs(session: dict) -> dict:
+    """读路径补展示 spec（C10：只补不存、不改入参）。
 
     - 返回 **浅拷贝**：`creative_brief` / `production_plan` 各自再拷一层，原对象零改动；
-    - 简报：模型给过就用（洗一遍），没有就从字段确定性生成；
-    - 规划书：**只看 `raw_scenes`/`scenes`**，确定性生成（不看模型给的 genui，与 T1.3 同口径）；
+    - 老键归一：2026-11-03~07 落库的会话带 `genui`，`legacy.normalize_legacy()` 转成
+      `display_specs`（新形状优先，只读不写回）；
+    - 补 spec：交给**通用装配器**（它按当前插件契约洗/生成）；插件未装时装配器原样返回；
     - 任何异常都只记日志并返回原对象——展示层补丁不得阻断会话读取。
     """
     if not isinstance(session, dict):
         return session
     try:
-        from clipwright.schema.genui import ensure_brief_spec, ensure_plan_spec
+        from clipwright.services.display_spec import ensure_display_specs
+        from clipwright.services.display_spec.legacy import normalize_legacy
 
         out = dict(session)
         brief = out.get("creative_brief")
         if isinstance(brief, dict) and brief:
-            out["creative_brief"] = ensure_brief_spec(dict(brief))
+            brief_copy = normalize_legacy(dict(brief), surface="brief")
+            out["creative_brief"] = ensure_display_specs("brief", brief_copy)
         plan = out.get("production_plan")
         if isinstance(plan, dict) and plan:
-            plan_copy = dict(plan)
+            plan_copy = normalize_legacy(dict(plan), surface="plan")
             scenes = plan_copy.get("raw_scenes") or plan_copy.get("scenes") or []
-            ensure_plan_spec(plan_copy, scenes if isinstance(scenes, list) else [])
+            ensure_display_specs(
+                "plan", plan_copy, scenes=scenes if isinstance(scenes, list) else []
+            )
             out["production_plan"] = plan_copy
         return out
     except Exception as exc:  # noqa: BLE001 — 展示层补丁不得阻断会话读取
-        logger.info("会话读取时补 genui 失败（返回原对象）: %s", exc)
+        logger.info("会话读取时补 display_specs 失败（返回原对象）: %s", exc)
         return session
 
 

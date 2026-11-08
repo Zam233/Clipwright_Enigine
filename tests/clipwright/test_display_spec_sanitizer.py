@@ -177,3 +177,47 @@ class TestContractDrivesBehaviour:
         )
         assert len(_clean(raw, brief_contract)[0]["items"][0]["columns"]) == 2
         assert len(_clean(raw, one_col)[0]["items"][0]["columns"]) == 1
+
+
+class TestSelectAction:
+    """`select` 的载荷必须是非空字符串选项组（迁自旧文件，随清洗器一起保留）。"""
+
+    def test_keeps_options_and_dedups(self, brief_contract):
+        spec, _ = sanitize_display_spec(
+            {"items": [{"type": "text", "content": "选一个",
+                        "action": {"type": "select", "payload": {"options": ["A", "B", "A", " ", 3]}}}]},
+            brief_contract,
+        )
+        assert spec["items"][0]["action"] == {"type": "select", "payload": {"options": ["A", "B"]}}
+
+    def test_caps_options_and_clips_each(self, brief_contract):
+        cap = brief_contract.limit("max_select_options")
+        chars = brief_contract.limit("max_option_chars")
+        long = "x" * (chars + 50)
+        options = [long] + [f"opt{i}" for i in range(cap + 4)]
+        spec, _ = sanitize_display_spec(
+            {"items": [{"type": "text", "content": "选", "action": {"type": "select", "payload": {"options": options}}}]},
+            brief_contract,
+        )
+        cleaned = spec["items"][0]["action"]["payload"]["options"]
+        assert len(cleaned) == cap
+        assert all(len(o) <= chars for o in cleaned)
+        assert not any("已截断" in o for o in cleaned), "选项是纯截断，不带标记"
+
+    def test_dropped_without_options(self, brief_contract):
+        for payload in (None, {}, {"options": []}, {"options": ["", "  "]}, {"options": "A"}):
+            action = {"type": "select"} if payload is None else {"type": "select", "payload": payload}
+            spec, problems = sanitize_display_spec(
+                {"items": [{"type": "text", "content": "选", "action": action}]}, brief_contract
+            )
+            assert "action" not in spec["items"][0]
+            assert any("select" in p for p in problems)
+
+    def test_ask_and_confirm_unaffected(self, brief_contract):
+        for kind in ("ask", "confirm"):
+            spec, _ = sanitize_display_spec(
+                {"items": [{"type": "text", "content": "x",
+                            "action": {"type": kind, "payload": {"prompt": "y"}}}]},
+                brief_contract,
+            )
+            assert spec["items"][0]["action"]["type"] == kind

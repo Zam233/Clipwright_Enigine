@@ -49,3 +49,158 @@ class TestBriefHash:
     def test_display_only_payload_has_no_hash(self):
         assert _brief_hash({"genui": {"items": [{"type": "text", "content": "x"}]}}) == ""
         assert _brief_hash({"display_specs": {"brief": {"items": []}}}) == ""
+
+
+# ── T3.5 / T3.6：字段形状、读路径归一、规划书接线 ──────────────────────
+
+import pytest
+
+from clipwright.plugins.contribution import Contribution, ContributionKind, ContributionRegistry
+from plugins.genui import main as genui_plugin
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _register_contracts():
+    """本模块的读路径/接线用例需要"插件已安装"的状态：显式注册它的两条契约。"""
+    owner = "wiring_fixture"
+    ContributionRegistry.declared_scope(owner, ["display_spec:brief", "display_spec:plan"])
+    report = ContributionRegistry.register(
+        owner,
+        [c for c in genui_plugin.GenUIPlugin().contributions()
+         if c.kind is ContributionKind.DISPLAY_SPEC],
+    )
+    assert report.ok, report.rejected
+    try:
+        yield
+    finally:
+        ContributionRegistry.unregister_plugin(owner)
+
+
+class TestSchemaShape:
+    """T3.5：模型层只做形状收口（不 import 插件知识）。"""
+
+    def test_fields_renamed(self):
+        from clipwright.schema.requirements import CreativeBrief, ProductionPlan
+
+        assert "genui" not in CreativeBrief.model_fields
+        assert "display_specs" in CreativeBrief.model_fields
+        assert "genui" not in ProductionPlan.model_fields
+        assert "display_specs" in ProductionPlan.model_fields
+
+    def test_accepts_well_formed_container(self):
+        from clipwright.schema.requirements import CreativeBrief
+
+        brief = CreativeBrief(title="T", display_specs={"brief": {"version": 1, "items": []}})
+        assert list(brief.display_specs) == ["brief"]
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            {"": {}},
+            {"brief": "not-a-dict"},
+            "not-a-dict",
+            {f"s{i}": {} for i in range(9)},
+        ],
+    )
+    def test_rejects_bad_shape(self, bad):
+        from pydantic import ValidationError
+
+        from clipwright.schema.requirements import CreativeBrief
+
+        with pytest.raises(ValidationError):
+            CreativeBrief(display_specs=bad)
+
+
+class TestReadPath:
+    """T3.6：老键 `genui` 在读路径归一，只补不存。"""
+
+    def test_legacy_key_is_normalized(self):
+        from clipwright.services.requirements_service import _with_display_specs
+
+        session = {
+            "id": "s1",
+            "creative_brief": {"title": "T", "genui": {"version": 1, "items": [{"type": "text", "content": "旧"}]}},
+        }
+        out = _with_display_specs(session)
+        assert "brief" in out["creative_brief"]["display_specs"]
+        assert out["creative_brief"]["display_specs"]["brief"]["items"][0]["content"] == "旧"
+
+    def test_new_shape_wins_over_legacy(self):
+        from clipwright.services.requirements_service import _with_display_specs
+
+        session = {
+            "id": "s1",
+            "creative_brief": {
+                "title": "T",
+                "display_specs": {"brief": {"version": 1, "items": [{"type": "text", "content": "新"}]}},
+                "genui": {"version": 1, "items": [{"type": "text", "content": "旧"}]},
+            },
+        }
+        out = _with_display_specs(session)
+        assert out["creative_brief"]["display_specs"]["brief"]["items"][0]["content"] == "新"
+
+    def test_input_is_not_mutated(self):
+        import copy
+
+        from clipwright.services.requirements_service import _with_display_specs
+
+        session = {"id": "s1", "creative_brief": {"title": "T"}}
+        snapshot = copy.deepcopy(session)
+        out = _with_display_specs(session)
+        assert session == snapshot
+        assert out is not session
+
+    def test_plan_uses_scenes_from_payload(self):
+        from clipwright.services.requirements_service import _with_display_specs
+
+        session = {
+            "id": "s1",
+            "production_plan": {
+                "markdown_content": "# m",
+                "raw_scenes": [{"title": "A", "duration_sec": 5}, {"title": "B", "duration_sec": 7}],
+            },
+        }
+        out = _with_display_specs(session)
+        plan_spec = out["production_plan"]["display_specs"]["plan"]
+        # 场景表 2 行 + 统计行 + 无 material_summary（不生成 callout）
+        values = [n["type"] for n in plan_spec["items"]]
+        assert "table" in values and "row" in values
+
+
+class TestTranslatePlanWiring:
+    """T3.6：`_translate_plan` 走通用装配器；模型给的 spec 一律不看（recipe_only）。"""
+
+    @staticmethod
+    def _service(monkeypatch, llm_result):
+        from clipwright.services import requirements_service as rs
+
+        svc = rs.RequirementsService.__new__(rs.RequirementsService)
+        svc._llm = object()
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(rs.RequirementsService, "_record_llm_usage", _noop)
+
+        async def _fake_llm(*args, **kwargs):
+            return dict(llm_result)
+
+        monkeypatch.setattr(rs, "llm_call_with_retry", _fake_llm)
+        return svc
+
+    async def test_attaches_plan_spec_and_keeps_markdown(self, monkeypatch):
+        svc = self._service(monkeypatch, {"summary": "ok", "markdown_content": "# 规划书\n\n正文保留"})
+        scenes = [{"title": "开场", "duration_sec": 4}, {"title": "正文", "duration_sec": 8}]
+        result = await svc._translate_plan(scenes, {"title": "T"}, script_text="")
+        assert "正文保留" in result["markdown_content"]
+        assert result["display_specs"]["plan"]["items"]
+        assert result["raw_scenes"] == scenes
+
+    async def test_model_spec_is_ignored(self, monkeypatch):
+        svc = self._service(monkeypatch, {
+            "summary": "ok", "markdown_content": "# 规划书",
+            "genui": {"version": 1, "items": [{"type": "text", "content": "模型编的展示"}]},
+        })
+        result = await svc._translate_plan([{"title": "开场", "duration_sec": 4}], {"title": "T"})
+        dumped = str(result["display_specs"])
+        assert "模型编的展示" not in dumped

@@ -889,3 +889,20 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 | **T3.1** `_brief_hash` 排除整个展示容器 | ✅ 已完成 | `_DISPLAY_SPEC_KEYS = frozenset({"genui", "display_specs"})`，指纹按显式键集合剔除（不用"值像 spec"的启发式）；只剩展示层时指纹为空 | `test_display_spec_wiring.py::TestBriefHash` **7 passed**（含注入 `display_specs`、双键同时注入、spec 值变化不改指纹） |
 | **T3.2** recipe 解释器 | ✅ 已完成 | 新建 `services/display_spec/recipe.py`：11 算子（literal/field/item/index_plus_one/join/pairs/foreach/count/sum_of/fmt_sec/coalesce）+ 节点开关 `skip_if_empty`/`when` + `field`/`item` 可选 `limit`；未知算子抛 `RecipeError`，**无 eval/exec/getattr**；产出必须过 `sanitize_display_spec` | `test_display_spec_recipe.py` **20 passed**（11 算子 + 嵌套 foreach + when + skip_if_empty + 未知算子 + 非法组件被清洗） |
 | **T3.3** 插件配方等价性 | ✅ 已完成 | 插件 `recipe.json` 的 brief/plan 输出与迁移前 `build_brief_genui` / `build_plan_genui` **逐字节相等**（实测 `old == new` 均为 True）；已知差异（非 dict 场景行：`count` 计入、但产出一行空值）用独立用例显式固定 | `TestGenuiRecipes` 4 例 |
+
+| **T3.4** 通用装配器 | ✅ 已完成 | 新建 `services/display_spec/assemble.py`：按 `source` 取契约（按 order）、无契约原样返回、`recipe_only` 忽略模型 spec、只写 `display_specs` 一个键、异常只记 warning 不阻断。 | `test_display_spec_assembly.py` **10 例** |
+| **T3.5** 字段泛化 + 形状收口 | ✅ 已完成 | `CreativeBrief` / `ProductionPlan` 的 `genui` → `display_specs: dict[str, dict]`；validator 只做形状收口（值必须 dict、键非空、≤8 项、≤128KB），**不再 import 任何插件知识**；前端 `src/types/persona.ts` 同步（`display_specs` + `@deprecated genui`） | `TestSchemaShape` 3 组（含 4 个负例）；`tsc --noEmit` 0 |
+| **T3.6** 生产接线 + 读路径 + 删旧文件 | ✅ 已完成 | 4 处服务接线改为 `ensure_display_specs("brief"/"plan", …)`；`_with_genui_specs` → `_with_display_specs`（老键经 `legacy.normalize_legacy` 归一、浅拷贝、只补不存）；Agent 删掉两个转发方法；**删除 `clipwright/schema/genui.py` 与 `genui_contract.json`**；自检 `genui_off_degradation` → `display_spec_off_degradation`（A6 口径） | `TestReadPath` 4 例 + `TestTranslatePlanWiring` 2 例；自检 **17/17** |
+
+**PRD §8 判据实测（D1–D4）**
+
+| 判据 | 命令 | 结果 |
+|---|---|---|
+| D1 无专属实现文件 | `Test-Path clipwright/schema/genui.py` / `genui_contract.json` | 两者 **False** |
+| D2 无专属导入 | 递归 grep `from clipwright.schema.genui` / `schema.genui` | **0 命中** |
+| D3 字面量收口 | 递归 grep `"genui"` | **2 处**，均为老数据键兼容（`legacy.LEGACY_SPEC_KEY`、`_brief_hash` 的 `_DISPLAY_SPEC_KEYS`） |
+| D4 无专属常量 | 递归 grep `GENUI_` | **0 命中** |
+
+**engine 侧现在的 `display_spec` 模块（全部通用、无产品知识）**：`contract.py` 148 行、`sanitizer.py` 372 行、`recipe.py` 256 行、`assemble.py` 80 行、`legacy.py` 26 行。
+
+> ⚠️ **过渡期可见回归**：B3 之后后端写 `display_specs`，而前端仍读 `genui` —— 因此卡片的结构化视图在 B4 完成前会**消失**（数据仍在库里，只是没渲染）。B4 必须紧接着做。

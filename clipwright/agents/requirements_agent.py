@@ -9,8 +9,7 @@
   明确抛错（"requirements 由需求服务处理"）。
 
 所以这个类目前只在测试/脚本里被直接实例化。**不要在这里新增生产逻辑**：需要改简报/规划书
-行为时改服务层；本模块与 `schema/genui.py` 共用同一批公共函数（`ensure_brief_spec` /
-`ensure_plan_spec`），保持两边不漂移即可。
+行为时改服务层（展示 spec 由 `services/display_spec` 的通用机制负责，本模块不参与）。
 
 在 StructureAgent 之前执行，负责：
 1. 与用户对话收集创作需求，逐步完善创作方案
@@ -157,20 +156,8 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
 
         result = await self.llm_or_fallback(lambda: self._llm.structured_output(system_prompt=system_prompt, user_prompt=user_context, pipeline_id=context.pipeline_id), fallback={}, retries=2)
         if isinstance(result, dict) and "brief_draft" in result:
-            return self._ensure_brief_genui(self._normalize_brief(result["brief_draft"]))
+            return self._normalize_brief(result["brief_draft"])
         return {}
-
-    @staticmethod
-    def _ensure_brief_genui(brief: dict[str, Any]) -> dict[str, Any]:
-        """保证简报带一份**可信**的 GenUI 展示 spec（转发到公共实现）。
-
-        实现在 `clipwright/schema/genui.py::ensure_brief_spec`——服务层
-        （`requirements_service._handle_gathering`，生产路径）与本 Agent 共用同一份，
-        避免"两套实现各自漂移"（计划 T1.2 / T1.5）。
-        """
-        from clipwright.schema.genui import ensure_brief_spec
-
-        return ensure_brief_spec(brief)
 
     @staticmethod
     def _normalize_brief(draft: Any) -> dict[str, Any]:
@@ -242,7 +229,6 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
                 grounded = self._material_summary(scenes)
                 if grounded:
                     result["material_summary"] = grounded
-                result["genui"] = self._plan_genui(result, scenes)
                 return result
         except Exception as e:
             logger.warning("规划书翻译失败: %s，使用降级", e)
@@ -255,20 +241,7 @@ class RequirementsAgent(BaseAgent[RequirementsInput, RequirementsOutput]):
             "raw_scenes": scenes,
             "material_summary": self._material_summary(scenes),
         }
-        fallback["genui"] = self._plan_genui(fallback, scenes)
         return fallback
-
-    @staticmethod
-    def _plan_genui(plan: dict[str, Any], scenes: list[dict]) -> dict[str, Any]:
-        """规划书的 GenUI 展示 spec —— **只**用确定性构造器（转发到公共实现）。
-
-        刻意**不看**模型给的 `plan["genui"]`：规划书是用户确认的对象，展示层若能被模型
-        编造，用户可能"看着漂亮卡片确认了一份 markdown 里没有的方案"（PRD §9 / 计划 0.5-③）。
-        实现在 `clipwright/schema/genui.py::ensure_plan_spec`，服务层生产路径共用。
-        """
-        from clipwright.schema.genui import ensure_plan_spec
-
-        return ensure_plan_spec(plan, list(scenes))
 
     @staticmethod
     def _material_summary(scenes: list[dict]) -> str:

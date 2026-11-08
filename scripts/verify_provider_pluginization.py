@@ -245,7 +245,6 @@ def check_display_spec_plugin_contract() -> None:
     from clipwright.plugins import prompt_overrides as O
     from clipwright.plugins.contribution import ContributionKind
     from clipwright.services.display_spec import normalize_contract
-    from clipwright.schema import genui as G
     from plugins.genui import main as M
 
     root = Path(__file__).resolve().parents[1]
@@ -270,10 +269,6 @@ def check_display_spec_plugin_contract() -> None:
         assert contract is not None, f"{item.id} 契约形状不合法：{problems}"
         assert contract.spec_id == item.id
         assert contract.recipe and contract.recipe.get("nodes"), f"{item.id} 缺少 recipe.nodes"
-        # B3 会删除 engine 常量；在那之前必须与它一致（防止迁移期两套口径）
-        assert set(contract.components) == set(G.GENUI_COMPONENT_TYPES), (
-            "插件契约的组件清单与 engine 过渡常量不一致"
-        )
     assert next(it for it in spec_items if it.id == "plan").meta["trust"] == "recipe_only"
 
     symbols = {str(x["name"]) for x in (O.all_symbols().get("constants") or [])}
@@ -314,27 +309,42 @@ def check_display_spec_contract_frontend_subset() -> None:
     assert not extra_actions, f"契约声明了前端未实现的动作：{extra_actions}"
 
 
-@check("genui_off_degradation")
-def check_genui_off_degradation() -> None:
-    """插件被禁用（提示词注册表为空）时：生产简报 prompt 仍可用；确定性兜底仍产出 spec。
+@check("display_spec_off_degradation")
+def check_display_spec_off_degradation() -> None:
+    """插件被禁用（提示词注册表空 + 没有 display_spec 契约）时的行为（A6 口径）。
 
-    这是"插件启停不改变业务行为"的关键证据（计划 T3.3 / C9 / Q8）：
-    只失去"模型知道怎么写 spec"，不失去"卡片有 spec"。
+    2026-11-07 用户裁定：能力归插件 → **禁用即没有展示 spec**（推翻旧的"确定性兜底"）。
+    但业务写入必须照常：`ensure_display_specs()` 在无契约时**原样返回 payload**、不建空容器。
     """
+    from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
     from clipwright.plugins.prompt_registry import PluginPromptRegistry
-    from clipwright.schema.genui import ensure_brief_spec
+    from clipwright.services.display_spec import ensure_display_specs
+    from clipwright.services.display_spec.contract import list_contracts
     from clipwright.services.requirements_service import _brief_system_prompt
 
     saved = dict(PluginPromptRegistry._prompts)
+    saved_specs = [
+        (owner, item) for owner, item in ContributionRegistry.list(ContributionKind.DISPLAY_SPEC)
+    ]
     try:
         PluginPromptRegistry._prompts = {}
+        for owner, _item in saved_specs:
+            ContributionRegistry.unregister_plugin(owner)
+
         prompt = _brief_system_prompt("")
         assert prompt.strip(), "禁用插件后 base 提示词必须还在"
         assert "GenUI 展示规范" not in prompt, "禁用插件后不应再出现 GenUI 规范段"
-        out = ensure_brief_spec({"title": "T", "overview": "O"})
-        assert out["genui"]["items"], "禁用插件不得影响确定性兜底（展示层不依赖插件在线）"
+
+        assert list_contracts() == [], "测试前提：此时应没有任何 display_spec 契约"
+        payload = {"title": "T", "overview": "O"}
+        out = ensure_display_specs("brief", payload)
+        assert out is payload, "无契约时应原样返回（不阻断业务写入）"
+        assert "display_specs" not in payload, "无契约时不得凭空创建展示容器"
     finally:
         PluginPromptRegistry._prompts = saved
+        for owner, item in saved_specs:
+            ContributionRegistry.declared_scope(owner, [item.key])
+            ContributionRegistry.register(owner, [item])
 
 
 @check("prompt_builder_guards")

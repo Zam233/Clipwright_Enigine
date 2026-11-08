@@ -9,13 +9,20 @@
   读契约，不含任何产品名/组件名单字面量）。
 - **不做 I/O**：契约来自 `ContributionRegistry`（内存表），不读文件、不 import
   插件模块，避免加载顺序耦合。
+
+模块分工：`contract`（读契约）→ `sanitizer`（清洗）→ `recipe`（按配方生成）→
+`assemble`（写回 payload 的 `display_specs`）。
 """
 
+from .assemble import ensure_display_specs
 from .contract import Contract, get_contract, list_contracts, normalize_contract
+from .recipe import build_spec_from_recipe
 from .sanitizer import sanitize_display_spec
 
 __all__ = [
     "Contract",
+    "build_spec_from_recipe",
+    "ensure_display_specs",
     "get_contract",
     "list_contracts",
     "normalize_contract",
