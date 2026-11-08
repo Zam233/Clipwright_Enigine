@@ -2,7 +2,7 @@ id: "logic_animations"
 name: "高级逻辑图解"
 version: "2.0.0"
 kind: "capability"
-description: "提供 12 种系统内建没有的复杂图解类型：思维导图/雷达图/甘特图/维恩3圆/热力图/桑基图/概念图/代码块/数据表格/引用卡片/对比卡片/组织结构图"
+description: "思维导图（mindmap）渲染器；其余 11 种图解由 engine 内置（B8-T8.2 诚实化）"
 entry_point: "logic_animations.main"
 
 # P1 迁移：新契约声明

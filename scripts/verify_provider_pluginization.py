@@ -774,6 +774,33 @@ def check_mg_impl_in_plugin() -> None:
     assert MGRenderer.load_animation("mg_countdown") is None, "注销后仍能读到 MG 动画（有目录兜底？）"
 
 
+@check("logic_animations_honest")
+def check_logic_animations_honest() -> None:
+    """B8-T8.2（第一步）：插件不得再声称拥有 engine 内置的 11 种图解。
+
+    审计 §3.10：插件 manifest/prompt 写着"12 种"，但 `diagrams/all.py` 只剩 mindmap，
+    其余 11 种由 engine `diagram_svg.py` 渲染——"声明面 > 实现面"。
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    import importlib
+
+    mod = importlib.import_module("plugins.logic_animations.main")
+    assert set(mod._DESCRIPTIONS) == {"mindmap"}, (
+        f"logic_animations 仍在声称渲染 {sorted(mod._DESCRIPTIONS)}"
+    )
+    manifest = (root / "plugins/logic_animations/plugin.yaml").read_text(encoding="utf-8")
+    assert "12 种" not in manifest, "manifest 仍写 12 种"
+    assert "engine" in manifest, "manifest 应说明其余图解归 engine"
+
+    prompt = next(
+        c.object for c in mod.LogicAnimationsPlugin().contributions()
+        if getattr(c.kind, "value", "") == "prompt"
+    )
+    assert "引擎内置" in prompt, "prompt 没有说明其余 11 种由引擎内置"
+
+
 @check("prompt_builder_guards")
 def check_builder_guards() -> None:
     from clipwright.plugins import prompt_overrides as O

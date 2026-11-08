@@ -1027,3 +1027,15 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 | **T8.7（其二）** `voice_ext` 接 `tts_provider` | ✅ 已完成 | 两套协议从"`extended_tts` 工具"改为 **`tts_provider` 贡献**：`plugins/voice_ext/providers.py` 新增 `ElevenLabsVoiceProvider` / `AzureVoiceProvider`（`BaseVoiceProvider` 子类，`synthesize` 用宿主凭据/代理/超时，`clone` 抛可读"不支持本项目克隆协议"）；`main.py` 贡献两条 `TtsProviderEntry`（factory 注入插件配置，`default_model` 从配置/默认表取）；manifest 改声明 `tts_provider` + `config_schema`（key/region/model，secret 字段） | 新增 `tests/clipwright/test_voice_ext_provider.py` **6 passed**（含"列表可见→注销即消失"）；`test_tts_provider_registry` 改为"三家内置 ⊆ 列表"（voice_ext 合法增加两个）；自检 **27/27**（新增 `voice_ext_as_provider`） |
 
 | **T8.7（其三）** `mg_animations` 定义走注册表 | ✅ 已完成 | 插件把每个 MG JSON **全文**塞进 `AnimationDef.properties_meta["mg_json"].default`（注册期一次，几 KB）；`mg_renderer.load_animation`/`list_animations` 改为先读 `AnimationRegistry`、只保留内置 `mg/templates` 兜底，**删掉两条写死的插件物理路径**（含已不存在的 `plugins/llm_mg/templates`） | `Select-String mg_renderer.py -Pattern 'plugins'` → **0**；新增 `test_mg_animation_registry` **4 passed**（注册→可读→注销→消失）；自检 **28/28**（新增 `mg_impl_in_plugin`）；`-k "mg or animation"` → **775 passed**（1 个既存失败） |
+
+| **T8.2（第一步）** `logic_animations` 诚实化 | ✅ 已完成 | `_DESCRIPTIONS` 收窄到它**真正渲染**的 `mindmap`；prompt 明确写"其余 11 种由引擎内置，不要声称来自插件"；manifest description 从"12 种"改为"思维导图渲染器；其余 11 种由 engine 内置" | 自检 **29/29**（新增 `logic_animations_honest`：`_DESCRIPTIONS == {mindmap}`、manifest 无"12 种"且含 engine 说明、prompt 含"引擎内置"）；`-k "animation or diagram or logic"` → **192 passed**（1 既存失败） |
+
+### B8 剩余（需用户拍板，不替用户选边）
+
+| 任务 | 现状 | 两个选项 |
+|---|---|---|
+| **T8.2 第二步** 搬 11 个渲染器进插件 | 11 个渲染函数仍在 `diagram_svg.py:1170-1878`；插件只渲染 mindmap | **A** 搬进插件（审计推荐，1.8 人日；只依赖 `DiagramStyle` + `svg_helpers`）／**B** 承认图解渲染归 engine，插件只保留 mindmap（把审计结论改写为"engine 能力"） |
+| **T8.6 `cloud_render`** | 插件 hook 写 `context["cloud_render"]`，**全仓无消费方**；真正远程渲染在 `services/remote_render.py` + `RemoteRenderBackend` | **A** 删除插件（0.2 人日，并在选型文档标注"远程渲染暂为宿主能力"）／**B** 把 `RemoteRenderService` 搬成 `renderer_backend` 插件（2.5 人日，含配置迁移与回退语义） |
+
+> 两项都不难写，难在**语义归属**：T8.2 决定"图解渲染是谁的能力"，T8.6 决定"云端渲染这条产品线还要不要"。
+> 在答复前，B8 的其余八项已全部落地，且都有对应门禁防回退。

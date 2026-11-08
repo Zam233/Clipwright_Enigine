@@ -25,18 +25,10 @@ def register_diagrams(context: dict[str, Any]) -> dict[str, Any]:
 
 
 _DESCRIPTIONS: dict[str, str] = {
+    # 只列本插件**真正渲染**的类型。其余 11 种（radar/gantt/venn3/heatmap/sankey/
+    # concept/codeblock/datatable/quote/compcard/orgchart）由 engine 的
+    # `DiagramRenderer` 内置渲染，插件不再声称拥有它们（B8-T8.2 诚实化）。
     "mindmap": "中心节点 → 多级辐射分支，适合知识体系/头脑风暴",
-    "radar": "3-8 轴多维度能力对比，支持数值标注",
-    "gantt": "项目时间规划，横向条状图 + 依赖关系",
-    "venn3": "三者交集关系，7 区域标注",
-    "heatmap": "矩阵色块数据分布，自动配色映射",
-    "sankey": "流量/转化/资金流向，宽度可变路径",
-    "concept": "自由节点 + 任意方向连线图，适合知识连接",
-    "codeblock": "等宽字体 + 行号 + 语法高亮，适合编程教程",
-    "datatable": "结构化表格，交替底色 + 表头",
-    "quote": "引用卡片，装饰引号 + 作者署名",
-    "compcard": "左右双列详细对比，高亮胜出方",
-    "orgchart": "自上而下组织结构图，缩进表层级",
 }
 
 
@@ -47,7 +39,7 @@ class LogicAnimationsPlugin(CapabilityPlugin):
         name="高级逻辑图解插件",
         version="2.0.0",
         kind=PluginKind.CAPABILITY,
-        description="12 种系统内建没有的复杂图解：思维导图/雷达图/甘特图/维恩3圆/热力图/桑基图/概念图/代码块/数据表格/引用卡片/对比卡片/组织结构图",
+        description="思维导图（mindmap）渲染器；其余 11 种图解由 engine 内置",
     )
 
     def contributions(self) -> list[Any]:
@@ -55,7 +47,9 @@ class LogicAnimationsPlugin(CapabilityPlugin):
         desc_list = "\n".join(f"  - {fid} — {desc}" for fid, desc in _DESCRIPTIONS.items())
         prompt = (
             "## 高级图解类型（来自 logic_animations 插件）\n"
-            f"以下高级图解可通过 mg_dynamic 或 [逻辑动画] 调用：\n{desc_list}"
+            f"本插件提供以下图解（可通过 mg_dynamic 或 [逻辑动画] 调用）：\n{desc_list}\n"
+            "注意：radar/gantt/venn3/heatmap/sankey/concept/codeblock/datatable/quote/"
+            "compcard/orgchart 是引擎内置图解，不需要本插件，也不要声称它们来自插件。"
         )
         return [
             Contribution(

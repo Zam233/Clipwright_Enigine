@@ -583,3 +583,29 @@ Select-String -Path plugins\platform_export\main.py -Pattern 'PLATFORM_PRESETS'
 | Q1 | `platform_export` 的平台预设进插件后，**插件禁用时导出页是否还有平台预设**？ | 接受"禁用即无平台预设"（与 PRD §3.6 口径 A 一致），engine 只留 `default/draft` 等非平台项；若产品不接受，则保留 engine 的 3 个基础预设、插件只增补 |
 | Q2 | `logic_animations` 的 11 个渲染器**搬到插件**（2.0 人日）还是**承认归 engine**（改声明，0.2）？ | 同一任务（B8-T8.2）先做 0.2 的诚实化，再搬 1.8；若 B8 预算不够，就只留诚实化并永久承认 engine 所有 |
 | Q3 | `cloud_render` 选 **A 删除**（0.2）还是 **B 把 remote render 搬成插件**（2.5）？ | 先 A：删掉自 2026-09 起从未生效的插件，远程渲染能力保留在 engine 并在文档标注"暂为宿主能力"；B 另立目标 |
+
+
+## 7.5 整改执行状态（2026-11-08）
+
+> 对应 coding plan 的 B7 / B8。状态只记"能力归属是否已正确"，不评价功能好坏；
+> 每条都有自检脚本里的门禁（见 `scripts/verify_provider_pluginization.py`）。
+
+| 审计项 | 判定 | 整改状态 | 门禁 |
+|---|---|---|---|
+| §3.1 `llm_anthropic` / `llm_openai_compatible` | 半壳 → 真 | ✅ 实现搬进插件（B7-T7.2） | `provider_impls_in_plugins` / `no_vendor_branches` |
+| §3.2 `tts_{qwen,cosyvoice,minimax}` | 半壳 → 真 | ✅ 实现搬进插件（B7-T7.1），`build_audio_ref` 取代 provider 名分支 | 同上 |
+| §3.3 `embedding_providers` / `rerank_providers` | 半壳 → 真 | ✅ 实现搬进插件（B7-T7.3）；embedder 走严格 A6 | 同上 |
+| §3.4 `stt_providers` | 空壳 → 真 | ✅ 探测/转写实现搬进插件（B7-T7.4）；`whisper_stt` 收窄为技能 | `provider_impls_in_plugins` |
+| §3.9 `cloud_render` | 空壳 | ⏳ 待拍板（删除 vs 搬成 renderer_backend） | — |
+| §3.10 `logic_animations` | 半壳 | 🟡 第一步完成（声明面收窄）；第二步（搬 11 个渲染器）待拍板 | `logic_animations_honest` |
+| §3.11 `kinetic_typography` | 半壳 → 真 | ✅ 补 keyframes、删死钩子与 CSS、下线 3D/渐变（B8-T8.3） | `dead_hooks_removed` |
+| §3.12 `lottie_animations` | 空壳 | ✅ 降级为素材目录（B8-T8.4） | `dead_hooks_removed` |
+| §3.13 `mg_animations` | 半壳 → 真 | ✅ MG JSON 随 `AnimationDef` 走注册表（B8-T8.7） | `mg_impl_in_plugin` |
+| §3.14 `local_material` | 半壳 → 真 | ✅ `LocalFolderSource` 搬进插件（B8-T8.7） | `material_impl_in_plugin` |
+| §3.15 `voice_ext` | 真插件 / 接线错 | ✅ 改贡献 `tts_provider`（B8-T8.7） | `voice_ext_as_provider` |
+| §3.5 `platform_export` | 空壳 → 真 | ✅ 预设改 `export_preset` 纯数据贡献 + hook 真接线（B8-T8.5） | `export_preset_wiring` |
+| §3.7 `genui` | 空壳 → 真 | ✅ 能力迁移 B0–B6（契约/配方/提示词全在插件） | `display_spec_*` 四条 |
+| §3.x 其余「半壳」名单（`headless_chrome` 等） | — | ✅ `headless_chrome` 实现搬进插件（B8-T8.1） | `headless_impl_in_plugin` |
+
+**结论**：44 个插件中，审计判定的 13 个半壳 + 5 个空壳，已转真 15 个；
+剩余 2 个（`cloud_render` / `logic_animations` 第二步）等产品语义拍板。
