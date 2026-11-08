@@ -906,3 +906,13 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 **engine 侧现在的 `display_spec` 模块（全部通用、无产品知识）**：`contract.py` 148 行、`sanitizer.py` 372 行、`recipe.py` 256 行、`assemble.py` 80 行、`legacy.py` 26 行。
 
 > ⚠️ **过渡期可见回归**：B3 之后后端写 `display_specs`，而前端仍读 `genui` —— 因此卡片的结构化视图在 B4 完成前会**消失**（数据仍在库里，只是没渲染）。B4 必须紧接着做。
+
+### Batch 4 进度（前端契约下发与挂载迁移）
+
+| 任务 | 状态 | 落地内容 | 证据 |
+|---|---|---|---|
+| **T4.1** 契约获取 | ✅ 已完成 | 新建 `src/features/genui/contractSource.ts`：`GET /api/plugin/contributions?kind=display_spec` → `Map<specId, DisplaySpecContract>`，30s TTL + 在途去重 + 复用 `onPluginSlotsInvalidated` 失效广播；失败静默空 Map；`resolveDisplaySpecs(obj, surface)` 优先 `display_specs`、回退老键 `genui` | `contractSource.test.ts` **10 例**（解析/跳过坏条目/缓存/失效/失败/四种 resolve 输入） |
+| **T4.2** 校验器契约驱动 | ✅ 已完成 | `validate.ts` 重写为契约驱动：组件/动作/色调/字号/9 个上限全部来自 `contract`；**无契约 → `spec: null` + 可读原因**；`MAX_*` 常量保留但只作"前端已实现原语"的闭包；契约声明但前端未实现的原语 → 占位文本（不再误落 accordion 分支） | `tsc --noEmit` 0；genui 测试改为传契约 fixture（内含"契约声明 mermaid → 占位""无契约 → 不渲染"两例） |
+| **T4.3** 渲染器接契约 | ✅ 已完成 | `GenUISpecRenderer` 新增 `contract` prop，`useMemo` 按契约校验；契约缺失整块不渲染 | 同上 |
+| **T4.4** 三处挂载点 | ✅ 已完成 | 新增 `DisplaySpecsBlock`（解析 → 取契约 → 逐条渲染，`data-testid` 保持 `brief-genui`/`plan-genui`）；`BriefCard`/`PlanCard` 改为传**整个业务对象**，`ReviewPanel` 的 `planGenui` → `plan` 且保留 `hideActions`，`EditorLayout` 传 `productionPlan` | `DisplaySpecsBlock.test.tsx` **4 例**（display_specs / 老 genui / 都没有 / 契约拉不到）；genui+agent+layouts **12 文件 135 passed / 5 skipped** |
+| **T4.5** 契约副本降级为夹具 | ✅ 已完成 | `src/features/genui/contract.json` 仍是插件契约的逐字节副本（跨仓 `display_spec_contract_sync` 守）；测试用它构造 `CONTRACT` fixture | 自检 17/17 |
