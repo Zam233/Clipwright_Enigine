@@ -158,9 +158,14 @@ class VisionService:
                     ".webp": "image/webp"}
         media_type = mime_map.get(ext, "image/jpeg")
 
-        # 按 LLM provider 构建消息
+        # 按 provider 声明的视觉消息格式构建（B7-T7.5：不再按 provider 名分支）
         vision_prov = settings.vision_llm_provider or settings.llm_provider
-        if vision_prov == "anthropic":
+        from clipwright.providers.base import llm_vision_message_format
+        from clipwright.services.llm import _resolve_llm_provider
+
+        _vision_impl = _resolve_llm_provider(vision_prov)
+        _vision_fmt = llm_vision_message_format(_vision_impl) if _vision_impl else "openai"
+        if _vision_fmt == "anthropic":
             import asyncio
             messages = [{
                 "role": "user",
@@ -174,7 +179,7 @@ class VisionService:
                 ],
             }]
         else:
-            # OpenAI / Ollama / 兼容格式
+            # OpenAI / Ollama / 兼容格式（能力位缺省值）
             data_uri = f"data:{media_type};base64,{img_b64}"
             messages = [{
                 "role": "user",

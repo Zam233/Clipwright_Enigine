@@ -10,3 +10,17 @@
 from __future__ import annotations
 
 __all__: list[str] = []
+
+
+def llm_provider_is_local(name: str) -> bool:
+    """该 LLM provider 是否"本地免 key"（由插件在贡献 meta 里声明 ``local: true``）。
+
+    B7-T7.5：engine 不再按名字判 ``== "ollama"``——"要不要 API key"是**能力方**的知识。
+    未安装/被禁用 → False（按需要凭据处理，交给调用方报可读错误）。
+    """
+    from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+
+    item = ContributionRegistry.resolve(ContributionKind.LLM_PROVIDER, str(name or ""))
+    if item is None:
+        return False
+    return bool((item.meta or {}).get("local"))

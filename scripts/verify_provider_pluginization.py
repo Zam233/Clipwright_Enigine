@@ -511,6 +511,8 @@ def check_provider_name_branches_removed() -> None:
             "_LEGACY_PROVIDER_ALIASES",
         ),
         "clipwright/api/providers.py": ('"qwen_tts"',),
+        "clipwright/services/vision.py": ('vision_prov == "anthropic"',),
+        "clipwright/services/agent_loop.py": ('("ollama",)',),
     }
     for rel, needles in forbidden.items():
         body = (root / rel).read_text(encoding="utf-8")

@@ -961,3 +961,8 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 > 的按名默认端点、`rag/embedder.py:176-180` 的 `provider in ("openai","ollama")`、`services/vision.py:163`、
 > `animation/mg/visual_eval.py:165`、`services/agent_loop.py:129`、`api/render.py` 的 `"local"` 渲染后端判断。
 > 这些都需要先定义"能力位"再改，不能机械替换（例如 model_listing 要区分"兼容端点"与"官方端点"）。
+
+| **T7.5（续）** vision / agent_loop 去厂商名 | ✅ 已完成本轮两项 | `services/vision.py` 不再 `if vision_prov == "anthropic"`——新增能力位 `llm_vision_message_format()`（Anthropic 声明 `image/source` 块、OpenAI 兼容声明 `image_url`）；`services/agent_loop.py` 不再按名字判本地免 key——新增 `providers/llm.llm_provider_is_local()` 读贡献 `meta.local`；两个插件 provider 补声明 | 自检 **21/21**（`provider_name_branches_removed` 已扩到 vision/agent_loop）；`test_agent_loop.py` 25 passed、`test_llm_provider_protocol.py` 7 passed；`import clipwright.main` ok |
+
+> **T7.5 仍剩**：`config.py` 的 `Literal` 枚举、`providers/model_listing.py` 按名默认端点、
+> `rag/embedder.py:176-180`、`animation/mg/visual_eval.py:165`、`api/render.py` 的 `"local"`。

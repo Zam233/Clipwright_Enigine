@@ -110,8 +110,10 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
       engine 的 `providers/*` 只保留协议（`providers/base.py`）与 `resolve_*` / `*_names`（**只读注册表**），
       `ensure_*_providers_registered` 这类**懒注册补位已全部删除**——它会让"禁用插件"不改变行为，
       是外壳化的根因。自检 `provider_impls_in_plugins` 守住这条（新增实现回 engine 会红）。
-      两处**能力位**取代了按 provider 名的分支：LLM 的 `tool_result_style()`（工具结果消息风格）、
-      TTS 的 `BaseVoiceProvider.build_audio_ref()`（参考音频 → base64 data URI 还是公网 URL）。
+      **能力位**取代了按 provider 名的分支：LLM 的 `tool_result_style()`（工具结果消息风格）、
+      `vision_message_format()`（视觉消息 image source 块 vs image_url）、TTS 的
+      `BaseVoiceProvider.build_audio_ref()`（参考音频 → base64 data URI 还是公网 URL）；
+      "本地免 key" 由贡献 `meta.local` 声明（engine 不再按名字判 `== "ollama"`）。
       暂时保留：`services/voice.py` 用 `__getattr__` 暴露三个 TTS 类的**兼容别名**（只为不打断既有
       导入与打桩路径），T7.5 收尾时删除；**新代码不要依赖别名**。
     - 插件对外暴露的 HTTP 入口**只有** `POST /api/capability/{name}`（`api/capability.py`，

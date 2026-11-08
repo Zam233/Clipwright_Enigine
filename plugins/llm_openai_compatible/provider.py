@@ -40,6 +40,10 @@ class OpenAIProvider:
             {"role": "user", "content": user_prompt},
         ]
 
+    def vision_message_format(self) -> str:
+        """OpenAI 兼容：image 用 {type: image_url, image_url: {url: data URI}}。"""
+        return "openai"
+
     def tool_result_style(self) -> str:
         """工具结果消息风格：OpenAI 用 assistant.tool_calls + role=tool 消息。"""
         return "openai"

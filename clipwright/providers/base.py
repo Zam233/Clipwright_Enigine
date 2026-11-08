@@ -251,6 +251,24 @@ def llm_tool_result_style(impl: Any) -> str:
         return "openai"
 
 
+def llm_vision_message_format(impl: Any) -> str:
+    """视觉消息格式：``"anthropic"``（image source 块）或 ``"openai"``（image_url）。
+
+    与 `tool_result_style` 同一思路：格式是**能力方的知识**，engine 只按声明组装。
+    缺方法 → OpenAI 兼容格式 + 一次告警。
+    """
+    fn = getattr(impl, "vision_message_format", None)
+    if not callable(fn):
+        _warn_once(impl, "vision_message_format()")
+        return "openai"
+    try:
+        fmt = str(fn() or "").strip().lower()
+        return fmt if fmt in ("anthropic", "openai") else "openai"
+    except Exception as e:  # noqa: BLE001
+        _warn_once(impl, f"vision_message_format() 调用异常({e})")
+        return "openai"
+
+
 def missing_llm_provider_methods(impl: Any) -> list[str]:
     """列出缺失的协议方法（注册时校验用；空列表 = 符合协议）。"""
     required = ("build_client", "capabilities", "normalize_messages",

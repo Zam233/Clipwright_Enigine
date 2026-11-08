@@ -43,6 +43,10 @@ class AnthropicProvider:
         """structured_output 路径的规范：system 拼进 user（与既有行为一致）。"""
         return [{"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"}]
 
+    def vision_message_format(self) -> str:
+        """Anthropic：image 用 {type: image, source: {base64...}} 块。"""
+        return "anthropic"
+
     def tool_result_style(self) -> str:
         """工具结果消息风格：Anthropic 用 content 数组里的 tool_use / tool_result 块。"""
         return "anthropic"

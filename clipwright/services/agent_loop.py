@@ -126,7 +126,9 @@ def _has_credential() -> bool:
     """凭据判定：全局 key / role binding key / 本地免 key provider 三者任一。"""
     if str(getattr(settings, "llm_api_key", "") or "").strip():
         return True
-    if str(getattr(settings, "llm_provider", "") or "").lower() in ("ollama",):
+    from clipwright.providers.llm import llm_provider_is_local
+
+    if llm_provider_is_local(getattr(settings, "llm_provider", "")):
         return True
     try:
         from clipwright.services.llm import _resolve_role_binding

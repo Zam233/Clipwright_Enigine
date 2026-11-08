@@ -21,6 +21,34 @@ from clipwright.services import agent_loop
 from clipwright.tool import surface as sf
 
 
+@pytest.fixture(autouse=True)
+def _llm_plugins_registered():
+    """B7-T7.2：LLM 实现归插件，可用性探针需要 provider 在注册表里。
+
+    没有插件时 `tool_loop_available()` 会（正确地）返回 `no_provider_impl`；
+    本文件的用例测的是 loop 行为，所以显式把两个 LLM 插件"装上"。
+    """
+    from clipwright.plugins.contribution import ContributionRegistry
+    from plugins.llm_anthropic.main import AnthropicProviderPlugin
+    from plugins.llm_openai_compatible.main import OpenACompatibleProviderPlugin
+
+    owners = []
+    for owner, plugin in (
+        ("agent_loop_anthropic", AnthropicProviderPlugin()),
+        ("agent_loop_openai", OpenACompatibleProviderPlugin()),
+    ):
+        items = plugin.contributions()
+        ContributionRegistry.declared_scope(owner, [c.key for c in items])
+        report = ContributionRegistry.register(owner, items)
+        assert report.ok, report.rejected
+        owners.append(owner)
+    try:
+        yield
+    finally:
+        for owner in owners:
+            ContributionRegistry.unregister_plugin(owner)
+
+
 class _FakeResp:
     def __init__(self, content: str = "", tool_calls: Any = None) -> None:
         self.content = content
