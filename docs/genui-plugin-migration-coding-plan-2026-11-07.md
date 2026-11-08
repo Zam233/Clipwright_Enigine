@@ -1009,3 +1009,9 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 自检 **22 条全过**，其中 4 条是这次整改新增的防回退门禁：
 `provider_impls_in_plugins`（实现类只在插件）、`provider_name_branches_removed`（分家族清单）、
 `no_vendor_branches`（语义化全仓检查）、`provider_plugin_fallback`（禁用即无能力，A6 口径）。
+
+### Batch 8 进度（插件外壳化整改二：失效钩子 / 渲染器 / 死插件）
+
+| 任务 | 状态 | 落地内容 | 证据 |
+|---|---|---|---|
+| **T8.1** `headless_chrome` 实现搬进插件 | ✅ 已完成 | 查找/安装/探测（`find_shell` / `install_shell` / `install_by_download` / `install_sync` / `probe_version` / 安装状态）搬进 `plugins/headless_chrome/shell.py`；engine `services/headless_browser.py` 变门面：按**能力形状**（贡献 object 是带 `resolve` 的 dict）取后端，不认死 id；保留两档策略编排（`apply_env`）、`boot_id`、系统 Chrome 探测；无插件时 `find_shell()` 空、`install_*` 返回可读"未安装"，不伪造路径 | `tests/test_headless_browser.py` **13 passed**；`pytest -k "headless or browser or hyperframes"` **44 passed**；自检 **23/23**（新增 `headless_impl_in_plugin`：插件里必须有四个实现函数，engine 门面里不得出现 `@puppeteer/browsers` / `zipfile` / `_download` 等实现细节） |

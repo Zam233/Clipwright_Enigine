@@ -573,6 +573,31 @@ def check_no_vendor_branches() -> None:
         assert needle not in joined, f"engine 里仍有内置 provider 白名单：{needle}"
 
 
+@check("headless_impl_in_plugin")
+def check_headless_impl_in_plugin() -> None:
+    """B8-T8.1：chrome-headless-shell 的查找/安装/探测必须只在插件里。
+
+    为什么要锁：这段代码会**下载 120MB 二进制并落盘**，属于典型插件能力
+    （可审计、可禁用、可替换）。engine 只留门面与两档策略编排。
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    engine = (root / "clipwright/services/headless_browser.py").read_text(encoding="utf-8")
+    plugin = root / "plugins/headless_chrome/shell.py"
+    assert plugin.exists(), "缺少 plugins/headless_chrome/shell.py（实现应在插件里）"
+    body = plugin.read_text(encoding="utf-8")
+    for needle in ("def find_shell", "def install_shell", "def install_by_download", "def probe_version"):
+        assert needle in body, f"插件实现缺少 {needle}"
+    # engine 门面不得再出现下载/子进程细节（这些是实现，不是编排）
+    for needle in ("@puppeteer/browsers", "last-known-good-versions.json",
+                   "zipfile", "create_subprocess_exec", "def _download", "def _http_json"):
+        assert needle not in engine, f"engine 门面里仍有实现细节：{needle}"
+    # 门面按能力形状取后端，不认死 id
+    assert "_shell_backend" in engine and "callable(obj.get(\"resolve\"))" in engine
+
+
 @check("prompt_builder_guards")
 def check_builder_guards() -> None:
     from clipwright.plugins import prompt_overrides as O

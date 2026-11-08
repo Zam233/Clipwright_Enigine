@@ -35,14 +35,21 @@ class HeadlessChromePlugin(CapabilityPlugin):
 
     def contributions(self) -> list[Any]:
         # 路径在**消费时**解析（安装可能发生在插件加载之后）
+        from plugins.headless_chrome import shell as _shell
+
         return [
             Contribution(
                 ContributionKind.RENDERER_BACKEND,
                 headless_browser.HEADLESS_SHELL_ID,
                 {
-                    "path": headless_browser.find_shell(),
-                    "resolve": headless_browser.find_shell,
-                    "install": headless_browser.install_shell,
+                    "path": _shell.find_shell(),
+                    "resolve": _shell.find_shell,
+                    "install": _shell.install_shell,
+                    "install_sync": _shell.install_sync,
+                    "install_by_download": _shell.install_by_download,
+                    "probe_version": _shell.probe_version,
+                    "install_state": _shell.install_state,
+                    "install_dir": str(_shell.BROWSERS_ROOT),
                 },
                 meta={"kind": "browser", "purpose": "headless-animation-render"},
             ),
