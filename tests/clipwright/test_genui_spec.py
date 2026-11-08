@@ -30,6 +30,32 @@ from clipwright.schema.genui import (
 from clipwright.schema.requirements import CreativeBrief, ProductionPlan, brief_prompt_template
 
 
+# ── B2：清洗器改成契约驱动后，测试进程显式注册 genui 的两条 display_spec 契约 ──
+@pytest.fixture(autouse=True, scope="module")
+def _register_display_spec_contracts():
+    """B2 起 `sanitize_spec` 按**注册表里的契约**清洗；测试不加载插件，因此显式注册。
+
+    这也顺带验证真实路径：插件交付的 meta 能通过 `_validate_data_only` 与
+    `normalize_contract`，而不是测试自己造一份"应该长这样"的契约。
+    """
+    from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+    from plugins.genui import main as genui_plugin
+
+    owner = "genui_test_fixture"
+    ContributionRegistry.declared_scope(owner, ["display_spec:brief", "display_spec:plan"])
+    report = ContributionRegistry.register(
+        owner,
+        [c for c in genui_plugin.GenUIPlugin().contributions()
+         if c.kind is ContributionKind.DISPLAY_SPEC],
+    )
+    assert report.ok, f"测试契约注册失败: {report.rejected}"
+    try:
+        yield
+    finally:
+        ContributionRegistry.unregister_plugin(owner)
+
+
+
 # ── 清洗器 ────────────────────────────────────────────────
 
 
@@ -261,16 +287,17 @@ class TestAgentFallback:
 
 class TestPluginContract:
     def test_plugin_components_match_schema(self):
+        """B2 起组件清单由插件契约提供；schema 常量在 B3 删除前必须与它一致（过渡断言）。"""
         from plugins.genui import main as genui_plugin
 
-        assert set(genui_plugin.COMPONENTS) == set(GENUI_COMPONENT_TYPES), (
-            "插件教给模型的组件清单与 schema 白名单不一致——等于教错"
+        assert set(genui_plugin.CONTRACT["components"]) == set(GENUI_COMPONENT_TYPES), (
+            "插件契约的组件清单与 schema 白名单不一致——等于教错"
         )
 
     def test_plugin_prompt_mentions_every_component(self):
         from plugins.genui import main as genui_plugin
 
-        for component in genui_plugin.COMPONENTS:
+        for component in genui_plugin.CONTRACT["components"]:
             assert component in genui_plugin.PROMPT, f"规范里没提 {component}"
 
     def test_plugin_declares_prompt_in_manifest(self):
@@ -279,17 +306,33 @@ class TestPluginContract:
         manifest = Path("plugins/genui/plugin.yaml").read_text(encoding="utf-8")
         assert "kind: prompt" in manifest
         assert "genui_requirements_prompt" in manifest
+        assert "kind: display_spec" in manifest
+        assert "id: brief" in manifest and "id: plan" in manifest
+
+    def test_plugin_contract_has_badge_tones(self):
+        """迁移必须补上的既有缺陷：契约原来漏了 `badge_tones`，badge 的 accent 无法表达。"""
+        from plugins.genui import main as genui_plugin
+
+        assert genui_plugin.CONTRACT["badge_tones"] == ["success", "warn", "danger", "accent"]
 
     def test_plugin_contribution_shape(self):
         from clipwright.plugins.contribution import ContributionKind
         from plugins.genui.main import GenUIPlugin
 
         items = GenUIPlugin().contributions()
-        assert len(items) == 1
-        item = items[0]
-        assert item.kind is ContributionKind.PROMPT
-        assert item.meta["agent"] == "requirements"
-        assert item.meta["prompt"] == item.object
+        assert len(items) == 3, "1 条提示词 + 2 条 display_spec（brief/plan）"
+        prompt, brief, plan = items
+        assert prompt.kind is ContributionKind.PROMPT
+        assert prompt.meta["agent"] == "requirements"
+        assert prompt.meta["prompt"] == prompt.object
+        for item, spec_id, trust in ((brief, "brief", "sanitize"), (plan, "plan", "recipe_only")):
+            assert item.kind is ContributionKind.DISPLAY_SPEC
+            assert item.id == spec_id
+            assert item.object is None, "纯数据扩展点：object 必须为 None"
+            assert item.meta["spec_id"] == spec_id
+            assert item.meta["trust"] == trust
+            assert set(item.meta["limits"]) >= {"max_nodes", "max_spec_bytes"}
+            assert item.meta["recipe"]["nodes"], "配方不能为空（plan 的 recipe_only 依赖它）"
 
 # ── Batch 1 接线（计划 T1.1 / T1.2 / T1.3 / T1.4）─────────────────────────
 
@@ -522,25 +565,34 @@ class TestOldSessionBackfill:
 
 
 class TestContractSingleSource:
-    """T3.1：`genui_contract.json` 是单一真相，本模块常量必须逐项与之相等。
+    """B2：契约**单一真相在插件**（`plugins/genui/contract.json`）；engine 旧常量在 B3 删除前必须与之逐项相等（过渡断言）。
 
     为什么需要它：组件白名单/上限原来靠"两仓手抄"，改一边忘另一边就是半渲染或
     前后端判断不一致。JSON 本身不含逻辑，只做**对账基准**。
     """
 
-    def test_version(self):
-        from clipwright.schema.genui import GENUI_VERSION, load_contract
+    @staticmethod
+    def _contract():
+        """插件契约是唯一真相；engine 旧文件在 B3 删除前只做过渡对账。"""
+        import json
+        from pathlib import Path
 
-        assert load_contract()["version"] == GENUI_VERSION
+        return json.loads(
+            Path("plugins/genui/contract.json").read_text(encoding="utf-8")
+        )
+
+    def test_version(self):
+        from clipwright.schema.genui import GENUI_VERSION
+
+        assert self._contract()["version"] == GENUI_VERSION
 
     def test_component_and_container_sets(self):
         from clipwright.schema.genui import (
             GENUI_COMPONENT_TYPES,
             GENUI_CONTAINER_TYPES,
-            load_contract,
         )
 
-        contract = load_contract()
+        contract = self._contract()
         assert set(contract["components"]) == set(GENUI_COMPONENT_TYPES)
         assert len(contract["components"]) == len(GENUI_COMPONENT_TYPES), "白名单不得有重复项"
         assert set(contract["containers"]) == set(GENUI_CONTAINER_TYPES)
@@ -550,10 +602,9 @@ class TestContractSingleSource:
             GENUI_ACTION_KINDS,
             GENUI_TEXT_SIZES,
             GENUI_TONES,
-            load_contract,
         )
 
-        contract = load_contract()
+        contract = self._contract()
         assert set(contract["actions"]) == set(GENUI_ACTION_KINDS)
         assert set(contract["tones"]) == set(GENUI_TONES)
         assert set(contract["text_sizes"]) == set(GENUI_TEXT_SIZES)
@@ -561,7 +612,7 @@ class TestContractSingleSource:
     def test_limits(self):
         from clipwright.schema import genui as g
 
-        limits = g.load_contract()["limits"]
+        limits = self._contract()["limits"]
         assert limits["max_nodes"] == g.MAX_NODES
         assert limits["max_depth"] == g.MAX_DEPTH
         assert limits["max_text_chars"] == g.MAX_TEXT_CHARS

@@ -868,3 +868,16 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 | **B1** T1.5 | ✅ 已完成 | `schema/plugin.py` 文档 17→18 类；新建 `tests/clipwright/test_display_spec_plugin.py`（**15 例**：读取/卸载隐藏、8 类形状拒绝、冲突与 override 拒绝、wired 不变量、归一纯函数性） | `py -3.14 -m pytest tests/clipwright/test_display_spec_plugin.py -q` → **15 passed**；插件相关 8 个文件合计 **166 passed / 2 failed**（2 个是既存 `test_plugin_review_fixes`）；自检 **16/16**；`import clipwright.main` ok |
 
 **本批不改变任何生产行为**（没有任何调用点），与计划 §3 B1 的声明一致。
+
+### Batch 2 进度
+
+| 任务 | 状态 | 落地内容 | 证据 |
+|---|---|---|---|
+| **T2.1** 契约文件进插件 | ✅ 已完成 | 新建 `plugins/genui/contract.json`：补齐漏掉的 `badge_tones`、新增 `specs.map`（brief=`sanitize`/100，plan=`recipe_only`/110）；engine 的 `genui_contract.json` 暂留（B3 删） | 插件契约键 = actions/badge_tones/components/containers/limits/specs/text_sizes/tones/version |
+| **T2.2** 两条 display_spec 贡献 | ✅ 已完成 | `plugin.yaml` 加 `display_spec: brief/plan`；`main.py` 删掉 `COMPONENTS` 硬编码，改为插件自读 `contract.json` + `recipe.json`；`contributions()` 返回 **3 条**（1 PROMPT + 2 DISPLAY_SPEC，`object=None`）；PROMPT 的组件清单与上限数字全部从契约插值 | `GenUIPlugin().contributions()` → `[('prompt','genui_requirements_prompt'), ('display_spec','brief'), ('display_spec','plan')]` |
+| **T2.3** 清洗器通用化 | ✅ 已完成 | 新建 `services/display_spec/sanitizer.py`：闭包捕获 `contract.components/actions/tones/badge_tones/text_sizes/limits`，**零产品常量**（大小写敏感 grep 0 命中）；`schema/genui.py` 只留过渡薄壳 `sanitize_spec()`（按注册表契约清洗，无契约则整块不可用 + 可读原因）与两个构造器（构造器新增 `_self_sanitize()`：无契约时原样返回，B3 随构造器一起删） | `Select-String sanitizer.py -Pattern "GENUI_|MAX_[A-Z]" -CaseSensitive` → **0**；`import clipwright.main` 0 |
+| **T2.4** 门禁先行 | ✅ 已完成 | verify 脚本：`genui_contract_sync` → `display_spec_contract_sync`（比对 `plugins/genui/contract.json` ↔ 前端副本）；`genui_plugin_contract` → `display_spec_plugin_contract`（3 条贡献 + 每条契约过 `normalize_contract` + recipe 非空 + plan trust=recipe_only）；新增 `display_spec_contract_frontend_subset`（契约 components/actions ⊆ 前端已实现集合） | 自检 **17/17**（原 16 + 新增 1；两项改名） |
+| **T2.5** 测试重组 | ✅ 已完成 | 新建 `tests/clipwright/test_display_spec_sanitizer.py`：12 例迁自 `TestSanitize` + 4 例契约驱动（无 html→降级、max_nodes=2→第 3 个丢、actions=[ask]→confirm 丢、同 raw 两契约不同结果）；`test_genui_spec.py` 改为**显式注册插件契约**（fixture，验证真实 meta 能过校验）+ 契约单一真相改读插件文件 + 插件断言 3 条贡献/含 badge_tones | 后端 4 文件 **114 passed**；requirements 全族 **103 passed / 4 failed**（4 个全是既存失败） |
+| **T3.3 提前** | ⚠️ 顺序调整 | `plugins/genui/recipe.json` 必须与 B2 一起落：`trust=recipe_only` 在注册期就要求 `recipe.nodes`，否则插件加载会把 `plan` 贡献判为非法（B1 校验器的严格性使然）。配方只是数据，解释器仍在 B3-T3.2 | `plan` 契约注册通过，recipe 6+3 节点 |
+
+**前端**：`src/features/genui/contract.json` 已同步为插件契约的逐字节副本（`display_spec_contract_sync` 通过）；`npx tsc --noEmit` 0；`npx vitest run src/features/genui` **30 passed**（运行期仍用 `validate.ts` 常量，B4 改为端点下发）。

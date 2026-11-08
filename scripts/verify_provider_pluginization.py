@@ -215,34 +215,36 @@ def check_prompt_runtime_path() -> None:
     assert L._system_prompt(task(False)) == P.LOOP_NORMAL_SYSTEM, "覆盖回滚后未恢复默认"
 
 
-@check("genui_contract_sync")
-def check_genui_contract_sync() -> None:
-    """前后端 GenUI 契约 JSON 必须**逐字节**一致（单一真相，计划 T3.1/§1.3）。
+@check("display_spec_contract_sync")
+def check_display_spec_contract_sync() -> None:
+    """\u63d2\u4ef6\u5951\u7ea6\u4e0e\u524d\u7aef\u526f\u672c\u5fc5\u987b**\u9010\u5b57\u8282**\u4e00\u81f4\uff08\u5355\u4e00\u771f\u76f8\u5728\u63d2\u4ef6\uff09\u3002
 
     组件白名单与上限原来靠两仓手抄；改一边忘另一边 → 半渲染 / 前后端判断不一致。
     """
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
-    backend = root / "clipwright/schema/genui_contract.json"
+    backend = root / "plugins/genui/contract.json"
     frontend = Path(r"J:\Clipweight-Client\src\features\genui\contract.json")
     assert backend.exists(), f"缺少后端契约文件：{backend}"
     if not frontend.exists():
         print("  （前端仓库不在本机：跳过跨仓字节比对）")
         return
     assert backend.read_bytes() == frontend.read_bytes(), (
-        "前后端 genui_contract.json 不一致——改一边必须同步另一边"
+        "插件契约与前端副本不一致——改一边必须同步另一边"
     )
 
 
-@check("genui_plugin_contract")
-def check_genui_plugin_contract() -> None:
-    """GenUI 插件：manifest ↔ contributions() 对齐；组件白名单与 schema 一致；不覆盖内置提示词。"""
+@check("display_spec_plugin_contract")
+def check_display_spec_plugin_contract() -> None:
+    """GenUI 插件：manifest ↔ contributions() 对齐；契约可被引擎归一；不覆盖内置提示词。"""
     from pathlib import Path
 
     import yaml
 
     from clipwright.plugins import prompt_overrides as O
+    from clipwright.plugins.contribution import ContributionKind
+    from clipwright.services.display_spec import normalize_contract
     from clipwright.schema import genui as G
     from plugins.genui import main as M
 
@@ -251,21 +253,65 @@ def check_genui_plugin_contract() -> None:
         (root / "plugins/genui/plugin.yaml").read_text(encoding="utf-8")
     ) or {}
     declared = {(str(i.get("kind")), str(i.get("id"))) for i in (manifest.get("contributions") or [])}
-    plugin = M.GenUIPlugin()
-    items = list(plugin.contributions() or [])
+    items = list(M.GenUIPlugin().contributions() or [])
     actual = {(it.kind.value, it.id) for it in items}
     assert declared == actual, f"manifest 与 contributions() 不一致：declared={declared} actual={actual}"
-    assert len(items) == 1, f"只应声明一条 PROMPT 贡献，实际 {len(items)}"
-    item = items[0]
-    assert item.meta.get("agent") == "requirements", item.meta
-    assert str(item.meta.get("prompt") or "").strip(), "PROMPT 贡献不能为空"
-    assert set(M.COMPONENTS) == set(G.GENUI_COMPONENT_TYPES), (
-        "插件教给模型的组件与 schema 白名单不一致——等于教错"
-    )
+    assert len(items) == 3, f"应为 1 条 PROMPT + 2 条 display_spec，实际 {len(items)}"
+
+    prompt_item = next(it for it in items if it.kind is ContributionKind.PROMPT)
+    assert prompt_item.meta.get("agent") == "requirements", prompt_item.meta
+    assert str(prompt_item.meta.get("prompt") or "").strip(), "PROMPT 贡献不能为空"
+
+    spec_items = [it for it in items if it.kind is ContributionKind.DISPLAY_SPEC]
+    assert {it.id for it in spec_items} == {"brief", "plan"}, [it.id for it in spec_items]
+    for item in spec_items:
+        assert item.object is None, "display_spec 是纯数据：object 必须为 None"
+        contract, problems = normalize_contract(item.meta, owner="genui")
+        assert contract is not None, f"{item.id} 契约形状不合法：{problems}"
+        assert contract.spec_id == item.id
+        assert contract.recipe and contract.recipe.get("nodes"), f"{item.id} 缺少 recipe.nodes"
+        # B3 会删除 engine 常量；在那之前必须与它一致（防止迁移期两套口径）
+        assert set(contract.components) == set(G.GENUI_COMPONENT_TYPES), (
+            "插件契约的组件清单与 engine 过渡常量不一致"
+        )
+    assert next(it for it in spec_items if it.id == "plan").meta["trust"] == "recipe_only"
+
     symbols = {str(x["name"]) for x in (O.all_symbols().get("constants") or [])}
     assert not any("genui" in name.lower() for name in symbols), (
         f"插件不应注册提示词符号覆盖：{sorted(symbols)}"
     )
+
+
+@check("display_spec_contract_frontend_subset")
+def check_display_spec_contract_frontend_subset() -> None:
+    """契约声明的组件/动作必须 ⊆ 前端已实现集合（前端原语是编译期闭包）。
+
+    前端仓库不在本机时按既有约定跳过（跨仓检查不应把单仓 CI 弄红）。
+    """
+    import json
+    import re
+    from pathlib import Path
+
+    frontend_root = Path(r"J:\Clipweight-Client")
+    contract_path = frontend_root / "src/features/genui/contract.json"
+    types_path = frontend_root / "src/features/genui/types.ts"
+    if not (contract_path.exists() and types_path.exists()):
+        print("  （前端仓库不在本机：跳过子集断言）")
+        return
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    types_src = types_path.read_text(encoding="utf-8")
+
+    def _tuple_block(name: str) -> set[str]:
+        match = re.search(name + r"\s*=\s*\[(.*?)\]", types_src, re.S)
+        assert match, f"前端 types.ts 里找不到 {name}"
+        return set(re.findall(r"'([^']+)'", match.group(1)))
+
+    implemented_components = _tuple_block("GENUI_COMPONENT_TYPES")
+    implemented_actions = _tuple_block("GENUI_ACTION_KINDS")
+    extra_components = [c for c in contract["components"] if c not in implemented_components]
+    extra_actions = [a for a in contract["actions"] if a not in implemented_actions]
+    assert not extra_components, f"契约声明了前端未实现的组件：{extra_components}"
+    assert not extra_actions, f"契约声明了前端未实现的动作：{extra_actions}"
 
 
 @check("genui_off_degradation")

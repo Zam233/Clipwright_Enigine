@@ -12,5 +12,12 @@
 """
 
 from .contract import Contract, get_contract, list_contracts, normalize_contract
+from .sanitizer import sanitize_display_spec
 
-__all__ = ["Contract", "get_contract", "list_contracts", "normalize_contract"]
+__all__ = [
+    "Contract",
+    "get_contract",
+    "list_contracts",
+    "normalize_contract",
+    "sanitize_display_spec",
+]

@@ -78,326 +78,35 @@ def _clip(text: str, limit: int = MAX_TEXT_CHARS) -> str:
     return text if len(text) <= limit else text[:limit] + "…（已截断）"
 
 
-def _clean_payload(value: Any, depth: int = 0) -> Any:
-    """动作载荷只留标量与浅层容器（不许函数/对象/超大字符串）。"""
-    if depth > 2:
-        return None
-    if isinstance(value, _SCALAR_TYPES):
-        return _clip(value, 500) if isinstance(value, str) else value
-    if isinstance(value, list):
-        return [_clean_payload(v, depth + 1) for v in value[:20]]
-    if isinstance(value, dict):
-        return {
-            str(k): _clean_payload(v, depth + 1)
-            for k, v in list(value.items())[:20]
-            if str(k) not in FORBIDDEN_KEYS
-        }
-    return None
-
-
-def _clean_action(raw: Any, problems: list[str]) -> dict[str, Any] | None:
-    """动作白名单：`type` 必须是 ask/select/confirm，载荷只留标量。"""
-    if not isinstance(raw, dict):
-        return None
-    kind = _as_text(raw.get("type")).strip().lower()
-    if kind not in GENUI_ACTION_KINDS:
-        problems.append(f"动作类型不在白名单：{kind or '空'}")
-        return None
-    action: dict[str, Any] = {"type": kind}
-    label = _as_text(raw.get("label")).strip()
-    if label:
-        action["label"] = _clip(label, 80)
-    payload = _clean_payload(raw.get("payload"))
-    if isinstance(payload, dict) and payload:
-        action["payload"] = payload
-    if kind == "select":
-        # `select` 的载荷必须是**非空字符串选项组**：宿主据此渲染选项按钮，
-        # 发送文案由宿主模板拼（`选择：X`），模型不能自定义发出的话。
-        options = _clean_select_options(payload, problems)
-        if not options:
-            problems.append("select 没有可用的 payload.options，动作已丢弃")
-            return None
-        action["payload"] = {"options": options}
-    if len(json.dumps(action, ensure_ascii=False)) > MAX_ACTION_PAYLOAD_CHARS:
-        problems.append("动作载荷超长，已丢弃")
-        return {"type": kind}
-    return action
-
-
-def _clean_select_options(payload: Any, problems: list[str]) -> list[str]:
-    """`select` 的选项：只收非空字符串，去重保序，逐项截断、总数封顶。"""
-    if not isinstance(payload, dict):
-        return []
-    raw = payload.get("options")
-    if not isinstance(raw, list):
-        return []
-    out: list[str] = []
-    for item in raw[: MAX_SELECT_OPTIONS * 2]:
-        if not isinstance(item, str):
-            continue
-        # 选项是按钮文案：**纯截断**，不加「…（已截断）」标记（按钮里出现标记是噪音）
-        text = item.strip()[:MAX_OPTION_CHARS]
-        if text and text not in out:
-            out.append(text)
-        if len(out) >= MAX_SELECT_OPTIONS:
-            break
-    return out
-
-
-def _clean_string_list(raw: Any, problems: list[str], field: str) -> list[str]:
-    if not isinstance(raw, list):
-        if raw is not None:
-            problems.append(f"{field} 不是数组，已忽略")
-        return []
-    out = [_clip(_as_text(x)) for x in raw[:MAX_ARRAY_ITEMS]]
-    if len(raw) > MAX_ARRAY_ITEMS:
-        problems.append(f"{field} 超过 {MAX_ARRAY_ITEMS} 项，已截断")
-    return [x for x in out if x]
-
-
-def _clean_list_items(raw: Any, problems: list[str]) -> list[Any]:
-    """`list` 组件的条目：字符串或 `{title, desc}`；其他形态丢弃。"""
-    if not isinstance(raw, list):
-        problems.append("list.items 不是数组，已忽略")
-        return []
-    out: list[Any] = []
-    for item in raw[:MAX_ARRAY_ITEMS]:
-        if isinstance(item, str):
-            text = _clip(item)
-            if text:
-                out.append(text)
-        elif isinstance(item, dict):
-            title = _clip(_as_text(item.get("title") or item.get("label")))
-            desc = _clip(_as_text(item.get("desc") or item.get("description")))
-            if title or desc:
-                out.append({"title": title, "desc": desc})
-        else:
-            problems.append("list 条目既不是字符串也不是对象，已丢弃")
-    return out
-
-
-def _clean_table(node: dict[str, Any], problems: list[str]) -> dict[str, Any]:
-    columns = _clean_string_list(node.get("columns"), problems, "table.columns")
-    if len(columns) > MAX_TABLE_COLS:
-        problems.append(f"table 列数超过 {MAX_TABLE_COLS}，已截断")
-        columns = columns[:MAX_TABLE_COLS]
-    rows_raw = node.get("rows")
-    rows: list[list[str]] = []
-    if isinstance(rows_raw, list):
-        if len(rows_raw) > MAX_ARRAY_ITEMS:
-            problems.append(f"table 行数超过 {MAX_ARRAY_ITEMS}，已截断")
-        for row in rows_raw[:MAX_ARRAY_ITEMS]:
-            if not isinstance(row, (list, tuple)):
-                continue
-            cells = [_clip(_as_text(cell), 500) for cell in list(row)[: len(columns) or MAX_TABLE_COLS]]
-            if cells:
-                rows.append(cells)
-    else:
-        problems.append("table.rows 不是数组，已忽略")
-    return {"type": "table", "columns": columns, "rows": rows}
-
-
-def _clean_steps(node: dict[str, Any], problems: list[str]) -> dict[str, Any]:
-    raw = node.get("steps")
-    steps: list[dict[str, Any]] = []
-    if isinstance(raw, list):
-        for item in raw[:MAX_ARRAY_ITEMS]:
-            if isinstance(item, str):
-                if item.strip():
-                    steps.append({"title": _clip(item)})
-            elif isinstance(item, dict):
-                title = _clip(_as_text(item.get("title")))
-                if title:
-                    step: dict[str, Any] = {"title": title}
-                    desc = _clip(_as_text(item.get("desc")))
-                    if desc:
-                        step["desc"] = desc
-                    steps.append(step)
-    else:
-        problems.append("steps.steps 不是数组，已忽略")
-    out: dict[str, Any] = {"type": "steps", "steps": steps}
-    current = node.get("current")
-    if isinstance(current, int) and not isinstance(current, bool) and current >= 0:
-        out["current"] = min(current, max(len(steps) - 1, 0))
-    return out
-
-
-def _clean_node(raw: Any, problems: list[str], depth: int, counter: list[int]) -> dict[str, Any] | None:
-    """清洗单个节点；返回 None 表示这个节点整体丢弃。"""
-    if depth > MAX_DEPTH:
-        problems.append(f"嵌套超过 {MAX_DEPTH} 层，以下节点已丢弃")
-        return None
-    if not isinstance(raw, dict):
-        problems.append("节点不是对象，已丢弃")
-        return None
-    for key in list(raw):
-        if str(key) in FORBIDDEN_KEYS:
-            problems.append(f"剔除危险键：{key}")
-            raw.pop(key, None)
-    kind = _as_text(raw.get("type")).strip().lower()
-    if kind not in GENUI_COMPONENT_TYPES:
-        problems.append(f"未知组件已降级为占位：{kind or '空'}")
-        return {"type": "text", "content": f"（暂不支持的组件：{kind or '空'}）", "size": "muted"}
-
-    counter[0] += 1
-    if counter[0] > MAX_NODES:
-        return None
-
-    node: dict[str, Any]
-    if kind == "text":
-        node = {"type": "text", "content": _clip(_as_text(raw.get("content")))}
-        size = _as_text(raw.get("size")).strip().lower()
-        if size in GENUI_TEXT_SIZES:
-            node["size"] = size
-        tone = _as_text(raw.get("tone")).strip().lower()
-        if tone in GENUI_TONES:
-            node["tone"] = tone
-    elif kind == "list":
-        node = {"type": "list", "items": _clean_list_items(raw.get("items"), problems)}
-    elif kind == "callout":
-        tone = _as_text(raw.get("tone")).strip().lower()
-        node = {
-            "type": "callout",
-            "tone": tone if tone in GENUI_TONES else "info",
-            "content": _clip(_as_text(raw.get("content"))),
-        }
-        title = _clip(_as_text(raw.get("title")), 120)
-        if title:
-            node["title"] = title
-    elif kind == "badge":
-        tone = _as_text(raw.get("tone")).strip().lower()
-        node = {"type": "badge", "label": _clip(_as_text(raw.get("label")), 60)}
-        if tone in GENUI_BADGE_TONES:
-            node["tone"] = tone
-    elif kind == "stat":
-        node = {
-            "type": "stat",
-            "label": _clip(_as_text(raw.get("label")), 80),
-            "value": _clip(_as_text(raw.get("value")), 80),
-        }
-        delta = _clip(_as_text(raw.get("delta")), 40)
-        if delta:
-            node["delta"] = delta
-    elif kind == "progress":
-        raw_value = raw.get("value")
-        value = float(raw_value) if isinstance(raw_value, (int, float)) and not isinstance(raw_value, bool) else 0.0
-        node = {"type": "progress", "value": max(0.0, min(100.0, value))}
-        label = _clip(_as_text(raw.get("label")), 80)
-        if label:
-            node["label"] = label
-        value_label = _clip(_as_text(raw.get("valueLabel")), 40)
-        if value_label:
-            node["valueLabel"] = value_label
-    elif kind == "table":
-        node = _clean_table(raw, problems)
-    elif kind == "steps":
-        node = _clean_steps(raw, problems)
-    elif kind == "divider":
-        node = {"type": "divider"}
-        label = _clip(_as_text(raw.get("label")), 80)
-        if label:
-            node["label"] = label
-    elif kind in ("row", "col"):
-        children = raw.get("items")
-        node = {"type": kind, "items": []}
-        if isinstance(children, list):
-            for child in children:
-                cleaned = _clean_node(child, problems, depth + 1, counter)
-                if cleaned is not None:
-                    node["items"].append(cleaned)
-    elif kind == "card":
-        node = {"type": "card", "items": []}
-        title = _clip(_as_text(raw.get("title")), 120)
-        if title:
-            node["title"] = title
-        tone = _as_text(raw.get("tone")).strip().lower()
-        if tone in GENUI_TONES:
-            node["tone"] = tone
-        children = raw.get("items")
-        if isinstance(children, list):
-            for child in children:
-                cleaned = _clean_node(child, problems, depth + 1, counter)
-                if cleaned is not None:
-                    node["items"].append(cleaned)
-    else:  # accordion
-        node = {"type": "accordion", "items": []}
-        children = raw.get("items")
-        if isinstance(children, list):
-            for child in children[:MAX_ARRAY_ITEMS]:
-                if not isinstance(child, dict):
-                    continue
-                title = _clip(_as_text(child.get("title")), 120)
-                inner: list[dict[str, Any]] = []
-                grand = child.get("items")
-                if isinstance(grand, list):
-                    for g in grand:
-                        cleaned = _clean_node(g, problems, depth + 1, counter)
-                        if cleaned is not None:
-                            inner.append(cleaned)
-                node["items"].append({"title": title, "items": inner})
-
-    action = _clean_action(raw.get("action"), problems)
-    if action is not None:
-        node["action"] = action
-    return node
-
-
 def sanitize_spec(raw: Any, *, source: str = "") -> tuple[dict[str, Any] | None, list[str]]:
-    """把「可能是模型编的」spec 洗成可信 spec。
+    """**过渡薄壳**（B2）：按当前注册的 `display_spec` 契约清洗。
 
-    返回 ``(spec|None, problems)``：``None`` 表示整块不可用（前端回落到原卡片/文本），
-    ``problems`` 是可诊断的降级原因（写日志，不回给用户当错误弹窗）。
+    实现在 `clipwright/services/display_spec/sanitizer.py`（契约驱动、通用、无产品字面量）。
+    本函数只为兼容 `schema/requirements.py` 的 validator 与既有测试的 import 而存在：
+    **不得**在新增的生产写入路径上继续调用；B3 会连同本文件一起删除。
+    契约缺失（插件未加载/被禁用）时返回整块不可用 + 可读原因，不抛异常。
     """
-    problems: list[str] = []
-    if raw in (None, "", {}, []):
-        return None, problems
-    if not isinstance(raw, dict):
-        return None, ["spec 顶层不是对象"]
+    from clipwright.services.display_spec import get_contract
+    from clipwright.services.display_spec.sanitizer import sanitize_display_spec
 
-    version = raw.get("version", GENUI_VERSION)
-    if isinstance(version, bool) or not isinstance(version, (int, str)):
-        problems.append(f"版本字段非法：{version!r}，按 {GENUI_VERSION} 处理")
-        version = GENUI_VERSION
-    try:
-        version_int = int(version)
-    except (TypeError, ValueError):
-        version_int = GENUI_VERSION
-    if version_int != GENUI_VERSION:
-        return None, [f"不支持的 spec 版本：{version_int}（当前 {GENUI_VERSION}）"]
-
-    items_raw = raw.get("items")
-    if not isinstance(items_raw, list) or not items_raw:
-        return None, ["spec.items 缺失或为空"]
-
-    counter = [0]
-    items: list[dict[str, Any]] = []
-    for entry in items_raw:
-        cleaned = _clean_node(entry, problems, 1, counter)
-        if cleaned is not None:
-            items.append(cleaned)
-    if not items:
-        return None, problems + ["清洗后没有任何可用节点"]
-    if counter[0] > MAX_NODES:
-        problems.append(f"节点数超过 {MAX_NODES}，多余节点已丢弃")
-
-    spec: dict[str, Any] = {"version": GENUI_VERSION, "items": items}
-    title = _clip(_as_text(raw.get("title")), 120)
-    if title:
-        spec["title"] = title
-    if source:
-        spec["source"] = source
-    # 体量检查放在**清洗之后**：模型偶发塞一个不可 JSON 化的值（函数/对象）不该拖垮整块，
-    # 清洗阶段已经把它们丢掉了；这里只看最终要下发的字节数。
-    try:
-        size = len(json.dumps(spec, ensure_ascii=False))
-    except (TypeError, ValueError):
-        return None, problems + ["spec 清洗后仍无法序列化"]
-    if size > MAX_SPEC_BYTES:
-        return None, problems + [f"spec 超过 {MAX_SPEC_BYTES} 字节（{size}），整块丢弃"]
-    return spec, problems
+    contract = get_contract("brief")
+    if contract is None:
+        return None, ["未注册任何 display_spec 契约（插件未加载或被禁用）"]
+    return sanitize_display_spec(raw, contract, source=source)
 
 
 # ── 确定性构造器（模型不给 spec 时的兜底；不调模型、不猜）───────────────
+
+
+def _self_sanitize(spec: dict[str, Any]) -> dict[str, Any]:
+    """过渡期（B2）：契约可用就按契约洗一遍；不可用则**原样返回**。
+
+    节点是本文件代码生成的（不是模型输入），所以没有契约时的"不洗"不构成信任问题；
+    真正的写入闸仍在 `sanitize_spec()` / 服务层装配点。B3 把两个构造器整体搬进插件
+    配方后，本函数与两个构造器一起删除。
+    """
+    cleaned, _ = sanitize_spec(spec)
+    return cleaned if cleaned is not None else spec
 
 
 def build_brief_genui(brief: dict[str, Any]) -> dict[str, Any] | None:
@@ -433,8 +142,7 @@ def build_brief_genui(brief: dict[str, Any]) -> dict[str, Any] | None:
         })
     if not items:
         return None
-    spec, _ = sanitize_spec({"version": GENUI_VERSION, "title": "创意简报", "items": items})
-    return spec
+    return _self_sanitize({"version": GENUI_VERSION, "title": "创意简报", "items": items})
 
 
 def build_plan_genui(plan: dict[str, Any], scenes: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
@@ -476,8 +184,7 @@ def build_plan_genui(plan: dict[str, Any], scenes: list[dict[str, Any]] | None =
         items.append({"type": "callout", "tone": "info", "content": gap})
     if len(items) <= 1 and not rows:
         return None
-    spec, _ = sanitize_spec({"version": GENUI_VERSION, "title": "制作规划书", "items": items})
-    return spec
+    return _self_sanitize({"version": GENUI_VERSION, "title": "制作规划书", "items": items})
 
 
 def load_contract() -> dict[str, Any]:
