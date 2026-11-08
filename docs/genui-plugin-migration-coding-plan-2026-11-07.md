@@ -954,3 +954,10 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 > **兼容别名**，只为不打断既有 `from ...voice import CosyVoiceProvider` 与
 > `patch("clipwright.services.voice.CosyVoiceProvider.synthesize")` 打桩路径。别名不是实现，
 > 但仍然是 engine 里的“名字残留”，必须在 T7.5 与测试改造一起删掉。
+
+| **T7.5（部分）** 清 vendor 分支 | 🟡 已完成 llm / tts / api 三处，剩余项已登记 | 删掉 `services/voice.py` 的 `__getattr__` 兼容别名（T7.1 登记的临时残留），`test_voice_providers.py` 的导入与打桩路径改到 `plugins.tts_*/provider`；TTS 别名表集中到 `providers/tts.tts_aliases()`（`api/providers.py` 不再写死 `qwen_tts`）；`voice.py` 的"未知 provider"报错不再列举硬编码厂商名；自检新增 `provider_name_branches_removed` 锁住这三处 | 自检 **21/21**；voice/tts/provider 相关 5 文件 **76 passed**；`import clipwright.main` ok |
+
+> **T7.5 剩余项（未做，属独立清理）**：`config.py` 的 `Literal` 枚举、`providers/model_listing.py`
+> 的按名默认端点、`rag/embedder.py:176-180` 的 `provider in ("openai","ollama")`、`services/vision.py:163`、
+> `animation/mg/visual_eval.py:165`、`services/agent_loop.py:129`、`api/render.py` 的 `"local"` 渲染后端判断。
+> 这些都需要先定义"能力位"再改，不能机械替换（例如 model_listing 要区分"兼容端点"与"官方端点"）。

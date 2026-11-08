@@ -12,13 +12,13 @@ import pytest
 
 from clipwright.services.voice import (
     BaseVoiceProvider,
-    CosyVoiceProvider,
-    MiniMaxProvider,
     PublicUploadManager,
-    QwenTTSProvider,
     _is_local_url,
     _sanitize_name,
 )
+from plugins.tts_cosyvoice.provider import CosyVoiceProvider
+from plugins.tts_minimax.provider import MiniMaxProvider
+from plugins.tts_qwen.provider import QwenTTSProvider
 
 
 # ──────────────────────────────────────────────
@@ -232,7 +232,7 @@ class TestCosyVoiceProvider:
         mock_synth.call.return_value = mock_audio
 
         mock_mod = MagicMock()
-        with patch("clipwright.services.voice.CosyVoiceProvider.synthesize") as mock_synth:
+        with patch("plugins.tts_cosyvoice.provider.CosyVoiceProvider.synthesize") as mock_synth:
             mock_synth.return_value = mock_audio
             result = await mock_synth(
                 voice_api_id="cv_xyz789",

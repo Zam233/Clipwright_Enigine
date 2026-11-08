@@ -53,7 +53,7 @@ async def available_providers(request: Request = None) -> dict[str, Any]:
     _require_admin(request)
     from clipwright.providers.embedding import embedding_provider_names
     from clipwright.providers.rerank import rerank_provider_names
-    from clipwright.providers.tts import tts_provider_names
+    from clipwright.providers.tts import tts_aliases, tts_provider_names
     from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
 
     # B7-T7.2：LLM 实现归插件，engine 不再懒注册内置补位
@@ -72,7 +72,8 @@ async def available_providers(request: Request = None) -> dict[str, Any]:
         "embed": "embedding", "rerank": "rerank", "tts": "tts",
     }
     # tts_provider 的别名（历史 id → 规范 id）也要给前端做兼容显示
-    out["tts_aliases"] = {"qwen_tts": "qwen-tts"}
+    # 别名单一真相在 providers/tts（T7.5：不再在 API 里写死）
+    out["tts_aliases"] = tts_aliases()
     return out
 
 

@@ -381,26 +381,9 @@ class BaseVoiceProvider(abc.ABC):
         return await uploader.upload(path)
 
 
-# ── 兼容别名（B7-T7.1）────────────────────────────────────────────
-# 三个 Provider 的实现已搬进插件；这里用**惰性 __getattr__** 保留同名访问，只为不打断
-# 既有导入与测试的打桩路径（`from clipwright.services.voice import QwenTTSProvider`、
-# `patch("clipwright.services.voice.CosyVoiceProvider.synthesize")`）。
-# **新代码不要依赖它**；T7.5 收尾时会连同别名一起删掉。
-_LEGACY_PROVIDER_ALIASES = {
-    "QwenTTSProvider": "plugins.tts_qwen.provider",
-    "CosyVoiceProvider": "plugins.tts_cosyvoice.provider",
-    "MiniMaxProvider": "plugins.tts_minimax.provider",
-}
-
-
-def __getattr__(name: str) -> Any:
-    target = _LEGACY_PROVIDER_ALIASES.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-
-    return getattr(importlib.import_module(target), name)
-
+# ── 兼容别名已删除（B7-T7.5）──────────────────────────────────────
+# 三个 TTS Provider 的实现与名字都只在 `plugins/tts_*/provider.py`；
+# 既有导入/打桩路径已改到插件模块。engine 里不再有任何 TTS/LLM 实现类名。
 
 class VoiceService:
     """声音克隆 + TTS 编排服务（仿 STTService 单例范式）。"""
@@ -465,9 +448,11 @@ class VoiceService:
         if cache_key not in self._providers:
             entry = resolve_tts_entry(canonical)
             if entry is None:
+                available = tts_provider_names()
                 raise ValueError(
-                    f"Unknown provider '{name}'. Choose from: "
-                    + ", ".join(tts_provider_names() or ["qwen-tts", "cosyvoice", "minimax"])
+                    f"Unknown provider '{name}'. "
+                    + (f"Choose from: {', '.join(available)}" if available
+                       else "未安装任何 TTS provider 插件（能力缺失）")
                 )
             self._providers[cache_key] = entry.factory(self._uploader, creds)
         if name != canonical:  # 别名 → 同一实例

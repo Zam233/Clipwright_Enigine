@@ -491,6 +491,37 @@ def check_provider_impls_in_plugins() -> None:
         assert name not in joined, f"engine 里仍有懒注册补位：{name}"
 
 
+@check("provider_name_branches_removed")
+def check_provider_name_branches_removed() -> None:
+    """已清理家族不得再出现"按 provider 名分支"（T7.5 分步执行）。
+
+    全仓级 `no_vendor_branches`（厂商字面量 ≤3）还没达标：`model_listing` /
+    `rag.embedder` / `vision` / `mg.visual_eval` / `agent_loop` 里仍有按 id 的判断，
+    已登记为 T7.5 剩余项。本检查先锁**已经清完的**三处，防止回退。
+    """
+    from pathlib import Path
+
+    import clipwright.services.voice as voice_mod
+
+    root = Path(__file__).resolve().parents[1]
+    forbidden = {
+        "clipwright/services/llm.py": ('provider == "anthropic"', 'self.provider == "anthropic"'),
+        "clipwright/services/voice.py": (
+            'provider_name == "qwen-tts"',
+            "_LEGACY_PROVIDER_ALIASES",
+        ),
+        "clipwright/api/providers.py": ('"qwen_tts"',),
+    }
+    for rel, needles in forbidden.items():
+        body = (root / rel).read_text(encoding="utf-8")
+        for needle in needles:
+            assert needle not in body, f"{rel} 仍含按 provider 名的分支/字面量：{needle}"
+
+    # T7.1 的兼容别名必须真的删掉（engine 里不该再有 TTS 实现类名）
+    for name in ("QwenTTSProvider", "CosyVoiceProvider", "MiniMaxProvider"):
+        assert not hasattr(voice_mod, name), f"services/voice.py 仍暴露 {name}（兼容别名未删）"
+
+
 @check("prompt_builder_guards")
 def check_builder_guards() -> None:
     from clipwright.plugins import prompt_overrides as O

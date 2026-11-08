@@ -36,6 +36,11 @@ def normalize_tts_name(name: str) -> str:
     return _TTS_ALIASES.get(str(name or ""), str(name or ""))
 
 
+def tts_aliases() -> dict[str, str]:
+    """TTS 名称别名表（历史 id → 规范 id）；**唯一真相在这里**，API 不再写死。"""
+    return dict(_TTS_ALIASES)
+
+
 def resolve_tts_entry(name: str) -> Optional[TtsProviderEntry]:
     """解析 TTS provider 条目（含别名归一）；未知 → None。
 
