@@ -740,6 +740,40 @@ def check_voice_ext_as_provider() -> None:
     assert "elevenlabs" not in tts_provider_names(), "注销后 elevenlabs 仍在列表（有串底？）"
 
 
+@check("mg_impl_in_plugin")
+def check_mg_impl_in_plugin() -> None:
+    """B8-T8.7 / 审计 §3.13：MG 动画定义只经注册表流转，engine 不得认插件物理目录。
+
+    旧实现把 `plugins/mg_animations/animations` 写死在 `mkdir` 搜索路径里：
+    插件被禁用后 engine 仍会去读那个目录（读得到就"能力还在"），与 A6 矛盾。
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    renderer = (root / "clipwright/animation/mg_renderer.py").read_text(encoding="utf-8")
+    assert "plugins" not in renderer, "mg_renderer 仍提到插件目录（应只读 AnimationRegistry）"
+    assert "_mg_json_from_registry" in renderer, "缺少从注册表取 MG JSON 的入口"
+
+    plugin = (root / "plugins/mg_animations/main.py").read_text(encoding="utf-8")
+    assert "json.dumps(mg_def" in plugin, "插件没有把 MG JSON 全文塞进 AnimationDef"
+
+    from clipwright.animation.mg_renderer import MGRenderer
+    from clipwright.plugins.contribution import ContributionRegistry
+    from plugins.mg_animations.main import MGAnimationPlugin
+
+    owner = "verify_mg_animations"
+    items = MGAnimationPlugin().contributions()
+    ContributionRegistry.declared_scope(owner, [c.key for c in items])
+    report = ContributionRegistry.register(owner, items)
+    assert report.ok, report.rejected
+    try:
+        data = MGRenderer.load_animation("mg_countdown")
+        assert data is not None and data.get("elements"), "注册后 load_animation 读不到 MG JSON"
+    finally:
+        ContributionRegistry.unregister_plugin(owner)
+    assert MGRenderer.load_animation("mg_countdown") is None, "注销后仍能读到 MG 动画（有目录兜底？）"
+
+
 @check("prompt_builder_guards")
 def check_builder_guards() -> None:
     from clipwright.plugins import prompt_overrides as O
