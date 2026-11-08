@@ -631,6 +631,55 @@ def check_dead_hooks_removed() -> None:
         assert len(kfs) >= 2, f"动画 {c.id} 的 keyframes 少于 2 帧（无法插值）"
 
 
+@check("export_preset_wiring")
+def check_export_preset_wiring() -> None:
+    """B8-T8.5：平台预设必须以 `export_preset` 纯数据贡献，且 hook 真的能改参数。
+
+    旧实现的两个病：预设写死在插件里但 hook 拿不到上下文（从未执行）；
+    engine 另外维护一份 `_PLATFORM_EXPORT_COUNTS` 平台表。两处都必须消失。
+    """
+    import asyncio
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    engine = (root / "clipwright/api/render.py").read_text(encoding="utf-8")
+    assert "_PLATFORM_EXPORT_COUNTS" not in engine, "engine 仍有硬编码平台封面表"
+    assert "_preset_map" in engine, "engine 缺少预设合并函数"
+
+    from clipwright.plugins.contribution import ContributionRegistry
+    from plugins.platform_export.main import PlatformExportPlugin
+
+    owner = "verify_platform_export"
+    items = PlatformExportPlugin().contributions()
+    presets = [c for c in items if getattr(c.kind, "value", "") == "export_preset"]
+    assert len(presets) >= 6, f"平台预设贡献不足：{len(presets)}"
+    for c in presets:
+        assert c.object is None, f"export_preset:{c.id} 必须是纯数据（object=None）"
+
+    ContributionRegistry.declared_scope(owner, [c.key for c in items])
+    report = ContributionRegistry.register(owner, items)
+    assert report.ok, report.rejected
+    try:
+        from clipwright.api.render import _preset_map
+        from clipwright.plugins.hooks import HookPoint
+        from clipwright.plugins.hooks_async import execute_async
+
+        merged = _preset_map()
+        for pid in ("bilibili", "douyin", "youtube", "xiaohongshu"):
+            assert pid in merged, f"插件预设 {pid} 未进入 /presets 合并结果"
+
+        ctx = {"task_id": "verify", "preset": "douyin", "settings": {}}
+        asyncio.run(execute_async(HookPoint.PRE_RENDER, ctx))
+        assert ctx["settings"].get("height") == 1920, "PRE_RENDER 没有把竖屏参数并进 settings"
+    finally:
+        ContributionRegistry.unregister_plugin(owner)
+
+    # A6：禁用插件后预设消失（不做内置兜底）
+    from clipwright.api.render import _preset_map
+
+    assert "douyin" not in _preset_map(), "插件注销后 douyin 仍在预设表（有内置兜底？）"
+
+
 @check("prompt_builder_guards")
 def check_builder_guards() -> None:
     from clipwright.plugins import prompt_overrides as O

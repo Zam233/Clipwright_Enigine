@@ -54,7 +54,7 @@ _PROVIDER_KINDS = {
 
 #: **纯数据** kind（2026-11-07 第 18 类 display_spec）：`object` 恒为 `None`，
 #: 全部信息在 `meta`。engine 从不 `callable()` 插件的任何对象（PRD §3.3 零信任）。
-_DATA_ONLY_KINDS = {ContributionKind.DISPLAY_SPEC}
+_DATA_ONLY_KINDS = {ContributionKind.DISPLAY_SPEC, ContributionKind.EXPORT_PRESET}
 
 #: display_spec 的 meta 必填键（与 `services/display_spec/contract.py` 共用同一份真相）。
 DISPLAY_SPEC_REQUIRED_KEYS = (
@@ -72,6 +72,22 @@ DISPLAY_SPEC_TRUST_VALUES = ("sanitize", "recipe_only")
 DISPLAY_SPEC_SOURCES = ("brief", "plan")
 
 
+def _validate_export_preset(item: Contribution) -> Optional[str]:
+    """导出预设的纯数据校验：宽高帧率码率必须是能直接喂给渲染器的形状。"""
+    meta = item.meta or {}
+    for key in ("width", "height", "fps"):
+        value = meta.get(key)
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+            return f"export_preset:{item.id} 的 {key} 必须是正数"
+    bitrate = meta.get("bitrate")
+    if not isinstance(bitrate, str) or not bitrate.strip():
+        return f"export_preset:{item.id} 的 bitrate 必须是非空字符串（如 6M / cq26）"
+    thumb = meta.get("thumbnail_count", 0)
+    if thumb not in ("", None) and (not isinstance(thumb, int) or isinstance(thumb, bool) or thumb < 0):
+        return f"export_preset:{item.id} 的 thumbnail_count 必须是非负整数"
+    return None
+
+
 def _validate_data_only(item: Contribution) -> Optional[str]:
     """校验纯数据贡献的形状；返回 None=接受，字符串=可读中文原因。
 
@@ -79,7 +95,9 @@ def _validate_data_only(item: Contribution) -> Optional[str]:
     （或更糟——静默生效到用户看到空卡片）。因此**不能**靠「未知 kind 默认放行」。
     """
     if item.object is not None:
-        return f"display_spec:{item.id} 的 object 必须为 None（纯数据扩展点）"
+        return f"{item.kind.value}:{item.id} 的 object 必须为 None（纯数据扩展点）"
+    if item.kind is ContributionKind.EXPORT_PRESET:
+        return _validate_export_preset(item)
     meta = item.meta if isinstance(item.meta, dict) else None
     if meta is None:
         return f"display_spec:{item.id} 的 meta 必须是对象"

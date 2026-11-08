@@ -603,11 +603,19 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
         _render_queue[task_id]["progress"] = 0
         # clip_count 改为片段总数（此前用轨道数，语义错误）
         _render_queue[task_id]["clip_count"] = sum(len(t.clips or []) for t in tl.tracks or [])
-        # 插件 hook — 渲染前置
+        # 插件 hook — 渲染前置（B8-T8.5：补 settings/preset，钩子才能真的改参数）
         try:
             from clipwright.plugins.hooks import HookPoint
             from clipwright.plugins.hooks_async import execute_async
-            await execute_async(HookPoint.PRE_RENDER, {"task_id": task_id})
+            hook_ctx = {
+                "task_id": task_id,
+                "settings": dict(params),
+                "preset": str(params.get("preset", "") or ""),
+            }
+            await execute_async(HookPoint.PRE_RENDER, hook_ctx)
+            patched = hook_ctx.get("settings")
+            if isinstance(patched, dict) and patched != params:
+                params = {**params, **patched}
         except Exception as e:
             logger.warning("pre_render hook 执行失败: %s", e)
         try:
@@ -652,6 +660,7 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                 await execute_async(HookPoint.POST_RENDER, {
                     "task_id": task_id, "output_path": str(out),
                     "success": result.success,
+                    "preset": str(params.get("preset", "") or ""),
                 })
             except Exception as e:
                 logger.warning("post_render hook 执行失败: %s", e)
@@ -661,7 +670,7 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
             try:
                 if result.success and Path(out).exists():
                     preset_name = str(body.settings.preset) if (body.settings and body.settings.preset) else ""
-                    cover_count = _PLATFORM_EXPORT_COUNTS.get(preset_name)
+                    cover_count = int(_preset_meta(preset_name).get("thumbnail_count", 0) or 0)
                     if cover_count:
                         covers = await asyncio.to_thread(
                             _extract_platform_covers, str(out), cover_count)
@@ -976,13 +985,6 @@ def _media_type_for(name: str) -> str:
             ".mkv": "video/x-matroska"}.get(Path(name).suffix.lower(), "video/mp4")
 
 
-# 6（轮 81）：平台预设 → 封面抽取张数（成片完成后自动抽帧，供发布选封面）
-_PLATFORM_EXPORT_COUNTS: dict[str, int] = {
-    "tiktok": 3, "douyin": 3, "weibo": 3,
-    "bilibili": 4, "youtube": 4,
-}
-
-
 def _extract_platform_covers(video_path: str, count: int) -> list[str]:
     """从成片均匀抽取 count 张封面帧到 renders/covers/，返回可用路径列表。
 
@@ -1120,6 +1122,47 @@ _EXPORT_PRESETS = {
 }
 
 
+#: 平台预设里"只给宿主看、不喂渲染器"的键（合并时剔除，避免污染 ffmpeg 参数）
+_PRESET_META_ONLY_KEYS = ("note", "name", "thumbnail_count", "max_duration_sec",
+                          "vertical", "aspect", "encoder_preset")
+
+
+def _contributed_presets() -> dict[str, dict]:
+    """`export_preset` 纯数据贡献（object 恒 None，信息在 meta）。"""
+    from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+
+    out: dict[str, dict] = {}
+    try:
+        for _, item in ContributionRegistry.list(ContributionKind.EXPORT_PRESET):
+            meta = dict(item.meta or {})
+            meta.pop("name", None)
+            out[item.id] = meta
+    except Exception:  # noqa: BLE001 — 门面不可用 = 没有插件预设
+        return {}
+    return out
+
+
+def _preset_map() -> dict[str, dict]:
+    """内置预设 + 插件预设（插件 id 可覆盖同名的内置预设，用于平台化改造）。"""
+    merged = {k: dict(v) for k, v in _EXPORT_PRESETS.items()}
+    merged.update(_contributed_presets())
+    return merged
+
+
+def _preset_meta(name: str) -> dict:
+    """取某预设的完整元数据（含宿主用的 thumbnail_count 等，不进渲染参数）。"""
+    if not name:
+        return {}
+    if name in _contributed_presets():
+        return _contributed_presets()[name]
+    return dict(_EXPORT_PRESETS.get(name) or {})
+
+
+def _as_render_params(preset: dict) -> dict:
+    """把预设元数据裁剪成渲染参数（剔除宿主视觉/封面类字段）。"""
+    return {k: v for k, v in preset.items() if k not in _PRESET_META_ONLY_KEYS}
+
+
 class RenderSettings(BaseModel):
     """渲染参数。"""
     preset: str = Field(default="", description="导出预设名（tiktok/720p/prores422hq 等）")
@@ -1192,8 +1235,8 @@ async def render_browser_install() -> dict:
 
 @router.get("/presets")
 async def list_presets() -> dict:
-    """列出所有导出预设。"""
-    return {"presets": _EXPORT_PRESETS}
+    """列出所有导出预设（内置 + `export_preset` 贡献；禁用插件即消失）。"""
+    return {"presets": _preset_map()}
 
 
 @router.get("/backends")
@@ -1254,11 +1297,11 @@ def _resolve_settings(s: RenderSettings | None) -> dict:
     """
     base = s.model_dump(exclude_unset=True) if s else {}
     preset_name = str(base.get("preset", "") or "")
-    if preset_name and preset_name not in _EXPORT_PRESETS:
-        raise ValueError(f"未知导出预设: {preset_name}（可用: {', '.join(sorted(_EXPORT_PRESETS))}）")
+    presets = _preset_map()
+    if preset_name and preset_name not in presets:
+        raise ValueError(f"未知导出预设: {preset_name}（可用: {', '.join(sorted(presets))}）")
     if preset_name:
-        preset = _EXPORT_PRESETS[preset_name].copy()
-        preset.pop("note", None)
+        preset = _as_render_params(presets[preset_name])
         # 预设为基底，显式传入的设置项可覆盖（空串不覆盖——避免 encoder/pix_fmt
         # 默认空值顶掉预设）
         preset.update({k: v for k, v in base.items() if v is not None and v != "" and k != "preset"})

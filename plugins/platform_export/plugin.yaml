@@ -1,13 +1,20 @@
 id: "platform_export"
 name: "平台导出预设"
-version: "1.0.0"
+version: "1.1.0"
 kind: "capability"
-description: "平台专属导出预设 — Bilibili/Douyin/YouTube/微信视频号/小红书"
+description: "平台专属导出预设（纯数据贡献）— B站/抖音/YouTube/视频号/小红书"
 author: "Clipwright Team"
 entry_point: "platform_export.main"
 
 # P1 迁移：新契约声明（声明即授权 —— 未声明的 id 会被门面拒绝）
+# B8-T8.5：预设改为 export_preset 纯数据贡献（object 恒 None，信息全在 meta）
 api_version: "2"
 contributions:
+  - { kind: export_preset, id: bilibili }
+  - { kind: export_preset, id: bilibili_4k }
+  - { kind: export_preset, id: douyin }
+  - { kind: export_preset, id: youtube }
+  - { kind: export_preset, id: wechat_channels }
+  - { kind: export_preset, id: xiaohongshu }
   - { kind: hook, id: platform_export_pre_render }
   - { kind: hook, id: platform_export_post_render }
