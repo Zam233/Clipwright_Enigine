@@ -11,6 +11,30 @@ pytest.importorskip("isobase", reason="isobase 未安装，跳过 IsoBase 集成
 from clipwright.services.llm import LLMService
 
 
+@pytest.fixture(autouse=True)
+def _llm_plugins_registered():
+    """B7-T7.2：LLM 实现归插件；测试进程显式注册（等价于"插件已安装"）。"""
+    from clipwright.plugins.contribution import ContributionRegistry
+    from plugins.llm_anthropic.main import AnthropicProviderPlugin
+    from plugins.llm_openai_compatible.main import OpenACompatibleProviderPlugin
+
+    owners = []
+    for owner, plugin in (
+        ("llm_svc_anthropic", AnthropicProviderPlugin()),
+        ("llm_svc_openai", OpenACompatibleProviderPlugin()),
+    ):
+        items = plugin.contributions()
+        ContributionRegistry.declared_scope(owner, [c.key for c in items])
+        report = ContributionRegistry.register(owner, items)
+        assert report.ok, report.rejected
+        owners.append(owner)
+    try:
+        yield
+    finally:
+        for owner in owners:
+            ContributionRegistry.unregister_plugin(owner)
+
+
 class TestLLMService:
     def test_init_defaults(self) -> None:
         """验证 LLMService 默认初始化。"""

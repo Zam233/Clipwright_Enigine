@@ -156,12 +156,8 @@ async def lifespan(app: FastAPI):
     except Exception as _ingest_err:
         logger.warning("内置贡献入账失败（不影响启动）: %s", _ingest_err)
 
-    # 4.2 B-1：内置 LLM provider 注册（anthropic/openai/ollama；幂等）
-    try:
-        from clipwright.providers.llm import ensure_llm_providers_registered
-        ensure_llm_providers_registered()
-    except Exception as _prov_err:
-        logger.warning("LLM provider 注册失败（不影响启动）: %s", _prov_err)
+    # 4.2 B-1 / B7-T7.2：**启动不再注册内置 LLM provider**（实现归 plugins/llm_* 插件）；
+    # 没有插件时 `_resolve_llm_provider()` 返回 None，调用方按能力缺失处理（口径 A）。
 
     # 4.3 裁定 3（PRD §15.1.6）/ B3-T6：**启动不再注册内置 TTS provider**。
     # TTS 协议插件（tts_cosyvoice / tts_qwen / tts_minimax）在 `_plugin_loader.load_all()`

@@ -75,8 +75,8 @@ def _dynamic_choices(key: str) -> list[str]:
         from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
         kind = ContributionKind(kind_name)
         if kind is ContributionKind.LLM_PROVIDER:
-            from clipwright.providers.llm import ensure_llm_providers_registered
-            ensure_llm_providers_registered()
+            # B7-T7.2：实现已迁进插件，engine 不再懒注册内置补位
+            pass
         elif kind is ContributionKind.TTS_PROVIDER:
             # 裁定 3 / B3-T6：不再懒注册内置 TTS provider，列表完全由插件贡献决定
             pass

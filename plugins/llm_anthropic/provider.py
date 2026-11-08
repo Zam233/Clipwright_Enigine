@@ -1,4 +1,9 @@
-"""Anthropic LLM Provider（方案 B-1）。"""
+"""Anthropic Provider 实现（**能力方**：插件拥有实现，engine 只留协议）。
+
+2026-11-08 能力迁移（审计 B7-T7.2）：类从 `clipwright/providers/llm/` 搬到这里；
+engine 侧 `providers/llm` 只保留协议说明。`build_client` 仍延后引用
+`clipwright.services.llm` 里的传输层构造（宿主能力，既有打桩继续有效）。
+"""
 from __future__ import annotations
 
 from typing import Any, Mapping
@@ -37,6 +42,10 @@ class AnthropicProvider:
     def normalize_messages(self, user_prompt: str, system_prompt: str) -> list[dict[str, Any]]:
         """structured_output 路径的规范：system 拼进 user（与既有行为一致）。"""
         return [{"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"}]
+
+    def tool_result_style(self) -> str:
+        """工具结果消息风格：Anthropic 用 content 数组里的 tool_use / tool_result 块。"""
+        return "anthropic"
 
     def build_client(self, *, api_key: str | None, base_url: str | None, model: str,
                      instructions: str, max_tokens: int, flash: bool,

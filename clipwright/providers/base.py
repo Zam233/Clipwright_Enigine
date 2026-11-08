@@ -231,6 +231,26 @@ def llm_uses_system_kwarg(impl: Any) -> bool:
         return False
 
 
+def llm_tool_result_style(impl: Any) -> str:
+    """工具结果消息风格：``"anthropic"``（tool_use/tool_result 块）或 ``"openai"``。
+
+    为什么要有这个方法：工具循环里的消息组装原先按 provider 名分支
+    （`if self.provider == "anthropic"`），那是把**能力方知识写进 engine**。
+    provider 声明自己用哪种风格，engine 只按声明组装；缺方法 → OpenAI 风格 + 一次告警
+    （与 `normalize_messages` 的降级策略一致）。
+    """
+    fn = getattr(impl, "tool_result_style", None)
+    if not callable(fn):
+        _warn_once(impl, "tool_result_style()")
+        return "openai"
+    try:
+        style = str(fn() or "").strip().lower()
+        return style if style in ("anthropic", "openai") else "openai"
+    except Exception as e:  # noqa: BLE001
+        _warn_once(impl, f"tool_result_style() 调用异常({e})")
+        return "openai"
+
+
 def missing_llm_provider_methods(impl: Any) -> list[str]:
     """列出缺失的协议方法（注册时校验用；空列表 = 符合协议）。"""
     required = ("build_client", "capabilities", "normalize_messages",

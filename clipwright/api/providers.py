@@ -52,12 +52,11 @@ async def available_providers(request: Request = None) -> dict[str, Any]:
     """
     _require_admin(request)
     from clipwright.providers.embedding import embedding_provider_names
-    from clipwright.providers.llm import ensure_llm_providers_registered
     from clipwright.providers.rerank import rerank_provider_names
     from clipwright.providers.tts import tts_provider_names
     from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
 
-    ensure_llm_providers_registered()
+    # B7-T7.2：LLM 实现归插件，engine 不再懒注册内置补位
     out: dict[str, list[str]] = {}
     for kind, names in (
         (ContributionKind.LLM_PROVIDER, None),

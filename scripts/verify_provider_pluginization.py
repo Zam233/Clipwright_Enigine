@@ -438,7 +438,8 @@ def check_provider_impls_in_plugins() -> None:
     root = Path(__file__).resolve().parents[1]
     engine = root / "clipwright"
 
-    # 已迁家族：实现类名 → 插件模块（必须既有实现类、又不再出现在 engine 的 class 定义里）
+    # 已迁家族（embedding / rerank / stt / llm）：实现类名 → 插件模块
+    # （必须既有实现、又不再出现在 engine 的 class 定义里）。tts 待 T7.1 迁移后加入。
     moved_classes = {
         "OpenAIEmbeddingProvider": "plugins/embedding_providers/providers.py",
         "OllamaEmbeddingProvider": "plugins/embedding_providers/providers.py",
@@ -451,6 +452,9 @@ def check_provider_impls_in_plugins() -> None:
         "probe_whisper": "plugins/stt_providers/backends.py",
         "transcribe_whisper": "plugins/stt_providers/backends.py",
         "transcribe_faster_whisper": "plugins/stt_providers/backends.py",
+        "AnthropicProvider": "plugins/llm_anthropic/provider.py",
+        "OpenAIProvider": "plugins/llm_openai_compatible/provider.py",
+        "OllamaProvider": "plugins/llm_openai_compatible/provider.py",
     }
     for plugin_rel in set(moved_classes.values()):
         plugin_file = root / plugin_rel
@@ -474,9 +478,14 @@ def check_provider_impls_in_plugins() -> None:
         assert not offenders, f"{name} 仍定义在 engine：{offenders}（应在 {plugin_rel}）"
 
     # 懒注册补位必须消失（它会让"禁用插件"不改变行为）
-    assert "ensure_embedding_providers_registered" not in "".join(engine_text.values())
-    assert "ensure_rerank_providers_registered" not in "".join(engine_text.values())
-    assert "ensure_stt_providers_registered" not in "".join(engine_text.values())
+    joined = "".join(engine_text.values())
+    for name in (
+        "ensure_embedding_providers_registered",
+        "ensure_rerank_providers_registered",
+        "ensure_stt_providers_registered",
+        "ensure_llm_providers_registered",
+    ):
+        assert name not in joined, f"engine 里仍有懒注册补位：{name}"
 
 
 @check("prompt_builder_guards")
@@ -555,27 +564,33 @@ def check_dub_boundary() -> None:
 
 @check("provider_plugin_fallback")
 def check_provider_fallback() -> None:
-    """插件被卸载后，内置必须能补位（否则禁用插件的用户会直接失去 provider）。
+    """插件被卸载后 **没有内置补位**——能力缺失是一等状态（2026-11-08 口径变更）。
 
-    这是「让位语义」的逆过程：让位发生在注册前（`register_builtin_once` 逐 id 过滤），
-    补位发生在下一次 `ensure_*` 调用（启动或解析时懒注册）。
+    旧语义是"让位 + 懒注册补位"（禁用插件后 engine 顶上内置实现）。审计整改 B7 之后
+    这条被明确推翻：实现归插件，禁用即没有该能力，调用方按"未安装"报可读错误。
     """
     from clipwright.plugins.contribution import ContributionKind as K
     from clipwright.plugins.contribution import ContributionRegistry as R
+    from plugins.llm_openai_compatible.main import OpenACompatibleProviderPlugin
 
-    # 卸载 openai 兼容插件后，两个 id 应从门面消失
-    R.unregister_plugin("llm_openai_compatible")
-    remaining = {c.id for _, c in R.list(K.LLM_PROVIDER)}
-    assert "openai" not in remaining, "卸载后 openai 仍在门面"
-    assert "ollama" not in remaining, "卸载后 ollama 仍在门面"
+    saved = [c for c in OpenACompatibleProviderPlugin().contributions()]
+    owner = "llm_openai_compatible"
+    try:
+        # 卸载 openai 兼容插件后，两个 id 应从门面消失
+        R.unregister_plugin(owner)
+        remaining = {c.id for _, c in R.list(K.LLM_PROVIDER)}
+        assert "openai" not in remaining, "卸载后 openai 仍在门面"
+        assert "ollama" not in remaining, "卸载后 ollama 仍在门面"
 
-    # 走真实解析路径：services.llm 的 resolver 会先 ensure 再查
-    from clipwright.services.llm import _resolve_llm_provider
+        from clipwright.services.llm import _resolve_llm_provider
 
-    impl = _resolve_llm_provider("openai")
-    assert impl is not None, "卸载插件后 openai 无法解析（内置没有补位）"
-    owner = R.owner_of(K.LLM_PROVIDER, "openai")
-    assert owner == "__builtin__", f"补位后归属应为 builtin，实际 {owner!r}"
+        impl = _resolve_llm_provider("openai")
+        assert impl is None, "禁用插件后不应再解析到内置实现（补位已删除）"
+    finally:
+        # 恢复插件贡献，避免影响后续检查
+        R.declared_scope(owner, [c.key for c in saved])
+        report = R.register(owner, saved)
+        assert report.ok, report.rejected
 
 
 @check("skill_shadow_restore")

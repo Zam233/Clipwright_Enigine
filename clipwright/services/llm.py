@@ -52,13 +52,11 @@ def _resolve_role_binding(role: str) -> dict[str, Any] | None:
 
 
 def _resolve_llm_provider(provider: str) -> Any | None:
-    """解析 LLM provider 实现（懒注册内置 + 门面查询；异常 → None 走 legacy 兜底）。
+    """解析 LLM provider 实现（只读注册表；异常 → None 走 legacy 兜底）。
 
-    B-1：provider 协议的唯一查询点——客户端构建、消息规范、能力校验共用。
+    B-1：provider 协议的唯一查询点。B7-T7.2 起实现归插件，engine 不再懒注册内置补位。
     """
     try:
-        from clipwright.providers.llm import ensure_llm_providers_registered
-        ensure_llm_providers_registered()
         from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
         impl = ContributionRegistry.resolve(ContributionKind.LLM_PROVIDER, provider)
         return impl.object if impl is not None else None
@@ -718,15 +716,14 @@ class LLMService:
         provider = _route_provider or (
             (settings.llm_flash_provider or self.provider) if use_flash else self.provider
         )
-        # B-1：消息格式规范由 provider 协议提供（legacy 分支兜底）
+        # B-1：消息格式规范由 provider 协议提供（B7-T7.2：按 provider 名的分支已删除）
         # B2/B3：缺方法或能力未声明时由访问器给最小可用语义 + 可读告警
         impl = _resolve_llm_provider(provider)
         if impl is not None:
             from clipwright.providers.base import llm_normalize_messages
             messages = llm_normalize_messages(impl, user_prompt, system_prompt)
-        elif provider == "anthropic":
-            messages = [{"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"}]
         else:
+            # 插件未装/被禁用：没有 provider 宣告格式，按 OpenAI 兜底（能力缺失时调用方另行报错）
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -882,20 +879,10 @@ class LLMService:
                     f"provider {self.provider} 不支持工具调用（tool_calls=false）——"
                     "请改用支持工具的 provider 或去掉工具参数"
                 )
-            if llm_uses_system_kwarg(impl):
-                messages: list[dict[str, Any]] = [
-                    {"role": "user", "content": user_prompt},
-                ]
-                base_kwargs = {**kwargs, "system": system_prompt}
-                first_round_kwargs = {**base_kwargs, "tools": tools}
-            else:
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ]
-                base_kwargs = {**kwargs}
-        elif self.provider == "anthropic":
-            messages = [
+        # B7-T7.2：格式由 provider 声明（`uses_system_kwarg`），不再按 provider 名分支
+        uses_system_kwarg = llm_uses_system_kwarg(impl) if impl is not None else False
+        if uses_system_kwarg:
+            messages: list[dict[str, Any]] = [
                 {"role": "user", "content": user_prompt},
             ]
             base_kwargs = {**kwargs, "system": system_prompt}
@@ -947,7 +934,10 @@ class LLMService:
                 except Exception as exc:  # noqa: BLE001 — 叙述失败不影响工具
                     logger.warning("with_tools on_preamble 回调失败: %s", exc)
 
-            if self.provider == "anthropic":
+            # B7-T7.2：工具结果消息风格由 provider 声明（`tool_result_style()`），
+            # engine 不再按 provider 名分支——第三方 provider 也能选自己的风格。
+            from clipwright.providers.base import llm_tool_result_style
+            if llm_tool_result_style(impl) == "anthropic":
                 # Anthropic: tool_use 块嵌入在 content 数组
                 content_blocks: list[dict[str, Any]] = []
                 if resp.content:

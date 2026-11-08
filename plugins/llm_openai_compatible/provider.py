@@ -1,4 +1,9 @@
-"""OpenAI 兼容 LLM Provider（方案 B-1）—— openai 与本地 ollama。"""
+"""OpenAI 兼容 Provider 实现（插件拥有实现；engine 只留协议）。
+
+2026-11-08 能力迁移（审计 B7-T7.2）：类从 `clipwright/providers/llm/` 搬到这里；
+engine 侧 `providers/llm` 只保留协议说明。`build_client` 仍延后引用
+`clipwright.services.llm` 里的传输层构造（宿主能力，既有打桩继续有效）。
+"""
 from __future__ import annotations
 
 from typing import Any, Mapping
@@ -34,6 +39,10 @@ class OpenAIProvider:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
+
+    def tool_result_style(self) -> str:
+        """工具结果消息风格：OpenAI 用 assistant.tool_calls + role=tool 消息。"""
+        return "openai"
 
     def build_client(self, *, api_key: str | None, base_url: str | None, model: str,
                      instructions: str, max_tokens: int, flash: bool,

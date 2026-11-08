@@ -941,3 +941,9 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 | **T7.4** STT 后端归位 + `whisper_stt` 收窄 | ✅ 已完成 | 探测（probe）与转写实现（`transcribe_whisper` / `transcribe_faster_whisper`）搬进 `plugins/stt_providers/backends.py`（模型缓存随之归插件，`reset_caches()` 供测试）；`services/stt.py` 两个私有方法变成 3 行转发、服务本身无状态；`providers/stt` 只留 `SttBackendEntry` + `resolve_stt_backends()`（只读注册表，按贡献 `meta["order"]` 排序，缺失则空列表）；`whisper_stt` 撤下与后端重复的 `whisper_transcribe_local` 工具，只保留 `transcribe_and_align` 技能 | `resolve_stt_backends(object())` 未装插件 → `[]`；`test_stt.py` 7 passed（缓存断言改到插件模块）；`test_stt_provider_registry.py` 4 passed（显式注册插件贡献）；`pytest -k "stt or transcribe"` → **278 passed**（4 个失败均为既存：pv_engine 1 + stream_chat 3） |
 
 | **T7.6（部分）** 门禁与声明文档 | 🟡 已提前落地（只锁已迁家族） | 自检新增 `provider_impls_in_plugins`：断言 embedding/rerank/stt 的实现类/函数**只存在于插件**、engine 里 `ensure_*_registered` 懒注册补位已消失（llm/tts 完成后追加进清单）；`AGENTS.md` #24 补「协议实现住在插件」并注明 llm/tts 待迁；`docs/pluginization-plan` §12.3 表下注明 provider 家族 owner 现状 | 自检 **20/20**；`-k provider_impls` PASS |
+
+| **T7.2** LLM 两协议类搬进插件 | ✅ 已完成 | `AnthropicProvider` / `OpenAIProvider` / `OllamaProvider` → `plugins/llm_anthropic/provider.py` / `plugins/llm_openai_compatible/provider.py`；engine 删两个实现文件，`providers/llm/__init__.py` 只剩协议说明；`ensure_llm_providers_registered()` 与 4 个调用点删除；`services/llm.py` 三处 `provider == "anthropic"` 分支改为协议方法（`llm_normalize_messages` / `llm_uses_system_kwarg` / 新增 `llm_tool_result_style`，由 provider 的 `tool_result_style()` 声明） | `AnthropicProvider().tool_result_style()` → `anthropic`、OpenAI/Ollama → `openai`；`pytest -k "llm or provider"` → **463 passed / 1 既存失败**（`test_edit_agent_llm`，基线里就有）；自检 **20/20**；门禁 `provider_impls_in_plugins` 已扩到 llm 三件套 |
+
+> **口径修正**：自检 `provider_plugin_fallback` 原断言"卸载插件后内置补位、归属 `__builtin__`"——
+> 这是旧「让位 + 懒注册」语义。B7 之后改成断言"卸载后解析为 None"（能力缺失是一等状态），
+> 并在 `finally` 里恢复插件贡献以免污染后续检查。
