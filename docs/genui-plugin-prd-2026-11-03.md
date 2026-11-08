@@ -1,3 +1,5 @@
+> ⚠️ **本文是历史记录**：GenUI 能力已于 2026-11-08 迁移进插件（display_spec 扩展点 + plugins/genui/contract.json）。当前态见 [docs/genui.md](genui.md)，迁移裁定见 [docs/genui-plugin-migration-prd-2026-11-07.md](genui-plugin-migration-prd-2026-11-07.md)。本文中的 schema/genui.py、genui 字段、确定性构造器等均已**不存在**，仅供追溯。
+
 # GenUI 插件与三宿主支持 PRD
 
 日期：2026-11-03  

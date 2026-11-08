@@ -423,13 +423,14 @@ PRD：[`provider-pluginization-and-prompt-override-prd-2026-11-02.md`](provider-
 
 
 
-## 12. GenUI 展示 spec（2026-11-07 增量）
+## 12. 展示 spec（`display_spec`，2026-11-08 能力迁移后）
 
 | 后端 | 前端 | 状态 / 契约 |
 |---|---|---|
-| `clipwright/schema/genui.py::sanitize_spec`（写入侧清洗：白名单 / 上限 / 危险键 / 动作） | `src/features/genui/validate.ts::validateGenUISpec`（渲染前再洗一遍） | ✅ 两道闸，规则同源 |
-| `clipwright/schema/genui_contract.json`（权威） | `src/features/genui/contract.json`（逐字节副本） | ✅ 自检 `genui_contract_sync` 比对；两侧测试各自断言常量==JSON |
-| `CreativeBrief.genui` / `ProductionPlan.genui`（`ensure_brief_spec` / `ensure_plan_spec`） | `AgentPanel` 的 `BriefCard` / `PlanCard` → `GenUISpecRenderer` | ✅ 简报：模型产出可洗、缺省确定性兜底；规划书：**只**确定性生成 |
-| `requirements_service._with_genui_specs`（读路径补 spec） | `validateGenUISpec` 对老会话/空 spec 返回 `null` → 整块不渲染 | ✅ 只补不存，不回写 Mongo |
-| `plugins/genui` 的 `PROMPT` 贡献（`agent: requirements`） | — | ✅ 只教"能写什么"；禁用后确定性兜底照常（自检 `genui_off_degradation`） |
-| 动作：`ask`（其余禁用） | `onGenUIAction` → `sendChat(当前需求会话, prompt)` | ✅ spec 不携带 endpoint/URL；`select`/`confirm` 白名单内但宿主不支持 → 禁用态 |
+| `services/display_spec/sanitizer.py::sanitize_display_spec`（契约驱动清洗） | `src/features/genui/validate.ts::validateGenUISpec(raw, contract)` | ✅ 两道闸，规则同源（**都读契约**，都不硬编码） |
+| `GET /api/plugin/contributions?kind=display_spec`（运行期唯一契约源） | `contractSource.ts`（30s 缓存 + 插件启停失效广播） | ✅ 契约在 `plugins/genui/contract.json`；前端副本只做对账（`display_spec_contract_sync`） |
+| `plugins/genui` 的 2 条 `display_spec` + 1 条 `PROMPT` | — | ✅ 能力（白名单/上限/配方/规范）全在插件 |
+| `CreativeBrief.display_specs` / `ProductionPlan.display_specs`（`ensure_display_specs`） | `DisplaySpecsBlock` → `GenUISpecRenderer`（简报卡/规划书卡/审阅覆盖层） | ✅ 简报 `trust=sanitize`、规划书 `trust=recipe_only`；老键 `genui` 读时归一 |
+| `requirements_service._with_display_specs`（读路径补 spec） | `resolveDisplaySpecs`：`display_specs` 优先、老 `genui` 回退 | ✅ 只补不存，不回写 Mongo |
+| 动作 `ask/select/confirm` | `onGenUIAction`（select 文案宿主拼、confirm 二次确认） | ✅ spec 不携带 endpoint/URL |
+| 插件禁用 | 前端拿不到契约 → 整块不渲染 | ✅ A6 口径：禁用即无展示 spec，业务字段与指纹不受影响（G1–G3） |

@@ -347,6 +347,83 @@ def check_display_spec_off_degradation() -> None:
             ContributionRegistry.register(owner, [item])
 
 
+@check("display_spec_kind_registered")
+def check_display_spec_kind_registered() -> None:
+    """第 18 类扩展点真的在位：枚举存在、不进 `_WIRED_KINDS`、子进程档直通、运行期有契约。"""
+    import re
+    from pathlib import Path
+
+    from fastapi.testclient import TestClient
+
+    from clipwright.main import app
+    from clipwright.plugins import contribution_dispatch as D
+    from clipwright.plugins.contribution import ContributionKind
+
+    assert ContributionKind("display_spec") is ContributionKind.DISPLAY_SPEC
+    assert ContributionKind.DISPLAY_SPEC not in D._WIRED_KINDS, "display_spec 不应有后端注册表"
+    assert ContributionKind.DISPLAY_SPEC in D._DATA_ONLY_KINDS, "应为纯数据 kind"
+
+    loader_src = (Path(__file__).resolve().parents[1] / "clipwright/plugins/loader.py").read_text(
+        encoding="utf-8"
+    )
+    block = re.search(r"_DECLARATIVE_KINDS\s*=\s*{[^}]*}", loader_src, re.S)
+    assert block and "DISPLAY_SPEC" in block.group(0), "子进程档应直通 display_spec"
+
+    from clipwright.services.display_spec import list_contracts
+
+    with TestClient(app):
+        contracts = list_contracts()
+    ids = {c.spec_id for c in contracts}
+    assert ids == {"brief", "plan"}, f"默认 profile 下的契约应恰好是 brief/plan，实际 {ids}"
+    for contract in contracts:
+        assert contract.components and contract.limits, contract.spec_id
+
+
+@check("display_spec_no_engine_path")
+def check_display_spec_no_engine_path() -> None:
+    """PRD §8 判据 D1/D2/D3/D4：engine 里不能再有 genui 专属链路。
+
+    D3 允许**老数据键兼容**（`genui` 字面量 ≤5 处且 0 处 import）；超出就说明有人在
+    engine 里又把能力知识写回来了。
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    engine = root / "clipwright"
+
+    # D1：专属实现文件不存在
+    assert not (engine / "schema/genui.py").exists(), "clipwright/schema/genui.py 应已删除"
+    assert not (engine / "schema/genui_contract.json").exists(), "genui_contract.json 应已删除"
+
+    py_files = list(engine.rglob("*.py"))
+    text = {f: f.read_text(encoding="utf-8") for f in py_files}
+
+    # D2：无专属导入
+    imports = [
+        str(f.relative_to(root))
+        for f, body in text.items()
+        if "from clipwright.schema.genui" in body or "import clipwright.schema.genui" in body
+    ]
+    assert not imports, f"仍有 schema.genui 导入：{imports}"
+
+    # D4：无专属常量
+    consts = [
+        str(f.relative_to(root))
+        for f, body in text.items()
+        if re.search(r"\bGENUI_[A-Z_]+\s*=", body)
+    ]
+    assert not consts, f"engine 里仍有 GENUI_ 常量：{consts}"
+
+    # D3：字面量收口（允许老键兼容）
+    hits: list[str] = []
+    for f, body in text.items():
+        for i, line in enumerate(body.splitlines(), 1):
+            if '"genui"' in line:
+                hits.append(f"{f.relative_to(root)}:{i}: {line.strip()[:80]}")
+    assert len(hits) <= 5, f"engine 里 \"genui\" 字面量过多（{len(hits)}）：\n" + "\n".join(hits)
+
+
 @check("prompt_builder_guards")
 def check_builder_guards() -> None:
     from clipwright.plugins import prompt_overrides as O

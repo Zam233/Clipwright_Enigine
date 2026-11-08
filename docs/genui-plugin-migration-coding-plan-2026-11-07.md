@@ -916,3 +916,15 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 | **T4.3** 渲染器接契约 | ✅ 已完成 | `GenUISpecRenderer` 新增 `contract` prop，`useMemo` 按契约校验；契约缺失整块不渲染 | 同上 |
 | **T4.4** 三处挂载点 | ✅ 已完成 | 新增 `DisplaySpecsBlock`（解析 → 取契约 → 逐条渲染，`data-testid` 保持 `brief-genui`/`plan-genui`）；`BriefCard`/`PlanCard` 改为传**整个业务对象**，`ReviewPanel` 的 `planGenui` → `plan` 且保留 `hideActions`，`EditorLayout` 传 `productionPlan` | `DisplaySpecsBlock.test.tsx` **4 例**（display_specs / 老 genui / 都没有 / 契约拉不到）；genui+agent+layouts **12 文件 135 passed / 5 skipped** |
 | **T4.5** 契约副本降级为夹具 | ✅ 已完成 | `src/features/genui/contract.json` 仍是插件契约的逐字节副本（跨仓 `display_spec_contract_sync` 守）；测试用它构造 `CONTRACT` fixture | 自检 17/17 |
+
+### Batch 5 / 6 进度（门禁 + 文档 + 清理）
+
+| 任务 | 状态 | 落地内容 | 证据 |
+|---|---|---|---|
+| **T5.1** 自检三条 check | ✅ 已完成 | 新增 `display_spec_kind_registered`（枚举在位 / 不进 `_WIRED_KINDS` / 子进程档直通 / 运行期契约恰好 brief+plan）与 `display_spec_no_engine_path`（直接执行 PRD §8 的 D1/D2/D4 + D3≤5）；`display_spec_off_degradation` 已在 B3 改为 A6 口径 | 自检 **19/19**；`-k display_spec` 6/6 |
+| **T5.2** 测试文件收口 | ✅ 已完成 | 旧 `test_genui_spec.py` 删除，用例按职责分入 `test_display_spec_{sanitizer,recipe,wiring,plugin,assembly,prompt}.py`（清洗 20 / 配方 20 / 接线 19 / 插件 15 / 装配 10 / 提示词 4） | `pytest tests/clipwright -k display_spec` → **88 passed** |
+| **T5.3** 文档更新（后端） | ✅ 已完成 | `docs/genui.md` 重写为当前态（能力归属表 / 契约在哪 / 加组件 4 步 / 加 spec_id 3 步 / 禁用口径 A / 两闸分工 / 自检命令 / **迁移完成证据**）；`api_reference.md` 换「display_specs 字段 + 契约端点」小节；`frontend-backend-parity.md` §12 换新对照；两份被取代的旧文档加历史横幅 | 四份文档 `display_spec` 命中 19/8/6/2；`genui.md` 里 `build_brief_genui`/确定性兜底残留 **0** |
+| **T5.4** 两仓 AGENTS 修订 | ✅ 已完成 | 后端 #26 与前端 #26 均改写为 display_spec 口径（能力归属、纯数据 kind、字段名、禁用即无、G1–G3、三动作、两闸、编译期闭包） | 后端 `display_spec` 命中 9 / `build_brief_genui` 0；前端 4 / 0 |
+| **T6.1** 删残留转发 | ✅ 已完成 | `agents/requirements_agent.py` 里 `_ensure_brief_genui` / `_plan_genui` 已删，`_normalize_brief` 保留 | `grep genui clipwright/agents/` → **0** |
+| **T6.2** 清临时壳 | ✅ 已完成 | `schema/genui.py` 与 `genui_contract.json` 已删；全仓无 `schema.genui` 导入 | 自检 `display_spec_no_engine_path` 通过 |
+| **T6.3** 判据留证 | ✅ 已完成 | `docs/genui.md` §8 贴了 D1–D4 命令与真实输出（D3 = 2 处老键兼容） | 见 `docs/genui.md` §8 |

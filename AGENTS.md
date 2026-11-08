@@ -127,41 +127,34 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
     - 内置配音块现在只在 `usePluginSlots('create.dub')` 为空时回落；整块删除属 B3-T6，
       等人跑完测试后与删除清单一起执行。
 
-26. **GenUI 是「只读展示层」，不拥有权威数据、不接受模型指定的 endpoint**（2026-11-03）：
-    - 创意简报 / 规划书的 `genui` 字段是 `version: 1` 的受控 JSON（白名单 **13 类**组件：
-      `text/list/callout/badge/stat/progress/table/steps/divider/row/col/card/accordion`），
-      契约与清洗在 `clipwright/schema/genui.py`。**权威数据永远是** `CreativeBrief` 字段与
-      规划书 `markdown_content`/`raw_scenes`——spec 丢了、坏了、插件被禁用，业务照常。
-    - **不信任模型输出**：模型给的 spec 一律先过 `sanitize_spec()`（未知组件降级为占位文本、
-      危险键 `__proto__/constructor/prototype` 剔除、非法动作丢弃、文本/表格/节点/深度/字节上限、
-      版本不符则整块丢弃），前端 `src/features/genui/validate.ts` 再洗一遍（防旧缓存/历史
-      session/被改过的响应）。**两道闸的规则必须同步**（`tests/clipwright/test_genui_spec.py`
-      与 `src/features/genui/genui.test.tsx` 各守一侧）。
-    - **动作只有三种** `ask/select/confirm`，三种都已实现（2026-11-07 用户裁定）：
-      `ask` → 发回当前需求会话的 `payload.prompt`；`select` → 渲染 `payload.options` 选项组，
-      点击发 `"选择：" + value`（**文案由宿主模板拼**，模型只能决定"有哪些选项"）；
-      `confirm` → 卡片确认回调（按事件 `scope` 区分简报/规划书）+ **`window.confirm` 二次确认**，
-      `busy` 时不响应、`scope` 缺失时不猜。`select` 无可用选项时整条动作丢弃。
-      **禁止** spec 携带 endpoint / URL / HTTP method / 任意能力名——那等于把"往哪发请求"交给模型。
-      宿主没有对应回调时按钮**渲染为禁用态**，不假装可点。
-    - **动作白名单是「词法」契约，不是「可点」契约**：`GENUI_ACTION_KINDS` 只保证老 spec 写
-      `select/confirm` 不被判非法；**是否可点**由宿主传的 `supportedActions` 决定。
-      审阅覆盖层（`ReviewPanel`）用 `hideActions` 连按钮都不渲染——确认前最后一屏只保留
-      一个确认按钮（C10：展示层不得影响业务判定）。
-    - **不碰 HTML/脚本/外链**：渲染器没有 `dangerouslySetInnerHTML`，文本一律走 `asText`，
+26. **声明式展示 spec：能力在插件，机制在 engine，渲染在前端**（2026-11-08 能力迁移完成）：
+    - **能力归属**：组件白名单、9 个上限、动作/色调/字号枚举、卡片配方、教模型的规范全部在
+      `plugins/genui/`（2 条 `display_spec` + 1 条 `prompt` 贡献）；engine 只有第 18 类扩展点
+      `ContributionKind.DISPLAY_SPEC`（**纯数据**，`object` 必须 `None`）与通用机制
+      `services/display_spec/{contract,sanitizer,recipe,assemble,legacy}.py`。**engine 里不允许再出现**
+      genui 专属实现/导入/常量（判据：文件不存在、零 `schema.genui` 导入、零 `GENUI_` 常量、
+      `"genui"` 字面量 ≤5 且只作老数据键兼容）。
+    - **字段名是 `display_specs`**（`spec_id -> spec`），老键 `genui` 只在读路径归一（不双写、
+      不批量迁移）。权威数据永远是 `CreativeBrief` 其它字段与规划书 `markdown_content`/`raw_scenes`。
+    - **两道闸，规则都来自契约**：写入侧 `sanitize_display_spec`（engine，**信任边界不可外包**——
+      插件若自带校验器就能放宽自己的白名单）、渲染前 `validate.ts`（前端，防旧缓存/历史 session）。
+      契约获取：`GET /api/plugin/contributions?kind=display_spec`（运行期唯一来源）；前端拿不到契约
+      → **不渲染**（不猜白名单）。前端原语是编译期闭包，新原语必须发前端版本。
+    - **禁用插件 = 没有展示 spec**（2026-11-07 用户裁定，推翻早前"engine 保底"方案），三条保证：
+      G1 业务字段不动（无契约时 `ensure_display_specs` 原样返回、不建空容器）、G2 指纹不漂
+      （`_brief_hash` 排除 `{"genui","display_specs"}`）、G3 写入不阻断（异常只记 warning）。
+    - **动作三种** `ask/select/confirm` 都已实现：`ask`→发回当前需求会话；`select`→选项组，
+      点击发 `"选择："+value`（**文案宿主拼**，模型只决定选项）；`confirm`→卡片确认回调
+      （按 `scope` 区分简报/规划书）+ **`window.confirm` 二次确认**，`busy` 不响应、`scope` 缺失不猜。
+      **禁止** spec 携带 endpoint/URL/method；白名单是「词法」契约、可点性由宿主 `supportedActions`
+      决定；审阅覆盖层用 `hideActions` 不渲染动作按钮（C10）。
+    - **不碰 HTML/脚本/外链**：渲染器无 `dangerouslySetInnerHTML`，文本一律 `asText`；
       首版不开放 `mermaid/echart/plot/scene3d/svg/image`（要开必须单独安全评审）。
-    - 规范由插件 `plugins/genui/` 以 `PROMPT` 贡献教给模型（`agent: requirements`）；
-      插件只说"能写什么"，校验权在后端纯函数、渲染权在宿主——插件被禁用时简报/规划书原样工作
-      （宿主用 `build_brief_genui()` / `build_plan_genui()` 确定性补一份）。
-    - **生产接线在服务层，不在 `agents/requirements_agent.py`**（2026-11-07 接线完成）：
-      `requirements_service._handle_gathering` 落库前过 `ensure_brief_spec`，
-      `_translate_plan` 返回前过 `ensure_plan_spec`（后者**只看 `raw_scenes`，不看模型给的 genui**）；
-      生产简报提示词由 `requirements_service._brief_system_prompt()` 拼（本文件那份 base +
-      `PluginPromptRegistry.get_for_agent("requirements")`）。`requirements_agent` 当前无生产调用点。
-    - **展示层不得影响业务判定（C10）**：`genui` 必须从 `_brief_hash`（幂等键与"规划书是否作废"
-      的判定）里排除——否则同一份简报"补过/没补过"会算出不同指纹，把刚生成的规划书误作废。
-    - 详见 [docs/genui-plugin-prd-2026-11-03.md](docs/genui-plugin-prd-2026-11-03.md)
-      与 [docs/genui-plugin-coding-plan-2026-11-07.md](docs/genui-plugin-coding-plan-2026-11-07.md)。
+    - **生产接线在服务层**：`_handle_gathering`（主/修订）与 `_translate_plan`（含 legacy 路径）
+      调 `ensure_display_specs(source, payload)`；`_with_display_specs` 负责读路径补 spec 与老键归一。
+      `agents/requirements_agent.py` 当前无生产调用点，只做字段归一。
+    - 详见 [docs/genui.md](docs/genui.md)（当前态）与
+      [docs/genui-plugin-migration-prd-2026-11-07.md](docs/genui-plugin-migration-prd-2026-11-07.md)（迁移裁定）。
 
 ## 鉴权三模式
 
