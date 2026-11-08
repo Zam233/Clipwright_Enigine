@@ -31,6 +31,14 @@ def _llm_plugins_registered():
     from plugins.llm_anthropic.main import AnthropicProviderPlugin
     from plugins.llm_openai_compatible.main import OpenACompatibleProviderPlugin
 
+    from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+
+    # 根 conftest 已保证"LLM 插件已装"（B7-T7.2 后单测默认如此）；这里幂等跳过，
+    # 否则同名 provider 会被 dispatch 以"已被注册"拒绝。
+    if ContributionRegistry.resolve(ContributionKind.LLM_PROVIDER, "anthropic") is not None:
+        yield
+        return
+
     owners = []
     for owner, plugin in (
         ("listing_anthropic", AnthropicProviderPlugin()),

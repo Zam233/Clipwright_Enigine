@@ -122,6 +122,11 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
       旧 `services/voice.py` 的 `__getattr__` 兼容别名已在 T7.5 删除；engine 里不再有任何实现类名。
       门禁：`provider_impls_in_plugins`（类只在插件）+ `no_vendor_branches`（按 provider 身份的分支为 0；
       `fmt="anthropic"` 这类协议词表与 settings 默认值不计）。
+      **单测默认等价于"LLM 插件已装"**：`tests/conftest.py` 的 `_llm_providers_available` autouse
+      fixture 在每个用例前确保 `llm_provider` 三家在注册表里（幂等：已有就跳过）。为什么必须有它：
+      T7.2 之后 `agent_loop.tool_loop_available()` 在无 provider 时（正确地）返回
+      `no_provider_impl`，内核/任务类用例会因此降级成"缺 context_loaded / 事件链不完整"的假红。
+      文件级 fixture 也必须**先查再注册**，否则同名 provider 会被 dispatch 以"已被注册"拒绝。
     - 插件对外暴露的 HTTP 入口**只有** `POST /api/capability/{name}`（`api/capability.py`，
       契约见 PRD §15.1.5）。它按**能力名**解析（`capabilities.resolve_name`，能力名优先、
       工具名兜底），状态码语义固定：`404` 解析不到（插件未装/被禁用）、`422` 参数或路径

@@ -21,14 +21,11 @@ def _plugins_registered():
     """把三类 provider 插件显式装上（等价于"插件已安装"）。"""
     from clipwright.plugins.contribution import ContributionRegistry
     from plugins.embedding_providers.main import EmbeddingProvidersPlugin
-    from plugins.llm_anthropic.main import AnthropicProviderPlugin
-    from plugins.llm_openai_compatible.main import OpenACompatibleProviderPlugin
     from plugins.tts_qwen.main import QwenTtsProviderPlugin
 
     owners: list[str] = []
+    # LLM 两家由根 conftest 统一注册（B7-T7.2 后单测默认"已装"），这里只管嵌入/TTS。
     for owner, plugin in (
-        ("psg_llm_a", AnthropicProviderPlugin()),
-        ("psg_llm_o", OpenACompatibleProviderPlugin()),
         ("psg_embed", EmbeddingProvidersPlugin()),
         ("psg_tts", QwenTtsProviderPlugin()),
     ):

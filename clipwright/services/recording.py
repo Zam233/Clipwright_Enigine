@@ -304,7 +304,12 @@ def make_replay_driver(replayer: Replayer):  # noqa: ANN201
     """
 
     async def driver(task, *, context_text="", shadow=False,  # noqa: ANN001, ARG002
-                     guard=None, on_tool_call=None):  # noqa: ANN001
+                     guard=None, on_tool_call=None, dry_run=False,  # noqa: ANN001
+                     closeout=False):  # noqa: ANN001
+        # `dry_run` / `closeout` 是 Kernel 的工具循环驱动协议参数（预检与收口模式）。
+        # 回放不改变行为（录制的调用序列就是唯一真相），但**签名必须接受**——
+        # 否则 Kernel 一进 tool loop 就 TypeError，而"降级跑完"会把这个错误藏起来。
+        _ = (dry_run, closeout)
         entries = replayer.calls("tool")
         if not entries:
             raise RecordingMiss(

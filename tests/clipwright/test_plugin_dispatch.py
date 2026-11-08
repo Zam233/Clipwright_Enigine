@@ -117,7 +117,9 @@ class TestDispatchRoundTrip:
         assert AgentRegistry.get(AGENT_ID) is None
         assert MaterialRegistry.get(SOURCE_ID) is None
         assert CategoryRegistry.get(CATEGORY_ID) is None
-        assert ContributionRegistry.list() == []
+        # B8 收尾：根 conftest 会预注册 LLM provider 插件（单测默认"插件已装"），
+        # 所以这里只断言**本用例的贡献**已回收，不再要求全局注册表为空。
+        assert all(owner != "dispatch_probe" for owner, _ in ContributionRegistry.list())
 
     def test_wired_kinds_covers_all_a_kinds(self):
         expect = {

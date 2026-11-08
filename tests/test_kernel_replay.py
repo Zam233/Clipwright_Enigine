@@ -29,7 +29,10 @@ class RecordingDriver:
         self.served = 0
 
     async def __call__(self, task, *, context_text="", shadow=False, dry_run=False,  # noqa: ANN001
-                       guard=None, on_tool_call=None):
+                       guard=None, on_tool_call=None, closeout=False):
+        # `closeout` 是 Kernel 收口模式的驱动协议参数（B5）：回放不改变行为，
+        # 但签名必须接受，否则 Kernel 一进 tool loop 就 TypeError。
+        _ = closeout
         for name, args in self.calls:
             if guard is not None and guard():
                 return {"status": "aborted", "stopped_reason": "aborted",
@@ -54,7 +57,10 @@ class ReplayDriver:
         self.replayer = replayer
 
     async def __call__(self, task, *, context_text="", shadow=False, dry_run=False,  # noqa: ANN001
-                       guard=None, on_tool_call=None):
+                       guard=None, on_tool_call=None, closeout=False):
+        # `closeout` 是 Kernel 收口模式的驱动协议参数（B5）：回放不改变行为，
+        # 但签名必须接受，否则 Kernel 一进 tool loop 就 TypeError。
+        _ = closeout
         for name, args in CALLS:
             result = self.replayer.result_of("tool", name, args)  # 缺了会抛 RecordingMiss
             if on_tool_call is not None:
