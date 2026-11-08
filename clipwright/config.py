@@ -72,7 +72,8 @@ class Settings(BaseSettings):
     )
 
     # --- IsoBase / LLM ---
-    llm_provider: Literal["openai", "anthropic", "ollama"] = "anthropic"
+    # B7-T7.5：provider id 由插件声明，engine 不再用 Literal 白名单限制
+    llm_provider: str = "anthropic"
     llm_api_key: str = ""
     # 模型名直接透传给 IsoBase → SDK：
     #   anthropic → Anthropic Messages API 模型名 (claude-sonnet-4-6, claude-opus-4-6, ...)
@@ -508,7 +509,8 @@ class Settings(BaseSettings):
     library_dir: Path = Path("library")
 
     # --- RAG / Embedding ---
-    rag_embed_provider: Literal["sentence_transformer", "openai", "ollama"] = "sentence_transformer"
+    # B7-T7.5：同上（历史值 sentence_transformer 与门面 id local 等价，见 provider_settings_guard）
+    rag_embed_provider: str = "sentence_transformer"
     rag_embed_model: str = "BAAI/bge-small-zh-v1.5"
     rag_embed_dim: int = 512
     rag_embed_api_key: Optional[str] = None
@@ -532,7 +534,8 @@ class Settings(BaseSettings):
     tts_dashscope_api_key: str = ""
     tts_workspace_id: str = ""
     # 默认音色模型 provider：qwen-tts | cosyvoice | minimax
-    tts_default_provider: Literal["qwen-tts", "cosyvoice", "minimax"] = "qwen-tts"
+    # B7-T7.5：同上（第三方 TTS 插件可声明任意 id）
+    tts_default_provider: str = "qwen-tts"
     # 各 provider 默认目标模型
     tts_qwen_model: str = "qwen3-tts-vc-2026-01-22"
     tts_cosyvoice_model: str = "cosyvoice-v3.5-plus"

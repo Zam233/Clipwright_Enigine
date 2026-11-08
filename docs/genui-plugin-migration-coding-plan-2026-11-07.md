@@ -974,3 +974,9 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 > `rag/embedder.py:176-180`（`provider in ("openai","ollama")` + ollama base_url 默认值；
 > 改走 `resolve_embedding_provider(...).create_embedder()` 会改变"插件缺失时的兜底"语义，
 > 需与 A6 口径一起裁定）、`api/render.py` 的 `"local"` 渲染后端（需定义默认后端能力位）。
+
+| **T7.5（续 3）** provider 设置项去 Literal + 启动期注册表校验 | ✅ 已完成本轮 | `config.py` 的 `llm_provider` / `rag_embed_provider` / `tts_default_provider` 从 `Literal[...]` 改为 `str`（第三方插件声明的 id 才填得进去）；新增 `services/provider_settings_guard.py`：把 settings 的历史值归一（`sentence_transformer→local`、`qwen_tts→qwen-tts`）后查注册表，**未知只记 info、不抛不改写**；`main.py` 在插件加载后调用一次；`api/settings.py` 的 provider 下拉把**当前值**始终并入选项（否则下拉会回退到第一个选项＝隐式改写配置） | 新增 `tests/clipwright/test_provider_settings_guard.py` **6 passed**；`pytest -k "config or settings or provider_available"` → **170 passed / 0 失败**；自检 **21/21**；`import clipwright.main` ok |
+
+> **T7.5 仍剩**：`providers/model_listing.py`（需 provider 声明 `default_base_url()` + 鉴权头风格）、
+> `rag/embedder.py:176-180`（走 `resolve_embedding_provider()` 会改变"插件缺失时兜底"语义，需与 A6 一起裁定）、
+> `api/render.py` 的 `"local"`（需定义默认渲染后端能力位）。

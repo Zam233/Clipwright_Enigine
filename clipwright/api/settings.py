@@ -96,6 +96,11 @@ def _field_payload(key: str) -> dict[str, Any]:
     for extra in _dynamic_choices(key):
         if extra not in choices:
             choices.append(extra)
+    # B7-T7.5：provider 字段的 choices 现在完全来自注册表；当前值必须始终出现，
+    # 否则前端下拉会回退到第一个选项（= 隐式改写用户配置，且历史值
+    # `sentence_transformer` 与门面 id `local` 不等价显示）。
+    if key in _DYNAMIC_CHOICE_KINDS and isinstance(current, str) and current and current not in choices:
+        choices.append(current)
     payload: dict[str, Any] = {
         "key": key,
         "group": meta.group,

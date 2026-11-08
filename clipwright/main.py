@@ -166,6 +166,13 @@ async def lifespan(app: FastAPI):
     # 4.4 B-2 / B7-T7.4：**启动不再注册内置 STT provider**。
     # 探测与转写实现在 `plugins/stt_providers`；没有插件时没有可用后端（口径 A）。
 
+    # 4.4.1 B7-T7.5：provider 设置项与注册表对账（未知 id 只记 info，不阻断启动）
+    try:
+        from clipwright.services.provider_settings_guard import warn_unknown_provider_settings
+        warn_unknown_provider_settings(settings)
+    except Exception as _psg_err:
+        logger.warning("provider 设置校验失败（不影响启动）: %s", _psg_err)
+
     # 4.5 B-3：内置渲染后端注册（local/remote；入口切换在下一批接线）
     try:
         from clipwright.providers.render import ensure_render_backends_registered
