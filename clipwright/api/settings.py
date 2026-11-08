@@ -81,8 +81,8 @@ def _dynamic_choices(key: str) -> list[str]:
             # 裁定 3 / B3-T6：不再懒注册内置 TTS provider，列表完全由插件贡献决定
             pass
         elif kind is ContributionKind.EMBEDDING_PROVIDER:
-            from clipwright.providers.embedding import ensure_embedding_providers_registered
-            ensure_embedding_providers_registered()
+            # B7-T7.3：实现已迁进插件，engine 不再懒注册内置补位
+            pass
         return [c.id for _, c in ContributionRegistry.list(kind)]
     except Exception:  # noqa: BLE001 — 门面不可用不阻断配置读取
         return []

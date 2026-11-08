@@ -1,7 +1,7 @@
 """Rerank Provider 插件（Batch 4 / B4-T2）。
 
-接管 `http` / `local` 两个 `rerank_provider`；插件禁用后内置补位。
-适配类暂留 `providers/rerank/`（同 Batch 2/3 的分阶段策略）。
+接管 `http` / `local` 两个 `rerank_provider`；实现就在本插件（`providers.py`）。
+插件被禁用 → 没有 rerank 能力（口径 A：能力缺失是一等状态）。
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ class RerankProvidersPlugin(BasePlugin):
     """内置重排序 provider 的插件化外壳。"""
 
     def contributions(self) -> list[Any]:
-        from clipwright.providers.rerank import HttpRerankProvider, LocalRerankProvider
+        from plugins.rerank_providers.providers import HttpRerankProvider, LocalRerankProvider
 
         return [
             Contribution(ContributionKind.RERANK_PROVIDER, "http", HttpRerankProvider(),

@@ -181,20 +181,9 @@ async def lifespan(app: FastAPI):
     except Exception as _rb_err:
         logger.warning("渲染后端注册失败（不影响启动）: %s", _rb_err)
 
-    # 4.6 B4：内置嵌入 provider 注册（openai/ollama/local；幂等）
-    try:
-        from clipwright.providers.embedding import ensure_embedding_providers_registered
-        ensure_embedding_providers_registered()
-    except Exception as _emb_err:
-        logger.warning("嵌入 provider 注册失败（不影响启动）: %s", _emb_err)
-
-    # 4.7 B4：内置重排序 provider 注册（http/local；幂等）
-    try:
-        from clipwright.providers.rerank import ensure_rerank_providers_registered
-        ensure_rerank_providers_registered()
-    except Exception as _rr_err:
-        logger.warning("重排序 provider 注册失败（不影响启动）: %s", _rr_err)
-
+    # 4.6 B4：内置嵌入 provider 已迁进 `plugins/embedding_providers`（B7-T7.3）——
+    #      engine 不再懒注册兜底；插件被禁用时能力缺失是一等状态。
+    # 4.7 B4：内置重排序 provider 已迁进 `plugins/rerank_providers`（B7-T7.3）
     # 4.8 B4：把既有平铺配置物化为一条 Provider 源（老用户升级后新页面不是空的）
     #     幂等：已有任何源则跳过；未配过凭据则跳过（不产生噪音配置）
     try:

@@ -4,7 +4,7 @@
 让位（逐 id，见 `providers/builtin_registry.py`）；插件禁用后内置补位，RAG 不会因为
 插件消失而失去嵌入能力。
 
-实现位置：与 Batch 2/3 同策略——适配类暂留 `providers/embedding/`，本插件先接管
+实现位置：**类就在本插件**（`providers.py`），engine 只留注册表访问器。
 **注册与声明**（`config_schema` / `capabilities` 是前端表单与诊断的唯一来源）。
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ class EmbeddingProvidersPlugin(BasePlugin):
     """内置嵌入 provider 的插件化外壳。"""
 
     def contributions(self) -> list[Any]:
-        from clipwright.providers.embedding import (
+        from plugins.embedding_providers.providers import (
             LocalEmbeddingProvider,
             OllamaEmbeddingProvider,
             OpenAIEmbeddingProvider,

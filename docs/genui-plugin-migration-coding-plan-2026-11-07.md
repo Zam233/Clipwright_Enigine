@@ -928,3 +928,12 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 | **T6.1** 删残留转发 | ✅ 已完成 | `agents/requirements_agent.py` 里 `_ensure_brief_genui` / `_plan_genui` 已删，`_normalize_brief` 保留 | `grep genui clipwright/agents/` → **0** |
 | **T6.2** 清临时壳 | ✅ 已完成 | `schema/genui.py` 与 `genui_contract.json` 已删；全仓无 `schema.genui` 导入 | 自检 `display_spec_no_engine_path` 通过 |
 | **T6.3** 判据留证 | ✅ 已完成 | `docs/genui.md` §8 贴了 D1–D4 命令与真实输出（D3 = 2 处老键兼容） | 见 `docs/genui.md` §8 |
+
+### Batch 7 进度（插件外壳化整改一：协议类归位）
+
+| 任务 | 状态 | 落地内容 | 证据 |
+|---|---|---|---|
+| **T7.3** embedding / rerank 实现搬进插件 | ✅ 已完成 | `RemoteEmbedder` / `OpenAIEmbeddingProvider` / `OllamaEmbeddingProvider` / `LocalEmbeddingProvider` → `plugins/embedding_providers/providers.py`；`HttpRerankProvider` / `LocalRerankProvider` / `HttpReranker` / `LocalCrossEncoder` → `plugins/rerank_providers/providers.py`；engine 只留 `resolve_*` / `*_names`（**只读注册表，不再懒注册**）与平台解析 `parse_rerank_response`；`main.py` 与 `api/settings.py` 的 `ensure_*` 调用删除 | `embedding_provider_names()` / `rerank_provider_names()` 未装插件时为 `[]`；插件贡献的实现在插件模块里；`test_provider_transport.py` 21 passed（改从插件导入 `RemoteEmbedder` + 显式注册插件贡献）；`test_provider_available.py` 12 passed（反向断言改为 TTS/embedding/rerank 裸 app 全空；设置页 choices 改为"插件在则有 local、注销即消失"） |
+
+> **语义变更（与口径 A 一致）**：这三类 provider 不再有 engine 兜底——插件被禁用 → 没有该能力。
+> 相关用例已改为断言新语义，而不是"engine 补位"。

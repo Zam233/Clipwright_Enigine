@@ -37,12 +37,16 @@ class TestAvailableProviders:
         assert set(body["embedding_provider"]) >= {"openai", "ollama", "local"}
         assert set(body["rerank_provider"]) >= {"http", "local"}
 
-    def test_tts_ids_absent_without_plugins(self, client):
-        """反向断言：裸 app（没有插件）里 TTS 下拉**为空**——engine 不再补位内置。"""
+    def test_protocol_kinds_absent_without_plugins(self, client):
+        """反向断言：裸 app（没有插件）里 TTS / embedding / rerank 都**为空**。
+
+        B3-T6（TTS）与 B7-T7.3（embedding/rerank）之后，这三类实现完全归插件，
+        engine 不再"懒注册补位"——能力缺失是一等状态（口径 A）。
+        """
         body = client.get("/api/providers/available").json()
         assert body["tts_provider"] == [], body["tts_provider"]
-        # 其它家族的「让位 + 懒补位」不受影响（它们仍由 engine 注册）
-        assert set(body["rerank_provider"]) >= {"http", "local"}
+        assert body["embedding_provider"] == [], body["embedding_provider"]
+        assert body["rerank_provider"] == [], body["rerank_provider"]
 
     def test_role_kinds_mapping(self, client):
         body = client.get("/api/providers/available").json()
@@ -148,9 +152,20 @@ class TestSettingsEnumChoicesFromFacade:
                     return f["choices"]
         raise AssertionError(f"未找到字段 {key}")
 
-    def test_embed_choices_include_local(self, settings_client):
-        choices = self._choices(settings_client, "rag_embed_provider")
-        assert "local" in choices and "sentence_transformer" in choices
+    def test_embed_choices_follow_plugin_registry(self, settings_client):
+        """embedding provider 现由插件注册：插件在 → 有 local；注销 → 立即消失。"""
+        from plugins.embedding_providers.main import EmbeddingProvidersPlugin
+
+        owner = "plug_embed_choices"
+        items = EmbeddingProvidersPlugin().contributions()
+        ContributionRegistry.declared_scope(owner, [c.key for c in items])
+        ContributionRegistry.register(owner, items)
+        try:
+            choices = self._choices(settings_client, "rag_embed_provider")
+            assert "local" in choices and "sentence_transformer" in choices
+        finally:
+            ContributionRegistry.unregister_plugin(owner)
+        assert "local" not in self._choices(settings_client, "rag_embed_provider")
 
     def test_plugin_llm_provider_joins_choices(self, settings_client):
         item = Contribution(ContributionKind.LLM_PROVIDER, "plugin-llm-x", object())

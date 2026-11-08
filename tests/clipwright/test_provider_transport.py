@@ -4,16 +4,40 @@ from __future__ import annotations
 import pytest
 
 from clipwright.providers.embedding import (
-    RemoteEmbedder,
     embedding_provider_names,
     resolve_embedding_provider,
 )
+from plugins.embedding_providers.providers import RemoteEmbedder
 from clipwright.providers.rerank import (
     parse_rerank_response,
     rerank_provider_names,
     resolve_rerank_provider,
 )
 from clipwright.providers.transport import apply_transport, build_http_client
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _providers_registered():
+    """B7-T7.3 起 embedding/rerank 实现都归插件；测试进程显式注册（等价于"插件已安装"）。"""
+    from clipwright.plugins.contribution import ContributionRegistry
+    from plugins.embedding_providers.main import EmbeddingProvidersPlugin
+    from plugins.rerank_providers.main import RerankProvidersPlugin
+
+    owners: list[str] = []
+    for owner, plugin in (
+        ("embed_transport_test", EmbeddingProvidersPlugin()),
+        ("rerank_transport_test", RerankProvidersPlugin()),
+    ):
+        items = plugin.contributions()
+        ContributionRegistry.declared_scope(owner, [c.key for c in items])
+        report = ContributionRegistry.register(owner, items)
+        assert report.ok, report.rejected
+        owners.append(owner)
+    try:
+        yield
+    finally:
+        for owner in owners:
+            ContributionRegistry.unregister_plugin(owner)
 
 
 class _FakeSDK:
