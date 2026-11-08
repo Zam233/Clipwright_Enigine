@@ -98,16 +98,22 @@ def _timeline(session_id: str):
     return session_log.get_log(session_id)
 
 
+#: 展示层容器键：`display_specs` 是新形状，`genui` 是 2026-11-03~07 落库的老键（只读归一）。
+#: 两者都**不得**进简报指纹（C10：展示层不得影响业务判定）。
+_DISPLAY_SPEC_KEYS = frozenset({"genui", "display_specs"})
+
+
 def _brief_hash(brief: dict | None) -> str:
     """简报指纹：让"这份规划书对应哪版 brief"可判定（PRD §3.2）。
 
-    ⚠️ **`genui` 必须排除**（C10 展示层不得影响业务判定）：这是展示层派生字段，
-    读/写路径随时可能补它。若算进指纹，同一份简报"补过"与"没补过"会算出不同值 →
-    派发拿 A 指纹、回填拿 B 指纹 → 误报 `brief_changed` 把刚生成的规划书作废。
+    ⚠️ **展示层容器必须整体排除**（C10）：读/写路径随时会补 `display_specs`（老会话还会带
+    `genui`）。若算进指纹，同一份简报"补过"与"没补过"会算出不同值 → 派发拿 A 指纹、
+    回填拿 B 指纹 → 误报 `brief_changed` 把刚生成的规划书作废。
+    用**显式键集合**而不是"值像 spec 就排除"的启发式：可测试、可解释、不会误伤业务字段。
     """
     if not isinstance(brief, dict) or not brief:
         return ""
-    payload = {k: v for k, v in brief.items() if k != "genui"}
+    payload = {k: v for k, v in brief.items() if k not in _DISPLAY_SPEC_KEYS}
     if not payload:
         return ""
     try:

@@ -337,35 +337,6 @@ class TestPluginContract:
 # ── Batch 1 接线（计划 T1.1 / T1.2 / T1.3 / T1.4）─────────────────────────
 
 
-class TestBriefHash:
-    """T1.1：`genui` 不得进简报指纹（C10 展示层不得影响业务判定）。"""
-
-    def test_genui_is_excluded(self):
-        from clipwright.services.requirements_service import _brief_hash
-
-        assert _brief_hash({"title": "T"}) == _brief_hash(
-            {"title": "T", "genui": {"version": 1, "items": [{"type": "text", "content": "x"}]}}
-        )
-
-    def test_real_field_change_still_changes_hash(self):
-        from clipwright.services.requirements_service import _brief_hash
-
-        assert _brief_hash({"title": "T"}) != _brief_hash({"title": "T2"})
-
-    def test_empty_inputs(self):
-        from clipwright.services.requirements_service import _brief_hash
-
-        assert _brief_hash({}) == ""
-        assert _brief_hash(None) == ""
-        assert _brief_hash({"genui": {"version": 1, "items": []}}) == ""
-
-    def test_nested_genui_only_also_empty(self):
-        """整个 brief 只有展示层 → 指纹为空（没有业务字段可比）。"""
-        from clipwright.services.requirements_service import _brief_hash
-
-        assert _brief_hash({"genui": {"items": [{"type": "text", "content": "x"}]}}) == ""
-
-
 class TestEnsureSpecWiring:
     """T1.2 / T1.3：服务层与 Agent 共用的两个公共函数。"""
 

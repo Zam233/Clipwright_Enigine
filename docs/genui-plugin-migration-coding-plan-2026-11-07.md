@@ -881,3 +881,11 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 | **T3.3 提前** | ⚠️ 顺序调整 | `plugins/genui/recipe.json` 必须与 B2 一起落：`trust=recipe_only` 在注册期就要求 `recipe.nodes`，否则插件加载会把 `plan` 贡献判为非法（B1 校验器的严格性使然）。配方只是数据，解释器仍在 B3-T3.2 | `plan` 契约注册通过，recipe 6+3 节点 |
 
 **前端**：`src/features/genui/contract.json` 已同步为插件契约的逐字节副本（`display_spec_contract_sync` 通过）；`npx tsc --noEmit` 0；`npx vitest run src/features/genui` **30 passed**（运行期仍用 `validate.ts` 常量，B4 改为端点下发）。
+
+### Batch 3 进度（进行中）
+
+| 任务 | 状态 | 落地内容 | 证据 |
+|---|---|---|---|
+| **T3.1** `_brief_hash` 排除整个展示容器 | ✅ 已完成 | `_DISPLAY_SPEC_KEYS = frozenset({"genui", "display_specs"})`，指纹按显式键集合剔除（不用"值像 spec"的启发式）；只剩展示层时指纹为空 | `test_display_spec_wiring.py::TestBriefHash` **7 passed**（含注入 `display_specs`、双键同时注入、spec 值变化不改指纹） |
+| **T3.2** recipe 解释器 | ✅ 已完成 | 新建 `services/display_spec/recipe.py`：11 算子（literal/field/item/index_plus_one/join/pairs/foreach/count/sum_of/fmt_sec/coalesce）+ 节点开关 `skip_if_empty`/`when` + `field`/`item` 可选 `limit`；未知算子抛 `RecipeError`，**无 eval/exec/getattr**；产出必须过 `sanitize_display_spec` | `test_display_spec_recipe.py` **20 passed**（11 算子 + 嵌套 foreach + when + skip_if_empty + 未知算子 + 非法组件被清洗） |
+| **T3.3** 插件配方等价性 | ✅ 已完成 | 插件 `recipe.json` 的 brief/plan 输出与迁移前 `build_brief_genui` / `build_plan_genui` **逐字节相等**（实测 `old == new` 均为 True）；已知差异（非 dict 场景行：`count` 计入、但产出一行空值）用独立用例显式固定 | `TestGenuiRecipes` 4 例 |
