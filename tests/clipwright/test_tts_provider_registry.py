@@ -31,8 +31,11 @@ def loaded_plugins():
 
 class TestTtsRegistry:
     def test_three_ids_are_provided_by_plugins(self, loaded_plugins):
-        assert set(tts_provider_names()) == {"qwen-tts", "cosyvoice", "minimax"}
-        for name in tts_provider_names():
+        # B8-T8.7：voice_ext 也贡献 tts_provider（elevenlabs/azure），所以这里是"至少包含"，
+        # 不再是全集相等——否则每加一个语音 provider 插件都要改这条断言。
+        names = set(tts_provider_names())
+        assert {"qwen-tts", "cosyvoice", "minimax"} <= names
+        for name in ("qwen-tts", "cosyvoice", "minimax"):
             owner = ContributionRegistry.owner_of(ContributionKind.TTS_PROVIDER, name)
             assert owner.startswith("tts_"), f"{name} 应由协议插件接管，实际 {owner!r}"
 

@@ -1,105 +1,86 @@
-"""语音提供商扩展插件 — 添加新 TTS 引擎的模板。
+"""语音提供商扩展插件 — 把 ElevenLabs / Azure 接成**真正的 TTS provider**。
 
-当前 VoiceService 硬编码了 Qwen-TTS/CosyVoice/MiniMax 提供商。
-本插件演示如何通过 Tool 注册额外的 TTS 提供商。
+2026-11-08 审计整改（B8-T8.7 / 审计 §3.15）：旧实现只贡献一个 `extended_tts` 工具，
+两套协议完整但 **`VoiceService` 看不到它们**——音色下拉没有、`/api/voice/*` 也不认，
+插件只能被 agent 当普通工具调用，走的是"另起一条路"。
 
-支持的扩展提供商（通过 config.yaml provider 字段）：
-  - "elevenlabs": ElevenLabs API（需 ELEVENLABS_API_KEY）
-  - "azure": Azure Cognitive Services TTS（需 AZURE_SPEECH_KEY）
-  - "xtts-unimplemented": 本地 XTTS-v2（需 XTTS_API_URL）
+现在贡献两条 `tts_provider`（与 qwen/cosyvoice/minimax 同一协议面）：
+- `elevenlabs`：`/v1/text-to-speech/{voice_id}`；
+- `azure`：`https://{region}.tts.speech.microsoft.com/cognitiveservices/v1`（SSML）。
+
+凭证优先级：Provider 源绑定（`TtsCredentials`）> 插件配置 > 环境变量。
+两者都**不支持本项目的音色克隆协议**（克隆接口会抛可读原因，而不是静默失败）。
 """
+
 from __future__ import annotations
-import os
+
 from typing import Any
-import httpx
+
+from clipwright.config import logger
 from clipwright.plugins import CapabilityPlugin
 from clipwright.plugins.contribution import Contribution, ContributionKind
-from clipwright.tool.base import BaseTool
+from clipwright.providers.tts import TtsProviderEntry
 from clipwright.schema.plugin import PluginManifest, PluginKind
-from clipwright.config import logger
+from plugins.voice_ext.providers import AzureVoiceProvider, ElevenLabsVoiceProvider
 
-class ExtendedTTSTool(BaseTool):
-    name = "extended_tts"
-    permission_tier = "costly"
-    agent_callable = True
-    description = "使用扩展 TTS 提供商合成语音"
-    parameters_schema = {
-        "type": "object",
-        "properties": {
-            "text": {"type": "string", "description": "要合成的文本"},
-            "voice_id": {"type": "string", "description": "语音 ID"},
-            "provider": {"type": "string", "description": "提供商 elevenlabs/azure/xtts-unimplemented"},
-        },
-        "required": ["text"],
-    }
+#: 各 provider 的默认目标模型/音色（plugin 配置可覆盖）
+_DEFAULT_MODELS = {
+    "elevenlabs": "eleven_multilingual_v2",
+    "azure": "zh-CN-XiaoxiaoNeural",
+}
 
-    def __init__(self, default_provider: str = "elevenlabs") -> None:
-        self._provider = default_provider
+#: 环境变量（仅用于"是否配置了凭据"的提示；实际读取在 providers.py）
+_ENV_KEYS = {
+    "elevenlabs": "ELEVENLABS_API_KEY",
+    "azure": "AZURE_SPEECH_KEY",
+}
 
-    async def execute(self, **kwargs: Any) -> dict[str, Any]:
-        text = kwargs.get("text", "")
-        if not text:
-            return {"success": False, "error": "缺少 text"}
-        provider = kwargs.get("provider", self._provider)
-        try:
-            if provider == "elevenlabs":
-                return await self._synth_elevenlabs(text, kwargs.get("voice_id", ""))
-            elif provider == "azure":
-                return await self._synth_azure(text, kwargs.get("voice_id", "zh-CN-XiaoxiaoNeural"))
-            return {"success": False, "error": f"未知 provider: {provider}"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    async def _synth_elevenlabs(self, text: str, voice_id: str) -> dict:
-        # 优先使用插件配置 config.yaml，其次环境变量
-        key = (self.config or {}).get("elevenlabs_api_key", "") or os.environ.get("ELEVENLABS_API_KEY", "")
-        if not key:
-            return {"success": False, "error": "ELEVENLABS_API_KEY 未配置（可在插件配置页设置）"}
-        vid = voice_id or "21m00Tcm4TlvDq8ikWAM"  # Rachel
-        async with httpx.AsyncClient(timeout=30) as c:
-            resp = await c.post(f"https://api.elevenlabs.io/v1/text-to-speech/{vid}",
-                headers={"xi-api-key": key}, json={"text": text, "model_id": "eleven_monolingual_v1"})
-            resp.raise_for_status()
-            out = f"PluginData/tmp/tts_elevenlabs_{os.urandom(4).hex()}.mp3"
-            with open(out, "wb") as f:
-                f.write(resp.content)
-            return {"success": True, "audio_path": out, "provider": "elevenlabs"}
-
-    async def _synth_azure(self, text: str, voice_id: str) -> dict:
-        cfg = self.config or {}
-        key = cfg.get("azure_speech_key", "") or os.environ.get("AZURE_SPEECH_KEY", "")
-        region = cfg.get("azure_speech_region", "") or os.environ.get("AZURE_SPEECH_REGION", "eastus")
-        if not key:
-            return {"success": False, "error": "AZURE_SPEECH_KEY 未配置（可在插件配置页设置）"}
-        ssml = f'<speak version="1.0" xml:lang="zh-CN"><voice name="{voice_id}">{text}</voice></speak>'
-        async with httpx.AsyncClient(timeout=30) as c:
-            resp = await c.post(f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1",
-                headers={"Ocp-Apim-Subscription-Key": key, "Content-Type": "application/ssml+xml"},
-                content=ssml)
-            resp.raise_for_status()
-            out = f"PluginData/tmp/tts_azure_{os.urandom(4).hex()}.wav"
-            with open(out, "wb") as f:
-                f.write(resp.content)
-            return {"success": True, "audio_path": out, "provider": "azure"}
 
 class VoiceExtPlugin(CapabilityPlugin):
-    manifest = PluginManifest(id="voice_ext", name="Voice Provider Extension", version="1.0.0",
-        kind=PluginKind.CAPABILITY, description="Extended TTS providers (ElevenLabs/Azure/XTTS)", author="Clipwright Team")
+    manifest = PluginManifest(
+        id="voice_ext", name="Voice Provider Extension", version="1.1.0",
+        kind=PluginKind.CAPABILITY,
+        description="扩展 TTS provider（ElevenLabs / Azure），与内置音色源同协议面",
+        author="Clipwright Team",
+    )
 
     def contributions(self) -> list[Any]:
-        """新契约（P1 迁移）：扩展 TTS 工具（provider 取自配置；非法值直接拒绝加载）。"""
-        cfg = self.config or {}
-        provider = cfg.get("provider", "elevenlabs")
-        if provider == "xtts-unimplemented":
-            raise ValueError(
-                "voice_ext: provider=xtts-unimplemented 不可用——XTTS 尚未实现，"
-                "请在插件配置页选择 elevenlabs 或 azure"
+        cfg = dict(self.config or {})
+        items: list[Any] = []
+        for provider_id, cls in (
+            ("elevenlabs", ElevenLabsVoiceProvider),
+            ("azure", AzureVoiceProvider),
+        ):
+            default_model = str(
+                cfg.get(f"{provider_id}_model") or _DEFAULT_MODELS[provider_id]
             )
-        return [Contribution(
-            ContributionKind.TOOL, "extended_tts",
-            ExtendedTTSTool(default_provider=provider),
-        )]
 
-    def shutdown(self) -> None: pass
+            entry = TtsProviderEntry(
+                name=provider_id,
+                factory=lambda uploader, creds=None, _cls=cls: _cls(creds, cfg),
+                default_model=lambda _m=default_model: _m,
+                # 两者都直接吃文本 → 音频字节；不需要公网参考音频
+                needs_uploader=False,
+            )
+            items.append(
+                Contribution(
+                    ContributionKind.TTS_PROVIDER, provider_id, entry,
+                    meta={
+                        "name": provider_id,
+                        "default_model": default_model,
+                        "env_key": _ENV_KEYS[provider_id],
+                        "clone_supported": False,
+                    },
+                ),
+            )
+        logger.info(
+            "[VoiceExt] 贡献 tts_provider: %s（凭证优先级：源绑定 > 插件配置 > 环境变量）",
+            ", ".join(c.id for c in items),
+        )
+        return items
+
+    def shutdown(self) -> None:
+        pass
+
 
 __all__ = ["VoiceExtPlugin"]

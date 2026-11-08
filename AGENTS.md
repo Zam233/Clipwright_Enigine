@@ -85,6 +85,9 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
     **全部迁移完毕并清空**（保留空 dict 仅为兼容 `explain()` 与外部读取），内置工具与插件工具
     （`plugins/*/`，含 `text_animations` 的 25 个文字动画、`pv_engine` 的 9 个引擎工具）都改为
     类上自声明。漏声明的内置工具仍硬失败（fail-closed），插件工具则降级为"不进 agent 工具面"并留痕。
+    - 补充（2026-11-08）：`web_search` / `web_fetch` **仍是内置工具**（能力在 engine）；它们的插件化
+      是另一个目标，不在本轮审计整改范围内。不要因为 `plugins/web_media` 提供了抓图/事实判断，
+      就以为搜索能力已经归插件。
 
 24. **内置 Provider 让位必须发生在注册之前；插件对外 HTTP 只走通用能力网关**（PRD §15，2026-11-02）：
     - 每个 provider 家族（`llm` / `embedding` / `rerank` / `stt` / `tts`）的内置注册
@@ -169,6 +172,9 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
     - **生产接线在服务层**：`_handle_gathering`（主/修订）与 `_translate_plan`（含 legacy 路径）
       调 `ensure_display_specs(source, payload)`；`_with_display_specs` 负责读路径补 spec 与老键归一。
       `agents/requirements_agent.py` 当前无生产调用点，只做字段归一。
+    - **插件 prompt 不得替 engine 宣称能力**（2026-11-08，B8 教训）：`kinetic_typography` /
+      `lottie_animations` 都曾出现"提示词说某动效可用，但渲染链没有对应实现"。插件要么真的交付
+      能力（`AnimationDef` + keyframes / 结构化 spec），要么在 prompt 里**明说未接入**。
     - 详见 [docs/genui.md](docs/genui.md)（当前态）与
       [docs/genui-plugin-migration-prd-2026-11-07.md](docs/genui-plugin-migration-prd-2026-11-07.md)（迁移裁定）。
 

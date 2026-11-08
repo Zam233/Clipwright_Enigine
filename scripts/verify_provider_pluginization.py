@@ -707,6 +707,39 @@ def check_material_impl_in_plugin() -> None:
     assert not hasattr(material, "LocalFolderSource"), "material 包仍导出 LocalFolderSource"
 
 
+@check("voice_ext_as_provider")
+def check_voice_ext_as_provider() -> None:
+    """B8-T8.7 / 审计 §3.15：voice_ext 的两套 TTS 协议必须走 `tts_provider`。
+
+    旧实现只贡献 `extended_tts` 工具：能力完整但 `VoiceService` 的音色下拉与
+    `/api/voice/*` 看不到它们，用户根本无法选。
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    main = (root / "plugins/voice_ext/main.py").read_text(encoding="utf-8")
+    yaml = (root / "plugins/voice_ext/plugin.yaml").read_text(encoding="utf-8")
+    assert "ContributionKind.TTS_PROVIDER" in main, "voice_ext 未贡献 tts_provider"
+    assert "ContributionKind.TOOL" not in main, "voice_ext 仍在贡献 tool（capacity 旁路）"
+    assert "kind: tts_provider" in yaml, "manifest 未声明 tts_provider"
+
+    from clipwright.plugins.contribution import ContributionRegistry
+    from clipwright.providers.tts import tts_provider_names
+    from plugins.voice_ext.main import VoiceExtPlugin
+
+    owner = "verify_voice_ext"
+    items = VoiceExtPlugin().contributions()
+    ContributionRegistry.declared_scope(owner, [c.key for c in items])
+    report = ContributionRegistry.register(owner, items)
+    assert report.ok, report.rejected
+    try:
+        names = set(tts_provider_names())
+        assert {"elevenlabs", "azure"} <= names, f"TTS provider 列表缺少 voice_ext：{names}"
+    finally:
+        ContributionRegistry.unregister_plugin(owner)
+    assert "elevenlabs" not in tts_provider_names(), "注销后 elevenlabs 仍在列表（有串底？）"
+
+
 @check("prompt_builder_guards")
 def check_builder_guards() -> None:
     from clipwright.plugins import prompt_overrides as O

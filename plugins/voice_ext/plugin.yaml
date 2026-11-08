@@ -1,12 +1,24 @@
 id: "voice_ext"
 name: "语音提供商扩展"
-version: "1.0.0"
+version: "1.1.0"
 kind: "capability"
-description: "TTS 语音提供商扩展模板 — 演示如何添加 ElevenLabs/Azure/XTTS 等新语音引擎"
+description: "扩展 TTS provider（ElevenLabs / Azure）— 与内置音色源同协议面"
 author: "Clipwright Team"
 entry_point: "voice_ext.main"
 
 # P1 迁移：新契约声明（声明即授权）
+# B8-T8.7 / 审计 §3.15：从 tool 改为 tts_provider —— 否则 VoiceService 的音色下拉
+# 与 /api/voice/* 看不到这两个 provider（能力在插件里，但没人能选）。
 api_version: "2"
 contributions:
-  - { kind: tool, id: extended_tts }
+  - { kind: tts_provider, id: elevenlabs }
+  - { kind: tts_provider, id: azure }
+
+config_schema:
+  type: object
+  properties:
+    elevenlabs_api_key: { type: string, secret: true, label: "ElevenLabs API Key" }
+    elevenlabs_model: { type: string, label: "ElevenLabs 模型", default: "eleven_multilingual_v2" }
+    azure_speech_key: { type: string, secret: true, label: "Azure Speech Key" }
+    azure_speech_region: { type: string, label: "Azure 区域", default: "eastus" }
+    azure_model: { type: string, label: "Azure 音色", default: "zh-CN-XiaoxiaoNeural" }
