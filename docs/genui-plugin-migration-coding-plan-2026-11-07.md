@@ -992,3 +992,20 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 > 改走 `resolve_embedding_provider().create_embedder()` 会改变一个产品可见行为：
 > **嵌入插件被禁用时 `get_embedder()` 原来还能造 engine 自带的 SentenceTransformerEmbedder**。
 > 按 A6 应改为"没有嵌入能力、如实报错"，但这会影响"没装嵌入插件时知识库是否可用"，需要一次明确确认。
+
+| **T7.5（收尾）** rag/embedder 去厂商分支 | ✅ 已完成 | `get_embedder()` 的 settings 回退路径改走 `resolve_embedding_provider().create_embedder()`（**严格 A6**：嵌入实现归插件，engine 不再自带兜底）；`_EMBED_PROVIDER_ALIASES` 方向修正为 `sentence_transformer → local`（原映射是反的，迁移后会让注册表查不到）；Ollama 的 `base_url` 历史默认值改为插件声明 `resolve_base_url()` | `pytest -k "rag or embedding"` → **98 passed**；`test_rag.py` + role binding + guard 三文件 30 passed；自检 **22/22** |
+
+| **T7.6** 最终门禁 `no_vendor_branches` | ✅ 已完成 | 新增语义化门禁：engine 里**按 provider 身份的分支**（`provider == "qwen-tts"` / `provider in ("openai","ollama")`）必须为 0；内置白名单/顺序表（`SUPPORTED_LISTING_PROVIDERS`、`_BUILTIN_ORDER`）必须消失。**不做字面量计数**（`fmt="anthropic"` 是协议词表、`llm_provider="anthropic"` 是默认值，都不是厂商分支），理由写进 check docstring | 自检 **22/22**；AGENTS #24 与 pluginization-plan §12.3 已更新为五家族全迁完 |
+
+## B7 完成小结（2026-11-08）
+
+五个 provider 家族的**实现全部归插件**（llm / tts / embedding / rerank / stt），engine 侧只剩：
+
+- `providers/base.py` 的协议与访问器（能力位：`tool_result_style` / `vision_message_format` /
+  `model_listing_spec` / `build_audio_ref` / `resolve_base_url`）；
+- 各家族的只读注册表访问器（`resolve_*` / `*_names`）与平台解析（`parse_rerank_response`）；
+- 平台基座（`providers/transport`、`PublicUploadManager`、`VoiceStorage`、`STTService` 的编排与 `SentenceTransformerEmbedder` 等宿主工具类）。
+
+自检 **22 条全过**，其中 4 条是这次整改新增的防回退门禁：
+`provider_impls_in_plugins`（实现类只在插件）、`provider_name_branches_removed`（分家族清单）、
+`no_vendor_branches`（语义化全仓检查）、`provider_plugin_fallback`（禁用即无能力，A6 口径）。

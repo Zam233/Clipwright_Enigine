@@ -235,7 +235,7 @@ def llm_tool_result_style(impl: Any) -> str:
     """工具结果消息风格：``"anthropic"``（tool_use/tool_result 块）或 ``"openai"``。
 
     为什么要有这个方法：工具循环里的消息组装原先按 provider 名分支
-    （`if self.provider == "anthropic"`），那是把**能力方知识写进 engine**。
+    （`if self.provider == "<vendor>"`），那是把**能力方知识写进 engine**。
     provider 声明自己用哪种风格，engine 只按声明组装；缺方法 → OpenAI 风格 + 一次告警
     （与 `normalize_messages` 的降级策略一致）。
     """

@@ -824,7 +824,7 @@ plugins/my_llm/
 > `embedding_provider` / `rerank_provider` / `stt_provider` 的**实现都已搬进插件**
 > （`plugins/{llm_anthropic,llm_openai_compatible,tts_qwen,tts_cosyvoice,tts_minimax,embedding_providers,
 > rerank_providers,stt_providers}`），engine 只留协议与只读注册表（自检 `provider_impls_in_plugins` 守）。
-> `services/voice.py` 里还有三个 TTS 类的 `__getattr__` **兼容别名**，T7.5 收尾时删除。
+> 兼容别名已全部删除；`no_vendor_branches` 与 `provider_impls_in_plugins` 两条门禁守回退。
 
 ### 12.4 与审计文档的接口
 

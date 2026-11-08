@@ -21,6 +21,10 @@ class OpenAIEmbeddingProvider:
         from clipwright.config import settings
         return settings.rag_embed_model
 
+    def resolve_base_url(self, base_url: str | None) -> str | None:
+        """默认端点归能力方：Ollama 走 llm_base_url，其余用调用方给的值。"""
+        return base_url
+
     def create_embedder(
         self, *, model: str, api_key: str | None, base_url: str | None,
         timeout_sec: float = 0.0, proxy: str = "", headers: Mapping[str, Any] | None = None,
@@ -35,6 +39,12 @@ class OllamaEmbeddingProvider(OpenAIEmbeddingProvider):
     """本地 Ollama（OpenAI 兼容端点），默认无 api_key。"""
 
     name = "ollama"
+
+    def resolve_base_url(self, base_url: str | None) -> str | None:
+        """Ollama 的历史默认值：未显式配置时跟随 `llm_base_url`。"""
+        from clipwright.config import settings
+
+        return base_url or settings.llm_base_url or None
 
 
 class LocalEmbeddingProvider:

@@ -113,12 +113,11 @@ class OpenAIEmbedder(BaseEmbedder):
 
 # ── 工厂 ──
 
-#: 历史 provider 名 → 实现分支（嵌入 provider 门面名为 `local`，
-#: settings 的历史值是 `sentence_transformer`；两者等价，P4/P5 并集下拉后
-#: 用户选任一个都必须可用）
+#: settings 历史值 → 门面 id（B7-T7.5：嵌入实现归插件，门面 id 是 `local`；
+#: 旧值 `sentence_transformer` 必须归一，否则注册表里找不到对应 provider）
 _EMBED_PROVIDER_ALIASES = {
-    "local": "sentence_transformer",
-    "sentence_transformers": "sentence_transformer",
+    "sentence_transformer": "local",
+    "sentence_transformers": "local",
 }
 
 _embedder_instance: Optional[BaseEmbedder] = None
@@ -171,16 +170,20 @@ def get_embedder() -> BaseEmbedder:
     api_key = settings.rag_embed_api_key
     base_url = settings.rag_embed_base_url
 
-    if provider == "sentence_transformer":
-        _embedder_instance = SentenceTransformerEmbedder()
-    elif provider in ("openai", "ollama"):
-        _embedder_instance = OpenAIEmbedder(
-            model_name=settings.rag_embed_model,
-            api_key=api_key or settings.llm_api_key,
-            base_url=(base_url or settings.llm_base_url) if provider == "ollama" else base_url,
+    # B7-T7.5（严格 A6）：嵌入 provider 的实现归插件；engine 不再自带兜底实现。
+    from clipwright.providers.embedding import resolve_embedding_provider
+
+    impl = resolve_embedding_provider(provider)
+    if impl is None:
+        raise RuntimeError(
+            f"没有可用的嵌入 provider「{provider}」：请启用 embedding_providers 插件"
+            "（能力缺失是一等状态，不做内置兜底）"
         )
-    else:
-        raise ValueError(f"Unsupported embed provider: {provider}")
+    _embedder_instance = impl.create_embedder(
+        model=settings.rag_embed_model,
+        api_key=api_key or settings.llm_api_key,
+        base_url=impl.resolve_base_url(base_url) if hasattr(impl, "resolve_base_url") else base_url,
+    )
 
     return _embedder_instance
 

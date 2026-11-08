@@ -520,6 +520,10 @@ def check_provider_name_branches_removed() -> None:
             '"ollama"',
         ),
         "clipwright/api/render.py": ('or "local"', '("", "local")'),
+        "clipwright/rag/embedder.py": (
+            'provider == "sentence_transformer"',
+            'provider in ("openai", "ollama")',
+        ),
     }
     for rel, needles in forbidden.items():
         body = (root / rel).read_text(encoding="utf-8")
@@ -529,6 +533,44 @@ def check_provider_name_branches_removed() -> None:
     # T7.1 的兼容别名必须真的删掉（engine 里不该再有 TTS 实现类名）
     for name in ("QwenTTSProvider", "CosyVoiceProvider", "MiniMaxProvider"):
         assert not hasattr(voice_mod, name), f"services/voice.py 仍暴露 {name}（兼容别名未删）"
+
+
+@check("no_vendor_branches")
+def check_no_vendor_branches() -> None:
+    """B7 收口：engine 里不得再有任何"按 provider 身份"的分支或内置白名单。
+
+    为什么是语义检查而不是字面量计数：`"anthropic"` 这个词在 engine 里还有两类别用法——
+    (1) **工具/消息格式词表**（`to_llm_tool(fmt="anthropic")`、`tool_result_style()=="anthropic"`），
+    这是协议词汇，不是厂商分支；(2) **settings 默认值**（`llm_provider = "anthropic"`）。
+    真正要禁的是"用 id 判断行为"：`provider == "qwen-tts"`、`provider in ("openai","ollama")`、
+    `SUPPORTED_*` 名单。这条门禁直接断言后者为 0。
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    engine = root / "clipwright"
+
+    branch_re = re.compile(
+        r"(provider|vision_prov|vision_provider|provider_name|llm_provider|tts_default_provider)"
+        r"\s*(==|!=|\bin\b)\s*[\(\[]?\s*[\"'\']"
+        r"(anthropic|ollama|cosyvoice|minimax|qwen-tts)"
+    )
+    offenders: list[str] = []
+    for f in engine.rglob("*.py"):
+        if "__pycache__" in f.parts:
+            continue
+        for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            if branch_re.search(line):
+                offenders.append(f"{f.relative_to(root)}:{i}: {line.strip()[:90]}")
+    assert not offenders, "engine 里仍有按 provider 身份的分支：\n" + "\n".join(offenders)
+
+    # 内置白名单/顺序表也必须消失（懒注册与硬编码顺序的残留形态）
+    joined = "".join(
+        f.read_text(encoding="utf-8") for f in engine.rglob("*.py") if "__pycache__" not in f.parts
+    )
+    for needle in ("SUPPORTED_LISTING_PROVIDERS", "_BUILTIN_ORDER", "SUPPORTED_LISTING"):
+        assert needle not in joined, f"engine 里仍有内置 provider 白名单：{needle}"
 
 
 @check("prompt_builder_guards")

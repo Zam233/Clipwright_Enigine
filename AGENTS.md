@@ -114,8 +114,11 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
       `vision_message_format()`（视觉消息 image source 块 vs image_url）、TTS 的
       `BaseVoiceProvider.build_audio_ref()`（参考音频 → base64 data URI 还是公网 URL）；
       "本地免 key" 由贡献 `meta.local` 声明（engine 不再按名字判 `== "ollama"`）。
-      暂时保留：`services/voice.py` 用 `__getattr__` 暴露三个 TTS 类的**兼容别名**（只为不打断既有
-      导入与打桩路径），T7.5 收尾时删除；**新代码不要依赖别名**。
+      **严格 A6 已贯穿到嵌入族**：`get_embedder()` 拿不到 provider 就抛可读错误，engine 不再
+      自带兜底实现；`SentenceTransformerEmbedder` 只是宿主工具类，由插件调用。
+      旧 `services/voice.py` 的 `__getattr__` 兼容别名已在 T7.5 删除；engine 里不再有任何实现类名。
+      门禁：`provider_impls_in_plugins`（类只在插件）+ `no_vendor_branches`（按 provider 身份的分支为 0；
+      `fmt="anthropic"` 这类协议词表与 settings 默认值不计）。
     - 插件对外暴露的 HTTP 入口**只有** `POST /api/capability/{name}`（`api/capability.py`，
       契约见 PRD §15.1.5）。它按**能力名**解析（`capabilities.resolve_name`，能力名优先、
       工具名兜底），状态码语义固定：`404` 解析不到（插件未装/被禁用）、`422` 参数或路径
