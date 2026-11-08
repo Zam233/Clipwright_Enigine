@@ -598,6 +598,39 @@ def check_headless_impl_in_plugin() -> None:
     assert "_shell_backend" in engine and "callable(obj.get(\"resolve\"))" in engine
 
 
+@check("dead_hooks_removed")
+def check_dead_hooks_removed() -> None:
+    """B8-T8.3/T8.4：两个"声明了但 engine 不消费"的插件能力必须收窄。
+
+    - `kinetic_typography`：删死钩子与没人消费的 CSS；动画必须是带 keyframes 的
+      `AnimationDef`（否则"注册了动画但渲不出来"）；
+    - `lottie_animations`：删两个形状错误的 hook 与外链 CDN 模板，只留素材目录说明。
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    kinetic = (root / "plugins/kinetic_typography/main.py").read_text(encoding="utf-8")
+    lottie = (root / "plugins/lottie_animations/main.py").read_text(encoding="utf-8")
+
+    for needle in ("catalog", "animation_catalog_extend"):
+        assert needle not in kinetic, f"kinetic_typography 仍含死钩子痕迹：{needle}"
+    for needle in ("cdnjs", "renderers", "lottie_web"):
+        assert needle not in lottie, f"lottie_animations 仍含假渲染器痕迹：{needle}"
+
+    # 动画贡献必须真的带关键帧（空 keyframes = 注册了但渲不出来）
+    import importlib
+
+    mod = importlib.import_module("plugins.kinetic_typography.main")
+    anims = [
+        c for c in mod.KineticTypographyPlugin().contributions()
+        if getattr(c.kind, "value", "") == "animation"
+    ]
+    assert anims, "kinetic_typography 没有动画贡献"
+    for c in anims:
+        kfs = getattr(c.object, "keyframes", None) or []
+        assert len(kfs) >= 2, f"动画 {c.id} 的 keyframes 少于 2 帧（无法插值）"
+
+
 @check("prompt_builder_guards")
 def check_builder_guards() -> None:
     from clipwright.plugins import prompt_overrides as O

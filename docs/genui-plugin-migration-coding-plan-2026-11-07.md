@@ -1015,3 +1015,7 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 | 任务 | 状态 | 落地内容 | 证据 |
 |---|---|---|---|
 | **T8.1** `headless_chrome` 实现搬进插件 | ✅ 已完成 | 查找/安装/探测（`find_shell` / `install_shell` / `install_by_download` / `install_sync` / `probe_version` / 安装状态）搬进 `plugins/headless_chrome/shell.py`；engine `services/headless_browser.py` 变门面：按**能力形状**（贡献 object 是带 `resolve` 的 dict）取后端，不认死 id；保留两档策略编排（`apply_env`）、`boot_id`、系统 Chrome 探测；无插件时 `find_shell()` 空、`install_*` 返回可读"未安装"，不伪造路径 | `tests/test_headless_browser.py` **13 passed**；`pytest -k "headless or browser or hyperframes"` **44 passed**；自检 **23/23**（新增 `headless_impl_in_plugin`：插件里必须有四个实现函数，engine 门面里不得出现 `@puppeteer/browsers` / `zipfile` / `_download` 等实现细节） |
+
+| **T8.3** `kinetic_typography` 失效修复 | ✅ 已完成 | 删死钩子（`animation_catalog_extend`：engine 从不读 `ctx["catalog"]`）与无人消费的 CSS；6 个动画收成 **4 个带 keyframes 的 `AnimationDef`**（逐词强调 / 弹跳 / 弹性缩放 / 描边绘制，各 2–4 帧 + `properties_meta`）；`perspective_3d` / `gradient_fill` 按审计下线并在 manifest 说明（keyframes 渲染器没有 3D/渐变属性）；提示词同步删掉这两项 | `Select-String kinetic/main.py -Pattern 'catalog'` → **0**；插件贡献 `animation × 4` 全部 keyframes ≥2；自检新增 `dead_hooks_removed` |
+
+| **T8.4** `lottie_animations` 降级 | ✅ 已完成 | 删两个形状错误的 hook（`catalog` 往不存在的 context 塞数据、`renderer` 返回带**外链 CDN** 的 HTML 模板）与 `_extend_*` 实现；只保留 `setup()` 建本地目录 + 一条提示词（明确告诉模型"Lottie 渲染尚未接入，不要生成 [逻辑动画] 标记"）；manifest description 改为"本地 Lottie 素材目录（渲染未接入）" | `Select-String lottie/main.py -Pattern 'cdnjs|renderers'` → **0**；贡献只剩 `prompt`；自检 `dead_hooks_removed` 断言两边痕迹归零 |
