@@ -122,9 +122,13 @@ class ExampleFullPlugin(BasePlugin):
 
             # 导出预设（D-3h：应用时走显式参数，不依赖后端预设白名单）
             Contribution(
-                ContributionKind.EXPORT_PRESET, "example_preset", "preset",
+                ContributionKind.EXPORT_PRESET, "example_preset", None,
                 meta={
+                    # 纯数据扩展点：object 必须为 None；顶层宽高帧率码率供注册期校验，
+                    # payload 供前端 ExportPage 直接消费（D-3h 契约）。
                     "title": "示例竖屏 1080p",
+                    "name": "示例竖屏 1080p",
+                    "width": 1080, "height": 1920, "fps": 30, "bitrate": "6M",
                     "payload": {"name": "示例竖屏 1080p", "width": 1080, "height": 1920,
                                 "fps": 30, "bitrate": "6M"},
                 },

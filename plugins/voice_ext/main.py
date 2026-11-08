@@ -35,6 +35,12 @@ _ENV_KEYS = {
     "azure": "AZURE_SPEECH_KEY",
 }
 
+#: 展示名（前端 VoicePage 直接用；不再靠前端硬编码厂商表）
+_DISPLAY_NAMES = {
+    "elevenlabs": "ElevenLabs",
+    "azure": "Azure Speech",
+}
+
 
 class VoiceExtPlugin(CapabilityPlugin):
     manifest = PluginManifest(
@@ -66,9 +72,10 @@ class VoiceExtPlugin(CapabilityPlugin):
                 Contribution(
                     ContributionKind.TTS_PROVIDER, provider_id, entry,
                     meta={
-                        "name": provider_id,
+                        "name": _DISPLAY_NAMES[provider_id],
                         "default_model": default_model,
                         "env_key": _ENV_KEYS[provider_id],
+                        "needs_uploader": False,
                         "clone_supported": False,
                     },
                 ),

@@ -111,10 +111,18 @@ class PlatformExportPlugin(CapabilityPlugin):
         """6 个 `export_preset` 纯数据贡献 + 两个声明式 hook。"""
         items: list[Any] = []
         for preset_id, spec in PLATFORM_PRESETS.items():
+            display = str(spec.get("note") or preset_id)
+            payload = {
+                "name": display,
+                "width": spec["width"], "height": spec["height"],
+                "fps": spec["fps"], "bitrate": spec["bitrate"],
+            }
             items.append(
                 Contribution(
                     ContributionKind.EXPORT_PRESET, preset_id, None,
-                    meta={"name": spec.get("note", preset_id), **spec},
+                    # 顶层字段供 `_validate_export_preset` 校验；title/payload 是前端
+                    # `usePluginContributions('export_preset')` 的既有契约（D-3h）。
+                    meta={"name": display, "title": display, "payload": payload, **spec},
                 ),
             )
         items.append(

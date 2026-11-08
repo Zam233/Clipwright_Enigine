@@ -307,6 +307,15 @@ QualityAgent 在动画编排之后对时间线做内容级校验，新增三类�
 （MG 的 8 个名字）不是同一套；属性上 drawtext 只支持文字类属性，
 `filter/clip/粒子` 都不在其中。
 
+## MG 动画：预览真相与渲染器数据源（2026-11-08 插件化后）
+
+- **预览**只读 `clip.metadata.mg_def`（前端 `mgRenderer.ts` / `PropertiesPanel`）；
+- **engine 渲染器**（`MGRenderer.load_animation`）从 `AnimationRegistry` 的
+  `AnimationDef.properties_meta["mg_json"].default` 读 JSON（插件注册期携带）；
+- 两者**语义相同、来源不同**：`mg_json` 是插件贡献的"定义本体"，`mg_def` 是作业时写进
+  clip 的"实例快照"。不要把预览改为只读 `mg_json`（会丢掉每 clip 的参数/覆盖），
+  也不要让渲染器回读 `clip.metadata`（那是时间线层的事）。
+
 ## 相关文档
 
 - [架构总览](structure.md) — AnimationAgent 在管线中的位置

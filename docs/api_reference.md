@@ -796,7 +796,8 @@ curl -X POST http://localhost:8080/api/voice/dub \
 |------|------|
 | `GET /api/providers?kind=` | 源列表（脱敏：`api_keys_masked`/`key_count`/`has_keys`）+ 角色绑定总览 |
 | `POST /api/providers` | 新建源 `{name,kind,provider,base_url,timeout_sec,proxy,headers,api_keys[],models[]}` |
-| `GET /api/providers/available` | 各类型可选 provider 名（**门面驱动**，含插件注册的 llm/tts/embedding/rerank provider）+ `role_kinds` 映射 |
+| `GET /api/providers/available` | 各类型可选 provider 名（**门面驱动**，含插件注册的 llm/tts/embedding/rerank provider）+ `role_kinds` 映射 + `provider_meta`（按 kind 的展示元数据：`name` / `needs_uploader` / `clone_supported` / `local` / `env_key`，前端用它渲染 label 与上传提示，**不得按厂商名硬编码**） |
+| `GET /api/plugin/contributions?kind=export_preset` | 插件导出预设（**纯数据**：`object` 恒 `None`）。`meta` 必须带顶层 `width/height/fps/bitrate`（注册期校验）+ `title` 与 `payload{name,width,height,fps,bitrate}`（前端 `ExportPage` 契约；payload 缺失会被整条丢弃） |
 | `GET /api/providers/roles` | 角色绑定（`main/flash/vision/embed/rerank/tts`） |
 | `PUT /api/providers/roles` | 绑定/解绑角色 `{role, source_id, model}`（`source_id=""` 解绑） |
 | `GET /api/providers/{id}` | 源详情（脱敏） |

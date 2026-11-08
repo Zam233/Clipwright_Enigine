@@ -58,6 +58,10 @@ async def available_providers(request: Request = None) -> dict[str, Any]:
 
     # B7-T7.2：LLM 实现归插件，engine 不再懒注册内置补位
     out: dict[str, list[str]] = {}
+    # P2：provider 的**展示元数据**（显示名 / 是否需要上传器 / 是否支持克隆）随列表下发。
+    # 前端不得靠厂商硬编码表补 label（插件新增 provider 会以裸 id 出现、提示语也不对）。
+    # 只透传白名单键，避免把插件内部字段泄给 UI。
+    meta_out: dict[str, dict[str, dict[str, object]]] = {}
     for kind, names in (
         (ContributionKind.LLM_PROVIDER, None),
         (ContributionKind.TTS_PROVIDER, None),
@@ -66,6 +70,20 @@ async def available_providers(request: Request = None) -> dict[str, Any]:
     ):
         listed = names() if names else [c.id for _, c in ContributionRegistry.list(kind)]
         out[kind.value] = sorted(set(listed))
+        kind_meta: dict[str, dict[str, object]] = {}
+        for _, item in ContributionRegistry.list(kind):
+            raw = item.meta if isinstance(item.meta, dict) else {}
+            picked = {
+                k: raw[k]
+                for k in ("name", "needs_uploader", "clone_supported", "local", "env_key")
+                if k in raw
+            }
+            if picked:
+                kind_meta[item.id] = picked
+        if kind_meta:
+            meta_out[kind.value] = kind_meta
+    if meta_out:
+        out["provider_meta"] = meta_out  # type: ignore[assignment]
     # 角色 ←→ 期望的 provider 类型（前端把「角色分配」渲染到对应 tab）
     out["role_kinds"] = {
         "main": "llm", "flash": "llm", "vision": "llm",
