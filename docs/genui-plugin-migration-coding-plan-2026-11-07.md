@@ -985,3 +985,10 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 
 > **T7.5 仍剩两项**：`rag/embedder.py:176-180`（走 `resolve_embedding_provider()` 会改变"插件缺失时兜底"语义，需与 A6 一起裁定）、
 > `api/render.py` 的 `"local"`（需定义默认渲染后端能力位）。
+
+| **T7.5（续 5）** 默认渲染后端由贡献声明 | ✅ 已完成本轮 | `providers/render` 内置 `local` 贡献声明 `meta.default=true`，新增 `default_render_backend_name()`（meta 优先、否则注册表第一项）；`resolve_preferred_render_backend()` 与 `api/render.py` 两处不再写死 `"local"`（`or "local"` / `("", "local")` 已清）；自检门禁扩到 `api/render.py` | `pytest -k "render"` → **397 passed / 1 xfailed**；自检 **21/21**；`import clipwright.main` ok |
+
+> **T7.5 只剩一项**：`rag/embedder.py:176-180`（`provider in ("openai","ollama")` + ollama base_url 默认值）。
+> 改走 `resolve_embedding_provider().create_embedder()` 会改变一个产品可见行为：
+> **嵌入插件被禁用时 `get_embedder()` 原来还能造 engine 自带的 SentenceTransformerEmbedder**。
+> 按 A6 应改为"没有嵌入能力、如实报错"，但这会影响"没装嵌入插件时知识库是否可用"，需要一次明确确认。

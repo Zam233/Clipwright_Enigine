@@ -211,10 +211,17 @@ def _new_render_service():
     @hyperframes/producer` 常驻 sidecar）也能被选中；未注册/未知名称回退本机。
     历史配置 `remote_render_url` 非空时仍按 remote 处理（缺省行为不变）。
     """
-    from clipwright.providers.render import render_backend_names, resolve_render_backend
+    from clipwright.providers.render import (
+        default_render_backend_name,
+        render_backend_names,
+        resolve_render_backend,
+    )
 
-    requested = str(getattr(settings, "renderer_backend", "") or "local").strip().lower()
-    if requested not in ("", "local"):
+    requested = str(getattr(settings, "renderer_backend", "") or "").strip().lower()
+    # B7-T7.5：未显式配置 → 走贡献声明的默认后端；不再写死 "local"
+    if not requested:
+        requested = default_render_backend_name()
+    if requested and requested != default_render_backend_name():
         backend = resolve_render_backend(requested)
         if backend is None:
             logger.warning("renderer_backend=%s 未注册（可用: %s），回退本机渲染",
@@ -1222,7 +1229,10 @@ async def list_render_backends() -> dict:
                     available = False
         items.append({"name": name, "available": available, "capabilities": capabilities})
 
-    requested = str(getattr(settings, "renderer_backend", "") or "local").strip().lower() or "local"
+    from clipwright.providers.render import default_render_backend_name
+
+    requested = (str(getattr(settings, "renderer_backend", "") or "").strip().lower()
+                 or default_render_backend_name())
     try:
         preferred = resolve_preferred_render_backend()
         preferred_name = getattr(preferred, "name", "") or requested

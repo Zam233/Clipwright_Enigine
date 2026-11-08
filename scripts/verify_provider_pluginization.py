@@ -519,6 +519,7 @@ def check_provider_name_branches_removed() -> None:
             '"anthropic"',
             '"ollama"',
         ),
+        "clipwright/api/render.py": ('or "local"', '("", "local")'),
     }
     for rel, needles in forbidden.items():
         body = (root / rel).read_text(encoding="utf-8")
