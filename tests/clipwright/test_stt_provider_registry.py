@@ -8,7 +8,6 @@ import pytest
 from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
 from clipwright.providers.stt import (
     SttBackendEntry,
-    ensure_stt_providers_registered,
     resolve_stt_backends,
 )
 
@@ -38,6 +37,22 @@ class _FakeService:
 
 
 @pytest.fixture(autouse=True)
+def _builtin_backends_registered():
+    """B7-T7.4：STT 后端 owner 是插件；测试进程显式注册它的两条贡献。"""
+    from plugins.stt_providers.main import SttProvidersPlugin
+
+    owner = "stt_registry_test"
+    items = SttProvidersPlugin().contributions()
+    ContributionRegistry.declared_scope(owner, [c.key for c in items])
+    report = ContributionRegistry.register(owner, items)
+    assert report.ok, report.rejected
+    try:
+        yield
+    finally:
+        ContributionRegistry.unregister_plugin(owner)
+
+
+@pytest.fixture(autouse=True)
 def _clean():
     yield
     ContributionRegistry.clear_all()
@@ -45,10 +60,9 @@ def _clean():
 
 class TestSttRegistry:
     def test_builtin_registered_and_order(self):
-        ensure_stt_providers_registered()
         names = [c.id for _, c in ContributionRegistry.list(ContributionKind.STT_PROVIDER)]
         assert set(names) == {"whisper", "faster-whisper"}
-        # 尝试顺序与旧硬编码一致：whisper → faster-whisper
+        # 尝试顺序 = 注册表登记顺序（插件按 whisper → faster-whisper 声明）
         ordered = [n for n, _ in resolve_stt_backends(_FakeService())]
         assert ordered[:2] == ["whisper", "faster-whisper"]
 
@@ -66,7 +80,6 @@ class TestSttRegistry:
 
     def test_plugin_provider_appended_after_builtins(self):
         """插件贡献的 STT provider 排在两个内置后端之后（确定性）。"""
-        ensure_stt_providers_registered()
         ContributionRegistry.register("stt_plug", [
             ContributionWrapper("zzz-custom-stt").contribution(),
         ], dispatch=False)

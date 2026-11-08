@@ -110,11 +110,13 @@ class WhisperSTTPlugin(CapabilityPlugin):
     )
 
     def contributions(self) -> list[Any]:
-        """新契约（P1 迁移）：本地 Whisper 转录工具 + 转录对齐技能。"""
-        model_size = (self.config or {}).get("model_size", "base")
+        """新契约（P1 迁移；B7-T7.4 收窄）：只保留「转录对齐」技能。
+
+        `whisper_transcribe_local` 工具已按审计结论撤下：它的能力面与
+        `plugins/stt_providers` 的后端贡献重复，同一个转录引擎开两个入口只会让
+        "禁用谁"变得含糊。类保留在模块内供技能复用。
+        """
         return [
-            Contribution(ContributionKind.TOOL, "whisper_transcribe_local",
-                         WhisperTranscribeTool(default_model=model_size)),
             Contribution(ContributionKind.SKILL, "transcribe_and_align",
                          TranscribeAndAlignSkill()),
         ]

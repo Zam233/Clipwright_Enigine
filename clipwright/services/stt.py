@@ -60,9 +60,7 @@ class STTService:
     """语音转文字服务。"""
 
     def __init__(self) -> None:
-        # 按 model_size 分键缓存已加载模型，避免不同尺寸互相复用
-        self._models: dict[str, Any] = {}
-        self._faster_models: dict[str, Any] = {}
+        """无状态：模型缓存归 `plugins/stt_providers/backends.py`（能力方）。"""
 
     # ── 转录 ──
 
@@ -109,10 +107,7 @@ class STTService:
         """
         from clipwright.providers.stt import resolve_stt_backends
 
-        backends = resolve_stt_backends(self) or [
-            ("whisper", self._transcribe_whisper),
-            ("faster-whisper", self._transcribe_faster_whisper),
-        ]
+        backends = resolve_stt_backends(self)
         for name, fn in backends:
             try:
                 # CPU 推理可达数分钟，必须 offload
@@ -214,71 +209,18 @@ class STTService:
     def _transcribe_whisper(
         self, audio_path: str, language: str, model_size: str, word_timestamps: bool
     ) -> STTResult:
-        """使用 openai-whisper 转录。"""
-        import whisper  # type: ignore[import-untyped]
+        """转发到插件实现（B7-T7.4：实现与模型缓存在 `plugins/stt_providers/backends.py`）。"""
+        from plugins.stt_providers.backends import transcribe_whisper
 
-        if model_size not in self._models:
-            self._models[model_size] = whisper.load_model(model_size)
-        model = self._models[model_size]
-
-        opts: dict[str, Any] = {"word_timestamps": word_timestamps}
-        if language:
-            opts["language"] = language
-
-        result = model.transcribe(audio_path, **opts)
-
-        segments = []
-        for seg in result.get("segments", []):
-            segments.append({
-                "start": round(seg.get("start", 0), 2),
-                "end": round(seg.get("end", 0), 2),
-                "text": seg.get("text", "").strip(),
-                "confidence": seg.get("confidence", 0),
-            })
-
-        return STTResult(
-            text=result.get("text", ""),
-            segments=segments,
-            language=result.get("language", language),
-            duration_sec=result.get("duration", 0),
-            model=f"whisper-{model_size}",
-            success=True,
-        )
+        return transcribe_whisper(audio_path, language, model_size, word_timestamps)
 
     def _transcribe_faster_whisper(
         self, audio_path: str, language: str, model_size: str, word_timestamps: bool
     ) -> STTResult:
-        """使用 faster-whisper 转录。"""
-        from faster_whisper import WhisperModel  # type: ignore[import-untyped]
+        """转发到插件实现（同上）。"""
+        from plugins.stt_providers.backends import transcribe_faster_whisper
 
-        if model_size not in self._faster_models:
-            self._faster_models[model_size] = WhisperModel(
-                model_size, device="cpu", compute_type="int8"
-            )
-        model = self._faster_models[model_size]
-        segments_raw, info = model.transcribe(
-            audio_path, language=language or None, word_timestamps=word_timestamps
-        )
-
-        segments = []
-        full_text = ""
-        for seg in segments_raw:
-            segments.append({
-                "start": round(seg.start, 2),
-                "end": round(seg.end, 2),
-                "text": seg.text.strip(),
-                "confidence": round(seg.avg_logprob, 4) if seg.avg_logprob else 0,
-            })
-            full_text += seg.text + " "
-
-        return STTResult(
-            text=full_text.strip(),
-            segments=segments,
-            language=info.language if info else language,
-            duration_sec=round(info.duration, 2) if info else 0,
-            model=f"faster-whisper-{model_size}",
-            success=True,
-        )
+        return transcribe_faster_whisper(audio_path, language, model_size, word_timestamps)
 
     @staticmethod
     def _get_duration(path: str) -> float:

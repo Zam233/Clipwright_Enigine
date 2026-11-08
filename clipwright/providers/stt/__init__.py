@@ -1,14 +1,13 @@
-"""内置 STT Provider 注册（方案 B-2 后半）。
+"""STT Provider **协议与注册表访问器**（实现已迁进 `plugins/stt_providers`）。
 
-两个 whisper 后端实现留在 `services/stt.py`（实现体不动）；本模块把
-「后端名 + 探测 + 转写调用」登记进门面：
+2026-11-08 能力迁移（审计 B7-T7.4）：engine 不再探测 whisper 是否安装、也不再
+懒注册内置后端——
 
-- 目标一：转写后端**顺序**由注册表决定（whisper → faster-whisper → 插件
-  新增的 STT provider），`_transcribe_any` 不再硬编码两段 try；
-- 目标二：`/api/plugin/contributions?kind=stt_provider` 可列出 STT 后端，
-  第三方可贡献自己的 STT provider（门面即注册表）。
+- 插件在 → `resolve_stt_backends()` 返回它声明的后端（按注册表顺序）；
+- 插件被禁用 → 空列表，调用方按"没有可用的转写后端"处理（口径 A）。
 
-行为兼容：注册表不可用时 `_transcribe_any` 回退旧的硬编码顺序。
+转写实现与模型缓存在 `plugins/stt_providers/backends.py`；`services/stt.py` 的两个
+私有方法只是 3 行转发（保留是为不打断既有调用面）。
 """
 from __future__ import annotations
 
@@ -18,89 +17,37 @@ from typing import Any, Callable
 
 @dataclass(frozen=True)
 class SttBackendEntry:
-    """STT 后端条目：名字 + 探测 + 转写调用（service 归属由调用方注入）。"""
+    """STT 后端条目：名字 + 探测 + 转写调用（`service` 由调用方注入）。"""
+
     name: str
     is_available: Callable[[], bool]
     call: Callable[..., Any]
 
 
-def _probe_whisper() -> bool:
-    try:
-        import importlib.util
-        return importlib.util.find_spec("whisper") is not None
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _probe_faster_whisper() -> bool:
-    try:
-        import importlib.util
-        return importlib.util.find_spec("faster_whisper") is not None
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def ensure_stt_providers_registered() -> None:
-    """登记两个内置 STT 后端（幂等；插件在则让位）。"""
-    from clipwright.plugins.contribution import Contribution, ContributionKind
-    from clipwright.providers.builtin_registry import register_builtin_once
-
-    def _call_whisper(service: Any, audio_file: str, language: str,
-                      model_size: str, word_timestamps: bool) -> Any:
-        return service._transcribe_whisper(audio_file, language, model_size, word_timestamps)
-
-    def _call_faster(service: Any, audio_file: str, language: str,
-                     model_size: str, word_timestamps: bool) -> Any:
-        return service._transcribe_faster_whisper(
-            audio_file, language, model_size, word_timestamps)
-
-    register_builtin_once(
-        ContributionKind.STT_PROVIDER,
-        "whisper",
-        [
-            Contribution(ContributionKind.STT_PROVIDER, "whisper", SttBackendEntry(
-                name="whisper", is_available=_probe_whisper, call=_call_whisper,
-            )),
-            Contribution(ContributionKind.STT_PROVIDER, "faster-whisper", SttBackendEntry(
-                name="faster-whisper", is_available=_probe_faster_whisper, call=_call_faster,
-            )),
-        ],
-    )
-
-
-#: 内置后端的尝试顺序（与旧硬编码一致；插件后端排在其后）
-_BUILTIN_ORDER = ("whisper", "faster-whisper")
-
-
 def resolve_stt_backends(service: Any) -> list[tuple[str, Callable[..., Any]]]:
-    """返回有序的 (backend_name, callable) 列表供 `_transcribe_any` 遍历。
+    """返回有序的 `(backend_name, callable)` 列表（只读注册表）。
 
-    门面不可用（极端环境）时返回空列表，由调用方回退旧顺序。
+    顺序由贡献 `meta["order"]` 决定（缺省 100，同值按 id 兜底）——**顺序是能力方的知识**，
+    engine 不硬编码后端名；插件被禁用/没有贡献时返回空列表。
     """
     try:
         from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
 
-        ensure_stt_providers_registered()
-        entries = {c.id: c.object for _, c in ContributionRegistry.list(ContributionKind.STT_PROVIDER)}
-        if not entries:
-            return []
-        ordered: list[tuple[str, Callable[..., Any]]] = []
-        for name in _BUILTIN_ORDER:
-            entry = entries.pop(name, None)
-            if entry is not None:
-                ordered.append((name, _bind(entry, service)))
-        for name in sorted(entries):  # 插件贡献的 STT 后端（字典序，确定性）
-            ordered.append((name, _bind(entries[name], service)))
-        return ordered
-    except Exception:  # noqa: BLE001 — 解析失败不阻断（调用方回退）
+        entries = [
+            (item, int(item.meta.get("order", 100) or 100))
+            for _, item in ContributionRegistry.list(ContributionKind.STT_PROVIDER)
+        ]
+        entries.sort(key=lambda pair: (pair[1], pair[0].id))
+        return [(item.id, _bind(item.object, service)) for item, _ in entries]
+    except Exception:  # noqa: BLE001 — 解析失败不阻断（调用方按无后端处理）
         return []
 
 
 def _bind(entry: Any, service: Any) -> Callable[..., Any]:
-    """把条目绑定到具体并返回 callable。"""
+    """把条目绑定到具体 service 并返回 callable。"""
     if isinstance(entry, SttBackendEntry):
         return lambda *a, **k: entry.call(service, *a, **k)
-    # 插件贡献：允许直接提供 transcribe(audio_file, **kwargs) 形态
+    # 第三方贡献：允许直接提供 transcribe(audio_file, **kwargs) 形态
     fn = getattr(entry, "transcribe", None)
     if callable(fn):
         return lambda audio_file, language, model_size, word_timestamps: fn(

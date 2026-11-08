@@ -20,6 +20,15 @@ from types import SimpleNamespace
 import pytest
 
 from clipwright.services.stt import STTService
+from plugins.stt_providers import backends as stt_backends
+
+
+@pytest.fixture(autouse=True)
+def _reset_model_caches():
+    """B7-T7.4 起模型缓存在插件模块；每个用例前后清空，避免跨用例互相影响。"""
+    stt_backends.reset_caches()
+    yield
+    stt_backends.reset_caches()
 
 
 class _FakeWhisperModel:
@@ -104,8 +113,8 @@ class TestB8WhisperCachePerSize:
         svc._transcribe_whisper("a.wav", "", "tiny", True)
         svc._transcribe_whisper("a.wav", "", "large", True)
 
-        assert len(svc._models) == 2
-        assert set(svc._models) == {"tiny", "large"}
+        assert len(stt_backends._MODELS) == 2
+        assert set(stt_backends._MODELS) == {"tiny", "large"}
 
 
 class TestB9FasterWhisperCache:
@@ -131,7 +140,7 @@ class TestB9FasterWhisperCache:
         svc._transcribe_faster_whisper("a.wav", "", "medium", True)
 
         assert _FakeFasterWhisperModel.constructed_sizes == ["small", "medium"]
-        assert len(svc._faster_models) == 2
+        assert len(stt_backends._FASTER_MODELS) == 2
 
 
 class TestB10EnsureAudioWarning:
