@@ -966,3 +966,11 @@ Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String -Pattern "contrac
 
 > **T7.5 仍剩**：`config.py` 的 `Literal` 枚举、`providers/model_listing.py` 按名默认端点、
 > `rag/embedder.py:176-180`、`animation/mg/visual_eval.py:165`、`api/render.py` 的 `"local"`。
+
+| **T7.5（续 2）** MG 视觉评估去厂商名 | ✅ 已完成本轮 | `animation/mg/visual_eval.py` 不再 `if provider == "anthropic"`——解析 provider impl 后按 `llm_vision_message_format()` 组图（与 `services/vision.py` 同一能力位）；自检 `provider_name_branches_removed` 扩到该文件 | 自检 **21/21**；`pytest -k "visual"` 46 passed；`import clipwright.main` ok（前一命令组已验证） |
+
+> **T7.5 剩余（三项，均有行为语义待定）**：`config.py` 的 `Literal` 枚举（改 `str` + 启动期注册表校验）、
+> `providers/model_listing.py` 的按名默认端点（需 provider 声明 `default_base_url()`）、
+> `rag/embedder.py:176-180`（`provider in ("openai","ollama")` + ollama base_url 默认值；
+> 改走 `resolve_embedding_provider(...).create_embedder()` 会改变"插件缺失时的兜底"语义，
+> 需与 A6 口径一起裁定）、`api/render.py` 的 `"local"` 渲染后端（需定义默认后端能力位）。
