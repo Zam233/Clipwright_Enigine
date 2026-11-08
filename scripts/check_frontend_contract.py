@@ -212,8 +212,11 @@ def backend_routes() -> dict[str, set[str]]:
     """{路径模板: {允许的方法}}（来自 FastAPI 路由表）。"""
     from clipwright.main import app
 
+    # FastAPI 0.162 起 `app.routes` 不再等价于「全部已注册路由」（实测 CI 只剩 1 条）；
+    # 路由表的稳定来源是 `app.router.routes`。老版本两者相同。
+    routes = getattr(getattr(app, "router", None), "routes", None) or getattr(app, "routes", [])
     out: dict[str, set[str]] = {}
-    for route in app.routes:
+    for route in routes:
         path = getattr(route, "path", "")
         if not path.startswith("/api/"):
             continue
