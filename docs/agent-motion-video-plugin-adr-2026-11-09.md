@@ -109,3 +109,4 @@
 | narration_events | 无需改动 | 只按 audio/animation 判定，插件 kind 不参与 |
 | 真实 ffmpeg 媒体契约 | 已验证 | `test_media_contract_real.py`（透明 ProRes 通过、无 alpha 拒绝） |
 | 真实 ffmpeg overlay 合成 | 已验证 | `test_real_render_overlay.py`（底层视频 + 插件 kind 出片成功） |
+| M7 独立插件骨架 | 已建立 | `J:\clipwright-motion-plugin`（category/clip_kind/工程工具/渲染回调，smoke + e2e 通过） |
