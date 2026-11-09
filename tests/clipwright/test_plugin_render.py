@@ -122,6 +122,30 @@ async def test_missing_renderer_tool(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_materialize_uses_resolver_and_owner_plugin(tmp_path):
+    """host 可以是 plugin_id→host 的解析函数；请求里的 plugin_id 取定义 owner。"""
+    host = FakeHost(_payload(tmp_path))
+    seen: list[str] = []
+
+    def resolver(plugin_id: str):
+        seen.append(plugin_id)
+        return host
+
+    timeline = await materialize_plugin_clips(
+        _timeline(), host=resolver, scope=RenderScope("ignored", "proj-1"),
+        width=1920, height=1080, fps=30.0, probe=_probe_ok,
+    )
+    assert seen == ["demo"]
+    assert timeline.tracks[0].clips[0].kind == "video"
+
+
+def test_api_kwargs_empty_for_builtin():
+    from clipwright.api.render import _plugin_render_kwargs
+
+    assert _plugin_render_kwargs(_timeline("video")) == {}
+
+
+@pytest.mark.asyncio
 async def test_render_requires_plugin_scope(tmp_path, monkeypatch):
     """RenderService 遇到插件片段但没给 host/scope 时，必须显式失败。"""
     from clipwright.services import render as render_mod
