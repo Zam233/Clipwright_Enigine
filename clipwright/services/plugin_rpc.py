@@ -40,6 +40,20 @@ ERR_REVISION_CONFLICT = "REVISION_CONFLICT"
 
 #: 进程内共享的 runtime 登记表 / job 管理器（管理员登记 runtime 后所有插件共用）
 _RUNTIMES = RuntimeRegistry()
+#: 已加载插件的 host 与 manifest（M5 跨插件调用需要）
+_PLUGIN_HOSTS: dict[str, Any] = {}
+_PLUGIN_MANIFESTS: dict[str, Any] = {}
+#: 任务当前的 Timeline（M6）：渲染路径登记，供 timeline.summary 只读查询
+_TIMELINES: dict[str, Any] = {}
+
+
+def register_timeline(task_id: str, timeline: Any) -> None:
+    if task_id:
+        _TIMELINES[str(task_id)] = timeline
+
+
+def unregister_timeline(task_id: str) -> None:
+    _TIMELINES.pop(str(task_id or ""), None)
 _JOB_MANAGER: PluginJobManager | None = None
 
 
@@ -97,9 +111,26 @@ def _wrap(fn: Any) -> Any:
     return _handler
 
 
-def install_default_handlers(host: Any) -> None:
+def register_plugin_runtime(plugin_id: str, host: Any, manifest: Any = None) -> None:
+    """登记插件 host/manifest（loader 加载后调用，M5 使用）。"""
+    pid = str(plugin_id or "")
+    if not pid:
+        return
+    _PLUGIN_HOSTS[pid] = host
+    if manifest is not None:
+        _PLUGIN_MANIFESTS[pid] = manifest
+
+
+def unregister_plugin_runtime(plugin_id: str) -> None:
+    pid = str(plugin_id or "")
+    _PLUGIN_HOSTS.pop(pid, None)
+    _PLUGIN_MANIFESTS.pop(pid, None)
+
+
+def install_default_handlers(host: Any, manifest: Any = None) -> None:
     """给一个 PluginHost 注册 workspace/artifact 通用方法。"""
     plugin_id = str(getattr(host, "plugin_id", "") or "")
+    register_plugin_runtime(plugin_id, host, manifest)
 
     def _workspace(scope: dict[str, Any]) -> PluginWorkspace:
         parsed = PluginScope.from_payload(scope, expected_plugin=plugin_id)
@@ -214,6 +245,67 @@ def install_default_handlers(host: Any) -> None:
             raise RpcError("BAD_REQUEST", "artifact_id 不能为空")
         return _artifacts(scope).get(artifact_id)
 
+    @_wrap
+    def timeline_summary(params: dict[str, Any], scope: dict[str, Any]) -> Any:
+        """M6：任务时间线只读摘要（不含 clip 明细，明细走 neighbors）。"""
+        parsed = PluginScope.from_payload(scope, expected_plugin=plugin_id)
+        timeline = _TIMELINES.get(parsed.task_id)
+        if timeline is None:
+            raise RpcError("NOT_FOUND", f"任务时间线未登记: {parsed.task_id}")
+        tracks = list(getattr(timeline, "tracks", []) or [])
+        return {
+            "duration_sec": float(getattr(timeline, "duration_sec", 0.0) or 0.0),
+            "width": int(getattr(timeline, "width", 0) or 0),
+            "height": int(getattr(timeline, "height", 0) or 0),
+            "fps": float(getattr(timeline, "fps", 0.0) or 0.0),
+            "track_count": len(tracks),
+            "clip_count": sum(len(getattr(t, "clips", []) or []) for t in tracks),
+        }
+
+    async def plugin_call(params: dict[str, Any], scope: dict[str, Any]) -> Any:
+        """M5：跨插件调用（依赖声明 + exposes 白名单 + 链深/环检测）。"""
+        parsed = PluginScope.from_payload(scope, expected_plugin=plugin_id)
+        target = str(params.get("plugin_id") or "").strip()
+        kind = str(params.get("kind") or "tool").strip().lower()
+        cid = str(params.get("id") or "").strip()
+        chain = [str(x) for x in (params.get("chain") or []) if str(x)]
+        if not target or not cid or kind not in ("tool", "skill"):
+            raise RpcError("BAD_REQUEST",
+                           "plugin.call 需要 plugin_id / kind(tool|skill) / id")
+        if target == plugin_id or target in chain or len(chain) >= 2:
+            raise RpcError(ERR_PERMISSION_DENIED, "插件调用链过深或成环")
+        caller_md = _PLUGIN_MANIFESTS.get(plugin_id)
+        deps = list(getattr(caller_md, "dependencies", []) or []) if caller_md else []
+        if target not in deps:
+            raise RpcError(ERR_PERMISSION_DENIED,
+                           f"未在 manifest.dependencies 声明目标插件: {target}")
+        target_host = _PLUGIN_HOSTS.get(target)
+        target_md = _PLUGIN_MANIFESTS.get(target)
+        if target_host is None or target_md is None:
+            raise RpcError("UNKNOWN_PLUGIN", f"目标插件未加载: {target}")
+        exposes = list((getattr(target_md, "runtime_config", {}) or {}).get("exposes") or [])
+        if "*" not in exposes and f"{kind}:{cid}" not in exposes:
+            raise RpcError(ERR_PERMISSION_DENIED,
+                           f"目标插件未暴露 {kind}:{cid}")
+        target_scope = {
+            "plugin_id": target,
+            "project_id": parsed.project_id,
+            "task_id": parsed.task_id,
+        }
+        method = "tool.call" if kind == "tool" else "skill.call"
+        payload = {
+            "id": cid,
+            "input": params.get("input") or {},
+            "scope": target_scope,
+            "chain": chain + [plugin_id],
+        }
+        result = await target_host.invoke(
+            method, payload,
+            timeout=float(params.get("timeout") or 120.0),
+            scope=target_scope,
+        )
+        return {"plugin_id": target, "kind": kind, "id": cid, "result": result}
+
     # ── 通用 job（M3）──────────────────────────────────
     async def job_submit(scope: PluginScope, params: dict[str, Any]) -> Any:
         record = await job_manager().submit(
@@ -249,6 +341,8 @@ def install_default_handlers(host: Any) -> None:
     host.register_handler("artifact.get", artifact_get)
     host.register_handler("materials.list", materials_list)
     host.register_handler("materials.read", materials_read)
+    host.register_handler("plugin.call", plugin_call)
+    host.register_handler("timeline.summary", timeline_summary)
     # M4：job 取消/超时/任务取消 → 转发为 worker 事件
     job_manager().register_listener(plugin_id, host.notify)
     host.register_handler("job.submit", _job_wrap(plugin_id, job_submit))

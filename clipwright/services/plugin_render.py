@@ -226,6 +226,13 @@ async def materialize_plugin_clips(
     engine 在这里只调用插件 renderer + 校验媒体；插件工程文件不参与解析。
     """
     result = timeline.model_copy(deep=True)
+    # M6：给插件的 timeline.summary 提供只读快照
+    try:
+        from clipwright.services.plugin_rpc import register_timeline
+
+        register_timeline(scope.task_id, result)
+    except Exception:  # noqa: BLE001 — 登记失败不影响渲染
+        pass
     for track in result.tracks:
         definition = ClipKindRegistry.get(str(track.kind))
         is_plugin_track = bool(definition and not definition.builtin)

@@ -475,7 +475,7 @@ class PluginLoader:
             # M2：通用 workspace/artifact handler（无领域语义）
             from clipwright.services.plugin_rpc import install_default_handlers
 
-            install_default_handlers(host)
+            install_default_handlers(host, manifest=manifest)
             self._register_declarations(plugin_id, host, declarations, make_proxy, manifest)
         except Exception:
             self._hosts.pop(plugin_id, None)
@@ -591,6 +591,12 @@ class PluginLoader:
         Skill/Category/Prompt 为本次补齐，MaterialSource 沿用插件 shutdown
         自清（已有 3 个 AI 插件实现）。
         """
+        try:
+            from clipwright.services.plugin_rpc import unregister_plugin_runtime
+
+            unregister_plugin_runtime(plugin_id)
+        except Exception as e:  # noqa: BLE001 — 注销失败不阻断其他回收
+            logger.warning("插件 %s runtime 登记注销异常: %s", plugin_id, e)
         try:
             from clipwright.plugins.hooks import HookRegistry
             HookRegistry.unregister_plugin(plugin_id)

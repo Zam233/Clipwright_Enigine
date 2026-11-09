@@ -278,8 +278,8 @@ M1 必须先做（安全债）；M2/M3 可并行；M7 依赖 M5 的授权模型�
 | M2 请求上下文 v2 | ✅ 核心完成（插件侧未接） | `services/plugin_context.py`（context/cues/audio/materials/neighbors/render_settings + 截断）；`build_request` 按 `render_contract` 组装 v2；7 例测试 |
 | M3 只读素材/artifact scope | ✅ 完成 | `services/plugin_materials.py`；`materials.list/read`、`artifact.list(scope=own/task)`；`test_plugin_materials.py` 4 例 + `test_plugin_materials_rpc.py` 1 例 |
 | M4 事件/取消 | ✅ 完成 | 协议 `event` 帧、`host.notify`、`bridge.on_event`/`emit_event`、job 取消/超时/task 取消通知；`test_plugin_events_m4.py` 2 例 + `test_plugin_jobs.py` 3 例 |
-| M5 跨插件调用 | 未开始 | — |
-| M6 timeline 读模型 | 部分（neighbors 已有基础） | 仍缺 `timeline.summary` RPC |
+| M5 跨插件调用 | ✅ 完成 | `plugin.call`（dependencies + runtime_config.exposes + 链深/环）；`test_plugin_cross_call_m5.py` 3 例 |
+| M6 timeline 读模型 | ✅ 完成 | `timeline.summary`（task 级只读快照）；`test_plugin_timeline_m6.py` 2 例 |
 | M7 引擎能力受控 | 未开始 | — |
 | M8 文档/迁移/回归 | 进行中（本表 + API 文档待补） | — |
 
