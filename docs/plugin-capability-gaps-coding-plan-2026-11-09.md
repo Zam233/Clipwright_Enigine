@@ -280,8 +280,8 @@ M1 必须先做（安全债）；M2/M3 可并行；M7 依赖 M5 的授权模型�
 | M4 事件/取消 | ✅ 完成 | 协议 `event` 帧、`host.notify`、`bridge.on_event`/`emit_event`、job 取消/超时/task 取消通知；`test_plugin_events_m4.py` 2 例 + `test_plugin_jobs.py` 3 例 |
 | M5 跨插件调用 | ✅ 完成 | `plugin.call`（dependencies + runtime_config.exposes + 链深/环）；`test_plugin_cross_call_m5.py` 3 例 |
 | M6 timeline 读模型 | ✅ 完成 | `timeline.summary`（task 级只读快照）；`test_plugin_timeline_m6.py` 2 例 |
-| M7 引擎能力受控 | 未开始 | — |
-| M8 文档/迁移/回归 | 进行中（本表 + API 文档待补） | — |
+| M7 引擎能力受控 | ✅ 完成 | `capability.call`（默认 align/frame_check/media_probe，其余需 manifest `capabilities`）；`test_plugin_capability_m7.py` 3 例 |
+| M8 文档/迁移/回归 | ✅ 完成 | `docs/plugin-sdk.md`（方法/请求 v2/错误码/安全模型/兼容）；全量插件面回归 88 例通过 |
 
 ## 9. 工作量估算
 

@@ -245,6 +245,37 @@ def install_default_handlers(host: Any, manifest: Any = None) -> None:
             raise RpcError("BAD_REQUEST", "artifact_id 不能为空")
         return _artifacts(scope).get(artifact_id)
 
+    #: M7：默认放行的引擎能力（只读/计算类）；LLM/搜索等需 manifest 显式授权
+    default_capabilities = {"media_probe", "frame_check", "align"}
+
+    async def capability_call(params: dict[str, Any], scope: dict[str, Any]) -> Any:
+        parsed = PluginScope.from_payload(scope, expected_plugin=plugin_id)
+        _ = parsed
+        name = str(params.get("name") or "").strip()
+        if not name:
+            raise RpcError("BAD_REQUEST", "capability.call 需要 name")
+        manifest = _PLUGIN_MANIFESTS.get(plugin_id)
+        granted = set((getattr(manifest, "runtime_config", {}) or {}).get("capabilities") or [])
+        if name not in default_capabilities and name not in granted:
+            raise RpcError(
+                ERR_PERMISSION_DENIED,
+                f"能力 {name!r} 未授权（默认: {sorted(default_capabilities)}；"
+                "其他能力需 manifest.runtime_config.capabilities 声明）",
+            )
+        from clipwright.tool.capabilities import resolve
+
+        tool = resolve(name)
+        if tool is None:
+            raise RpcError("UNAVAILABLE", f"当前没有可用的能力实现: {name}")
+        payload = dict(params.get("input") or {})
+        fn = getattr(tool, "execute_async", None) or getattr(tool, "execute")
+        result = fn(**payload)
+        if inspect.isawaitable(result):
+            result = await result
+        if hasattr(result, "model_dump"):
+            return result.model_dump(mode="json")
+        return result
+
     @_wrap
     def timeline_summary(params: dict[str, Any], scope: dict[str, Any]) -> Any:
         """M6：任务时间线只读摘要（不含 clip 明细，明细走 neighbors）。"""
@@ -343,6 +374,7 @@ def install_default_handlers(host: Any, manifest: Any = None) -> None:
     host.register_handler("materials.read", materials_read)
     host.register_handler("plugin.call", plugin_call)
     host.register_handler("timeline.summary", timeline_summary)
+    host.register_handler("capability.call", capability_call)
     # M4：job 取消/超时/任务取消 → 转发为 worker 事件
     job_manager().register_listener(plugin_id, host.notify)
     host.register_handler("job.submit", _job_wrap(plugin_id, job_submit))
