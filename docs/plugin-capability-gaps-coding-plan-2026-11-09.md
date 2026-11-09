@@ -270,7 +270,20 @@ M1 必须先做（安全债）；M2/M3 可并行；M7 依赖 M5 的授权模型�
 - [ ] 引擎能力按 grant 开放，带配额与审计。
 - [ ] v1 插件零改动可运行；全量回归通过。
 
-## 8. 工作量估算
+## 8. 执行进度
+
+| 里程碑 | 状态 | 证据 |
+|---|---|---|
+| M1 安全基线 | ✅ 完成 | `host.py` ENV_ALLOWLIST；`permissions.check_read_path`（读根=插件目录/Python 环境/sys.path）；`test_plugin_security_m1.py` 2 例、权限单测 16 例、子进程回归 27 例 |
+| M2 请求上下文 v2 | ✅ 核心完成（插件侧未接） | `services/plugin_context.py`（context/cues/audio/materials/neighbors/render_settings + 截断）；`build_request` 按 `render_contract` 组装 v2；7 例测试 |
+| M3 只读素材/artifact | 未开始 | — |
+| M4 事件/取消 | 未开始 | — |
+| M5 跨插件调用 | 未开始 | — |
+| M6 timeline 读模型 | 部分（neighbors 已有基础） | 仍缺 `timeline.summary` RPC |
+| M7 引擎能力受控 | 未开始 | — |
+| M8 文档/迁移/回归 | 进行中（本表 + API 文档待补） | — |
+
+## 9. 工作量估算
 
 | 里程碑 | 估时 |
 |---|---|
