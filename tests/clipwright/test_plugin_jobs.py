@@ -146,3 +146,37 @@ class TestLifecycle:
         assert manager.get(scope, job.job_id)["status"] == "running"
         assert manager.recover_interrupted() >= 1
         assert manager.get(scope, job.job_id)["status"] == "interrupted"
+
+    @pytest.mark.asyncio
+    async def test_listener_gets_cancel_event(self, manager, scope):
+        events: list[tuple[str, dict]] = []
+        manager.register_listener("demo", lambda name, payload: events.append((name, payload)))
+        job = await manager.submit(
+            scope, runtime_id="py", argv=["-c", "import time;time.sleep(5)"],
+        )
+        await asyncio.sleep(0.2)
+        await manager.cancel(scope, job.job_id)
+        assert events and events[0][0] == "job.cancelled"
+        assert events[0][1]["job_id"] == job.job_id
+
+    @pytest.mark.asyncio
+    async def test_listener_gets_task_cancel_event(self, manager, scope):
+        events: list[tuple[str, dict]] = []
+        manager.register_listener("demo", lambda name, payload: events.append((name, payload)))
+        await manager.submit(
+            scope, runtime_id="py", argv=["-c", "import time;time.sleep(5)"],
+        )
+        await asyncio.sleep(0.2)
+        manager.cancel_for_task("t1")
+        assert any(name == "task.cancelled" for name, _ in events)
+
+    @pytest.mark.asyncio
+    async def test_listener_gets_timeout_event(self, manager, scope):
+        events: list[tuple[str, dict]] = []
+        manager.register_listener("demo", lambda name, payload: events.append((name, payload)))
+        job = await manager.submit(
+            scope, runtime_id="py",
+            argv=["-c", "import time;time.sleep(5)"], timeout_ms=200,
+        )
+        await _wait(manager, scope, job.job_id, timeout=10)
+        assert any(name == "job.timed_out" for name, _ in events)

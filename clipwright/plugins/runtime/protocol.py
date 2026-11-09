@@ -164,6 +164,22 @@ def check_version(message: dict[str, Any]) -> None:
         )
 
 
+def event_frame(name: str, payload: dict[str, Any] | None = None,
+                *, direction: str = DIRECTION_HOST) -> dict[str, Any]:
+    """host→worker 的单向事件（进度/取消）。不占请求 id，不需要响应。"""
+    return {
+        "v": PROTOCOL_VERSION,
+        "direction": str(direction),
+        "kind": "event",
+        "event": str(name),
+        "payload": payload or {},
+    }
+
+
+def is_event(message: dict[str, Any]) -> bool:
+    return message.get("kind") == "event" and "event" in message
+
+
 def is_request(message: dict[str, Any]) -> bool:
     """请求帧：带 method、不带 ok 字段。"""
     return "method" in message and "ok" not in message

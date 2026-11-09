@@ -40,7 +40,9 @@ from clipwright.plugins.runtime.protocol import (
     decode,
     direction_of,
     encode,
+    event_frame,
     fail,
+    is_event,
     is_request,
     is_response,
     ok,
@@ -198,6 +200,17 @@ class PluginHost:
         self._fail_pending(ERR_WORKER_DEAD, self._dead_reason)
 
     # ── v2：worker → host 请求 ────────────────────────
+
+    def notify(self, name: str, payload: dict[str, Any] | None = None) -> bool:
+        """向 worker 推送一条单向事件（M4）；worker 不可用时返回 False。"""
+        if not self.alive:
+            return False
+        try:
+            self._write(event_frame(name, payload or {}))
+            return True
+        except Exception as e:  # noqa: BLE001 — 通知失败不应影响业务
+            logger.debug("插件 %s 事件推送失败 %s: %s", self.plugin_id, name, e)
+            return False
 
     def register_handler(self, method: str, handler: Any) -> None:
         """注册一个可被 worker 调用的宿主方法。

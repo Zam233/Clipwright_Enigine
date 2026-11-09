@@ -30,6 +30,7 @@ from clipwright.plugins.runtime.protocol import (
     direction_of,
     encode,
     fail,
+    is_event,
     is_request,
     is_response,
     ok,
@@ -139,6 +140,12 @@ async def serve(runtime: Any, out: Any,
                 check_version(message)
             except RpcError as e:
                 sys.stderr.write(f"[worker] 非法帧: {e.code} {e.message}\n")
+                continue
+            if is_event(message):
+                bridge.emit_event(
+                    str(message.get("event") or ""),
+                    dict(message.get("payload") or {}),
+                )
                 continue
             if is_response(message):
                 rpc.resolve(message)

@@ -153,6 +153,22 @@ class PluginJobManager:
         self._locks: dict[str, asyncio.Lock] = {}
         #: 首次 submit 时记录宿主循环，供 task 取消（同步调用点）调度进程终止
         self._loop: asyncio.AbstractEventLoop | None = None
+        #: 事件监听（M4）：plugin_id → fn(name, payload)
+        self._listeners: dict[str, Any] = {}
+
+    def register_listener(self, plugin_id: str, fn: Any) -> None:
+        """注册插件事件监听（通常是 host.notify）。"""
+        if plugin_id and callable(fn):
+            self._listeners[str(plugin_id)] = fn
+
+    def _notify(self, plugin_id: str, name: str, payload: dict[str, Any]) -> None:
+        fn = self._listeners.get(str(plugin_id))
+        if fn is None:
+            return
+        try:
+            fn(str(name), dict(payload))
+        except Exception as e:  # noqa: BLE001 — 通知失败不影响 job 状态
+            logger.debug("job 事件通知失败 %s/%s: %s", plugin_id, name, e)
 
     # ── 提交 ──────────────────────────────────────────
     async def submit(
@@ -225,6 +241,8 @@ class PluginJobManager:
         task = self._tasks.get(job.job_id)
         if task and not task.done():
             task.cancel()
+        self._notify(job.plugin_id, "job.cancelled",
+                     {"job_id": job.job_id, "reason": "user_cancel"})
         return job.to_dict()
 
     def cancel_for_task(self, task_id: str) -> int:
@@ -240,6 +258,8 @@ class PluginJobManager:
             job.status = "cancelled"
             job.finished_at = time.time()
             job.error = "任务被取消"
+            self._notify(job.plugin_id, "task.cancelled",
+                         {"job_id": job.job_id, "task_id": job.task_id})
             proc = self._procs.get(job.job_id)
             task = self._tasks.get(job.job_id)
             loop = self._loop
@@ -314,6 +334,8 @@ class PluginJobManager:
             except asyncio.TimeoutError:
                 job.status = "timed_out"
                 job.error = f"超时（{timeout_ms}ms）"
+                self._notify(job.plugin_id, "job.timed_out",
+                             {"job_id": job.job_id, "timeout_ms": timeout_ms})
                 await self._kill_tree(proc)
             except asyncio.CancelledError:
                 job.status = "cancelled"

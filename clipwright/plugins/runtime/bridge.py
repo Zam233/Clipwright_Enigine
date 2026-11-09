@@ -24,6 +24,31 @@ from clipwright.plugins.runtime.protocol import RpcError
 _client: Optional[Any] = None
 #: 当前请求的 scope（宿主随 tool.call/clip.render 下发），插件的 call_host 默认沿用它
 _SCOPE: ContextVar[dict[str, Any]] = ContextVar("plugin_rpc_scope", default={})
+#: 事件订阅者（M4）：handler(name, payload)，可同步或异步
+_EVENT_HANDLERS: list[Any] = []
+
+
+def on_event(handler: Any) -> Any:
+    """订阅宿主事件（job.progress / job.cancelled / task.cancelled）。"""
+    _EVENT_HANDLERS.append(handler)
+    return handler
+
+
+def emit_event(name: str, payload: dict[str, Any]) -> None:
+    """worker 读循环收到 event 帧时调用；单个 handler 异常不影响其他订阅者。"""
+    import asyncio
+    import inspect
+
+    for handler in list(_EVENT_HANDLERS):
+        try:
+            result = handler(str(name), dict(payload or {}))
+            if inspect.isawaitable(result):
+                try:
+                    asyncio.get_running_loop().create_task(result)
+                except RuntimeError:  # pragma: no cover — 无运行循环
+                    pass
+        except Exception:  # noqa: BLE001 — 订阅者异常不能打断协议循环
+            continue
 
 
 def set_scope(scope: dict[str, Any]) -> Token:
@@ -77,6 +102,6 @@ async def call_host(
 
 
 __all__ = [
-    "available", "bind", "call_host", "current_scope", "reset_scope",
-    "set_scope", "unbind",
+    "available", "bind", "call_host", "current_scope", "emit_event",
+    "on_event", "reset_scope", "set_scope", "unbind",
 ]

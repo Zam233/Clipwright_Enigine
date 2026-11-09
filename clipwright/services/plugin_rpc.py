@@ -249,6 +249,8 @@ def install_default_handlers(host: Any) -> None:
     host.register_handler("artifact.get", artifact_get)
     host.register_handler("materials.list", materials_list)
     host.register_handler("materials.read", materials_read)
+    # M4：job 取消/超时/任务取消 → 转发为 worker 事件
+    job_manager().register_listener(plugin_id, host.notify)
     host.register_handler("job.submit", _job_wrap(plugin_id, job_submit))
     host.register_handler("job.status", _job_wrap(plugin_id, job_status))
     host.register_handler("job.list", _job_wrap(plugin_id, job_list))
