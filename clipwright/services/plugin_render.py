@@ -93,6 +93,28 @@ async def render_clip(host: Any, request: dict[str, Any],
     return payload
 
 
+def _resolve_payload_path(payload: dict[str, Any], scope: RenderScope) -> dict[str, Any]:
+    """插件只给 artifact_id 时，宿主从登记表解析真实路径（校验归属与 hash）。"""
+    if str(payload.get("path") or "").strip():
+        return payload
+    artifact_id = str(payload.get("artifact_id") or "").strip()
+    if not artifact_id:
+        return payload
+    from clipwright.services.plugin_workspace import (
+        PluginArtifactRegistry,
+        PluginScope,
+        PluginWorkspace,
+    )
+
+    registry = PluginArtifactRegistry(PluginWorkspace(PluginScope(
+        plugin_id=scope.plugin_id,
+        project_id=scope.project_id,
+        task_id=scope.task_id,
+    )))
+    path = registry.raw_path(artifact_id)
+    return {**payload, "path": str(path)}
+
+
 def probe_media(path: str | Path) -> dict[str, Any]:
     """用 ffprobe 读媒体事实（宽/高/帧率/时长/像素格式）。"""
     cmd = [
@@ -211,6 +233,9 @@ async def materialize_plugin_clips(
             payload = await render_clip(
                 clip_host, request, renderer_tool=definition.renderer_tool,
             )
+            # 插件可以只回 artifact_id：由宿主按登记表取真实路径，避免把本地绝对路径
+            # 暴露给插件/模型。
+            payload = _resolve_payload_path(payload, clip_scope)
             overlay = validate_result(payload, request, probe=probe)
             clip.kind = "video"
             clip.asset_id = overlay["source_path"]
