@@ -97,4 +97,6 @@
 | RenderService 对插件片段的前置回调与显式失败 | 已实现 | `services/render.py`（需调用方传 `plugin_host/plugin_scope`） |
 | M5 测试 | 已通过 | `test_plugin_render.py`（8） |
 | API 渲染入口传入插件 host/scope | 未接线 | 待下一轮（`api/render.py` 调用点） |
-| Category/Skill subprocess 适配、artifact UI（M6） | 未开始 | 后续里程碑 |
+| 通用 artifact API（列表/raw/分页） | 已实现 | `services/artifact_query.py`、`api/artifacts.py` |
+| 通用 artifact UI（列表 + MIME 播放） | 已实现（前端仓 `eb53974`） | `TaskArtifacts.tsx`、`services/api/artifacts.ts` |
+| Category/Skill subprocess 适配 | 未开始 | 后续里程碑 |
