@@ -102,4 +102,7 @@
 | Category subprocess 适配（meta 静态 + `category.*` RPC） | 已实现 | `plugins/category_adapter.py`、`worker.py`、`loader.py` |
 | Skill subprocess 适配（meta + `skill.call` RPC） | 已实现 | `plugins/skill_adapter.py`、`worker.py`、`loader.py` |
 | M4 Category/Skill 测试 | 已通过 | `test_category_subprocess.py`、`test_skill_subprocess.py` |
-| quality/preroll/narration/trait 消费者迁移 | 未开始 | 后续里程碑 |
+| quality 消费者迁移（插件 kind 视为视觉轨） | 已实现 | `agents/quality_agent.py::_is_visual_kind` |
+| runtime 管理 API（列表/登记） | 已实现 | `api/plugin.py` `/api/plugin/runtimes` |
+| M4 收尾测试 | 已通过 | `test_runtime_api_and_quality.py` |
+| preroll/narration/trait 消费者迁移 | 未开始 | 目前靠未知 kind 分支，不误判但不参与统计 |
