@@ -128,6 +128,10 @@ class ClipKindRegistry:
 
     @classmethod
     def clear(cls) -> None:
+        # 同步收回 schema 的插件 kind 白名单，否则 clear 后旧值仍被接受
+        for definition in list(cls._defs.values()):
+            if not definition.builtin:
+                unregister_plugin_clip_kind(definition.kind_id)
         cls._defs.clear()
 
 
