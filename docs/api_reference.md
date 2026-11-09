@@ -778,6 +778,8 @@ curl -X POST http://localhost:8080/api/voice/dub \
 | `GET /api/plugin/{plugin_id}/ui` | 获取插件 UI 定义 |
 | `GET /api/plugin/health` | 插件健康聚合（ok/degraded/error 分类 + Hook/Agent 计数） |
 | `GET /api/plugin/contributions?kind=&slot=&owner=` | 已注册贡献清单（kind:id → owner）。前端按 slot 拉取插件 UI 贡献，**唯一的贡献数据源** |
+| `GET /api/plugin/runtimes` | 已登记的不透明运行时（runtime_id/version/approved；**不返回可执行文件路径**） |
+| `POST /api/plugin/runtimes` | 登记/更新 runtime（管理员）。body：`runtime_id/executable/version/digest/approved`；批准状态显式传入 |
 | `GET /api/plugin/prompt-symbols` | **提示词符号清单与来源**：26 常量 + 8 builder、签名、是否被插件覆盖、覆盖它的 plugin id、`wired`（false = 还没有消费方在运行时解析，**覆盖了也不生效**）、最近被拒绝的覆盖原因。不返回提示词正文，只给长度 |
 
 **插件 Agent（SA-2/3/4）**：插件 manifest 声明 `kind: agent` + `permissions: [orchestrate]` 后，可在 `initialize()` 经 `AgentRegistry.register(agent, name, plugin_id, deps)` 注册自定义 Agent——按 deps 并入主管线 DAG（输入 `PluginAgentInput`、输出 `PluginAgentOutput`），或经 `services.subagent.run_sub_agent(ctx, name, payload)` 作为子代理被宿主 Agent 调用（嵌套深度上限 2、宿主取消感知、用量以「宿主:子代理」复合名归因、熔断 3 次/60s、默认 120s 超时）。Agent 边界 Hook `PRE_AGENT`（改写 input/skip）与 `POST_AGENT`（只读观测）已在管线接线。
@@ -950,6 +952,15 @@ secret 字段（密钥类）读取时只返回 `has_value` 与掩码占位、绝
 | `generate_captions` | 字幕生成 |
 | `analyze_audio_rhythm` | 音频节奏分析 |
 | `dub_script` | 文案切分 + 逐段配音（**由 `plugins/tts_feature` 提供**，2026-11-03 起不在 engine；插件不在 → 能力缺失 → `/api/voice/dub` 503） |
+## 通用产物 (/api/artifacts)
+
+所有视频类型/插件共用；数据源为 `<project>/.engine/artifacts/<plugin_id>.json`，元数据（mime/size/sha256）由宿主计算。
+
+| 端点 | 说明 |
+|------|------|
+| `GET /api/artifacts?project_id=&plugin_id=&task_id=&status=&role=&cursor=&limit=` | 游标分页（`limit` ≤100），`created_at desc`；返回 `items[]`（含 `_cursor`）、`next_cursor`、`total_estimate` |
+| `GET /api/artifacts/{plugin_id}/{artifact_id}/raw?project_id=` | 返回原始文件；服务端按登记 MIME 设置 Content-Type，校验文件仍在 `plugins/<plugin_id>/` 内，不暴露本地绝对路径 |
+
 ## 工作区 (/api/workspace)
 
 > 实现依据：[workspace-prd-2026-10-24.md](workspace-prd-2026-10-24.md)。
