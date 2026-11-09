@@ -268,6 +268,7 @@ def register(owner: str, item: Contribution, *, policy=None) -> Optional[str]:
                 metadata_schema=dict(meta.get("metadata_schema") or {}),
                 render_contract=str(meta.get("render_contract") or ""),
                 preview_contract=str(meta.get("preview_contract") or ""),
+                renderer_tool=str(meta.get("renderer_tool") or ""),
                 capabilities=tuple(meta.get("capabilities") or ()),
                 owner_plugin=owner,
             ))

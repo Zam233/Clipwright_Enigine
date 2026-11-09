@@ -29,6 +29,8 @@ class ClipKindDefinition:
     metadata_schema: dict[str, Any] = field(default_factory=dict)
     render_contract: str = ""
     preview_contract: str = ""
+    #: 插件内负责渲染该 kind 的工具 id（engine 通过 tool.call 调用，不直接执行代码）
+    renderer_tool: str = ""
     capabilities: tuple[str, ...] = ()
     owner_plugin: str = ""
     builtin: bool = False
@@ -42,6 +44,7 @@ class ClipKindDefinition:
             "metadata_schema": dict(self.metadata_schema),
             "render_contract": self.render_contract,
             "preview_contract": self.preview_contract,
+            "renderer_tool": self.renderer_tool,
             "capabilities": list(self.capabilities),
             "owner_plugin": self.owner_plugin,
             "builtin": self.builtin,

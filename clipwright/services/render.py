@@ -80,6 +80,15 @@ def is_plugin_clip_kind(kind: str) -> bool:
         return False
 
 
+def _timeline_has_plugin_clips(timeline: Any) -> bool:
+    """时间线是否含插件 ClipKind（决定是否需要渲染前回调）。"""
+    for track in getattr(timeline, "tracks", []) or []:
+        for clip in getattr(track, "clips", []) or []:
+            if is_plugin_clip_kind(str(getattr(clip, "kind", ""))):
+                return True
+    return False
+
+
 class RenderCancelledError(Exception):
     """渲染任务被用户取消。"""
 
@@ -1157,7 +1166,9 @@ class RenderService:
                      encoder_override: str = "", preset_override: str = "",
                      pix_fmt_override: str = "", force_render: bool = False,
                      soft_subtitle_srt: str = "",
-                     loudnorm_enabled: bool = True) -> RenderResult:
+                     loudnorm_enabled: bool = True,
+                     plugin_host: Any = None,
+                     plugin_scope: dict[str, Any] | None = None) -> RenderResult:
         # 审计 P0 修复：取消标识注入 context，线程池内 ffmpeg 调用可感知并 terminate
         _CURRENT_CANCEL_ID.set(cancel_id)
         # Phase 3.3: 单次渲染编码器/像素格式覆盖注入 context（随 ctx.run 传播）
@@ -1176,6 +1187,32 @@ class RenderService:
         ok, info = await asyncio.to_thread(ffmpeg_available)
         if not ok:
             return RenderResult(False, error=f"FFmpeg 未就绪: {info}")
+
+        # M5：插件 ClipKind 先由插件回调产出媒体，再按普通视频 overlay 合成。
+        if _timeline_has_plugin_clips(timeline):
+            if plugin_host is None or not plugin_scope:
+                return RenderResult(
+                    False,
+                    error="时间线包含插件片段，渲染需要 plugin_host 与 plugin_scope",
+                )
+            try:
+                from clipwright.services.plugin_render import (
+                    PluginRenderError,
+                    RenderScope,
+                    materialize_plugin_clips,
+                )
+
+                scope = RenderScope(
+                    plugin_id=str(plugin_scope.get("plugin_id") or ""),
+                    project_id=str(plugin_scope.get("project_id") or ""),
+                    task_id=str(plugin_scope.get("task_id") or ""),
+                )
+                timeline = await materialize_plugin_clips(
+                    timeline, host=plugin_host, scope=scope,
+                    width=width, height=height, fps=fps,
+                )
+            except PluginRenderError as e:
+                return RenderResult(False, error=f"{e.code}: {e.message}")
 
         # Phase 3.1: 未变更无操作快速返回（指纹 sidecar 比对）
         self._render_fp = _timeline_render_fingerprint(
