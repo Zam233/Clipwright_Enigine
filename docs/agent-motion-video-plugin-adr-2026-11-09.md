@@ -99,4 +99,7 @@
 | API 渲染入口传入插件 host/scope | 未接线 | 待下一轮（`api/render.py` 调用点） |
 | 通用 artifact API（列表/raw/分页） | 已实现 | `services/artifact_query.py`、`api/artifacts.py` |
 | 通用 artifact UI（列表 + MIME 播放） | 已实现（前端仓 `eb53974`） | `TaskArtifacts.tsx`、`services/api/artifacts.ts` |
-| Category/Skill subprocess 适配 | 未开始 | 后续里程碑 |
+| Category subprocess 适配（meta 静态 + `category.*` RPC） | 已实现 | `plugins/category_adapter.py`、`worker.py`、`loader.py` |
+| Skill subprocess 适配（meta + `skill.call` RPC） | 已实现 | `plugins/skill_adapter.py`、`worker.py`、`loader.py` |
+| M4 Category/Skill 测试 | 已通过 | `test_category_subprocess.py`、`test_skill_subprocess.py` |
+| quality/preroll/narration/trait 消费者迁移 | 未开始 | 后续里程碑 |
