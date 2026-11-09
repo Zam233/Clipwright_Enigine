@@ -196,11 +196,20 @@ async def materialize_plugin_clips(
             definition = ClipKindRegistry.get(str(clip.kind))
             if definition is None or definition.builtin:
                 continue
-            request = build_request(
-                clip, definition=definition, scope=scope, width=width, height=height, fps=fps,
+            # 每个 clip 可能属于不同插件：scope.plugin_id 用定义里的 owner，
+            # host 可以是单个 host，也可以是 `plugin_id -> host` 的解析函数。
+            clip_scope = RenderScope(
+                plugin_id=definition.owner_plugin,
+                project_id=scope.project_id,
+                task_id=scope.task_id,
             )
+            request = build_request(
+                clip, definition=definition, scope=clip_scope,
+                width=width, height=height, fps=fps,
+            )
+            clip_host = host(definition.owner_plugin) if callable(host) else host
             payload = await render_clip(
-                host, request, renderer_tool=definition.renderer_tool,
+                clip_host, request, renderer_tool=definition.renderer_tool,
             )
             overlay = validate_result(payload, request, probe=probe)
             clip.kind = "video"

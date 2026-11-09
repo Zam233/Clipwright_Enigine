@@ -212,7 +212,48 @@ def install_default_handlers(host: Any) -> None:
     host.register_handler("job.cancel", _job_wrap(plugin_id, job_cancel))
 
 
+def plugin_hosts_for(timeline: Any) -> dict[str, Any]:
+    """收集时间线里插件 clip 对应的 worker host（plugin_id → host）。"""
+    from clipwright.services.clip_kind_registry import ClipKindRegistry
+
+    plugin_ids: set[str] = set()
+    for track in getattr(timeline, "tracks", []) or []:
+        for clip in getattr(track, "clips", []) or []:
+            definition = ClipKindRegistry.get(str(getattr(clip, "kind", "")))
+            if definition is not None and not definition.builtin:
+                plugin_ids.add(definition.owner_plugin)
+    if not plugin_ids:
+        return {}
+    try:
+        from clipwright.main import _plugin_loader as loader  # 进程级 loader
+    except Exception:  # noqa: BLE001 — 早期启动/单测没有 loader
+        return {}
+    hosts = dict(getattr(loader, "_hosts", {}) or {})
+    return {pid: hosts[pid] for pid in plugin_ids if pid in hosts}
+
+
+def plugin_render_kwargs(
+    timeline: Any, *, project_id: str = "", task_id: str = "",
+) -> dict[str, Any]:
+    """给 `RenderService.render` 准备通用插件回调参数；没有插件片段时返回空。"""
+    hosts = plugin_hosts_for(timeline)
+    if not hosts:
+        return {}
+
+    def _resolve(plugin_id: str) -> Any:
+        host = hosts.get(str(plugin_id))
+        if host is None:
+            raise RpcError("UNKNOWN_PLUGIN_HOST", f"插件未运行: {plugin_id}")
+        return host
+
+    return {
+        "plugin_host": _resolve,
+        "plugin_scope": {"project_id": project_id, "task_id": task_id},
+    }
+
+
 __all__ = [
-    "install_default_handlers", "job_manager", "register_runtime",
-    "runtime_registry", "ERR_NOT_FOUND", "ERR_REVISION_CONFLICT",
+    "install_default_handlers", "job_manager", "plugin_hosts_for",
+    "plugin_render_kwargs", "register_runtime", "runtime_registry",
+    "ERR_NOT_FOUND", "ERR_REVISION_CONFLICT",
 ]
