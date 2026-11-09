@@ -827,6 +827,14 @@ class AgentKernel:
         from clipwright.services.task_events import emit
 
         task.status = "cancelled"
+        # M3：取消该任务关联的插件 job（状态先落 cancelled；进程终止异步投递，
+        # 失败只告警，不阻断任务取消）
+        try:
+            from clipwright.services.plugin_rpc import job_manager
+
+            job_manager().cancel_for_task(task_id)
+        except Exception as exc:  # noqa: BLE001 — 清理失败不影响取消
+            logger.warning("取消任务关联插件 job 失败 %s: %s", task_id, exc)
         # devplan T3.1：用户中止也要写机器可读原因（原来只有一个 `"cancelled"` 字符串）。
         # 旧 `reason` 字段照旧产出（用户裁定 4：暂不停用），新代码读 terminal_reason。
         try:

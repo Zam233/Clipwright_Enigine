@@ -8,11 +8,18 @@ scope.plugin_id 与当前 host 一致，并按 scope 构造受限视图，插件
 """
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 from clipwright.plugins.runtime.protocol import (
     ERR_PERMISSION_DENIED,
     RpcError,
+)
+from clipwright.services.plugin_jobs import (
+    JobError,
+    PluginJobManager,
+    RuntimeRegistry,
+    RuntimeSpec,
 )
 from clipwright.services.plugin_workspace import (
     PluginArtifactRegistry,
@@ -24,6 +31,44 @@ from clipwright.services.plugin_workspace import (
 
 ERR_NOT_FOUND = "NOT_FOUND"
 ERR_REVISION_CONFLICT = "REVISION_CONFLICT"
+
+#: 进程内共享的 runtime 登记表 / job 管理器（管理员登记 runtime 后所有插件共用）
+_RUNTIMES = RuntimeRegistry()
+_JOB_MANAGER: PluginJobManager | None = None
+
+
+def runtime_registry() -> RuntimeRegistry:
+    return _RUNTIMES
+
+
+def register_runtime(spec: RuntimeSpec) -> RuntimeSpec:
+    """管理员/安装流程登记一个 runtime（生产环境需接审批；测试可直接调用）。"""
+    return _RUNTIMES.register(spec)
+
+
+def job_manager() -> PluginJobManager:
+    global _JOB_MANAGER
+    if _JOB_MANAGER is None:
+        _JOB_MANAGER = PluginJobManager(_RUNTIMES)
+    return _JOB_MANAGER
+
+
+def _job_wrap(plugin_id: str, fn: Any) -> Any:
+    """job handler：校验 scope、解包 JobError、支持 async。"""
+
+    async def _handler(params: dict[str, Any], scope: dict[str, Any]) -> Any:
+        try:
+            parsed = PluginScope.from_payload(scope, expected_plugin=plugin_id)
+            result = fn(parsed, dict(params or {}))
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+        except WorkspaceScopeError as e:
+            raise RpcError(ERR_PERMISSION_DENIED, str(e)) from e
+        except JobError as e:
+            raise RpcError(e.code, e.message) from e
+
+    return _handler
 
 
 def _wrap(fn: Any) -> Any:
@@ -128,6 +173,28 @@ def install_default_handlers(host: Any) -> None:
             raise RpcError("BAD_REQUEST", "artifact_id 不能为空")
         return _artifacts(scope).get(artifact_id)
 
+    # ── 通用 job（M3）──────────────────────────────────
+    async def job_submit(scope: PluginScope, params: dict[str, Any]) -> Any:
+        record = await job_manager().submit(
+            scope,
+            runtime_id=str(params.get("runtime_id") or ""),
+            argv=list(params.get("argv") or []),
+            cwd=str(params.get("cwd") or ""),
+            outputs=[str(p) for p in (params.get("outputs") or [])],
+            timeout_ms=int(params.get("timeout_ms") or 600_000),
+            idempotency_key=str(params.get("idempotency_key") or ""),
+        )
+        return record.to_dict()
+
+    def job_status(scope: PluginScope, params: dict[str, Any]) -> Any:
+        return job_manager().get(scope, str(params.get("job_id") or ""))
+
+    def job_list(scope: PluginScope, params: dict[str, Any]) -> Any:
+        return job_manager().list(scope, status=str(params.get("status") or ""))
+
+    async def job_cancel(scope: PluginScope, params: dict[str, Any]) -> Any:
+        return await job_manager().cancel(scope, str(params.get("job_id") or ""))
+
     host.register_handler("workspace.read", workspace_read)
     host.register_handler("workspace.write", workspace_write)
     host.register_handler("workspace.list", workspace_list)
@@ -139,6 +206,13 @@ def install_default_handlers(host: Any) -> None:
     host.register_handler("artifact.register", artifact_register)
     host.register_handler("artifact.list", artifact_list)
     host.register_handler("artifact.get", artifact_get)
+    host.register_handler("job.submit", _job_wrap(plugin_id, job_submit))
+    host.register_handler("job.status", _job_wrap(plugin_id, job_status))
+    host.register_handler("job.list", _job_wrap(plugin_id, job_list))
+    host.register_handler("job.cancel", _job_wrap(plugin_id, job_cancel))
 
 
-__all__ = ["install_default_handlers", "ERR_NOT_FOUND", "ERR_REVISION_CONFLICT"]
+__all__ = [
+    "install_default_handlers", "job_manager", "register_runtime",
+    "runtime_registry", "ERR_NOT_FOUND", "ERR_REVISION_CONFLICT",
+]
