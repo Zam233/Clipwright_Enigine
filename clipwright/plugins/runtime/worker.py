@@ -132,13 +132,16 @@ class PluginRuntime:
     def _instantiate(self, module: Any) -> Any:
         from clipwright.plugins.base import BasePlugin
 
-        klass = None
-        for name in dir(module):
-            obj = getattr(module, name)
-            if inspect.isclass(obj) and issubclass(obj, BasePlugin) and obj is not BasePlugin:
-                if obj.__module__ == module.__name__:
-                    klass = obj
-                    break
+        # 按**定义顺序**取子类，不按 dir() 字母序：插件常同时定义 Category/Tool 辅助类，
+        # 字母序会先拿到 MotionCategory 之类的辅助类，导致 contributions() 为空。
+        candidates = [
+            obj for obj in vars(module).values()
+            if inspect.isclass(obj) and issubclass(obj, BasePlugin)
+            and obj is not BasePlugin and obj.__module__ == module.__name__
+        ]
+        # 约定：入口类以 Plugin 结尾；没有则退回定义顺序第一个
+        preferred = [c for c in candidates if c.__name__.endswith("Plugin")] or candidates
+        klass = preferred[0] if preferred else None
         if klass is None:
             raise RpcError(ERR_PLUGIN_ERROR, "入口模块中未找到 BasePlugin 子类")
         instance = klass()
