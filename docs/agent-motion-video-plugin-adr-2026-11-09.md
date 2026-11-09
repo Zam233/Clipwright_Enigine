@@ -93,4 +93,8 @@
 | 渲染分派对插件 kind 显式失败（不静默丢） | 已实现 | `services/render.py::is_plugin_clip_kind` |
 | M4 测试 | 已通过 | `test_clip_kind_registry.py`（10）、`test_clip_kind_subprocess.py`（1） |
 | 消费者全量迁移（quality/preroll/narration/trait） | 未完成 | 目前只有 render 显式分支；其余待 M4 续 |
-| Category/Skill subprocess 适配、渲染回调（M5）、artifact UI（M6） | 未开始 | 后续里程碑 |
+| 渲染回调契约 `media_overlay.v1`（请求/校验/改写时间线） | 已实现 | `services/plugin_render.py` |
+| RenderService 对插件片段的前置回调与显式失败 | 已实现 | `services/render.py`（需调用方传 `plugin_host/plugin_scope`） |
+| M5 测试 | 已通过 | `test_plugin_render.py`（8） |
+| API 渲染入口传入插件 host/scope | 未接线 | 待下一轮（`api/render.py` 调用点） |
+| Category/Skill subprocess 适配、artifact UI（M6） | 未开始 | 后续里程碑 |
