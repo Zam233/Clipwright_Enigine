@@ -65,6 +65,8 @@ class PermissionGuard:
         plugin_id: str,
         data_dir: Optional[Path] = None,
         extra_write_roots: Optional[Iterable[Path]] = None,
+        plugin_dir: Optional[Path] = None,
+        extra_read_roots: Optional[Iterable[Path]] = None,
     ) -> None:
         self.permissions = {str(p) for p in (permissions or [])}
         self.plugin_id = str(plugin_id or "")
@@ -72,6 +74,9 @@ class PermissionGuard:
         self.write_roots = [p.resolve() for p in (extra_write_roots or []) if p]
         if self.data_dir is not None:
             self.write_roots.append(self.data_dir)
+        # 读根（M1）：插件自己的目录 + Python 运行环境 + 显式授权目录。
+        # 不含项目根/用户目录，避免插件顺手读走别的项目或素材。
+        self.read_roots = self._build_read_roots(plugin_dir, extra_read_roots)
 
     # ── 判定 ──────────────────────────────────────────
 
@@ -83,6 +88,58 @@ class PermissionGuard:
     def can_network(self) -> bool:
         return bool({"network", "http"} & self.permissions)
 
+    def _build_read_roots(
+        self, plugin_dir: Optional[Path], extra_read_roots: Optional[Iterable[Path]],
+    ) -> list[Path]:
+        import site
+        import sys
+
+        roots: list[Path] = []
+        for raw in (plugin_dir, self.data_dir, *(extra_read_roots or ())):
+            if raw:
+                try:
+                    roots.append(Path(raw).resolve())
+                except OSError:
+                    pass
+        for raw in (sys.prefix, sys.base_prefix):
+            if raw:
+                roots.append(Path(raw).resolve())
+        try:
+            roots.extend(Path(p).resolve() for p in site.getsitepackages())
+        except Exception:  # noqa: BLE001 — 某些嵌入环境没有 site
+            pass
+        # 允许 import 引擎自身模块（worker 的 sys.path 含仓库根）
+        for entry in sys.path:
+            if entry and Path(entry).is_dir():
+                try:
+                    roots.append(Path(entry).resolve())
+                except OSError:
+                    pass
+        # 去重、保序
+        seen: set[str] = set()
+        unique: list[Path] = []
+        for root in roots:
+            key = str(root).lower()
+            if key not in seen:
+                seen.add(key)
+                unique.append(root)
+        return unique
+
+    def check_read_path(self, raw_path: str) -> None:
+        if not raw_path:
+            raise PermissionViolation("open", raw_path, "读路径为空")
+        try:
+            target = Path(raw_path).resolve()
+        except (OSError, ValueError) as e:
+            raise PermissionViolation("open", raw_path, f"路径无法解析: {e}") from e
+        for root in self.read_roots:
+            if target == root or root in target.parents:
+                return
+        raise PermissionViolation(
+            "open", raw_path,
+            "读越界：只允许插件目录、Python 运行环境与显式授权目录",
+        )
+
     def check_event(self, event: str, args: tuple[Any, ...] = ()) -> None:
         """审计钩子入口：违规即抛 PermissionViolation。"""
         if event.startswith(_ALWAYS_DENY_PREFIXES):
@@ -92,10 +149,16 @@ class PermissionGuard:
             raise PermissionViolation(event, _first_str(args),
                                       "未声明 network/http 权限，禁止网络访问")
 
+        if event in ("os.listdir", "os.scandir"):
+            self.check_read_path(_first_str(args))
+            return
+
         if event == "open":
             mode = str(args[1]) if len(args) > 1 else ""
             if any(flag in mode for flag in _WRITE_MODES):
                 self.check_write_path(_first_str(args))
+            else:
+                self.check_read_path(_first_str(args))
 
     def check_write_path(self, raw_path: str) -> None:
         """写路径判定：需 fs_write 且落在允许的根内。"""

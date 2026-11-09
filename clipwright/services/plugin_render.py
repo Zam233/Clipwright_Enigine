@@ -48,9 +48,15 @@ def build_request(
     width: int,
     height: int,
     fps: float,
+    timeline: Any = None,
+    task: Any = None,
 ) -> dict[str, Any]:
-    """构造通用 ClipRenderRequest（字段全部是通用媒体信息）。"""
-    return {
+    """构造通用 ClipRenderRequest（字段全部是通用媒体信息）。
+
+    `render_contract` 为 `media_overlay.v2` 时追加只读上下文（cues/audio/
+    materials/neighbors/render_settings），否则保持 v1 字段不变。
+    """
+    request = {
         "contract": CONTRACT,
         "plugin_id": scope.plugin_id,
         "clip_kind": definition.kind_id,
@@ -66,6 +72,15 @@ def build_request(
         "input_artifacts": [],
         "render_settings": {},
     }
+    if str(definition.render_contract) == "media_overlay.v2":
+        from clipwright.services.plugin_context import assemble
+
+        request.update(assemble(
+            timeline, clip, task=task, project_id=scope.project_id,
+            category=definition.kind_id, width=width, height=height, fps=fps,
+        ))
+        request["contract"] = "media_overlay.v2"
+    return request
 
 
 async def render_clip(host: Any, request: dict[str, Any],
@@ -227,7 +242,7 @@ async def materialize_plugin_clips(
             )
             request = build_request(
                 clip, definition=definition, scope=clip_scope,
-                width=width, height=height, fps=fps,
+                width=width, height=height, fps=fps, timeline=timeline,
             )
             clip_host = host(definition.owner_plugin) if callable(host) else host
             payload = await render_clip(

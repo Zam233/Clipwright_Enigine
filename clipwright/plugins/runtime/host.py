@@ -52,6 +52,14 @@ DEFAULT_CALL_TIMEOUT = 120.0
 #: 启动与 describe 的握手超时
 BOOT_TIMEOUT = 60.0
 
+#: 传给 worker 的环境变量白名单（M1）：只保留运行必需项，
+#: **显式剥离** CLIPWRIGHT_*、模型/云厂商密钥、代理凭据等。
+ENV_ALLOWLIST = (
+    "PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC",
+    "TEMP", "TMP", "HOME", "USERPROFILE", "LANG", "LC_ALL",
+    "PYTHONIOENCODING", "PYTHONUTF8", "PYTHONPATH",
+)
+
 
 class PluginHost:
     """一个插件一个子进程的宿主。
@@ -123,7 +131,9 @@ class PluginHost:
             "-m", "clipwright.plugins.runtime.worker",
             str(self.plugin_dir), self.plugin_id, str(self.data_dir),
         ]
-        env = dict(os.environ)
+        # M1：不再继承宿主全环境（旧实现 dict(os.environ) 会把
+        # CLIPWRIGHT_API_TOKEN / 模型密钥直接交给插件进程）。
+        env = {key: os.environ[key] for key in ENV_ALLOWLIST if key in os.environ}
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env.setdefault("PYTHONUTF8", "1")
         self._proc = await asyncio.create_subprocess_exec(

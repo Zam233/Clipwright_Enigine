@@ -75,10 +75,18 @@ class PluginRuntime:
 
     def boot(self) -> None:
         self.manifest = self._parse_manifest()
+        runtime_config = dict(getattr(self.manifest, "runtime_config", {}) or {})
+        extra_reads = [
+            Path(str(p)).expanduser()
+            for p in (runtime_config.get("extra_read_roots") or [])
+            if str(p).strip()
+        ]
         guard = PermissionGuard(
             getattr(self.manifest, "permissions", []) or [],
             plugin_id=self.plugin_id,
             data_dir=self.data_dir,
+            plugin_dir=self.plugin_dir,
+            extra_read_roots=extra_reads,
         )
         # 预导入插件常用的宿主契约模块（engine 自有代码），必须在审计钩子之前：
         # 这些模块的依赖链会在 import 期触达 ctypes（click 等），而钩子一律拒绝
