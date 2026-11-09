@@ -55,11 +55,26 @@ class TestProtocol:
 
 class TestPermissionGuard:
     def _guard(self, tmp_path, perms):
-        return PermissionGuard(perms, plugin_id="plug_x", data_dir=tmp_path / "data")
+        plugin_dir = tmp_path / "plugin"
+        plugin_dir.mkdir(exist_ok=True)
+        return PermissionGuard(
+            perms, plugin_id="plug_x", data_dir=tmp_path / "data",
+            plugin_dir=plugin_dir,
+        )
 
-    def test_read_only_open_allowed(self, tmp_path):
+    def test_read_inside_plugin_dir_allowed(self, tmp_path):
         guard = self._guard(tmp_path, [])
-        guard.check_event("open", ("/etc/hosts", "r"))  # 不抛
+        target = tmp_path / "plugin" / "main.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("x", encoding="utf-8")
+        guard.check_event("open", (str(target), "r"))  # 不抛
+
+    def test_read_outside_roots_denied(self, tmp_path):
+        guard = self._guard(tmp_path, [])
+        secret = tmp_path / "secret.txt"
+        secret.write_text("x", encoding="utf-8")
+        with pytest.raises(PermissionViolation, match="读越界"):
+            guard.check_event("open", (str(secret), "r"))
 
     def test_write_without_permission_denied(self, tmp_path):
         guard = self._guard(tmp_path, [])
