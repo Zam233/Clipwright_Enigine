@@ -109,4 +109,5 @@
 | narration_events | 无需改动 | 只按 audio/animation 判定，插件 kind 不参与 |
 | 真实 ffmpeg 媒体契约 | 已验证 | `test_media_contract_real.py`（透明 ProRes 通过、无 alpha 拒绝） |
 | 真实 ffmpeg overlay 合成 | 已验证 | `test_real_render_overlay.py`（底层视频 + 插件 kind 出片成功） |
-| M7 独立插件骨架 | 已建立 | `J:\clipwright-motion-plugin`（category/clip_kind/工程工具/渲染回调，smoke + e2e 通过） |
+| M7 独立插件 | 已完成（Remotion 运行时） | `J:\clipwright-motion-plugin` `ffc87d3`：scene/preview/render 工具，真 Remotion 出 30fps/1s ProRes 4444 透明视频 |
+| runtime 归属 | engine 管登记/执行，插件管资产 | 插件 `runtime/`（package.json/lock/render.mjs）；engine 只认 `runtime_id=node` 并执行 JobSpec |
