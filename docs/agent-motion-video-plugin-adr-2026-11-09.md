@@ -88,4 +88,9 @@
 | runtime 登记 + Job Broker（argv/cwd/env/超时/取消/幂等/恢复） | 已实现 | `clipwright/services/plugin_jobs.py` |
 | task 取消 → job 取消 | 已接线 | `agent_kernel.cancel()` → `cancel_for_task()` |
 | M3 测试 | 已通过 | `test_plugin_jobs.py`（11）、`test_plugin_job_rpc.py`（1） |
-| ClipKind 注册 / 渲染回调 / artifact UI | 未开始 | 按 M4–M6 推进 |
+| ClipKind 注册表（内置 + 插件 + schema 接受度） | 已实现 | `services/clip_kind_registry.py`、`schema/timeline.py` |
+| `clip_kind` 贡献声明（in-process / subprocess） | 已实现 | `contribution.py`、`contribution_dispatch.py`、`loader.py`、`worker.py` |
+| 渲染分派对插件 kind 显式失败（不静默丢） | 已实现 | `services/render.py::is_plugin_clip_kind` |
+| M4 测试 | 已通过 | `test_clip_kind_registry.py`（10）、`test_clip_kind_subprocess.py`（1） |
+| 消费者全量迁移（quality/preroll/narration/trait） | 未完成 | 目前只有 render 显式分支；其余待 M4 续 |
+| Category/Skill subprocess 适配、渲染回调（M5）、artifact UI（M6） | 未开始 | 后续里程碑 |
