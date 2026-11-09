@@ -40,7 +40,11 @@ from clipwright.plugins.runtime.protocol import (
 )
 
 #: 允许跨越进程边界的贡献类型（纯数据或有明确 RPC 语义）
-_RPC_KINDS = {"tool", "hook", "material_source", "prompt", "ui_slot", "export_preset"}
+_RPC_KINDS = {
+    "tool", "hook", "material_source", "prompt", "ui_slot", "export_preset",
+    # M4：clip_kind 是纯数据声明（展示信息/schema/契约名），不需要代理对象
+    "clip_kind",
+}
 
 #: 每类 kind 的 RPC 方法名（宿主代理据此调用）
 _RPC_METHOD = {

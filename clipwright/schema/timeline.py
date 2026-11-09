@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from clipwright.utils.timebase import (
     TICKS_PER_SECOND,
@@ -31,6 +31,38 @@ class ClipKind(str, Enum):
     SHAPE = "shape"
     WAVEFORM = "waveform"
     ANIMATION = "animation"
+
+
+#: 插件注册的扩展 kind（由 `services.clip_kind_registry` 写入）。
+#: schema 只维护“值是否被承认”，不依赖 services，也不理解 kind 的领域含义。
+_PLUGIN_KIND_VALUES: set[str] = set()
+
+
+def register_plugin_clip_kind(value: str) -> None:
+    """承认一个插件 kind（注册表调用；卸载时对应移除）。"""
+    text = str(value or "").strip()
+    if text:
+        _PLUGIN_KIND_VALUES.add(text)
+
+
+def unregister_plugin_clip_kind(value: str) -> None:
+    _PLUGIN_KIND_VALUES.discard(str(value or "").strip())
+
+
+def known_clip_kinds() -> set[str]:
+    return {member.value for member in ClipKind} | set(_PLUGIN_KIND_VALUES)
+
+
+def _coerce_clip_kind(value: Any) -> str:
+    if isinstance(value, ClipKind):
+        return value.value
+    text = str(value or "").strip()
+    if text in known_clip_kinds():
+        return text
+    raise ValueError(
+        f"未知片段/轨道类型: {text!r}（内置: {sorted(m.value for m in ClipKind)}；"
+        "插件类型需先注册 clip_kind）"
+    )
 
 
 class TransitionType(str, Enum):
@@ -58,7 +90,12 @@ class TextAlign(str, Enum):
 class Clip(BaseModel):
     """时间轴上的单个剪辑片段。"""
     id: str = Field(description="全局唯一 ID")
-    kind: ClipKind = Field(description="片段类型")
+    kind: str = Field(description="片段类型（内置值或已注册的插件 clip_kind）")
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _validate_kind(cls, value: Any) -> str:
+        return _coerce_clip_kind(value)
     asset_id: str = Field(description="引用的素材 ID")
     track_id: str = Field(description="所属轨道 ID")
 
@@ -241,8 +278,13 @@ class Track(BaseModel):
     """时间轴轨道。"""
     id: str = Field(description="全局唯一轨道 ID")
     name: str = Field(default="", description="轨道名称")
-    kind: ClipKind = Field(description="轨道类型（限制其子片段类型）")
+    kind: str = Field(description="轨道类型（内置值或已注册的插件 clip_kind）")
     index: int = Field(ge=0, description="轨道在时间轴中的顺序索引")
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _validate_kind(cls, value: Any) -> str:
+        return _coerce_clip_kind(value)
     clips: list[Clip] = Field(default_factory=list)
     locked: bool = Field(default=False)
     muted: bool = Field(default=False)

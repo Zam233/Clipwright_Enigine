@@ -70,6 +70,16 @@ _CANCELLED_IDS: set[str] = set()
 _ACTIVE_PROCS: dict[str, list[subprocess.Popen]] = {}
 
 
+def is_plugin_clip_kind(kind: str) -> bool:
+    """是否为插件注册的 ClipKind（M4）。导入失败时保守返回 False。"""
+    try:
+        from clipwright.services.clip_kind_registry import ClipKindRegistry
+
+        return ClipKindRegistry.is_plugin_kind(kind)
+    except Exception:  # noqa: BLE001 — 注册表不可用不应影响既有渲染路径
+        return False
+
+
 class RenderCancelledError(Exception):
     """渲染任务被用户取消。"""
 
@@ -1396,6 +1406,7 @@ class RenderService:
     # ── 分段提取 ──────────────────────────────────
 
     def _extract_segments(self, timeline):
+        """按 kind 收集片段（内置分支 + 插件类型显式失败，见下）。"""
         video_segments, overlay_segments, text_overlays, audio_segments = [], [], [], []
         hf_ov_local = []
 
@@ -1479,6 +1490,12 @@ class RenderService:
                         ))
                     else:
                         text_overlays.append(self._extract_animation_overlay(clip, track.index))
+                elif is_plugin_clip_kind(k):
+                    # M4：插件类型必须由插件渲染回调产出媒体（M5 接入）。
+                    # 这里显式失败，不允许像未知 kind 一样被静默丢弃。
+                    raise RuntimeError(
+                        f"片段类型 {k!r} 由插件提供，渲染回调尚未接入（M5）"
+                    )
         return video_segments, overlay_segments, text_overlays, audio_segments, hf_ov_local
 
     @staticmethod

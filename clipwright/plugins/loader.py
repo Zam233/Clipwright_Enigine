@@ -531,6 +531,8 @@ class PluginLoader:
             ContributionKind.UI_SLOT, ContributionKind.EXPORT_PRESET,
             # 2026-11-07：display_spec 是纯数据（object 恒 None），子进程档无需代理对象
             ContributionKind.DISPLAY_SPEC,
+            # 2026-11-09（M4）：clip_kind 也是纯数据（展示信息/schema/契约名在 meta）
+            ContributionKind.CLIP_KIND,
         }
         items: list[Any] = []
         for decl in declarations:
