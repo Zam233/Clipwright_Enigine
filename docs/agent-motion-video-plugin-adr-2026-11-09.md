@@ -105,6 +105,7 @@
 | quality 消费者迁移（插件 kind 视为视觉轨） | 已实现 | `agents/quality_agent.py::_is_visual_kind` |
 | runtime 管理 API（列表/登记） | 已实现 | `api/plugin.py` `/api/plugin/runtimes` |
 | M4 收尾测试 | 已通过 | `test_runtime_api_and_quality.py` |
-| preroll/narration/trait 消费者迁移 | 未开始 | 目前靠未知 kind 分支，不误判但不参与统计 |
+| traits/preroll 消费者迁移 | 已实现 | traits 计入插件镜头；preroll 不为插件轨加片头 |
+| narration_events | 无需改动 | 只按 audio/animation 判定，插件 kind 不参与 |
 | 真实 ffmpeg 媒体契约 | 已验证 | `test_media_contract_real.py`（透明 ProRes 通过、无 alpha 拒绝） |
 | 真实 ffmpeg overlay 合成 | 已验证 | `test_real_render_overlay.py`（底层视频 + 插件 kind 出片成功） |
