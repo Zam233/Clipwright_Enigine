@@ -85,4 +85,7 @@
 | artifact registry（宿主算 hash/mime） | 已实现 | 同文件 `PluginArtifactRegistry` |
 | workspace/artifact RPC handler + scope 下发 | 已实现 | `services/plugin_rpc.py`、`host.py`、`worker_rpc.py` |
 | M2 测试 | 已通过 | `test_plugin_workspace.py`（9）、`test_plugin_workspace_rpc.py`（3） |
-| job broker / ClipKind / 渲染回调 | 未开始 | 按 M3–M5 推进 |
+| runtime 登记 + Job Broker（argv/cwd/env/超时/取消/幂等/恢复） | 已实现 | `clipwright/services/plugin_jobs.py` |
+| task 取消 → job 取消 | 已接线 | `agent_kernel.cancel()` → `cancel_for_task()` |
+| M3 测试 | 已通过 | `test_plugin_jobs.py`（11）、`test_plugin_job_rpc.py`（1） |
+| ClipKind 注册 / 渲染回调 / artifact UI | 未开始 | 按 M4–M6 推进 |
