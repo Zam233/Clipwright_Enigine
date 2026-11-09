@@ -56,6 +56,7 @@ _ffmpeg_available = cached_probe("ffmpeg", _probe_ffmpeg, ttl=600.0, default=Fal
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from clipwright.api import artifacts as artifacts_api
 from clipwright.api import pipeline as pipeline_api
 from clipwright.api import eval as eval_api
 from clipwright.api import supervisor as supervisor_api
@@ -658,6 +659,7 @@ _pv_engine_path.mkdir(parents=True, exist_ok=True)
 app.mount("/pv-engine", StaticFiles(directory=str(_pv_engine_path)), name="pv-engine")
 
 # 注册路由
+app.include_router(artifacts_api.router)
 app.include_router(pipeline_api.router)
 app.include_router(supervisor_api.router)
 app.include_router(supervisor_api.admin_router)

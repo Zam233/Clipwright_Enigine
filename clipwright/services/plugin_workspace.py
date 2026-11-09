@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -305,6 +306,7 @@ class PluginArtifactRegistry:
             "role": role,
             "status": status,
             "retention": retention,
+            "created_at": time.time(),
         }
         data = self._load()
         data["artifacts"] = [a for a in data["artifacts"] if a.get("artifact_id") != entry["artifact_id"]]
