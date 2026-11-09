@@ -472,6 +472,10 @@ class PluginLoader:
 
         self._hosts[plugin_id] = host
         try:
+            # M2：通用 workspace/artifact handler（无领域语义）
+            from clipwright.services.plugin_rpc import install_default_handlers
+
+            install_default_handlers(host)
             self._register_declarations(plugin_id, host, declarations, make_proxy, manifest)
         except Exception:
             self._hosts.pop(plugin_id, None)

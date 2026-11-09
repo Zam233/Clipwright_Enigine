@@ -288,28 +288,12 @@ async def _serve(runtime: PluginRuntime) -> int:
     """
     loop = asyncio.get_running_loop()
     out = sys.stdout.buffer      # 二进制写出：不受子进程 locale 影响
-    while True:
-        line = await loop.run_in_executor(None, sys.stdin.buffer.readline)
-        if not line:
-            return 0  # 宿主关闭管道 → 正常退出
-        req_id = -1
-        try:
-            message = decode(line)
-            check_version(message)
-            req_id = int(message.get("id", -1))
-            if message.get("method") == "shutdown":
-                out.write(encode(ok(req_id, {"bye": True})))
-                out.flush()
-                return 0
-            result = await runtime.handle(str(message.get("method") or ""),
-                                          dict(message.get("params") or {}))
-            out.write(encode(ok(req_id, result)))
-        except RpcError as e:
-            out.write(encode(fail(req_id, e)))
-        except Exception as e:  # noqa: BLE001 — 插件异常必须回成错误帧而非崩掉 worker
-            traceback.print_exc(file=sys.stderr)
-            out.write(encode(fail(req_id, RpcError(ERR_PLUGIN_ERROR, str(e)))))
-        out.flush()
+    # v2 读循环搬到 worker_rpc：它要同时处理「宿主请求」与「插件请求的响应」，
+    # 单一 while-await-handle 会在插件等宿主回包时死锁。这里保留二进制 out
+    # 的字面量（AST 守卫要求 _serve 体内出现 sys.stdout.buffer）。
+    from clipwright.plugins.runtime.worker_rpc import serve
+
+    return await serve(runtime, out, loop)
 
 
 def main(argv: list[str] | None = None) -> int:
