@@ -44,6 +44,10 @@ _RPC_KINDS = {
     "tool", "hook", "material_source", "prompt", "ui_slot", "export_preset",
     # M4：clip_kind 是纯数据声明（展示信息/schema/契约名），不需要代理对象
     "clip_kind",
+    # M4：category 的静态部分由 meta 声明，可执行方法经 category.* RPC
+    "category",
+    # M4：skill 的元数据由 meta 声明，执行经 skill.call RPC
+    "skill",
 }
 
 #: 每类 kind 的 RPC 方法名（宿主代理据此调用）
@@ -76,6 +80,20 @@ class PluginRuntime:
             plugin_id=self.plugin_id,
             data_dir=self.data_dir,
         )
+        # 预导入插件常用的宿主契约模块（engine 自有代码），必须在审计钩子之前：
+        # 这些模块的依赖链会在 import 期触达 ctypes（click 等），而钩子一律拒绝
+        # ctypes.*；插件再 import 时命中缓存，不会在钩子下重复触发。
+        for _name in (
+            "clipwright.plugins.base",
+            "clipwright.plugins.contribution",
+            "clipwright.category.base",
+            "clipwright.skill.base",
+            "clipwright.schema.skill",
+        ):
+            try:
+                importlib.import_module(_name)
+            except Exception:  # noqa: BLE001 — 预导入失败不阻断（插件可能不用）
+                pass
         install_audit_hook(guard)  # 必须在 import 插件代码之前
         module = self._import_plugin()
         self.plugin = self._instantiate(module)
@@ -187,6 +205,10 @@ class PluginRuntime:
             return await self._call_material(params)
         if method == "prompt.get":
             return self._get_prompt(params)
+        if method.startswith("category."):
+            return await self._call_category(method, params)
+        if method == "skill.call":
+            return await self._call_skill(params)
         if method == "shutdown":
             return {"bye": True}
         raise RpcError(ERR_UNKNOWN_METHOD, f"未知方法: {method}")
@@ -220,6 +242,47 @@ class PluginRuntime:
         if inspect.isawaitable(result):
             result = await result
         return _jsonable(result)
+
+    async def _call_category(self, method: str, params: dict[str, Any]) -> Any:
+        """category.*：把通用可执行方法转发给插件里的 Category 实例。
+
+        只暴露两个纯函数式方法（translate_persona / get_shot_params）；
+        Timeline 后处理等留给 engine 的默认实现，避免把核心 schema 传播给插件。
+        """
+        obj = self._object(params, expected_kind="category")
+        payload = dict(params.get("payload") or {})
+        name = method.split(".", 1)[1]
+        if name == "translate_persona":
+            fn = getattr(obj, "translate_persona", None)
+            result = fn(payload.get("params") or {}) if callable(fn) else {}
+        elif name == "get_shot_params":
+            fn = getattr(obj, "get_shot_params", None)
+            result = fn(payload.get("translated") or {}) if callable(fn) else {}
+        else:
+            raise RpcError(ERR_UNKNOWN_METHOD, f"未知 category 方法: {method}")
+        if inspect.isawaitable(result):
+            result = await result
+        return _jsonable(result)
+
+    async def _call_skill(self, params: dict[str, Any]) -> Any:
+        """skill.call：执行插件的 Skill，结果统一成 {success, output, error}。"""
+        obj = self._object(params, expected_kind="skill")
+        payload = dict(params.get("input") or {})
+        runner = getattr(obj, "execute", None)
+        if not callable(runner):
+            raise RpcError(ERR_PLUGIN_ERROR, "技能对象缺少 execute()")
+        result = runner(**payload)
+        if inspect.isawaitable(result):
+            result = await result
+        if hasattr(result, "status"):
+            status = str(getattr(getattr(result, "status"), "value", result.status))
+            success = status == "success"
+            return {
+                "success": success,
+                "output": _jsonable(getattr(result, "output", {})),
+                "error": None if success else str(getattr(result, "output", "")),
+            }
+        return {"success": True, "output": _jsonable(result)}
 
     def _get_prompt(self, params: dict[str, Any]) -> Any:
         obj = self._object(params, expected_kind="prompt")

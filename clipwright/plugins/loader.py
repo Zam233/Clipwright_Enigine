@@ -550,6 +550,21 @@ class PluginLoader:
                 # 纯数据贡献（界面插槽/导出预设）：不需要代理对象，元数据即全部
                 items.append(Contribution(kind, cid, None, meta=meta))
                 continue
+            if kind is ContributionKind.SKILL:
+                # M4：技能元数据由 meta 声明，执行经 skill.call RPC
+                from clipwright.plugins.skill_adapter import RemoteSkill
+
+                adapter = RemoteSkill(host, plugin_id, cid, meta)
+                items.append(Contribution(kind, cid, adapter, meta=meta))
+                continue
+            if kind is ContributionKind.CATEGORY:
+                # M4：类别用「meta 静态声明 + category.* RPC」适配成宿主插件，
+                # 不把插件的 Python 对象跨进程带过来。
+                from clipwright.plugins.category_adapter import RemoteCategoryPlugin
+
+                adapter = RemoteCategoryPlugin(host, plugin_id, meta, category_id=cid)
+                items.append(Contribution(kind, cid, adapter, meta=meta))
+                continue
             text = str(meta.get("prompt") or "") if kind is ContributionKind.PROMPT else ""
             proxy = make_proxy(host, kind_name, cid, meta, text)
             if proxy is None:
