@@ -21,6 +21,12 @@ from clipwright.services.plugin_jobs import (
     RuntimeRegistry,
     RuntimeSpec,
 )
+from clipwright.services.plugin_materials import (
+    MAX_READ_BYTES,
+    MaterialError,
+    list_materials,
+    read_material,
+)
 from clipwright.services.plugin_workspace import (
     PluginArtifactRegistry,
     PluginScope,
@@ -63,7 +69,7 @@ def _job_wrap(plugin_id: str, fn: Any) -> Any:
             if inspect.isawaitable(result):
                 result = await result
             return result
-        except WorkspaceScopeError as e:
+        except (WorkspaceScopeError, MaterialError) as e:
             raise RpcError(ERR_PERMISSION_DENIED, str(e)) from e
         except JobError as e:
             raise RpcError(e.code, e.message) from e
@@ -77,7 +83,7 @@ def _wrap(fn: Any) -> Any:
     def _handler(params: dict[str, Any], scope: dict[str, Any]) -> Any:
         try:
             return fn(dict(params or {}), dict(scope or {}))
-        except WorkspaceScopeError as e:
+        except (WorkspaceScopeError, MaterialError) as e:
             raise RpcError(ERR_PERMISSION_DENIED, str(e)) from e
         except WorkspaceRevisionConflict as e:
             raise RpcError(ERR_REVISION_CONFLICT, str(e)) from e
@@ -161,9 +167,44 @@ def install_default_handlers(host: Any) -> None:
 
     @_wrap
     def artifact_list(params: dict[str, Any], scope: dict[str, Any]) -> Any:
-        return _artifacts(scope).list(
-            status=str(params.get("status") or ""),
-            role=str(params.get("role") or ""),
+        parsed = PluginScope.from_payload(scope, expected_plugin=plugin_id)
+        mode = str(params.get("scope") or "own").strip().lower()
+        if mode in ("", "own"):
+            return _artifacts(scope).list(
+                status=str(params.get("status") or ""),
+                role=str(params.get("role") or ""),
+            )
+        if mode == "task":
+            # 只读同任务产物（其他阶段/插件的产出），供插件复用
+            from clipwright.services.artifact_query import list_artifacts
+
+            page = list_artifacts(
+                parsed.project_id, task_id=parsed.task_id,
+                limit=int(params.get("limit") or 50),
+            )
+            return [
+                {k: v for k, v in item.items() if k != "_cursor"}
+                for item in page.items
+            ]
+        raise RpcError(
+            ERR_PERMISSION_DENIED,
+            f"artifact scope={mode!r} 未授权（可用: own / task）",
+        )
+
+    @_wrap
+    def materials_list(params: dict[str, Any], scope: dict[str, Any]) -> Any:
+        parsed = PluginScope.from_payload(scope, expected_plugin=plugin_id)
+        return list_materials(
+            parsed.project_id, limit=int(params.get("limit") or 32),
+        )
+
+    @_wrap
+    def materials_read(params: dict[str, Any], scope: dict[str, Any]) -> Any:
+        parsed = PluginScope.from_payload(scope, expected_plugin=plugin_id)
+        ref = str(params.get("ref") or params.get("path") or "")
+        return read_material(
+            parsed.project_id, ref,
+            max_bytes=int(params.get("max_bytes") or MAX_READ_BYTES),
         )
 
     @_wrap
@@ -206,6 +247,8 @@ def install_default_handlers(host: Any) -> None:
     host.register_handler("artifact.register", artifact_register)
     host.register_handler("artifact.list", artifact_list)
     host.register_handler("artifact.get", artifact_get)
+    host.register_handler("materials.list", materials_list)
+    host.register_handler("materials.read", materials_read)
     host.register_handler("job.submit", _job_wrap(plugin_id, job_submit))
     host.register_handler("job.status", _job_wrap(plugin_id, job_status))
     host.register_handler("job.list", _job_wrap(plugin_id, job_list))
