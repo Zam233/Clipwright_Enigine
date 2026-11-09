@@ -1,8 +1,8 @@
 """Webhook secret 加密（P8/P2-7）— 落盘不存明文，投递时解密。
 
 密钥优先级：CLIPWRIGHT_WEBHOOK_SECRET_KEY（Fernet urlsafe base64, 32 字节）
-> CLIPWRIGHT_ACCOUNT_JWT_SECRET 派生（sha256 → urlsafe b64）。
-既无密钥也无 jwt secret 时退化为明文兼容（本地开发，日志告警）。
+> CLIPWRIGHT_LOCAL_SECRET 派生（sha256 → urlsafe b64）。
+既无密钥也无本地密钥时退化为明文兼容（本地开发，日志告警）。
 """
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ def _get_fernet():
     from cryptography.fernet import Fernet, InvalidToken
 
     raw = (settings.webhook_secret_key or "").strip()
-    if not raw and settings.account_jwt_secret:
-        digest = hashlib.sha256(settings.account_jwt_secret.encode("utf-8")).digest()
+    if not raw and settings.local_secret:
+        digest = hashlib.sha256(settings.local_secret.encode("utf-8")).digest()
         raw = base64.urlsafe_b64encode(digest).decode("ascii")
     if not raw:
         logger.warning("webhook_secret_key 未配置，secret 将以明文落盘（建议设置 CLIPWRIGHT_WEBHOOK_SECRET_KEY）")

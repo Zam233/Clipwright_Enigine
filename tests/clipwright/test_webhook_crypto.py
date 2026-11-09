@@ -26,9 +26,9 @@ def test_encrypt_decrypt_roundtrip(monkeypatch) -> None:
 
 
 def test_plaintext_fallback_without_key(monkeypatch) -> None:
-    """未配置密钥且无 jwt secret → 明文兼容（本地开发）。"""
+    """未配置密钥且无本地密钥 → 明文兼容（本地开发）。"""
     monkeypatch.setattr(settings, "webhook_secret_key", "")
-    monkeypatch.setattr(settings, "account_jwt_secret", "")
+    monkeypatch.setattr(settings, "local_secret", "")
     import clipwright.services.webhook_crypto as wc
     wc._FERNET = None
     assert encrypt_secret("whsec_x") == "whsec_x"

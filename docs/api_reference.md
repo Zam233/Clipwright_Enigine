@@ -849,8 +849,8 @@ curl -X POST http://localhost:8080/api/voice/dub \
 
 把 `.env` 配置项搬到「设置 → 后端配置」页管理。优先级：`settings.json`（store）> 环境变量/.env > 默认值。
 secret 字段（密钥类）读取时只返回 `has_value` 与掩码占位、绝不回显明文；落盘经 Fernet 加密（未配置
-`CLIPWRIGHT_WEBHOOK_SECRET_KEY` 时拒绝保存 secret，返回 409）。所有端点需管理员权限（jwt 模式仅 admin；
-off/token 模式放行）。`requires_restart=true` 的字段（CORS/Mongo/端口/路径/最大并发渲染等）只在启动时读取，保存后需重启。
+`CLIPWRIGHT_WEBHOOK_SECRET_KEY` 时拒绝保存 secret，返回 409）。账号系统已剥离，所有端点按本地模式放行（
+仅受 `CLIPWRIGHT_API_TOKEN` 约束）。`requires_restart=true` 的字段（CORS/Mongo/端口/路径/最大并发渲染等）只在启动时读取，保存后需重启。
 
 | 端点 | 说明 |
 |------|------|

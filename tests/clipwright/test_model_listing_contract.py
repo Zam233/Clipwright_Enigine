@@ -181,7 +181,7 @@ def api(monkeypatch, tmp_path):
     from clipwright.services import provider_sources as ps
 
     ps.reset_for_tests(tmp_path / "provider_sources.json")
-    monkeypatch.delenv("CLIPWRIGHT_ACCOUNT_VERIFY_MODE", raising=False)
+    monkeypatch.delenv("CLIPWRIGHT_API_TOKEN", raising=False)
     client = TestClient(app)
     src = ps.create_source({
         "name": "src-a", "kind": "llm", "provider": "openai",
