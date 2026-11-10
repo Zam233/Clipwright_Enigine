@@ -1,0 +1,8 @@
+node_modules/
+runtime/node_modules/
+runtime/entry.gen.tsx
+runtime/scenes/
+runtime/preview.png
+runtime/test.mov
+*.log
+__pycache__/
