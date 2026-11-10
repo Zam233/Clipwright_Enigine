@@ -32,8 +32,21 @@ class SubprocessTool(BaseTool):
         self._llm_schema: Optional[dict[str, Any]] = dict(schema) if isinstance(schema, dict) else None
 
     async def _forward(self, **kwargs: Any) -> Any:
+        # scope 在**进入线程池之前**采集：agent_context 是 contextvar，
+        # host.invoke 会跳到 executor，那里读不到当前任务。
+        try:
+            from clipwright.services.agent_context import current_task_id
+
+            task_id = current_task_id()
+        except Exception:  # noqa: BLE001 — 单测/脚本直调时没有作用域
+            task_id = ""
+        scope = {
+            "task_id": task_id,
+            "project_id": str(kwargs.get("project_id") or ""),
+        }
         return await self._host.invoke(
-            "tool.call", {"id": self._contrib_id, "input": kwargs},
+            "tool.call", {"id": self._contrib_id, "input": kwargs, "scope": scope},
+            scope=scope,
         )
 
     #: BaseTool 契约要求 execute；用别名绑定（静态扫描会把 `async def execute`

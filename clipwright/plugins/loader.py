@@ -472,6 +472,10 @@ class PluginLoader:
 
         self._hosts[plugin_id] = host
         try:
+            # M2：通用 workspace/artifact handler（无领域语义）
+            from clipwright.services.plugin_rpc import install_default_handlers
+
+            install_default_handlers(host, manifest=manifest)
             self._register_declarations(plugin_id, host, declarations, make_proxy, manifest)
         except Exception:
             self._hosts.pop(plugin_id, None)
@@ -527,6 +531,8 @@ class PluginLoader:
             ContributionKind.UI_SLOT, ContributionKind.EXPORT_PRESET,
             # 2026-11-07：display_spec 是纯数据（object 恒 None），子进程档无需代理对象
             ContributionKind.DISPLAY_SPEC,
+            # 2026-11-09（M4）：clip_kind 也是纯数据（展示信息/schema/契约名在 meta）
+            ContributionKind.CLIP_KIND,
         }
         items: list[Any] = []
         for decl in declarations:
@@ -543,6 +549,21 @@ class PluginLoader:
             if kind in _DECLARATIVE_KINDS:
                 # 纯数据贡献（界面插槽/导出预设）：不需要代理对象，元数据即全部
                 items.append(Contribution(kind, cid, None, meta=meta))
+                continue
+            if kind is ContributionKind.SKILL:
+                # M4：技能元数据由 meta 声明，执行经 skill.call RPC
+                from clipwright.plugins.skill_adapter import RemoteSkill
+
+                adapter = RemoteSkill(host, plugin_id, cid, meta)
+                items.append(Contribution(kind, cid, adapter, meta=meta))
+                continue
+            if kind is ContributionKind.CATEGORY:
+                # M4：类别用「meta 静态声明 + category.* RPC」适配成宿主插件，
+                # 不把插件的 Python 对象跨进程带过来。
+                from clipwright.plugins.category_adapter import RemoteCategoryPlugin
+
+                adapter = RemoteCategoryPlugin(host, plugin_id, meta, category_id=cid)
+                items.append(Contribution(kind, cid, adapter, meta=meta))
                 continue
             text = str(meta.get("prompt") or "") if kind is ContributionKind.PROMPT else ""
             proxy = make_proxy(host, kind_name, cid, meta, text)
@@ -570,6 +591,12 @@ class PluginLoader:
         Skill/Category/Prompt 为本次补齐，MaterialSource 沿用插件 shutdown
         自清（已有 3 个 AI 插件实现）。
         """
+        try:
+            from clipwright.services.plugin_rpc import unregister_plugin_runtime
+
+            unregister_plugin_runtime(plugin_id)
+        except Exception as e:  # noqa: BLE001 — 注销失败不阻断其他回收
+            logger.warning("插件 %s runtime 登记注销异常: %s", plugin_id, e)
         try:
             from clipwright.plugins.hooks import HookRegistry
             HookRegistry.unregister_plugin(plugin_id)

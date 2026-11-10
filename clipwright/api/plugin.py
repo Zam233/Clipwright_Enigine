@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
 from clipwright.config import logger
 from clipwright.plugins import PluginLoadError
@@ -234,6 +235,48 @@ async def disable_plugin(plugin_id: str, request: Request = None) -> dict[str, s
         logger.warning("禁用插件 Agent 清理失败 %s: %s", plugin_id, e)
     _invalidate_plugin_caches()
     return {"status": "ok", "plugin_id": plugin_id, "enabled": "false"}
+
+
+class RuntimeRegistration(BaseModel):
+    """管理员登记一个不透明运行时（M3）：engine 只认 id/可执行文件/摘要。"""
+
+    runtime_id: str
+    executable: str
+    version: str = ""
+    digest: str = ""
+    approved: bool = False
+
+
+@router.get("/runtimes")
+async def list_runtimes(request: Request = None) -> dict:
+    """列出已登记 runtime（不暴露 executable 绝对路径）。"""
+    _require_admin(request)
+    from clipwright.services.plugin_rpc import runtime_registry
+
+    return {"runtimes": runtime_registry().list()}
+
+
+@router.post("/runtimes")
+async def register_runtime_api(
+    body: RuntimeRegistration, request: Request = None,
+) -> dict:
+    """登记/更新 runtime；批准状态由调用方显式给出（生产应走审批流程）。"""
+    _require_admin(request)
+    from clipwright.services.plugin_jobs import RuntimeSpec
+    from clipwright.services.plugin_rpc import register_runtime
+
+    spec = register_runtime(RuntimeSpec(
+        runtime_id=body.runtime_id,
+        executable=body.executable,
+        version=body.version,
+        digest=body.digest,
+        approved=body.approved,
+    ))
+    return {
+        "runtime_id": spec.runtime_id,
+        "version": spec.version,
+        "approved": spec.approved,
+    }
 
 
 @router.get("/permissions")

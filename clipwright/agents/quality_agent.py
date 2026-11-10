@@ -60,6 +60,19 @@ def select_glossary(brief: dict | None, extra_params: dict | None = None) -> lis
     return []
 
 
+def _is_visual_kind(kind: object) -> bool:
+    """视频/图片轨道，或插件注册的 ClipKind（M4：渲染前也按视觉轨参与质检）。"""
+    text = str(kind or "")
+    if text in (ClipKind.VIDEO.value, ClipKind.IMAGE.value):
+        return True
+    try:
+        from clipwright.services.clip_kind_registry import ClipKindRegistry
+
+        return ClipKindRegistry.is_plugin_kind(text)
+    except Exception:  # noqa: BLE001 — 注册表不可用时退回内置判定
+        return False
+
+
 class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
     """质检 Agent：校验时间线是否符合 Persona 规范和硬约束。"""
 
@@ -151,8 +164,8 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                 decision=AgentDecision.FAIL, passed=False, issues=issues,
             )
 
-        track_kinds = {t.kind for t in tracks}
-        if ClipKind.VIDEO not in track_kinds and ClipKind.IMAGE not in track_kinds:
+        track_kinds = {str(t.kind) for t in tracks}
+        if not any(_is_visual_kind(kind) for kind in track_kinds):
             issues.append(QualityIssue(
                 severity="error", category="structure",
                 message="时间线缺少视频/图片轨道",
@@ -161,7 +174,7 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         # ── 3. 节奏方差分析 ──
         video_clips = []
         for track in tracks:
-            if track.kind in (ClipKind.VIDEO, ClipKind.IMAGE):
+            if _is_visual_kind(track.kind):
                 video_clips.extend(track.clips)
 
         if len(video_clips) >= 3:
@@ -216,7 +229,7 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
 
         # 按轨道计算间隔（避免跨轨道误报）
         clip_gaps = sum(max(0, len(t.clips) - 1) for t in tracks
-                        if t.kind in (ClipKind.VIDEO, ClipKind.IMAGE))
+                        if _is_visual_kind(t.kind))
         if clip_gaps > 0 and transition_count == 0:
             issues.append(QualityIssue(
                 severity="info", category="transition",
@@ -232,8 +245,7 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         except Exception as exc:  # 结构异常不应让质检整体失败
             logger.debug("QualityAgent: 相邻性检查跳过: %s", exc)
             adjacency = []
-        _video_track_ids = {t.id for t in tracks
-                            if t.kind in (ClipKind.VIDEO, ClipKind.IMAGE)}
+        _video_track_ids = {t.id for t in tracks if _is_visual_kind(t.kind)}
         overlaps = [a for a in adjacency if a["kind"] == "overlap" and a["track_id"] in _video_track_ids]
         gaps = [a for a in adjacency if a["kind"] == "gap" and a["track_id"] in _video_track_ids]
         if overlaps:

@@ -27,13 +27,25 @@ from typing import Any, Optional
 
 from clipwright.config import logger
 from clipwright.plugins.runtime.protocol import (
+    DIRECTION_HOST,
+    DIRECTION_WORKER,
     ERR_BOOT_FAILED,
+    ERR_OVERLOADED,
     ERR_TIMEOUT,
+    ERR_UNKNOWN_METHOD,
     ERR_WORKER_DEAD,
+    MAX_INFLIGHT,
     PROTOCOL_VERSION,
     RpcError,
     decode,
+    direction_of,
     encode,
+    event_frame,
+    fail,
+    is_event,
+    is_request,
+    is_response,
+    ok,
     request,
 )
 
@@ -41,6 +53,14 @@ from clipwright.plugins.runtime.protocol import (
 DEFAULT_CALL_TIMEOUT = 120.0
 #: 启动与 describe 的握手超时
 BOOT_TIMEOUT = 60.0
+
+#: 传给 worker 的环境变量白名单（M1）：只保留运行必需项，
+#: **显式剥离** CLIPWRIGHT_*、模型/云厂商密钥、代理凭据等。
+ENV_ALLOWLIST = (
+    "PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC",
+    "TEMP", "TMP", "HOME", "USERPROFILE", "LANG", "LC_ALL",
+    "PYTHONIOENCODING", "PYTHONUTF8", "PYTHONPATH",
+)
 
 
 class PluginHost:
@@ -76,6 +96,10 @@ class PluginHost:
             max_workers=4, thread_name_prefix=f"plug-{self.plugin_id}",
         )
         self.declarations: list[dict[str, Any]] = []
+        # v2：worker 主动请求的处理表（method → handler）与在途任务
+        self._handlers: dict[str, Any] = {}
+        self._worker_tasks: set[asyncio.Task] = set()
+        self._worker_inflight = 0
 
     # ── 生命周期 ─────────────────────────────────────
 
@@ -109,7 +133,9 @@ class PluginHost:
             "-m", "clipwright.plugins.runtime.worker",
             str(self.plugin_dir), self.plugin_id, str(self.data_dir),
         ]
-        env = dict(os.environ)
+        # M1：不再继承宿主全环境（旧实现 dict(os.environ) 会把
+        # CLIPWRIGHT_API_TOKEN / 模型密钥直接交给插件进程）。
+        env = {key: os.environ[key] for key in ENV_ALLOWLIST if key in os.environ}
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env.setdefault("PYTHONUTF8", "1")
         self._proc = await asyncio.create_subprocess_exec(
@@ -173,24 +199,88 @@ class PluginHost:
             logger.warning("子进程插件 %s 不可用: %s", self.plugin_id, self._dead_reason)
         self._fail_pending(ERR_WORKER_DEAD, self._dead_reason)
 
+    # ── v2：worker → host 请求 ────────────────────────
+
+    def notify(self, name: str, payload: dict[str, Any] | None = None) -> bool:
+        """向 worker 推送一条单向事件（M4）；worker 不可用时返回 False。"""
+        if not self.alive:
+            return False
+        try:
+            self._write(event_frame(name, payload or {}))
+            return True
+        except Exception as e:  # noqa: BLE001 — 通知失败不应影响业务
+            logger.debug("插件 %s 事件推送失败 %s: %s", self.plugin_id, name, e)
+            return False
+
+    def register_handler(self, method: str, handler: Any) -> None:
+        """注册一个可被 worker 调用的宿主方法。
+
+        handler 可以是同步或异步可调用，签名 `handler(params, scope) -> Any`。
+        M2 之后由 workspace/artifact/job 服务注册；M1 只验证通道本身。
+        """
+        name = str(method or "").strip()
+        if not name:
+            raise ValueError("handler method 不能为空")
+        self._handlers[name] = handler
+
+    async def _dispatch_worker_request(self, message: dict[str, Any]) -> None:
+        """处理 worker 发来的请求：限流 → 查表 → 执行 → 回包（方向 worker）。"""
+        req_id = int(message.get("id", -1))
+        method = str(message.get("method") or "")
+        params = dict(message.get("params") or {})
+        scope = dict(message.get("scope") or {})
+        depth = int(message.get("depth", 0) or 0)
+        try:
+            if depth > 8:
+                raise RpcError("DEPTH_EXCEEDED", f"嵌套过深（depth={depth}）")
+            if self._worker_inflight >= MAX_INFLIGHT:
+                raise RpcError(ERR_OVERLOADED, f"在途请求超过上限 {MAX_INFLIGHT}")
+            handler = self._handlers.get(method)
+            if handler is None:
+                raise RpcError(ERR_UNKNOWN_METHOD, f"宿主不支持方法: {method}")
+            self._worker_inflight += 1
+            try:
+                result = handler(params, scope)
+                if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
+                    result = await asyncio.wait_for(result, timeout=self.call_timeout)
+            finally:
+                self._worker_inflight -= 1
+            self._write(ok(req_id, result, direction=DIRECTION_WORKER))
+        except asyncio.TimeoutError:
+            self._write(fail(req_id, RpcError(ERR_TIMEOUT, f"{method} 超时"),
+                             direction=DIRECTION_WORKER))
+        except RpcError as e:
+            self._write(fail(req_id, e, direction=DIRECTION_WORKER))
+        except Exception as e:  # noqa: BLE001 — 单个 handler 异常不能拆掉插件
+            logger.warning("插件 %s 的宿主方法 %s 异常: %s", self.plugin_id, method, e)
+            self._write(fail(req_id, RpcError("PLUGIN_ERROR", str(e)),
+                             direction=DIRECTION_WORKER))
+
     # ── RPC ──────────────────────────────────────────
 
     async def invoke(self, method: str, params: dict[str, Any],
-                     timeout: float = 0.0) -> Any:
+                     timeout: float = 0.0,
+                     scope: dict[str, Any] | None = None) -> Any:
         """异步调用点用：把阻塞 RPC 交给线程池，不占宿主事件循环。"""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            self._pool, self.invoke_sync, method, params, timeout,
+            self._pool, self.invoke_sync, method, params, timeout, scope,
         )
 
     def invoke_sync(self, method: str, params: dict[str, Any],
-                    timeout: float = 0.0) -> Any:
-        """同步调用点（如 Hook）用：阻塞等待结果。"""
+                    timeout: float = 0.0,
+                    scope: dict[str, Any] | None = None) -> Any:
+        """同步调用点（如 Hook）用：阻塞等待结果。
+
+        `scope` 随请求下发到 worker，插件的 `call_host` 默认沿用它，
+        宿主据此做 plugin/task/project 归属校验（M2）。
+        """
         limit = float(timeout or self.call_timeout)
-        return self._submit(self._rpc(method, params, limit),
+        return self._submit(self._rpc(method, params, limit, scope),
                             timeout=limit + 5.0, what=method)
 
-    async def _rpc(self, method: str, params: dict[str, Any], timeout: float) -> Any:
+    async def _rpc(self, method: str, params: dict[str, Any], timeout: float,
+                   scope: dict[str, Any] | None = None) -> Any:
         if not self.alive:
             raise RpcError(ERR_WORKER_DEAD, self._dead_reason or "worker 未启动或已退出")
         with self._lock:
@@ -198,7 +288,7 @@ class PluginHost:
             self._next_id += 1
             fut: asyncio.Future = asyncio.get_running_loop().create_future()
             self._pending[req_id] = fut
-            self._write(request(req_id, method, params))
+            self._write(request(req_id, method, params, scope=scope))
         try:
             return await asyncio.wait_for(fut, timeout=float(timeout))
         except asyncio.TimeoutError:
@@ -244,7 +334,12 @@ class PluginHost:
             raise RpcError(ERR_WORKER_DEAD, self._dead_reason) from e
 
     async def _read_responses(self) -> None:
-        """后台读循环：按 id 把响应派发给等待中的 future。"""
+        """后台读循环：响应按 id 唤醒 pending；请求交给 handler 异步任务。
+
+        v2 关键点：worker 可能在**等待宿主响应**（例如 workspace.stat），
+        所以这里不能用同一个 await 链处理请求后再读下一行——请求必须
+        派发给独立 task，读循环立即回到 readline。
+        """
         proc = self._proc
         if proc is None or proc.stdout is None:
             return
@@ -255,12 +350,33 @@ class PluginHost:
                     break
                 try:
                     message = decode(line)
+                    direction = direction_of(message)
                 except RpcError as e:
                     logger.warning("子进程插件 %s 回帧非法: %s", self.plugin_id, e.message)
                     continue
+
+                if is_request(message):
+                    if direction != DIRECTION_WORKER:
+                        logger.warning("插件 %s 发来 host 方向的请求帧，已忽略",
+                                       self.plugin_id)
+                        continue
+                    task = asyncio.get_running_loop().create_task(
+                        self._dispatch_worker_request(message)
+                    )
+                    self._worker_tasks.add(task)
+                    task.add_done_callback(self._worker_tasks.discard)
+                    continue
+
+                if not is_response(message) or direction != DIRECTION_HOST:
+                    logger.warning("插件 %s 发来无法识别的帧（direction=%s）",
+                                   self.plugin_id, direction)
+                    continue
+
                 req_id = int(message.get("id", -1))
                 fut = self._pending.pop(req_id, None)
                 if fut is None or fut.done():
+                    logger.debug("插件 %s 的未知/已结束响应 id=%s，已忽略",
+                                 self.plugin_id, req_id)
                     continue
                 if message.get("ok"):
                     fut.set_result(message.get("result"))
@@ -305,6 +421,11 @@ class PluginHost:
                 fut.set_exception(RpcError(code, message))
             except Exception:  # noqa: BLE001 - future 可能已取消
                 pass
+        # v2：在途的 worker 请求处理任务一并取消，避免 worker 死后仍在等回包
+        tasks, self._worker_tasks = self._worker_tasks, set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
 
 
 def runtime_available() -> bool:

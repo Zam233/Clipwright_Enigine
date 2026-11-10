@@ -40,6 +40,7 @@ _WIRED_KINDS = {
     ContributionKind.STYLE_INTERPRETER,
     ContributionKind.HOOK,
     ContributionKind.PROMPT,
+    ContributionKind.CLIP_KIND,
 }
 
 #: Provider 类 kind（facade-only，但注册前要做协议符合性校验 —— B2）
@@ -252,6 +253,26 @@ def register(owner: str, item: Contribution, *, policy=None) -> Optional[str]:
                     return f"未知 hook point: {item.meta.get('point')}"
             HookRegistry.register(point, item.object, plugin_id=owner)
 
+        elif item.kind is ContributionKind.CLIP_KIND:
+            from clipwright.services.clip_kind_registry import (
+                ClipKindDefinition,
+                ClipKindRegistry,
+            )
+
+            meta = dict(item.meta or {})
+            ClipKindRegistry.register(ClipKindDefinition(
+                kind_id=item.id,
+                display_name=str(meta.get("display_name") or ""),
+                track_label=str(meta.get("track_label") or ""),
+                icon=str(meta.get("icon") or ""),
+                metadata_schema=dict(meta.get("metadata_schema") or {}),
+                render_contract=str(meta.get("render_contract") or ""),
+                preview_contract=str(meta.get("preview_contract") or ""),
+                renderer_tool=str(meta.get("renderer_tool") or ""),
+                capabilities=tuple(meta.get("capabilities") or ()),
+                owner_plugin=owner,
+            ))
+
         elif item.kind is ContributionKind.PROMPT:
             from clipwright.plugins.prompt_registry import PluginPromptRegistry
 
@@ -341,6 +362,9 @@ def unregister(owner: str, keys: list[str]) -> list[str]:
             elif kind_value == ContributionKind.HOOK.value:
                 from clipwright.plugins.hooks import HookRegistry
                 HookRegistry.unregister_plugin(owner)
+            elif kind_value == ContributionKind.CLIP_KIND.value:
+                from clipwright.services.clip_kind_registry import ClipKindRegistry
+                ClipKindRegistry.unregister_plugin(owner)
             elif kind_value == ContributionKind.PROMPT.value:
                 from clipwright.plugins import prompt_overrides
                 from clipwright.plugins.prompt_registry import PluginPromptRegistry

@@ -40,10 +40,23 @@ KNOWN_TRAITS: tuple[str, ...] = (
 )
 
 
+def _is_visual_kind(kind: object) -> bool:
+    """视频轨或插件 ClipKind（M4：插件片段也是镜头，参与节奏/长度指标）。"""
+    text = str(kind or "")
+    if text == ClipKind.VIDEO.value:
+        return True
+    try:
+        from clipwright.services.clip_kind_registry import ClipKindRegistry
+
+        return ClipKindRegistry.is_plugin_kind(text)
+    except Exception:  # noqa: BLE001 — 注册表不可用时按内置判定
+        return False
+
+
 def _video_clips(timeline: Timeline) -> list[Clip]:
     clips: list[Clip] = []
     for track in timeline.tracks or []:
-        if track.kind == ClipKind.VIDEO:
+        if _is_visual_kind(track.kind):
             clips.extend(track.clips or [])
     return clips
 

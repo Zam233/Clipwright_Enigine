@@ -272,6 +272,35 @@ class _BackendServiceAdapter:
         )
 
 
+def _project_id_of_workspace(workspace_root: str | None) -> str:
+    """从工作区元数据读 project_id（插件渲染 scope 需要）。失败返回空串。"""
+    if not workspace_root:
+        return ""
+    try:
+        data = json.loads(
+            (Path(workspace_root) / ".workspace.json").read_text(encoding="utf-8")
+        )
+        return str(data.get("project_id") or "")
+    except Exception:  # noqa: BLE001 — 没有工作区/元数据损坏都不阻断渲染
+        return ""
+
+
+def _plugin_render_kwargs(timeline, *, workspace_root: str | None = "",
+                          task_id: str = "") -> dict:
+    """时间线含插件 ClipKind 时，给 RenderService 传 host 与 scope；否则空。"""
+    try:
+        from clipwright.services.plugin_rpc import plugin_render_kwargs
+
+        return plugin_render_kwargs(
+            timeline,
+            project_id=_project_id_of_workspace(workspace_root),
+            task_id=task_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — 解析失败由 RenderService 显式报错
+        logger.debug("插件渲染参数解析失败: %s", exc)
+        return {}
+
+
 def _ensure_disk_space(min_free_gb: float = 1.0) -> None:
     """轮 86（出片闭环）：渲染前磁盘预检——空间不足快速失败，不再让
     ffmpeg 写满磁盘后以晦涩的 stderr 尾巴暴露。探测失败不阻断。"""
@@ -386,6 +415,7 @@ async def enqueue_auto_render(
                     encoder_override=params.get("encoder", ""),
                     pix_fmt_override=params.get("pix_fmt", ""),
                     loudnorm_enabled=bool(params.get("loudnorm", True)),
+                    **_plugin_render_kwargs(tl, task_id=task_id),
                 )
                 if not result.success:
                     raise RuntimeError(result.error or "render failed")
@@ -635,6 +665,10 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                 pix_fmt_override=params.get("pix_fmt", ""),
                 soft_subtitle_srt=_srt_path,  # D4
                 loudnorm_enabled=bool(params.get("loudnorm", True)),
+                **_plugin_render_kwargs(
+                    tl, workspace_root=getattr(body, "workspace_root", "") or "",
+                    task_id=task_id,
+                ),
             )
             # SRT sidecar 用后即删（此前永久遗留 temp 目录）
             if _srt_path:
@@ -1362,6 +1396,9 @@ async def start_render(
             encoder_override=params.get("encoder", ""),
             pix_fmt_override=params.get("pix_fmt", ""),
             loudnorm_enabled=bool(params.get("loudnorm", True)),
+            **_plugin_render_kwargs(
+                tl, workspace_root=getattr(body, "workspace_root", "") or "",
+            ),
         )
     except Exception as e:
         logger.exception("start_render failed: %s", e)

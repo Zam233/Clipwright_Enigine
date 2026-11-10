@@ -40,6 +40,16 @@ class PrerollPlan:
         }
 
 
+def _is_plugin_kind(kind: object) -> bool:
+    """插件 ClipKind（M4）：预热片头只放在内置视觉轨上，避免与插件渲染契约冲突。"""
+    try:
+        from clipwright.services.clip_kind_registry import ClipKindRegistry
+
+        return ClipKindRegistry.is_plugin_kind(str(kind or ""))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def plan(timeline: Timeline, preroll_sec: float) -> PrerollPlan:
     """片头方案：视频 = 片头 + 原时长；音频延后 = 片头。"""
     duration = float(getattr(timeline, "duration_sec", 0) or 0)
@@ -91,7 +101,7 @@ def apply_preroll(
             clip.model_copy(update={"start_sec": round(clip.start_sec + preroll, 6)})
             for clip in (track.clips or [])
         ]
-        if not lead_placed and track.kind != ClipKind.AUDIO:
+        if not lead_placed and track.kind != ClipKind.AUDIO and not _is_plugin_kind(track.kind):
             donor = _first_visual_clip(timeline)
             lead = Clip(
                 id=f"preroll_{track.id}",

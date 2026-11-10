@@ -70,6 +70,25 @@ _CANCELLED_IDS: set[str] = set()
 _ACTIVE_PROCS: dict[str, list[subprocess.Popen]] = {}
 
 
+def is_plugin_clip_kind(kind: str) -> bool:
+    """是否为插件注册的 ClipKind（M4）。导入失败时保守返回 False。"""
+    try:
+        from clipwright.services.clip_kind_registry import ClipKindRegistry
+
+        return ClipKindRegistry.is_plugin_kind(kind)
+    except Exception:  # noqa: BLE001 — 注册表不可用不应影响既有渲染路径
+        return False
+
+
+def _timeline_has_plugin_clips(timeline: Any) -> bool:
+    """时间线是否含插件 ClipKind（决定是否需要渲染前回调）。"""
+    for track in getattr(timeline, "tracks", []) or []:
+        for clip in getattr(track, "clips", []) or []:
+            if is_plugin_clip_kind(str(getattr(clip, "kind", ""))):
+                return True
+    return False
+
+
 class RenderCancelledError(Exception):
     """渲染任务被用户取消。"""
 
@@ -1147,7 +1166,9 @@ class RenderService:
                      encoder_override: str = "", preset_override: str = "",
                      pix_fmt_override: str = "", force_render: bool = False,
                      soft_subtitle_srt: str = "",
-                     loudnorm_enabled: bool = True) -> RenderResult:
+                     loudnorm_enabled: bool = True,
+                     plugin_host: Any = None,
+                     plugin_scope: dict[str, Any] | None = None) -> RenderResult:
         # 审计 P0 修复：取消标识注入 context，线程池内 ffmpeg 调用可感知并 terminate
         _CURRENT_CANCEL_ID.set(cancel_id)
         # Phase 3.3: 单次渲染编码器/像素格式覆盖注入 context（随 ctx.run 传播）
@@ -1166,6 +1187,32 @@ class RenderService:
         ok, info = await asyncio.to_thread(ffmpeg_available)
         if not ok:
             return RenderResult(False, error=f"FFmpeg 未就绪: {info}")
+
+        # M5：插件 ClipKind 先由插件回调产出媒体，再按普通视频 overlay 合成。
+        if _timeline_has_plugin_clips(timeline):
+            if plugin_host is None or not plugin_scope:
+                return RenderResult(
+                    False,
+                    error="时间线包含插件片段，渲染需要 plugin_host 与 plugin_scope",
+                )
+            try:
+                from clipwright.services.plugin_render import (
+                    PluginRenderError,
+                    RenderScope,
+                    materialize_plugin_clips,
+                )
+
+                scope = RenderScope(
+                    plugin_id=str(plugin_scope.get("plugin_id") or ""),
+                    project_id=str(plugin_scope.get("project_id") or ""),
+                    task_id=str(plugin_scope.get("task_id") or ""),
+                )
+                timeline = await materialize_plugin_clips(
+                    timeline, host=plugin_host, scope=scope,
+                    width=width, height=height, fps=fps,
+                )
+            except PluginRenderError as e:
+                return RenderResult(False, error=f"{e.code}: {e.message}")
 
         # Phase 3.1: 未变更无操作快速返回（指纹 sidecar 比对）
         self._render_fp = _timeline_render_fingerprint(
@@ -1396,6 +1443,7 @@ class RenderService:
     # ── 分段提取 ──────────────────────────────────
 
     def _extract_segments(self, timeline):
+        """按 kind 收集片段（内置分支 + 插件类型显式失败，见下）。"""
         video_segments, overlay_segments, text_overlays, audio_segments = [], [], [], []
         hf_ov_local = []
 
@@ -1479,6 +1527,12 @@ class RenderService:
                         ))
                     else:
                         text_overlays.append(self._extract_animation_overlay(clip, track.index))
+                elif is_plugin_clip_kind(k):
+                    # M4：插件类型必须由插件渲染回调产出媒体（M5 接入）。
+                    # 这里显式失败，不允许像未知 kind 一样被静默丢弃。
+                    raise RuntimeError(
+                        f"片段类型 {k!r} 由插件提供，渲染回调尚未接入（M5）"
+                    )
         return video_segments, overlay_segments, text_overlays, audio_segments, hf_ov_local
 
     @staticmethod
