@@ -1542,6 +1542,16 @@ class AgentKernel:
             if bool(getattr(settings, "agent_terminal_reason_v1", True)):
                 task.terminal_reason = _treason
             task.blocker_code = _blocker
+            # KK-09（审计 PRD §5F P3）：ok 路径也落收口报告——它是**交接物**，
+            # 续跑任务读它就知道上一轮产物与缺口。报告先写（含 usage/黑板清单），
+            # finish 的 completed/unfinished 从报告取，两边一致。
+            try:
+                _report = self._write_closeout_report(
+                    task, why=conclusion or gate_reason,
+                    terminal_reason=_treason.value if hasattr(_treason, "value") else str(_treason))
+            except Exception as exc:  # noqa: BLE001 — 报告失败不阻断收尾
+                logger.warning("ok 路径收口报告写入失败 %s: %s", task.id, exc)
+                _report = {"completed": [], "unfinished": []}
             if getattr(task, 'goal', None) is not None:
                 if _treason in (TerminalReason.achieved, TerminalReason.plan_only_completed,
                                 TerminalReason.dry_run_completed):
@@ -1552,12 +1562,13 @@ class AgentKernel:
                     _goal_of(task).status = GoalStatus.blocked
             task.finish = TaskFinish(
                 conclusion=conclusion or f"工具循环结束：{len(outcome.get('tool_calls') or [])} 次调用",
-                completed=[],
-                unfinished=([
+                # KK-09：清单与收口报告同源（报告已从黑板推导），不再恒空数组
+                completed=list(_report.get("completed") or []),
+                unfinished=(list(_report.get("unfinished") or []) + ([
                     "degraded:" + ",".join(sorted({
                         str(d.get("kind")) for d in unresolved
                     }))[:200]
-                ] if unresolved else []),
+                ] if unresolved else [])),
                 reason=gate_reason,
                 terminal_reason=_treason,
             )
@@ -1810,11 +1821,15 @@ class AgentKernel:
             unfinished.append("没有任何可交付产物")
         return completed, unfinished
 
-    def _write_closeout_report(self, task: Task, *, why: str) -> dict[str, Any]:
+    def _write_closeout_report(self, task: Task, *, why: str,
+                               terminal_reason: str = "capped") -> dict[str, Any]:
         """把收尾报告落到 `reports/agent-closeout.json`（原子替换），返回 payload。
 
         报告是**交接物**：下一轮续跑的任务读它就知道上一轮卡在哪、还缺什么，不需要
         把整段对话再塞进上下文。
+        KK-09（审计 PRD §5F P3）：ok 路径（正常完成）此前不写收口报告——续跑任务
+        只能靠黑板/对话猜上一轮产物。现在 ok 路径也落一份（terminal_reason 标注
+        achieved 等），deliverable_status 同步写入。
         """
         import json as _json
         import os
@@ -1823,7 +1838,7 @@ class AgentKernel:
         payload = {
             "task_id": task.id,
             "goal_id": _goal_of(task).id if _goal_of(task) else "",
-            "terminal_reason": "capped",
+            "terminal_reason": str(terminal_reason),
             "why": str(why or "")[:500],
             "completed": completed,
             "unfinished": unfinished,
