@@ -56,8 +56,11 @@ def _persist_render_task(doc: dict) -> None:
             mongo.db["render_tasks"].update_one(
                 {"task_id": doc["task_id"]}, {"$set": doc}, upsert=True
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        # BE-09（审计 PRD §5E P3）：持久化降级可以接受（纯内存仍可用），
+        # 但必须留痕——刷新后该任务的 Mongo 记录就是缺失的，排查"为什么
+        # 刷新后任务消失"时没有这条日志就是黑盒。
+        logger.warning("渲染任务持久化失败（降级内存，刷新后记录缺失）: %s", exc)
 
 
 def _drop_render_task(task_id: str) -> None:
@@ -65,8 +68,8 @@ def _drop_render_task(task_id: str) -> None:
         from clipwright.context import mongo
         if mongo.is_connected:
             mongo.db["render_tasks"].delete_one({"task_id": task_id})
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("渲染任务清理失败 %s（Mongo 记录将残留）: %s", task_id, exc)
 
 
 def mark_interrupted_render_tasks() -> int:

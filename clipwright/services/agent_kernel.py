@@ -1329,7 +1329,9 @@ class AgentKernel:
                   "completed": list(task.finish.completed or []),
                   "unfinished": list(task.finish.unfinished or []),
                   # ── 终止机制（devplan §4：新字段与旧 reason 并行）──
-                  "terminal_reason": _treason,
+                  # KK-09：terminal_reason 统一发字符串值（与 1576 行的
+                  # `_treason.value` 同形态），消费者不必兼容两种类型。
+                  "terminal_reason": str(_treason),
                   "blocker_code": _blocker,
                   "goal_id": _goal_of(task).id if _goal_of(task) else "",
                   "goal_status": _goal_status_value(task) or None,

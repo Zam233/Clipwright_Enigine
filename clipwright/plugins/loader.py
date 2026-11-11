@@ -876,13 +876,25 @@ class PluginLoader:
             return config
 
         # 尝试加载插件目录 migrations.py 中的 migrate_config(config, from, to)
+        # BE-09（审计 PRD §5E P3）：迁移完成后**立即从 sys.path 摘掉插件根**——
+        # 旧实现只 append 不 remove，多个插件重名模块（`migrations.py`、`utils.py`）
+        # 会互相遮蔽，且每次 reload 再 append 一条，越积越多。
+        migrate_fn = None
+        plugin_dir_str = str(self.plugin_dir)
+        added_to_path = False
+        if plugin_dir_str not in sys.path:
+            sys.path.append(plugin_dir_str)
+            added_to_path = True
         try:
-            plugin_dir_str = str(self.plugin_dir)
-            if plugin_dir_str not in sys.path:
-                sys.path.append(plugin_dir_str)
             migrate_fn = getattr(importlib.import_module(f"{plugin_id}.migrations"), "migrate_config", None)
-        except Exception:
-            migrate_fn = None
+        except Exception as exc:
+            logger.debug("插件 %s 无迁移器（可忽略）: %s", plugin_id, exc)
+        finally:
+            if added_to_path:
+                try:
+                    sys.path.remove(plugin_dir_str)
+                except ValueError:  # 已被并发移除
+                    pass
 
         migrated = config
         if callable(migrate_fn):
