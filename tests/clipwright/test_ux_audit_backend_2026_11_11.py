@@ -117,6 +117,51 @@ def test_valid_budget_setting_passthrough(raw, expected, monkeypatch):
     assert limits.budget_usd == expected
 
 
+# ── KK-09：ok 路径也写收口报告（交接物不缺位）────────────────────────────
+
+def test_write_closeout_report_accepts_achieved_reason(tmp_path, monkeypatch):
+    """ok 路径（achieved）也能落收口报告：terminal_reason 参数化、
+    deliverable_status 同步写入、清单来自 _closeout_evidence。"""
+    kernel = AgentKernel()
+    task = _task(status="running")
+    task.closeout.mode = "closed"
+    kernel_mod._TASKS[task.id] = task
+
+    monkeypatch.setattr(
+        kernel, "_closeout_evidence",
+        lambda t: (["final_timeline"], []),
+        raising=False,
+    )
+    monkeypatch.setattr(kernel_mod, "_workspace_root_of", lambda t: str(tmp_path))
+
+    payload = kernel._write_closeout_report(
+        task, why="工具循环结束", terminal_reason="achieved")
+
+    assert payload["terminal_reason"] == "achieved"
+    assert payload["completed"] == ["final_timeline"]
+    # 报告已落盘且路径回填
+    from pathlib import Path
+    report = Path(payload["path"])
+    assert report.exists()
+    # deliverable_status 由报告写入流程置位
+    assert task.closeout.deliverable_status == "delivered"
+
+    kernel_mod._TASKS.pop(task.id, None)
+
+
+def test_write_closeout_report_default_reason_is_capped():
+    """capped 调用点（旧签名）行为不变——terminal_reason 缺省 'capped'。"""
+    kernel = AgentKernel()
+    task = _task(status="running")
+    task.closeout.mode = "closed"
+    kernel_mod._TASKS[task.id] = task
+
+    payload = kernel._write_closeout_report(task, why="预算耗尽")
+    assert payload["terminal_reason"] == "capped"
+
+    kernel_mod._TASKS.pop(task.id, None)
+
+
 # ── KK-01：金额闸只看主 agent 花费 ────────────────────────────────────────
 
 def test_budget_gate_uses_main_spent_not_total():
