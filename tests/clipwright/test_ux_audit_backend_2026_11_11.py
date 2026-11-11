@@ -95,6 +95,28 @@ def test_closeout_window_still_capped():
     assert blocker == "budget_exhausted"
 
 
+# ── KK-09：limits_from_settings 对非法预算值不再炸 create ─────────────────
+
+@pytest.mark.parametrize("raw", ["", "abc", "  "])
+def test_invalid_budget_setting_falls_back_to_none(raw, monkeypatch):
+    """空串/非数字的 pipeline_budget_usd 旧实现直接抛 ValidationError（create 500），
+    现在按「未配置」处理并留 warning。"""
+    from unittest.mock import patch
+
+    with patch.object(kernel_mod.settings, "pipeline_budget_usd", raw):
+        limits = kernel_mod.limits_from_settings()
+    assert limits.budget_usd is None
+
+
+@pytest.mark.parametrize("raw,expected", [(None, None), ("2.5", 2.5), (3, 3.0)])
+def test_valid_budget_setting_passthrough(raw, expected, monkeypatch):
+    from unittest.mock import patch
+
+    with patch.object(kernel_mod.settings, "pipeline_budget_usd", raw):
+        limits = kernel_mod.limits_from_settings()
+    assert limits.budget_usd == expected
+
+
 # ── KK-01：金额闸只看主 agent 花费 ────────────────────────────────────────
 
 def test_budget_gate_uses_main_spent_not_total():
