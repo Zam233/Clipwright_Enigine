@@ -641,12 +641,30 @@ def _capability_catalog() -> str:
 
 
 def limits_from_settings() -> TaskLimits:
-    """从设置读四道闸；金额闸未配置=无上限（Q1 裁定）。"""
+    """从设置读四道闸；金额闸未配置=无上限（Q1 裁定）。
+
+    KK-09（审计 PRD §5F P3，实测复现）：`pipeline_budget_usd` 被配置成空串或
+    非数字时，旧实现原样透传给 pydantic `float` → `TaskLimits` 构造即抛
+    `ValidationError`，任务 create 阶段 500。无效配置按「未配置」处理（None）
+    并留痕，而不是让整个任务创建失败。
+    """
+    _raw_budget = getattr(settings, "pipeline_budget_usd", None)
+    budget_usd: Any = _raw_budget
+    if _raw_budget is not None:
+        try:
+            budget_usd = float(_raw_budget)
+            if budget_usd != budget_usd or budget_usd in (float("inf"), float("-inf")):
+                raise ValueError(f"非有限数值: {_raw_budget!r}")
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "设置项 pipeline_budget_usd 非法（%s），按未配置处理（无金额上限）",
+                exc)
+            budget_usd = None
     limits = TaskLimits(
         max_turns=int(getattr(settings, "agent_max_turns", 30) or 30),
         max_tool_calls=int(getattr(settings, "agent_max_tool_calls", 80) or 80),
         max_wall_sec=float(getattr(settings, "agent_max_wall_sec", 0.0) or 0.0),
-        budget_usd=getattr(settings, "pipeline_budget_usd", None),
+        budget_usd=budget_usd,
     )
     limits.validate_or_raise()
     return limits
