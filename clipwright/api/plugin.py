@@ -810,3 +810,93 @@ async def get_plugin_ui(plugin_id: str) -> dict:
             }],
         }
     return raw
+
+
+# ── W01：插件专用受限代理（服务端权限最终裁定）──────────────────────────
+#
+# 背景（审计 PRD §5D PL-01/02）：插件贡献里的 endpoint/method 此前由前端直发到
+# 带 CLIPWRIGHT_API_TOKEN 的普通宿主 API —— 插件可以借宿主凭据 DELETE /api/project/*。
+# 前端已做默认拒绝 + 白名单收口（pluginApiGuard），但**前端白名单不是授权边界**；
+# 本端点是服务端最终裁定：按插件启停状态 + 服务端允许清单转发，普通宿主令牌
+# 不因代理放宽。
+
+#: 服务端允许清单：plugin_id → 允许的方法+动作。
+#: key 形如 "GET:probe" / "POST:tool"；具体目标端点在 handler 里映射，不接受
+#: 插件自报的任意路径（插件若需要新端点，必须改这里 + 发版）。
+_PLUGIN_PROXY_ALLOWED: dict[str, dict[str, str]] = {
+    # 内置生成类插件：ui.json 按钮只调 /api/tool/execute
+    "ai_image_gen": {"POST:tool": "/api/tool/execute"},
+    "ai_music_gen": {"POST:tool": "/api/tool/execute"},
+    "ai_video_gen": {"POST:tool": "/api/tool/execute"},
+    "example_full": {"POST:tool": "/api/tool/execute"},
+    # 依赖探针：GET /api/render/browser（前端浮层轮询）+ POST 安装触发（用户点确认）
+    "headless_chrome": {
+        "GET:probe": "/api/render/browser",
+        "POST:install": "/api/render/browser/install",
+    },
+}
+
+
+class _PluginProxyBody(BaseModel):
+    """代理请求体。action 由服务端清单解释，插件/前端不能指定任意路径。"""
+    action: str  # "tool" | "probe"
+    payload: dict = {}
+
+
+@router.post("/proxy/{plugin_id}/{method}")
+async def plugin_proxy(plugin_id: str, method: str, body: _PluginProxyBody,
+                       request: Request = None) -> dict:
+    """插件专用受限代理：服务端按清单裁定，普通宿主 API 不因代理放宽。
+
+    - 只接受 POST（GET 探针走 `method="get"` 形式 + action=probe）；
+    - plugin_id 必须已加载且启用；
+    - (plugin_id, method, action) 必须命中 `_PLUGIN_PROXY_ALLOWED`，目标端点由
+      服务端映射，不接受请求体里的路径。
+    """
+    _validate_plugin_id(plugin_id)
+    method_norm = method.strip().lower()
+    if method_norm not in ("get", "post"):
+        raise HTTPException(status_code=405, detail=f"代理不支持方法: {method}")
+
+    if _loader is None:
+        raise HTTPException(status_code=503, detail="Plugin system not initialized")
+    if plugin_id not in _loader.discover():
+        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not found")
+    if not _loader.is_enabled(plugin_id):
+        # 插件被禁用后其贡献即使仍缓存在前端也不能再调用（默认拒绝）
+        raise HTTPException(status_code=403, detail=f"插件 {plugin_id} 已禁用")
+
+    allowed = _PLUGIN_PROXY_ALLOWED.get(plugin_id) or {}
+    target = allowed.get(f"{method_norm}:{body.action}")
+    if not target:
+        raise HTTPException(
+            status_code=403,
+            detail=f"插件 {plugin_id} 未被授权调用 {method_norm}:{body.action}",
+        )
+
+    # 服务端内部转发（复用既有 handler 逻辑，不出网）
+    if method_norm == "post" and body.action == "tool":
+        from clipwright.api.tool import _validate_tool_params
+        from clipwright.schema.tool import ToolExecResult
+        from clipwright.tool import ToolRegistry
+
+        name = str(body.payload.get("name") or "")
+        params = body.payload.get("params") or {}
+        if not name:
+            raise HTTPException(status_code=400, detail="缺少工具名")
+        _validate_tool_params(params)
+        result = await ToolRegistry.execute(name, **params)
+        if result.status == "not_found":
+            raise HTTPException(status_code=404, detail=result.error)
+        return result.model_dump()
+
+    if method_norm == "get" and body.action == "probe":
+        # 探针只允许打渲染依赖状态端点；直接调用其 handler 逻辑
+        from clipwright.api.render import render_browser_status
+        return await render_browser_status()
+
+    if method_norm == "post" and body.action == "install":
+        from clipwright.api.render import render_browser_install
+        return await render_browser_install()
+
+    raise HTTPException(status_code=403, detail="未授权的代理动作")
