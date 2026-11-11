@@ -58,6 +58,43 @@ def test_plan_only_completed_not_misjudged_as_capped():
     assert treason is TerminalReason.plan_only_completed
 
 
+# ── KK-09：收口期行为性失败是 blocked 不是 capped ─────────────────────────
+
+def test_repeat_fail_in_closeout_is_blocked_not_capped():
+    """收口期"同一工具连续失败 3 次"（agent_loop 的文案不含「熔断」）必须判
+    blocked——旧实现被 in_closeout 分支吞掉判成 capped。"""
+    kernel = AgentKernel()
+    task = _task()
+    task.closeout.mode = "soft_landing"
+    status, treason, blocker = kernel._classify_gate(
+        task, "同一工具连续失败 3 次（video_trim）：ffprobe failed")
+    assert status == "failed"
+    assert treason == "blocked"
+    assert blocker == "repeat_fail"
+
+
+def test_no_progress_in_closeout_is_blocked_not_capped():
+    kernel = AgentKernel()
+    task = _task()
+    task.closeout.mode = "soft_landing"
+    status, treason, blocker = kernel._classify_gate(
+        task, "连续 6 次检查没有任何新进展")
+    assert status == "failed"
+    assert treason == "blocked"
+    assert blocker == "no_progress"
+
+
+def test_closeout_window_still_capped():
+    """真正的收口窗口用尽仍是 capped——行为性失败修复不得误伤正常封顶。"""
+    kernel = AgentKernel()
+    task = _task()
+    task.closeout.mode = "soft_landing"
+    status, treason, blocker = kernel._classify_gate(task, "收口窗口用尽")
+    assert status == "capped"
+    assert treason == "capped"
+    assert blocker == "budget_exhausted"
+
+
 # ── KK-01：金额闸只看主 agent 花费 ────────────────────────────────────────
 
 def test_budget_gate_uses_main_spent_not_total():
