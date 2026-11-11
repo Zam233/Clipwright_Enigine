@@ -1860,9 +1860,15 @@ class AgentKernel:
         """
         in_closeout = str(_closeout_of(task).mode) == "soft_landing"
         text = str(text or "")
-        if "重复动作熔断" in text:
+        # KK-09（审计 PRD §5F P3）：**先**判行为性失败，再判收口封顶。
+        # 旧实现 `in_closeout` 分支在重复失败/无进展之前——收口期里
+        # "同一工具连续失败 3 次"（agent_loop raise 的文案不含「熔断」二字）
+        # 会被收口分支吞掉判成 capped，blocker_code 也错标 budget_exhausted；
+        # 用户看到"正常封顶"，实际是"卡死了"。行为性失败无论是否在收口期
+        # 都是 blocked，只有真正的预算/上限触闸才走 capped。
+        if "重复动作熔断" in text or "连续失败" in text:
             return ("failed", "blocked", "repeat_fail")
-        if "没有任何新进展" in text:
+        if "没有任何新进展" in text or "没有新进展" in text:
             return ("failed", "blocked", "no_progress")
         if "收口窗口用尽" in text or in_closeout:
             # 收口里结束 = 有交付的封顶（真交付与否看 deliverable_status）
