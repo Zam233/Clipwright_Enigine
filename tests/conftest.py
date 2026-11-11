@@ -60,6 +60,17 @@ def _llm_credentials(monkeypatch):
 sys.path.insert(0, str(Path(__file__).parent))
 
 
+@pytest.fixture(autouse=True)
+def _reset_circuit_breaker():
+    """P2-49 之后熔断会真正拦截派发：单测之间必须清表，否则前面用例制造的
+    连续失败会让后面同 (阶段, 模型) 的 run 直接被判「熔断中」。"""
+    from clipwright.services import circuit_breaker
+
+    circuit_breaker.reset()
+    yield
+    circuit_breaker.reset()
+
+
 @pytest.fixture
 def sample_persona_dir() -> Path:
     return Path("personas/zam_knowledge_critical")
