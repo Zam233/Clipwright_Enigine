@@ -824,6 +824,15 @@ class AgentKernel:
                 handle.cancel()
             except Exception as exc:  # noqa: BLE001 — 取消失败只记录，仍置终态
                 logger.warning("取消任务协程失败 %s: %s", task_id, exc)
+        # KK-03：外层协程被取消**不会**连带取消阶段子 agent（它们登记在
+        # agent_run._LIVE）。不显式取消，子 agent 会继续跑完并把产物 merge
+        # 进黑板/时间线——用户以为停了，实际还在烧钱写结果。
+        try:
+            from clipwright.services import agent_run as _agent_run
+
+            _agent_run.cancel_for_task(task_id)
+        except Exception as exc:  # noqa: BLE001 — 子 run 取消失败要留痕
+            logger.warning("取消在飞子 run 失败 %s: %s", task_id, exc)
         from clipwright.services.task_events import emit
 
         task.status = "cancelled"
@@ -1258,9 +1267,23 @@ class AgentKernel:
             if task.status in ("cancelled", "paused") or text == "cancel":
                 task.status = "cancelled" if text == "cancel" else task.status
                 if task.status == "cancelled":
+                    # KK-08：本分支旧实现用不带 terminal_reason 的 TaskFinish 覆盖
+                    # cancel() 已写好的终态 → 两条取消路径互相打架，`terminal_reason`
+                    # 丢失。这里统一补 user_cancelled，并且不覆盖已完成的原因。
+                    try:
+                        from clipwright.schema.task import TerminalReason as _TR
+
+                        task.terminal_reason = _TR.user_cancelled
+                    except Exception as exc:  # noqa: BLE001 — 打标记失败不阻断
+                        logger.warning("取消分支写 terminal_reason 失败 %s: %s", task.id, exc)
+                    prev = task.finish
                     task.finish = TaskFinish(
-                        conclusion="任务被取消", completed=[],
-                        unfinished=["cancel"], reason="cancelled")
+                        conclusion=(getattr(prev, "conclusion", "") or "任务被取消"),
+                        completed=list(getattr(prev, "completed", []) or []),
+                        unfinished=(list(getattr(prev, "unfinished", []) or []) or ["cancel"]),
+                        reason="cancelled",
+                        terminal_reason=getattr(task, "terminal_reason", None),
+                    )
                     self._record_task_metrics(task, "cancelled")
                 self._checkpoint(task)
                 return task
@@ -1518,9 +1541,22 @@ class AgentKernel:
                 reason=gate_reason,
                 terminal_reason=_treason,
             )
-            task.status = ("done" if gate_reason in ("tool_loop_completed",
-                                                    "dry_run_preview",
-                                                    "plan_only_completed") else "failed")
+            # KK-02/KK-05（审计 PRD §5F P1/P2）：status 必须由分类后的
+            # terminal_reason 派生，不能再只看 gate_reason 白名单——否则收口后
+            # 正常 finish 一律落 done，状态页显示「已完成」而与 terminal_reason=capped 矛盾。
+            if getattr(settings, "agent_terminal_reason_v1", True):
+                if _treason is TerminalReason.capped:
+                    task.status = "capped"
+                elif _treason in (TerminalReason.achieved,
+                                  TerminalReason.dry_run_completed,
+                                  TerminalReason.plan_only_completed):
+                    task.status = "done"
+                else:
+                    task.status = "failed"
+            else:  # 兼容旧口径（未启用 terminal_reason v1）
+                task.status = ("done" if gate_reason in ("tool_loop_completed",
+                                                        "dry_run_preview",
+                                                        "plan_only_completed") else "failed")
             # 结果快照（含质检摘要）落一份：前端任务详情/质检页读它，而不是读老管线的结果字典
             try:
                 from clipwright.services import task_blackboard as _bb2
@@ -1915,16 +1951,25 @@ class AgentKernel:
                 return None
             return f"墙钟达到上限 {limits.max_wall_sec}s"
         # 金额闸：用**扣除质量预留后**的额度判（用户裁定 2）
+        # KK-01（审计 PRD §5F P1）：旧实现拿 `usage.cost_usd`（主 + 质量总账）
+        # 去比 `main_budget`（已扣预留），于是"质量阶段花了钱"会被算成"主 agent
+        # 超支"，任务被提前收口。这里改比 escrow 已算好的 main_spent_usd。
         main_budget = self._main_budget(task)
-        if main_budget is not None and task.usage.cost_usd >= main_budget:
+        escrow_now = _escrow_of(task)
+        main_spent = (
+            float(escrow_now.main_spent_usd)
+            if escrow_now is not None and escrow_now.state.value != "disabled"
+            else float(task.usage.cost_usd)
+        )
+        if main_budget is not None and main_spent >= main_budget:
             if self._closeout_enabled():
                 self._enter_closeout(
                     task, trigger="budget",
-                    detail=(f"主 agent 可用额度用尽（已花 {task.usage.cost_usd:.4f} ≥ "
+                    detail=(f"主 agent 可用额度用尽（已花 {main_spent:.4f} ≥ "
                             f"{main_budget:.4f}；质量预留 "
                             f"{getattr(_escrow_of(task), 'reserve_usd', 0.0):.4f} 不动）"))
                 return None
-            return f"预算耗尽（{task.usage.cost_usd:.4f} ≥ {main_budget}）"
+            return f"预算耗尽（{main_spent:.4f} ≥ {main_budget}）"
         # ③ 跨阶段重复动作熔断（用户选择"扩展"）：同一 (工具+参数指纹) 在整个任务里
         #    累计失败到阈值就收尾。实测「同一段 video_trim 重试 41 次」就属这类空转。
         for fingerprint, fails in list((_REPEAT_FAILS.get(task.id) or {}).items()):
@@ -1966,14 +2011,19 @@ class AgentKernel:
         """
         if unresolved:
             return TerminalReason.blocked, "degradation_unresolved"
+        # KK-02（审计 PRD §5F P1）：收口模式里的正常 finish **不是** achieved。
+        # 旧实现把 `tool_loop_completed → achieved` 排在 soft_landing 判断之前，
+        # 于是跑满预算进收口后只要模型正常收尾，任务就被记成 done 并计入成功率，
+        # capped 形同虚设（与「capped 是独立终态、不进成功率」的裁定相悖）。
+        # 把收口判定提到最前。
+        if str(_closeout_of(task).mode) == "soft_landing":
+            return TerminalReason.capped, "budget_exhausted"
         if gate_reason == "plan_only_completed":
             return TerminalReason.plan_only_completed, ""
         if gate_reason == "dry_run_preview":
             return TerminalReason.dry_run_completed, ""
         if gate_reason == "tool_loop_completed":
             return TerminalReason.achieved, ""
-        if str(_closeout_of(task).mode) == "soft_landing":
-            return TerminalReason.capped, "budget_exhausted"
         if gate_reason.startswith("缺少可渲染时间线"):
             return TerminalReason.invalid_completion, "missing_artifact"
         return TerminalReason.model_error, "unclassified"
@@ -1984,52 +2034,14 @@ class AgentKernel:
         _REPEAT_FAILS.pop(task_id, None)
 
 
-    def _finish(self, task: Task, *, reason: str) -> None:
-        """收尾
-        self._reset_task_state(task.id)（M3 后不再按 steps 汇总：没有步骤表，只有一次 tool loop 的结果）。
-
-        仍保留"没有可渲染时间线就不许宣称完成"的守门（§4.4 领域不变量）：
-        只要这次任务碰过阶段派发，就必须有 `final_timeline`。
-        """
-        from clipwright.services.task_events import emit
-
-        completed: list[str] = []
-        unfinished: list[str] = []
-        if reason in ("tool_loop_completed", "plan_completed"):
-            try:
-                from clipwright.services import task_blackboard as _bb
-
-                board = _bb.get(task.id)
-                timeline = board.get("final_timeline") or board.get("timeline")
-                if timeline:
-                    completed.append("final_timeline")
-                else:
-                    reason = "缺少可渲染时间线（final_timeline 为空）"
-                    unfinished.append("final_timeline")
-            except Exception:  # noqa: BLE001 — 守门本身失败不阻断收尾
-                pass
-        task.finish = TaskFinish(
-            conclusion=f"结束原因：{reason}",
-            completed=completed,
-            unfinished=unfinished,
-            reason=reason,
-        )
-        if task.status not in ("cancelled", "paused"):
-            task.status = "done" if reason in ("tool_loop_completed",
-                                               "plan_completed") else "failed"
-        task.touch()
-        emit(task.id, "task_end", task.finish.conclusion,
-             {"reason": reason, "usage": task.usage.model_dump(),
-              "completed": completed, "unfinished": unfinished})
-        self._record_task_metrics(task, reason)
-        self._checkpoint(task)
-
     def _persist_memory(self, task: Task, reason: str) -> None:
         """收尾把记忆落盘：任务结局写一条情景记忆 → 追加落盘 + 语义快照。"""
         try:
             from clipwright.services import memory as _mem
             from clipwright.services.workspace import Workspace
 
+            # KK-06（审计 PRD §5F P2）：capped 不等于成功——收口后任务虽有交付，
+            # 但「没跑完」必须进情景记忆的失败/未完成侧，不能当作 success 记住。
             ok = str(task.status) in ("done",)
             conclusion = (task.finish.conclusion if task.finish else "") or reason
             try:
@@ -2056,8 +2068,11 @@ class AgentKernel:
         """任务级指标（PRD §2.6.1）：CompletionGate 通过率的分母就在这里。
 
         顺带落盘记忆：所有终态路径都会走到这里，是唯一不会漏的挂点。
+        KK-09：终态路径统一在此清理按 task_id 累积的闸门状态
+        （`_PROGRESS` / `_REPEAT_FAILS`），防止长驻进程内存泄漏。
         """
         self._persist_memory(task, reason)
+        self._reset_task_state(task.id)
         try:
             from clipwright.services import evaluation
 

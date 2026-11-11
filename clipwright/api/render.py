@@ -32,6 +32,21 @@ _render_queue: dict[str, dict] = {}
 _idempotency_render: dict[str, str] = {}
 
 
+def _release_cancelled_render(task_id: str) -> None:
+    """BE-05（审计 PRD §5E P2）：排队中被取消的渲染任务必须立即清理。
+
+    旧实现在「排队等待后 cancelled」分支直接 `return` —— 早于清理 `finally`，
+    内存条目与幂等键永久留在 /queue 与 `_idempotency_render` 里（列表越积越多，
+    同一个 Idempotency-Key 也永远拿不回新任务）。
+    这里只清内存；Mongo 记录保留（用户仍能在历史里看到它被取消）。
+    """
+    _render_queue.pop(task_id, None)
+    for k, v in list(_idempotency_render.items()):
+        if v == task_id:
+            _idempotency_render.pop(k, None)
+    logger.info("渲染任务在排队中被取消，已清理内存条目: %s", task_id)
+
+
 # ── P5-B4: 渲染队列持久化（Mongo render_tasks；不可用静默降级为纯内存）──
 
 def _persist_render_task(doc: dict) -> None:
@@ -611,6 +626,11 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
         import time as _time
         _wait_started = _time.monotonic()
         while priority < 5:
+            # BE-05（审计 PRD §5E P2）：等待期间必须响应取消——旧实现排队循环
+            # 完全不看 cancelled，用户点了取消还要再等最多 1800s 才退出。
+            if _render_queue.get(task_id, {}).get("status") == "cancelled":
+                _release_cancelled_render(task_id)
+                return
             _has_higher_queued = any(
                 t.get("status") == "queued" and int(t.get("priority", 3)) > priority
                 for t in list(_render_queue.values())
@@ -625,6 +645,8 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
             await asyncio.sleep(2.0)
         # 取消的排队任务不进入渲染（状态保持 cancelled）
         if _render_queue[task_id].get("status") == "cancelled":
+            # BE-05：旧实现这里直接 return，内存条目与幂等键永久残留 /queue。
+            _release_cancelled_render(task_id)
             return
         _render_queue[task_id]["status"] = "rendering"
         _render_queue[task_id]["progress"] = 0
@@ -1354,6 +1376,38 @@ def _resolve_settings(s: RenderSettings | None) -> dict:
     }
 
 
+def _validate_render_params(params: dict) -> list[str]:
+    """BE-06（审计 PRD §5E P2）：渲染参数在**提交时**做字段级校验。
+
+    旧实现把 bitrate/encoder/pix_fmt 原样塞进队列，非法值要等进队列后才 failed，
+    用户既拿不到 4xx 也不知道是哪个字段错了。
+    返回错误描述列表（空 = 通过）。
+    """
+    errors: list[str] = []
+    fps = params.get("fps")
+    if not isinstance(fps, (int, float)) or not (1 <= float(fps) <= 240):
+        errors.append(f"fps: 需在 1–240 之间（收到 {fps!r}）")
+    for key in ("width", "height"):
+        v = params.get(key)
+        if not isinstance(v, int) or not (16 <= v <= 7680):
+            errors.append(f"{key}: 需为 16–7680 的整数（收到 {v!r}）")
+    bitrate = str(params.get("bitrate") or "").strip().lower()
+    # 允许 cq\d+ 恒定质量档，或 NNNk/NNNM 的 ABR 写法
+    # 兼容 `5M` / `5m` 两种写法（用户/前端习惯用大写 M）
+    if bitrate and not (re.fullmatch(r"cq\d{1,2}", bitrate) or re.fullmatch(r"\d{1,5}[km]", bitrate)):
+        errors.append(f"bitrate: 需为 cqNN 或 数字+k/M（收到 {params.get('bitrate')!r}）")
+    audio_bitrate = str(params.get("audio_bitrate") or "").strip().lower()
+    if audio_bitrate and not re.fullmatch(r"\d{2,4}k", audio_bitrate):
+        errors.append(f"audio_bitrate: 需为 数字+k，如 128k（收到 {params.get('audio_bitrate')!r}）")
+    pix_fmt = str(params.get("pix_fmt") or "").strip()
+    if pix_fmt and not re.fullmatch(r"[a-z0-9_]{3,20}", pix_fmt):
+        errors.append(f"pix_fmt: 格式非法（收到 {params.get('pix_fmt')!r}）")
+    encoder = str(params.get("encoder") or "").strip()
+    if encoder and not re.fullmatch(r"[A-Za-z0-9_.\-]{2,40}", encoder):
+        errors.append(f"encoder: 格式非法（收到 {params.get('encoder')!r}）")
+    return errors
+
+
 @router.post("/start")
 async def start_render(
     body: RenderRequest,
@@ -1374,6 +1428,10 @@ async def start_render(
         params = _resolve_settings(s)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    # BE-06：非法字段在提交时 4xx 并指明字段，不进队列
+    _param_errors = _validate_render_params(params)
+    if _param_errors:
+        raise HTTPException(status_code=422, detail={"errors": _param_errors})
     _ext = str(params.get("container_ext") or "mp4")
     if requested_name:
         stem = Path(requested_name).stem

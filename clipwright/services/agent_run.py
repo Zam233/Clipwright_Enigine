@@ -266,6 +266,36 @@ def cancel(run_id: str, *, task_id: str = "") -> tuple[bool, dict[str, Any]]:
     return False, {"error": f"子 agent 不可取消或不存在: {key}"}
 
 
+def cancel_for_task(task_id: str) -> list[str]:
+    """KK-03（审计 PRD §5F P1）：取消某任务**所有仍在飞**的阶段子 run。
+
+    为什么必须有：`kernel.cancel()` 只取消外层 run-loop 句柄，而阶段子 agent
+    登记在 `_LIVE`（另一个 asyncio.Task）。旧实现在点「停止」后，子 agent 仍独立
+    跑完并把产物 merge 进黑板/时间线——用户以为停了，实际上还在烧钱、还在写结果。
+
+    返回被发出取消信号的 run_id 列表。已实际发生的费用仍据实记账（取消协程
+    不能撤销 provider 已开始的计费），这里只保证不再产生**新的**派发与合并。
+    """
+    tid = str(task_id or "").strip()
+    if not tid:
+        return []
+    cancelled: list[str] = []
+    for run_id, live in list(_LIVE.items()):
+        if str(live.get("task_id") or "") != tid:
+            continue
+        handle = live.get("task")
+        try:
+            if handle is not None and not handle.done():
+                handle.cancel()
+            live["cancelled"] = True
+            cancelled.append(run_id)
+        except Exception as exc:  # noqa: BLE001 — 单个失败不影响其它子 run
+            logger.warning("取消子 run 失败 %s/%s: %s", tid, run_id, exc)
+    if cancelled:
+        logger.info("任务 %s 取消 %d 个在飞子 run: %s", tid, len(cancelled), cancelled)
+    return cancelled
+
+
 def reset() -> None:
     for live in list(_LIVE.values()):
         task = live.get("task")
@@ -337,13 +367,32 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
                       run_id=cached.run_id, span="agent", trace_id=trace_id)
             return cached
 
+    # P2-49：熔断真正生效——同一（阶段, 模型）连续失败达阈值后，恢复期内直接拒绝派发。
+    # 旧实现只记账不拦截（`is_open()` 全仓零调用），429 风暴下仍会一路撞同一 provider。
+    from clipwright.services import circuit_breaker as _cb
+
+    _bk_key = _cb.key_of(spec.stage or spec.role or spec.kind, spec.model)
+    if _cb.is_open(_bk_key):
+        result = AgentResult(
+            run_id=run_id, kind=spec.kind, stage=spec.stage, role=spec.role,
+            status="failed", attempt=attempt,
+            error=f"熔断中：{_bk_key} 连续失败，{_cb.RECOVERY_SEC}s 内拒绝派发",
+            failure={"category": "circuit_open", "retryable": "retryable",
+                     "blocking_point": "circuit_breaker", "evidence": []},
+        )
+        _record(result)
+        _emit_run(task, "agent_run_end",
+                  f"{spec.kind}/{spec.stage or spec.role} → failed（熔断）",
+                  detail={"run_id": run_id, "status": "failed", "error": result.error},
+                  run_id=run_id, span="agent", trace_id=trace_id)
+        return result
+
     _emit_run(task, "agent_run_start", f"派出 {spec.kind}/{spec.stage or spec.role}",
               detail={"run_id": run_id, "kind": spec.kind, "stage": spec.stage,
                       "role": spec.role, "brief": spec.brief[:200],
                       "attempt": attempt,
                       "inputs": list((spec.inputs or {}).keys())},
               run_id=run_id, span="agent", trace_id=trace_id)
-
     # 拓扑：星型，深度固定 1（子 agent 不得再派）
     if int(spec.depth or 1) > 1:
         result = AgentResult(
@@ -375,6 +424,14 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
                 failure={"category": "cancelled", "retryable": "permanent",
                          "blocking_point": "人工取消", "evidence": []},
             )
+            # P1-19：取消打断的是协程，在飞的 provider 线程可能仍跑完并计费。
+            # 结果一律弃用（不写回 timeline），但必须留一条 wasted_call 痕迹，
+            # 否则「取消了还在烧钱」在轨迹里完全不可见。
+            _emit_run(task, "agent_run_update",
+                      f"{spec.kind}/{spec.stage or spec.role} → 已取消，在飞调用结果弃用",
+                      detail={"run_id": run_id, "status": "cancelled",
+                              "wasted_call": True, "reason": "cancelled_in_flight"},
+                      run_id=run_id, span="agent", trace_id=trace_id)
         finally:
             _LIVE.pop(run_id, None)
         # 上游真实 subagent_id 也登记成别名，旧的 cancel_subagent(subagent_id=…) 才能取消

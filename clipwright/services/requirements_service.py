@@ -536,9 +536,12 @@ def release_stale_pipeline_sessions() -> int:
     kernel = AgentKernel()
     released = 0
     try:
-        rows = RequirementsSessionModel.find_many({"status": "pipeline_running"}) or []
+        # B-04（审计 PRD §1 P1）：旧实现只扫 `pipeline_running`，规划书派发中途
+        # 重启时停在 `planning` 的会话永远不会被放开。两种"运行中"状态都要扫。
+        rows = (RequirementsSessionModel.find_many({"status": "pipeline_running"})
+                + RequirementsSessionModel.find_many({"status": "planning"})) or []
     except Exception as exc:  # noqa: BLE001 — 读不到就跳过这一轮
-        logger.warning("扫描 pipeline_running 会话失败: %s", exc)
+        logger.warning("扫描运行中会话失败: %s", exc)
         return 0
     for row in rows:
         sid = str(getattr(row, "_id", "") or "")
@@ -574,13 +577,16 @@ def release_stale_pipeline_sessions() -> int:
             logger.warning("放开会话失败 %s: %s", sid, exc)
         try:
             log = get_log(sid)
+            # B-04：另两条释放路径都会 close_open("interrupted")，这里漏了 →
+            # 时间线里思考/工具条目永远显示「进行中…」。统一收口。
+            log.close_open("interrupted")
             log.append(type="content", content=note, source="requirements",
                        turn=log.user_turns() or 1,
                        meta={"role": "assistant", "task_released": "stale_pipeline_running"})
         except Exception:  # noqa: BLE001 — 时间线写失败不影响状态修复
             pass
     if released:
-        logger.info("已把 %d 个卡在 pipeline_running 的会话放回 plan_ready", released)
+        logger.info("已把 %d 个卡在运行中的会话放回 plan_ready", released)
     return released
 
 
@@ -3440,6 +3446,7 @@ class RequirementsService:
         task_status = ""
         terminal_reason = ""
         goal_status = ""
+        cancel_error = ""
         if live:
             try:
                 task = kernel.cancel(live)
@@ -3449,8 +3456,17 @@ class RequirementsService:
                 terminal_reason = (reason_obj.value if reason_obj is not None else "")
                 goal = getattr(task, "goal", None)
                 goal_status = goal.status.value if goal is not None else ""
-            except Exception as exc:  # noqa: BLE001 — 取消失败也要把会话放开
+            except Exception as exc:  # noqa: BLE001 — 取消失败要留痕
                 logger.warning("用户停止任务失败 %s/%s: %s", session_id, live, exc)
+                cancel_error = str(exc)[:200]
+        # B-03（审计 PRD §1 P1）：取消失败时**不能**向用户宣称「已停止」并返回
+        # stopped:true —— 任务其实还在跑（继续计费、继续写时间线），而 UI 已回到
+        # 可输入状态，用户再发消息会和仍在跑的任务冲突。此时如实回报失败，
+        # 不改会话状态、不伪造中止说明，由前端显示「停止失败，可重试」。
+        if live and cancel_error:
+            return {"stopped": False, "task_id": live, "status": "",
+                    "note": "", "cancel_error": cancel_error,
+                    "terminal_reason": "", "task_status": "", "goal_status": ""}
         sess = await asyncio.to_thread(self.get_session, session_id) or {}
         messages = list(sess.get("messages") or [])
         if live:
@@ -3536,10 +3552,39 @@ class RequirementsService:
             except Exception as exc:  # noqa: BLE001 — 收尾失败要留痕，不吞
                 logger.warning("任务终态释放会话失败 %s/%s: %s", session_id, task_id, exc)
             return
-        logger.warning("会话终态监听超时：session=%s task=%s（1 小时）", session_id, task_id)
+        # B-05（审计 PRD §1 P2）：超时不能只打日志就走——若任务其实已终态，
+        # 会话会一直停在运行中，要等下一次周期性扫描。退出前再查一次。
+        try:
+            final = kernel.get(task_id)
+            if final is not None and final.terminal:
+                await self._release_session_after_task(session_id, final)
+                return
+        except Exception as exc:  # noqa: BLE001 — 收尾失败要留痕
+            logger.warning("监听超时后补释放失败 %s/%s: %s", session_id, task_id, exc)
+        logger.warning("会话终态监听超时：session=%s task=%s（2 小时）", session_id, task_id)
+
+    def _still_owns_session(self, session_id: str, task_id: str) -> bool:
+        """B-01（审计 PRD §1 P1）：释放前确认「会话当前绑定的活任务仍是本任务」。
+
+        为什么必须有：用户点停止（任务 A 被取消）后 2 秒内再说一句话，
+        `_continue_as_task` 拉起任务 B、会话进入 `pipeline_running`；随后 A 的
+        watcher 看到 A 已终态，把会话写回 `plan_ready` —— 前端据此恢复输入框，
+        但 B 仍在跑，用户可以重复发起任务、运行条/停止按钮消失。
+
+        判据用**会话侧最后一次绑定的任务 id**（`_live_task_id` 只找非终态任务，
+        不能单独证明旧任务仍拥有会话）。
+        """
+        current = self._live_task_id(session_id)
+        if not current:
+            return False
+        return str(current) == str(task_id)
 
     async def _release_session_missing_task(self, session_id: str, task_id: str) -> None:
         """任务已不在内存（重启/淘汰）时放开会话，保证用户能继续说下一句。"""
+        # B-01：同样要确认会话仍归属本任务，否则任务 A 丢失时会放开已在跑 B 的会话。
+        if not self._still_owns_session(session_id, task_id):
+            logger.info("跳过释放（会话已改绑其它任务）：session=%s task=%s", session_id, task_id)
+            return
         sess = await asyncio.to_thread(self.get_session, session_id) or {}
         if str(sess.get("status") or "") not in ("pipeline_running", "planning"):
             return
@@ -3566,6 +3611,12 @@ class RequirementsService:
             logger.warning("放开丢失任务时写时间线失败 %s: %s", session_id, exc)
 
     async def _release_session_after_task(self, session_id: str, task: Any) -> None:
+        # B-01：释放前确认会话仍归属本任务——A 的 watcher 不得释放已在跑 B 的会话。
+        task_id = str(getattr(task, "id", "") or "")
+        if task_id and not self._still_owns_session(session_id, task_id):
+            logger.info("跳过终态释放（会话已改绑其它任务）：session=%s task=%s",
+                        session_id, task_id)
+            return
         sess = await asyncio.to_thread(self.get_session, session_id) or {}
         messages = list(sess.get("messages") or [])
         status_now = str(sess.get("status") or "")
@@ -3597,6 +3648,26 @@ class RequirementsService:
             new_status = "plan_ready"
             note = (f"任务没跑完（{reason or task_status}），规划书还在，可以直接说"
                     "「重试」或告诉我要改哪里。")
+        # B-02（审计 PRD §1 P1）：用户主动停止时 `stop_task` 已写过「已按你的要求
+        # 停止任务…（metadata.user_stopped=true）」；随后 watcher 又写「任务没跑完
+        # (cancelled)…」，两条文案不同、幂等判断（只比内容）挡不住，于是用户看到
+        # 两条互相矛盾的助手消息，第二条还把「主动停止」说成「没跑完」。
+        # 判据：最后一条已带 user_stopped 且 task_id 相同 → 只做状态校正，不再追加说明。
+        last = messages[-1] if messages else None
+        last_meta = (last or {}).get("metadata") or {}
+        if (isinstance(last_meta, dict) and last_meta.get("user_stopped")
+                and str(last_meta.get("task_id") or "") == task_id):
+            if status_now != new_status:
+                await asyncio.to_thread(
+                    self._persist, session_id, new_status, messages,
+                    sess.get("creative_brief"), sess.get("production_plan"),
+                    sess.get("user_inputs") or {},
+                )
+            try:
+                _timeline(session_id).close_open("interrupted")
+            except Exception:  # noqa: BLE001 — 收口失败不影响状态
+                pass
+            return
         # 已经是终态且不是"运行中"就不重复写（幂等）
         if status_now == new_status and messages and messages[-1].get("content") == note:
             return
