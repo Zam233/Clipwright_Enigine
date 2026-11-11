@@ -555,7 +555,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                             logic_jobs.append(
                                 (anim_track, clip, anim_id, anim_name, marker, persona_style)
                             )
-                            logic_anim_count += 1
+                            # §7.3-3：入队≠完成——计数移到 gather 之后按真实新增 clip 统计，
+                            # 否则「窗口不足跳过 / 生成失败 / Hyperframes 不可用」都会被算作已完成。
                             logger.info("AnimationAgent: [逻辑动画]%s → %s (id=%s)",
                                         anim_name, clip.id[:8], anim_id)
                             add_event(context.pipeline_id, "animation", "logic_anim",
@@ -582,6 +583,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 sem = asyncio.Semaphore(max(1, int(_conc)))
                 _total_jobs = len(logic_jobs)
                 _done_jobs = {"n": 0}
+                _logic_baseline = len(anim_track.clips) if anim_track is not None else 0
 
                 async def _run_logic(job):
                     async with sem:
@@ -625,6 +627,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                             )
 
                 await asyncio.gather(*(_run_logic(j) for j in logic_jobs))
+                # §7.3-3：只统计真正新增到动画轨的 clip（跳过/失败不计）
+                if anim_track is not None:
+                    logic_anim_count = max(0, len(anim_track.clips) - _logic_baseline)
 
             summary = (
                 f"AnimationAgent: 文字动画={text_anim_count}, 逻辑动画={logic_anim_count}, "
@@ -1324,7 +1329,16 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             )
             return False
 
-        clip_dur = min(float(result.mg_def.get("duration_sec") or duration), vid_clip.duration_sec)
+        # P1-03：场景窗口短于 MG 自身时长 → 跳过并告警。旧实现只把 clip 钳到窗口，
+        # HTML 仍按自身时长渲染，退场动画被硬切（无重新配速）。与模板 MG 路径同语义。
+        mg_dur = float(result.mg_def.get("duration_sec") or duration)
+        if vid_clip.duration_sec < mg_dur - 0.05:
+            self._add_trace_warning(
+                f"MG 动画 {spec.id} 时长 {mg_dur:.2f}s 超过场景窗口 "
+                f"{vid_clip.duration_sec:.2f}s，已跳过（窗口不足）"
+            )
+            return True
+        clip_dur = min(mg_dur, vid_clip.duration_sec)
         anim_clip = Clip(
             id=_uid("tmg"),
             kind=ClipKind.ANIMATION,
@@ -1342,7 +1356,6 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "mg_html": result.html,
                 "mg_def": result.mg_def,
                 "mg_params": (result.raw or {}).get("params") or {},
-                "mg_method": result.method,
                 "type_prompt_version": result.prompt_version,
                 "motion": result.motion,
                 "type_issues": result.issues[:6],
@@ -1738,13 +1751,21 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         html = result.get("html", "")
         mg_def = result.get("mg_def", {})
         method = result.get("method", "unknown")
-        generation_id = result.get("generation_id", "")
 
         if not html:
             self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
             return
 
-        clip_dur = min(mg_def.get("duration_sec", duration), vid_clip.duration_sec)
+        # P1-03：窗口不足时跳过（同模板 MG 路径）——否则 clip 被钳到窗口、
+        # HTML 仍按自身时长渲染，尾部/退场被硬切且无任何提示。
+        mg_dur = float(mg_def.get("duration_sec") or duration)
+        if vid_clip.duration_sec < mg_dur - 0.05:
+            self._add_trace_warning(
+                f"LLM MG 动画 {anim_name} 时长 {mg_dur:.2f}s 超过场景窗口 "
+                f"{vid_clip.duration_sec:.2f}s，已跳过（窗口不足）"
+            )
+            return
+        clip_dur = min(mg_dur, vid_clip.duration_sec)
 
         anim_clip = Clip(
             id=_uid("mgd"),
@@ -1765,8 +1786,6 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 # V3：LLM 路径此前不存参数 → PIL 快路径无法安全复现（占位符未解析），
                 # 只能保守回退 Chrome。这里把生成期实际使用的参数存下来。
                 "mg_params": result.get("params") or {},
-                "mg_method": method,
-                "mg_generation_id": generation_id,
                 "mg_fallback_template": result.get("fallback_template"),
                 "position": "center",
             },

@@ -240,6 +240,12 @@ def apply_rhythm_defaults(extra_params: dict[str, Any], vc: VisualContext) -> di
         out["cut_density_tier"] = vc.rhythm["cut_density_tier"]
     if not out.get("base_shot_duration_ms") and vc.rhythm.get("base_shot_duration_ms"):
         out["base_shot_duration_ms"] = vc.rhythm["base_shot_duration_ms"]
+    # P3-15: persona 的 visual.transition_weights 此前只有写没有读（M3 删除
+    # pipeline_v2 后接线丢失，值只落在 yaml 里）。显式 extra 优先，不覆盖调用方。
+    if not out.get("transition_weights"):
+        _tw = (vc.persona_config.get("visual") or {}).get("transition_weights")
+        if isinstance(_tw, dict) and _tw:
+            out["transition_weights"] = dict(_tw)
     return out
 
 

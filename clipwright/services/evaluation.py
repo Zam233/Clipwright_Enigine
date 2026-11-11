@@ -102,7 +102,9 @@ def reset() -> None:
 #: 不计入成功率分母的终态（devplan 2026-11-02 / 用户裁定 3）。
 #: capped = 撞上限但已完成收口交付：既不算成功也不算失败，所以**从分母里拿掉**，
 #: 但仍单独计数（`capped_count`）——从统计里悄悄消失等于骗人。
-_EXCLUDED_FROM_RATE: frozenset[str] = frozenset({"capped"})
+#: KK-09（审计 PRD §5F P3）：用户主动取消同理——它不是「模型没做成」，
+#: 算进分母会系统性拉低成功率。仍单独计数，不隐身。
+_EXCLUDED_FROM_RATE: frozenset[str] = frozenset({"capped", "cancelled"})
 
 
 def _capped(record: dict[str, Any]) -> bool:
