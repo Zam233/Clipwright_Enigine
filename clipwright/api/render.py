@@ -913,6 +913,15 @@ async def stream_render_progress(task_id: str, request: Request):
                         'output_path': rec.get("output_path", ''),
                     })
                     yield f"data: {payload}\n\n"
+                elif rec:
+                    # BE-09（审计 PRD §5E P3）：刷新后从 Mongo 恢复的**非终态**记录
+                    # （queued/rendering）——进程重启后永远不会再有 worker 处理它
+                    # （启动时的 mark_interrupted_render_tasks 会标 failed，但若那次
+                    # 写失败/还没跑到，这里就是活锁：旧实现发 "Task not found"
+                    # 误导前端当错误）。如实告知「进程重启，任务中断」，给终态语义。
+                    yield f"data: {json.dumps({'type': 'failed', 'task_id': task_id,
+                        'result': {'error': '服务进程已重启，该渲染任务已中断（未完成）'},
+                        'output_path': rec.get('output_path', '')})}\n\n"
                 else:
                     yield f"data: {json.dumps({'type': 'error', 'message': 'Task not found'})}\n\n"
                 return
@@ -1220,9 +1229,12 @@ def _as_render_params(preset: dict) -> dict:
 
 
 class RenderSettings(BaseModel):
-    """渲染参数。"""
+    """渲染参数。
+
+    BE-09（审计 PRD §5E P3）：`preset` 与 `soft_subtitle` 此前各声明了**两次**
+    （Pydantic 静默用后一个，前一个带描述的定义成了死配置）。现在各只保留一份。
+    """
     preset: str = Field(default="", description="导出预设名（tiktok/720p/prores422hq 等）")
-    soft_subtitle: bool = Field(default=False, description="字幕软轨封装（mov_text）而非烧入画面")
     container_ext: str = Field(default="", description="容器扩展名（覆盖，如 mov）")
     width: int = Field(default=1920, ge=64, le=7680, description="输出宽度 (px)")
     height: int = Field(default=1080, ge=64, le=4320, description="输出高度 (px)")
@@ -1230,7 +1242,6 @@ class RenderSettings(BaseModel):
     #: 码率或质量："5M" / "3000k" 走 ABR；"cq26" / "crf23" 走恒定质量（默认）
     bitrate: str = "cq26"
     audio_bitrate: str = "128k"
-    preset: str = ""  # 预设名称，如 "bilibili"、"tiktok"，会覆盖其他参数
     # Phase 3.3: 编码器/像素格式覆盖（交付级；空 = 自动探测/默认）
     encoder: str = Field(default="", description="编码器覆盖（libx264/h264_nvenc/prores_ks/libx265；空=自动）")
     pix_fmt: str = Field(default="", description="像素格式覆盖（yuv420p/yuv420p10le/yuv422p10le；空=默认）")
