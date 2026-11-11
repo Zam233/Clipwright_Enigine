@@ -415,20 +415,60 @@ async def upload_file(
     if suffix.lower() not in (".txt", ".md", ".pdf", ".docx", ".png", ".jpg",
                               ".jpeg", ".webp", ".gif", ".srt"):
         raise HTTPException(status_code=415, detail=f"不支持的文件类型: {suffix}")
-    content = await file.read()
-    if len(content) > 20 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="文件过大（上限 20MB）")
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
+    # B-06 / BE-01（审计 PRD §1 + §5E P1）：旧实现先 `await file.read()` 整块读进
+    # 内存再比较 20MB —— 上传 1–2GB 附件会直接把内存吃满（OOM），413 在整读之后
+    # 才执行等于没有保护。改为**分块读取并逐块累计**，超限立即 413 并清理临时文件。
+    limit = 20 * 1024 * 1024
+    chunk_size = 1024 * 1024
+    tmp_path = ""
+    total = 0
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp_path = tmp.name
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > limit:
+                    raise HTTPException(status_code=413, detail="文件过大（上限 20MB）")
+                tmp.write(chunk)
+    except HTTPException:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
+    except Exception as e:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        logger.exception("附件落盘失败: %s", e)
+        raise HTTPException(status_code=500, detail="附件写入失败，请重试")
 
     try:
         # process_upload is async — await it directly (asyncio.to_thread would only
         # create an unawaited coroutine and never execute it)
         result = await _service.process_upload(session_id, tmp_path, file.filename or "file")
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Upload error: %s", e)
+        # B-06：解析类错误（损坏的 docx/pdf 等）要给用户**可执行**的信息，
+        # 不能一律「稍后重试」——那既误导又让人无从下手。
+        raw = str(e)
+        parse_hint = any(k in raw.lower() for k in (
+            "zip", "pdf", "docx", "decode", "parse", "utf-8", "unicodedata", "cannot read"))
+        if parse_hint:
+            raise HTTPException(
+                status_code=422,
+                detail={"filename": file.filename or "", "format": suffix.lstrip("."),
+                        "reason": raw[:200] or "文件内容无法解析"},
+            )
         raise HTTPException(status_code=500, detail="会话处理失败，请稍后重试")
     finally:
         try:

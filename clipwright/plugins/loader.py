@@ -254,12 +254,12 @@ class PluginLoader:
                 f"Plugin '{plugin_id}' 声明了未知权限 {forbidden}，拒绝加载"
             )
 
-        # 3. M2: 依赖解析
+        # 3. M2: 依赖解析（未安装 / 已禁用都拒绝）
         missing = self._resolve_dependencies(manifest)
         if missing:
             get_error_bus().record(plugin_id, "load", f"缺少依赖插件 {missing}")
             raise PluginLoadError(
-                f"Plugin '{plugin_id}' 缺少依赖插件 {missing}，拒绝加载"
+                f"Plugin '{plugin_id}' 缺少可用依赖插件 {missing}（未安装或已禁用），拒绝加载"
             )
 
         # 4. 解析配置（合并源码默认 + PluginData 覆盖，M15 迁移后）
@@ -819,11 +819,18 @@ class PluginLoader:
     # ── M2: 依赖解析 ──
 
     def _resolve_dependencies(self, manifest: PluginManifest) -> list[str]:
-        """返回 manifest 声明依赖中缺失（未安装/不可发现）的插件 ID。"""
+        """返回 manifest 声明依赖中**不可用**（未安装或已禁用）的插件 ID。
+
+        P2-54：旧实现只看目录是否存在——依赖被 disable 后仍然放行，运行期缺能力。
+        """
         if not manifest.dependencies:
             return []
         available = set(self.discover())
-        return [dep for dep in manifest.dependencies if dep not in available]
+        missing: list[str] = []
+        for dep in manifest.dependencies:
+            if dep not in available or not self.is_enabled(dep):
+                missing.append(dep)
+        return missing
 
     # ── M15: 配置迁移 ──
 
@@ -845,7 +852,7 @@ class PluginLoader:
         try:
             plugin_dir_str = str(self.plugin_dir)
             if plugin_dir_str not in sys.path:
-                sys.path.insert(0, plugin_dir_str)
+                sys.path.append(plugin_dir_str)
             migrate_fn = getattr(importlib.import_module(f"{plugin_id}.migrations"), "migrate_config", None)
         except Exception:
             migrate_fn = None
@@ -915,14 +922,23 @@ class PluginLoader:
         self, plugin_id: str, plugin_path: Path, manifest: PluginManifest
     ) -> object:
         """动态导入插件的入口模块。"""
-        # 将插件目录加入 sys.path
-        plugin_dir_str = str(self.plugin_dir)
-        if plugin_dir_str not in sys.path:
-            sys.path.insert(0, plugin_dir_str)
+        # 将插件根目录加入 sys.path —— **追加到末尾**，不能 insert(0)：
+        # P1-14 插件可用同名目录（如 plugins/yaml/）shadow 任意顶层模块，影响整个进程；
+        # 追加后标准库/site-packages 永远优先解析，插件只在自身包名下命中。
+        plugin_root = str(self.plugin_dir)
+        if plugin_root not in sys.path:
+            sys.path.append(plugin_root)
 
         # 从 manifest 的 entry_point 或默认位置导入
         if manifest.entry_point:
             mod_path = manifest.entry_point
+            # P1-14: 入口必须属于本插件包（`<id>` 或 `<id>.*`）。旧实现允许
+            # `entry_point: requests` 之类的顶层名，配合上面的 sys.path 即可 shadow。
+            if not (mod_path == plugin_id or mod_path.startswith(f"{plugin_id}.")):
+                raise PluginLoadError(
+                    f"Plugin '{plugin_id}' 的 entry_point 必须是 '{plugin_id}' 或其子模块，"
+                    f"收到: {mod_path!r}"
+                )
         else:
             mod_path = f"{plugin_id}.main"
 

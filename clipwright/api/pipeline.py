@@ -239,8 +239,21 @@ async def _start_as_task(request: PipelineRequest, req: Request, uid: str = "") 
     `/status`、`/result`、`/cancel` 时能正常工作（那几个端点已加 Task 回退）。
     """
     from clipwright.schema.task import TaskRequest
+    from clipwright.services import idempotency as _idem
     from clipwright.services.agent_kernel import AgentKernel
     from clipwright.services.task_events import emit
+
+    # P3-13：幂等与 `/requirements/proceed` 共用同一键空间——同键连打 run-async
+    # 不应创建两条 Task（旧实现只有 proceed 侧读写 Idempotency-Key）。
+    _idem_key = req.headers.get("Idempotency-Key", "").strip()
+    if _idem_key:
+        _hit = _idem.lookup(_idem_key)
+        if _hit:
+            logger.info("run-async 幂等命中: %s → %s", _idem_key, _hit)
+            return {
+                "pipeline_id": _hit, "task_id": _hit, "status": "started",
+                "mode": "agent", "idempotent": True,
+            }
 
     # 插件 hook —— 管线前置（M3 后 Task 是唯一创作入口，所以 hook 挂在这里：
     # 插件契约不变，只是宿主从后台编排循环换成了 Task 创建）。
@@ -268,6 +281,8 @@ async def _start_as_task(request: PipelineRequest, req: Request, uid: str = "") 
     )
     kernel = AgentKernel()
     task = kernel.create(task_request, mode="on")
+    if _idem_key:
+        _idem.bind(_idem_key, task.id)
     # 归属登记：老端点的 owner 校验靠 `_pipeline_owners`，task 也得进这张表
     if uid:
         _pipeline_owners[task.id] = uid
@@ -391,9 +406,15 @@ async def stream_pipeline_trace(pipeline_id: str, request: Request):
         async def task_stream():
             from clipwright.services.task_events import events_since
 
-            cursor = 0
+            # BE-07（审计 PRD §5E P2）：旧实现 `cursor = 0` 写死——断线重连会把
+            # 整段历史全量重放（前端重复渲染几百条、seq 去重也只能丢弃）。
+            # 现在接受 `since_seq` 续传，并在每轮检测客户端断连提前退出。
+            cursor = max(0, int(request.query_params.get("since_seq") or 0))
             idle = 0
             while True:
+                # 客户端断开（浏览器关闭/切走页面）→ 结束生成器，别让协程空转
+                if await request.is_disconnected():
+                    return
                 batch = events_since(pipeline_id, cursor)
                 for e in batch:
                     cursor = max(cursor, int(e.seq))

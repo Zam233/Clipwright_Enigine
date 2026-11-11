@@ -166,7 +166,10 @@ class DynamicCategoryPlugin(BaseCategoryPlugin):
         return result
 
     def get_shot_params(self, translated: dict[str, Any]) -> dict[str, Any]:
-        return {**self._shot_params, **translated}
+        # P1-15：统一成 EditAgent 消费的 ms 键。旧实现原样返回 YAML 的秒键
+        # （min_shot_sec/max_shot_sec），而 EditAgent 读 base_shot_ms/min_shot_ms/
+        # max_shot_ms → 自定义类型的节奏配置整体失效、回退 5000ms。
+        return {**self._shot_params_ms(), **translated}
 
     def post_process_timeline(self, timeline: Timeline) -> Timeline:
         """B21: transform 实现 — 按 YAML transform 规范调整时间线。

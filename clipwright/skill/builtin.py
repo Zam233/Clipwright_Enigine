@@ -158,7 +158,19 @@ class AnalyzeAudioRhythmSkill(BaseSkill):
             "output": bpm_result,
         })
 
-        bpm = (bpm_result.get("output") or {}).get("bpm", 120)
+        # P3-08：检测失败不再伪造 120——旧实现默认 120 会让下游按"中速"排镜头，
+        # 实际音频可能根本没有节拍（与 P2-31 的 audio_agent 契约保持一致）。
+        _out = bpm_result.get("output") or {}
+        _raw_bpm = _out.get("bpm")
+        bpm = float(_raw_bpm) if isinstance(_raw_bpm, (int, float)) else None
+        if bpm is None or bpm <= 0:
+            return SkillExecResult(
+                status=SkillStatus.TOOL_FAILED,
+                skill_name=self.name,
+                error="BPM 检测失败：未得到有效 BPM（不伪造默认值）",
+                tool_calls=tool_calls,
+                output={"bpm": None, "rhythm_profile": None, "cut_suggestion_ms": None},
+            )
 
         # 节奏分段
         rhythm_profile = "fast" if bpm >= 120 else ("medium" if bpm >= 80 else "slow")

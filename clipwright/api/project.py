@@ -584,15 +584,28 @@ async def import_archive(request: Request, file: UploadFile = File(...)) -> dict
 async def duplicate_project(project_id: str, request: Request) -> dict[str, Any]:
     """Deep-copy a project with a new id（P3-3B: 校验所有权，副本归属当前用户）。"""
     _load_owned(request, project_id)
+    owner_id = current_user_id(request)
     try:
         dup = _manager.duplicate(project_id)
-        uid = current_user_id(request)
-        if uid:
+        # BE-08（审计 PRD §5E P2）：owner 补写失败不能 `except Exception: pass`
+        # ——那会返回一个**无主副本**，任何人都可能接管/访问它。
+        # 账号系统已剥离（2026-11-08），owner_id 恒为 None：没有归属可写，
+        # 也没有"无主"风险，直接返回副本即可。若未来恢复多用户，这里的
+        # save 失败必须回滚/删除副本并返回 500，而不是静默吞掉。
+        dup_id = str(dup.get("id") or "")
+        if owner_id and dup_id:
             try:
-                _manager.save(dup["id"], {"owner_id": uid})
-            except Exception:
-                pass
+                _manager.save(dup_id, {"owner_id": owner_id})
+            except Exception as exc:
+                logger.error("副本 owner 写失败，回滚删除无主副本 %s: %s", dup_id, exc)
+                try:
+                    _manager.delete(dup_id)
+                except Exception:  # noqa: BLE001 — 删除失败时至少不让它悄悄漏出去
+                    logger.error("无主副本回滚删除失败 %s（需人工清理）", dup_id)
+                raise HTTPException(status_code=500, detail="副本归属写入失败，已回滚") from exc
         return dup
+    except HTTPException:
+        raise
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
     except ValueError as e:
