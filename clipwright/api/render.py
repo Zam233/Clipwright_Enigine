@@ -1513,6 +1513,16 @@ async def get_video_thumbnail(path: str, time_sec: float = 0.5, request: Request
 
     from clipwright.security import assert_allowed_path
 
+    # BE-09（审计 PRD §5E P3）：time_sec 此前无范围校验——负数/NaN/巨值
+    # 直接拼进 ffmpeg 命令行（-ss 后任意字符串）。钳到 [0, 36000]（10h）。
+    try:
+        _t = float(time_sec)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="time_sec 必须是数字")
+    if _t != _t or _t in (float("inf"), float("-inf")):
+        raise HTTPException(status_code=400, detail="time_sec 非法（NaN/Inf）")
+    time_sec = max(0.0, min(_t, 36000.0))
+
     src = Path(path)
     if not src.exists() or not src.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
