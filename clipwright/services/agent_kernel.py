@@ -2001,7 +2001,9 @@ class AgentKernel:
         final_timeline"和"缺产物被推回来后勉强收尾"两种情况下含义完全不同，
         前者是 achieved、后者必须是 blocked（否则成功率会被灌水）。
         """
-        if unresolved:
+        # 只有 strict 策略下守门把 gate_reason 改成 `degradation_unresolved` 才算 blocked；
+        # warn 策略允许带未处置项收尾（unfinished 仍如实记录），不能因 unresolved 非空就判失败。
+        if gate_reason == "degradation_unresolved":
             return TerminalReason.blocked, "degradation_unresolved"
         # KK-02（审计 PRD §5F P1）：收口模式里的正常 finish **不是** achieved。
         # 旧实现把 `tool_loop_completed → achieved` 排在 soft_landing 判断之前，
@@ -2025,6 +2027,45 @@ class AgentKernel:
         _PROGRESS.pop(task_id, None)
         _REPEAT_FAILS.pop(task_id, None)
 
+    def _finish(self, task: Task, *, reason: str) -> None:
+        """收尾
+        self._reset_task_state(task.id)（M3 后不再按 steps 汇总：没有步骤表，只有一次 tool loop 的结果）。
+
+        仍保留"没有可渲染时间线就不许宣称完成"的守门（§4.4 领域不变量）：
+        只要这次任务碰过阶段派发，就必须有 `final_timeline`。
+        """
+        from clipwright.services.task_events import emit
+
+        completed: list[str] = []
+        unfinished: list[str] = []
+        if reason in ("tool_loop_completed", "plan_completed"):
+            try:
+                from clipwright.services import task_blackboard as _bb
+
+                board = _bb.get(task.id)
+                timeline = board.get("final_timeline") or board.get("timeline")
+                if timeline:
+                    completed.append("final_timeline")
+                else:
+                    reason = "缺少可渲染时间线（final_timeline 为空）"
+                    unfinished.append("final_timeline")
+            except Exception:  # noqa: BLE001 — 守门本身失败不阻断收尾
+                pass
+        task.finish = TaskFinish(
+            conclusion=f"结束原因：{reason}",
+            completed=completed,
+            unfinished=unfinished,
+            reason=reason,
+        )
+        if task.status not in ("cancelled", "paused"):
+            task.status = "done" if reason in ("tool_loop_completed",
+                                               "plan_completed") else "failed"
+        task.touch()
+        emit(task.id, "task_end", task.finish.conclusion,
+             {"reason": reason, "usage": task.usage.model_dump(),
+              "completed": completed, "unfinished": unfinished})
+        self._record_task_metrics(task, reason)
+        self._checkpoint(task)
 
     def _persist_memory(self, task: Task, reason: str) -> None:
         """收尾把记忆落盘：任务结局写一条情景记忆 → 追加落盘 + 语义快照。"""
