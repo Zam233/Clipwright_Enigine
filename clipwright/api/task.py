@@ -97,28 +97,69 @@ async def _run_background(task_id: str) -> None:
     task = kernel.get(task_id)
     if task is None:
         return
+
+    def _emit_failed(message: str, error: str, reason: str) -> None:
+        """BE-03（审计 PRD §5E P2）：失败/异常路径的 task_end 也必须带
+        completed/unfinished —— 前端按契约读这两个键，缺了就只能用空数组
+        覆盖后端状态，终态展示会卡在异常分支。"""
+        from clipwright.services.task_events import emit
+        from clipwright.schema.task import TaskFinish, TerminalReason
+
+        cur = kernel.get(task_id) or task
+        try:
+            cur.status = "failed"
+            cur.terminal_reason = TerminalReason.model_error
+            prev = cur.finish
+            cur.finish = TaskFinish(
+                conclusion=message,
+                completed=list(getattr(prev, "completed", []) or []),
+                unfinished=(list(getattr(prev, "unfinished", []) or [])
+                            or [f"task_error:{reason}"]),
+                reason=reason,
+                terminal_reason=TerminalReason.model_error,
+            )
+            kernel._checkpoint(cur)  # noqa: SLF001 — 与正常收尾同一份真相
+        except Exception:  # noqa: BLE001 — 状态补齐失败不阻断事件
+            pass
+        emit(task_id, "task_end", message, {
+            "error": error,
+            "reason": reason,
+            "completed": list(getattr(getattr(cur, "finish", None), "completed", []) or []),
+            "unfinished": list(getattr(getattr(cur, "finish", None), "unfinished", []) or []),
+            "terminal_reason": "model_error",
+        })
+
     try:
         await kernel.run(task)
     except KernelError as e:
-        from clipwright.services.task_events import emit
-
-        emit(task_id, "task_end", f"任务执行失败: {e}", {"error": str(e)})
+        _emit_failed(f"任务执行失败: {e}", str(e), "failed")
     except Exception as e:  # noqa: BLE001 — 后台任务异常必须留痕，不能静默
         from clipwright.config import logger
-        from clipwright.services.task_events import emit
 
         logger.exception("任务执行异常 %s", task_id)
-        emit(task_id, "task_end", f"任务异常: {type(e).__name__}", {"error": str(e)[:500]})
+        _emit_failed(f"任务异常: {type(e).__name__}", str(e)[:500], "exception")
     finally:
         # 成片时间线回写发起项目（E2E 2026-10-29）：proceed 带了 project_id，
         # 但旧实现只把它当工作区 id 用——任务跑完黑板里有 final_timeline，项目里仍是
-        # 0 轨，导出页按钮恒禁用。这一步失败只记日志，不改任务结论。
+        # 0 轨，导出页按钮恒禁用。
+        # BE-04（审计 PRD §5E P2）：旧实现 `except Exception: pass` 把回写失败**静默
+        # 吞掉**，用户看到"任务成功"但项目时间线是空的、导出按钮不可用，且无任何日志。
+        # 现在至少记 error，并把失败写进任务结论（不谎称完整成功）。
         try:
             from clipwright.services.task_project_sync import sync_timeline_to_project
 
             sync_timeline_to_project(task_id, kernel.get(task_id) or task)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001 — 回写失败要可见
+            from clipwright.config import logger
+            from clipwright.services.task_events import emit
+
+            logger.error("成片时间线回写项目失败 %s: %s", task_id, exc, exc_info=True)
+            try:
+                emit(task_id, "warning", f"成片未写入项目：{type(exc).__name__}", {
+                    "scope": "timeline_sync", "error": str(exc)[:300],
+                })
+            except Exception:  # noqa: BLE001 — 连事件都发不出时只保留日志
+                pass
         _RUNNING.pop(task_id, None)
 
 

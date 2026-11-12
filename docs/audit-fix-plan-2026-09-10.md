@@ -896,11 +896,90 @@ P2-06 堆叠方向与 ASS 同向（向上）｜ P2-09 API 地址哨兵语义 ｜
 | 待验证 ✅ | MG 提示词注入实际画布尺寸（竖屏越界）；模板应用带 target_project_id（重映射生效）；空时间线导出提示 |
 | 回归 | 后端 1565 passed；前端 441 passed / tsc 0 / lint 0 error / build ✅ |
 
-**📊 审计计划全部 111 条已完成**（P0 5/5、P1 37/37、P2 54/54、P3 15/15）。待验证 11 项：6 项核实并处理、1 项部分不成立、4 项需真机实测；P3-06 同类 catch 余量（约 50 处）为可选的批量留痕工作。
+**📊 审计计划 111 条曾按批次标记完成，但 2026-11-10 的独立复核证明并非全部落地**（P0 5/5 已修；P1 有 8 条部分；P2 有 15 条部分 + 3 条未修；P3 有 6 条部分 + 1 条未修）。复核结论与本轮补修见 [§13](#13-2026-11-10-独立复核与补修)。待验证 11 项：6 项核实并处理、1 项部分不成立、4 项需真机实测；P3-06 同类 catch 余量（约 91 处）为可选的批量留痕工作。
 
-### 历史剩余清单（已全部关闭）
+### 历史剩余清单（2026-11-10 复核：其中两项此前并未关闭，见 §13）
 
-- **待人工（工具阻断）**：加载器文件的 sys.path 收敛（P1-14）、依赖启用状态校验（P2-54）——扫描器对该文件误报拦截一切写入
-- **P2 未做（仅剩 3 项，均为可选优化）**：P2-07（吸附网格视口化）、P2-17（插件未知控件占位）、P2-21（OS 文件拖入上传）
-- **P3 未做**：P3-07（react-query 收口/死依赖）、P3-06 同类 catch 余量
-- **待验证未抽查**：§7.3 其余 8 项
+- **曾标「待人工（工具阻断）」**：加载器 `sys.path` 收敛（P1-14）、依赖启用状态校验（P2-54）——**复核确认代码里确实没做**，本轮已补
+- **P2 未做（仅剩 3 项，均为可选优化）**：P2-07（吸附网格视口化）、P2-17（插件未知控件占位）、P2-21（OS 文件拖入上传）——**复核确认均已落地**
+- **P3 未做**：P3-07（react-query 收口/死依赖）已做；P3-06 同类 catch 余量仍在
+- **待验证未抽查**：§7.3 其余项（复核后仅 4 项确需真机）
+
+---
+
+## 13. 2026-11-10 独立复核与补修
+
+> 复核方式：逐条读当前代码 + 5 路并行子核查（后端 P1 / 前端 P1 / 前端 P2 / 后端 P2+P3 / §7.3）。
+> 结论：**此前「全部完成」的自述不成立**——P0 5/5 真修；P1 33 修 / 8 部分；P2 37 修 / 15 部分 / 3 未修；
+> P3 8 修 / 6 部分 / 1 未修；§7.3 仅 3 项真修好。根因多为「后端修了前端没改」「随 11 月重构回退」。
+> 本节记录本轮补修；原 §11/§12 的完成声明以本节为准。
+
+### 13.1 后端补修
+
+| ID | 改动 | 位置 |
+|---|---|---|
+| P1-14 | `sys.path` 从 `insert(0, plugins根)` 改为 `append`（标准库/site-packages 优先解析，插件无法 shadow 顶层模块）；`_import_plugin` 强制 `entry_point == plugin_id` 或 `<plugin_id>.*`，导入前拒绝 | `plugins/loader.py` `_import_plugin` / `_migrate_config` |
+| P2-54 | `_resolve_dependencies` 除「目录存在」外同时校验 `is_enabled(dep)`；禁用依赖按缺失处理并拒绝加载 | `plugins/loader.py:821` |
+| P1-15 | `DynamicCategoryPlugin.get_shot_params` 返回 `_shot_params_ms()`（秒→ms），EditAgent 的 `base_shot_ms/min_shot_ms/max_shot_ms` 不再回退 5000 | `category/dynamic.py:168` |
+| P1-03 | `_handle_typed_animation` 与 `_handle_llm_mg` 在窗口短于 MG 时长时跳过并 `_add_trace_warning`，与模板 MG 路径同语义 | `agents/animation_agent.py` |
+| §7.3-3 | 逻辑动画计数从「入队 +1」改为 gather 后按动画轨**真实新增 clip**统计（跳过/失败不再算完成） | `agents/animation_agent.py:558,632` |
+| P3-15 | `apply_rhythm_defaults` 把 persona `visual.transition_weights` 提升到 `extra_params`（显式值优先） | `services/visual_context.py` |
+| P2-49 | `agent_run.run` 在派发前查 `circuit_breaker.is_open(key_of(stage, model))`，熔断期直接返回 failed（不重复记账，避免永不恢复） | `services/agent_run.py` |
+| P1-19 | 取消分支补 `wasted_call` 事件（结果弃用留痕），不再只有协程取消 | `services/agent_run.py` |
+| P3-13 | `/run-async` 读 `Idempotency-Key` 并复用 `services/idempotency`，与 proceed 共键空间 | `api/pipeline.py:_start_as_task` |
+| P3-10 | 删除无消费者的 `mg_method` / `mg_generation_id` 写入 | `agents/animation_agent.py` |
+| P3-08 | `analyze_audio_rhythm` 检测失败不再伪造 120，返回 `TOOL_FAILED` + 可读错误（`analyze_video_structure` 作为能力别名保留） | `skill/builtin.py` |
+
+### 13.2 前端补修
+
+| ID | 改动 | 位置 |
+|---|---|---|
+| §7.3-9 | 项目卡携带原始 `updatedAt`，排序用时间戳而非 `relTime()` 文案（旧实现 `Date.parse('3 分钟前')→NaN`，>7 天项目反而排最前） | `pages/ProjectsPage.tsx`、`components/shared/ProjectCard.tsx` |
+| P1-04 | 归一化容差 0.001 → 0.05（与后端 `keyframes_expr._EPS` 对齐），舍入到 2 位的绝对秒不再被跳过 | `stores/timelineStore.ts:96` |
+| P2-08 | rolling 尾边界：clip 入点不变、邻居 `source_offset_sec` 按 `d*speed` 平移 | `stores/timelineStore.ts:509` |
+| P1-07 | 字段级 `detail` 优先于 `userMessage`（422 显示字段路径与前 3 条） | `pages/ExportPage.tsx` |
+| P1-09 | 多素材源改 repeated query（`sources=a&sources=b`） | `services/api/asset.ts` |
+| P1-10 | 掩码按后端契约原样回传（后端还原旧值），删除与事实相反的 confirm，secret 字段给准确提示 | `features/settings/PluginsPanel.tsx` |
+| P2-16 | AI 匹配入轨写 `local_path`/`url`，并显式 `registerUrl`（新 clip 不经过 setTimeline） | `features/assets/AssetPanel.tsx` |
+| P2-45 | 只读模式仅放行 Ctrl/Cmd+C；<768px 工具栏整体 `pointer-events-none` | `KeybindingEngine.ts`、`layouts/EditorLayout.tsx` |
+| P2-19 | 新增 `useModalKeybindingGuard`，接入授权弹层 / 插件覆盖层 / 历史抽屉 | `features/keyboard/useModalKeybindingGuard.ts` 等 |
+| P2-06 | 堆叠偏移按锚点：bottom 向上、top 向下、center/left/right 不偏移（对齐 `tool/design.py`） | `features/preview/captionLayout.ts` |
+| P2-14 | `ConfigValueInput` 数字框 + 关键帧属性框改本地草稿（空串/「-」不提交、失焦回原值） | `ConfigValueInput.tsx`、`PropertiesPanel.tsx` |
+| P2-15 | 指针按下开合并窗口、抬起关窗（显式拖拽边界，长拖拽/连拖不再多点） | `features/properties/historyCoalesce.ts`、`PropertiesPanel.tsx` |
+| P2-33 | 只接受已知状态，`typing`/未知值保持当前状态（不再打回 gathering） | `features/agent/AgentPanel.tsx` |
+| P2-42 | 代理切换按返回时间线的实际 `asset_id` 变更数判定，0 变更不提示成功、不持久化假状态 | `features/timeline/components/EditorToolbar.tsx` |
+| P2-43 | JSON 导入逐级校验 track/clip 必需字段 | 同上 |
+| P2-20 | FontsPage / PreprocessPage 演示数据受 `allowDemoFallback` 门控 + 可见横幅 | `pages/admin/FontsPage.tsx`、`PreprocessPage.tsx` |
+| P2-26 | 类型制作器按 404/400/409/网络离线区分文案 | `pages/admin/TypeMakerPage.tsx` |
+| P2-47 | 「视频编辑器控制台」标题下明确「工具页，非项目时间线编辑器」 | `pages/admin/VideoEditorPage.tsx` |
+| P2-02 | `createEmptyTimeline` 支持传入帧率/分辨率，EditorPage 传设置值 | `types/timeline.ts`、`pages/EditorPage.tsx` |
+| §7.3-11 | 空时间线点「复制」/「导出」给出明确提示（不再静默） | `EditorToolbar.tsx` |
+| P3-04 | `git rm --cached` 12 个根目录调试产物（文件保留、已被 .gitignore 覆盖） | 仓库根 |
+| P3-03 | 损坏的 `docs/agent-pipeline-audit.md` 重写为可读索引（原文 533 处 U+FFFD 无法还原，删除「不影响阅读」的不实声明）；Design-Plan 6 处乱码修复 | `docs/` |
+| 工程 | `vitest.config.ts` 排除 `.agents/**`（本地 worktree 副本导致同批用例跑两遍且以旧代码假红） | `vitest.config.ts` |
+
+### 13.3 本轮未修 / 不修
+
+| 项 | 结论 |
+|---|---|
+| P2-23（401 续期重放） | 账号系统已于 2026-11-08 剥离，续期语义不存在；不重新引入账号链路，文档 ✅ 仅代表历史 |
+| P3-06（约 91 处静默 catch） | 仅修真正空 body 的 2 处（iframe 内）并加注；其余多数已有意图注释，全量加日志属机械噪声，保留为可选批量项 |
+| P3-08 的 `analyze_video_structure` | 仍无内部调用点，但它作为 `structure_analysis` 能力别名对外暴露（插件/模型可按能力调用），按「能力保留」处理 |
+| §7.3 需真机 4 项 | 缩略图 bucket=0 的 `seeked`、区域级编辑意图分发、幻觉场景数校验、计划书 sections 渲染——静态不可判定，留待真机验收 |
+
+### 13.4 验证
+
+- 后端：`pytest tests -q` → **3200 passed / 7 skipped / 1 xfailed**；唯一失败为
+  `test_render_download.py::test_queue_output_matches_request_basename`，原因是 C 盘剩余 0.5GB
+  触发 507「磁盘空间不足」（环境问题，与改动无关）。新增 `tests/clipwright/test_audit_fixes_2026_11_10.py`（6 条）
+  并在根 conftest 加熔断表重置 fixture。
+- 前端：`npx tsc --noEmit` **0 错误**；`npx eslint`（改动文件）**0 error**；
+  `npm run test -- --run` **140 文件 / 1224 passed / 5 skipped**。
+- 真机验证仍需：MG 预览出片非透明、上传配音字幕偏差 <150ms、30s 播放音画偏差 <80ms 等（见各条验收标准）。
+
+### 13.5 给后续执行者的提醒
+
+1. **不要再把「代码里有注释/有函数」当成已修复**。本轮多条正是「函数存在但无调用点」
+   （P1-15 `translate_persona`、P2-49 `is_open`、P3-15 `transition_weights`）。
+2. 重构删除模块时，凡是审计修复落在被删模块里的，必须在**新位置重新接线**并补行为断言。
+3. 审计文档的 file:line 会随重构失效；复核时按**行为**检索，不按行号。
