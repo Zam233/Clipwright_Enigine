@@ -29,6 +29,26 @@ def _record_old_track_hint(plugin_id: str) -> None:
         pass
 
 
+def _plugin_loader_plugin_dir(plugin: Any) -> str:
+    """插件目录：Loader 在实例上挂 ``_plugin_dir``，旧轨没有时返回空串。
+
+    空串意味着无法证明它是 bundled 来源，覆盖策略会按外部插件处理（fail-closed）。
+    """
+    return str(getattr(plugin, "_plugin_dir", "") or "")
+
+
+def _manifest_signature_ok(manifest: Any) -> bool:
+    """manifest HMAC 是否有效；无签名或校验异常一律 False。"""
+    if not str(getattr(manifest, "signature", "") or ""):
+        return False
+    try:
+        from clipwright.plugins.loader import verify_manifest_signature
+
+        return bool(verify_manifest_signature(manifest))
+    except Exception:  # noqa: BLE001 — 校验器异常按无效处理
+        return False
+
+
 def run_contributions(plugin: Any) -> bool:
     """A-4 桥接核心：新契约注册（声明即授权 + 门面转调）。
 
@@ -87,10 +107,27 @@ def run_contributions(plugin: Any) -> bool:
     api_version = str(getattr(manifest, "api_version", "1") or "1")
     if api_version == "2" or declared:
         ContributionRegistry.declared_scope(plugin_id, declared)
+    wants_override = bool(getattr(manifest, "override_builtin", False))
+    if wants_override:
+        # B7：自声明不是授权。bundled 来源需目标在允许表；外部来源还需签名有效。
+        from clipwright.plugins.override_policy import override_problems
+
+        plugin_dir = getattr(_plugin_loader_plugin_dir(plugin), "", "")
+        signature_ok = _manifest_signature_ok(manifest)
+        problems = override_problems(
+            manifest, plugin_dir=plugin_dir, signature_ok=signature_ok,
+        )
+        if problems:
+            try:
+                from clipwright.plugins.error_bus import get_error_bus
+
+                for reason in problems:
+                    get_error_bus().record(plugin_id, "manifest", reason)
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError("插件覆盖内置被拒: " + "；".join(problems))
     policy = (
-        ConflictPolicy.OVERRIDE
-        if getattr(manifest, "override_builtin", False)
-        else ConflictPolicy.REJECT
+        ConflictPolicy.OVERRIDE if wants_override else ConflictPolicy.REJECT
     )
     report = ContributionRegistry.register(plugin_id, items, policy)
     if report.rejected:
@@ -102,6 +139,14 @@ def run_contributions(plugin: Any) -> bool:
                 )
         except Exception:
             pass
+        # C1：Loader 的 v2 激活路径把任一贡献被拒视为整批失败。底层门面仍保留
+        # 逐项 accepted/rejected 报告（测试与旧调用方依赖），由加载器负责回收。
+        # 先撤掉本批已接受项，避免「加载失败但能力残存」。
+        ContributionRegistry.unregister_plugin(plugin_id)
+        raise RuntimeError(
+            "插件贡献被拒，整批激活失败: "
+            + "；".join(f"{item.key}: {reason}" for item, reason in report.rejected)
+        )
     _FACADE_MANAGED.add(plugin_id)
     return True
 

@@ -716,8 +716,25 @@ async def put_plugin_config(plugin_id: str, request: Request) -> dict[str, objec
         if isinstance(fdef, dict) and isinstance(fdef.get("value"), str) and "****" in fdef["value"]:
             orig_val = _current_plain.get(fname)
             fdef["value"] = orig_val if isinstance(orig_val, str) and orig_val else ""
-    _loader.save_config(plugin_id, data)
-    _loader.reload(plugin_id)
+    config_path = _loader.get_plugin_data_dir(plugin_id) / "config.yaml"
+    backup = config_path.read_text(encoding="utf-8") if config_path.exists() else None
+    try:
+        _loader.save_config(plugin_id, data)
+        _loader.reload(plugin_id)
+    except Exception as e:
+        # C2：保存/重载失败必须还原旧文件与旧运行态，不能返回假成功。
+        try:
+            if backup is None:
+                config_path.unlink(missing_ok=True)
+            else:
+                config_path.write_text(backup, encoding="utf-8")
+            _loader.reload(plugin_id)
+        except Exception as restore_error:  # noqa: BLE001
+            raise HTTPException(
+                status_code=500,
+                detail=f"配置更新失败且回滚失败: {e}; 回滚错误: {restore_error}",
+            ) from e
+        raise HTTPException(status_code=500, detail=f"配置更新失败，已回滚: {e}") from e
     # B5：重载会重新注册贡献（例如钩子/槽位随配置变化），失效读路径缓存
     _invalidate_plugin_caches()
     return {"status": "ok", "plugin_id": plugin_id}
@@ -734,17 +751,29 @@ async def delete_plugin_config(plugin_id: str, request: Request) -> dict[str, st
         raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not found")
 
     config_path = _loader.get_plugin_data_dir(plugin_id) / "config.yaml"
+    backup = config_path.read_text(encoding="utf-8") if config_path.exists() else None
+    try:
+        if config_path.exists():
+            config_path.unlink()
 
-    if config_path.exists():
-        config_path.unlink()
+        # 刷新并重载
+        plugin = _loader.get(plugin_id)
+        if plugin:
+            from clipwright.plugins.loader import _extract_flat_values
+            plugin.config = _extract_flat_values(_loader._get_merged_config(plugin_id))
 
-    # 刷新并重载
-    plugin = _loader.get(plugin_id)
-    if plugin:
-        from clipwright.plugins.loader import _extract_flat_values
-        plugin.config = _extract_flat_values(_loader._get_merged_config(plugin_id))
-
-    _loader.reload(plugin_id)
+        _loader.reload(plugin_id)
+    except Exception as e:
+        try:
+            if backup is not None:
+                config_path.write_text(backup, encoding="utf-8")
+            _loader.reload(plugin_id)
+        except Exception as restore_error:  # noqa: BLE001
+            raise HTTPException(
+                status_code=500,
+                detail=f"配置删除失败且回滚失败: {e}; 回滚错误: {restore_error}",
+            ) from e
+        raise HTTPException(status_code=500, detail=f"配置删除失败，已回滚: {e}") from e
     # B5：重载后贡献集合可能变化，失效读路径缓存
     _invalidate_plugin_caches()
     return {"status": "ok", "plugin_id": plugin_id}

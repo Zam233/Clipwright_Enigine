@@ -83,11 +83,22 @@ class TestDependencyResolution:
         m = _manifest(id="dependent", dependencies=["not_installed_plugin"])
         assert loader._resolve_dependencies(m) == ["not_installed_plugin"]
 
-    def test_all_dependencies_satisfied(self, tmp_path) -> None:
+    def test_directory_present_but_not_loaded_is_unsatisfied(self, tmp_path) -> None:
+        """C1：目录存在但依赖没有真正加载成功，不能算满足。"""
         loader = PluginLoader(plugin_dir=tmp_path / "plugins", data_dir=tmp_path / "data")
         (tmp_path / "plugins" / "base_plugin").mkdir(parents=True)
         (tmp_path / "plugins" / "base_plugin" / "plugin.yaml").write_text(
             "id: base_plugin\nname: base\nkind: capability\n", encoding="utf-8")
+        m = _manifest(id="dependent", dependencies=["base_plugin"])
+        assert loader._resolve_dependencies(m) == ["base_plugin"]
+
+    def test_all_dependencies_satisfied(self, tmp_path, monkeypatch) -> None:
+        loader = PluginLoader(plugin_dir=tmp_path / "plugins", data_dir=tmp_path / "data")
+        (tmp_path / "plugins" / "base_plugin").mkdir(parents=True)
+        (tmp_path / "plugins" / "base_plugin" / "plugin.yaml").write_text(
+            "id: base_plugin\nname: base\nkind: capability\n", encoding="utf-8")
+        # 模拟该依赖已经成功加载（loader._plugins 是判据，不只目录存在）。
+        loader._plugins["base_plugin"] = object()  # type: ignore[assignment]
         m = _manifest(id="dependent", dependencies=["base_plugin"])
         assert loader._resolve_dependencies(m) == []
 

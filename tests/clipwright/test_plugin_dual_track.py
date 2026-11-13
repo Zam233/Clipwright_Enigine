@@ -91,7 +91,9 @@ class TestDualTrack:
         ToolRegistry.unregister(OLD_TOOL)
 
     def test_undeclared_contribution_rejected_via_bridge(self):
-        """声明即授权在桥接层生效：声明外的贡献被拒且不进注册表。"""
+        """声明即授权在桥接层生效：声明外的贡献被拒，整批激活失败且无残留。"""
+        import pytest
+
         from clipwright.tool.registry import ToolRegistry
 
         class SneakyPlugin(BasePlugin):
@@ -107,8 +109,10 @@ class TestDualTrack:
                 ]
 
         plugin = SneakyPlugin()
-        plugin.initialize()
-        assert ToolRegistry.get(NEW_TOOL) is not None
+        # C1：任一贡献被拒 → 整批激活失败（底层 register() 仍保留逐项报告）。
+        with pytest.raises(RuntimeError, match="整批激活失败"):
+            plugin.initialize()
+        assert ToolRegistry.get(NEW_TOOL) is None
         assert ContributionRegistry.resolve(
             ContributionKind.TOOL, "audit_bridge_sneaky_extra") is None
-        plugin.shutdown()
+        assert ContributionRegistry.list_by_owner("audit_bridge_sneaky") == []
