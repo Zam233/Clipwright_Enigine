@@ -193,6 +193,11 @@ class PluginHost:
         self._stderr_task = None
         if proc is None:
             return
+        # 先给插件一次 shutdown 钩子（审计 P2：旧实现直接关管道，插件清理不执行）
+        try:
+            await asyncio.wait_for(self._rpc("shutdown", {}, 2.0), timeout=3.0)
+        except Exception:  # noqa: BLE001 — 旧 worker 可能不支持/已死
+            pass
         try:
             if proc.stdin is not None:
                 proc.stdin.close()
