@@ -9,6 +9,8 @@ scope.plugin_id 与当前 host 一致，并按 scope 构造受限视图，插件
 from __future__ import annotations
 
 import inspect
+import json
+from pathlib import Path
 from typing import Any, Iterable
 
 from clipwright.plugins.runtime.protocol import (
@@ -41,6 +43,8 @@ ERR_REVISION_CONFLICT = "REVISION_CONFLICT"
 
 #: 进程内共享的 runtime 登记表 / job 管理器（管理员登记 runtime 后所有插件共用）
 _RUNTIMES = RuntimeRegistry()
+#: M7：默认放行的引擎能力（只读/计算类）；其它能力必须由管理员按插件登记
+DEFAULT_CAPABILITIES: frozenset[str] = frozenset({"media_probe", "frame_check", "align"})
 #: 已加载插件的 host 与 manifest（M5 跨插件调用需要）
 _PLUGIN_HOSTS: dict[str, Any] = {}
 _PLUGIN_MANIFESTS: dict[str, Any] = {}
@@ -281,8 +285,29 @@ def install_default_handlers(host: Any, manifest: Any = None) -> None:
             raise RpcError("BAD_REQUEST", "artifact_id 不能为空")
         return _artifacts(scope).get(artifact_id)
 
-    #: M7：默认放行的引擎能力（只读/计算类）；LLM/搜索等需 manifest 显式授权
-    default_capabilities = {"media_probe", "frame_check", "align"}
+    #: M7：默认放行的引擎能力（只读/计算类）；LLM/搜索等需管理员登记
+    default_capabilities = DEFAULT_CAPABILITIES
+
+    def _server_grants() -> set[str]:
+        """管理员登记的额外能力（PluginData/<id>/capability_grants.json）。
+
+        审计 P2：旧实现把授权来源取 ``manifest.runtime_config.capabilities``——
+        那是插件**自报**字段，未签名部署下等于没有授权。现在 manifest 只能
+        "申请"，真正放行的是宿主侧文件（由管理端点写入）。
+        """
+        data_dir = getattr(host, "data_dir", None)
+        if data_dir is None:
+            return set()
+        path = Path(data_dir) / "capability_grants.json"
+        try:
+            if not path.is_file():
+                return set()
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, list):
+                return {str(x) for x in raw}
+        except Exception:  # noqa: BLE001 — 坏文件按无授权
+            return set()
+        return set()
 
     async def capability_call(params: dict[str, Any], scope: dict[str, Any]) -> Any:
         parsed = PluginScope.from_payload(scope, expected_plugin=plugin_id)
@@ -290,13 +315,12 @@ def install_default_handlers(host: Any, manifest: Any = None) -> None:
         name = str(params.get("name") or "").strip()
         if not name:
             raise RpcError("BAD_REQUEST", "capability.call 需要 name")
-        manifest = _PLUGIN_MANIFESTS.get(plugin_id)
-        granted = set((getattr(manifest, "runtime_config", {}) or {}).get("capabilities") or [])
+        granted = _server_grants()
         if name not in default_capabilities and name not in granted:
             raise RpcError(
                 ERR_PERMISSION_DENIED,
                 f"能力 {name!r} 未授权（默认: {sorted(default_capabilities)}；"
-                "其他能力需 manifest.runtime_config.capabilities 声明）",
+                "其他能力需管理员通过 /api/plugin/{id}/capabilities 登记）",
             )
         from clipwright.tool.capabilities import resolve
 

@@ -70,7 +70,7 @@ class PluginRuntime:
         self.data_dir = Path(data_dir)
         self.manifest: Any = None
         self.plugin: Any = None
-        self.objects: dict[str, Any] = {}
+        self.objects: dict[tuple[str, str], Any] = {}
         self.declarations: list[dict[str, Any]] = []
 
     # ── 启动 ─────────────────────────────────────────
@@ -187,6 +187,18 @@ class PluginRuntime:
 
         from clipwright.plugins.loader import _extract_flat_values
 
+        # 宿主下发的解密配置优先（审计 P2：worker 从文件读到的是 secret 密文）。
+        import json as _json
+        import os as _os
+        _injected = _os.environ.get("CLIPWRIGHT_PLUGIN_CONFIG")
+        if _injected:
+            try:
+                data = _json.loads(_injected)
+                if isinstance(data, dict) and data:
+                    return dict(data)
+            except (ValueError, TypeError):
+                pass
+
         def _read(path: Path) -> dict[str, Any]:
             if not path.is_file():
                 return {}
@@ -226,10 +238,10 @@ class PluginRuntime:
                     ERR_UNSUPPORTED_KIND,
                     f"子进程档暂不支持 {kind}（{cid}）；支持：{sorted(_RPC_KINDS)}",
                 )
-            self.objects[cid] = getattr(item, "object", None)
+            self.objects[(kind, cid)] = getattr(item, "object", None)
             # C2：与宿主 _inject_plugin_config 同语义——贡献对象自己也要拿到配置，
             # 否则子进程里 getattr(self, "config") 恒为 None（宿主注入到不了这里）。
-            obj = self.objects[cid]
+            obj = self.objects[(kind, cid)]
             if obj is not None and self.plugin_config:
                 try:
                     obj.config = dict(self.plugin_config)
@@ -355,9 +367,11 @@ class PluginRuntime:
 
     def _object(self, params: dict[str, Any], expected_kind: str) -> Any:
         cid = str(params.get("id") or "")
-        obj = self.objects.get(cid)
+        # 键 = (kind, id)：manifest 允许跨 kind 复用同一 id，旧实现只用 id 做键，
+        # 后注册的会覆盖前一个（审计 P3）。
+        obj = self.objects.get((str(expected_kind), cid))
         if obj is None:
-            raise RpcError(ERR_UNKNOWN_METHOD, f"未知贡献 id: {cid}")
+            raise RpcError(ERR_UNKNOWN_METHOD, f"未知贡献 id: {cid}（{expected_kind}）")
         declared = next((d for d in self.declarations if d["id"] == cid), None)
         if declared and declared["kind"] != expected_kind:
             raise RpcError(ERR_UNKNOWN_METHOD,
