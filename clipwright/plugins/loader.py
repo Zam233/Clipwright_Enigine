@@ -822,13 +822,27 @@ class PluginLoader:
 
     # ── 配置管理 ──
 
+    def _config_target_schema(self, plugin_id: str) -> int:
+        """读 config 时应使用的目标 schema 版本（manifest 声明）。
+
+        审计 P2：旧实现 `get_config/get_typed_config/save_config` 都走默认
+        `target_schema=1`，manifest 声明 v2 的插件永远不迁移。
+        """
+        try:
+            manifest = self._parse_manifest(plugin_id, self.plugin_dir / plugin_id)
+            return int(getattr(manifest, "config_schema_version", 1) or 1)
+        except Exception:  # noqa: BLE001 — manifest 不可读时按 v1
+            return 1
+
     def get_config(self, plugin_id: str) -> dict[str, Any]:
         """获取插件的合并配置（扁平值，向后兼容；P1-7: secret 解密）。"""
-        return _decrypt_flat(self._get_merged_config(plugin_id))
+        return _decrypt_flat(self._get_merged_config(
+            plugin_id, target_schema=self._config_target_schema(plugin_id)))
 
     def get_typed_config(self, plugin_id: str) -> dict[str, Any]:
         """获取插件的结构化配置（含 type/value/label 元数据；P1-7: secret 解密后掩码）。"""
-        merged = self._get_merged_config(plugin_id)
+        merged = self._get_merged_config(
+            plugin_id, target_schema=self._config_target_schema(plugin_id))
         return _mask_secret_fields(merged)
 
     def save_config(self, plugin_id: str, data: dict[str, Any]) -> None:
@@ -846,7 +860,8 @@ class PluginLoader:
 
         # 热更新：刷新已加载插件的 config（扁平值，解密后注入）
         if plugin_id in self._plugins:
-            merged = self._get_merged_config(plugin_id)
+            merged = self._get_merged_config(
+                plugin_id, target_schema=self._config_target_schema(plugin_id))
             self._plugins[plugin_id].config = _decrypt_flat(merged)
             # 同步到该插件贡献的工具/技能：否则改配置后必须重启进程才生效
             fresh = dict(getattr(self._plugins[plugin_id], "config", {}) or {})
