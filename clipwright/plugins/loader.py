@@ -931,9 +931,16 @@ class PluginLoader:
         manifest_path = plugin_path / "plugin.yaml"
         if manifest_path.exists():
             try:
-                with open(manifest_path, encoding="utf-8") as f:
-                    data: dict[str, Any] = yaml.safe_load(f) or {}
-            except yaml.YAMLError as e:
+                from clipwright.plugins.manifest_yaml import (
+                    PluginManifestError,
+                    load_manifest_dict,
+                )
+
+                data: dict[str, Any] = load_manifest_dict(
+                    manifest_path.read_text(encoding="utf-8"),
+                    source=str(manifest_path),
+                )
+            except (PluginManifestError, yaml.YAMLError) as e:
                 raise PluginLoadError(
                     f"Plugin '{plugin_id}' plugin.yaml 解析失败: {e}"
                 ) from e

@@ -108,14 +108,19 @@ class PluginRuntime:
         self._collect_declarations()
 
     def _parse_manifest(self) -> Any:
-        import yaml
-
+        from clipwright.plugins.manifest_yaml import load_manifest_dict
         from clipwright.schema.plugin import PluginManifest
 
         manifest_path = self.plugin_dir / "plugin.yaml"
         data: dict[str, Any] = {}
         if manifest_path.exists():
-            data = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+            try:
+                data = load_manifest_dict(
+                    manifest_path.read_text(encoding="utf-8"),
+                    source=str(manifest_path),
+                )
+            except ValueError as e:
+                raise RpcError(ERR_PLUGIN_ERROR, f"插件清单不合法: {e}") from e
         data.pop("id", None)
         return PluginManifest(id=self.plugin_id, **data)
 

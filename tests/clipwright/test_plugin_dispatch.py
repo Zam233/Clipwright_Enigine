@@ -127,6 +127,7 @@ class TestDispatchRoundTrip:
             ContributionKind.MATERIAL_SOURCE, ContributionKind.CATEGORY,
             ContributionKind.ANIMATION, ContributionKind.STYLE_INTERPRETER,
             ContributionKind.HOOK, ContributionKind.PROMPT,
+            ContributionKind.CLIP_KIND,
         }
         assert _WIRED_KINDS == expect
 
