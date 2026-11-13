@@ -76,7 +76,7 @@
 | `analyze_video_structure` | skill | write_local | ✓ | ✓ | ✗ | ✗ | 组合能力（4 个内置 Skill） |
 | `dub_script` | skill | write_local | ✓ | ✓ | ✗ | ✗ | 组合能力（4 个内置 Skill） |
 | `generate_captions` | skill | write_local | ✓ | ✓ | ✗ | ✗ | 组合能力（4 个内置 Skill） |
-| `run_pipeline` | pipeline | costly | ✓ | ✓ | ✗ | ✓ | 老 6 阶段管线，降级为可调用能力；常规套路/预算敏感时应优先选它 |
+| `run_pipeline` | pipeline | costly | ✓ | ✓ | ✗ | ✓ | **已下线**：老 6 阶段管线移除后能力拒绝执行；创作请用主 Agent 的 `delegate_agent` 阶段派发 |
 | `spawn_subagent` | subagent | costly | ✓ | ✓ | ✗ | ✗ | 星型拓扑、深度 1；只读角色不需审核门，带执行权限需两级审核 |
 | `run_python` | meta | dangerous | ✓ | ✓ | ✗ | ✗ | 同上；脚本落临时文件、默认禁网 |
 | `run_shell` | meta | dangerous | ✓ | ✓ | ✗ | ✗ | 经 ExecutionGateway：硬底线标记 + 独立 LLM 判定 + 两级确认 |

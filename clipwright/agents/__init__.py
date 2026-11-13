@@ -1,6 +1,6 @@
-"""Agent 编排层 — LangGraph 节点。
+"""Agent 编排层 — 阶段子 Agent。
 
-每个 Agent 是 LangGraph 图中的一个节点，负责独立的子任务。
+每个 Agent 负责一个阶段的子任务，由主 Agent 通过 `delegate_agent` 按需派发。
 """
 
 from .base import BaseAgent

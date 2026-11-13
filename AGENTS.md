@@ -33,7 +33,7 @@ scripts\stop.ps1         # 停止全部
 ```
 J:\Clipwright                    # 后端（Python FastAPI）
 ├── clipwright/       # 后端源码
-│   ├── agents/       # 7 个 Agent（需求→结构→素材→剪辑→动画→音频→质检）
+│   ├── agents/       # 阶段子 Agent（结构/素材/剪辑/动画/音频/质检）+ requirements 规划，由主 Agent 派发
 │   ├── api/          # 33 个 API 路由文件
 │   ├── services/     # 30+ 后端服务
 │   ├── tool/         # 44+ 原子能力工具
@@ -56,7 +56,10 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
 
 ## 核心不变量
 
-1. **7 核心 Agent + 插件 Agent**：RequirementsAgent → StructureAgent → MaterialAgent → EditAgent → AnimationAgent → AudioAgent → QualityAgent；第三方插件可经 AgentRegistry（`orchestrate` 权限）注册自定义 Agent 并入主管线 DAG 或作为子代理被调用（SA-2/3/4）
+1. **1 个主 Agent + 7 个阶段子 Agent + 插件 Agent**：主 Agent 持有规划、工具调用与收尾，用
+   `delegate_agent(stage=…)` 把结构 / 素材 / 剪辑 / 动画 / 音频 / 质检派给阶段子 Agent（requirements 只用于规划/改写）；
+   第三方插件可经 AgentRegistry（`orchestrate` 权限）注册自定义 Agent，作为阶段子代理或独立子代理被调用（SA-2/3/4）。
+   阶段结果回主 Agent、由它决定下一步，**不是**固定串行管线。
 2. **44+ 个 Tool**：原子能力层，通过 ToolRegistry 注册
 3. **3 个内置 Skill**：可组合的高级能力，通过 SkillRegistry 注册（`analyze_video_structure` /
    `generate_captions` / `analyze_audio_rhythm`）。`dub_script` 自 2026-11-03（B3-T6）起**由插件提供**
@@ -260,20 +263,18 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
 
 ### 新增一个插件 Agent（SA-2/3/4）
 
-第三方插件可注册自定义 Agent（`clipwright/agents/registry.py`），两种形态：
+第三方插件可注册自定义 Agent（`clipwright/agents/registry.py`），由宿主 Agent 作为子代理调用：
 
-1. **随主管线执行**：manifest 声明 `kind: agent` + `permissions: [orchestrate]`，
-   插件 `initialize()` 内 `AgentRegistry.register(agent, name, plugin_id, deps=[...])`
-   ——Agent 按 deps 并入主管线 DAG（依赖核心 Agent 或其它已注册 Agent；
-   未知依赖/环会被剔除）。输入为 `PluginAgentInput`（context/data/timeline），
-   输出 `PluginAgentOutput`（decision/payload，payload 键合并进共享数据）
-2. **被子代理调用**：宿主 Agent/插件工具内
-   `await run_sub_agent(ctx, agent_name, payload)`（`services/subagent.py`）——
-   嵌套深度上限 2、宿主管线取消感知、用量以「宿主:子代理」复合名归因、
-   per (pipeline_id, agent) 熔断（3 次/60s 恢复）、默认 120s 超时
-3. Agent 边界 Hook：`HookPoint.PRE_AGENT`（可改写 input 或 skip）与
+1. manifest 声明 `kind: agent` + `permissions: [orchestrate]`，插件 `initialize()` 内
+   `AgentRegistry.register(agent, name, plugin_id)`；宿主 Agent/插件工具内
+   `await run_sub_agent(ctx, agent_name, payload)`（`services/subagent.py`）调用
+   ——嵌套深度上限 2、宿主取消感知、用量以「宿主:子代理」复合名归因、
+   per (pipeline_id, agent) 熔断（3 次/60s 恢复）、默认 120s 超时。
+   输入为 `PluginAgentInput`（context/data/timeline），输出 `PluginAgentOutput`（decision/payload）。
+   老管线已下线，插件 Agent **不再**并入固定 DAG，而是被主 Agent/宿主按需派发。
+2. Agent 边界 Hook：`HookPoint.PRE_AGENT`（可改写 input 或 skip）与
    `POST_AGENT`（只读观测 decision/result/error）
-4. 参考：`clipwright/PLUGIN_AGENT_INTEGRATION.md`、`plugins/subagent_demo/`
+3. 参考：`clipwright/PLUGIN_AGENT_INTEGRATION.md`、`plugins/subagent_demo/`
 
 ### 新增一个动画类型（LLM 化后）
 
@@ -340,7 +341,7 @@ npm run build                    # tsc 过不代表 build 过（vite 另有一�
 | 文档 | 覆盖的代码模块 |
 |------|---------------|
 | [架构总览](docs/structure.md) | 全部五层架构 |
-| [Agent 工作流](docs/workflow.md) | agents/, services/pipeline*.py, services/agent_bus.py |
+| [Agent 工作流](docs/workflow.md) | agents/, services/agent_kernel.py, services/stage_subagent.py, services/subagent.py, services/agent_bus.py |
 | [API 参考](docs/api_reference.md) | api/ 全部 33 个路由文件 |
 | [开发指南](docs/development.md) | tool/, skill/, plugins/, 开发规范 |
 | [Persona 系统](docs/Persona.md) | persona/ 模块 |
