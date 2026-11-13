@@ -16,6 +16,26 @@ KIND = "probe_scene"
 
 
 @pytest.fixture(autouse=True)
+def _workspace_in_tmp(tmp_path, monkeypatch):
+    """把 Workspace 的目录根指向 tmp_path，让插件工作区路径可预测（B4 契约）。"""
+    from types import SimpleNamespace
+
+    import clipwright.services.plugin_workspace as pw
+
+    class _Ws:
+        def __init__(self, project_id: str) -> None:
+            self.project_id = project_id
+
+        def dirs(self):
+            root = tmp_path / "workspaces" / self.project_id
+            root.mkdir(parents=True, exist_ok=True)
+            return SimpleNamespace(root=root, materials=root / "materials")
+
+    monkeypatch.setattr(pw, "Workspace", _Ws)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def registry():
     ClipKindRegistry.clear()
     ClipKindRegistry.register(ClipKindDefinition(
@@ -57,13 +77,22 @@ def _probe_ok(path):
             "pix_fmt": "yuva420p"}
 
 
-def _payload(tmp_path) -> dict:
-    media = tmp_path / "scene.mov"
+def _payload(
+    tmp_path, *, plugin_id: str = "demo", project_id: str = "proj-1",
+    absolute: bool = False,
+) -> dict:
+    """合法结果：媒体放在该插件工作区内，默认用相对路径返回（B4 契约）。"""
+    root = tmp_path / "workspaces" / project_id / "plugins" / plugin_id
+    root.mkdir(parents=True, exist_ok=True)
+    media = root / "scene.mov"
     media.write_bytes(b"\x00")
     return {
-        "path": str(media), "mime": "video/quicktime",
+        # 默认相对路径，验证 materialize 的工作区归属；
+        # validate_result 独立测试时传 absolute=True（它只做 probe 契约）。
+        "path": str(media) if absolute else "scene.mov",
+        "mime": "video/quicktime",
         "width": 1920, "height": 1080, "fps": 30.0, "duration": 2.0,
-        "alpha": True, "artifact_id": "art_1",
+        "alpha": True,
     }
 
 
@@ -112,7 +141,7 @@ async def test_plugin_failure_propagates(tmp_path):
 async def test_missing_renderer_tool(tmp_path):
     ClipKindRegistry.clear()
     ClipKindRegistry.register(ClipKindDefinition(kind_id="no_tool", owner_plugin="demo"))
-    host = FakeHost(_payload(tmp_path))
+    host = FakeHost(_payload(tmp_path, absolute=True))
     with pytest.raises(PluginRenderError) as err:
         await materialize_plugin_clips(
             _timeline("no_tool"), host=host, scope=RenderScope("demo", "proj-1"),
@@ -124,7 +153,7 @@ async def test_missing_renderer_tool(tmp_path):
 @pytest.mark.asyncio
 async def test_materialize_uses_resolver_and_owner_plugin(tmp_path):
     """host 可以是 plugin_id→host 的解析函数；请求里的 plugin_id 取定义 owner。"""
-    host = FakeHost(_payload(tmp_path))
+    host = FakeHost(_payload(tmp_path, absolute=True))
     seen: list[str] = []
 
     def resolver(plugin_id: str):
@@ -161,7 +190,7 @@ async def test_render_requires_plugin_scope(tmp_path, monkeypatch):
 
 class TestValidate:
     def test_rejects_non_video(self, tmp_path):
-        payload = _payload(tmp_path) | {"mime": "text/plain"}
+        payload = _payload(tmp_path, absolute=True) | {"mime": "text/plain"}
         with pytest.raises(PluginRenderError) as err:
             validate_result(payload, {"width": 1920, "height": 1080, "fps": 30.0,
                                       "duration_sec": 2.0, "start_sec": 0.0},
@@ -170,16 +199,29 @@ class TestValidate:
 
     def test_rejects_missing_alpha(self, tmp_path):
         with pytest.raises(PluginRenderError) as err:
-            validate_result(_payload(tmp_path),
+            validate_result(_payload(tmp_path, absolute=True),
                             {"width": 1920, "height": 1080, "fps": 30.0,
                              "duration_sec": 2.0, "start_sec": 0.0},
                             probe=lambda p: {**_probe_ok(p), "pix_fmt": "yuv420p"})
         assert err.value.code == "NO_ALPHA"
 
     def test_rejects_size_mismatch(self, tmp_path):
-        payload = _payload(tmp_path) | {"width": 1280}
+        """B4：用 probe 实测尺寸判定，插件自报 payload.width 不再能掩盖不一致。"""
+        payload = _payload(tmp_path, absolute=True)
         with pytest.raises(PluginRenderError) as err:
             validate_result(payload, {"width": 1920, "height": 1080, "fps": 30.0,
                                       "duration_sec": 2.0, "start_sec": 0.0},
-                            probe=_probe_ok)
+                            probe=lambda p: {**_probe_ok(p), "width": 1280,
+                                             "height": 720})
         assert err.value.code == "SIZE_MISMATCH"
+
+    def test_self_reported_metadata_does_not_override_probe(self, tmp_path):
+        """自报宽高与实测一致时通过，即使 payload 里写了别值也不改变判定。"""
+        payload = _payload(tmp_path, absolute=True) | {"width": 1280, "height": 720}
+        result = validate_result(
+            payload,
+            {"width": 1920, "height": 1080, "fps": 30.0,
+             "duration_sec": 2.0, "start_sec": 0.0},
+            probe=_probe_ok,
+        )
+        assert result["pix_fmt"] == "yuva420p"

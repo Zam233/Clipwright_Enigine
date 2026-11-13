@@ -50,6 +50,44 @@ def _resolve(project_id: str, ref: str) -> Path:
     return target
 
 
+def _iter_material_files(root: Path, *, limit: int) -> list[Path]:
+    """只读枚举素材文件，拒绝 symlink 越界（B4）。
+
+    ``rglob`` 会跟随指向根外的符号链接；旧实现随后直接 read_bytes/stat，
+    等于让插件把宿主任意文件当素材读。这里对每个候选做 realpath 归属校验，
+    越界或符号链接本身一律跳过。
+    """
+    root_real = root.resolve()
+    out: list[Path] = []
+    for path in sorted(root.rglob("*")):
+        if len(out) >= limit:
+            break
+        try:
+            if path.is_symlink():
+                continue
+            real = path.resolve()
+            if real != root_real and root_real not in real.parents:
+                continue
+            if not real.is_file():
+                continue
+        except (OSError, ValueError):
+            continue
+        out.append(real)
+    return out
+
+
+def _stream_sha256(path: Path, *, chunk: int = 1024 * 1024) -> str:
+    """分块计算 sha256，避免把大文件整体读进内存。"""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while True:
+            block = fh.read(chunk)
+            if not block:
+                break
+            h.update(block)
+    return h.hexdigest()
+
+
 def list_materials(project_id: str, *, limit: int = 32) -> list[dict]:
     if not project_id:
         raise MaterialError("project_id 不能为空")
@@ -58,21 +96,16 @@ def list_materials(project_id: str, *, limit: int = 32) -> list[dict]:
         return []
     limit = max(1, min(int(limit or 32), MAX_LIST))
     items: list[dict] = []
-    for path in sorted(root.rglob("*")):
-        if len(items) >= limit:
-            break
-        if not path.is_file():
-            continue
-        rel = path.relative_to(root).as_posix()
+    for path in _iter_material_files(root, limit=limit):
         try:
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
             size = path.stat().st_size
+            digest = _stream_sha256(path)
         except OSError:
             continue
         mime, _ = mimetypes.guess_type(str(path))
         items.append({
             "name": path.name,
-            "ref": f"materials/{rel}",
+            "ref": f"materials/{path.relative_to(root.resolve()).as_posix()}",
             "mime": mime or "application/octet-stream",
             "size": size,
             "sha256": digest,

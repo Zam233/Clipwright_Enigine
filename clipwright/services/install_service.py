@@ -12,6 +12,9 @@ from typing import Optional
 from clipwright.config import logger, settings
 
 MAX_TARBALL_BYTES = 200 * 1024 * 1024
+#: 解包后的总字节与成员数上限（防压缩炸弹；压缩包大小上限挡不住高压缩比）。
+MAX_EXTRACTED_BYTES = 500 * 1024 * 1024
+MAX_MEMBERS = 5000
 
 
 def _safe_extract(data: bytes, dest: Path, required_manifest: str) -> None:
@@ -19,15 +22,29 @@ def _safe_extract(data: bytes, dest: Path, required_manifest: str) -> None:
 
     P1-14: 旧实现 (a) startswith 前缀比较可被 `tmp/abc` vs `tmp/abc-evil`
     绕过、(b) 未拒 symlink/hardlink 成员、(c) extractall 未用 filter="data"。
+
+    B1：另按成员数与解包总字节限额（tar header 预检 + 实际写入计数），
+    防止高压缩比包把磁盘写满。
     """
     dest_resolved = dest.resolve()
+    total_bytes = 0
+    members = 0
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
-        for member in tf.getmembers():
+        all_members = tf.getmembers()
+        if len(all_members) > MAX_MEMBERS:
+            raise ValueError(f"压缩包成员过多（>{MAX_MEMBERS}）")
+        for member in all_members:
+            members += 1
             if member.issym() or member.islnk():
                 raise ValueError(f"拒绝符号链接/硬链接条目: {member.name}")
             target = (dest / member.name).resolve()
             if not target.is_relative_to(dest_resolved):
                 raise ValueError(f"非法路径条目: {member.name}")
+            total_bytes += max(0, int(member.size or 0))
+            if total_bytes > MAX_EXTRACTED_BYTES:
+                raise ValueError(
+                    f"解包后总大小超限（>{MAX_EXTRACTED_BYTES} 字节）",
+                )
         names = tf.getnames()
         if not any(n.endswith(required_manifest) for n in names):
             raise ValueError(f"缺少必需清单文件 {required_manifest}")
@@ -38,11 +55,25 @@ def _safe_extract(data: bytes, dest: Path, required_manifest: str) -> None:
             tf.extractall(dest)
 
 
+def _validated_plugin_id(plugin_id: str) -> str:
+    """安装路径的插件 id 必须先过统一校验，禁止 ``..``/盘符/绝对路径。
+
+    API 端点的 `_validate_plugin_id` 不能替代离线安装函数自身的校验。
+    """
+    from clipwright.security import SecurityViolation, validate_id
+
+    try:
+        return validate_id(str(plugin_id or ""), "plugin_id")
+    except SecurityViolation as e:
+        raise ValueError(f"非法 plugin_id: {e}") from e
+
+
 def install_plugin_from_bytes(data: bytes, plugin_id: str, expected_sha256: str = "") -> Path:
     """安装插件包：解包到临时目录 → 校验 → 原子移动到 plugins/{id} → 注册。
 
     P2: 支持 expected_sha256 校验（下载端提供）；load 失败时自动回滚删除 plugin_dir。
     """
+    plugin_id = _validated_plugin_id(plugin_id)
     if len(data) > MAX_TARBALL_BYTES:
         raise ValueError("包大小超限")
     # sha256 完整性校验

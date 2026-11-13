@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,10 @@ from typing import Any
 
 from clipwright.config import logger
 from clipwright.services.workspace import Workspace
+
+#: B4：artifact 登记表的进程内写锁（同一 JSON 的读-改-写必须串行）。
+#: 用 RLock：register() 持锁读-改-写时会再进入 _save()，普通 Lock 会自锁死。
+_ARTIFACT_LOCK = threading.RLock()
 
 #: 单文件读取上限（字节）；插件协议帧上限 8MiB，这里留出 JSON 包装余量
 MAX_READ_BYTES = 4 * 1024 * 1024
@@ -71,6 +76,18 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _sha256_file(path: Path, *, chunk: int = 1024 * 1024) -> str:
+    """分块计算文件 sha256（B4：避免把大成品整块读进内存）。"""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while True:
+            block = fh.read(chunk)
+            if not block:
+                break
+            h.update(block)
+    return h.hexdigest()
+
+
 def _reject(reason: str) -> None:
     raise WorkspaceScopeError(reason)
 
@@ -87,6 +104,12 @@ class PluginWorkspace:
 
     # ── 路径解析 ──────────────────────────────────────
     def resolve(self, relative: str, *, must_exist_parent: bool = True) -> Path:
+        """解析插件命名空间内的相对路径。
+
+        B4：只读调用（read/list/stat/hash）必须传 ``must_exist_parent=False``，
+        此时**不创建**插件根或父目录——旧实现无条件 mkdir，让只读请求产生写副作用。
+        写路径（write/mkdir）保持创建父目录的既有约定。
+        """
         raw = str(relative or "").strip().replace("\\", "/")
         if not raw:
             _reject("路径不能为空")
@@ -96,7 +119,8 @@ class PluginWorkspace:
         if any(p == ".." for p in parts):
             _reject(f"拒绝路径穿越: {relative!r}")
 
-        self.root.mkdir(parents=True, exist_ok=True)
+        if must_exist_parent:
+            self.root.mkdir(parents=True, exist_ok=True)
         root_real = os.path.realpath(self.root)
         target = Path(os.path.realpath(self.root / Path(*parts)))
         try:
@@ -112,7 +136,7 @@ class PluginWorkspace:
 
     # ── 读写 ──────────────────────────────────────────
     def list(self, relative: str = ".") -> list[dict[str, Any]]:
-        base = self.resolve(relative) if relative not in ("", ".") else self._ensure_root()
+        base = self.resolve(relative, must_exist_parent=False) if relative not in ("", ".") else self.root
         if not base.exists():
             return []
         if not base.is_dir():
@@ -133,7 +157,7 @@ class PluginWorkspace:
         return out
 
     def read(self, relative: str) -> dict[str, Any]:
-        path = self.resolve(relative)
+        path = self.resolve(relative, must_exist_parent=False)
         if not path.is_file():
             raise FileNotFoundError(f"文件不存在: {relative}")
         size = path.stat().st_size
@@ -186,7 +210,7 @@ class PluginWorkspace:
         }
 
     def stat(self, relative: str) -> dict[str, Any]:
-        path = self.resolve(relative)
+        path = self.resolve(relative, must_exist_parent=False)
         if not path.exists():
             return {"path": relative, "exists": False}
         st = path.stat()
@@ -199,10 +223,10 @@ class PluginWorkspace:
         }
 
     def hash(self, relative: str) -> dict[str, Any]:
-        path = self.resolve(relative)
+        path = self.resolve(relative, must_exist_parent=False)
         if not path.is_file():
             return {"path": relative, "exists": False, "sha256": None}
-        return {"path": self.rel_of(path), "exists": True, "sha256": _sha256(path.read_bytes())}
+        return {"path": self.rel_of(path), "exists": True, "sha256": _sha256_file(path)}
 
     def mkdir(self, relative: str) -> dict[str, Any]:
         path = self.resolve(relative)
@@ -270,10 +294,28 @@ class PluginArtifactRegistry:
         return {"artifacts": []}
 
     def _save(self, data: dict[str, Any]) -> None:
+        """原子写登记表（B4）：唯一临时文件 + replace，避免并发互删。
+
+        进程内用模块级锁串行同一路径的读-改-写；跨进程并发只有部署到多 worker
+        时才需要，届时换文件锁/事务存储（PRD 条件项）。
+        """
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, self._path)
+        with _ARTIFACT_LOCK:
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=".artifacts-", suffix=".tmp", dir=str(self._path.parent),
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(json.dumps(data, ensure_ascii=False, indent=2))
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp_name, self._path)
+            finally:
+                if os.path.exists(tmp_name):
+                    try:
+                        os.unlink(tmp_name)
+                    except OSError:
+                        pass
 
     def register(
         self,
@@ -289,7 +331,7 @@ class PluginArtifactRegistry:
         if not path.is_file():
             raise FileNotFoundError(f"artifact 文件不存在: {relative}")
         size = path.stat().st_size
-        digest = _sha256(path.read_bytes())
+        digest = _sha256_file(path)
         guessed = mime or _guess_mime(path)
         if guessed not in self.ALLOWED_MIME:
             guessed = "application/octet-stream"
@@ -308,10 +350,14 @@ class PluginArtifactRegistry:
             "retention": retention,
             "created_at": time.time(),
         }
-        data = self._load()
-        data["artifacts"] = [a for a in data["artifacts"] if a.get("artifact_id") != entry["artifact_id"]]
-        data["artifacts"].append(entry)
-        self._save(data)
+        # B4：读-改-写整段持锁，避免两个并发 register 互相覆盖。
+        with _ARTIFACT_LOCK:
+            data = self._load()
+            data["artifacts"] = [
+                a for a in data["artifacts"] if a.get("artifact_id") != entry["artifact_id"]
+            ]
+            data["artifacts"].append(entry)
+            self._save(data)
         return entry
 
     def list(self, *, status: str = "", role: str = "") -> list[dict[str, Any]]:
@@ -333,7 +379,7 @@ class PluginArtifactRegistry:
         path = self.workspace.resolve(str(entry.get("path") or ""))
         if not path.is_file():
             raise FileNotFoundError(f"artifact 文件已不存在: {artifact_id}")
-        if _sha256(path.read_bytes()) != entry.get("sha256"):
+        if _sha256_file(path) != entry.get("sha256"):
             raise ValueError(f"artifact 内容与登记 hash 不一致: {artifact_id}")
         return path
 

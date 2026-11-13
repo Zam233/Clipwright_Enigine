@@ -120,7 +120,11 @@ def build_audio(timeline: Any) -> dict[str, Any] | None:
 
 
 def build_materials(project_id: str, *, limit: int = MAX_MATERIALS) -> list[dict[str, Any]]:
-    """`<project>/materials/` 的只读清单（名称/MIME/大小/sha256）。"""
+    """`<project>/materials/` 的只读清单（名称/MIME/大小/sha256）。
+
+    B4：复用 plugin_materials 的只读枚举器——跳过 symlink 越界、分块 hash，
+    不再把每个文件整块 read_bytes 进内存。
+    """
     if not project_id:
         return []
     try:
@@ -130,23 +134,25 @@ def build_materials(project_id: str, *, limit: int = MAX_MATERIALS) -> list[dict
         return []
     if not root.is_dir():
         return []
+    from clipwright.services.plugin_materials import (
+        _iter_material_files,
+        _stream_sha256,
+    )
+
     items: list[dict[str, Any]] = []
-    for path in sorted(root.rglob("*")):
-        if len(items) >= limit:
-            break
-        if not path.is_file():
-            continue
+    root_real = root.resolve()
+    for path in _iter_material_files(root, limit=limit):
         try:
-            data = path.read_bytes()
-            digest = hashlib.sha256(data).hexdigest()
+            size = path.stat().st_size
+            digest = _stream_sha256(path)
         except OSError:
             continue
         mime, _ = mimetypes.guess_type(str(path))
         items.append({
             "name": path.name,
-            "ref": f"materials/{path.relative_to(root).as_posix()}",
+            "ref": f"materials/{path.relative_to(root_real).as_posix()}",
             "mime": mime or "application/octet-stream",
-            "size": len(data),
+            "size": size,
             "sha256": digest,
         })
     return items

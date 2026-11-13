@@ -109,25 +109,54 @@ async def render_clip(host: Any, request: dict[str, Any],
 
 
 def _resolve_payload_path(payload: dict[str, Any], scope: RenderScope) -> dict[str, Any]:
-    """插件只给 artifact_id 时，宿主从登记表解析真实路径（校验归属与 hash）。"""
-    if str(payload.get("path") or "").strip():
-        return payload
-    artifact_id = str(payload.get("artifact_id") or "").strip()
-    if not artifact_id:
-        return payload
+    """解析插件返回的媒体路径，并约束在插件工作区内（B4）。
+
+    旧实现只要 payload 带 ``path`` 就原样返回，插件可让宿主 ffprobe/合成任意可读
+    文件。现在：
+    - 有 ``artifact_id`` 时以登记表为准（校验归属与 hash）；
+    - 只有 ``path`` 时必须是相对路径、realpath 落在当前插件工作区内，且是文件；
+    - 拒绝绝对路径、盘符、``..``、指向工作区外的符号链接。
+    """
     from clipwright.services.plugin_workspace import (
         PluginArtifactRegistry,
         PluginScope,
         PluginWorkspace,
+        WorkspaceScopeError,
     )
 
-    registry = PluginArtifactRegistry(PluginWorkspace(PluginScope(
+    workspace = PluginWorkspace(PluginScope(
         plugin_id=scope.plugin_id,
         project_id=scope.project_id,
         task_id=scope.task_id,
-    )))
-    path = registry.raw_path(artifact_id)
-    return {**payload, "path": str(path)}
+    ))
+    raw_path = str(payload.get("path") or "").strip()
+    artifact_id = str(payload.get("artifact_id") or "").strip()
+    if artifact_id:
+        registry = PluginArtifactRegistry(workspace)
+        path = registry.raw_path(artifact_id)
+        return {**payload, "path": str(path)}
+    if not raw_path:
+        return payload
+
+    normalized = raw_path.replace("\\", "/")
+    if ".." in normalized.split("/"):
+        raise PluginRenderError("BAD_PATH", f"插件返回了非法媒体路径: {raw_path!r}")
+    try:
+        # 绝对路径也允许，但 realpath 必须仍在该插件工作区内（旧插件的合法写法）；
+        # 相对路径按插件工作区根解析。两类都不接受工作区外的文件。
+        root_real = Path(workspace.root).resolve()
+        resolved = (
+            Path(raw_path).expanduser().resolve()
+            if Path(raw_path).is_absolute()
+            else workspace.resolve(normalized, must_exist_parent=False).resolve()
+        )
+        if resolved != root_real and root_real not in resolved.parents:
+            raise PluginRenderError("BAD_PATH", f"媒体路径逃逸插件工作区: {raw_path!r}")
+        if not resolved.is_file():
+            raise PluginRenderError("ARTIFACT_MISSING", f"插件返回的媒体不存在: {raw_path!r}")
+    except WorkspaceScopeError as e:
+        raise PluginRenderError("BAD_PATH", f"媒体路径不可用: {e}") from e
+    return {**payload, "path": str(resolved)}
 
 
 def probe_media(path: str | Path) -> dict[str, Any]:
@@ -184,22 +213,25 @@ def validate_result(
         raise PluginRenderError(
             "NO_ALPHA", f"透明视频缺少 alpha 通道: {info.get('pix_fmt')!r}",
         )
-    if int(payload.get("width") or 0) != int(request["width"]) or \
-            int(payload.get("height") or 0) != int(request["height"]):
-        # 允许 contain：插件声明 fit=contain 时按请求尺寸输出
+    # B4：用**实测媒体属性**判定，不信插件自报 payload（旧实现只比自报字段，
+    # 返回任意比例的媒体也能通过）。
+    actual_w, actual_h = int(info.get("width") or 0), int(info.get("height") or 0)
+    if actual_w != int(request["width"]) or actual_h != int(request["height"]):
         raise PluginRenderError(
             "SIZE_MISMATCH",
-            f"尺寸不一致: {payload.get('width')}x{payload.get('height')} "
-            f"!= {request['width']}x{request['height']}",
+            f"尺寸不一致: 实际 {actual_w}x{actual_h} != 请求 "
+            f"{request['width']}x{request['height']}",
         )
-    fps = float(payload.get("fps") or 0)
-    if abs(fps - float(request["fps"])) > FPS_TOLERANCE:
-        raise PluginRenderError("FPS_MISMATCH", f"帧率不一致: {fps} != {request['fps']}")
-    duration = float(payload.get("duration") or 0)
-    if abs(duration - float(request["duration_sec"])) > DURATION_TOLERANCE_SEC:
+    actual_fps = float(info.get("fps") or 0)
+    if abs(actual_fps - float(request["fps"])) > FPS_TOLERANCE:
+        raise PluginRenderError(
+            "FPS_MISMATCH", f"帧率不一致: 实际 {actual_fps} != 请求 {request['fps']}",
+        )
+    actual_duration = float(info.get("duration") or 0)
+    if abs(actual_duration - float(request["duration_sec"])) > DURATION_TOLERANCE_SEC:
         raise PluginRenderError(
             "DURATION_MISMATCH",
-            f"时长差超过 1 帧: {duration} vs {request['duration_sec']}",
+            f"实际时长差超过 1 帧: {actual_duration} vs {request['duration_sec']}",
         )
     return {
         "source_path": path,
