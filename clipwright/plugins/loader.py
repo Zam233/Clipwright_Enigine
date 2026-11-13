@@ -549,6 +549,10 @@ class PluginLoader:
             plugin_id, plugin_path, self.get_plugin_data_dir(plugin_id),
             call_timeout=float(runtime_config.get("call_timeout", 0) or 0) or 30.0,
             extra_read_roots=list(runtime_config.get("extra_read_roots") or []),
+            # 子进程看不到宿主的解密路径：把**解密后**的合并配置下发（审计 P2：
+            # 旧实现 worker 自己读文件，secret 字段是 Fernet 密文）。
+            plugin_config=_decrypt_flat(self._get_merged_config(
+                plugin_id, target_schema=manifest.config_schema_version)),
         )
         try:
             declarations = host.start()

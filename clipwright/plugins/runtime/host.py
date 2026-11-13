@@ -81,10 +81,13 @@ class PluginHost:
         call_timeout: float = DEFAULT_CALL_TIMEOUT,
         python_executable: str = "",
         extra_read_roots: Optional[list[str]] = None,
+        plugin_config: Optional[dict[str, Any]] = None,
     ) -> None:
         self.plugin_id = str(plugin_id)
         self.plugin_dir = Path(plugin_dir)
         self.data_dir = Path(data_dir)
+        # 宿主解密后的配置（子进程不再自己读密文文件）
+        self.plugin_config: dict[str, Any] = dict(plugin_config or {})
         # 宿主审核后的额外读根（审计 P1：worker 不能从 manifest 自报字段取，
         # 否则子进程可读任意目录）。通过启动环境变量下发。
         self.extra_read_roots = [str(p) for p in (extra_read_roots or [])]
@@ -151,6 +154,10 @@ class PluginHost:
         # manifest 里的自报字段。
         import json as _json
         env["CLIPWRIGHT_PLUGIN_READ_ROOTS"] = _json.dumps(self.extra_read_roots)
+        if self.plugin_config:
+            env["CLIPWRIGHT_PLUGIN_CONFIG"] = _json.dumps(
+                self.plugin_config, ensure_ascii=False, default=str,
+            )
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
