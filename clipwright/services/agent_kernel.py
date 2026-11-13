@@ -2050,7 +2050,9 @@ class AgentKernel:
         final_timeline"和"缺产物被推回来后勉强收尾"两种情况下含义完全不同，
         前者是 achieved、后者必须是 blocked（否则成功率会被灌水）。
         """
-        if unresolved:
+        # 只有 strict 策略下守门把 gate_reason 改成 `degradation_unresolved` 才算 blocked；
+        # warn 策略允许带未处置项收尾（unfinished 仍如实记录），不能因 unresolved 非空就判失败。
+        if gate_reason == "degradation_unresolved":
             return TerminalReason.blocked, "degradation_unresolved"
         # KK-02（审计 PRD §5F P1）：收口模式里的正常 finish **不是** achieved。
         # 旧实现把 `tool_loop_completed → achieved` 排在 soft_landing 判断之前，

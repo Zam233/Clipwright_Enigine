@@ -8,8 +8,11 @@
 from __future__ import annotations
 
 import inspect
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 
 def test_duplicate_owner_write_failure_no_longer_silent():
@@ -38,10 +41,13 @@ def test_use_plugin_slots_reads_same_cache_key_it_writes():
     否则缓存永不命中、每次挂载都多发请求。"""
     from pathlib import Path
 
-    test_dir = Path(__file__).parent          # .../tests/clipwright
-    client_root = test_dir.parents[1]         # .../tests -> J:\Clipweight-Client? no: tests 的父是仓库根
-    # tests/clipwright -> tests -> J:\Clipwright；前端仓库在同盘的 J:\Clipweight-Client
+    # 前端仓库在开发机同盘的 J:\Clipweight-Client；CI（Linux）没有该路径，
+    # 跨仓源码断言只能在本机执行，缺环境时跳过而不是报 FileNotFoundError。
     client_root = Path(r"J:\Clipweight-Client")
+    if not client_root.is_dir():
+        pytest.skip(r"前端仓库不在本机（J:\Clipweight-Client），跳过跨仓源码断言")
+    if shutil.which("node") is None:
+        pytest.skip("本机没有 node，跳过前端源码断言")
     check = (
         "const fs=require('fs');"
         "const s=fs.readFileSync('src/features/plugins/usePluginSlots.ts','utf8');"
@@ -51,4 +57,4 @@ def test_use_plugin_slots_reads_same_cache_key_it_writes():
         "console.log('OK');"
     )
     r = subprocess.run(["node", "-e", check], cwd=str(client_root), capture_output=True, text=True)
-    assert r.returncode == 0, f"cache key mismatch: {r2_out if False else r.stdout} {r.stderr}"
+    assert r.returncode == 0, f"cache key mismatch: {r.stdout} {r.stderr}"
