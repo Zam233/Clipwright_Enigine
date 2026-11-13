@@ -321,6 +321,9 @@ class PluginLoader:
             get_error_bus().record(plugin_id, "initialize", f"initialize() 失败: {e}")
             # C1：initialize 可能在抛错前已注册部分贡献/工具/技能/类型/Agent；
             # 失败必须当作整次激活失败，逆序清掉本次 owner 的残留，再抛出。
+            self._claim_new_registrations(
+                plugin_id, _tools_before, _skills_before,
+                _agents_before, _categories_before)
             self._teardown_registrations(plugin_id)
             from clipwright.plugins.provider_decl import forget_plugin
 
@@ -357,7 +360,13 @@ class PluginLoader:
             if entry is not None and not entry.plugin_id:
                 entry.plugin_id = plugin_id
         if new_agents and "orchestrate" not in (manifest.permissions or []):
-            AgentRegistry.unregister_plugin(plugin_id)
+            # 同一次失败激活：先把本次新增条目归属到本插件，再统一回收
+            # （旧实现只 unregister_plugin(agents)，tool/facade 账本全残留，
+            # 且插件不在 _plugins 里，disable/DELETE 都找不到它——审计 P1）。
+            self._claim_new_registrations(
+                plugin_id, _tools_before, _skills_before,
+                _agents_before, _categories_before)
+            self._teardown_registrations(plugin_id)
             get_error_bus().record(
                 plugin_id, "load",
                 "注册了 Agent 但 manifest 未声明 orchestrate 权限",
@@ -403,6 +412,12 @@ class PluginLoader:
                 plugin = self.load(pid)
             except PluginLoadError as e:
                 logger.warning("插件加载失败 (skipped): %s", e)
+                continue
+            except Exception as e:  # noqa: BLE001 — 一个坏插件不得拖垮整次加载/启动
+                # 审计 P1：manifest/config 的类型错误（如 _schema_version="abc"）
+                # 会抛 ValueError，旧实现让 load_all 整个中断。
+                get_error_bus().record(pid, "load", f"加载异常: {type(e).__name__}: {e}")
+                logger.warning("插件加载异常 (skipped) %s: %s", pid, e)
                 continue
             # load() 返回 None 表示被禁用/目录缺失——不能计入「已加载」。
             if plugin is not None:
@@ -533,6 +548,11 @@ class PluginLoader:
         host = PluginHost(
             plugin_id, plugin_path, self.get_plugin_data_dir(plugin_id),
             call_timeout=float(runtime_config.get("call_timeout", 0) or 0) or 30.0,
+            extra_read_roots=list(runtime_config.get("extra_read_roots") or []),
+            # 子进程看不到宿主的解密路径：把**解密后**的合并配置下发（审计 P2：
+            # 旧实现 worker 自己读文件，secret 字段是 Fernet 密文）。
+            plugin_config=_decrypt_flat(self._get_merged_config(
+                plugin_id, target_schema=manifest.config_schema_version)),
         )
         try:
             declarations = host.start()
@@ -665,6 +685,42 @@ class PluginLoader:
                 f"Plugin '{plugin_id}' 的全部贡献均被拒绝：{report.rejected[0][1]}"
             )
 
+    def _claim_new_registrations(
+        self, plugin_id: str,
+        tools_before: set[str], skills_before: set[str],
+        agents_before: set[str], categories_before: set[str],
+    ) -> None:
+        """把 initialize() 期间新注册的条目归属到本插件，供失败/卸载回收。
+
+        审计 P1：旧实现只在 **initialize 成功后**才写归属。initialize 先注册
+        再抛错时，teardown 按 owner 找不到这些残留——工具/类型永久存活
+        （Category 甚至被永久占用，再次启用报 already registered）。
+        """
+        from clipwright.agents.registry import AgentRegistry
+        from clipwright.category.registry import CategoryRegistry
+        from clipwright.skill.registry import SkillRegistry
+        from clipwright.tool.registry import ToolRegistry
+
+        for name in set(ToolRegistry._tools.keys()) - tools_before:
+            try:
+                ToolRegistry._tools[name]._plugin_id = plugin_id  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001 — 单个对象归属失败不影响清理
+                pass
+        for name in set(SkillRegistry._skills.keys()) - skills_before:
+            try:
+                SkillRegistry._skills[name]._plugin_id = plugin_id  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+        for cid in set(CategoryRegistry._plugins.keys()) - categories_before:
+            try:
+                CategoryRegistry.set_owner(cid, plugin_id)
+            except Exception:  # noqa: BLE001 — 已被他人占用时不覆盖
+                pass
+        for name in set(AgentRegistry.list_names()) - agents_before:
+            entry = AgentRegistry.get_entry(name)
+            if entry is not None and not entry.plugin_id:
+                entry.plugin_id = plugin_id
+
     def _teardown_registrations(self, plugin_id: str) -> None:
         """轮 87：注销插件注册到各注册表的内容。
 
@@ -770,13 +826,27 @@ class PluginLoader:
 
     # ── 配置管理 ──
 
+    def _config_target_schema(self, plugin_id: str) -> int:
+        """读 config 时应使用的目标 schema 版本（manifest 声明）。
+
+        审计 P2：旧实现 `get_config/get_typed_config/save_config` 都走默认
+        `target_schema=1`，manifest 声明 v2 的插件永远不迁移。
+        """
+        try:
+            manifest = self._parse_manifest(plugin_id, self.plugin_dir / plugin_id)
+            return int(getattr(manifest, "config_schema_version", 1) or 1)
+        except Exception:  # noqa: BLE001 — manifest 不可读时按 v1
+            return 1
+
     def get_config(self, plugin_id: str) -> dict[str, Any]:
         """获取插件的合并配置（扁平值，向后兼容；P1-7: secret 解密）。"""
-        return _decrypt_flat(self._get_merged_config(plugin_id))
+        return _decrypt_flat(self._get_merged_config(
+            plugin_id, target_schema=self._config_target_schema(plugin_id)))
 
     def get_typed_config(self, plugin_id: str) -> dict[str, Any]:
         """获取插件的结构化配置（含 type/value/label 元数据；P1-7: secret 解密后掩码）。"""
-        merged = self._get_merged_config(plugin_id)
+        merged = self._get_merged_config(
+            plugin_id, target_schema=self._config_target_schema(plugin_id))
         return _mask_secret_fields(merged)
 
     def save_config(self, plugin_id: str, data: dict[str, Any]) -> None:
@@ -794,7 +864,8 @@ class PluginLoader:
 
         # 热更新：刷新已加载插件的 config（扁平值，解密后注入）
         if plugin_id in self._plugins:
-            merged = self._get_merged_config(plugin_id)
+            merged = self._get_merged_config(
+                plugin_id, target_schema=self._config_target_schema(plugin_id))
             self._plugins[plugin_id].config = _decrypt_flat(merged)
             # 同步到该插件贡献的工具/技能：否则改配置后必须重启进程才生效
             fresh = dict(getattr(self._plugins[plugin_id], "config", {}) or {})
@@ -869,6 +940,18 @@ class PluginLoader:
             get_error_bus().record(plugin_id, "reload", f"重载异常: {e}")
 
         if not reloaded:
+            # 子进程档：旧 worker 已 stop，回滚只会留下「已加载但零能力」的
+            # 僵尸句柄（get() 非空、list_loaded 仍列出、调用报 RuntimeError）。
+            # 审计 P1：保持未加载状态，让用户明确看到插件没起来。
+            if old_host is not None:
+                self._hosts.pop(plugin_id, None)
+                self._plugins.pop(plugin_id, None)
+                self._metadatas.pop(plugin_id, None)
+                get_error_bus().record(
+                    plugin_id, "reload", "旧 worker 已停止，插件保持未加载状态",
+                )
+                logger.warning("插件 %s 重载失败：子进程档不回滚，保持未加载", plugin_id)
+                return False
             # 回滚 — 恢复旧实例，避免插件从注册表消失
             if old_plugin is not None:
                 self._plugins[plugin_id] = old_plugin

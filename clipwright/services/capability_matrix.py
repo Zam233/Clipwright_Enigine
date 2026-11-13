@@ -259,9 +259,9 @@ def _tool_entries() -> list[CapabilityEntry]:
     from clipwright.tool import register_builtin_tools
     from clipwright.tool.registry import ToolRegistry
 
-    # 只在空注册表时初始化：重复注册会触发"重复注册"告警，把真正的告警淹掉
-    if not ToolRegistry.list():
-        register_builtin_tools()
+    # 始终确保内置工具已注册（幂等）：只在注册表为空时注册会让“插件工具先到”
+    # 的场景里内置工具永久缺席，进而让整张工具面构建失败（审计 P1）。
+    register_builtin_tools()
 
     out: list[CapabilityEntry] = []
     unknown: list[str] = []

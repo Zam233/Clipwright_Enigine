@@ -80,10 +80,20 @@ class PluginHost:
         *,
         call_timeout: float = DEFAULT_CALL_TIMEOUT,
         python_executable: str = "",
+        extra_read_roots: Optional[list[str]] = None,
+        plugin_config: Optional[dict[str, Any]] = None,
     ) -> None:
         self.plugin_id = str(plugin_id)
         self.plugin_dir = Path(plugin_dir)
         self.data_dir = Path(data_dir)
+        # 宿主解密后的配置（子进程不再自己读密文文件）
+        self.plugin_config: dict[str, Any] = dict(plugin_config or {})
+        # 宿主审核后的额外读根（审计 P1：worker 不能从 manifest 自报字段取，
+        # 否则子进程可读任意目录）。通过启动环境变量下发。
+        self.extra_read_roots = [str(p) for p in (extra_read_roots or [])]
+        # 最近一次宿主→worker 调用的可信 scope（project/task 归属只能由宿主给，
+        # 不能在 worker 回传的 call_host scope 里被改写）。
+        self._trusted_scope: dict[str, Any] = {}
         self.call_timeout = float(call_timeout or DEFAULT_CALL_TIMEOUT)
         self._python = python_executable or sys.executable
         self._proc: Optional[asyncio.subprocess.Process] = None
@@ -140,6 +150,14 @@ class PluginHost:
         env = {key: os.environ[key] for key in ENV_ALLOWLIST if key in os.environ}
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env.setdefault("PYTHONUTF8", "1")
+        # 额外读根只由宿主下发（JSON 数组）；空数组也要显式给，worker 不再读
+        # manifest 里的自报字段。
+        import json as _json
+        env["CLIPWRIGHT_PLUGIN_READ_ROOTS"] = _json.dumps(self.extra_read_roots)
+        if self.plugin_config:
+            env["CLIPWRIGHT_PLUGIN_CONFIG"] = _json.dumps(
+                self.plugin_config, ensure_ascii=False, default=str,
+            )
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
@@ -182,6 +200,11 @@ class PluginHost:
         self._stderr_task = None
         if proc is None:
             return
+        # 先给插件一次 shutdown 钩子（审计 P2：旧实现直接关管道，插件清理不执行）
+        try:
+            await asyncio.wait_for(self._rpc("shutdown", {}, 2.0), timeout=3.0)
+        except Exception:  # noqa: BLE001 — 旧 worker 可能不支持/已死
+            pass
         try:
             if proc.stdin is not None:
                 proc.stdin.close()
@@ -235,7 +258,24 @@ class PluginHost:
         params = dict(message.get("params") or {})
         scope = dict(message.get("scope") or {})
         depth = int(message.get("depth", 0) or 0)
+        # 归属只能由宿主给：worker 自报的 project/task/plugin 必须与本次调用的
+        # 可信 scope 一致，不一致按伪造拒绝（审计 P1：旧实现只看 plugin_id，
+        # 子进程可读写任意已知 project 的素材/产物）。
+        trusted = getattr(self, "_trusted_scope", None) or {}
         try:
+            for key in ("project_id", "task_id"):
+                claimed = scope.get(key)
+                if trusted.get(key):
+                    if claimed not in (None, "", trusted.get(key)):
+                        raise RpcError(
+                            "PERMISSION_DENIED",
+                            f"scope.{key} 与宿主调用上下文不一致（疑似伪造）",
+                        )
+                    scope[key] = trusted[key]
+            claimed_plugin = str(scope.get("plugin_id") or "")
+            if claimed_plugin and claimed_plugin != self.plugin_id:
+                raise RpcError("PERMISSION_DENIED", "scope.plugin_id 与当前插件不一致")
+            scope["plugin_id"] = self.plugin_id
             if depth > 8:
                 raise RpcError("DEPTH_EXCEEDED", f"嵌套过深（depth={depth}）")
             if self._worker_inflight >= MAX_INFLIGHT:
@@ -281,6 +321,8 @@ class PluginHost:
         宿主据此做 plugin/task/project 归属校验（M2）。
         """
         limit = float(timeout or self.call_timeout)
+        if scope:
+            self._trusted_scope = dict(scope)
         return self._submit(self._rpc(method, params, limit, scope),
                             timeout=limit + 5.0, what=method)
 

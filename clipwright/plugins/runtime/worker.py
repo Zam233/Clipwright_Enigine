@@ -48,6 +48,8 @@ _RPC_KINDS = {
     "category",
     # M4：skill 的元数据由 meta 声明，执行经 skill.call RPC
     "skill",
+    # declarative display spec 是纯数据（宿主清洗后交给编辑器），子进程可声明
+    "display_spec",
 }
 
 #: 每类 kind 的 RPC 方法名（宿主代理据此调用）
@@ -68,19 +70,27 @@ class PluginRuntime:
         self.data_dir = Path(data_dir)
         self.manifest: Any = None
         self.plugin: Any = None
-        self.objects: dict[str, Any] = {}
+        self.objects: dict[tuple[str, str], Any] = {}
         self.declarations: list[dict[str, Any]] = []
 
     # ── 启动 ─────────────────────────────────────────
 
     def boot(self) -> None:
         self.manifest = self._parse_manifest()
-        runtime_config = dict(getattr(self.manifest, "runtime_config", {}) or {})
-        extra_reads = [
-            Path(str(p)).expanduser()
-            for p in (runtime_config.get("extra_read_roots") or [])
-            if str(p).strip()
-        ]
+        # 额外读根**只**从宿主下发的环境变量取（宿主已审核）。旧实现重新读
+        # plugin.yaml 的自报 runtime_config.extra_read_roots → 绕过宿主的越界
+        # 清洗，可读任意目录（审计 P1，安全边界实破）。
+        import json as _json
+        import os as _os
+        extra_reads = []
+        raw_roots = _os.environ.get("CLIPWRIGHT_PLUGIN_READ_ROOTS")
+        if raw_roots:
+            try:
+                for item in _json.loads(raw_roots) or []:
+                    if str(item).strip():
+                        extra_reads.append(Path(str(item)).expanduser())
+            except (ValueError, TypeError):
+                extra_reads = []
         guard = PermissionGuard(
             getattr(self.manifest, "permissions", []) or [],
             plugin_id=self.plugin_id,
@@ -177,6 +187,18 @@ class PluginRuntime:
 
         from clipwright.plugins.loader import _extract_flat_values
 
+        # 宿主下发的解密配置优先（审计 P2：worker 从文件读到的是 secret 密文）。
+        import json as _json
+        import os as _os
+        _injected = _os.environ.get("CLIPWRIGHT_PLUGIN_CONFIG")
+        if _injected:
+            try:
+                data = _json.loads(_injected)
+                if isinstance(data, dict) and data:
+                    return dict(data)
+            except (ValueError, TypeError):
+                pass
+
         def _read(path: Path) -> dict[str, Any]:
             if not path.is_file():
                 return {}
@@ -216,10 +238,10 @@ class PluginRuntime:
                     ERR_UNSUPPORTED_KIND,
                     f"子进程档暂不支持 {kind}（{cid}）；支持：{sorted(_RPC_KINDS)}",
                 )
-            self.objects[cid] = getattr(item, "object", None)
+            self.objects[(kind, cid)] = getattr(item, "object", None)
             # C2：与宿主 _inject_plugin_config 同语义——贡献对象自己也要拿到配置，
             # 否则子进程里 getattr(self, "config") 恒为 None（宿主注入到不了这里）。
-            obj = self.objects[cid]
+            obj = self.objects[(kind, cid)]
             if obj is not None and self.plugin_config:
                 try:
                     obj.config = dict(self.plugin_config)
@@ -251,6 +273,17 @@ class PluginRuntime:
         if method == "skill.call":
             return await self._call_skill(params)
         if method == "shutdown":
+            # 审计 P2：旧实现只回 {"bye": true} 就退出，插件 shutdown() 从不执行
+            # （临时文件/连接泄漏）。这里先调插件钩子，失败不影响退出。
+            try:
+                fn = getattr(self.plugin, "shutdown", None)
+                if callable(fn):
+                    result = fn()
+                    if inspect.isawaitable(result):
+                        await result
+            except Exception as exc:  # noqa: BLE001 — 清理失败不阻止退出
+                from clipwright.config import logger as _logger
+                _logger.warning("插件 shutdown() 失败: %s", exc)
             return {"bye": True}
         raise RpcError(ERR_UNKNOWN_METHOD, f"未知方法: {method}")
 
@@ -334,9 +367,11 @@ class PluginRuntime:
 
     def _object(self, params: dict[str, Any], expected_kind: str) -> Any:
         cid = str(params.get("id") or "")
-        obj = self.objects.get(cid)
+        # 键 = (kind, id)：manifest 允许跨 kind 复用同一 id，旧实现只用 id 做键，
+        # 后注册的会覆盖前一个（审计 P3）。
+        obj = self.objects.get((str(expected_kind), cid))
         if obj is None:
-            raise RpcError(ERR_UNKNOWN_METHOD, f"未知贡献 id: {cid}")
+            raise RpcError(ERR_UNKNOWN_METHOD, f"未知贡献 id: {cid}（{expected_kind}）")
         declared = next((d for d in self.declarations if d["id"] == cid), None)
         if declared and declared["kind"] != expected_kind:
             raise RpcError(ERR_UNKNOWN_METHOD,

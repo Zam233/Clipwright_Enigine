@@ -14,7 +14,26 @@ from clipwright.config import logger
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
 from clipwright.tool.video import _CLIPWRIGHT_TEMP, resolve_ffmpeg, ENCODE_VIDEO_ARGS
+from clipwright.tool.video import resolve_ffprobe
 
+
+
+def _atempo_chain(speed: float) -> str:
+    """把任意倍速折成 FFmpeg atempo（0.5~2.0）串联链。
+
+    旧实现插值分支只写 ``atempo=min(speed,2.0)``：0.25x 慢动作直接触发
+    ``Value > 0.5`` 范围错误（审计 P2）。非插值分支已有串联逻辑，这里抽出复用。
+    """
+    atempo = float(speed)
+    filters: list[str] = []
+    while atempo > 2.0:
+        filters.append("atempo=2.0")
+        atempo /= 2.0
+    while atempo < 0.5:
+        filters.append("atempo=0.5")
+        atempo /= 0.5
+    filters.append(f"atempo={atempo}")
+    return ",".join(filters)
 
 
 class VideoSpeedTool(BaseTool):
@@ -45,21 +64,12 @@ class VideoSpeedTool(BaseTool):
                     "-i", input_path,
                     "-vf", f"setpts={1/speed}*PTS,minterpolate=fps=30:mi_mode=mci",
                     *ENCODE_VIDEO_ARGS,
-                    "-c:a", "aac", "-b:a", "192k", "-af", f"atempo={min(speed, 2.0)}",
+                    "-c:a", "aac", "-b:a", "192k", "-af", _atempo_chain(speed),
                     out,
                 ]
             else:
                 # 简单变速
-                atempo = speed
-                # FFmpeg atempo 范围 0.5~2.0，用多个串联
-                audio_filters = []
-                while atempo > 2.0:
-                    audio_filters.append("atempo=2.0")
-                    atempo /= 2.0
-                while atempo < 0.5:
-                    audio_filters.append("atempo=0.5")
-                    atempo /= 0.5
-                audio_filters.append(f"atempo={atempo}")
+                audio_filters = [_atempo_chain(speed)]
 
                 cmd = [
                     resolve_ffmpeg(), "-y", "-loglevel", "error",
@@ -103,8 +113,29 @@ class TransitionApplyTool(BaseTool):
                                       error=f"{name} not found: {path}")
         try:
             if transition == "hard_cut":
-                import shutil
-                shutil.copy2(clip_a, out)
+                # 旧实现只 copy clip_a，clip_b 被直接丢弃（审计 P2）。
+                # 用 concat demuxer 把两段真正接起来（同编码时零重编码）。
+                list_file = _CLIPWRIGHT_TEMP / f"concat_{uuid.uuid4().hex[:8]}.txt"
+                def _q(p: str) -> str:
+                    return str(Path(p).resolve()).replace("'", "'\\''")
+                list_file.write_text(
+                    f"file '{_q(clip_a)}'\nfile '{_q(clip_b)}'\n", encoding="utf-8",
+                )
+                try:
+                    result = await asyncio.to_thread(
+                        subprocess.run,
+                        [resolve_ffmpeg(), "-y", "-loglevel", "error",
+                         "-f", "concat", "-safe", "0", "-i", str(list_file),
+                         "-c", "copy", out],
+                        capture_output=True, text=True, timeout=300,
+                    )
+                finally:
+                    list_file.unlink(missing_ok=True)
+                if result.returncode != 0:
+                    return ToolExecResult(
+                        status=ToolStatus.ERROR, tool_name=self.name,
+                        error=f"hard_cut concat 失败: {(result.stderr or '')[:300]}",
+                    )
                 return ToolExecResult(status=ToolStatus.SUCCESS, tool_name=self.name,
                                       output={"output_path": out, "transition": "hard_cut"}, output_path=out)
 
@@ -120,19 +151,28 @@ class TransitionApplyTool(BaseTool):
                 "slide_down": f"xfade=transition=slidedown:duration={t}:offset=1",
                 "push_left": f"xfade=transition=pushleft:duration={t}:offset=1",
                 "push_right": f"xfade=transition=pushright:duration={t}:offset=1",
-                "wipe_left": f"xfade=transition=wiperight:duration={t}:offset=1",
-                "wipe_right": f"xfade=transition=wipeleft:duration={t}:offset=1",
+                "wipe_left": f"xfade=transition=wipeleft:duration={t}:offset=1",
+                "wipe_right": f"xfade=transition=wiperight:duration={t}:offset=1",
                 "zoom_in": f"xfade=transition=zoomin:duration={t}:offset=1",
                 "pixel_dissolve": f"xfade=transition=pixelize:duration={t}:offset=1",
                 "radial": f"xfade=transition=radial:duration={t}:offset=1",
                 "rect": f"xfade=transition=rectcrop:duration={t}:offset=1",
                 "clock": f"xfade=transition=circleopen:duration={t}:offset=1",
             }
-            xfade = filter_map.get(transition, filter_map["crossfade"])
+            if transition == 'glitch':
+                # B1（历史裁定）：glitch 无对应 xfade，显式回落 crossfade。
+                transition = "crossfade"
+            if transition not in filter_map:
+                return ToolExecResult(
+                    status=ToolStatus.ERROR, tool_name=self.name,
+                    error=(f"unsupported transition: {transition}；"
+                           f"支持: {', '.join(sorted(filter_map))}"),
+                )
+            xfade = filter_map[transition]
 
             # 获取 clip_a 的时长
             probe_a = await asyncio.to_thread(subprocess.run,
-                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                [resolve_ffprobe(), "-v", "error", "-show_entries", "format=duration",
                  "-of", "json", clip_a],
                 capture_output=True, text=True, timeout=10,
             )
@@ -451,10 +491,12 @@ class TextDiagramTool(BaseTool):
 # ── 人脸/背景相关 ──
 
 class FaceDetectTool(BaseTool):
-    """人脸检测工具 — 检测视频帧中的人脸位置和数量。"""
+    """人脸检测工具 — 检测视频帧中的人脸（视觉 LLM）。"""
     name = "face_detect"
-    permission_tier = "read"
-    description = "检测视频中的人脸，返回每帧的人脸位置/数量/置信度"
+    # 内部调付费视觉 LLM（effects.py 的 LLMService().ask），标 read 会让收口期
+    # 放行、并按只读档记成 idempotent——审计 P1 的档位与行为不一致。
+    permission_tier = "costly"
+    description = "检测视频中是否含人脸（视觉 LLM），返回标签与描述"
     dependencies = []
 
     async def execute(

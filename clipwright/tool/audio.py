@@ -61,6 +61,11 @@ def _estimate_bpm_from_rms_stderr(ffmpeg_stderr: str) -> Optional[float]:
     import math
     import re as _re
 
+    # 兼容误传 CompletedProcess：调用方曾经把整个 result 传进来，导致每次
+    # 调用都在 `.splitlines()` 上抛 AttributeError（2026-11-14 审计 P0）。
+    if not isinstance(ffmpeg_stderr, str):
+        ffmpeg_stderr = getattr(ffmpeg_stderr, "stderr", "") or ""
+
     try:
         import numpy as _np
     except ImportError:  # pragma: no cover - numpy 为硬依赖，防御兜底
@@ -139,7 +144,7 @@ class BPMDetectTool(BaseTool):
                 "-af", "astats=metadata=1:reset=1:length=0.05",
                 "-f", "null", "-",
             )
-            bpm = _estimate_bpm_from_rms_stderr(result)
+            bpm = _estimate_bpm_from_rms_stderr(result.stderr)
             if bpm is None:
                 return ToolExecResult(
                     status=ToolStatus.SUCCESS,
@@ -158,6 +163,12 @@ class BPMDetectTool(BaseTool):
                 status=ToolStatus.DEPENDENCY_MISSING,
                 tool_name=self.name,
                 error="ffmpeg not found",
+            )
+        except Exception as e:  # noqa: BLE001 — 解析/IO 失败如实回报，不再外泄崩溃
+            return ToolExecResult(
+                status=ToolStatus.ERROR,
+                tool_name=self.name,
+                error=f"BPM 检测失败: {type(e).__name__}: {e}",
             )
 
 
@@ -182,21 +193,23 @@ class AudioReplaceTool(BaseTool):
             # 先调音量
             vol_filter = f"volume={volume}" if volume != 1.0 else ""
             if mix:
-                # 混音：用 amix 过滤器
-                filter_complex = "[1:a]volume=1.0[a1];[0:a][a1]amix=inputs=2:duration=first"
+                # 混音：用 amix 过滤器（音量作用在第二路输入上）
+                a1 = f"[1:a]{vol_filter}[a1]" if vol_filter else "[1:a]volume=1.0[a1]"
+                filter_complex = f"{a1};[0:a][a1]amix=inputs=2:duration=first"
                 result = await _ffmpeg(
                     "-i", video_path, "-i", audio_path,
                     "-filter_complex", filter_complex,
                     "-c:v", "copy", "-c:a", "aac", out,
                 )
             else:
-                # 替换：直接用新音频
-                audio_input = f"[1:a]{vol_filter}" if vol_filter else "[1:a]"
-                result = await _ffmpeg(
-                    "-i", video_path, "-i", audio_path,
-                    "-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0",
-                    "-c:a", "aac", "-shortest", out,
-                )
+                # 替换：直接用新音频（volume 必须真的进 filter，旧实现只赋给
+                # audio_input 后丢弃 → 传 volume 不生效，审计 P1）
+                cmd = ["-i", video_path, "-i", audio_path,
+                       "-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0"]
+                if vol_filter:
+                    cmd += ["-af", vol_filter]
+                cmd += ["-c:a", "aac", "-shortest", out]
+                result = await _ffmpeg(*cmd)
             if result.returncode != 0:
                 return ToolExecResult(
                     status=ToolStatus.ERROR,
@@ -221,7 +234,7 @@ class AudioNormalizeTool(BaseTool):
     """音频归一化工具 — LUFS/峰值归一化。"""
     name = "audio_normalize"
     permission_tier = "write_local"
-    description = "音频音量归一化：loudnorm(LUFS目标)/peak(峰值)/rms(RMS)"
+    description = "音频音量归一化：loudnorm(LUFS目标)/peak(峰值)"
     dependencies = ["ffmpeg"]
 
     async def execute(
@@ -234,24 +247,18 @@ class AudioNormalizeTool(BaseTool):
         out = _ensure_output_path(output_path, "norm_", ".wav")
         try:
             if mode == "loudnorm":
-                # EBU R128 loudnorm 两遍处理
-                import json
-                # 第一遍: 分析
-                probe = await asyncio.to_thread(subprocess.run, 
-                    ["ffmpeg", "-y", "-i", input_path, "-af",
-                     "loudnorm=print_format=json", "-f", "null", "-"],
-                    capture_output=True, text=True, timeout=120,
-                )
-                # 第二遍: 应用归一化
+                # 第二遍: 应用归一化（测量值不可用时 linear=true 仍可用）
                 result = await _ffmpeg(
                     "-i", input_path,
                     "-af", "loudnorm=linear=true",
                     "-c:a", "pcm_s16le", out,
                 )
             elif mode == "peak":
+                # 峰值归一：旧实现是 volume=1.0（什么都不做）却报 success，
+                # 审计 P1。用 loudnorm 的 TP=-1 把真峰值压到 -1dBFS。
                 result = await _ffmpeg(
                     "-i", input_path,
-                    "-af", "volume=1.0:precision=double",
+                    "-af", "loudnorm=I=-1:TP=-1:LRA=11",
                     "-c:a", "pcm_s16le", out,
                 )
             else:
@@ -293,10 +300,14 @@ class AudioMixTool(BaseTool):
         try:
             if not input_paths:
                 return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error="no input paths")
-            vols = volumes or [1.0] * len(input_paths)
+            vols = list(volumes or [1.0] * len(input_paths))
+            # volumes 短于输入数时补 1.0（旧实现 vols[i] 直接 IndexError）
+            if len(vols) < len(input_paths):
+                vols.extend([1.0] * (len(input_paths) - len(vols)))
 
-            # 构建 ffmpeg 多输入混音命令
-            cmd_args = ["ffmpeg", "-y", "-loglevel", "error"]
+            # 构建 ffmpeg 多输入混音命令（走配置解析，而不是硬编码 "ffmpeg"）
+            from clipwright.tool.video import resolve_ffmpeg
+            cmd_args = [resolve_ffmpeg(), "-y", "-loglevel", "error"]
             for p in input_paths:
                 cmd_args.extend(["-i", p])
 

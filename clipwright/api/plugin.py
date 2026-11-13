@@ -724,7 +724,10 @@ async def put_plugin_config(plugin_id: str, request: Request) -> dict[str, objec
     backup = config_path.read_text(encoding="utf-8") if config_path.exists() else None
     try:
         _loader.save_config(plugin_id, data)
-        applied = _loader.reload(plugin_id)
+        # 未加载的插件（预配置）无需 reload：loader.reload 对未加载插件返回
+        # False，旧实现据此回 500——保存成功却报错（审计 P1）。
+        _loaded_now = _loader.get(plugin_id) is not None
+        applied = _loader.reload(plugin_id) if _loaded_now else True
     except Exception as e:
         # C2：保存/重载失败必须还原旧文件与旧运行态，不能返回假成功。
         try:
@@ -767,13 +770,13 @@ async def delete_plugin_config(plugin_id: str, request: Request) -> dict[str, st
         if config_path.exists():
             config_path.unlink()
 
-        # 刷新并重载
+        # 刷新并重载（未加载插件只删配置文件，不 reload）
         plugin = _loader.get(plugin_id)
         if plugin:
             from clipwright.plugins.loader import _extract_flat_values
             plugin.config = _extract_flat_values(_loader._get_merged_config(plugin_id))
 
-        applied = _loader.reload(plugin_id)
+        applied = _loader.reload(plugin_id) if plugin is not None else True
     except Exception as e:
         try:
             if backup is not None:
@@ -796,11 +799,83 @@ async def delete_plugin_config(plugin_id: str, request: Request) -> dict[str, st
 
 
 @router.post("/load-all", response_model=list[str])
-async def load_all_plugins() -> list[str]:
+async def load_all_plugins(request: Request) -> list[str]:
     """发现并加载所有可用插件。"""
+    _require_admin(request)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
     return _loader.load_all()
+
+
+def _capability_grants_path(plugin_id: str) -> "Path":
+    from pathlib import Path
+
+    return _loader.get_plugin_data_dir(plugin_id) / "capability_grants.json"
+
+
+def _load_capability_grants(plugin_id: str) -> list[str]:
+    import json
+    from pathlib import Path
+
+    path: Path = _capability_grants_path(plugin_id)
+    if not path.is_file():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — 坏文件按空授权
+        return []
+    return sorted({str(x) for x in raw}) if isinstance(raw, list) else []
+
+
+def _save_capability_grants(plugin_id: str, names: list[str]) -> None:
+    import json
+
+    path = _capability_grants_path(plugin_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(sorted(set(names)), ensure_ascii=False), encoding="utf-8")
+
+
+@router.get("/{plugin_id}/capabilities")
+async def get_plugin_capability_grants(plugin_id: str, request: Request) -> dict:
+    """管理员登记的能力授权（默认放行项 + 额外 grant）。"""
+    _require_admin(request)
+    _validate_plugin_id(plugin_id)
+    if _loader is None:
+        raise HTTPException(status_code=503, detail="Plugin system not initialized")
+    from clipwright.services.plugin_rpc import DEFAULT_CAPABILITIES
+
+    return {
+        "plugin_id": plugin_id,
+        "default": sorted(DEFAULT_CAPABILITIES),
+        "granted": _load_capability_grants(plugin_id),
+    }
+
+
+@router.post("/{plugin_id}/capabilities/{name}")
+async def grant_plugin_capability(plugin_id: str, name: str, request: Request) -> dict:
+    """登记一个引擎能力（manifest 只能申请，授权在宿主侧）。"""
+    _require_admin(request)
+    _validate_plugin_id(plugin_id)
+    if not name.replace("_", "").isalnum():
+        raise HTTPException(status_code=400, detail="非法能力名")
+    if _loader is None:
+        raise HTTPException(status_code=503, detail="Plugin system not initialized")
+    names = _load_capability_grants(plugin_id)
+    if name not in names:
+        names.append(name)
+        _save_capability_grants(plugin_id, names)
+    return {"plugin_id": plugin_id, "granted": sorted(set(names))}
+
+
+@router.delete("/{plugin_id}/capabilities/{name}")
+async def revoke_plugin_capability(plugin_id: str, name: str, request: Request) -> dict:
+    _require_admin(request)
+    _validate_plugin_id(plugin_id)
+    if _loader is None:
+        raise HTTPException(status_code=503, detail="Plugin system not initialized")
+    names = [n for n in _load_capability_grants(plugin_id) if n != name]
+    _save_capability_grants(plugin_id, names)
+    return {"plugin_id": plugin_id, "granted": names}
 
 
 @router.get("/capabilities")

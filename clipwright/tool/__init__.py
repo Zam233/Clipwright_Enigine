@@ -70,7 +70,14 @@ from clipwright.tool.vision import SceneDetectTool, SemanticMatchTool
 
 
 def register_builtin_tools() -> None:
-    """注册所有内置工具到全局 ToolRegistry。"""
+    """注册所有内置工具到全局 ToolRegistry（幂等）。
+
+    审计 P1：旧实现由调用方按「注册表为空」决定是否调用——插件工具先注册时，
+    内置工具永远不会补注册，漏声明档位的插件工具被降级后整张工具面为空。
+    现在以两个稳定内置工具名做哨兵，重复调用直接返回。
+    """
+    if ToolRegistry.get("read_file") is not None and ToolRegistry.get("video_trim") is not None:
+        return
     tools: list[BaseTool] = [
         # ── 视频 ──
         VideoTrimTool(),

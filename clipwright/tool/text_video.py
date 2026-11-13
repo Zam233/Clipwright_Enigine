@@ -81,18 +81,7 @@ class GenerateTextVideoTool(BaseTool):
 
             # 生成纯色背景视频，用 ass 字幕叠加文字（避免 drawtext 的参数转义问题）
             # 方案：先生成无声纯色视频 + 用 drawtext 的 textfile 读取
-            tf_path = str(text_file).replace("\\", "/")
-            # 转义冒号：drawtext filter 中 : 是参数分隔符，路径中的 C: 会被误解析
-            # 用单引号括起来让 FFmpeg 把路径整体作为一个值
-            drawtext_filter = (
-                f"drawtext=textfile='{tf_path}':"
-                f"fontsize={font_size}:"
-                f"fontcolor={font_color}:"
-                f"x=(w-text_w)/2:y=(h-text_h)/2"
-            )
-
-            # 避免路径中的 C: 问题：使用简短文件名
-            # 直接把文本写入当前目录的临时文件
+            # 使用简短文件名（避免 Windows 盘符冒号问题）。
             # uuid 命名——旧 getpid 固定名在 EditAgent 并发场景下互相覆盖
             local_text = Path(f"__text_{uuid.uuid4().hex[:8]}.txt")
             try:
@@ -107,14 +96,11 @@ class GenerateTextVideoTool(BaseTool):
                     "-f", "lavfi", "-i",
                     f"color=c={bg_color}:s={width}x{height}:d={duration_sec}",
                     "-vf",
-                    f"drawtext=textfile={local_path}:fontsize={font_size}:fontcolor={font_color}:x=(w-text_w)/2:y=(h-text_h)/2{font_file}",
+                    f"drawtext=textfile={local_path}:expansion=none:fontsize={font_size}:fontcolor={font_color}:x=(w-text_w)/2:y=(h-text_h)/2{font_file}",
                     *ENCODE_VIDEO_ARGS,
+                    "-an",
+                    out,
                 ]
-                if duration_sec > 1:
-                    cmd += ["-c:a", "aac"]
-                else:
-                    cmd += ["-an"]
-                cmd.append(out)
 
                 logger.debug("FFmpeg cmd: %s", " ".join(cmd))
                 result = await asyncio.to_thread(subprocess.run,
@@ -123,12 +109,18 @@ class GenerateTextVideoTool(BaseTool):
                 if result.returncode != 0:
                     err = (result.stderr or "unknown")[:500]
                     logger.warning("generate_text_video FFmpeg 错误: %s", err)
-                    # 回退：生成无文字纯色视频
+                    # 回退：生成无文字纯色视频。
+                    # 旧实现改 cmd 下标（cmd[8]=色值、cmd[9:11]=[]），把
+                    # `color=…` 顶成了输出文件名 → 回退分支本身必失败（审计 P0）。
                     logger.info("generate_text_video: 回退到纯色视频")
-                    cmd[8] = f"color=c={bg_color}:s={width}x{height}:d={duration_sec}"
-                    cmd[9:11] = []
+                    fallback_cmd = [
+                        resolve_ffmpeg(), "-y", "-loglevel", "error",
+                        "-f", "lavfi", "-i",
+                        f"color=c={bg_color}:s={width}x{height}:d={duration_sec}",
+                        *ENCODE_VIDEO_ARGS, "-an", out,
+                    ]
                     result = await asyncio.to_thread(subprocess.run,
-                        cmd, capture_output=True, text=True, timeout=120,
+                        fallback_cmd, capture_output=True, text=True, timeout=120,
                     )
                     if result.returncode != 0:
                         return ToolExecResult(

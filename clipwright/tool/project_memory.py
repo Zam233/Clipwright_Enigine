@@ -27,7 +27,7 @@ class ProjectMemoryTool(BaseTool):
 
     name = "project_memory"
 
-    permission_tier = "read"
+    permission_tier = "write_local"
     description = (
         "读写项目决策记忆 memory.md（四段式：Strategy 策略 / Decisions 决策 / "
         "Reasoning 理由 / Outstanding 待办）。action=read 读回记忆与摘要；"
@@ -129,3 +129,4 @@ class ProjectMemoryTool(BaseTool):
                     out.append((str(item[0]), str(item[1])))
             return out
         return []
+
