@@ -38,6 +38,10 @@ ALLOWED_BUILTIN_OVERRIDES: frozenset[str] = frozenset({
     "tts_provider:minimax",
     "tts_provider:qwen-tts",
     "skill:dub_script",
+    # tts_feature 同时声明配音入口槽位；它是新增挂点而非替换内置实现，
+    # 但 override_builtin 是插件级开关，仍须在这里显式列出（漏列会让整个插件
+    # 加载失败，2026-11-13 实测踩到）。
+    "ui_slot:create_dub_entry",
 })
 
 

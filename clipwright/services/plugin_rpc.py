@@ -9,7 +9,7 @@ scope.plugin_id 与当前 host 一致，并按 scope 构造受限视图，插件
 from __future__ import annotations
 
 import inspect
-from typing import Any
+from typing import Any, Iterable
 
 from clipwright.plugins.runtime.protocol import (
     ERR_PERMISSION_DENIED,
@@ -67,11 +67,17 @@ def _current_call_chain(plugin_id: str) -> list[str]:
     return list(_CALL_CHAIN.get(str(plugin_id or ""), []))
 
 
-def push_call_chain(plugin_id: str, caller: str) -> None:
+def push_call_chain(plugin_id: str, caller: str, ancestors: Iterable[str] = ()) -> None:
+    """把「祖先链 + 直接调用方」压到目标插件的链上。
+
+    只压直接调用方会丢失祖先（A→B→C 时 C 只能看到 B），深度与环检测形同虚设。
+    """
     pid = str(plugin_id or "")
     stack = _CALL_CHAIN.setdefault(pid, [])
-    if caller and caller not in stack:
-        stack.append(str(caller))
+    for node in (*ancestors, caller):
+        value = str(node or "")
+        if value and value not in stack:
+            stack.append(value)
 
 
 def pop_call_chain(plugin_id: str) -> None:
@@ -360,7 +366,7 @@ def install_default_handlers(host: Any, manifest: Any = None) -> None:
         }
         method = "tool.call" if kind == "tool" else "skill.call"
         # 目标插件在宿主侧链上压入调用方，返回后出栈（不依赖插件回传）。
-        push_call_chain(target, plugin_id)
+        push_call_chain(target, plugin_id, chain)
         payload = {
             "id": cid,
             "input": params.get("input") or {},
