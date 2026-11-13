@@ -59,6 +59,10 @@ async def test_proxy_rejects_action_not_in_allowlist(monkeypatch):
         def is_enabled(pid):
             return True
 
+        @staticmethod
+        def get(pid):
+            return object()
+
     monkeypatch.setattr(pj, "_loader", _Loader())
     with pytest.raises(HTTPException) as ei:
         await pj.plugin_proxy("ai_image_gen", "post",
@@ -75,6 +79,10 @@ async def test_proxy_rejects_get_for_post_only_action(monkeypatch):
         @staticmethod
         def is_enabled(pid):
             return True
+
+        @staticmethod
+        def get(pid):
+            return object()
 
     monkeypatch.setattr(pj, "_loader", _Loader())
     with pytest.raises(HTTPException) as ei:
@@ -104,8 +112,53 @@ def test_allowlist_has_no_destructive_targets():
 
 
 def test_proxy_body_rejects_path_field():
-    """请求体没有 path/endpoint 字段——插件不能指定任意目标。"""
+    """请求体没有 path/endpoint 字段——插件不能指定任意目标。
+
+    ``contribution_id`` 是归属校验用的白名单字段，不是目标路径。
+    """
     fields = pj._PluginProxyBody.model_fields
     assert "path" not in fields
     assert "endpoint" not in fields
-    assert set(fields) == {"action", "payload"}
+    assert set(fields) == {"action", "payload", "contribution_id"}
+
+
+async def test_proxy_rejects_tool_from_another_plugin(monkeypatch):
+    """白名单只按 action 放行；工具名必须属于该插件当前注册的贡献。"""
+    from clipwright.plugins.contribution import (
+        Contribution, ContributionKind, ContributionRegistry,
+    )
+    from clipwright.tool.base import BaseTool
+
+    class _OtherTool(BaseTool):
+        name = "video_trim"
+
+        async def execute(self, **kwargs):
+            return {"ok": True}
+
+    class _Loader:
+        @staticmethod
+        def discover():
+            return ["ai_image_gen"]
+
+        @staticmethod
+        def is_enabled(pid):
+            return True
+
+        @staticmethod
+        def get(pid):
+            return object()
+
+    monkeypatch.setattr(pj, "_loader", _Loader())
+    ContributionRegistry.clear_all()
+    ContributionRegistry.declared_scope("someone_else", ["tool:video_trim"])
+    ContributionRegistry.register(
+        "someone_else", [Contribution(ContributionKind.TOOL, "video_trim", _OtherTool())],
+    )
+    with pytest.raises(HTTPException) as ei:
+        await pj.plugin_proxy(
+            "ai_image_gen", "post",
+            pj._PluginProxyBody(action="tool", payload={"name": "video_trim", "params": {}}),
+            None,
+        )
+    assert ei.value.status_code == 403
+    ContributionRegistry.unregister_plugin("someone_else")

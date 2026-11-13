@@ -83,9 +83,22 @@ def encode(message: dict[str, Any]) -> bytes:
 
 
 def decode(line: bytes | str) -> dict[str, Any]:
-    """单行 → 消息 dict；非法 JSON/非对象一律 RpcError（调用方决定是否拆掉该插件）。"""
+    """单行 → 消息 dict；非法 JSON/非对象一律 RpcError（调用方决定是否拆掉该插件）。
+
+    B2.2：入站字节**在 decode 之前**就按 MAX_FRAME_BYTES 限长（含多字节 UTF-8，
+    按字节数算），避免恶意/失控 worker 用超长行把宿主内存打爆。
+    """
     if isinstance(line, bytes):
+        # 去掉行尾换行后按「内容字节数」判定：MAX_FRAME_BYTES 是单帧内容上限，
+        # 允许再多 1 字节的 '\n'（宿主 readline 也按 MAX_FRAME_BYTES+1 截断）。
+        payload = line[:-1] if line.endswith(b"\n") else line
+        if len(payload) > MAX_FRAME_BYTES:
+            raise RpcError(ERR_BAD_REQUEST, f"入站帧超过上限 {MAX_FRAME_BYTES} 字节")
         line = line.decode("utf-8", errors="replace")
+    else:
+        payload = line[:-1] if line.endswith("\n") else line
+        if len(payload.encode("utf-8")) > MAX_FRAME_BYTES:
+            raise RpcError(ERR_BAD_REQUEST, f"入站帧超过上限 {MAX_FRAME_BYTES} 字节")
     text = line.strip()
     if not text:
         raise RpcError(ERR_BAD_REQUEST, "空帧")

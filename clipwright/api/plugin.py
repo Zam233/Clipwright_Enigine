@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hmac
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
@@ -326,21 +328,37 @@ async def get_plugin_bundle(plugin_id: str, request: Request = None):
     if not bundle_file.exists():
         raise HTTPException(status_code=404, detail="该插件未提供 bundle.html")
 
-    # 签名强制：受信任档不接受无签名插件（与 loader 的签名策略同语义，
-    # 因加载器文件被外部工具阻断，门禁落在本端点层）
+    # 签名强制：受信任档要求 manifest HMAC 有效，并且签名载荷中的
+    # bundle_sha256 与磁盘文件一致。仅检查 signature 非空会被任意字符串绕过，
+    # 也挡不住 manifest 不变但 bundle.html 被替换。
     try:
+        from clipwright.plugins.loader import verify_manifest_signature
+
         manifest = _loader._parse_manifest(plugin_id, _loader.plugin_dir / plugin_id)
-    except Exception:
-        manifest = None
-    if manifest is None or not getattr(manifest, "signature", ""):
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"插件清单解析失败: {e}") from e
+    if not getattr(manifest, "signature", ""):
         raise HTTPException(
             status_code=403,
             detail="受信任 UI bundle 需要插件签名（manifest.signature 缺失）",
+        )
+    if not verify_manifest_signature(manifest):
+        raise HTTPException(status_code=403, detail="插件 manifest 签名校验失败")
+    declared = str(getattr(manifest, "bundle_sha256", "") or "").strip().lower()
+    if not declared:
+        raise HTTPException(
+            status_code=403,
+            detail="受信任 UI bundle 需要 manifest.bundle_sha256（旧 bundle 请重新签发）",
         )
     try:
         html = bundle_file.read_text(encoding="utf-8")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read bundle: {e}")
+    import hashlib
+
+    actual = hashlib.sha256(bundle_file.read_bytes()).hexdigest()
+    if not hmac.compare_digest(actual, declared):
+        raise HTTPException(status_code=403, detail="bundle.html 内容与 manifest 声明的摘要不一致")
     return HTMLResponse(
         content=html,
         headers={
@@ -839,8 +857,31 @@ _PLUGIN_PROXY_ALLOWED: dict[str, dict[str, str]] = {
 
 class _PluginProxyBody(BaseModel):
     """代理请求体。action 由服务端清单解释，插件/前端不能指定任意路径。"""
-    action: str  # "tool" | "probe"
+    action: str  # "tool" | "probe" | "install"
     payload: dict = {}
+    #: 新版 UI 传贡献 id，服务端核对其当前确属 URL 中的 owner；旧客户端可省略。
+    contribution_id: str = ""
+
+
+def _proxy_target(method_norm: str, action: str, owner: str) -> str | None:
+    """大小写无关地查白名单；method_norm 是 get/post，字典键是 GET/POST。"""
+    allowed = _PLUGIN_PROXY_ALLOWED.get(owner) or {}
+    return allowed.get(f"{method_norm.upper()}:{action}")
+
+
+def _plugin_owns_tool(owner: str, tool_name: str) -> bool:
+    """工具名必须属于该插件当前已注册的贡献，而非宿主/其他插件工具。"""
+    from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+    from clipwright.tool.registry import ToolRegistry
+
+    declared = {
+        item.id for pid, item in ContributionRegistry.list(ContributionKind.TOOL)
+        if pid == owner
+    }
+    if tool_name not in declared:
+        return False
+    tool = ToolRegistry.get(tool_name)
+    return tool is not None and str(getattr(tool, "_plugin_id", "") or "") == owner
 
 
 @router.post("/proxy/{plugin_id}/{method}")
@@ -865,9 +906,18 @@ async def plugin_proxy(plugin_id: str, method: str, body: _PluginProxyBody,
     if not _loader.is_enabled(plugin_id):
         # 插件被禁用后其贡献即使仍缓存在前端也不能再调用（默认拒绝）
         raise HTTPException(status_code=403, detail=f"插件 {plugin_id} 已禁用")
+    if _loader.get(plugin_id) is None:
+        raise HTTPException(status_code=403, detail=f"插件 {plugin_id} 未加载")
+    if body.contribution_id:
+        from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
 
-    allowed = _PLUGIN_PROXY_ALLOWED.get(plugin_id) or {}
-    target = allowed.get(f"{method_norm}:{body.action}")
+        contribution_owner = ContributionRegistry.owner_of(
+            ContributionKind.UI_SLOT, body.contribution_id,
+        )
+        if contribution_owner != plugin_id:
+            raise HTTPException(status_code=403, detail="贡献 id 与插件归属不匹配")
+
+    target = _proxy_target(method_norm, body.action, plugin_id)
     if not target:
         raise HTTPException(
             status_code=403,
@@ -884,6 +934,20 @@ async def plugin_proxy(plugin_id: str, method: str, body: _PluginProxyBody,
         params = body.payload.get("params") or {}
         if not name:
             raise HTTPException(status_code=400, detail="缺少工具名")
+        if not _plugin_owns_tool(plugin_id, name):
+            raise HTTPException(
+                status_code=403,
+                detail=f"工具 {name} 不属于插件 {plugin_id} 的已注册贡献",
+            )
+        tool = ToolRegistry.get(name)
+        tier = str(getattr(tool, "permission_tier", "") or "")
+        if tier == "dangerous":
+            raise HTTPException(
+                status_code=403,
+                detail=f"插件 UI 不允许直接调用 dangerous 档工具：{name}",
+            )
+        # costly 档允许（生成类插件的主按钮本就是这个档位），但调用方须在
+        # 前端逐次确认；服务端仍按统一 ToolRegistry 入口记录费用与审计。
         _validate_tool_params(params)
         result = await ToolRegistry.execute(name, **params)
         if result.status == "not_found":
