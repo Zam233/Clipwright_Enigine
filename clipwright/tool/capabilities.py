@@ -159,11 +159,18 @@ def _matches(tool: Any, capability: str) -> bool:
 
 
 def resolve_name(capability_or_name: str, *, prefer: Iterable[str] = ()) -> Any | None:
-    """先按能力解析；失败再当作工具名直取（向后兼容显式名字调用）。"""
+    """先按能力解析；失败再当作工具名直取（向后兼容显式名字调用）。
+
+    C1：直取分支也必须经过可用性判定——旧实现返回注册表对象，未安装依赖/
+    未配置的工具会被当成可执行，调用后才报错。
+    """
     tool = resolve(capability_or_name, prefer=prefer)
     if tool is not None:
         return tool
-    return _registry().get(capability_or_name)
+    direct = _registry().get(capability_or_name)
+    if direct is not None and is_usable(direct):
+        return direct
+    return None
 
 
 def skill_resolve(capability_or_name: str, *, prefer: Iterable[str] = ()) -> Any | None:
@@ -211,9 +218,18 @@ def explain(capability: str) -> dict[str, Any]:
 
 
 def catalog() -> dict[str, Any]:
-    """全部能力 → 当前选中的实现（供前端/诊断页一次性拉取）。"""
+    """全部能力 → 当前选中的实现（供前端/诊断页一次性拉取）。
+
+    C1：除别名表外，也收录插件**新声明的 capability**（旧实现只遍历别名表，
+    插件声明的新能力在目录里不可见）。
+    """
+    capabilities = set(CAPABILITY_ALIASES)
+    for tool in _all_tools():
+        cap = str(getattr(tool, "capability", "") or "")
+        if cap:
+            capabilities.add(cap)
     return {
-        "tools": {cap: explain(cap) for cap in sorted(CAPABILITY_ALIASES)},
+        "tools": {cap: explain(cap) for cap in sorted(capabilities)},
         "skills": {
             cap: [n for n in names if _skill_available(n)]
             for cap, names in sorted(SKILL_CAPABILITY_ALIASES.items())

@@ -793,6 +793,9 @@ class PluginLoader:
         P8 失败回滚：任何加载失败路径（PluginLoadError、其他异常、load 返回
         None 如被禁用/目录缺失）都恢复旧实例并尝试重新 initialize（shutdown
         已释放其资源）；回滚失败仍保留注册并记错误总线，插件不静默消失。
+
+        C2：子进程档必须**先停旧 worker 并摘掉 `_hosts` 引用**，否则新 load
+        会覆盖字典、旧进程继续存活；失败回滚也不复用一个已 shutdown 的实例。
         """
         if plugin_id not in self._plugins:
             logger.warning("插件 %s 未加载，无法重载", plugin_id)
@@ -800,6 +803,13 @@ class PluginLoader:
 
         old_plugin = self._plugins.get(plugin_id)
         old_meta = self._metadatas.get(plugin_id)
+        old_host = self._hosts.pop(plugin_id, None)
+        if old_host is not None:
+            try:
+                old_host.stop()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("插件 %s 重载前停止旧 worker 异常: %s", plugin_id, e)
+                get_error_bus().record(plugin_id, "reload", f"停止旧 worker 异常: {e}")
 
         try:
             if old_plugin is not None:
@@ -835,8 +845,12 @@ class PluginLoader:
             if old_meta is not None:
                 self._metadatas[plugin_id] = old_meta
             try:
-                if old_plugin is not None:
+                if old_plugin is not None and old_host is None:
+                    # 进程内插件可以重新 initialize；子进程档的 host 已 stop，
+                    # 无法复用一个死 worker，明确报告失败而不是伪称已恢复。
                     old_plugin.initialize()
+                elif old_host is not None:
+                    raise RuntimeError("旧 worker 已停止，无法原地恢复")
             except Exception as e:
                 get_error_bus().record(plugin_id, "reload", f"回滚后旧实例 initialize 失败: {e}")
             logger.warning("插件 %s 已回滚到旧实例", plugin_id)

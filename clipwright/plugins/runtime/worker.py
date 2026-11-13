@@ -163,18 +163,32 @@ class PluginRuntime:
         return instance
 
     def _flat_config(self) -> dict[str, Any]:
-        """读 PluginData 的 config.yaml（与宿主同源：结构化 → 扁平值）。"""
-        from clipwright.plugins.loader import _extract_flat_values
+        """读取生效配置：源码 config.yaml 默认值 + PluginData 覆盖（C2）。
 
-        config_path = self.data_dir / "config.yaml"
-        if not config_path.exists():
-            return {}
+        旧实现只读 PluginData，插件代码里的默认值在子进程中永远不生效，
+        和宿主 `_get_merged_config()` 看到的不是同一份配置。这里复用宿主同一套
+        合并/解密/迁移函数，保证「配置页显示什么，worker 就用什么」。
+        """
+        from clipwright.plugins.loader import PluginLoader
+
         try:
-            import yaml
-            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        except Exception:
+            loader = PluginLoader(
+                plugin_dir=self.plugin_dir.parent,
+                data_dir=self.data_dir.parent.parent,
+            )
+            merged = loader._get_merged_config(
+                self.plugin_id,
+                target_schema=int(getattr(self.manifest, "config_schema_version", 1) or 1),
+            )
+        except Exception as e:  # noqa: BLE001 — 配置不可用时退回空，不阻断启动
+            from clipwright.config import logger
+
+            logger.warning("插件 %s worker 配置合并失败: %s", self.plugin_id, e)
             return {}
-        return _extract_flat_values(raw) if isinstance(raw, dict) else {}
+        from clipwright.plugins.loader import _decrypt_flat, _extract_flat_values
+
+        flat = _extract_flat_values(merged) if isinstance(merged, dict) else {}
+        return _decrypt_flat(flat)
 
     def _collect_declarations(self) -> None:
         """调用 setup()/contributions()，把贡献转成纯数据声明。
