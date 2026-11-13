@@ -112,7 +112,7 @@ def run_contributions(plugin: Any) -> bool:
         # B7：自声明不是授权。bundled 来源需目标在允许表；外部来源还需签名有效。
         from clipwright.plugins.override_policy import override_problems
 
-        plugin_dir = getattr(_plugin_loader_plugin_dir(plugin), "", "")
+        plugin_dir = _plugin_loader_plugin_dir(plugin)
         signature_ok = _manifest_signature_ok(manifest)
         problems = override_problems(
             manifest, plugin_dir=plugin_dir, signature_ok=signature_ok,
