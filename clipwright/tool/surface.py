@@ -427,6 +427,15 @@ def _agent_surface_entries(allowed: tuple[str, ...]) -> list[SurfaceEntry]:
     return entries
 
 
+def is_skill(name: str) -> bool:
+    """公开判定：该工具面名字当前解析为 Skill（而非原子工具）。
+
+    事件层需要它来给 `tool_call`/`tool_result` 打 `kind=skill`——旧实现只在
+    执行器内部用 `_is_skill`，前端因此无法区分主 agent 的技能与工具调用。
+    """
+    return _is_skill(name)
+
+
 def _skill_surface_entries(allowed: tuple[str, ...]) -> list[SurfaceEntry]:
     """把 Skill 也放进工具面（否则主 Agent **一个技能都调不了**）。
 

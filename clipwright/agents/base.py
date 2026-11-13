@@ -141,6 +141,25 @@ class BaseAgent(ABC, Generic[I, O]):
 
         return [s for s in SkillRegistry.list() if s.available]
 
+    def skill_schemas(self, fmt: str = "openai") -> list[dict[str, Any]]:
+        """把可用 Skill 编译成 LLM tool schema（技能插件化后的统一入口）。
+
+        技能以**裸名**出现在工具面上（与 Kernel `tool/surface.py` 同口径），
+        执行时由 `run_tool_loop` 按 `SkillRegistry` 分派到 `SkillRegistry.execute`。
+        """
+        from clipwright.skill.registry import SkillRegistry
+
+        out: list[dict[str, Any]] = []
+        for info in self.list_skills():
+            skill = SkillRegistry.get(info.name)
+            if skill is None or not info.available:
+                continue
+            try:
+                out.append(skill.to_llm_tool(fmt))
+            except Exception:  # noqa: BLE001 — 单个技能 schema 失败不影响其余
+                continue
+        return out
+
     def resolve_skill(self, capability: str):
         """按能力名（或技能名）解析到当前可用的技能实例。"""
         from clipwright.tool.capabilities import skill_resolve
@@ -334,8 +353,13 @@ class BaseAgent(ABC, Generic[I, O]):
         except Exception:  # noqa: BLE001 — 降级记录失败不该带崩调用方
             pass
 
-    def tool_schemas(self, names: Any = None, fmt: str = "openai") -> list[dict[str, Any]]:
-        """把工具编译成 LLM tool schema（按名字实时解析，缺失的静默跳过）。"""
+    def tool_schemas(self, names: Any = None, fmt: str = "openai",
+                     *, include_skills: bool = True) -> list[dict[str, Any]]:
+        """把工具编译成 LLM tool schema（按名字实时解析，缺失的静默跳过）。
+
+        `include_skills=True`（默认）时把当前可用 Skill 一并并入——子 agent 的
+        LLM 工具轮因此能自主选择技能；技能与工具重名时以工具为准。
+        """
         from clipwright.tool.registry import ToolRegistry
 
         wanted = list(names) if names is not None else list(self.tool_whitelist)
@@ -353,6 +377,15 @@ class BaseAgent(ABC, Generic[I, O]):
                 out.append(tool.to_llm_tool(fmt))
             except Exception:  # noqa: BLE001 — 单个工具 schema 失败不影响其余
                 continue
+        if include_skills:
+            existing = {
+                str((s.get("function") or {}).get("name") or "")
+                for s in out if isinstance(s, dict)
+            }
+            for schema in self.skill_schemas(fmt):
+                name = str((schema.get("function") or {}).get("name") or "")
+                if name and name not in existing:
+                    out.append(schema)
         return out
 
     async def run_tool_loop(
@@ -396,9 +429,14 @@ class BaseAgent(ABC, Generic[I, O]):
             if name not in allowed:
                 return {"status": "error", "error": f"工具 {name} 不在本 Agent 的本次白名单内"}
             calls.append({"tool": name, "input": tool_input})
+            from clipwright.skill.registry import SkillRegistry
             from clipwright.tool.registry import ToolRegistry
 
-            result = await ToolRegistry.execute(name, **tool_input)
+            # 技能与工具同名时以工具为准（与 tool_schemas 的合并规则一致）。
+            if ToolRegistry.get(name) is None and SkillRegistry.get(name) is not None:
+                result = await SkillRegistry.execute(name, **tool_input)
+            else:
+                result = await ToolRegistry.execute(name, **tool_input)
             if hasattr(result, "model_dump"):
                 return result.model_dump(mode="json")
             return result if isinstance(result, dict) else {"result": str(result)}
