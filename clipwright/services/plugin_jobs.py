@@ -274,6 +274,10 @@ class PluginJobManager:
             j for j in self._jobs.values()
             if j.plugin_id == scope.plugin_id and j.project_id == scope.project_id
         ]
+        # B3：与 get/cancel 同作用域——当前任务只能看自己的 job；
+        # 空 task 的历史记录保持兼容（不因缺 task 而隐身）。
+        if scope.task_id:
+            items = [j for j in items if not j.task_id or j.task_id == scope.task_id]
         if status:
             items = [j for j in items if j.status == status]
         return [j.to_dict() for j in items]

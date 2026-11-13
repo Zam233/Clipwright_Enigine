@@ -832,6 +832,12 @@ async def get_plugin_ui(plugin_id: str) -> dict:
     _validate_plugin_id(plugin_id)  # 审计 P1 修复：阻断 ../ 路径穿越
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
+    # C3：与 /contributions 的 legacy 合成同一口径——未加载/已禁用不返回布局，
+    # 否则禁用插件后管理页仍能渲染它的表单（并可能触发其动作）。
+    if plugin_id not in _loader.discover():
+        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not found")
+    if not _loader.is_enabled(plugin_id) or _loader.get(plugin_id) is None:
+        return {"widgets": []}
     ui_file = _loader.plugin_dir / plugin_id / "ui.json"
     if not ui_file.exists():
         return {"widgets": []}
