@@ -22,7 +22,8 @@ def _json_type(py_type: str) -> str:
     """Python 类型名 → JSON Schema 类型名。"""
     mapping = {
         "str": "string", "string": "string",
-        "int": "number", "float": "number", "number": "number",
+        "int": "integer", "integer": "integer",
+        "float": "number", "number": "number",
         "bool": "boolean", "boolean": "boolean",
         "list": "array", "tuple": "array", "array": "array",
         "dict": "object", "object": "object",
@@ -83,24 +84,35 @@ class BaseTool(ABC):
             Anthropic Messages API tool 格式或 OpenAI tool 格式的 dict。
         """
         params = self._infer_parameters()
-        input_schema: dict[str, Any] = {
-            "type": "object",
-            "properties": {},
-        }
-        required: list[str] = []
-        for pname, pinfo in params.items():
-            if pname in ("kwargs", "self"):
-                continue
-            ptype = pinfo.get("type", "string")
-            input_schema["properties"][pname] = {
-                "type": _json_type(ptype),
-                "description": pinfo.get("description", ""),
+        # 插件工具常把参数声明在类属性 `parameters_schema` 上（execute 是
+        # `**kwargs` 签名，推断不出来）。旧实现完全忽略它 → 模型看到的是
+        # `properties: {}`，付费生成类工具连 prompt 都传不进来（审计 P1）。
+        declared = getattr(self, "parameters_schema", None)
+        if isinstance(declared, dict) and (declared.get("properties") or declared.get("required")):
+            input_schema: dict[str, Any] = {
+                "type": "object",
+                "properties": dict(declared.get("properties") or {}),
             }
-            if pinfo.get("required", False):
-                required.append(pname)
-
-        if required:
-            input_schema["required"] = required
+            if declared.get("required"):
+                input_schema["required"] = list(declared["required"])
+        else:
+            input_schema = {
+                "type": "object",
+                "properties": {},
+            }
+            required: list[str] = []
+            for pname, pinfo in params.items():
+                if pname in ("kwargs", "self"):
+                    continue
+                ptype = pinfo.get("type", "string")
+                input_schema["properties"][pname] = {
+                    "type": _json_type(ptype),
+                    "description": pinfo.get("description", ""),
+                }
+                if pinfo.get("required", False):
+                    required.append(pname)
+            if required:
+                input_schema["required"] = required
 
         if fmt == "openai":
             return {

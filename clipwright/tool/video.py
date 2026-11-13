@@ -450,13 +450,26 @@ class MediaProbeTool(BaseTool):
         input_path: str,
         **kwargs: Any,
     ) -> ToolExecResult:
+        from pathlib import Path as _Path
+
+        if not _Path(input_path).is_file():
+            return ToolExecResult(
+                status=ToolStatus.NOT_FOUND, tool_name=self.name,
+                error=f"文件不存在: {input_path}",
+            )
         try:
             result = await asyncio.to_thread(
                 subprocess.run,
-                ["ffprobe", "-v", "error", "-print_format", "json",
+                [resolve_ffprobe(), "-v", "error", "-print_format", "json",
                  "-show_format", "-show_streams", input_path],
                 capture_output=True, text=True, timeout=30,
             )
+            if result.returncode != 0:
+                err = (result.stderr or "").strip().splitlines()
+                return ToolExecResult(
+                    status=ToolStatus.ERROR, tool_name=self.name,
+                    error="ffprobe 失败: " + (err[0] if err else f"exit {result.returncode}"),
+                )
             data = json.loads(result.stdout)
             fmt = data.get("format", {})
             streams = data.get("streams", [])

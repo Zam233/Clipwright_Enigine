@@ -28,7 +28,7 @@ class TimelineViewTool(BaseTool):
 
     name = "timeline_view"
 
-    permission_tier = "read"
+    permission_tier = "write_local"
     description = (
         "为成片生成复核图：cuts=每个切点前后三帧对照，overview=全片均匀抽帧联络表。"
         "返回图片路径列表，供人或视觉模型判断跳变/爆闪/字幕遮挡/节奏问题"
@@ -118,3 +118,4 @@ class TimelineViewTool(BaseTool):
         except Exception as exc:
             logger.warning("timeline_view 工具失败: %s", exc)
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error=str(exc))
+

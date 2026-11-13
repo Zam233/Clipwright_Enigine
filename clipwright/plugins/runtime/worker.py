@@ -48,6 +48,8 @@ _RPC_KINDS = {
     "category",
     # M4：skill 的元数据由 meta 声明，执行经 skill.call RPC
     "skill",
+    # declarative display spec 是纯数据（宿主清洗后交给编辑器），子进程可声明
+    "display_spec",
 }
 
 #: 每类 kind 的 RPC 方法名（宿主代理据此调用）
@@ -75,12 +77,20 @@ class PluginRuntime:
 
     def boot(self) -> None:
         self.manifest = self._parse_manifest()
-        runtime_config = dict(getattr(self.manifest, "runtime_config", {}) or {})
-        extra_reads = [
-            Path(str(p)).expanduser()
-            for p in (runtime_config.get("extra_read_roots") or [])
-            if str(p).strip()
-        ]
+        # 额外读根**只**从宿主下发的环境变量取（宿主已审核）。旧实现重新读
+        # plugin.yaml 的自报 runtime_config.extra_read_roots → 绕过宿主的越界
+        # 清洗，可读任意目录（审计 P1，安全边界实破）。
+        import json as _json
+        import os as _os
+        extra_reads = []
+        raw_roots = _os.environ.get("CLIPWRIGHT_PLUGIN_READ_ROOTS")
+        if raw_roots:
+            try:
+                for item in _json.loads(raw_roots) or []:
+                    if str(item).strip():
+                        extra_reads.append(Path(str(item)).expanduser())
+            except (ValueError, TypeError):
+                extra_reads = []
         guard = PermissionGuard(
             getattr(self.manifest, "permissions", []) or [],
             plugin_id=self.plugin_id,

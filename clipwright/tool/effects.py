@@ -451,10 +451,12 @@ class TextDiagramTool(BaseTool):
 # ── 人脸/背景相关 ──
 
 class FaceDetectTool(BaseTool):
-    """人脸检测工具 — 检测视频帧中的人脸位置和数量。"""
+    """人脸检测工具 — 检测视频帧中的人脸（视觉 LLM）。"""
     name = "face_detect"
-    permission_tier = "read"
-    description = "检测视频中的人脸，返回每帧的人脸位置/数量/置信度"
+    # 内部调付费视觉 LLM（effects.py 的 LLMService().ask），标 read 会让收口期
+    # 放行、并按只读档记成 idempotent——审计 P1 的档位与行为不一致。
+    permission_tier = "costly"
+    description = "检测视频中是否含人脸（视觉 LLM），返回标签与描述"
     dependencies = []
 
     async def execute(

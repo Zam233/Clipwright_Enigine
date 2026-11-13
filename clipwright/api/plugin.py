@@ -724,7 +724,10 @@ async def put_plugin_config(plugin_id: str, request: Request) -> dict[str, objec
     backup = config_path.read_text(encoding="utf-8") if config_path.exists() else None
     try:
         _loader.save_config(plugin_id, data)
-        applied = _loader.reload(plugin_id)
+        # 未加载的插件（预配置）无需 reload：loader.reload 对未加载插件返回
+        # False，旧实现据此回 500——保存成功却报错（审计 P1）。
+        _loaded_now = _loader.get(plugin_id) is not None
+        applied = _loader.reload(plugin_id) if _loaded_now else True
     except Exception as e:
         # C2：保存/重载失败必须还原旧文件与旧运行态，不能返回假成功。
         try:
@@ -767,13 +770,13 @@ async def delete_plugin_config(plugin_id: str, request: Request) -> dict[str, st
         if config_path.exists():
             config_path.unlink()
 
-        # 刷新并重载
+        # 刷新并重载（未加载插件只删配置文件，不 reload）
         plugin = _loader.get(plugin_id)
         if plugin:
             from clipwright.plugins.loader import _extract_flat_values
             plugin.config = _extract_flat_values(_loader._get_merged_config(plugin_id))
 
-        applied = _loader.reload(plugin_id)
+        applied = _loader.reload(plugin_id) if plugin is not None else True
     except Exception as e:
         try:
             if backup is not None:
@@ -796,8 +799,9 @@ async def delete_plugin_config(plugin_id: str, request: Request) -> dict[str, st
 
 
 @router.post("/load-all", response_model=list[str])
-async def load_all_plugins() -> list[str]:
+async def load_all_plugins(request: Request) -> list[str]:
     """发现并加载所有可用插件。"""
+    _require_admin(request)
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
     return _loader.load_all()
