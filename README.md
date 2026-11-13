@@ -54,14 +54,11 @@ to the plugins themselves.
 - **Capability-resolved tools** — 44+ atomic tools and 4 skills are resolved by semantic capability names at call
   time, so plugins can take over without touching agent code. Tools self-declare permission tiers; missing
   capability is a first-class state, not an exception.
-- **Plugin-first contribution surface** — tools, skills, hooks, prompts, UI slots, export presets, display specs
-  and provider families are all plugin contributions (42 built-in plugins). Disable a plugin and its capability
-  disappears — no hidden built-in back-fill.
-- **Provider families live in plugins** — LLM, TTS, embedding, rerank and STT implementations are plugin-owned;
-  the engine only exposes protocols and registries, plus capability bits (tool result style, vision format,
-  model listing, audio refs) instead of vendor-name branches.
-- **Contract-driven GenUI** — the agent can emit declarative display specs; the engine sanitizes and assembles
-  them against per-plugin contracts, and passes the result to the editor. No contract, no spec.
+- **Pluggable plugin surface** — tools, skills, hooks, prompts, UI slots, export presets, display specs and
+  provider families (LLM, TTS, embedding, rerank, STT) are all plugin contributions (42 built-in plugins).
+  Providers are plugin-owned: the engine only exposes protocols, registries and capability bits (tool result
+  style, vision format, model listing, audio refs) instead of vendor-name branches. Disable a plugin and its
+  capability disappears — no hidden built-in back-fill.
 - **Workspace & media pipeline** — per-task workspaces, `materials/` as the only writable area, FFmpeg rendering,
   subtitle burn-in, motion-graphics/hyperframes, render queues with priorities and resumable artifacts.
 - **Realtime by SSE** — 31 event types (task, agent-run, tool, subagent, degradation, closeout, progress…) share
