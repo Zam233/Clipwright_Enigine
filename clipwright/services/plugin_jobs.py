@@ -122,6 +122,14 @@ class RuntimeRegistry:
             raise JobError("UNSUPPORTED_RUNTIME", f"runtime 未批准: {runtime_id}")
         if not Path(spec.executable).is_file():
             raise JobError("UNSUPPORTED_RUNTIME", f"runtime 可执行文件不存在: {spec.executable}")
+        # B3：声明了 digest 就必须校验，防止批准的运行时文件被替换。
+        if spec.digest:
+            actual = _file_sha256(spec.executable)
+            if actual.lower() != spec.digest.strip().lower():
+                raise JobError(
+                    "UNSUPPORTED_RUNTIME",
+                    f"runtime 文件摘要不匹配: 期望 {spec.digest[:16]}… 实际 {actual[:16]}…",
+                )
         return spec
 
     def list(self) -> list[dict[str, Any]]:
@@ -138,6 +146,27 @@ class RuntimeRegistry:
 
 def _env_for_child() -> dict[str, str]:
     return {k: os.environ[k] for k in ENV_ALLOWLIST if k in os.environ}
+
+
+def _file_sha256(path: str | Path, *, chunk: int = 1024 * 1024) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while True:
+            block = fh.read(chunk)
+            if not block:
+                break
+            h.update(block)
+    return h.hexdigest()
+
+
+def _idem_scope_key(scope: PluginScope, idempotency_key: str) -> str:
+    """幂等键作用域：插件 + 项目 + 任务 + 用户 key（B3）。"""
+    key = str(idempotency_key or "").strip()
+    if not key:
+        return ""
+    return "\x1f".join((scope.plugin_id, scope.project_id, scope.task_id or "", key))
 
 
 class PluginJobManager:
@@ -187,16 +216,35 @@ class PluginJobManager:
             self._loop = asyncio.get_running_loop()
         args = self._validate_argv(spec, argv)
         workspace = PluginWorkspace(scope)
-        work_dir = workspace.resolve(cwd or ".")
+        # B3：默认 cwd 是插件根（宿主负责建根）；其它 cwd 必须是已存在目录，
+        # 不能因为解析路径而在工作区里凭空造子目录。
+        if (cwd or ".") in ("", "."):
+            work_dir = workspace._ensure_root()
+        else:
+            work_dir = workspace.resolve(cwd, must_exist_parent=False)
         if not work_dir.is_dir():
             raise JobError("BAD_CWD", f"cwd 不是已存在目录: {cwd!r}")
         out_rel = [str(p) for p in (outputs or [])]
         for rel in out_rel:
             workspace.resolve(rel)  # 只校验范围，不要求已存在
-        if idempotency_key:
-            existing = self._idem.get(idempotency_key)
+        # B3：幂等键按 (plugin, project, task, key) 分区；复用前核对参数，
+        # 不同作用域同 key 绝不返回他人 JobRecord。
+        idem_scope = _idem_scope_key(scope, idempotency_key)
+        if idem_scope:
+            existing = self._idem.get(idem_scope)
             if existing and existing in self._jobs:
-                return self._jobs[existing]
+                previous = self._jobs[existing]
+                if (
+                    previous.runtime_id == runtime_id
+                    and previous.argv == args
+                    and previous.cwd == (cwd or ".")
+                    and previous.outputs == out_rel
+                ):
+                    return previous
+                raise JobError(
+                    "IDEMPOTENCY_CONFLICT",
+                    "相同幂等键用于不同的 job 参数；请使用新的幂等键",
+                )
 
         job = JobRecord(
             job_id=f"job_{uuid.uuid4().hex[:16]}",
@@ -210,8 +258,8 @@ class PluginJobManager:
             idempotency_key=idempotency_key,
         )
         self._jobs[job.job_id] = job
-        if idempotency_key:
-            self._idem[idempotency_key] = job.job_id
+        if idem_scope:
+            self._idem[idem_scope] = job.job_id
         task = asyncio.create_task(self._run(job, spec, workspace, min(int(timeout_ms), MAX_TIMEOUT_MS)))
         self._tasks[job.job_id] = task
         return job
@@ -277,6 +325,9 @@ class PluginJobManager:
             raise JobError("NOT_FOUND", f"job 不存在: {job_id}")
         if (job.plugin_id, job.project_id) != (scope.plugin_id, scope.project_id):
             raise JobError("PERMISSION_DENIED", "job 归属不匹配")
+        # B3：同一插件/项目内仍按任务隔离；空 task 的旧记录保持兼容可读。
+        if scope.task_id and job.task_id and job.task_id != scope.task_id:
+            raise JobError("PERMISSION_DENIED", "job 不属于当前任务")
         return job
 
     def _validate_argv(self, spec: RuntimeSpec, argv: list[str]) -> list[str]:
@@ -310,6 +361,8 @@ class PluginJobManager:
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    # B3：独立 session/进程组，取消时只杀 job 子树，绝不波及宿主进程组。
+                    start_new_session=(sys.platform != "win32"),
                 )
             except Exception as e:  # noqa: BLE001
                 job.status = "failed"
@@ -355,7 +408,15 @@ class PluginJobManager:
                     capture_output=True, check=False, timeout=10,
                 )
             else:
-                os.killpg(os.getpgid(proc.pid), 9)
+                # B3：独立 session 里 PID 即 PGID；仍用 getpgid 核对，避免配置漂移把
+                # 信号发给宿主所在进程组。
+                pgid = os.getpgid(proc.pid)
+                if pgid == os.getpgid(0):
+                    logger.warning(
+                        "拒绝 killpg: job pid=%s 与宿主同组 %s", proc.pid, pgid,
+                    )
+                else:
+                    os.killpg(pgid, 9)
         except Exception as e:  # noqa: BLE001
             logger.warning("终止 job 进程树失败 pid=%s: %s", getattr(proc, "pid", "?"), e)
         try:

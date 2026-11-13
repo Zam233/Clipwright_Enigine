@@ -94,9 +94,35 @@ class TestSubmit:
             scope, runtime_id="py", argv=["-c", "print(1)"], idempotency_key="k1",
         )
         second = await manager.submit(
-            scope, runtime_id="py", argv=["-c", "print(2)"], idempotency_key="k1",
+            scope, runtime_id="py", argv=["-c", "print(1)"], idempotency_key="k1",
         )
         assert first.job_id == second.job_id
+
+    async def test_idempotency_key_conflicts_on_different_args(self, manager, scope):
+        """B3：同 key 不同参数不能再静默返回旧 JobRecord。"""
+        await manager.submit(
+            scope, runtime_id="py", argv=["-c", "print(1)"], idempotency_key="k2",
+        )
+        with pytest.raises(JobError) as err:
+            await manager.submit(
+                scope, runtime_id="py", argv=["-c", "print(2)"], idempotency_key="k2",
+            )
+        assert err.value.code == "IDEMPOTENCY_CONFLICT"
+
+    async def test_idempotency_key_is_scoped_per_task(self, manager, scope):
+        """不同 task 用同一 key 不得复用彼此的结果。"""
+        from clipwright.services.plugin_workspace import PluginScope
+
+        other = PluginScope(
+            plugin_id=scope.plugin_id, project_id=scope.project_id, task_id="other-task",
+        )
+        first = await manager.submit(
+            scope, runtime_id="py", argv=["-c", "print(1)"], idempotency_key="shared",
+        )
+        second = await manager.submit(
+            other, runtime_id="py", argv=["-c", "print(1)"], idempotency_key="shared",
+        )
+        assert first.job_id != second.job_id
 
 
 class TestLifecycle:

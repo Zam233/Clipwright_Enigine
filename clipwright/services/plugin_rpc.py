@@ -13,6 +13,7 @@ from typing import Any
 
 from clipwright.plugins.runtime.protocol import (
     ERR_PERMISSION_DENIED,
+    MAX_DEPTH,
     RpcError,
 )
 from clipwright.services.plugin_jobs import (
@@ -55,6 +56,35 @@ def register_timeline(task_id: str, timeline: Any) -> None:
 def unregister_timeline(task_id: str) -> None:
     _TIMELINES.pop(str(task_id or ""), None)
 _JOB_MANAGER: PluginJobManager | None = None
+
+
+#: B5：宿主侧维护的调用链（plugin_id 栈）。由 host 在每次 worker 请求前后压栈/出栈，
+#: 插件不能通过 params 伪造或清空。
+_CALL_CHAIN: dict[str, list[str]] = {}
+
+
+def _current_call_chain(plugin_id: str) -> list[str]:
+    return list(_CALL_CHAIN.get(str(plugin_id or ""), []))
+
+
+def push_call_chain(plugin_id: str, caller: str) -> None:
+    pid = str(plugin_id or "")
+    stack = _CALL_CHAIN.setdefault(pid, [])
+    if caller and caller not in stack:
+        stack.append(str(caller))
+
+
+def pop_call_chain(plugin_id: str) -> None:
+    pid = str(plugin_id or "")
+    stack = _CALL_CHAIN.get(pid)
+    if stack:
+        stack.pop()
+        if not stack:
+            _CALL_CHAIN.pop(pid, None)
+
+
+def reset_call_chains() -> None:
+    _CALL_CHAIN.clear()
 
 
 def runtime_registry() -> RuntimeRegistry:
@@ -268,13 +298,14 @@ def install_default_handlers(host: Any, manifest: Any = None) -> None:
         if tool is None:
             raise RpcError("UNAVAILABLE", f"当前没有可用的能力实现: {name}")
         payload = dict(params.get("input") or {})
-        fn = getattr(tool, "execute_async", None) or getattr(tool, "execute")
-        result = fn(**payload)
-        if inspect.isawaitable(result):
-            result = await result
-        if hasattr(result, "model_dump"):
-            return result.model_dump(mode="json")
-        return result
+        # B5：不能直接 tool.execute() 绕过统一执行入口（路径/URL 校验、trace、
+        # ToolExecResult 语义与 fallback 都在 ToolRegistry.execute 里）。
+        from clipwright.tool.registry import ToolRegistry
+
+        result = await ToolRegistry.execute(str(getattr(tool, "name", name)), **payload)
+        if result.status == "not_found":
+            raise RpcError("UNAVAILABLE", result.error or f"工具不可用: {name}")
+        return result.model_dump(mode="json")
 
     @_wrap
     def timeline_summary(params: dict[str, Any], scope: dict[str, Any]) -> Any:
@@ -299,12 +330,16 @@ def install_default_handlers(host: Any, manifest: Any = None) -> None:
         target = str(params.get("plugin_id") or "").strip()
         kind = str(params.get("kind") or "tool").strip().lower()
         cid = str(params.get("id") or "").strip()
-        chain = [str(x) for x in (params.get("chain") or []) if str(x)]
+        # B5：调用链由宿主在入站请求上下文里维护，**不信任 params.chain**。
+        # 插件清空/伪造 chain 都无法绕过深度与环检测。
+        chain = list(_current_call_chain(plugin_id))
         if not target or not cid or kind not in ("tool", "skill"):
             raise RpcError("BAD_REQUEST",
                            "plugin.call 需要 plugin_id / kind(tool|skill) / id")
         if target == plugin_id or target in chain or len(chain) >= 2:
             raise RpcError(ERR_PERMISSION_DENIED, "插件调用链过深或成环")
+        if len(chain) + 1 > MAX_DEPTH:
+            raise RpcError(ERR_PERMISSION_DENIED, "插件调用链过深")
         caller_md = _PLUGIN_MANIFESTS.get(plugin_id)
         deps = list(getattr(caller_md, "dependencies", []) or []) if caller_md else []
         if target not in deps:
@@ -324,17 +359,21 @@ def install_default_handlers(host: Any, manifest: Any = None) -> None:
             "task_id": parsed.task_id,
         }
         method = "tool.call" if kind == "tool" else "skill.call"
+        # 目标插件在宿主侧链上压入调用方，返回后出栈（不依赖插件回传）。
+        push_call_chain(target, plugin_id)
         payload = {
             "id": cid,
             "input": params.get("input") or {},
             "scope": target_scope,
-            "chain": chain + [plugin_id],
         }
-        result = await target_host.invoke(
-            method, payload,
-            timeout=float(params.get("timeout") or 120.0),
-            scope=target_scope,
-        )
+        try:
+            result = await target_host.invoke(
+                method, payload,
+                timeout=float(params.get("timeout") or 120.0),
+                scope=target_scope,
+            )
+        finally:
+            pop_call_chain(target)
         return {"plugin_id": target, "kind": kind, "id": cid, "result": result}
 
     # ── 通用 job（M3）──────────────────────────────────
