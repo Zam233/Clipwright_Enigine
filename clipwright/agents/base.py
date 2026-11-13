@@ -160,6 +160,65 @@ class BaseAgent(ABC, Generic[I, O]):
                 continue
         return out
 
+    async def run_skill_round(
+        self, brief: str, *, pipeline_id: str = "", max_calls: int | None = None,
+    ) -> dict[str, Any]:
+        """有界技能轮：让阶段 agent 自主选择 0–N 个 Skill。
+
+        为什么需要它：material/animation/audio/quality 等阶段**没有** LLM 工具轮
+        （只程序化调工具），技能因此永远只能被主 agent 或 edit/structure 调用。
+        这里给它们一次轻量、可降级的自主选择机会：
+        - 只暴露技能 schema（不暴露原子工具），最多 ``skill_assist_max_calls`` 次；
+        - 无技能 / 未开启 / LLM 不可用 / 超时 → 返回 skipped，绝不阻塞阶段；
+        - 调用轨迹写 `last_skill_calls`，由 stage_subagent 并入 StageResult。
+        """
+        from clipwright.config import settings
+
+        self.last_skill_calls: list[dict[str, Any]] = []
+        if not bool(getattr(settings, "skill_assist_enabled", True)):
+            return {"status": "skipped", "reason": "disabled", "tool_calls": []}
+        schemas = self.skill_schemas()
+        if not schemas:
+            return {"status": "skipped", "reason": "no_skills", "tool_calls": []}
+        names = [str((s.get("function") or {}).get("name") or "") for s in schemas]
+        names = [n for n in names if n]
+        limit = int(max_calls or getattr(settings, "skill_assist_max_calls", 2) or 2)
+        timeout = float(getattr(settings, "skill_assist_timeout_sec", 60.0) or 60.0)
+        system_prompt = (
+            "你是视频创作系统的阶段子 agent。只需要判断：为了完成当前阶段，是否要调用"
+            f"最多 {limit} 个组合技能（它们会跑多个工具并返回聚合结果）。"
+            "不需要就直接回复 SKIP；需要就调用对应技能工具，参数按 schema 填。"
+            "不要调用任何原子工具，也不要编造产物。"
+        )
+        user_prompt = (
+            f"阶段任务：{brief}\n可选技能：{', '.join(names)}\n"
+            "若技能无法补齐关键输入，直接 SKIP，把问题留给主 agent。"
+        )
+        try:
+            result = await asyncio.wait_for(
+                self.run_tool_loop(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    tools=(),
+                    max_rounds=2,
+                    max_calls=limit,
+                    pipeline_id=pipeline_id,
+                ),
+                timeout=timeout,
+            )
+        except Exception as exc:  # noqa: BLE001 — 技能轮是增强，不是必需路径
+            from clipwright.config import logger
+
+            logger.debug("%s: 技能轮跳过（%s）", self.agent_name, exc)
+            return {"status": "skipped", "reason": str(exc)[:160], "tool_calls": []}
+        calls = list((result or {}).get("tool_calls") or [])
+        for call in calls:
+            if isinstance(call, dict):
+                call.setdefault("kind", "skill")
+                call.setdefault("skill", call.get("tool"))
+        self.last_skill_calls = calls
+        return {**(result or {}), "tool_calls": calls}
+
     def resolve_skill(self, capability: str):
         """按能力名（或技能名）解析到当前可用的技能实例。"""
         from clipwright.tool.capabilities import skill_resolve

@@ -8,6 +8,7 @@
 | [Persona 系统](Persona.md) | 四层复合数字人格体系：参数层 / 示例层 / 嵌入层 / 模型层 |
 | [Agent 工作流](workflow.md) | 一个主 Agent + 阶段子 Agent：主 Agent 规划并派发结构 → 素材 → 剪辑 → 动画 → 音频 → 质检，结果回主 Agent（黑板/产物/失败回流） |
 | [**主 Actor 化 PRD（2026-10-26）**](master-agent-prd-2026-10-26.md) | 移除 6 阶段管线：主 Agent 派发阶段子代理（黑板/契约/自愈闭包）+ 能力目录修复 + 11 条实测 bug |
+| [**Skill 自主调用与插件化 PRD（2026-11-14）**](skill-pluginization-prd-2026-11-14.md) | 主/子 agent 自主选技能、技能由插件提供、副驾驶技能调用可见；含 [Coding Plan](skill-pluginization-coding-plan-2026-11-14.md) |
 | [工作区 PRD（2026-10-24）](workspace-prd-2026-10-24.md) | 一个项目一个工作区：工程文件/素材/成片/缓存同根，自动索引 + 视觉解读 |
 
 ## 使用指南
