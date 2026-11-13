@@ -27,7 +27,7 @@
                 "errorKey": "error",
                 "successKey": "success",
                 "body": {
-                  "tool": "ai_video_generate",
+                  "name": "ai_video_generate",
                   "params": {
                     "prompt": "${prompt}",
                     "duration_sec": 5

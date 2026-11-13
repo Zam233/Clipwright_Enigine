@@ -27,7 +27,7 @@
                 "errorKey": "error",
                 "successKey": "success",
                 "body": {
-                  "tool": "ai_music_generate",
+                  "name": "ai_music_generate",
                   "params": {
                     "prompt": "${prompt}",
                     "duration_sec": 30

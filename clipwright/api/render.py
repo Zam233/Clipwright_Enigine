@@ -524,12 +524,18 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
         priority = max(1, min(5, int(request.headers.get("X-Priority", "3") or "3")))
     except (TypeError, ValueError):
         priority = 3
+    try:
+        category_id = _validated_category_id(body.category_id, strict=True)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     _render_queue[task_id] = {
         "status": "queued",
         "progress": 0,
         "result": None,
         "owner_id": uid or "",  # P3-3B
         "priority": priority,
+        # 显式类型由 Hook 消费；空字符串表示旧客户端或手动导出未指定类型。
+        "category_id": category_id,
     }
     if idem_key:
         _idempotency_render[idem_key] = task_id
@@ -663,6 +669,8 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                 "task_id": task_id,
                 "settings": dict(params),
                 "preset": str(params.get("preset", "") or ""),
+                # 旧客户端/手动导出为空；插件只能依据这个显式来源决定是否改规格。
+                "category_id": str(_render_queue.get(task_id, {}).get("category_id") or ""),
             }
             await execute_async(HookPoint.PRE_RENDER, hook_ctx)
             patched = hook_ctx.get("settings")
@@ -1267,6 +1275,23 @@ class RenderRequest(BaseModel):
         default=0.0, ge=0, le=15.0,
         description="负时间片头秒数（0 = 无片头；画面先起、音乐后进）",
     )
+    #: 显式选中的视频类型插件 id。旧客户端不传；插件 Hook 不得从宽高或
+    #: metadata 猜测类别。自动渲染由已知 category_plugin_id 的调用方填入。
+    category_id: str = Field(default="", max_length=64, description="显式视频类型插件 id（空 = 未指定）")
+
+
+def _validated_category_id(raw: str, *, strict: bool) -> str:
+    """非空 id 必须已在 CategoryRegistry 注册；strict 决定未知值是否报错。"""
+    value = str(raw or "").strip()
+    if not value:
+        return ""
+    from clipwright.category.registry import CategoryRegistry
+
+    if value not in getattr(CategoryRegistry, "_plugins", {}):
+        if strict:
+            raise ValueError(f"未知视频类型: {value}")
+        return ""
+    return value
 
 
 @router.get("/browser")
