@@ -103,6 +103,9 @@ class PluginManifest(BaseModel):
     dependencies: list[str] = Field(default_factory=list, description="依赖的其他插件 ID（M2 依赖解析）")
     signature: str = Field(default="", description="manifest 签名（HMAC-SHA256 hex，M1）")
     config_schema_version: int = Field(default=1, description="配置结构版本（M15 配置迁移）")
+    #: 受信任 UI bundle 的 SHA-256（hex）。该字段进入 manifest HMAC 的签名载荷，
+    #: 服务端读取时重算 bundle.html 摘要；空值表示不使用 bundle 档。
+    bundle_sha256: str = Field(default="", description="bundle.html 的 SHA-256 hex（进入 manifest 签名）")
 
     # ── P9: 运行形态（插件子进程沙箱）──
     runtime: str = Field(

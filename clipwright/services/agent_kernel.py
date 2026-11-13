@@ -641,12 +641,30 @@ def _capability_catalog() -> str:
 
 
 def limits_from_settings() -> TaskLimits:
-    """从设置读四道闸；金额闸未配置=无上限（Q1 裁定）。"""
+    """从设置读四道闸；金额闸未配置=无上限（Q1 裁定）。
+
+    KK-09（审计 PRD §5F P3，实测复现）：`pipeline_budget_usd` 被配置成空串或
+    非数字时，旧实现原样透传给 pydantic `float` → `TaskLimits` 构造即抛
+    `ValidationError`，任务 create 阶段 500。无效配置按「未配置」处理（None）
+    并留痕，而不是让整个任务创建失败。
+    """
+    _raw_budget = getattr(settings, "pipeline_budget_usd", None)
+    budget_usd: Any = _raw_budget
+    if _raw_budget is not None:
+        try:
+            budget_usd = float(_raw_budget)
+            if budget_usd != budget_usd or budget_usd in (float("inf"), float("-inf")):
+                raise ValueError(f"非有限数值: {_raw_budget!r}")
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "设置项 pipeline_budget_usd 非法（%s），按未配置处理（无金额上限）",
+                exc)
+            budget_usd = None
     limits = TaskLimits(
         max_turns=int(getattr(settings, "agent_max_turns", 30) or 30),
         max_tool_calls=int(getattr(settings, "agent_max_tool_calls", 80) or 80),
         max_wall_sec=float(getattr(settings, "agent_max_wall_sec", 0.0) or 0.0),
-        budget_usd=getattr(settings, "pipeline_budget_usd", None),
+        budget_usd=budget_usd,
     )
     limits.validate_or_raise()
     return limits
@@ -836,6 +854,14 @@ class AgentKernel:
         from clipwright.services.task_events import emit
 
         task.status = "cancelled"
+        # M3：取消该任务关联的插件 job（状态先落 cancelled；进程终止异步投递，
+        # 失败只告警，不阻断任务取消）
+        try:
+            from clipwright.services.plugin_rpc import job_manager
+
+            job_manager().cancel_for_task(task_id)
+        except Exception as exc:  # noqa: BLE001 — 清理失败不影响取消
+            logger.warning("取消任务关联插件 job 失败 %s: %s", task_id, exc)
         # devplan T3.1：用户中止也要写机器可读原因（原来只有一个 `"cancelled"` 字符串）。
         # 旧 `reason` 字段照旧产出（用户裁定 4：暂不停用），新代码读 terminal_reason。
         try:
@@ -1321,7 +1347,9 @@ class AgentKernel:
                   "completed": list(task.finish.completed or []),
                   "unfinished": list(task.finish.unfinished or []),
                   # ── 终止机制（devplan §4：新字段与旧 reason 并行）──
-                  "terminal_reason": _treason,
+                  # KK-09：terminal_reason 统一发字符串值（与 1576 行的
+                  # `_treason.value` 同形态），消费者不必兼容两种类型。
+                  "terminal_reason": str(_treason),
                   "blocker_code": _blocker,
                   "goal_id": _goal_of(task).id if _goal_of(task) else "",
                   "goal_status": _goal_status_value(task) or None,
@@ -1514,6 +1542,16 @@ class AgentKernel:
             if bool(getattr(settings, "agent_terminal_reason_v1", True)):
                 task.terminal_reason = _treason
             task.blocker_code = _blocker
+            # KK-09（审计 PRD §5F P3）：ok 路径也落收口报告——它是**交接物**，
+            # 续跑任务读它就知道上一轮产物与缺口。报告先写（含 usage/黑板清单），
+            # finish 的 completed/unfinished 从报告取，两边一致。
+            try:
+                _report = self._write_closeout_report(
+                    task, why=conclusion or gate_reason,
+                    terminal_reason=_treason.value if hasattr(_treason, "value") else str(_treason))
+            except Exception as exc:  # noqa: BLE001 — 报告失败不阻断收尾
+                logger.warning("ok 路径收口报告写入失败 %s: %s", task.id, exc)
+                _report = {"completed": [], "unfinished": []}
             if getattr(task, 'goal', None) is not None:
                 if _treason in (TerminalReason.achieved, TerminalReason.plan_only_completed,
                                 TerminalReason.dry_run_completed):
@@ -1524,12 +1562,13 @@ class AgentKernel:
                     _goal_of(task).status = GoalStatus.blocked
             task.finish = TaskFinish(
                 conclusion=conclusion or f"工具循环结束：{len(outcome.get('tool_calls') or [])} 次调用",
-                completed=[],
-                unfinished=([
+                # KK-09：清单与收口报告同源（报告已从黑板推导），不再恒空数组
+                completed=list(_report.get("completed") or []),
+                unfinished=(list(_report.get("unfinished") or []) + ([
                     "degraded:" + ",".join(sorted({
                         str(d.get("kind")) for d in unresolved
                     }))[:200]
-                ] if unresolved else []),
+                ] if unresolved else [])),
                 reason=gate_reason,
                 terminal_reason=_treason,
             )
@@ -1782,11 +1821,15 @@ class AgentKernel:
             unfinished.append("没有任何可交付产物")
         return completed, unfinished
 
-    def _write_closeout_report(self, task: Task, *, why: str) -> dict[str, Any]:
+    def _write_closeout_report(self, task: Task, *, why: str,
+                               terminal_reason: str = "capped") -> dict[str, Any]:
         """把收尾报告落到 `reports/agent-closeout.json`（原子替换），返回 payload。
 
         报告是**交接物**：下一轮续跑的任务读它就知道上一轮卡在哪、还缺什么，不需要
         把整段对话再塞进上下文。
+        KK-09（审计 PRD §5F P3）：ok 路径（正常完成）此前不写收口报告——续跑任务
+        只能靠黑板/对话猜上一轮产物。现在 ok 路径也落一份（terminal_reason 标注
+        achieved 等），deliverable_status 同步写入。
         """
         import json as _json
         import os
@@ -1795,7 +1838,7 @@ class AgentKernel:
         payload = {
             "task_id": task.id,
             "goal_id": _goal_of(task).id if _goal_of(task) else "",
-            "terminal_reason": "capped",
+            "terminal_reason": str(terminal_reason),
             "why": str(why or "")[:500],
             "completed": completed,
             "unfinished": unfinished,
@@ -1850,9 +1893,15 @@ class AgentKernel:
         """
         in_closeout = str(_closeout_of(task).mode) == "soft_landing"
         text = str(text or "")
-        if "重复动作熔断" in text:
+        # KK-09（审计 PRD §5F P3）：**先**判行为性失败，再判收口封顶。
+        # 旧实现 `in_closeout` 分支在重复失败/无进展之前——收口期里
+        # "同一工具连续失败 3 次"（agent_loop raise 的文案不含「熔断」二字）
+        # 会被收口分支吞掉判成 capped，blocker_code 也错标 budget_exhausted；
+        # 用户看到"正常封顶"，实际是"卡死了"。行为性失败无论是否在收口期
+        # 都是 blocked，只有真正的预算/上限触闸才走 capped。
+        if "重复动作熔断" in text or "连续失败" in text:
             return ("failed", "blocked", "repeat_fail")
-        if "没有任何新进展" in text:
+        if "没有任何新进展" in text or "没有新进展" in text:
             return ("failed", "blocked", "no_progress")
         if "收口窗口用尽" in text or in_closeout:
             # 收口里结束 = 有交付的封顶（真交付与否看 deliverable_status）
@@ -2027,45 +2076,6 @@ class AgentKernel:
         _PROGRESS.pop(task_id, None)
         _REPEAT_FAILS.pop(task_id, None)
 
-    def _finish(self, task: Task, *, reason: str) -> None:
-        """收尾
-        self._reset_task_state(task.id)（M3 后不再按 steps 汇总：没有步骤表，只有一次 tool loop 的结果）。
-
-        仍保留"没有可渲染时间线就不许宣称完成"的守门（§4.4 领域不变量）：
-        只要这次任务碰过阶段派发，就必须有 `final_timeline`。
-        """
-        from clipwright.services.task_events import emit
-
-        completed: list[str] = []
-        unfinished: list[str] = []
-        if reason in ("tool_loop_completed", "plan_completed"):
-            try:
-                from clipwright.services import task_blackboard as _bb
-
-                board = _bb.get(task.id)
-                timeline = board.get("final_timeline") or board.get("timeline")
-                if timeline:
-                    completed.append("final_timeline")
-                else:
-                    reason = "缺少可渲染时间线（final_timeline 为空）"
-                    unfinished.append("final_timeline")
-            except Exception:  # noqa: BLE001 — 守门本身失败不阻断收尾
-                pass
-        task.finish = TaskFinish(
-            conclusion=f"结束原因：{reason}",
-            completed=completed,
-            unfinished=unfinished,
-            reason=reason,
-        )
-        if task.status not in ("cancelled", "paused"):
-            task.status = "done" if reason in ("tool_loop_completed",
-                                               "plan_completed") else "failed"
-        task.touch()
-        emit(task.id, "task_end", task.finish.conclusion,
-             {"reason": reason, "usage": task.usage.model_dump(),
-              "completed": completed, "unfinished": unfinished})
-        self._record_task_metrics(task, reason)
-        self._checkpoint(task)
 
     def _persist_memory(self, task: Task, reason: str) -> None:
         """收尾把记忆落盘：任务结局写一条情景记忆 → 追加落盘 + 语义快照。"""

@@ -40,7 +40,15 @@ from clipwright.plugins.runtime.protocol import (
 )
 
 #: 允许跨越进程边界的贡献类型（纯数据或有明确 RPC 语义）
-_RPC_KINDS = {"tool", "hook", "material_source", "prompt", "ui_slot", "export_preset"}
+_RPC_KINDS = {
+    "tool", "hook", "material_source", "prompt", "ui_slot", "export_preset",
+    # M4：clip_kind 是纯数据声明（展示信息/schema/契约名），不需要代理对象
+    "clip_kind",
+    # M4：category 的静态部分由 meta 声明，可执行方法经 category.* RPC
+    "category",
+    # M4：skill 的元数据由 meta 声明，执行经 skill.call RPC
+    "skill",
+}
 
 #: 每类 kind 的 RPC 方法名（宿主代理据此调用）
 _RPC_METHOD = {
@@ -67,25 +75,52 @@ class PluginRuntime:
 
     def boot(self) -> None:
         self.manifest = self._parse_manifest()
+        runtime_config = dict(getattr(self.manifest, "runtime_config", {}) or {})
+        extra_reads = [
+            Path(str(p)).expanduser()
+            for p in (runtime_config.get("extra_read_roots") or [])
+            if str(p).strip()
+        ]
         guard = PermissionGuard(
             getattr(self.manifest, "permissions", []) or [],
             plugin_id=self.plugin_id,
             data_dir=self.data_dir,
+            plugin_dir=self.plugin_dir,
+            extra_read_roots=extra_reads,
         )
+        # 预导入插件常用的宿主契约模块（engine 自有代码），必须在审计钩子之前：
+        # 这些模块的依赖链会在 import 期触达 ctypes（click 等），而钩子一律拒绝
+        # ctypes.*；插件再 import 时命中缓存，不会在钩子下重复触发。
+        for _name in (
+            "clipwright.plugins.base",
+            "clipwright.plugins.contribution",
+            "clipwright.category.base",
+            "clipwright.skill.base",
+            "clipwright.schema.skill",
+        ):
+            try:
+                importlib.import_module(_name)
+            except Exception:  # noqa: BLE001 — 预导入失败不阻断（插件可能不用）
+                pass
         install_audit_hook(guard)  # 必须在 import 插件代码之前
         module = self._import_plugin()
         self.plugin = self._instantiate(module)
         self._collect_declarations()
 
     def _parse_manifest(self) -> Any:
-        import yaml
-
+        from clipwright.plugins.manifest_yaml import load_manifest_dict
         from clipwright.schema.plugin import PluginManifest
 
         manifest_path = self.plugin_dir / "plugin.yaml"
         data: dict[str, Any] = {}
         if manifest_path.exists():
-            data = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+            try:
+                data = load_manifest_dict(
+                    manifest_path.read_text(encoding="utf-8"),
+                    source=str(manifest_path),
+                )
+            except ValueError as e:
+                raise RpcError(ERR_PLUGIN_ERROR, f"插件清单不合法: {e}") from e
         data.pop("id", None)
         return PluginManifest(id=self.plugin_id, **data)
 
@@ -110,33 +145,53 @@ class PluginRuntime:
     def _instantiate(self, module: Any) -> Any:
         from clipwright.plugins.base import BasePlugin
 
-        klass = None
-        for name in dir(module):
-            obj = getattr(module, name)
-            if inspect.isclass(obj) and issubclass(obj, BasePlugin) and obj is not BasePlugin:
-                if obj.__module__ == module.__name__:
-                    klass = obj
-                    break
+        # 按**定义顺序**取子类，不按 dir() 字母序：插件常同时定义 Category/Tool 辅助类，
+        # 字母序会先拿到 MotionCategory 之类的辅助类，导致 contributions() 为空。
+        candidates = [
+            obj for obj in vars(module).values()
+            if inspect.isclass(obj) and issubclass(obj, BasePlugin)
+            and obj is not BasePlugin and obj.__module__ == module.__name__
+        ]
+        # 约定：入口类以 Plugin 结尾；没有则退回定义顺序第一个
+        preferred = [c for c in candidates if c.__name__.endswith("Plugin")] or candidates
+        klass = preferred[0] if preferred else None
         if klass is None:
             raise RpcError(ERR_PLUGIN_ERROR, "入口模块中未找到 BasePlugin 子类")
         instance = klass()
         instance.manifest = self.manifest
         instance.config = self._flat_config()
+        self.plugin_config = dict(instance.config or {})
         return instance
 
     def _flat_config(self) -> dict[str, Any]:
-        """读 PluginData 的 config.yaml（与宿主同源：结构化 → 扁平值）。"""
+        """读取生效配置：源码 config.yaml 默认值 + PluginData 覆盖（C2）。
+
+        旧实现只读 PluginData，插件代码里的默认值在子进程中永远不生效，
+        和宿主 `_get_merged_config()` 看到的不是同一份配置。
+
+        **不要**在 worker 里构造 PluginLoader：那会走宿主的 get_plugin_data_dir/
+        mkdir 路径，被本进程的审计钩子判成未授权写盘（实测日志：worker 配置合并
+        失败: 权限不足 … event=os.mkdir）。这里只做只读文件合并。
+        """
+        import yaml
+
         from clipwright.plugins.loader import _extract_flat_values
 
-        config_path = self.data_dir / "config.yaml"
-        if not config_path.exists():
-            return {}
-        try:
-            import yaml
-            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        except Exception:
-            return {}
-        return _extract_flat_values(raw) if isinstance(raw, dict) else {}
+        def _read(path: Path) -> dict[str, Any]:
+            if not path.is_file():
+                return {}
+            try:
+                raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            except Exception:  # noqa: BLE001 — 坏配置退回空，不阻断启动
+                return {}
+            if not isinstance(raw, dict):
+                return {}
+            return _extract_flat_values(raw) if "fields" in raw else dict(raw)
+
+        merged: dict[str, Any] = {}
+        merged.update(_read(self.plugin_dir / "config.yaml"))
+        merged.update(_read(self.data_dir / "config.yaml"))
+        return merged
 
     def _collect_declarations(self) -> None:
         """调用 setup()/contributions()，把贡献转成纯数据声明。
@@ -162,6 +217,14 @@ class PluginRuntime:
                     f"子进程档暂不支持 {kind}（{cid}）；支持：{sorted(_RPC_KINDS)}",
                 )
             self.objects[cid] = getattr(item, "object", None)
+            # C2：与宿主 _inject_plugin_config 同语义——贡献对象自己也要拿到配置，
+            # 否则子进程里 getattr(self, "config") 恒为 None（宿主注入到不了这里）。
+            obj = self.objects[cid]
+            if obj is not None and self.plugin_config:
+                try:
+                    obj.config = dict(self.plugin_config)
+                except Exception:  # noqa: BLE001 — 只读属性等极端情况
+                    pass
             self.declarations.append({
                 "kind": kind,
                 "id": cid,
@@ -183,6 +246,10 @@ class PluginRuntime:
             return await self._call_material(params)
         if method == "prompt.get":
             return self._get_prompt(params)
+        if method.startswith("category."):
+            return await self._call_category(method, params)
+        if method == "skill.call":
+            return await self._call_skill(params)
         if method == "shutdown":
             return {"bye": True}
         raise RpcError(ERR_UNKNOWN_METHOD, f"未知方法: {method}")
@@ -216,6 +283,47 @@ class PluginRuntime:
         if inspect.isawaitable(result):
             result = await result
         return _jsonable(result)
+
+    async def _call_category(self, method: str, params: dict[str, Any]) -> Any:
+        """category.*：把通用可执行方法转发给插件里的 Category 实例。
+
+        只暴露两个纯函数式方法（translate_persona / get_shot_params）；
+        Timeline 后处理等留给 engine 的默认实现，避免把核心 schema 传播给插件。
+        """
+        obj = self._object(params, expected_kind="category")
+        payload = dict(params.get("payload") or {})
+        name = method.split(".", 1)[1]
+        if name == "translate_persona":
+            fn = getattr(obj, "translate_persona", None)
+            result = fn(payload.get("params") or {}) if callable(fn) else {}
+        elif name == "get_shot_params":
+            fn = getattr(obj, "get_shot_params", None)
+            result = fn(payload.get("translated") or {}) if callable(fn) else {}
+        else:
+            raise RpcError(ERR_UNKNOWN_METHOD, f"未知 category 方法: {method}")
+        if inspect.isawaitable(result):
+            result = await result
+        return _jsonable(result)
+
+    async def _call_skill(self, params: dict[str, Any]) -> Any:
+        """skill.call：执行插件的 Skill，结果统一成 {success, output, error}。"""
+        obj = self._object(params, expected_kind="skill")
+        payload = dict(params.get("input") or {})
+        runner = getattr(obj, "execute", None)
+        if not callable(runner):
+            raise RpcError(ERR_PLUGIN_ERROR, "技能对象缺少 execute()")
+        result = runner(**payload)
+        if inspect.isawaitable(result):
+            result = await result
+        if hasattr(result, "status"):
+            status = str(getattr(getattr(result, "status"), "value", result.status))
+            success = status == "success"
+            return {
+                "success": success,
+                "output": _jsonable(getattr(result, "output", {})),
+                "error": None if success else str(getattr(result, "output", "")),
+            }
+        return {"success": True, "output": _jsonable(result)}
 
     def _get_prompt(self, params: dict[str, Any]) -> Any:
         obj = self._object(params, expected_kind="prompt")
@@ -254,22 +362,40 @@ def _tool_result(value: Any) -> Any:
 
     三种常见形态：ToolExecResult 对象、同形 dict（插件常直接返回 dict）、
     裸数据（list/dict/标量 → 视为成功输出）。
+
+    注意 `ToolExecResult` 用 ``status``（success/partial/...）而不是 ``success``；
+    旧实现按属性存在性判断，遇到只有 output 的对象就返回 ``success: False``，
+    让子进程插件的正常结果全被判成失败。
     """
     if value is None:
         return {"success": True, "output": None}
-    if isinstance(value, dict) and "success" in value:
-        return {
-            "success": bool(value.get("success")),
-            "output": _jsonable(value.get("output")),
-            "error": value.get("error"),
-        }
-    for attr in ("success", "output", "error"):
-        if hasattr(value, attr):
+    if isinstance(value, dict):
+        if "success" in value:
             return {
-                "success": bool(getattr(value, "success", False)),
-                "output": _jsonable(getattr(value, "output", None)),
-                "error": getattr(value, "error", None),
+                "success": bool(value.get("success")),
+                "output": _jsonable(value.get("output")),
+                "error": value.get("error"),
             }
+        if "status" in value:
+            return {
+                "success": str(value.get("status")).lower() in ("success", "partial"),
+                "output": _jsonable(value.get("output")),
+                "error": value.get("error"),
+            }
+    if hasattr(value, "success"):
+        return {
+            "success": bool(getattr(value, "success", False)),
+            "output": _jsonable(getattr(value, "output", None)),
+            "error": getattr(value, "error", None),
+        }
+    status = getattr(value, "status", None)
+    if status is not None:
+        text = str(getattr(status, "value", status)).lower()
+        return {
+            "success": text in ("success", "partial"),
+            "output": _jsonable(getattr(value, "output", None)),
+            "error": getattr(value, "error", None),
+        }
     return {"success": True, "output": _jsonable(value)}
 
 
@@ -288,28 +414,12 @@ async def _serve(runtime: PluginRuntime) -> int:
     """
     loop = asyncio.get_running_loop()
     out = sys.stdout.buffer      # 二进制写出：不受子进程 locale 影响
-    while True:
-        line = await loop.run_in_executor(None, sys.stdin.buffer.readline)
-        if not line:
-            return 0  # 宿主关闭管道 → 正常退出
-        req_id = -1
-        try:
-            message = decode(line)
-            check_version(message)
-            req_id = int(message.get("id", -1))
-            if message.get("method") == "shutdown":
-                out.write(encode(ok(req_id, {"bye": True})))
-                out.flush()
-                return 0
-            result = await runtime.handle(str(message.get("method") or ""),
-                                          dict(message.get("params") or {}))
-            out.write(encode(ok(req_id, result)))
-        except RpcError as e:
-            out.write(encode(fail(req_id, e)))
-        except Exception as e:  # noqa: BLE001 — 插件异常必须回成错误帧而非崩掉 worker
-            traceback.print_exc(file=sys.stderr)
-            out.write(encode(fail(req_id, RpcError(ERR_PLUGIN_ERROR, str(e)))))
-        out.flush()
+    # v2 读循环搬到 worker_rpc：它要同时处理「宿主请求」与「插件请求的响应」，
+    # 单一 while-await-handle 会在插件等宿主回包时死锁。这里保留二进制 out
+    # 的字面量（AST 守卫要求 _serve 体内出现 sys.stdout.buffer）。
+    from clipwright.plugins.runtime.worker_rpc import serve
+
+    return await serve(runtime, out, loop)
 
 
 def main(argv: list[str] | None = None) -> int:

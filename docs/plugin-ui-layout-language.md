@@ -75,14 +75,14 @@ plugins/{plugin_id}/
     "errorKey": "error",
     "successKey": "success",
     "body": {
-      "tool": "my_tool",
+      "name": "my_tool",
       "params": {
         "prompt": "${prompt}",
         "width": 1024
       }
     },
     "resultMap": {
-      "url": "url",
+      "url": "output.url",
       "image_url": "data.image_url"
     }
   }
@@ -104,7 +104,7 @@ plugins/{plugin_id}/
 **变量插值**：`body` 中字符串值 `"${prompt}"` 会被替换为 `state["prompt"]`。
 支持嵌套对象中的插值。
 
-**响应处理**：若未指定 `resultMap`，响应 data 直接合并到 state。
+**响应处理**：若未指定 `resultMap`，不合并任何响应字段（防止插件把任意数据写进 state）；需要展示的字段必须在 `resultMap` 里显式声明。工具执行结果是 `{status, output, error}`，字段路径通常写 `output.xxx`。
 通过 `resultMap` 可精确映射，如 `"data.image_url"` 提取嵌套字段。
 
 ### 3. image — 图片显示
@@ -256,10 +256,10 @@ plugins/{plugin_id}/
                 "loadingKey": "loading",
                 "errorKey": "error",
                 "body": {
-                  "tool": "my_image_gen",
+                  "name": "my_image_gen",
                   "params": { "prompt": "${prompt}" }
                 },
-                "resultMap": { "url": "url" }
+                "resultMap": { "url": "output.url" }
               }
             }
           ]

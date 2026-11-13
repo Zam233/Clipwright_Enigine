@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hmac
+
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
 from clipwright.config import logger
 from clipwright.plugins import PluginLoadError
@@ -236,6 +239,48 @@ async def disable_plugin(plugin_id: str, request: Request = None) -> dict[str, s
     return {"status": "ok", "plugin_id": plugin_id, "enabled": "false"}
 
 
+class RuntimeRegistration(BaseModel):
+    """管理员登记一个不透明运行时（M3）：engine 只认 id/可执行文件/摘要。"""
+
+    runtime_id: str
+    executable: str
+    version: str = ""
+    digest: str = ""
+    approved: bool = False
+
+
+@router.get("/runtimes")
+async def list_runtimes(request: Request = None) -> dict:
+    """列出已登记 runtime（不暴露 executable 绝对路径）。"""
+    _require_admin(request)
+    from clipwright.services.plugin_rpc import runtime_registry
+
+    return {"runtimes": runtime_registry().list()}
+
+
+@router.post("/runtimes")
+async def register_runtime_api(
+    body: RuntimeRegistration, request: Request = None,
+) -> dict:
+    """登记/更新 runtime；批准状态由调用方显式给出（生产应走审批流程）。"""
+    _require_admin(request)
+    from clipwright.services.plugin_jobs import RuntimeSpec
+    from clipwright.services.plugin_rpc import register_runtime
+
+    spec = register_runtime(RuntimeSpec(
+        runtime_id=body.runtime_id,
+        executable=body.executable,
+        version=body.version,
+        digest=body.digest,
+        approved=body.approved,
+    ))
+    return {
+        "runtime_id": spec.runtime_id,
+        "version": spec.version,
+        "approved": spec.approved,
+    }
+
+
 @router.get("/permissions")
 async def list_permissions() -> dict[str, object]:
     """M1: 已知权限白名单（供前端安装确认展示）。"""
@@ -283,21 +328,37 @@ async def get_plugin_bundle(plugin_id: str, request: Request = None):
     if not bundle_file.exists():
         raise HTTPException(status_code=404, detail="该插件未提供 bundle.html")
 
-    # 签名强制：受信任档不接受无签名插件（与 loader 的签名策略同语义，
-    # 因加载器文件被外部工具阻断，门禁落在本端点层）
+    # 签名强制：受信任档要求 manifest HMAC 有效，并且签名载荷中的
+    # bundle_sha256 与磁盘文件一致。仅检查 signature 非空会被任意字符串绕过，
+    # 也挡不住 manifest 不变但 bundle.html 被替换。
     try:
+        from clipwright.plugins.loader import verify_manifest_signature
+
         manifest = _loader._parse_manifest(plugin_id, _loader.plugin_dir / plugin_id)
-    except Exception:
-        manifest = None
-    if manifest is None or not getattr(manifest, "signature", ""):
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"插件清单解析失败: {e}") from e
+    if not getattr(manifest, "signature", ""):
         raise HTTPException(
             status_code=403,
             detail="受信任 UI bundle 需要插件签名（manifest.signature 缺失）",
+        )
+    if not verify_manifest_signature(manifest):
+        raise HTTPException(status_code=403, detail="插件 manifest 签名校验失败")
+    declared = str(getattr(manifest, "bundle_sha256", "") or "").strip().lower()
+    if not declared:
+        raise HTTPException(
+            status_code=403,
+            detail="受信任 UI bundle 需要 manifest.bundle_sha256（旧 bundle 请重新签发）",
         )
     try:
         html = bundle_file.read_text(encoding="utf-8")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read bundle: {e}")
+    import hashlib
+
+    actual = hashlib.sha256(bundle_file.read_bytes()).hexdigest()
+    if not hmac.compare_digest(actual, declared):
+        raise HTTPException(status_code=403, detail="bundle.html 内容与 manifest 声明的摘要不一致")
     return HTMLResponse(
         content=html,
         headers={
@@ -407,6 +468,10 @@ async def list_contributions(
         discovered = _discover_plugins_cached()
         for pid in discovered:
             if owner and pid != owner:
+                continue
+            # C3：旧 ui.json 也要遵守「只对已加载且启用的 owner 输出」——
+            # 否则插件被禁用后 settings.section 仍会渲染它的面板。
+            if not _loader.is_enabled(pid) or _loader.get(pid) is None:
                 continue
             raw = _legacy_ui_file(pid)
             if raw is None:
@@ -655,8 +720,32 @@ async def put_plugin_config(plugin_id: str, request: Request) -> dict[str, objec
         if isinstance(fdef, dict) and isinstance(fdef.get("value"), str) and "****" in fdef["value"]:
             orig_val = _current_plain.get(fname)
             fdef["value"] = orig_val if isinstance(orig_val, str) and orig_val else ""
-    _loader.save_config(plugin_id, data)
-    _loader.reload(plugin_id)
+    config_path = _loader.get_plugin_data_dir(plugin_id) / "config.yaml"
+    backup = config_path.read_text(encoding="utf-8") if config_path.exists() else None
+    try:
+        _loader.save_config(plugin_id, data)
+        applied = _loader.reload(plugin_id)
+    except Exception as e:
+        # C2：保存/重载失败必须还原旧文件与旧运行态，不能返回假成功。
+        try:
+            if backup is None:
+                config_path.unlink(missing_ok=True)
+            else:
+                config_path.write_text(backup, encoding="utf-8")
+            _loader.reload(plugin_id)
+        except Exception as restore_error:  # noqa: BLE001
+            raise HTTPException(
+                status_code=500,
+                detail=f"配置更新失败且回滚失败: {e}; 回滚错误: {restore_error}",
+            ) from e
+        raise HTTPException(status_code=500, detail=f"配置更新失败，已回滚: {e}") from e
+    if not applied:
+        # 配置已落盘但插件没能用新配置起来（回滚到旧实例）：明确告诉调用方，
+        # 不能回 200 让用户以为已生效。
+        raise HTTPException(
+            status_code=500,
+            detail="配置已保存，但插件重载失败并已回滚到旧实例；请查看插件错误日志",
+        )
     # B5：重载会重新注册贡献（例如钩子/槽位随配置变化），失效读路径缓存
     _invalidate_plugin_caches()
     return {"status": "ok", "plugin_id": plugin_id}
@@ -673,17 +762,34 @@ async def delete_plugin_config(plugin_id: str, request: Request) -> dict[str, st
         raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not found")
 
     config_path = _loader.get_plugin_data_dir(plugin_id) / "config.yaml"
+    backup = config_path.read_text(encoding="utf-8") if config_path.exists() else None
+    try:
+        if config_path.exists():
+            config_path.unlink()
 
-    if config_path.exists():
-        config_path.unlink()
+        # 刷新并重载
+        plugin = _loader.get(plugin_id)
+        if plugin:
+            from clipwright.plugins.loader import _extract_flat_values
+            plugin.config = _extract_flat_values(_loader._get_merged_config(plugin_id))
 
-    # 刷新并重载
-    plugin = _loader.get(plugin_id)
-    if plugin:
-        from clipwright.plugins.loader import _extract_flat_values
-        plugin.config = _extract_flat_values(_loader._get_merged_config(plugin_id))
-
-    _loader.reload(plugin_id)
+        applied = _loader.reload(plugin_id)
+    except Exception as e:
+        try:
+            if backup is not None:
+                config_path.write_text(backup, encoding="utf-8")
+            _loader.reload(plugin_id)
+        except Exception as restore_error:  # noqa: BLE001
+            raise HTTPException(
+                status_code=500,
+                detail=f"配置删除失败且回滚失败: {e}; 回滚错误: {restore_error}",
+            ) from e
+        raise HTTPException(status_code=500, detail=f"配置删除失败，已回滚: {e}") from e
+    if not applied:
+        raise HTTPException(
+            status_code=500,
+            detail="配置已删除，但插件重载失败并已回滚到旧实例；请查看插件错误日志",
+        )
     # B5：重载后贡献集合可能变化，失效读路径缓存
     _invalidate_plugin_caches()
     return {"status": "ok", "plugin_id": plugin_id}
@@ -738,6 +844,12 @@ async def get_plugin_ui(plugin_id: str) -> dict:
     _validate_plugin_id(plugin_id)  # 审计 P1 修复：阻断 ../ 路径穿越
     if _loader is None:
         raise HTTPException(status_code=503, detail="Plugin system not initialized")
+    # C3：与 /contributions 的 legacy 合成同一口径——未加载/已禁用不返回布局，
+    # 否则禁用插件后管理页仍能渲染它的表单（并可能触发其动作）。
+    if plugin_id not in _loader.discover():
+        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not found")
+    if not _loader.is_enabled(plugin_id) or _loader.get(plugin_id) is None:
+        return {"widgets": []}
     ui_file = _loader.plugin_dir / plugin_id / "ui.json"
     if not ui_file.exists():
         return {"widgets": []}
@@ -767,3 +879,164 @@ async def get_plugin_ui(plugin_id: str) -> dict:
             }],
         }
     return raw
+
+
+# ── W01：插件专用受限代理（服务端权限最终裁定）──────────────────────────
+#
+# 背景（审计 PRD §5D PL-01/02）：插件贡献里的 endpoint/method 此前由前端直发到
+# 带 CLIPWRIGHT_API_TOKEN 的普通宿主 API —— 插件可以借宿主凭据 DELETE /api/project/*。
+# 前端已做默认拒绝 + 白名单收口（pluginApiGuard），但**前端白名单不是授权边界**；
+# 本端点是服务端最终裁定：按插件启停状态 + 服务端允许清单转发，普通宿主令牌
+# 不因代理放宽。
+
+#: 服务端允许清单：plugin_id → 允许的方法+动作。
+#: key 形如 "GET:probe" / "POST:tool"；具体目标端点在 handler 里映射，不接受
+#: 插件自报的任意路径（插件若需要新端点，必须改这里 + 发版）。
+_PLUGIN_PROXY_ALLOWED: dict[str, dict[str, str]] = {
+    # 内置生成类插件：ui.json 按钮只调 /api/tool/execute
+    "ai_image_gen": {"POST:tool": "/api/tool/execute"},
+    "ai_music_gen": {"POST:tool": "/api/tool/execute"},
+    "ai_video_gen": {"POST:tool": "/api/tool/execute"},
+    "example_full": {"POST:tool": "/api/tool/execute"},
+    # 依赖探针：GET /api/render/browser（前端浮层轮询）+ POST 安装触发（用户点确认）
+    "headless_chrome": {
+        "GET:probe": "/api/render/browser",
+        "POST:install": "/api/render/browser/install",
+    },
+}
+
+
+class _PluginProxyBody(BaseModel):
+    """代理请求体。action 由服务端清单解释，插件/前端不能指定任意路径。"""
+    action: str  # "tool" | "probe" | "install"
+    payload: dict = {}
+    #: 新版 UI 传贡献 id，服务端核对其当前确属 URL 中的 owner；旧客户端可省略。
+    contribution_id: str = ""
+
+
+def _proxy_target(method_norm: str, action: str, owner: str) -> str | None:
+    """大小写无关地查白名单；method_norm 是 get/post，字典键是 GET/POST。"""
+    allowed = _PLUGIN_PROXY_ALLOWED.get(owner) or {}
+    return allowed.get(f"{method_norm.upper()}:{action}")
+
+
+def _plugin_owns_tool(owner: str, tool_name: str) -> bool:
+    """工具名必须属于该插件当前已注册的贡献，而非宿主/其他插件工具。"""
+    from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+    from clipwright.tool.registry import ToolRegistry
+
+    declared = {
+        item.id for pid, item in ContributionRegistry.list(ContributionKind.TOOL)
+        if pid == owner
+    }
+    if tool_name not in declared:
+        return False
+    tool = ToolRegistry.get(tool_name)
+    return tool is not None and str(getattr(tool, "_plugin_id", "") or "") == owner
+
+
+def _contribution_owned_by(plugin_id: str, raw: str) -> bool:
+    """校验前端上报的贡献 id 确属该插件。
+
+    契约（B6，2026-11-13 实测修正）：
+    - 空串 = 旧客户端未上报，跳过校验（行为不变）；
+    - 裸 id（前端规范形状）= 门面 `(ui_slot, id)` 的 owner 必须等于 plugin_id；
+    - ``owner:id`` 也接受（旧版本前端把 stateKey 当 id 发），但 owner 段必须一致；
+    - `{plugin_id}_legacy` 是 `/contributions` 现造的旧 ui.json 槽，不进门面，
+      按命名规则归属该插件。
+
+    旧实现只按裸 id 查门面，前端发 `owner:id` 时恒 403，等于把布局按钮全打死。
+    """
+    value = str(raw or "").strip()
+    if not value:
+        return True
+    owner_part, sep, rest = value.partition(":")
+    cid = rest if sep else value
+    if sep and owner_part != plugin_id:
+        return False
+    if not cid:
+        return False
+    # 旧 ui.json 槽：`<plugin>_legacy` 是 /contributions 现造的 id；`legacy` 是旧前端
+    # 把 stateKey 当 id 发时被剥前缀后的形状（`pluginId:legacy`）。两者都只在该插件
+    # 确实有 ui.json 时放行，避免任意插件冒领。
+    if cid == f"{plugin_id}_legacy" or cid == "legacy":
+        return _legacy_ui_file(plugin_id) is not None
+    from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+
+    return ContributionRegistry.owner_of(ContributionKind.UI_SLOT, cid) == plugin_id
+
+
+@router.post("/proxy/{plugin_id}/{method}")
+async def plugin_proxy(plugin_id: str, method: str, body: _PluginProxyBody,
+                       request: Request = None) -> dict:
+    """插件专用受限代理：服务端按清单裁定，普通宿主 API 不因代理放宽。
+
+    - 只接受 POST（GET 探针走 `method="get"` 形式 + action=probe）；
+    - plugin_id 必须已加载且启用；
+    - (plugin_id, method, action) 必须命中 `_PLUGIN_PROXY_ALLOWED`，目标端点由
+      服务端映射，不接受请求体里的路径。
+    """
+    _validate_plugin_id(plugin_id)
+    method_norm = method.strip().lower()
+    if method_norm not in ("get", "post"):
+        raise HTTPException(status_code=405, detail=f"代理不支持方法: {method}")
+
+    if _loader is None:
+        raise HTTPException(status_code=503, detail="Plugin system not initialized")
+    if plugin_id not in _loader.discover():
+        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not found")
+    if not _loader.is_enabled(plugin_id):
+        # 插件被禁用后其贡献即使仍缓存在前端也不能再调用（默认拒绝）
+        raise HTTPException(status_code=403, detail=f"插件 {plugin_id} 已禁用")
+    if _loader.get(plugin_id) is None:
+        raise HTTPException(status_code=403, detail=f"插件 {plugin_id} 未加载")
+    if body.contribution_id and not _contribution_owned_by(plugin_id, body.contribution_id):
+        raise HTTPException(status_code=403, detail="贡献 id 与插件归属不匹配")
+
+    target = _proxy_target(method_norm, body.action, plugin_id)
+    if not target:
+        raise HTTPException(
+            status_code=403,
+            detail=f"插件 {plugin_id} 未被授权调用 {method_norm}:{body.action}",
+        )
+
+    # 服务端内部转发（复用既有 handler 逻辑，不出网）
+    if method_norm == "post" and body.action == "tool":
+        from clipwright.api.tool import _validate_tool_params
+        from clipwright.schema.tool import ToolExecResult
+        from clipwright.tool import ToolRegistry
+
+        name = str(body.payload.get("name") or "")
+        params = body.payload.get("params") or {}
+        if not name:
+            raise HTTPException(status_code=400, detail="缺少工具名")
+        if not _plugin_owns_tool(plugin_id, name):
+            raise HTTPException(
+                status_code=403,
+                detail=f"工具 {name} 不属于插件 {plugin_id} 的已注册贡献",
+            )
+        tool = ToolRegistry.get(name)
+        tier = str(getattr(tool, "permission_tier", "") or "")
+        if tier == "dangerous":
+            raise HTTPException(
+                status_code=403,
+                detail=f"插件 UI 不允许直接调用 dangerous 档工具：{name}",
+            )
+        # costly 档允许（生成类插件的主按钮本就是这个档位），但调用方须在
+        # 前端逐次确认；服务端仍按统一 ToolRegistry 入口记录费用与审计。
+        _validate_tool_params(params)
+        result = await ToolRegistry.execute(name, **params)
+        if result.status == "not_found":
+            raise HTTPException(status_code=404, detail=result.error)
+        return result.model_dump()
+
+    if method_norm == "get" and body.action == "probe":
+        # 探针只允许打渲染依赖状态端点；直接调用其 handler 逻辑
+        from clipwright.api.render import render_browser_status
+        return await render_browser_status()
+
+    if method_norm == "post" and body.action == "install":
+        from clipwright.api.render import render_browser_install
+        return await render_browser_install()
+
+    raise HTTPException(status_code=403, detail="未授权的代理动作")

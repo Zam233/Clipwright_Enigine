@@ -56,8 +56,11 @@ def _persist_render_task(doc: dict) -> None:
             mongo.db["render_tasks"].update_one(
                 {"task_id": doc["task_id"]}, {"$set": doc}, upsert=True
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        # BE-09（审计 PRD §5E P3）：持久化降级可以接受（纯内存仍可用），
+        # 但必须留痕——刷新后该任务的 Mongo 记录就是缺失的，排查"为什么
+        # 刷新后任务消失"时没有这条日志就是黑盒。
+        logger.warning("渲染任务持久化失败（降级内存，刷新后记录缺失）: %s", exc)
 
 
 def _drop_render_task(task_id: str) -> None:
@@ -65,8 +68,8 @@ def _drop_render_task(task_id: str) -> None:
         from clipwright.context import mongo
         if mongo.is_connected:
             mongo.db["render_tasks"].delete_one({"task_id": task_id})
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("渲染任务清理失败 %s（Mongo 记录将残留）: %s", task_id, exc)
 
 
 def mark_interrupted_render_tasks() -> int:
@@ -287,6 +290,35 @@ class _BackendServiceAdapter:
         )
 
 
+def _project_id_of_workspace(workspace_root: str | None) -> str:
+    """从工作区元数据读 project_id（插件渲染 scope 需要）。失败返回空串。"""
+    if not workspace_root:
+        return ""
+    try:
+        data = json.loads(
+            (Path(workspace_root) / ".workspace.json").read_text(encoding="utf-8")
+        )
+        return str(data.get("project_id") or "")
+    except Exception:  # noqa: BLE001 — 没有工作区/元数据损坏都不阻断渲染
+        return ""
+
+
+def _plugin_render_kwargs(timeline, *, workspace_root: str | None = "",
+                          task_id: str = "") -> dict:
+    """时间线含插件 ClipKind 时，给 RenderService 传 host 与 scope；否则空。"""
+    try:
+        from clipwright.services.plugin_rpc import plugin_render_kwargs
+
+        return plugin_render_kwargs(
+            timeline,
+            project_id=_project_id_of_workspace(workspace_root),
+            task_id=task_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — 解析失败由 RenderService 显式报错
+        logger.debug("插件渲染参数解析失败: %s", exc)
+        return {}
+
+
 def _ensure_disk_space(min_free_gb: float = 1.0) -> None:
     """轮 86（出片闭环）：渲染前磁盘预检——空间不足快速失败，不再让
     ffmpeg 写满磁盘后以晦涩的 stderr 尾巴暴露。探测失败不阻断。"""
@@ -401,6 +433,7 @@ async def enqueue_auto_render(
                     encoder_override=params.get("encoder", ""),
                     pix_fmt_override=params.get("pix_fmt", ""),
                     loudnorm_enabled=bool(params.get("loudnorm", True)),
+                    **_plugin_render_kwargs(tl, task_id=task_id),
                 )
                 if not result.success:
                     raise RuntimeError(result.error or "render failed")
@@ -491,12 +524,19 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
         priority = max(1, min(5, int(request.headers.get("X-Priority", "3") or "3")))
     except (TypeError, ValueError):
         priority = 3
+    try:
+        # strict=False：类型暂时不可用不应让旧项目的导出整单失败
+        category_id = _validated_category_id(body.category_id, strict=False)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     _render_queue[task_id] = {
         "status": "queued",
         "progress": 0,
         "result": None,
         "owner_id": uid or "",  # P3-3B
         "priority": priority,
+        # 显式类型由 Hook 消费；空字符串表示旧客户端或手动导出未指定类型。
+        "category_id": category_id,
     }
     if idem_key:
         _idempotency_render[idem_key] = task_id
@@ -630,6 +670,8 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                 "task_id": task_id,
                 "settings": dict(params),
                 "preset": str(params.get("preset", "") or ""),
+                # 旧客户端/手动导出为空；插件只能依据这个显式来源决定是否改规格。
+                "category_id": str(_render_queue.get(task_id, {}).get("category_id") or ""),
             }
             await execute_async(HookPoint.PRE_RENDER, hook_ctx)
             patched = hook_ctx.get("settings")
@@ -657,6 +699,10 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
                 pix_fmt_override=params.get("pix_fmt", ""),
                 soft_subtitle_srt=_srt_path,  # D4
                 loudnorm_enabled=bool(params.get("loudnorm", True)),
+                **_plugin_render_kwargs(
+                    tl, workspace_root=getattr(body, "workspace_root", "") or "",
+                    task_id=task_id,
+                ),
             )
             # SRT sidecar 用后即删（此前永久遗留 temp 目录）
             if _srt_path:
@@ -876,6 +922,15 @@ async def stream_render_progress(task_id: str, request: Request):
                         'output_path': rec.get("output_path", ''),
                     })
                     yield f"data: {payload}\n\n"
+                elif rec:
+                    # BE-09（审计 PRD §5E P3）：刷新后从 Mongo 恢复的**非终态**记录
+                    # （queued/rendering）——进程重启后永远不会再有 worker 处理它
+                    # （启动时的 mark_interrupted_render_tasks 会标 failed，但若那次
+                    # 写失败/还没跑到，这里就是活锁：旧实现发 "Task not found"
+                    # 误导前端当错误）。如实告知「进程重启，任务中断」，给终态语义。
+                    yield f"data: {json.dumps({'type': 'failed', 'task_id': task_id,
+                        'result': {'error': '服务进程已重启，该渲染任务已中断（未完成）'},
+                        'output_path': rec.get('output_path', '')})}\n\n"
                 else:
                     yield f"data: {json.dumps({'type': 'error', 'message': 'Task not found'})}\n\n"
                 return
@@ -1183,9 +1238,12 @@ def _as_render_params(preset: dict) -> dict:
 
 
 class RenderSettings(BaseModel):
-    """渲染参数。"""
+    """渲染参数。
+
+    BE-09（审计 PRD §5E P3）：`preset` 与 `soft_subtitle` 此前各声明了**两次**
+    （Pydantic 静默用后一个，前一个带描述的定义成了死配置）。现在各只保留一份。
+    """
     preset: str = Field(default="", description="导出预设名（tiktok/720p/prores422hq 等）")
-    soft_subtitle: bool = Field(default=False, description="字幕软轨封装（mov_text）而非烧入画面")
     container_ext: str = Field(default="", description="容器扩展名（覆盖，如 mov）")
     width: int = Field(default=1920, ge=64, le=7680, description="输出宽度 (px)")
     height: int = Field(default=1080, ge=64, le=4320, description="输出高度 (px)")
@@ -1193,7 +1251,6 @@ class RenderSettings(BaseModel):
     #: 码率或质量："5M" / "3000k" 走 ABR；"cq26" / "crf23" 走恒定质量（默认）
     bitrate: str = "cq26"
     audio_bitrate: str = "128k"
-    preset: str = ""  # 预设名称，如 "bilibili"、"tiktok"，会覆盖其他参数
     # Phase 3.3: 编码器/像素格式覆盖（交付级；空 = 自动探测/默认）
     encoder: str = Field(default="", description="编码器覆盖（libx264/h264_nvenc/prores_ks/libx265；空=自动）")
     pix_fmt: str = Field(default="", description="像素格式覆盖（yuv420p/yuv420p10le/yuv422p10le；空=默认）")
@@ -1219,6 +1276,28 @@ class RenderRequest(BaseModel):
         default=0.0, ge=0, le=15.0,
         description="负时间片头秒数（0 = 无片头；画面先起、音乐后进）",
     )
+    #: 显式选中的视频类型插件 id。旧客户端不传；插件 Hook 不得从宽高或
+    #: metadata 猜测类别。自动渲染由已知 category_plugin_id 的调用方填入。
+    category_id: str = Field(default="", max_length=64, description="显式视频类型插件 id（空 = 未指定）")
+
+
+def _validated_category_id(raw: str, *, strict: bool) -> str:
+    """非空 id 必须已在 CategoryRegistry 注册；strict 决定未知值是否报错。
+
+    默认 strict=False：类型插件可能被用户禁用，旧项目里仍存着它的 id。
+    渲染任务不该因为“类型暂时不可用”整单 400——按未指定处理并记一条告警即可。
+    """
+    value = str(raw or "").strip()
+    if not value:
+        return ""
+    from clipwright.category.registry import CategoryRegistry
+
+    if value not in getattr(CategoryRegistry, "_plugins", {}):
+        if strict:
+            raise ValueError(f"未知视频类型: {value}")
+        logger.warning("渲染请求的类型 %s 当前不可用，按未指定类型处理", value)
+        return ""
+    return value
 
 
 @router.get("/browser")
@@ -1420,6 +1499,9 @@ async def start_render(
             encoder_override=params.get("encoder", ""),
             pix_fmt_override=params.get("pix_fmt", ""),
             loudnorm_enabled=bool(params.get("loudnorm", True)),
+            **_plugin_render_kwargs(
+                tl, workspace_root=getattr(body, "workspace_root", "") or "",
+            ),
         )
     except Exception as e:
         logger.exception("start_render failed: %s", e)
@@ -1475,6 +1557,16 @@ async def get_video_thumbnail(path: str, time_sec: float = 0.5, request: Request
     from starlette.background import BackgroundTask
 
     from clipwright.security import assert_allowed_path
+
+    # BE-09（审计 PRD §5E P3）：time_sec 此前无范围校验——负数/NaN/巨值
+    # 直接拼进 ffmpeg 命令行（-ss 后任意字符串）。钳到 [0, 36000]（10h）。
+    try:
+        _t = float(time_sec)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="time_sec 必须是数字")
+    if _t != _t or _t in (float("inf"), float("-inf")):
+        raise HTTPException(status_code=400, detail="time_sec 非法（NaN/Inf）")
+    time_sec = max(0.0, min(_t, 36000.0))
 
     src = Path(path)
     if not src.exists() or not src.is_file():

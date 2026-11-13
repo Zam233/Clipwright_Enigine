@@ -83,13 +83,59 @@ class TestDependencyResolution:
         m = _manifest(id="dependent", dependencies=["not_installed_plugin"])
         assert loader._resolve_dependencies(m) == ["not_installed_plugin"]
 
-    def test_all_dependencies_satisfied(self, tmp_path) -> None:
+    def test_directory_present_but_not_loaded_is_unsatisfied(self, tmp_path) -> None:
+        """C1：目录存在但依赖没有真正加载成功，不能算满足。"""
         loader = PluginLoader(plugin_dir=tmp_path / "plugins", data_dir=tmp_path / "data")
         (tmp_path / "plugins" / "base_plugin").mkdir(parents=True)
         (tmp_path / "plugins" / "base_plugin" / "plugin.yaml").write_text(
             "id: base_plugin\nname: base\nkind: capability\n", encoding="utf-8")
         m = _manifest(id="dependent", dependencies=["base_plugin"])
+        assert loader._resolve_dependencies(m) == ["base_plugin"]
+
+    def test_all_dependencies_satisfied(self, tmp_path, monkeypatch) -> None:
+        loader = PluginLoader(plugin_dir=tmp_path / "plugins", data_dir=tmp_path / "data")
+        (tmp_path / "plugins" / "base_plugin").mkdir(parents=True)
+        (tmp_path / "plugins" / "base_plugin" / "plugin.yaml").write_text(
+            "id: base_plugin\nname: base\nkind: capability\n", encoding="utf-8")
+        # 模拟该依赖已经成功加载（loader._plugins 是判据，不只目录存在）。
+        loader._plugins["base_plugin"] = object()  # type: ignore[assignment]
+        m = _manifest(id="dependent", dependencies=["base_plugin"])
         assert loader._resolve_dependencies(m) == []
+
+    def test_single_plugin_load_pulls_installed_dependency(self, tmp_path) -> None:
+        """C1：单插件 load()（安装/手动启用）应自动载入已安装且启用的依赖。"""
+        plugins = tmp_path / "plugins"
+        for pid, extra in (("dep_base", ""), ("dep_user", "dependencies:\n  - dep_base\n")):
+            d = plugins / pid
+            d.mkdir(parents=True)
+            (d / "plugin.yaml").write_text(
+                f"id: {pid}\nname: {pid}\nkind: capability\n{extra}", encoding="utf-8")
+            (d / "main.py").write_text(
+                "from clipwright.plugins.base import BasePlugin\n"
+                "class P(BasePlugin):\n"
+                "    def initialize(self):\n"
+                "        pass\n",
+                encoding="utf-8",
+            )
+        loader = PluginLoader(plugin_dir=plugins, data_dir=tmp_path / "data")
+        handle = loader.load("dep_user")
+        assert handle is not None
+        assert "dep_base" in loader._plugins
+
+    def test_missing_dependency_still_rejected_on_single_load(self, tmp_path) -> None:
+        plugins = tmp_path / "plugins"
+        d = plugins / "dep_only"
+        d.mkdir(parents=True)
+        (d / "plugin.yaml").write_text(
+            "id: dep_only\nname: x\nkind: capability\n"
+            "dependencies:\n  - not_installed\n",
+            encoding="utf-8",
+        )
+        loader = PluginLoader(plugin_dir=plugins, data_dir=tmp_path / "data")
+        from clipwright.plugins import PluginLoadError
+
+        with pytest.raises(PluginLoadError, match="依赖"):
+            loader.load("dep_only")
 
 
 # ── M8: 启停持久化 ──

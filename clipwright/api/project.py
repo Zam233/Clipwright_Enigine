@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import threading
@@ -678,7 +679,10 @@ async def get_thumbnail(project_id: str, request: Request, force: bool = Query(F
         return FileResponse(thumb_path, media_type="image/jpeg")
 
     # Try to generate (or regenerate when force=True)
-    result = _manager.regenerate_thumbnail(project_id, force=force)
+    # BE-09（审计 PRD §5E P3）：regenerate_thumbnail 内部跑 ffmpeg 是同步阻塞调用，
+    # 旧实现在 async 端点里直接调 → 事件循环被卡住，所有并发请求排队。
+    # 挪到线程池执行。
+    result = await asyncio.to_thread(_manager.regenerate_thumbnail, project_id, force=force)
     if result and Path(result).exists():
         return FileResponse(result, media_type="image/jpeg")
 

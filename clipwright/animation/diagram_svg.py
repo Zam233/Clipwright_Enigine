@@ -194,13 +194,14 @@ class DiagramRenderer:
         if fn is not None:
             return cls._inject_motion(fn(items, text, style, width, height))
 
-        # 未找到 → 尝试从 Hook 加载插件渲染器
+        # 未找到 → 每次从当前 Hook 快照解析插件渲染器。
+        # C1：**不再写入** `_custom_renderers` 类缓存——旧实现首次命中后永久缓存，
+        # 插件被禁用/卸载后仍旧可渲染（能力泄漏），且无法按 owner 回收。
         try:
             from clipwright.plugins.hooks import HookRegistry, HookPoint
             ctx = HookRegistry.execute(HookPoint.DIAGRAM_RENDERER_EXTEND, {})
             for r in (ctx.get("renderers") or []):
                 if isinstance(r, dict) and r.get("id") == preset and "renderer" in r:
-                    cls._custom_renderers[preset] = r["renderer"]
                     fn = r["renderer"]
                     return cls._inject_motion(fn(items, text, style, width, height))
         except Exception:

@@ -254,7 +254,10 @@ class PluginLoader:
                 f"Plugin '{plugin_id}' 声明了未知权限 {forbidden}，拒绝加载"
             )
 
-        # 3. M2: 依赖解析（未安装 / 已禁用都拒绝）
+        # 3. M2: 依赖解析（未安装 / 已禁用 / 加载失败都拒绝）
+        # C1 修正：单插件 load()（安装、手动启用、依赖方先到）时依赖可能"已安装且
+        # 启用但尚未加载"。先按拓扑把这类依赖载进来，只有真正不可用才报缺依赖。
+        self._ensure_dependencies_loaded(plugin_id, manifest)
         missing = self._resolve_dependencies(manifest)
         if missing:
             get_error_bus().record(plugin_id, "load", f"缺少依赖插件 {missing}")
@@ -293,6 +296,11 @@ class PluginLoader:
                 f"Plugin '{plugin_id}' has no exported class in its entry module"
             )
         plugin.manifest = manifest
+        # B7：记录来源目录，供 override 受控来源判定（bundled vs 外部安装）。
+        try:
+            plugin._plugin_dir = str(plugin_path)
+        except Exception:  # noqa: BLE001 — 只读属性等极端情况
+            pass
         # 注入扁平值（向后兼容插件通过 self.config["key"] 访问；P1-7: secret 解密）
         plugin.config = _decrypt_flat(config)
 
@@ -311,6 +319,12 @@ class PluginLoader:
             plugin.initialize()
         except Exception as e:
             get_error_bus().record(plugin_id, "initialize", f"initialize() 失败: {e}")
+            # C1：initialize 可能在抛错前已注册部分贡献/工具/技能/类型/Agent；
+            # 失败必须当作整次激活失败，逆序清掉本次 owner 的残留，再抛出。
+            self._teardown_registrations(plugin_id)
+            from clipwright.plugins.provider_decl import forget_plugin
+
+            forget_plugin(plugin_id)
             raise PluginLoadError(
                 f"Plugin '{plugin_id}' initialize() failed: {e}"
             ) from e
@@ -377,15 +391,54 @@ class PluginLoader:
         return plugin
 
     def load_all(self) -> list[str]:
-        """发现并加载所有可用插件，返回成功加载的 ID 列表。"""
+        """发现并加载所有可用插件，返回成功加载的 ID 列表。
+
+        C1：按 manifest.dependencies 做稳定拓扑排序，确保依赖先于消费者加载；
+        无法解析的依赖不阻止继续尝试其它插件（只在 load() 内报缺依赖）。
+        """
+        ordered = self._topological_order()
         loaded: list[str] = []
-        for pid in self.discover():
+        for pid in ordered:
             try:
-                self.load(pid)
-                loaded.append(pid)
+                plugin = self.load(pid)
             except PluginLoadError as e:
                 logger.warning("插件加载失败 (skipped): %s", e)
+                continue
+            # load() 返回 None 表示被禁用/目录缺失——不能计入「已加载」。
+            if plugin is not None:
+                loaded.append(pid)
         return loaded
+
+    def _topological_order(self) -> list[str]:
+        """稳定拓扑序；循环依赖保持原发现顺序并记录错误（不阻断其余插件）。"""
+        discovered = list(self.discover())
+        result: list[str] = []
+        state: dict[str, int] = {}
+
+        def visit(pid: str, stack: tuple[str, ...]) -> None:
+            if state.get(pid) == 2:
+                return
+            if state.get(pid) == 1:
+                get_error_bus().record(
+                    pid, "load", "插件依赖成环: " + " -> ".join((*stack, pid)),
+                )
+                return
+            state[pid] = 1
+            try:
+                manifest = self._parse_manifest(pid, self.plugin_dir / pid)
+                deps = list(getattr(manifest, "dependencies", []) or [])
+            except Exception:  # noqa: BLE001 — 坏清单交给 load() 报错
+                deps = []
+            for dep in deps:
+                if dep in discovered:
+                    visit(dep, (*stack, pid))
+            state[pid] = 2
+            if pid not in result:
+                result.append(pid)
+
+        for pid in discovered:
+            visit(pid, ())
+        return result
 
     # ── 管理 ──
 
@@ -453,6 +506,30 @@ class PluginLoader:
             )
 
         runtime_config = dict(getattr(manifest, "runtime_config", {}) or {})
+        # B2：`extra_read_roots` 由 manifest 自报，宿主必须审核后再交给 worker。
+        # 只允许落在「插件目录 / 插件数据目录」内的目录；其它路径（用户主目录、
+        # 盘符根、workspace 之外的任意目录）一律丢弃并记录，避免插件凭一行声明
+        # 获得宿主任意目录的只读权。
+        if runtime_config.get("extra_read_roots"):
+            allowed_roots: list[str] = []
+            allowed_bases = [
+                Path(plugin_path).resolve(),
+                self.get_plugin_data_dir(plugin_id).resolve(),
+            ]
+            for raw in runtime_config.get("extra_read_roots") or []:
+                try:
+                    candidate = Path(str(raw)).expanduser().resolve()
+                except (OSError, ValueError):
+                    continue
+                if any(candidate == base or base in candidate.parents for base in allowed_bases):
+                    allowed_roots.append(str(candidate))
+                else:
+                    get_error_bus().record(
+                        plugin_id, "load",
+                        f"extra_read_roots 越界已忽略: {raw}",
+                    )
+            runtime_config["extra_read_roots"] = allowed_roots
+            manifest.runtime_config = runtime_config
         host = PluginHost(
             plugin_id, plugin_path, self.get_plugin_data_dir(plugin_id),
             call_timeout=float(runtime_config.get("call_timeout", 0) or 0) or 30.0,
@@ -472,6 +549,10 @@ class PluginLoader:
 
         self._hosts[plugin_id] = host
         try:
+            # M2：通用 workspace/artifact handler（无领域语义）
+            from clipwright.services.plugin_rpc import install_default_handlers
+
+            install_default_handlers(host, manifest=manifest)
             self._register_declarations(plugin_id, host, declarations, make_proxy, manifest)
         except Exception:
             self._hosts.pop(plugin_id, None)
@@ -527,6 +608,8 @@ class PluginLoader:
             ContributionKind.UI_SLOT, ContributionKind.EXPORT_PRESET,
             # 2026-11-07：display_spec 是纯数据（object 恒 None），子进程档无需代理对象
             ContributionKind.DISPLAY_SPEC,
+            # 2026-11-09（M4）：clip_kind 也是纯数据（展示信息/schema/契约名在 meta）
+            ContributionKind.CLIP_KIND,
         }
         items: list[Any] = []
         for decl in declarations:
@@ -539,10 +622,30 @@ class PluginLoader:
                 get_error_bus().record(
                     plugin_id, "load", f"未知贡献类型 {kind_name}:{cid}",
                 )
-                continue
+                # C1：子进程声明了宿主不认识的 kind，旧实现只记录后 continue，
+                # 插件仍「加载成功」但少了一条能力。改为整批失败（fail-closed），
+                # 由调用方清理已注册项。
+                raise PluginLoadError(
+                    f"Plugin '{plugin_id}' 声明了未知贡献类型 {kind_name}:{cid}"
+                ) from None
             if kind in _DECLARATIVE_KINDS:
                 # 纯数据贡献（界面插槽/导出预设）：不需要代理对象，元数据即全部
                 items.append(Contribution(kind, cid, None, meta=meta))
+                continue
+            if kind is ContributionKind.SKILL:
+                # M4：技能元数据由 meta 声明，执行经 skill.call RPC
+                from clipwright.plugins.skill_adapter import RemoteSkill
+
+                adapter = RemoteSkill(host, plugin_id, cid, meta)
+                items.append(Contribution(kind, cid, adapter, meta=meta))
+                continue
+            if kind is ContributionKind.CATEGORY:
+                # M4：类别用「meta 静态声明 + category.* RPC」适配成宿主插件，
+                # 不把插件的 Python 对象跨进程带过来。
+                from clipwright.plugins.category_adapter import RemoteCategoryPlugin
+
+                adapter = RemoteCategoryPlugin(host, plugin_id, meta, category_id=cid)
+                items.append(Contribution(kind, cid, adapter, meta=meta))
                 continue
             text = str(meta.get("prompt") or "") if kind is ContributionKind.PROMPT else ""
             proxy = make_proxy(host, kind_name, cid, meta, text)
@@ -570,6 +673,12 @@ class PluginLoader:
         Skill/Category/Prompt 为本次补齐，MaterialSource 沿用插件 shutdown
         自清（已有 3 个 AI 插件实现）。
         """
+        try:
+            from clipwright.services.plugin_rpc import unregister_plugin_runtime
+
+            unregister_plugin_runtime(plugin_id)
+        except Exception as e:  # noqa: BLE001 — 注销失败不阻断其他回收
+            logger.warning("插件 %s runtime 登记注销异常: %s", plugin_id, e)
         try:
             from clipwright.plugins.hooks import HookRegistry
             HookRegistry.unregister_plugin(plugin_id)
@@ -645,6 +754,13 @@ class PluginLoader:
                 logger.info("插件 %s 门面账本已回收: %d 条", plugin_id, len(recycled))
         except Exception as e:
             logger.warning("插件 %s 门面账本回收异常: %s", plugin_id, e)
+        # C2：Provider 配置 schema 也要随 owner 退出，否则 Providers 表单残留幽灵项。
+        try:
+            from clipwright.plugins.provider_decl import forget_plugin
+
+            forget_plugin(plugin_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("插件 %s Provider schema 回收异常: %s", plugin_id, e)
 
     def get(self, plugin_id: str) -> Optional[BasePlugin]:
         return self._plugins.get(plugin_id)
@@ -698,19 +814,32 @@ class PluginLoader:
 
         logger.info("Plugin config saved: %s", plugin_id)
 
-    def reload(self, plugin_id: str) -> None:
+    def reload(self, plugin_id: str) -> bool:
         """重载插件——shutdown 后重新 initialize，使新配置生效。
 
         P8 失败回滚：任何加载失败路径（PluginLoadError、其他异常、load 返回
         None 如被禁用/目录缺失）都恢复旧实例并尝试重新 initialize（shutdown
         已释放其资源）；回滚失败仍保留注册并记错误总线，插件不静默消失。
+
+        C2：子进程档必须**先停旧 worker 并摘掉 `_hosts` 引用**，否则新 load
+        会覆盖字典、旧进程继续存活；失败回滚也不复用一个已 shutdown 的实例。
+
+        返回 True 表示新实例已生效；False 表示走了回滚（调用方——配置保存接口
+        ——应据此返回 5xx，不能把失败报成“保存成功”）。
         """
         if plugin_id not in self._plugins:
             logger.warning("插件 %s 未加载，无法重载", plugin_id)
-            return
+            return False
 
         old_plugin = self._plugins.get(plugin_id)
         old_meta = self._metadatas.get(plugin_id)
+        old_host = self._hosts.pop(plugin_id, None)
+        if old_host is not None:
+            try:
+                old_host.stop()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("插件 %s 重载前停止旧 worker 异常: %s", plugin_id, e)
+                get_error_bus().record(plugin_id, "reload", f"停止旧 worker 异常: {e}")
 
         try:
             if old_plugin is not None:
@@ -746,11 +875,16 @@ class PluginLoader:
             if old_meta is not None:
                 self._metadatas[plugin_id] = old_meta
             try:
-                if old_plugin is not None:
+                if old_plugin is not None and old_host is None:
+                    # 进程内插件可以重新 initialize；子进程档的 host 已 stop，
+                    # 无法复用一个死 worker，明确报告失败而不是伪称已恢复。
                     old_plugin.initialize()
+                elif old_host is not None:
+                    raise RuntimeError("旧 worker 已停止，无法原地恢复")
             except Exception as e:
                 get_error_bus().record(plugin_id, "reload", f"回滚后旧实例 initialize 失败: {e}")
             logger.warning("插件 %s 已回滚到旧实例", plugin_id)
+        return reloaded
 
     @staticmethod
     def _purge_plugin_modules(plugin_id: str) -> None:
@@ -818,17 +952,56 @@ class PluginLoader:
 
     # ── M2: 依赖解析 ──
 
+    def _ensure_dependencies_loaded(self, plugin_id: str, manifest: PluginManifest) -> None:
+        """把「已安装且启用、但尚未加载」的依赖先加载（递归，防环）。
+
+        只看 `_plugins` 会把这类合法依赖误判为缺失，导致单插件安装/启用失败。
+        依赖本身不可用时保持原样，由 `_resolve_dependencies()` 统一报错。
+        """
+        deps = [d for d in (manifest.dependencies or []) if d != plugin_id]
+        if not deps:
+            return
+        installed = set(self.discover())
+        loading = getattr(self, "_loading_stack", None)
+        if loading is None:
+            loading = self._loading_stack = set()
+        if plugin_id in loading:
+            return  # 环：交给上层报错
+        loading.add(plugin_id)
+        try:
+            for dep in deps:
+                if dep in self._plugins or dep not in installed:
+                    continue
+                if not self.is_enabled(dep):
+                    continue
+                if dep in loading:
+                    continue
+                try:
+                    self.load(dep)
+                except PluginLoadError as e:
+                    # 依赖自己坏了：记录后交给缺失检查统一拒绝
+                    logger.warning("依赖插件 %s 加载失败: %s", dep, e)
+        finally:
+            loading.discard(plugin_id)
+
     def _resolve_dependencies(self, manifest: PluginManifest) -> list[str]:
-        """返回 manifest 声明依赖中**不可用**（未安装或已禁用）的插件 ID。
+        """返回 manifest 声明依赖中**不可用**（未安装、已禁用或未成功加载）的插件 ID。
 
         P2-54：旧实现只看目录是否存在——依赖被 disable 后仍然放行，运行期缺能力。
+        C1：依赖还必须真的加载成功；「目录在但加载失败」同样算缺失。
         """
         if not manifest.dependencies:
             return []
         available = set(self.discover())
         missing: list[str] = []
         for dep in manifest.dependencies:
-            if dep not in available or not self.is_enabled(dep):
+            if dep not in available:
+                missing.append(dep)
+                continue
+            if not self.is_enabled(dep):
+                missing.append(dep)
+                continue
+            if dep not in self._plugins:
                 missing.append(dep)
         return missing
 
@@ -849,24 +1022,57 @@ class PluginLoader:
             return config
 
         # 尝试加载插件目录 migrations.py 中的 migrate_config(config, from, to)
+        # BE-09（审计 PRD §5E P3）：迁移完成后**立即从 sys.path 摘掉插件根**——
+        # 旧实现只 append 不 remove，多个插件重名模块（`migrations.py`、`utils.py`）
+        # 会互相遮蔽，且每次 reload 再 append 一条，越积越多。
+        migrate_fn = None
+        plugin_dir_str = str(self.plugin_dir)
+        added_to_path = False
+        if plugin_dir_str not in sys.path:
+            sys.path.append(plugin_dir_str)
+            added_to_path = True
         try:
-            plugin_dir_str = str(self.plugin_dir)
-            if plugin_dir_str not in sys.path:
-                sys.path.append(plugin_dir_str)
             migrate_fn = getattr(importlib.import_module(f"{plugin_id}.migrations"), "migrate_config", None)
-        except Exception:
-            migrate_fn = None
+        except Exception as exc:
+            logger.debug("插件 %s 无迁移器（可忽略）: %s", plugin_id, exc)
+        finally:
+            if added_to_path:
+                try:
+                    sys.path.remove(plugin_dir_str)
+                except ValueError:  # 已被并发移除
+                    pass
 
         migrated = config
         if callable(migrate_fn):
             try:
                 migrated = migrate_fn(config, current, target_schema)
             except Exception as e:
-                logger.warning("插件 %s 配置迁移失败（保留原值）: %s", plugin_id, e)
+                # C2：迁移失败必须保留原值与原版本，不能把内存版本推进到 target
+                # （旧实现无论成功失败都写 _schema_version，导致重启后不再重试）。
+                logger.warning("插件 %s 配置迁移失败（保留原值与版本）: %s", plugin_id, e)
+                return config
         if not isinstance(migrated, dict):
-            migrated = config
+            logger.warning("插件 %s 迁移器返回非对象，保留原值", plugin_id)
+            return config
         migrated = dict(migrated)
         migrated["_schema_version"] = target_schema
+        # C2：成功结果原子写回 PluginData（仅在已有用户覆盖文件时更新；
+        # 源码默认 config.yaml 保持只读）。写失败不推进内存版本。
+        try:
+            data_dir = self.get_plugin_data_dir(plugin_id)
+            target_path = data_dir / "config.yaml"
+            if target_path.exists():
+                tmp = target_path.with_suffix(".yaml.migrating")
+                tmp.write_text(
+                    yaml.dump(migrated, allow_unicode=True, default_flow_style=False),
+                    encoding="utf-8",
+                )
+                import os as _os
+
+                _os.replace(tmp, target_path)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("插件 %s 迁移结果落盘失败，保留原文件: %s", plugin_id, e)
+            return config
         return migrated
 
     # ── 内部 ──
@@ -892,9 +1098,16 @@ class PluginLoader:
         manifest_path = plugin_path / "plugin.yaml"
         if manifest_path.exists():
             try:
-                with open(manifest_path, encoding="utf-8") as f:
-                    data: dict[str, Any] = yaml.safe_load(f) or {}
-            except yaml.YAMLError as e:
+                from clipwright.plugins.manifest_yaml import (
+                    PluginManifestError,
+                    load_manifest_dict,
+                )
+
+                data: dict[str, Any] = load_manifest_dict(
+                    manifest_path.read_text(encoding="utf-8"),
+                    source=str(manifest_path),
+                )
+            except (PluginManifestError, yaml.YAMLError) as e:
                 raise PluginLoadError(
                     f"Plugin '{plugin_id}' plugin.yaml 解析失败: {e}"
                 ) from e

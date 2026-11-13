@@ -84,8 +84,17 @@ class ShortformCategoryPlugin(BaseCategoryPlugin):
 
     @staticmethod
     def _inject_vertical(context: dict[str, Any]) -> dict[str, Any]:
-        """PRE_RENDER hook: 强制竖屏尺寸。"""
+        """PRE_RENDER hook: 仅当请求显式选择本插件类型时才改竖屏尺寸。
+
+        ``category_id`` 由宿主 RenderRequest 提供，旧客户端和手动导出为空。
+        禁止从宽高、preset 或 timeline.metadata 猜测类别：那会让所有成片被
+        无条件改成 1080x1920。
+        """
+        if str(context.get("category_id") or "") != "shortform_category":
+            return {}
         settings = context.get("settings", {})
+        if not isinstance(settings, dict):
+            return {}
         settings["width"] = 1080
         settings["height"] = 1920
         context["settings"] = settings

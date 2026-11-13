@@ -58,6 +58,110 @@ def test_plan_only_completed_not_misjudged_as_capped():
     assert treason is TerminalReason.plan_only_completed
 
 
+# ── KK-09：收口期行为性失败是 blocked 不是 capped ─────────────────────────
+
+def test_repeat_fail_in_closeout_is_blocked_not_capped():
+    """收口期"同一工具连续失败 3 次"（agent_loop 的文案不含「熔断」）必须判
+    blocked——旧实现被 in_closeout 分支吞掉判成 capped。"""
+    kernel = AgentKernel()
+    task = _task()
+    task.closeout.mode = "soft_landing"
+    status, treason, blocker = kernel._classify_gate(
+        task, "同一工具连续失败 3 次（video_trim）：ffprobe failed")
+    assert status == "failed"
+    assert treason == "blocked"
+    assert blocker == "repeat_fail"
+
+
+def test_no_progress_in_closeout_is_blocked_not_capped():
+    kernel = AgentKernel()
+    task = _task()
+    task.closeout.mode = "soft_landing"
+    status, treason, blocker = kernel._classify_gate(
+        task, "连续 6 次检查没有任何新进展")
+    assert status == "failed"
+    assert treason == "blocked"
+    assert blocker == "no_progress"
+
+
+def test_closeout_window_still_capped():
+    """真正的收口窗口用尽仍是 capped——行为性失败修复不得误伤正常封顶。"""
+    kernel = AgentKernel()
+    task = _task()
+    task.closeout.mode = "soft_landing"
+    status, treason, blocker = kernel._classify_gate(task, "收口窗口用尽")
+    assert status == "capped"
+    assert treason == "capped"
+    assert blocker == "budget_exhausted"
+
+
+# ── KK-09：limits_from_settings 对非法预算值不再炸 create ─────────────────
+
+@pytest.mark.parametrize("raw", ["", "abc", "  "])
+def test_invalid_budget_setting_falls_back_to_none(raw, monkeypatch):
+    """空串/非数字的 pipeline_budget_usd 旧实现直接抛 ValidationError（create 500），
+    现在按「未配置」处理并留 warning。"""
+    from unittest.mock import patch
+
+    with patch.object(kernel_mod.settings, "pipeline_budget_usd", raw):
+        limits = kernel_mod.limits_from_settings()
+    assert limits.budget_usd is None
+
+
+@pytest.mark.parametrize("raw,expected", [(None, None), ("2.5", 2.5), (3, 3.0)])
+def test_valid_budget_setting_passthrough(raw, expected, monkeypatch):
+    from unittest.mock import patch
+
+    with patch.object(kernel_mod.settings, "pipeline_budget_usd", raw):
+        limits = kernel_mod.limits_from_settings()
+    assert limits.budget_usd == expected
+
+
+# ── KK-09：ok 路径也写收口报告（交接物不缺位）────────────────────────────
+
+def test_write_closeout_report_accepts_achieved_reason(tmp_path, monkeypatch):
+    """ok 路径（achieved）也能落收口报告：terminal_reason 参数化、
+    deliverable_status 同步写入、清单来自 _closeout_evidence。"""
+    kernel = AgentKernel()
+    task = _task(status="running")
+    task.closeout.mode = "closed"
+    kernel_mod._TASKS[task.id] = task
+
+    monkeypatch.setattr(
+        kernel, "_closeout_evidence",
+        lambda t: (["final_timeline"], []),
+        raising=False,
+    )
+    monkeypatch.setattr(kernel_mod, "_workspace_root_of", lambda t: str(tmp_path))
+
+    payload = kernel._write_closeout_report(
+        task, why="工具循环结束", terminal_reason="achieved")
+
+    assert payload["terminal_reason"] == "achieved"
+    assert payload["completed"] == ["final_timeline"]
+    # 报告已落盘且路径回填
+    from pathlib import Path
+    report = Path(payload["path"])
+    assert report.exists()
+    # deliverable_status 由报告写入流程置位
+    assert task.closeout.deliverable_status == "delivered"
+
+    kernel_mod._TASKS.pop(task.id, None)
+
+
+def test_write_closeout_report_default_reason_is_capped():
+    """capped 调用点（旧签名）行为不变——terminal_reason 缺省 'capped'。"""
+    kernel = AgentKernel()
+    task = _task(status="running")
+    task.closeout.mode = "closed"
+    kernel_mod._TASKS[task.id] = task
+
+    payload = kernel._write_closeout_report(task, why="预算耗尽")
+    assert payload["terminal_reason"] == "capped"
+
+    kernel_mod._TASKS.pop(task.id, None)
+
+
 # ── KK-01：金额闸只看主 agent 花费 ────────────────────────────────────────
 
 def test_budget_gate_uses_main_spent_not_total():

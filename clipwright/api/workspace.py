@@ -24,7 +24,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from clipwright.config import logger, settings
@@ -505,7 +505,8 @@ async def workspace_events(project_id: str, since: int = Query(default=0)) -> di
 
 @router.get("/{project_id}/events/stream")
 async def workspace_events_stream(project_id: str,
-                                  since: int = Query(default=0)) -> StreamingResponse:
+                                  since: int = Query(default=0),
+                                  request: Request = None) -> StreamingResponse:
     """SSE：和 pipeline trace 同构（seq 游标 + data: 帧）。仅在显式订阅时挂起。"""
     _ws(project_id)
 
@@ -513,6 +514,10 @@ async def workspace_events_stream(project_id: str,
         cursor = int(since or 0)
         idle = 0
         while True:
+            # BE-09（审计 PRD §5E P3）：客户端断开（页面关闭/切走）后协程继续
+            # 空转写 keep-alive，永不退出。每轮检测断连提前结束。
+            if request is not None and await request.is_disconnected():
+                return
             batch = ws_mod.events(project_id, since=cursor)
             for ev in batch:
                 cursor = ev["seq"]

@@ -723,6 +723,16 @@ async def task_result(task_id: str, request: Request) -> dict:
 
     _enforce_task_owner(request, task_id)
     result = last_result(task_id)
+    # 任务发起时若带了项目，产物查询以该项目为范围（前端 artifact 列表用）
+    project_id = ""
+    try:
+        from clipwright.services.agent_kernel import _TASKS  # noqa: PLC2701 — 只读快照
+
+        task = _TASKS.get(task_id)
+        if task is not None:
+            project_id = str((task.request.extra or {}).get("proceed_project_id") or "")
+    except Exception:  # noqa: BLE001 — 取不到就返回空，不影响旧字段
+        project_id = ""
     timeline = None
     if isinstance(result, dict):
         timeline = result.get("timeline") or (result.get("shared_data") or {}).get("timeline")
@@ -734,6 +744,7 @@ async def task_result(task_id: str, request: Request) -> dict:
         "clips": sum(len(t.get("clips") or []) for t in tracks),
         "duration_sec": float((timeline or {}).get("duration_sec") or 0.0),
         "output_path": (result or {}).get("output_path") or "",
+        "project_id": project_id,
     }
 
 

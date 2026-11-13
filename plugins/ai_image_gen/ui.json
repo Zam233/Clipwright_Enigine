@@ -27,7 +27,7 @@
                 "errorKey": "error",
                 "successKey": "success",
                 "body": {
-                  "tool": "ai_image_generate",
+                  "name": "ai_image_generate",
                   "params": {
                     "prompt": "${prompt}",
                     "width": 1024,
@@ -35,7 +35,7 @@
                   }
                 },
                 "resultMap": {
-                  "url": "url"
+                  "url": "output.url"
                 }
               }
             }

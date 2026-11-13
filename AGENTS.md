@@ -186,9 +186,9 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
 
 ## Git 分支命名（2026-11-08 起）
 
-- 格式：`<type>/<提交人>_<主要变更>`，例：`feat/zam_agent_pipeline`、`doc/zam_update_README`、`fix/zam_render_params`。
+- 格式：`<type>/<提交人>_<主要变更>`，例：`feat/zam_agent_pipeline`、`ref/zam_update_README`、`fix/zam_render_params`。
 - `<提交人>` 用 GitHub 用户名（小写）；`<主要变更>` 用简短英文 + 下划线，避免中文、空格与大写混排。
-- `<type>` 取 `feat` / `doc` / `fix` / `chore`；文档改动一律 `doc/`（例如 `doc/zam_update_README`，不要 `docs/readme` 这类缺提交人的名字）。
+- `<type>` 取 `feat` / `ref` / `fix` / `chore`；文档改动一律 `ref/`（例如 `ref/zam_update_README`，不要 `docs/readme` 这类缺提交人的名字）。
 - 分支从当前基线（`main` / `master` 或目标集成分支）切出，PR 的 base 与切出点一致。
 - 存量长生命周期分支（如 `feat/master-agent`）是规则之前的历史，保留原名即可，新建分支一律按本约定。
 

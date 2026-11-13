@@ -12,6 +12,9 @@ from typing import Optional
 from clipwright.config import logger, settings
 
 MAX_TARBALL_BYTES = 200 * 1024 * 1024
+#: 解包后的总字节与成员数上限（防压缩炸弹；压缩包大小上限挡不住高压缩比）。
+MAX_EXTRACTED_BYTES = 500 * 1024 * 1024
+MAX_MEMBERS = 5000
 
 
 def _safe_extract(data: bytes, dest: Path, required_manifest: str) -> None:
@@ -19,23 +22,68 @@ def _safe_extract(data: bytes, dest: Path, required_manifest: str) -> None:
 
     P1-14: 旧实现 (a) startswith 前缀比较可被 `tmp/abc` vs `tmp/abc-evil`
     绕过、(b) 未拒 symlink/hardlink 成员、(c) extractall 未用 filter="data"。
+
+    B1：另按成员数与解包总字节限额（tar header 预检 + 实际写入计数），
+    防止高压缩比包把磁盘写满。
     """
     dest_resolved = dest.resolve()
+    total_bytes = 0
+    members = 0
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
-        for member in tf.getmembers():
+        all_members = tf.getmembers()
+        if len(all_members) > MAX_MEMBERS:
+            raise ValueError(f"压缩包成员过多（>{MAX_MEMBERS}）")
+        for member in all_members:
+            members += 1
             if member.issym() or member.islnk():
                 raise ValueError(f"拒绝符号链接/硬链接条目: {member.name}")
             target = (dest / member.name).resolve()
             if not target.is_relative_to(dest_resolved):
                 raise ValueError(f"非法路径条目: {member.name}")
+            total_bytes += max(0, int(member.size or 0))
+            if total_bytes > MAX_EXTRACTED_BYTES:
+                raise ValueError(
+                    f"解包后总大小超限（>{MAX_EXTRACTED_BYTES} 字节）",
+                )
         names = tf.getnames()
         if not any(n.endswith(required_manifest) for n in names):
             raise ValueError(f"缺少必需清单文件 {required_manifest}")
-        # filter="data"（Python 3.12+）：进一步拒绝绝对路径/穿越/设备文件
-        try:
-            tf.extractall(dest, filter="data")
-        except TypeError:  # 老版本 Python 无 filter 参数
-            tf.extractall(dest)
+        # B1：按**实际写出字节**限额（header.size 可被伪造），分块复制而不是
+        # 交给 extractall 一把梭。
+        written = 0
+        for member in all_members:
+            target = dest / member.name
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            source = tf.extractfile(member)
+            if source is None:  # 设备文件等：前面已拒绝，这里兜底
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "wb") as out:
+                while True:
+                    block = source.read(1024 * 1024)
+                    if not block:
+                        break
+                    written += len(block)
+                    if written > MAX_EXTRACTED_BYTES:
+                        raise ValueError(
+                            f"解包后总大小超限（>{MAX_EXTRACTED_BYTES} 字节）",
+                        )
+                    out.write(block)
+
+
+def _validated_plugin_id(plugin_id: str) -> str:
+    """安装路径的插件 id 必须先过统一校验，禁止 ``..``/盘符/绝对路径。
+
+    API 端点的 `_validate_plugin_id` 不能替代离线安装函数自身的校验。
+    """
+    from clipwright.security import SecurityViolation, validate_id
+
+    try:
+        return validate_id(str(plugin_id or ""), "plugin_id")
+    except SecurityViolation as e:
+        raise ValueError(f"非法 plugin_id: {e}") from e
 
 
 def install_plugin_from_bytes(data: bytes, plugin_id: str, expected_sha256: str = "") -> Path:
@@ -43,6 +91,7 @@ def install_plugin_from_bytes(data: bytes, plugin_id: str, expected_sha256: str 
 
     P2: 支持 expected_sha256 校验（下载端提供）；load 失败时自动回滚删除 plugin_dir。
     """
+    plugin_id = _validated_plugin_id(plugin_id)
     if len(data) > MAX_TARBALL_BYTES:
         raise ValueError("包大小超限")
     # sha256 完整性校验

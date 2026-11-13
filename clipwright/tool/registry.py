@@ -16,6 +16,26 @@ from clipwright.schema.tool import ToolExecResult, ToolInfo, ToolStatus
 from clipwright.tool.base import BaseTool
 
 
+def _plugin_owner_alive(plugin_id: str) -> bool:
+    """插件 owner 是否仍然可用（加载且启用）。
+
+    读的是 API 层注入的 loader 单例；没有 loader（纯单元测试/嵌入式使用）时
+    视为存活，避免把「没有插件系统」误判成「插件已死」。
+    """
+    try:
+        from clipwright.api.plugin import _loader as loader
+    except Exception:  # noqa: BLE001 — 循环导入等极端情况按存活处理
+        return True
+    if loader is None:
+        return True
+    try:
+        if not loader.is_enabled(plugin_id):
+            return False
+        return loader.get(plugin_id) is not None
+    except Exception:  # noqa: BLE001 — 查询失败不阻断既有调用
+        return True
+
+
 class ToolRegistry:
     """全局工具注册表。"""
 
@@ -264,6 +284,17 @@ class ToolRegistry:
                 status=ToolStatus.NOT_FOUND,
                 tool_name=name,
                 error=f"Tool '{name}' not registered",
+            )
+        # C1：插件注销失败时残留的 owner 不得继续被调用。工具自带 `_plugin_id`
+        # 就要求该插件仍加载且启用；否则按 NOT_FOUND 处理（与“能力缺失”同语义），
+        # 不让失活实现继续吃配额或改状态。
+        owner = str(getattr(tool, "_plugin_id", "") or "")
+        if owner and not _plugin_owner_alive(owner):
+            logger.warning("ToolRegistry: 插件 %s 已失活，拒绝执行 %s", owner, name)
+            return ToolExecResult(
+                status=ToolStatus.NOT_FOUND,
+                tool_name=name,
+                error=f"Tool '{name}' 所属插件 {owner} 未加载或已禁用",
             )
         logger.info("ToolRegistry: 执行 %s(%s)", name,
                     ", ".join(f"{k}={v}" for k, v in list(kwargs.items())[:3]))

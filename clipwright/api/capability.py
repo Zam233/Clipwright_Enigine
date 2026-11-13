@@ -44,10 +44,15 @@ class _CapabilityRequest(BaseModel):
 
 
 def _resolve(name: str) -> Any:
-    """按能力名解析实现；解析不到 → 404（不是 500，也不是静默降级）。"""
-    from clipwright.tool.capabilities import resolve_name
+    """按能力名解析实现；解析不到 → 404（不是 500，也不是静默降级）。
 
-    tool = resolve_name(name)
+    C1：这里用 ``resolve_any``（不筛可用性），把「装了但没配」交给
+    `_assert_usable` 报 503——只筛可用会让 503 分支永远不可达，前端会把
+    「去配凭据」误读成「去装插件」。
+    """
+    from clipwright.tool.capabilities import resolve_any
+
+    tool = resolve_any(name)
     if tool is None:
         raise HTTPException(
             status_code=404,

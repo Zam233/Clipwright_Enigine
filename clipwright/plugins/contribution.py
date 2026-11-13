@@ -47,6 +47,9 @@ class ContributionKind(str, Enum):
     #: engine 从不执行插件的任何可调用对象（见
     #: docs/genui-plugin-migration-prd-2026-11-07.md §3.1/§3.3）。
     DISPLAY_SPEC = "display_spec"
+    # ── 方案 F：插件轨道/片段类型（第 19 类，2026-11-09 动效插件 M4）──
+    #: 纯数据扩展点：`object` 恒为 None，展示信息/ schema / 契约名全在 meta
+    CLIP_KIND = "clip_kind"
 
 
 class ConflictPolicy(str, Enum):

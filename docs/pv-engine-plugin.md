@@ -1,5 +1,10 @@
 # PV 引擎插件（`pv_engine`）v2
 
+> **已移除（2026-11-09）**：`plugins/pv_engine/` 及其插件测试已删除；本文仅作历史参考。
+> 按用户要求 engine 代码未改动，因此 `main.py` 的 `/pv-engine` 静态挂载与
+> `capability_matrix` 中的 pv 能力名仍在，但对应能力现在解析为「不可用」。
+
+
 把逐帧纯函数渲染引擎接成 Clipwright 里 **agent / 子 agent 可调用** 的能力。
 
 - 引擎两种合法形态：**通用引擎**（`engine/cli.py`，如 `K:\video engine`）与 **上游 PV 仓库**
