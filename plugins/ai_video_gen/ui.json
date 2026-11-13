@@ -34,8 +34,8 @@
                   }
                 },
                 "resultMap": {
-                  "url": "url",
-                  "status": "status"
+                  "url": "output.url",
+                  "status": "output.status"
                 }
               }
             }

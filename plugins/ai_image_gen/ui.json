@@ -35,7 +35,7 @@
                   }
                 },
                 "resultMap": {
-                  "url": "url"
+                  "url": "output.url"
                 }
               }
             }

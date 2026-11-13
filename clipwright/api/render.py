@@ -525,7 +525,8 @@ async def queue_render(body: RenderRequest, request: Request) -> dict:
     except (TypeError, ValueError):
         priority = 3
     try:
-        category_id = _validated_category_id(body.category_id, strict=True)
+        # strict=False：类型暂时不可用不应让旧项目的导出整单失败
+        category_id = _validated_category_id(body.category_id, strict=False)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     _render_queue[task_id] = {
@@ -1281,7 +1282,11 @@ class RenderRequest(BaseModel):
 
 
 def _validated_category_id(raw: str, *, strict: bool) -> str:
-    """非空 id 必须已在 CategoryRegistry 注册；strict 决定未知值是否报错。"""
+    """非空 id 必须已在 CategoryRegistry 注册；strict 决定未知值是否报错。
+
+    默认 strict=False：类型插件可能被用户禁用，旧项目里仍存着它的 id。
+    渲染任务不该因为“类型暂时不可用”整单 400——按未指定处理并记一条告警即可。
+    """
     value = str(raw or "").strip()
     if not value:
         return ""
@@ -1290,6 +1295,7 @@ def _validated_category_id(raw: str, *, strict: bool) -> str:
     if value not in getattr(CategoryRegistry, "_plugins", {}):
         if strict:
             raise ValueError(f"未知视频类型: {value}")
+        logger.warning("渲染请求的类型 %s 当前不可用，按未指定类型处理", value)
         return ""
     return value
 
