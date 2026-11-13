@@ -48,11 +48,29 @@ def _safe_extract(data: bytes, dest: Path, required_manifest: str) -> None:
         names = tf.getnames()
         if not any(n.endswith(required_manifest) for n in names):
             raise ValueError(f"缺少必需清单文件 {required_manifest}")
-        # filter="data"（Python 3.12+）：进一步拒绝绝对路径/穿越/设备文件
-        try:
-            tf.extractall(dest, filter="data")
-        except TypeError:  # 老版本 Python 无 filter 参数
-            tf.extractall(dest)
+        # B1：按**实际写出字节**限额（header.size 可被伪造），分块复制而不是
+        # 交给 extractall 一把梭。
+        written = 0
+        for member in all_members:
+            target = dest / member.name
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            source = tf.extractfile(member)
+            if source is None:  # 设备文件等：前面已拒绝，这里兜底
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "wb") as out:
+                while True:
+                    block = source.read(1024 * 1024)
+                    if not block:
+                        break
+                    written += len(block)
+                    if written > MAX_EXTRACTED_BYTES:
+                        raise ValueError(
+                            f"解包后总大小超限（>{MAX_EXTRACTED_BYTES} 字节）",
+                        )
+                    out.write(block)
 
 
 def _validated_plugin_id(plugin_id: str) -> str:

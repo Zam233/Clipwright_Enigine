@@ -506,6 +506,30 @@ class PluginLoader:
             )
 
         runtime_config = dict(getattr(manifest, "runtime_config", {}) or {})
+        # B2：`extra_read_roots` 由 manifest 自报，宿主必须审核后再交给 worker。
+        # 只允许落在「插件目录 / 插件数据目录」内的目录；其它路径（用户主目录、
+        # 盘符根、workspace 之外的任意目录）一律丢弃并记录，避免插件凭一行声明
+        # 获得宿主任意目录的只读权。
+        if runtime_config.get("extra_read_roots"):
+            allowed_roots: list[str] = []
+            allowed_bases = [
+                Path(plugin_path).resolve(),
+                self.get_plugin_data_dir(plugin_id).resolve(),
+            ]
+            for raw in runtime_config.get("extra_read_roots") or []:
+                try:
+                    candidate = Path(str(raw)).expanduser().resolve()
+                except (OSError, ValueError):
+                    continue
+                if any(candidate == base or base in candidate.parents for base in allowed_bases):
+                    allowed_roots.append(str(candidate))
+                else:
+                    get_error_bus().record(
+                        plugin_id, "load",
+                        f"extra_read_roots 越界已忽略: {raw}",
+                    )
+            runtime_config["extra_read_roots"] = allowed_roots
+            manifest.runtime_config = runtime_config
         host = PluginHost(
             plugin_id, plugin_path, self.get_plugin_data_dir(plugin_id),
             call_timeout=float(runtime_config.get("call_timeout", 0) or 0) or 30.0,
@@ -790,7 +814,7 @@ class PluginLoader:
 
         logger.info("Plugin config saved: %s", plugin_id)
 
-    def reload(self, plugin_id: str) -> None:
+    def reload(self, plugin_id: str) -> bool:
         """重载插件——shutdown 后重新 initialize，使新配置生效。
 
         P8 失败回滚：任何加载失败路径（PluginLoadError、其他异常、load 返回
@@ -799,10 +823,13 @@ class PluginLoader:
 
         C2：子进程档必须**先停旧 worker 并摘掉 `_hosts` 引用**，否则新 load
         会覆盖字典、旧进程继续存活；失败回滚也不复用一个已 shutdown 的实例。
+
+        返回 True 表示新实例已生效；False 表示走了回滚（调用方——配置保存接口
+        ——应据此返回 5xx，不能把失败报成“保存成功”）。
         """
         if plugin_id not in self._plugins:
             logger.warning("插件 %s 未加载，无法重载", plugin_id)
-            return
+            return False
 
         old_plugin = self._plugins.get(plugin_id)
         old_meta = self._metadatas.get(plugin_id)
@@ -857,6 +884,7 @@ class PluginLoader:
             except Exception as e:
                 get_error_bus().record(plugin_id, "reload", f"回滚后旧实例 initialize 失败: {e}")
             logger.warning("插件 %s 已回滚到旧实例", plugin_id)
+        return reloaded
 
     @staticmethod
     def _purge_plugin_modules(plugin_id: str) -> None:

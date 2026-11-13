@@ -34,6 +34,7 @@ from clipwright.plugins.runtime.protocol import (
     ERR_TIMEOUT,
     ERR_UNKNOWN_METHOD,
     MAX_FRAME_BYTES,
+    check_version,
     ERR_WORKER_DEAD,
     MAX_INFLIGHT,
     PROTOCOL_VERSION,
@@ -373,10 +374,16 @@ class PluginHost:
                     break
                 try:
                     message = decode(line)
+                    # B2：每条入站帧都校验协议版本——旧实现只在握手看一次，
+                    # worker 后续发 v3 或省略 v 都会被当成合法消息处理。
+                    check_version(message)
                     direction = direction_of(message)
                 except RpcError as e:
                     logger.warning("子进程插件 %s 回帧非法: %s", self.plugin_id, e.message)
-                    continue
+                    # 版本/方向错说明对端实现不可信，继续读只会收到更多坏帧：
+                    # 标记死亡并结束读循环，让调用方拿到明确错误而不是半可用状态。
+                    self.mark_dead(f"协议帧非法: {e.message}")
+                    break
 
                 if is_request(message):
                     if direction != DIRECTION_WORKER:

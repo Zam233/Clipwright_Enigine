@@ -158,6 +158,22 @@ def _matches(tool: Any, capability: str) -> bool:
     return getattr(tool, "name", "") in CAPABILITY_ALIASES.get(capability, ())
 
 
+def resolve_any(capability_or_name: str, *, prefer: Iterable[str] = ()) -> Any | None:
+    """解析实现但**不**要求可用（用于区分 404 与 503）。
+
+    网关需要知道“这个能力存在但依赖没配”（503）与“根本没有实现”（404）。
+    `resolve_name()` 会过滤不可用项，只适合“要直接执行”的调用方。
+    """
+    tool = resolve(capability_or_name, prefer=prefer)
+    if tool is not None:
+        return tool
+    direct = _registry().get(capability_or_name)
+    if direct is not None:
+        return direct
+    declared = candidates(capability_or_name)
+    return declared[0] if declared else None
+
+
 def resolve_name(capability_or_name: str, *, prefer: Iterable[str] = ()) -> Any | None:
     """先按能力解析；失败再当作工具名直取（向后兼容显式名字调用）。
 

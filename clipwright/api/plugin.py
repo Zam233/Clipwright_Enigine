@@ -724,7 +724,7 @@ async def put_plugin_config(plugin_id: str, request: Request) -> dict[str, objec
     backup = config_path.read_text(encoding="utf-8") if config_path.exists() else None
     try:
         _loader.save_config(plugin_id, data)
-        _loader.reload(plugin_id)
+        applied = _loader.reload(plugin_id)
     except Exception as e:
         # C2：保存/重载失败必须还原旧文件与旧运行态，不能返回假成功。
         try:
@@ -739,6 +739,13 @@ async def put_plugin_config(plugin_id: str, request: Request) -> dict[str, objec
                 detail=f"配置更新失败且回滚失败: {e}; 回滚错误: {restore_error}",
             ) from e
         raise HTTPException(status_code=500, detail=f"配置更新失败，已回滚: {e}") from e
+    if not applied:
+        # 配置已落盘但插件没能用新配置起来（回滚到旧实例）：明确告诉调用方，
+        # 不能回 200 让用户以为已生效。
+        raise HTTPException(
+            status_code=500,
+            detail="配置已保存，但插件重载失败并已回滚到旧实例；请查看插件错误日志",
+        )
     # B5：重载会重新注册贡献（例如钩子/槽位随配置变化），失效读路径缓存
     _invalidate_plugin_caches()
     return {"status": "ok", "plugin_id": plugin_id}
@@ -766,7 +773,7 @@ async def delete_plugin_config(plugin_id: str, request: Request) -> dict[str, st
             from clipwright.plugins.loader import _extract_flat_values
             plugin.config = _extract_flat_values(_loader._get_merged_config(plugin_id))
 
-        _loader.reload(plugin_id)
+        applied = _loader.reload(plugin_id)
     except Exception as e:
         try:
             if backup is not None:
@@ -778,6 +785,11 @@ async def delete_plugin_config(plugin_id: str, request: Request) -> dict[str, st
                 detail=f"配置删除失败且回滚失败: {e}; 回滚错误: {restore_error}",
             ) from e
         raise HTTPException(status_code=500, detail=f"配置删除失败，已回滚: {e}") from e
+    if not applied:
+        raise HTTPException(
+            status_code=500,
+            detail="配置已删除，但插件重载失败并已回滚到旧实例；请查看插件错误日志",
+        )
     # B5：重载后贡献集合可能变化，失效读路径缓存
     _invalidate_plugin_caches()
     return {"status": "ok", "plugin_id": plugin_id}

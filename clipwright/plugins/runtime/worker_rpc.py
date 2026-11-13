@@ -139,8 +139,10 @@ async def serve(runtime: Any, out: Any,
                 message = decode(line)
                 check_version(message)
             except RpcError as e:
-                sys.stderr.write(f"[worker] 非法帧: {e.code} {e.message}\n")
-                continue
+                # B2：宿主发来非法帧说明协议已经不同步，继续读只会越错越远。
+                # 明确退出（非 0），让宿主按 worker 死亡处理而不是半可用。
+                sys.stderr.write(f"[worker] 非法帧，退出: {e.code} {e.message}\n")
+                return 3
             if is_event(message):
                 bridge.emit_event(
                     str(message.get("event") or ""),
