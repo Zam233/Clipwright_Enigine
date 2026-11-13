@@ -469,6 +469,10 @@ async def list_contributions(
         for pid in discovered:
             if owner and pid != owner:
                 continue
+            # C3：旧 ui.json 也要遵守「只对已加载且启用的 owner 输出」——
+            # 否则插件被禁用后 settings.section 仍会渲染它的面板。
+            if not _loader.is_enabled(pid) or _loader.get(pid) is None:
+                continue
             raw = _legacy_ui_file(pid)
             if raw is None:
                 continue
@@ -913,6 +917,37 @@ def _plugin_owns_tool(owner: str, tool_name: str) -> bool:
     return tool is not None and str(getattr(tool, "_plugin_id", "") or "") == owner
 
 
+def _contribution_owned_by(plugin_id: str, raw: str) -> bool:
+    """校验前端上报的贡献 id 确属该插件。
+
+    契约（B6，2026-11-13 实测修正）：
+    - 空串 = 旧客户端未上报，跳过校验（行为不变）；
+    - 裸 id（前端规范形状）= 门面 `(ui_slot, id)` 的 owner 必须等于 plugin_id；
+    - ``owner:id`` 也接受（旧版本前端把 stateKey 当 id 发），但 owner 段必须一致；
+    - `{plugin_id}_legacy` 是 `/contributions` 现造的旧 ui.json 槽，不进门面，
+      按命名规则归属该插件。
+
+    旧实现只按裸 id 查门面，前端发 `owner:id` 时恒 403，等于把布局按钮全打死。
+    """
+    value = str(raw or "").strip()
+    if not value:
+        return True
+    owner_part, sep, rest = value.partition(":")
+    cid = rest if sep else value
+    if sep and owner_part != plugin_id:
+        return False
+    if not cid:
+        return False
+    # 旧 ui.json 槽：`<plugin>_legacy` 是 /contributions 现造的 id；`legacy` 是旧前端
+    # 把 stateKey 当 id 发时被剥前缀后的形状（`pluginId:legacy`）。两者都只在该插件
+    # 确实有 ui.json 时放行，避免任意插件冒领。
+    if cid == f"{plugin_id}_legacy" or cid == "legacy":
+        return _legacy_ui_file(plugin_id) is not None
+    from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+
+    return ContributionRegistry.owner_of(ContributionKind.UI_SLOT, cid) == plugin_id
+
+
 @router.post("/proxy/{plugin_id}/{method}")
 async def plugin_proxy(plugin_id: str, method: str, body: _PluginProxyBody,
                        request: Request = None) -> dict:
@@ -937,14 +972,8 @@ async def plugin_proxy(plugin_id: str, method: str, body: _PluginProxyBody,
         raise HTTPException(status_code=403, detail=f"插件 {plugin_id} 已禁用")
     if _loader.get(plugin_id) is None:
         raise HTTPException(status_code=403, detail=f"插件 {plugin_id} 未加载")
-    if body.contribution_id:
-        from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
-
-        contribution_owner = ContributionRegistry.owner_of(
-            ContributionKind.UI_SLOT, body.contribution_id,
-        )
-        if contribution_owner != plugin_id:
-            raise HTTPException(status_code=403, detail="贡献 id 与插件归属不匹配")
+    if body.contribution_id and not _contribution_owned_by(plugin_id, body.contribution_id):
+        raise HTTPException(status_code=403, detail="贡献 id 与插件归属不匹配")
 
     target = _proxy_target(method_norm, body.action, plugin_id)
     if not target:
