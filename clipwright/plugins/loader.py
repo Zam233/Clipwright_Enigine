@@ -254,7 +254,10 @@ class PluginLoader:
                 f"Plugin '{plugin_id}' 声明了未知权限 {forbidden}，拒绝加载"
             )
 
-        # 3. M2: 依赖解析（未安装 / 已禁用都拒绝）
+        # 3. M2: 依赖解析（未安装 / 已禁用 / 加载失败都拒绝）
+        # C1 修正：单插件 load()（安装、手动启用、依赖方先到）时依赖可能"已安装且
+        # 启用但尚未加载"。先按拓扑把这类依赖载进来，只有真正不可用才报缺依赖。
+        self._ensure_dependencies_loaded(plugin_id, manifest)
         missing = self._resolve_dependencies(manifest)
         if missing:
             get_error_bus().record(plugin_id, "load", f"缺少依赖插件 {missing}")
@@ -920,6 +923,38 @@ class PluginLoader:
             self._metadatas[plugin_id].enabled = enabled
 
     # ── M2: 依赖解析 ──
+
+    def _ensure_dependencies_loaded(self, plugin_id: str, manifest: PluginManifest) -> None:
+        """把「已安装且启用、但尚未加载」的依赖先加载（递归，防环）。
+
+        只看 `_plugins` 会把这类合法依赖误判为缺失，导致单插件安装/启用失败。
+        依赖本身不可用时保持原样，由 `_resolve_dependencies()` 统一报错。
+        """
+        deps = [d for d in (manifest.dependencies or []) if d != plugin_id]
+        if not deps:
+            return
+        installed = set(self.discover())
+        loading = getattr(self, "_loading_stack", None)
+        if loading is None:
+            loading = self._loading_stack = set()
+        if plugin_id in loading:
+            return  # 环：交给上层报错
+        loading.add(plugin_id)
+        try:
+            for dep in deps:
+                if dep in self._plugins or dep not in installed:
+                    continue
+                if not self.is_enabled(dep):
+                    continue
+                if dep in loading:
+                    continue
+                try:
+                    self.load(dep)
+                except PluginLoadError as e:
+                    # 依赖自己坏了：记录后交给缺失检查统一拒绝
+                    logger.warning("依赖插件 %s 加载失败: %s", dep, e)
+        finally:
+            loading.discard(plugin_id)
 
     def _resolve_dependencies(self, manifest: PluginManifest) -> list[str]:
         """返回 manifest 声明依赖中**不可用**（未安装、已禁用或未成功加载）的插件 ID。

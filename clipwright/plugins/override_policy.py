@@ -38,10 +38,6 @@ ALLOWED_BUILTIN_OVERRIDES: frozenset[str] = frozenset({
     "tts_provider:minimax",
     "tts_provider:qwen-tts",
     "skill:dub_script",
-    # tts_feature 同时声明配音入口槽位；它是新增挂点而非替换内置实现，
-    # 但 override_builtin 是插件级开关，仍须在这里显式列出（漏列会让整个插件
-    # 加载失败，2026-11-13 实测踩到）。
-    "ui_slot:create_dub_entry",
 })
 
 
@@ -62,6 +58,25 @@ def is_bundled_plugin(plugin_dir: str | Path | None) -> bool:
     return target == root or root in target.parents
 
 
+#: 只有这些 kind 会与内置实现“撞键”，需要允许表逐项审核。
+#: 纯新增挂点（ui_slot / export_preset / shortcut / prompt 等）不参与覆盖校验：
+#: 它们由前端 slot 名单或宿主端点定义，列出它们只会让多贡献插件被整包拒载
+#: （2026-11-13 实测：tts_feature 因一个 ui_slot 加载失败）。
+OVERRIDABLE_KINDS: frozenset[str] = frozenset({
+    "llm_provider",
+    "embedding_provider",
+    "rerank_provider",
+    "stt_provider",
+    "tts_provider",
+    "skill",
+    "tool",
+    "category",
+    "animation",
+    "style_interpreter",
+    "clip_kind",
+})
+
+
 def override_problems(
     manifest: Any,
     *,
@@ -79,7 +94,11 @@ def override_problems(
         f"{str(getattr(d, 'kind', '') or '')}:{str(getattr(d, 'id', '') or '')}"
         for d in (getattr(manifest, "contributions", None) or [])
     ]
-    unbundled = [key for key in declared if key not in ALLOWED_BUILTIN_OVERRIDES]
+    # 只审核真正会覆盖内置的 kind；附加型贡献原样放行。
+    overridable = [
+        key for key in declared if key.split(":", 1)[0] in OVERRIDABLE_KINDS
+    ]
+    unbundled = [key for key in overridable if key not in ALLOWED_BUILTIN_OVERRIDES]
     if unbundled:
         return [
             "override_builtin 目标不在宿主允许表内: " + ", ".join(sorted(unbundled)),

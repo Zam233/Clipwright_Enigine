@@ -11,7 +11,10 @@ from pathlib import Path
 
 import yaml
 
-from clipwright.plugins.override_policy import ALLOWED_BUILTIN_OVERRIDES
+from clipwright.plugins.override_policy import (
+    ALLOWED_BUILTIN_OVERRIDES,
+    OVERRIDABLE_KINDS,
+)
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -33,16 +36,27 @@ def _override_manifests() -> list[tuple[str, list[str]]]:
     return out
 
 
-def test_every_bundled_override_target_is_allowlisted():
+def test_every_overridable_target_is_allowlisted():
+    """只有会撞内置的 kind 需要进允许表；附加型贡献（ui_slot 等）不参与。"""
     offenders: dict[str, list[str]] = {}
     for plugin_id, declared in _override_manifests():
-        missing = [key for key in declared if key not in ALLOWED_BUILTIN_OVERRIDES]
+        overridable = [
+            key for key in declared if key.split(":", 1)[0] in OVERRIDABLE_KINDS
+        ]
+        missing = [key for key in overridable if key not in ALLOWED_BUILTIN_OVERRIDES]
         if missing:
             offenders[plugin_id] = missing
     assert offenders == {}, (
-        "这些 bundled 覆盖插件声明的目标未进允许表（会导致整个插件加载失败）："
+        "这些 bundled 覆盖插件声明的可覆盖目标未进允许表（会导致整个插件加载失败）："
         f"{offenders}"
     )
+
+
+def test_additive_slots_are_not_required_in_allowlist():
+    """tts_feature 的 create.dub 槽位是新增挂点，不应要求出现在覆盖表。"""
+    declared = dict(_override_manifests())["tts_feature"]
+    assert "ui_slot:create_dub_entry" in declared
+    assert "ui_slot:create_dub_entry" not in ALLOWED_BUILTIN_OVERRIDES
 
 
 def test_override_plugins_actually_load():
