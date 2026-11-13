@@ -160,35 +160,38 @@ class PluginRuntime:
         instance = klass()
         instance.manifest = self.manifest
         instance.config = self._flat_config()
+        self.plugin_config = dict(instance.config or {})
         return instance
 
     def _flat_config(self) -> dict[str, Any]:
         """读取生效配置：源码 config.yaml 默认值 + PluginData 覆盖（C2）。
 
         旧实现只读 PluginData，插件代码里的默认值在子进程中永远不生效，
-        和宿主 `_get_merged_config()` 看到的不是同一份配置。这里复用宿主同一套
-        合并/解密/迁移函数，保证「配置页显示什么，worker 就用什么」。
+        和宿主 `_get_merged_config()` 看到的不是同一份配置。
+
+        **不要**在 worker 里构造 PluginLoader：那会走宿主的 get_plugin_data_dir/
+        mkdir 路径，被本进程的审计钩子判成未授权写盘（实测日志：worker 配置合并
+        失败: 权限不足 … event=os.mkdir）。这里只做只读文件合并。
         """
-        from clipwright.plugins.loader import PluginLoader
+        import yaml
 
-        try:
-            loader = PluginLoader(
-                plugin_dir=self.plugin_dir.parent,
-                data_dir=self.data_dir.parent.parent,
-            )
-            merged = loader._get_merged_config(
-                self.plugin_id,
-                target_schema=int(getattr(self.manifest, "config_schema_version", 1) or 1),
-            )
-        except Exception as e:  # noqa: BLE001 — 配置不可用时退回空，不阻断启动
-            from clipwright.config import logger
+        from clipwright.plugins.loader import _extract_flat_values
 
-            logger.warning("插件 %s worker 配置合并失败: %s", self.plugin_id, e)
-            return {}
-        from clipwright.plugins.loader import _decrypt_flat, _extract_flat_values
+        def _read(path: Path) -> dict[str, Any]:
+            if not path.is_file():
+                return {}
+            try:
+                raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            except Exception:  # noqa: BLE001 — 坏配置退回空，不阻断启动
+                return {}
+            if not isinstance(raw, dict):
+                return {}
+            return _extract_flat_values(raw) if "fields" in raw else dict(raw)
 
-        flat = _extract_flat_values(merged) if isinstance(merged, dict) else {}
-        return _decrypt_flat(flat)
+        merged: dict[str, Any] = {}
+        merged.update(_read(self.plugin_dir / "config.yaml"))
+        merged.update(_read(self.data_dir / "config.yaml"))
+        return merged
 
     def _collect_declarations(self) -> None:
         """调用 setup()/contributions()，把贡献转成纯数据声明。
@@ -214,6 +217,14 @@ class PluginRuntime:
                     f"子进程档暂不支持 {kind}（{cid}）；支持：{sorted(_RPC_KINDS)}",
                 )
             self.objects[cid] = getattr(item, "object", None)
+            # C2：与宿主 _inject_plugin_config 同语义——贡献对象自己也要拿到配置，
+            # 否则子进程里 getattr(self, "config") 恒为 None（宿主注入到不了这里）。
+            obj = self.objects[cid]
+            if obj is not None and self.plugin_config:
+                try:
+                    obj.config = dict(self.plugin_config)
+                except Exception:  # noqa: BLE001 — 只读属性等极端情况
+                    pass
             self.declarations.append({
                 "kind": kind,
                 "id": cid,
@@ -351,22 +362,40 @@ def _tool_result(value: Any) -> Any:
 
     三种常见形态：ToolExecResult 对象、同形 dict（插件常直接返回 dict）、
     裸数据（list/dict/标量 → 视为成功输出）。
+
+    注意 `ToolExecResult` 用 ``status``（success/partial/...）而不是 ``success``；
+    旧实现按属性存在性判断，遇到只有 output 的对象就返回 ``success: False``，
+    让子进程插件的正常结果全被判成失败。
     """
     if value is None:
         return {"success": True, "output": None}
-    if isinstance(value, dict) and "success" in value:
-        return {
-            "success": bool(value.get("success")),
-            "output": _jsonable(value.get("output")),
-            "error": value.get("error"),
-        }
-    for attr in ("success", "output", "error"):
-        if hasattr(value, attr):
+    if isinstance(value, dict):
+        if "success" in value:
             return {
-                "success": bool(getattr(value, "success", False)),
-                "output": _jsonable(getattr(value, "output", None)),
-                "error": getattr(value, "error", None),
+                "success": bool(value.get("success")),
+                "output": _jsonable(value.get("output")),
+                "error": value.get("error"),
             }
+        if "status" in value:
+            return {
+                "success": str(value.get("status")).lower() in ("success", "partial"),
+                "output": _jsonable(value.get("output")),
+                "error": value.get("error"),
+            }
+    if hasattr(value, "success"):
+        return {
+            "success": bool(getattr(value, "success", False)),
+            "output": _jsonable(getattr(value, "output", None)),
+            "error": getattr(value, "error", None),
+        }
+    status = getattr(value, "status", None)
+    if status is not None:
+        text = str(getattr(status, "value", status)).lower()
+        return {
+            "success": text in ("success", "partial"),
+            "output": _jsonable(getattr(value, "output", None)),
+            "error": getattr(value, "error", None),
+        }
     return {"success": True, "output": _jsonable(value)}
 
 

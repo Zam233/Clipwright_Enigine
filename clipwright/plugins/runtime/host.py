@@ -33,6 +33,7 @@ from clipwright.plugins.runtime.protocol import (
     ERR_OVERLOADED,
     ERR_TIMEOUT,
     ERR_UNKNOWN_METHOD,
+    MAX_FRAME_BYTES,
     ERR_WORKER_DEAD,
     MAX_INFLIGHT,
     PROTOCOL_VERSION,
@@ -144,6 +145,9 @@ class PluginHost:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            # B2：StreamReader 行缓冲上限抬到协议帧上限，否则 64KiB 的默认值会把
+            # 合法大结果（如 70KB 工具输出）当成超长帧而杀掉 worker。
+            limit=MAX_FRAME_BYTES + 1,
         )
         self._reader_task = asyncio.get_running_loop().create_task(self._read_responses())
         self._stderr_task = asyncio.get_running_loop().create_task(self._drain_stderr())
@@ -345,7 +349,26 @@ class PluginHost:
             return
         try:
             while True:
-                line = await proc.stdout.readline()
+                # B2：readline() 默认 StreamReader 上限 64KiB，70KB 的合法结果会被
+                # LimitOverrunError 直接判死 worker。改用 readuntil 并把 limit 抬到
+                # 协议帧上限，超长帧只丢该帧（回错误），不拆掉整个插件进程。
+                try:
+                    line = await proc.stdout.readuntil(b"\n")
+                except asyncio.LimitOverrunError:
+                    logger.warning(
+                        "子进程插件 %s 发来超长帧（>%d 字节），已丢弃该帧",
+                        self.plugin_id, MAX_FRAME_BYTES,
+                    )
+                    # 吃掉剩余数据到下一个换行，保持后续帧可解析
+                    try:
+                        await proc.stdout.readuntil(b"\n")
+                    except Exception:  # noqa: BLE001 — 已经无法对齐则退出循环
+                        break
+                    continue
+                except asyncio.IncompleteReadError as e:
+                    line = e.partial
+                    if not line:
+                        break
                 if not line:
                     break
                 try:
