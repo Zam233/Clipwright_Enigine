@@ -421,7 +421,7 @@ class VideoDownloadTool(BaseTool):
         try:
             result = await asyncio.to_thread(
                 subprocess.run,
-                ["ffmpeg", "-y", "-loglevel", "error",
+                [resolve_ffmpeg(), "-y", "-loglevel", "error",
                  "-i", url, "-c", "copy", "-movflags", "+faststart", out],
                 capture_output=True, text=True, timeout=600,
             )
@@ -525,6 +525,18 @@ class VideoCropTool(BaseTool):
         **kwargs: Any,
     ) -> ToolExecResult:
         out = _ensure_output_path(output_path, "crop_", ".mp4")
+        import re as _re
+
+        if not _re.fullmatch(r"\d+:\d+", str(aspect or "")):
+            return ToolExecResult(
+                status=ToolStatus.ERROR, tool_name=self.name,
+                error=f"aspect 必须形如 16:9 / 9:16 / 1:1，收到 {aspect!r}",
+            )
+        if not Path(input_path).is_file():
+            return ToolExecResult(
+                status=ToolStatus.ERROR, tool_name=self.name,
+                error=f"文件不存在: {input_path}",
+            )
         try:
             # 先探测源尺寸，在 Python 中计算裁切参数（旧表达式缺 ih* 乘数恒错）
             probe = await asyncio.to_thread(
@@ -533,6 +545,12 @@ class VideoCropTool(BaseTool):
                  "-show_entries", "stream=width,height", "-of", "csv=p=0", input_path],
                 capture_output=True, text=True, timeout=30,
             )
+            if probe.returncode != 0 or not (probe.stdout or "").strip():
+                err = (probe.stderr or "").strip().splitlines()
+                return ToolExecResult(
+                    status=ToolStatus.ERROR, tool_name=self.name,
+                    error="无法探测源尺寸: " + (err[0] if err else "ffprobe 无输出"),
+                )
             iw, ih = map(int, probe.stdout.strip().split(","))
             aw, ah = map(int, aspect.split(":"))
             target_ratio = aw / ah
@@ -584,7 +602,7 @@ class VideoThumbnailTool(BaseTool):
         import tempfile
         out = output_path or str(_CLIPWRIGHT_TEMP / f"tmp_{uuid.uuid4().hex[:8]}.jpg")
         try:
-            cmd = ["ffmpeg", "-y", "-loglevel", "error",
+            cmd = [resolve_ffmpeg(), "-y", "-loglevel", "error",
                    "-ss", str(time_sec), "-i", input_path,
                    "-vframes", "1", "-vf", "scale=1280:-1"]
             if text:

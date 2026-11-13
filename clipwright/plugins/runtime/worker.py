@@ -261,6 +261,17 @@ class PluginRuntime:
         if method == "skill.call":
             return await self._call_skill(params)
         if method == "shutdown":
+            # 审计 P2：旧实现只回 {"bye": true} 就退出，插件 shutdown() 从不执行
+            # （临时文件/连接泄漏）。这里先调插件钩子，失败不影响退出。
+            try:
+                fn = getattr(self.plugin, "shutdown", None)
+                if callable(fn):
+                    result = fn()
+                    if inspect.isawaitable(result):
+                        await result
+            except Exception as exc:  # noqa: BLE001 — 清理失败不阻止退出
+                from clipwright.config import logger as _logger
+                _logger.warning("插件 shutdown() 失败: %s", exc)
             return {"bye": True}
         raise RpcError(ERR_UNKNOWN_METHOD, f"未知方法: {method}")
 

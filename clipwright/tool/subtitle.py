@@ -62,13 +62,19 @@ class SubtitleBurnTool(BaseTool):
                 # 只写第一条字幕（drawtext 不支持多段文本交替的 textfile）
                 # 对多段字幕用多个 drawtext filter
                 filters = []
+                from clipwright.tool.design import escape_drawtext_text
+
                 for i, sub in enumerate(subtitles[:50]):  # 最多 50 段
                     txt = (sub.get("text", "") or "")[:100]
                     if not txt:
                         continue
                     start = sub.get("start_sec", 0)
-                    end = start + sub.get("duration_sec", 3)
-                    safe_txt = txt.replace("'", "'\\''").replace(":", "\\:")
+                    # 同时支持 duration_sec 与 end_sec（旧实现忽略 end_sec）
+                    if sub.get("end_sec") is not None:
+                        end = sub.get("end_sec")
+                    else:
+                        end = start + sub.get("duration_sec", 3)
+                    safe_txt = escape_drawtext_text(txt)
                     font_color_val = sub.get("font_color", font_color)
                     font_size_val = sub.get("font_size", font_size)
                     enable = f"between(t,{start},{end})"

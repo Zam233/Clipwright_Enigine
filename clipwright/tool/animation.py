@@ -34,19 +34,23 @@ class TypewriterAnimationTool(BaseTool):
         out = _ensure_output_path(output_path, "typewriter_", ".mp4")
 
         try:
+            # 统一用实机校准过的 drawtext 转义（`%`/`\`/`:`/`'` 都覆盖）；
+            # 旧实现叠字分支直接把原文塞进 filter，`%` 会被当扩展序列（审计 P2）。
+            from clipwright.tool.design import escape_drawtext_text
+
+            safe_text = escape_drawtext_text(text)
             if input_path and input_path.strip():
                 # 在已有视频上叠加文字
                 result = await _ffmpeg(
                     "-i", input_path,
-                    "-vf", f"drawtext=text='{text}':fontsize={font_size}:fontcolor={color}:x=(w-text_w)/2:y=(h-text_h)/2",
+                    "-vf", f"drawtext=text='{safe_text}':fontsize={font_size}:fontcolor={color}:x=(w-text_w)/2:y=(h-text_h)/2",
                     "-c:a", "copy", out,
                 )
             else:
                 # 生成纯色背景 + 文字的短视频（5 秒）
-                escaped = text.replace(":", "\\:").replace("'", "'\\\\''")
                 result = await _ffmpeg(
                     "-f", "lavfi", "-i", f"color=c=#1a1a1a:s=1920x1080:d=5",
-                    "-vf", f"drawtext=text='{escaped}':fontsize={font_size}:fontcolor={color}:x=(w-text_w)/2:y=(h-text_h)/2",
+                    "-vf", f"drawtext=text='{safe_text}':fontsize={font_size}:fontcolor={color}:x=(w-text_w)/2:y=(h-text_h)/2",
                     "-c:v", "libx264", "-pix_fmt", "yuv420p", out,
                 )
             if result.returncode != 0:

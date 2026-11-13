@@ -134,12 +134,17 @@ async def test_execute_not_configured_returns_empty(monkeypatch) -> None:
 
     assert result.status == ToolStatus.DEPENDENCY_MISSING
     assert result.tool_name == "web_search"
-    assert result.output == {"results": []}
+    assert result.output == {"results": [], "reason": "not_configured"}
+    assert "未配置" in (result.error or "")
     stub.search.assert_not_awaited()
 
 
-async def test_execute_empty_results_returns_dependency_missing(monkeypatch) -> None:
-    """已配置但无结果 → status=DEPENDENCY_MISSING，output.results=[]。"""
+async def test_execute_empty_results_is_success_with_reason(monkeypatch) -> None:
+    """已配置但无结果 → SUCCESS + reason=no_results（不是依赖缺失）。
+
+    2026-11-14 审计 P2：旧实现把「搜索成功但 0 条」和「搜索不可用」混成
+    DEPENDENCY_MISSING，排障时分不清是配置/网络还是真的没结果。
+    """
     stub = _stub_search_service(configured=True, results=[])
     monkeypatch.setattr(
         "clipwright.tool.web_search_tool.get_web_search_service", lambda: stub
@@ -147,12 +152,12 @@ async def test_execute_empty_results_returns_dependency_missing(monkeypatch) -> 
 
     result = await WebSearchTool().execute("无结果词")
 
-    assert result.status == ToolStatus.DEPENDENCY_MISSING
-    assert result.output == {"results": []}
+    assert result.status == ToolStatus.SUCCESS
+    assert result.output == {"results": [], "reason": "no_results"}
 
 
 async def test_execute_service_exception_never_raises(monkeypatch) -> None:
-    """服务层意外异常 → 不抛异常，返回 DEPENDENCY_MISSING 与空结果。"""
+    """服务层意外异常 → 不抛异常，返回 ERROR + 真实错误信息。"""
     stub = _stub_search_service(configured=True)
     stub.search = AsyncMock(side_effect=RuntimeError("boom"))
     monkeypatch.setattr(
@@ -161,8 +166,9 @@ async def test_execute_service_exception_never_raises(monkeypatch) -> None:
 
     result = await WebSearchTool().execute("测试")
 
-    assert result.status == ToolStatus.DEPENDENCY_MISSING
-    assert result.output == {"results": []}
+    assert result.status == ToolStatus.ERROR
+    assert result.output["results"] == []
+    assert "boom" in (result.error or "")
 
 
 # ── WebFetchTool.execute ──────────────────────────────────

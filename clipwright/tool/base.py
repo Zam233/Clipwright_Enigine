@@ -10,6 +10,7 @@ LLM 工具调用支持：
 
 from __future__ import annotations
 
+import os
 import shutil
 from abc import ABC, abstractmethod
 from typing import Any, Optional
@@ -66,10 +67,25 @@ class BaseTool(ABC):
         ...
 
     def is_available(self) -> bool:
-        """检查工具在当前环境是否可用（依赖是否满足）。"""
+        """检查工具在当前环境是否可用（依赖是否满足）。
+
+        ffmpeg/ffprobe 用工具层同一套解析（配置项 → PATH → WinGet 等安装目录），
+        与 `resolve_ffmpeg()`/`resolve_ffprobe()` 保持一致——旧实现只看
+        `shutil.which`，配置/非 PATH 安装时工具会被误判为不可用（审计 P2）。
+        """
         if not self.dependencies:
             return True
         for cmd in self.dependencies:
+            if cmd in ("ffmpeg", "ffprobe"):
+                try:
+                    from clipwright.tool.video import resolve_ffmpeg, resolve_ffprobe
+
+                    path = resolve_ffmpeg() if cmd == "ffmpeg" else resolve_ffprobe()
+                    if (os.path.isabs(path) and os.path.exists(path)) or shutil.which(path):
+                        continue
+                    return False
+                except Exception:  # noqa: BLE001 — 解析失败按缺失处理
+                    return False
             if shutil.which(cmd) is None:
                 return False
         return True

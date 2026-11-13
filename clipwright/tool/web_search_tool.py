@@ -49,7 +49,6 @@ class WebSearchTool(BaseTool):
     agent_callable = True
     #: 语义能力名 + 权限档位**自声明**（外网读取：costly；引擎 TIER_MAP 不再需要登记）
     capability = "web_search"
-    permission_tier = "costly"
     description = (
         "联网搜索网络获取最新/事实信息，返回相关网页结果列表（标题、URL、摘要）。"
         "当需要查询实时新闻、百科事实、资料引用或任何超出模型知识范围的信息时调用。"
@@ -89,7 +88,8 @@ class WebSearchTool(BaseTool):
                 return ToolExecResult(
                     status=ToolStatus.DEPENDENCY_MISSING,
                     tool_name=self.name,
-                    output={"results": []},
+                    output={"results": [], "reason": "not_configured"},
+                    error="搜索服务未配置（请在设置里填写搜索 provider/key）",
                 )
             results = await service.search(query, max_results=max_results)
             # 归一化但**不丢字段**：DeepSeek 的 rerank_score/summary/content/authority/date
@@ -108,9 +108,9 @@ class WebSearchTool(BaseTool):
                 normalized.append(item)
             if not normalized:
                 return ToolExecResult(
-                    status=ToolStatus.DEPENDENCY_MISSING,
+                    status=ToolStatus.SUCCESS,
                     tool_name=self.name,
-                    output={"results": []},
+                    output={"results": [], "reason": "no_results"},
                 )
             return ToolExecResult(
                 status=ToolStatus.SUCCESS,
@@ -119,10 +119,13 @@ class WebSearchTool(BaseTool):
             )
         except Exception as e:
             logger.warning("web_search 执行异常: %s", e)
+            # 网络/额度错误必须与"未配置"区分开（旧实现一律 DEPENDENCY_MISSING
+            # 且不带 error，排障时看不出真实原因——审计 P2）。
             return ToolExecResult(
-                status=ToolStatus.DEPENDENCY_MISSING,
+                status=ToolStatus.ERROR,
                 tool_name=self.name,
-                output={"results": []},
+                output={"results": [], "reason": "search_failed"},
+                error=f"{type(e).__name__}: {e}",
             )
 
 
