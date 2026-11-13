@@ -1,0 +1,14 @@
+id: "skill_pack"
+name: "基础技能包"
+version: "1.0.0"
+kind: "capability"
+description: "引擎内置技能迁出后的基础技能包：视频结构分析、字幕生成、音频节奏分析"
+author: "Clipwright Team"
+entry_point: "skill_pack.main"
+
+# 声明即授权（新契约）：技能全部由插件提供，engine 不再内置业务 Skill
+api_version: "2"
+contributions:
+  - { kind: skill, id: analyze_video_structure }
+  - { kind: skill, id: generate_captions }
+  - { kind: skill, id: analyze_audio_rhythm }

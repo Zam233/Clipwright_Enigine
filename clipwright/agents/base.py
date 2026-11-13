@@ -141,6 +141,84 @@ class BaseAgent(ABC, Generic[I, O]):
 
         return [s for s in SkillRegistry.list() if s.available]
 
+    def skill_schemas(self, fmt: str = "openai") -> list[dict[str, Any]]:
+        """把可用 Skill 编译成 LLM tool schema（技能插件化后的统一入口）。
+
+        技能以**裸名**出现在工具面上（与 Kernel `tool/surface.py` 同口径），
+        执行时由 `run_tool_loop` 按 `SkillRegistry` 分派到 `SkillRegistry.execute`。
+        """
+        from clipwright.skill.registry import SkillRegistry
+
+        out: list[dict[str, Any]] = []
+        for info in self.list_skills():
+            skill = SkillRegistry.get(info.name)
+            if skill is None or not info.available:
+                continue
+            try:
+                out.append(skill.to_llm_tool(fmt))
+            except Exception:  # noqa: BLE001 — 单个技能 schema 失败不影响其余
+                continue
+        return out
+
+    async def run_skill_round(
+        self, brief: str, *, pipeline_id: str = "", max_calls: int | None = None,
+    ) -> dict[str, Any]:
+        """有界技能轮：让阶段 agent 自主选择 0–N 个 Skill。
+
+        为什么需要它：material/animation/audio/quality 等阶段**没有** LLM 工具轮
+        （只程序化调工具），技能因此永远只能被主 agent 或 edit/structure 调用。
+        这里给它们一次轻量、可降级的自主选择机会：
+        - 只暴露技能 schema（不暴露原子工具），最多 ``skill_assist_max_calls`` 次；
+        - 无技能 / 未开启 / LLM 不可用 / 超时 → 返回 skipped，绝不阻塞阶段；
+        - 调用轨迹写 `last_skill_calls`，由 stage_subagent 并入 StageResult。
+        """
+        from clipwright.config import settings
+
+        self.last_skill_calls: list[dict[str, Any]] = []
+        if not bool(getattr(settings, "skill_assist_enabled", True)):
+            return {"status": "skipped", "reason": "disabled", "tool_calls": []}
+        schemas = self.skill_schemas()
+        if not schemas:
+            return {"status": "skipped", "reason": "no_skills", "tool_calls": []}
+        names = [str((s.get("function") or {}).get("name") or "") for s in schemas]
+        names = [n for n in names if n]
+        limit = int(max_calls or getattr(settings, "skill_assist_max_calls", 2) or 2)
+        timeout = float(getattr(settings, "skill_assist_timeout_sec", 60.0) or 60.0)
+        system_prompt = (
+            "你是视频创作系统的阶段子 agent。只需要判断：为了完成当前阶段，是否要调用"
+            f"最多 {limit} 个组合技能（它们会跑多个工具并返回聚合结果）。"
+            "不需要就直接回复 SKIP；需要就调用对应技能工具，参数按 schema 填。"
+            "不要调用任何原子工具，也不要编造产物。"
+        )
+        user_prompt = (
+            f"阶段任务：{brief}\n可选技能：{', '.join(names)}\n"
+            "若技能无法补齐关键输入，直接 SKIP，把问题留给主 agent。"
+        )
+        try:
+            result = await asyncio.wait_for(
+                self.run_tool_loop(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    tools=(),
+                    max_rounds=2,
+                    max_calls=limit,
+                    pipeline_id=pipeline_id,
+                ),
+                timeout=timeout,
+            )
+        except Exception as exc:  # noqa: BLE001 — 技能轮是增强，不是必需路径
+            from clipwright.config import logger
+
+            logger.debug("%s: 技能轮跳过（%s）", self.agent_name, exc)
+            return {"status": "skipped", "reason": str(exc)[:160], "tool_calls": []}
+        calls = list((result or {}).get("tool_calls") or [])
+        for call in calls:
+            if isinstance(call, dict):
+                call.setdefault("kind", "skill")
+                call.setdefault("skill", call.get("tool"))
+        self.last_skill_calls = calls
+        return {**(result or {}), "tool_calls": calls}
+
     def resolve_skill(self, capability: str):
         """按能力名（或技能名）解析到当前可用的技能实例。"""
         from clipwright.tool.capabilities import skill_resolve
@@ -334,8 +412,13 @@ class BaseAgent(ABC, Generic[I, O]):
         except Exception:  # noqa: BLE001 — 降级记录失败不该带崩调用方
             pass
 
-    def tool_schemas(self, names: Any = None, fmt: str = "openai") -> list[dict[str, Any]]:
-        """把工具编译成 LLM tool schema（按名字实时解析，缺失的静默跳过）。"""
+    def tool_schemas(self, names: Any = None, fmt: str = "openai",
+                     *, include_skills: bool = True) -> list[dict[str, Any]]:
+        """把工具编译成 LLM tool schema（按名字实时解析，缺失的静默跳过）。
+
+        `include_skills=True`（默认）时把当前可用 Skill 一并并入——子 agent 的
+        LLM 工具轮因此能自主选择技能；技能与工具重名时以工具为准。
+        """
         from clipwright.tool.registry import ToolRegistry
 
         wanted = list(names) if names is not None else list(self.tool_whitelist)
@@ -353,6 +436,15 @@ class BaseAgent(ABC, Generic[I, O]):
                 out.append(tool.to_llm_tool(fmt))
             except Exception:  # noqa: BLE001 — 单个工具 schema 失败不影响其余
                 continue
+        if include_skills:
+            existing = {
+                str((s.get("function") or {}).get("name") or "")
+                for s in out if isinstance(s, dict)
+            }
+            for schema in self.skill_schemas(fmt):
+                name = str((schema.get("function") or {}).get("name") or "")
+                if name and name not in existing:
+                    out.append(schema)
         return out
 
     async def run_tool_loop(
@@ -396,9 +488,14 @@ class BaseAgent(ABC, Generic[I, O]):
             if name not in allowed:
                 return {"status": "error", "error": f"工具 {name} 不在本 Agent 的本次白名单内"}
             calls.append({"tool": name, "input": tool_input})
+            from clipwright.skill.registry import SkillRegistry
             from clipwright.tool.registry import ToolRegistry
 
-            result = await ToolRegistry.execute(name, **tool_input)
+            # 技能与工具同名时以工具为准（与 tool_schemas 的合并规则一致）。
+            if ToolRegistry.get(name) is None and SkillRegistry.get(name) is not None:
+                result = await SkillRegistry.execute(name, **tool_input)
+            else:
+                result = await ToolRegistry.execute(name, **tool_input)
             if hasattr(result, "model_dump"):
                 return result.model_dump(mode="json")
             return result if isinstance(result, dict) else {"result": str(result)}
