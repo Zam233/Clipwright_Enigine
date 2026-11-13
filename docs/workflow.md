@@ -6,42 +6,38 @@
 
 ## 一、Agent 工作流总览
 
-### v1（固定序列）
+当前生产链路是 **1 个主 Agent + 阶段子 Agent**：
 
 ```plaintext
-Structure → Material → Edit → Animation → Audio → Quality → Render
-```
-
-### v2（动态路由 + DAG 并行执行）
-
-> ⚠ 对账注记（2026-08）：执行组[3] 的 animation/audio 并行在 `_DEPS` 中
-> `audio` 依赖 `animation`（防并行覆盖时间轴），**当前实为串行**；
-> 并行机制本身（asyncio.gather）已实现，待时间轴合并改不可变后可启用。
-
-```plaintext
-执行组 [0] ─→ structure
-执行组 [1] ─→ material
-执行组 [2] ─→ edit
-执行组 [3] ─→ animation ─┐
-              audio ──────┤ → 并行 (asyncio.gather)
-执行组 [4] ─→ quality
+用户指令 → 主 Agent（任务内核：规划 / 工具 / 收尾）
                 │
-                ├→ PASS ─→ Render
-                └→ FAIL ─→ 自愈循环
-                     │
-                     ├→ 重做指定 redo_agent
-                     ├→ 联动重做下游 Agent
-                     └→ 返回 quality 复查 (最多 3 次)
+                ├─ delegate_agent(stage="structure")   → 场景 / 分镜
+                ├─ delegate_agent(stage="material")    → 候选素材
+                ├─ delegate_agent(stage="edit")        → 时间线草稿
+                ├─ delegate_agent(stage="animation")   → 动画 / MG
+                ├─ delegate_agent(stage="audio")       → 配音 / 混音 / final_timeline
+                └─ delegate_agent(stage="quality")     → 质检；问题回流主 Agent
+                          │
+                          ▼
+                    RenderService → MP4 + Webhook
+
+阶段依赖：structure → material → edit → animation → audio；quality 在时间线成形后复查。
+主 Agent 依据 delegate_agent 返回的 degraded / failure.category / needs 决定重派、跳过还是接受，
+不是固定路由表。
 ```
+
+> 历史：v1 固定序列 / v2 DAG + 自愈循环已于 2026-10 起被主 Agent + 阶段子 Agent 取代，
+> `pipeline.py` / `pipeline_v2.py` 已删除、`run_pipeline` 能力下线。下面「二、Agent 职责」
+> 中的阶段职责仍是各**阶段子 Agent** 的契约来源。
 
 ---
 
 ## 二、Agent 职责
 
 ### Requirements Agent
-> F4 对齐注记（2026-09）：本 Agent 类**保留实现但不在管线中实例化**——生产链路的需求
+> F4 对齐注记（2026-09）：本 Agent 类**保留实现但不在阶段派发中实例化**——生产链路的需求
 > 分析由 `services/requirements_service.py` 承担（自持提示词，经 /api/requirements/* 暴露），
-> PipelineV2 DAG 的入口是 structure。animation_intents 经 requirements_service →
+> 主 Agent 的默认首派阶段是 structure。animation_intents 经 requirements_service →
 > /proceed 的 extra_params → StructureAgent（C2 已接通）。
 
 - **输入**: 用户选题 + 文稿 + 参考素材
@@ -97,13 +93,14 @@ Structure → Material → Edit → Animation → Audio → Quality → Render
 - **输入**: 完整时间线 + 约束条件
 - **输出**: 质检报告 + 自愈建议（`redo_agent` 字段）
 - **检查项**: 时长/轨道/节奏方差/动画覆盖率/音量
-- **自愈**: 发现问题时设置 `redo_agent` → 编排器自动回退重做
+- **自愈**: 发现问题时给出 `redo_agent` 建议 → 结果回主 Agent，由它用 `delegate_agent` 重派对应阶段
 
 ---
 
 ## 三、AgentBus 上下文总线
 
-Agent 之间通过 `AgentBus` 交换信息：
+阶段子 Agent 之间**不直接通信**：输入由主 Agent 通过 `delegate_agent` 显式传入，结果写回黑板
+（`task_blackboard`）/产物，失败与降级回主 Agent。`AgentBus` 目前只承担事件与诊断通道：
 
 | 方法 | 说明 |
 |------|------|
@@ -111,7 +108,7 @@ Agent 之间通过 `AgentBus` 交换信息：
 | `get_events(topic)` | 按主题获取事件 |
 | `set_artifact / get_artifact` | 时间线等共享产物的读写 |
 | `add_demand / get_demands` | 需求通道（⚠ F6: 无消费确认机制，管线已停止注入 `_demands`，保留事件流） |
-| `route_decision` | ⚠ 未实现——当前为静态 DAG（`AgentDAG._DEPS`） |
+| `route_decision` | ⚠ 未实现——编排由主 Agent 决策，不再有静态 DAG 路由 |
 
 ---
 
@@ -155,7 +152,10 @@ Agent 之间通过 `AgentBus` 交换信息：
 
 ---
 
-## 六、V2 管线可靠性机制
+## 六、老 V2 管线的可靠性机制（历史参考）
+
+> 以下机制属于已下线的 V2 管线；主 Agent 侧等价能力为：熔断（子 Agent 连续失败）、
+> 墙钟/回合/预算硬闸、`failure.category` 分类与收口（soft landing）。保留此节供对照。
 
 ### 熔断器 (Circuit Breaker)
 - 连续 3 次失败后熔断指定 Agent

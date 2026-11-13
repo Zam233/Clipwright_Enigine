@@ -172,8 +172,8 @@ personas/            # Persona 定义
 
 | 概念 | 说明 |
 |------|------|
-| **Pipeline** | Agent 编排管线，v1 固定序列 / v2 动态并行 |
-| **Agent** | 7 个 Agent（需求/结构/素材/剪辑/动画/音频/质检） |
+| **Pipeline** | 老 6 阶段管线：**已下线**（`pipeline_enabled=false`，`run_pipeline` 拒绝执行），仅保留历史记录 |
+| **Agent** | 1 个主 Agent + 7 个阶段子 Agent（需求/结构/素材/剪辑/动画/音频/质检）；主 Agent 用 `delegate_agent(stage=…)` 派发 |
 | **Tool** | 原子能力（FFmpeg 封装） |
 | **Skill** | 可组合的高级能力 |
 | **Persona** | UP 主风格配置（四层复合 + 自适应学习） |

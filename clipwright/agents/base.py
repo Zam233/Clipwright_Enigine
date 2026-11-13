@@ -1,6 +1,6 @@
 """Agent 基类。
 
-每个 Agent 是一个 LangGraph 节点，包含策略注册表。
+每个 Agent 是一个阶段子 Agent，包含策略注册表。
 Agent 本身不写死逻辑，它只是"调度器"——根据 Persona 和视频类型选择策略。
 """
 

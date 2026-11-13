@@ -24,7 +24,7 @@ uvicorn clipwright.main:app --reload --host 0.0.0.0 --port 8000
 
 ```
 clipwright/                  # 核心引擎
-├── agents/                  # 7 个 Agent
+├── agents/                  # 阶段子 Agent（由主 Agent 派发）
 │   ├── requirements_agent.py # 需求分析
 │   ├── structure_agent.py   # 结构分析
 │   ├── material_agent.py    # 素材搜索
@@ -35,8 +35,9 @@ clipwright/                  # 核心引擎
 │   └── base.py              # Agent 基类
 ├── api/                     # REST API 端点 (30 路由)
 ├── services/                # 核心服务
-│   ├── pipeline.py          # 管线 v1（固定序列）
-│   ├── pipeline_v2.py       # 管线 v2（DAG 并行 + 熔断 + 自愈）
+│   ├── agent_kernel.py      # 任务内核：主 Agent 规划/工具/收尾 + 阶段派发
+│   ├── stage_subagent.py    # 阶段子 Agent 执行（结构化输入/输出、黑板、run 归属）
+│   ├── subagent.py          # 只读调研子 Agent（research）
 │   ├── agent_bus.py         # Agent 上下文总线
 │   ├── render.py            # 渲染引擎（多轨/缓存/降级）
 │   ├── task_queue.py        # 并发任务队列（信号量+超时）
