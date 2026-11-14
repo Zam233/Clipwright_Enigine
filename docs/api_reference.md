@@ -533,6 +533,10 @@ data: {"type":"error","detail":"流式生成中断: ...","partial":"已产出的
 `PluginData/assets/`（生成 URL 24h 失效，落地前经 `assert_public_url` 防 SSRF），
 返回 `{success, url/path（本地）, remote_url, provider, ...}`。
 
+> ⚠️ 2026-11-14：下表三个 `ai_*_generate` 工具随插件**已下架**（image-provider-plugin PRD M6）。
+> 生图改为 Provider 契约（供应商 → AI 生图），生成工具 `image_generate` 属第二期。
+> 下表仅作历史记录，不再注册、不可调用。
+
 | 工具 | 插件 | Provider（默认加粗） | 关键参数 |
 |------|------|---------------------|----------|
 | `ai_image_generate` | ai_image_gen | **volcengine(Seedream)** / dalle / flux / local | prompt, width/height（按比例收敛到 Seedream 合法像素区间）, size（直传 `2K`/`2048x2048`，优先）, image（参考图，图生图）, seed |

@@ -968,11 +968,11 @@ async def get_plugin_ui(plugin_id: str) -> dict:
 #: key 形如 "GET:probe" / "POST:tool"；具体目标端点在 handler 里映射，不接受
 #: 插件自报的任意路径（插件若需要新端点，必须改这里 + 发版）。
 _PLUGIN_PROXY_ALLOWED: dict[str, dict[str, str]] = {
-    # 内置生成类插件：ui.json 按钮只调 /api/tool/execute
-    "ai_image_gen": {"POST:tool": "/api/tool/execute"},
-    "ai_music_gen": {"POST:tool": "/api/tool/execute"},
-    "ai_video_gen": {"POST:tool": "/api/tool/execute"},
+    # ai_image_gen / ai_music_gen / ai_video_gen 已下架（image-provider-plugin
+    # PRD M6）；example_full 保留作示例插件，demo_plug_aigen 是测试插件
+    # （tests/clipwright/test_plugin_proxy_*，与生产无关）。
     "example_full": {"POST:tool": "/api/tool/execute"},
+    "demo_plug_aigen": {"POST:tool": "/api/tool/execute"},
     # 依赖探针：GET /api/render/browser（前端浮层轮询）+ POST 安装触发（用户点确认）
     "headless_chrome": {
         "GET:probe": "/api/render/browser",

@@ -40,6 +40,8 @@ PROVIDER_KINDS: frozenset[str] = frozenset({
     "embedding_provider",
     "rerank_provider",
     "renderer_backend",
+    # 第 20 类：图像生成（2026-11-14 image-provider-plugin PRD M1）
+    "image_provider",
 })
 
 #: 协议能力键（PRD §8；未知键不报错，只做记录以便后续收敛）
@@ -50,6 +52,15 @@ PROVIDER_CAPABILITY_KEYS: frozenset[str] = frozenset({
     "reasoning",
     "usage",
     "needs_uploader",
+    # 图像 provider（image-provider-plugin PRD M1）；未知键仍只记录不报错
+    "sizes",
+    "max_n",
+    "reference_image",
+    "output_formats",
+    "max_prompt_chars",
+    "concurrency",
+    "cost_per_image_usd",
+    "size_dialect",
 })
 
 #: (kind, id) → {"plugin_id", "config_schema", "capabilities", "unknown_capability_keys"}

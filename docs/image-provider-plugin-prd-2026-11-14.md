@@ -6,6 +6,23 @@
 - 前置文档：`J:\Clipweight-Client\docs\image-provider-prd-2026-11-14.md`（2026-11-14 提交 `6205f48`，覆盖更完整的「生成工具 + 工作区素材 + 定点插入」；本文是其**第一期切片**，只做 Provider 层与插件接入）
 - 关联：[docs/plugin_authoring.md](plugin_authoring.md)、[docs/plugin-registration-runtime-optimization-prd-2026-11-13.md](plugin-registration-runtime-optimization-prd-2026-11-13.md)
 
+## 实施状态（2026-11-14）
+
+第一期为**已实施**（分支 `feat/zam_aigen_plugin`）：
+
+| 里程碑 | 状态 | 落点 |
+|---|---|---|
+| M1 契约 | ✅ | `ContributionKind.IMAGE_PROVIDER`、`providers/base.py::ImageProvider`、`provider_decl` 种类与能力键、dispatch 注册期校验 |
+| M2 配置源/API | ✅ | `provider_sources` 的 `image` kind/role；`/available` 的 `image_provider` 与 `role_kinds.image`；`/schemas?kind=image`（返回键 `image_provider`）；`/test` 调 `probe()` |
+| M3 前端 tab | ✅ | `ProviderKind/ProviderRole` 增 `image`；`TABS` 增「AI 生图」；`KIND_ROLES/ROLE_LABELS/KIND_PROVIDER_KEY` 同步 |
+| M4 插件 `image_providers` | ✅ | `plugins/image_providers`（`openai_compatible`） |
+| M5 插件 `image_gpt_images` | ✅ | `plugins/image_gpt_images`（`openai_gpt_image`） |
+| M6 下架与清理 | ✅ | 三插件目录删除；`api/plugin.py` legacy 映射、`prompts.py`、`capability_matrix`、`requirements_service`、`generated_source`（迁 `services/generated_assets.py`）与旧测试同步清理 |
+
+测试：`tests/clipwright/test_image_provider_plugin.py`（契约/API/插件 5 例）；后端
+`-k "plugin or provider or tool or capability"` 826 passed；前端 `tsc --noEmit` 与
+`ProvidersPage.test.tsx` 40 passed。第二期（`image_generate` 工具/落盘/账本/素材检索）未实施。
+
 ---
 
 ## 0. 结论先行

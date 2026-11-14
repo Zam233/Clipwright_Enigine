@@ -51,6 +51,8 @@ _PROVIDER_KINDS = {
     ContributionKind.TTS_PROVIDER,
     ContributionKind.STT_PROVIDER,
     ContributionKind.RENDERER_BACKEND,
+    # 第 20 类：图像生成（image-provider-plugin PRD M1）
+    ContributionKind.IMAGE_PROVIDER,
 }
 
 #: **纯数据** kind（2026-11-07 第 18 类 display_spec）：`object` 恒为 `None`，
@@ -180,6 +182,14 @@ def register(owner: str, item: Contribution, *, policy=None) -> Optional[str]:
             missing = missing_llm_provider_methods(item.object)
             if missing:
                 return (f"llm_provider:{item.id} 不符合协议，缺少方法: "
+                        f"{', '.join(missing)}")
+        elif item.kind is ContributionKind.IMAGE_PROVIDER:
+            # image-provider-plugin PRD M1：与 llm 同款注册期协议校验，
+            # 缺方法给可读原因，不连累同插件其它贡献。
+            from clipwright.providers.base import missing_image_provider_methods
+            missing = missing_image_provider_methods(item.object)
+            if missing:
+                return (f"image_provider:{item.id} 不符合协议，缺少方法: "
                         f"{', '.join(missing)}")
         return None
 

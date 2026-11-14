@@ -321,3 +321,74 @@ def supported_transport_params(impl: Any) -> set[str]:
     if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
         return set(TRANSPORT_PARAMS)
     return {name for name in TRANSPORT_PARAMS if name in params}
+
+# ── 图像生成 Provider（第 20 类贡献契约，2026-11-14）──────────────
+
+
+@dataclass(frozen=True)
+class ImageProviderCapabilities:
+    """图像 provider 的能力协商（Engine 只按声明校验，不猜厂商方言）。"""
+
+    #: 支持的尺寸白名单（如 ("1024x1024", "1536x1024")）；"any" = 接受 WxH 并做通用校验
+    sizes: tuple[str, ...] | str = "any"
+    #: 单次请求最多几张图
+    max_n: int = 1
+    #: 是否支持参考图（图生图）
+    reference_image: bool = False
+    #: 允许的输出格式（引擎落盘时按此选扩展名）
+    output_formats: tuple[str, ...] = ("png", "jpeg")
+    #: prompt 长度上限
+    max_prompt_chars: int = 4000
+    #: 建议并发（宿主可据此排队）
+    concurrency: int = 1
+    #: 单张成本（美元）；None = 未知，调用方不得记成 0
+    cost_per_image_usd: float | None = None
+    #: size 参数方言：wxh（"1024x1024"）/ openai_size（固定档位）/ auto
+    size_dialect: str = "wxh"
+
+
+@dataclass
+class ImageGenerationRequest:
+    """一次图像生成的请求（Engine 构造，插件消费）。"""
+
+    prompt: str
+    model: str = ""
+    size: str = ""
+    n: int = 1
+    reference_image: bytes | None = None
+    seed: int | None = None
+    extra: Mapping[str, Any] | None = None
+
+
+@dataclass
+class GeneratedImage:
+    """插件返回的单张结果；`data` 与 `url` 至少给一个。"""
+
+    data: bytes | None = None
+    url: str = ""
+    mime: str = "image/png"
+
+
+@runtime_checkable
+class ImageProvider(Protocol):
+    """图像生成 provider —— 只做协议与厂商翻译，不写盘/不记账。"""
+
+    name: str
+
+    def default_model(self) -> str:
+        ...
+
+    def capabilities(self, model: str = "") -> ImageProviderCapabilities:
+        ...
+
+    async def generate(self, request: ImageGenerationRequest) -> list[GeneratedImage]:
+        ...
+
+    async def probe(self) -> bool:
+        ...
+
+
+def missing_image_provider_methods(impl: Any) -> list[str]:
+    """注册期协议校验：缺哪些必需方法（空 = 符合协议）。"""
+    required = ("default_model", "capabilities", "generate")
+    return [m for m in required if not callable(getattr(impl, m, None))]

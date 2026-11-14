@@ -1,3 +1,6 @@
+> ⚠️ **已下架（2026-11-14）**：本文描述的 `ai_image_gen` / `ai_video_gen` / `ai_music_gen` 三个插件已移除，
+> 生图改为 `image_provider` 契约（见 [image-provider-plugin-prd-2026-11-14.md](image-provider-plugin-prd-2026-11-14.md)）。
+
 # AI 生成产物入轨 + 规划感知 — 设计与执行计划
 
 > 状态：已完成（2026-09-07）
