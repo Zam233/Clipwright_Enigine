@@ -162,3 +162,11 @@ def make_generated_source(plugin_id: str, source_name: str,
             return [self._to_asset(e) for e in load_generated_history(plugin_id)]
 
     return _GeneratedAssetSource()
+
+
+def legacy_image_history_present() -> bool:
+    """是否存在旧版 ai_image_gen 生成历史（只读兼容，未迁移）。"""
+    try:
+        return bool(load_generated_history("ai_image_gen"))
+    except Exception:  # noqa: BLE001
+        return False

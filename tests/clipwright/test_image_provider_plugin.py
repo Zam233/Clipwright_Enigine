@@ -113,3 +113,136 @@ def test_schemas_for_image_kind(client):
     body = client.get("/api/providers/schemas", params={"kind": "image"}).json()
     ids = {item["id"] for item in body["schemas"]["image_provider"]}
     assert {"openai_compatible", "openai_gpt_image"} <= ids
+
+
+# ── 插件 HTTP 行为（桩网关，不联网）──────────────────────────────
+
+def _install_mock_httpx(monkeypatch, handler):
+    import httpx
+
+    class _FakeClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_probe_uses_injected_config(monkeypatch):
+    from plugins.image_providers.main import OpenAICompatibleImageProvider
+
+    seen = {}
+
+    def handler(request):
+        import httpx as _httpx
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization")
+        return _httpx.Response(200, json={"data": []})
+
+    _install_mock_httpx(monkeypatch, handler)
+    impl = OpenAICompatibleImageProvider()
+    ok = await impl.probe({"base_url": "https://gw.example/v1", "api_key": "sk-x"})
+    assert ok is True
+    assert seen["url"].endswith("/v1/models")
+    assert seen["auth"] == "Bearer sk-x"
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_generate_b64(monkeypatch):
+    import base64
+    import httpx
+
+    from plugins.image_providers.main import OpenAICompatibleImageProvider
+
+    payload = b"\x89PNG fake"
+
+    def handler(request):
+        body = __import__("json").loads(request.content)
+        assert body["response_format"] == "b64_json"
+        return httpx.Response(200, json={"data": [{
+            "b64_json": base64.b64encode(payload).decode()}]
+        })
+
+    _install_mock_httpx(monkeypatch, handler)
+    impl = OpenAICompatibleImageProvider(base_url="https://gw.example/v1", api_key="sk-x")
+    images = await impl.generate(_req())
+    assert images and images[0].data == payload
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_generate_url_download_and_ssrf(monkeypatch):
+    import httpx
+
+    import clipwright.security as security
+    from clipwright.providers.base import ImageGenerationRequest
+    from plugins.image_providers.main import OpenAICompatibleImageProvider
+
+    monkeypatch.setattr(security, "assert_public_url", lambda url: None)
+
+    def handler(request):
+        if request.method == "POST":
+            return httpx.Response(200, json={"data": [{"url": "https://cdn.example/a.jpg"}]})
+        return httpx.Response(200, content=b"JPEGDATA",
+                              headers={"content-type": "image/jpeg"})
+
+    _install_mock_httpx(monkeypatch, handler)
+    impl = OpenAICompatibleImageProvider(base_url="https://gw.example/v1", api_key="sk-x")
+    images = await impl.generate(ImageGenerationRequest(prompt="cat"))
+    assert images[0].data == b"JPEGDATA"
+    assert images[0].mime == "image/jpeg"
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_generate_401_raises(monkeypatch):
+    import httpx
+
+    from plugins.image_providers.main import OpenAICompatibleImageProvider
+
+    def handler(request):
+        return httpx.Response(401, json={"error": {"message": "invalid key"}})
+
+    _install_mock_httpx(monkeypatch, handler)
+    impl = OpenAICompatibleImageProvider(base_url="https://gw.example/v1", api_key="sk-x")
+    with pytest.raises(RuntimeError) as exc:
+        await impl.generate(_req())
+    assert "401" in str(exc.value) and "invalid key" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_gpt_images_rejects_bad_size(monkeypatch):
+    from plugins.image_gpt_images.main import GPTImagesProvider
+
+    impl = GPTImagesProvider(base_url="https://gw.example/v1", api_key="sk-x")
+    with pytest.raises(ValueError):
+        await impl.generate(_req(size="800x600"))
+
+
+def _req(size: str = ""):
+    from clipwright.providers.base import ImageGenerationRequest
+
+    return ImageGenerationRequest(prompt="a cat", size=size)
+
+
+def test_image_source_test_endpoint_passes_resolved_config(client, monkeypatch):
+    """/test 对 image 源：宿主注入源配置，插件 probe 才能真的带 key。"""
+    import httpx
+
+    seen = {}
+
+    def handler(request):
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"data": []})
+
+    _install_mock_httpx(monkeypatch, handler)
+    created = client.post("/api/providers", json={
+        "name": "img-gw", "kind": "image", "provider": "openai_compatible",
+        "base_url": "https://gw.example/v1",
+        "api_keys": ["sk-test"],
+        "models": [{"id": "gpt-image-1", "name": "gpt-image-1", "enabled": True}],
+    })
+    assert created.status_code == 200, created.text
+    sid = created.json()["id"]
+    result = client.post(f"/api/providers/{sid}/test").json()
+    assert result["ok"] is True, result
+    assert seen["auth"] == "Bearer sk-test"

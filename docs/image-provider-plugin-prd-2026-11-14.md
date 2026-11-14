@@ -18,10 +18,13 @@
 | M4 插件 `image_providers` | ✅ | `plugins/image_providers`（`openai_compatible`） |
 | M5 插件 `image_gpt_images` | ✅ | `plugins/image_gpt_images`（`openai_gpt_image`） |
 | M6 下架与清理 | ✅ | 三插件目录删除；`api/plugin.py` legacy 映射、`prompts.py`、`capability_matrix`、`requirements_service`、`generated_source`（迁 `services/generated_assets.py`）与旧测试同步清理 |
+| M7 生成工具（第二期） | ✅ | `tool/image_generate.py` + `services/image_generation.py`：选源/能力校验/幂等账本/落盘 `materials/image/`/工作区素材源注册；`is_available()` 无源即隐藏 |
+| M8 定点插入（第二期） | ✅ | `tool/timeline_insert_image.py`：走 `intent_apply` 补丁引擎（start/end/after:<clip_id>），dry-run 预览，下游定稿后拒绝写 |
 
-测试：`tests/clipwright/test_image_provider_plugin.py`（契约/API/插件 5 例）；后端
-`-k "plugin or provider or tool or capability"` 826 passed；前端 `tsc --noEmit` 与
-`ProvidersPage.test.tsx` 40 passed。第二期（`image_generate` 工具/落盘/账本/素材检索）未实施。
+测试：`tests/clipwright/test_image_provider_plugin.py`（契约/API/插件 11 例）、
+`tests/clipwright/test_image_generation_flow.py`（生成/幂等/素材可见性/定点插入 6 例）；
+后端 `-k "plugin or provider or tool or capability"` 见提交说明；前端 `tsc --noEmit` 与
+`ProvidersPage.test.tsx` 40 passed。第二期（M7/M8）已并入本分支；真实厂商端到端仍需用户密钥。
 
 ---
 
@@ -127,7 +130,7 @@ class ImageProvider(Protocol):
     def default_model(self) -> str: ...
     def capabilities(self, model: str = "") -> ImageProviderCapabilities: ...
     async def generate(self, request: ImageGenerationRequest) -> list[GeneratedImage]: ...
-    async def probe(self) -> bool: ...   # 可选
+    async def probe(self, config: Mapping[str, Any] | None = None) -> bool: ...   # 可选；宿主注入源配置
 ```
 
 `ImageGenerationRequest`：`prompt / model / size / n / reference_image(bytes|None) / seed / extra`。

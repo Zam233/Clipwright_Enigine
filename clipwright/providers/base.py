@@ -384,7 +384,12 @@ class ImageProvider(Protocol):
     async def generate(self, request: ImageGenerationRequest) -> list[GeneratedImage]:
         ...
 
-    async def probe(self) -> bool:
+    async def probe(self, config: Mapping[str, Any] | None = None) -> bool:
+        """鉴权/连通探测。`config` 是宿主解析后的源配置（base_url/api_key/…）。
+
+        宿主把「源配置」与「provider 实现」分开：实现不读配置文件，探测时由
+        调用方注入，避免插件自行决定读哪份凭据。
+        """
         ...
 
 

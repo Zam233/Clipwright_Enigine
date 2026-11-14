@@ -370,7 +370,12 @@ async def test_source(source_id: str, request: Request = None) -> dict[str, Any]
             if not callable(probe_fn):
                 return {"ok": False, "latency_ms": _ms(),
                         "detail": "该 provider 未声明 probe()（无法做鉴权探测）"}
-            ok = await asyncio.wait_for(probe_fn(), timeout=20.0)
+            # 源配置（含解密后的 api_key）由宿主注入；插件不读配置文件。
+            try:
+                ok = await asyncio.wait_for(probe_fn(resolved), timeout=20.0)
+            except TypeError:
+                # 兼容旧实现（probe() 无参）
+                ok = await asyncio.wait_for(probe_fn(), timeout=20.0)
             return {"ok": bool(ok), "latency_ms": _ms(),
                     "detail": "探测通过" if ok else "探测失败（检查密钥/Base URL）"}
         except Exception as e:  # noqa: BLE001 — 探测失败按结果返回

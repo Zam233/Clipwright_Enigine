@@ -76,8 +76,20 @@ class GPTImagesProvider:
             size_dialect="openai_size",
         )
 
-    async def probe(self) -> bool:
+    def _apply_source_config(self, config: dict | None) -> None:
+        cfg = dict(config or {})
+        if cfg.get("base_url"):
+            self.base_url = str(cfg["base_url"]).strip().rstrip("/")
+        if cfg.get("api_key"):
+            self.api_key = str(cfg["api_key"])
+        if cfg.get("model"):
+            self.model = str(cfg["model"]).strip() or self.model
+        if cfg.get("timeout_sec"):
+            self.timeout_sec = float(cfg["timeout_sec"])
+
+    async def probe(self, config: dict | None = None) -> bool:
         """鉴权探测：gpt-image-1 无轻量握手，这里打 `/models` 只看 401/403。"""
+        self._apply_source_config(config)
         if not self.base_url or not self.api_key:
             return False
         try:
