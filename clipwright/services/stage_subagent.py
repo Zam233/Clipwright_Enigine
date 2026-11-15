@@ -379,6 +379,51 @@ PLAN_STAGES: tuple[str, ...] = ("structure", "material", "edit", "animation",
                                 "audio", "quality")
 
 
+def _explicit_timeline_for_redo(task: Any, stage: str, explicit: dict,
+                                refs: list[str] | None = None) -> dict | None:
+    """重做上游阶段时，从显式 inputs 里解析出可回写的 timeline。
+
+    只在调用方真的带了 timeline 输入时生效；没有就不猜（避免把错误时间线
+    当作起点）。引用形如 {"artifact": "art_x", "path": "artifacts/art_x.json"}。
+    """
+    if stage not in ("edit", "animation"):
+        return None
+    raw = (explicit or {}).get("timeline")
+    if not isinstance(raw, dict) and refs:
+        # 主 Agent 有时把时间线放在 input_refs（artifacts/art_x.json），而不是
+        # inputs.timeline。重做 animation 时按引用里第一个 timeline 回退。
+        root0 = _workspace_root_of(task)
+        if root0:
+            for rel in refs:
+                try:
+                    cand = json.loads((Path(root0) / str(rel)).read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001
+                    continue
+                if isinstance(cand, dict) and isinstance(cand.get("tracks"), list):
+                    raw = {"path": str(rel)}
+                    break
+    if not isinstance(raw, dict):
+        return None
+    if isinstance(raw.get("tracks"), list):
+        return raw
+    root = _workspace_root_of(task)
+    if not root:
+        return None
+    rel = str(raw.get("path") or "")
+    art = str(raw.get("artifact") or "")
+    if not rel and art:
+        rel = f"artifacts/{art}.json"
+    if not rel:
+        return None
+    try:
+        from pathlib import Path as _Path
+        path = _Path(root) / rel
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) and isinstance(data.get("tracks"), list) else None
+    except Exception:  # noqa: BLE001 — 引用坏了就不回退，交给装配校验
+        return None
+
+
 async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     """真跑一个阶段，返回结构化结果（并合并进黑板）。"""
     task_id = str(getattr(task, "id", "") or "")
@@ -388,6 +433,32 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     # 校验只认显式键，取值时空值才回退。
     explicit = dict(spec.inputs or {})
     board = bb.get(task_id)
+    # 重做 animation/edit 时，如果黑板 timeline 的 owner 是下游（audio），
+    # 先把它回退到这次显式传入的上游时间线，否则 animation 会被
+    # “只许下游覆盖上游”守卫拒绝，随后 audio 又拿旧时间线覆盖动画层。
+    try:
+        _redo_tl = _explicit_timeline_for_redo(
+            task, stage, explicit,
+            list((spec.args or {}).get("input_refs") or []),
+        )
+        _owner = bb.owner_of(task_id, "timeline")
+        if _redo_tl is not None and _owner:
+            _rank = bb.TIMELINE_STAGE_ORDER
+            if _rank.get(_owner, 99) > _rank.get(stage, 99):
+                bb.reset_timeline(
+                    task_id, _redo_tl,
+                    by="edit" if stage == "animation" else stage,
+                    reason=f"redo {stage}: 黑板 timeline owner={_owner}，回退到显式输入的上游时间线",
+                )
+                board = bb.get(task_id)
+                emit(task_id, "narration",
+                     f"黑板 timeline owner 从 {_owner} 回退到 {stage} 的上游起点（重做用）",
+                     {"kind": "timeline_owner_reset", "from": _owner, "stage": stage},
+                     span="kernel")
+                logger.warning("阶段 %s 重做：timeline owner %s → upstream（显式输入回退）",
+                               stage, _owner)
+    except Exception as _reset_err:  # noqa: BLE001 — 回退失败不阻断，交给黑板守卫给出可读错误
+        logger.warning("阶段 %s 重做：timeline owner 回退失败: %s", stage, _reset_err)
     started = time.monotonic()
 
     emit(task_id, "step_start", f"阶段子代理：{stage}",

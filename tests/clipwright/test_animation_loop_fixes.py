@@ -244,3 +244,25 @@ async def test_critique_retries_invalid_json_once(monkeypatch):
     )
     assert parsed and parsed["score"] == 75
     assert calls["n"] == 2
+
+
+def test_blackboard_reset_timeline_allows_upstream_redo():
+    from clipwright.services import task_blackboard as bb
+
+    tid = "t_reset_timeline_test"
+    bb.reset(tid)
+    tl_edit = {"tracks": [{"kind": "video", "clips": []}]}
+    tl_audio = {"tracks": [{"kind": "video", "clips": []}, {"kind": "audio", "clips": []}]}
+    bb.put(tid, "timeline", tl_edit, by="edit")
+    bb.put(tid, "timeline", tl_audio, by="audio")
+    assert bb.owner_of(tid, "timeline") == "audio"
+    # 正常 put 必须拒绝倒序写
+    try:
+        bb.put(tid, "timeline", tl_edit, by="animation")
+        assert False, "倒序写应被拒绝"
+    except bb.BlackboardError:
+        pass
+    # 受控 reset 才允许回退
+    bb.reset_timeline(tid, tl_edit, by="edit", reason="redo animation")
+    assert bb.owner_of(tid, "timeline") == "edit"
+    assert bb.get(tid)["timeline"] == tl_edit
