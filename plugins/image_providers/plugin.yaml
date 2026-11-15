@@ -1,0 +1,38 @@
+id: "image_providers"
+name: "AI 生图 Provider（OpenAI 兼容）"
+version: "1.0.0"
+kind: "capability"
+description: "通用 OpenAI 兼容图像生成 provider：POST {base_url}/images/generations，支持 b64_json / url 两种响应；厂商知识只在本插件"
+author: "Clipwright Team"
+entry_point: "image_providers.main"
+
+# 声明即授权（新契约）：第 20 类贡献 image_provider（image-provider-plugin PRD M4）
+api_version: "2"
+contributions:
+  - kind: image_provider
+    id: openai_compatible
+    config_schema:
+      base_url:
+        type: string
+        label: API Base URL
+        placeholder: https://api.openai.com/v1
+      api_key:
+        type: string
+        label: API Key
+        secret: true
+      model:
+        type: string
+        label: 默认模型
+        placeholder: gpt-image-1
+      timeout_sec:
+        type: number
+        label: 请求超时（秒）
+        default: 120
+    capabilities:
+      sizes: "any"
+      max_n: 4
+      reference_image: false
+      output_formats: ["png", "jpeg", "webp"]
+      max_prompt_chars: 4000
+      concurrency: 2
+      size_dialect: "wxh"

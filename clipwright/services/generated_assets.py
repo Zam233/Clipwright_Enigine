@@ -1,11 +1,14 @@
-"""生成产物素材源工厂 — 把 AI 生成插件的历史产物暴露给 MaterialRegistry。
+"""生成产物素材源工厂 — 历史 AI 生成产物的只读兼容层。
 
-三个生成插件（ai_image_gen / ai_video_gen / ai_music_gen）生成成功后把产物
-追加到各自 ``PluginData/plugins/<id>/generated.json`` 历史索引，并以
-:func:`make_generated_source` 构造的 MaterialSource 注册进 MaterialRegistry。
-MaterialAgent 的场景关键词与 AudioAgent 的 BGM 关键词即可命中历史产物
-（local_path 指向已落地文件），从而进入候选素材 → 时间线（视频/图片）与
-BGM 铺轨（音频）链路。
+原三个生成插件（ai_image_gen / ai_video_gen / ai_music_gen）已于 2026-11-14
+下架（image-provider-plugin PRD M6）；本模块由 `plugins/generated_source.py`
+迁入 Engine（宿主持有账本与登记）。当前职责：
+
+- 读取旧 ``PluginData/plugins/<id>/generated.json`` 历史（只读，不写回），
+  供 :func:`generated_image_entries` 把仍存在的旧产物喂给 AnimationAgent
+  的 `image_assets`（无历史时返回 []，零变化）；
+- :func:`make_generated_source` 保留给历史调用方；新生成链路（第二期
+  `image_generate` 工具）走工作区 `materials/image/`，不再经过本模块。
 """
 
 from __future__ import annotations
@@ -159,3 +162,11 @@ def make_generated_source(plugin_id: str, source_name: str,
             return [self._to_asset(e) for e in load_generated_history(plugin_id)]
 
     return _GeneratedAssetSource()
+
+
+def legacy_image_history_present() -> bool:
+    """是否存在旧版 ai_image_gen 生成历史（只读兼容，未迁移）。"""
+    try:
+        return bool(load_generated_history("ai_image_gen"))
+    except Exception:  # noqa: BLE001
+        return False

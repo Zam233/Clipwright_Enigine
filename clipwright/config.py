@@ -136,6 +136,12 @@ class Settings(BaseSettings):
     agent_max_turns: int = 80
     agent_max_tool_calls: int = 400
     agent_max_wall_sec: float = 0.0  # 0 = 不设上限
+    # --- 技能自主调用（skill-pluginization M2）---
+    # 阶段子 agent 在进入主逻辑前做一次有界技能轮：只暴露 Skill schema，最多
+    # skill_assist_max_calls 次调用；失败/无技能/超时一律跳过，不影响阶段。
+    skill_assist_enabled: bool = True
+    skill_assist_max_calls: int = 2
+    skill_assist_timeout_sec: float = 60.0
 
     # --- 终止机制收口（docs/agent-termination-devplan-2026-11-02.md §3/§6/§7）---
     # 2026-11-02 用户裁定 1：软着陆轮次 600（原来 PRD 的 360/400 作废），

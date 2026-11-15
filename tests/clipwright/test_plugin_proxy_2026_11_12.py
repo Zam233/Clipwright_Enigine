@@ -17,7 +17,7 @@ async def test_proxy_rejects_disabled_plugin(monkeypatch):
     class _Loader:
         @staticmethod
         def discover():
-            return ["ai_image_gen"]
+            return ["demo_plug_aigen"]
 
         @staticmethod
         def is_enabled(pid):
@@ -25,7 +25,7 @@ async def test_proxy_rejects_disabled_plugin(monkeypatch):
 
     monkeypatch.setattr(pj, "_loader", _Loader())
     with pytest.raises(HTTPException) as ei:
-        await pj.plugin_proxy("ai_image_gen", "post",
+        await pj.plugin_proxy("demo_plug_aigen", "post",
                         pj._PluginProxyBody(action="tool", payload={}), None)
     assert ei.value.status_code == 403
     assert "已禁用" in ei.value.detail
@@ -53,7 +53,7 @@ async def test_proxy_rejects_action_not_in_allowlist(monkeypatch):
     class _Loader:
         @staticmethod
         def discover():
-            return ["ai_image_gen"]
+            return ["demo_plug_aigen"]
 
         @staticmethod
         def is_enabled(pid):
@@ -65,7 +65,7 @@ async def test_proxy_rejects_action_not_in_allowlist(monkeypatch):
 
     monkeypatch.setattr(pj, "_loader", _Loader())
     with pytest.raises(HTTPException) as ei:
-        await pj.plugin_proxy("ai_image_gen", "post",
+        await pj.plugin_proxy("demo_plug_aigen", "post",
                         pj._PluginProxyBody(action="delete_project", payload={}), None)
     assert ei.value.status_code == 403
 
@@ -74,7 +74,7 @@ async def test_proxy_rejects_get_for_post_only_action(monkeypatch):
     class _Loader:
         @staticmethod
         def discover():
-            return ["ai_image_gen"]
+            return ["demo_plug_aigen"]
 
         @staticmethod
         def is_enabled(pid):
@@ -86,14 +86,14 @@ async def test_proxy_rejects_get_for_post_only_action(monkeypatch):
 
     monkeypatch.setattr(pj, "_loader", _Loader())
     with pytest.raises(HTTPException) as ei:
-        await pj.plugin_proxy("ai_image_gen", "get",
+        await pj.plugin_proxy("demo_plug_aigen", "get",
                         pj._PluginProxyBody(action="tool", payload={}), None)
     assert ei.value.status_code == 403
 
 
 async def test_proxy_rejects_unsupported_method():
     with pytest.raises(HTTPException) as ei:
-        await pj.plugin_proxy("ai_image_gen", "delete",
+        await pj.plugin_proxy("demo_plug_aigen", "delete",
                         pj._PluginProxyBody(action="tool", payload={}), None)
     assert ei.value.status_code == 405
 
@@ -138,7 +138,7 @@ async def test_proxy_rejects_tool_from_another_plugin(monkeypatch):
     class _Loader:
         @staticmethod
         def discover():
-            return ["ai_image_gen"]
+            return ["demo_plug_aigen"]
 
         @staticmethod
         def is_enabled(pid):
@@ -156,7 +156,7 @@ async def test_proxy_rejects_tool_from_another_plugin(monkeypatch):
     )
     with pytest.raises(HTTPException) as ei:
         await pj.plugin_proxy(
-            "ai_image_gen", "post",
+            "demo_plug_aigen", "post",
             pj._PluginProxyBody(action="tool", payload={"name": "video_trim", "params": {}}),
             None,
         )

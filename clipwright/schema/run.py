@@ -178,7 +178,8 @@ def _tool_call_digest(calls: list[dict[str, Any]]) -> tuple[dict[str, Any], list
     sample: list[dict[str, Any]] = []
     for call in (bad + rest):
         item = {k: call.get(k) for k in
-                ("tool", "capability", "status", "duration_ms", "args_brief", "output_brief", "error")}
+                ("tool", "capability", "kind", "skill", "status", "duration_ms",
+                 "args_brief", "output_brief", "error", "seq_in_run")}
         if any(v not in (None, "", 0) for v in item.values()):
             sample.append({k: (str(v)[:200] if v is not None else "") for k, v in item.items()})
         if len(sample) >= 12:

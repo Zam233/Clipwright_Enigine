@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Request
@@ -67,6 +68,8 @@ async def available_providers(request: Request = None) -> dict[str, Any]:
         (ContributionKind.TTS_PROVIDER, None),
         (ContributionKind.EMBEDDING_PROVIDER, embedding_provider_names),
         (ContributionKind.RERANK_PROVIDER, rerank_provider_names),
+        # 第 20 类：图像生成（image-provider-plugin PRD M2）
+        (ContributionKind.IMAGE_PROVIDER, None),
     ):
         listed = names() if names else [c.id for _, c in ContributionRegistry.list(kind)]
         out[kind.value] = sorted(set(listed))
@@ -88,6 +91,7 @@ async def available_providers(request: Request = None) -> dict[str, Any]:
     out["role_kinds"] = {
         "main": "llm", "flash": "llm", "vision": "llm",
         "embed": "embedding", "rerank": "rerank", "tts": "tts",
+        "image": "image",
     }
     # tts_provider 的别名（历史 id → 规范 id）也要给前端做兼容显示
     # 别名单一真相在 providers/tts（T7.5：不再在 API 里写死）
@@ -110,7 +114,10 @@ async def provider_schemas(kind: str = "", request: Request = None) -> dict[str,
     from clipwright.plugins.provider_decl import all_schemas, schemas_for_kind
 
     if kind:
-        return {"schemas": {kind: schemas_for_kind(kind)}}
+        # 接受短名（image）/全名（image_provider），返回键统一为门面全名，
+        # 与前端 `schemaFor` 的 `${kind}_provider` 索引一致。
+        decl_kind = kind if kind.endswith("_provider") else f"{kind}_provider"
+        return {"schemas": {decl_kind: schemas_for_kind(decl_kind)}}
     return {"schemas": all_schemas()}
 
 
@@ -266,7 +273,8 @@ async def fetch_models(source_id: str, request: Request = None) -> dict[str, Any
     try:
         from clipwright.providers.model_listing import list_models_result
 
-        result = await list_models_result(provider, resolved or {})
+        result = await list_models_result(provider, resolved or {},
+                                          kind=str(src.get("kind") or ""))
     except Exception as e:  # noqa: BLE001 — 拉取失败不阻断（前端可自定义）
         logger.warning("获取模型列表失败 (%s): %s", provider, e)
         result = None
@@ -347,6 +355,31 @@ async def test_source(source_id: str, request: Request = None) -> dict[str, Any]
             return {"ok": False, "latency_ms": _ms(),
                     "detail": "rerank 无结果（检查端点路径/密钥；本地模型请确认已加载）"}
         except Exception as e:  # noqa: BLE001
+            return {"ok": False, "latency_ms": _ms(), "detail": f"探测异常：{e}"}
+
+    if kind == "image":
+        # image-provider-plugin PRD M2：调用 provider 的 probe()；未实现则如实
+        # 说明「未声明 probe」，不假装成功、也不替插件猜协议。
+        try:
+            from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
+
+            impl = ContributionRegistry.resolve(ContributionKind.IMAGE_PROVIDER, provider)
+            if impl is None:
+                return {"ok": False, "latency_ms": _ms(),
+                        "detail": f"未安装图像 provider: {provider or '（未选择）'}"}
+            probe_fn = getattr(impl.object, "probe", None)
+            if not callable(probe_fn):
+                return {"ok": False, "latency_ms": _ms(),
+                        "detail": "该 provider 未声明 probe()（无法做鉴权探测）"}
+            # 源配置（含解密后的 api_key）由宿主注入；插件不读配置文件。
+            try:
+                ok = await asyncio.wait_for(probe_fn(resolved), timeout=20.0)
+            except TypeError:
+                # 兼容旧实现（probe() 无参）
+                ok = await asyncio.wait_for(probe_fn(), timeout=20.0)
+            return {"ok": bool(ok), "latency_ms": _ms(),
+                    "detail": "探测通过" if ok else "探测失败（检查密钥/Base URL）"}
+        except Exception as e:  # noqa: BLE001 — 探测失败按结果返回
             return {"ok": False, "latency_ms": _ms(), "detail": f"探测异常：{e}"}
 
     return {"ok": False, "latency_ms": _ms(),

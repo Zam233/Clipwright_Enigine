@@ -76,9 +76,8 @@ OPTIONAL_PLUGIN_TOOLS: frozenset[str] = frozenset({
     "pv_engine_beats",
     "pv_engine_align",
     # plugins/ 下的示例/扩展插件（默认目录里存在，但可被卸载）
-    "ai_image_generate",
-    "ai_music_generate",
-    "ai_video_generate",
+    # ai_image_generate / ai_music_generate / ai_video_generate 已下架
+    # （image-provider-plugin PRD M6）
     "extended_tts",
     "whisper_transcribe_local",
     "subtitle_translate",

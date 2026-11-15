@@ -85,6 +85,7 @@ class TestAvailableProviders:
         assert body["role_kinds"] == {
             "main": "llm", "flash": "llm", "vision": "llm",
             "embed": "embedding", "rerank": "rerank", "tts": "tts",
+            "image": "image",
         }
 
     def test_tts_alias_exposed(self, client):

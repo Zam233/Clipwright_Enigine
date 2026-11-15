@@ -81,6 +81,8 @@
 
 | 服务文件 | 说明 |
 |---------|------|
+| `image_generation.py` | 图像生成（image-provider-plugin PRD 第二期）：解析 `image` 角色/源 → 能力协商（尺寸/n）→ 调 `image_provider` 插件 → 落工作区 `materials/image/` → 幂等账本（`cache/generated_images.json`）；厂商协议不在本模块 |
+| `workspace_materials.py` | 工作区生成图素材源：把 `materials/image/` 注册为 `MaterialSource`，素材阶段可按关键词检索到生成/导入图片；旧生成历史只在 `generated_assets.py` 只读兼容 |
 | `waveform_service.py` | 音频波形可视化数据生成 |
 | `vision_service.py` | 视觉分析服务 |
 | `edl_service.py` | EDL 导入导出 |

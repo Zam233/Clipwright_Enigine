@@ -347,12 +347,14 @@ def _material_library_overview() -> str:
         return ""
 
 
-# AI 生成能力概览（D4）：三个生成插件的工具与展示名，可用性以 is_available() 为准
-_AI_GEN_TOOLS = [
-    ("ai_image_generate", "图片生成"),
-    ("ai_video_generate", "视频生成"),
-    ("ai_music_generate", "音乐生成"),
-]
+# AI 生成能力概览（D4）：按**当前已配置可用**的生成类工具动态生成，不点名旧插件
+# （ai_image_gen / ai_music_gen / ai_video_gen 已下架，image-provider-plugin PRD M6；
+#  image_generate 工具待第二期落地）。无任何可用生成工具时返回 ""，保证零变化。
+_AI_GEN_TOOL_LABELS: dict[str, str] = {
+    "image_generate": "图片生成",
+    "video_generate": "视频生成",
+    "music_generate": "音乐生成",
+}
 
 
 def _ai_generation_overview() -> str:
@@ -364,7 +366,7 @@ def _ai_generation_overview() -> str:
     try:
         from clipwright.tool.registry import ToolRegistry
         available = []
-        for name, label in _AI_GEN_TOOLS:
+        for name, label in _AI_GEN_TOOL_LABELS.items():
             tool = ToolRegistry.get(name)
             if tool is not None and tool.is_available():
                 available.append(label)
@@ -1856,7 +1858,7 @@ class RequirementsService:
             if isinstance(anim_style, dict):
                 visual_config = anim_style
         try:
-            from clipwright.plugins.generated_source import generated_image_entries
+            from clipwright.services.generated_assets import generated_image_entries
             from clipwright.services import stage_subagent
 
             out = await stage_subagent.run_inline(
