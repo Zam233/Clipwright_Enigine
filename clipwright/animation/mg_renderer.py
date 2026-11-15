@@ -480,7 +480,7 @@ const dur=parseFloat(root.dataset.duration);
                 )
             html = (
                 f'<div id="{eid}" class="mg-el clip" data-start="0" data-duration="{total_dur}" data-track-index="1"{var_attr} style="{base_css}'
-                f'font-size:{font_size}px;color:{font_color};font-weight:{font_weight}'
+                f'font-size:{font_size}px;color:{font_color};font-weight:{font_weight};'
                 + gradient_css
                 + static_style
                 + f'">{MGRenderer._esc(content)}</div>'

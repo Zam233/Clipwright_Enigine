@@ -202,6 +202,11 @@ def build_text_mgdef(
         }
         decorations.append(hl)
 
+    # 重建 element 列表：上面的 glitch/neon/highlight 可能往 decorations 追加了图层
+    elements = decorations if motion_type in ("typewriter", "word_by_word") else [main] + decorations
+    if motion_type == "highlight":
+        elements = [e for e in elements if e.get("type") == "shape"] + [e for e in elements if e.get("type") != "shape"]
+
     # 圆角底板：前置 shape（MG renderer 支持 background/border_radius）
     if style.get("box"):
         pad_x = float(style.get("box_padding_x") or 18)
