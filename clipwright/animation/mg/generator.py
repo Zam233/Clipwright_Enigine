@@ -996,26 +996,47 @@ ision_prompt
         user_prompt = "\n\n".join(user_parts)
 
         llm_config = self._config.get("llm", {})
-        try:
-            response = await unified_llm_call("MGGenerator.critique", lambda: self._llm.generate(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=critique_config.get("temperature", 0.1),
-                # 之前这里**没有下发 max_tokens**：模型按默认上限返回，长 issues
-                # 被截断成非法 JSON → 批判失败 → 修复被跳过（E2E 2026-11-15 实测
-                # 1533 字符的半截 critique）。评审批次同样需要完整输出预算。
-                max_tokens=int(llm_config.get("max_tokens", 0) or MAX_OUTPUT_TOKENS),
-                timeout=llm_config.get("timeout", 900),
-            ), retries=1, timeout=llm_config.get("timeout", 900))
-            content = response.content if hasattr(response, "content") else str(response)
-            return self._parse_critique_json(
-                content,
-                finish_reason=_finish_reason_of(getattr(response, "raw_response", None)))
-        except Exception as e:
-            logger.warning("MGGenerator critique call failed: %s", e)
-            return None
+        last_finish = ""
+        for attempt in range(2):  # 评审是质量信号：一次 JSON 坏了不该直接丢掉自评
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+            if attempt:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "上一次输出不是合法 JSON（可能夹了解释文字或少了括号）。"
+                        "这次只输出一个 JSON 对象："
+                        '{"score": 0到100的整数, "issues": ["..."], "suggestions": ["..."]}'
+                    ),
+                })
+            try:
+                response = await unified_llm_call(
+                    f"MGGenerator.critique:{attempt + 1}",
+                    lambda m=messages: self._llm.generate(
+                        messages=m,
+                        temperature=critique_config.get("temperature", 0.1),
+                        # 之前这里**没有下发 max_tokens**：模型按默认上限返回，长 issues
+                        # 被截断成非法 JSON → 批判失败 → 修复被跳过（E2E 2026-11-15 实测
+                        # 1533 字符的半截 critique）。评审批次同样需要完整输出预算。
+                        max_tokens=int(llm_config.get("max_tokens", 0) or MAX_OUTPUT_TOKENS),
+                        timeout=llm_config.get("timeout", 900),
+                    ),
+                    retries=1, timeout=llm_config.get("timeout", 900),
+                )
+                content = response.content if hasattr(response, "content") else str(response)
+                last_finish = _finish_reason_of(getattr(response, "raw_response", None))
+                parsed = self._parse_critique_json(content, finish_reason=last_finish)
+                if parsed is not None:
+                    return parsed
+                logger.warning(
+                    "MGGenerator critique JSON 不可解析（第 %d 次，finish=%s chars=%d），重试",
+                    attempt + 1, last_finish or "?", len(content or ""),
+                )
+            except Exception as e:
+                logger.warning("MGGenerator critique call failed（第 %d 次）: %s", attempt + 1, e)
+        return None
 
     async def _call_llm_critique_repair(
         self,

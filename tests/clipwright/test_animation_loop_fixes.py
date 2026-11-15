@@ -212,3 +212,35 @@ def test_text_animation_accepts_drawtext_easing():
         }],
     }
     assert _validate_text_easing_neutral(mg, duration_s=3) == []
+
+
+@pytest.mark.asyncio
+async def test_critique_retries_invalid_json_once(monkeypatch):
+    gen = object.__new__(MGGenerator)
+    gen._config = {
+        "llm": {"max_tokens": 0, "timeout": 30},
+        "critique": {"enabled": True},
+        "prompt": {"system_template": ""},
+    }
+    calls = {"n": 0}
+
+    class _FakeLLM:
+        async def generate(self, **kwargs):
+            calls["n"] += 1
+            text = "这不是 JSON，只是解释" if calls["n"] == 1 else \
+                '{"score": 75, "issues": [], "suggestions": ["加个缓动"]}'
+
+            class _Resp:
+                content = text
+                raw_response = None
+
+            return _Resp()
+
+    gen._llm = _FakeLLM()
+    monkeypatch.setattr(MGGenerator, "_knowledge_section", lambda self, *a, **k: "")
+    parsed = await gen._critique_quality(
+        {"duration_sec": 3, "elements": []}, "描述", {}, {}, "",
+        scene_context={"title": "t"},
+    )
+    assert parsed and parsed["score"] == 75
+    assert calls["n"] == 2

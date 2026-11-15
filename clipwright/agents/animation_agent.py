@@ -722,15 +722,14 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 text_track.clips.append(llm_clip)
                 text_track.clips.sort(key=lambda c: c.start_sec)
                 return
+            # 用户 2026-11-15 裁定：文字动画也只保留提示词，LLM 失败就跳过，
+            # 不再用 AnimationCatalog 的 typewriter/highlight_flash 预设模板冒充。
             _note(
-                "text_llm_fallback_template",
-                f"文字动画 LLM 生成失败，回退 AnimationCatalog 模板（anim_id={anim_id}）",
+                "text_llm_failed_no_template",
+                f"文字动画 LLM 生成失败，按“只保留提示词”策略跳过（anim_id={anim_id}）",
                 scope=str((vid_clip.metadata or {}).get("scene_title") or ""),
-                impact="该段文字动效是固定模板关键帧，不是按语义定制",
+                impact="该段没有文字动效（不会用固定模板关键帧冒充 LLM 产物）",
             )
-            # 回退到同步模板入口（既有测试/调用方的稳定路径）
-            self._handle_text_animation(
-                text_track, vid_clip, anim_id, anim_name, marker, persona_style)
             return
 
         full_kfs = AnimationCatalog.build_full_keyframes(
@@ -1130,24 +1129,28 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             )
             if typed_ok:
                 return
+            # 用户 2026-11-15 裁定：插件/类型动画的领域里**只保留提示词**，
+            # 不再回退 mg_* / SVG 预设模板。模板只能生成“看起来在动”的占位图，
+            # 却会被当成 LLM 产物展示；宁可如实登记失败并跳过这一段。
+            _note(
+                "animation_llm_failed",
+                f"{anim_id} 的类型化 LLM 生成失败；按“只保留提示词”策略跳过，不回退预设模板",
+                scope=str(marker.get("scene_title") or anim_id),
+                impact="该段没有动画（不会用模板/占位图冒充 LLM 产物）",
+            )
+            self._add_trace_warning(
+                f"[逻辑动画]{anim_name}({anim_id}) 的 LLM 生成失败，已跳过（不回退预设模板）"
+            )
+            return
 
-        # ── 回退 1：mg_* 内置模板（仍是动态 HTML/CSS，只是非 LLM 定制）
+        # LLM 动画生成被显式关闭（settings.animation_llm_generation=false）时，
+        # 才允许走旧的模板/SVG 路径；这是运维开关，不是失败回退。
         if anim_id.startswith("mg_"):
-            _note("animation_typed_fallback",
-                  f"类型化 LLM 生成未生效，{anim_id} 回退内置模板 mg_*",
-                  scope=str(marker.get("scene_title") or anim_id),
-                  impact="该段动画非按类型提示词定制，构图与文案贴合度下降")
             await self._handle_mg_animation(
                 anim_track, vid_clip, anim_id, anim_name,
                 text_content, duration, marker, persona_style,
             )
             return
-
-        # ── 回退 2：图解 SVG（现已补真实关键帧，见 diagram_svg；仍是动的）
-        _note("animation_svg_fallback",
-              f"{anim_id} 无可用类型化路径，回退图解 SVG",
-              scope=str(marker.get("scene_title") or anim_id),
-              impact="该段只有矢量图解 + 关键帧，缺少 MG 级动效设计")
         await self._handle_svg_fallback(
             anim_track, vid_clip, anim_id, anim_name, text_content, duration, persona_style,
         )
@@ -1903,17 +1906,32 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
             return
 
-        if not result.get("success"):
-            logger.warning("AnimationAgent: llm_mg 生成失败 (method=%s)", result.get("method"))
-            self._add_trace_warning(
-                f"LLM MG 生成失败，使用降级方案: {result.get('fallback_template', 'none')}")
+        method = str(result.get("method", "unknown") or "unknown")
+        if (not result.get("success")
+                or result.get("fallback_template")
+                or "fallback" in method or "template" in method):
+            logger.warning(
+                "AnimationAgent: llm_mg 未产出 LLM 定制动画 (method=%s, fallback=%s)，跳过",
+                method, result.get("fallback_template"),
+            )
+            _note(
+                "llm_mg_failed_no_template",
+                f"{anim_name} 未产出 LLM 定制动画（method={method}），按“只保留提示词”策略跳过",
+                scope=str((vid_clip.metadata or {}).get("scene_title") or anim_name),
+                impact="该段没有动画（不会用内置模板冒充 LLM 产物）",
+            )
+            return
 
         html = result.get("html", "")
         mg_def = result.get("mg_def", {})
-        method = result.get("method", "unknown")
 
         if not html:
-            self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
+            _note(
+                "llm_mg_failed_no_template",
+                f"{anim_name} 的 LLM 产物没有 HTML，跳过（不回退模板）",
+                scope=str((vid_clip.metadata or {}).get("scene_title") or anim_name),
+                impact="该段没有动画（不会用内置模板冒充 LLM 产物）",
+            )
             return
 
         # P1-03：窗口不足时跳过（同模板 MG 路径）——否则 clip 被钳到窗口、
@@ -2113,11 +2131,12 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             f"LLM MG 动画 [{anim_name}] 无法生成，已跳过（不再降级为文字显示）"
         )
 
-    def _add_trace_warning(self, message: str) -> None:
-        """添加 trace 警告事件。"""
+    def _add_trace_warning(self, message: str, detail: dict[str, Any] | None = None) -> None:
+        """添加 trace 警告事件（统一 5 参数，允许带结构化 detail）。"""
         try:
             from clipwright.services.trace import add_event as _evt
-            _evt(getattr(self, '_pid', ''), "animation", "warning", message)
+            _evt(getattr(self, '_pid', ''), "animation", "warning", message,
+                 detail or {"degradation": "animation_warning"})
         except Exception:
             pass
 
