@@ -543,3 +543,16 @@
 ### 16.4 结论
 
 本轮把 slide/scale/highlight/word/cursor/圆角底板/工具链补上了，但 PRD 仍**未全部完成**；状态继续保持“部分实现，验收未通过”。下一轮优先：任务 done 闭环、渐变/故障/霓虹/撕纸、line_height、LLM 自动调用 `apply_text_style`、完整任务 E2E。
+
+
+## 17. 2026-11-15 最后一轮任务 E2E 的真实结果（仍未通过）
+
+- 重跑 `task_a3e78e2fda`（重置黑板为 edit，animation→audio→quality）：
+  - animation 3 轮后仍有 `text_motion_weak`（报告称关键帧覆盖 40%/阈值 45%）、`mg_motion_weak`（44px）、`mg_template_fallback`、`llm_mg_failed_no_template`；
+  - 任务最终 **failed**，不是 done；接受收据 `outstanding=0` 只是降级闭环，不等于完成；
+  - 因此“任务终态 done”仍未达成。
+- 另做的局部 E2E（现有时间线改两条文字 clip 后重渲）：
+  - `render_30f9c53a4793`，`renders/..._20261115131502.mp4`，702.4s，127,800,158 bytes；
+  - `_cache/e2e_478.9.jpg` 只显示「只禁离」+红底圆角；`_cache/e2e_493.jpg` 完整「只禁离线下载」+红底；`_cache/e2e_337.jpg`「没有通报」+黄色圆角；
+  - 证明 ASS typewriter / 矢量圆角底板 / 样式字段在真实成片生效，但这只是**局部样式 E2E**，不能替代任务 done。
+- 结论不变：PRD 仍“部分实现，验收未通过”；最后四项硬缺口：任务 done、渐变/撕纸/故障/霓虹、line_height、LLM 自动调用 `apply_text_style` 的生成闭环。
