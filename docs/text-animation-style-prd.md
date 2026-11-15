@@ -671,3 +671,45 @@
 ### 22.5 结论
 
 PRD 的 P0 文字动画需求已按要求迁移到 MG HTML，并通过任务 done + 真实 render + 抽帧验证。仍属于显式拒绝/独立能力而非文字动画的：渐变/撕纸/glitch/霓虹（走 `text_effect_card` 静态卡）；这是有意的边界，不是静默降级。
+
+
+## 23. 最终检查：仍未完成/不可宣称“全部完成”的部分（2026-11-16）
+
+### 23.1 阻断项：成片视频流被截断
+
+证据：
+
+- 最新成片 `renders/..._20261115154540.mp4`：
+  - 容器 duration = 702.4s；
+  - **video stream duration = 538.266667s（16148 帧）**；
+  - audio stream duration = 702.4s。
+- 结果日志只写了 `concat: 55 段无损拼接（-c copy）`；视频轨时间线有 69 个 video clip。
+- 因此 538s 之后的文字动画（`tc_b4fbc769` glitch 555s、`tc_728f5ad6` typewriter 631s、`tc_e26d4762` 651s、`tc_b47b34ba` 658s、`tc_8d8f1e16` 692s）在成片里根本没有画面；`contact_sheet.jpg` 最后 4 格只能是空白/占位。
+- 这不是截图问题，是 render 的 video 轨丢失约 164s，必须先修 trim/concat。
+
+### 23.2 任务历史仍有一条 accepted 降级
+
+- `task_a3e78e2fda` 最终 done，但 finish 里仍记录 1 条已接受的 `mg_motion_weak`（某 MG 18px）；
+- 当前项目动画轨复核未发现 <77px 的 MG clip，但历史收据没有删除；
+- 用户“零降级/完美出片”口径下，这仍是未清项。
+
+### 23.3 预览与成片对新效果不一致
+
+- `text_mg`/`MGRenderer` 已支持 gradient/glitch/neon/highlight；
+- 后端 `render` 走 Hyperframes；
+- 前端 `src/features/preview/mgRenderer.ts` 的文字渲染仍只画 `font_color`、font/line_height，**没有** `text_gradient`、`text_shadow`、glitch/neon 的等价实现；
+- 所以这些新效果在预览里会回退成普通文字，不能宣称预览一致。
+
+### 23.4 其他残余
+
+- `text_effect_card` 仍只是静态 PNG，用于渐变/撕纸/纹理；不支持逐字/位移动画；
+- `MGGenerator._fallback_generate` 函数体还在（生产路径已不调用，但测试/旧接口仍引用），严格“无降级”审计会把它算残留；
+- 最新 MGRenderer 的 gradient/glitch/neon/highlight 扩展是在当前成片 render **之后**提交的，尚未重新跑完整 animation→audio→render 验证；
+- `line_height` 在 MG HTML 支持，但前端预览的 mgRenderer 只读 line_height 数值，未验证与 Chrome 行距一致；
+- `text_animation_shots/contact_sheet.jpg` 只有前 15 个有效格，后 4 个因 538s 截断缺失。
+
+### 23.5 结论
+
+当前可确认完成：文字 19 条全部 MG HTML、全部 apply_text_style、任务 done、MGRenderer 支持 9 种 motion + gradient、单独效果样例已渲染。
+
+当前**不能确认完成**：538s 视频截断、历史 mg_motion_weak 收据、前端预览新效果、最新 MGRenderer 的完整 E2E 重跑。必须先修 23.1，再补 23.2–23.4。
