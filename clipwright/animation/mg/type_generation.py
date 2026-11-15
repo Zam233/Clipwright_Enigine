@@ -476,11 +476,17 @@ async def generate_for_type(
 
     html = str(raw.get("html") or "")
     mg_def = raw.get("mg_def") if isinstance(raw.get("mg_def"), dict) else {}
-    if not raw.get("success") or not html or not mg_def:
+    _method = str(raw.get("method") or "")
+    # 2026-11-15 用户裁定：类型动画只接受 LLM 定制产物。MGGenerator 内部的
+    # 模板兜底（method=fallback_template / fallback）即使“能通过门禁”也不许
+    # 当成交付物——否则又是一段看起来在动的预设模板。
+    if (not raw.get("success") or not html or not mg_def
+            or raw.get("fallback_template")
+            or "fallback" in _method or "template" in _method):
         return TypeGenerationResult(
             ok=False, type_id=spec.id, prompt_version=prompt_version,
-            method=str(raw.get("method") or ""),
-            issues=["生成器未返回可用产物"],
+            method=_method,
+            issues=["LLM 未产出定制动画，拒绝模板回退"],
             raw=raw,
         )
 
