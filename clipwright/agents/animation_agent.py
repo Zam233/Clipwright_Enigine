@@ -708,10 +708,15 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         # 与 38 个类型化 MG 同构：prompt 定义类型语义 + LLM 产出 MGDef，
         # 这里把它转成 drawtext 可消费的 keyframes。失败才回退模板表。
         if self._text_llm_enabled():
-            llm_clip = await self._build_text_clip_llm(
-                vid_clip, text_content, clip_duration, persona_style,
-                anim_id=anim_id, anim_name=anim_name,
-            )
+            # LLM 首次失败先重跑一次（transient 空/坏 JSON），不要立刻放弃。
+            llm_clip = None
+            for _attempt in range(2):
+                llm_clip = await self._build_text_clip_llm(
+                    vid_clip, text_content, clip_duration, persona_style,
+                    anim_id=anim_id, anim_name=anim_name,
+                )
+                if llm_clip is not None:
+                    break
             if llm_clip is not None:
                 overlap = self._find_overlapping_clip(text_track, llm_clip)
                 if overlap is not None:
@@ -1129,6 +1134,15 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             )
             if typed_ok:
                 return
+            # 首次失败不是直接放弃：同一段提示词立即重跑一次（LLM 偶发空/坏 JSON
+            # 是 transient，重跑通常就正常了）。只有连续两次都失败才登记降级。
+            logger.warning("AnimationAgent: 类型化 %s 首次失败，立即重跑一次", anim_name)
+            typed_ok = await self._handle_typed_animation(
+                anim_track, vid_clip, anim_id, anim_name, text_content, duration,
+                marker, persona_style, retry=True,
+            )
+            if typed_ok:
+                return
             # 用户 2026-11-15 裁定：插件/类型动画的领域里**只保留提示词**，
             # 不再回退 mg_* / SVG 预设模板。模板只能生成“看起来在动”的占位图，
             # 却会被当成 LLM 产物展示；宁可如实登记失败并跳过这一段。
@@ -1381,8 +1395,14 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         duration: float,
         marker: dict[str, Any],
         persona_style: dict[str, Any] | None = None,
+        *,
+        retry: bool = False,
     ) -> bool:
-        """按类型生成动画；返回 True 表示已创建 clip（调用方不再回退）。"""
+        """按类型生成动画；返回 True 表示已创建 clip。
+
+        `retry=True` 是同一段的第二次生成（首次失败后由调用方触发）：跳过
+        “同片内容去重”记录，否则会把自己当成重复片段直接返回 True。
+        """
         from clipwright.animation.mg.type_generation import fingerprint_of
 
         if not await self._hyperframes_available():
@@ -1398,6 +1418,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         # 逻辑动画是并发执行的，check-and-set 必须串行化，否则同内容会被并发生成两次。
         fp = fingerprint_of(spec.id, text_content)
         seen = getattr(self, "_anim_fingerprints", None)
+        if retry and isinstance(seen, dict):
+            # 重试同一段：清掉首次失败留下的去重记录，否则会被当成“同片重复”跳过。
+            seen.pop(fp, None)
         if seen is None:
             seen = {}
             self._anim_fingerprints = seen
