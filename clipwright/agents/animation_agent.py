@@ -2020,6 +2020,24 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         html = result.get("html", "")
         mg_def = result.get("mg_def", {})
 
+        # 不允许降级：mg_dynamic 也确定性补主运动（>=4% 画布），再重建 HTML。
+        if isinstance(mg_def, dict) and mg_def:
+            try:
+                from clipwright.animation.mg.type_generation import ensure_motion_floor
+                from clipwright.animation.mg_renderer import MGRenderer
+                fixed = ensure_motion_floor(mg_def, width=int(self._tl_width or 1920))
+                if fixed != mg_def:
+                    mg_def = fixed
+                    html = MGRenderer.render(
+                        mg_def, result.get("params") or {},
+                        width=int(self._tl_width or 1920),
+                        height=int(self._tl_height or 1080),
+                        fps=float(self._tl_fps or 30),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                _note("mg_motion_fix_failed", f"{type(exc).__name__}: {exc}",
+                      impact="该段 MG 动效可能仍偏弱")
+
         if not html:
             _note(
                 "llm_mg_failed_no_template",

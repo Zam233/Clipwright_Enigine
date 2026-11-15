@@ -38,3 +38,12 @@ def test_rendered_html_is_hyperframes_document():
     assert "<!DOCTYPE html>" in html
     assert "data-duration=\"2.00\"" in html
     assert "测试" in html
+
+
+def test_gradient_is_rejected_not_silently_white():
+    import pytest
+    with pytest.raises(ValueError, match="不支持渐变"):
+        build_text_mgdef(
+            _base(), text="渐变", style={"fill": {"type": "gradient", "colors": ["#f0f", "#0ff"]}},
+            motion={"type": "fade_in"}, width=1920, height=1080, display_sec=2.0,
+        )

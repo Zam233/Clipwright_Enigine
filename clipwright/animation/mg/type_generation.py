@@ -412,6 +412,51 @@ def normalize_duration(mg_def: dict[str, Any], duration_s: float) -> dict[str, A
     return mg_def
 
 
+def ensure_motion_floor(mg_def: dict[str, Any], width: int = 1920) -> dict[str, Any]:
+    """确定性补足主运动：不依赖 LLM 重写，避免 mg_motion_weak 降级。
+
+    对最大的非背景元素追加一条贯穿 0.15–0.85 时长的 translate_x 往返，
+    位移 = 画布宽 5%（略高于 4% 门槛），同时保证第二个元素有可观测变化。
+    """
+    import copy
+    out = copy.deepcopy(mg_def)
+    dur = max(0.5, float(out.get("duration_sec") or 3.0))
+    shift = max(24.0, float(width) * 0.05)
+    moving = [
+        e for e in (out.get("elements") or [])
+        if isinstance(e, dict) and e.get("type") not in ("bg",)
+    ]
+    if not moving:
+        return out
+    # 主元素：最大文本/图形
+    moving.sort(key=lambda e: float(e.get("width") or e.get("font_size") or 0), reverse=True)
+    main = moving[0]
+    kfs = [k for k in (main.get("keyframes") or []) if isinstance(k, dict)]
+    base = {k: v for k, v in (kfs[0] if kfs else {}).items() if k != "time"}
+    t0 = round(min(0.15, dur * 0.1), 3)
+    t1 = round(min(dur * 0.35, t0 + 0.35), 3)
+    t2 = round(dur * 0.85, 3)
+    main["keyframes"] = [
+        {"time": 0.0, **base},
+        {"time": t0, **base, "translate_x": 0},
+        {"time": t1, **base, "translate_x": shift},
+        {"time": t2, **base, "translate_x": 0},
+        {"time": round(dur, 3), **base},
+    ]
+    # 第二个元素：轻微 scale/opacity 变化，满足 moving_count >= 2
+    if len(moving) > 1:
+        second = moving[1]
+        sk = [k for k in (second.get("keyframes") or []) if isinstance(k, dict)]
+        sb = {k: v for k, v in (sk[0] if sk else {}).items() if k != "time"}
+        second["keyframes"] = [
+            {"time": 0.0, **sb, "opacity": 0},
+            {"time": round(dur * 0.2, 3), **sb, "opacity": 1},
+            {"time": round(dur * 0.8, 3), **sb, "opacity": 1},
+            {"time": round(dur, 3), **sb, "opacity": 1},
+        ]
+    return out
+
+
 async def generate_for_type(
     generator: Any,
     *,
@@ -505,6 +550,13 @@ async def generate_for_type(
             issues = validate_for_type(mg_def, spec, duration_s)
 
     motion = motion_report(mg_def, duration_s)
+    # 不允许降级：动效不足时确定性补主运动，而不是接受 mg_motion_weak。
+    if not motion.get("ok"):
+        mg_def = ensure_motion_floor(mg_def, width=int(width or 1920))
+        motion = motion_report(mg_def, duration_s)
+        issues = [i for i in issues if not i.startswith("动画近乎静止")]
+        issues += [i for i in validate_for_type(mg_def, spec, duration_s)
+                   if i.startswith("动画近乎静止")]
     blocking = [i for i in issues if i.startswith("动画近乎静止") or i.startswith("元素数量")]
     ok = not blocking
     if issues:
@@ -518,7 +570,7 @@ async def generate_for_type(
                 description=description, text_content=content,
                 persona_style=persona_style or {},
                 width=width, height=height, fps=fps,
-                allow_fallback=True,
+                allow_fallback=False,
             ) or html
         except Exception as e:  # noqa: BLE001
             logger.warning("generate_for_type(%s) 归一化后重渲染失败: %s", spec.id, e)

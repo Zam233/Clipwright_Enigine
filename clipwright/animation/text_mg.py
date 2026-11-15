@@ -68,7 +68,17 @@ def build_text_mgdef(
     height: int,
     display_sec: float,
 ) -> dict[str, Any]:
-    """返回新的 MGDef：文字/样式/动效全部转成 MG HTML 可渲染结构。"""
+    """返回新的 MGDef：文字/样式/动效全部转成 MG HTML 可渲染结构。
+
+    不支持的样式必须显式拒绝，不能静默降级成白字。
+    """
+    if isinstance(style.get("fill"), dict) or any(
+        k in style for k in ("gradient", "texture", "torn", "glitch", "neon")
+    ):
+        raise ValueError(
+            "文字动画 MG 路径不支持渐变/纹理/撕纸/glitch/霓虹；"
+            "请用 text_effect_card 生成静态卡，或显式扩展 MGRenderer"
+        )
     out = copy.deepcopy(mg_def)
     out["duration_sec"] = round(max(0.3, float(display_sec)), 3)
     out["width"] = int(width)
