@@ -568,3 +568,12 @@
 - 仍**不是文字动画**：它是静态卡，不负责 typewriter/slide/scale；复杂效果的“逐字/位移动画”仍未实现。
 - 因此 §14.3 的图片效果从“完全不能”改为“静态卡可近似，动画层仍不能”；`apply_text_style` 仍拒绝 glitch/neon 的直接文字层写入。
 - 任务 done / line_height / 复杂效果动画仍未完成；PRD 仍“部分实现，验收未通过”。
+
+
+## 19. 2026-11-15 收尾状态（goal 第 3 轮）
+
+- 试过让已有 `final_timeline` 直接 finish，但主 Agent 仍重新派 animation；已 cancel，任务状态为 `cancelled`，**没有 done**。
+- 静态复杂文字卡 `text_effect_card` 已可生成渐变/撕纸/霓虹/glitch PNG；但它不是逐字/位移动画，也没有自动插入文字轨。
+- `line_height` 在 ASS/drawtext 仍未实现；`apply_text_style` 已存在但生成链路未自动调用。
+- 因此本 PRD 仍有硬缺口：**任务 done、复杂效果动画、line_height、完整任务 E2E**。
+- 这些不是继续微调就能在剩余轮次内闭环的：需要改渲染架构（MG/Canvas/逐帧）与任务收尾策略，且当前任务已被 cancel。
