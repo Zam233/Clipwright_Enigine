@@ -1,6 +1,6 @@
 # 文字动画样式与 Typewriter 修复 PRD
 
-> 状态：草案（待评审）  
+> 状态：已实现（M1–M4，M5 代码侧验收通过；全片抽帧验收待重跑任务）  
 > 日期：2026-11-15  
 > 范围：后端文字动画生成 / 渲染、前端预览、文字 LLM 提示词与样式契约  
 > 关联现场：成品 `05:37`、`08:13` 白色文字抽帧；`renders/从_PCL_到_HMCL...mp4`
@@ -251,3 +251,24 @@
 - `clipwright/services/render.py::_build_drawtext_filter`：typewriter 分支存在，但默认不走；x 从左边起排、reveal 摊满整段。
 - `clipwright/tool/design.py::TextStyle`：已有描边/阴影/发光/box 字段，但 `build_ass_style` 未使用 box，且 `build_ass_dialogue` 没有逐字位置参数。
 - 成片抽帧：`_cache/render_check_337.jpg`、`_cache/render_check_493.jpg`（本次分析用），新验收用逐字帧。
+
+
+## 11. 实现记录（2026-11-15）
+
+- `e0ef24e`：`TextAnimationStyle` 契约、`text_animation` prompt/校验、时长/淡出、ASS 逐字与 per-overlay 样式、底板。
+- `5725d3c`：quality 增加文字样式/时长依据/叠字检查。
+- `31ead06`（前端）：预览文字样式、底板、typewriter、fade 与成片语义对齐。
+- `338b4e1`：6 份文字类型提示词示例补齐 `text_animation`。
+- `fc8f662`：style 的 `{accent}` 参数占位符解析。
+
+已验证：
+
+- `tests/clipwright/test_text_animation_style.py`：4 passed（样式归一、legacy 时长/reason、ASS 逐字 6 行且 `\pos/\an7`、多样式与 box BorderStyle=3）。
+- `tests/clipwright/test_ass_style.py`：22 passed。
+- 抽帧合成验证：`_cache/text_style_check/txt_0.mp4`，0.8s 只见“离线”、2.2s 完整“离线下载功能”，红底白字；4.8s “没有通报”带描边/阴影；证明逐字、底板、描边/阴影在 ASS 路径生效。
+- 前端 `npx tsc --noEmit` + preview 151 tests 通过。
+
+未达/待办：
+
+- 用真实任务重新生成文字动画（让 LLM 输出 `text_animation`）后重跑 337s/493s 全片抽帧，确认 493s 逐字与关键词时长策略；当前旧时间线仍是旧 clip 数据。
+- 底板圆角/内边距在 ASS 的精确像素对齐、渐变/故障/霓虹等二期样式。
