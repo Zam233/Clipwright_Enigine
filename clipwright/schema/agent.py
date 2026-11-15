@@ -254,12 +254,19 @@ class AnimationInput(BaseModel):
         default_factory=list,
         description="素材库图片资产 [{path, tags, description}]，Agent 解析语义供 LLM 选图",
     )
+    #: 主 Agent 按失败片段重派时传入；动画 Agent 只对这些片段重新生成，
+    #: 其余成功片段从 cache/mg/animations 复用（不整段重跑）。
+    retry_clip_ids: list[str] = Field(default_factory=list)
 
 
 class AnimationOutput(AgentOutputBase):
     """动画 Agent 的输出 — 带动画的时间线。"""
     agent_name: str = "animation_agent"
     timeline: Optional[Timeline] = Field(default=None)
+    #: 失败片段清单：主 Agent 必须按 clip_id 重新派发 animation（不允许静默跳过）。
+    issues: list[dict[str, Any]] = Field(default_factory=list)
+    #: 非空 = 该阶段建议重做（失败片段）。主 Agent 看到后必须重派，不能收尾。
+    redo_agent: str = ""
     animation_plan: Optional[dict[str, Any]] = Field(
         default=None,
         description="动画编排计划：含 onscreen 和 transition 动画的实例化序列",

@@ -17,6 +17,9 @@
 - 文本行宽 <= {{max_line_chars}} 字（通用上限 14）；元素数 <= {{max_elements}}（通用上限 3）。
 - 字幕带 = 画面底部 {{caption_band_px}}px（160）；所有元素必须避让字幕带与安全边界。
 - 事实只能来自 {{source_fields}}；不得推算、补造、把推测写成结论。
+- **阴影是硬性样式**：每个文字元素必须显式给出 `text_shadow`（或 `style.shadow_x/shadow_y/shadow_blur/shadow_color`），
+  推荐 `0 4px 10px rgba(0,0,0,0.78)`；浅色/蓝色底板/高亮条上必须加强到 `0 5px 14px rgba(0,0,0,0.85)`。
+  没有阴影的文字视为样式不完整，必须重写。
 
 ## ③ 常量表
 | 常量 | 值 |

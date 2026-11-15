@@ -49,6 +49,8 @@ class MGRenderer:
         "font_size": "font-size",
         "font_weight": "font-weight",
         "font_family": "font-family",
+        "font_italic": "font-style",
+        "text_align": "text-align",
         "line_height": "line-height",
         "letter_spacing": "letter-spacing",
         "text_shadow": "text-shadow",
@@ -66,6 +68,7 @@ class MGRenderer:
         "font_size", "font_color", "font_weight",
         "width", "height", "border_radius",
         "stroke_width", "stroke_color", "border_width", "border_color",
+        "text_gradient", "text_stroke",
     }
 
     # CSS 值中的 url(...) 会触发 headless Chrome 主动请求（SSRF /
@@ -459,7 +462,9 @@ const dur=parseFloat(root.dataset.duration);
             if k in MGRenderer.STATIC_EXCLUDE_KEYS:
                 continue
             css_key = MGRenderer.KEYFRAME_CSS_MAP.get(k)
-            if css_key and isinstance(v, (str, int, float)):
+            if k == "font_italic" and isinstance(v, bool):
+                static_style += f"font-style:{'italic' if v else 'normal'};"
+            elif css_key and isinstance(v, (str, int, float)):
                 static_style += f"{css_key}:{bindable(MGRenderer._sanitize_css_value(v))};"
 
         if elem_type == "text":
@@ -467,9 +472,16 @@ const dur=parseFloat(root.dataset.duration);
             font_color = bindable(elem.get("font_color", "#ffffff"))
             font_weight = fill(elem.get("font_weight", "normal"))
             var_attr = f' data-var-text="{var_text_id}"' if var_text_id else ""
+            gradient_css = ""
+            if elem.get("text_gradient") and elem.get("background"):
+                gradient_css = (
+                    f"background:{bindable(MGRenderer._sanitize_css_value(elem.get('background')))};"
+                    "-webkit-background-clip:text;background-clip:text;color:transparent;"
+                )
             html = (
                 f'<div id="{eid}" class="mg-el clip" data-start="0" data-duration="{total_dur}" data-track-index="1"{var_attr} style="{base_css}'
-                f'font-size:{font_size}px;color:{font_color};font-weight:{font_weight}'
+                f'font-size:{font_size}px;color:{font_color};font-weight:{font_weight};'
+                + gradient_css
                 + static_style
                 + f'">{MGRenderer._esc(content)}</div>'
             )

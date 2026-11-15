@@ -12,7 +12,13 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Any, Iterable
+
+from clipwright.config import logger
+
+#: 同一 (stage, 降级指纹) 允许的重派次数（含第一次）。超过后要求写收据收尾，
+#: 否则“确定性失败 → 质检再报 → 再重派”会无限循环（2026-11-15 E2E 实测）。
+MAX_REPLAN_PER_FINGERPRINT = 2
 
 #: 阶段依赖（老编排器 DAG 已删除，这里是唯一真值）
 STAGE_DEPS: dict[str, tuple[str, ...]] = {
@@ -114,12 +120,42 @@ async def run(task, step) -> dict:  # noqa: ANN001 — 与其它 capability 同�
             "status": "refused",
             "error": f"未知阶段 {redo}（可选：{'/'.join(EXECUTION_ORDER)}）",
         }
+    fingerprint = str(args.get("fingerprint") or args.get("degradation") or "").strip()
+    key = f"{redo}|{fingerprint or 'default'}"
+    counts: dict[str, int] = getattr(task, "_replan_counts", None) or {}
+    attempts = int(counts.get(key, 0))
+    if attempts >= MAX_REPLAN_PER_FINGERPRINT:
+        logger.warning(
+            "replan_closure: %s 的降级指纹 %r 已重派 %d 次，停止重跑并要求收据",
+            redo, fingerprint or "default", attempts,
+        )
+        return {
+            "status": "ok",
+            "output": {
+                "redo_agent": redo,
+                "stages": [],
+                "exhausted": True,
+                "attempts": attempts,
+                "reason": (
+                    f"{redo} 的同一降级已经重派 {attempts} 次仍未消除——确定性失败，"
+                    "继续重跑只会重复同样结果。请按降级接受收据收尾（在结论里标注该项），"
+                    "不要再次调用 replan_closure。"
+                ),
+            },
+        }
+    counts[key] = attempts + 1
+    try:
+        setattr(task, "_replan_counts", counts)
+    except Exception:  # noqa: BLE001 — task 不可写时退化；调用方仍受本轮逻辑约束
+        pass
     plan = replan_plan(redo)
     return {
         "status": "ok",
         "output": {
             "redo_agent": redo,
             "stages": plan,
+            "attempt": attempts + 1,
+            "max_attempts": MAX_REPLAN_PER_FINGERPRINT,
             "reason": ("重做一个阶段必须连带重做它的下游：否则下游产物会基于旧时间线，"
                        "例如重做 edit 而不重做 audio，会让先前的配音/字幕静默丢失"),
         },

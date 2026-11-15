@@ -152,7 +152,11 @@ _DEGRADATION_DECISION_HINT_TAIL = (
     "   - `material_placeholder` → 重派 `material`，换更泛的英文关键词、放宽阈值或换素材源；\n"
     "   - 偶发/可救（LLM JSON 截断、自批判被跳过）→ 用同样 inputs **重派同一阶段**；\n"
     "   - 结构性短板（类型化生成失败、模板兜底、motion gate 退让）→ **换策略**"
-    "（换阶段/改提示词/降低该段复杂度），并说明为什么这样选。\n"
+    "（换阶段/改提示词/降低该段复杂度），并说明为什么这样选；\n"
+    "   - **animation 的 issues 带 `clip_id`/`retry` → 必须按片段重派**："
+    "`delegate_agent(stage=\"animation\", inputs={\"timeline\": <当前 timeline artifact>, "
+    "\"retry_clip_ids\": [失败 clip_id]}, refresh=true)`；同一段最多连续 3 轮，"
+    "3 轮仍失败要写出根因（提示词/字段/模型哪一层），**不得用收据或\"已编排\"把失败带过去**。\n"
     "4. 用户选了「保留」或本就无需问 → 调用 "
     "`acknowledge_degradation(kinds=[...], reason=..., impact=...)` 写 accepted 收据"
     "（reason ≥10 字）。**用户说「可以接受」不等于收据**：收据只能由工具写，"
@@ -1536,6 +1540,11 @@ class AgentKernel:
                     once_key="wrapup")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("进度播报（收尾前）失败 %s: %s", task.id, exc)
+            # 收据可能是在 gate 之后才写入的：若 pending 已清空，必须重算 gate，
+            # 不能拿旧的 degradation_unresolved 把任务判死（outstanding=0 仍 failed 的根因）。
+            if gate_reason == "degradation_unresolved" and not unresolved:
+                gate_reason = "tool_loop_completed"
+
             # ── 终态原因编码化（devplan §8）：旧 reason 字符串继续产出，新枚举供机器读 ──
             _treason, _blocker = self._success_terminal_reason(
                 task, gate_reason=gate_reason, unresolved=unresolved)

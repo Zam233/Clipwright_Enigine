@@ -963,7 +963,7 @@ from collections import OrderedDict
 from clipwright.tool.video import _CLIPWRIGHT_TEMP
 _trim_cache: "OrderedDict[str, str]" = OrderedDict()
 _trim_cache_lock = _threading.Lock()
-_TRIM_CACHE_MAX = 50
+_TRIM_CACHE_MAX = 512
 _TRIM_CACHE_MAX_BYTES = 2 * 1024 ** 3  # 2GB 磁盘配额
 _TRIM_CACHE_DIR = _CLIPWRIGHT_TEMP / "trim_cache"
 _TRIM_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -974,11 +974,11 @@ def _trim_cache_put_locked(cache_key: str, path: str) -> None:
     _trim_cache[cache_key] = path
     _trim_cache.move_to_end(cache_key)
     while len(_trim_cache) > _TRIM_CACHE_MAX:
-        _old_key, old_path = _trim_cache.popitem(last=False)
-        try:
-            Path(old_path).unlink(missing_ok=True)
-        except Exception:
-            pass
+        _old_key, _old_path = _trim_cache.popitem(last=False)
+        # 不要在这里删盘：同一轮渲染可能已有 >MAX 个 trim 被并发创建，
+        # 旧实现删掉“最旧”文件，恰好把本轮还要 concat 的片段删掉 →
+        # concat 只剩 55/69 段（video 538s / audio 702s 的根因）。
+        # 磁盘清理交给 _prune_trim_cache_dir（只删 >10min 的旧文件）。
 
 
 def _prune_trim_cache_dir() -> None:
@@ -1509,9 +1509,24 @@ class RenderService:
                     entry["denoise"] = bool(_am.get("denoise"))
                     audio_segments.append(entry)
                 elif k in ("text", "caption"):
-                    # 先计算偏移，分离追加以避免列表自引用歧义
-                    ov = self._extract_text_overlay(clip, track.index, text_overlays)
-                    text_overlays.append(ov)
+                    meta = clip.metadata or {}
+                    if meta.get("renderer") == "mg_hyperframes" and meta.get("mg_html"):
+                        # 用户裁定：文字动画统一 MG HTML；走 Hyperframes 透明 MOV，
+                        # 不再进 ASS/drawtext 文字层。
+                        hf_ov_local.append(dict(
+                            mg_html=self._ensure_mg_placeholders_filled(meta, clip.text or ""),
+                            start_sec=clip.start_sec,
+                            duration_sec=clip.duration_sec,
+                            _track_idx=track.index,
+                            mg_def=meta.get("mg_def"),
+                            mg_params=meta.get("mg_params") or {},
+                            anim_type=meta.get("anim_type") or "",
+                            category="text_mg",
+                        ))
+                    else:
+                        # 兼容旧时间线：只有没有 mg_html 的旧 clip 才走 ASS
+                        ov = self._extract_text_overlay(clip, track.index, text_overlays)
+                        text_overlays.append(ov)
                 elif k == "animation":
                     meta = clip.metadata or {}
                     if meta.get("renderer") == "mg_hyperframes" and meta.get("mg_html"):
@@ -1651,6 +1666,7 @@ class RenderService:
                     font_color=clip.font_color or "#ffffff", font=clip.font or "",
                     position=pos, offset_y=offset_y, style=style,
                     anim_type=meta.get("anim_type", ""), renderer=meta.get("renderer", "drawtext"),
+                    motion=meta.get("motion") or (meta.get("text_animation") or {}).get("motion") or {},
                     category=category, _track_idx=track_idx, keyframes=clip.keyframes or [],
                     # 关键帧时间基标记（前端 exportTimeline 写 clip_local）
                     kf_time_base=meta.get("kf_time_base"))
@@ -2035,6 +2051,12 @@ class RenderService:
             (seg, r) for seg, r in zip(segments, results)
             if r and Path(r).exists()
         ]
+        _dropped = [(i, r) for i, r in enumerate(results) if not r or not Path(r).exists()]
+        if _dropped:
+            _sample = ", ".join(f"#{i}:{r!r}" for i, r in _dropped[:3])
+            self._final_ffmpeg_log.append(
+                f"trim: 丢弃 {len(_dropped)} 段（{_sample}）")
+            logger.warning("trim: 丢弃 %d 段: %s", len(_dropped), _sample)
         segments = [seg for seg, _ in kept]
         trimmed = [t for _, t in kept]
 
@@ -2621,45 +2643,208 @@ class RenderService:
         写文件用相对路径（ffmpeg 从 CWD=仓库根运行，同 ``_fonts/`` 哲学，
         规避 Windows 盘符冒号被 filter 解析器截断）。
         """
-        from clipwright.tool.design import TextStyle
+        from dataclasses import replace
+        from clipwright.tool.design import TextStyle, color_to_ass, ass_time
         try:
             actual_dur = await asyncio.to_thread(_get_actual_duration, str(video))
         except Exception:
             actual_dur = 0
 
         dialogues: list[str] = []
-        style_ts: TextStyle | None = None
+        style_defs: list[tuple[str, TextStyle]] = []
+        style_index: dict[tuple, str] = {}
+
+        def _style_name(ts) -> str:
+            key = (
+                ts.font, ts.font_size, ts.font_color, ts.font_weight, ts.font_italic,
+                ts.stroke_width, ts.stroke_color, ts.shadow_x, ts.shadow_y,
+                ts.shadow_blur, ts.shadow_color, ts.glow_color, ts.glow_width,
+                ts.box, ts.box_color, ts.box_border, ts.position, ts.offset_y,
+                ts.letter_spacing,
+            )
+            name = style_index.get(key)
+            if name is None:
+                name = f"T{len(style_defs)}"
+                style_index[key] = name
+                style_defs.append((name, ts))
+            return name
+
+        def _cw(ch: str, font_size: float) -> int:
+            if ord(ch) > 0x2E80:
+                return int(font_size)
+            if ch == " ":
+                return int(font_size * 0.3)
+            return int(font_size * 0.6)
+
+        def _box_event(ts, text: str, style_name: str, start: float, end: float,
+                       x: float, y: float, w: float) -> str:
+            """ASS 矢量底板：圆角 + 内边距，替代 BorderStyle=3 的方角近似。"""
+            pad_x = max(0.0, float(getattr(ts, "box_padding_x", 18) or 18))
+            pad_y = max(0.0, float(getattr(ts, "box_padding_y", 8) or 8))
+            r = max(0.0, min(float(getattr(ts, "box_radius", 6) or 6),
+                             (w + pad_x * 2) / 2, (ts.font_size + pad_y * 2) / 2))
+            bx, by = x - pad_x, y - pad_y
+            bw, bh = w + pad_x * 2, ts.font_size + pad_y * 2
+            if r <= 0:
+                path = f"m {bx:.1f} {by:.1f} l {bx+bw:.1f} {by:.1f} l {bx+bw:.1f} {by+bh:.1f} l {bx:.1f} {by+bh:.1f}"
+            else:
+                path = (
+                    f"m {bx+r:.1f} {by:.1f} l {bx+bw-r:.1f} {by:.1f} "
+                    f"b {bx+bw-r:.1f} {by:.1f} {bx+bw:.1f} {by+r:.1f} {bx+bw:.1f} {by+r:.1f} "
+                    f"l {bx+bw:.1f} {by+bh-r:.1f} "
+                    f"b {bx+bw:.1f} {by+bh-r:.1f} {bx+bw-r:.1f} {by+bh:.1f} {bx+bw-r:.1f} {by+bh:.1f} "
+                    f"l {bx+r:.1f} {by+bh:.1f} "
+                    f"b {bx+r:.1f} {by+bh:.1f} {bx:.1f} {by+bh-r:.1f} {bx:.1f} {by+bh-r:.1f} "
+                    f"l {bx:.1f} {by+r:.1f} "
+                    f"b {bx:.1f} {by+r:.1f} {bx+r:.1f} {by:.1f} {bx+r:.1f} {by:.1f}"
+                )
+            color = color_to_ass(ts.box_color)
+            return (f"Dialogue: 0,{ass_time(start)},{ass_time(end)},{style_name},,,"
+                    f"0,0,0,,{{\\an7\\pos(0,0)\\p1\\1c{color}\\bord0\\shad0}}{path}{{\\p0}}")
+
+        import re as _re
+
+        def _tokens(text: str, word_mode: bool) -> list[str]:
+            if not word_mode:
+                return list(text)
+            # 中文按字、英文/数字按词、标点单独成 token（ASS 逐词即可）
+            return _re.findall(r"[\u4e00-\u9fff]|[A-Za-z0-9_]+|[^\w\s]", text)
+
         for ov in overlays:
             if ov.get("renderer") == "hyperframes" or ov.get("diagram_params"):
                 continue
-            # 生产加固 1.6：长字幕自动拆分多 Dialogue（时间按字数比例分配），不再硬截断
-            chunks = _split_long_text(ov.get("text") or "")
-            if not chunks:
+            raw_text = ov.get("text") or ""
+            if not raw_text.strip():
                 continue
             start = float(ov.get("start_sec", 0) or 0)
             dur = float(ov.get("duration_sec", 3) or 3)
-            # 裁剪到成片实际时长；never extend past start+duration（min 天然保证）
             end = min(start + dur, actual_dur) if actual_dur > 0 else start + dur
             end = max(end, start)
-            total_chars = sum(len(c) for c in chunks) or 1
-            style_d = ov.get("style", {})
+            style_d = ov.get("style") or {}
             if style_d:
-                # 优先 style dict（含 font），再补 clip 级 font 字段
                 if "font" not in style_d and ov.get("font"):
                     style_d = {**style_d, "font": ov.get("font")}
                 ts = TextStyle.from_dict(style_d)
             else:
                 ts = TextStyle(
-                    font_size=ov.get("font_size", 48), font_color=ov.get("font_color", "#ffffff"),
+                    font_size=ov.get("font_size", 48),
+                    font_color=ov.get("font_color", "#ffffff"),
                     font=ov.get("font", ""),
-                    stroke_width=ov.get("stroke_width", 0), position=ov.get("position", "bottom"),
-                    offset_y=ov.get("offset_y", 0))
-            if style_ts is None:
-                style_ts = ts  # 样式取第一条 overlay（14 字段映射 1:1）
+                    stroke_width=ov.get("stroke_width", 0),
+                    position=ov.get("position", "bottom"),
+                    offset_y=ov.get("offset_y", 0),
+                )
+            box_ts = ts if bool(getattr(ts, "box", False)) else None
+            if box_ts is not None:
+                # 方框由 _box_event 矢量绘制；文字样式本身不能再用 BorderStyle=3，
+                # 否则会叠加一个方角底框。
+                ts = replace(ts, box=False)
+            style_name = _style_name(ts)
+            anim = str(ov.get("anim_type") or "")
+            motion = dict(ov.get("motion") or {})
+            motion_type = str(motion.get("type") or anim or "").lower()
+            is_caption = str(ov.get("category") or "") == "caption"
+
+            total_w = sum(_cw(ch, ts.font_size) for ch in raw_text)
+            center_x = (int(width) - total_w) / 2 + float(ts.offset_x or 0)
+            center_y = int(height) / 2 + float(ts.offset_y or 0)
+            if str(ts.position or "center") == "top":
+                center_y = ts.font_size + 20 + float(ts.offset_y or 0)
+            elif str(ts.position or "center") == "bottom":
+                center_y = int(height) - ts.font_size - 20 - float(ts.offset_y or 0)
+
+            if not is_caption and box_ts is not None:
+                dialogues.append(_box_event(
+                    box_ts, raw_text, style_name, start, end,
+                    center_x, center_y - ts.font_size / 2, total_w,
+                ))
+
+            if not is_caption and motion_type in ("typewriter", "word_by_word") and len(raw_text) <= 40:
+                word_mode = motion_type == "word_by_word"
+                items = _tokens(raw_text, word_mode)
+                n = max(1, len(items))
+                reveal = float(motion.get("reveal_sec") or min(2.0, max(0.6, n * 0.08)))
+                reveal = max(0.1, min(reveal, max(0.2, end - start)))
+                step = reveal / max(1, n - 1)
+                x = center_x
+                y_top = center_y - ts.font_size / 2
+                delay = 0.0
+                for i, token in enumerate(items):
+                    if not token.strip():
+                        x += _cw(token, ts.font_size)
+                        continue
+                    dstart = start + delay
+                    dstart = min(dstart, end - 0.01)
+                    extra = rf"\an7\pos({x:.1f},{y_top:.1f})\fad(80,150)"
+                    dialogues.append(ts.build_ass_dialogue(
+                        token, dstart, end, style_name=style_name, extra_tags=extra, layer=1,
+                    ))
+                    x += sum(_cw(ch, ts.font_size) for ch in token)
+                    delay += step
+                    if token in "，。！？,.!?；;：:":
+                        delay += 0.08
+                if motion.get("cursor") and not is_caption:
+                    cursor_x = min(int(width) - 8, x + 4)
+                    dialogues.append(ts.build_ass_dialogue(
+                        "▍", min(start + reveal, end - 0.01),
+                        min(start + reveal + 0.35, end),
+                        style_name=style_name,
+                        extra_tags=rf"\an7\pos({cursor_x:.1f},{y_top:.1f})",
+                    ))
+                continue
+
+            eff = motion_type if motion_type in (
+                "slide_in", "scale_in", "highlight", "glitch", "neon", "fade_in", "fade_out"
+            ) else anim
+            if not is_caption and (eff == "highlight" or anim == "highlight_flash") and len(raw_text) <= 40:
+                highlight_color = color_to_ass(str((style_d or {}).get("highlight_color") or "#ffd400"))
+                tokens = _tokens(raw_text, False)
+                n = max(1, len(tokens))
+                total_cs = max(1, int((end - start) * 100))
+                per_cs = max(1, total_cs // n)
+                karaoke = "".join(f"{{\\k{per_cs}}}{t}" for t in tokens if t)
+                extra = rf"\an5\1c{highlight_color}\2c&H00FFFFFF\fad(100,160)"
+                dialogues.append(ts.build_ass_dialogue(
+                    karaoke, start, end, style_name=style_name,
+                    extra_tags=extra, layer=1, raw_text=True,
+                ))
+                continue
+
+            chunks = _split_long_text(raw_text)
+            if not chunks:
+                continue
+            total_chars = sum(len(c) for c in chunks) or 1
             cursor = start
+            # motion 优先，anim_type 作为 fallback
+            eff = motion_type if motion_type in (
+                "slide_in", "scale_in", "highlight", "glitch", "neon", "fade_in", "fade_out"
+            ) else anim
+            if eff in ("glitch", "neon"):
+                logger.warning("Render: 文字 motion=%s 未实现，按显式降级处理（不是真实特效）", eff)
+                try:
+                    self._final_ffmpeg_log.append(
+                        f"文字 motion={eff} 未实现：该段按 fade 输出，已在验收中标为未完成")
+                except Exception:
+                    pass
             for chunk in chunks:
                 w = (end - start) * len(chunk) / total_chars
-                dialogues.append(ts.build_ass_dialogue(chunk, cursor, min(cursor + w, end)))
+                extra = "" if is_caption else r"\fad(200,200)"
+                if not is_caption and eff == "slide_in":
+                    ms = max(120, int(min(0.5, max(0.15, end - start)) * 1000))
+                    extra = (rf"\an5\move({center_x:.1f},{center_y + 80:.1f},"
+                             rf"{center_x:.1f},{center_y:.1f},0,{ms})\fad(80,160)")
+                elif not is_caption and eff == "scale_in":
+                    ms = max(120, int(min(0.5, max(0.15, end - start)) * 1000))
+                    extra = (rf"\fscx70\fscy70\t(0,{ms},\fscx100\fscy100)"
+                             r"\fad(80,160)")
+                elif not is_caption and eff == "highlight":
+                    extra = r"\fad(120,160)"
+                elif not is_caption and (ts.offset_x or ts.offset_y):
+                    extra = rf"\an5\pos({center_x:.1f},{center_y:.1f})"
+                dialogues.append(ts.build_ass_dialogue(
+                    chunk, cursor, min(cursor + w, end),
+                    style_name=style_name, extra_tags=extra, layer=1,
+                ))
                 cursor += w
         if not dialogues:
             return video
@@ -2674,7 +2859,12 @@ class RenderService:
         for bi in range(0, len(dialogues), batch_size):
             batch = dialogues[bi:bi + batch_size]
             ass_path = self._work_dir / f"subs_{bi}.ass"
-            header = style_ts.build_ass_style(int(width), int(height))
+            _first_name, _first_ts = style_defs[0]
+            header = _first_ts.build_ass_style(
+                int(width), int(height), style_name=_first_name, include_header=True)
+            for _name, _ts in style_defs[1:]:
+                header += "\n" + _ts.build_ass_style(
+                    int(width), int(height), style_name=_name, include_header=False)
             body = ("[Events]\n"
                     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
                     + "\n".join(batch) + "\n")

@@ -78,8 +78,9 @@ def test_spec_intent_is_type_specific_not_generic():
     causation = get_spec("causation")
     assert comparison and causation
     assert comparison.intent != causation.intent
-    assert comparison.fallback_preset == "comparison"
-    assert causation.fallback_preset == "causation"
+    # 2026-11-15 裁定：类型动画只保留提示词，不再声明预设回退。
+    assert comparison.fallback_preset == ""
+    assert causation.fallback_preset == ""
 
 
 def test_persona_fingerprint_stable_and_ignores_empty():
@@ -358,7 +359,9 @@ async def test_typed_failure_falls_back_to_svg():
         with patch.object(agent, "_handle_svg_fallback", fallback):
             await agent._handle_logic_animation(track, _vid_clip(), "diagram", "箭头", {"text": "A→B"}, None)
 
-    fallback.assert_awaited_once()
+    # 2026-11-15 裁定：类型动画只保留提示词，LLM 失败不得回退预设 SVG/模板。
+    fallback.assert_not_awaited()
+    assert len(track.clips) == 0
 
 
 @pytest.mark.asyncio

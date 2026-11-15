@@ -378,7 +378,19 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         # 让报告里能看出"这项没做"，而不是假装做过。
         issues.extend(await self._check_pv_engine(timeline))
 
+        issues.extend(self._check_text_animation_style(timeline))
+
+
         # ── 判定 ──
+        # 2026-11-15 用户裁定：主观语义/简报口径/类型一致性属于“请人工核对”的
+        # 提示，不应把整条成片卡死在 render 之前。硬门禁只保留技术性类别
+        # （素材缺失/时间线结构/时长节奏/动画/音频/术语）。
+        _SUBJECTIVE = {"semantic", "brief_requirement", "type_conformance"}
+        for i in issues:
+            if i.severity == "error" and i.category in _SUBJECTIVE:
+                i.severity = "warning"
+                if not i.message.startswith("（主观项，提示）"):
+                    i.message = "（主观项，提示）" + i.message
         errors = [i for i in issues if i.severity == "error"]
         decision = AgentDecision.FAIL if errors else AgentDecision.PASS
 
@@ -414,6 +426,78 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
             redo_agent=redo_agent,
             score=score,
         )
+
+    @staticmethod
+    def _check_text_animation_style(timeline) -> list:
+        """文字动画必须带样式/时长依据，且不能同一窗多条关键词（PRD FR-7）。"""
+        from clipwright.schema.agent import QualityIssue
+
+        issues: list[QualityIssue] = []
+        texts = [
+            (t, c) for t in timeline.tracks if str(t.kind) == "text"
+            for c in (t.clips or [])
+        ]
+        for t, c in texts:
+            meta = getattr(c, "metadata", None) or {}
+            style = meta.get("style") or {}
+            fill = str(style.get("fill") or getattr(c, "font_color", "") or "").lower()
+            has_box = bool(style.get("box"))
+            try:
+                has_stroke = float(style.get("stroke_width") or getattr(c, "stroke_width", 0) or 0) > 0
+            except (TypeError, ValueError):
+                has_stroke = False
+            has_shadow = bool(style.get("shadow_color") or getattr(c, "shadow_color", ""))
+            if fill in ("#ffffff", "#fff") and not (has_box or has_stroke or has_shadow):
+                issues.append(QualityIssue(
+                    severity="warning", category="text_style",
+                    message=f"文字动画 {c.id} 是纯白字且无描边/阴影/底板，可读性差",
+                    location=c.id,
+                ))
+            if not str(meta.get("duration_reason") or "").strip():
+                issues.append(QualityIssue(
+                    severity="warning", category="text_style",
+                    message=f"文字动画 {c.id} 缺少 duration_reason（时长无内容依据）",
+                    location=c.id,
+                ))
+        # 样式多样性：全片文字都白字无底板 → 说明“可配置样式”没有兑现
+        _fills = {str(((getattr(c, "metadata", None) or {}).get("style") or {}).get("fill") or "").lower()
+                  for _, c in texts}
+        _any_box = any(bool(((getattr(c, "metadata", None) or {}).get("style") or {}).get("box"))
+                       for _, c in texts)
+        if len(texts) >= 5 and len(_fills - {""}) <= 1 and not _any_box:
+            issues.append(QualityIssue(
+                severity="warning", category="text_style",
+                message="全片文字样式单一（全部白字且无底板），样式契约未在成片兑现",
+                location="text_tracks",
+            ))
+
+        # 同一时间窗最多 1 条关键词文字动画
+        def _span(c):
+            try:
+                st = float(c.start_sec or 0)
+                du = float(c.duration_sec or 0)
+            except (TypeError, ValueError):
+                return None
+            return st, st + du
+
+        for i, (_, a) in enumerate(texts):
+            sa = _span(a)
+            if sa is None:
+                continue
+            a0, a1 = sa
+            for _, b in texts[i + 1:]:
+                sb = _span(b)
+                if sb is None:
+                    continue
+                b0, b1 = sb
+                if min(a1, b1) - max(a0, b0) > 0.2:
+                    issues.append(QualityIssue(
+                        severity="error", category="text_style",
+                        message=f"文字动画 {a.id} 与 {b.id} 时间重叠，会叠字",
+                        location=a.id,
+                    ))
+        return issues
+
 
     async def _check_pv_engine(self, timeline: Timeline) -> list[QualityIssue]:
         """把引擎侧的规则审计并入质检（只处理元数据里声明 ``metadata.pv`` 的字幕）。"""

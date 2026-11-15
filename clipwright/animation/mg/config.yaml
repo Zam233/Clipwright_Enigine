@@ -140,9 +140,10 @@ prompt:
     - background: 背景色，支持 "linear-gradient(135deg, #111 0%, #1a2a4a 100%)"
 
     ## 位置定义
-    - x: "center" / "left" / "right" / 数字像素值
-    - y: "center" / "top" / "bottom" / 数字像素值
-    - x_offset / y_offset: 额外偏移 (px)
+    - x: "center" / "left" / "right" / 数字像素值（元素级）
+    - y: "center" / "top" / "bottom" / 数字像素值（元素级）
+    - x_offset / y_offset: 额外偏移 (px)，**只能写在元素上，不能写进 keyframes**
+    - 关键帧内的位移请用 translate_x / translate_y（与 x_offset/y_offset 语义等价）
 
     ## 镜头卡（Shot Card）
     每个生成的 MG 都是一张「镜头卡」，JSON 顶层描述镜头意图，元素必须落实该意图：
@@ -161,6 +162,10 @@ prompt:
     - 每个元素至少 3 个关键帧，第一个关键帧必须 time=0 且隐藏（opacity:0）
     - 至少 2 个关键帧带 easing 字段
     - 所有关键帧 time 不超过 duration_sec
+    - 关键帧只允许这些动画属性：opacity / scale / translate_x / translate_y / rotate /
+      width / height / font_size / color / background / border_radius / border_width /
+      border_color / box_shadow / text_shadow / filter / letter_spacing / font_weight /
+      font_family / line_height / transform_origin / easing；不要写 x_offset/y_offset
     - 坐标为设计画布坐标（参考 1920x1080 基准；实际分辨率由时间线在运行时决定，
       勿把 1920x1080 写成强制分辨率）
     - animation_id 命名: mg_generated_<简短英文>
