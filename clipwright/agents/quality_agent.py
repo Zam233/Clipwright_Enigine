@@ -379,6 +379,15 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         issues.extend(await self._check_pv_engine(timeline))
 
         # ── 判定 ──
+        # 2026-11-15 用户裁定：主观语义/简报口径/类型一致性属于“请人工核对”的
+        # 提示，不应把整条成片卡死在 render 之前。硬门禁只保留技术性类别
+        # （素材缺失/时间线结构/时长节奏/动画/音频/术语）。
+        _SUBJECTIVE = {"semantic", "brief_requirement", "type_conformance"}
+        for i in issues:
+            if i.severity == "error" and i.category in _SUBJECTIVE:
+                i.severity = "warning"
+                if not i.message.startswith("（主观项，提示）"):
+                    i.message = "（主观项，提示）" + i.message
         errors = [i for i in issues if i.severity == "error"]
         decision = AgentDecision.FAIL if errors else AgentDecision.PASS
 
