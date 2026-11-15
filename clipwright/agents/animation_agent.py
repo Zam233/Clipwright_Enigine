@@ -294,12 +294,19 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         # 图片素材库语义索引 {path, tags, description} — execute() 中构建，
         # 供 mg_dynamic 生成 prompt 让 LLM 主动选择语义匹配图片（防 📡→石墨烯 类错配）
         self._image_index: list[dict[str, Any]] = []
+        #: 当前项目 id（用于逐段落盘：每完成一个动画就写回项目时间线，
+        #: 让编辑器动画轴增量出现，而不是等整个阶段结束）
+        self._project_id: str = ""
 
     async def execute(
         self, input_data: AnimationInput, context: AgentContext
     ) -> AnimationOutput:
         logger.info("AnimationAgent 开始 pipeline=%s", context.pipeline_id[:12])
         self._pid = context.pipeline_id
+        _extra_ctx = dict(getattr(context, "extra_params", None) or {})
+        self._project_id = str(
+            _extra_ctx.get("workspace_project_id") or _extra_ctx.get("project_id") or ""
+        )
         add_event(context.pipeline_id, "animation", "agent_start",
                   "AnimationAgent 开始（文字动画/逻辑动画分流）")
         # 工具/技能列表实时可见（插件增删立即生效）——写进 trace 便于排障
@@ -545,6 +552,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                                 marker, persona_style,
                             )
                             text_anim_count += 1
+                            self._persist_timeline_tick(timeline)
                             logger.info("AnimationAgent: [文字动画]%s → %s (id=%s)",
                                         anim_name, clip.id[:8], anim_id)
                             add_event(context.pipeline_id, "animation", "text_anim",
@@ -604,6 +612,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                                 track, c, aid, aname, m, style,
                             )
                             _done_jobs["n"] += 1
+                            self._persist_timeline_tick(timeline)
                             _emit_progress(
                                 f"动画 {_done_jobs['n']}/{_total_jobs} 完成：{aname}",
                                 {"anim_id": aid, "clip_id": c.id, "total": _total_jobs,
@@ -1214,6 +1223,24 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             style_description=desc,
         )
 
+
+    def _persist_timeline_tick(self, timeline: Any) -> None:
+        """把一个已完成动画的时间线立刻写回项目（动画轴增量可见）。
+
+        阶段级输出要等整个 animation 阶段结束才 merge 进黑板；用户看到
+        「动画 N/48 完成」但动画轴仍是 0 条。这里每完成一段就 save 一次，
+        前端轮询项目即可看到增量（见 EditorPage 的 pipeline 轮询）。
+        """
+        pid = str(getattr(self, "_project_id", "") or "").strip()
+        if not pid:
+            return
+        try:
+            from clipwright.services.project_manager import ProjectManager
+
+            data = timeline.model_dump(mode="json") if hasattr(timeline, "model_dump") else timeline
+            ProjectManager().save(pid, {"timeline": data})
+        except Exception as exc:  # noqa: BLE001 — 增量落盘失败不阻断动画阶段
+            logger.warning("AnimationAgent: 动画逐段写回项目失败 %s: %s", pid, exc)
 
     # ── 动画逐段落盘 / 复用（2026-11-15）──────────────────────────────
     # 背景：阶段级重派会让 46 段动画全部重新生成，即使只有 1 段失败。

@@ -175,3 +175,22 @@ def test_shape_missing_field_repaired_to_rect():
     repaired, fixes = repair_mg_json(mg)
     assert repaired["elements"][0]["shape"] == "rect"
     assert any("missing shape" in f for f in fixes)
+
+
+def test_persist_timeline_tick_writes_project(monkeypatch):
+    """每完成一个动画都要写回项目时间线（动画轴增量可见）。"""
+    from clipwright.services import project_manager
+
+    calls: list[tuple[str, dict]] = []
+
+    class _PM:
+        def save(self, pid, data):
+            calls.append((pid, data))
+            return data
+
+    monkeypatch.setattr(project_manager, "ProjectManager", _PM)
+    agent = object.__new__(AnimationAgent)
+    agent._project_id = "proj_test"
+    agent._persist_timeline_tick({"tracks": [], "duration_sec": 0})
+    assert calls and calls[0][0] == "proj_test"
+    assert "timeline" in calls[0][1]
