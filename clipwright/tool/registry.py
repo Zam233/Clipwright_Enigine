@@ -249,7 +249,8 @@ class ToolRegistry:
         from clipwright.security import (
             assert_allowed_path, assert_public_url, SecurityViolation,
         )
-        for key in ("input_path", "video_path", "audio_path", "file_path", "path"):
+        for key in ("input_path", "video_path", "audio_path", "file_path", "path",
+                    "output_path", "output_dir", "out_dir"):
             val = kwargs.get(key)
             # 只校验**绝对路径**：模型给的工作区相对路径（`artifacts/art_x.json`、`.`）
             # 会被按服务器 CWD 解析成白名单之外的目录而一律拒绝——实测后果是主 agent
@@ -309,17 +310,32 @@ class ToolRegistry:
             if isinstance(raw, ToolExecResult):
                 if raw.status in ("success", "dependency_missing"):
                     return raw
-                # 失败 → 尝试 fallback
+                # 失败 → 尝试 fallback。
+                # 旧实现把同一份 kwargs 透传给签名不兼容的 fallback（如
+                # semantic_match → material_filter：query/candidate_paths vs
+                # candidates），TypeError 直接覆盖真实错误——排障时看不到
+                # 「CLIP 不可用」这类根因（审计 P1）。现在：单次尝试、捕获异常、
+                # 保留主错误。
                 fallbacks = cls._FALLBACK_CHAINS.get(name, [])
+                fb_errors: list[str] = []
                 for fb_name in fallbacks:
                     fb_tool = cls._tools.get(fb_name)
                     if fb_tool is None:
                         continue
                     logger.info("ToolRegistry: %s 失败, 尝试 fallback %s", name, fb_name)
-                    fb_raw = await fb_tool.execute(**kwargs)
+                    try:
+                        fb_raw = await fb_tool.execute(**kwargs)
+                    except TypeError as exc:
+                        fb_errors.append(f"{fb_name}: 参数不兼容 ({exc})")
+                        continue
+                    except Exception as exc:  # noqa: BLE001 — fallback 失败不吞主错误
+                        fb_errors.append(f"{fb_name}: {type(exc).__name__}: {exc}")
+                        continue
                     if isinstance(fb_raw, ToolExecResult) and fb_raw.status == "success":
                         fb_raw.tool_name = name  # 保持原工具名
                         return fb_raw
+                if fb_errors and raw.error is not None:
+                    raw.error = f"{raw.error}（fallback 均失败: {'; '.join(fb_errors)}）"
                 return raw
             return ToolExecResult(
                 status=ToolStatus.SUCCESS,

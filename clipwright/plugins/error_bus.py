@@ -69,9 +69,14 @@ class PluginErrorBus:
             if plugin_id is None:
                 n = len(self._errors)
                 self._errors = []
+                # 审计 P3：去重表不清会让"清空错误"后 60s 内同一错误不再出现
+                self._last_seen.clear()
                 return n
             before = len(self._errors)
             self._errors = [e for e in self._errors if e["plugin_id"] != plugin_id]
+            self._last_seen = {
+                k: v for k, v in self._last_seen.items() if k[0] != plugin_id
+            }
             return before - len(self._errors)
 
 

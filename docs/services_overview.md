@@ -6,13 +6,19 @@
 
 ## 服务分类
 
-### Pipeline 执行
+### Agent 编排（主 Agent + 阶段子 Agent）
 
 | 服务文件 | 说明 |
 |---------|------|
-| `pipeline.py` | 管线 v1（固定序列执行） |
-| `pipeline_v2.py` | 管线 v2（DAG 并行 + 熔断 + 自愈） |
-| `agent_bus.py` | Agent 上下文总线（消息发布/订阅、路由决策） |
+| `agent_kernel.py` | 任务内核：主 Agent 的规划、工具调用、收口与阶段派发（`delegate_agent`） |
+| `agent_loop.py` | 主 Agent 的 tool loop（叙述 → 调用 → 汇报） |
+| `stage_subagent.py` | 阶段子 Agent 执行：结构化输入/输出、黑板写回、timeline 单向覆盖守卫 |
+| `stage_inputs.py` / `stage_merge.py` / `stage_closure.py` / `stage_report.py` | 阶段输入装配、结果合并、自愈闭包与阶段报告 |
+| `subagent.py` | 只读调研子 Agent（`research_agent`，星型、深度 1、熔断） |
+| `agent_run.py` | run/attempt 归属、产物与失败回流主 Agent |
+| `agent_bus.py` | Agent 上下文总线（消息发布/订阅） |
+
+> 老 6 阶段管线（`pipeline.py` / `pipeline_v2.py`）已删除，`run_pipeline` 能力下线；创作只走主 Agent + 阶段子 Agent。
 
 ### 渲染
 

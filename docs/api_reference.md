@@ -782,7 +782,7 @@ curl -X POST http://localhost:8080/api/voice/dub \
 | `POST /api/plugin/runtimes` | 登记/更新 runtime（管理员）。body：`runtime_id/executable/version/digest/approved`；批准状态显式传入 |
 | `GET /api/plugin/prompt-symbols` | **提示词符号清单与来源**：26 常量 + 8 builder、签名、是否被插件覆盖、覆盖它的 plugin id、`wired`（false = 还没有消费方在运行时解析，**覆盖了也不生效**）、最近被拒绝的覆盖原因。不返回提示词正文，只给长度 |
 
-**插件 Agent（SA-2/3/4）**：插件 manifest 声明 `kind: agent` + `permissions: [orchestrate]` 后，可在 `initialize()` 经 `AgentRegistry.register(agent, name, plugin_id, deps)` 注册自定义 Agent——按 deps 并入主管线 DAG（输入 `PluginAgentInput`、输出 `PluginAgentOutput`），或经 `services.subagent.run_sub_agent(ctx, name, payload)` 作为子代理被宿主 Agent 调用（嵌套深度上限 2、宿主取消感知、用量以「宿主:子代理」复合名归因、熔断 3 次/60s、默认 120s 超时）。Agent 边界 Hook `PRE_AGENT`（改写 input/skip）与 `POST_AGENT`（只读观测）已在管线接线。
+**插件 Agent（SA-2/3/4）**：插件 manifest 声明 `kind: agent` + `permissions: [orchestrate]` 后，可在 `initialize()` 经 `AgentRegistry.register(agent, name, plugin_id)` 注册自定义 Agent——宿主（主 Agent 或插件工具）经 `services.subagent.run_sub_agent(ctx, name, payload)` 作为子代理按需调用（输入 `PluginAgentInput`、输出 `PluginAgentOutput`；嵌套深度上限 2、宿主取消感知、用量以「宿主:子代理」复合名归因、熔断 3 次/60s、默认 120s 超时）。老管线已下线，插件 Agent 不再并入固定 DAG。Agent 边界 Hook `PRE_AGENT`（改写 input/skip）与 `POST_AGENT`（只读观测）已在派发链路接线。
 
 
 ---

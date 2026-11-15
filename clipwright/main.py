@@ -228,7 +228,7 @@ async def lifespan(app: FastAPI):
 
     # 5. 初始化第三方插件系统（数据统一写入 PluginData/）
     _plugin_loader = PluginLoader(
-        plugin_dir=Path("plugins"),
+        plugin_dir=Path(_cfg.plugin_dir),
         data_dir=_cfg.plugin_data_dir,
     )
     loaded = _plugin_loader.load_all()

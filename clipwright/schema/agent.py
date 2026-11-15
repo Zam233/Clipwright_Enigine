@@ -1,6 +1,6 @@
 """Agent 数据模型 — Agent 输入/输出契约。
 
-每个 Agent 是一个 LangGraph 节点，输入和输出都有严格的类型定义。
+每个阶段子 Agent 的输入和输出都有严格的类型定义。
 """
 
 from __future__ import annotations

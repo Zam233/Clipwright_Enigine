@@ -62,7 +62,7 @@ contributions:
 |------|------|------------------|
 | `tool` | 原子能力 | `object` 需符合 `BaseTool`；同 id 覆盖内置需 `override_builtin` |
 | `skill` | 组合技能 | 同上，`BaseSkill` |
-| `agent` | 主管线 Agent | `meta.deps=[...]` 决定并入 DAG 的位置 |
+| `agent` | 插件 Agent | 注册后由宿主作为子代理按需调用（`run_sub_agent`），不参与固定编排 |
 | `material_source` | 素材源 | 实现 `search()` |
 | `category` | 视频类型 | 结构同内置类型插件 |
 | `style_interpreter` | 风格解释器 | 同一时刻只允许一个非内置所有者 |

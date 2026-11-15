@@ -6,7 +6,7 @@
 
 **帧艺 Clipwright 背后的编排引擎。**
 
-Agent 流水线、按能力解析的工具，以及把其余一切交给插件的扩展面。
+主 Agent 规划并派发阶段子 Agent、按能力解析的工具，以及把其余一切交给插件的扩展面。
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
@@ -16,7 +16,7 @@ Agent 流水线、按能力解析的工具，以及把其余一切交给插件�
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)
 ![MongoDB](https://img.shields.io/badge/MongoDB-metadata-47A248?logo=mongodb&logoColor=white)
-![Agents](https://img.shields.io/badge/agents-7-4F6BED)
+![Subagents](https://img.shields.io/badge/subagents-7-4F6BED)
 ![Plugins](https://img.shields.io/badge/plugins-42-8B5CF6)
 ![Tests](https://img.shields.io/badge/tests-5101_passed-2EA043)
 ![License](https://img.shields.io/badge/license-MPL--2.0-8B5CF6)
@@ -26,8 +26,8 @@ Agent 流水线、按能力解析的工具，以及把其余一切交给插件�
 
 ## 简介
 
-**Clipwright Engine** 是 Clipwright AI 视频创作系统的 Python 后端：一个 FastAPI 服务，
-通过七阶段 Agent 流水线把选题变成成片——并且为每一步留下可核对的凭据。
+**Clipwright Engine** 是 Clipwright AI 视频创作系统的 Python 后端：一个 FastAPI 服务，由**一个主 Agent**
+规划，并把各阶段工作派给**阶段子 Agent**，从而把选题变成成片——并且为每一步留下可核对的凭据。
 
 产品逻辑刻意做成**人在回路**：引擎出草稿，Web 编辑器让你在时间轴上审阅，
 一条修改指令继续同一个任务。每一轮都是真实的 `Task`，带目标、限额、事件与降级收据——
@@ -43,16 +43,16 @@ Agent 流水线、按能力解析的工具，以及把其余一切交给插件�
 
 ## 核心特性
 
-- **七阶段 Agent 流水线**：需求 → 结构 → 素材 → 剪辑 → 动画 → 音频 → 质检，由任务内核编排，
-  带目标、软着陆/收口、`capped` 终态、暂停/恢复与确定性续跑。
+- **一个主 Agent + 阶段子 Agent**：主 Agent 独占规划与收尾，用 `delegate_agent(stage=…)` 把
+  结构 → 素材 → 剪辑 → 动画 → 音频 → 质检派给阶段子 Agent。每个阶段有结构化输入/输出、自己的 run 记录，
+  并写回共享黑板；失败回到主 Agent，由它决定重派、跳过还是接受。老六阶段管线已不是执行路径；
+  目标、软着陆/收口、`capped` 终态、暂停/恢复与确定性续跑都在任务内核里。
 - **按能力名解析的工具**：44+ 原子工具与 4 个技能在调用时刻按语义能力名解析，插件可以接管而无需改 Agent；
   工具自声明权限档位，能力缺失是一等状态而不是异常分支。
-- **插件优先的贡献面**：工具、技能、Hook、提示词、UI 插槽、导出预设、display spec 与 provider 家族
-  都是插件贡献（内置 42 个插件）。禁用插件，对应能力就消失——没有隐藏的内置兜底。
-- **Provider 家族归插件**：LLM / TTS / 嵌入 / 重排序 / STT 的实现都在插件里；引擎只提供协议与注册表，
-  以及能力位（工具结果风格、视觉消息格式、模型清单、音频引用）而非厂商名分支。
-- **契约驱动的 GenUI**：Agent 可以输出声明式展示 spec；引擎按插件契约做清洗与装配后交给编辑器。
-  没有契约，就没有 spec。
+- **可插拔的插件贡献面**：工具、技能、Hook、提示词、UI 插槽、导出预设、display spec 与 provider 家族
+  （LLM / TTS / 嵌入 / 重排序 / STT）都是插件贡献（内置 42 个插件）；provider 实现归插件，引擎只提供协议、
+  注册表与能力位（工具结果风格、视觉消息格式、模型清单、音频引用），而不是厂商名分支。
+  禁用插件，对应能力就消失——没有隐藏的内置兜底。
 - **工作区与媒体管线**：每任务独立工作区、`materials/` 是唯一可写区；FFmpeg 渲染、字幕烧入、
   动效/hyperframes、带优先级的渲染队列与可恢复产物。
 - **SSE 实时链路**：31 种事件类型（任务、Agent run、工具、子 Agent、降级、收口、进度……）
@@ -105,7 +105,7 @@ npm ci
 npm run dev
 ```
 
-打开 <http://localhost:5173>。Vite 开发服务器把 `/api` 代理到引擎（`:8080`），`/srv` 代理到账号服务（`:8090`）。
+打开 <http://localhost:5173>。Vite 开发服务器把 `/api` 代理到引擎（`:8080`）。
 
 ## 技术栈
 
@@ -113,7 +113,7 @@ npm run dev
 | --- | --- |
 | 运行时 | Python 3.12 + FastAPI（锁定 `>=0.115,<0.162`） |
 | 数据 | Pydantic v2 + MongoDB（pymongo） |
-| Agent | 自研任务内核 + 七阶段流水线 |
+| Agent | 自研任务内核：一个主 Agent + 阶段子 Agent |
 | 工具 | `ToolRegistry` + 能力解析 + 工具自声明权限档位 |
 | 插件 | 统一贡献契约、清单签名、启停回滚 |
 | 媒体 | FFmpeg（渲染、裁剪、字幕烧入）、动效 / hyperframes |

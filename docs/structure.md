@@ -28,16 +28,13 @@
 │   用户自定义: Type Maker → JSON → DynamicPlugin       │
 │   第三方: PluginLoader 发现加载 (PluginData/ 存储)     │
 ├─────────────────────────────────────────────────────┤
-│            Agent 编排层 (动态路由 + 并行执行)           │
-│   ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐     │
-│   │结构  │ │素材  │ │剪辑  │ │动画  │ │音频  │     │
-│   │Agent │ │Agent │ │Agent │ │Agent │ │Agent │     │
-│   └──────┘ └──────┘ └──────┘ └──────┘ └──────┘     │
-│                         ↕                            │
-│                    ┌────────┐                        │
-│                    │ 质检   │ ← 自愈循环回退          │
-│                    │ Agent  │                        │
-│                    └────────┘                        │
+│        Agent 编排层 (1 主 Agent + 阶段子 Agent)         │
+│   ┌──────────────────────────────────────────────┐    │
+│   │ 主 Agent（任务内核：规划 / 工具 / 收尾）       │    │
+│   │   └─ delegate_agent(stage=…) ─→ 阶段子 Agent   │    │
+│   │      结构 · 素材 · 剪辑 · 动画 · 音频 · 质检    │    │
+│   │      失败 → 回主 Agent 决策（重派/跳过/接受）   │    │
+│   └──────────────────────────────────────────────┘    │
 ├─────────────────────────────────────────────────────┤
 │            原子能力层 (40 个 Tool + 12 个 Skill)        │
 │   FFmpeg · ffprobe · Vision · Whisper · TTS · CLIP   │
@@ -80,18 +77,25 @@
 
 ### 3.2 Agent 编排层
 
-7 个 Agent + 动态路由 + 自愈循环：
+**1 个主 Agent + 阶段子 Agent**。主 Agent 在任务内核里持有规划、工具调用与收尾，用
+`delegate_agent(stage=…)` 把阶段工作派给子 Agent；每个阶段有结构化输入/输出（`StageResult`）、
+归属到一次 run、并写回共享黑板（`task_blackboard`）。阶段顺序由主 Agent 按依赖判断
+（默认 structure → material → edit → animation → audio → quality），不是写死的固定管线。
 
 ```plaintext
-执行组 [0]: structure                     ← 结构分析（含 animation_intents 注入）
-执行组 [1]: material                      ← 素材搜索
-执行组 [2]: edit                          ← 时间线生成
-执行组 [3]: animation + audio             ← 并行：动画编排（含 LLM MG 动画）+ 音频处理
-执行组 [4]: quality                       ← 质检 + 自愈循环
-    失败 → 自动回退到对应 Agent + 下游重做 (最多 3 次)
+主 Agent（任务内核）
+  ├─ delegate_agent(stage="structure")   → 场景 / 分镜
+  ├─ delegate_agent(stage="material")    → 候选素材
+  ├─ delegate_agent(stage="edit")        → 时间线草稿
+  ├─ delegate_agent(stage="animation")   → 动画 / MG
+  ├─ delegate_agent(stage="audio")       → 配音 / 混音 / final_timeline
+  └─ delegate_agent(stage="quality")     → 质检；问题回流主 Agent 决策
 ```
 
-Agent 间通过 `AgentBus` 共享上下文。AnimationAgent 通过 `[逻辑动画]mg_dynamic:{...}` 标记调用 `llm_mg` 插件，LLM 动态生成完整 MG JSON（elements + keyframes + params），经 MGRenderer → Hyperframes 渲染为透明 MOV，最后 overlay 到主视频。
+主 Agent 也可以派只读调研子 Agent（`research_agent`）、读工作区产物、直接调用工具与技能。
+老 6 阶段管线（`pipeline.py` / `pipeline_v2.py`）已删除，`run_pipeline` 能力下线。
+
+Agent 结果通过黑板交换；AnimationAgent 通过 `[逻辑动画]mg_dynamic:{...}` 标记调用 `llm_mg` 插件，LLM 动态生成完整 MG JSON（elements + keyframes + params），经 MGRenderer → Hyperframes 渲染为透明 MOV，最后 overlay 到主视频。
 
 ### 3.3 类型插件层
 
@@ -107,18 +111,20 @@ Agent 间通过 `AgentBus` 共享上下文。AnimationAgent 通过 `[逻辑动�
 ### 3.5 用户接口层
 
 ```
-# Pipeline
-POST   /api/pipeline/run                 # 管线 v1 (固定序列)
-POST   /api/pipeline/run-v2              # 管线 v2 (动态路由 + 并行 + 自愈)
-POST   /api/pipeline/run-async           # 异步管线 + SSE 追踪
-POST   /api/pipeline/submit              # ⚠ 未实现（规划中）
-POST   /api/pipeline/retry/{id}/{agent}  # 重试 Agent
-POST   /api/pipeline/batch               # ⚠ 未实现（规划中，模板批量见 template.py 孤儿代码）
-GET    /api/pipeline/trace/stream/{id}   # SSE 实时追踪
-GET    /api/pipeline/result/{id}         # 异步结果查询
-GET    /api/pipeline/tasks               # ⚠ 未实现（规划中）
-GET    /api/pipeline/stats               # ⚠ 未实现（规划中）
-GET    /api/pipeline/llm-usage           # ⚠ 未实现（规划中）
+# Task —— 创作唯一入口（主 Agent + 阶段子 Agent）
+POST   /api/task                         # 创建任务
+GET    /api/task/{task_id}               # 任务详情（plan / steps / finish）
+GET    /api/task/{task_id}/events        # 事件列表（SSE 在同一路径的 /stream）
+POST   /api/task/{task_id}/pause         # 暂停
+POST   /api/task/{task_id}/resume        # 恢复
+POST   /api/task/{task_id}/cancel        # 取消
+
+# Pipeline —— 老 6 阶段管线已下线，仅保留历史记录 / 诊断端点
+GET    /api/pipeline/runs                # 历史运行记录
+GET    /api/pipeline/trace/{id}          # 历史 trace
+GET    /api/pipeline/result/{id}         # 历史结果
+POST   /api/pipeline/run-async           # 410 Gone
+POST   /api/pipeline/retry/{id}/{agent}  # 410 Gone：改用主 Agent 的 delegate_agent(stage=…)
 
 # 声音克隆与 TTS
 POST   /api/voice/upload                 # 上传音频 → data_uri
@@ -173,19 +179,19 @@ GET    /api/plugin/llm_mg/generations    # 列出未保存的生成记录
 ## 四、关键数据流
 
 ```plaintext
-模板变量 → VideoTemplate.render() → PipelineRequest
+模板变量 → VideoTemplate.render() → 任务请求（/api/task）
                                         ↓
-                                PipelineOrchestratorV2.run()
+                          主 Agent（任务内核）规划 → 工具/技能
                                         ↓
-                           AgentDAG 分组 — asyncio.gather()
+                          delegate_agent(stage=…) 派发阶段子 Agent
                                         ↓
-                                AgentBus 上下文交换
+                          黑板 + 产物（artifacts）回传主 Agent
                                         ↓
-                                QualityAgent 自愈循环 (≤3 次)
+                          quality 复查 / 失败回流主 Agent 决策
                                         ↓
-                                RenderService (多轨渲染)
+                          RenderService（多轨渲染）
                                         ↓
-                                MP4 输出 + Webhook 通知
+                          MP4 输出 + Webhook 通知
 
                 ┌───────────────────────────────┐
                 │    运行时数据目录               │

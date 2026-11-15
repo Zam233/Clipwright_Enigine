@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import uuid
 from pathlib import Path
+from clipwright.tool.video import resolve_ffmpeg
 from typing import Any
 
 import httpx
@@ -29,7 +30,7 @@ def _asset_value(asset: Any, name: str) -> Any:
 async def _extract_frame(source: str, timestamp: float, output_path: Path) -> bool:
     """Extract one frame with FFmpeg and report whether it succeeded."""
     process = await asyncio.create_subprocess_exec(
-        "ffmpeg",
+        resolve_ffmpeg(),
         "-y",
         "-ss",
         str(timestamp),

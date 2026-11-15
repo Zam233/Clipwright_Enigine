@@ -62,8 +62,18 @@ async def test_unlisted_capability_denied(env):
 
 
 @pytest.mark.asyncio
-async def test_missing_implementation_unavailable(env):
+async def test_missing_implementation_unavailable(env, monkeypatch):
+    """能力已授权但当前没有实现 → UNAVAILABLE。
+
+    必须显式制造“无实现”：`media_probe` 在完整测试套件里早已被
+    `register_builtin_tools()` 注册，旧断言依赖“此文件先跑、注册表恰好为空”的
+    执行顺序，在 `-k` 子集或全量时会偶发失败。
+    """
     host, scope = env
+    monkeypatch.setattr(
+        "clipwright.tool.capabilities.resolve",
+        lambda name, prefer=(): None,
+    )
     result = await host.invoke(
         "tool.call", {"id": "probe_cap", "input": {"name": "media_probe"}, "scope": scope},
         scope=scope,

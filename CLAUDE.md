@@ -8,7 +8,7 @@
 
 > 核心文档：`docs/structure.md` · `docs/Persona.md` · `docs/workflow.md`
 
-Persona 驱动的 Agent 引擎，包含五层架构和 7 个 Agent 构成 LangGraph 管线。可独立运行，对外暴露 REST API。
+Persona 驱动的 Agent 引擎：一个主 Agent 负责规划，把阶段工作派给阶段子 Agent；包含五层架构。可独立运行，对外暴露 REST API。
 
 ### 2. 帧艺 ClipWright AI 辅助视频创作系统（全栈）
 
@@ -16,7 +16,7 @@ Persona 驱动的 Agent 引擎，包含五层架构和 7 个 Agent 构成 LangGr
 
 前后端分离的 AI 辅助视频创作系统 = 内容视频编排引擎（后端）+ Web 视频编辑器（前端）。
 
-- **后端**：Python + FastAPI + LangGraph。Persona 驱动的 Agent 引擎，7 个 Agent 构成管线。
+- **后端**：Python + FastAPI。Persona 驱动的 Agent 引擎：一个主 Agent 规划并派发阶段子 Agent。
 - **前端**：React 19 + TypeScript + Zustand + Canvas 自研时间轴。对标 PR 的多轨编辑器。
 - **Plugin 系统**：视频类型插件（knowledge_longform、kichiku_fastcut、digital_review、vlog_daily）
 - **Persona 系统**：四层复合（参数层/示例层/嵌入层/模型层）
@@ -162,9 +162,9 @@ LLM Agent → ① 构造 AgentToolkit（感知 ToolRegistry 可用工具）
 ## 代码规范
 
 - 前端：React 19 + TypeScript + Zustand + Radix UI + Tailwind
-- 后端：Python + FastAPI + LangGraph + Pydantic
+- 后端：Python + FastAPI + Pydantic
 - 时间线数据格式：前后端统一的 JSON schema（Agent 输出 = 编辑器可编辑）
-- Agent 之间通过 LangGraph 节点图传递数据，每个节点独立可测
+- 主 Agent 通过 `delegate_agent(stage=…)` 派发阶段子 Agent；阶段结果回主 Agent（`StageResult` + 黑板），不是固定管线
 - Persona 配置以 YAML 存储，支持版本管理
 - 遵循[Google Python Style Guide](https://google.github.io/styleguide/pyguide.html)。
 

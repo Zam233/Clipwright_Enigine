@@ -32,30 +32,35 @@ class BlackFrameDetectTool(BaseTool):
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error="file not found")
         try:
             result = await asyncio.to_thread(subprocess.run,
-                [resolve_ffmpeg(), "-y", "-loglevel", "error", "-i", video_path,
+                [resolve_ffmpeg(), "-y", "-v", "info", "-i", video_path,
                  "-vf", f"blackdetect=d=0.5:pic_th={black_threshold}:pix_th={pixel_threshold}",
                  "-f", "null", "-"],
                 capture_output=True, text=True, timeout=120,
             )
             import re
+            # blackdetect 的行只在 info 级别输出（旧实现 -loglevel error 把
+            # stderr 压成空串 → 永远 0 段、passed=True 假通过，审计 P0）。
             starts = re.findall(r"black_duration:([\d.]+)", result.stderr or "")
             black_segments = [float(d) for d in starts]
 
             # 检测全白（过曝）— T2: signalstats YAVG 替代全帧 ffprobe
             probe = await asyncio.to_thread(subprocess.run,
-                [resolve_ffmpeg(), "-y", "-loglevel", "error", "-i", video_path,
-                 "-vf", "signalstats,metadata=print:key=lavfi.signalstats.YAVG",
+                [resolve_ffmpeg(), "-y", "-v", "info", "-i", video_path,
+                 "-vf", "signalstats,metadata=print:file=-",
                  "-f", "null", "-"],
                 capture_output=True, text=True, timeout=120,
             )
             white_segments = []
             try:
                 import re as _re
-                pat = _re.compile(r"pts_time:([\d.]+)\s*\n?.*?YAVG=([\d.]+)")
-                for t, yavg in pat.findall(probe.stderr or ""):
-                    if float(yavg) > 250:
+                # metadata=print:file=- 写 stdout；frame 块跨多行（pts_time 在
+                # YAVG 之前），旧正则未开 DOTALL 且阈值 >250 对 limited-range
+                # 的白帧（YAVG=235）永远不命中 —— 审计 P0 的第二个成因。
+                pat = _re.compile(r"pts_time:([\d.]+).*?YAVG=([\d.]+)", _re.S)
+                for t, yavg in pat.findall(probe.stdout or ""):
+                    if float(yavg) >= 235:
                         white_segments.append(float(t))
-            except Exception:
+            except Exception:  # noqa: BLE001 — 解析失败按无过曝处理
                 pass
 
             issues = []
@@ -91,7 +96,7 @@ class AudioSilenceDetectTool(BaseTool):
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error="file not found")
         try:
             result = await asyncio.to_thread(subprocess.run,
-                [resolve_ffmpeg(), "-y", "-loglevel", "error", "-i", audio_path,
+                [resolve_ffmpeg(), "-y", "-v", "info", "-i", audio_path,
                  "-af", f"silencedetect=n={silence_threshold}dB:d={min_duration}",
                  "-f", "null", "-"],
                 capture_output=True, text=True, timeout=120,

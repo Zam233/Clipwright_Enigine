@@ -74,7 +74,26 @@ class ListAnimationsTool(BaseTool):
                 for a in (anims[:top_k] if top_k > 0 else anims)
             ]
 
+        if category in ("all", "mg"):
+            # 描述里宣称支持 mg，旧实现没有该分支（返回空目录却 success，
+            # 模型会以为"没有 MG 动画"——审计 P2）。
+            from pathlib import Path as _Path
+
+            mg_dir = _Path(__file__).resolve().parents[1] / "animation" / "mg" / "templates"
+            names = sorted(p.stem for p in mg_dir.glob("*.json")) if mg_dir.is_dir() else []
+            results["mg_animations"] = [
+                {"id": name, "name": name, "desc": "预置 MG 动态图形模板",
+                 "usage": "[逻辑动画]mg_dynamic：{...} 或直接引用模板"}
+                for name in (names[:top_k] if top_k > 0 else names)
+            ]
+
         total = sum(len(v) for v in results.values())
+        if total == 0 and category not in ("all", "text", "logic", "transition", "mg"):
+            return ToolExecResult(
+                status=ToolStatus.ERROR, tool_name=self.name,
+                error=(f"不支持的 category: {category}；"
+                       "可选 all / text / logic / transition / mg"),
+            )
         return ToolExecResult(
             status=ToolStatus.SUCCESS,
             tool_name=self.name,

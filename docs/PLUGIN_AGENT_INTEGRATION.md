@@ -177,9 +177,10 @@ ToolRegistry.register(MyAIGenTool(), plugin_id="my_plugin")
 
 ## 插件自定义 Agent（SA-2/3/4）
 
-插件可注册**自定义 Agent**，两种使用形态：
+插件可注册**自定义 Agent**，由宿主（主 Agent 或插件工具）作为子代理按需调用。
+老管线已下线，**不再有**「并入主管线 DAG」这条路径。
 
-### 1. 随主管线执行（DAG 合并）
+### 1. 注册
 
 **plugin.yaml**：
 
@@ -200,20 +201,19 @@ from clipwright.schema.agent import PluginAgentInput, PluginAgentOutput
 class MyAgent(BaseAgent):
     agent_name = "my_agent"
     async def execute(self, input_data: PluginAgentInput, context):
-        # input_data.data = 上游产物共享 dict；timeline = 时间线快捷引用
+        # input_data.data = 宿主传入的共享 dict；timeline = 时间线快捷引用
         return PluginAgentOutput(payload={"my_result": "..."})  # decision 默认 PASS
 
 class MyPlugin:
     def initialize(self):
-        AgentRegistry.register(MyAgent(), name="my_agent",
-                               plugin_id="my_agent_plugin", deps=["edit"])
+        AgentRegistry.register(MyAgent(), name="my_agent", plugin_id="my_agent_plugin")
     def shutdown(self):
         AgentRegistry.unregister_plugin("my_agent_plugin")
 ```
 
-- deps 声明上游（核心 Agent 或其它插件 Agent）；Agent 按 DAG 拓扑顺序执行
-- 未知依赖/依赖环的插件 Agent 会被剔除（核心 DAG 永不受影响）
-- 自动获得：熔断、用量差值记账（llm_tracker）、trace span、/retry 重跑、自愈下游联动
+- 插件 Agent 不参与固定编排；宿主通过 `run_sub_agent` 调用它
+- 核心 Agent 名是保留名（`CORE_AGENT_NAMES`），插件不得占用
+- 自动获得：熔断、用量差值记账（llm_tracker）、trace span
 
 ### 2. 作为子代理被宿主调用
 
@@ -223,12 +223,12 @@ out = await run_sub_agent(ctx, "my_agent", payload={"text": "..."})
 ```
 
 - 嵌套深度上限 2（子代理内再派生抛 SubAgentDepthError）
-- 宿主管线取消 → SubAgentCancelled；超时默认 120s
-- 用量以「宿主:子代理」复合名入账 llm_tracker（归因宿主管线）
+- 宿主取消 → SubAgentCancelled；超时默认 120s
+- 用量以「宿主:子代理」复合名入账 llm_tracker（归因宿主）
 - 熔断：per (pipeline_id, agent) 连续失败 3 次 → 熔断 60s
 - trace 事件携带 parent_agent/depth（SSE 零改动即可区分展示）
 
 ### 卸载语义
 
 插件 disable/unload/注销时，其注册的 Agent 经 AgentRegistry.unregister_plugin
-同步注销（能力即时收缩），后续管线执行计划自动回退。
+同步注销（能力即时收缩），后续 `run_sub_agent` 派发自动找不到该 Agent。

@@ -9,6 +9,7 @@ from typing import Any, Optional
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 from clipwright.tool.base import BaseTool
 from clipwright.tool.video import _ensure_output_path
+from clipwright.tool.video import resolve_ffmpeg
 
 
 class ColorCorrectTool(BaseTool):
@@ -48,7 +49,7 @@ class ColorCorrectTool(BaseTool):
                 filters.append(f"hue=h={hue}")
             vf = ",".join(filters) if filters else "null"
             result = await asyncio.to_thread(subprocess.run, 
-                ["ffmpeg", "-y", "-i", input_path,
+                [resolve_ffmpeg(), "-y", "-i", input_path,
                  "-vf", vf,
                  "-c:a", "copy", out],
                 capture_output=True, text=True, timeout=300,
@@ -86,7 +87,7 @@ class LutApplyTool(BaseTool):
         out = _ensure_output_path(output_path, "lut_", ".mp4")
         try:
             result = await asyncio.to_thread(subprocess.run, 
-                ["ffmpeg", "-y", "-i", input_path,
+                [resolve_ffmpeg(), "-y", "-i", input_path,
                  "-vf", f"lut3d={lut_path}",
                  "-c:a", "copy", out],
                 capture_output=True, text=True, timeout=300,
@@ -129,7 +130,7 @@ class ColorMatchTool(BaseTool):
             # 1. 提取参考片段平均亮度（YAVG）
             ref_probe = await asyncio.to_thread(
                 subprocess.run,
-                ["ffmpeg", "-i", reference_path,
+                [resolve_ffmpeg(), "-i", reference_path,
                  "-vf", "signalstats,metadata=print:key=lavfi.signalstats.YAVG",
                  "-frames:v", "30", "-f", "null", "-"],
                 capture_output=True, text=True, timeout=120,
@@ -138,7 +139,7 @@ class ColorMatchTool(BaseTool):
             # 2. 提取目标片段平均亮度
             tgt_probe = await asyncio.to_thread(
                 subprocess.run,
-                ["ffmpeg", "-i", input_path,
+                [resolve_ffmpeg(), "-i", input_path,
                  "-vf", "signalstats,metadata=print:key=lavfi.signalstats.YAVG",
                  "-frames:v", "30", "-f", "null", "-"],
                 capture_output=True, text=True, timeout=120,
@@ -151,7 +152,7 @@ class ColorMatchTool(BaseTool):
                 delta = max(-0.5, min(0.5, delta))
             eq_filter = f"eq=brightness={delta:.4f}:contrast=1.0:saturation=1.0"
             result = await asyncio.to_thread(subprocess.run, 
-                ["ffmpeg", "-y", "-i", input_path,
+                [resolve_ffmpeg(), "-y", "-i", input_path,
                  "-vf", eq_filter,
                  "-c:a", "copy", out],
                 capture_output=True, text=True, timeout=300,
