@@ -105,7 +105,7 @@ def build_text_mgdef(
         tokens = _tokens(text, motion_type == "word_by_word")
         total_w = sum(_char_w(ch, main["font_size"]) for ch in text)
         x = (width - total_w) / 2
-        y = height / 2
+        y = (height - float(main["font_size"])) / 2
         if style.get("position") == "top":
             y = height * 0.18
         main["keyframes"] = []
