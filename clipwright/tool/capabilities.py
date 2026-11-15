@@ -47,6 +47,7 @@ CAPABILITY_ALIASES: dict[str, tuple[str, ...]] = {
     "typewriter": ("typewriter_animation",),
     "tracking_text": ("tracking_text",),
     "text_diagram": ("text_diagram",),
+    "text_style": ("apply_text_style",),
     "subtitle_burn": ("subtitle_burn",),
     "subtitle_overflow": ("subtitle_overflow",),
     # 音频

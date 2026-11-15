@@ -120,7 +120,7 @@ def test_weak_motion_is_reported(monkeypatch):
 
     async def _weak(type_id, **kw):  # noqa: ANN001, ANN003
         return _fake_result(keyframes=[{"time": 0.0, "opacity": 0},
-                                       {"time": 0.5, "opacity": 1}])
+                                       {"time": 0.05, "opacity": 1}])
 
     monkeypatch.setattr("clipwright.animation.text_generation.generate_for_type", _weak)
     sink: list = []

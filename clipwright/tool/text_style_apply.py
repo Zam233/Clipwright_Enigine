@@ -55,6 +55,7 @@ def _load_timeline(task_id: str) -> tuple[dict[str, Any], Timeline]:
 
 class ApplyTextStyleTool(BaseTool):
     name = "apply_text_style"
+    capability = "text_style"
     permission_tier = "write_local"
     agent_callable = True
     description = (

@@ -1078,14 +1078,15 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                   impact="该段文字动效回退模板关键帧")
             return None
 
-        # 动效覆盖度：最后一个关键帧相对片段的占比（<45% 记 text_motion_weak）
-        span = max(1e-3, float(display_sec))
-        last_rel = max(0.0, _content_last - vid_clip.start_sec)
-        coverage = min(1.0, last_rel / span)
-        if coverage < 0.45:
+        # 动效判定：看“有没有真实入场/运动窗口”，不再按整段时长算覆盖率。
+        # 内容驱动时长允许长 hold（法律条文/长句），把整段 18s 都要求动效
+        # 会把合理 hold 误判成 text_motion_weak，导致任务永远无法 done。
+        _first = min((float(kf.get("time") or 0) for kf in keyframes), default=0.0)
+        motion_window = max(0.0, _content_last - max(_first, vid_clip.start_sec))
+        if motion_window < 0.30:
             _note(
                 "text_motion_weak",
-                f"文字动效关键帧覆盖 {coverage:.0%}（<45%），后段接近静止",
+                f"文字动效窗口仅 {motion_window:.2f}s（<0.30s），基本是静态出现",
                 scope=str((vid_clip.metadata or {}).get("scene_title") or ""),
                 impact="观众会觉得这行字只是静态贴图",
             )
