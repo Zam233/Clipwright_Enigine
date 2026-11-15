@@ -83,6 +83,23 @@ def _color(value: Any, default: str) -> str:
     return s if _COLOR_RE.match(s) else default
 
 
+def resolve_style_placeholders(style: dict[str, Any], params: dict[str, Any] | None) -> dict[str, Any]:
+    """把 style 里的 `{accent}` 等占位符用 mg_def.params 解析。
+
+    LLM 的 style 可能引用它自己声明的参数（例如 fill: "{accent}"）；
+    不解析就会把字面量写进 ASS，libass 渲染成无色/黑块。
+    """
+    p = dict(params or {})
+    if not p:
+        return dict(style or {})
+    def _one(v: Any) -> Any:
+        if isinstance(v, str) and v.startswith("{") and v.endswith("}") and len(v) > 2:
+            key = v[1:-1].strip()
+            return p.get(key, v)
+        return v
+    return {k: _one(v) for k, v in (style or {}).items()}
+
+
 def normalize_style(raw: dict[str, Any] | None) -> dict[str, Any]:
     """合并默认值 + 夹取范围；非法颜色/枚举回落到安全默认。"""
     src = dict(raw or {})
@@ -217,7 +234,7 @@ def ensure_text_animation(mg_def: dict[str, Any], *, text: str,
             "letter_spacing": main.get("letter_spacing"),
             "text_align": main.get("align") or main.get("text_align"),
         }
-    style = normalize_style(style_src)
+    style = normalize_style(resolve_style_placeholders(style_src, mg_def.get("params") or {}))
     motion = normalize_motion(ta.get("motion") or {}, text=text)
     display, reason = normalize_display(ta, host_duration=host_duration, text=text)
     result = {
