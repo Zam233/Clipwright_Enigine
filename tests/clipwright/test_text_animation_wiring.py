@@ -95,6 +95,9 @@ def test_llm_path_creates_center_clip(monkeypatch):
     assert clip.metadata["text_anim_type"] == "emphasis_keyword"
     assert clip.metadata["text_llm_method"] == "text_llm"
     assert clip.keyframes[0]["time"] == 10.0
+    assert clip.metadata["renderer"] == "mg_hyperframes"
+    assert clip.metadata["mg_html"]
+    assert clip.metadata["apply_text_style"] is True
 
 
 def test_llm_failure_falls_back_to_template_with_degradation(monkeypatch):

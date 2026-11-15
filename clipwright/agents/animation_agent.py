@@ -1108,7 +1108,32 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         if main_style.get("letter_spacing") is not None:
             style["letter_spacing"] = main_style["letter_spacing"]
 
-        return Clip(
+        # 用户裁定：所有文字动画统一走 MG HTML，不再用 ASS/drawtext。
+        # 这里把 LLM 的 MGDef + style/motion 转成 MGDef，再由 MGRenderer 生成 HTML。
+        from clipwright.animation.text_mg import build_text_mgdef, render_text_mg_html
+        text_style = dict(ta.get("style") or {})
+        text_motion = dict(ta.get("motion") or {})
+        try:
+            mg_def = build_text_mgdef(
+                result.mg_def,
+                text=main_style.get("text") or text_content,
+                style=text_style,
+                motion=text_motion,
+                width=int(self._tl_width or 1920),
+                height=int(self._tl_height or 1080),
+                display_sec=display_sec,
+            )
+            mg_html = render_text_mg_html(
+                mg_def, width=int(self._tl_width or 1920),
+                height=int(self._tl_height or 1080), fps=float(self._tl_fps or 30),
+            )
+        except Exception as exc:  # noqa: BLE001 — 明确失败，不回退 ASS/模板
+            _note("text_mg_failed", f"{type(exc).__name__}: {exc}",
+                  scope=str((vid_clip.metadata or {}).get("scene_title") or ""),
+                  impact="该段文字没有产物（不回退 ASS/模板）")
+            return None
+
+        clip = Clip(
             id=_uid("tc"),
             kind=ClipKind.TEXT,
             asset_id="",
@@ -1122,19 +1147,28 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             metadata={
                 "anim_type": anim_id,
                 "anim_name": anim_name,
-                "renderer": "drawtext",
+                "renderer": "mg_hyperframes",
+                "mg_html": mg_html,
+                "mg_def": mg_def,
+                "mg_params": {},
                 "position": "center",  # 字幕带避让（caption 固定 bottom）
                 "text_anim_type": type_id,
                 "text_llm_method": result.method,
                 "text_prompt_version": result.prompt_version,
-                "style": dict(ta.get("style") or {}),
-                "motion": dict(ta.get("motion") or {}),
+                "style": text_style,
+                "motion": text_motion,
                 "text_animation": ta,
                 "duration_reason": str(ta.get("duration_reason") or ""),
                 "avoid_caption_band_px": tg.CAPTION_BAND_PX,
                 "stroke_width": persona_style.get("stroke_width", 0),
                 "stroke_color": persona_style.get("stroke_color", "#000000"),
+                "apply_text_style": True,
             },
+        )
+        from clipwright.animation.text_mg import apply_text_style_to_clip
+        return apply_text_style_to_clip(
+            clip, style=text_style, motion=text_motion,
+            width=int(self._tl_width or 1920), height=int(self._tl_height or 1080),
         )
 
     @staticmethod
@@ -2010,13 +2044,14 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "AnimationAgent: llm_mg 未产出 LLM 定制动画 (method=%s, fallback=%s)，跳过",
                 method, result.get("fallback_template"),
             )
+            err_detail = str(result.get("error") or result.get("failure") or "")
             self._record_failed_animation(
                 vid_clip, anim_id, anim_name,
-                f"LLM MG 未产出定制动画（method={method}）",
+                f"LLM MG 未产出定制动画（method={method}）: {err_detail[:300]}",
             )
             _note(
                 "llm_mg_failed_no_template",
-                f"{anim_name} 未产出 LLM 定制动画（method={method}），按“只保留提示词”策略跳过",
+                f"{anim_name} 未产出 LLM 定制动画（method={method}）: {err_detail[:400]}",
                 scope=str((vid_clip.metadata or {}).get("scene_title") or anim_name),
                 impact="该段没有动画（不会用内置模板冒充 LLM 产物）",
             )

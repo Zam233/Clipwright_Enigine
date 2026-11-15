@@ -238,6 +238,7 @@ class MGGenerator:
         # 自愈/重试零 LLM 成本。缓存 TTL 30 分钟，LRU 淘汰。
         # P1-02: 存到 self——generate() 里落缓存时也要用同一键（旧局部变量跨
         # 作用域不可见，是 getattr(self,'_ck','') 恒空串笔误的根源）
+        self._last_failure: dict[str, Any] = {}
         self._ck = _mg_cache_key(description, text_content, persona_style)
         _cached = _mg_cache_get(self._ck)
         if _cached is not None:
@@ -309,12 +310,8 @@ class MGGenerator:
                 )
                 if result:
                     return result
-                logger.warning("MGGenerator: 批判修复失败，进入降级")
-                return await self._fallback_generate(
-                    description, text_content, persona_style,
-                    width=width, height=height, fps=fps,
-                    vision_prompt=vision_prompt,
-                )
+                logger.warning("MGGenerator: 批判修复失败，明确失败（不回退模板）")
+                return self._failure_result(description, "批判修复失败")
 
             # 带错误回传的一次修复重试（仅一次，避免无限重试）
             repair_kwargs: dict[str, Any] = {}
@@ -336,12 +333,8 @@ class MGGenerator:
                     width=width, height=height, fps=fps,
                     vision_prompt=vision_prompt,
                 )
-            logger.warning("MGGenerator: 修复重试仍失败，进入降级")
-            return await self._fallback_generate(
-                description, text_content, persona_style, pipeline_id=pipeline_id,
-                width=width, height=height, fps=fps,
-                vision_prompt=vision_prompt,
-            )
+            logger.warning("MGGenerator: 修复重试仍失败，明确失败（不回退模板）")
+            return self._failure_result(description, "修复重试仍失败")
 
         if not mg_def:
             # LLM 多次尝试均失败（返回 None 或抛异常），记录失败原因供降级决策追溯
@@ -350,11 +343,7 @@ class MGGenerator:
                 "LLM 生成失败（多次尝试均未返回有效 JSON）",
                 {},
             )
-        return await self._fallback_generate(
-            description, text_content, persona_style, pipeline_id=pipeline_id,
-            width=width, height=height, fps=fps,
-            vision_prompt=vision_prompt,
-        )
+        return self._failure_result(description, "LLM 多次尝试均未返回有效 JSON")
 
     @staticmethod
     def _ensure_no_background(
@@ -1446,13 +1435,29 @@ ision_prompt
             "(finish_reason=%s, chars=%d, head=%.120s | tail=%.120s)",
             finish_reason or "?", len(content), content, content,
         )
+        detail = (f"finish_reason={finish_reason or '?'} chars={len(content)} "
+                  f"head={content[:160]!r} tail={content[-160:]!r}")
+        self._last_failure = {
+            "kind": kind, "finish_reason": finish_reason or "?",
+            "chars": len(content), "head": content[:200], "tail": content[-200:],
+            "error": detail,
+        }
         _note(
             kind,
-            f"finish_reason={finish_reason or '?'} chars={len(content)} "
-            f"tail=…{content[-120:]}",
-            impact="本轮产物不可用，若重试/修复都失败则该段动画退化为内置模板",
+            detail,
+            impact="本轮产物不可用；不回退模板，按 clip_id 重派",
         )
         return None
+
+    def _failure_result(self, description: str, reason: str = "") -> dict[str, Any]:
+        """明确失败：不返回模板/预设，报告保留 finish_reason 与解析错误。"""
+        failure = dict(self._last_failure or {})
+        detail = reason or str(failure.get("error") or "LLM MG 未产出")
+        return {
+            "success": False, "html": "", "mg_def": {},
+            "method": "llm_failed", "fallback_template": None,
+            "error": detail, "failure": failure,
+        }
 
     async def _fallback_generate(
         self,
@@ -1748,19 +1753,6 @@ ision_prompt
         if html2 and not _RESIDUAL_PLACEHOLDER_RE.search(html2):
             logger.warning("MGGenerator: 渲染残留占位符经二次填充后清除")
             return await self._lint_gated(html2)
-
-        if allow_fallback and description and text_content:
-            try:
-                fallback = await self._fallback_generate(
-                    description, text_content, persona_style or {},
-                    width=width, height=height, fps=fps,
-                )
-                fb_html = fallback.get("html") or ""
-                if fb_html and not _RESIDUAL_PLACEHOLDER_RE.search(fb_html):
-                    logger.warning("MGGenerator: 渲染残留占位符 → 降级模板渲染")
-                    return fb_html
-            except Exception as e:
-                logger.warning("MGGenerator: 残留占位符降级渲染失败: %s", e)
 
         logger.warning("MGGenerator: 渲染后仍含残留占位符，返回原始 HTML")
         return html or html2

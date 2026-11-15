@@ -1540,6 +1540,11 @@ class AgentKernel:
                     once_key="wrapup")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("进度播报（收尾前）失败 %s: %s", task.id, exc)
+            # 收据可能是在 gate 之后才写入的：若 pending 已清空，必须重算 gate，
+            # 不能拿旧的 degradation_unresolved 把任务判死（outstanding=0 仍 failed 的根因）。
+            if gate_reason == "degradation_unresolved" and not unresolved:
+                gate_reason = "tool_loop_completed"
+
             # ── 终态原因编码化（devplan §8）：旧 reason 字符串继续产出，新枚举供机器读 ──
             _treason, _blocker = self._success_terminal_reason(
                 task, gate_reason=gate_reason, unresolved=unresolved)

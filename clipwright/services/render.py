@@ -1509,9 +1509,24 @@ class RenderService:
                     entry["denoise"] = bool(_am.get("denoise"))
                     audio_segments.append(entry)
                 elif k in ("text", "caption"):
-                    # 先计算偏移，分离追加以避免列表自引用歧义
-                    ov = self._extract_text_overlay(clip, track.index, text_overlays)
-                    text_overlays.append(ov)
+                    meta = clip.metadata or {}
+                    if meta.get("renderer") == "mg_hyperframes" and meta.get("mg_html"):
+                        # 用户裁定：文字动画统一 MG HTML；走 Hyperframes 透明 MOV，
+                        # 不再进 ASS/drawtext 文字层。
+                        hf_ov_local.append(dict(
+                            mg_html=self._ensure_mg_placeholders_filled(meta, clip.text or ""),
+                            start_sec=clip.start_sec,
+                            duration_sec=clip.duration_sec,
+                            _track_idx=track.index,
+                            mg_def=meta.get("mg_def"),
+                            mg_params=meta.get("mg_params") or {},
+                            anim_type=meta.get("anim_type") or "",
+                            category="text_mg",
+                        ))
+                    else:
+                        # 兼容旧时间线：只有没有 mg_html 的旧 clip 才走 ASS
+                        ov = self._extract_text_overlay(clip, track.index, text_overlays)
+                        text_overlays.append(ov)
                 elif k == "animation":
                     meta = clip.metadata or {}
                     if meta.get("renderer") == "mg_hyperframes" and meta.get("mg_html"):
