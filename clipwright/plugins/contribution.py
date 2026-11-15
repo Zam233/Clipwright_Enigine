@@ -50,6 +50,10 @@ class ContributionKind(str, Enum):
     # ── 方案 F：插件轨道/片段类型（第 19 类，2026-11-09 动效插件 M4）──
     #: 纯数据扩展点：`object` 恒为 None，展示信息/ schema / 契约名全在 meta
     CLIP_KIND = "clip_kind"
+    # ── 图像生成 Provider（第 20 类，2026-11-14 image-provider-plugin PRD）──
+    #: 协议见 `providers/base.py::ImageProvider`；厂商知识（URL/鉴权/size 方言/
+    #: 响应解析）只在插件里，Engine 不做任何厂商分支。
+    IMAGE_PROVIDER = "image_provider"
 
 
 class ConflictPolicy(str, Enum):

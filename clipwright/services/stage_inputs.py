@@ -313,7 +313,7 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
 
     if stage == "animation":
         from clipwright.schema.agent import AnimationInput
-        from clipwright.plugins.generated_source import generated_image_entries
+        from clipwright.services.generated_assets import generated_image_entries
         from clipwright.schema.timeline import Timeline
 
         return AnimationInput(

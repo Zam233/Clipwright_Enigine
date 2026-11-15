@@ -533,11 +533,25 @@ data: {"type":"error","detail":"流式生成中断: ...","partial":"已产出的
 `PluginData/assets/`（生成 URL 24h 失效，落地前经 `assert_public_url` 防 SSRF），
 返回 `{success, url/path（本地）, remote_url, provider, ...}`。
 
+> ⚠️ 2026-11-14：下表三个 `ai_*_generate` 工具随插件**已下架**（image-provider-plugin PRD M6）。
+> 生图改为 Provider 契约（供应商 → AI 生图），替代工具见下方「图像生成工具（第二期）」。
+> 下表仅作历史记录，不再注册、不可调用。
+
 | 工具 | 插件 | Provider（默认加粗） | 关键参数 |
 |------|------|---------------------|----------|
 | `ai_image_generate` | ai_image_gen | **volcengine(Seedream)** / dalle / flux / local | prompt, width/height（按比例收敛到 Seedream 合法像素区间）, size（直传 `2K`/`2048x2048`，优先）, image（参考图，图生图）, seed |
 | `ai_video_generate` | ai_video_gen | **volcengine(Seedance)** / kling / runway | prompt, duration_sec（默认 5）, aspect_ratio, resolution（480p/720p/1080p）, image_url（首帧，图生视频）, seed |
 | `ai_music_generate` | ai_music_gen | **volcengine(豆包音乐)** / suno | prompt, instrumental（默认 true=纯音乐 BGM）, lyrics（人声歌曲，优先于 prompt）, duration_sec（纯音乐 [30,120]，人声 [30,240]）, genre/mood/model_version（人声可选） |
+
+### 图像生成工具（第二期，2026-11-14）
+
+| 工具 | 归属 | Provider | 关键参数 |
+|------|------|----------|----------|
+| `image_generate` | Engine 内置 | 由「供应商 → AI 生图」的源决定（插件实现） | prompt, size, n, model, source_id, seed；产物落工作区 `materials/image/`，同参数幂等复用；`dry_run=true` 只校验 |
+| `timeline_insert_image` | Engine 内置 | — | task_id, asset_ref（工作区相对路径）, position（start/end/after:<clip_id>）, duration_sec, motion（ken_burns/still）；走补丁引擎，dry_run 可预览 |
+
+`image_generate` 只在存在可用图像源时出现在主 Agent 工具面；生成后自动注册该工作区的
+图片素材源，素材阶段可按 prompt 关键词检索到。
 
 环境变量/插件配置：
 
@@ -798,13 +812,15 @@ curl -X POST http://localhost:8080/api/voice/dub \
 |------|------|
 | `GET /api/providers?kind=` | 源列表（脱敏：`api_keys_masked`/`key_count`/`has_keys`）+ 角色绑定总览 |
 | `POST /api/providers` | 新建源 `{name,kind,provider,base_url,timeout_sec,proxy,headers,api_keys[],models[]}` |
-| `GET /api/providers/available` | 各类型可选 provider 名（**门面驱动**，含插件注册的 llm/tts/embedding/rerank provider）+ `role_kinds` 映射 + `provider_meta`（按 kind 的展示元数据：`name` / `needs_uploader` / `clone_supported` / `local` / `env_key`，前端用它渲染 label 与上传提示，**不得按厂商名硬编码**） |
+| `GET /api/providers/available` | 各类型可选 provider 名（**门面驱动**，含插件注册的 llm/tts/embedding/rerank/**image** provider）+ `role_kinds` 映射（含 `image`） + `provider_meta`（按 kind 的展示元数据：`name` / `needs_uploader` / `clone_supported` / `local` / `env_key`，前端用它渲染 label 与上传提示，**不得按厂商名硬编码**） |
 | `GET /api/plugin/contributions?kind=export_preset` | 插件导出预设（**纯数据**：`object` 恒 `None`）。`meta` 必须带顶层 `width/height/fps/bitrate`（注册期校验）+ `title` 与 `payload{name,width,height,fps,bitrate}`（前端 `ExportPage` 契约；payload 缺失会被整条丢弃） |
-| `GET /api/providers/roles` | 角色绑定（`main/flash/vision/embed/rerank/tts`） |
+| `GET /api/providers/roles` | 角色绑定（`main/flash/vision/embed/rerank/tts/image`） |
 | `PUT /api/providers/roles` | 绑定/解绑角色 `{role, source_id, model}`（`source_id=""` 解绑） |
 | `GET /api/providers/{id}` | 源详情（脱敏） |
 | `PUT /api/providers/{id}` | 更新源（`api_keys` 传掩码=保留旧值） |
 | `DELETE /api/providers/{id}` | 删除源（引用它的角色自动解绑） |
+| `GET /api/providers/schemas?kind=image` | 图像 provider 的插件声明（返回键 `image_provider`；表单按 `config_schema` 渲染） |
+| `POST /api/providers/{id}/test`（`kind=image`） | 调用插件的 `probe(config)`（宿主注入 base_url/api_key）；未声明 probe 时返回可读原因，不假装成功 |
 | `POST /api/providers/{id}/models` | 覆盖模型清单 |
 | `POST /api/providers/{id}/models/upsert` | 自定义模型（新增/覆盖 `{id,name?,enabled?}`） |
 | `DELETE /api/providers/{id}/models/{model_id}` | 删除模型（解绑引用它的角色） |

@@ -18,7 +18,18 @@ from clipwright.plugins.contribution import (
 
 
 @pytest.fixture(autouse=True)
-def _registered_slot():
+def _registered_slot(tmp_path, monkeypatch):
+    # legacy 槽校验要求插件目录下存在 ui.json（ai_image_gen 已下架，
+    # 不能再用仓库 plugins/ 目录）——用临时目录造一个 demo_plug_aigen/ui.json。
+    global _PLUGIN_DIR
+    _PLUGIN_DIR = tmp_path
+    plug = tmp_path / "demo_plug_aigen"
+    plug.mkdir(exist_ok=True)
+    (plug / "ui.json").write_text(
+        '{"title": "临时演示面板", "widgets": [{"type": "input", "key": "prompt"}]}',
+        encoding="utf-8")
+    # ui.json 读取带 mtime 缓存，换目录后必须清掉
+    monkeypatch.setattr(pj, "_ui_cache", {})
     ContributionRegistry.clear_all()
     ContributionRegistry.declared_scope("demo_plug", ["ui_slot:panel_a"])
     ContributionRegistry.register(
@@ -53,9 +64,9 @@ def test_legacy_ui_json_slot_is_accepted(monkeypatch):
     确实有 ui.json 时放行。
     """
     monkeypatch.setattr(pj, "_loader", _loader_stub())
-    assert pj._contribution_owned_by("ai_image_gen", "ai_image_gen_legacy") is True
-    assert pj._contribution_owned_by("ai_image_gen", "ai_image_gen:legacy") is True
-    assert pj._contribution_owned_by("ai_image_gen", "ai_music_gen_legacy") is False
+    assert pj._contribution_owned_by("demo_plug_aigen", "demo_plug_aigen_legacy") is True
+    assert pj._contribution_owned_by("demo_plug_aigen", "demo_plug_aigen:legacy") is True
+    assert pj._contribution_owned_by("demo_plug_aigen", "other_plug_legacy") is False
 
 
 def test_empty_contribution_id_skips_check():
@@ -67,7 +78,7 @@ async def test_proxy_rejects_mismatched_contribution_before_allowlist(monkeypatc
     class _Loader:
         @staticmethod
         def discover():
-            return ["ai_image_gen"]
+            return ["demo_plug_aigen"]
 
         @staticmethod
         def is_enabled(pid):
@@ -80,7 +91,7 @@ async def test_proxy_rejects_mismatched_contribution_before_allowlist(monkeypatc
     monkeypatch.setattr(pj, "_loader", _Loader())
     with pytest.raises(HTTPException) as ei:
         await pj.plugin_proxy(
-            "ai_image_gen", "post",
+            "demo_plug_aigen", "post",
             pj._PluginProxyBody(
                 action="tool", payload={}, contribution_id="other_plug:panel",
             ),
@@ -122,13 +133,13 @@ async def test_proxy_accepts_owner_prefixed_contribution_id(monkeypatch):
 
 @pytest.fixture
 def owned_tool(monkeypatch):
-    """在门面与 ToolRegistry 里造一个属于 ai_image_gen 的合法工具。"""
+    """在门面与 ToolRegistry 里造一个属于 demo_plug_aigen 的合法工具。"""
     from clipwright.schema.tool import ToolExecResult
     from clipwright.tool.base import BaseTool
     from clipwright.tool.registry import ToolRegistry
 
     class _ProbeTool(BaseTool):
-        name = "ai_image_gen_probe"
+        name = "demo_plug_aigen_probe"
         description = "probe"
         capability = ""
         permission_tier = "costly"
@@ -141,22 +152,25 @@ def owned_tool(monkeypatch):
 
     tool = _ProbeTool()
     ToolRegistry.register(tool)
-    tool._plugin_id = "ai_image_gen"
-    ContributionRegistry.declared_scope("ai_image_gen", ["tool:ai_image_gen_probe"])
+    tool._plugin_id = "demo_plug_aigen"
+    ContributionRegistry.declared_scope("demo_plug_aigen", ["tool:demo_plug_aigen_probe"])
     ContributionRegistry.register(
-        "ai_image_gen",
-        [Contribution(ContributionKind.TOOL, "ai_image_gen_probe", tool)],
+        "demo_plug_aigen",
+        [Contribution(ContributionKind.TOOL, "demo_plug_aigen_probe", tool)],
     )
     yield tool
-    ToolRegistry.unregister("ai_image_gen_probe")
-    ContributionRegistry.unregister_plugin("ai_image_gen")
+    ToolRegistry.unregister("demo_plug_aigen_probe")
+    ContributionRegistry.unregister_plugin("demo_plug_aigen")
+
+
+_PLUGIN_DIR = None  # 由 fixture 注入（含 demo_plug_aigen/ui.json）
 
 
 def _loader_stub():
     class _Loader:
         @staticmethod
         def discover():
-            return ["ai_image_gen"]
+            return ["demo_plug_aigen"]
 
         @staticmethod
         def is_enabled(pid):
@@ -168,26 +182,26 @@ def _loader_stub():
 
         @property
         def plugin_dir(self):
-            from pathlib import Path
-
-            return Path(__file__).resolve().parents[2] / "plugins"
+            # demo_plug_aigen 的 ui.json 由 tmp_path fixture 提供
+            # （ai_image_gen 已下架，不能再用仓库 plugins/ 目录）。
+            return _PLUGIN_DIR
 
     return _Loader()
 
 
 @pytest.mark.parametrize("contribution_id", [
     "",                       # 旧客户端：不报 id
-    "ai_image_gen_legacy",    # legacy 槽的规范 id
-    "ai_image_gen:legacy",    # 旧前端把 stateKey 当 id 发
+    "demo_plug_aigen_legacy",    # legacy 槽的规范 id
+    "demo_plug_aigen:legacy",    # 旧前端把 stateKey 当 id 发
 ])
 async def test_legacy_panel_tool_call_succeeds(monkeypatch, owned_tool, contribution_id):
-    """B6 正例：ai_image_gen 的 legacy 面板按钮必须真的能调到自己的工具。"""
+    """B6 正例：demo_plug_aigen 的 legacy 面板按钮必须真的能调到自己的工具。"""
     monkeypatch.setattr(pj, "_loader", _loader_stub())
     result = await pj.plugin_proxy(
-        "ai_image_gen", "post",
+        "demo_plug_aigen", "post",
         pj._PluginProxyBody(
             action="tool",
-            payload={"name": "ai_image_gen_probe", "params": {"prompt": "猫"}},
+            payload={"name": "demo_plug_aigen_probe", "params": {"prompt": "猫"}},
             contribution_id=contribution_id,
         ),
         None,
@@ -202,10 +216,10 @@ async def test_tool_call_rejected_when_contribution_belongs_to_other_plugin(
     monkeypatch.setattr(pj, "_loader", _loader_stub())
     with pytest.raises(HTTPException) as ei:
         await pj.plugin_proxy(
-            "ai_image_gen", "post",
+            "demo_plug_aigen", "post",
             pj._PluginProxyBody(
                 action="tool",
-                payload={"name": "ai_image_gen_probe", "params": {}},
+                payload={"name": "demo_plug_aigen_probe", "params": {}},
                 contribution_id="other_plug:panel",
             ),
             None,

@@ -909,6 +909,15 @@ def _add_clip(
         ref = position.split(":", 1)[1]
         found = _find(timeline, ref)
         start = (float(found[1].start_sec) + float(found[1].duration_sec)) if found else _track_end(track)
+    elif position.startswith("at:"):
+        # 绝对秒定位（timeline_insert_image 需求）：坏值回落到轨道末尾并记 warning
+        try:
+            start = max(0.0, float(position.split(":", 1)[1]))
+        except (TypeError, ValueError):
+            start = _track_end(track)
+            problems.append(PatchProblem(
+                level="warning", where=where,
+                message=f"新增片段的位置 {position!r} 不是合法秒数，已落到轨道末尾"))
     else:
         start = _track_end(track)
 

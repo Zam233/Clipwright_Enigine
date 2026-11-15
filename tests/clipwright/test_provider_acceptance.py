@@ -86,7 +86,7 @@ class TestProviderConfigAcceptance:
         assert bound.status_code == 200, bound.text
         roles = client.get("/api/providers/roles").json()
         assert roles["roles"]["main"]["model"] == "deepseek-chat"
-        assert roles["available"] == ["main", "flash", "vision", "embed", "rerank", "tts"]
+        assert roles["available"] == ["main", "flash", "vision", "embed", "rerank", "tts", "image"]
 
         # ④ 运行时解析：角色 → 明文凭据 + 传输参数
         resolved = _resolve_role_binding("main")
@@ -134,6 +134,8 @@ class TestProviderConfigAcceptance:
         assert body["role_kinds"]["embed"] == "embedding"
         assert body["role_kinds"]["rerank"] == "rerank"
         assert body["role_kinds"]["tts"] == "tts"
+        # AI 生图 tab（image-provider-plugin PRD M2）
+        assert body["role_kinds"]["image"] == "image"
 
     def test_plugin_provider_appears_and_desists(self, client):
         ContributionRegistry.register("accept_plug", [

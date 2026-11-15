@@ -56,7 +56,7 @@ contributions:
 > 声明了却没注册的条目会出现在 `GET /api/plugin/list` 的 `declared_only` 里；
 > 注册了却没声明的会被门面拒绝并写错误通道。
 
-## 2. 可贡献的 17 类扩展点
+## 2. 可贡献的 20 类扩展点
 
 | kind | 用途 | 关键 meta / 说明 |
 |------|------|------------------|
@@ -74,6 +74,7 @@ contributions:
 | `renderer_backend` | 渲染后端 | 实现 `render(timeline, output_path, settings, on_progress=None, cancel_token=None)`；详见下方「渲染后端贡献」 |
 | `embedding_provider` | 向量化（RAG） | 工厂形态，产出 `embed/embed_query/dim` |
 | `rerank_provider` | 重排序（RAG） | 工厂形态，产出 `rerank(query, documents, model, top_n)` |
+| `image_provider` | 图像生成 | 实现 `default_model/capabilities/generate`（可选 `probe(config)`）；厂商知识只在插件，Engine 校验尺寸/数量；详见下方「图像生成贡献」 |
 | `animation` | 动画定义 | `object` 需是 `AnimationDef`；id 即 `animation_id` |
 | `ui_slot` | 前端插槽 | `meta.slot` 见下节 |
 | `export_preset` | 导出预设 | `meta.payload = {name,width,height,fps,bitrate,container?}` |
@@ -226,3 +227,27 @@ runtime_config:
 2. `plugin.yaml` 加 `api_version: "2"` 与 `contributions:` 声明白名单；
 3. 删除 `initialize()` 主体（或保留为空），交给桥接层短路；
 4. 若依赖 `teardown` 清单回收，确认注册进的是门面可回收的 kind（否则在 `shutdown()` 自行清理）。
+
+
+---
+
+## 图像生成贡献（`image_provider`）
+
+第 20 类扩展点（2026-11-14）。协议在 `clipwright/providers/base.py::ImageProvider`：
+
+```python
+class MyImageProvider:
+    name = "my_image"                      # 与 manifest 贡献 id 一致
+    def default_model(self) -> str: ...
+    def capabilities(self, model: str = "") -> ImageProviderCapabilities: ...
+    async def generate(self, request: ImageGenerationRequest) -> list[GeneratedImage]: ...
+    async def probe(self, config=None) -> bool: ...   # 可选；宿主注入源配置
+```
+
+- **插件只做协议 ↔ 厂商翻译**：URL、鉴权头、`size` 方言、`b64_json`/`url` 解析都在插件；
+  不写盘、不记账、不改时间线（落盘/账本由 Engine 第二期工具负责）。
+- **配置**：manifest 的 `config_schema` 驱动前台表单（`api_key` 标 `secret: true`）；
+  `capabilities` 声明 `sizes` / `max_n` / `reference_image` / `cost_per_image_usd` 等。
+- **注册期校验**：缺 `default_model`/`capabilities`/`generate` → 该贡献被拒并给可读原因。
+- 示例：`plugins/image_providers`（`openai_compatible`）与 `plugins/image_gpt_images`
+  （`openai_gpt_image`，gpt-image-1 专用）。
