@@ -10,6 +10,7 @@ LLM 工具调用支持：
 
 from __future__ import annotations
 
+import os
 import shutil
 from abc import ABC, abstractmethod
 from typing import Any, Optional
@@ -22,7 +23,8 @@ def _json_type(py_type: str) -> str:
     """Python 类型名 → JSON Schema 类型名。"""
     mapping = {
         "str": "string", "string": "string",
-        "int": "number", "float": "number", "number": "number",
+        "int": "integer", "integer": "integer",
+        "float": "number", "number": "number",
         "bool": "boolean", "boolean": "boolean",
         "list": "array", "tuple": "array", "array": "array",
         "dict": "object", "object": "object",
@@ -65,10 +67,25 @@ class BaseTool(ABC):
         ...
 
     def is_available(self) -> bool:
-        """检查工具在当前环境是否可用（依赖是否满足）。"""
+        """检查工具在当前环境是否可用（依赖是否满足）。
+
+        ffmpeg/ffprobe 用工具层同一套解析（配置项 → PATH → WinGet 等安装目录），
+        与 `resolve_ffmpeg()`/`resolve_ffprobe()` 保持一致——旧实现只看
+        `shutil.which`，配置/非 PATH 安装时工具会被误判为不可用（审计 P2）。
+        """
         if not self.dependencies:
             return True
         for cmd in self.dependencies:
+            if cmd in ("ffmpeg", "ffprobe"):
+                try:
+                    from clipwright.tool.video import resolve_ffmpeg, resolve_ffprobe
+
+                    path = resolve_ffmpeg() if cmd == "ffmpeg" else resolve_ffprobe()
+                    if (os.path.isabs(path) and os.path.exists(path)) or shutil.which(path):
+                        continue
+                    return False
+                except Exception:  # noqa: BLE001 — 解析失败按缺失处理
+                    return False
             if shutil.which(cmd) is None:
                 return False
         return True
@@ -83,24 +100,35 @@ class BaseTool(ABC):
             Anthropic Messages API tool 格式或 OpenAI tool 格式的 dict。
         """
         params = self._infer_parameters()
-        input_schema: dict[str, Any] = {
-            "type": "object",
-            "properties": {},
-        }
-        required: list[str] = []
-        for pname, pinfo in params.items():
-            if pname in ("kwargs", "self"):
-                continue
-            ptype = pinfo.get("type", "string")
-            input_schema["properties"][pname] = {
-                "type": _json_type(ptype),
-                "description": pinfo.get("description", ""),
+        # 插件工具常把参数声明在类属性 `parameters_schema` 上（execute 是
+        # `**kwargs` 签名，推断不出来）。旧实现完全忽略它 → 模型看到的是
+        # `properties: {}`，付费生成类工具连 prompt 都传不进来（审计 P1）。
+        declared = getattr(self, "parameters_schema", None)
+        if isinstance(declared, dict) and (declared.get("properties") or declared.get("required")):
+            input_schema: dict[str, Any] = {
+                "type": "object",
+                "properties": dict(declared.get("properties") or {}),
             }
-            if pinfo.get("required", False):
-                required.append(pname)
-
-        if required:
-            input_schema["required"] = required
+            if declared.get("required"):
+                input_schema["required"] = list(declared["required"])
+        else:
+            input_schema = {
+                "type": "object",
+                "properties": {},
+            }
+            required: list[str] = []
+            for pname, pinfo in params.items():
+                if pname in ("kwargs", "self"):
+                    continue
+                ptype = pinfo.get("type", "string")
+                input_schema["properties"][pname] = {
+                    "type": _json_type(ptype),
+                    "description": pinfo.get("description", ""),
+                }
+                if pinfo.get("required", False):
+                    required.append(pname)
+            if required:
+                input_schema["required"] = required
 
         if fmt == "openai":
             return {

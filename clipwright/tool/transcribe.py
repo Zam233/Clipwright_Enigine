@@ -72,6 +72,21 @@ class WhisperTranscribeTool(BaseTool):
                     end = _to_srt_time(float(seg["end"]))
                     lines.append(f"{i}\n{start} --> {end}\n{seg['text']}\n")
                 output["srt"] = "\n".join(lines)
+            elif output_format == "vtt":
+                # 描述里一直宣称支持 VTT，旧实现静默回落 JSON（审计 P2）。
+                from clipwright.services.subtitle import _to_srt_time
+
+                lines = ["WEBVTT", ""]
+                for i, seg in enumerate(segments, 1):
+                    start = _to_srt_time(float(seg["start"])).replace(",", ".")
+                    end = _to_srt_time(float(seg["end"])).replace(",", ".")
+                    lines.append(f"{i}\n{start} --> {end}\n{seg['text']}\n")
+                output["vtt"] = "\n".join(lines)
+            elif output_format not in ("json", ""):
+                return ToolExecResult(
+                    status=ToolStatus.ERROR, tool_name=self.name,
+                    error=f"unsupported output_format: {output_format}（支持 srt / vtt / json）",
+                )
 
             return ToolExecResult(status=ToolStatus.SUCCESS, tool_name=self.name, output=output)
         except Exception as e:

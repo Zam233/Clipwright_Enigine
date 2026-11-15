@@ -38,7 +38,7 @@ class ContributionDecl(BaseModel):
         # （`faster-whisper`、`qwen-tts`），原 `^[a-z][a-z0-9_]{1,63}$` 会让插件
         # 无法声明这类 id —— 表现为「manifest 校验失败」，而内置注册不校验所以
         # 一直没暴露。id 只做门面键使用，不参与文件路径，放开连字符是安全的。
-        pattern=r"^[a-z][a-z0-9_-]{1,63}$",
+        pattern=r"^[a-z][a-z0-9_-]{0,63}$",
         description="贡献 id（同 kind 内唯一；允许小写字母/数字/下划线/连字符）",
     )
     meta: dict[str, Any] = Field(default_factory=dict, description="kind 专属元数据")

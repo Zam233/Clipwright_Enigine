@@ -98,6 +98,15 @@ class SemanticMatchTool(BaseTool):
     ) -> ToolExecResult:
         from clipwright.services import content_semantic as sem
 
+        paths = [str(p) for p in candidate_paths if str(p)]
+        # 空候选先返回：旧实现先加载 CLIP（联网/下载模型，实测空列表也耗 71s），
+        # 再做空判断（审计 P2）。
+        if not paths:
+            return ToolExecResult(
+                status=ToolStatus.SUCCESS,
+                tool_name=self.name,
+                output={"query": query, "candidates": [], "query_gloss": sem.gloss_query(query)},
+            )
         if not sem._clip_loaded():
             return ToolExecResult(
                 status=ToolStatus.DEPENDENCY_MISSING,
@@ -105,13 +114,6 @@ class SemanticMatchTool(BaseTool):
                 output={"query": query, "candidates": []},
                 error=(f"CLIP 模型不可用（{settings.content_index_clip_model}）——"
                        "语义匹配无法执行；请确认模型已下载或改用关键词检索"),
-            )
-        paths = [str(p) for p in candidate_paths if str(p)]
-        if not paths:
-            return ToolExecResult(
-                status=ToolStatus.SUCCESS,
-                tool_name=self.name,
-                output={"query": query, "candidates": [], "query_gloss": sem.gloss_query(query)},
             )
         glossed = sem.gloss_query(query)
         vectors = await asyncio.to_thread(sem.embed_images, paths)
