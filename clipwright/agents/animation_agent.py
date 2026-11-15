@@ -297,12 +297,17 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         #: 当前项目 id（用于逐段落盘：每完成一个动画就写回项目时间线，
         #: 让编辑器动画轴增量出现，而不是等整个阶段结束）
         self._project_id: str = ""
+        #: 生成失败、需要主 Agent 重新派发 animation 的片段
+        self._failed_animations: list[dict[str, Any]] = []
+        #: 主 Agent 按失败片段重派时只重跑这些 clip（其余沿用已有动画轨）
+        self._retry_clip_ids: set[str] = set()
 
     async def execute(
         self, input_data: AnimationInput, context: AgentContext
     ) -> AnimationOutput:
         logger.info("AnimationAgent 开始 pipeline=%s", context.pipeline_id[:12])
         self._pid = context.pipeline_id
+        self._retry_clip_ids = {str(x) for x in (getattr(input_data, "retry_clip_ids", None) or [])}
         _extra_ctx = dict(getattr(context, "extra_params", None) or {})
         self._project_id = str(
             _extra_ctx.get("workspace_project_id") or _extra_ctx.get("project_id") or ""
@@ -547,6 +552,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                         anim_name = marker.get("name", "淡入")
 
                         if marker_type == "text":
+                            if self._retry_clip_ids and str(clip.id) not in self._retry_clip_ids:
+                                continue
                             await self._handle_text_animation_async(
                                 text_track, clip, anim_id, anim_name,
                                 marker, persona_style,
@@ -559,6 +566,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                                       f"[文字动画]{anim_name}({anim_id}) → clip={clip.id[:8]}")
 
                         elif marker_type == "logic":
+                            if self._retry_clip_ids and str(clip.id) not in self._retry_clip_ids:
+                                continue
                             anim_track = anim_track or self._ensure_anim_track(timeline)
                             logic_jobs.append(
                                 (anim_track, clip, anim_id, anim_name, marker, persona_style)
@@ -650,6 +659,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             return AnimationOutput(
                 decision=AgentDecision.PASS,
                 timeline=timeline,
+                issues=list(self._failed_animations),
+                redo_agent="animation" if self._failed_animations else "",
+
                 animation_plan={
                     "text_animations": text_anim_count,
                     "logic_animations": logic_anim_count,
@@ -710,7 +722,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         if self._text_llm_enabled():
             # LLM 首次失败先重跑一次（transient 空/坏 JSON），不要立刻放弃。
             llm_clip = None
-            for _attempt in range(2):
+            for _attempt in range(3):
                 llm_clip = await self._build_text_clip_llm(
                     vid_clip, text_content, clip_duration, persona_style,
                     anim_id=anim_id, anim_name=anim_name,
@@ -729,6 +741,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 return
             # 用户 2026-11-15 裁定：文字动画也只保留提示词，LLM 失败就跳过，
             # 不再用 AnimationCatalog 的 typewriter/highlight_flash 预设模板冒充。
+            self._record_failed_animation(
+                vid_clip, anim_id, anim_name,
+                "文字动画连续 3 次 LLM 生成失败",
+            )
             _note(
                 "text_llm_failed_no_template",
                 f"文字动画 LLM 生成失败，按“只保留提示词”策略跳过（anim_id={anim_id}）",
@@ -1128,32 +1144,32 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         # ── 主路径（用户 2026-10-29）：所有逻辑动画按「类型提示词 + 视频类型 + persona」
         # 由 LLM 生成 mg_def（不再是静态 SVG 贴图，也不是统一塞给 mg_dynamic）。
         if self._typed_generation_enabled():
-            typed_ok = await self._handle_typed_animation(
-                anim_track, vid_clip, anim_id, anim_name, text_content, duration,
-                marker, persona_style,
-            )
-            if typed_ok:
-                return
-            # 首次失败不是直接放弃：同一段提示词立即重跑一次（LLM 偶发空/坏 JSON
-            # 是 transient，重跑通常就正常了）。只有连续两次都失败才登记降级。
-            logger.warning("AnimationAgent: 类型化 %s 首次失败，立即重跑一次", anim_name)
-            typed_ok = await self._handle_typed_animation(
-                anim_track, vid_clip, anim_id, anim_name, text_content, duration,
-                marker, persona_style, retry=True,
-            )
-            if typed_ok:
-                return
-            # 用户 2026-11-15 裁定：插件/类型动画的领域里**只保留提示词**，
-            # 不再回退 mg_* / SVG 预设模板。模板只能生成“看起来在动”的占位图，
-            # 却会被当成 LLM 产物展示；宁可如实登记失败并跳过这一段。
+            # 成功导向：同一段最多连跑 3 次（首次 + 2 次重跑）。LLM 偶发空/坏 JSON
+            # 是 transient，重跑通常就正常；3 次仍失败才升级给主 Agent 重派。
+            typed_ok = False
+            last_issue = ""
+            for attempt in range(3):
+                typed_ok = await self._handle_typed_animation(
+                    anim_track, vid_clip, anim_id, anim_name, text_content, duration,
+                    marker, persona_style, retry=(attempt > 0),
+                )
+                if typed_ok:
+                    return
+                last_issue = f"第 {attempt + 1} 次生成失败"
+                logger.warning(
+                    "AnimationAgent: 类型化 %s %s，%s",
+                    anim_name, last_issue, "重跑" if attempt < 2 else "升级给主 Agent",
+                )
             _note(
                 "animation_llm_failed",
-                f"{anim_id} 的类型化 LLM 生成失败；按“只保留提示词”策略跳过，不回退预设模板",
+                f"{anim_id} 连续 3 次 LLM 生成失败；不回退预设模板，提交主 Agent 重派该片段",
                 scope=str(marker.get("scene_title") or anim_id),
-                impact="该段没有动画（不会用模板/占位图冒充 LLM 产物）",
+                impact="暂时没有该段动画（主 Agent 必须按 clip_id 重派 animation）",
             )
+            self._record_failed_animation(vid_clip, anim_id, anim_name, last_issue)
             self._add_trace_warning(
-                f"[逻辑动画]{anim_name}({anim_id}) 的 LLM 生成失败，已跳过（不回退预设模板）"
+                f"[逻辑动画]{anim_name}({anim_id}) 连续 3 次失败，需主 Agent 重派该片段",
+                {"clip_id": str(getattr(vid_clip, "id", "") or ""), "anim_id": anim_id},
             )
             return
 
@@ -1937,6 +1953,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "AnimationAgent: llm_mg 未产出 LLM 定制动画 (method=%s, fallback=%s)，跳过",
                 method, result.get("fallback_template"),
             )
+            self._record_failed_animation(
+                vid_clip, anim_id, anim_name,
+                f"LLM MG 未产出定制动画（method={method}）",
+            )
             _note(
                 "llm_mg_failed_no_template",
                 f"{anim_name} 未产出 LLM 定制动画（method={method}），按“只保留提示词”策略跳过",
@@ -2153,6 +2173,23 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         self._add_trace_warning(
             f"LLM MG 动画 [{anim_name}] 无法生成，已跳过（不再降级为文字显示）"
         )
+
+    def _record_failed_animation(self, vid_clip: Clip, anim_id: str,
+                                 anim_name: str, reason: str) -> None:
+        """登记失败片段：主 Agent 据此按 clip_id 重派 animation，而不是静默跳过。"""
+        meta = vid_clip.metadata or {}
+        self._failed_animations.append({
+            "severity": "error",
+            "category": "animation",
+            "clip_id": str(getattr(vid_clip, "id", "") or ""),
+            "anim_id": str(anim_id or ""),
+            "anim_name": str(anim_name or ""),
+            "scene_title": str(meta.get("title") or meta.get("scene_title") or ""),
+            "start_sec": float(getattr(vid_clip, "start_sec", 0.0) or 0.0),
+            "duration_sec": float(getattr(vid_clip, "duration_sec", 0.0) or 0.0),
+            "reason": str(reason or "")[:500],
+            "retry": {"stage": "animation", "clip_id": str(getattr(vid_clip, "id", "") or "")},
+        })
 
     def _add_trace_warning(self, message: str, detail: dict[str, Any] | None = None) -> None:
         """添加 trace 警告事件（统一 5 参数，允许带结构化 detail）。"""

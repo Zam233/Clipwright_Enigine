@@ -665,12 +665,16 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     except Exception as exc:  # noqa: BLE001 — 播报失败不影响阶段结果
         logger.warning("进度播报（阶段结束）失败 %s/%s: %s", task_id, stage, exc)
 
+    _summary = _summary_of(stage, payload, tool_calls=stage_tool_calls)
+    _failed_anims = list(payload.get("issues") or []) if stage == "animation" else []
+    if _failed_anims:
+        _summary += f"；{len(_failed_anims)} 段动画失败，主 Agent 必须按 clip_id 重派（不得收据收尾）"
     result = StageResult(
         stage=stage,
         status=status,
         artifacts={k: payload[k] for k in ("timeline", "script_skeleton",
                                            "candidate_clips", "issues") if payload.get(k)},
-        summary=_summary_of(stage, payload, tool_calls=stage_tool_calls),
+        summary=_summary,
         writes=writes,
         degradations=_degradations,
         issues=list(payload.get("issues") or [])[:20],
