@@ -497,3 +497,49 @@
 | PRD 状态是否可标完成 | 文档头、§12.7、§14.6、§15 | ✅ 保持“部分实现，验收未通过” |
 
 > 结论：截至本版，**用户在本轮对话中提出的问题均已映射到 PRD 的具体章节**；PRD 不再把未实现项写成已完成，也不再以“二期/近似/收据”替代验收。
+
+
+## 16. 第三轮实现与 E2E 记录（2026-11-15 晚，进行中）
+
+### 16.1 本轮已关闭的缺口
+
+| 缺口 | 状态 | 证据 / 代码 |
+|---|---|---|
+| ASS `slide_in` 只 fade、不位移 | ✅ 已修 | `\move` 写入；E2E 抽帧断言上移（`test_text_animation_e2e.py`） |
+| ASS `scale_in` 不缩放 | ✅ 已修 | `\t(\fscx,\fscy)`；E2E 宽度增长断言 |
+| `word_by_word` 实际逐字 | ✅ 已修 | 按 token 拆分（中文按字/英文按词），独立 Dialogue |
+| typewriter cursor / 标点停顿 | ✅ 已修 | `cursor` + 标点 0.08s 停顿；E2E 检查 `▍` |
+| `highlight` 只 fade | ✅ 已修 | karaoke `\k` + 高亮色；ASS `raw_text` 支持 |
+| 底板方角 | ✅ 已修 | `\p1` 矢量圆角 + `box_radius/box_padding`；抽帧 `_cache/box_round.jpg` |
+| `text_align` / `offset_x` | ✅ 基本修复 | `TextStyle.text_align` 映射 `\an`；`offset_x` 走 `\pos`；预览同步 |
+| LLM 无样式工具 | ✅ 新增 | `apply_text_style` 工具（`text_style` 能力）写入 `clip.metadata.style/motion` |
+| 长 hold 被误判 `text_motion_weak` | ✅ 已修 | 改为“运动窗口 <0.30s”判定，不再按整段时长比例 |
+| 样式单调无门禁 | ✅ 提示+告警 | prompt 增加样式变化要求；quality 增加 `text_style` 单调 warning |
+
+### 16.2 本轮 E2E
+
+- `tests/clipwright/test_text_animation_e2e.py`：3 passed
+  - typewriter：0.45s 白像素/宽度 < 1.5s，证明逐字；
+  - slide：早期 y > 后期 y，证明上移；
+  - scale：早期宽度 < 后期宽度，证明缩放；
+  - rounded box：红色像素 >1000，证明矢量底板。
+- 真实前端 render（`render_30f9c53a4793`）：
+  - 成片 `renders/..._20261115131502.mp4`，702.4s，127,800,158 bytes；
+  - `_cache/e2e_478.9.jpg`：typewriter 只显示「只禁离」，红底圆角；
+  - `_cache/e2e_493.jpg`：完整「只禁离线下载」+ 红底圆角；
+  - `_cache/e2e_337.jpg`：「没有通报」+ 黄色圆角底板。
+  - 说明：该 render 是现有时间线上改两条文字 clip 的样式后重渲，不是全新 animation→audio 任务终态；任务终态仍未 done。
+
+### 16.3 仍未完成（按验收口径）
+
+- **任务终态仍 failed**：本次没有重新跑到 done；accepted 收据不能替代。
+- **渐变文字、撕纸/纹理、故障/glitch、真霓虹**：ASS 仍不支持；`apply_text_style` 对 glitch/neon 明确拒绝，但 render 对旧数据的 glitch/neon 仍只记 warning + fade。
+- **line_height**：ASS/drawtext 仍不生效（预览也未实现）。
+- **text_align/offset 精度**：已按近似坐标实现，多行/不同字体的精确对齐未验收。
+- **`apply_text_style` 尚未被主 Agent/动画 Agent 自动调用**：工具存在，但生成链路仍走文本 clip 自动样式；LLM 尚不能自主选择“给这条加红底/渐变/故障”。
+- **style 多样性**：只有 prompt 引导 + warning，未强制；实际全白仍可能。
+- **E2E 覆盖**：目前是 synthetic pytest + 已有时间线重渲；缺“新 requirements 任务 animation→audio→render→done”的完整链路。
+
+### 16.4 结论
+
+本轮把 slide/scale/highlight/word/cursor/圆角底板/工具链补上了，但 PRD 仍**未全部完成**；状态继续保持“部分实现，验收未通过”。下一轮优先：任务 done 闭环、渐变/故障/霓虹/撕纸、line_height、LLM 自动调用 `apply_text_style`、完整任务 E2E。
