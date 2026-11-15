@@ -963,7 +963,7 @@ from collections import OrderedDict
 from clipwright.tool.video import _CLIPWRIGHT_TEMP
 _trim_cache: "OrderedDict[str, str]" = OrderedDict()
 _trim_cache_lock = _threading.Lock()
-_TRIM_CACHE_MAX = 50
+_TRIM_CACHE_MAX = 512
 _TRIM_CACHE_MAX_BYTES = 2 * 1024 ** 3  # 2GB 磁盘配额
 _TRIM_CACHE_DIR = _CLIPWRIGHT_TEMP / "trim_cache"
 _TRIM_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -974,11 +974,11 @@ def _trim_cache_put_locked(cache_key: str, path: str) -> None:
     _trim_cache[cache_key] = path
     _trim_cache.move_to_end(cache_key)
     while len(_trim_cache) > _TRIM_CACHE_MAX:
-        _old_key, old_path = _trim_cache.popitem(last=False)
-        try:
-            Path(old_path).unlink(missing_ok=True)
-        except Exception:
-            pass
+        _old_key, _old_path = _trim_cache.popitem(last=False)
+        # 不要在这里删盘：同一轮渲染可能已有 >MAX 个 trim 被并发创建，
+        # 旧实现删掉“最旧”文件，恰好把本轮还要 concat 的片段删掉 →
+        # concat 只剩 55/69 段（video 538s / audio 702s 的根因）。
+        # 磁盘清理交给 _prune_trim_cache_dir（只删 >10min 的旧文件）。
 
 
 def _prune_trim_cache_dir() -> None:
@@ -2051,6 +2051,12 @@ class RenderService:
             (seg, r) for seg, r in zip(segments, results)
             if r and Path(r).exists()
         ]
+        _dropped = [(i, r) for i, r in enumerate(results) if not r or not Path(r).exists()]
+        if _dropped:
+            _sample = ", ".join(f"#{i}:{r!r}" for i, r in _dropped[:3])
+            self._final_ffmpeg_log.append(
+                f"trim: 丢弃 {len(_dropped)} 段（{_sample}）")
+            logger.warning("trim: 丢弃 %d 段: %s", len(_dropped), _sample)
         segments = [seg for seg, _ in kept]
         trimmed = [t for _, t in kept]
 
