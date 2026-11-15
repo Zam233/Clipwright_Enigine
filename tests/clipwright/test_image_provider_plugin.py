@@ -246,3 +246,29 @@ def test_image_source_test_endpoint_passes_resolved_config(client, monkeypatch):
     result = client.post(f"/api/providers/{sid}/test").json()
     assert result["ok"] is True, result
     assert seen["auth"] == "Bearer sk-test"
+
+
+@pytest.mark.asyncio
+async def test_image_model_listing_via_plugin_spec(loader, monkeypatch):
+    """图像 provider 声明 model_listing_spec → 「获取模型列表」按 /models 拉取。"""
+    import httpx
+
+    from clipwright.providers.model_listing import list_models_result
+
+    loader.load("image_providers")
+    try:
+        def handler(request):
+            assert str(request.url).endswith("/models")
+            assert request.headers.get("authorization") == "Bearer sk-x"
+            return httpx.Response(200, json={"data": [{"id": "gpt-image-2.5"}]})
+
+        _install_mock_httpx(monkeypatch, handler)
+        res = await list_models_result(
+            "openai_compatible",
+            {"base_url": "https://gw.example/v1", "api_key": "sk-x"},
+            kind="image",
+        )
+        assert res.status == "ok", res
+        assert res.models == ["gpt-image-2.5"]
+    finally:
+        loader.unload("image_providers")

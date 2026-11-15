@@ -273,7 +273,8 @@ async def fetch_models(source_id: str, request: Request = None) -> dict[str, Any
     try:
         from clipwright.providers.model_listing import list_models_result
 
-        result = await list_models_result(provider, resolved or {})
+        result = await list_models_result(provider, resolved or {},
+                                          kind=str(src.get("kind") or ""))
     except Exception as e:  # noqa: BLE001 — 拉取失败不阻断（前端可自定义）
         logger.warning("获取模型列表失败 (%s): %s", provider, e)
         result = None

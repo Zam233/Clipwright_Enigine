@@ -392,8 +392,29 @@ class ImageProvider(Protocol):
         """
         ...
 
+    def model_listing_spec(self) -> Mapping[str, Any] | None:
+        """模型清单端点声明（可选）：``{"path": "/models", "auth": "bearer"}``。
+
+        缺方法 = 不支持自动拉取；Engine 不按厂商猜端点。
+        """
+        ...
+
 
 def missing_image_provider_methods(impl: Any) -> list[str]:
     """注册期协议校验：缺哪些必需方法（空 = 符合协议）。"""
     required = ("default_model", "capabilities", "generate")
     return [m for m in required if not callable(getattr(impl, m, None))]
+
+
+def image_model_listing_spec(impl: Any) -> Mapping[str, Any] | None:
+    """图像 provider 的模型清单声明（缺方法 → None；Engine 不猜端点）。"""
+    fn = getattr(impl, "model_listing_spec", None)
+    if not callable(fn):
+        return None
+    try:
+        spec = fn()
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(spec, dict) or not str(spec.get("path") or ""):
+        return None
+    return spec

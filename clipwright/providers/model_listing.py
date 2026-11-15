@@ -66,23 +66,38 @@ def _parse_items(data: Any) -> list[str]:
     return sorted(set(out))
 
 
-async def list_models_result(provider: str, resolved: dict[str, Any]) -> ModelListingResult:
-    """拉取某 provider 的模型清单，返回带状态/错误码的结果（B6）。"""
+async def list_models_result(provider: str, resolved: dict[str, Any],
+                            kind: str = "") -> ModelListingResult:
+    """拉取某 provider 的模型清单，返回带状态/错误码的结果（B6）。
+
+    `kind` 区分门面种类：`llm`（默认）或 `image`。两类都要求实现方声明
+    `model_listing_spec()`（Engine 不按厂商猜端点）。
+    """
     name = (provider or "").strip().lower()
     from clipwright.plugins.contribution import ContributionKind, ContributionRegistry
-    from clipwright.providers.base import llm_model_listing_spec
+    from clipwright.providers.base import image_model_listing_spec, llm_model_listing_spec
 
     # 直接读注册表（不 import services.llm：providers 层不该依赖调用层，
     # 也避免测试期 patch httpx 后导入 isobase 造成的连带失败）
-    _item = ContributionRegistry.resolve(ContributionKind.LLM_PROVIDER, name) if name else None
+    is_image = str(kind or "").strip().lower() == "image"
+    decl_kind = ContributionKind.IMAGE_PROVIDER if is_image else ContributionKind.LLM_PROVIDER
+    _item = ContributionRegistry.resolve(decl_kind, name) if name else None
     impl = _item.object if _item is not None else None
-    spec = llm_model_listing_spec(impl) if impl is not None else None
+    if is_image:
+        spec = image_model_listing_spec(impl) if impl is not None else None
+    else:
+        spec = llm_model_listing_spec(impl) if impl is not None else None
     if spec is None:
-        logger.info("provider %s 未声明模型列表端点（插件未装/被禁用或不支持）", name)
+        logger.info("provider %s (%s) 未声明模型列表端点（插件未装/被禁用或不支持）",
+                    name or "（空）", "image" if is_image else "llm")
+        shown = name or "（未选择）"
+        if not name:
+            note = "未选择 provider：请先在「源」里选择 provider 再获取模型列表"
+        else:
+            note = (f"provider「{shown}」不支持自动获取模型列表（本地/自建端点常见），"
+                    "请用「自定义模型」手动添加")
         return ModelListingResult(
-            status="unsupported", error_code="provider_unsupported",
-            note=(f"provider「{name}」不支持自动获取模型列表（本地/自建端点常见），"
-                  "请用「自定义模型」手动添加"),
+            status="unsupported", error_code="provider_unsupported", note=note,
         )
 
     base = str(resolved.get("base_url") or spec.get("base") or "").rstrip("/")

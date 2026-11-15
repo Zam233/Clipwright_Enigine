@@ -87,6 +87,10 @@ class GPTImagesProvider:
         if cfg.get("timeout_sec"):
             self.timeout_sec = float(cfg["timeout_sec"])
 
+    def model_listing_spec(self) -> dict | None:
+        """OpenAI 兼容网关的模型清单端点（Bearer 鉴权）。"""
+        return {"path": "/models", "auth": "bearer"}
+
     async def probe(self, config: dict | None = None) -> bool:
         """鉴权探测：gpt-image-1 无轻量握手，这里打 `/models` 只看 401/403。"""
         self._apply_source_config(config)

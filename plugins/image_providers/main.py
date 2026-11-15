@@ -86,6 +86,10 @@ class OpenAICompatibleImageProvider:
         if cfg.get("timeout_sec"):
             self.timeout_sec = float(cfg["timeout_sec"])
 
+    def model_listing_spec(self) -> dict | None:
+        """OpenAI 兼容网关的模型清单端点（Bearer 鉴权）。"""
+        return {"path": "/models", "auth": "bearer"}
+
     async def probe(self, config: dict | None = None) -> bool:
         """鉴权探测：没有统一的图像模型列表协议，这里只验证
         「能带上 Bearer 头发一个最小请求且不是 401/403」。
