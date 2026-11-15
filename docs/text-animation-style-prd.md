@@ -1,6 +1,6 @@
 # 文字动画样式与 Typewriter 修复 PRD
 
-> 状态：已实现（M1–M4，M5 代码侧验收通过；全片抽帧验收待重跑任务）  
+> 状态：已实现并完成全片抽帧验收（M1–M5）  
 > 日期：2026-11-15  
 > 范围：后端文字动画生成 / 渲染、前端预览、文字 LLM 提示词与样式契约  
 > 关联现场：成品 `05:37`、`08:13` 白色文字抽帧；`renders/从_PCL_到_HMCL...mp4`
@@ -268,7 +268,12 @@
 - 抽帧合成验证：`_cache/text_style_check/txt_0.mp4`，0.8s 只见“离线”、2.2s 完整“离线下载功能”，红底白字；4.8s “没有通报”带描边/阴影；证明逐字、底板、描边/阴影在 ASS 路径生效。
 - 前端 `npx tsc --noEmit` + preview 151 tests 通过。
 
-未达/待办：
+全片验收（2026-11-15 晚）：
 
-- 用真实任务重新生成文字动画（让 LLM 输出 `text_animation`）后重跑 337s/493s 全片抽帧，确认 493s 逐字与关键词时长策略；当前旧时间线仍是旧 clip 数据。
-- 底板圆角/内边距在 ASS 的精确像素对齐、渐变/故障/霓虹等二期样式。
+- 重置旧 task 黑板为 edit 产物后只重跑 animation → audio → render；
+- 新成片：`renders/从_PCL_到_HMCL..._1920x1080_20261115111153.mp4`，702.4s，127,831,470 bytes，h264+aac；
+- `new_337.jpg`：「没有通报」白字+描边，字幕在底部不重叠；
+- `type_478.9.jpg`：只显示「只禁离」（逐字 reveal 生效）；`new_493.jpg`：18s clip 完整显示「只禁离线下载」；
+- 新文字 clip metadata 已带 `motion.reveal_sec`、`display_sec`、`duration_reason`、style。
+
+仍属二期：底板圆角/内边距在 ASS 的精确像素对齐、渐变/故障/霓虹等复杂样式；本期 glitch/slide 等 motion 在 ASS 路径按 fade 兜底，不冒充完整特效。
