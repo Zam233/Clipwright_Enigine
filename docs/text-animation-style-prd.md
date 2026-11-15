@@ -577,3 +577,15 @@
 - `line_height` 在 ASS/drawtext 仍未实现；`apply_text_style` 已存在但生成链路未自动调用。
 - 因此本 PRD 仍有硬缺口：**任务 done、复杂效果动画、line_height、完整任务 E2E**。
 - 这些不是继续微调就能在剩余轮次内闭环的：需要改渲染架构（MG/Canvas/逐帧）与任务收尾策略，且当前任务已被 cancel。
+
+
+## 20. 降级根因诊断
+
+详见独立诊断：[text-animation-degradation-rootcause.md](text-animation-degradation-rootcause.md)。
+
+核心结论：
+- `text_motion_weak`：长 display_sec 的分母 + LLM 只做入场，重派只重生成、不补关键帧；
+- `mg_motion_weak`：LLM 只给小位移（26/44px），gate 只给一次修复，且第 14 次 sha 相同的假 ok；
+- `mg_template_fallback`：`_fallback_generate()` 仍会匹配内置模板，违反“禁模板”；
+- `llm_mg_failed_no_template`：长 MG 的 JSON/校验失败，报告未保留具体 finish_reason，无法定向修；
+- **任务 failed 的状态机根因**：`degradation_unresolved` 先写入 gate_reason，收据后写但 gate 不重算，outstanding=0 仍按旧 blocked 落终态。
