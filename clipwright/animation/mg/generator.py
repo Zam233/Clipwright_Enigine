@@ -1004,10 +1004,16 @@ ision_prompt
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=critique_config.get("temperature", 0.1),
+                # 之前这里**没有下发 max_tokens**：模型按默认上限返回，长 issues
+                # 被截断成非法 JSON → 批判失败 → 修复被跳过（E2E 2026-11-15 实测
+                # 1533 字符的半截 critique）。评审批次同样需要完整输出预算。
+                max_tokens=int(llm_config.get("max_tokens", 0) or MAX_OUTPUT_TOKENS),
                 timeout=llm_config.get("timeout", 900),
             ), retries=1, timeout=llm_config.get("timeout", 900))
             content = response.content if hasattr(response, "content") else str(response)
-            return self._parse_critique(content)
+            return self._parse_critique_json(
+                content,
+                finish_reason=_finish_reason_of(getattr(response, "raw_response", None)))
         except Exception as e:
             logger.warning("MGGenerator critique call failed: %s", e)
             return None
@@ -1083,9 +1089,38 @@ ision_prompt
             logger.warning("MGGenerator critique repair call failed: %s", e)
         return None
 
+    def _parse_critique_json(self, content: str, *, finish_reason: str = "") -> dict[str, Any] | None:
+        """批判响应专用 JSON 提取：失败只记 `critique_json_*`，不污染生成降级。"""
+        if not content:
+            logger.warning("MGGenerator: critique 返回空正文（finish_reason=%s）",
+                           finish_reason or "?")
+            _note("critique_json_empty", "自批判返回空正文", impact="该段跳过自评（不影响动画产物）")
+            return None
+        candidates: list[Any] = [content.strip()]
+        match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)
+        if match:
+            candidates.append(match.group(1).strip())
+        start, end = content.find("{"), content.rfind("}")
+        if start >= 0 and end > start:
+            candidates.append(content[start:end + 1])
+        for cand in candidates:
+            try:
+                return json.loads(cand)
+            except (json.JSONDecodeError, TypeError):
+                continue
+        truncated = finish_reason in ("length", "max_tokens")
+        kind = "critique_json_truncated" if truncated else "critique_json_invalid"
+        logger.warning(
+            "MGGenerator: critique JSON 解析失败（finish_reason=%s chars=%d tail=%.120s）",
+            finish_reason or "?", len(content), content[-120:],
+        )
+        _note(kind, f"finish_reason={finish_reason or '?'} chars={len(content)}",
+              impact="该段跳过自评（不影响动画产物）")
+        return None
+
     def _parse_critique(self, content: str) -> dict[str, Any] | None:
         """从 LLM 批判响应中提取并规范化 {score, issues, suggestions}。"""
-        parsed = self._parse_llm_response(content)
+        parsed = self._parse_critique_json(content)
         if not isinstance(parsed, dict):
             return None
 

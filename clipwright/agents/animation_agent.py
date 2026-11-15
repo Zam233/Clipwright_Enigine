@@ -1214,6 +1214,133 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             style_description=desc,
         )
 
+
+    # ── 动画逐段落盘 / 复用（2026-11-15）──────────────────────────────
+    # 背景：阶段级重派会让 46 段动画全部重新生成，即使只有 1 段失败。
+    # 这里每生成成功一段就立刻落盘；重跑时按内容指纹复用成功产物，
+    # 只重新生成失败的片段（弱动效/模板回退不缓存，下一次重跑会重试）。
+
+    def _mg_cache_dir(self) -> Path | None:
+        root = str(getattr(self, "_ws_root", "") or "").strip()
+        if not root:
+            return None
+        try:
+            d = Path(root) / "cache" / "mg" / "animations"
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+        except OSError:
+            return None
+
+    @staticmethod
+    def _mg_cache_key(type_id: str, text: str, duration: float,
+                      persona_style: dict[str, Any] | None,
+                      width: int, height: int) -> str:
+        import json as _json
+
+        fp = str((persona_style or {}).get("persona_fingerprint") or "")
+        raw = _json.dumps(
+            # 时长按 0.5s 分桶：edit 重做后场景边界可能漂移几十毫秒，
+            # 精确到 0.001s 会让所有动画缓存失效（等于没缓存）。
+            [type_id, str(text or ""), round(float(duration or 0) * 2) / 2, fp, int(width), int(height)],
+            ensure_ascii=False, sort_keys=True,
+        )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+    def _mg_cache_lookup(self, type_id: str, text: str, duration: float,
+                         persona_style: dict[str, Any] | None) -> dict[str, Any] | None:
+        import json as _json
+
+        d = self._mg_cache_dir()
+        if d is None:
+            return None
+        key = self._mg_cache_key(type_id, text, duration, persona_style,
+                                 self._tl_width, self._tl_height)
+        path = d / f"{key}.json"
+        if not path.is_file():
+            return None
+        try:
+            data = _json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — 坏缓存当作未命中
+            return None
+        if not data.get("quality_ok") or not data.get("html") or not data.get("mg_def"):
+            return None
+        return data
+
+    def _mg_cache_store(self, type_id: str, text: str, duration: float,
+                        persona_style: dict[str, Any] | None, result: Any) -> None:
+        import json as _json
+        import time as _time
+
+        d = self._mg_cache_dir()
+        if d is None:
+            return
+        try:
+            issues = list(getattr(result, "issues", []) or [])
+            html = str(getattr(result, "html", "") or "")
+            mg_def = getattr(result, "mg_def", None)
+            method = str(getattr(result, "method", "") or "")
+            if not html or not isinstance(mg_def, dict):
+                return
+            # 弱动效 / 模板回退不缓存：重跑时仍需重新生成这一段
+            weak = any(("静止" in i) or ("动效" in i) or ("偏弱" in i) for i in issues)
+            fallback = ("fallback" in method) or ("template" in method)
+            quality_ok = bool(getattr(result, "ok", False)) and not weak and not fallback
+            key = self._mg_cache_key(type_id, text, duration, persona_style,
+                                     self._tl_width, self._tl_height)
+            payload = {
+                "key": key, "type_id": type_id, "text": str(text or ""),
+                "duration_s": float(duration or 0),
+                "persona_fingerprint": (persona_style or {}).get("persona_fingerprint"),
+                "width": int(self._tl_width), "height": int(self._tl_height),
+                "html": html, "mg_def": mg_def,
+                "params": (getattr(result, "raw", {}) or {}).get("params") or {},
+                "method": method,
+                "motion": getattr(result, "motion", {}) or {},
+                "issues": issues[:6],
+                "quality_ok": quality_ok,
+                "created_at": _time.time(),
+            }
+            path = d / f"{key}.json"
+            tmp = path.with_suffix(path.suffix + ".part")
+            tmp.write_text(_json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(path)
+        except Exception as exc:  # noqa: BLE001 — 落盘失败不影响本段出片
+            logger.warning("AnimationAgent: 动画逐段落盘失败: %s", exc)
+
+    def _apply_cached_typed(self, anim_track: Track, vid_clip: Clip,
+                            anim_name: str, spec: Any, text_content: str,
+                            cached: dict[str, Any]) -> bool:
+        mg_def = cached.get("mg_def") or {}
+        mg_dur = float(mg_def.get("duration_sec") or cached.get("duration_s") or 0)
+        if mg_dur and vid_clip.duration_sec < mg_dur - 0.05:
+            return False
+        clip_dur = min(float(cached.get("duration_s") or vid_clip.duration_sec),
+                       vid_clip.duration_sec)
+        anim_clip = Clip(
+            id=_uid("tmg"), kind=ClipKind.ANIMATION, asset_id="",
+            track_id=anim_track.id, start_sec=vid_clip.start_sec,
+            duration_sec=clip_dur or mg_dur or vid_clip.duration_sec,
+            text=text_content,
+            metadata={
+                "anim_type": spec.id, "anim_name": anim_name,
+                "category": "mg_dynamic", "logic_category": "logic",
+                "renderer": "mg_hyperframes",
+                "mg_html": str(cached.get("html") or ""),
+                "mg_def": mg_def,
+                "mg_params": cached.get("params") or {},
+                "motion": cached.get("motion") or {},
+                "type_issues": list(cached.get("issues") or []),
+                "reused_from_cache": True,
+                "position": "center",
+            },
+        )
+        if self._find_overlapping_clip(anim_track, anim_clip) is not None:
+            return True
+        anim_track.clips.append(anim_clip)
+        anim_track.clips.sort(key=lambda c: c.start_sec)
+        logger.info("AnimationAgent: 复用已落盘动画 %s（type=%s）", anim_name, spec.id)
+        return True
+
     async def _handle_typed_animation(
         self,
         anim_track: Track,
@@ -1260,6 +1387,11 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 )
                 return True  # 视为已处理（跳过重复也是有意的结果）
             seen[fp] = {"start": float(vid_clip.start_sec), "type": spec.id}
+
+        cached = self._mg_cache_lookup(spec.id, text_content, duration, persona_style)
+        if cached is not None:
+            return self._apply_cached_typed(
+                anim_track, vid_clip, anim_name, spec, text_content, cached)
 
         try:
             from clipwright.animation.mg.generator import MGGenerator
@@ -1366,6 +1498,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "position": "center",
             },
         )
+        self._mg_cache_store(spec.id, text_content, duration, persona_style, result)
         if self._find_overlapping_clip(anim_track, anim_clip) is not None:
             logger.info("AnimationAgent: 动画窗口冲突，跳过 %s（同窗口已有动画）", anim_name)
             return True

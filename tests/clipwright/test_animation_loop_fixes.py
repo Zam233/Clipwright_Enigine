@@ -1,0 +1,121 @@
+"""动画循环修复回归（2026-11-15 E2E）。
+
+覆盖：
+- 关键帧 x_offset/y_offset → translate_x/y 语义转换（不是删除）
+- critique 专用解析：截断 JSON 不再被当成生成成功/失败
+- 动画逐段落盘与复用：弱动效/模板回退不缓存
+- replan 同一降级指纹限次，超限返回 exhausted（要求收尾写收据）
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from clipwright.animation.mg.generator import MGGenerator
+from clipwright.animation.mg.validator import repair_mg_json
+from clipwright.agents.animation_agent import AnimationAgent
+from clipwright.services import stage_closure
+
+
+def _mg_def_with_offset() -> dict:
+    return {
+        "duration_sec": 3,
+        "elements": [
+            {
+                "type": "text",
+                "content": "x",
+                "x": "center",
+                "y": "center",
+                "keyframes": [
+                    {"time": 0, "opacity": 0, "y_offset": 40},
+                    {"time": 1, "opacity": 1, "y_offset": 40},
+                ],
+            }
+        ],
+    }
+
+
+def test_keyframe_offset_is_converted_not_deleted():
+    repaired, fixes = repair_mg_json(_mg_def_with_offset())
+    kfs = repaired["elements"][0]["keyframes"]
+    assert "y_offset" not in kfs[0]
+    assert kfs[0]["translate_y"] == 40
+    assert any("converted" in f for f in fixes)
+
+
+def test_critique_parser_rejects_truncated_json_without_generation_kind():
+    truncated = '{"score": 52, "issues": ["JSON 不合规范：末尾 keyframes 被截断'
+    parsed = MGGenerator._parse_critique_json(object.__new__(MGGenerator), truncated)
+    assert parsed is None
+
+
+def test_critique_parser_accepts_valid_json():
+    valid = '{"score": 72, "issues": [], "suggestions": ["加一点动"]}'
+    parsed = MGGenerator._parse_critique_json(object.__new__(MGGenerator), valid)
+    assert parsed and parsed["score"] == 72
+
+
+class _FakeResult:
+    def __init__(self, *, issues=None, method="llm"):
+        self.ok = True
+        self.html = "<html>mg</html>"
+        self.mg_def = {"duration_sec": 3, "elements": []}
+        self.method = method
+        self.issues = issues or []
+        self.motion = {"moving_count": 2}
+        self.raw = {"params": {}}
+
+
+def _agent(tmp_path):
+    agent = object.__new__(AnimationAgent)
+    agent._ws_root = str(tmp_path)
+    agent._tl_width = 1920
+    agent._tl_height = 1080
+    agent._find_overlapping_clip = lambda track, clip: None
+    return agent
+
+
+def test_animation_cache_roundtrip(tmp_path):
+    agent = _agent(tmp_path)
+    persona = {"persona_fingerprint": "p1"}
+    agent._mg_cache_store("countdown", "文案", 3.0, persona, _FakeResult())
+    hit = agent._mg_cache_lookup("countdown", "文案", 3.0, persona)
+    assert hit is not None
+    assert hit["quality_ok"] is True
+    # 不同文本不命中
+    assert agent._mg_cache_lookup("countdown", "另一段", 3.0, persona) is None
+
+
+def test_weak_or_fallback_not_cached(tmp_path):
+    agent = _agent(tmp_path)
+    persona = {"persona_fingerprint": "p1"}
+    agent._mg_cache_store("countdown", "弱动效", 3.0, persona,
+                          _FakeResult(issues=["动画近乎静止"]))
+    assert agent._mg_cache_lookup("countdown", "弱动效", 3.0, persona) is None
+
+    agent._mg_cache_store("countdown", "模板", 3.0, persona,
+                          _FakeResult(method="fallback_template"))
+    assert agent._mg_cache_lookup("countdown", "模板", 3.0, persona) is None
+
+
+@pytest.mark.asyncio
+async def test_replan_budget_stops_same_fingerprint(monkeypatch):
+    from clipwright.config import settings
+
+    monkeypatch.setattr(settings, "agent_mode", "on", raising=False)
+
+    class _Task:
+        pass
+
+    class _Step:
+        capability = "replan_closure"
+        args = {"redo_agent": "animation", "fingerprint": "mg_motion_weak"}
+
+    task, step = _Task(), _Step()
+    first = await stage_closure.run(task, step)
+    second = await stage_closure.run(task, step)
+    third = await stage_closure.run(task, step)
+    assert first["output"]["stages"] == ["animation", "audio"]
+    assert second["output"]["stages"] == ["animation", "audio"]
+    assert third["output"]["exhausted"] is True
+    assert third["output"]["stages"] == []

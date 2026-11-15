@@ -298,11 +298,30 @@ def repair_mg_json(mg_def: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
                         f"elements[{i}]: easing {kf.get('easing')!r} → {fixed_easing!r}")
                     kf["easing"] = fixed_easing
 
-            # 清理未知动画属性（LLM 偶发的多余字段），避免整个生成降级
+            # 清理未知动画属性（LLM 偶发的多余字段），避免整个生成降级。
+            # 关键帧里的 x_offset/y_offset 是元素级字段的误用：语义等价于
+            # translate_x/translate_y，直接**转换**而不是删除——删除会把主运动
+            # 一起删掉，客观动效门禁随即判 1.5% 位移 → 整段降级/回退模板。
             unknown = [k for k in kf if k != "time" and k not in ANIMATABLE_PROPS]
             if unknown:
+                converted: list[str] = []
                 for k in unknown:
-                    kf.pop(k, None)
-                fixes.append(f"elements[{i}]: removed unknown keyframe props {unknown}")
+                    if k in ("x_offset", "y_offset"):
+                        target = "translate_x" if k == "x_offset" else "translate_y"
+                        try:
+                            base = float(kf.get(target, 0) or 0)
+                            delta = float(kf.get(k) or 0)
+                            kf[target] = base + delta
+                            converted.append(f"{k}->{target}")
+                        except (TypeError, ValueError):
+                            pass
+                        kf.pop(k, None)
+                    else:
+                        kf.pop(k, None)
+                if converted:
+                    fixes.append(
+                        f"elements[{i}]: converted keyframe offsets {converted}")
+                if unknown:
+                    fixes.append(f"elements[{i}]: removed unknown keyframe props {unknown}")
 
     return repaired, fixes
