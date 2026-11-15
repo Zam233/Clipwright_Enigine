@@ -589,3 +589,41 @@
 - `mg_template_fallback`：`_fallback_generate()` 仍会匹配内置模板，违反“禁模板”；
 - `llm_mg_failed_no_template`：长 MG 的 JSON/校验失败，报告未保留具体 finish_reason，无法定向修；
 - **任务 failed 的状态机根因**：`degradation_unresolved` 先写入 gate_reason，收据后写但 gate 不重算，outstanding=0 仍按旧 blocked 落终态。
+
+
+## 21. 文字动画统一 MG HTML（2026-11-15 用户新裁定）
+
+### 21.1 架构变化
+
+- 新增 `clipwright/animation/text_mg.py`：
+  - `build_text_mgdef()`：把 text_generation 的 MGDef + style/motion 转成 MG HTML 可渲染结构；
+  - typewriter/word_by_word → 每个 token 一个 MG text 元素 + 错峰 opacity keyframes；
+  - 圆角底板 → 前置 MG shape；
+  - `render_text_mg_html()` → MGRenderer 输出 Hyperframes HTML；
+  - `apply_text_style_to_clip()`：所有文字 clip 的统一样式应用入口。
+- `_build_text_clip_llm` 不再生成 drawtext/ASS 文字 clip：
+  - `metadata.renderer="mg_hyperframes"`，保存 `mg_html/mg_def`；
+  - 每个文字 clip 都调用 `apply_text_style_to_clip`。
+- `services/render.py`：text/caption 分支检测 `renderer=mg_hyperframes` → 送 `hf_ov_local`，由 Hyperframes 渲染透明 MOV；旧 ASS 只兼容没有 mg_html 的旧时间线。
+- `PreviewPanel`：text 分支检测 `mg_def` → 走 `drawMgFrame`，不再画旧 ASS 文字层。
+- `apply_text_style` 工具：改样式后同步重建 `mg_html`。
+
+### 21.2 无降级
+
+- `MGGenerator.generate()` 删除 `_fallback_generate` 调用：LLM/修复失败返回 `success=False` + `error/failure`，不再匹配内置模板；
+- 文字 handler 删除 `AnimationCatalog` 模板分支：LLM 未启用/失败 → 无文字 clip + 记录失败，由主 Agent 重派；
+- `generator._failure_result()` 保留 `finish_reason/chars/head/tail/error`，animation 报告会带上该错误；
+- `agent_kernel` 收尾时若 `outstanding=0` 会把旧的 `degradation_unresolved` 重算为 `tool_loop_completed`。
+
+### 21.3 已验证
+
+- `tests/clipwright/test_text_mg.py`：2 passed（typewriter 6 个 MG text 元素 + 圆角 shape；HTML 文档）；
+- `test_text_animation_wiring`：文字 clip 断言 `renderer=mg_hyperframes` + `mg_html` + `apply_text_style=True`；
+- Hyperframes 实际渲染 `_cache/text_mg_check/out2.mov`：0.5s 只显示「逐字」，1.6s 完整「逐字测试」，红底圆角；
+- 现有 ASS E2E 仍保留作为旧时间线兼容测试。
+
+### 21.4 仍未验证
+
+- 真实 requirements 任务 animation→audio→render 全链路（新 MG 文字路径）；
+- 19 条文字全部 MG 的 Chrome 渲染耗时/并发；
+- line_height/渐变/故障/霓虹在 MG HTML 的精确样式（当前 MG 文字支持纯色/描边/阴影/底板/位移/缩放/逐字；复杂静态效果仍走 text_effect_card）。
