@@ -2772,6 +2772,23 @@ class RenderService:
                     ))
                 continue
 
+            eff = motion_type if motion_type in (
+                "slide_in", "scale_in", "highlight", "glitch", "neon", "fade_in", "fade_out"
+            ) else anim
+            if not is_caption and (eff == "highlight" or anim == "highlight_flash") and len(raw_text) <= 40:
+                highlight_color = color_to_ass(str((style_d or {}).get("highlight_color") or "#ffd400"))
+                tokens = _tokens(raw_text, False)
+                n = max(1, len(tokens))
+                total_cs = max(1, int((end - start) * 100))
+                per_cs = max(1, total_cs // n)
+                karaoke = "".join(f"{{\\k{per_cs}}}{t}" for t in tokens if t)
+                extra = rf"\an5\1c{highlight_color}\2c&H00FFFFFF\fad(100,160)"
+                dialogues.append(ts.build_ass_dialogue(
+                    karaoke, start, end, style_name=style_name,
+                    extra_tags=extra, layer=1, raw_text=True,
+                ))
+                continue
+
             chunks = _split_long_text(raw_text)
             if not chunks:
                 continue

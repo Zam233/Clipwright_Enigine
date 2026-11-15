@@ -289,7 +289,7 @@ class TextStyle:
 
     def build_ass_dialogue(self, text: str, start_sec: float, end_sec: float, *,
                           style_name: str = "Default", extra_tags: str = "",
-                          layer: int = 0) -> str:
+                          layer: int = 0, raw_text: bool = False) -> str:
         """构建 ASS `Dialogue:` 行。
 
         start_sec/end_sec 已由调用方裁剪到成片实际时长（render._apply_text_ass），
@@ -341,7 +341,7 @@ class TextStyle:
             tags.append(rf"\3c{color_to_ass(self.glow_color)}")
         if extra_tags:
             tags.append(extra_tags)
-        esc = text.replace("{", r"\{").replace("}", r"\}")
+        esc = text if raw_text else text.replace("{", r"\{").replace("}", r"\}")
         # 实渲修复: ASS override tags 必须包裹在 {} 内才被 libass 当作样式解释，
         # 否则 \an2\i1... 会作为字面文本渲染进画面。
         # 轮 83（知识区门槛）：中文断行——每行 ≤16 字 + 标点避头尾，
