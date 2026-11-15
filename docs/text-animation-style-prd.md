@@ -713,3 +713,44 @@ PRD 的 P0 文字动画需求已按要求迁移到 MG HTML，并通过任务 don
 当前可确认完成：文字 19 条全部 MG HTML、全部 apply_text_style、任务 done、MGRenderer 支持 9 种 motion + gradient、单独效果样例已渲染。
 
 当前**不能确认完成**：538s 视频截断、历史 mg_motion_weak 收据、前端预览新效果、最新 MGRenderer 的完整 E2E 重跑。必须先修 23.1，再补 23.2–23.4。
+
+
+## 24. 538s 截断根因与修复（2026-11-16）
+
+### 24.1 根因
+
+- `_TRIM_CACHE_MAX = 50`，而本轮有 69 个 video clip；
+- `_trim_segments_parallel` 并发裁剪 69 段时，`_trim_cache_put_locked` 按 LRU 淘汰最旧条目并 **unlink 磁盘文件**；
+- 被淘汰的文件可能正是本轮还没 concat 的片段；`kept` 过滤后只剩 55 段 → `concat: 55 段` → video 538.266s；
+- audio 仍按完整 702.4s 混音，所以出现 video/audio 不等长。
+
+### 24.2 修复
+
+- `_TRIM_CACHE_MAX` 50 → 512；
+- 淘汰内存条目时**不再 unlink 文件**；磁盘清理交给 `_prune_trim_cache_dir`（只删 >10min 的旧文件）；
+- 增加 `trim: 丢弃 N 段` 日志，避免再次静默丢段；
+- 回归测试 `test_trim_cache_eviction.py`。
+
+### 24.3 验证
+
+- 诊断：修复前 `trimmed 55/69`，修复后 `trimmed 69/69`；
+- 新 render `render_1d1a2545f4b1`：
+  - `renders/..._20261115163730.mp4`
+  - video 702.9s / audio 702.4s（不再 538s）；
+- 后续最新 render `render_0aa48b78f321`（重建全部 19 条文字 MG 后）：
+  - video 702.9s / audio 702.4s；
+  - 抽帧 `final_332/final_340/final_556.7/final_632.4` 可见后半段文字动画。
+
+### 24.4 预览
+
+- `mgRenderer.ts` 文字分支新增：
+  - `text_gradient` → canvas linear gradient；
+  - `text_shadow` → ctx shadow（投影/霓虹/glitch 主投影）；
+  - `text_stroke` → strokeText；
+  - `text_align` / `font_italic`。
+- 前端 `tsc` + preview 151 tests 通过。
+
+### 24.5 仍存在的历史项
+
+- task finish 仍有 1 条 accepted `mg_motion_weak`（18px，0.9%）；当前项目动画轨复核未发现 <77px 的 MG clip，但收据未删除；
+- 文字动画截图 `contact_sheet.jpg` 已补齐 19 格；effects 样例 `_cache/text_effect_samples/contact_sheet.jpg` 为 gradient/glitch/neon/highlight。
