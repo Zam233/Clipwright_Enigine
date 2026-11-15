@@ -388,3 +388,82 @@
 **任务成功闭环、slide/scale/highlight/glitch/neon、word_by_word、cursor/标点停顿、box 圆角/内边距、text_align/line_height/offset_x、渐变/撕纸/故障/霓虹、样式多样性、预览—成片一致、自动化抽帧验收。**
 
 这些已写入本节；在以上项全部关闭前，PRD 状态保持“部分实现，验收未通过”。
+
+
+## 14. 工具与引擎能力核查：图片示例能否由 LLM 自主实现？
+
+> 结论：**不能全部自主实现。** 当前 LLM 能调用的文字动画工具是“独立 FFmpeg 视频生成器”，不是“可配置样式的文字层”；ASS/MG 引擎也只覆盖其中一部分。用户图片里的效果大多没有对应的工具参数或渲染能力。
+
+### 14.1 LLM 可见的文字工具（text_animations 插件）
+
+| 工具 | 能力 | 关键限制 |
+|---|---|---|
+| `text_fade_in` / `text_slide_*` / `text_zoom_*` / `text_scale_bounce` / `text_rotate_in` / `text_blur_in` / `text_wave` / `text_shake` | 对输入视频做 drawtext + FFmpeg 滤镜，输出**新 mp4** | 只接受 `text/font_size/font_color/position/start/duration`；没有底板/渐变/描边/阴影/圆角参数 |
+| `text_typewriter` | drawtext 静态叠加 | 不是逐字；无 reveal/光标 |
+| `text_letter_reveal` | 逐字符 drawtext | x 坐标硬编码 `8+i*22`，不居中；无样式 |
+| `text_glow` / `text_rainbow` / `text_neon` | 单条 FFmpeg 滤镜（hue/发光/闪烁） | 只是独立视频；不是 ASS/MG 文字样式；无底板/渐变填充/故障 |
+| `text_typing_cursor` | drawtext + 光标 | 光标坐标简单近似；无样式 |
+| `text_perspective` / `text_flip_in` / `text_elastic` / `text_pulse` / `text_morph` | drawtext 旋转/字体大小/替换 | 不是 3D/真变形；效果有限 |
+| `text_custom_json` | 自定义 JSON → drawtext | style 只支持 font_size/font_color/position/rotation/opacity/stroke_width/stroke_color/shadow(bool)；没有背景/渐变/圆角/故障/霓虹；输出 mp4，不写入时间线文字样式 |
+| `text_gradient` | FFmpeg hue 循环 | 不是渐变填充；只是色相变化 |
+| `typewriter_animation`（内置） | 静态 drawtext | 无逐字 |
+| `tracking_text`（内置） | 直接返回 `DEPENDENCY_MISSING` | Manim 未接入，占位 |
+
+这些工具是**独立视频渲染**，不是 `clip.metadata.style` 的文字层；即使主 Agent 调用，也不能自动把“样式化文字”写进动画/文字轨。当前 animation agent 的文字路径（`_build_text_clip_llm` + ASS）**不调用这些工具**。
+
+### 14.2 引擎能力矩阵
+
+| 效果 | ASS/drawtext | MG | 插件工具 | 结论 |
+|---|---|---|---|---|
+| 纯色字、字号、字重、字距 | ✅ | ✅ | ✅ | 支持 |
+| 描边 | ✅ 单层 | ✅ `border` | ✅ 基础 | 单层可用；多层描边无 |
+| 阴影 | ✅ 偏移/颜色；blur 近似 | ✅ `text_shadow` | ✅ 基础 | 可用，非精确 |
+| 纯色方角底板 | ✅ `BorderStyle=3` | ✅ shape 背景 | ❌ | 方角可用 |
+| 圆角/内边距底板 | ❌ | ✅ HTML | ❌ | ASS 不行；预览圆角但成片方角 |
+| 渐变填充 | ❌ | ⚠️ 仅元素背景渐变，文字填充无 | ⚠️ hue 近似 | **未真正支持** |
+| 撕纸/纹理/纸张底板 | ❌ | ⚠️ 需要图片素材 | ❌ | **需素材+合成，当前无自动化工具** |
+| 故障/Glitch | ❌ | ⚠️ 理论上 CSS 可实现，无契约/验证 | ❌ | **未支持** |
+| 霓虹 | ❌ | ⚠️ 发光可近似，闪烁无契约 | ⚠️ `text_neon` 独立视频 | 文字层不完整 |
+| 逐字/光标 | ✅ 逐字；光标无 | ⚠️ | ✅ 独立视频 | 文字层光标未实现 |
+| 滑动/缩放/旋转 | ❌（当前全 fade） | ✅ | ✅ 独立视频 | 文字层 ASS 未实现 |
+| 文字对齐/水平偏移/行高 | ❌ | ✅ | 部分 | 成片 ASS 不支持 |
+| 多层描边/3D/透视 | ❌ | ⚠️ | ⚠️ 旋转近似 | 未完整支持 |
+
+### 14.3 用户图片逐项判断
+
+| 图片示例 | 能否由 LLM 调工具自主实现 | 说明 |
+|---|---|---|
+| 商品 1/2：白字 + 红色底板/条 | ⚠️ 部分 | ASS 方角 box 可近似；圆角/内边距/精确条宽不行；MG 可由 LLM 生成 shape+text，但没有样式工具保证 |
+| 黄色“示例文字”高亮 | ⚠️ 部分 | 无 `highlight` 文本层工具；只能用 box/shape 近似，非高亮扫过 |
+| 蓝色下划线/底线 | ⚠️ 部分 | MG line/shape 可以，ASS box 不能只画下划线；无文字样式工具 |
+| 撕纸/白纸底板 + 黑字 | ❌ | 需要撕纸纹理图片 + 合成；当前没有“底板素材/纹理”文字工具，LLM 不能自主保证 |
+| 渐变字（紫/蓝） | ❌ | 文字 fill 不支持渐变；`text_gradient` 只是 hue 循环 |
+| 故障/glitch 字 | ❌ | 无工具、无 ASS/文字层契约；MG 理论可做但未实现/未验收 |
+| 霓虹发光字 | ⚠️ 部分 | `text_neon` 可产出独立视频，但不会进入文字层/ASS；文字层只有发光近似 |
+| 多层描边/白色描边+蓝光 | ⚠️ 部分 | 单层描边+glow 近似；多层描边无 |
+| 3D/透视字 | ⚠️ 部分 | `text_perspective` 旋转近似，不是真正 3D |
+
+### 14.4 根因
+
+1. **工具参数没有样式模型**：25 个 `text_*` 工具只暴露 text/font_size/font_color/position；没有 background/stroke/shadow/box/radius/gradient/motion 参数。
+2. **工具输出不是时间线文字层**：工具返回 mp4，不写 `clip.metadata.style`；animation agent 也不调用它们。
+3. **ASS 渲染器只有基础样式**；MG 有更丰富的 HTML/CSS，但文字样式契约没有把 MG 的 style 暴露给 LLM，且没有 glitch/neon/gradient 的 schema/验收。
+4. **没有 `text_style` / `apply_text_effect` 工具**：LLM 无法声明“给这段文字加红色圆角底板+黄色描边+故障入场”，然后由渲染层执行。
+5. **预览与成片能力不一致**；预览的圆角/内边距不是成片能力。
+
+### 14.5 要让 LLM 自主实现图片效果，需要补的工具/引擎
+
+1. 新增 `apply_text_style`（或 `text_effect`）工具：
+   - 入参：`timeline_id/clip_id` 或 `text + start/duration`，`style`（FR-1 全字段），`motion`（FR-2），可选 `background_asset`；
+   - 输出：写入文字轨的 clip（metadata.style），或返回可插入的 styled text spec；
+   - 不接受“只给 mp4”的旁路。
+2. ASS 渲染器补齐：slide/scale/highlight、text_align/line_height/offset、圆角/内边距（`\p` 背景层）、gradient 或明确拒绝。
+3. MG 文字样式 schema：把 MG 的 background/text_shadow/border/渐变/故障/霓虹能力收敛为可校验的 style；LLM 用 `mg_dynamic` 生成时也能写同一套 style。
+4. 为 glitch/neon/gradient/torn paper 定义明确的 fidelity：支持就渲染，不支持就 `DEPENDENCY_MISSING`/error，不能静默 fade/方角。
+5. 质量门禁检查“声明样式 == 实际渲染”，并建立图片效果样例的视觉回归。
+
+### 14.6 结论
+
+- **LLM 现在不能仅靠工具自主实现这些图片效果**；只能对纯色/描边/阴影/方角底板做有限近似。
+- **引擎也没有全部支持**：渐变文字、撕纸纹理、glitch、真正的霓虹/多层描边、圆角底板、滑动/缩放文字层均缺失。
+- 图片示例属于**需求但未实现**，不是“已有能力”；PRD 状态仍为“部分实现，验收未通过”。
