@@ -203,6 +203,12 @@ def test_text_animation_accepts_drawtext_easing():
     mg = {
         "animation_id": "text_test", "duration_sec": 3,
         "width": 1920, "height": 1080,
+        "text_animation": {
+            "style": {"font_size": 56, "fill": "#ffffff", "stroke_width": 2},
+            "motion": {"type": "fade_in", "reveal_sec": 0.5},
+            "display_sec": 2.0,
+            "duration_reason": "测试：短关键词",
+        },
         "elements": [{
             "type": "text", "content": "关键词", "x": "center", "y": "center",
             "keyframes": [

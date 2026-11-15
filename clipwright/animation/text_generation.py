@@ -18,6 +18,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from clipwright.animation.mg.validator import repair_mg_json, validate_mg_json
+from clipwright.animation.text_style import (
+    ensure_text_animation, normalize_style, validate_motion, validate_style,
+)
 from clipwright.animation.text_specs import (
     TextAnimSpec, get_text_spec, load_text_prompt, text_prompt_version,
 )
@@ -136,7 +139,14 @@ def build_text_prompt(
         "关键帧覆盖 ≥60% 时长，入场 <1.2s，末段 ≥0.5s 静止。\n"
         "- 文字必须带 text_shadow 或 text_stroke，或位于 rgba(...,0.25–0.55) 半透明底板内。\n"
         "- 禁止不透明全幅背景。\n"
-        '- 只输出 MGDef JSON，且必须包含字段：animation_id / duration_sec / width / height / elements。'
+        "- 必须额外输出顶层 `text_animation`：\n"
+        "  {\"style\": {font/font_size/font_weight/letter_spacing/text_align/fill/box/box_color/box_radius/box_padding_x/box_padding_y/stroke_width/stroke_color/shadow_x/shadow_y/shadow_blur/shadow_color/glow_color/glow_width/position/offset_x/offset_y}, "
+        "\"motion\": {type, reveal_sec, cursor, stagger_sec, easing}, "
+        "\"display_sec\": 本关键词应停留多少秒（按内容阅读需求，不设硬上限）, "
+        "\"duration_reason\": 为什么需要这么久（阅读/多行/引用/停顿）}\n"
+        "- 颜色/字号/描边/阴影/底板必须显式给出，禁止默认白字无描边；motion.type 只能是 "
+        "fade_in / fade_out / slide_in / scale_in / typewriter / word_by_word / highlight / glitch / neon。\n"
+        '- 只输出 MGDef JSON，且必须包含字段：animation_id / duration_sec / width / height / elements / text_animation。'
     )
     return "\n\n".join(system_parts), "\n\n".join(user_parts)
 
@@ -248,6 +258,15 @@ def _normalize(mg_def: dict[str, Any], spec: TextAnimSpec, duration_s: float) ->
         "max_line_chars": MAX_LINE_CHARS,
     })
     mg_def["text_meta"] = meta
+    # 文字动画样式/动效/时长契约（PRD M1）：缺失时从主元素推断 legacy
+    try:
+        ensure_text_animation(
+            mg_def,
+            text=str(mg_def.get("text") or mg_def.get("content") or ""),
+            host_duration=duration,
+        )
+    except Exception as exc:  # noqa: BLE001 — 样式归一失败不阻断产物
+        logger.warning("text_generation: text_animation 归一失败: %s", exc)
     return mg_def
 
 
@@ -321,6 +340,18 @@ def validate_text_def(
         height = float(mg_def.get("height") or 1080)
         if y > 0 and y > height - CAPTION_BAND_PX:
             errors.append(f"elements[{idx}] y={y:.0f} 落入底部字幕带")
+    ta = mg_def.get("text_animation") or {}
+    if not isinstance(ta, dict) or not ta:
+        errors.append("缺少 text_animation（样式/动效/时长契约）")
+    else:
+        errors.extend(validate_style(normalize_style(ta.get("style") or {}))[:4])
+        errors.extend(validate_motion(ta.get("motion") or {}, text=" ".join(
+            str(e.get("content") or "") for e in elements
+        ))[:4])
+        if not str(ta.get("duration_reason") or "").strip():
+            errors.append("text_animation.duration_reason 为空（时长必须说明内容依据）")
+        if float(ta.get("display_sec") or 0) <= 0:
+            errors.append("text_animation.display_sec 必须 > 0")
     ok, base_errors = validate_mg_json(mg_def)
     if not ok:
         errors.extend(base_errors[:8])

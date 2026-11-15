@@ -200,7 +200,7 @@ class TextStyle:
             return cls()
         return cls(
             font_size=d.get("font_size", 48),
-            font_color=d.get("font_color", "#ffffff"),
+            font_color=d.get("fill") or d.get("font_color", "#ffffff"),
             font=d.get("font", ""),
             stroke_width=d.get("stroke_width", 0),
             stroke_color=d.get("stroke_color", "#000000"),
@@ -233,7 +233,8 @@ class TextStyle:
         cleaned = font.replace('"', "").replace("'", "").replace(",", " ").strip()
         return cleaned or "MSYH"
 
-    def build_ass_style(self, play_res_x: int = 1920, play_res_y: int = 1080) -> str:
+    def build_ass_style(self, play_res_x: int = 1920, play_res_y: int = 1080,
+                        *, style_name: str = "Default", include_header: bool = True) -> str:
         """构建 ASS `[Script Info]` + `[V4+ Styles]` 段。
 
         Fontname←font（_ass_fontname 清洗，空回退 "MSYH"）——修复 ASS 字体
@@ -249,16 +250,19 @@ class TextStyle:
           Shadow←shadow_x/y/blur 任一非零 / Alignment←position。
         """
         primary = color_to_ass(self.font_color)
-        outline = color_to_ass(self.stroke_color or "#000000")
-        back = color_to_ass(self.shadow_color)
+        # 底板（box）用 ASS BorderStyle=3 的“不透明框”实现：ord 是框内边距，
+        # c 是框色，BackColour 也同步，避免 libass 把框画成描边。
+        border_style = 3 if self.box else 1
+        outline = color_to_ass(self.box_color if self.box else (self.stroke_color or "#000000"))
+        back = color_to_ass(self.box_color if self.box else self.shadow_color)
         bold = -1 if self.font_weight == "bold" else 0
         italic = -1 if self.font_italic else 0
         spacing = int(round(self.letter_spacing))
-        outline_w = int(round(self.stroke_width))
-        shadow = 1 if (self.shadow_x or self.shadow_y or self.shadow_blur) else 0
+        outline_w = int(round(self.box_border if self.box else self.stroke_width))
+        shadow = 0 if self.box else (1 if (self.shadow_x or self.shadow_y or self.shadow_blur) else 0)
         align = ass_alignment(self.position)
         fontname = self._ass_fontname(self.font)
-        return (
+        _head = (
             "[Script Info]\n"
             "ScriptType: v4.00+\n"
             f"PlayResX: {int(play_res_x)}\n"
@@ -267,12 +271,14 @@ class TextStyle:
             "\n"
             "[V4+ Styles]\n"
             "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
-            f"Style: Default,{fontname},{self.font_size},{primary},{primary},{outline},{back},"
-            f"{bold},{italic},0,0,100,100,{spacing},0,1,{outline_w},{shadow},{align},"
+            f"Style: {style_name},{fontname},{self.font_size},{primary},{primary},{outline},{back},"
+            f"{bold},{italic},0,0,100,100,{spacing},0,{border_style},{outline_w},{shadow},{align},"
             f"{ass_safe_margins(play_res_x, play_res_y)[0]},{ass_safe_margins(play_res_x, play_res_y)[1]},{ass_safe_margins(play_res_x, play_res_y)[2]},1"
         )
+        return _head if include_header else _head.split("\n\n[V4+ Styles]\n")[1].split("\n", 1)[1].replace(f"Style: {style_name}", f"Style: {style_name}", 1)
 
-    def build_ass_dialogue(self, text: str, start_sec: float, end_sec: float) -> str:
+    def build_ass_dialogue(self, text: str, start_sec: float, end_sec: float, *,
+                          style_name: str = "Default", extra_tags: str = "") -> str:
         """构建 ASS `Dialogue:` 行。
 
         start_sec/end_sec 已由调用方裁剪到成片实际时长（render._apply_text_ass），
@@ -313,6 +319,8 @@ class TextStyle:
             # 辉光由 \3c（描边层）承载加宽模糊，填充保持 font_color
             tags.append(rf"\blur{int(round(self.glow_width))}")
             tags.append(rf"\3c{color_to_ass(self.glow_color)}")
+        if extra_tags:
+            tags.append(extra_tags)
         esc = text.replace("{", r"\{").replace("}", r"\}")
         # 实渲修复: ASS override tags 必须包裹在 {} 内才被 libass 当作样式解释，
         # 否则 \an2\i1... 会作为字面文本渲染进画面。
@@ -323,7 +331,7 @@ class TextStyle:
         # offset_y 修复：样式段 Margin 硬编码 10/10/10，行级不传 Margin 时
         # 多段同屏文字全部锚定同一位置互相重叠；行级 MarginV 承载 offset_y
         margin_v = 10 + max(0, int(self.offset_y or 0))
-        return (f"Dialogue: 0,{ass_time(start_sec)},{ass_time(end_sec)},Default,,"
+        return (f"Dialogue: 0,{ass_time(start_sec)},{ass_time(end_sec)},{style_name},,"
                 f"0,0,{margin_v},,{tags_block}{esc}")
 
     def drawtext_position(self) -> tuple[str, str]:

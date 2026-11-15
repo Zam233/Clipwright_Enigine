@@ -986,6 +986,42 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         style["text"] = str(main.get("content") or main.get("text") or "")
         return out, style
 
+    @staticmethod
+    def _text_style_to_clip_fields(style: dict[str, Any]) -> dict[str, Any]:
+        """TextAnimationStyle → Clip 可接受字段（颜色统一成 #rrggbb[aa]）。"""
+        def _hex(value: Any, fallback: str = "#ffffff") -> str:
+            s = str(value or "").strip()
+            if s.startswith("#") and len(s) in (4, 7, 9):
+                if len(s) == 4:
+                    return "#" + "".join(ch * 2 for ch in s[1:]) + "ff"
+                return s if len(s) == 9 else s + "ff"
+            import re as _re
+            m = _re.match(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([0-9.]+))?\s*\)", s)
+            if m:
+                r, g, b = (int(m.group(i)) for i in (1, 2, 3))
+                a = float(m.group(4)) if m.group(4) is not None else 1.0
+                return f"#{r:02x}{g:02x}{b:02x}{int(max(0, min(1, a)) * 255):02x}"
+            return fallback
+
+        out: dict[str, Any] = {
+            "font_size": float(style.get("font_size") or 56),
+            "font_color": _hex(style.get("fill"), "#ffffff"),
+            "font_weight": "bold" if str(style.get("font_weight") or "") == "bold" else "normal",
+            "font_italic": bool(style.get("font_italic")),
+            "letter_spacing": float(style.get("letter_spacing") or 0),
+            "text_align": str(style.get("text_align") or "center"),
+            "stroke_width": float(style.get("stroke_width") or 0),
+            "stroke_color": _hex(style.get("stroke_color"), "#000000"),
+            "shadow_x": float(style.get("shadow_x") or 0),
+            "shadow_y": float(style.get("shadow_y") or 0),
+            "shadow_blur": float(style.get("shadow_blur") or 0),
+            "shadow_color": _hex(style.get("shadow_color"), "#000000b3"),
+        }
+        if style.get("glow_color"):
+            out["glow_color"] = _hex(style.get("glow_color"), "")
+            out["glow_width"] = float(style.get("glow_width") or 0)
+        return out
+
     async def _build_text_clip_llm(
         self,
         vid_clip: Clip,
@@ -1022,14 +1058,29 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         keyframes, main_style = self._mgdef_to_drawtext_keyframes(
             result.mg_def, clip_start=vid_clip.start_sec,
         )
+        ta = dict(result.mg_def.get("text_animation") or {})
+        display_sec = float(ta.get("display_sec") or clip_duration or 3.0)
+        display_sec = max(0.5, min(display_sec, float(clip_duration or display_sec)))
+        clip_end = vid_clip.start_sec + display_sec
+        # 关键帧是绝对时间；按 display_sec 截断，并补 0.2s 淡出（不能硬切消失）
+        keyframes = [kf for kf in keyframes if float(kf.get("time") or 0) <= clip_end + 0.001]
+        _content_last = max((float(kf.get("time") or 0) for kf in keyframes), default=0.0)
+        if keyframes:
+            last = keyframes[-1]
+            last_props = dict(last.get("properties") or {})
+            if float(last_props.get("opacity", 1) or 0) > 0.01:
+                keyframes.append({"time": round(max(0.0, clip_end - 0.2), 3),
+                                  "properties": {**last_props, "opacity": 1}})
+                keyframes.append({"time": round(clip_end, 3),
+                                  "properties": {**last_props, "opacity": 0}})
         if not keyframes:
             _note("text_llm_failed", "LLM 产物没有可用关键帧",
                   impact="该段文字动效回退模板关键帧")
             return None
 
         # 动效覆盖度：最后一个关键帧相对片段的占比（<45% 记 text_motion_weak）
-        span = max(1e-3, float(clip_duration))
-        last_rel = max(0.0, keyframes[-1]["time"] - vid_clip.start_sec)
+        span = max(1e-3, float(display_sec))
+        last_rel = max(0.0, _content_last - vid_clip.start_sec)
         coverage = min(1.0, last_rel / span)
         if coverage < 0.45:
             _note(
@@ -1040,7 +1091,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             )
 
         style = _merge_style_defaults(DEFAULT_TEXT_STYLE, persona_style)
-        if main_style.get("font_size") is not None:
+        style.update(self._text_style_to_clip_fields(dict(ta.get("style") or {})))
+        if main_style.get("font_size") is not None and not ta.get("style"):
             style["font_size"] = main_style["font_size"]
         # 文字动画是"画面主体"，字号有下限：LLM 偶尔给 28 这种字幕级字号，
         # 1080p 成片里几乎看不见（E2E 2026-10-30 实测）。字幕有自己的一套样式，
@@ -1061,7 +1113,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             asset_id="",
             track_id="",  # 由调用方 append 到 text_track，track_id 在构造后补
             start_sec=vid_clip.start_sec,
-            duration_sec=clip_duration,
+            duration_sec=display_sec,
             text=main_style.get("text") or text_content,
             font="sans-serif",
             **style,
@@ -1074,6 +1126,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "text_anim_type": type_id,
                 "text_llm_method": result.method,
                 "text_prompt_version": result.prompt_version,
+                "style": dict(ta.get("style") or {}),
+                "motion": dict(ta.get("motion") or {}),
+                "text_animation": ta,
+                "duration_reason": str(ta.get("duration_reason") or ""),
                 "avoid_caption_band_px": tg.CAPTION_BAND_PX,
                 "stroke_width": persona_style.get("stroke_width", 0),
                 "stroke_color": persona_style.get("stroke_color", "#000000"),

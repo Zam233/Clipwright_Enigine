@@ -1651,6 +1651,7 @@ class RenderService:
                     font_color=clip.font_color or "#ffffff", font=clip.font or "",
                     position=pos, offset_y=offset_y, style=style,
                     anim_type=meta.get("anim_type", ""), renderer=meta.get("renderer", "drawtext"),
+                    motion=meta.get("motion") or (meta.get("text_animation") or {}).get("motion") or {},
                     category=category, _track_idx=track_idx, keyframes=clip.keyframes or [],
                     # 关键帧时间基标记（前端 exportTimeline 写 clip_local）
                     kf_time_base=meta.get("kf_time_base"))
@@ -2628,38 +2629,90 @@ class RenderService:
             actual_dur = 0
 
         dialogues: list[str] = []
-        style_ts: TextStyle | None = None
+        style_defs: list[tuple[str, TextStyle]] = []
+        style_index: dict[tuple, str] = {}
+
+        def _style_name(ts) -> str:
+            key = (
+                ts.font, ts.font_size, ts.font_color, ts.font_weight, ts.font_italic,
+                ts.stroke_width, ts.stroke_color, ts.shadow_x, ts.shadow_y,
+                ts.shadow_blur, ts.shadow_color, ts.glow_color, ts.glow_width,
+                ts.box, ts.box_color, ts.box_border, ts.position, ts.offset_y,
+                ts.letter_spacing,
+            )
+            name = style_index.get(key)
+            if name is None:
+                name = f"T{len(style_defs)}"
+                style_index[key] = name
+                style_defs.append((name, ts))
+            return name
+
+        def _cw(ch: str, font_size: float) -> int:
+            if ord(ch) > 0x2E80:
+                return int(font_size)
+            if ch == " ":
+                return int(font_size * 0.3)
+            return int(font_size * 0.6)
+
         for ov in overlays:
             if ov.get("renderer") == "hyperframes" or ov.get("diagram_params"):
                 continue
-            # 生产加固 1.6：长字幕自动拆分多 Dialogue（时间按字数比例分配），不再硬截断
-            chunks = _split_long_text(ov.get("text") or "")
-            if not chunks:
+            raw_text = ov.get("text") or ""
+            if not raw_text.strip():
                 continue
             start = float(ov.get("start_sec", 0) or 0)
             dur = float(ov.get("duration_sec", 3) or 3)
-            # 裁剪到成片实际时长；never extend past start+duration（min 天然保证）
             end = min(start + dur, actual_dur) if actual_dur > 0 else start + dur
             end = max(end, start)
-            total_chars = sum(len(c) for c in chunks) or 1
-            style_d = ov.get("style", {})
+            style_d = ov.get("style") or {}
             if style_d:
-                # 优先 style dict（含 font），再补 clip 级 font 字段
                 if "font" not in style_d and ov.get("font"):
                     style_d = {**style_d, "font": ov.get("font")}
                 ts = TextStyle.from_dict(style_d)
             else:
                 ts = TextStyle(
-                    font_size=ov.get("font_size", 48), font_color=ov.get("font_color", "#ffffff"),
+                    font_size=ov.get("font_size", 48),
+                    font_color=ov.get("font_color", "#ffffff"),
                     font=ov.get("font", ""),
-                    stroke_width=ov.get("stroke_width", 0), position=ov.get("position", "bottom"),
-                    offset_y=ov.get("offset_y", 0))
-            if style_ts is None:
-                style_ts = ts  # 样式取第一条 overlay（14 字段映射 1:1）
+                    stroke_width=ov.get("stroke_width", 0),
+                    position=ov.get("position", "bottom"),
+                    offset_y=ov.get("offset_y", 0),
+                )
+            style_name = _style_name(ts)
+            anim = str(ov.get("anim_type") or "")
+            motion = dict(ov.get("motion") or {})
+            is_caption = str(ov.get("category") or "") == "caption"
+            if not is_caption and anim in ("typewriter", "word_by_word") and len(raw_text) <= 40:
+                n = max(1, len(raw_text))
+                reveal = float(motion.get("reveal_sec") or min(2.0, max(0.6, n * 0.08)))
+                reveal = max(0.1, min(reveal, max(0.2, end - start)))
+                total_w = sum(_cw(ch, ts.font_size) for ch in raw_text)
+                x = max(8, (int(width) - total_w) / 2)
+                y = max(8, (int(height) - ts.font_size) / 2)
+                for i, ch in enumerate(raw_text):
+                    if not ch.strip():
+                        x += _cw(ch, ts.font_size)
+                        continue
+                    dstart = start + i * reveal / max(1, n - 1)
+                    dstart = min(dstart, end - 0.01)
+                    extra = rf"\an7\pos({x:.1f},{y:.1f})\fad(80,150)"
+                    dialogues.append(ts.build_ass_dialogue(
+                        ch, dstart, end, style_name=style_name, extra_tags=extra,
+                    ))
+                    x += _cw(ch, ts.font_size)
+                continue
+            chunks = _split_long_text(raw_text)
+            if not chunks:
+                continue
+            total_chars = sum(len(c) for c in chunks) or 1
             cursor = start
+            extra = "" if is_caption else r"\fad(200,200)"
             for chunk in chunks:
                 w = (end - start) * len(chunk) / total_chars
-                dialogues.append(ts.build_ass_dialogue(chunk, cursor, min(cursor + w, end)))
+                dialogues.append(ts.build_ass_dialogue(
+                    chunk, cursor, min(cursor + w, end),
+                    style_name=style_name, extra_tags=extra,
+                ))
                 cursor += w
         if not dialogues:
             return video
@@ -2674,7 +2727,12 @@ class RenderService:
         for bi in range(0, len(dialogues), batch_size):
             batch = dialogues[bi:bi + batch_size]
             ass_path = self._work_dir / f"subs_{bi}.ass"
-            header = style_ts.build_ass_style(int(width), int(height))
+            _first_name, _first_ts = style_defs[0]
+            header = _first_ts.build_ass_style(
+                int(width), int(height), style_name=_first_name, include_header=True)
+            for _name, _ts in style_defs[1:]:
+                header += "\n" + _ts.build_ass_style(
+                    int(width), int(height), style_name=_name, include_header=False)
             body = ("[Events]\n"
                     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
                     + "\n".join(batch) + "\n")
