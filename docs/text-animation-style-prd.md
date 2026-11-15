@@ -556,3 +556,15 @@
   - `_cache/e2e_478.9.jpg` 只显示「只禁离」+红底圆角；`_cache/e2e_493.jpg` 完整「只禁离线下载」+红底；`_cache/e2e_337.jpg`「没有通报」+黄色圆角；
   - 证明 ASS typewriter / 矢量圆角底板 / 样式字段在真实成片生效，但这只是**局部样式 E2E**，不能替代任务 done。
 - 结论不变：PRD 仍“部分实现，验收未通过”；最后四项硬缺口：任务 done、渐变/撕纸/故障/霓虹、line_height、LLM 自动调用 `apply_text_style` 的生成闭环。
+
+
+## 18. 静态复杂文字卡：新增 `text_effect_card`（2026-11-15）
+
+- 新增工具 `text_effect_card`（能力 `text_effect`）：
+  - 输入 text + style，输出透明 PNG；
+  - 支持渐变填充、圆角底板、撕纸锯齿底板、描边、阴影、发光/霓虹、RGB glitch 偏移；
+  - 由 `timeline_insert_image` / overlay 使用，不再让 ASS 假装能做这些。
+- 样例：`_cache/card_test.png`（渐变字 + 撕纸底板 + 霓虹 + glitch），1920×1080 RGBA。
+- 仍**不是文字动画**：它是静态卡，不负责 typewriter/slide/scale；复杂效果的“逐字/位移动画”仍未实现。
+- 因此 §14.3 的图片效果从“完全不能”改为“静态卡可近似，动画层仍不能”；`apply_text_style` 仍拒绝 glitch/neon 的直接文字层写入。
+- 任务 done / line_height / 复杂效果动画仍未完成；PRD 仍“部分实现，验收未通过”。
