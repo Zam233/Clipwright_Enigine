@@ -109,6 +109,15 @@ def build_text_mgdef(
         main["text_stroke"] = (
             f"{float(style['stroke_width']):g}px {_color(style.get('stroke_color'), '#000000')}"
         )
+    # 带底板（尤其蓝色方块）的文字默认加投影；否则文字与底板同亮度会糊在一起。
+    # 用户显式给 shadow 时保留用户值。
+    try:
+        _user_shadow = (float(style.get("shadow_blur") or 0) > 0
+                        or abs(float(style.get("shadow_y") or 0)) > 0)
+    except (TypeError, ValueError):
+        _user_shadow = False
+    if bool(style.get("box")) and not _user_shadow:
+        main["text_shadow"] = "0 4px 10px rgba(0,0,0,0.78)"
     main["text_align"] = str(style.get("text_align") or "center")
     main["x"] = "center"
     main["y"] = "center"

@@ -77,3 +77,13 @@ def test_highlight_text_has_default_shadow():
     )
     text = next(e for e in mg["elements"] if e.get("type") == "text")
     assert "rgba(0,0,0,0.78)" in text["text_shadow"]
+
+
+def test_boxed_text_has_default_shadow():
+    mg = build_text_mgdef(
+        _base(), text="方块", style={"font_size": 64, "fill": "#ffffff", "box": True,
+                                     "box_color": "#4f8cff"},
+        motion={"type": "fade_in"}, width=1920, height=1080, display_sec=2.0,
+    )
+    text = next(e for e in mg["elements"] if e.get("type") == "text")
+    assert "rgba(0,0,0,0.78)" in text["text_shadow"]
