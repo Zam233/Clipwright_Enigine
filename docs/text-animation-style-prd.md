@@ -1,6 +1,6 @@
 # 文字动画样式与 Typewriter 修复 PRD
 
-> 状态：已实现并完成全片抽帧验收（M1–M5）  
+> 状态：**部分实现，验收未通过**（任务 failed；motion/样式/底板/任务终态均有未完成项，见 §12）  
 > 日期：2026-11-15  
 > 范围：后端文字动画生成 / 渲染、前端预览、文字 LLM 提示词与样式契约  
 > 关联现场：成品 `05:37`、`08:13` 白色文字抽帧；`renders/从_PCL_到_HMCL...mp4`
@@ -253,7 +253,7 @@
 - 成片抽帧：`_cache/render_check_337.jpg`、`_cache/render_check_493.jpg`（本次分析用），新验收用逐字帧。
 
 
-## 11. 实现记录（2026-11-15）
+## 11. 实现记录（2026-11-15，部分完成）
 
 - `e0ef24e`：`TextAnimationStyle` 契约、`text_animation` prompt/校验、时长/淡出、ASS 逐字与 per-overlay 样式、底板。
 - `5725d3c`：quality 增加文字样式/时长依据/叠字检查。
@@ -277,3 +277,46 @@
 - 新文字 clip metadata 已带 `motion.reveal_sec`、`display_sec`、`duration_reason`、style。
 
 仍属二期：底板圆角/内边距在 ASS 的精确像素对齐、渐变/故障/霓虹等复杂样式；本期 glitch/slide 等 motion 在 ASS 路径按 fade 兜底，不冒充完整特效。
+
+
+## 12. 需求完成度审计（2026-11-15，忠实呈现未完成项）
+
+> 结论：**当前不能算完成本条 PRD 的全部需求。** 代码层已完成样式契约、时长依据、ASS typewriter、per-overlay 样式；但下列 P0 需求仍未完成或只做了近似，且任务终态是 `failed`。
+
+### 12.1 未完成 / 不达标
+
+| # | 需求（PRD/用户原话） | 当前状态 | 证据 / 差距 |
+|---|---|---|---|
+| 1 | 完整跑完并输出合格成片，任务终态不能 failed | ❌ 未达成 | `task_a3e78e2fda` 最终 `failed`；animation 3 轮后仍有 8 段 `text_motion_weak` + 1 段 `mg_motion_weak`，走了 accepted 收据；quality 未作为成功门禁闭环 |
+| 2 | `slide_in` / `scale_in` / `highlight` / `glitch` / `neon` 动效 | ❌ 未实现 | ASS 路径仅对 `typewriter`/`word_by_word` 做逐字；其余 motion 一律只加 `\fad`，实际是淡入淡出，**没有位移动画、缩放动画、高亮扫过、故障/霓虹** |
+| 3 | 不得把未实现的特效静默降级 | ❌ 违反 | `_apply_text_ass` 对 `slide_in/scale_in/glitch` 没有 fidelity 记录，也不报错，直接按 fade 输出；预览同样只处理 typewriter/fade |
+| 4 | `word_by_word` 逐词出现 | ⚠️ 名义实现、实际逐字 | 代码把 `word_by_word` 与 `typewriter` 一起按**字符**拆分 Dialogue，不是按词 |
+| 5 | 底板圆角 `box_radius`、内边距 `box_padding_x/y` 精确生效 | ⚠️ 方角近似 | ASS 用 `BorderStyle=3`，只用了 `box_border` 作为框厚度；`box_radius` / `box_padding_*` 在 ASS 渲染中未使用（预览有 roundRect，但与成片不一致） |
+| 6 | 渐变填充、撕纸/条带、描边示例、故障风、霓虹风等用户示例样式 | ❌ 未实现 | 仅支持纯色 fill；`fill` 只接受单一颜色；渐变/纹理/多层描边/故障/霓虹均为空 |
+| 7 | Typewriter 标点停顿、cursor、结束前 0.2s 淡出 | ⚠️ 部分 | 逐字和 `\fad(80,150)` 已实现；标点额外停顿未实现；`motion.cursor` 字段未消费；结束淡出是每字 `fad` 尾，非统一 0.2s clip 淡出 |
+| 8 | 同一支片至少 3 种可区分文字样式 | ❌ 未达成 | 实际 LLM 输出 19 条文字全部 `fill=#ffffff`、`box=False`，只有描边/阴影默认值；没有红底/黄高亮/故障等变化；prompt 未强制颜色/底板多样性 |
+| 9 | 预览与成片样式一致 | ⚠️ 部分 | 预览支持 fill/box/stroke/shadow/typewriter/fade；但 slide/scale/glitch 预览也未实现；底板圆角预览与 ASS 方角不一致；无专门视觉回归测试 |
+| 10 | 时长由内容决定、不设硬限制 | ⚠️ 部分 | `duration_reason/display_sec` 已落地；但 `normalize_display` 仍会把 display 夹到宿主片段上限（物理上避免越界），且质量门禁仍按“长片段覆盖率”判弱 |
+| 11 | quality 通过或明确接受后继续 render | ⚠️ 流程可用但不等于“合格” | 本次是 accepted 收据后手动 render；quality 未真正判定成片合格，任务仍 failed |
+| 12 | M5 全片抽帧验收 | ⚠️ 只验证了局部 | 已抽 478.9s 逐字、493s 全文、337s 白字+描边；但这不是“合格成片”验收：白字样式单一、弱动效仍存在、任务 failed |
+
+### 12.2 已完成（可复核）
+
+- `text_animation` 数据契约 + `TextAnimationStyle` 归一化/校验；
+- display_sec + duration_reason 生成链路；
+- ASS per-overlay 样式表（颜色/字号/描边/阴影/字体）；
+- typewriter 逐字 Dialogue、固定左起点 `\an7\pos`、reveal_sec 独立于 clip；
+- 预览 fill/box/stroke/shadow/typewriter/fade；
+- quality 对纯白无装饰、缺 duration_reason、同窗叠字的检查；
+- 6 份提示词示例补齐契约；
+- 合成渲染抽帧与全片渲染（702.4s，h264+aac）。
+
+### 12.3 下一步必须做（按优先级）
+
+1. **任务终态**：把 animation 的 `text_motion_weak/mg_motion_weak` 做成可修复闭环（或调整“长片段按比例覆盖”判定），让任务最终 `done` 而不是 accepted failed；quality 必须真正检查成片。
+2. **motion 实现**：ASS 实现 slide（`\move`）、scale（`\t(\fscx,\fscy)`）、highlight（`\k`/双色层）；不支持的 glitch/neon 明确报错/记录 fidelity，禁止静默 fade。
+3. **word_by_word** 改为按词拆分；cursor/标点停顿按 FR-2 实现。
+4. **底板**：ASS 用 `\p` 绘图或独立背景层实现圆角/内边距；与预览 roundRect 对齐。
+5. **渐变/故障/霓虹**：要么实现，要么从一期验收移除并明确标注“未实现”，不能列为已完成。
+6. **样式多样性**：prompt 强制至少 N 种样式/底板，质量门禁检查全片样式单调；重跑 animation 后抽帧验证 3 种以上可区分样式。
+7. **验收**：任务 `done` + render + 337/478.9/493/其他样式点抽帧，全部通过后才可把本 PRD 标为完成。
