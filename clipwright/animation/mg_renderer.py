@@ -49,6 +49,8 @@ class MGRenderer:
         "font_size": "font-size",
         "font_weight": "font-weight",
         "font_family": "font-family",
+        "font_italic": "font-style",
+        "text_align": "text-align",
         "line_height": "line-height",
         "letter_spacing": "letter-spacing",
         "text_shadow": "text-shadow",
@@ -459,7 +461,9 @@ const dur=parseFloat(root.dataset.duration);
             if k in MGRenderer.STATIC_EXCLUDE_KEYS:
                 continue
             css_key = MGRenderer.KEYFRAME_CSS_MAP.get(k)
-            if css_key and isinstance(v, (str, int, float)):
+            if k == "font_italic" and isinstance(v, bool):
+                static_style += f"font-style:{'italic' if v else 'normal'};"
+            elif css_key and isinstance(v, (str, int, float)):
                 static_style += f"{css_key}:{bindable(MGRenderer._sanitize_css_value(v))};"
 
         if elem_type == "text":

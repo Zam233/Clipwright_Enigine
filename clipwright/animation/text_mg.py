@@ -96,6 +96,7 @@ def build_text_mgdef(
     main["font_color"] = _color(style.get("fill"), "#ffffff")
     main["font_size"] = max(8, float(style.get("font_size") or 56))
     main["font_weight"] = "bold" if str(style.get("font_weight") or "") == "bold" else "normal"
+    main["font_italic"] = bool(style.get("font_italic"))
     main["letter_spacing"] = float(style.get("letter_spacing") or 0)
     main["line_height"] = float(style.get("line_height") or 1.25)
     main["text_shadow"] = _text_shadow(style)
