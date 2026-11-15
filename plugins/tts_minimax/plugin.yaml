@@ -11,10 +11,6 @@ contributions:
   - kind: tts_provider
     id: minimax
     config_schema:
-      api_key:
-        type: string
-        label: MiniMax API Key
-        secret: true
       default_model:
         type: string
         label: 默认模型

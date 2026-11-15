@@ -12,15 +12,6 @@ override_builtin: true
 contributions:
   - kind: llm_provider
     id: openai
-    config_schema:
-      base_url:
-        type: string
-        label: API Base URL
-        placeholder: https://api.openai.com/v1
-      api_key:
-        type: string
-        label: API Key
-        secret: true
     capabilities:
       stream: true
       tools: true
@@ -29,11 +20,6 @@ contributions:
       models: true
   - kind: llm_provider
     id: ollama
-    config_schema:
-      base_url:
-        type: string
-        label: Ollama 地址
-        placeholder: http://127.0.0.1:11434/v1
     capabilities:
       stream: true
       tools: true
