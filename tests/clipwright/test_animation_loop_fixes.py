@@ -194,3 +194,21 @@ def test_persist_timeline_tick_writes_project(monkeypatch):
     agent._persist_timeline_tick({"tracks": [], "duration_sec": 0})
     assert calls and calls[0][0] == "proj_test"
     assert "timeline" in calls[0][1]
+
+
+def test_text_animation_accepts_drawtext_easing():
+    """drawtext 提示词的 ease-out-cubic 不能被 MG 白名单否决（否则必回退模板）。"""
+    from clipwright.animation.text_generation import _validate_text_easing_neutral
+
+    mg = {
+        "animation_id": "text_test", "duration_sec": 3,
+        "width": 1920, "height": 1080,
+        "elements": [{
+            "type": "text", "content": "关键词", "x": "center", "y": "center",
+            "keyframes": [
+                {"time": 0, "opacity": 0, "easing": "ease-out-cubic"},
+                {"time": 1, "opacity": 1, "easing": "ease-out-cubic"},
+            ],
+        }],
+    }
+    assert _validate_text_easing_neutral(mg, duration_s=3) == []

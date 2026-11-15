@@ -251,6 +251,51 @@ def _normalize(mg_def: dict[str, Any], spec: TextAnimSpec, duration_s: float) ->
     return mg_def
 
 
+def _text_easing_backup(mg_def: dict[str, Any]) -> list[tuple[int, int, Any]]:
+    backup: list[tuple[int, int, Any]] = []
+    for i, elem in enumerate(mg_def.get("elements") or []):
+        if not isinstance(elem, dict):
+            continue
+        for j, kf in enumerate(elem.get("keyframes") or []):
+            if isinstance(kf, dict) and "easing" in kf:
+                backup.append((i, j, kf.get("easing")))
+    return backup
+
+
+def _restore_text_easing(mg_def: dict[str, Any], backup: list[tuple[int, int, Any]]) -> None:
+    for i, j, value in backup:
+        elems = mg_def.get("elements") or []
+        if i >= len(elems) or not isinstance(elems[i], dict):
+            continue
+        kfs = elems[i].get("keyframes") or []
+        if j < len(kfs) and isinstance(kfs[j], dict):
+            kfs[j]["easing"] = value
+
+
+def _validate_text_easing_neutral(mg_def: dict[str, Any], *, duration_s: float) -> list[str]:
+    """文字动画校验：把 drawtext 的 easing 先换成 MG 白名单里的占位值。
+
+    根因（2026-11-15 E2E）：`prompts/text/_base.md` 要求模型写 drawtext 的
+    `ease-out-cubic` 等 21 个名字（并禁止 back-out/ease），但
+    `validate_text_def` 直接复用 MG validator（白名单恰好相反）——按提示词
+    输出的 JSON 必被判非法，重试两次后回退模板。文字动效由 drawtext 渲染，
+    easing 合法性以 `keyframes_expr.EASING_EXPR` 为准，不应被 MG 词表否决。
+    """
+    import copy
+
+    from clipwright.utils.keyframes_expr import EASING_EXPR
+
+    probe = copy.deepcopy(mg_def)
+    for elem in probe.get("elements") or []:
+        if not isinstance(elem, dict):
+            continue
+        for kf in elem.get("keyframes") or []:
+            if isinstance(kf, dict) and isinstance(kf.get("easing"), str):
+                if kf["easing"].strip() in EASING_EXPR:
+                    kf["easing"] = "ease"
+    return validate_text_def(probe, duration_s=duration_s)
+
+
 def validate_text_def(
     mg_def: dict[str, Any], *, duration_s: float,
 ) -> list[str]:
@@ -334,11 +379,16 @@ async def generate_for_type(
             mg_def.setdefault("width", width)
             mg_def.setdefault("height", height)
             mg_def.setdefault("animation_id", f"text_{spec.id}")
-            errors = validate_text_def(mg_def, duration_s=duration_s)
+            errors = _validate_text_easing_neutral(mg_def, duration_s=duration_s)
             if errors:
+                # 修复会归一/删除 easing；文字动画必须保留 drawtext 的 easing 名，
+                # 所以修复后按索引还原，再按“easing 中性副本”复验。
+                _easing = _text_easing_backup(mg_def)
                 repaired, fixes = repair_mg_json(dict(mg_def))
+                _restore_text_easing(repaired, _easing)
                 repaired = _normalize(repaired, spec, duration_s)
-                again = validate_text_def(repaired, duration_s=duration_s)
+                _restore_text_easing(repaired, _easing)
+                again = _validate_text_easing_neutral(repaired, duration_s=duration_s)
                 if again:
                     last_error = "校验失败：" + "；".join(again[:3])
                     logger.warning("text_generation: %s type=%s", last_error, type_id)
