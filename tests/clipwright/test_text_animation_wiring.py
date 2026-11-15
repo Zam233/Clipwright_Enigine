@@ -133,7 +133,7 @@ def test_weak_motion_is_reported(monkeypatch):
     assert any(d.kind == "text_motion_weak" for d in sink)
 
 
-def test_flag_off_uses_template_only(monkeypatch):
+def test_flag_off_has_no_text_clip_and_no_template(monkeypatch):
     from clipwright.config import settings
 
     monkeypatch.setattr(settings, "text_animation_llm", False, raising=False)
@@ -149,5 +149,4 @@ def test_flag_off_uses_template_only(monkeypatch):
     asyncio.run(agent._handle_text_animation_async(
         track, _clip(), "text_fade_in", "淡入", {"text": "没有监管要求"}, {}))
     assert called["n"] == 0
-    assert len(track.clips) == 1
-    assert track.clips[0].metadata["position"] == "center"
+    assert len(track.clips) == 0  # 不允许模板/降级

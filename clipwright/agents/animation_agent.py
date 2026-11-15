@@ -753,59 +753,19 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             )
             return
 
-        full_kfs = AnimationCatalog.build_full_keyframes(
-            anim_id, vid_clip.start_sec, clip_duration
+        # 用户裁定：不允许降级/模板。LLM 路径关闭或失败都没有文字动画，
+        # 记录失败让主 Agent 重派，不再用 AnimationCatalog 预设模板。
+        self._record_failed_animation(
+            vid_clip, anim_id, anim_name,
+            "文字动画 LLM 未启用/未产出；按无降级策略跳过该段",
         )
-
-        # 完整文字样式字段（统一默认 + persona_style 覆盖，任务 32）
-        style = _merge_style_defaults(DEFAULT_TEXT_STYLE, persona_style)
-
-        # 底部叠字修复（E2E 2026-10-30）：文字动画的正文往往就是旁白整句，
-        # 而 audio 阶段的字幕也来自同一份旁白 → 成片底部出现两行字
-        # （一行文字动画、一行字幕）。字幕负责"说出来的每一句"，文字动画只做
-        # 短语/关键词强调。判据：内容等于所在片段的旁白且足够长（>10 字）→ 交给字幕。
-        _narration = ""
-        try:
-            _narration = str(getattr(vid_clip, "text", "") or
-                             (vid_clip.metadata or {}).get("narration_text") or "").strip()
-        except Exception:  # noqa: BLE001 — 取不到旁白就按普通文字动画处理
-            _narration = ""
-        if _narration and len(text_content.strip()) > 10 and \
-                text_content.strip() == _narration:
-            logger.info(
-                "AnimationAgent: 文字动画与旁白整句重复，交给字幕渲染（避免底部叠字）: %s",
-                text_content[:30],
-            )
-            return
-
-        text_clip = Clip(
-            id=_uid("tc"),
-            kind=ClipKind.TEXT,
-            asset_id="",
-            track_id=text_track.id,
-            start_sec=vid_clip.start_sec,
-            duration_sec=clip_duration,
-            text=text_content or marker.get("text", ""),
-            font="sans-serif",
-            **style,
-            keyframes=full_kfs,
-            metadata={
-                "anim_type": anim_id,
-                "anim_name": anim_name,
-                "renderer": "drawtext",
-                # 位置避让（同上）：字幕固定在 bottom，文字动画默认落在 center，
-                # 只有 persona 显式声明了 text_anim_position 时才跟随。
-                "position": (
-                    persona_style.get("text_anim_position")
-                    or ("center" if str(persona_style.get("position") or "bottom") == "bottom"
-                        else persona_style.get("position"))
-                ),
-                "stroke_width": persona_style.get("stroke_width", 0),
-                "stroke_color": persona_style.get("stroke_color", "#000000"),
-            },
+        _note(
+            "text_llm_failed_no_template",
+            f"文字动画 LLM 未产出（anim_id={anim_id}），不允许模板兜底",
+            scope=str((vid_clip.metadata or {}).get("scene_title") or ""),
+            impact="该段没有文字动效；主 Agent 必须重派，不接受模板",
         )
-        if is_typewriter:
-            text_clip.metadata["typewriter"] = True
+        return
 
         # 启用重叠去重（_find_overlapping_clip 此前定义未调用）——
         # 同轨道文字片段时间重叠会叠字渲染
