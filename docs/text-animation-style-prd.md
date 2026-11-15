@@ -320,3 +320,71 @@
 5. **渐变/故障/霓虹**：要么实现，要么从一期验收移除并明确标注“未实现”，不能列为已完成。
 6. **样式多样性**：prompt 强制至少 N 种样式/底板，质量门禁检查全片样式单调；重跑 animation 后抽帧验证 3 种以上可区分样式。
 7. **验收**：任务 `done` + render + 337/478.9/493/其他样式点抽帧，全部通过后才可把本 PRD 标为完成。
+
+
+## 13. 第二轮审计：仍未完成 / 只在代码里“半实现”的项（2026-11-15）
+
+> 这一节是对 §12 的补充。**不能因为字段存在、单测通过，就认为需求完成**；以下逐项对照用户需求与真实渲染行为。
+
+### 13.1 样式字段“有名无实”清单
+
+| 需求字段 | 契约/预览 | ASS 成片实际 | 差距 |
+|---|---|---|---|
+| `text_align`（left/center/right） | 预览使用 | ASS 只按 `position` 设 `\an`，没有用 `text_align` | 左/右对齐在成片不生效 |
+| `line_height` | 字段存在 | ASS/Drawtext 均未使用；换行行距固定 | 多行行距不可控 |
+| `offset_x` | 字段存在 | ASS 只用 `MarginV` 处理 `offset_y`，`offset_x` 未使用；预览也未按 style offset 定位 | 水平偏移在成片/预览都不生效 |
+| `offset_y` | 字段存在 | ASS 用行级 MarginV 近似；`position=center` 时语义不稳 | 不同对齐下偏移会漂移 |
+| `box_radius` | 预览 roundRect | ASS `BorderStyle=3` 只有方框 | 圆角不生效 |
+| `box_padding_x/y` | 预览有绘制 | ASS 只用 `box_border` 作为框厚度，padding 未映射 | 内边距不生效 |
+| `background`（渐变/纹理） | 未实现 | 未实现 | 用户示例里的渐变/撕纸/条带没有 |
+| `font` 字体族 | 字段存在 | `_ass_fontname` 只清洗，不保证系统存在；缺字体静默回退 MSYH | 字体选择不可验证 |
+| `stroke` 多层/描边风格 | 单层 | ASS 单层 `\bord` | 示例里的描边+外发光组合只部分生效 |
+| `glow` | 字段存在 | ASS 用 `\blur+\3c` 近似；是否作用于阴影/描边未验证 | 发光语义不精确 |
+| `fill` 渐变 | 非目标 | 未实现 | 用户示例中的渐变字未实现 |
+
+### 13.2 动效“静默降级”清单
+
+- `slide_in`：ASS 里没有 `\move`/关键帧位移；实际只加 `\fad`，**位置不动**；
+- `scale_in`：ASS 里没有 `\t(\fscx,\fscy)`；实际只淡入，**不缩放**；
+- `highlight`：没有 `\k` / 双色层；实际只淡入，**不高亮**；
+- `glitch` / `neon`：未实现，仍被归入 fade；
+- `word_by_word`：与 typewriter 共用逐**字符** Dialogue，按词效果不存在；
+- `typewriter`：无标点停顿、无 cursor、无统一 0.2s 结尾淡出（每个字符各自 `\fad`）；
+- 预览：只实现 typewriter/fade；slide/scale/highlight/glitch/neon 在预览同样不可见；
+- 预览文字不消费 `clip.keyframes`（只有 `motion`），所以 LLM 产出的关键帧缩放入场在预览里也不会体现。
+
+### 13.3 生成与契约
+
+- `ensure_text_animation` 在 LLM 未给 `text_animation` 时会自动补 legacy `duration_reason`，**导致“缺少 reason 必须退回重生成”的验收被绕过**；
+- `normalize_display` 会把 `display_sec` 夹到宿主片段时长；用户要求“不硬限制”，当前只做到“不额外造上限”，仍受物理片段限制；
+- 实际生成 19 条文字全部 `fill=#ffffff`、`box=False`；prompt 没有强制“至少 N 种样式/必须使用底板或强调色”，LLM 可以全部输出白字；
+- 样式多样性没有质量门禁，只有“纯白无描边/阴影/底板”warning；因为默认有描边，warning 也不会触发；
+- `TextStyle` 默认 `stroke_width=2`、`shadow` 默认值使“纯白裸字”检查永远通过，无法发现单调。
+
+### 13.4 质量与任务终态
+
+- `task_a3e78e2fda` 最终 **failed**，不是 `done`；成片是 accepted 收据后手动 render；
+- quality 仍以 frame_validator 为主，没有对文字样式多样性、motion 是否真正实现、底板几何做硬检查；
+- `text_motion_weak` 只看关键帧覆盖，“长片段 + 内容驱动时长”天然容易低覆盖；没有区分“内容需要长停留”和“动效缺失”；
+- 任务没有“样式验收通过 → render → done”的闭环测试。
+
+### 13.5 预览与验收
+
+- 预览底板圆角/padding 与 ASS 方角不一致，不能声称“预览与成片一致”；
+- 预览没有 slide/scale/highlight/glitch/neon；
+- 没有针对 337s / 493s 的自动化抽帧断言（目前只有人工截图）；
+- 全片抽帧只覆盖少数时间点，没有逐段检查文字 clip 的 duration_reason、样式、motion 是否兑现。
+
+### 13.6 PRD 自身需要修正的地方
+
+- 目标写“每个文字动画有明确动效……按渲染能力分级”，但一期验收却把 glitch/neon 列为“至少不冒充”；实际代码**静默 fade 冒充**，PRD 必须把“未实现”标为失败项，而不是可用降级；
+- §12 的“全片验收”只能证明 typewriter 和局部白字，不能证明“样式配置”与“预览一致”；
+- 用户示例中的渐变、撕纸、故障、霓虹属于本期需求输入，不能简单归入二期后宣称完成；要么排期实现，要么在 PRD 明确“本 PRD 不交付这些示例样式”。
+
+### 13.7 结论
+
+当前 PRD 的**代码骨架**已完成，但按“用户原始需求”验收，未完成项至少包括：
+
+**任务成功闭环、slide/scale/highlight/glitch/neon、word_by_word、cursor/标点停顿、box 圆角/内边距、text_align/line_height/offset_x、渐变/撕纸/故障/霓虹、样式多样性、预览—成片一致、自动化抽帧验收。**
+
+这些已写入本节；在以上项全部关闭前，PRD 状态保持“部分实现，验收未通过”。
