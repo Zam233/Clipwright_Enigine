@@ -72,13 +72,8 @@ def build_text_mgdef(
 
     不支持的样式必须显式拒绝，不能静默降级成白字。
     """
-    if isinstance(style.get("fill"), dict) or any(
-        k in style for k in ("gradient", "texture", "torn", "glitch", "neon")
-    ):
-        raise ValueError(
-            "文字动画 MG 路径不支持渐变/纹理/撕纸/glitch/霓虹；"
-            "请用 text_effect_card 生成静态卡，或显式扩展 MGRenderer"
-        )
+    if any(k in style for k in ("texture", "torn")):
+        raise ValueError("文字动画 MG 路径不支持纹理/撕纸；请用 text_effect_card")
     out = copy.deepcopy(mg_def)
     out["duration_sec"] = round(max(0.3, float(display_sec)), 3)
     out["width"] = int(width)
@@ -93,7 +88,17 @@ def build_text_mgdef(
     # 文字内容以旁白/关键词为准，避免 LLM 的旧 content 覆盖
     main = text_elements[0]
     main["content"] = text
-    main["font_color"] = _color(style.get("fill"), "#ffffff")
+    fill_raw = style.get("fill")
+    if isinstance(fill_raw, dict) and str(fill_raw.get("type")) == "gradient":
+        colors = [_color(c, "#ffffff") for c in (fill_raw.get("colors") or [])]
+        if len(colors) >= 2:
+            main["text_gradient"] = True
+            main["background"] = f"linear-gradient(90deg, {colors[0]}, {colors[1]})"
+            main["font_color"] = colors[0]
+        else:
+            main["font_color"] = "#ffffff"
+    else:
+        main["font_color"] = _color(fill_raw, "#ffffff")
     main["font_size"] = max(8, float(style.get("font_size") or 56))
     main["font_weight"] = "bold" if str(style.get("font_weight") or "") == "bold" else "normal"
     main["font_italic"] = bool(style.get("font_italic"))
@@ -110,6 +115,7 @@ def build_text_mgdef(
     if style.get("position") == "top":
         main["y"] = "18%"
 
+    total_w = sum(_char_w(ch, main["font_size"]) for ch in text)
     motion_type = str(motion.get("type") or "fade_in").lower()
     reveal = max(0.1, float(motion.get("reveal_sec") or 0.6))
     if motion_type in ("typewriter", "word_by_word"):
@@ -159,6 +165,42 @@ def build_text_mgdef(
             ]
         main["keyframes"] = kfs
         elements = [main] + decorations
+
+    # 扩展动效：glitch / neon / highlight
+    if motion_type == "glitch":
+        main["text_shadow"] = "3px 0 #ff2a50, -3px 0 #00e5ff, 0 0 14px #ffffff"
+        main["keyframes"] = [
+            {"time": 0.0, "opacity": 0, "translate_x": -8},
+            {"time": 0.08, "opacity": 1, "translate_x": 6},
+            {"time": 0.16, "opacity": 0.5, "translate_x": -4},
+            {"time": 0.24, "opacity": 1, "translate_x": 0},
+            {"time": round(max(0.4, display_sec - 0.2), 3), "opacity": 1, "translate_x": 0},
+            {"time": round(display_sec, 3), "opacity": 0},
+        ]
+    elif motion_type == "neon":
+        main["text_shadow"] = (
+            f"0 0 6px #00e5ff, 0 0 14px #00e5ff, 0 0 28px #00e5ff, 0 0 42px #ff2a50"
+        )
+        main["keyframes"] = [
+            {"time": 0.0, "opacity": 0},
+            {"time": 0.2, "opacity": 1},
+            {"time": round(max(0.4, display_sec - 0.2), 3), "opacity": 1},
+            {"time": round(display_sec, 3), "opacity": 0},
+        ]
+    elif motion_type == "highlight":
+        # 黄色高亮条：置于文字下方，宽度从 0 扫到全文
+        hl = {
+            "type": "shape", "shape": "rect",
+            "x": (width - total_w) / 2, "y": (height - main["font_size"]) / 2 + main["font_size"] * 0.55,
+            "width": total_w, "height": main["font_size"] * 0.45,
+            "background": "#ffd400cc", "border_radius": 3,
+            "keyframes": [
+                {"time": 0.0, "opacity": 0, "width": 0},
+                {"time": round(reveal, 3), "opacity": 1, "width": total_w},
+                {"time": round(display_sec, 3), "opacity": 1, "width": total_w},
+            ],
+        }
+        decorations.append(hl)
 
     # 圆角底板：前置 shape（MG renderer 支持 background/border_radius）
     if style.get("box"):

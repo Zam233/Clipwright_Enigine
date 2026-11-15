@@ -68,6 +68,7 @@ class MGRenderer:
         "font_size", "font_color", "font_weight",
         "width", "height", "border_radius",
         "stroke_width", "stroke_color", "border_width", "border_color",
+        "text_gradient", "text_stroke",
     }
 
     # CSS 值中的 url(...) 会触发 headless Chrome 主动请求（SSRF /
@@ -471,9 +472,16 @@ const dur=parseFloat(root.dataset.duration);
             font_color = bindable(elem.get("font_color", "#ffffff"))
             font_weight = fill(elem.get("font_weight", "normal"))
             var_attr = f' data-var-text="{var_text_id}"' if var_text_id else ""
+            gradient_css = ""
+            if elem.get("text_gradient") and elem.get("background"):
+                gradient_css = (
+                    f"background:{bindable(MGRenderer._sanitize_css_value(elem.get('background')))};"
+                    "-webkit-background-clip:text;background-clip:text;color:transparent;"
+                )
             html = (
                 f'<div id="{eid}" class="mg-el clip" data-start="0" data-duration="{total_dur}" data-track-index="1"{var_attr} style="{base_css}'
                 f'font-size:{font_size}px;color:{font_color};font-weight:{font_weight}'
+                + gradient_css
                 + static_style
                 + f'">{MGRenderer._esc(content)}</div>'
             )

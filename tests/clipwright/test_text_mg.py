@@ -40,10 +40,30 @@ def test_rendered_html_is_hyperframes_document():
     assert "测试" in html
 
 
-def test_gradient_is_rejected_not_silently_white():
-    import pytest
-    with pytest.raises(ValueError, match="不支持渐变"):
-        build_text_mgdef(
-            _base(), text="渐变", style={"fill": {"type": "gradient", "colors": ["#f0f", "#0ff"]}},
-            motion={"type": "fade_in"}, width=1920, height=1080, display_sec=2.0,
+def test_gradient_is_supported_via_background_clip():
+    mg = build_text_mgdef(
+        _base(), text="渐变", style={"fill": {"type": "gradient", "colors": ["#f0f", "#0ff"]}},
+        motion={"type": "fade_in"}, width=1920, height=1080, display_sec=2.0,
+    )
+    assert any(e.get("text_gradient") for e in mg["elements"] if e.get("type") == "text")
+
+
+def test_all_motion_types_render_to_html():
+    for motion in ("fade_in", "fade_out", "slide_in", "scale_in", "typewriter",
+                   "word_by_word", "highlight", "glitch", "neon"):
+        mg = build_text_mgdef(
+            _base(), text="效果", style={"font_size": 64, "fill": "#ffffff"},
+            motion={"type": motion, "reveal_sec": 0.4}, width=1920, height=1080,
+            display_sec=2.0,
         )
+        html = render_text_mg_html(mg, width=1920, height=1080)
+        assert "<!DOCTYPE html>" in html, motion
+
+
+def test_gradient_text_uses_background_clip():
+    mg = build_text_mgdef(
+        _base(), text="渐变", style={"font_size": 64, "fill": {"type": "gradient", "colors": ["#ff00ff", "#00ffff"]}},
+        motion={"type": "fade_in"}, width=1920, height=1080, display_sec=2.0,
+    )
+    html = render_text_mg_html(mg, width=1920, height=1080)
+    assert "background-clip:text" in html
