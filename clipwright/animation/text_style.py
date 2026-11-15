@@ -113,7 +113,11 @@ def normalize_style(raw: dict[str, Any] | None) -> dict[str, Any]:
         "line_height": _num(src.get("line_height"), out["line_height"], 0.8, 3.0),
         "text_align": str(src.get("text_align") or out["text_align"])
         if str(src.get("text_align") or "") in ("left", "center", "right") else out["text_align"],
-        "fill": _color(src.get("fill") or src.get("font_color"), out["fill"]),
+        "fill": (
+            dict(src.get("fill"))
+            if isinstance(src.get("fill"), dict) and str((src.get("fill") or {}).get("type")) == "gradient"
+            else _color(src.get("fill") or src.get("font_color"), out["fill"])
+        ),
         "box": bool(src.get("box", out["box"])),
         "box_color": _color(src.get("box_color"), out["box_color"]),
         "box_radius": _num(src.get("box_radius"), out["box_radius"], 0, 80),

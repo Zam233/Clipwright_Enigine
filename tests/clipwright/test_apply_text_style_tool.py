@@ -40,11 +40,14 @@ async def test_apply_text_style_updates_clip_metadata():
 
 
 @pytest.mark.asyncio
-async def test_apply_text_style_rejects_unimplemented_glitch():
+async def test_apply_text_style_accepts_glitch_and_rebuilds_html():
     task_id = "task_style_tool_test2"
     bb.put(task_id, "timeline", _timeline(), by="edit")
     result = await ApplyTextStyleTool().execute(
         task_id, "tc_1", motion={"type": "glitch"},
+        style={"font_size": 72, "fill": {"type": "gradient", "colors": ["#ff00ff", "#00ffff"]}},
     )
-    assert result.status == "error"
-    assert "glitch" in (result.error or "")
+    assert result.status == "success", result.error
+    clip = bb.get(task_id)["timeline"]["tracks"][0]["clips"][0]
+    assert clip["metadata"]["motion"]["type"] == "glitch"
+    assert clip["metadata"]["mg_html"]

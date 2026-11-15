@@ -102,16 +102,14 @@ class ApplyTextStyleTool(BaseTool):
         st = normalize_style(raw_style)
         text = str(target.text or "")
         mo = normalize_motion(motion or (target.metadata or {}).get("motion") or {}, text=text)
-        if mo["type"] in ("glitch", "neon"):
-            return ToolExecResult(
-                status=ToolStatus.ERROR, tool_name=self.name,
-                error=f"motion={mo['type']} 尚未实现（禁止静默 fade 冒充）",
-            )
         if not duration_reason:
             duration_reason = str((target.metadata or {}).get("duration_reason") or "")
 
         target.font_size = float(st["font_size"])
-        target.font_color = _hex(st["fill"])
+        _fill = st.get("fill")
+        if isinstance(_fill, dict):
+            _fill = ((_fill.get("colors") or ["#ffffff"])[0])
+        target.font_color = _hex(_fill)
         target.font_weight = str(st["font_weight"])
         target.font_italic = bool(st["font_italic"])
         target.letter_spacing = float(st["letter_spacing"])
@@ -140,18 +138,18 @@ class ApplyTextStyleTool(BaseTool):
         # 所有文字动画统一 MG HTML：样式变了必须重建 mg_html，否则成片仍是旧样式。
         try:
             from clipwright.animation.text_mg import build_text_mgdef, render_text_mg_html
-            if isinstance(meta.get("mg_def"), dict):
-                mg_def = build_text_mgdef(
-                    meta["mg_def"], text=str(target.text or ""), style=st, motion=mo,
-                    width=int(timeline.width or 1920), height=int(timeline.height or 1080),
-                    display_sec=float(target.duration_sec),
-                )
-                meta["mg_def"] = mg_def
-                meta["mg_html"] = render_text_mg_html(
-                    mg_def, width=int(timeline.width or 1920),
-                    height=int(timeline.height or 1080), fps=float(timeline.fps or 30),
-                )
-                meta["mg_params"] = {}
+            base = meta.get("mg_def") if isinstance(meta.get("mg_def"), dict) else {}
+            mg_def = build_text_mgdef(
+                base, text=str(target.text or ""), style=st, motion=mo,
+                width=int(timeline.width or 1920), height=int(timeline.height or 1080),
+                display_sec=float(target.duration_sec),
+            )
+            meta["mg_def"] = mg_def
+            meta["mg_html"] = render_text_mg_html(
+                mg_def, width=int(timeline.width or 1920),
+                height=int(timeline.height or 1080), fps=float(timeline.fps or 30),
+            )
+            meta["mg_params"] = {}
         except Exception as exc:  # noqa: BLE001
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
                                   error=f"重建 MG HTML 失败: {exc}")
