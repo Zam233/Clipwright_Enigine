@@ -132,7 +132,25 @@ y 中心在画面 42% 处；背景保持实拍可见。
         }
       ]
     }
-  ]
+  ],
+  "text_animation": {
+    "style": {
+      "font_size": 56,
+      "fill": "#ffffff",
+      "stroke_width": 2,
+      "stroke_color": "#000000",
+      "shadow_y": 4,
+      "shadow_color": "#000000b3",
+      "box": false,
+      "position": "center"
+    },
+    "motion": {
+      "type": "fade_in",
+      "reveal_sec": 0.4
+    },
+    "display_sec": 1.6,
+    "duration_reason": "示例：单条关键词的阅读时间"
+  }
 }
 ```
 
