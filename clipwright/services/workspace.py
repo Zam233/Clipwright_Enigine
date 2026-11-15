@@ -225,10 +225,15 @@ class Workspace:
     def _scan_known_roots(self) -> list[Path]:
         root = workspace_root()
         out: list[Path] = []
+        suffix = self.project_id[-6:]
+        # 根目录文件列表缓存 30s：`_read_meta` 每次都要列一遍根目录，项目多时
+        # O(N²) stat 会把工作区轮询线程之外的事件循环也拖死（2026-11-15 实测
+        # py-spy 卡在 Workspace._scan_known_roots / Path.is_dir）。
+        names = _root_names_cached(root)
         try:
-            for child in root.iterdir():
-                if child.is_dir() and child.name.endswith(self.project_id[-6:]):
-                    out.append(child)
+            for name in names:
+                if name.endswith(suffix) and (root / name).is_dir():
+                    out.append(root / name)
         except OSError:
             pass
         return out
@@ -710,3 +715,25 @@ __all__ = [
     "workspace_info",
     "workspace_root",
 ]
+
+
+#: 工作区根目录列表缓存：root → (时间戳, 子目录名列表)
+_ROOT_NAMES_CACHE: dict[str, tuple[float, list[str]]] = {}
+_ROOT_NAMES_TTL_SEC = 30.0
+
+
+def _root_names_cached(root: Path) -> list[str]:
+    """列出工作区根下的子目录名（30s 缓存；创建新工作区后调用方无需强刷）。"""
+    import time as _time
+
+    key = str(root)
+    now = _time.time()
+    cached = _ROOT_NAMES_CACHE.get(key)
+    if cached and now - cached[0] < _ROOT_NAMES_TTL_SEC:
+        return cached[1]
+    try:
+        names = [c.name for c in root.iterdir() if c.is_dir()]
+    except OSError:
+        names = []
+    _ROOT_NAMES_CACHE[key] = (now, names)
+    return names

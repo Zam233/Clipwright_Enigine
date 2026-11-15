@@ -61,6 +61,10 @@ class ImageGenerateTool(BaseTool):
             "model": {"type": "string", "description": "模型 id（不填用源绑定/默认模型）"},
             "source_id": {"type": "string", "description": "图像源 id（不填用 image 角色绑定）"},
             "seed": {"type": "integer", "description": "随机种子（可选，用于幂等复用）"},
+            # 由工具面在入口自动注入（模型不需要填）——不声明的话 surface 的
+            # workspace_root/project_id 注入不会生效，主 agent 调用必报"未找到工作区"。
+            "workspace_root": {"type": "string", "description": "工作区根（宿主自动注入）"},
+            "project_id": {"type": "string", "description": "项目 id（宿主自动注入）"},
         },
         "required": ["prompt"],
     }
