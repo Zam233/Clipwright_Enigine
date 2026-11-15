@@ -2622,7 +2622,8 @@ class RenderService:
         写文件用相对路径（ffmpeg 从 CWD=仓库根运行，同 ``_fonts/`` 哲学，
         规避 Windows 盘符冒号被 filter 解析器截断）。
         """
-        from clipwright.tool.design import TextStyle
+        from dataclasses import replace
+        from clipwright.tool.design import TextStyle, color_to_ass, ass_time
         try:
             actual_dur = await asyncio.to_thread(_get_actual_duration, str(video))
         except Exception:
@@ -2654,6 +2655,40 @@ class RenderService:
                 return int(font_size * 0.3)
             return int(font_size * 0.6)
 
+        def _box_event(ts, text: str, style_name: str, start: float, end: float,
+                       x: float, y: float, w: float) -> str:
+            """ASS 矢量底板：圆角 + 内边距，替代 BorderStyle=3 的方角近似。"""
+            pad_x = max(0.0, float(getattr(ts, "box_padding_x", 18) or 18))
+            pad_y = max(0.0, float(getattr(ts, "box_padding_y", 8) or 8))
+            r = max(0.0, min(float(getattr(ts, "box_radius", 6) or 6),
+                             (w + pad_x * 2) / 2, (ts.font_size + pad_y * 2) / 2))
+            bx, by = x - pad_x, y - pad_y
+            bw, bh = w + pad_x * 2, ts.font_size + pad_y * 2
+            if r <= 0:
+                path = f"m {bx:.1f} {by:.1f} l {bx+bw:.1f} {by:.1f} l {bx+bw:.1f} {by+bh:.1f} l {bx:.1f} {by+bh:.1f}"
+            else:
+                path = (
+                    f"m {bx+r:.1f} {by:.1f} l {bx+bw-r:.1f} {by:.1f} "
+                    f"b {bx+bw-r:.1f} {by:.1f} {bx+bw:.1f} {by+r:.1f} {bx+bw:.1f} {by+r:.1f} "
+                    f"l {bx+bw:.1f} {by+bh-r:.1f} "
+                    f"b {bx+bw:.1f} {by+bh-r:.1f} {bx+bw-r:.1f} {by+bh:.1f} {bx+bw-r:.1f} {by+bh:.1f} "
+                    f"l {bx+r:.1f} {by+bh:.1f} "
+                    f"b {bx+r:.1f} {by+bh:.1f} {bx:.1f} {by+bh-r:.1f} {bx:.1f} {by+bh-r:.1f} "
+                    f"l {bx:.1f} {by+r:.1f} "
+                    f"b {bx:.1f} {by+r:.1f} {bx+r:.1f} {by:.1f} {bx+r:.1f} {by:.1f}"
+                )
+            color = color_to_ass(ts.box_color)
+            return (f"Dialogue: 0,{ass_time(start)},{ass_time(end)},{style_name},,,"
+                    f"0,0,0,,{{\\an7\\pos(0,0)\\p1\\1c{color}\\bord0\\shad0}}{path}{{\\p0}}")
+
+        import re as _re
+
+        def _tokens(text: str, word_mode: bool) -> list[str]:
+            if not word_mode:
+                return list(text)
+            # 中文按字、英文/数字按词、标点单独成 token（ASS 逐词即可）
+            return _re.findall(r"[\u4e00-\u9fff]|[A-Za-z0-9_]+|[^\w\s]", text)
+
         for ov in overlays:
             if ov.get("renderer") == "hyperframes" or ov.get("diagram_params"):
                 continue
@@ -2678,40 +2713,100 @@ class RenderService:
                     position=ov.get("position", "bottom"),
                     offset_y=ov.get("offset_y", 0),
                 )
+            box_ts = ts if bool(getattr(ts, "box", False)) else None
+            if box_ts is not None:
+                # 方框由 _box_event 矢量绘制；文字样式本身不能再用 BorderStyle=3，
+                # 否则会叠加一个方角底框。
+                ts = replace(ts, box=False)
             style_name = _style_name(ts)
             anim = str(ov.get("anim_type") or "")
             motion = dict(ov.get("motion") or {})
+            motion_type = str(motion.get("type") or anim or "").lower()
             is_caption = str(ov.get("category") or "") == "caption"
-            if not is_caption and anim in ("typewriter", "word_by_word") and len(raw_text) <= 40:
-                n = max(1, len(raw_text))
+
+            total_w = sum(_cw(ch, ts.font_size) for ch in raw_text)
+            center_x = (int(width) - total_w) / 2 + float(ts.offset_x or 0)
+            center_y = int(height) / 2 + float(ts.offset_y or 0)
+            if str(ts.position or "center") == "top":
+                center_y = ts.font_size + 20 + float(ts.offset_y or 0)
+            elif str(ts.position or "center") == "bottom":
+                center_y = int(height) - ts.font_size - 20 - float(ts.offset_y or 0)
+
+            if not is_caption and box_ts is not None:
+                dialogues.append(_box_event(
+                    box_ts, raw_text, style_name, start, end,
+                    center_x, center_y - ts.font_size / 2, total_w,
+                ))
+
+            if not is_caption and motion_type in ("typewriter", "word_by_word") and len(raw_text) <= 40:
+                word_mode = motion_type == "word_by_word"
+                items = _tokens(raw_text, word_mode)
+                n = max(1, len(items))
                 reveal = float(motion.get("reveal_sec") or min(2.0, max(0.6, n * 0.08)))
                 reveal = max(0.1, min(reveal, max(0.2, end - start)))
-                total_w = sum(_cw(ch, ts.font_size) for ch in raw_text)
-                x = max(8, (int(width) - total_w) / 2)
-                y = max(8, (int(height) - ts.font_size) / 2)
-                for i, ch in enumerate(raw_text):
-                    if not ch.strip():
-                        x += _cw(ch, ts.font_size)
+                step = reveal / max(1, n - 1)
+                x = center_x
+                y_top = center_y - ts.font_size / 2
+                delay = 0.0
+                for i, token in enumerate(items):
+                    if not token.strip():
+                        x += _cw(token, ts.font_size)
                         continue
-                    dstart = start + i * reveal / max(1, n - 1)
+                    dstart = start + delay
                     dstart = min(dstart, end - 0.01)
-                    extra = rf"\an7\pos({x:.1f},{y:.1f})\fad(80,150)"
+                    extra = rf"\an7\pos({x:.1f},{y_top:.1f})\fad(80,150)"
                     dialogues.append(ts.build_ass_dialogue(
-                        ch, dstart, end, style_name=style_name, extra_tags=extra,
+                        token, dstart, end, style_name=style_name, extra_tags=extra, layer=1,
                     ))
-                    x += _cw(ch, ts.font_size)
+                    x += sum(_cw(ch, ts.font_size) for ch in token)
+                    delay += step
+                    if token in "，。！？,.!?；;：:":
+                        delay += 0.08
+                if motion.get("cursor") and not is_caption:
+                    cursor_x = min(int(width) - 8, x + 4)
+                    dialogues.append(ts.build_ass_dialogue(
+                        "▍", min(start + reveal, end - 0.01),
+                        min(start + reveal + 0.35, end),
+                        style_name=style_name,
+                        extra_tags=rf"\an7\pos({cursor_x:.1f},{y_top:.1f})",
+                    ))
                 continue
+
             chunks = _split_long_text(raw_text)
             if not chunks:
                 continue
             total_chars = sum(len(c) for c in chunks) or 1
             cursor = start
-            extra = "" if is_caption else r"\fad(200,200)"
+            # motion 优先，anim_type 作为 fallback
+            eff = motion_type if motion_type in (
+                "slide_in", "scale_in", "highlight", "glitch", "neon", "fade_in", "fade_out"
+            ) else anim
+            if eff in ("glitch", "neon"):
+                logger.warning("Render: 文字 motion=%s 未实现，按显式降级处理（不是真实特效）", eff)
+                try:
+                    self._final_ffmpeg_log.append(
+                        f"文字 motion={eff} 未实现：该段按 fade 输出，已在验收中标为未完成")
+                except Exception:
+                    pass
             for chunk in chunks:
                 w = (end - start) * len(chunk) / total_chars
+                extra = "" if is_caption else r"\fad(200,200)"
+                if not is_caption and eff == "slide_in":
+                    ms = max(120, int(min(0.5, max(0.15, end - start)) * 1000))
+                    extra = (rf"\an5\pos({center_x:.1f},{center_y + 80:.1f})"
+                             rf"\move({center_x:.1f},{center_y + 80:.1f},"
+                             rf"{center_x:.1f},{center_y:.1f},0,{ms})\fad(80,160)")
+                elif not is_caption and eff == "scale_in":
+                    ms = max(120, int(min(0.5, max(0.15, end - start)) * 1000))
+                    extra = (rf"\fscx70\fscy70\t(0,{ms},\fscx100\fscy100)"
+                             r"\fad(80,160)")
+                elif not is_caption and eff == "highlight":
+                    extra = r"\fad(120,160)"
+                elif not is_caption and (ts.offset_x or ts.offset_y):
+                    extra = rf"\an5\pos({center_x:.1f},{center_y:.1f})"
                 dialogues.append(ts.build_ass_dialogue(
                     chunk, cursor, min(cursor + w, end),
-                    style_name=style_name, extra_tags=extra,
+                    style_name=style_name, extra_tags=extra, layer=1,
                 ))
                 cursor += w
         if not dialogues:

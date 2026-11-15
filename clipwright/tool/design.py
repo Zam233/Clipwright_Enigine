@@ -179,9 +179,14 @@ class TextStyle:
     stroke_color: str = "#000000"
     position: str = "bottom"
     offset_y: int = 0
+    offset_x: float = 0
+    text_align: str = "center"
     box: bool = False
     box_color: str = "#00000080"
     box_border: int = 8
+    box_radius: float = 6
+    box_padding_x: float = 18
+    box_padding_y: float = 8
     shadow_x: float = 0
     shadow_y: float = 0
     shadow_color: str = "#00000080"
@@ -206,9 +211,14 @@ class TextStyle:
             stroke_color=d.get("stroke_color", "#000000"),
             position=d.get("position", "bottom"),
             offset_y=d.get("offset_y", 0),
+            offset_x=d.get("offset_x", 0),
+            text_align=d.get("text_align", "center"),
             box=d.get("box", False),
             box_color=d.get("box_color", "#00000080"),
             box_border=d.get("box_border", 8),
+            box_radius=d.get("box_radius", 6),
+            box_padding_x=d.get("box_padding_x", 18),
+            box_padding_y=d.get("box_padding_y", 8),
             shadow_x=d.get("shadow_x", 0),
             shadow_y=d.get("shadow_y", 0),
             shadow_color=d.get("shadow_color", "#00000080"),
@@ -278,7 +288,8 @@ class TextStyle:
         return _head if include_header else _head.split("\n\n[V4+ Styles]\n")[1].split("\n", 1)[1].replace(f"Style: {style_name}", f"Style: {style_name}", 1)
 
     def build_ass_dialogue(self, text: str, start_sec: float, end_sec: float, *,
-                          style_name: str = "Default", extra_tags: str = "") -> str:
+                          style_name: str = "Default", extra_tags: str = "",
+                          layer: int = 0) -> str:
         """构建 ASS `Dialogue:` 行。
 
         start_sec/end_sec 已由调用方裁剪到成片实际时长（render._apply_text_ass），
@@ -299,7 +310,16 @@ class TextStyle:
             tags.append(rf"\3c{color_to_ass(self.stroke_color)}")
         if self.shadow_color and (self.shadow_x or self.shadow_y or self.shadow_blur):
             tags.append(rf"\4c{color_to_ass(self.shadow_color)}")
-        tags.append(rf"\an{ass_alignment(self.position)}")
+        _base = {"bottom": 2, "center": 5, "top": 8}.get(
+            str(self.position or "center"), 2)
+        _align = str(self.text_align or "center").lower()
+        if _align == "left":
+            _an = {2: 1, 5: 4, 8: 7}[_base]
+        elif _align == "right":
+            _an = {2: 3, 5: 6, 8: 9}[_base]
+        else:
+            _an = _base
+        tags.append(rf"\an{_an}")
         if self.font_italic:
             tags.append(r"\i1")
         if self.letter_spacing != 0:
@@ -331,7 +351,7 @@ class TextStyle:
         # offset_y 修复：样式段 Margin 硬编码 10/10/10，行级不传 Margin 时
         # 多段同屏文字全部锚定同一位置互相重叠；行级 MarginV 承载 offset_y
         margin_v = 10 + max(0, int(self.offset_y or 0))
-        return (f"Dialogue: 0,{ass_time(start_sec)},{ass_time(end_sec)},{style_name},,"
+        return (f"Dialogue: {int(layer)},{ass_time(start_sec)},{ass_time(end_sec)},{style_name},,"
                 f"0,0,{margin_v},,{tags_block}{esc}")
 
     def drawtext_position(self) -> tuple[str, str]:

@@ -81,7 +81,34 @@ async def test_ass_per_overlay_style_and_box(tmp_path, monkeypatch):
     ]
     ass = await _render(svc, overlays, monkeypatch)
     assert "Style: T0" in ass and "Style: T1" in ass
-    # 第一个样式是 box：BorderStyle=3；第二个是普通描边
+    # box 由矢量绘图实现（\p1）；文字样式本身不能再用 BorderStyle=3 叠方框
     style_lines = [ln for ln in ass.splitlines() if ln.startswith("Style:")]
-    assert style_lines[0].split(",")[15] == "3"
+    assert style_lines[0].split(",")[15] == "1"
     assert style_lines[1].split(",")[15] == "1"
+    assert r"\p1" in ass and r"\p0" in ass
+
+
+async def test_ass_slide_and_scale_motion(tmp_path, monkeypatch):
+    svc = RenderService(work_dir=tmp_path)
+    for motion, needle in (
+        ({"type": "slide_in", "reveal_sec": 0.4}, r"\move("),
+        ({"type": "scale_in", "reveal_sec": 0.4}, r"\t(0,"),
+    ):
+        ov = {"start_sec": 1.0, "duration_sec": 3.0, "text": "滑入",
+              "style": {"font_size": 56, "fill": "#ffffff"},
+              "position": "center", "category": "text", "motion": motion}
+        ass = await _render(svc, [ov], monkeypatch)
+        assert needle in ass, (motion, ass[:200])
+
+
+async def test_ass_word_by_word_and_cursor(tmp_path, monkeypatch):
+    svc = RenderService(work_dir=tmp_path)
+    ov = {"start_sec": 1.0, "duration_sec": 4.0, "text": "离线 下载 功能",
+          "style": {"font_size": 56, "fill": "#ffffff"},
+          "position": "center", "category": "text",
+          "motion": {"type": "word_by_word", "reveal_sec": 1.2, "cursor": True}}
+    ass = await _render(svc, [ov], monkeypatch)
+    lines = [ln for ln in ass.splitlines() if ln.startswith("Dialogue:")]
+    # 5 个 token + cursor
+    assert len(lines) >= 6
+    assert "▍" in ass
