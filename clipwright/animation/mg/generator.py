@@ -656,11 +656,10 @@ ision_prompt
         )
         # 自批判没生效 = 这段产物少了一道质量校验（旧实现静默跳过，主 Agent 完全不知情）
         if critique is None and (self._config.get("critique", {}) or {}).get("enabled", True):
-            _note(
-                "mg_critique_skipped",
-                "自批判未产出（LLM 返回不可解析 / 调用异常），该段产物未经质量自评",
-                scope=str((scene_context or {}).get("title") or ""),
-                impact="仅靠客观动效指标兜底；若指标也通过则该段无质量信号",
+            logger.warning("MGGenerator: 自批判未产出，按客观动效门禁兜底（不降级）")
+            self._trace_event(
+                None, "quality", "MG 自批判未产出，按客观门禁兜底",
+                {"scene": str((scene_context or {}).get("title") or "")},
             )
 
         # 客观动效门禁（PRD §5 / §8）：LLM 自评容易"看着还行"，这里用可计算的
@@ -1094,7 +1093,6 @@ ision_prompt
         if not content:
             logger.warning("MGGenerator: critique 返回空正文（finish_reason=%s）",
                            finish_reason or "?")
-            _note("critique_json_empty", "自批判返回空正文", impact="该段跳过自评（不影响动画产物）")
             return None
         candidates: list[Any] = [content.strip()]
         match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)
@@ -1114,8 +1112,10 @@ ision_prompt
             "MGGenerator: critique JSON 解析失败（finish_reason=%s chars=%d tail=%.120s）",
             finish_reason or "?", len(content), content[-120:],
         )
-        _note(kind, f"finish_reason={finish_reason or '?'} chars={len(content)}",
-              impact="该段跳过自评（不影响动画产物）")
+        # 自批判是“质量信号”，不是产物本身：它的失败不能登记成产品降级，
+        # 否则一次评审 JSON 坏了就会被主 Agent 当成动画失败去重派（非必要降级）。
+        self._trace_event(None, "quality", f"MG 自批判不可用：{kind}",
+                          {"finish_reason": finish_reason, "chars": len(content)})
         return None
 
     def _parse_critique(self, content: str) -> dict[str, Any] | None:
