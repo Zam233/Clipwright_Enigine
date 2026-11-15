@@ -188,6 +188,15 @@ def build_text_mgdef(
             {"time": round(display_sec, 3), "opacity": 0},
         ]
     elif motion_type == "highlight":
+        # 高亮文字必须和黄色条有分离感：默认给文字加一层向下投影。
+        # 用户显式给了非零 shadow 时保留用户值，不被默认覆盖。
+        try:
+            _has_user_shadow = (float(style.get("shadow_blur") or 0) > 0
+                                or abs(float(style.get("shadow_y") or 0)) > 0)
+        except (TypeError, ValueError):
+            _has_user_shadow = False
+        if not _has_user_shadow:
+            main["text_shadow"] = "0 4px 10px rgba(0,0,0,0.78)"
         # 黄色高亮条：置于文字下方，宽度从 0 扫到全文
         hl = {
             "type": "shape", "shape": "rect",

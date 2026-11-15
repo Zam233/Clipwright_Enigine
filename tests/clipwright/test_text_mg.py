@@ -67,3 +67,13 @@ def test_gradient_text_uses_background_clip():
     )
     html = render_text_mg_html(mg, width=1920, height=1080)
     assert "background-clip:text" in html
+
+
+def test_highlight_text_has_default_shadow():
+    mg = build_text_mgdef(
+        _base(), text="高亮", style={"font_size": 64, "fill": "#ffffff"},
+        motion={"type": "highlight", "reveal_sec": 0.8},
+        width=1920, height=1080, display_sec=2.0,
+    )
+    text = next(e for e in mg["elements"] if e.get("type") == "text")
+    assert "rgba(0,0,0,0.78)" in text["text_shadow"]
