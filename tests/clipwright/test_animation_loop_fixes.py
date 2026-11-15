@@ -119,3 +119,37 @@ async def test_replan_budget_stops_same_fingerprint(monkeypatch):
     assert second["output"]["stages"] == ["animation", "audio"]
     assert third["output"]["exhausted"] is True
     assert third["output"]["stages"] == []
+
+
+@pytest.mark.asyncio
+async def test_critique_call_passes_max_tokens(monkeypatch):
+    """critique 必须和生成/修复一样下发 max_tokens，否则长 issues 会被截断。"""
+    from clipwright.services.llm import MAX_OUTPUT_TOKENS
+
+    gen = object.__new__(MGGenerator)
+    gen._config = {
+        "llm": {"max_tokens": 0, "timeout": 30},
+        "critique": {"enabled": True},
+        "prompt": {"system_template": ""},
+    }
+    captured: dict = {}
+
+    class _FakeLLM:
+        async def generate(self, **kwargs):
+            captured.update(kwargs)
+
+            class _Resp:
+                content = '{"score": 80, "issues": [], "suggestions": []}'
+                raw_response = None
+
+            return _Resp()
+
+    gen._llm = _FakeLLM()
+    monkeypatch.setattr(MGGenerator, "_knowledge_section", lambda self, *a, **k: "")
+    parsed = await gen._critique_quality(
+        {"duration_sec": 3, "elements": []},
+        "描述", {}, {}, "",
+        scene_context={"title": "t"},
+    )
+    assert parsed and parsed["score"] == 80
+    assert captured.get("max_tokens") == MAX_OUTPUT_TOKENS
