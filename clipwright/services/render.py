@@ -2793,8 +2793,7 @@ class RenderService:
                 extra = "" if is_caption else r"\fad(200,200)"
                 if not is_caption and eff == "slide_in":
                     ms = max(120, int(min(0.5, max(0.15, end - start)) * 1000))
-                    extra = (rf"\an5\pos({center_x:.1f},{center_y + 80:.1f})"
-                             rf"\move({center_x:.1f},{center_y + 80:.1f},"
+                    extra = (rf"\an5\move({center_x:.1f},{center_y + 80:.1f},"
                              rf"{center_x:.1f},{center_y:.1f},0,{ms})\fad(80,160)")
                 elif not is_caption and eff == "scale_in":
                     ms = max(120, int(min(0.5, max(0.15, end - start)) * 1000))
