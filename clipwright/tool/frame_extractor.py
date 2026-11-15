@@ -14,6 +14,8 @@ from typing import Any
 
 import httpx
 
+from clipwright import net
+
 logger = logging.getLogger("clipwright.tool.frame_extractor")
 
 
@@ -105,7 +107,10 @@ async def extract_frames(
     if thumbnail_url:
         thumbnail_path = output_dir / f"thumbnail_{uuid.uuid4().hex[:8]}.jpg"
         try:
-            async with httpx.AsyncClient() as client:
+            # SSL context 首次创建在 Windows 上要 1s+，必须离开事件循环线程；
+            # 之后的 client 复用同一 context（构造 ~0.07s）。
+            await asyncio.to_thread(net.ssl_context)
+            async with httpx.AsyncClient(verify=net.ssl_context()) as client:
                 response = await client.get(str(thumbnail_url), timeout=25.0)
                 response.raise_for_status()
             thumbnail_path.write_bytes(response.content)
