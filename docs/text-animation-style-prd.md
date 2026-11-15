@@ -627,3 +627,47 @@
 - 真实 requirements 任务 animation→audio→render 全链路（新 MG 文字路径）；
 - 19 条文字全部 MG 的 Chrome 渲染耗时/并发；
 - line_height/渐变/故障/霓虹在 MG HTML 的精确样式（当前 MG 文字支持纯色/描边/阴影/底板/位移/缩放/逐字；复杂静态效果仍走 text_effect_card）。
+
+
+## 22. 最终完成记录（2026-11-16 00:xx，MG HTML + E2E）
+
+### 22.1 任务终态
+
+- `task_a3e78e2fda`：**status=done，terminal_reason=achieved**；
+- 阶段链 structure → material → edit → animation(#2) → audio → quality 全部跑通；
+- `final_timeline` 702s；quality 0 error；上一轮 animation#1 降级由 #2 remediated；
+- finish 中仍记录了 1 条已接受的 `mg_motion_weak`（某 MG 位移 18px）；当前项目动画轨复核没有再发现 <77px 的 mg clip，但这条收据仍保留在任务历史里。
+
+### 22.2 文字全部 MG HTML
+
+- 项目文字轨 19 条全部：
+  - `metadata.renderer="mg_hyperframes"`
+  - `mg_html` 非空
+  - `apply_text_style=True`
+  - motion 覆盖 typewriter / word_by_word / slide_in / scale_in / fade_in；
+- 渲染路径：text clip → `hf_ov_local` → Hyperframes 透明 MOV，不再走 ASS；
+- 预览：text clip 有 mg_def 时走 `drawMgFrame`。
+
+### 22.3 真实 E2E
+
+- `render_003edae4d9e3` completed：
+  - `renders/从_PCL_到_HMCL..._20261115154540.mp4`
+  - 702.4s，127,995,386 bytes，h264+aac。
+- 抽帧：
+  - `_cache/mg_332.jpg`：typewriter 只显示「没有」；
+  - `_cache/mg_340.jpg`：只显示「未见」；
+  - `_cache/mg_478.9.jpg`：完整「只禁用下载」，MG 文字+阴影；
+  - 证明逐字 reveal 和 MG 文字层在真实成片生效。
+- MG 样片 `_cache/text_mg_check/out2.mov`：0.5s「逐字」/1.6s「逐字测试」+ 红底圆角。
+
+### 22.4 失败详情与无降级
+
+- `MGGenerator` 失败结果带 `finish_reason/chars/head/tail/error`；
+- `generate()` 不再调用 `_fallback_generate`，类型/文字失败均明确报错；
+- 文字 handler 不再走 AnimationCatalog 模板；
+- 不支持的渐变/纹理/撕纸/glitch/霓虹在 MG 文字路径显式 `ValueError`，不静默白字；静态效果走 `text_effect_card`；
+- `agent_kernel` 收据清空后重算 gate，任务不再被旧 `degradation_unresolved` 判死。
+
+### 22.5 结论
+
+PRD 的 P0 文字动画需求已按要求迁移到 MG HTML，并通过任务 done + 真实 render + 抽帧验证。仍属于显式拒绝/独立能力而非文字动画的：渐变/撕纸/glitch/霓虹（走 `text_effect_card` 静态卡）；这是有意的边界，不是静默降级。
