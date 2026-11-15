@@ -459,6 +459,18 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                     message=f"文字动画 {c.id} 缺少 duration_reason（时长无内容依据）",
                     location=c.id,
                 ))
+        # 样式多样性：全片文字都白字无底板 → 说明“可配置样式”没有兑现
+        _fills = {str(((getattr(c, "metadata", None) or {}).get("style") or {}).get("fill") or "").lower()
+                  for _, c in texts}
+        _any_box = any(bool(((getattr(c, "metadata", None) or {}).get("style") or {}).get("box"))
+                       for _, c in texts)
+        if len(texts) >= 5 and len(_fills - {""}) <= 1 and not _any_box:
+            issues.append(QualityIssue(
+                severity="warning", category="text_style",
+                message="全片文字样式单一（全部白字且无底板），样式契约未在成片兑现",
+                location="text_tracks",
+            ))
+
         # 同一时间窗最多 1 条关键词文字动画
         def _span(c):
             try:

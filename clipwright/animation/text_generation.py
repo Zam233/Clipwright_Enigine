@@ -144,7 +144,7 @@ def build_text_prompt(
         "\"motion\": {type, reveal_sec, cursor, stagger_sec, easing}, "
         "\"display_sec\": 本关键词应停留多少秒（按内容阅读需求，不设硬上限）, "
         "\"duration_reason\": 为什么需要这么久（阅读/多行/引用/停顿）}\n"
-        "- 颜色/字号/描边/阴影/底板必须显式给出，禁止默认白字无描边；motion.type 只能是 "
+        "- 颜色/字号/描边/阴影/底板必须显式给出，禁止默认白字无描边；同一支片必须有样式变化：至少用强调色/底板/不同字号区分层级，禁止所有关键词都是白字无底板。motion.type 只能是 "
         "fade_in / fade_out / slide_in / scale_in / typewriter / word_by_word / highlight / glitch / neon。\n"
         '- 只输出 MGDef JSON，且必须包含字段：animation_id / duration_sec / width / height / elements / text_animation。'
     )
