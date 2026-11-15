@@ -153,3 +153,25 @@ async def test_critique_call_passes_max_tokens(monkeypatch):
     )
     assert parsed and parsed["score"] == 80
     assert captured.get("max_tokens") == MAX_OUTPUT_TOKENS
+
+
+def test_easing_family_alias_normalized():
+    """ease-out-cubic / easeInOutQuad 等常见写法必须归一，否则整段文字动画回退模板。"""
+    from clipwright.animation.mg.validator import normalize_easing
+
+    assert normalize_easing("ease-out-cubic") == "ease-out"
+    assert normalize_easing("easeInOutQuad") == "ease-in-out"
+    assert normalize_easing("ease-in-sine") == "ease-in"
+
+
+def test_shape_missing_field_repaired_to_rect():
+    mg = {
+        "duration_sec": 3,
+        "elements": [
+            {"type": "shape", "x": 100, "y": 100, "width": 20, "height": 20,
+             "keyframes": [{"time": 0, "opacity": 0}, {"time": 1, "opacity": 1}]},
+        ],
+    }
+    repaired, fixes = repair_mg_json(mg)
+    assert repaired["elements"][0]["shape"] == "rect"
+    assert any("missing shape" in f for f in fixes)

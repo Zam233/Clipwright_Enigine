@@ -58,7 +58,23 @@ def normalize_easing(value: Any) -> Any:
         return low
     if low.startswith("cubic-bezier("):
         return low
-    return EASING_ALIASES.get(low) or EASING_ALIASES.get(low.replace("-", "")) or raw
+    # 常见「基础缓动 + 曲线族」写法：ease-out-cubic / easeInOutQuad / ease-in-sine。
+    # 先剥掉曲线族后缀再查白名单/别名（旧实现只认精确别名，`ease-out-cubic`
+    # 直接判非法 → 整段文字动画回退模板）。
+    families = ("cubic", "quart", "quint", "quad", "sine", "expo", "circ",
+                "back", "elastic", "bounce")
+    stripped = low
+    for fam in families:
+        if stripped.endswith(fam):
+            stripped = stripped[: -len(fam)].rstrip("-")
+            break
+    for cand in (low, low.replace("-", ""), stripped, stripped.replace("-", "")):
+        if cand in VALID_EASINGS:
+            return cand
+        mapped = EASING_ALIASES.get(cand)
+        if mapped:
+            return mapped
+    return raw
 
 
 
@@ -269,6 +285,12 @@ def repair_mg_json(mg_def: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
             repaired["params"] = params
 
     for i, elem in enumerate(repaired.get("elements", [])):
+        if str(elem.get("type") or "") == "shape" and not str(elem.get("shape") or "").strip():
+            elem["shape"] = "rect"
+            fixes.append(f"elements[{i}]: missing shape → rect")
+        if str(elem.get("type") or "") == "shape" and elem.get("shape") not in VALID_SHAPES:
+            elem["shape"] = "rect"
+            fixes.append(f"elements[{i}]: invalid shape → rect")
         kfs = elem.get("keyframes", [])
         if not kfs:
             elem["keyframes"] = [
