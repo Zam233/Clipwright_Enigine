@@ -212,39 +212,46 @@
 - `motion` → ASS `\fad` / `\t` / `\move` / 逐字 Dialogue
 - `position/offset` → `\an` + `\pos` / `MarginV`
 
-## 7. 验收标准
+## 7. 验收标准（按当前真实状态修订）
 
-1. **337s**：文字「没有通报」按新样式出现（颜色/描边/阴影可配），hold ≤ 3s，结束前 0.2s 淡出；不与底部字幕重叠。
-2. **493s**：文字「离线下载功能」在 clip 开始后 1.2s 内逐字出现；抽帧 `+0.2s/+0.6s/+1.2s` 分别看到 1–2 / 3–4 / 全部字符；不允许首帧全文。
-3. 同一支片至少 3 种不同文字样式（白字描边、红色底板、黄色高亮）在成片里可区分。
-4. 预览与成片在 05:37 / 08:13 的文字内容、位置、颜色、底板一致。
-5. 自动化：
-   - `test_text_style_contract`：style 字段完整、非法字段降级；
-   - `test_typewriter_reveal`：逐字时间公式；
-   - `test_ass_text_animation`：ASS dialogue 含 `\fad` / 逐字行/`\pos`；
-   - `test_text_clip_duration_policy`：`duration_sec` 与 `duration_reason` 必须同时存在，且时长不得无理由默认等于宿主片段（不设硬上限）；
-   - 前端预览快照/时间推进测试。
-6. 回归：重跑 render，`renders/` 出片，`ffprobe` 时长 702s，抽帧验收通过。
+> 以下验收项**尚未全部通过**。不通过项已在 §12–§14 标注，不能再把“单测通过/有产物”当成验收通过。
 
-## 8. 里程碑
+1. **任务终态**：任务必须 `done`；不能是 `failed/capped`，也不能靠 accepted 收据把未修复的 motion 降级带过去。
+2. **337s**：文字「没有通报」按新样式出现（颜色/描边/阴影/底板可配），时长由 `duration_reason` 支撑，结束前淡出；不与底部字幕重叠。
+3. **493s**：文字「只禁离线下载」在 clip 开始后按 `reveal_sec` 逐字出现；抽帧 `+0.2s/+0.6s/+1.2s` 分别看到部分/更多/完整字符；不允许首帧全文。
+4. **样式多样性**：同一支片至少 3 种可区分文字样式（如白字描边、红色底板、黄色高亮）；当前实际 19 条全白、无底板，**未通过**。
+5. **预览与成片**：内容/位置/颜色/描边/阴影/底板一致；当前预览 box 圆角与 ASS 方角不一致，**未通过**。
+6. **动效真实实现**：slide_in / scale_in / highlight 必须有真实位移动画/缩放/高亮；glitch/neon 未实现时必须显式 `DEPENDENCY_MISSING` 或 error，不能 fade 冒充。
+7. **样式字段生效**：text_align、line_height、offset_x、box_radius、box_padding 必须在成片生效；当前 ASS 不生效。
+8. **工具自主性**：LLM 必须能通过一个带 style/motion 的工具把效果写入文字轨；当前 25 个 text_* 工具都没有完整 style 参数，**未通过**。
+9. **自动化**：
+   - `test_text_style_contract`、`test_typewriter_reveal`、`test_ass_text_animation`、`test_text_clip_duration_policy`（已有，但只覆盖基础）；
+   - 新增 motion 实现、box 几何、样式多样性、预览—成片一致、任务 done 的测试；
+   - 全片抽帧断言，不只人工截图。
+10. **全片**：任务 done + render 成功 + `ffprobe` 702s + 抽帧验收全部通过。
 
-| 阶段 | 内容 | 产出 |
+## 8. 里程碑（按完成度重标）
+
+| 阶段 | 状态 | 产出 / 未完成 |
 |---|---|---|
-| M1 契约 | `TextAnimationStyle` + 校验 + prompt | 数据契约、prompt 更新、单测 |
-| M2 生成 | `_mgdef_to_drawtext_keyframes` 提取样式；按内容决定 clip 时长并记录 reason；淡出 | 文字 clip 带样式、时长有内容依据 |
-| M3 Typewriter | ASS 逐字 Dialogue + reveal 公式 + 预览同步 | 493s 逐字抽帧通过 |
-| M4 样式渲染 | per-overlay ASS 样式/底板/描边/阴影；drawtext 兜底 | 3 种样式成片可区分 |
-| M5 验收 | render 抽帧、预览对比、质量规则 | 验收报告 + 成片 |
+| M1 契约 | ✅ 已完成 | style/motion/duration_reason 契约、prompt 示例、单测 |
+| M2 生成 | ✅ 已完成 | 时长/样式写入 clip、淡出、类型提示词 |
+| M3 Typewriter | ✅ 已完成 | ASS 逐字、固定起点、reveal 独立；cursor/标点停顿未完成 |
+| M4 样式渲染 | ⚠️ 部分完成 | per-overlay 颜色/描边/阴影、方角 box；圆角/内边距/对齐/行高/offset_x 未完成 |
+| M5 验收 | ⚠️ 部分完成 | 有全片 render 与局部抽帧；任务 failed、样式单一、动效未兑现，验收未通过 |
+| M6 引擎/工具 | ❌ 未完成 | slide/scale/highlight/glitch/neon/渐变/撕纸/多层描边、apply_text_style 工具 |
 
-## 9. 风险与开放问题
+## 9. 风险与开放问题（真实状态）
 
-- ASS 的底板圆角、渐变、故障风能力有限；一期做纯色方角/条带，复杂样式二期或 drawtext/Canvas 兜底。
-- 逐字 Dialogue 在长文本上事件数爆炸：限制 ≤40 字，超长走 `caption_only` 或逐词。
-- 预览与 ASS 的字体度量差异：以成片为准，预览标注“近似”。
-- 既有 `drawtext` 路径的 typewriter 是按整段时长摊开且从左边起排，需按本 PRD 修正（reveal 独立、整行居中）。
-- 质量门禁此前因主观语义项 fail 12 次，已在 `abdd0b4` 将 semantic/brief/type 降为 warning；本 PRD 的文字样式检查应作为新的硬/软门禁，不重复阻塞。
+- **ASS 的能力边界**：圆角/内边距/渐变文字/多层描边/故障/霓虹无法靠当前 ASS 实现；必须用 `\p` 背景层、MG HTML 或专门 renderer，否则只能明确不支持。
+- **“二期”不能吞掉需求**：用户图片里的渐变/撕纸/故障/霓虹属于输入需求；本 PRD 未实现，验收必须标失败，不能把“二期”当完成。
+- **长片段覆盖率**：`text_motion_weak` 按比例计算，内容驱动长停留会天然低覆盖；需要区分“内容要求 hold”与“动效缺失”，否则任务永远无法 done。
+- **样式多样性**：LLM 默认全白；prompt/质量门禁必须强制至少 N 种样式，否则“可配置样式”只是字段存在。
+- **预览与成片**：预览圆角/box 与 ASS 方角不一致；预览未实现 slide/scale/highlight/glitch，不能宣称一致。
+- **工具自主性**：25 个 text_* 工具输出独立 mp4，不写文字轨；没有 apply_text_style，LLM 不能自主完成图片效果。
+- **验收截图**：当前只有人工截图，没有自动化逐段断言；任务 failed 也说明“成功出片”未闭环。
 
-## 10. 代码证据（现状）
+## 10. 代码证据（历史诊断；部分已修，当前状态以 §12–§14 为准）
 
 - `clipwright/agents/animation_agent.py::_build_text_clip_llm`：文字 clip 生成，样式只取 `main_style` 部分字段。
 - `clipwright/services/render.py::_apply_text_ass`：默认 ASS 路径，未消费 `anim_type/keyframes`；样式取首条 overlay。
@@ -253,7 +260,7 @@
 - 成片抽帧：`_cache/render_check_337.jpg`、`_cache/render_check_493.jpg`（本次分析用），新验收用逐字帧。
 
 
-## 11. 实现记录（2026-11-15，部分完成）
+## 11. 实现记录（2026-11-15，只记录已落地代码，不代表验收通过）
 
 - `e0ef24e`：`TextAnimationStyle` 契约、`text_animation` prompt/校验、时长/淡出、ASS 逐字与 per-overlay 样式、底板。
 - `5725d3c`：quality 增加文字样式/时长依据/叠字检查。
@@ -467,3 +474,26 @@
 - **LLM 现在不能仅靠工具自主实现这些图片效果**；只能对纯色/描边/阴影/方角底板做有限近似。
 - **引擎也没有全部支持**：渐变文字、撕纸纹理、glitch、真正的霓虹/多层描边、圆角底板、滑动/缩放文字层均缺失。
 - 图片示例属于**需求但未实现**，不是“已有能力”；PRD 状态仍为“部分实现，验收未通过”。
+
+
+## 15. 覆盖核对：用户提出的问题是否都已进入 PRD
+
+| 用户关注点 | PRD 位置 | 是否忠实记录 |
+|---|---|---|
+| 任务 `task_a3e78e2fda` 最终 failed | §12.1、§7.1、§13.4 | ✅ |
+| typewriter 是否真正逐字 | §13.2、§7.3、§11 | ✅ 已实现但 cursor/标点未完成 |
+| slide/scale/highlight/glitch/neon 只 fade | §13.2、§7.6、§14.2 | ✅ 标为未实现/静默降级 |
+| word_by_word 实际逐字 | §13.2、§7.6 | ✅ |
+| 底板圆角/内边距在 ASS 是方角 | §13.1、§7.7、§8 M4 | ✅ |
+| text_align/line_height/offset_x 不生效 | §13.1、§7.7 | ✅ |
+| 渐变/撕纸/故障/霓虹缺失 | §3、§13.1、§14.3 | ✅ 标为未实现，不再归“二期=完成” |
+| 实际 19 条文字全白/无底板 | §13.3、§7.4 | ✅ |
+| 预览与成片不一致 | §13.5、§7.5 | ✅ |
+| 25 个 text_* 工具不能自主做图片效果 | §14.1、§14.3、§14.4 | ✅ |
+| 引擎是否全部支持 | §14.2 矩阵、§14.6 | ✅ 明确“没有全部支持” |
+| 缺 apply_text_style/text_effect 工具 | §14.5、§7.8 | ✅ |
+| quality 未做样式/motion/几何验收 | §13.4、§7.9 | ✅ |
+| 只做了局部抽帧，不是合格成片验收 | §12.1 #12、§13.5 | ✅ |
+| PRD 状态是否可标完成 | 文档头、§12.7、§14.6、§15 | ✅ 保持“部分实现，验收未通过” |
+
+> 结论：截至本版，**用户在本轮对话中提出的问题均已映射到 PRD 的具体章节**；PRD 不再把未实现项写成已完成，也不再以“二期/近似/收据”替代验收。
