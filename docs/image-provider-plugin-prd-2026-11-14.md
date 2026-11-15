@@ -161,7 +161,9 @@ class ImageProvider(Protocol):
    - `ROLE_LABELS.image = '图像模型'`；
    - `AvailableProviders` 类型补 `image_provider?: string[]`。
 2. `src/pages/admin/ProvidersPage.tsx`：`TABS` 增 `{ kind: 'image', label: 'AI 生图', hint: '文生图 / 图生图；模型与网关在此配置' }`。
-3. 表单字段仍由 `schemaFor(schemas, 'image', provider)` 驱动（`config_schema`），**不新增厂商字段**；`secret: true` 的 `api_key` 走既有掩码/加密。
+3. **基础连接字段归「源」**：`base_url` / `api_key`（多条，加密+掩码）/ `timeout_sec` / `proxy` / `headers` 由「源设置」区统一渲染；
+   **插件 `config_schema` 只放厂商专有参数**（本期两个插件不声明，避免出现两组重复输入框与"写了不生效"的死旋钮）。
+   生成工具需要的模型名走「源内的模型清单 + `image` 角色绑定」。
 4. 未安装任何图像 provider 时：下拉为空 + 明示「（未安装）」，与现有 `providersForKind` 行为一致；不提供点了必报错的选项。
 5. 该 tab 的「测试连接」按钮走 `POST /{source_id}/test`，按 `{ok, detail}` 展示。
 
@@ -171,7 +173,7 @@ class ImageProvider(Protocol):
 
 | 插件 | 贡献 | 职责 | 依赖 |
 |---|---|---|---|
-| `plugins/image_providers`（AI 生图 provider 插件） | `kind: image_provider`，id `openai_compatible` | 通用 OpenAI 兼容实现：`POST {base_url}/images/generations`，支持 `b64_json` / `url`；`config_schema`：`base_url`、`api_key`（secret）、`model`、`timeout_sec`、`size_dialect`；`capabilities`：`sizes` 可配、`max_n`、`reference_image`、`cost_per_image_usd`（可空） | 无 |
+| `plugins/image_providers`（AI 生图 provider 插件） | `kind: image_provider`，id `openai_compatible` | 通用 OpenAI 兼容实现：`POST {base_url}/images/generations`，支持 `b64_json` / `url`；连接字段全部走「源」（不重复声明 `config_schema`）；`capabilities`：`sizes` 可配、`max_n`、`reference_image`、`cost_per_image_usd`（可空） | 无 |
 | `plugins/image_gpt_images`（OpenAI gpt-images 插件） | `kind: image_provider`，id `openai_gpt_image` | 针对 `gpt-image-1` 的专有参数与响应：`size` 档位（`1024x1024` / `1536x1024` / `1024x1536` / `auto`）、`quality`、`background`、`output_format`、`n`；默认 `model=gpt-image-1`；响应以 `b64_json` 为主 | 无（可复制少量公共 HTTP 辅助，或后续抽 `plugins/image_common` 包） |
 
 两个插件都只做「协议 ↔ 厂商」翻译，不写盘、不登记账本、不改时间线。
@@ -198,7 +200,7 @@ class ImageProvider(Protocol):
 
 ## 4. 数据、安全与错误语义
 
-- **密钥**：`api_key` 在 `config_schema` 标 `secret: true`，走既有 Fernet 加密与掩码回显（`provider_sources` 与插件 secret 同机制）。
+- **密钥**：`api_key` 走「源」的 `api_keys` 字段（Fernet 加密 + 掩码回显），不放进插件 `config_schema`；插件 `config_schema` 若声明 secret 字段同样加密，但本期不需要。
 - **URL/SSRF**：插件下载 `url` 响应前必须 `security.assert_public_url`；或只使用 `b64_json`（gpt-image-1 默认）。Engine 在第二期落盘时仍会再校验一次。
 - **尺寸**：Engine 只按 `capabilities().sizes` 白名单校验；`"any"` 时接受 `WxH` 并做 64..4096 与偶数校验；非法**报错并列可用值**，不静默改。
 - **`n` / 参考图 / 格式**：超限或不支持一律报错，不静默截断/忽略。

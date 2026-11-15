@@ -10,27 +10,8 @@ api_version: "2"
 contributions:
   - kind: image_provider
     id: openai_gpt_image
-    config_schema:
-      base_url:
-        type: string
-        label: API Base URL
-        placeholder: https://api.openai.com/v1
-      api_key:
-        type: string
-        label: API Key
-        secret: true
-      model:
-        type: string
-        label: 模型
-        default: gpt-image-1
-      quality:
-        type: string
-        label: 质量（low/medium/high/auto）
-        default: auto
-      timeout_sec:
-        type: number
-        label: 请求超时（秒）
-        default: 180
+    # 同 image_providers：基础连接字段归「源」；专有参数（quality 等）待接入
+    # 生成链路时再作为源 config 透传，避免现在出现重复且无效的输入框。
     capabilities:
       sizes: ["1024x1024", "1536x1024", "1024x1536", "auto"]
       max_n: 10
