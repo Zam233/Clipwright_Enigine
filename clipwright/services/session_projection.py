@@ -107,7 +107,8 @@ def _meta_for(event: Any) -> dict[str, Any]:
     }
     for key in ("phase", "stage", "status", "tool", "skill", "agent", "run_id",
                 "duration_ms", "step_id", "chars", "artifact", "path", "title",
-                "kind", "done", "error", "truncated"):
+                "kind", "done", "error", "truncated", "capability",
+                "args_brief", "seq_in_run"):
         if key in detail and detail[key] is not None:
             meta[key] = detail[key]
     role = _ROLE.get(event.type)
@@ -161,6 +162,10 @@ class Projector:
                 return False
             item_type = "content"
         detail = _detail(event)
+        # 技能调用与普通工具在时间线里必须分开（PRD skill-pluginization）：
+        # 后端事件已带 kind=skill，这里据此投影成 `skill` 类型。
+        if item_type == "tool" and str(detail.get("kind") or "") == "skill":
+            item_type = "skill"
         meta = _meta_for(event)
         meta["task_id"] = task_id
         content = _content_for(event)

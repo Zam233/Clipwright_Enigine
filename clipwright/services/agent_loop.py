@@ -77,6 +77,21 @@ def _is_repeatable(name: str) -> bool:
     return str(name) in _REPEATABLE_TOOLS
 
 
+def _skill_meta(name: str) -> dict[str, Any]:
+    """工具调用事件的 kind/skill 标记（审计：主 agent 的技能调用与工具不可分）。
+
+    能力名由 SkillRegistry 判定；异常时按普通工具处理，绝不让事件层炸掉执行。
+    """
+    try:
+        from clipwright.tool.surface import is_skill
+
+        if is_skill(name):
+            return {"kind": "skill", "skill": name}
+    except Exception:  # noqa: BLE001
+        pass
+    return {"kind": "tool"}
+
+
 def _seq_of(event: Any) -> str:
     """把上一条事件变成 `causation_id`（`seq:N`）；拿不到就空——不编造。"""
     seq = getattr(event, "seq", None)
@@ -380,7 +395,8 @@ async def run_loop(task: Any, *, context_text: str = "",
             return {"status": "refused",
                     "error": f"工具调用次数已达上限（{max_calls}）"}
         call_event = emit(task_id, "tool_call", f"{name}",
-                          {"tool": name, "args": args, "shadow": shadow})
+                          {"tool": name, "args": args, "shadow": shadow,
+                           **_skill_meta(name)})
         if shadow:
             # 影子：不执行副作用，只记录"模型想调什么"
             calls.append({"tool": name, "ok": True, "status": "shadowed",
@@ -543,7 +559,7 @@ async def run_loop(task: Any, *, context_text: str = "",
         emit(task_id, "tool_result", f"{name} → {result.get('status')}",
              {"tool": name, "status": result.get("status"),
               "error": result.get("error"), "duration_ms": elapsed,
-              "brief": _brief_of(result)},
+              "brief": _brief_of(result), **_skill_meta(name)},
              causation_id=f"seq:{_seq_of(call_event)}")
         return result
 

@@ -507,6 +507,7 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     usage_before = llm_usage_snapshot()
     degradations: list[Any] = []
     payload: dict[str, Any] = {}
+    skill_calls: list[dict[str, Any]] = []
     # 阶段墙钟下限（E2E 2026-10-29）：`timeout_sec` 是主 agent 可以自己填的参数，
     # 实测它填了 900s → material（43 场逐场搜素材 + 视觉 LLM）与 animation（43 段 MG
     # 逐个渲染）必然超时，然后自己重试、再超时，白烧半小时。模型不该有权把阶段超时
@@ -530,6 +531,20 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
 
         with task_scope(task_id, stage=stage), degradation_scope(degradations), use_route(route):
             from clipwright.services.timeouts import wait_or_run
+
+            # 技能轮（skill-pluginization M2）：没有 LLM 工具轮的阶段（material /
+            # animation / audio / quality 等）先让模型自主选择 0–2 个技能补分析；
+            # 有工具轮的阶段（edit 等）技能已并入工具面，这里仍可补一次轻量调用。
+            try:
+                if getattr(agent, "run_skill_round", None) is not None:
+                    _brief = f"{stage} 阶段：{str(getattr(spec, 'brief', '') or '')[:200]}"
+                    _sr = await asyncio.wait_for(
+                        agent.run_skill_round(_brief, pipeline_id=context.pipeline_id),
+                        timeout=min(60.0, timeout_eff) if timeout_eff > 0 else 60.0,
+                    )
+                    skill_calls = list((_sr or {}).get("tool_calls") or [])
+            except Exception as exc:  # noqa: BLE001 — 技能轮失败不影响阶段主流程
+                logger.debug("阶段 %s 技能轮跳过: %s", stage, exc)
 
             output = await wait_or_run(agent.execute(input_obj, context), timeout_eff)
         payload = stage_merge.payload_of(output)
@@ -582,7 +597,7 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
                      + int(usage_after.get("output_tokens", 0)))
                  - (int(usage_before.get("input_tokens", 0))
                     + int(usage_before.get("output_tokens", 0))))
-    stage_tool_calls = list(getattr(agent, "last_tool_calls", None) or [])
+    stage_tool_calls = list(skill_calls) + list(getattr(agent, "last_tool_calls", None) or [])
     # 暗区补齐（PRD M2）：素材源检索 / MG 生成 / 插件与 skill 调用不走 call_tool，
     # 但同样属于"子 agent 干了什么"。`operation()` 记下的条目在这里并入轨迹
     # （source=internal），随 tool_calls 一起进 AgentResult 与落盘文件。
