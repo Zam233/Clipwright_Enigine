@@ -118,16 +118,27 @@ PluginData/plugins/{plugin_id}/config.yaml
 
 - Engine 契约：`providers/base.py::ImageProvider`（`default_model` / `capabilities` /
   `generate` / 可选 `probe`）；贡献种类 `image_provider`（第 20 类）。
-- 配置：后台「供应商 → AI 生图」tab（`kind=image`），字段由插件 `config_schema` 驱动，
-  `api_key` 标 `secret: true` 走加密与掩码。
+- 配置：后台「供应商 → AI 生图」tab（`kind=image`）。**基础连接字段归「源设置」**
+  （`base_url` / `api_key` / `timeout_sec` / `proxy` / `headers`，密钥加密+掩码）；
+  插件 `config_schema` 只放厂商专有参数（本期两个插件不声明，避免两组重复输入框）。
 - 内置插件：
   | 插件 | provider id | 说明 |
   |------|-------------|------|
   | `plugins/image_providers` | `openai_compatible` | 通用 OpenAI 兼容：`POST {base_url}/images/generations`，`b64_json`/`url` 双响应 |
   | `plugins/image_gpt_images` | `openai_gpt_image` | `gpt-image-1` 专有：固定 size 档位、quality 参数 |
 - 新增厂商 = 新插件实现 `ImageProvider`，**不要**在 Engine 里加厂商分支。
-- 生成工具（`image_generate`）与工作区素材可见性属第二期，见
-  [image-provider-plugin-prd-2026-11-14.md](image-provider-plugin-prd-2026-11-14.md)。
+- 生成工具 `image_generate`（工作区落盘/幂等账本/素材可见性）与 `timeline_insert_image`
+  已随第二期接入，见 [image-provider-plugin-prd-2026-11-14.md](image-provider-plugin-prd-2026-11-14.md)。
+
+### Provider 配置字段口径（2026-11-15）
+
+- `ProvidersPage` 始终渲染「源设置」：`base_url` / `api_key`（多条）/ `timeout_sec` /
+  `proxy` / `headers`。
+- provider 插件的 `config_schema` **只声明厂商专有参数**；不要重复声明上述连接字段——
+  否则页面出现两组输入框，而且插件 config 与源配置互不同步（写了不生效）。
+- 专有参数必须真的有消费方：源 `config` 目前只在 `provider_sources` 存取/加密，
+  provider 调用点并未读取；**未接线就不要在 UI 暴露**，等接线后再声明。
+- TTS 的 `default_model`、`workspace_id` 等非连接字段可保留，但同样以"已接线"为前提。
 
 **工具可用性与生成历史入库（轮次 61）**：
 
