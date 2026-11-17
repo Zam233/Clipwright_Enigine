@@ -553,3 +553,15 @@ text_motion_llm_max_output_tokens=4096
 - 测试 `test_motion_spec` 11 passed；短 Hyperframes E2E 帧：
   `_cache/motion_spec_e2e3/frame.png`；
 - 仍未完成：真实 LLM provider 的完整任务 E2E、前端独立 MotionSpec 解释、PR。
+
+
+### 完成状态（2026-11-18）
+
+- MotionSpec schema/validator/interpolation/compiler 完成；
+- tracks/camera/stagger/mask/3D/blur/clip 编译完成；
+- text-motion-llm author 插件完成；
+- Agent 写回 motion_spec/hash/motion_author 完成；
+- render/quality 允许编译产物，render 不 import author；
+- 合成 2s RenderService E2E 成功，MotionSpec 测试 16 passed；
+- 真实 LLM provider E2E 受环境缺少 openai provider 阻断（`未安装 LLM provider: openai`）；
+- PR #20 open。
