@@ -787,89 +787,51 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         marker: dict[str, Any],
         persona_style: dict[str, Any],
     ) -> None:
-        """模板路径（同步）：AnimationCatalog 固定关键帧 → drawtext clip。
+        """旧同步适配器：不再使用 AnimationCatalog 固定关键帧。
 
-        生产路径请用 `_handle_text_animation_async`（LLM 优先，失败回退到这里）；
-        保留同步入口是为了既有调用方与测试的稳定契约。
+        新生产路径是 `_handle_text_animation_async`（LLM + text-motion-core）。
+        这里仅为旧调用方/测试保留：按插件 provider 生成静态/MG 文字 clip，
+        不生成任何模板 keyframes；motion 服务由 text-motion-core 决定。
         """
         clip_duration = max(0.2, float(vid_clip.duration_sec or 0.2))
         text_content, text_source = self._extract_text_with_source(vid_clip, marker)
         if not text_content:
             text_content = marker.get("text", "")
-            if text_content:
-                text_source = "marker"
-        is_typewriter = self._is_typewriter_like(anim_id)
+            text_source = "marker" if text_content else text_source
         if len(text_content) > 50 and text_source in ("marker", "metadata"):
             self._handle_caption(text_track, vid_clip, text_content, persona_style)
             return
-        full_kfs = AnimationCatalog.build_full_keyframes(
-            anim_id, vid_clip.start_sec, clip_duration
-        )
-
-        # 完整文字样式字段（统一默认 + persona_style 覆盖，任务 32）
         style = _merge_style_defaults(DEFAULT_TEXT_STYLE, persona_style)
-
-        # 底部叠字修复（E2E 2026-10-30）：文字动画的正文往往就是旁白整句，
-        # 而 audio 阶段的字幕也来自同一份旁白 → 成片底部出现两行字
-        # （一行文字动画、一行字幕）。字幕负责"说出来的每一句"，文字动画只做
-        # 短语/关键词强调。判据：内容等于所在片段的旁白且足够长（>10 字）→ 交给字幕。
-        _narration = ""
-        try:
-            _narration = str(getattr(vid_clip, "text", "") or
-                             (vid_clip.metadata or {}).get("narration_text") or "").strip()
-        except Exception:  # noqa: BLE001 — 取不到旁白就按普通文字动画处理
-            _narration = ""
-        if _narration and len(text_content.strip()) > 10 and \
-                text_content.strip() == _narration:
-            logger.info(
-                "AnimationAgent: 文字动画与旁白整句重复，交给字幕渲染（避免底部叠字）: %s",
-                text_content[:30],
-            )
-            return
-
+        style.pop("text", None)
+        _motion_id = str(anim_id or "fade_in")
+        if _motion_id.startswith("text_"):
+            _motion_id = _motion_id[5:]
+        motion = {"type": _motion_id or "fade_in", "reveal_sec": 0.4, "cursor": False}
         text_clip = Clip(
-            id=_uid("tc"),
-            kind=ClipKind.TEXT,
-            asset_id="",
-            track_id=text_track.id,
-            start_sec=vid_clip.start_sec,
-            duration_sec=clip_duration,
-            text=text_content or marker.get("text", ""),
-            font="sans-serif",
-            **style,
-            keyframes=full_kfs,
+            id=_uid("tc"), kind=ClipKind.TEXT, asset_id="", track_id=text_track.id,
+            start_sec=vid_clip.start_sec, duration_sec=min(clip_duration, 6.0),
+            text=text_content, font="sans-serif", **style,
             metadata={
-                "anim_type": anim_id,
-                "anim_name": anim_name,
-                "renderer": "drawtext",
-                # 位置避让（同上）：字幕固定在 bottom，文字动画默认落在 center，
-                # 只有 persona 显式声明了 text_anim_position 时才跟随。
-                "position": (
-                    persona_style.get("text_anim_position")
-                    or ("center" if str(persona_style.get("position") or "bottom") == "bottom"
-                        else persona_style.get("position"))
-                ),
-                "stroke_width": persona_style.get("stroke_width", 0),
-                "stroke_color": persona_style.get("stroke_color", "#000000"),
+                "anim_type": anim_id, "anim_name": anim_name,
+                "renderer": "mg_hyperframes", "mg_html": "", "mg_def": {},
+                "style": style, "motion": motion,
+                "text_anim_type": anim_id, "apply_text_style": True,
             },
         )
-        if is_typewriter:
-            text_clip.metadata["typewriter"] = True
-
-        # 启用重叠去重（_find_overlapping_clip 此前定义未调用）——
-        # 同轨道文字片段时间重叠会叠字渲染
+        from clipwright.animation.text_mg import apply_text_style_to_clip
+        try:
+            text_clip = apply_text_style_to_clip(
+                text_clip, style=style, motion=motion,
+                width=int(self._tl_width or 1920), height=int(self._tl_height or 1080),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AnimationAgent: legacy sync text provider 失败: %s", exc)
+            return
         overlap = self._find_overlapping_clip(text_track, text_clip)
         if overlap is not None:
-            logger.info("AnimationAgent: 跳过重叠文字动画 %s（与 %s 时间重叠）",
-                        text_clip.id[:8], overlap.id[:8])
             return
-
         text_track.clips.append(text_clip)
         text_track.clips.sort(key=lambda c: c.start_sec)
-
-    # ── 长文本字幕处理 ─────────────────────────────────────
-
-    # ── 文字动画 LLM 路线（PRD text-animation-llm M2）────────────
 
     @staticmethod
     def _text_llm_enabled() -> bool:
