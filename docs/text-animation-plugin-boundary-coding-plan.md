@@ -1,6 +1,7 @@
 # 文字动画插件化 Coding Plan
 
 > 对应 PRD：[text-animation-plugin-boundary-prd.md](text-animation-plugin-boundary-prd.md)  
+> 实现分支：`ref/文字效果插件化`  
 > 目标：Engine 只保留文字动画接口、渲染运行时、布局原语、预览/质量/时间线；fade/slide/scale/typewriter/word_by_word/highlight 等基础动效由独立插件 `text-motion-core` 提供。  
 > 原则：**先做无损抽象，再搬实现；每步可回滚、可对比、不得静默降级。**
 
