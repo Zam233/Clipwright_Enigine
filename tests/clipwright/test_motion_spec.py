@@ -97,3 +97,13 @@ def test_render_module_does_not_import_llm_author():
     text = Path("clipwright/services/render.py").read_text(encoding="utf-8")
     assert "text_motion_llm" not in text
     assert "plugins.text_motion_llm" not in text
+
+
+def test_text_stagger_splits_units():
+    spec = _spec(layers=[{"id": "t", "type": "text", "content": "逐字", "text_motion": {
+        "unit": "char", "stagger": 0.1, "unit_duration": 0.3},
+        "keyframes": [{"time": 0, "opacity": 0}, {"time": 0.5, "opacity": 1}]}])
+    plan = compile_motion_spec(spec)
+    texts = [e for e in plan.mg_def["elements"] if e.get("type") == "text"]
+    assert len(texts) == 2
+    assert texts[1]["keyframes"][0]["time"] > texts[0]["keyframes"][0]["time"]

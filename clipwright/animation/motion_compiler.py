@@ -137,15 +137,48 @@ def compile_motion_spec(spec: MotionSpec, *, width: int | None = None, height: i
                 px, py = sample_path(layer.motion_path.type, layer.motion_path.points, val)
                 kfs.append({"time": round(t, 3),
                             "translate_x": (px - 0.5) * w, "translate_y": (py - 0.5) * h})
-        if kfs:
-            base["keyframes"] = kfs
+        # 逐字/逐词 stagger：按单元拆成多个 text 元素，并整体平移时间
+        if layer.type == "text" and layer.text_motion and layer.text_motion.unit in ("char", "word"):
+            from clipwright.animation.text_primitives import char_width
+            unit = layer.text_motion.unit
+            pieces = list(layer.content) if unit == "char" else layer.content.split()
+            if unit == "char":
+                total_w = sum(char_width(c, float(style.get("font_size", 72))) for c in pieces)
+                start_x = (w - total_w) / 2
+                xpos = start_x
+            else:
+                start_x = 0.0
+                xpos = 0.0
+            for i, part in enumerate(pieces):
+                if not part.strip():
+                    xpos += char_width(part, float(style.get("font_size", 72)))
+                    continue
+                unit_base = dict(base)
+                unit_base["content"] = part
+                if unit == "char":
+                    unit_base["x"] = xpos
+                    xpos += char_width(part, float(style.get("font_size", 72)))
+                else:
+                    unit_base["x"] = "center"
+                delay = i * float(layer.text_motion.stagger or 0)
+                unit_kfs = []
+                for kf in kfs:
+                    k = dict(kf)
+                    k["time"] = round(max(0.0, min(duration, float(k.get("time", 0)) + delay)), 3)
+                    unit_kfs.append(k)
+                if unit_kfs:
+                    unit_base["keyframes"] = unit_kfs
+                elements.append(unit_base)
+        else:
+            if kfs:
+                base["keyframes"] = kfs
+            elements.append(base)
         # effects → CSS 可接收的静态/关键帧字段
         for effect in layer.effects or []:
             if effect.get("type") == "blur" and isinstance(effect.get("radius"), (int, float)):
                 base["filter"] = f"blur({effect['radius']:g}px)"
             if effect.get("type") == "glow" and effect.get("color"):
                 base["text_shadow"] = f"0 0 {float(effect.get('blur', 14)):g}px {effect['color']}"
-        elements.append(base)
 
     mg = {
         "animation_id": spec.spec_id or "motion_spec",
