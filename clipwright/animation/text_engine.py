@@ -116,9 +116,20 @@ class TextMotionRegistry:
 
 class TextAnimationEngine:
     def capabilities(self) -> dict[str, Any]:
+        try:
+            from clipwright.animation.text_plugin_registry import (
+                TextAssetPackRegistry, TextPromptPackRegistry, TextStylePackRegistry,
+            )
+            packs = {
+                "prompts": [x["id"] for x in TextPromptPackRegistry.list()],
+                "styles": [x["id"] for x in TextStylePackRegistry.list()],
+                "assets": [x["id"] for x in TextAssetPackRegistry.list()],
+            }
+        except Exception:
+            packs = {"prompts": [], "styles": [], "assets": []}
         return {"motions": TextMotionRegistry.list(),
                 "style_schema": 1,
-                "renderer": "mg_hyperframes"}
+                "renderer": "mg_hyperframes", "packs": packs}
 
     def plan(self, *, text: str, style: dict, motion: dict,
              width: int, height: int, display_sec: float,
@@ -187,6 +198,7 @@ class TextAnimationEngine:
             "style": plan.style, "motion": plan.motion, "mg_def": plan.mg_def,
             "mg_html": html, "mg_params": {}, "renderer": "mg_hyperframes",
             "text_provider_id": plan.provider_id, "fidelity": plan.fidelity,
+            "preview_ops": list(plan.preview_ops or []),
             "apply_text_style": True,
         })
         clip.metadata = meta

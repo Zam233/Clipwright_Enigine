@@ -57,6 +57,9 @@ class ContributionKind(str, Enum):
     # ── 方案 G：文字动效 provider（第 21 类，文字效果插件化）──
     #: object 必须是 TextMotionProvider；engine 只持有接口，实现由插件提供。
     TEXT_MOTION = "text_motion"
+    TEXT_PROMPT_PACK = "text_prompt_pack"
+    TEXT_STYLE_PACK = "text_style_pack"
+    TEXT_ASSET_PACK = "text_asset_pack"
 
 
 class ConflictPolicy(str, Enum):

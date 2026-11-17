@@ -1,0 +1,11 @@
+id: "text_packs"
+name: "文字 Prompt/Style/Asset 包"
+version: "1.0.0"
+kind: "capability"
+description: "纯数据的文字类型 prompt、style preset、asset pack"
+entry_point: "text_packs.main"
+api_version: "2"
+contributions:
+  - { kind: text_prompt_pack, id: spotlight_quote }
+  - { kind: text_style_pack, id: editorial_dark }
+  - { kind: text_asset_pack, id: paper_assets }

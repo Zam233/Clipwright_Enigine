@@ -117,7 +117,23 @@ _BY_ID = {spec.id: spec for spec in TEXT_ANIM_SPECS}
 
 
 def get_text_spec(type_id: str) -> TextAnimSpec | None:
-    return _BY_ID.get(str(type_id or ""))
+    type_id = str(type_id or "")
+    try:
+        from clipwright.animation.text_plugin_registry import TextPromptPackRegistry
+        packed = TextPromptPackRegistry.get(type_id)
+        if packed:
+            return TextAnimSpec(
+                id=type_id,
+                name=str(packed.get("name") or type_id),
+                intent=str(packed.get("intent") or ""),
+                motion=str(packed.get("motion") or ""),
+                constraints=tuple(packed.get("constraints") or ()),
+                anti_patterns=tuple(packed.get("anti_patterns") or ()),
+                default_anchor=str(packed.get("default_anchor") or "center"),
+            )
+    except Exception:
+        pass
+    return _BY_ID.get(type_id)
 
 
 def known_text_ids() -> tuple[str, ...]:
@@ -133,6 +149,14 @@ def _read_prompt(type_id: str) -> str:
 
 
 def load_text_prompt(type_id: str) -> dict[str, str]:
+    try:
+        from clipwright.animation.text_plugin_registry import TextPromptPackRegistry
+        packed = TextPromptPackRegistry.get(type_id)
+        if packed and str(packed.get("prompt") or "").strip():
+            text = str(packed["prompt"])
+            return {name: text for name in PROMPT_SECTIONS}
+    except Exception:
+        pass
     """按 `## 段名` 切分提示词正文（与 `type_specs.load_type_prompt` 同构）。"""
     body = _read_prompt(type_id)
     if not body.strip():

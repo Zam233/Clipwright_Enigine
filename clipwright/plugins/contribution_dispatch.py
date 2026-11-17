@@ -42,6 +42,9 @@ _WIRED_KINDS = {
     ContributionKind.PROMPT,
     ContributionKind.CLIP_KIND,
     ContributionKind.TEXT_MOTION,
+    ContributionKind.TEXT_PROMPT_PACK,
+    ContributionKind.TEXT_STYLE_PACK,
+    ContributionKind.TEXT_ASSET_PACK,
 }
 
 #: Provider 类 kind（facade-only，但注册前要做协议符合性校验 —— B2）
@@ -201,6 +204,24 @@ def register(owner: str, item: Contribution, *, policy=None) -> Optional[str]:
         if item.kind is ContributionKind.TEXT_MOTION:
             from clipwright.animation.text_engine import TextMotionRegistry
             reason = TextMotionRegistry.register(item.object, plugin_id=owner)
+            if reason:
+                return reason
+
+        elif item.kind is ContributionKind.TEXT_PROMPT_PACK:
+            from clipwright.animation.text_plugin_registry import TextPromptPackRegistry
+            reason = TextPromptPackRegistry.register(item.id, item.meta, plugin_id=owner)
+            if reason:
+                return reason
+
+        elif item.kind is ContributionKind.TEXT_STYLE_PACK:
+            from clipwright.animation.text_plugin_registry import TextStylePackRegistry
+            reason = TextStylePackRegistry.register(item.id, item.meta, plugin_id=owner)
+            if reason:
+                return reason
+
+        elif item.kind is ContributionKind.TEXT_ASSET_PACK:
+            from clipwright.animation.text_plugin_registry import TextAssetPackRegistry
+            reason = TextAssetPackRegistry.register(item.id, item.meta, plugin_id=owner)
             if reason:
                 return reason
 
@@ -385,6 +406,15 @@ def unregister(owner: str, keys: list[str]) -> list[str]:
             elif kind_value == ContributionKind.TEXT_MOTION.value:
                 from clipwright.animation.text_engine import TextMotionRegistry
                 TextMotionRegistry.unregister_plugin(owner)
+            elif kind_value == ContributionKind.TEXT_PROMPT_PACK.value:
+                from clipwright.animation.text_plugin_registry import TextPromptPackRegistry
+                TextPromptPackRegistry.unregister_plugin(owner)
+            elif kind_value == ContributionKind.TEXT_STYLE_PACK.value:
+                from clipwright.animation.text_plugin_registry import TextStylePackRegistry
+                TextStylePackRegistry.unregister_plugin(owner)
+            elif kind_value == ContributionKind.TEXT_ASSET_PACK.value:
+                from clipwright.animation.text_plugin_registry import TextAssetPackRegistry
+                TextAssetPackRegistry.unregister_plugin(owner)
             elif kind_value == ContributionKind.PROMPT.value:
                 from clipwright.plugins import prompt_overrides
                 from clipwright.plugins.prompt_registry import PluginPromptRegistry
