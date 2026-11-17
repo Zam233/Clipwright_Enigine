@@ -115,6 +115,25 @@ class TextMotionRegistry:
 
 
 class TextAnimationEngine:
+    @staticmethod
+    def resolve_style_pack(pack_id: str) -> dict[str, Any]:
+        from clipwright.animation.text_plugin_registry import TextStylePackRegistry
+        pack = TextStylePackRegistry.get(pack_id)
+        if not pack:
+            raise TextMotionUnavailable(f"没有 text_style_pack: {pack_id!r}")
+        return dict(pack.get("style") or {})
+
+    @staticmethod
+    def resolve_asset(pack_id: str, asset_id: str) -> dict[str, Any]:
+        from clipwright.animation.text_plugin_registry import TextAssetPackRegistry
+        pack = TextAssetPackRegistry.get(pack_id)
+        if not pack:
+            raise TextMotionUnavailable(f"没有 text_asset_pack: {pack_id!r}")
+        for asset in pack.get("assets") or []:
+            if str(asset.get("id") or "") == str(asset_id or ""):
+                return dict(asset)
+        raise TextMotionUnavailable(f"asset_pack {pack_id!r} 没有 asset: {asset_id!r}")
+
     def capabilities(self) -> dict[str, Any]:
         try:
             from clipwright.animation.text_plugin_registry import (
@@ -134,7 +153,10 @@ class TextAnimationEngine:
     def plan(self, *, text: str, style: dict, motion: dict,
              width: int, height: int, display_sec: float,
              base_mg_def: dict | None = None,
-             provider_id: str | None = None) -> TextPlan:
+             provider_id: str | None = None,
+             style_pack_id: str | None = None) -> TextPlan:
+        if style_pack_id:
+            style = {**self.resolve_style_pack(style_pack_id), **dict(style or {})}
         normalized_style = normalize_style(style)
         motion_type = provider_id or str(motion.get("type") or "fade_in")
         provider = TextMotionRegistry.resolve(motion_type)
@@ -192,6 +214,7 @@ class TextAnimationEngine:
             text=str(clip.text or ""), style=style, motion=motion,
             width=int(width), height=int(height),
             display_sec=float(clip.duration_sec or 3), base_mg_def=base,
+            style_pack_id=str(meta.get("style_pack_id") or "") or None,
         )
         html = self.render_html(plan)
         meta.update({

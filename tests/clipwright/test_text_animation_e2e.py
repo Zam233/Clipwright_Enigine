@@ -75,36 +75,26 @@ def _ov(text: str, start: float, dur: float, *, motion: dict | None = None,
 
 
 @pytest.mark.asyncio
-async def test_typewriter_reveals_more_pixels_over_time(tmp_path):
+async def test_legacy_typewriter_is_static_readonly(tmp_path):
+    # 旧 ASS 文字 motion 已从 engine 删除；旧时间线只读兼容并退化为静态文字。
     video = await _render(tmp_path, [
         _ov("逐字测试", 0.2, 1.6, motion={"type": "typewriter", "reveal_sec": 0.9}),
     ])
     bbox_mid = _white_bbox(_frame(video, 0.45, tmp_path / "tw_mid.jpg"))
     bbox_end = _white_bbox(_frame(video, 1.5, tmp_path / "tw_end.jpg"))
     assert bbox_mid and bbox_end
-    assert bbox_end[4] > bbox_mid[4], (bbox_mid, bbox_end)
-    assert (bbox_end[2] - bbox_end[0]) > (bbox_mid[2] - bbox_mid[0])
+    assert abs(bbox_end[4] - bbox_mid[4]) < max(80, bbox_mid[4] * 0.1), (bbox_mid, bbox_end)
 
 
 @pytest.mark.asyncio
-async def test_slide_moves_up_and_scale_grows(tmp_path):
-    slide_video = await _render(tmp_path, [
+async def test_legacy_slide_and_scale_are_static_readonly(tmp_path):
+    # 旧 ASS motion 已从 engine 删除；只验证旧时间线仍能出片、不崩溃。
+    await _render(tmp_path, [
         _ov("滑动", 0.2, 1.6, motion={"type": "slide_in", "reveal_sec": 0.5}),
     ])
-    slide_early = _white_bbox(_frame(slide_video, 0.28, tmp_path / "slide_early.jpg"))
-    slide_late = _white_bbox(_frame(slide_video, 1.3, tmp_path / "slide_late.jpg"))
-    assert slide_early and slide_late
-    assert slide_late[1] < slide_early[1], "slide_in 应向上移动"
-
-    scale_video = await _render(tmp_path, [
+    await _render(tmp_path, [
         _ov("缩放", 0.2, 1.6, motion={"type": "scale_in", "reveal_sec": 0.5}),
     ])
-    scale_early = _white_bbox(_frame(scale_video, 0.28, tmp_path / "scale_early.jpg"))
-    scale_late = _white_bbox(_frame(scale_video, 1.3, tmp_path / "scale_late.jpg"))
-    assert scale_early and scale_late
-    early_w = scale_early[2] - scale_early[0]
-    late_w = scale_late[2] - scale_late[0]
-    assert late_w > early_w, (early_w, late_w)
 
 
 @pytest.mark.asyncio
