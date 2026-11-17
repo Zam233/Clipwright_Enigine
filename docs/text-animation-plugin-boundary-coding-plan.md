@@ -397,3 +397,44 @@ plugins/text_motion_core/
 - [ ] 不装插件时显式失败，不回退 ASS/白字/模板；
 - [ ] E2E 任务 done，video/audio 702s，抽帧和预览对比通过；
 - [ ] 代码提交、push、PR。
+
+
+## 10. 实施记录（分支 `ref/文字效果插件化`）
+
+### 已完成
+
+- 新增 `clipwright/animation/text_engine.py`：
+  - `TextAnimationEngine` / `TextPlan` / `TextMotionRequest` / `MotionPlan` / `TextMotionProvider` / `TextMotionRegistry`；
+  - engine 只做 style 归一化、provider 解析、MGDef 校验、HTML 渲染、apply_style；无 motion 分支。
+- 新增 `clipwright/animation/text_primitives.py`：颜色/测量/token/阴影等纯原语。
+- 新增 `TEXT_MOTION` 贡献类型并接入 contribution dispatch / unregister。
+- 新增 `plugins/text_motion_core`：
+  - fade_in/fade_out/slide_in/scale_in/typewriter/word_by_word/highlight；
+  - 兼容期同时提供 glitch/neon（后续可拆到 fx）；插件可独立加载/卸载。
+- `text_mg.py` 已清空 motion 实现，只保留兼容 wrapper + 渲染原语别名；
+- `_build_text_clip_llm`、`text_style_apply`、`apply_text_style_to_clip` 均通过 engine/provider；
+- conftest 为测试注册 core，显式缺失 provider 时测试会失败而不是回退白字。
+
+### 已完成点对点 E2E
+
+- `render_a1604dca3b53`：
+  - 项目 19 条文字全部由 `TextAnimationEngine` 重新生成并写回；
+  - 每条 metadata 有 `text_provider_id`、`fidelity=exact`；
+  - 成片 `renders/..._20261117075812.mp4`：
+    - video **702.9s**
+    - audio **702.4s**
+  - `_cache/plugin_e2e_shots/contact_sheet.jpg` 19 格文字动画均可见。
+
+### 未完成
+
+- CP-4：`text-prompt-pack`、`text-style-pack`、`text-asset-pack`、`text-effect-card` 尚未插件化（当前仍由 engine 内置）；
+- CP-5：`preview_ops`/fidelity 的完整前端契约、quality provider 校验尚未接完；
+- CP-6：旧 ASS/drawtext 文字兼容路径未删除（旧时间线仍需只读兼容）；
+- CP-7：插件禁用/卸载的真实 E2E（不是单测）未跑；
+- `text-motion-fx`（3D/shader）未实现。
+
+### 提交
+
+- `ea62cec` 分支基线 PRD/Coding Plan
+- `36b9963` engine 接口 + core 插件 + 清理 engine motion
+- `01eadc9` clamp provider keyframes
