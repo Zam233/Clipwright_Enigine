@@ -119,3 +119,40 @@ def test_tracks_and_camera_bake():
     kfs = plan.mg_def["elements"][0]["keyframes"]
     assert any(float(k.get("scale", 1)) > 1.0 for k in kfs)
     assert any("rotate_z" in k for k in kfs)
+
+
+@pytest.mark.asyncio
+async def test_agent_writes_motion_spec(monkeypatch):
+    from types import SimpleNamespace
+    from clipwright.agents.animation_agent import AnimationAgent
+    from clipwright.animation.text_engine import TextMotionRegistry
+    from clipwright.schema.timeline import Clip, ClipKind
+
+    class Provider:
+        id = "llm_motion"
+        version = "test"
+        async def author(self, request):
+            return _spec()
+
+    TextMotionRegistry.register(Provider(), plugin_id="test_agent_motion")
+    monkeypatch.setattr(AnimationAgent, "_motion_llm_enabled", staticmethod(lambda: True))
+    import clipwright.animation.text_generation as tg
+    fake = SimpleNamespace(ok=True, method="llm", prompt_version="v1", error="", mg_def={
+        "width": 640, "height": 360, "duration_sec": 2,
+        "elements": [{"type": "text", "content": "测试",
+                      "keyframes": [{"time": 0, "opacity": 0},
+                                    {"time": 0.5, "opacity": 1},
+                                    {"time": 2, "opacity": 1}]}],
+        "text_animation": {"display_sec": 2, "style": {"font_size": 56, "fill": "#fff"},
+                           "motion": {"type": "llm_motion"}},
+    })
+    async def fake_generate(*a, **k): return fake
+    monkeypatch.setattr(tg, "generate_for_type", fake_generate)
+    agent = AnimationAgent()
+    vid = Clip(id="v", kind=ClipKind.VIDEO, asset_id="x", track_id="v", start_sec=0, duration_sec=2)
+    clip = await agent._build_text_clip_llm(vid, "测试", 2, {}, anim_id="text_fade_in", anim_name="淡入")
+    assert clip is not None
+    assert clip.metadata["motion_spec"]["schema"] == "motion_spec/1"
+    assert clip.metadata["motion_spec_hash"]
+    assert clip.metadata["mg_html"]
+    TextMotionRegistry.unregister_plugin("test_agent_motion")

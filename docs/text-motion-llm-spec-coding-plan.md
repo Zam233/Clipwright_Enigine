@@ -528,3 +528,18 @@ text_motion_llm_max_output_tokens=4096
 - [ ] 测试矩阵通过；
 - [ ] E2E 通过；
 - [ ] 提交、push。
+
+
+## 8. 实施记录（分支 `feat/zam_text_motion_llm_spec`）
+
+- CP-0：`motion_spec.py` schema 已落地；
+- CP-1：`motion_interpolation.py` 支持 linear/named/cubic-bezier/steps/hold/spring、line/polyline/arc/circle；
+- CP-2：`motion_spec_validator.py` 已落地；
+- CP-3：`motion_compiler.py` 已支持 layers/keyframes/tracks/path/camera/stagger；
+- CP-4：MGRenderer 增加 rotate_x/y/z、scale_x/y、translate_z、perspective、blur、clip_inset/filter；
+- CP-5：`plugins/text_motion_llm` author 插件、fake LLM 测试通过；
+- CP-6：Agent 写回 `motion_spec/hash/motion_author` 测试通过；
+- CP-7：render 不 import LLM author；测试通过；
+- 测试：`test_motion_spec.py` 10 passed（含 agent writeback、short Hyperframes E2E）；
+- 提交：`8718747`、`c7dc694`、`fd9341c`、`052c29b`、后续测试提交。
+- 仍缺：full task E2E、真实 provider LLM 调用、preview 独立解释、mask 完整语义。
