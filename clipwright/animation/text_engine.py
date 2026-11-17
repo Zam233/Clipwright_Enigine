@@ -223,6 +223,17 @@ class TextAnimationEngine:
             display_sec=float(clip.duration_sec or 3), base_mg_def=base,
             style_pack_id=str(meta.get("style_pack_id") or "") or None,
         )
+        _asset = meta.get("resolved_asset")
+        if isinstance(_asset, dict) and _asset.get("kind") == "texture":
+            _asset_path = str(_asset.get("path") or "")
+            if _asset_path:
+                plan.mg_def.setdefault("elements", []).insert(0, {
+                    "type": "shape", "shape": "rect", "x": 0, "y": 0,
+                    "width": int(width), "height": int(height),
+                    "background": "#00000000", "background_image": _asset_path,
+                    "keyframes": [{"time": 0.0, "opacity": 0.9},
+                                  {"time": float(clip.duration_sec or 3), "opacity": 0.9}],
+                })
         html = self.render_html(plan)
         meta.update({
             "style": plan.style, "motion": plan.motion, "mg_def": plan.mg_def,

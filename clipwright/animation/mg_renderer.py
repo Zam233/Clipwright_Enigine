@@ -521,6 +521,13 @@ const dur=parseFloat(root.dataset.duration);
                 border_radius = elem.get("border_radius", 4)
 
             radius_css = f"border-radius:{fill(border_radius)};" if border_radius not in (0, "0", 0.0) else ""
+            _bg_image = elem.get("background_image")
+            _bg_image_css = ""
+            if isinstance(_bg_image, str) and _bg_image.strip():
+                _bg_image_css = (
+                    f"background-image:url('{MGRenderer._esc(_bg_image.strip())}');"
+                    "background-size:cover;background-position:center;"
+                )
             # 审计 P3 修复：stroke_width=0 为合法「显式无边框」，按数值判断而非 truthy
             try:
                 sw_num = float(sw)
@@ -536,7 +543,7 @@ const dur=parseFloat(root.dataset.duration);
             html = (
                 f'<div id="{eid}" class="mg-el mg-shape clip" data-start="0" data-duration="{total_dur}" data-track-index="1" style="{base_css}'
                 f'width:{w_val}px;height:{h_val}px;{bg_css}'
-                f'{radius_css}'
+                f'{radius_css}{_bg_image_css}'
                 + (f'border:{sw}px solid {bindable(sw_color)};' if sw_num > 0 else "")
                 + static_style
                 + '"></div>'
