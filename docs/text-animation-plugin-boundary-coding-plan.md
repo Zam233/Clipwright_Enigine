@@ -483,3 +483,17 @@ plugins/text_motion_core/
 - 插件路径：TextAnimationEngine → `text-motion-core` → MG HTML → Hyperframes；
 - 抽帧 `_cache/final2_332.png`、`final2_340.png`、`final2_556.7.png`、`final2_632.4.png`。
 - 仍缺：CP-4 的 prompt/style/asset pack，CP-5 的前端 preview_ops 完整契约，CP-6 旧 ASS 兼容清理。
+
+
+### CP-4 pack 插件补齐（2026-11-17）
+
+- 新增贡献类型：`TEXT_PROMPT_PACK` / `TEXT_STYLE_PACK` / `TEXT_ASSET_PACK`；
+- 新增 `plugins/text_packs` 示例：
+  - prompt type `spotlight_quote`；
+  - style pack `editorial_dark`；
+  - asset pack `paper_assets`；
+- `text_specs.get_text_spec/load_text_prompt` 优先读取 prompt pack；
+- `TextAnimationEngine.capabilities()` 暴露 packs；
+- `apply_style` metadata 写 `preview_ops`；
+- `test_text_packs_plugin` 覆盖 load/unload。
+- 仍缺：前端真正消费 `preview_ops` 的渲染分支（当前仍以 `mg_def` 为准）、style pack 的显式选择 UI。
