@@ -122,3 +122,14 @@ tests/clipwright/test_text_motion_api.py
 - [ ] render 无 LLM；
 - [ ] 前端状态机与 API 对齐；
 - [ ] 测试通过。
+
+
+## 9. 实施记录（2026-11-18）
+
+- validate-spec / compile / author/status/cancel / commit 已在 `clipwright/api/text_animation.py` 落地；
+- compile 服务端重新编译并调用 MG validator；
+- commit 校验 base_hash、非 text 拒绝、409 conflict、原子写 metadata；
+- author 任务为内存状态机，真实 provider 可用时调用；不写 timeline；
+- `tests/clipwright/test_text_motion_api.py` 4 passed；
+- 前端 PropertiesPanel 已接 validate/compile/commit，支持 keyframe time/opacity 编辑；
+- 仍缺：持久任务队列、真实前端 API 联调/视觉抽帧、author 取消/超时完整 E2E。
