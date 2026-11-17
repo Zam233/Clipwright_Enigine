@@ -31,3 +31,21 @@ def test_plugin_does_not_import_engine_mutation_modules():
         text = path.read_text(encoding="utf-8")
         for token in forbidden:
             assert token not in text, f"{path} imports forbidden {token}"
+
+
+def test_render_fails_when_provider_is_unloaded(monkeypatch, tmp_path):
+    from clipwright.schema.timeline import Clip, ClipKind, Timeline, Track
+    from clipwright.services.render import RenderService
+
+    monkeypatch.setattr(TextMotionRegistry, "_providers", {})
+    clip = Clip(
+        id="tc_lifecycle", kind=ClipKind.TEXT, asset_id="", track_id="t_text",
+        start_sec=0, duration_sec=2, text="测试",
+        metadata={"renderer": "mg_hyperframes", "mg_html": "<html/>",
+                   "text_provider_id": "typewriter"},
+    )
+    tl = Timeline(width=1920, height=1080, fps=30, duration_sec=2, tracks=[
+        Track(id="t_text", kind=ClipKind.TEXT, index=0, clips=[clip]),
+    ])
+    with pytest.raises(RuntimeError, match="TEXT_MOTION_UNAVAILABLE"):
+        RenderService(work_dir=tmp_path)._extract_segments(tl)

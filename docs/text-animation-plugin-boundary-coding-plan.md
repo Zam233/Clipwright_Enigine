@@ -461,3 +461,14 @@ plugins/text_motion_core/
 - 静态隔离：`plugins/text_motion_core` 不含 `task_blackboard` / `quality_agent` / `services.render` 引用；
 - `test_text_engine_plugin`：9 个 provider、非法 plan 显式失败；
 - 点对点 E2E：`render_a1604dca3b53`，video 702.9s / audio 702.4s，19 条文字 provider_id/fidelity=exact。
+
+
+### CP-4/CP-5/CP-7 追加（2026-11-17）
+
+- `text_effect_card` 已从 engine tool 迁到 `plugins/text_effect_card`（TOOL contribution）；
+- render 在文字 clip 有 `text_provider_id` 时检查 provider；未加载时抛
+  `TEXT_MOTION_UNAVAILABLE`，不回退 ASS/白字；
+- quality 增加 provider 缺失 / `fidelity=unsupported` 的 error；
+- `test_text_motion_plugin_lifecycle` 增加“provider 卸载后 render 显式失败”测试；
+- 仍未完成：`text-prompt-pack` / `text-style-pack` / `text-asset-pack`，
+  `preview_ops` 的前端完整契约、旧 ASS 兼容路径清理。
