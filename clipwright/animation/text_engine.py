@@ -135,6 +135,19 @@ class TextAnimationEngine:
             base_mg_def=_base, primitives=_primitives(),
         )
         plan = provider.plan(request)
+        if isinstance(plan, MotionPlan) and isinstance(plan.mg_def, dict):
+            # provider 可能带着 base mgdef 的旧 keyframe 时间；engine 统一夹到
+            # 当前 display_sec，避免 scale/typewriter 的浮点尾差被判非法。
+            _dur = max(0.1, float(display_sec))
+            for _e in plan.mg_def.get("elements") or []:
+                if not isinstance(_e, dict):
+                    continue
+                for _kf in _e.get("keyframes") or []:
+                    if isinstance(_kf, dict):
+                        try:
+                            _kf["time"] = round(max(0.0, min(_dur, float(_kf.get("time") or 0))), 3)
+                        except (TypeError, ValueError):
+                            pass
         if not isinstance(plan, MotionPlan):
             raise TextMotionPlanInvalid(f"{motion_type} provider 返回非法 plan")
         from clipwright.animation.mg.validator import validate_mg_json
