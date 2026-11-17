@@ -1,176 +1,230 @@
-# 文字动画能力拆分与 Engine 接口 PRD
+# 文字动画插件边界与 Engine 接口 PRD（v2）
 
-> 状态：草案（待评审）  
-> 日期：2026-11-17  
-> 范围：`clipwright/animation/text_*`、`MGRenderer`、Hyperframes、预览 `mgRenderer`、`apply_text_style`、`text_effect_card`、插件贡献契约  
-> 结论先行：**基础文字动画能力留在 engine，做成稳定接口；可选效果/提示词包/静态卡/替代渲染后端拆成插件。插件只提供“能力声明 + 纯数据/隔离渲染”，不拥有 timeline、预览、质量门禁和降级决策。**
+> 状态：草案 v2（按 2026-11-17 新裁定重写）  
+> 范围：仅文字动画（不含 MG 图形动画、转场、字幕样式）  
+> 关键变化：**typewriter / word_by_word / fade / slide / scale / highlight 等基础动效从 engine 拆出，成为独立插件能力；engine 只保留接口、运行时、布局原语、渲染与校验。**  
+> 同时移除旧约束“插件领域只保留提示词”：插件可提供提示词、动效、样式包、资产、渲染后端和预览扩展。
 
-## 1. 背景
+## 1. 结论先行
 
-当前文字动画已经形成一条完整链路：
+### 1.1 Engine 只保留什么
 
-```
-text_specs / prompts/text
-  → text_generation（LLM）
-  → TextAnimationStyle / text_mg
-  → MGRenderer → Hyperframes → 成片
-  → apply_text_style（写回 clip）
-  → mgRenderer.ts（预览）
-  → quality（样式/叠字/单调检查）
-```
+- `TextAnimationStyle` / `TextMotion` 的**契约与校验**；
+- 文字布局、测量、字幕带避让、字号下限、box/描边/阴影等**渲染原语**；
+- `TextAnimationEngine` 门面（plan / render / preview / apply_style / capabilities）；
+- `MGRenderer`、Hyperframes、MOV 合成、缓存、并发、安全；
+- timeline 写入、质量门禁、任务终态、失败/重试策略；
+- 插件注册、能力发现、冲突处理、卸载后的显式失败。
 
-同时，插件系统已有 20 类贡献（`ContributionKind`），其中与文字动画相关的是：
+**Engine 不再内置具体 motion 实现。**
 
-- `ANIMATION`：动画定义（预设模板/关键帧），**不适合**承载“提示词驱动”的文字动画；
-- `PROMPT`：提示词注入；
-- `RENDERER_BACKEND`：渲染后端；
-- `TOOL` / `CLIP_KIND`：工具、轨道/片段类型；
-- `CATEGORY`：视频类型插件。
+### 1.2 插件提供什么
 
-用户此前的硬约束：
+- 文字**动效 provider**：fade / slide / scale / typewriter / word_by_word / highlight / glitch / neon / 3D 等；
+- 文字**提示词包**：类型语义、prompt、约束；
+- 文字**样式包**：预设 style（允许，但必须显式声明，不作为静默兜底）；
+- 文字**资产包**：字体、纸张纹理、贴图；
+- 文字**渲染后端**：WebGL/Blender/Canvas 等隔离渲染；
+- **静态效果卡**：渐变/撕纸/霓虹/glitch 的 PNG 卡（由 engine 插入图片轨）。
 
-> 插件领域只保留提示词，而不是预设模板；由 LLM 动态生成动画。
+插件**不能**直接写 timeline、不能改质量结论、不能替 engine 决定任务 done。
 
-因此本 PRD 不把“固定文字动画模板”做成插件；要把**提示词包**和**可选效果实现**做成插件，把**契约、渲染、预览、质量、时间线**留在 engine。
+## 2. 重新评估的依据
 
-## 2. 拆分原则
+旧版 PRD 把基础动效留在 engine，理由是“跨类型共用、保证一致”。新裁定改变了这个取舍：
 
-### 2.1 留在 Engine 的判据
+- 基础动效也需要可替换/可扩展，不应写死在 engine；
+- 用户需要插件化试验不同动效实现；
+- “插件只保留提示词”不再成立，插件可以承载实现；
+- 但**一致性、预览、安全、timeline、质量**仍必须由 engine 收口。
 
-满足任一条即属于 engine：
+因此采用“**Engine 提供接口 + 插件提供 motion 实现**”，而不是“engine 内置所有基础动效”。
 
-1. 定义跨模块的**稳定数据契约**（style/motion/timeline）；
-2. 决定**成片与预览是否一致**；
-3. 涉及**安全/沙箱/资源访问**；
-4. 决定**任务终态、质量门禁、失败/重试**；
-5. 基础渲染能力，所有视频类型都要用；
-6. 写入 timeline、资产、项目状态；
-7. 插件卸载后必须仍然可解释/可失败的行为。
+## 3. 能力归属矩阵
 
-### 2.2 拆成插件的判据
-
-满足全部才可拆：
-
-1. 可选能力，缺失不影响基础出片；
-2. 可以用**纯数据**或**隔离渲染**表达；
-3. 不直接写 timeline/质量/任务状态；
-4. 有明确的能力声明（supports）和 fidelity；
-5. 卸载后 engine 能显式报“能力不可用”，而不是静默降级；
-6. 不要求插件执行任意 JS 或访问任意文件系统。
-
-## 3. 能力清单与归属
-
-| 能力 | 当前实现 | 归属 | 理由 / 接口 |
+| 能力 | 现在实现 | 新归属 | 说明 |
 |---|---|---|---|
-| `TextAnimationStyle` 字段、默认值、归一化 | `text_style.py` | **Engine** | 跨生成/渲染/预览/质量的稳定契约 |
-| motion 枚举：fade/slide/scale/typewriter/word_by_word/highlight/glitch/neon | `text_style.py`、`text_mg.py` | **Engine 基础实现** | 基础语义必须一致；glitch/neon 可后续做成可选 provider |
-| 文字布局（center/top、字幕带避让、字号下限、box/padding） | `text_mg.py` | **Engine** | 与画布、字幕轨、可读性耦合 |
-| typewriter/word_by_word 的 token 切分、reveal 时间 | `text_mg.py` | **Engine** | 基础文字动画，所有类型共用 |
-| 圆角底板、描边、阴影、发光、对齐、line_height | `text_mg.py` / `MGRenderer` | **Engine** | 预览与成片必须同源 |
-| 渐变文字 `background-clip` | `MGRenderer` | **Engine** | 需要 HTML 渲染安全与预览一致 |
-| `highlight` 黄条 | `text_mg.py` | **Engine** | 基础 motion，语义固定 |
-| glitch/neon 的 CSS 近似 | `text_mg.py` | **Engine（一期）** | 目前是内建效果；复杂 shader 版另开 provider |
-| 文字类型 prompt（emphasis/quote/number/...） | `text_specs.py` + `prompts/text/*.md` | **Plugin：Prompt Pack** | 用户要求插件只保留提示词；不提供固定关键帧 |
-| 每种类型的默认视觉指引/风格模块 | prompt md | **Plugin：Prompt Pack** | 纯文本，可版本化、可卸载 |
-| LLM 调用、JSON 解析、repair、校验 | `text_generation.py` | **Engine** | 统一错误处理、重试、报告 finish_reason |
-| `apply_text_style` 写回 clip | tool + builder | **Engine API/Tool** | 必须唯一入口，插件不能直接改 timeline |
-| Hyperframes 调用、MOV 合成、缓存 | `render.py` / `hyperframes_renderer.py` | **Engine** | 渲染编排、并发、资源、安全 |
-| 预览 `mgRenderer.ts` 的 style/motion 解释 | 前端 | **Engine** | 预览一致性；插件只能提供声明/近似策略 |
-| 质量（纯白、叠字、样式单调、style 字段） | `quality_agent` | **Engine** | 硬门禁不能由插件决定 |
-| 静态 `text_effect_card`（渐变/撕纸/霓虹/glitch PNG） | tool | **Plugin：Text Effect/Asset** | 可选、静态、不写 timeline；由引擎插入图片 |
-| 撕纸纹理、纸张素材、字体包 | 无统一实现 | **Plugin：Asset Pack** | 资产与授权由插件声明，engine 校验路径 |
-| 3D/粒子/shader/复杂故障 | 无 | **Plugin：Effect Provider** | 可选效果，需要隔离渲染/fidelity |
-| 替代渲染器（Blender/WebGL/Canvas） | 无 | **Plugin：Renderer Backend** | 只实现 render 接口，不碰 timeline |
-| 视频类型专属文字风格指南 | 部分 category | **Plugin：Prompt Pack / Category** | 文本提示，不生成模板 |
-| 固定动画模板/预设关键帧 | `AnimationCatalog` 旧路径 | **不拆、禁止** | 违反“只保留提示词”；只保留为旧兼容，不新增 |
+| `TextAnimationStyle` schema、默认值、校验 | `text_style.py` | **Engine** | 稳定契约；插件可声明 style extension |
+| 字体、字号、字距、行高、对齐、字幕带避让 | `text_mg.py` | **Engine 原语** | 画布/可读性/字幕轨耦合 |
+| 圆角底板、描边、阴影、发光 | `text_mg.py` | **Engine 原语** | 跨动效复用；插件调用原语 |
+| 文字测量、token/字符宽度、布局 | `text_mg.py` | **Engine 原语** | 不用每个插件重复实现 |
+| fade_in / fade_out | `text_mg.py` | **`text-motion-core` 插件** | 独立 provider |
+| slide_in | `text_mg.py` | **`text-motion-core` 插件** | 独立 provider |
+| scale_in | `text_mg.py` | **`text-motion-core` 插件** | 独立 provider |
+| typewriter | `text_mg.py` | **`text-motion-core` 插件** | token/时间/光标逻辑归插件 |
+| word_by_word | `text_mg.py` | **`text-motion-core` 插件** | 同上 |
+| highlight | `text_mg.py` | **`text-motion-core` 插件** | 黄条/文字分离/阴影归插件 |
+| glitch / neon | `text_mg.py` | **`text-motion-fx` 插件（可选）** | 也可放 core，但建议独立，便于替换 |
+| 3D/粒子/shader 动效 | 无 | **`text-motion-3d` 插件** | 走隔离 renderer backend |
+| 文字类型 prompt（emphasis/quote/...） | `prompts/text/*.md` | **`text-prompt-pack` 插件** | 纯 prompt；允许新增类型 |
+| 类型默认 style 预设 | `DEFAULT_STYLE`/persona | **`text-style-pack` 插件** | 显式选择；失败不静默套用 |
+| 静态 `text_effect_card` | tool | **`text-effect-card` 插件** | PNG/纹理/撕纸；engine 插图片 |
+| 字体/纹理资产 | 分散 | **`text-asset-pack` 插件** | 路径、SHA、授权由 engine 校验 |
+| Hyperframes/MG HTML 渲染 | `MGRenderer` | **Engine** | 统一渲染运行时 |
+| `apply_text_style` 写回 | tool/builder | **Engine API** | 唯一写入口 |
+| 预览 `mgRenderer.ts` | 前端 | **Engine** | 消费 MotionPlan/PreviewOps |
+| 质量门禁 | `quality_agent` | **Engine** | 插件不能决定 done |
+| 固定动画模板/预设 | `AnimationCatalog` 旧路径 | **不用于文字动画** | 新插件可提供显式 style/motion preset，但不得静默兜底 |
 
-## 4. Engine 对外接口
+## 4. Engine 接口
 
-### 4.1 Python 协议
-
-建议新增一个稳定的门面模块 `clipwright/animation/text_engine.py`（或 service），所有内部/插件调用都走它：
+### 4.1 Python 门面
 
 ```python
 class TextAnimationEngine(Protocol):
+    def capabilities(self) -> TextCapabilities: ...
     def normalize_style(self, style: dict) -> dict: ...
     def validate_style(self, style: dict) -> list[str]: ...
 
     def plan(
         self, *, text: str, style: dict, motion: dict,
         width: int, height: int, display_sec: float,
-    ) -> "TextPlan": ...
+        provider_id: str | None = None,
+    ) -> TextPlan: ...
 
-    def render_html(self, plan: "TextPlan", *, fps: float) -> str: ...
-    def render_preview(self, plan: "TextPlan", *, t: float) -> "PreviewFrame": ...
+    def render_html(self, plan: TextPlan, *, fps: float) -> str: ...
+    def render_preview(self, plan: TextPlan, *, t: float) -> PreviewFrame: ...
 
     def apply_style(
         self, *, timeline, clip_id: str,
         style: dict, motion: dict, duration_reason: str = "",
-    ) -> "ApplyStyleResult": ...
-
-    def capabilities(self) -> "TextCapabilities": ...
+    ) -> ApplyStyleResult: ...
 ```
 
-`TextPlan` 只包含：
+`TextPlan` 是唯一交付物：
 
-- 规范化 style/motion；
-- `mg_def`（可渲染 IR）；
-- `duration_sec`、layout、fidelity；
-- 可选 effect provider 的 `render_hint`。
+```python
+@dataclass
+class TextPlan:
+    provider_id: str
+    mg_def: dict          # engine 可渲染 IR
+    width: int
+    height: int
+    duration_sec: float
+    fidelity: str         # exact / approx / unsupported
+    preview_ops: list     # engine preview 指令
+    style_extensions: dict
+```
 
-插件不直接拿 `Timeline`、不直接写 `mg_html`；需要写回时只能调用 `apply_style`。
+### 4.2 Motion Provider 接口
 
-### 4.2 HTTP 接口（供前端/外部 Agent）
+```python
+class TextMotionProvider(Protocol):
+    id: str
+    version: str
 
-建议 engine 暴露以下端点（或内部 service 等价）：
+    def capabilities(self) -> MotionCapabilities:
+        """motions / required_style_fields / preview / fidelity / schema"""
+
+    def supports(self, *, text: str, style: dict, motion: dict) -> bool: ...
+
+    def plan(self, request: TextMotionRequest) -> MotionPlan:
+        """只返回 MGDef/元素/关键帧，不返回任意可执行 HTML/JS。"""
+
+    def preview(self, plan: MotionPlan, t: float) -> PreviewOp | None: ...
+```
+
+`TextMotionRequest` 提供 engine 原语：
+
+```python
+@dataclass
+class TextMotionRequest:
+    text: str
+    style: dict
+    motion: dict
+    width: int
+    height: int
+    duration_sec: float
+    primitives: TextPrimitives
+    assets: AssetHandle | None
+```
+
+`TextPrimitives` 是 engine 提供的安全 API：
+
+- `add_text(content, x, y, style) -> element_id`
+- `add_shape(rect/line/ellipse, ...)`
+- `add_box(...)`
+- `measure_text(...)` / `measure_token(...)`
+- `shadow_for(style)` / `stroke_for(style)`
+- `safe_area()` / `caption_band()`
+
+插件不得自己计算字幕带、访问文件系统或返回任意 HTML。
+
+### 4.3 HTTP 接口
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| `GET` | `/api/text-animation/capabilities` | 基础能力 + 已装插件能力 + fidelity |
-| `POST` | `/api/text-animation/normalize-style` | 归一化/校验 style |
-| `POST` | `/api/text-animation/plan` | text/style/motion → TextPlan |
-| `POST` | `/api/text-animation/render-html` | TextPlan → MG HTML |
-| `POST` | `/api/text-animation/preview-frame` | t → 预览绘制指令/近似标记 |
-| `POST` | `/api/text-animation/apply-style` | 写回文字 clip |
-| `POST` | `/api/text-animation/validate-effect` | 插件/用户 style 是否可渲染 |
+| GET | `/api/text-animation/capabilities` | 基础能力 + 插件 + provider + fidelity |
+| POST | `/api/text-animation/normalize-style` | 归一化/校验 |
+| POST | `/api/text-animation/plan` | text/style/motion → TextPlan |
+| POST | `/api/text-animation/render-html` | TextPlan → MG HTML |
+| POST | `/api/text-animation/preview-frame` | t → PreviewFrame |
+| POST | `/api/text-animation/apply-style` | 写回文字 clip |
+| POST | `/api/text-animation/validate-effect` | 插件/用户效果是否可渲染 |
 
-要求：
+错误码至少：
 
-- 响应必须带 `fidelity`（`exact` / `approx` / `unsupported`）；
-- 不能返回“成功”但实际忽略字段；
-- 插件不可用时返回明确错误码，由 engine 决定是否阻止出片。
+- `TEXT_MOTION_UNAVAILABLE`：没有 provider；
+- `TEXT_MOTION_PLAN_INVALID`：provider 返回非法 MGDef；
+- `TEXT_STYLE_UNSUPPORTED`：style 字段不被 provider 支持；
+- `TEXT_PREVIEW_UNSUPPORTED`：无预览实现或 fidelity unsupported；
+- `TEXT_PROVIDER_UNLOADED`：插件被卸载但 clip 仍引用。
 
-### 4.3 前端接口
+## 5. 插件目录与契约
 
-`mgRenderer.ts` 只消费 engine 的 `TextPlan.preview_ops` 或 `mg_def`，不直接读插件代码。建议：
+### 5.1 `text-motion-core`（基础动效独立插件）
 
-```ts
-type TextPreviewFrame = {
-  ops: PreviewOp[];
-  fidelity: "exact" | "approx" | "unsupported";
-  missing?: string[];
-}
-```
-
-插件提供的新效果必须同时提供 preview 映射，或声明 `preview: "none"`；engine 在预览上显示“近似/不可预览”，不能静默当普通文字。
-
-## 5. 插件契约
-
-### 5.1 新增贡献类型建议
-
-现有 `ANIMATION` 是“动画定义”，不适合文字提示词。建议新增：
+这是本次裁定的核心：**一个独立的 motion plugin**，默认随 engine 发布并启用，但代码、注册、卸载、版本都在插件层。
 
 ```text
-TEXT_PROMPT_PACK   # 纯数据：文字类型语义 + prompt 文本 + 约束
-TEXT_EFFECT        # 可选：复杂文字效果 provider（隔离/纯数据）
-TEXT_ASSET_PACK    # 可选：纹理/纸张/字体资产声明
+plugins/text_motion_core/
+  plugin.yaml
+  main.py
+  providers/
+    fade.py
+    slide.py
+    scale.py
+    typewriter.py
+    word_by_word.py
+    highlight.py
 ```
 
-`RENDERER_BACKEND` 复用；`TOOL` 用于静态卡/独立效果工具；`CLIP_KIND` 不用于文字样式。
+manifest：
 
-> 是否新增 `TEXT_EFFECT` 需要走现有“20 类贡献名单冻结”的契约评审；本 PRD 建议新增，不要塞进 `ANIMATION` 或 `TOOL` 混淆语义。
+```yaml
+id: text-motion-core
+kind: capability
+api_version: "2"
+contributions:
+  - kind: text_motion
+    id: fade_in
+  - kind: text_motion
+    id: fade_out
+  - kind: text_motion
+    id: slide_in
+  - kind: text_motion
+    id: scale_in
+  - kind: text_motion
+    id: typewriter
+  - kind: text_motion
+    id: word_by_word
+  - kind: text_motion
+    id: highlight
+```
 
-### 5.2 `TEXT_PROMPT_PACK`
+- 每个 motion 是一个独立 provider；
+- 打包在一个 plugin 中，保证基础能力一起安装/升级；
+- 插件卸载后 `text-motion-core` 能力消失，engine 必须报 `TEXT_MOTION_UNAVAILABLE`，**不得回退 ASS/白字**；
+- 旧时间线引用 typewriter 等，若插件不可用，重渲染必须失败并报告，而不是静默变成静态文字。
+
+### 5.2 `text-motion-fx`（可选）
+
+- glitch / neon / 3D / 粒子；
+- 独立插件，可按项目启用；
+- 可声明 `renderer_backend` 使用 WebGL/Blender；
+- 不安装时，引用这些 motion 的 clip 显式失败。
+
+### 5.3 `text-prompt-pack`
 
 ```json
 {
@@ -182,125 +236,99 @@ TEXT_ASSET_PACK    # 可选：纹理/纸张/字体资产声明
       "intent": "...",
       "constraints": ["..."],
       "anti_patterns": ["..."],
-      "prompt": "完整 prompt 文本",
-      "version": "2026-11-17"
+      "prompt": "..."
     }
   ]
 }
 ```
 
-规则：
+- 纯 prompt + 类型语义，不包含固定关键帧；
+- 可新增/覆盖（覆盖需签名/管理员策略）；
+- engine 校验 7 段结构与版本。
 
-- 只能是**提示词 + 类型语义**，不能带固定关键帧/模板；
-- 必须包含现有 7 段（Intent/Semantic constraints/Composition/Motion/Anti-patterns/Example/Style reference）或声明扩展段；
-- engine 负责 schema 校验、版本、冲突、卸载；
-- 不合法/重复 type 拒绝整包，不做“部分加载”；
-- prompt 中的占位符必须可被 engine 白名单替换。
+### 5.4 `text-style-pack`
 
-### 5.3 `TEXT_EFFECT`
+- 允许提供 style preset（颜色、字体、底板、阴影、motion 默认参数）；
+- 必须作为显式 `style_pack_id` 被选择；
+- 不得在 LLM 失败时静默作为兜底；
+- engine 负责 schema/安全/预览一致性。
 
-```python
-class TextEffectProvider(Protocol):
-    id: str
-    version: str
+### 5.5 `text-effect-card` / `text-asset-pack`
 
-    def capabilities(self) -> dict:
-        """{styles, motions, fidelity, preview, permissions, schema_version}"""
+- `text-effect-card` 提供静态 PNG 卡（渐变/撕纸/霓虹/glitch）；
+- `text-asset-pack` 声明字体/纹理/贴图（path、sha256、license）；
+- engine 校验路径、SHA、字体授权；插件不能任意读盘。
 
-    def supports(self, *, style: dict, motion: dict) -> bool: ...
+### 5.6 `renderer_backend`
 
-    def build(self, request: "TextEffectRequest") -> "TextEffectResult":
-        """返回 MGDef/IR；不得返回任意可执行 HTML/JS。"""
+- 复用现有 `RENDERER_BACKEND`；
+- 只接收 engine 的 `TextPlan`/帧请求，返回图像/视频；
+- 隔离进程；不得访问 timeline/quality；
+- 无 preview 能力必须声明。
 
-    def preview(self, frame: "TextEffectFrame") -> "PreviewOp | None": ...
-```
+## 6. 预览与质量
 
-约束：
+- 每个 provider 必须返回 `preview` 或声明 `preview: "none"`；
+- engine 生成 `PreviewFrame`，前端 `mgRenderer.ts` 只消费 `PreviewOps`/`mg_def`，不加载插件代码；
+- `fidelity` 三态：`exact` / `approx` / `unsupported`；
+- 质量门禁由 engine 执行：
+  - provider 未声明支持却返回效果 → 拒绝；
+  - preview unsupported 仍出现在成片 → 质量 error；
+  - 同一 clip 多 provider 冲突 → 拒绝，不自动择优；
+  - 任何回退/不可用必须记录，不允许白字兜底。
 
-- `build` 返回结构化 `mg_def`，由 engine 的 `MGRenderer` 渲染；若必须用 WebGL/Blender，走 `RENDERER_BACKEND` 隔离进程；
-- 不允许插件写 timeline、改 clip_id、改 quality、改任务终态；
-- 不允许下载/读取任意 URL；资产只能来自声明的 `TEXT_ASSET_PACK` 或白名单路径；
-- 卸载后，已有 clip 的 `style/motion` 若不再 supported，engine 必须报 `TEXT_EFFECT_UNAVAILABLE`，不能回退普通白字；
-- 必须声明 preview fidelity；无 preview 的效果不能伪装成精确预览。
+## 7. 迁移步骤
 
-### 5.4 `TEXT_ASSET_PACK`
+### M1 接口冻结
 
-```json
-{
-  "assets": [
-    {"id": "paper_torn_01", "kind": "texture", "path": "assets/paper_torn_01.png",
-     "license": "CC0", "sha256": "..."}
-  ],
-  "fonts": [
-    {"family": "Source Han Sans", "path": "fonts/...", "license": "OFL"}
-  ]
-}
-```
+- 新增 `TextAnimationEngine` / `TextMotionProvider` / `TextPrimitives`；
+- 把 `text_style`、`text_mg` 的公共入口收敛；
+- 建立能力注册表（`TEXT_MOTION`）。
 
-engine 校验路径、SHA、字体授权；插件不能直接访问任意文件系统。
+### M2 基础动效迁出
 
-## 6. 不建议拆分的部分（并说明原因）
+- 新建 `text-motion-core` 插件，把 fade/slide/scale/typewriter/word_by_word/highlight 从 `text_mg` 移到 provider；
+- engine 的 `text_mg` 只保留布局、box、shadow 等原语；
+- 默认启用该插件，行为与现有 19 条文字动画一致；
+- 增加“禁用插件 → 显式失败”回归测试。
 
-| 能力 | 不拆原因 |
-|---|---|
-| `apply_text_style` 写回 | 必须唯一写入口，否则插件可绕过质量/owner/时间线校验 |
-| 质量门禁 | 插件不能决定任务是否 done |
-| 预览渲染器核心 | 预览与成片一致性是 engine 的契约 |
-| Hyperframes/MOV 合成 | 并发、资源、缓存、超时属于 engine |
-| TextAnimationStyle schema | 插件各写一套会导致预览/渲染/质量分裂 |
-| 基础 typewriter/word/box/shadow | 所有视频类型共用，拆出去会增加不可控组合 |
-| 固定动画模板 | 与用户“只保留提示词、LLM 动态生成”冲突；旧 catalog 仅兼容，不扩展 |
-| 字幕带避让/字号下限 | 属于安全/可读性硬约束 |
+### M3 prompt/style/资产插件
 
-## 7. 迁移与里程碑
+- `text-prompt-pack`、`text-style-pack`、`text-asset-pack`；
+- `text-effect-card` 拆为插件；
+- 允许 style preset，但禁止静默兜底。
 
-### M1 契约冻结（engine）
+### M4 复杂动效与 renderer backend
 
-- 新增 `TextAnimationEngine` 门面；
-- 把 `text_style`、`text_mg`、`text_effect_card` 的公共入口收敛到 engine；
-- 定义 `TextPlan`、`TextPreviewFrame`、`fidelity`。
-
-### M2 Prompt Pack 插件化
-
-- `text_specs` 内置类型改为 builtin `TEXT_PROMPT_PACK`；
-- 插件可新增类型 prompt；
-- 禁止插件提供固定关键帧/模板；
-- 冲突：builtin 不可被未签名插件覆盖。
-
-### M3 可选 Effect 插件
-
-- 把 `text_effect_card` 拆成 plugin tool + asset pack；
-- 新增 `TEXT_EFFECT` provider 承载撕纸/复杂 glitch/3D；
-- 发动机只接受结构化结果，显式 fidelity。
-
-### M4 Renderer Backend / 预览
-
-- 插件可实现隔离 renderer backend；
-- preview 必须提供 `PreviewOp`，否则明确标记不可预览；
-- engine 统一校验 preview 与 render 的 style/motion 解释一致性。
+- `text-motion-fx`（glitch/neon/3D）；
+- 隔离 renderer；
+- preview `approx` 标准。
 
 ### M5 E2E
 
-- 装/卸插件各跑一次真实 animation→audio→render；
-- 验证插件新增文字类型、卸载后显式失败；
-- 验证无模板兜底、无静默白字；
-- 抽帧与预览截图对比。
+- 不装插件：基础文字动画全部 `TEXT_MOTION_UNAVAILABLE`，不产生白字；
+- 装 core：19 条文字动画、video/audio 702s；
+- 装 fx：glitch/neon/3D 真实可见；
+- 卸载插件后重渲染：明确失败；
+- 抽帧 + 预览对比。
 
 ## 8. 验收标准
 
-1. **基础不变**：不装插件时现有 19 条文字样式/动效/渲染结果不变；
-2. **Prompt Pack**：插件可新增一个文字类型，LLM 生成成功，质量可通过；卸载后该类型从能力列表消失；
-3. **Effect**：插件可新增一种复杂效果，成片有真实效果，预览有对应 fidelity；不支持时显式 `TEXT_EFFECT_UNAVAILABLE`；
-4. **隔离**：插件不能写 timeline、不能改 quality、不能执行任意 JS/URL；
-5. **无降级**：缺能力/坏输出时任务失败或阻止出片，不回退模板/白字；
-6. **可观测**：能力列表、fidelity、错误码、报告都能看到；
-7. **E2E**：任务 done，video/audio 702s，抽帧和预览对比通过。
+1. **Engine 不内置 motion 实现**：`text_mg` 不再包含 fade/slide/scale/typewriter/word/highlight 的语义分支，只保留原语；
+2. **`text-motion-core` 可独立启停**：启用时现有行为不变，禁用时引用这些 motion 的 clip 报 `TEXT_MOTION_UNAVAILABLE`；
+3. **`apply_text_style` 全部文字**：所有文字 clip 必须经 engine apply；插件不可绕过；
+4. **提示词/样式/资产插件**：可新增类型、style pack、字体/纹理；
+5. **复杂效果**：glitch/neon/3D 由插件提供，preview fidelity 明确；
+6. **无静默回退**：不支持的 motion/style 不得变白字/ASS/模板，必须失败并报告；
+7. **E2E**：任务 done，video/audio 均为 702s，文字动画全部可见，预览与成片对比通过；
+8. **可卸载**：插件卸载后能力列表、错误码、已有 clip 行为一致。
 
 ## 9. 风险与开放问题
 
-- 新增 `TEXT_EFFECT` 贡献类型需要冻结名单评审；是否复用 `RENDERER_BACKEND` 需要决定；
-- 插件返回 MGDef 是否足够表达 shader/3D，还是必须允许隔离 renderer；
-- 复杂效果 preview 的 `approx` 标准需要定义（像素阈值/结构对比）；
-- 字体授权与机器级安装（Windows DirectWrite）属于 engine/asset 治理，不能由插件静默安装；
-- builtin prompt pack 是否放插件目录：建议“内置插件”同契约，便于卸载测试，但默认随 engine 发布；
-- 插件新增 type 与质量门禁的兼容策略需要明确。
+- `TEXT_MOTION` 是新增贡献类型，需要冻结名单评审；是否复用 `ANIMATION` 需决定（建议不要，语义不同）；
+- engine 原语边界：`TextPrimitives` 是否允许插件调用 `add_text` 任意坐标？建议 engine 二次校验安全区；
+- `text-motion-core` 是否默认随 engine 发布但以插件形式安装（建议是，便于禁用测试）；
+- 旧时间线中 `renderer=mg_hyperframes` 的 clip 若插件卸载，是否允许“只读预览/禁止重渲染”；
+- style preset 的显式选择方式（clip 字段/项目设置）需要定义；
+- 3D/WebGL renderer 的 license、GPU 依赖和预览近似标准；
+- 质量门禁如何判定 `preview: none` 的效果是否可接受（建议 error，不放行）。
