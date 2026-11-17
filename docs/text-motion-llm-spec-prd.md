@@ -736,3 +736,111 @@ render 时再次问 LLM
 - 预览与 3D 差异 → fidelity；
 - 成本延迟 → 生成阶段一次 + 缓存；
 - 不可复现 → spec/hash/model/prompt 全持久化。
+
+
+## 21. 与现有文字动画插件的补充契约
+
+### 21.1 `apply_text_style`
+
+`apply_text_style` 仍然只负责“改已存在文字 clip 的样式/参数”，不直接生成 MotionSpec：
+
+- 只改 `style` 且已有 `motion_spec`：**默认保留原 spec**，不重新调 LLM；
+- 只改 `style` 且没有 spec：走当前 provider 或显式 `MOTION_SPEC_MISSING`；
+- 显式 `regenerate_motion=true`：由 Animation Agent 重新 author，工具本身不调 LLM；
+- `motion` 参数只能选 intent/类型，不得直接塞非法 keyframes；
+- 写入前必须校验 `motion_spec_hash`；
+- 工具不直接写 timeline，统一通过 engine。
+
+### 21.2 Prompt 契约
+
+`text-motion-llm` 的系统提示词必须包含：
+
+- MotionSpec JSON Schema；
+- 可用 capabilities；
+- 画布/时长/字幕带/安全区；
+- 文字内容必须原样，不得改字；
+- 只允许 schema 白名单字段；
+- 必须给出至少一个主运动；
+- 不要生成 HTML/JS/CSS；
+- 场景上下文（见 21.4）。
+
+结构化输出：
+
+```text
+response_format: json_schema
+schema: MotionSpec
+max_output_tokens: 4096
+```
+
+失败修复：
+
+1. 第一次非法 → 带 validator 错误 JSON 重试一次；
+2. 仍非法 → `MOTION_SPEC_INVALID`；
+3. 不允许把 LLM 错误转成固定 motion。
+
+### 21.3 style / asset / prompt pack
+
+- `text-prompt-pack` 提供类型语义与 prompt，不提供 motion 关键帧；
+- `text-style-pack` 提供默认 style，不得覆盖显式 MotionSpec；
+- `text-asset-pack` 提供字体/纹理/贴图，MotionSpec 只能引用 `asset_id`，不能带路径；
+- 渲染时由 engine 将 `asset_id` 解析为受控资源；
+- 插件包缺失 → `MOTION_ASSET_UNAVAILABLE`，不得静默忽略。
+
+### 21.4 场景上下文与一致性
+
+`MotionAuthorRequest` 增加：
+
+```python
+scene_context: dict
+recent_motions: list[dict]
+project_style: dict
+```
+
+- 同一场景连续文字不应重复相同 motion；
+- 不得读取或修改其他 clip 的 spec；
+- 同一项目 motion 风格由 prompt pack / project_style 约束；
+- 只影响生成，不影响已有 spec。
+
+### 21.5 可观测性与成本
+
+记录：
+
+- model、prompt_version、token 数、耗时；
+- spec_hash、重试次数、失败码；
+- 作者版本；
+- 质量评分；
+- 缓存命中。
+
+## 22. 测试矩阵
+
+| 层级 | 测试 | 验收 |
+|---|---|---|
+| Schema | MotionSpec 合法/非法/未知字段 | 非法显式失败 |
+| Interpolation | linear/bezier/steps/hold/spring | 编译结果可预测 |
+| Path | line/cubic/arc/circle | 采样在安全区 |
+| Tracks | 多属性独立 easing | 采样一致 |
+| Compile | MotionSpec → MGDef | 预览/渲染同源 |
+| Author | LLM 合法/一次修复/失败 | 无模板回退 |
+| Persistence | spec/hash/model 写回 | 重渲染不变 |
+| Render | 无 LLM 调用 | 渲染进程不 import author |
+| Preview | exact/approx/unsupported | 不静默白字 |
+| Packs | style/asset 缺失 | 明确错误 |
+| E2E | 生成→编译→渲染→抽帧 | 702s 成片 |
+
+## 23. 版本与兼容
+
+- `motion_spec/1` 主版本不兼容变更必须升 `motion_spec/2`；
+- 新增可选字段保持向后兼容；
+- 未知字段拒绝，扩展放 `ext`；
+- 旧 clip 无 spec：只读 legacy 或显式缺 spec；
+- compiler 版本写入 metadata；
+- 插件卸载后已有 spec 不能静默重解释。
+
+## 24. 开放问题
+
+- spring 采样率是固定 120Hz 还是按 fps；
+- 3D 深度/透视是否需要独立的 camera-aware compile；
+- 路径越界是自动夹取还是判非法；
+- LLM 生成 motion 的质量评分阈值；
+- prompt pack 与 motion author 的职责是否合并；
+- 是否需要项目级 motion 风格记忆。
