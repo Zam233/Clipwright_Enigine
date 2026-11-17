@@ -530,3 +530,12 @@ plugins/text_motion_core/
 - CP-7：真实禁用 `text_motion_core` 后提交 render `render_3d92e6ffd5ce`，状态 failed/0%，未产生成片；
 - 最新完整 E2E：`render_aec88d8c82b6`，video **702.9s** / audio **702.4s**；
 - 测试：后端 20 passed；前端 preview 151 passed；`tsc --noEmit` 通过。
+
+
+### Goal 轮次进展（2026-11-18）
+
+- 内置 6 个 prompt 类型数据已物理迁到 `plugins/text_packs/builtin_types.json`；engine `text_specs` 从插件 JSON 加载，插件贡献完整 prompt；
+- `apply_text_style` 支持 `style_pack_id`；`TextAnimationEngine.apply_style` 读取 `asset_pack_id/asset_id` 并写 `resolved_asset`；
+- `render_3d92e6ffd5ce` 的失败原因已持久化在 Mongo `result.error`：
+  `TEXT_MOTION_UNAVAILABLE ... provider slide_in`；
+- 仍未完成：同步 `_handle_text_animation`/`AnimationCatalog` 模板路径（测试依赖）、asset pack 未进入像素渲染、preview_ops 未实际绘制、style pack 无 UI；PR #19/#16 保持 open。
