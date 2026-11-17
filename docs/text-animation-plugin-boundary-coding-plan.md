@@ -505,3 +505,16 @@ plugins/text_motion_core/
   `TEXT_MG_HTML_MISSING`，不再静默回退 ASS/白字；
 - 旧时间线（没有 mg_html、renderer 不是 mg_hyperframes）仍走只读 ASS 兼容；
 - 新文字路径已无动静混合 fallback。
+
+
+### 收尾状态（2026-11-17）
+
+- CP-4：`text_effect_card`、`text_packs`（prompt/style/asset 三类）已插件化；
+- CP-5：engine metadata 写 `preview_ops`/`fidelity`；quality 检查 provider/fidelity；
+  前端 `previewFidelity` 对 `fidelity=unsupported` 显示不可预览角标；
+- CP-6：`renderer=mg_hyperframes` 但缺 `mg_html` 现在抛 `TEXT_MG_HTML_MISSING`，
+  不再回退 ASS；旧时间线无 mg_html 仍只读兼容；
+- CP-7：PluginLoader 加载/卸载、provider 卸载后 render 显式失败测试通过；
+  路由验证：项目 19 条文字 clip 全部进入 `hf_ov_local`（category=text_mg），
+  `ass_text` 仅 321 条字幕，不含文字动画；
+- 测试：后端 25 passed；前端 preview 151 passed；`tsc --noEmit` 通过。
