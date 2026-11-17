@@ -1008,12 +1008,12 @@ _prune_trim_cache_dir()
 
 def _trim_cache_key(src: str, offset: float, dur: float, width: int, height: int,
                     speed: float = 1.0, image_fit: str = "", transform: str = "",
-                    kfs: str = "", kb: str = "", mask: str = "") -> str:
+                    kfs: str = "", kb: str = "", mask: str = "", frames: int = 0) -> str:
     # /D2/V4/V3: 速度、填充模式、静态变换与关键帧都影响输出内容，必须进缓存键
     # 轮 85: kenburns 改变画面（图片推近），同样必须进键
     # O-遮罩升级: 蒙版（类型/区域/羽化/反相/点数/旋转）同样改变像素，**必须进键**——
     # 否则同一素材换个蒙版会命中上一版缓存，表现为"蒙版没生效"
-    raw = f"{src}|{offset:.2f}|{dur:.2f}|{width}x{height}|{speed:.3f}|{image_fit}|{transform}|{kfs}|{kb}|{mask}"
+    raw = f"{src}|{offset:.2f}|{dur:.2f}|{width}x{height}|{speed:.3f}|{image_fit}|{transform}|{kfs}|{kb}|{mask}|{frames}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -1722,6 +1722,14 @@ class RenderService:
                 speed = 1.0
             speed = max(0.25, min(4.0, speed))
             dur = max(0.5, seg.get("duration_sec", 5))
+            try:
+                _fps = max(1.0, float(fps or 30))
+                _start = float(seg.get("start_sec", 0) or 0)
+                # 按时间线全局帧边界分配，而不是每段独立 round：
+                # 69 段各自 round/ceil 会累计 15 帧（702.9s vs 702.4s）。
+                _target_frames = max(1, round((_start + dur) * _fps) - round(_start * _fps))
+            except (TypeError, ValueError):
+                _target_frames = max(1, round(dur * float(fps or 30)))
             if not src:
                 self._fallback_count += 1
                 return self._generate_fallback(dur, width, height, fps, idx)
@@ -1762,6 +1770,7 @@ class RenderService:
                                         speed, image_fit,
                                         transform=f"{_tx:.4f},{_ty:.4f},{_ts:.4f},{_tr:.4f}" if _has_transform else "",
                                         kfs=_kfs_digest,
+                                        frames=_target_frames,
                                         kb="1" if seg.get("kenburns") else "",
                                         mask=json.dumps({
                                             "t": seg.get("mask_type"),
@@ -2026,12 +2035,14 @@ class RenderService:
                            "-ss", str(seg.get("source_offset", 0)),
                            "-stream_loop", "-1", "-i", src, "-t", str(dur),
                            "-filter_complex", fc, "-map", "[vout]", "-r", str(fps),
+                           "-frames:v", str(_target_frames),
                            *_encoder_stage_args(encoder, preset),
                            *video_rate_args(encoder, bitrate), "-an", out_tmp]
                 else:
                     cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)),
                            "-ss", str(seg.get("source_offset", 0)),
                            "-stream_loop", "-1", "-i", src, "-t", str(dur), "-vf", vf, "-r", str(fps),
+                           "-frames:v", str(_target_frames),
                            *_encoder_stage_args(encoder, preset),
                            *video_rate_args(encoder, bitrate), "-an", out_tmp]
                 r = self._run_ff(cmd, capture_output=True, text=False, timeout=3600)
