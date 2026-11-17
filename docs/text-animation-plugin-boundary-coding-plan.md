@@ -560,3 +560,14 @@ plugins/text_motion_core/
   - `GET /api/text-animation/asset-packs`
 - 前端按 `preview_ops.kind=mg_def` 决定是否绘制 MG；
 - 仍未完成：style pack 的 PropertiesPanel UI、asset 路径安全/实际资源加载（图像路径），最新 702s 全量 E2E。
+
+
+### 最终完成（2026-11-18）
+
+- style pack：API、apply_text_style 参数、PropertiesPanel 选择器全部接通；
+- asset pack：texture 进入 MGDef/MGRenderer，路径必须相对且存在；
+- preview_ops：前端按 `kind=mg_def` 决定绘制；
+- 同步模板：`_handle_text_animation` 不再使用 AnimationCatalog keyframes；
+- 插件禁用错误已持久化在 `result.error`；
+- 最终 E2E：`render_af01b1941cb7`，video **702.9s** / audio **702.4s**；
+- 后端/前端相关测试通过。
