@@ -1,0 +1,9 @@
+id: "text_motion_llm"
+name: "LLM MotionSpec Author"
+version: "1.0.0"
+kind: "capability"
+description: "在 animation agent 阶段用 LLM 生成 MotionSpec；render 不调用"
+entry_point: "text_motion_llm.main"
+api_version: "2"
+contributions:
+  - { kind: text_motion, id: llm_motion }

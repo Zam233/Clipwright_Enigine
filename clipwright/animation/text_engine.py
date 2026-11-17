@@ -100,6 +100,11 @@ class TextMotionRegistry:
         return str(motion_type or "") in cls._providers
 
     @classmethod
+    def get(cls, provider_id: str):
+        entry = cls._providers.get(str(provider_id or ""))
+        return entry[1] if entry else None
+
+    @classmethod
     def resolve(cls, motion_type: str) -> TextMotionProvider:
         entry = cls._providers.get(str(motion_type or ""))
         if entry is None:
@@ -211,6 +216,14 @@ class TextAnimationEngine:
             style=normalized_style, motion=normalized_motion,
         )
 
+    def compile_motion_spec(self, spec, *, width: int, height: int,
+                            fps: float = 30.0) -> TextPlan:
+        from clipwright.animation.motion_compiler import compile_motion_spec
+        plan = compile_motion_spec(spec, width=width, height=height, fps=fps)
+        return TextPlan(provider_id="motion_spec", mg_def=plan.mg_def, width=width,
+                        height=height, duration_sec=float(spec.duration_sec),
+                        fidelity=plan.fidelity, preview_ops=plan.preview_ops)
+
     def render_html(self, plan: TextPlan, *, fps: float = 30.0) -> str:
         from clipwright.animation.mg_renderer import MGRenderer
         return MGRenderer.render(plan.mg_def, params={}, width=plan.width,
@@ -225,12 +238,19 @@ class TextAnimationEngine:
             meta["resolved_asset"] = self.resolve_asset(
                 _pack_id, str(meta.get("asset_id") or ""))
         base = meta.get("mg_def") if isinstance(meta.get("mg_def"), dict) else {}
-        plan = self.plan(
-            text=str(clip.text or ""), style=style, motion=motion,
-            width=int(width), height=int(height),
-            display_sec=float(clip.duration_sec or 3), base_mg_def=base,
-            style_pack_id=str(meta.get("style_pack_id") or "") or None,
-        )
+        if isinstance(meta.get("motion_spec"), dict):
+            from clipwright.animation.motion_spec import MotionSpec
+            plan = self.compile_motion_spec(
+                MotionSpec.model_validate(meta["motion_spec"]),
+                width=int(width), height=int(height),
+            )
+        else:
+            plan = self.plan(
+                text=str(clip.text or ""), style=style, motion=motion,
+                width=int(width), height=int(height),
+                display_sec=float(clip.duration_sec or 3), base_mg_def=base,
+                style_pack_id=str(meta.get("style_pack_id") or "") or None,
+            )
         _asset = meta.get("resolved_asset")
         if isinstance(_asset, dict) and _asset.get("kind") == "texture":
             _asset_path = str(_asset.get("path") or "")

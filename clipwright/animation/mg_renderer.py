@@ -59,6 +59,8 @@ class MGRenderer:
         "border_width": "border-width",
         "border_color": "border-color",
         "transform_origin": "transform-origin",
+        "filter": "filter",
+        "clip_path": "clip-path",
     }
 
     # 元素级已显式渲染/结构性字段，静态透传时排除，避免重复输出
@@ -428,6 +430,30 @@ const dur=parseFloat(root.dataset.duration);
             if "translate_x" in props:
                 tx = props.pop("translate_x")
                 transforms.append(f"translateX({fill(tx)}px)")
+            if "translate_z" in props:
+                tz = props.pop("translate_z")
+                transforms.append(f"translateZ({fill(tz)}px)")
+            if "scale_x" in props:
+                sx = props.pop("scale_x")
+                transforms.append(f"scaleX({fill(sx)})")
+            if "scale_y" in props:
+                sy = props.pop("scale_y")
+                transforms.append(f"scaleY({fill(sy)})")
+            for _rot, _fn in (("rotate_x", "rotateX"), ("rotate_y", "rotateY"), ("rotate_z", "rotateZ")):
+                if _rot in props:
+                    rv = props.pop(_rot)
+                    transforms.append(f"{_fn}({fill(rv)}deg)")
+            if "perspective" in props:
+                pv = props.pop("perspective")
+                transforms.insert(0, f"perspective({fill(pv)}px)")
+            if "blur" in props:
+                bv = props.pop("blur")
+                style_attrs.append(f"filter:blur({fill(bv)}px);")
+            if "clip_inset" in props:
+                ci = props.pop("clip_inset")
+                if isinstance(ci, (list, tuple)) and len(ci) == 4:
+                    style_attrs.append(
+                        "clip-path:inset(" + " ".join(f"{fill(v)}px" for v in ci) + ");")
             if "width" in props:
                 w = props.pop("width")
                 style_attrs.append(f"width:{fill(w)}px;")

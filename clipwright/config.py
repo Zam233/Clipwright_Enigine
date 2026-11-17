@@ -228,6 +228,7 @@ class Settings(BaseSettings):
     # 文字动画 LLM 化（PRD text-animation-llm-2026-10-30）：True = prompt+LLM 生成；
     # False = 回退 AnimationCatalog 固定关键帧表（回滚开关）。
     text_animation_llm: bool = True
+    text_motion_llm_enabled: bool = False
     # 类型化生成的并发上限（LLM 等待型，默认与 pipeline 并发一致）
     animation_llm_concurrency: int = 6
     # persona 提示词统一上限（PRD §16 R5）：旧实现 400/600/1500/2000 四处不同截断，
