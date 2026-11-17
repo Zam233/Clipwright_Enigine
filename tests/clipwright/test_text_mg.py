@@ -91,3 +91,30 @@ def test_boxed_text_has_default_shadow():
     )
     text = next(e for e in mg["elements"] if e.get("type") == "text")
     assert "rgba(0,0,0,0.78)" in text["text_shadow"]
+
+
+def test_glitch_dedupes_box_and_line_uses_props():
+    base = {"animation_id": "x", "duration_sec": 2, "width": 640, "height": 360,
+            "elements": [
+                {"type": "shape", "shape": "rect", "x": 100, "y": 100,
+                 "width": 200, "height": 80, "background": "#12121a6b",
+                 "keyframes": [{"time": 0, "opacity": 1}]},
+                {"type": "shape", "shape": "rect", "x": 100, "y": 100,
+                 "width": 200, "height": 80, "background": "#12121a6b",
+                 "keyframes": [{"time": 0, "opacity": 1}]},
+                {"type": "line", "x": 320, "y": 200,
+                 "props": {"width": 560, "height": 2, "color": "#dc1414"},
+                 "keyframes": [{"time": 0, "opacity": 1}]},
+            ]}
+    mg = build_text_mgdef(base, text="技术中立", style={"font_size": 64, "fill": "#fff",
+                          "box": True, "box_color": "rgba(18,18,26,0.42)"},
+                          motion={"type": "glitch"}, width=640, height=360, display_sec=2)
+    shapes = [e for e in mg["elements"] if e.get("type") == "shape"
+              and e.get("shape") == "rect" and e.get("x") == 100]
+    assert len(shapes) == 1
+    line = next(e for e in mg["elements"] if e.get("type") == "line")
+    assert line["props"]["color"] == "#dc1414"
+    from clipwright.animation.mg_renderer import MGRenderer
+    html = MGRenderer.render(mg, params={}, width=640, height=360, fps=30)
+    assert "width:560" in html or "width:560.0" in html
+    assert "background:#4f8cff" not in html

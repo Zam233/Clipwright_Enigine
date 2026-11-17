@@ -207,7 +207,28 @@ def build_text_mgdef(
         }
         elements = [bg] + elements
 
-    out["elements"] = elements
+    # 重建时 base 里可能已有旧底板/旧装饰；再追加会叠出多个半透明黑块，
+    # 后续 shape 盖在文字上导致文字发灰。按几何/颜色去重（文本元素不参与）。
+    _seen: set[tuple] = set()
+    _deduped: list[dict] = []
+    for _el in elements:
+        if not isinstance(_el, dict) or _el.get("type") == "text":
+            _deduped.append(_el)
+            continue
+        _key = (
+            str(_el.get("type")), str(_el.get("shape")),
+            round(float(_el.get("x") or 0), 2), round(float(_el.get("y") or 0), 2),
+            round(float(_el.get("width") or 0), 2), round(float(_el.get("height") or 0), 2),
+            str(_el.get("background") or ""), str(_el.get("color") or ""),
+            str((_el.get("props") or {}).get("color") or ""),
+            str((_el.get("props") or {}).get("width") or ""),
+            str((_el.get("props") or {}).get("height") or ""),
+        )
+        if _key in _seen:
+            continue
+        _seen.add(_key)
+        _deduped.append(_el)
+    out["elements"] = _deduped
     return out
 
 

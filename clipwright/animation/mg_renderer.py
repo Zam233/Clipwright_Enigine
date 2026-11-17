@@ -496,11 +496,12 @@ const dur=parseFloat(root.dataset.duration);
             )
         elif elem_type in ("line", "circle", "ring", "arc", "shape"):
             shape = elem.get("shape", "rect")
-            color = elem.get("color", "#4f8cff")
+            _props = elem.get("props") if isinstance(elem.get("props"), dict) else {}
+            color = _props.get("color", elem.get("color", "#4f8cff"))
             sw = fill(elem.get("stroke_width", elem.get("border_width", 0)))
             sw_color = elem.get("stroke_color", elem.get("border_color", color))
-            w_val = fill(elem.get("width", 100))
-            h_val = fill(elem.get("height", 100))
+            w_val = fill(_props.get("width", elem.get("width", 100)))
+            h_val = fill(_props.get("height", elem.get("height", 100 if elem_type != "line" else 2)))
             border_radius = elem.get("border_radius", 0)
 
             if elem_type == "circle":
@@ -521,6 +522,13 @@ const dur=parseFloat(root.dataset.duration);
                 border_radius = elem.get("border_radius", 4)
 
             radius_css = f"border-radius:{fill(border_radius)};" if border_radius not in (0, "0", 0.0) else ""
+            _line_offset = ""
+            if elem_type == "line":
+                try:
+                    _line_offset = (f"margin-left:-{float(w_val) / 2:g}px;"
+                                    f"margin-top:-{float(h_val) / 2:g}px;")
+                except (TypeError, ValueError):
+                    _line_offset = ""
             _bg_image = elem.get("background_image")
             _bg_image_css = ""
             if isinstance(_bg_image, str) and _bg_image.strip():
@@ -543,7 +551,7 @@ const dur=parseFloat(root.dataset.duration);
             html = (
                 f'<div id="{eid}" class="mg-el mg-shape clip" data-start="0" data-duration="{total_dur}" data-track-index="1" style="{base_css}'
                 f'width:{w_val}px;height:{h_val}px;{bg_css}'
-                f'{radius_css}{_bg_image_css}'
+                f'{radius_css}{_bg_image_css}{_line_offset}'
                 + (f'border:{sw}px solid {bindable(sw_color)};' if sw_num > 0 else "")
                 + static_style
                 + '"></div>'
