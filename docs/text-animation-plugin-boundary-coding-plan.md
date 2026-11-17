@@ -453,3 +453,11 @@ plugins/text_motion_core/
   - 19 条文字 metadata 均有 `text_provider_id`/`fidelity=exact`；
   - 截图 `_cache/plugin_e2e_shots/contact_sheet.jpg`。
 - 仍未完成：CP-4 prompt/style/asset/card 插件、CP-5 preview_ops/quality 契约、CP-6 旧 ASS 兼容清理、CP-7 插件卸载真实 E2E。
+
+
+### 插件生命周期/隔离验证（2026-11-17）
+
+- `test_text_motion_plugin_lifecycle.py`：PluginLoader 加载 core → provider 可用；unload → `TEXT_MOTION_UNAVAILABLE`；
+- 静态隔离：`plugins/text_motion_core` 不含 `task_blackboard` / `quality_agent` / `services.render` 引用；
+- `test_text_engine_plugin`：9 个 provider、非法 plan 显式失败；
+- 点对点 E2E：`render_a1604dca3b53`，video 702.9s / audio 702.4s，19 条文字 provider_id/fidelity=exact。
