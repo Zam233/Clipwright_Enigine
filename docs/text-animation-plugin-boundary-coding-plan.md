@@ -547,3 +547,16 @@ plugins/text_motion_core/
 - 旧调用改为通过 TextAnimationEngine + text-motion-core 生成 MGDef；
 - 对应测试改为断言 `text_provider_id`/`mg_html`，不再断言模板 keyframes；
 - 受影响测试 47 passed。
+
+
+### 第三轮收尾（2026-11-18）
+
+- 内置 prompt 数据物理迁移到 `plugins/text_packs/builtin_types.json`；
+- 旧同步 `_handle_text_animation` 已去掉 AnimationCatalog keyframes，改走 motion provider；
+- texture asset pack 进入 MGDef（shape.background_image）并在 MGRenderer 输出 CSS；
+- 新增 API：
+  - `GET /api/text-animation/capabilities`
+  - `GET /api/text-animation/style-packs`
+  - `GET /api/text-animation/asset-packs`
+- 前端按 `preview_ops.kind=mg_def` 决定是否绘制 MG；
+- 仍未完成：style pack 的 PropertiesPanel UI、asset 路径安全/实际资源加载（图像路径），最新 702s 全量 E2E。
