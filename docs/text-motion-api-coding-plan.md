@@ -142,3 +142,12 @@ tests/clipwright/test_text_motion_api.py
 - 启动加载时 queued/authoring 任务标记为 failed，错误为“进程重启中断”；
 - 启动/完成/取消/失败均原子写；
 - 测试：`test_text_motion_api.py` 5 passed（含重启 fail-open）。
+
+
+## 11. 能力一致性修正（2026-11-18）
+
+- MG validator 白名单新增 translate_z/scale_x/scale_y/rotate_x/y/z/perspective/blur/clip/mask；
+- spring 在 `motion_interpolation.easing_progress` 中真实采样；
+- path 支持 cubic-bezier/arc 真实曲线采样；
+- compiler 支持 group/parent 变换叠加、camera rotate/easing；
+- 验证：`test_motion_spec + test_text_motion_api` 17 passed。

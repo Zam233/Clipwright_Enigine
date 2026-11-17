@@ -84,8 +84,11 @@ def compile_motion_spec(spec: MotionSpec, *, width: int | None = None, height: i
     h = int(height or spec.canvas.get("height") or 1080)
     duration = float(spec.duration_sec)
     elements: list[dict[str, Any]] = []
+    groups = {l.id: l for l in spec.layers if l.type == "group"}
 
     for layer in sorted(spec.layers, key=lambda x: (x.z_index, x.id)):
+        if layer.type == "group":
+            continue
         style = dict(layer.style or {})
         base: dict[str, Any] = {"type": layer.type, "id": layer.id}
         layout = layer.layout or {}
@@ -165,15 +168,45 @@ def compile_motion_spec(spec: MotionSpec, *, width: int | None = None, height: i
                         a, b = cam_kfs[j], cam_kfs[j + 1]
                         break
                 span = max(1e-6, float(b.get("time", 0)) - float(a.get("time", 0)))
-                local = max(0.0, min(1.0, (ct - float(a.get("time", 0))) / span))
+                raw = max(0.0, min(1.0, (ct - float(a.get("time", 0))) / span))
+                from clipwright.animation.motion_interpolation import easing_progress as _ep
+                local = _ep(a.get("easing"), raw)
                 cs = float(a.get("scale", 1)) + (float(b.get("scale", 1)) - float(a.get("scale", 1))) * local
                 cx = float(a.get("x", 0)) + (float(b.get("x", 0)) - float(a.get("x", 0))) * local
                 cy = float(a.get("y", 0)) + (float(b.get("y", 0)) - float(a.get("y", 0))) * local
+                cr = float(a.get("rotate", 0)) + (float(b.get("rotate", 0)) - float(a.get("rotate", 0))) * local
                 if cs != 1:
                     kf["scale"] = float(kf.get("scale", 1)) * cs
                 if cx or cy:
                     kf["translate_x"] = float(kf.get("translate_x", 0)) + cx
                     kf["translate_y"] = float(kf.get("translate_y", 0)) + cy
+                if cr:
+                    kf["rotate"] = float(kf.get("rotate", 0)) + cr
+
+        # group/parent：把父组关键帧的 transform 叠加到子层
+        if layer.parent and layer.parent in groups and kfs:
+            parent = groups[layer.parent]
+            pk = parent.keyframes or []
+            for kf in kfs:
+                t = float(kf.get("time", 0))
+                if not pk:
+                    break
+                a = pk[0]; b = pk[-1]
+                for j in range(len(pk) - 1):
+                    if pk[j].time <= t <= pk[j + 1].time:
+                        a, b = pk[j], pk[j + 1]
+                        break
+                span = max(1e-6, b.time - a.time)
+                local = max(0.0, min(1.0, (t - a.time) / span))
+                pa = a.model_extra or {}; pb = b.model_extra or {}
+                for key in ("translate_x", "translate_y", "scale", "rotate"):
+                    av = pa.get(key); bv = pb.get(key)
+                    if isinstance(av, (int, float)) and isinstance(bv, (int, float)):
+                        val = float(av) + (float(bv) - float(av)) * local
+                        if key == "scale":
+                            kf["scale"] = float(kf.get("scale", 1)) * val
+                        else:
+                            kf[key] = float(kf.get(key, 0)) + val
 
         # 逐字/逐词 stagger：按单元拆成多个 text 元素，并整体平移时间
         if layer.type == "text" and layer.text_motion and layer.text_motion.unit in ("char", "word"):

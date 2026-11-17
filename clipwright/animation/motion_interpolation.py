@@ -60,6 +60,12 @@ def easing_progress(easing: Any, t: float) -> float:
             t, float(getattr(easing, "x1", 0.25)), float(getattr(easing, "y1", 0.1)),
             float(getattr(easing, "x2", 0.25)), float(getattr(easing, "y2", 1.0)),
         )
+    if et == "spring":
+        vals = sample_spring(64, float(getattr(easing, "stiffness", 170)),
+                             float(getattr(easing, "damping", 18)),
+                             float(getattr(easing, "mass", 1)),
+                             float(getattr(easing, "velocity", 0)))
+        return vals[max(0, min(len(vals) - 1, int(t * (len(vals) - 1))))]
     if et == "steps":
         n = max(1, int(getattr(easing, "count", 1)))
         pos = getattr(easing, "position", "end")
@@ -101,7 +107,22 @@ def sample_path(path_type: str, points: list[dict[str, float]], progress: float)
         return cx + rx * math.cos(ang), cy + ry * math.sin(ang)
     if len(points) == 1:
         return points[0].get("x", 0), points[0].get("y", 0)
-    # 多段折线等距近似（cubic/arc 在 compiler 中可进一步采样）
+    if path_type == "cubic-bezier" and len(points) >= 4:
+        # points[0]=start, [1]/[2]=controls, [3]=end
+        t = p
+        mt = 1 - t
+        x = (mt ** 3 * points[0].get("x", 0) + 3 * mt ** 2 * t * points[1].get("x", 0)
+             + 3 * mt * t ** 2 * points[2].get("x", 0) + t ** 3 * points[3].get("x", 0))
+        y = (mt ** 3 * points[0].get("y", 0) + 3 * mt ** 2 * t * points[1].get("y", 0)
+             + 3 * mt * t ** 2 * points[2].get("y", 0) + t ** 3 * points[3].get("y", 0))
+        return x, y
+    if path_type == "arc" and len(points) >= 2:
+        cx, cy = points[0].get("x", 0), points[0].get("y", 0)
+        rx = abs(points[1].get("x", cx + 0.1) - cx)
+        ry = abs(points[1].get("y", cy + 0.1) - cy)
+        ang = math.pi * p
+        return cx + rx * math.cos(ang), cy - ry * math.sin(ang)
+    # 多段折线等距近似
     seg = min(len(points) - 1, int(p * (len(points) - 1)))
     local = p * (len(points) - 1) - seg
     a, b = points[seg], points[seg + 1]
