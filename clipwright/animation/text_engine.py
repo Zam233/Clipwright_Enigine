@@ -95,6 +95,10 @@ class TextMotionRegistry:
         return removed
 
     @classmethod
+    def has(cls, motion_type: str) -> bool:
+        return str(motion_type or "") in cls._providers
+
+    @classmethod
     def resolve(cls, motion_type: str) -> TextMotionProvider:
         entry = cls._providers.get(str(motion_type or ""))
         if entry is None:

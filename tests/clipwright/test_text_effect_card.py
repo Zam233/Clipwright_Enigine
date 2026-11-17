@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from clipwright.tool.text_effect_card import TextEffectCardTool
+from plugins.text_effect_card.card import TextEffectCardTool
 
 
 @pytest.mark.asyncio

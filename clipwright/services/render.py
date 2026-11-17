@@ -1510,6 +1510,14 @@ class RenderService:
                     audio_segments.append(entry)
                 elif k in ("text", "caption"):
                     meta = clip.metadata or {}
+                    _provider = str(meta.get("text_provider_id") or "")
+                    if _provider:
+                        from clipwright.animation.text_engine import TextMotionRegistry
+                        if not TextMotionRegistry.has(_provider):
+                            raise RuntimeError(
+                                f"TEXT_MOTION_UNAVAILABLE: 文字 clip {clip.id} 需要 provider "
+                                f"{_provider}，插件未加载/已禁用"
+                            )
                     if meta.get("renderer") == "mg_hyperframes" and meta.get("mg_html"):
                         # 用户裁定：文字动画统一 MG HTML；走 Hyperframes 透明 MOV，
                         # 不再进 ASS/drawtext 文字层。
