@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -246,22 +246,28 @@ async def author_status(task_id: str) -> dict:
 
 
 @router.get("/author/{task_id}/events")
-async def author_events(task_id: str):
+async def author_events(task_id: str, request: Request):
     """SSE 状态流；终态后关闭。客户端重连按 seq/task 状态重同步。"""
     if task_id not in _AUTHOR_TASKS:
         _load_tasks()
     if task_id not in _AUTHOR_TASKS:
         raise HTTPException(status_code=404, detail="author task not found")
 
-    async def gen():
+    try:
+        last = int(request.headers.get("last-event-id", "-1"))
+    except (TypeError, ValueError):
         last = -1
+
+    async def gen():
+        nonlocal last
         while True:
             task = _AUTHOR_TASKS.get(task_id) or {}
             seq = int(task.get("seq") or 0)
-            if seq != last:
+            terminal = task.get("status") in ("succeeded", "failed", "cancelled", "timed_out")
+            if seq != last or terminal:
                 last = seq
-                yield f"data: {json.dumps(_public_task(task), ensure_ascii=False)}\n\n"
-            if task.get("status") in ("succeeded", "failed", "cancelled", "timed_out"):
+                yield (f"id: {seq}\ndata: {json.dumps(_public_task(task), ensure_ascii=False)}\n\n")
+            if terminal:
                 break
             await asyncio.sleep(1)
 

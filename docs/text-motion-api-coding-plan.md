@@ -159,3 +159,11 @@ tests/clipwright/test_text_motion_api.py
 - 任务状态变化带 seq，终态关闭流；
 - 前端 `watchAuthor` 使用共享 sseStream，取消走 cancel endpoint；
 - 测试 `test_text_motion_api` 5 passed。
+
+
+## 13. SSE cursor（2026-11-18）
+
+- SSE 事件增加 `id: seq`；
+- 读取 `Last-Event-ID` 作为重连起点；
+- 终态即使 seq 未变化也会发送并关闭；
+- 前端共享 `connectSseStream` 的 EventSource 自动携带 last-event-id。
