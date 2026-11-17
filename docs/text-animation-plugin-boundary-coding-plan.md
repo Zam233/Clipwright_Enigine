@@ -518,3 +518,15 @@ plugins/text_motion_core/
   路由验证：项目 19 条文字 clip 全部进入 `hf_ov_local`（category=text_mg），
   `ass_text` 仅 321 条字幕，不含文字动画；
 - 测试：后端 25 passed；前端 preview 151 passed；`tsc --noEmit` 通过。
+
+
+### 最终收尾（2026-11-18）
+
+- CP-6：删除 `render.py` 旧 ASS 的 typewriter/word/highlight/slide/scale/glitch 实现；
+  旧时间线只读时退化为静态 ASS（保留兼容），新 MG 文字缺 HTML 抛 `TEXT_MG_HTML_MISSING`；
+- CP-4：style pack 已可被 `TextAnimationEngine.resolve_style_pack`/`plan(style_pack_id)` 消费；
+  asset pack 提供 `resolve_asset`；内置 prompt 类型仍作为 engine bootstrap（外部 pack 优先）；
+- CP-5：`preview_ops` 默认生成 `mg_def` op；前端 `previewFidelity` 消费 `preview_ops` 的 unsupported；
+- CP-7：真实禁用 `text_motion_core` 后提交 render `render_3d92e6ffd5ce`，状态 failed/0%，未产生成片；
+- 最新完整 E2E：`render_aec88d8c82b6`，video **702.9s** / audio **702.4s**；
+- 测试：后端 20 passed；前端 preview 151 passed；`tsc --noEmit` 通过。
