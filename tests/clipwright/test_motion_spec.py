@@ -8,6 +8,8 @@ import pytest
 
 from clipwright.animation.motion_compiler import compile_motion_spec
 from clipwright.animation.motion_interpolation import cubic_bezier_y, easing_progress, sample_path
+from pathlib import Path
+
 from clipwright.animation.motion_spec import MotionSpec
 from clipwright.animation.motion_spec_validator import validate_motion_spec
 from clipwright.animation.mg_renderer import MGRenderer
@@ -76,3 +78,22 @@ async def test_llm_plugin_author(monkeypatch):
     spec = await TextMotionAuthor().author(MotionAuthorRequest(
         text="测试", style={}, intent={}, width=640, height=360, duration_sec=2))
     assert spec.layers[0].content == "测试"
+
+
+def test_engine_applies_motion_spec_to_clip():
+    from clipwright.animation.text_engine import TextAnimationEngine
+    from clipwright.schema.timeline import Clip, ClipKind
+    spec = _spec()
+    clip = Clip(id="c", kind=ClipKind.TEXT, asset_id="", track_id="t",
+                start_sec=0, duration_sec=2, text="测试",
+                metadata={"motion_spec": spec.model_dump(by_alias=True)})
+    TextAnimationEngine().apply_style(clip, style={"font_size": 56, "fill": "#fff"},
+                                      motion={"type": "llm_motion"}, width=640, height=360)
+    assert clip.metadata["text_provider_id"] == "motion_spec"
+    assert clip.metadata["mg_html"]
+
+
+def test_render_module_does_not_import_llm_author():
+    text = Path("clipwright/services/render.py").read_text(encoding="utf-8")
+    assert "text_motion_llm" not in text
+    assert "plugins.text_motion_llm" not in text
