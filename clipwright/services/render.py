@@ -1518,9 +1518,14 @@ class RenderService:
                                 f"TEXT_MOTION_UNAVAILABLE: 文字 clip {clip.id} 需要 provider "
                                 f"{_provider}，插件未加载/已禁用"
                             )
-                    if meta.get("renderer") == "mg_hyperframes" and meta.get("mg_html"):
-                        # 用户裁定：文字动画统一 MG HTML；走 Hyperframes 透明 MOV，
-                        # 不再进 ASS/drawtext 文字层。
+                    if meta.get("renderer") == "mg_hyperframes":
+                        # 用户裁定：文字动画统一 MG HTML；走 Hyperframes 透明 MOV。
+                        # 新路径缺 HTML 是硬错误，不得静默回退 ASS/drawtext。
+                        if not meta.get("mg_html"):
+                            raise RuntimeError(
+                                f"TEXT_MG_HTML_MISSING: 文字 clip {clip.id} renderer=mg_hyperframes "
+                                "但没有 mg_html；拒绝回退 ASS/白字"
+                            )
                         hf_ov_local.append(dict(
                             mg_html=self._ensure_mg_placeholders_filled(meta, clip.text or ""),
                             start_sec=clip.start_sec,
@@ -1532,7 +1537,7 @@ class RenderService:
                             category="text_mg",
                         ))
                     else:
-                        # 兼容旧时间线：只有没有 mg_html 的旧 clip 才走 ASS
+                        # 旧时间线只读兼容：无 mg_html 的旧 clip 仍走 ASS
                         ov = self._extract_text_overlay(clip, track.index, text_overlays)
                         text_overlays.append(ov)
                 elif k == "animation":

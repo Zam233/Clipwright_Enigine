@@ -497,3 +497,11 @@ plugins/text_motion_core/
 - `apply_style` metadata 写 `preview_ops`；
 - `test_text_packs_plugin` 覆盖 load/unload。
 - 仍缺：前端真正消费 `preview_ops` 的渲染分支（当前仍以 `mg_def` 为准）、style pack 的显式选择 UI。
+
+
+### CP-6 收尾（2026-11-17）
+
+- 文字 clip `renderer=mg_hyperframes` 但缺 `mg_html` 时现在抛
+  `TEXT_MG_HTML_MISSING`，不再静默回退 ASS/白字；
+- 旧时间线（没有 mg_html、renderer 不是 mg_hyperframes）仍走只读 ASS 兼容；
+- 新文字路径已无动静混合 fallback。
