@@ -477,7 +477,7 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                         location=c.id,
                     ))
             _provider = str(meta.get("text_provider_id") or "")
-            if _provider:
+            if _provider and _provider != "motion_spec":
                 try:
                     from clipwright.animation.text_engine import TextMotionRegistry
                     _has_provider = TextMotionRegistry.has(_provider)

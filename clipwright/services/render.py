@@ -1511,7 +1511,7 @@ class RenderService:
                 elif k in ("text", "caption"):
                     meta = clip.metadata or {}
                     _provider = str(meta.get("text_provider_id") or "")
-                    if _provider:
+                    if _provider and _provider != "motion_spec":
                         from clipwright.animation.text_engine import TextMotionRegistry
                         if not TextMotionRegistry.has(_provider):
                             raise RuntimeError(
