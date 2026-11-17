@@ -1,0 +1,9 @@
+id: "text_effect_card"
+name: "文字效果卡"
+version: "1.0.0"
+kind: "capability"
+description: "渐变/撕纸/霓虹/故障静态文字卡 PNG"
+entry_point: "text_effect_card.main"
+api_version: "2"
+contributions:
+  - { kind: tool, id: text_effect_card }

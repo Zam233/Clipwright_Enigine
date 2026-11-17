@@ -453,6 +453,25 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                     message=f"文字动画 {c.id} 是纯白字且无描边/阴影/底板，可读性差",
                     location=c.id,
                 ))
+            _provider = str(meta.get("text_provider_id") or "")
+            if _provider:
+                try:
+                    from clipwright.animation.text_engine import TextMotionRegistry
+                    _has_provider = TextMotionRegistry.has(_provider)
+                except Exception:
+                    _has_provider = False
+                if not _has_provider:
+                    issues.append(QualityIssue(
+                        severity="error", category="animation",
+                        message=f"文字动画 {c.id} 需要 text_motion provider {_provider}，当前不可用",
+                        location=c.id,
+                    ))
+            if str(meta.get("fidelity") or "") == "unsupported":
+                issues.append(QualityIssue(
+                    severity="error", category="animation",
+                    message=f"文字动画 {c.id} 的 provider 声明 fidelity=unsupported",
+                    location=c.id,
+                ))
             if not str(meta.get("duration_reason") or "").strip():
                 issues.append(QualityIssue(
                     severity="warning", category="text_style",

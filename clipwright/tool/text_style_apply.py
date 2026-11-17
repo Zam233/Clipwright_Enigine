@@ -74,6 +74,7 @@ class ApplyTextStyleTool(BaseTool):
         motion: Optional[dict[str, Any]] = None,
         duration_sec: Optional[float] = None,
         duration_reason: str = "",
+        style_pack_id: str = "",
         **kwargs: Any,
     ) -> ToolExecResult:
         from clipwright.animation.text_style import normalize_motion, normalize_style
@@ -135,25 +136,20 @@ class ApplyTextStyleTool(BaseTool):
         }
         meta["anim_type"] = str(mo["type"])
         meta["duration_reason"] = duration_reason
-        # 所有文字动画统一 MG HTML：样式变了必须重建 mg_html，否则成片仍是旧样式。
+        if str(style_pack_id or "").strip():
+            meta["style_pack_id"] = str(style_pack_id).strip()
+        # 所有文字动画统一走 engine + motion provider；工具不再直接构建 MG。
         try:
-            from clipwright.animation.text_mg import build_text_mgdef, render_text_mg_html
-            base = meta.get("mg_def") if isinstance(meta.get("mg_def"), dict) else {}
-            mg_def = build_text_mgdef(
-                base, text=str(target.text or ""), style=st, motion=mo,
-                width=int(timeline.width or 1920), height=int(timeline.height or 1080),
-                display_sec=float(target.duration_sec),
+            from clipwright.animation.text_engine import get_engine
+            target = get_engine().apply_style(
+                target, style=st, motion=mo,
+                width=int(timeline.width or 1920),
+                height=int(timeline.height or 1080),
             )
-            meta["mg_def"] = mg_def
-            meta["mg_html"] = render_text_mg_html(
-                mg_def, width=int(timeline.width or 1920),
-                height=int(timeline.height or 1080), fps=float(timeline.fps or 30),
-            )
-            meta["mg_params"] = {}
         except Exception as exc:  # noqa: BLE001
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name,
                                   error=f"重建 MG HTML 失败: {exc}")
-        target.metadata = meta
+
 
         try:
             bb.put(str(task_id), "timeline", timeline.model_dump(), by="animation")

@@ -1008,12 +1008,12 @@ _prune_trim_cache_dir()
 
 def _trim_cache_key(src: str, offset: float, dur: float, width: int, height: int,
                     speed: float = 1.0, image_fit: str = "", transform: str = "",
-                    kfs: str = "", kb: str = "", mask: str = "") -> str:
+                    kfs: str = "", kb: str = "", mask: str = "", frames: int = 0) -> str:
     # /D2/V4/V3: 速度、填充模式、静态变换与关键帧都影响输出内容，必须进缓存键
     # 轮 85: kenburns 改变画面（图片推近），同样必须进键
     # O-遮罩升级: 蒙版（类型/区域/羽化/反相/点数/旋转）同样改变像素，**必须进键**——
     # 否则同一素材换个蒙版会命中上一版缓存，表现为"蒙版没生效"
-    raw = f"{src}|{offset:.2f}|{dur:.2f}|{width}x{height}|{speed:.3f}|{image_fit}|{transform}|{kfs}|{kb}|{mask}"
+    raw = f"{src}|{offset:.2f}|{dur:.2f}|{width}x{height}|{speed:.3f}|{image_fit}|{transform}|{kfs}|{kb}|{mask}|{frames}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -1510,9 +1510,22 @@ class RenderService:
                     audio_segments.append(entry)
                 elif k in ("text", "caption"):
                     meta = clip.metadata or {}
-                    if meta.get("renderer") == "mg_hyperframes" and meta.get("mg_html"):
-                        # 用户裁定：文字动画统一 MG HTML；走 Hyperframes 透明 MOV，
-                        # 不再进 ASS/drawtext 文字层。
+                    _provider = str(meta.get("text_provider_id") or "")
+                    if _provider:
+                        from clipwright.animation.text_engine import TextMotionRegistry
+                        if not TextMotionRegistry.has(_provider):
+                            raise RuntimeError(
+                                f"TEXT_MOTION_UNAVAILABLE: 文字 clip {clip.id} 需要 provider "
+                                f"{_provider}，插件未加载/已禁用"
+                            )
+                    if meta.get("renderer") == "mg_hyperframes":
+                        # 用户裁定：文字动画统一 MG HTML；走 Hyperframes 透明 MOV。
+                        # 新路径缺 HTML 是硬错误，不得静默回退 ASS/drawtext。
+                        if not meta.get("mg_html"):
+                            raise RuntimeError(
+                                f"TEXT_MG_HTML_MISSING: 文字 clip {clip.id} renderer=mg_hyperframes "
+                                "但没有 mg_html；拒绝回退 ASS/白字"
+                            )
                         hf_ov_local.append(dict(
                             mg_html=self._ensure_mg_placeholders_filled(meta, clip.text or ""),
                             start_sec=clip.start_sec,
@@ -1524,7 +1537,7 @@ class RenderService:
                             category="text_mg",
                         ))
                     else:
-                        # 兼容旧时间线：只有没有 mg_html 的旧 clip 才走 ASS
+                        # 旧时间线只读兼容：无 mg_html 的旧 clip 仍走 ASS
                         ov = self._extract_text_overlay(clip, track.index, text_overlays)
                         text_overlays.append(ov)
                 elif k == "animation":
@@ -1709,6 +1722,14 @@ class RenderService:
                 speed = 1.0
             speed = max(0.25, min(4.0, speed))
             dur = max(0.5, seg.get("duration_sec", 5))
+            try:
+                _fps = max(1.0, float(fps or 30))
+                _start = float(seg.get("start_sec", 0) or 0)
+                # 按时间线全局帧边界分配，而不是每段独立 round：
+                # 69 段各自 round/ceil 会累计 15 帧（702.9s vs 702.4s）。
+                _target_frames = max(1, round((_start + dur) * _fps) - round(_start * _fps))
+            except (TypeError, ValueError):
+                _target_frames = max(1, round(dur * float(fps or 30)))
             if not src:
                 self._fallback_count += 1
                 return self._generate_fallback(dur, width, height, fps, idx)
@@ -1749,6 +1770,7 @@ class RenderService:
                                         speed, image_fit,
                                         transform=f"{_tx:.4f},{_ty:.4f},{_ts:.4f},{_tr:.4f}" if _has_transform else "",
                                         kfs=_kfs_digest,
+                                        frames=_target_frames,
                                         kb="1" if seg.get("kenburns") else "",
                                         mask=json.dumps({
                                             "t": seg.get("mask_type"),
@@ -2013,12 +2035,14 @@ class RenderService:
                            "-ss", str(seg.get("source_offset", 0)),
                            "-stream_loop", "-1", "-i", src, "-t", str(dur),
                            "-filter_complex", fc, "-map", "[vout]", "-r", str(fps),
+                           "-frames:v", str(_target_frames),
                            *_encoder_stage_args(encoder, preset),
                            *video_rate_args(encoder, bitrate), "-an", out_tmp]
                 else:
                     cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)),
                            "-ss", str(seg.get("source_offset", 0)),
                            "-stream_loop", "-1", "-i", src, "-t", str(dur), "-vf", vf, "-r", str(fps),
+                           "-frames:v", str(_target_frames),
                            *_encoder_stage_args(encoder, preset),
                            *video_rate_args(encoder, bitrate), "-an", out_tmp]
                 r = self._run_ff(cmd, capture_output=True, text=False, timeout=3600)
@@ -2759,88 +2783,25 @@ class RenderService:
                     center_x, center_y - ts.font_size / 2, total_w,
                 ))
 
-            if not is_caption and motion_type in ("typewriter", "word_by_word") and len(raw_text) <= 40:
-                word_mode = motion_type == "word_by_word"
-                items = _tokens(raw_text, word_mode)
-                n = max(1, len(items))
-                reveal = float(motion.get("reveal_sec") or min(2.0, max(0.6, n * 0.08)))
-                reveal = max(0.1, min(reveal, max(0.2, end - start)))
-                step = reveal / max(1, n - 1)
-                x = center_x
-                y_top = center_y - ts.font_size / 2
-                delay = 0.0
-                for i, token in enumerate(items):
-                    if not token.strip():
-                        x += _cw(token, ts.font_size)
-                        continue
-                    dstart = start + delay
-                    dstart = min(dstart, end - 0.01)
-                    extra = rf"\an7\pos({x:.1f},{y_top:.1f})\fad(80,150)"
-                    dialogues.append(ts.build_ass_dialogue(
-                        token, dstart, end, style_name=style_name, extra_tags=extra, layer=1,
-                    ))
-                    x += sum(_cw(ch, ts.font_size) for ch in token)
-                    delay += step
-                    if token in "，。！？,.!?；;：:":
-                        delay += 0.08
-                if motion.get("cursor") and not is_caption:
-                    cursor_x = min(int(width) - 8, x + 4)
-                    dialogues.append(ts.build_ass_dialogue(
-                        "▍", min(start + reveal, end - 0.01),
-                        min(start + reveal + 0.35, end),
-                        style_name=style_name,
-                        extra_tags=rf"\an7\pos({cursor_x:.1f},{y_top:.1f})",
-                    ))
-                continue
-
-            eff = motion_type if motion_type in (
-                "slide_in", "scale_in", "highlight", "glitch", "neon", "fade_in", "fade_out"
-            ) else anim
-            if not is_caption and (eff == "highlight" or anim == "highlight_flash") and len(raw_text) <= 40:
-                highlight_color = color_to_ass(str((style_d or {}).get("highlight_color") or "#ffd400"))
-                tokens = _tokens(raw_text, False)
-                n = max(1, len(tokens))
-                total_cs = max(1, int((end - start) * 100))
-                per_cs = max(1, total_cs // n)
-                karaoke = "".join(f"{{\\k{per_cs}}}{t}" for t in tokens if t)
-                extra = rf"\an5\1c{highlight_color}\2c&H00FFFFFF\fad(100,160)"
-                dialogues.append(ts.build_ass_dialogue(
-                    karaoke, start, end, style_name=style_name,
-                    extra_tags=extra, layer=1, raw_text=True,
-                ))
-                continue
+            # 旧时间线只读：engine 不再实现任何 motion。旧 clip 的
+            # typewriter/slide/scale/highlight 等动效退化为静态 ASS 文字，
+            # 只保留淡入淡出；新文字必须走 MG HTML 插件路径。
+            if not is_caption and motion_type:
+                try:
+                    self._final_ffmpeg_log.append(
+                        f"legacy_text_static: {clip.id if hasattr(clip, 'id') else ''} "
+                        f"motion={motion_type} 已按只读静态文字处理")
+                except Exception:
+                    pass
 
             chunks = _split_long_text(raw_text)
             if not chunks:
                 continue
             total_chars = sum(len(c) for c in chunks) or 1
             cursor = start
-            # motion 优先，anim_type 作为 fallback
-            eff = motion_type if motion_type in (
-                "slide_in", "scale_in", "highlight", "glitch", "neon", "fade_in", "fade_out"
-            ) else anim
-            if eff in ("glitch", "neon"):
-                logger.warning("Render: 文字 motion=%s 未实现，按显式降级处理（不是真实特效）", eff)
-                try:
-                    self._final_ffmpeg_log.append(
-                        f"文字 motion={eff} 未实现：该段按 fade 输出，已在验收中标为未完成")
-                except Exception:
-                    pass
             for chunk in chunks:
                 w = (end - start) * len(chunk) / total_chars
                 extra = "" if is_caption else r"\fad(200,200)"
-                if not is_caption and eff == "slide_in":
-                    ms = max(120, int(min(0.5, max(0.15, end - start)) * 1000))
-                    extra = (rf"\an5\move({center_x:.1f},{center_y + 80:.1f},"
-                             rf"{center_x:.1f},{center_y:.1f},0,{ms})\fad(80,160)")
-                elif not is_caption and eff == "scale_in":
-                    ms = max(120, int(min(0.5, max(0.15, end - start)) * 1000))
-                    extra = (rf"\fscx70\fscy70\t(0,{ms},\fscx100\fscy100)"
-                             r"\fad(80,160)")
-                elif not is_caption and eff == "highlight":
-                    extra = r"\fad(120,160)"
-                elif not is_caption and (ts.offset_x or ts.offset_y):
-                    extra = rf"\an5\pos({center_x:.1f},{center_y:.1f})"
                 dialogues.append(ts.build_ass_dialogue(
                     chunk, cursor, min(cursor + w, end),
                     style_name=style_name, extra_tags=extra, layer=1,

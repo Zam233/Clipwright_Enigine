@@ -57,7 +57,6 @@ from clipwright.tool.type_spec_tool import GetTypeSpecTool
 from clipwright.tool.subtitle import SubtitleBurnTool
 from clipwright.tool.text_video import GenerateTextVideoTool
 from clipwright.tool.text_style_apply import ApplyTextStyleTool
-from clipwright.tool.text_effect_card import TextEffectCardTool
 from clipwright.tool.video import (
     MediaProbeTool,
     VideoConcatTool,
@@ -116,7 +115,6 @@ def register_builtin_tools() -> None:
         # ── 文字 ──
         GenerateTextVideoTool(),
         ApplyTextStyleTool(),
-        TextEffectCardTool(),
         SubtitleBurnTool(),
         TypewriterAnimationTool(),
         TrackingTextTool(),

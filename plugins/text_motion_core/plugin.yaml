@@ -1,0 +1,17 @@
+id: "text-motion-core"
+name: "基础文字动效"
+version: "1.0.0"
+kind: "capability"
+description: "fade/slide/scale/typewriter/word_by_word/highlight 的独立文字动效 provider"
+entry_point: "text_motion_core.main"
+api_version: "2"
+contributions:
+  - { kind: text_motion, id: fade_in }
+  - { kind: text_motion, id: fade_out }
+  - { kind: text_motion, id: slide_in }
+  - { kind: text_motion, id: scale_in }
+  - { kind: text_motion, id: typewriter }
+  - { kind: text_motion, id: word_by_word }
+  - { kind: text_motion, id: highlight }
+  - { kind: text_motion, id: glitch }
+  - { kind: text_motion, id: neon }

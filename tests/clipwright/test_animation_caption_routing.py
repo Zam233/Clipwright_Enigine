@@ -90,9 +90,10 @@ class TestCaptionRouting:
             f"场景描述不应进入字幕轨，实际 kind={produced.kind}"
         )
         assert str(produced.kind) == "text"
-        # 降级为普通 TEXT clip，保留入场动画 keyframes
+        # 旧同步适配器只生成插件 MG clip，不再生成 AnimationCatalog keyframes
         assert produced.metadata["anim_type"] == "typewriter"
-        assert len(produced.keyframes) >= 2
+        assert produced.metadata["text_provider_id"] == "typewriter"
+        assert produced.metadata["mg_html"]
 
     def test_long_metadata_text_still_captioned(self) -> None:
         """长真实旁白（metadata.text）+ typewriter → 仍正常产出 CAPTION clip。"""
@@ -141,8 +142,8 @@ class TestCaptionRouting:
         produced = track.clips[0]
         assert str(produced.kind) == "caption"
 
-    def test_long_scene_description_short_text_fallback_keeps_keyframes(self) -> None:
-        """场景描述降级路径保留入场动画 keyframes（opacity 0→1）。"""
+    def test_long_scene_description_short_text_fallback_uses_provider(self) -> None:
+        """场景描述降级路径不再用模板 keyframes，而是走 motion provider。"""
         track = _mk_text_track()
         vid = _mk_video_clip(description="[文字动画]打字：" + _LONG_REAL_TEXT)
         marker = {"type": "text", "anim_id": "typewriter", "name": "打字"}
@@ -152,10 +153,6 @@ class TestCaptionRouting:
         )
 
         produced = track.clips[0]
-        opacities = [
-            kf["properties"]["opacity"]
-            for kf in produced.keyframes
-            if "opacity" in kf.get("properties", {})
-        ]
-        assert opacities[0] == 0
-        assert 1 in opacities
+        assert produced.metadata["text_provider_id"] == "typewriter"
+        assert produced.keyframes == []
+

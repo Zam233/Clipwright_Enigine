@@ -67,6 +67,7 @@ from clipwright.api import model_probe as model_probe_api
 from clipwright.api import settings as settings_api
 from clipwright.api import providers as providers_api
 from clipwright.api import rag as rag_api
+from clipwright.api import text_animation as text_animation_api
 from clipwright.api import render as render_api
 from clipwright.api import capability as capability_api
 from clipwright.api import tool as tool_api
@@ -681,6 +682,7 @@ app.include_router(model_probe_api.router)
 app.include_router(settings_api.router)
 app.include_router(providers_api.router)
 app.include_router(render_api.router)
+app.include_router(text_animation_api.router)
 app.include_router(capability_api.router)
 app.include_router(tool_api.router)
 app.include_router(tool_surface_api.router)
