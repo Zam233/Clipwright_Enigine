@@ -539,3 +539,11 @@ plugins/text_motion_core/
 - `render_3d92e6ffd5ce` 的失败原因已持久化在 Mongo `result.error`：
   `TEXT_MOTION_UNAVAILABLE ... provider slide_in`；
 - 仍未完成：同步 `_handle_text_animation`/`AnimationCatalog` 模板路径（测试依赖）、asset pack 未进入像素渲染、preview_ops 未实际绘制、style pack 无 UI；PR #19/#16 保持 open。
+
+
+### 同步模板路径清理（2026-11-18）
+
+- `_handle_text_animation` 旧同步入口不再调用 `AnimationCatalog.build_full_keyframes`；
+- 旧调用改为通过 TextAnimationEngine + text-motion-core 生成 MGDef；
+- 对应测试改为断言 `text_provider_id`/`mg_html`，不再断言模板 keyframes；
+- 受影响测试 47 passed。
