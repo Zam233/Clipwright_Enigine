@@ -25,16 +25,19 @@ class TextPacksPlugin(BasePlugin):
     id = "text_packs"
 
     def contributions(self):
-        from clipwright.animation.text_specs import TEXT_ANIM_SPECS
+        import json
+        from pathlib import Path
+        pack = json.loads((Path(__file__).with_name("builtin_types.json")).read_text(encoding="utf-8"))
         builtin = [
-            Contribution(ContributionKind.TEXT_PROMPT_PACK, spec.id, None, meta={
-                "name": spec.name, "intent": spec.intent, "motion": spec.motion,
-                "constraints": list(spec.constraints),
-                "anti_patterns": list(spec.anti_patterns),
-                "default_anchor": spec.default_anchor,
-                "prompt": "",
+            Contribution(ContributionKind.TEXT_PROMPT_PACK, item["id"], None, meta={
+                "name": item.get("name") or item["id"], "intent": item.get("intent") or "",
+                "motion": item.get("motion") or "",
+                "constraints": item.get("constraints") or [],
+                "anti_patterns": item.get("anti_patterns") or [],
+                "default_anchor": item.get("default_anchor") or "center",
+                "prompt": item.get("prompt") or "",
             })
-            for spec in TEXT_ANIM_SPECS
+            for item in pack.get("types") or []
         ]
         return [
             Contribution(ContributionKind.TEXT_PROMPT_PACK, "spotlight_quote", None, meta={
