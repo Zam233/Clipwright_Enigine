@@ -47,3 +47,35 @@ def test_engine_plan_and_html_for_typewriter():
     texts = [e for e in plan.mg_def["elements"] if e.get("type") == "text"]
     assert len(texts) == 4
     assert "<!DOCTYPE html>" in TextAnimationEngine().render_html(plan)
+
+
+def test_all_core_motions_have_plan_and_html():
+    eng = TextAnimationEngine()
+    for motion_id in ("fade_in", "fade_out", "slide_in", "scale_in",
+                      "typewriter", "word_by_word", "highlight", "glitch", "neon"):
+        plan = eng.plan(
+            text="效果", style={"font_size": 64, "fill": "#ffffff"},
+            motion={"type": motion_id, "reveal_sec": 0.4},
+            width=640, height=360, display_sec=2,
+        )
+        assert plan.provider_id == motion_id
+        assert plan.mg_def.get("elements")
+        assert "<!DOCTYPE html>" in eng.render_html(plan)
+
+
+def test_invalid_provider_plan_is_explicit(monkeypatch):
+    class BadProvider:
+        id = "bad_motion"
+        version = "1"
+        def supports(self, **kwargs): return True
+        def plan(self, request): return {"mg_def": {"elements": []}}
+
+    TextMotionRegistry.register(BadProvider(), plugin_id="bad")
+    try:
+        with pytest.raises(Exception):
+            TextAnimationEngine().plan(
+                text="坏", style={"font_size": 56, "fill": "#fff"},
+                motion={"type": "bad_motion"}, width=640, height=360, display_sec=2,
+            )
+    finally:
+        TextMotionRegistry.unregister_plugin("bad")

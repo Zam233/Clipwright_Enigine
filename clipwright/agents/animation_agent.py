@@ -1107,10 +1107,24 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             },
         )
         from clipwright.animation.text_mg import apply_text_style_to_clip
-        return apply_text_style_to_clip(
-            clip, style=text_style, motion=text_motion,
-            width=int(self._tl_width or 1920), height=int(self._tl_height or 1080),
-        )
+        try:
+            return apply_text_style_to_clip(
+                clip, style=text_style, motion=text_motion,
+                width=int(self._tl_width or 1920), height=int(self._tl_height or 1080),
+            )
+        except Exception as exc:  # noqa: BLE001 — provider 缺失/非法时明确失败
+            _note(
+                "text_motion_unavailable" if "UNAVAILABLE" in type(exc).__name__.upper()
+                else "text_motion_plan_invalid",
+                f"{type(exc).__name__}: {exc}",
+                scope=str((vid_clip.metadata or {}).get("scene_title") or ""),
+                impact="该段文字没有产物；不回退 ASS/白字/模板",
+            )
+            self._record_failed_animation(
+                vid_clip, anim_id, anim_name,
+                f"文字 motion provider 失败: {type(exc).__name__}: {exc}",
+            )
+            return None
 
     @staticmethod
     def _handle_caption(
