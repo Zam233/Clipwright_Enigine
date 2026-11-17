@@ -1,8 +1,9 @@
 # LLM MotionSpec 文字动效 PRD
 
-> 状态：方案评审稿  
+> 状态：方案评审稿；下文标为“目标”的条款均未因写入 PRD 而视为已实现
+> 修订说明：独立审阅指出的 P0/P1/P2 阻塞以第 25–28 节的收口契约和验收矩阵为准；前文示例是完整设计空间，不是当前代码能力表。
 > 范围：仅文字动画（不含 MG 图形动画、转场、字幕样式）  
-> 目标分支：`ref/文字效果插件化`  
+> 目标分支：`feat/zam_text_motion_llm_spec`  
 > 关联：`docs/text-animation-plugin-boundary-prd.md`、`docs/text-animation-plugin-boundary-coding-plan.md`
 
 ## 1. 背景
@@ -29,8 +30,8 @@ text_generation（LLM 决定文字/类型/style/motion 类型）
 
 ### 2.1 目标
 
-- LLM 在 **animation agent 阶段**调用一次，输出 `MotionSpec`；
-- `MotionSpec` 写入文字 clip，render 阶段只编译 spec，**绝不调用 LLM**；
+- LLM 在 **animation agent 阶段**生成 MotionSpec；当前先经 `text_generation` 再经 author，调用次数及重试见 §27；
+- `MotionSpec` 写入文字 clip；目标是 render 阶段只验证并按版本编译 spec、**绝不调用 LLM**（目前只读取持久化产物）；
 - 支持比现有模板丰富得多的动画：
   - 线性/贝塞尔/阶跃/弹簧/保持；
   - 2D/3D transform；
@@ -844,3 +845,47 @@ project_style: dict
 - LLM 生成 motion 的质量评分阈值；
 - prompt pack 与 motion author 的职责是否合并；
 - 是否需要项目级 motion 风格记忆。
+
+## 25. 修订说明：现状、冻结子集与非目标
+
+本节及第 26–28 节约束前述完整设计空间；原有示例（含 `requires` 列表、插件 manifest 和 `exact`）均为**目标示例**，不能用作当前支持证明。代码静态存在不等于端到端验收通过。
+
+| 范围 | 当前代码已实现 | PRD 目标 / 尚未实现 |
+|---|---|---|
+| Schema/校验 | Pydantic 顶层、Layer、Easing 与部分时间/属性检查 | `tracks/effects/camera/layout/style/progress` 仍为宽松 dict；未知嵌套字段、正文与 clip 一致性、真实变化覆盖率、末段静止、安全区采样与资源约束尚未闭合 |
+| 编译 | text/shape/line/image、部分 camera/stagger 与 blur/glow；基础 easing、circle/折线近似 | group 当前被丢弃，parent 不继承；camera 不处理 rotate/easing；line/range、order/seed/unit_duration 未兑现；贝塞尔路径/arc 退化为线段、orient 未用；spring 采样走线性；未知 named easing 退线性，dict easing 的参数读取不正确 |
+| MGDef/预览 | MGRenderer 可输出部分 3D/blur/clip CSS；compiler 返回 MGDef | MG validator 的属性白名单缺 3D/clip/mask，且每元素要求至少两帧；compiler 不调用它而恒标 `exact`；HTML 能输出不代表 MGDef 已统一校验或 Canvas 可等价绘制 |
+| Agent/持久化 | author 最多两次 JSON 解析；Agent 写 spec/hash 并调用 engine；render 不直接导入 author | 没有 structured `json_schema`、能力 prompt/错误反馈修复、完整生成元数据；Agent 不传 validator capabilities；render 只读 mg_html/mg_def，不核 spec/hash/版本或重编译；quality 仅对已有 spec 报 issue |
+| 前端/接口 | 已有 mg_def Canvas 预览与通用编辑底座 | MotionSpec 编辑和 validate-spec/author/compile API 均待新增；前端可能普通文字回退，不能宣称一致 |
+
+**冻结的 v1 可执行子集是准入门槛，不是对当前实现的背书。** 在双方 schema、validator、compiler、MG validator 和前端能力表逐项对齐并有测试前，仅将已验证的 text 单层、显式静态 style/layout 字段、2D 数值 transform/opacity、严格命名白名单及可验证的至少两帧线性插值列入候选。候选也必须先通过 MG validator 和 Canvas 原语对账才可启用。`spring`、复杂 path（含 arc、Bezier、orient）、group/parent、camera、3D、mask/clip、tracks、line/range stagger、插件效果和外部 image 均为**尚未实现的目标能力**；未对齐的已有编译分支不进入公开能力声明。不得偷偷忽略、退线性或返回 `exact`。扩展能力按单项 schema→validator→compiler→MG validator→前端→抽帧测试放行，不因后端 HTML 支持而自动开放。旧 fixed motion/ASS 只允许按来源/版本识别为 legacy clip 后只读兼容；新 MotionSpec clip 缺失/非法 spec 不准落入 legacy、默认 `fade_in` 或白字路径。
+
+## 26. 修订契约：Schema、校验与编译
+
+1. **唯一能力表**（目标）：宿主按 compiler 版本发布 feature ID、字段形状/范围、依赖、MG 属性及前端可绘制原语；`requires` 必填、去重、精确匹配，且与实际使用字段双向比对，隐式能力也须推导。Agent 在调用 validator 时**必须传入非空的实际能力集合**，不能以 `None`/空集合跳过检查；author request 的 `allowed_features`、`capabilities` 和 seed 从同一快照构造。当前 Agent 未传 capabilities、manifest 未列 features，`allowed_features` 默认空，均是未完成项。没有协商结果即拒绝生成/保存，不猜能力。
+2. **结构约束**（目标）：顶层和每个嵌套对象（tracks/segments/effects/camera/layout/style/path/progress）均有关闭未知字段的版本化 schema；字段无实现即拒绝，不允许宽松 dict 直通 compiler。`spec_id`、`requires` 必填；duration/canvas 与 clip 对齐，text layer `content` 与 clip 正文一致。对位置/采样后路径包围盒、字幕带及资源引用做校验。质量闸基于采样后的实际位移/缩放/旋转变化时段计算主元素 ≥45% 覆盖、入场 <1.2s、末段静止 ≥0.5s；弱动效的 warning 与 hard fail 由明确的错误等级/可保存政策区分。现有“最后带运动属性的关键帧时间”与低于 0.35 仅警告，不能充当此验收。
+3. **插值语义**（目标）：§5 命名清单只有在 `_NAMED` 与前端绘制/采样同时支持时才放行；expo/elastic/bounce 等当前未在 `_NAMED`，未知名必须拒绝。dict easing 必须以键读取参数并测试边界；spring 实现确定性积分/采样后才放行，不得经无 spring 分支的 `easing_progress` 退线性。§6 的 Bézier/arc 必须真实曲线采样，orient 用切线算角度，安全区按采样点及文字外框检测，否则拒绝该类型。
+4. **组合与产物**（目标）：为 tracks 与 keyframes 同属性冲突定义唯一规则：同一属性同一时间窗不允许双重驱动，校验拒绝并定位 layer/property/time；不同属性按合并采样。group/parent、camera rotate/easing、stagger unit/order/seed/unit_duration、mask/3D/effects 均需确定性变换语义和属性白名单；未实现时显式 `MOTION_SPEC_UNSUPPORTED`。编译后**调用统一 MGDef validator**，对齐 3D/clip/mask 属性与最少帧约束；验证失败不持久化，不以 MGRenderer 能输出 HTML 代替校验。§7 的固定 `exact`、§15 的“同采样即 exact”均撤销：后端只声明编译原语/提示，fidelity 由前端实际可绘制原语与 MGDef/easing 所属起始帧逐项比对；默认 `approx`，未知/缺 ops/无法绘制为 `unsupported`，`exact` 仅经实测像素和时序阈值证明（常规 UI 仍提示近似预览）。
+
+## 27. 修订契约：权威、任务、插件与 UX
+
+**权威与写回（目标，当前未实现）：** `motion_spec` 是可编辑唯一权威，`motion_spec_hash` 是对规范化 spec（规定排序/数字精度/编码）的 SHA-256，`motion_spec_version` 与 `compiler_version` 一并入缓存键；`mg_def`、`mg_html`、`preview_ops`、fidelity 是与该 hash/版本绑定的派生产物，不允许独立改写。生成/编辑采用草稿→验证→编译→MG 验证→单次事务/条件版本替换 spec、hash、版本、产物与 provenance；失败保留旧四元组及当前可用画面，禁止半写入。render 必须读取 spec 校验 hash/版本及产物绑定；缺/旧产物按**固定版本宿主 compiler**确定性重编译并校验，不能重 author；若 compiler 版本不可用则显式失败，不能拿旧产物冒充。现有 render 只读 `mg_html/mg_def`、`apply_style` 重编译不核/更新 hash 且覆盖 `text_provider_id`、`apply_text_style` 可改 duration 不重 author，全部是代码缺口。文字、样式、时长的变更必须同步更新 layer.content/style/duration 或拒绝并提示需重新生成；样式优先级规定为“显式 spec layer.style > 样式包默认值”，clip.text 不得暗中覆盖 spec；任何重编译保持来源 ID 与审计记录。
+
+**Author/Agent（目标，当前未实现）：** 现有链路先由 `text_generation` 调一次 LLM，再由 author 生成（至多两次 JSON 解析），Agent 外层至多三轮；因此 §2/§17 的“每段只调用一次”不成立。目标将两段调用及最大重试、300 秒级单次等待/超时、token/费用上限记录为任务预算；不把全链路成本算作一次调用。author 使用受约束 `json_schema` 输出与真实字段/能力白名单 prompt（含场景、画布、安全区、原文），第一次 validator 失败只允许**带定位错误 JSON 的一次修复**，记录 model、prompt_version、author/plugin version、attempt、seed、tokens、latency、失败原因；JSON parse 成功不等于校验成功。Agent 外层重试需总预算/幂等键和明确终态，不能无限或伪装成功。§11 的写回与 §21.2 均属待实现。
+
+**插件与资源（目标，当前未实现）：** 将异步 `TextMotionAuthor.author` 与同步 `TextMotionProvider.supports/plan` 分注册/贡献契约；Agent 按声明的能力和优先级选择 author，禁止固定 `TextMotionRegistry.get("llm_motion")` 假定 provider 即 author。宿主 compiler 是唯一版本化实现。插件卸载/禁用只影响**新生成**；已有有效 spec 的确定性重编译不依赖 author 在线，不按 `text_provider_id` 要求活插件；若已有 spec 需要已卸载的效果/asset pack 且无可用受控资源，返回明确 unavailable，不能重解释。当前 render 检查活 `llm_motion` 会拒绝旧产物，此政策尚未落地。图片/纹理/字体仅持有 `asset_id`（含 pack/version/hash），通过宿主受控 resolver 限目录、类型、大小与权限；不允许 `style.src`、URL、路径、`..` 直接进入 compiler。当前 compiler 直接用 `style.src`，需要封闭入口。新 MotionSpec clip 失败显式终止；旧无 spec 的 ASS/fixed motion 仅明确 legacy 来源标识的**只读**分支可继续渲染，不可编辑后伪装为 v1。
+
+**任务与前端交接（目标）：** `validate-spec`、`compile` 和“提交重新生成”的 author 任务入口是待新增 API；author 不直接由浏览器调用插件，走 Agent 编排、授权/任务归属/幂等回执。响应携带 clip/version/hash、compiler_version、能力快照、定位错误、任务状态；比较版本失败为 409，取消/超时/失败保留旧 spec 和派生物。先上线只读摘要/明确待编译或不支持状态、错误定位及真实成片抽帧对比，再开放有限参数编辑；取消、刷新和失败后允许从已提交 spec 继续手工编辑。quality 对有 MotionSpec 标识却缺 spec、hash 错误、产物不匹配及弱动效分别产出 issue；错误码统一映射任务终态、可重试性及 UI，不能只在有 spec 时检查。
+
+## 28. 审阅意见落实矩阵与验收门槛
+
+| 优先级 / 审阅点 | 落实章节 | 新增验收项（均未完成，须有自动化证据） |
+|---|---|---|
+| P0 可执行 schema/能力一致；spring/path/group/camera/stagger 不兑现；MG 白名单 | §25–26、§4–9、§13–14 | 同一能力快照贯通 author/validator/compiler/MG/前端；未知字段/能力/easing 拒绝；逐项语义与抽帧通过才开启；MG 验证失败不落盘 |
+| P0 spec/hash/MGDef/HTML 权威、render 不重编译、普通文字回退 | §25、§27、§11–12、§15–16 | 修改/失败/并发冲突无半写；render 验 hash/版本且确定性重编译；新 clip 缺 MGDef 或 spec 不落 legacy/白字 |
+| P1 author structured schema、能力、双 LLM/修复成本 | §26–27、§10–11、§17、§21 | 记录两段 LLM/总调用上限、validator 错误反馈与来源元数据；超时和失败有终态 |
+| P1 插件 author/provider、卸载、asset_id、旧 ASS | §25、§27、§10、§16、§21、§23 | 卸载 author 后已有有效 spec 仍能渲染；不可用 pack 显错；路径/外链拒绝；legacy 只读分支独立 |
+| P1 编辑 API/时间-easing 适配、质量/错误码及 fidelity | §26–27、§13、§15、§19、前端 PRD §16–18 | 三个接口及版本冲突/取消契约；错误按 layer/field 定位；前端由原语对账决定 approx/unsupported，不接受固定 exact |
+| P2 长任务、编辑恢复、性能/成本与成片对照 | §27–28、§17、§19、§22 | 702s 全任务、实际 provider 费用与延迟、刷新/撤销/取消/失败恢复；多时间点预览/成片抽帧对照，容差和环境留档；现有 2 秒短片/单测不能替代 |
+
+以上条款是**目标验收**，不表示已运行测试。先冻结并验证 v1 子集，再逐项开放扩展能力；未达到 P0 不得默认启用编辑或标注 `exact`。原 §19 的“插件禁用后明确 MISSING”仅适用于尚未生成且确需 author 的新 clip，不适用于已有有效 spec；原 §19 的全能力一口气通过改为按能力门禁验收。原 §24 未定问题不得被当作已支持语义。

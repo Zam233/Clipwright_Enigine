@@ -575,3 +575,5 @@ text_motion_llm_max_output_tokens=4096
   `_cache/motion_spec_real_e2e.mp4`，2.0s，83,193 bytes；
 - 修复模型常见别名（elements/text/position/version）和 JSON 截断补全；
 - `test_motion_spec` 12 passed。
+
+> 修订说明（独立审阅）：上文 CP-1/CP-3 和“完成状态”仅表示相关分支、测试与短片产物存在，**不表示 PRD 完整语义或 702s 全任务验收通过**。spring 实际退线性，Bezier/arc 路径退折线，group/parent 和 camera rotate/easing 未兑现；MG validator 白名单、能力校验传参、render 核 hash/按 spec 重编译及前端 fidelity 仍有阻塞。可执行 v1 子集与逐项放行条件以 `text-motion-llm-spec-prd.md` §25–28 为准；2s 成片/真实 provider 单段生成不可替代全任务、刷新编辑与多点抽帧验收。
