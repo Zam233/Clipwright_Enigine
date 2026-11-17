@@ -151,3 +151,11 @@ tests/clipwright/test_text_motion_api.py
 - path 支持 cubic-bezier/arc 真实曲线采样；
 - compiler 支持 group/parent 变换叠加、camera rotate/easing；
 - 验证：`test_motion_spec + test_text_motion_api` 17 passed。
+
+
+## 12. author SSE（2026-11-18）
+
+- 新增 `GET /api/text-animation/author/{task_id}/events`；
+- 任务状态变化带 seq，终态关闭流；
+- 前端 `watchAuthor` 使用共享 sseStream，取消走 cancel endpoint；
+- 测试 `test_text_motion_api` 5 passed。

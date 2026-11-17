@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/text-animation", tags=["text-animation"])
@@ -211,11 +212,13 @@ async def _run_author(task_id: str, body: AuthorRequest) -> None:
             scene_context={"project_id": body.project_id},
         ))
         task.update({"status": "succeeded", "spec": spec.model_dump(by_alias=True),
-                     "spec_hash": _canonical_hash(spec), "progress": 100})
+                     "spec_hash": _canonical_hash(spec), "progress": 100,
+                     "seq": int(task.get("seq", 0)) + 1})
     except asyncio.CancelledError:
-        task.update({"status": "cancelled"})
+        task.update({"status": "cancelled", "seq": int(task.get("seq", 0)) + 1})
     except Exception as exc:  # noqa: BLE001
-        task.update({"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:800]})
+        task.update({"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:800],
+                     "seq": int(task.get("seq", 0)) + 1})
     finally:
         task["cancelable"] = False
         _persist_tasks()
@@ -226,7 +229,7 @@ async def start_author(body: AuthorRequest) -> dict:
     task_id = f"ma_{uuid.uuid4().hex[:12]}"
     _AUTHOR_TASKS[task_id] = {
         "task_id": task_id, "status": "authoring", "progress": 0,
-        "created_at": time.time(), "cancelable": True,
+        "created_at": time.time(), "cancelable": True, "seq": 1,
     }
     _AUTHOR_TASKS[task_id]["_task"] = asyncio.create_task(_run_author(task_id, body))
     _persist_tasks()
@@ -242,6 +245,29 @@ async def author_status(task_id: str) -> dict:
     return _public_task(task)
 
 
+@router.get("/author/{task_id}/events")
+async def author_events(task_id: str):
+    """SSE 状态流；终态后关闭。客户端重连按 seq/task 状态重同步。"""
+    if task_id not in _AUTHOR_TASKS:
+        _load_tasks()
+    if task_id not in _AUTHOR_TASKS:
+        raise HTTPException(status_code=404, detail="author task not found")
+
+    async def gen():
+        last = -1
+        while True:
+            task = _AUTHOR_TASKS.get(task_id) or {}
+            seq = int(task.get("seq") or 0)
+            if seq != last:
+                last = seq
+                yield f"data: {json.dumps(_public_task(task), ensure_ascii=False)}\n\n"
+            if task.get("status") in ("succeeded", "failed", "cancelled", "timed_out"):
+                break
+            await asyncio.sleep(1)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
 @router.post("/author/{task_id}/cancel")
 async def cancel_author(task_id: str) -> dict:
     _load_tasks()
@@ -251,7 +277,8 @@ async def cancel_author(task_id: str) -> dict:
     t = task.get("_task")
     if isinstance(t, asyncio.Task):
         t.cancel()
-    task.update({"status": "cancel_requested", "cancelable": False})
+    task.update({"status": "cancel_requested", "cancelable": False,
+                 "seq": int(task.get("seq", 0)) + 1})
     _persist_tasks()
     return _public_task(task)
 
