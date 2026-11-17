@@ -454,6 +454,20 @@ const dur=parseFloat(root.dataset.duration);
                 if isinstance(ci, (list, tuple)) and len(ci) == 4:
                     style_attrs.append(
                         "clip-path:inset(" + " ".join(f"{fill(v)}px" for v in ci) + ");")
+            if "mask" in props:
+                m = props.pop("mask")
+                if isinstance(m, dict):
+                    try:
+                        mx, my = float(m.get("x", 0)), float(m.get("y", 0))
+                        mw, mh = float(m.get("w", 1)), float(m.get("h", 1))
+                        top = max(0, my) * 100
+                        left = max(0, mx) * 100
+                        right = max(0, 1 - mx - mw) * 100
+                        bottom = max(0, 1 - my - mh) * 100
+                        style_attrs.append(
+                            f"clip-path:inset({top:.2f}% {right:.2f}% {bottom:.2f}% {left:.2f}%);")
+                    except (TypeError, ValueError):
+                        pass
             if "width" in props:
                 w = props.pop("width")
                 style_attrs.append(f"width:{fill(w)}px;")
@@ -490,6 +504,15 @@ const dur=parseFloat(root.dataset.duration);
             css_key = MGRenderer.KEYFRAME_CSS_MAP.get(k)
             if k == "font_italic" and isinstance(v, bool):
                 static_style += f"font-style:{'italic' if v else 'normal'};"
+            elif k == "mask" and isinstance(v, dict):
+                try:
+                    mx, my = float(v.get("x", 0)), float(v.get("y", 0))
+                    mw, mh = float(v.get("w", 1)), float(v.get("h", 1))
+                    static_style += (f"clip-path:inset({max(0,my)*100:.2f}% "
+                                     f"{max(0,1-mx-mw)*100:.2f}% {max(0,1-my-mh)*100:.2f}% "
+                                     f"{max(0,mx)*100:.2f}%);")
+                except (TypeError, ValueError):
+                    pass
             elif css_key and isinstance(v, (str, int, float)):
                 static_style += f"{css_key}:{bindable(MGRenderer._sanitize_css_value(v))};"
 

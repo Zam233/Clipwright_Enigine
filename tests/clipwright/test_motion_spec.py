@@ -156,3 +156,12 @@ async def test_agent_writes_motion_spec(monkeypatch):
     assert clip.metadata["motion_spec_hash"]
     assert clip.metadata["mg_html"]
     TextMotionRegistry.unregister_plugin("test_agent_motion")
+
+
+def test_mask_compiles_to_clip_path():
+    spec = _spec(layers=[{"id": "t", "type": "text", "content": "遮罩",
+                          "keyframes": [{"time": 0, "opacity": 0},
+                                        {"time": 0.5, "opacity": 1, "mask": {"x": 0.1, "y": 0.2, "w": 0.8, "h": 0.5}}]}])
+    plan = compile_motion_spec(spec)
+    html = MGRenderer.render(plan.mg_def, params={}, width=640, height=360, fps=30)
+    assert "clip-path:inset(" in html

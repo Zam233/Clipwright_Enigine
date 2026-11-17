@@ -543,3 +543,13 @@ text_motion_llm_max_output_tokens=4096
 - 测试：`test_motion_spec.py` 10 passed（含 agent writeback、short Hyperframes E2E）；
 - 提交：`8718747`、`c7dc694`、`fd9341c`、`052c29b`、后续测试提交。
 - 仍缺：full task E2E、真实 provider LLM 调用、preview 独立解释、mask 完整语义。
+
+
+### 第二轮实施记录（2026-11-18）
+
+- tracks/camera 已烘焙进 compiler；逐字 stagger 支持；
+- MGRenderer 增加 3D/scale/translateZ/perspective/blur/clip/mask；
+- quality_agent 校验 MotionSpec，非法/弱运动入 issues；
+- 测试 `test_motion_spec` 11 passed；短 Hyperframes E2E 帧：
+  `_cache/motion_spec_e2e3/frame.png`；
+- 仍未完成：真实 LLM provider 的完整任务 E2E、前端独立 MotionSpec 解释、PR。

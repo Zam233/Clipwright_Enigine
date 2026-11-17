@@ -453,6 +453,29 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
                     message=f"文字动画 {c.id} 是纯白字且无描边/阴影/底板，可读性差",
                     location=c.id,
                 ))
+            _spec = meta.get("motion_spec")
+            if isinstance(_spec, dict):
+                try:
+                    from clipwright.animation.motion_spec import MotionSpec
+                    from clipwright.animation.motion_spec_validator import validate_motion_spec
+                    _v = validate_motion_spec(MotionSpec.model_validate(_spec))
+                    if not _v.ok:
+                        issues.append(QualityIssue(
+                            severity="error", category="animation",
+                            message=f"文字动画 {c.id} MotionSpec 非法: {'; '.join(_v.errors[:3])}",
+                            location=c.id,
+                        ))
+                    for _w in _v.warnings[:3]:
+                        issues.append(QualityIssue(
+                            severity="warning", category="animation",
+                            message=f"文字动画 {c.id}: {_w}", location=c.id,
+                        ))
+                except Exception as _exc:
+                    issues.append(QualityIssue(
+                        severity="error", category="animation",
+                        message=f"文字动画 {c.id} MotionSpec 解析失败: {_exc}",
+                        location=c.id,
+                    ))
             _provider = str(meta.get("text_provider_id") or "")
             if _provider:
                 try:
