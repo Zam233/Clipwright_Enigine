@@ -13,6 +13,7 @@ fade/slide/scale/typewriter/... 的实现由 `text-motion-core` 插件提供。
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 from clipwright.animation.text_style import normalize_motion, normalize_style
@@ -130,8 +131,15 @@ class TextAnimationEngine:
         if not pack:
             raise TextMotionUnavailable(f"没有 text_asset_pack: {pack_id!r}")
         for asset in pack.get("assets") or []:
-            if str(asset.get("id") or "") == str(asset_id or ""):
-                return dict(asset)
+            if str(asset.get("id") or "") != str(asset_id or ""):
+                continue
+            out = dict(asset)
+            rel = str(out.get("path") or "")
+            if not rel or Path(rel).is_absolute() or ".." in Path(rel).parts:
+                raise TextMotionUnavailable(f"asset path 非法: {rel!r}")
+            if not Path(rel).exists():
+                raise TextMotionUnavailable(f"asset 文件不存在: {rel!r}")
+            return out
         raise TextMotionUnavailable(f"asset_pack {pack_id!r} 没有 asset: {asset_id!r}")
 
     def capabilities(self) -> dict[str, Any]:
