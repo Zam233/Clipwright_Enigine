@@ -7,5 +7,11 @@ entry_point: "text_packs.main"
 api_version: "2"
 contributions:
   - { kind: text_prompt_pack, id: spotlight_quote }
+  - { kind: text_prompt_pack, id: emphasis_keyword }
+  - { kind: text_prompt_pack, id: reveal_line }
+  - { kind: text_prompt_pack, id: quote_block }
+  - { kind: text_prompt_pack, id: label_callout }
+  - { kind: text_prompt_pack, id: number_punch }
+  - { kind: text_prompt_pack, id: title_stack }
   - { kind: text_style_pack, id: editorial_dark }
   - { kind: text_asset_pack, id: paper_assets }

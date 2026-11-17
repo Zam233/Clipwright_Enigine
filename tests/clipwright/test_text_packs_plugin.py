@@ -36,3 +36,15 @@ def test_style_pack_changes_plan_style():
         style_pack_id="editorial_dark",
     )
     assert plan.style["box"] is True
+
+
+def test_asset_pack_resolves_asset():
+    from clipwright.animation.text_engine import TextAnimationEngine
+    from clipwright.animation.text_plugin_registry import TextAssetPackRegistry
+    from plugins.text_packs.main import TextPacksPlugin
+
+    for c in TextPacksPlugin().contributions():
+        if c.kind.value == "text_asset_pack":
+            TextAssetPackRegistry.register(c.id, c.meta, plugin_id="__asset_test__")
+    asset = TextAnimationEngine.resolve_asset("paper_assets", "paper_01")
+    assert asset["kind"] == "texture"

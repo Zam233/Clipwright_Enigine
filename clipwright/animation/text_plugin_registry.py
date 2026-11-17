@@ -14,8 +14,8 @@ class TextPromptPackRegistry:
 
     @classmethod
     def register(cls, item_id: str, meta: dict[str, Any], *, plugin_id: str = "") -> str | None:
-        if not item_id or not str(meta.get("prompt") or "").strip():
-            return f"text_prompt_pack:{item_id} 缺少 prompt"
+        if not item_id:
+            return "text_prompt_pack 缺少 id"
         if item_id in cls._items:
             owner = cls._items[item_id].get("plugin_id", "")
             if owner != plugin_id:

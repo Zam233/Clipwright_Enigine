@@ -212,6 +212,10 @@ class TextAnimationEngine:
                     width: int, height: int) -> Any:
         """所有文字 clip 的唯一写入口；无 provider 直接失败。"""
         meta = dict(getattr(clip, "metadata", None) or {})
+        _pack_id = str(meta.get("asset_pack_id") or "")
+        if _pack_id:
+            meta["resolved_asset"] = self.resolve_asset(
+                _pack_id, str(meta.get("asset_id") or ""))
         base = meta.get("mg_def") if isinstance(meta.get("mg_def"), dict) else {}
         plan = self.plan(
             text=str(clip.text or ""), style=style, motion=motion,

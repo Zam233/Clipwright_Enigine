@@ -74,6 +74,7 @@ class ApplyTextStyleTool(BaseTool):
         motion: Optional[dict[str, Any]] = None,
         duration_sec: Optional[float] = None,
         duration_reason: str = "",
+        style_pack_id: str = "",
         **kwargs: Any,
     ) -> ToolExecResult:
         from clipwright.animation.text_style import normalize_motion, normalize_style
@@ -135,6 +136,8 @@ class ApplyTextStyleTool(BaseTool):
         }
         meta["anim_type"] = str(mo["type"])
         meta["duration_reason"] = duration_reason
+        if str(style_pack_id or "").strip():
+            meta["style_pack_id"] = str(style_pack_id).strip()
         # 所有文字动画统一走 engine + motion provider；工具不再直接构建 MG。
         try:
             from clipwright.animation.text_engine import get_engine

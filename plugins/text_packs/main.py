@@ -25,6 +25,17 @@ class TextPacksPlugin(BasePlugin):
     id = "text_packs"
 
     def contributions(self):
+        from clipwright.animation.text_specs import TEXT_ANIM_SPECS
+        builtin = [
+            Contribution(ContributionKind.TEXT_PROMPT_PACK, spec.id, None, meta={
+                "name": spec.name, "intent": spec.intent, "motion": spec.motion,
+                "constraints": list(spec.constraints),
+                "anti_patterns": list(spec.anti_patterns),
+                "default_anchor": spec.default_anchor,
+                "prompt": "",
+            })
+            for spec in TEXT_ANIM_SPECS
+        ]
         return [
             Contribution(ContributionKind.TEXT_PROMPT_PACK, "spotlight_quote", None, meta={
                 "name": "聚光引语", "intent": "引语强调", "motion": "fade_in",
@@ -41,6 +52,7 @@ class TextPacksPlugin(BasePlugin):
                                               "path": "plugins/text_packs/assets/paper_01.png",
                                               "license": "CC0"}],
             }),
+            *builtin,
         ]
 
     def initialize(self):
