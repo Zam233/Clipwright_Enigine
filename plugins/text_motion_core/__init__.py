@@ -1,0 +1,1 @@
+"""text-motion-core plugin."""

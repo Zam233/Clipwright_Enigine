@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from clipwright.animation.text_mg import build_text_mgdef, render_text_mg_html
+from plugins.text_motion_core.providers.core import build_text_mgdef
+from clipwright.animation.mg_renderer import MGRenderer
+
+def render_text_mg_html(mg_def, *, width, height, fps=30.0):
+    return MGRenderer.render(mg_def, params={}, width=width, height=height, fps=fps)
 
 
 def _base():

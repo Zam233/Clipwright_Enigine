@@ -1068,30 +1068,11 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         if main_style.get("letter_spacing") is not None:
             style["letter_spacing"] = main_style["letter_spacing"]
 
-        # 用户裁定：所有文字动画统一走 MG HTML，不再用 ASS/drawtext。
-        # 这里把 LLM 的 MGDef + style/motion 转成 MGDef，再由 MGRenderer 生成 HTML。
-        from clipwright.animation.text_mg import build_text_mgdef, render_text_mg_html
+        # 用户裁定：所有文字动画统一走 MG HTML；具体 motion 由
+        # text-motion-core 插件 provider 生成，engine 不内置 motion 实现。
         text_style = dict(ta.get("style") or {})
         text_motion = dict(ta.get("motion") or {})
-        try:
-            mg_def = build_text_mgdef(
-                result.mg_def,
-                text=main_style.get("text") or text_content,
-                style=text_style,
-                motion=text_motion,
-                width=int(self._tl_width or 1920),
-                height=int(self._tl_height or 1080),
-                display_sec=display_sec,
-            )
-            mg_html = render_text_mg_html(
-                mg_def, width=int(self._tl_width or 1920),
-                height=int(self._tl_height or 1080), fps=float(self._tl_fps or 30),
-            )
-        except Exception as exc:  # noqa: BLE001 — 明确失败，不回退 ASS/模板
-            _note("text_mg_failed", f"{type(exc).__name__}: {exc}",
-                  scope=str((vid_clip.metadata or {}).get("scene_title") or ""),
-                  impact="该段文字没有产物（不回退 ASS/模板）")
-            return None
+        base_mg_def = result.mg_def
 
         clip = Clip(
             id=_uid("tc"),
@@ -1108,8 +1089,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "anim_type": anim_id,
                 "anim_name": anim_name,
                 "renderer": "mg_hyperframes",
-                "mg_html": mg_html,
-                "mg_def": mg_def,
+                "mg_html": "",
+                "mg_def": base_mg_def,
                 "mg_params": {},
                 "position": "center",  # 字幕带避让（caption 固定 bottom）
                 "text_anim_type": type_id,

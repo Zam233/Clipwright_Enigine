@@ -21,3 +21,15 @@ def _isolate_provider_sources(tmp_path):
     ps.reset_for_tests(tmp_path / "provider_sources.json")
     yield
     ps.reset_for_tests(None)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _register_text_motion_core():
+    """测试进程不启动 PluginLoader，显式注册 bundled core provider。"""
+    from plugins.text_motion_core.main import TextMotionCorePlugin
+    from clipwright.animation.text_engine import TextMotionRegistry
+
+    for c in TextMotionCorePlugin().contributions():
+        TextMotionRegistry.register(c.object, plugin_id="__test__")
+    yield
+    TextMotionRegistry.unregister_plugin("__test__")

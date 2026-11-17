@@ -41,6 +41,7 @@ _WIRED_KINDS = {
     ContributionKind.HOOK,
     ContributionKind.PROMPT,
     ContributionKind.CLIP_KIND,
+    ContributionKind.TEXT_MOTION,
 }
 
 #: Provider 类 kind（facade-only，但注册前要做协议符合性校验 —— B2）
@@ -197,7 +198,13 @@ def register(owner: str, item: Contribution, *, policy=None) -> Optional[str]:
         return None  # facade-only：由各消费方（B/D 里程碑）自行解析
 
     try:
-        if item.kind is ContributionKind.TOOL:
+        if item.kind is ContributionKind.TEXT_MOTION:
+            from clipwright.animation.text_engine import TextMotionRegistry
+            reason = TextMotionRegistry.register(item.object, plugin_id=owner)
+            if reason:
+                return reason
+
+        elif item.kind is ContributionKind.TOOL:
             from clipwright.tool.registry import ToolRegistry
             ToolRegistry.register(item.object, plugin_id=owner)
             # 后置校验：ToolRegistry 对「插件覆盖内置」是静默拒绝（warn+return，
@@ -375,6 +382,9 @@ def unregister(owner: str, keys: list[str]) -> list[str]:
             elif kind_value == ContributionKind.CLIP_KIND.value:
                 from clipwright.services.clip_kind_registry import ClipKindRegistry
                 ClipKindRegistry.unregister_plugin(owner)
+            elif kind_value == ContributionKind.TEXT_MOTION.value:
+                from clipwright.animation.text_engine import TextMotionRegistry
+                TextMotionRegistry.unregister_plugin(owner)
             elif kind_value == ContributionKind.PROMPT.value:
                 from clipwright.plugins import prompt_overrides
                 from clipwright.plugins.prompt_registry import PluginPromptRegistry

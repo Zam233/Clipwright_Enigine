@@ -54,6 +54,9 @@ class ContributionKind(str, Enum):
     #: 协议见 `providers/base.py::ImageProvider`；厂商知识（URL/鉴权/size 方言/
     #: 响应解析）只在插件里，Engine 不做任何厂商分支。
     IMAGE_PROVIDER = "image_provider"
+    # ── 方案 G：文字动效 provider（第 21 类，文字效果插件化）──
+    #: object 必须是 TextMotionProvider；engine 只持有接口，实现由插件提供。
+    TEXT_MOTION = "text_motion"
 
 
 class ConflictPolicy(str, Enum):
