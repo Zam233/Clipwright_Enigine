@@ -472,3 +472,14 @@ plugins/text_motion_core/
 - `test_text_motion_plugin_lifecycle` 增加“provider 卸载后 render 显式失败”测试；
 - 仍未完成：`text-prompt-pack` / `text-style-pack` / `text-asset-pack`，
   `preview_ops` 的前端完整契约、旧 ASS 兼容路径清理。
+
+
+### 最终点对点 E2E（2026-11-17）
+
+- `render_9b88102f740f` 通过 API 触发（不依赖浏览器按钮）：
+  - video **702.9s**
+  - audio **702.4s**
+  - output `renders/render_9b88102f740f.mp4`
+- 插件路径：TextAnimationEngine → `text-motion-core` → MG HTML → Hyperframes；
+- 抽帧 `_cache/final2_332.png`、`final2_340.png`、`final2_556.7.png`、`final2_632.4.png`。
+- 仍缺：CP-4 的 prompt/style/asset pack，CP-5 的前端 preview_ops 完整契约，CP-6 旧 ASS 兼容清理。
