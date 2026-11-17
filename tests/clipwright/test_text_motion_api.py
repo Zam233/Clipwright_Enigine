@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -75,3 +76,17 @@ def test_commit_and_conflict(tmp_path, monkeypatch):
         asyncio.run(api.commit_spec(api.CommitRequest(
             project_id=p["id"], clip_id="tc", spec=SPEC, base_hash="wrong")))
     assert exc.value.status_code == 409
+
+
+def test_author_tasks_persist_and_restart_fails_open(tmp_path, monkeypatch):
+    monkeypatch.setattr("clipwright.config.settings.project_dir", tmp_path)
+    api._AUTHOR_TASKS.clear()
+    api._AUTHOR_TASKS["ma_test"] = {
+        "task_id": "ma_test", "status": "authoring", "progress": 0,
+        "created_at": 1.0, "cancelable": True,
+    }
+    api._persist_tasks()
+    api._AUTHOR_TASKS.clear()
+    api._load_tasks()
+    assert api._AUTHOR_TASKS["ma_test"]["status"] == "failed"
+    assert "重启" in api._AUTHOR_TASKS["ma_test"]["error"]

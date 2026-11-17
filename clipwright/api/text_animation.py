@@ -11,6 +11,7 @@ import hashlib
 import json
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -23,6 +24,53 @@ _SUPPORTED = {
     "mask", "clip", "camera", "effects",
 }
 _AUTHOR_TASKS: dict[str, dict[str, Any]] = {}
+
+
+def _task_store_path() -> Path:
+    from clipwright.config import settings
+    return Path(settings.project_dir).parent / "_cache" / "text_motion_author_tasks.json"
+
+
+def _public_task(task: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in task.items() if not k.startswith("_")}
+
+
+def _persist_tasks() -> None:
+    """本地持久化 author 任务；只存公开字段，不存 asyncio.Task/凭据。"""
+    path = _task_store_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {tid: _public_task(t) for tid, t in _AUTHOR_TASKS.items()}
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        pass
+
+
+def _load_tasks() -> None:
+    path = _task_store_path()
+    if not path.exists() or _AUTHOR_TASKS:
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if not isinstance(data, dict):
+        return
+    for tid, raw in data.items():
+        if not isinstance(raw, dict):
+            continue
+        task = dict(raw)
+        if task.get("status") in ("authoring", "cancel_requested"):
+            task["status"] = "failed"
+            task["error"] = "进程重启中断（author 未完成）"
+            task["cancelable"] = False
+        _AUTHOR_TASKS[str(tid)] = task
+    _persist_tasks()
+
+
+_load_tasks()
 
 
 class SpecRequest(BaseModel):
@@ -168,6 +216,9 @@ async def _run_author(task_id: str, body: AuthorRequest) -> None:
         task.update({"status": "cancelled"})
     except Exception as exc:  # noqa: BLE001
         task.update({"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:800]})
+    finally:
+        task["cancelable"] = False
+        _persist_tasks()
 
 
 @router.post("/author")
@@ -178,19 +229,22 @@ async def start_author(body: AuthorRequest) -> dict:
         "created_at": time.time(), "cancelable": True,
     }
     _AUTHOR_TASKS[task_id]["_task"] = asyncio.create_task(_run_author(task_id, body))
+    _persist_tasks()
     return {"task_id": task_id, "status": "authoring", "clip_id": body.clip_id}
 
 
 @router.get("/author/{task_id}")
 async def author_status(task_id: str) -> dict:
+    _load_tasks()
     task = _AUTHOR_TASKS.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="author task not found")
-    return {k: v for k, v in task.items() if not k.startswith("_")}
+    return _public_task(task)
 
 
 @router.post("/author/{task_id}/cancel")
 async def cancel_author(task_id: str) -> dict:
+    _load_tasks()
     task = _AUTHOR_TASKS.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="author task not found")
@@ -198,7 +252,8 @@ async def cancel_author(task_id: str) -> dict:
     if isinstance(t, asyncio.Task):
         t.cancel()
     task.update({"status": "cancel_requested", "cancelable": False})
-    return {k: v for k, v in task.items() if not k.startswith("_")}
+    _persist_tasks()
+    return _public_task(task)
 
 
 @router.post("/commit")

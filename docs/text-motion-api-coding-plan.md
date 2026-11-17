@@ -133,3 +133,12 @@ tests/clipwright/test_text_motion_api.py
 - `tests/clipwright/test_text_motion_api.py` 4 passed；
 - 前端 PropertiesPanel 已接 validate/compile/commit，支持 keyframe time/opacity 编辑；
 - 仍缺：持久任务队列、真实前端 API 联调/视觉抽帧、author 取消/超时完整 E2E。
+
+
+## 10. author 本地持久化（2026-11-18）
+
+- `_AUTHOR_TASKS` 增加本地 JSON 持久化：`_cache/text_motion_author_tasks.json`；
+- 只持久化公开字段，不写 asyncio.Task/凭据；
+- 启动加载时 queued/authoring 任务标记为 failed，错误为“进程重启中断”；
+- 启动/完成/取消/失败均原子写；
+- 测试：`test_text_motion_api.py` 5 passed（含重启 fail-open）。
