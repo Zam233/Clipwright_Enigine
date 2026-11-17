@@ -192,11 +192,14 @@ class TextAnimationEngine:
         if not ok:
             raise TextMotionPlanInvalid(
                 f"{motion_type} 返回非法 MGDef: {'; '.join(errors[:5])}")
+        _preview_ops = list(plan.preview_ops or [])
+        if not _preview_ops:
+            _preview_ops = [{"kind": "mg_def", "fidelity": plan.fidelity}]
         return TextPlan(
             provider_id=plan.provider_id or motion_type,
             mg_def=plan.mg_def, width=int(width), height=int(height),
             duration_sec=float(display_sec), fidelity=plan.fidelity,
-            preview_ops=list(plan.preview_ops or []),
+            preview_ops=_preview_ops,
             style=normalized_style, motion=normalized_motion,
         )
 
