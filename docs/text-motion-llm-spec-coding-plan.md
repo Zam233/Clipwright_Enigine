@@ -565,3 +565,13 @@ text_motion_llm_max_output_tokens=4096
 - 合成 2s RenderService E2E 成功，MotionSpec 测试 16 passed；
 - 真实 LLM provider E2E 受环境缺少 openai provider 阻断（`未安装 LLM provider: openai`）；
 - PR #20 open。
+
+
+### 真实 LLM E2E（2026-11-18）
+
+- 加载全部插件后 LLM route 成功：`OpenAIChat (deepseek-flash)`；
+- `TextMotionAuthor` 成功返回 MotionSpec（1 layer / 3 keyframes）；
+- 真实 LLM → MotionSpec → MGRenderer → RenderService：
+  `_cache/motion_spec_real_e2e.mp4`，2.0s，83,193 bytes；
+- 修复模型常见别名（elements/text/position/version）和 JSON 截断补全；
+- `test_motion_spec` 12 passed。

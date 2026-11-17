@@ -40,8 +40,85 @@ class TextMotionAuthor:
             )
             content = getattr(resp, "content", "") or ""
             try:
-                data = json.loads(content[content.find("{"):content.rfind("}") + 1])
+                from clipwright.animation.text_generation import _extract_json
+                data = _extract_json(content)
+                if data is None:
+                    data = json.loads(_close_json(content))
+                if data is None:
+                    raise ValueError("无可解析 JSON")
+                data = _normalize_payload(data, request)
                 return MotionSpec.model_validate(data)
             except Exception as exc:  # noqa: BLE001
                 last = f"{type(exc).__name__}: {exc}"[:800]
         raise ValueError(f"MOTION_SPEC_INVALID: {last}")
+
+
+def _normalize_payload(data: dict, request) -> dict:
+    """兼容模型常见别名：elements/text/at/stagger，统一到 MotionSpec。"""
+    out = dict(data)
+    if "schema" not in out and "version" in out:
+        out["schema"] = out.pop("version")
+    out.setdefault("schema", "motion_spec/1")
+    out.setdefault("duration_sec", float(request.duration_sec))
+    layers = out.pop("layers", None) or out.pop("elements", None) or []
+    norm = []
+    for layer in layers:
+        if not isinstance(layer, dict):
+            continue
+        item = dict(layer)
+        if "content" not in item and isinstance(item.get("text"), str):
+            item["content"] = item.pop("text")
+        elif "text" in item:
+            item.pop("text", None)
+        if "layout" not in item and isinstance(item.get("position"), dict):
+            item["layout"] = item.pop("position")
+        if "stagger" in item and "text_motion" not in item:
+            st = item.pop("stagger") or {}
+            item["text_motion"] = {
+                "unit": st.get("unit", "char"),
+                "stagger": float(st.get("delay_sec", st.get("stagger", 0)) or 0),
+            }
+        kfs = []
+        for kf in item.get("keyframes") or []:
+            if not isinstance(kf, dict):
+                continue
+            k = dict(kf)
+            if "time" not in k and "at" in k:
+                k["time"] = k.pop("at")
+            if "at" in k:
+                k.pop("at", None)
+            kfs.append(k)
+        item["keyframes"] = kfs
+        norm.append(item)
+    out["layers"] = norm
+    return out
+
+
+def _close_json(content: str) -> str:
+    """模型偶尔少输出最后几个闭合括号：按未闭合栈补齐。"""
+    s = content[content.find("{"):]
+    stack: list[str] = []
+    in_str = False
+    esc = False
+    for ch in s:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "[{":
+            stack.append(ch)
+        elif ch == "]" and stack and stack[-1] == "[":
+            stack.pop()
+        elif ch == "}" and stack and stack[-1] == "{":
+            stack.pop()
+    if in_str:
+        s += '"'
+    for ch in reversed(stack):
+        s += "]" if ch == "[" else "}"
+    return s

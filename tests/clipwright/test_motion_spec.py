@@ -165,3 +165,15 @@ def test_mask_compiles_to_clip_path():
     plan = compile_motion_spec(spec)
     html = MGRenderer.render(plan.mg_def, params={}, width=640, height=360, fps=30)
     assert "clip-path:inset(" in html
+
+
+def test_author_normalizes_aliases_and_truncated_json():
+    from plugins.text_motion_llm.author import _close_json, _normalize_payload
+    raw = '{"version":"motion_spec/1","duration_sec":2,"elements":[{"id":"t","type":"text","text":"测试","position":{"x":0.5,"y":0.5},"keyframes":[{"at":0,"opacity":0},{"at":1,"opacity":1}'
+    import json
+    data = json.loads(_close_json(raw))
+    norm = _normalize_payload(data, type("R", (), {"duration_sec": 2})())
+    assert norm["schema"] == "motion_spec/1"
+    assert norm["layers"][0]["content"] == "测试"
+    assert norm["layers"][0]["layout"]["x"] == 0.5
+    assert norm["layers"][0]["keyframes"][0]["time"] == 0
