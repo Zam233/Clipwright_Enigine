@@ -438,3 +438,18 @@ plugins/text_motion_core/
 - `ea62cec` 分支基线 PRD/Coding Plan
 - `36b9963` engine 接口 + core 插件 + 清理 engine motion
 - `01eadc9` clamp provider keyframes
+
+
+### 追加实施记录（2026-11-17，branch `ref/文字效果插件化`）
+
+- CP-1/CP-2/CP-3 基础完成：
+  - `TextAnimationEngine`/`TextMotionRegistry`/`TextPrimitives` 已落地；
+  - `plugins/text_motion_core` 提供 9 个 provider（7 基础 + glitch/neon 兼容）；
+  - `text_mg.py` 已无 motion 实现，只保留 wrapper/原语；
+  - provider 缺失/非法时 `_build_text_clip_llm` 记录 `text_motion_unavailable`/`text_motion_plan_invalid`，不回退 ASS/白字/模板；
+  - 新增 `test_text_engine_plugin` 覆盖 provider 启停、9 个 motion、非法 plan。
+- 点对点 E2E 已通过：
+  - `render_a1604dca3b53` video 702.9s / audio 702.4s；
+  - 19 条文字 metadata 均有 `text_provider_id`/`fidelity=exact`；
+  - 截图 `_cache/plugin_e2e_shots/contact_sheet.jpg`。
+- 仍未完成：CP-4 prompt/style/asset/card 插件、CP-5 preview_ops/quality 契约、CP-6 旧 ASS 兼容清理、CP-7 插件卸载真实 E2E。
