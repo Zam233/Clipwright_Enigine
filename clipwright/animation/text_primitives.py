@@ -26,8 +26,8 @@ def char_width(ch: str, size: float) -> float:
     if ord(ch) > 0x2E80:
         return float(size)
     if ch == " ":
-        return float(size) * 0.3
-    return float(size) * 0.6
+        return float(size) * 0.35
+    return float(size) * 0.95
 
 
 def tokens(text: str, word_mode: bool) -> list[str]:

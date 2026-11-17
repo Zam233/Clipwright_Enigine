@@ -107,3 +107,15 @@ def test_text_stagger_splits_units():
     texts = [e for e in plan.mg_def["elements"] if e.get("type") == "text"]
     assert len(texts) == 2
     assert texts[1]["keyframes"][0]["time"] > texts[0]["keyframes"][0]["time"]
+
+
+def test_tracks_and_camera_bake():
+    spec = _spec(camera={"keyframes": [{"time": 0, "scale": 1.0}, {"time": 2, "scale": 1.1}]},
+                 layers=[{"id": "t", "type": "text", "content": "镜头",
+                          "keyframes": [{"time": 0, "opacity": 0}, {"time": 2, "opacity": 1}],
+                          "tracks": [{"property": "rotate_z", "segments": [
+                              {"start": 0, "end": 1, "from": -6, "to": 0}]}]}])
+    plan = compile_motion_spec(spec)
+    kfs = plan.mg_def["elements"][0]["keyframes"]
+    assert any(float(k.get("scale", 1)) > 1.0 for k in kfs)
+    assert any("rotate_z" in k for k in kfs)

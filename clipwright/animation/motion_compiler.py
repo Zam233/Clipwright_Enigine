@@ -33,6 +33,21 @@ def _keyframes(layer: Layer) -> list[dict[str, Any]]:
         if es:
             d["easing"] = es
         out.append(d)
+    # tracks → 属性端点关键帧；后续统一交给 keyframes/采样
+    for track in layer.tracks or []:
+        prop = str(track.get("property") or "")
+        if not prop:
+            continue
+        for seg in track.get("segments") or []:
+            try:
+                start = float(seg.get("start", 0)); end = float(seg.get("end", start))
+                out.append({"time": start, prop: seg.get("from"),
+                            "easing": _ease_string(seg.get("easing"))})
+                out.append({"time": end, prop: seg.get("to")})
+            except (TypeError, ValueError):
+                continue
+    out.sort(key=lambda x: float(x.get("time", 0)))
+
     # spring 采样：Easing 为 spring 的区间在 compiler 中展开为离散帧
     if any(isinstance(k.easing, Easing) and k.easing.type == "spring" for k in layer.keyframes):
         # 对数值属性分别采样；不改变非数值属性
@@ -137,6 +152,29 @@ def compile_motion_spec(spec: MotionSpec, *, width: int | None = None, height: i
                 px, py = sample_path(layer.motion_path.type, layer.motion_path.points, val)
                 kfs.append({"time": round(t, 3),
                             "translate_x": (px - 0.5) * w, "translate_y": (py - 0.5) * h})
+        # camera：把全局相机线性插值烘焙进每个层的 keyframes
+        cam = spec.camera or {}
+        cam_kfs = [dict(k) for k in (cam.get("keyframes") or []) if isinstance(k, dict)]
+        if cam_kfs and kfs:
+            cam_kfs.sort(key=lambda k: float(k.get("time", 0)))
+            for kf in kfs:
+                ct = float(kf.get("time", 0))
+                a, b = cam_kfs[0], cam_kfs[-1]
+                for j in range(len(cam_kfs) - 1):
+                    if float(cam_kfs[j].get("time", 0)) <= ct <= float(cam_kfs[j + 1].get("time", 0)):
+                        a, b = cam_kfs[j], cam_kfs[j + 1]
+                        break
+                span = max(1e-6, float(b.get("time", 0)) - float(a.get("time", 0)))
+                local = max(0.0, min(1.0, (ct - float(a.get("time", 0))) / span))
+                cs = float(a.get("scale", 1)) + (float(b.get("scale", 1)) - float(a.get("scale", 1))) * local
+                cx = float(a.get("x", 0)) + (float(b.get("x", 0)) - float(a.get("x", 0))) * local
+                cy = float(a.get("y", 0)) + (float(b.get("y", 0)) - float(a.get("y", 0))) * local
+                if cs != 1:
+                    kf["scale"] = float(kf.get("scale", 1)) * cs
+                if cx or cy:
+                    kf["translate_x"] = float(kf.get("translate_x", 0)) + cx
+                    kf["translate_y"] = float(kf.get("translate_y", 0)) + cy
+
         # 逐字/逐词 stagger：按单元拆成多个 text 元素，并整体平移时间
         if layer.type == "text" and layer.text_motion and layer.text_motion.unit in ("char", "word"):
             from clipwright.animation.text_primitives import char_width
