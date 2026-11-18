@@ -312,6 +312,19 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         self._project_id = str(
             _extra_ctx.get("workspace_project_id") or _extra_ctx.get("project_id") or ""
         )
+        self._ctx_store = None
+        self._ctx_session_id = str(_extra_ctx.get("session_id") or "")
+        self._ctx_task_id = str(_extra_ctx.get("task_id") or context.pipeline_id or "")
+        try:
+            if self._ctx_session_id and self._ctx_task_id:
+                from clipwright.animation.context_store import get_context_store
+                self._ctx_store = get_context_store()
+                self._ctx_store.append_history(
+                    self._ctx_session_id, self._ctx_task_id, "agent",
+                    "AnimationAgent 开始", pipeline_id=context.pipeline_id,
+                )
+        except Exception:  # noqa: BLE001 — 上下文失败不阻断动画
+            self._ctx_store = None
         add_event(context.pipeline_id, "animation", "agent_start",
                   "AnimationAgent 开始（文字动画/逻辑动画分流）")
         # 工具/技能列表实时可见（插件增删立即生效）——写进 trace 便于排障
@@ -693,6 +706,15 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             )
             logger.info(summary)
             add_event(context.pipeline_id, "animation", "agent_end", summary)
+            if self._ctx_store is not None:
+                try:
+                    self._ctx_store.record_call(
+                        self._ctx_session_id, self._ctx_task_id, "agent", "animation_agent",
+                        "success", input_summary=summary[:300],
+                        output_summary=summary[:300],
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
 
             return AnimationOutput(
                 decision=AgentDecision.PASS,
