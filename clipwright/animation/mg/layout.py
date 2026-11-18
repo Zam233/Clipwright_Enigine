@@ -218,4 +218,18 @@ def normalize_mg_layout(mg_def: dict[str, Any]) -> tuple[dict[str, Any], list[st
             texts[idx]["y"] = round(max(height * _SAFE_RATIO, top + rank * (h + gap)), 2)
             warnings.append("多行文字统一字号/居中/等距")
 
+    # Reading time: extend the shot if text needs longer than current duration,
+    # capped at 8s so a long paragraph does not become a static slide.
+    try:
+        from clipwright.animation.qa import read_seconds
+        need = max(
+            (read_seconds(_resolved_text(e, params)) for e in out.get("elements", []) if e.get("type") == "text"),
+            default=0.0,
+        )
+        if need > float(out.get("duration_sec") or 0) and need <= 8.0:
+            out["duration_sec"] = round(need, 2)
+            warnings.append(f"镜头延长到 {need}s 以满足阅读时间")
+    except Exception:
+        pass
+
     return out, warnings

@@ -168,9 +168,14 @@ class MGGenerator:
             return override
         if prompt_config.get("modular", True):
             from clipwright.animation.prompting import compose_mg_system_prompt
+            plan = getattr(self, "_active_plan", None) or self._plan(description, category_context)
+            brief = None
+            if isinstance(getattr(plan, "brief", None), dict) and plan.brief:
+                from clipwright.animation.brief import AnimationBrief
+                brief = AnimationBrief(**plan.brief)
             return compose_mg_system_prompt(
-                getattr(self, "_active_plan", None) or self._plan(description, category_context),
-                width=getattr(self, "_cfg_width", None), height=getattr(self, "_cfg_height", None),
+                plan, width=getattr(self, "_cfg_width", None), height=getattr(self, "_cfg_height", None),
+                brief=brief,
             )
         return _mg_constraint("MG_DESIGNER_SYSTEM")
 
@@ -329,6 +334,15 @@ class MGGenerator:
                     ok, errors = validate_mg_json(mg_def)
                 except Exception as exc:  # noqa: BLE001 — 布局修正失败不阻断生成
                     logger.warning("MGGenerator: 布局自动修正失败（跳过）: %s", exc)
+            if ok:
+                try:
+                    from clipwright.animation.qa import qa_report
+                    qa = qa_report(mg_def)
+                    if not qa["ok"]:
+                        logger.warning("MGGenerator QA: %s", qa)
+                        self._trace_event(pipeline_id, "qa", "MG 质量检查", qa)
+                except Exception:  # noqa: BLE001
+                    pass
             if ok:
                 try:
                     from clipwright.animation.prompting import (

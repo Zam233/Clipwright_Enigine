@@ -19,6 +19,7 @@ from clipwright.prompts.engine.animation_prompt import (
     ANIMATION_SELF_CHECK,
     ANIMATION_STYLE_CONTRACT,
 )
+from clipwright.animation.brief import AnimationBrief, build_brief, style_prompt_block
 from clipwright.prompts.mg import MG_ORCHESTRATION_CONSTRAINTS, MG_STRICT_JSON_OUTPUT
 
 ANIMATION_CATEGORIES = (
@@ -105,6 +106,9 @@ class AnimationPlan:
     shot_type: str = "title_reveal"
     seams: list[dict[str, Any]] = field(default_factory=list)
     shots: list[dict[str, Any]] = field(default_factory=list)
+    brief: dict[str, Any] = field(default_factory=dict)
+    beats: list[dict[str, Any]] = field(default_factory=list)
+    continuity: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -114,6 +118,9 @@ class AnimationPlan:
             "carrier": self.carrier, "shot_type": self.shot_type,
             "seams": self.seams,
             "shots": self.shots or [{"index": 1, "role": "main", "rule_ids": self.rule_ids}],
+            "brief": self.brief,
+            "beats": self.beats,
+            "continuity": self.continuity,
         }
 
 
@@ -145,7 +152,7 @@ def infer_energy(description: str, category_context: dict[str, Any]) -> Literal[
 
 def build_animation_plan(
     description: str, category_context: dict[str, Any] | None = None,
-    duration_sec: float = 4.0,
+    duration_sec: float = 4.0, brief: AnimationBrief | None = None,
 ) -> AnimationPlan:
     category_context = category_context or {}
     category = _pick_category(description, category_context)
@@ -164,11 +171,14 @@ def build_animation_plan(
         "charts": "data_impact", "stat": "data_impact", "comparison": "comparison",
         "flow": "flow", "maps": "flow", "logo-reveal": "title_reveal",
     }.get(category, "title_reveal")
+    brief = brief or build_brief(description, category_context, duration_sec)
     return AnimationPlan(
         category=category, intent=description[:160], energy=energy,
         duration_sec=max(1.0, float(duration_sec or 4.0)),
         rule_ids=selected[:3], carrier="title-word" if category != "charts" else "bar-series",
-        shot_type=shot_type,
+        shot_type=shot_type, brief=brief.as_dict(),
+        beats=[{"at_sec": 0.0, "event": "entry"}, {"at_sec": max(1.0, duration_sec * 0.4), "event": "main"}, {"at_sec": max(1.5, duration_sec * 0.8), "event": "hold"}],
+        continuity={"inherits": "", "before": "", "after": "", "handoff": {}},
     )
 
 
@@ -178,8 +188,13 @@ def rule_by_id(rule_id: str) -> AnimationRule | None:
 
 def compose_mg_system_prompt(
     plan: AnimationPlan, *, width: int | None = None, height: int | None = None,
-    category_name: str = "",
-) -> str:
+    category_name: str = "", brief: AnimationBrief | None = None,
+ ) -> str:
+    if brief is None and getattr(plan, "brief", None):
+        try:
+            brief = AnimationBrief(**plan.brief)
+        except Exception:
+            brief = None
     lines = []
     for rid in plan.rule_ids[:3]:
         rule = rule_by_id(rid)
@@ -190,6 +205,7 @@ def compose_mg_system_prompt(
         category=category_name or plan.category, energy=plan.energy, intent=plan.intent[:120], accent="{accent}",
     )
     caps = ANIMATION_RENDERER_CAPABILITIES.format(width=width or 1920, height=height or 1080)
+    brief_block = style_prompt_block(brief) if brief else ""
     plan_block = (
         "## 本镜头计划\n"
         f"- category: {plan.category}\n"
@@ -200,7 +216,7 @@ def compose_mg_system_prompt(
         f"- rule_ids: {', '.join(plan.rule_ids)}\n"
     )
     body = "\n\n".join([
-        ANIMATION_PROMPT_BASE, ANIMATION_MOTION_CONTRACT, plan_block, rules, style, caps,
+        ANIMATION_PROMPT_BASE, ANIMATION_MOTION_CONTRACT, brief_block, plan_block, rules, style, caps,
         ANIMATION_SELF_CHECK, ANIMATION_EXAMPLE,
     ])
     return body + MG_ORCHESTRATION_CONSTRAINTS + MG_STRICT_JSON_OUTPUT
