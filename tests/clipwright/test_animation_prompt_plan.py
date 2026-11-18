@@ -99,3 +99,30 @@ def test_legacy_prompt_fallback_still_available() -> None:
     legacy = gen._design_system_template("标题", {})
     assert len(legacy) > 10000
     assert "Motion Design Principles" in legacy
+
+
+def test_critique_prompt_contains_continuity_checks(monkeypatch) -> None:
+    import asyncio
+    from clipwright.animation.mg.generator import MGGenerator
+
+    captured = []
+
+    class _Resp:
+        content = '{"score": 90, "issues": [], "suggestions": []}'
+
+    class _LLM:
+        async def generate(self, messages, **kwargs):
+            captured.append(messages[0]["content"])
+            return _Resp()
+
+    gen = MGGenerator()
+    gen._llm = _LLM()
+
+    async def _quality(*args, **kwargs):
+        return None
+
+    # 直接验证 critique template 的检查项，避免依赖完整生成链。
+    text = gen._critique_system_template("标题", {})
+    assert "连续性与运动检查" in text
+    assert "idle" in text
+    assert "carrier" in text
