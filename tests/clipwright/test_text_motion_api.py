@@ -90,3 +90,18 @@ def test_author_tasks_persist_and_restart_fails_open(tmp_path, monkeypatch):
     api._load_tasks()
     assert api._AUTHOR_TASKS["ma_test"]["status"] == "failed"
     assert "重启" in api._AUTHOR_TASKS["ma_test"]["error"]
+
+
+def test_author_tasks_with_request_requeue_on_restart(tmp_path, monkeypatch):
+    monkeypatch.setattr("clipwright.config.settings.project_dir", tmp_path)
+    api._AUTHOR_TASKS.clear()
+    api._AUTHOR_TASKS["ma_resume"] = {
+        "task_id": "ma_resume", "status": "authoring", "progress": 0,
+        "created_at": 1.0, "cancelable": True,
+        "request": {"text": "测试", "duration_sec": 2},
+    }
+    api._persist_tasks()
+    api._AUTHOR_TASKS.clear()
+    api._load_tasks()
+    assert api._AUTHOR_TASKS["ma_resume"]["status"] == "queued"
+    assert api._AUTHOR_TASKS["ma_resume"]["request"]["text"] == "测试"

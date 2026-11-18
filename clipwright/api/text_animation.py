@@ -64,9 +64,16 @@ def _load_tasks() -> None:
             continue
         task = dict(raw)
         if task.get("status") in ("authoring", "cancel_requested"):
-            task["status"] = "failed"
-            task["error"] = "进程重启中断（author 未完成）"
-            task["cancelable"] = False
+            # 有请求体可恢复：重启后先排队，首次状态查询/SSE 会重新拉起 provider；
+            # 缺请求体的旧任务才 fail-open。
+            if isinstance(task.get("request"), dict):
+                task["status"] = "queued"
+                task["error"] = ""
+                task["cancelable"] = True
+            else:
+                task["status"] = "failed"
+                task["error"] = "进程重启中断（author 未完成）"
+                task["cancelable"] = False
         _AUTHOR_TASKS[str(tid)] = task
     _persist_tasks()
 
@@ -230,10 +237,28 @@ async def start_author(body: AuthorRequest) -> dict:
     _AUTHOR_TASKS[task_id] = {
         "task_id": task_id, "status": "authoring", "progress": 0,
         "created_at": time.time(), "cancelable": True, "seq": 1,
+        "request": {"project_id": body.project_id, "clip_id": body.clip_id,
+                    "text": body.text, "duration_sec": body.duration_sec, "style": body.style},
     }
     _AUTHOR_TASKS[task_id]["_task"] = asyncio.create_task(_run_author(task_id, body))
     _persist_tasks()
     return {"task_id": task_id, "status": "authoring", "clip_id": body.clip_id}
+
+
+async def _ensure_resumed(task: dict[str, Any]) -> None:
+    if task.get("status") != "queued" or task.get("_task") is not None:
+        return
+    raw = task.get("request")
+    if not isinstance(raw, dict):
+        return
+    try:
+        body = AuthorRequest(**raw)
+    except Exception:
+        return
+    task["status"] = "authoring"
+    task["seq"] = int(task.get("seq", 0)) + 1
+    task["_task"] = asyncio.create_task(_run_author(task["task_id"], body))
+    _persist_tasks()
 
 
 @router.get("/author/{task_id}")
@@ -242,6 +267,7 @@ async def author_status(task_id: str) -> dict:
     task = _AUTHOR_TASKS.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="author task not found")
+    await _ensure_resumed(task)
     return _public_task(task)
 
 
