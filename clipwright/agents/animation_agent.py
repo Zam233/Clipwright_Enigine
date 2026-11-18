@@ -1930,6 +1930,19 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 return await rt.decide_with_llm(llm, description, obs)
             result = await rt.run(decide, category=str((category_context or {}).get("category") or "kinetic-type"),
                                   shot_type="title_reveal", needs={"agent"})
+            if getattr(self, "_ctx_store", None) is not None:
+                try:
+                    for action in result.actions:
+                        if action.kind in ("tool", "skill"):
+                            self._ctx_store.record_call(
+                                self._ctx_session_id, self._ctx_task_id,
+                                action.kind, action.name or "?",
+                                "success" if result.status == "ok" else "failed",
+                                input_summary=str(action.reason)[:200],
+                                output_summary=f"loop={result.status} rounds={result.rounds}",
+                            )
+                except Exception:
+                    pass
             for obs in reversed(result.observations):
                 if isinstance(obs, dict) and obs.get("mg_def"):
                     mg = obs
