@@ -1962,6 +1962,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             for obs in reversed(result.observations):
                 if isinstance(obs, dict) and obs.get("mg_def"):
                     mg = obs
+                    mg["mg_def"]["agentic"] = True
                     from clipwright.animation.qa import qa_report
                     from clipwright.animation.mg.semantic_layout import semantic_layout_errors
                     errors = semantic_layout_errors(mg["mg_def"], mg["mg_def"].get("params"))
