@@ -100,3 +100,16 @@ class QAIn(BaseModel):
 @router.post("/blackboard/{session_id}/{task_id}/qa")
 async def record_qa(session_id: str, task_id: str, body: QAIn) -> dict:
     return get_context_store().record_qa(session_id, task_id, body.shot_index, body.report)
+
+
+class ExportGateIn(BaseModel):
+    mg_json: dict = Field(default_factory=dict)
+    user_confirmed: bool = False
+    require_confirmation: bool = False
+
+
+@router.post("/export-gate")
+async def export_gate(body: ExportGateIn) -> dict:
+    from clipwright.animation.export_gate import can_export
+    return can_export(body.mg_json, user_confirmed=body.user_confirmed,
+                      require_confirmation=body.require_confirmation)
