@@ -196,8 +196,6 @@ async def chat_message(req: ChatMessageRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(e))
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Session not found: {req.session_id}")
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
 
 
 @router.post("/message/stream")
@@ -316,6 +314,8 @@ async def chat_commit(req: ChatCommitRequest, request: Request) -> PersonaManife
         return manifest
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Session not found: {req.session_id}")
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @router.get("/state/{session_id}")
