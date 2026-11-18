@@ -165,12 +165,18 @@ async def get_type(type_id: str) -> dict:
         config["_source_file"] = str(yaml_path)
         return config
 
-    # 内置类型返回基本信息
+    # 内置类型：返回基本信息 + 插件声明的 Prompt/规则/指标（详情页可读）
+    bundle = plugin.get_prompt_bundle()
     return {
         "id": plugin.plugin_id,
         "name": plugin.display_name,
         "description": plugin.description,
         "builtin": True,
+        "prompts": {k: v.model_dump(mode="json") for k, v in (bundle.slots or {}).items()},
+        "param_rules": [r.model_dump(mode="json") for r in plugin.get_param_rules()],
+        "signature_traits": [t.model_dump(mode="json") for t in plugin.get_signature_traits()],
+        "declares": plugin.get_declares().model_dump(mode="json"),
+        "waivers": [],
     }
 
 

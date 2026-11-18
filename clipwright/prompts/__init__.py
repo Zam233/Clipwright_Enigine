@@ -40,6 +40,7 @@ from .loop import *  # noqa: F401,F403
 from .mg import *  # noqa: F401,F403
 from .material import *  # noqa: F401,F403
 from .chat import CHAT_TITLE_SYSTEM  # noqa: F401
+from .type_forge import TYPE_FORGE_SYSTEM, TYPE_TITLE_SYSTEM  # noqa: F401
 from .engine import (  # noqa: F401
     KINETIC_TYPOGRAPHY_SYSTEM,
     MG_CRITIQUE_CHECK_ITEMS,

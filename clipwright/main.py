@@ -87,6 +87,7 @@ from clipwright.api import voice as voice_api
 from clipwright.api import waveform as waveform_api
 from clipwright.api import skill as skill_api
 from clipwright.api import type_maker as type_maker_api
+from clipwright.api import type_forge as type_forge_api
 from clipwright.api import template as template_api
 from clipwright.api import webhook as webhook_api
 from clipwright.api import video_editor as video_editor_api
@@ -701,6 +702,7 @@ app.include_router(voice_api.router)
 app.include_router(waveform_api.router)
 app.include_router(vision_api.router)
 app.include_router(type_maker_api.router)
+app.include_router(type_forge_api.router)
 app.include_router(template_api.router)
 app.include_router(webhook_api.router)
 app.include_router(video_editor_api.router)
