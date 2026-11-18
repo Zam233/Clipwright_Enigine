@@ -22,7 +22,7 @@ from typing import Any, Iterable
 from clipwright.config import logger
 
 #: 提示词目录（Markdown，一类型一文件）
-PROMPTS_DIR = Path(__file__).resolve().parent / "prompts" / "types"
+PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts" / "engine" / "templates" / "types"
 
 #: 提示词正文的标准分段（loader 只认这些标题）
 PROMPT_SECTIONS: tuple[str, ...] = (

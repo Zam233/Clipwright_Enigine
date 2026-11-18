@@ -38,7 +38,7 @@ from typing import Any, Iterable
 from clipwright.animation.mg.validator import VALID_EASINGS
 from clipwright.utils.keyframes_expr import EASING_EXPR
 
-PROMPTS_DIR = Path(__file__).resolve().parent
+PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts" / "engine" / "templates"
 CATALOG_PATH = PROMPTS_DIR / "style_catalog.json"
 
 LEGACY_SECTIONS = (
