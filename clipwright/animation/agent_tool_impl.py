@@ -35,6 +35,29 @@ async def qa_mg(mg_def: dict | None = None, **_: Any) -> dict[str, Any]:
     return qa_report(mg_def or {})
 
 
+async def repair_mg(mg_def: dict | None = None, errors: list[str] | None = None,
+                    description: str = "", text_content: str = "", **_: Any) -> dict[str, Any]:
+    from clipwright.animation.mg.generator import MGGenerator
+    gen = MGGenerator()
+    repaired = await gen._call_llm_repair(
+        mg_def or {}, list(errors or [])[:10], description, text_content,
+        {}, {}, {}, "",
+    )
+    return {"ok": bool(repaired), "mg_def": repaired or mg_def, "errors": errors or []}
+
+
+async def render_preview(mg_def: dict | None = None, params: dict | None = None,
+                         width: int = 1920, height: int = 1080, fps: float = 30.0, **_: Any) -> dict[str, Any]:
+    import httpx
+    async with httpx.AsyncClient(timeout=600) as client:
+        resp = await client.post("http://127.0.0.1:8080/api/animation/preview", json={
+            "mg_json": mg_def or {}, "params": params or {},
+            "width": width, "height": height, "fps": fps,
+        })
+        resp.raise_for_status()
+        return resp.json()
+
+
 async def generate_mg(description: str = "", text_content: str = "", persona_style: dict | None = None,
                       width: int = 1920, height: int = 1080, fps: float = 30.0, **_: Any) -> dict[str, Any]:
     from clipwright.animation.mg.generator import MGGenerator
@@ -51,5 +74,7 @@ def install_animation_tool_handlers() -> None:
         "generate_mg": generate_mg,
         "validate_layout": validate_layout,
         "qa_mg": qa_mg,
+        "repair_mg": repair_mg,
+        "render_preview": render_preview,
     }.items():
         bind_animation_tool(name, handler)
