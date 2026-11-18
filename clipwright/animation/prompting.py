@@ -21,6 +21,7 @@ from clipwright.prompts.engine.animation_prompt import (
 )
 from clipwright.animation.beats import beats_for_duration
 from clipwright.animation.brief import AnimationBrief, build_brief, style_prompt_block
+from clipwright.animation.prompt_skills import compose_skills
 from clipwright.prompts.mg import MG_ORCHESTRATION_CONSTRAINTS, MG_STRICT_JSON_OUTPUT
 
 ANIMATION_CATEGORIES = (
@@ -190,6 +191,7 @@ def rule_by_id(rule_id: str) -> AnimationRule | None:
 def compose_mg_system_prompt(
     plan: AnimationPlan, *, width: int | None = None, height: int | None = None,
     category_name: str = "", brief: AnimationBrief | None = None,
+    needs: set[str] | None = None,
  ) -> str:
     if brief is None and getattr(plan, "brief", None):
         try:
@@ -206,6 +208,10 @@ def compose_mg_system_prompt(
         category=category_name or plan.category, energy=plan.energy, intent=plan.intent[:120], accent="{accent}",
     )
     caps = ANIMATION_RENDERER_CAPABILITIES.format(width=width or 1920, height=height or 1080)
+    # Engine selects only the skill packs needed by this shot; no hardcoded id list here.
+    skill_block = compose_skills(
+        category=category_name or plan.category, shot_type=plan.shot_type, needs=needs,
+    )
     brief_block = style_prompt_block(brief) if brief else ""
     plan_block = (
         "## 本镜头计划\n"
@@ -217,7 +223,7 @@ def compose_mg_system_prompt(
         f"- rule_ids: {', '.join(plan.rule_ids)}\n"
     )
     body = "\n\n".join([
-        ANIMATION_PROMPT_BASE, ANIMATION_MOTION_CONTRACT, brief_block, plan_block, rules, style, caps,
+        ANIMATION_PROMPT_BASE, ANIMATION_MOTION_CONTRACT, skill_block, brief_block, plan_block, rules, style, caps,
         ANIMATION_SELF_CHECK, ANIMATION_EXAMPLE,
     ])
     return body + MG_ORCHESTRATION_CONSTRAINTS + MG_STRICT_JSON_OUTPUT

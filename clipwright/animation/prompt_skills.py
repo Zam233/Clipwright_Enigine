@@ -14,7 +14,18 @@ class PromptSkill:
     priority: int = 0
 
 
-SKILLS: dict[str, PromptSkill] = {
+SKILLS: dict[str, PromptSkill] = {}
+_PLUGIN_SKILLS: dict[str, PromptSkill] = {}
+
+
+def register_prompt_skill(skill: PromptSkill) -> None:
+    """Plugin-facing registration; builtins remain protected by id."""
+    if skill.id in SKILLS and SKILLS[skill.id].kind == "builtin":
+        raise ValueError(f"prompt skill {skill.id} 已存在（内置不可覆盖）")
+    SKILLS[skill.id] = skill
+
+
+BUILTIN_SKILLS: dict[str, PromptSkill] = {
     "core-layout": PromptSkill(
         "core-layout", ("*",),
         "坐标：text/shape/image 左上角，line 中心，bg 忽略；bbox=[x,y,x+w,y+h]；elements 顺序=层级。",
@@ -48,6 +59,7 @@ SKILLS: dict[str, PromptSkill] = {
         "不支持 z_index/object_fit/alt/gradient_angle/stroke_dasharray；替代：顺序/contain/background 渐变/实线。",
     ),
 }
+SKILLS.update(BUILTIN_SKILLS)
 
 
 def select_skills(*, category: str = "", shot_type: str = "", needs: set[str] | None = None) -> list[PromptSkill]:
