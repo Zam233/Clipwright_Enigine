@@ -1932,7 +1932,16 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                                   shot_type="title_reveal", needs={"agent"})
             for obs in reversed(result.observations):
                 if isinstance(obs, dict) and obs.get("mg_def"):
-                    return obs
+                    mg = obs
+                    from clipwright.animation.qa import qa_report
+                    from clipwright.animation.mg.semantic_layout import semantic_layout_errors
+                    errors = semantic_layout_errors(mg["mg_def"], mg["mg_def"].get("params"))
+                    if errors:
+                        mg["success"] = False
+                        mg["qa_errors"] = errors
+                        mg["error"] = "; ".join(errors[:3])
+                    mg.setdefault("qa", qa_report(mg["mg_def"]))
+                    return mg
         except Exception as exc:  # noqa: BLE001 — agentic loop 失败必须回退旧引擎
             logger.warning("AnimationAgent: agentic loop 失败，回退 MGGenerator: %s", exc)
         return {}
