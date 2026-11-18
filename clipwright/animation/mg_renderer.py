@@ -59,6 +59,8 @@ class MGRenderer:
         "border_width": "border-width",
         "border_color": "border-color",
         "transform_origin": "transform-origin",
+        "filter": "filter",
+        "clip_path": "clip-path",
     }
 
     # 元素级已显式渲染/结构性字段，静态透传时排除，避免重复输出
@@ -428,6 +430,44 @@ const dur=parseFloat(root.dataset.duration);
             if "translate_x" in props:
                 tx = props.pop("translate_x")
                 transforms.append(f"translateX({fill(tx)}px)")
+            if "translate_z" in props:
+                tz = props.pop("translate_z")
+                transforms.append(f"translateZ({fill(tz)}px)")
+            if "scale_x" in props:
+                sx = props.pop("scale_x")
+                transforms.append(f"scaleX({fill(sx)})")
+            if "scale_y" in props:
+                sy = props.pop("scale_y")
+                transforms.append(f"scaleY({fill(sy)})")
+            for _rot, _fn in (("rotate_x", "rotateX"), ("rotate_y", "rotateY"), ("rotate_z", "rotateZ")):
+                if _rot in props:
+                    rv = props.pop(_rot)
+                    transforms.append(f"{_fn}({fill(rv)}deg)")
+            if "perspective" in props:
+                pv = props.pop("perspective")
+                transforms.insert(0, f"perspective({fill(pv)}px)")
+            if "blur" in props:
+                bv = props.pop("blur")
+                style_attrs.append(f"filter:blur({fill(bv)}px);")
+            if "clip_inset" in props:
+                ci = props.pop("clip_inset")
+                if isinstance(ci, (list, tuple)) and len(ci) == 4:
+                    style_attrs.append(
+                        "clip-path:inset(" + " ".join(f"{fill(v)}px" for v in ci) + ");")
+            if "mask" in props:
+                m = props.pop("mask")
+                if isinstance(m, dict):
+                    try:
+                        mx, my = float(m.get("x", 0)), float(m.get("y", 0))
+                        mw, mh = float(m.get("w", 1)), float(m.get("h", 1))
+                        top = max(0, my) * 100
+                        left = max(0, mx) * 100
+                        right = max(0, 1 - mx - mw) * 100
+                        bottom = max(0, 1 - my - mh) * 100
+                        style_attrs.append(
+                            f"clip-path:inset({top:.2f}% {right:.2f}% {bottom:.2f}% {left:.2f}%);")
+                    except (TypeError, ValueError):
+                        pass
             if "width" in props:
                 w = props.pop("width")
                 style_attrs.append(f"width:{fill(w)}px;")
@@ -464,6 +504,15 @@ const dur=parseFloat(root.dataset.duration);
             css_key = MGRenderer.KEYFRAME_CSS_MAP.get(k)
             if k == "font_italic" and isinstance(v, bool):
                 static_style += f"font-style:{'italic' if v else 'normal'};"
+            elif k == "mask" and isinstance(v, dict):
+                try:
+                    mx, my = float(v.get("x", 0)), float(v.get("y", 0))
+                    mw, mh = float(v.get("w", 1)), float(v.get("h", 1))
+                    static_style += (f"clip-path:inset({max(0,my)*100:.2f}% "
+                                     f"{max(0,1-mx-mw)*100:.2f}% {max(0,1-my-mh)*100:.2f}% "
+                                     f"{max(0,mx)*100:.2f}%);")
+                except (TypeError, ValueError):
+                    pass
             elif css_key and isinstance(v, (str, int, float)):
                 static_style += f"{css_key}:{bindable(MGRenderer._sanitize_css_value(v))};"
 

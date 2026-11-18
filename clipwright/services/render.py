@@ -1511,7 +1511,7 @@ class RenderService:
                 elif k in ("text", "caption"):
                     meta = clip.metadata or {}
                     _provider = str(meta.get("text_provider_id") or "")
-                    if _provider:
+                    if _provider and _provider != "motion_spec":
                         from clipwright.animation.text_engine import TextMotionRegistry
                         if not TextMotionRegistry.has(_provider):
                             raise RuntimeError(
@@ -2789,7 +2789,7 @@ class RenderService:
             if not is_caption and motion_type:
                 try:
                     self._final_ffmpeg_log.append(
-                        f"legacy_text_static: {clip.id if hasattr(clip, 'id') else ''} "
+                        f"legacy_text_static: {ov.get('clip_id') or ''} "
                         f"motion={motion_type} 已按只读静态文字处理")
                 except Exception:
                     pass

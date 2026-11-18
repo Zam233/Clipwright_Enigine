@@ -14,7 +14,8 @@ ANIMATABLE_PROPS = {
     "border_radius", "border_width", "border_color",
     "box_shadow", "text_shadow", "filter", "letter_spacing",
     "font_weight", "font_family", "line_height", "transform_origin",
-    "easing",
+    "easing", "translate_z", "scale_x", "scale_y", "rotate_x", "rotate_y", "rotate_z",
+    "perspective", "blur", "clip_inset", "mask", "clip_path",
 }
 # easing 取值：命名曲线 + 可选 cubic-bezier 数组 [x1,y1,x2,y2]
 VALID_EASINGS = {

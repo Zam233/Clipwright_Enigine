@@ -767,17 +767,6 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         )
         return
 
-        # 启用重叠去重（_find_overlapping_clip 此前定义未调用）——
-        # 同轨道文字片段时间重叠会叠字渲染
-        overlap = self._find_overlapping_clip(text_track, text_clip)
-        if overlap is not None:
-            logger.info("AnimationAgent: 跳过重叠文字动画 %s（与 %s 时间重叠）",
-                        text_clip.id[:8], overlap.id[:8])
-            return
-
-        text_track.clips.append(text_clip)
-        text_track.clips.sort(key=lambda c: c.start_sec)
-
     def _handle_text_animation(
         self,
         text_track: Track,
@@ -832,6 +821,14 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             return
         text_track.clips.append(text_clip)
         text_track.clips.sort(key=lambda c: c.start_sec)
+
+    @staticmethod
+    def _motion_llm_enabled() -> bool:
+        try:
+            from clipwright.config import settings
+            return bool(getattr(settings, "text_motion_llm_enabled", False))
+        except Exception:
+            return False
 
     @staticmethod
     def _text_llm_enabled() -> bool:
@@ -1036,6 +1033,36 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         text_motion = dict(ta.get("motion") or {})
         base_mg_def = result.mg_def
 
+        motion_spec_data = None
+        motion_author_meta = None
+        if self._motion_llm_enabled():
+            from clipwright.animation.motion_spec import MotionAuthorRequest
+            from clipwright.animation.motion_spec_validator import validate_motion_spec
+            from clipwright.animation.text_engine import TextMotionRegistry
+            provider = TextMotionRegistry.get("llm_motion")
+            if provider is None:
+                raise RuntimeError("MOTION_SPEC_MISSING: text-motion-llm provider 未加载")
+            req = MotionAuthorRequest(
+                text=main_style.get("text") or text_content,
+                style=text_style, intent=text_motion,
+                width=int(self._tl_width or 1920), height=int(self._tl_height or 1080),
+                duration_sec=float(display_sec), caption_band_px=int(tg.CAPTION_BAND_PX),
+                scene_context={"scene": str((vid_clip.metadata or {}).get("scene_title") or "")},
+            )
+            spec = await provider.author(req)
+            v = validate_motion_spec(spec)
+            if not v.ok:
+                raise ValueError("MOTION_SPEC_INVALID: " + "; ".join(v.errors[:5]))
+            import hashlib
+            import json as _json
+            motion_spec_data = spec.model_dump(by_alias=True)
+            motion_author_meta = {
+                "provider": provider.id, "version": provider.version,
+                "spec_hash": hashlib.sha256(
+                    _json.dumps(motion_spec_data, sort_keys=True, ensure_ascii=False).encode()
+                ).hexdigest(),
+            }
+
         clip = Clip(
             id=_uid("tc"),
             kind=ClipKind.TEXT,
@@ -1066,6 +1093,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "stroke_width": persona_style.get("stroke_width", 0),
                 "stroke_color": persona_style.get("stroke_color", "#000000"),
                 "apply_text_style": True,
+                **({"motion_spec": motion_spec_data,
+                    "motion_spec_hash": motion_author_meta["spec_hash"],
+                    "text_provider_id": "llm_motion",
+                    "motion_author": motion_author_meta} if motion_spec_data else {}),
             },
         )
         from clipwright.animation.text_mg import apply_text_style_to_clip
