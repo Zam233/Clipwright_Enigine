@@ -160,3 +160,14 @@ class AnimationContextStore:
             target = self._root / session_id / task_id / "context.json"
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(json.dumps(self.get(session_id, task_id), ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+
+_STORE: AnimationContextStore | None = None
+
+
+def get_context_store() -> AnimationContextStore:
+    global _STORE
+    if _STORE is None:
+        _STORE = AnimationContextStore()
+    return _STORE

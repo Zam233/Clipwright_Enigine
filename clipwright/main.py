@@ -75,6 +75,7 @@ from clipwright.api import tool_surface as tool_surface_api
 from clipwright.api import task as task_api
 from clipwright.api import plugin as plugin_api
 from clipwright.api import animation as animation_api
+from clipwright.api import animation_context as animation_context_api
 from clipwright.api import material as material_api
 from clipwright.api import asset as asset_api
 from clipwright.api import edl as edl_api
@@ -692,6 +693,7 @@ app.include_router(plugin_api.router)
 app.include_router(skill_api.router)
 app.include_router(material_api.router)
 app.include_router(animation_api.router)
+app.include_router(animation_context_api.router)
 app.include_router(stt_api.router)
 app.include_router(asset_api.router)
 app.include_router(edl_api.router)
