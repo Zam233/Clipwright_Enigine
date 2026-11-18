@@ -1908,6 +1908,35 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
     # ── LLM 动态 MG 动画处理 ──────────────────────────────
 
+    async def _generate_mg_via_agentic(
+        self, *, description: str, text_content: str, persona_style: dict,
+        scene_context: dict, category_context: dict, vision_prompt: str, web_context: str,
+    ) -> dict:
+        """Opt-in agentic loop; returns MGGenerator-shaped result or {} to fallback."""
+        try:
+            from clipwright.animation.agentic_runtime import AnimationAgentRuntime
+            from clipwright.services.llm import LLMService
+            rt = AnimationAgentRuntime(
+                max_rounds=3, max_calls=6,
+                default_args={
+                    "description": description, "text_content": text_content,
+                    "persona_style": persona_style or {}, "scene_context": scene_context or {},
+                    "category_context": category_context or {}, "vision_prompt": vision_prompt or "",
+                    "web_context": web_context or "", "fps": getattr(self, "_tl_fps", 30.0),
+                },
+            )
+            llm = getattr(self, "_llm", None) or LLMService()
+            async def decide(obs):
+                return await rt.decide_with_llm(llm, description, obs)
+            result = await rt.run(decide, category=str((category_context or {}).get("category") or "kinetic-type"),
+                                  shot_type="title_reveal", needs={"agent"})
+            for obs in reversed(result.observations):
+                if isinstance(obs, dict) and obs.get("mg_def"):
+                    return obs
+        except Exception as exc:  # noqa: BLE001 — agentic loop 失败必须回退旧引擎
+            logger.warning("AnimationAgent: agentic loop 失败，回退 MGGenerator: %s", exc)
+        return {}
+
     async def _handle_llm_mg(
         self,
         anim_track: Track,
@@ -2038,16 +2067,25 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             # P2-B 多方案择优：新引擎提供 generate_best（variants=1 时等价旧行为）；
             # 旧版/插件提供的引擎可能只有 generate → 回退调用，保持兼容。
             _generate = getattr(mg_gen, "generate_best", None) or mg_gen.generate
-            result = await _generate(
-                description=gen_description,
-                text_content=text_parts or text_content,
-                persona_style=persona_style or {},
-                scene_context=scene_context,
-                category_context=self._mg_category_context,
-                vision_prompt=getattr(self, "_vision_prompt", "") or "",
-                web_context=web_context,
-                width=self._tl_width, height=self._tl_height, fps=self._tl_fps,
-            )
+            result = {}
+            if os.environ.get("CLIPWRIGHT_ANIMATION_AGENTIC_LOOP", "").strip() in ("1", "true", "yes"):
+                result = await self._generate_mg_via_agentic(
+                    description=gen_description, text_content=text_parts or text_content,
+                    persona_style=persona_style or {}, scene_context=scene_context,
+                    category_context=self._mg_category_context,
+                    vision_prompt=getattr(self, "_vision_prompt", "") or "", web_context=web_context,
+                )
+            if not result.get("mg_def"):
+                result = await _generate(
+                    description=gen_description,
+                    text_content=text_parts or text_content,
+                    persona_style=persona_style or {},
+                    scene_context=scene_context,
+                    category_context=self._mg_category_context,
+                    vision_prompt=getattr(self, "_vision_prompt", "") or "",
+                    web_context=web_context,
+                    width=self._tl_width, height=self._tl_height, fps=self._tl_fps,
+                )
         except Exception as e:
             logger.exception("AnimationAgent: llm_mg.generate() 异常: %s", e)
             self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)

@@ -17,9 +17,11 @@ DECIDE_SYSTEM = """你是 AnimationAgent 的导演循环。根据目标与已有
 
 
 class AnimationAgentRuntime:
-    def __init__(self, *, max_rounds: int = 3, max_calls: int = 8) -> None:
+    def __init__(self, *, max_rounds: int = 3, max_calls: int = 8,
+                 default_args: dict[str, Any] | None = None) -> None:
         self.max_rounds = max_rounds
         self.max_calls = max_calls
+        self.default_args = dict(default_args or {})
 
     async def decide_with_llm(self, llm: Any, goal: str, observations: list[Any]) -> AgentAction:
         from clipwright.animation.agent_tools import list_animation_tools
@@ -52,7 +54,8 @@ class AnimationAgentRuntime:
             return {"skill": name, "prompt": compose_skills(category=category or name, shot_type=shot_type, needs=needs)}
 
         async def execute(name: str, args: dict[str, Any]) -> Any:
-            return await call_animation_tool(name, **args)
+            merged = {**self.default_args, **args}
+            return await call_animation_tool(name, **merged)
 
         return await run_agentic_loop(
             decide=decide,
