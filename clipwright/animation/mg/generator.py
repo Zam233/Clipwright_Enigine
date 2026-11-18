@@ -2049,10 +2049,24 @@ ision_prompt
             except Exception as exc:
                 logger.warning("MG 生成记录持久化失败 %s: %s", generation_id, exc)
 
+        semantic_gate: list[str] = []
+        try:
+            from clipwright.animation.mg.semantic_layout import semantic_layout_errors
+            semantic_gate = semantic_layout_errors(mg_def, mg_def.get("params"))
+        except Exception:  # noqa: BLE001
+            semantic_gate = []
+        if semantic_gate:
+            self._trace_event(
+                pipeline_id, "qa_gate", "MG 布局语义门禁未通过",
+                {"errors": semantic_gate[:20], "method": method},
+            )
+
         return {
-            "success": bool(html),
+            "success": bool(html) and not semantic_gate,
             "html": html,
             "mg_def": mg_def,
+            "qa_errors": semantic_gate,
+            "error": ("; ".join(semantic_gate[:3]) if semantic_gate else ""),
             "method": method,
             "fallback_template": fallback_template,
             "generation_id": generation_id,
