@@ -41,6 +41,12 @@ ANIMATION_PROMPT_BASE = """你是一位 Motion Graphics 动画设计师。你的
 - 其他元素字段：`shape`(rect/ellipse)、`color`、`background`、`background_image`、`font_family`、`font_italic`、`text_align`、`line_height`、`text_gradient`（需配合 background）、`box_shadow`、`border_radius`、`border_width`、`border_color`、`stroke_width`、`stroke_color`、`filter`、`clip_path`、`clip_inset`、`mask`、`transform_origin`。
 - 关键帧可用属性：`opacity`、`scale`/`scale_x`/`scale_y`、`translate_x`/`translate_y`/`translate_z`、`rotate`/`rotate_x`/`rotate_y`/`rotate_z`、`width`/`height`、`font_size`、`color`、`background`、`border_radius`、`border_width`、`border_color`、`box_shadow`、`text_shadow`、`filter`、`letter_spacing`、`font_weight`、`font_family`、`line_height`、`transform_origin`、`perspective`、`blur`、`clip_inset`、`mask`、`clip_path`、`easing`。
 - `easing` 允许：linear / ease / ease-in / ease-out / ease-in-out / back-out / elastic-out / bounce，或 `[x1,y1,x2,y2]`。
+- `params` 的 type 只能是 string / number / color；必须给 default。
+- `image` 只使用 `src + x/y/width/height`；**object-fit 固定 contain**，不接受 `object_fit`；`alt` 不参与渲染，不要写。
+- `image.src` 只能是 `data:image/*` 或媒体白名单内的本地资源；禁止 http(s) 外链。
+- `color` 用于 shape/line；text 用 `font_color`。`background_image` 只用于 shape；`text_gradient` 必须配合 `background`。
+- `stroke_width/stroke_color` 只用于 circle/ring 描边；普通矩形边框用 `border_width/border_color`。
+- **不支持的字段：`text_stroke`、`z_index`、`object_fit`、`alt`**；不要写。层级只靠 elements 顺序。
 
 ## 输出前自检
 1. 是否只有一个主角？
