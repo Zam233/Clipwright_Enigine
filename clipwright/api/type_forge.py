@@ -79,4 +79,4 @@ async def commit(req: CommitRequest) -> dict[str, Any]:
     except KeyError:
         raise HTTPException(status_code=404, detail="TypeForge session not found")
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
