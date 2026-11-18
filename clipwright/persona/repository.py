@@ -52,6 +52,19 @@ class PersonaRepository:
         validate_id(persona_id, "persona_id")
         return self.root_dir / persona_id
 
+    def get_revision(self, persona_id: str) -> int:
+        path = self.persona_path(persona_id) / ".revision"
+        try:
+            return int(path.read_text(encoding="utf-8").strip() or 0)
+        except Exception:
+            return 0
+
+    def bump_revision(self, persona_id: str) -> int:
+        path = self.persona_path(persona_id) / ".revision"
+        value = self.get_revision(persona_id) + 1
+        self._atomic_write_text(path, str(value))
+        return value
+
     # ── 保存 ──
 
     def save_manifest(self, manifest: PersonaManifest) -> None:
@@ -109,6 +122,8 @@ class PersonaRepository:
 
             # 自动向量化索引
             self._async_reindex(manifest.persona_id)
+
+        self.bump_revision(manifest.persona_id)
 
     @staticmethod
     def _atomic_write_text(path: Path, text: str) -> None:
