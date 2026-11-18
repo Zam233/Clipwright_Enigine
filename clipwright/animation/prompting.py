@@ -14,6 +14,7 @@ from clipwright.prompts.engine.animation_prompt import (
     ANIMATION_EXAMPLE,
     ANIMATION_MOTION_CONTRACT,
     ANIMATION_PROMPT_BASE,
+    ANIMATION_PROMPT_CORE,
     ANIMATION_RENDERER_CAPABILITIES,
     ANIMATION_RULE_SELECTION,
     ANIMATION_SELF_CHECK,
@@ -223,7 +224,7 @@ def compose_mg_system_prompt(
         f"- rule_ids: {', '.join(plan.rule_ids)}\n"
     )
     body = "\n\n".join([
-        ANIMATION_PROMPT_BASE, ANIMATION_MOTION_CONTRACT, skill_block, brief_block, plan_block, rules, style, caps,
+        ANIMATION_PROMPT_CORE, ANIMATION_MOTION_CONTRACT, skill_block, brief_block, plan_block, rules, style, caps,
         ANIMATION_SELF_CHECK, ANIMATION_EXAMPLE,
     ])
     return body + MG_ORCHESTRATION_CONSTRAINTS + MG_STRICT_JSON_OUTPUT

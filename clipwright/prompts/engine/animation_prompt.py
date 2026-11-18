@@ -217,3 +217,24 @@ ANIMATION_CONTINUITY_CHECK_ITEMS = """## 连续性与运动检查
 ANIMATION_EXAMPLE = """## 最小正例
 {"animation_id":"mg_generated_title","shot_type":"title_reveal","energy":"high","animation":"标题从 1.15 倍回落并 hold","name":"标题揭示","description":"单主角标题镜头","duration_sec":3.0,"width":1920,"height":1080,"elements":[{"type":"text","content":"{text}","x":"center","y":"center","font_size":96,"font_weight":"bold","font_color":"#ffffff","keyframes":[{"time":0,"opacity":0,"scale":1.15,"easing":"back-out"},{"time":0.5,"opacity":1,"scale":1.0},{"time":2.4,"opacity":1,"easing":"ease-in"},{"time":3.0,"opacity":0,"scale":1.02}]}],"params":{"text":{"type":"string","default":"标题"}},"style":{"background":"transparent","font_family":"system-ui, HF Symbols, sans-serif"}}
 """
+
+
+ANIMATION_PROMPT_CORE = """你是一位 Motion Graphics 动画设计师。只输出一个合法 MG JSON，不写解释。
+
+## 核心契约
+- 一个镜头只解释一件事、只有一个主角；text_content 用 | 分段时每段都要落到元素。
+- **数值坐标：text/shape/image = 左上角；line 的 x/y 是中心；bg 忽略坐标。**
+- **bbox = [x, y, x+width, y+height]**；text 未给 width 按内容估算，height = font_size×line_height；线/卡片/标签先算 bbox 再摆。
+- **elements 的 JSON 顺序就是绘制层级：后写覆盖先写**，没有 z-index。背景→装饰→线→标签→主文字。
+- 下划线/高亮条在文字下 → 写在 text 前；要覆盖文字 → 写在 text 后。
+- 元素总数 ≤5；箭头/emoji 用文本 + HF Symbols 字体。
+- 输出严格 JSON；不要 markdown 围栏、解释、注释。
+
+## 错误示例
+text y=440、font_size=120、line_height=1.4 → bbox 440..608；line y=565 是错的（穿字）；line y 必须 ≥ 632。
+text 写 `color` 是错的，必须写 `font_color`。
+line 写 `x=text.x` 是错的；line.x 是中心，应为 `text.x + text.width/2`。
+
+## 字段与类型
+具体元素字段、格式、静态/关键帧边界、不支持字段，全部由当前选中的 PromptSkill 提供；不要自行发明未声明字段。
+"""
