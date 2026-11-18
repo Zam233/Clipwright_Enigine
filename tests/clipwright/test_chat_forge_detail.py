@@ -57,3 +57,17 @@ async def test_patch_draft_accepts_falsy_and_revision(forge: ChatForge) -> None:
     assert detail["revision"] == before + 1
     with pytest.raises(ValueError):
         forge.patch_draft(sid, {"identity": {"tone": "x"}}, expected_revision=before)
+
+
+@pytest.mark.asyncio
+async def test_attachment_is_materialized_without_inline_data_url(forge: ChatForge) -> None:
+    sid = (await forge.start())["session_id"]
+    await forge.message(sid, "参考附件", attachments=[
+        {"type": "file", "name": "note.txt", "mime": "text/plain", "data_url": "data:text/plain;base64,5L2g5aW9"},
+    ])
+    entry = forge.get_detail(sid)["messages"][0]
+    att = entry["attachments"][0]
+    assert "data_url" not in att
+    assert att["storage_ref"].endswith(".txt")
+    assert att["size"] > 0
+    assert forge.read_attachment(sid, att["id"]) is not None

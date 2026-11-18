@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from clipwright.schema.persona import PersonaManifest
@@ -138,6 +138,15 @@ async def chat_sessions(request: Request, scope: str = "mine") -> dict[str, Any]
     owner = _owner_of(request)
     sessions = _forge.list_sessions(owner_id=owner, include_all=(scope == "all" or not owner))
     return {"sessions": sessions, "total": len(sessions)}
+
+
+@router.get("/sessions/{session_id}/attachments/{attachment_id}")
+async def chat_get_attachment(session_id: str, attachment_id: str):
+    """受控读取会话附件（只允许 att_ + 16 hex，防路径穿越）。"""
+    path = _forge.read_attachment(session_id, attachment_id)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    return FileResponse(path)
 
 
 @router.patch("/sessions/{session_id}/draft")

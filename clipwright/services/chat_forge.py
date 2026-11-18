@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import re
 import uuid
@@ -138,6 +140,8 @@ class ChatForge:
     MAX_KB_CHARS: int = 8000
     # 会话落盘目录（每个 session 一个 JSON；重启后恢复）
     SESSIONS_DIR = Path("chatforge_sessions")
+    # 受控附件目录；消息 JSON 只保存 storage_ref，不再内嵌 data URL
+    ATTACHMENTS_DIR = Path("chatforge_attachments")
     # 单条消息的附件上限：数量与单张图片的 Base64 体积（4 张 × 8MB ≈ 32MB 会话文件上限）
     MAX_ATTACHMENTS: int = 4
     MAX_ATTACHMENT_CHARS: int = 8 * 1024 * 1024
@@ -148,6 +152,7 @@ class ChatForge:
         self._llm = LLMService()
         self._sessions: dict[str, ChatForgeSession] = {}
         self.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        self.ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
         self._restore_sessions()
 
     # ── B5: 会话落盘 ──
@@ -442,8 +447,8 @@ class ChatForge:
         normalized = self._normalize_attachments(attachments)
         entry: dict[str, Any] = {"role": "user", "content": user_message}
         if normalized:
-            entry["attachments"] = normalized
             context = await self._attachments_to_context(normalized)
+            entry["attachments"] = self._materialize_attachments(session_id, normalized)
             if context:
                 entry["attachment_context"] = context
         session.messages.append(entry)
@@ -487,6 +492,66 @@ class ChatForge:
                 "data_url": data_url,
             })
         return normalized
+
+    def _materialize_attachments(
+        self, session_id: str, attachments: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """把 data URL 落受控文件，返回不含 base64 的元信息。"""
+        out: list[dict[str, Any]] = []
+        session_dir = self.ATTACHMENTS_DIR / "".join(
+            c for c in session_id if c.isalnum() or c in "-_"
+        )[:64]
+        session_dir.mkdir(parents=True, exist_ok=True)
+        for index, att in enumerate(attachments):
+            data_url = str(att.get("data_url") or "")
+            if not data_url.startswith("data:") or "," not in data_url:
+                raise ChatForgeAttachmentError(f"第 {index + 1} 个附件 data_url 非法")
+            header, payload = data_url.split(",", 1)
+            if ";base64" not in header:
+                raise ChatForgeAttachmentError(f"第 {index + 1} 个附件必须是 base64")
+            try:
+                raw = base64.b64decode(payload, validate=True)
+            except Exception as exc:  # noqa: BLE001
+                raise ChatForgeAttachmentError(f"第 {index + 1} 个附件 base64 损坏") from exc
+            if len(raw) > self.MAX_ATTACHMENT_CHARS:
+                raise ChatForgeAttachmentError(f"第 {index + 1} 个附件过大")
+            kind = str(att.get("type") or "file")
+            mime = str(att.get("mime") or "application/octet-stream")
+            if kind == "image":
+                if raw[:8] == b"\x89PNG\r\n\x1a\n":
+                    mime, ext = "image/png", ".png"
+                elif raw[:2] == b"\xff\xd8":
+                    mime, ext = "image/jpeg", ".jpg"
+                elif raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+                    mime, ext = "image/webp", ".webp"
+                else:
+                    raise ChatForgeAttachmentError(f"第 {index + 1} 个图片格式不支持")
+            else:
+                ext = ".txt" if mime in ("text/plain", "text/markdown", "application/json") else ".bin"
+            digest = hashlib.sha256(raw).hexdigest()
+            att_id = f"att_{digest[:16]}"
+            filename = f"{att_id}{ext}"
+            target = session_dir / filename
+            if not target.exists():
+                target.write_bytes(raw)
+            out.append({
+                "id": att_id, "type": kind, "name": str(att.get("name") or filename),
+                "mime": mime, "size": len(raw), "sha256": digest,
+                "storage_ref": f"{session_dir.name}/{filename}",
+            })
+        return out
+
+    def read_attachment(self, session_id: str, attachment_id: str) -> Optional[Path]:
+        """按会话 + 附件 id 读取受控文件（防路径穿越）。"""
+        if not re.fullmatch(r"att_[0-9a-f]{16}", attachment_id):
+            return None
+        session_dir = self.ATTACHMENTS_DIR / "".join(
+            c for c in session_id if c.isalnum() or c in "-_"
+        )[:64]
+        for path in session_dir.glob(f"{attachment_id}.*"):
+            if path.is_file():
+                return path
+        return None
 
     async def _attachments_to_context(self, attachments: list[dict[str, Any]]) -> str:
         """把附件转成喂给 LLM 的文本上下文。
@@ -583,8 +648,8 @@ class ChatForge:
         normalized = self._normalize_attachments(attachments)
         entry: dict[str, Any] = {"role": "user", "content": user_message}
         if normalized:
-            entry["attachments"] = normalized
             context = await self._attachments_to_context(normalized)
+            entry["attachments"] = self._materialize_attachments(session_id, normalized)
             if context:
                 entry["attachment_context"] = context
         session.messages.append(entry)
