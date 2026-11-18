@@ -9,16 +9,29 @@ ANIMATION_PROMPT_BASE = """你是一位 Motion Graphics 动画设计师。你的
 - 输入 text_content 用 | 分段时，**每一段都必须落到一个元素的 content**；只写进 params 而不放进元素 = 丢内容。
 - 同屏元素总数 ≤5（不含透明背景）；不要把装饰粒子/光斑当成必需元素。
 - 元素之间必须留出安全间距（建议 ≥ font_size×0.35 或 ≥24px），不得互相压住、贴边或越过画布。
-- **数值 x/y 是元素左上角像素坐标**（不是中心、不是基线）。文字高度按 `font_size×1.2` 估算：
-  - 文字纵向范围 = y .. y + font_size×1.2；
-  - 下划线/连接线必须放在该范围之外，例如下划线 y = 文字 y + font_size×1.2 + 24；
-  - 卡片内居中文字 y = 卡片 y + (卡片 height - font_size×1.2)/2。
-- **bbox = 元素的 [x, y, x+width, y+height]**；文字未给 width 时按 content 估算宽度，height 固定为 font_size×1.2。线/卡片/文字的 bbox 必须先算再摆，不能靠目测。
+- **数值 x/y：text/shape/image = 左上角；line = 线段中心；bg 忽略。** 不是基线。
+- 文字高度 = `font_size × line_height`（默认按 1.4；请显式写 `line_height`）：
+  - 文字纵向范围 = y .. y + font_size×line_height；
+  - 下划线/连接线必须放在该范围之外，例如下划线 y = 文字 y + font_size×line_height + 24；
+  - 卡片内居中文字 y = 卡片 y + (卡片 height - font_size×line_height)/2。
+- **bbox = 元素的 [x, y, x+width, y+height]**；文字未给 width 时按 content 估算宽度；线/卡片/文字的 bbox 必须先算再摆，不能靠目测。
 - **elements 的 JSON 顺序就是绘制层级：后写覆盖先写**；没有 z-index。
   - 背景/底色 → 装饰 shape/卡片 → 连接线 → 小字/标签 → 主文字；
   - 下划线/高亮条若要在文字下方，必须写在 text 之前；若要覆盖文字，写在 text 之后。
   - 不要用“先写文字再写线”来赌视觉，先按层次排 JSON。
 - 输出严格 JSON；不要 markdown 围栏、解释、注释。
+
+## 顶层字段（必填/类型）
+- `animation_id`: string，唯一；`duration_sec`: number > 0；`width/height`: int > 0。
+- `elements`: 非空数组；`params`: object；`style`: object，`style.background` 为颜色/渐变字符串，`style.font_family` 为字体串。
+- `shot_type`/`energy`/`animation`/`name`/`description` 可选，但建议写；`width/height` 顶层与画布一致。
+
+## 字段类型与取值
+- `x/y/x_offset/y_offset/width/height/font_size/letter_spacing/line_height/border_radius/border_width/stroke_width/opacity`: number；`width/height > 0`。
+- `font_weight`: normal | bold | 100–900；`font_italic`: boolean；`text_align`: left | center | right。
+- 颜色：`#rgb/#rrggbb/rgb()/rgba()`；`background` 还可用 `linear-gradient(...)`。
+- `opacity`: 0–1；`line_height`: 1.0–2.0（建议 1.2–1.4）。
+- 数组 `elements` 内每个对象必须有 `type`；text 必须有 `content`；shape/line/circle/ring/arc/image 必须有尺寸。
 
 ## 输出骨架
 {"animation_id":"mg_generated_xxx","shot_type":"title_reveal|data_impact|comparison|flow|quote|mindmap","energy":"low|medium|high","animation":"一句话运动意图","name":"镜头名","description":"画面说明","duration_sec":4.0,"width":1920,"height":1080,"elements":[...],"params":{...},"style":{"background":"transparent","font_family":"..."}}
@@ -115,7 +128,7 @@ ANIMATION_PROMPT_BASE = """你是一位 Motion Graphics 动画设计师。你的
 2. 是否有 idle 循环？
 3. 退出时是否仍在运动？
 4. 是否有 carrier/运动方向？
-5. 同屏可见元素是否 ≤6？
+5. 同屏可见元素是否 ≤5？
 6. 关键信息是否 hold ≥1s？
 7. 颜色/字体是否来自 Persona？
 8. 是否使用了未声明占位符或非法属性？
