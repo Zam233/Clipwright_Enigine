@@ -133,6 +133,15 @@ async def chat_sessions(request: Request, scope: str = "mine") -> dict[str, Any]
     return {"sessions": sessions, "total": len(sessions)}
 
 
+@router.get("/sessions/{session_id}")
+async def chat_session_detail(session_id: str) -> dict[str, Any]:
+    """会话详情：真实消息、草稿、两类 Prompt 草稿与进度。"""
+    detail = _forge.get_detail(session_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+    return detail
+
+
 @router.delete("/sessions/{session_id}")
 async def chat_delete_session(session_id: str) -> dict[str, Any]:
     """删除会话（内存 + 落盘文件）。"""

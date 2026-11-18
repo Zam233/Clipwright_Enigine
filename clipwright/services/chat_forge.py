@@ -448,7 +448,10 @@ class ChatForge:
         self._persist_session(session)  # B5
         logger.info("ChatForge message: session=%s, len=%d, attachments=%d",
                     session_id, len(user_message), len(normalized))
-        return await self._process(session, user_message, persona_id)
+        result = await self._process(session, user_message, persona_id)
+        # 同步路径也必须在 assistant 消息追加后落盘；否则重启后丢最后一条回复。
+        self._persist_session(session)
+        return result
 
     # ── 附件（图/文件消息） ──
 
@@ -787,6 +790,25 @@ class ChatForge:
                      session_id, manifest.persona_id, persona_name, len(knowledge_docs))
 
         return manifest
+
+    def get_detail(self, session_id: str) -> Optional[dict[str, Any]]:
+        """会话详情：消息 + 草稿 + Prompt 草稿 + 六维进度。"""
+        session = self._sessions.get(session_id)
+        if not session:
+            return None
+        progress = self._progress_of(session.persona_draft)
+        return {
+            "session_id": session.session_id,
+            "messages": session.messages,
+            "persona_draft": session.persona_draft,
+            "prompt_draft": self._build_prompt_from_session(session.messages),
+            "vision_prompt_draft": self._build_vision_prompt_from_session(session.messages),
+            "progress": progress,
+            "missing_dimensions": [k for k, v in progress.items() if v < 0.7],
+            "knowledge_base_count": len(session.knowledge_base),
+            "created_at": session.created_at.isoformat(),
+            "updated_at": session.updated_at.isoformat(),
+        }
 
     def get_state(self, session_id: str) -> Optional[dict[str, Any]]:
         """获取当前会话状态。"""
