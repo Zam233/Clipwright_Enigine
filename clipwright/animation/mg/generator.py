@@ -540,7 +540,7 @@ ision_prompt
     ) -> dict[str, Any] | None:
         """带错误回传的一次性修复调用：把 schema 校验错误告诉 LLM 让其修正 JSON。"""
         prompt_config = self._config.get("prompt", {})
-        system_template = prompt_config.get("system_template", "") or MG_DESIGNER_SYSTEM
+        system_template = prompt_config.get("system_template", "") or _mg_constraint("MG_DESIGNER_SYSTEM")
         context_section = self._build_context_section(
             persona_style, category_context, vision_prompt, web_context,
         )
@@ -934,7 +934,7 @@ ision_prompt
             return None
 
         prompt_config = self._config.get("prompt", {})
-        system_template = prompt_config.get("system_template", "") or MG_DESIGNER_SYSTEM
+        system_template = prompt_config.get("system_template", "") or _mg_constraint("MG_DESIGNER_SYSTEM")
         context_section = self._build_context_section(
             persona_style, category_context, vision_prompt, web_context,
         )
@@ -1002,7 +1002,7 @@ ision_prompt
     ) -> dict[str, Any] | None:
         """带批判反馈的一次性修复调用：把质量评审意见告诉 LLM 让其重做 JSON。"""
         prompt_config = self._config.get("prompt", {})
-        system_template = prompt_config.get("system_template", "") or MG_DESIGNER_SYSTEM
+        system_template = prompt_config.get("system_template", "") or _mg_constraint("MG_DESIGNER_SYSTEM")
         context_section = self._build_context_section(
             persona_style, category_context, vision_prompt, web_context,
         )
@@ -1120,7 +1120,7 @@ ision_prompt
         动画风格不写死，由 LLM 依据传入数据自行决定。
         """
         prompt_config = self._config.get("prompt", {})
-        system_template = prompt_config.get("system_template", "") or MG_DESIGNER_SYSTEM
+        system_template = prompt_config.get("system_template", "") or _mg_constraint("MG_DESIGNER_SYSTEM")
 
         context_section = self._build_context_section(
             persona_style, category_context, vision_prompt, web_context,
