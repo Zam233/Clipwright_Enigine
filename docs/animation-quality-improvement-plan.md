@@ -367,6 +367,59 @@ AnimationAgent 的系统提示词应写：
 
 产物用于**可追溯**，不是必须逐个填满的表单。
 
+#### 5.12.2a Tool 与 Skill 都是 Agent 的能力
+
+除了原子 Tool，Agent 还必须能调用更高层的 **Skill**。区别：
+
+| 层 | 例子 | 适合做什么 |
+|---|---|---|
+| Tool | `web_search`、`kb_search`、`generate_mg`、`qa_animation` | 单一动作、确定性输入输出 |
+| Skill | `motion-showreel`、`web-design-engineer`、`data-story`、`text-animation` | 一套方法、多个步骤、可再调用 Tool |
+
+Agent 自主选择：
+
+- 简单标题：直接 `generate_mg`，不必加载 Skill；
+- 需要完整短片方法论：`load_skill("motion-showreel")`，按 Skill 的 brief/风格帧/审片流程执行；
+- 需要设计方向/反 AI 味：`load_skill("web-design-engineer")`；
+- 数据型动画：`load_skill("data-story")` + `kb_search`；
+- 文字动画：`load_skill("text-animation")`；
+- 需要图像资产：`load_skill("gpt-image-2")`（Mode B/C，只出 prompt 或委托宿主工具）；
+- 需要事实/知识库：`load_skill("kb-retriever")`。
+
+Skill 调用契约：
+
+```json
+{
+  "type": "animation_activity",
+  "kind": "skill_call",
+  "name": "motion-showreel",
+  "status": "success",
+  "summary": "已加载 brief/风格帧/审片方法",
+  "artifact_ref": "skills/motion-showreel/SKILL.md",
+  "children": ["build_animation_brief", "qa_animation"]
+}
+```
+
+规则：
+
+- Skill 必须来自 `SkillRegistry`，按能力名解析，不写死实现；
+- Agent 可加载完整 Skill，也可只读取其 references；
+- Skill 可以继续调用 Tool 或其他 Skill；
+- Skill 不可用时如实降级，不假装已执行；
+- Skill 产物（brief/风格帧/QA 清单）进入 trace/工作区；
+- 不允许把 Skill 的说明文本直接当 HTML/脚本执行；
+- 不允许为了“用上 Skill”而套一个不相关的方法论。
+
+系统提示词中的能力面写成：
+
+```text
+可用 Tool：brief/research/kb/draft/generate/layout/qa/repair
+可用 Skill：motion-showreel / web-design-engineer / web-video-presentation /
+           gpt-image-2 / beautiful-article / kb-retriever（按 SkillRegistry 实际注册）
+选择原则：先判断任务需要的方法层；简单任务直接用 Tool，
+         复杂任务加载 Skill；Skill/Tool 都可跳过、并行、回退。
+```
+
 #### 5.12.3 完成标准与失败处理
 
 Agent 自己判断是否完成，但必须满足：
@@ -397,7 +450,7 @@ Agent 自己判断是否完成，但必须满足：
 ```json
 {
   "type": "animation_activity",
-  "kind": "tool_call|decision|artifact|qa|repair|user_review",
+  "kind": "tool_call|skill_call|decision|artifact|qa|repair|user_review",
   "name": "qa_animation",
   "summary": "text #2 字号 < 4% 屏高",
   "artifact_ref": "qa/qa-report.json",
@@ -416,7 +469,7 @@ Agent 自己判断是否完成，但必须满足：
 动画任务卡/预览面板显示：
 
 - 当前动作（研究 / 草稿 / 生成 / 布局 / 自检 / 修复 / 等待确认）；
-- 最近工具调用与结果；
+- 最近 Tool / Skill 调用与结果；
 - 产物（brief / shot plan / draft / mg_def / QA）；
 - 失败项与 Agent 选择的修复动作；
 - 修复轮次。
@@ -498,7 +551,8 @@ src/features/animation/types.ts
 
 测试：
 
-- 活动流事件渲染；
+- 活动流事件渲染（含 skill_call）；
+- Skill 不可用时降级提示；
 - brief/style 可选，不阻断直接生成；
 - QA fail 导出禁用；
 - 旧 mg_def 兼容；
@@ -515,7 +569,7 @@ src/features/animation/types.ts
 3. 禁止清单 + 2+1 配色 + 文本可读性硬约束；
 4. 连续叙事字段；
 5. contact sheet/phone/text/motion QA；
-6. Agent 自主编排工具（brief/research/draft/generate/qa/repair），非固定阶段；
+6. Agent 自主编排 Tool + Skill（brief/research/draft/generate/qa/repair；motion-showreel/web-design-engineer 等），非固定阶段；
 7. 前端活动流 / 可选 brief / 风格帧 / QA 面板 / 导出闸门。
 
 ### P1（第二阶段）
