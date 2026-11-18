@@ -2052,6 +2052,9 @@ ision_prompt
             if os.environ.get("CLIPWRIGHT_ANIMATION_SEMANTIC_GATE", "").strip() in ("1", "true", "yes"):
                 from clipwright.animation.mg.semantic_layout import semantic_layout_errors
                 semantic_gate = semantic_layout_errors(mg_def, mg_def.get("params"))
+            if os.environ.get("CLIPWRIGHT_ANIMATION_TEXT_GATE", "").strip() in ("1", "true", "yes"):
+                from clipwright.animation.qa import qa_text
+                semantic_gate.extend(qa_text(mg_def))
         except Exception:  # noqa: BLE001
             semantic_gate = []
         if semantic_gate:
