@@ -31,6 +31,8 @@ ANIMATION_PROMPT_BASE = """你是一位 Motion Graphics 动画设计师。你的
 - `font_weight`: normal | bold | 100–900；`font_italic`: boolean；`text_align`: left | center | right。
 - 颜色：`#rgb/#rrggbb/rgb()/rgba()`；`background` 还可用 `linear-gradient(...)`。
 - `opacity`: 0–1；`line_height`: 1.0–2.0（建议 1.2–1.4）。
+- `text.height` 可选：不写时按行数×font_size×line_height；写了则是指定框高，不得小于内容所需高度。
+- 只能静态、不能写进 keyframes：`text_align`、`font_stretch`、`mix_blend_mode`、`text_stroke`、`object_position`、`background_size`、`background_position`。
 - 数组 `elements` 内每个对象必须有 `type`；text 必须有 `content`；shape/line/circle/ring/arc/image 必须有尺寸。
 
 ## 输出骨架
@@ -60,14 +62,15 @@ ANIMATION_PROMPT_BASE = """你是一位 Motion Graphics 动画设计师。你的
   - 写 `width`：固定文本框，超宽自动换行；高度按行数计算。
 - 高度 = `font_size × line_height`；**请显式写 `line_height`（建议 1.2–1.4）**；未写时按 1.4 估算。
 - 文字 bbox 的高度不要用 `font_size` 本身估算。
-- 可用字段：`content`、`x/y/x_offset/y_offset`、`width/height`、`font_size/font_color/font_weight/font_family/font_italic`、`text_align`、`line_height`、`letter_spacing`、`text_shadow`、`box_shadow`、`background`、`text_gradient`、`border_radius/border_width/border_color`、`filter`、`clip_path`、`clip_inset`、`mask`、`transform_origin`、`text_stroke`、`font_stretch`、`mix_blend_mode`。
+- 可用字段：`content`、`x/y/x_offset/y_offset`、`width/height`、`font_size/font_color/font_weight/font_family/font_italic`、`text_align`、`line_height`、`letter_spacing`、`text_shadow`、`box_shadow`、`opacity`、`background`、`text_gradient`、`border_radius/border_width/border_color`、`filter`、`clip_path`、`clip_inset`、`mask`、`transform_origin`、`text_stroke`、`font_stretch`、`mix_blend_mode`。
 - `text_gradient: true` 时必须同时给 `background`（渐变背景被裁成文字）；否则渐变不生效。
+- 背景/阴影：默认透明背景；实拍叠加场景才强制 `text_shadow`/`text_stroke`/半透明底板；纯色背景允许干净文字。半透明底板用 shape 或 bg 的 rgba，不得用不透明全幅 bg。
 - text 的颜色字段是 `font_color`，不是 `color`。
 
 ### shape
 - `x/y` = 左上角；`width/height` 必填。
 - `shape`：`rect`（默认）或 `ellipse`；`circle/ring/arc` 是独立 type，不要用 shape 替代。
-- 可用字段：`shape`、`color` 或 `background`、`background_image`、`width/height`、`border_radius`、`border_width`、`border_color`、`box_shadow`、`filter`、`clip_path`、`clip_inset`、`mask`、`transform_origin`。
+- 可用字段：`shape`、`color` 或 `background`、`background_image`、`width/height`、`opacity`、`border_radius`、`border_width`、`border_color`、`box_shadow`、`filter`、`clip_path`、`clip_inset`、`mask`、`transform_origin`。
 - 普通矩形边框用 `border_*`；不要给 shape 写 `stroke_*`。
 
 ### line
