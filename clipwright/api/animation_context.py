@@ -90,3 +90,13 @@ async def record_call(session_id: str, task_id: str, body: CallIn) -> dict:
         idempotency_key=body.idempotency_key, children=body.children,
     )
     return rec.as_dict()
+
+
+class QAIn(BaseModel):
+    shot_index: int = Field(default=1, ge=1)
+    report: dict = Field(default_factory=dict)
+
+
+@router.post("/blackboard/{session_id}/{task_id}/qa")
+async def record_qa(session_id: str, task_id: str, body: QAIn) -> dict:
+    return get_context_store().record_qa(session_id, task_id, body.shot_index, body.report)

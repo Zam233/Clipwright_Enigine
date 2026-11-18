@@ -111,6 +111,21 @@ class AnimationContextStore:
             ctx.updated_at = time.time()
             return ctx.as_dict()
 
+    def record_qa(self, session_id: str, task_id: str, shot_index: int, report: dict[str, Any]) -> dict[str, Any]:
+        """Attach a QA report + repair history to the blackboard without CAS churn."""
+        with self._lock:
+            ctx = self._get(session_id, task_id)
+            shots = ctx.blackboard.setdefault("shots", [])
+            while len(shots) < shot_index:
+                shots.append({"index": len(shots) + 1})
+            shot = shots[shot_index - 1]
+            shot.setdefault("repairs", []).append({"qa": report, "at": time.time()})
+            shot["last_qa"] = report
+            shot["status"] = "qa_failed" if not report.get("ok", False) else "passed"
+            ctx.version += 1
+            ctx.updated_at = time.time()
+            return shot
+
     def record_call(self, session_id: str, task_id: str, kind: str, name: str,
                     status: str, **kwargs: Any) -> CallRecord:
         with self._lock:
