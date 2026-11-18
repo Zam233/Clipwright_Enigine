@@ -99,9 +99,14 @@ async def main() -> None:
             )
             try:
                 async with httpx.AsyncClient(timeout=600) as client:
+                    raw_params = result.get("params") or {}
+                    preview_params = {
+                        str(k): str(v.get("default", "")) if isinstance(v, dict) else str(v)
+                        for k, v in raw_params.items()
+                    }
                     resp = await client.post(f"{API}/api/animation/preview", json={
                         "mg_json": mg_def,
-                        "params": result.get("params") or {},
+                        "params": preview_params,
                         "width": 1920,
                         "height": 1080,
                         "fps": 30,

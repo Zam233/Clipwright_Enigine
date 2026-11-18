@@ -142,3 +142,52 @@ def test_layout_guard_catches_line_through_text() -> None:
         {"type": "line", "y": 565, "width": 600, "content": ""},
     ]}
     assert validate_layout_overlaps(mg)
+
+
+def test_layout_quote_unifies_font_size_and_centers() -> None:
+    from clipwright.animation.mg.layout import normalize_mg_layout
+    mg = {
+        "width": 1920, "height": 1080, "shot_type": "quote",
+        "params": {"a": {"default": "让每一帧"}, "b": {"default": "都有"}, "c": {"default": "信息量"}},
+        "elements": [
+            {"type": "text", "content": "{a}", "x": "center", "y": 326, "font_size": 56},
+            {"type": "text", "content": "{b}", "x": "center", "y": 433, "font_size": 136},
+            {"type": "text", "content": "{c}", "x": "center", "y": 644, "font_size": 72},
+        ],
+    }
+    out, warnings = normalize_mg_layout(mg)
+    sizes = {e["font_size"] for e in out["elements"]}
+    assert len(sizes) == 1
+    assert all(e["x"] == "center" for e in out["elements"])
+    assert warnings
+
+
+def test_layout_flow_distributes_nodes_and_arrows() -> None:
+    from clipwright.animation.mg.layout import normalize_mg_layout
+    mg = {
+        "width": 1920, "height": 1080, "shot_type": "flow",
+        "params": {"a": {"default": "选题"}, "b": {"default": "脚本"}, "c": {"default": "剪辑"}},
+        "elements": [
+            {"type": "text", "content": "{a}", "x": 344, "y": 520, "font_size": 56},
+            {"type": "text", "content": "→", "x": 650, "y": 506, "font_size": 56},
+            {"type": "text", "content": "{b}", "x": 904, "y": 520, "font_size": 56},
+            {"type": "text", "content": "→", "x": 1200, "y": 506, "font_size": 56},
+            {"type": "text", "content": "{c}", "x": 1464, "y": 520, "font_size": 56},
+        ],
+    }
+    out, _ = normalize_mg_layout(mg)
+    starts = [e["x"] for e in out["elements"] if e.get("content") in ("{a}", "{b}", "{c}")]
+    assert starts == sorted(starts)
+    assert starts[0] > 0 and starts[-1] < 1920
+
+
+def test_layout_clamps_text_into_safe_area() -> None:
+    from clipwright.animation.mg.layout import normalize_mg_layout
+    mg = {"width": 1920, "height": 1080, "params": {}, "elements": [
+        {"type": "text", "content": "这是一个非常非常非常非常非常非常非常非常长的标题", "x": -200, "y": -200, "font_size": 200},
+    ]}
+    out, _ = normalize_mg_layout(mg)
+    e = out["elements"][0]
+    assert e["x"] >= 1920 * 0.025
+    assert e["y"] >= 1080 * 0.025
+    assert e["font_size"] < 200

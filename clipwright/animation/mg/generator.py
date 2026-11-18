@@ -318,6 +318,19 @@ class MGGenerator:
             ok, errors = validate_mg_json(mg_def)
             if ok:
                 try:
+                    from clipwright.animation.mg.layout import normalize_mg_layout
+                    mg_def, layout_adjustments = normalize_mg_layout(mg_def)
+                    if layout_adjustments:
+                        logger.info("MGGenerator: 布局自动修正 %d 项", len(layout_adjustments))
+                        self._trace_event(
+                            pipeline_id, "layout_normalize",
+                            "MG 文本/流程自动布局", {"adjustments": layout_adjustments[:20]},
+                        )
+                    ok, errors = validate_mg_json(mg_def)
+                except Exception as exc:  # noqa: BLE001 — 布局修正失败不阻断生成
+                    logger.warning("MGGenerator: 布局自动修正失败（跳过）: %s", exc)
+            if ok:
+                try:
                     from clipwright.animation.prompting import (
                         validate_content_coverage, validate_layout_overlaps, validate_placeholder_types,
                     )
