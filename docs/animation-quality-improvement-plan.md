@@ -81,7 +81,7 @@
 6. 自动布局 + 文本安全区 + 文本阅读时间
 7. AnimationAgent 自检 QA：bbox/重叠/字号/阅读时间/空拍
 8. 技术 QA：contact sheet / phone / strip / motion / determinism
-9. 前端活动流 / 可选风格帧 / QA 面板 → 工作区预览 → 用户确认（如需要）
+9. 会话历史 / 任务黑板 / Tool-Skill 调用记录 → 前端活动流 / 可选风格帧 / QA 面板 → 工作区预览 → 用户确认（如需要）
 10. 前端闸门通过后导出 / 归档 brief + style + QA
 ```
 
@@ -560,6 +560,218 @@ src/features/animation/types.ts
 - 三种宽度下侧栏不挤压画布；
 - 缺失 artifact 不崩。
 
+### 5.14 会话历史、任务级黑板与调用记录
+
+Agent 要自主编排 Tool/Skill，必须先有上下文层。否则每一轮都重新问、重复研究、重复犯错。
+
+#### 5.14.1 三层上下文
+
+| 层 | 生命周期 | 内容 | 用途 |
+|---|---|---|---|
+| 会话历史 | 一个 session | 用户消息、Agent 回复、用户确认/否定、关键反馈 | 理解“用户到底要什么、改过什么” |
+| 任务黑板 | 一个 task | brief、风格、分镜、草稿、mg_def、QA、repair、sources、决定 | 让 Agent 跨 Tool/Skill/轮次共享状态 |
+| 调用记录 | 一个 task | Tool/Skill 名称、输入摘要、输出摘要、状态、耗时、artifact | 避免重复调用、可审计、可恢复 |
+
+三者都必须按 `session_id + task_id` 隔离，禁止跨任务串上下文。
+
+#### 5.14.2 会话历史
+
+记录：
+
+- 用户原始需求；
+- 用户对风格帧/brief/预览的确认与否定；
+- 用户反馈原文（如“蓝色线穿过文字”）；
+- Agent 的响应摘要；
+- 系统确认（用户确认、导出、取消）。
+
+不记录：
+
+- 完整 chain-of-thought；
+- 密钥、token、cookie；
+- 与动画无关的长篇对话。
+
+管理：
+
+- 每个 task 保留最近 N 轮原文 + 更早的滚动摘要；
+- 摘要必须保留：已确认决策、未解决 fail、用户明确禁止项、当前待办；
+- 超出 token 预算时先压历史，再压工具输出，最后才裁当前任务关键上下文；
+- 摘要生成后写回黑板 `history.summary`，并记录 `summary_version`。
+
+接口：
+
+```text
+GET  /api/animation/context/{session_id}/{task_id}
+GET  /api/animation/context/{session_id}/{task_id}/history?cursor=
+POST /api/animation/context/{session_id}/{task_id}/feedback
+```
+
+#### 5.14.3 任务级黑板
+
+黑板是 task 内唯一可写状态，建议结构：
+
+```json
+{
+  "version": 12,
+  "session_id": "...",
+  "task_id": "...",
+  "brief": {},
+  "style": {"selected": "", "frames": [], "confirmed": false},
+  "plan": {},
+  "shots": [
+    {
+      "index": 1,
+      "status": "draft|generated|qa_failed|passed",
+      "shot_plan": {},
+      "draft": {},
+      "mg_def_ref": "artifacts/shot-01.mg.json",
+      "qa_ref": "qa/shot-01.qa.json",
+      "repairs": [],
+      "seam_out": {}
+    }
+  ],
+  "sources": [],
+  "decisions": [],
+  "failures": [],
+  "do_not_repeat": [],
+  "history": {"summary": "", "summary_version": 1},
+  "artifacts": {}
+}
+```
+
+规则：
+
+- 大对象只存 **artifact ref**，黑板存摘要和引用，不塞完整 HTML/视频；
+- 每次写入带 `version`，更新使用 compare-and-set，冲突返回 `409`；
+- 同一 artifact 可被多个 shot 引用；
+- 删除/覆盖必须留历史版本或 tombstone；
+- 任务结束后黑板保留可配置时间，导出时归档 `brief/style/qa/repair-log`；
+- 黑板恢复后 Agent 才能续跑，不能从空状态重来。
+
+接口：
+
+```text
+GET  /api/animation/blackboard/{session_id}/{task_id}
+PATCH /api/animation/blackboard/{session_id}/{task_id}
+POST /api/animation/blackboard/{session_id}/{task_id}/artifact
+```
+
+#### 5.14.4 Tool / Skill 调用记录
+
+每次调用写一条：
+
+```json
+{
+  "call_id": "call_01",
+  "kind": "tool|skill",
+  "name": "qa_animation",
+  "status": "running|success|failed|skipped",
+  "input_summary": "shot=1; checks=text,phone,motion",
+  "output_summary": "2 issues",
+  "artifact_ref": "qa/shot-01.qa.json",
+  "started_at": "...",
+  "duration_ms": 420,
+  "error": "",
+  "idempotency_key": "..."
+}
+```
+
+规则：
+
+- 输入/输出只存摘要，完整内容进 artifact；
+- 密钥、URL 中的 token、用户隐私必须脱敏；
+- 失败也要记录，不能只记录成功；
+- 同一 `idempotency_key` 的成功结果可复用；
+- `call_id` 进入 trace，前端可展开查看；
+- Agent 在调用前可查“最近是否已经查过这个来源/跑过这个 QA”；
+- Skill 调用额外记录 `children`（它内部调用的 Tool/Skill）。
+
+接口：
+
+```text
+GET /api/animation/calls/{session_id}/{task_id}?kind=tool|skill
+GET /api/animation/calls/{session_id}/{task_id}/{call_id}
+```
+
+#### 5.14.5 上下文装配策略
+
+每次 LLM 调用只装配必要内容：
+
+```text
+系统提示词
++ 当前任务目标与完成标准
++ brief / 已确认风格
++ 当前 shot plan / draft
++ 上一镜 seam_out
++ 相关 QA fail（只取当前镜）
++ 相关 sources
++ 最近工具/Skill 结果摘要
++ 历史摘要（不是全文）
+```
+
+禁止：
+
+- 把整条时间线/全部历史塞进 prompt；
+- 把其他任务的上下文带进来；
+- 把已失败的完整输出重复塞入；
+- 把 artifact 全文当消息。
+
+#### 5.14.6 前端适配
+
+新增“上下文/活动”侧栏，三个 Tab：
+
+1. **活动**
+   - Tool/Skill 调用时间线；
+   - 状态、耗时、摘要、artifact；
+   - 失败项与回退动作。
+2. **上下文**
+   - 当前 brief / 风格 / shot plan / draft；
+   - 历史摘要；
+   - 用户反馈；
+   - `do_not_repeat`。
+3. **黑板**
+   - shots 状态；
+   - artifact 引用；
+   - version / 最后更新；
+   - 恢复/重放入口（有权限时）。
+
+新增组件：
+
+```text
+src/features/animation/AnimationActivityFeed.tsx
+src/features/animation/ContextInspector.tsx
+src/features/animation/BlackboardPanel.tsx
+src/features/animation/CallDetailDrawer.tsx
+src/features/animation/api.ts
+src/features/animation/types.ts
+```
+
+交互：
+
+- 点击调用 → 抽屉展示输入/输出摘要 + artifact 链接；
+- 点击 shot → 定位对应 mg_def/qa/repair；
+- 用户反馈可直接写入会话历史；
+- 黑板版本冲突时提示“刷新后重试”，不静默覆盖；
+- 断线重连按 `since_seq` 补齐，不重复插入；
+- 移动端侧栏改为抽屉，不挤压预览画布。
+
+安全：
+
+- 不展示 chain-of-thought；
+- 调用输入中的密钥/token 脱敏；
+- artifact 链接必须走鉴权；
+- 不允许前端直接改黑板 JSON（只能通过 PATCH + 版本校验）。
+
+#### 5.14.7 验收
+
+- 新 task 能拿到本 task 会话历史，不串其他 task；
+- 黑板可在进程重启后恢复；
+- 同一 Tool 调用不会在同一 idempotency key 下重复执行；
+- 前端能看到每次 Tool/Skill 调用及失败原因；
+- QA fail 后 Agent 能读到 fail 项并针对性修复；
+- 长任务触发摘要后，已确认 brief/风格/禁止项不丢失；
+- 黑板版本冲突返回 409，前端提示刷新；
+- 所有调用记录可导出到 `qa/` 或 task 归档。
+
 ## 6. 优先级与里程碑
 
 ### P0（先做，收益最大）
@@ -570,7 +782,8 @@ src/features/animation/types.ts
 4. 连续叙事字段；
 5. contact sheet/phone/text/motion QA；
 6. Agent 自主编排 Tool + Skill（brief/research/draft/generate/qa/repair；motion-showreel/web-design-engineer 等），非固定阶段；
-7. 前端活动流 / 可选 brief / 风格帧 / QA 面板 / 导出闸门。
+7. 会话历史 / 任务黑板 / Tool-Skill 调用记录；
+8. 前端活动流 / 上下文检查器 / 黑板面板 / QA 面板 / 导出闸门。
 
 ### P1（第二阶段）
 
