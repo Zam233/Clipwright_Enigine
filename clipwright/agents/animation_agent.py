@@ -1950,6 +1950,22 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                     from clipwright.animation.mg.semantic_layout import semantic_layout_errors
                     errors = semantic_layout_errors(mg["mg_def"], mg["mg_def"].get("params"))
                     if errors:
+                        try:
+                            from clipwright.animation.agent_tools import call_animation_tool
+                            for _ in range(2):
+                                repaired = await call_animation_tool(
+                                    "repair_mg", mg_def=mg["mg_def"], errors=errors,
+                                    description=description, text_content=text_content,
+                                )
+                                if not repaired.get("ok"):
+                                    break
+                                mg["mg_def"] = repaired["mg_def"]
+                                errors = semantic_layout_errors(mg["mg_def"], mg["mg_def"].get("params"))
+                                if not errors:
+                                    break
+                        except Exception:
+                            pass
+                    if errors:
                         mg["success"] = False
                         mg["qa_errors"] = errors
                         mg["error"] = "; ".join(errors[:3])
