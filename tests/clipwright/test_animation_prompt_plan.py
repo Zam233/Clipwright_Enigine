@@ -6,6 +6,7 @@ from clipwright.animation.prompting import (
     compose_mg_system_prompt,
     rule_by_id,
     validate_animation_plan,
+    build_timeline_plan,
 )
 
 
@@ -75,3 +76,26 @@ def test_generator_prompt_uses_compact_modules() -> None:
     assert len(system) < 6000
     assert "全片运动契约" in system
     assert "动画编排约束" in system
+
+
+def test_multi_scene_plan_has_shots_and_seams() -> None:
+    plan = build_timeline_plan([
+        {"clip_id": "c1", "description": "标题开场", "start_sec": 0},
+        {"clip_id": "c2", "description": "数据增长对比", "start_sec": 4},
+    ])
+    assert len(plan.shots) == 2
+    assert len(plan.seams) == 1
+    assert plan.shots[0]["clip_id"] == "c1"
+    assert plan.seams[0]["vector"] == "left"
+
+
+def test_legacy_prompt_fallback_still_available() -> None:
+    from clipwright.animation.mg.generator import MGGenerator
+
+    gen = MGGenerator()
+    old = gen._design_system_template("标题", {})
+    assert len(old) < 6000
+    gen._config["prompt"]["modular"] = False
+    legacy = gen._design_system_template("标题", {})
+    assert len(legacy) > 10000
+    assert "Motion Design Principles" in legacy

@@ -591,6 +591,44 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
                     prev_clip = clip
 
+            # PRD：先在 Agent 层为这次多镜头动画生成一份全局计划，逐镜头复用；
+            # 单镜头任务也走同一路径（seams 为空），保证计划是源头而不是生成器
+            # 的局部启发。
+            self._animation_plans: dict[str, Any] = {}
+            if logic_jobs:
+                try:
+                    from clipwright.animation.prompting import AnimationPlan, build_timeline_plan
+                    scenes = []
+                    for track, c, aid, aname, m, style in logic_jobs:
+                        payload = m.get("payload") if isinstance(m, dict) else None
+                        desc = ""
+                        if isinstance(payload, dict):
+                            desc = str(payload.get("description") or "")
+                        desc = desc or str((c.metadata or {}).get("description") or "") or str(c.text or "")
+                        scenes.append({
+                            "clip_id": str(c.id), "description": desc,
+                            "start_sec": float(c.start_sec or 0),
+                            "duration_sec": float(c.duration_sec or 4.0),
+                            "category_context": getattr(self, "_mg_category_context", {}) or {},
+                        })
+                    global_plan = build_timeline_plan(scenes)
+                    for shot in global_plan.shots:
+                        plan = AnimationPlan(
+                            category=str(shot.get("category") or global_plan.category),
+                            intent=str(shot.get("description") or global_plan.intent),
+                            energy=global_plan.energy,
+                            duration_sec=float(shot.get("duration_sec") or global_plan.duration_sec),
+                            global_current=global_plan.global_current,
+                            transition_budget=global_plan.transition_budget,
+                            rule_ids=list(shot.get("rule_ids") or global_plan.rule_ids),
+                            carrier=str(shot.get("carrier") or global_plan.carrier),
+                            shot_type=str(global_plan.shot_type),
+                            seams=list(global_plan.seams), shots=list(global_plan.shots),
+                        )
+                        self._animation_plans[str(shot.get("clip_id") or "")] = plan
+                except Exception:  # 计划失败不阻断动画
+                    self._animation_plans = {}
+
             # 并发执行逻辑动画作业（有界并发；clips 写入后按 start_sec 排序保证 z-order）
             # 类型化 LLM 生成是等待型：优先用 animation_llm_concurrency，
             # 未配置则回落到 pipeline_concurrency（保持旧行为）。
@@ -1967,11 +2005,12 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
         try:
             # PRD：AnimationAgent 先产出计划，再把计划交给镜头生成器选 2–3 条规则。
-            from clipwright.animation.prompting import build_animation_plan
             try:
-                mg_gen._active_plan = build_animation_plan(
-                    description, self._mg_category_context, duration,
-                )
+                plan = getattr(self, "_animation_plans", {}).get(str(vid_clip.id))
+                if plan is None:
+                    from clipwright.animation.prompting import build_animation_plan
+                    plan = build_animation_plan(description, self._mg_category_context, duration)
+                mg_gen._active_plan = plan
             except Exception:  # 计划失败不阻断生成
                 pass
             # P2-B 多方案择优：新引擎提供 generate_best（variants=1 时等价旧行为）；

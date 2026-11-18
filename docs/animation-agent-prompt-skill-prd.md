@@ -381,7 +381,8 @@ MG_EXAMPLE                # 一个精简示例（约 800）
 - `clipwright/animation/prompting.py`：`AnimationRule`、`AnimationPlan`、规则目录、计划构建、计划校验、模块化 prompt composer；
 - `clipwright/prompts/engine/animation_prompt.py`：运动契约、规则选择、风格、能力边界、自检、最小示例；
 - `MGGenerator`：默认 `prompt.modular=true`，镜头生成走模块化提示；保留旧 `MG_DESIGNER_SYSTEM` 作为 `modular=false` fallback；
-- `AnimationAgent`：在 MG 生成前构建 `_active_plan`，由生成器按计划注入规则；
+- `AnimationAgent`：在本次动画作业开始前构建**多镜头全局 `AnimationPlan`**（shots/seams/transition budget），按 clip_id 注入每个镜头；单镜头任务也走同一路径；
+- `build_timeline_plan`：由 clips 的起始时间/描述生成 shots 与 seams，生成器按镜头规则子集注入；
 - critique：模块化模式下注入 motion contract + continuity check items（seam/carrier/idle/hold/budget）；
 - 新增测试 `tests/clipwright/test_animation_prompt_plan.py`；
 - 实测同一场景模块化 prompt 约 3.5k 字符，基线 `MG_DESIGNER_SYSTEM` 为 13,702 字符。

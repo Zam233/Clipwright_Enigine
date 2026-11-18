@@ -229,3 +229,49 @@ def validate_animation_plan(plan: AnimationPlan | dict[str, Any]) -> list[str]:
     if any(rule_by_id(rid) is None for rid in ids):
         errors.append("unknown rule_id")
     return errors
+
+
+def build_timeline_plan(scenes: list[dict[str, Any]], duration_sec: float = 4.0) -> AnimationPlan:
+    """Build one plan for a multi-scene animation pass.
+
+    Each scene entry: {clip_id, description, start_sec, duration_sec, category_context}.
+    The first scene owns category/current; later shots inherit the current and get
+    explicit seams so the agent can inject per-shot rule sets.
+    """
+    if not scenes:
+        return build_animation_plan("", {}, duration_sec)
+    first = scenes[0]
+    base = build_animation_plan(
+        str(first.get("description") or ""),
+        first.get("category_context") or {},
+        float(first.get("duration_sec") or duration_sec or 4.0),
+    )
+    shots: list[dict[str, Any]] = []
+    seams: list[dict[str, Any]] = []
+    for i, scene in enumerate(scenes):
+        scene_plan = build_animation_plan(
+            str(scene.get("description") or base.intent),
+            scene.get("category_context") or {},
+            float(scene.get("duration_sec") or duration_sec or 4.0),
+        )
+        shot = {
+            "index": i + 1, "clip_id": str(scene.get("clip_id") or ""),
+            "start_sec": float(scene.get("start_sec") or 0),
+            "role": "hook" if i == 0 else "body",
+            "description": str(scene.get("description") or scene_plan.intent),
+            "duration_sec": float(scene.get("duration_sec") or duration_sec or 4.0),
+            "rule_ids": scene_plan.rule_ids,
+            "carrier": scene_plan.carrier,
+            "category": scene_plan.category,
+        }
+        shots.append(shot)
+        if i:
+            seams.append({
+                "from_shot": i, "to_shot": i + 1,
+                "at_sec": shot["start_sec"], "vector": base.global_current,
+                "carrier": scene_plan.carrier,
+            })
+    base.shots = shots
+    base.seams = seams
+    base.transition_budget = min(3, max(1, len(scenes) - 1))
+    return base
