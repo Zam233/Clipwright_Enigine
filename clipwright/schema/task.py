@@ -341,6 +341,8 @@ class TaskRequest(BaseModel):
 
 class Task(BaseModel):
     id: str
+    #: 创建该任务的会话 id（动画上下文/前端面板按 session+task 隔离）
+    session_id: str = ""
     request: TaskRequest
     status: TaskStatus = "pending"
     mode: str = "on"
@@ -390,6 +392,7 @@ class Task(BaseModel):
     def to_public(self) -> dict[str, Any]:
         return {
             "id": self.id,
+            "session_id": self.session_id,
             "status": self.status,
             "mode": self.mode,
             "request": self.request.model_dump(mode="json"),
