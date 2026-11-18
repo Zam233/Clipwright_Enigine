@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import os
+
 import json
 import re
 import asyncio
@@ -325,7 +327,7 @@ class MGGenerator:
                 try:
                     from clipwright.animation.mg.semantic_layout import semantic_layout_errors
                     semantic_errors = semantic_layout_errors(mg_def, mg_def.get("params") if isinstance(mg_def.get("params"), dict) else None)
-                    if semantic_errors:
+                    if semantic_errors and os.environ.get("CLIPWRIGHT_ANIMATION_SEMANTIC_REPAIR", "").strip() in ("1", "true", "yes"):
                         self._trace_event(
                             pipeline_id, "semantic_layout", "MG 布局语义问题",
                             {"errors": semantic_errors[:20]},
@@ -2051,8 +2053,9 @@ ision_prompt
 
         semantic_gate: list[str] = []
         try:
-            from clipwright.animation.mg.semantic_layout import semantic_layout_errors
-            semantic_gate = semantic_layout_errors(mg_def, mg_def.get("params"))
+            if os.environ.get("CLIPWRIGHT_ANIMATION_SEMANTIC_GATE", "").strip() in ("1", "true", "yes"):
+                from clipwright.animation.mg.semantic_layout import semantic_layout_errors
+                semantic_gate = semantic_layout_errors(mg_def, mg_def.get("params"))
         except Exception:  # noqa: BLE001
             semantic_gate = []
         if semantic_gate:
