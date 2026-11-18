@@ -1944,6 +1944,19 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                                 input_summary=str(action.reason)[:200],
                                 output_summary=f"loop={result.status} rounds={result.rounds}",
                             )
+                            try:
+                                from clipwright.services.task_events import emit as _emit
+                                _emit(
+                                    self._ctx_task_id,
+                                    "tool_call" if action.kind == "tool" else "skill_call",
+                                    f"AnimationAgent · {action.name}",
+                                    {"agent": "animation", "kind": action.kind,
+                                     "tool": action.name, "status": "success",
+                                     "reason": str(action.reason)[:200]},
+                                    span="subagent",
+                                )
+                            except Exception:
+                                pass
                 except Exception:
                     pass
             for obs in reversed(result.observations):
