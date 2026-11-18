@@ -1913,6 +1913,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         scene_context: dict, category_context: dict, vision_prompt: str, web_context: str,
     ) -> dict:
         """Opt-in agentic loop; returns MGGenerator-shaped result or {} to fallback."""
+        logger.info("AnimationAgent: agentic loop 启动")
         try:
             from clipwright.animation.agentic_runtime import AnimationAgentRuntime
             from clipwright.services.llm import LLMService
@@ -1930,6 +1931,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 return await rt.decide_with_llm(llm, description, obs)
             result = await rt.run(decide, category=str((category_context or {}).get("category") or "kinetic-type"),
                                   shot_type="title_reveal", needs={"agent"})
+            logger.info("AnimationAgent: agentic loop 结束 status=%s rounds=%s actions=%s",
+                        result.status, result.rounds, [(a.kind, a.name) for a in result.actions])
             if getattr(self, "_ctx_store", None) is not None:
                 try:
                     for action in result.actions:
