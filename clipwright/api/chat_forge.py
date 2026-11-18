@@ -303,6 +303,7 @@ async def chat_commit(req: ChatCommitRequest, request: Request) -> PersonaManife
             session_id=req.session_id,
             persona_id=req.persona_id,
             persona_name=req.persona_name,
+            expected_revision=req.expected_revision,
         )
         # 轮 80（红线）：落盘产物标记归属，否则 jwt 模式下创建者自己读不到
         from clipwright.authz import current_user_id

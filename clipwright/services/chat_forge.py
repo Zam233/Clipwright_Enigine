@@ -805,10 +805,13 @@ class ChatForge:
         session_id: str,
         persona_id: str = "",
         persona_name: str = "",
+        expected_revision: int | None = None,
     ) -> PersonaManifest:
         """将当前会话保存为完整的 Persona（含 YAML + Prompt + RAG 知识库）。"""
         session = self._get_or_create_session(session_id)
         repo = PersonaRepository.from_settings()
+        if expected_revision is not None and expected_revision != session.revision:
+            raise ValueError("revision conflict")
         target_id = persona_id or session.committed_persona_id or f"chat_{session.session_id}"
 
         # 幂等：同一会话已提交过，直接返回已保存的 manifest；不做隐式覆盖。
