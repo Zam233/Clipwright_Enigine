@@ -31,22 +31,84 @@ ANIMATION_PROMPT_BASE = """你是一位 Motion Graphics 动画设计师。你的
 - image: 图片元素（src + x/y + width/height，可做关键帧动画）
 - 默认不加 bg。
 
-## 参数说明（每个字段做什么）
-- `animation_id`：唯一 ID；`shot_type`：镜头语义；`energy`：能量级；`duration_sec`：时长（秒）；`width/height`：画布尺寸。
-- `elements[]`：画面元素；`type` 决定 text/shape/line/circle/ring/arc/image；`content` 是文字/占位符。
-- `x/y`：元素位置；数值是左上角像素，字符串 center/left/right/top/bottom 是锚点；`x_offset/y_offset` 只写在元素上，做额外偏移。
-- `width/height`：元素尺寸；`font_size/font_color/font_weight/letter_spacing/text_shadow`：文字排版与可读性。
-- `keyframes[]`：动画时间线；`time` 是秒；`opacity/scale/translate_x/translate_y/rotate` 是动画属性；`easing` 控制当前帧到下一帧的缓动。
-- `params`：占位符声明；每个 key 必须有 type/default；`style`：画布背景和全局字体。
-- 其他元素字段：`shape`(rect/ellipse)、`color`、`background`、`background_image`、`font_family`、`font_italic`、`text_align`、`line_height`、`text_gradient`（需配合 background）、`box_shadow`、`border_radius`、`border_width`、`border_color`、`stroke_width`、`stroke_color`、`filter`、`clip_path`、`clip_inset`、`mask`、`transform_origin`。
-- 关键帧可用属性：`opacity`、`scale`/`scale_x`/`scale_y`、`translate_x`/`translate_y`/`translate_z`、`rotate`/`rotate_x`/`rotate_y`/`rotate_z`、`width`/`height`、`font_size`、`color`、`background`、`border_radius`、`border_width`、`border_color`、`box_shadow`、`text_shadow`、`filter`、`letter_spacing`、`font_weight`、`font_family`、`line_height`、`transform_origin`、`perspective`、`blur`、`clip_inset`、`mask`、`clip_path`、`easing`。
-- `easing` 允许：linear / ease / ease-in / ease-out / ease-in-out / back-out / elastic-out / bounce，或 `[x1,y1,x2,y2]`。
-- `params` 的 type 只能是 string / number / color；必须给 default。
-- `image` 只使用 `src + x/y/width/height`；**object-fit 固定 contain**，不接受 `object_fit`；`alt` 不参与渲染，不要写。
-- `image.src` 只能是 `data:image/*` 或媒体白名单内的本地资源；禁止 http(s) 外链。
-- `color` 用于 shape/line；text 用 `font_color`。`background_image` 只用于 shape；`text_gradient` 必须配合 `background`。
-- `stroke_width/stroke_color` 只用于 circle/ring 描边；普通矩形边框用 `border_width/border_color`。
-- **不支持的字段：`text_stroke`、`z_index`、`object_fit`、`alt`**；不要写。层级只靠 elements 顺序。
+## 坐标、锚点与 bbox（按元素类型）
+
+### 通用
+- 数值坐标是**画布绝对像素**，原点左上；`width/height` 是元素尺寸；画布尺寸用 `width/height` 顶层字段。
+- 字符串锚点：
+  - `x=center` → 元素水平中心在画布中心；`x=left` → 左边缘距画布 20px；`x=right` → 右边缘距画布 20px。
+  - `y=center` → 元素垂直中心在画布中心；`y=top` → 上边缘距画布 20px；`y=bottom` → 下边缘距画布底部 60px。
+  - `x_offset/y_offset` 只写在元素上，是在上述锚点基础上的额外偏移。
+- `bbox = [x, y, x+width, y+height]`。摆放下划线、连接线、卡片、标签前，先算 bbox。
+
+### text
+- `x/y` 数值 = 文字左上角；`width` 可选：
+  - 不写 `width`：单行自然宽度，按内容估算（中文/全角 1em，英文/数字 0.6em，空格 0.3em）。
+  - 写 `width`：固定文本框，超宽自动换行；高度按行数计算。
+- 高度 = `font_size × line_height`；**请显式写 `line_height`（建议 1.2–1.4）**；未写时按 1.4 估算。
+- 文字 bbox 的高度不要用 `font_size` 本身估算。
+- 可用字段：`content`、`x/y/x_offset/y_offset`、`width/height`、`font_size/font_color/font_weight/font_family/font_italic`、`text_align`、`line_height`、`letter_spacing`、`text_shadow`、`box_shadow`、`background`、`text_gradient`、`border_radius/border_width/border_color`、`filter`、`clip_path`、`clip_inset`、`mask`、`transform_origin`。
+- `text_gradient: true` 时必须同时给 `background`（渐变背景被裁成文字）；否则渐变不生效。
+- text 的颜色字段是 `font_color`，不是 `color`。
+
+### shape
+- `x/y` = 左上角；`width/height` 必填。
+- `shape`：`rect`（默认）或 `ellipse`；`circle/ring/arc` 是独立 type，不要用 shape 替代。
+- 可用字段：`shape`、`color` 或 `background`、`background_image`、`width/height`、`border_radius`、`border_width`、`border_color`、`box_shadow`、`filter`、`clip_path`、`clip_inset`、`mask`、`transform_origin`。
+- 普通矩形边框用 `border_*`；不要给 shape 写 `stroke_*`。
+
+### line
+- **`x/y` 是线段中心点，不是左上角**（渲染器会按中心偏移）。
+- `width` = 线段长度，`height` = 线宽；默认细线 3–6px。
+- 可用字段：`x/y`、`width/height`、`color` 或 `background`、`border_radius`、`box_shadow`、`filter`、`opacity`。
+- 不要给 line 写 `font_*`、`text_*`、`content`。
+- 下划线：`line.x = text.x + text.width/2`；`line.y = text.y + text.height + 24`。
+
+### circle / ring / arc
+- `x/y` = 左上角；`width/height` 必填；circle 用宽高画圆，ring 是空心圆环，arc 是上半圆弧。
+- 可用字段：`width/height`、`color` 或 `background`、`border_width/border_color`（矩形边框）、`stroke_width/stroke_color`（circle/ring 描边）、`box_shadow`、`filter`、`opacity`。
+- ring 必须给 `stroke_width > 0` 和 `stroke_color`，否则看不见。
+
+### image
+- `x/y` = 左上角；`src + width/height` 必填；`object-fit` 固定 `contain`，不接受 `object_fit`。
+- `src` 只能是 `data:image/*` 或媒体白名单本地资源；禁止 http(s) 外链。
+- 可用字段：`src`、`x/y`、`width/height`、`border_radius`、`filter`、`opacity`、`box_shadow`；不要写 `alt`（不参与渲染）。
+- 不要给 image 写 `font_*`、`text_*`。
+
+### bg
+- 全幅背景层，铺满画布；只写 `background` 或 `color`，忽略 x/y/width/height。
+- 默认不要加 bg；需要不透明背景时才加，且放 elements 第一个。
+
+## 字段冲突与错误示例
+
+| 冲突 | 错误 | 正确 |
+|---|---|---|
+| text 用 `color` | `{"type":"text","content":"标题","color":"#fff"}` | 用 `font_color` |
+| line 当左上角 | `line.x=text.x` | `line.x=text.x+text.width/2`（line 的 x 是中心） |
+| line 在文字 bbox 内 | text y=440 fs=120 lh=1.4 → bbox 440..608；line y=565 | line y ≥ 608+24=632 |
+| 下划线先于文字写 | `[line, text]` 或 `[text, line]` 不确定 | 线下→line 在 text 前；线上→line 在 text 后 |
+| 文字渐变无 background | `{"text_gradient":true}` | 同时给 `background` 渐变 |
+| shape 用 stroke | `{"type":"shape","stroke_width":4}` | 用 `border_width/border_color` |
+| ring 无描边 | `{"type":"ring","width":80,"height":80}` | 加 `stroke_width`、`stroke_color` |
+| 颜色参数塞文本 | `{"content":"{accent}"}` | 颜色放 `font_color/background/border_color` |
+| 文字框宽度当自然宽 | 给 text 写 `width=100` 却按单行排 | 有 width 就会换行，高度按行数算 |
+
+## 参数（params）用法
+
+- 每个 key 必须声明：`{"type":"string|number|color","default":...}`。
+- `string` 只能进 `content`、`font_family` 等字符串字段；
+- `number` 只能进 `font_size`、`width`、`height`、`x`、`y` 等数值字段；
+- `color` 只能进 `font_color`、`background`、`color`、`border_color`、`stroke_color`；
+- **不要把 color 放进 content**；未声明占位符会被清空。
+- 错误：`{"content":"{accent}","font_color":"#fff"}`；正确：`{"content":"标题","font_color":"{accent}"}`。
+
+## keyframes 硬约束
+
+- 每个元素至少 3 帧；第一帧 `time=0`；`time` 严格递增；最后一帧 ≤ `duration_sec`。
+- 入场必须有 opacity 0→1（或等价可见性变化）；末帧保留或退场，不能空数组。
+- 属性必须属于该元素：text 可动 `font_size/letter_spacing`，shape/image 不能动 `font_size`；line 不能动 `text_*`。
+- 每个关键帧的 `easing` 只控制该帧到下一帧；允许 linear/ease/ease-in/ease-out/ease-in-out/back-out/elastic-out/bounce 或 `[x1,y1,x2,y2]`。
+- 不允许 `z_index`；层级只由 elements 顺序决定。
 
 ## 输出前自检
 1. 是否只有一个主角？

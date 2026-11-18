@@ -76,7 +76,7 @@ def test_generator_prompt_uses_compact_modules() -> None:
     gen._llm = fake
     asyncio.run(gen._call_llm("数据增长对比标题", "A|B", {}, {}, {}))
     system = fake.calls[0][0]["content"]
-    assert len(system) < 6500
+    assert len(system) < 9000
     assert "全片运动契约" in system
     assert "动画编排约束" in system
 
