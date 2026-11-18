@@ -767,17 +767,6 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         )
         return
 
-        # 启用重叠去重（_find_overlapping_clip 此前定义未调用）——
-        # 同轨道文字片段时间重叠会叠字渲染
-        overlap = self._find_overlapping_clip(text_track, text_clip)
-        if overlap is not None:
-            logger.info("AnimationAgent: 跳过重叠文字动画 %s（与 %s 时间重叠）",
-                        text_clip.id[:8], overlap.id[:8])
-            return
-
-        text_track.clips.append(text_clip)
-        text_track.clips.sort(key=lambda c: c.start_sec)
-
     def _handle_text_animation(
         self,
         text_track: Track,
