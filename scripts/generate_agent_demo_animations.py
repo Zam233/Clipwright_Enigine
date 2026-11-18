@@ -20,35 +20,35 @@ API = "http://127.0.0.1:8080"
 CASES = [
     {
         "name": "01_title",
-        "description": "标题揭示：展示「帧艺动画」四个字，单主角，冷色科技感，落定后 hold 一秒",
+        "description": "标题揭示：展示「帧艺动画」四个字，水平居中，文字下留 40px 再放下划线；单主角，冷色科技感，落定后 hold 一秒",
         "text": "帧艺动画",
         "category": "知识区",
         "scope": "kinetic-type",
     },
     {
         "name": "02_data",
-        "description": "数据冲击：用户增长 120%，柱状图从零生长，数字连续计数，最后强调结论",
+        "description": "数据冲击：用户增长 120%，柱状图从零生长，数字连续计数；标签放柱子上方，不要与柱体重叠",
         "text": "用户增长|120|%",
         "category": "知识区",
         "scope": "charts",
     },
     {
         "name": "03_compare",
-        "description": "左右对比：传统流程慢、AI 流程快，两侧卡片顺序入场，中间箭头指出差异",
+        "description": "左右对比：传统流程慢、AI 流程快，两侧卡片同高等大、高对比；中间箭头指出差异",
         "text": "传统流程|AI 流程|快 3 倍",
         "category": "数码评测",
         "scope": "comparison",
     },
     {
         "name": "04_flow",
-        "description": "三步流程：选题 → 脚本 → 剪辑，节点依次点亮，箭头自左向右推进",
+        "description": "三步流程：选题 → 脚本 → 剪辑；三个节点等距横排，左右各留 240px 安全边距，节点依次点亮",
         "text": "选题|脚本|剪辑",
         "category": "知识区",
         "scope": "flow",
     },
     {
         "name": "05_quote",
-        "description": "金句强调：让每一帧都有信息量，文字逐词升起，关键词用下划线标记",
+        "description": "金句强调：让每一帧都有信息量；三行文字水平居中，下划线用 line 元素；不要生成任何装饰形状",
         "text": "让每一帧都有信息量",
         "category": "知识区",
         "scope": "kinetic-type",
@@ -102,8 +102,8 @@ async def main() -> None:
                     resp = await client.post(f"{API}/api/animation/preview", json={
                         "mg_json": mg_def,
                         "params": result.get("params") or {},
-                        "width": 1280,
-                        "height": 720,
+                        "width": 1920,
+                        "height": 1080,
                         "fps": 30,
                     })
                     resp.raise_for_status()

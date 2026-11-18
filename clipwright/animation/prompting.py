@@ -274,3 +274,45 @@ def build_timeline_plan(scenes: list[dict[str, Any]], duration_sec: float = 4.0)
     base.seams = seams
     base.transition_budget = min(3, max(1, len(scenes) - 1))
     return base
+
+
+def validate_content_coverage(mg_def: dict[str, Any], text_content: str) -> list[str]:
+    """Check that every `|` segment has an element placeholder/literal.
+
+    Catches the 04_flow failure: model puts {step3} in params but omits the
+    third node from elements, so the rendered flow silently loses a step.
+    """
+    tokens = [t.strip() for t in str(text_content or "").split("|") if t.strip()]
+    if not tokens:
+        return []
+    elements = mg_def.get("elements") or []
+    params = mg_def.get("params") or {}
+    element_text = " ".join(str(e.get("content") or "") for e in elements if isinstance(e, dict))
+    errors: list[str] = []
+    for token in tokens:
+        keys = [
+            str(k) for k, v in params.items()
+            if isinstance(v, dict) and str(v.get("default", "")).strip() == token
+        ]
+        if keys:
+            if not any("{" + k + "}" in element_text for k in keys):
+                errors.append(f"内容段「{token}」只在 params 中，未落到任何元素")
+        elif token not in element_text:
+            errors.append(f"内容段「{token}」未出现在元素中")
+    return errors
+
+
+def validate_placeholder_types(mg_def: dict[str, Any]) -> list[str]:
+    """Catch params declared as color but used as text (03_compare accent bug)."""
+    params = mg_def.get("params") or {}
+    errors: list[str] = []
+    for i, elem in enumerate(mg_def.get("elements") or []):
+        if not isinstance(elem, dict) or elem.get("type") not in ("text", "caption"):
+            continue
+        content = str(elem.get("content") or "")
+        for key, spec in params.items():
+            if not isinstance(spec, dict) or str(spec.get("type", "")) != "color":
+                continue
+            if "{" + str(key) + "}" in content:
+                errors.append(f"元素 #{i} 把 color 参数 {{{key}}} 当作文本使用")
+    return errors

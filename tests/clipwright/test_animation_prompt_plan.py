@@ -6,6 +6,8 @@ from clipwright.animation.prompting import (
     compose_mg_system_prompt,
     rule_by_id,
     validate_animation_plan,
+    validate_content_coverage,
+    validate_placeholder_types,
     build_timeline_plan,
 )
 
@@ -114,3 +116,20 @@ def test_critique_prompt_contains_continuity_checks() -> None:
     assert "连续性与运动检查" in text
     assert "idle" in text
     assert "carrier" in text
+
+
+def test_content_coverage_catches_missing_step() -> None:
+    mg = {
+        "params": {"step1": {"default": "选题"}, "step2": {"default": "脚本"}, "step3": {"default": "剪辑"}},
+        "elements": [{"type": "text", "content": "{step1}"}, {"type": "text", "content": "{step2}"}],
+    }
+    errors = validate_content_coverage(mg, "选题|脚本|剪辑")
+    assert errors == ["内容段「剪辑」只在 params 中，未落到任何元素"]
+
+
+def test_placeholder_type_catches_color_used_as_text() -> None:
+    mg = {
+        "params": {"accent": {"type": "color", "default": "快 3 倍"}},
+        "elements": [{"type": "text", "content": "{accent}"}],
+    }
+    assert validate_placeholder_types(mg)
