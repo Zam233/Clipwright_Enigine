@@ -294,12 +294,24 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         # 图片素材库语义索引 {path, tags, description} — execute() 中构建，
         # 供 mg_dynamic 生成 prompt 让 LLM 主动选择语义匹配图片（防 📡→石墨烯 类错配）
         self._image_index: list[dict[str, Any]] = []
+        #: 当前项目 id（用于逐段落盘：每完成一个动画就写回项目时间线，
+        #: 让编辑器动画轴增量出现，而不是等整个阶段结束）
+        self._project_id: str = ""
+        #: 生成失败、需要主 Agent 重新派发 animation 的片段
+        self._failed_animations: list[dict[str, Any]] = []
+        #: 主 Agent 按失败片段重派时只重跑这些 clip（其余沿用已有动画轨）
+        self._retry_clip_ids: set[str] = set()
 
     async def execute(
         self, input_data: AnimationInput, context: AgentContext
     ) -> AnimationOutput:
         logger.info("AnimationAgent 开始 pipeline=%s", context.pipeline_id[:12])
         self._pid = context.pipeline_id
+        self._retry_clip_ids = {str(x) for x in (getattr(input_data, "retry_clip_ids", None) or [])}
+        _extra_ctx = dict(getattr(context, "extra_params", None) or {})
+        self._project_id = str(
+            _extra_ctx.get("workspace_project_id") or _extra_ctx.get("project_id") or ""
+        )
         add_event(context.pipeline_id, "animation", "agent_start",
                   "AnimationAgent 开始（文字动画/逻辑动画分流）")
         # 工具/技能列表实时可见（插件增删立即生效）——写进 trace 便于排障
@@ -540,17 +552,22 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                         anim_name = marker.get("name", "淡入")
 
                         if marker_type == "text":
+                            if self._retry_clip_ids and str(clip.id) not in self._retry_clip_ids:
+                                continue
                             await self._handle_text_animation_async(
                                 text_track, clip, anim_id, anim_name,
                                 marker, persona_style,
                             )
                             text_anim_count += 1
+                            self._persist_timeline_tick(timeline)
                             logger.info("AnimationAgent: [文字动画]%s → %s (id=%s)",
                                         anim_name, clip.id[:8], anim_id)
                             add_event(context.pipeline_id, "animation", "text_anim",
                                       f"[文字动画]{anim_name}({anim_id}) → clip={clip.id[:8]}")
 
                         elif marker_type == "logic":
+                            if self._retry_clip_ids and str(clip.id) not in self._retry_clip_ids:
+                                continue
                             anim_track = anim_track or self._ensure_anim_track(timeline)
                             logic_jobs.append(
                                 (anim_track, clip, anim_id, anim_name, marker, persona_style)
@@ -604,6 +621,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                                 track, c, aid, aname, m, style,
                             )
                             _done_jobs["n"] += 1
+                            self._persist_timeline_tick(timeline)
                             _emit_progress(
                                 f"动画 {_done_jobs['n']}/{_total_jobs} 完成：{aname}",
                                 {"anim_id": aid, "clip_id": c.id, "total": _total_jobs,
@@ -641,6 +659,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             return AnimationOutput(
                 decision=AgentDecision.PASS,
                 timeline=timeline,
+                issues=list(self._failed_animations),
+                redo_agent="animation" if self._failed_animations else "",
+
                 animation_plan={
                     "text_animations": text_anim_count,
                     "logic_animations": logic_anim_count,
@@ -699,10 +720,15 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         # 与 38 个类型化 MG 同构：prompt 定义类型语义 + LLM 产出 MGDef，
         # 这里把它转成 drawtext 可消费的 keyframes。失败才回退模板表。
         if self._text_llm_enabled():
-            llm_clip = await self._build_text_clip_llm(
-                vid_clip, text_content, clip_duration, persona_style,
-                anim_id=anim_id, anim_name=anim_name,
-            )
+            # LLM 首次失败先重跑一次（transient 空/坏 JSON），不要立刻放弃。
+            llm_clip = None
+            for _attempt in range(3):
+                llm_clip = await self._build_text_clip_llm(
+                    vid_clip, text_content, clip_duration, persona_style,
+                    anim_id=anim_id, anim_name=anim_name,
+                )
+                if llm_clip is not None:
+                    break
             if llm_clip is not None:
                 overlap = self._find_overlapping_clip(text_track, llm_clip)
                 if overlap is not None:
@@ -713,81 +739,33 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 text_track.clips.append(llm_clip)
                 text_track.clips.sort(key=lambda c: c.start_sec)
                 return
+            # 用户 2026-11-15 裁定：文字动画也只保留提示词，LLM 失败就跳过，
+            # 不再用 AnimationCatalog 的 typewriter/highlight_flash 预设模板冒充。
+            self._record_failed_animation(
+                vid_clip, anim_id, anim_name,
+                "文字动画连续 3 次 LLM 生成失败",
+            )
             _note(
-                "text_llm_fallback_template",
-                f"文字动画 LLM 生成失败，回退 AnimationCatalog 模板（anim_id={anim_id}）",
+                "text_llm_failed_no_template",
+                f"文字动画 LLM 生成失败，按“只保留提示词”策略跳过（anim_id={anim_id}）",
                 scope=str((vid_clip.metadata or {}).get("scene_title") or ""),
-                impact="该段文字动效是固定模板关键帧，不是按语义定制",
-            )
-            # 回退到同步模板入口（既有测试/调用方的稳定路径）
-            self._handle_text_animation(
-                text_track, vid_clip, anim_id, anim_name, marker, persona_style)
-            return
-
-        full_kfs = AnimationCatalog.build_full_keyframes(
-            anim_id, vid_clip.start_sec, clip_duration
-        )
-
-        # 完整文字样式字段（统一默认 + persona_style 覆盖，任务 32）
-        style = _merge_style_defaults(DEFAULT_TEXT_STYLE, persona_style)
-
-        # 底部叠字修复（E2E 2026-10-30）：文字动画的正文往往就是旁白整句，
-        # 而 audio 阶段的字幕也来自同一份旁白 → 成片底部出现两行字
-        # （一行文字动画、一行字幕）。字幕负责"说出来的每一句"，文字动画只做
-        # 短语/关键词强调。判据：内容等于所在片段的旁白且足够长（>10 字）→ 交给字幕。
-        _narration = ""
-        try:
-            _narration = str(getattr(vid_clip, "text", "") or
-                             (vid_clip.metadata or {}).get("narration_text") or "").strip()
-        except Exception:  # noqa: BLE001 — 取不到旁白就按普通文字动画处理
-            _narration = ""
-        if _narration and len(text_content.strip()) > 10 and \
-                text_content.strip() == _narration:
-            logger.info(
-                "AnimationAgent: 文字动画与旁白整句重复，交给字幕渲染（避免底部叠字）: %s",
-                text_content[:30],
+                impact="该段没有文字动效（不会用固定模板关键帧冒充 LLM 产物）",
             )
             return
 
-        text_clip = Clip(
-            id=_uid("tc"),
-            kind=ClipKind.TEXT,
-            asset_id="",
-            track_id=text_track.id,
-            start_sec=vid_clip.start_sec,
-            duration_sec=clip_duration,
-            text=text_content or marker.get("text", ""),
-            font="sans-serif",
-            **style,
-            keyframes=full_kfs,
-            metadata={
-                "anim_type": anim_id,
-                "anim_name": anim_name,
-                "renderer": "drawtext",
-                # 位置避让（同上）：字幕固定在 bottom，文字动画默认落在 center，
-                # 只有 persona 显式声明了 text_anim_position 时才跟随。
-                "position": (
-                    persona_style.get("text_anim_position")
-                    or ("center" if str(persona_style.get("position") or "bottom") == "bottom"
-                        else persona_style.get("position"))
-                ),
-                "stroke_width": persona_style.get("stroke_width", 0),
-                "stroke_color": persona_style.get("stroke_color", "#000000"),
-            },
+        # 用户裁定：不允许降级/模板。LLM 路径关闭或失败都没有文字动画，
+        # 记录失败让主 Agent 重派，不再用 AnimationCatalog 预设模板。
+        self._record_failed_animation(
+            vid_clip, anim_id, anim_name,
+            "文字动画 LLM 未启用/未产出；按无降级策略跳过该段",
         )
-        if is_typewriter:
-            text_clip.metadata["typewriter"] = True
-
-        # 启用重叠去重（_find_overlapping_clip 此前定义未调用）——
-        # 同轨道文字片段时间重叠会叠字渲染
-        overlap = self._find_overlapping_clip(text_track, text_clip)
-        if overlap is not None:
-            logger.info("AnimationAgent: 跳过重叠文字动画 %s（与 %s 时间重叠）",
-                        text_clip.id[:8], overlap.id[:8])
-            return
-
-        text_track.clips.append(text_clip)
-        text_track.clips.sort(key=lambda c: c.start_sec)
+        _note(
+            "text_llm_failed_no_template",
+            f"文字动画 LLM 未产出（anim_id={anim_id}），不允许模板兜底",
+            scope=str((vid_clip.metadata or {}).get("scene_title") or ""),
+            impact="该段没有文字动效；主 Agent 必须重派，不接受模板",
+        )
+        return
 
     def _handle_text_animation(
         self,
@@ -798,89 +776,59 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         marker: dict[str, Any],
         persona_style: dict[str, Any],
     ) -> None:
-        """模板路径（同步）：AnimationCatalog 固定关键帧 → drawtext clip。
+        """旧同步适配器：不再使用 AnimationCatalog 固定关键帧。
 
-        生产路径请用 `_handle_text_animation_async`（LLM 优先，失败回退到这里）；
-        保留同步入口是为了既有调用方与测试的稳定契约。
+        新生产路径是 `_handle_text_animation_async`（LLM + text-motion-core）。
+        这里仅为旧调用方/测试保留：按插件 provider 生成静态/MG 文字 clip，
+        不生成任何模板 keyframes；motion 服务由 text-motion-core 决定。
         """
         clip_duration = max(0.2, float(vid_clip.duration_sec or 0.2))
         text_content, text_source = self._extract_text_with_source(vid_clip, marker)
         if not text_content:
             text_content = marker.get("text", "")
-            if text_content:
-                text_source = "marker"
-        is_typewriter = self._is_typewriter_like(anim_id)
+            text_source = "marker" if text_content else text_source
         if len(text_content) > 50 and text_source in ("marker", "metadata"):
             self._handle_caption(text_track, vid_clip, text_content, persona_style)
             return
-        full_kfs = AnimationCatalog.build_full_keyframes(
-            anim_id, vid_clip.start_sec, clip_duration
-        )
-
-        # 完整文字样式字段（统一默认 + persona_style 覆盖，任务 32）
         style = _merge_style_defaults(DEFAULT_TEXT_STYLE, persona_style)
-
-        # 底部叠字修复（E2E 2026-10-30）：文字动画的正文往往就是旁白整句，
-        # 而 audio 阶段的字幕也来自同一份旁白 → 成片底部出现两行字
-        # （一行文字动画、一行字幕）。字幕负责"说出来的每一句"，文字动画只做
-        # 短语/关键词强调。判据：内容等于所在片段的旁白且足够长（>10 字）→ 交给字幕。
-        _narration = ""
-        try:
-            _narration = str(getattr(vid_clip, "text", "") or
-                             (vid_clip.metadata or {}).get("narration_text") or "").strip()
-        except Exception:  # noqa: BLE001 — 取不到旁白就按普通文字动画处理
-            _narration = ""
-        if _narration and len(text_content.strip()) > 10 and \
-                text_content.strip() == _narration:
-            logger.info(
-                "AnimationAgent: 文字动画与旁白整句重复，交给字幕渲染（避免底部叠字）: %s",
-                text_content[:30],
-            )
-            return
-
+        style.pop("text", None)
+        _motion_id = str(anim_id or "fade_in")
+        if _motion_id.startswith("text_"):
+            _motion_id = _motion_id[5:]
+        motion = {"type": _motion_id or "fade_in", "reveal_sec": 0.4, "cursor": False}
         text_clip = Clip(
-            id=_uid("tc"),
-            kind=ClipKind.TEXT,
-            asset_id="",
-            track_id=text_track.id,
-            start_sec=vid_clip.start_sec,
-            duration_sec=clip_duration,
-            text=text_content or marker.get("text", ""),
-            font="sans-serif",
-            **style,
-            keyframes=full_kfs,
+            id=_uid("tc"), kind=ClipKind.TEXT, asset_id="", track_id=text_track.id,
+            start_sec=vid_clip.start_sec, duration_sec=min(clip_duration, 6.0),
+            text=text_content, font="sans-serif", **style,
             metadata={
-                "anim_type": anim_id,
-                "anim_name": anim_name,
-                "renderer": "drawtext",
-                # 位置避让（同上）：字幕固定在 bottom，文字动画默认落在 center，
-                # 只有 persona 显式声明了 text_anim_position 时才跟随。
-                "position": (
-                    persona_style.get("text_anim_position")
-                    or ("center" if str(persona_style.get("position") or "bottom") == "bottom"
-                        else persona_style.get("position"))
-                ),
-                "stroke_width": persona_style.get("stroke_width", 0),
-                "stroke_color": persona_style.get("stroke_color", "#000000"),
+                "anim_type": anim_id, "anim_name": anim_name,
+                "renderer": "mg_hyperframes", "mg_html": "", "mg_def": {},
+                "style": style, "motion": motion,
+                "text_anim_type": anim_id, "apply_text_style": True,
             },
         )
-        if is_typewriter:
-            text_clip.metadata["typewriter"] = True
-
-        # 启用重叠去重（_find_overlapping_clip 此前定义未调用）——
-        # 同轨道文字片段时间重叠会叠字渲染
+        from clipwright.animation.text_mg import apply_text_style_to_clip
+        try:
+            text_clip = apply_text_style_to_clip(
+                text_clip, style=style, motion=motion,
+                width=int(self._tl_width or 1920), height=int(self._tl_height or 1080),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AnimationAgent: legacy sync text provider 失败: %s", exc)
+            return
         overlap = self._find_overlapping_clip(text_track, text_clip)
         if overlap is not None:
-            logger.info("AnimationAgent: 跳过重叠文字动画 %s（与 %s 时间重叠）",
-                        text_clip.id[:8], overlap.id[:8])
             return
-
         text_track.clips.append(text_clip)
         text_track.clips.sort(key=lambda c: c.start_sec)
 
-    # ── 长文本字幕处理 ─────────────────────────────────────
-
-    # ── 文字动画 LLM 路线（PRD text-animation-llm M2）────────────
+    @staticmethod
+    def _motion_llm_enabled() -> bool:
+        try:
+            from clipwright.config import settings
+            return bool(getattr(settings, "text_motion_llm_enabled", False))
+        except Exception:
+            return False
 
     @staticmethod
     def _text_llm_enabled() -> bool:
@@ -957,6 +905,42 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         style["text"] = str(main.get("content") or main.get("text") or "")
         return out, style
 
+    @staticmethod
+    def _text_style_to_clip_fields(style: dict[str, Any]) -> dict[str, Any]:
+        """TextAnimationStyle → Clip 可接受字段（颜色统一成 #rrggbb[aa]）。"""
+        def _hex(value: Any, fallback: str = "#ffffff") -> str:
+            s = str(value or "").strip()
+            if s.startswith("#") and len(s) in (4, 7, 9):
+                if len(s) == 4:
+                    return "#" + "".join(ch * 2 for ch in s[1:]) + "ff"
+                return s if len(s) == 9 else s + "ff"
+            import re as _re
+            m = _re.match(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([0-9.]+))?\s*\)", s)
+            if m:
+                r, g, b = (int(m.group(i)) for i in (1, 2, 3))
+                a = float(m.group(4)) if m.group(4) is not None else 1.0
+                return f"#{r:02x}{g:02x}{b:02x}{int(max(0, min(1, a)) * 255):02x}"
+            return fallback
+
+        out: dict[str, Any] = {
+            "font_size": float(style.get("font_size") or 56),
+            "font_color": _hex(style.get("fill"), "#ffffff"),
+            "font_weight": "bold" if str(style.get("font_weight") or "") == "bold" else "normal",
+            "font_italic": bool(style.get("font_italic")),
+            "letter_spacing": float(style.get("letter_spacing") or 0),
+            "text_align": str(style.get("text_align") or "center"),
+            "stroke_width": float(style.get("stroke_width") or 0),
+            "stroke_color": _hex(style.get("stroke_color"), "#000000"),
+            "shadow_x": float(style.get("shadow_x") or 0),
+            "shadow_y": float(style.get("shadow_y") or 0),
+            "shadow_blur": float(style.get("shadow_blur") or 0),
+            "shadow_color": _hex(style.get("shadow_color"), "#000000b3"),
+        }
+        if style.get("glow_color"):
+            out["glow_color"] = _hex(style.get("glow_color"), "")
+            out["glow_width"] = float(style.get("glow_width") or 0)
+        return out
+
     async def _build_text_clip_llm(
         self,
         vid_clip: Clip,
@@ -993,25 +977,42 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         keyframes, main_style = self._mgdef_to_drawtext_keyframes(
             result.mg_def, clip_start=vid_clip.start_sec,
         )
+        ta = dict(result.mg_def.get("text_animation") or {})
+        display_sec = float(ta.get("display_sec") or clip_duration or 3.0)
+        display_sec = max(0.5, min(display_sec, float(clip_duration or display_sec)))
+        clip_end = vid_clip.start_sec + display_sec
+        # 关键帧是绝对时间；按 display_sec 截断，并补 0.2s 淡出（不能硬切消失）
+        keyframes = [kf for kf in keyframes if float(kf.get("time") or 0) <= clip_end + 0.001]
+        _content_last = max((float(kf.get("time") or 0) for kf in keyframes), default=0.0)
+        if keyframes:
+            last = keyframes[-1]
+            last_props = dict(last.get("properties") or {})
+            if float(last_props.get("opacity", 1) or 0) > 0.01:
+                keyframes.append({"time": round(max(0.0, clip_end - 0.2), 3),
+                                  "properties": {**last_props, "opacity": 1}})
+                keyframes.append({"time": round(clip_end, 3),
+                                  "properties": {**last_props, "opacity": 0}})
         if not keyframes:
             _note("text_llm_failed", "LLM 产物没有可用关键帧",
                   impact="该段文字动效回退模板关键帧")
             return None
 
-        # 动效覆盖度：最后一个关键帧相对片段的占比（<45% 记 text_motion_weak）
-        span = max(1e-3, float(clip_duration))
-        last_rel = max(0.0, keyframes[-1]["time"] - vid_clip.start_sec)
-        coverage = min(1.0, last_rel / span)
-        if coverage < 0.45:
+        # 动效判定：看“有没有真实入场/运动窗口”，不再按整段时长算覆盖率。
+        # 内容驱动时长允许长 hold（法律条文/长句），把整段 18s 都要求动效
+        # 会把合理 hold 误判成 text_motion_weak，导致任务永远无法 done。
+        _first = min((float(kf.get("time") or 0) for kf in keyframes), default=0.0)
+        motion_window = max(0.0, _content_last - max(_first, vid_clip.start_sec))
+        if motion_window < 0.30:
             _note(
                 "text_motion_weak",
-                f"文字动效关键帧覆盖 {coverage:.0%}（<45%），后段接近静止",
+                f"文字动效窗口仅 {motion_window:.2f}s（<0.30s），基本是静态出现",
                 scope=str((vid_clip.metadata or {}).get("scene_title") or ""),
                 impact="观众会觉得这行字只是静态贴图",
             )
 
         style = _merge_style_defaults(DEFAULT_TEXT_STYLE, persona_style)
-        if main_style.get("font_size") is not None:
+        style.update(self._text_style_to_clip_fields(dict(ta.get("style") or {})))
+        if main_style.get("font_size") is not None and not ta.get("style"):
             style["font_size"] = main_style["font_size"]
         # 文字动画是"画面主体"，字号有下限：LLM 偶尔给 28 这种字幕级字号，
         # 1080p 成片里几乎看不见（E2E 2026-10-30 实测）。字幕有自己的一套样式，
@@ -1026,13 +1027,49 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         if main_style.get("letter_spacing") is not None:
             style["letter_spacing"] = main_style["letter_spacing"]
 
-        return Clip(
+        # 用户裁定：所有文字动画统一走 MG HTML；具体 motion 由
+        # text-motion-core 插件 provider 生成，engine 不内置 motion 实现。
+        text_style = dict(ta.get("style") or {})
+        text_motion = dict(ta.get("motion") or {})
+        base_mg_def = result.mg_def
+
+        motion_spec_data = None
+        motion_author_meta = None
+        if self._motion_llm_enabled():
+            from clipwright.animation.motion_spec import MotionAuthorRequest
+            from clipwright.animation.motion_spec_validator import validate_motion_spec
+            from clipwright.animation.text_engine import TextMotionRegistry
+            provider = TextMotionRegistry.get("llm_motion")
+            if provider is None:
+                raise RuntimeError("MOTION_SPEC_MISSING: text-motion-llm provider 未加载")
+            req = MotionAuthorRequest(
+                text=main_style.get("text") or text_content,
+                style=text_style, intent=text_motion,
+                width=int(self._tl_width or 1920), height=int(self._tl_height or 1080),
+                duration_sec=float(display_sec), caption_band_px=int(tg.CAPTION_BAND_PX),
+                scene_context={"scene": str((vid_clip.metadata or {}).get("scene_title") or "")},
+            )
+            spec = await provider.author(req)
+            v = validate_motion_spec(spec)
+            if not v.ok:
+                raise ValueError("MOTION_SPEC_INVALID: " + "; ".join(v.errors[:5]))
+            import hashlib
+            import json as _json
+            motion_spec_data = spec.model_dump(by_alias=True)
+            motion_author_meta = {
+                "provider": provider.id, "version": provider.version,
+                "spec_hash": hashlib.sha256(
+                    _json.dumps(motion_spec_data, sort_keys=True, ensure_ascii=False).encode()
+                ).hexdigest(),
+            }
+
+        clip = Clip(
             id=_uid("tc"),
             kind=ClipKind.TEXT,
             asset_id="",
             track_id="",  # 由调用方 append 到 text_track，track_id 在构造后补
             start_sec=vid_clip.start_sec,
-            duration_sec=clip_duration,
+            duration_sec=display_sec,
             text=main_style.get("text") or text_content,
             font="sans-serif",
             **style,
@@ -1040,16 +1077,47 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             metadata={
                 "anim_type": anim_id,
                 "anim_name": anim_name,
-                "renderer": "drawtext",
+                "renderer": "mg_hyperframes",
+                "mg_html": "",
+                "mg_def": base_mg_def,
+                "mg_params": {},
                 "position": "center",  # 字幕带避让（caption 固定 bottom）
                 "text_anim_type": type_id,
                 "text_llm_method": result.method,
                 "text_prompt_version": result.prompt_version,
+                "style": text_style,
+                "motion": text_motion,
+                "text_animation": ta,
+                "duration_reason": str(ta.get("duration_reason") or ""),
                 "avoid_caption_band_px": tg.CAPTION_BAND_PX,
                 "stroke_width": persona_style.get("stroke_width", 0),
                 "stroke_color": persona_style.get("stroke_color", "#000000"),
+                "apply_text_style": True,
+                **({"motion_spec": motion_spec_data,
+                    "motion_spec_hash": motion_author_meta["spec_hash"],
+                    "text_provider_id": "llm_motion",
+                    "motion_author": motion_author_meta} if motion_spec_data else {}),
             },
         )
+        from clipwright.animation.text_mg import apply_text_style_to_clip
+        try:
+            return apply_text_style_to_clip(
+                clip, style=text_style, motion=text_motion,
+                width=int(self._tl_width or 1920), height=int(self._tl_height or 1080),
+            )
+        except Exception as exc:  # noqa: BLE001 — provider 缺失/非法时明确失败
+            _note(
+                "text_motion_unavailable" if "UNAVAILABLE" in type(exc).__name__.upper()
+                else "text_motion_plan_invalid",
+                f"{type(exc).__name__}: {exc}",
+                scope=str((vid_clip.metadata or {}).get("scene_title") or ""),
+                impact="该段文字没有产物；不回退 ASS/白字/模板",
+            )
+            self._record_failed_animation(
+                vid_clip, anim_id, anim_name,
+                f"文字 motion provider 失败: {type(exc).__name__}: {exc}",
+            )
+            return None
 
     @staticmethod
     def _handle_caption(
@@ -1115,30 +1183,43 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         # ── 主路径（用户 2026-10-29）：所有逻辑动画按「类型提示词 + 视频类型 + persona」
         # 由 LLM 生成 mg_def（不再是静态 SVG 贴图，也不是统一塞给 mg_dynamic）。
         if self._typed_generation_enabled():
-            typed_ok = await self._handle_typed_animation(
-                anim_track, vid_clip, anim_id, anim_name, text_content, duration,
-                marker, persona_style,
+            # 成功导向：同一段最多连跑 3 次（首次 + 2 次重跑）。LLM 偶发空/坏 JSON
+            # 是 transient，重跑通常就正常；3 次仍失败才升级给主 Agent 重派。
+            typed_ok = False
+            last_issue = ""
+            for attempt in range(3):
+                typed_ok = await self._handle_typed_animation(
+                    anim_track, vid_clip, anim_id, anim_name, text_content, duration,
+                    marker, persona_style, retry=(attempt > 0),
+                )
+                if typed_ok:
+                    return
+                last_issue = f"第 {attempt + 1} 次生成失败"
+                logger.warning(
+                    "AnimationAgent: 类型化 %s %s，%s",
+                    anim_name, last_issue, "重跑" if attempt < 2 else "升级给主 Agent",
+                )
+            _note(
+                "animation_llm_failed",
+                f"{anim_id} 连续 3 次 LLM 生成失败；不回退预设模板，提交主 Agent 重派该片段",
+                scope=str(marker.get("scene_title") or anim_id),
+                impact="暂时没有该段动画（主 Agent 必须按 clip_id 重派 animation）",
             )
-            if typed_ok:
-                return
+            self._record_failed_animation(vid_clip, anim_id, anim_name, last_issue)
+            self._add_trace_warning(
+                f"[逻辑动画]{anim_name}({anim_id}) 连续 3 次失败，需主 Agent 重派该片段",
+                {"clip_id": str(getattr(vid_clip, "id", "") or ""), "anim_id": anim_id},
+            )
+            return
 
-        # ── 回退 1：mg_* 内置模板（仍是动态 HTML/CSS，只是非 LLM 定制）
+        # LLM 动画生成被显式关闭（settings.animation_llm_generation=false）时，
+        # 才允许走旧的模板/SVG 路径；这是运维开关，不是失败回退。
         if anim_id.startswith("mg_"):
-            _note("animation_typed_fallback",
-                  f"类型化 LLM 生成未生效，{anim_id} 回退内置模板 mg_*",
-                  scope=str(marker.get("scene_title") or anim_id),
-                  impact="该段动画非按类型提示词定制，构图与文案贴合度下降")
             await self._handle_mg_animation(
                 anim_track, vid_clip, anim_id, anim_name,
                 text_content, duration, marker, persona_style,
             )
             return
-
-        # ── 回退 2：图解 SVG（现已补真实关键帧，见 diagram_svg；仍是动的）
-        _note("animation_svg_fallback",
-              f"{anim_id} 无可用类型化路径，回退图解 SVG",
-              scope=str(marker.get("scene_title") or anim_id),
-              impact="该段只有矢量图解 + 关键帧，缺少 MG 级动效设计")
         await self._handle_svg_fallback(
             anim_track, vid_clip, anim_id, anim_name, text_content, duration, persona_style,
         )
@@ -1214,6 +1295,151 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             style_description=desc,
         )
 
+
+    def _persist_timeline_tick(self, timeline: Any) -> None:
+        """把一个已完成动画的时间线立刻写回项目（动画轴增量可见）。
+
+        阶段级输出要等整个 animation 阶段结束才 merge 进黑板；用户看到
+        「动画 N/48 完成」但动画轴仍是 0 条。这里每完成一段就 save 一次，
+        前端轮询项目即可看到增量（见 EditorPage 的 pipeline 轮询）。
+        """
+        pid = str(getattr(self, "_project_id", "") or "").strip()
+        if not pid:
+            return
+        try:
+            from clipwright.services.project_manager import ProjectManager
+
+            data = timeline.model_dump(mode="json") if hasattr(timeline, "model_dump") else timeline
+            ProjectManager().save(pid, {"timeline": data})
+        except Exception as exc:  # noqa: BLE001 — 增量落盘失败不阻断动画阶段
+            logger.warning("AnimationAgent: 动画逐段写回项目失败 %s: %s", pid, exc)
+
+    # ── 动画逐段落盘 / 复用（2026-11-15）──────────────────────────────
+    # 背景：阶段级重派会让 46 段动画全部重新生成，即使只有 1 段失败。
+    # 这里每生成成功一段就立刻落盘；重跑时按内容指纹复用成功产物，
+    # 只重新生成失败的片段（弱动效/模板回退不缓存，下一次重跑会重试）。
+
+    def _mg_cache_dir(self) -> Path | None:
+        root = str(getattr(self, "_ws_root", "") or "").strip()
+        if not root:
+            return None
+        try:
+            d = Path(root) / "cache" / "mg" / "animations"
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+        except OSError:
+            return None
+
+    @staticmethod
+    def _mg_cache_key(type_id: str, text: str, duration: float,
+                      persona_style: dict[str, Any] | None,
+                      width: int, height: int) -> str:
+        import json as _json
+
+        fp = str((persona_style or {}).get("persona_fingerprint") or "")
+        raw = _json.dumps(
+            # 时长按 0.5s 分桶：edit 重做后场景边界可能漂移几十毫秒，
+            # 精确到 0.001s 会让所有动画缓存失效（等于没缓存）。
+            [type_id, str(text or ""), round(float(duration or 0) * 2) / 2, fp, int(width), int(height)],
+            ensure_ascii=False, sort_keys=True,
+        )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+    def _mg_cache_lookup(self, type_id: str, text: str, duration: float,
+                         persona_style: dict[str, Any] | None) -> dict[str, Any] | None:
+        import json as _json
+
+        d = self._mg_cache_dir()
+        if d is None:
+            return None
+        key = self._mg_cache_key(type_id, text, duration, persona_style,
+                                 self._tl_width, self._tl_height)
+        path = d / f"{key}.json"
+        if not path.is_file():
+            return None
+        try:
+            data = _json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — 坏缓存当作未命中
+            return None
+        if not data.get("quality_ok") or not data.get("html") or not data.get("mg_def"):
+            return None
+        return data
+
+    def _mg_cache_store(self, type_id: str, text: str, duration: float,
+                        persona_style: dict[str, Any] | None, result: Any) -> None:
+        import json as _json
+        import time as _time
+
+        d = self._mg_cache_dir()
+        if d is None:
+            return
+        try:
+            issues = list(getattr(result, "issues", []) or [])
+            html = str(getattr(result, "html", "") or "")
+            mg_def = getattr(result, "mg_def", None)
+            method = str(getattr(result, "method", "") or "")
+            if not html or not isinstance(mg_def, dict):
+                return
+            # 弱动效 / 模板回退不缓存：重跑时仍需重新生成这一段
+            weak = any(("静止" in i) or ("动效" in i) or ("偏弱" in i) for i in issues)
+            fallback = ("fallback" in method) or ("template" in method)
+            quality_ok = bool(getattr(result, "ok", False)) and not weak and not fallback
+            key = self._mg_cache_key(type_id, text, duration, persona_style,
+                                     self._tl_width, self._tl_height)
+            payload = {
+                "key": key, "type_id": type_id, "text": str(text or ""),
+                "duration_s": float(duration or 0),
+                "persona_fingerprint": (persona_style or {}).get("persona_fingerprint"),
+                "width": int(self._tl_width), "height": int(self._tl_height),
+                "html": html, "mg_def": mg_def,
+                "params": (getattr(result, "raw", {}) or {}).get("params") or {},
+                "method": method,
+                "motion": getattr(result, "motion", {}) or {},
+                "issues": issues[:6],
+                "quality_ok": quality_ok,
+                "created_at": _time.time(),
+            }
+            path = d / f"{key}.json"
+            tmp = path.with_suffix(path.suffix + ".part")
+            tmp.write_text(_json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(path)
+        except Exception as exc:  # noqa: BLE001 — 落盘失败不影响本段出片
+            logger.warning("AnimationAgent: 动画逐段落盘失败: %s", exc)
+
+    def _apply_cached_typed(self, anim_track: Track, vid_clip: Clip,
+                            anim_name: str, spec: Any, text_content: str,
+                            cached: dict[str, Any]) -> bool:
+        mg_def = cached.get("mg_def") or {}
+        mg_dur = float(mg_def.get("duration_sec") or cached.get("duration_s") or 0)
+        if mg_dur and vid_clip.duration_sec < mg_dur - 0.05:
+            return False
+        clip_dur = min(float(cached.get("duration_s") or vid_clip.duration_sec),
+                       vid_clip.duration_sec)
+        anim_clip = Clip(
+            id=_uid("tmg"), kind=ClipKind.ANIMATION, asset_id="",
+            track_id=anim_track.id, start_sec=vid_clip.start_sec,
+            duration_sec=clip_dur or mg_dur or vid_clip.duration_sec,
+            text=text_content,
+            metadata={
+                "anim_type": spec.id, "anim_name": anim_name,
+                "category": "mg_dynamic", "logic_category": "logic",
+                "renderer": "mg_hyperframes",
+                "mg_html": str(cached.get("html") or ""),
+                "mg_def": mg_def,
+                "mg_params": cached.get("params") or {},
+                "motion": cached.get("motion") or {},
+                "type_issues": list(cached.get("issues") or []),
+                "reused_from_cache": True,
+                "position": "center",
+            },
+        )
+        if self._find_overlapping_clip(anim_track, anim_clip) is not None:
+            return True
+        anim_track.clips.append(anim_clip)
+        anim_track.clips.sort(key=lambda c: c.start_sec)
+        logger.info("AnimationAgent: 复用已落盘动画 %s（type=%s）", anim_name, spec.id)
+        return True
+
     async def _handle_typed_animation(
         self,
         anim_track: Track,
@@ -1224,8 +1450,14 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         duration: float,
         marker: dict[str, Any],
         persona_style: dict[str, Any] | None = None,
+        *,
+        retry: bool = False,
     ) -> bool:
-        """按类型生成动画；返回 True 表示已创建 clip（调用方不再回退）。"""
+        """按类型生成动画；返回 True 表示已创建 clip。
+
+        `retry=True` 是同一段的第二次生成（首次失败后由调用方触发）：跳过
+        “同片内容去重”记录，否则会把自己当成重复片段直接返回 True。
+        """
         from clipwright.animation.mg.type_generation import fingerprint_of
 
         if not await self._hyperframes_available():
@@ -1241,6 +1473,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         # 逻辑动画是并发执行的，check-and-set 必须串行化，否则同内容会被并发生成两次。
         fp = fingerprint_of(spec.id, text_content)
         seen = getattr(self, "_anim_fingerprints", None)
+        if retry and isinstance(seen, dict):
+            # 重试同一段：清掉首次失败留下的去重记录，否则会被当成“同片重复”跳过。
+            seen.pop(fp, None)
         if seen is None:
             seen = {}
             self._anim_fingerprints = seen
@@ -1260,6 +1495,11 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 )
                 return True  # 视为已处理（跳过重复也是有意的结果）
             seen[fp] = {"start": float(vid_clip.start_sec), "type": spec.id}
+
+        cached = self._mg_cache_lookup(spec.id, text_content, duration, persona_style)
+        if cached is not None:
+            return self._apply_cached_typed(
+                anim_track, vid_clip, anim_name, spec, text_content, cached)
 
         try:
             from clipwright.animation.mg.generator import MGGenerator
@@ -1366,6 +1606,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "position": "center",
             },
         )
+        self._mg_cache_store(spec.id, text_content, duration, persona_style, result)
         if self._find_overlapping_clip(anim_track, anim_clip) is not None:
             logger.info("AnimationAgent: 动画窗口冲突，跳过 %s（同窗口已有动画）", anim_name)
             return True
@@ -1743,17 +1984,55 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
             return
 
-        if not result.get("success"):
-            logger.warning("AnimationAgent: llm_mg 生成失败 (method=%s)", result.get("method"))
-            self._add_trace_warning(
-                f"LLM MG 生成失败，使用降级方案: {result.get('fallback_template', 'none')}")
+        method = str(result.get("method", "unknown") or "unknown")
+        if (not result.get("success")
+                or result.get("fallback_template")
+                or "fallback" in method or "template" in method):
+            logger.warning(
+                "AnimationAgent: llm_mg 未产出 LLM 定制动画 (method=%s, fallback=%s)，跳过",
+                method, result.get("fallback_template"),
+            )
+            err_detail = str(result.get("error") or result.get("failure") or "")
+            self._record_failed_animation(
+                vid_clip, anim_id, anim_name,
+                f"LLM MG 未产出定制动画（method={method}）: {err_detail[:300]}",
+            )
+            _note(
+                "llm_mg_failed_no_template",
+                f"{anim_name} 未产出 LLM 定制动画（method={method}）: {err_detail[:400]}",
+                scope=str((vid_clip.metadata or {}).get("scene_title") or anim_name),
+                impact="该段没有动画（不会用内置模板冒充 LLM 产物）",
+            )
+            return
 
         html = result.get("html", "")
         mg_def = result.get("mg_def", {})
-        method = result.get("method", "unknown")
+
+        # 不允许降级：mg_dynamic 也确定性补主运动（>=4% 画布），再重建 HTML。
+        if isinstance(mg_def, dict) and mg_def:
+            try:
+                from clipwright.animation.mg.type_generation import ensure_motion_floor
+                from clipwright.animation.mg_renderer import MGRenderer
+                fixed = ensure_motion_floor(mg_def, width=int(self._tl_width or 1920))
+                if fixed != mg_def:
+                    mg_def = fixed
+                    html = MGRenderer.render(
+                        mg_def, result.get("params") or {},
+                        width=int(self._tl_width or 1920),
+                        height=int(self._tl_height or 1080),
+                        fps=float(self._tl_fps or 30),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                _note("mg_motion_fix_failed", f"{type(exc).__name__}: {exc}",
+                      impact="该段 MG 动效可能仍偏弱")
 
         if not html:
-            self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
+            _note(
+                "llm_mg_failed_no_template",
+                f"{anim_name} 的 LLM 产物没有 HTML，跳过（不回退模板）",
+                scope=str((vid_clip.metadata or {}).get("scene_title") or anim_name),
+                impact="该段没有动画（不会用内置模板冒充 LLM 产物）",
+            )
             return
 
         # P1-03：窗口不足时跳过（同模板 MG 路径）——否则 clip 被钳到窗口、
@@ -1953,11 +2232,29 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             f"LLM MG 动画 [{anim_name}] 无法生成，已跳过（不再降级为文字显示）"
         )
 
-    def _add_trace_warning(self, message: str) -> None:
-        """添加 trace 警告事件。"""
+    def _record_failed_animation(self, vid_clip: Clip, anim_id: str,
+                                 anim_name: str, reason: str) -> None:
+        """登记失败片段：主 Agent 据此按 clip_id 重派 animation，而不是静默跳过。"""
+        meta = vid_clip.metadata or {}
+        self._failed_animations.append({
+            "severity": "error",
+            "category": "animation",
+            "clip_id": str(getattr(vid_clip, "id", "") or ""),
+            "anim_id": str(anim_id or ""),
+            "anim_name": str(anim_name or ""),
+            "scene_title": str(meta.get("title") or meta.get("scene_title") or ""),
+            "start_sec": float(getattr(vid_clip, "start_sec", 0.0) or 0.0),
+            "duration_sec": float(getattr(vid_clip, "duration_sec", 0.0) or 0.0),
+            "reason": str(reason or "")[:500],
+            "retry": {"stage": "animation", "clip_id": str(getattr(vid_clip, "id", "") or "")},
+        })
+
+    def _add_trace_warning(self, message: str, detail: dict[str, Any] | None = None) -> None:
+        """添加 trace 警告事件（统一 5 参数，允许带结构化 detail）。"""
         try:
             from clipwright.services.trace import add_event as _evt
-            _evt(getattr(self, '_pid', ''), "animation", "warning", message)
+            _evt(getattr(self, '_pid', ''), "animation", "warning", message,
+                 detail or {"degradation": "animation_warning"})
         except Exception:
             pass
 

@@ -11,24 +11,10 @@ override_builtin: true
 contributions:
   - kind: embedding_provider
     id: openai
-    config_schema:
-      api_key:
-        type: string
-        label: OpenAI API Key
-        secret: true
-      base_url:
-        type: string
-        label: API Base URL
-        placeholder: https://api.openai.com/v1
     capabilities:
       models: true
   - kind: embedding_provider
     id: ollama
-    config_schema:
-      base_url:
-        type: string
-        label: Ollama 地址
-        placeholder: http://127.0.0.1:11434
     capabilities:
       models: true
   - kind: embedding_provider

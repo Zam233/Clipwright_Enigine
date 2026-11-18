@@ -111,25 +111,34 @@ PluginData/plugins/{plugin_id}/config.yaml
 
 插件内通过 `self.config` 访问合并后的配置。
 
-### AI 生成插件的 Provider 配置
+### AI 生图 Provider（2026-11-14 起）
 
-三个生成类插件（`ai_image_gen` / `ai_video_gen` / `ai_music_gen`）默认走火山引擎，
-均支持 env 兜底 + 插件配置覆盖（配置经管理面 `PUT /api/plugin/{id}/config` 写入
-`PluginData/plugins/{id}/config.yaml`，secret 字段加密落盘）：
+> `ai_image_gen` / `ai_video_gen` / `ai_music_gen` **已下架**（image-provider-plugin PRD M6）。
+> 旧的「厂商分支写在插件源码里」模式不再新增；生成能力改为 **Provider 契约 + 插件实现**。
 
-| 插件 | provider 取值 | env | 插件配置键 |
-|------|--------------|-----|-----------|
-| ai_image_gen | `volcengine`（默认）/ dalle / flux / local | `ARK_API_KEY`、`ARK_BASE_URL`、`ARK_SEEDREAM_MODEL` | `provider`、`api_key`、`ark_base_url`、`model` |
-| ai_video_gen | `volcengine`（默认）/ kling / runway | `ARK_API_KEY`、`ARK_BASE_URL`、`ARK_SEEDANCE_MODEL` | `provider`、`api_key`、`ark_base_url`、`model`、`poll_interval_sec`、`poll_timeout_sec` |
-| ai_music_gen | `volcengine`（默认）/ suno | `VOLC_ACCESS_KEY`、`VOLC_SECRET_KEY`（兼容 `VOLCENGINE_*`） | `provider`、`access_key`、`secret_key`、`billing_mode`（prepaid/postpaid）、`poll_interval_sec`、`poll_timeout_sec` |
+- Engine 契约：`providers/base.py::ImageProvider`（`default_model` / `capabilities` /
+  `generate` / 可选 `probe`）；贡献种类 `image_provider`（第 20 类）。
+- 配置：后台「供应商 → AI 生图」tab（`kind=image`）。**基础连接字段归「源设置」**
+  （`base_url` / `api_key` / `timeout_sec` / `proxy` / `headers`，密钥加密+掩码）；
+  插件 `config_schema` 只放厂商专有参数（本期两个插件不声明，避免两组重复输入框）。
+- 内置插件：
+  | 插件 | provider id | 说明 |
+  |------|-------------|------|
+  | `plugins/image_providers` | `openai_compatible` | 通用 OpenAI 兼容：`POST {base_url}/images/generations`，`b64_json`/`url` 双响应 |
+  | `plugins/image_gpt_images` | `openai_gpt_image` | `gpt-image-1` 专有：固定 size 档位、quality 参数 |
+- 新增厂商 = 新插件实现 `ImageProvider`，**不要**在 Engine 里加厂商分支。
+- 生成工具 `image_generate`（工作区落盘/幂等账本/素材可见性）与 `timeline_insert_image`
+  已随第二期接入，见 [image-provider-plugin-prd-2026-11-14.md](image-provider-plugin-prd-2026-11-14.md)。
 
-要点：
-- 火山方舟（图片 Seedream / 视频 Seedance）用 Bearer API Key；音乐大模型走火山
-  OpenAPI AK/SK V4 签名（自包含实现见 `plugins/ai_music_gen/main.py::_sign_v4`）。
-- 生成产物 URL 有效期短（图片/视频 24h），插件统一下载落地 `PluginData/assets/`
-  后返回本地路径；下载前经 `clipwright.security.assert_public_url` 防 SSRF。
-- 新增 provider 的模式：`__init__` 接收 provider/凭据 → `execute()` 分发 →
-  独立 `_gen_<provider>()` 方法 + 落地辅助；在 `initialize()` 读取 `self.config`。
+### Provider 配置字段口径（2026-11-15）
+
+- `ProvidersPage` 始终渲染「源设置」：`base_url` / `api_key`（多条）/ `timeout_sec` /
+  `proxy` / `headers`。
+- provider 插件的 `config_schema` **只声明厂商专有参数**；不要重复声明上述连接字段——
+  否则页面出现两组输入框，而且插件 config 与源配置互不同步（写了不生效）。
+- 专有参数必须真的有消费方：源 `config` 目前只在 `provider_sources` 存取/加密，
+  provider 调用点并未读取；**未接线就不要在 UI 暴露**，等接线后再声明。
+- TTS 的 `default_model`、`workspace_id` 等非连接字段可保留，但同样以"已接线"为前提。
 
 **工具可用性与生成历史入库（轮次 61）**：
 

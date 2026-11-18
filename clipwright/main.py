@@ -67,6 +67,7 @@ from clipwright.api import model_probe as model_probe_api
 from clipwright.api import settings as settings_api
 from clipwright.api import providers as providers_api
 from clipwright.api import rag as rag_api
+from clipwright.api import text_animation as text_animation_api
 from clipwright.api import render as render_api
 from clipwright.api import capability as capability_api
 from clipwright.api import tool as tool_api
@@ -132,6 +133,15 @@ def get_plugin_loader() -> PluginLoader:
 async def lifespan(app: FastAPI):
     """应用生命周期管理 — 初始化注册表等。"""
     global _plugin_loader
+
+    # 0. 共享 SSL context + 预热：避免首个 HTTP 客户端构造在事件循环里卡 1–5s
+    #    （Windows 上 create_default_context 实测 1.2s+，httpx 默认每个 client 建一次）
+    from clipwright import net as _net
+    _net.install_httpx_ssl_sharing()
+    try:
+        await asyncio.to_thread(_net.prewarm)
+    except Exception as _net_err:  # noqa: BLE001 — 预热失败不影响启动
+        logger.warning("SSL context 预热失败（首次请求会慢一次）: %s", _net_err)
 
     # 1. 注册内置视频类型插件
     _register_builtin_plugins()
@@ -672,6 +682,7 @@ app.include_router(model_probe_api.router)
 app.include_router(settings_api.router)
 app.include_router(providers_api.router)
 app.include_router(render_api.router)
+app.include_router(text_animation_api.router)
 app.include_router(capability_api.router)
 app.include_router(tool_api.router)
 app.include_router(tool_surface_api.router)

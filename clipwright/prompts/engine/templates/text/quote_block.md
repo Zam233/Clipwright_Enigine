@@ -132,7 +132,25 @@ drawtext 最终只输出 1 个可见文本层 + 1 个出处层；引号装饰如
         }
       ]
     }
-  ]
+  ],
+  "text_animation": {
+    "style": {
+      "font_size": 56,
+      "fill": "#ffffff",
+      "stroke_width": 2,
+      "stroke_color": "#000000",
+      "shadow_y": 4,
+      "shadow_color": "#000000b3",
+      "box": false,
+      "position": "center"
+    },
+    "motion": {
+      "type": "fade_in",
+      "reveal_sec": 0.4
+    },
+    "display_sec": 2.4,
+    "duration_reason": "示例：单条关键词的阅读时间"
+  }
 }
 ```
 

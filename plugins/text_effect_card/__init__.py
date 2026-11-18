@@ -1,0 +1,1 @@
+"""text-effect-card plugin."""

@@ -280,9 +280,9 @@ async def test_llm_raises_falls_back_to_template(monkeypatch) -> None:
         persona_style={},
     )
 
-    assert result["success"] is True
-    assert result["method"] == "fallback"
-    assert result["fallback_template"]
+    assert result["success"] is False
+    assert result["method"] == "llm_failed"
+    assert result["fallback_template"] is None
 
 
 @pytest.mark.asyncio
@@ -311,14 +311,9 @@ async def test_trace_event_emits_method(monkeypatch) -> None:
         pipeline_id="proj_demo_test",
     )
 
-    assert result["success"] is True
-    method_events = [
-        ev for ev in captured if ev[1] == "mg" and ev[2] == "method"
-    ]
-    assert method_events, f"no method trace event captured: {captured}"
-    detail = method_events[-1][4]
-    assert detail["method"] == "fallback"
-    assert detail["fallback_template"]
+    assert result["success"] is False
+    fail_events = [ev for ev in captured if ev[1] == "mg" and ev[2] == "llm_fail"]
+    assert fail_events, f"no llm_fail event captured: {captured}"
 
 
 @pytest.mark.asyncio
@@ -367,9 +362,10 @@ async def test_all_fail_logs_clear_reason(monkeypatch, caplog) -> None:
         )
 
     assert result["success"] is False
-    assert result["method"] == "fallback"
+    assert result["method"] == "llm_failed"
+    assert result["error"]
     joined = "\n".join(rec.getMessage() for rec in caplog.records)
-    assert "no fallback template available" in joined
+    assert "LLM" in joined
 
 
 @pytest.mark.asyncio

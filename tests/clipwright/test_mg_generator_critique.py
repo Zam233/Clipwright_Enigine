@@ -136,8 +136,8 @@ class TestCritiqueFlow:
         assert captured["critique"]["score"] == 40
         assert any("光效" in i for i in captured["critique"]["issues"])
 
-    async def test_low_score_repair_fail_falls_back(self, gen, monkeypatch) -> None:
-        """低分可修复但修复失败 → 降级 fallback。"""
+    async def test_low_score_repair_fail_fails_explicitly(self, gen, monkeypatch) -> None:
+        """低分可修复但修复失败 → 明确失败，不回退模板。"""
         g, st = gen
 
         async def fake_critique_low(*args, **kwargs):
@@ -149,9 +149,9 @@ class TestCritiqueFlow:
         result = await g.generate("测试动画需求", "世界")
         assert st.critique_calls == 1
         assert st.repair_calls == 1
-        assert st.fallback_calls == 1
+        assert st.fallback_calls == 0
         assert result["success"] is False
-        assert result["method"] == "fallback"
+        assert result["method"] == "llm_failed"
 
     async def test_low_score_not_fixable_accepts_original(self, gen, monkeypatch) -> None:
         """低分但不可修复 → 接受原输出，不降级。"""

@@ -294,8 +294,11 @@ def _build_specs() -> dict[str, AnimationTypeSpec]:
             composition=str(override.get("composition") or ""),
             motion=str(override.get("motion") or ""),
             anti_patterns=tuple(override.get("anti_patterns") or ()),
-            fallback_preset=str(override.get("fallback_preset") or ""),
-            fallback_template=str(override.get("fallback_template") or ""),
+            # 2026-11-15 用户裁定：动画类型领域只保留提示词，禁止把
+            # diagram_svg preset / mg template 当作 LLM 失败后的「产物」。
+            # 失败就如实跳过并登记 degradation，不静默换成模板。
+            fallback_preset="",
+            fallback_template="",
         )
 
     # 只有手写覆盖、但 catalog 暂时取不到的类型也要在册（离线/测试环境）
@@ -310,7 +313,8 @@ def _build_specs() -> dict[str, AnimationTypeSpec]:
             composition=str(override.get("composition") or ""),
             motion=str(override.get("motion") or ""),
             anti_patterns=tuple(override.get("anti_patterns") or ()),
-            fallback_preset=str(override.get("fallback_preset") or ""),
+            fallback_preset="",
+            fallback_template="",
         )
     return specs
 

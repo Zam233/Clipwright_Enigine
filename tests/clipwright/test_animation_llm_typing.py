@@ -78,8 +78,9 @@ def test_spec_intent_is_type_specific_not_generic():
     causation = get_spec("causation")
     assert comparison and causation
     assert comparison.intent != causation.intent
-    assert comparison.fallback_preset == "comparison"
-    assert causation.fallback_preset == "causation"
+    # 2026-11-15 裁定：类型动画只保留提示词，不再声明预设回退。
+    assert comparison.fallback_preset == ""
+    assert causation.fallback_preset == ""
 
 
 def test_persona_fingerprint_stable_and_ignores_empty():
@@ -233,7 +234,7 @@ async def test_generate_for_type_reuses_generator_and_reports_motion():
 
 
 @pytest.mark.asyncio
-async def test_generate_for_type_blocks_static_output():
+async def test_generate_for_type_repairs_static_output_with_motion_floor():
     spec = get_spec("comparison")
     frozen = {
         "duration_sec": 6.0,
@@ -248,8 +249,10 @@ async def test_generate_for_type_blocks_static_output():
 
     res = await TG.generate_for_type(gen, spec=spec, content="A vs B", duration_s=6.0)
 
-    assert res.ok is False
-    assert any("近乎静止" in i for i in res.issues)
+    # 现行策略不是“拒绝静态”，而是确定性补 motion floor 后再交付。
+    assert res.ok is True
+    assert not any("近乎静止" in i for i in res.issues)
+    assert TG.motion_report(res.mg_def, 6.0)["ok"] is True
 
 
 @pytest.mark.asyncio
@@ -358,7 +361,9 @@ async def test_typed_failure_falls_back_to_svg():
         with patch.object(agent, "_handle_svg_fallback", fallback):
             await agent._handle_logic_animation(track, _vid_clip(), "diagram", "箭头", {"text": "A→B"}, None)
 
-    fallback.assert_awaited_once()
+    # 2026-11-15 裁定：类型动画只保留提示词，LLM 失败不得回退预设 SVG/模板。
+    fallback.assert_not_awaited()
+    assert len(track.clips) == 0
 
 
 @pytest.mark.asyncio

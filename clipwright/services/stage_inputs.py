@@ -313,7 +313,7 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
 
     if stage == "animation":
         from clipwright.schema.agent import AnimationInput
-        from clipwright.plugins.generated_source import generated_image_entries
+        from clipwright.services.generated_assets import generated_image_entries
         from clipwright.schema.timeline import Timeline
 
         return AnimationInput(
@@ -323,6 +323,7 @@ def assemble(stage: str, *, task: Any, board: dict[str, Any],
             persona_prompt=visual_ctx.persona_prompt or data.get("persona_prompt"),
             vision_prompt=visual_ctx.vision_prompt or data.get("vision_prompt"),
             image_assets=data.get("image_assets") or generated_image_entries(),
+            retry_clip_ids=list(data.get("retry_clip_ids") or []),
             creative_brief=brief,
             production_plan=plan,
         )

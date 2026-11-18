@@ -19,8 +19,19 @@ _task: asyncio.Task | None = None
 _stop = False
 
 
+#: 已知工作区缓存（60s）：20s 轮询每次都 glob + 读 N 个 .workspace.json 会随
+#: 项目数线性变慢，且这段是同步 IO，跑在事件循环里（2026-11-15 py-spy 实测）。
+_KNOWN_CACHE: dict[str, Any] = {"at": 0.0, "ids": []}
+_KNOWN_TTL_SEC = 60.0
+
+
 def _known_projects() -> list[str]:
-    """扫工作区根目录，收集所有已建工作区的 project_id。"""
+    """扫工作区根目录，收集所有已建工作区的 project_id（60s 缓存）。"""
+    import time as _time
+
+    now = _time.time()
+    if now - float(_KNOWN_CACHE["at"] or 0) < _KNOWN_TTL_SEC:
+        return list(_KNOWN_CACHE["ids"])
     out: list[str] = []
     root = workspace_root()
     for meta_file in root.glob("*/.workspace.json"):
@@ -31,6 +42,8 @@ def _known_projects() -> list[str]:
         pid = str(data.get("project_id") or "")
         if pid:
             out.append(pid)
+    _KNOWN_CACHE["at"] = now
+    _KNOWN_CACHE["ids"] = list(out)
     return out
 
 

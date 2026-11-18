@@ -56,12 +56,24 @@ async def _ffmpeg(*args: str, timeout: int = 300) -> subprocess.CompletedProcess
     )
 
 
+#: (name, configured) → 解析结果。`shutil.which` 会扫 PATH（Windows 上可达百毫秒级），
+#: 而 `ToolRegistry.list()` 每次构建工具面都会对每个工具调 `is_available()`；
+#: 不缓存的话主 agent 每次工具调用都在事件循环里重复扫盘（实测 /health 被拖到 8s）。
+_BIN_CACHE: dict[tuple[str, str], str] = {}
+
+
 def _resolve_bin(name: str, configured: str) -> str:
     """解析可执行文件路径：配置项 → PATH → 常见安装位置（如 WinGet）。"""
+    key = (name, configured or "")
+    cached = _BIN_CACHE.get(key)
+    if cached:
+        return cached
     if configured:
+        _BIN_CACHE[key] = configured
         return configured
     found = shutil.which(name)
     if found:
+        _BIN_CACHE[key] = found
         return found
     if os.name == "nt":
         # WinGet 默认安装位置（Gyan.FFmpeg）
@@ -73,10 +85,12 @@ def _resolve_bin(name: str, configured: str) -> str:
                                        "Gyan.FFmpeg_*", "ffmpeg-*-full_build", "bin", f"{name}.exe")
                 matches = _glob.glob(pattern)
                 if matches:
+                    _BIN_CACHE[key] = matches[0]
                     return matches[0]
         except Exception:
             pass
-    return name  # 退回名称，依赖 PATH（找不到时 subprocess 会抛 FileNotFoundError）
+    _BIN_CACHE[key] = name  # 退回名称，依赖 PATH（找不到时 subprocess 会抛 FileNotFoundError）
+    return name
 
 
 def resolve_ffmpeg() -> str:

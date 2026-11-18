@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import asyncio
+import json
 import time
 from typing import Any, Iterable, Optional
 
@@ -379,6 +380,51 @@ PLAN_STAGES: tuple[str, ...] = ("structure", "material", "edit", "animation",
                                 "audio", "quality")
 
 
+def _explicit_timeline_for_redo(task: Any, stage: str, explicit: dict,
+                                refs: list[str] | None = None) -> dict | None:
+    """重做上游阶段时，从显式 inputs 里解析出可回写的 timeline。
+
+    只在调用方真的带了 timeline 输入时生效；没有就不猜（避免把错误时间线
+    当作起点）。引用形如 {"artifact": "art_x", "path": "artifacts/art_x.json"}。
+    """
+    if stage not in ("edit", "animation"):
+        return None
+    raw = (explicit or {}).get("timeline")
+    if not isinstance(raw, dict) and refs:
+        # 主 Agent 有时把时间线放在 input_refs（artifacts/art_x.json），而不是
+        # inputs.timeline。重做 animation 时按引用里第一个 timeline 回退。
+        root0 = _workspace_root_of(task)
+        if root0:
+            for rel in refs:
+                try:
+                    cand = json.loads((Path(root0) / str(rel)).read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001
+                    continue
+                if isinstance(cand, dict) and isinstance(cand.get("tracks"), list):
+                    raw = {"path": str(rel)}
+                    break
+    if not isinstance(raw, dict):
+        return None
+    if isinstance(raw.get("tracks"), list):
+        return raw
+    root = _workspace_root_of(task)
+    if not root:
+        return None
+    rel = str(raw.get("path") or "")
+    art = str(raw.get("artifact") or "")
+    if not rel and art:
+        rel = f"artifacts/{art}.json"
+    if not rel:
+        return None
+    try:
+        from pathlib import Path as _Path
+        path = _Path(root) / rel
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) and isinstance(data.get("tracks"), list) else None
+    except Exception:  # noqa: BLE001 — 引用坏了就不回退，交给装配校验
+        return None
+
+
 async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     """真跑一个阶段，返回结构化结果（并合并进黑板）。"""
     task_id = str(getattr(task, "id", "") or "")
@@ -388,6 +434,32 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     # 校验只认显式键，取值时空值才回退。
     explicit = dict(spec.inputs or {})
     board = bb.get(task_id)
+    # 重做 animation/edit 时，如果黑板 timeline 的 owner 是下游（audio），
+    # 先把它回退到这次显式传入的上游时间线，否则 animation 会被
+    # “只许下游覆盖上游”守卫拒绝，随后 audio 又拿旧时间线覆盖动画层。
+    try:
+        _redo_tl = _explicit_timeline_for_redo(
+            task, stage, explicit,
+            list((spec.args or {}).get("input_refs") or []),
+        )
+        _owner = bb.owner_of(task_id, "timeline")
+        if _redo_tl is not None and _owner:
+            _rank = bb.TIMELINE_STAGE_ORDER
+            if _rank.get(_owner, 99) > _rank.get(stage, 99):
+                bb.reset_timeline(
+                    task_id, _redo_tl,
+                    by="edit" if stage == "animation" else stage,
+                    reason=f"redo {stage}: 黑板 timeline owner={_owner}，回退到显式输入的上游时间线",
+                )
+                board = bb.get(task_id)
+                emit(task_id, "narration",
+                     f"黑板 timeline owner 从 {_owner} 回退到 {stage} 的上游起点（重做用）",
+                     {"kind": "timeline_owner_reset", "from": _owner, "stage": stage},
+                     span="kernel")
+                logger.warning("阶段 %s 重做：timeline owner %s → upstream（显式输入回退）",
+                               stage, _owner)
+    except Exception as _reset_err:  # noqa: BLE001 — 回退失败不阻断，交给黑板守卫给出可读错误
+        logger.warning("阶段 %s 重做：timeline owner 回退失败: %s", stage, _reset_err)
     started = time.monotonic()
 
     emit(task_id, "step_start", f"阶段子代理：{stage}",
@@ -507,6 +579,7 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     usage_before = llm_usage_snapshot()
     degradations: list[Any] = []
     payload: dict[str, Any] = {}
+    skill_calls: list[dict[str, Any]] = []
     # 阶段墙钟下限（E2E 2026-10-29）：`timeout_sec` 是主 agent 可以自己填的参数，
     # 实测它填了 900s → material（43 场逐场搜素材 + 视觉 LLM）与 animation（43 段 MG
     # 逐个渲染）必然超时，然后自己重试、再超时，白烧半小时。模型不该有权把阶段超时
@@ -530,6 +603,20 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
 
         with task_scope(task_id, stage=stage), degradation_scope(degradations), use_route(route):
             from clipwright.services.timeouts import wait_or_run
+
+            # 技能轮（skill-pluginization M2）：没有 LLM 工具轮的阶段（material /
+            # animation / audio / quality 等）先让模型自主选择 0–2 个技能补分析；
+            # 有工具轮的阶段（edit 等）技能已并入工具面，这里仍可补一次轻量调用。
+            try:
+                if getattr(agent, "run_skill_round", None) is not None:
+                    _brief = f"{stage} 阶段：{str(getattr(spec, 'brief', '') or '')[:200]}"
+                    _sr = await asyncio.wait_for(
+                        agent.run_skill_round(_brief, pipeline_id=context.pipeline_id),
+                        timeout=min(60.0, timeout_eff) if timeout_eff > 0 else 60.0,
+                    )
+                    skill_calls = list((_sr or {}).get("tool_calls") or [])
+            except Exception as exc:  # noqa: BLE001 — 技能轮失败不影响阶段主流程
+                logger.debug("阶段 %s 技能轮跳过: %s", stage, exc)
 
             output = await wait_or_run(agent.execute(input_obj, context), timeout_eff)
         payload = stage_merge.payload_of(output)
@@ -582,7 +669,7 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
                      + int(usage_after.get("output_tokens", 0)))
                  - (int(usage_before.get("input_tokens", 0))
                     + int(usage_before.get("output_tokens", 0))))
-    stage_tool_calls = list(getattr(agent, "last_tool_calls", None) or [])
+    stage_tool_calls = list(skill_calls) + list(getattr(agent, "last_tool_calls", None) or [])
     # 暗区补齐（PRD M2）：素材源检索 / MG 生成 / 插件与 skill 调用不走 call_tool，
     # 但同样属于"子 agent 干了什么"。`operation()` 记下的条目在这里并入轨迹
     # （source=internal），随 tool_calls 一起进 AgentResult 与落盘文件。
@@ -650,12 +737,16 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     except Exception as exc:  # noqa: BLE001 — 播报失败不影响阶段结果
         logger.warning("进度播报（阶段结束）失败 %s/%s: %s", task_id, stage, exc)
 
+    _summary = _summary_of(stage, payload, tool_calls=stage_tool_calls)
+    _failed_anims = list(payload.get("issues") or []) if stage == "animation" else []
+    if _failed_anims:
+        _summary += f"；{len(_failed_anims)} 段动画失败，主 Agent 必须按 clip_id 重派（不得收据收尾）"
     result = StageResult(
         stage=stage,
         status=status,
         artifacts={k: payload[k] for k in ("timeline", "script_skeleton",
                                            "candidate_clips", "issues") if payload.get(k)},
-        summary=_summary_of(stage, payload, tool_calls=stage_tool_calls),
+        summary=_summary,
         writes=writes,
         degradations=_degradations,
         issues=list(payload.get("issues") or [])[:20],

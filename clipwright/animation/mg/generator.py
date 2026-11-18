@@ -224,6 +224,7 @@ class MGGenerator:
         # 自愈/重试零 LLM 成本。缓存 TTL 30 分钟，LRU 淘汰。
         # P1-02: 存到 self——generate() 里落缓存时也要用同一键（旧局部变量跨
         # 作用域不可见，是 getattr(self,'_ck','') 恒空串笔误的根源）
+        self._last_failure: dict[str, Any] = {}
         self._ck = _mg_cache_key(description, text_content, persona_style)
         _cached = _mg_cache_get(self._ck)
         if _cached is not None:
@@ -295,12 +296,8 @@ class MGGenerator:
                 )
                 if result:
                     return result
-                logger.warning("MGGenerator: 批判修复失败，进入降级")
-                return await self._fallback_generate(
-                    description, text_content, persona_style,
-                    width=width, height=height, fps=fps,
-                    vision_prompt=vision_prompt,
-                )
+                logger.warning("MGGenerator: 批判修复失败，明确失败（不回退模板）")
+                return self._failure_result(description, "批判修复失败")
 
             # 带错误回传的一次修复重试（仅一次，避免无限重试）
             repair_kwargs: dict[str, Any] = {}
@@ -322,12 +319,8 @@ class MGGenerator:
                     width=width, height=height, fps=fps,
                     vision_prompt=vision_prompt,
                 )
-            logger.warning("MGGenerator: 修复重试仍失败，进入降级")
-            return await self._fallback_generate(
-                description, text_content, persona_style, pipeline_id=pipeline_id,
-                width=width, height=height, fps=fps,
-                vision_prompt=vision_prompt,
-            )
+            logger.warning("MGGenerator: 修复重试仍失败，明确失败（不回退模板）")
+            return self._failure_result(description, "修复重试仍失败")
 
         if not mg_def:
             # LLM 多次尝试均失败（返回 None 或抛异常），记录失败原因供降级决策追溯
@@ -336,11 +329,7 @@ class MGGenerator:
                 "LLM 生成失败（多次尝试均未返回有效 JSON）",
                 {},
             )
-        return await self._fallback_generate(
-            description, text_content, persona_style, pipeline_id=pipeline_id,
-            width=width, height=height, fps=fps,
-            vision_prompt=vision_prompt,
-        )
+        return self._failure_result(description, "LLM 多次尝试均未返回有效 JSON")
 
     @staticmethod
     def _ensure_no_background(
@@ -642,11 +631,10 @@ ision_prompt
         )
         # 自批判没生效 = 这段产物少了一道质量校验（旧实现静默跳过，主 Agent 完全不知情）
         if critique is None and (self._config.get("critique", {}) or {}).get("enabled", True):
-            _note(
-                "mg_critique_skipped",
-                "自批判未产出（LLM 返回不可解析 / 调用异常），该段产物未经质量自评",
-                scope=str((scene_context or {}).get("title") or ""),
-                impact="仅靠客观动效指标兜底；若指标也通过则该段无质量信号",
+            logger.warning("MGGenerator: 自批判未产出，按客观动效门禁兜底（不降级）")
+            self._trace_event(
+                None, "quality", "MG 自批判未产出，按客观门禁兜底",
+                {"scene": str((scene_context or {}).get("title") or "")},
             )
 
         # 客观动效门禁（PRD §5 / §8）：LLM 自评容易"看着还行"，这里用可计算的
@@ -973,20 +961,47 @@ ision_prompt
         user_prompt = "\n\n".join(user_parts)
 
         llm_config = self._config.get("llm", {})
-        try:
-            response = await unified_llm_call("MGGenerator.critique", lambda: self._llm.generate(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=critique_config.get("temperature", 0.1),
-                timeout=llm_config.get("timeout", 900),
-            ), retries=1, timeout=llm_config.get("timeout", 900))
-            content = response.content if hasattr(response, "content") else str(response)
-            return self._parse_critique(content)
-        except Exception as e:
-            logger.warning("MGGenerator critique call failed: %s", e)
-            return None
+        last_finish = ""
+        for attempt in range(2):  # 评审是质量信号：一次 JSON 坏了不该直接丢掉自评
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+            if attempt:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "上一次输出不是合法 JSON（可能夹了解释文字或少了括号）。"
+                        "这次只输出一个 JSON 对象："
+                        '{"score": 0到100的整数, "issues": ["..."], "suggestions": ["..."]}'
+                    ),
+                })
+            try:
+                response = await unified_llm_call(
+                    f"MGGenerator.critique:{attempt + 1}",
+                    lambda m=messages: self._llm.generate(
+                        messages=m,
+                        temperature=critique_config.get("temperature", 0.1),
+                        # 之前这里**没有下发 max_tokens**：模型按默认上限返回，长 issues
+                        # 被截断成非法 JSON → 批判失败 → 修复被跳过（E2E 2026-11-15 实测
+                        # 1533 字符的半截 critique）。评审批次同样需要完整输出预算。
+                        max_tokens=int(llm_config.get("max_tokens", 0) or MAX_OUTPUT_TOKENS),
+                        timeout=llm_config.get("timeout", 900),
+                    ),
+                    retries=1, timeout=llm_config.get("timeout", 900),
+                )
+                content = response.content if hasattr(response, "content") else str(response)
+                last_finish = _finish_reason_of(getattr(response, "raw_response", None))
+                parsed = self._parse_critique_json(content, finish_reason=last_finish)
+                if parsed is not None:
+                    return parsed
+                logger.warning(
+                    "MGGenerator critique JSON 不可解析（第 %d 次，finish=%s chars=%d），重试",
+                    attempt + 1, last_finish or "?", len(content or ""),
+                )
+            except Exception as e:
+                logger.warning("MGGenerator critique call failed（第 %d 次）: %s", attempt + 1, e)
+        return None
 
     async def _call_llm_critique_repair(
         self,
@@ -1059,9 +1074,39 @@ ision_prompt
             logger.warning("MGGenerator critique repair call failed: %s", e)
         return None
 
+    def _parse_critique_json(self, content: str, *, finish_reason: str = "") -> dict[str, Any] | None:
+        """批判响应专用 JSON 提取：失败只记 `critique_json_*`，不污染生成降级。"""
+        if not content:
+            logger.warning("MGGenerator: critique 返回空正文（finish_reason=%s）",
+                           finish_reason or "?")
+            return None
+        candidates: list[Any] = [content.strip()]
+        match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)
+        if match:
+            candidates.append(match.group(1).strip())
+        start, end = content.find("{"), content.rfind("}")
+        if start >= 0 and end > start:
+            candidates.append(content[start:end + 1])
+        for cand in candidates:
+            try:
+                return json.loads(cand)
+            except (json.JSONDecodeError, TypeError):
+                continue
+        truncated = finish_reason in ("length", "max_tokens")
+        kind = "critique_json_truncated" if truncated else "critique_json_invalid"
+        logger.warning(
+            "MGGenerator: critique JSON 解析失败（finish_reason=%s chars=%d tail=%.120s）",
+            finish_reason or "?", len(content), content[-120:],
+        )
+        # 自批判是“质量信号”，不是产物本身：它的失败不能登记成产品降级，
+        # 否则一次评审 JSON 坏了就会被主 Agent 当成动画失败去重派（非必要降级）。
+        self._trace_event(None, "quality", f"MG 自批判不可用：{kind}",
+                          {"finish_reason": finish_reason, "chars": len(content)})
+        return None
+
     def _parse_critique(self, content: str) -> dict[str, Any] | None:
         """从 LLM 批判响应中提取并规范化 {score, issues, suggestions}。"""
-        parsed = self._parse_llm_response(content)
+        parsed = self._parse_critique_json(content)
         if not isinstance(parsed, dict):
             return None
 
@@ -1366,13 +1411,29 @@ ision_prompt
             "(finish_reason=%s, chars=%d, head=%.120s | tail=%.120s)",
             finish_reason or "?", len(content), content, content,
         )
+        detail = (f"finish_reason={finish_reason or '?'} chars={len(content)} "
+                  f"head={content[:160]!r} tail={content[-160:]!r}")
+        self._last_failure = {
+            "kind": kind, "finish_reason": finish_reason or "?",
+            "chars": len(content), "head": content[:200], "tail": content[-200:],
+            "error": detail,
+        }
         _note(
             kind,
-            f"finish_reason={finish_reason or '?'} chars={len(content)} "
-            f"tail=…{content[-120:]}",
-            impact="本轮产物不可用，若重试/修复都失败则该段动画退化为内置模板",
+            detail,
+            impact="本轮产物不可用；不回退模板，按 clip_id 重派",
         )
         return None
+
+    def _failure_result(self, description: str, reason: str = "") -> dict[str, Any]:
+        """明确失败：不返回模板/预设，报告保留 finish_reason 与解析错误。"""
+        failure = dict(self._last_failure or {})
+        detail = reason or str(failure.get("error") or "LLM MG 未产出")
+        return {
+            "success": False, "html": "", "mg_def": {},
+            "method": "llm_failed", "fallback_template": None,
+            "error": detail, "failure": failure,
+        }
 
     async def _fallback_generate(
         self,
@@ -1668,19 +1729,6 @@ ision_prompt
         if html2 and not _RESIDUAL_PLACEHOLDER_RE.search(html2):
             logger.warning("MGGenerator: 渲染残留占位符经二次填充后清除")
             return await self._lint_gated(html2)
-
-        if allow_fallback and description and text_content:
-            try:
-                fallback = await self._fallback_generate(
-                    description, text_content, persona_style or {},
-                    width=width, height=height, fps=fps,
-                )
-                fb_html = fallback.get("html") or ""
-                if fb_html and not _RESIDUAL_PLACEHOLDER_RE.search(fb_html):
-                    logger.warning("MGGenerator: 渲染残留占位符 → 降级模板渲染")
-                    return fb_html
-            except Exception as e:
-                logger.warning("MGGenerator: 残留占位符降级渲染失败: %s", e)
 
         logger.warning("MGGenerator: 渲染后仍含残留占位符，返回原始 HTML")
         return html or html2

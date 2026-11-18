@@ -11,6 +11,21 @@ import pytest
 from clipwright.services import capability_matrix as cm
 
 
+@pytest.fixture(autouse=True)
+def _skills_from_plugin(tmp_path):
+    """2026-11-14：业务技能已迁出 engine，矩阵里的 skill 来自 plugins/skill_pack。"""
+    from pathlib import Path
+
+    from clipwright.plugins.loader import PluginLoader
+
+    loader = PluginLoader(Path("plugins"), tmp_path / "PluginData")
+    loader.load("skill_pack")
+    try:
+        yield
+    finally:
+        loader.unload("skill_pack")
+
+
 def test_registry_coverage_is_exhaustive():
     """注册表里每个工具都必须有明确档位；漏一个就抛（新增能力不能悄悄出现）。"""
     matrix = cm.build_matrix()
@@ -124,9 +139,9 @@ def test_meta_capabilities_present():
     assert "run_pipeline" not in names          # 已下线，不再广告（能力代码留作回滚）
     stat = cm.coverage()
     assert stat["by_kind"].get("pipeline", 0) == 0   # 管线能力清零（键不存在也算 0）
-    # B3-T6（2026-11-03）：`dub_script` 已从 engine 迁到 `plugins/tts_feature`，
-    # engine 侧 skill 由 4 变 3（analyze_video_structure / generate_captions /
-    # analyze_audio_rhythm）。这是裁定 3 的预期结果，不是能力丢失。
+    # B3-T6（2026-11-03）+ skill-pluginization（2026-11-14）：业务技能全部由插件
+    # 提供（dub_script → tts_feature；其余三个 → skill_pack），engine 不再内置。
+    # 本用例的 autouse fixture 已加载 skill_pack。
     assert stat["by_kind"]["skill"] >= 3
 
 

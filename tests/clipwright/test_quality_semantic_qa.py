@@ -192,7 +192,8 @@ async def test_semantic_qa_invalid_severity_dropped(monkeypatch: Any) -> None:
 
     semantic = [i for i in out.issues if i.category == "semantic"]
     assert len(semantic) == 2
-    assert {i.severity for i in semantic} == {"error", "info"}
+    # 2026-11-15：主观 semantic error 降级为 warning，不再阻塞 render
+    assert {i.severity for i in semantic} == {"warning", "info"}
 
 
 # ── 无关键片段文案 → 直接返回，不调用 LLM ────────────────

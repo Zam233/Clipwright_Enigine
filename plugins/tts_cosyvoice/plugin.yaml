@@ -12,10 +12,6 @@ contributions:
   - kind: tts_provider
     id: cosyvoice
     config_schema:
-      api_key:
-        type: string
-        label: DashScope API Key
-        secret: true
       workspace_id:
         type: string
         label: 业务空间 ID

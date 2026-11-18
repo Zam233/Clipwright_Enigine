@@ -1,0 +1,23 @@
+id: "image_gpt_images"
+name: "OpenAI GPT-Images 生图 Provider"
+version: "1.0.0"
+kind: "capability"
+description: "OpenAI gpt-image-1 专用图像生成 provider：固定 size 档位（1024x1024/1536x1024/1024x1536/auto）、quality/background/output_format 专有参数，响应以 b64_json 为主"
+author: "Clipwright Team"
+entry_point: "image_gpt_images.main"
+
+api_version: "2"
+contributions:
+  - kind: image_provider
+    id: openai_gpt_image
+    # 同 image_providers：基础连接字段归「源」；专有参数（quality 等）待接入
+    # 生成链路时再作为源 config 透传，避免现在出现重复且无效的输入框。
+    capabilities:
+      sizes: ["1024x1024", "1536x1024", "1024x1536", "auto"]
+      max_n: 10
+      reference_image: false
+      output_formats: ["png", "jpeg", "webp"]
+      max_prompt_chars: 32000
+      concurrency: 2
+      cost_per_image_usd: null
+      size_dialect: "openai_size"

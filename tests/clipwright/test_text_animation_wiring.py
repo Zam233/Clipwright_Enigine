@@ -95,6 +95,9 @@ def test_llm_path_creates_center_clip(monkeypatch):
     assert clip.metadata["text_anim_type"] == "emphasis_keyword"
     assert clip.metadata["text_llm_method"] == "text_llm"
     assert clip.keyframes[0]["time"] == 10.0
+    assert clip.metadata["renderer"] == "mg_hyperframes"
+    assert clip.metadata["mg_html"]
+    assert clip.metadata["apply_text_style"] is True
 
 
 def test_llm_failure_falls_back_to_template_with_degradation(monkeypatch):
@@ -110,11 +113,9 @@ def test_llm_failure_falls_back_to_template_with_degradation(monkeypatch):
         asyncio.run(agent._handle_text_animation_async(
             track, _clip(), "text_fade_in", "淡入", {"text": "没有监管要求"}, {}))
     kinds = [d.kind for d in sink]
-    assert "text_llm_failed" in kinds
-    assert "text_llm_fallback_template" in kinds
-    # 回退模板仍然产出 clip（不因 LLM 失败丢动画）
-    assert len(track.clips) == 1
-    assert track.clips[0].metadata["position"] == "center"
+    assert "text_llm_failed_no_template" in kinds
+    # 2026-11-15 裁定：文字动画也只保留提示词，LLM 失败不再回退模板。
+    assert len(track.clips) == 0
 
 
 def test_weak_motion_is_reported(monkeypatch):
@@ -122,7 +123,7 @@ def test_weak_motion_is_reported(monkeypatch):
 
     async def _weak(type_id, **kw):  # noqa: ANN001, ANN003
         return _fake_result(keyframes=[{"time": 0.0, "opacity": 0},
-                                       {"time": 0.5, "opacity": 1}])
+                                       {"time": 0.05, "opacity": 1}])
 
     monkeypatch.setattr("clipwright.animation.text_generation.generate_for_type", _weak)
     sink: list = []
@@ -132,7 +133,7 @@ def test_weak_motion_is_reported(monkeypatch):
     assert any(d.kind == "text_motion_weak" for d in sink)
 
 
-def test_flag_off_uses_template_only(monkeypatch):
+def test_flag_off_has_no_text_clip_and_no_template(monkeypatch):
     from clipwright.config import settings
 
     monkeypatch.setattr(settings, "text_animation_llm", False, raising=False)
@@ -148,5 +149,4 @@ def test_flag_off_uses_template_only(monkeypatch):
     asyncio.run(agent._handle_text_animation_async(
         track, _clip(), "text_fade_in", "淡入", {"text": "没有监管要求"}, {}))
     assert called["n"] == 0
-    assert len(track.clips) == 1
-    assert track.clips[0].metadata["position"] == "center"
+    assert len(track.clips) == 0  # 不允许模板/降级

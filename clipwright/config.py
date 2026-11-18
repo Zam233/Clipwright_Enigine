@@ -136,6 +136,12 @@ class Settings(BaseSettings):
     agent_max_turns: int = 80
     agent_max_tool_calls: int = 400
     agent_max_wall_sec: float = 0.0  # 0 = 不设上限
+    # --- 技能自主调用（skill-pluginization M2）---
+    # 阶段子 agent 在进入主逻辑前做一次有界技能轮：只暴露 Skill schema，最多
+    # skill_assist_max_calls 次调用；失败/无技能/超时一律跳过，不影响阶段。
+    skill_assist_enabled: bool = True
+    skill_assist_max_calls: int = 2
+    skill_assist_timeout_sec: float = 60.0
 
     # --- 终止机制收口（docs/agent-termination-devplan-2026-11-02.md §3/§6/§7）---
     # 2026-11-02 用户裁定 1：软着陆轮次 600（原来 PRD 的 360/400 作废），
@@ -222,6 +228,7 @@ class Settings(BaseSettings):
     # 文字动画 LLM 化（PRD text-animation-llm-2026-10-30）：True = prompt+LLM 生成；
     # False = 回退 AnimationCatalog 固定关键帧表（回滚开关）。
     text_animation_llm: bool = True
+    text_motion_llm_enabled: bool = False
     # 类型化生成的并发上限（LLM 等待型，默认与 pipeline 并发一致）
     animation_llm_concurrency: int = 6
     # persona 提示词统一上限（PRD §16 R5）：旧实现 400/600/1500/2000 四处不同截断，

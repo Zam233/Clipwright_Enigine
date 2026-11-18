@@ -14,7 +14,8 @@ ANIMATABLE_PROPS = {
     "border_radius", "border_width", "border_color",
     "box_shadow", "text_shadow", "filter", "letter_spacing",
     "font_weight", "font_family", "line_height", "transform_origin",
-    "easing",
+    "easing", "translate_z", "scale_x", "scale_y", "rotate_x", "rotate_y", "rotate_z",
+    "perspective", "blur", "clip_inset", "mask", "clip_path",
 }
 # easing 取值：命名曲线 + 可选 cubic-bezier 数组 [x1,y1,x2,y2]
 VALID_EASINGS = {
@@ -58,7 +59,23 @@ def normalize_easing(value: Any) -> Any:
         return low
     if low.startswith("cubic-bezier("):
         return low
-    return EASING_ALIASES.get(low) or EASING_ALIASES.get(low.replace("-", "")) or raw
+    # 常见「基础缓动 + 曲线族」写法：ease-out-cubic / easeInOutQuad / ease-in-sine。
+    # 先剥掉曲线族后缀再查白名单/别名（旧实现只认精确别名，`ease-out-cubic`
+    # 直接判非法 → 整段文字动画回退模板）。
+    families = ("cubic", "quart", "quint", "quad", "sine", "expo", "circ",
+                "back", "elastic", "bounce")
+    stripped = low
+    for fam in families:
+        if stripped.endswith(fam):
+            stripped = stripped[: -len(fam)].rstrip("-")
+            break
+    for cand in (low, low.replace("-", ""), stripped, stripped.replace("-", "")):
+        if cand in VALID_EASINGS:
+            return cand
+        mapped = EASING_ALIASES.get(cand)
+        if mapped:
+            return mapped
+    return raw
 
 
 
@@ -269,6 +286,12 @@ def repair_mg_json(mg_def: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
             repaired["params"] = params
 
     for i, elem in enumerate(repaired.get("elements", [])):
+        if str(elem.get("type") or "") == "shape" and not str(elem.get("shape") or "").strip():
+            elem["shape"] = "rect"
+            fixes.append(f"elements[{i}]: missing shape → rect")
+        if str(elem.get("type") or "") == "shape" and elem.get("shape") not in VALID_SHAPES:
+            elem["shape"] = "rect"
+            fixes.append(f"elements[{i}]: invalid shape → rect")
         kfs = elem.get("keyframes", [])
         if not kfs:
             elem["keyframes"] = [
@@ -298,11 +321,30 @@ def repair_mg_json(mg_def: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
                         f"elements[{i}]: easing {kf.get('easing')!r} → {fixed_easing!r}")
                     kf["easing"] = fixed_easing
 
-            # 清理未知动画属性（LLM 偶发的多余字段），避免整个生成降级
+            # 清理未知动画属性（LLM 偶发的多余字段），避免整个生成降级。
+            # 关键帧里的 x_offset/y_offset 是元素级字段的误用：语义等价于
+            # translate_x/translate_y，直接**转换**而不是删除——删除会把主运动
+            # 一起删掉，客观动效门禁随即判 1.5% 位移 → 整段降级/回退模板。
             unknown = [k for k in kf if k != "time" and k not in ANIMATABLE_PROPS]
             if unknown:
+                converted: list[str] = []
                 for k in unknown:
-                    kf.pop(k, None)
-                fixes.append(f"elements[{i}]: removed unknown keyframe props {unknown}")
+                    if k in ("x_offset", "y_offset"):
+                        target = "translate_x" if k == "x_offset" else "translate_y"
+                        try:
+                            base = float(kf.get(target, 0) or 0)
+                            delta = float(kf.get(k) or 0)
+                            kf[target] = base + delta
+                            converted.append(f"{k}->{target}")
+                        except (TypeError, ValueError):
+                            pass
+                        kf.pop(k, None)
+                    else:
+                        kf.pop(k, None)
+                if converted:
+                    fixes.append(
+                        f"elements[{i}]: converted keyframe offsets {converted}")
+                if unknown:
+                    fixes.append(f"elements[{i}]: removed unknown keyframe props {unknown}")
 
     return repaired, fixes

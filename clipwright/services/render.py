@@ -963,7 +963,7 @@ from collections import OrderedDict
 from clipwright.tool.video import _CLIPWRIGHT_TEMP
 _trim_cache: "OrderedDict[str, str]" = OrderedDict()
 _trim_cache_lock = _threading.Lock()
-_TRIM_CACHE_MAX = 50
+_TRIM_CACHE_MAX = 512
 _TRIM_CACHE_MAX_BYTES = 2 * 1024 ** 3  # 2GB 磁盘配额
 _TRIM_CACHE_DIR = _CLIPWRIGHT_TEMP / "trim_cache"
 _TRIM_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -974,11 +974,11 @@ def _trim_cache_put_locked(cache_key: str, path: str) -> None:
     _trim_cache[cache_key] = path
     _trim_cache.move_to_end(cache_key)
     while len(_trim_cache) > _TRIM_CACHE_MAX:
-        _old_key, old_path = _trim_cache.popitem(last=False)
-        try:
-            Path(old_path).unlink(missing_ok=True)
-        except Exception:
-            pass
+        _old_key, _old_path = _trim_cache.popitem(last=False)
+        # 不要在这里删盘：同一轮渲染可能已有 >MAX 个 trim 被并发创建，
+        # 旧实现删掉“最旧”文件，恰好把本轮还要 concat 的片段删掉 →
+        # concat 只剩 55/69 段（video 538s / audio 702s 的根因）。
+        # 磁盘清理交给 _prune_trim_cache_dir（只删 >10min 的旧文件）。
 
 
 def _prune_trim_cache_dir() -> None:
@@ -1008,12 +1008,12 @@ _prune_trim_cache_dir()
 
 def _trim_cache_key(src: str, offset: float, dur: float, width: int, height: int,
                     speed: float = 1.0, image_fit: str = "", transform: str = "",
-                    kfs: str = "", kb: str = "", mask: str = "") -> str:
+                    kfs: str = "", kb: str = "", mask: str = "", frames: int = 0) -> str:
     # /D2/V4/V3: 速度、填充模式、静态变换与关键帧都影响输出内容，必须进缓存键
     # 轮 85: kenburns 改变画面（图片推近），同样必须进键
     # O-遮罩升级: 蒙版（类型/区域/羽化/反相/点数/旋转）同样改变像素，**必须进键**——
     # 否则同一素材换个蒙版会命中上一版缓存，表现为"蒙版没生效"
-    raw = f"{src}|{offset:.2f}|{dur:.2f}|{width}x{height}|{speed:.3f}|{image_fit}|{transform}|{kfs}|{kb}|{mask}"
+    raw = f"{src}|{offset:.2f}|{dur:.2f}|{width}x{height}|{speed:.3f}|{image_fit}|{transform}|{kfs}|{kb}|{mask}|{frames}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -1509,9 +1509,37 @@ class RenderService:
                     entry["denoise"] = bool(_am.get("denoise"))
                     audio_segments.append(entry)
                 elif k in ("text", "caption"):
-                    # 先计算偏移，分离追加以避免列表自引用歧义
-                    ov = self._extract_text_overlay(clip, track.index, text_overlays)
-                    text_overlays.append(ov)
+                    meta = clip.metadata or {}
+                    _provider = str(meta.get("text_provider_id") or "")
+                    if _provider and _provider != "motion_spec":
+                        from clipwright.animation.text_engine import TextMotionRegistry
+                        if not TextMotionRegistry.has(_provider):
+                            raise RuntimeError(
+                                f"TEXT_MOTION_UNAVAILABLE: 文字 clip {clip.id} 需要 provider "
+                                f"{_provider}，插件未加载/已禁用"
+                            )
+                    if meta.get("renderer") == "mg_hyperframes":
+                        # 用户裁定：文字动画统一 MG HTML；走 Hyperframes 透明 MOV。
+                        # 新路径缺 HTML 是硬错误，不得静默回退 ASS/drawtext。
+                        if not meta.get("mg_html"):
+                            raise RuntimeError(
+                                f"TEXT_MG_HTML_MISSING: 文字 clip {clip.id} renderer=mg_hyperframes "
+                                "但没有 mg_html；拒绝回退 ASS/白字"
+                            )
+                        hf_ov_local.append(dict(
+                            mg_html=self._ensure_mg_placeholders_filled(meta, clip.text or ""),
+                            start_sec=clip.start_sec,
+                            duration_sec=clip.duration_sec,
+                            _track_idx=track.index,
+                            mg_def=meta.get("mg_def"),
+                            mg_params=meta.get("mg_params") or {},
+                            anim_type=meta.get("anim_type") or "",
+                            category="text_mg",
+                        ))
+                    else:
+                        # 旧时间线只读兼容：无 mg_html 的旧 clip 仍走 ASS
+                        ov = self._extract_text_overlay(clip, track.index, text_overlays)
+                        text_overlays.append(ov)
                 elif k == "animation":
                     meta = clip.metadata or {}
                     if meta.get("renderer") == "mg_hyperframes" and meta.get("mg_html"):
@@ -1651,6 +1679,7 @@ class RenderService:
                     font_color=clip.font_color or "#ffffff", font=clip.font or "",
                     position=pos, offset_y=offset_y, style=style,
                     anim_type=meta.get("anim_type", ""), renderer=meta.get("renderer", "drawtext"),
+                    motion=meta.get("motion") or (meta.get("text_animation") or {}).get("motion") or {},
                     category=category, _track_idx=track_idx, keyframes=clip.keyframes or [],
                     # 关键帧时间基标记（前端 exportTimeline 写 clip_local）
                     kf_time_base=meta.get("kf_time_base"))
@@ -1693,6 +1722,14 @@ class RenderService:
                 speed = 1.0
             speed = max(0.25, min(4.0, speed))
             dur = max(0.5, seg.get("duration_sec", 5))
+            try:
+                _fps = max(1.0, float(fps or 30))
+                _start = float(seg.get("start_sec", 0) or 0)
+                # 按时间线全局帧边界分配，而不是每段独立 round：
+                # 69 段各自 round/ceil 会累计 15 帧（702.9s vs 702.4s）。
+                _target_frames = max(1, round((_start + dur) * _fps) - round(_start * _fps))
+            except (TypeError, ValueError):
+                _target_frames = max(1, round(dur * float(fps or 30)))
             if not src:
                 self._fallback_count += 1
                 return self._generate_fallback(dur, width, height, fps, idx)
@@ -1733,6 +1770,7 @@ class RenderService:
                                         speed, image_fit,
                                         transform=f"{_tx:.4f},{_ty:.4f},{_ts:.4f},{_tr:.4f}" if _has_transform else "",
                                         kfs=_kfs_digest,
+                                        frames=_target_frames,
                                         kb="1" if seg.get("kenburns") else "",
                                         mask=json.dumps({
                                             "t": seg.get("mask_type"),
@@ -1997,12 +2035,14 @@ class RenderService:
                            "-ss", str(seg.get("source_offset", 0)),
                            "-stream_loop", "-1", "-i", src, "-t", str(dur),
                            "-filter_complex", fc, "-map", "[vout]", "-r", str(fps),
+                           "-frames:v", str(_target_frames),
                            *_encoder_stage_args(encoder, preset),
                            *video_rate_args(encoder, bitrate), "-an", out_tmp]
                 else:
                     cmd = ["ffmpeg", "-y", "-loglevel", "error", *(_hwaccel_args(encoder)),
                            "-ss", str(seg.get("source_offset", 0)),
                            "-stream_loop", "-1", "-i", src, "-t", str(dur), "-vf", vf, "-r", str(fps),
+                           "-frames:v", str(_target_frames),
                            *_encoder_stage_args(encoder, preset),
                            *video_rate_args(encoder, bitrate), "-an", out_tmp]
                 r = self._run_ff(cmd, capture_output=True, text=False, timeout=3600)
@@ -2035,6 +2075,12 @@ class RenderService:
             (seg, r) for seg, r in zip(segments, results)
             if r and Path(r).exists()
         ]
+        _dropped = [(i, r) for i, r in enumerate(results) if not r or not Path(r).exists()]
+        if _dropped:
+            _sample = ", ".join(f"#{i}:{r!r}" for i, r in _dropped[:3])
+            self._final_ffmpeg_log.append(
+                f"trim: 丢弃 {len(_dropped)} 段（{_sample}）")
+            logger.warning("trim: 丢弃 %d 段: %s", len(_dropped), _sample)
         segments = [seg for seg, _ in kept]
         trimmed = [t for _, t in kept]
 
@@ -2621,45 +2667,145 @@ class RenderService:
         写文件用相对路径（ffmpeg 从 CWD=仓库根运行，同 ``_fonts/`` 哲学，
         规避 Windows 盘符冒号被 filter 解析器截断）。
         """
-        from clipwright.tool.design import TextStyle
+        from dataclasses import replace
+        from clipwright.tool.design import TextStyle, color_to_ass, ass_time
         try:
             actual_dur = await asyncio.to_thread(_get_actual_duration, str(video))
         except Exception:
             actual_dur = 0
 
         dialogues: list[str] = []
-        style_ts: TextStyle | None = None
+        style_defs: list[tuple[str, TextStyle]] = []
+        style_index: dict[tuple, str] = {}
+
+        def _style_name(ts) -> str:
+            key = (
+                ts.font, ts.font_size, ts.font_color, ts.font_weight, ts.font_italic,
+                ts.stroke_width, ts.stroke_color, ts.shadow_x, ts.shadow_y,
+                ts.shadow_blur, ts.shadow_color, ts.glow_color, ts.glow_width,
+                ts.box, ts.box_color, ts.box_border, ts.position, ts.offset_y,
+                ts.letter_spacing,
+            )
+            name = style_index.get(key)
+            if name is None:
+                name = f"T{len(style_defs)}"
+                style_index[key] = name
+                style_defs.append((name, ts))
+            return name
+
+        def _cw(ch: str, font_size: float) -> int:
+            if ord(ch) > 0x2E80:
+                return int(font_size)
+            if ch == " ":
+                return int(font_size * 0.3)
+            return int(font_size * 0.6)
+
+        def _box_event(ts, text: str, style_name: str, start: float, end: float,
+                       x: float, y: float, w: float) -> str:
+            """ASS 矢量底板：圆角 + 内边距，替代 BorderStyle=3 的方角近似。"""
+            pad_x = max(0.0, float(getattr(ts, "box_padding_x", 18) or 18))
+            pad_y = max(0.0, float(getattr(ts, "box_padding_y", 8) or 8))
+            r = max(0.0, min(float(getattr(ts, "box_radius", 6) or 6),
+                             (w + pad_x * 2) / 2, (ts.font_size + pad_y * 2) / 2))
+            bx, by = x - pad_x, y - pad_y
+            bw, bh = w + pad_x * 2, ts.font_size + pad_y * 2
+            if r <= 0:
+                path = f"m {bx:.1f} {by:.1f} l {bx+bw:.1f} {by:.1f} l {bx+bw:.1f} {by+bh:.1f} l {bx:.1f} {by+bh:.1f}"
+            else:
+                path = (
+                    f"m {bx+r:.1f} {by:.1f} l {bx+bw-r:.1f} {by:.1f} "
+                    f"b {bx+bw-r:.1f} {by:.1f} {bx+bw:.1f} {by+r:.1f} {bx+bw:.1f} {by+r:.1f} "
+                    f"l {bx+bw:.1f} {by+bh-r:.1f} "
+                    f"b {bx+bw:.1f} {by+bh-r:.1f} {bx+bw-r:.1f} {by+bh:.1f} {bx+bw-r:.1f} {by+bh:.1f} "
+                    f"l {bx+r:.1f} {by+bh:.1f} "
+                    f"b {bx+r:.1f} {by+bh:.1f} {bx:.1f} {by+bh-r:.1f} {bx:.1f} {by+bh-r:.1f} "
+                    f"l {bx:.1f} {by+r:.1f} "
+                    f"b {bx:.1f} {by+r:.1f} {bx+r:.1f} {by:.1f} {bx+r:.1f} {by:.1f}"
+                )
+            color = color_to_ass(ts.box_color)
+            return (f"Dialogue: 0,{ass_time(start)},{ass_time(end)},{style_name},,,"
+                    f"0,0,0,,{{\\an7\\pos(0,0)\\p1\\1c{color}\\bord0\\shad0}}{path}{{\\p0}}")
+
+        import re as _re
+
+        def _tokens(text: str, word_mode: bool) -> list[str]:
+            if not word_mode:
+                return list(text)
+            # 中文按字、英文/数字按词、标点单独成 token（ASS 逐词即可）
+            return _re.findall(r"[\u4e00-\u9fff]|[A-Za-z0-9_]+|[^\w\s]", text)
+
         for ov in overlays:
             if ov.get("renderer") == "hyperframes" or ov.get("diagram_params"):
                 continue
-            # 生产加固 1.6：长字幕自动拆分多 Dialogue（时间按字数比例分配），不再硬截断
-            chunks = _split_long_text(ov.get("text") or "")
-            if not chunks:
+            raw_text = ov.get("text") or ""
+            if not raw_text.strip():
                 continue
             start = float(ov.get("start_sec", 0) or 0)
             dur = float(ov.get("duration_sec", 3) or 3)
-            # 裁剪到成片实际时长；never extend past start+duration（min 天然保证）
             end = min(start + dur, actual_dur) if actual_dur > 0 else start + dur
             end = max(end, start)
-            total_chars = sum(len(c) for c in chunks) or 1
-            style_d = ov.get("style", {})
+            style_d = ov.get("style") or {}
             if style_d:
-                # 优先 style dict（含 font），再补 clip 级 font 字段
                 if "font" not in style_d and ov.get("font"):
                     style_d = {**style_d, "font": ov.get("font")}
                 ts = TextStyle.from_dict(style_d)
             else:
                 ts = TextStyle(
-                    font_size=ov.get("font_size", 48), font_color=ov.get("font_color", "#ffffff"),
+                    font_size=ov.get("font_size", 48),
+                    font_color=ov.get("font_color", "#ffffff"),
                     font=ov.get("font", ""),
-                    stroke_width=ov.get("stroke_width", 0), position=ov.get("position", "bottom"),
-                    offset_y=ov.get("offset_y", 0))
-            if style_ts is None:
-                style_ts = ts  # 样式取第一条 overlay（14 字段映射 1:1）
+                    stroke_width=ov.get("stroke_width", 0),
+                    position=ov.get("position", "bottom"),
+                    offset_y=ov.get("offset_y", 0),
+                )
+            box_ts = ts if bool(getattr(ts, "box", False)) else None
+            if box_ts is not None:
+                # 方框由 _box_event 矢量绘制；文字样式本身不能再用 BorderStyle=3，
+                # 否则会叠加一个方角底框。
+                ts = replace(ts, box=False)
+            style_name = _style_name(ts)
+            anim = str(ov.get("anim_type") or "")
+            motion = dict(ov.get("motion") or {})
+            motion_type = str(motion.get("type") or anim or "").lower()
+            is_caption = str(ov.get("category") or "") == "caption"
+
+            total_w = sum(_cw(ch, ts.font_size) for ch in raw_text)
+            center_x = (int(width) - total_w) / 2 + float(ts.offset_x or 0)
+            center_y = int(height) / 2 + float(ts.offset_y or 0)
+            if str(ts.position or "center") == "top":
+                center_y = ts.font_size + 20 + float(ts.offset_y or 0)
+            elif str(ts.position or "center") == "bottom":
+                center_y = int(height) - ts.font_size - 20 - float(ts.offset_y or 0)
+
+            if not is_caption and box_ts is not None:
+                dialogues.append(_box_event(
+                    box_ts, raw_text, style_name, start, end,
+                    center_x, center_y - ts.font_size / 2, total_w,
+                ))
+
+            # 旧时间线只读：engine 不再实现任何 motion。旧 clip 的
+            # typewriter/slide/scale/highlight 等动效退化为静态 ASS 文字，
+            # 只保留淡入淡出；新文字必须走 MG HTML 插件路径。
+            if not is_caption and motion_type:
+                try:
+                    self._final_ffmpeg_log.append(
+                        f"legacy_text_static: {ov.get('clip_id') or ''} "
+                        f"motion={motion_type} 已按只读静态文字处理")
+                except Exception:
+                    pass
+
+            chunks = _split_long_text(raw_text)
+            if not chunks:
+                continue
+            total_chars = sum(len(c) for c in chunks) or 1
             cursor = start
             for chunk in chunks:
                 w = (end - start) * len(chunk) / total_chars
-                dialogues.append(ts.build_ass_dialogue(chunk, cursor, min(cursor + w, end)))
+                extra = "" if is_caption else r"\fad(200,200)"
+                dialogues.append(ts.build_ass_dialogue(
+                    chunk, cursor, min(cursor + w, end),
+                    style_name=style_name, extra_tags=extra, layer=1,
+                ))
                 cursor += w
         if not dialogues:
             return video
@@ -2674,7 +2820,12 @@ class RenderService:
         for bi in range(0, len(dialogues), batch_size):
             batch = dialogues[bi:bi + batch_size]
             ass_path = self._work_dir / f"subs_{bi}.ass"
-            header = style_ts.build_ass_style(int(width), int(height))
+            _first_name, _first_ts = style_defs[0]
+            header = _first_ts.build_ass_style(
+                int(width), int(height), style_name=_first_name, include_header=True)
+            for _name, _ts in style_defs[1:]:
+                header += "\n" + _ts.build_ass_style(
+                    int(width), int(height), style_name=_name, include_header=False)
             body = ("[Events]\n"
                     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
                     + "\n".join(batch) + "\n")

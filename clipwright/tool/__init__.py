@@ -56,6 +56,7 @@ from clipwright.tool.reports import EditFileTool, ListReportsTool, ReadReportToo
 from clipwright.tool.type_spec_tool import GetTypeSpecTool
 from clipwright.tool.subtitle import SubtitleBurnTool
 from clipwright.tool.text_video import GenerateTextVideoTool
+from clipwright.tool.text_style_apply import ApplyTextStyleTool
 from clipwright.tool.video import (
     MediaProbeTool,
     VideoConcatTool,
@@ -65,6 +66,8 @@ from clipwright.tool.video import (
     VideoThumbnailTool,
     VideoTrimTool,
 )
+from clipwright.tool.image_generate import ImageGenerateTool
+from clipwright.tool.timeline_insert_image import TimelineInsertImageTool
 from clipwright.tool.image import ImageToClipTool
 from clipwright.tool.vision import SceneDetectTool, SemanticMatchTool
 
@@ -82,6 +85,8 @@ def register_builtin_tools() -> None:
         # ── 视频 ──
         VideoTrimTool(),
         ImageToClipTool(),
+        ImageGenerateTool(),
+        TimelineInsertImageTool(),
         VideoConcatTool(),
         VideoOverlayTool(),
         VideoDownloadTool(),
@@ -109,6 +114,7 @@ def register_builtin_tools() -> None:
         VideoStabilizeTool(),
         # ── 文字 ──
         GenerateTextVideoTool(),
+        ApplyTextStyleTool(),
         SubtitleBurnTool(),
         TypewriterAnimationTool(),
         TrackingTextTool(),

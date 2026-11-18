@@ -49,6 +49,8 @@ class MGRenderer:
         "font_size": "font-size",
         "font_weight": "font-weight",
         "font_family": "font-family",
+        "font_italic": "font-style",
+        "text_align": "text-align",
         "line_height": "line-height",
         "letter_spacing": "letter-spacing",
         "text_shadow": "text-shadow",
@@ -57,6 +59,8 @@ class MGRenderer:
         "border_width": "border-width",
         "border_color": "border-color",
         "transform_origin": "transform-origin",
+        "filter": "filter",
+        "clip_path": "clip-path",
     }
 
     # 元素级已显式渲染/结构性字段，静态透传时排除，避免重复输出
@@ -66,6 +70,7 @@ class MGRenderer:
         "font_size", "font_color", "font_weight",
         "width", "height", "border_radius",
         "stroke_width", "stroke_color", "border_width", "border_color",
+        "text_gradient", "text_stroke",
     }
 
     # CSS 值中的 url(...) 会触发 headless Chrome 主动请求（SSRF /
@@ -425,6 +430,44 @@ const dur=parseFloat(root.dataset.duration);
             if "translate_x" in props:
                 tx = props.pop("translate_x")
                 transforms.append(f"translateX({fill(tx)}px)")
+            if "translate_z" in props:
+                tz = props.pop("translate_z")
+                transforms.append(f"translateZ({fill(tz)}px)")
+            if "scale_x" in props:
+                sx = props.pop("scale_x")
+                transforms.append(f"scaleX({fill(sx)})")
+            if "scale_y" in props:
+                sy = props.pop("scale_y")
+                transforms.append(f"scaleY({fill(sy)})")
+            for _rot, _fn in (("rotate_x", "rotateX"), ("rotate_y", "rotateY"), ("rotate_z", "rotateZ")):
+                if _rot in props:
+                    rv = props.pop(_rot)
+                    transforms.append(f"{_fn}({fill(rv)}deg)")
+            if "perspective" in props:
+                pv = props.pop("perspective")
+                transforms.insert(0, f"perspective({fill(pv)}px)")
+            if "blur" in props:
+                bv = props.pop("blur")
+                style_attrs.append(f"filter:blur({fill(bv)}px);")
+            if "clip_inset" in props:
+                ci = props.pop("clip_inset")
+                if isinstance(ci, (list, tuple)) and len(ci) == 4:
+                    style_attrs.append(
+                        "clip-path:inset(" + " ".join(f"{fill(v)}px" for v in ci) + ");")
+            if "mask" in props:
+                m = props.pop("mask")
+                if isinstance(m, dict):
+                    try:
+                        mx, my = float(m.get("x", 0)), float(m.get("y", 0))
+                        mw, mh = float(m.get("w", 1)), float(m.get("h", 1))
+                        top = max(0, my) * 100
+                        left = max(0, mx) * 100
+                        right = max(0, 1 - mx - mw) * 100
+                        bottom = max(0, 1 - my - mh) * 100
+                        style_attrs.append(
+                            f"clip-path:inset({top:.2f}% {right:.2f}% {bottom:.2f}% {left:.2f}%);")
+                    except (TypeError, ValueError):
+                        pass
             if "width" in props:
                 w = props.pop("width")
                 style_attrs.append(f"width:{fill(w)}px;")
@@ -459,7 +502,18 @@ const dur=parseFloat(root.dataset.duration);
             if k in MGRenderer.STATIC_EXCLUDE_KEYS:
                 continue
             css_key = MGRenderer.KEYFRAME_CSS_MAP.get(k)
-            if css_key and isinstance(v, (str, int, float)):
+            if k == "font_italic" and isinstance(v, bool):
+                static_style += f"font-style:{'italic' if v else 'normal'};"
+            elif k == "mask" and isinstance(v, dict):
+                try:
+                    mx, my = float(v.get("x", 0)), float(v.get("y", 0))
+                    mw, mh = float(v.get("w", 1)), float(v.get("h", 1))
+                    static_style += (f"clip-path:inset({max(0,my)*100:.2f}% "
+                                     f"{max(0,1-mx-mw)*100:.2f}% {max(0,1-my-mh)*100:.2f}% "
+                                     f"{max(0,mx)*100:.2f}%);")
+                except (TypeError, ValueError):
+                    pass
+            elif css_key and isinstance(v, (str, int, float)):
                 static_style += f"{css_key}:{bindable(MGRenderer._sanitize_css_value(v))};"
 
         if elem_type == "text":
@@ -467,9 +521,16 @@ const dur=parseFloat(root.dataset.duration);
             font_color = bindable(elem.get("font_color", "#ffffff"))
             font_weight = fill(elem.get("font_weight", "normal"))
             var_attr = f' data-var-text="{var_text_id}"' if var_text_id else ""
+            gradient_css = ""
+            if elem.get("text_gradient") and elem.get("background"):
+                gradient_css = (
+                    f"background:{bindable(MGRenderer._sanitize_css_value(elem.get('background')))};"
+                    "-webkit-background-clip:text;background-clip:text;color:transparent;"
+                )
             html = (
                 f'<div id="{eid}" class="mg-el clip" data-start="0" data-duration="{total_dur}" data-track-index="1"{var_attr} style="{base_css}'
-                f'font-size:{font_size}px;color:{font_color};font-weight:{font_weight}'
+                f'font-size:{font_size}px;color:{font_color};font-weight:{font_weight};'
+                + gradient_css
                 + static_style
                 + f'">{MGRenderer._esc(content)}</div>'
             )
@@ -484,11 +545,12 @@ const dur=parseFloat(root.dataset.duration);
             )
         elif elem_type in ("line", "circle", "ring", "arc", "shape"):
             shape = elem.get("shape", "rect")
-            color = elem.get("color", "#4f8cff")
+            _props = elem.get("props") if isinstance(elem.get("props"), dict) else {}
+            color = _props.get("color", elem.get("color", "#4f8cff"))
             sw = fill(elem.get("stroke_width", elem.get("border_width", 0)))
             sw_color = elem.get("stroke_color", elem.get("border_color", color))
-            w_val = fill(elem.get("width", 100))
-            h_val = fill(elem.get("height", 100))
+            w_val = fill(_props.get("width", elem.get("width", 100)))
+            h_val = fill(_props.get("height", elem.get("height", 100 if elem_type != "line" else 2)))
             border_radius = elem.get("border_radius", 0)
 
             if elem_type == "circle":
@@ -509,6 +571,20 @@ const dur=parseFloat(root.dataset.duration);
                 border_radius = elem.get("border_radius", 4)
 
             radius_css = f"border-radius:{fill(border_radius)};" if border_radius not in (0, "0", 0.0) else ""
+            _line_offset = ""
+            if elem_type == "line":
+                try:
+                    _line_offset = (f"margin-left:-{float(w_val) / 2:g}px;"
+                                    f"margin-top:-{float(h_val) / 2:g}px;")
+                except (TypeError, ValueError):
+                    _line_offset = ""
+            _bg_image = elem.get("background_image")
+            _bg_image_css = ""
+            if isinstance(_bg_image, str) and _bg_image.strip():
+                _bg_image_css = (
+                    f"background-image:url('{MGRenderer._esc(_bg_image.strip())}');"
+                    "background-size:cover;background-position:center;"
+                )
             # 审计 P3 修复：stroke_width=0 为合法「显式无边框」，按数值判断而非 truthy
             try:
                 sw_num = float(sw)
@@ -524,7 +600,7 @@ const dur=parseFloat(root.dataset.duration);
             html = (
                 f'<div id="{eid}" class="mg-el mg-shape clip" data-start="0" data-duration="{total_dur}" data-track-index="1" style="{base_css}'
                 f'width:{w_val}px;height:{h_val}px;{bg_css}'
-                f'{radius_css}'
+                f'{radius_css}{_bg_image_css}{_line_offset}'
                 + (f'border:{sw}px solid {bindable(sw_color)};' if sw_num > 0 else "")
                 + static_style
                 + '"></div>'

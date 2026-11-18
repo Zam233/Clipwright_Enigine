@@ -79,6 +79,39 @@ def describe(task_id: str) -> dict[str, Any]:
     }
 
 
+def reset_timeline(task_id: str, value: Any, *, by: str = "edit",
+                   reason: str = "") -> None:
+    """显式重做上游阶段时，把 timeline 回退到该阶段可写的起点。
+
+    为什么需要（E2E 2026-11-15）：主 Agent 重派 animation 修动画时，黑板
+    timeline 的 owner 还是 audio（旧 final_timeline），animation 的写入被
+    “只许下游覆盖上游”守卫拒绝；随后 audio 又以黑板里的旧 timeline 收尾，
+    动画层被覆盖。正常路径不该靠人工删 sidecar 才能重跑 animation。
+
+    这是**受控的** owner 回退：只允许 trusted 代码（stage_subagent）在明确
+    带上了上游时间线输入时调用，并留下 reason；不允许经由 `put` 匿名绕过。
+    """
+    tid, k = str(task_id), "timeline"
+    stage = str(by or "").strip()
+    if stage not in TIMELINE_STAGE_ORDER:
+        raise BlackboardError(f"reset_timeline: {stage or '匿名'} 不是时间线生产者")
+    if not (isinstance(value, dict) and isinstance(value.get("tracks"), list)):
+        raise BlackboardError("reset_timeline: value 必须是完整 timeline（含 tracks）")
+    previous = owner_of(tid, k)
+    size = _size_of(value)
+    if size > MAX_BLACKBOARD_BYTES:
+        raise BlackboardError(f"reset_timeline: timeline 过大（{size} bytes）")
+    _BOARDS.setdefault(tid, {})[k] = value
+    _OWNERS.setdefault(tid, {})[k] = {
+        "by": stage, "ts": time.time(), "bytes": size,
+        "reset_from": previous, "reset_reason": str(reason or "")[:300],
+    }
+    logger.warning(
+        "黑板书 timeline owner 回退: %s → %s（%s；task=%s）",
+        previous or "无", stage, reason or "redo upstream", tid,
+    )
+
+
 def put(task_id: str, key: str, value: Any, *, by: str = "") -> None:
     """写一个键。`timeline` 走单向覆盖校验；超大值只接受文件指针形状。"""
     tid, k = str(task_id), str(key)
@@ -158,6 +191,7 @@ __all__ = [
     "merge",
     "owner_of",
     "put",
+    "reset_timeline",
     "reset",
     "snapshot",
     "stages_that_can_write",

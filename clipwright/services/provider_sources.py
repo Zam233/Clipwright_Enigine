@@ -23,11 +23,11 @@ from clipwright.config import logger
 from clipwright.paths import anchor
 from clipwright.services.webhook_crypto import decrypt_secret, encrypt_secret, has_key
 
-#: 角色名单（与前端 tabs/角色徽标一致）
-ROLES: tuple[str, ...] = ("main", "flash", "vision", "embed", "rerank", "tts")
+#: 角色名单（与前端 tabs/角色徽标一致）；`image` 为 AI 生图（image-provider-plugin PRD M2）
+ROLES: tuple[str, ...] = ("main", "flash", "vision", "embed", "rerank", "tts", "image")
 
 #: 源的类型（对应前端顶部 tab）
-SOURCE_KINDS: tuple[str, ...] = ("llm", "embedding", "rerank", "tts")
+SOURCE_KINDS: tuple[str, ...] = ("llm", "embedding", "rerank", "tts", "image")
 
 #: 角色 → 允许的源类型（P2：绑定前校验，避免把 TTS 源绑到 LLM 角色之后
 #: 在运行期才报「未安装 LLM provider」这种难以定位的错误）
@@ -38,6 +38,7 @@ ROLE_EXPECTED_KINDS: dict[str, tuple[str, ...]] = {
     "embed": ("embedding",),
     "rerank": ("rerank",),
     "tts": ("tts",),
+    "image": ("image",),
 }
 
 _STORE_PATH: Optional[Path] = None

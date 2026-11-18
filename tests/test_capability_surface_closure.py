@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -21,14 +22,22 @@ from clipwright.tool.registry import ToolRegistry
 
 
 @pytest.fixture(autouse=True)
-def _registered():
+def _registered(tmp_path):
     register_builtin_tools()
-    register_builtin_skills()
+    # 2026-11-14 skill 插件化：业务技能来自插件，engine 不再内置。
+    # 这个用例断言的是「技能能进工具面并可执行」，所以显式加载基础技能插件。
+    from clipwright.plugins.loader import PluginLoader
+
+    loader = PluginLoader(Path("plugins"), tmp_path / "PluginData")
+    loader.load("skill_pack")
     sf.clear_records()
     sf.clear_cache()
-    yield
-    sf.clear_records()
-    sf.clear_cache()
+    try:
+        yield
+    finally:
+        loader.unload("skill_pack")
+        sf.clear_records()
+        sf.clear_cache()
 
 
 # ── 1. Skill 进工具面并可执行 ─────────────────────────────

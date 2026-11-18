@@ -41,6 +41,10 @@ _WIRED_KINDS = {
     ContributionKind.HOOK,
     ContributionKind.PROMPT,
     ContributionKind.CLIP_KIND,
+    ContributionKind.TEXT_MOTION,
+    ContributionKind.TEXT_PROMPT_PACK,
+    ContributionKind.TEXT_STYLE_PACK,
+    ContributionKind.TEXT_ASSET_PACK,
 }
 
 #: Provider 类 kind（facade-only，但注册前要做协议符合性校验 —— B2）
@@ -51,6 +55,8 @@ _PROVIDER_KINDS = {
     ContributionKind.TTS_PROVIDER,
     ContributionKind.STT_PROVIDER,
     ContributionKind.RENDERER_BACKEND,
+    # 第 20 类：图像生成（image-provider-plugin PRD M1）
+    ContributionKind.IMAGE_PROVIDER,
 }
 
 #: **纯数据** kind（2026-11-07 第 18 类 display_spec）：`object` 恒为 `None`，
@@ -181,13 +187,45 @@ def register(owner: str, item: Contribution, *, policy=None) -> Optional[str]:
             if missing:
                 return (f"llm_provider:{item.id} 不符合协议，缺少方法: "
                         f"{', '.join(missing)}")
+        elif item.kind is ContributionKind.IMAGE_PROVIDER:
+            # image-provider-plugin PRD M1：与 llm 同款注册期协议校验，
+            # 缺方法给可读原因，不连累同插件其它贡献。
+            from clipwright.providers.base import missing_image_provider_methods
+            missing = missing_image_provider_methods(item.object)
+            if missing:
+                return (f"image_provider:{item.id} 不符合协议，缺少方法: "
+                        f"{', '.join(missing)}")
         return None
 
     if item.kind not in _WIRED_KINDS:
         return None  # facade-only：由各消费方（B/D 里程碑）自行解析
 
     try:
-        if item.kind is ContributionKind.TOOL:
+        if item.kind is ContributionKind.TEXT_MOTION:
+            from clipwright.animation.text_engine import TextMotionRegistry
+            reason = TextMotionRegistry.register(item.object, plugin_id=owner)
+            if reason:
+                return reason
+
+        elif item.kind is ContributionKind.TEXT_PROMPT_PACK:
+            from clipwright.animation.text_plugin_registry import TextPromptPackRegistry
+            reason = TextPromptPackRegistry.register(item.id, item.meta, plugin_id=owner)
+            if reason:
+                return reason
+
+        elif item.kind is ContributionKind.TEXT_STYLE_PACK:
+            from clipwright.animation.text_plugin_registry import TextStylePackRegistry
+            reason = TextStylePackRegistry.register(item.id, item.meta, plugin_id=owner)
+            if reason:
+                return reason
+
+        elif item.kind is ContributionKind.TEXT_ASSET_PACK:
+            from clipwright.animation.text_plugin_registry import TextAssetPackRegistry
+            reason = TextAssetPackRegistry.register(item.id, item.meta, plugin_id=owner)
+            if reason:
+                return reason
+
+        elif item.kind is ContributionKind.TOOL:
             from clipwright.tool.registry import ToolRegistry
             ToolRegistry.register(item.object, plugin_id=owner)
             # 后置校验：ToolRegistry 对「插件覆盖内置」是静默拒绝（warn+return，
@@ -365,6 +403,18 @@ def unregister(owner: str, keys: list[str]) -> list[str]:
             elif kind_value == ContributionKind.CLIP_KIND.value:
                 from clipwright.services.clip_kind_registry import ClipKindRegistry
                 ClipKindRegistry.unregister_plugin(owner)
+            elif kind_value == ContributionKind.TEXT_MOTION.value:
+                from clipwright.animation.text_engine import TextMotionRegistry
+                TextMotionRegistry.unregister_plugin(owner)
+            elif kind_value == ContributionKind.TEXT_PROMPT_PACK.value:
+                from clipwright.animation.text_plugin_registry import TextPromptPackRegistry
+                TextPromptPackRegistry.unregister_plugin(owner)
+            elif kind_value == ContributionKind.TEXT_STYLE_PACK.value:
+                from clipwright.animation.text_plugin_registry import TextStylePackRegistry
+                TextStylePackRegistry.unregister_plugin(owner)
+            elif kind_value == ContributionKind.TEXT_ASSET_PACK.value:
+                from clipwright.animation.text_plugin_registry import TextAssetPackRegistry
+                TextAssetPackRegistry.unregister_plugin(owner)
             elif kind_value == ContributionKind.PROMPT.value:
                 from clipwright.plugins import prompt_overrides
                 from clipwright.plugins.prompt_registry import PluginPromptRegistry

@@ -10,15 +10,6 @@ override_builtin: true
 contributions:
   - kind: rerank_provider
     id: http
-    config_schema:
-      base_url:
-        type: string
-        label: Rerank 服务地址
-        placeholder: https://api.example.com/rerank
-      api_key:
-        type: string
-        label: API Key
-        secret: true
     capabilities:
       models: true
   - kind: rerank_provider
