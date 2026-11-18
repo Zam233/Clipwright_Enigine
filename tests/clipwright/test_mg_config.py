@@ -13,13 +13,13 @@ from pathlib import Path
 import yaml
 
 from clipwright.animation.mg.validator import validate_mg_json
+from clipwright.prompts.engine.mg import MG_DESIGNER_SYSTEM
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "clipwright" / "animation" / "mg" / "config.yaml"
 
 
 def _load_template() -> str:
-    cfg = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
-    return cfg["prompt"]["system_template"]
+    return MG_DESIGNER_SYSTEM
 
 
 def _extract_examples(tpl: str) -> list[dict]:
@@ -58,8 +58,8 @@ class TestMGConfig:
         cfg = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
         assert isinstance(cfg, dict)
         assert "prompt" in cfg
-        assert "system_template" in cfg["prompt"]
-        assert len(cfg["prompt"]["system_template"]) > 2000
+        # 主提示已迁到 clipwright/prompts/engine/mg.py
+        assert len(MG_DESIGNER_SYSTEM) > 2000
 
     def test_template_covers_motion_principles(self) -> None:
         """system_template 覆盖专业动效设计原则关键词。"""

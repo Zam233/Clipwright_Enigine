@@ -10,6 +10,8 @@ from pathlib import Path
 
 import yaml
 
+from clipwright.prompts.engine.mg import MG_DESIGNER_SYSTEM
+
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "clipwright" / "animation" / "mg" / "config.yaml"
 
 # 快照：config.yaml 的 keyframes 白名单（可用动画属性）。
@@ -32,7 +34,7 @@ def _load_config() -> dict:
 
 
 def _system_template() -> str:
-    return _load_config()["prompt"]["system_template"]
+    return MG_DESIGNER_SYSTEM
 
 
 def _extract_whitelist(template: str) -> set[str]:
@@ -72,7 +74,7 @@ class TestConfigYamlLoads:
     def test_yaml_safe_load_succeeds(self) -> None:
         cfg = _load_config()
         assert isinstance(cfg, dict)
-        assert cfg["prompt"]["system_template"]
+        assert MG_DESIGNER_SYSTEM
 
     def test_system_template_is_substantial(self) -> None:
         template = _system_template()
