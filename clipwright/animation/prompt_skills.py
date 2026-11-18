@@ -57,6 +57,4 @@ def select_skills(*, category: str = "", shot_type: str = "", needs: set[str] | 
 
 
 def compose_skills(*, category: str = "", shot_type: str = "", needs: set[str] | None = None) -> str:
-    return "
-".join(f"## {s.id}
-{s.body}" for s in select_skills(category=category, shot_type=shot_type, needs=needs))
+    return "\n".join(f"## {s.id}\n{s.body}" for s in select_skills(category=category, shot_type=shot_type, needs=needs))
