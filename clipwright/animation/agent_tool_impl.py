@@ -50,7 +50,9 @@ async def render_preview(mg_def: dict | None = None, params: dict | None = None,
                          width: int = 1920, height: int = 1080, fps: float = 30.0, **_: Any) -> dict[str, Any]:
     import httpx
     async with httpx.AsyncClient(timeout=600) as client:
-        resp = await client.post("http://127.0.0.1:8080/api/animation/preview", json={
+        from clipwright.config import settings
+        base = f"http://127.0.0.1:{getattr(settings, 'port', 8080)}"
+        resp = await client.post(f"{base}/api/animation/preview", json={
             "mg_json": mg_def or {}, "params": params or {},
             "width": width, "height": height, "fps": fps,
         })
@@ -80,11 +82,17 @@ async def inspect_reference(video_path: str = "", out_dir: str = "", **_: Any) -
 
 
 async def generate_mg(description: str = "", text_content: str = "", persona_style: dict | None = None,
+                      scene_context: dict | None = None, category_context: dict | None = None,
+                      vision_prompt: str = "", web_context: str = "",
                       width: int = 1920, height: int = 1080, fps: float = 30.0, **_: Any) -> dict[str, Any]:
     from clipwright.animation.mg.generator import MGGenerator
     gen = MGGenerator()
-    return await gen.generate(description=description, text_content=text_content,
-                              persona_style=persona_style or {}, width=width, height=height, fps=fps)
+    return await gen.generate(
+        description=description, text_content=text_content,
+        persona_style=persona_style or {}, scene_context=scene_context or {},
+        category_context=category_context or {}, vision_prompt=vision_prompt,
+        web_context=web_context, width=width, height=height, fps=fps,
+    )
 
 
 def install_animation_tool_handlers() -> None:
