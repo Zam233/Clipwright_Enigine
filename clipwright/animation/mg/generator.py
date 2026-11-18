@@ -336,11 +336,16 @@ class MGGenerator:
                     logger.warning("MGGenerator: 布局自动修正失败（跳过）: %s", exc)
             if ok:
                 try:
-                    from clipwright.animation.qa import qa_report
-                    qa = qa_report(mg_def)
+                    from clipwright.animation.qa_engine import evaluate as qa_evaluate
+                    qa = qa_evaluate(mg_def).as_dict()
                     if not qa["ok"]:
                         logger.warning("MGGenerator QA: %s", qa)
-                        self._trace_event(pipeline_id, "qa", "MG 质量检查", qa)
+                        self._trace_event(
+                            pipeline_id, "qa", "MG 质量检查",
+                            {"report": qa["report"], "retry_action": qa["retry_action"]},
+                        )
+                    else:
+                        self._trace_event(pipeline_id, "qa", "MG 质量检查通过", {"report": qa["report"]})
                 except Exception:  # noqa: BLE001
                     pass
             if ok:
