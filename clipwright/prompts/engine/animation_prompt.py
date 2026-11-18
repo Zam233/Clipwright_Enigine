@@ -66,6 +66,7 @@ ANIMATION_PROMPT_BASE = """你是一位 Motion Graphics 动画设计师。你的
 - `text_gradient: true` 时必须同时给 `background`（渐变背景被裁成文字）；否则渐变不生效。
 - 背景/阴影：默认透明背景；实拍叠加场景才强制 `text_shadow`/`text_stroke`/半透明底板；纯色背景允许干净文字。半透明底板用 shape 或 bg 的 rgba，不得用不透明全幅 bg。
 - text 的颜色字段是 `font_color`，不是 `color`。
+- **text 的 `border_width/border_color` 是文本框边框，不是字形描边**；默认不要给 text 加 border。需要字形描边用 `text_stroke`；需要卡片用 `shape` 作背景、`text` 作内容；需要外发光用 `box_shadow`；需要文字阴影用 `text_shadow`。不要把 text 做成带 border 的胶囊，除非设计明确要求胶囊标签。
 
 ### shape
 - `x/y` = 左上角；`width/height` 必填。
