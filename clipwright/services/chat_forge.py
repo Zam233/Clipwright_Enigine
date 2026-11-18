@@ -12,6 +12,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import hashlib
 import json
 import re
 import uuid
@@ -34,6 +37,8 @@ from clipwright.schema.persona import (
 )
 from clipwright.services.llm import LLMService
 from clipwright.config import logger
+from clipwright.prompts import CHAT_TITLE_SYSTEM
+from filelock import FileLock
 
 # ── ChatForgesystem prompt ──
 
@@ -107,6 +112,9 @@ class ChatForgeSession:
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     # 会话归属（jwt 模式下用于「我的会话」过滤；off 模式为空串）
     owner_id: str = ""
+    revision: int = 0
+    committed_persona_id: str = ""
+    title: str = ""
 
     @property
     def is_expired(self) -> bool:
@@ -137,9 +145,13 @@ class ChatForge:
     MAX_KB_CHARS: int = 8000
     # 会话落盘目录（每个 session 一个 JSON；重启后恢复）
     SESSIONS_DIR = Path("chatforge_sessions")
+    # 受控附件目录；消息 JSON 只保存 storage_ref，不再内嵌 data URL
+    ATTACHMENTS_DIR = Path("chatforge_attachments")
+    ATTACHMENT_TTL_DAYS: int = 7
     # 单条消息的附件上限：数量与单张图片的 Base64 体积（4 张 × 8MB ≈ 32MB 会话文件上限）
     MAX_ATTACHMENTS: int = 4
     MAX_ATTACHMENT_CHARS: int = 8 * 1024 * 1024
+    MAX_SESSION_ATTACHMENT_BYTES: int = 32 * 1024 * 1024
     # 附件类型白名单
     ATTACHMENT_TYPES = ("image", "file")
 
@@ -147,6 +159,8 @@ class ChatForge:
         self._llm = LLMService()
         self._sessions: dict[str, ChatForgeSession] = {}
         self.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        self.ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+        self.cleanup_attachments()
         self._restore_sessions()
 
     # ── B5: 会话落盘 ──
@@ -166,13 +180,17 @@ class ChatForge:
                 "created_at": session.created_at.isoformat(),
                 "updated_at": session.updated_at.isoformat(),
                 "owner_id": session.owner_id,
+                "revision": session.revision,
+                "committed_persona_id": session.committed_persona_id,
+                "title": session.title,
             }
             path = self._session_path(session.session_id)
             tmp = path.with_suffix(".tmp")
             tmp.write_text(json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
             tmp.replace(path)
         except Exception as e:
-            logger.warning("ChatForge 会话落盘失败 %s: %s", session.session_id, e)
+            logger.exception("ChatForge 会话落盘失败 %s: %s", session.session_id, e)
+            raise
 
     def _restore_sessions(self) -> None:
         """启动时从磁盘恢复未过期会话。"""
@@ -193,6 +211,9 @@ class ChatForge:
                         created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.now(timezone.utc),
                         updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else datetime.now(timezone.utc),
                         owner_id=data.get("owner_id", "") or "",
+                        revision=int(data.get("revision", 0) or 0),
+                        committed_persona_id=data.get("committed_persona_id", "") or "",
+                        title=data.get("title", "") or "",
                     )
                     if not session.is_expired:
                         self._ensure_knowledge_ids(session)
@@ -218,6 +239,16 @@ class ChatForge:
         expired = [sid for sid, s in self._sessions.items() if now - s.updated_at > timedelta(hours=1)]
         for sid in expired:
             del self._sessions[sid]
+
+    def get_session(self, session_id: str) -> Optional[ChatForgeSession]:
+        self._cleanup_expired()
+        return self._sessions.get(session_id)
+
+    def _require_session(self, session_id: str) -> ChatForgeSession:
+        session = self.get_session(session_id)
+        if session is None:
+            raise KeyError(session_id)
+        return session
 
     def _get_or_create_session(self, session_id: Optional[str] = None) -> ChatForgeSession:
         self._cleanup_expired()
@@ -246,7 +277,7 @@ class ChatForge:
                 if m.get("role") == "user" and not str(m.get("content", "")).startswith("[系统]")
             ]
             # 首条用户消息作为标题（列表页一眼能认出来是哪个会话）
-            title = user_messages[0]["content"][:40].strip() if user_messages else ""
+            title = session.title or (user_messages[0]["content"][:40].strip() if user_messages else "")
             items.append({
                 "session_id": session.session_id,
                 "title": title,
@@ -435,12 +466,12 @@ class ChatForge:
           未开启时只留一行占位说明（不假装看过图）；
         - 附件与派生文本都随会话落盘，刷新/重启后仍在。
         """
-        session = self._get_or_create_session(session_id)
+        session = self._require_session(session_id)
         normalized = self._normalize_attachments(attachments)
         entry: dict[str, Any] = {"role": "user", "content": user_message}
         if normalized:
-            entry["attachments"] = normalized
             context = await self._attachments_to_context(normalized)
+            entry["attachments"] = self._materialize_attachments(session_id, normalized)
             if context:
                 entry["attachment_context"] = context
         session.messages.append(entry)
@@ -448,7 +479,11 @@ class ChatForge:
         self._persist_session(session)  # B5
         logger.info("ChatForge message: session=%s, len=%d, attachments=%d",
                     session_id, len(user_message), len(normalized))
-        return await self._process(session, user_message, persona_id)
+        result = await self._process(session, user_message, persona_id)
+        # 同步路径也必须在 assistant 消息追加后落盘；否则重启后丢最后一条回复。
+        self._persist_session(session)
+        await self._ensure_title(session)
+        return result
 
     # ── 附件（图/文件消息） ──
 
@@ -481,6 +516,126 @@ class ChatForge:
                 "data_url": data_url,
             })
         return normalized
+
+    def _materialize_attachments(
+        self, session_id: str, attachments: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """把 data URL 落受控文件，返回不含 base64 的元信息。"""
+        out: list[dict[str, Any]] = []
+        session_dir = self.ATTACHMENTS_DIR / "".join(
+            c for c in session_id if c.isalnum() or c in "-_"
+        )[:64]
+        session_dir.mkdir(parents=True, exist_ok=True)
+        for index, att in enumerate(attachments):
+            data_url = str(att.get("data_url") or "")
+            if not data_url.startswith("data:") or "," not in data_url:
+                raise ChatForgeAttachmentError(f"第 {index + 1} 个附件 data_url 非法")
+            header, payload = data_url.split(",", 1)
+            if ";base64" not in header:
+                raise ChatForgeAttachmentError(f"第 {index + 1} 个附件必须是 base64")
+            try:
+                raw = base64.b64decode(payload, validate=True)
+            except Exception as exc:  # noqa: BLE001
+                raise ChatForgeAttachmentError(f"第 {index + 1} 个附件 base64 损坏") from exc
+            if len(raw) > self.MAX_ATTACHMENT_CHARS:
+                raise ChatForgeAttachmentError(f"第 {index + 1} 个附件过大")
+            kind = str(att.get("type") or "file")
+            mime = str(att.get("mime") or "application/octet-stream")
+            if mime == "application/octet-stream" and header.startswith("data:"):
+                mime = header[5:].split(";", 1)[0] or mime
+            if kind == "image":
+                if raw[:8] == b"\x89PNG\r\n\x1a\n":
+                    mime, ext = "image/png", ".png"
+                elif raw[:2] == b"\xff\xd8":
+                    mime, ext = "image/jpeg", ".jpg"
+                elif raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+                    mime, ext = "image/webp", ".webp"
+                else:
+                    raise ChatForgeAttachmentError(f"第 {index + 1} 个图片格式不支持")
+            else:
+                if mime not in ("text/plain", "text/markdown", "application/json"):
+                    raise ChatForgeAttachmentError(f"第 {index + 1} 个附件类型不支持")
+                ext = ".txt" if mime in ("text/plain", "text/markdown") else ".json"
+            digest = hashlib.sha256(raw).hexdigest()
+            att_id = f"att_{digest[:16]}"
+            filename = f"{att_id}{ext}"
+            target = session_dir / filename
+            if not target.exists():
+                target.write_bytes(raw)
+            out.append({
+                "id": att_id, "type": kind, "name": str(att.get("name") or filename),
+                "mime": mime, "size": len(raw), "sha256": digest,
+                "storage_ref": f"{session_dir.name}/{filename}",
+            })
+        return out
+
+    def store_upload(
+        self, session_id: str, filename: str, content_type: str, raw: bytes,
+    ) -> dict[str, Any]:
+        """multipart 上传入口：校验 MIME/大小/会话配额后落盘。"""
+        self._require_session(session_id)
+        allowed = {
+            "image/png", "image/jpeg", "image/webp",
+            "text/plain", "text/markdown", "application/json",
+        }
+        if content_type not in allowed:
+            raise ChatForgeAttachmentError(f"不支持的附件类型: {content_type}")
+        if len(raw) > self.MAX_ATTACHMENT_CHARS:
+            raise ChatForgeAttachmentError("附件过大")
+        session = self._require_session(session_id)
+        used = sum(
+            int(a.get("size") or 0)
+            for m in session.messages for a in (m.get("attachments") or [])
+        )
+        if used + len(raw) > self.MAX_SESSION_ATTACHMENT_BYTES:
+            raise ChatForgeAttachmentError("会话附件总容量超限")
+        data_url = f"data:{content_type};base64,{base64.b64encode(raw).decode('ascii')}"
+        meta = self._materialize_attachments(session_id, [{
+            "type": "image" if content_type.startswith("image/") else "file",
+            "name": filename or "attachment", "mime": content_type, "data_url": data_url,
+        }])[0]
+        return meta
+
+    def read_attachment(self, session_id: str, attachment_id: str) -> Optional[Path]:
+        """按会话 + 附件 id 读取受控文件（防路径穿越）。"""
+        if not re.fullmatch(r"att_[0-9a-f]{16}", attachment_id):
+            return None
+        session_dir = self.ATTACHMENTS_DIR / "".join(
+            c for c in session_id if c.isalnum() or c in "-_"
+        )[:64]
+        for path in session_dir.glob(f"{attachment_id}.*"):
+            if path.is_file():
+                return path
+        return None
+
+    def cleanup_attachments(self, max_age_days: int | None = None) -> int:
+        """删除超过 TTL 的附件文件；返回删除数量。"""
+        import time
+        days = max_age_days if max_age_days is not None else self.ATTACHMENT_TTL_DAYS
+        cutoff = time.time() - max(1, days) * 86400
+        removed = 0
+        if not self.ATTACHMENTS_DIR.exists():
+            return 0
+        for path in self.ATTACHMENTS_DIR.rglob("*"):
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink()
+                    removed += 1
+            except OSError:
+                continue
+        return removed
+
+
+        """按会话 + 附件 id 读取受控文件（防路径穿越）。"""
+        if not re.fullmatch(r"att_[0-9a-f]{16}", attachment_id):
+            return None
+        session_dir = self.ATTACHMENTS_DIR / "".join(
+            c for c in session_id if c.isalnum() or c in "-_"
+        )[:64]
+        for path in session_dir.glob(f"{attachment_id}.*"):
+            if path.is_file():
+                return path
+        return None
 
     async def _attachments_to_context(self, attachments: list[dict[str, Any]]) -> str:
         """把附件转成喂给 LLM 的文本上下文。
@@ -573,12 +728,12 @@ class ChatForge:
 
         离线（无 API key）时不假装流式：直接 yield 一次 fallback 文本 + done。
         """
-        session = self._get_or_create_session(session_id)
+        session = self._require_session(session_id)
         normalized = self._normalize_attachments(attachments)
         entry: dict[str, Any] = {"role": "user", "content": user_message}
         if normalized:
-            entry["attachments"] = normalized
             context = await self._attachments_to_context(normalized)
+            entry["attachments"] = self._materialize_attachments(session_id, normalized)
             if context:
                 entry["attachment_context"] = context
         session.messages.append(entry)
@@ -640,6 +795,7 @@ class ChatForge:
                 "missing_dimensions": result.get("missing_dimensions", []),
                 "progress": result.get("progress", {}),
             }
+            await self._ensure_title(session)
         except (json.JSONDecodeError, KeyError) as exc:
             # 与同步路径一致：解析失败时把原始文本当回复（宁可展示模型原文，也不吞掉）
             session.messages.append({"role": "assistant", "content": raw})
@@ -731,10 +887,46 @@ class ChatForge:
         session_id: str,
         persona_id: str = "",
         persona_name: str = "",
+        expected_revision: int | None = None,
+        idempotency_key: str = "",
+    ) -> PersonaManifest:
+        """跨进程锁内执行 commit。"""
+        lock_path = self.SESSIONS_DIR / "commits" / ".lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with FileLock(str(lock_path)):
+            return await self._commit_locked(
+                session_id, persona_id, persona_name, expected_revision, idempotency_key,
+            )
+
+    async def _commit_locked(
+        self,
+        session_id: str,
+        persona_id: str = "",
+        persona_name: str = "",
+        expected_revision: int | None = None,
+        idempotency_key: str = "",
     ) -> PersonaManifest:
         """将当前会话保存为完整的 Persona（含 YAML + Prompt + RAG 知识库）。"""
-        session = self._get_or_create_session(session_id)
+        session = self._require_session(session_id)
         repo = PersonaRepository.from_settings()
+        if expected_revision is not None and expected_revision != session.revision:
+            raise ValueError("revision conflict")
+        target_id = persona_id or session.committed_persona_id or f"chat_{session.session_id}"
+
+        if idempotency_key:
+            key_path = self.SESSIONS_DIR / "commits" / f"{''.join(c for c in idempotency_key if c.isalnum() or c in '-_')[:80]}.json"
+            if key_path.exists():
+                rec = json.loads(key_path.read_text(encoding="utf-8"))
+                return repo.load_manifest(str(rec.get("persona_id") or target_id))
+
+        # 幂等：同一会话已提交过，直接返回已保存的 manifest；不做隐式覆盖。
+        if session.committed_persona_id:
+            existing = repo.load_manifest(session.committed_persona_id)
+            if persona_id and persona_id != session.committed_persona_id:
+                raise ValueError("session already committed to another persona")
+            return existing
+        if repo.exists(target_id):
+            raise ValueError(f"persona id already exists: {target_id}")
 
         # 1. 从对话记录提取 Prompt 指令
         prompt = self._build_prompt_from_session(session.messages)
@@ -756,13 +948,12 @@ class ChatForge:
         # 3. 编译参数层
         manifest = self._draft_to_manifest(
             session.persona_draft,
-            persona_id or f"chat_{session.session_id}",
+            target_id,
             persona_name or f"对话创建_{session.session_id[:8]}",
         )
 
-        # 4. 填入 Prompt + RAG
-        if prompt:
-            manifest.prompt = prompt
+        # 4. 填入 Prompt + RAG；Prompt 显式写，允许空串清空旧内容
+        manifest.prompt = prompt
         if knowledge_docs:
             manifest.knowledge = knowledge_docs
 
@@ -776,6 +967,15 @@ class ChatForge:
 
         # 5. 保存到磁盘
         repo.save_manifest(manifest)
+        repo.save_prompt(manifest.persona_id, prompt)
+        session.committed_persona_id = manifest.persona_id
+        session.revision += 1
+        self._persist_session(session)
+        if idempotency_key:
+            key_path.parent.mkdir(parents=True, exist_ok=True)
+            key_path.write_text(json.dumps({
+                "persona_id": manifest.persona_id, "session_id": session_id,
+            }, ensure_ascii=False), encoding="utf-8")
 
         # 6. 保存对话记录
         transcript_path = repo.root_dir / manifest.persona_id / "chat_transcript.json"
@@ -787,6 +987,78 @@ class ChatForge:
                      session_id, manifest.persona_id, persona_name, len(knowledge_docs))
 
         return manifest
+
+    def patch_draft(
+        self,
+        session_id: str,
+        parameter_patch: dict[str, Any],
+        expected_revision: int | None = None,
+    ) -> Optional[dict[str, Any]]:
+        """人工修订草稿：只合出现过的键，允许 0/false/空串。"""
+        session = self._sessions.get(session_id)
+        if not session:
+            return None
+        if expected_revision is not None and expected_revision != session.revision:
+            raise ValueError("revision conflict")
+        for key, value in (parameter_patch or {}).items():
+            if key not in session.persona_draft:
+                continue
+            if isinstance(value, dict) and isinstance(session.persona_draft[key], dict):
+                session.persona_draft[key].update(value)
+            else:
+                session.persona_draft[key] = value
+        session.revision += 1
+        session.updated_at = datetime.now(timezone.utc)
+        self._persist_session(session)
+        return self.get_detail(session_id)
+
+    async def _ensure_title(self, session: ChatForgeSession) -> None:
+        """首条用户消息后用 LLM 生成短标题；失败保留空串由前端回退。"""
+        if session.title:
+            return
+        first = next(
+            (m.get("content", "") for m in session.messages
+             if m.get("role") == "user" and not str(m.get("content", "")).startswith("[系统]")),
+            "",
+        )
+        if not first.strip():
+            return
+        try:
+            resp = await asyncio.wait_for(
+                self._llm.generate(messages=[
+                    {"role": "system", "content": CHAT_TITLE_SYSTEM},
+                    {"role": "user", "content": first[:2000]},
+                ]),
+                timeout=8,
+            )
+            if getattr(resp, "success", False):
+                title = (getattr(resp, "content", "") or "").strip().strip('"“”').strip()
+                if title and len(title) <= 40:
+                    session.title = title
+                    session.updated_at = datetime.now(timezone.utc)
+                    self._persist_session(session)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("ChatForge 标题生成失败: %s", e)
+
+    def get_detail(self, session_id: str) -> Optional[dict[str, Any]]:
+        """会话详情：消息 + 草稿 + Prompt 草稿 + 六维进度。"""
+        session = self._sessions.get(session_id)
+        if not session:
+            return None
+        progress = self._progress_of(session.persona_draft)
+        return {
+            "session_id": session.session_id,
+            "revision": session.revision,
+            "messages": session.messages,
+            "persona_draft": session.persona_draft,
+            "prompt_draft": self._build_prompt_from_session(session.messages),
+            "vision_prompt_draft": self._build_vision_prompt_from_session(session.messages),
+            "progress": progress,
+            "missing_dimensions": [k for k, v in progress.items() if v < 0.7],
+            "knowledge_base_count": len(session.knowledge_base),
+            "created_at": session.created_at.isoformat(),
+            "updated_at": session.updated_at.isoformat(),
+        }
 
     def get_state(self, session_id: str) -> Optional[dict[str, Any]]:
         """获取当前会话状态。"""

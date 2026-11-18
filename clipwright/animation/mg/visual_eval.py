@@ -33,22 +33,11 @@ from pathlib import Path
 from typing import Any
 
 from clipwright.config import logger
+from clipwright.prompts.engine.mg import MG_VISUAL_RUBRIC
 
 # 评分表：每项都要能被"从截图看出来"，避免模型空泛打分。
-_RUBRIC = """你是短视频动效（Motion Graphics）质检员。图是该动画在时间轴上的若干关键帧截图
-（按顺序给出，背景透明处以 checkerboard/黑底呈现）。请只依据**画面本身**评分。
+_RUBRIC = MG_VISUAL_RUBRIC
 
-评分维度（各 20 分，总分 100）：
-1. 可读性：文字是否清晰、字号是否足够、是否被其他元素压住或与背景对比过低
-2. 视觉层级：主体是否突出，陪衬元素是否克制（同屏同时可见元素建议 ≤ 6 个）
-3. 构图与安全区：是否预留留白（建议 ≥15%），元素是否贴边/越界/相互重叠
-4. 一致性：配色与字体是否统一（不应出现多个相近却不同的主色），风格是否与给定期望一致
-5. 完成度：是否存在空帧、元素残缺、明显错位、占位符/乱码残留
-
-只输出 JSON（不要 markdown 代码块、不要额外解释）：
-{"score": <0-100 整数>, "issues": [{"severity": "high|medium|low", "detail": "<具体到画面位置>"}],
- "suggestions": ["<可执行的修改建议>"], "summary": "<一句话结论>"}
-没有任何问题时 issues 为空数组且 score >= 80。"""
 
 
 def _default_sample_times(duration: float) -> list[float]:

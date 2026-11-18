@@ -194,12 +194,11 @@ class TestStreamEvents:
                            attachments=[{"type": "video", "data_url": "data:video/mp4;base64,AA"}])
 
     @pytest.mark.asyncio
-    async def test_new_session_is_created_on_demand(self, forge: ChatForge) -> None:
+    async def test_unknown_session_is_rejected(self, forge: ChatForge) -> None:
         forge._llm = _FakeLLM([_json_reply()])
-        events = await _collect(forge, session_id="fresh_sid", user_message="你好")
-        assert events[-1]["type"] == "done"
-        assert events[-1]["session_id"] == "fresh_sid"
-        assert "fresh_sid" in forge._sessions
+        with pytest.raises(KeyError):
+            await _collect(forge, session_id="fresh_sid", user_message="你好")
+        assert "fresh_sid" not in forge._sessions
 
 
 class TestStreamApi:

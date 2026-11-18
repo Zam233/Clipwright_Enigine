@@ -336,7 +336,7 @@ class TestMalformedInputFallbackPreserved:
     """LLM 返回非法 JSON 时仍走既有 fallback（A3/A8 不改变降级行为）。"""
 
     @pytest.mark.asyncio
-    async def test_malformed_json_still_falls_back(self, monkeypatch) -> None:
+    async def test_malformed_json_fails_explicitly(self, monkeypatch) -> None:
         g = MGGenerator()
         fallback_hits = {"n": 0}
 
@@ -348,6 +348,6 @@ class TestMalformedInputFallbackPreserved:
         monkeypatch.setattr(g, "_llm", _GarbageLLM())
         monkeypatch.setattr(g, "_fallback_generate", fake_fallback)
         result = await g.generate("流程动画", "A|B")
-        assert fallback_hits["n"] == 1
-        assert result["method"] == "fallback"
+        assert fallback_hits["n"] == 0
+        assert result["method"] == "llm_failed"
         assert result["success"] is False

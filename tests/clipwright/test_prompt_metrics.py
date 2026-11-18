@@ -25,7 +25,7 @@ from clipwright.animation.text_generation import (
     CAPTION_BAND_PX, MAX_ELEMENTS, MAX_LINE_CHARS, validate_text_def,
 )
 
-PROMPTS = Path(__file__).resolve().parents[2] / "clipwright" / "animation" / "prompts"
+PROMPTS = Path(__file__).resolve().parents[2] / "clipwright" / "prompts" / "engine" / "templates"
 TEXT_IDS = ("emphasis_keyword", "reveal_line", "quote_block",
             "label_callout", "number_punch", "title_stack")
 MG_IDS = ("bar_chart", "line_chart", "comparison", "flow_chart")

@@ -228,7 +228,10 @@ class TestChatForgeCommitVisionPrompt:
         forge._sessions["vp_existing"] = session
 
         import asyncio
-        asyncio.run(forge.commit("vp_existing", persona_id="vp_existing"))
+        import pytest
+        # 新契约：已存在的 Persona ID 不允许 commit 覆盖；既有 vision 文件保持原样。
+        with pytest.raises(ValueError):
+            asyncio.run(forge.commit("vp_existing", persona_id="vp_existing"))
 
         content = (pdir / "vision_prompt.md").read_text(encoding="utf-8")
         assert content == original
@@ -257,3 +260,17 @@ class TestChatForgeCommitVisionPrompt:
         assert "画面要冷色调，转场全部用硬切。" in prompt
         assert "短句" not in prompt
         assert "[系统]" not in prompt
+
+
+def test_prompt_history_archives_old_version(tmp_path, monkeypatch: MonkeyPatch) -> None:
+    from clipwright.config import settings
+    from clipwright.persona.repository import PersonaRepository
+    monkeypatch.setattr(settings, "persona_dir", tmp_path)
+    pdir = tmp_path / "hist_persona"
+    _write_persona_dir(pdir, persona_id="hist_persona")
+    repo = PersonaRepository(tmp_path)
+    repo.save_prompt("hist_persona", "第一版")
+    repo.save_prompt("hist_persona", "第二版")
+    items = repo.list_prompt_history("hist_persona")
+    assert items
+    assert repo.read_prompt_version("hist_persona", items[0]["version"]) == "第一版"

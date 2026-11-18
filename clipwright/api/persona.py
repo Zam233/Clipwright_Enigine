@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from clipwright.authz import current_user_id, enforce_owner
@@ -36,9 +36,13 @@ async def list_personas() -> list[str]:
 
 
 @router.get("/{persona_id}", response_model=PersonaManifest)
-async def get_persona(persona_id: str, request: Request) -> PersonaManifest:
+async def get_persona(persona_id: str, request: Request, response: Response) -> PersonaManifest:
     # 审计 P0 修复：读端点同样校验所有权
-    return _load_owned(request, persona_id)
+    manifest = _load_owned(request, persona_id)
+    rev = _repo.get_revision(persona_id)
+    response.headers["ETag"] = f'"{rev}"'
+    response.headers["X-Persona-Revision"] = str(rev)
+    return manifest
 
 
 @router.post("/create", response_model=PersonaManifest)
@@ -57,8 +61,21 @@ async def create_persona(manifest: PersonaManifest, request: Request) -> Persona
 
 
 @router.put("/{persona_id}", response_model=PersonaManifest)
-async def update_persona(persona_id: str, manifest: PersonaManifest, request: Request) -> PersonaManifest:
+async def update_persona(
+    persona_id: str, manifest: PersonaManifest, request: Request,
+    if_match: str | None = Header(default=None, alias="If-Match"),
+) -> PersonaManifest:
     _load_owned(request, persona_id)  # P3-3B
+    if if_match is not None:
+        current = _repo.get_revision(persona_id)
+        expected = if_match.strip().strip('"').removeprefix("W/").strip('"')
+        try:
+            ok = int(expected) == current
+        except ValueError:
+            ok = False
+        if not ok:
+            raise HTTPException(status_code=412, detail="Persona revision conflict",
+                                headers={"X-Persona-Revision": str(current)})
     if not _repo.exists(persona_id):
         raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
     # 保留原所有者（body 未携带时）
@@ -243,6 +260,21 @@ async def import_persona(req: ImportPersonaRequest, request: Request) -> Persona
 
 class SavePromptRequest(BaseModel):
     prompt: str
+
+
+@router.get("/{persona_id}/prompt/history")
+async def list_prompt_history(persona_id: str, request: Request) -> dict:
+    _load_owned(request, persona_id)
+    return {"items": _repo.list_prompt_history(persona_id)}
+
+
+@router.get("/{persona_id}/prompt/history/{version}")
+async def get_prompt_history(persona_id: str, version: str, request: Request) -> dict:
+    _load_owned(request, persona_id)
+    text = _repo.read_prompt_version(persona_id, version)
+    if text is None:
+        raise HTTPException(status_code=404, detail="Prompt version not found")
+    return {"persona_id": persona_id, "version": version, "prompt": text}
 
 
 @router.get("/{persona_id}/prompt")

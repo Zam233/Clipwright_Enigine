@@ -18,6 +18,14 @@ from clipwright.animation.mg.validator import repair_mg_json, validate_mg_json
 from clipwright.config import logger
 from clipwright.services.llm import LLMService, MAX_OUTPUT_TOKENS
 from clipwright.agents.base import unified_llm_call
+from clipwright.prompts.engine.mg import (
+    MG_CRITIQUE_CHECK_ITEMS,
+    MG_CRITIQUE_IMAGE_MATCH_CHECK,
+    MG_CRITIQUE_OUTPUT,
+    MG_CRITIQUE_PREFIX,
+    MG_CRITIQUE_REPAIR_IMAGE_GUIDANCE,
+    MG_DESIGNER_SYSTEM,
+)
 # PRD W4（2026-11-02）：提示词搬到 `clipwright/prompts.py` 统一维护。
 # 这里保留同名别名，调用点一行都不用改；文案与原实现逐字一致（见 prompts.py 对照表）。
 def _mg_constraint(name: str) -> str:
@@ -117,31 +125,9 @@ def _mg_cache_put(key: str, result: dict[str, Any]) -> None:
 # 箭头方向随流程 / 次级元素错峰（stagger）。
 
 # 批判检查项：构图 / 层级 / 方向 / 编排
-_CRITIQUE_CHECK_ITEMS = (
-    "\n## 评审检查项（必须逐项检查）\n"
-    "- 构图（composition）：整体构图是否居中平衡，是否存在偏左/偏右或大面积留白。\n"
-    "- 层级（hierarchy）：元素层级是否清晰，连接线是否穿入节点内部、是否遮挡文字。\n"
-    "- 方向（direction）：箭头/运动方向是否与语义一致"
-    "（流程 L→R 时箭头向右，增长向上、下降向下）。\n"
-    "- 编排（orchestration）：是否顺序揭示、每节拍一个主运动、次级元素错峰入场。\n"
-)
-
-# 图片语义匹配检查项：所选图片必须与场景语义匹配（防 📡→石墨烯 类错配）
-_CRITIQUE_IMAGE_MATCH_CHECK = (
-    "\n## 图片语义匹配检查（动画包含 image 元素时必须检查）\n"
-    "- 逐张核对 image 元素的 src 与场景标题/关键词/动画需求的语义匹配度；"
-    "图片必须与场景语义一致（如「石墨烯」场景配卫星图标即错配）。\n"
-    "- 图片与场景语义不匹配属于严重问题：score 应低于阈值，并在 issues/suggestions 中"
-    "明确要求——更换为语义匹配的图片，或移除全部 image 元素回退为纯矢量动画。\n"
-)
-
-# 批判修复指引：图片不匹配 → 换图或回退无图动画
-_CRITIQUE_REPAIR_IMAGE_GUIDANCE = (
-    "\n\n## 图片修复指引\n"
-    "若评审指出图片语义不匹配：优先更换 image 元素的 src 为语义匹配的图片"
-    "（从可用图片中选择）；若没有可替换的匹配图片，则移除全部 image 元素，"
-    "回退为纯矢量动画。其余元素与编排约束保持不变。"
-)
+_CRITIQUE_CHECK_ITEMS = MG_CRITIQUE_CHECK_ITEMS
+_CRITIQUE_IMAGE_MATCH_CHECK = MG_CRITIQUE_IMAGE_MATCH_CHECK
+_CRITIQUE_REPAIR_IMAGE_GUIDANCE = MG_CRITIQUE_REPAIR_IMAGE_GUIDANCE
 
 
 def _sanitize_user_data(value: str, limit: int = 4000) -> str:
@@ -543,7 +529,7 @@ ision_prompt
     ) -> dict[str, Any] | None:
         """带错误回传的一次性修复调用：把 schema 校验错误告诉 LLM 让其修正 JSON。"""
         prompt_config = self._config.get("prompt", {})
-        system_template = prompt_config.get("system_template", "Generate MG animation JSON.")
+        system_template = prompt_config.get("system_template", "") or _mg_constraint("MG_DESIGNER_SYSTEM")
         context_section = self._build_context_section(
             persona_style, category_context, vision_prompt, web_context,
         )
@@ -936,29 +922,19 @@ ision_prompt
             return None
 
         prompt_config = self._config.get("prompt", {})
-        system_template = prompt_config.get("system_template", "")
+        system_template = prompt_config.get("system_template", "") or _mg_constraint("MG_DESIGNER_SYSTEM")
         context_section = self._build_context_section(
             persona_style, category_context, vision_prompt, web_context,
         )
 
-        system_prompt = (
-            "你是一位严苛的 Motion Graphics 动画质量评审专家。"
-            "下面给出 MG 动画 JSON 及其设计原则与硬性约束，请据此评审动画质量。\n\n"
-        )
+        system_prompt = MG_CRITIQUE_PREFIX
+
         if system_template:
             system_prompt += system_template
         _knowledge = self._knowledge_section(description, category_context)
         if _knowledge:
             system_prompt += "\n\n" + _knowledge
-        system_prompt += (
-            "\n\n## 评审输出\n"
-            "只输出一个 JSON，不要包含解释性文字：\n"
-            '{"score": 0到100的整数, "issues": ["具体问题1", ...], '
-            '"suggestions": ["可操作建议1", ...]}\n'
-            "- score < 60 表示未达标（元素过少/缺少缓动/违反硬性约束/动画平淡单调等）。\n"
-            "- issues 指出违反的原则与约束，具体到元素或关键帧。\n"
-            "- suggestions 给出一到两条可执行的改进方向，供修复重试使用。\n"
-        )
+        system_prompt += MG_CRITIQUE_OUTPUT
         # 构图/层级/方向/编排检查项；A8：含 image 元素时增加图片语义匹配检查
         system_prompt += _CRITIQUE_CHECK_ITEMS
         if self._has_image_elements(mg_def):
@@ -1041,7 +1017,7 @@ ision_prompt
     ) -> dict[str, Any] | None:
         """带批判反馈的一次性修复调用：把质量评审意见告诉 LLM 让其重做 JSON。"""
         prompt_config = self._config.get("prompt", {})
-        system_template = prompt_config.get("system_template", "Generate MG animation JSON.")
+        system_template = prompt_config.get("system_template", "") or _mg_constraint("MG_DESIGNER_SYSTEM")
         context_section = self._build_context_section(
             persona_style, category_context, vision_prompt, web_context,
         )
@@ -1189,7 +1165,7 @@ ision_prompt
         动画风格不写死，由 LLM 依据传入数据自行决定。
         """
         prompt_config = self._config.get("prompt", {})
-        system_template = prompt_config.get("system_template", "Generate MG animation JSON.")
+        system_template = prompt_config.get("system_template", "") or _mg_constraint("MG_DESIGNER_SYSTEM")
 
         context_section = self._build_context_section(
             persona_style, category_context, vision_prompt, web_context,

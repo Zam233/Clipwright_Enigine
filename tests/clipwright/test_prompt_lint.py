@@ -19,7 +19,7 @@ import pytest
 from clipwright.animation.prompts import lint_prompts as L
 
 ROOT = Path(__file__).resolve().parents[2]
-PROMPTS = ROOT / "clipwright" / "animation" / "prompts"
+PROMPTS = ROOT / "clipwright" / "prompts" / "engine" / "templates"
 
 
 # ── 现状：strict 通过 ─────────────────────────────────────

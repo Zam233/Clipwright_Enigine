@@ -31,6 +31,7 @@ from clipwright.services.trace import add_event
 from clipwright.tool.registry import ToolRegistry
 # PRD W4.3：提示词已搬到 clipwright/prompts.py（文案逐字一致）
 from clipwright.prompts import EDIT_PROFILE_SYSTEM  # noqa: E402
+from clipwright.prompts.engine.pv import PV_ENGINE_ORCHESTRATOR_SYSTEM
 
 # 素材裁剪缓存：同一 (源路径, 起点, 时长) 的裁剪结果复用，避免对同一网络素材重复下载/裁剪。
 # 有界（最多 _TRIM_CACHE_MAX 条），超出时清空重建。
@@ -993,8 +994,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                     _pv_llm_on = False
             if _pv_project and _pv_llm_on:
                 _loop = await self.run_tool_loop(
-                    system_prompt=("你是 PV 引擎编排助手。只使用给定工具检查项目，"
-                                   "发现问题给出可执行的修复建议，不要编造文件路径。"),
+                    system_prompt=PV_ENGINE_ORCHESTRATOR_SYSTEM,
                     user_prompt=(f"项目文件：{_pv_project}\n"
                                  "请运行审计并汇报 verdict、FAIL 规则与修复建议。"),
                     tools=self.tool_whitelist,

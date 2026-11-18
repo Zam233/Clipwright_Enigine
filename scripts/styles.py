@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
-PROMPTS_DIR = Path(__file__).resolve().parents[1] / "clipwright" / "animation" / "prompts"
+PROMPTS_DIR = Path(__file__).resolve().parents[1] / "clipwright" / "prompts" / "engine" / "templates"
 CATALOG_PATH = PROMPTS_DIR / "style_catalog.json"
 STYLES_DIR = PROMPTS_DIR / "styles"
 

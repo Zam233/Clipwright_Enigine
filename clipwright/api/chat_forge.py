@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from clipwright.schema.persona import PersonaManifest
@@ -54,6 +54,13 @@ class ChatCommitRequest(BaseModel):
     session_id: str
     persona_id: str = ""
     persona_name: str = ""
+    idempotency_key: str = ""
+    expected_revision: int | None = None
+
+
+class ChatDraftPatchRequest(BaseModel):
+    expected_revision: int | None = None
+    parameter_patch: dict[str, Any] = Field(default_factory=dict)
 
 
 class PromptMessage(BaseModel):
@@ -81,10 +88,21 @@ def _owner_of(request: Request) -> str:
         return ""
 
 
+def _check_session(session_id: str, request: Request) -> None:
+    """未知会话 404；有 owner 的会话校验当前请求归属。"""
+    session = _forge.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+    owner = _owner_of(request)
+    if session.owner_id and owner and session.owner_id != owner:
+        raise HTTPException(status_code=403, detail="Session belongs to another owner")
+
+
 @router.post("/start")
-async def chat_start(req: ChatStartRequest) -> dict[str, Any]:
+async def chat_start(req: ChatStartRequest, request: Request) -> dict[str, Any]:
     """开始新的对话会话（``scope=mv_prompt`` 时用于磨视频提示词）。"""
     result = await _forge.start(req.persona_id)
+    _forge.set_session_owner(str(result.get("session_id") or ""), _owner_of(request))
     if isinstance(result, dict):
         result["scope"] = req.scope
         result["context"] = dict(req.context or {})
@@ -133,17 +151,73 @@ async def chat_sessions(request: Request, scope: str = "mine") -> dict[str, Any]
     return {"sessions": sessions, "total": len(sessions)}
 
 
+@router.post("/sessions/{session_id}/attachments")
+async def chat_upload_attachment(
+    session_id: str, request: Request, file: UploadFile = File(...),
+) -> dict[str, Any]:
+    """multipart 上传：服务端校验 MIME/大小/配额后落盘。"""
+    _check_session(session_id, request)
+    raw = await file.read()
+    try:
+        meta = _forge.store_upload(
+            session_id, file.filename or "attachment",
+            file.content_type or "application/octet-stream", raw,
+        )
+    except ChatForgeAttachmentError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"attachment": meta}
+
+
+@router.get("/sessions/{session_id}/attachments/{attachment_id}")
+async def chat_get_attachment(session_id: str, attachment_id: str, request: Request):
+    """受控读取会话附件（只允许 att_ + 16 hex，防路径穿越）。"""
+    _check_session(session_id, request)
+    path = _forge.read_attachment(session_id, attachment_id)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    return FileResponse(path)
+
+
+@router.patch("/sessions/{session_id}/draft")
+async def chat_patch_draft(
+    session_id: str, req: ChatDraftPatchRequest, request: Request,
+) -> dict[str, Any]:
+    """人工修订六维草稿；只合出现过的键，0/false/空串合法。"""
+    _check_session(session_id, request)
+    try:
+        detail = _forge.patch_draft(
+            session_id, req.parameter_patch, expected_revision=req.expected_revision,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+    return detail
+
+
+@router.get("/sessions/{session_id}")
+async def chat_session_detail(session_id: str, request: Request) -> dict[str, Any]:
+    """会话详情：真实消息、草稿、两类 Prompt 草稿与进度。"""
+    _check_session(session_id, request)
+    detail = _forge.get_detail(session_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+    return detail
+
+
 @router.delete("/sessions/{session_id}")
-async def chat_delete_session(session_id: str) -> dict[str, Any]:
+async def chat_delete_session(session_id: str, request: Request) -> dict[str, Any]:
     """删除会话（内存 + 落盘文件）。"""
+    _check_session(session_id, request)
     if not _forge.delete_session(session_id):
         raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
     return {"deleted": True, "session_id": session_id}
 
 
 @router.post("/message")
-async def chat_message(req: ChatMessageRequest) -> dict[str, Any]:
+async def chat_message(req: ChatMessageRequest, request: Request) -> dict[str, Any]:
     """发送对话消息（可带图片/文件附件）。"""
+    _check_session(req.session_id, request)
     try:
         return await _forge.message(
             session_id=req.session_id,
@@ -158,7 +232,7 @@ async def chat_message(req: ChatMessageRequest) -> dict[str, Any]:
 
 
 @router.post("/message/stream")
-async def chat_message_stream(req: ChatMessageRequest):
+async def chat_message_stream(req: ChatMessageRequest, request: Request):
     """流式发送对话消息（SSE）——逐块 `delta`，末尾一个 `done`。
 
     历史欠账：会话此前只能等模型产出完整 JSON 再渲染，长回复时界面长时间空白。
@@ -169,6 +243,8 @@ async def chat_message_stream(req: ChatMessageRequest):
     因此前端用 fetch + ReadableStream 读，而不是 EventSource。
     """
     import json as _json
+
+    _check_session(req.session_id, request)
 
     async def _event_stream():
         try:
@@ -194,8 +270,9 @@ async def chat_message_stream(req: ChatMessageRequest):
 
 
 @router.post("/knowledge")
-async def chat_add_knowledge(req: ChatKnowledgeRequest) -> dict[str, Any]:
+async def chat_add_knowledge(req: ChatKnowledgeRequest, request: Request) -> dict[str, Any]:
     """添加上下文知识库内容（超长按 H1 自动分段）。"""
+    _check_session(req.session_id, request)
     try:
         return await _forge.add_knowledge(
             session_id=req.session_id,
@@ -207,8 +284,9 @@ async def chat_add_knowledge(req: ChatKnowledgeRequest) -> dict[str, Any]:
 
 
 @router.get("/knowledge/{session_id}")
-async def chat_list_knowledge(session_id: str) -> dict[str, Any]:
+async def chat_list_knowledge(session_id: str, request: Request) -> dict[str, Any]:
     """列出会话知识库条目（含 id/长度/预览，供前端编辑与删除）。"""
+    _check_session(session_id, request)
     items = _forge.list_knowledge(session_id)
     if items is None:
         raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
@@ -216,8 +294,9 @@ async def chat_list_knowledge(session_id: str) -> dict[str, Any]:
 
 
 @router.get("/knowledge/{session_id}/{kb_id}")
-async def chat_get_knowledge(session_id: str, kb_id: str) -> dict[str, Any]:
+async def chat_get_knowledge(session_id: str, kb_id: str, request: Request) -> dict[str, Any]:
     """读取单条知识全文（编辑前）。"""
+    _check_session(session_id, request)
     item = _forge.get_knowledge(session_id, kb_id)
     if item is None:
         raise HTTPException(status_code=404, detail=f"Knowledge not found: {kb_id}")
@@ -226,9 +305,10 @@ async def chat_get_knowledge(session_id: str, kb_id: str) -> dict[str, Any]:
 
 @router.put("/knowledge/{session_id}/{kb_id}")
 async def chat_update_knowledge(
-    session_id: str, kb_id: str, req: ChatKnowledgeUpdateRequest,
+    session_id: str, kb_id: str, req: ChatKnowledgeUpdateRequest, request: Request,
 ) -> dict[str, Any]:
     """编辑一条知识。只改存储的上下文，**不重跑 LLM**（重分析需用户显式触发）。"""
+    _check_session(session_id, request)
     if req.content is None and req.source is None:
         raise HTTPException(status_code=400, detail="content 与 source 至少要给一个")
     item = _forge.update_knowledge(session_id, kb_id, content=req.content, source=req.source)
@@ -238,16 +318,18 @@ async def chat_update_knowledge(
 
 
 @router.delete("/knowledge/{session_id}/{kb_id}")
-async def chat_delete_knowledge(session_id: str, kb_id: str) -> dict[str, Any]:
+async def chat_delete_knowledge(session_id: str, kb_id: str, request: Request) -> dict[str, Any]:
     """删除一条知识。"""
+    _check_session(session_id, request)
     if not _forge.delete_knowledge(session_id, kb_id):
         raise HTTPException(status_code=404, detail=f"Knowledge not found: {kb_id}")
     return {"deleted": True, "id": kb_id}
 
 
 @router.delete("/knowledge/{session_id}")
-async def chat_clear_knowledge(session_id: str) -> dict[str, Any]:
+async def chat_clear_knowledge(session_id: str, request: Request) -> dict[str, Any]:
     """清空会话知识库。"""
+    _check_session(session_id, request)
     if _forge.get_state(session_id) is None:
         raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
     removed = _forge.clear_knowledge(session_id)
@@ -257,11 +339,14 @@ async def chat_clear_knowledge(session_id: str) -> dict[str, Any]:
 @router.post("/commit", response_model=PersonaManifest)
 async def chat_commit(req: ChatCommitRequest, request: Request) -> PersonaManifest:
     """保存当前 Persona 草稿为正式配置。"""
+    _check_session(req.session_id, request)
     try:
         manifest = await _forge.commit(
             session_id=req.session_id,
             persona_id=req.persona_id,
             persona_name=req.persona_name,
+            expected_revision=req.expected_revision,
+            idempotency_key=req.idempotency_key,
         )
         # 轮 80（红线）：落盘产物标记归属，否则 jwt 模式下创建者自己读不到
         from clipwright.authz import current_user_id
@@ -273,11 +358,14 @@ async def chat_commit(req: ChatCommitRequest, request: Request) -> PersonaManife
         return manifest
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Session not found: {req.session_id}")
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @router.get("/state/{session_id}")
-async def chat_state(session_id: str) -> dict[str, Any]:
+async def chat_state(session_id: str, request: Request) -> dict[str, Any]:
     """获取会话当前状态。"""
+    _check_session(session_id, request)
     state = _forge.get_state(session_id)
     if state is None:
         raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")

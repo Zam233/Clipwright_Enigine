@@ -25,6 +25,7 @@ from clipwright.animation.text_specs import (
     TextAnimSpec, get_text_spec, load_text_prompt, text_prompt_version,
 )
 from clipwright.config import logger
+from clipwright.prompts.engine.text import KINETIC_TYPOGRAPHY_SYSTEM
 
 #: 字幕带高度（像素）：文字动画不得进入这条带（字幕固定在底部）
 CAPTION_BAND_PX = 160
@@ -103,8 +104,7 @@ def build_text_prompt(
     ]
 
     system_parts = [
-        "你是动态排版（kinetic typography）设计师，负责把旁白里的**关键词/短语**"
-        "做成屏幕上的文字动效。你只输出 MGDef JSON，不解释、不加围栏。",
+        KINETIC_TYPOGRAPHY_SYSTEM,
         f"## 类型\n{spec.name}（{spec.id}）：{spec.intent}",
     ]
     for name in ("Semantic constraints", "Composition", "Motion", "Anti-patterns", "Example"):

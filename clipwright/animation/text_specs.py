@@ -13,7 +13,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
-PROMPT_DIR = Path(__file__).resolve().parent / "prompts" / "text"
+PROMPT_DIR = Path(__file__).resolve().parent.parent / "prompts" / "engine" / "templates" / "text"
 
 #: 提示词必须包含的段落（与 38 个 MG 类型同构 + 风格参考）
 PROMPT_SECTIONS = (

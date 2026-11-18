@@ -52,6 +52,19 @@ class PersonaRepository:
         validate_id(persona_id, "persona_id")
         return self.root_dir / persona_id
 
+    def get_revision(self, persona_id: str) -> int:
+        path = self.persona_path(persona_id) / ".revision"
+        try:
+            return int(path.read_text(encoding="utf-8").strip() or 0)
+        except Exception:
+            return 0
+
+    def bump_revision(self, persona_id: str) -> int:
+        path = self.persona_path(persona_id) / ".revision"
+        value = self.get_revision(persona_id) + 1
+        self._atomic_write_text(path, str(value))
+        return value
+
     # ── 保存 ──
 
     def save_manifest(self, manifest: PersonaManifest) -> None:
@@ -109,6 +122,8 @@ class PersonaRepository:
 
             # 自动向量化索引
             self._async_reindex(manifest.persona_id)
+
+        self.bump_revision(manifest.persona_id)
 
     @staticmethod
     def _atomic_write_text(path: Path, text: str) -> None:
@@ -171,10 +186,33 @@ class PersonaRepository:
     # ── 部分更新 ──
 
     def save_prompt(self, persona_id: str, prompt_text: str) -> None:
-        """单独保存/更新 Prompt。"""
+        """单独保存/更新 Prompt；旧版本保留在 prompt_history/。"""
         pdir = self.persona_path(persona_id)
         pdir.mkdir(parents=True, exist_ok=True)
-        (pdir / "prompt.md").write_text(prompt_text, encoding="utf-8")
+        target = pdir / "prompt.md"
+        if target.exists():
+            old = target.read_text(encoding="utf-8")
+            if old and old != prompt_text:
+                hdir = pdir / "prompt_history"
+                hdir.mkdir(parents=True, exist_ok=True)
+                import datetime as _dt
+                name = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + ".md"
+                (hdir / name).write_text(old, encoding="utf-8")
+                for extra in sorted(hdir.glob("*.md"))[:-20]:
+                    extra.unlink(missing_ok=True)
+        target.write_text(prompt_text, encoding="utf-8")
+
+    def list_prompt_history(self, persona_id: str) -> list[dict[str, str]]:
+        hdir = self.persona_path(persona_id) / "prompt_history"
+        if not hdir.exists():
+            return []
+        return [{"version": p.name, "created_at": p.stem} for p in sorted(hdir.glob("*.md"), reverse=True)]
+
+    def read_prompt_version(self, persona_id: str, version: str) -> str | None:
+        if "/" in version or "\\" in version or not version.endswith(".md"):
+            return None
+        path = self.persona_path(persona_id) / "prompt_history" / version
+        return path.read_text(encoding="utf-8") if path.exists() else None
 
     def save_vision_prompt(self, persona_id: str, vision_text: str) -> None:
         """单独保存/更新视觉需求 Prompt（显式写入，允许覆盖）。"""
