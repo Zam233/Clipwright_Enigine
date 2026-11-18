@@ -70,3 +70,17 @@ def qa_report(mg_def: dict[str, Any]) -> dict[str, Any]:
     text = qa_text(mg_def)
     motion = qa_motion(mg_def)
     return {"ok": not text and not motion, "text_issues": text, "motion_issues": motion}
+
+
+def phone_report(mg_def: dict[str, Any], phone_w: int = 390, phone_h: int = 844) -> list[str]:
+    """Approximate phone readability: scale the 16:9 frame into a phone viewport."""
+    width = float(mg_def.get("width") or 1920)
+    height = float(mg_def.get("height") or 1080)
+    scale = min(phone_w / width, phone_h / height)
+    issues: list[str] = []
+    for i, e in enumerate(mg_def.get("elements") or []):
+        if isinstance(e, dict) and e.get("type") == "text":
+            fs = float(e.get("font_size") or 48) * scale
+            if fs < phone_h * 0.04:
+                issues.append(f"text #{i} 手机字号 {fs:.1f}px < 4% 屏高")
+    return issues
