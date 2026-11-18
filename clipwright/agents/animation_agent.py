@@ -1913,7 +1913,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         scene_context: dict, category_context: dict, vision_prompt: str, web_context: str,
     ) -> dict:
         """Opt-in agentic loop; returns MGGenerator-shaped result or {} to fallback."""
-        logger.info("AnimationAgent: agentic loop 启动")
+        logger.warning("AnimationAgent: agentic loop 启动")
         try:
             from clipwright.animation.agentic_runtime import AnimationAgentRuntime
             from clipwright.services.llm import LLMService
@@ -1931,7 +1931,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 return await rt.decide_with_llm(llm, description, obs)
             result = await rt.run(decide, category=str((category_context or {}).get("category") or "kinetic-type"),
                                   shot_type="title_reveal", needs={"agent"})
-            logger.info("AnimationAgent: agentic loop 结束 status=%s rounds=%s actions=%s",
+            logger.warning("AnimationAgent: agentic loop 结束 status=%s rounds=%s actions=%s",
                         result.status, result.rounds, [(a.kind, a.name) for a in result.actions])
             if getattr(self, "_ctx_store", None) is not None:
                 try:
@@ -2109,7 +2109,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             # 旧版/插件提供的引擎可能只有 generate → 回退调用，保持兼容。
             _generate = getattr(mg_gen, "generate_best", None) or mg_gen.generate
             _agentic_flag = os.environ.get("CLIPWRIGHT_ANIMATION_AGENTIC_LOOP", "").strip()
-            logger.info("AnimationAgent: agentic flag=%r", _agentic_flag)
+            logger.warning("AnimationAgent: agentic flag=%r", _agentic_flag)
             result = {}
             if os.environ.get("CLIPWRIGHT_ANIMATION_AGENTIC_LOOP", "").strip() in ("1", "true", "yes"):
                 result = await self._generate_mg_via_agentic(
