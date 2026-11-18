@@ -34,10 +34,14 @@ def test_rules_are_short_and_have_skill_source() -> None:
         assert len(rule.snippet) < 200
 
 
-def test_modular_prompt_is_compact_and_contains_gates() -> None:
+def test_modular_prompt_contains_contract_and_gates() -> None:
     plan = build_animation_plan("数据增长对比")
     prompt = compose_mg_system_prompt(plan)
-    assert len(prompt) < 6000
+    # 长度守卫已移除：契约完整性比字符数重要。
+    assert "bbox" in prompt
+    assert "JSON 顺序就是绘制层级" in prompt
+    assert "line 的 x/y 是中心" in prompt or "**`x/y` 是线段中心点" in prompt
+    assert "错误示例" in prompt or "错误" in prompt
     assert "全片运动契约" in prompt
     assert "headline-slam" in prompt or "data-bars" in prompt
     assert "动画编排约束" in prompt
@@ -76,9 +80,10 @@ def test_generator_prompt_uses_compact_modules() -> None:
     gen._llm = fake
     asyncio.run(gen._call_llm("数据增长对比标题", "A|B", {}, {}, {}))
     system = fake.calls[0][0]["content"]
-    assert len(system) < 9000
+    # 不设字符上限；确保完整契约仍被注入。
     assert "全片运动契约" in system
     assert "动画编排约束" in system
+    assert "bbox" in system
 
 
 def test_multi_scene_plan_has_shots_and_seams() -> None:
@@ -97,7 +102,7 @@ def test_legacy_prompt_fallback_still_available() -> None:
 
     gen = MGGenerator()
     old = gen._design_system_template("标题", {})
-    assert len(old) < 6000
+    # 不设字符上限：旧模板同样可以承载完整字段契约。
     gen._config["prompt"]["modular"] = False
     legacy = gen._design_system_template("标题", {})
     assert len(legacy) > 10000
@@ -191,3 +196,4 @@ def test_layout_clamps_text_into_safe_area() -> None:
     assert e["x"] >= 1920 * 0.025
     assert e["y"] >= 1080 * 0.025
     assert e["font_size"] < 200
+
