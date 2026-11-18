@@ -107,6 +107,7 @@ class ChatForgeSession:
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     # 会话归属（jwt 模式下用于「我的会话」过滤；off 模式为空串）
     owner_id: str = ""
+    revision: int = 0
 
     @property
     def is_expired(self) -> bool:
@@ -166,6 +167,7 @@ class ChatForge:
                 "created_at": session.created_at.isoformat(),
                 "updated_at": session.updated_at.isoformat(),
                 "owner_id": session.owner_id,
+                "revision": session.revision,
             }
             path = self._session_path(session.session_id)
             tmp = path.with_suffix(".tmp")
@@ -193,6 +195,7 @@ class ChatForge:
                         created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.now(timezone.utc),
                         updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else datetime.now(timezone.utc),
                         owner_id=data.get("owner_id", "") or "",
+                        revision=int(data.get("revision", 0) or 0),
                     )
                     if not session.is_expired:
                         self._ensure_knowledge_ids(session)
@@ -738,6 +741,16 @@ class ChatForge:
         """将当前会话保存为完整的 Persona（含 YAML + Prompt + RAG 知识库）。"""
         session = self._get_or_create_session(session_id)
         repo = PersonaRepository.from_settings()
+        target_id = persona_id or session.committed_persona_id or f"chat_{session.session_id}"
+
+        # 幂等：同一会话已提交过，直接返回已保存的 manifest；不做隐式覆盖。
+        if session.committed_persona_id:
+            existing = repo.load_manifest(session.committed_persona_id)
+            if persona_id and persona_id != session.committed_persona_id:
+                raise ValueError("session already committed to another persona")
+            return existing
+        if repo.exists(target_id):
+            raise ValueError(f"persona id already exists: {target_id}")
 
         # 1. 从对话记录提取 Prompt 指令
         prompt = self._build_prompt_from_session(session.messages)
@@ -759,13 +772,12 @@ class ChatForge:
         # 3. 编译参数层
         manifest = self._draft_to_manifest(
             session.persona_draft,
-            persona_id or f"chat_{session.session_id}",
+            target_id,
             persona_name or f"对话创建_{session.session_id[:8]}",
         )
 
-        # 4. 填入 Prompt + RAG
-        if prompt:
-            manifest.prompt = prompt
+        # 4. 填入 Prompt + RAG；Prompt 显式写，允许空串清空旧内容
+        manifest.prompt = prompt
         if knowledge_docs:
             manifest.knowledge = knowledge_docs
 
@@ -779,6 +791,10 @@ class ChatForge:
 
         # 5. 保存到磁盘
         repo.save_manifest(manifest)
+        repo.save_prompt(manifest.persona_id, prompt)
+        session.committed_persona_id = manifest.persona_id
+        session.revision += 1
+        self._persist_session(session)
 
         # 6. 保存对话记录
         transcript_path = repo.root_dir / manifest.persona_id / "chat_transcript.json"
@@ -791,6 +807,30 @@ class ChatForge:
 
         return manifest
 
+    def patch_draft(
+        self,
+        session_id: str,
+        parameter_patch: dict[str, Any],
+        expected_revision: int | None = None,
+    ) -> Optional[dict[str, Any]]:
+        """人工修订草稿：只合出现过的键，允许 0/false/空串。"""
+        session = self._sessions.get(session_id)
+        if not session:
+            return None
+        if expected_revision is not None and expected_revision != session.revision:
+            raise ValueError("revision conflict")
+        for key, value in (parameter_patch or {}).items():
+            if key not in session.persona_draft:
+                continue
+            if isinstance(value, dict) and isinstance(session.persona_draft[key], dict):
+                session.persona_draft[key].update(value)
+            else:
+                session.persona_draft[key] = value
+        session.revision += 1
+        session.updated_at = datetime.now(timezone.utc)
+        self._persist_session(session)
+        return self.get_detail(session_id)
+
     def get_detail(self, session_id: str) -> Optional[dict[str, Any]]:
         """会话详情：消息 + 草稿 + Prompt 草稿 + 六维进度。"""
         session = self._sessions.get(session_id)
@@ -799,6 +839,7 @@ class ChatForge:
         progress = self._progress_of(session.persona_draft)
         return {
             "session_id": session.session_id,
+            "revision": session.revision,
             "messages": session.messages,
             "persona_draft": session.persona_draft,
             "prompt_draft": self._build_prompt_from_session(session.messages),

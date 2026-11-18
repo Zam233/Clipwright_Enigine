@@ -40,3 +40,20 @@ async def test_sync_reply_survives_restart(forge: ChatForge) -> None:
     assert detail is not None
     assert len(detail["messages"]) == 2
     assert detail["messages"][1]["role"] == "assistant"
+
+
+@pytest.mark.asyncio
+async def test_patch_draft_accepts_falsy_and_revision(forge: ChatForge) -> None:
+    sid = (await forge.start())["session_id"]
+    before = forge.get_detail(sid)["revision"]
+    detail = forge.patch_draft(sid, {
+        "identity": {"tone": "sharp"},
+        "language": {"academic_density": 0, "slang_ratio": False},
+    }, expected_revision=before)
+    assert detail is not None
+    assert detail["persona_draft"]["identity"]["tone"] == "sharp"
+    assert detail["persona_draft"]["language"]["academic_density"] == 0
+    assert detail["persona_draft"]["language"]["slang_ratio"] is False
+    assert detail["revision"] == before + 1
+    with pytest.raises(ValueError):
+        forge.patch_draft(sid, {"identity": {"tone": "x"}}, expected_revision=before)

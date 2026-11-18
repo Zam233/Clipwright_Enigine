@@ -54,6 +54,13 @@ class ChatCommitRequest(BaseModel):
     session_id: str
     persona_id: str = ""
     persona_name: str = ""
+    idempotency_key: str = ""
+    expected_revision: int | None = None
+
+
+class ChatDraftPatchRequest(BaseModel):
+    expected_revision: int | None = None
+    parameter_patch: dict[str, Any] = Field(default_factory=dict)
 
 
 class PromptMessage(BaseModel):
@@ -133,6 +140,22 @@ async def chat_sessions(request: Request, scope: str = "mine") -> dict[str, Any]
     return {"sessions": sessions, "total": len(sessions)}
 
 
+@router.patch("/sessions/{session_id}/draft")
+async def chat_patch_draft(
+    session_id: str, req: ChatDraftPatchRequest,
+) -> dict[str, Any]:
+    """人工修订六维草稿；只合出现过的键，0/false/空串合法。"""
+    try:
+        detail = _forge.patch_draft(
+            session_id, req.parameter_patch, expected_revision=req.expected_revision,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+    return detail
+
+
 @router.get("/sessions/{session_id}")
 async def chat_session_detail(session_id: str) -> dict[str, Any]:
     """会话详情：真实消息、草稿、两类 Prompt 草稿与进度。"""
@@ -164,6 +187,8 @@ async def chat_message(req: ChatMessageRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(e))
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Session not found: {req.session_id}")
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @router.post("/message/stream")
