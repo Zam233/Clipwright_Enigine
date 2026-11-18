@@ -76,12 +76,12 @@
 1. Reel Brief：对标 + 风格 + 禁止清单 + 记忆点
 2. 3 个风格帧（或 3 个设计方向） → 用户选 1
 3. 分镜 / AnimationPlan：对象、变化、承接、seams、节拍
-4. Agent 细化：草稿 → 研究/素材 → 结构 spec（不是一次成型）
-5. 逐镜头落地 mg_def
+4. Agent 自主决定：研究/草稿/工具/生成顺序（不是固定流水线）
+5. 生成 mg_def（可多轮、可局部修复）
 6. 自动布局 + 文本安全区 + 文本阅读时间
 7. AnimationAgent 自检 QA：bbox/重叠/字号/阅读时间/空拍
 8. 技术 QA：contact sheet / phone / strip / motion / determinism
-9. 前端阶段时间线 / 风格帧选择 / QA 面板 → 工作区预览（可 scrub + 音频） → 用户确认
+9. 前端活动流 / 可选风格帧 / QA 面板 → 工作区预览 → 用户确认（如需要）
 10. 前端闸门通过后导出 / 归档 brief + style + QA
 ```
 
@@ -304,151 +304,193 @@ clipwright/schemas/animation_brief.py
 - `kb-retriever`：数据型 MG 先查知识库/来源，禁止模型编数字；
 - 在 `AnimationBrief` 增加 `sources[]`，进入 trace/交付物。
 
-### 5.12 Agentic 动画生产循环（不要求一次生成）
+### 5.12 Agent 自主编排（不是固定流水线）
 
-动画生成不应是“一个 step 里直接吐 mg_def”。应把 AnimationAgent 做成可多轮、可调用工具的 agent，至少分六个阶段：
+动画生成应交给一个**有工具、有提示词目标、有完成标准**的 AnimationAgent，而不是一个固定状态的 pipeline。用户的要求是：
 
-```text
-A. 规划        读 brief / 场景 / 上下文，确定这一镜要说明什么
-B. 细化规划    选风格、主体、变化、承接、seams、beats、禁止项
-C. 研究        需要时调用 web_search / web_fetch / kb / 图片素材，
-               数据必须带 source；不得凭空造数字
-D. 草稿        只生成“结构草稿”：元素角色、层级、相对布局、运动意图，
-               不要求一次写全关键帧
-E. 落地        按草稿生成 mg_def，调用自动布局/字号/安全区/阅读时间
-F. 质检        AnimationAgent 自己用 QA 工具检查：
-               文本 bbox、重叠、字号、阅读时间、空拍、元素数、配色
-               → 不通过则带着具体 fail 项回到 D/E，而不是盲重试
-G. 终审        通过后交主 Agent / 人工审片；记录 brief、草稿、QA、修复轮次
-```
+> Agent 根据提示词中的需求，自主判断先做什么、是否需要研究、要不要先出草稿、何时生成、何时自检、失败后回到哪里。
 
-硬约束：
-
-- 规划/细化/研究/质检都必须是**真实阶段**，不能只在 prompt 里写一句“请先思考”；
-- 每个阶段有结构化产物：`AnimationBrief`、`ShotPlan`、`DraftSpec`、`mg_def`、`QAReport`；
-- 质检不通过必须回到具体阶段（布局失败回 E，叙事失败回 B，事实缺失回 C），禁止整段重生成；
-- 最多 3 轮修复，仍失败则降级并留下 `unfinished`，不伪装成完成；
-- 研究阶段的来源写入 `brief.sources`，数据型动画没有来源不允许进入 D；
-- 最终 trace 必须包含阶段耗时、工具调用、QA fail/pass、修复次数。
-
-这对应 `motion-showreel` 的 brief/风格帧/制作/审片，以及 `web-video-presentation` 的“首章验收后再批量”和 `beautiful-article` 的 reviewer/repair 流程。
-
-### 5.13 前端与预览适配（Agent 多阶段的必要组成）
-
-Agent 多阶段如果没有前端承接，用户只会看到“转圈很久，然后突然出片”。前端必须把每个阶段变成可见、可确认、可回退的状态。
-
-#### 5.13.1 前端展示的阶段时间线
-
-在动画任务卡/预览面板显示：
+因此不强制：
 
 ```text
 规划 → 细化 → 研究 → 草稿 → 落地 → 自检 → 待审片
 ```
 
-每个阶段展示：
+这条顺序只是**可选的工作方式**，不是状态机。Agent 可以：
 
-- 状态：pending / running / passed / failed / skipped；
-- 结构化摘要：`ShotPlan`、`DraftSpec`、`QAReport` 的关键字段；
-- 工具调用：web/kb/素材检索次数与来源；
-- 失败原因与回退目标：例如“布局失败 → 回到落地阶段”；
-- 修复轮次：第 1/3 轮；
-- 耗时。
+- 简单标题直接生成，跳过研究；
+- 数据镜头先 `kb_search` / `web_search` 再出草稿；
+- 复杂镜头先写 `ShotPlan` 或 `DraftSpec`，简单镜头直接落 MG；
+- 并行调用素材/事实/字体检查；
+- 自检失败后只重做布局、只补来源、只改一句文案，而不是整段重生成；
+- 根据用户反馈回到任意一步；
+- 不需要为了“走完流程”而假装完成某个阶段。
 
-后端通过现有 SSE trace 发送 `animation_stage` 事件：
+#### 5.12.1 系统提示词给目标，不给步骤
+
+AnimationAgent 的系统提示词应写：
+
+- 角色：动画导演 / motion designer；
+- 目标：在给定时长、画幅、brief、风格和事实约束下，做出可交付动画；
+- 完成标准：内容覆盖、叙事连续、文字可读、布局不重叠、QA 通过、来源可追溯；
+- 可用工具：brief、research、kb、draft、generate、layout、qa、preview、repair；
+- 预算：最多 3 轮修复、工具调用上限、时长上限；
+- 自主权：可跳过、并行、回退、询问用户；
+- 禁止：为了走流程而输出空阶段；无来源编数字；QA 未过声称完成。
+
+不要写“必须先规划再研究再草稿”的硬顺序。
+
+#### 5.12.2 工具与产物是能力，不是阶段
+
+提供以下**可被 Agent 自主调用**的能力：
+
+| 能力 | 作用 | 是否必须 |
+|---|---|---|
+| `build_animation_brief` | 生成/更新 brief | 可选 |
+| `research_web` / `kb_search` | 事实、数据、参考 | 按内容 |
+| `build_shot_plan` | 镜头意图/承接/seams | 复杂镜头 |
+| `build_draft_spec` | 元素角色/层级/相对布局 | 可选 |
+| `generate_mg` | 生成 mg_def | 必须 |
+| `normalize_layout` | 安全区/字号/阅读时间 | 生成后自动 |
+| `qa_animation` | text/phone/motion/determinism | 必须（生成后） |
+| `repair_animation` | 按 fail 项局部修复 | 按需 |
+| `request_user_review` | 风格帧/画面确认 | 按用户需求 |
+
+产物：
+
+- `AnimationBrief`；
+- `ShotPlan`；
+- `DraftSpec`；
+- `mg_def`；
+- `QAReport`；
+- `repair-log`。
+
+产物用于**可追溯**，不是必须逐个填满的表单。
+
+#### 5.12.3 完成标准与失败处理
+
+Agent 自己判断是否完成，但必须满足：
+
+- text_content 每段都落到画面；
+- 同镜一个主角；
+- 文字不重叠/不溢出/可读；
+- 数据有来源；
+- QA 技术项通过；
+- 用户确认（如果用户要求确认）。
+
+失败时 Agent 自己决定修复粒度：
+
+```text
+布局失败 → 只调 normalize_layout / 局部改坐标
+字号失败 → 只改字号/分组
+事实缺失 → 只补 research
+叙事不连贯 → 只改 ShotPlan / 承接
+生成失败 → 换 prompt 重试或降级模板
+```
+
+最多 3 轮修复；仍失败则如实标记 `unfinished`，不伪装完成。
+
+#### 5.12.4 可观测性
+
+不要求固定阶段，但每次工具调用/关键决策要有 trace：
 
 ```json
 {
-  "type": "animation_stage",
-  "stage": "self_check",
+  "type": "animation_activity",
+  "kind": "tool_call|decision|artifact|qa|repair|user_review",
+  "name": "qa_animation",
+  "summary": "text #2 字号 < 4% 屏高",
+  "artifact_ref": "qa/qa-report.json",
+  "at": "2026-11-19T..."
+}
+```
+
+前端展示的是**活动流**，不是“必须走完七步”的进度条。
+
+### 5.13 前端与预览适配（Agent 自主编排）
+
+前端不把 Agent 画成固定 pipeline，而是让用户看到“它现在在做什么、调用了什么、产出了什么、哪里失败”。
+
+#### 5.13.1 活动流而非步骤条
+
+动画任务卡/预览面板显示：
+
+- 当前动作（研究 / 草稿 / 生成 / 布局 / 自检 / 修复 / 等待确认）；
+- 最近工具调用与结果；
+- 产物（brief / shot plan / draft / mg_def / QA）；
+- 失败项与 Agent 选择的修复动作；
+- 修复轮次。
+
+不显示“规划 1/6、细化 2/6”这种强制进度。
+
+SSE 事件：
+
+```json
+{
+  "type": "animation_activity",
+  "kind": "tool_call",
+  "name": "qa_animation",
   "status": "failed",
-  "attempt": 1,
-  "max_attempts": 3,
   "summary": "text #2 字号 < 4% 屏高；line 穿过文字",
-  "retry_stage": "landing",
+  "retry_action": "normalize_layout",
   "artifact_ref": "qa/qa-report.json"
 }
 ```
 
-前端必须用 `asText` / `textList` 渲染，不能直接把对象当 React child。
+前端用 `asText` / `textList` 渲染，禁止把对象当 React child。
 
-#### 5.13.2 Brief 与风格帧确认
+#### 5.13.2 Brief 与风格帧是可选工具
 
-新增前端面板：
+- `AnimationBriefCard`：展示/编辑 brief；
+- `StyleFramePicker`：用户要求风格确认时出现 3 张风格帧；
+- 用户没有要求确认时，Agent 可以直接按 brief 生成；
+- 不把 brief/风格帧做成硬闸门；
+- 用户选择结果写入 plan，后续可追溯。
 
-- `AnimationBriefCard`：topic / benchmark / style / signature / palette / forbidden / sources；
-- `StyleFramePicker`：3 张风格帧，显示 school / palette / type / motion；
-- 用户选择后调用：
+#### 5.13.3 Draft / QA 的可见性
 
-```text
-POST /api/animation/style-frames/{session_id}/select
-{ "style_id": "swiss-editorial" }
-```
+预览侧栏可折叠展示：
 
-规则：
+- ShotPlan：inherits / before / after / change / handoff；
+- DraftSpec：元素角色/层级/相对布局/意图；
+- QA：text / phone / motion / determinism；
+- repair-log：每次失败与修复。
 
-- 未确认 brief 或风格帧，前端不显示“开始生成动画”；
-- 已确认后，确认值进入 `AnimationPlan` 并随任务持久化；
-- 不允许用户只选颜色而跳过风格语义。
+QA 未通过：
 
-#### 5.13.3 Draft / ShotPlan / QA 的可见性
-
-预览面板增加三个折叠区：
-
-- **计划**：每个镜头的 inherits / before / after / change / handoff；
-- **草稿**：元素角色、层级、相对布局、运动意图；
-- **QA**：text / phone / motion / determinism 分项结果。
-
-QA 未通过时：
-
-- 显示具体 fail 项与对应阶段；
-- 提供“按失败项修复”按钮，不提供“重新生成全部”作为唯一动作；
-- 修复后保留上一版 QA，形成对比。
+- 显示 fail 项；
+- 提供“按失败项修复”；
+- Agent 可选择局部修复或重新生成；
+- 保留上一版 QA 对比。
 
 #### 5.13.4 预览契约
 
-前端预览继续只消费 `clip.metadata.mg_def`，由 `mgRenderer.ts` 画 canvas：
+前端预览继续只消费 `clip.metadata.mg_def`：
 
-- **禁止**执行 `metadata.mg_html`；
-- 新增 brief/style/draft/qa 字段仅是元数据，不进入 canvas display-list；
-- `mg_def` 仍是唯一渲染真相；
-- 旧 MG 没有新字段时必须正常渲染，不能因可选字段缺失报错；
-- 后端自动布局后的坐标/字号必须在预览中体现，不能只改后端成片；
-- 预览头保留“近似预览”，当 `mgRenderer.ts` 与后端 `MGRenderer` 的 bbox/字号差异超过阈值时由 `mgFidelity.ts` 标记。
+- 禁止执行 `metadata.mg_html`；
+- brief/style/draft/qa 是元数据，不进入 canvas；
+- 旧 mg_def 没有新字段必须正常渲染；
+- 后端自动布局后的坐标/字号必须反映到预览；
+- `mgFidelity.ts` 标记前后端差异；
+- `width/height` 缺省使用 `mg_def` 尺寸。
 
-预览接口：
+#### 5.13.5 导出与确认
 
-```text
-POST /api/animation/preview
-{
-  "mg_json": {...},
-  "params": {...},
-  "width": 1920,
-  "height": 1080,
-  "fps": 30
-}
-```
-
-`width/height` 缺省必须使用 `mg_def` 自身尺寸，禁止固定 1280×720。
-
-#### 5.13.5 QA 与导出闸门
-
-- 自检未通过：预览可看，但“导出”禁用，显示 fail 原因；
-- 自检通过：仍要用户点击“确认画面”后才允许导出；
-- 技术 QA 未通过：不生成正式 MP4；
-- contact sheet / phone sheet / strip / motion 报告可在预览侧栏打开；
-- 所有 QA 文件写入工作区 `qa/`，路径进入 trace，供审片和复盘。
+- QA 技术项未通过：导出禁用；
+- QA 通过但用户要求确认：等待用户确认；
+- 用户未要求确认且 QA 通过：允许导出；
+- 不允许静默导出未通过 QA 的成片；
+- QA 文件写入 `qa/` 并进入 trace。
 
 #### 5.13.6 前端文件与测试
 
-需要改/新增：
-
 ```text
-src/features/preview/PreviewPanel.tsx        # 阶段/QA/草稿侧栏
-src/features/preview/mgRenderer.ts           # 保持 mg_def-only
-src/features/preview/mgFidelity.ts           # 差异角标
+src/features/preview/PreviewPanel.tsx
+src/features/preview/mgRenderer.ts
+src/features/preview/mgFidelity.ts
 src/features/animation/AnimationBriefCard.tsx
 src/features/animation/StyleFramePicker.tsx
-src/features/animation/AnimationStageTimeline.tsx
+src/features/animation/AnimationActivityFeed.tsx
 src/features/animation/QAReportPanel.tsx
 src/features/animation/api.ts
 src/features/animation/types.ts
@@ -456,22 +498,13 @@ src/features/animation/types.ts
 
 测试：
 
-- 阶段 SSE 事件渲染；
-- brief/style 未确认时生成按钮禁用；
-- QA fail 时导出禁用且显示回退阶段；
-- 旧 mg_def 无新字段仍可预览；
-- `mg_json` 为唯一渲染源，`mg_html` 不执行；
-- 1440×900 / 1280×720 / 手机宽度下侧栏不挤压画布；
-- 无效/空 stage artifact 不崩（`asText`）。
-
-#### 5.13.7 验收
-
-- 用户能看懂“现在在哪个阶段、为什么失败、下一步回哪”；
-- 每个风格帧可选、可回看、可追溯；
-- 预览体现自动布局结果；
-- QA fail 不会静默导出；
-- Agent 的每轮修复都有前后对比；
-- 前端不引入新的 HTML/脚本执行面。
+- 活动流事件渲染；
+- brief/style 可选，不阻断直接生成；
+- QA fail 导出禁用；
+- 旧 mg_def 兼容；
+- 不执行 mg_html；
+- 三种宽度下侧栏不挤压画布；
+- 缺失 artifact 不崩。
 
 ## 6. 优先级与里程碑
 
@@ -482,8 +515,8 @@ src/features/animation/types.ts
 3. 禁止清单 + 2+1 配色 + 文本可读性硬约束；
 4. 连续叙事字段；
 5. contact sheet/phone/text/motion QA；
-6. Agent 六阶段循环：规划/细化/研究/草稿/落地/自检，带修复回退；
-7. 前端阶段时间线 / brief / 风格帧 / QA 面板 / 导出闸门。
+6. Agent 自主编排工具（brief/research/draft/generate/qa/repair），非固定阶段；
+7. 前端活动流 / 可选 brief / 风格帧 / QA 面板 / 导出闸门。
 
 ### P1（第二阶段）
 
