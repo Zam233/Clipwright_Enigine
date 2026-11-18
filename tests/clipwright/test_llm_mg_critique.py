@@ -120,7 +120,8 @@ class TestCritiquePassThrough:
         critique_prompt = "".join(m["content"] for m in critique_messages)
         assert "Motion Graphics" in critique_prompt
         assert "score" in critique_prompt
-        assert "Easing" in critique_prompt
+        # PRD: critique 已改为运动契约 + 连续性检查，不再回注整份 Easing 设计提示。
+        assert "全片运动契约" in critique_prompt
 
     async def test_low_score_but_not_enabled_skips_critique(self) -> None:
         """critique.enabled=false：跳过批判，直接接受输出（即使低分）。"""
@@ -216,7 +217,7 @@ class TestCritiqueRepair:
         # 与任务 5 的模板目录状态解耦：显式清空模板，使降级结果可判定
         gen._get_templates = lambda: []  # type: ignore[method-assign]
         result = await gen.generate("展示产品核心数据", "")
-        assert result["method"] == "fallback"
+        assert result["method"] == "llm_failed"
         assert result["success"] is False
         assert fake.generate.await_count == 3
 
@@ -230,7 +231,7 @@ class TestCritiqueRepair:
         ])
         gen._get_templates = lambda: []  # type: ignore[method-assign]
         result = await gen.generate("展示产品核心数据", "")
-        assert result["method"] == "fallback"
+        assert result["method"] == "llm_failed"
         assert result["success"] is False
 
     async def test_low_score_not_fixable_accepts_original(self) -> None:

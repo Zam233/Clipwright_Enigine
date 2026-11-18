@@ -1761,8 +1761,10 @@ ision_prompt
             logger.warning("MGGenerator: 渲染残留占位符经二次填充后清除")
             return await self._lint_gated(html2)
 
-        logger.warning("MGGenerator: 渲染后仍含残留占位符，返回原始 HTML")
-        return html or html2
+        # 最后一道守卫：渲染器偶发把参数默认值里的 {unknown} 再次带出来；
+        # 直接清掉字面占位符，避免用户看到 {unknown} 这样的内部 token。
+        logger.warning("MGGenerator: 渲染后仍含残留占位符，清理字面 token")
+        return _RESIDUAL_PLACEHOLDER_RE.sub("", html or html2)
 
     @staticmethod
     def _dedupe_duplicate_text(mg_def: dict[str, Any], params: dict | None = None) -> dict[str, Any]:

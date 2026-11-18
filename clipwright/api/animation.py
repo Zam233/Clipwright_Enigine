@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -207,7 +209,10 @@ async def preview_mg(body: MgPreviewRequest) -> dict:
         # 旧实现塞进 render_overlays 的 overlay 列表，_overlay_to_html 只读 text
         # 字段 → 恒产出空白视频却报成功。
         async def _run_preview(cmd):
-            return await run_tracked_ff(
+            # run_tracked_ff 是同步 subprocess 封装；旧实现直接 await 会抛
+            # "'CompletedProcess' object can't be awaited"，预览恒 500。
+            return await asyncio.to_thread(
+                run_tracked_ff,
                 cmd, capture_output=True, text=False, timeout=1800,
                 env=HyperframesRenderer._render_env(),
             )
@@ -223,7 +228,8 @@ async def preview_mg(body: MgPreviewRequest) -> dict:
         if not out or not mov_path.exists():
             raise HTTPException(status_code=500, detail="Hyperframes 渲染失败")
         # MOV → MP4（H.264 重编码，浏览器可直接播放）
-        r = await run_tracked_ff(
+        r = await asyncio.to_thread(
+            run_tracked_ff,
             ["ffmpeg", "-y", "-loglevel", "error", "-i", str(mov_path),
              "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
              "-an", str(mp4_path)],

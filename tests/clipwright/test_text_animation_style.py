@@ -51,7 +51,7 @@ def test_ensure_text_animation_legacy_and_duration_reason():
     assert ta["duration_reason"]
 
 
-async def test_ass_typewriter_reveals_per_char_and_centers(tmp_path, monkeypatch):
+async def test_ass_legacy_typewriter_is_static_fade(tmp_path, monkeypatch):
     svc = RenderService(work_dir=tmp_path)
     ov = {
         "start_sec": 1.0, "duration_sec": 8.0, "text": "离线下载功能",
@@ -62,9 +62,10 @@ async def test_ass_typewriter_reveals_per_char_and_centers(tmp_path, monkeypatch
     }
     ass = await _render(svc, [ov], monkeypatch)
     lines = _dialogue_lines(ass)
-    assert len(lines) == 6
-    # 每个字独立出现、使用固定 left-top 位置；不能每个字各自居中
-    assert all(r"\pos(" in ln and r"\an7" in ln for ln in lines)
+    # 旧时间线的 motion 已退役：静态文字 + 淡入，不再逐字/逐 pos 输出。
+    assert len(lines) == 1
+    assert r"\fad(200,200)" in ass
+    assert r"\pos(" not in ass
     assert "Style: T0" in ass
 
 
@@ -98,7 +99,10 @@ async def test_ass_slide_and_scale_motion(tmp_path, monkeypatch):
               "style": {"font_size": 56, "fill": "#ffffff"},
               "position": "center", "category": "text", "motion": motion}
         ass = await _render(svc, [ov], monkeypatch)
-        assert needle in ass, (motion, ass[:200])
+        # 旧 motion 字段不再生成 ASS 动效；文字按静态 ASS 输出。
+        assert r"\move(" not in ass
+        assert r"\t(" not in ass
+        assert r"\fad(200,200)" in ass
 
 
 async def test_ass_word_by_word_and_cursor(tmp_path, monkeypatch):
@@ -109,6 +113,6 @@ async def test_ass_word_by_word_and_cursor(tmp_path, monkeypatch):
           "motion": {"type": "word_by_word", "reveal_sec": 1.2, "cursor": True}}
     ass = await _render(svc, [ov], monkeypatch)
     lines = [ln for ln in ass.splitlines() if ln.startswith("Dialogue:")]
-    # 5 个 token + cursor
-    assert len(lines) >= 6
-    assert "▍" in ass
+    # 旧时间线的 motion 已退役：整段静态文字，无 cursor。
+    assert len(lines) == 1
+    assert "▍" not in ass
