@@ -1984,9 +1984,11 @@ ision_prompt
         import uuid
         from datetime import datetime, timezone
 
-        # 所有出口（首轮/llm_repair/critique_repair/fallback）都必须过布局归一化。
-        # 旧实现只在首轮校验后调用 normalize_mg_layout；修复路径直接 _build_success，
-        # 于是 LLM 修完的布局又回到重叠/贴边状态。
+        # 守卫顺序：先按语义分列 left/right，再归一化；否则 normalizer 会改 y，
+        # 让 _ensure_label_separation 失去“同坐标”分组条件。
+        mg_def = self._ensure_no_background(mg_def, vision_prompt)
+        mg_def = self._ensure_label_separation(mg_def)
+        mg_def = self._dedupe_duplicate_text(mg_def, params)
         try:
             from clipwright.animation.mg.layout import normalize_mg_layout
             mg_def, layout_adjustments = normalize_mg_layout(mg_def)
@@ -1997,12 +1999,6 @@ ision_prompt
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("MGGenerator: 出口布局归一化失败（跳过）: %s", exc)
-        # 背景守卫：vision_prompt 未明确要求背景时剥离不透明 bg 背景层
-        mg_def = self._ensure_no_background(mg_def, vision_prompt)
-        # 标签分离守卫：left/right 标签同坐标 → 按语义分列左右（质检发现的重叠 bug）
-        mg_def = self._ensure_label_separation(mg_def)
-        # 重复文本守卫：同窗口同文案的两个元素 → 只留字号最大的（成片重影）
-        mg_def = self._dedupe_duplicate_text(mg_def, params)
         # 字体令牌：Persona 字体落进成片（此前恒 sans-serif，见 _apply_persona_font）
         mg_def = self._apply_persona_font(mg_def, persona_style)
 
