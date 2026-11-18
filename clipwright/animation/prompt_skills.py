@@ -62,7 +62,28 @@ BUILTIN_SKILLS: dict[str, PromptSkill] = {
 SKILLS.update(BUILTIN_SKILLS)
 
 
+def load_plugin_prompt_skills(agent_names: tuple[str, ...] = ("animation", "animation_mg", "mg")) -> int:
+    """Wrap plugin prompt entries into PromptSkill. Engine owns selection; plugin owns body."""
+    try:
+        from clipwright.plugins.prompt_registry import PluginPromptRegistry
+    except Exception:
+        return 0
+    loaded = 0
+    for agent_name in agent_names:
+        for idx, entry in enumerate(PluginPromptRegistry.get_entries_for_agent(agent_name)):
+            sid = f"plugin:{entry.plugin_id}:{agent_name}:{idx}"
+            if sid in SKILLS:
+                continue
+            register_prompt_skill(PromptSkill(
+                sid, ("*",), f"{entry.description}\n{entry.prompt}"[:4000],
+                kind="plugin", priority=int(entry.priority),
+            ))
+            loaded += 1
+    return loaded
+
+
 def select_skills(*, category: str = "", shot_type: str = "", needs: set[str] | None = None) -> list[PromptSkill]:
+    load_plugin_prompt_skills()
     tags = {"*", category, shot_type, *(needs or set())}
     out = [s for s in SKILLS.values() if any(t in tags for t in s.when)]
     return sorted(out, key=lambda s: (-s.priority, s.id))
