@@ -625,18 +625,6 @@ class ChatForge:
                 continue
         return removed
 
-
-        """按会话 + 附件 id 读取受控文件（防路径穿越）。"""
-        if not re.fullmatch(r"att_[0-9a-f]{16}", attachment_id):
-            return None
-        session_dir = self.ATTACHMENTS_DIR / "".join(
-            c for c in session_id if c.isalnum() or c in "-_"
-        )[:64]
-        for path in session_dir.glob(f"{attachment_id}.*"):
-            if path.is_file():
-                return path
-        return None
-
     async def _attachments_to_context(self, attachments: list[dict[str, Any]]) -> str:
         """把附件转成喂给 LLM 的文本上下文。
 
