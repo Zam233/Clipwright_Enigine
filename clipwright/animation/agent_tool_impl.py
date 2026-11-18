@@ -58,6 +58,27 @@ async def render_preview(mg_def: dict | None = None, params: dict | None = None,
         return resp.json()
 
 
+async def research_sources(query: str = "", agent: Any = None, **_: Any) -> dict[str, Any]:
+    from clipwright.animation.assets import gather_sources
+    if agent is None:
+        return {"sources": [], "note": "agent capability unavailable"}
+    return {"sources": await gather_sources(agent, query)}
+
+
+async def inspect_reference(video_path: str = "", out_dir: str = "", **_: Any) -> dict[str, Any]:
+    import json
+    import subprocess
+    import sys
+    if not video_path:
+        return {"error": "video_path required"}
+    script = "scripts/inspect_reference.py"
+    args = [sys.executable, script, video_path]
+    if out_dir:
+        args += ["--out", out_dir]
+    out = subprocess.check_output(args, cwd=".")
+    return json.loads(out.decode("utf-8", "ignore") or "{}")
+
+
 async def generate_mg(description: str = "", text_content: str = "", persona_style: dict | None = None,
                       width: int = 1920, height: int = 1080, fps: float = 30.0, **_: Any) -> dict[str, Any]:
     from clipwright.animation.mg.generator import MGGenerator
@@ -76,5 +97,7 @@ def install_animation_tool_handlers() -> None:
         "qa_mg": qa_mg,
         "repair_mg": repair_mg,
         "render_preview": render_preview,
+        "research_sources": research_sources,
+        "inspect_reference": inspect_reference,
     }.items():
         bind_animation_tool(name, handler)
