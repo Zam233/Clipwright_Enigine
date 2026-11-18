@@ -2108,6 +2108,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             # P2-B 多方案择优：新引擎提供 generate_best（variants=1 时等价旧行为）；
             # 旧版/插件提供的引擎可能只有 generate → 回退调用，保持兼容。
             _generate = getattr(mg_gen, "generate_best", None) or mg_gen.generate
+            _agentic_flag = os.environ.get("CLIPWRIGHT_ANIMATION_AGENTIC_LOOP", "").strip()
+            logger.info("AnimationAgent: agentic flag=%r", _agentic_flag)
             result = {}
             if os.environ.get("CLIPWRIGHT_ANIMATION_AGENTIC_LOOP", "").strip() in ("1", "true", "yes"):
                 result = await self._generate_mg_via_agentic(
