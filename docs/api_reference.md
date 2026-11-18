@@ -378,6 +378,7 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 | `POST /api/persona/forge/chat/message/stream` | **流式发送消息（SSE）**：逐块 `delta`，末尾 `done`；中断时 `error`（带 `partial`） |
 | `POST /api/persona/forge/chat/knowledge` | 注入知识（超长按 H1 自动分段） |
 | `POST /api/persona/forge/chat/commit` | 提交并生成 `PersonaManifest` |
+| `GET /api/persona/forge/chat/sessions/{session_id}` | **会话详情**：真实消息、六维草稿、Prompt/视觉 Prompt 草稿、六维进度 |
 | `GET /api/persona/forge/chat/state/{session_id}` | 获取会话状态 |
 | `whisper_transcribe`（工具） | 转写输出含 `phrases`/`packed_text`/`silences`/`compression`（V6 短语级打包，逐词 JSON 字符数可降 90%+） |
 | `timeline_view`（工具） | 复核图工具（V7）：`mode=cuts` 切点三帧对照条 / `mode=overview` 全片联络表 |
