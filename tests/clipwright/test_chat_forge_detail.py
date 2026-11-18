@@ -94,3 +94,22 @@ async def test_upload_quota_and_mime(forge: ChatForge) -> None:
     assert forge.read_attachment(sid, meta["id"]) is not None
     with pytest.raises(Exception):
         forge.store_upload(sid, "x.exe", "application/x-msdownload", b"x")
+
+
+@pytest.mark.asyncio
+async def test_llm_generates_session_title(forge: ChatForge) -> None:
+    sid = (await forge.start())["session_id"]
+    session = forge._sessions[sid]
+    session.messages.append({"role": "user", "content": "我想做冷峻科技评论"})
+
+    class _TitleLLM:
+        async def generate(self, messages=None, **kwargs):
+            class R:
+                success = True
+                content = "冷峻科技评论"
+            return R()
+
+    forge._llm = _TitleLLM()
+    await forge._ensure_title(session)
+    assert session.title == "冷峻科技评论"
+    assert forge.list_sessions()[0]["title"] == "冷峻科技评论"

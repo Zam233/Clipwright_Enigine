@@ -39,6 +39,7 @@ from .agents import *  # noqa: F401,F403
 from .loop import *  # noqa: F401,F403
 from .mg import *  # noqa: F401,F403
 from .material import *  # noqa: F401,F403
+from .chat import CHAT_TITLE_SYSTEM  # noqa: F401
 from .engine import (  # noqa: F401
     KINETIC_TYPOGRAPHY_SYSTEM,
     MG_CRITIQUE_CHECK_ITEMS,

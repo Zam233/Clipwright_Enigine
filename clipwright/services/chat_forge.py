@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -36,6 +37,7 @@ from clipwright.schema.persona import (
 )
 from clipwright.services.llm import LLMService
 from clipwright.config import logger
+from clipwright.prompts import CHAT_TITLE_SYSTEM
 from filelock import FileLock
 
 # ── ChatForgesystem prompt ──
@@ -112,6 +114,7 @@ class ChatForgeSession:
     owner_id: str = ""
     revision: int = 0
     committed_persona_id: str = ""
+    title: str = ""
 
     @property
     def is_expired(self) -> bool:
@@ -179,6 +182,7 @@ class ChatForge:
                 "owner_id": session.owner_id,
                 "revision": session.revision,
                 "committed_persona_id": session.committed_persona_id,
+                "title": session.title,
             }
             path = self._session_path(session.session_id)
             tmp = path.with_suffix(".tmp")
@@ -209,6 +213,7 @@ class ChatForge:
                         owner_id=data.get("owner_id", "") or "",
                         revision=int(data.get("revision", 0) or 0),
                         committed_persona_id=data.get("committed_persona_id", "") or "",
+                        title=data.get("title", "") or "",
                     )
                     if not session.is_expired:
                         self._ensure_knowledge_ids(session)
@@ -272,7 +277,7 @@ class ChatForge:
                 if m.get("role") == "user" and not str(m.get("content", "")).startswith("[系统]")
             ]
             # 首条用户消息作为标题（列表页一眼能认出来是哪个会话）
-            title = user_messages[0]["content"][:40].strip() if user_messages else ""
+            title = session.title or (user_messages[0]["content"][:40].strip() if user_messages else "")
             items.append({
                 "session_id": session.session_id,
                 "title": title,
@@ -477,6 +482,7 @@ class ChatForge:
         result = await self._process(session, user_message, persona_id)
         # 同步路径也必须在 assistant 消息追加后落盘；否则重启后丢最后一条回复。
         self._persist_session(session)
+        await self._ensure_title(session)
         return result
 
     # ── 附件（图/文件消息） ──
@@ -789,6 +795,7 @@ class ChatForge:
                 "missing_dimensions": result.get("missing_dimensions", []),
                 "progress": result.get("progress", {}),
             }
+            await self._ensure_title(session)
         except (json.JSONDecodeError, KeyError) as exc:
             # 与同步路径一致：解析失败时把原始文本当回复（宁可展示模型原文，也不吞掉）
             session.messages.append({"role": "assistant", "content": raw})
@@ -1004,6 +1011,34 @@ class ChatForge:
         session.updated_at = datetime.now(timezone.utc)
         self._persist_session(session)
         return self.get_detail(session_id)
+
+    async def _ensure_title(self, session: ChatForgeSession) -> None:
+        """首条用户消息后用 LLM 生成短标题；失败保留空串由前端回退。"""
+        if session.title:
+            return
+        first = next(
+            (m.get("content", "") for m in session.messages
+             if m.get("role") == "user" and not str(m.get("content", "")).startswith("[系统]")),
+            "",
+        )
+        if not first.strip():
+            return
+        try:
+            resp = await asyncio.wait_for(
+                self._llm.generate(messages=[
+                    {"role": "system", "content": CHAT_TITLE_SYSTEM},
+                    {"role": "user", "content": first[:2000]},
+                ]),
+                timeout=8,
+            )
+            if getattr(resp, "success", False):
+                title = (getattr(resp, "content", "") or "").strip().strip('"“”').strip()
+                if title and len(title) <= 40:
+                    session.title = title
+                    session.updated_at = datetime.now(timezone.utc)
+                    self._persist_session(session)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("ChatForge 标题生成失败: %s", e)
 
     def get_detail(self, session_id: str) -> Optional[dict[str, Any]]:
         """会话详情：消息 + 草稿 + Prompt 草稿 + 六维进度。"""
