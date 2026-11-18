@@ -256,3 +256,15 @@ async def preview_mg(body: MgPreviewRequest) -> dict:
             mov_path.unlink(missing_ok=True)
         except Exception:
             pass
+
+
+
+class TextBBoxRequest(BaseModel):
+    mg_json: dict
+
+
+@router.post("/text-bbox")
+async def text_bbox(body: TextBBoxRequest) -> dict:
+    """Real browser text bbox for the given mg_def (engine QA helper)."""
+    from clipwright.animation.text_metrics import measure_text_bboxes
+    return {"boxes": await asyncio.to_thread(measure_text_bboxes, body.mg_json)}
