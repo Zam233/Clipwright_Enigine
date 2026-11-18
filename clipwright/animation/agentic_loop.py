@@ -55,7 +55,10 @@ async def run_agentic_loop(
             if calls >= max_calls:
                 return LoopResult("capped", actions, observations, rounds, "max_calls")
             calls += 1
-            observations.append(await execute_tool(action.name, action.args))
+            try:
+                observations.append(await execute_tool(action.name, action.args))
+            except Exception as exc:  # noqa: BLE001 — 工具失败作为观察，不终止循环
+                observations.append({"error": str(exc)[:500], "tool": action.name})
             continue
         observations.append({"error": f"unknown action kind: {action.kind}"})
     return LoopResult("capped", actions, observations, rounds, "max_rounds")

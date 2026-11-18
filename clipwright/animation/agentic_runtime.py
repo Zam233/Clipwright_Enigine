@@ -60,8 +60,16 @@ class AnimationAgentRuntime:
             merged = {**self.default_args, **args}
             return await call_animation_tool(name, **merged)
 
+        async def guarded(observations: list[Any]) -> AgentAction:
+            action = await decide(observations)
+            if action.kind == "final" and not any(
+                isinstance(o, dict) and o.get("mg_def") for o in observations
+            ):
+                return AgentAction("tool", "generate_mg", {}, "还没有 mg_def，先生成")
+            return action
+
         return await run_agentic_loop(
-            decide=decide,
+            decide=guarded,
             execute_tool=execute,
             load_skill=load_skill,
             max_rounds=self.max_rounds,
