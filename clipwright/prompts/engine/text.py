@@ -14,7 +14,7 @@ font_family 必须使用：`system-ui, HF Symbols, sans-serif`。
 - `elements[]`：文字元素；`content/text` 是显示文本；`x/y` 数值是左上角，字符串锚点 center/left/right/top/bottom。
 - bbox = 元素 [x, y, x+width, y+height]；文字未给 width 时按内容估算，height=font_size×1.2。
 - `elements` 的 JSON 顺序就是绘制层级，后写覆盖先写；没有 z-index。背景→装饰→线→标签→主文字。
-- `keyframes[]`：time 秒；opacity/scale/translate_x/translate_y/rotate 可动画；easing 控制该帧到下一帧。
+- `keyframes[]`：time 秒；opacity/scale/translate_x/translate_y/rotate/width/height/font_size/color/background/filter 可动画；easing 支持 linear/ease/ease-in/ease-out/ease-in-out/back-out/elastic-out/bounce 或 cubic-bezier 数组。
 
 ## 硬约束
 - 一屏只表达一个关键词/短语；元素数 1–4；文本 ≤16 字/行。

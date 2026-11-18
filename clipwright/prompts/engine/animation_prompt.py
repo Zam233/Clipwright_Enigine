@@ -38,6 +38,9 @@ ANIMATION_PROMPT_BASE = """你是一位 Motion Graphics 动画设计师。你的
 - `width/height`：元素尺寸；`font_size/font_color/font_weight/letter_spacing/text_shadow`：文字排版与可读性。
 - `keyframes[]`：动画时间线；`time` 是秒；`opacity/scale/translate_x/translate_y/rotate` 是动画属性；`easing` 控制当前帧到下一帧的缓动。
 - `params`：占位符声明；每个 key 必须有 type/default；`style`：画布背景和全局字体。
+- 其他元素字段：`shape`(rect/ellipse)、`color`、`background`、`background_image`、`font_family`、`font_italic`、`text_align`、`line_height`、`text_gradient`（需配合 background）、`box_shadow`、`border_radius`、`border_width`、`border_color`、`stroke_width`、`stroke_color`、`filter`、`clip_path`、`clip_inset`、`mask`、`transform_origin`。
+- 关键帧可用属性：`opacity`、`scale`/`scale_x`/`scale_y`、`translate_x`/`translate_y`/`translate_z`、`rotate`/`rotate_x`/`rotate_y`/`rotate_z`、`width`/`height`、`font_size`、`color`、`background`、`border_radius`、`border_width`、`border_color`、`box_shadow`、`text_shadow`、`filter`、`letter_spacing`、`font_weight`、`font_family`、`line_height`、`transform_origin`、`perspective`、`blur`、`clip_inset`、`mask`、`clip_path`、`easing`。
+- `easing` 允许：linear / ease / ease-in / ease-out / ease-in-out / back-out / elastic-out / bounce，或 `[x1,y1,x2,y2]`。
 
 ## 输出前自检
 1. 是否只有一个主角？
