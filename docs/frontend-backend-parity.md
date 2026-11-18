@@ -58,6 +58,7 @@
 | `/api/capability` | capability.py | 1 | POST `/{name}`（**通用能力网关**：按能力名解析→执行，404/422/503/200；插件对外 HTTP 的唯一通道） |
 | `/api/providers` | providers.py | 14 | GET `` · POST `` · GET `/available` · GET `/roles` · PUT `/roles` · GET `/schemas` · GET `/capabilities` · GET `/{id}` · PUT `/{id}` · DELETE `/{id}` · POST `/{id}/models` · POST `/{id}/models/upsert` · POST `/{id}/models/fetch` · POST `/{id}/test` |
 | `/api/type-maker` | type_maker.py | 6 | GET `/list` · GET `/{type_id}` · POST `/create` · PUT `/{type_id}` · DELETE `/{type_id}` · POST `/preview` |
+| `/api/type-forge/chat` | type_forge.py | 7 | POST `/start` · POST `/message` · POST `/message/stream` · GET `/sessions` · GET `/sessions/{id}` · DELETE `/sessions/{id}` · POST `/commit` |
 | `/api/project`（版本） | versions.py | 4 | GET `/{project_id}/versions` · POST `/{project_id}/versions` · POST `/{project_id}/versions/{position}/restore` · DELETE `/{project_id}/versions` |
 | `/api/video-editor` | video_editor.py | 13 | GET `/status` · GET `/projects` · POST `/projects/create` · GET `/projects/{project_id}` · PUT `/projects/{project_id}` · DELETE `/projects/{project_id}` · POST `/projects/{project_id}/undo` · POST `/projects/{project_id}/redo` · POST `/projects/{project_id}/clips/add` · POST `/projects/{project_id}/clips/remove` · POST `/projects/{project_id}/clips/move` · POST `/projects/{project_id}/clips/split` · POST `/projects/{project_id}/export` |
 | `/api/vision` | vision.py | 2 | POST `/analyze` · POST `/import` |
@@ -98,6 +99,7 @@
 | `font.ts` | `fontApi` | 4 | `/api/fonts`（4/4） |
 | `webhook.ts` | `webhookApi` | 8 | `/api/webhook`（8/8） |
 | `typeMaker.ts` | `typeMakerApi` | 6 | `/api/type-maker`（6/6） |
+| `typeForge.ts` | `typeForgeApi` | 7 | `/api/type-forge/chat`（7/7） |
 | `template.ts` | `templateApi` | 7 | `/api/template`（7/7，含 batch-apply） |
 | `edl.ts` | `edlApi` | 4 | `/api/edl`（4/4） |
 | `waveform.ts` | `waveformApi` | 1 | `/api/waveform`（1/1） |

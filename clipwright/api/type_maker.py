@@ -165,12 +165,34 @@ async def get_type(type_id: str) -> dict:
         config["_source_file"] = str(yaml_path)
         return config
 
-    # 内置类型返回基本信息
+    # 内置类型：返回基本信息 + 插件声明的 Prompt/规则/指标（详情页可读）
+    bundle = plugin.get_prompt_bundle()
+    # 内置插件的镜头参数由 translate_persona 推导；默认 Persona 只用于展示。
+    from clipwright.schema.persona import ParameterLayer
+    try:
+        translated = plugin.translate_persona(ParameterLayer(persona_id=plugin.plugin_id))
+        raw_shot = plugin.get_shot_params(translated)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("内置类型 %s 参数推导失败: %s", type_id, exc)
+        raw_shot = {}
+    shot_params = {
+        "min_shot_sec": round(float(raw_shot.get("min_shot_ms", 1000)) / 1000, 3),
+        "max_shot_sec": round(float(raw_shot.get("max_shot_ms", 10000)) / 1000, 3),
+        "transition_type": "cut",
+        "transition_duration_sec": 0.5,
+        "cut_on_beat": False,
+    }
     return {
         "id": plugin.plugin_id,
         "name": plugin.display_name,
         "description": plugin.description,
         "builtin": True,
+        "shot_params": shot_params,
+        "prompts": {k: v.model_dump(mode="json") for k, v in (bundle.slots or {}).items()},
+        "param_rules": [r.model_dump(mode="json") for r in plugin.get_param_rules()],
+        "signature_traits": [t.model_dump(mode="json") for t in plugin.get_signature_traits()],
+        "declares": plugin.get_declares().model_dump(mode="json"),
+        "waivers": [],
     }
 
 

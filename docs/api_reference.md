@@ -447,6 +447,13 @@ data: {"type":"error","detail":"流式生成中断: ...","partial":"已产出的
 | `PUT /api/type-maker/{type_id}` | 更新类型 |
 | `DELETE /api/type-maker/{type_id}` | 删除类型 |
 | `POST /api/type-maker/preview` | 类型预览 |
+| `POST /api/type-forge/chat/start` | 创建类型对话会话 |
+| `POST /api/type-forge/chat/message` | 类型对话消息（LLM 更新草稿） |
+| `POST /api/type-forge/chat/message/stream` | 类型对话 SSE 流 |
+| `GET /api/type-forge/chat/sessions` | 类型对话会话列表 |
+| `GET /api/type-forge/chat/sessions/{id}` | 类型对话详情 |
+| `DELETE /api/type-forge/chat/sessions/{id}` | 删除类型对话 |
+| `POST /api/type-forge/chat/commit` | 校验并创建自定义类型（冲突 409） |
 
 ---
 
