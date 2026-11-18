@@ -143,9 +143,11 @@ class ChatForge:
     SESSIONS_DIR = Path("chatforge_sessions")
     # 受控附件目录；消息 JSON 只保存 storage_ref，不再内嵌 data URL
     ATTACHMENTS_DIR = Path("chatforge_attachments")
+    ATTACHMENT_TTL_DAYS: int = 7
     # 单条消息的附件上限：数量与单张图片的 Base64 体积（4 张 × 8MB ≈ 32MB 会话文件上限）
     MAX_ATTACHMENTS: int = 4
     MAX_ATTACHMENT_CHARS: int = 8 * 1024 * 1024
+    MAX_SESSION_ATTACHMENT_BYTES: int = 32 * 1024 * 1024
     # 附件类型白名单
     ATTACHMENT_TYPES = ("image", "file")
 
@@ -154,6 +156,7 @@ class ChatForge:
         self._sessions: dict[str, ChatForgeSession] = {}
         self.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
         self.ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+        self.cleanup_attachments()
         self._restore_sessions()
 
     # ── B5: 会话落盘 ──
@@ -181,7 +184,8 @@ class ChatForge:
             tmp.write_text(json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
             tmp.replace(path)
         except Exception as e:
-            logger.warning("ChatForge 会话落盘失败 %s: %s", session.session_id, e)
+            logger.exception("ChatForge 会话落盘失败 %s: %s", session.session_id, e)
+            raise
 
     def _restore_sessions(self) -> None:
         """启动时从磁盘恢复未过期会话。"""
@@ -229,6 +233,16 @@ class ChatForge:
         expired = [sid for sid, s in self._sessions.items() if now - s.updated_at > timedelta(hours=1)]
         for sid in expired:
             del self._sessions[sid]
+
+    def get_session(self, session_id: str) -> Optional[ChatForgeSession]:
+        self._cleanup_expired()
+        return self._sessions.get(session_id)
+
+    def _require_session(self, session_id: str) -> ChatForgeSession:
+        session = self.get_session(session_id)
+        if session is None:
+            raise KeyError(session_id)
+        return session
 
     def _get_or_create_session(self, session_id: Optional[str] = None) -> ChatForgeSession:
         self._cleanup_expired()
@@ -446,7 +460,7 @@ class ChatForge:
           未开启时只留一行占位说明（不假装看过图）；
         - 附件与派生文本都随会话落盘，刷新/重启后仍在。
         """
-        session = self._get_or_create_session(session_id)
+        session = self._require_session(session_id)
         normalized = self._normalize_attachments(attachments)
         entry: dict[str, Any] = {"role": "user", "content": user_message}
         if normalized:
@@ -520,6 +534,8 @@ class ChatForge:
                 raise ChatForgeAttachmentError(f"第 {index + 1} 个附件过大")
             kind = str(att.get("type") or "file")
             mime = str(att.get("mime") or "application/octet-stream")
+            if mime == "application/octet-stream" and header.startswith("data:"):
+                mime = header[5:].split(";", 1)[0] or mime
             if kind == "image":
                 if raw[:8] == b"\x89PNG\r\n\x1a\n":
                     mime, ext = "image/png", ".png"
@@ -530,7 +546,9 @@ class ChatForge:
                 else:
                     raise ChatForgeAttachmentError(f"第 {index + 1} 个图片格式不支持")
             else:
-                ext = ".txt" if mime in ("text/plain", "text/markdown", "application/json") else ".bin"
+                if mime not in ("text/plain", "text/markdown", "application/json"):
+                    raise ChatForgeAttachmentError(f"第 {index + 1} 个附件类型不支持")
+                ext = ".txt" if mime in ("text/plain", "text/markdown") else ".json"
             digest = hashlib.sha256(raw).hexdigest()
             att_id = f"att_{digest[:16]}"
             filename = f"{att_id}{ext}"
@@ -544,7 +562,63 @@ class ChatForge:
             })
         return out
 
+    def store_upload(
+        self, session_id: str, filename: str, content_type: str, raw: bytes,
+    ) -> dict[str, Any]:
+        """multipart 上传入口：校验 MIME/大小/会话配额后落盘。"""
+        self._require_session(session_id)
+        allowed = {
+            "image/png", "image/jpeg", "image/webp",
+            "text/plain", "text/markdown", "application/json",
+        }
+        if content_type not in allowed:
+            raise ChatForgeAttachmentError(f"不支持的附件类型: {content_type}")
+        if len(raw) > self.MAX_ATTACHMENT_CHARS:
+            raise ChatForgeAttachmentError("附件过大")
+        session = self._require_session(session_id)
+        used = sum(
+            int(a.get("size") or 0)
+            for m in session.messages for a in (m.get("attachments") or [])
+        )
+        if used + len(raw) > self.MAX_SESSION_ATTACHMENT_BYTES:
+            raise ChatForgeAttachmentError("会话附件总容量超限")
+        data_url = f"data:{content_type};base64,{base64.b64encode(raw).decode('ascii')}"
+        meta = self._materialize_attachments(session_id, [{
+            "type": "image" if content_type.startswith("image/") else "file",
+            "name": filename or "attachment", "mime": content_type, "data_url": data_url,
+        }])[0]
+        return meta
+
     def read_attachment(self, session_id: str, attachment_id: str) -> Optional[Path]:
+        """按会话 + 附件 id 读取受控文件（防路径穿越）。"""
+        if not re.fullmatch(r"att_[0-9a-f]{16}", attachment_id):
+            return None
+        session_dir = self.ATTACHMENTS_DIR / "".join(
+            c for c in session_id if c.isalnum() or c in "-_"
+        )[:64]
+        for path in session_dir.glob(f"{attachment_id}.*"):
+            if path.is_file():
+                return path
+        return None
+
+    def cleanup_attachments(self, max_age_days: int | None = None) -> int:
+        """删除超过 TTL 的附件文件；返回删除数量。"""
+        import time
+        days = max_age_days if max_age_days is not None else self.ATTACHMENT_TTL_DAYS
+        cutoff = time.time() - max(1, days) * 86400
+        removed = 0
+        if not self.ATTACHMENTS_DIR.exists():
+            return 0
+        for path in self.ATTACHMENTS_DIR.rglob("*"):
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink()
+                    removed += 1
+            except OSError:
+                continue
+        return removed
+
+
         """按会话 + 附件 id 读取受控文件（防路径穿越）。"""
         if not re.fullmatch(r"att_[0-9a-f]{16}", attachment_id):
             return None
@@ -647,7 +721,7 @@ class ChatForge:
 
         离线（无 API key）时不假装流式：直接 yield 一次 fallback 文本 + done。
         """
-        session = self._get_or_create_session(session_id)
+        session = self._require_session(session_id)
         normalized = self._normalize_attachments(attachments)
         entry: dict[str, Any] = {"role": "user", "content": user_message}
         if normalized:
@@ -806,13 +880,20 @@ class ChatForge:
         persona_id: str = "",
         persona_name: str = "",
         expected_revision: int | None = None,
+        idempotency_key: str = "",
     ) -> PersonaManifest:
         """将当前会话保存为完整的 Persona（含 YAML + Prompt + RAG 知识库）。"""
-        session = self._get_or_create_session(session_id)
+        session = self._require_session(session_id)
         repo = PersonaRepository.from_settings()
         if expected_revision is not None and expected_revision != session.revision:
             raise ValueError("revision conflict")
         target_id = persona_id or session.committed_persona_id or f"chat_{session.session_id}"
+
+        if idempotency_key:
+            key_path = self.SESSIONS_DIR / "commits" / f"{''.join(c for c in idempotency_key if c.isalnum() or c in '-_')[:80]}.json"
+            if key_path.exists():
+                rec = json.loads(key_path.read_text(encoding="utf-8"))
+                return repo.load_manifest(str(rec.get("persona_id") or target_id))
 
         # 幂等：同一会话已提交过，直接返回已保存的 manifest；不做隐式覆盖。
         if session.committed_persona_id:
@@ -866,6 +947,11 @@ class ChatForge:
         session.committed_persona_id = manifest.persona_id
         session.revision += 1
         self._persist_session(session)
+        if idempotency_key:
+            key_path.parent.mkdir(parents=True, exist_ok=True)
+            key_path.write_text(json.dumps({
+                "persona_id": manifest.persona_id, "session_id": session_id,
+            }, ensure_ascii=False), encoding="utf-8")
 
         # 6. 保存对话记录
         transcript_path = repo.root_dir / manifest.persona_id / "chat_transcript.json"

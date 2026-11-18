@@ -84,3 +84,13 @@ async def test_commit_is_idempotent_and_does_not_overwrite(forge: ChatForge) -> 
     again = await forge.commit(sid, persona_id="persona_chat_demo", persona_name="Demo")
     assert again.persona_id == first.persona_id
     assert again.parameter.identity.tone == "sharp"
+
+
+@pytest.mark.asyncio
+async def test_upload_quota_and_mime(forge: ChatForge) -> None:
+    sid = (await forge.start())["session_id"]
+    meta = forge.store_upload(sid, "a.txt", "text/plain", b"hello")
+    assert meta["size"] == 5
+    assert forge.read_attachment(sid, meta["id"]) is not None
+    with pytest.raises(Exception):
+        forge.store_upload(sid, "x.exe", "application/x-msdownload", b"x")
