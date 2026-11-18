@@ -87,12 +87,17 @@ async def generate_mg(description: str = "", text_content: str = "", persona_sty
                       width: int = 1920, height: int = 1080, fps: float = 30.0, **_: Any) -> dict[str, Any]:
     from clipwright.animation.mg.generator import MGGenerator
     gen = MGGenerator()
-    return await gen.generate(
-        description=description, text_content=text_content,
-        persona_style=persona_style or {}, scene_context=scene_context or {},
-        category_context=category_context or {}, vision_prompt=vision_prompt,
-        web_context=web_context, width=width, height=height, fps=fps,
-    )
+    last: dict[str, Any] = {}
+    for _ in range(2):
+        last = await gen.generate(
+            description=description, text_content=text_content,
+            persona_style=persona_style or {}, scene_context=scene_context or {},
+            category_context=category_context or {}, vision_prompt=vision_prompt,
+            web_context=web_context, width=width, height=height, fps=fps,
+        )
+        if last.get("success") and last.get("mg_def"):
+            return last
+    return last
 
 
 def install_animation_tool_handlers() -> None:
