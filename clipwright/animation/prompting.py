@@ -119,7 +119,6 @@ class AnimationPlan:
 
 def _pick_category(description: str, category_context: dict[str, Any]) -> str:
     text = f"{description} {category_context.get('display_name', '')} {category_context.get('description', '')}"
-    low = text.lower()
     if any(k in text for k in ("地图", "map", "地域", "区域")):
         return "maps"
     if any(k in text for k in ("logo", "标志", "品牌收尾")):
