@@ -60,7 +60,7 @@ ANIMATION_PROMPT_BASE = """你是一位 Motion Graphics 动画设计师。你的
   - 写 `width`：固定文本框，超宽自动换行；高度按行数计算。
 - 高度 = `font_size × line_height`；**请显式写 `line_height`（建议 1.2–1.4）**；未写时按 1.4 估算。
 - 文字 bbox 的高度不要用 `font_size` 本身估算。
-- 可用字段：`content`、`x/y/x_offset/y_offset`、`width/height`、`font_size/font_color/font_weight/font_family/font_italic`、`text_align`、`line_height`、`letter_spacing`、`text_shadow`、`box_shadow`、`background`、`text_gradient`、`border_radius/border_width/border_color`、`filter`、`clip_path`、`clip_inset`、`mask`、`transform_origin`。
+- 可用字段：`content`、`x/y/x_offset/y_offset`、`width/height`、`font_size/font_color/font_weight/font_family/font_italic`、`text_align`、`line_height`、`letter_spacing`、`text_shadow`、`box_shadow`、`background`、`text_gradient`、`border_radius/border_width/border_color`、`filter`、`clip_path`、`clip_inset`、`mask`、`transform_origin`、`text_stroke`、`font_stretch`、`mix_blend_mode`。
 - `text_gradient: true` 时必须同时给 `background`（渐变背景被裁成文字）；否则渐变不生效。
 - text 的颜色字段是 `font_color`，不是 `color`。
 
@@ -73,19 +73,19 @@ ANIMATION_PROMPT_BASE = """你是一位 Motion Graphics 动画设计师。你的
 ### line
 - **`x/y` 是线段中心点，不是左上角**（渲染器会按中心偏移）。
 - `width` = 线段长度，`height` = 线宽；默认细线 3–6px。
-- 可用字段：`x/y`、`width/height`、`color` 或 `background`、`border_radius`、`box_shadow`、`filter`、`opacity`。
+- 可用字段：`x/y`、`width/height`、`color` 或 `background`、`border_radius`、`box_shadow`、`filter`、`opacity`、`background_size`、`background_position`、`mix_blend_mode`。
 - 不要给 line 写 `font_*`、`text_*`、`content`。
 - 下划线：`line.x = text.x + text.width/2`；`line.y = text.y + text.height + 24`。
 
 ### circle / ring / arc
 - `x/y` = 左上角；`width/height` 必填；circle 用宽高画圆，ring 是空心圆环，arc 是上半圆弧。
-- 可用字段：`width/height`、`color` 或 `background`、`border_width/border_color`（矩形边框）、`stroke_width/stroke_color`（circle/ring 描边）、`box_shadow`、`filter`、`opacity`。
+- 可用字段：`width/height`、`color` 或 `background`、`border_width/border_color`（矩形边框）、`stroke_width/stroke_color`（circle/ring 描边）、`box_shadow`、`filter`、`opacity`、`background_size`、`background_position`、`mix_blend_mode`。
 - ring 必须给 `stroke_width > 0` 和 `stroke_color`，否则看不见。
 
 ### image
 - `x/y` = 左上角；`src + width/height` 必填；`object-fit` 固定 `contain`，不接受 `object_fit`。
 - `src` 只能是 `data:image/*` 或媒体白名单本地资源；禁止 http(s) 外链。
-- 可用字段：`src`、`x/y`、`width/height`、`border_radius`、`filter`、`opacity`、`box_shadow`；不要写 `alt`（不参与渲染）。
+- 可用字段：`src`、`x/y`、`width/height`、`border_radius`、`filter`、`opacity`、`box_shadow`、`object_position`、`mix_blend_mode`；不要写 `alt`（不参与渲染）。
 - 不要给 image 写 `font_*`、`text_*`。
 
 ### bg

@@ -61,6 +61,11 @@ class MGRenderer:
         "transform_origin": "transform-origin",
         "filter": "filter",
         "clip_path": "clip-path",
+        "object_position": "object-position",
+        "background_size": "background-size",
+        "background_position": "background-position",
+        "font_stretch": "font-stretch",
+        "mix_blend_mode": "mix-blend-mode",
     }
 
     # 元素级已显式渲染/结构性字段，静态透传时排除，避免重复输出
@@ -503,7 +508,9 @@ const dur=parseFloat(root.dataset.duration);
             if k in MGRenderer.STATIC_EXCLUDE_KEYS:
                 continue
             css_key = MGRenderer.KEYFRAME_CSS_MAP.get(k)
-            if k == "opacity" and isinstance(v, (int, float)):
+            if k == "text_stroke" and isinstance(v, str) and v.strip():
+                static_style += f"-webkit-text-stroke:{MGRenderer._esc(v.strip())};"
+            elif k == "opacity" and isinstance(v, (int, float)):
                 static_style += f"opacity:{max(0.0, min(1.0, float(v)))};"
             elif k == "font_italic" and isinstance(v, bool):
                 static_style += f"font-style:{'italic' if v else 'normal'};"
