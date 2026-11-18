@@ -262,6 +262,21 @@ class SavePromptRequest(BaseModel):
     prompt: str
 
 
+@router.get("/{persona_id}/prompt/history")
+async def list_prompt_history(persona_id: str, request: Request) -> dict:
+    _load_owned(request, persona_id)
+    return {"items": _repo.list_prompt_history(persona_id)}
+
+
+@router.get("/{persona_id}/prompt/history/{version}")
+async def get_prompt_history(persona_id: str, version: str, request: Request) -> dict:
+    _load_owned(request, persona_id)
+    text = _repo.read_prompt_version(persona_id, version)
+    if text is None:
+        raise HTTPException(status_code=404, detail="Prompt version not found")
+    return {"persona_id": persona_id, "version": version, "prompt": text}
+
+
 @router.get("/{persona_id}/prompt")
 async def get_prompt(persona_id: str, request: Request) -> dict:
     """获取 Persona 的 Prompt 指令。"""

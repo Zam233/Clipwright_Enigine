@@ -270,8 +270,9 @@ async def chat_message_stream(req: ChatMessageRequest, request: Request):
 
 
 @router.post("/knowledge")
-async def chat_add_knowledge(req: ChatKnowledgeRequest) -> dict[str, Any]:
+async def chat_add_knowledge(req: ChatKnowledgeRequest, request: Request) -> dict[str, Any]:
     """添加上下文知识库内容（超长按 H1 自动分段）。"""
+    _check_session(req.session_id, request)
     try:
         return await _forge.add_knowledge(
             session_id=req.session_id,
@@ -283,8 +284,9 @@ async def chat_add_knowledge(req: ChatKnowledgeRequest) -> dict[str, Any]:
 
 
 @router.get("/knowledge/{session_id}")
-async def chat_list_knowledge(session_id: str) -> dict[str, Any]:
+async def chat_list_knowledge(session_id: str, request: Request) -> dict[str, Any]:
     """列出会话知识库条目（含 id/长度/预览，供前端编辑与删除）。"""
+    _check_session(session_id, request)
     items = _forge.list_knowledge(session_id)
     if items is None:
         raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
@@ -292,8 +294,9 @@ async def chat_list_knowledge(session_id: str) -> dict[str, Any]:
 
 
 @router.get("/knowledge/{session_id}/{kb_id}")
-async def chat_get_knowledge(session_id: str, kb_id: str) -> dict[str, Any]:
+async def chat_get_knowledge(session_id: str, kb_id: str, request: Request) -> dict[str, Any]:
     """读取单条知识全文（编辑前）。"""
+    _check_session(session_id, request)
     item = _forge.get_knowledge(session_id, kb_id)
     if item is None:
         raise HTTPException(status_code=404, detail=f"Knowledge not found: {kb_id}")
@@ -302,9 +305,10 @@ async def chat_get_knowledge(session_id: str, kb_id: str) -> dict[str, Any]:
 
 @router.put("/knowledge/{session_id}/{kb_id}")
 async def chat_update_knowledge(
-    session_id: str, kb_id: str, req: ChatKnowledgeUpdateRequest,
+    session_id: str, kb_id: str, req: ChatKnowledgeUpdateRequest, request: Request,
 ) -> dict[str, Any]:
     """编辑一条知识。只改存储的上下文，**不重跑 LLM**（重分析需用户显式触发）。"""
+    _check_session(session_id, request)
     if req.content is None and req.source is None:
         raise HTTPException(status_code=400, detail="content 与 source 至少要给一个")
     item = _forge.update_knowledge(session_id, kb_id, content=req.content, source=req.source)
@@ -314,16 +318,18 @@ async def chat_update_knowledge(
 
 
 @router.delete("/knowledge/{session_id}/{kb_id}")
-async def chat_delete_knowledge(session_id: str, kb_id: str) -> dict[str, Any]:
+async def chat_delete_knowledge(session_id: str, kb_id: str, request: Request) -> dict[str, Any]:
     """删除一条知识。"""
+    _check_session(session_id, request)
     if not _forge.delete_knowledge(session_id, kb_id):
         raise HTTPException(status_code=404, detail=f"Knowledge not found: {kb_id}")
     return {"deleted": True, "id": kb_id}
 
 
 @router.delete("/knowledge/{session_id}")
-async def chat_clear_knowledge(session_id: str) -> dict[str, Any]:
+async def chat_clear_knowledge(session_id: str, request: Request) -> dict[str, Any]:
     """清空会话知识库。"""
+    _check_session(session_id, request)
     if _forge.get_state(session_id) is None:
         raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
     removed = _forge.clear_knowledge(session_id)

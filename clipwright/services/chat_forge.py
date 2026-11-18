@@ -36,6 +36,7 @@ from clipwright.schema.persona import (
 )
 from clipwright.services.llm import LLMService
 from clipwright.config import logger
+from filelock import FileLock
 
 # ── ChatForgesystem prompt ──
 
@@ -875,6 +876,22 @@ class ChatForge:
             return result
 
     async def commit(
+        self,
+        session_id: str,
+        persona_id: str = "",
+        persona_name: str = "",
+        expected_revision: int | None = None,
+        idempotency_key: str = "",
+    ) -> PersonaManifest:
+        """跨进程锁内执行 commit。"""
+        lock_path = self.SESSIONS_DIR / "commits" / ".lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with FileLock(str(lock_path)):
+            return await self._commit_locked(
+                session_id, persona_id, persona_name, expected_revision, idempotency_key,
+            )
+
+    async def _commit_locked(
         self,
         session_id: str,
         persona_id: str = "",

@@ -31,7 +31,10 @@ def main() -> int:
     backup_dir = root / "_backup" / time.strftime("%Y%m%d-%H%M%S")
     if args.backup and files and not args.dry_run:
         backup_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(root, backup_dir / "sessions", dirs_exist_ok=True)
+        shutil.copytree(
+            root, backup_dir / "sessions", dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns("_backup"),
+        )
 
     for path in files:
         try:
