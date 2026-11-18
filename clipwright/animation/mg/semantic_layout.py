@@ -1,7 +1,10 @@
 """LLM-facing layout checks: errors are fed back, not silently normalized."""
 from __future__ import annotations
 
+import re
 from typing import Any
+
+_PARAM_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 
 
 def _num(v: Any, default: float = 0.0) -> float:
@@ -11,8 +14,13 @@ def _num(v: Any, default: float = 0.0) -> float:
         return default
 
 
-def _text(e: dict) -> str:
-    return str(e.get("content") or "").strip()
+def _text(e: dict, params: dict[str, Any] | None = None) -> str:
+    raw = str(e.get("content") or "").strip()
+    params = params or {}
+    def repl(m: re.Match[str]) -> str:
+        spec = params.get(m.group(1))
+        return str(spec.get("default", "")) if isinstance(spec, dict) else ""
+    return _PARAM_RE.sub(repl, raw).strip() or raw
 
 
 def semantic_layout_errors(mg_def: dict[str, Any], params: dict[str, Any] | None = None) -> list[str]:
@@ -33,13 +41,13 @@ def semantic_layout_errors(mg_def: dict[str, Any], params: dict[str, Any] | None
             if not (cy - 4 <= ty <= cy + ch + 4):
                 continue
             if tw >= cw - 8 and str(t.get("text_align") or "left") != "center":
-                errs.append(f"卡片标签 '{_text(t)}' 宽度≈卡片但未 text_align=center，会贴左边缘")
+                errs.append(f"卡片标签 '{_text(t, params)}' 宽度≈卡片但未 text_align=center，会贴左边缘")
             elif abs(tx - cx) < 8 and tw < cw - 8 and str(t.get("text_align") or "left") == "left":
-                errs.append(f"卡片标签 '{_text(t)}' 贴在卡片左边缘，应 x=card.x+(card.width-text.width)/2")
+                errs.append(f"卡片标签 '{_text(t, params)}' 贴在卡片左边缘，应 x=card.x+(card.width-text.width)/2")
 
     # 2) flow arrows: line used as arrow without a head
     if str(mg_def.get("shot_type") or "") in ("flow", "process"):
-        has_arrow_text = any("→" in _text(t) or "←" in _text(t) for t in texts)
+        has_arrow_text = any("→" in _text(t, params) or "←" in _text(t, params) for t in texts)
         has_line = any(e.get("type") == "line" for e in elements)
         has_head = any(e.get("type") in ("shape", "circle") and _num(e.get("width"), 0) <= 40 and _num(e.get("height"), 0) <= 40 for e in elements)
         if has_line and not (has_arrow_text or has_head):
@@ -52,10 +60,10 @@ def semantic_layout_errors(mg_def: dict[str, Any], params: dict[str, Any] | None
             ah = _num(a.get("height")) or _num(a.get("font_size"), 48) * 1.4
             bh = _num(b.get("height")) or _num(b.get("font_size"), 48) * 1.4
             if abs(_num(a.get("x")) - _num(b.get("x"))) < 8 and abs(_num(a.get("width")) - _num(b.get("width"))) < 8 and ay < by + bh and by < ay + ah:
-                errs.append(f"多行文本 '{_text(a)}' 与 '{_text(b)}' 共用 y/bbox；必须同 x、不同 y，y 递增")
+                errs.append(f"多行文本 '{_text(a, params)}' 与 '{_text(b, params)}' 共用 y/bbox；必须同 x、不同 y，y 递增")
                 break
     # 4) duplicate phrases
-    contents = [_text(t) for t in texts if _text(t)]
+    contents = [_text(t, params) for t in texts if _text(t, params)]
     for i, a in enumerate(contents):
         for b in contents[i + 1:]:
             if a and b and (a == b or a in b or b in a) and min(len(a), len(b)) >= 2:

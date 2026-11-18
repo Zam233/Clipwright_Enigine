@@ -324,7 +324,7 @@ class MGGenerator:
             if ok:
                 try:
                     from clipwright.animation.mg.semantic_layout import semantic_layout_errors
-                    semantic_errors = semantic_layout_errors(mg_def)
+                    semantic_errors = semantic_layout_errors(mg_def, mg_def.get("params") if isinstance(mg_def.get("params"), dict) else None)
                     if semantic_errors:
                         self._trace_event(
                             pipeline_id, "semantic_layout", "MG 布局语义问题",
