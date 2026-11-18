@@ -110,6 +110,7 @@ class ChatForgeSession:
     # 会话归属（jwt 模式下用于「我的会话」过滤；off 模式为空串）
     owner_id: str = ""
     revision: int = 0
+    committed_persona_id: str = ""
 
     @property
     def is_expired(self) -> bool:
@@ -173,6 +174,7 @@ class ChatForge:
                 "updated_at": session.updated_at.isoformat(),
                 "owner_id": session.owner_id,
                 "revision": session.revision,
+                "committed_persona_id": session.committed_persona_id,
             }
             path = self._session_path(session.session_id)
             tmp = path.with_suffix(".tmp")
@@ -201,6 +203,7 @@ class ChatForge:
                         updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else datetime.now(timezone.utc),
                         owner_id=data.get("owner_id", "") or "",
                         revision=int(data.get("revision", 0) or 0),
+                        committed_persona_id=data.get("committed_persona_id", "") or "",
                     )
                     if not session.is_expired:
                         self._ensure_knowledge_ids(session)

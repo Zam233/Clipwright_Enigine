@@ -6,11 +6,14 @@ from pathlib import Path
 import pytest
 
 from clipwright.services.chat_forge import ChatForge
+from clipwright.config import settings
 
 
 @pytest.fixture()
 def forge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ChatForge:
     monkeypatch.setattr(ChatForge, "SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(ChatForge, "ATTACHMENTS_DIR", tmp_path / "attachments")
+    monkeypatch.setattr(settings, "persona_dir", tmp_path / "personas")
     monkeypatch.setattr(ChatForge, "_has_api_key", staticmethod(lambda: False))
     return ChatForge()
 
@@ -71,3 +74,13 @@ async def test_attachment_is_materialized_without_inline_data_url(forge: ChatFor
     assert att["storage_ref"].endswith(".txt")
     assert att["size"] > 0
     assert forge.read_attachment(sid, att["id"]) is not None
+
+
+@pytest.mark.asyncio
+async def test_commit_is_idempotent_and_does_not_overwrite(forge: ChatForge) -> None:
+    sid = (await forge.start())["session_id"]
+    forge.patch_draft(sid, {"identity": {"tone": "sharp"}})
+    first = await forge.commit(sid, persona_id="persona_chat_demo", persona_name="Demo")
+    again = await forge.commit(sid, persona_id="persona_chat_demo", persona_name="Demo")
+    assert again.persona_id == first.persona_id
+    assert again.parameter.identity.tone == "sharp"
