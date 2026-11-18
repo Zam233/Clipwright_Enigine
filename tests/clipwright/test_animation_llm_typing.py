@@ -234,7 +234,7 @@ async def test_generate_for_type_reuses_generator_and_reports_motion():
 
 
 @pytest.mark.asyncio
-async def test_generate_for_type_blocks_static_output():
+async def test_generate_for_type_repairs_static_output_with_motion_floor():
     spec = get_spec("comparison")
     frozen = {
         "duration_sec": 6.0,
@@ -249,8 +249,10 @@ async def test_generate_for_type_blocks_static_output():
 
     res = await TG.generate_for_type(gen, spec=spec, content="A vs B", duration_s=6.0)
 
-    assert res.ok is False
-    assert any("近乎静止" in i for i in res.issues)
+    # 现行策略不是“拒绝静态”，而是确定性补 motion floor 后再交付。
+    assert res.ok is True
+    assert not any("近乎静止" in i for i in res.issues)
+    assert TG.motion_report(res.mg_def, 6.0)["ok"] is True
 
 
 @pytest.mark.asyncio
