@@ -323,6 +323,28 @@ class MGGenerator:
             ok, errors = validate_mg_json(mg_def)
             if ok:
                 try:
+                    from clipwright.animation.mg.semantic_layout import semantic_layout_errors
+                    semantic_errors = semantic_layout_errors(mg_def)
+                    if semantic_errors:
+                        self._trace_event(
+                            pipeline_id, "semantic_layout", "MG 布局语义问题",
+                            {"errors": semantic_errors[:20]},
+                        )
+                        repaired = await self._call_llm_repair(
+                            mg_def, semantic_errors[:10], description, text_content,
+                            persona_style, scene_context, category_context, vision_prompt,
+                        )
+                        if repaired:
+                            mg_def = repaired
+                            ok, errors = validate_mg_json(mg_def)
+                            self._trace_event(
+                                pipeline_id, "semantic_repair", "LLM 按布局语义问题修复",
+                                {"issues": len(semantic_errors)},
+                            )
+                except Exception as exc:  # noqa: BLE001 — 语义修复失败仍走后续
+                    logger.warning("MGGenerator: 布局语义修复失败（跳过）: %s", exc)
+            if ok:
+                try:
                     from clipwright.animation.mg.layout import normalize_mg_layout
                     mg_def, layout_adjustments = normalize_mg_layout(mg_def)
                     if layout_adjustments:
