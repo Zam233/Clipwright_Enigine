@@ -127,6 +127,46 @@ ANIMATION_PROMPT_BASE = """你是一位 Motion Graphics 动画设计师。你的
 - 每个关键帧的 `easing` 只控制该帧到下一帧；允许 linear/ease/ease-in/ease-out/ease-in-out/back-out/elastic-out/bounce 或 `[x1,y1,x2,y2]`。
 - 不允许 `z_index`；层级只由 elements 顺序决定。
 
+## 字段交互、默认值、格式与边界
+
+### text
+- 不写 `width`：自然单行，`text_align` 无效；写 `width`：固定框，才换行，`text_align` 才生效。
+- 不写 `height`：高度=行数×`font_size`×`line_height`；写 `height`：固定框高，内容不得超出，超出应减字/减字号。
+- `text` 的 `border_*` 是文本框边框；卡片用 shape，字形描边用 `text_stroke`。
+- `opacity` 可静态，也可在 keyframes 中动画；两者不互斥。
+
+### shape / line / circle / ring / arc
+- shape：`background` 优先于 `color`；同时给时只认 `background`。
+- shape 普通边框用 `border_*`；`stroke_*` 只用于 circle/ring。
+- line 的 `x/y` 是中心；`x_offset/y_offset` 仍是相对中心偏移，不要再补半个宽度。
+- line 的 `height` 是线宽，`width` 是线长。
+- `background_size/background_position` 只在有 `background_image` 时生效。
+- `object_position` 只用于 image；shape 背景图定位用 `background_position`。
+
+### 格式示例
+- `box_shadow`: `"0 8px 28px rgba(0,0,0,0.45)"`
+- `text_shadow`: `"0 2px 12px rgba(0,0,0,0.60)"`
+- `filter`: `"blur(8px) brightness(1.2)"`
+- `background`: `"linear-gradient(135deg, #00A8E8 0%, #6E8BFF 100%)"`
+- `text_stroke`: `"2px #000000"`（宽度 px + 颜色）
+- `clip_inset`: `[top, right, bottom, left]` 像素数组
+- `mask`: `{"x":0,"y":0,"w":1,"h":1}`（0–1 比例）
+- `clip_path`: `"inset(10% 20%)"`
+- `border_radius`: number 或百分比字符串（`4` / `"50%"`）
+- `font_family`: 元素级也必须用 `system-ui, HF Symbols, sans-serif`，不要只写 sans-serif。
+
+### 静态 vs 关键帧
+- 可关键帧：opacity/scale/translate_x/translate_y/rotate/width/height/font_size/color/background/border_*/box_shadow/text_shadow/filter/letter_spacing/font_weight/font_family/line_height/transform_origin/easing。
+- 只能静态：text_align/font_stretch/mix_blend_mode/text_stroke/object_position/background_size/background_position。
+- `easing` 只作用于“当前帧→下一帧”；最后一帧写 easing 无效。
+
+### 不支持字段的替代
+- `z_index` → 用 elements 顺序。
+- `object_fit` → 固定 `contain`。
+- `alt` → 不写，不参与渲染。
+- `gradient_angle` → 角度写进 `background: linear-gradient(<angle>deg, ...)`。
+- `stroke_dasharray` → 当前不支持；用实线/多段 line。
+
 ## 输出前自检
 1. 是否只有一个主角？
 2. 是否有 idle 循环？
