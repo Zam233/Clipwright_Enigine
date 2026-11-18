@@ -8,7 +8,8 @@ from clipwright.animation.agentic_loop import AgentAction, LoopResult, run_agent
 from clipwright.animation.prompt_skills import SKILLS, compose_skills
 
 
-DECIDE_SYSTEM = """你是 AnimationAgent 的导演循环。根据目标与已有观察，选择下一步：
+DECIDE_SYSTEM = """你是 AnimationAgent 的导演循环。必须先用工具产出 mg_def；观察里没有 mg_def 时禁止 final。
+根据目标与已有观察，选择下一步：
 - tool：调用一个动画工具；
 - skill：加载一个方法论/规则包；
 - final：完成，交给交付/QA。
@@ -22,6 +23,8 @@ class AnimationAgentRuntime:
         self.max_rounds = max_rounds
         self.max_calls = max_calls
         self.default_args = dict(default_args or {})
+        from clipwright.animation.agent_tool_impl import install_animation_tool_handlers
+        install_animation_tool_handlers()
 
     async def decide_with_llm(self, llm: Any, goal: str, observations: list[Any]) -> AgentAction:
         from clipwright.animation.agent_tools import list_animation_tools
