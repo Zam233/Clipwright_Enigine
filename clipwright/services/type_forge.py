@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import re
 import uuid
@@ -145,13 +146,18 @@ class TypeForge:
             raise KeyError(session_id)
         content = text
         for a in attachments or []:
-            if str(a.get("type")) == "file" and a.get("data_url"):
+            data_url = str(a.get("data_url") or "")
+            name = str(a.get("name") or "附件")
+            if str(a.get("type")) == "image":
+                analysis = await self._analyze_image_attachment(data_url)
+                content += f"\n\n[图片附件·{name}]\n" + (analysis or "用户上传了一张图片，请结合品类需求理解它。")
+            elif data_url:
                 try:
-                    import base64
-                    raw = str(a["data_url"]).split(",", 1)[1]
-                    content += "\n\n[附件]\n" + base64.b64decode(raw).decode("utf-8", errors="ignore")[:8000]
+                    raw = data_url.split(",", 1)[1] if "," in data_url else data_url
+                    text_part = base64.b64decode(raw).decode("utf-8", errors="ignore")
+                    content += f"\n\n[文件附件·{name}]\n" + text_part[:8000]
                 except Exception:
-                    pass
+                    content += f"\n\n[文件附件·{name}] 用户上传了文件，内容无法按文本解析。"
         s.messages.append({"role": "user", "content": content})
         s.updated_at = datetime.now(timezone.utc)
         self._persist(s)
@@ -159,6 +165,17 @@ class TypeForge:
         self._persist(s)
         await self._ensure_title(s)
         return result
+
+    async def message_stream(self, session_id: str, text: str, attachments: list[dict[str, Any]] | None = None):
+        """SSE 兼容的流式外壳；当前按完整回复分片返回。"""
+        yield {"type": "start", "session_id": session_id}
+        try:
+            result = await self.message(session_id, text, attachments)
+        except KeyError:
+            yield {"type": "error", "message": "session not found"}
+            return
+        yield {"type": "delta", "content": result.get("reply", "")}
+        yield {"type": "done", **result}
 
     async def _process(self, s: TypeForgeSession) -> dict[str, Any]:
         msgs = [{"role": "system", "content": TYPE_FORGE_SYSTEM}]
@@ -182,6 +199,45 @@ class TypeForge:
         s.messages.append({"role": "assistant", "content": reply})
         s.updated_at = datetime.now(timezone.utc)
         return {"reply": reply, "draft": s.draft, "missing_fields": [], "progress": {}}
+
+    async def _analyze_image_attachment(self, data_url: str) -> str:
+        """best-effort 图片分析；失败返回空串。"""
+        try:
+            from clipwright.config import settings
+            if not data_url.startswith("data:") or "," not in data_url:
+                return ""
+            if not getattr(settings, "enable_visual_llm", False):
+                return ""
+            header, _, payload = data_url.partition(",")
+            if "base64" not in header:
+                return ""
+            import tempfile
+            suffix = ".png" if "png" in header else ".jpg"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
+                handle.write(base64.b64decode(payload))
+                tmp_path = handle.name
+            try:
+                from clipwright.services.vision import VisionService
+                return self._summarize_vision(await VisionService().analyze_image(tmp_path))
+            finally:
+                Path(tmp_path).unlink(missing_ok=True)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("TypeForge 图片分析跳过: %s", e)
+            return ""
+
+    @staticmethod
+    def _summarize_vision(result: Any) -> str:
+        if not isinstance(result, dict):
+            return ""
+        parts: list[str] = []
+        for key, label in (("description", "描述"), ("caption", "画面"), ("name", "名称")):
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(f"{label}: {value.strip()[:200]}")
+        tags = result.get("tags") or result.get("labels")
+        if isinstance(tags, list) and tags:
+            parts.append("标签: " + ", ".join(str(t) for t in tags[:8]))
+        return "；".join(parts)
 
     async def _ensure_title(self, s: TypeForgeSession) -> None:
         if s.title:

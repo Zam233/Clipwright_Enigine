@@ -3,7 +3,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import json
+
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from clipwright.services.type_forge import TypeForge
@@ -71,6 +74,15 @@ async def message(req: MessageRequest) -> dict[str, Any]:
     except KeyError:
         raise HTTPException(status_code=404, detail="TypeForge session not found")
 
+
+@router.post("/message/stream")
+async def message_stream(req: MessageRequest):
+    async def events():
+        async for event in _forge.message_stream(
+            req.session_id, req.message, [a.model_dump() for a in req.attachments],
+        ):
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+    return StreamingResponse(events(), media_type="text/event-stream")
 
 @router.post("/commit")
 async def commit(req: CommitRequest) -> dict[str, Any]:

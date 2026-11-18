@@ -73,5 +73,45 @@ async def test_builtin_type_detail_includes_prompts() -> None:
         assert data["builtin"] is True
         assert "structure" in data["prompts"]
         assert "genre" in data["prompts"]
+        assert data["shot_params"]["max_shot_sec"] > 0
     finally:
         CategoryRegistry.unregister("knowledge_longform")
+
+
+def test_type_forge_http_404_400_409_and_create() -> None:
+    from fastapi.testclient import TestClient
+    from clipwright.main import app
+    client = TestClient(app)
+    assert client.get("/api/type-forge/chat/sessions/missing").status_code == 404
+    stream = client.post("/api/type-forge/chat/message/stream", json={
+        "session_id": "missing", "message": "x", "attachments": [],
+    })
+    assert stream.status_code == 200
+    assert "session not found" in stream.text
+    assert client.post("/api/type-forge/chat/commit", json={
+        "session_id": "missing", "type_id": "x", "definition": {},
+    }).status_code == 404
+
+    sid = client.post("/api/type-forge/chat/start", json={}).json()["session_id"]
+    bad = {
+        "id": "typeforge_http_bad", "name": "坏类型",
+        "shot_params": {"min_shot_sec": 1, "max_shot_sec": 5,
+                        "transition_type": "rm -rf", "transition_duration_sec": 0.5},
+        "prompts": {}, "param_rules": [], "signature_traits": [], "declares": {}, "waivers": [],
+    }
+    assert client.post("/api/type-forge/chat/commit", json={
+        "session_id": sid, "type_id": "typeforge_http_bad", "definition": bad,
+    }).status_code == 400
+
+    good = {**bad, "id": "typeforge_http_ok", "name": "HTTP 测试",
+            "shot_params": {"min_shot_sec": 1, "max_shot_sec": 3,
+                            "transition_type": "cut", "transition_duration_sec": 0.2},
+            "prompts": {"genre": {"text": "快节奏知识解说"}}}
+    created = client.post("/api/type-forge/chat/commit", json={
+        "session_id": sid, "type_id": "typeforge_http_ok", "definition": good,
+    })
+    assert created.status_code == 200
+    assert client.post("/api/type-forge/chat/commit", json={
+        "session_id": sid, "type_id": "typeforge_http_ok", "definition": good,
+    }).status_code == 409
+    client.delete("/api/type-maker/typeforge_http_ok")
