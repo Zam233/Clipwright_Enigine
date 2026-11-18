@@ -1,6 +1,6 @@
 # 动画 Agent 提示词 Skill 化改造 PRD
 
-- 状态：待评审 / 待实施
+- 状态：MVP 已实施（规则库 + plan + modular prompt + 测试）
 - 范围：`clipwright/agents/animation_agent.py`、`clipwright/prompts/engine/mg.py`、`clipwright/prompts/agents.py`、`clipwright/animation/mg/generator.py`
 - 分支：`feat_zam_animation_improvements`
 - 目标：用 HyperFrames 的动画 Skill 方法论重构动画 Agent 的提示词组织方式，提升 MG 动画的 **视觉质量、镜头连续性、风格一致性、JSON 合格率**，同时降低提示词冗余与无效约束。
@@ -372,3 +372,18 @@ MG_EXAMPLE                # 一个精简示例（约 800）
 - [HyperFrames skills](https://hyperframes.heygen.com/guides/skills)
 - [DeepSeek V4.1 Flash](https://api-docs.deepseek.com/zh-cn/news/news260910/)
 - [DeepSeek V4.1 Flash 1017](https://api-docs.deepseek.com/zh-cn/news/news261017/)
+
+
+## 14. MVP 实施记录（2026-11-18）
+
+已落地：
+
+- `clipwright/animation/prompting.py`：`AnimationRule`、`AnimationPlan`、规则目录、计划构建、计划校验、模块化 prompt composer；
+- `clipwright/prompts/engine/animation_prompt.py`：运动契约、规则选择、风格、能力边界、自检、最小示例；
+- `MGGenerator`：默认 `prompt.modular=true`，镜头生成走模块化提示；保留旧 `MG_DESIGNER_SYSTEM` 作为 `modular=false` fallback；
+- `AnimationAgent`：在 MG 生成前构建 `_active_plan`，由生成器按计划注入规则；
+- critique：模块化模式下注入 motion contract + continuity check items（seam/carrier/idle/hold/budget）；
+- 新增测试 `tests/clipwright/test_animation_prompt_plan.py`；
+- 实测同一场景模块化 prompt 约 3.5k 字符，基线 `MG_DESIGNER_SYSTEM` 为 13,702 字符。
+
+后续迭代仍按 M3–M5：多镜头 plan/shot 拆解、A/B 指标、视觉抽帧评审。

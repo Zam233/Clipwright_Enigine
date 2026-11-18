@@ -1966,6 +1966,14 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             )
 
         try:
+            # PRD：AnimationAgent 先产出计划，再把计划交给镜头生成器选 2–3 条规则。
+            from clipwright.animation.prompting import build_animation_plan
+            try:
+                mg_gen._active_plan = build_animation_plan(
+                    description, self._mg_category_context, duration,
+                )
+            except Exception:  # 计划失败不阻断生成
+                pass
             # P2-B 多方案择优：新引擎提供 generate_best（variants=1 时等价旧行为）；
             # 旧版/插件提供的引擎可能只有 generate → 回退调用，保持兼容。
             _generate = getattr(mg_gen, "generate_best", None) or mg_gen.generate

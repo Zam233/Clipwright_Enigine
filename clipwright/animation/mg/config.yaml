@@ -48,6 +48,8 @@ critique:
     sample_times: null
 
 prompt:
+  # PRD：modular=true 时使用 Skill 化计划/规则/镜头模块；false 回退旧单体提示。
+  modular: true
   # P2-1：动效配方库注入（animation/mg/knowledge/motion_recipes.yaml）。
   # 按镜头类型/关键词挑选 1-2 条结构骨架（beat 节奏 + 构图 + 禁忌）进入系统提示词，
   # 仅为方法论提炼、已逐条登记来源与许可；库缺失/解析失败自动跳过。

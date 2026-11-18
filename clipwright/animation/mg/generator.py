@@ -157,6 +157,34 @@ class MGGenerator:
                 return yaml.safe_load(f) or {}
         return {}
 
+    def _plan(self, description: str, category_context: dict[str, Any] | None):
+        from clipwright.animation.prompting import build_animation_plan
+        return build_animation_plan(description, category_context or {}, 4.0)
+
+    def _design_system_template(self, description: str, category_context: dict[str, Any] | None) -> str:
+        prompt_config = self._config.get("prompt", {})
+        override = str(prompt_config.get("system_template", "") or "")
+        if override:
+            return override
+        if prompt_config.get("modular", True):
+            from clipwright.animation.prompting import compose_mg_system_prompt
+            return compose_mg_system_prompt(
+                getattr(self, "_active_plan", None) or self._plan(description, category_context),
+                width=getattr(self, "_cfg_width", None), height=getattr(self, "_cfg_height", None),
+            )
+        return _mg_constraint("MG_DESIGNER_SYSTEM")
+
+    def _critique_system_template(self, description: str, category_context: dict[str, Any] | None) -> str:
+        prompt_config = self._config.get("prompt", {})
+        override = str(prompt_config.get("system_template", "") or "")
+        if override:
+            return override
+        if prompt_config.get("modular", True):
+            from clipwright.animation.prompting import compose_critique_check_items
+            from clipwright.prompts.engine.animation_prompt import ANIMATION_MOTION_CONTRACT
+            return ANIMATION_MOTION_CONTRACT + compose_critique_check_items()
+        return _mg_constraint("MG_DESIGNER_SYSTEM")
+
     def _trace_event(
         self, pipeline_id: str | None, event_type: str, summary: str, detail: Any = None,
     ) -> None:
@@ -225,6 +253,9 @@ class MGGenerator:
         # P1-02: 存到 self——generate() 里落缓存时也要用同一键（旧局部变量跨
         # 作用域不可见，是 getattr(self,'_ck','') 恒空串笔误的根源）
         self._last_failure: dict[str, Any] = {}
+        if not getattr(self, "_active_plan", None):
+            self._active_plan = self._plan(description, category_context)
+        self._cfg_width, self._cfg_height = width, height
         self._ck = _mg_cache_key(description, text_content, persona_style)
         _cached = _mg_cache_get(self._ck)
         if _cached is not None:
@@ -529,7 +560,7 @@ ision_prompt
     ) -> dict[str, Any] | None:
         """带错误回传的一次性修复调用：把 schema 校验错误告诉 LLM 让其修正 JSON。"""
         prompt_config = self._config.get("prompt", {})
-        system_template = prompt_config.get("system_template", "") or _mg_constraint("MG_DESIGNER_SYSTEM")
+        system_template = self._design_system_template(description, category_context)
         context_section = self._build_context_section(
             persona_style, category_context, vision_prompt, web_context,
         )
@@ -922,7 +953,7 @@ ision_prompt
             return None
 
         prompt_config = self._config.get("prompt", {})
-        system_template = prompt_config.get("system_template", "") or _mg_constraint("MG_DESIGNER_SYSTEM")
+        system_template = self._design_system_template(description, category_context)
         context_section = self._build_context_section(
             persona_style, category_context, vision_prompt, web_context,
         )
@@ -1017,7 +1048,7 @@ ision_prompt
     ) -> dict[str, Any] | None:
         """带批判反馈的一次性修复调用：把质量评审意见告诉 LLM 让其重做 JSON。"""
         prompt_config = self._config.get("prompt", {})
-        system_template = prompt_config.get("system_template", "") or _mg_constraint("MG_DESIGNER_SYSTEM")
+        system_template = self._design_system_template(description, category_context)
         context_section = self._build_context_section(
             persona_style, category_context, vision_prompt, web_context,
         )
@@ -1165,7 +1196,7 @@ ision_prompt
         动画风格不写死，由 LLM 依据传入数据自行决定。
         """
         prompt_config = self._config.get("prompt", {})
-        system_template = prompt_config.get("system_template", "") or _mg_constraint("MG_DESIGNER_SYSTEM")
+        system_template = self._design_system_template(description, category_context)
 
         context_section = self._build_context_section(
             persona_style, category_context, vision_prompt, web_context,
