@@ -81,8 +81,8 @@
 6. 自动布局 + 文本安全区 + 文本阅读时间
 7. AnimationAgent 自检 QA：bbox/重叠/字号/阅读时间/空拍
 8. 技术 QA：contact sheet / phone / strip / motion / determinism
-9. 工作区预览（可 scrub + 音频） → 用户确认
-10. 导出 / 归档 brief + style + QA
+9. 前端阶段时间线 / 风格帧选择 / QA 面板 → 工作区预览（可 scrub + 音频） → 用户确认
+10. 前端闸门通过后导出 / 归档 brief + style + QA
 ```
 
 ## 5. 逐项改进设计
@@ -333,6 +333,146 @@ G. 终审        通过后交主 Agent / 人工审片；记录 brief、草稿、
 
 这对应 `motion-showreel` 的 brief/风格帧/制作/审片，以及 `web-video-presentation` 的“首章验收后再批量”和 `beautiful-article` 的 reviewer/repair 流程。
 
+### 5.13 前端与预览适配（Agent 多阶段的必要组成）
+
+Agent 多阶段如果没有前端承接，用户只会看到“转圈很久，然后突然出片”。前端必须把每个阶段变成可见、可确认、可回退的状态。
+
+#### 5.13.1 前端展示的阶段时间线
+
+在动画任务卡/预览面板显示：
+
+```text
+规划 → 细化 → 研究 → 草稿 → 落地 → 自检 → 待审片
+```
+
+每个阶段展示：
+
+- 状态：pending / running / passed / failed / skipped；
+- 结构化摘要：`ShotPlan`、`DraftSpec`、`QAReport` 的关键字段；
+- 工具调用：web/kb/素材检索次数与来源；
+- 失败原因与回退目标：例如“布局失败 → 回到落地阶段”；
+- 修复轮次：第 1/3 轮；
+- 耗时。
+
+后端通过现有 SSE trace 发送 `animation_stage` 事件：
+
+```json
+{
+  "type": "animation_stage",
+  "stage": "self_check",
+  "status": "failed",
+  "attempt": 1,
+  "max_attempts": 3,
+  "summary": "text #2 字号 < 4% 屏高；line 穿过文字",
+  "retry_stage": "landing",
+  "artifact_ref": "qa/qa-report.json"
+}
+```
+
+前端必须用 `asText` / `textList` 渲染，不能直接把对象当 React child。
+
+#### 5.13.2 Brief 与风格帧确认
+
+新增前端面板：
+
+- `AnimationBriefCard`：topic / benchmark / style / signature / palette / forbidden / sources；
+- `StyleFramePicker`：3 张风格帧，显示 school / palette / type / motion；
+- 用户选择后调用：
+
+```text
+POST /api/animation/style-frames/{session_id}/select
+{ "style_id": "swiss-editorial" }
+```
+
+规则：
+
+- 未确认 brief 或风格帧，前端不显示“开始生成动画”；
+- 已确认后，确认值进入 `AnimationPlan` 并随任务持久化；
+- 不允许用户只选颜色而跳过风格语义。
+
+#### 5.13.3 Draft / ShotPlan / QA 的可见性
+
+预览面板增加三个折叠区：
+
+- **计划**：每个镜头的 inherits / before / after / change / handoff；
+- **草稿**：元素角色、层级、相对布局、运动意图；
+- **QA**：text / phone / motion / determinism 分项结果。
+
+QA 未通过时：
+
+- 显示具体 fail 项与对应阶段；
+- 提供“按失败项修复”按钮，不提供“重新生成全部”作为唯一动作；
+- 修复后保留上一版 QA，形成对比。
+
+#### 5.13.4 预览契约
+
+前端预览继续只消费 `clip.metadata.mg_def`，由 `mgRenderer.ts` 画 canvas：
+
+- **禁止**执行 `metadata.mg_html`；
+- 新增 brief/style/draft/qa 字段仅是元数据，不进入 canvas display-list；
+- `mg_def` 仍是唯一渲染真相；
+- 旧 MG 没有新字段时必须正常渲染，不能因可选字段缺失报错；
+- 后端自动布局后的坐标/字号必须在预览中体现，不能只改后端成片；
+- 预览头保留“近似预览”，当 `mgRenderer.ts` 与后端 `MGRenderer` 的 bbox/字号差异超过阈值时由 `mgFidelity.ts` 标记。
+
+预览接口：
+
+```text
+POST /api/animation/preview
+{
+  "mg_json": {...},
+  "params": {...},
+  "width": 1920,
+  "height": 1080,
+  "fps": 30
+}
+```
+
+`width/height` 缺省必须使用 `mg_def` 自身尺寸，禁止固定 1280×720。
+
+#### 5.13.5 QA 与导出闸门
+
+- 自检未通过：预览可看，但“导出”禁用，显示 fail 原因；
+- 自检通过：仍要用户点击“确认画面”后才允许导出；
+- 技术 QA 未通过：不生成正式 MP4；
+- contact sheet / phone sheet / strip / motion 报告可在预览侧栏打开；
+- 所有 QA 文件写入工作区 `qa/`，路径进入 trace，供审片和复盘。
+
+#### 5.13.6 前端文件与测试
+
+需要改/新增：
+
+```text
+src/features/preview/PreviewPanel.tsx        # 阶段/QA/草稿侧栏
+src/features/preview/mgRenderer.ts           # 保持 mg_def-only
+src/features/preview/mgFidelity.ts           # 差异角标
+src/features/animation/AnimationBriefCard.tsx
+src/features/animation/StyleFramePicker.tsx
+src/features/animation/AnimationStageTimeline.tsx
+src/features/animation/QAReportPanel.tsx
+src/features/animation/api.ts
+src/features/animation/types.ts
+```
+
+测试：
+
+- 阶段 SSE 事件渲染；
+- brief/style 未确认时生成按钮禁用；
+- QA fail 时导出禁用且显示回退阶段；
+- 旧 mg_def 无新字段仍可预览；
+- `mg_json` 为唯一渲染源，`mg_html` 不执行；
+- 1440×900 / 1280×720 / 手机宽度下侧栏不挤压画布；
+- 无效/空 stage artifact 不崩（`asText`）。
+
+#### 5.13.7 验收
+
+- 用户能看懂“现在在哪个阶段、为什么失败、下一步回哪”；
+- 每个风格帧可选、可回看、可追溯；
+- 预览体现自动布局结果；
+- QA fail 不会静默导出；
+- Agent 的每轮修复都有前后对比；
+- 前端不引入新的 HTML/脚本执行面。
+
 ## 6. 优先级与里程碑
 
 ### P0（先做，收益最大）
@@ -342,7 +482,8 @@ G. 终审        通过后交主 Agent / 人工审片；记录 brief、草稿、
 3. 禁止清单 + 2+1 配色 + 文本可读性硬约束；
 4. 连续叙事字段；
 5. contact sheet/phone/text/motion QA；
-6. Agent 六阶段循环：规划/细化/研究/草稿/落地/自检，带修复回退。
+6. Agent 六阶段循环：规划/细化/研究/草稿/落地/自检，带修复回退；
+7. 前端阶段时间线 / brief / 风格帧 / QA 面板 / 导出闸门。
 
 ### P1（第二阶段）
 
