@@ -65,6 +65,7 @@ def clear_owners() -> None:
 
 class CreateTaskBody(BaseModel):
     topic: str = Field(description="用户一句话需求")
+    session_id: str = Field(default="", max_length=200, description="上游会话 id（动画上下文隔离）")
     persona_id: str = ""
     category_plugin_id: str = ""
     duration_sec: float = 0.0
@@ -183,6 +184,9 @@ async def create_task(payload: CreateTaskBody, request: Request) -> dict:
     )
     kernel = _kernel()
     task = kernel.create(request_value)
+    if payload.session_id:
+        task.session_id = payload.session_id
+        task.touch()
     _register_owner(task.id, request)   # 归属登记：后面的每个端点都靠它隔离
     await kernel.plan(task)
     if not payload.plan_only:
