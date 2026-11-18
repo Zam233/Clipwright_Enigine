@@ -2104,6 +2104,15 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                     self._ctx_session_id, self._ctx_task_id, 1,
                     {"ok": bool(result.get("success")), "errors": result.get("qa_errors") or []},
                 )
+                try:
+                    from clipwright.services.task_events import emit as _emit
+                    _emit(self._ctx_task_id, "tool_result", "AnimationAgent · generate_mg",
+                          {"agent": "animation", "tool": "generate_mg",
+                           "status": "success" if result.get("success") else "failed",
+                           "method": result.get("method"),
+                           "qa_errors": result.get("qa_errors") or []}, span="subagent")
+                except Exception:  # noqa: BLE001
+                    pass
             except Exception as exc:  # noqa: BLE001
                 logger.debug("AnimationAgent: 黑板写入失败: %s", exc)
         method = str(result.get("method", "unknown") or "unknown")
