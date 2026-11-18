@@ -9,7 +9,7 @@ async def test_runtime_loads_skill_then_final() -> None:
     seq = [AgentAction("skill", "flow"), AgentAction("final")]
     async def decide(_obs):
         return seq.pop(0)
-    rt = AnimationAgentRuntime()
+    rt = AnimationAgentRuntime(require_mg=False)
     result = await rt.run(decide, category="flow", shot_type="flow")
     assert result.status == "ok"
     assert "text-arrow" in result.observations[0]["prompt"]
@@ -25,3 +25,4 @@ async def test_llm_decide_parses_action() -> None:
     action = await AnimationAgentRuntime().decide_with_llm(LLM(), "test", [])
     assert action.kind == "tool"
     assert action.name == "qa_mg"
+

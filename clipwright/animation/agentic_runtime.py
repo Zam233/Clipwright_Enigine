@@ -19,10 +19,11 @@ DECIDE_SYSTEM = """你是 AnimationAgent 的导演循环。必须先用工具产
 
 class AnimationAgentRuntime:
     def __init__(self, *, max_rounds: int = 3, max_calls: int = 8,
-                 default_args: dict[str, Any] | None = None) -> None:
+                 default_args: dict[str, Any] | None = None, require_mg: bool = True) -> None:
         self.max_rounds = max_rounds
         self.max_calls = max_calls
         self.default_args = dict(default_args or {})
+        self.require_mg = require_mg
         from clipwright.animation.agent_tool_impl import install_animation_tool_handlers
         install_animation_tool_handlers()
 
@@ -62,7 +63,7 @@ class AnimationAgentRuntime:
 
         async def guarded(observations: list[Any]) -> AgentAction:
             action = await decide(observations)
-            if action.kind == "final" and not any(
+            if self.require_mg and action.kind == "final" and not any(
                 isinstance(o, dict) and o.get("mg_def") for o in observations
             ):
                 return AgentAction("tool", "generate_mg", {}, "还没有 mg_def，先生成")
