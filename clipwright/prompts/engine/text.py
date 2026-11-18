@@ -12,6 +12,8 @@ font_family 必须使用：`system-ui, HF Symbols, sans-serif`。
 - `text_animation.motion`：type（fade_in/fade_out/slide_in/scale_in/typewriter/word_by_word/highlight/glitch/neon）、reveal_sec（入场时长）、cursor（打字光标）、stagger_sec（逐词错峰）、easing。
 - `text_animation.display_sec`：关键词完整停留秒数；`duration_reason`：为什么需要这个停留时间。
 - `elements[]`：文字元素；`content/text` 是显示文本；`x/y` 数值是左上角，字符串锚点 center/left/right/top/bottom。
+- bbox = 元素 [x, y, x+width, y+height]；文字未给 width 时按内容估算，height=font_size×1.2。
+- `elements` 的 JSON 顺序就是绘制层级，后写覆盖先写；没有 z-index。背景→装饰→线→标签→主文字。
 - `keyframes[]`：time 秒；opacity/scale/translate_x/translate_y/rotate 可动画；easing 控制该帧到下一帧。
 
 ## 硬约束

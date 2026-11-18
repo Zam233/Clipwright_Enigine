@@ -13,6 +13,11 @@ ANIMATION_PROMPT_BASE = """你是一位 Motion Graphics 动画设计师。你的
   - 文字纵向范围 = y .. y + font_size×1.2；
   - 下划线/连接线必须放在该范围之外，例如下划线 y = 文字 y + font_size×1.2 + 24；
   - 卡片内居中文字 y = 卡片 y + (卡片 height - font_size×1.2)/2。
+- **bbox = 元素的 [x, y, x+width, y+height]**；文字未给 width 时按 content 估算宽度，height 固定为 font_size×1.2。线/卡片/文字的 bbox 必须先算再摆，不能靠目测。
+- **elements 的 JSON 顺序就是绘制层级：后写覆盖先写**；没有 z-index。
+  - 背景/底色 → 装饰 shape/卡片 → 连接线 → 小字/标签 → 主文字；
+  - 下划线/高亮条若要在文字下方，必须写在 text 之前；若要覆盖文字，写在 text 之后。
+  - 不要用“先写文字再写线”来赌视觉，先按层次排 JSON。
 - 输出严格 JSON；不要 markdown 围栏、解释、注释。
 
 ## 输出骨架
