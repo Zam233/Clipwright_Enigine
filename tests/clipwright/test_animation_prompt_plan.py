@@ -8,6 +8,7 @@ from clipwright.animation.prompting import (
     validate_animation_plan,
     validate_content_coverage,
     validate_placeholder_types,
+    validate_layout_overlaps,
     build_timeline_plan,
 )
 
@@ -133,3 +134,11 @@ def test_placeholder_type_catches_color_used_as_text() -> None:
         "elements": [{"type": "text", "content": "{accent}"}],
     }
     assert validate_placeholder_types(mg)
+
+
+def test_layout_guard_catches_line_through_text() -> None:
+    mg = {"elements": [
+        {"type": "text", "y": 450, "font_size": 150, "content": "T"},
+        {"type": "line", "y": 565, "width": 600, "content": ""},
+    ]}
+    assert validate_layout_overlaps(mg)

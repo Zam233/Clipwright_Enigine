@@ -318,11 +318,14 @@ class MGGenerator:
             ok, errors = validate_mg_json(mg_def)
             if ok:
                 try:
-                    from clipwright.animation.prompting import validate_content_coverage, validate_placeholder_types
+                    from clipwright.animation.prompting import (
+                        validate_content_coverage, validate_layout_overlaps, validate_placeholder_types,
+                    )
                     coverage = validate_content_coverage(mg_def, text_content)
                     type_errors = validate_placeholder_types(mg_def)
+                    layout_errors = validate_layout_overlaps(mg_def)
                 except Exception:  # noqa: BLE001 — 守卫失败不阻断生成
-                    coverage, type_errors = [], []
+                    coverage, type_errors, layout_errors = [], [], []
                 if coverage:
                     logger.warning("MGGenerator: 内容覆盖缺口: %s", coverage[:3])
                     self._trace_event(
@@ -334,6 +337,12 @@ class MGGenerator:
                     self._trace_event(
                         pipeline_id, "placeholder_type",
                         "MG 占位符类型不匹配", {"errors": type_errors[:10]},
+                    )
+                if layout_errors:
+                    logger.warning("MGGenerator: 布局重叠: %s", layout_errors[:3])
+                    self._trace_event(
+                        pipeline_id, "layout_overlap",
+                        "MG 文字/线条重叠", {"errors": layout_errors[:10]},
                     )
 
             if ok:

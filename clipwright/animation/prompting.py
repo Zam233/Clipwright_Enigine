@@ -316,3 +316,23 @@ def validate_placeholder_types(mg_def: dict[str, Any]) -> list[str]:
             if "{" + str(key) + "}" in content:
                 errors.append(f"元素 #{i} 把 color 参数 {{{key}}} 当作文本使用")
     return errors
+
+
+def validate_layout_overlaps(mg_def: dict[str, Any]) -> list[str]:
+    """Cheap geometric guard for text/line overlap (top-left coordinate contract)."""
+    elements = [e for e in (mg_def.get("elements") or []) if isinstance(e, dict)]
+    errors: list[str] = []
+    texts = [
+        (i, float(e.get("y") or 0), float(e.get("font_size") or 48))
+        for i, e in enumerate(elements)
+        if e.get("type") == "text" and isinstance(e.get("y"), (int, float))
+    ]
+    for j, e in enumerate(elements):
+        if e.get("type") != "line" or not isinstance(e.get("y"), (int, float)):
+            continue
+        ly = float(e["y"])
+        for i, ty, fs in texts:
+            if ty < ly < ty + fs * 1.2:
+                errors.append(f"line #{j} 穿过 text #{i} 的纵向范围")
+                break
+    return errors
