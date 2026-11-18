@@ -19,6 +19,7 @@ from clipwright.prompts.engine.animation_prompt import (
     ANIMATION_SELF_CHECK,
     ANIMATION_STYLE_CONTRACT,
 )
+from clipwright.animation.beats import beats_for_duration
 from clipwright.animation.brief import AnimationBrief, build_brief, style_prompt_block
 from clipwright.prompts.mg import MG_ORCHESTRATION_CONSTRAINTS, MG_STRICT_JSON_OUTPUT
 
@@ -177,7 +178,7 @@ def build_animation_plan(
         duration_sec=max(1.0, float(duration_sec or 4.0)),
         rule_ids=selected[:3], carrier="title-word" if category != "charts" else "bar-series",
         shot_type=shot_type, brief=brief.as_dict(),
-        beats=[{"at_sec": 0.0, "event": "entry"}, {"at_sec": max(1.0, duration_sec * 0.4), "event": "main"}, {"at_sec": max(1.5, duration_sec * 0.8), "event": "hold"}],
+        beats=beats_for_duration(duration_sec),
         continuity={"inherits": "", "before": "", "after": "", "handoff": {}},
     )
 
