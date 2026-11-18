@@ -59,3 +59,19 @@ async def test_commit_creates_custom_type(forge: TypeForge, tmp_path: Path, monk
     result = await forge.commit(sid, "typeforge_test_type", definition)
     assert result["status"] == "created"
     assert (tmp_path / "user_types" / "typeforge_test_type.yaml").exists()
+    from clipwright.category.registry import CategoryRegistry
+    CategoryRegistry.unregister("typeforge_test_type")
+
+
+@pytest.mark.asyncio
+async def test_builtin_type_detail_includes_prompts() -> None:
+    from clipwright.api.type_maker import get_type
+    from clipwright.category import CategoryRegistry, KnowledgeLongformPlugin
+    CategoryRegistry.register(KnowledgeLongformPlugin())
+    try:
+        data = await get_type("knowledge_longform")
+        assert data["builtin"] is True
+        assert "structure" in data["prompts"]
+        assert "genre" in data["prompts"]
+    finally:
+        CategoryRegistry.unregister("knowledge_longform")
