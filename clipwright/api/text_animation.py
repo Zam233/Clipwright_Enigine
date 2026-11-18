@@ -325,7 +325,7 @@ class PreviewFrameRequest(BaseModel):
 
 
 @router.post("/preview-frame")
-async def preview_frame(body: PreviewFrameRequest):
+async def preview_frame(body: PreviewFrameRequest, request: Request):
     """服务端精确帧：只读项目 mg_def，不接受客户端 HTML/spec。"""
     from clipwright.services.mg_frame import MgFrameRenderer
     from clipwright.services.project_manager import ProjectManager
@@ -352,13 +352,15 @@ async def preview_frame(body: PreviewFrameRequest):
         raise HTTPException(status_code=400, detail="time outside clip")
     fps = float((project.get("timeline") or {}).get("fps") or 30)
     frame = int(round(max(0.0, body.time_sec - start) * fps))
+    etag = f'"mgf-{MgFrameRenderer.cache_key(mg_def, meta.get("mg_params") or {}, frame, body.dpr)[:16]}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, max-age=86400, immutable"})
     png, hit = await MgFrameRenderer.render(
         mg_def=mg_def, params=meta.get("mg_params") or {}, width=int(mg_def.get("width") or 1920),
         height=int(mg_def.get("height") or 1080), fps=fps, frame=frame, dpr=body.dpr,
     )
     if not png:
         raise HTTPException(status_code=503, detail="HYPERFRAMES_UNAVAILABLE")
-    etag = f'"mgf-{MgFrameRenderer.cache_key(mg_def, meta.get("mg_params") or {}, frame, body.dpr)[:16]}"'
     return Response(content=png, media_type="image/png", headers={
         "Cache-Control": "private, max-age=86400, immutable",
         "ETag": etag,

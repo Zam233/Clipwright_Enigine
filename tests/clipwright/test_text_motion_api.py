@@ -123,8 +123,32 @@ def test_preview_frame_route(tmp_path, monkeypatch):
     async def fake_render(**kwargs):
         return b"\x89PNGfake", False
     monkeypatch.setattr(mg_frame.MgFrameRenderer, "render", fake_render)
+    from starlette.requests import Request
+    req = Request({"type": "http", "headers": []})
     r = asyncio.run(api.preview_frame(api.PreviewFrameRequest(
-        project_id=p["id"], clip_id="tc", time_sec=0.5, spec_hash="h1")))
+        project_id=p["id"], clip_id="tc", time_sec=0.5, spec_hash="h1"), req))
     assert r.media_type == "image/png"
     assert r.body == b"\x89PNGfake"
     assert r.headers["x-mgframe-cache"] == "miss"
+
+
+def test_preview_frame_etag_304(tmp_path, monkeypatch):
+    from clipwright.services.project_manager import ProjectManager
+    from starlette.requests import Request
+    monkeypatch.setattr("clipwright.config.settings.project_dir", tmp_path)
+    m = ProjectManager(); p = m.create(name="t")
+    timeline = {"width": 640, "height": 360, "fps": 30, "duration_sec": 2, "tracks": [
+        {"id": "tt", "kind": "text", "index": 0, "clips": [
+            {"id": "tc", "kind": "text", "start_sec": 0, "duration_sec": 2,
+             "metadata": {"mg_def": {"elements": [{"type": "text", "content": "x"}]},
+                          "motion_spec_hash": "h1"}},
+        ]},
+    ]}
+    m.save(p["id"], {"timeline": timeline})
+    from clipwright.services.mg_frame import MgFrameRenderer
+    key = MgFrameRenderer.cache_key({"elements": [{"type": "text", "content": "x"}]}, {}, 15, 1)
+    etag = f'"mgf-{key[:16]}"'
+    req = Request({"type": "http", "headers": [(b"if-none-match", etag.encode())]})
+    r = asyncio.run(api.preview_frame(api.PreviewFrameRequest(
+        project_id=p["id"], clip_id="tc", time_sec=0.5, spec_hash="h1"), req))
+    assert r.status_code == 304
