@@ -2091,6 +2091,21 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
             return
 
+        if getattr(self, "_ctx_store", None) is not None:
+            try:
+                self._ctx_store.record_call(
+                    self._ctx_session_id, self._ctx_task_id, "tool", "generate_mg",
+                    "success" if result.get("success") else "failed",
+                    input_summary=str(anim_name)[:200],
+                    output_summary=f"method={result.get('method')} success={bool(result.get('success'))}"[:300],
+                    error=str(result.get("error") or "")[:300],
+                )
+                self._ctx_store.record_qa(
+                    self._ctx_session_id, self._ctx_task_id, 1,
+                    {"ok": bool(result.get("success")), "errors": result.get("qa_errors") or []},
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("AnimationAgent: 黑板写入失败: %s", exc)
         method = str(result.get("method", "unknown") or "unknown")
         if (not result.get("success")
                 or result.get("fallback_template")
