@@ -41,3 +41,21 @@ async def test_restart_restores_session(forge: TypeForge) -> None:
     again = TypeForge()
     again._llm = forge._llm
     assert again.detail(sid) is not None
+
+
+@pytest.mark.asyncio
+async def test_commit_creates_custom_type(forge: TypeForge, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import clipwright.api.type_maker as tm
+
+    monkeypatch.setattr(tm, "_USER_TYPES_DIR", tmp_path / "user_types")
+    sid = (await forge.start())["session_id"]
+    definition = {
+        "id": "typeforge_test_type", "name": "TypeForge 测试",
+        "description": "测试类型",
+        "shot_params": {"min_shot_sec": 1, "max_shot_sec": 3, "transition_type": "cut"},
+        "prompts": {"genre": {"text": "快节奏知识解说"}},
+        "param_rules": [], "signature_traits": [], "declares": {}, "waivers": [],
+    }
+    result = await forge.commit(sid, "typeforge_test_type", definition)
+    assert result["status"] == "created"
+    assert (tmp_path / "user_types" / "typeforge_test_type.yaml").exists()
