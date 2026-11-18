@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -313,6 +314,57 @@ async def cancel_author(task_id: str) -> dict:
                  "seq": int(task.get("seq", 0)) + 1})
     _persist_tasks()
     return _public_task(task)
+
+
+class PreviewFrameRequest(BaseModel):
+    project_id: str
+    clip_id: str
+    time_sec: float = 0.0
+    dpr: int = 1
+    spec_hash: str = ""
+
+
+@router.post("/preview-frame")
+async def preview_frame(body: PreviewFrameRequest):
+    """服务端精确帧：只读项目 mg_def，不接受客户端 HTML/spec。"""
+    from clipwright.services.mg_frame import MgFrameRenderer
+    from clipwright.services.project_manager import ProjectManager
+
+    if body.dpr not in (1, 2):
+        raise HTTPException(status_code=422, detail="dpr must be 1 or 2")
+    manager = ProjectManager()
+    project = manager.load(body.project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="project not found")
+    clip = next((c for t in (project.get("timeline") or {}).get("tracks") or []
+                 for c in t.get("clips") or [] if str(c.get("id")) == body.clip_id), None)
+    if clip is None:
+        raise HTTPException(status_code=404, detail="clip not found")
+    meta = clip.get("metadata") or {}
+    if body.spec_hash and body.spec_hash != str(meta.get("motion_spec_hash") or ""):
+        raise HTTPException(status_code=409, detail="MG_DEF_STALE")
+    mg_def = meta.get("mg_def")
+    if not isinstance(mg_def, dict) or not mg_def.get("elements"):
+        raise HTTPException(status_code=422, detail="MG_DEF_MISSING")
+    start = float(clip.get("start_sec") or 0)
+    dur = float(clip.get("duration_sec") or 0)
+    if body.time_sec < start or body.time_sec > start + dur:
+        raise HTTPException(status_code=400, detail="time outside clip")
+    fps = float((project.get("timeline") or {}).get("fps") or 30)
+    frame = int(round(max(0.0, body.time_sec - start) * fps))
+    png, hit = await MgFrameRenderer.render(
+        mg_def=mg_def, params=meta.get("mg_params") or {}, width=int(mg_def.get("width") or 1920),
+        height=int(mg_def.get("height") or 1080), fps=fps, frame=frame, dpr=body.dpr,
+    )
+    if not png:
+        raise HTTPException(status_code=503, detail="HYPERFRAMES_UNAVAILABLE")
+    etag = f'"mgf-{MgFrameRenderer.cache_key(mg_def, meta.get("mg_params") or {}, frame, body.dpr)[:16]}"'
+    return Response(content=png, media_type="image/png", headers={
+        "Cache-Control": "private, max-age=86400, immutable",
+        "ETag": etag,
+        "X-MgFrame-Cache": "hit" if hit else "miss",
+        "X-Content-Type-Options": "nosniff",
+    })
 
 
 @router.post("/commit")

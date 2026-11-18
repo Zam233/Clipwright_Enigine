@@ -105,3 +105,26 @@ def test_author_tasks_with_request_requeue_on_restart(tmp_path, monkeypatch):
     api._load_tasks()
     assert api._AUTHOR_TASKS["ma_resume"]["status"] == "queued"
     assert api._AUTHOR_TASKS["ma_resume"]["request"]["text"] == "测试"
+
+
+def test_preview_frame_route(tmp_path, monkeypatch):
+    from clipwright.services.project_manager import ProjectManager
+    from clipwright.services import mg_frame
+    monkeypatch.setattr("clipwright.config.settings.project_dir", tmp_path)
+    m = ProjectManager(); p = m.create(name="t")
+    timeline = {"width": 640, "height": 360, "fps": 30, "duration_sec": 2, "tracks": [
+        {"id": "tt", "kind": "text", "index": 0, "clips": [
+            {"id": "tc", "kind": "text", "start_sec": 0, "duration_sec": 2,
+             "metadata": {"mg_def": {"elements": [{"type": "text", "content": "x"}]},
+                          "motion_spec_hash": "h1"}},
+        ]},
+    ]}
+    m.save(p["id"], {"timeline": timeline})
+    async def fake_render(**kwargs):
+        return b"\x89PNGfake", False
+    monkeypatch.setattr(mg_frame.MgFrameRenderer, "render", fake_render)
+    r = asyncio.run(api.preview_frame(api.PreviewFrameRequest(
+        project_id=p["id"], clip_id="tc", time_sec=0.5, spec_hash="h1")))
+    assert r.media_type == "image/png"
+    assert r.body == b"\x89PNGfake"
+    assert r.headers["x-mgframe-cache"] == "miss"

@@ -338,6 +338,61 @@ class HyperframesRenderer:
             _shutil.rmtree(work, ignore_errors=True)
 
     @staticmethod
+    async def render_mg_html_to_png(
+        html: str,
+        out_dir: str,
+        *,
+        time_sec: float,
+        timeout: float = 20.0,
+        run_cmd=None,
+    ) -> bytes | None:
+        """单帧 PNG：Hyperframes snapshot（与成片同渲染器，供精确抽帧核对）。
+
+        不执行模型 mg_html；调用方只传已由 MGRenderer 生成的 HTML。
+        """
+        import uuid as _uuid
+        from pathlib import Path as _Path
+
+        if not html:
+            return None
+        work = _Path(out_dir) / f"mg_png_{_uuid.uuid4().hex[:8]}"
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "index.html").write_text(html, encoding="utf-8")
+        png_dir = work / "snapshots"
+        cmd = HyperframesRenderer._cli_cmd(
+            "snapshot", str(work),
+            "--at", f"{max(0.0, float(time_sec)):.3f}",
+            "--no-end", "--keep",
+            "--describe", "false",
+            "--output", str(png_dir),
+            "--timeout", "5000",
+            "--no-browser-gpu",
+        )
+        try:
+            if run_cmd is not None:
+                r = await asyncio.wait_for(run_cmd(cmd), timeout=float(timeout or 20.0))
+                rc = getattr(r, "returncode", 1)
+            else:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd, stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    env=HyperframesRenderer._render_env(),
+                )
+                rc = await asyncio.wait_for(proc.wait(), timeout=float(timeout or 20.0))
+            if rc != 0:
+                return None
+            pngs = sorted(png_dir.glob("*.png"))
+            if not pngs:
+                return None
+            return pngs[0].read_bytes()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("HyperframesRenderer: snapshot 失败: %s", exc)
+            return None
+        finally:
+            import shutil as _shutil
+            _shutil.rmtree(work, ignore_errors=True)
+
+    @staticmethod
     async def render_mg_html_to_mov(
         html: str,
         out_dir: str,
