@@ -293,6 +293,7 @@ class MGRenderer:
       data-composition-variables="{MGRenderer._json_attr(variables)}">
 <head><meta charset="utf-8"><style>
 *{{margin:0;padding:0;box-sizing:border-box}}
+@font-face{{font-family:"HF Symbols";src:local("Segoe UI Symbol"),local("Segoe UI Emoji"),local("Noto Sans Symbols 2"),local("Arial");}}
 body{{width:{w}px;height:{h}px;overflow:hidden;background:{bg};position:relative;font-family:{font_family}}}
 .mg-el{{position:absolute;will-change:transform,opacity}}
 .mg-shape{{border-radius:4px}}

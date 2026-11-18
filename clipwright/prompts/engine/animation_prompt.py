@@ -26,45 +26,15 @@ ANIMATION_PROMPT_BASE = """你是一位 Motion Graphics 动画设计师。你的
 - image: 图片元素（src + x/y + width/height，可做关键帧动画）
 - 默认不加 bg。
 
-## 元素与属性
-- 元素：text / shape / line / circle / ring / arc / image；默认不加 bg。
-- 关键帧属性：opacity / scale / translate_x / translate_y / rotate / width / height / font_size / color / background / border_radius / border_width / border_color / box_shadow / text_shadow / filter / letter_spacing / font_weight / font_family / line_height / transform_origin / easing。
-- 每个元素至少 3 个关键帧；第一个 time=0 且 opacity=0；至少 2 个关键帧带 easing。
-- 只使用已声明参数：{text} {value} {unit} {subtitle} {accent} 或 params 中显式声明的键。
-- 关键帧里不要写 x_offset / y_offset；位移只用 translate_x / translate_y。
-- 占位符类型必须与用法一致：文本/字幕用 string 或 number，颜色用 color；**不要把 color 参数放进 text 的 content**。
-- 箭头/图标不要写成 → / ← / emoji 文本；用 line/shape 组合绘制。下划线 line 的 y 必须大于对应文字 y + font_size + 20，不能穿过文字。
+## 参数说明（每个字段做什么）
+- `animation_id`：唯一 ID；`shot_type`：镜头语义；`energy`：能量级；`duration_sec`：时长（秒）；`width/height`：画布尺寸。
+- `elements[]`：画面元素；`type` 决定 text/shape/line/circle/ring/arc/image；`content` 是文字/占位符。
+- `x/y`：元素位置；数值是左上角像素，字符串 center/left/right/top/bottom 是锚点；`x_offset/y_offset` 只写在元素上，做额外偏移。
+- `width/height`：元素尺寸；`font_size/font_color/font_weight/letter_spacing/text_shadow`：文字排版与可读性。
+- `keyframes[]`：动画时间线；`time` 是秒；`opacity/scale/translate_x/translate_y/rotate` 是动画属性；`easing` 控制当前帧到下一帧的缓动。
+- `params`：占位符声明；每个 key 必须有 type/default；`style`：画布背景和全局字体。
 
-## 透明叠加
-默认背景透明；除非用户明确要求背景，不生成 bg。元素 background 必须 transparent 或省略。
-"""
-
-ANIMATION_MOTION_CONTRACT = """## 全片运动契约（motion-doctrine）
-- 全片只选一个 current（默认 left）；退出与进入同轴、同方向、速度匹配，cut 在运动中。
-- 每个 seam 必须有 carrier：文字、容器、光标、Logo 或一个具体对象跨 cut。
-- 动作必须有可见起因；反应与起因同一帧或紧邻，禁止无因翻转。
-- 禁止 crossfade、禁止 ping-pong；转场总数 2–3 个并重复使用。
-- 禁止 idle wobble：呼吸、漂浮、脉冲、无限循环都不算运动。
-- 关键信息落定后 hold ≥1s；一个镜头结束前保留 0.3–0.75s 的静止/收束。
-"""
-
-ANIMATION_RULE_SELECTION = """## 本镜头选定规则（只执行这些，不要自行加戏）
-{rule_lines}
-"""
-
-ANIMATION_STYLE_CONTRACT = """## 视觉令牌
-- 颜色只取 Persona 调色板（3–5 个锚点）；强调色优先 {accent}。
-- 字体只取 Persona 字体；未提供才用 sans-serif。
-- 类型气质：{category}；能量级：{energy}；镜头意图：{intent}。
-"""
-
-ANIMATION_RENDERER_CAPABILITIES = """## 渲染器能力边界
-- 输出是结构化 mg_def，不是 HTML/JS；不要写 GSAP/Lottie/Three.js 代码。
-- 只使用上面的元素和关键帧属性；不支持的属性会被 validator 拒绝。
-- 画面按 {width}x{height} 设计；坐标必须在画布内。
-"""
-
-ANIMATION_SELF_CHECK = """## 输出前自检
+## 输出前自检
 1. 是否只有一个主角？
 2. 是否有 idle 循环？
 3. 退出时是否仍在运动？
@@ -77,6 +47,31 @@ ANIMATION_SELF_CHECK = """## 输出前自检
 10. 是否出现无因方向翻转？
 """
 
+ANIMATION_MOTION_CONTRACT = """## 全片运动契约
+- 全片一个 current（默认 left）；seam 同轴、同方向、速度匹配，cut 在运动中。
+- 一个 seam 必须有一个具体 carrier；禁止 crossfade/ping-pong。
+- 禁止 idle wobble；关键信息 hold ≥1s，动作后留 0.3–0.75s 静止。
+"""
+
+ANIMATION_RULE_SELECTION = """## 本镜头选定规则（只执行这些）
+{rule_lines}
+"""
+
+ANIMATION_STYLE_CONTRACT = """## 视觉令牌
+- 颜色取自 Persona；强调色用 {accent}；字体用 system-ui, HF Symbols, sans-serif。
+- 类型：{category}；能量：{energy}；意图：{intent}。
+"""
+
+ANIMATION_RENDERER_CAPABILITIES = """## 渲染器边界
+- 输出结构化 mg_def，不写 HTML/JS；画布 {width}x{height}。
+- 只使用允许的元素/关键帧属性；箭头/emoji 用文本 + HF Symbols 字体。
+"""
+
+ANIMATION_SELF_CHECK = """## 输出前自检
+主角唯一、无 idle、退出仍在动、有 carrier、元素≤5、hold≥1s、
+颜色/字体来自 Persona、占位符已声明、无重叠、箭头/emoji 不被裁切。
+"""
+
 ANIMATION_CONTINUITY_CHECK_ITEMS = """## 连续性与运动检查
 - seam：退出与进入是否同轴、同方向、速度匹配，是否切在运动中。
 - carrier：是否有具体对象跨 cut，而不是靠 crossfade。
@@ -87,5 +82,5 @@ ANIMATION_CONTINUITY_CHECK_ITEMS = """## 连续性与运动检查
 """
 
 ANIMATION_EXAMPLE = """## 最小正例
-{"animation_id":"mg_generated_title","shot_type":"title_reveal","energy":"high","animation":"标题从 1.15 倍回落并 hold","name":"标题揭示","description":"单主角标题镜头","duration_sec":3.0,"width":1920,"height":1080,"elements":[{"type":"text","content":"{text}","x":"center","y":"center","font_size":96,"font_weight":"bold","font_color":"#ffffff","keyframes":[{"time":0,"opacity":0,"scale":1.15,"easing":"back-out"},{"time":0.5,"opacity":1,"scale":1.0},{"time":2.4,"opacity":1,"easing":"ease-in"},{"time":3.0,"opacity":0,"scale":1.02}]}],"params":{"text":{"type":"string","default":"标题"}},"style":{"background":"transparent","font_family":"sans-serif"}}
+{"animation_id":"mg_generated_title","shot_type":"title_reveal","energy":"high","animation":"标题从 1.15 倍回落并 hold","name":"标题揭示","description":"单主角标题镜头","duration_sec":3.0,"width":1920,"height":1080,"elements":[{"type":"text","content":"{text}","x":"center","y":"center","font_size":96,"font_weight":"bold","font_color":"#ffffff","keyframes":[{"time":0,"opacity":0,"scale":1.15,"easing":"back-out"},{"time":0.5,"opacity":1,"scale":1.0},{"time":2.4,"opacity":1,"easing":"ease-in"},{"time":3.0,"opacity":0,"scale":1.02}]}],"params":{"text":{"type":"string","default":"标题"}},"style":{"background":"transparent","font_family":"system-ui, HF Symbols, sans-serif"}}
 """
