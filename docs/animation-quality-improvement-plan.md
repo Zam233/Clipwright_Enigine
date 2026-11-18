@@ -76,11 +76,13 @@
 1. Reel Brief：对标 + 风格 + 禁止清单 + 记忆点
 2. 3 个风格帧（或 3 个设计方向） → 用户选 1
 3. 分镜 / AnimationPlan：对象、变化、承接、seams、节拍
-4. 逐镜头生成 mg_def
-5. 自动布局 + 文本安全区 + 文本阅读时间
-6. 技术 QA：contact sheet / phone / strip / motion / determinism
-7. 工作区预览（可 scrub + 音频） → 用户确认
-8. 导出 / 归档 brief + style + QA
+4. Agent 细化：草稿 → 研究/素材 → 结构 spec（不是一次成型）
+5. 逐镜头落地 mg_def
+6. 自动布局 + 文本安全区 + 文本阅读时间
+7. AnimationAgent 自检 QA：bbox/重叠/字号/阅读时间/空拍
+8. 技术 QA：contact sheet / phone / strip / motion / determinism
+9. 工作区预览（可 scrub + 音频） → 用户确认
+10. 导出 / 归档 brief + style + QA
 ```
 
 ## 5. 逐项改进设计
@@ -302,6 +304,35 @@ clipwright/schemas/animation_brief.py
 - `kb-retriever`：数据型 MG 先查知识库/来源，禁止模型编数字；
 - 在 `AnimationBrief` 增加 `sources[]`，进入 trace/交付物。
 
+### 5.12 Agentic 动画生产循环（不要求一次生成）
+
+动画生成不应是“一个 step 里直接吐 mg_def”。应把 AnimationAgent 做成可多轮、可调用工具的 agent，至少分六个阶段：
+
+```text
+A. 规划        读 brief / 场景 / 上下文，确定这一镜要说明什么
+B. 细化规划    选风格、主体、变化、承接、seams、beats、禁止项
+C. 研究        需要时调用 web_search / web_fetch / kb / 图片素材，
+               数据必须带 source；不得凭空造数字
+D. 草稿        只生成“结构草稿”：元素角色、层级、相对布局、运动意图，
+               不要求一次写全关键帧
+E. 落地        按草稿生成 mg_def，调用自动布局/字号/安全区/阅读时间
+F. 质检        AnimationAgent 自己用 QA 工具检查：
+               文本 bbox、重叠、字号、阅读时间、空拍、元素数、配色
+               → 不通过则带着具体 fail 项回到 D/E，而不是盲重试
+G. 终审        通过后交主 Agent / 人工审片；记录 brief、草稿、QA、修复轮次
+```
+
+硬约束：
+
+- 规划/细化/研究/质检都必须是**真实阶段**，不能只在 prompt 里写一句“请先思考”；
+- 每个阶段有结构化产物：`AnimationBrief`、`ShotPlan`、`DraftSpec`、`mg_def`、`QAReport`；
+- 质检不通过必须回到具体阶段（布局失败回 E，叙事失败回 B，事实缺失回 C），禁止整段重生成；
+- 最多 3 轮修复，仍失败则降级并留下 `unfinished`，不伪装成完成；
+- 研究阶段的来源写入 `brief.sources`，数据型动画没有来源不允许进入 D；
+- 最终 trace 必须包含阶段耗时、工具调用、QA fail/pass、修复次数。
+
+这对应 `motion-showreel` 的 brief/风格帧/制作/审片，以及 `web-video-presentation` 的“首章验收后再批量”和 `beautiful-article` 的 reviewer/repair 流程。
+
 ## 6. 优先级与里程碑
 
 ### P0（先做，收益最大）
@@ -310,7 +341,8 @@ clipwright/schemas/animation_brief.py
 2. 3 个风格帧与用户确认；
 3. 禁止清单 + 2+1 配色 + 文本可读性硬约束；
 4. 连续叙事字段；
-5. contact sheet/phone/text/motion QA。
+5. contact sheet/phone/text/motion QA；
+6. Agent 六阶段循环：规划/细化/研究/草稿/落地/自检，带修复回退。
 
 ### P1（第二阶段）
 
