@@ -772,6 +772,101 @@ src/features/animation/types.ts
 - 黑板版本冲突返回 409，前端提示刷新；
 - 所有调用记录可导出到 `qa/` 或 task 归档。
 
+### 5.15 插件化边界：哪些是 engine 接口，哪些是插件
+
+依据 `docs/pluginization-plan-2026-09-10.md` 的裁定：
+
+> 内核收缩，插件通过 Contribution 契约向内扩展；被两个以上插件读写的东西是内核。
+
+动画质量改进也必须遵守这个边界，不能把新的上下文/QA/风格逻辑又写死进 AnimationAgent。
+
+#### 5.15.1 Engine 接口（必须稳定、不可由插件替换）
+
+这些是“动画内核契约”，插件只能消费，不能改写：
+
+| Engine 接口 | 内容 | 为什么是内核 |
+|---|---|---|
+| `AnimationBrief` / `ShotPlan` / `DraftSpec` | 结构化 schema、必填/枚举/版本 | 多插件共享的数据契约 |
+| `QAReport` / `AnimationActivity` / `AnimationCallRecord` | QA、活动流、调用记录 schema | 前端/SSE/审计共同依赖 |
+| `AnimationContextStore` | 会话历史、任务黑板、artifact ref、CAS version | 项目存储/鉴权/一致性是内核 |
+| `AnimationOrchestrator` | Agent 循环、预算、完成标准、失败回退上限 | 不能由某个插件决定全局调度 |
+| `AnimationLayoutEngine` | 安全区、字号、阅读时间、bbox、重叠校验 | 所有渲染/预览共享的坐标契约 |
+| `AnimationQAEngine` | QA 调度、阈值、pass/fail 聚合 | 阈值不能由单个 QA 插件自定 |
+| `MGRenderer` / preview contract | `mg_def` 唯一渲染源、HTML 安全边界 | 前端预览与后端成片必须同契约 |
+| SSE event contract | `animation_activity` / `context_update` 等事件名与字段 | AgentBus/前端不能各自发明 |
+| API 路由/鉴权 | context/blackboard/calls/QA 端点 | 项目所有权/鉴权是内核 |
+| 前端四面板骨架 + `mgRenderer.ts` | 预览画布、时间轴、面板布局 | 不允许插件注入任意 JS/HTML |
+
+Engine 可以提供**默认实现**，但接口和安全性不得下放到插件。
+
+#### 5.15.2 Plugin 贡献（可插拔）
+
+这些通过现有 `ContributionRegistry` / `ContributionKind` 注册：
+
+| 插件类型 | 在动画中的用途 | 已有/新增 |
+|---|---|---|
+| `tool` | `web_search`、`kb_search`、`web_fetch`、`reference_inspect`、`image_search`、`qa_check_*` | 已有 ToolRegistry，新增能力按 tool 注册 |
+| `skill` | `motion-showreel`、`web-design-engineer`、`data-story`、`text-animation`、`kb-retriever` | 已有 SkillRegistry |
+| `llm_provider` | DeepSeek / GPT-6 SOL / 其他模型路由 | 已有 Provider 化 |
+| `tts_provider` / `stt_provider` | 口播/字幕/音画同步 | 已有 Provider 化 |
+| `renderer_backend` | 不同成片后端（HyperFrames 等） | 已有/按 B 方案 |
+| `style_interpreter` | 风格包：swiss-editorial / cinematic / blueprint 等 | 插件贡献 `style_id + signals + palette + motion` |
+| `category` | 类型插件覆盖动画 stage prompt / shot params / pacing | 已有 Category 插件 |
+| `prompt` | 类别/persona 的 prompt 片段 | 已有 prompt contribution；核心契约仍归 engine |
+| `material_source` | 参考片/图片/素材源 | 已有 |
+| `ui_slot` | Brief 扩展卡、自定义 QA 面板、导出预设入口 | 方案 D，声明式，不写 JS |
+| `export_preset` | 动画导出规格/封装 | 方案 D |
+
+#### 5.15.3 分界规则
+
+1. **共享 schema 归 engine**：任何会被两个以上插件读写的字段，先进 engine schema，不能在插件里私自定义。
+2. **安全/一致性归 engine**：鉴权、存储、版本、CAS、artifacts、SSE、渲染安全边界，插件不得绕过。
+3. **能力实现归插件**：研究、素材、QA 检查、风格包、模型、TTS、渲染后端都通过 Contribution 注册。
+4. **阈值/预算归 engine**：QA 阈值、最大修复轮次、token/时长预算由 engine 配置，插件只能读。
+5. **插件失败必须降级**：Tool/Skill/Style 不可用时，Agent 如实记录并继续，不阻塞整个动画。
+6. **不允许静默覆盖**：插件不得覆盖内置同名 contribution；冲突进错误通道。
+7. **前后端同一契约**：engine schema 变更必须同步前端 `types.ts` 与 display_spec 契约，不能只改后端。
+
+#### 5.15.4 具体归属
+
+| Plan 功能 | 归属 | 说明 |
+|---|---|---|
+| AnimationBrief | **Engine schema** + 可选 UI slot 扩展 | 字段稳定；插件可加只读扩展，不改核心字段 |
+| 8 个风格库 | **内置 style_interpreter** + 插件可加 | 内置 8 个保证可用；插件可新增风格包 |
+| 3 风格帧契约 | **Engine** 生成/选择协议 | 具体图像生成走 `gpt-image-2` tool/provider |
+| 连续叙事 inherits/handoff | **Engine schema** | 镜头间契约，不能由单个插件定义 |
+| 会话历史/黑板/调用记录 | **Engine** `AnimationContextStore` | 存储/鉴权/CAS 是内核 |
+| Tool/Skill 调用 | **Plugin** 实现 + **Engine** 记录 | 调用记录 schema 归 engine |
+| QA 调度/阈值 | **Engine** `AnimationQAEngine` | 单个 check 可插件化 |
+| 文本 bbox/手机审片 | **Engine** 布局/QA 默认能力 | 允许插件 add check，不允许替换核心判定 |
+| 共享 beat/event | **Engine** timeline schema | 音频/动画共同依赖 |
+| contact sheet/phone/motion | **Engine** QA 默认实现 | 可作为 tool 暴露给 Agent |
+| 参考片拆解 | **Plugin tool** | `reference_inspect`，不写进核心 |
+| 图像资产 | **Plugin tool / provider** | gpt-image-2 Mode B/C 或素材源 |
+| 知识库检索 | **Plugin skill/tool** | kb-retriever；engine 只存 source refs |
+| 前端活动流/上下文/黑板面板 | **Engine 前端骨架** + **ui_slot** 扩展 | 核心面板不可被插件替换；插件可加 tab/卡片 |
+| 前端自定义 JS | **禁止默认档** | 只允许声明式 ui_slot；需要 JS 走显式高危档 |
+
+#### 5.15.5 迁移顺序
+
+1. 先把 Engine schema/contracts 落地（Brief/Plan/Draft/QA/Activity/CallRecord/ContextStore）；
+2. 再把现有 `AnimationAgent` 的 context 读写切到 `AnimationContextStore`；
+3. 把 QA 拆成 `AnimationQAEngine` + 内置 checks；插件 check 通过 registry 注册；
+4. 把风格包迁到 `style_interpreter` contribution，内置 8 个作为 builtin；
+5. 把参考片/图像/KB 作为 tool/skill 插件接入；
+6. 前端先接 Engine 面板，再接 ui_slot 扩展；
+7. 每个阶段保持旧插件可运行，不搞一次性大迁移。
+
+#### 5.15.6 验收
+
+- 新增一个风格包不需要改 AnimationAgent/Engine 代码；
+- 新增一个 QA check 不需要改 QA 调度器；
+- 新增一个研究工具不需要改 prompt/tool 白名单硬编码；
+- 卸载插件后内置能力仍可用；
+- 插件不能覆盖内置 contribution；
+- 前端只通过 engine API + ui_slot 扩展，不执行插件 JS；
+- 同一份 `mg_def` 在后端与前端预览的契约一致。
+
 ## 6. 优先级与里程碑
 
 ### P0（先做，收益最大）
@@ -783,7 +878,8 @@ src/features/animation/types.ts
 5. contact sheet/phone/text/motion QA；
 6. Agent 自主编排 Tool + Skill（brief/research/draft/generate/qa/repair；motion-showreel/web-design-engineer 等），非固定阶段；
 7. 会话历史 / 任务黑板 / Tool-Skill 调用记录；
-8. 前端活动流 / 上下文检查器 / 黑板面板 / QA 面板 / 导出闸门。
+8. 前端活动流 / 上下文检查器 / 黑板面板 / QA 面板 / 导出闸门；
+9. Engine/Plugin 边界：schema/context/QA/render 归 engine，Tool/Skill/风格/资产归插件。
 
 ### P1（第二阶段）
 
