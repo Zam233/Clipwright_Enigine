@@ -115,3 +115,17 @@ def test_type_forge_http_404_400_409_and_create() -> None:
         "session_id": sid, "type_id": "typeforge_http_ok", "definition": good,
     }).status_code == 409
     client.delete("/api/type-maker/typeforge_http_ok")
+
+
+@pytest.mark.asyncio
+async def test_message_accepts_text_attachment(forge: TypeForge) -> None:
+    import base64
+    sid = (await forge.start())["session_id"]
+    encoded = base64.b64encode("品牌关键词：极简、冷色".encode()).decode()
+    await forge.message(sid, "按附件做类型", [{
+        "type": "file", "name": "brief.txt", "mime": "text/plain",
+        "data_url": f"data:text/plain;base64,{encoded}",
+    }])
+    detail = forge.detail(sid)
+    assert detail is not None
+    assert "品牌关键词" in detail["messages"][0]["content"]
