@@ -32,7 +32,7 @@ class AnimationAgentRuntime:
     async def decide_with_llm(self, llm: Any, goal: str, observations: list[Any]) -> AgentAction:
         """Prefer provider-native tool calls; never parse a free-form JSON blob if tools exist."""
         from clipwright.animation.agent_tools import list_animation_tools
-        tools = list_animation_tools()
+        tools = [t for t in list_animation_tools() if t.name != "render_preview"]
         schemas = [{
             "type": "function",
             "function": {
@@ -86,11 +86,14 @@ class AnimationAgentRuntime:
         category: str = "",
         shot_type: str = "",
         needs: set[str] | None = None,
+        seed_observations: list[Any] | None = None,
     ) -> LoopResult:
         async def load_skill(name: str) -> dict[str, Any]:
             return {"skill": name, "prompt": compose_skills(category=category or name, shot_type=shot_type, needs=needs)}
 
         ledger = FailureLedger()
+        for _seed in (seed_observations or []):
+            ledger.add(_seed)
         async def execute(name: str, args: dict[str, Any]) -> Any:
             merged = {**self.default_args, **args}
             obs = observation_from_result(name, await call_animation_tool(name, **merged))
@@ -140,6 +143,7 @@ class AnimationAgentRuntime:
             load_skill=load_skill,
             max_rounds=self.max_rounds,
             max_calls=self.max_calls,
+            initial_observations=seed_observations,
         )
         if self.require_mg and not any(
             isinstance(o, dict) and o.get("mg_def") for o in result.observations
