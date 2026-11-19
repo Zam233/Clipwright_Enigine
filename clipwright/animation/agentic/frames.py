@@ -44,7 +44,7 @@ def capture_frames(html_path: Path, times: list[float], out_dir: Path | None = N
     return frames
 
 
-def inspect_frames(frames: list[Path], brief: str = "") -> dict[str, Any]:
+async def inspect_frames(frames: list[Path], brief: str = "") -> dict[str, Any]:
     """Vision inspection over captured frames. Returns structured findings."""
     import base64
     from clipwright.config import settings
@@ -62,11 +62,10 @@ def inspect_frames(frames: list[Path], brief: str = "") -> dict[str, Any]:
         b64 = base64.b64encode(f.read_bytes()).decode()
         content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
     llm = LLMService()
-    import asyncio
-    resp = asyncio.run(llm.generate(
+    resp = await llm.generate(
         messages=[{"role": "user", "content": content}],
         model=getattr(settings, "vision_llm_model", None),
-    ))
+    )
     import json
     raw = str(getattr(resp, "content", "") or "")
     start, end = raw.find("{"), raw.rfind("}")
