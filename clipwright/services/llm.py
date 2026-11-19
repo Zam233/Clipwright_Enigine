@@ -632,7 +632,7 @@ class LLMService:
         if temperature is None:
             temperature = float(eff.get("temperature", 0.7))
         if max_tokens is None:
-            max_tokens = int(eff.get("max_tokens", MAX_OUTPUT_TOKENS))
+            max_tokens = eff.get("max_tokens")
         logger.debug("LLM chat 请求: flash=%s, messages=%.500s, temperature=%s",
                      use_flash, json.dumps(messages, ensure_ascii=False)[:500], temperature)
         resp = await self.generate(
