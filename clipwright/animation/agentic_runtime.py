@@ -5,6 +5,8 @@ from typing import Any, Awaitable, Callable
 
 from clipwright.animation.agent_tools import call_animation_tool
 from clipwright.animation.agentic_loop import AgentAction, LoopResult, run_agentic_loop
+from clipwright.animation.agentic.adapters import observation_from_result
+from clipwright.animation.agentic.ledger import FailureLedger
 from clipwright.animation.prompt_skills import SKILLS, compose_skills
 
 
@@ -60,16 +62,21 @@ class AnimationAgentRuntime:
         async def load_skill(name: str) -> dict[str, Any]:
             return {"skill": name, "prompt": compose_skills(category=category or name, shot_type=shot_type, needs=needs)}
 
+        ledger = FailureLedger()
         async def execute(name: str, args: dict[str, Any]) -> Any:
             merged = {**self.default_args, **args}
-            return await call_animation_tool(name, **merged)
+            obs = observation_from_result(name, await call_animation_tool(name, **merged))
+            ledger.add(obs)
+            return obs
 
         async def guarded(observations: list[Any]) -> AgentAction:
             action = await decide(observations)
-            if self.require_mg and action.kind == "final" and not any(
-                isinstance(o, dict) and o.get("mg_def") for o in observations
-            ):
-                return AgentAction("tool", "generate_mg", {}, "还没有 mg_def，先生成")
+            has_mg = any(
+                isinstance(o, dict) and o.get("mg_def")
+                or getattr(o, "data", {}).get("mg_def") for o in observations
+            )
+            if action.kind == "final" and (not has_mg or not ledger.can_final()):
+                return AgentAction("tool", "generate_mg", {}, "存在未解决失败，先修复/重生成")
             return action
 
         result = await run_agentic_loop(

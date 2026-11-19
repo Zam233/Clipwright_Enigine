@@ -69,3 +69,66 @@ def semantic_layout_errors(mg_def: dict[str, Any], params: dict[str, Any] | None
             if a and b and (a == b or a in b or b in a) and min(len(a), len(b)) >= 2:
                 errs.append(f"重复文本：'{a}' 与 '{b}' 表达同一内容，只保留一个或拆行")
     return errs
+
+
+def semantic_layout_failures(mg_def: dict[str, Any], params: dict[str, Any] | None = None) -> list[Any]:
+    """Structured failures with element indices and numeric expectations."""
+    from clipwright.animation.agentic.contracts import Failure
+
+    elements = [e for e in (mg_def.get("elements") or []) if isinstance(e, dict)]
+    out: list[Failure] = []
+    cards = [(i, e) for i, e in enumerate(elements) if e.get("type") == "shape" and _num(e.get("width")) >= 200 and _num(e.get("height")) >= 120]
+    texts = [(i, e) for i, e in enumerate(elements) if e.get("type") == "text"]
+    for ci, card in cards:
+        cx, cy = _num(card.get("x")), _num(card.get("y"))
+        cw, ch = _num(card.get("width")), _num(card.get("height"))
+        for ti, t in texts:
+            tx, ty = _num(t.get("x")), _num(t.get("y"))
+            tw = _num(t.get("width"))
+            th = _num(t.get("height")) or _num(t.get("font_size"), 48) * 1.4
+            if tx < cx - 4 or tx + max(tw, 1) > cx + cw + 4 or not (cy - 4 <= ty <= cy + ch + 4):
+                continue
+            align = str(t.get("text_align") or "left")
+            if tw >= cw - 8 and align != "center":
+                out.append(Failure("MG_LAYOUT_CARD_LABEL_OFFCENTER", "layout", scope="element",
+                    location={"element_index": ti, "path": "elements[%d].text_align" % ti},
+                    expected="center", observed=align, fix_hint="卡片标签设 text_align=center"))
+            elif abs(tx - cx) < 8 and tw < cw - 8 and align == "left":
+                out.append(Failure("MG_LAYOUT_CARD_LABEL_LEFT", "layout", scope="element",
+                    location={"element_index": ti, "path": "elements[%d].x" % ti, "card_index": ci},
+                    expected=cx + (cw - tw) / 2, observed=tx,
+                    fix_hint="x = card.x + (card.width - text.width)/2"))
+    if str(mg_def.get("shot_type") or "") in ("flow", "process"):
+        heads = any(e.get("type") in ("shape", "circle") and _num(e.get("width"), 0) <= 40 and _num(e.get("height"), 0) <= 40 for e in elements)
+        arrows = any("→" in _text(t, params) or "←" in _text(t, params) for _, t in texts)
+        lines = [(i, e) for i, e in enumerate(elements) if e.get("type") == "line"]
+        if lines and not (heads or arrows):
+            out.append(Failure("MG_LAYOUT_ARROW_HEAD_MISSING", "layout", scope="document",
+                location={"element_index": lines[0][0]}, expected="箭头头/→ 文本", observed="line 无头",
+                fix_hint="改用 → 文本或加小三角 shape"))
+    for ai, a in enumerate(texts):
+        for bi, b in texts[ai + 1:]:
+            ay, by = _num(a.get("y")), _num(b.get("y"))
+            ah = _num(a.get("height")) or _num(a.get("font_size"), 48) * 1.4
+            bh = _num(b.get("height")) or _num(b.get("font_size"), 48) * 1.4
+            if abs(_num(a.get("x")) - _num(b.get("x"))) < 8 and abs(_num(a.get("width")) - _num(b.get("width"))) < 8 and ay < by + bh and by < ay + ah:
+                gap = max(ah, bh)
+                out.append(Failure("MG_LAYOUT_MULTILINE_OVERLAP", "layout", scope="element",
+                    location={"element_indices": [a[0], b[0]], "path": "elements[*].y"},
+                    expected={"min_gap": gap, "suggested_y": [ay, ay + gap]},
+                    observed={"y": [ay, by], "heights": [ah, bh]},
+                    fix_hint="同 x 且 y 递增；相邻 y 差 >= 最大行高"))
+                break
+    seen: list[tuple[str, str]] = []
+    for _, t in texts:
+        txt = _text(t, params)
+        if not txt:
+            continue
+        for other in seen:
+            if txt == other[0] or txt in other[0] or other[0] in txt:
+                out.append(Failure("MG_LAYOUT_DUPLICATE_TEXT", "layout", scope="element",
+                    location={"element_index": t.get("_index", -1)}, expected="唯一条目", observed=txt,
+                    fix_hint="删除重复文本或拆成语义不同行"))
+                break
+        seen.append((txt, ""))
+    return out
