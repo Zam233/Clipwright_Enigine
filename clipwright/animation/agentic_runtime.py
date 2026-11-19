@@ -33,12 +33,26 @@ class AnimationAgentRuntime:
         """Prefer provider-native tool calls; never parse a free-form JSON blob if tools exist."""
         from clipwright.animation.agent_tools import list_animation_tools
         tools = [t for t in list_animation_tools() if t.name != "render_preview"]
+        _props = {
+            "workspace_tree": {"root": {"type": "string"}, "glob": {"type": "string"},
+                               "max_depth": {"type": "integer"}, "include_dirs": {"type": "boolean"}},
+            "read_file": {"root": {"type": "string"}, "path": {"type": "string"},
+                          "mode": {"type": "string", "enum": ["text", "image", "binary"]}},
+            "generate_mg": {"description": {"type": "string"}, "text_content": {"type": "string"},
+                            "background_mode": {"type": "string", "enum": ["transparent", "color", "image"]},
+                            "background_value": {"type": "string"},
+                            "background_reason": {"type": "string"},
+                            "allow_opaque_background": {"type": "boolean"}},
+            "revise_mg": {"mg_def": {"type": "object"}, "findings": {"type": "array"},
+                          "brief": {"type": "string"}},
+        }
         schemas = [{
             "type": "function",
             "function": {
                 "name": t.name,
                 "description": t.description,
-                "parameters": {"type": "object", "properties": {}, "additionalProperties": True},
+                "parameters": {"type": "object", "properties": _props.get(t.name, {}),
+                               "additionalProperties": True},
             },
         } for t in tools]
         schemas.append({"type": "function", "function": {

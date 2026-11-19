@@ -347,6 +347,7 @@ class LLMPlanner:
             "- delegate_agent(stage=structure|material|edit|animation|audio|quality, "
             "inputs={…}, brief=…)：派一个**子 agent**做真正干活的那一步；`inputs` 由你显式提供"
             "（上一份结果的产物引用），结果**只回给你**；缺输入时它会返回 needs，你决定先补哪一步。\n"
+            "- 派 animation 时，若动画将叠在真实画面上，必须在 inputs.background_context.frames 传 5–6 张该时间段的背景截图（可用工作区已有帧/截图）；让动画 Agent 先看背景再定文字色。\n"
             "- 一次创作通常覆盖 structure→material→edit→animation→audio→quality，但顺序由你判断"
             "（依赖写在能力清单里；需要时可跳过、重派或换人）。\n"
             "- research_agent(role, brief, tools)：只派**只读**调研员（核实文件是否存在、"

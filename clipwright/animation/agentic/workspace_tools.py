@@ -44,7 +44,8 @@ def read_file(root: str, path: str, mode: str = "text") -> dict[str, Any]:
         from PIL import Image
         with Image.open(p) as im:
             width, height = im.size
-        return {"path": str(p.relative_to(Path(root).resolve())), "kind": "image",
+        rel = str(p.relative_to(Path(root).resolve())).replace("\\", "/")
+        return {"path": rel, "src": rel, "kind": "image",
                 "mime": f"image/{p.suffix.lstrip('.').lower()}", "width": width, "height": height,
                 "artifact_ref": str(p)}
     data = p.read_bytes()
