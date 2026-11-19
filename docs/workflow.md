@@ -80,10 +80,10 @@
 - **文字动画**: 在文字轨创建 text clip，生成完整 keyframes（入场+保持+出场），走 FFmpeg drawtext
 - **逻辑动画**: 在动画轨创建独立 clip（Hyperframes SVG / drawtext 降级），展示箭头/对比/流程等关系
 - **MG 动画（静态模板）**: ID 以 mg_ 开头 → MGRenderer 加载预定义 JSON 模板 → HTML/CSS 动画 → hyperframes 渲染
-- **MG 动画（LLM 动态生成）**: `[逻辑动画]mg_dynamic:{...}` 标记 → `_handle_llm_mg()` → `llm_mg` 插件生成完整 MG JSON → MGRenderer → Hyperframes
+- **MG 动画（LLM 动态生成）**: `【逻辑动画】mg_dynamic:{...}` 标记 → `_handle_llm_mg()` → `llm_mg` 插件生成完整 MG JSON → MGRenderer → Hyperframes
   - 成功生成时 `generated_mg_count` 递增
   - 失败时自动降级: LLM → 模板匹配 → drawtext 纯文字
-- **过渡动画**: `[过渡动画]xxx` 标记 → 设置 clip.transition_in 字段，供 xfade filter
+- **过渡动画**: `【过渡动画】xxx` 标记 → 设置 clip.transition_in 字段，供 xfade filter
 
 ### Audio Agent
 - **输入**: 时间线 + Persona 音频参数

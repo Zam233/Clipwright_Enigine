@@ -67,7 +67,7 @@ class LottieAnimationsPlugin(CapabilityPlugin):
         prompt = (
             "## Lottie 素材（来自 lottie_animations 插件）\n"
             f"本地素材目录 `{LOTTIE_DIR}/` 现有：{names}。\n"
-            "注意：**Lottie 渲染尚未接入成片链路**，不要为它们生成 [逻辑动画] 标记，"
+            "注意：**Lottie 渲染尚未接入成片链路**，不要为它们生成 【逻辑动画】 标记，"
             "也不要把 Lottie 当作可用动画类型；如需矢量动效用 MG 动画表达。"
         )
         return [

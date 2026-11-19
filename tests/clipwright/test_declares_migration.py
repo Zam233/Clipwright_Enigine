@@ -125,7 +125,7 @@ class TestAgentsUseDeclares:
         CategoryRegistry.register(_SpecPlugin(outro_animation=True))
         scenes = [{"title": "a", "description": "x"}, {"title": "总结", "description": "收束"}]
         assert StructureAgent._ensure_outro_animation(scenes, "declared_demo") == 1
-        assert "[文字动画]" in scenes[-1]["description"]
+        assert "【文字动画】" in scenes[-1]["description"]
 
     def test_outro_off_without_declaration(self) -> None:
         from clipwright.agents.structure_agent import StructureAgent
@@ -138,17 +138,17 @@ class TestAgentsUseDeclares:
         from clipwright.agents.structure_agent import StructureAgent
 
         CategoryRegistry.register(_SpecPlugin(opening_animation=True))
-        scenes = [{"title": "开场", "description": "[逻辑动画]mg_dynamic:{}"}]
+        scenes = [{"title": "开场", "description": "【逻辑动画】mg_dynamic:{}"}]
         kept = StructureAgent._strip_opening_animation_markers(scenes, "declared_demo")
-        assert "[逻辑动画]" in kept[0]["description"]
+        assert "【逻辑动画】" in kept[0]["description"]
 
     def test_opening_stripped_by_default(self) -> None:
         from clipwright.agents.structure_agent import StructureAgent
 
         CategoryRegistry.register(_SpecPlugin())
-        scenes = [{"title": "开场", "description": "[逻辑动画]mg_dynamic:{}"}]
+        scenes = [{"title": "开场", "description": "【逻辑动画】mg_dynamic:{}"}]
         stripped = StructureAgent._strip_opening_animation_markers(scenes, "declared_demo")
-        assert "[逻辑动画]" not in stripped[0]["description"]
+        assert "【逻辑动画】" not in stripped[0]["description"]
 
     def test_material_hint_uses_declares(self) -> None:
         from clipwright.agents.material_agent import _category_search_hint

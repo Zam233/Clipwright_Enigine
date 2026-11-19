@@ -846,9 +846,9 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         parts = [
             "## 动画标记",
             "在 scene.description 中用以下格式标记动画：",
-            "  [文字动画]动画名：要显示的文字",
-            "  [逻辑动画]动画名：要展示的概念 或 关系描述",
-            "  [过渡动画]动画名",
+            "  【文字动画】动画名：要显示的文字",
+            "  【逻辑动画】动画名：要展示的概念 或 关系描述",
+            "  【过渡动画】动画名",
             "同一场景 description 最多一个标记。",
             "",
         ]
@@ -858,7 +858,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         if text_anims:
             parts.append("### 常用文字动画（更多可调用 list_animations 工具）")
             for a in text_anims[:TOP_N]:
-                parts.append(f"  [文字动画]{a['name']} — {a.get('desc', '')}")
+                parts.append(f"  【文字动画】{a['name']} — {a.get('desc', '')}")
             parts.append("")
 
         # 逻辑动画 top-N（含 MG）
@@ -866,7 +866,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         if logic_anims:
             parts.append("### 常用逻辑动画（更多可调用 list_animations 工具）")
             for a in logic_anims[:TOP_N]:
-                parts.append(f"  [逻辑动画]{a['name']} — {a.get('desc', '')}")
+                parts.append(f"  【逻辑动画】{a['name']} — {a.get('desc', '')}")
             parts.append("")
 
         # 过渡动画 top-N
@@ -874,7 +874,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         if trans_anims:
             parts.append("### 常用过渡动画（更多可调用 list_animations 工具）")
             for a in trans_anims[:TOP_N]:
-                parts.append(f"  [过渡动画]{a['name']} — {a.get('desc', '')}")
+                parts.append(f"  【过渡动画】{a['name']} — {a.get('desc', '')}")
             parts.append("")
 
         # 动态 MG 动画 — **必须**先调用 describe_llm_mg 工具了解能力再使用
@@ -928,7 +928,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             "你是视频分镜标注助手。用户给你按段落切分好的文稿，你为每段写分镜标注：\n"
             "- title：8-16 字，概括该段论证任务\n"
             "- description：1-3 句画面描述，**必须包含一个动画标记**"
-            "（[文字动画]名称：文字 或 [逻辑动画]mg_dynamic:{\"description\": \"...\", \"text\": \"A|B\"}）\n"
+            "（【文字动画】名称：文字 或 【逻辑动画】mg_dynamic:{\"description\": \"...\", \"text\": \"A|B\"}）\n"
             "- keywords：2-4 个可检索的画面关键词\n"
             "只输出 JSON 对象 {\"scenes\": [...]}，不要输出任何解释文字。\n"
         )
@@ -1028,7 +1028,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         和 llm_mg 插件能力（通过 describe_llm_mg 工具动态获取）选择合适的动画标记。
         """
         import re
-        marker_re = re.compile(r"\[(?:文字动画|逻辑动画|过渡动画|动画)\]")
+        marker_re = re.compile(r"【(?:文字动画|逻辑动画|过渡动画|动画)】")
         scenes_needing = [s for s in scenes if not marker_re.search(s.get("description", "") or "")]
         if not scenes_needing:
             self._ensure_chart_coverage(scenes, context.category_plugin_id)
@@ -1047,7 +1047,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                 "llm_mg 是内置的 LLM 驱动动态 MG 动画生成引擎。"
                 "可从自然语言描述动态生成完整的 HTML/CSS 动画，"
                 "适用于数据图表、对比图、进度条等自定义动效。\n\n"
-                "标记格式：[逻辑动画]mg_dynamic:{\"description\":\"动画描述\",\"text\":\"A|B|结果\",\"style\":\"tech_dark\"}\n"
+                "标记格式：【逻辑动画】mg_dynamic:{\"description\":\"动画描述\",\"text\":\"A|B|结果\",\"style\":\"tech_dark\"}\n"
                 "在场景 description 末尾添加此标记，AnimationAgent 会在渲染时自动生成 MG 动画。"
             )
             if templates:
@@ -1108,7 +1108,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
     # 轮 84（批次 5 收尾）：知识/评测类的图表硬规则适用类型
     _DATA_CHART_CATEGORIES = {"knowledge_longform", "digital_review"}
-    _DATA_CHART_MARKER_RE = re.compile(r"\[逻辑动画\]|mg_[a-z_]+")
+    _DATA_CHART_MARKER_RE = re.compile(r"【逻辑动画】|mg_[a-z_]+")
     _DATA_CHART_KEYWORDS = (
         "对比", "增长", "提升", "下降", "排名", "占比", "数据", "参数",
         "性能", "跑分", "续航", "价格", "销量", "实测", "评测", "优势",
@@ -1193,7 +1193,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         safe_title = re.sub(r'["\\]', "'", (s.get("title", "") or ""))[:40]
         desc = (s.get("description") or "").strip()
         marker = (
-            f'[逻辑动画]mg_dynamic:{{"description":"{safe_title} 核心数据对比图表",'
+            f'【逻辑动画】mg_dynamic:{{"description":"{safe_title} 核心数据对比图表",'
             f'"text":"","style":"tech_dark"}}'
         )
         s["description"] = f"{desc} {marker}".strip()
@@ -1205,7 +1205,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
 
     # 轮 93（批次 6）：片尾文字动画规则适用类型（有结构模板的内容类）
     _OUTRO_ANIMATION_CATEGORIES = {"knowledge_longform", "digital_review", "vlog_daily"}
-    _ANY_ANIMATION_MARKER_RE = re.compile(r"\[(?:文字动画|逻辑动画|过渡动画|动画)\]|mg_[a-z_]+")
+    _ANY_ANIMATION_MARKER_RE = re.compile(r"【(?:文字动画|逻辑动画|过渡动画|动画)】|mg_[a-z_]+")
 
     @classmethod
     def _ensure_outro_animation(cls, scenes: list[dict], category_plugin_id: str = "") -> int:
@@ -1229,7 +1229,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         desc = (last.get("description") or "").strip()
         if cls._ANY_ANIMATION_MARKER_RE.search(desc):
             return -1
-        last["description"] = f"{desc} [文字动画]text_fade_in".strip()
+        last["description"] = f"{desc} 【文字动画】text_fade_in".strip()
         logger.info(
             "StructureAgent: %s 类片尾规则生效——末场景补充收束文字动画",
             category_plugin_id,
@@ -1245,7 +1245,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         用户要求：知识讲解类视频开场是口播引入，开头特定时间内不应生成动画标记——
         实现应放在结构 Agent（生成源头），而非动画 Agent（消费端事后跳过）。
         复用规划书场景与 LLM 新生成场景两条路径都在返回前调用本方法，硬保证
-        第一个场景的 description 不携带任何 [逻辑动画]/[文字动画]/[动画] 标记。
+        第一个场景的 description 不携带任何 【逻辑动画】/【文字动画】/【动画】 标记。
 
         按视频类型分支（来自 context.category_plugin_id）：
         - 快节奏类型（kichiku_fastcut 等，见 _OPENING_ANIMATION_ALLOWED_PLUGIN_IDS）：
@@ -1267,7 +1267,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             return scenes
         opening = scenes[0]
         desc = opening.get("description", "") or ""
-        marker_re = re.compile(r"\[(?:文字动画|逻辑动画|过渡动画|动画)\][^\n]*")
+        marker_re = re.compile(r"【(?:文字动画|逻辑动画|过渡动画|动画)】[^\n]*")
         stripped = marker_re.sub("", desc).strip()
         if stripped != desc:
             opening["description"] = stripped
@@ -1288,7 +1288,7 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                 f"2. 每个场景需包含: title, description, duration_sec, keywords\n"
                 f"3. duration_sec 按重要性分配，总和接近 {audio_dur:.0f}s\n"
                 f"4. 场景数量接近 {len(lines)}\n"
-                f"5. 在 description 中用 [动画] 和 [转场] 标记\n"
+                f"5. 在 description 中用 【动画】 和 【转场】 标记\n"
                 f"6. keywords 具体可搜索\n\n{anim_guide}"
             )
         elif script:
@@ -1396,38 +1396,33 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         except json.JSONDecodeError:
             pass
         # 放弃逐字符括号深度扫描。提示词强制场景 JSON 的字符串值内含
-        # `[逻辑动画]mg_dynamic:{...}` 等标记，字符串内的括号会使深度计数
+        # `【逻辑动画】mg_dynamic:{...}` 等标记，字符串内的括号会使深度计数
         # 永不归零/提前归零，解析必然失败并静默降级 fallback_scenes。
         # 改为文本定位 + json.JSONDecoder（JSON 语法自身正确处理字符串内括号）。
         decoder = json.JSONDecoder()
-        # 不能只从首个 '[' 开始：正文里的 ``[逻辑动画]`` 之类标记会抢在
-        # 真正的 JSON 前面，raw_decode 从这里必然失败。逐个候选起点试，
-        # 找到第一个能解出 scenes 的对象/数组就返回。
-        starts = [i for i, ch in enumerate(content) if ch in "[{"][:80]
-        for start in starts:
+        # 稳定锚点：场景 JSON 一定有 "scenes"。只从该键所在对象的 '{' 起解，
+        # 不再遍历正文里所有括号候选（避免把 [数组] / 文字里的括号都试一遍）。
+        key = content.find('"scenes"')
+        if key != -1:
+            obj_start = content.rfind('{', 0, key)
+            if obj_start != -1:
+                try:
+                    parsed, _ = decoder.raw_decode(content[obj_start:])
+                    result = self._scenes_from_parsed(parsed)
+                    if result:
+                        return result
+                except json.JSONDecodeError:
+                    pass
+        # 纯数组形式：只在正文第一个非空白字符就是 '[' 时按数组解。
+        stripped = content.lstrip()
+        if stripped.startswith('['):
             try:
-                parsed, _ = decoder.raw_decode(content[start:])
-            except json.JSONDecodeError:
-                continue
-            result = self._scenes_from_parsed(parsed)
-            if result:
-                return result
-        start = content.find('[')
-        if start == -1:
-            return []
-        # 截断/尾部缺损兜底：']' 从尾部逐步回退，交 json.loads 重试（有界 10 次）
-        end = content.rfind(']')
-        tries = 0
-        while end > start and tries < 10:
-            try:
-                parsed = json.loads(content[start:end + 1])
+                parsed, _ = decoder.raw_decode(stripped)
                 result = self._scenes_from_parsed(parsed)
                 if result:
                     return result
             except json.JSONDecodeError:
                 pass
-            end = content.rfind(']', start, end)
-            tries += 1
         return []
 
     def _parse_structured_result(self, result: dict, topic: str, tone: str) -> list[dict]:

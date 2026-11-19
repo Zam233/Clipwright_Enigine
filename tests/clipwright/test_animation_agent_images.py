@@ -25,7 +25,7 @@ from clipwright.schema.agent import AgentContext, AgentDecision, AnimationInput
 from clipwright.schema.timeline import Clip, ClipKind, Timeline, Track
 
 _MG_MARKER = (
-    '[逻辑动画]mg_dynamic:{"description":"科技场景展示",'
+    '【逻辑动画】mg_dynamic:{"description":"科技场景展示",'
     '"text":"芯片|算力","style":"tech_dark"}'
 )
 

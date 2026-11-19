@@ -57,7 +57,7 @@ prompt="## LLM 动态 MG 动画（来自 my_plugin）\n支持从自然语言描�
 提供具体的标记格式或调用方式：
 
 ```python
-"标记格式：[逻辑动画]mg_dynamic:{\"description\":\"...\",\"text\":\"A|B\"}"
+"标记格式：【逻辑动画】mg_dynamic:{\"description\":\"...\",\"text\":\"A|B\"}"
 ```
 
 ### 4. 设置优先级
@@ -81,7 +81,7 @@ class LLMMGPlugin(CapabilityPlugin):
             "与文字动画用途不同，二者互不冲突：\n"
             "- 文字动画：强调标题/字幕/关键句\n"
             "- MG 动画：数据可视化/对比图/流程图\n\n"
-            "标记格式：[逻辑动画]mg_dynamic:{...}\n"
+            "标记格式：【逻辑动画】mg_dynamic:{...}\n"
             "使用场景：数据对比、进度展示、标题特效、关系图",
             priority=10,
         )

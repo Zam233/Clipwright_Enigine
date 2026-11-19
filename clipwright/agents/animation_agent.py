@@ -1,8 +1,8 @@
 """动画 Agent（AnimationAgent）— 将动画标记转为时间线修改。
 
 两种动画类型：
-1. 文字动画 [文字动画]xxx — 作用于文字轨 clip 的入场 keyframes + 出场淡出
-2. 逻辑动画 [逻辑动画]xxx — 独立动画轨，展示逻辑关系（箭头/对比/流程/因果）
+1. 文字动画 【文字动画】xxx — 作用于文字轨 clip 的入场 keyframes + 出场淡出
+2. 逻辑动画 【逻辑动画】xxx — 独立动画轨，展示逻辑关系（箭头/对比/流程/因果）
 
 动画类型从 AnimationCatalog 动态读取，支持插件扩展。
 """
@@ -53,7 +53,7 @@ def _merge_style_defaults(
 
 
 class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
-    """动画 Agent：解析 [文字动画] / [逻辑动画] / [过渡动画] 标记 → 修改时间线。
+    """动画 Agent：解析 【文字动画】 / 【逻辑动画】 / 【过渡动画】 标记 → 修改时间线。
 
     文字动画：在文字轨创建/更新 text clip，添加完整 keyframes（入场+保持+出场）。
     逻辑动画：在动画轨创建独立 clip，将 diagram 参数存入 metadata 供 Render 使用。
@@ -574,10 +574,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                             )
                             text_anim_count += 1
                             self._persist_timeline_tick(timeline)
-                            logger.info("AnimationAgent: [文字动画]%s → %s (id=%s)",
+                            logger.info("AnimationAgent: 【文字动画】%s → %s (id=%s)",
                                         anim_name, clip.id[:8], anim_id)
                             add_event(context.pipeline_id, "animation", "text_anim",
-                                      f"[文字动画]{anim_name}({anim_id}) → clip={clip.id[:8]}")
+                                      f"【文字动画】{anim_name}({anim_id}) → clip={clip.id[:8]}")
 
                         elif marker_type == "logic":
                             if self._retry_clip_ids and str(clip.id) not in self._retry_clip_ids:
@@ -588,20 +588,20 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                             )
                             # §7.3-3：入队≠完成——计数移到 gather 之后按真实新增 clip 统计，
                             # 否则「窗口不足跳过 / 生成失败 / Hyperframes 不可用」都会被算作已完成。
-                            logger.info("AnimationAgent: [逻辑动画]%s → %s (id=%s)",
+                            logger.info("AnimationAgent: 【逻辑动画】%s → %s (id=%s)",
                                         anim_name, clip.id[:8], anim_id)
                             add_event(context.pipeline_id, "animation", "logic_anim",
-                                      f"[逻辑动画]{anim_name}({anim_id}) → clip={clip.id[:8]}")
+                                      f"【逻辑动画】{anim_name}({anim_id}) → clip={clip.id[:8]}")
 
                         elif marker_type == "transition":
                             self._handle_transition_animation(
                                 clip, prev_clip, anim_id, anim_name,
                             )
                             transition_anim_count += 1
-                            logger.info("AnimationAgent: [过渡动画]%s → %s (id=%s)",
+                            logger.info("AnimationAgent: 【过渡动画】%s → %s (id=%s)",
                                         anim_name, clip.id[:8], anim_id)
                             add_event(context.pipeline_id, "animation", "transition_anim",
-                                      f"[过渡动画]{anim_name}({anim_id}) → clip={clip.id[:8]}")
+                                      f"【过渡动画】{anim_name}({anim_id}) → clip={clip.id[:8]}")
 
                     prev_clip = clip
 
@@ -1276,7 +1276,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             )
             self._record_failed_animation(vid_clip, anim_id, anim_name, last_issue)
             self._add_trace_warning(
-                f"[逻辑动画]{anim_name}({anim_id}) 连续 3 次失败，需主 Agent 重派该片段",
+                f"【逻辑动画】{anim_name}({anim_id}) 连续 3 次失败，需主 Agent 重派该片段",
                 {"clip_id": str(getattr(vid_clip, "id", "") or ""), "anim_id": anim_id},
             )
             return
@@ -1754,7 +1754,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             try:
                 from clipwright.services.trace import add_event as _evt
                 _evt(getattr(self, '_pid', ''), "animation", "warning",
-                     f"Hyperframes 不可用，[逻辑动画]{anim_name} 已跳过",
+                     f"Hyperframes 不可用，【逻辑动画】{anim_name} 已跳过",
                      {"anim_id": anim_id, "degradation": "hyperframes_not_available",
                       "skipped": True})
             except Exception:
@@ -1813,7 +1813,12 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
         # 加载 MG 动画定义
         mg_def = MGRenderer.load_animation(anim_id)
-        if mg_def is None:
+        if isinstance(mg_def, str):
+            try:
+                mg_def = json.loads(mg_def)
+            except json.JSONDecodeError:
+                mg_def = None
+        if not isinstance(mg_def, dict):
             # 降级：MG 定义缺失 → 跳过创建 clip，不把设计描述打印成屏幕文字
             logger.warning("MG 动画未找到: %s，已跳过（不再降级为文字显示）", anim_id)
             self._add_trace_warning(f"MG 动画未找到: {anim_id}，动画已跳过")
@@ -1822,7 +1827,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         # 背景守卫：模板 MG 与 LLM MG 一致——vision_prompt 为空时强制 bg 透明，
         # 动画叠加在实拍素材上，不允许不透明全幅背景（用户要求，T3 补充覆盖模板路径）
         from clipwright.animation.mg.generator import MGGenerator
-        mg_def = MGGenerator._ensure_no_background(
+        mg_def = MGGenerator()._ensure_no_background(
             mg_def, getattr(self, "_vision_prompt", "") or ""
         )
 
@@ -2662,7 +2667,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         """从 clip 中提取文字内容。
 
         优先级：
-        1. marker 中解析出的 text 字段（[文字动画]打字：xxx → "xxx"）
+        1. marker 中解析出的 text 字段（【文字动画】打字：xxx → "xxx"）
         2. clip.metadata.text
         3. clip.metadata.label
         4. clip.metadata.source_title
@@ -2702,9 +2707,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         desc = meta.get("description", "") or ""
         if desc:
             import re
-            # 尝试 [文字动画]xxx：text 格式
+            # 尝试 【文字动画】xxx：text 格式
             for m in re.finditer(
-                r'\[(?:文字动画|逻辑动画|动画)\]\S+\s*[：:—\-]\s*(.+?)(?:$|[\n。！？])',
+                r'【(?:文字动画|逻辑动画|动画)】\S+\s*[：:—\-]\s*(.+?)(?:$|[\n。！？])',
                 desc,
             ):
                 return m.group(1).strip(), "description"

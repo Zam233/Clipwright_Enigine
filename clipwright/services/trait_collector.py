@@ -24,7 +24,7 @@ from typing import Any, Iterable, Optional
 from clipwright.schema.timeline import Clip, ClipKind, Timeline
 
 #: 场景描述里的"数据图表"标记（与 structure_agent 的硬规则同源）。
-CHART_MARKER_RE = re.compile(r"\[(?:逻辑动画|文字动画|过渡动画|动画)\]|mg_[a-z_]+|data_chart")
+CHART_MARKER_RE = re.compile(r"【(?:逻辑动画|文字动画|过渡动画|动画)】|mg_[a-z_]+|data_chart")
 
 #: 本模块认识的指标名（供校验器提示"未知指标"）。
 KNOWN_TRAITS: tuple[str, ...] = (

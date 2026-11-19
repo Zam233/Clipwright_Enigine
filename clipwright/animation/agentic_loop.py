@@ -34,9 +34,10 @@ async def run_agentic_loop(
     load_skill: Callable[[str], Awaitable[Any]] | None = None,
     max_rounds: int = 3,
     max_calls: int = 8,
+    initial_observations: list[Any] | None = None,
 ) -> LoopResult:
     actions: list[AgentAction] = []
-    observations: list[Any] = []
+    observations: list[Any] = list(initial_observations or [])
     rounds = 0
     calls = 0
     while rounds < max_rounds:

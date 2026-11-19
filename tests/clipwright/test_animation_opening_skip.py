@@ -20,7 +20,7 @@ from clipwright.schema.agent import AgentContext, AgentDecision, AnimationInput,
 from clipwright.schema.timeline import Clip, ClipKind, Timeline, Track
 
 _MG_MARKER = (
-    '[逻辑动画]mg_dynamic:{"description":"三阶段增长柱状图",'
+    '【逻辑动画】mg_dynamic:{"description":"三阶段增长柱状图",'
     '"text":"2023|2024|2025","style":"tech_dark"}'
 )
 
@@ -84,10 +84,10 @@ def test_strip_opening_markers_reuse_path(monkeypatch) -> None:
     monkeypatch.setattr(agent, "_enrich_scene_animations", _noop_enrich)
 
     stripped = agent._strip_opening_animation_markers(scenes)
-    assert "[逻辑动画]" not in stripped[0]["description"]
+    assert "【逻辑动画】" not in stripped[0]["description"]
     assert "开场口播" in stripped[0]["description"]
     # 第二个场景不受影响
-    assert "[逻辑动画]" in stripped[1]["description"]
+    assert "【逻辑动画】" in stripped[1]["description"]
 
 
 def test_strip_opening_markers_empty_scenes() -> None:

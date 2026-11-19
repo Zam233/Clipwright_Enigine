@@ -55,9 +55,9 @@ class TestBuildAnimGuide:
         assert "|" in guide
 
     def test_contains_rules(self) -> None:
-        """规则：纯文字强调用 [文字动画]、长文本走字幕、每视频鼓励 1-2 个 MG。"""
+        """规则：纯文字强调用 【文字动画】、长文本走字幕、每视频鼓励 1-2 个 MG。"""
         guide = _agent()._build_anim_guide()
-        assert "[文字动画]" in guide
+        assert "【文字动画】" in guide
         assert "字幕" in guide
         assert "1-2" in guide
 
@@ -82,7 +82,7 @@ class TestEnrichSceneAnimations:
         agent._llm = fake  # type: ignore[assignment]
         scenes = [{
             "title": "S1",
-            "description": "强调 [文字动画]淡入：关键结论",
+            "description": "强调 【文字动画】淡入：关键结论",
             "duration_sec": 10,
         }]
         out = await agent._enrich_scene_animations(scenes, _context())
@@ -95,7 +95,7 @@ class TestEnrichSceneAnimations:
         fake = FakeLLM(markers=[{
             "index": 0,
             "animation_marker": (
-                '[逻辑动画]mg_dynamic:{"description":"增长柱状图",'
+                '【逻辑动画】mg_dynamic:{"description":"增长柱状图",'
                 '"text":"2023|2024|2025","style":"tech_dark"}'
             ),
         }])

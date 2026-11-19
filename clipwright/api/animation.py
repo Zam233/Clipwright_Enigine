@@ -135,7 +135,7 @@ def _resolve_preview_mg(body: MgPreviewRequest) -> tuple[dict, float, str, int, 
     if not isinstance(mg_def, dict) or not mg_def.get("elements"):
         raise HTTPException(status_code=400, detail="无效的 MG 定义（缺少 elements）")
 
-    mg_def = MGGenerator._ensure_no_background(mg_def, "")
+    mg_def = MGGenerator()._ensure_no_background(mg_def, "")
     dur = min(float(mg_def.get("duration_sec", 3.0) or 3.0), 8.0)
     # MG 设计坐标是绝对像素；缺省预览必须使用 mg_def 自身设计尺寸。
     # 旧默认 1280x720 会把 1920x1080 的坐标裁掉/错位（这正是 5 个预览

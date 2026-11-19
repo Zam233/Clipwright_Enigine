@@ -8,9 +8,9 @@ from clipwright.services.requirements_service import RequirementsService
 async def main():
     svc = RequirementsService()
     scenes = [
-        {"title": "开场", "description": "黑底白字标题 [文字动画]打字", "duration_sec": 120, "keywords": ["文理"]},
-        {"title": "解构", "description": "对比图表 [逻辑动画]mg_dynamic", "duration_sec": 180, "keywords": ["对比"]},
-        {"title": "升华", "description": "拉康镜像 [逻辑动画]对比", "duration_sec": 120, "keywords": ["镜像"]},
+        {"title": "开场", "description": "黑底白字标题 【文字动画】打字", "duration_sec": 120, "keywords": ["文理"]},
+        {"title": "解构", "description": "对比图表 【逻辑动画】mg_dynamic", "duration_sec": 180, "keywords": ["对比"]},
+        {"title": "升华", "description": "拉康镜像 【逻辑动画】对比", "duration_sec": 120, "keywords": ["镜像"]},
     ]
     brief = {"title": "文理之争", "overview": "测试", "core_message": "测试"}
     t0 = time.time()

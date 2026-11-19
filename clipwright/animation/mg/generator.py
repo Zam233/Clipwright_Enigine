@@ -450,7 +450,6 @@ class MGGenerator:
             )
         return self._failure_result(description, "LLM 多次尝试均未返回有效 JSON")
 
-    @staticmethod
     def _ensure_no_background(
         self, mg_def: dict[str, Any], vision_prompt: str = "", *, allow_scrim: bool | None = None,
     ) -> dict[str, Any]:
