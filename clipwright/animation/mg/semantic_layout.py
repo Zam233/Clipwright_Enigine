@@ -82,7 +82,31 @@ def semantic_layout_errors(mg_def: dict[str, Any], params: dict[str, Any] | None
         for b in contents[i + 1:]:
             if a and b and (a == b or a in b or b in a) and min(len(a), len(b)) >= 2:
                 errs.append(f"重复文本：'{a}' 与 '{b}' 表达同一内容，只保留一个或拆行")
-    # 5) transparent canvas + near-black text = invisible in rendered black background
+    # 5) units must be attached to number labels, not separate elements
+    for t in texts:
+        if _text(t, params).strip() in ("%", "px", "s", "秒"):
+            errs.append(f"单位 '{_text(t, params)}' 被单独做成元素；必须并入相邻数值标签")
+    # 6) flow safe area
+    if str(mg_def.get("shot_type") or "") in ("flow", "process"):
+        for t in texts:
+            tx = _num(t.get("x")); tw = _num(t.get("width"))
+            if tx < 200 or (tw > 0 and tx + tw > 1720):
+                errs.append(f"流程节点 '{_text(t, params)}' 超出 240px 安全区；x 应在 240..1680-width")
+    # 7) transparent canvas + near-black text = invisible in rendered black background
+    for ti, t in texts:
+        if _text(t, params).strip() in ("%", "px", "s", "秒"):
+            out.append(Failure("MG_LAYOUT_UNIT_SEPARATE", "layout", scope="element",
+                location={"element_index": ti, "path": "elements[%d].content" % ti},
+                expected="并入相邻数值标签", observed=_text(t, params),
+                fix_hint="删除该元素，把单位追加到数值文本"))
+    if str(mg_def.get("shot_type") or "") in ("flow", "process"):
+        for ti, t in texts:
+            tx, tw = _num(t.get("x")), _num(t.get("width"))
+            if tx < 200 or (tw > 0 and tx + tw > 1720):
+                out.append(Failure("MG_LAYOUT_FLOW_SAFE_AREA", "layout", scope="element",
+                    location={"element_index": ti, "path": "elements[%d].x" % ti},
+                    expected={"min_x": 240, "max_right": 1680}, observed={"x": tx, "width": tw},
+                    fix_hint="节点置于 240..1680 安全区，等距排布"))
     bg = str((mg_def.get("style") or {}).get("background") or "transparent").lower()
     if bg in ("transparent", "none", ""):
         for t in texts:

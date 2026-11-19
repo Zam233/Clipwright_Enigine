@@ -9,6 +9,10 @@ ANIMATION_PROMPT_BASE = """你是一位 Motion Graphics 动画设计师。你的
 - 输入 text_content 用 | 分段时，**每一段都必须落到一个元素的 content**；只写进 params 而不放进元素 = 丢内容。
 - 同屏元素总数 ≤5（不含透明背景）；不要把装饰粒子/光斑当成必需元素。
 - 元素之间必须留出安全间距（建议 ≥ font_size×0.35 或 ≥24px），不得互相压住、贴边或越过画布。
+- text_content 用 `|` 分段时，单位/百分号必须并入相邻数值：`120|%` 只能是 `120%`，禁止把 `%`、`px`、`s` 单独做成元素。
+- 数据镜头：数值+单位必须在同一个 text；标签 x 对齐柱子中心，标签 y 在柱顶上方 ≥24px。
+- 对比镜头：卡片内文字 x = card.x + (card.width - text.width)/2；y 在卡片垂直中心；不得把标签放到卡片外或下沿。
+- 流程镜头：3 个节点左右安全边距 ≥240px，节点中心等距；箭头/→ 文本放在节点之间；禁止 x<240 或 x+width>1680。
 - **数值 x/y：text/shape/image = 左上角；line = 线段中心；bg 忽略。** 不是基线。
 - 文字高度 = `font_size × line_height`（默认按 1.4；请显式写 `line_height`）：
   - 文字纵向范围 = y .. y + font_size×line_height；
