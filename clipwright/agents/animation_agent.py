@@ -1941,7 +1941,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                                 self._ctx_session_id, self._ctx_task_id,
                                 action.kind, action.name or "?",
                                 "success" if result.status == "ok" else "failed",
-                                input_summary=str(action.reason)[:200],
+                                input_summary=str(action.reason),
                                 output_summary=f"loop={result.status} rounds={result.rounds}",
                             )
                             try:
@@ -1952,7 +1952,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                                     f"AnimationAgent · {action.name}",
                                     {"agent": "animation", "kind": action.kind,
                                      "tool": action.name, "status": "success",
-                                     "reason": str(action.reason)[:200]},
+                                     "reason": str(action.reason)},
                                     span="subagent",
                                 )
                             except Exception:

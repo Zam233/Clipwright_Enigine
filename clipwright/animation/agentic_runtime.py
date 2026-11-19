@@ -13,7 +13,7 @@ DECIDE_SYSTEM = """你是 AnimationAgent 的导演循环。必须先用工具产
 - tool：调用一个动画工具；
 - skill：加载一个方法论/规则包；
 - final：完成，交给交付/QA。
-只输出 JSON：{"kind":"tool|skill|final","name":"...","args":{},"reason":"不超过40字"}
+只输出 JSON：{"kind":"tool|skill|final","name":"...","args":{},"reason":"..."}
 不要输出 markdown。args 必须简短；不要复述目标。"""
 
 
@@ -36,7 +36,7 @@ class AnimationAgentRuntime:
                   + "\n\n技能：\n" + "\n".join(skills)
                   + f"\n\n已有观察：\n{obs}\n\n下一步：")
         resp = await llm.generate(messages=[{"role": "system", "content": DECIDE_SYSTEM},
-                                             {"role": "user", "content": prompt}], max_tokens=1200)
+                                             {"role": "user", "content": prompt}])
         import json
         raw = str(getattr(resp, "content", "") or "").strip()
         start, end = raw.find("{"), raw.rfind("}")
@@ -46,7 +46,7 @@ class AnimationAgentRuntime:
             return AgentAction("tool", "generate_mg", {}, "decision JSON truncated; fallback to generate_mg")
         return AgentAction(
             str(data.get("kind") or "final"), str(data.get("name") or ""),
-            dict(data.get("args") or {}), str(data.get("reason") or "")[:200],
+            dict(data.get("args") or {}), str(data.get("reason") or ""),
         )
 
     async def run(
