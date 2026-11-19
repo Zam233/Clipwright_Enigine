@@ -59,7 +59,7 @@ class OpenAIProvider:
         return "openai"
 
     def build_client(self, *, api_key: str | None, base_url: str | None, model: str,
-                     instructions: str, max_tokens: int, flash: bool,
+                     instructions: str, max_tokens: int | None, flash: bool,
                      timeout_sec: float = 0.0, proxy: str = "",
                      headers: Mapping[str, Any] | None = None) -> Any:
         # 从 services.llm 延后取符号——与核心的 isobase 导入路径一致，
