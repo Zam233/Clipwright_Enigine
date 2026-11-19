@@ -315,7 +315,7 @@ async def resume_task(task_id: str, request: Request) -> dict:
     task = kernel.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
-    if task.terminal:
+    if task.terminal and task.status != "cancelled":
         raise HTTPException(
             status_code=409,
             detail={
@@ -324,6 +324,15 @@ async def resume_task(task_id: str, request: Request) -> dict:
                 "message": f"任务已结束（{task.status}），无法继续；如需重做请新建任务",
             },
         )
+    if task.status == "cancelled":
+        # 用户取消不是不可逆终态：保留黑板/已完成阶段，清掉终态标记后从
+        # 同一个 Task 的检查点继续，而不是新建任务从 structure 重跑。
+        task.status = "running"
+        task.finish = None
+        task.terminal_reason = None
+        task.blocker_code = ""
+        if hasattr(task, "touch"):
+            task.touch()
     if task.status == "waiting_user":
         from clipwright.services import ask_user
 
