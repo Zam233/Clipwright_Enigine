@@ -56,9 +56,16 @@ Agent 生成
 输入：brief / description / text_content / style。  
 输出：mg_def + artifact_ref；不做视觉判断。
 
-### `render_preview`
-输入：mg_def、fps、size。  
-输出：mp4 artifact + frame artifact refs（0/25/50/75/100%）。
+### `preview_html`
+输入：mg_def、size。  
+输出：合成 HTML + timeline runtime ref。  
+不渲染 MP4，不启动 HyperFrames；只在隔离浏览器里播放。
+
+### `capture_preview_frames`
+输入：preview HTML、时间点（0/25/50/75/100% 或 Agent 指定）。  
+输出：frame artifact refs。  
+实现：headless Chrome 打开预览 iframe，调用 `window.__timelines["main"].seek(t)`，截图。  
+**不调用完整 render**，毫秒级抽帧。
 
 ### `inspect_frames`
 输入：frame refs / mp4、问题提示、可选的关注点。  
@@ -82,6 +89,10 @@ Agent 生成
 
 这是 vision LLM 的判断，不是规则引擎。
 
+### `render_final`
+只有 `inspect_frames` 通过后才调用，渲染 MP4 成片。  
+生成阶段禁止每轮 render_final。
+
 ### `revise_mg`
 输入：mg_def、findings、frame refs、原始 brief。  
 输出：新 mg_def；必须说明改了哪些视觉问题。
@@ -100,13 +111,16 @@ Agent 生成
 
 ```text
 1. generate_mg
-2. render_preview
-3. inspect_frames
-4. if findings blocking:
+2. preview_html            # 不渲染 MP4
+3. capture_preview_frames  # 浏览器 seek + 截图
+4. inspect_frames          # vision LLM 看帧
+5. if findings blocking:
        revise_mg(mg_def, findings, frames)
-       → render_preview
+       → preview_html
+       → capture_preview_frames
        → inspect_frames
    else:
+       render_final         # 只在这里出 MP4
        final
 ```
 
