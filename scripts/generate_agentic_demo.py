@@ -17,7 +17,9 @@ CASES = [
 async def main():
     async with app.router.lifespan_context(app):
         out = []
-        for name, desc, text in CASES[: int(os.environ.get("AGENTIC_LIMIT", "5"))]:
+        _off = int(os.environ.get("AGENTIC_OFFSET", "0"))
+        _lim = int(os.environ.get("AGENTIC_LIMIT", "5"))
+        for name, desc, text in CASES[_off:_off + _lim]:
             agent = AnimationAgent()
             agent._llm = LLMService()
             agent._tl_width, agent._tl_height, agent._tl_fps = 1920, 1080, 30
