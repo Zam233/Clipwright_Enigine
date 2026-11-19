@@ -495,31 +495,11 @@ async def run_loop(task: Any, *, context_text: str = "",
 
             # 原子工具与派发类工具走**同一个入口**（surface.execute）：
             # 同一份档位裁定、同一份幂等键、同一份审计记录。
-            if name == "delegate_agent" and str((args or {}).get("stage") or "") == "animation":
-                _inputs = dict((args or {}).get("inputs") or {})
-                if not _inputs.get("retry_clip_ids"):
-                    _pending = _ANIMATION_RETRY.get(task_id) or []
-                    if _pending:
-                        _inputs["retry_clip_ids"] = list(_pending)
-                        args = {**(args or {}), "inputs": _inputs}
             result = await surface_execute(
                 name, args, pipeline_id=task_id,
                 idem_key=_key, task=task,
                 dry_run=dry_run,
             )
-            if name == "delegate_agent" and str((args or {}).get("stage") or "") == "animation":
-                _out = result.get("output") or {}
-                _issues = _out.get("issues") if isinstance(_out, dict) else []
-                _ids: list[str] = []
-                for _it in (_issues or []):
-                    if isinstance(_it, dict):
-                        _cid = str(_it.get("clip_id") or (_it.get("retry") or {}).get("clip_id") or "")
-                        if _cid:
-                            _ids.append(_cid)
-                if _ids:
-                    _ANIMATION_RETRY[task_id] = list(dict.fromkeys(_ids))
-                elif str(result.get("status") or "") == "ok":
-                    _ANIMATION_RETRY.pop(task_id, None)
             if result.get("status") in ("ok", "dry_run"):
                 _TOOL_FAILS_BY_NAME.pop(_name_key, None)
                 _TOOL_LAST_ERROR.pop(_name_key, None)
