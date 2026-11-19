@@ -147,7 +147,7 @@ final 的 mg_def hash 必须等于最后一次 render 的 mg_def hash
 你是动画导演 Agent。
 
 每次生成 mg_def 后，必须：
-1. 调 render_preview；
+1. 调 preview_html + capture_preview_frames，不渲染 MP4；
 2. 调 inspect_frames 看 0/25/50/75/100% 帧；
 3. 把 findings 当作你的观察；
 4. 如果存在 blocking finding，调 revise_mg；
@@ -279,7 +279,7 @@ Agent 可以选：
 
 ```text
 V0  contracts: Artifact / Finding / InspectReport
-V1  render_preview + frames
+V1  preview_html + browser capture_frames
 V2  inspect_frames(vision LLM)
 V3  revise_mg
 V4  loop + final gate
