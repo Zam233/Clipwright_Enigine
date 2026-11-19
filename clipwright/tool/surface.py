@@ -742,6 +742,11 @@ async def _execute_agent(name: str, payload: dict[str, Any], *,
 
             task_id = str(getattr(task, "id", "") or pipeline_id)
             n = degradation_ledger.accept(task_id, kinds, reason=reason, impact=impact)
+            try:
+                from clipwright.services.agent_kernel import _forget_pending_degradations
+                _forget_pending_degradations(task_id, kinds)
+            except Exception:  # noqa: BLE001 — 镜像清理失败不影响收据
+                pass
             emit(task_id, "degradation",
                  f"降级接受收据：{n} 项（{','.join(kinds)[:80]}）",
                  {"mode": "accepted", "kinds": kinds, "reason": reason[:200],

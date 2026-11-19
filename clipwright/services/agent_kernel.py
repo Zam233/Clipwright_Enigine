@@ -514,6 +514,17 @@ def _collect_degradations(task: Task, name: str, result: dict[str, Any]) -> None
         pass
 
 
+def _forget_pending_degradations(task_id: str, kinds: list[str]) -> None:
+    """收据落账后同步清内存镜像，避免守门用旧镜像再次判未处置。"""
+    wanted = {str(k) for k in kinds if str(k).strip()}
+    pending = _PENDING_DEGRADATIONS.get(task_id) or []
+    keep = [d for d in pending if str(d.get("kind")) not in wanted]
+    if keep:
+        _PENDING_DEGRADATIONS[task_id] = keep
+    else:
+        _PENDING_DEGRADATIONS.pop(task_id, None)
+
+
 def _mark_stage_remediated(task_id: str, stage: str) -> None:
     """重派某阶段并成功后，把该阶段的降级记为 `remediated` 收据。"""
     if not stage:

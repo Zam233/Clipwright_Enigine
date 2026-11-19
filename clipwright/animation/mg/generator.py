@@ -774,7 +774,7 @@ ision_prompt
                     _note(
                         "mg_motion_weak",
                         f"客观动效未达标：{(_weak.get('issues') or [])[:2]}",
-                        scope=str((scene_context or {}).get("title") or ""),
+                        scope=str((scene_context or {}).get("clip_id") or (scene_context or {}).get("title") or ""),
                         impact="该段动画观感接近静态展示（关键帧集中在前段、后段静止）",
                     )
             except Exception:  # noqa: BLE001 — 指标计算失败不影响出片

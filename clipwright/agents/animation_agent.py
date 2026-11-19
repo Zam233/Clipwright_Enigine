@@ -1610,6 +1610,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 persona=self._persona_anim_context(persona_style),
                 persona_style=persona_style or {},
                 scene_context={
+                    "clip_id": str(getattr(vid_clip, "id", "") or ""),
                     "title": scene_meta.get("title", ""),
                     "keywords": scene_meta.get("keywords", []),
                     "description": scene_meta.get("description", ""),
