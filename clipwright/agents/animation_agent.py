@@ -1225,6 +1225,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         """在动画轨创建独立的逻辑动画 clip。优先 Hyperframes 渲染 SVG，不可用时降级到 drawtext。
 
         MG 动画（ID 以 mg_ 开头）使用 MGRenderer 渲染 HTML/CSS 动画。"""
+        if self._retry_clip_ids and str(getattr(vid_clip, "id", "")) not in self._retry_clip_ids:
+            return
         text_content = marker.get("text", self._extract_text_content(vid_clip, marker))
         # 防御：旧 marker 的 text 可能是原始 JSON 串，先剥离
         text_content = self._strip_json_payload(text_content)
