@@ -257,6 +257,10 @@ class AnimationInput(BaseModel):
     #: 主 Agent 按失败片段重派时传入；动画 Agent 只对这些片段重新生成，
     #: 其余成功片段从 cache/mg/animations 复用（不整段重跑）。
     retry_clip_ids: list[str] = Field(default_factory=list)
+    background_context: dict[str, Any] = Field(
+        default_factory=dict,
+        description="动画位置的真实背景帧 {frames:[{time,path}], colors, luminance}",
+    )
 
 
 class AnimationOutput(AgentOutputBase):

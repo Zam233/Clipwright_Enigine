@@ -307,6 +307,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
     ) -> AnimationOutput:
         logger.info("AnimationAgent 开始 pipeline=%s", context.pipeline_id[:12])
         self._pid = context.pipeline_id
+        self._background_context = dict(getattr(input_data, "background_context", {}) or {})
         self._retry_clip_ids = {str(x) for x in (getattr(input_data, "retry_clip_ids", None) or [])}
         _extra_ctx = dict(getattr(context, "extra_params", None) or {})
         self._project_id = str(
@@ -1918,12 +1919,13 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             from clipwright.animation.agentic_runtime import AnimationAgentRuntime
             from clipwright.services.llm import LLMService
             rt = AnimationAgentRuntime(
-                max_rounds=3, max_calls=6,
+                max_rounds=8, max_calls=12,
                 default_args={
                     "description": description, "text_content": text_content,
                     "persona_style": persona_style or {}, "scene_context": scene_context or {},
                     "category_context": category_context or {}, "vision_prompt": vision_prompt or "",
                     "web_context": web_context or "", "fps": getattr(self, "_tl_fps", 30.0),
+                    "root": str(getattr(self, "_ws_root", "") or "."),
                 },
             )
             llm = getattr(self, "_llm", None) or LLMService()
@@ -1990,47 +1992,28 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                     mg.setdefault("qa", qa_report(mg["mg_def"]))
                     logger.warning("AnimationAgent: agentic result success=%s error=%s elements=%d",
                                    mg.get("success"), mg.get("error"), len(mg["mg_def"].get("elements") or []))
-                    try:
-                        from clipwright.animation.agent_tools import call_animation_tool
-                        seen: set[str] = set()
-                        while True:
-                            pv = await call_animation_tool("preview_html", mg_def=mg["mg_def"],
-                                                           params=mg["mg_def"].get("params") or {})
-                            fr = await call_animation_tool("capture_preview_frames",
-                                                           html_path=pv.get("path", ""),
-                                                           times=[0, 0.25, 0.5, 0.75, 1.0])
-                            ins = await call_animation_tool("inspect_frames", frames=fr.get("frames", []),
-                                                            brief=description)
-                            findings = ins.get("findings") or []
-                            mg["visual_findings"] = findings
-                            blocking = [f for f in findings if str(f.get("severity") or "") == "blocking"]
-                            if not blocking:
-                                break
-                            fp = ";".join(str(f.get("observation") or f) for f in blocking)
-                            if fp in seen:
-                                mg["success"] = False
-                                mg["qa_errors"] = list(mg.get("qa_errors") or []) + [fp]
-                                break
-                            seen.add(fp)
-                            rev = await call_animation_tool("revise_mg", mg_def=mg["mg_def"],
-                                                            findings=blocking, brief=description)
-                            if not rev.get("repaired") or not rev.get("mg_def"):
-                                rev = await call_animation_tool("revise_mg", mg_def=mg["mg_def"],
-                                                                findings=blocking[:1], brief="")
-                            if not rev.get("repaired") or not rev.get("mg_def"):
-                                mg["success"] = False
-                                mg["qa_errors"] = list(mg.get("qa_errors") or []) + [
-                                    "revise_mg 未产出新 mg_def"]
-                                break
-                            mg["mg_def"] = rev["mg_def"]
-                            errors = []
-                            if errors:
-                                mg["success"] = False
-                                mg["qa_errors"] = list(mg.get("qa_errors") or []) + errors
-                                break
-                    except Exception as exc:
-                        mg["visual_findings"] = [{"severity": "warning", "category": "tool",
-                                                  "observation": f"visual inspect failed: {exc}"}]
+                    # 视觉循环回到 Agent：把 mg 作为观察交给同一个 Agent，由它决定
+                    # preview/capture/inspect/revise/final，而不是 wrapper while。
+                    from clipwright.animation.agentic.contracts import Observation
+                    seed = Observation("generate_mg", "ok", data=dict(mg))
+                    vis = await rt.run(decide, category=str((category_context or {}).get("category") or "kinetic-type"),
+                                       shot_type="title_reveal", needs={"agent"},
+                                       seed_observations=[seed])
+                    logger.warning("AnimationAgent: visual loop status=%s actions=%s",
+                                   vis.status, [(a.kind, a.name) for a in vis.actions])
+                    latest_mg = next((o for o in reversed(vis.observations)
+                                      if getattr(o, "data", {}).get("mg_def")), None)
+                    if latest_mg is not None:
+                        mg = latest_mg.data
+                    inspect_obs = next((o for o in reversed(vis.observations)
+                                        if getattr(o, "tool", "") == "inspect_frames"), None)
+                    findings = (getattr(inspect_obs, "data", {}) or {}).get("findings") or []
+                    mg["visual_findings"] = findings
+                    blocking = [f for f in findings if str(f.get("severity") or "") == "blocking"]
+                    if blocking:
+                        mg["success"] = False
+                        mg["qa_errors"] = list(mg.get("qa_errors") or []) + [
+                            str(f.get("observation") or f) for f in blocking]
                     return mg
         except Exception as exc:  # noqa: BLE001 — agentic loop 失败必须回退旧引擎
             logger.warning("AnimationAgent: agentic loop 失败，回退 MGGenerator: %s", exc)
