@@ -425,7 +425,9 @@ class MGGenerator:
                 persona_style, scene_context, category_context, vision_prompt,
                 **repair_kwargs,
             )
-            if repaired:
+            if isinstance(repaired, str):
+                repaired = self._parse_llm_response(repaired)
+            if isinstance(repaired, dict):
                 logger.info("MGGenerator: 修复重试成功（带错误回传）")
                 # 合并决策：修复重试是「带错误回传」的定向修正，不再叠加
                 # 批判闭环——保证 method=llm_repair 契约确定性，且省一轮
@@ -895,7 +897,9 @@ ision_prompt
             persona_style, scene_context, category_context, vision_prompt,
             **repair_kwargs,
         )
-        if repaired:
+        if isinstance(repaired, str):
+            repaired = self._parse_llm_response(repaired)
+        if isinstance(repaired, dict):
             logger.info("MGGenerator: 批判修复成功 score=%d", score)
             return await self._build_success(
                 repaired, "critique_repair",
