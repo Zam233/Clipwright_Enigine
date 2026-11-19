@@ -10,7 +10,7 @@ from clipwright.animation.agentic.ledger import FailureLedger
 from clipwright.animation.prompt_skills import SKILLS, compose_skills
 
 
-DECIDE_SYSTEM = """你是 AnimationAgent 的导演循环。必须先用工具产出 mg_def；观察里没有 mg_def 时禁止 final。
+DECIDE_SYSTEM = """你是 AnimationAgent 的导演循环。生成 mg_def 后必须 preview_html → capture_preview_frames → inspect_frames；有 blocking findings 必须 revise_mg 并重新抽帧质检；没有 inspect_frames 证据时禁止 final。观察里没有 mg_def 时禁止 final。
 根据目标与已有观察，选择下一步：
 - tool：调用一个动画工具；
 - skill：加载一个方法论/规则包；

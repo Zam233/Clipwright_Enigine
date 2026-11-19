@@ -61,6 +61,10 @@ BUILTIN_TOOLS = (
     AnimationToolSpec("qa_mg", "text/phone/motion/determinism QA", "read"),
     AnimationToolSpec("render_preview", "渲染单镜预览", "costly"),
     AnimationToolSpec("inspect_reference", "参考片 contact sheet/剪点", "costly"),
+    AnimationToolSpec("preview_html", "生成浏览器预览 HTML，不渲染 MP4", "read"),
+    AnimationToolSpec("capture_preview_frames", "浏览器 seek 抽帧，不渲染 MP4", "read"),
+    AnimationToolSpec("inspect_frames", "vision LLM 对抽帧做视觉质检", "costly"),
+    AnimationToolSpec("revise_mg", "按 findings 修改 mg_def", "costly"),
     AnimationToolSpec("ask_user", "需要用户确认时提问", "read"),
 )
 for _spec in BUILTIN_TOOLS:

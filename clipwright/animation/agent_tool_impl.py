@@ -106,6 +106,38 @@ async def generate_mg(description: str = "", text_content: str = "", persona_sty
     return last
 
 
+
+
+async def preview_html(mg_def: dict | None = None, params: dict | None = None,
+                       width: int = 1920, height: int = 1080, fps: float = 30.0, **_: Any) -> dict[str, Any]:
+    from clipwright.animation.agentic.frames import write_preview_html
+    path = write_preview_html(mg_def or {}, params or {}, width, height, fps)
+    return {"path": str(path), "html": str(path), "render": False}
+
+
+async def capture_preview_frames(html_path: str = "", times: list[float] | None = None,
+                                 background: str = "#111111", **_: Any) -> dict[str, Any]:
+    from clipwright.animation.agentic.frames import capture_frames
+    from pathlib import Path
+    frames = capture_frames(Path(html_path), list(times or [0, 0.25, 0.5, 0.75, 1.0]), background=background)
+    return {"frames": [str(f) for f in frames]}
+
+
+async def inspect_frames(frames: list[str] | None = None, brief: str = "", **_: Any) -> dict[str, Any]:
+    import asyncio
+    from pathlib import Path
+    from clipwright.animation.agentic.frames import inspect_frames as _inspect
+    return await asyncio.to_thread(_inspect, [Path(f) for f in (frames or [])], brief)
+
+
+async def revise_mg(mg_def: dict | None = None, findings: list[dict] | None = None,
+                    brief: str = "", **_: Any) -> dict[str, Any]:
+    from clipwright.animation.mg.generator import MGGenerator
+    errors = [str(f.get("observation") or f) for f in (findings or [])]
+    gen = MGGenerator()
+    repaired = await gen._call_llm_repair(mg_def or {}, errors, brief, "", {}, {}, {}, "")
+    return {"mg_def": repaired or mg_def, "repaired": bool(repaired), "findings": findings or []}
+
 def install_animation_tool_handlers() -> None:
     for name, handler in {
         "build_animation_brief": build_animation_brief,
@@ -118,5 +150,9 @@ def install_animation_tool_handlers() -> None:
         "render_preview": render_preview,
         "research_sources": research_sources,
         "inspect_reference": inspect_reference,
+        "preview_html": preview_html,
+        "capture_preview_frames": capture_preview_frames,
+        "inspect_frames": inspect_frames,
+        "revise_mg": revise_mg,
     }.items():
         bind_animation_tool(name, handler)
