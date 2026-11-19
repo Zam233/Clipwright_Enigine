@@ -145,7 +145,8 @@ async def revise_mg(mg_def: dict | None = None, findings: list[dict] | None = No
 
     system = ("你是 MG 动画修复器。根据视觉质检 findings 修改完整 mg_def。"
               "只输出完整合法 JSON；必须保留 animation_id/duration/elements/params/style。"
-              "不要输出解释、markdown、diff。视觉问题优先用设计手段解决，不要只改一个字段。")
+              "不要输出解释、markdown、diff。视觉问题优先用设计手段解决，不要只改一个字段。"
+              "elements[].type 只能是 text/shape/line/circle/ring/arc/bg/image；矩形必须是 type=shape, shape=rect，不能写 type=rect。")
     user = json.dumps({"brief": brief, "findings": findings or [], "mg_def": mg_def or {}}, ensure_ascii=False)
     resp = await LLMService().generate(messages=[{"role": "system", "content": system},
                                                  {"role": "user", "content": user}])
@@ -155,6 +156,8 @@ async def revise_mg(mg_def: dict | None = None, findings: list[dict] | None = No
     if not fixed:
         return {"success": False, "repaired": False, "mg_def": mg_def, "findings": findings or [],
                 "qa_errors": ["revise_mg JSON 无法解析"]}
+    from clipwright.animation.mg.validator import repair_mg_json
+    fixed, _fixes = repair_mg_json(fixed)
     ok, errors = validate_mg_json(fixed)
     return {"success": bool(ok), "repaired": bool(ok), "mg_def": fixed,
             "findings": findings or [], "qa_errors": [] if ok else errors}
