@@ -1965,9 +1965,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                     mg = raw
                     mg["mg_def"]["agentic"] = True
                     from clipwright.animation.qa import qa_report
-                    from clipwright.animation.mg.semantic_layout import semantic_layout_errors
-                    errors = semantic_layout_errors(mg["mg_def"], mg["mg_def"].get("params"))
-                    errors.extend(str(x) for x in (mg.get("qa_errors") or []) if str(x) not in errors)
+                    # 审美判断交给 vision inspect；这里只保留 schema/工具返回的硬错误。
+                    errors = [str(x) for x in (mg.get("qa_errors") or [])]
                     if errors:
                         try:
                             from clipwright.animation.agent_tools import call_animation_tool
@@ -1979,7 +1978,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                                 if not repaired.get("ok"):
                                     break
                                 mg["mg_def"] = repaired["mg_def"]
-                                errors = semantic_layout_errors(mg["mg_def"], mg["mg_def"].get("params"))
+                                errors = []
                                 if not errors:
                                     break
                         except Exception:
@@ -2019,7 +2018,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                                     "revise_mg 未产出新 mg_def"]
                                 break
                             mg["mg_def"] = rev["mg_def"]
-                            errors = semantic_layout_errors(mg["mg_def"], mg["mg_def"].get("params"))
+                            errors = []
                             if errors:
                                 mg["success"] = False
                                 mg["qa_errors"] = list(mg.get("qa_errors") or []) + errors
