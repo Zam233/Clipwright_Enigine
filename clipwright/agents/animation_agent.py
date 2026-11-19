@@ -1988,6 +1988,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                         mg["qa_errors"] = errors
                         mg["error"] = "; ".join(errors[:3])
                     mg.setdefault("qa", qa_report(mg["mg_def"]))
+                    logger.warning("AnimationAgent: agentic result success=%s error=%s elements=%d",
+                                   mg.get("success"), mg.get("error"), len(mg["mg_def"].get("elements") or []))
                     try:
                         from clipwright.animation.agent_tools import call_animation_tool
                         seen: set[str] = set()
