@@ -671,23 +671,6 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                         logger.info("StructureAgent: 解析出 %d 个原始场景", len(raw_scenes))
                         sc, wa = _validate_scenes(raw_scenes)
                         logger.info("StructureAgent: 验证后 %d 个有效场景, 警告=%s", len(sc), wa)
-                        if not sc:
-                            # 工具轮之后模型常以“确认…”收尾而不吐 JSON。再做一次
-                            # **无工具**的纯 JSON 收口调用：只把已有正文转成场景表。
-                            logger.info("StructureAgent: 首轮无 JSON，执行无工具 JSON 收口")
-                            repair_prompt = (
-                                "把下面这段分镜说明转成 JSON 数组，只输出 JSON 本身，"
-                                "不要解释、不要 markdown 围栏。字段：title, description, "
-                                "keywords, duration_sec, voiceover_script。\n\n" + content[:12000]
-                            )
-                            repaired = await self.llm_call_with_retry(
-                                lambda: self._llm.ask(prompt=repair_prompt),
-                                retries=1, timeout=self.timeout_sec,
-                            )
-                            raw_scenes = self._parse_scenes((repaired.content or "").strip())
-                            sc, wa2 = _validate_scenes(raw_scenes)
-                            wa = list(wa) + list(wa2)
-                            logger.info("StructureAgent: JSON 收口后 %d 个有效场景", len(sc))
                         return sc, wa
                     except asyncio.TimeoutError:
                         logger.warning("StructureAgent: LLM 超时（>%ss），使用 fallback", self.timeout_sec)
