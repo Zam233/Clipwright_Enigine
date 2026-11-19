@@ -75,6 +75,8 @@ class AgentResult(BaseModel):
     report_path: str = ""
     report_seq: int = 0
     issues: list[dict[str, Any]] = Field(default_factory=list)
+    redo_agent: str = ""
+    redo_hint: str = ""
     #: 本步**完成了但打了折扣**（PRD F9 `note_degradation` 的落地）。与 failure 的区别：
     #: failure 是没做完；degradation 是伪装成成功的次品（LLM JSON 截断、自批判被跳过、
     #: 模板兜底、fastpath 回退 Chrome）。主 Agent 必须看见它并当轮决策，
@@ -121,6 +123,13 @@ class AgentResult(BaseModel):
                 for d in self.degradations[:8]
             ],
             "summary": self.summary[:800],
+            "issues": [
+                {k: str(v)[:300] for k, v in dict(i).items()
+                 if k in ("severity", "category", "clip_id", "reason", "retry", "scene_title")}
+                for i in list(getattr(self, "issues", []) or [])[:20]
+            ],
+            "redo_agent": str(getattr(self, "redo_agent", "") or ""),
+            "redo_hint": str(getattr(self, "redo_hint", "") or "")[:1200],
             "outputs": {k: _preview(v) for k, v in list(self.outputs.items())[:8]},
             "writes": self.writes[:12],
             "needs": self.needs[:5],

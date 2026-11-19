@@ -598,6 +598,8 @@ async def _run_stage(spec: RunSpec, task: Any, run_id: str, trace_id: str) -> Ag
         needs=needs,
         report_path=sr.report_path, report_seq=sr.report_seq,
         issues=list(sr.issues or []),
+        redo_agent=str(getattr(sr, "redo_agent", "") or ""),
+        redo_hint=str(getattr(sr, "redo_hint", "") or ""),
         # 降级信号上浮（E2E 2026-10-29）：StageResult.degradations 此前在这里被整段丢弃，
         # 于是动画阶段的 LLM JSON 截断、自批判跳过、模板兜底只有 logger 知道，主 Agent
         # 看到的永远是 "轨道 6 条 / 片段 502 个" —— 截断与回退被默认接受。

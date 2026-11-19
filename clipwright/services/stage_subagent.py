@@ -751,6 +751,7 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
         degradations=_degradations,
         issues=list(payload.get("issues") or [])[:20],
         redo_agent=str(payload.get("redo_agent") or ""),
+        redo_hint=str(payload.get("redo_hint") or ""),
         cost_usd=cost,
         cost_unknown=cost_unknown,
         tokens=tokens,
