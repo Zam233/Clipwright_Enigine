@@ -2011,7 +2011,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                                 break
                             seen.add(fp)
                             rev = await call_animation_tool("revise_mg", mg_def=mg["mg_def"],
-                                                            findings=findings, brief=description)
+                                                            findings=blocking, brief=description)
+                            if not rev.get("repaired") or not rev.get("mg_def"):
+                                rev = await call_animation_tool("revise_mg", mg_def=mg["mg_def"],
+                                                                findings=blocking[:1], brief="")
                             if not rev.get("repaired") or not rev.get("mg_def"):
                                 mg["success"] = False
                                 mg["qa_errors"] = list(mg.get("qa_errors") or []) + [
