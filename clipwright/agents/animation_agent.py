@@ -1989,6 +1989,22 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                         mg["qa_errors"] = errors
                         mg["error"] = "; ".join(errors[:3])
                     mg.setdefault("qa", qa_report(mg["mg_def"]))
+                    try:
+                        from clipwright.animation.agent_tools import call_animation_tool
+                        pv = await call_animation_tool("preview_html", mg_def=mg["mg_def"],
+                                                       params=mg["mg_def"].get("params") or {})
+                        fr = await call_animation_tool("capture_preview_frames",
+                                                       html_path=pv.get("path", ""),
+                                                       times=[0, 0.25, 0.5, 0.75, 1.0])
+                        ins = await call_animation_tool("inspect_frames", frames=fr.get("frames", []),
+                                                        brief=description)
+                        mg["visual_findings"] = ins.get("findings") or []
+                        if ins.get("qa_errors"):
+                            mg["success"] = False
+                            mg["qa_errors"] = list(mg.get("qa_errors") or []) + list(ins["qa_errors"])
+                    except Exception as exc:
+                        mg["visual_findings"] = [{"severity": "warning", "category": "tool",
+                                                  "observation": f"visual inspect failed: {exc}"}]
                     return mg
         except Exception as exc:  # noqa: BLE001 — agentic loop 失败必须回退旧引擎
             logger.warning("AnimationAgent: agentic loop 失败，回退 MGGenerator: %s", exc)
