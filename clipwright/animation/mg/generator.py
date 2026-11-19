@@ -2009,8 +2009,9 @@ ision_prompt
         import uuid
         from datetime import datetime, timezone
 
-        if isinstance(mg_def, str):
-            mg_def = self._parse_llm_response(mg_def) or {}
+        if not isinstance(mg_def, dict):
+            _parsed = self._parse_llm_response(mg_def if isinstance(mg_def, str) else "")
+            mg_def = _parsed if isinstance(_parsed, dict) else {}
 
         # 守卫顺序：先按语义分列 left/right，再归一化；否则 normalizer 会改 y，
         # 让 _ensure_label_separation 失去“同坐标”分组条件。
