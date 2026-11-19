@@ -1399,18 +1399,22 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         # `[逻辑动画]mg_dynamic:{...}` 等标记，字符串内的括号会使深度计数
         # 永不归零/提前归零，解析必然失败并静默降级 fallback_scenes。
         # 改为文本定位 + json.JSONDecoder（JSON 语法自身正确处理字符串内括号）。
-        start = content.find('[')
-        if start == -1:
-            return []
         decoder = json.JSONDecoder()
-        try:
-            # raw_decode：从首个 '[' 起解析第一个完整 JSON 值，忽略前后杂文本
-            parsed, _ = decoder.raw_decode(content[start:])
+        # 不能只从首个 '[' 开始：正文里的 ``[逻辑动画]`` 之类标记会抢在
+        # 真正的 JSON 前面，raw_decode 从这里必然失败。逐个候选起点试，
+        # 找到第一个能解出 scenes 的对象/数组就返回。
+        starts = [i for i, ch in enumerate(content) if ch in "[{"][:80]
+        for start in starts:
+            try:
+                parsed, _ = decoder.raw_decode(content[start:])
+            except json.JSONDecodeError:
+                continue
             result = self._scenes_from_parsed(parsed)
             if result:
                 return result
-        except json.JSONDecodeError:
-            pass
+        start = content.find('[')
+        if start == -1:
+            return []
         # 截断/尾部缺损兜底：']' 从尾部逐步回退，交 json.loads 重试（有界 10 次）
         end = content.rfind(']')
         tries = 0
