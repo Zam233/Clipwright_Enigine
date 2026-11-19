@@ -271,6 +271,7 @@ class AnimationOutput(AgentOutputBase):
     issues: list[dict[str, Any]] = Field(default_factory=list)
     #: 非空 = 该阶段建议重做（失败片段）。主 Agent 看到后必须重派，不能收尾。
     redo_agent: str = ""
+    redo_hint: str = ""
     animation_plan: Optional[dict[str, Any]] = Field(
         default=None,
         description="动画编排计划：含 onscreen 和 transition 动画的实例化序列",

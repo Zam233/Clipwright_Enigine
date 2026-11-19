@@ -722,6 +722,12 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 timeline=timeline,
                 issues=list(self._failed_animations),
                 redo_agent="animation" if self._failed_animations else "",
+                redo_hint=(
+                    "主 Agent：请用 delegate_agent(stage='animation', inputs={'retry_clip_ids': ["
+                    + ", ".join(repr(x.get('clip_id')) for x in self._failed_animations)
+                    + "]}, refresh=true) 只重跑失败片段。"
+                    if self._failed_animations else ""
+                ),
 
                 animation_plan={
                     "text_animations": text_anim_count,
@@ -2477,7 +2483,11 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             "start_sec": float(getattr(vid_clip, "start_sec", 0.0) or 0.0),
             "duration_sec": float(getattr(vid_clip, "duration_sec", 0.0) or 0.0),
             "reason": str(reason or "")[:500],
-            "retry": {"stage": "animation", "clip_id": str(getattr(vid_clip, "id", "") or "")},
+            "retry": {
+                "stage": "animation",
+                "clip_id": str(getattr(vid_clip, "id", "") or ""),
+                "inputs": {"retry_clip_ids": [str(getattr(vid_clip, "id", "") or "")]},
+            },
         })
 
     def _add_trace_warning(self, message: str, detail: dict[str, Any] | None = None) -> None:
