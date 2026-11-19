@@ -1213,7 +1213,7 @@ class AgentKernel:
             if name == "delegate_agent":
                 try:
                     _stage0 = str((dict(args or {}).get("stage") or "")).strip()
-                    await _recover_upstream_needs(task, _stage0, result)
+                    asyncio.create_task(_recover_upstream_needs(task, _stage0, result))
                 except Exception as exc:  # noqa: BLE001
                     emit(task.id, "degradation", f"needs_upstream 自动补派失败：{exc}",
                          {"stage": "kernel_recovery"}, span="kernel")
