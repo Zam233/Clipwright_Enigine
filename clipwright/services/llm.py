@@ -245,7 +245,7 @@ class LLMService:
             headers = dict(bound.get("headers") or {}) or None
         return self._construct_client(
             provider, api_key=api_key, base_url=base_url, model=model,
-            instructions=settings.llm_instructions, max_tokens=8192, flash=flash,
+            instructions=settings.llm_instructions, max_tokens=MAX_OUTPUT_TOKENS, flash=flash,
             timeout_sec=timeout_sec, proxy=proxy, headers=headers,
         )
 
