@@ -93,20 +93,6 @@ def semantic_layout_errors(mg_def: dict[str, Any], params: dict[str, Any] | None
             if tx < 200 or (tw > 0 and tx + tw > 1720):
                 errs.append(f"流程节点 '{_text(t, params)}' 超出 240px 安全区；x 应在 240..1680-width")
     # 7) transparent canvas + near-black text = invisible in rendered black background
-    for ti, t in texts:
-        if _text(t, params).strip() in ("%", "px", "s", "秒"):
-            out.append(Failure("MG_LAYOUT_UNIT_SEPARATE", "layout", scope="element",
-                location={"element_index": ti, "path": "elements[%d].content" % ti},
-                expected="并入相邻数值标签", observed=_text(t, params),
-                fix_hint="删除该元素，把单位追加到数值文本"))
-    if str(mg_def.get("shot_type") or "") in ("flow", "process"):
-        for ti, t in texts:
-            tx, tw = _num(t.get("x")), _num(t.get("width"))
-            if tx < 200 or (tw > 0 and tx + tw > 1720):
-                out.append(Failure("MG_LAYOUT_FLOW_SAFE_AREA", "layout", scope="element",
-                    location={"element_index": ti, "path": "elements[%d].x" % ti},
-                    expected={"min_x": 240, "max_right": 1680}, observed={"x": tx, "width": tw},
-                    fix_hint="节点置于 240..1680 安全区，等距排布"))
     bg = str((mg_def.get("style") or {}).get("background") or "transparent").lower()
     if bg in ("transparent", "none", ""):
         for t in texts:
@@ -152,19 +138,35 @@ def semantic_layout_failures(mg_def: dict[str, Any], params: dict[str, Any] | No
             out.append(Failure("MG_LAYOUT_ARROW_HEAD_MISSING", "layout", scope="document",
                 location={"element_index": lines[0][0]}, expected="箭头头/→ 文本", observed="line 无头",
                 fix_hint="改用 → 文本或加小三角 shape"))
-    for ai, a in enumerate(texts):
-        for bi, b in texts[ai + 1:]:
+    for ai in range(len(texts)):
+        a_idx, a = texts[ai]
+        for bi in range(ai + 1, len(texts)):
+            b_idx, b = texts[bi]
             ay, by = _num(a.get("y")), _num(b.get("y"))
             ah = _num(a.get("height")) or _num(a.get("font_size"), 48) * 1.4
             bh = _num(b.get("height")) or _num(b.get("font_size"), 48) * 1.4
             if abs(_num(a.get("x")) - _num(b.get("x"))) < 8 and abs(_num(a.get("width")) - _num(b.get("width"))) < 8 and ay < by + bh and by < ay + ah:
                 gap = max(ah, bh)
                 out.append(Failure("MG_LAYOUT_MULTILINE_OVERLAP", "layout", scope="element",
-                    location={"element_indices": [a[0], b[0]], "path": "elements[*].y"},
+                    location={"element_indices": [a_idx, b_idx], "path": "elements[*].y"},
                     expected={"min_gap": gap, "suggested_y": [ay, ay + gap]},
                     observed={"y": [ay, by], "heights": [ah, bh]},
                     fix_hint="同 x 且 y 递增；相邻 y 差 >= 最大行高"))
                 break
+    for ti, t in texts:
+        if _text(t, params).strip() in ("%", "px", "s", "秒"):
+            out.append(Failure("MG_LAYOUT_UNIT_SEPARATE", "layout", scope="element",
+                location={"element_index": ti, "path": "elements[%d].content" % ti},
+                expected="并入相邻数值标签", observed=_text(t, params),
+                fix_hint="删除该元素，把单位追加到数值文本"))
+    if str(mg_def.get("shot_type") or "") in ("flow", "process"):
+        for ti, t in texts:
+            tx, tw = _num(t.get("x")), _num(t.get("width"))
+            if tx < 200 or (tw > 0 and tx + tw > 1720):
+                out.append(Failure("MG_LAYOUT_FLOW_SAFE_AREA", "layout", scope="element",
+                    location={"element_index": ti, "path": "elements[%d].x" % ti},
+                    expected={"min_x": 240, "max_right": 1680}, observed={"x": tx, "width": tw},
+                    fix_hint="节点置于 240..1680 安全区，等距排布"))
     bg = str((mg_def.get("style") or {}).get("background") or "transparent").lower()
     if bg in ("transparent", "none", ""):
         for ti, t in texts:
@@ -176,14 +178,14 @@ def semantic_layout_failures(mg_def: dict[str, Any], params: dict[str, Any] | No
                     expected="#E8F0F7 或 #FFFFFF", observed=str(col),
                     fix_hint="透明画布上的文字改为浅色，否则渲染后不可见"))
     seen: list[tuple[str, str]] = []
-    for _, t in texts:
+    for idx, t in texts:
         txt = _text(t, params)
         if not txt:
             continue
         for other in seen:
             if txt == other[0] or txt in other[0] or other[0] in txt:
                 out.append(Failure("MG_LAYOUT_DUPLICATE_TEXT", "layout", scope="element",
-                    location={"element_index": t.get("_index", -1)}, expected="唯一条目", observed=txt,
+                    location={"element_index": idx}, expected="唯一条目", observed=txt,
                     fix_hint="删除重复文本或拆成语义不同行"))
                 break
         seen.append((txt, ""))
