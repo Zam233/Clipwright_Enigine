@@ -89,9 +89,9 @@ Agent 生成
 
 这是 vision LLM 的判断，不是规则引擎。
 
-### `render_final`
-只有 `inspect_frames` 通过后才调用，渲染 MP4 成片。  
-生成阶段禁止每轮 render_final。
+### 不在 Agent 内 render_final
+Agent 只负责产出通过视觉质检的 mg_def + 帧证据。  
+MP4 渲染是**最终用户渲染动作**，由用户/导出管线触发，不在 Agent loop 内。
 
 ### `revise_mg`
 输入：mg_def、findings、frame refs、原始 brief。  
@@ -120,8 +120,7 @@ Agent 生成
        → capture_preview_frames
        → inspect_frames
    else:
-       render_final         # 只在这里出 MP4
-       final
+       final                # 只交付 mg_def + 证据，不渲染 MP4
 ```
 
 硬门禁只有一条：
