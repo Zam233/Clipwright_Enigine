@@ -53,7 +53,9 @@ async def inspect_frames(frames: list[Path], brief: str = "") -> dict[str, Any]:
     content: list[dict[str, Any]] = [{
         "type": "text",
         "text": ("你是动画视觉质检。检查这些帧：文字可读性、元素重叠/出画、层级、"
-                 "数字单位完整性、主运动是否清楚。只输出 JSON："
+                 "数字单位完整性、主运动是否清楚。"
+                 "以下必须判为 blocking：文字几乎不可读/与背景无对比、元素重叠、出画、"
+                 "数字缺单位、标签明显错位。只有风格偏好/轻微拥挤才判 warning。只输出 JSON："
                  '{"findings":[{"severity":"blocking|warning","category":"legibility|layout|hierarchy|motion|content",'
                  '"observation":"...","frame":"frame_XXXXX.png"}]}。没有问题时 findings=[]。'
                  f"\nBrief: {brief}"),
