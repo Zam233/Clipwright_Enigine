@@ -84,6 +84,7 @@ async def inspect_reference(video_path: str = "", out_dir: str = "", **_: Any) -
 async def generate_mg(description: str = "", text_content: str = "", persona_style: dict | None = None,
                       scene_context: dict | None = None, category_context: dict | None = None,
                       vision_prompt: str = "", web_context: str = "",
+                      allow_opaque_background: bool = False, background_reason: str = "",
                       width: int = 1920, height: int = 1080, fps: float = 30.0, **_: Any) -> dict[str, Any]:
     from clipwright.animation.mg.generator import MGGenerator
     gen = MGGenerator()
@@ -171,6 +172,18 @@ async def revise_mg(mg_def: dict | None = None, findings: list[dict] | None = No
             "findings": findings or [], "qa_errors": [] if ok else errors}
 
 
+
+
+async def workspace_tree(root: str = ".", glob: str = "**/*", max_depth: int = 6,
+                         include_dirs: bool = False, **_: Any) -> dict[str, Any]:
+    from clipwright.animation.agentic.workspace_tools import workspace_tree as _tree
+    return _tree(root, glob, max_depth, include_dirs)
+
+
+async def read_file(root: str = ".", path: str = "", mode: str = "text", **_: Any) -> dict[str, Any]:
+    from clipwright.animation.agentic.workspace_tools import read_file as _read
+    return _read(root, path, mode)
+
 def install_animation_tool_handlers() -> None:
     for name, handler in {
         "build_animation_brief": build_animation_brief,
@@ -187,5 +200,7 @@ def install_animation_tool_handlers() -> None:
         "capture_preview_frames": capture_preview_frames,
         "inspect_frames": inspect_frames,
         "revise_mg": revise_mg,
+        "workspace_tree": workspace_tree,
+        "read_file": read_file,
     }.items():
         bind_animation_tool(name, handler)

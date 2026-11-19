@@ -65,6 +65,8 @@ BUILTIN_TOOLS = (
     AnimationToolSpec("capture_preview_frames", "浏览器 seek 抽帧，不渲染 MP4", "read"),
     AnimationToolSpec("inspect_frames", "vision LLM 对抽帧做视觉质检", "costly"),
     AnimationToolSpec("revise_mg", "按 findings 修改 mg_def", "costly"),
+    AnimationToolSpec("workspace_tree", "列出工作区文件/图片", "read"),
+    AnimationToolSpec("read_file", "读取工作区文本或图片元数据", "read"),
     AnimationToolSpec("ask_user", "需要用户确认时提问", "read"),
 )
 for _spec in BUILTIN_TOOLS:

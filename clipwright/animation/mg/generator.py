@@ -228,7 +228,9 @@ class MGGenerator:
         height: int | None = None,
         fps: float = 30.0,
         pipeline_id: str | None = None,
+        allow_opaque_background: bool = False,
     ) -> dict[str, Any]:
+        self.allow_opaque_background = bool(allow_opaque_background)
         """生成 MG 动画 JSON。
 
         Args:
@@ -448,7 +450,7 @@ class MGGenerator:
 
     @staticmethod
     def _ensure_no_background(
-        mg_def: dict[str, Any], vision_prompt: str = "", *, allow_scrim: bool | None = None,
+        self, mg_def: dict[str, Any], vision_prompt: str = "", *, allow_scrim: bool | None = None,
     ) -> dict[str, Any]:
         """背景守卫：禁止**不透明全幅**背景，但允许半透明底板（PRD §17 D7）。
 
@@ -462,6 +464,8 @@ ision_prompt
         - 仍清除 style.background 的不透明填充，避免整屏遮挡。
         """
         if not isinstance(mg_def, dict):
+            return mg_def
+        if getattr(self, "allow_opaque_background", False):
             return mg_def
         if vision_prompt and str(vision_prompt).strip():
             return mg_def
