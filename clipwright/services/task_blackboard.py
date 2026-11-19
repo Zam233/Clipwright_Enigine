@@ -127,13 +127,9 @@ def put(task_id: str, key: str, value: Any, *, by: str = "") -> None:
                 f"（只允许 {'/'.join(TIMELINE_STAGE_ORDER)} 写 timeline）"
             )
         current = owner_of(tid, k)
-        new_rank = TIMELINE_STAGE_ORDER.get(by or "", 99)
-        old_rank = TIMELINE_STAGE_ORDER.get(current or "", -1)
-        if current and new_rank < old_rank:
-            raise BlackboardError(
-                f"时间线只能由下游覆盖上游：{by or '未知阶段'} 不能覆盖 {current} 写的时间线"
-                "（否则动画/音频产物会被粗剪覆盖，成片会突然没字幕没配音）"
-            )
+        # 时间线允许任意注册生产者覆盖：animation 在 audio 之后重跑时
+        # 不应被硬顺序拒绝；由主 Agent/阶段自行保证最终 audio 合成。
+        _ = current
 
     size = _size_of(value)
     if size > MAX_BLACKBOARD_BYTES and not (
