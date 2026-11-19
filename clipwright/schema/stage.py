@@ -68,6 +68,8 @@ class StageResult(BaseModel):
     degradations: list[dict[str, Any]] = Field(default_factory=list)
     issues: list[dict[str, Any]] = Field(default_factory=list)
     redo_agent: str = ""
+    redo_hint: str = ""
+    details: dict[str, Any] = Field(default_factory=dict)
     #: None = 未知（不许伪造成 0，金额闸对未知成本是盲的）
     cost_usd: Optional[float] = None
     cost_unknown: bool = False

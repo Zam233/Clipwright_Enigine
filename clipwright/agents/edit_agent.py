@@ -777,7 +777,7 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 for ui, unit in enumerate(units):
                     seg_dur = unit["seg_dur"]
 
-                    # 添加视频 clip（注入场景描述供 Animation Agent 检测 [文字动画]/[逻辑动画] 标记）
+                    # 添加视频 clip（注入场景描述供 Animation Agent 检测 【文字动画】/【逻辑动画】 标记）
                     vid_clip = self._make_clip(
                         kind=ClipKind.VIDEO,
                         track_id=vid_track.id,
@@ -804,11 +804,11 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                             from clipwright.animation.xfade_map import to_xfade
                             vid_clip.transition_in = to_xfade(cut_transition)
                             vid_clip.transition_duration_sec = 0.4
-                    # 注入描述信息到 metadata（C3: 补 [过渡动画]/[转场动画]——
+                    # 注入描述信息到 metadata（C3: 补 【过渡动画】/【转场动画】——
                     # 原白名单缺失使场景转场意图永不透传到 AnimationAgent）
                     if any(m in scene_desc for m in [
-                        "[动画]", "[转场]", "[文字动画]", "[逻辑动画]",
-                        "[过渡动画]", "[转场动画]",
+                        "【动画】", "【转场】", "【文字动画】", "【逻辑动画】",
+                        "【过渡动画】", "【转场动画】",
                     ]):
                         if not vid_clip.metadata:
                             vid_clip.metadata = {}

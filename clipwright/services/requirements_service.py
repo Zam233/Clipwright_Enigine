@@ -3369,6 +3369,7 @@ class RequirementsService:
             )
             kernel = AgentKernel()
             task = kernel.create(task_req, limits=TaskLimits(max_turns=160, max_tool_calls=800))
+            task.session_id = str(session_id or "")
         except Exception as exc:  # noqa: BLE001 — 建任务失败要如实告知，不假装在跑
             logger.warning("续跑：创建任务失败 %s: %s", session_id, exc)
             return None
@@ -3768,6 +3769,7 @@ class RequirementsService:
             extra=extra,
         )
         task = kernel.create(task_req, limits=TaskLimits(max_turns=40, max_tool_calls=80))
+        task.session_id = str(session_id or "")
         _PLAN_DISPATCH[key] = {"task_id": task.id, "run_id": task.id,
                                "session_id": session_id, "brief_hash": brief_hash}
         # C3：任务归到会话 → 事件由服务端投影进时间线（前端**不**再自己订阅）
@@ -3976,3 +3978,4 @@ def _brief_system_prompt(context: str = "") -> str:
     if plugin_prompts:
         prompt += _hdr("PROMPT_PLUGIN_EXT_HEADER") + "\n\n".join(plugin_prompts)
     return prompt
+

@@ -150,9 +150,9 @@ class AnimationCatalog:
         for a in anims:
             name = a.get("name", a["id"])
             desc = a.get("desc", "")
-            lines.append(f"  [文字动画]{name} — {desc}")
-        lines.append('格式：在场景 description 中写 [文字动画]动画名：要显示的文字')
-        lines.append('示例：description: "以中立风格引入话题 [文字动画]淡入：人工智能正在改变世界"')
+            lines.append(f"  【文字动画】{name} — {desc}")
+        lines.append('格式：在场景 description 中写 【文字动画】动画名：要显示的文字')
+        lines.append('示例：description: "以中立风格引入话题 【文字动画】淡入：人工智能正在改变世界"')
         return "\n".join(lines)
 
     @staticmethod
@@ -165,9 +165,9 @@ class AnimationCatalog:
         for a in anims:
             name = a.get("name", a["id"])
             desc = a.get("desc", "")
-            lines.append(f"  [逻辑动画]{name} — {desc}")
-        lines.append('格式：在场景 description 中写 [逻辑动画]动画名：要展示的概念')
-        lines.append('示例：description: "技术发展演进 [逻辑动画]箭头：机器学习→深度学习→强化学习"')
+            lines.append(f"  【逻辑动画】{name} — {desc}")
+        lines.append('格式：在场景 description 中写 【逻辑动画】动画名：要展示的概念')
+        lines.append('示例：description: "技术发展演进 【逻辑动画】箭头：机器学习→深度学习→强化学习"')
         return "\n".join(lines)
 
     # 别名表：旧广告名/LLM 简称 → 已注册动画 id（命名漂移兼容）
@@ -260,16 +260,16 @@ class AnimationCatalog:
         """从场景描述中解析所有的动画标记。
 
         支持格式:
-        - [文字动画]淡入：要显示的文字
-        - [文字动画]打字 — 引言
-        - [逻辑动画]箭头：A→B→C
-        - [转场动画]淡入淡出（创建过渡转场）
-        - [过渡动画]淡入淡出（同 [转场动画]，兼容）
-        - [动画]淡入（向后兼容）
+        - 【文字动画】淡入：要显示的文字
+        - 【文字动画】打字 — 引言
+        - 【逻辑动画】箭头：A→B→C
+        - 【转场动画】淡入淡出（创建过渡转场）
+        - 【过渡动画】淡入淡出（同 【转场动画】，兼容）
+        - 【动画】淡入（向后兼容）
 
         Returns:
             [{"type": "text", "anim_id": "text_fade_in", "name": "淡入",
-              "text": "要显示的文字", "full_match": "[文字动画]淡入：..."}, ...]
+              "text": "要显示的文字", "full_match": "【文字动画】淡入：..."}, ...]
         """
         import re
         results = []
@@ -290,7 +290,7 @@ class AnimationCatalog:
                     text = text_match.group(1)
 
             # JSON payload 提取：structure_agent 会写入
-            # [逻辑动画]mg_dynamic:{"description":"...","text":"A|B","style":"..."}
+            # 【逻辑动画】mg_dynamic:{"description":"...","text":"A|B","style":"..."}
             # 此时 text 是整个 JSON 串，必须解析出结构化字段，
             # 否则 JSON 片段会被当作屏上大字渲染。
             if text.strip().startswith("{"):
@@ -324,28 +324,28 @@ class AnimationCatalog:
             info["full_match"] = match.group(0)
             return info
 
-        # 1. [文字动画]xxx
+        # 1. 【文字动画】xxx
         # 注意：动画名后面紧跟 ：或 — 或空白表示文字内容开始
-        for m in re.finditer(r'\[文字动画\]([^：:—\s]+)', desc):
+        for m in re.finditer(r'【文字动画】([^：:—\s]+)', desc):
             info = _extract(m, "text")
             if info:
                 results.append(info)
 
-        # 2. [逻辑动画]xxx
-        for m in re.finditer(r'\[逻辑动画\]([^：:—\s]+)', desc):
+        # 2. 【逻辑动画】xxx
+        for m in re.finditer(r'【逻辑动画】([^：:—\s]+)', desc):
             info = _extract(m, "logic")
             if info:
                 results.append(info)
 
-        # 3. [转场动画]xxx / [过渡动画]xxx（过渡转场，如 淡入淡出/左推/黑场过渡）
-        for m in re.finditer(r'\[(?:转场动画|过渡动画)\]([^：:—\s]+)', desc):
+        # 3. 【转场动画】xxx / 【过渡动画】xxx（过渡转场，如 淡入淡出/左推/黑场过渡）
+        for m in re.finditer(r'【(?:转场动画|过渡动画)】([^：:—\s]+)', desc):
             info = _extract(m, "transition")
             if info:
                 results.append(info)
 
-        # 4. [动画]xxx（向后兼容）
+        # 4. 【动画】xxx（向后兼容）
         if not results:
-            for m in re.finditer(r'\[动画\]([^：:—\s]+)', desc):
+            for m in re.finditer(r'【动画】([^：:—\s]+)', desc):
                 info = _extract(m)
                 if info:
                     results.append(info)

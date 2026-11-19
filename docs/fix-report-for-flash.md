@@ -95,9 +95,9 @@
 
 **B1. Structure 解析器与自身动画标记括号冲突**
 - 位置：`clipwright/agents/structure_agent.py:665-699`（_parse_scenes 括号平衡扫描）
-- 问题：提示词强制 LLM 在 JSON 字符串内输出 `[逻辑动画]mg_dynamic:{...}`，扫描器把字符串内的 `[`/`]` 计入深度 → 解析失败静默降级 fallback_scenes。
+- 问题：提示词强制 LLM 在 JSON 字符串内输出 `【逻辑动画】mg_dynamic:{...}`，扫描器把字符串内的 `[`/`]` 计入深度 → 解析失败静默降级 fallback_scenes。
 - 修复：解析策略改为——先尝试 `json.loads` 整体；失败再用正则提取首个 `[` 到最后一个 `]` 的外层区间直接 loads（放弃逐字符深度扫描）；或对候选子串做"逐层尝试 loads"。同时修复围栏剥离丢首末行问题。
-- 验收：新增测试：包含 `[逻辑动画]mg_dynamic:{"a":[1,2]}` 字符串值的场景 JSON 能正确解析。
+- 验收：新增测试：包含 `【逻辑动画】mg_dynamic:{"a":[1,2]}` 字符串值的场景 JSON 能正确解析。
 
 **B2. Material/Edit 的 gather 无 return_exceptions**
 - 位置：`material_agent.py:575`、`edit_agent.py:306-308`
@@ -168,10 +168,10 @@
 - 修复：proceed 时从 session 取 `animation_intents` 放入 extra_params。
 - 验收：聊天会话设置动画意图后成片结构含对应动画标记。
 
-**C3. `[过渡动画]` 标记被 EditAgent 丢弃**
-- 位置：`edit_agent.py:350`（白名单缺 `[过渡动画]`）
-- 修复：白名单加入 `[过渡动画]`（及 catalog.py 支持的 `[转场动画]` 别名）。
-- 验收：含 `[过渡动画]fade` 的场景描述透传到 clip metadata，AnimationAgent 应用转场。
+**C3. `【过渡动画】` 标记被 EditAgent 丢弃**
+- 位置：`edit_agent.py:350`（白名单缺 `【过渡动画】`）
+- 修复：白名单加入 `【过渡动画】`（及 catalog.py 支持的 `【转场动画】` 别名）。
+- 验收：含 `【过渡动画】fade` 的场景描述透传到 clip metadata，AnimationAgent 应用转场。
 
 **C4. EditAgent LLM 转场名无 xfade 映射 → 渲染静默硬切**
 - 位置：`edit_agent.py:489-491, 344-348`（写入原值）vs `render.py:1184-1188`（白名单只查形状）

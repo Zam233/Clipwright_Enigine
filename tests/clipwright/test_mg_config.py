@@ -91,7 +91,7 @@ class TestMGConfig:
         tpl = _load_template()
         assert "至少 3 个关键帧" in tpl
         assert "opacity:0" in tpl
-        assert "元素数量 >= 3" in tpl
+        assert "元素数量 1–5" in tpl
         assert "至少 2 个关键帧带 easing" in tpl
         assert "duration_sec" in tpl
         # 默认禁止不透明背景层（动画叠加实拍画面）
@@ -111,3 +111,4 @@ class TestMGConfig:
                 assert bg.get("background") in (None, "transparent"), (
                     f"embedded example has opaque bg background: {bg.get('background')}"
                 )
+

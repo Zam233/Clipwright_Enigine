@@ -20,9 +20,9 @@ StructureAgent ──→ scenes[] (带 description 含动画标记)
 EditAgent ──→ Timeline (粗剪)
     ↓
 AnimationAgent ──→ 解析标记 → 三种路由:
-    ├── [文字动画]xxx  → drawtext keyframes
-    ├── [逻辑动画]xxx  → DiagramSVG / Hyperframes
-    └── [逻辑动画]mg_* → MGRenderer.render(mg_def, params) → HTML → Hyperframes
+    ├── 【文字动画】xxx  → drawtext keyframes
+    ├── 【逻辑动画】xxx  → DiagramSVG / Hyperframes
+    └── 【逻辑动画】mg_* → MGRenderer.render(mg_def, params) → HTML → Hyperframes
 ```
 
 ### 2.2 mg_animations 伪插件问题
@@ -59,7 +59,7 @@ User: "产品A和B对比，A在性能上胜出"
     ↓
 RequirementsAgent ──→ creative_brief + animation_intent
     ↓
-StructureAgent ──→ scenes[] 带 [逻辑动画]mg_dynamic:{intent_json}
+StructureAgent ──→ scenes[] 带 【逻辑动画】mg_dynamic:{intent_json}
     ↓
 AnimationAgent ──→ _handle_logic_animation() 检测 mg_dynamic
     ↓
@@ -152,8 +152,8 @@ animation_intents 格式:
 
 #### StructureAgent → 新标记格式
 
-现有标记: `[逻辑动画]comparison:A vs B → A胜出`
-新增标记: `[逻辑动画]mg_dynamic:{"description":"产品对比","text":"A|B|A胜出","style":"tech"}`
+现有标记: `【逻辑动画】comparison:A vs B → A胜出`
+新增标记: `【逻辑动画】mg_dynamic:{"description":"产品对比","text":"A|B|A胜出","style":"tech"}`
 
 #### AnimationAgent → 新路由
 

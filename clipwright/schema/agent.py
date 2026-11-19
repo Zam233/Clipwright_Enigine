@@ -257,6 +257,10 @@ class AnimationInput(BaseModel):
     #: 主 Agent 按失败片段重派时传入；动画 Agent 只对这些片段重新生成，
     #: 其余成功片段从 cache/mg/animations 复用（不整段重跑）。
     retry_clip_ids: list[str] = Field(default_factory=list)
+    background_context: dict[str, Any] = Field(
+        default_factory=dict,
+        description="动画位置的真实背景帧 {frames:[{time,path}], colors, luminance}",
+    )
 
 
 class AnimationOutput(AgentOutputBase):
@@ -267,6 +271,7 @@ class AnimationOutput(AgentOutputBase):
     issues: list[dict[str, Any]] = Field(default_factory=list)
     #: 非空 = 该阶段建议重做（失败片段）。主 Agent 看到后必须重派，不能收尾。
     redo_agent: str = ""
+    redo_hint: str = ""
     animation_plan: Optional[dict[str, Any]] = Field(
         default=None,
         description="动画编排计划：含 onscreen 和 transition 动画的实例化序列",

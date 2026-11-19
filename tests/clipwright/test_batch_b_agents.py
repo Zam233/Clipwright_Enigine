@@ -32,12 +32,12 @@ class TestParseScenes:
         self.agent = StructureAgent()
 
     def test_markers_with_brackets_inside_strings(self) -> None:
-        """B1 核心：JSON 字符串内含 [逻辑动画]mg_dynamic:{...} 标记也能解析。"""
+        """B1 核心：JSON 字符串内含 【逻辑动画】mg_dynamic:{...} 标记也能解析。"""
         content = (
             '以下是分镜：\n'
-            '[{"title":"开场","description":"介绍 [逻辑动画]mg_dynamic:{\\"type\\":\\"bars\\",\\"items\\":[1,2]} 的内容",'
+            '[{"title":"开场","description":"介绍 【逻辑动画】mg_dynamic:{\\"type\\":\\"bars\\",\\"items\\":[1,2]} 的内容",'
             '"keywords":["a"],"duration_sec":10,"voiceover_script":"你好"},'
-            '{"title":"结尾","description":"总结 [文字动画]fade_in","keywords":["b"],'
+            '{"title":"结尾","description":"总结 【文字动画】fade_in","keywords":["b"],'
             '"duration_sec":8,"voiceover_script":"再见"}]'
         )
         scenes = self.agent._parse_scenes(content)

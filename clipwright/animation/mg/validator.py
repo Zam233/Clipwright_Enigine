@@ -339,12 +339,16 @@ def repair_mg_json(mg_def: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
                         except (TypeError, ValueError):
                             pass
                         kf.pop(k, None)
+                    elif k in ("x", "y", "content"):
+                        # 布局/文本不是动画属性：不要静默丢弃。保留原值，让 validator
+                        # 产出明确错误，Agent 才知道要改用 translate_* 或静态字段。
+                        continue
                     else:
                         kf.pop(k, None)
                 if converted:
                     fixes.append(
                         f"elements[{i}]: converted keyframe offsets {converted}")
-                if unknown:
+                if unknown and any(k not in ("x", "y", "content") for k in unknown):
                     fixes.append(f"elements[{i}]: removed unknown keyframe props {unknown}")
 
     return repaired, fixes

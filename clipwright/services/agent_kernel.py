@@ -347,6 +347,7 @@ class LLMPlanner:
             "- delegate_agent(stage=structure|material|edit|animation|audio|quality, "
             "inputs={…}, brief=…)：派一个**子 agent**做真正干活的那一步；`inputs` 由你显式提供"
             "（上一份结果的产物引用），结果**只回给你**；缺输入时它会返回 needs，你决定先补哪一步。\n"
+            "- 派 animation 时，若动画将叠在真实画面上，必须在 inputs.background_context.frames 传 5–6 张该时间段的背景截图（可用工作区已有帧/截图）；让动画 Agent 先看背景再定文字色。\n"
             "- 一次创作通常覆盖 structure→material→edit→animation→audio→quality，但顺序由你判断"
             "（依赖写在能力清单里；需要时可跳过、重派或换人）。\n"
             "- research_agent(role, brief, tools)：只派**只读**调研员（核实文件是否存在、"
@@ -513,6 +514,17 @@ def _collect_degradations(task: Task, name: str, result: dict[str, Any]) -> None
         pass
 
 
+def _forget_pending_degradations(task_id: str, kinds: list[str]) -> None:
+    """收据落账后同步清内存镜像，避免守门用旧镜像再次判未处置。"""
+    wanted = {str(k) for k in kinds if str(k).strip()}
+    pending = _PENDING_DEGRADATIONS.get(task_id) or []
+    keep = [d for d in pending if str(d.get("kind")) not in wanted]
+    if keep:
+        _PENDING_DEGRADATIONS[task_id] = keep
+    else:
+        _PENDING_DEGRADATIONS.pop(task_id, None)
+
+
 def _mark_stage_remediated(task_id: str, stage: str) -> None:
     """重派某阶段并成功后，把该阶段的降级记为 `remediated` 收据。"""
     if not stage:
@@ -530,6 +542,31 @@ def _mark_stage_remediated(task_id: str, stage: str) -> None:
     except Exception:  # noqa: BLE001
         pass
 
+
+
+
+async def _recover_upstream_needs(task: Any, stage: str, result: dict[str, Any]) -> None:
+    """delegate 返回 needs_upstream 时，先补派 needs 里的阶段，再重派原阶段。"""
+    failure = result.get("failure") or {}
+    if str(failure.get("retryable") or "") != "needs_upstream":
+        return
+    needs = failure.get("needs") or []
+    upstream = []
+    for n in needs:
+        if isinstance(n, dict):
+            s = str(n.get("from_stage") or n.get("stage") or "").strip()
+            if s and s != stage and s not in upstream:
+                upstream.append(s)
+    if not upstream:
+        return
+    from clipwright.services.task_events import emit
+    emit(task.id, "narration", f"阶段 {stage} 缺上游，Kernel 先补派 {', '.join(upstream)}",
+         {"kind": "needs_upstream_recovery", "stage": stage, "upstream": upstream}, span="kernel")
+    for s in upstream:
+        r = await _kernel_recover_stage(task, s, f"{stage} needs {s}")
+        if str(r.get("status") or "") not in ("ok", "dry_run"):
+            return
+    await _kernel_recover_stage(task, stage, f"upstream ready for {stage}")
 
 async def _kernel_recover_stage(task: Any, stage: str, reason: str) -> dict[str, Any]:
     """Kernel 自己补派一个阶段（确定性补救）。
@@ -1185,6 +1222,13 @@ class AgentKernel:
                 _progress.on_budget_half(task)
             except Exception:  # noqa: BLE001 — 播报失败不影响工具循环
                 pass
+            if name == "delegate_agent":
+                try:
+                    _stage0 = str((dict(args or {}).get("stage") or "")).strip()
+                    asyncio.create_task(_recover_upstream_needs(task, _stage0, result))
+                except Exception as exc:  # noqa: BLE001
+                    emit(task.id, "degradation", f"needs_upstream 自动补派失败：{exc}",
+                         {"stage": "kernel_recovery"}, span="kernel")
             # 降级信号收集（E2E 2026-10-29）：delegate_agent 的 output 里带
             # degradations 时记成"待处置"，收尾守门会据此强推一轮决策。
             _collect_degradations(task, name, result)

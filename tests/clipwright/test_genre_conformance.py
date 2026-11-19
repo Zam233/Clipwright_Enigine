@@ -92,7 +92,7 @@ class TestCollectTraits:
     def test_chart_count_and_segments_from_scenes(self) -> None:
         scenes = [
             {"title": "开场", "description": "口播"},
-            {"title": "数据", "description": "[逻辑动画]mg_dynamic:{}"},
+            {"title": "数据", "description": "【逻辑动画】mg_dynamic:{}"},
             {"title": "对比", "description": "跑分对比"},
         ]
         traits = collect_traits(_timeline([]), scenes=scenes)

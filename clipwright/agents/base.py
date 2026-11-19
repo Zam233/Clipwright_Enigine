@@ -318,6 +318,19 @@ class BaseAgent(ABC, Generic[I, O]):
             # 轨迹内的序号：前端"全部可见"时用它稳定排序（不靠时间戳）
             entry["seq_in_run"] = len(calls) + 1
             calls.append(entry)
+            # 任务黑板调用记录（AnimationAgent 的上下文存储；其他 Agent 没有则跳过）
+            _ctx_store = getattr(self, "_ctx_store", None)
+            _ctx_session = str(getattr(self, "_ctx_session_id", "") or "")
+            _ctx_task = str(getattr(self, "_ctx_task_id", "") or "")
+            if _ctx_store is not None and _ctx_session and _ctx_task:
+                try:
+                    _ctx_store.record_call(
+                        _ctx_session, _ctx_task, entry["kind"], tool_name, status,
+                        input_summary=entry["args_brief"], output_summary=entry["output_brief"],
+                        duration_ms=duration_ms, error=entry["error"],
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             # 有界：实时事件不需要无限增长；**全量**轨迹另有落盘文件
             # （stage_subagent._dump_tool_calls → reports/tool_calls/<stage>-<n>.json）
             if len(calls) > 200:

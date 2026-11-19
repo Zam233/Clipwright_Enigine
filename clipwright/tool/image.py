@@ -14,8 +14,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
+from pathlib import Path
 from typing import Any, Optional
 
 from clipwright.config import logger
@@ -43,6 +45,39 @@ class ImageToClipTool(BaseTool):
     )
     dependencies = ["ffmpeg"]
 
+    async def _ensure_local(self, source: str) -> str | None:
+        """远程图片先落到 _cache/tmp；本地路径原样返回。"""
+        if not source.startswith(("http://", "https://")):
+            return source
+        from clipwright.security import allowed_media_roots, assert_public_url
+        assert_public_url(source)
+        import httpx
+
+        roots = allowed_media_roots()
+        cache_root = next((r for r in roots if r.name == "_cache"), None)
+        if cache_root is None:
+            cache_root = Path(__file__).resolve().parent.parent.parent / "_cache"
+        dl_dir = cache_root / "tmp"
+        dl_dir.mkdir(parents=True, exist_ok=True)
+        url_hash = hashlib.sha256(source.encode()).hexdigest()[:16]
+        ext = source.split("?")[0].rsplit(".", 1)[-1][:5].lower() or "jpg"
+        if ext not in ("jpg", "jpeg", "png", "webp", "bmp", "gif", "tif", "tiff"):
+            ext = "jpg"
+        out = dl_dir / f"img_{url_hash}.{ext}"
+        if out.exists() and out.stat().st_size > 500:
+            return str(out)
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=60.0) as client:
+                resp = await client.get(source)
+                resp.raise_for_status()
+                out.write_bytes(resp.content)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("image_to_clip 远程图片下载失败: %s (%s)", source[:80], exc)
+            return None
+        if out.stat().st_size <= 500:
+            return None
+        return str(out)
+
     async def execute(
         self,
         input_path: str,
@@ -60,10 +95,11 @@ class ImageToClipTool(BaseTool):
                 status=ToolStatus.ERROR, tool_name=self.name,
                 error="image_to_clip 需要 input_path",
             )
-        if not os.path.isfile(src):
+        src = await self._ensure_local(src) or ""
+        if not src or not os.path.isfile(src):
             return ToolExecResult(
                 status=ToolStatus.ERROR, tool_name=self.name,
-                error=f"source missing: {src}",
+                error=f"source missing: {src or input_path}",
             )
         try:
             size = os.path.getsize(src)

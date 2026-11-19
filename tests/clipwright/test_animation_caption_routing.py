@@ -74,7 +74,7 @@ class TestCaptionRouting:
     def test_long_scene_description_not_captioned(self) -> None:
         """长场景描述（description 正则兜底）+ typewriter → 不产生 CAPTION clip。"""
         track = _mk_text_track()
-        vid = _mk_video_clip(description="[文字动画]打字：" + _LONG_REAL_TEXT)
+        vid = _mk_video_clip(description="【文字动画】打字：" + _LONG_REAL_TEXT)
         marker = {"type": "text", "anim_id": "typewriter", "name": "打字"}
         # 断言前提：确实验证了 _extract_text_content 走的是 description 兜底分支
         extracted = AnimationAgent._extract_text_content(vid, marker)
@@ -145,7 +145,7 @@ class TestCaptionRouting:
     def test_long_scene_description_short_text_fallback_uses_provider(self) -> None:
         """场景描述降级路径不再用模板 keyframes，而是走 motion provider。"""
         track = _mk_text_track()
-        vid = _mk_video_clip(description="[文字动画]打字：" + _LONG_REAL_TEXT)
+        vid = _mk_video_clip(description="【文字动画】打字：" + _LONG_REAL_TEXT)
         marker = {"type": "text", "anim_id": "typewriter", "name": "打字"}
 
         self._agent()._handle_text_animation(

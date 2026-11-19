@@ -69,8 +69,8 @@ class TestAnimationCatalog:
         assert result["anim_id"] == "text_fade_in"
 
     def test_parse_marker_text_with_text(self) -> None:
-        """[文字动画]淡入：xxx 应正确解析。"""
-        desc = "以中立风格引入话题 [文字动画]淡入：人工智能正在改变世界"
+        """【文字动画】淡入：xxx 应正确解析。"""
+        desc = "以中立风格引入话题 【文字动画】淡入：人工智能正在改变世界"
         markers = AnimationCatalog.parse_marker_from_description(desc)
         assert len(markers) == 1
         m = markers[0]
@@ -79,8 +79,8 @@ class TestAnimationCatalog:
         assert m["text"] == "人工智能正在改变世界"
 
     def test_parse_marker_logic_with_arrow(self) -> None:
-        """[逻辑动画]箭头：xxx 应正确解析。"""
-        desc = "技术演进 [逻辑动画]箭头：机器学习→深度学习→强化学习"
+        """【逻辑动画】箭头：xxx 应正确解析。"""
+        desc = "技术演进 【逻辑动画】箭头：机器学习→深度学习→强化学习"
         markers = AnimationCatalog.parse_marker_from_description(desc)
         assert len(markers) == 1
         m = markers[0]
@@ -89,8 +89,8 @@ class TestAnimationCatalog:
         assert "机器学习" in m["text"]
 
     def test_parse_marker_legacy_backward_compat(self) -> None:
-        """[动画]xxx 向后兼容。"""
-        desc = "测试 [动画]打字：引言内容"
+        """【动画】xxx 向后兼容。"""
+        desc = "测试 【动画】打字：引言内容"
         markers = AnimationCatalog.parse_marker_from_description(desc)
         assert len(markers) == 1
         m = markers[0]
@@ -98,13 +98,13 @@ class TestAnimationCatalog:
 
     def test_parse_marker_no_separator(self) -> None:
         """无冒号分隔时不应崩溃。"""
-        desc = "场景 [文字动画]淡入"
+        desc = "场景 【文字动画】淡入"
         markers = AnimationCatalog.parse_marker_from_description(desc)
         assert len(markers) == 1
 
     def test_parse_marker_multiple(self) -> None:
         """多个标记只取第一个。"""
-        desc = "[文字动画]淡入：第一个 [文字动画]打字：第二个"
+        desc = "【文字动画】淡入：第一个 【文字动画】打字：第二个"
         markers = AnimationCatalog.parse_marker_from_description(desc)
         # 目前实现取第一个匹配
         assert len(markers) >= 1
@@ -451,7 +451,7 @@ class TestAnimationAgentAsyncProbe:
         return Clip(
             id="vid1", kind=ClipKind.VIDEO, asset_id="a.mp4",
             track_id="t0", start_sec=start_sec, duration_sec=duration_sec,
-            metadata={"description": "[逻辑动画]箭头：A→B→C"},
+            metadata={"description": "【逻辑动画】箭头：A→B→C"},
         )
 
     @staticmethod

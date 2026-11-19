@@ -67,7 +67,7 @@ def _timeline_with_mg_dynamic(description: str) -> Timeline:
                     track_id="v_main",
                     start_sec=0.0,
                     duration_sec=5.0,
-                    metadata={"description": f"科技内容 [逻辑动画]mg_dynamic:{payload}"},
+                    metadata={"description": f"科技内容 【逻辑动画】mg_dynamic:{payload}"},
                 ),
             ],
         )

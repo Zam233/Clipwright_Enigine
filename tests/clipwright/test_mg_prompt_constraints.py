@@ -3,7 +3,7 @@
 
 覆盖计划 ux-polish todo 23（A3）与 todo 28（A8）：
 - A3(a)：mg_dynamic 生成 system prompt（_call_llm 注入，位于 _STRICT_JSON_OUTPUT 之前）
-  含编排约束关键词：顺序揭示 / 每节拍一个主运动 / 方向强化语义 / 构图居中 /
+  含编排约束关键词：顺序揭示 / 每节拍一个主运动 / 方向强化语义 / 构图平衡 /
   连线止于节点边缘不穿入 / 箭头方向随流程 / 次级元素错峰（stagger）。
 - A3(b)：_critique_quality 批判 prompt 含构图/层级/方向检查项。
 - A8：含 image 元素时批判增加「图片与场景语义匹配」检查（基于场景标题/关键词）；
@@ -132,8 +132,8 @@ class TestGenerationPromptConstraints:
         assert "one primary motion per beat" in system
         # 方向强化语义（direction reinforces semantics）
         assert "方向强化语义" in system
-        # 构图居中（composition centered）
-        assert "构图居中" in system
+        # 构图平衡（composition centered）
+        assert "构图平衡" in system
         # 连线止于节点边缘、不得穿入节点内部（connectors stop at node edge）
         assert "节点边缘" in system
         assert "不得穿入节点内部" in system
@@ -169,7 +169,7 @@ class TestGenerationPromptConstraints:
         assert len(fake.calls) == 2
         system = fake.calls[0]["messages"][0]["content"]
         for keyword in (
-            "顺序揭示", "主运动", "方向强化语义", "构图居中",
+            "顺序揭示", "主运动", "方向强化语义", "构图平衡",
             "节点边缘", "箭头方向随流程", "错峰",
         ):
             assert keyword in system, f"生成 prompt 缺少约束关键词: {keyword}"

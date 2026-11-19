@@ -183,7 +183,7 @@ def build_anim_marker_user(scenes_count: int, scenes_text: str) -> str:
         f"以下是 {scenes_count} 个分镜场景。请为缺少动画标记的场景补充合适的动画标记。\n\n"
         "分析每个场景的内容（标题、描述），判断属于上述哪种类型：\n"
         "- 若有数据/对比/流程/逻辑关系 → 用 mg_dynamic\n"
-        "- 若是纯文字强调 → 用 [文字动画]\n\n"
+        "- 若是纯文字强调 → 用 【文字动画】\n\n"
         '返回 JSON：{"markers": [{"index": 场景序号(从0开始), "animation_marker": "动画标记字符串"}]}。\n\n'
         f"{scenes_text}"
     )

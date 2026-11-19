@@ -22,7 +22,7 @@ class ListAnimationsTool(BaseTool):
     agent_callable = True
     description = (
         "列出所有可用的动画类型和标记格式。"
-        "用于在场景 description 中标注 [文字动画]xxx / [逻辑动画]xxx / [过渡动画]xxx 标记时，"
+        "用于在场景 description 中标注 【文字动画】xxx / 【逻辑动画】xxx / 【过渡动画】xxx 标记时，"
         "查询当前有哪些动画可供选择。"
         "返回每个动画的 id、名称、简要描述和标记用法。"
     )
@@ -54,7 +54,7 @@ class ListAnimationsTool(BaseTool):
             anims = AnimationCatalog.get_text_animations()
             results["text_animations"] = [
                 {"id": a["id"], "name": a.get("name", ""), "desc": a.get("desc", ""),
-                 "usage": f"[文字动画]{a.get('name', '')}：要显示的文字"}
+                 "usage": f"【文字动画】{a.get('name', '')}：要显示的文字"}
                 for a in (anims[:top_k] if top_k > 0 else anims)
             ]
 
@@ -62,7 +62,7 @@ class ListAnimationsTool(BaseTool):
             anims = AnimationCatalog.get_logic_animations()
             results["logic_animations"] = [
                 {"id": a["id"], "name": a.get("name", ""), "desc": a.get("desc", ""),
-                 "usage": f"[逻辑动画]{a.get('name', '')}：要展示的概念"}
+                 "usage": f"【逻辑动画】{a.get('name', '')}：要展示的概念"}
                 for a in (anims[:top_k] if top_k > 0 else anims)
             ]
 
@@ -70,7 +70,7 @@ class ListAnimationsTool(BaseTool):
             anims = AnimationCatalog.get_transition_animations()
             results["transition_animations"] = [
                 {"id": a["id"], "name": a.get("name", ""), "desc": a.get("desc", ""),
-                 "usage": f"[过渡动画]{a.get('name', '')}"}
+                 "usage": f"【过渡动画】{a.get('name', '')}"}
                 for a in (anims[:top_k] if top_k > 0 else anims)
             ]
 
@@ -83,7 +83,7 @@ class ListAnimationsTool(BaseTool):
             names = sorted(p.stem for p in mg_dir.glob("*.json")) if mg_dir.is_dir() else []
             results["mg_animations"] = [
                 {"id": name, "name": name, "desc": "预置 MG 动态图形模板",
-                 "usage": "[逻辑动画]mg_dynamic：{...} 或直接引用模板"}
+                 "usage": "【逻辑动画】mg_dynamic：{...} 或直接引用模板"}
                 for name in (names[:top_k] if top_k > 0 else names)
             ]
 

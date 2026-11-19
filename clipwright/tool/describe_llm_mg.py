@@ -49,7 +49,7 @@ def _get_llm_mg_description() -> dict[str, Any]:
             "已内置到系统核心，无需插件加载。"
         ),
         "marker_format": (
-            "[逻辑动画]mg_dynamic:{\"description\":\"自然语言动画描述\","
+            "【逻辑动画】mg_dynamic:{\"description\":\"自然语言动画描述\","
             "\"text\":\"A|B|结果\",\"style\":\"tech_dark\"}"
         ),
         "marker_usage": (

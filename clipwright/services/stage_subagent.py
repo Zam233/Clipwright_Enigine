@@ -751,6 +751,13 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
         degradations=_degradations,
         issues=list(payload.get("issues") or [])[:20],
         redo_agent=str(payload.get("redo_agent") or ""),
+        redo_hint=str(payload.get("redo_hint") or ""),
+        details={
+            k: payload.get(k) for k in (
+                "animation_plan", "generated_mg_count", "material_notes", "edit_notes",
+                "audio_notes", "audio_config_internal", "passed", "fix_suggestions", "score",
+            ) if payload.get(k) not in (None, "", [], {})
+        },
         cost_usd=cost,
         cost_unknown=cost_unknown,
         tokens=tokens,

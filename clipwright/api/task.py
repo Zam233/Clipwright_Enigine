@@ -65,6 +65,7 @@ def clear_owners() -> None:
 
 class CreateTaskBody(BaseModel):
     topic: str = Field(description="用户一句话需求")
+    session_id: str = Field(default="", max_length=200, description="上游会话 id（动画上下文隔离）")
     persona_id: str = ""
     category_plugin_id: str = ""
     duration_sec: float = 0.0
@@ -183,6 +184,9 @@ async def create_task(payload: CreateTaskBody, request: Request) -> dict:
     )
     kernel = _kernel()
     task = kernel.create(request_value)
+    if payload.session_id:
+        task.session_id = payload.session_id
+        task.touch()
     _register_owner(task.id, request)   # 归属登记：后面的每个端点都靠它隔离
     await kernel.plan(task)
     if not payload.plan_only:
@@ -311,7 +315,7 @@ async def resume_task(task_id: str, request: Request) -> dict:
     task = kernel.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
-    if task.terminal:
+    if task.terminal and task.status != "cancelled":
         raise HTTPException(
             status_code=409,
             detail={
@@ -320,6 +324,15 @@ async def resume_task(task_id: str, request: Request) -> dict:
                 "message": f"任务已结束（{task.status}），无法继续；如需重做请新建任务",
             },
         )
+    if task.status == "cancelled":
+        # 用户取消不是不可逆终态：保留黑板/已完成阶段，清掉终态标记后从
+        # 同一个 Task 的检查点继续，而不是新建任务从 structure 重跑。
+        task.status = "running"
+        task.finish = None
+        task.terminal_reason = None
+        task.blocker_code = ""
+        if hasattr(task, "touch"):
+            task.touch()
     if task.status == "waiting_user":
         from clipwright.services import ask_user
 

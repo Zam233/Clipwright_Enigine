@@ -58,7 +58,7 @@ class LogicAnimationsPlugin(CapabilityPlugin):
         desc_list = "\n".join(f"  - {fid} — {desc}" for fid, desc in _DESCRIPTIONS.items())
         prompt = (
             "## 高级图解类型（来自 logic_animations 插件）\n"
-            f"本插件渲染以下 12 种图解（可通过 mg_dynamic 或 [逻辑动画] 调用）：\n{desc_list}"
+            f"本插件渲染以下 12 种图解（可通过 mg_dynamic 或 【逻辑动画】 调用）：\n{desc_list}"
         )
         return [
             Contribution(

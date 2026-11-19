@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import os
+
 import json
 import re
 import asyncio
@@ -157,6 +159,39 @@ class MGGenerator:
                 return yaml.safe_load(f) or {}
         return {}
 
+    def _plan(self, description: str, category_context: dict[str, Any] | None):
+        from clipwright.animation.prompting import build_animation_plan
+        return build_animation_plan(description, category_context or {}, 4.0)
+
+    def _design_system_template(self, description: str, category_context: dict[str, Any] | None) -> str:
+        prompt_config = self._config.get("prompt", {})
+        override = str(prompt_config.get("system_template", "") or "")
+        if override:
+            return override
+        if prompt_config.get("modular", True):
+            from clipwright.animation.prompting import compose_mg_system_prompt
+            plan = getattr(self, "_active_plan", None) or self._plan(description, category_context)
+            brief = None
+            if isinstance(getattr(plan, "brief", None), dict) and plan.brief:
+                from clipwright.animation.brief import AnimationBrief
+                brief = AnimationBrief(**plan.brief)
+            return compose_mg_system_prompt(
+                plan, width=getattr(self, "_cfg_width", None), height=getattr(self, "_cfg_height", None),
+                brief=brief,
+            )
+        return _mg_constraint("MG_DESIGNER_SYSTEM")
+
+    def _critique_system_template(self, description: str, category_context: dict[str, Any] | None) -> str:
+        prompt_config = self._config.get("prompt", {})
+        override = str(prompt_config.get("system_template", "") or "")
+        if override:
+            return override
+        if prompt_config.get("modular", True):
+            from clipwright.animation.prompting import compose_critique_check_items
+            from clipwright.prompts.engine.animation_prompt import ANIMATION_MOTION_CONTRACT
+            return ANIMATION_MOTION_CONTRACT + compose_critique_check_items()
+        return _mg_constraint("MG_DESIGNER_SYSTEM")
+
     def _trace_event(
         self, pipeline_id: str | None, event_type: str, summary: str, detail: Any = None,
     ) -> None:
@@ -193,7 +228,9 @@ class MGGenerator:
         height: int | None = None,
         fps: float = 30.0,
         pipeline_id: str | None = None,
+        allow_opaque_background: bool = False,
     ) -> dict[str, Any]:
+        self.allow_opaque_background = bool(allow_opaque_background)
         """生成 MG 动画 JSON。
 
         Args:
@@ -225,6 +262,9 @@ class MGGenerator:
         # P1-02: 存到 self——generate() 里落缓存时也要用同一键（旧局部变量跨
         # 作用域不可见，是 getattr(self,'_ck','') 恒空串笔误的根源）
         self._last_failure: dict[str, Any] = {}
+        if not getattr(self, "_active_plan", None):
+            self._active_plan = self._plan(description, category_context)
+        self._cfg_width, self._cfg_height = width, height
         self._ck = _mg_cache_key(description, text_content, persona_style)
         _cached = _mg_cache_get(self._ck)
         if _cached is not None:
@@ -285,6 +325,83 @@ class MGGenerator:
                 )
 
             ok, errors = validate_mg_json(mg_def)
+            if ok:
+                try:
+                    from clipwright.animation.mg.semantic_layout import semantic_layout_errors
+                    semantic_errors = semantic_layout_errors(mg_def, mg_def.get("params") if isinstance(mg_def.get("params"), dict) else None)
+                    if semantic_errors and os.environ.get("CLIPWRIGHT_ANIMATION_SEMANTIC_REPAIR", "").strip() in ("1", "true", "yes"):
+                        self._trace_event(
+                            pipeline_id, "semantic_layout", "MG 布局语义问题",
+                            {"errors": semantic_errors[:20]},
+                        )
+                        repaired = await self._call_llm_repair(
+                            mg_def, semantic_errors[:10], description, text_content,
+                            persona_style, scene_context, category_context, vision_prompt,
+                        )
+                        if repaired:
+                            mg_def = repaired
+                            ok, errors = validate_mg_json(mg_def)
+                            self._trace_event(
+                                pipeline_id, "semantic_repair", "LLM 按布局语义问题修复",
+                                {"issues": len(semantic_errors)},
+                            )
+                except Exception as exc:  # noqa: BLE001 — 语义修复失败仍走后续
+                    logger.warning("MGGenerator: 布局语义修复失败（跳过）: %s", exc)
+            if ok:
+                try:
+                    from clipwright.animation.mg.layout import normalize_mg_layout
+                    mg_def, layout_adjustments = normalize_mg_layout(mg_def)
+                    if layout_adjustments:
+                        logger.info("MGGenerator: 布局自动修正 %d 项", len(layout_adjustments))
+                        self._trace_event(
+                            pipeline_id, "layout_normalize",
+                            "MG 文本/流程自动布局", {"adjustments": layout_adjustments[:20]},
+                        )
+                    ok, errors = validate_mg_json(mg_def)
+                except Exception as exc:  # noqa: BLE001 — 布局修正失败不阻断生成
+                    logger.warning("MGGenerator: 布局自动修正失败（跳过）: %s", exc)
+            if ok:
+                try:
+                    from clipwright.animation.qa_engine import evaluate as qa_evaluate
+                    qa = qa_evaluate(mg_def).as_dict()
+                    if not qa["ok"]:
+                        logger.warning("MGGenerator QA: %s", qa)
+                        self._trace_event(
+                            pipeline_id, "qa", "MG 质量检查",
+                            {"report": qa["report"], "retry_action": qa["retry_action"]},
+                        )
+                    else:
+                        self._trace_event(pipeline_id, "qa", "MG 质量检查通过", {"report": qa["report"]})
+                except Exception:  # noqa: BLE001
+                    pass
+            if ok:
+                try:
+                    from clipwright.animation.prompting import (
+                        validate_content_coverage, validate_layout_overlaps, validate_placeholder_types,
+                    )
+                    coverage = validate_content_coverage(mg_def, text_content)
+                    type_errors = validate_placeholder_types(mg_def)
+                    layout_errors = validate_layout_overlaps(mg_def)
+                except Exception:  # noqa: BLE001 — 守卫失败不阻断生成
+                    coverage, type_errors, layout_errors = [], [], []
+                if coverage:
+                    logger.warning("MGGenerator: 内容覆盖缺口: %s", coverage[:3])
+                    self._trace_event(
+                        pipeline_id, "content_coverage",
+                        "MG 内容段未落到元素", {"errors": coverage[:10]},
+                    )
+                if type_errors:
+                    logger.warning("MGGenerator: 占位符类型错误: %s", type_errors[:3])
+                    self._trace_event(
+                        pipeline_id, "placeholder_type",
+                        "MG 占位符类型不匹配", {"errors": type_errors[:10]},
+                    )
+                if layout_errors:
+                    logger.warning("MGGenerator: 布局重叠: %s", layout_errors[:3])
+                    self._trace_event(
+                        pipeline_id, "layout_overlap",
+                        "MG 文字/线条重叠", {"errors": layout_errors[:10]},
+                    )
 
             if ok:
                 # 校验通过 → LLM 自批判质量闭环：低分且可修复 → 一次修复重试
@@ -308,7 +425,9 @@ class MGGenerator:
                 persona_style, scene_context, category_context, vision_prompt,
                 **repair_kwargs,
             )
-            if repaired:
+            if isinstance(repaired, str):
+                repaired = self._parse_llm_response(repaired)
+            if isinstance(repaired, dict):
                 logger.info("MGGenerator: 修复重试成功（带错误回传）")
                 # 合并决策：修复重试是「带错误回传」的定向修正，不再叠加
                 # 批判闭环——保证 method=llm_repair 契约确定性，且省一轮
@@ -331,9 +450,8 @@ class MGGenerator:
             )
         return self._failure_result(description, "LLM 多次尝试均未返回有效 JSON")
 
-    @staticmethod
     def _ensure_no_background(
-        mg_def: dict[str, Any], vision_prompt: str = "", *, allow_scrim: bool | None = None,
+        self, mg_def: dict[str, Any], vision_prompt: str = "", *, allow_scrim: bool | None = None,
     ) -> dict[str, Any]:
         """背景守卫：禁止**不透明全幅**背景，但允许半透明底板（PRD §17 D7）。
 
@@ -347,6 +465,8 @@ ision_prompt
         - 仍清除 style.background 的不透明填充，避免整屏遮挡。
         """
         if not isinstance(mg_def, dict):
+            return mg_def
+        if getattr(self, "allow_opaque_background", False):
             return mg_def
         if vision_prompt and str(vision_prompt).strip():
             return mg_def
@@ -529,7 +649,7 @@ ision_prompt
     ) -> dict[str, Any] | None:
         """带错误回传的一次性修复调用：把 schema 校验错误告诉 LLM 让其修正 JSON。"""
         prompt_config = self._config.get("prompt", {})
-        system_template = prompt_config.get("system_template", "") or _mg_constraint("MG_DESIGNER_SYSTEM")
+        system_template = self._design_system_template(description, category_context)
         context_section = self._build_context_section(
             persona_style, category_context, vision_prompt, web_context,
         )
@@ -654,7 +774,7 @@ ision_prompt
                     _note(
                         "mg_motion_weak",
                         f"客观动效未达标：{(_weak.get('issues') or [])[:2]}",
-                        scope=str((scene_context or {}).get("title") or ""),
+                        scope=str((scene_context or {}).get("clip_id") or (scene_context or {}).get("title") or ""),
                         impact="该段动画观感接近静态展示（关键帧集中在前段、后段静止）",
                     )
             except Exception:  # noqa: BLE001 — 指标计算失败不影响出片
@@ -739,7 +859,9 @@ ision_prompt
                         persona_style, scene_context, category_context, vision_prompt,
                         **repair_kwargs,
                     )
-                    if repaired_v:
+                    if isinstance(repaired_v, str):
+                        repaired_v = self._parse_llm_response(repaired_v)
+                    if isinstance(repaired_v, dict):
                         return await self._build_success(
                             repaired_v, "visual_repair",
                             params=self._build_llm_params(repaired_v, text_content, persona_style),
@@ -774,7 +896,9 @@ ision_prompt
             persona_style, scene_context, category_context, vision_prompt,
             **repair_kwargs,
         )
-        if repaired:
+        if isinstance(repaired, str):
+            repaired = self._parse_llm_response(repaired)
+        if isinstance(repaired, dict):
             logger.info("MGGenerator: 批判修复成功 score=%d", score)
             return await self._build_success(
                 repaired, "critique_repair",
@@ -922,7 +1046,7 @@ ision_prompt
             return None
 
         prompt_config = self._config.get("prompt", {})
-        system_template = prompt_config.get("system_template", "") or _mg_constraint("MG_DESIGNER_SYSTEM")
+        system_template = self._design_system_template(description, category_context)
         context_section = self._build_context_section(
             persona_style, category_context, vision_prompt, web_context,
         )
@@ -1017,7 +1141,7 @@ ision_prompt
     ) -> dict[str, Any] | None:
         """带批判反馈的一次性修复调用：把质量评审意见告诉 LLM 让其重做 JSON。"""
         prompt_config = self._config.get("prompt", {})
-        system_template = prompt_config.get("system_template", "") or _mg_constraint("MG_DESIGNER_SYSTEM")
+        system_template = self._design_system_template(description, category_context)
         context_section = self._build_context_section(
             persona_style, category_context, vision_prompt, web_context,
         )
@@ -1165,7 +1289,7 @@ ision_prompt
         动画风格不写死，由 LLM 依据传入数据自行决定。
         """
         prompt_config = self._config.get("prompt", {})
-        system_template = prompt_config.get("system_template", "") or _mg_constraint("MG_DESIGNER_SYSTEM")
+        system_template = self._design_system_template(description, category_context)
 
         context_section = self._build_context_section(
             persona_style, category_context, vision_prompt, web_context,
@@ -1402,6 +1526,21 @@ ision_prompt
             except json.JSONDecodeError:
                 pass
 
+        # 容忍常见 LLM JSON 损坏：尾逗号、截断在字符串/容器中。
+        if start >= 0:
+            cand = content[start:]
+            import re as _re
+            cand = _re.sub(r",\s*([}\]])", r"\1", cand)
+            for _ in range(64):
+                try:
+                    return json.loads(cand)
+                except json.JSONDecodeError as exc:
+                    if "Unterminated string" in exc.msg:
+                        cand += '"'
+                    elif exc.pos >= len(cand) - 2:
+                        cand += "}" if "{" in cand else "]"
+                    else:
+                        break
         # 三种提取都失败：把"到底怎么坏的"讲清楚（旧实现只打前 200 字符，
         # 长度截断与格式坏在日志里长得一模一样，且主 Agent 完全看不到）。
         truncated = finish_reason in ("length", "max_tokens")
@@ -1730,8 +1869,10 @@ ision_prompt
             logger.warning("MGGenerator: 渲染残留占位符经二次填充后清除")
             return await self._lint_gated(html2)
 
-        logger.warning("MGGenerator: 渲染后仍含残留占位符，返回原始 HTML")
-        return html or html2
+        # 最后一道守卫：渲染器偶发把参数默认值里的 {unknown} 再次带出来；
+        # 直接清掉字面占位符，避免用户看到 {unknown} 这样的内部 token。
+        logger.warning("MGGenerator: 渲染后仍含残留占位符，清理字面 token")
+        return _RESIDUAL_PLACEHOLDER_RE.sub("", html or html2)
 
     @staticmethod
     def _dedupe_duplicate_text(mg_def: dict[str, Any], params: dict | None = None) -> dict[str, Any]:
@@ -1867,12 +2008,25 @@ ision_prompt
         import uuid
         from datetime import datetime, timezone
 
-        # 背景守卫：vision_prompt 未明确要求背景时剥离不透明 bg 背景层
+        if not isinstance(mg_def, dict):
+            _parsed = self._parse_llm_response(mg_def if isinstance(mg_def, str) else "")
+            mg_def = _parsed if isinstance(_parsed, dict) else {}
+
+        # 守卫顺序：先按语义分列 left/right，再归一化；否则 normalizer 会改 y，
+        # 让 _ensure_label_separation 失去“同坐标”分组条件。
         mg_def = self._ensure_no_background(mg_def, vision_prompt)
-        # 标签分离守卫：left/right 标签同坐标 → 按语义分列左右（质检发现的重叠 bug）
         mg_def = self._ensure_label_separation(mg_def)
-        # 重复文本守卫：同窗口同文案的两个元素 → 只留字号最大的（成片重影）
         mg_def = self._dedupe_duplicate_text(mg_def, params)
+        try:
+            from clipwright.animation.mg.layout import normalize_mg_layout
+            mg_def, layout_adjustments = normalize_mg_layout(mg_def)
+            if layout_adjustments:
+                self._trace_event(
+                    pipeline_id, "layout_normalize", "MG 出口布局归一化",
+                    {"method": method, "adjustments": layout_adjustments[:20]},
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MGGenerator: 出口布局归一化失败（跳过）: %s", exc)
         # 字体令牌：Persona 字体落进成片（此前恒 sans-serif，见 _apply_persona_font）
         mg_def = self._apply_persona_font(mg_def, persona_style)
 
@@ -1921,10 +2075,28 @@ ision_prompt
             except Exception as exc:
                 logger.warning("MG 生成记录持久化失败 %s: %s", generation_id, exc)
 
+        semantic_gate: list[str] = []
+        try:
+            if os.environ.get("CLIPWRIGHT_ANIMATION_SEMANTIC_GATE", "").strip() in ("1", "true", "yes"):
+                from clipwright.animation.mg.semantic_layout import semantic_layout_errors
+                semantic_gate = semantic_layout_errors(mg_def, mg_def.get("params"))
+            if os.environ.get("CLIPWRIGHT_ANIMATION_TEXT_GATE", "").strip() in ("1", "true", "yes"):
+                from clipwright.animation.qa import qa_text
+                semantic_gate.extend(qa_text(mg_def))
+        except Exception:  # noqa: BLE001
+            semantic_gate = []
+        if semantic_gate:
+            self._trace_event(
+                pipeline_id, "qa_gate", "MG 布局语义门禁未通过",
+                {"errors": semantic_gate[:20], "method": method},
+            )
+
         return {
-            "success": bool(html),
+            "success": bool(html) and not semantic_gate,
             "html": html,
             "mg_def": mg_def,
+            "qa_errors": semantic_gate,
+            "error": ("; ".join(semantic_gate[:3]) if semantic_gate else ""),
             "method": method,
             "fallback_template": fallback_template,
             "generation_id": generation_id,

@@ -95,7 +95,7 @@
 主 Agent 也可以派只读调研子 Agent（`research_agent`）、读工作区产物、直接调用工具与技能。
 老 6 阶段管线（`pipeline.py` / `pipeline_v2.py`）已删除，`run_pipeline` 能力下线。
 
-Agent 结果通过黑板交换；AnimationAgent 通过 `[逻辑动画]mg_dynamic:{...}` 标记调用 `llm_mg` 插件，LLM 动态生成完整 MG JSON（elements + keyframes + params），经 MGRenderer → Hyperframes 渲染为透明 MOV，最后 overlay 到主视频。
+Agent 结果通过黑板交换；AnimationAgent 通过 `【逻辑动画】mg_dynamic:{...}` 标记调用 `llm_mg` 插件，LLM 动态生成完整 MG JSON（elements + keyframes + params），经 MGRenderer → Hyperframes 渲染为透明 MOV，最后 overlay 到主视频。
 
 ### 3.3 类型插件层
 

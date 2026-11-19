@@ -206,7 +206,7 @@ class TestLLMPromptElementList:
     """LLM prompt（config.yaml system_template）可用元素列表必须包含 image。"""
 
     def test_prompt_element_list_mentions_image(self) -> None:
-        cfg = MGGenerator._load_config()
-        template = cfg["prompt"]["system_template"]
+        from clipwright.prompts.engine.animation_prompt import ANIMATION_PROMPT_BASE
+        template = ANIMATION_PROMPT_BASE
         assert "可用元素种类" in template
         assert "- image:" in template

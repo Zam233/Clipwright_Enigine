@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -17,8 +19,8 @@ class MgPreviewRequest(BaseModel):
     animation_id: str = Field(default="", description="内置模板动画 ID（与 mg_json 二选一）")
     mg_json: dict | None = Field(default=None, description="直接传入 MG 定义 JSON（LLM 生成预览）")
     params: dict[str, str] = Field(default_factory=dict, description="模板参数（占位符替换）")
-    width: int = Field(default=1280, ge=320, le=3840, description="预览宽度")
-    height: int = Field(default=720, ge=320, le=2160, description="预览高度")
+    width: int | None = Field(default=None, ge=320, le=3840, description="预览宽度；缺省取 mg_def 设计尺寸")
+    height: int | None = Field(default=None, ge=320, le=2160, description="预览高度；缺省取 mg_def 设计尺寸")
     fps: float = Field(default=30.0, ge=10, le=60, description="预览帧率")
 
 
@@ -116,7 +118,7 @@ def _mg_variables(mg_def: dict, params: dict[str, str]) -> list[dict]:
         return []
 
 
-def _resolve_preview_mg(body: MgPreviewRequest) -> tuple[dict, float, str]:
+def _resolve_preview_mg(body: MgPreviewRequest) -> tuple[dict, float, str, int, int]:
     """解析预览请求 → (mg_def, duration_sec, html)。
 
     ``animation_id``（内置模板）或 ``mg_json``（LLM 生成定义）二选一；
@@ -133,16 +135,21 @@ def _resolve_preview_mg(body: MgPreviewRequest) -> tuple[dict, float, str]:
     if not isinstance(mg_def, dict) or not mg_def.get("elements"):
         raise HTTPException(status_code=400, detail="无效的 MG 定义（缺少 elements）")
 
-    mg_def = MGGenerator._ensure_no_background(mg_def, "")
+    mg_def = MGGenerator()._ensure_no_background(mg_def, "")
     dur = min(float(mg_def.get("duration_sec", 3.0) or 3.0), 8.0)
+    # MG 设计坐标是绝对像素；缺省预览必须使用 mg_def 自身设计尺寸。
+    # 旧默认 1280x720 会把 1920x1080 的坐标裁掉/错位（这正是 5 个预览
+    # 中标题偏移、流程第三步消失、金句出现蓝色块的主因）。
+    width = int(body.width or mg_def.get("width") or 1280)
+    height = int(body.height or mg_def.get("height") or 720)
     try:
         html = MGRenderer.render(
             mg_def, body.params or {},
-            width=body.width, height=body.height, fps=body.fps,
+            width=width, height=height, fps=body.fps,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"MG 渲染失败: {e}")
-    return mg_def, dur, html
+    return mg_def, dur, html, width, height
 
 
 @router.post("/mg/html")
@@ -153,13 +160,13 @@ async def preview_mg_html(body: MgPreviewRequest) -> dict:
     （与主管线同源的 hf_timeline 运行时），因此是秒级的"真效果"预览；
     需要落地成片时再走 `POST /api/animation/preview`（Hyperframes 渲染 MP4）。
     """
-    mg_def, dur, html = _resolve_preview_mg(body)
+    mg_def, dur, html, width, height = _resolve_preview_mg(body)
     variables = {k: str(v) for k, v in (body.params or {}).items()}
     return {
         "html": html,
         "duration_sec": round(dur, 2),
-        "width": body.width,
-        "height": body.height,
+        "width": width,
+        "height": height,
         "fps": body.fps,
         "animation_id": mg_def.get("animation_id", ""),
         # P1-5：声明过的变量与本次取值，前端可在 iframe 内驱动/展示
@@ -182,7 +189,7 @@ async def preview_mg(body: MgPreviewRequest) -> dict:
     from clipwright.config import logger
     from clipwright.services.render import run_tracked_ff
 
-    mg_def, dur, html = _resolve_preview_mg(body)
+    mg_def, dur, html, width, height = _resolve_preview_mg(body)
 
     if not await HyperframesRenderer.ais_available():
         raise HTTPException(status_code=503, detail="Hyperframes 渲染器不可用，无法预览")
@@ -207,7 +214,10 @@ async def preview_mg(body: MgPreviewRequest) -> dict:
         # 旧实现塞进 render_overlays 的 overlay 列表，_overlay_to_html 只读 text
         # 字段 → 恒产出空白视频却报成功。
         async def _run_preview(cmd):
-            return await run_tracked_ff(
+            # run_tracked_ff 是同步 subprocess 封装；旧实现直接 await 会抛
+            # "'CompletedProcess' object can't be awaited"，预览恒 500。
+            return await asyncio.to_thread(
+                run_tracked_ff,
                 cmd, capture_output=True, text=False, timeout=1800,
                 env=HyperframesRenderer._render_env(),
             )
@@ -223,7 +233,8 @@ async def preview_mg(body: MgPreviewRequest) -> dict:
         if not out or not mov_path.exists():
             raise HTTPException(status_code=500, detail="Hyperframes 渲染失败")
         # MOV → MP4（H.264 重编码，浏览器可直接播放）
-        r = await run_tracked_ff(
+        r = await asyncio.to_thread(
+            run_tracked_ff,
             ["ffmpeg", "-y", "-loglevel", "error", "-i", str(mov_path),
              "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
              "-an", str(mp4_path)],
@@ -236,8 +247,8 @@ async def preview_mg(body: MgPreviewRequest) -> dict:
             "url": f"/api/render/download/{name}.mp4",
             "path": str(mp4_path),
             "duration_sec": round(dur, 2),
-            "width": body.width,
-            "height": body.height,
+            "width": width,
+            "height": height,
             "fps": body.fps,
         }
     finally:
@@ -245,3 +256,15 @@ async def preview_mg(body: MgPreviewRequest) -> dict:
             mov_path.unlink(missing_ok=True)
         except Exception:
             pass
+
+
+
+class TextBBoxRequest(BaseModel):
+    mg_json: dict
+
+
+@router.post("/text-bbox")
+async def text_bbox(body: TextBBoxRequest) -> dict:
+    """Real browser text bbox for the given mg_def (engine QA helper)."""
+    from clipwright.animation.text_metrics import measure_text_bboxes
+    return {"boxes": await asyncio.to_thread(measure_text_bboxes, body.mg_json)}

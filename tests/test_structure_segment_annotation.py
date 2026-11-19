@@ -51,7 +51,7 @@ def _svc(llm: _LLM) -> StructureAgent:
 
 def test_every_segment_becomes_a_scene_with_verbatim_voiceover():
     llm = _LLM({"scenes": [
-        {"index": i, "title": f"标题{i}", "description": f"画面{i} [文字动画]",
+        {"index": i, "title": f"标题{i}", "description": f"画面{i} 【文字动画】",
          "keywords": [f"k{i}"]} for i in range(6)
     ]})
     scenes = asyncio.run(_svc(llm)._annotate_segments(  # noqa: SLF001
@@ -69,8 +69,8 @@ def test_every_segment_becomes_a_scene_with_verbatim_voiceover():
 def test_missing_segments_are_filled_so_coverage_stays_complete():
     """模型只给了 2 段 → 其余段落仍要有场景（覆盖度不靠兜底分支保证）。"""
     llm = _LLM({"scenes": [
-        {"index": 0, "title": "开头", "description": "画面 [文字动画]", "keywords": ["a"]},
-        {"index": 1, "title": "承接", "description": "画面 [文字动画]", "keywords": ["b"]},
+        {"index": 0, "title": "开头", "description": "画面 【文字动画】", "keywords": ["a"]},
+        {"index": 1, "title": "承接", "description": "画面 【文字动画】", "keywords": ["b"]},
     ]})
     scenes = asyncio.run(_svc(llm)._annotate_segments(SEGMENTS, "sys", _ctx(), 60.0))  # noqa: SLF001
 
@@ -82,8 +82,8 @@ def test_missing_segments_are_filled_so_coverage_stays_complete():
 def test_long_segment_duration_is_proportional():
     segments = ["短" * 10, "长" * 90]
     llm = _LLM({"scenes": [
-        {"index": 0, "title": "a", "description": "x [文字动画]", "keywords": ["a"]},
-        {"index": 1, "title": "b", "description": "y [文字动画]", "keywords": ["b"]},
+        {"index": 0, "title": "a", "description": "x 【文字动画】", "keywords": ["a"]},
+        {"index": 1, "title": "b", "description": "y 【文字动画】", "keywords": ["b"]},
     ]})
     scenes = asyncio.run(_svc(llm)._annotate_segments(segments, "sys", _ctx(), 100.0))  # noqa: SLF001
 

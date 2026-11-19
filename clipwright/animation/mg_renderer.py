@@ -61,6 +61,11 @@ class MGRenderer:
         "transform_origin": "transform-origin",
         "filter": "filter",
         "clip_path": "clip-path",
+        "object_position": "object-position",
+        "background_size": "background-size",
+        "background_position": "background-position",
+        "font_stretch": "font-stretch",
+        "mix_blend_mode": "mix-blend-mode",
     }
 
     # 元素级已显式渲染/结构性字段，静态透传时排除，避免重复输出
@@ -293,6 +298,7 @@ class MGRenderer:
       data-composition-variables="{MGRenderer._json_attr(variables)}">
 <head><meta charset="utf-8"><style>
 *{{margin:0;padding:0;box-sizing:border-box}}
+@font-face{{font-family:"HF Symbols";src:local("Segoe UI Symbol"),local("Segoe UI Emoji"),local("Noto Sans Symbols 2"),local("Arial");}}
 body{{width:{w}px;height:{h}px;overflow:hidden;background:{bg};position:relative;font-family:{font_family}}}
 .mg-el{{position:absolute;will-change:transform,opacity}}
 .mg-shape{{border-radius:4px}}
@@ -502,7 +508,11 @@ const dur=parseFloat(root.dataset.duration);
             if k in MGRenderer.STATIC_EXCLUDE_KEYS:
                 continue
             css_key = MGRenderer.KEYFRAME_CSS_MAP.get(k)
-            if k == "font_italic" and isinstance(v, bool):
+            if k == "text_stroke" and isinstance(v, str) and v.strip():
+                static_style += f"-webkit-text-stroke:{MGRenderer._esc(v.strip())};"
+            elif k == "opacity" and isinstance(v, (int, float)):
+                static_style += f"opacity:{max(0.0, min(1.0, float(v)))};"
+            elif k == "font_italic" and isinstance(v, bool):
                 static_style += f"font-style:{'italic' if v else 'normal'};"
             elif k == "mask" and isinstance(v, dict):
                 try:
@@ -527,9 +537,14 @@ const dur=parseFloat(root.dataset.duration);
                     f"background:{bindable(MGRenderer._sanitize_css_value(elem.get('background')))};"
                     "-webkit-background-clip:text;background-clip:text;color:transparent;"
                 )
+            box_css = ""
+            if elem.get("width") is not None:
+                box_css += f"width:{fill(elem.get('width'))}px;"
+            if elem.get("height") is not None:
+                box_css += f"height:{fill(elem.get('height'))}px;"
             html = (
                 f'<div id="{eid}" class="mg-el clip" data-start="0" data-duration="{total_dur}" data-track-index="1"{var_attr} style="{base_css}'
-                f'font-size:{font_size}px;color:{font_color};font-weight:{font_weight};'
+                f'font-size:{font_size}px;color:{font_color};font-weight:{font_weight};{box_css}'
                 + gradient_css
                 + static_style
                 + f'">{MGRenderer._esc(content)}</div>'

@@ -1,8 +1,8 @@
 """动画 Agent（AnimationAgent）— 将动画标记转为时间线修改。
 
 两种动画类型：
-1. 文字动画 [文字动画]xxx — 作用于文字轨 clip 的入场 keyframes + 出场淡出
-2. 逻辑动画 [逻辑动画]xxx — 独立动画轨，展示逻辑关系（箭头/对比/流程/因果）
+1. 文字动画 【文字动画】xxx — 作用于文字轨 clip 的入场 keyframes + 出场淡出
+2. 逻辑动画 【逻辑动画】xxx — 独立动画轨，展示逻辑关系（箭头/对比/流程/因果）
 
 动画类型从 AnimationCatalog 动态读取，支持插件扩展。
 """
@@ -53,7 +53,7 @@ def _merge_style_defaults(
 
 
 class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
-    """动画 Agent：解析 [文字动画] / [逻辑动画] / [过渡动画] 标记 → 修改时间线。
+    """动画 Agent：解析 【文字动画】 / 【逻辑动画】 / 【过渡动画】 标记 → 修改时间线。
 
     文字动画：在文字轨创建/更新 text clip，添加完整 keyframes（入场+保持+出场）。
     逻辑动画：在动画轨创建独立 clip，将 diagram 参数存入 metadata 供 Render 使用。
@@ -307,11 +307,25 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
     ) -> AnimationOutput:
         logger.info("AnimationAgent 开始 pipeline=%s", context.pipeline_id[:12])
         self._pid = context.pipeline_id
+        self._background_context = dict(getattr(input_data, "background_context", {}) or {})
         self._retry_clip_ids = {str(x) for x in (getattr(input_data, "retry_clip_ids", None) or [])}
         _extra_ctx = dict(getattr(context, "extra_params", None) or {})
         self._project_id = str(
             _extra_ctx.get("workspace_project_id") or _extra_ctx.get("project_id") or ""
         )
+        self._ctx_store = None
+        self._ctx_session_id = str(_extra_ctx.get("session_id") or "")
+        self._ctx_task_id = str(_extra_ctx.get("task_id") or context.pipeline_id or "")
+        try:
+            if self._ctx_session_id and self._ctx_task_id:
+                from clipwright.animation.context_store import get_context_store
+                self._ctx_store = get_context_store()
+                self._ctx_store.append_history(
+                    self._ctx_session_id, self._ctx_task_id, "agent",
+                    "AnimationAgent 开始", pipeline_id=context.pipeline_id,
+                )
+        except Exception:  # noqa: BLE001 — 上下文失败不阻断动画
+            self._ctx_store = None
         add_event(context.pipeline_id, "animation", "agent_start",
                   "AnimationAgent 开始（文字动画/逻辑动画分流）")
         # 工具/技能列表实时可见（插件增删立即生效）——写进 trace 便于排障
@@ -560,10 +574,10 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                             )
                             text_anim_count += 1
                             self._persist_timeline_tick(timeline)
-                            logger.info("AnimationAgent: [文字动画]%s → %s (id=%s)",
+                            logger.info("AnimationAgent: 【文字动画】%s → %s (id=%s)",
                                         anim_name, clip.id[:8], anim_id)
                             add_event(context.pipeline_id, "animation", "text_anim",
-                                      f"[文字动画]{anim_name}({anim_id}) → clip={clip.id[:8]}")
+                                      f"【文字动画】{anim_name}({anim_id}) → clip={clip.id[:8]}")
 
                         elif marker_type == "logic":
                             if self._retry_clip_ids and str(clip.id) not in self._retry_clip_ids:
@@ -574,22 +588,60 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                             )
                             # §7.3-3：入队≠完成——计数移到 gather 之后按真实新增 clip 统计，
                             # 否则「窗口不足跳过 / 生成失败 / Hyperframes 不可用」都会被算作已完成。
-                            logger.info("AnimationAgent: [逻辑动画]%s → %s (id=%s)",
+                            logger.info("AnimationAgent: 【逻辑动画】%s → %s (id=%s)",
                                         anim_name, clip.id[:8], anim_id)
                             add_event(context.pipeline_id, "animation", "logic_anim",
-                                      f"[逻辑动画]{anim_name}({anim_id}) → clip={clip.id[:8]}")
+                                      f"【逻辑动画】{anim_name}({anim_id}) → clip={clip.id[:8]}")
 
                         elif marker_type == "transition":
                             self._handle_transition_animation(
                                 clip, prev_clip, anim_id, anim_name,
                             )
                             transition_anim_count += 1
-                            logger.info("AnimationAgent: [过渡动画]%s → %s (id=%s)",
+                            logger.info("AnimationAgent: 【过渡动画】%s → %s (id=%s)",
                                         anim_name, clip.id[:8], anim_id)
                             add_event(context.pipeline_id, "animation", "transition_anim",
-                                      f"[过渡动画]{anim_name}({anim_id}) → clip={clip.id[:8]}")
+                                      f"【过渡动画】{anim_name}({anim_id}) → clip={clip.id[:8]}")
 
                     prev_clip = clip
+
+            # PRD：先在 Agent 层为这次多镜头动画生成一份全局计划，逐镜头复用；
+            # 单镜头任务也走同一路径（seams 为空），保证计划是源头而不是生成器
+            # 的局部启发。
+            self._animation_plans: dict[str, Any] = {}
+            if logic_jobs:
+                try:
+                    from clipwright.animation.prompting import AnimationPlan, build_timeline_plan
+                    scenes = []
+                    for track, c, aid, aname, m, style in logic_jobs:
+                        payload = m.get("payload") if isinstance(m, dict) else None
+                        desc = ""
+                        if isinstance(payload, dict):
+                            desc = str(payload.get("description") or "")
+                        desc = desc or str((c.metadata or {}).get("description") or "") or str(c.text or "")
+                        scenes.append({
+                            "clip_id": str(c.id), "description": desc,
+                            "start_sec": float(c.start_sec or 0),
+                            "duration_sec": float(c.duration_sec or 4.0),
+                            "category_context": getattr(self, "_mg_category_context", {}) or {},
+                        })
+                    global_plan = build_timeline_plan(scenes)
+                    for shot in global_plan.shots:
+                        plan = AnimationPlan(
+                            category=str(shot.get("category") or global_plan.category),
+                            intent=str(shot.get("description") or global_plan.intent),
+                            energy=global_plan.energy,
+                            duration_sec=float(shot.get("duration_sec") or global_plan.duration_sec),
+                            global_current=global_plan.global_current,
+                            transition_budget=global_plan.transition_budget,
+                            rule_ids=list(shot.get("rule_ids") or global_plan.rule_ids),
+                            carrier=str(shot.get("carrier") or global_plan.carrier),
+                            shot_type=str(global_plan.shot_type),
+                            seams=list(global_plan.seams), shots=list(global_plan.shots),
+                        )
+                        self._animation_plans[str(shot.get("clip_id") or "")] = plan
+                except Exception:  # 计划失败不阻断动画
+                    self._animation_plans = {}
 
             # 并发执行逻辑动画作业（有界并发；clips 写入后按 start_sec 排序保证 z-order）
             # 类型化 LLM 生成是等待型：优先用 animation_llm_concurrency，
@@ -655,12 +707,27 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             )
             logger.info(summary)
             add_event(context.pipeline_id, "animation", "agent_end", summary)
+            if self._ctx_store is not None:
+                try:
+                    self._ctx_store.record_call(
+                        self._ctx_session_id, self._ctx_task_id, "agent", "animation_agent",
+                        "success", input_summary=summary[:300],
+                        output_summary=summary[:300],
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
 
             return AnimationOutput(
                 decision=AgentDecision.PASS,
                 timeline=timeline,
                 issues=list(self._failed_animations),
                 redo_agent="animation" if self._failed_animations else "",
+                redo_hint=(
+                    "主 Agent：请用 delegate_agent(stage='animation', inputs={'retry_clip_ids': ["
+                    + ", ".join(repr(x.get('clip_id')) for x in self._failed_animations)
+                    + "]}, refresh=true) 只重跑失败片段。"
+                    if self._failed_animations else ""
+                ),
 
                 animation_plan={
                     "text_animations": text_anim_count,
@@ -1164,6 +1231,8 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         """在动画轨创建独立的逻辑动画 clip。优先 Hyperframes 渲染 SVG，不可用时降级到 drawtext。
 
         MG 动画（ID 以 mg_ 开头）使用 MGRenderer 渲染 HTML/CSS 动画。"""
+        if self._retry_clip_ids and str(getattr(vid_clip, "id", "")) not in self._retry_clip_ids:
+            return
         text_content = marker.get("text", self._extract_text_content(vid_clip, marker))
         # 防御：旧 marker 的 text 可能是原始 JSON 串，先剥离
         text_content = self._strip_json_payload(text_content)
@@ -1194,7 +1263,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 )
                 if typed_ok:
                     return
-                last_issue = f"第 {attempt + 1} 次生成失败"
+                last_issue = f"第 {attempt + 1} 次生成失败：{getattr(self, '_last_typed_error', '')}"
                 logger.warning(
                     "AnimationAgent: 类型化 %s %s，%s",
                     anim_name, last_issue, "重跑" if attempt < 2 else "升级给主 Agent",
@@ -1207,7 +1276,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             )
             self._record_failed_animation(vid_clip, anim_id, anim_name, last_issue)
             self._add_trace_warning(
-                f"[逻辑动画]{anim_name}({anim_id}) 连续 3 次失败，需主 Agent 重派该片段",
+                f"【逻辑动画】{anim_name}({anim_id}) 连续 3 次失败，需主 Agent 重派该片段",
                 {"clip_id": str(getattr(vid_clip, "id", "") or ""), "anim_id": anim_id},
             )
             return
@@ -1541,6 +1610,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 persona=self._persona_anim_context(persona_style),
                 persona_style=persona_style or {},
                 scene_context={
+                    "clip_id": str(getattr(vid_clip, "id", "") or ""),
                     "title": scene_meta.get("title", ""),
                     "keywords": scene_meta.get("keywords", []),
                     "description": scene_meta.get("description", ""),
@@ -1563,6 +1633,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "AnimationAgent: 类型化生成未通过门禁 %s（type=%s）：%s",
                 anim_name, spec.id, "；".join(result.issues[:3]) or result.method,
             )
+            self._last_typed_error = ("；".join(result.issues[:3]) or str(result.method or "unknown"))
             self._add_trace_warning(
                 f"类型化生成未通过，回退：{anim_name}（{spec.id}）" +
                 (f" — {result.issues[0]}" if result.issues else "")
@@ -1684,7 +1755,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             try:
                 from clipwright.services.trace import add_event as _evt
                 _evt(getattr(self, '_pid', ''), "animation", "warning",
-                     f"Hyperframes 不可用，[逻辑动画]{anim_name} 已跳过",
+                     f"Hyperframes 不可用，【逻辑动画】{anim_name} 已跳过",
                      {"anim_id": anim_id, "degradation": "hyperframes_not_available",
                       "skipped": True})
             except Exception:
@@ -1743,7 +1814,12 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
         # 加载 MG 动画定义
         mg_def = MGRenderer.load_animation(anim_id)
-        if mg_def is None:
+        if isinstance(mg_def, str):
+            try:
+                mg_def = json.loads(mg_def)
+            except json.JSONDecodeError:
+                mg_def = None
+        if not isinstance(mg_def, dict):
             # 降级：MG 定义缺失 → 跳过创建 clip，不把设计描述打印成屏幕文字
             logger.warning("MG 动画未找到: %s，已跳过（不再降级为文字显示）", anim_id)
             self._add_trace_warning(f"MG 动画未找到: {anim_id}，动画已跳过")
@@ -1752,7 +1828,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         # 背景守卫：模板 MG 与 LLM MG 一致——vision_prompt 为空时强制 bg 透明，
         # 动画叠加在实拍素材上，不允许不透明全幅背景（用户要求，T3 补充覆盖模板路径）
         from clipwright.animation.mg.generator import MGGenerator
-        mg_def = MGGenerator._ensure_no_background(
+        mg_def = MGGenerator()._ensure_no_background(
             mg_def, getattr(self, "_vision_prompt", "") or ""
         )
 
@@ -1847,6 +1923,130 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         logger.info("AnimationAgent: [MG动画]%s → HTML已生成 (%s)", anim_name, anim_id)
 
     # ── LLM 动态 MG 动画处理 ──────────────────────────────
+
+    async def _generate_mg_via_agentic(
+        self, *, description: str, text_content: str, persona_style: dict,
+        scene_context: dict, category_context: dict, vision_prompt: str, web_context: str,
+    ) -> dict:
+        """Opt-in agentic loop; returns MGGenerator-shaped result or {} to fallback."""
+        logger.warning("AnimationAgent: agentic loop 启动")
+        try:
+            from clipwright.animation.agentic_runtime import AnimationAgentRuntime
+            from clipwright.services.llm import LLMService
+            rt = AnimationAgentRuntime(
+                max_rounds=8, max_calls=12,
+                default_args={
+                    "description": description, "text_content": text_content,
+                    "persona_style": persona_style or {}, "scene_context": scene_context or {},
+                    "category_context": category_context or {}, "vision_prompt": vision_prompt or "",
+                    "web_context": web_context or "", "fps": getattr(self, "_tl_fps", 30.0),
+                    "root": str(getattr(self, "_ws_root", "") or "."),
+                },
+            )
+            llm = getattr(self, "_llm", None) or LLMService()
+            bg_ctx = getattr(self, "_background_context", {}) or {}
+            bg_note = ""
+            if bg_ctx.get("frames"):
+                frames = bg_ctx.get("frames") or []
+                bg_note = ("\n\n## 真实背景上下文（配色前必须 read_file 查看）\n"
+                           + "\n".join(f"- t={f.get('time')} path={f.get('path')}" for f in frames[:8])
+                           + f"\ndominant_colors={bg_ctx.get('dominant_colors')} luminance={bg_ctx.get('luminance')}")
+            agent_goal = description + bg_note
+            async def decide(obs):
+                return await rt.decide_with_llm(llm, agent_goal, obs)
+            result = await rt.run(decide, category=str((category_context or {}).get("category") or "kinetic-type"),
+                                  shot_type="title_reveal", needs={"agent"})
+            logger.warning("AnimationAgent: agentic loop 结束 status=%s rounds=%s actions=%s",
+                        result.status, result.rounds, [(a.kind, a.name) for a in result.actions])
+            if getattr(self, "_ctx_store", None) is not None:
+                try:
+                    for action in result.actions:
+                        if action.kind in ("tool", "skill"):
+                            self._ctx_store.record_call(
+                                self._ctx_session_id, self._ctx_task_id,
+                                action.kind, action.name or "?",
+                                "success" if result.status == "ok" else "failed",
+                                input_summary=str(action.reason),
+                                output_summary=f"loop={result.status} rounds={result.rounds}",
+                            )
+                            try:
+                                from clipwright.services.task_events import emit as _emit
+                                _emit(
+                                    self._ctx_task_id,
+                                    "tool_call" if action.kind == "tool" else "skill_call",
+                                    f"AnimationAgent · {action.name}",
+                                    {"agent": "animation", "kind": action.kind,
+                                     "tool": action.name, "status": "success",
+                                     "reason": str(action.reason)},
+                                    span="subagent",
+                                )
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+            for obs in reversed(result.observations):
+                raw = obs.data if hasattr(obs, "data") else (obs if isinstance(obs, dict) else {})
+                if raw.get("mg_def"):
+                    mg = raw
+                    mg["mg_def"]["agentic"] = True
+                    from clipwright.animation.qa import qa_report
+                    # 审美判断交给 vision inspect；这里只保留 schema/工具返回的硬错误。
+                    errors = [str(x) for x in (mg.get("qa_errors") or [])]
+                    if errors:
+                        try:
+                            from clipwright.animation.agent_tools import call_animation_tool
+                            for _ in range(2):
+                                repaired = await call_animation_tool(
+                                    "repair_mg", mg_def=mg["mg_def"], errors=errors,
+                                    description=description, text_content=text_content,
+                                )
+                                if not repaired.get("ok"):
+                                    break
+                                mg["mg_def"] = repaired["mg_def"]
+                                errors = []
+                                if not errors:
+                                    break
+                        except Exception:
+                            pass
+                    if errors:
+                        mg["success"] = False
+                        mg["qa_errors"] = errors
+                        mg["error"] = "; ".join(errors[:3])
+                    mg.setdefault("qa", qa_report(mg["mg_def"]))
+                    logger.warning("AnimationAgent: agentic result success=%s error=%s elements=%d",
+                                   mg.get("success"), mg.get("error"), len(mg["mg_def"].get("elements") or []))
+                    # 视觉循环回到 Agent：把 mg 作为观察交给同一个 Agent，由它决定
+                    # preview/capture/inspect/revise/final，而不是 wrapper while。
+                    from clipwright.animation.agentic.contracts import Observation
+                    seed = Observation("generate_mg", "ok", data=dict(mg))
+                    vis = await rt.run(decide, category=str((category_context or {}).get("category") or "kinetic-type"),
+                                       shot_type="title_reveal", needs={"agent"},
+                                       seed_observations=[seed])
+                    logger.warning("AnimationAgent: visual loop status=%s actions=%s",
+                                   vis.status, [(a.kind, a.name) for a in vis.actions])
+                    latest_mg = next((o for o in reversed(vis.observations)
+                                      if getattr(o, "data", {}).get("mg_def")), None)
+                    if latest_mg is not None:
+                        mg = latest_mg.data
+                    inspect_obs = next((o for o in reversed(vis.observations)
+                                        if getattr(o, "tool", "") == "inspect_frames"), None)
+                    findings = (getattr(inspect_obs, "data", {}) or {}).get("findings") or []
+                    mg["visual_findings"] = findings
+                    blocking = [f for f in findings if str(f.get("severity") or "") == "blocking"]
+                    if blocking:
+                        mg["success"] = False
+                        mg["qa_errors"] = list(mg.get("qa_errors") or []) + [
+                            str(f.get("observation") or f) for f in blocking]
+                    bg = str(((mg.get("mg_def") or {}).get("style") or {}).get("background") or "transparent").lower()
+                    decision = mg.get("background_decision") or {}
+                    if bg not in ("transparent", "none", "") and not str(decision.get("reason") or "").strip():
+                        mg["success"] = False
+                        mg["qa_errors"] = list(mg.get("qa_errors") or []) + [
+                            "使用了不透明背景但没有 background_reason"]
+                    return mg
+        except Exception as exc:  # noqa: BLE001 — agentic loop 失败必须回退旧引擎
+            logger.warning("AnimationAgent: agentic loop 失败，回退 MGGenerator: %s", exc)
+        return {}
 
     async def _handle_llm_mg(
         self,
@@ -1966,24 +2166,68 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             )
 
         try:
+            # PRD：AnimationAgent 先产出计划，再把计划交给镜头生成器选 2–3 条规则。
+            try:
+                plan = getattr(self, "_animation_plans", {}).get(str(vid_clip.id))
+                if plan is None:
+                    from clipwright.animation.prompting import build_animation_plan
+                    plan = build_animation_plan(description, self._mg_category_context, duration)
+                mg_gen._active_plan = plan
+            except Exception:  # 计划失败不阻断生成
+                pass
             # P2-B 多方案择优：新引擎提供 generate_best（variants=1 时等价旧行为）；
             # 旧版/插件提供的引擎可能只有 generate → 回退调用，保持兼容。
             _generate = getattr(mg_gen, "generate_best", None) or mg_gen.generate
-            result = await _generate(
-                description=gen_description,
-                text_content=text_parts or text_content,
-                persona_style=persona_style or {},
-                scene_context=scene_context,
-                category_context=self._mg_category_context,
-                vision_prompt=getattr(self, "_vision_prompt", "") or "",
-                web_context=web_context,
-                width=self._tl_width, height=self._tl_height, fps=self._tl_fps,
-            )
+            _agentic_flag = os.environ.get("CLIPWRIGHT_ANIMATION_AGENTIC_LOOP", "").strip()
+            logger.warning("AnimationAgent: agentic flag=%r", _agentic_flag)
+            result = {}
+            if os.environ.get("CLIPWRIGHT_ANIMATION_AGENTIC_LOOP", "").strip() in ("1", "true", "yes"):
+                result = await self._generate_mg_via_agentic(
+                    description=gen_description, text_content=text_parts or text_content,
+                    persona_style=persona_style or {}, scene_context=scene_context,
+                    category_context=self._mg_category_context,
+                    vision_prompt=getattr(self, "_vision_prompt", "") or "", web_context=web_context,
+                )
+            if not result.get("mg_def"):
+                result = await _generate(
+                    description=gen_description,
+                    text_content=text_parts or text_content,
+                    persona_style=persona_style or {},
+                    scene_context=scene_context,
+                    category_context=self._mg_category_context,
+                    vision_prompt=getattr(self, "_vision_prompt", "") or "",
+                    web_context=web_context,
+                    width=self._tl_width, height=self._tl_height, fps=self._tl_fps,
+                )
         except Exception as e:
             logger.exception("AnimationAgent: llm_mg.generate() 异常: %s", e)
             self._create_fallback_text_clip(anim_track, vid_clip, anim_name, text_content, duration)
             return
 
+        if getattr(self, "_ctx_store", None) is not None:
+            try:
+                self._ctx_store.record_call(
+                    self._ctx_session_id, self._ctx_task_id, "tool", "generate_mg",
+                    "success" if result.get("success") else "failed",
+                    input_summary=str(anim_name)[:200],
+                    output_summary=f"method={result.get('method')} success={bool(result.get('success'))}"[:300],
+                    error=str(result.get("error") or "")[:300],
+                )
+                self._ctx_store.record_qa(
+                    self._ctx_session_id, self._ctx_task_id, 1,
+                    {"ok": bool(result.get("success")), "errors": result.get("qa_errors") or []},
+                )
+                try:
+                    from clipwright.services.task_events import emit as _emit
+                    _emit(self._ctx_task_id, "tool_result", "AnimationAgent · generate_mg",
+                          {"agent": "animation", "tool": "generate_mg",
+                           "status": "success" if result.get("success") else "failed",
+                           "method": result.get("method"),
+                           "qa_errors": result.get("qa_errors") or []}, span="subagent")
+                except Exception:  # noqa: BLE001
+                    pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("AnimationAgent: 黑板写入失败: %s", exc)
         method = str(result.get("method", "unknown") or "unknown")
         if (not result.get("success")
                 or result.get("fallback_template")
@@ -2246,7 +2490,11 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
             "start_sec": float(getattr(vid_clip, "start_sec", 0.0) or 0.0),
             "duration_sec": float(getattr(vid_clip, "duration_sec", 0.0) or 0.0),
             "reason": str(reason or "")[:500],
-            "retry": {"stage": "animation", "clip_id": str(getattr(vid_clip, "id", "") or "")},
+            "retry": {
+                "stage": "animation",
+                "clip_id": str(getattr(vid_clip, "id", "") or ""),
+                "inputs": {"retry_clip_ids": [str(getattr(vid_clip, "id", "") or "")]},
+            },
         })
 
     def _add_trace_warning(self, message: str, detail: dict[str, Any] | None = None) -> None:
@@ -2420,7 +2668,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         """从 clip 中提取文字内容。
 
         优先级：
-        1. marker 中解析出的 text 字段（[文字动画]打字：xxx → "xxx"）
+        1. marker 中解析出的 text 字段（【文字动画】打字：xxx → "xxx"）
         2. clip.metadata.text
         3. clip.metadata.label
         4. clip.metadata.source_title
@@ -2460,9 +2708,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
         desc = meta.get("description", "") or ""
         if desc:
             import re
-            # 尝试 [文字动画]xxx：text 格式
+            # 尝试 【文字动画】xxx：text 格式
             for m in re.finditer(
-                r'\[(?:文字动画|逻辑动画|动画)\]\S+\s*[：:—\-]\s*(.+?)(?:$|[\n。！？])',
+                r'【(?:文字动画|逻辑动画|动画)】\S+\s*[：:—\-]\s*(.+?)(?:$|[\n。！？])',
                 desc,
             ):
                 return m.group(1).strip(), "description"

@@ -26,8 +26,8 @@
 
 **修复**（`catalog.py` + `builtin.py`）：
 - `resolve_marker` 现遍历 `get_text_animations()`（已合并 TEXT+ONSCREEN 共 15 个）+ `get_logic_animations()`（24 个）+ transition 动画。
-- 新增 `[转场动画]`/`[过渡动画]` 前缀支持（`parse_marker_from_description`），转场语义保留为片段间过渡。
-- onscreen 动画（弹跳/模糊/脉冲等）现可直接经 `[文字动画]` marker 解析命中。
+- 新增 `【转场动画】`/`【过渡动画】` 前缀支持（`parse_marker_from_description`），转场语义保留为片段间过渡。
+- onscreen 动画（弹跳/模糊/脉冲等）现可直接经 `【文字动画】` marker 解析命中。
 - 未匹配时回退 `text_fade_in` 并 `warn` 日志，区分拼写错误与不支持类型。
 
 **现象**：以下名字注册于 `clipwright/animation/builtin.py`，`/api/animation/list`（`api/animation.py`）会返回给前端/LLM，但写进 description marker 后全部静默兜底为淡入。
@@ -68,8 +68,8 @@
 - `structure_agent.py` — 经 `list_animations` tool 可见全部
 
 **待决策（产品）**：
-1. onscreen 动画是否应作为 `[文字动画]` 可解析？（`parse_marker_from_description` 只认 `[文字动画]`/`[逻辑动画]`/`[动画]` 三种前缀）
-2. transition 动画是否需要 `[转场动画]` 前缀支持？目前**无此前缀**，且转场语义上是「片段之间」而非「片段入场」，可能需要单独的 timeline 属性而非 description marker。
+1. onscreen 动画是否应作为 `【文字动画】` 可解析？（`parse_marker_from_description` 只认 `【文字动画】`/`【逻辑动画】`/`【动画】` 三种前缀）
+2. transition 动画是否需要 `【转场动画】` 前缀支持？目前**无此前缀**，且转场语义上是「片段之间」而非「片段入场」，可能需要单独的 timeline 属性而非 description marker。
 3. 若上两者均不需要 → `resolve_marker` 应在未匹配时对「已注册但类型不支持」的名字给出**显式警告**（区分「拼写错」与「不支持的类型」），并让 `/api/animation/list` 只返回可解析的类型。
 
 ---

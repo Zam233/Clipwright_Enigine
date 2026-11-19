@@ -95,13 +95,13 @@ for name, etype, eid in tests:
 # ── 3. parse_marker_from_description() ──
 print("\n=== 3. parse_marker_from_description() ===")
 desc_tests = [
-    ("[文字动画]淡入：人工智能改变世界", "text", "text_fade_in"),
-    ("[逻辑动画]箭头：机器学习→深度学习", "logic", "diagram"),
-    # 过渡动画前缀（[过渡动画]/[转场动画] 兼容）
-    ("[过渡动画]淡入淡出", "transition", "crossfade"),
-    ("[转场动画]左推", "transition", "push_left"),
+    ("【文字动画】淡入：人工智能改变世界", "text", "text_fade_in"),
+    ("【逻辑动画】箭头：机器学习→深度学习", "logic", "diagram"),
+    # 过渡动画前缀（【过渡动画】/【转场动画】 兼容）
+    ("【过渡动画】淡入淡出", "transition", "crossfade"),
+    ("【转场动画】左推", "transition", "push_left"),
     # 屏上动画简称 → 别名解析
-    ("[文字动画]弹跳：重要结论", "text", "scale_bounce"),
+    ("【文字动画】弹跳：重要结论", "text", "scale_bounce"),
 ]
 for desc, etype, eid in desc_tests:
     markers = AnimationCatalog.parse_marker_from_description(desc)

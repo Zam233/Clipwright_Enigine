@@ -29,7 +29,7 @@ def _mk_video_clip(start_sec: float = 2.0, duration_sec: float = 5.0) -> Clip:
     return Clip(
         id="vid1", kind=ClipKind.VIDEO, asset_id="a.mp4",
         track_id="t0", start_sec=start_sec, duration_sec=duration_sec,
-        metadata={"description": "[逻辑动画]因果：镜像→他者→镜像"},
+        metadata={"description": "【逻辑动画】因果：镜像→他者→镜像"},
     )
 
 

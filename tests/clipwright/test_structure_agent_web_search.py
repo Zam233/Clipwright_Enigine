@@ -32,7 +32,7 @@ _SCENES_JSON = json.dumps(
     [
         {
             "title": "开场",
-            "description": "引入话题 [文字动画]强调：关键结论",
+            "description": "引入话题 【文字动画】强调：关键结论",
             "keywords": ["话题", "引入"],
             "duration_sec": 30,
             "voiceover_script": "开场旁白",
@@ -40,7 +40,7 @@ _SCENES_JSON = json.dumps(
         },
         {
             "title": "论证",
-            "description": '数据论证 [逻辑动画]mg_dynamic:{"description":"柱状图","text":"A|B"}',
+            "description": '数据论证 【逻辑动画】mg_dynamic:{"description":"柱状图","text":"A|B"}',
             "keywords": ["数据", "论证"],
             "duration_sec": 60,
             "voiceover_script": "论证旁白",

@@ -208,7 +208,7 @@ curl -X POST http://localhost:8000/api/pipeline/run \
   }'
 ```
 
-RequirementsAgent 自动识别对比需求 → StructureAgent 生成 `[逻辑动画]mg_dynamic:{...}` 标记 → AnimationAgent 调用 llm_mg 插件 → LLM 生成完整 MG 动画。
+RequirementsAgent 自动识别对比需求 → StructureAgent 生成 `【逻辑动画】mg_dynamic:{...}` 标记 → AnimationAgent 调用 llm_mg 插件 → LLM 生成完整 MG 动画。
 
 ### 直接调用 llm_mg 插件
 
@@ -237,7 +237,7 @@ curl http://localhost:8000/api/plugin/llm_mg/templates
 在 scene.description 中直接写入标记：
 
 ```
-[逻辑动画]mg_dynamic:{"description":"数据对比图","text":"A|B|结果","style":"tech_dark"}
+【逻辑动画】mg_dynamic:{"description":"数据对比图","text":"A|B|结果","style":"tech_dark"}
 ```
 
 ## 更多

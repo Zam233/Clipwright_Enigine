@@ -813,6 +813,7 @@ async def _proceed_as_task(*, session: dict, req: "ProceedRequest", request: Req
     # （传进去会被静默忽略），必须显式交给 `create`。
     kernel = AgentKernel()
     task = kernel.create(task_req, limits=TaskLimits(max_turns=160, max_tool_calls=800))
+    task.session_id = str(session_id or "")
     _register_owner(task.id, request)
     # 会话↔项目绑定：任务结束要把成片时间线写回**这个项目**。旧实现从不写这条绑定，
     # 于是 `task_project_sync.project_id_of()` 在续跑/派发任务上恒拿不到项目 id →
@@ -989,6 +990,7 @@ async def proceed_to_pipeline(req: ProceedRequest, request: Request) -> dict:
         user_inputs=user_inputs, plan_data=plan_data,
         pipeline_req=pipeline_req, pipeline_id=pipeline_id,
     )
+
 
 
 

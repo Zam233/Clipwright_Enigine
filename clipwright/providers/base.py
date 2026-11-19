@@ -58,7 +58,7 @@ class LLMProvider(Protocol):
         base_url: str | None,
         model: str,
         instructions: str,
-        max_tokens: int,
+        max_tokens: int | None,
         flash: bool,
         timeout_sec: float = 0.0,
         proxy: str = "",

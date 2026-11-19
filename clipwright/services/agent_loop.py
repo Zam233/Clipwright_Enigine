@@ -47,6 +47,9 @@ def agent_tool_schemas() -> list[dict[str, Any]]:
     return [e.schema for e in build_surface() if e.name in AGENT_TOOLS]
 
 
+#: 按 task 记住上次 animation 失败 clip，供下一次 delegate 自动注入。
+_ANIMATION_RETRY: dict[str, list[str]] = {}
+
 #: 可"同参数直接复用"的工具（纯只读查询：摸底/看目录/读报告/查 run）。
 #: 写操作与派发**不进**这张表——它们必须真的执行。
 _REPEATABLE_TOOLS = frozenset({
