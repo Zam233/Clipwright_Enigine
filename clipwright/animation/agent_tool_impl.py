@@ -112,7 +112,7 @@ async def preview_html(mg_def: dict | None = None, params: dict | None = None,
                        width: int = 1920, height: int = 1080, fps: float = 30.0, **_: Any) -> dict[str, Any]:
     from clipwright.animation.agentic.frames import write_preview_html
     path = write_preview_html(mg_def or {}, params or {}, width, height, fps)
-    return {"path": str(path), "html": str(path), "render": False}
+    return {"success": True, "path": str(path), "html": str(path), "render": False}
 
 
 async def capture_preview_frames(html_path: str = "", times: list[float] | None = None,
@@ -120,14 +120,19 @@ async def capture_preview_frames(html_path: str = "", times: list[float] | None 
     from clipwright.animation.agentic.frames import capture_frames
     from pathlib import Path
     frames = capture_frames(Path(html_path), list(times or [0, 0.25, 0.5, 0.75, 1.0]), background=background)
-    return {"frames": [str(f) for f in frames]}
+    return {"success": True, "frames": [str(f) for f in frames]}
 
 
 async def inspect_frames(frames: list[str] | None = None, brief: str = "", **_: Any) -> dict[str, Any]:
     import asyncio
     from pathlib import Path
     from clipwright.animation.agentic.frames import inspect_frames as _inspect
-    return await asyncio.to_thread(_inspect, [Path(f) for f in (frames or [])], brief)
+    result = await asyncio.to_thread(_inspect, [Path(f) for f in (frames or [])], brief)
+    findings = result.get("findings") or []
+    blocking = [f for f in findings if str(f.get("severity") or "") == "blocking"]
+    result["success"] = not blocking
+    result["qa_errors"] = [str(f.get("observation") or f) for f in blocking]
+    return result
 
 
 async def revise_mg(mg_def: dict | None = None, findings: list[dict] | None = None,
@@ -136,7 +141,7 @@ async def revise_mg(mg_def: dict | None = None, findings: list[dict] | None = No
     errors = [str(f.get("observation") or f) for f in (findings or [])]
     gen = MGGenerator()
     repaired = await gen._call_llm_repair(mg_def or {}, errors, brief, "", {}, {}, {}, "")
-    return {"mg_def": repaired or mg_def, "repaired": bool(repaired), "findings": findings or []}
+    return {"success": bool(repaired), "mg_def": repaired or mg_def, "repaired": bool(repaired), "findings": findings or [], "qa_errors": [] if repaired else ["revise_mg 未产出"]}
 
 def install_animation_tool_handlers() -> None:
     for name, handler in {

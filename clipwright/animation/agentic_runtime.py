@@ -99,12 +99,39 @@ class AnimationAgentRuntime:
 
         async def guarded(observations: list[Any]) -> AgentAction:
             action = await decide(observations)
-            has_mg = any(
-                isinstance(o, dict) and o.get("mg_def")
-                or getattr(o, "data", {}).get("mg_def") for o in observations
-            )
-            if action.kind == "final" and (not has_mg or not ledger.can_final()):
-                return AgentAction("tool", "generate_mg", {}, "存在未解决失败，先修复/重生成")
+            def data_of(o: Any) -> dict[str, Any]:
+                return o.data if hasattr(o, "data") else (o if isinstance(o, dict) else {})
+
+            mg_obs = next((o for o in reversed(observations)
+                           if data_of(o).get("mg_def")), None)
+            html_obs = next((o for o in reversed(observations)
+                             if getattr(o, "tool", "") == "preview_html"), None)
+            frame_obs = next((o for o in reversed(observations)
+                              if getattr(o, "tool", "") == "capture_preview_frames"), None)
+            inspect_obs = next((o for o in reversed(observations)
+                                if getattr(o, "tool", "") == "inspect_frames"), None)
+            if action.kind == "final":
+                if not mg_obs:
+                    return AgentAction("tool", "generate_mg", {}, "还没有 mg_def")
+                if not html_obs:
+                    return AgentAction("tool", "preview_html", {"mg_def": data_of(mg_obs)["mg_def"]}, "先做浏览器预览")
+                if not frame_obs:
+                    return AgentAction("tool", "capture_preview_frames",
+                                       {"html_path": data_of(html_obs).get("path", "")}, "还没有抽帧证据")
+                if not inspect_obs:
+                    return AgentAction("tool", "inspect_frames",
+                                       {"frames": data_of(frame_obs).get("frames", []), "brief": ""},
+                                       "还没有 vision 质检")
+                findings = data_of(inspect_obs).get("findings") or []
+                blocking = [f for f in findings if str(f.get("severity") or "") == "blocking"]
+                if blocking:
+                    return AgentAction("tool", "revise_mg",
+                                       {"mg_def": data_of(mg_obs)["mg_def"], "findings": findings},
+                                       "inspect 仍有 blocking findings")
+                if not ledger.can_final():
+                    return AgentAction("tool", "generate_mg", {}, "存在未解决失败")
+            if action.kind == "final" and not ledger.can_final():
+                return AgentAction("tool", "generate_mg", {}, "存在未解决失败")
             return action
 
         result = await run_agentic_loop(
