@@ -1929,8 +1929,16 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 },
             )
             llm = getattr(self, "_llm", None) or LLMService()
+            bg_ctx = getattr(self, "_background_context", {}) or {}
+            bg_note = ""
+            if bg_ctx.get("frames"):
+                frames = bg_ctx.get("frames") or []
+                bg_note = ("\n\n## 真实背景上下文（配色前必须 read_file 查看）\n"
+                           + "\n".join(f"- t={f.get('time')} path={f.get('path')}" for f in frames[:8])
+                           + f"\ndominant_colors={bg_ctx.get('dominant_colors')} luminance={bg_ctx.get('luminance')}")
+            agent_goal = description + bg_note
             async def decide(obs):
-                return await rt.decide_with_llm(llm, description, obs)
+                return await rt.decide_with_llm(llm, agent_goal, obs)
             result = await rt.run(decide, category=str((category_context or {}).get("category") or "kinetic-type"),
                                   shot_type="title_reveal", needs={"agent"})
             logger.warning("AnimationAgent: agentic loop 结束 status=%s rounds=%s actions=%s",
