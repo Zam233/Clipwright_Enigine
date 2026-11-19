@@ -1263,7 +1263,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 )
                 if typed_ok:
                     return
-                last_issue = f"第 {attempt + 1} 次生成失败"
+                last_issue = f"第 {attempt + 1} 次生成失败：{getattr(self, '_last_typed_error', '')}"
                 logger.warning(
                     "AnimationAgent: 类型化 %s %s，%s",
                     anim_name, last_issue, "重跑" if attempt < 2 else "升级给主 Agent",
@@ -1632,6 +1632,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 "AnimationAgent: 类型化生成未通过门禁 %s（type=%s）：%s",
                 anim_name, spec.id, "；".join(result.issues[:3]) or result.method,
             )
+            self._last_typed_error = ("；".join(result.issues[:3]) or str(result.method or "unknown"))
             self._add_trace_warning(
                 f"类型化生成未通过，回退：{anim_name}（{spec.id}）" +
                 (f" — {result.issues[0]}" if result.issues else "")
