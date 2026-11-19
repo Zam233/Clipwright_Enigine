@@ -155,6 +155,12 @@ async def revise_mg(mg_def: dict | None = None, findings: list[dict] | None = No
     raw = str(getattr(resp, "content", "") or "")
     gen = MGGenerator()
     fixed = gen._parse_llm_response(raw)
+    if not fixed and findings:
+        user2 = json.dumps({"brief": brief, "findings": findings[:1], "mg_def": mg_def or {}},
+                           ensure_ascii=False)
+        resp2 = await LLMService().generate(messages=[{"role": "system", "content": system},
+                                                     {"role": "user", "content": user2}])
+        fixed = gen._parse_llm_response(str(getattr(resp2, "content", "") or ""))
     if not fixed:
         return {"success": False, "repaired": False, "mg_def": mg_def, "findings": findings or [],
                 "qa_errors": ["revise_mg JSON 无法解析"]}
