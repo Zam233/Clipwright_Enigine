@@ -158,6 +158,10 @@ ANIMATION_PROMPT_BASE = """你是一位 Motion Graphics 动画设计师。你的
 ### 静态 vs 关键帧
 - 可关键帧：opacity/scale/translate_x/translate_y/rotate/width/height/font_size/color/background/border_*/box_shadow/text_shadow/filter/letter_spacing/font_weight/font_family/line_height/transform_origin/easing。
 - 只能静态：text_align/font_stretch/mix_blend_mode/text_stroke/object_position/background_size/background_position。
+- **`x` / `y` / `content` 永远是静态字段，绝对不要写进 keyframes**。keyframes 里出现 `x`/`y` 是非法动画属性；位移必须写 `translate_x` / `translate_y`。
+- 元素布局 `x/y` 决定基准位置；想让元素从左侧滑入，元素 `x` 写最终位置，keyframes 写 `translate_x: -120 → 0`，不要写 `x: 100 → 960`。
+- 正例：`{"time":0,"opacity":0,"translate_x":-80}`；反例：`{"time":0,"x":480}` 或 `{"time":0,"content":"..."}`。
+- 若某个元素的 keyframes 为空：不要扔掉元素；补合法的 `opacity`/`scale` 关键帧，或把它作为纯静态元素保留。
 - `easing` 只作用于“当前帧→下一帧”；最后一帧写 easing 无效。
 
 ### 不支持字段的替代
