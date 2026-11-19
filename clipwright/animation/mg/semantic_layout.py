@@ -23,6 +23,20 @@ def _text(e: dict, params: dict[str, Any] | None = None) -> str:
     return _PARAM_RE.sub(repl, raw).strip() or raw
 
 
+
+
+def _hex_lum(v: str) -> float | None:
+    v = (v or "").strip()
+    if not v.startswith("#") or len(v) not in (4, 7):
+        return None
+    if len(v) == 4:
+        v = "#" + "".join(c * 2 for c in v[1:])
+    try:
+        r, g, b = (int(v[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    except ValueError:
+        return None
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
 def semantic_layout_errors(mg_def: dict[str, Any], params: dict[str, Any] | None = None) -> list[str]:
     elements = [e for e in (mg_def.get("elements") or []) if isinstance(e, dict)]
     errs: list[str] = []
@@ -68,6 +82,14 @@ def semantic_layout_errors(mg_def: dict[str, Any], params: dict[str, Any] | None
         for b in contents[i + 1:]:
             if a and b and (a == b or a in b or b in a) and min(len(a), len(b)) >= 2:
                 errs.append(f"重复文本：'{a}' 与 '{b}' 表达同一内容，只保留一个或拆行")
+    # 5) transparent canvas + near-black text = invisible in rendered black background
+    bg = str((mg_def.get("style") or {}).get("background") or "transparent").lower()
+    if bg in ("transparent", "none", ""):
+        for t in texts:
+            col = t.get("font_color") or t.get("color") or ""
+            lum = _hex_lum(str(col))
+            if lum is not None and lum < 0.2:
+                errs.append(f"文字 '{_text(t, params)}' 在透明画布上使用近黑色 {col}，渲染后不可见；改浅色 (#E8F0F7/#FFFFFF)")
     return errs
 
 
@@ -119,6 +141,16 @@ def semantic_layout_failures(mg_def: dict[str, Any], params: dict[str, Any] | No
                     observed={"y": [ay, by], "heights": [ah, bh]},
                     fix_hint="同 x 且 y 递增；相邻 y 差 >= 最大行高"))
                 break
+    bg = str((mg_def.get("style") or {}).get("background") or "transparent").lower()
+    if bg in ("transparent", "none", ""):
+        for ti, t in texts:
+            col = t.get("font_color") or t.get("color") or ""
+            lum = _hex_lum(str(col))
+            if lum is not None and lum < 0.2:
+                out.append(Failure("MG_TEXT_LOW_CONTRAST", "typography", scope="element",
+                    location={"element_index": ti, "path": "elements[%d].font_color" % ti},
+                    expected="#E8F0F7 或 #FFFFFF", observed=str(col),
+                    fix_hint="透明画布上的文字改为浅色，否则渲染后不可见"))
     seen: list[tuple[str, str]] = []
     for _, t in texts:
         txt = _text(t, params)
