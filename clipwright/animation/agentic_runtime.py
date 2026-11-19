@@ -30,26 +30,54 @@ class AnimationAgentRuntime:
         install_animation_tool_handlers()
 
     async def decide_with_llm(self, llm: Any, goal: str, observations: list[Any]) -> AgentAction:
+        """Prefer provider-native tool calls; never parse a free-form JSON blob if tools exist."""
         from clipwright.animation.agent_tools import list_animation_tools
-        tools = [f"{t.name}: {t.description}" for t in list_animation_tools()]
-        skills = [f"{k}: {v.body[:80]}" for k, v in SKILLS.items() if v.kind == "builtin"]
-        obs = "\n".join(str(o)[:600] for o in observations[-4:]) or "（无）"
-        prompt = (f"目标：{goal}\n\n工具：\n" + "\n".join(tools)
-                  + "\n\n技能：\n" + "\n".join(skills)
-                  + f"\n\n已有观察：\n{obs}\n\n下一步：")
-        resp = await llm.generate(messages=[{"role": "system", "content": DECIDE_SYSTEM},
-                                             {"role": "user", "content": prompt}])
+        tools = list_animation_tools()
+        schemas = [{
+            "type": "function",
+            "function": {
+                "name": t.name,
+                "description": t.description,
+                "parameters": {"type": "object", "properties": {}, "additionalProperties": True},
+            },
+        } for t in tools]
+        schemas.append({"type": "function", "function": {
+            "name": "final", "description": "结束本轮，交付当前 mg_def",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": True},
+        }})
+        obs_text = "\n".join(str(o) for o in observations[-6:]) or "（无）"
+        prompt = f"目标：{goal}\n\n已有观察：\n{obs_text}\n\n选择下一个工具调用。"
+        resp = await llm.generate(
+            messages=[{"role": "system", "content": DECIDE_SYSTEM},
+                      {"role": "user", "content": prompt}],
+            tools=schemas,
+        )
+        calls = getattr(resp, "tool_calls", None) or []
+        if calls:
+            tc = calls[0]
+            name = str(getattr(tc, "name", "") or "")
+            raw_args = getattr(tc, "arguments", "") or "{}"
+            try:
+                import json
+                args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args or {})
+            except Exception:
+                return AgentAction("tool", "generate_mg", {}, "tool args 无法解析，回退生成")
+            if name == "final":
+                return AgentAction("final", "", {}, "model final")
+            if name:
+                return AgentAction("tool", name, args, "")
+        # Provider without tool-calling: fall back to a single explicit final/parse path.
         import json
         raw = str(getattr(resp, "content", "") or "").strip()
-        start, end = raw.find("{"), raw.rfind("}")
+        start_i, end_i = raw.find("{"), raw.rfind("}")
         try:
-            data = json.loads(raw[start:end + 1]) if start >= 0 and end > start else {}
+            data = json.loads(raw[start_i:end_i + 1]) if start_i >= 0 and end_i > start_i else {}
         except Exception:
-            return AgentAction("tool", "generate_mg", {}, "decision JSON truncated; fallback to generate_mg")
-        return AgentAction(
-            str(data.get("kind") or "final"), str(data.get("name") or ""),
-            dict(data.get("args") or {}), str(data.get("reason") or ""),
-        )
+            return AgentAction("tool", "generate_mg", {}, "decision JSON 无法解析，回退生成")
+        if str(data.get("kind")) == "final":
+            return AgentAction("final", "", {}, str(data.get("reason") or ""))
+        return AgentAction("tool", str(data.get("name") or "generate_mg"),
+                           dict(data.get("args") or {}), str(data.get("reason") or ""))
 
     async def run(
         self,

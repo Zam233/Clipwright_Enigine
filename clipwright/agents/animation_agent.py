@@ -1960,8 +1960,9 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                 except Exception:
                     pass
             for obs in reversed(result.observations):
-                if isinstance(obs, dict) and obs.get("mg_def"):
-                    mg = obs
+                raw = obs.data if hasattr(obs, "data") else (obs if isinstance(obs, dict) else {})
+                if raw.get("mg_def"):
+                    mg = raw
                     mg["mg_def"]["agentic"] = True
                     from clipwright.animation.qa import qa_report
                     from clipwright.animation.mg.semantic_layout import semantic_layout_errors
