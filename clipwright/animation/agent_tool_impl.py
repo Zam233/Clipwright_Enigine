@@ -96,6 +96,12 @@ async def generate_mg(description: str = "", text_content: str = "", persona_sty
             web_context=web_context, width=width, height=height, fps=fps,
         )
         if last.get("success") and last.get("mg_def"):
+            from clipwright.animation.agentic.adapters import failures_from_mg_def
+            fs = failures_from_mg_def(last["mg_def"])
+            if fs:
+                last["success"] = False
+                last["qa_errors"] = [f.observed for f in fs]
+                last["error"] = "keyframes 含静态字段 x/y/content"
             return last
     return last
 

@@ -1967,6 +1967,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                     from clipwright.animation.qa import qa_report
                     from clipwright.animation.mg.semantic_layout import semantic_layout_errors
                     errors = semantic_layout_errors(mg["mg_def"], mg["mg_def"].get("params"))
+                    errors.extend(str(x) for x in (mg.get("qa_errors") or []) if str(x) not in errors)
                     if errors:
                         try:
                             from clipwright.animation.agent_tools import call_animation_tool

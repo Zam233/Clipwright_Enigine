@@ -24,6 +24,22 @@ def _code_for(text: str) -> tuple[str, str]:
     return "MG_TOOL_FAILED", "tool"
 
 
+def failures_from_mg_def(mg_def: dict[str, Any]) -> list[Failure]:
+    out: list[Failure] = []
+    for i, el in enumerate(mg_def.get("elements") or []):
+        for j, kf in enumerate(el.get("keyframes") or []):
+            for prop in ("x", "y", "content"):
+                if prop in kf:
+                    out.append(Failure(
+                        "MG_KEYFRAME_LAYOUT_PROP", "schema", scope="element",
+                        location={"element_index": i, "keyframe_index": j, "path": f"elements[{i}].keyframes[{j}].{prop}"},
+                        expected="translate_x/translate_y（x/y/content 为静态字段）",
+                        observed=kf.get(prop),
+                        fix_hint="删除该 keyframe 的布局/文本字段，用 translate_* 表达运动",
+                    ))
+    return out
+
+
 def failures_from_result(result: dict[str, Any]) -> list[Failure]:
     out: list[Failure] = []
     errors = list(result.get("qa_errors") or [])
