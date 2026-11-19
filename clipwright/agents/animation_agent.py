@@ -1991,17 +1991,39 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                     mg.setdefault("qa", qa_report(mg["mg_def"]))
                     try:
                         from clipwright.animation.agent_tools import call_animation_tool
-                        pv = await call_animation_tool("preview_html", mg_def=mg["mg_def"],
-                                                       params=mg["mg_def"].get("params") or {})
-                        fr = await call_animation_tool("capture_preview_frames",
-                                                       html_path=pv.get("path", ""),
-                                                       times=[0, 0.25, 0.5, 0.75, 1.0])
-                        ins = await call_animation_tool("inspect_frames", frames=fr.get("frames", []),
-                                                        brief=description)
-                        mg["visual_findings"] = ins.get("findings") or []
-                        if ins.get("qa_errors"):
-                            mg["success"] = False
-                            mg["qa_errors"] = list(mg.get("qa_errors") or []) + list(ins["qa_errors"])
+                        seen: set[str] = set()
+                        while True:
+                            pv = await call_animation_tool("preview_html", mg_def=mg["mg_def"],
+                                                           params=mg["mg_def"].get("params") or {})
+                            fr = await call_animation_tool("capture_preview_frames",
+                                                           html_path=pv.get("path", ""),
+                                                           times=[0, 0.25, 0.5, 0.75, 1.0])
+                            ins = await call_animation_tool("inspect_frames", frames=fr.get("frames", []),
+                                                            brief=description)
+                            findings = ins.get("findings") or []
+                            mg["visual_findings"] = findings
+                            blocking = [f for f in findings if str(f.get("severity") or "") == "blocking"]
+                            if not blocking:
+                                break
+                            fp = ";".join(str(f.get("observation") or f) for f in blocking)
+                            if fp in seen:
+                                mg["success"] = False
+                                mg["qa_errors"] = list(mg.get("qa_errors") or []) + [fp]
+                                break
+                            seen.add(fp)
+                            rev = await call_animation_tool("revise_mg", mg_def=mg["mg_def"],
+                                                            findings=findings, brief=description)
+                            if not rev.get("repaired") or not rev.get("mg_def"):
+                                mg["success"] = False
+                                mg["qa_errors"] = list(mg.get("qa_errors") or []) + [
+                                    "revise_mg 未产出新 mg_def"]
+                                break
+                            mg["mg_def"] = rev["mg_def"]
+                            errors = semantic_layout_errors(mg["mg_def"], mg["mg_def"].get("params"))
+                            if errors:
+                                mg["success"] = False
+                                mg["qa_errors"] = list(mg.get("qa_errors") or []) + errors
+                                break
                     except Exception as exc:
                         mg["visual_findings"] = [{"severity": "warning", "category": "tool",
                                                   "observation": f"visual inspect failed: {exc}"}]
