@@ -72,10 +72,19 @@ class AnimationAgentRuntime:
                 return AgentAction("tool", "generate_mg", {}, "还没有 mg_def，先生成")
             return action
 
-        return await run_agentic_loop(
+        result = await run_agentic_loop(
             decide=guarded,
             execute_tool=execute,
             load_skill=load_skill,
             max_rounds=self.max_rounds,
             max_calls=self.max_calls,
         )
+        if self.require_mg and not any(
+            isinstance(o, dict) and o.get("mg_def") for o in result.observations
+        ):
+            try:
+                result.observations.append(await execute("generate_mg", {}))
+                result.status = "recovered"
+            except Exception as exc:  # noqa: BLE001
+                result.observations.append({"error": str(exc)[:500], "tool": "generate_mg"})
+        return result
