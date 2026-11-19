@@ -126,10 +126,9 @@ async def capture_preview_frames(html_path: str = "", times: list[float] | None 
 
 
 async def inspect_frames(frames: list[str] | None = None, brief: str = "", **_: Any) -> dict[str, Any]:
-    import asyncio
     from pathlib import Path
     from clipwright.animation.agentic.frames import inspect_frames as _inspect
-    result = await asyncio.to_thread(_inspect, [Path(f) for f in (frames or [])], brief)
+    result = await _inspect([Path(f) for f in (frames or [])], brief)
     findings = result.get("findings") or []
     blocking = [f for f in findings if str(f.get("severity") or "") == "blocking"]
     result["success"] = not blocking
