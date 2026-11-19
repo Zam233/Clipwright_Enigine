@@ -2022,6 +2022,12 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                         mg["success"] = False
                         mg["qa_errors"] = list(mg.get("qa_errors") or []) + [
                             str(f.get("observation") or f) for f in blocking]
+                    bg = str(((mg.get("mg_def") or {}).get("style") or {}).get("background") or "transparent").lower()
+                    decision = mg.get("background_decision") or {}
+                    if bg not in ("transparent", "none", "") and not str(decision.get("reason") or "").strip():
+                        mg["success"] = False
+                        mg["qa_errors"] = list(mg.get("qa_errors") or []) + [
+                            "使用了不透明背景但没有 background_reason"]
                     return mg
         except Exception as exc:  # noqa: BLE001 — agentic loop 失败必须回退旧引擎
             logger.warning("AnimationAgent: agentic loop 失败，回退 MGGenerator: %s", exc)

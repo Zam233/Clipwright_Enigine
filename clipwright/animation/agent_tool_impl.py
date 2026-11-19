@@ -103,6 +103,11 @@ async def generate_mg(description: str = "", text_content: str = "", persona_sty
                 last["success"] = False
                 last["qa_errors"] = [f.observed for f in fs]
                 last["error"] = "keyframes 含静态字段 x/y/content"
+            last["background_decision"] = {
+                "mode": "opaque" if allow_opaque_background else "transparent",
+                "reason": str(background_reason or ""),
+                "value": str((last["mg_def"].get("style") or {}).get("background") or "transparent"),
+            }
             return last
     return last
 
