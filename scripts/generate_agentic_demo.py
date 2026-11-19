@@ -1,5 +1,5 @@
 """Generate demo MGs through AnimationAgent._generate_mg_via_agentic (Tool/Skill loop)."""
-import asyncio, json, sys
+import asyncio, json, os, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from clipwright.main import app
@@ -17,7 +17,7 @@ CASES = [
 async def main():
     async with app.router.lifespan_context(app):
         out = []
-        for name, desc, text in CASES:
+        for name, desc, text in CASES[: int(os.environ.get("AGENTIC_LIMIT", "5"))]:
             agent = AnimationAgent()
             agent._llm = LLMService()
             agent._tl_width, agent._tl_height, agent._tl_fps = 1920, 1080, 30
