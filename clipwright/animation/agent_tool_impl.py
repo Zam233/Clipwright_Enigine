@@ -117,9 +117,11 @@ async def preview_html(mg_def: dict | None = None, params: dict | None = None,
 
 async def capture_preview_frames(html_path: str = "", times: list[float] | None = None,
                                  background: str = "#111111", **_: Any) -> dict[str, Any]:
+    import asyncio
     from clipwright.animation.agentic.frames import capture_frames
     from pathlib import Path
-    frames = capture_frames(Path(html_path), list(times or [0, 0.25, 0.5, 0.75, 1.0]), background=background)
+    frames = await asyncio.to_thread(capture_frames, Path(html_path),
+                                     list(times or [0, 0.25, 0.5, 0.75, 1.0]), None, background)
     return {"success": True, "frames": [str(f) for f in frames]}
 
 
