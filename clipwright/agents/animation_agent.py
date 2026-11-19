@@ -1993,7 +1993,6 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                     try:
                         from clipwright.animation.agent_tools import call_animation_tool
                         seen: set[str] = set()
-                        last_blocking_count: int | None = None
                         while True:
                             pv = await call_animation_tool("preview_html", mg_def=mg["mg_def"],
                                                            params=mg["mg_def"].get("params") or {})
@@ -2007,12 +2006,6 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                             blocking = [f for f in findings if str(f.get("severity") or "") == "blocking"]
                             if not blocking:
                                 break
-                            if last_blocking_count is not None and len(blocking) >= last_blocking_count:
-                                mg["success"] = False
-                                mg["qa_errors"] = list(mg.get("qa_errors") or []) + [
-                                    "vision revise 无进展（blocking 未减少）"]
-                                break
-                            last_blocking_count = len(blocking)
                             fp = ";".join(str(f.get("observation") or f) for f in blocking)
                             if fp in seen:
                                 mg["success"] = False
