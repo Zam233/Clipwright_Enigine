@@ -858,7 +858,9 @@ ision_prompt
                         persona_style, scene_context, category_context, vision_prompt,
                         **repair_kwargs,
                     )
-                    if repaired_v:
+                    if isinstance(repaired_v, str):
+                        repaired_v = self._parse_llm_response(repaired_v)
+                    if isinstance(repaired_v, dict):
                         return await self._build_success(
                             repaired_v, "visual_repair",
                             params=self._build_llm_params(repaired_v, text_content, persona_style),
