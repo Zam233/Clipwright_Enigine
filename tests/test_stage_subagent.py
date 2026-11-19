@@ -67,7 +67,7 @@ def _patch_agent(monkeypatch, payload, delay: float = 0.0):
 # ── 黑板语义 ────────────────────────────────────────────────
 
 
-def test_blackboard_tracks_writer_and_rejects_backwards_timeline() -> None:
+def test_blackboard_tracks_writer_and_allows_any_producer_timeline() -> None:
     bb.put("t1", "script_skeleton", {"title": "x"}, by="structure")
     assert bb.owner_of("t1", "script_skeleton") == "structure"
 
@@ -75,9 +75,9 @@ def test_blackboard_tracks_writer_and_rejects_backwards_timeline() -> None:
     bb.put("t1", "timeline", {"tracks": [], "duration": 10}, by="audio")
     assert bb.owner_of("t1", "timeline") == "audio"
 
-    with pytest.raises(bb.BlackboardError) as exc:
-        bb.put("t1", "timeline", {"tracks": [{"clips": []}]}, by="edit")
-    assert "下游覆盖上游" in str(exc.value)
+    # 顺序不再是硬限制：animation/edit 可以在 audio 之后重写时间线
+    bb.put("t1", "timeline", {"tracks": [{"clips": []}]}, by="edit")
+    assert bb.owner_of("t1", "timeline") == "edit"
 
 
 def test_blackboard_requires_pointer_for_huge_values() -> None:
