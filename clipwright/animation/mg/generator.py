@@ -1517,6 +1517,21 @@ ision_prompt
             except json.JSONDecodeError:
                 pass
 
+        # 容忍常见 LLM JSON 损坏：尾逗号、截断在字符串/容器中。
+        if start >= 0:
+            cand = content[start:]
+            import re as _re
+            cand = _re.sub(r",\s*([}\]])", r"\1", cand)
+            for _ in range(64):
+                try:
+                    return json.loads(cand)
+                except json.JSONDecodeError as exc:
+                    if "Unterminated string" in exc.msg:
+                        cand += '"'
+                    elif exc.pos >= len(cand) - 2:
+                        cand += "}" if "{" in cand else "]"
+                    else:
+                        break
         # 三种提取都失败：把"到底怎么坏的"讲清楚（旧实现只打前 200 字符，
         # 长度截断与格式坏在日志里长得一模一样，且主 Agent 完全看不到）。
         truncated = finish_reason in ("length", "max_tokens")
