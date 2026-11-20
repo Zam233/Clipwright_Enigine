@@ -1070,32 +1070,70 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
         target_sec: float = 0.0,
         max_repairs: int = 2,
     ) -> tuple[list[dict], list[str], list[str]]:
-        """自检不过 → 把 findings 拼进下一轮提示，同 run 内修复。
+        """自检不过 → 把 findings 交给公共 `drive` 的 gate，同 run 内回灌修复。
 
-        返回 `(scenes, warnings, problems)`；`problems` 非空表示修复预算用完仍未过，
-        由调用方降级留痕（不再静默 template 兜底）。
+        B15b：循环/预算/终止由 `agent_loop.drive` 控制；这里只提供
+        `candidate → gate` 两个纯函数，不再自建 while。
         """
-        warnings = list(warnings)
-        current = list(scenes or [])
-        for attempt in range(max(0, int(max_repairs))):
-            problems = self._scene_gate_problems(
-                current, script_text=script_text, target_sec=target_sec)
-            if not problems:
-                return current, warnings, []
-            hint = (
-                "\n\n## 上一轮结构自检未通过（只修复这些问题，其余保持不变）\n"
-                + "\n".join(f"- {p}" for p in problems[:10])
-                + "\n请输出完整修正后的场景表（同等字段），不要只输出差异。"
+        from types import SimpleNamespace
+
+        from clipwright.services.agent_loop import (
+            LoopAction, LoopBudget, LoopObservation, drive,
+        )
+
+        state: dict[str, Any] = {"scenes": list(scenes or []), "warnings": list(warnings or [])}
+
+        def _problems() -> list[str]:
+            return self._scene_gate_problems(
+                state["scenes"], script_text=script_text, target_sec=target_sec)
+
+        async def decide(observations: list[Any]) -> Any:
+            rejected = [o for o in observations
+                        if getattr(o, "kind", "") == "gate_rejected"]
+            if rejected:
+                findings = list((getattr(rejected[-1], "payload", {}) or {}).get("missing") or [])
+                hint = (
+                    "\n\n## 上一轮结构自检未通过（只修复这些问题，其余保持不变）\n"
+                    + "\n".join(f"- {p}" for p in findings[:10])
+                    + "\n请输出完整修正后的场景表（同等字段），不要只输出差异。"
+                )
+                fixed, more = await generate(hint)
+                state["warnings"].extend(list(more or []))
+                state["warnings"].append(
+                    f"结构自检未通过（第 {len(rejected)} 次回灌）："
+                    + "；".join(findings[:3]))
+                if fixed:
+                    state["scenes"] = list(fixed)
+                elif not state["scenes"]:
+                    # 生成器给不出场景：不再空转；由 gate 放行后带着 problems 返回
+                    state["gave_up"] = True
+                    return SimpleNamespace(calls=[], text="")
+            return SimpleNamespace(
+                calls=[LoopAction("candidate", "scenes", {})], text="")
+
+        async def dispatch(_action: Any) -> Any:
+            return LoopObservation("final_candidate", "scenes", ok=True,
+                                   payload={"scenes": state["scenes"]})
+
+        def gate(_candidate: Any) -> Any:
+            if state.get("gave_up"):
+                return SimpleNamespace(accepted=True, missing=[], reason="")
+            problems = _problems()
+            return SimpleNamespace(
+                accepted=not problems, missing=problems,
+                reason="；".join(problems[:5]) or "",
+                code="scenes_invalid" if problems else "",
             )
-            fixed, more = await generate(hint)
-            warnings.extend(list(more or []))
-            warnings.append(
-                f"结构自检未通过（第 {attempt + 1} 次回灌）：" + "；".join(problems[:3]))
-            if not fixed:
-                break
-            current = list(fixed)
-        return current, warnings, self._scene_gate_problems(
-            current, script_text=script_text, target_sec=target_sec)
+
+        await drive(
+            run_id="structure_gate",
+            decide=decide,
+            dispatch=dispatch,
+            gate=gate,
+            budget=LoopBudget(rounds=max(1, int(max_repairs) + 1),
+                              actions=max(1, int(max_repairs) + 1)),
+        )
+        return state["scenes"], state["warnings"], _problems()
 
     async def _enrich_scene_animations(self, scenes: list[dict], context: AgentContext) -> list[dict]:
         """为缺少动画标记的场景调用 LLM 补充动画标记（文字动画/逻辑动画/mg_dynamic）。
