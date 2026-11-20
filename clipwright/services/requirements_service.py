@@ -383,6 +383,35 @@ def _ai_generation_overview() -> str:
 
 # ── 对话窗口管理 ──────────────────────────────
 
+def chat_batch_digest(messages: list[dict] | None, *, limit: int = 6,
+                      max_chars: int = 1200) -> str:
+    """把会话里最近几轮用户/助手对话压成一段「本批对话要点」。
+
+    B16：规划与需求聊天**同批**——聊天里已确认的倾向必须进入生成提示，
+    否则模型只能从结构化 brief 猜测，用户会觉得"刚说过的它没听见"。
+    只取 user/assistant 的纯文本，工具轨迹与卡片不进来。
+    """
+    lines: list[str] = []
+    for m in list(messages or [])[-limit * 2:]:
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role") or "")
+        if role not in ("user", "assistant"):
+            continue
+        text = m.get("content")
+        if not isinstance(text, str):
+            continue
+        text = " ".join(text.split()).strip()
+        if not text:
+            continue
+        prefix = "用户" if role == "user" else "助手"
+        lines.append(f"- {prefix}：{text[:220]}")
+    if not lines:
+        return ""
+    digest = "\n".join(lines)
+    return digest[:max_chars]
+
+
 def compress_history(messages: list[dict]) -> list[dict]:
     """压缩超长对话历史：超过 MAX_HISTORY_ROUNDS 轮时，保留最近 N 轮 + 摘要。"""
     if len(messages) <= MAX_HISTORY_ROUNDS * 2:
@@ -2616,6 +2645,16 @@ class RequirementsService:
                     rag_context += f"\n\n## AI 生成能力\n{gen_overview}"
                 else:
                     rag_context = f"## AI 生成能力\n{gen_overview}"
+
+            # B16：需求聊天与规划同批 —— 最近几轮对话进入生成上下文
+            try:
+                _row = RequirementsSessionModel.find_by_id(session_id)
+                _digest = chat_batch_digest(getattr(_row, "messages", None))
+            except Exception as exc:  # noqa: BLE001 — 读不到会话不影响出规划
+                logger.debug("需求对话摘要读取失败 %s: %s", session_id, exc)
+                _digest = ""
+            if _digest:
+                rag_context += ("\n\n## 本批需求对话（用户已表达，必须遵守）\n" + _digest)
 
             from clipwright.services import stage_subagent
 

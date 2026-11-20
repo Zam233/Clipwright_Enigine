@@ -451,11 +451,23 @@ async def _search_with_cache(
 
     with _ctx.operation(f"material_search:{','.join(source_ids or ['all'])[:40]}",
                         source="internal") as _op:
-        results = await MaterialRegistry.search(
-            query=query,
-            top_k_per_source=top_k,
-            source_ids=source_ids,
-        )
+        try:
+            results = await MaterialRegistry.search(
+                query=query,
+                top_k_per_source=top_k,
+                source_ids=source_ids,
+            )
+        except Exception as exc:  # noqa: BLE001 — 源失败是降级，不是阶段异常
+            from clipwright.services.degradation import note_degradation
+
+            note_degradation(
+                "material_search_unavailable",
+                detail=f"{type(exc).__name__}: {str(exc)[:200]}",
+                scope="stage:material",
+                impact="本次查询没有候选，相关场景可能退化为文字占位",
+            )
+            _op["detail"] = f"搜索失败（{type(exc).__name__}）"
+            return []
         _op["detail"] = f"{len(results)} 条结果（query={query[:40]}）"
     # 场景候选排除音频——BGM 由 AudioAgent 独立链路检索；音频混入
     # 视频场景候选会被 video_trim 拒绝，烧掉候选位并把场景挤成占位
@@ -780,18 +792,18 @@ class MaterialAgent(BaseAgent[MaterialInput, MaterialOutput]):
             if not scenes:
                 # D7（PRD §19.5）：scenes 为空是**上游没给**，不是"素材阶段完成"。
                 # 旧实现返回 PASS + 空候选，于是 editor 成为第一个失败点且归因 unknown。
-                from clipwright.schema.agent import FailureReport
+                from clipwright.schema.agent import FailureReport, Need
 
                 _reason = "分镜场景为空：structure 没有产出可用 scenes"
                 return MaterialOutput(
                     decision=AgentDecision.FAIL,
                     error=_reason,
+                    needs=[Need(field="scenes", from_stage="structure",
+                                why="素材匹配需要场景（title/description/时长）")],
                     failure=FailureReport(
                         category="input_insufficient",
                         blocking_point=_reason[:200],
                         retryable="needs_upstream",
-                        needs=[{"from_stage": "structure", "field": "scenes",
-                                "why": "素材匹配需要场景（title/description/时长）"}],
                         evidence=[{"kind": "empty_scenes", "text": "scenes=[]"}],
                     ),
                     candidate_clips=[],

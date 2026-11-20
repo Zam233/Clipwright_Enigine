@@ -21,10 +21,10 @@ from typing import Any, Iterable, Optional
 
 from clipwright.config import logger, settings
 from clipwright.schema.agent import AgentDecision
+from clipwright.schema.run import AgentResult
 from clipwright.schema.stage import (
     STAGE_NAMES,
     TIMELINE_STAGES,
-    StageResult,
     StageSpec,
 )
 from clipwright.services import stage_inputs, stage_merge, task_blackboard as bb
@@ -32,6 +32,7 @@ from clipwright.services.task_events import emit
 
 #: 阶段 → Agent 类（延迟导入：这些 Agent 各自会 import 一堆重量级依赖）
 _STAGE_DEPENDENCIES: dict[str, tuple[str, str]] = {
+    "requirements": ("clipwright.agents.requirements_agent", "RequirementsAgent"),
     "structure": ("clipwright.agents.structure_agent", "StructureAgent"),
     "material": ("clipwright.agents.material_agent", "MaterialAgent"),
     "edit": ("clipwright.agents.edit_agent", "EditAgent"),
@@ -41,10 +42,43 @@ _STAGE_DEPENDENCIES: dict[str, tuple[str, str]] = {
 }
 
 #: 进程内运行表：task_id → [StageResult]
-_RUNS: dict[str, list[StageResult]] = {}
-#: 幂等结果缓存：key → StageResult
-_IDEM: dict[str, StageResult] = {}
-_MAX_IDEM = 256
+def _stage_result(*, task_id: str, spec: Any, stage: str, status: str,
+                 artifacts: dict[str, Any] | None = None, summary: str = "",
+                 writes: list[str] | None = None,
+                 degradations: list[dict[str, Any]] | None = None,
+                 issues: list[dict[str, Any]] | None = None,
+                 redo_agent: str = "", redo_hint: str = "",
+                 needs: list[dict[str, Any]] | None = None,
+                 details: dict[str, Any] | None = None,
+                 cost_usd: float | None = None, cost_unknown: bool = False,
+                 tokens: int = 0,
+                 tool_calls: list[dict[str, Any]] | None = None,
+                 tool_calls_path: str = "", duration_ms: int = 0,
+                 provider: str = "", model: str = "",
+                 failure: Any = None, error: str = "",
+                 report_path: str = "", report_seq: int = 0,
+                 attempt: int | None = None) -> AgentResult:
+    """B21b：阶段终态直接构造成 AgentResult（唯一铁厂是 result_assembler）。"""
+    from clipwright.services import result_assembler as _ra
+
+    return _ra.build(
+        run_id=str(getattr(spec, "run_id", "") or f"{task_id}:{stage}"),
+        kind="stage", mode="task",
+        task_id=str(task_id), trace_id=str(getattr(spec, "trace_id", "") or ""),
+        attempt=int(attempt or getattr(spec, "attempt", 1) or 1),
+        stage=str(stage), role=str(stage), status=status,  # type: ignore[arg-type]
+        summary=summary, outputs=dict(artifacts or {}),
+        writes=list(writes or []), needs=list(needs or []),
+        failure=failure, error=error,
+        issues=list(issues or []), redo_agent=redo_agent, redo_hint=redo_hint,
+        degradations=list(degradations or []), report_path=report_path,
+        report_seq=report_seq, tool_calls=list(tool_calls or []),
+        tool_calls_path=tool_calls_path, tokens=tokens,
+        cost_usd=cost_usd, cost_unknown=cost_unknown, duration_ms=duration_ms,
+        provider=provider, model=model, details=dict(details or {}),
+    )
+
+
 
 #: `run_inline`（预览/局部修补）的默认墙钟：比完整阶段短，卡住要尽快报错
 DEFAULT_STAGE_TIMEOUT_LOCAL = 1800.0
@@ -88,55 +122,25 @@ def agent_for(stage: str) -> Any:
     """实例化阶段 Agent（不复用实例：Agent 内部状态不能跨任务串味）。"""
     dep = _STAGE_DEPENDENCIES.get(str(stage))
     if dep is None:
-        raise ValueError(f"阶段 {stage} 没有对应的 Agent（requirements 由需求服务处理）")
+        raise ValueError(f"阶段 {stage} 没有对应的 Agent（未知阶段）")
     module_name, class_name = dep
     module = __import__(module_name, fromlist=[class_name])
     return getattr(module, class_name)()
 
 
-def list_stages(task_id: str) -> list[dict[str, Any]]:
-    return [r.to_public() for r in _RUNS.get(str(task_id), [])]
-
-
-def import_runs(task_id: str, items: list[dict[str, Any]]) -> int:
-    """从检查点恢复阶段运行表（S5 状态持久化）；返回恢复条数。
-
-    幂等：已有记录时跳过（避免重复恢复把同一阶段记两遍）。
-    """
-    tid = str(task_id)
-    if _RUNS.get(tid):
-        return 0
-    restored: list[StageResult] = []
-    for item in items or []:
-        if not isinstance(item, dict):
-            continue
-        try:
-            restored.append(StageResult.model_validate(item))
-        except Exception:  # noqa: BLE001 — 单条坏数据跳过
-            continue
-    if restored:
-        _RUNS[tid] = restored
-        logger.info("已恢复阶段运行表 %s（%d 条）", tid, len(restored))
-    return len(restored)
-
-
 def get_stage(task_id: str, stage: str) -> Optional[dict[str, Any]]:
-    for result in reversed(_RUNS.get(str(task_id), [])):
-        if result.stage == str(stage):
-            return result.to_public()
+    """最近一次该阶段的 run（B21b：读 RunStore，不再有进程内镜像）。"""
+    from clipwright.services import run_store
+
+    for result in reversed(run_store.list_task(str(task_id))):
+        if str(getattr(result, "stage", "")) == str(stage):
+            return result.model_dump(mode="json")
     return None
 
 
 def reset(task_id: str = "") -> None:
-    if task_id:
-        _RUNS.pop(str(task_id), None)
-    else:
-        _RUNS.clear()
-        _IDEM.clear()
-
-
-def _record(task_id: str, result: StageResult) -> None:
-    _RUNS.setdefault(str(task_id), []).append(result)
+    """兼容旧测试：进程内运行表已删除，RunStore 由测试用 tmp workspace 隔离。"""
+    return None
 
 
 def _default_route() -> tuple[str, str]:
@@ -309,68 +313,23 @@ async def run_inline(stage: str, input_obj: Any, context: Any, *,
     return output
 
 
-async def run(task: Any, spec: StageSpec) -> dict[str, Any]:
-    """能力层入口：返回 Kernel 可直接消费的 dict（status/output/failure/…）。"""
-    task_id = str(getattr(task, "id", "") or "")
-    if not task_id:
-        return {"status": "refused", "error": "缺少 task_id"}
-    if str(spec.stage) not in STAGE_NAMES:
-        return {"status": "refused", "error": f"未知阶段: {spec.stage}"}
-
-    idem = (spec.idem_key or "").strip()
-    if idem and idem in _IDEM:
-        cached = _IDEM[idem].model_copy(deep=True)
-        return {
-            "status": "ok" if cached.status in ("ok", "degraded") else "error",
-            "output": cached.to_public() | {"replayed": True},
-            "cost_usd": cached.cost_usd,
-        }
-
-    result = await run_stage(task, spec)
-    if idem:
-        if len(_IDEM) >= _MAX_IDEM:
-            _IDEM.pop(next(iter(_IDEM)))
-        _IDEM[idem] = result.model_copy(deep=True)
-
-    if result.status in ("ok", "degraded", "dry_run"):
-        return {
-            "status": "ok",
-            "output": result.to_public(),
-            "cost_usd": result.cost_usd,
-            "cost_unknown": result.cost_unknown,
-        }
-    if result.status == "cancelled":
-        return {
-            "status": "error",
-            "error": result.error or "阶段被取消",
-            "output": result.to_public(),
-            "failure": {
-                "category": "cancelled",
-                "retryable": "permanent",
-                "blocking_point": result.error or "人工取消",
-                "evidence": [],
-            },
-        }
-    return {
-        "status": "error" if result.status == "failed" else "refused",
-        "error": result.error or f"阶段 {spec.stage} 状态 {result.status}",
-        "output": result.to_public(),
-        "failure": (result.failure.model_dump(mode="json") if result.failure else {
-            "category": "unknown", "retryable": "unknown",
-            "blocking_point": result.error or result.status, "evidence": [],
-        }),
-    }
-
-
 def _stage_progress_counts(task_id: str) -> tuple[int, int]:
-    """(已完成阶段数, 计划阶段数)。拿不到就给 (n, 0) —— 让播报写"总数未定"。"""
-    try:
-        from clipwright.services.workspace import Workspace
-        from clipwright.services import stage_report
+    """(已完成阶段数, 计划阶段数)。
 
-        root = Workspace(str(task_id)).dirs().root
-        done = len({m["stage"] for m in stage_report.list_reports(root, limit=200)})
-        return done, len(PLAN_STAGES)
+    B08：完成数来自**本任务已提交的 run 收据**（ok/degraded，且属于计划阶段），
+    不再数“工作区里有多少份报告”——项目工作区可能被多个任务共用，按报告数会把
+    别的任务的阶段算进来；requirements 也不在 6 阶段分母里。
+    """
+    try:
+        from clipwright.services import run_store
+
+        runs = run_store.list_task(str(task_id))
+        done = {
+            str(r.stage) for r in runs
+            if str(r.kind) == "stage" and str(r.stage) in PLAN_STAGES
+            and str(r.status) in ("ok", "degraded")
+        }
+        return len(done), len(PLAN_STAGES)
     except Exception:  # noqa: BLE001 — 统计失败按"总数未定"处理
         return 0, 0
 
@@ -425,7 +384,7 @@ def _explicit_timeline_for_redo(task: Any, stage: str, explicit: dict,
         return None
 
 
-async def run_stage(task: Any, spec: StageSpec) -> StageResult:
+async def run_stage(task: Any, spec: StageSpec) -> AgentResult:
     """真跑一个阶段，返回结构化结果（并合并进黑板）。"""
     task_id = str(getattr(task, "id", "") or "")
     stage = str(spec.stage)
@@ -433,6 +392,8 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     # 但空值回退需要黑板（见 stage_inputs.assemble 的 _flow_keys）——二者不冲突：
     # 校验只认显式键，取值时空值才回退。
     explicit = dict(spec.inputs or {})
+    # CAS 基线：阶段跑完后如果黑板已被别的写入推进，提交必须拒绝而不是覆盖
+    board_revision = bb.revision(task_id)
     board = bb.get(task_id)
     # 重做 animation/edit 时，如果黑板 timeline 的 owner 是下游（audio），
     # 先把它回退到这次显式传入的上游时间线，否则 animation 会被
@@ -518,34 +479,32 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
             **(spec.args or {}),
         }
     except stage_inputs.StageInputMissing as exc:
-        result = StageResult(
+        result = _stage_result(task_id=task_id, spec=spec, 
             stage=stage,
             status="failed",
             error=str(exc),
             summary=f"缺输入：{'、'.join(exc.missing)}",
+            needs=_missing_needs(exc),
             failure=_missing_failure(stage, exc),
             duration_ms=int((time.monotonic() - started) * 1000),
         )
-        _record(task_id, result)
         emit(task_id, "step_end", f"阶段 {stage} 无法开始：{result.error}",
              {"stage": stage, "status": result.status,
               "missing": exc.missing, "suggestion": exc.suggestion})
         return result
     except Exception as exc:  # noqa: BLE001 — 装配异常同样要如实回报
-        result = StageResult(
+        result = _stage_result(task_id=task_id, spec=spec, 
             stage=stage, status="failed", error=f"{type(exc).__name__}: {exc}"[:500],
             duration_ms=int((time.monotonic() - started) * 1000),
         )
-        _record(task_id, result)
         return result
 
     if spec.dry_run:
-        result = StageResult(
+        result = _stage_result(task_id=task_id, spec=spec, 
             stage=stage, status="dry_run",
             summary=f"输入已装配（{type(input_obj).__name__}），未执行",
             duration_ms=int((time.monotonic() - started) * 1000),
         )
-        _record(task_id, result)
         return result
 
     # 2) 路由：显式 provider/model 只校验「已配置 provider + 模型可用」，
@@ -557,7 +516,7 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
 
         resolved = resolve_explicit_route(spec.provider, spec.model)
         if not resolved.ok:
-            result = StageResult(
+            result = _stage_result(task_id=task_id, spec=spec, 
                 stage=stage, status="refused",
                 error=f"显式模型不可用：{resolved.message}",
                 failure=_policy_failure(
@@ -566,7 +525,6 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
                 ),
                 duration_ms=int((time.monotonic() - started) * 1000),
             )
-            _record(task_id, result)
             return result
         route = resolved.route
 
@@ -618,6 +576,9 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
             except Exception as exc:  # noqa: BLE001 — 技能轮失败不影响阶段主流程
                 logger.debug("阶段 %s 技能轮跳过: %s", stage, exc)
 
+            # CAS 基线必须在所有“执行前写入”（如 reset_timeline）之后取：
+            # 否则阶段自己的回退会被当成并发冲突。
+            board_revision = bb.revision(task_id)
             output = await wait_or_run(agent.execute(input_obj, context), timeout_eff)
         payload = stage_merge.payload_of(output)
         if degradations and hasattr(output, "degradations"):
@@ -632,30 +593,27 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
             except Exception:  # noqa: BLE001
                 pass
     except asyncio.TimeoutError:
-        result = StageResult(
+        result = _stage_result(task_id=task_id, spec=spec, 
             stage=stage, status="failed",
             error=f"阶段超时（>{timeout_eff}s）",
             failure=_timeout_failure(stage, timeout_eff),
             duration_ms=int((time.monotonic() - started) * 1000),
         )
-        _record(task_id, result)
         emit(task_id, "step_end", f"阶段 {stage} 超时", {"stage": stage, "status": "failed"})
         return result
     except asyncio.CancelledError:
-        result = StageResult(
+        result = _stage_result(task_id=task_id, spec=spec, 
             stage=stage, status="cancelled", error="阶段被取消",
             duration_ms=int((time.monotonic() - started) * 1000),
         )
-        _record(task_id, result)
         raise
     except Exception as exc:  # noqa: BLE001 — 阶段失败不能带崩 Kernel
         logger.warning("阶段 %s 执行失败 %s: %s", stage, task_id, exc)
-        result = StageResult(
+        result = _stage_result(task_id=task_id, spec=spec, 
             stage=stage, status="failed", error=f"{type(exc).__name__}: {exc}"[:500],
             failure=_internal_failure(exc),
             duration_ms=int((time.monotonic() - started) * 1000),
         )
-        _record(task_id, result)
         emit(task_id, "step_end", f"阶段 {stage} 失败：{exc}",
              {"stage": stage, "status": "failed"})
         return result
@@ -687,7 +645,9 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     merge_errors: list[str] = []
     if spec.merge:
         try:
-            writes, merge_errors = stage_merge.merge(stage, payload, task_id=task_id)
+            writes, merge_errors = stage_merge.merge(
+                stage, payload, task_id=task_id, expect_revision=board_revision,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("阶段合并失败 %s.%s: %s", task_id, stage, exc)
             merge_errors = [f"merge: {exc}"]
@@ -719,7 +679,9 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
                       for e in merge_errors[:5]]
 
     # attempt = 该阶段在本任务里跑过几次（含本次）：进度去重键与报告文件名都用它
-    attempt_no = sum(1 for r in _RUNS.get(task_id, []) if r.stage == stage) + 1
+    from clipwright.services import run_store as _run_store
+    attempt_no = sum(1 for r in _run_store.list_task(task_id)
+                     if str(getattr(r, "stage", "")) == stage) + 1
 
     # 进度播报（PRD §14）：阶段结束（写清状态/降级/下一步）
     try:
@@ -741,7 +703,7 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
     _failed_anims = list(payload.get("issues") or []) if stage == "animation" else []
     if _failed_anims:
         _summary += f"；{len(_failed_anims)} 段动画失败，主 Agent 必须按 clip_id 重派（不得收据收尾）"
-    result = StageResult(
+    result = _stage_result(task_id=task_id, spec=spec, 
         stage=stage,
         status=status,
         artifacts={k: payload[k] for k in ("timeline", "script_skeleton",
@@ -752,11 +714,19 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
         issues=list(payload.get("issues") or [])[:20],
         redo_agent=str(payload.get("redo_agent") or ""),
         redo_hint=str(payload.get("redo_hint") or ""),
+        needs=[n for n in (payload.get("needs") or []) if isinstance(n, dict)],
         details={
             k: payload.get(k) for k in (
                 "animation_plan", "generated_mg_count", "material_notes", "edit_notes",
                 "audio_notes", "audio_config_internal", "passed", "fix_suggestions", "score",
+                "redo_request",
             ) if payload.get(k) not in (None, "", [], {})
+        } | {
+            # 输入快照（B05）：执行前黑板代数 + 摘要；提交被 CAS 拒绝时据此定位
+            "input_revision": board_revision,
+            "input_digest": _board_digest(board),
+            "output_revision": bb.revision(task_id),
+            **({"merge_errors": merge_errors} if merge_errors else {}),
         },
         cost_usd=cost,
         cost_unknown=cost_unknown,
@@ -776,23 +746,23 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
 
         # 产物先落盘再写报告：引用里只带 preview，大对象留给 read_artifact 按需读
         try:
-            result.artifacts = persist_artifacts(root, attempt_no, result.artifacts, stage=stage)
+            result.outputs = persist_artifacts(root, attempt_no, result.outputs, stage=stage)
         except Exception as exc:  # noqa: BLE001 — 落盘失败保持内联，不阻断
             logger.warning("产物落盘失败 %s/%s: %s", task_id, stage, exc)
-        sections = stage_report.build_sections(
+        body = stage_report.build_body(
             payload, stage=stage, status=status, summary=result.summary,
             needs=[n for n in (payload.get("needs") or []) if isinstance(n, dict)],
             degradations=_degradations, issues=result.issues,
             artifact_names=list((payload.get("artifacts") or {}).keys()) if isinstance(
-                payload.get("artifacts"), dict) else list(result.artifacts.keys()),
+                payload.get("artifacts"), dict) else list(result.outputs.keys()),
         )
         path, seq = "", 0
         try:
             path, seq = stage_report.write_report(
                 workspace_root=root, stage=stage, status=status, attempt=attempt_no,
-                sections=sections, artifacts=_artifact_refs(result), cost_usd=cost,
+                body=body, artifacts=_artifact_refs(result.outputs), cost_usd=cost,
                 duration_ms=result.duration_ms, provider=result.provider, model=result.model,
-                task_id=task_id,
+                task_id=task_id, run_id=str(getattr(spec, "run_id", "") or ""),
             )
         except Exception as exc:  # noqa: BLE001 — 写报告失败降级，不阻断阶段
             logger.warning("写报告异常 %s/%s: %s", root, stage, exc)
@@ -803,6 +773,7 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
         try:
             result.tool_calls_path = _dump_tool_calls(
                 root, stage=stage, attempt=attempt_no, calls=stage_tool_calls,
+                run_id=str(getattr(spec, "run_id", "") or ""),
             )
         except Exception as exc:  # noqa: BLE001 — 落盘失败不阻断阶段
             logger.warning("工具轨迹落盘失败 %s/%s: %s", task_id, stage, exc)
@@ -817,25 +788,46 @@ async def run_stage(task: Any, spec: StageSpec) -> StageResult:
                  {"kind": "report_write_failed", "stage": stage,
                   "reason": "reports_dir_unwritable"})
         else:
+            try:
+                _bytes = Path(path).stat().st_size
+            except OSError:
+                _bytes = 0
             emit(task_id, "doc_write", f"报告已写：{path}",
-                 {"path": path, "bytes": 0, "by": stage, "seq": seq})
+                 {"path": path, "bytes": _bytes, "by": stage, "seq": seq,
+                  "run_id": str(getattr(spec, "run_id", "") or ""),
+                  "status": result.status})
 
-    _record(task_id, result)
+    # B21b：报告/轨迹路径是构造后才知道的，最后按真实字段重建一次（report_state/
+    # handoff_summary 由 assembler 依据最终 report_path 计算，避免留下 stale 状态）。
+    result = _stage_result(
+        task_id=task_id, spec=spec, stage=stage, attempt=attempt_no,
+        status=result.status, artifacts=result.outputs, summary=result.summary,
+        writes=writes, degradations=list(result.degradations), issues=result.issues,
+        redo_agent=result.redo_agent, redo_hint=result.redo_hint,
+        needs=list(result.needs), details=result.details,
+        cost_usd=cost, cost_unknown=cost_unknown, tokens=tokens,
+        tool_calls=stage_tool_calls, tool_calls_path=result.tool_calls_path,
+        duration_ms=result.duration_ms, provider=result.provider, model=result.model,
+        failure=result.failure, error=result.error,
+        report_path=result.report_path, report_seq=result.report_seq,
+    )
     emit(task_id, "step_end", f"阶段 {stage} → {result.status}：{result.summary}"[:200],
          {"stage": stage, "status": result.status, "writes": writes,
           "cost_usd": cost, "duration_ms": result.duration_ms,
           "summary": result.summary, "report_path": result.report_path,
-          "report_seq": result.report_seq})
+          "report_seq": result.report_seq,
+          "report_state": "written" if result.report_path else "unavailable",
+          "run_id": str(getattr(spec, "run_id", "") or ""),
+          "input_revision": board_revision})
     return result
 
 
 def _dump_tool_calls(root: str, *, stage: str, attempt: int,
-                     calls: list[dict[str, Any]]) -> str:
+                     calls: list[dict[str, Any]], run_id: str = "") -> str:
     """把阶段全量工具轨迹写成 JSON（`reports/tool_calls/<stage>-<attempt>.json`）。
 
-    为什么单独落盘：`BaseAgent.last_tool_calls` 与 `AgentResult.tool_payload` 都有条数上限
-    （200 / 12 条采样），而 edit 这类阶段可能有 100+ 次调用。主 agent 要复盘子 agent
-    到底干了什么（PRD modern-agent-review P0），就必须有**无损**的那一份。
+    文件名暂保持 `stage-attempt`（B10 重写 trace API 时切到 run_id 寻址）；
+    payload 里必须带 `run_id`，否则跨任务/重放的轨迹无法归属。
     """
     if not root or not calls:
         return ""
@@ -848,11 +840,23 @@ def _dump_tool_calls(root: str, *, stage: str, attempt: int,
     payload = {
         "stage": stage,
         "attempt": int(attempt),
+        "run_id": str(run_id or ""),
         "count": len(calls),
         "calls": calls,
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
     return str(path)
+
+
+def _board_digest(board: dict[str, Any]) -> str:
+    """黑板快照摘要（只用于定位“这次是基于哪版输入跑的”，不参与业务判断）。"""
+    try:
+        import hashlib
+
+        raw = json.dumps(board, ensure_ascii=False, sort_keys=True, default=str)
+        return "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    except Exception:  # noqa: BLE001 — 摘要失败不影响阶段
+        return ""
 
 
 def _workspace_root_of(task: Any) -> str:
@@ -871,10 +875,10 @@ def _workspace_root_of(task: Any) -> str:
         return ""
 
 
-def _artifact_refs(result: StageResult) -> dict[str, Any]:
+def _artifact_refs(outputs: dict[str, Any] | None) -> dict[str, Any]:
     """把产物整理成报告里的引用表（大对象只留指针 + preview）。"""
     out: dict[str, Any] = {}
-    for name, value in (result.artifacts or {}).items():
+    for name, value in (outputs or {}).items():
         if isinstance(value, dict) and value.get("artifact"):
             out[name] = value
             continue
@@ -950,26 +954,34 @@ def _missing_failure(stage: str, exc: stage_inputs.StageInputMissing) -> Any:
 
     # 每个缺失键一条 needs（旧实现按"建议上游阶段"聚合、并把字段用「、」拼成一个
     # 字符串，主 Agent 看到 field='script_skeleton、candidate_clips' 无法逐项补齐）。
-    _fallback_stage = (exc.suggestion or ["structure"])[0]
-    needs = [
-        {
-            "from_stage": stage_inputs.KEY_PRODUCER.get(str(field), _fallback_stage),
-            "field": str(field),
-            "why": f"{stage} 阶段的必需输入",
-        }
-        for field in (exc.missing or [])
-    ] or [
-        {"from_stage": s, "field": "、".join(exc.missing), "why": f"{stage} 阶段的必需输入"}
-        for s in (exc.suggestion or ["structure"])
-    ]
     return FailureReport(
         category="input_insufficient",
         blocking_point=str(exc)[:200],
         retryable="needs_upstream",
-        # needs 是契约里的"请求上游补什么"，主 Agent 据此先派缺的那一步
-        needs=needs,
         evidence=[{"kind": "missing_keys", "text": "、".join(exc.missing)}],
     )
+
+
+def _missing_needs(exc: stage_inputs.StageInputMissing) -> list[dict[str, Any]]:
+    """缺项 → v2 needs（每个缺失字段一条，不拼串、不聚合）。"""
+    fallback_stage = (exc.suggestion or ["structure"])[0]
+    out = [
+        {
+            "field": str(field),
+            "from_stage": stage_inputs.KEY_PRODUCER.get(str(field), fallback_stage),
+            "why": f"阶段必需输入缺失：{field}",
+            "resolution": "upstream",
+        }
+        for field in (exc.missing or [])
+    ]
+    if out:
+        return out
+    return [{
+        "field": "、".join(exc.missing) or "input",
+        "from_stage": s,
+        "why": "阶段必需输入缺失",
+        "resolution": "upstream",
+    } for s in (exc.suggestion or ["structure"])]
 
 
 def _timeout_failure(stage: str, timeout_sec: float) -> Any:
@@ -1015,9 +1027,7 @@ def _internal_failure(exc: Exception) -> Any:
 __all__ = [
     "agent_for",
     "get_stage",
-    "list_stages",
     "reset",
-    "run",
     "run_stage",
 ]
 

@@ -1121,7 +1121,15 @@ class AgentKernel:
             task.touch()
             emit(task.id, "task_end", task.finish.conclusion,
                  {"reason": task.finish.reason,
-                  "completed": [], "unfinished": list(task.finish.unfinished or [])})
+                  "completed": [], "unfinished": list(task.finish.unfinished or []),
+                  # B08：五处 task_end 同形——前端缺字段时不得用空数组覆盖已写状态
+                  "terminal_reason": "tool_loop_unavailable",
+                  "goal_id": _goal_of(task).id if _goal_of(task) else "",
+                  "goal_status": _goal_status_value(task) or None,
+                  "closeout_mode": _closeout_of(task).mode,
+                  "escrow": _escrow_of(task).model_dump_public() if _escrow_of(task) else None,
+                  "usage": task.usage.model_dump()},
+                 span="kernel")
             self._checkpoint(task)
             return task
         return await self._run_tool_loop(task, started=started,
@@ -2221,7 +2229,6 @@ class AgentKernel:
                 "blackboard_owners": {
                     k: _bb.owner_of(task.id, k) for k in _bb.get(task.id)
                 },
-                "stages": stage_subagent.list_stages(task.id),
                 "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             }
             path = self._state_path(task.id)
@@ -2304,7 +2311,6 @@ class AgentKernel:
                     _bb.put(task_id, key, value, by=str(owners.get(key) or ""))
                 except Exception:  # noqa: BLE001 — 单键恢复失败不影响其它
                     continue
-            stage_subagent.import_runs(task_id, data.get("stages") or [])
             logger.info("已从 sidecar 恢复任务状态 %s（黑板 %d 键）", task_id, len(board))
         except Exception as e:  # noqa: BLE001
             logger.warning("状态 sidecar 恢复失败 %s: %s", task_id, e)
@@ -2407,43 +2413,6 @@ def _emit_thinking(task: Task, step: PlanStep) -> None:
 
     emit(task.id, "thinking", text[:120],
          {"delta": text, "done": True, "step_id": step.id})
-
-
-def _emit_report(task: Task, step: PlanStep, outcome: dict[str, Any]) -> None:
-    """阶段性汇报卡（PRD §16.4）：一步一张，失败时 headline 说明没做成。"""
-    from clipwright.services.task_events import emit
-
-    output = outcome.get("output") if isinstance(outcome.get("output"), dict) else {}
-    status = str(outcome.get("status") or "")
-    stage = str((step.args or {}).get("stage") or step.capability)
-    summary = str(output.get("summary") or "").strip()
-    headline = (
-        f"{stage} 完成：{summary}"[:160] if summary and status == "ok"
-        else (f"{stage} 没做成：{str(outcome.get('error') or summary or '未知原因')[:120]}"
-              if status != "ok" else f"{stage} 完成")
-    )
-    bullets: list[str] = []
-    if summary:
-        bullets.append(summary[:200])
-    writes = output.get("writes")
-    if isinstance(writes, list) and writes:
-        bullets.append("写入：" + "、".join(str(w)[:24] for w in writes[:6]))
-    artifacts = output.get("artifacts")
-    if isinstance(artifacts, dict) and artifacts:
-        bullets.append("产物：" + "、".join(list(artifacts)[:6]))
-    failure = outcome.get("failure")
-    if isinstance(failure, dict):
-        for ev in (failure.get("evidence") or [])[:3]:
-            if isinstance(ev, dict) and ev.get("text"):
-                bullets.append(f"证据：{str(ev['text'])[:120]}")
-    emit(task.id, "report", headline[:200], {
-        "stage": stage, "status": status,
-        "bullets": bullets[:5],
-        "artifacts": list(artifacts)[:8] if isinstance(artifacts, dict) else [],
-        "report_path": str(output.get("report_path") or ""),
-        "cost_usd": outcome.get("cost_usd"),
-        "duration_ms": step.duration_ms,
-    })
 
 
 def reset_kernel_state() -> None:

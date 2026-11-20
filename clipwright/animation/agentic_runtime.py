@@ -19,6 +19,16 @@ DECIDE_SYSTEM = """你是 AnimationAgent 的导演循环。决定文字颜色/�
 不要输出 markdown。args 必须简短；不要复述目标。"""
 
 
+def _vision_available() -> bool:
+    """视觉质检能力是否可用（未配 vision 模型 = 不可用，不伪造通过）。"""
+    try:
+        from clipwright.config import settings
+
+        return bool(str(getattr(settings, "vision_llm_model", "") or "").strip())
+    except Exception:  # noqa: BLE001 — 配置读不到按不可用
+        return False
+
+
 class AnimationAgentRuntime:
     def __init__(self, *, max_rounds: int = 3, max_calls: int = 8,
                  default_args: dict[str, Any] | None = None, require_mg: bool = True) -> None:
@@ -136,6 +146,10 @@ class AnimationAgentRuntime:
                     return AgentAction("tool", "capture_preview_frames",
                                        {"html_path": data_of(html_obs).get("path", "")}, "还没有抽帧证据")
                 if not inspect_obs:
+                    if not _vision_available():
+                        # 按能力可用性分流：vision 未配置 → 允许交付，但由本层在结果里
+                        # 标 `unverified_visual`（调用方必须降级，不得伪装成 ok）
+                        return action
                     return AgentAction("tool", "inspect_frames",
                                        {"frames": data_of(frame_obs).get("frames", []), "brief": ""},
                                        "还没有 vision 质检")
@@ -159,12 +173,29 @@ class AnimationAgentRuntime:
             max_calls=self.max_calls,
             initial_observations=seed_observations,
         )
-        if self.require_mg and not any(
-            isinstance(o, dict) and o.get("mg_def") for o in result.observations
-        ):
-            try:
-                result.observations.append(await execute("generate_mg", {}))
-                result.status = "recovered"
-            except Exception as exc:  # noqa: BLE001
-                result.observations.append({"error": str(exc)[:500], "tool": "generate_mg"})
+        has_mg = any(
+            (o.data if hasattr(o, "data") else o).get("mg_def")
+            for o in result.observations
+            if isinstance(o, dict) or hasattr(o, "data")
+        )
+        if self.require_mg and not has_mg:
+            # 旧实现会在循环结束后偷偷补生成一次并标 "recovered"——那不是 agent 的决定，
+            # 也会绕过预算。这里如实判失败，由调用方回退旧引擎或重派。
+            result.status = "failed"
+            result.error = result.error or "no_mg_def"
+            result.observations.append({"tool": "generate_mg", "error": "no_mg_def",
+                                        "kind": "failure"})
+            return result
+
+        if has_mg:
+            inspect_obs = next((o for o in reversed(result.observations)
+                                if getattr(o, "tool", "") == "inspect_frames"), None)
+            if inspect_obs is None:
+                result.observations.append({
+                    "kind": "unverified_visual",
+                    "reason": "vision_unavailable" if not _vision_available() else "inspect_missing",
+                    "impact": "动画视觉未经质检，交付为 degraded",
+                })
+                if result.status == "ok":
+                    result.status = "degraded"
         return result

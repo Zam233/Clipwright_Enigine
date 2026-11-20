@@ -95,7 +95,8 @@ class ReadReportTool(BaseTool):
     dependencies: list[str] = []
     description = (
         "读取工作区报告正文。参数：`seq`（报告序号）或 `path`（绝对路径），"
-        "`max_chars` 默认 8000；超出时返回前 N 字并提示用 `section` 精确读取。"
+        "`offset`/`max_chars` 分页（默认 8000）；返回 `total_chars/next_offset/truncated`。"
+        "正文是自由 Markdown，`section` 参数已移除（传了会显式报错）。"
     )
 
     async def execute(
@@ -105,9 +106,15 @@ class ReadReportTool(BaseTool):
         project_id: str = "",
         workspace_root: str = "",
         max_chars: int = READ_REPORT_MAX_CHARS,
+        offset: int = 0,
         section: str = "",
         **kwargs: Any,
     ) -> ToolExecResult:
+        if str(section or "").strip():
+            return ToolExecResult(
+                status=ToolStatus.ERROR, tool_name=self.name,
+                error="section 参数已移除：报告正文是自由 Markdown，请用 offset/max_chars 分页",
+            )
         root = _resolve_root(project_id, workspace_root)
         target: Path | None = None
         if path:
@@ -134,20 +141,23 @@ class ReadReportTool(BaseTool):
         except OSError as exc:
             return ToolExecResult(status=ToolStatus.ERROR, tool_name=self.name, error=str(exc))
 
-        if section:
-            from clipwright.services.stage_report import _section_text  # noqa: PLC2701
-
-            text = _section_text(text, section) or f"（没有「{section}」这一节）"
+        total = len(text)
+        start = max(0, int(offset or 0))
         limit = max(200, int(max_chars or READ_REPORT_MAX_CHARS))
-        truncated = len(text) > limit
+        chunk = text[start:start + limit]
+        end = start + len(chunk)
+        truncated = end < total
         return ToolExecResult(
             status=ToolStatus.SUCCESS, tool_name=self.name,
             output={
                 "path": str(guarded),
-                "chars": len(text),
+                "chars": total,
+                "total_chars": total,
+                "offset": start,
+                "next_offset": end if truncated else None,
                 "truncated": truncated,
-                "hint": "用 section 参数精确读取某一节" if truncated else "",
-                "content": text[:limit],
+                "hint": "用 offset 继续读取" if truncated else "",
+                "content": chunk,
             },
             output_path=str(guarded),
         )

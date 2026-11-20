@@ -67,6 +67,52 @@ async def _search_bgm_from_library(bgm_slots: dict, top_k: int = 3,
         return []
 
 
+def _audio_gate_problems(timeline: Any, *, expect_voice: bool = False) -> list[str]:
+    """B18：音频交付前固定清单自检（只读，不改时间线）。"""
+    problems: list[str] = []
+    if timeline is None:
+        return ["没有时间线"]
+    tracks = list(getattr(timeline, "tracks", None) or [])
+    if not tracks:
+        return ["时间线没有任何轨道"]
+    total = float(getattr(timeline, "total_duration_sec", 0) or 0)
+    if total <= 0:
+        problems.append("时间线总时长为 0")
+    voice_clips = []
+    caption_clips = []
+    for tr in tracks:
+        for c in (getattr(tr, "clips", None) or []):
+            kind = str(getattr(tr, "kind", ""))
+            if kind == "audio" and not (getattr(c, "metadata", {}) or {}).get("bgm"):
+                voice_clips.append(c)
+            elif kind == "caption":
+                caption_clips.append(c)
+    if expect_voice and not voice_clips:
+        problems.append("口播模式但没有任何配音/旁白音频片段")
+    if total > 0:
+        over = [c for c in caption_clips
+                if float(getattr(c, "start_sec", 0) or 0)
+                + float(getattr(c, "duration_sec", 0) or 0) > total + 0.5]
+        if over:
+            problems.append(f"{len(over)} 条字幕越过时间线结尾")
+    caption_clips.sort(key=lambda c: float(getattr(c, "start_sec", 0) or 0))
+    overlap = 0
+    prev_end = 0.0
+    for c in caption_clips:
+        start = float(getattr(c, "start_sec", 0) or 0)
+        if start < prev_end - 0.05:
+            overlap += 1
+        prev_end = max(prev_end, start + float(getattr(c, "duration_sec", 0) or 0))
+    if overlap:
+        problems.append(f"{overlap} 条字幕与上一条重叠")
+    if voice_clips:
+        voice_end = max(float(getattr(c, "start_sec", 0) or 0)
+                        + float(getattr(c, "duration_sec", 0) or 0) for c in voice_clips)
+        if total > 0 and abs(voice_end - total) > 2.0:
+            problems.append(f"配音结束 {voice_end:.1f}s 与时间线 {total:.1f}s 差超过 2s")
+    return problems
+
+
 class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
     """音效 Agent：BGM 匹配、混音编排。"""
 
@@ -736,6 +782,25 @@ class AudioAgent(BaseAgent[AudioInput, AudioOutput]):
                         f"时长对账：画面比音频长 {_video_dur - _audio_end:.1f}s（片尾静音）")
             except Exception:
                 logger.debug("时长对账失败（忽略）", exc_info=True)
+
+            # B18：交付前自检（固定清单）。不通过不失败——降级交付并留痕。
+            _gate = _audio_gate_problems(
+                timeline,
+                expect_voice=(
+                    bool((context.extra_params or {}).get("audio_path"))
+                    or str((context.extra_params or {}).get("video_mode") or "") == "voiceover"
+                ),
+            )
+            if _gate:
+                from clipwright.services.degradation import note_degradation
+
+                note_degradation(
+                    "audio_gate_failed",
+                    detail="；".join(_gate[:5]),
+                    scope="timeline",
+                    impact="音频自检未通过，继续交付并标记降级",
+                )
+                notes.append("自检未通过：" + "；".join(_gate[:3]))
 
             return AudioOutput(
                 decision=AgentDecision.PASS,

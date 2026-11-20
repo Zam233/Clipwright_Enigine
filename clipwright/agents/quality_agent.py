@@ -73,6 +73,60 @@ def _is_visual_kind(kind: object) -> bool:
         return False
 
 
+def _timeline_sha(timeline: Any) -> str:
+    """时间线当前字节的 sha256（证据绑定的基准版本）。"""
+    import hashlib
+
+    try:
+        raw = timeline.model_dump_json()
+    except Exception:  # noqa: BLE001 — 非 pydantic 对象退化为 str
+        raw = str(timeline)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _bind_issue_evidence(issues: list[Any], *, timeline_sha: str = "") -> list[Any]:
+    """B19：给每条 issue 绑 clip_id / artifact_sha / evidence。
+
+    clip_id 来自 `location`（`clip:<id>` / `track:<id>/clip:<id>`）或已填的 clip_id；
+    证据行保留原描述 + 定位，供主 Agent / 复审直接回查。
+    """
+    for issue in issues or []:
+        loc = str(getattr(issue, "location", "") or "")
+        clip_id = str(getattr(issue, "clip_id", "") or "")
+        if not clip_id and loc:
+            for part in loc.replace("\\", "/").split("/"):
+                if part.startswith("clip:"):
+                    clip_id = part.split(":", 1)[1]
+                    break
+        if clip_id:
+            issue.clip_id = clip_id
+        if timeline_sha and not getattr(issue, "artifact_sha", ""):
+            issue.artifact_sha = timeline_sha
+        if not getattr(issue, "evidence", None):
+            ev = [f"{getattr(issue, 'severity', '')}：{getattr(issue, 'message', '')}"]
+            if loc:
+                ev.append(f"location={loc}")
+            issue.evidence = ev
+    return issues
+
+
+def _build_redo_request(errors: list[Any], *, redo_agent: str, timeline_sha: str) -> dict | None:
+    """B19：错误 → 结构化 redo_request；与 needs 互斥（这里永不产出 needs）。"""
+    if not errors or not redo_agent:
+        return None
+    clip_ids = {str(getattr(i, "clip_id", "") or "") for i in errors}
+    scope = f"clip:{clip_ids.pop()}" if len(clip_ids) == 1 and "" not in clip_ids else "global"
+    return {
+        "scope": scope,
+        "target_stage": str(redo_agent),
+        "base_artifact_sha": timeline_sha,
+        "issue_ids": [
+            f"{getattr(i, 'category', '')}:{getattr(i, 'clip_id', '') or 'global'}"
+            for i in errors[:20]
+        ],
+    }
+
+
 class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
     """质检 Agent：校验时间线是否符合 Persona 规范和硬约束。"""
 
@@ -418,6 +472,11 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
         # 轮 84（评分闭环）：确定性 0-100 质量分（error -25 / warning -8 / info -2）
         score = self._compute_score(issues)
 
+        # B19：证据绑定（时间线 sha + 片段 id）与结构化 redo 请求
+        _tl_sha = _timeline_sha(timeline)
+        _bind_issue_evidence(issues, timeline_sha=_tl_sha)
+        _redo = _build_redo_request(errors, redo_agent=redo_agent, timeline_sha=_tl_sha)
+
         return QualityOutput(
             decision=decision,
             passed=len(errors) == 0,
@@ -425,6 +484,7 @@ class QualityAgent(BaseAgent[QualityInput, QualityOutput]):
             fix_suggestions=[i.message for i in issues if i.severity in ("error", "warning")],
             redo_agent=redo_agent,
             score=score,
+            redo_request=_redo,
         )
 
     @staticmethod

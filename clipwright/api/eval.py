@@ -62,6 +62,7 @@ def _summarize(path: Path) -> dict:
         "success_rate_spread": sr.get("spread"),
         "cost_avg_usd": cost.get("mean"),
         "warnings": len(report.get("warnings") or []),
+        "capped_count": int(report.get("capped_count") or 0),
         "mtime": path.stat().st_mtime,
     }
 

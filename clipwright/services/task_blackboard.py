@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from typing import Any, Iterable, Optional
 
@@ -39,6 +40,9 @@ STAGE_WRITES: dict[str, tuple[str, ...]] = {
 
 _BOARDS: dict[str, dict[str, Any]] = {}
 _OWNERS: dict[str, dict[str, dict[str, Any]]] = {}
+#: 每个 task 的写入代数：CAS 提交与前端“数据变了”都靠它（单调递增）
+_REV: dict[str, int] = {}
+_LOCK = threading.RLock()
 
 
 class BlackboardError(RuntimeError):
@@ -66,6 +70,44 @@ def snapshot(task_id: str, keys: Iterable[str] | None = None) -> dict[str, Any]:
 
 def owner_of(task_id: str, key: str) -> str:
     return str((_OWNERS.get(str(task_id), {}).get(key) or {}).get("by") or "")
+
+
+def revision(task_id: str) -> int:
+    """该任务黑板的当前代数（任何一次成功写入都会 +1）。"""
+    return int(_REV.get(str(task_id), 0))
+
+
+def snapshot_with_revision(task_id: str, keys: Iterable[str] | None = None) -> tuple[dict[str, Any], int]:
+    """(黑板快照, 代数) —— 读取方用同一个代数做后续 CAS。"""
+    with _LOCK:
+        return snapshot(task_id, keys), revision(task_id)
+
+
+def _bump(task_id: str) -> int:
+    tid = str(task_id)
+    _REV[tid] = int(_REV.get(tid, 0)) + 1
+    return _REV[tid]
+
+
+def commit(task_id: str, data: dict[str, Any], *, by: str = "",
+           expect_revision: int | None = None) -> tuple[bool, int, list[str]]:
+    """CAS 批量提交：`expect_revision` 不匹配则**一个键都不写**。
+
+    返回 `(ok, current_revision, written_keys)`；冲突是正常结果，不是异常——
+    调用方据此记降级并重派，而不是把任务判死。
+    """
+    tid = str(task_id)
+    with _LOCK:
+        current = revision(tid)
+        if expect_revision is not None and int(expect_revision) != current:
+            return False, current, []
+        written: list[str] = []
+        for key, value in (data or {}).items():
+            if value is None:
+                continue
+            put(tid, str(key), value, by=by)
+            written.append(str(key))
+        return True, revision(tid), written
 
 
 def describe(task_id: str) -> dict[str, Any]:
@@ -102,6 +144,7 @@ def reset_timeline(task_id: str, value: Any, *, by: str = "edit",
     if size > MAX_BLACKBOARD_BYTES:
         raise BlackboardError(f"reset_timeline: timeline 过大（{size} bytes）")
     _BOARDS.setdefault(tid, {})[k] = value
+    _bump(tid)
     _OWNERS.setdefault(tid, {})[k] = {
         "by": stage, "ts": time.time(), "bytes": size,
         "reset_from": previous, "reset_reason": str(reason or "")[:300],
@@ -149,6 +192,7 @@ def put(task_id: str, key: str, value: Any, *, by: str = "") -> None:
         "bytes": size,
         "previous_by": previous,
     }
+    _bump(tid)
     if previous and previous != by:
         logger.info("黑板覆盖 %s.%s：%s → %s", tid, k, previous, by or "未知")
 
@@ -168,9 +212,11 @@ def reset(task_id: str = "") -> None:
     if task_id:
         _BOARDS.pop(str(task_id), None)
         _OWNERS.pop(str(task_id), None)
+        _REV.pop(str(task_id), None)
     else:
         _BOARDS.clear()
         _OWNERS.clear()
+        _REV.clear()
 
 
 def stages_that_can_write(stage: str) -> tuple[str, ...]:
@@ -179,6 +225,9 @@ def stages_that_can_write(stage: str) -> tuple[str, ...]:
 
 __all__ = [
     "MAX_BLACKBOARD_BYTES",
+    "commit",
+    "revision",
+    "snapshot_with_revision",
     "STAGE_WRITES",
     "TIMELINE_STAGE_ORDER",
     "BlackboardError",
