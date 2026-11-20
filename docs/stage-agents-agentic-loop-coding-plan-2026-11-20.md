@@ -350,7 +350,7 @@ sequenceDiagram
 
 **执行拆分（2026-11-20）**：B13 已拆成 **B13a（Base 侧，已完成）** 与 **B13b（Kernel 内部收敛，延后）**。
 - B13a：`settings.agent_loop_shared_driver` 开关 + `BaseAgent._drive_tool_loop` 复用公共 `drive`（白名单/预算/`subagent_round` 事件），关闭时行为不变；测试见 `tests/contracts/test_base_shared_driver.py`。
-- B13b（2026-11-20 追加）：`LLMService.with_tools` 已提供 `agent_loop_shared_driver=true` 时的公共 `drive` 路径——真正控制轮次/预算/取消的是 `drive`，该函数只做 provider 消息适配（含 anthropic/openai 两种 tool_result 样式、preamble/reasoning 回调）。Kernel 的工具循环就建立在 `with_tools` 上，因此打开开关即让 Kernel 走公共驱动。**默认仍为 false**：provider 边界（流式、各家 tool_call 变体）需要灰度观察后再翻转；旧循环保留为回退路径，删除它要等默认翻转后单独提交。
+- B13b（2026-11-20 追加）：`LLMService.with_tools` 已提供 `agent_loop_shared_driver=true` 时的公共 `drive` 路径——真正控制轮次/预算/取消的是 `drive`，该函数只做 provider 消息适配（含 anthropic/openai 两种 tool_result 样式、preamble/reasoning 回调）。Kernel 的工具循环就建立在 `with_tools` 上，因此打开开关即让 Kernel 走公共驱动。**默认已翻转为 true（2026-11-20）**：旧的自建 `for _round` 循环已删除，`with_tools` 只保留 provider 适配；回滚走二进制版本，不再保留第二套循环。`agent_loop_shared_driver` 仍保留给 Base 阶段侧兼容。
 
 
 ### B14 · P1-2 Animation MG 收窄【后端】
