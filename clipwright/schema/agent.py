@@ -79,12 +79,65 @@ class FailureReport(BaseModel):
     attempts: list[dict[str, Any]] = Field(default_factory=list,
                                            description="已尝试 [{n, changed}]")
     retryable: str = Field(default="retry_same", description="可重试性，取值见 RETRY_MODES")
-    needs: list[dict[str, str]] = Field(
-        default_factory=list,
-        description="请求上游提供什么 [{from_stage, field, why}] —— 让归因从「推断」变成「申报」",
-    )
     evidence: list[dict[str, Any]] = Field(default_factory=list,
                                            description="证据引用 [{kind, ref}]")
+
+
+class Need(BaseModel):
+    """v2 唯一缺项真相（每个缺失字段一条，不得拼成字符串）。
+
+    `resolution` 决定由谁补齐：
+    - upstream：上游阶段/产物（Kernel 先补它再考虑 redo）；
+    - human：用户确认/补充（需求聊天里映射 `ask_user`）；
+    - capability：插件/能力缺失（先装/配置再派）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    field: str = Field(min_length=1, description="缺失的字段名，如 audience / target_duration_s")
+    why: str = Field(min_length=1, description="人话说明：为什么缺、缺了会怎样")
+    from_stage: Optional[str] = Field(default=None, description="应由哪个阶段提供")
+    resolution: str = Field(default="upstream", description="upstream / human / capability")
+    evidence_ref: Optional[str] = Field(default=None, description="证据引用（artifact/run 引用）")
+
+    @model_validator(mode="after")
+    def _valid_resolution(self) -> "Need":
+        if self.resolution not in ("upstream", "human", "capability"):
+            raise ValueError(f"Need.resolution 非法：{self.resolution}")
+        return self
+
+
+class Issue(BaseModel):
+    """结构化问题（质检/剪辑/动画共用）。保留旧键名的归一映射，额外键放行。"""
+
+    model_config = ConfigDict(extra="allow")
+
+    issue_id: str = ""
+    code: str = ""
+    severity: str = Field(default="info", description="error / warning / info")
+    category: str = ""
+    message: str = ""
+    location: str = ""
+    clip_id: str = ""
+    evidence_ref: str = ""
+    # 动画旧字段（归一映射，不再双写权威值）
+    reason: str = ""
+    retry: str = ""
+    scene_title: str = ""
+
+
+class RedoRequest(BaseModel):
+    """可校验的返工请求（仅 quality/edit 的 failed 可产生，且不得与 needs 并存）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope: str = Field(default="", description="clip:<id> / scene:<idx> / track:<name> / global")
+    target_stage: str = Field(default="", description="被要求重做的阶段")
+    issue_ids: list[str] = Field(default_factory=list)
+    source_run_id: str = Field(min_length=1)
+    base_artifact_sha: str = Field(min_length=1, description="返工基线的产物 SHA，防止旧证据重放")
+    overrides: dict[str, Any] = Field(default_factory=dict, description="允许的 typed 覆盖")
+
 
 
 class AgentContext(BaseModel):
@@ -128,6 +181,9 @@ class AgentOutputBase(BaseModel):
     failure: Optional[FailureReport] = Field(
         default=None, description="结构化失败回报：归因/阻塞点/已尝试/可重试性/向上需求/证据",
     )
+    #: v2 缺项真相：每个缺失字段一条（阶段自己的输出里就带，不再挂 failure 镜像）
+    needs: list[Need] = Field(default_factory=list,
+                              description="每个缺失字段一条 needs（与 redo_request 互斥）")
     degradations: list[Degradation] = Field(
         default_factory=list, description="本次执行中「完成了但打了折扣」的全部登记",
     )
@@ -314,11 +370,15 @@ class QualityInput(BaseModel):
 
 
 class QualityIssue(BaseModel):
-    """质检发现的问题。"""
+    """质检发现的问题（B19：证据必须可回查）。"""
     severity: str = Field(description="error / warning / info")
     category: str = Field(description="问题类别")
     message: str
     location: Optional[str] = Field(default=None)
+    #: B19：证据绑定 —— 哪一段、哪一版字节
+    clip_id: str = Field(default="", description="出问题的片段 id（无则空）")
+    artifact_sha: str = Field(default="", description="被检产物的 sha256")
+    evidence: list[str] = Field(default_factory=list, description="可回查的证据行")
 
 
 class RequirementsInput(BaseModel):
@@ -355,6 +415,9 @@ class QualityOutput(AgentOutputBase):
     # 轮 84（评分闭环）：0-100 成片质量分——确定性权重（error -25 / warning -8 /
     # info -2）由 issue 列表推导；passed 判定不变（分数仅供审阅与可选门槛）
     score: int = Field(default=100, ge=0, le=100, description="成片质量分（0-100）")
+    #: B19：需要重做时的结构化请求（与 needs 互斥）
+    redo_request: Optional[dict[str, Any]] = Field(
+        default=None, description="redo 请求（scope/base_artifact_sha/issues）")
 
 
 class PluginAgentInput(BaseModel):

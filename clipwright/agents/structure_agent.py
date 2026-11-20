@@ -504,8 +504,6 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                     "但不可缺失核心段落）：\n" + category_tpl
                 )
 
-            # 自愈重做时注入上一轮质检问题（原 _quality_issues 注入无 Agent 消费）
-            system_prompt += self.quality_issues_hint(context)
 
             # R8：把"素材库里实际有什么"注入结构 prompt——**先看料再排场景**，
             # 而不是先排出场景再去找料（找不到就编）。没有索引时返回 ""，零变化。
@@ -684,6 +682,20 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
                         return self._fallback_scenes(context.topic, tone, script_text), [f"LLM 超时（>{self.timeout_sec}s）"]
 
                 scenes, warnings = await _generate_scenes()
+
+                # B15：自检回灌（同 run 修复，最多 2 次）；修复预算用完才降级
+                scenes, warnings, _gate_problems = await self._gate_repair_scenes(
+                    scenes, warnings, generate=_generate_scenes,
+                    script_text=script_text,
+                    target_sec=float(audio_duration or 0),
+                )
+                if _gate_problems:
+                    note_degradation(
+                        "scenes_gate_failed",
+                        detail="；".join(_gate_problems[:5]),
+                        scope="scenes",
+                        impact="分镜自检未通过，继续使用最后一版并标记为降级",
+                    )
 
                 # /A9: 多方案择优 — voiceover 双稿会双倍最大 LLM 开销与耗时
                 # （择优启发式只比较场景数）。批3 改为配置开关，默认关闭。
@@ -1020,6 +1032,108 @@ class StructureAgent(BaseAgent[StructureInput, StructureOutput]):
             len(scenes), len(segments), len(items), target,
         )
         return scenes
+
+    # ── B15：结构自检 Gate（把校验放回循环内，失败回灌同 run 修复）──
+
+    @staticmethod
+    def _scene_gate_problems(
+        scenes: list[dict], *, script_text: str = "", target_sec: float = 0.0,
+    ) -> list[str]:
+        """确定性自检：schema/时长/覆盖度。只报问题，不改写场景。"""
+        problems: list[str] = []
+        if not scenes:
+            return ["没有可用场景（0 个）"]
+        valid, issues = _validate_scenes(list(scenes))
+        problems.extend(str(x) for x in issues[:8])
+        if len(valid) != len(scenes):
+            problems.append(f"{len(scenes) - len(valid)} 个场景字段无效（见上）")
+        total = sum(float(s.get("duration_sec", 0) or 0) for s in scenes)
+        if target_sec > 0:
+            ratio = total / target_sec
+            if ratio < 0.5 or ratio > 2.0:
+                problems.append(
+                    f"场景总时长 {total:.1f}s 与目标 {target_sec:.1f}s 偏差过大（{ratio:.2f}×）")
+        if script_text.strip():
+            cov = _script_coverage(scenes, script_text)
+            if cov < _MIN_ACCEPT_COVERAGE:
+                problems.append(f"分镜只覆盖文稿 {cov * 100:.0f}%（低于 "
+                                f"{_MIN_ACCEPT_COVERAGE * 100:.0f}%）")
+        return problems
+
+    async def _gate_repair_scenes(
+        self,
+        scenes: list[dict],
+        warnings: list[str],
+        *,
+        generate: Any,
+        script_text: str = "",
+        target_sec: float = 0.0,
+        max_repairs: int = 2,
+    ) -> tuple[list[dict], list[str], list[str]]:
+        """自检不过 → 把 findings 交给公共 `drive` 的 gate，同 run 内回灌修复。
+
+        B15b：循环/预算/终止由 `agent_loop.drive` 控制；这里只提供
+        `candidate → gate` 两个纯函数，不再自建 while。
+        """
+        from types import SimpleNamespace
+
+        from clipwright.services.agent_loop import (
+            LoopAction, LoopBudget, LoopObservation, drive,
+        )
+
+        state: dict[str, Any] = {"scenes": list(scenes or []), "warnings": list(warnings or [])}
+
+        def _problems() -> list[str]:
+            return self._scene_gate_problems(
+                state["scenes"], script_text=script_text, target_sec=target_sec)
+
+        async def decide(observations: list[Any]) -> Any:
+            rejected = [o for o in observations
+                        if getattr(o, "kind", "") == "gate_rejected"]
+            if rejected:
+                findings = list((getattr(rejected[-1], "payload", {}) or {}).get("missing") or [])
+                hint = (
+                    "\n\n## 上一轮结构自检未通过（只修复这些问题，其余保持不变）\n"
+                    + "\n".join(f"- {p}" for p in findings[:10])
+                    + "\n请输出完整修正后的场景表（同等字段），不要只输出差异。"
+                )
+                fixed, more = await generate(hint)
+                state["warnings"].extend(list(more or []))
+                state["warnings"].append(
+                    f"结构自检未通过（第 {len(rejected)} 次回灌）："
+                    + "；".join(findings[:3]))
+                if fixed:
+                    state["scenes"] = list(fixed)
+                elif not state["scenes"]:
+                    # 生成器给不出场景：不再空转；由 gate 放行后带着 problems 返回
+                    state["gave_up"] = True
+                    return SimpleNamespace(calls=[], text="")
+            return SimpleNamespace(
+                calls=[LoopAction("candidate", "scenes", {})], text="")
+
+        async def dispatch(_action: Any) -> Any:
+            return LoopObservation("final_candidate", "scenes", ok=True,
+                                   payload={"scenes": state["scenes"]})
+
+        def gate(_candidate: Any) -> Any:
+            if state.get("gave_up"):
+                return SimpleNamespace(accepted=True, missing=[], reason="")
+            problems = _problems()
+            return SimpleNamespace(
+                accepted=not problems, missing=problems,
+                reason="；".join(problems[:5]) or "",
+                code="scenes_invalid" if problems else "",
+            )
+
+        await drive(
+            run_id="structure_gate",
+            decide=decide,
+            dispatch=dispatch,
+            gate=gate,
+            budget=LoopBudget(rounds=max(1, int(max_repairs) + 1),
+                              actions=max(1, int(max_repairs) + 1)),
+        )
+        return state["scenes"], state["warnings"], _problems()
 
     async def _enrich_scene_animations(self, scenes: list[dict], context: AgentContext) -> list[dict]:
         """为缺少动画标记的场景调用 LLM 补充动画标记（文字动画/逻辑动画/mg_dynamic）。

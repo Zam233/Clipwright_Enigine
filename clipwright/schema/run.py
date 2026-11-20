@@ -14,21 +14,34 @@
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from .agent import Need, RedoRequest
 
 RunKind = Literal["stage", "research"]
-RunStatus = Literal["pending", "running", "needs", "ok", "degraded", "failed",
-                     "refused", "cancelled"]
+#: v2 终态（pending/running 只属于 live RunState，不在 AgentResult 里出现）。
+RunStatus = Literal["needs", "ok", "degraded", "failed",
+                    "refused", "cancelled", "dry_run"]
+
+
+def _result_strict() -> bool:
+    """v2 终态证据严格模式（B02 的 ResultAssembler 落地后默认开启）。"""
+    return (os.getenv("CLIPWRIGHT_AGENT_RESULT_STRICT", "") or "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
 
 class RunSpec(BaseModel):
     """一次子 agent 派发的规格（阶段 / 调研共用）。"""
 
     kind: RunKind = "stage"
+    #: task = 生产任务；inline = 预览/局部修补（禁止写生产 Task 黑板）
+    mode: Literal["task", "inline"] = "task"
     #: 阶段子 agent 的阶段名（structure/material/...）；调研时可为空
     stage: str = ""
     role: str = ""
@@ -53,10 +66,15 @@ class RunSpec(BaseModel):
 
 
 class AgentResult(BaseModel):
-    """子 agent 的统一返回（阶段与调研同一形状）。"""
+    """子 agent 的统一返回（阶段与调研同一形状，v2 契约）。"""
 
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[2] = 2
     run_id: str
     kind: RunKind
+    #: task = 生产任务；inline = 预览/局部修补（禁止写生产 Task 黑板）
+    mode: Literal["task", "inline"] = "task"
     # ── 归因字段（PRD §2.4.2）：没有它们，"谁花的钱、谁失败的"只能靠猜 ──
     task_id: str = ""
     trace_id: str = ""
@@ -64,19 +82,30 @@ class AgentResult(BaseModel):
     stage: str = ""
     role: str = ""
     status: RunStatus
+    #: 机器可读终态原因（如 completed / input_insufficient / limit_rounds）；
+    #: 自由文本只做展示，路由一律看它。
+    terminal_reason: str = ""
     summary: str = ""
     #: 这次派发的原始要求（重放时要"照原样再干一次"，不能只凭 summary 猜）
     brief: str = ""
     #: 结构化产物（引用或内联小值）
     outputs: dict[str, Any] = Field(default_factory=dict)
     writes: list[str] = Field(default_factory=list)
-    needs: list[dict[str, Any]] = Field(default_factory=list)
-    #: 工作区 markdown 报告（append-only）
+    #: v2 唯一缺项真相（每字段一条）；不得与 redo_request 同时出现
+    needs: list[Need] = Field(default_factory=list)
+    #: 工作区 markdown 报告（append-only）。state 区分“没有正文”与“写盘失败”
     report_path: str = ""
     report_seq: int = 0
+    report_state: Literal["written", "unavailable", "not_applicable"] = "not_applicable"
+    report_sha256: Optional[str] = None
+    #: 结构化交接摘要（非空短句；正文自由 Markdown，机器只读这里）
+    handoff_summary: str = ""
     issues: list[dict[str, Any]] = Field(default_factory=list)
     redo_agent: str = ""
     redo_hint: str = ""
+    #: 可校验返工请求：仅 quality/edit 的 failed 且 base SHA 可校验时产生；
+    #: 不得与本结果的 needs 同时出现（Kernel 先补 needs 再考虑重做）。
+    redo_request: Optional[RedoRequest] = None
     details: dict[str, Any] = Field(default_factory=dict)
     #: 本步**完成了但打了折扣**（PRD F9 `note_degradation` 的落地）。与 failure 的区别：
     #: failure 是没做完；degradation 是伪装成成功的次品（LLM JSON 截断、自批判被跳过、
@@ -91,6 +120,10 @@ class AgentResult(BaseModel):
     replayed: bool = False
     #: 工具轨迹全量落盘路径（内存只留最近 200 条；主 agent 按此路径取完整 transcript）
     tool_calls_path: str = ""
+    #: 全量调用数（tool_calls 只是采样）
+    tool_calls_total: int = 0
+    #: 轨迹可用性：0 次调用 ≠ 读取失败
+    trace_state: Literal["complete", "partial", "empty", "unavailable"] = "empty"
     tokens: int = 0
     cost_usd: Optional[float] = None
     cost_unknown: bool = True
@@ -100,6 +133,33 @@ class AgentResult(BaseModel):
     created_at: float = Field(default_factory=time.time)
     failure: Optional[dict[str, Any]] = None
     error: str = ""
+    #: 显式重跑：指向被重跑的真实 run（缓存复用不设置它）
+    replay_of: str = ""
+    #: 这次派发的规格引用（输入快照/授权范围的寻址键）
+    spec_ref: str = ""
+
+    @model_validator(mode="after")
+    def _v2_invariants(self) -> "AgentResult":
+        """v2 结构不变量。
+
+        `needs` 与 `redo_request` 互斥**始终生效**（新字段，没有历史生产者）；
+        其余终态证据在严格模式（`CLIPWRIGHT_AGENT_RESULT_STRICT=1`）下校验——
+        B02 的 `ResultAssembler` 落地后默认开启，迁移期由它统一补证据。
+        """
+        if self.needs and self.redo_request is not None:
+            raise ValueError("needs 与 redo_request 互斥：Kernel 无法同时补输入与重做")
+        if _result_strict():
+            if self.status == "needs" and not self.needs:
+                raise ValueError("status=needs 必须至少一条 Need")
+            if self.status in ("failed", "refused", "cancelled", "needs") and not self.failure:
+                raise ValueError(f"status={self.status} 必须带 FailureReport")
+            if self.status == "degraded" and not self.degradations:
+                raise ValueError("status=degraded 必须带降级项")
+            if self.status == "ok" and (self.failure or self.degradations or self.needs):
+                raise ValueError("status=ok 不得携带 failure/degradations/needs")
+            if not str(self.terminal_reason or "").strip():
+                raise ValueError("v2 终态必须带 terminal_reason")
+        return self
 
     def to_tool_payload(self) -> dict[str, Any]:
         """给模型看的最小形状（工具结果回填用；不含大对象）。
@@ -109,12 +169,21 @@ class AgentResult(BaseModel):
         主 agent 的判断依据必须是"它到底干了什么"，而不是一句 summary。
         """
         stats, sample = _tool_call_digest(self.tool_calls)
+        total_calls = int(self.tool_calls_total or len(self.tool_calls))
+        trace_state = self.trace_state
+        if trace_state == "empty" and total_calls > 0:
+            # 直接构造的 AgentResult 未必过 ResultAssembler：按同一规则补投影
+            trace_state = "complete" if self.tool_calls_path else "partial"
         return {
             "run_id": self.run_id,
+            "schema_version": self.schema_version,
             "kind": self.kind,
+            "mode": self.mode,
+            "attempt": self.attempt,
             "stage": self.stage,
             "role": self.role,
             "status": self.status,
+            "terminal_reason": self.terminal_reason,
             # 降级信号必须进模型视野：只写日志等于"主 Agent 默许截断/回退"
             "degraded": bool(self.degradations),
             "degradation_count": len(self.degradations),
@@ -131,27 +200,49 @@ class AgentResult(BaseModel):
             ],
             "redo_agent": str(getattr(self, "redo_agent", "") or ""),
             "redo_hint": str(getattr(self, "redo_hint", "") or "")[:1200],
-            "details": dict(getattr(self, "details", {}) or {}),
+            "redo_request": (self.redo_request.model_dump(mode="json")
+                             if self.redo_request is not None else None),
+            "details": _bounded_details(getattr(self, "details", {})),
             "outputs": {k: _preview(v) for k, v in list(self.outputs.items())[:8]},
             "writes": self.writes[:12],
-            "needs": self.needs[:5],
+            "needs": [n.model_dump(mode="json") for n in self.needs[:5]],
             "report_path": self.report_path,
+            "report_seq": self.report_seq,
+            "report_state": self.report_state,
+            "handoff_summary": self.handoff_summary[:600],
             # 轨迹：统计 + 失败优先采样（全量走 get_agent_run，不塞爆上下文）
             "tool_call_stats": stats,
             "tool_calls": sample,
-            "tool_calls_total": len(self.tool_calls),
+            "tool_calls_total": total_calls,
+            "trace_state": trace_state,
+            "replayed": self.replayed,
+            "replay_of": self.replay_of,
+            "cost_unknown": self.cost_unknown,
             "tool_calls_path": self.tool_calls_path,
-            "tool_calls_hint": (
-                f"共 {len(self.tool_calls)} 次工具调用（内存仅保留最近 200 条）；"
-                f"完整轨迹见 {self.tool_calls_path or 'get_agent_run'} "
-                f"或 get_agent_run(stage=\"{self.stage}\")"
-            ) if self.tool_calls else "",
             "tokens": self.tokens,
             "cost_usd": self.cost_usd,
             "duration_ms": self.duration_ms,
             "failure": self.failure,
             "error": self.error,
         }
+
+
+def _bounded_details(value: Any, *, max_items: int = 20, max_chars: int = 300) -> dict[str, Any]:
+    """`details` 只放少量非权威诊断：限键数、限长，防止无界 dump 撑爆上下文。"""
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key in list(value)[:max_items]:
+        item = value[key]
+        if isinstance(item, (dict, list)):
+            out[str(key)] = str(item)[:max_chars]
+        elif isinstance(item, str):
+            out[str(key)] = item[:max_chars]
+        elif isinstance(item, (int, float, bool)) or item is None:
+            out[str(key)] = item
+        else:
+            out[str(key)] = str(item)[:max_chars]
+    return out
 
 
 def _tool_call_digest(calls: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:

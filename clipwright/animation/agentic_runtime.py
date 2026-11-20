@@ -19,6 +19,30 @@ DECIDE_SYSTEM = """你是 AnimationAgent 的导演循环。决定文字颜色/�
 不要输出 markdown。args 必须简短；不要复述目标。"""
 
 
+def mg_fingerprint(mg_def: Any) -> str:
+    """mg_def 的稳定指纹（sha256 前 16 位），用于把视觉证据钉在具体版本上。"""
+    import hashlib
+    import json
+
+    raw = json.dumps(mg_def or {}, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _evidence_sha(obs: Any) -> str:
+    data = obs.data if hasattr(obs, "data") else (obs if isinstance(obs, dict) else {})
+    return str((data or {}).get("evidence_sha") or "")
+
+
+def _vision_available() -> bool:
+    """视觉质检能力是否可用（未配 vision 模型 = 不可用，不伪造通过）。"""
+    try:
+        from clipwright.config import settings
+
+        return bool(str(getattr(settings, "vision_llm_model", "") or "").strip())
+    except Exception:  # noqa: BLE001 — 配置读不到按不可用
+        return False
+
+
 class AnimationAgentRuntime:
     def __init__(self, *, max_rounds: int = 3, max_calls: int = 8,
                  default_args: dict[str, Any] | None = None, require_mg: bool = True) -> None:
@@ -106,11 +130,24 @@ class AnimationAgentRuntime:
             return {"skill": name, "prompt": compose_skills(category=category or name, shot_type=shot_type, needs=needs)}
 
         ledger = FailureLedger()
+        state: dict[str, str] = {"sha": ""}
         for _seed in (seed_observations or []):
+            _d = _seed.data if hasattr(_seed, "data") else {}
+            if isinstance(_d, dict):
+                if _d.get("mg_def"):
+                    state["sha"] = mg_fingerprint(_d["mg_def"])
+                _d.setdefault("evidence_sha", state["sha"])
             ledger.add(_seed)
+
         async def execute(name: str, args: dict[str, Any]) -> Any:
             merged = {**self.default_args, **args}
             obs = observation_from_result(name, await call_animation_tool(name, **merged))
+            data = obs.data if hasattr(obs, "data") else {}
+            if isinstance(data, dict):
+                if name in ("generate_mg", "revise_mg") and data.get("mg_def"):
+                    state["sha"] = mg_fingerprint(data["mg_def"])
+                # 证据钉在当前版本：版本一变，旧 preview/frames/inspect 全部失效
+                data["evidence_sha"] = state["sha"]
             ledger.add(obs)
             return obs
 
@@ -119,14 +156,28 @@ class AnimationAgentRuntime:
             def data_of(o: Any) -> dict[str, Any]:
                 return o.data if hasattr(o, "data") else (o if isinstance(o, dict) else {})
 
-            mg_obs = next((o for o in reversed(observations)
-                           if data_of(o).get("mg_def")), None)
-            html_obs = next((o for o in reversed(observations)
-                             if getattr(o, "tool", "") == "preview_html"), None)
-            frame_obs = next((o for o in reversed(observations)
-                              if getattr(o, "tool", "") == "capture_preview_frames"), None)
-            inspect_obs = next((o for o in reversed(observations)
-                                if getattr(o, "tool", "") == "inspect_frames"), None)
+            mg_idx = -1
+            for i, o in enumerate(observations):
+                if data_of(o).get("mg_def"):
+                    mg_idx = i
+            mg_obs = observations[mg_idx] if mg_idx >= 0 else None
+            current_sha = state["sha"] or (
+                mg_fingerprint(data_of(mg_obs)["mg_def"]) if mg_obs is not None else "")
+
+            def _bound(tool: str) -> Any:
+                for i in range(len(observations) - 1, -1, -1):
+                    o = observations[i]
+                    if getattr(o, "tool", "") != tool:
+                        continue
+                    if i <= mg_idx:
+                        continue
+                    if current_sha and _evidence_sha(o) == current_sha:
+                        return o
+                return None
+
+            html_obs = _bound("preview_html")
+            frame_obs = _bound("capture_preview_frames")
+            inspect_obs = _bound("inspect_frames")
             if action.kind == "final":
                 if not mg_obs:
                     return AgentAction("tool", "generate_mg", {}, "还没有 mg_def")
@@ -136,6 +187,10 @@ class AnimationAgentRuntime:
                     return AgentAction("tool", "capture_preview_frames",
                                        {"html_path": data_of(html_obs).get("path", "")}, "还没有抽帧证据")
                 if not inspect_obs:
+                    if not _vision_available():
+                        # 按能力可用性分流：vision 未配置 → 允许交付，但由本层在结果里
+                        # 标 `unverified_visual`（调用方必须降级，不得伪装成 ok）
+                        return action
                     return AgentAction("tool", "inspect_frames",
                                        {"frames": data_of(frame_obs).get("frames", []), "brief": ""},
                                        "还没有 vision 质检")
@@ -159,12 +214,29 @@ class AnimationAgentRuntime:
             max_calls=self.max_calls,
             initial_observations=seed_observations,
         )
-        if self.require_mg and not any(
-            isinstance(o, dict) and o.get("mg_def") for o in result.observations
-        ):
-            try:
-                result.observations.append(await execute("generate_mg", {}))
-                result.status = "recovered"
-            except Exception as exc:  # noqa: BLE001
-                result.observations.append({"error": str(exc)[:500], "tool": "generate_mg"})
+        has_mg = any(
+            (o.data if hasattr(o, "data") else o).get("mg_def")
+            for o in result.observations
+            if isinstance(o, dict) or hasattr(o, "data")
+        )
+        if self.require_mg and not has_mg:
+            # 旧实现会在循环结束后偷偷补生成一次并标 "recovered"——那不是 agent 的决定，
+            # 也会绕过预算。这里如实判失败，由调用方回退旧引擎或重派。
+            result.status = "failed"
+            result.error = result.error or "no_mg_def"
+            result.observations.append({"tool": "generate_mg", "error": "no_mg_def",
+                                        "kind": "failure"})
+            return result
+
+        if has_mg:
+            inspect_obs = next((o for o in reversed(result.observations)
+                                if getattr(o, "tool", "") == "inspect_frames"), None)
+            if inspect_obs is None:
+                result.observations.append({
+                    "kind": "unverified_visual",
+                    "reason": "vision_unavailable" if not _vision_available() else "inspect_missing",
+                    "impact": "动画视觉未经质检，交付为 degraded",
+                })
+                if result.status == "ok":
+                    result.status = "degraded"
         return result

@@ -298,6 +298,9 @@ _ROWS: list[tuple[str, str, str, bool, bool, str]] = [
     ("kernel_mode", "pipeline", "Kernel 主循环形态", False, True,
      "tool_loop（默认）=模型拿工具 schema 自主调用（原生 tool-use loop）；"
      "shadow=跑 loop 只记录不落副作用；plan=旧计划表 adapter，仅回滚/测试用"),
+    ("agent_loop_shared_driver", "pipeline", "阶段/内核共用行动循环", False, True,
+     "true（默认）=阶段与工具循环统一走公共 drive；false 仅为阶段侧兼容开关（Kernel 已不再有第二套循环）。"
+     "只切策略，不切 wire 协议"),
     ("agent_loop_max_turns", "pipeline", "tool loop 模型回合上限", False, True,
      "单次 tool-use loop 最多几轮模型往返（默认 12，不可置空）"),
     ("agent_loop_max_tool_calls", "pipeline", "tool loop 工具调用上限", False, True,

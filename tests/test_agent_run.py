@@ -29,7 +29,12 @@ def _task(task_id: str = "task_run") -> Any:
 
 
 @pytest.fixture(autouse=True)
-def _clean():
+def _clean(tmp_path, monkeypatch):
+    # B04：run/idem 持久化到任务工作区，测试必须隔离，否则跨轮次命中旧缓存
+    from clipwright.config import settings
+
+    monkeypatch.setattr(settings, "workspace_dir", tmp_path / "ws")
+    monkeypatch.setattr(settings, "project_dir", tmp_path / "projects")
     agent_run.reset()
     from clipwright.services import evaluation, memory
 
@@ -52,9 +57,9 @@ def test_idem_key_replays_without_rework(monkeypatch):
 
     async def fake_stage(task, spec):  # noqa: ANN001
         calls["n"] += 1
-        from clipwright.schema.stage import StageResult
+        from clipwright.schema.stage import make_stage_result
 
-        return StageResult(stage=spec.stage, status="ok", summary="已完成",
+        return make_stage_result(stage=spec.stage, status="ok", summary="已完成",
                            duration_ms=5)
 
     from clipwright.services import stage_subagent
@@ -68,12 +73,12 @@ def test_idem_key_replays_without_rework(monkeypatch):
 
 
 def test_stage_and_research_share_envelope(monkeypatch):
-    from clipwright.schema.stage import StageResult
+    from clipwright.schema.stage import make_stage_result
     from clipwright.services import stage_subagent
     from clipwright.supervisor import spawn as sp
 
     async def fake_stage(task, spec):  # noqa: ANN001
-        return StageResult(stage=spec.stage, status="ok", summary="结构出好了",
+        return make_stage_result(stage=spec.stage, status="ok", summary="结构出好了",
                            writes=["docs/plan.md"], cost_usd=0.03, duration_ms=9)
 
     async def fake_spawn(ctx, **kwargs):  # noqa: ANN001, ARG001
@@ -101,11 +106,11 @@ def test_stage_and_research_share_envelope(monkeypatch):
 
 
 def test_metrics_and_episodic_are_recorded(monkeypatch):
-    from clipwright.schema.stage import StageResult
+    from clipwright.schema.stage import make_stage_result
     from clipwright.services import evaluation, memory, stage_subagent
 
     async def fake_stage(task, spec):  # noqa: ANN001
-        return StageResult(stage=spec.stage, status="ok", summary="剪辑完成",
+        return make_stage_result(stage=spec.stage, status="ok", summary="剪辑完成",
                            cost_usd=0.05, duration_ms=11)
 
     monkeypatch.setattr(stage_subagent, "run_stage", fake_stage)
@@ -177,11 +182,11 @@ def test_legacy_query_names_still_work_after_alias_migration(monkeypatch):
 
     别名表把它们指向新工具，参数名也必须认——否则"兼容"只是纸面上的。
     """
-    from clipwright.schema.stage import StageResult
+    from clipwright.schema.stage import make_stage_result
     from clipwright.services import stage_subagent
 
     async def fake_stage(task, spec):  # noqa: ANN001
-        return StageResult(stage=spec.stage, status="ok", summary="剪辑完成",
+        return make_stage_result(stage=spec.stage, status="ok", summary="剪辑完成",
                            duration_ms=3)
 
     monkeypatch.setattr(stage_subagent, "run_stage", fake_stage)
@@ -212,7 +217,7 @@ def test_cancel_works_for_stage_run(monkeypatch):
 
     旧实现拿 run_id 去查按 subagent_id 建键的 tracker，永远返回"不可取消"。
     """
-    from clipwright.schema.stage import StageResult
+    from clipwright.schema.stage import make_stage_result
     from clipwright.services import stage_subagent
 
     started = {"go": False}
@@ -220,7 +225,7 @@ def test_cancel_works_for_stage_run(monkeypatch):
     async def slow_stage(task, spec):  # noqa: ANN001
         started["go"] = True
         await asyncio.sleep(5)
-        return StageResult(stage=spec.stage, status="ok", summary="不该到这里")
+        return make_stage_result(stage=spec.stage, status="ok", summary="不该到这里")
 
     monkeypatch.setattr(stage_subagent, "run_stage", slow_stage)
 
@@ -250,12 +255,12 @@ def test_cancel_unknown_run_reports_honestly():
 
 def test_reset_cancels_live_runs(monkeypatch):
     """reset 必须把还在跑的句柄一起收掉，否则测试之间会互相污染。"""
-    from clipwright.schema.stage import StageResult
+    from clipwright.schema.stage import make_stage_result
     from clipwright.services import stage_subagent
 
     async def slow_stage(task, spec):  # noqa: ANN001
         await asyncio.sleep(5)
-        return StageResult(stage=spec.stage, status="ok")
+        return make_stage_result(stage=spec.stage, status="ok")
 
     monkeypatch.setattr(stage_subagent, "run_stage", slow_stage)
 

@@ -50,72 +50,70 @@ def reserve_seq(reports_dir: Path) -> int:
     return 0
 
 
-def build_sections(payload: dict[str, Any] | None, *, stage: str, status: str,
-                   summary: str = "", needs: list[dict[str, Any]] | None = None,
-                   degradations: list[dict[str, Any]] | None = None,
-                   issues: list[dict[str, Any]] | None = None,
-                   artifact_names: list[str] | None = None) -> dict[str, str]:
-    """四节正文（我做了什么 / 结果如何 / 发现的问题 / 给下一位）。
+def build_body(payload: dict[str, Any] | None, *, stage: str, status: str,
+               summary: str = "", needs: list[Any] | None = None,
+               degradations: list[Any] | None = None,
+               issues: list[Any] | None = None,
+               artifact_names: list[str] | None = None) -> str:
+    """自由正文：Agent 自己写什么就是什么，宿主只在缺失时补一段事实。
 
-    优先用 Agent 自己写的 `report_text`（若提供，可为 dict 或纯文本）；
-    否则从结构化结果里合成——**不允许空着**，缺内容时写明"未提供"。
+    v2 起报告**没有固定四节**（PRD v0.4 §7）：正文是给人读的自由 Markdown，
+    机器事实只在 `AgentResult`。这里只负责“拿正文”，不做章节切分。
     """
+
+    def _text(value: Any) -> str:
+        return str(value or "").strip()
+
     raw = (payload or {}).get("report_text")
-    if isinstance(raw, dict):
-        return {
-            "我做了什么": str(raw.get("did") or raw.get("我做了什么") or "").strip() or "未提供",
-            "结果如何": str(raw.get("result") or raw.get("结果如何") or "").strip() or "未提供",
-            "发现的问题": str(raw.get("issues") or raw.get("发现的问题") or "").strip() or "无",
-            "给下一位": str(raw.get("next") or raw.get("给下一位") or "").strip() or "无",
-        }
     if isinstance(raw, str) and raw.strip():
-        return {"我做了什么": "见下", "结果如何": raw.strip()[:4000],
-                "发现的问题": "未提供", "给下一位": "未提供"}
+        return raw.strip()[:4000]
+    if isinstance(raw, dict):
+        for key in ("body", "markdown", "report", "text"):
+            body = _text(raw.get(key))
+            if body:
+                return body[:4000]
+        parts: list[str] = []
+        for key in ("did", "result", "issues", "next", "summary"):
+            body = _text(raw.get(key))
+            if body:
+                parts.append(f"**{key}**：{body}")
+        if parts:
+            return "\n\n".join(parts)[:4000]
 
-    did = f"{stage} 阶段执行完毕（status={status}）"
+    # 宿主兜底：只陈述事实，不编造“我做了什么”
+    lines = [f"{stage} 阶段终态：{status}"]
+    if _text(summary):
+        lines.append(_text(summary))
+    need_fields = []
+    for item in (needs or [])[:8]:
+        field = str(getattr(item, "field", "") or (item or {}).get("field") or "") if isinstance(item, dict) else str(getattr(item, "field", "") or "")
+        if field:
+            need_fields.append(field)
+    if need_fields:
+        lines.append("待补：" + "、".join(need_fields))
+    if degradations:
+        lines.append(f"降级：{len(degradations)} 项")
+    if issues:
+        lines.append(f"问题：{len(issues)} 条")
     if artifact_names:
-        did += f"；产出 {len(artifact_names)} 项：{'、'.join(artifact_names[:8])}"
-
-    notes: list[str] = []
-    for key in ("material_notes", "edit_notes", "audio_notes", "animation_notes"):
-        for note in (payload or {}).get(key) or []:
-            if str(note).strip():
-                notes.append(f"- {str(note)[:300]}")
-    if payload and payload.get("redo_agent"):
-        notes.append(f"- 建议重做：{payload['redo_agent']}")
-
-    problems: list[str] = []
-    for d in (degradations or [])[:8]:
-        kind = str(d.get("kind") or "")
-        detail = str(d.get("detail") or "")
-        problems.append(f"- 降级 `{kind}`：{detail[:200]}" if kind else f"- {detail[:200]}")
-    for it in (issues or [])[:8]:
-        if isinstance(it, dict):
-            problems.append(f"- 问题（{it.get('severity') or 'info'}）："
-                            f"{str(it.get('title') or it.get('message') or '')[:200]}")
-    for need in (needs or [])[:5]:
-        problems.append(f"- 缺输入 `{need.get('field')}`（来自 {need.get('from_stage') or need.get('from')}）："
-                        f"{str(need.get('why') or '')[:160]}")
-
-    return {
-        "我做了什么": did,
-        "结果如何": summary.strip() or "未提供摘要",
-        "发现的问题": "\n".join(problems) or ("\n".join(notes) or "无"),
-        "给下一位": "\n".join(notes) or "无",
-    }
+        lines.append("产物：" + "、".join(artifact_names[:8]))
+    return "\n\n".join(lines)[:4000]
 
 
-def render_report(*, stage: str, status: str, attempt: int, seq: int,
-                  sections: dict[str, str], artifacts: dict[str, Any] | None = None,
+def render_report(*, stage: str, status: str, attempt: int, seq: int, body: str,
+                  artifacts: dict[str, Any] | None = None,
                   cost_usd: Optional[float] = None, duration_ms: int = 0,
-                  provider: str = "", model: str = "", task_id: str = "") -> str:
-    """渲染完整 markdown（含 YAML front-matter）。"""
+                  provider: str = "", model: str = "", task_id: str = "",
+                  run_id: str = "") -> str:
+    """渲染完整 markdown：最小机器信封（front-matter）+ 自由正文。"""
     meta = {
+        "schema_version": 2,
         "stage": stage,
         "status": status,
         "attempt": attempt,
         "seq": seq,
         "task_id": task_id,
+        "run_id": run_id,
         "cost_usd": cost_usd,
         "cost_unknown": cost_usd is None,
         "duration_ms": duration_ms,
@@ -128,22 +126,9 @@ def render_report(*, stage: str, status: str, attempt: int, seq: int,
     lines.extend(f"{k}: {json.dumps(v, ensure_ascii=False)}" for k, v in meta.items())
     lines.append("---")
     lines.append("")
-    lines.append(f"# {stage} · 第 {attempt} 次 · {status}")
+    text_body = (body or "").strip() or f"{stage} 阶段终态：{status}"
+    lines.append(text_body)
     lines.append("")
-    for title in ("我做了什么", "结果如何", "发现的问题", "给下一位"):
-        body = (sections.get(title) or "").strip() or "未提供"
-        lines.append(f"## {title}")
-        lines.append("")
-        lines.append(body)
-        lines.append("")
-    if artifacts:
-        lines.append("## 产物")
-        lines.append("")
-        for name, ref in (artifacts or {}).items():
-            preview = ref.get("preview") if isinstance(ref, dict) else None
-            artifact = ref.get("artifact") if isinstance(ref, dict) else ref
-            lines.append(f"- `{name}` → {artifact or '（内联）'}（preview: {preview}）")
-        lines.append("")
 
     text = "\n".join(lines)
     limit = _max_chars()
@@ -152,10 +137,18 @@ def render_report(*, stage: str, status: str, attempt: int, seq: int,
     return text
 
 
+def _atomic_write(path: Path, text: str) -> None:
+    """同目录临时文件 + 原子换名：读者永远看不到半截报告。"""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def write_report(*, workspace_root: Path | str, stage: str, status: str, attempt: int,
-                 sections: dict[str, str], artifacts: dict[str, Any] | None = None,
+                 body: str, artifacts: dict[str, Any] | None = None,
                  cost_usd: Optional[float] = None, duration_ms: int = 0,
-                 provider: str = "", model: str = "", task_id: str = "") -> tuple[str, int]:
+                 provider: str = "", model: str = "", task_id: str = "",
+                 run_id: str = "") -> tuple[str, int]:
     """写一份报告并更新 INDEX；返回 `(path, seq)`，失败返回 `("", 0)`。"""
     try:
         reports = report_root(workspace_root)
@@ -166,10 +159,10 @@ def write_report(*, workspace_root: Path | str, stage: str, status: str, attempt
         name = f"{seq:02d}-{safe_stage}-{max(1, int(attempt))}.md"
         path = reports / name
         text = render_report(stage=stage, status=status, attempt=attempt, seq=seq,
-                             sections=sections, artifacts=artifacts, cost_usd=cost_usd,
+                             body=body, artifacts=artifacts, cost_usd=cost_usd,
                              duration_ms=duration_ms, provider=provider, model=model,
-                             task_id=task_id)
-        path.write_text(text, encoding="utf-8")
+                             task_id=task_id, run_id=run_id)
+        _atomic_write(path, text)
         update_index(reports)
         return str(path), seq
     except Exception as exc:  # noqa: BLE001 — 写盘失败由调用方降级为 degraded
@@ -227,23 +220,26 @@ def list_reports(workspace_root: Path | str, limit: int = 10) -> list[dict[str, 
             "attempt": int(meta.get("attempt") or 0),
             "headline": headline,
             "path": str(path),
+            "run_id": str(meta.get("run_id") or ""),
+            "task_id": str(meta.get("task_id") or ""),
             "cost_usd": meta.get("cost_usd"),
             "created_at": str(meta.get("created_at") or ""),
-            "preview": _section_text(text, "结果如何")[:300],
-            "next_for": _section_text(text, "给下一位")[:600],
+            "preview": _body_excerpt(text)[:300],
         })
     items.sort(key=lambda m: (m["seq"], m["created_at"]), reverse=True)
     return items[:max(1, int(limit or 10))]
 
 
-def _section_text(text: str, title: str) -> str:
-    marker = f"## {title}"
-    start = text.find(marker)
-    if start < 0:
-        return ""
-    rest = text[start + len(marker):]
-    end = rest.find("\n## ")
-    return (rest if end < 0 else rest[:end]).strip()
+def _body_excerpt(text: str) -> str:
+    """自由正文的首段摘要（不含 front-matter、不含标题行）。"""
+    body = text
+    if body.startswith("---"):
+        end = body.find("\n---", 3)
+        if end >= 0:
+            body = body[end + 4:]
+    lines = [ln.strip() for ln in body.splitlines()]
+    lines = [ln for ln in lines if ln and not ln.startswith("#")]
+    return " ".join(lines)[:400]
 
 
 def update_index(reports_dir: Path) -> str:
@@ -296,7 +292,7 @@ def update_index(reports_dir: Path) -> str:
 
 __all__ = [
     "DEFAULT_REPORT_MAX_CHARS",
-    "build_sections",
+    "build_body",
     "list_reports",
     "render_report",
     "report_root",

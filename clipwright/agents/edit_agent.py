@@ -270,6 +270,47 @@ def _trim_cache_set(source_path: str, start_sec: float, duration_sec: float, out
     _TRIM_CACHE[(source_path, round(start_sec, 2), round(duration_sec, 2))] = output_path
 
 
+def _edit_gate_problems(timeline: Any, *, target_sec: float = 0.0,
+                        has_audio: bool = False) -> list[str]:
+    """B17：剪辑交付前的确定性自检（无 LLM、不改时间线）。
+
+    固定清单：有视频片段、有可用时长、与配音目标时长偏差、字幕越过结尾。
+    返回问题列表；空列表 = 通过。
+    """
+    problems: list[str] = []
+    if timeline is None:
+        return ["没有时间线"]
+    tracks = list(getattr(timeline, "tracks", None) or [])
+    if not tracks:
+        return ["时间线没有任何轨道"]
+    video = [c for tr in tracks for c in (getattr(tr, "clips", None) or [])
+             if str(getattr(tr, "kind", "")) == "video"]
+    if not video:
+        problems.append("没有视频片段（video 轨为空）")
+    total = float(getattr(timeline, "total_duration_sec", 0) or 0)
+    if total <= 0:
+        problems.append("时间线总时长为 0")
+    if target_sec > 0 and total > 0:
+        ratio = total / target_sec
+        if ratio < 0.85 or ratio > 1.15:
+            problems.append(
+                f"时间线时长 {total:.1f}s 与配音目标 {target_sec:.1f}s 偏差过大（{ratio:.2f}×）")
+    if has_audio:
+        audio = [c for tr in tracks for c in (getattr(tr, "clips", None) or [])
+                 if str(getattr(tr, "kind", "")) == "audio"]
+        if not audio:
+            problems.append("口播模式但音频轨为空")
+    for tr in tracks:
+        for c in (getattr(tr, "clips", None) or []):
+            end = float(getattr(c, "start_sec", 0) or 0) + float(getattr(c, "duration_sec", 0) or 0)
+            if total > 0 and end > total + 0.05:
+                problems.append(f"片段 {getattr(c, 'id', '?')} 越过时间线结尾（{end:.1f}s > {total:.1f}s）")
+                break
+        if problems and problems[-1].startswith("片段"):
+            break
+    return problems
+
+
 class EditAgent(BaseAgent[EditInput, EditOutput]):
     """剪辑 Agent：从脚本骨架和素材生成粗剪时间线。"""
 
@@ -352,18 +393,18 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 logger.warning("EditAgent: 场景列表为空，无法生成时间线")
                 # D5（PRD §19.5）：失败必须**说清原因与缺什么**——旧实现只写 edit_notes，
                 # 上层拿不到 error/failure 只能归因 unknown，用户看到「unknown（retryable=retry_same）」。
-                from clipwright.schema.agent import FailureReport
+                from clipwright.schema.agent import FailureReport, Need
 
                 _reason = "分镜场景为空：structure 阶段没有产出可用 scenes（或 script_skeleton.scenes 缺失）"
                 return EditOutput(
                     decision=AgentDecision.FAIL,
                     error=_reason,
+                    needs=[Need(field="scenes", from_stage="structure",
+                                why="剪辑需要分镜场景（title/description/duration）")],
                     failure=FailureReport(
                         category="input_insufficient",
                         blocking_point=_reason[:200],
                         retryable="needs_upstream",
-                        needs=[{"from_stage": "structure", "field": "scenes",
-                                "why": "剪辑需要分镜场景（title/description/duration）"}],
                         evidence=[{"kind": "empty_scenes", "text": "scenes=[]"}],
                     ),
                     # 失败时**不返回时间线**（D6）：空壳 Timeline 一旦入库，
@@ -426,7 +467,6 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 },
                 context.category_plugin_id,
                 pipeline_id=context.pipeline_id,
-                quality_hint=self.quality_issues_hint(context),  # C6
                 extra_params=context.extra_params,
             )
             llm_pip_scenes: set[int] = set()
@@ -1002,6 +1042,24 @@ class EditAgent(BaseAgent[EditInput, EditOutput]):
                 )
                 notes.append(f"PV 自检：{_loop.get('status')}"
                              f"（工具调用 {len(_loop.get('tool_calls') or [])} 次）")
+
+            # B17：交付前自检（固定清单）。不通过不失败——降级交付并留痕，
+            # 让主 Agent 看见"这份时间线哪里不对"，而不是等到渲染才暴露。
+            _gate_problems = _edit_gate_problems(
+                timeline,
+                target_sec=float(context.extra_params.get("audio_duration_sec", 0) or 0),
+                has_audio=self._is_narration_anchored(context),
+            )
+            if _gate_problems:
+                from clipwright.services.degradation import note_degradation
+
+                note_degradation(
+                    "edit_gate_failed",
+                    detail="；".join(_gate_problems[:5]),
+                    scope="timeline",
+                    impact="时间线自检未通过，继续交付并标记降级",
+                )
+                notes.append("自检未通过：" + "；".join(_gate_problems[:3]))
 
             return EditOutput(
                 decision=AgentDecision.PASS,

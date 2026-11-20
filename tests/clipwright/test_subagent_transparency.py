@@ -139,7 +139,8 @@ def test_payload_prefers_failed_and_slow_calls() -> None:
     assert "slow_ok" in names[:2]  # 其次最慢
     assert payload["tool_call_stats"]["failed"] == 1
     assert payload["tool_call_stats"]["slowest"]["tool"] == "slow_ok"
-    assert "get_agent_run" in payload["tool_calls_hint"]
+    assert payload["tool_calls_total"] == 3
+    assert payload["trace_state"] == "partial"  # 有调用但未落盘路径
 
 
 def test_call_skill_is_recorded_like_a_tool(monkeypatch) -> None:

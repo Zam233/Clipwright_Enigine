@@ -47,14 +47,21 @@ def payload_of(result: Any) -> dict[str, Any]:
 
 
 def merge(stage: str, payload: dict[str, Any], *, task_id: str,
-          allow: tuple[str, ...] | None = None) -> tuple[list[str], list[str]]:
+          allow: tuple[str, ...] | None = None,
+          expect_revision: int | None = None) -> tuple[list[str], list[str]]:
     """把一次阶段输出合并进黑板；返回 `(写入的键, 合并错误)`。
 
     `timeline` 单独处理：它是渲染真值，允许的写入方向由黑板把关（edit→animation→audio），
     超过 2MB 时自动落盘转指针（否则会被静默丢弃，下游报"缺 timeline"）。
     合并错误必须回传给调用方（stage_subagent 会据此把 status 降为 degraded），
     只打 warning 等于让"时间线没存上"这件事消失。
+
+    `expect_revision` 是 CAS：阶段开跑前记下的黑板代数；提交时若已被别的写入推进，
+    **一个键都不写**并回报 `board_conflict`，由调用方重派而不是覆盖别人的产物。
     """
+    current_rev = bb.revision(task_id)
+    if expect_revision is not None and int(expect_revision) != current_rev:
+        return [], [f"board_conflict: 期望 r{int(expect_revision)}，当前 r{current_rev}"]
     keys = allow if allow is not None else MERGE_KEYS.get(stage, ())
     written: list[str] = []
     errors: list[str] = []

@@ -371,7 +371,21 @@ def _reports_digest(root: Path, limit: int) -> tuple[str, int]:
     chunks: list[str] = []
     for m in items:
         head = f"### #{m['seq']} {m['stage']}（{m['status']}）"
-        body = (m.get("next_for") or "").strip() or (m.get("preview") or "").strip()
+        # v2：优先用同一 run 的结构化交接摘要（handoff_summary）；
+        # 拿不到（无工作区/旧报告）才退回正文首段。next_for 已删除。
+        body = ""
+        run_id = str(m.get("run_id") or "")
+        task_id = str(m.get("task_id") or "")
+        if run_id and task_id:
+            try:
+                from clipwright.services import run_store
+
+                stored = run_store.get_for_task(task_id, run_id)
+                if stored is not None:
+                    body = str(stored.handoff_summary or "").strip()
+            except Exception:  # noqa: BLE001 — 交接摘要读不到不阻断上下文
+                body = ""
+        body = body or str(m.get("preview") or "").strip()
         chunks.append(f"{head}\n{body[:600]}")
     return "\n\n".join(chunks)[:limit], len(items)
 

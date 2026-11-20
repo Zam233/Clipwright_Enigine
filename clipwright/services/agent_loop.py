@@ -773,8 +773,194 @@ def take_thinking(task_id: str) -> str:
     return "".join(parts)
 
 
-__all__ = ["DELEGATE_TOOL", "RESEARCH_TOOL", "LoopAborted", "agent_tool_schemas",
-           "build_tools", "is_agent_tool", "run_loop", "take_thinking",
-           "tool_loop_available"]
+
+# ── 公共 AgentLoop（PRD §4.1 / Coding Plan B12）──────────────────────────
+#
+# 唯一行动循环：cancel → 闸门 → decide → dispatch → observe → gate。
+# Kernel / 阶段 / 调研 / 动画共用；这里只管控制流，不知道业务。
+# 墙钟与 max_tokens 是**可空字段**：None = 不设上限（provider 自夹），
+# 禁止在这里写死默认秒数。
+
+from dataclasses import dataclass, field  # noqa: E402 — 与文件其余 dataclass 风格一致
+
+
+@dataclass
+class LoopBudget:
+    """一次循环的预算。rounds/actions 是策略值；wall_sec/max_tokens 可空。"""
+
+    rounds: int = 8
+    actions: int = 16
+    wall_sec: float | None = None
+    max_tokens: int | None = None
+
+
+@dataclass
+class LoopAction:
+    """模型决定的一个动作（工具/技能/收尾候选）。"""
+
+    kind: str
+    name: str = ""
+    args: dict[str, Any] = field(default_factory=dict)
+    reason: str = ""
+
+
+@dataclass
+class LoopObservation:
+    """一次动作的可观测结果（也是回灌给模型的证据）。"""
+
+    kind: str
+    name: str = ""
+    ok: bool = True
+    payload: dict[str, Any] = field(default_factory=dict)
+    error: str = ""
+
+
+@dataclass
+class LoopExit:
+    status: str
+    reason: str
+    rounds: int = 0
+    actions: int = 0
+    observations: list[Any] = field(default_factory=list)
+    verdict: Any = None
+
+
+async def drive(
+    *,
+    run_id: str,
+    decide: Any,
+    dispatch: Any,
+    gate: Any = None,
+    seed: Any = None,
+    budget: LoopBudget | None = None,
+    is_cancelled: Any = None,
+    emit_round: Any = None,
+    clock: Any = None,
+) -> LoopExit:
+    """唯一行动循环；`decide(observations)` 返回带 `.calls` 与 `.text` 的决策。
+
+    - gate(decision_or_observation) 返回带 `.accepted` / `.missing` 的判定；
+    - 收尾候选被拒时，**把判定变成一条观察**回灌，模型必须继续给动作；
+    - 取消/轮数/调用数/墙钟是唯一闸门顺序，policy 不可改写。
+    """
+    import time as _time
+
+    now = clock or _time.monotonic
+    budget = budget or LoopBudget()
+    started = now()
+    observations: list[Any] = []
+    if seed is not None:
+        seeded = await seed() if callable(seed) else seed
+        observations.extend(seeded or [])
+
+    rounds = 0
+    actions = 0
+    while True:
+        if is_cancelled is not None and is_cancelled():
+            return LoopExit("cancelled", "user_cancelled", rounds, actions, observations)
+        if rounds >= int(budget.rounds):
+            return LoopExit("failed", "limit_rounds", rounds, actions, observations)
+        if actions >= int(budget.actions):
+            return LoopExit("failed", "limit_calls", rounds, actions, observations)
+        if budget.wall_sec is not None and (now() - started) >= float(budget.wall_sec):
+            return LoopExit("failed", "limit_wall", rounds, actions, observations)
+
+        decision = await decide(observations)
+        calls = list(getattr(decision, "calls", None) or [])
+        rounds += 1
+        if emit_round is not None:
+            try:
+                emit_round(rounds, [str(getattr(c, "name", "")) for c in calls], run_id)
+            except Exception:  # noqa: BLE001 — 事件写失败不阻断循环
+                logger.debug("subagent_round 事件写入失败 run=%s", run_id)
+
+        if not calls:
+            verdict = gate(decision) if gate is not None else None
+            if verdict is None or getattr(verdict, "accepted", True):
+                return LoopExit("ok", "completed", rounds, actions, observations, verdict)
+            observations.append(LoopObservation(
+                kind="gate_rejected",
+                name=str(getattr(verdict, "code", "gate") or "gate"),
+                ok=False,
+                payload={"missing": list(getattr(verdict, "missing", None) or []),
+                         "digest": str(getattr(verdict, "digest", "") or "")},
+                error=str(getattr(verdict, "reason", "") or "完成门未通过"),
+            ))
+            continue
+
+        for call in calls:
+            if is_cancelled is not None and is_cancelled():
+                return LoopExit("cancelled", "user_cancelled", rounds, actions, observations)
+            if actions >= int(budget.actions):
+                return LoopExit("failed", "limit_calls", rounds, actions, observations)
+            result = await dispatch(call)
+            actions += 1
+            observations.append(result)
+            if getattr(result, "kind", "") == "final_candidate" and gate is not None:
+                verdict = gate(result)
+                if getattr(verdict, "accepted", False):
+                    return LoopExit("ok", "completed", rounds, actions, observations, verdict)
+                observations.append(LoopObservation(
+                    kind="gate_rejected",
+                    name=str(getattr(verdict, "code", "gate") or "gate"),
+                    ok=False,
+                    payload={"missing": list(getattr(verdict, "missing", None) or [])},
+                    error=str(getattr(verdict, "reason", "") or "完成门未通过"),
+                ))
+
+
+def make_round_emitter(task_id: str, *, span: str = "subagent") -> Any:
+    """返回可直接传给 `drive(emit_round=…)` 的事件写手（B12：事件可见）。"""
+
+    def _emit(round_no: int, names: list[str], run_id: str) -> None:
+        emit(str(task_id), "subagent_round",
+             f"第 {round_no} 轮：{len(names)} 个动作",
+             {"run_id": str(run_id), "round": int(round_no),
+              "visible_calls": [str(n)[:80] for n in names[:12]]},
+             span=span)
+
+    return _emit
+
+
+class BudgetedSurface:
+    """按权限档位预留预算的 dispatch 包装（PRD v0.4 §8）。
+
+    - read / write_local：直接执行；
+    - costly：必须能按保守单价预留；预留不足时返回 `budget_limited` 观察，
+      **不让阶段失败**（调用方据此降级），只有硬约束场景才由 policy 转 needs。
+    """
+
+    def __init__(self, dispatch: Any, *, tier_of: Any, prices: dict[str, float] | None = None,
+                 lease_usd: float | None = None) -> None:
+        self._dispatch = dispatch
+        self._tier_of = tier_of
+        self._prices = dict(prices or {})
+        self._lease = lease_usd
+
+    def _reserve(self, name: str) -> tuple[bool, str]:
+        tier = str(self._tier_of(name) or "read")
+        if tier != "costly":
+            return True, ""
+        price = self._prices.get(name)
+        if price is None and self._lease is None:
+            return False, "budget_unreserved: 未知单价且无租约"
+        budget = self._lease if self._lease is not None else float(price or 0.0)
+        if budget <= 0:
+            return False, "budget_unreserved: 预留额度为 0"
+        return True, ""
+
+    async def __call__(self, action: LoopAction) -> LoopObservation:
+        ok, why = self._reserve(str(getattr(action, "name", "")))
+        if not ok:
+            return LoopObservation(kind="tool", name=str(getattr(action, "name", "")),
+                                   ok=False, payload={"degenerated": True},
+                                   error=why)
+        return await self._dispatch(action)
+
+
+__all__ = ["DELEGATE_TOOL", "RESEARCH_TOOL", "BudgetedSurface", "LoopAborted",
+           "LoopAction", "LoopBudget", "LoopExit", "LoopObservation",
+           "agent_tool_schemas", "build_tools", "drive", "is_agent_tool",
+           "make_round_emitter", "run_loop", "take_thinking", "tool_loop_available"]
 
 

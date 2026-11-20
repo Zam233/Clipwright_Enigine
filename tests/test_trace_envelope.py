@@ -77,9 +77,9 @@ def test_tool_result_points_at_its_tool_call(monkeypatch):
 def test_agent_run_update_emitted_for_review(monkeypatch):
     """等人工审核要发 update（不是 end），否则前端只看到"卡住"。"""
     async def fake_stage(task, spec):  # noqa: ANN001
-        from clipwright.schema.stage import StageResult
+        from clipwright.schema.stage import make_stage_result
 
-        return StageResult(stage=spec.stage, status="ok", summary="需要人看一眼")
+        return make_stage_result(stage=spec.stage, status="ok", summary="需要人看一眼")
 
     from clipwright.services import stage_subagent
 
@@ -110,11 +110,11 @@ def test_agent_run_update_emitted_for_review(monkeypatch):
 
 def test_idem_replay_emits_update(monkeypatch):
     """幂等复用要留痕：否则 trace 上看起来"又干了一遍"。"""
-    from clipwright.schema.stage import StageResult
+    from clipwright.schema.stage import make_stage_result
     from clipwright.services import stage_subagent
 
     async def fake_stage(task, spec):  # noqa: ANN001
-        return StageResult(stage=spec.stage, status="ok", summary="做完了")
+        return make_stage_result(stage=spec.stage, status="ok", summary="做完了")
 
     monkeypatch.setattr(stage_subagent, "run_stage", fake_stage)
     from types import SimpleNamespace

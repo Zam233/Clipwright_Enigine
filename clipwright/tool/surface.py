@@ -842,6 +842,12 @@ async def _execute_agent(name: str, payload: dict[str, Any], *,
         idem_key=idem_key[:120],
         trace_id=pipeline_id,
         refresh=bool(payload.get("refresh")),
+        provider=str(payload.get("provider") or ""),
+        model=str(payload.get("model") or ""),
+        **({"timeout_sec": float(payload["timeout_sec"])}
+           if payload.get("timeout_sec") else {}),
+        **({"max_turns": int(payload["max_turns"])}
+           if payload.get("max_turns") else {}),
     )
     result = await agent_run.run(spec, task)
     # 语义要分清：ok/degraded/needs 是"跑完了"，refused 是"不许跑"，其余才是 error

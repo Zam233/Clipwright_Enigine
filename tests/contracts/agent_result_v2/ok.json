@@ -1,0 +1,87 @@
+{
+  "attempt": 1,
+  "brief": "为 ZAM 做一条 3 分钟数码测评，结尾给出购买建议。",
+  "cost_unknown": false,
+  "cost_usd": 0.0123,
+  "created_at": 1795176802.5575814,
+  "degradations": [],
+  "details": {},
+  "duration_ms": 1234,
+  "error": "",
+  "failure": null,
+  "handoff_summary": "3 个分镜已产出，素材引用可读，可直接进入素材阶段。",
+  "issues": [],
+  "iterations": 0,
+  "kind": "stage",
+  "mode": "task",
+  "model": "stub-model",
+  "needs": [],
+  "outputs": {
+    "dropped": [],
+    "mg_dynamic": false,
+    "scenes": [
+      {
+        "duration": 40.0,
+        "id": "s1"
+      },
+      {
+        "duration": 50.0,
+        "id": "s2"
+      },
+      {
+        "duration": 60.0,
+        "id": "s3"
+      }
+    ],
+    "script_skeleton": {
+      "scene_count": 3,
+      "title": "测评"
+    },
+    "warnings": 0
+  },
+  "provider": "stub",
+  "redo_agent": "",
+  "redo_hint": "",
+  "redo_request": null,
+  "replay_of": "",
+  "replayed": false,
+  "report_path": "reports/01-structure-1.md",
+  "report_seq": 1,
+  "report_sha256": "sha256:fixture-report",
+  "report_state": "written",
+  "role": "structure",
+  "run_id": "run_contract_ok",
+  "schema_version": 2,
+  "spec_ref": "",
+  "stage": "structure",
+  "status": "ok",
+  "summary": "分镜 3 个；工具 2 次",
+  "task_id": "task_contract",
+  "terminal_reason": "completed",
+  "tokens": 900,
+  "tool_calls": [
+    {
+      "capability": "describe_mg",
+      "duration_ms": 120,
+      "kind": "tool",
+      "seq_in_run": 1,
+      "status": "success",
+      "tool": "describe_llm_mg"
+    },
+    {
+      "capability": "media_probe",
+      "duration_ms": 80,
+      "kind": "tool",
+      "seq_in_run": 2,
+      "status": "success",
+      "tool": "media_probe"
+    }
+  ],
+  "tool_calls_path": "reports/tool_calls/structure-1.json",
+  "tool_calls_total": 2,
+  "trace_id": "trace_contract",
+  "trace_state": "complete",
+  "writes": [
+    "artifacts/art_structure.json"
+  ]
+}

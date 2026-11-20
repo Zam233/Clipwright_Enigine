@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from clipwright.schema.run import AgentResult
-from clipwright.schema.stage import StageResult
+from clipwright.schema.stage import make_stage_result
 from clipwright.services import agent_kernel, agent_run
 from clipwright.services import degradation as degradation_mod
 
@@ -71,7 +71,7 @@ def test_run_stage_passes_degradations_to_agent_result(monkeypatch) -> None:
     from clipwright.schema.stage import StageSpec
 
     async def _fake_run_stage(task, spec):  # noqa: ANN001, ANN002, ANN003
-        return StageResult(
+        return make_stage_result(
             stage="animation", status="degraded", summary="动画已编排",
             writes=["timeline", "final_timeline"],
             degradations=[{"kind": "text_motion_weak", "detail": "最大位移不足"}],

@@ -43,7 +43,7 @@ def test_edit_empty_scenes_reports_input_insufficient() -> None:
     assert str(out.decision).endswith("FAIL")
     assert out.failure is not None
     assert out.failure.category == "input_insufficient"
-    assert out.failure.needs and out.failure.needs[0]["from_stage"] == "structure"
+    assert out.needs and out.needs[0].from_stage == "structure"
     assert out.timeline is None            # D6 的前置：失败不返回空壳时间线
     assert out.error                     # 原文原因要带出来
 
@@ -136,8 +136,8 @@ def test_explicit_inputs_missing_returns_needs(monkeypatch) -> None:
         task, StageSpec(stage="edit", inputs={"candidate_clips": []})))
     assert result.status == "failed"
     assert result.failure is not None
-    assert result.failure.category == "input_insufficient"
-    assert any(n["field"] == "script_skeleton" for n in result.failure.needs)
+    assert result.failure["category"] == "input_insufficient"
+    assert any(n.field == "script_skeleton" for n in result.needs)
 
 
 def test_explicit_inputs_missing_but_board_has_it_is_satisfied(monkeypatch) -> None:

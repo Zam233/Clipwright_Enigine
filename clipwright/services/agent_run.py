@@ -2,7 +2,7 @@
 
 对外只暴露 `run(spec, task)` → `AgentResult`。内部按 `spec.kind` 选 adapter：
 
-- `stage`  → `services.stage_subagent.run_stage`（阶段 Agent，写报告/产物/黑板）
+- `stage`  → `services.stage_adapter.run_stage`（唯一阶段 Adapter，返回 `AgentResult`）
 - `research` → `supervisor.spawn.spawn_subagent`（只读调研员，带并发/审核门）
 
 这样主 agent 只有一个工具（`delegate_agent` / `research_agent`）两种 spec，
@@ -18,6 +18,8 @@ from typing import Any
 
 from clipwright.config import logger
 from clipwright.schema.run import AgentResult, RunSpec
+from clipwright.services import result_assembler as _ra
+from clipwright.services import run_store
 
 #: Kernel 可直接授予子 agent 的只读/低危工具（与 supervisor.SUPERVISOR_TOOLS 的交集）。
 #: 这条策略原来在 `subagent_capability` 里；适配层退役后它必须留在**运行时**——
@@ -66,7 +68,7 @@ _MAX_IDEM = 200
 #: **运行中的 run → 取消句柄**（这是取消契约的唯一事实来源）
 #:
 #: 为什么不用 supervisor tracker：tracker 按 `subagent_id` 建键，阶段子 agent 根本
-#: 不注册进去（它直接跑 `stage_subagent.run_stage`）。用 run_id 去查那个表只会永远
+#: 不注册进去（阶段执行走 `stage_adapter.run_stage`，不经过 tracker）。用 run_id 去查那个表只会永远
 #: 返回"不可取消"——取消契约看着有、实际是空的。
 _LIVE: dict[str, dict[str, Any]] = {}
 #: 别名索引：subagent_id / idem_key / stage 名 → run_id（让旧调用方也能取消）
@@ -92,6 +94,8 @@ def _record(result: AgentResult) -> None:
     if len(_RUNS) >= _MAX_RUNS:
         _RUNS.pop(next(iter(_RUNS)))
     _RUNS[result.run_id] = result
+    # 持久化事实源：重启后 get_for_task/list_task 仍能恢复
+    run_store.save(result)
 
 
 def replay(idem_key: str) -> AgentResult | None:
@@ -123,7 +127,7 @@ def peek_pending_notes(task_id: str, stage: str) -> list[str]:
 
 
 def get_run(run_id: str) -> dict[str, Any] | None:
-    r = _RUNS.get(run_id)
+    r = _RUNS.get(run_id) or run_store.get(run_id)
     return r.model_dump(mode="json") if r else None
 
 
@@ -135,7 +139,7 @@ def get_run_for_task(task_id: str, run_id: str) -> dict[str, Any] | None:
     否则拿 A 的 URL 就能读/改 B 的子会话。
     """
     key_task = str(task_id or "")
-    r = _RUNS.get(str(run_id or ""))
+    r = run_store.get_for_task(key_task, str(run_id or ""))
     if r is None or not key_task or r.task_id != key_task:
         return None
     return r.model_dump(mode="json")
@@ -156,6 +160,10 @@ def list_runs(task_id: str = "") -> list[dict[str, Any]]:
         for r in _RUNS.values()
         if not key or r.task_id == key
     }
+    if key:
+        # 磁盘事实源补齐“重启后内存没有”的 run（同 run_id 以已加载结果为准）
+        for stored in run_store.list_task(key):
+            done.setdefault(stored.run_id, stored.model_dump(mode="json"))
     if key:
         for run_id, live in _LIVE.items():
             if run_id in done or str(live.get("task_id") or "") != key:
@@ -201,11 +209,15 @@ def _tracker_node(task_id: str, node_id: str) -> dict[str, Any] | None:
 def inspect(*, run_id: str = "", task_id: str = "", stage: str = "") -> dict[str, Any] | None:
     """按 run_id 或（task_id + stage）查一次结果——两条查法都只是索引，不是分支逻辑。"""
     if run_id:
-        hit = _RUNS.get(run_id)
+        hit = run_store.get(run_id) or _RUNS.get(run_id)
         if hit is not None:
             # 归属不符就是"不存在"，不能退到别的索引继续找（那会串任务）。
             return (hit.model_dump(mode="json")
                     if not task_id or hit.task_id == task_id else None)
+        if task_id:
+            disk = run_store.get_for_task(task_id, run_id)
+            if disk is not None:
+                return disk.model_dump(mode="json")
         found = _tracker_node(task_id, run_id)
         if found is not None:
             return found
@@ -308,20 +320,21 @@ def reset() -> None:
     _ALIAS.clear()
     _RUNS.clear()
     _IDEM.clear()
+    run_store.clear(memory_only=True)
 
 
 def _next_attempt(task: Any, spec: RunSpec) -> int:
-    """该任务该阶段的第几次执行（1 起）。"""
+    """该任务该阶段的第几次执行（1 起）。序号由 RunStore 原子分配（重启不重号）。"""
     task_id = str(getattr(task, "id", "") or "")
     stage = str(spec.stage or "")
     if not task_id or not stage:
         return 1
-    nums = [int(r.attempt or 1) for r in _RUNS.values()
-            if r.task_id == task_id and r.stage == stage]
-    nums += [int(v.get("attempt") or 1) for v in _LIVE.values()
-             if str(v.get("task_id") or "") == task_id
-             and str(v.get("stage") or "") == stage]
-    return max(nums, default=0) + 1
+    live_max = max([int(v.get("attempt") or 1) for v in _LIVE.values()
+                    if str(v.get("task_id") or "") == task_id
+                    and str(v.get("stage") or "") == stage] or [0])
+    mem_max = max([int(r.attempt or 1) for r in _RUNS.values()
+                   if r.task_id == task_id and r.stage == stage] or [0])
+    return max(run_store.next_attempt(task_id, stage), mem_max + 1, live_max + 1)
 
 
 async def run(spec: RunSpec, task: Any) -> AgentResult:
@@ -332,13 +345,14 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
     - `run_id`：**每一次真实执行**的唯一记录 id。显式重放、降级重跑都必须拿新 id，
       否则新轨迹会挂在旧 run 上，或直接覆盖上一份失败记录。
     """
+    task_id = str(getattr(task, "id", "") or "")
     base_id = spec.idem_key or f"run_{uuid.uuid4().hex[:10]}"
-    cached = replay(spec.idem_key) if (spec.idem_key and not spec.refresh) else None
+    cached = (
+        (run_store.lookup_idem(task_id, spec.idem_key) or replay(spec.idem_key))
+        if (spec.idem_key and not spec.refresh) else None
+    )
     must_rerun = bool(
-        spec.refresh
-        or (cached is not None and cached.degradations)
-        # 幂等键已有一条真实执行记录：再次执行必须追加，不能覆盖。
-        or (spec.idem_key and spec.idem_key in _RUNS)
+        spec.refresh or (cached is not None and cached.degradations)
     )
     run_id = f"{base_id}#r{uuid.uuid4().hex[:6]}" if must_rerun else base_id
     started = time.monotonic()
@@ -373,9 +387,10 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
 
     _bk_key = _cb.key_of(spec.stage or spec.role or spec.kind, spec.model)
     if _cb.is_open(_bk_key):
-        result = AgentResult(
+        result = _ra.build(
             run_id=run_id, kind=spec.kind, stage=spec.stage, role=spec.role,
-            status="failed", attempt=attempt,
+            status="failed", attempt=attempt, task_id=str(getattr(task, "id", "") or ""),
+            trace_id=trace_id,
             error=f"熔断中：{_bk_key} 连续失败，{_cb.RECOVERY_SEC}s 内拒绝派发",
             failure={"category": "circuit_open", "retryable": "retryable",
                      "blocking_point": "circuit_breaker", "evidence": []},
@@ -395,9 +410,10 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
               run_id=run_id, span="agent", trace_id=trace_id)
     # 拓扑：星型，深度固定 1（子 agent 不得再派）
     if int(spec.depth or 1) > 1:
-        result = AgentResult(
+        result = _ra.build(
             run_id=run_id, kind=spec.kind, stage=spec.stage, role=spec.role,
-            status="refused", attempt=attempt,
+            status="refused", attempt=attempt, task_id=str(getattr(task, "id", "") or ""),
+            trace_id=trace_id,
             error="子 agent 不得再派子 agent（星型拓扑，深度固定 1）",
             failure={"category": "policy_refused", "retryable": "permanent",
                      "blocking_point": "depth>1", "evidence": []},
@@ -418,9 +434,10 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
         try:
             result = await handle
         except asyncio.CancelledError:
-            result = AgentResult(
+            result = _ra.build(
                 run_id=run_id, kind=spec.kind, stage=spec.stage, role=spec.role,
-                status="cancelled", error="子 agent 已被取消",
+                status="cancelled", attempt=attempt, task_id=str(getattr(task, "id", "") or ""),
+                trace_id=trace_id, error="子 agent 已被取消",
                 failure={"category": "cancelled", "retryable": "permanent",
                          "blocking_point": "人工取消", "evidence": []},
             )
@@ -439,9 +456,10 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
             _bind_alias(str(result.outputs["subagent_id"]), run_id)
     except Exception as exc:  # noqa: BLE001 — 派发异常也要结构化返回
         logger.warning("agent_run 失败 %s/%s: %s", spec.kind, spec.stage, exc)
-        result = AgentResult(
+        result = _ra.build(
             run_id=run_id, kind=spec.kind, stage=spec.stage, role=spec.role,
-            status="failed", error=f"{type(exc).__name__}: {exc}",
+            status="failed", attempt=attempt, task_id=str(getattr(task, "id", "") or ""),
+            trace_id=trace_id, error=f"{type(exc).__name__}: {exc}",
             failure={"category": "internal_defect", "retryable": "needs_human",
                      "blocking_point": str(exc)[:200], "evidence": []},
         )
@@ -449,6 +467,11 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
     # 这里是真实执行的收敛点：attempt 由运行时统一编号，
     # 各 adapter 的默认值（恒为 1）不能覆盖它。
     result.attempt = int(attempt)
+    # B10：落一份派发快照，显式重放按原 stage/brief/inputs/路由重跑
+    try:
+        result.details.setdefault("spec", spec.model_dump(mode="json"))
+    except Exception:  # noqa: BLE001 — 快照失败不影响结果
+        pass
     _record(result)
     if result.status == "needs":
         # 等人工审核：既不是成功也不是失败，用 update 事件让前端显示"卡在哪"
@@ -472,7 +495,8 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
                       "tool_calls_path": result.tool_calls_path,
                       "degradations": len(result.degradations or []),
                       "failure": result.failure,
-                      "needs": result.needs or []},
+                      "needs": [n.model_dump(mode="json") if hasattr(n, "model_dump")
+                                else dict(n) for n in (result.needs or [])]},
               run_id=result.run_id, span="agent", trace_id=trace_id)
     if not result.brief and spec.brief:
         result.brief = spec.brief
@@ -480,6 +504,9 @@ async def run(spec: RunSpec, task: Any) -> AgentResult:
         if len(_IDEM) >= _MAX_IDEM:
             _IDEM.pop(next(iter(_IDEM)))
         _IDEM[spec.idem_key] = result.model_copy(deep=True)
+        # 持久化幂等索引（task scope）：重启后同 idem_key 仍能回放
+        run_store.bind_idem(str(getattr(task, "id", "") or ""),
+                            spec.idem_key, result.run_id)
     return result
 
 
@@ -514,11 +541,17 @@ def _after_run(result: AgentResult, spec: RunSpec, task: Any) -> None:
 
         evaluation.record_run(
             task_id=task_id, run_id=result.run_id, kind=result.kind,
-            status=result.status, tool_calls=len(result.tool_calls),
+            status=result.status,
+            tool_calls=int(result.tool_calls_total or len(result.tool_calls)),
             duration_ms=result.duration_ms, cost_usd=result.cost_usd,
             provider=result.provider, model=result.model,
             extra={"stage": result.stage, "role": result.role,
                    "tokens": result.tokens,
+                   "terminal_reason": result.terminal_reason,
+                   "attempt": result.attempt,
+                   "needs": len(result.needs or []),
+                   "report_state": result.report_state,
+                   "trace_state": result.trace_state,
                    "failure": (result.failure or {}).get("category")},
         )
     except Exception as exc:  # noqa: BLE001 — 记账失败不影响返回
@@ -551,70 +584,10 @@ def _after_run(result: AgentResult, spec: RunSpec, task: Any) -> None:
 
 
 async def _run_stage(spec: RunSpec, task: Any, run_id: str, trace_id: str) -> AgentResult:
-    from clipwright.schema.stage import STAGE_NAMES, StageSpec
-    from clipwright.services import stage_subagent
+    """薄转发：阶段领域执行与 AgentResult 组装都在 `services.stage_adapter`。"""
+    from clipwright.services import stage_adapter
 
-    # 阶段名校验：这是**运行时**的输入契约（旧适配层退役后必须留在这里）
-    if not spec.stage:
-        return AgentResult(
-            run_id=run_id, kind="stage", task_id=str(getattr(task, "id", "") or ""),
-            trace_id=trace_id, status="refused",
-            error="派阶段必须给 stage（structure/material/edit/animation/audio/quality）",
-            failure={"category": "input_insufficient", "retryable": "needs_human",
-                     "blocking_point": "缺少 stage 参数", "evidence": []},
-        )
-    if str(spec.stage) not in STAGE_NAMES:
-        return AgentResult(
-            run_id=run_id, kind="stage", task_id=str(getattr(task, "id", "") or ""),
-            trace_id=trace_id, stage=str(spec.stage), status="refused",
-            error=f"未知阶段 {spec.stage}（可选：{'/'.join(STAGE_NAMES)}）",
-            failure={"category": "input_insufficient", "retryable": "needs_human",
-                     "blocking_point": f"stage={spec.stage}", "evidence": []},
-        )
-
-    stage_spec = StageSpec(
-        stage=spec.stage,  # type: ignore[arg-type]
-        args={"brief": spec.brief} if spec.brief else {},
-        inputs=dict(spec.inputs or {}),
-        provider=spec.provider,
-        model=spec.model,
-        timeout_sec=float(spec.timeout_sec or 900.0),
-        max_turns=int(spec.max_turns or 8),
-        idem_key=spec.idem_key,
-        run_id=run_id,
-    )
-    sr = await stage_subagent.run_stage(task, stage_spec)
-    failure = sr.failure.model_dump(mode="json") if sr.failure else None
-    # 缺输入清单在 FailureReport.needs 里；AgentResult 也有顶层 needs，前端读的是顶层。
-    # 只转 failure 不转 needs，界面就永远显示“还缺什么：无”。
-    needs = [dict(n) for n in (getattr(sr.failure, "needs", None) or [])
-             if isinstance(n, dict)] if sr.failure else []
-    return AgentResult(
-        run_id=run_id, kind="stage",
-        task_id=str(getattr(task, "id", "") or ""), trace_id=trace_id,
-        stage=sr.stage, role=spec.role or sr.stage,
-        status=_map_status(sr.status),
-        summary=sr.summary, outputs=dict(sr.artifacts or {}), writes=list(sr.writes or []),
-        needs=needs,
-        report_path=sr.report_path, report_seq=sr.report_seq,
-        issues=list(sr.issues or []),
-        redo_agent=str(getattr(sr, "redo_agent", "") or ""),
-        redo_hint=str(getattr(sr, "redo_hint", "") or ""),
-        details=dict(getattr(sr, "details", {}) or {}),
-        # 降级信号上浮（E2E 2026-10-29）：StageResult.degradations 此前在这里被整段丢弃，
-        # 于是动画阶段的 LLM JSON 截断、自批判跳过、模板兜底只有 logger 知道，主 Agent
-        # 看到的永远是 "轨道 6 条 / 片段 502 个" —— 截断与回退被默认接受。
-        degradations=[d.model_dump(mode="json") if hasattr(d, "model_dump") else dict(d)
-                      for d in (sr.degradations or [])],
-        # 归因（PRD §2.4.2）：阶段侧的 token 与工具轨迹由 StageResult 带上来；
-        # 拿不到就保持 0/空 + cost_unknown，不伪造数字。
-        tokens=int(getattr(sr, "tokens", 0) or 0),
-        tool_calls=list(getattr(sr, "tool_calls", None) or []),
-        tool_calls_path=str(getattr(sr, "tool_calls_path", "") or ""),
-        cost_usd=sr.cost_usd, cost_unknown=sr.cost_unknown,
-        duration_ms=sr.duration_ms, provider=sr.provider, model=sr.model,
-        failure=failure, error=sr.error,
-    )
+    return await stage_adapter.run_stage(spec, task, run_id, trace_id)
 
 
 async def _run_research(spec: RunSpec, task: Any, run_id: str, trace_id: str) -> AgentResult:
@@ -625,7 +598,7 @@ async def _run_research(spec: RunSpec, task: Any, run_id: str, trace_id: str) ->
     try:
         allowed_tools = enforce_tool_policy(spec)
     except RunRefused as exc:
-        return AgentResult(
+        return _ra.build(
             run_id=run_id, kind="research", role=spec.role, status="refused",
             error=str(exc),
             failure={"category": exc.category, "retryable": "needs_human",
@@ -645,7 +618,7 @@ async def _run_research(spec: RunSpec, task: Any, run_id: str, trace_id: str) ->
             max_turns=int(spec.max_turns or 5),
         )
     except SpawnError as exc:
-        return AgentResult(
+        return _ra.build(
             run_id=run_id, kind="research", role=spec.role, status="refused",
             error=str(exc),
             failure={"category": "spawn_rejected", "retryable": "needs_human",
@@ -654,7 +627,7 @@ async def _run_research(spec: RunSpec, task: Any, run_id: str, trace_id: str) ->
     raw = str(res.get("status") or "")
     review = dict(res.get("review") or {})
     if raw == "pending_review":
-        return AgentResult(
+        return _ra.build(
             run_id=run_id, kind="research",
             task_id=str(getattr(task, "id", "") or ""), trace_id=trace_id,
             role=spec.role, status="needs",
@@ -664,12 +637,14 @@ async def _run_research(spec: RunSpec, task: Any, run_id: str, trace_id: str) ->
             tool_calls=list(res.get("tool_calls") or []),
             cost_usd=res.get("cost_usd"), cost_unknown=res.get("cost_usd") is None,
             duration_ms=int(res.get("duration_ms") or 0),
+            needs=[{"field": "review", "why": "等待人工审核（带执行权限的子代理）",
+                    "from_stage": "human", "resolution": "human"}],
             failure={"category": "needs_review", "retryable": "needs_human",
                      "blocking_point": "等待人工审核", "evidence": [],
                      "review": review},
         )
     status = {"done": "ok", "failed": "failed"}.get(raw, "failed")
-    return AgentResult(
+    return _ra.build(
         run_id=run_id, kind="research",
         task_id=str(getattr(task, "id", "") or ""), trace_id=trace_id,
         role=spec.role, status=status,  # type: ignore[arg-type]
@@ -683,17 +658,6 @@ async def _run_research(spec: RunSpec, task: Any, run_id: str, trace_id: str) ->
         failure=res.get("failure"),
         error=str(res.get("error") or ""),
     )
-
-
-def _map_status(stage_status: str) -> Any:
-    return {
-        "ok": "ok",
-        "degraded": "degraded",
-        "failed": "failed",
-        "refused": "refused",
-        "cancelled": "cancelled",
-        "dry_run": "ok",
-    }.get(str(stage_status), "failed")
 
 
 __all__ = ["EXEC_TOOLS", "READONLY_TOOLS", "RunRefused", "cancel",

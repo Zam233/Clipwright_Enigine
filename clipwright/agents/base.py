@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from types import SimpleNamespace
 from abc import ABC, abstractmethod
 from typing import Any, Generic, TypeVar
 
@@ -489,6 +490,19 @@ class BaseAgent(ABC, Generic[I, O]):
         if not schemas:
             return {"status": "skipped", "reason": "no_tools", "tool_calls": []}
 
+        # B13 灰度开关：只在打开时走公共 drive；关闭时行为与旧路径完全一致
+        try:
+            from clipwright.config import settings as _settings
+
+            _shared = bool(getattr(_settings, "agent_loop_shared_driver", False))
+        except Exception:  # noqa: BLE001 — 配置读不到按旧路径
+            _shared = False
+        if _shared:
+            return await self._drive_tool_loop(
+                system_prompt=system_prompt, user_prompt=user_prompt, schemas=schemas,
+                max_rounds=max_rounds, max_calls=max_calls, pipeline_id=pipeline_id,
+            )
+
         from clipwright.services.llm import LLMService
 
         llm = getattr(self, "_llm", None) or LLMService()
@@ -544,6 +558,108 @@ class BaseAgent(ABC, Generic[I, O]):
             "content": getattr(resp, "content", "") or "",
             "tool_calls": calls,
         }
+
+    async def _drive_tool_loop(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        schemas: list[dict[str, Any]],
+        max_rounds: int,
+        max_calls: int,
+        pipeline_id: str = "",
+    ) -> dict[str, Any]:
+        """B13：把一次受控 tool 回合交给公共 `agent_loop.drive`。
+
+        预算/闸门/事件都由公共层提供；这里只做 provider 消息与工具分发的适配。
+        墙钟与 max_tokens 不在这里赋值（None = 不设上限）。
+        """
+        import json
+
+        from clipwright.services import agent_loop as _loop
+        from clipwright.services.llm import LLMService
+
+        llm = getattr(self, "_llm", None) or LLMService()
+        allowed = {str(s["function"]["name"]) for s in schemas}
+        calls: list[dict[str, Any]] = []
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        last_text = {"value": ""}
+
+        def _to_actions(resp: Any) -> list[Any]:
+            raw = getattr(resp, "tool_calls", None) or []
+            out = []
+            for item in raw:
+                if isinstance(item, dict):
+                    fn = item.get("function") or {}
+                    name = item.get("name") or fn.get("name") or ""
+                    args = item.get("arguments", fn.get("arguments"))
+                else:
+                    name = getattr(item, "name", "") or ""
+                    args = getattr(item, "arguments", None)
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except Exception:  # noqa: BLE001 — 坏参数按空对象
+                        args = {}
+                out.append(_loop.LoopAction("tool", str(name), dict(args or {})))
+            return out
+
+        async def decide(observations: list[Any]) -> Any:
+            for obs in observations:
+                if getattr(obs, "kind", "") == "tool":
+                    messages.append({
+                        "role": "tool",
+                        "content": json.dumps({
+                            "tool": obs.name, "ok": bool(obs.ok),
+                            "result": obs.payload, "error": obs.error,
+                        }, ensure_ascii=False, default=str),
+                    })
+            resp = await llm.generate(messages=messages, tools=schemas)
+            text = str(getattr(resp, "content", "") or "")
+            last_text["value"] = text or last_text["value"]
+            if text:
+                messages.append({"role": "assistant", "content": text})
+            return SimpleNamespace(calls=_to_actions(resp), text=text)
+
+        async def dispatch(action: Any) -> Any:
+            name = str(getattr(action, "name", "") or "")
+            if name not in allowed:
+                return _loop.LoopObservation("tool", name, ok=False,
+                                             error=f"工具 {name} 不在本次白名单内")
+            payload = dict(getattr(action, "args", None) or {})
+            calls.append({"tool": name, "input": payload})
+            from clipwright.skill.registry import SkillRegistry
+            from clipwright.tool.registry import ToolRegistry
+
+            try:
+                if ToolRegistry.get(name) is None and SkillRegistry.get(name) is not None:
+                    result = await SkillRegistry.execute(name, **payload)
+                else:
+                    result = await ToolRegistry.execute(name, **payload)
+            except Exception as exc:  # noqa: BLE001 — 工具失败是观察，不是异常出口
+                return _loop.LoopObservation("tool", name, ok=False, error=str(exc)[:300])
+            if hasattr(result, "model_dump"):
+                data = result.model_dump(mode="json")
+            elif isinstance(result, dict):
+                data = result
+            else:
+                data = {"result": str(result)}
+            return _loop.LoopObservation("tool", name, ok=True, payload=data)
+
+        budget = _loop.LoopBudget(rounds=max(1, int(max_rounds)),
+                                  actions=max(1, int(max_calls)))
+        emit_round = _loop.make_round_emitter(pipeline_id) if pipeline_id else None
+        exit_ = await _loop.drive(
+            run_id=pipeline_id or self.agent_name, decide=decide, dispatch=dispatch,
+            budget=budget, emit_round=emit_round,
+        )
+        self.last_tool_calls = list(calls)
+        if exit_.status == "ok":
+            return {"status": "ok", "content": last_text["value"], "tool_calls": calls}
+        return {"status": "error", "reason": exit_.reason, "tool_calls": calls}
 
     async def run_with_timeout(self, coro_factory, timeout: float | None = None):
         """带统一超时的 LLM/工具调用封装（超时抛 asyncio.TimeoutError，由调用方降级）。
@@ -606,23 +722,3 @@ class BaseAgent(ABC, Generic[I, O]):
                 impact="该步骤使用兜底结果继续，成品质量可能下降",
             )
             return fallback
-
-    @staticmethod
-    def quality_issues_hint(context: Any) -> str:
-        """C6: 自愈重做时提取上一轮质检问题段落（注入 LLM 提示词尾部）。
-
-        老编排器的自愈循环此前把 _quality_issues 写入 extra_params，但没有任何
-        Agent 读取——被要求重做的 Agent 不知道为什么重做。无问题/非自愈时返回空串。
-        """
-        issues = (getattr(context, "extra_params", {}) or {}).get("_quality_issues") or []
-        lines: list[str] = []
-        for item in issues[:5]:
-            if isinstance(item, dict):
-                lines.append(
-                    f"- [{item.get('severity', '')}] {item.get('category', '')}: "
-                    f"{str(item.get('message', ''))[:120]}"
-                )
-        if not lines:
-            return ""
-        return ("\n\n## 上一轮质检发现问题（本次重做必须针对性修复，不要重复同类问题）\n"
-                + "\n".join(lines))

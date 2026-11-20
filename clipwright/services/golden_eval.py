@@ -95,17 +95,25 @@ async def run_once(
 
     rows = [r for r in evaluation.records(task.id) if r.get("kind") == "task"]
     summary = evaluation.summary(rows) if rows else {}
+    raw_cost = getattr(task.usage, "cost_usd", None)
+    # 0 是“已计费且为零”，不是 unknown；只有真正拿不到数字才是 None
+    cost_usd = round(float(raw_cost), 6) if isinstance(raw_cost, (int, float)) else None
+    status = str(task.status)
     return {
         "task_id": task.id,
-        "status": str(task.status),
+        "status": status,
+        "terminal_reason": str(getattr(task, "terminal_reason", "") or ""),
+        "capped": status == "capped",
         "finish_reason": str((task.finish.reason if task.finish else "") or ""),
         "conclusion": str((task.finish.conclusion if task.finish else "") or "")[:300],
         "wall_sec": round(time.time() - started, 2),
         "turns": int(task.usage.turns),
         "tool_calls": int(task.usage.tool_calls),
-        "cost_usd": task.usage.cost_usd or None,
+        "cost_usd": cost_usd,
+        "cost_unknown": cost_usd is None,
         "unknown_cost_calls": int(getattr(task.usage, "unknown_cost_calls", 0) or 0),
         "success_rate": summary.get("success_rate"),
+        "task_success_rate": summary.get("task_success_rate"),
     }
 
 
@@ -124,8 +132,12 @@ async def run_many(
         results.append(await run_once(topic, driver=driver, **kw))
 
     # 三次对比报告只吃 summary 形状 → 把每次运行折成 summary
+    # capped 不进成功率分子/分母（与 evaluation.task_summary 同口径），但单独计数
+    capped_count = sum(1 for r in results if r.get("capped"))
     summaries = []
     for r in results:
+        if r.get("capped"):
+            continue
         summaries.append({
             "success_rate": 1.0 if r["status"] == "done" else 0.0,
             "avg_turns": r["turns"],
@@ -136,6 +148,11 @@ async def run_many(
             "replan_rate": 0.0,
         })
     report = prompt_registry.three_run_report(summaries)
+    report["capped_count"] = capped_count
+    report["eligible_runs"] = len(summaries)
+    if capped_count:
+        report.setdefault("warnings", []).append(
+            f"{capped_count} 次运行 capped：已从成功率统计中排除（单列 capped_count）")
     report["topic"] = {
         "id": str(getattr(topic, "id", "")),
         "topic": str(getattr(topic, "topic", "")),
@@ -144,7 +161,8 @@ async def run_many(
     }
     report["raw_runs"] = results
     report["generated_at"] = time.time()
-    return {"topic": report["topic"], "runs": results, "report": report}
+    return {"topic": report["topic"], "runs": results, "capped_count": capped_count,
+            "report": report}
 
 
 def _format(payload: dict[str, Any]) -> str:

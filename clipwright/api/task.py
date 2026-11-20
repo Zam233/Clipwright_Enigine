@@ -514,6 +514,7 @@ async def task_tool_calls(
     request: Request,
     stage: str = Query(default="", description="阶段名（edit/animation/...）；留空取最近一个"),
     attempt: int = Query(default=0, ge=0, description="第几次尝试；0 = 最新"),
+    run_id: str = Query(default="", description="按 run 寻址（优先于 stage/attempt）"),
     limit: int = Query(default=2000, ge=1, le=20000),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
@@ -525,6 +526,8 @@ async def task_tool_calls(
     不接受客户端传路径）。
     """
     _enforce_task_owner(request, task_id)
+    # 直接调用（非 FastAPI 注入）时默认值是 Query 对象：显式归一，避免误进 run 分支
+    run_id = run_id if isinstance(run_id, str) else ""
     from clipwright.services.workspace import Workspace
 
     def _empty(stage_name: str, names: list[str]) -> dict:
@@ -558,11 +561,49 @@ async def task_tool_calls(
         return Workspace(str(task_id)).dirs().root
 
     base = _root_of() / "reports" / "tool_calls"
-    if not base.is_dir():
-        return _empty(stage, [])
+    available = sorted(p.stem for p in base.glob("*.json")) if base.is_dir() else []
+    if run_id:
+        from pathlib import Path
 
-    available = sorted(p.stem for p in base.glob("*.json"))
-    # stage 只参与文件名前缀匹配：剥掉路径分隔符与 ".."，避免穿越到别处。
+        # B10：按 run 寻址——路径取自该 run 自己的 tool_calls_path，不再猜 stage-attempt
+        run = _run_for_task(task_id, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail=f"run 不存在: {run_id}")
+        rel = str(run.get("tool_calls_path") or "")
+        path = Path(rel) if rel else None
+        if path is None or not path.is_file():
+            payload = _empty(str(run.get("stage") or stage), available)
+            payload.update({"run_id": run_id,
+                            "trace_state": str(run.get("trace_state") or "empty")})
+            return payload
+        try:
+            path.resolve().relative_to(base.resolve())
+        except ValueError:
+            raise HTTPException(status_code=409, detail="轨迹路径不属于该任务工作区")
+        import json as _json
+
+        try:
+            data = _json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001 — 读失败如实回报
+            raise HTTPException(status_code=500, detail=f"读取轨迹失败: {exc}") from exc
+        calls = data.get("calls") or []
+        window = calls[offset: offset + limit]
+        return {
+            "task_id": task_id, "run_id": run_id,
+            "stage": str(data.get("stage") or run.get("stage") or ""),
+            "attempt": int(data.get("attempt") or run.get("attempt") or 0),
+            "path": str(path),
+            "total": len(calls),
+            "offset": offset,
+            "limit": limit,
+            "count": len(window),
+            "internal": sum(1 for c in calls if isinstance(c, dict) and c.get("source") == "internal"),
+            "failed": sum(1 for c in calls if isinstance(c, dict)
+                          and str(c.get("status") or "").lower() not in ("success", "ok", "")),
+            "items": window,
+            "available": available,
+            "trace_state": str(run.get("trace_state") or "complete"),
+        }
     stage = (stage or "").replace("\\", "/").split("/")[-1].strip()
     if stage in (".", ".."):
         return _empty("", available)
@@ -634,22 +675,33 @@ async def task_runs(task_id: str, request: Request) -> dict:
     items = []
     for run in agent_run.list_runs(task_id):
         items.append({
+            "schema_version": int(run.get("schema_version") or 2),
             "run_id": run.get("run_id", ""),
             "kind": run.get("kind", ""),
+            "mode": run.get("mode", "task"),
             "stage": run.get("stage", ""),
             "role": run.get("role", ""),
             "status": run.get("status", ""),
+            "terminal_reason": run.get("terminal_reason", ""),
             "attempt": run.get("attempt", 1),
             "duration_ms": run.get("duration_ms", 0),
             "cost_usd": run.get("cost_usd"),
+            "cost_unknown": bool(run.get("cost_unknown", run.get("cost_usd") is None)),
             "degradations": len(run.get("degradations") or []),
+            "needs": len(run.get("needs") or []),
             "tool_calls": len(run.get("tool_calls") or []),
+            "tool_calls_total": int(run.get("tool_calls_total")
+                                    or len(run.get("tool_calls") or [])),
+            "trace_state": run.get("trace_state", "empty"),
             "tool_calls_path": run.get("tool_calls_path", ""),
             # 真实阶段结果把报告路径写在顶层（AgentResult.report_path），
             # outputs 里通常没有这个键——旧实现让列表永远拿不到报告入口。
             "report_path": run.get("report_path", ""),
+            "report_state": run.get("report_state", "not_applicable"),
             "summary": str(run.get("summary") or "")[:400],
+            "handoff_summary": str(run.get("handoff_summary") or "")[:600],
             "replayed": bool(run.get("replayed")),
+            "replay_of": run.get("replay_of", ""),
             "live": bool(run.get("live")),
         })
     items.sort(key=lambda r: (r["stage"], r["attempt"], r["run_id"]))
@@ -721,12 +773,30 @@ async def task_run_replay(task_id: str, run_id: str, request: Request) -> dict:
                             detail="任务已结束，不能再重放子 agent；如需重做请新建任务")
     result = await surface.execute(
         "delegate_agent",
-        {"stage": stage, "brief": str(run.get("brief") or ""), "refresh": True},
+        _replay_payload(run, stage),
         pipeline_id=task_id, task=task,
     )
     return {"task_id": task_id, "stage": stage, "status": result.get("status"),
             "replayed": bool(result.get("replayed")),
             "run": (result.get("output") or {}) if isinstance(result.get("output"), dict) else {}}
+
+
+def _replay_payload(run: dict, stage: str) -> dict:
+    """按原派发快照重跑；没有快照（旧 run）才退回 stage+brief。"""
+    snapshot = dict((run.get("details") or {}).get("spec") or {})
+    payload: dict = {
+        "stage": str(snapshot.get("stage") or stage),
+        "brief": str(snapshot.get("brief") or run.get("brief") or ""),
+        "inputs": dict(snapshot.get("inputs") or {}),
+        "refresh": True,
+    }
+    for key in ("role", "provider", "model", "timeout_sec", "max_turns", "expect", "tools"):
+        value = snapshot.get(key)
+        if key == "timeout_sec" and not (isinstance(value, (int, float)) and value > 0):
+            continue  # 0/None = 不设上限，传给 RunSpec 会被当成“未配置”
+        if value not in (None, "", [], {}):
+            payload[key] = value
+    return payload
 
 
 @router.get("/{task_id}/result")

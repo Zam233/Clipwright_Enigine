@@ -894,106 +894,116 @@ class LLMService:
             ]
             base_kwargs = {**kwargs}
 
-        logger.debug("LLM with_tools 启动: system=%.300s, user=%.300s, tools=%s, max_rounds=%s",
-                     system_prompt[:300], user_prompt[:300],
-                     json.dumps(tools, ensure_ascii=False)[:300], max_tool_rounds)
-        tool_executor_is_coro = asyncio.iscoroutinefunction(tool_executor)
+        # B13b：工具循环唯一实现 = 公共 `agent_loop.drive`（本函数只做 provider 适配）。
+        # 旧的自建 while 已删除；回滚走二进制版本，不再保留第二套循环。
+        return await self._with_tools_via_drive(
+            messages=messages, base_kwargs=base_kwargs, tools=tools,
+            tool_executor=tool_executor, max_tool_rounds=max_tool_rounds,
+            on_preamble=on_preamble, on_reasoning=on_reasoning, impl=impl,
+        )
 
-        for _round in range(max_tool_rounds):
-            # 修复：每轮都必须携带 tools——旧实现仅首轮下发，模型按提示词
-            # 顺序先调 describe_llm_mg 后，第二轮再无任何工具可调
+    async def _with_tools_via_drive(
+        self, *, messages: list[dict[str, Any]], base_kwargs: dict[str, Any],
+        tools: list[dict[str, Any]], tool_executor: Any, max_tool_rounds: int,
+        on_preamble: Any, on_reasoning: Any, impl: Any,
+    ) -> LLMResponse:
+        """B13b：驱动层复用 `agent_loop.drive`，这里只做 provider 消息适配。"""
+        import json as _json
+        from types import SimpleNamespace
+
+        from clipwright.providers.base import llm_tool_result_style
+        from clipwright.services import agent_loop as _loop
+
+        state: dict[str, Any] = {"resp": None, "failed": False, "round": 0}
+        style = llm_tool_result_style(impl)
+        executor_is_coro = asyncio.iscoroutinefunction(tool_executor)
+        last_resp: Any = None
+
+        def _emit_round(round_no: int, names: list[str], _run_id: str) -> None:
+            nonlocal last_resp
+            resp = state.get("resp")
+            if resp is None:
+                return
+            last_resp = resp
+            state["round"] = round_no
+            content = (resp.content or "").strip()
+            if content and on_preamble is not None:
+                try:
+                    on_preamble(content, round_no, list(resp.tool_calls or []))
+                except Exception as exc:  # noqa: BLE001 — 叙述失败不影响工具
+                    logger.warning("with_tools on_preamble 回调失败: %s", exc)
+            # 先把 assistant 的 tool_calls 消息补上，dispatch 再逐条补结果
+            if style == "anthropic":
+                blocks: list[dict[str, Any]] = []
+                if resp.content:
+                    blocks.append({"type": "text", "text": resp.content})
+                for tc in resp.tool_calls or []:
+                    parsed = _json.loads(tc.arguments) if isinstance(tc.arguments, str) else tc.arguments
+                    blocks.append({"type": "tool_use", "id": tc.id, "name": tc.name,
+                                   "input": parsed})
+                messages.append({"role": "assistant", "content": blocks})
+            else:
+                calls = [{"id": tc.id, "type": "function",
+                          "function": {"name": tc.name, "arguments": tc.arguments}}
+                         for tc in resp.tool_calls or []]
+                messages.append({"role": "assistant", "content": resp.content or None,
+                                 "tool_calls": calls})
+
+        async def decide(_obs: list[Any]) -> Any:
             kw = {**base_kwargs, "tools": tools}
-
-            # B5：reasoning 回调带上「第几轮」，上层据此给 thinking 事件标注 round
             round_cb: Any = None
             if on_reasoning is not None:
-                def round_cb(delta: str, _rnd: int = _round + 1) -> None:  # noqa: ANN001
+                rnd = state["round"] + 1
+
+                def round_cb(delta: str, _rnd: int = rnd) -> None:  # noqa: ANN001
                     try:
                         on_reasoning(delta, _rnd)
                     except TypeError:
                         on_reasoning(delta)
             resp = await self.generate(messages=messages, on_reasoning=round_cb, **kw)
-            logger.debug("LLM with_tools 第%d轮: success=%s, tool_calls=%d, content=%.200s",
-                         _round + 1, resp.success, len(resp.tool_calls or []), resp.content or "")
-
+            state["resp"] = resp
             if not resp.success:
-                logger.error("LLM with_tools request failed: status=%s", resp.status_code)
-                return resp
+                state["failed"] = True
+                return SimpleNamespace(calls=[], text="")
+            calls = []
+            for tc in resp.tool_calls or []:
+                parsed = _json.loads(tc.arguments) if isinstance(tc.arguments, str) else tc.arguments
+                calls.append(_loop.LoopAction("tool", tc.name, {"_args": parsed, "_id": tc.id}))
+            return SimpleNamespace(calls=calls, text=resp.content or "")
 
-            if not resp.tool_calls:
-                logger.debug("LLM with_tools 第%d轮完成: 无工具调用", _round + 1)
-                return resp
-
-            # B2：把"要动手之前说的那段话"先交出去。顺序很关键——narration 必须
-            # 早于 tool_call 事件，前端才能渲染成「先说再做」。回调同步执行且异常
-            # 只记日志：叙述漏发不能挡住真正的工具调用。
-            preamble = (resp.content or "").strip()
-            if preamble and on_preamble is not None:
-                try:
-                    on_preamble(preamble, _round + 1, list(resp.tool_calls))
-                except Exception as exc:  # noqa: BLE001 — 叙述失败不影响工具
-                    logger.warning("with_tools on_preamble 回调失败: %s", exc)
-
-            # B7-T7.2：工具结果消息风格由 provider 声明（`tool_result_style()`），
-            # engine 不再按 provider 名分支——第三方 provider 也能选自己的风格。
-            from clipwright.providers.base import llm_tool_result_style
-            if llm_tool_result_style(impl) == "anthropic":
-                # Anthropic: tool_use 块嵌入在 content 数组
-                content_blocks: list[dict[str, Any]] = []
-                if resp.content:
-                    content_blocks.append({"type": "text", "text": resp.content})
-
-                for tc in resp.tool_calls:
-                    parsed = json.loads(tc.arguments) if isinstance(tc.arguments, str) else tc.arguments
-                    content_blocks.append({
-                        "type": "tool_use",
-                        "id": tc.id,
-                        "name": tc.name,
-                        "input": parsed,
-                    })
-
-                messages.append({"role": "assistant", "content": content_blocks})
-
-                for tc in resp.tool_calls:
-                    tool_input = json.loads(tc.arguments) if isinstance(tc.arguments, str) else tc.arguments
-                    logger.debug("LLM with_tools 工具调用 %s → input=%s", tc.name,
-                                 json.dumps(tool_input, ensure_ascii=False)[:200])
-                    result = await self._do_tool_call(tool_executor, tool_executor_is_coro, tc.name, tool_input)
-                    result_str = json.dumps(result, ensure_ascii=False, default=str)
-                    logger.debug("LLM with_tools 工具结果 %s → %s", tc.name, result_str[:300])
-                    messages.append({
-                        "role": "user",
-                        "content": [{"type": "tool_result", "tool_use_id": tc.id, "content": result_str}],
-                    })
+        async def dispatch(action: Any) -> Any:
+            resp = state.get("resp")
+            if resp is None or state.get("failed"):
+                return _loop.LoopObservation("tool", action.name, ok=False, error="llm_failed")
+            tc_id = str(action.args.pop("_id", ""))
+            tool_input = dict(action.args.pop("_args", {}) or {})
+            result = await self._do_tool_call(tool_executor, executor_is_coro,
+                                              action.name, tool_input)
+            result_str = _json.dumps(result, ensure_ascii=False, default=str)
+            if style == "anthropic":
+                messages.append({"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": tc_id, "content": result_str}]})
             else:
-                # OpenAI: tool_calls 在 assistant message 的 tool_calls 字段
-                openai_tool_calls = [
-                    {"id": tc.id, "type": "function",
-                     "function": {"name": tc.name, "arguments": tc.arguments}}
-                    for tc in resp.tool_calls
-                ]
-                messages.append({
-                    "role": "assistant",
-                    "content": resp.content or None,
-                    "tool_calls": openai_tool_calls,
-                })
+                messages.append({"role": "tool", "tool_call_id": tc_id,
+                                 "content": result_str})
+            return _loop.LoopObservation("tool", action.name, ok=True, payload=result)
 
-                for tc in resp.tool_calls:
-                    tool_input = json.loads(tc.arguments) if isinstance(tc.arguments, str) else tc.arguments
-                    logger.debug("LLM with_tools OpenAI 工具 %s → input=%s", tc.name,
-                                 json.dumps(tool_input, ensure_ascii=False)[:200])
-                    result = await self._do_tool_call(tool_executor, tool_executor_is_coro, tc.name, tool_input)
-                    result_str = json.dumps(result, ensure_ascii=False, default=str)
-                    logger.debug("LLM with_tools OpenAI 工具结果 %s → %s", tc.name, result_str[:300])
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": result_str,
-                    })
-
-        logger.debug("LLM with_tools 结束: tool_calls 耗尽或达上限, 最终消息数=%d", len(messages))
-        logger.info("LLM with_tools 最终响应: content=%.500s", resp.content or "(空)")
-        return resp
+        exit_ = await _loop.drive(
+            run_id="llm_with_tools",
+            decide=decide,
+            dispatch=dispatch,
+            budget=_loop.LoopBudget(rounds=max(1, int(max_tool_rounds)),
+                                    actions=max(4, int(max_tool_rounds) * 32)),
+            emit_round=_emit_round,
+        )
+        if state.get("failed") or last_resp is None:
+            return state.get("resp") or LLMResponse(success=False, content="",
+                                                    status_code=500)
+        if exit_.status not in ("ok",) and exit_.reason == "limit_rounds":
+            logger.info("LLM with_tools 达到轮数上限 %s", max_tool_rounds)
+        logger.debug("LLM with_tools(drive) 结束: status=%s rounds=%s calls=%s",
+                     exit_.status, exit_.rounds, exit_.actions)
+        return last_resp
 
     @staticmethod
     async def _do_tool_call(

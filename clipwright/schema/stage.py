@@ -53,47 +53,60 @@ class StageSpec(BaseModel):
     #: 本次**真实执行**的 run_id（重放时与 idem_key 不同）。阶段内工具事件必须挂它，
     #: 否则重放产生的轨迹会被归到上一次 run 上。
     run_id: str = Field(default="", description="本次执行的 run_id（留空回落 idem_key）")
+    #: 追踪 id 与尝试号：adapter 透传，让 StageResult 直接成为 AgentResult 时身份完整
+    trace_id: str = Field(default="", description="trace_id（透传给 AgentResult）")
+    attempt: int = Field(default=1, ge=1, description="本次尝试号")
 
 
-class StageResult(BaseModel):
-    """阶段子代理的返回：产物 + 结论 + 降级 + 成本 + 失败分类。"""
+def make_stage_result(
+    *,
+    stage: str,
+    status: str,
+    summary: str = "",
+    artifacts: dict[str, Any] | None = None,
+    writes: list[str] | None = None,
+    degradations: list[dict[str, Any]] | None = None,
+    issues: list[dict[str, Any]] | None = None,
+    redo_agent: str = "",
+    redo_hint: str = "",
+    needs: list[dict[str, Any]] | None = None,
+    details: dict[str, Any] | None = None,
+    cost_usd: float | None = None,
+    cost_unknown: bool = False,
+    tokens: int = 0,
+    tool_calls: list[dict[str, Any]] | None = None,
+    tool_calls_path: str = "",
+    duration_ms: int = 0,
+    provider: str = "",
+    model: str = "",
+    failure: Any = None,
+    error: str = "",
+    task_id: str = "",
+    run_id: str = "",
+    trace_id: str = "",
+    attempt: int = 1,
+    report_path: str = "",
+    report_seq: int = 0,
+) -> Any:
+    """B21b：测试/兼容用的阶段终态构造器（正式路径走 result_assembler）。
 
-    stage: str
-    status: Literal["ok", "degraded", "failed", "refused", "cancelled", "dry_run"]
-    #: 产物：`{"timeline": {...}}` 或 `{"timeline": {"path": ..., "sha256": ...}}`
-    artifacts: dict[str, Any] = Field(default_factory=dict)
-    summary: str = ""
-    #: 本次写进黑板的键（主 Agent 据此知道"上一步产出了什么"）
-    writes: list[str] = Field(default_factory=list)
-    degradations: list[dict[str, Any]] = Field(default_factory=list)
-    issues: list[dict[str, Any]] = Field(default_factory=list)
-    redo_agent: str = ""
-    redo_hint: str = ""
-    details: dict[str, Any] = Field(default_factory=dict)
-    #: None = 未知（不许伪造成 0，金额闸对未知成本是盲的）
-    cost_usd: Optional[float] = None
-    cost_unknown: bool = False
-    #: 归因（modern-agent PRD §2.4.2）：阶段内部模型调用用了多少 token、调了哪些工具。
-    #: 拿不到就留 0/空——不伪造数字，让上层把这次记成"未知"。
-    tokens: int = 0
-    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
-    #: 工具轨迹**全量**落盘路径（`reports/tool_calls/<stage>-<attempt>.json`）。
-    #: 内存里只保留最近 200 条（性能），主 agent 需要完整 transcript 时按此路径读
-    #: （PRD modern-agent-review M1：工具轨迹无损）。
-    tool_calls_path: str = ""
-    duration_ms: int = 0
-    #: 工作区报告（markdown）的真路径与序号：子 agent 的文字汇报由 runtime 落盘，
-    #: 主 agent 通过 read_report 读取；写盘失败时为空字符串（不是 None）。
-    report_path: str = ""
-    report_seq: int = 0
-    #: 实际使用的模型（留空继承默认时也要回填，用户要知道到底跑了谁）
-    provider: str = ""
-    model: str = ""
-    failure: Optional[FailureReport] = None
-    error: str = ""
+    返回 `AgentResult`——旧的 `StageResult` 模型已删除，避免两套终态并存。
+    """
+    from clipwright.services import result_assembler as _ra
 
-    def to_public(self) -> dict[str, Any]:
-        return self.model_dump(mode="json")
+    return _ra.build(
+        run_id=run_id or f"{task_id or 'test'}:{stage}", kind="stage", mode="task",
+        task_id=task_id, trace_id=trace_id, attempt=attempt,
+        stage=stage, role=stage, status=status,  # type: ignore[arg-type]
+        summary=summary, outputs=dict(artifacts or {}), writes=list(writes or []),
+        needs=list(needs or []), failure=failure, error=error,
+        issues=list(issues or []), redo_agent=redo_agent, redo_hint=redo_hint,
+        degradations=list(degradations or []), report_path=report_path,
+        report_seq=report_seq, tool_calls=list(tool_calls or []),
+        tool_calls_path=tool_calls_path, tokens=tokens,
+        cost_usd=cost_usd, cost_unknown=cost_unknown, duration_ms=duration_ms,
+        provider=provider, model=model, details=dict(details or {}),
+    )
 
 
 __all__ = [
@@ -101,6 +114,6 @@ __all__ = [
     "STAGE_NAMES",
     "TIMELINE_STAGES",
     "StageName",
-    "StageResult",
+    "make_stage_result",
     "StageSpec",
 ]

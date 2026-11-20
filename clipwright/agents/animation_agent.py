@@ -2015,20 +2015,31 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
                     mg.setdefault("qa", qa_report(mg["mg_def"]))
                     logger.warning("AnimationAgent: agentic result success=%s error=%s elements=%d",
                                    mg.get("success"), mg.get("error"), len(mg["mg_def"].get("elements") or []))
-                    # 视觉循环回到 Agent：把 mg 作为观察交给同一个 Agent，由它决定
-                    # preview/capture/inspect/revise/final，而不是 wrapper while。
-                    from clipwright.animation.agentic.contracts import Observation
-                    seed = Observation("generate_mg", "ok", data=dict(mg))
-                    vis = await rt.run(decide, category=str((category_context or {}).get("category") or "kinetic-type"),
-                                       shot_type="title_reveal", needs={"agent"},
-                                       seed_observations=[seed])
-                    logger.warning("AnimationAgent: visual loop status=%s actions=%s",
-                                   vis.status, [(a.kind, a.name) for a in vis.actions])
-                    latest_mg = next((o for o in reversed(vis.observations)
+                    # 视觉证据复用：第一轮循环若已 inspect 过，就不再开第二轮的预算
+                    # （B14：单阶段共享预算；只有缺证据时才补视觉轮）。
+                    prior_inspect = next(
+                        (o for o in reversed(result.observations)
+                         if getattr(o, "tool", "") == "inspect_frames"), None)
+                    if prior_inspect is not None:
+                        vis_observations = list(result.observations)
+                    else:
+                        # 视觉循环回到 Agent：把 mg 作为观察交给同一个 Agent，由它决定
+                        # preview/capture/inspect/revise/final，而不是 wrapper while。
+                        from clipwright.animation.agentic.contracts import Observation
+                        seed = Observation("generate_mg", "ok", data=dict(mg))
+                        vis = await rt.run(
+                            decide,
+                            category=str((category_context or {}).get("category") or "kinetic-type"),
+                            shot_type="title_reveal", needs={"agent"},
+                            seed_observations=[seed])
+                        logger.warning("AnimationAgent: visual loop status=%s actions=%s",
+                                       vis.status, [(a.kind, a.name) for a in vis.actions])
+                        vis_observations = list(vis.observations)
+                    latest_mg = next((o for o in reversed(vis_observations)
                                       if getattr(o, "data", {}).get("mg_def")), None)
                     if latest_mg is not None:
                         mg = latest_mg.data
-                    inspect_obs = next((o for o in reversed(vis.observations)
+                    inspect_obs = next((o for o in reversed(vis_observations)
                                         if getattr(o, "tool", "") == "inspect_frames"), None)
                     findings = (getattr(inspect_obs, "data", {}) or {}).get("findings") or []
                     mg["visual_findings"] = findings
@@ -2098,6 +2109,7 @@ class AnimationAgent(BaseAgent[AnimationInput, AnimationOutput]):
 
         scene_meta = vid_clip.metadata or {}
         scene_context = {
+            "clip_id": str(getattr(vid_clip, "id", "") or ""),
             "title": scene_meta.get("title", ""),
             "keywords": scene_meta.get("keywords", []),
             "description": scene_meta.get("description", ""),

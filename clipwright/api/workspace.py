@@ -174,25 +174,58 @@ async def scan_workspace(project_id: str, payload: dict[str, Any] = Body(default
 
 @router.get("/{project_id}/reports")
 async def list_workspace_reports(project_id: str, limit: int = Query(default=50)) -> dict[str, Any]:
-    """列出工作区报告（PRD §19.6 / docs 标签数据源）。
+    """列出工作区报告（v2 DTO）：不含 headline/preview/next_for。
 
-    只返回索引与 preview；正文用 `GET .../reports/{seq}`（`reports/INDEX.md` 只是目录，
-    不是数据通道——子 agent 不得读它，只有主 agent/前端展示用）。
+    机器事实以 `task_id + run_id` 回查 RunStore（summary/handoff_summary/report_state/
+    cost_unknown）；报告文件只是正文载体。正文用 `GET .../reports/{seq}`。
     """
-    from clipwright.services import stage_report
+    from clipwright.services import run_store, stage_report
 
     ws = _ws(project_id)
     if not ws.exists:
         raise HTTPException(status_code=404, detail="工作区不存在")
     items = stage_report.list_reports(ws.dirs().root, limit=int(limit or 50))
     return {"project_id": project_id, "root": str(ws.dirs().root),
-            "count": len(items), "reports": items}
+            "count": len(items), "reports": [_report_dto(item) for item in items]}
+
+
+def _report_dto(item: dict[str, Any]) -> dict[str, Any]:
+    """报告 DTO v2：磁盘索引 + RunStore 结构化事实，两者都拿不到时显式 unavailable。"""
+    from clipwright.services import run_store
+
+    run_id = str(item.get("run_id") or "")
+    task_id = str(item.get("task_id") or "")
+    stored = None
+    if run_id and task_id:
+        try:
+            stored = run_store.get_for_task(task_id, run_id)
+        except Exception:  # noqa: BLE001 — 读不到就按“无结构化事实”处理
+            stored = None
+    remote = stored.model_dump(mode="json") if stored is not None else {}
+    return {
+        "schema_version": 2,
+        "seq": int(item.get("seq") or 0),
+        "run_id": run_id,
+        "task_id": task_id,
+        "stage": str(item.get("stage") or ""),
+        "status": str(item.get("status") or ""),
+        "attempt": int(item.get("attempt") or 0),
+        "path": str(item.get("path") or ""),
+        "summary": str(remote.get("summary") or item.get("preview") or "")[:300],
+        "handoff_summary": str(remote.get("handoff_summary") or "")[:600],
+        "report_state": str(remote.get("report_state") or (
+            "written" if item.get("path") else "unavailable")),
+        "cost_usd": remote.get("cost_usd", item.get("cost_usd")),
+        "cost_unknown": bool(remote.get("cost_unknown", item.get("cost_usd") is None)),
+        "created_at": str(item.get("created_at") or ""),
+    }
 
 
 @router.get("/{project_id}/reports/{seq}")
 async def read_workspace_report(project_id: str, seq: int,
+                                offset: int = Query(default=0, ge=0),
                                 max_chars: int = Query(default=20000)) -> dict[str, Any]:
-    """读一份报告正文（默认 20k 字上限）。"""
+    """读一份报告正文（offset/max_chars 分页；自由 Markdown，无 section）。"""
     from clipwright.services import stage_report
 
     ws = _ws(project_id)
@@ -206,9 +239,19 @@ async def read_workspace_report(project_id: str, seq: int,
             except OSError as e:
                 raise HTTPException(status_code=409, detail=f"读取报告失败：{e}") from e
             limit = max(200, int(max_chars or 20000))
+            start = max(0, int(offset or 0))
+            chunk = text[start:start + limit]
+            end = start + len(chunk)
             return {
-                "project_id": project_id, "seq": seq, "path": str(path),
-                "truncated": len(text) > limit, "content": text[:limit],
+                "project_id": project_id, "schema_version": 2, "seq": seq,
+                "run_id": str(item.get("run_id") or ""),
+                "stage": str(item.get("stage") or ""),
+                "path": str(path),
+                "total_chars": len(text), "offset": start,
+                "next_offset": end if end < len(text) else None,
+                "truncated": end < len(text),
+                "report_state": "written",
+                "content": chunk,
             }
     raise HTTPException(status_code=404, detail=f"报告 #{seq} 不存在")
 

@@ -785,6 +785,9 @@ async def health() -> dict[str, str]:
         if k not in _non_status_keys and v not in ("no_key", "checking")
     )
     components["status"] = "ok" if all_ok else "degraded"
+    # X02 探针：双仓同版切换的合同指纹（不参与 all_ok 判定）
+    components["contract_version"] = "2"
+    components["contract_schema"] = "agent_result_v2"
     return components
 
 

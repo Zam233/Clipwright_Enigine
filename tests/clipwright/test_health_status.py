@@ -75,6 +75,9 @@ async def test_health_is_ok_when_every_component_is_ok(healthy_probes, mongo_ok)
     # 非状态字段仍然如实回传，只是不参与判定
     assert body["service"] == "clipwright-engine"
     assert "queue_running" in body and "queue_pending" in body
+    # X02：版本探针（前端据此拒绝连旧版后端）
+    assert body["contract_version"] == "2"
+    assert body["contract_schema"] == "agent_result_v2"
 
 
 async def test_health_is_degraded_when_mongo_is_down(healthy_probes, monkeypatch):
