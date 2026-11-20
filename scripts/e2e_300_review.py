@@ -134,10 +134,10 @@ def main() -> int:
                     continue
                 rd = client.get(f"/api/task/{tid}/runs/{rid}")
                 if rd.status_code == 200:
-                    _dump(out_dir / "runs" / f"{rid}.json", rd.json())
+                    _dump(out_dir / "runs" / f"{rid.replace(':', '_')}.json", rd.json())
                 tc = client.get(f"/api/task/{tid}/tool-calls", params={"run_id": rid})
                 if tc.status_code == 200:
-                    _dump(out_dir / "tool_calls" / f"{rid}.json", tc.json())
+                    _dump(out_dir / "tool_calls" / f"{rid.replace(':', '_')}.json", tc.json())
         except Exception as exc:  # noqa: BLE001
             _dump(out_dir / "runs_list.json", {"error": str(exc)})
 
