@@ -369,6 +369,8 @@ sequenceDiagram
 
 `animation/agentic_loop.py:30` 旧 loop 及 `agentic/ledger.py:9` 的通用部分迁入公共驱动，领域 handler 保留；`prompts/__init__.py:58` 单一导出源，新增 `prompts/stage_loop.py`，旧 `DECIDE_SYSTEM`、修复文案先逐字快照，有意改动另存 prompt diff。
 
+**执行补充（2026-11-20，B14b）**：视觉证据已按版本绑定——`mg_fingerprint(mg_def)`（sha256 前 16 位）写入每条观察的 `evidence_sha`；`preview_html / capture_preview_frames / inspect_frames` 必须出现在**最近一次 `generate_mg/revise_mg` 之后**且 `evidence_sha` 与当前 `mg_def` 相同，否则完成门会要求重新 preview/inspect（旧证据不能放行 final）。单测见 `tests/contracts/test_animation_runtime_v14.py`。
+
 ### B15 · P1-3 Structure 自检回灌【后端】
 
 | 字段 | 派工说明 |
