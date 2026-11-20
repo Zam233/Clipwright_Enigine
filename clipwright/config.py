@@ -119,7 +119,7 @@ class Settings(BaseSettings):
     #   （旧的 plan 形态已在 M3 删除：传它只发降级告警，然后按 tool_loop 运行）
     kernel_mode: Literal["plan", "tool_loop", "shadow"] = "tool_loop"
     #: B13：Base 阶段循环是否复用公共 `agent_loop.drive`（默认关；灰度开关，只切策略不切 wire）
-    agent_loop_shared_driver: bool = False
+    agent_loop_shared_driver: bool = True
     # tool loop 的模型回合 / 工具调用上限（0 = 沿用 TaskLimits）
     #: 单次 tool loop 的软上限；0 = 不设软上限（仍有结构性护栏 STRUCTURAL_*）
     agent_loop_max_turns: int = 0
