@@ -19,6 +19,20 @@ DECIDE_SYSTEM = """你是 AnimationAgent 的导演循环。决定文字颜色/�
 不要输出 markdown。args 必须简短；不要复述目标。"""
 
 
+def mg_fingerprint(mg_def: Any) -> str:
+    """mg_def 的稳定指纹（sha256 前 16 位），用于把视觉证据钉在具体版本上。"""
+    import hashlib
+    import json
+
+    raw = json.dumps(mg_def or {}, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _evidence_sha(obs: Any) -> str:
+    data = obs.data if hasattr(obs, "data") else (obs if isinstance(obs, dict) else {})
+    return str((data or {}).get("evidence_sha") or "")
+
+
 def _vision_available() -> bool:
     """视觉质检能力是否可用（未配 vision 模型 = 不可用，不伪造通过）。"""
     try:
@@ -116,11 +130,24 @@ class AnimationAgentRuntime:
             return {"skill": name, "prompt": compose_skills(category=category or name, shot_type=shot_type, needs=needs)}
 
         ledger = FailureLedger()
+        state: dict[str, str] = {"sha": ""}
         for _seed in (seed_observations or []):
+            _d = _seed.data if hasattr(_seed, "data") else {}
+            if isinstance(_d, dict):
+                if _d.get("mg_def"):
+                    state["sha"] = mg_fingerprint(_d["mg_def"])
+                _d.setdefault("evidence_sha", state["sha"])
             ledger.add(_seed)
+
         async def execute(name: str, args: dict[str, Any]) -> Any:
             merged = {**self.default_args, **args}
             obs = observation_from_result(name, await call_animation_tool(name, **merged))
+            data = obs.data if hasattr(obs, "data") else {}
+            if isinstance(data, dict):
+                if name in ("generate_mg", "revise_mg") and data.get("mg_def"):
+                    state["sha"] = mg_fingerprint(data["mg_def"])
+                # 证据钉在当前版本：版本一变，旧 preview/frames/inspect 全部失效
+                data["evidence_sha"] = state["sha"]
             ledger.add(obs)
             return obs
 
@@ -129,14 +156,28 @@ class AnimationAgentRuntime:
             def data_of(o: Any) -> dict[str, Any]:
                 return o.data if hasattr(o, "data") else (o if isinstance(o, dict) else {})
 
-            mg_obs = next((o for o in reversed(observations)
-                           if data_of(o).get("mg_def")), None)
-            html_obs = next((o for o in reversed(observations)
-                             if getattr(o, "tool", "") == "preview_html"), None)
-            frame_obs = next((o for o in reversed(observations)
-                              if getattr(o, "tool", "") == "capture_preview_frames"), None)
-            inspect_obs = next((o for o in reversed(observations)
-                                if getattr(o, "tool", "") == "inspect_frames"), None)
+            mg_idx = -1
+            for i, o in enumerate(observations):
+                if data_of(o).get("mg_def"):
+                    mg_idx = i
+            mg_obs = observations[mg_idx] if mg_idx >= 0 else None
+            current_sha = state["sha"] or (
+                mg_fingerprint(data_of(mg_obs)["mg_def"]) if mg_obs is not None else "")
+
+            def _bound(tool: str) -> Any:
+                for i in range(len(observations) - 1, -1, -1):
+                    o = observations[i]
+                    if getattr(o, "tool", "") != tool:
+                        continue
+                    if i <= mg_idx:
+                        continue
+                    if current_sha and _evidence_sha(o) == current_sha:
+                        return o
+                return None
+
+            html_obs = _bound("preview_html")
+            frame_obs = _bound("capture_preview_frames")
+            inspect_obs = _bound("inspect_frames")
             if action.kind == "final":
                 if not mg_obs:
                     return AgentAction("tool", "generate_mg", {}, "还没有 mg_def")
