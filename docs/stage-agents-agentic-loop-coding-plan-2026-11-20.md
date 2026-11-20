@@ -387,6 +387,8 @@ sequenceDiagram
 
 工具面只授予已有 `describe_mg/list_animations/media_probe/content_query/get_type_spec/structure_analysis`，`scene_detect` 可选，`image_generate` 需父授权；`scenes_validate` 为待登记 read 能力，不能把业务 validator 当未经审计的直连工具。生产 `with_tools` 迁成公共 provider turn。
 
+**执行补充（2026-11-20，B15b）**：结构自检已改为**公共 `drive` 的 gate**——`candidate`（当前场景）经 `gate` 校验，未过则把 `missing` 作为 `gate_rejected` 回灌给 `decide`，由 `decide` 带 findings 重新生成；轮次/预算由 `LoopBudget` 控制，不再有 agent 内自建 while。生成器持续给不出场景时短路退出并如实返回 problems。
+
 ### B16 · P1-3 Requirements 规划接线【后端】
 
 | 字段 | 派工说明 |
