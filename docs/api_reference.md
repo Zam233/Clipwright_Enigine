@@ -270,7 +270,7 @@ Pipeline 输出的核心数据结构。前端编辑器与后端 Agent 共享此 
 
 `requested` = `settings.renderer_backend` 的配置值；`effective` = **回退后真正生效**的后端
 （未注册/探测失败时回退 `local`，排障时一眼看出为什么走了本机）。
-插件如何贡献后端见 [插件作者指南](plugin_authoring.md) 的「渲染后端贡献」。
+插件如何贡献后端见 [插件开发指南](plugin-development.md) 的「渲染后端贡献」。
 
 **渲染后复核（V4，默认关闭；`settings.render_review=true` 或 `CLIPWRIGHT_POST_RENDER_REVIEW=1` 开启）**：
 开启后每次渲染额外产出「切点复核图」（每个剪辑点前后三帧对照）与「全片总览图」

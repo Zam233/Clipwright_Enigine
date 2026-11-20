@@ -274,7 +274,7 @@ K:\Clipwright Server              # 账号/CREADIT/市场服务端（独立仓�
    老管线已下线，插件 Agent **不再**并入固定 DAG，而是被主 Agent/宿主按需派发。
 2. Agent 边界 Hook：`HookPoint.PRE_AGENT`（可改写 input 或 skip）与
    `POST_AGENT`（只读观测 decision/result/error）
-3. 参考：`clipwright/PLUGIN_AGENT_INTEGRATION.md`、`plugins/subagent_demo/`
+3. 参考：`docs/plugin-development.md`、`plugins/subagent_demo/`
 
 ### 新增一个动画类型（LLM 化后）
 
