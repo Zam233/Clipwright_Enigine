@@ -307,6 +307,15 @@ def repair_mg_json(mg_def: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
             fixes.append(f"elements[{i}]: added time=0 keyframe")
 
         for kf in kfs:
+            # 模型常把位移写成 keyframe.x / y（CSS/GSAP 习惯）；validator 只认
+            # translate_x/y。旧修复直接删掉/忽略 x，等于把运动信息吃掉 →
+            # 出现 1px 微动。这里先做等价归一，再继续常规修复。
+            for _old, _new in (("x", "translate_x"), ("y", "translate_y")):
+                _v = kf.get(_old)
+                if (isinstance(_v, (int, float)) and not isinstance(_v, bool)
+                        and _new not in kf):
+                    kf[_new] = _v
+                    kf.pop(_old, None)
             if "properties" in kf and isinstance(kf["properties"], dict):
                 for pk, pv in kf["properties"].items():
                     if pk not in kf:

@@ -457,6 +457,26 @@ def ensure_motion_floor(mg_def: dict[str, Any], width: int = 1920) -> dict[str, 
     return out
 
 
+def enforce_motion_floor(
+    mg_def: dict[str, Any], *, width: int = 1920,
+) -> tuple[dict[str, Any], dict[str, Any] | None, bool]:
+    """先测动效；不足则确定性补主运动并复检。
+
+    返回 `(mg_def, findings_after, changed)`。这是 LLM MG 路径的唯一正确顺序：
+    **先补再判定**，避免把已修复的片段记成 `mg_motion_weak`。
+    """
+    if not isinstance(mg_def, dict) or not mg_def:
+        return mg_def, None, False
+    dur = max(0.5, float(mg_def.get("duration_sec") or 3.0))
+    findings = objective_motion_findings(mg_def, dur, width=width)
+    if findings.get("ok"):
+        return mg_def, findings, False
+    fixed = ensure_motion_floor(mg_def, width=width)
+    if fixed == mg_def:
+        return mg_def, findings, False
+    return fixed, objective_motion_findings(fixed, dur, width=width), True
+
+
 async def generate_for_type(
     generator: Any,
     *,

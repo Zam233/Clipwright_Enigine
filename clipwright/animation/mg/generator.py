@@ -763,18 +763,29 @@ ision_prompt
         gate_on = (getattr(self, "_motion_gate_enabled", False)
                    if motion_gate is None else bool(motion_gate))
         objective = self._objective_motion_gate(mg_def, width=width) if gate_on else None
-        # mg_dynamic 路径（gate 关闭）也要如实上报"动效偏弱"（E2E 2026-10-30）：
-        # 实测修复 overlay 后，入场 0.4s 有 23.8% 像素变化，但 34.2–38.0s 只剩 3–4%
-        # ——动画"只是展示画面"的根因是**关键帧集中在前段**，后段完全静止。
-        # 不擅自重派（会改变 method 契约），但必须登记，主 agent 才能决定重做。
+        # mg_dynamic 路径（gate 关闭）：先做**确定性补运动**，再判定是否仍偏弱。
+        # 旧顺序是「先记 mg_motion_weak → AnimationAgent 再 ensure_motion_floor」，
+        # 补完运动后降级记录仍在，收口会当成未解决降级（E2E 2026-11-20 实测）。
+        # 现在：补完并复检通过就不记；只有补完仍不达标才登记（scope 带 clip_id）。
         if not gate_on:
             try:
-                _weak = self._objective_motion_gate(mg_def, width=width)
+                from clipwright.animation.mg.type_generation import enforce_motion_floor
+
+                _fixed, _weak, _changed = enforce_motion_floor(
+                    mg_def, width=int(width or (mg_def.get("width") or 1920)))
+                if _changed:
+                    mg_def = _fixed
+                    self._trace_event(
+                        None, "motion_floor", "客观动效不足，已确定性补主运动",
+                        {"scene": str((scene_context or {}).get("title") or ""),
+                         "ok": bool((_weak or {}).get("ok"))},
+                    )
                 if _weak is not None and not _weak.get("ok"):
                     _note(
                         "mg_motion_weak",
                         f"客观动效未达标：{(_weak.get('issues') or [])[:2]}",
-                        scope=str((scene_context or {}).get("clip_id") or (scene_context or {}).get("title") or ""),
+                        scope=str((scene_context or {}).get("clip_id")
+                                  or (scene_context or {}).get("title") or ""),
                         impact="该段动画观感接近静态展示（关键帧集中在前段、后段静止）",
                     )
             except Exception:  # noqa: BLE001 — 指标计算失败不影响出片
