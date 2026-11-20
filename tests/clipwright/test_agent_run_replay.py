@@ -25,7 +25,12 @@ class _Task:
 
 
 @pytest.fixture(autouse=True)
-def _clean():
+def _clean(tmp_path, monkeypatch):
+    # B04：run/attempt 会持久化到任务工作区，测试必须隔离工作区，否则跨轮次累计
+    from clipwright.config import settings
+
+    monkeypatch.setattr(settings, "workspace_dir", tmp_path / "ws")
+    monkeypatch.setattr(settings, "project_dir", tmp_path / "projects")
     agent_run.reset()
     yield
     agent_run.reset()

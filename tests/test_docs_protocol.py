@@ -75,14 +75,14 @@ def test_write_docs_creates_brief_and_plan_with_versions(tmp_path) -> None:
 
 def test_write_report_is_append_only_and_updates_index(tmp_path) -> None:
     root = tmp_path / "ws"
-    sections = stage_report.build_sections({"material_notes": ["场景 4 无匹配"]},
+    body = stage_report.build_body({"material_notes": ["场景 4 无匹配"]},
                                            stage="material", status="ok",
                                            summary="候选素材 0 条")
     p1, s1 = stage_report.write_report(workspace_root=root, stage="material", status="ok",
-                                       attempt=1, sections=sections, cost_usd=0.01,
+                                       attempt=1, body=body, cost_usd=0.01,
                                        duration_ms=100)
     p2, s2 = stage_report.write_report(workspace_root=root, stage="material", status="ok",
-                                       attempt=2, sections=sections, cost_usd=0.02,
+                                       attempt=2, body=body, cost_usd=0.02,
                                        duration_ms=120)
     assert s1 == 1 and s2 == 2
     assert Path(p1).name == "01-material-1.md" and Path(p2).name == "02-material-2.md"
@@ -96,15 +96,17 @@ def test_write_report_is_append_only_and_updates_index(tmp_path) -> None:
     assert items[0]["stage"] == "material"
 
 
-def test_report_has_four_sections(tmp_path) -> None:
+def test_report_is_freeform_with_minimal_envelope(tmp_path) -> None:
+    """v2：正文自由 Markdown，机器信封最小；不再强制四节。"""
     root = tmp_path / "ws"
-    sections = stage_report.build_sections({}, stage="edit", status="failed",
-                                           summary="轨道 0 条")
+    body = "## 我自己的标题\n\n轨道 0 条，先补 edit 的候选素材。"
     path, _ = stage_report.write_report(workspace_root=root, stage="edit", status="failed",
-                                        attempt=1, sections=sections)
+                                        attempt=1, body=body, run_id="run_free_1",
+                                        task_id="task_free")
     text = Path(path).read_text(encoding="utf-8")
-    for title in ("我做了什么", "结果如何", "发现的问题", "给下一位"):
-        assert f"## {title}" in text
+    assert "## 我自己的标题" in text and "轨道 0 条" in text
+    assert "## 结果如何" not in text and "## 给下一位" not in text
+    assert 'schema_version: 2' in text and 'run_id: "run_free_1"' in text
 
 
 # ── run_stage 接入报告 ─────────────────────────────────────
@@ -121,7 +123,8 @@ def test_run_stage_writes_report_path(tmp_path, monkeypatch) -> None:
     assert result.report_path and Path(result.report_path).is_file()
     text = Path(result.report_path).read_text(encoding="utf-8")
     assert "分镜 1 个" in text                      # 摘要进了报告
-    assert "# structure · 第 1 次 · ok" in text
+    assert "structure 阶段终态：ok" in text          # 自由正文（宿主兜底，不再强制 H1/四节）
+    assert 'schema_version: 2' in text
 
 
 def test_run_stage_marks_degraded_when_report_write_fails(tmp_path, monkeypatch) -> None:
@@ -145,9 +148,9 @@ def test_run_stage_marks_degraded_when_report_write_fails(tmp_path, monkeypatch)
 
 def test_list_and_read_report_tools(tmp_path) -> None:
     ws = _ws(tmp_path)
-    sections = stage_report.build_sections({}, stage="material", status="ok", summary="候选 21 条")
+    body = stage_report.build_body({}, stage="material", status="ok", summary="候选 21 条")
     path, _ = stage_report.write_report(workspace_root=ws.dirs().root, stage="material",
-                                        status="ok", attempt=1, sections=sections)
+                                        status="ok", attempt=1, body=body)
 
     listed = asyncio.run(ListReportsTool().execute(project_id=ws.project_id))
     assert str(listed.status).lower().endswith("success")
@@ -172,7 +175,7 @@ def test_edit_file_allows_docs_but_rejects_reports(tmp_path) -> None:
 
     report_path, _ = stage_report.write_report(
         workspace_root=ws.dirs().root, stage="edit", status="ok", attempt=1,
-        sections=stage_report.build_sections({}, stage="edit", status="ok", summary="x"))
+        body=stage_report.build_body({}, stage="edit", status="ok", summary="x"))
     blocked = asyncio.run(EditFileTool().execute(path=report_path, old_string="x", new_string="y"))
     assert "append-only" in str(blocked.error)
 
@@ -191,8 +194,7 @@ def test_context_loader_includes_docs_reports_and_failure(tmp_path) -> None:
     ws.write_docs({"theme": "手机越用越卡"}, {"scenes": [{"title": "开场"}]})
     stage_report.write_report(
         workspace_root=ws.dirs().root, stage="material", status="ok", attempt=1,
-        sections={"我做了什么": "找素材", "结果如何": "候选 0 条",
-                  "发现的问题": "素材库为空", "给下一位": "先补素材再剪"})
+        body="找素材；候选 0 条；素材库为空。先补素材再剪。")
 
     task = _Task("task_ctx", ws.dirs().root)
     out = context_loader.load(task, failure={"category": "input_insufficient",
@@ -272,22 +274,53 @@ def _client():
 
 def test_reports_api_lists_and_reads(tmp_path) -> None:
     ws = _ws(tmp_path, "proj_api_reports")
-    sections = stage_report.build_sections({}, stage="material", status="ok", summary="候选 21 条")
+    body = stage_report.build_body({}, stage="material", status="ok", summary="候选 21 条")
     stage_report.write_report(workspace_root=ws.dirs().root, stage="material",
-                              status="ok", attempt=1, sections=sections)
+                              status="ok", attempt=1, body=body, run_id="run_api_1",
+                              task_id="task_api_1")
 
     client = _client()
     listed = client.get("/api/workspace/proj_api_reports/reports")
     assert listed.status_code == 200
     body = listed.json()
-    assert body["count"] == 1 and body["reports"][0]["stage"] == "material"
+    assert body["count"] == 1
+    item = body["reports"][0]
+    assert item["schema_version"] == 2 and item["run_id"] == "run_api_1"
+    assert "headline" not in item and "preview" not in item and "next_for" not in item
+    assert item["report_state"] == "written"
 
     read = client.get("/api/workspace/proj_api_reports/reports/1")
     assert read.status_code == 200
     assert "候选 21 条" in read.json()["content"]
+    assert read.json()["total_chars"] > 0
+
+    paged = client.get("/api/workspace/proj_api_reports/reports/1?max_chars=200")
+    assert paged.json()["truncated"] is True
+    assert paged.json()["next_offset"] == 200
+    tail = client.get("/api/workspace/proj_api_reports/reports/1"
+                      f"?max_chars=200&offset={paged.json()['next_offset']}")
+    assert tail.json()["offset"] == 200
 
     missing = client.get("/api/workspace/proj_api_reports/reports/999")
     assert missing.status_code == 404
+
+
+def test_reports_api_uses_run_store_handoff(tmp_path) -> None:
+    """DTO 的 summary/handoff_summary 优先来自 RunStore（同一 task_id+run_id）。"""
+    from clipwright.services import result_assembler as ra, run_store
+
+    ws = _ws(tmp_path, "proj_api_handoff")
+    task_id, run_id = "task_handoff", "run_handoff"
+    run_store.save(ra.build(run_id=run_id, kind="stage", task_id=task_id,
+                            stage="material", status="ok",
+                            summary="候选 3 条", handoff_summary="素材已就绪，可进剪辑"))
+    stage_report.write_report(workspace_root=ws.dirs().root, stage="material",
+                              status="ok", attempt=1, body="正文", run_id=run_id,
+                              task_id=task_id)
+    client = _client()
+    item = client.get("/api/workspace/proj_api_handoff/reports").json()["reports"][0]
+    assert item["summary"] == "候选 3 条"
+    assert item["handoff_summary"] == "素材已就绪，可进剪辑"
 
 
 def test_docs_api_returns_brief_and_plan(tmp_path) -> None:

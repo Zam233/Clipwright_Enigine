@@ -37,4 +37,4 @@ def test_payload_exposes_tool_calls_path_and_total():
     ).to_tool_payload()
     assert payload["tool_calls_path"].endswith("edit-1.json")
     assert payload["tool_calls_total"] == 1
-    assert "完整轨迹见" in payload["tool_calls_hint"]
+    assert payload["trace_state"] == "complete"

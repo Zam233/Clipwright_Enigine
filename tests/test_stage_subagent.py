@@ -199,10 +199,10 @@ def test_run_stage_missing_input_returns_input_insufficient(monkeypatch) -> None
     result = asyncio.run(stage_subagent.run_stage(_Task(), StageSpec(stage="edit")))
     assert result.status == "failed"
     assert result.failure is not None
-    assert result.failure.category == "input_insufficient"
-    # needs 里要写清"该先派哪个阶段补什么"
-    assert result.failure.needs
-    assert result.failure.needs[0]["from_stage"] == "structure"
+    assert result.failure.get("category") == "input_insufficient"
+    # needs 里要写清"该先派哪个阶段补什么"（v2：只在 StageResult.needs）
+    assert result.needs
+    assert result.needs[0].from_stage == "structure"
 
 
 def test_run_stage_dry_run_does_not_execute_or_merge(monkeypatch) -> None:
@@ -229,8 +229,8 @@ def test_run_stage_timeout_is_categorized(monkeypatch) -> None:
     result = asyncio.run(stage_subagent.run_stage(
         _Task(), StageSpec(stage="structure", timeout_sec=0.05)))
     assert result.status == "failed"
-    assert result.failure.category == "timeout"
-    assert result.failure.retryable == "retry_same"
+    assert result.failure.get("category") == "timeout"
+    assert result.failure.get("retryable") == "retry_same"
 
 
 def test_stage_timeout_has_floor(monkeypatch) -> None:
@@ -303,7 +303,7 @@ def test_run_stage_rejects_unconfigured_provider(monkeypatch) -> None:
     assert result.status == "refused"
     assert "未配置" in result.error
     assert result.failure is not None
-    assert result.failure.category == "provider_not_configured"
+    assert result.failure.get("category") == "provider_not_configured"
 
 
 def test_run_stage_explicit_route_not_blocked_by_whitelist(monkeypatch) -> None:

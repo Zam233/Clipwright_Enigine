@@ -79,7 +79,7 @@ def test_progress_event_type_is_registered():
 
     assert "progress" in EVENT_TYPES
     # 计数漂移守卫：新增事件类型时同步这里（goal_update / soft_landing 为终止机制引入）
-    assert len(EVENT_TYPES) == 31
+    assert len(EVENT_TYPES) == 32
 
 
 def test_emit_never_raises_when_event_channel_broken(monkeypatch, tmp_path):

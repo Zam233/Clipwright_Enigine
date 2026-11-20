@@ -1,0 +1,81 @@
+{
+  "attempt": 1,
+  "brief": "为 ZAM 做一条 3 分钟数码测评，结尾给出购买建议。",
+  "cost_unknown": false,
+  "cost_usd": 0.0123,
+  "created_at": 1795176802.5577033,
+  "degradations": [
+    {
+      "detail": "LLM 输出不可解析，用模板",
+      "impact": "结构质量下降",
+      "kind": "scenes_fallback",
+      "scope": "scenes"
+    }
+  ],
+  "details": {},
+  "duration_ms": 1234,
+  "error": "",
+  "failure": null,
+  "handoff_summary": "3 个分镜已产出，素材引用可读，可直接进入素材阶段。",
+  "issues": [],
+  "iterations": 0,
+  "kind": "stage",
+  "mode": "task",
+  "model": "stub-model",
+  "needs": [],
+  "outputs": {
+    "scenes": [
+      {
+        "duration": 30.0,
+        "id": "s1"
+      },
+      {
+        "duration": 30.0,
+        "id": "s2"
+      }
+    ]
+  },
+  "provider": "stub",
+  "redo_agent": "",
+  "redo_hint": "",
+  "redo_request": null,
+  "replay_of": "",
+  "replayed": false,
+  "report_path": "",
+  "report_seq": 1,
+  "report_sha256": "sha256:fixture-report",
+  "report_state": "unavailable",
+  "role": "structure",
+  "run_id": "run_contract_degraded",
+  "schema_version": 2,
+  "spec_ref": "",
+  "stage": "structure",
+  "status": "degraded",
+  "summary": "模板兜底产出 2 个分镜",
+  "task_id": "task_contract",
+  "terminal_reason": "scenes_fallback",
+  "tokens": 900,
+  "tool_calls": [
+    {
+      "capability": "describe_mg",
+      "duration_ms": 120,
+      "kind": "tool",
+      "seq_in_run": 1,
+      "status": "success",
+      "tool": "describe_llm_mg"
+    },
+    {
+      "capability": "media_probe",
+      "duration_ms": 80,
+      "kind": "tool",
+      "seq_in_run": 2,
+      "status": "success",
+      "tool": "media_probe"
+    }
+  ],
+  "tool_calls_path": "reports/tool_calls/structure-1.json",
+  "tool_calls_total": 2,
+  "trace_id": "trace_contract",
+  "trace_state": "complete",
+  "writes": []
+}
