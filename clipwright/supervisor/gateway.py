@@ -109,8 +109,11 @@ def restore_approvals(pipeline_id: str, approvals: list[dict[str, Any]]) -> int:
             "needsDoubleConfirm": bool(item.get("needs_double_confirm")),
             "hardFloor": bool(item.get("hard_floor")),
             "execRequestId": str(item.get("exec_request_id") or ""),
+            "command_sha256": str(item.get("command_sha256") or ""),
+            "risk_sha256": str(item.get("risk_sha256") or ""),
             "shell": str((item.get("risk_report") or {}).get("shell") or ""),
             "history": list(item.get("history") or []),
+            "riskReport": item.get("risk_report") or {},
             "requestedBy": str(item.get("requested_by") or "kernel"),
             "expiresAt": str(item.get("expires_at") or ""),
         }
