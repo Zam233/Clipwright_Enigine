@@ -496,10 +496,20 @@ python -m pytest tests/clipwright/test_prompt_lint.py \
 | WP8 进度/取消/心跳 | 部分完成 | — | 文字动画进度已修；batch job 进度/取消未做 |
 | WP9 quality | 完成（质量门 + report） | `6e5bae3`、`b98813e` | final_timeline 后强制 quality；quality_report |
 | WP10 R10 复盘 | 完成（快照+访谈） | `e3277c2`、`bfbfe55` | 只读 review 与按角色 interview |
+| WP8 job 基础设施 | 完成（REST + 事件流） | `028df72`、`caa8fc0`、`958200f`、`6a72f26` | 有界 job、逐项进度、取消感知、任务事件流 |
+| 调研 worker 工作区 | 完成 | `873ce41` | glob/tree/range 开放给 worker |
 
 仍未完成：
 
 - EditAgent 消费 `video_trim_batch`（当前仍逐 clip `video_trim`）；
 - AnimationAgent 消费 `generate_mg_batch`（当前仍逐段 `MGGenerator`）；
-- `image_generate_batch` 的 provider 原生 `generate_batch` 契约（当前插件内并发单张）；
-- 通用 batch job 的进度/取消/心跳（R8 的完整版）。
+- `image_generate_batch` 的 provider 原生 `generate_batch` 契约（当前插件内并发单张）。
+
+已完成但需注意：
+
+- 通用 batch job 已有 REST 查询、逐项进度、取消感知与任务事件流；心跳仍由单次工具调用生命周期隐式承担；
+- quality 门默认开启（`agent_quality_gate=True`），单测 fixture 默认关闭；
+- `PluginData/plugins/image_providers` 首次访问新 id 时自动复制到 `image_generate`。
+
+结论：工具工效改造的插件边界、批量工具、工作区查询、research、预检、quality、复盘与 job 基础设施已落地；
+edit/animation 的批量消费与 image provider 原生 batch 仍需后续实现，**当前不宣称全部完成**。
