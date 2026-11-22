@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from clipwright.schema.tool import BatchItem, BatchResult, JobRef
+from clipwright.schema.tool import BatchItem, BatchResult, JobRef, ToolError
 
 
 def attach_batch_contract(output: dict[str, Any], *, job_id: str = "") -> dict[str, Any]:
@@ -19,9 +19,14 @@ def attach_batch_contract(output: dict[str, Any], *, job_id: str = "") -> dict[s
             status = "ok"
         if status not in ("ok", "failed", "skipped"):
             status = "failed" if not row.get("ok") else "ok"
+        err = str(row.get("error") or "") or None
         items.append(BatchItem(
             index=int(row.get("index", i)), status=status,  # type: ignore[arg-type]
-            error=str(row.get("error") or "") or None,
+            error=err,
+            error_info=(ToolError(category="tool_error", blocking_point=err,
+                                  retryable="retry_same",
+                                  suggestion="检查该项输入/依赖后重试")
+                        if err and status == "failed" else None),
             data={k: v for k, v in row.items()
                   if k not in ("index", "status", "error", "error_info")},
         ))
