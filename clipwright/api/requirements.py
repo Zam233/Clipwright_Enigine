@@ -655,7 +655,14 @@ async def session_timeline_stream(session_id: str, request: Request,
             if since_seq >= 0:
                 page = await asyncio.to_thread(
                     log.list_items, since_seq=start, limit=_session_log.MAX_PAGE)
-                frame = {"op": "snapshot", **page}
+                _items = page.get("items") or []
+                _first_seq = int(_items[0].get("seq") or 0) if _items else int(start) + 1
+                _older = await asyncio.to_thread(
+                    log.list_items, before_seq=_first_seq, limit=1)
+                # 增量 snapshot 的 has_more 只表示“snapshot 内无更多”，不能拿它
+                # 覆盖前端首屏分页；单独给“snapshot 之前是否还有更早条目”。
+                frame = {"op": "snapshot", **page,
+                         "has_more_before": bool(_older.get("items"))}
                 yield f"data: {json.dumps(frame, ensure_ascii=False)}\n\n"
             while True:
                 try:

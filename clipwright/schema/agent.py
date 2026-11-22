@@ -44,6 +44,7 @@ FAILURE_CATEGORIES: tuple[str, ...] = (
     "invalid_input",         # 参数/品类 ID 非法（需人工修）
     "not_found",             # 引用的对象不存在（阶段/子代理 id）
     "stage_failed",          # 老 pipeline_failed 的阶段版
+    "provider_error",        # LLM/Provider 上游失败（HTTP 5xx/连接错误）
     "unknown",
 )
 
@@ -256,6 +257,10 @@ class MaterialInput(BaseModel):
     )
     production_plan: Optional[dict[str, Any]] = Field(
         default=None, description="用户确认的制作规划书"
+    )
+    resume_checkpoint: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="断点续跑：同一输入摘要下的已完成场景与部分候选（stage_subagent 注入）",
     )
 
 

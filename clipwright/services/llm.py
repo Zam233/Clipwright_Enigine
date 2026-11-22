@@ -30,6 +30,25 @@ from clipwright.config import settings
 from clipwright.config import logger
 from clipwright.schema.tool import ToolExecResult, ToolStatus
 
+
+class LLMProviderError(RuntimeError):
+    """Provider 侧失败（HTTP 5xx/连接错误）的结构化载体。
+
+    只做分类：重试策略仍在 `generate()`；这里保留 status/model/provider 供
+    FailureReport 归因，避免把 provider 返回的原文当成最终汇报。
+    """
+
+    category = "provider_error"
+
+    def __init__(self, message: str, *, status_code: int | None = None,
+                 content: str = "", provider: str = "", model: str = "") -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.content = content
+        self.provider = provider
+        self.model = model
+
+
 # 模块级客户端缓存：多个 LLMService 实例（各 Agent/Service 各自 new）共享同一
 # IsoBase 客户端实例，避免每个实例重复构建连接/初始化（日志里反复出现
 # "OpenAIChat initialized" 即此问题）。key = (provider, base_url, model, api_key)。
@@ -644,8 +663,10 @@ class LLMService:
         )
         if not resp.success:
             logger.error("LLM chat failed: status=%s, content=%.200s", resp.status_code, resp.content)
-            raise RuntimeError(
-                f"LLM request failed (status={resp.status_code}): {resp.content}"
+            raise LLMProviderError(
+                f"LLM request failed (status={resp.status_code}): {resp.content}",
+                status_code=getattr(resp, "status_code", None),
+                content=str(getattr(resp, "content", "") or ""),
             )
         logger.debug("LLM chat 响应: content=%.500s", resp.content)
         return resp.content
@@ -732,8 +753,10 @@ class LLMService:
         resp = await self.generate(messages=messages, use_flash=use_flash, **kwargs)
         if not resp.success:
             logger.error("LLM structured output failed: status=%s, content=%.200s", resp.status_code, resp.content)
-            raise RuntimeError(
-                f"LLM structured output failed (status={resp.status_code}): {resp.content}"
+            raise LLMProviderError(
+                f"LLM structured output failed (status={resp.status_code}): {resp.content}",
+                status_code=getattr(resp, "status_code", None),
+                content=str(getattr(resp, "content", "") or ""),
             )
 
         content = resp.content.strip()

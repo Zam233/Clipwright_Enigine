@@ -86,13 +86,15 @@ async def run_inline(stage: str, input_obj: Any, context: Any, *,
         output = await stage_subagent.run_inline(stage, input_obj, context,
                                                  timeout_sec=timeout_sec)
     except Exception as exc:  # noqa: BLE001 — 预览失败也要是结构化终态
+        _cat = str(getattr(exc, "category", "") or "internal_defect")
         return _ra.build(
             run_id=run_id, kind="stage", mode=mode,  # type: ignore[arg-type]
             task_id=task_id or str(getattr(context, "pipeline_id", "") or ""),
             trace_id=task_id or str(getattr(context, "pipeline_id", "") or ""),
             stage=stage, role=stage, status="failed",
             error=f"{type(exc).__name__}: {exc}",
-            failure={"category": "internal_defect", "retryable": "needs_human",
+            failure={"category": _cat,
+                     "retryable": "retry_same" if _cat == "provider_error" else "needs_human",
                      "blocking_point": str(exc)[:200], "evidence": []},
         )
 
