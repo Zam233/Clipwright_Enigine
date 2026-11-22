@@ -67,6 +67,11 @@ from clipwright.tool.video import (
     VideoTrimTool,
 )
 from clipwright.tool.timeline_insert_image import TimelineInsertImageTool
+from clipwright.tool.workspace_search import (
+    GlobWorkspaceTool,
+    ReadFileRangeTool,
+    WorkspaceTreeTool,
+)
 from clipwright.tool.image import ImageToClipTool
 from clipwright.tool.vision import SceneDetectTool, SemanticMatchTool
 
@@ -85,6 +90,9 @@ def register_builtin_tools() -> None:
         VideoTrimTool(),
         ImageToClipTool(),
         TimelineInsertImageTool(),
+        GlobWorkspaceTool(),
+        WorkspaceTreeTool(),
+        ReadFileRangeTool(),
         VideoConcatTool(),
         VideoOverlayTool(),
         VideoDownloadTool(),

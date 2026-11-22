@@ -557,11 +557,10 @@ data: {"type":"error","detail":"流式生成中断: ...","partial":"已产出的
 
 | 工具 | 归属 | Provider | 关键参数 |
 |------|------|----------|----------|
-| `image_generate` | Engine 内置 | 由「供应商 → AI 生图」的源决定（插件实现） | prompt, size, n, model, source_id, seed；产物落工作区 `materials/image/`，同参数幂等复用；`dry_run=true` 只校验 |
+| `image_generate` | `plugins/image_generate` | 由「供应商 → AI 生图」的源决定（插件实现） | prompt, size, n, model, source_id, seed；产物落工作区 `materials/image/`，同参数幂等复用；`dry_run=true` 只校验 |
 | `timeline_insert_image` | Engine 内置 | — | task_id, asset_ref（工作区相对路径）, position（start/end/after:<clip_id>）, duration_sec, motion（ken_burns/still）；走补丁引擎，dry_run 可预览 |
 
-`image_generate` 只在存在可用图像源时出现在主 Agent 工具面；生成后自动注册该工作区的
-图片素材源，素材阶段可按 prompt 关键词检索到。
+`image_generate` / `image_generate_batch` 由 `image_generate` 插件提供；未安装插件或没有图像源时**不出现在工具面**，Engine 不保留空壳工具。生成后自动注册该工作区的图片素材源，但**不会自动进入时间线**，需要 `timeline_insert_image` / `timeline_insert_images`。
 
 环境变量/插件配置：
 
