@@ -37,6 +37,7 @@ from clipwright.tool.effects import (
 # 本地 tool/quality.py、tool/material.py 真实实现，替代远程 stubs 占位版。
 from clipwright.tool.frame_validator import FrameValidatorTool
 from clipwright.tool.material import MaterialFilterTool
+from clipwright.tool.quality_report import QualityReportTool
 from clipwright.tool.quality import (
     AudioSilenceDetectTool,
     BlackFrameDetectTool,
@@ -148,6 +149,7 @@ def register_builtin_tools() -> None:
         BlackFrameDetectTool(),
         AudioSilenceDetectTool(),
         SubtitleOverflowCheckTool(),
+        QualityReportTool(),
         # ── 其他 ──
         SpeedRampTool(),
         ColorCorrectTool(),
